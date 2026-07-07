@@ -19,6 +19,8 @@
 
 import {
   //
+  afterEach,
+  beforeEach,
   describe,
   expect,
   test,
@@ -38,7 +40,18 @@ import type {
 } from "~/lib/history/types"
 
 import { createRequestContext } from "~/lib/context/request"
+import {
+  //
+  classifyError,
+  HTTPError,
+} from "~/lib/error"
 import { compress } from "~/lib/history/sqlite/compression"
+import {
+  //
+  closeDatabase,
+  openInMemoryDatabase,
+} from "~/lib/history/sqlite/connection"
+import { getEntryById } from "~/lib/history/sqlite/read"
 import {
   //
   assembleFullEntry,
@@ -50,7 +63,19 @@ import {
   type StagePayload,
   type StageRow,
 } from "~/lib/history/sqlite/serialize"
-import { collectAttemptStages } from "~/lib/observability/sinks/history"
+import {
+  //
+  drainPendingFinalizations,
+  initHistory,
+  shutdownHistory,
+} from "~/lib/history/store"
+import { createBus } from "~/lib/observability"
+import {
+  //
+  attachHistorySink,
+  collectAttemptStages,
+} from "~/lib/observability/sinks/history"
+import { setHistoryConfig } from "~/lib/state"
 
 // ── Local reproduction of the production finalize stage-row layout ───────────
 function serializeToRawRows(entry: HistoryEntry): { row: EntryRow; stageRows: Array<StageRow> } {
@@ -347,5 +372,201 @@ describe("P2 FAIL-1 — eager stage shape matches finalized", () => {
     // For a clean single non-streaming attempt, the payloads are byte-identical
     // (both funnel through the same P1 leg builders) — the strongest FAIL-1 lock.
     expect(newPayloads(eager)).toEqual(newPayloads(finalized))
+  })
+
+  // ── FAIL-1 for a FAILED non-final attempt (adversarial coverage gap). ──
+  //
+  // A retry-recovered request: attempt 0 fails with an upstream HTTPError body,
+  // attempt 1 succeeds. attempt 0 is the DANGEROUS case — it has NO captured
+  // `response` (only `error`), so the FINALIZED path synthesizes an
+  // `upstreamResponse` from the HTTPError body (`synthesizeAttemptErrorResponse`,
+  // RFC gap H) while the EAGER path historically read raw `a.response` (absent)
+  // and emitted NO `upstream_response@0`. That divergence means an interrupted row
+  // (process dies mid-flight, only eager stages written) would LOSE attempt 0's
+  // upstream error body AND assemble with a different stage KIND set than a
+  // finalized row — a structural FAIL-1 violation. The eager producer is fixed to
+  // synthesize the same failure response, so both paths commit the SAME stage
+  // KINDS for the SAME committed failed-attempt state.
+  test("eager collectAttemptStages matches finalized for a FAILED non-final attempt (synthesized upstream_response parity)", () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    ctx.setOriginalRequest({ model: "claude-opus-4.7", messages: [{ role: "user", content: "hi" }], stream: false, payload: { model: "claude-opus-4.7" } })
+
+    const effective0: EffectiveRequest = {
+      model: "claude-opus-4.7",
+      resolvedModel: undefined,
+      messages: [{ role: "user", content: "hi" }],
+      payload: { model: "claude-opus-4.7", system: "sys" },
+      format: "anthropic-messages",
+    }
+    const wire0: WireRequest = {
+      model: "claude-opus-4.7",
+      messages: [{ role: "user", content: "hi [wire]" }],
+      payload: { model: "claude-opus-4.7", system: "sys" },
+      headers: { "x-h": "0" },
+      format: "anthropic-messages",
+    }
+
+    // Attempt 0 — fails with an upstream HTTP 502 carrying an error body, NO response.
+    ctx.beginAttempt({ strategy: "primary" })
+    ctx.setAttemptEffectiveRequest(effective0)
+    ctx.setAttemptWireRequest(wire0)
+    ctx.setAttemptError(classifyError(new HTTPError("HTTP 502", 502, `{"error":"attempt-0 upstream boom"}`)))
+
+    // EAGER path: capture attempt 0's stages WHILE it is the current (failed) attempt,
+    // BEFORE attempt 1 begins (collectAttemptStages reads ctx.currentAttempt).
+    const eager0 = collectAttemptStages(ctx)
+
+    // Attempt 1 — succeeds; the request completes.
+    const resp: ResponseData = {
+      success: true,
+      model: "claude-opus-4.7",
+      usage: { input_tokens: 3, output_tokens: 1 },
+      content: { role: "assistant", content: "ok" },
+    }
+    ctx.beginAttempt({ strategy: "server-error-retry" })
+    ctx.setAttemptEffectiveRequest(effective0)
+    ctx.setAttemptWireRequest({ ...wire0, headers: { "x-h": "1" } })
+    ctx.setAttemptResponse(resp)
+    ctx.complete(resp)
+
+    // FINALIZED path: toHistoryEntry synthesizes attempt 0's upstreamResponse from
+    // its HTTPError body; extractStagePayloads emits it as a per-attempt stage.
+    const finalizedAll = extractStagePayloads(ctx.toHistoryEntry() as unknown as HistoryEntry)
+    const finalized0 = finalizedAll.filter((s) => s.attemptIndex === 0)
+
+    // KIND parity — the load-bearing FAIL-1 assertion. Attempt 0 must carry the
+    // synthesized upstream_response on BOTH paths, else interrupted/finalized diverge.
+    expect(newKinds(eager0)).toEqual(newKinds(finalized0))
+    expect(newKinds(eager0)).toEqual(["effective_source@0", "upstream_request@0", "upstream_response@0"])
+    // Payloads are byte-identical too: both funnel the SAME attempt through the SAME
+    // synthesizeAttemptErrorResponse + legFromUpstreamResponse builder (no top-level
+    // trailers/frames apply to a non-final attempt) — the strongest FAIL-1 lock.
+    expect(newPayloads(eager0)).toEqual(newPayloads(finalized0))
+    // Sanity: the synthesized upstream_response actually carries the failure body.
+    const up0 = eager0.find((s) => s.stage === STAGE.upstreamResponse)?.payload as Record<string, unknown>
+    expect(up0.success).toBe(false)
+    expect(up0.rawBody).toBe(`{"error":"attempt-0 upstream boom"}`)
+  })
+})
+
+// ============================================================================
+// 4. Sink passthrough E2E — producer → sink → serialize → assemble.
+//
+// The FAIL-1 parity test above is PURE (it compares the two producers directly).
+// This test closes the remaining hole: it drives a REAL RequestContext through
+// the observability bus + HistorySink into the sandboxed in-memory SQLite store,
+// then reads the assembled entry back — exercising the sink's `toHistoryAttempts`
+// (per-attempt leg copy-through) and `onTerminal` (clientResponse spread). The
+// new per-attempt legs (effectiveSource/upstreamRequest/upstreamResponse) and the
+// entry-level clientResponse must survive the HistoryEntryData→HistoryEntry
+// projection with NO field loss — an explicit-projection sink silently drops any
+// field it forgets to copy (unlike a blind spread), so this is the guard that a
+// future leg addition can't be lost in the sink.
+// ============================================================================
+
+describe("P2 sink passthrough — new legs survive HistoryEntryData→HistoryEntry", () => {
+  beforeEach(async () => {
+    await shutdownHistory()
+    setHistoryConfig({ historyDbPath: ":memory:" })
+    initHistory(true)
+    openInMemoryDatabase()
+  })
+
+  afterEach(async () => {
+    await shutdownHistory()
+    closeDatabase()
+    setHistoryConfig({ historyDbPath: "" })
+  })
+
+  function makeWiredContext() {
+    const bus = createBus()
+    const detach = attachHistorySink(bus)
+    const ctx = createRequestContext({
+      endpoint: "anthropic-messages",
+      method: "POST",
+      path: "/v1/messages",
+      publisher: bus.scope("request"),
+    })
+    return { ctx, detach }
+  }
+
+  test("effectiveSource/upstreamRequest/upstreamResponse (incl. synthesized) + clientResponse pass through the sink intact", async () => {
+    const B0 = `{"error":{"message":"attempt-0 upstream 502","type":"server_error"}}`
+    const inbound = [msg("user", "hello")]
+    const upstreamMsgs = [msg("user", "hello [proxy-rewritten]")]
+    const okBody: MessageContent = { role: "assistant", content: "hi" }
+    const clientFrames = [sse(0, "message_start", `data: {"type":"message_start"}`)]
+
+    const { ctx, detach } = makeWiredContext()
+    ctx.setOriginalRequest({ model: "claude-opus-4.7", messages: inbound, stream: true, payload: { model: "claude-opus-4.7" } })
+    ctx.transition("executing")
+
+    // Attempt 0 — fails with an upstream HTTP 502 body B0 (synthesized upstreamResponse).
+    ctx.beginAttempt({ strategy: "primary" })
+    ctx.setAttemptEffectiveRequest({
+      model: "claude-opus-4.7",
+      resolvedModel: undefined,
+      messages: upstreamMsgs,
+      payload: { model: "claude-opus-4.7" },
+      format: "anthropic-messages",
+    })
+    ctx.setAttemptWireRequest({
+      model: "claude-opus-4.7",
+      messages: upstreamMsgs,
+      payload: { model: "claude-opus-4.7" },
+      headers: { "x-req": "0" },
+      format: "anthropic-messages",
+    })
+    ctx.setAttemptError(classifyError(new HTTPError("HTTP 502", 502, B0)))
+
+    // Attempt 1 — succeeds.
+    ctx.beginAttempt({ strategy: "server-error-retry" })
+    ctx.setAttemptEffectiveRequest({
+      model: "claude-opus-4.7",
+      resolvedModel: undefined,
+      messages: upstreamMsgs,
+      payload: { model: "claude-opus-4.7" },
+      format: "anthropic-messages",
+    })
+    ctx.setAttemptWireRequest({
+      model: "claude-opus-4.7",
+      messages: upstreamMsgs,
+      payload: { model: "claude-opus-4.7" },
+      headers: { "x-req": "1" },
+      format: "anthropic-messages",
+    })
+    ctx.setAttemptResponse({ success: true, model: "claude-opus-4.7", usage: { input_tokens: 5, output_tokens: 2 }, content: okBody })
+
+    // The client-facing forwarded response → clientResponse leg.
+    ctx.setForwardedResponse({ content: okBody, sseEvents: clientFrames })
+    ctx.complete({ success: true, model: "claude-opus-4.7", usage: { input_tokens: 5, output_tokens: 2 }, content: okBody })
+    detach()
+
+    await drainPendingFinalizations()
+    const entry = getEntryById(ctx.id)
+    expect(entry).toBeDefined()
+    expect(entry?.state).toBe("completed")
+
+    const attempt0 = entry?.attempts?.find((a) => a.index === 0)
+    const attempt1 = entry?.attempts?.find((a) => a.index === 1)
+    expect(attempt0).toBeDefined()
+    expect(attempt1).toBeDefined()
+
+    // ── attempt 0: all three new legs survive the sink (upstreamResponse is SYNTHESIZED). ──
+    expect(attempt0?.effectiveSource?.messages).toEqual(upstreamMsgs)
+    expect(attempt0?.upstreamRequest?.messages).toEqual(upstreamMsgs)
+    expect(attempt0?.upstreamRequest?.headers).toEqual({ "x-req": "0" })
+    expect(attempt0?.upstreamResponse?.success).toBe(false)
+    expect(attempt0?.upstreamResponse?.rawBody).toBe(B0)
+
+    // ── attempt 1: all three new legs survive; upstreamResponse is the success verdict. ──
+    expect(attempt1?.effectiveSource?.messages).toEqual(upstreamMsgs)
+    expect(attempt1?.upstreamRequest?.headers).toEqual({ "x-req": "1" })
+    expect(attempt1?.upstreamResponse?.success).toBe(true)
+    expect(attempt1?.upstreamResponse?.body).toEqual(okBody)
+
+    // ── entry-level clientResponse survives onTerminal's projection. ──
+    expect(entry?.clientResponse?.body).toEqual(okBody)
+    expect(entry?.clientResponse?.sseEvents?.map((e) => e.type)).toEqual(["message_start"])
   })
 })

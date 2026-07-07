@@ -42,6 +42,7 @@ import {
   legFromUpstreamRequest,
   legFromUpstreamResponse,
   legFromWire,
+  synthesizeAttemptErrorResponse,
 } from "~/lib/context/request"
 import {
   //
@@ -311,22 +312,29 @@ export class HistorySink {
 export function collectAttemptStages(ctx: RequestContext): Array<StagePayload> {
   const a = ctx.currentAttempt
   if (!a) return []
+  // A failed attempt carries no captured `response`; fall back to a response
+  // synthesized from its upstream HTTPError body — IDENTICAL to the finalized
+  // producer (`toHistoryEntry`), so an interrupted row (only these eager stages
+  // written) reassembles with the SAME per-attempt response/upstream_response
+  // stages as a finalized row (FAIL-1). No-op when the attempt already has a
+  // response or its error carries no upstream body.
+  const attemptResponse = a.response ?? synthesizeAttemptErrorResponse(a)
   const stages: Array<StagePayload> = []
   if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveRequest, attemptIndex: a.index, payload: legFromEffective(a.effectiveRequest) })
   if (a.wireRequest) stages.push({ stage: STAGE.outboundRequest, attemptIndex: a.index, payload: legFromWire(a.wireRequest) })
-  if (a.response) stages.push({ stage: STAGE.outboundResponse, attemptIndex: a.index, payload: responseDataToHistory(a.response) })
+  if (attemptResponse) stages.push({ stage: STAGE.outboundResponse, attemptIndex: a.index, payload: responseDataToHistory(attemptResponse) })
   // ─── New per-attempt leg stages (RFC §3) — dual-written ALONGSIDE the legacy
   //     stages above, mirroring extractStagePayloads' new-stage shape (FAIL-1). The
   //     upstreamResponse layers on per-attempt response headers + the attempt's own
   //     committed frames (top-level trailers/frames resolve at finalize). ───
   if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveSource, attemptIndex: a.index, payload: legFromEffectiveSource(a.effectiveRequest) })
   if (a.wireRequest) stages.push({ stage: STAGE.upstreamRequest, attemptIndex: a.index, payload: legFromUpstreamRequest(a.wireRequest) })
-  if (a.response) {
+  if (attemptResponse) {
     stages.push({
       stage: STAGE.upstreamResponse,
       attemptIndex: a.index,
       payload: {
-        ...legFromUpstreamResponse(a.response),
+        ...legFromUpstreamResponse(attemptResponse),
         ...(a.responseHeaders && { headers: a.responseHeaders }),
         ...(a.sseEvents && { sseEvents: a.sseEvents }),
       },

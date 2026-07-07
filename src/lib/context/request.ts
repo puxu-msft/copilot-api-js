@@ -176,8 +176,13 @@ export function legFromUpstreamResponse(r: ResponseData): HistoryUpstreamRespons
  * attempt. Non-HTTP failures (network errors, aborts) carry no upstream body, so
  * their `attempt.error` message stays the only record (no empty response stage).
  * Returns undefined when there is nothing to record.
+ *
+ * Exported so the EAGER stage producer (`collectAttemptStages`) can apply the
+ * SAME synthesis the finalized producer (`toHistoryEntry`) does — otherwise an
+ * interrupted row would drop a failed attempt's `upstream_response` stage and
+ * assemble with a divergent stage-KIND set (FAIL-1).
  */
-function synthesizeAttemptErrorResponse(a: Attempt): ResponseData | undefined {
+export function synthesizeAttemptErrorResponse(a: Attempt): ResponseData | undefined {
   if (!a.error) return undefined
   const raw = a.error.raw
   if (!(raw instanceof HTTPError) || !raw.responseText) return undefined
