@@ -1,104 +1,105 @@
-# Spec: 中毒会话的 thinking 隔离（session-level thinking quarantine）
+# Spec: thinking「cannot be modified」400 三层防治（collapse + reactive + session quarantine）
 
-- 状态：draft **v2.1（已过 subagent 复审，2 阻塞项已修）**。待用户 review → 实施计划。复审报告：[#03 v2 架构+对抗](2026-07-07-thinking-signature-quarantine-review-2026-07-07-03.md)。修正：反应式落库改**原生 env-strategy**（读 env.ctx，HIGH-1）；主动过滤改**独立 env-aware RequestRewrite + 双接入点**（driver + web_search，MEDIUM-1/2）；非 CC 每轮成本 + 内容寻址 fallback 记入 §8（MEDIUM-3）；放弃 PoC 对照臂记 record-not-adopted（LOW-1）；compact 残留记已知不修（LOW-2）。v1 六问（A1/A2/A3/C1/C2/H3）经逐条对照代码确认已解决/消解。
+- 状态：draft **v4（三层叠加：结构 collapse 主修 + reactive strip-all 兜底 + session-key/TTL 持久 quarantine）**。待 subagent 复审 → 用户 review → 实施计划。
 - 日期：2026-07-07
-- 前身：v1「基于 signature + 索引/二分」已废（索引法被 PoC 实证判死、二分成本高且好块空明文低伤害）。评审存证：[#01 架构](2026-07-07-thinking-signature-quarantine-review-2026-07-07-01.md) / [#02 红队](2026-07-07-thinking-signature-quarantine-review-2026-07-07-02.md)；PoC：[exp/thinking-signature-quarantine/README.md](../../exp/thinking-signature-quarantine/README.md)。
+- 演进：v1（signature+索引+二分，废）→ v2/v2.1（会话级 strip-all + TTL）→ v3（纯结构 collapse，**因过度简化被否**）→ **v4（三层：结构精确修 + reactive 兜底 + 会话 quarantine 全保留）**。评审存证 [#01](2026-07-07-thinking-signature-quarantine-review-2026-07-07-01.md)/[#02](2026-07-07-thinking-signature-quarantine-review-2026-07-07-02.md)/[#03](2026-07-07-thinking-signature-quarantine-review-2026-07-07-03.md)；PoC [exp/thinking-signature-quarantine/README.md](../../exp/thinking-signature-quarantine/README.md)。
 - 相关 skill：`ghc-anthropic-upstream`、`empirical-verification`、`persistence-async-invariants`、`history-sqlite-schema`、`test-isolation`。
 
-## 1. 问题（What & Why）
+## 1. 问题 + PoC 锁定的精确根因
 
-GHC 上游对某些 thinking 块返回确定性 400：
-
+GHC 上游对某些请求返回确定性 400：
 ```
 messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest
 assistant message cannot be modified. These blocks must remain as they were in
 the original response.
 ```
 
-某个 thinking 块的 signature 被上游判为「已修改/无法验证」，**烘焙在客户端某条会话历史里**，该会话之后每一轮都随历史重发、每轮都撞同一 400，整条会话卡死。现状兜底是 Claude Code 客户端自行把整轮**全部** thinking 剥掉重发（盲目、且只有 CC 客户端会做）。
+**PoC 决定性结论（详见 exp/ README）**：
+- **根因（本样本）= 一条（GHC 折叠后）assistant 消息含 ≥2 个连续 thinking 块**。真实失败请求里唯一含多 thinking 块的 msg 14（3 个连续）正是元凶；保留任意 1 个 → 200、保留 ≥2 → 400、保留 0 → 200。三块本身不畸形。客户端把本应交替的 thinking 错误累积/前置成连续块，上游判「已修改」。
+- **拆分救不了**：把 msg14 拆成 3 条连续 assistant 消息 → GHC 折叠回 `[T,T,T]` → 仍 400（实测 `pb_split3`）。→ **唯一结构修 = 连续 run 折叠为首块**（record-not-adopted：split）。
+- **确定性**（原样 ×3 全 400）、**非我方所致**（inbound==outbound 全量逐条相同）。
+- **其他中毒模式存在**：skill `ghc-anthropic-upstream` 记载单块签名内在对不上等；本 PoC 仅 1 样本无法穷尽 → 需兜底 + 持久记忆。
 
-## 2. PoC 实证结论（决定设计形状，详见 exp/ README）
+## 2. 三层防治（互补，非替代）
 
-- **确定性**：原样重发 ×3 全 400、同一 `content.34`。非间歇。
-- **根因 = 上游 intrinsic 毒，非我方 sanitize**：inbound vs outbound 全量结构逐条相同、thinking 逐字节相同 → 我方 sanitize 是 no-op。（红队 H2 证伪。）
-- **strip-all thinking → 确定性 200**。
-- **索引/signature 定位不可行**：`content.M` 是 GHC 折叠后坐标、指向「第一个越界块」、剥它后索引移位仍 400、无折叠逻辑可参考 → **放弃 signature/索引/二分识别**。
-- **好块与坏块都是空明文**（opus-4.8 常态，thinking 文本长度 0）→ 过度剥离只损签名连续性/缓存，**低伤害**，不损可见推理。
+| 层 | 机制 | 覆盖 | 状态 |
+|---|---|---|---|
+| **L1 结构 collapse**（主修，提前精确） | 无状态 sanitize：连续 thinking run 折叠为首块 | 高发的「多重性」毒；**保留 1 块 thinking**，零 400 往返 | 无状态 |
+| **L2 reactive strip-all**（兜底，解锁本轮） | 命中「cannot be modified」400 → strip-all thinking 重试一次 | L1 没预防到的其他型毒（漏网/非多重性） | 无状态 |
+| **L3 session quarantine**（持久记忆，免复发往返） | 记 `(session_id, agent_id)`@now；该会话 3d 滑动 TTL 内提前 strip-all | 非 L1 型毒的**会话级复发**（否则每轮都 L2 一次 400+重试） | 持久 sidecar |
 
-**推论**：与其精确定位坏块（贵、脆、收益小），不如**认定「这条会话已中毒」，在一段时间内对它一律 strip-all thinking**——简单、鲁棒、确定性有效、服务端化（任何客户端受益）。
+L1 精确修高发毒（保留 thinking）；L2 接住漏网、保证本轮成功；L3（**用户明确要求无论如何保留**）记住会话、免非-L1 型毒每轮复发的 400+重试往返。
 
-## 3. 设计决策（已与用户敲定）
+## 3. 架构
 
-| 维度 | 决策 |
-|---|---|
-| 隔离粒度 | **会话级**：key = `(session_id, agent_id)` |
-| 命中动作 | **整体 strip-all thinking**（不做 signature 级过滤/二分） |
-| 生命周期 | 持久化 sidecar + **3 天滑动 TTL**（每次命中同 key 的新请求刷新 last_seen） |
-| 失败轮处理 | 首次撞 400 → strip-all 重试一次解锁本轮（PoC 证 → 200）+ 记录 key |
-| 启用方式 | config 开关，默认开；TTL 可配 |
+### 3.1 L1 结构 collapse `src/lib/anthropic/sanitize/collapse-consecutive-thinking.ts`
+- 规则：每条 assistant 消息 content 里，**极大连续 run（相邻 ≥2 个 `thinking`/`redacted_thinking`）折叠为首块**、丢其余。**只动连续 run**，不误伤被 tool_use 隔开的合法 interleaved thinking、不动单 thinking 消息、不动非 thinking 块。
+- 纯函数（payload-only），接入 [sanitizeAnthropicMessages](../../src/lib/anthropic/sanitize/index.ts#L79)（`processToolBlocks` 之前）——**一处覆盖 driver S3 + web_search 双路径**（评审 A6）。按 `type` 判定覆盖 redacted（评审 A2）。PoC 证留首块 → 200。
+- config 门禁 + telemetry（折叠 run 数 / 丢块数）。
 
-### key 可行性（已核实）
-- `session_id` ← header `x-claude-code-session-id`（[sessions.ts:34-43](../../src/lib/history/sessions.ts#L34)）：稳定 per-conversation UUID，会话内每请求复用。
-- `agent_id` ← header `x-claude-code-agent-id`（[sessions.ts:60-68](../../src/lib/history/sessions.ts#L60)）：稳定 per-subagent id；主 agent 不发 → `undefined`。
-- 两者已在 request context（[context/request.ts](../../src/lib/context/request.ts) `getSessionId`/`getAgentId`）+ history schema（`session_id`/`agent_id`）。`(session,agent)` 稳定唯一标识主/子 agent 的独立会话历史。
-- **无 session_id 时**（非 CC 客户端不发该头）：无法 durable 隔离 → 仅每轮 reactive strip-all 解锁，不入库（文档化的降级，不阻塞）。
+### 3.2 L2 + L3 反应式策略 `src/lib/codec/anthropic/poisoned-thinking-retry.ts`
+- **必须原生 env-strategy**（非 `adaptLegacyStrategy`）——落库 key=`(session_id,agent_id)` 只在 `env.ctx`，legacy `ResolvedContext` 无 ctx、adapter 丢 env（评审 HIGH-1，已复核 [pipeline.ts:154](../../src/lib/request/pipeline.ts#L154)/[legacy-strategy-adapter.ts:100](../../src/lib/pipeline/legacy-strategy-adapter.ts#L100)）。原生 `handle(error,env)`/`onResolved(env,meta)` 读 `env.ctx`（driver `onResolved(current,…)` 传带 ctx 的 env，[driver.ts:283](../../src/lib/pipeline/driver.ts#L283)/[types.ts:137](../../src/lib/pipeline/types.ts#L137)）。
+- 接入 v4 活路径 [codec/anthropic/strategies.ts:84](../../src/lib/codec/anthropic/strategies.ts#L84)（直连主流量，评审 A1）+ 辅接 legacy `anthropic/pipeline.ts:170`（web_search 双跳，legacy 孪生或共享 remediation）。
+- **matcher**：守卫式双 token（`thinking`/`redacted_thinking` + `cannot be modified`，仿 [legacy-thinking-retry](../../src/lib/request/strategies/legacy-thinking-retry.ts#L36)，避免误伤 `thinking.type.enabled`；评审 M3 负样本测试）。per-request 一次性。
+- **L2 remediate**：strip-all thinking（含 redacted）→ 重试一次（`learning:true`，`MAX_LEARNING_RETRIES=32` 足）。PoC 证 → 200。
+- **L3 落库（onResolved，成功才记）**：从 `env.ctx` 读 `(session_id, agent_id)` 写 sidecar（now/hit_count++/error_sample）。无 session_id → 跳过落库（仅 L2 解锁，降级）。归因混淆会话级无害（误记最坏剥该会话 thinking ≤3d 滑动，空明文低伤害、自动过期）；**（record-not-adopted）** 有意不采纳 PoC 对照臂双证（会话级低伤害 + 窄 matcher 使 strip-all→200 即有效 oracle + 自动过期）。
 
-## 4. 架构（三组件 + 配置）
+### 3.3 L3 持久 quarantine 存储 `src/lib/anthropic/thinking-quarantine/store.ts`
+- **专用 sidecar SQLite** `~/.local/share/copilot-api/thinking-quarantine.db`，独立于 `history.enabled`。**禁用** `connection.ts:openDatabase`（单例会关 history 库，评审 A3/M1）；用 [sqlite/driver.ts:createDatabase](../../src/lib/history/sqlite/driver.ts#L122)（无单例副作用）+ **自建最小 init**（mkdir + WAL/busy_timeout + 建表——createDatabase 不做 PRAGMA/mkdir，必须自建，评审补强）。
+- 表 `poisoned_conversations(session_id TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', first_seen_at, last_seen_at, hit_count, last_error_sample, PRIMARY KEY(session_id, agent_id))`。主 agent 归一 `agent_id=''`（NULL 在 PK 视作互异）。
+- **3 天滑动 TTL**：读时 `now-last_seen_at>TTL` 视过期；命中有效即 bump `last_seen_at`（滑动续期，评审 H3）。惰性 + 周期 purge 过期；安全 cap 防极端。
+- 内存热缓存 `Map<"session\0agent", last_seen_at>`，boot 水合、写穿透。**never-throw** fire-and-forget，过滤只读内存（`persistence-async-invariants`）。
 
-### 4.1 持久隔离存储 `src/lib/anthropic/thinking-quarantine/store.ts`
-- **专用 sidecar SQLite** `~/.local/share/copilot-api/thinking-quarantine.db`，**独立于 `history.enabled`**（history 可关而过滤须常驻）。
-- **禁用** `history/sqlite/connection.ts:openDatabase`（模块级单例，会关 history 库，评审 A3/M1）；复用 [sqlite/driver.ts:createDatabase](../../src/lib/history/sqlite/driver.ts#L122)（bun/node 工厂，无单例）+ 自建最小 init（mkdir + WAL/busy_timeout + 建表）。
-- 表 `poisoned_conversations(session_id TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', first_seen_at INTEGER, last_seen_at INTEGER, hit_count INTEGER, last_error_sample TEXT, PRIMARY KEY(session_id, agent_id))`。`agent_id` 主 agent 归一为 `''`（NULL 在 SQLite PK 里视作互异，故用哨兵空串）。
-- **3 天滑动 TTL**：读时 `now - last_seen_at > TTL` 视为过期（不隔离）；命中有效 key 时 bump `last_seen_at`（滑动续期，评审 H3 的「命中须刷新」以 TTL 形式落地）。周期性 + 惰性 purge 过期行；另设安全 cap（超量按 last_seen 淘汰）防极端。
-- 内存热缓存 `Map<"session\0agent", last_seen_at>`，boot 水合，写穿透。**never-throw**：持久化 fire-and-forget 只 warn，过滤只读内存（`persistence-async-invariants`）。
+### 3.4 L3 主动 strip-all 过滤（独立 env-aware RequestRewrite，**双接入点**）
+- 语义：请求进入时若 `(session_id, agent_id)` ∈ store 且未过期 → strip-all thinking（含 redacted）后送上游 + bump `last_seen_at`。
+- **必须独立 env-aware `RequestRewrite`**（`apply:(env)=>读 env.ctx.sessionId/agentId`），非塞进无 ctx 的纯 `sanitizeAnthropicMessages`（评审 MEDIUM-1）；同构 `createAnthropicSanitizeRewrite`、挂 `codec.getRequestRewrites()`（[request-rewrite-adapter.ts:63](../../src/lib/codec/anthropic/request-rewrite-adapter.ts#L63)）。
+- **双接入点**（web_search 整体绕过 driver，[handler-v4.ts:211](../../src/routes/messages/handler-v4.ts#L211)「codec bypassed」，评审 MEDIUM-2）：driver RequestRewrite + web_search handler 侧显式剥。
+- 注：L3 主动过滤命中即整体 strip-all（比 L1 collapse 更宽）；对已知中毒会话不必依赖 L1 精确性。
 
-### 4.2 反应式检测 + strip-all 重试策略 `src/lib/codec/anthropic/poisoned-thinking-retry.ts`
-- **必须写成原生 env-strategy**（`EnvRetryStrategy`），**不经 `adaptLegacyStrategy`**（评审 HIGH-1，已亲自复核）。原因：落库 key = `(session_id, agent_id)` **只存在于 `env.ctx`**；而 legacy `ResolvedContext`（[pipeline.ts:154-164](../../src/lib/request/pipeline.ts#L154)）= `{payload, prepareHints, meta, attempt}` **无 ctx**，`adaptLegacyStrategy` 的 onResolved 桥接又**丢弃 env**（[legacy-strategy-adapter.ts:100-103](../../src/lib/pipeline/legacy-strategy-adapter.ts#L100)）。`createServerToolRejectionStrategy` 能用 legacy 模式是因其 key=model（来自 payload），**不是本策略的模板**（key 域不同：model vs ctx-only 的 session/agent）。原生 env-strategy 的 `handle(error, env)` 与 `onResolved(env, meta)` 都能读 `env.ctx`（driver 传 `onResolved(current, meta)`、`current` 带 `.ctx`，[driver.ts:283](../../src/lib/pipeline/driver.ts#L283) / [pipeline/types.ts:137](../../src/lib/pipeline/types.ts#L137)）。
-- **接入 v4 活路径** [codec/anthropic/strategies.ts:84](../../src/lib/codec/anthropic/strategies.ts#L84)（直接放进 env-strategy 清单，非 adapt 包装；评审 A1）+ 辅接 legacy `anthropic/pipeline.ts:170`（web_search 双跳也重放中毒历史；该处是 legacy 清单，需 legacy 形态的孪生策略或共享 remediation + 各自落库腿）。
-- **matcher**：守卫式匹配——同时命中 `thinking`/`redacted_thinking` + `cannot be modified`（仿 `legacy-thinking-retry` 双 token，避免误伤 `thinking.type.enabled` 等；评审 M3 要求负样本测试）。per-request 一次性。
-- **remediate**：strip-all thinking（含 `redacted_thinking`，按 `type ∈ {thinking, redacted_thinking}` 过滤、非按 signature，天然覆盖无 signature 的 redacted，解评审 A2）→ 重试一次（`learning:true`）。PoC 证 → 200。管线「首个 200 即停」与本策略目标一致（我们就要 strip-all 的 200），无控制流张力。
-- **落库（onResolved，成功才记）**：从 `env.ctx` 读 `(session_id, agent_id)`，写入 store（now、hit_count++、error_sample）。归因混淆在会话级**无害**：即便某次瞬态 400 误记，最坏是该会话 thinking 被剥 ≤3d 滑动窗口（空明文低伤害、自动过期）；无 session_id 则跳过落库。**（record-not-adopted）** 有意不采纳 PoC 硬约束 #2 的「落库前对照臂双证（不剥仍 400 + 剥后 200）」——理由：会话级隔离低伤害 + 窄 matcher 使 strip-all→200 本身即有效因果 oracle + 3d 自动过期，对照臂的额外一次 400 探测不划算。
+### 3.5 配置
+- `anthropic.collapse_consecutive_thinking`（bool，默认 `true`，L1）
+- `anthropic.strip_thinking_on_reject`（bool，默认 `true`，L2）
+- `anthropic.poisoned_thinking_quarantine`（bool，默认 `true`，L3）+ `anthropic.poisoned_thinking_ttl_hours`（number，默认 `72`）
+- schema + state + bundled config.yaml + config 应用。
 
-### 4.3 主动 strip-all 过滤 —— 独立 env-aware RequestRewrite（**双接入点**）
-- 语义：请求进入时若 `(session_id, agent_id)` ∈ store 且未过期 → **strip-all thinking**（含 redacted）后再送上游；命中即 bump `last_seen_at`（滑动续期）。
-- **必须是独立的 env-aware `RequestRewrite`**（`apply: (env) => 读 env.ctx.sessionId/agentId`），**不能塞进 `sanitizeAnthropicMessages`**——后者是**只收 payload、无 ctx 的纯函数**（[sanitize/index.ts:79](../../src/lib/anthropic/sanitize/index.ts#L79)），塞进去要污染其签名（评审 MEDIUM-1）。新 rewrite 与既有 `createAnthropicSanitizeRewrite` 同构、挂进 `codec.getRequestRewrites()`（rewrite 能拿 ctx 已证，[request-rewrite-adapter.ts:63](../../src/lib/codec/anthropic/request-rewrite-adapter.ts#L63)）。
-- **双接入点（一处覆盖不了双路径，评审 MEDIUM-2）**：
-  1. **driver 路径**（直连主流量）：作为 codec RequestRewrite 进 driver S3。
-  2. **web_search 双跳路径**：**整体绕过 driver**（[handler-v4.ts:211-225](../../src/routes/messages/handler-v4.ts#L211)「codec is bypassed entirely」），driver 的 rewrite 不跑；需在 web_search handler 侧（其自己调 `sanitizeAnthropicMessages` 的链，`web-search-handler.ts`）显式加一处 strip。与 §4.2 反应式的「辅接 legacy」对称。
-- config 门禁 + telemetry 计数（沿用 `telemetry-dimensions` 的 thinking-sanitize 维度）。
+## 4. 数据流
+- **多重性毒请求**：L1 折叠 → 200（提前，无 400、无 quarantine）。← 高发路径，最省。
+- **非-L1 型毒，首轮**：L1 不动 → 发出 → 400 → L2 strip-all 重试 → 200 → L3 记 `(session,agent)`。
+- **非-L1 型毒，次轮起（TTL 内）**：L3 主动 strip-all + 刷新 TTL → 零 400。
+- **3d 无活动**：TTL 过期 purge → 恢复常态（毒仍在则重学一次）。
+- 跨重启：sidecar 水合，L3 继续。
 
-### 4.4 配置
-- schema（[config/schema.ts](../../src/lib/config/schema.ts)）：`anthropic.poisoned_thinking_quarantine`（boolean，默认 `true`）+ `anthropic.poisoned_thinking_ttl_hours`（number，默认 `72`=3d）。
-- state 字段 + bundled config.yaml 文档 + `config/config.ts` 应用。
+## 5. 不变量 / 错误处理
+- L1 纯函数确定性、只动连续 run。
+- L2 per-request 一次性、strip-all 走 learning 预算。
+- L3 落库读 env.ctx（原生 env-strategy）；主动过滤命中必 bump last_seen（否则活跃中毒会话过期重撞）；持久化 never-throw、过滤读内存缓存。
+- 无 session_id → L2 仍解锁、L3 跳过（降级，不阻塞）。
+- matcher 窄匹配不吞其他 400。
+- 多进程：WAL+busy_timeout 防损坏、内存缓存经 sidecar 最终一致（进程 A 学 B 重启前经 L2 自愈；文档化取舍，评审 M2）。
+- **已知残留**（评审 LOW-2）：活跃长会话被 compact 掉毒块后 L3 仍剥至 TTL 过期；**不加自愈探针**（会在健康请求引发 400 RTT）；空明文低伤害 + TTL 兜底。
 
-## 5. 数据流
-- **第 N 轮（首次中毒）**：无 key 记录 → 主动过滤不动 → 发出 → 400 → 反应式 strip-all 重试 → 200 → onResolved 记 `(session,agent)@now`。
-- **第 N+1 轮起（同会话，TTL 内）**：主动过滤发出前 strip-all thinking + 刷新 TTL → 零 400。
-- **3 天无活动后**：TTL 过期、purge → 该会话恢复正常发 thinking（若毒仍在会重新学一次）。
-- **跨重启**：sidecar 水合 → 隔离继续。
+## 6. 测试（TDD）
+- **L1 单元**：`[T,T,T,text,tool]`→`[T,text,tool]`；`[T,tool,T,tool]` interleaved 不动；单 T 不动；redacted run 折叠；多不相邻 run 各折叠；user 消息不动；**split 不修**（回归钉死 GHC 折回、不采纳 split）。
+- **L2 单元**：matcher 正/负样本（`thinking.type.enabled` 负命中）；strip-all 移除 thinking+redacted 保留其余。
+- **L3 存储**：createDatabase 独立库（不碰 history 单例）；水合/写穿透/TTL 滑动+purge/never-throw；**临时目录 DI**（Bun `os.homedir()` 忽略 `env.HOME`，记忆 `feedback_tests_never_touch_real_env`）；key 归一（主 agent→'')。
+- **集成**：L1 折叠请求直接 200（不触发 L2/L3）；非-L1 毒 首轮 400→L2→200→L3 落库、次轮 L3 主动 strip-all+TTL 刷新；无 session_id 降级；三 config 门禁；**接线守卫**——原生 env-strategy onResolved 从 env.ctx 读 (session,agent) 落库（锚 HIGH-1）+ web_search 主动过滤命中（锚 MEDIUM-2）+ v4 直连激活（handler-v4 路径，非 legacy）。
+- **实证**：PoC 已证 留1块/strip-all→200、确定性 400、split 不修；impl 期 :4141 复跑守 matcher + 折叠规则。
 
-## 6. 不变量 / 错误处理
-- 持久化 never-throw、fire-and-forget；过滤只读内存缓存。
-- 反应式 per-request 一次性；strip-all 重试走 learning 预算（`MAX_LEARNING_RETRIES=32` 充足，只需 1 次）。
-- 无 session_id → 反应式仍解锁本轮，但不 durable 隔离（降级，不阻塞）。
-- TTL 滑动：命中必 bump last_seen_at（否则活跃中毒会话过期后重撞 400——评审 H3 同理）。
-- matcher 窄匹配，不吞其他 400（`never-swallow-errors`）。
-- 多进程：WAL + busy_timeout 防损坏；各进程内存缓存经 sidecar 最终一致（进程 A 学到、B 重启前经 reactive 自愈；文档化取舍，评审 M2）。
-- **已知残留（低伤害，不修）**：活跃长会话若后来被 auto-compact 挤掉了中毒轮，主动过滤仍会继续 strip-all 健康 thinking 直到会话停顿 3 天过期。**不加「偶尔试探不剥」自愈探针**（评审 LOW-2）——那会在健康请求上主动引发 400 RTT，得不偿失；空明文低伤害 + TTL 过期重学本身就是正确自愈路径。
+## 7. 暂缓（记 docs/todo）
+- 非 CC 客户端 durable key（无 `x-claude-code-session-id`→每轮 L2 一次 400+重试；内容寻址 fallback key 暂缓，评审 MEDIUM-3；若做：store key 泛化 `header-key|content-hash-key`）。
+- 跨进程即时缓存失效（当前重启/L2 最终一致）。
+- 上游根因反馈（CC 产生连续 thinking 的行为治本在 CC 侧，非本项目）。
 
-## 7. 测试（TDD）
-- **单元**：matcher 正/负样本（`thinking.type.enabled` 负命中）；strip-all 移除 thinking + redacted_thinking、保留其余块；key 归一（主 agent → `''`）；TTL 过期判定 + 滑动刷新。
-- **存储**：createDatabase 独立库（不碰 history 单例）；水合/写穿透/TTL purge/never-throw；**临时目录 DI**（store 构造收 path 参数，Bun `os.homedir()` 忽略 `env.HOME`，记忆 `feedback_tests_never_touch_real_env`）。
-- **集成**：首轮 400→strip-all→200→落库；次轮命中→主动 strip-all + TTL 刷新；无 session_id 降级（reactive 解锁、不落库）；config 门禁；onResolved 只成功触发；接入 v4 codec 策略确在直连路径激活（用 handler-v4 路径测，非 legacy）。
-- **接线守卫（锚定评审阻塞项修复）**：(a) 原生 env-strategy 的 `onResolved(env, meta)` 确实从 `env.ctx` 读到 `(session, agent)` 并落库（正面锚定 HIGH-1 修复，非只测 remediation）；(b) web_search 双跳路径主动过滤命中的独立测试（锚定 MEDIUM-2 的第二接入点）。
-- **实证**：PoC 已证 strip-all→200 + 确定性；impl 期用 :4141 复跑守 matcher 措辞。
+## 8. 与现有机制关系
+- 与 `thinkingBlockSanitizeCheck`/`thinking_block_message_policy`/`thinking-signature-compat` 正交。
+- 与 `thinking-protection.ts`（防误改 thinking）不冲突：L1 折叠**有意移除被证伪的连续冗余 thinking**（发它必 400），非「误删合法 thinking」；impl 需核对折叠 pass 在 protection 语义下被允许（连续冗余不属「必须保留」）。
+- PoC 证根因上游 intrinsic（非我方 sanitize），故不替代任何「别碰 latest-assistant」保护。
 
-## 8. 暂缓（记 docs/todo，非本 spec）
-- signature 级精确隔离（保留好块）：需二分（贵）+ 好块空明文低伤害，暂不做；若将来 thinking 携带可见推理再评估。
-- 跨进程即时缓存失效（当前重启/reactive 最终一致）。
-- **非 CC 客户端的 durable 隔离 key（内容寻址 fallback）**：无 `x-claude-code-session-id` 的客户端拿不到 key → 每轮对话**永久多一次上游 400+strip-all 重试往返**（非一次性成本；评审 MEDIUM-3）。注意真正受影响的只是「不自剥的非 CC 客户端」（CC 自身已会自剥）。若要补全：对请求内 thinking signature 集合做 hash 作 durable key，不依赖 header。当前暂缓可辩护（真实迭代路线、非臆想需求），若做需改：store key 从 `(session,agent)` 泛化为 `header-key | content-hash-key` 联合，主动/反应两腿的查/写都按新 key。
+## 9. 路线图定位：L3 是「会话级连续请求处理」的基础能力（重要未来分支）
 
-## 9. 与现有机制关系
-- 与 `thinkingBlockSanitizeCheck`（空签名启发式）、`thinking_block_message_policy`（无差别剥旧块）正交：本机制是**按会话中毒态**条件性 strip-all。
-- 与 `thinking-protection.ts`（防误改 thinking）不冲突：中毒会话的 strip-all 是有意的安全移除（发坏块更糟）。
-- PoC 证根因是上游 intrinsic 毒，非我方 sanitize，故**不替代**任何「别碰 latest-assistant」的保护——两者面对不同问题。
+L3 的 `(session_id, agent_id)` 持久层**不是本 feature 的一次性补丁，而是未来「基于会话的连续请求处理」方向的第一块基石**（用户明确定为重要未来分支）。设计约束（`against-yagni` 对真实迭代路线 + `richest-data-flow`）：
+- **key 作为可复用 primitive**：`(session_id, agent_id)` 归一/查询/落库封装成独立模块（`thinking-quarantine/store.ts` 内的 session-key helper 或抽到 `session-state/`），供未来会话级特性复用，而非内联进 quarantine 逻辑。
+- **store 不过度窄化**：sidecar 表虽当前只承载 `poisoned_conversations`，但连接/迁移/热缓存/TTL 骨架应可容纳未来 per-conversation state（例如会话级偏好、累积上下文指纹、连续请求去重/幂等标记）——即「会话级 KV/状态」形态，而非写死单表单用途。impl 期用现有 sidecar init 骨架时保留这一扩展余地（不预建未用表，但不设计成无法扩展）。
+- **未来分支候选**（记 docs/todo，不在本 spec 实现）：会话级连续请求的幂等/去重、跨轮上下文累积与压缩决策、会话级路由/模型粘滞、会话级遥测聚合。这些都以 `(session_id, agent_id)` 为共享 key。
+- **暂不过度设计**：本 spec 只落地 L3 的 quarantine 用途；但**不把 store/key 设计成只能干这一件事**。具体未来特性到来时各自 spec。
+
