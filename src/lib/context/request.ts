@@ -239,6 +239,12 @@ export function createRequestContext(opts: {
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
   let _forwardedResponse: ForwardedResponse | null = null
+  // P3 (RFC §3): the HTTP status the proxy actually forwards to the client — captured at
+  // the forward boundary (handler `c.json`/`streamSSE` write-out, or the observability
+  // middleware's `completeFromHttpStatus` safety net) BEFORE the terminal snapshot. Distinct
+  // from the upstream leg status (`_response.status`): a failed entry can still forward a 200
+  // (semantic-truncation gate) and a proxy-introduced refusal forwards a 500. undefined until set.
+  let _clientResponseStatus: number | undefined = undefined
   // Request-outcome failure reason set DIRECTLY by fail() when the failure is proxy-introduced
   // AFTER the upstream leg succeeded (opts.upstreamSucceeded) — so `outboundResponse` stays a
   // faithful upstream-leg record (success:true, no error) while the request verdict lives here.
@@ -441,6 +447,16 @@ export function createRequestContext(opts: {
       // sends to the client), captured at the handler write-out point. Completes the
       // four-leg model. Publishes for in-flight visibility (Phase 5).
       _httpHeaders = { ..._httpHeaders, inboundResponse: headers }
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
+    },
+
+    setClientResponseStatus(status: number) {
+      // P3 (RFC §3): the HTTP status forwarded to the client (proxy→client), captured at the
+      // same forward boundary as `setInboundResponseHeaders` — the handler's built Response
+      // (`c.json`/`streamSSE` → `c.res.status`) or the middleware safety net's `c.res.status`.
+      // MUST land before complete()/fail()/abort() snapshots the entry (mirrors the header
+      // capture ordering). Lands on the first-class `clientResponse` leg in toHistoryEntry.
+      _clientResponseStatus = status
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
@@ -751,12 +767,19 @@ export function createRequestContext(opts: {
 
       if (_forwardedResponse) {
         entry.inboundResponse = _forwardedResponse
-        // New client/upstream leg model (RFC §2.1): clientResponse is first-class,
-        // dual-written ALONGSIDE the legacy inboundResponse. `body` = the forwarded
-        // content; `status?` is a separate capture landed in P3 (absent here).
+      }
+      // New client/upstream leg model (RFC §2.1): clientResponse is first-class, dual-written
+      // ALONGSIDE the legacy inboundResponse. `body`/`sseEvents` = the forwarded content;
+      // `status` = the HTTP status forwarded to the client (P3 capture). Built when EITHER the
+      // forwarded body OR the status is known — a defer-settle error path (handler threw → the
+      // middleware settled from `c.res.status`) yields a status-only clientResponse (no body was
+      // forwarded through the handler, but the client genuinely received that status —
+      // richest-data-flow keeps that observable rather than dropping it).
+      if (_forwardedResponse || _clientResponseStatus !== undefined) {
         entry.clientResponse = {
-          ...(_forwardedResponse.content !== undefined && { body: _forwardedResponse.content }),
-          ...(_forwardedResponse.sseEvents && { sseEvents: _forwardedResponse.sseEvents }),
+          ...(_clientResponseStatus !== undefined && { status: _clientResponseStatus }),
+          ...(_forwardedResponse?.content !== undefined && { body: _forwardedResponse.content }),
+          ...(_forwardedResponse?.sseEvents && { sseEvents: _forwardedResponse.sseEvents }),
         }
       }
 

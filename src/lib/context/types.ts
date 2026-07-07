@@ -487,6 +487,8 @@ export interface RequestContext {
   setHttpHeaders(capture: HeadersCapture): void
   setInboundRequestHeaders(headers: Record<string, string>): void
   setInboundResponseHeaders(headers: Record<string, string>): void
+  /** P3 (RFC §3): record the HTTP status forwarded to the client (proxy→client). Must be called before complete()/fail()/abort(). Lands on `clientResponse.status`. */
+  setClientResponseStatus(status: number): void
   /** Record upstream HTTP/2 response trailers (best-effort; the h2 transport fires this before stream end). */
   setOutboundResponseTrailers(trailers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void

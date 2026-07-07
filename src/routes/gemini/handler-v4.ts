@@ -179,6 +179,7 @@ export async function handleStreamGenerateContentV4(c: Context, modelId: string)
     stream.onAbort(() => clientAbort.abort())
     // RFC Phase 4: ④ capture proxy→client response headers (set by streamSSE before this callback).
     result.env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
+    result.env.ctx.setClientResponseStatus(c.res.status)
     try {
       await pumpGeminiStreamingV4({ stream, driver, codec, upstream: result.upstream, env: result.env })
     } finally {
@@ -200,6 +201,7 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
   // RFC Phase 4: ④ build the client response first, capture its headers, THEN complete.
   const httpResponse = c.json(gemini)
   env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
+  env.ctx.setClientResponseStatus(httpResponse.status)
 
   // Non-streaming semantic-truncation gate (Gemini renders from a CC response → check
   // finish_reason; `.at(0)` so an empty choices array flows through as a fail, not a throw).
