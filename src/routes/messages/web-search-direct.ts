@@ -66,6 +66,7 @@ import {
 } from "~/lib/anthropic/recover-tool-call"
 import {
   //
+  destackActed,
   type SanitizationStats,
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
@@ -211,9 +212,17 @@ function runInitialSanitizationAndRecord(
   const sanitizationStats = sanitizeResult.stats
   const initialSanitizationInfo = toSanitizationInfo(sanitizationStats)
 
-  // Record sanitization/preprocessing if anything was modified
+  // Record sanitization/preprocessing if anything was modified. De-stack (terminal,
+  // pure insertion) is OR'd in via destackActed — the block-removal counters can't
+  // see it, and this bypass path shares the same telemetry contract (fix-all-comparison-sites).
   const hasPreprocessing = preprocessInfo.dedupedToolCallCount > 0 || preprocessInfo.strippedReadTagCount > 0
-  if (sanitizationStats.totalBlocksRemoved > 0 || sanitizationStats.systemReminderRemovals > 0 || sanitizationStats.fixedNameCount > 0 || hasPreprocessing) {
+  if (
+    sanitizationStats.totalBlocksRemoved > 0
+    || sanitizationStats.systemReminderRemovals > 0
+    || sanitizationStats.fixedNameCount > 0
+    || destackActed(sanitizationStats)
+    || hasPreprocessing
+  ) {
     const messageMapping = buildMessageMapping(anthropicPayload.messages, initialSanitized.messages)
     reqCtx.setPipelineInfo({
       preprocessing: preprocessInfo,

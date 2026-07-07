@@ -29,7 +29,11 @@ import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
-import { toSanitizationInfo } from "~/lib/anthropic/sanitize"
+import {
+  //
+  destackActed,
+  toSanitizationInfo,
+} from "~/lib/anthropic/sanitize"
 
 /** The history-facing sanitization-info envelope (subset of SanitizationStats). */
 type SanitizationInfo = ReturnType<typeof toSanitizationInfo>
@@ -68,10 +72,12 @@ function applyAnthropicSanitize(env: RequestEnvelope, deps: AnthropicRequestRewr
   const initialSanitizationInfo = toSanitizationInfo(stats)
   deps.onInitialSanitizationInfo(initialSanitizationInfo)
 
-  // Same gate + mapping the parse path used (RFC §12.9): the baseline is the
+  // Same gate + mapping the parse path used (RFC §12.9), PLUS the terminal de-stack
+  // (pure insertion — invisible to the block-removal counters, so OR'd in via
+  // destackActed so its telemetry is never dropped): the baseline is the
   // preprocessed, pre-initial-sanitize messages (= this rewrite's input body).
   const hasPreprocessing = deps.preprocessInfo.dedupedToolCallCount > 0 || deps.preprocessInfo.strippedReadTagCount > 0
-  if (stats.totalBlocksRemoved > 0 || stats.systemReminderRemovals > 0 || stats.fixedNameCount > 0 || hasPreprocessing) {
+  if (stats.totalBlocksRemoved > 0 || stats.systemReminderRemovals > 0 || stats.fixedNameCount > 0 || destackActed(stats) || hasPreprocessing) {
     const messageMapping = buildMessageMapping(baseline.messages, sanitized.messages)
     ctx.setPipelineInfo({
       preprocessing: deps.preprocessInfo,
