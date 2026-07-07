@@ -53,9 +53,12 @@ export type WarmupPolicy = "allow" | "reject" | "drop" | "fake"
  * surrounding context or array position. The only real constraint is that thinking blocks
  * must be echoed verbatim and consecutive thinking sequences must not be reordered.
  *
- * - `preserve` — Keep thinking blocks verbatim and don't reorder consecutive thinking, but
- *                allow all surrounding cleanup (drop orphan tools, downgrade server tools,
- *                edit/drop non-thinking blocks).
+ * - `preserve` — Keep thinking blocks verbatim, preserve their relative order, and never
+ *                drop them, but allow all surrounding cleanup (drop orphan tools, downgrade
+ *                server tools, edit/drop non-thinking blocks). Thinking *adjacency* is NOT
+ *                protected: the de-stack pass (sanitize/destack-adjacent-thinking.ts) may
+ *                insert non-thinking blocks between consecutive thinking blocks to satisfy
+ *                the upstream "no two thinking blocks adjacent" rule.
  * - `stripped` — Actively delete thinking blocks from old messages; delete the message if
  *                empty after stripping.
  */
