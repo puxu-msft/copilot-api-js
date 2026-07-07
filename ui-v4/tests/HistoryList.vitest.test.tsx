@@ -380,32 +380,51 @@ describe("HistoryList", () => {
     expect(screen.queryByText("清除筛选")).toBeNull()
   })
 
-  // ── Task 4.2:列表键盘导航（↑/↓/Enter/Esc）+ 行 a11y ──
+  // ── Task 4.2:列表键盘导航（↑/↓/Enter/Esc）+ 行 a11y。roving 焦点：DOM 焦点跟随游标，测试驱动真实焦点路径。 ──
 
-  it("keyboard nav: ArrowDown ×2 moves focus to index 2 and scrolls it into view", () => {
+  it("keyboard nav: ArrowDown moves DOM focus to the next row (roving) and scrolls it into view", () => {
     mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
     const { container } = renderList()
-    const scroller = screen.getByTestId("history-scroller")
-    fireEvent.keyDown(scroller, { key: "ArrowDown" })
-    fireEvent.keyDown(scroller, { key: "ArrowDown" })
-    // 焦点游标落在 index 2（第三行）：既断言 scrollToIndex 的最后一次调用（向下 → align end），也断言焦点行视觉标记。
+    const e1row = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
+    // 真实键盘路径：焦点先落在某行（初始 tab 停靠 = 首行），对该聚焦行派发 ArrowDown。
+    e1row?.focus()
+    expect(document.activeElement).toBe(e1row)
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
+    // DOM 焦点应随游标移到下一行（roving），且 scrollToIndex 带入视口（向下 → align end）。
+    const e2row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
+    expect(document.activeElement).toBe(e2row)
+    expect(e2row?.getAttribute("data-focused")).toBe("true")
+    expect(scrollToIndexMock).toHaveBeenLastCalledWith({ index: 1, align: "end" })
+  })
+
+  it("keyboard nav: ArrowDown ×2 moves focus/cursor to index 2 (third row)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = renderList()
+    container.querySelector<HTMLElement>('[data-entry-id="e1"]')?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
     expect(scrollToIndexMock).toHaveBeenLastCalledWith({ index: 2, align: "end" })
-    const focusedRow = container.querySelector<HTMLElement>('[data-focused="true"]')
-    expect(focusedRow?.getAttribute("data-entry-id")).toBe("e3")
+    const e3row = container.querySelector<HTMLElement>('[data-entry-id="e3"]')
+    expect(document.activeElement).toBe(e3row)
+    expect(e3row?.getAttribute("data-focused")).toBe("true")
   })
 
   it("keyboard nav: ArrowUp clamps at 0 (never negative)", () => {
     mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
-    renderList()
-    const scroller = screen.getByTestId("history-scroller")
-    // 初始焦点 index 0，ArrowUp 应 clamp 在 0（向上 → align start）。
-    fireEvent.keyDown(scroller, { key: "ArrowUp" })
+    const { container } = renderList()
+    const e1row = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
+    // 初始焦点 index 0（首行 tab 停靠），聚焦首行后 ArrowUp 应 clamp 在 0（向上 → align start），焦点不动。
+    e1row?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowUp" })
     expect(scrollToIndexMock).toHaveBeenLastCalledWith({ index: 0, align: "start" })
+    expect(document.activeElement).toBe(e1row)
   })
 
-  it("keyboard nav: Enter on the focused index navigates to that row", () => {
+  it("keyboard nav: Enter activates the CURSOR row, not the initially-focused row0 (real focus path)", () => {
+    // 回归 oracle：Tab 落 row0 → ArrowDown ×2 游标到 e3 → Enter。roving 保证 DOM 焦点已随游标移到 e3，
+    // Enter 由 e3 激活 → 打开 e3（而非旧 bug 的 row0/e1）。修复前 DOM 焦点滞留 e1，Enter 打开 e1 → 本用例失败。
     mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
-    render(
+    const { container } = render(
       <QueryClientProvider client={new QueryClient()}>
         <MemoryRouter initialEntries={["/requests"]}>
           <HistoryList filters={EMPTY_FILTERS} />
@@ -413,20 +432,23 @@ describe("HistoryList", () => {
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    const scroller = screen.getByTestId("history-scroller")
-    fireEvent.keyDown(scroller, { key: "ArrowDown" }) // index 0 → 1
-    fireEvent.keyDown(scroller, { key: "Enter" })
-    expect(screen.getByTestId("loc").textContent).toBe("/requests/e2")
+    container.querySelector<HTMLElement>('[data-entry-id="e1"]')?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" }) // 游标/焦点 → e2
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" }) // 游标/焦点 → e3
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Enter" }) // 由聚焦行 e3 激活
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e3")
   })
 
-  it("keyboard nav: Escape clears the focus cursor", () => {
+  it("keyboard nav: Escape clears the focus cursor and blurs", () => {
     mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
     const { container } = renderList()
-    const scroller = screen.getByTestId("history-scroller")
-    fireEvent.keyDown(scroller, { key: "ArrowDown" }) // 焦点 → index 1
+    container.querySelector<HTMLElement>('[data-entry-id="e1"]')?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" }) // 焦点 → index 1 (e2)
     expect(container.querySelector('[data-focused="true"]')).not.toBeNull()
-    fireEvent.keyDown(scroller, { key: "Escape" })
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" })
     expect(container.querySelector('[data-focused="true"]')).toBeNull()
+    // Esc 后不应再把焦点抢回旧行（focusRequestRef 已清）。
+    expect(container.contains(document.activeElement)).toBe(false)
   })
 
   it("keyboard nav: isTyping guard — ArrowDown from inside an input does not move focus", () => {
@@ -441,7 +463,24 @@ describe("HistoryList", () => {
     expect(scrollToIndexMock).not.toHaveBeenCalled()
   })
 
-  it("row a11y: each row is a keyboard-activatable button (role + tabIndex) and Enter activates it", () => {
+  it("row a11y: roving tabindex — only the tab-stop (cursor) row has tabIndex 0, others -1; all are role=button", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = renderList()
+    const e1row = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
+    const e2row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
+    // 初始游标 index 0 → e1 是唯一 tab 停靠（tabIndex 0），其余 -1（仅脚本/方向键可聚焦）。
+    expect(e1row?.getAttribute("role")).toBe("button")
+    expect(e2row?.getAttribute("role")).toBe("button")
+    expect(e1row?.getAttribute("tabindex")).toBe("0")
+    expect(e2row?.getAttribute("tabindex")).toBe("-1")
+    // ArrowDown 后 tab 停靠随游标移到 e2。
+    e1row?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
+    expect(e1row?.getAttribute("tabindex")).toBe("-1")
+    expect(e2row?.getAttribute("tabindex")).toBe("0")
+  })
+
+  it("row a11y: Enter on a focused row activates it (row-level activation)", () => {
     mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
     const { container } = render(
       <QueryClientProvider client={new QueryClient()}>
@@ -452,8 +491,7 @@ describe("HistoryList", () => {
       </QueryClientProvider>,
     )
     const row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
-    expect(row?.getAttribute("role")).toBe("button")
-    expect(row?.getAttribute("tabindex")).toBe("0")
+    row?.focus()
     fireEvent.keyDown(row as HTMLElement, { key: "Enter" })
     expect(screen.getByTestId("loc").textContent).toBe("/requests/e2")
   })

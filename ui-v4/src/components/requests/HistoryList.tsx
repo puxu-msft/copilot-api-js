@@ -63,12 +63,14 @@ const FLASH_MS = 1200
 /** TableVirtuoso 的行数据 = TanStack 行对象(`row.original` 即 EntrySummary)。 */
 type HistoryRowModel = Row<EntrySummary>
 
-/** 传给 Virtuoso 各子组件的上下文:定位真值(`at`)+ 命中 flash(`flashId`)+ 键盘焦点游标(`focusedId`)+ 行点击回调。用 context 而非闭包,组件得以稳定不重挂。 */
+/** 传给 Virtuoso 各子组件的上下文:定位真值(`at`)+ 命中 flash(`flashId`)+ 键盘焦点游标(`focusedId`)+ roving tab 停靠(`tabStopId`)+ 行点击回调。用 context 而非闭包,组件得以稳定不重挂。 */
 interface RowContext {
   at: string | null
   flashId: string | null
-  /** 键盘导航焦点游标所在行的 id(区别于 `at` 选中真值);命中行加焦点视觉标记。 */
+  /** 键盘导航焦点游标所在行的 id(区别于 `at` 选中真值);命中行加焦点视觉标记 + DOM 焦点跟随(roving)。 */
   focusedId: string | null
+  /** roving tabindex 的唯一 tab 停靠行 id:等于焦点行;无焦点(初始/Esc 清空后)回退首行作为入口。同一时刻仅此行 `tabIndex=0`,余行 `-1`。 */
+  tabStopId: string | null
   onSelect: (id: string) => void
 }
 
@@ -118,28 +120,33 @@ const TableShell: NonNullable<TableComponents<HistoryRowModel, RowContext>["Tabl
   />
 )
 
-/** 每行 `<tr>`:`item` 即 TanStack 行,`context.at` 决定选中高亮(+aria-current)、`context.flashId` 决定命中瞬态 flash、`context.focusedId` 决定键盘焦点游标描边,点击/Enter/Space 走 `context.onSelect`(单元格 td 由 itemContent 注入 children)。行本身即可聚焦可键盘激活(role=button + tabIndex),与容器级 ↑/↓ 跨行移动并存(容器管移动、行级管激活)。 */
+/** 每行 `<tr>`:`item` 即 TanStack 行,`context.at` 决定选中高亮(+aria-current)、`context.flashId` 决定命中瞬态 flash、`context.focusedId` 决定键盘焦点游标描边、`context.tabStopId` 决定 roving tabindex(唯一 tab 停靠行 `tabIndex=0`,余行 `-1`),点击/Enter/Space 走 `context.onSelect`(单元格 td 由 itemContent 注入 children)。行本身即键盘焦点与激活单元:方向键 keydown 从聚焦行冒泡到容器移动游标(容器同步把 DOM 焦点移到目标行),Enter/Space 由 DOM 聚焦行(即游标行)激活 —— 焦点与游标恒同步,语义统一。 */
 const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableRow"]> = ({ item, context, ...props }) => {
   const id = item.original.id
   const selected = id === context.at
   const flashing = id === context.flashId
   const focused = id === context.focusedId
+  const isTabStop = id === context.tabStopId
   return (
     <tr
       {...props}
       data-entry-id={id}
       data-focused={focused ? "true" : undefined}
       role="button"
-      tabIndex={0}
+      // roving tabindex:同一时刻仅 tab 停靠行可 Tab 聚焦(`0`),余行 `-1`(仅脚本/方向键可聚焦)。
+      // 保证列表整体只占一个 Tab 停靠点,方向键在行间移动 DOM 焦点(见容器 onKeyDown + focus effect)。
+      tabIndex={isTabStop ? 0 : -1}
       aria-current={selected ? "true" : undefined}
       onClick={() => context.onSelect(id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
-          // 行级激活:阻止冒泡到容器的 onKeyDown(否则容器再按焦点游标激活一次 → 双重导航)。
+          // 行级激活:Enter/Space 由 DOM 聚焦行激活。roving 保证聚焦行 === 游标行,故激活的恒是游标行。
+          // stopPropagation 防止冒泡到容器(容器已不含激活分支,此为纵深防御 + 语义显式:激活只在行级)。
           e.preventDefault()
           e.stopPropagation()
           context.onSelect(id)
         }
+        // 方向键不在此处理:放行冒泡到容器 onKeyDown 统一移动游标 + DOM 焦点(roving)。
       }}
       className={`${ROW_CLASS} ${selectionClass(selected)}${flashing ? " toc-flash" : ""}${focusClass(focused)}`}
     />
@@ -197,8 +204,13 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
   // 故不用 imperative classList,交给 itemContent/TableRow 渲染)。FLASH_MS 后清空。
   const [flashId, setFlashId] = useState<string | null>(null)
   // 键盘导航焦点游标:index 指向 rows 中的位置(初始 0,与「列表默认有个顶部游标」一致);
-  // ↑/↓ 移动、Enter 激活、Esc 清空。区别于 `at` 选中真值(由 URL 承载)。
+  // ↑/↓ 移动、Enter 激活(由行级 DOM 焦点承担)、Esc 清空。区别于 `at` 选中真值(由 URL 承载)。
   const [focusedIndex, setFocusedIndex] = useState(0)
+  // 滚动容器 DOM 引用:focus effect 据此按 data-entry-id 查目标行节点并 .focus()(roving)。
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  // 待移焦请求:方向键导航时置为目标行 id,渲染提交后由 focus effect 消费并把 DOM 焦点移到该行。
+  // 用 id 而非 bool:仅键盘导航置位(初始挂载/数据刷新不夺焦点),消费后清空,避免背景数据更新误抢焦点。
+  const focusRequestRef = useRef<string | null>(null)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const flashRow = useCallback((id: string) => {
     if (flashTimerRef.current !== undefined) clearTimeout(flashTimerRef.current)
@@ -214,6 +226,31 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
     },
     [],
   )
+
+  // roving DOM 焦点:方向键移动游标后(focusedIndex 变化)把 DOM 焦点移到目标行,使聚焦行 === 游标行。
+  // 虚拟化下目标行经 scrollToIndex 滚入可见后才渲染,故在渲染提交后(effect,含一次 rAF 补偿异步渲染)
+  // 按 data-entry-id 查节点 .focus()。仅当 focusRequestRef 有待移焦请求(键盘导航发起)才移焦 —— 初始挂载、
+  // 数据刷新(rows 变)不夺用户焦点。deps 仅 focusedIndex:游标未变(如 ArrowUp 触底 clamp)则焦点本就正确、无需重跑。
+  useEffect(() => {
+    const id = focusRequestRef.current
+    if (id === null) return
+    focusRequestRef.current = null
+    // 按 dataset 匹配(而非 CSS 选择器)以免 id 含特殊字符需转义,且不依赖 `CSS.escape`(测试 DOM 环境未必暴露)。
+    const focusRow = () => {
+      const nodes = scrollerRef.current?.querySelectorAll<HTMLElement>("[data-entry-id]")
+      for (const node of nodes ?? []) {
+        if (node.dataset.entryId === id) {
+          node.focus()
+          return
+        }
+      }
+    }
+    focusRow()
+    // 真实 Virtuoso 下 scrollToIndex 触发的重渲染可能晚一帧:补一次 rAF 重试(测试的 fake Virtuoso 同步渲染,首次即命中)。
+    const raf = requestAnimationFrame(focusRow)
+    return () => cancelAnimationFrame(raf)
+    // 以 focusedIndex 变化为触发闸:不把 rows 纳入 deps,避免数据刷新(rows 变引用)误抢用户焦点。
+  }, [focusedIndex])
 
   // at×筛选归属判定(§10.1 分支 2/3):`at` 不在已加载集时,查单条 summary 判 matchesGating —
   // 属于则继续 load-until-found、不属于则提示不翻页。membership 按 (at, filterSig) 记忆:filterSig 变化
@@ -301,12 +338,17 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
   )
   const rowContext = useMemo<RowContext>(() => {
     const focused = focusedIndex >= 0 && focusedIndex < rows.length ? rows[focusedIndex] : undefined
-    return { at, flashId, focusedId: focused?.original.id ?? null, onSelect: selectRow }
+    const focusedId = focused ? focused.original.id : null
+    // roving tab 停靠:焦点行即停靠行;无焦点(初始/Esc 清空)回退首行作为 Tab 入口,保证列表始终有且仅一个 Tab 停靠点。
+    const firstId = rows.length > 0 ? rows[0].original.id : null
+    const tabStopId = focusedId ?? firstId
+    return { at, flashId, focusedId, tabStopId, onSelect: selectRow }
   }, [at, flashId, focusedIndex, rows, selectRow])
 
-  // 容器级键盘导航(↑/↓/Enter/Esc):↑/↓ 移动焦点游标 + scrollToIndex 带入视口,Enter 激活游标行,Esc 清游标。
-  // isTyping 守卫:焦点落在输入类元素内(如筛选栏)时不拦,避免方向键/回车误触列表导航。
-  // preventDefault 仅在真正处理方向键/激活时,不吞其他按键。
+  // 容器级键盘导航(↑/↓/Esc):方向键从聚焦行冒泡到此,移动焦点游标 + 同步 DOM 焦点(roving)+ scrollToIndex 带入视口。
+  // Enter/Space 激活不在此处理 —— 由 DOM 聚焦行(即游标行,roving 保证同步)的行级 onKeyDown 承担,语义统一到行级。
+  // isTyping 守卫:焦点落在输入类元素内(如筛选栏)时不拦,避免方向键误触列表导航。
+  // 副作用(scrollToIndex/移焦请求)在 setState updater 外执行 —— updater 须纯(StrictMode 双调用安全)。
   const onListKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
       if (isTyping(e.target)) return
@@ -315,43 +357,36 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
       switch (e.key) {
         case "ArrowDown": {
           e.preventDefault()
-          setFocusedIndex((i) => {
-            const next = Math.min(i + 1, len - 1)
-            // 向下移动:游标行贴底显现(align "end"),最小滚动露出目标(react-virtuoso 无 "auto",按方向取边)。
-            virtuosoRef.current?.scrollToIndex({ index: next, align: "end" })
-            return next
-          })
+          const next = focusedIndex < 0 ? 0 : Math.min(focusedIndex + 1, len - 1)
+          setFocusedIndex(next)
+          focusRequestRef.current = rows[next]?.original.id ?? null
+          // 向下移动:游标行贴底显现(align "end",最小滚动露出目标;react-virtuoso 无 "auto",按方向取边)。
+          virtuosoRef.current?.scrollToIndex({ index: next, align: "end" })
           break
         }
         case "ArrowUp": {
           e.preventDefault()
-          setFocusedIndex((i) => {
-            const next = Math.max(i - 1, 0)
-            // 向上移动:游标行贴顶显现(align "start")。
-            virtuosoRef.current?.scrollToIndex({ index: next, align: "start" })
-            return next
-          })
-          break
-        }
-        case "Enter": {
-          if (focusedIndex >= 0 && focusedIndex < len) {
-            e.preventDefault()
-            selectRow(rows[focusedIndex].original.id)
-          }
+          const next = focusedIndex < 0 ? 0 : Math.max(focusedIndex - 1, 0)
+          setFocusedIndex(next)
+          focusRequestRef.current = rows[next]?.original.id ?? null
+          // 向上移动:游标行贴顶显现(align "start")。
+          virtuosoRef.current?.scrollToIndex({ index: next, align: "start" })
           break
         }
         case "Escape": {
+          // 清游标:清掉待移焦请求(否则 focus effect 会因 focusedIndex 变 -1 而重新聚回旧行),并 blur 当前聚焦行。
+          focusRequestRef.current = null
           setFocusedIndex(-1)
           if (e.target instanceof HTMLElement) e.target.blur()
           break
         }
         default: {
-          // 其他键不处理(不 preventDefault,放行页面滚动等默认行为)。
+          // 其他键不处理(不 preventDefault,放行页面滚动等默认行为)。Enter/Space 由行级 onKeyDown 处理。
           break
         }
       }
     },
-    [rows, focusedIndex, selectRow],
+    [rows, focusedIndex],
   )
 
   // 显式跟随实时流:恢复 tail 并清掉 URL 的定位参数(URL-as-truth:tailing 态不该声明 locate)。
@@ -413,12 +448,13 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
         )}
         {!isError && isLoading && <div className="mono p-2 text-[#888]">loading…</div>}
         {!isError && !isLoading && (
-          // 容器级方向键导航(roving arrow 表面):真正可交互的单元是内部 role=button、tabIndex=0 的行(激活层);
-          // 本 div 只是委托捕获的方向键滚动表面(移动层)——键盘用户 Tab 进某行后,↑/↓ 从聚焦行冒泡到此处理。
+          // 容器级方向键导航(roving 表面):真正可交互 + 可聚焦的单元是内部 role=button 的行;方向键从聚焦行冒泡到此,
+          // 容器移动游标并把 DOM 焦点同步到目标行(roving),Enter/Space 由聚焦行(即游标行)激活 —— 焦点与游标恒同步。
           // 不给本 div 自身 tabIndex(避免多余的非交互 tab stop);onKeyDown 触发 no-static-element-interactions,
           // 而给虚拟化 <table> 外壳强加 grid/listbox role 会扭曲语义、误导 AT,按项目约定禁用此规则而非扭曲代码。
           // eslint-disable-next-line jsx-a11y/no-static-element-interactions
           <div
+            ref={scrollerRef}
             className="relative h-full"
             data-testid="history-scroller"
             onKeyDown={onListKeyDown}
