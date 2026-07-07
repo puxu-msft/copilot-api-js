@@ -1,8 +1,8 @@
-# Spec: thinking「cannot be modified」400 三层防治（collapse + reactive + session quarantine）
+# Spec: thinking「cannot be modified」400 三层防治（de-stack + reactive + session quarantine）
 
-- 状态：draft **v4（三层叠加：结构 collapse 主修 + reactive strip-all 兜底 + session-key/TTL 持久 quarantine）**。待 subagent 复审 → 用户 review → 实施计划。
+- 状态：draft **v4（三层叠加：结构 de-stack 主修〔保留全部 thinking〕 + reactive strip-all 兜底 + session-key/TTL 持久 quarantine）**。待 subagent 复审 → 用户 review → 实施计划。
 - 日期：2026-07-07
-- 演进：v1（signature+索引+二分，废）→ v2/v2.1（会话级 strip-all + TTL）→ v3（纯结构 collapse，**因过度简化被否**）→ **v4（三层：结构精确修 + reactive 兜底 + 会话 quarantine 全保留）**。评审存证 [#01](2026-07-07-thinking-signature-quarantine-review-2026-07-07-01.md)/[#02](2026-07-07-thinking-signature-quarantine-review-2026-07-07-02.md)/[#03](2026-07-07-thinking-signature-quarantine-review-2026-07-07-03.md)；PoC [exp/thinking-signature-quarantine/README.md](../../exp/thinking-signature-quarantine/README.md)。
+- 演进：v1（signature+索引+二分，废）→ v2/v2.1（会话级 strip-all + TTL）→ v3（纯结构 collapse，**因过度简化被否**）→ **v4（三层：结构精确 de-stack + reactive 兜底 + 会话 quarantine 全保留）**。评审存证 [#01](2026-07-07-thinking-signature-quarantine-review-2026-07-07-01.md)/[#02](2026-07-07-thinking-signature-quarantine-review-2026-07-07-02.md)/[#03](2026-07-07-thinking-signature-quarantine-review-2026-07-07-03.md)；PoC [exp/thinking-signature-quarantine/README.md](../../exp/thinking-signature-quarantine/README.md)。
 - 相关 skill：`ghc-anthropic-upstream`、`empirical-verification`、`persistence-async-invariants`、`history-sqlite-schema`、`test-isolation`。
 
 ## 1. 问题 + PoC 锁定的精确根因
@@ -15,8 +15,9 @@ the original response.
 ```
 
 **PoC 决定性结论（详见 exp/ README）**：
-- **根因（本样本）= 一条（GHC 折叠后）assistant 消息含 ≥2 个连续 thinking 块**。真实失败请求里唯一含多 thinking 块的 msg 14（3 个连续）正是元凶；保留任意 1 个 → 200、保留 ≥2 → 400、保留 0 → 200。三块本身不畸形。客户端把本应交替的 thinking 错误累积/前置成连续块，上游判「已修改」。
-- **拆分救不了**：把 msg14 拆成 3 条连续 assistant 消息 → GHC 折叠回 `[T,T,T]` → 仍 400（实测 `pb_split3`）。→ **唯一结构修 = 连续 run 折叠为首块**（record-not-adopted：split）。
+- **根因（本样本）= 一条（GHC 折叠后）assistant 消息里有两个 thinking 块相邻**。精确约束 = **「同一条折叠后 assistant 消息内任意两个 `thinking`/`redacted_thinking` 块不得相邻」**（非「至多 1 个」）。真实失败请求里唯一含多 thinking 块的 msg 14（`[T,T,T,text,toolA,toolB]`，3 个连续）正是元凶。
+- **实测精确定位**：保留任意 1 个 → 200；任意 2 个相邻 → 400；**把 3 个用非 thinking 块交错分隔（`[T,text,T,tool,T,tool]` 等）→ 200 且全保留**；部分相邻（`[T,tool,T,T,tool]`）→ 仍 400。三块本身不畸形、signature 各自有效（自包含、非位置绑定）。客户端把本应交替的 thinking 错误累积/前置成相邻块，上游判「已修改」。
+- **拆分救不了**：拆成 3 条连续 assistant 消息 → GHC 折叠回 `[T,T,T]` → 仍 400（`pb_split3`）。→ **修法 = 消息内 de-stack（交错分隔，保留全部 thinking；真实块不足则插非空合成标记，永不丢）**；record-not-adopted：split（无效）、collapse-to-first/丢弃多余（放弃——用非空合成标记分隔即可保全 thinking）。
 - **确定性**（原样 ×3 全 400）、**非我方所致**（inbound==outbound 全量逐条相同）。
 - **其他中毒模式存在**：skill `ghc-anthropic-upstream` 记载单块签名内在对不上等；本 PoC 仅 1 样本无法穷尽 → 需兜底 + 持久记忆。
 
@@ -24,18 +25,26 @@ the original response.
 
 | 层 | 机制 | 覆盖 | 状态 |
 |---|---|---|---|
-| **L1 结构 collapse**（主修，提前精确） | 无状态 sanitize：连续 thinking run 折叠为首块 | 高发的「多重性」毒；**保留 1 块 thinking**，零 400 往返 | 无状态 |
+| **L1 结构 de-stack**（主修，提前精确） | 无状态 sanitize：相邻 thinking 块用消息内非 thinking 块交错分隔（**保留全部 thinking**；分隔不足才丢多余） | 高发的「相邻 thinking」毒；零 400 往返、零数据丢失 | 无状态 |
 | **L2 reactive strip-all**（兜底，解锁本轮） | 命中「cannot be modified」400 → strip-all thinking 重试一次 | L1 没预防到的其他型毒（漏网/非多重性） | 无状态 |
 | **L3 session quarantine**（持久记忆，免复发往返） | 记 `(session_id, agent_id)`@now；该会话 3d 滑动 TTL 内提前 strip-all | 非 L1 型毒的**会话级复发**（否则每轮都 L2 一次 400+重试） | 持久 sidecar |
 
-L1 精确修高发毒（保留 thinking）；L2 接住漏网、保证本轮成功；L3（**用户明确要求无论如何保留**）记住会话、免非-L1 型毒每轮复发的 400+重试往返。
+L1 精确修高发毒（**de-stack 保留全部 thinking**）；L2 接住漏网、保证本轮成功；L3（**用户明确要求无论如何保留**）记住会话、免非-L1 型毒每轮复发的 400+重试往返。
+
+**架构要点（用户明确）**：
+- **L1 是无条件 always-on proactive**——对**每个请求**都跑，**不 gate 在 400 检测上**、不等反应式。安全性依据：de-stack **确定性 + 保序**（thinking 块相对序不变，只在其间插分隔，不重排 thinking 序列 → 满足上游「连续序列不重排」）+ 对无相邻 thinking 的请求是 **no-op** + **永不丢 thinking** + **跨轮严格一致**（同一历史每轮产出同一 de-stack 结果）→ 总是应用**零下风险**，无需先撞 400。
+- **反应式基础设施恒需**：L2/L3 依托的 retry-strategy/pipeline 是**共享 infra**，即使 L1 已提前消解「相邻 thinking」这一高发毒，仍需它接住其他中毒模式（skill 记载的单块签名内在对不上等）+ 通用鲁棒性 → **绝不因 L1 覆盖高发路径就裁掉反应式层**。
 
 ## 3. 架构
 
-### 3.1 L1 结构 collapse `src/lib/anthropic/sanitize/collapse-consecutive-thinking.ts`
-- 规则：每条 assistant 消息 content 里，**极大连续 run（相邻 ≥2 个 `thinking`/`redacted_thinking`）折叠为首块**、丢其余。**只动连续 run**，不误伤被 tool_use 隔开的合法 interleaved thinking、不动单 thinking 消息、不动非 thinking 块。
-- 纯函数（payload-only），接入 [sanitizeAnthropicMessages](../../src/lib/anthropic/sanitize/index.ts#L79)（`processToolBlocks` 之前）——**一处覆盖 driver S3 + web_search 双路径**（评审 A6）。按 `type` 判定覆盖 redacted（评审 A2）。PoC 证留首块 → 200。
-- config 门禁 + telemetry（折叠 run 数 / 丢块数）。
+### 3.1 L1 结构 de-stack `src/lib/anthropic/sanitize/destack-adjacent-thinking.ts`
+- 精确约束（PoC 实证）：**同一条 assistant 消息内任意两个 `thinking`/`redacted_thinking` 块不得相邻**（非「至多 1 个」）。
+- 规则：对每条 assistant 消息，若存在相邻 thinking 块 → **重排：用消息内非 thinking 块（text/tool_use）把 thinking 块交错分隔，保留全部 thinking**。保持 thinking 组内相对序 + 非 thinking 组内相对序，thinking 首块仍在首位（`[T0,O0,T1,O1,…,T_k, …剩余 O]`）。
+  - 分隔充分条件：`#thinking ≤ #非thinking + 1`。**不足时永不丢弃 thinking**：插入**非空合成标记 text 块**分隔剩余相邻 thinking（如整条全 thinking 的退化消息）。**分隔符须非空非纯空白**——实测空 `""`/空格 `" "` text 块被上游 strip 掉、thinking 又相邻仍 400（`pb_sep_empty/space`），非空标记 `"[thinking continued]"` → 200（`pb_sep_marker`）；标记打可辨识前缀（`synthetic-must-be-distinguishable`）。
+  - 只动「存在相邻 thinking」的消息；被非 thinking 块隔开的合法 interleaved thinking 不动、单 thinking 消息不动、非 thinking 块不动。
+- 纯函数（payload-only），接入 [sanitizeAnthropicMessages](../../src/lib/anthropic/sanitize/index.ts#L79)（`processToolBlocks` 之前）——**一处覆盖 driver S3 + web_search 双路径**（评审 A6）。按 `type` 判定覆盖 redacted（评审 A2）。PoC 证交错保留全部 → 200（`[T,text,T,tool,T,tool]` 等），部分相邻仍 400（`pb_P1/P2`）。
+- **注（跨消息边界）**：本 pass 在**单条消息内**去相邻；GHC 折叠后若某消息末 thinking 与下条消息首 thinking 相邻（罕见，消息间通常有 user/tool_result 隔开）未覆盖 → 由 L2/L3 兜底。impl 期可评估是否需跨消息去相邻。
+- config 门禁 + telemetry（de-stack 的消息数 / 重排块数 / 分隔不足丢弃数）。
 
 ### 3.2 L2 + L3 反应式策略 `src/lib/codec/anthropic/poisoned-thinking-retry.ts`
 - **必须原生 env-strategy**（非 `adaptLegacyStrategy`）——落库 key=`(session_id,agent_id)` 只在 `env.ctx`，legacy `ResolvedContext` 无 ctx、adapter 丢 env（评审 HIGH-1，已复核 [pipeline.ts:154](../../src/lib/request/pipeline.ts#L154)/[legacy-strategy-adapter.ts:100](../../src/lib/pipeline/legacy-strategy-adapter.ts#L100)）。原生 `handle(error,env)`/`onResolved(env,meta)` 读 `env.ctx`（driver `onResolved(current,…)` 传带 ctx 的 env，[driver.ts:283](../../src/lib/pipeline/driver.ts#L283)/[types.ts:137](../../src/lib/pipeline/types.ts#L137)）。
@@ -54,16 +63,16 @@ L1 精确修高发毒（保留 thinking）；L2 接住漏网、保证本轮成�
 - 语义：请求进入时若 `(session_id, agent_id)` ∈ store 且未过期 → strip-all thinking（含 redacted）后送上游 + bump `last_seen_at`。
 - **必须独立 env-aware `RequestRewrite`**（`apply:(env)=>读 env.ctx.sessionId/agentId`），非塞进无 ctx 的纯 `sanitizeAnthropicMessages`（评审 MEDIUM-1）；同构 `createAnthropicSanitizeRewrite`、挂 `codec.getRequestRewrites()`（[request-rewrite-adapter.ts:63](../../src/lib/codec/anthropic/request-rewrite-adapter.ts#L63)）。
 - **双接入点**（web_search 整体绕过 driver，[handler-v4.ts:211](../../src/routes/messages/handler-v4.ts#L211)「codec bypassed」，评审 MEDIUM-2）：driver RequestRewrite + web_search handler 侧显式剥。
-- 注：L3 主动过滤命中即整体 strip-all（比 L1 collapse 更宽）；对已知中毒会话不必依赖 L1 精确性。
+- 注：L3 主动过滤命中即整体 strip-all（比 L1 de-stack 更宽）；对已知中毒会话不必依赖 L1 精确性。
 
 ### 3.5 配置
-- `anthropic.collapse_consecutive_thinking`（bool，默认 `true`，L1）
+- `anthropic.destack_adjacent_thinking`（bool，默认 `true`，L1）
 - `anthropic.strip_thinking_on_reject`（bool，默认 `true`，L2）
 - `anthropic.poisoned_thinking_quarantine`（bool，默认 `true`，L3）+ `anthropic.poisoned_thinking_ttl_hours`（number，默认 `72`）
 - schema + state + bundled config.yaml + config 应用。
 
 ## 4. 数据流
-- **多重性毒请求**：L1 折叠 → 200（提前，无 400、无 quarantine）。← 高发路径，最省。
+- **相邻 thinking 毒请求**：L1 de-stack 交错分隔 → 200（提前，无 400、无 quarantine、保留全部 thinking）。← 高发路径，最省。
 - **非-L1 型毒，首轮**：L1 不动 → 发出 → 400 → L2 strip-all 重试 → 200 → L3 记 `(session,agent)`。
 - **非-L1 型毒，次轮起（TTL 内）**：L3 主动 strip-all + 刷新 TTL → 零 400。
 - **3d 无活动**：TTL 过期 purge → 恢复常态（毒仍在则重学一次）。
@@ -79,11 +88,11 @@ L1 精确修高发毒（保留 thinking）；L2 接住漏网、保证本轮成�
 - **已知残留**（评审 LOW-2）：活跃长会话被 compact 掉毒块后 L3 仍剥至 TTL 过期；**不加自愈探针**（会在健康请求引发 400 RTT）；空明文低伤害 + TTL 兜底。
 
 ## 6. 测试（TDD）
-- **L1 单元**：`[T,T,T,text,tool]`→`[T,text,tool]`；`[T,tool,T,tool]` interleaved 不动；单 T 不动；redacted run 折叠；多不相邻 run 各折叠；user 消息不动；**split 不修**（回归钉死 GHC 折回、不采纳 split）。
+- **L1 单元**：`[T,T,T,text,toolA,toolB]`→交错 `[T,text,T,tool,T,tool]`（保留全部 3 块）；`[T,tool,T,tool]` 已非相邻不动；单 T 不动；redacted 相邻同样 de-stack；分隔不足（全 thinking 消息）插非空合成标记（空/空白标记被 strip 无效——回归钉死）；user 消息不动；**split 不修**（GHC 折回，钉死不采纳）。
 - **L2 单元**：matcher 正/负样本（`thinking.type.enabled` 负命中）；strip-all 移除 thinking+redacted 保留其余。
 - **L3 存储**：createDatabase 独立库（不碰 history 单例）；水合/写穿透/TTL 滑动+purge/never-throw；**临时目录 DI**（Bun `os.homedir()` 忽略 `env.HOME`，记忆 `feedback_tests_never_touch_real_env`）；key 归一（主 agent→'')。
-- **集成**：L1 折叠请求直接 200（不触发 L2/L3）；非-L1 毒 首轮 400→L2→200→L3 落库、次轮 L3 主动 strip-all+TTL 刷新；无 session_id 降级；三 config 门禁；**接线守卫**——原生 env-strategy onResolved 从 env.ctx 读 (session,agent) 落库（锚 HIGH-1）+ web_search 主动过滤命中（锚 MEDIUM-2）+ v4 直连激活（handler-v4 路径，非 legacy）。
-- **实证**：PoC 已证 留1块/strip-all→200、确定性 400、split 不修；impl 期 :4141 复跑守 matcher + 折叠规则。
+- **集成**：L1 de-stack 请求直接 200（不触发 L2/L3）；非-L1 毒 首轮 400→L2→200→L3 落库、次轮 L3 主动 strip-all+TTL 刷新；无 session_id 降级；三 config 门禁；**接线守卫**——原生 env-strategy onResolved 从 env.ctx 读 (session,agent) 落库（锚 HIGH-1）+ web_search 主动过滤命中（锚 MEDIUM-2）+ v4 直连激活（handler-v4 路径，非 legacy）。
+- **实证**：PoC 已证 交错保留全部/strip-all→200、确定性 400、split 不修、空分隔符无效；impl 期 :4141 复跑守 matcher + de-stack 规则。
 
 ## 7. 暂缓（记 docs/todo）
 - 非 CC 客户端 durable key（无 `x-claude-code-session-id`→每轮 L2 一次 400+重试；内容寻址 fallback key 暂缓，评审 MEDIUM-3；若做：store key 泛化 `header-key|content-hash-key`）。
@@ -92,7 +101,7 @@ L1 精确修高发毒（保留 thinking）；L2 接住漏网、保证本轮成�
 
 ## 8. 与现有机制关系
 - 与 `thinkingBlockSanitizeCheck`/`thinking_block_message_policy`/`thinking-signature-compat` 正交。
-- 与 `thinking-protection.ts`（防误改 thinking）不冲突：L1 折叠**有意移除被证伪的连续冗余 thinking**（发它必 400），非「误删合法 thinking」；impl 需核对折叠 pass 在 protection 语义下被允许（连续冗余不属「必须保留」）。
+- 与 `thinking-protection.ts`（防误改 thinking）不冲突：L1 de-stack **不删除 thinking**（保留全部，仅交错重排+可能插合成分隔），故不触碰 protection「thinking 须原样保留」的红线（保序、不改内容、不丢块）；impl 需核对 de-stack 的重排在 protection 语义下被允许（相邻布局非「必须保留」的属性，thinking 内容/相对序均不变）。
 - PoC 证根因上游 intrinsic（非我方 sanitize），故不替代任何「别碰 latest-assistant」保护。
 
 ## 9. 路线图定位：L3 是「会话级连续请求处理」的基础能力（重要未来分支）
