@@ -2,9 +2,9 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
-## GHC memory_tool 默认关 — CAPI 接受性待探针
+## GHC server_tool_memory 默认关 — CAPI 接受性待探针
 
-- **现状**：`anthropic.memory_tool` 默认关。GHC 只在 BYOK 直连注入 `memory_20250818`、CAPI 路径不注入，故本项目经 CAPI 发该 server-tool 类型 + `context-management` beta 的**接受性未实测**。
+- **现状**：`anthropic.server_tool_memory` 默认关。GHC 只在 BYOK 直连注入 `memory_20250818`、CAPI 路径不注入，故本项目经 CAPI 发该 server-tool 类型 + `context-management` beta 的**接受性未实测**。
 - **若做**：先用探针 / history `sseEvents` 实测 CAPI 是否接受（见 skill `empirical-verification`）；被拒时 `unsupported-beta-retry` 只自愈 beta、body 里的 tool 类型无自愈（属未来工作）。保持关直到实测接受。
 - **权威现状**：skill `ghc-api-reference` + `docs/plan/ghc-feature-alignment-tool-search-cache-ttl-memory.md`。
 

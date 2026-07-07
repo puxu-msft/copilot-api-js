@@ -17,7 +17,7 @@
 - **P0 `067f79a` family fallback**：`matchModelCapability` 加可选 `family`，所有能力函数传 `resolvedModel.capabilities.family`，镜像 GHC `matches(id) || matches(family)`。dash 边界比 GHC 裸 startsWith 更严（`claude-opus-40` 不误伤）——有意保留。
 - **P1 `1e06ef5` tool-search default-allow**：`toolSearchDefaultAllow`（镜像 GHC `chatModelCapabilities.ts`，仅 Claude 分支）替换手动 `toolSearchModels` 列表；新 `model_capabilities.tool_search_overrides`（per-model force-on/off）；`state.toolSearchEnabled` 归一为唯一总闸（修 `features.ts:208` + `message-tools.ts:282` split-brain）；compat `removeKey` 迁移旧列表。优先级 `metadata ?? overrides ?? default-allow`。
 - **P2 `1a08848` extended-cache-ttl**：`modelSupportsExtendedCacheTtl`（config `model_capabilities.extended_cache_ttl`）+ `anthropic.extended_cache_ttl.{enabled,tools_system_ttl,messages_ttl}`；接入既有 `cache_control` 模式管线（proxied 注入带 ttl 断点、sanitize 按层升级、passthrough/disabled 不动）；`walkCacheControl` 加 section 线索；beta 由 `wireHasOneHourTtl` 扫描裁决（`ctx.wroteExtendedTtl`）。Agent 门用 `isAgentCall`。
-- **P3 `5e1976c` memory tool**：`modelSupportsMemory`（config `model_capabilities.memory`）+ `anthropic.memory_tool`（默认关）；新 prepare step `rewrite-memory-tool`（在 cache-control 前）把客户端 `memory` 工具改写为 `{name:"memory", type:"memory_20250818"}`；`forceMemoryContextBeta` 强制 context-management beta（绕过 `disableContextManagement`）；**root-cause 附带修**：`addToolCacheControl` 排除有 `type` 的 server tool 作缓存锚点（同时根治 tool_search server-tool 隐患）。
+- **P3 `5e1976c` memory tool**：`modelSupportsMemory`（config `model_capabilities.memory`）+ `anthropic.server_tool_memory`（默认关）；新 prepare step `rewrite-memory-tool`（在 cache-control 前）把客户端 `memory` 工具改写为 `{name:"memory", type:"memory_20250818"}`；`forceMemoryContextBeta` 强制 context-management beta（绕过 `disableContextManagement`）；**root-cause 附带修**：`addToolCacheControl` 排除有 `type` 的 server tool 作缓存锚点（同时根治 tool_search server-tool 隐患）。
 
 ## 有意的（更正确）偏离 GHC——已文档化
 
@@ -28,5 +28,5 @@
 
 ## 未决/风险
 
-- **memory CAPI 接受性未实测**：GHC 仅在 BYOK 直连路径注入 `memory_20250818`，CAPI 路径不注入。故 `memory_tool` 默认关；开启后须用探针/history `sseEvents` 实测 CAPI 是否接受该 server-tool 类型 + `context-management` beta。若被拒，`filterUnsupportedBetas` + `unsupported-beta-retry` 自愈剥 beta（但 body 里的 tool 类型无自愈，属未来工作）。
+- **memory CAPI 接受性未实测**：GHC 仅在 BYOK 直连路径注入 `memory_20250818`，CAPI 路径不注入。故 `server_tool_memory` 默认关；开启后须用探针/history `sseEvents` 实测 CAPI 是否接受该 server-tool 类型 + `context-management` beta。若被拒，`filterUnsupportedBetas` + `unsupported-beta-retry` 自愈剥 beta（但 body 里的 tool 类型无自愈，属未来工作）。
 - **memory `forceMemoryContextBeta` 绕过 `disableContextManagement`**：beta-vs-body 耦合未经 oracle 证实（见上条实测项）。

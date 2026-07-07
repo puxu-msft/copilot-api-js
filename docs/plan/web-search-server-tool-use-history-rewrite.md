@@ -2,7 +2,7 @@
 
 > **实施状态：已完成**
 > **落地**：—
-> **现状锚点**：运行时选项 `rewriteHistoryServerTools`（config 键 tool_rewrite_history_server）；sanitize/rewrite-server-tool-history.ts
+> **现状锚点**：运行时选项 `rewriteServerTools`（config 键 server_tool_rewrite）；sanitize/rewrite-server-tool-blocks.ts
 > **备注**：消息拆分式 downgrade 落地；另有 always-on 兜底 downgradeEmptyEncryptedSearchResults 叠加
 
 ## Context（为什么要做）
@@ -19,7 +19,7 @@ Use a `tool_use` block for client-executed tools.
 
 ### 根因（闭环自产 — 两轮 subagent review 确认）
 
-`web_search.enabled: true` 时形成自产链：
+`server_tool_web_search.enabled: true` 时形成自产链：
 
 1. 第 N 轮：客户端带 `WebSearch` 工具 → 走 `orchestrateWebSearch` double-hop
 2. `src/lib/anthropic/web-search/synthesize.ts:78-82` 把 `server_tool_use{name:"web_search"} + web_search_tool_result + text` 合成到**同一条 assistant 消息**
@@ -69,7 +69,7 @@ Use a `tool_use` block for client-executed tools.
 
 ## 实施步骤
 
-### 1. 新增 `src/lib/anthropic/sanitize/rewrite-server-tool-history.ts`
+### 1. 新增 `src/lib/anthropic/sanitize/rewrite-server-tool-blocks.ts`
 
 ```typescript
 export type RewriteServerToolHistoryMode = false | "downgrade"
@@ -106,7 +106,7 @@ export function rewriteServerToolHistory(
 在 `removeAnthropicSystemReminders` 之后、`processToolBlocks` **之前**插入：
 
 ```typescript
-const rewriteResult = rewriteServerToolHistory(messages, state.rewriteHistoryServerTools)
+const rewriteResult = rewriteServerToolHistory(messages, state.rewriteServerTools)
 messages = rewriteResult.messages
 const toolResult = processToolBlocks(messages, payload.tools)   // 看到改写后形态
 ```
@@ -116,10 +116,10 @@ const toolResult = processToolBlocks(messages, payload.tools)   // 看到改写�
 ### 3. state：`src/lib/state.ts`
 
 ```typescript
-readonly rewriteHistoryServerTools: false | "downgrade"
+readonly rewriteServerTools: false | "downgrade"
 ```
 
-- `CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools: false`
+- `CONFIG_MANAGED_DEFAULTS.rewriteServerTools: false`
 - 加入 `setAnthropicBehavior` 的 `Pick<>` allowlist
 - 加入 reset 路径（L948 一带）
 
@@ -138,7 +138,7 @@ rewrite_history_server_tools: z
 
 ```typescript
 if (a.rewrite_history_server_tools !== undefined) {
-  setAnthropicBehavior({ rewriteHistoryServerTools: a.rewrite_history_server_tools })
+  setAnthropicBehavior({ rewriteServerTools: a.rewrite_history_server_tools })
 }
 ```
 
@@ -149,10 +149,10 @@ if (a.rewrite_history_server_tools !== undefined) {
 ```typescript
 {
   configKey: "anthropic.rewrite_history_server_tools",
-  stateKey: "rewriteHistoryServerTools",
+  stateKey: "rewriteServerTools",
   sampleYamlValue: "downgrade",
   expectedStateValue: "downgrade",
-  defaultStateValue: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
+  defaultStateValue: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
 },
 ```
 
@@ -163,7 +163,7 @@ if (a.rewrite_history_server_tools !== undefined) {
 
 ### 8. 文档：`docs/DESIGN.md`
 
-- 运行时选项表加 `rewriteHistoryServerTools` 行
+- 运行时选项表加 `rewriteServerTools` 行
 - web_search 段加"已知陷阱（自产回传 400）+ 推荐配置 + immutable thinking 边界"小节
 - `config.example.yaml` / bundled `config.yaml` 的 `anthropic:` 段加注释 + 默认 `false`
 
@@ -186,7 +186,7 @@ if (a.rewrite_history_server_tools !== undefined) {
 
 **`tests/anthropic/request-server-tool-history-rewrite.it.test.ts`：**
 
-- `rewriteHistoryServerTools:"downgrade"` + 完整 `sanitizeAnthropicMessages`：验证 processToolBlocks 不把改写后 tool_use 当孤儿
+- `rewriteServerTools:"downgrade"` + 完整 `sanitizeAnthropicMessages`：验证 processToolBlocks 不把改写后 tool_use 当孤儿
 - **断言 sanitize 输出无 assistant 内 tool_result**（#1 blocker 回归保护）
 - **顺序约束**：rewrite 在 processToolBlocks 之前（构造一个只有 rewrite 在前才正确的场景）
 - 复现根因 fixture：含 `server_tool_use{web_search}` + 配对 result + 后续多轮 tool_use → sanitize 后无 server_tool_use 残留、消息结构合法
@@ -200,7 +200,7 @@ if (a.rewrite_history_server_tools !== undefined) {
 ## 文件改动清单
 
 **新增：**
-- `src/lib/anthropic/sanitize/rewrite-server-tool-history.ts`
+- `src/lib/anthropic/sanitize/rewrite-server-tool-blocks.ts`
 - `tests/anthropic/request-server-tool-history-rewrite.unit.test.ts`
 - `tests/anthropic/request-server-tool-history-rewrite.it.test.ts`
 
@@ -219,7 +219,7 @@ if (a.rewrite_history_server_tools !== undefined) {
 
 ## 暂缓项（按原则5 文档化）
 
-- **`web_search.enabled` 自动联动改写**：当前需用户显式同时配两项。理想是 enabled 时自动开 downgrade，但引入派生配置层、破坏"配置项=行为开关"纯净语义。暂缓，文档交叉引用。
+- **`server_tool_web_search.enabled` 自动联动改写**：当前需用户显式同时配两项。理想是 enabled 时自动开 downgrade，但引入派生配置层、破坏"配置项=行为开关"纯净语义。暂缓，文档交叉引用。
 - **`"strip"` 模式**：YAGNI（损坏 result 已被孤儿过滤兜底）。enum 形态保留扩展位，未来真需要再加。
 - **immutable thinking 边界**：含签名 thinking 的真实 native web_search 历史在 `immutable` policy 下不被改写（早退保护优先）。本 bug 的自产块无 thinking，不受影响；该边界仅理论存在，文档化不声称全覆盖。
 - **搜索路径 outboundRequest 不记录改写形态**：orchestrator 的 hop 用 `requestContext: undefined`（`orchestrator.ts:279`），`web-search-handler` 只记 synthesized response，不调 setAttemptWireRequest。故搜索路径的改写后 wire **不进 history.outboundRequest**（仅 pass-through 路径可见）。不在本次修复范围；若需诊断搜索 hop 的 wire，另开任务给 hop 接 wire-request recording。
