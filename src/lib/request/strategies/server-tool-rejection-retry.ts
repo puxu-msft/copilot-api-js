@@ -19,67 +19,66 @@
  * `PrepareHints.excludeServerToolTypes` so THIS attempt's retry strips it
  * deterministically — independent of the cache read.
  *
- * Scope: only `web_search` is covered (the sole tool with an observed upstream
- * message). The cache structure is generic per-toolType, so extending to
- * `web_fetch` etc. later only needs another pattern + prefix here.
+ * TABLE-DRIVEN (RFC gap E, O4): the upstream-message → type-prefix mapping is a
+ * per-tool table, not a hardcoded regex. Adding a newly-observed server-tool
+ * rejection = one data row; the cache structure is already generic per-toolType.
+ * Today the table has exactly ONE row — `web_search`, the sole tool with an
+ * OBSERVED upstream message. No speculative rows: an unmodelled rejection falls
+ * through (canHandle false) rather than silently stripping an unknown tool.
  *
- * Unlike `unsupported-beta`'s laconic path, the upstream names the tool
- * unambiguously, so fixation happens directly in `handle` (no probe / no
- * `onResolved` deferral).
+ * Strip arm of the reactive-rejection primitive: the primitive owns
+ * parse/mark/canHandle/one-shot; the token IS the matched type prefix. Unlike
+ * `unsupported-beta`'s laconic path, the upstream names the tool unambiguously,
+ * so fixation happens directly (no probe / no `onResolved` deferral).
  */
 
 import type { ApiError } from "~/lib/error"
 
 import { markAnthropicServerToolUnsupported } from "~/lib/anthropic/feature-negotiation"
 import { HTTPError } from "~/lib/error"
+import { createReactiveRejectionStrategy } from "~/lib/request/strategies/reactive-rejection"
 
-import type {
-  //
-  RetryAction,
-  RetryContext,
-  RetryStrategy,
-} from "../pipeline"
+import type { RetryStrategy } from "../pipeline"
 
-/** Upstream message for an unsupported native web_search server tool. */
-const WEB_SEARCH_NOT_SUPPORTED = /the use of the web search tool is not supported/i
-
-/** The server tool type prefix to strip when web_search is rejected. */
-const WEB_SEARCH_TYPE_PREFIX = "web_search_"
+/**
+ * Upstream-message pattern → server-tool type prefix to strip. Only tools with
+ * an OBSERVED upstream rejection message earn a row (extend by adding a row).
+ *
+ * REGEX-vs-WIRE: `error.raw.responseText` is the RAW JSON body — patterns are
+ * verified against it. The web_search message has no quotes / JSON-escapable
+ * chars, so it reads identically in the wrapped `error.message` and the raw
+ * `{"error":{"message":"The use of the web search tool is not supported.",…}}`.
+ */
+const SERVER_TOOL_REJECTION_TABLE: ReadonlyArray<{ pattern: RegExp; typePrefix: string }> = [
+  { pattern: /the use of the web search tool is not supported/i, typePrefix: "web_search_" },
+]
 
 function extractErrorText(error: ApiError): string | null {
   // The wrapped message sometimes already contains the upstream text (e.g.
   // "HTTP 400: The use of the web search tool is not supported."). Otherwise
   // fall back to the raw HTTPError responseText where the upstream JSON lives.
-  if (WEB_SEARCH_NOT_SUPPORTED.test(error.message)) return error.message
+  if (SERVER_TOOL_REJECTION_TABLE.some((row) => row.pattern.test(error.message))) return error.message
   if (error.raw instanceof HTTPError) return error.raw.responseText
   return null
 }
 
+/** Match against the table; returns the type prefix to strip, or null. */
+function matchServerToolRejection(error: ApiError): string | null {
+  const text = extractErrorText(error)
+  if (text === null) return null
+  return SERVER_TOOL_REJECTION_TABLE.find((row) => row.pattern.test(text))?.typePrefix ?? null
+}
+
 export function createServerToolRejectionStrategy<TPayload extends { model: string }>(): RetryStrategy<TPayload> {
-  // Per-instance one-shot guard. Strategies are built per-request (see
-  // buildAnthropicStrategies), so this is request-scoped and cannot leak across
-  // unrelated requests. Defense-in-depth alongside the idempotent cache mark.
-  let attempted = false
-
-  return {
+  return createReactiveRejectionStrategy<TPayload>({
     name: "server-tool-rejection-retry",
-
-    canHandle(error: ApiError): boolean {
-      if (error.type !== "bad_request" || error.status !== 400) return false
-      if (attempted) return false
-      const text = extractErrorText(error)
-      return text !== null && WEB_SEARCH_NOT_SUPPORTED.test(text)
-    },
-
-    handle(_error: ApiError, currentPayload: TPayload, _context: RetryContext<TPayload>): Promise<RetryAction<TPayload>> {
-      attempted = true
-      markAnthropicServerToolUnsupported(currentPayload.model, WEB_SEARCH_TYPE_PREFIX)
-      return Promise.resolve({
-        action: "retry",
-        payload: currentPayload,
-        prepareHints: { excludeServerToolTypes: [WEB_SEARCH_TYPE_PREFIX] },
-        meta: { strippedServerTools: [WEB_SEARCH_TYPE_PREFIX] },
-      })
-    },
-  }
+    match: matchServerToolRejection,
+    mark: (model, typePrefix) => markAnthropicServerToolUnsupported(model, typePrefix),
+    remediate: ({ payload, token }) => ({
+      action: "retry",
+      payload,
+      prepareHints: { excludeServerToolTypes: [token] },
+      meta: { strippedServerTools: [token] },
+    }),
+  })
 }
