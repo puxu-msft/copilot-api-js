@@ -5,6 +5,16 @@ import type {
   MessageContent,
 } from "./types"
 
+import {
+  //
+  resolveAttemptCount,
+  resolveCurrentStrategy,
+  resolveResponseError,
+  resolveResponseModel,
+  resolveResponseSuccess,
+  resolveResponseUsage,
+} from "./entry-view"
+
 const entries = new Map<string, HistoryEntry>()
 
 /**
@@ -148,16 +158,16 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     pinned: entry.pinned,
     lastUpdatedAt: entry.lastUpdatedAt,
     queueWaitMs: entry.queueWaitMs,
-    attemptCount: entry.attemptCount,
-    currentStrategy: entry.currentStrategy,
+    attemptCount: resolveAttemptCount(entry),
+    currentStrategy: resolveCurrentStrategy(entry),
     pid: entry.process?.pid,
     requestModel: entry.inboundRequest.model,
     stream: entry.inboundRequest.stream,
     messageCount: entry.inboundRequest.messages?.length ?? 0,
-    responseModel: entry.outboundResponse?.model,
-    responseSuccess: entry.outboundResponse?.success,
-    responseError: entry.outboundResponse?.error ?? entry.failureReason,
-    usage: entry.outboundResponse?.usage,
+    responseModel: resolveResponseModel(entry),
+    responseSuccess: resolveResponseSuccess(entry),
+    responseError: resolveResponseError(entry) ?? entry.failureReason,
+    usage: resolveResponseUsage(entry),
     durationMs: entry.durationMs,
     requestBytes: entry.requestBytes,
     responseBytes: entry.responseBytes,

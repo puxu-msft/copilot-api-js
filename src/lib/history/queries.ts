@@ -7,6 +7,7 @@ import type {
   SummaryResult,
 } from "./types"
 
+import { resolveResponseModel } from "./entry-view"
 import {
   //
   getInFlight,
@@ -30,7 +31,7 @@ function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   if (opts.model) {
     const needle = opts.model.toLowerCase()
     const req = entry.inboundRequest.model?.toLowerCase() ?? ""
-    const res = entry.outboundResponse?.model.toLowerCase() ?? ""
+    const res = resolveResponseModel(entry)?.toLowerCase() ?? ""
     if (!req.includes(needle) && !res.includes(needle)) return false
   }
   if (opts.success === true && entry.state !== "completed") return false

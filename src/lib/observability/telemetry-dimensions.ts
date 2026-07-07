@@ -34,6 +34,16 @@ import type { RequestContextSnapshot } from "~/lib/observability/events"
 
 import { getHeaderCaseInsensitive } from "~/lib/fetch-utils"
 
+/**
+ * The upstream response content envelope for tool-name / thinking-block
+ * extraction. New model: the final attempt's `upstreamResponse.body`; falls back
+ * to the deprecated top-level `outboundResponse.content` for legacy-only entries.
+ * P4c: drop the `?? entry.outboundResponse?.content` fallback once legacy legs go.
+ */
+function resolveUpstreamContent(entry: HistoryEntryData): unknown {
+  return entry.attempts?.at(-1)?.upstreamResponse?.body ?? entry.outboundResponse?.content
+}
+
 /** A registered telemetry dimension: a name + an entry/ctx → key extractor. */
 export interface StatDimension {
   name: string
@@ -69,7 +79,7 @@ export function normalizeClient(headers: Record<string, string> | undefined): st
  * caveat; with the default `sanitizeToolNames: false`, wire == client name).
  */
 export function extractToolNames(entry: HistoryEntryData): Array<string> {
-  const content = entry.outboundResponse?.content
+  const content = resolveUpstreamContent(entry)
   if (!content || typeof content !== "object") return []
   const names = new Set<string>()
 
@@ -120,7 +130,7 @@ export interface ThinkingBlockCounts {
  */
 export function extractThinkingBlockCounts(entry: HistoryEntryData): ThinkingBlockCounts {
   const counts: ThinkingBlockCounts = { nonEmpty: 0, emptySigned: 0, emptyUnsigned: 0 }
-  const content = entry.outboundResponse?.content
+  const content = resolveUpstreamContent(entry)
   if (!content || typeof content !== "object") return counts
 
   const blocks = (content as { content?: unknown }).content
@@ -158,7 +168,14 @@ export function extractThinkingBlockCounts(entry: HistoryEntryData): ThinkingBlo
  * `agentKind` (`main`/`subagent`) are genuinely `bounded` and skip the cap.
  */
 export const TELEMETRY_DIMENSIONS: ReadonlyArray<StatDimension> = [
-  { name: "model", cardinality: "capped", extract: (entry) => entry.outboundResponse?.model ?? entry.inboundRequest.model ?? "unknown" },
+  // New model: resolved/requested live under the `model` parent key (RFC §2.5);
+  // fall back to the deprecated `outboundResponse.model` then the raw inbound
+  // model. P4c: drop the `?? entry.outboundResponse?.model` fallback with legacy legs.
+  {
+    name: "model",
+    cardinality: "capped",
+    extract: (entry) => entry.model?.resolved ?? entry.model?.requested ?? entry.outboundResponse?.model ?? entry.inboundRequest.model ?? "unknown",
+  },
   { name: "endpoint", cardinality: "bounded", extract: (entry) => entry.endpoint },
   { name: "client", cardinality: "capped", extract: (entry) => normalizeClient(entry.httpHeaders?.inboundRequest) },
   { name: "agentKind", cardinality: "bounded", extract: (entry) => (entry.agentId ? "subagent" : "main") },

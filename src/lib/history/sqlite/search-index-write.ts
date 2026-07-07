@@ -40,6 +40,11 @@ import {
 } from "~/lib/diff/block-align"
 import {
   //
+  finalUpstreamRequest,
+  finalUpstreamResponse,
+} from "~/lib/history/entry-view"
+import {
+  //
   hashMessage,
   type MessageFormat,
   normalizeMessageForIndex,
@@ -136,7 +141,10 @@ function collectChangedText(rows: Array<AlignRow>): string {
 /** rewrites-req: what the proxy changed between the client request and the wire request. */
 function buildRewritesReq(entry: HistoryEntry): string {
   const inbound = (entry.inboundRequest.messages ?? []) as Array<DiffMessage>
-  const outbound = entry.outboundRequest?.messages as Array<DiffMessage> | undefined
+  // New model: the wire messages projection lives on the final attempt's
+  // `upstreamRequest` leg (R4-FAIL-A — dropping it silently breaks search).
+  // Fallback to the deprecated top-level `outboundRequest` for legacy-only entries.
+  const outbound = (finalUpstreamRequest(entry)?.messages ?? entry.outboundRequest?.messages) as Array<DiffMessage> | undefined
   if (!outbound || outbound.length === 0) return ""
   return collectChangedText(alignMessages(inbound, outbound))
 }
@@ -171,15 +179,20 @@ function coerceContent(value: unknown): string | Array<unknown> | null {
  * When `inboundResponse` is absent (no forwarded capture) the source is empty.
  */
 function buildRewritesResp(entry: HistoryEntry): string {
-  const upstreamFrames = entry.sseEvents
-  const forwardedFrames = entry.inboundResponse?.sseEvents
+  // New model (RFC §S1): upstream frames unify into the final attempt's
+  // `upstreamResponse.sseEvents`; the forwarded (client-visible) frames move to
+  // the first-class `clientResponse` leg. Both fall back to the deprecated
+  // top-level `sseEvents` / `inboundResponse` for legacy-only entries.
+  const upstreamResp = finalUpstreamResponse(entry)
+  const upstreamFrames = upstreamResp?.sseEvents ?? entry.sseEvents
+  const forwardedFrames = entry.clientResponse?.sseEvents ?? entry.inboundResponse?.sseEvents
   if ((upstreamFrames && upstreamFrames.length > 0) || (forwardedFrames && forwardedFrames.length > 0)) {
     if (!forwardedFrames) return ""
     return collectChangedFrameRaw(upstreamFrames ?? [], forwardedFrames)
   }
 
-  const upstream = entry.outboundResponse?.content
-  const forwarded = entry.inboundResponse?.content
+  const upstream = upstreamResp?.body ?? entry.outboundResponse?.content
+  const forwarded = entry.clientResponse?.body ?? entry.inboundResponse?.content
   if (upstream === null || upstream === undefined || forwarded === undefined) return ""
   return collectChangedText(alignMessages([toResponseDiffMessage(upstream)], [toResponseDiffMessage(forwarded)]))
 }
