@@ -148,7 +148,14 @@ export interface HistoryModelInfo {
   multiplier?: number
 }
 
-/** Client → Proxy request leg (RFC §3). `body` is the raw inbound payload. */
+/**
+ * Client → Proxy request leg (RFC §3). `body` is the raw inbound payload.
+ *
+ * The structured projections (model/messages/system/max_tokens/temperature/tools/
+ * thinking) mirror the deprecated `inboundRequest` (R1-W7): a NON-authoritative
+ * index of `body` (§2.3) so consumers read the parsed request without re-parsing
+ * `body`. Producer-side (`unknown`-based) parallel of the owner `ClientRequestLeg`.
+ */
 export interface HistoryClientRequestLeg {
   method?: string
   path?: string
@@ -156,6 +163,14 @@ export interface HistoryClientRequestLeg {
   headers?: Record<string, string>
   body?: unknown
   stream?: boolean
+  // ─── Structured projections mirroring the deprecated inboundRequest (R1-W7) ───
+  model?: string
+  messages?: Array<unknown>
+  system?: unknown
+  max_tokens?: number
+  temperature?: number
+  tools?: Array<unknown>
+  thinking?: unknown
 }
 
 /** Proxy → Client response leg, first-class (RFC §2.1). `status?` new capture. */

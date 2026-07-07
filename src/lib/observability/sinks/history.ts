@@ -42,6 +42,7 @@ import {
   legFromUpstreamRequest,
   legFromUpstreamResponse,
   legFromWire,
+  pipelineFromAttempt,
   synthesizeAttemptErrorResponse,
 } from "~/lib/context/request"
 import {
@@ -203,6 +204,25 @@ export class HistorySink {
           tools: orig.tools as HistoryEntry["inboundRequest"]["tools"],
           system: orig.system as HistoryEntry["inboundRequest"]["system"],
         },
+        // New leg (RFC §3) dual-write on the EAGER insert too, so an in-flight /
+        // interrupted row (process dies before terminal) still carries `model` +
+        // `clientRequest`. `resolved`/`multiplier` are unknown at request entry (model
+        // not yet resolved) — the terminal `toHistoryEntry` completes them. Mirrors the
+        // subset the eager `inboundRequest` above carries (max_tokens/temperature/
+        // thinking are derivable from `body` and filled at terminal).
+        ...(orig.model !== undefined && { model: { requested: orig.model } }),
+        clientRequest: {
+          method: ctx.method,
+          path: ctx.path,
+          format: ctx.endpoint,
+          ...(ctx.httpHeaders?.inboundRequest && { headers: ctx.httpHeaders.inboundRequest }),
+          body: orig.payload,
+          stream: orig.stream,
+          model: orig.model,
+          messages: orig.messages as Array<MessageContent> | undefined,
+          system: orig.system as NonNullable<HistoryEntry["clientRequest"]>["system"],
+          tools: orig.tools as NonNullable<HistoryEntry["clientRequest"]>["tools"],
+        },
       }
       insertEntry(entry)
       persistEntryEager(entry)
@@ -288,6 +308,15 @@ export class HistorySink {
       // New client leg (RFC §2.1) — dual-written ALONGSIDE the legacy inboundResponse
       // above. The producer (toHistoryEntry) built it from the forwarded response.
       ...(entryData.clientResponse && { clientResponse: entryData.clientResponse as HistoryEntry["clientResponse"] }),
+      // New parent/leg/projection fields (RFC §3) — dual-written ALONGSIDE the legacy
+      // top-level fields. The producer (toHistoryEntry) built them; the explicit field
+      // projection must carry them through HistoryEntryData→HistoryEntry (an explicit-
+      // projection sink silently drops any field it forgets to copy). `model`/`preprocessing`/
+      // `_index` ride the head-meta blob; `clientRequest` is stage-backed (client_request).
+      ...(entryData.model && { model: entryData.model as HistoryEntry["model"] }),
+      ...(entryData.clientRequest && { clientRequest: entryData.clientRequest as HistoryEntry["clientRequest"] }),
+      ...(entryData.preprocessing && { preprocessing: entryData.preprocessing }),
+      ...(entryData._index && { _index: entryData._index as HistoryEntry["_index"] }),
       ...(entryData.attempts && { attempts: toHistoryAttempts(entryData.attempts) }),
     })
     // Fire-and-forget: finalize is now async (libuv-offloaded compression). It
@@ -327,7 +356,7 @@ export function collectAttemptStages(ctx: RequestContext): Array<StagePayload> {
   //     stages above, mirroring extractStagePayloads' new-stage shape (FAIL-1). The
   //     upstreamResponse layers on per-attempt response headers + the attempt's own
   //     committed frames (top-level trailers/frames resolve at finalize). ───
-  if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveSource, attemptIndex: a.index, payload: legFromEffectiveSource(a.effectiveRequest) })
+  if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveSource, attemptIndex: a.index, payload: legFromEffectiveSource(a.effectiveRequest, pipelineFromAttempt(a)) })
   if (a.wireRequest) stages.push({ stage: STAGE.upstreamRequest, attemptIndex: a.index, payload: legFromUpstreamRequest(a.wireRequest) })
   if (attemptResponse) {
     stages.push({
@@ -374,6 +403,10 @@ function toHistoryAttempts(attempts: HistoryEntryData["attempts"]): HistoryEntry
     durationMs: a.durationMs,
     transport: a.transport,
     error: a.error,
+    // New captures (RFC §4): attempt wall-clock start + rate-limit wait — copied
+    // through from the producer so terminal entries carry per-attempt timing.
+    startedAt: a.startedAt,
+    waitMs: a.waitMs,
     truncation: a.truncation,
     sanitization: a.sanitization,
     effectiveMessageCount: a.effectiveMessageCount,

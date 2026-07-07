@@ -97,6 +97,14 @@ export function updateEntry(
       // ride through the whole-object "attempts" field below, so they need no
       // separate allowlist entry.
       | "clientResponse"
+      // New parent/leg/projection fields (RFC §3) — dual-written by the sink at the
+      // eager insert (model.requested + clientRequest) and completed at terminal
+      // (model.resolved/multiplier + full clientRequest + _index.derived + preprocessing).
+      // Three-point sync for _index.derived: toHistoryEntry + onTerminal projection + HERE.
+      | "model"
+      | "clientRequest"
+      | "preprocessing"
+      | "_index"
       | "pipelineInfo"
       | "sseEvents"
       | "durationMs"

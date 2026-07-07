@@ -235,7 +235,16 @@ export interface ModelInfo {
   multiplier?: number
 }
 
-/** Client → Proxy request leg (per-entry). `body` is the raw inbound payload (SoT). */
+/**
+ * Client → Proxy request leg (per-entry). `body` is the raw inbound payload (SoT).
+ *
+ * The structured projections (`model`/`messages`/`system`/`max_tokens`/
+ * `temperature`/`tools`/`thinking`) mirror the deprecated `inboundRequest`
+ * (R1-W7): a NON-authoritative index of `body` (§2.3) kept so consumers read the
+ * parsed inbound request without re-parsing `body`. The producer dual-writes them
+ * off `originalRequest`; P4c removes the legacy `inboundRequest` once every
+ * consumer reads these instead.
+ */
 export interface ClientRequestLeg {
   method?: string
   path?: string
@@ -243,6 +252,14 @@ export interface ClientRequestLeg {
   headers?: Record<string, string>
   body?: unknown
   stream?: boolean
+  // ─── Structured projections mirroring the deprecated inboundRequest (R1-W7) ───
+  model?: string
+  messages?: Array<MessageContent>
+  system?: string | Array<SystemBlock>
+  max_tokens?: number
+  temperature?: number
+  tools?: Array<ToolDefinition>
+  thinking?: unknown
 }
 
 /**

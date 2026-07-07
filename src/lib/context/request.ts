@@ -100,13 +100,32 @@ export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outb
 }
 
 /**
+ * Aggregate a single attempt's `truncation` + `sanitization` into a per-attempt
+ * `PipelineInfo` for its `effectiveSource.pipeline` (RFC §4: `attempts[].{truncation,
+ * sanitization}` → `effectiveSource.pipeline`). `sanitization` is a single record per
+ * attempt (unlike the top-level `pipelineInfo.sanitization` array), so it is wrapped
+ * in a one-element array to match `PipelineInfo.sanitization: Array<…>`. Returns
+ * undefined when the attempt has neither — so a clean attempt adds no `pipeline` key
+ * (keeps the eager/finalized stage byte-identical when there is nothing to record).
+ */
+export function pipelineFromAttempt(a: Attempt): PipelineInfo | undefined {
+  if (!a.truncation && !a.sanitization) return undefined
+  return {
+    ...(a.truncation && { truncation: a.truncation }),
+    ...(a.sanitization && { sanitization: [a.sanitization] }),
+  }
+}
+
+/**
  * Project an effective request into the NEW `effectiveSource` leg (RFC §3).
  * `body` = env.body verbatim (SoT); model/messageCount/messages/system are the
  * NON-authoritative structured index of that body (§2.3), for search-index and
- * other structured consumers. Parallel to `legFromEffective` (the deprecated
+ * other structured consumers. `pipeline` carries this attempt's truncation/
+ * sanitization/messageMapping (RFC §4) — passed by the caller since it lives on the
+ * Attempt, not the EffectiveRequest. Parallel to `legFromEffective` (the deprecated
  * `effectiveRequest` builder) during migration; wired into the producer in P2.
  */
-export function legFromEffectiveSource(ep: EffectiveRequest): HistoryEffectiveSourceLeg {
+export function legFromEffectiveSource(ep: EffectiveRequest, pipeline?: PipelineInfo): HistoryEffectiveSourceLeg {
   return {
     format: ep.format,
     model: ep.model,
@@ -114,6 +133,7 @@ export function legFromEffectiveSource(ep: EffectiveRequest): HistoryEffectiveSo
     messages: ep.messages,
     system: (ep.payload as Record<string, unknown> | undefined)?.system,
     body: ep.payload,
+    ...(pipeline && { pipeline }),
   }
 }
 
@@ -759,10 +779,61 @@ export function createRequestContext(opts: {
       // directly-set proxy verdict (`_failureReason`, when the upstream leg succeeded but the
       // proxy rejected the result) else the settled response error else the last attempt's
       // error — so triage need not crawl outboundResponse / per-attempt errors. Only for
-      // non-success terminals.
-      if (_state === "failed" || _state === "aborted" || _state === "interrupted") {
-        const reason = _failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message
-        if (reason) entry.failureReason = reason
+      // non-success terminals. Hoisted so `_index.derived.failureReason` (the recompute-only
+      // projection) reuses the SAME value (invariant: derived == entry-level projection).
+      const failureReasonValue =
+        _state === "failed" || _state === "aborted" || _state === "interrupted"
+          ? (_failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message ?? undefined)
+          : undefined
+      if (failureReasonValue) entry.failureReason = failureReasonValue
+
+      // New `model` parent key (RFC §3, §2.5): `requested` = client alias (raw inbound
+      // model, == deprecated `inboundRequest.model`); `resolved` = normalized resolved
+      // name (== deprecated `outboundResponse.model` — same value today, RFC §4 note);
+      // `multiplier` = the write-time billing factor (== deprecated top-level `multiplier`,
+      // resolved from the SAME `state.modelIndex` billing source as buildHistoryActivityPatch).
+      // Dual-written alongside the legacy fields; P4c drops those once consumers read `model`.
+      const requestedModel = _originalRequest?.model
+      const resolvedModelName = _resolvedModel !== null ? normalizeModelId(_resolvedModel) : _response?.model
+      const billing = _resolvedModel !== null ? appState.modelIndex.get(_resolvedModel)?.billing : undefined
+      if (requestedModel !== undefined || resolvedModelName !== undefined || billing?.multiplier !== undefined) {
+        entry.model = {
+          ...(requestedModel !== undefined && { requested: requestedModel }),
+          ...(resolvedModelName !== undefined && { resolved: resolvedModelName }),
+          ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+        }
+      }
+
+      // New `clientRequest` leg (RFC §3): `body` = raw inbound payload (SoT); the
+      // structured projections (model/messages/system/max_tokens/temperature/tools/
+      // thinking) mirror the deprecated `inboundRequest` (R1-W7) so consumers read the
+      // parsed request without re-parsing `body`. `headers` = the captured inbound
+      // request headers; `method`/`path`/`format` are new captures. Dual-written
+      // alongside `inboundRequest`; P4c drops `inboundRequest` once consumers migrate.
+      if (_originalRequest) {
+        entry.clientRequest = {
+          method,
+          path,
+          format: opts.endpoint,
+          ...(_httpHeaders?.inboundRequest && { headers: _httpHeaders.inboundRequest }),
+          body: _originalRequest.payload,
+          stream: _originalRequest.stream,
+          model: _originalRequest.model,
+          messages: _originalRequest.messages,
+          system: _originalRequest.system,
+          max_tokens: extractMaxTokens(p),
+          temperature: typeof p?.temperature === "number" ? p.temperature : undefined,
+          tools: _originalRequest.tools,
+          thinking: p?.thinking ?? undefined,
+        }
+      }
+
+      // Entry-level one-time inbound `preprocessing` (RFC §4): hoisted OFF the
+      // top-level `pipelineInfo` (which stays for the deprecated per-attempt
+      // truncation/messageMapping) — preprocessing is a once-per-request transform,
+      // not per-attempt, so it belongs at the entry level.
+      if (_pipelineInfo?.preprocessing) {
+        entry.preprocessing = _pipelineInfo.preprocessing
       }
 
       if (_forwardedResponse) {
@@ -845,6 +916,10 @@ export function createRequestContext(opts: {
             durationMs: a.durationMs,
             transport: a.transport,
             error: a.error?.message,
+            // New captures (RFC §4): attempt wall-clock start + rate-limit wait before
+            // this attempt (already stored on the Attempt by beginAttempt; now output).
+            startedAt: a.startTime,
+            ...(a.waitMs !== undefined && { waitMs: a.waitMs }),
             truncation: a.truncation,
             sanitization: a.sanitization,
             effectiveMessageCount: a.effectiveRequest?.messages.length,
@@ -855,12 +930,34 @@ export function createRequestContext(opts: {
             responseHeaders: a.responseHeaders,
             // ─── New per-attempt legs (RFC §3) — dual-written ALONGSIDE the legacy
             //     legs above. effectiveSource/upstreamRequest reuse the P1 builders;
+            //     effectiveSource carries this attempt's aggregated `pipeline` (RFC §4);
             //     upstreamResponse carries success/trailers/rawBody + unified frames. ───
-            ...(a.effectiveRequest && { effectiveSource: legFromEffectiveSource(a.effectiveRequest) }),
+            ...(a.effectiveRequest && { effectiveSource: legFromEffectiveSource(a.effectiveRequest, pipelineFromAttempt(a)) }),
             ...(a.wireRequest && { upstreamRequest: legFromUpstreamRequest(a.wireRequest) }),
             ...(upstreamResponse && { upstreamResponse }),
           }
         })
+      }
+
+      // New `_index.derived` projection (RFC §3, R4-WARN-E): recompute-only subset of
+      // `attempts` — read the SAME fields the migrated consumers read (invariant ④,
+      // three-point sync: here + onTerminal projection + updateEntry allowlist).
+      // `responseSuccess` mirrors the FINAL attempt's `upstreamResponse.success` (the
+      // exact field entry-view `resolveResponseSuccess` reads); `currentStrategy` /
+      // `attemptCount` mirror the deprecated top-level fields; `failureReason` reuses the
+      // entry-level projection value above. Dual-written alongside the legacy fields.
+      const finalUpstreamResponseSuccess = entry.attempts?.at(-1)?.upstreamResponse?.success
+      const derivedCurrentStrategy = _attempts.at(-1)?.strategy
+      entry._index = {
+        derived: {
+          ...(finalUpstreamResponseSuccess !== undefined && { responseSuccess: finalUpstreamResponseSuccess }),
+          ...(derivedCurrentStrategy !== undefined && { currentStrategy: derivedCurrentStrategy }),
+          // Truthy guard (matching `entry.failureReason` at :788) so the recompute-only
+          // `derived.failureReason` stays EXACTLY the entry-level projection — both omit on
+          // a falsy reason, never diverging on a degenerate empty-string error message.
+          ...(failureReasonValue && { failureReason: failureReasonValue }),
+          attemptCount: _attempts.length,
+        },
       }
 
       return entry

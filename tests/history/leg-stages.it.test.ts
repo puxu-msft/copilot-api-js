@@ -310,19 +310,27 @@ describe("P2 invariant ③ — legacy single-blob assemble", () => {
 // ============================================================================
 
 describe("P2 FAIL-1 — eager stage shape matches finalized", () => {
+  // `collectAttemptStages` is the PER-ATTEMPT eager producer — it emits ONLY the
+  // per-attempt new legs (effective_source/upstream_request/upstream_response @N).
+  // The entry-level, leg-independent client legs (client_request/client_response
+  // @-1) are produced by a DIFFERENT eager path (the eager INSERT →
+  // persistEntryEager), NOT by collectAttemptStages, so the per-attempt FAIL-1
+  // parity comparison scopes to `attemptIndex >= 0`. (Before P4c-1 the producer
+  // left `clientRequest` unpopulated, so the finalized path emitted no client_request
+  // stage either and the entry-level filter was moot; the producer now populates it.)
+  const PER_ATTEMPT_NEW_STAGES = new Set<string>([STAGE.effectiveSource, STAGE.upstreamRequest, STAGE.upstreamResponse])
+
   function newKinds(stages: Array<StagePayload>): Array<string> {
-    const fresh = new Set<string>([STAGE.clientRequest, STAGE.clientResponse, STAGE.effectiveSource, STAGE.upstreamRequest, STAGE.upstreamResponse])
     return stages
-      .filter((s) => fresh.has(s.stage))
+      .filter((s) => s.attemptIndex >= 0 && PER_ATTEMPT_NEW_STAGES.has(s.stage))
       .map((s) => `${s.stage}@${s.attemptIndex}`)
       .sort()
   }
 
   function newPayloads(stages: Array<StagePayload>): Record<string, unknown> {
-    const fresh = new Set<string>([STAGE.clientRequest, STAGE.clientResponse, STAGE.effectiveSource, STAGE.upstreamRequest, STAGE.upstreamResponse])
     const out: Record<string, unknown> = {}
     for (const s of stages) {
-      if (fresh.has(s.stage)) out[`${s.stage}@${s.attemptIndex}`] = s.payload
+      if (s.attemptIndex >= 0 && PER_ATTEMPT_NEW_STAGES.has(s.stage)) out[`${s.stage}@${s.attemptIndex}`] = s.payload
     }
     return out
   }
