@@ -37,21 +37,34 @@ import {
  *     evaluated per `isPoisoned` call, NOT captured at construction. A
  *     hot-reloaded `poisoned_thinking_ttl_hours` config edit therefore takes
  *     effect immediately, without rebuilding the store or restarting.
+ *   - **bounded growth (spec §3.3)**: `record` lazily prunes at the growth
+ *     point — it purges entries older than the live TTL and enforces a `maxRows`
+ *     safety cap (oldest-by-`last_seen_at` evicted first) on BOTH the cache and
+ *     the DB, so neither grows monotonically. Cache pruning runs unconditionally
+ *     (Map ops never throw → bounded even in degraded mode); DB pruning rides the
+ *     same never-throw try/catch as the write.
  *
  * `createDatabase` does no PRAGMA/mkdir of its own, so this class self-inits:
  * `mkdir` the parent dir, set WAL + busy_timeout, and `CREATE TABLE IF NOT
  * EXISTS`.
  */
+
+/** Default safety cap on quarantine rows / cache entries (spec §3.3). Constructor-injectable so tests assert the cap without recording 1000 rows. */
+const MAX_ROWS = 1000
+
 export class ThinkingQuarantineStore {
   private db: SqliteDatabase | null = null
   private cache = new Map<string, number>() // keyString -> lastSeenAt (ms)
   private readonly ttlMs: () => number
+  private readonly maxRows: number
 
   // `dbPath` is a plain parameter, not a stored field: it is only needed during
   // self-init here. Parameter properties (`private readonly dbPath`) are barred
-  // by tsconfig `erasableSyntaxOnly`.
-  constructor(dbPath: string, ttlMs: () => number) {
+  // by tsconfig `erasableSyntaxOnly`. `maxRows` defaults to MAX_ROWS but is
+  // injectable so tests can assert the cap without recording 1000 rows.
+  constructor(dbPath: string, ttlMs: () => number, maxRows: number = MAX_ROWS) {
     this.ttlMs = ttlMs
+    this.maxRows = maxRows
     try {
       mkdirSync(dirname(dbPath), { recursive: true })
       this.db = createDatabase(dbPath)
@@ -103,6 +116,10 @@ export class ThinkingQuarantineStore {
    */
   record(k: QuarantineKey, errorSample: string, now = Date.now()): void {
     this.cache.set(keyString(k), now)
+    // Lazy bounded-growth maintenance at the growth point. Cache pruning first
+    // and OUTSIDE the try — Map ops never throw, so the in-memory read path
+    // stays bounded even when the DB is degraded/failing.
+    this.pruneCache(now)
     try {
       this.db
         ?.prepare(
@@ -114,6 +131,9 @@ export class ThinkingQuarantineStore {
              last_error_sample = excluded.last_error_sample`,
         )
         .run(k.sessionId, k.agentId, now, now, errorSample.slice(0, 500))
+      // DB-side purge + cap AFTER the upsert (so the just-written row is present
+      // and survives the cap), riding the same never-throw try/catch.
+      this.pruneDb(now)
     } catch (e) {
       consola.warn("[ThinkingQuarantine] record failed:", e instanceof Error ? e.message : e)
     }
@@ -132,5 +152,40 @@ export class ThinkingQuarantineStore {
     } catch (e) {
       consola.warn("[ThinkingQuarantine] touch failed:", e instanceof Error ? e.message : e)
     }
+  }
+
+  /**
+   * In-memory bounded-growth maintenance (cache only, never throws): drop
+   * entries older than the live TTL, then evict oldest-by-`lastSeen` down to
+   * `maxRows`. Runs unconditionally on every `record` so the read-path Map stays
+   * bounded regardless of DB health.
+   */
+  private pruneCache(now: number): void {
+    const cutoff = now - this.ttlMs()
+    for (const [k, lastSeen] of this.cache) if (lastSeen < cutoff) this.cache.delete(k)
+    const overflow = this.cache.size - this.maxRows
+    if (overflow > 0) {
+      // Oldest-first by lastSeen; evict the overflow. (`overflow` is snapshotted
+      // before the loop — deleting shrinks `cache.size` under us otherwise.)
+      const oldestFirst = [...this.cache.entries()].sort((a, b) => a[1] - b[1]).slice(0, overflow)
+      for (const [k] of oldestFirst) this.cache.delete(k)
+    }
+  }
+
+  /**
+   * DB-side mirror of {@link pruneCache}: purge expired rows, then trim to the
+   * newest `maxRows` by `last_seen_at`. Best-effort — the caller wraps it in the
+   * never-throw try/catch, and it no-ops when the DB is degraded (`db === null`).
+   */
+  private pruneDb(now: number): void {
+    if (!this.db) return
+    this.db.prepare("DELETE FROM poisoned_conversations WHERE last_seen_at < ?").run(now - this.ttlMs())
+    this.db
+      .prepare(
+        `DELETE FROM poisoned_conversations WHERE rowid NOT IN (
+           SELECT rowid FROM poisoned_conversations ORDER BY last_seen_at DESC LIMIT ?
+         )`,
+      )
+      .run(this.maxRows)
   }
 }
