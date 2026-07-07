@@ -74,6 +74,8 @@ import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/uns
 import { createWebSearchNotFoundRetryStrategy } from "~/lib/request/strategies/web-search-not-found-retry"
 import { state } from "~/lib/state"
 
+import { createPoisonedThinkingRetryStrategy } from "./poisoned-thinking-retry"
+
 export interface AnthropicStrategiesDeps {
   /** Truncation baseline: the preprocessed, pre-initial-sanitize payload (= codec.getTruncateBaseline()). */
   originalPayload: MessagesPayload
@@ -105,6 +107,12 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
     adapt(createToolFieldRejectionStrategy<MessagesPayload>()),
     adapt(createBodyFieldRejectionStrategy<MessagesPayload>()),
     adapt(createLegacyThinkingRetryStrategy<MessagesPayload>()),
+    // L2 poisoned-thinking strip-all retry — NATIVE env-strategy, deliberately NOT
+    // adapt()-wrapped: L3 (Task 10) reads `env.ctx` in onResolved, which the legacy
+    // adapter drops. Its matcher requires "cannot be modified" (disjoint from
+    // legacy-thinking's "thinking.type.enabled"), so this position among the
+    // 400-class handlers is order-safe.
+    createPoisonedThinkingRetryStrategy(),
     adapt(createUnsupportedBetaRetryStrategy<MessagesPayload>({ getProbeCandidates: () => deps.betaProbe.getCandidates() })),
     adapt(createServerToolRejectionStrategy<MessagesPayload>()),
     adapt(createStructuredOutputsRejectionStrategy<MessagesPayload>()),

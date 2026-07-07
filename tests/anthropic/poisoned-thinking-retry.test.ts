@@ -68,7 +68,7 @@ describe("createPoisonedThinkingRetryStrategy().canHandle — body-parse extract
     // 真实分类器：400 + 非 token-limit/非 rate-limit body → bad_request，raw 为原始 HTTPError。
     const error = classifyError(new HTTPError("400 Bad Request", 400, POISON_BODY))
     // oracle：确认确实走 body-parse 分支——已归类为 bad_request/400，且顶层 message 不含短语
-    // （否则 extractMessage 会在第一行短路，测不到 JSON 解析路径）。
+    // （否则 extractThinkingRejectMessage 会在第一行短路，测不到 JSON 解析路径）。
     expect(error.type).toBe("bad_request")
     expect(error.status).toBe(400)
     expect(error.message.toLowerCase()).not.toContain("cannot be modified")
