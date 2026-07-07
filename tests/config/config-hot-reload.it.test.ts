@@ -460,6 +460,14 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   },
   {
+    configKey: "anthropic.thinking_destack_strategy",
+    stateKey: "thinkingDestackStrategy",
+    // Sample MUST differ from the default (move_blocks) so R1/R2 prove the wiring.
+    sampleYamlValue: "insert_text",
+    expectedStateValue: "insert_text",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+  },
+  {
     configKey: "anthropic.thinking_block_sanitize",
     stateKey: "thinkingBlockSanitizeCheck",
     sampleYamlValue: "empty_any",

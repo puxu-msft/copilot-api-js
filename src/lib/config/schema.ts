@@ -224,6 +224,17 @@ export const AnthropicConfigSchema = z
     tool_inject_claude_code: nullableBoolean(),
     thinking_block_message_policy: nullableEnum(["preserve", "stripped"] as const),
     /**
+     * De-stack adjacent `thinking`/`redacted_thinking` blocks so no two are
+     * consecutive in an assistant message — GHC rejects an echoed history with
+     * stacked thinking ("thinking blocks cannot be modified" 400). Idempotent:
+     * a message without adjacent thinking passes through byte-identical.
+     *   passthrough — leave stacked thinking as-is
+     *   insert_text — insert a synthetic text separator between adjacent thinking
+     *   move_blocks — interleave thinking with real non-thinking blocks (order-
+     *                 preserving), synthetic marker only when insufficient (default)
+     */
+    thinking_destack_strategy: nullableEnum(["passthrough", "insert_text", "move_blocks"] as const),
+    /**
      * Drop corrupt thinking blocks before sending upstream. Validity is decided
      * by the SIGNATURE, not the thinking text — a legitimate *encrypted* thinking
      * block has empty text but a valid signature, and is always kept.

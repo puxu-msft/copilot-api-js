@@ -1,3 +1,4 @@
+import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type {
   //
@@ -319,6 +320,19 @@ export interface State {
   readonly thinkingBlockMessagePolicy: ThinkingBlockMessagePolicy
   /** Drop corrupt empty thinking blocks before sending upstream (see config `anthropic.thinking_block_sanitize`) */
   readonly thinkingBlockSanitizeCheck: false | "empty_thinking" | "empty_any"
+
+  /**
+   * De-stack strategy for adjacent `thinking`/`redacted_thinking` blocks (config
+   * `anthropic.thinking_destack_strategy`). Ensures no two thinking blocks are
+   * consecutive in an assistant message — GHC rejects an echoed history with
+   * stacked thinking with a "thinking blocks cannot be modified" 400.
+   *
+   * - `"passthrough"` — leave stacked thinking as-is.
+   * - `"insert_text"` — insert a synthetic text separator between adjacent thinking.
+   * - `"move_blocks"` — interleave thinking with real non-thinking blocks
+   *                     (order-preserving), synthetic marker only when insufficient (default).
+   */
+  readonly thinkingDestackStrategy: ThinkingDestackStrategy
 
   /**
    * Coerce legacy `thinking.type="enabled"` to `"adaptive"` when the target
@@ -1004,6 +1018,7 @@ export function setAnthropicBehavior(
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
+      | "thinkingDestackStrategy"
       | "coerceAdaptiveThinking"
       | "systemMessagesSanitize"
       | "systemRejectModels"
@@ -1220,6 +1235,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
+  thinkingDestackStrategy: "move_blocks" as ThinkingDestackStrategy,
   coerceAdaptiveThinking: "basic" as false | "basic" | "best_effort",
   systemMessagesSanitize: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectMode: "as_user" as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
@@ -1345,6 +1361,7 @@ export function resetConfigManagedState(): void {
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+    thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
     coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
     systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
     systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
@@ -1481,6 +1498,7 @@ const mutableState: MutableState = {
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+  thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
   coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
   systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
   systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,

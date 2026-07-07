@@ -537,6 +537,13 @@ anthropic:
   #   stripped: actively delete thinking blocks from old messages / 主动从旧消息删除 thinking 块
   thinking_block_message_policy: preserve
 
+  # De-stack adjacent thinking/redacted_thinking blocks so no two are consecutive in an assistant message — GHC rejects an echoed history with stacked thinking ("thinking blocks cannot be modified" 400). Idempotent: a message without adjacent thinking passes through byte-identical.
+  # 分隔 assistant 消息中相邻的 thinking/redacted_thinking 块使其两两不相邻——GHC 拒绝回显历史里堆叠的 thinking（报 "thinking blocks cannot be modified" 400）。幂等：无相邻 thinking 的消息逐字透传。
+  #   passthrough: leave stacked thinking as-is / 保留堆叠的 thinking，不改动
+  #   insert_text: insert a synthetic text separator between adjacent thinking / 在相邻 thinking 间插入合成文本分隔符
+  #   move_blocks: interleave thinking with real non-thinking blocks (order-preserving), synthetic marker only when insufficient (default) / 与真实非 thinking 块交错（保序），不足时才用合成标记（默认）
+  thinking_destack_strategy: move_blocks
+
   # Drop corrupt thinking blocks before sending upstream — validity decided by SIGNATURE, not text (encrypted thinking has empty text + valid signature, kept).
   # 发送上游前剥离损坏的 thinking 块——有效性由 signature 而非文本判定（加密 thinking 文本为空但有有效 signature，保留）。
   #   empty_thinking: remove double-empty blocks (text AND signature empty) (default) / 移除双空块（文本与 signature 都空）（默认）
