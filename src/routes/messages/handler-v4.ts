@@ -378,6 +378,11 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         // client-disconnect bridge flips it) — NOT error.name (a response-header timeout does NOT
         // flip clientAbort, so it correctly falls through to fail → forwardError 504).
         if (error instanceof Error && isAbortError(error) && clientAbort.signal.aborted) {
+          // 499 is a KNOWN literal decided HERE, before the abort snapshot — so capture it on the
+          // clientResponse leg BEFORE ctx.abort() freezes the entry (mirrors the forward-boundary
+          // status capture on the success paths). Distinct from the inherent settle-timing gap
+          // where the forwarded status is only decided downstream (see docs/todo/deferred-backlog).
+          ctx.setClientResponseStatus(499)
           ctx.abort(resolvedName)
           detachClientAbort()
           return c.body(null, 499 as ContentfulStatusCode)

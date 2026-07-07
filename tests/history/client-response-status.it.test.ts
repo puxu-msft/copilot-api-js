@@ -16,6 +16,11 @@
  * failure-forward non-200 (anthropic thinking-only refusal → client 500, a
  * proxy-introduced error forwarded in-handler). `clientResponse.status` is
  * DECOUPLED from the entry verdict — a failed entry can forward a 200 or a 500.
+ *
+ * Also covers the PRE-RESPONSE client-abort path: 499 is a KNOWN literal decided
+ * in-handler (before the upstream forwards anything) and is captured on the
+ * clientResponse leg BEFORE ctx.abort() freezes the entry — so an `aborted` entry
+ * carries clientResponse.status === 499.
  */
 
 import {
@@ -193,5 +198,36 @@ describe("P3 clientResponse.status capture at forward boundary", () => {
     expect(entry?.state).toBe("failed")
     expect(entry?.clientResponse?.status).toBe(res.status)
     expect(entry?.clientResponse?.status).toBe(500)
+  })
+
+  test("pre-response client abort → client 499, clientResponse.status === 499 (aborted, decided in-handler)", async () => {
+    setModel("claude-sonnet-4.6", "Anthropic", ["/v1/messages"])
+    // Client disconnects while the handler awaits upstream headers: abort the request signal
+    // (→ bridgeClientAbort flips the handler's clientAbort), then reject with an http2-style
+    // AbortError (upstream never returned headers). The handler's settled-path catch takes the
+    // pre-response abort branch → sets clientResponse.status = 499 BEFORE ctx.abort() snapshots,
+    // then returns 499. Mirrors tests/anthropic/pre-response-abort.http.test.ts.
+    const clientAbort = new AbortController()
+    applyFetchMock((() => {
+      clientAbort.abort()
+      const e = new Error("The operation was aborted.")
+      e.name = "AbortError"
+      return Promise.reject(e)
+    }) as Parameters<typeof applyFetchMock>[0])
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: CLIENT_HEADERS,
+      body: JSON.stringify({ model: "claude-sonnet-4.6", max_tokens: 256, stream: true, messages: [{ role: "user", content: "go" }] }),
+      signal: clientAbort.signal,
+    })
+    expect(res.status).toBe(499)
+    await res.text().catch(() => undefined)
+    const entry = latest("anthropic-messages")
+    // The pre-response abort settles as `aborted`, yet the KNOWN forwarded 499 is captured
+    // verbatim — clientResponse.status is decoupled from the entry state (richest-data-flow).
+    expect(entry?.state).toBe("aborted")
+    expect(entry?.clientResponse?.status).toBe(res.status)
+    expect(entry?.clientResponse?.status).toBe(499)
   })
 })
