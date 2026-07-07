@@ -27,6 +27,7 @@ import {
 
 import type { EntrySummary } from "@/types"
 
+import { EMPTY_FILTERS } from "@/lib/request-filters"
 import {
   //
   initialListState,
@@ -68,7 +69,7 @@ function renderList(initialEntries: Array<string> = ["/requests"]) {
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <MemoryRouter initialEntries={initialEntries}>
-        <HistoryList />
+        <HistoryList filters={EMPTY_FILTERS} />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -135,7 +136,7 @@ describe("HistoryList", () => {
     render(
       <QueryClientProvider client={new QueryClient()}>
         <MemoryRouter initialEntries={["/requests?at=e2"]}>
-          <HistoryList />
+          <HistoryList filters={EMPTY_FILTERS} />
           <LocationProbe />
         </MemoryRouter>
       </QueryClientProvider>,

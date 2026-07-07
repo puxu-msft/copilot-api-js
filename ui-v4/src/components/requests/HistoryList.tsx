@@ -9,9 +9,10 @@ import {
   useSearchParams,
 } from "react-router-dom"
 
+import type { RequestFilters } from "@/lib/request-filters"
+
 import { RequestRow } from "@/components/requests/RequestRow"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
-import { EMPTY_FILTERS } from "@/lib/request-filters"
 import { useListStore } from "@/stores/list-store"
 
 /** 定位命中后的瞬态高亮类(与 useAnchorScroll 共用,见 styles/theme.css)。 */
@@ -28,12 +29,11 @@ function findRow(container: HTMLElement | null, id: string): HTMLElement | null 
 }
 
 /** History —— 游标分页 + 缓冲横幅 + tail 暂停 + URL(`?at=`)定位/高亮(spec §4.2)。 */
-export function HistoryList() {
+export function HistoryList({ filters }: { filters: RequestFilters }) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const at = searchParams.get("at")
-  // Phase 1 占位:filters 进 hook 契约已就绪,真实 filters prop 由 Phase 2 Task 2.5 接入。
-  const { entries, total, isLoading, hasNextPage, fetchNextPage } = useHistoryInfinite(EMPTY_FILTERS)
+  const { entries, total, isLoading, hasNextPage, fetchNextPage } = useHistoryInfinite(filters)
   const bufferedIds = useListStore((s) => s.bufferedIds)
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
