@@ -44,6 +44,7 @@ import {
 import {
   //
   matchesGating,
+  hasAnyFilter,
   toQueryString,
 } from "@/lib/request-filters"
 import { useListStore } from "@/stores/list-store"
@@ -139,7 +140,7 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const at = searchParams.get("at")
-  const { entries, total, isLoading, hasNextPage, fetchNextPage } = useHistoryInfinite(filters)
+  const { entries, total, isLoading, isError, error, refetch, hasNextPage, fetchNextPage } = useHistoryInfinite(filters)
   const bufferedIds = useListStore((s) => s.bufferedIds)
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
@@ -312,52 +313,82 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
         </div>
       )}
       <div className="min-h-0 flex-1">
-        {isLoading ?
-          <div className="mono p-2 text-[#888]">loading…</div>
-        : <TableVirtuoso<HistoryRowModel, RowContext>
-            ref={virtuosoRef}
-            style={{ height: "100%" }}
-            data={rows}
-            context={rowContext}
-            // jsdom 无 layout,靠 initialItemCount 强制首屏渲染前 N 行(见 CONCLUSION.md)。
-            initialItemCount={Math.min(rows.length, INITIAL_ITEM_COUNT)}
-            components={TABLE_COMPONENTS}
-            endReached={() => {
-              if (hasNextPage) void fetchNextPage()
-            }}
-            // 离顶(用户上滚)→ 暂停 tail,避免新条目把当前浏览位置挤走(取代旧 onScroll 阈值判断)。
-            atTopStateChange={(atTop) => {
-              if (!atTop && tailOn) dispatch({ kind: "scroll-up" })
-            }}
-            fixedHeaderContent={() =>
-              table.getHeaderGroups().map((hg) => (
-                <tr
-                  key={hg.id}
-                  className="mono border-b border-[#222] bg-[#111] text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
-                >
-                  {hg.headers.map((header) => (
-                    <th
-                      key={header.id}
-                      className={`${header.column.columnDef.meta?.width ?? ""} px-2 py-1 text-left font-normal`}
-                    >
-                      {flexRender(header.column.columnDef.header, header.getContext())}
-                    </th>
-                  ))}
-                </tr>
-              ))
-            }
-            itemContent={(_index, row) =>
-              row.getVisibleCells().map((cell) => (
-                <td
-                  key={cell.id}
-                  className={`${cell.column.columnDef.meta?.width ?? ""} overflow-hidden px-2 py-1 align-middle`}
-                >
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </td>
-              ))
-            }
-          />
-        }
+        {isError && (
+          <div className="mono flex flex-col items-center gap-2 p-4 text-center text-[13px] text-[#e0a0a0]">
+            <span>⚠ 加载失败</span>
+            <span className="text-[#c88]">{String(error)}</span>
+            <button
+              type="button"
+              className="text-[var(--color-primary)] underline-offset-2 hover:underline"
+              onClick={() => void refetch()}
+            >
+              重试
+            </button>
+          </div>
+        )}
+        {!isError && isLoading && <div className="mono p-2 text-[#888]">loading…</div>}
+        {!isError && !isLoading && (
+          <div className="relative h-full">
+            <TableVirtuoso<HistoryRowModel, RowContext>
+              ref={virtuosoRef}
+              style={{ height: "100%" }}
+              data={rows}
+              context={rowContext}
+              // jsdom 无 layout,靠 initialItemCount 强制首屏渲染前 N 行(见 CONCLUSION.md)。
+              initialItemCount={Math.min(rows.length, INITIAL_ITEM_COUNT)}
+              components={TABLE_COMPONENTS}
+              endReached={() => {
+                if (hasNextPage) void fetchNextPage()
+              }}
+              // 离顶(用户上滚)→ 暂停 tail,避免新条目把当前浏览位置挤走(取代旧 onScroll 阈值判断)。
+              atTopStateChange={(atTop) => {
+                if (!atTop && tailOn) dispatch({ kind: "scroll-up" })
+              }}
+              fixedHeaderContent={() =>
+                table.getHeaderGroups().map((hg) => (
+                  <tr
+                    key={hg.id}
+                    className="mono border-b border-[#222] bg-[#111] text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
+                  >
+                    {hg.headers.map((header) => (
+                      <th
+                        key={header.id}
+                        className={`${header.column.columnDef.meta?.width ?? ""} px-2 py-1 text-left font-normal`}
+                      >
+                        {flexRender(header.column.columnDef.header, header.getContext())}
+                      </th>
+                    ))}
+                  </tr>
+                ))
+              }
+              itemContent={(_index, row) =>
+                row.getVisibleCells().map((cell) => (
+                  <td
+                    key={cell.id}
+                    className={`${cell.column.columnDef.meta?.width ?? ""} overflow-hidden px-2 py-1 align-middle`}
+                  >
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                ))
+              }
+            />
+            {/* 空态:保留表头(列可见性等外层结构),仅在表体区叠加「无匹配请求」提示(+ 有筛选时清除筛选)。 */}
+            {entries.length === 0 && (
+              <div className="mono absolute inset-x-0 top-10 flex flex-col items-center gap-2 p-4 text-center text-[13px] text-[#888]">
+                <span>无匹配请求</span>
+                {hasAnyFilter(filters) && (
+                  <button
+                    type="button"
+                    className="text-[var(--color-primary)] underline-offset-2 hover:underline"
+                    onClick={() => onClearFilters?.()}
+                  >
+                    清除筛选
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

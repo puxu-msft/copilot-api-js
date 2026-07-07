@@ -88,6 +88,9 @@ let mockHistory: {
   isLoading: boolean
   hasNextPage: boolean
   fetchNextPage: () => void
+  isError?: boolean
+  error?: unknown
+  refetch?: () => void
 } = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
 
 vi.mock("@/hooks/useHistoryInfinite", () => ({
@@ -347,5 +350,33 @@ describe("HistoryList", () => {
     fireEvent.click(screen.getByText(/resume/))
     expect(useListStore.getState().tailOn).toBe(true)
     expect(screen.getByTestId("loc").textContent).toBe("/requests")
+  })
+
+  // ── Task 4.1:error / empty 三态 ──
+
+  it("error state: renders the error message and 重试 calls refetch", () => {
+    const refetch = vi.fn()
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn(), isError: true, error: new Error("boom"), refetch }
+    renderList()
+    expect(screen.getByText(/boom/)).toBeDefined()
+    fireEvent.click(screen.getByText("重试"))
+    expect(refetch).toHaveBeenCalled()
+  })
+
+  it("empty state with active filters: renders 清除筛选 and calls onClearFilters", () => {
+    const onClearFilters = vi.fn()
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
+    const filters: RequestFilters = { ...EMPTY_FILTERS, endpoint: "anthropic-messages" }
+    renderList(["/requests"], filters, onClearFilters)
+    expect(screen.getByText(/无匹配请求/)).toBeDefined()
+    fireEvent.click(screen.getByText("清除筛选"))
+    expect(onClearFilters).toHaveBeenCalled()
+  })
+
+  it("empty state without filters: 无匹配请求 only, no 清除筛选 button", () => {
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
+    renderList()
+    expect(screen.getByText(/无匹配请求/)).toBeDefined()
+    expect(screen.queryByText("清除筛选")).toBeNull()
   })
 })
