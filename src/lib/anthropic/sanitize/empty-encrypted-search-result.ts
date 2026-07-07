@@ -33,7 +33,7 @@
  * array), are left untouched — no over-reach beyond the proven-broken shape.
  *
  * This is orthogonal to the `server_tool_rewrite` config: when that is
- * enabled it downgrades ALL server-tool history first, so this pass then finds
+ * enabled it downgrades ALL prior-turn server-tool blocks first, so this pass then finds
  * nothing to do (no-op); when it is disabled, this pass still catches the
  * poisoned web_search turns. Both reuse the same downgrade primitive.
  */

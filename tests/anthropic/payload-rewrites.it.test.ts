@@ -113,7 +113,7 @@ const scenarios: Array<Scenario> = [
     didWork: (s) => s.emptyThinkingBlocksRemoved > 0,
   },
   {
-    name: "server-tool history downgraded then validated",
+    name: "prior-turn server-tool blocks downgraded then validated",
     setup: () => setStateForTests({ rewriteServerTools: "downgrade" }),
     payload: payload([
       assistant([

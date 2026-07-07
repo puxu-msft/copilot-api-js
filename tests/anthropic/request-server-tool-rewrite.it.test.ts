@@ -170,7 +170,7 @@ describe("sanitizeAnthropicMessages × rewriteServerTools", () => {
   })
 })
 
-describe("sanitizeAnthropicMessages × learned server-tool-history downgrade (reactive gap C)", () => {
+describe("sanitizeAnthropicMessages × learned server-tool downgrade (reactive gap C)", () => {
   afterEach(() => clearAnthropicFeatureNegotiationForTests())
 
   test("learned-downgrade model: server_tool_use history is downgraded even with global config false", () => {
