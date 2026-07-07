@@ -206,9 +206,16 @@ function runInitialSanitizationAndRecord(
 ): { initialSanitized: MessagesPayload; initialSanitizationInfo: ReturnType<typeof toSanitizationInfo> } {
   // L3 proactive quarantine (Task 11): the web_search double-hop bypasses the v4
   // driver, so the codec's proactive filter never runs on this path. Apply the SAME
-  // known-poisoned strip-all here, BEFORE sanitize, so a quarantined conversation
-  // never re-hits the "thinking cannot be modified" 400 on the web_search path
-  // either. Reads (session, agent) from reqCtx; the store resolves lazily (singleton).
+  // known-poisoned strip-all here, BEFORE sanitize. This pre-strip prevents the
+  // "thinking cannot be modified" 400 ONLY on this RE-DISPATCHED real send (the
+  // no-search pass-through routed here by handleWebSearchCompletion). It does NOT
+  // extend to the web_search probe + second hop (web-search/orchestrator.ts
+  // callMainModel), which run plain sanitizeAnthropicMessages with no L3 and no
+  // reqCtx — a poisoned web_search conversation still re-hits the 400 on those hops,
+  // recovered reactively by the L2 legacy backstop
+  // (createLegacyPoisonedThinkingRetryStrategy, pipeline.ts:188). See
+  // docs/todo/deferred-backlog.md. Reads (session, agent) from reqCtx; the store
+  // resolves lazily (singleton).
   const { messages: quarantinedMessages, changed: quarantineStripped } = stripAllThinkingIfQuarantined(
     anthropicPayload.messages,
     reqCtx.sessionId,

@@ -17,10 +17,16 @@
  * and then strip the thinking, orphaning those markers — so `250` is load-bearing
  * (spec §3.4 / review C4).
  *
- * Dual access point: the driver assembles this via the codec's `requestRewrites`;
- * the web_search double-hop bypasses the driver (a deferred `[bypass]`), so it
- * calls the shared core ({@link stripAllThinkingIfQuarantined}) directly before
- * its own sanitize.
+ * Coverage (two L3 access points): the driver assembles this via the codec's
+ * `requestRewrites`; the web_search **direct real-send** (`web-search-direct.ts`
+ * `runInitialSanitizationAndRecord` — the no-search re-dispatch) calls the shared
+ * core ({@link stripAllThinkingIfQuarantined}) directly before its own sanitize.
+ * OUT OF SCOPE: the web_search **probe + second hop** (`web-search/orchestrator.ts`
+ * `callMainModel`) run plain `sanitizeAnthropicMessages` with no L3 (no `env.ctx`
+ * session/agent on that path), so a poisoned web_search conversation still re-hits
+ * the "cannot be modified" 400 there — recovered reactively by the L2 legacy
+ * backstop (`createLegacyPoisonedThinkingRetryStrategy`, `pipeline.ts:188`). Tracked
+ * in docs/todo/deferred-backlog.md.
  */
 
 import type {
