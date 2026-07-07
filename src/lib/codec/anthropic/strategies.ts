@@ -64,6 +64,7 @@ import { createStructuredOutputsRejectionStrategy } from "~/lib/request/strategi
 import { createSystemRejectRetryStrategy } from "~/lib/request/strategies/system-reject-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
+import { createWebSearchNotFoundRetryStrategy } from "~/lib/request/strategies/web-search-not-found-retry"
 import { state } from "~/lib/state"
 
 export interface AnthropicStrategiesDeps {
@@ -96,6 +97,7 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
     adapt(createServerToolRejectionStrategy<MessagesPayload>()),
     adapt(createStructuredOutputsRejectionStrategy<MessagesPayload>()),
     adapt(createSystemRejectRetryStrategy<MessagesPayload>({ resanitize: deps.resanitize })),
+    adapt(createWebSearchNotFoundRetryStrategy<MessagesPayload>({ resanitize: deps.resanitize })),
     adapt(createDeferredToolRetryStrategy<MessagesPayload>()),
     adapt(
       createAutoTruncateStrategy<MessagesPayload>({

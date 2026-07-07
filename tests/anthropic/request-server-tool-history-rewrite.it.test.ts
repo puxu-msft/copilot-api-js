@@ -1,5 +1,6 @@
 import {
   //
+  afterEach,
   describe,
   expect,
   test,
@@ -11,6 +12,11 @@ import type {
   MessagesPayload,
 } from "~/types/api/anthropic"
 
+import {
+  //
+  clearAnthropicFeatureNegotiationForTests,
+  markServerToolHistoryDowngrade,
+} from "~/lib/anthropic/feature-negotiation"
 import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
 import { setStateForTests } from "~/lib/state"
 
@@ -161,5 +167,38 @@ describe("sanitizeAnthropicMessages × rewriteHistoryServerTools", () => {
       .filter((b) => b.type === "tool_result")
       .map((b) => b.tool_use_id)
     for (const ref of resultRefs) expect(toolUseIds.has(ref as string)).toBe(true)
+  })
+})
+
+describe("sanitizeAnthropicMessages × learned server-tool-history downgrade (reactive gap C)", () => {
+  afterEach(() => clearAnthropicFeatureNegotiationForTests())
+
+  test("learned-downgrade model: server_tool_use history is downgraded even with global config false", () => {
+    // Global config is OFF, but the model was learned-rejected via a prior 400.
+    // The per-model resolver must route it to "downgrade". Use a REAL (non-empty)
+    // encrypted_content so the always-on empty-encrypted fallback does NOT fire —
+    // isolating the effect to the reactive per-model path.
+    setStateForTests({ rewriteHistoryServerTools: false })
+    markServerToolHistoryDowngrade("claude-opus-4.8")
+    const out = sanitizeAnthropicMessages(payload([webSearchTurnWithEncrypted("EhoKC3JlYWxfY2lwaGVy", "srvtoolu_learned")])).payload
+
+    const allBlocks = out.messages.flatMap((m) => (typeof m.content === "string" ? [] : (m.content as unknown as Array<Block>)))
+    expect(allBlocks.some((b) => b.type === "server_tool_use")).toBe(false)
+    expect(allBlocks.some((b) => b.type === "web_search_tool_result")).toBe(false)
+    // downgraded tool_use survives (paired tool_result keeps it non-orphan)
+    expect(allBlocks.some((b) => b.type === "tool_use" && b.id === "srvtoolu_learned")).toBe(true)
+  })
+
+  test("non-learned model with global false: real server_tool_use history is preserved", () => {
+    // Nothing learned, global off → resolver returns false → passthrough. A real
+    // (non-empty encrypted_content) server_tool_use survives untouched.
+    setStateForTests({ rewriteHistoryServerTools: false })
+    const out = sanitizeAnthropicMessages(payload([webSearchTurnWithEncrypted("EhoKC3JlYWxfY2lwaGVy", "srvtoolu_keep")])).payload
+
+    const serverToolUses = out.messages
+      .flatMap((m) => (typeof m.content === "string" ? [] : (m.content as unknown as Array<Block>)))
+      .filter((b) => b.type === "server_tool_use")
+    expect(serverToolUses.length).toBe(1)
+    expect(serverToolUses[0].id).toBe("srvtoolu_keep")
   })
 })
