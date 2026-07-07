@@ -23,7 +23,7 @@
  * because the system prompt already instructs the model to return JSON. We also
  * fixate `structured_outputs` in the negotiation cache so future
  * same-(endpoint, model) requests pre-emptively strip the field during prepare
- * (`stripUnsupportedStructuredOutputs`), avoiding a repeated failed round-trip.
+ * (`strip-partner-features`), avoiding a repeated failed round-trip.
  *
  * Proactive twin: the operator can also pre-declare disallowed partner features
  * in config (`anthropic.partner_strip_features: { <model>: [structured_outputs] }`);
@@ -31,21 +31,24 @@
  * `beta_strip_headers` ∪ the beta cache), so a declared model strips on the FIRST
  * request without paying this reactive 400 + degrade-warn round-trip.
  *
- * Deferred / extension point — **only `structured_outputs` is handled today**:
+ * Table-driven extension point — **only `structured_outputs` is in the table
+ * today** (`PARTNER_FEATURE_STRIP_TARGETS`, the single table shared with the
+ * prepare step):
  *   - Current behavior: any OTHER disallowed partner feature
  *     (`extended_thinking`, `vision`, `prompt_caching`, …) is parsed by
- *     `parseDisallowedPartnerFeature` but `canHandle` returns false for it, so
- *     the request still fails with a plain 400.
- *   - Why deferred: `structured_outputs` is the only feature with empirical
- *     evidence AND a known, safe strip target (`output_config.format`). The
- *     other features have no obvious "remove this one field and the request is
- *     still valid" mapping, and stripping the wrong thing would silently change
- *     request semantics. We don't speculatively guess (YAGNI).
- *   - To extend: add the feature→strip mapping (a small table keyed by feature
- *     name), let `canHandle` accept the new feature, and teach the matching
- *     prepare step (`stripUnsupportedStructuredOutputs` and siblings) to honour
- *     the negotiation-cache entry. The identification half
- *     (`parseDisallowedPartnerFeature`) is already feature-agnostic.
+ *     `parseDisallowedPartnerFeature` but `canHandle` returns false for it (no
+ *     table row), so the request still fails with a plain 400.
+ *   - Why: `structured_outputs` is the only feature with empirical evidence AND
+ *     a known, safe strip target (`output_config.format`). The other features
+ *     have no obvious "remove this one field and the request is still valid"
+ *     mapping, and stripping the wrong thing would silently change request
+ *     semantics. We don't speculatively guess.
+ *   - To extend: add a row to `PARTNER_FEATURE_STRIP_TARGETS` (feature name →
+ *     wire strip descriptor). That single data change lights up BOTH this
+ *     reactive strategy (`canHandle` + `handle`) and the prepare step
+ *     (`strip-partner-features`), which iterate the same table. The
+ *     identification half (`parseDisallowedPartnerFeature`) is already
+ *     feature-agnostic.
  *
  * Note: stripping `structured_outputs` drops the client's JSON-schema guarantee
  * (degrade to free-form). The real fix is on the user's side — allow the feature
@@ -63,6 +66,11 @@ import {
   markAnthropicPartnerFeatureUnsupported,
   STRUCTURED_OUTPUTS_PARTNER_FEATURE,
 } from "~/lib/anthropic/feature-negotiation"
+import {
+  //
+  PARTNER_FEATURE_STRIP_TARGETS,
+  stripPartnerFeatureFromWire,
+} from "~/lib/anthropic/partner-feature-strip"
 import {
   //
   type ApiError,
@@ -98,18 +106,6 @@ export function parseDisallowedPartnerFeature(error: ApiError): string | null {
   return DISALLOWED_FEATURE.exec(text)?.[1] ?? null
 }
 
-/** Remove `format` from `output_config`, dropping `output_config` if it empties. */
-function stripStructuredOutputFormat<TPayload extends { output_config?: OutputConfig }>(payload: TPayload): TPayload {
-  const outputConfig = payload.output_config
-  if (!outputConfig || outputConfig.format === undefined) return payload
-
-  const { format: _format, ...rest } = outputConfig
-  return {
-    ...payload,
-    output_config: Object.keys(rest).length > 0 ? rest : undefined,
-  }
-}
-
 export function createStructuredOutputsRejectionStrategy<TPayload extends { model: string; output_config?: OutputConfig }>(): RetryStrategy<TPayload> {
   // Per-instance one-shot guard. Strategies are built per-request, so this is
   // request-scoped and cannot leak across unrelated requests.
@@ -121,26 +117,37 @@ export function createStructuredOutputsRejectionStrategy<TPayload extends { mode
     canHandle(error: ApiError): boolean {
       if (error.type !== "bad_request" || error.status !== 400) return false
       if (attempted) return false
-      // Only `structured_outputs` has a known safe strip target. Let any other
-      // disallowed partner feature fall through to a plain 400.
-      return parseDisallowedPartnerFeature(error) === STRUCTURED_OUTPUTS_PARTNER_FEATURE
+      // Accept any disallowed partner feature that has a KNOWN SAFE strip target
+      // (i.e. is a row in PARTNER_FEATURE_STRIP_TARGETS). Others fall through to
+      // a plain 400 — we don't speculatively strip an unknown wire field.
+      const feature = parseDisallowedPartnerFeature(error)
+      return feature !== null && Object.hasOwn(PARTNER_FEATURE_STRIP_TARGETS, feature)
     },
 
-    handle(_error: ApiError, currentPayload: TPayload, _context: RetryContext<TPayload>): Promise<RetryAction<TPayload>> {
+    handle(error: ApiError, currentPayload: TPayload, _context: RetryContext<TPayload>): Promise<RetryAction<TPayload>> {
       attempted = true
-      markAnthropicPartnerFeatureUnsupported(currentPayload.model, STRUCTURED_OUTPUTS_PARTNER_FEATURE)
-      // One-shot per request (the `attempted` guard above): surface WHY the
-      // response silently loses its JSON-schema guarantee, and how to restore it.
-      consola.warn(
-        `[StructuredOutputs] Upstream org policy disallows "${STRUCTURED_OUTPUTS_PARTNER_FEATURE}" for ${currentPayload.model}; `
-          + `stripped output_config.format and retrying — the response degrades to free-form (no schema guarantee). `
-          + `To restore: allow the feature in your Vertex AI org policy (allowedPartnerModelFeatures), then clear the `
-          + `negotiation cache entry (negotiation-states.json) so it is re-tested.`,
-      )
+      // canHandle guarantees a table-matched feature; default defensively.
+      const feature = parseDisallowedPartnerFeature(error) ?? STRUCTURED_OUTPUTS_PARTNER_FEATURE
+      markAnthropicPartnerFeatureUnsupported(currentPayload.model, feature)
+      if (feature === STRUCTURED_OUTPUTS_PARTNER_FEATURE) {
+        // One-shot per request (the `attempted` guard above): surface WHY the
+        // response silently loses its JSON-schema guarantee, and how to restore it.
+        consola.warn(
+          `[StructuredOutputs] Upstream org policy disallows "${STRUCTURED_OUTPUTS_PARTNER_FEATURE}" for ${currentPayload.model}; `
+            + `stripped output_config.format and retrying — the response degrades to free-form (no schema guarantee). `
+            + `To restore: allow the feature in your Vertex AI org policy (allowedPartnerModelFeatures), then clear the `
+            + `negotiation cache entry (negotiation-states.json) so it is re-tested.`,
+        )
+      }
+      // Shallow-clone then strip via the shared table-driven primitive: the strip
+      // reassigns/deletes the top-level field, never mutating nested objects, so
+      // the caller's original payload is untouched.
+      const next = { ...currentPayload }
+      stripPartnerFeatureFromWire(next as Record<string, unknown>, feature)
       return Promise.resolve({
         action: "retry",
-        payload: stripStructuredOutputFormat(currentPayload),
-        meta: { strippedPartnerFeature: STRUCTURED_OUTPUTS_PARTNER_FEATURE },
+        payload: next,
+        meta: { strippedPartnerFeature: feature },
       })
     },
   }

@@ -25,7 +25,6 @@ import {
   isEffortUnsupported,
   markEffortUnsupported,
   setSupportedEfforts,
-  STRUCTURED_OUTPUTS_PARTNER_FEATURE,
 } from "./feature-negotiation"
 import {
   //
@@ -45,6 +44,11 @@ import {
   selectPassthroughHeaders,
 } from "./header-policy"
 import { stripServerTools } from "./message-tools"
+import {
+  //
+  PARTNER_FEATURE_STRIP_TARGETS,
+  stripPartnerFeatureFromWire,
+} from "./partner-feature-strip"
 import {
   //
   collectAllMatching,
@@ -384,7 +388,7 @@ export const ANTHROPIC_PREPARE_STEPS: ReadonlyArray<PrepareStep> = [
   { name: "coerce-thinking", apply: (ctx) => coerceAdaptiveThinking(ctx.wire, ctx.opts.resolvedModel) },
   { name: "adjust-budget", apply: (ctx) => adjustThinkingBudget(ctx.wire, ctx.opts.resolvedModel) },
   { name: "clamp-effort", apply: (ctx) => clampEffortLevel(ctx.wire, ctx.opts.resolvedModel) },
-  { name: "strip-structured-outputs", apply: (ctx) => stripUnsupportedStructuredOutputs(ctx.wire) },
+  { name: "strip-partner-features", apply: (ctx) => stripUnsupportedPartnerFeatures(ctx.wire) },
   { name: "rewrite-memory-tool", apply: rewriteMemoryTool },
   { name: "cache-control", apply: (ctx) => applyCacheControlMode(ctx) },
   { name: "build-headers", apply: buildAnthropicHeaders },
@@ -705,39 +709,36 @@ function reconcileWithMetadata(whitelist: Array<string>, metadataSet: Set<string
 }
 
 /**
- * Strip `output_config.format` (structured outputs) from the wire when the
- * resolved model's upstream is known to disallow the `structured_outputs`
- * partner feature — learned reactively (negotiation `partnerFeatures` cache) OR
- * declared by the operator (config `anthropic.partner_strip_features`). Same
- * config ∪ cache union as betas.
+ * Pre-emptively strip disallowed partner-model features from the wire, driven by
+ * the shared {@link PARTNER_FEATURE_STRIP_TARGETS} table (the same table the
+ * reactive `structured-outputs-rejection-retry` strategy consults). For each
+ * feature in the table, strip its wire field when the resolved model's upstream
+ * is known to disallow it — learned reactively (negotiation `partnerFeatures`
+ * cache) OR declared by the operator (config `anthropic.partner_strip_features`).
+ * Same config ∪ cache union as betas.
  *
- * Some GHC accounts route to Vertex AI where the org policy
+ * Today the table holds exactly `structured_outputs → output_config.format`:
+ * some GHC accounts route to Vertex AI where the org policy
  * `constraints/vertexai.allowedPartnerModelFeatures` blocks `structured_outputs`
- * for the partner Claude model, returning a 400. The
- * `structured-outputs-rejection-retry` strategy records the incompatibility in
- * the cache; declaring it in config makes the strip first-request-durable. Either
- * way this step pre-emptively strips the format so requests don't re-pay a failed
- * upstream round-trip. `effort` (and any other `output_config` key) is preserved;
- * an emptied `output_config` is dropped entirely.
+ * for the partner Claude model, returning a 400. The rejection strategy records
+ * the incompatibility in the cache; declaring it in config makes the strip
+ * first-request-durable. Either way this step pre-emptively strips the field so
+ * requests don't re-pay a failed upstream round-trip. Sibling `output_config`
+ * keys (e.g. `effort`) are preserved; an emptied `output_config` is dropped.
+ * Adding a partner feature is a table (data) change — this loop needs no edit.
  */
-function stripUnsupportedStructuredOutputs(wire: Record<string, unknown>): void {
-  const outputConfig = wire.output_config as OutputConfig | undefined
-  if (!outputConfig || outputConfig.format === undefined) return
-
+function stripUnsupportedPartnerFeatures(wire: Record<string, unknown>): void {
   const modelName = wire.model as string | undefined
   if (!modelName) return
-  const disallowed =
-    isAnthropicPartnerFeatureUnsupported(modelName, STRUCTURED_OUTPUTS_PARTNER_FEATURE)
-    || collectStripPartnerFeatures(modelName).has(STRUCTURED_OUTPUTS_PARTNER_FEATURE)
-  if (!disallowed) return
 
-  const { format: _format, ...rest } = outputConfig
-  if (Object.keys(rest).length > 0) {
-    wire.output_config = rest
-  } else {
-    delete wire.output_config
+  const declared = collectStripPartnerFeatures(modelName)
+  for (const feature of Object.keys(PARTNER_FEATURE_STRIP_TARGETS)) {
+    const disallowed = isAnthropicPartnerFeatureUnsupported(modelName, feature) || declared.has(feature)
+    if (!disallowed) continue
+    if (stripPartnerFeatureFromWire(wire, feature)) {
+      consola.debug(`[DirectAnthropic] Stripped partner feature "${feature}" wire field (disallowed, model=${modelName})`)
+    }
   }
-  consola.debug(`[DirectAnthropic] Stripped output_config.format (structured_outputs disallowed, model=${modelName})`)
 }
 
 /**

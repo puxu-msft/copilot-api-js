@@ -24,12 +24,12 @@ import {
 } from "~/lib/anthropic/request-preparation"
 
 describe("ANTHROPIC_PREPARE_STEPS order contract", () => {
-  test("steps are named and ordered: coerce → adjust → clamp → strip-structured-outputs → rewrite-memory → cache → headers", () => {
+  test("steps are named and ordered: coerce → adjust → clamp → strip-partner-features → rewrite-memory → cache → headers", () => {
     expect(ANTHROPIC_PREPARE_STEPS.map((s) => s.name)).toEqual([
       "coerce-thinking",
       "adjust-budget",
       "clamp-effort",
-      "strip-structured-outputs",
+      "strip-partner-features",
       "rewrite-memory-tool",
       "cache-control",
       "build-headers",
@@ -60,7 +60,7 @@ describe("ANTHROPIC_PREPARE_STEPS order contract", () => {
       "coerce-thinking",
       "adjust-budget",
       "clamp-effort",
-      "strip-structured-outputs",
+      "strip-partner-features",
       "rewrite-memory-tool",
       "cache-control",
       "build-headers",
