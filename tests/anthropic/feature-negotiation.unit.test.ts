@@ -1,28 +1,79 @@
 import {
   //
+  afterAll,
   afterEach,
+  beforeAll,
   describe,
   expect,
   test,
 } from "bun:test"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 
 import {
   //
+  clearAnthropicFeatureNegotiationForTests,
   getStickyUndeferredTools,
   getSupportedEfforts,
   getUnsupportedFeatures,
   isAnthropicBetaUnsupported,
   isAnthropicFeatureUnsupported,
+  isSystemRejectModelLearned,
   isToolStickyUndeferred,
+  loadPersistedFeatureNegotiation,
   markAnthropicBetaUnsupported,
   markAnthropicFeatureUnsupported,
+  markSystemRejectModel,
   markToolUndeferred,
+  persistFeatureNegotiation,
   resetAnthropicFeatureNegotiationForTesting,
   setSupportedEfforts,
 } from "~/lib/anthropic/feature-negotiation"
+import { PATHS } from "~/lib/config/paths"
+
+// Sandbox the persisted path so mark()'s debounced persist and the golden
+// persist→reload never touch the real negotiation-states.json (this is an
+// explicit per-file override on top of the bunfig preload floor).
+let tmpDir = ""
+let realPath = ""
+
+beforeAll(async () => {
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "neg-system-reject-"))
+  realPath = PATHS.NEGOTIATION_STATES
+  PATHS.NEGOTIATION_STATES = path.join(tmpDir, "negotiation-states.json")
+})
 
 afterEach(async () => {
   await resetAnthropicFeatureNegotiationForTesting()
+})
+
+afterAll(async () => {
+  PATHS.NEGOTIATION_STATES = realPath
+  await fs.rm(tmpDir, { recursive: true, force: true })
+})
+
+describe("systemRejectModels (inline role:system rejection set)", () => {
+  test("mark then is — normalized membership, endpoint-scoped", () => {
+    clearAnthropicFeatureNegotiationForTests()
+    expect(isSystemRejectModelLearned("claude-sonnet-4.6")).toBe(false)
+    markSystemRejectModel("claude-sonnet-4.6")
+    expect(isSystemRejectModelLearned("claude-sonnet-4.6")).toBe(true)
+    // normalization: dotted vs dashed are the same key
+    expect(isSystemRejectModelLearned("claude-sonnet-4-6")).toBe(true)
+    // an unrelated model is not marked
+    expect(isSystemRejectModelLearned("claude-opus-4.8")).toBe(false)
+  })
+
+  test("golden: persist → reload keeps the learned reject model across restart", async () => {
+    clearAnthropicFeatureNegotiationForTests()
+    markSystemRejectModel("claude-haiku-4.5")
+    await persistFeatureNegotiation()
+    clearAnthropicFeatureNegotiationForTests()
+    expect(isSystemRejectModelLearned("claude-haiku-4.5")).toBe(false) // wiped
+    await loadPersistedFeatureNegotiation()
+    expect(isSystemRejectModelLearned("claude-haiku-4.5")).toBe(true) // survived
+  })
 })
 
 describe("feature negotiation cache — features", () => {

@@ -68,6 +68,9 @@ const stickyUndeferredTools = new Map<string, Set<string>>()
 const unsupportedServerTools = new Map<string, Set<string>>()
 /** partnerFeatures[modelKey] = Set<partner feature name> the upstream org policy disallows */
 const unsupportedPartnerFeatures = new Map<string, Set<string>>()
+/** Models whose upstream rejects inline role:"system", LEARNED reactively (config
+ *  twin = state.systemRejectModels; effective set = config ∪ this learned set). */
+const learnedSystemRejectModels = new Set<string>()
 
 function modelKey(modelId: string): string {
   return `${copilotBaseUrl(state)}|anthropic-messages|${normalizeForMatching(modelId)}`
@@ -219,6 +222,30 @@ export function isAnthropicPartnerFeatureUnsupported(modelId: string, feature: s
 }
 
 // ============================================================================
+// Learned inline role:"system" rejection set
+// ============================================================================
+
+/**
+ * Mark a model whose upstream rejects inline `role:"system"` messages (learned
+ * reactively from an `Unexpected role "system"` 400). A 1-level membership set —
+ * the fact is a per-model boolean, no sub-dimension. Observed SYMPTOM, not a
+ * Vertex assertion (Vertex is this account's known cause but is not asserted).
+ * The config twin is `state.systemRejectModels`; the effective reject set unions
+ * both (see resolveSystemSanitizeMode).
+ */
+export function markSystemRejectModel(modelId: string): void {
+  if (!learnedSystemRejectModels.has(modelKey(modelId))) {
+    learnedSystemRejectModels.add(modelKey(modelId))
+    schedulePersist()
+  }
+}
+
+/** Whether inline role:"system" was learned-rejected for the given model. */
+export function isSystemRejectModelLearned(modelId: string): boolean {
+  return learnedSystemRejectModels.has(modelKey(modelId))
+}
+
+// ============================================================================
 // Persistence
 // ============================================================================
 
@@ -230,6 +257,7 @@ interface NegotiationStateFile {
   deferredTools: Record<string, Array<string>>
   serverTools: Record<string, Array<string>>
   partnerFeatures: Record<string, Array<string>>
+  systemRejectModels: Array<string>
 }
 
 function snapshotSetMap(map: Map<string, Set<string>>): Record<string, Array<string>> {
@@ -276,6 +304,7 @@ export const persistFeatureNegotiation = createSerializedAsyncFn(async () => {
     deferredTools: snapshotSetMap(stickyUndeferredTools),
     serverTools: snapshotSetMap(unsupportedServerTools),
     partnerFeatures: snapshotSetMap(unsupportedPartnerFeatures),
+    systemRejectModels: [...learnedSystemRejectModels],
   }
   try {
     await atomicWriteJson(PATHS.NEGOTIATION_STATES, data)
@@ -309,6 +338,19 @@ function loadEffortMap(target: Map<string, Array<string>>, source: Record<string
   return n
 }
 
+/** Load a flat Array<string> into a Set (1-level set persistence — mirrors loadSetMap but for a single set). */
+function loadStringSet(target: Set<string>, source: Array<string> | undefined): number {
+  if (!Array.isArray(source)) return 0
+  let n = 0
+  for (const v of source) {
+    if (typeof v === "string" && v.length > 0) {
+      target.add(v)
+      n++
+    }
+  }
+  return n
+}
+
 export async function loadPersistedFeatureNegotiation(): Promise<void> {
   try {
     const raw = await fs.readFile(PATHS.NEGOTIATION_STATES, "utf8")
@@ -321,6 +363,7 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
       + loadSetMap(stickyUndeferredTools, data.deferredTools)
       + loadSetMap(unsupportedServerTools, data.serverTools)
       + loadSetMap(unsupportedPartnerFeatures, data.partnerFeatures)
+      + loadStringSet(learnedSystemRejectModels, data.systemRejectModels)
     if (total > 0) {
       consola.info(`[FeatureNegotiation] Loaded ${total} negotiated entries from ${PATHS.NEGOTIATION_STATES}`)
     }
@@ -342,6 +385,7 @@ function clearNegotiationMaps(): void {
   stickyUndeferredTools.clear()
   unsupportedServerTools.clear()
   unsupportedPartnerFeatures.clear()
+  learnedSystemRejectModels.clear()
 }
 
 export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void> {
@@ -363,7 +407,7 @@ export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void
  * does NOT drain/persist — a per-test afterEach should not incur sandbox disk
  * I/O on every test, and there is nothing worth flushing (the maps are about to
  * be wiped). Cancels the debounce timer so no enqueued persist fires after the
- * next test starts, then clears the 6 maps. Use the async drain-reset only when
+ * next test starts, then clears the 7 collections. Use the async drain-reset only when
  * a caller explicitly needs the cleared state flushed to disk.
  */
 export function clearAnthropicFeatureNegotiationForTests(): void {
