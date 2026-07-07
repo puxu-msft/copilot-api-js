@@ -1,6 +1,6 @@
 # 反应式 per-model 上游拒绝协商 —— 实施计划
 
-> **实施状态（2026-07-07）：** ✅ **P1 已实施完成**（分支 `feat/reactive-upstream-rejection-p1`，9 commits，逐 Task subagent review + whole-branch opus review 判 READY，全触及测试套件 1902 pass/0 fail、typecheck+lint 绿）。**待合并 master**（主工作树有未提交 config.yaml 与 Task 3 重叠，合并前需先处理）。P2–P4 待 P1 合并后开始。各 phase kick-off prompt 在 [prompts/](prompts/)。冻结设计事实源 = [RFC](../../rfc/2026-07-07-reactive-upstream-rejection-negotiation.md)。
+> **实施状态（2026-07-07）：** ✅ **P1 已合并 master**（merge commit `3de64acd`；逐 Task subagent review + whole-branch opus review 判 READY，全触及测试套件 1902 pass/0 fail、typecheck+lint 绿）。P2–P4 待开始（各 phase kick-off prompt 在 [prompts/](prompts/)，依赖 DAG 见 [prompts/README.md](prompts/README.md)）。冻结设计事实源 = [RFC](../../rfc/2026-07-07-reactive-upstream-rejection-negotiation.md)。
 
 
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐 Task 实施。步骤用 checkbox（`- [ ]`）跟踪。本项目纪律见 [项目 CLAUDE.md](../../../CLAUDE.md) 与 [prompts/README.md](prompts/README.md) 的「集中红线」；本文档是唯一 how-to 事实源，冻结的设计事实源是 [RFC](../../rfc/2026-07-07-reactive-upstream-rejection-negotiation.md)。
