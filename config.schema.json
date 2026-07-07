@@ -283,6 +283,16 @@
                 }
               ]
             },
+            "strip_thinking_on_reject": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "thinking_block_sanitize": {
               "anyOf": [
                 {

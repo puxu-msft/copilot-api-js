@@ -235,6 +235,14 @@ export const AnthropicConfigSchema = z
      */
     thinking_destack_strategy: nullableEnum(["passthrough", "insert_text", "move_blocks"] as const),
     /**
+     * Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400
+     * that L1 de-stack (`thinking_destack_strategy`) did not preempt: strip ALL
+     * `thinking`/`redacted_thinking` blocks from the echoed history and retry the
+     * turn once. `true` (default) enables the one-shot strip-and-retry; `false`
+     * lets the 400 surface unmodified.
+     */
+    strip_thinking_on_reject: nullableBoolean(),
+    /**
      * Drop corrupt thinking blocks before sending upstream. Validity is decided
      * by the SIGNATURE, not the thinking text — a legitimate *encrypted* thinking
      * block has empty text but a valid signature, and is always kept.

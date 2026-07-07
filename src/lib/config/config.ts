@@ -528,6 +528,9 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.thinking_destack_strategy !== undefined) {
       setAnthropicBehavior({ thinkingDestackStrategy: a.thinking_destack_strategy })
     }
+    if (a.strip_thinking_on_reject !== undefined) {
+      setAnthropicBehavior({ stripThinkingOnReject: a.strip_thinking_on_reject })
+    }
     if (a.thinking_block_sanitize !== undefined) {
       setAnthropicBehavior({ thinkingBlockSanitizeCheck: a.thinking_block_sanitize })
     }

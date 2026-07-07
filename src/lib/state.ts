@@ -339,6 +339,16 @@ export interface State {
   readonly thinkingDestackStrategy: ThinkingDestackStrategy
 
   /**
+   * Reactive strip-all fallback (L2) for the GHC "thinking ... cannot be
+   * modified" 400 that L1 de-stack ({@link thinkingDestackStrategy}) did not
+   * preempt (config `anthropic.strip_thinking_on_reject`). When `true` (default)
+   * the `poisoned-thinking-retry` strategy strips ALL thinking/redacted_thinking
+   * blocks from the echoed history and retries the turn once; `false` lets the
+   * 400 surface unmodified.
+   */
+  readonly stripThinkingOnReject: boolean
+
+  /**
    * Coerce legacy `thinking.type="enabled"` to `"adaptive"` when the target
    * model only supports adaptive thinking (e.g. opus 4.6/4.7/4.8). Solves the
    * upstream 400 raised when an old client sends `enabled` + `budget_tokens` to
@@ -1023,6 +1033,7 @@ export function setAnthropicBehavior(
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
       | "thinkingDestackStrategy"
+      | "stripThinkingOnReject"
       | "coerceAdaptiveThinking"
       | "systemMessagesSanitize"
       | "systemRejectModels"
@@ -1240,6 +1251,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
   thinkingDestackStrategy: "move_blocks" as ThinkingDestackStrategy,
+  stripThinkingOnReject: true,
   coerceAdaptiveThinking: "basic" as false | "basic" | "best_effort",
   systemMessagesSanitize: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectMode: "as_user" as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
@@ -1366,6 +1378,7 @@ export function resetConfigManagedState(): void {
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
     thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+    stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
     coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
     systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
     systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
@@ -1503,6 +1516,7 @@ const mutableState: MutableState = {
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
   thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+  stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
   coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
   systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
   systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,

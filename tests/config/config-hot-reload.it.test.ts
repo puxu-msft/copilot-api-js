@@ -468,6 +468,14 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
   },
   {
+    configKey: "anthropic.strip_thinking_on_reject",
+    stateKey: "stripThinkingOnReject",
+    // Sample MUST differ from the default (true) so R1/R2 prove the wiring.
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
+  },
+  {
     configKey: "anthropic.thinking_block_sanitize",
     stateKey: "thinkingBlockSanitizeCheck",
     sampleYamlValue: "empty_any",
