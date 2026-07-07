@@ -23,11 +23,8 @@ import {
   test,
 } from "bun:test"
 
-import {
-  //
-  createPoisonedThinkingRetryStrategy,
-  isThinkingModifiedRejection,
-} from "~/lib/codec/anthropic/poisoned-thinking-retry"
+import { isThinkingModifiedRejection } from "~/lib/anthropic/poisoned-thinking-match"
+import { createPoisonedThinkingRetryStrategy } from "~/lib/codec/anthropic/poisoned-thinking-retry"
 import {
   //
   classifyError,

@@ -12,6 +12,11 @@
  * `adaptLegacyStrategy`): L3 later reads `env.ctx` in `onResolved`, which the
  * legacy adapter drops. The remediation itself is payload-only (strip-all
  * thinking) so it needs no ctx here.
+ *
+ * The shared match core (`matchesThinkingModifiedRejection`) lives in the neutral
+ * `~/lib/anthropic/poisoned-thinking-match` leaf so the legacy twin
+ * (`~/lib/request/strategies/poisoned-thinking-retry`) imports it DOWNWARD — no
+ * request/strategies → codec inversion.
  */
 
 import type { ApiError } from "~/lib/error"
@@ -26,59 +31,9 @@ import type {
 } from "~/lib/pipeline/types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
+import { matchesThinkingModifiedRejection } from "~/lib/anthropic/poisoned-thinking-match"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
-import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
-
-/**
- * Guarded match for the "thinking blocks ... cannot be modified" 400. Requires
- * BOTH the "cannot be modified" cue AND a thinking-block token, so it never
- * fires on unrelated 400s (e.g. `Extra inputs are not permitted`) nor on the
- * legacy `thinking.type.enabled` rejection (which has no "cannot be modified"
- * phrase and is owned by `legacy-thinking-retry`).
- */
-export function isThinkingModifiedRejection(message: string): boolean {
-  const lower = message.toLowerCase()
-  if (!lower.includes("cannot be modified")) return false
-  return lower.includes("thinking") || lower.includes("redacted_thinking")
-}
-
-/**
- * Resolve the human-readable rejection message from a classified 400. The
- * classifier's `message` is usually the terse HTTPError message; the detailed
- * `... cannot be modified ...` text lives in the raw response body. Try the
- * classified message first, then fall back to the raw HTTPError's JSON
- * `error.message` (or the raw text if it isn't JSON).
- *
- * Exported so the legacy `RetryStrategy<TPayload>` twin (web_search path,
- * request/strategies/poisoned-thinking-retry.ts) reuses the EXACT extraction —
- * the two pipeline paths must never drift on which bodies count as poisoned.
- */
-export function extractThinkingRejectMessage(error: ApiError): string | null {
-  if (isThinkingModifiedRejection(error.message)) return error.message
-  if (!(error.raw instanceof HTTPError)) return null
-  const text = error.raw.responseText
-  try {
-    return (JSON.parse(text) as { error?: { message?: string } }).error?.message ?? text
-  } catch {
-    // Body isn't JSON — match against the raw text.
-    return text
-  }
-}
-
-/**
- * Error-level predicate: is this classified error the "thinking ... cannot be
- * modified" 400? Combines the class gate (`bad_request` / 400), the body-aware
- * message extraction, and the guarded phrase matcher into ONE decision shared by
- * BOTH strategy shells — the native env strategy below and the legacy twin. Each
- * shell ANDs its own `state.stripThinkingOnReject` gate + per-request one-shot
- * guard on top; keeping this core in one place stops the two paths from drifting.
- */
-export function matchesThinkingModifiedRejection(error: ApiError): boolean {
-  if (error.type !== "bad_request" || error.status !== 400) return false
-  const msg = extractThinkingRejectMessage(error)
-  return msg ? isThinkingModifiedRejection(msg) : false
-}
 
 /**
  * Reactive fallback for the "thinking ... cannot be modified" 400 that L1 de-stack

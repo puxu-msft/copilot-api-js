@@ -155,5 +155,8 @@ describe("poisoned-thinking-retry wiring — legacy web_search path", () => {
     if (action.action !== "retry") return
     expect(hasThinking(action.payload)).toBe(false)
     expect(action.meta?.strippedThinkingOnReject).toBe(1)
+    // Reliability symmetry with the native path: the corrective strip-all retry
+    // draws from the learning budget so it can't be starved under a retry pileup.
+    expect(action.learning).toBe(true)
   })
 })
