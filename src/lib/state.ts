@@ -349,6 +349,22 @@ export interface State {
   readonly stripThinkingOnReject: boolean
 
   /**
+   * L3 durable quarantine master switch (config `anthropic.poisoned_thinking_quarantine`).
+   * When `true` (default), a successful L2 strip-all retry records the offending
+   * `(session, agent)` conversation in a sidecar store so later turns are stripped
+   * proactively; `false` keeps only the per-turn L2 reaction (no remembering).
+   */
+  readonly poisonedThinkingQuarantine: boolean
+
+  /**
+   * Sliding TTL (hours) of an L3 quarantine entry (config
+   * `anthropic.poisoned_thinking_ttl_hours`, default `72`). Read once when the
+   * quarantine store singleton is first built; a conversation quiet longer than
+   * this since its last poison hit drops out of the quarantine.
+   */
+  readonly poisonedThinkingTtlHours: number
+
+  /**
    * Coerce legacy `thinking.type="enabled"` to `"adaptive"` when the target
    * model only supports adaptive thinking (e.g. opus 4.6/4.7/4.8). Solves the
    * upstream 400 raised when an old client sends `enabled` + `budget_tokens` to
@@ -1034,6 +1050,8 @@ export function setAnthropicBehavior(
       | "thinkingBlockSanitizeCheck"
       | "thinkingDestackStrategy"
       | "stripThinkingOnReject"
+      | "poisonedThinkingQuarantine"
+      | "poisonedThinkingTtlHours"
       | "coerceAdaptiveThinking"
       | "systemMessagesSanitize"
       | "systemRejectModels"
@@ -1252,6 +1270,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
   thinkingDestackStrategy: "move_blocks" as ThinkingDestackStrategy,
   stripThinkingOnReject: true,
+  poisonedThinkingQuarantine: true,
+  poisonedThinkingTtlHours: 72,
   coerceAdaptiveThinking: "basic" as false | "basic" | "best_effort",
   systemMessagesSanitize: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectMode: "as_user" as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
@@ -1379,6 +1399,8 @@ export function resetConfigManagedState(): void {
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
     thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
     stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
+    poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
+    poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
     coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
     systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
     systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
@@ -1517,6 +1539,8 @@ const mutableState: MutableState = {
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
   thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
   stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
+  poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
+  poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
   coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
   systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
   systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,

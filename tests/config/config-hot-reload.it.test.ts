@@ -476,6 +476,22 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
   },
   {
+    configKey: "anthropic.poisoned_thinking_quarantine",
+    stateKey: "poisonedThinkingQuarantine",
+    // Sample MUST differ from the default (true) so R1/R2 prove the wiring.
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
+  },
+  {
+    configKey: "anthropic.poisoned_thinking_ttl_hours",
+    stateKey: "poisonedThinkingTtlHours",
+    // Sample MUST differ from the default (72) so R1/R2 prove the wiring.
+    sampleYamlValue: "24",
+    expectedStateValue: 24,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
+  },
+  {
     configKey: "anthropic.thinking_block_sanitize",
     stateKey: "thinkingBlockSanitizeCheck",
     sampleYamlValue: "empty_any",

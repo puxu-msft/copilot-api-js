@@ -293,6 +293,27 @@
                 }
               ]
             },
+            "poisoned_thinking_quarantine": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "poisoned_thinking_ttl_hours": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "thinking_block_sanitize": {
               "anyOf": [
                 {

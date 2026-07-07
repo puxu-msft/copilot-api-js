@@ -531,6 +531,12 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.strip_thinking_on_reject !== undefined) {
       setAnthropicBehavior({ stripThinkingOnReject: a.strip_thinking_on_reject })
     }
+    if (a.poisoned_thinking_quarantine !== undefined) {
+      setAnthropicBehavior({ poisonedThinkingQuarantine: a.poisoned_thinking_quarantine })
+    }
+    if (a.poisoned_thinking_ttl_hours !== undefined) {
+      setAnthropicBehavior({ poisonedThinkingTtlHours: a.poisoned_thinking_ttl_hours })
+    }
     if (a.thinking_block_sanitize !== undefined) {
       setAnthropicBehavior({ thinkingBlockSanitizeCheck: a.thinking_block_sanitize })
     }
