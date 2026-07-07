@@ -36,7 +36,9 @@ import type {
   Attempt,
   EffectiveRequest,
   HeadersCapture,
+  HistoryEffectiveSourceLeg,
   HistoryEntryData,
+  HistoryUpstreamRequestLeg,
   OriginalRequest,
   PartialResponseInfo,
   RepairOutcomeRecord,
@@ -93,6 +95,43 @@ export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outb
     system: (wp.payload as Record<string, unknown> | undefined)?.system,
     payload: wp.payload,
     headers: wp.headers,
+  }
+}
+
+/**
+ * Project an effective request into the NEW `effectiveSource` leg (RFC §3).
+ * `body` = env.body verbatim (SoT); model/messageCount/messages/system are the
+ * NON-authoritative structured index of that body (§2.3), for search-index and
+ * other structured consumers. Parallel to `legFromEffective` (the deprecated
+ * `effectiveRequest` builder) during migration; wired into the producer in P2.
+ */
+export function legFromEffectiveSource(ep: EffectiveRequest): HistoryEffectiveSourceLeg {
+  return {
+    format: ep.format,
+    model: ep.model,
+    messageCount: ep.messages.length,
+    messages: ep.messages,
+    system: (ep.payload as Record<string, unknown> | undefined)?.system,
+    body: ep.payload,
+  }
+}
+
+/**
+ * Project a wire request into the NEW `upstreamRequest` leg (RFC §3). Unlike a
+ * naive headers+body wire leg, this ALSO carries the structured
+ * messages/model/system projection (R4-FAIL-A) — the `rewrites-req` search facet
+ * reads `messages` off this leg, so omitting it would silently break that search
+ * facet. Parallel to `legFromWire` (the deprecated `outboundRequest` builder)
+ * during migration; wired into the producer in P2.
+ */
+export function legFromUpstreamRequest(wp: WireRequest): HistoryUpstreamRequestLeg {
+  return {
+    format: wp.format,
+    model: wp.model,
+    messages: wp.messages,
+    system: (wp.payload as Record<string, unknown> | undefined)?.system,
+    headers: wp.headers,
+    body: wp.payload,
   }
 }
 

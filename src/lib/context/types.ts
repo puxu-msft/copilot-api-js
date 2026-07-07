@@ -4,6 +4,7 @@ import type {
   EndpointType,
   ForwardedResponse,
   PipelineInfo,
+  PreprocessInfo,
   RequestLifecycleState,
   RequestTransport,
   SanitizationInfo,
@@ -134,6 +135,105 @@ export interface HeadersCapture {
   response?: Record<string, string>
 }
 
+// ─── New client/upstream leg DTOs (RFC 2026-07-07 §3) — producer-side (unknown-based) ───
+// Parallel to the history-store owner interfaces (ModelInfo/ClientRequestLeg/…), which use
+// the structured `MessageContent` type; these use `unknown` for messages/body/system to match
+// what the producer (context/request.ts) actually carries. Coexist with the legacy legs during
+// migration; producers/consumers switch over in later phases.
+
+/** Model identity + billing (parent key, RFC §3). */
+export interface HistoryModelInfo {
+  requested?: string
+  resolved?: string
+  multiplier?: number
+}
+
+/** Client → Proxy request leg (RFC §3). `body` is the raw inbound payload. */
+export interface HistoryClientRequestLeg {
+  method?: string
+  path?: string
+  format?: EndpointType
+  headers?: Record<string, string>
+  body?: unknown
+  stream?: boolean
+}
+
+/** Proxy → Client response leg, first-class (RFC §2.1). `status?` new capture. */
+export interface HistoryClientResponseLeg {
+  status?: number
+  headers?: Record<string, string>
+  body?: unknown
+  sseEvents?: Array<SseEventRecord>
+}
+
+/**
+ * Per-attempt effective source leg (RFC §3). `body` = env.body verbatim (SoT); the
+ * structured projections index it non-authoritatively (§2.3). `pipeline` = this
+ * attempt's truncation/sanitization/messageMapping.
+ */
+export interface HistoryEffectiveSourceLeg {
+  format?: EndpointType
+  model?: string
+  messageCount?: number
+  messages?: Array<unknown>
+  system?: unknown
+  body?: unknown
+  pipeline?: PipelineInfo
+}
+
+/**
+ * Per-attempt upstream request leg (RFC §3, R4-FAIL-A): messages/model/system
+ * projection ALONGSIDE headers+body — `rewrites-req` search reads `messages` here.
+ */
+export interface HistoryUpstreamRequestLeg {
+  format?: EndpointType
+  model?: string
+  messages?: Array<unknown>
+  system?: unknown
+  headers?: Record<string, string>
+  body?: unknown
+}
+
+/**
+ * Per-attempt upstream response leg (RFC §3). Every settled attempt carries one
+ * (success = real; failure = synthesized verdict via P2.5). `success` = complete
+ * 2xx with normal protocol termination; client-facing outcome is `entry.state`.
+ */
+export interface HistoryUpstreamResponseData {
+  success: boolean
+  status?: number
+  headers?: Record<string, string>
+  trailers?: Record<string, string>
+  body?: unknown
+  rawBody?: string
+  sseEvents?: Array<SseEventRecord>
+  usage?: ResponseData["usage"]
+  stopReason?: string
+  model?: string
+  responseId?: string
+  copilotAnnotations?: Array<CopilotAnnotations>
+  toolSearchRequests?: number
+}
+
+/**
+ * Derived (recompute-only) + auxiliary index projections (RFC §3, R4-WARN-E).
+ * `derived` recomputes from `attempts` (three-point sync invariant); `aux` free-evolving.
+ */
+export interface HistoryIndexProjection {
+  derived?: {
+    responseSuccess?: boolean
+    currentStrategy?: string
+    failureReason?: string
+    attemptCount?: number
+  }
+  aux?: {
+    requestBytes?: number
+    responseBytes?: number
+    previewText?: string
+    warningMessages?: Array<WarningMessage>
+  }
+}
+
 /** Serialized form of a completed request (decoupled from history store) */
 export interface HistoryEntryData {
   id: string
@@ -162,7 +262,22 @@ export interface HistoryEntryData {
   transport?: RequestTransport
   warningMessages?: Array<WarningMessage>
 
-  /** Client → Proxy: the client's raw inbound request. */
+  // ─── New client/upstream leg model (RFC §3) — coexists with legacy legs below ───
+  /** Model identity + billing (parent key, RFC §3). */
+  model?: HistoryModelInfo
+  /** Client → Proxy request leg (RFC §3). */
+  clientRequest?: HistoryClientRequestLeg
+  /** Proxy → Client response leg, first-class (RFC §2.1). */
+  clientResponse?: HistoryClientResponseLeg
+  /** One-time inbound preprocessing hoisted to entry level (RFC §4). */
+  preprocessing?: PreprocessInfo
+  /** Derived (recompute-only) + auxiliary index projections (RFC §3). */
+  _index?: HistoryIndexProjection
+
+  /**
+   * @deprecated 迁移中，见 RFC §4；P4 删除。→ `clientRequest.{body,headers,stream}` + `model.requested`.
+   * Client → Proxy: the client's raw inbound request.
+   */
   inboundRequest: {
     model?: string
     messages?: Array<unknown>
@@ -174,6 +289,7 @@ export interface HistoryEntryData {
     thinking?: unknown
   }
 
+  /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `attempts[final].effectiveSource`. */
   effectiveRequest?: {
     model?: string
     format?: EndpointType
@@ -183,7 +299,10 @@ export interface HistoryEntryData {
     payload?: unknown
   }
 
-  /** Proxy → Upstream: the final wire request sent upstream. */
+  /**
+   * @deprecated 迁移中，见 RFC §4；P4 删除。→ `attempts[final].upstreamRequest`.
+   * Proxy → Upstream: the final wire request sent upstream.
+   */
   outboundRequest?: {
     model?: string
     format?: EndpointType
@@ -195,12 +314,13 @@ export interface HistoryEntryData {
     headers?: Record<string, string>
   }
 
-  /** Upstream → Proxy: the upstream-original response. */
+  /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `attempts[final].upstreamResponse`. Upstream → Proxy: the upstream-original response. */
   outboundResponse?: ResponseData
-  /** Proxy → Client: response as actually forwarded to the client, post-rewrite. */
+  /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `clientResponse`. Proxy → Client: response as actually forwarded to the client, post-rewrite. */
   inboundResponse?: ForwardedResponse
   truncation?: TruncationInfo
   pipelineInfo?: PipelineInfo
+  /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `attempts[final].upstreamResponse.sseEvents`. */
   sseEvents?: Array<SseEventRecord>
   httpHeaders?: {
     inboundRequest?: Record<string, string>
@@ -216,10 +336,24 @@ export interface HistoryEntryData {
     durationMs: number
     transport?: RequestTransport
     error?: string
+    /** New capture (RFC §4): attempt wall-clock start; producer wires in P4. */
+    startedAt?: number
+    /** New capture (RFC §4): rate-limit wait before this attempt; producer wires in P4. */
+    waitMs?: number
+    // ─── New per-attempt legs (RFC §3) — coexist with the deprecated legs below ───
+    /** Proxy-side effective source (env.body verbatim + this attempt's pipeline). */
+    effectiveSource?: HistoryEffectiveSourceLeg
+    /** Proxy → Upstream wire request (with messages/model/system projection, R4-FAIL-A). */
+    upstreamRequest?: HistoryUpstreamRequestLeg
+    /** Upstream → Proxy response (settled attempts recompute-safe verdict). */
+    upstreamResponse?: HistoryUpstreamResponseData
+    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `effectiveSource.pipeline`. */
     truncation?: TruncationInfo
+    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `effectiveSource.pipeline`. */
     sanitization?: SanitizationInfo
+    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `effectiveSource.messageCount`. */
     effectiveMessageCount?: number
-    /** Full per-attempt bodies (Bug 3): preserved for every attempt, not just the final one. */
+    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `effectiveSource`. Full per-attempt bodies (Bug 3): preserved for every attempt, not just the final one. */
     effectiveRequest?: {
       model?: string
       format?: EndpointType
@@ -228,6 +362,7 @@ export interface HistoryEntryData {
       system?: unknown
       payload?: unknown
     }
+    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `upstreamRequest`. */
     wireRequest?: {
       model?: string
       format?: EndpointType
@@ -238,6 +373,7 @@ export interface HistoryEntryData {
       /** RFC Phase 3: ② per-attempt outbound request headers. */
       headers?: Record<string, string>
     }
+    /** @deprecated 迁移中，见 RFC §4；P4 删除。→ `upstreamResponse`. */
     response?: ResponseData
     /** Per-attempt upstream-original SSE frames (L2 buffered retry / D1) — present on FAILED attempts only. */
     sseEvents?: Array<SseEventRecord>
