@@ -1,6 +1,6 @@
 # Spec: thinking「cannot be modified」400 三层防治（de-stack + reactive + session quarantine）
 
-- 状态：draft **v4（三层叠加：结构 de-stack 主修〔保留全部 thinking〕 + reactive strip-all 兜底 + session-key/TTL 持久 quarantine）**。待 subagent 复审 → 用户 review → 实施计划。
+- 状态：draft **v4.1（已过复审 #04，1 CRITICAL + 数 HIGH/MEDIUM 全落实）**。待用户 review → 实施计划。复审：[#04 v4 de-stack](2026-07-07-thinking-signature-quarantine-review-2026-07-07-04.md)。关键修正：de-stack = **终末 pass**（放 processToolBlocks 之后，否则分隔符被删自伤 400）；分隔符只计非空块；de-stack 自带计量不进减法残差 + messageMapping 标合成块；**幂等 + byte-lock 守卫**；L3 strip-all 排 L1 前；更新 protection docstring（相邻性非受保护属性）+ 组合测试；合成标记 sentinel + history 标注。
 - 日期：2026-07-07
 - 演进：v1（signature+索引+二分，废）→ v2/v2.1（会话级 strip-all + TTL）→ v3（纯结构 collapse，**因过度简化被否**）→ **v4（三层：结构精确 de-stack + reactive 兜底 + 会话 quarantine 全保留）**。评审存证 [#01](2026-07-07-thinking-signature-quarantine-review-2026-07-07-01.md)/[#02](2026-07-07-thinking-signature-quarantine-review-2026-07-07-02.md)/[#03](2026-07-07-thinking-signature-quarantine-review-2026-07-07-03.md)；PoC [exp/thinking-signature-quarantine/README.md](../../exp/thinking-signature-quarantine/README.md)。
 - 相关 skill：`ghc-anthropic-upstream`、`empirical-verification`、`persistence-async-invariants`、`history-sqlite-schema`、`test-isolation`。
@@ -43,10 +43,12 @@ L1 精确修高发毒（**de-stack 保留全部 thinking**）；L2 接住漏网�
   1. **`passthrough`（透传）**：L1 不动、原样发出，靠 L2/L3 反应式接住。（= L1 关）
   2. **`insert_text`（直接插入文本块）**：相邻 thinking 之间**纯插入非空合成 text 块**分隔，真实块**原位不动**（不重排 tool_use）。最简、不触碰真实块顺序（免 tool 顺序疑虑），代价 = 每对相邻 thinking 加一个合成 text 块。
   3. **`move_blocks`（后移块，默认）**：用消息内**真实**非 thinking 块（text/tool_use）交错分隔相邻 thinking（`[T0,O0,T1,O1,…]`，thinking 首块居首、thinking 组与非thinking 组各自保序）；**真实块不足**（`#thinking > #非thinking+1`）时**补充**非空合成 text 块（永不丢弃 thinking）。零/最少合成污染。
-- **分隔符须非空非纯空白**：实测空 `""`/空格 `" "` text 块被上游 strip 掉、thinking 又相邻仍 400（`pb_sep_empty/space`），非空标记 `"[thinking continued]"` → 200（`pb_sep_marker`）；合成标记打可辨识前缀（`synthetic-must-be-distinguishable`）。
-- 三策略共性：**保序**（thinking 块内容不改、相对序不变）、只动「存在相邻 thinking」的消息（合法 interleaved / 单 thinking / 非 thinking 块不动）、**保留全部 thinking**（insert_text 与 move_blocks 均不丢；仅 passthrough 不处理）。
-- 纯函数（payload-only），接入 [sanitizeAnthropicMessages](../../src/lib/anthropic/sanitize/index.ts#L79)（`processToolBlocks` 之前）——**一处覆盖 driver S3 + web_search 双路径**（评审 A6）。按 `type` 判定覆盖 redacted（评审 A2）。PoC 证交错保留全部 → 200（`[T,text,T,tool,T,tool]` 等 = move_blocks；`[T,marker,T,marker,T,…]` = insert_text），部分相邻仍 400（`pb_P1/P2`）。
-- **注（跨消息边界）**：本 pass 在**单条消息内**去相邻；GHC 折叠后若某消息末 thinking 与下条消息首 thinking 相邻（罕见，消息间通常有 user/tool_result 隔开）未覆盖 → 由 L2/L3 兜底。impl 期可评估是否需跨消息去相邻。
+- **分隔符须非空非纯空白**：实测空 `""`/空格 `" "` text 块被上游 strip 掉、thinking 又相邻仍 400（`pb_sep_empty/space`），非空标记 `"[thinking continued]"` → 200（`pb_sep_marker`）；合成标记打可辨识前缀（`synthetic-must-be-distinguishable`）。**充分条件 `#thinking ≤ #非thinking+1` 只计 trim 后非空的非 thinking 块**（空 text 会被 `filterEmptyAnthropicTextBlocks` + 上游双重 strip，不能算分隔符，评审 CRITICAL）。
+- 三策略共性：**保序**（thinking 块内容不改、相对序不变）、只动「存在相邻 thinking」的消息（合法 interleaved / 单 thinking / 非 thinking 块不动）、**保留全部 thinking**（insert_text 与 move_blocks 均不丢；仅 passthrough 不处理）、**幂等**（`de-stack(de-stack(x))==de-stack(x)` 逐字节——`resanitize` 每次 retry 重跑全链含 de-stack，[codec.ts:322](../../src/lib/codec/anthropic/codec.ts#L322)，必须严格幂等）。
+- 纯函数（payload-only），接入 [sanitizeAnthropicMessages](../../src/lib/anthropic/sanitize/index.ts#L79)——**必须是最后一个 pass**（`processToolBlocks` + finalize 的 `filterEmptyAnthropicTextBlocks` **之后**，评审 CRITICAL）。原因：de-stack 依赖分隔符不被后续 pass 删；放在 `processToolBlocks` 之前会被其删孤儿 tool_use（[tool-blocks.ts:91](../../src/lib/anthropic/sanitize/tool-blocks.ts#L91) 无 thinking guard）/删空 text 破坏分隔 → thinking 重新相邻 → 自伤 400；且放最后才能看见「processToolBlocks 删孤儿**新生**的相邻」（`[T,orphanTool,T]`→删→`[T,T]`）并修复。**一处放置覆盖 driver S3 + web_search 双路径**（web_search orchestrator 直调 sanitizeAnthropicMessages，评审确认 A6）。按 `type∈{thinking,redacted_thinking}` 判定覆盖 redacted（评审 A2）。
+- **stats/mapping 感知**（评审 HIGH）：de-stack **插入/重排**块 → 破坏 `finalize` 的减法残差模型（[result.ts:44](../../src/lib/anthropic/sanitize/result.ts#L44) 假设 block 只减不增）。故 de-stack 在 finalize **算完减法 stats 之后**作用于终态 messages、**自带独立计量项**（insertedMarkers / reorderedBlocks / 采用策略）不进减法残差；messageMapping（[request-rewrite-adapter.ts:75](../../src/lib/codec/anthropic/request-rewrite-adapter.ts#L75)）须把合成标记标为「无 baseline 源」防 history 归因错位。
+- **合成标记落地**（评审 MEDIUM）：固定 **sentinel 常量**（无歧义、不像真实产出）；进上游 wire（上游只收纯 text 无元数据）故 **history 侧标注为合成**（synthetic-must-be-distinguishable ADR）+ telemetry 单独计数。cache 断点（插标记可能移 prompt cache 边界致该轮 miss，仅对否则 400 的毒请求、净正，记 docs）。
+- **注（跨消息边界）**：本 pass 在**单条消息内**去相邻；GHC 折叠后跨消息 thinking 相邻**是否真发生 PoC 未证**（消息间通常有 user/tool_result 隔开）→ impl 期 :4141 专门探针量化，决定是否 L1 就做跨消息（否则靠 L2 每轮 400+重试，评审 MEDIUM）。
 - config（见 §3.5）+ telemetry（de-stack 消息数 / 重排块数 / 插入合成标记数 / 采用策略）。
 
 ### 3.2 L2 + L3 反应式策略 `src/lib/codec/anthropic/poisoned-thinking-retry.ts`
@@ -67,6 +69,7 @@ L1 精确修高发毒（**de-stack 保留全部 thinking**）；L2 接住漏网�
 - **必须独立 env-aware `RequestRewrite`**（`apply:(env)=>读 env.ctx.sessionId/agentId`），非塞进无 ctx 的纯 `sanitizeAnthropicMessages`（评审 MEDIUM-1）；同构 `createAnthropicSanitizeRewrite`、挂 `codec.getRequestRewrites()`（[request-rewrite-adapter.ts:63](../../src/lib/codec/anthropic/request-rewrite-adapter.ts#L63)）。
 - **双接入点**（web_search 整体绕过 driver，[handler-v4.ts:211](../../src/routes/messages/handler-v4.ts#L211)「codec bypassed」，评审 MEDIUM-2）：driver RequestRewrite + web_search handler 侧显式剥。
 - 注：L3 主动过滤命中即整体 strip-all（比 L1 de-stack 更宽）；对已知中毒会话不必依赖 L1 精确性。
+- **L1/L3 出站 order 钉死**（评审 MEDIUM）：L3 主动 strip-all 命中时**排在 L1 de-stack 之前**——strip 掉全部 thinking 后 L1 自然 no-op；反序则 L1 先插合成标记、strip-all 只删 thinking 会**残留孤儿标记**。
 
 ### 3.5 配置
 - `anthropic.thinking_destack_strategy`（enum `passthrough`/`insert_text`/`move_blocks`，默认 `move_blocks`，L1）——见 §3.1 三策略。
@@ -91,11 +94,12 @@ L1 精确修高发毒（**de-stack 保留全部 thinking**）；L2 接住漏网�
 - **已知残留**（评审 LOW-2）：活跃长会话被 compact 掉毒块后 L3 仍剥至 TTL 过期；**不加自愈探针**（会在健康请求引发 400 RTT）；空明文低伤害 + TTL 兜底。
 
 ## 6. 测试（TDD）
-- **L1 单元（三策略）**：`move_blocks`：`[T,T,T,text,toolA,toolB]`→`[T,text,T,tool,T,tool]`（保留全部 3 块、无合成）；真实块不足（全 thinking 消息 `[T,T,T]`）→ 补非空合成标记。`insert_text`：`[T,T,T,text,tools]`→`[T,marker,T,marker,T,text,tools]`（真实块原位、插 2 合成标记）。`passthrough`：不动。共性：`[T,tool,T,tool]` 已非相邻不动；单 T 不动；redacted 相邻同样处理；thinking 内容/相对序不变；空/空白合成标记无效（回归钉死）；user 消息不动；**split 不修**（GHC 折回，钉死不采纳）。
+- **L1 单元（三策略）**：`move_blocks`：`[T,T,T,text,toolA,toolB]`→`[T,text,T,tool,T,tool]`（保留全部 3 块、无合成）；真实块不足（全 thinking 消息 `[T,T,T]`）→ 补非空合成标记。`insert_text`：`[T,T,T,text,tools]`→`[T,marker,T,marker,T,text,tools]`（真实块原位、插 2 合成标记）。`passthrough`：不动。共性：`[T,tool,T,tool]` 已非相邻不动；单 T 不动；`[redacted,redacted]` 相邻同样处理；thinking 内容/相对序不变；空/空白合成标记无效（回归钉死）；充分条件计数只计非空块；user 消息不动；**split 不修**（GHC 折回，钉死不采纳）。
+- **L1 守卫（评审必修）**：**幂等**——`de-stack(de-stack(x))` 逐字节 == `de-stack(x)`；**no-op 严格性**——无相邻 thinking 的既有 sanitize fixture 逐字节不变、**跑绿既有 byte-lock 套件**（`tests/pipeline/payload-rewrite-registry.it.test.ts`）；**终末序**——构造「孤儿 tool_use 夹在两 thinking 间」，验证 de-stack 在 `processToolBlocks` 删孤儿**之后**运行、修掉新生相邻（放前则漏防→回归钉死）；**de-stack×protection 组合**——thinking-bearing 消息经 de-stack 后 thinking 内容/相对序不变、merge/strip 谓词行为不变。
 - **L2 单元**：matcher 正/负样本（`thinking.type.enabled` 负命中）；strip-all 移除 thinking+redacted 保留其余。
 - **L3 存储**：createDatabase 独立库（不碰 history 单例）；水合/写穿透/TTL 滑动+purge/never-throw；**临时目录 DI**（Bun `os.homedir()` 忽略 `env.HOME`，记忆 `feedback_tests_never_touch_real_env`）；key 归一（主 agent→'')。
-- **集成**：L1 de-stack 请求直接 200（不触发 L2/L3）；非-L1 毒 首轮 400→L2→200→L3 落库、次轮 L3 主动 strip-all+TTL 刷新；无 session_id 降级；三 config 门禁；**接线守卫**——原生 env-strategy onResolved 从 env.ctx 读 (session,agent) 落库（锚 HIGH-1）+ web_search 主动过滤命中（锚 MEDIUM-2）+ v4 直连激活（handler-v4 路径，非 legacy）。
-- **实证**：PoC 已证 交错保留全部/strip-all→200、确定性 400、split 不修、空分隔符无效；impl 期 :4141 复跑守 matcher + de-stack 规则。
+- **集成**：L1 de-stack 请求直接 200（不触发 L2/L3）；非-L1 毒 首轮 400→L2→200→L3 落库、次轮 L3 主动 strip-all+TTL 刷新；**L1/L3 order**——L3 命中时 strip-all 在 L1 前、无残留孤儿标记；无 session_id 降级；三 config 门禁；**接线守卫**——原生 env-strategy onResolved 从 env.ctx 读 (session,agent) 落库（锚 HIGH-1）+ web_search 主动过滤命中（锚 MEDIUM-2）+ v4 直连激活（handler-v4 路径，非 legacy）。
+- **实证**：PoC 已证 交错保留全部/strip-all→200、确定性 400、split 不修、空分隔符无效；impl 期 :4141 复跑守 matcher + de-stack 规则、补 **latest-assistant 毒消息 de-stack→200** 探针（PoC 元凶是中间消息，latest 未单独隔离）+ **跨消息相邻**探针（量化 gap）。
 
 ## 7. 暂缓（记 docs/todo）
 - 非 CC 客户端 durable key（无 `x-claude-code-session-id`→每轮 L2 一次 400+重试；内容寻址 fallback key 暂缓，评审 MEDIUM-3；若做：store key 泛化 `header-key|content-hash-key`）。
@@ -104,7 +108,7 @@ L1 精确修高发毒（**de-stack 保留全部 thinking**）；L2 接住漏网�
 
 ## 8. 与现有机制关系
 - 与 `thinkingBlockSanitizeCheck`/`thinking_block_message_policy`/`thinking-signature-compat` 正交。
-- 与 `thinking-protection.ts`（防误改 thinking）不冲突：L1 de-stack **不删除 thinking**（保留全部，仅交错重排+可能插合成分隔），故不触碰 protection「thinking 须原样保留」的红线（保序、不改内容、不丢块）；impl 需核对 de-stack 的重排在 protection 语义下被允许（相邻布局非「必须保留」的属性，thinking 内容/相对序均不变）。
+- 与 `thinking-protection.ts`（防误改 thinking）**能共存，但需一条架构硬约束**（评审修正「天然正交」的轻率判断）：de-stack 满足 protection 全部红线（thinking 内容 verbatim / 相对序不变 / 不丢块），protection 谓词 gate 的是 merge/strip pass 不阻止 de-stack。**真冲突在反方向**——block-level 模型假设「非 thinking 块可被任意 pass 自由删」（[thinking-protection.ts:11-13](../../src/lib/anthropic/thinking-protection.ts#L11)），而 de-stack 反过来依赖分隔符不被后续删 → 解法 = **de-stack 放最后**（§3.1 CRITICAL）。**必须同步更新 [thinking-protection.ts:8-15](../../src/lib/anthropic/thinking-protection.ts#L8) docstring**：显式声明「相邻性非受保护属性、de-stack 可在 thinking 间插非 thinking 块」（否则未来维护者依 docstring 判 de-stack 违规、或在其后再加删块 pass 重引 CRITICAL）+ 加 de-stack×protection 组合测试。
 - PoC 证根因上游 intrinsic（非我方 sanitize），故不替代任何「别碰 latest-assistant」保护。
 
 ## 9. 路线图定位：L3 是「会话级连续请求处理」的基础能力（重要未来分支）
