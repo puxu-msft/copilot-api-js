@@ -96,6 +96,38 @@ export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outb
   }
 }
 
+/**
+ * Synthesize a per-attempt ResponseData from a FAILED attempt that carries an
+ * upstream HTTPError body but no captured `response` (the common shape for a
+ * mid-flight failure that a later retry recovered from — the pipeline records
+ * only `attempt.error`). This routes the upstream error body into the same
+ * per-attempt response stage the serialize path already persists via
+ * `resp.rawBody` (from `responseText`), so a retry-recovered request keeps
+ * attempt[N]'s failure body for post-hoc audit — symmetric with how `fail()`
+ * records the TERMINAL attempt's error body on `outboundResponse` (RFC gap H,
+ * the reactive-learning evidence).
+ *
+ * Only synthesized when the attempt's error `raw` is an HTTPError with a
+ * non-empty `responseText`: that body IS the upstream's error response for the
+ * attempt. Non-HTTP failures (network errors, aborts) carry no upstream body, so
+ * their `attempt.error` message stays the only record (no empty response stage).
+ * Returns undefined when there is nothing to record.
+ */
+function synthesizeAttemptErrorResponse(a: Attempt): ResponseData | undefined {
+  if (!a.error) return undefined
+  const raw = a.error.raw
+  if (!(raw instanceof HTTPError) || !raw.responseText) return undefined
+  return {
+    success: false,
+    model: a.wireRequest?.model ?? a.effectiveRequest?.model ?? "",
+    usage: { input_tokens: 0, output_tokens: 0 },
+    error: a.error.message,
+    status: a.error.status,
+    content: null,
+    responseText: raw.responseText,
+  }
+}
+
 export function createRequestContext(opts: {
   endpoint: EndpointType
   sessionId?: string
@@ -681,7 +713,11 @@ export function createRequestContext(opts: {
           effectiveMessageCount: a.effectiveRequest?.messages.length,
           effectiveRequest: a.effectiveRequest ? legFromEffective(a.effectiveRequest) : undefined,
           wireRequest: a.wireRequest ? legFromWire(a.wireRequest) : undefined,
-          response: a.response ?? undefined,
+          // A failed attempt has no captured `response`; fall back to a response
+          // synthesized from its upstream HTTPError body so the failure body
+          // persists on THIS attempt's response stage (RFC gap H). No-op when the
+          // attempt already has a response or its error carries no upstream body.
+          response: a.response ?? synthesizeAttemptErrorResponse(a),
           sseEvents: a.sseEvents,
           responseHeaders: a.responseHeaders,
         }))
