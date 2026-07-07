@@ -20,10 +20,15 @@ export function toQuarantineKey(sessionId: string | undefined, agentId: string |
 }
 
 /**
- * Stable, collision-safe string encoding of a {@link QuarantineKey}, used as the
- * map/cache key. The store (Task 9) hydrates its in-memory cache with this exact
- * encoding, so any change here must stay in lockstep with the store.
+ * Deterministic, collision-safe string encoding of a {@link QuarantineKey}, used
+ * as the map/cache key. JSON-encoding the `(sessionId, agentId)` pair keeps the
+ * structure unambiguous even when a field contains a space, quote, or other
+ * delimiter-like character, so no two distinct pairs can ever collide.
+ *
+ * The store (Task 9) MUST hydrate its in-memory cache through this exact
+ * function so the cache keys and the DB rows agree; any change here must stay in
+ * lockstep with the store.
  */
 export function keyString(k: QuarantineKey): string {
-  return `${k.sessionId} ${k.agentId}`
+  return JSON.stringify([k.sessionId, k.agentId])
 }
