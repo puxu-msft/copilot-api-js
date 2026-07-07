@@ -14,7 +14,6 @@ import {
   matchesPolicyState,
   matchesPremium,
   matchesRestrictedTo,
-  sortModels,
 } from "@/lib/model-filters"
 
 const m = (over: Record<string, unknown> = {}): Model =>
@@ -67,16 +66,5 @@ describe("filterModels", () => {
   it("vendor + premium combine (AND)", () => {
     const list = [m({ id: "a", vendor: "Anthropic", billing: { is_premium: true } }), m({ id: "b", vendor: "Anthropic", billing: { is_premium: false } })]
     expect(filterModels(list, { ...EMPTY_FILTERS, vendor: "Anthropic", premium: true }, never).map((x) => x.id)).toEqual(["a"])
-  })
-})
-
-describe("sortModels", () => {
-  it("sorts by billing multiplier desc", () => {
-    const list = [m({ id: "lo", billing: { multiplier: 1 } }), m({ id: "hi", billing: { multiplier: 3 } })]
-    expect(sortModels(list, "billing", true, () => 0).map((x) => x.id)).toEqual(["hi", "lo"])
-  })
-  it("sorts by requests7d via reqFor", () => {
-    const list = [m({ id: "a" }), m({ id: "b" })]
-    expect(sortModels(list, "requests7d", true, (id) => (id === "b" ? 9 : 1)).map((x) => x.id)).toEqual(["b", "a"])
   })
 })

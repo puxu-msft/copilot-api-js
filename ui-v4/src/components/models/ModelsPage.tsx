@@ -1,11 +1,19 @@
+import type { SortingState } from "@tanstack/react-table"
+
 import {
   //
+  useCallback,
   useEffect,
   useMemo,
   useState,
 } from "react"
 import { useSearchParams } from "react-router-dom"
 
+import {
+  //
+  augmentRows,
+  sortModelRows,
+} from "@/components/models/model-table-columns"
 import { ModelDetail } from "@/components/models/ModelDetail"
 import { ModelsColumnMenu } from "@/components/models/ModelsColumnMenu"
 import { ModelsFilterBar } from "@/components/models/ModelsFilterBar"
@@ -25,9 +33,7 @@ import {
   //
   EMPTY_FILTERS,
   filterModels,
-  sortModels,
   type ModelFilters,
-  type ModelSortKey,
 } from "@/lib/model-filters"
 import {
   //
@@ -53,7 +59,9 @@ export function ModelsPage() {
   const [raw, setRaw] = useState(false)
   const [columns, setColumns] = useState<ModelColumnVisibility>(loadColumns)
   const [filters, setFilters] = useState<ModelFilters>(EMPTY_FILTERS)
-  const [sort, setSort] = useState<{ key: ModelSortKey; desc: boolean }>({ key: "id", desc: false })
+  // Sort state is lifted here (controlled) so the CSV export can sort the same rows
+  // with the same shared accessor as the table — TanStack owns the sort inside the table.
+  const [sorting, setSorting] = useState<SortingState>([{ id: "id", desc: false }])
 
   useEffect(() => {
     localStorage.setItem(COLUMNS_KEY, JSON.stringify(columns))
@@ -75,16 +83,29 @@ export function ModelsPage() {
   // is filtered out of the current table.
   const selectedId = searchParams.get("model")
   const selectedModel = useMemo(() => (selectedId ? (models.find((m) => m.id === selectedId) ?? null) : null), [models, selectedId])
-  const select = (id: string) => {
-    const next = new URLSearchParams(searchParams)
-    next.set("model", id)
-    setSearchParams(next)
-  }
-  const clearSelection = () => {
-    const next = new URLSearchParams(searchParams)
-    next.delete("model")
-    setSearchParams(next, { replace: true })
-  }
+  // `select` is passed as ModelsTable's `onSelect`, which feeds the memoized column
+  // builder — keep its identity stable (useCallback) so the columns/row-model aren't
+  // rebuilt on every ModelsPage render (filters/sorting/selection all re-render this).
+  const select = useCallback(
+    (id: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev)
+        next.set("model", id)
+        return next
+      })
+    },
+    [setSearchParams],
+  )
+  const clearSelection = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete("model")
+        return next
+      },
+      { replace: true },
+    )
+  }, [setSearchParams])
 
   const options = useMemo(
     () => ({
@@ -96,21 +117,20 @@ export function ModelsPage() {
     [models],
   )
 
-  const visible = useMemo(() => {
-    const filtered = filterModels(models, filters, hasTelemetry)
-    return sortModels(filtered, sort.key, sort.desc, (id) => telemetryFor(id)?.last7d?.requestCount ?? 0)
-  }, [models, filters, hasTelemetry, sort, telemetryFor])
+  // Filter only — TanStack owns sorting inside the table (state lifted above so the
+  // CSV export can reproduce the exact same order).
+  const visible = useMemo(() => filterModels(models, filters, hasTelemetry), [models, filters, hasTelemetry])
 
   const onChange = (patch: Partial<ModelFilters>) => setFilters((f) => ({ ...f, ...patch }))
-  const onSort = (key: ModelSortKey) =>
-    setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: key === "context" || key === "output" || key === "billing" || key === "requests7d" }))
   const toggleColumn = (key: ModelColumnKey) => setColumns((c) => ({ ...c, [key]: !c[key] }))
   const resetColumns = () => setColumns({ ...DEFAULT_COLUMN_VISIBILITY })
 
-  // Export the CURRENT filtered/sorted view (spec §7); telemetry columns use the
-  // same normalized join as the table.
+  // Export the CURRENT filtered/sorted view (spec §7): sort the filtered rows with
+  // the SAME shared accessor + SortingState the table uses, so the CSV row order is
+  // identical to the on-screen table. Telemetry columns use the same normalized join.
   const exportCsv = () => {
-    const csv = modelsToCsv(visible, telemetryFor)
+    const sortedModels = sortModelRows(augmentRows(visible, telemetryFor), sorting).map((r) => r.model)
+    const csv = modelsToCsv(sortedModels, telemetryFor)
     triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8" }), "models.csv")
   }
 
@@ -159,12 +179,11 @@ export function ModelsPage() {
                 <div className="p-4 text-[#888]">No models match the current filters.</div>
               : <ModelsTable
                   models={visible}
-                  columns={columns}
+                  columnVisibility={columns}
                   telemetryFor={telemetryFor}
                   maxRequests7d={maxRequests7d}
-                  sortKey={sort.key}
-                  sortDesc={sort.desc}
-                  onSort={onSort}
+                  sorting={sorting}
+                  onSortingChange={setSorting}
                   selectedId={selectedId}
                   onSelect={select}
                 />

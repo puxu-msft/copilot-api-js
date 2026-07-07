@@ -143,12 +143,14 @@ describe("ModelsPage", () => {
     expect(screen.getByRole("region", { name: /Model detail: claude-opus-4\.8/i })).toBeDefined()
   })
 
-  it("sortable headers are keyboard-operable and expose aria-sort", () => {
+  it("sortable headers are keyboard-operable and expose aria-sort", async () => {
+    const user = userEvent.setup()
     renderPage()
     const vendorHeader = screen.getByRole("columnheader", { name: /Vendor/i })
     expect(vendorHeader.getAttribute("aria-sort")).toBe("none")
-    // The header's control is a real button (WCAG 2.1.1), and clicking it sorts.
-    fireEvent.click(screen.getByRole("button", { name: /Vendor/i }))
+    // The header's control is a real button (WCAG 2.1.1); clicking it drives
+    // TanStack's controlled sort (Vendor is a string column → ascending first).
+    await user.click(screen.getByRole("button", { name: /Vendor/i }))
     expect(vendorHeader.getAttribute("aria-sort")).toBe("ascending")
   })
 
@@ -160,6 +162,22 @@ describe("ModelsPage", () => {
     const [blob, filename] = vi.mocked(triggerDownload).mock.calls[0]
     expect(filename).toBe("models.csv")
     expect(blob.type).toContain("text/csv")
+  })
+
+  it("CSV export reflects the active sort order (spec §7: sorted view)", async () => {
+    const user = userEvent.setup()
+    vi.mocked(triggerDownload).mockClear()
+    renderPage()
+    // Default is id-asc (claude before gpt). Click Ctx twice → ascending (gpt=0
+    // context before claude=1M) → the CSV row order must flip to match the table.
+    await user.click(screen.getByRole("button", { name: /^Ctx/i }))
+    await user.click(screen.getByRole("button", { name: /^Ctx/i }))
+    fireEvent.click(screen.getByText("Export CSV"))
+    const [blob] = vi.mocked(triggerDownload).mock.calls[0]
+    const text = await blob.text()
+    const dataRows = text.split("\n").slice(1) // drop header
+    expect(dataRows[0].startsWith("gpt-5.5")).toBe(true)
+    expect(dataRows[1].startsWith("claude-opus-4.8")).toBe(true)
   })
 
   it("surfaces unmatched telemetry (no catalog model) rather than dropping it", () => {

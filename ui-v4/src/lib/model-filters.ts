@@ -57,38 +57,3 @@ export function filterModels(models: Array<Model>, filters: ModelFilters, hasTel
     return true
   })
 }
-
-export type ModelSortKey = "id" | "vendor" | "context" | "output" | "billing" | "requests7d"
-
-/** Stable sort by the given key. `reqFor(id)` supplies the requests(7d) value. */
-export function sortModels(models: Array<Model>, key: ModelSortKey, desc: boolean, reqFor: (id: string) => number): Array<Model> {
-  const val = (m: Model): string | number => {
-    switch (key) {
-      case "vendor": {
-        return m.vendor
-      }
-      case "context": {
-        return deriveCapabilities(m).contextWindow ?? 0
-      }
-      case "output": {
-        return deriveCapabilities(m).maxOutput ?? 0
-      }
-      case "billing": {
-        return m.billing?.multiplier ?? 0
-      }
-      case "requests7d": {
-        return reqFor(m.id)
-      }
-      default: {
-        return m.id
-      }
-    }
-  }
-  const sorted = [...models].sort((a, b) => {
-    const va = val(a)
-    const vb = val(b)
-    const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb))
-    return desc ? -cmp : cmp
-  })
-  return sorted
-}
