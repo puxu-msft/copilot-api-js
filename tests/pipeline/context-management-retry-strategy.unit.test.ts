@@ -64,6 +64,22 @@ describe("parseExtraInputsError", () => {
   test("returns null for unrelated messages", () => {
     expect(parseExtraInputsError("Invalid request body")).toBeNull()
   })
+
+  // C1 regression: the tightened lookbehind must NOT claim a DOTTED sub-path
+  // field (e.g. a rejected custom-tool field), which is not a top-level body
+  // field — otherwise body-field-rejection would swallow the error before the
+  // tool-field-rejection strategy (which CAN remediate the tools path) sees it.
+  test("does NOT match a dotted tool-path field (C1)", () => {
+    expect(parseExtraInputsError("tools.0.custom.eager_input_streaming: Extra inputs are not permitted")).toBeNull()
+  })
+
+  test("does NOT match a dotted nested message-path field (C1)", () => {
+    expect(parseExtraInputsError("messages.5.content.0.foo: Extra inputs are not permitted")).toBeNull()
+  })
+
+  test("still matches a genuine top-level field even when other text precedes it", () => {
+    expect(parseExtraInputsError('{"error":{"message":"context_management: Extra inputs are not permitted"}}')?.field).toBe("context_management")
+  })
 })
 
 describe("parseContextManagementExtraInputsError (deprecated)", () => {
