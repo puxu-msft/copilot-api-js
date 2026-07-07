@@ -47,7 +47,7 @@ let dir: string
 let store: ThinkingQuarantineStore
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "tsq-onresolved-"))
-  store = new ThinkingQuarantineStore(join(dir, "q.db"), 72 * 3600_000)
+  store = new ThinkingQuarantineStore(join(dir, "q.db"), () => 72 * 3600_000)
 })
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })

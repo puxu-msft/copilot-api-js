@@ -33,6 +33,10 @@ import {
  *   - **never-throw**: construction, `record`, and `touch` are wrapped so a
  *     broken/unwritable DB degrades to an in-memory-only cache (warn once) —
  *     the feature keeps working for the lifetime of the process.
+ *   - **live TTL (hot-reloadable)**: `ttlMs` is a thunk (`() => number`)
+ *     evaluated per `isPoisoned` call, NOT captured at construction. A
+ *     hot-reloaded `poisoned_thinking_ttl_hours` config edit therefore takes
+ *     effect immediately, without rebuilding the store or restarting.
  *
  * `createDatabase` does no PRAGMA/mkdir of its own, so this class self-inits:
  * `mkdir` the parent dir, set WAL + busy_timeout, and `CREATE TABLE IF NOT
@@ -41,12 +45,12 @@ import {
 export class ThinkingQuarantineStore {
   private db: SqliteDatabase | null = null
   private cache = new Map<string, number>() // keyString -> lastSeenAt (ms)
-  private readonly ttlMs: number
+  private readonly ttlMs: () => number
 
   // `dbPath` is a plain parameter, not a stored field: it is only needed during
   // self-init here. Parameter properties (`private readonly dbPath`) are barred
   // by tsconfig `erasableSyntaxOnly`.
-  constructor(dbPath: string, ttlMs: number) {
+  constructor(dbPath: string, ttlMs: () => number) {
     this.ttlMs = ttlMs
     try {
       mkdirSync(dirname(dbPath), { recursive: true })
@@ -80,10 +84,16 @@ export class ThinkingQuarantineStore {
     }
   }
 
-  /** True iff the key was recorded within the last `ttlMs`. Cache-only; never throws. */
+  /**
+   * True iff the key was recorded within the last `ttlMs`. The `ttlMs` thunk is
+   * evaluated LIVE here (per call), not captured at construction, so a
+   * hot-reloaded `poisoned_thinking_ttl_hours` edit takes effect immediately.
+   * Cache-only; never throws.
+   */
   isPoisoned(k: QuarantineKey, now = Date.now()): boolean {
     const last = this.cache.get(keyString(k))
-    return last !== undefined && now - last <= this.ttlMs
+    const ttlMs = this.ttlMs()
+    return last !== undefined && now - last <= ttlMs
   }
 
   /**
