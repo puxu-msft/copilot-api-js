@@ -368,6 +368,12 @@ export const AnthropicConfigSchema = z
     effort_overrides: z.record(z.string(), z.array(z.string())).optional(),
     beta_strip_headers: z.record(z.string(), z.array(z.string())).optional(),
     partner_strip_features: z.record(z.string(), z.array(z.string())).optional(),
+    // Custom-tool top-level field names to strip / keep (model-name pattern → field list;
+    // `"*"` = all models). tool_strip_fields ADDS to the built-in default
+    // (`eager_input_streaming`) + reactive learned cache; tool_keep_fields SUBTRACTS
+    // (the reversibility escape hatch — e.g. re-enable a field a future upstream supports).
+    tool_strip_fields: z.record(z.string(), z.array(z.string())).optional(),
+    tool_keep_fields: z.record(z.string(), z.array(z.string())).optional(),
     retry_reject_body_fields: z.record(z.string(), z.array(z.string())).optional(),
     // Tool-name-keyed (NOT model-keyed): keys are matched verbatim against the
     // tool name — must NOT go through normalizeModelKeyedRecord, which would
@@ -772,7 +778,8 @@ export type RecordMergeStrategy = "per-key" | "replace"
 export const RECORD_MERGE_STRATEGIES = new WeakMap<z.ZodType, RecordMergeStrategy>()
 
 RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
-// effort_overrides / beta_strip_headers / partner_strip_features / retry_reject_body_fields intentionally
+// effort_overrides / beta_strip_headers / partner_strip_features / tool_strip_fields /
+// tool_keep_fields / retry_reject_body_fields intentionally
 // omitted — they default to "replace": when the user sets one of these
 // tables, they take responsibility for the entire policy.
 

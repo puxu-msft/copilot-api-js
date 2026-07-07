@@ -580,6 +580,14 @@ export async function applyConfigToState(): Promise<Config> {
       setAnthropicBehavior({
         stripPartnerFeatures: normalizeModelKeyedRecord(a.partner_strip_features, "anthropic.partner_strip_features"),
       })
+    if (a.tool_strip_fields !== undefined)
+      setAnthropicBehavior({
+        stripToolFields: normalizeModelKeyedRecord(a.tool_strip_fields, "anthropic.tool_strip_fields"),
+      })
+    if (a.tool_keep_fields !== undefined)
+      setAnthropicBehavior({
+        keepToolFields: normalizeModelKeyedRecord(a.tool_keep_fields, "anthropic.tool_keep_fields"),
+      })
     if (a.retry_reject_body_fields !== undefined)
       setAnthropicBehavior({
         rejectBodyFields: normalizeModelKeyedRecord(a.retry_reject_body_fields, "anthropic.retry_reject_body_fields"),

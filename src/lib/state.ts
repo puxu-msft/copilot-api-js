@@ -717,6 +717,23 @@ export interface State {
   readonly stripPartnerFeatures: Record<string, Array<string>>
 
   /**
+   * Per-model custom-tool top-level field names to STRIP from every tool before
+   * sending upstream (e.g. `eager_input_streaming`). Keys are model-name
+   * substrings; `"*"` applies to all models. ADDITIVE — union'd with the built-in
+   * default (`eager_input_streaming`) and the runtime negotiation cache.
+   * Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly stripToolFields: Record<string, Array<string>>
+
+  /**
+   * Per-model custom-tool field names to KEEP (never strip) — the reversibility
+   * escape hatch that subtracts from the strip set, e.g. to re-enable a field a
+   * future upstream starts supporting. Keys are model-name substrings; `"*"`
+   * applies to all models. Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly keepToolFields: Record<string, Array<string>>
+
+  /**
    * Per-model body fields to strip from outbound payloads before sending
    * upstream. Keys are model-name substrings; the pseudo-key `"*"` applies
    * to all models. Built-in default: `{ "*": ["inference_geo"] }`.
@@ -798,6 +815,8 @@ function cloneState(source: MutableState): MutableState {
     effortsOverrides: { ...source.effortsOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
+    stripToolFields: cloneStripBetaHeaders(source.stripToolFields),
+    keepToolFields: cloneStripBetaHeaders(source.keepToolFields),
     rejectBodyFields: cloneStripBetaHeaders(source.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(source.decodeToolInputFields),
     disabledModels: [...source.disabledModels],
@@ -853,6 +872,12 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("stripPartnerFeatures" in patch) {
     cloned.stripPartnerFeatures = patch.stripPartnerFeatures ? cloneStripBetaHeaders(patch.stripPartnerFeatures) : undefined
+  }
+  if ("stripToolFields" in patch) {
+    cloned.stripToolFields = patch.stripToolFields ? cloneStripBetaHeaders(patch.stripToolFields) : undefined
+  }
+  if ("keepToolFields" in patch) {
+    cloned.keepToolFields = patch.keepToolFields ? cloneStripBetaHeaders(patch.keepToolFields) : undefined
   }
   if ("rejectBodyFields" in patch) {
     cloned.rejectBodyFields = patch.rejectBodyFields ? cloneStripBetaHeaders(patch.rejectBodyFields) : undefined
@@ -1016,6 +1041,8 @@ export function setAnthropicBehavior(
       | "effortsOverrides"
       | "stripBetaHeaders"
       | "stripPartnerFeatures"
+      | "stripToolFields"
+      | "keepToolFields"
       | "rejectBodyFields"
       | "decodeToolInputFields"
       | "decodeAllToolInputFields"
@@ -1288,6 +1315,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   effortsOverrides: {} as Record<string, Array<string>>,
   stripBetaHeaders: {} as Record<string, Array<string>>,
   stripPartnerFeatures: {} as Record<string, Array<string>>,
+  stripToolFields: {} as Record<string, Array<string>>,
+  keepToolFields: {} as Record<string, Array<string>>,
   rejectBodyFields: {} as Record<string, Array<string>>,
   decodeToolInputFields: { AskUserQuestion: ["questions"] } as Record<string, Array<string>>,
   decodeAllToolInputFields: false,
@@ -1353,6 +1382,8 @@ export function resetConfigManagedState(): void {
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
     stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
+    stripToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripToolFields),
+    keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
     rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
     decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
@@ -1490,6 +1521,8 @@ const mutableState: MutableState = {
   effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
   stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
   stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
+  stripToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripToolFields),
+  keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
   rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
   decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
   decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,

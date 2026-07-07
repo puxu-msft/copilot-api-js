@@ -618,6 +618,20 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures,
   },
   {
+    configKey: "anthropic.tool_strip_fields",
+    stateKey: "stripToolFields",
+    sampleYamlValue: `\n  "*":\n    - eager_input_streaming`,
+    expectedStateValue: { "*": ["eager_input_streaming"] },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripToolFields,
+  },
+  {
+    configKey: "anthropic.tool_keep_fields",
+    stateKey: "keepToolFields",
+    sampleYamlValue: `\n  "*":\n    - eager_input_streaming`,
+    expectedStateValue: { "*": ["eager_input_streaming"] },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.keepToolFields,
+  },
+  {
     configKey: "anthropic.retry_reject_body_fields",
     stateKey: "rejectBodyFields",
     sampleYamlValue: `\n  "*":\n    - thinking`,
