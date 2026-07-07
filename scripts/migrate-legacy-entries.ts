@@ -156,10 +156,10 @@ function listLegacyRows(): Array<LegacyRow> {
  * entry from the v1 blob, then re-inserts through the canonical v2 write path.
  * A failure logs + returns "fail" so the caller can keep the legacy table.
  */
-function migrateOne(r: LegacyRow, dryRun: boolean): "ok" | "fail" {
+async function migrateOne(r: LegacyRow, dryRun: boolean): Promise<"ok" | "fail"> {
   try {
     const entry = deserializeEntry(toEntryRow(r))
-    if (!dryRun) insertCompletedEntry(entry)
+    if (!dryRun) await insertCompletedEntry(entry)
     return "ok"
   } catch (err: unknown) {
     consola.warn(`[migrate] row ${r.id} failed:`, err)
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
     let fail = 0
     const t0 = Date.now()
     for (const r of rows) {
-      if (migrateOne(r, args.dryRun) === "ok") ok++
+      if ((await migrateOne(r, args.dryRun)) === "ok") ok++
       else fail++
     }
     consola.info(`[migrate] migrated ok=${ok} fail=${fail} in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
