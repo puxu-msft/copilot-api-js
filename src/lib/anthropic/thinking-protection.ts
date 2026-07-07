@@ -5,8 +5,8 @@
  * Their `signature` is **self-contained** — it encrypts the thinking content itself
  * (the upstream decrypts and rebuilds it) and does NOT bind to surrounding context or
  * array position (empirically verified against opus-4.8 via the live backend). The only
- * real constraints are: thinking blocks must be echoed **verbatim**, and consecutive
- * thinking sequences must not be **reordered**.
+ * real constraints are: thinking blocks must be echoed **verbatim**, kept in **relative
+ * order**, and never dropped — adjacency is NOT protected (see the de-stack note below).
  *
  * Protection is therefore **block-level**, not message-level: passes may freely clean up
  * around thinking blocks (drop orphan tools, downgrade server tools, edit/drop non-thinking

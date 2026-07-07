@@ -50,8 +50,9 @@ export type WarmupPolicy = "allow" | "reject" | "drop" | "fake"
  *
  * Empirically, Anthropic thinking `signature`s are self-contained — they encrypt the
  * thinking content itself (the upstream decrypts and rebuilds it) and do NOT bind to
- * surrounding context or array position. The only real constraint is that thinking blocks
- * must be echoed verbatim and consecutive thinking sequences must not be reordered.
+ * surrounding context or array position. The only real constraints are that thinking blocks
+ * must be echoed verbatim, kept in relative order, and never dropped (their adjacency,
+ * however, is not preserved — see `preserve` below).
  *
  * - `preserve` — Keep thinking blocks verbatim, preserve their relative order, and never
  *                drop them, but allow all surrounding cleanup (drop orphan tools, downgrade
