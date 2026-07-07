@@ -1,6 +1,6 @@
 # 反应式 per-model 上游拒绝协商 —— 实施计划
 
-> **实施状态（2026-07-07）：** 📝 **plan-ready，未开始实施。** P1 已过一轮对抗 subagent review（[plan-review-2026-07-07-1.md](plan-review-2026-07-07-1.md)，无 blocker、5 项 SHOULD-FIX 已折入）。P2–P4 待 P1 落地后开始。各 phase kick-off prompt 在 [prompts/](prompts/)。冻结设计事实源 = [RFC](../../rfc/2026-07-07-reactive-upstream-rejection-negotiation.md)。
+> **实施状态（2026-07-07）：** ✅ **P1 已实施完成**（分支 `feat/reactive-upstream-rejection-p1`，9 commits，逐 Task subagent review + whole-branch opus review 判 READY，全触及测试套件 1902 pass/0 fail、typecheck+lint 绿）。**待合并 master**（主工作树有未提交 config.yaml 与 Task 3 重叠，合并前需先处理）。P2–P4 待 P1 合并后开始。各 phase kick-off prompt 在 [prompts/](prompts/)。冻结设计事实源 = [RFC](../../rfc/2026-07-07-reactive-upstream-rejection-negotiation.md)。
 
 
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐 Task 实施。步骤用 checkbox（`- [ ]`）跟踪。本项目纪律见 [项目 CLAUDE.md](../../../CLAUDE.md) 与 [prompts/README.md](prompts/README.md) 的「集中红线」；本文档是唯一 how-to 事实源，冻结的设计事实源是 [RFC](../../rfc/2026-07-07-reactive-upstream-rejection-negotiation.md)。
@@ -835,7 +835,9 @@ import { createReactiveRejectionStrategy } from "~/lib/request/strategies/reacti
 import type { RetryStrategy } from "../pipeline"
 
 /** Upstream message for an inline role:"system" rejection. */
-const UNEXPECTED_SYSTEM_ROLE = /Unexpected role "system"/i
+const UNEXPECTED_SYSTEM_ROLE = /Unexpected role \\?"system\\?"/i
+// ⚠ 实施修正（Task 5 实测）：`HTTPError.responseText` 是**原始 JSON**，内层引号被反斜杠转义（`Unexpected role \"system\"`）。
+// 故正则须容忍可选反斜杠 `\\?"`，才能同时匹配 raw-escaped body 与 parsed message；朴素的 `/Unexpected role "system"/i` 在真实 wire 上不触发（正样本测试会抓到）。
 
 function extractErrorText(error: ApiError): string | null {
   if (UNEXPECTED_SYSTEM_ROLE.test(error.message)) return error.message

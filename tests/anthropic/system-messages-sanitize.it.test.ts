@@ -1,5 +1,6 @@
 import {
   //
+  afterEach,
   describe,
   expect,
   test,
@@ -11,8 +12,13 @@ import type {
   MessagesPayload,
 } from "~/types/api/anthropic"
 
+import { clearAnthropicFeatureNegotiationForTests } from "~/lib/anthropic/feature-negotiation"
 import { sanitizeInlineSystemMessages } from "~/lib/anthropic/sanitize/system-messages"
-import { setStateForTests } from "~/lib/state"
+import {
+  //
+  setAnthropicBehavior,
+  setStateForTests,
+} from "~/lib/state"
 
 import { autoRestoreState } from "../helpers/state-fixture"
 
@@ -228,6 +234,40 @@ describe("sanitizeAnthropicMessages × system_messages_sanitize", () => {
     setStateForTests({ systemMessagesSanitize: false })
     const payload: MessagesPayload = {
       model: "claude-sonnet-4",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "hi" }, { role: "system", content: "INLINE" } as MessageParam],
+    }
+    const result = sanitizeAnthropicMessages(payload)
+    expect(result.payload.messages.some((m) => m.role === "system")).toBe(true)
+    expect(result.stats.inlineSystemConverted).toBe(0)
+  })
+})
+
+// PROACTIVE side (feature A): the per-model effective sanitize mode. Even with the
+// global `system_messages_sanitize` OFF (false), a model in the reject set is
+// sanitized via `system_reject_mode`; a non-reject model is left untouched.
+describe("sanitizeAnthropicMessages × per-model reject set (proactive)", () => {
+  autoRestoreState()
+  afterEach(() => clearAnthropicFeatureNegotiationForTests())
+
+  test("reject-set model is sanitized despite global false", async () => {
+    const { sanitizeAnthropicMessages } = await import("~/lib/anthropic/sanitize")
+    setAnthropicBehavior({ systemMessagesSanitize: false, systemRejectModels: ["claude-sonnet-4.6"], systemRejectMode: "as_user" })
+    const payload: MessagesPayload = {
+      model: "claude-sonnet-4.6",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "hi" }, { role: "system", content: "INLINE" } as MessageParam, { role: "assistant", content: "yo" }],
+    }
+    const result = sanitizeAnthropicMessages(payload)
+    expect(result.payload.messages.some((m) => m.role === "system")).toBe(false)
+    expect(result.stats.inlineSystemConverted).toBe(1)
+  })
+
+  test("non-reject model is left untouched under global false (passthrough)", async () => {
+    const { sanitizeAnthropicMessages } = await import("~/lib/anthropic/sanitize")
+    setAnthropicBehavior({ systemMessagesSanitize: false, systemRejectModels: ["claude-sonnet-4.6"], systemRejectMode: "as_user" })
+    const payload: MessagesPayload = {
+      model: "claude-opus-4.8",
       max_tokens: 1024,
       messages: [{ role: "user", content: "hi" }, { role: "system", content: "INLINE" } as MessageParam],
     }

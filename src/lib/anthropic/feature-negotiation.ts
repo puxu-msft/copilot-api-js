@@ -28,6 +28,13 @@
  *                    `constraints/vertexai.allowedPartnerModelFeatures violated
  *                    ... disallowed feature X` 400. Currently only
  *                    `structured_outputs` (→ strip `output_config.format`).
+ *   - systemRejectModels — models whose upstream rejects inline `role:"system"`,
+ *                    learned from an `Unexpected role "system"` 400. An observed
+ *                    symptom, not a Vertex assertion. Stored as a flat model-key set.
+ *   - effortUnsupported — models that support NO reasoning effort at all, learned
+ *                    from a `does not support reasoning effort` 400 (no supported-
+ *                    values list). Independent membership set, mutually exclusive
+ *                    with `efforts`.
  *
  * Persisted to `PATHS.NEGOTIATION_STATES`.
  */
@@ -62,12 +69,18 @@ const unsupportedFeatures = new Map<string, Set<string>>()
 const unsupportedBetas = new Map<string, Set<string>>()
 /** efforts[modelName] = ordered list of supported effort values (low→max) */
 const supportedEfforts = new Map<string, Array<string>>()
+/** Models that support NO reasoning effort at all — an INDEPENDENT membership set,
+ *  keyed by `effortKey`, mutually exclusive with a `supportedEfforts` whitelist. */
+const effortUnsupportedModels = new Set<string>()
 /** deferredTools[modelKey] = Set<toolName> that must be un-deferred */
 const stickyUndeferredTools = new Map<string, Set<string>>()
 /** serverTools[modelKey] = Set<serverToolType prefix> the upstream rejects */
 const unsupportedServerTools = new Map<string, Set<string>>()
 /** partnerFeatures[modelKey] = Set<partner feature name> the upstream org policy disallows */
 const unsupportedPartnerFeatures = new Map<string, Set<string>>()
+/** Models whose upstream rejects inline role:"system", LEARNED reactively (config
+ *  twin = state.systemRejectModels; effective set = config ∪ this learned set). */
+const learnedSystemRejectModels = new Set<string>()
 
 function modelKey(modelId: string): string {
   return `${copilotBaseUrl(state)}|anthropic-messages|${normalizeForMatching(modelId)}`
@@ -129,6 +142,7 @@ export function isAnthropicBetaUnsupported(modelId: string, beta: string): boole
 
 export function setSupportedEfforts(modelName: string, supported: Array<string>): boolean {
   const key = effortKey(modelName)
+  effortUnsupportedModels.delete(key) // exclusivity: setting a whitelist revokes "unsupported"
   const existing = supportedEfforts.get(key)
   if (existing && existing.length === supported.length && existing.every((e, i) => e === supported[i])) {
     return false
@@ -147,6 +161,27 @@ export function getAllLearnedEfforts(): Record<string, Array<string>> {
   const out: Record<string, Array<string>> = {}
   for (const [key, value] of supportedEfforts) out[key] = [...value]
   return out
+}
+
+/**
+ * Mark a model as supporting NO reasoning effort at all (learned from a
+ * `does not support reasoning effort` 400, code invalid_reasoning_effort, WITHOUT
+ * a `supported values:[...]` list). Stored as an INDEPENDENT membership set —
+ * "known-unsupported" is membership, never an empty array — so snapshot/load is
+ * symmetric and the 5 empty-set collision sites of `supportedEfforts` do NOT apply
+ * (RFC §3.3 O5). Mutually exclusive with a supported whitelist for the same model.
+ */
+export function markEffortUnsupported(modelName: string): void {
+  const key = effortKey(modelName)
+  supportedEfforts.delete(key) // exclusivity: cannot be both unsupported and have a whitelist
+  if (!effortUnsupportedModels.has(key)) {
+    effortUnsupportedModels.add(key)
+    schedulePersist()
+  }
+}
+
+export function isEffortUnsupported(modelName: string): boolean {
+  return effortUnsupportedModels.has(effortKey(modelName))
 }
 
 // ============================================================================
@@ -219,6 +254,30 @@ export function isAnthropicPartnerFeatureUnsupported(modelId: string, feature: s
 }
 
 // ============================================================================
+// Learned inline role:"system" rejection set
+// ============================================================================
+
+/**
+ * Mark a model whose upstream rejects inline `role:"system"` messages (learned
+ * reactively from an `Unexpected role "system"` 400). A 1-level membership set —
+ * the fact is a per-model boolean, no sub-dimension. Observed SYMPTOM, not a
+ * Vertex assertion (Vertex is this account's known cause but is not asserted).
+ * The config twin is `state.systemRejectModels`; the effective reject set unions
+ * both (see resolveSystemSanitizeMode).
+ */
+export function markSystemRejectModel(modelId: string): void {
+  if (!learnedSystemRejectModels.has(modelKey(modelId))) {
+    learnedSystemRejectModels.add(modelKey(modelId))
+    schedulePersist()
+  }
+}
+
+/** Whether inline role:"system" was learned-rejected for the given model. */
+export function isSystemRejectModelLearned(modelId: string): boolean {
+  return learnedSystemRejectModels.has(modelKey(modelId))
+}
+
+// ============================================================================
 // Persistence
 // ============================================================================
 
@@ -227,9 +286,11 @@ interface NegotiationStateFile {
   features: Record<string, Array<string>>
   betas: Record<string, Array<string>>
   efforts: Record<string, Array<string>>
+  effortUnsupported: Array<string>
   deferredTools: Record<string, Array<string>>
   serverTools: Record<string, Array<string>>
   partnerFeatures: Record<string, Array<string>>
+  systemRejectModels: Array<string>
 }
 
 function snapshotSetMap(map: Map<string, Set<string>>): Record<string, Array<string>> {
@@ -273,9 +334,11 @@ export const persistFeatureNegotiation = createSerializedAsyncFn(async () => {
     features: snapshotSetMap(unsupportedFeatures),
     betas: snapshotSetMap(unsupportedBetas),
     efforts: snapshotEffortMap(supportedEfforts),
+    effortUnsupported: [...effortUnsupportedModels],
     deferredTools: snapshotSetMap(stickyUndeferredTools),
     serverTools: snapshotSetMap(unsupportedServerTools),
     partnerFeatures: snapshotSetMap(unsupportedPartnerFeatures),
+    systemRejectModels: [...learnedSystemRejectModels],
   }
   try {
     await atomicWriteJson(PATHS.NEGOTIATION_STATES, data)
@@ -309,6 +372,19 @@ function loadEffortMap(target: Map<string, Array<string>>, source: Record<string
   return n
 }
 
+/** Load a flat Array<string> into a Set (1-level set persistence — mirrors loadSetMap but for a single set). */
+function loadStringSet(target: Set<string>, source: Array<string> | undefined): number {
+  if (!Array.isArray(source)) return 0
+  let n = 0
+  for (const v of source) {
+    if (typeof v === "string" && v.length > 0) {
+      target.add(v)
+      n++
+    }
+  }
+  return n
+}
+
 export async function loadPersistedFeatureNegotiation(): Promise<void> {
   try {
     const raw = await fs.readFile(PATHS.NEGOTIATION_STATES, "utf8")
@@ -318,9 +394,11 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
       loadSetMap(unsupportedFeatures, data.features)
       + loadSetMap(unsupportedBetas, data.betas)
       + loadEffortMap(supportedEfforts, data.efforts)
+      + loadStringSet(effortUnsupportedModels, data.effortUnsupported)
       + loadSetMap(stickyUndeferredTools, data.deferredTools)
       + loadSetMap(unsupportedServerTools, data.serverTools)
       + loadSetMap(unsupportedPartnerFeatures, data.partnerFeatures)
+      + loadStringSet(learnedSystemRejectModels, data.systemRejectModels)
     if (total > 0) {
       consola.info(`[FeatureNegotiation] Loaded ${total} negotiated entries from ${PATHS.NEGOTIATION_STATES}`)
     }
@@ -339,9 +417,11 @@ function clearNegotiationMaps(): void {
   unsupportedFeatures.clear()
   unsupportedBetas.clear()
   supportedEfforts.clear()
+  effortUnsupportedModels.clear()
   stickyUndeferredTools.clear()
   unsupportedServerTools.clear()
   unsupportedPartnerFeatures.clear()
+  learnedSystemRejectModels.clear()
 }
 
 export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void> {
@@ -363,7 +443,7 @@ export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void
  * does NOT drain/persist — a per-test afterEach should not incur sandbox disk
  * I/O on every test, and there is nothing worth flushing (the maps are about to
  * be wiped). Cancels the debounce timer so no enqueued persist fires after the
- * next test starts, then clears the 6 maps. Use the async drain-reset only when
+ * next test starts, then clears the 8 collections. Use the async drain-reset only when
  * a caller explicitly needs the cleared state flushed to disk.
  */
 export function clearAnthropicFeatureNegotiationForTests(): void {

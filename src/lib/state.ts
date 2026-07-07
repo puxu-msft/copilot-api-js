@@ -352,6 +352,23 @@ export interface State {
   readonly systemMessagesSanitize: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
 
   /**
+   * Config-declared set of models whose upstream STRICT backend rejects inline
+   * `role:"system"` messages (observed symptom — Vertex is the known cause on
+   * this account but NOT asserted). A substring set matched against the resolved
+   * outbound model name (normalized at match time, NOT here). A matched model
+   * uses `systemRejectMode`; unmatched models fall back to the global
+   * `systemMessagesSanitize`. Union'd at match time with the runtime-learned
+   * reject set. Default `["claude-sonnet-4.6", "claude-haiku-4.5"]`.
+   */
+  readonly systemRejectModels: Array<string>
+  /**
+   * Effective sanitize mode for models in `systemRejectModels` (∪ the learned
+   * reject set). Reuses the SystemMessagesSanitizeMode enum. Default `"as_user"`
+   * (keeps position — most prompt-cache-friendly).
+   */
+  readonly systemRejectMode: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
+
+  /**
    * Rewrite native server-tool blocks left in inbound message history before
    * sending upstream. The web_search double-hop surfaces a synthesized
    * `server_tool_use{web_search}` + `web_search_tool_result` pair to the client
@@ -964,6 +981,8 @@ export function setAnthropicBehavior(
       | "thinkingBlockSanitizeCheck"
       | "coerceAdaptiveThinking"
       | "systemMessagesSanitize"
+      | "systemRejectModels"
+      | "systemRejectMode"
       | "rewriteHistoryServerTools"
       | "thinkingSignatureCompat"
       | "dedupToolCalls"
@@ -1176,6 +1195,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
   coerceAdaptiveThinking: "basic" as false | "basic" | "best_effort",
   systemMessagesSanitize: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
+  systemRejectMode: "as_user" as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
+  systemRejectModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] as Array<string>,
   rewriteHistoryServerTools: false as false | "downgrade",
   thinkingSignatureCompat: "signature_delta" as false | "signature_delta" | "redacted_thinking",
   dedupToolCalls: false as const,
@@ -1297,6 +1318,8 @@ export function resetConfigManagedState(): void {
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
     coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
     systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
+    systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
+    systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
     rewriteHistoryServerTools: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
     thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
     dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
@@ -1429,6 +1452,8 @@ const mutableState: MutableState = {
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
   coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
   systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
+  systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
+  systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
   rewriteHistoryServerTools: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
   thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,

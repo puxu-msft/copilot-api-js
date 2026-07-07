@@ -22,6 +22,8 @@ import {
   isAnthropicBetaUnsupported,
   isAnthropicFeatureUnsupported,
   isAnthropicPartnerFeatureUnsupported,
+  isEffortUnsupported,
+  markEffortUnsupported,
   setSupportedEfforts,
   STRUCTURED_OUTPUTS_PARTNER_FEATURE,
 } from "./feature-negotiation"
@@ -590,6 +592,19 @@ export function parseInvalidEffortError(responseText: string): { modelName: stri
 }
 
 /**
+ * Parse the ZERO-support effort variant: `output_config.effort "X" was provided,
+ * but model <M> does not support reasoning effort` (code invalid_reasoning_effort,
+ * NO `supported values:[...]` list). Distinct from parseInvalidEffortError (which
+ * requires the supported list). Returns the model name, or null when not this variant.
+ */
+export function parseEffortUnsupportedError(responseText: string): string | null {
+  if (!responseText.includes("invalid_reasoning_effort")) return null
+  if (!/does not support reasoning effort/i.test(responseText)) return null
+  const m = /model ([^;"]+?) does not support reasoning effort/i.exec(responseText)
+  return m ? m[1].trim() : null
+}
+
+/**
  * Dynamically record per-model effort whitelists discovered from upstream
  * `invalid_reasoning_effort` errors. Persisted via the negotiation cache.
  * Config-sourced `effortsOverrides` remains untouched. Returns true if the
@@ -597,7 +612,17 @@ export function parseInvalidEffortError(responseText: string): { modelName: stri
  */
 export function learnEffortsFromError(responseText: string): boolean {
   const parsed = parseInvalidEffortError(responseText)
-  if (!parsed) return false
+  if (!parsed) {
+    // Zero-support variant (no supported list): learn "known-unsupported" so
+    // clampEffortLevel strips output_config.effort on the retried attempt.
+    const unsupportedModel = parseEffortUnsupportedError(responseText)
+    if (unsupportedModel) {
+      markEffortUnsupported(unsupportedModel)
+      consola.info(`[DirectAnthropic] Learned ${unsupportedModel} supports NO reasoning effort; will strip output_config.effort.`)
+      return true
+    }
+    return false
+  }
 
   const existing = getSupportedEfforts(parsed.modelName)
   const isFirstLearn = !existing
@@ -731,6 +756,20 @@ function clampEffortLevel(wire: Record<string, unknown>, resolvedModel?: Model):
 
   const modelName = resolvedModel?.id ?? (wire.model as string)
   if (!modelName) return
+
+  // Zero-support variant (learned from a `does not support reasoning effort` 400):
+  // the model supports NO reasoning effort at all. Strip the field entirely (drop
+  // output_config if it empties) BEFORE the whitelist/clamp logic below.
+  if (isEffortUnsupported(modelName)) {
+    const { effort: _effort, ...rest } = outputConfig
+    if (Object.keys(rest).length > 0) {
+      wire.output_config = rest
+    } else {
+      delete wire.output_config
+    }
+    consola.debug(`[DirectAnthropic] Stripped output_config.effort (model=${modelName} supports no reasoning effort)`)
+    return
+  }
 
   const supported = findSupportedEfforts(modelName, resolvedModel)
   if (!supported) return

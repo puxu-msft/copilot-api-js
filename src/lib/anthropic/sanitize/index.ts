@@ -15,6 +15,7 @@ import type {
 
 import { state } from "~/lib/state"
 
+import { resolveSystemSanitizeMode } from "../system-reject-mode"
 import {
   //
   countAnthropicContentBlocks,
@@ -92,7 +93,7 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // cleanup (orphan tool / empty text / corrupt thinking) — inline-system moves
   // are reported separately via `inlineSystemConverted`, not as removed blocks.
   const beforeInlineBlocks = countAnthropicContentBlocks(messages)
-  const inlineSystem = sanitizeInlineSystemMessages(messages, sanitizedSystem, state.systemMessagesSanitize)
+  const inlineSystem = sanitizeInlineSystemMessages(messages, sanitizedSystem, resolveSystemSanitizeMode(payload.model))
   messages = inlineSystem.messages
   const inlineBlocksRemoved = beforeInlineBlocks - countAnthropicContentBlocks(messages)
 

@@ -47,7 +47,12 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
   // Also strip the attribution billing line from system[0] so the count matches
   // what the request path forwards upstream (parity with strip_attribution_header).
   const attributionStrippedSystem = stripSystemAttribution(payload.system, state.stripAttributionHeader).system
-  const inlineSystem = sanitizeInlineSystemMessages(payload.messages, attributionStrippedSystem, state.systemMessagesSanitize)
+  // count_tokens forwards the CANONICAL first-party endpoint, which rejects role:"system"
+  // for EVERY model (not GHC's lenient first-party leg) — so ALWAYS sanitize, independent
+  // of the reject set. Use as_user (position-preserving); fall back to the global mode only
+  // when it is a non-false mode the operator explicitly chose otherwise.
+  const countMode = state.systemMessagesSanitize === false ? "as_user" : state.systemMessagesSanitize
+  const inlineSystem = sanitizeInlineSystemMessages(payload.messages, attributionStrippedSystem, countMode)
   const countPayload = { ...payload, model, system: inlineSystem.system, messages: inlineSystem.messages }
 
   try {

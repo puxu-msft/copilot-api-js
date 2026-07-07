@@ -375,6 +375,16 @@ anthropic:
   #   false:        passthrough unchanged (default — will 400 upstream if present) / 原样透传（默认——存在时会 400）
   system_messages_sanitize: false
 
+  # 上游严格后端拒绝 inline role:"system" 的模型集（观测症状，非 vertex 硬断言）。子串匹配 resolved outbound 名（归一化）。
+  # 命中 → 用 system_reject_mode；未命中 → 回退 system_messages_sanitize。运行时还会从上游拒绝中学习扩展该集。
+  # Models whose upstream STRICT backend rejects inline role:"system" (observed symptom, not a Vertex assertion).
+  # Substring set matched against the resolved outbound model name. Matched → system_reject_mode; else → system_messages_sanitize.
+  # Default [claude-sonnet-4.6, claude-haiku-4.5] + as_user (empirically confirmed). / 默认命中集 + as_user（实测确认）。
+  # system_reject_models:
+  #   - claude-sonnet-4.6
+  #   - claude-haiku-4.5
+  # system_reject_mode: as_user
+
   # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
   # 去重工具调用：false | "input" | "result"（true 兼容映射为 "input"）
   # "input": dedup by (name, input); "result": also require identical result

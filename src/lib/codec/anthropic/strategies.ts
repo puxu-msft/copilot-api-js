@@ -61,6 +61,7 @@ import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-ret
 import { createServerErrorRetryStrategy } from "~/lib/request/strategies/server-error-retry"
 import { createServerToolRejectionStrategy } from "~/lib/request/strategies/server-tool-rejection-retry"
 import { createStructuredOutputsRejectionStrategy } from "~/lib/request/strategies/structured-outputs-rejection-retry"
+import { createSystemRejectRetryStrategy } from "~/lib/request/strategies/system-reject-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
 import { state } from "~/lib/state"
@@ -94,6 +95,7 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
     adapt(createUnsupportedBetaRetryStrategy<MessagesPayload>({ getProbeCandidates: () => deps.betaProbe.getCandidates() })),
     adapt(createServerToolRejectionStrategy<MessagesPayload>()),
     adapt(createStructuredOutputsRejectionStrategy<MessagesPayload>()),
+    adapt(createSystemRejectRetryStrategy<MessagesPayload>({ resanitize: deps.resanitize })),
     adapt(createDeferredToolRetryStrategy<MessagesPayload>()),
     adapt(
       createAutoTruncateStrategy<MessagesPayload>({

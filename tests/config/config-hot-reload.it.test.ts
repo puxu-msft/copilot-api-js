@@ -481,6 +481,21 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
   },
   {
+    configKey: "anthropic.system_reject_models",
+    stateKey: "systemRejectModels",
+    // Sample MUST differ from the (non-empty) default so R1/R2 prove the wiring.
+    sampleYamlValue: `\n  - foo-model`,
+    expectedStateValue: ["foo-model"],
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.systemRejectModels,
+  },
+  {
+    configKey: "anthropic.system_reject_mode",
+    stateKey: "systemRejectMode",
+    sampleYamlValue: "merge",
+    expectedStateValue: "merge",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
+  },
+  {
     configKey: "anthropic.tool_rewrite_history_server",
     stateKey: "rewriteHistoryServerTools",
     sampleYamlValue: "downgrade",
@@ -1107,6 +1122,12 @@ system_prompt_overrides:
     setStateForTests({ modelOverrides: { custom: "model" } })
     resetConfigManagedState()
     expect(state.modelOverrides).toEqual(DEFAULT_MODEL_OVERRIDES)
+  })
+
+  test("system_reject_* defaults are the empirically-confirmed reject set + as_user", () => {
+    resetConfigManagedState()
+    expect(state.systemRejectModels).toEqual(["claude-sonnet-4.6", "claude-haiku-4.5"])
+    expect(state.systemRejectMode).toBe("as_user")
   })
 
   test("CONFIG_MANAGED_DEFAULTS stays aligned with initial mutable state", () => {
