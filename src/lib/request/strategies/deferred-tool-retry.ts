@@ -169,9 +169,9 @@ export function applyStickyUndeferredTools<TPayload extends { model: string; too
 function parseToolReferenceFromResponse(responseText: string): string | null {
   try {
     const parsed = JSON.parse(responseText) as { error?: { message?: string } }
-    const message = parsed.error?.message
-    if (!message) return null
-    return parseToolReferenceError(message)
+    // Fall back to raw text when the double-wrapped body has no error.message
+    // (mirrors legacy-thinking / context-management: parsed.error?.message ?? responseText).
+    return parseToolReferenceError(parsed.error?.message ?? responseText)
   } catch {
     // Try raw text match as fallback
     return parseToolReferenceError(responseText)
