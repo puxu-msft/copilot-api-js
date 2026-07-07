@@ -25,6 +25,7 @@ P1 (primitive + A + B) ──┬── P2 (C)
 4. **判别轴 = resolved outbound 名** —— 一切 per-model 判别 key 在 `resolveModelName` 的最终 outbound 名（`payload.model` 在 sanitize 时已是 resolved），绝不 key 在 inbound 别名。归一化经 `normalizeForMatching`。
 5. **能力框架非硬断言** —— 学入日志如实写「推断（Vertex 已知成因，不硬断言）」；命名按观测症状。
 6. **正样本证 canHandle 触达目标** —— 每 strategy 测试用**真实上游错误串**做正样本，先证正则匹配；wire 正确性用 GHC 独立 oracle（实测，非字节自洽）。
+6b. **`HTTPError.responseText` 是原始 JSON、内层引号反斜杠转义（实施实测，P1 Task 5 踩坑）** —— 任何匹配 `responseText` 的 strategy 正则（C 的 `Tool '…' not found in provided tools`、D/E 的错误串）须容忍可选反斜杠（如 `\?"`），否则在真实 wire 上不触发；正样本测试务必用**原始转义 body**（`JSON.stringify(...)`）而非手写 parsed 串。
 7. **persist→reload golden** —— 每个新 negotiation 集必测「学入→snapshot 写盘→load 重载→重准备/重判定仍生效」（否则空集碰撞类 bug 会在绿测下于首次重启回归）。
 8. **flaky/时序测试连跑 10–25 次** 确认确定性（反应式 mock、单例隔离）。
 9. **never-swallow-errors** —— 不吞错误；预期错误至少有注释说明。
