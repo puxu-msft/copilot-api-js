@@ -361,7 +361,7 @@ export const AnthropicConfigSchema = z
       })
       .strict()
       .optional(),
-    tool_non_deferred: nullableNonemptyStringArray(),
+    tool_search_non_deferred: nullableNonemptyStringArray(),
     api_key: nullableString(),
     warmup: nullableEnum(["allow", "reject", "drop", "fake"] as const),
     // Free-form Records — key = model-name pattern, value = list

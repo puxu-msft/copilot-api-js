@@ -213,7 +213,11 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("anthropic.rewrite_history_server_tools", "anthropic.tool_rewrite_history_server"),
   renameLeaf("anthropic.dedup_tool_calls", "anthropic.tool_dedup_calls"),
   renameLeaf("anthropic.strip_read_tool_result_tags", "anthropic.tool_strip_read_result_tags"),
-  renameLeaf("anthropic.non_deferred_tools", "anthropic.tool_non_deferred"),
+  renameLeaf("anthropic.non_deferred_tools", "anthropic.tool_search_non_deferred"),
+  // tool_non_deferred → tool_search_non_deferred: the non-defer allowlist only
+  // applies when tool_search is enabled, so it now carries the tool_search_ sub-concern
+  // prefix. Same string[]→string[] shape, no value transform.
+  renameLeaf("anthropic.tool_non_deferred", "anthropic.tool_search_non_deferred"),
   renameLeaf("anthropic.decode_tool_input_fields", "anthropic.tool_decode_input_fields"),
   renameLeaf("anthropic.decode_all_tool_input_fields", "anthropic.tool_decode_all_input_fields"),
   renameLeaf("anthropic.recover_tool_call_text", "anthropic.tool_recover_call_text"),

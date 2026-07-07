@@ -574,7 +574,7 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
   },
   {
-    configKey: "anthropic.tool_non_deferred",
+    configKey: "anthropic.tool_search_non_deferred",
     stateKey: "nonDeferredTools",
     sampleYamlValue: `\n  - first_tool\n  - second_tool`,
     expectedStateValue: ["first_tool", "second_tool"],

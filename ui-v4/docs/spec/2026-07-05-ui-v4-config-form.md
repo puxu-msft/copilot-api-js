@@ -34,7 +34,7 @@
 
 关键既有约束（调研已核验，`file:line` 见调研报告）：
 - **后端 SSOT = `src/lib/config/schema.ts`** 的 Zod `ConfigSchema`（`Config = z.infer<...>`）。每字段 optional、每标量叶子接受 `null`（=删键）。
-- **PUT `/api/config/yaml`**：sparse partial 合并（保留 YAML 注释）；strict `ConfigSchema.safeParse` **硬失败 per-field**（400 `{error, details:[{field,message,value?}]}`）；先跑 legacy-key 迁移再校验；collections（`model_overrides`/`system_prompt_overrides`/`anthropic.system_rewrite_reminders`/`anthropic.tool_non_deferred`）整体替换；空 rewrite 数组归一为 `false`。
+- **PUT `/api/config/yaml`**：sparse partial 合并（保留 YAML 注释）；strict `ConfigSchema.safeParse` **硬失败 per-field**（400 `{error, details:[{field,message,value?}]}`）；先跑 legacy-key 迁移再校验；collections（`model_overrides`/`system_prompt_overrides`/`anthropic.system_rewrite_reminders`/`anthropic.tool_search_non_deferred`）整体替换；空 rewrite 数组归一为 `false`。
 - **GET `/api/config/yaml` 不遮蔽** `anthropic.api_key` —— 结构化表单**必须**把它当 secret 处理（遮蔽、write-only、set/not-set 指示；发 `null` 删除）。另有 `/api/config`（effective 快照，只读、已遮蔽），本表单**不用**它（要编辑用户文件原值）。
 - **启动期字段**（改后需重启、非热重载）：`proxy`、`ghc_api_base_url`、`rate_limiter.*`、`model_refresh_interval`（`state.ts` `CONFIG_MANAGED_DEFAULTS` 未含者）。表单须打 **requires-restart** 标记。
 
@@ -83,7 +83,7 @@
 | **Rate limiter** ⚠restart | `retry_interval`·`request_interval`·`recovery_interval`·`consecutive_successes`(number) |
 | **Anthropic ▸ Headers** | `strict_request_headers`·`strict_response_headers`·`strip_attribution_header`(toggle) · `request_header_blacklist`/`_whitelist`·`response_header_blacklist`/`_whitelist`(string-list) · `beta_strip_headers`·`partner_strip_features`(record<str,str[]>) |
 | **Anthropic ▸ Thinking** | `thinking_block_message_policy`(enum) · `thinking_block_sanitize`·`thinking_coerce_adaptive`·`thinking_signature_compat`(disc-enum w/ `false`) |
-| **Anthropic ▸ Tools** | `tool_strip_server`·`tool_inject_claude_code`·`tool_strip_read_result_tags`·`tool_search`·`memory_tool`·`tool_decode_all_input_fields`·`tool_recover_call_text`·`tool_backfill_question`(toggle) · `tool_dedup_calls`·`tool_rewrite_history_server`(disc-enum) · `tool_non_deferred`(string-list) · `tool_repair_malformed_input`(multi-select tags) · `tool_decode_input_fields`·`effort_overrides`·`retry_reject_body_fields`(record<str,str[]>) |
+| **Anthropic ▸ Tools** | `tool_strip_server`·`tool_inject_claude_code`·`tool_strip_read_result_tags`·`tool_search`·`memory_tool`·`tool_decode_all_input_fields`·`tool_recover_call_text`·`tool_backfill_question`(toggle) · `tool_dedup_calls`·`tool_rewrite_history_server`(disc-enum) · `tool_search_non_deferred`(string-list) · `tool_repair_malformed_input`(multi-select tags) · `tool_decode_input_fields`·`effort_overrides`·`retry_reject_body_fields`(record<str,str[]>) |
 | **Anthropic ▸ Streaming/protect** | `stream_keepalive_mode`(enum) · `stream_keepalive_ping_sec`·`stream_commit_after_sec`·`protect_streaming_max_retries`·`protect_streaming_buffer_cap_bytes`·`protect_streaming_heartbeat`(number) · `protect_streaming_generation`(disc-enum) · `protect_streaming_escalate_context`(toggle) |
 | **Anthropic ▸ Context editing** | `context_editing`(enum) · `context_editing_trigger`/`_keep_tools`/`_keep_thinking`(number) |
 | **Anthropic ▸ Cache** | `cache_control`(enum) · `extended_cache_ttl`(nested: enabled/tools_system_ttl/messages_ttl) |
@@ -161,7 +161,7 @@ DESIGN §7 原文「默认 raw + 可切结构化」。**本 spec 修正**：结�
 - **merge 行为三分（后端 route.ts:257-290 核验，前端按描述符 `mergeMode` 区分）**：
   - **per-key**：顶层 section（`history`/`timeouts`/`rate_limiter`/`shutdown`/`openai_responses`/`auto_truncate`）+ anthropic 顶层——`setNestedScalarContainer` 逐子键 merge。前端**只发 sparse 子键、绝不整份发**（否则丢隐藏键如 deprecated `history.limit`）。
   - **whole**：anthropic 子对象（`extended_cache_ttl`/`model_capabilities`）+ record 字段（`effort_overrides`/`beta_strip_headers`/`partner_strip_features`/`retry_reject_body_fields`/`tool_decode_input_fields`）——value 被 `setIn` 整体写。改子键 → 整份重发。
-  - **collection**：`model_overrides`/`system_prompt_overrides`/`anthropic.system_rewrite_reminders`/`anthropic.tool_non_deferred`——`replaceCollection` 整体替换。
+  - **collection**：`model_overrides`/`system_prompt_overrides`/`anthropic.system_rewrite_reminders`/`anthropic.tool_search_non_deferred`——`replaceCollection` 整体替换。
   - `mergeMode` 是描述符字段（从 route.ts 机械派生 + drift-guard 守），前端 `computeSparsePatch` 据此决定 sparse 子键 vs 整份 value。**control 类型 ≠ mergeMode**（不可从 control 反推）。
 - **requires-restart 提示**：改了 startup 字段（proxy/ghc_api_base_url/rate_limiter/model_refresh_interval）→ 保存后 toast「部分改动需重启生效」。
 - **保存**：PUT sparse body → 成功 invalidate 重拉；`resetConfigCache` 热重载后端已做。

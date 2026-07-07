@@ -222,7 +222,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Anthropic section keys whose values are collections (arrays / booleans) and
  *  therefore must NOT be written by the generic scalar setter — they are
  *  handled explicitly by replaceCollection / setScalar below. */
-const ANTHROPIC_COLLECTION_KEYS = new Set(["system_rewrite_reminders", "tool_non_deferred"])
+const ANTHROPIC_COLLECTION_KEYS = new Set(["system_rewrite_reminders", "tool_search_non_deferred"])
 
 type ConfigDocument = ReturnType<typeof parseDocument>
 
@@ -282,8 +282,8 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
         const normalized = Array.isArray(rewrite) && rewrite.length === 0 ? false : rewrite
         replaceCollection(doc, ["anthropic", "system_rewrite_reminders"], normalized)
       }
-      if (hasOwn(anthropic, "tool_non_deferred")) {
-        replaceCollection(doc, ["anthropic", "tool_non_deferred"], anthropic.tool_non_deferred)
+      if (hasOwn(anthropic, "tool_search_non_deferred")) {
+        replaceCollection(doc, ["anthropic", "tool_search_non_deferred"], anthropic.tool_search_non_deferred)
       }
     }
   }

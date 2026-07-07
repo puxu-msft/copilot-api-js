@@ -125,7 +125,7 @@ anthropic:
   context_editing_keep_thinking: 2
   tool_search: false
   cache_control: disabled
-  tool_non_deferred:
+  tool_search_non_deferred:
     - custom_tool
     - second_tool
   system_rewrite_reminders:
@@ -184,7 +184,7 @@ system_prompt_append: "append"
         context_editing_keep_thinking: 2,
         tool_search: false,
         cache_control: "disabled",
-        tool_non_deferred: ["custom_tool", "second_tool"],
+        tool_search_non_deferred: ["custom_tool", "second_tool"],
         system_rewrite_reminders: [
           {
             from: "(?i)warning",
@@ -456,7 +456,7 @@ model_refresh_interval: 600
         context_editing_keep_thinking: 2,
         tool_search: false,
         cache_control: "disabled",
-        tool_non_deferred: ["custom_tool", "second_tool"],
+        tool_search_non_deferred: ["custom_tool", "second_tool"],
         system_rewrite_reminders: [
           {
             from: "(?i)warning",
@@ -511,7 +511,7 @@ model_refresh_interval: 600
     expect(written).toContain("anthropic:")
     expect(written).toContain("context_editing_trigger: 200000")
     expect(written).toContain("tool_search: false")
-    expect(written).toContain("tool_non_deferred:")
+    expect(written).toContain("tool_search_non_deferred:")
     expect(written).toContain("openai_responses:")
     expect(written).toContain("rate_limiter:")
     expect(written).toContain("system_prompt_overrides:")
@@ -545,7 +545,7 @@ model_refresh_interval: 600
         anthropic: {
           context_editing_trigger: -1,
           tool_search: "yes",
-          tool_non_deferred: ["valid", 123],
+          tool_search_non_deferred: ["valid", 123],
         },
       }),
     })
@@ -565,7 +565,7 @@ model_refresh_interval: 600
           value: "yes",
         },
         {
-          field: "anthropic.tool_non_deferred.1",
+          field: "anthropic.tool_search_non_deferred.1",
           message: "Must be a non-empty string",
           value: 123,
         },

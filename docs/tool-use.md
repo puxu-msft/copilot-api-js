@@ -8,7 +8,7 @@
 
 ## Server tools
 
-`src/lib/anthropic/server-tool-filter.ts` 拦截 `server_tool_use` / `*_tool_result`。剥离集合是三源并集：全局开关（`tool_strip_server`）∪ 反应式学习账本 ∪ 单次重试 hint。`tool_search`（`tool_search` 配置）按模型能力注入；`tool_non_deferred` 控制延迟工具。
+`src/lib/anthropic/server-tool-filter.ts` 拦截 `server_tool_use` / `*_tool_result`。剥离集合是三源并集：全局开关（`tool_strip_server`）∪ 反应式学习账本 ∪ 单次重试 hint。`tool_search`（`tool_search` 配置）按模型能力注入；`tool_search_non_deferred` 控制延迟工具。
 
 ## web_search 双跳（旁路）
 
