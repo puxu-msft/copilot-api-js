@@ -82,6 +82,7 @@ import {
   processAnthropicStream,
 } from "~/lib/anthropic/stream"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { stripAllThinkingIfQuarantined } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -203,12 +204,24 @@ function runInitialSanitizationAndRecord(
   reqCtx: RequestContext,
   preprocessInfo: PreprocessInfo,
 ): { initialSanitized: MessagesPayload; initialSanitizationInfo: ReturnType<typeof toSanitizationInfo> } {
+  // L3 proactive quarantine (Task 11): the web_search double-hop bypasses the v4
+  // driver, so the codec's proactive filter never runs on this path. Apply the SAME
+  // known-poisoned strip-all here, BEFORE sanitize, so a quarantined conversation
+  // never re-hits the "thinking cannot be modified" 400 on the web_search path
+  // either. Reads (session, agent) from reqCtx; the store resolves lazily (singleton).
+  const { messages: quarantinedMessages, changed: quarantineStripped } = stripAllThinkingIfQuarantined(
+    anthropicPayload.messages,
+    reqCtx.sessionId,
+    reqCtx.agentId,
+  )
+  const sanitizeInput = quarantineStripped ? { ...anthropicPayload, messages: quarantinedMessages } : anthropicPayload
+
   // Run the ordered Anthropic request-rewrite chain (tool-preprocess → tool-name
   // → sanitize). Preprocess must precede sanitize — processToolBlocks (in
   // sanitize) validates tool_use references against the tools array — and
   // tool-name precedes sanitize so processToolBlocks' name-casing fix sees the
   // already-renamed upstream names. The registry's `order` keys encode this.
-  const { payload: initialSanitized, sanitizeResult } = runAnthropicPayloadRewrites(anthropicPayload, { toolNameMapper: reqCtx.toolNameMapper })
+  const { payload: initialSanitized, sanitizeResult } = runAnthropicPayloadRewrites(sanitizeInput, { toolNameMapper: reqCtx.toolNameMapper })
   const sanitizationStats = sanitizeResult.stats
   const initialSanitizationInfo = toSanitizationInfo(sanitizationStats)
 
