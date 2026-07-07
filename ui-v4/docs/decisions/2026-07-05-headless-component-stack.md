@@ -81,7 +81,8 @@ Radix 迁移（P0–P3）解决了**交互原语**（Dialog/Tabs/Menu/Select/Col
 ## 实施
 
 **增量、分领域**，各随对应功能落地时贯彻 headless + Terminal Amber：
-- **数据表 = TanStack Table**（双 PoC 对照已定，见上节）→ 正式重写 `ModelsTable`（删手写 `sortModels`/`sort` state/部分 `model-columns`，ColumnMenu 驱动 `VisibilityState`）+ 作 Requests 列表/6 维筛选地基。**同一提交删两个 PoC**（`ModelsTableTanstack.poc.tsx` + `ModelsTableAria.poc.tsx` + 各测试）+ **卸 `react-aria-components`**（PoC 专用，落地不用）；PoC 悬挂期 tripwire（[tests/poc-tripwire.bun.test.ts](../../tests/poc-tripwire.bun.test.ts)）守其未接生产。
+- **数据表 = TanStack Table**（双 PoC 对照已定，见上节）→ 正式重写 `ModelsTable`（删手写 `sortModels`/`sort` state/部分 `model-columns`，ColumnMenu 驱动 `VisibilityState`）+ 作 Requests 列表/6 维筛选地基。**同一提交删两个 PoC**（`ModelsTableTanstack.poc.tsx` + `ModelsTableAria.poc.tsx` + 各测试）+ **卸 `react-aria-components`**（PoC 专用，落地不用）；PoC 悬挂期 tripwire（`tests/poc-tripwire.bun.test.ts`）守其未接生产。
+  > **✅ 已落地（2026-07-07）**：`ModelsTable` 正式重写为 TanStack（`useReactTable` + `getSortedRowModel` + 受控 `sorting`/`columnVisibility`）；新增共享列定义 `src/components/models/model-table-columns.tsx`（单一 accessor 源，供表格 ColumnDef + CSV 排序两个消费者，保证 CSV 序 = 表格序）；`sortModels`/`ModelSortKey`/`sort` state 已删；两个 PoC + 各测试 + `poc-tripwire.bun.test.ts` + `tests/setup.ts` 的 `CSS.escape` stub 已删；`react-aria-components` 已卸载。bundle 实测 +13.9kB gzip（TanStack Table 接线，符合 PoC 预估 +13.7kB）。
 - **react-hook-form + zod**：随 [Config 结构化表单](../plans/2026-07-05-ui-v4-config-form.md) 落地。
 - **cmdk**：随全局搜索（TODO.md 退役 gating）落地。
 - **TanStack Virtual**：长列表性能触发时引（现非目标）。

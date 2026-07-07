@@ -18,11 +18,11 @@
 | server-state | TanStack Query | 5.62 |
 | client-state | Zustand | 5.0 |
 | 表格 | @tanstack/react-table | 8.21 |
-| headless 组件 | radix-ui（统一包） + react-aria-components | 1.6 / 1.19 |
+| headless 组件 | radix-ui（统一包） | 1.6 |
 | 语法高亮 | shiki（4× `@shikijs/*`：core / engine-javascript / langs / themes） | 4.2 |
 | diff | diff（jsdiff） | 9 |
 
-> react-aria-components 当前主要作 PoC/对照与个别组件；主交互原语走 radix-ui（迁移史见 [decisions/2026-07-05-adopt-radix-primitives.md](decisions/2026-07-05-adopt-radix-primitives.md)）。
+> 交互原语走 radix-ui（迁移史见 [decisions/2026-07-05-adopt-radix-primitives.md](decisions/2026-07-05-adopt-radix-primitives.md)）；数据表走 @tanstack/react-table（ModelsTable 已正式重写，见 [decisions/2026-07-05-headless-component-stack.md](decisions/2026-07-05-headless-component-stack.md)）。react-aria-components 曾作数据表方案对照 PoC，评估后不采纳、已卸载。
 
 ## 2. 入口与路由（实测 `main.tsx` / `App.tsx`）
 
