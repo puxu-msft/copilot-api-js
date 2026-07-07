@@ -89,14 +89,14 @@
 2. 否则 `GET /history/api/entries/:id` 拿 summary → `matchesGating(summary, filters)`（无 search 维；从宽——不属则提示，不盲翻页）。
 3. 不属 → 行内提示「该条目不在当前筛选内 · [清除筛选并定位]」（点击 `clearAll()`，保留 `?at=`）。属而未在已加载集 → `fetchNextPage` load-until-found（保留 `LOCATE_PAGE_CAP` cap）。
 
-- [ ] **Step 1: 失败测试** —
-  - at 在已加载集 → `scrollToIndex` 被调（mock virtuosoRef）+ flash 类加上。
-  - at 不在集 + `matchesGating` 返回 false（mock `api.get` 返回不匹配 summary）→ 渲染「不在当前筛选内」提示，**不**调 fetchNextPage。
-  - at 不在集 + 匹配 → 调 fetchNextPage（cap 内）。
-- [ ] **Step 2: 确认失败** → FAIL。
-- [ ] **Step 3: 实现** — 替换现 `findRow`/`scrollIntoView`/load-until-found（[HistoryList.tsx:54-76](../../src/components/requests/HistoryList.tsx)）为 index+scrollToIndex + 归属判定分支。`locateRef` 语义保留（done/pages/at）。
-- [ ] **Step 4: 确认通过** → PASS。
-- [ ] **Step 5: 门禁 + 提交** — msg `feat(ui-v4): at-locate via scrollToIndex + filter-membership guard`。
+- [x] **Step 1: 失败测试** —
+  - at 在已加载集 → `scrollToIndex` 被调（fake TableVirtuoso 经 useImperativeHandle 暴露 spy）+ flash 类加上。
+  - at 不在集 + `matchesGating` 返回 false（mock `api.get` 返回不匹配 endpoint 的 HistoryEntry）→ 渲染「不在当前筛选内」提示，**不**调 fetchNextPage。
+  - at 不在集 + 匹配 → 调 fetchNextPage（cap 内）。追加 loop（翻页揭示目标→scroll）+ CAP（永不出现→恰 LOCATE_PAGE_CAP 次）覆盖。
+- [x] **Step 2: 确认失败** → FAIL（4 新用例红）。
+- [x] **Step 3: 实现** — index+scrollToIndex + at×筛选归属判定分支（membership 按 (at, gating-sig) 记忆 + 代次守卫防陈旧 filters 竞态；`.catch` 记 console.error 再从宽回退）。`locateRef` 语义保留（done/pages/at）；新增 `onClearFilters` prop，RequestsListPage 传 `clearAll`。
+- [x] **Step 4: 确认通过** → PASS（16/16，确定性 4 连跑；全量 279 绿；typecheck/eslint/build 绿）。
+- [x] **Step 5: 门禁 + 提交** — commit `cda8bf25` msg `feat(ui-v4): at-locate via scrollToIndex + filter-membership guard`。两轮 ecc:react-reviewer 复审通过。
 
 ---
 
