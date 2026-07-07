@@ -642,6 +642,18 @@ export function createRequestContext(opts: {
         }
       }
 
+      // P2.5 producer alignment: land the FULL settled verdict on the final
+      // attempt (symmetric with `complete()`), so the terminal attempt carries
+      // the same rich response the top-level `_response` holds. Placed AFTER the
+      // if/else so it covers BOTH legs — the honest `upstreamSucceeded` leg
+      // (success:true, no error) and the else leg (HTTPError-enriched failure).
+      // Sitting inside the else would drop the upstreamSucceeded leg (WARN-3).
+      // Without this, a failed entry's per-attempt `upstreamResponse` degrades to
+      // the thin `synthesizeAttemptErrorResponse` fallback (no model / partial
+      // usage / stop_reason / partial content). Guarded by the `settled` early
+      // return at the method top, so it never double-writes.
+      ctx.setAttemptResponse(_response)
+
       // Drive state via transition() so `state_changed` fires for the
       // terminal transition — keeps the WS observer view consistent with
       // every non-terminal state change. Safe because finalization is now
@@ -676,6 +688,11 @@ export function createRequestContext(opts: {
         content: null,
         ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
       }
+
+      // P2.5 producer alignment: land the aborted verdict on the final attempt
+      // (symmetric with complete()/fail()). Single leg here — no upstreamSucceeded
+      // branch — so a plain post-`_response` write covers it. Guarded by `settled`.
+      ctx.setAttemptResponse(_response)
 
       ctx.transition("aborted")
       const entry = ctx.toHistoryEntry()

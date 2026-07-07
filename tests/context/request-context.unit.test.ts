@@ -813,3 +813,104 @@ describe("createRequestContext - settled guard", () => {
     expect(ctx.state).toBe("failed")
   })
 })
+
+// ─── P2.5: producer alignment — fail()/abort() populate final attempt response ───
+//
+// `complete()` writes the settled verdict onto the final attempt via
+// `setAttemptResponse`. Before P2.5, `fail()`/`abort()` wrote only the top-level
+// `_response` — so the live object's `attempts[last].response` was null and the
+// per-attempt `upstreamResponse` leg had to be SYNTHESIZED from the attempt's
+// HTTPError body (thinner than the real verdict: no model / partial usage /
+// stop_reason / partial content). These tests pin that fail()/abort() now land
+// the FULL verdict on the final attempt (symmetric with complete), so the
+// `a.response ?? synthesizeAttemptErrorResponse(a)` fallback short-circuits to
+// the rich real `_response` rather than the thin synth.
+describe("createRequestContext - P2.5 producer alignment (fail/abort → final attempt)", () => {
+  test("fail() with HTTPError lands full verdict on final attempt.response + upstreamResponse leg", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    ctx.fail("claude-sonnet-4-5", new HTTPError("x", 400, "body"))
+
+    const entry = ctx.toHistoryEntry()
+    const last = entry.attempts?.at(-1)
+
+    // Legacy per-attempt response stage carries the settled verdict (not undefined).
+    expect(last?.response).toBeDefined()
+    expect(last?.response?.success).toBe(false)
+    // getErrorMessage formats an HTTPError as "HTTP <status>: <body>".
+    expect(last?.response?.error).toBe("HTTP 400: body")
+    expect(last?.response?.status).toBe(400)
+    expect(last?.response?.responseText).toBe("body")
+    // Model normalized (claude-sonnet-4-5 → claude-sonnet-4.5).
+    expect(last?.response?.model).toBe("claude-sonnet-4.5")
+
+    // New client/upstream leg (RFC §S1) reflects the same verdict.
+    expect(last?.upstreamResponse).toBeDefined()
+    expect(last?.upstreamResponse?.success).toBe(false)
+    expect(last?.upstreamResponse?.status).toBe(400)
+    expect(last?.upstreamResponse?.rawBody).toBe("body")
+    expect(last?.upstreamResponse?.model).toBe("claude-sonnet-4.5")
+  })
+
+  test("fail() with partial lands rich verdict — richer than the thin synth fallback", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    // HTTPError body means synthesizeAttemptErrorResponse WOULD produce a stage,
+    // but a thin one (usage {0,0}, content null, no stop_reason). The real verdict
+    // carries the partial usage/stop_reason/content — proving the `??` short-circuits
+    // to the rich real `_response`, not the synth.
+    ctx.fail(
+      "claude-sonnet-4",
+      new HTTPError("truncated", 200, "partial-body"),
+      { usage: { input_tokens: 12, output_tokens: 7 }, stop_reason: "max_tokens", content: "half a tool_use" },
+      {},
+    )
+
+    const last = ctx.toHistoryEntry().attempts?.at(-1)
+    expect(last?.response?.usage).toEqual({ input_tokens: 12, output_tokens: 7 })
+    expect(last?.response?.stop_reason).toBe("max_tokens")
+    expect(last?.response?.content).toBe("half a tool_use")
+    // Distinguishes real verdict from synth (synth would be {0,0} / null / undefined).
+    expect(last?.response?.usage).not.toEqual({ input_tokens: 0, output_tokens: 0 })
+  })
+
+  test("fail() with upstreamSucceeded lands the HONEST success:true leg (no error)", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    ctx.fail("claude-sonnet-4", new Error("proxy rejected malformed tool_use"), undefined, { upstreamSucceeded: true })
+
+    const last = ctx.toHistoryEntry().attempts?.at(-1)
+    expect(last?.response?.success).toBe(true)
+    expect(last?.response?.error).toBeUndefined()
+    expect(last?.upstreamResponse?.success).toBe(true)
+    // The request verdict still lives at entry level, not jammed into the leg.
+    expect(ctx.state).toBe("failed")
+  })
+
+  test("abort() lands the aborted verdict on the final attempt", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    ctx.abort("claude-sonnet-4-5", { usage: { input_tokens: 5, output_tokens: 3 }, stop_reason: "abort" })
+
+    const last = ctx.toHistoryEntry().attempts?.at(-1)
+    expect(last?.response).toBeDefined()
+    expect(last?.response?.success).toBe(false)
+    expect(last?.response?.error).toBe("client disconnected")
+    expect(last?.response?.model).toBe("claude-sonnet-4.5")
+    expect(last?.response?.usage).toEqual({ input_tokens: 5, output_tokens: 3 })
+    expect(last?.response?.stop_reason).toBe("abort")
+    expect(last?.upstreamResponse?.success).toBe(false)
+    expect(last?.upstreamResponse?.model).toBe("claude-sonnet-4.5")
+  })
+
+  test("fail() does not re-write the final attempt when already settled", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    ctx.fail("claude-sonnet-4", new HTTPError("first", 400, "body-1"))
+    ctx.fail("claude-sonnet-4", new HTTPError("second", 500, "body-2")) // no-op
+
+    const last = ctx.toHistoryEntry().attempts?.at(-1)
+    expect(last?.response?.status).toBe(400)
+    expect(last?.response?.responseText).toBe("body-1")
+  })
+})
