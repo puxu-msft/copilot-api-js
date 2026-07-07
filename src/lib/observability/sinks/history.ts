@@ -38,6 +38,9 @@ import { buildHistoryActivityPatch } from "~/lib/context/activity-summary"
 import {
   //
   legFromEffective,
+  legFromEffectiveSource,
+  legFromUpstreamRequest,
+  legFromUpstreamResponse,
   legFromWire,
 } from "~/lib/context/request"
 import {
@@ -281,6 +284,9 @@ export class HistorySink {
         },
       }),
       ...(entryData.httpHeaders && { httpHeaders: entryData.httpHeaders }),
+      // New client leg (RFC §2.1) — dual-written ALONGSIDE the legacy inboundResponse
+      // above. The producer (toHistoryEntry) built it from the forwarded response.
+      ...(entryData.clientResponse && { clientResponse: entryData.clientResponse as HistoryEntry["clientResponse"] }),
       ...(entryData.attempts && { attempts: toHistoryAttempts(entryData.attempts) }),
     })
     // Fire-and-forget: finalize is now async (libuv-offloaded compression). It
@@ -294,13 +300,38 @@ export class HistorySink {
 // Helpers (kept in sync with the legacy consumers.ts — single source now)
 // ============================================================================
 
-function collectAttemptStages(ctx: RequestContext): Array<StagePayload> {
+/**
+ * EAGER / in-flight per-attempt stage production (second stage-production path,
+ * alongside the finalized `extractStagePayloads`). MUST emit the SAME new-stage
+ * SHAPE as `extractStagePayloads` (both funnel through the P1 leg builders), so an
+ * interrupted row (only these eager stages written) reassembles identically to a
+ * finalized row — otherwise in-flight/interrupted rows diverge structurally from
+ * finalized ones (FAIL-1). Exported for the P2 eager-path parity test.
+ */
+export function collectAttemptStages(ctx: RequestContext): Array<StagePayload> {
   const a = ctx.currentAttempt
   if (!a) return []
   const stages: Array<StagePayload> = []
   if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveRequest, attemptIndex: a.index, payload: legFromEffective(a.effectiveRequest) })
   if (a.wireRequest) stages.push({ stage: STAGE.outboundRequest, attemptIndex: a.index, payload: legFromWire(a.wireRequest) })
   if (a.response) stages.push({ stage: STAGE.outboundResponse, attemptIndex: a.index, payload: responseDataToHistory(a.response) })
+  // ─── New per-attempt leg stages (RFC §3) — dual-written ALONGSIDE the legacy
+  //     stages above, mirroring extractStagePayloads' new-stage shape (FAIL-1). The
+  //     upstreamResponse layers on per-attempt response headers + the attempt's own
+  //     committed frames (top-level trailers/frames resolve at finalize). ───
+  if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveSource, attemptIndex: a.index, payload: legFromEffectiveSource(a.effectiveRequest) })
+  if (a.wireRequest) stages.push({ stage: STAGE.upstreamRequest, attemptIndex: a.index, payload: legFromUpstreamRequest(a.wireRequest) })
+  if (a.response) {
+    stages.push({
+      stage: STAGE.upstreamResponse,
+      attemptIndex: a.index,
+      payload: {
+        ...legFromUpstreamResponse(a.response),
+        ...(a.responseHeaders && { headers: a.responseHeaders }),
+        ...(a.sseEvents && { sseEvents: a.sseEvents }),
+      },
+    })
+  }
   return stages
 }
 
@@ -343,6 +374,13 @@ function toHistoryAttempts(attempts: HistoryEntryData["attempts"]): HistoryEntry
     response: a.response ? responseDataToHistory(a.response) : undefined,
     sseEvents: a.sseEvents,
     responseHeaders: a.responseHeaders,
+    // ─── New per-attempt legs (RFC §3) — copied through from the producer
+    //     (toHistoryEntry already built them via the P1 leg builders). Cast bridges
+    //     the producer-side `unknown`-based DTOs to the owner-side MessageContent
+    //     shapes (structurally identical). Dual-written alongside the legacy legs. ───
+    ...(a.effectiveSource && { effectiveSource: a.effectiveSource as NonNullable<HistoryEntry["attempts"]>[number]["effectiveSource"] }),
+    ...(a.upstreamRequest && { upstreamRequest: a.upstreamRequest as NonNullable<HistoryEntry["attempts"]>[number]["upstreamRequest"] }),
+    ...(a.upstreamResponse && { upstreamResponse: a.upstreamResponse as NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"] }),
   }))
 }
 

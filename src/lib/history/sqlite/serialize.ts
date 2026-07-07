@@ -95,6 +95,18 @@ export const STAGE = {
   outboundResponse: "outbound_response",
   inboundResponse: "inbound_response",
   sseEvents: "sse_events",
+  // ─── New client/upstream leg stages (RFC 2026-07-07 §3) — coexist with the
+  //     legacy stages above during migration (P2 additive; P4 removes legacy). ───
+  /** Client → Proxy request leg (leg-independent, attempt_index -1). RFC §4: legacy `inbound_request` migrates here in P4. */
+  clientRequest: "client_request",
+  /** Proxy → Client response leg, first-class (leg-independent, attempt_index -1). RFC §2.1. */
+  clientResponse: "client_response",
+  /** Per-attempt proxy-side effective source (env.body verbatim + projections). RFC §3. */
+  effectiveSource: "effective_source",
+  /** Per-attempt proxy → upstream wire request (headers+body + messages projection, R4-FAIL-A). RFC §3. */
+  upstreamRequest: "upstream_request",
+  /** Per-attempt upstream → proxy response (success/trailers/rawBody + unified upstream frames). RFC §3, §S1. */
+  upstreamResponse: "upstream_response",
   /**
    * Dedup container (B3): a single row holding the JSON array of the request
    * group's member stages (inbound_request + per-attempt effective/outbound
@@ -142,9 +154,28 @@ export interface StagePayload {
 }
 
 /** Heavy top-level fields that move OUT of the head blob into stage rows. */
-const STAGE_TOP_KEYS = new Set<string>(["inboundRequest", "effectiveRequest", "outboundRequest", "outboundResponse", "inboundResponse", "sseEvents"])
+const STAGE_TOP_KEYS = new Set<string>([
+  "inboundRequest",
+  "effectiveRequest",
+  "outboundRequest",
+  "outboundResponse",
+  "inboundResponse",
+  "sseEvents",
+  // New leg-independent legs (RFC §3) — coexist with the legacy keys above.
+  "clientRequest",
+  "clientResponse",
+])
 /** Per-attempt heavy bodies that move OUT of the head blob's attempts[] into stage rows. */
-const ATTEMPT_BODY_KEYS = new Set<string>(["effectiveRequest", "wireRequest", "response", "sseEvents"])
+const ATTEMPT_BODY_KEYS = new Set<string>([
+  "effectiveRequest",
+  "wireRequest",
+  "response",
+  "sseEvents",
+  // New per-attempt legs (RFC §3) — coexist with the legacy keys above.
+  "effectiveSource",
+  "upstreamRequest",
+  "upstreamResponse",
+])
 
 /** Strip the heavy per-attempt bodies, keeping only the attempt summary in the head blob. */
 function stripAttemptBodies(attempt: Record<string, unknown>): Record<string, unknown> {
@@ -306,6 +337,12 @@ export function deserializeEntry(row: EntryRow, blob?: Uint8Array): HistoryEntry
  * fields; per-attempt stages fill attempts[i].{effectiveRequest,wireRequest,
  * response} and the top-level outbound/effective mirror the FINAL attempt.
  *
+ * New client/upstream leg stages (RFC §3) layer ADDITIVELY alongside the legacy
+ * ones: `client_request`/`client_response` fill the entry-level `clientRequest`/
+ * `clientResponse`; `effective_source`/`upstream_request`/`upstream_response` fill
+ * per-attempt `attempts[i].{effectiveSource,upstreamRequest,upstreamResponse}`
+ * (no top-level mirror — the upstream track is strictly per-attempt).
+ *
  * Partial / interrupted entries (some stage rows missing) degrade gracefully:
  * missing fields stay `undefined`; the head row `status` column (not field
  * presence) is the authority on whether the entry is partial.
@@ -353,6 +390,30 @@ export function assembleFullEntry(row: EntryRow, stageRows: Array<StageRow>): Hi
       }
       case STAGE.outboundResponse: {
         attemptSlot(attemptIndex).response = payload
+        break
+      }
+      // ─── New client/upstream leg stages (RFC §3) — coexist with the legacy
+      //     cases above. Unlike the legacy legs, the new per-attempt legs have NO
+      //     top-level mirror (upstream legs live per-attempt only); the client legs
+      //     are already entry-level, so they fill top-level fields directly. ───
+      case STAGE.clientRequest: {
+        base.clientRequest = payload as HistoryEntry["clientRequest"]
+        break
+      }
+      case STAGE.clientResponse: {
+        base.clientResponse = payload as HistoryEntry["clientResponse"]
+        break
+      }
+      case STAGE.effectiveSource: {
+        attemptSlot(attemptIndex).effectiveSource = payload
+        break
+      }
+      case STAGE.upstreamRequest: {
+        attemptSlot(attemptIndex).upstreamRequest = payload
+        break
+      }
+      case STAGE.upstreamResponse: {
+        attemptSlot(attemptIndex).upstreamResponse = payload
         break
       }
       default: {
@@ -516,6 +577,21 @@ export function extractStagePayloads(entry: HistoryEntry): Array<StagePayload> {
   if (finalEffective) stages.push({ stage: STAGE.effectiveRequest, attemptIndex: finalIdx, payload: finalEffective })
   if (finalWire) stages.push({ stage: STAGE.outboundRequest, attemptIndex: finalIdx, payload: finalWire })
   if (finalResponse) stages.push({ stage: STAGE.outboundResponse, attemptIndex: finalIdx, payload: finalResponse })
+
+  // ─── New client/upstream leg stages (RFC §3) — ADDITIVE, coexist with the legacy
+  //     stages above. The new per-attempt legs (effectiveSource/upstreamRequest/
+  //     upstreamResponse) are contributed directly by EVERY attempt (including the
+  //     final one) — there is NO top-level mirror, since the new model keeps the
+  //     upstream track strictly per-attempt (RFC §2.2). The client legs are
+  //     entry-level, leg-independent (attempt_index -1). Each is emitted ONLY when
+  //     the producer populated it (dual-write), so a legacy-only entry adds nothing.
+  if (entry.clientRequest) stages.push({ stage: STAGE.clientRequest, attemptIndex: LEG_ATTEMPT_INDEX, payload: entry.clientRequest })
+  if (entry.clientResponse) stages.push({ stage: STAGE.clientResponse, attemptIndex: LEG_ATTEMPT_INDEX, payload: entry.clientResponse })
+  for (const a of attempts) {
+    if (a.effectiveSource) stages.push({ stage: STAGE.effectiveSource, attemptIndex: a.index, payload: a.effectiveSource })
+    if (a.upstreamRequest) stages.push({ stage: STAGE.upstreamRequest, attemptIndex: a.index, payload: a.upstreamRequest })
+    if (a.upstreamResponse) stages.push({ stage: STAGE.upstreamResponse, attemptIndex: a.index, payload: a.upstreamResponse })
+  }
 
   return stages
 }

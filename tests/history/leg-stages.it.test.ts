@@ -1,0 +1,351 @@
+/**
+ * P2 — serialize/assemble the NEW client/upstream leg stages (RFC §3).
+ *
+ * Locks the additive-coexistence contract introduced in P2:
+ *   - `extractStagePayloads` emits the new stages (`client_response` /
+ *     `effective_source` / `upstream_request` / `upstream_response`) ALONGSIDE the
+ *     legacy ones, and `assembleFullEntry` reassembles them into the new legs.
+ *   - Upstream frames land in `attempts[i].upstreamResponse.sseEvents` (RFC §S1),
+ *     `upstreamRequest.messages` survives (R4-FAIL-A), and `upstreamResponse`'s
+ *     rich fields (`success`/`trailers`/`rawBody`) round-trip.
+ *   - FAIL-1: the EAGER stage path (`collectAttemptStages`, the in-flight second
+ *     producer) emits the SAME new-stage shape as the finalized
+ *     `extractStagePayloads`, so an interrupted row assembles like a finalized one.
+ *   - Invariant ③: a legacy single-blob row (no stage rows) still assembles.
+ *
+ * Pure — no DB. The stage-row layout is reproduced from the production finalize
+ * path (partitionStagesForWrite + zstd compress), matching the P0 golden helper.
+ */
+
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import type {
+  //
+  EffectiveRequest,
+  ResponseData,
+  WireRequest,
+} from "~/lib/context/types"
+import type {
+  //
+  HistoryEntry,
+  MessageContent,
+  SseEventRecord,
+} from "~/lib/history/types"
+
+import { createRequestContext } from "~/lib/context/request"
+import { compress } from "~/lib/history/sqlite/compression"
+import {
+  //
+  assembleFullEntry,
+  type EntryRow,
+  extractStagePayloads,
+  partitionStagesForWrite,
+  serializeHeadEntry,
+  STAGE,
+  type StagePayload,
+  type StageRow,
+} from "~/lib/history/sqlite/serialize"
+import { collectAttemptStages } from "~/lib/observability/sinks/history"
+
+// ── Local reproduction of the production finalize stage-row layout ───────────
+function serializeToRawRows(entry: HistoryEntry): { row: EntryRow; stageRows: Array<StageRow> } {
+  const { row } = serializeHeadEntry(entry)
+  const { groupRow, rest } = partitionStagesForWrite(extractStagePayloads(entry))
+  const ordered = groupRow ? [groupRow, ...rest] : rest
+  const stageRows: Array<StageRow> = ordered.map((sp) => ({
+    entry_id: row.id,
+    stage: sp.stage,
+    attempt_index: sp.attemptIndex,
+    created_at: 0,
+    blob_gz: compress(sp.payload),
+  }))
+  return { row, stageRows }
+}
+
+function msg(role: string, content: string): MessageContent {
+  return { role, content }
+}
+
+function sse(offsetMs: number, type: string, raw: string): SseEventRecord {
+  return { offsetMs, type, raw }
+}
+
+// ============================================================================
+// 1. Round-trip: new legs survive extractStagePayloads → assembleFullEntry
+// ============================================================================
+
+describe("P2 new leg stages — round-trip", () => {
+  // An entry carrying BOTH legacy legs and the new client/upstream legs, with two
+  // attempts: attempt 0 FAILED (carries its own upstream frames) + attempt 1 SUCCESS.
+  function dualEntry(): HistoryEntry {
+    const inbound = [msg("user", "hello")]
+    const upstreamMsgs = [msg("user", "hello [proxy-rewritten]")]
+    const okBody: MessageContent = { role: "assistant", content: "hi" }
+    return {
+      id: "p2-dual",
+      endpoint: "anthropic-messages",
+      startedAt: 1_700_000_000_000,
+      endedAt: 1_700_000_001_000,
+      durationMs: 1000,
+      transport: "http",
+      state: "completed",
+      active: false,
+      lastUpdatedAt: 1_700_000_001_000,
+      inboundRequest: { model: "claude-opus-4.7", messages: inbound, stream: true },
+      // ── legacy legs (still filled during coexistence) ──
+      effectiveRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" } },
+      outboundRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" } },
+      outboundResponse: { success: true, model: "claude-opus-4.7", usage: { input_tokens: 5, output_tokens: 2 }, content: okBody },
+      sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)],
+      // ── new client/upstream legs ──
+      clientResponse: { body: okBody, sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)] },
+      attempts: [
+        {
+          index: 0,
+          strategy: "primary",
+          durationMs: 100,
+          error: "upstream RST_STREAM",
+          // legacy per-attempt legs (dual-written during coexistence)
+          effectiveRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" } },
+          wireRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" }, headers: { "x-req": "0" } },
+          response: { success: false, model: "claude-opus-4.7", usage: { input_tokens: 0, output_tokens: 0 }, error: "upstream RST_STREAM", content: null },
+          sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)],
+          // new per-attempt legs
+          effectiveSource: {
+            format: "anthropic-messages",
+            model: "claude-opus-4.7",
+            messageCount: 1,
+            messages: upstreamMsgs,
+            body: { model: "claude-opus-4.7" },
+          },
+          upstreamRequest: {
+            format: "anthropic-messages",
+            model: "claude-opus-4.7",
+            messages: upstreamMsgs,
+            headers: { "x-req": "0" },
+            body: { model: "claude-opus-4.7" },
+          },
+          upstreamResponse: {
+            success: false,
+            status: 502,
+            rawBody: "upstream RST_STREAM",
+            model: "claude-opus-4.7",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`)],
+          },
+        },
+        {
+          index: 1,
+          strategy: "ws-fallback",
+          durationMs: 900,
+          // legacy per-attempt legs (dual-written during coexistence)
+          effectiveRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" } },
+          wireRequest: { model: "claude-opus-4.7", messages: upstreamMsgs, payload: { model: "claude-opus-4.7" }, headers: { "x-req": "1" } },
+          response: { success: true, model: "claude-opus-4.7", usage: { input_tokens: 5, output_tokens: 2 }, content: okBody },
+          // new per-attempt legs
+          effectiveSource: {
+            format: "anthropic-messages",
+            model: "claude-opus-4.7",
+            messageCount: 1,
+            messages: upstreamMsgs,
+            body: { model: "claude-opus-4.7" },
+          },
+          upstreamRequest: {
+            format: "anthropic-messages",
+            model: "claude-opus-4.7",
+            messages: upstreamMsgs,
+            headers: { "x-req": "1" },
+            body: { model: "claude-opus-4.7" },
+          },
+          upstreamResponse: {
+            success: true,
+            status: 200,
+            trailers: { "x-upstream-trailer": "ok" },
+            rawBody: `{"ok":true}`,
+            body: okBody,
+            model: "claude-opus-4.7",
+            usage: { input_tokens: 5, output_tokens: 2 },
+            sseEvents: [sse(0, "message_start", `data: {"type":"message_start"}`), sse(20, "message_stop", `data: {"type":"message_stop"}`)],
+          },
+        },
+      ],
+      attemptCount: 2,
+      currentStrategy: "ws-fallback",
+    } as HistoryEntry
+  }
+
+  test("upstream frames live in attempts[i].upstreamResponse.sseEvents (per-attempt, not top-level)", () => {
+    const entry = dualEntry()
+    const { row, stageRows } = serializeToRawRows(entry)
+    const back = assembleFullEntry(row, stageRows)
+
+    // Failed attempt 0 keeps its own frames on its upstreamResponse.
+    expect(back.attempts?.[0].upstreamResponse?.sseEvents?.map((e) => e.type)).toEqual(["message_start"])
+    // Successful attempt 1 keeps the full stream on ITS upstreamResponse.
+    expect(back.attempts?.[1].upstreamResponse?.sseEvents?.map((e) => e.type)).toEqual(["message_start", "message_stop"])
+  })
+
+  test("upstreamRequest.messages projection survives (R4-FAIL-A)", () => {
+    const entry = dualEntry()
+    const { row, stageRows } = serializeToRawRows(entry)
+    const back = assembleFullEntry(row, stageRows)
+    expect(back.attempts?.[0].upstreamRequest?.messages).toEqual([msg("user", "hello [proxy-rewritten]")])
+    expect(back.attempts?.[1].upstreamRequest?.messages).toEqual([msg("user", "hello [proxy-rewritten]")])
+  })
+
+  test("upstreamResponse rich fields (success / trailers / rawBody) round-trip", () => {
+    const entry = dualEntry()
+    const { row, stageRows } = serializeToRawRows(entry)
+    const back = assembleFullEntry(row, stageRows)
+    expect(back.attempts?.[0].upstreamResponse?.success).toBe(false)
+    expect(back.attempts?.[0].upstreamResponse?.rawBody).toBe("upstream RST_STREAM")
+    expect(back.attempts?.[1].upstreamResponse?.success).toBe(true)
+    expect(back.attempts?.[1].upstreamResponse?.trailers).toEqual({ "x-upstream-trailer": "ok" })
+    expect(back.attempts?.[1].upstreamResponse?.rawBody).toBe(`{"ok":true}`)
+  })
+
+  test("clientResponse reassembles as an entry-level leg", () => {
+    const entry = dualEntry()
+    const { row, stageRows } = serializeToRawRows(entry)
+    const back = assembleFullEntry(row, stageRows)
+    expect(back.clientResponse?.body).toEqual({ role: "assistant", content: "hi" })
+    expect(back.clientResponse?.sseEvents?.map((e) => e.type)).toEqual(["message_start"])
+  })
+
+  test("new stages are emitted ALONGSIDE the legacy ones (既有不丢)", () => {
+    const entry = dualEntry()
+    const { stageRows } = serializeToRawRows(entry)
+    const kinds = stageRows.map((sr) => `${sr.stage}@${sr.attempt_index}`).sort()
+    // Legacy stages still present (subset check — nothing dropped).
+    for (const legacy of ["request_group@-1", "sse_events@-1", "outbound_response@0", "outbound_response@1"]) {
+      expect(kinds).toContain(legacy)
+    }
+    // New stages present.
+    for (const fresh of [
+      "client_response@-1",
+      "effective_source@0",
+      "effective_source@1",
+      "upstream_request@0",
+      "upstream_request@1",
+      "upstream_response@0",
+      "upstream_response@1",
+    ]) {
+      expect(kinds).toContain(fresh)
+    }
+  })
+
+  test("legacy legs still round-trip unchanged during coexistence", () => {
+    const entry = dualEntry()
+    const { row, stageRows } = serializeToRawRows(entry)
+    const back = assembleFullEntry(row, stageRows)
+    // Legacy per-attempt response + top-level mirror still assemble.
+    expect(back.attempts?.[0].response?.success).toBe(false)
+    expect(back.outboundResponse?.success).toBe(true)
+    expect(back.sseEvents?.map((e) => e.type)).toEqual(["message_start"])
+    expect(back.inboundRequest.messages).toEqual([msg("user", "hello")])
+  })
+})
+
+// ============================================================================
+// 2. Invariant ③ — legacy single-blob row (no stage rows) still assembles
+// ============================================================================
+
+describe("P2 invariant ③ — legacy single-blob assemble", () => {
+  test("a full-blob row with zero stage rows returns the whole entry", () => {
+    const legacy: HistoryEntry = {
+      id: "p2-legacy",
+      endpoint: "anthropic-messages",
+      startedAt: 1_700_000_000_000,
+      state: "completed",
+      active: false,
+      inboundRequest: { model: "claude-opus-4.7", messages: [msg("user", "old row")] },
+      effectiveRequest: { model: "claude-opus-4.7", messages: [msg("user", "old row")], payload: {} },
+      outboundResponse: { success: true, model: "claude-opus-4.7", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
+    } as HistoryEntry
+    // Legacy layout: the head blob IS the full entry (old writer), NO stage rows.
+    const row: EntryRow = {
+      ...serializeHeadEntry(legacy).row,
+      blob_gz: compress(legacy),
+    }
+    const back = assembleFullEntry(row, [])
+    expect(back.inboundRequest.messages).toEqual([msg("user", "old row")])
+    expect(back.outboundResponse?.success).toBe(true)
+    // No new legs on a legacy row — they stay absent (status column is the authority).
+    expect(back.clientResponse).toBeUndefined()
+  })
+})
+
+// ============================================================================
+// 3. FAIL-1 — eager (collectAttemptStages) matches finalized (extractStagePayloads)
+// ============================================================================
+
+describe("P2 FAIL-1 — eager stage shape matches finalized", () => {
+  function newKinds(stages: Array<StagePayload>): Array<string> {
+    const fresh = new Set<string>([STAGE.clientRequest, STAGE.clientResponse, STAGE.effectiveSource, STAGE.upstreamRequest, STAGE.upstreamResponse])
+    return stages
+      .filter((s) => fresh.has(s.stage))
+      .map((s) => `${s.stage}@${s.attemptIndex}`)
+      .sort()
+  }
+
+  function newPayloads(stages: Array<StagePayload>): Record<string, unknown> {
+    const fresh = new Set<string>([STAGE.clientRequest, STAGE.clientResponse, STAGE.effectiveSource, STAGE.upstreamRequest, STAGE.upstreamResponse])
+    const out: Record<string, unknown> = {}
+    for (const s of stages) {
+      if (fresh.has(s.stage)) out[`${s.stage}@${s.attemptIndex}`] = s.payload
+    }
+    return out
+  }
+
+  test("eager collectAttemptStages emits the same per-attempt new-stage shape as finalized extractStagePayloads", () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    ctx.setOriginalRequest({ model: "claude-opus-4.7", messages: [{ role: "user", content: "hi" }], stream: false, payload: { model: "claude-opus-4.7" } })
+
+    const effective: EffectiveRequest = {
+      model: "claude-opus-4.7",
+      resolvedModel: undefined,
+      messages: [{ role: "user", content: "hi" }],
+      payload: { model: "claude-opus-4.7", system: "sys" },
+      format: "anthropic-messages",
+    }
+    const wire: WireRequest = {
+      model: "claude-opus-4.7",
+      messages: [{ role: "user", content: "hi [wire]" }],
+      payload: { model: "claude-opus-4.7", system: "sys" },
+      headers: { "x-h": "1" },
+      format: "anthropic-messages",
+    }
+    const resp: ResponseData = {
+      success: true,
+      model: "claude-opus-4.7",
+      usage: { input_tokens: 3, output_tokens: 1 },
+      content: { role: "assistant", content: "ok" },
+    }
+
+    ctx.beginAttempt({})
+    ctx.setAttemptEffectiveRequest(effective)
+    ctx.setAttemptWireRequest(wire)
+    ctx.setAttemptResponse(resp)
+
+    // EAGER path: the in-flight second producer.
+    const eager = collectAttemptStages(ctx)
+
+    // FINALIZED path: the producer bakes the same new legs into the entry; the
+    // sink copies them through; extractStagePayloads emits them at finalize.
+    ctx.complete(resp)
+    const entryData = ctx.toHistoryEntry()
+    const finalized = extractStagePayloads(entryData as unknown as HistoryEntry)
+
+    // Same new-stage KINDS (effective_source/upstream_request/upstream_response @0).
+    expect(newKinds(eager)).toEqual(newKinds(finalized))
+    expect(newKinds(eager)).toEqual(["effective_source@0", "upstream_request@0", "upstream_response@0"])
+    // For a clean single non-streaming attempt, the payloads are byte-identical
+    // (both funnel through the same P1 leg builders) — the strongest FAIL-1 lock.
+    expect(newPayloads(eager)).toEqual(newPayloads(finalized))
+  })
+})

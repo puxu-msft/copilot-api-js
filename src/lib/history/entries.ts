@@ -92,6 +92,11 @@ export function updateEntry(
       | "inboundRequest"
       | "outboundResponse"
       | "inboundResponse"
+      // New client leg (RFC §2.1) — dual-written by the history sink at terminal.
+      // The per-attempt new legs (effectiveSource/upstreamRequest/upstreamResponse)
+      // ride through the whole-object "attempts" field below, so they need no
+      // separate allowlist entry.
+      | "clientResponse"
       | "pipelineInfo"
       | "sseEvents"
       | "durationMs"

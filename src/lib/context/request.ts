@@ -39,6 +39,7 @@ import type {
   HistoryEffectiveSourceLeg,
   HistoryEntryData,
   HistoryUpstreamRequestLeg,
+  HistoryUpstreamResponseData,
   OriginalRequest,
   PartialResponseInfo,
   RepairOutcomeRecord,
@@ -132,6 +133,30 @@ export function legFromUpstreamRequest(wp: WireRequest): HistoryUpstreamRequestL
     system: (wp.payload as Record<string, unknown> | undefined)?.system,
     headers: wp.headers,
     body: wp.payload,
+  }
+}
+
+/**
+ * Project an upstream ResponseData into the NEW `upstreamResponse` leg (RFC §3).
+ * Carries the settled verdict (success / status / body / rawBody / usage /
+ * stopReason / model / responseId / annotations). `headers`, `trailers` and
+ * `sseEvents` are NOT on ResponseData — the caller layers them on (per-attempt
+ * response headers, final-attempt trailers, and the unified upstream frames that
+ * resolve §S1). Parallel to `legFromEffectiveSource`/`legFromUpstreamRequest`;
+ * wired into the producer (`toHistoryEntry`) + the eager sink path in P2.
+ */
+export function legFromUpstreamResponse(r: ResponseData): HistoryUpstreamResponseData {
+  return {
+    success: r.success,
+    ...(r.status !== undefined && { status: r.status }),
+    body: r.content,
+    ...(r.responseText !== undefined && { rawBody: r.responseText }),
+    usage: r.usage,
+    ...(r.stop_reason !== undefined && { stopReason: r.stop_reason }),
+    model: r.model,
+    ...(r.responseId !== undefined && { responseId: r.responseId }),
+    ...(r.copilotAnnotations && { copilotAnnotations: r.copilotAnnotations }),
+    ...(r.toolSearchRequests !== undefined && { toolSearchRequests: r.toolSearchRequests }),
   }
 }
 
@@ -704,6 +729,13 @@ export function createRequestContext(opts: {
 
       if (_forwardedResponse) {
         entry.inboundResponse = _forwardedResponse
+        // New client/upstream leg model (RFC §2.1): clientResponse is first-class,
+        // dual-written ALONGSIDE the legacy inboundResponse. `body` = the forwarded
+        // content; `status?` is a separate capture landed in P3 (absent here).
+        entry.clientResponse = {
+          ...(_forwardedResponse.content !== undefined && { body: _forwardedResponse.content }),
+          ...(_forwardedResponse.sseEvents && { sseEvents: _forwardedResponse.sseEvents }),
+        }
       }
 
       // Find truncation from the last attempt that had one
@@ -741,25 +773,49 @@ export function createRequestContext(opts: {
       // now carries its FULL bodies (Bug 3), so retries preserve every wire
       // payload + upstream response, not only the final attempt's.
       if (_attempts.length > 0) {
-        entry.attempts = _attempts.map((a) => ({
-          index: a.index,
-          strategy: a.strategy,
-          durationMs: a.durationMs,
-          transport: a.transport,
-          error: a.error?.message,
-          truncation: a.truncation,
-          sanitization: a.sanitization,
-          effectiveMessageCount: a.effectiveRequest?.messages.length,
-          effectiveRequest: a.effectiveRequest ? legFromEffective(a.effectiveRequest) : undefined,
-          wireRequest: a.wireRequest ? legFromWire(a.wireRequest) : undefined,
+        const finalIdx = _attempts.length - 1
+        entry.attempts = _attempts.map((a, i) => {
+          const isFinal = i === finalIdx
           // A failed attempt has no captured `response`; fall back to a response
           // synthesized from its upstream HTTPError body so the failure body
           // persists on THIS attempt's response stage (RFC gap H). No-op when the
           // attempt already has a response or its error carries no upstream body.
-          response: a.response ?? synthesizeAttemptErrorResponse(a),
-          sseEvents: a.sseEvents,
-          responseHeaders: a.responseHeaders,
-        }))
+          const attemptResponse = a.response ?? synthesizeAttemptErrorResponse(a)
+          // New model (RFC §S1): upstream frames unify into the per-attempt
+          // upstreamResponse. The FINAL attempt's frames are the top-level
+          // `_sseEvents` (the successful stream); non-final buffered-retry attempts
+          // carry their own committed `a.sseEvents`.
+          const upstreamSse = isFinal ? (_sseEvents ?? a.sseEvents) : a.sseEvents
+          const upstreamResponse: HistoryUpstreamResponseData | undefined = attemptResponse
+            ? {
+                ...legFromUpstreamResponse(attemptResponse),
+                ...(a.responseHeaders && { headers: a.responseHeaders }),
+                ...(isFinal && _httpHeaders?.outboundResponseTrailers && { trailers: _httpHeaders.outboundResponseTrailers }),
+                ...(upstreamSse && { sseEvents: upstreamSse }),
+              }
+            : undefined
+          return {
+            index: a.index,
+            strategy: a.strategy,
+            durationMs: a.durationMs,
+            transport: a.transport,
+            error: a.error?.message,
+            truncation: a.truncation,
+            sanitization: a.sanitization,
+            effectiveMessageCount: a.effectiveRequest?.messages.length,
+            effectiveRequest: a.effectiveRequest ? legFromEffective(a.effectiveRequest) : undefined,
+            wireRequest: a.wireRequest ? legFromWire(a.wireRequest) : undefined,
+            response: attemptResponse,
+            sseEvents: a.sseEvents,
+            responseHeaders: a.responseHeaders,
+            // ─── New per-attempt legs (RFC §3) — dual-written ALONGSIDE the legacy
+            //     legs above. effectiveSource/upstreamRequest reuse the P1 builders;
+            //     upstreamResponse carries success/trailers/rawBody + unified frames. ───
+            ...(a.effectiveRequest && { effectiveSource: legFromEffectiveSource(a.effectiveRequest) }),
+            ...(a.wireRequest && { upstreamRequest: legFromUpstreamRequest(a.wireRequest) }),
+            ...(upstreamResponse && { upstreamResponse }),
+          }
+        })
       }
 
       return entry
