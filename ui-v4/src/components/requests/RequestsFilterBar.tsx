@@ -36,10 +36,12 @@ const STATE_OPTIONS = TERMINAL_STATES.map((s) => ({ value: s, label: s }))
 export function RequestsFilterBar({
   filters,
   setFilter,
+  setFilters,
   columnMenuSlot,
 }: {
   filters: RequestFilters
   setFilter: <K extends keyof RequestFilters>(k: K, v: RequestFilters[K]) => void
+  setFilters: (patch: Partial<RequestFilters>) => void
   columnMenuSlot?: React.ReactNode
 }) {
   const [search, setSearch] = useState(filters.search)
@@ -123,10 +125,7 @@ export function RequestsFilterBar({
       <DateRangePopover
         from={filters.from}
         to={filters.to}
-        onChange={(f, t) => {
-          setFilter("from", f)
-          setFilter("to", t)
-        }}
+        onChange={(f, t) => setFilters({ from: f, to: t })}
       />
       {columnMenuSlot}
     </div>

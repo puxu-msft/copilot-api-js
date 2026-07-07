@@ -27,6 +27,7 @@ describe("RequestsFilterBar", () => {
       <RequestsFilterBar
         filters={EMPTY_FILTERS}
         setFilter={setFilter}
+        setFilters={vi.fn()}
         columnMenuSlot={null}
       />,
     )
@@ -44,6 +45,7 @@ describe("RequestsFilterBar", () => {
       <RequestsFilterBar
         filters={EMPTY_FILTERS}
         setFilter={setFilter}
+        setFilters={vi.fn()}
         columnMenuSlot={null}
       />,
     )
@@ -58,6 +60,7 @@ describe("RequestsFilterBar", () => {
       <RequestsFilterBar
         filters={EMPTY_FILTERS}
         setFilter={vi.fn()}
+        setFilters={vi.fn()}
         columnMenuSlot={null}
       />,
     )
@@ -79,6 +82,7 @@ describe("RequestsFilterBar", () => {
       <RequestsFilterBar
         filters={{ ...EMPTY_FILTERS, model: "opus" }}
         setFilter={setFilter}
+        setFilters={vi.fn()}
         columnMenuSlot={null}
       />,
     )
@@ -88,9 +92,32 @@ describe("RequestsFilterBar", () => {
       <RequestsFilterBar
         filters={EMPTY_FILTERS}
         setFilter={setFilter}
+        setFilters={vi.fn()}
         columnMenuSlot={null}
       />,
     )
     expect(input.value).toBe("")
+  })
+
+  it("date-range onChange batches from+to via setFilters in one call (never drops 'from')", async () => {
+    const user = userEvent.setup()
+    const setFilters = vi.fn()
+    render(
+      <RequestsFilterBar
+        filters={EMPTY_FILTERS}
+        setFilter={vi.fn()}
+        setFilters={setFilters}
+        columnMenuSlot={null}
+      />,
+    )
+    // 打开时间范围 popover(Radix Trigger 需真实 pointer+focus 序列 → userEvent),选当前月 15 号。
+    await user.click(screen.getByRole("button", { name: /time range/i }))
+    await user.click(screen.getByText("15"))
+    // 关键回归:一次 setFilters 落两维,from 与 to 同时传入(不因全量重写丢下界)。
+    expect(setFilters).toHaveBeenCalledTimes(1)
+    const patch = setFilters.mock.calls[0][0] as { from: number | null; to: number | null }
+    expect(patch.from).not.toBeNull()
+    expect(patch.to).not.toBeNull()
+    expect((patch.to as number) - (patch.from as number)).toBe(86_399_999)
   })
 })

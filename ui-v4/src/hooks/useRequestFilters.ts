@@ -38,8 +38,11 @@ export function useRequestFilters() {
   )
 
   const setFilter = useCallback(<K extends keyof RequestFilters>(k: K, v: RequestFilters[K]) => write({ ...filters, [k]: v }), [filters, write])
+  // 多维联动写(如时间范围 from+to)必须走批量,一次 write 落多维。分次 setFilter 会因 `filters`
+  // 闭包旧值 + write 全量重写(先删所有 filter 键再回填)在同一事件里互相覆盖 → 丢维度。
+  const setFilters = useCallback((patch: Partial<RequestFilters>) => write({ ...filters, ...patch }), [filters, write])
   const clearFilter = useCallback((k: keyof RequestFilters) => write({ ...filters, [k]: EMPTY_FILTERS[k] }), [filters, write])
   const clearAll = useCallback(() => write(EMPTY_FILTERS), [write])
 
-  return { filters, setFilter, clearFilter, clearAll }
+  return { filters, setFilter, setFilters, clearFilter, clearAll }
 }
