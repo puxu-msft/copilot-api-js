@@ -82,11 +82,40 @@ describe("anthropic codec — createResponseAccumulator", () => {
   })
 })
 
+describe("anthropic codec — prepareWire tool-field stripping", () => {
+  // The codec's prepareWire is the S4 last-mile that maps env.prepareHints.* into
+  // prepareAnthropicRequest opts. This closes the seam for excludeToolFields
+  // (codec.ts) — asserting the per-attempt hint threads all the way to the wire,
+  // alongside the always-on built-in default strip.
+  function envWithTools(tools: unknown, prepareHints: Record<string, unknown> = {}): RequestEnvelope {
+    return {
+      model: undefined,
+      body: { model: "claude-sonnet-4", max_tokens: 16, messages: [], tools },
+      prepareHints,
+    } as unknown as RequestEnvelope
+  }
+
+  test("built-in default strips eager_input_streaming through prepareWire", () => {
+    const codec = makeCodec()
+    const prepared = codec.prepareWire(envWithTools([{ name: "Read", input_schema: {}, eager_input_streaming: true }]))
+    const tools = (prepared.body as { tools: Array<Record<string, unknown>> }).tools
+    expect(tools[0].eager_input_streaming).toBeUndefined()
+  })
+
+  test("prepareHints.excludeToolFields threads to the wire (codec mapping)", () => {
+    const codec = makeCodec()
+    const prepared = codec.prepareWire(envWithTools([{ name: "Read", input_schema: {}, future_x: 1 }], { excludeToolFields: ["future_x"] }))
+    const tools = (prepared.body as { tools: Array<Record<string, unknown>> }).tools
+    expect(tools[0].future_x).toBeUndefined()
+    expect(tools[0].name).toBe("Read")
+  })
+})
+
 describe("buildAnthropicStrategies", () => {
   const stubResanitize = (p: MessagesPayload): SanitizeResult<MessagesPayload> => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 })
   const baseline = { model: "claude-sonnet-4", messages: [], max_tokens: 100 } as unknown as MessagesPayload
 
-  test("yields the 13 strategies in order (8 legacy + v4-only server-error-retry + server-tool-rejection + structured-outputs-rejection + system-reject-retry + web-search-not-found-retry, RFC §12.9)", () => {
+  test("yields the 14 strategies in order (8 legacy + v4-only server-error-retry + tool-field-rejection + server-tool-rejection + structured-outputs-rejection + system-reject-retry + web-search-not-found-retry, RFC §12.9)", () => {
     const strategies = buildAnthropicStrategies({
       originalPayload: baseline,
       resanitize: stubResanitize,
@@ -99,6 +128,7 @@ describe("buildAnthropicStrategies", () => {
       "server-error-retry",
       "token-refresh",
       "effort-learning",
+      "tool-field-rejection-retry",
       "body-field-rejection-retry",
       "legacy-thinking-retry",
       "unsupported-beta-retry",

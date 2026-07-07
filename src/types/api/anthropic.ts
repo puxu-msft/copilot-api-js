@@ -100,6 +100,16 @@ export interface Tool {
   cache_control?: CacheControlEphemeral
   type?: string
   defer_loading?: boolean
+  /**
+   * Client-side tool-input streaming hint (newer Anthropic feature). Modelled
+   * here only to make it EXPLICIT that we know about it and deliberately do NOT
+   * forward it: GHC's upstream Anthropic API rejects unknown tool fields with
+   * `tools.N.custom.eager_input_streaming: Extra inputs are not permitted`, so it
+   * is stripped by `stripToolFields` (built-in default). See
+   * `lib/request/strategies/tool-field-rejection-retry.ts` for the general
+   * learner that auto-strips any future unknown tool field.
+   */
+  eager_input_streaming?: boolean
 }
 
 export type ToolChoice = { type: "auto" } | { type: "any" } | { type: "none" } | { type: "tool"; name: string }

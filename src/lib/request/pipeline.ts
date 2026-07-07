@@ -106,6 +106,14 @@ export interface PrepareHints {
    */
   excludeServerToolTypes?: ReadonlyArray<string>
   /**
+   * Custom-tool top-level field names (e.g. `eager_input_streaming`) to strip
+   * from every tool in the next wire payload, in addition to anything the
+   * built-in defaults / global config / negotiation cache already strips. Set by
+   * the tool-field-rejection retry strategy when the upstream rejects an unknown
+   * tool field with `tools.N.<variant>.<field>: Extra inputs are not permitted`.
+   */
+  excludeToolFields?: ReadonlyArray<string>
+  /**
    * L2 buffered-retry escalation (RFC §8): FORCE an aggressive native `clear_tool_uses`
    * context_management edit on this attempt's wire (independent of `context_editing` mode) to
    * compress the context so the generation finishes faster. Set by the buffered driver's

@@ -400,6 +400,7 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
     ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
     ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
     ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
+    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
     ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
   })
 

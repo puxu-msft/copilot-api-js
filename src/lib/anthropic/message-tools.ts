@@ -25,8 +25,13 @@ import type {
 import { applyStickyUndeferredTools } from "~/lib/request/strategies/deferred-tool-retry"
 import { state } from "~/lib/state"
 
-import { getUnsupportedServerToolTypes } from "./feature-negotiation"
+import {
+  //
+  getUnsupportedServerToolTypes,
+  getUnsupportedToolFields,
+} from "./feature-negotiation"
 import { modelSupportsToolSearch } from "./features"
+import { collectAllMatching } from "./per-model-config"
 
 // ============================================================================
 // Constants
@@ -367,4 +372,88 @@ export function stripServerTools(tools: Array<Tool> | undefined, model: string, 
   }
 
   return result.length > 0 ? result : undefined
+}
+
+// ============================================================================
+// Unknown Tool-Field Stripping
+// ============================================================================
+
+/**
+ * Custom-tool top-level fields ALWAYS stripped before sending upstream. Seeded
+ * with `eager_input_streaming` — a newer client-side tool-input streaming hint
+ * that newer Claude Code attaches to every tool, which GHC's upstream Anthropic
+ * API rejects with `tools.N.custom.eager_input_streaming: Extra inputs are not
+ * permitted`. Empirically verified inert (pure streaming optimization; output is
+ * identical when stripped). Additive with config `tool_strip_fields` and the
+ * reactive negotiation cache; reversible via config `tool_keep_fields`.
+ */
+export const BUILTIN_STRIP_TOOL_FIELDS: ReadonlyArray<string> = ["eager_input_streaming"]
+
+/**
+ * Tool keys GHC's upstream legitimately models. NEVER stripped: if the upstream
+ * ever reports one of these as "Extra inputs are not permitted", that signals a
+ * variant-misrouting bug (some transform corrupted the tool's discriminator so
+ * pydantic landed on the wrong union arm), which must surface as a loud 400 for
+ * investigation — NOT be silently swallowed by stripping a legitimate field.
+ */
+export const LEGIT_TOOL_KEYS: ReadonlySet<string> = new Set(["name", "description", "input_schema", "type", "defer_loading", "cache_control"])
+
+/**
+ * Strip unknown/rejected top-level fields from every custom tool. The strip set:
+ *
+ *   BUILTIN ∪ config `tool_strip_fields`(model) ∪ endpoint-learned cache ∪ excludeFields
+ *     − config `tool_keep_fields`(model) − LEGIT_TOOL_KEYS
+ *
+ * `excludeFields` is the per-attempt authoritative hint from the
+ * tool-field-rejection retry strategy (deterministic for THIS attempt,
+ * independent of whether the cache was written yet). Learned cache is
+ * endpoint-level (model-agnostic) — the rejection is an upstream-version
+ * property. Returns a new array; never mutates the input.
+ */
+export function stripToolFields(tools: Array<Tool> | undefined, model: string, excludeFields?: ReadonlyArray<string>): Array<Tool> | undefined {
+  if (!tools) return tools
+
+  const strip = new Set<string>(BUILTIN_STRIP_TOOL_FIELDS)
+  for (const fields of collectAllMatching(model, state.stripToolFields)) for (const f of fields) strip.add(f)
+  for (const f of getUnsupportedToolFields()) strip.add(f)
+  if (excludeFields) for (const f of excludeFields) strip.add(f)
+
+  // Subtract the reversibility keep-list, then the never-strip legit keys.
+  for (const fields of collectAllMatching(model, state.keepToolFields)) for (const f of fields) strip.delete(f)
+  for (const k of LEGIT_TOOL_KEYS) strip.delete(k)
+
+  if (strip.size === 0) return tools
+
+  const strippedFields = new Set<string>()
+  let affected = 0
+  const result = tools.map((tool) => {
+    // Copy only the non-stripped keys (avoids a dynamic `delete` on a computed key).
+    const next: Record<string, unknown> = {}
+    let toolChanged = false
+    for (const [key, value] of Object.entries(tool)) {
+      if (strip.has(key)) {
+        strippedFields.add(key)
+        toolChanged = true
+        continue
+      }
+      next[key] = value
+    }
+    if (toolChanged) affected++
+    return next as unknown as Tool
+  })
+
+  if (strippedFields.size > 0) {
+    // Observability with signal/noise balance: NOTABLE strips (config-declared,
+    // reactively learned, or a per-attempt hint — i.e. anything beyond the
+    // built-in baseline) warn; a strip consisting ONLY of the built-in default
+    // (`eager_input_streaming`, present on every Claude Code tool) logs at debug,
+    // since warning on every request would drown genuine alerts. Either way the
+    // proactive strip is recorded (not silent) — see richest-data-flow.
+    const builtin = new Set(BUILTIN_STRIP_TOOL_FIELDS)
+    const notable = [...strippedFields].some((field) => !builtin.has(field))
+    const log = notable ? consola.warn : consola.debug
+    log(`[DirectAnthropic] Stripped tool field(s) from ${affected}/${tools.length} tool(s): ${[...strippedFields].join(", ")}`)
+  }
+
+  return result
 }

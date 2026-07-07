@@ -39,6 +39,10 @@
  *                    server-tool history, learned from a `Tool '…' not found in
  *                    provided tools` 400. A flat model-key set; consumers downgrade
  *                    server-tool history for these models.
+ *   - toolFields   — custom-tool top-level field names (e.g. `eager_input_streaming`)
+ *                    the upstream rejects as `tools.N.<variant>.<field>: Extra inputs
+ *                    are not permitted`. Keyed model-AGNOSTICALLY (endpoint only) —
+ *                    the field is an upstream-version property, not a per-model one.
  *
  * Persisted to `PATHS.NEGOTIATION_STATES`.
  */
@@ -88,9 +92,28 @@ const learnedSystemRejectModels = new Set<string>()
 /** Models whose upstream rejects prior-turn server-tool history, LEARNED reactively
  *  from a `Tool '…' not found in provided tools` 400. 1-level membership set. */
 const serverToolHistoryDowngradeModels = new Set<string>()
+/**
+ * toolFields[endpointKey] = Set<custom-tool top-level field name> the upstream
+ * rejects as "Extra inputs are not permitted" (e.g. `eager_input_streaming`).
+ * Keyed model-AGNOSTICALLY (endpoint only) — see {@link endpointKey}.
+ */
+const unsupportedToolFields = new Map<string, Set<string>>()
 
 function modelKey(modelId: string): string {
   return `${copilotBaseUrl(state)}|anthropic-messages|${normalizeForMatching(modelId)}`
+}
+
+/**
+ * Endpoint-only key (NO model segment). Tool-field rejection is an UPSTREAM
+ * (GHC-version) property, not a per-model one: the client attaches the field to
+ * every tool regardless of model, and whether GHC rejects it depends only on the
+ * upstream API version. Keying model-agnostically means one 400 on ANY model
+ * immunizes every model on the same upstream endpoint — the most general
+ * learning (unlike the per-(endpoint, model) server-tool / partner-feature cache,
+ * whose rejections ARE model-specific).
+ */
+function endpointKey(): string {
+  return `${copilotBaseUrl(state)}|anthropic-messages`
 }
 
 function effortKey(modelId: string): string {
@@ -307,6 +330,33 @@ export function isServerToolHistoryDowngradeLearned(modelId: string): boolean {
 }
 
 // ============================================================================
+// Unsupported custom-tool fields (endpoint-level, model-agnostic)
+// ============================================================================
+
+/**
+ * Mark custom-tool top-level field names (e.g. `eager_input_streaming`) the
+ * upstream rejects as `tools.N.<variant>.<field>: Extra inputs are not
+ * permitted`. Learned reactively; keyed model-agnostically (see
+ * {@link endpointKey}) so one 400 immunizes every model on this endpoint.
+ * Accepts a batch because pydantic reports all offending fields in one response.
+ */
+export function markAnthropicUnsupportedToolFields(fields: ReadonlyArray<string>): void {
+  const key = endpointKey()
+  let changed = false
+  for (const field of fields) {
+    const trimmed = field.trim()
+    if (trimmed && addToSetMap(unsupportedToolFields, key, trimmed)) changed = true
+  }
+  if (changed) schedulePersist()
+}
+
+/** Return all custom-tool field names marked unsupported for the current endpoint. */
+export function getUnsupportedToolFields(): Array<string> {
+  const set = unsupportedToolFields.get(endpointKey())
+  return set ? [...set] : []
+}
+
+// ============================================================================
 // Persistence
 // ============================================================================
 
@@ -321,6 +371,7 @@ interface NegotiationStateFile {
   partnerFeatures: Record<string, Array<string>>
   systemRejectModels: Array<string>
   serverToolHistoryDowngrade: Array<string>
+  toolFields: Record<string, Array<string>>
 }
 
 function snapshotSetMap(map: Map<string, Set<string>>): Record<string, Array<string>> {
@@ -370,6 +421,7 @@ export const persistFeatureNegotiation = createSerializedAsyncFn(async () => {
     partnerFeatures: snapshotSetMap(unsupportedPartnerFeatures),
     systemRejectModels: [...learnedSystemRejectModels],
     serverToolHistoryDowngrade: [...serverToolHistoryDowngradeModels],
+    toolFields: snapshotSetMap(unsupportedToolFields),
   }
   try {
     await atomicWriteJson(PATHS.NEGOTIATION_STATES, data)
@@ -431,6 +483,7 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
       + loadSetMap(unsupportedPartnerFeatures, data.partnerFeatures)
       + loadStringSet(learnedSystemRejectModels, data.systemRejectModels)
       + loadStringSet(serverToolHistoryDowngradeModels, data.serverToolHistoryDowngrade)
+      + loadSetMap(unsupportedToolFields, data.toolFields)
     if (total > 0) {
       consola.info(`[FeatureNegotiation] Loaded ${total} negotiated entries from ${PATHS.NEGOTIATION_STATES}`)
     }
@@ -455,6 +508,7 @@ function clearNegotiationMaps(): void {
   unsupportedPartnerFeatures.clear()
   learnedSystemRejectModels.clear()
   serverToolHistoryDowngradeModels.clear()
+  unsupportedToolFields.clear()
 }
 
 export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void> {
@@ -476,7 +530,7 @@ export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void
  * does NOT drain/persist — a per-test afterEach should not incur sandbox disk
  * I/O on every test, and there is nothing worth flushing (the maps are about to
  * be wiped). Cancels the debounce timer so no enqueued persist fires after the
- * next test starts, then clears the 9 collections. Use the async drain-reset only when
+ * next test starts, then clears the 10 collections. Use the async drain-reset only when
  * a caller explicitly needs the cleared state flushed to disk.
  */
 export function clearAnthropicFeatureNegotiationForTests(): void {
