@@ -19,11 +19,13 @@ import {
   getUnsupportedFeatures,
   isAnthropicBetaUnsupported,
   isAnthropicFeatureUnsupported,
+  isEffortUnsupported,
   isSystemRejectModelLearned,
   isToolStickyUndeferred,
   loadPersistedFeatureNegotiation,
   markAnthropicBetaUnsupported,
   markAnthropicFeatureUnsupported,
+  markEffortUnsupported,
   markSystemRejectModel,
   markToolUndeferred,
   persistFeatureNegotiation,
@@ -140,6 +142,34 @@ describe("feature negotiation cache — deferred tools", () => {
   test("entries are per-model", () => {
     markToolUndeferred("m1", "Read")
     expect(isToolStickyUndeferred("m2", "Read")).toBe(false)
+  })
+})
+
+describe("effortUnsupported (zero-support effort set)", () => {
+  test("mark then is (model-only key, normalized)", () => {
+    clearAnthropicFeatureNegotiationForTests()
+    expect(isEffortUnsupported("claude-haiku-4.5")).toBe(false)
+    markEffortUnsupported("claude-haiku-4.5")
+    expect(isEffortUnsupported("claude-haiku-4-5")).toBe(true)
+  })
+  test("mutually exclusive with supportedEfforts", () => {
+    clearAnthropicFeatureNegotiationForTests()
+    setSupportedEfforts("claude-x", ["medium"])
+    markEffortUnsupported("claude-x")
+    // marking unsupported removes any supported whitelist for that model
+    expect(getSupportedEfforts("claude-x")).toBeUndefined()
+    expect(isEffortUnsupported("claude-x")).toBe(true)
+    // and vice-versa
+    setSupportedEfforts("claude-x", ["low"])
+    expect(isEffortUnsupported("claude-x")).toBe(false)
+  })
+  test("golden: persist → reload keeps the unsupported flag (empty-set collision avoided)", async () => {
+    clearAnthropicFeatureNegotiationForTests()
+    markEffortUnsupported("claude-haiku-4.5")
+    await persistFeatureNegotiation()
+    clearAnthropicFeatureNegotiationForTests()
+    await loadPersistedFeatureNegotiation()
+    expect(isEffortUnsupported("claude-haiku-4.5")).toBe(true)
   })
 })
 
