@@ -25,9 +25,9 @@
  * its history next turn. Since the hops downgrade the `tools` array (native
  * web_search → plain function tool), the historical server_tool_use has no
  * matching server-tool definition and upstream 400s. The
- * `anthropic.tool_rewrite_history_server: "downgrade"` config closes that loop
+ * `anthropic.server_tool_rewrite: "downgrade"` config closes that loop
  * by rewriting the historical pair into plain tool_use + tool_result inside
- * sanitizeAnthropicMessages (see sanitize/rewrite-server-tool-history.ts).
+ * sanitizeAnthropicMessages (see sanitize/rewrite-server-tool-blocks.ts).
  */
 
 import type { Context } from "hono"

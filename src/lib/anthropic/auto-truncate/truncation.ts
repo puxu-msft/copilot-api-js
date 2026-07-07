@@ -338,7 +338,7 @@ export function cleanupMessages(messages: Array<MessageParam>): Array<MessagePar
   let prevLength: number
   do {
     prevLength = result.length
-    // NOTE: processToolBlocks here does NOT run rewriteServerToolHistory (that
+    // NOTE: processToolBlocks here does NOT run rewriteServerToolBlocks (that
     // lives only in sanitizeAnthropicMessages). Auto-truncate always runs on an
     // already-sanitized payload, so any historical server_tool_use has already
     // been downgraded to tool_use upstream — nothing for this pass to rewrite.

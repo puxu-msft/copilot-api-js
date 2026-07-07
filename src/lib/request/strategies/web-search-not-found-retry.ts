@@ -7,7 +7,7 @@
  * `Tool 'web_search' not found in provided tools`. This strategy reacts to that
  * 400: learn the model into the negotiation `serverToolHistoryDowngrade` set
  * (persisted), then re-run the S3 sanitize chain on the PRE-S3 baseline
- * (`context.originalPayload`) — `resolveServerToolHistoryMode` now downgrades the
+ * (`context.originalPayload`) — `resolveServerToolMode` now downgrades the
  * server-tool history for the just-learned model, so sanitize rewrites the
  * `server_tool_use{web_search}` turns and the retry ships a clean payload.
  *
@@ -24,7 +24,7 @@ import type { AnthropicSanitizeFn } from "~/lib/anthropic/pipeline"
 import type { ApiError } from "~/lib/error"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { markServerToolHistoryDowngrade } from "~/lib/anthropic/feature-negotiation"
+import { markServerToolDowngrade } from "~/lib/anthropic/feature-negotiation"
 import { HTTPError } from "~/lib/error"
 import { createReactiveRejectionStrategy } from "~/lib/request/strategies/reactive-rejection"
 
@@ -54,7 +54,7 @@ export interface WebSearchNotFoundRetryDeps {
 }
 
 export function createWebSearchNotFoundRetryStrategy<TPayload extends MessagesPayload>(deps: WebSearchNotFoundRetryDeps): RetryStrategy<TPayload> {
-  const mark = deps.mark ?? markServerToolHistoryDowngrade
+  const mark = deps.mark ?? markServerToolDowngrade
   return createReactiveRejectionStrategy<TPayload>({
     name: "web-search-not-found-retry",
     match: (error) => {
@@ -68,7 +68,7 @@ export function createWebSearchNotFoundRetryStrategy<TPayload extends MessagesPa
       )
     },
     remediate: ({ context }) => {
-      // Re-run the S3 chain on the PRE-S3 baseline — resolveServerToolHistoryMode
+      // Re-run the S3 chain on the PRE-S3 baseline — resolveServerToolMode
       // now downgrades server-tool history for the just-learned model. NEVER feed
       // currentPayload (already-S3 → double-apply). Mirrors system-reject-retry.
       const result = deps.resanitize(context.originalPayload)

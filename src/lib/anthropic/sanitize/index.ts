@@ -15,7 +15,7 @@ import type {
 
 import { state } from "~/lib/state"
 
-import { resolveServerToolHistoryMode } from "../server-tool-history-mode"
+import { resolveServerToolMode } from "../server-tool-rewrite-mode"
 import { resolveSystemSanitizeMode } from "../system-reject-mode"
 import {
   //
@@ -26,7 +26,7 @@ import { deduplicateToolCalls } from "./deduplicate-tool-calls"
 import { downgradeEmptyEncryptedSearchResults } from "./empty-encrypted-search-result"
 import { stripReadToolResultTags } from "./read-tool-result-tags"
 import { finalizeAnthropicSanitization } from "./result"
-import { rewriteServerToolHistory } from "./rewrite-server-tool-history"
+import { rewriteServerToolBlocks } from "./rewrite-server-tool-blocks"
 import { sanitizeInlineSystemMessages } from "./system-messages"
 import { sanitizeAnthropicSystemPrompt } from "./system-prompt"
 import { removeAnthropicSystemReminders } from "./system-reminders"
@@ -102,8 +102,8 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // double-hop (server_tool_use{web_search} + *_tool_result) into plain
   // tool_use + tool_result. MUST run BEFORE processToolBlocks so the tool
   // reference validation sees the already-downgraded (plain) blocks. No-op when
-  // disabled. See rewrite-server-tool-history.ts for the self-poisoning loop.
-  messages = rewriteServerToolHistory(messages, resolveServerToolHistoryMode(payload.model)).messages
+  // disabled. See rewrite-server-tool-blocks.ts for the self-poisoning loop.
+  messages = rewriteServerToolBlocks(messages, resolveServerToolMode(payload.model)).messages
 
   // Fallback (always-on): downgrade any synthesized web_search turn whose result
   // `encrypted_content` is empty/missing — upstream rejects it with "Invalid

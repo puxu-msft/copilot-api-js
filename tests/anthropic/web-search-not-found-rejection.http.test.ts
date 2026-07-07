@@ -15,7 +15,7 @@ import path from "node:path"
 
 import {
   //
-  isServerToolHistoryDowngradeLearned,
+  isServerToolDowngradeLearned,
   resetAnthropicFeatureNegotiationForTesting,
 } from "~/lib/anthropic/feature-negotiation"
 import { PATHS } from "~/lib/config/paths"
@@ -131,7 +131,7 @@ describe("POST /v1/messages — reactive web_search-not-found self-healing", () 
       // Keep the PROACTIVE (global config) downgrade OFF so the first hop ships
       // the native server_tool_use block — the reactive strategy must learn the
       // per-model downgrade from the 400.
-      rewriteHistoryServerTools: false,
+      rewriteServerTools: false,
     })
     applyFetchMock(upstreamFetchMock)
     setModels({
@@ -186,6 +186,6 @@ describe("POST /v1/messages — reactive web_search-not-found self-healing", () 
     expect(hasServerToolUse(bodiesPerCall[1])).toBe(false)
 
     // Learned downgrade set fixated so future first hops proactively downgrade.
-    expect(isServerToolHistoryDowngradeLearned("claude-sonnet-4.6")).toBe(true)
+    expect(isServerToolDowngradeLearned("claude-sonnet-4.6")).toBe(true)
   })
 })

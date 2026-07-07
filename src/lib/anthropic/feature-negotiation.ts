@@ -317,7 +317,7 @@ export function isSystemRejectModelLearned(modelId: string): boolean {
  * membership set — the fact is a per-model boolean, no sub-dimension. Consumers
  * downgrade server-tool history for these models on subsequent requests.
  */
-export function markServerToolHistoryDowngrade(modelId: string): void {
+export function markServerToolDowngrade(modelId: string): void {
   if (!serverToolHistoryDowngradeModels.has(modelKey(modelId))) {
     serverToolHistoryDowngradeModels.add(modelKey(modelId))
     schedulePersist()
@@ -325,7 +325,7 @@ export function markServerToolHistoryDowngrade(modelId: string): void {
 }
 
 /** Whether server-tool history downgrade was learned for the given model. */
-export function isServerToolHistoryDowngradeLearned(modelId: string): boolean {
+export function isServerToolDowngradeLearned(modelId: string): boolean {
   return serverToolHistoryDowngradeModels.has(modelKey(modelId))
 }
 

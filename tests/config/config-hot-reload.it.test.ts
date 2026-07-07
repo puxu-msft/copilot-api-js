@@ -497,10 +497,10 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
   },
   {
     configKey: "anthropic.server_tool_rewrite",
-    stateKey: "rewriteHistoryServerTools",
+    stateKey: "rewriteServerTools",
     sampleYamlValue: "downgrade",
     expectedStateValue: "downgrade",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
   },
   {
     configKey: "anthropic.thinking_signature_compat",

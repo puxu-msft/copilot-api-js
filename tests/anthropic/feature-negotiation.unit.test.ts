@@ -20,14 +20,14 @@ import {
   isAnthropicBetaUnsupported,
   isAnthropicFeatureUnsupported,
   isEffortUnsupported,
-  isServerToolHistoryDowngradeLearned,
+  isServerToolDowngradeLearned,
   isSystemRejectModelLearned,
   isToolStickyUndeferred,
   loadPersistedFeatureNegotiation,
   markAnthropicBetaUnsupported,
   markAnthropicFeatureUnsupported,
   markEffortUnsupported,
-  markServerToolHistoryDowngrade,
+  markServerToolDowngrade,
   markSystemRejectModel,
   markToolUndeferred,
   persistFeatureNegotiation,
@@ -178,23 +178,23 @@ describe("effortUnsupported (zero-support effort set)", () => {
 describe("serverToolHistoryDowngrade (web_search-not-found downgrade set)", () => {
   test("mark then is — normalized membership, endpoint-scoped", () => {
     clearAnthropicFeatureNegotiationForTests()
-    expect(isServerToolHistoryDowngradeLearned("claude-sonnet-4.6")).toBe(false)
-    markServerToolHistoryDowngrade("claude-sonnet-4.6")
-    expect(isServerToolHistoryDowngradeLearned("claude-sonnet-4.6")).toBe(true)
+    expect(isServerToolDowngradeLearned("claude-sonnet-4.6")).toBe(false)
+    markServerToolDowngrade("claude-sonnet-4.6")
+    expect(isServerToolDowngradeLearned("claude-sonnet-4.6")).toBe(true)
     // normalization: dotted vs dashed are the same key
-    expect(isServerToolHistoryDowngradeLearned("claude-sonnet-4-6")).toBe(true)
+    expect(isServerToolDowngradeLearned("claude-sonnet-4-6")).toBe(true)
     // an unrelated model is not marked
-    expect(isServerToolHistoryDowngradeLearned("claude-opus-4.8")).toBe(false)
+    expect(isServerToolDowngradeLearned("claude-opus-4.8")).toBe(false)
   })
 
   test("golden: persist → reload keeps the learned downgrade model across restart", async () => {
     clearAnthropicFeatureNegotiationForTests()
-    markServerToolHistoryDowngrade("claude-haiku-4.5")
+    markServerToolDowngrade("claude-haiku-4.5")
     await persistFeatureNegotiation()
     clearAnthropicFeatureNegotiationForTests()
-    expect(isServerToolHistoryDowngradeLearned("claude-haiku-4.5")).toBe(false) // wiped
+    expect(isServerToolDowngradeLearned("claude-haiku-4.5")).toBe(false) // wiped
     await loadPersistedFeatureNegotiation()
-    expect(isServerToolHistoryDowngradeLearned("claude-haiku-4.5")).toBe(true) // survived
+    expect(isServerToolDowngradeLearned("claude-haiku-4.5")).toBe(true) // survived
   })
 })
 

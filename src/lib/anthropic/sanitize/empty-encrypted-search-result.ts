@@ -15,7 +15,7 @@
  * valid encrypted_content — an empty string AND any non-empty placeholder are
  * both rejected. So there is no way to "repair" the field; the only sendable
  * shape is to downgrade the whole web_search turn to a plain tool_use +
- * tool_result (exactly what `rewriteServerToolHistory("downgrade")` does).
+ * tool_result (exactly what `rewriteServerToolBlocks("downgrade")` does).
  *
  * ── Why this runs unconditionally (not gated on a config flag) ─────────────
  * A `web_search_tool_result` on our wire can ONLY be one we synthesized (GHC
@@ -32,7 +32,7 @@
  * (e.g. `tool_search_tool_result`, whose content is an object, not a result
  * array), are left untouched — no over-reach beyond the proven-broken shape.
  *
- * This is orthogonal to the `tool_rewrite_history_server` config: when that is
+ * This is orthogonal to the `server_tool_rewrite` config: when that is
  * enabled it downgrades ALL server-tool history first, so this pass then finds
  * nothing to do (no-op); when it is disabled, this pass still catches the
  * poisoned web_search turns. Both reuse the same downgrade primitive.
@@ -41,7 +41,7 @@
 import type { MessageParam } from "~/types/api/anthropic"
 
 import { isServerToolResultType } from "../server-tool-filter"
-import { rewriteServerToolHistory } from "./rewrite-server-tool-history"
+import { rewriteServerToolBlocks } from "./rewrite-server-tool-blocks"
 
 export interface DowngradeEmptyEncryptedSearchResult {
   messages: Array<MessageParam>
@@ -95,7 +95,7 @@ function messageHasEmptyEncryptedSearchResult(msg: MessageParam): boolean {
  * (or missing) into a plain tool_use + tool_result, so upstream stops rejecting
  * it with `Invalid encrypted_content in search_result block`.
  *
- * Reuses `rewriteServerToolHistory("downgrade")` per poisoned message so the
+ * Reuses `rewriteServerToolBlocks("downgrade")` per poisoned message so the
  * message-splitting / stringification logic stays single-sourced. Messages
  * without a poisoned web_search result are returned untouched; when nothing is
  * poisoned the input array reference is returned unchanged.
@@ -115,7 +115,7 @@ export function downgradeEmptyEncryptedSearchResults(messages: Array<MessagePara
     // A poisoned message always contains a *_tool_result, so downgrade always
     // rewrites it (assistant turns split into tool_use + a trailing user
     // tool_result; an orphan user-side result downgrades in place).
-    const { messages: rewritten } = rewriteServerToolHistory([msg], "downgrade")
+    const { messages: rewritten } = rewriteServerToolBlocks([msg], "downgrade")
     result.push(...rewritten)
   }
 

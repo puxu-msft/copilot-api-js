@@ -114,7 +114,7 @@ const scenarios: Array<Scenario> = [
   },
   {
     name: "server-tool history downgraded then validated",
-    setup: () => setStateForTests({ rewriteHistoryServerTools: "downgrade" }),
+    setup: () => setStateForTests({ rewriteServerTools: "downgrade" }),
     payload: payload([
       assistant([
         { type: "server_tool_use", id: "srv1", name: "web_search", input: { query: "x" } },

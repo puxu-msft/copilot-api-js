@@ -15,7 +15,7 @@ import type {
 import {
   //
   clearAnthropicFeatureNegotiationForTests,
-  markServerToolHistoryDowngrade,
+  markServerToolDowngrade,
 } from "~/lib/anthropic/feature-negotiation"
 import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
 import { setStateForTests } from "~/lib/state"
@@ -63,9 +63,9 @@ function payload(messages: Array<MessageParam>, tools?: Array<{ name: string }>)
   return { model: "claude-opus-4.8", max_tokens: 1024, messages, ...(tools && { tools }) } as unknown as MessagesPayload
 }
 
-describe("sanitizeAnthropicMessages × rewriteHistoryServerTools", () => {
+describe("sanitizeAnthropicMessages × rewriteServerTools", () => {
   test("downgrade: no server_tool_use survives, and no assistant message carries a tool_result (#1 regression)", () => {
-    setStateForTests({ rewriteHistoryServerTools: "downgrade" })
+    setStateForTests({ rewriteServerTools: "downgrade" })
     const out = sanitizeAnthropicMessages(payload([user([{ type: "text", text: "search" }]), webSearchTurn()])).payload
 
     for (const msg of out.messages) {
@@ -80,7 +80,7 @@ describe("sanitizeAnthropicMessages × rewriteHistoryServerTools", () => {
   })
 
   test("downgrade: processToolBlocks does NOT treat the downgraded tool_use as an orphan", () => {
-    setStateForTests({ rewriteHistoryServerTools: "downgrade" })
+    setStateForTests({ rewriteServerTools: "downgrade" })
     const out = sanitizeAnthropicMessages(payload([webSearchTurn("srvtoolu_keep", "q")])).payload
 
     // tool_use (assistant) + tool_result (user) must both survive — the pairing
@@ -98,7 +98,7 @@ describe("sanitizeAnthropicMessages × rewriteHistoryServerTools", () => {
   })
 
   test("false (default): a non-poisoned server_tool_use (real encrypted_content) is passed through unchanged", () => {
-    setStateForTests({ rewriteHistoryServerTools: false })
+    setStateForTests({ rewriteServerTools: false })
     const out = sanitizeAnthropicMessages(payload([webSearchTurnWithEncrypted("EhoKC3JlYWxfY2lwaGVy", "srvtoolu_pass")])).payload
 
     const serverToolUses = out.messages
@@ -112,7 +112,7 @@ describe("sanitizeAnthropicMessages × rewriteHistoryServerTools", () => {
     // The config-driven downgrade is off, but the always-on empty-encrypted
     // fallback (integrated into the sanitize chain) still rescues the poisoned
     // synthesized turn — otherwise upstream 400s on `Invalid encrypted_content`.
-    setStateForTests({ rewriteHistoryServerTools: false })
+    setStateForTests({ rewriteServerTools: false })
     const out = sanitizeAnthropicMessages(payload([user([{ type: "text", text: "search" }]), webSearchTurn("srvtoolu_poison")])).payload
 
     const allBlocks = out.messages.flatMap((m) => (typeof m.content === "string" ? [] : (m.content as unknown as Array<Block>)))
@@ -127,7 +127,7 @@ describe("sanitizeAnthropicMessages × rewriteHistoryServerTools", () => {
     // carries a synthesized server_tool_use{web_search}. With downgrade on, the
     // historical block becomes a plain tool_use, so upstream sees no orphaned
     // server tool reference.
-    setStateForTests({ rewriteHistoryServerTools: "downgrade" })
+    setStateForTests({ rewriteServerTools: "downgrade" })
     const messages = [user([{ type: "text", text: "find docs" }]), webSearchTurn("srvtoolu_root", "tokenizer offline"), user([{ type: "text", text: "继续" }])]
     const out = sanitizeAnthropicMessages(payload(messages, [{ name: "WebSearch" }])).payload
 
@@ -139,7 +139,7 @@ describe("sanitizeAnthropicMessages × rewriteHistoryServerTools", () => {
   })
 
   test("downgrade composes with system_messages_sanitize without producing orphans", () => {
-    setStateForTests({ rewriteHistoryServerTools: "downgrade", systemMessagesSanitize: "as_user" })
+    setStateForTests({ rewriteServerTools: "downgrade", systemMessagesSanitize: "as_user" })
     const messages = [{ role: "system", content: "inline system note" } as unknown as MessageParam, webSearchTurn("srvtoolu_compose")]
     const out = sanitizeAnthropicMessages(payload(messages)).payload
     const allBlocks = out.messages.flatMap((m) => (typeof m.content === "string" ? [] : (m.content as unknown as Array<Block>)))
@@ -154,7 +154,7 @@ describe("sanitizeAnthropicMessages × rewriteHistoryServerTools", () => {
     // server_tool_use pairing it tracks, but after rewrite the user-side
     // tool_result must still pair with the assistant tool_use. This asserts the
     // post-sanitize structure is internally consistent (no orphan drop).
-    setStateForTests({ rewriteHistoryServerTools: "downgrade" })
+    setStateForTests({ rewriteServerTools: "downgrade" })
     const out = sanitizeAnthropicMessages(payload([webSearchTurn("srvtoolu_order")])).payload
     const toolUseIds = new Set(
       out.messages
@@ -178,8 +178,8 @@ describe("sanitizeAnthropicMessages × learned server-tool-history downgrade (re
     // The per-model resolver must route it to "downgrade". Use a REAL (non-empty)
     // encrypted_content so the always-on empty-encrypted fallback does NOT fire —
     // isolating the effect to the reactive per-model path.
-    setStateForTests({ rewriteHistoryServerTools: false })
-    markServerToolHistoryDowngrade("claude-opus-4.8")
+    setStateForTests({ rewriteServerTools: false })
+    markServerToolDowngrade("claude-opus-4.8")
     const out = sanitizeAnthropicMessages(payload([webSearchTurnWithEncrypted("EhoKC3JlYWxfY2lwaGVy", "srvtoolu_learned")])).payload
 
     const allBlocks = out.messages.flatMap((m) => (typeof m.content === "string" ? [] : (m.content as unknown as Array<Block>)))
@@ -192,7 +192,7 @@ describe("sanitizeAnthropicMessages × learned server-tool-history downgrade (re
   test("non-learned model with global false: real server_tool_use history is preserved", () => {
     // Nothing learned, global off → resolver returns false → passthrough. A real
     // (non-empty encrypted_content) server_tool_use survives untouched.
-    setStateForTests({ rewriteHistoryServerTools: false })
+    setStateForTests({ rewriteServerTools: false })
     const out = sanitizeAnthropicMessages(payload([webSearchTurnWithEncrypted("EhoKC3JlYWxfY2lwaGVy", "srvtoolu_keep")])).payload
 
     const serverToolUses = out.messages

@@ -72,7 +72,7 @@ describe("buildMessageMapping", () => {
   })
 
   test("maps a split turn (1 original → 2 rewritten) back to the source original index", () => {
-    // rewriteServerToolHistory splits one assistant (server_tool_use + result + text)
+    // rewriteServerToolBlocks splits one assistant (server_tool_use + result + text)
     // into assistant(tool_use + text) + a NEW user(tool_result). Both derive from
     // the single original assistant, so both must map to its index.
     const original = [
@@ -188,7 +188,7 @@ describe("messagesMatch", () => {
   })
 
   test("matches a downgraded server_tool_use against the original tool_use by id", () => {
-    // rewriteServerToolHistory turns server_tool_use into a plain tool_use; the
+    // rewriteServerToolBlocks turns server_tool_use into a plain tool_use; the
     // mapping must still recognize the assistant as the same original message.
     const orig = {
       role: "assistant" as const,

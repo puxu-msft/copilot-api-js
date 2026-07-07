@@ -537,7 +537,7 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.system_reject_models !== undefined) setAnthropicBehavior({ systemRejectModels: a.system_reject_models })
     if (a.system_reject_mode !== undefined) setAnthropicBehavior({ systemRejectMode: a.system_reject_mode })
     if (a.server_tool_rewrite !== undefined) {
-      setAnthropicBehavior({ rewriteHistoryServerTools: a.server_tool_rewrite })
+      setAnthropicBehavior({ rewriteServerTools: a.server_tool_rewrite })
     }
     if (a.thinking_signature_compat !== undefined) {
       setAnthropicBehavior({ thinkingSignatureCompat: a.thinking_signature_compat })
