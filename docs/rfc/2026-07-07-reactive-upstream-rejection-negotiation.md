@@ -1,6 +1,6 @@
 # RFC: 反应式 per-model 上游拒绝协商 —— 完整性 pass
 
-- 状态：DRAFT v2（R1 对抗 review 已并入：修正 B 存储表达/parse 站点、A 接线阶段+反应式机制、映射链式表述；新增 O5/O6。待 R2 review 达零 FAIL/WARN + 用户解答 open questions 后转 plan）
+- 状态：DRAFT v3（R1+R2 对抗 review 已并入并逐条独立核验；O1–O5 已定，O6 推荐 (c) 待确认。R2 的 §3.2 FAIL 修正：payload.model 在 sanitize 已是解析名、无需改签名。待 O6 确认 + §3.2 定向 R3 后转 plan）
 - 日期：2026-07-07
 - 关联：ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)、ADR [internal-tool-security-posture](../decisions/2026-07-05-internal-tool-security-posture.md)、skill `telemetry-architecture`、skill `history-sqlite-schema`
 - 触发实例：Claude Code 后台 `haiku` 请求（映射到 Vertex-routed `claude-sonnet-4.6`/`claude-haiku-4.5`）携带 inline `role:"system"` 消息 → 上游 400 → 无任何反应式恢复。
@@ -76,10 +76,11 @@
 
 - **config**：新增 `anthropic.system_reject_models`（模型名子串集，match resolved outbound model），默认 `[claude-sonnet-4.6, claude-haiku-4.5]`（实测确认）。注释写明能力语义 + Vertex 已知成因。
 - **模式**：新增 `anthropic.system_reject_mode`（复用 `SystemMessagesSanitizeMode` 枚举），默认 `as_user`（保位置、对 prompt-cache 最友好）。
-- **有效模式解析**（具体胜通配）：`model ∈ reject 集 → system_reject_mode`；否则 → 全局 `system_messages_sanitize`（保留、默认 false，作用于所有模型）。
-- **接线（proactive 侧，声明式）—— 注意阶段与 plumbing**：inline-system 清洗现在在 **message-sanitize 阶段**（[handler-v4.ts:201](../../src/routes/messages/handler-v4.ts#L201) `sanitizeAnthropicMessages(payload)` → [sanitize/index.ts:95](../../src/lib/anthropic/sanitize/index.ts#L95)），该阶段**只跑一次、且当前只吃 payload、无 resolved model**（用全局 `state.systemMessagesSanitize`）。要按模型选有效模式，须**把 resolved 名 plumb 进 sanitize**：handler 在 [handler-v4.ts:183](../../src/routes/messages/handler-v4.ts#L183) 已有 `resolvedName`，改 `sanitizeAnthropicMessages` 签名接收它、内部算有效模式。这是**新 plumbing**（改函数签名 + 全部调用方，含 count-tokens，见下），非「resolvedModel 在 prepare 已有所以 trivial」——sanitize 与 prepare 是**不同阶段**（prepare 每 attempt 跑、sanitize 请求前只跑一次）。
-- **count-tokens 同源**（WARN 修复）：[count-tokens.ts:50](../../src/routes/messages/count-tokens.ts#L50) 也调 `sanitizeInlineSystemMessages(..., state.systemMessagesSanitize)` 并转发真 `count_tokens` 上游，对 reject 集模型同样会 400。有效模式必须**同样 thread 到此**，否则 count-tokens 与请求路径分叉。
-- **反应式侧 —— 机制须显式（FAIL-3 修复）**：pipeline 每 attempt 只重跑 `adapter.execute → prepareAnthropicRequest`（[pipeline.ts:272](../../src/lib/request/pipeline.ts#L272)），**sanitize 不重跑**。故反应式 A **不能靠 sanitize 阶段重清洗**。两个候选机制（O6，见 §6）：(a) reject-strategy 在 `handle` 里**直接对 `effectivePayload.messages` 做 role-rewrite**（system→user）再重试；(b) 把 inline-system 处理**下移进 `prepareAnthropicRequest`**（每 attempt 跑、天然拿 resolved model），proactive/reactive 统一在 prepare。(b) 架构更干净但改动面更大（inline-system 从 sanitize 迁到 prepare）。学入日志如实写「推断（Vertex 已知成因）」。
+- **有效模式解析**（具体胜通配，match 用 `normalizeForMatching`/`findMostSpecific`，同 `effortsOverrides`——NIT 修复：默认 `[claude-sonnet-4.6, claude-haiku-4.5]` 点名靠归一化才能匹配真实 resolved 名 `claude-sonnet-4-6`/`claude-haiku-4-5-20251001`）：`model ∈ (config system_reject_models ∪ 学入 systemRejectModels) → system_reject_mode`；否则 → 全局 `system_messages_sanitize`（保留、默认 false）。
+- **持久化槽（WARN 修复，与 B 的 O5 对称）**：反应式学入的「拒绝 inline-system」事实须存 negotiation 缓存的 `systemRejectModels: Set<model>`（config 声明 ∪ 运行时学入，snapshot/load 同 sibling 的 `Set<string>` 映射如 partnerFeatures）。否则反应式只自愈当前请求、后续同模型仍 400——与框架 learn-persist-then-proactively-skip 模式不一致。
+- **接线（proactive 侧）—— 阶段与前提修正（FAIL 修复）**：inline-system 清洗在 **S3 sanitize rewrite**（`sanitizeAnthropicMessages(payload)`，[payload-rewrites.ts:118](../../src/lib/anthropic/payload-rewrites.ts#L118) order 300 → [request-rewrite-adapter.ts:52](../../src/lib/codec/anthropic/request-rewrite-adapter.ts#L52) → [sanitize/index.ts:95](../../src/lib/anthropic/sanitize/index.ts#L95)）；**非** [handler-v4.ts:201](../../src/routes/messages/handler-v4.ts#L201)（那是 `preprocessAnthropicMessages` dedup+strip-read-tags）。关键：`payload.model` 在此**已是解析后 outbound 名**（[handler-v4.ts:193](../../src/routes/messages/handler-v4.ts#L193) `wireBody={...payload, model:resolvedName}`）。故有效模式**在 `sanitizeAnthropicMessages` 内部从 `payload.model` 直接算**——**无需改签名 / 无需 thread 全调用方**（推翻 v2 的 plumbing 主张）。web-search sanitize 路径（orchestrator/web-search-direct）经同一 `sanitizeAnthropicMessages` 透明覆盖。
+- **count-tokens（独立调用点）**：[count-tokens.ts:50](../../src/routes/messages/count-tokens.ts#L50) **直接**调 `sanitizeInlineSystemMessages`（不经 `sanitizeAnthropicMessages`），须用其已解析的 `anthropicPayload.model` 同样算有效模式——否则 count-tokens 与请求路径分叉、对 reject 集模型 400。
+- **反应式侧 —— 机制（O6，含新选项 c）**：pipeline 每 attempt 只重跑 `prepareAnthropicRequest`（[pipeline.ts:272](../../src/lib/request/pipeline.ts#L272)），**S3 sanitize 不重跑**。反应式 A：检测 `Unexpected role "system"` 400 → 学入 `systemRejectModels`（持久）→ 修复当前 in-flight 请求。修复机制三候选（O6）：**(a)** strategy 在 `handle` 直接 role-rewrite `effectivePayload.messages`；**(b)** inline-system 下移进 `prepareAnthropicRequest`（每 attempt 跑，但 **strand `inlineSystemConverted` 遥测**——现由 [sanitize/index.ts:138](../../src/lib/anthropic/sanitize/index.ts#L138) 经 pipelineInfo 捕获，迁走须重新接线）；**(c)** strategy 学入后调 `getResanitize()`（[codec.ts:122](../../src/lib/codec/anthropic/codec.ts#L122)，siblings auto-truncate/legacy-thinking 已用此重跑 sanitize 链）——学入后重跑 S3，有效模式已含新学模型 → 自动 role-rewrite。**(c) 最一致**（复用既有 hook、不 strand 遥测、proactive/reactive 同一份 sanitize 逻辑）。学入日志如实写「推断（Vertex 已知成因）」。
 
 ### 3.3 B：effort 零支持剥离（存储表达须重做）
 
@@ -93,13 +94,13 @@
 |---|---|---|
 | [request-preparation.ts:648](../../src/lib/anthropic/request-preparation.ts#L648) `findSupportedEfforts` | `if (learned && learned.length>0)` | 存下的 `[]` 被跳过 → 落到 metadata/undefined |
 | [request-preparation.ts:736](../../src/lib/anthropic/request-preparation.ts#L736) `clampEffortLevel` | `if (!supported) return` | undefined → 不剥 |
-| [request-preparation.ts:739](../../src/lib/anthropic/request-preparation.ts#L739) `clampEffortLevel` | `if (supportedIndices.length===0) return` | 空集 → 不剥（第 5 处） |
+| [request-preparation.ts:740](../../src/lib/anthropic/request-preparation.ts#L740) `clampEffortLevel` | `if (supportedIndices.length===0) return` | 空集 → 不剥（第 5 处） |
 | [feature-negotiation.ts:246](../../src/lib/anthropic/feature-negotiation.ts#L246) `snapshotEffortMap` | `if (value.length>0) out[key]` | **空集永不写盘** |
 | [feature-negotiation.ts:302](../../src/lib/anthropic/feature-negotiation.ts#L302) `loadEffortMap` | `values.length===0 continue` | **即便写了也加载即丢** |
 
 后两处使「不支持 effort」这一事实**无法跨重启存活**，直接违反 negotiation 缓存的持久契约（[feature-negotiation.ts:5-7](../../src/lib/anthropic/feature-negotiation.ts#L5)「All entries are permanent」）。
 
-**修法（须整体做，见 O5 定形）**：把「已知不支持」与「未知」表达为**可区分的两态**——候选：(a) 独立 `effortUnsupported: Set<model>` 映射（与 supportedEfforts 并列、各自持久化）；(b) sentinel 记录 `{learned:true, values:[]}`；(c) 用特殊 marker 值。**全部 5 处站点 + snapshot/load 持久化**须一并改；clampEffortLevel 对「已知不支持」→ **完全剥除 `output_config.effort`**。effort-learning strategy 的 `handle` 逻辑不变（learn 返 true → 重试 → 重准备读到「已知不支持」→ 剥除），但依赖存储表达修好。
+**修法（O5 已定 = (a) 独立集）**：新增 negotiation 缓存的 `effortUnsupported: Set<model>`，与 `supportedEfforts` map **完全分离**——「已知不支持」= 成员身份，**永不存空数组**，故 snapshot/load 对称平凡（一串模型名、无 length-0 特判），碰撞按构造消失；`supportedEfforts` map 及其 5 处现有逻辑**原样不动**。改动仅：① 新 parse 分支识别零支持措辞 → 学入 `effortUnsupported`；② `findSupportedEfforts`/`clampEffortLevel` **前置**一句 `if (effortUnsupported.has(model)) → 剥除 output_config.effort`（先于现有子集逻辑）；③ snapshot/load 加对称的 `effortUnsupported` 字段；④ 写入互斥：一个模型不同时在 `supportedEfforts` 与 `effortUnsupported`。effort-learning strategy 的 `handle` 逻辑不变（learn 返 true → 重试 → 重准备读到 unsupported → 剥除）。
 
 ### 3.4 C：web_search-not-found 反应式化
 
@@ -126,8 +127,8 @@
 
 - **P1 —— 框架 + A + B（承重，最重）**
   - 抽通用 learn/persist/canHandle primitive（strip 类补救；A 的 role-rewrite remediation 单列，见 §3.1）。
-  - A：config schema（`system_reject_models`/`system_reject_mode`）+ state 接线 + 有效模式解析 + `sanitizeAnthropicMessages` 签名加 resolved 名（含 count-tokens 调用方）+ 反应式机制（O6 定 a/b）。
-  - B：新 parse 分支（零支持措辞）+ 存储表达重做（O5 定形，改全部 5 站点 + snapshot/load）+ `clampEffortLevel` 对「已知不支持」剥除。
+  - A：config schema（`system_reject_models`/`system_reject_mode`）+ state 接线 + `systemRejectModels` negotiation Set（config ∪ 学入）+ 有效模式在 `sanitizeAnthropicMessages` 内从 `payload.model` 算（含 count-tokens 独立点）+ 反应式机制（O6 定，推荐 c=getResanitize）。
+  - B：新 parse 分支（零支持措辞）+ 独立 `effortUnsupported` 集（O5=a，supportedEfforts 逻辑不动）+ `clampEffortLevel`/`findSupportedEfforts` 前置剥除。
   - invariant：A/B 的反应式 + 声明式双路径都覆盖；B 经 persist→reload golden；默认 config 下 role:system reject 集含实测两模型（O2 定）。
 - **P2 —— C（server-tool history 反应式）**
   - 依 O1 裁决：加 strategy 或翻默认。
@@ -150,14 +151,14 @@ DAG：P1 是其余前置（抽出的 primitive 被 P2/P3 复用）。P3 内部�
 
 ---
 
-## 6. Open Questions（写代码前请用户解答）
+## 6. Open Questions（用户已解答）
 
-- **O1（C 的实现路径）**：`Tool 'web_search' not found` 用「加反应式 strategy」还是「翻转 `tool_rewrite_history_server` 默认为 downgrade」？前者对称于框架、默认不变；后者一行改默认但改变所有请求的 proactive 行为。
-- **O2（默认 reject 集）**：`system_reject_models` 默认是否内置 `[claude-sonnet-4.6, claude-haiku-4.5]`（此账号实测），还是默认空 + 靠反应式学入（更中立、首次必 400 一次再自愈）？
-- **O3（F 范围）**：token-limit 变体是否本轮做？取决于能否捕获真实上游 body（无 golden 不做，避免猜正则）。
-- **O4（D/E 广度）**：D/E 是把**当前已知**的 feature/tool 补齐，还是做成完全数据驱动的表（未知项也能声明式扩展而不改码）？
-- **O5（B 存储表达）**：「已知不支持 effort」与「未知」如何区分——独立 `effortUnsupported` 集 / sentinel `{learned:true, values:[]}` / marker 值？决定 §3.3 全部 5 站点 + 持久化的改法。
-- **O6（A 反应式机制）**：反应式 A 用 (a) strategy 在 `handle` 直接 role-rewrite `effectivePayload.messages`，还是 (b) 把 inline-system 处理下移进 `prepareAnthropicRequest`（proactive/reactive 统一、每 attempt 跑、天然拿 resolved model，但改动面更大）？
+- **O1（C 实现路径）→ 已定：加反应式 strategy**（对称于框架、默认不变）。
+- **O2（默认 reject 集）→ 已定：内置 `[claude-sonnet-4.6, claude-haiku-4.5]`**（此账号实测）。
+- **O3（F 范围）→ 已定：本轮做**（前置：先捕获真实上游 token-limit body 做 golden，再加正则）。
+- **O4（D/E 广度）→ 已定：补当前已知** feature/tool（非完全数据驱动表）。
+- **O5（B 存储表达）→ 已定：(a) 独立 `effortUnsupported: Set<model>`**（见 §3.3；碰撞按构造消失、supportedEfforts 逻辑不动）。
+- **O6（A 反应式机制）→ 待最终确认**：R2 新揭示**选项 (c) learn-then-`getResanitize()`**（[codec.ts:122](../../src/lib/codec/anthropic/codec.ts#L122)，siblings 已用）——最一致、不 strand `inlineSystemConverted` 遥测、proactive/reactive 同一份 sanitize 逻辑。用户初选 (b)，但 (b) 会 strand 该遥测且改动面更大；**RFC 推荐改选 (c)**，待用户确认。
 
 ---
 
