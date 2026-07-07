@@ -35,6 +35,10 @@
  *                    from a `does not support reasoning effort` 400 (no supported-
  *                    values list). Independent membership set, mutually exclusive
  *                    with `efforts`.
+ *   - serverToolHistoryDowngrade — models whose upstream rejects prior-turn
+ *                    server-tool history, learned from a `Tool '…' not found in
+ *                    provided tools` 400. A flat model-key set; consumers downgrade
+ *                    server-tool history for these models.
  *
  * Persisted to `PATHS.NEGOTIATION_STATES`.
  */
@@ -81,6 +85,9 @@ const unsupportedPartnerFeatures = new Map<string, Set<string>>()
 /** Models whose upstream rejects inline role:"system", LEARNED reactively (config
  *  twin = state.systemRejectModels; effective set = config ∪ this learned set). */
 const learnedSystemRejectModels = new Set<string>()
+/** Models whose upstream rejects prior-turn server-tool history, LEARNED reactively
+ *  from a `Tool '…' not found in provided tools` 400. 1-level membership set. */
+const serverToolHistoryDowngradeModels = new Set<string>()
 
 function modelKey(modelId: string): string {
   return `${copilotBaseUrl(state)}|anthropic-messages|${normalizeForMatching(modelId)}`
@@ -278,6 +285,28 @@ export function isSystemRejectModelLearned(modelId: string): boolean {
 }
 
 // ============================================================================
+// Learned server-tool history downgrade set
+// ============================================================================
+
+/**
+ * Mark a model whose upstream rejects prior-turn server-tool history (learned
+ * reactively from a `Tool '…' not found in provided tools` 400). A 1-level
+ * membership set — the fact is a per-model boolean, no sub-dimension. Consumers
+ * downgrade server-tool history for these models on subsequent requests.
+ */
+export function markServerToolHistoryDowngrade(modelId: string): void {
+  if (!serverToolHistoryDowngradeModels.has(modelKey(modelId))) {
+    serverToolHistoryDowngradeModels.add(modelKey(modelId))
+    schedulePersist()
+  }
+}
+
+/** Whether server-tool history downgrade was learned for the given model. */
+export function isServerToolHistoryDowngradeLearned(modelId: string): boolean {
+  return serverToolHistoryDowngradeModels.has(modelKey(modelId))
+}
+
+// ============================================================================
 // Persistence
 // ============================================================================
 
@@ -291,6 +320,7 @@ interface NegotiationStateFile {
   serverTools: Record<string, Array<string>>
   partnerFeatures: Record<string, Array<string>>
   systemRejectModels: Array<string>
+  serverToolHistoryDowngrade: Array<string>
 }
 
 function snapshotSetMap(map: Map<string, Set<string>>): Record<string, Array<string>> {
@@ -339,6 +369,7 @@ export const persistFeatureNegotiation = createSerializedAsyncFn(async () => {
     serverTools: snapshotSetMap(unsupportedServerTools),
     partnerFeatures: snapshotSetMap(unsupportedPartnerFeatures),
     systemRejectModels: [...learnedSystemRejectModels],
+    serverToolHistoryDowngrade: [...serverToolHistoryDowngradeModels],
   }
   try {
     await atomicWriteJson(PATHS.NEGOTIATION_STATES, data)
@@ -399,6 +430,7 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
       + loadSetMap(unsupportedServerTools, data.serverTools)
       + loadSetMap(unsupportedPartnerFeatures, data.partnerFeatures)
       + loadStringSet(learnedSystemRejectModels, data.systemRejectModels)
+      + loadStringSet(serverToolHistoryDowngradeModels, data.serverToolHistoryDowngrade)
     if (total > 0) {
       consola.info(`[FeatureNegotiation] Loaded ${total} negotiated entries from ${PATHS.NEGOTIATION_STATES}`)
     }
@@ -422,6 +454,7 @@ function clearNegotiationMaps(): void {
   unsupportedServerTools.clear()
   unsupportedPartnerFeatures.clear()
   learnedSystemRejectModels.clear()
+  serverToolHistoryDowngradeModels.clear()
 }
 
 export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void> {
@@ -443,7 +476,7 @@ export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void
  * does NOT drain/persist — a per-test afterEach should not incur sandbox disk
  * I/O on every test, and there is nothing worth flushing (the maps are about to
  * be wiped). Cancels the debounce timer so no enqueued persist fires after the
- * next test starts, then clears the 8 collections. Use the async drain-reset only when
+ * next test starts, then clears the 9 collections. Use the async drain-reset only when
  * a caller explicitly needs the cleared state flushed to disk.
  */
 export function clearAnthropicFeatureNegotiationForTests(): void {
