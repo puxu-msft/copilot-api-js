@@ -5,6 +5,8 @@ import {
   z,
 } from "@hono/zod-openapi"
 
+import type { InternalModelsResponse } from "~/lib/models/client"
+
 import {
   //
   getConfigDisabledIds,
@@ -76,7 +78,7 @@ internalModelsRoutes.openapi(listModelsRoute, async (c) => {
       object: raw?.object ?? "list",
       data: raw?.data ?? [],
       disabled: getConfigDisabledIds(),
-    },
+    } satisfies InternalModelsResponse,
     200,
   )
 })
@@ -85,8 +87,8 @@ internalModelsRoutes.openapi(getModelRoute, async (c) => {
   await ensureModels()
 
   const modelId = c.req.param("model")
-  // Enabled models keep modelIndex's alias resolution; config-disabled models are
-  // absent from the (filtered) index → fall back to an exact match on the full catalog.
+  // Enabled models: exact-id lookup on the (filtered) index. Config-disabled models
+  // are absent there → exact-id fallback on the full raw catalog.
   const model = state.modelIndex.get(modelId) ?? getRawModels()?.data.find((m) => m.id === modelId)
 
   if (!model) {
