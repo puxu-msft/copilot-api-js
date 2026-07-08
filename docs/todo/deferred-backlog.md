@@ -131,3 +131,11 @@
 - **当前行为**：注释指向失效（函数已不在该文件）；纯文档陈旧，无功能影响。
 - **为何暂缓**：`state.ts` 此刻正被并发会话改动（工作区有未提交外来改动），本会话按 concurrent-sessions 纪律**不碰该文件**（pathspec 提交会连带其未提交改动，违「绝不提交他人在飞工作」）。属并发协作让路，非范围降级。
 - **若做需改什么**：待 `state.ts` 并发改动落定后，把该注释指针更新为 `src/lib/anthropic/thinking-coercion.ts`。一行 doc-sync。发现方：typescript-reviewer NIT（2026-07-08）。
+
+## 反应式学习记录 生命周期转换的遥测（negotiation lifecycle telemetry）
+
+- **根因**：反应式学习记录（feature-negotiation 缓存）引入 TTL 生命周期后（spec `docs/spec/2026-07-08-negotiation-learning-lifecycle.md`），「自然重测环」在过期时静默丢弃 workaround、在下次上游 400 时静默重学，**无任何遥测**记录一次重测往返发生过；手动 expire / renew / pin 转换同样无信号。
+- **当前行为**：生命周期转换纯静默；管理 UI 能看到当前状态与时间戳，但看不到「转换事件流」（何时过期、何时被重学、重测往返频率）。
+- **理想架构**：按 richest-data-flow + telemetry-architecture，给 request-telemetry registry 加 `negotiation_lifecycle` 维度（转换类型 expired/re-learned/manual-expire/renew/pin + 分类 category + model），前端可选呈现重测频率、稳定性诊断。
+- **为何暂缓**：与核心生命周期改动解耦，避免把跨切面遥测通道耦进本 spec 的数据模型 + API + UI 三块交付；属「决定数据模型后的后续项」。对抗审查 M3 提出（2026-07-08）。
+- **若做需改什么**：接 request-telemetry registry（skill `telemetry-architecture`）加维度；在 `isEntryActive` 判过期→未施加的消费点、`markX` 再学点、四个 mutation 处发结构化转换事件。

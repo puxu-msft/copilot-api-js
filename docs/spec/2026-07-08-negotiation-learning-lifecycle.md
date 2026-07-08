@@ -119,9 +119,23 @@ function isEntryActive(meta: LearnedEntryMeta, category: NegotiationCategory, no
 
 实现纪律：先 `grep` 全仓这些符号的调用点、逐一核对（方法论见记忆 [fix-all-comparison-sites]），每分类配一条「过期后不再施加」的守卫测试。
 
+**门控位置（消费 vs 原始读取）**：`isEntryActive` 过滤只加在**上述面向管线消费的 exported reader** 内部。**内部 mutator 与快照/导出走原始（不门控）路径**，二者必须区分：
+- **写路径存在性探针**：`learnEffortsFromError`（[request-preparation.ts:685-688](../../src/lib/anthropic/request-preparation.ts#L685-L688)）用 `getSupportedEfforts` 判 `isFirstLearn`。门控后过期 effort 会被判为「首学」→ 日志打 `Learned` 而非 `Updated`（**仅日志措辞漂移，无害**）；`firstLearnedAt` 的保真由 `setSupportedEfforts` 内部**直接读原始 meta**保证（不经门控 reader）。
+- **快照 / 导出**：`getGroupedSnapshot` / `exportAll` **直接读原始 map + 自行计算 status**，绝不经门控 reader（否则过期行不显示 —— 与「管理过期记录」的目标相悖）。`getAllLearnedEfforts`（[feature-negotiation.ts:190](../../src/lib/anthropic/feature-negotiation.ts#L190)，当前无 live 消费者）保持原始，供快照/导出用。
+
 **自然重测环**：过期记录读作「没学过」→ workaround 不施加 → 上游再拒 → 对应 reactive-rejection 策略再学 → `markX` 刷新 `lastConfirmedAt`。无需独立的重测调度器。
 
-**`markX` 改为再确认（AC4）**：现有 `addToSetMap` 在 value 已存在时返回 false、不 persist。改为：即使已存在，也 `lastConfirmedAt = now`、清 `manuallyExpired`、`schedulePersist`（debounce 1s 吸收高频）。新建时另设 `firstLearnedAt`。
+**`markX` 再确认：分离「meta 变更」与「retry 前进」（AC4，关键）**。改动必须把**生命周期 meta 刷新**（副作用）与**函数返回的 `changed` 布尔**（load-bearing）分开 —— 后者驱动 reactive-retry driver，绝不能因 meta 刷新而改变语义。规则：**任何 mark 入口在 re-hit（值已存在）时都刷新 meta（`lastConfirmedAt=now`、清 `manuallyExpired`、`schedulePersist`），作为独立于返回值的副作用；返回值仍旧只表达「学到的值集/是否有前进」。** 十个入口逐一（6 个走 `addToSetMap`，4 个自带守卫）：
+
+| mark 入口 | 现状守卫 | 改动 |
+|---|---|---|
+| `markAnthropicFeatureUnsupported` / `markAnthropicBetaUnsupported` / `markToolUndeferred` / `markAnthropicServerToolUnsupported` / `markAnthropicPartnerFeatureUnsupported` / `markAnthropicUnsupportedToolFields`（`addToSetMap`，value 存在返 false） | 存在则不 persist | re-hit 也刷新 meta + persist（这些返回值当前无 retry-driver 消费，安全） |
+| `setSupportedEfforts`（[:173-183](../../src/lib/anthropic/feature-negotiation.ts#L173-L183)，whitelist 未变返 false） | `if(!changed) return false` 驱动 effort retry | **whitelist 未变仍返 false**（保 retry 契约），但**照常刷新 meta**；whitelist 变了照旧返 true + 刷新 |
+| `markEffortUnsupported`（[:204-211](../../src/lib/anthropic/feature-negotiation.ts#L204-L211)，`.has` 守卫） | 已在集合则 no-op | re-hit 刷新 meta + persist |
+| `markSystemRejectModel`（[:298-303](../../src/lib/anthropic/feature-negotiation.ts#L298-L303)，flat-set `.has`） | 已在集合则 no-op | re-hit 刷新 meta + persist |
+| `markServerToolDowngrade`（[:320-325](../../src/lib/anthropic/feature-negotiation.ts#L320-L325)，flat-set `.has`） | 已在集合则 no-op | re-hit 刷新 meta + persist |
+
+**互斥删除也要清对方 meta**：`setSupportedEfforts` 删 `effortUnsupported` 条目（[:175](../../src/lib/anthropic/feature-negotiation.ts#L175)）、`markEffortUnsupported` 删 `efforts` 条目（[:206](../../src/lib/anthropic/feature-negotiation.ts#L206)）—— v2 下必须连带删掉**对方分类的 meta**，不只删值。新建时设 `firstLearnedAt`；`schedulePersist` debounce 1s 吸收高频，且活跃条目会预抢 400、re-confirm 只对已过期条目触发，churn 有界。
 
 ### 4.3 按分类可配 TTL（config.yaml 新段，AC8）
 
@@ -136,6 +150,11 @@ negotiation_learning:
 
 - `never` / `0` / `null` → `Infinity`（不自动过期，除非手动失效）。
 - 沿用项目既有 duration 解析风格（参考 `reaper_interval` / `stale_request_max_age` / `extended_cache_ttl`），落进 state 的 negotiation 配置切片；`config.ts` 增 `negotiation_learning` 解析分支。
+- **热重载 + config UI 可编辑 → 必须打通四个 config 触点**（否则 `PUT /api/config/yaml` 报错或不 round-trip）：
+  1. `validateConfigInput`（[config/route.ts:113](../../src/routes/config/route.ts#L113)）的 schema 加 `negotiation_learning`（含嵌套 `ttl` map），否则含该键的 body 被拒。
+  2. `CONFIG_MANAGED_DEFAULTS` 加 `negotiation_learning` 默认 → `buildEffectiveConfig`（[config/route.ts:164-195](../../src/routes/config/route.ts#L164-L195)）必须 emit 它，否则完备性守卫测试（[:160-163](../../src/routes/config/route.ts#L160-L163)）失败。
+  3. `mergeConfigIntoDocument`（[config/route.ts:257-290](../../src/routes/config/route.ts#L257-L290)）的 `setNestedScalarContainer` 只处理一层标量 —— 嵌套 `ttl.<category>` map 需专门分支才能经 config UI round-trip。
+  4. 若改走 startup-phase（不热重载），则在 `config.ts` 显式块追加、并**不**进 `CONFIG_MANAGED_DEFAULTS`。本 spec 取**热重载**方案（1-3）。
 
 ### 4.4 后端 API（新 `src/routes/negotiation/route.ts`，`OpenAPIHono`，挂 `/api/negotiation`）
 
@@ -145,8 +164,21 @@ negotiation_learning:
 | POST | `/renew` | `{category,key,value}` | 续约：`lastConfirmedAt=now`、清 `manuallyExpired` |
 | POST | `/expire` | `{category,key,value}` | 立即失效：`manuallyExpired=true`（保留行） |
 | POST | `/pin` | `{category,key,value,pinned:boolean}` | 切换永不过期 |
-| DELETE | `/entry` | `{category,key,value}` | 彻底删除该行 |
+| POST | `/entry/delete` | `{category,key,value}` | 彻底删除该行 |
 | GET | `/export` | — | 完整 v2 数据集 JSON（`Content-Disposition: attachment`） |
+
+**四个编辑动作统一用 POST + JSON body**（H2）：删除不用 `DELETE /entry` —— `api.delete`（[api.ts:37](../../ui-v4/src/lib/api.ts#L37)）无 body 参数，且 DELETE-with-body 经 fetch/代理不可靠。故删除走 `POST /entry/delete`，与其余三个动作一致；前端只需给 [api.ts](../../ui-v4/src/lib/api.ts) 补 `post` 方法（无需扩展 delete）。
+
+**条目寻址约定（H3，消歧）**：API 层统一 `(category, key, value)`，与内部 map 的 key 维度**不是一回事**，此处钉死：
+
+| 分类 | 内部 map key | API `key` | API `value` | resolver 查找 |
+|---|---|---|---|---|
+| features / betas / deferredTools / serverTools / partnerFeatures | modelKey | = modelKey | 叶子值 | `map.get(key).get(value)` |
+| toolFields | endpointKey | = endpointKey | 字段名 | `map.get(key).get(value)` |
+| efforts | model | `""` | = model | `map.get(value)`（key 忽略） |
+| effortUnsupported / systemRejectModels / serverToolDowngrade | model（扁平） | `""` | = model | `map.get(value)`（key 忽略） |
+
+即：**扁平集合与 efforts 一律 `key=""`、`value=model`**，resolver 用 `value` 查这些 map；§4.1 表格的「key 维度」列指内部 map 键，与 API 寻址解耦。resolver 用 `satisfies Record<NegotiationCategory, …>` 逼编译期完备（方法论见记忆 [route-variant-to-existing-outcome]）。
 
 **分组快照响应**（richest-data-flow — 后端算全、前端选择性呈现）：
 
@@ -172,9 +204,9 @@ interface LearnedEntryView {
 }
 ```
 
-条目统一用 `(category, key, value)` 寻址（扁平集合 key=""）。feature-negotiation.ts 增 `renewEntry` / `expireEntry` / `setPinned` / `deleteEntry` / `getGroupedSnapshot` / `exportAll` + 一个 `(category,key,value) → 目标 map` 的 resolver（穷尽 10 分类 —— 用 `satisfies Record<NegotiationCategory, …>` 逼编译期完备，方法论见记忆 [route-variant-to-existing-outcome]）。
+路由在 `src/routes/index.ts` 挂 `app.route("/api/negotiation", negotiationRoutes)`，**须在 `registerOpenApiDocs` 之前挂载**（[openapi.ts:50-54](../../src/routes/openapi.ts#L50-L54) 要求管理路由先挂再注册文档）。因是 `OpenAPIHono` + `.openapi()` 定义，**无需**手动 openapi-compat 注册（区别于 history 路由）。
 
-路由在 `src/routes/index.ts` 挂 `app.route("/api/negotiation", negotiationRoutes)`。
+`renewEntry` / `expireEntry` / `setPinned` / `deleteEntry` 复用 §4.4 的 resolver 定位 meta；`getGroupedSnapshot` / `exportAll` 直接读原始 map 计算 status（见 §4.2 门控位置）。
 
 ### 4.5 前端页面（`ui-v4/src/components/learned/`）
 
@@ -194,8 +226,10 @@ interface LearnedEntryView {
   - `isEntryActive` 覆盖 pinned / manuallyExpired / TTL 到期（`fake timers`）。
   - `markX` 再确认刷新 `lastConfirmedAt` + 清 `manuallyExpired`。
   - **每消费点一条守卫测试**：过期后该 workaround 不再施加（10 分类各一）。
-  - 四个 mutation（renew/expire/pin/delete）+ resolver 完备性。
-- **API 集成**：GET 分组 / renew / expire / pin / DELETE / export。
+  - `markX` 再确认与 `changed` 返回值分离：`setSupportedEfforts` whitelist 未变时仍返 false 但刷新 meta；互斥删除清对方 meta。
+  - 四个 mutation（renew/expire/pin/delete）+ resolver 编译期完备性。
+  - 测试 reset 助手 `clearNegotiationMaps` / `clearAnthropicFeatureNegotiationForTests`（[feature-negotiation.ts:508-549](../../src/lib/anthropic/feature-negotiation.ts#L508-L549)）随 `Map<string, Map<string, meta>>` 新形状更新（仍 10 个集合）。
+- **API 集成**：GET 分组 / renew / expire / pin / `/entry/delete` / export。
 - **前端 vitest（jsdom）**：分组渲染、动作触发 mutation、导出触发下载；**须跑 `build:ui`（rollup）非仅 vitest**（`~backend/*` 纯度，见 skill `debugging-frontend-tests`）。
 
 ## 5. 未采纳 / 记录
@@ -210,3 +244,7 @@ interface LearnedEntryView {
 - **行为变更**：既有永久记录迁移后 30d 起开始自动过期 → 稳定不兼容（Vertex org policy、endpoint 级 toolFields）每 TTL 会多一次 400 重测往返 —— 已用「按分类可配 + partner_features/tool_fields 设长/never」缓解。
 - **不变量风险**：消费点 gate 必须穷尽，漏一个则过期记录仍生效 —— 靠 grep 全量 + 每分类守卫测试兜底。
 - **无向后兼容负担**：v1→v2 单向迁移，旧格式读时适配、写时升级，不留双轨。
+
+## 7. 记录的暂缓项（不静默砍）
+
+- **生命周期转换的遥测**（对抗审查 M3）：「自然重测环」在过期时静默丢弃 workaround、在下次 400 时静默重学，无任何遥测记录一次重测往返发生过。按 richest-data-flow + telemetry-architecture 姿态，生命周期转换（expired→re-learned、manual-expire、renew）本属该进 stats/metrics registry 的信号。本 spec **暂不**纳入实现（避免与核心生命周期改动耦合），但**显式记录为暂缓项**（非静默缺失），归入 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)；若做，接 request-telemetry registry 加 `negotiation_lifecycle` 维度（转换类型 + 分类 + model）。
