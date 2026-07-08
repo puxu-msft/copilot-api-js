@@ -174,3 +174,11 @@
 - **理想架构**：`accumulateResponses` 按 `output_index` / `accumulateGemini` 按 part 出现序把 text 与 tool_use 块**按真实交错序**入 `content[]`（类似 `accumulateAnthropic` 的 index 定位），保 wire 顺序保真。
 - **为何暂缓**：本次目标是「让这两端点流式工具在预览列 + 详情页可见」（此前完全不可见），已达；交错顺序保真是保真度增量、对预览列零影响、对详情页仅影响多工具+文本混排的罕见块序；且需给两累加器加序号定位逻辑。属「保真度优化独立工作项」非「因范围大降级」。
 - **若做需改什么**：① `accumulateResponses` 用 `Map<outputIndex, block>` 保 text/tool 混合序（text delta 也按 output_index 归位）→ 按 index 排序出 content；② `accumulateGemini` 按 parts 遍历序交替 push text/tool_use（不再分离两桶）；③ 交错序单测（text→tool→text → 三块保序）。发现方：response-content-preview spec §4 H1 扩展的保真度残余（2026-07-08）。
+
+## ui-v4 raw-json-dual-view 落地的 minor 跟进项（2026-07-08）
+
+来自 `docs/spec/2026-07-08-ui-v4-raw-json-dual-view.md` 落地（分支 `feat/ui-v4-raw-json-dual-view`）的 review minor（均非阻塞，已 landed）：
+
+- **JsonTreeView copy-path 对含 `.`/空格的 object key 非 round-trip**：`{"a.b":1}` 的 copy-path 产出 `$.a.b`（看似嵌套）。copy-path 是便利功能非正确性契约、内部工具可接受。若做：对不匹配 identifier 正则的 key 用 bracket-quote（`$["a.b"]`）。
+- **RawJsonView 可选 `label` 位于 `role="tablist"` 内**：WAI-ARIA tablist 直接子元素应仅为 `role="tab"`。若做：把 label `<span>` 移出 tablist 容器。另：完整 tabs 键盘方向键导航 + roving tabIndex 未实现（原生 `<button>` 可点击可聚焦，功能可用）。
+- **ResponseSegment ForwardedBody `content` 静态类型 `unknown`**：当前经 producer 契约（`ForwardedResponse.content` = 端点响应对象）保证是结构化 JSON、喂 RawJsonView 安全；与迁移前 `JSON.stringify(content)` 行为一致。若未来某端点转发裸字符串非流式 body，tree 视图会显单个带引号 primitive。若做：加 `typeof content === "object" ? RawJsonView : RawPre` 守卫与其它站点对称。

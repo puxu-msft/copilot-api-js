@@ -1,7 +1,7 @@
 # Spec: ui-v4 Raw JSON 双视图共享组件
 
 - 日期：2026-07-08
-- 状态：draft（待用户复审 → 转 plan）
+- 状态：**landed**（7 task subagent-driven 执行完毕；分支 `feat/ui-v4-raw-json-dual-view`，12 commits `f5d36cd6..4496ac8c`；全站 raw JSON 面已迁移，ConfigPage/MessageDiffView 排除到位；68/68 目标 vitest + 全量 339 tests 绿、build:ui-v4 绿；最终全分支 review READY TO MERGE。执行期新增 §4 遗漏面 `SystemSegment`（结构化 system → RawJsonView、string → `<pre>`，与 ConvoSegment 同类）。）
 - 归属：ui-v4 前端子项目；服务「增量淘汰 Vue `ui/`」路线图
 - 相关：[docs/DESIGN.md](../DESIGN.md)、ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)、姊妹 spec [ui-v4-models-list-parity](2026-07-08-ui-v4-models-list-parity.md)
 
