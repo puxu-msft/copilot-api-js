@@ -54,4 +54,34 @@ describe("accumulateForwardedContent", () => {
     expect(tool?.name).toBe("Read")
     expect(tool?.input).toEqual({ path: "/x" })
   })
+
+  test("openai-chat-completions text + tool_calls accumulate across frames", () => {
+    const msg = accumulateForwardedContent(
+      frames(
+        JSON.stringify({ choices: [{ delta: { content: "hel" } }] }),
+        JSON.stringify({ choices: [{ delta: { content: "lo" } }] }),
+        JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "Bash", arguments: '{"cmd":' } }] } }] }),
+        JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"ls"}' } }] } }] }),
+      ),
+      "openai-chat-completions",
+    )
+    expect(msg?.role).toBe("assistant")
+    expect(msg?.content).toBe("hello")
+    const toolCalls = (msg as { tool_calls?: Array<{ function: { name: string; arguments: string } }> }).tool_calls
+    expect(toolCalls?.[0].function.name).toBe("Bash")
+    expect(toolCalls?.[0].function.arguments).toBe('{"cmd":"ls"}')
+  })
+
+  test("anthropic malformed tool_use input kept as { _raw } (not silently dropped)", () => {
+    const msg = accumulateForwardedContent(
+      frames(
+        JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "Bash" } }),
+        JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"a":' } }),
+      ),
+      "anthropic-messages",
+    )
+    const blocks = msg?.content as Array<{ type: string; input?: unknown }>
+    const tool = blocks.find((b) => b.type === "tool_use")
+    expect(tool?.input).toEqual({ _raw: '{"a":' })
+  })
 })

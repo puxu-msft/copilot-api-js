@@ -16,6 +16,7 @@ function parseFrame(raw: string): Record<string, unknown> | undefined {
   }
 }
 
+/** One in-progress Anthropic content block being accumulated across deltas. */
 interface AnthropicBlockAcc {
   type: string
   text?: string
@@ -24,9 +25,16 @@ interface AnthropicBlockAcc {
   data?: string
   id?: string
   name?: string
+  /** Accumulated `input_json_delta.partial_json` for a tool_use block. */
   partialJson?: string
 }
 
+/**
+ * Accumulate Anthropic SSE frames (content_block_start/delta/stop) into an assistant message.
+ * Mirrors the client's own reconstruction so the Response tab shows what Claude Code renders.
+ * A malformed tool_use input (the unrepairable case) is kept as `{ _raw }` so the broken JSON is
+ * still visible rather than silently dropped.
+ */
 function accumulateAnthropic(framesIn: Array<SseEventRecord>): MessageContent | undefined {
   const blocks: Array<AnthropicBlockAcc | undefined> = []
   for (const f of framesIn) {
@@ -75,12 +83,15 @@ function accumulateAnthropic(framesIn: Array<SseEventRecord>): MessageContent | 
         try {
           input = JSON.parse(b.partialJson)
         } catch {
-          input = { _raw: b.partialJson }
+          input = { _raw: b.partialJson } // malformed (unrepairable) — keep the broken JSON visible
         }
       }
       content.push({ type: "tool_use", id: b.id ?? "", name: b.name ?? "", input } as ContentBlock)
     } else {
       const { partialJson: _drop, ...rest } = b
+      // A text block opened but never delta'd finalizes with `text: undefined`; the renderer
+      // (`LineNumberedText.split`) needs a string. Default text/thinking so an empty block renders
+      // as empty rather than an error box.
       if (rest.type === "text") rest.text = rest.text ?? ""
       else if (rest.type === "thinking") rest.thinking = rest.thinking ?? ""
       content.push(rest as ContentBlock)
@@ -89,6 +100,7 @@ function accumulateAnthropic(framesIn: Array<SseEventRecord>): MessageContent | 
   return content.length > 0 ? { role: "assistant", content } : undefined
 }
 
+/** Accumulate OpenAI Chat-Completions delta frames into an assistant message (content + tool_calls). */
 function accumulateOpenAICC(framesIn: Array<SseEventRecord>): MessageContent | undefined {
   let text = ""
   const toolCalls = new Map<number, { id?: string; type: "function"; function: { name: string; arguments: string } }>()
