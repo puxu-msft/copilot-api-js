@@ -214,4 +214,13 @@ describe("ModelsPage", () => {
     expect(screen.getByText(/boom/)).toBeDefined()
     expect(screen.queryByText(/no models match/i)).toBeNull()
   })
+
+  // Covers the `String(error)` fallback leg — react-query's `error` is `unknown`, so a
+  // non-Error rejection (e.g. a thrown string) must still surface a readable message.
+  it("stringifies a non-Error rejection in the error branch", () => {
+    mockUseModels.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: "network down" })
+    renderPage()
+    expect(screen.getByText(/failed to load models/i)).toBeDefined()
+    expect(screen.getByText(/network down/)).toBeDefined()
+  })
 })
