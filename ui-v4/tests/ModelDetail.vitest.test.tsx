@@ -251,7 +251,7 @@ describe("ModelDetail", () => {
         onClose={onClose}
       />,
     )
-    fireEvent.keyDown(globalThis.window, { key: "Escape" })
+    fireEvent.keyDown(document, { key: "Escape" })
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
@@ -264,14 +264,17 @@ describe("ModelDetail", () => {
         onClose={onClose}
       />,
     )
+    // 抽屉内放一个 input 并聚焦（模态下焦点被 trap 在抽屉内，外部 input 不可聚焦）。
+    const region = screen.getByRole("dialog")
     const input = document.createElement("input")
-    document.body.append(input)
+    region.append(input)
     input.focus()
-    fireEvent.keyDown(globalThis.window, { key: "Escape" })
+    fireEvent.keyDown(document, { key: "Escape" })
     expect(onClose).not.toHaveBeenCalled()
     input.remove()
-    // With focus back outside a text control, Escape closes again.
-    fireEvent.keyDown(globalThis.window, { key: "Escape" })
+    // 焦点移出文本控件后 Escape 关闭。
+    screen.getByRole("dialog").focus()
+    fireEvent.keyDown(document, { key: "Escape" })
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
@@ -283,7 +286,8 @@ describe("ModelDetail", () => {
         onClose={() => {}}
       />,
     )
-    expect(document.activeElement).toBe(screen.getByRole("region", { name: /Model detail/i }))
+    const dialog = screen.getByRole("dialog")
+    expect(dialog.contains(document.activeElement) || document.activeElement === dialog).toBe(true)
   })
 
   it("switches tab + wires panel aria + roving tabindex (Radix Tabs)", async () => {
