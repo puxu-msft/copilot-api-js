@@ -196,15 +196,32 @@ describe("ModelsPage", () => {
     expect(screen.getByText("ghost-alias")).toBeDefined()
   })
 
-  // Positive control for the error test's negative assertion below: an empty catalog
-  // renders the "No models match…" empty branch, so its ABSENCE in the error case is
-  // a meaningful signal (error ≠ empty). getByText throws when absent; queryByText
-  // returns null (project convention — jest-dom matchers are not registered).
-  it("renders the empty branch when the catalog resolves to zero models", () => {
+  // Catalog-empty is distinct from filtered-empty: a genuinely empty catalog says
+  // "No models in the catalog." with NO relax-filters guidance (there is nothing to
+  // relax). This is also a positive control for the error tests' negative assertion —
+  // an empty catalog is not an error, so `failed to load` must be absent. getByText
+  // throws when absent; queryByText returns null (project convention — jest-dom
+  // matchers are not registered).
+  it("renders 'no models in the catalog' (no filter guidance) when the catalog resolves to zero models", () => {
     mockUseModels.mockReturnValue({ data: { data: [] }, isLoading: false, isError: false, error: null })
     renderPage()
-    expect(screen.getByText(/no models match/i)).toBeDefined()
+    expect(screen.getByText(/no models in the catalog/i)).toBeDefined()
+    // Nothing is filtered out — the relax-filters guidance and the filtered-empty
+    // message must NOT appear (paired negative control for the filtered-empty test).
+    expect(screen.queryByText(/relaxing your search or clearing/i)).toBeNull()
+    expect(screen.queryByText(/no models match/i)).toBeNull()
     expect(screen.queryByText(/failed to load models/i)).toBeNull()
+  })
+
+  // Positive control for the catalog-empty test's negative assertions: a NON-empty
+  // catalog filtered down to zero shows the filter-specific message AND the
+  // relax-filters guidance sub-line (and NOT the catalog-empty text).
+  it("shows relax-filters guidance when a non-empty catalog filters to zero", () => {
+    renderPage() // default two-model catalog
+    fireEvent.change(screen.getByLabelText("Search models"), { target: { value: "zzzz-no-such-model" } })
+    expect(screen.getByText(/no models match the current filters/i)).toBeDefined()
+    expect(screen.getByText(/relaxing your search or clearing a filter/i)).toBeDefined()
+    expect(screen.queryByText(/no models in the catalog/i)).toBeNull()
   })
 
   it("renders error state distinct from empty when query fails", () => {
