@@ -10,6 +10,7 @@ import {
 } from "react"
 import { useSearchParams } from "react-router-dom"
 
+import { RawJsonView } from "@/components/common/RawJsonView"
 import {
   //
   augmentRows,
@@ -180,7 +181,9 @@ export function ModelsPage() {
       </div>
 
       {raw ?
-        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all p-2 text-[12px] text-[#aaa]">{JSON.stringify(models, null, 2)}</pre>
+        // Feed the FULL response envelope (`{ data: [...] }`), not the bare models
+        // array — restores parity with the Vue list AND gives the dual source/tree view.
+        <RawJsonView value={data ?? { data: [] }} />
       : <>
           <ModelsFilterBar
             filters={filters}

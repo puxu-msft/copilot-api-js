@@ -236,6 +236,24 @@ describe("ModelsPage", () => {
     expect(screen.queryByText(/no models in the catalog/i)).toBeNull()
   })
 
+  // The raw view must render the FULL API response — the `{ data: [...] }` envelope,
+  // not just the bare models array (the pre-migration `<pre>` dumped only the array,
+  // dropping the envelope, a regression vs the Vue list). RawJsonView's source mode is
+  // the default; a top-level "data" key is the discriminator (model objects use
+  // id/name/vendor/… — the array dump contained no `"data"` key anywhere).
+  it("raw view shows the full API envelope (top-level data key), and can switch to tree", () => {
+    renderPage()
+    fireEvent.click(screen.getByText("raw JSON"))
+    const panel = screen.getByRole("tabpanel")
+    expect(panel.textContent).toContain('"data"')
+    // Positive control: the models themselves are still rendered inside the envelope,
+    // so a passing "data" assertion isn't matching an empty/omitted payload.
+    expect(panel.textContent).toContain("claude-opus-4.8")
+    // Dual view: switch to the tree tab — the envelope's `data` key surfaces as a node label.
+    fireEvent.click(screen.getByRole("tab", { name: "树" }))
+    expect(screen.getByText("data")).toBeDefined()
+  })
+
   it("renders error state distinct from empty when query fails", () => {
     mockUseModels.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("boom") })
     renderPage()
