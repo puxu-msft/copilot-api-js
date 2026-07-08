@@ -52,7 +52,7 @@ describe("StageTabs", () => {
 
 describe("DiagnosticSummary", () => {
   function entry(over: Partial<HistoryEntry>): HistoryEntry {
-    return { id: "e", endpoint: "anthropic-messages", startedAt: 0, inboundRequest: { model: "m" }, ...over } as HistoryEntry
+    return { id: "e", endpoint: "anthropic-messages", startedAt: 0, clientRequest: { model: "m" }, model: { requested: "m" }, ...over } as HistoryEntry
   }
   test("aborted → status chip + 'client disconnected' reason", () => {
     const w = mountWithVuetifyStubs(DiagnosticSummary, { props: { entry: entry({ state: "aborted" }) } })
@@ -68,7 +68,13 @@ describe("DiagnosticSummary", () => {
       props: {
         entry: entry({
           state: "completed",
-          outboundResponse: { success: true, model: "m", usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 512 }, content: null },
+          attempts: [
+            {
+              index: 0,
+              durationMs: 0,
+              upstreamResponse: { success: true, model: "m", usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 512 }, body: null },
+            },
+          ],
         }),
       },
     })
@@ -104,14 +110,14 @@ describe("AttemptDiff", () => {
       {
         index: 0,
         durationMs: 1,
-        wireRequest: {
+        upstreamRequest: {
           messages: [
             { role: "user", content: "a" },
             { role: "user", content: "b" },
           ],
         },
       },
-      { index: 1, durationMs: 1, wireRequest: { messages: [{ role: "user", content: "a" }] } }, // dropped "b"
+      { index: 1, durationMs: 1, upstreamRequest: { messages: [{ role: "user", content: "a" }] } }, // dropped "b"
     ] as never
     const w = mountWithVuetifyStubs(AttemptDiff, { props: { attempts }, global: { components: { ...vuetifyComponentStubs } } })
     expect(w.findComponent(MessageDiffView).exists()).toBe(true)

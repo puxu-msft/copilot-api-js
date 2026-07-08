@@ -13,6 +13,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/messages"
 
 import type { ProcessIdentity } from "~/lib/process-identity"
+import type { CopilotAnnotations } from "~/types/api/anthropic"
 
 /** Supported API endpoint types */
 export type EndpointType = "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content"
@@ -218,6 +219,137 @@ export interface OutboundResponseData {
   rawBody?: string
 }
 
+// ============================================================================
+// New client/upstream leg data model (RFC 2026-07-07 history-data-model-restructure §3).
+// Coexists with the legacy inbound/outbound/wire/effective legs below (marked
+// @deprecated) during migration; producers/consumers switch over in later phases.
+// ============================================================================
+
+/** Model identity + billing, hoisted under a single parent key (RFC §3, §2.5). */
+export interface ModelInfo {
+  /** Model name as it appeared in the inbound client request (pre-alias). */
+  requested?: string
+  /** Model name after routing/sanitize resolution (post-alias, normalized). */
+  resolved?: string
+  /** Billing multiplier resolved for this request (e.g. 3 for opus, 0.33 for haiku). */
+  multiplier?: number
+}
+
+/**
+ * Client → Proxy request leg (per-entry). `body` is the raw inbound payload (SoT).
+ *
+ * The structured projections (`model`/`messages`/`system`/`max_tokens`/
+ * `temperature`/`tools`/`thinking`) mirror the deprecated `inboundRequest`
+ * (R1-W7): a NON-authoritative index of `body` (§2.3) kept so consumers read the
+ * parsed inbound request without re-parsing `body`. The producer dual-writes them
+ * off `originalRequest`; P4c removes the legacy `inboundRequest` once every
+ * consumer reads these instead.
+ */
+export interface ClientRequestLeg {
+  method?: string
+  path?: string
+  format?: EndpointType
+  headers?: Record<string, string>
+  body?: unknown
+  stream?: boolean
+  // ─── Structured projections mirroring the deprecated inboundRequest (R1-W7) ───
+  model?: string
+  messages?: Array<MessageContent>
+  system?: string | Array<SystemBlock>
+  max_tokens?: number
+  temperature?: number
+  tools?: Array<ToolDefinition>
+  thinking?: unknown
+}
+
+/**
+ * Proxy → Client response leg (per-entry), promoted to a first-class citizen
+ * (RFC §2.1): a non-error upstream response is NOT necessarily what the client
+ * received (rewrite / truncation / abort / buffered-retry discard / reaper cancel).
+ * `status?` is a new capture (RFC R4-C); the client-facing outcome is `entry.state`,
+ * NOT this leg.
+ */
+export interface ClientResponseLeg {
+  status?: number
+  headers?: Record<string, string>
+  body?: unknown
+  sseEvents?: Array<SseEventRecord>
+}
+
+/**
+ * Per-attempt effective source leg: `body` = the `env.body` verbatim (SoT); the
+ * structured projections (model/messageCount/messages/system) are a NON-authoritative
+ * index of `body` for structured consumers (RFC §2.3 — must not drift from `body`).
+ * `pipeline` carries this attempt's truncation/sanitization/messageMapping.
+ */
+export interface EffectiveSourceLeg {
+  format?: EndpointType
+  model?: string
+  messageCount?: number
+  messages?: Array<MessageContent>
+  system?: string | Array<SystemBlock>
+  body?: unknown
+  pipeline?: PipelineInfo
+}
+
+/**
+ * Per-attempt upstream request leg (proxy → upstream wire). Carries the structured
+ * messages/model/system projection ALONGSIDE headers+body (RFC R4-FAIL-A) — the
+ * `rewrites-req` search facet reads `messages` off this leg, so dropping the
+ * projection would silently break search.
+ */
+export interface UpstreamRequestLeg {
+  format?: EndpointType
+  model?: string
+  messages?: Array<MessageContent>
+  system?: string | Array<SystemBlock>
+  headers?: Record<string, string>
+  body?: unknown
+}
+
+/**
+ * Per-attempt upstream response leg (upstream → proxy). Every SETTLED attempt
+ * carries one (success = real response; failure = synthesized verdict, written by
+ * the P2.5 producer alignment). `success` = upstream returned a complete 2xx with
+ * normal protocol termination (RFC §3 legal-combination matrix); the client-facing
+ * outcome is `entry.state`, not this flag.
+ */
+export interface UpstreamResponseData {
+  success: boolean
+  status?: number
+  headers?: Record<string, string>
+  trailers?: Record<string, string>
+  body?: MessageContent | null
+  rawBody?: string
+  sseEvents?: Array<SseEventRecord>
+  usage?: UsageData
+  stopReason?: string
+  model?: string
+  responseId?: string
+  copilotAnnotations?: Array<CopilotAnnotations>
+  toolSearchRequests?: number
+}
+
+/**
+ * Derived/auxiliary index projections (RFC §3, R4-WARN-E). `derived` is a
+ * recompute-only subset of `attempts` (three-point sync invariant — see skill
+ * persistence-async-invariants); `aux` is free-evolving projection space.
+ */
+export interface IndexProjection {
+  derived?: {
+    responseSuccess?: boolean
+    currentStrategy?: string
+    failureReason?: string
+    attemptCount?: number
+  }
+  aux?: {
+    requestBytes?: number
+    responseBytes?: number
+    previewText?: string
+    warningMessages?: Array<WarningMessage>
+  }
+}
+
 export interface HistoryEntry {
   id: string
   sessionId?: string
@@ -237,16 +369,11 @@ export interface HistoryEntry {
   pinned?: boolean
   lastUpdatedAt?: number
   queueWaitMs?: number
-  attemptCount?: number
-  currentStrategy?: string
   durationMs?: number
-  /**
-   * Top-level failure reason for non-success terminal states (failed / aborted /
-   * interrupted), projected from `outboundResponse.error` else the last attempt's
-   * error — so triage need not crawl the per-leg errors (RFC pre-response-abort Q3).
-   * A projection, not a new capture; absent for successful / non-terminal entries.
-   */
-  failureReason?: string
+  // NOTE (P4c-3): the deprecated top-level scalars `attemptCount` / `currentStrategy`
+  // / `failureReason` were REMOVED — they now live in `_index.derived` (recompute-only
+  // projection), read via entry-view resolvers. Legacy DB rows still carry them at
+  // runtime; the read adapter (serialize.ts) recomputes `_index.derived` from them.
   /**
    * Wire byte size of the request the proxy sent upstream (↑). DERIVED at
    * serialize time from the best available stored payload (outbound → effective
@@ -276,38 +403,18 @@ export interface HistoryEntry {
    * relies on comparing timestamps against process start times.
    */
   process?: ProcessIdentity
-  /** Client → Proxy: the client's raw inbound request. */
-  inboundRequest: {
-    model?: string
-    messages?: Array<MessageContent>
-    stream?: boolean
-    tools?: Array<ToolDefinition>
-    system?: string | Array<SystemBlock>
-    max_tokens?: number
-    temperature?: number
-    thinking?: unknown
-  }
-  effectiveRequest?: RequestLegData
-  /** Proxy → Upstream: the final wire request sent upstream (final attempt). */
-  outboundRequest?: RequestLegData
-  /** Upstream → Proxy: the upstream-original response (final attempt). */
-  outboundResponse?: OutboundResponseData
-  /** Proxy → Client: response as actually forwarded to the client, post-rewrite. */
-  inboundResponse?: ForwardedResponse
-  /** HTTP headers captured at each leg of the proxy pipeline */
-  httpHeaders?: {
-    /** Client → Proxy (inbound request) */
-    inboundRequest?: Record<string, string>
-    /** Proxy → Upstream API (outbound request) */
-    outboundRequest?: Record<string, string>
-    /** Upstream API → Proxy (outbound response) */
-    outboundResponse?: Record<string, string>
-    /** Proxy → Client (inbound response) — reserved for future use */
-    inboundResponse?: Record<string, string>
-    /** Upstream API → Proxy HTTP/2 response trailers (trailing HEADERS), when present — best-effort h2 capture. */
-    outboundResponseTrailers?: Record<string, string>
-  }
-  sseEvents?: Array<SseEventRecord>
+  // ─── New client/upstream leg model (RFC §3) — coexists with legacy legs below ───
+  /** Model identity + billing (parent key, RFC §3). */
+  model?: ModelInfo
+  /** Client → Proxy request leg (RFC §3). */
+  clientRequest?: ClientRequestLeg
+  /** Proxy → Client response leg, first-class (RFC §2.1). */
+  clientResponse?: ClientResponseLeg
+  /** One-time inbound preprocessing (non-per-attempt), hoisted to entry level (RFC §4). */
+  preprocessing?: PreprocessInfo
+  /** Derived (recompute-only) + auxiliary index projections (RFC §3). */
+  _index?: IndexProjection
+
   pipelineInfo?: PipelineInfo
   attempts?: Array<{
     index: number
@@ -315,25 +422,25 @@ export interface HistoryEntry {
     durationMs: number
     transport?: RequestTransport
     error?: string
-    truncation?: TruncationInfo
-    sanitization?: SanitizationInfo
-    effectiveMessageCount?: number
-    /**
-     * Full per-attempt request/response bodies (Bug 3 fix). Reconstructed from
-     * per-attempt stage rows (effective_request / outbound_request /
-     * outbound_response with attempt_index = this attempt's index). Optional:
-     * absent on legacy single-blob entries and on partially-persisted
-     * (interrupted) attempts. The top-level outboundRequest/outboundResponse/
-     * effectiveRequest mirror the FINAL attempt; these preserve every attempt.
-     */
-    effectiveRequest?: RequestLegData
-    wireRequest?: RequestLegData
-    response?: OutboundResponseData
+    /** New capture (RFC §4): attempt wall-clock start; producer wires in P4. */
+    startedAt?: number
+    /** New capture (RFC §4): rate-limit wait before this attempt; producer wires in P4. */
+    waitMs?: number
+    // ─── New per-attempt legs (RFC §3) — the legacy per-attempt legs
+    //     (effectiveRequest/wireRequest/response/truncation/sanitization/
+    //     effectiveMessageCount) were REMOVED in P4c-3; the read adapter maps a
+    //     legacy row's OLD stages into these. ───
+    /** Proxy-side effective source (env.body verbatim + this attempt's pipeline). */
+    effectiveSource?: EffectiveSourceLeg
+    /** Proxy → Upstream wire request (with messages/model/system projection, R4-FAIL-A). */
+    upstreamRequest?: UpstreamRequestLeg
+    /** Upstream → Proxy response (settled attempts recompute-safe verdict). */
+    upstreamResponse?: UpstreamResponseData
     /**
      * Per-attempt upstream-original SSE frames (L2 buffered retry / D1). Present only on
      * FAILED (non-final) attempts of a buffered-retry entry — persisted at this attempt's
-     * `attempt_index` so "why did attempt N RST?" is answerable post-hoc. The successful
-     * (final) attempt's frames remain the top-level `sseEvents` (attempt_index -1).
+     * `attempt_index`. The successful (final) attempt's frames live on
+     * `upstreamResponse.sseEvents` (§S1). The read adapter reads this for legacy rows.
      */
     sseEvents?: Array<SseEventRecord>
     /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */

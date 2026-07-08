@@ -1,23 +1,27 @@
+import {
+  //
+  finalUpstreamRequest,
+  finalUpstreamResponse,
+} from "~backend/lib/history/entry-view"
+
 import type { HistoryEntry } from "@/types"
 
-const LEGS = [
-  ["inboundRequest", "Client → Proxy"],
-  ["outboundRequest", "Proxy → Upstream"],
-  ["outboundResponse", "Upstream → Proxy"],
-  ["inboundResponse", "Proxy → Client"],
-] as const
-
 export function HeadersSegment({ entry }: { entry: HistoryEntry }) {
-  const headers = entry.httpHeaders
-  if (!headers) return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无 headers</div>
+  // Per-leg headers: new legs (client/upstream request+response); legacy `httpHeaders.*` removed in P4c.
+  const legs: Array<[label: string, headers: Record<string, string> | undefined]> = [
+    ["Client → Proxy", entry.clientRequest?.headers],
+    ["Proxy → Upstream", finalUpstreamRequest(entry)?.headers],
+    ["Upstream → Proxy", finalUpstreamResponse(entry)?.headers],
+    ["Proxy → Client", entry.clientResponse?.headers],
+  ]
+  if (!legs.some(([, h]) => h)) return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无 headers</div>
   return (
     <div className="flex flex-col gap-2">
-      {LEGS.map(([key, label]) => {
-        const h = headers[key]
+      {legs.map(([label, h]) => {
         if (!h) return null
         return (
           <div
-            key={key}
+            key={label}
             className="border border-[var(--color-border)]"
           >
             <div className="mono bg-[#1a1a1f] px-2 py-1 text-[11px] uppercase tracking-wider text-[var(--color-primary)]">{label}</div>

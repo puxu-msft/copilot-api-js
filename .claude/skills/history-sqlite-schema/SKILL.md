@@ -17,7 +17,7 @@ description: 当需要了解 copilot-api-js 的 History SQLite 数据库结构�
 | 表 | 角色 |
 |---|---|
 | `entries_v2` | head 行（一请求一行），meta 列 + `blob_gz`（zstd 压缩生命周期）。`pinned=1` 豁免 reaper；`usage_normalized`（NOT NULL DEFAULT 0）= usage 净值化标记（新行生来 1，历史行由 usage-normalize-backfill 置 1，破坏性减法的幂等主闸） |
-| `entry_stages` | per-stage/attempt 重 blob（inbound/effective/outbound req+resp、sse_events），FK CASCADE |
+| `entry_stages` | per-stage/attempt 重 blob。**新写路径**：`client_request`/`client_response`（entry 级，attempt_index -1）+ per-attempt `effective_source`/`upstream_request`/`upstream_response` + `sse_events`；finalize 时冗余请求体折进 `request_group` 合并帧。**legacy 只读**：旧行 `inbound_request`/`effective_request`/`outbound_request`/`outbound_response`/`inbound_response` 经 `adaptLegacyLegsInPlace` 读时适配为新腿。FK CASCADE |
 | `response_sessions` | response_id → session_id |
 | `msg_blob` | content-addressed：每条归一化消息存一次（hash PK），跨请求去重 |
 | `req_msg` | 请求→消息位置（FK CASCADE）；孤儿 msg_blob 由 reaper GC |
@@ -35,11 +35,11 @@ sqlite3 history.db "SELECT id,model,status,error_message FROM entries_v2 WHERE s
 sqlite3 history.db "SELECT id,status FROM entries_v2 WHERE session_id=? ORDER BY started_at"
 ```
 
-`blob_gz` 是 zstd（magic `28b52ffd`，旧库 gzip `1f8b`）：解压用 `compression.ts` 的 `decompress`。entry_stages.stage ∈ inbound_request/effective_request/outbound_request/outbound_response/inbound_response/sse_events（finalized 后前三者合并进 request_group 容器帧）。**勿对运行中库直读**——live churn 致 torn snapshot，用 `/history/api/entries/:id`（六腿全量 `assembleFullEntry`）。
+`blob_gz` 是 zstd（magic `28b52ffd`，旧库 gzip `1f8b`）：解压用 `compression.ts` 的 `decompress`。`entry_stages.stage`（**新写路径**）∈ client_request/client_response/effective_source/upstream_request/upstream_response/sse_events（finalized 后请求侧腿合并进 request_group 容器帧）；**legacy 只读**：旧行仍带 inbound_request/effective_request/outbound_request/outbound_response/inbound_response，读时经 `adaptLegacyLegsInPlace`（serialize.ts）适配为 client/upstream 新腿——`STAGE` 常量双列新旧名共存。**运行时 vs 持久化命名**：live `RequestContext`（`Attempt.{effectiveRequest,wireRequest,response}`、`_httpHeaders` 捕获袋）保留旧名，仅持久化 `HistoryEntry` 采用新腿。**勿对运行中库直读**——live churn 致 torn snapshot，用 `/history/api/entries/:id`（全腿全量 `assembleFullEntry`）。
 
 ## blob 压缩 / dedup 策略（为什么是合并帧）
 
-要 dedup 多个**高度相似的大 blob**（同一请求的 inbound/effective/outbound 三份请求体，>90% 共享），**zstd `dictionary` 选项无用，合并帧才有效**（copilot-api 存储瘦身实测裁决）：
+要 dedup 多个**高度相似的大 blob**（同一请求逐 attempt 的 `effective_source`/`upstream_request` 请求体，>90% 共享 `env.body`——旧行则是 inbound/effective/outbound 三份；`client_request`/`client_response`/`upstream_response` **非**合并帧成员），**zstd `dictionary` 选项无用，合并帧才有效**（copilot-api 存储瘦身实测裁决）：
 
 - **per-blob 字典无增益**：用 blob A 当字典压 blob B——`node:zlib zstdCompressSync(B,{dictionary:A})` 与 `Bun.zstdCompressSync(B,{dictionary:A})` 对大 blob 均无增益（245→245KB）。字典没把内容当匹配源（可能只对"大量小同构文档"有效）。
 - **合并帧有效**：`[A+B+C]` 拼一个 buffer 单次 zstd → 3224KB raw 压到 231KB = 单份 A 同值，第 2/3 份近零成本。

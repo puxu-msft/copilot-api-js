@@ -131,6 +131,9 @@ function toEntryRow(r: LegacyRow): EntryRow {
     // usage-normalize-backfill picks them up (OpenAI-family legacy input_tokens
     // still includes cached).
     usage_normalized: 0,
+    // Legacy v1 rows are single-blob (no new client/upstream stages) → leave 0 so
+    // the legacy-stage-backfill re-serializes them into the new stage shape.
+    stages_migrated: 0,
     stop_reason: r.stop_reason,
     error_message: r.error_message,
     message_count: r.message_count,

@@ -279,6 +279,12 @@ function createSocksAgent(proxyUrl: URL): Agent {
         },
       })
         .then(({ socket }) => {
+          // NB: this SOCKS-tunneled socket (and the tls.connect below) is
+          // deliberately NOT withErrorSink'd (cf. transport/crash-safety.ts): it is
+          // handed straight to undici's `callback`, and undici owns it from there —
+          // it attaches its own 'error' handling, so there is no no-listener window.
+          // withErrorSink is only for sockets/sessions the transport itself owns
+          // through a teardown/handoff gap (node:http2 path, proxy-connect.ts).
           // Apply the same TCP keepalive as the non-proxy path so middlebox idle
           // reapers don't sever the tunnel during long upstream silences. TLS
           // (below) wraps this same underlying socket, so setting it here covers

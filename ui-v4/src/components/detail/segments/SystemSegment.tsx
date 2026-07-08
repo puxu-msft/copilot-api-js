@@ -1,3 +1,4 @@
+import { finalAttempt } from "~backend/lib/history/entry-view"
 import {
   //
   useMemo,
@@ -46,9 +47,12 @@ export function SystemSegment({ entry }: { entry: HistoryEntry }) {
   const [systemMode, setSystemMode] = useState<ViewMode>("original")
   const { scrollTo, activeAnchor } = useAnchorScroll()
 
-  const inboundSystem = entry.inboundRequest.system
-  const effectiveSystem = entry.effectiveRequest?.system
-  const hasEffective = entry.effectiveRequest !== undefined
+  // Effective (post-rewrite) source: new final-attempt `effectiveSource` (legacy top-level `effectiveRequest` removed in P4c).
+  // Inbound (client) system comes from the `clientRequest` structured projection.
+  const effectiveSource = finalAttempt(entry)?.effectiveSource
+  const inboundSystem = entry.clientRequest?.system
+  const effectiveSystem = effectiveSource?.system
+  const hasEffective = effectiveSource !== undefined
   const originalPresent = inboundSystem !== undefined
 
   // TOC reflects the inbound (original) block structure; string / single-block

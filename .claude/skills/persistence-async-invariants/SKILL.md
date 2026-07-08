@@ -27,7 +27,7 @@ history 持久化层三类高危不变量：**同步→异步落盘的不变量�
 
 History 持久化时点陷阱（2026-07-04 修 ui-v4 Response 错位时踩，实证真实 entry `req_1783070660245_128`）：
 
-**`ctx.fail()` / `ctx.complete()` 在 `toHistoryEntry()` 里同步读快照并发 `request.failed/completed` 事件**（`src/lib/context/request.ts`），history sink `onTerminal` 持久化的是**那个冻结的 `event.entry`**，`finalizeEntry` 只压缩内存 entry、**不再回读 ctx**。故 **settle 之后**对 ctx 的任何 `setForwardedResponse` / 其它 mutation 对持久化**不可见**——trailing `finally { recordForwarded() }` 太晚。凡要把 client 实收数据（合成 error 帧等）记进 `inboundResponse`，顺序必须 `write(采样进 forwardedSseEvents) → recordForwarded() → ctx.fail/complete`（合成写 best-effort `.catch` 保 settle 恒跑）。这是"忘了记录合成帧"类 bug 的根因，不是 sink 采样与否的问题。
+**`ctx.fail()` / `ctx.complete()` 在 `toHistoryEntry()` 里同步读快照并发 `request.failed/completed` 事件**（`src/lib/context/request.ts`），history sink `onTerminal` 持久化的是**那个冻结的 `event.entry`**，`finalizeEntry` 只压缩内存 entry、**不再回读 ctx**。故 **settle 之后**对 ctx 的任何 `setForwardedResponse` / 其它 mutation 对持久化**不可见**——trailing `finally { recordForwarded() }` 太晚。凡要把 client 实收数据（合成 error 帧等）记进 `clientResponse`（旧名 `inboundResponse`，2026-07-07 重构后仅持久化 `HistoryEntry` 改名；live ctx 的 `setForwardedResponse` getter 保留旧名），顺序必须 `write(采样进 forwardedSseEvents) → recordForwarded() → ctx.fail/complete`（合成写 best-effort `.catch` 保 settle 恒跑）。这是"忘了记录合成帧"类 bug 的根因，不是 sink 采样与否的问题。
 
 **新增顶层 HistoryEntry 字段的三处必改**（漏一处则静默永不持久化）：
 1. `toHistoryEntry()` 里算出该字段；

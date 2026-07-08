@@ -46,16 +46,29 @@ async function seedCompletedEntry(model: string): Promise<string> {
     sessionId: "session-export",
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    inboundRequest: { model, messages: [{ role: "user", content: "hi" }], stream: true },
+    model: { requested: model },
+    clientRequest: { format: "anthropic-messages", model, messages: [{ role: "user", content: "hi" }], stream: true },
   }
   insertEntry(entry)
   updateEntry(id, {
     state: "completed",
-    outboundResponse: { success: true, model, usage: { input_tokens: 10, output_tokens: 5 }, content: null },
-    sseEvents: [
-      { offsetMs: 0, type: "message_start", raw: `event: message_start\ndata: {"type":"message_start"}\n\n` },
-      { offsetMs: 12, type: "message_stop", raw: `event: message_stop\ndata: {"type":"message_stop"}\n\n` },
+    attempts: [
+      {
+        index: 0,
+        durationMs: 0,
+        upstreamResponse: {
+          success: true,
+          model,
+          usage: { input_tokens: 10, output_tokens: 5 },
+          body: null,
+          sseEvents: [
+            { offsetMs: 0, type: "message_start", raw: `event: message_start\ndata: {"type":"message_start"}\n\n` },
+            { offsetMs: 12, type: "message_stop", raw: `event: message_stop\ndata: {"type":"message_stop"}\n\n` },
+          ],
+        },
+      },
     ],
+    _index: { derived: { responseSuccess: true, attemptCount: 1 } },
   })
   await finalizeEntry(id)
   return id
@@ -78,7 +91,7 @@ describe("GET /history/api/entries/:id/export", () => {
     expect(roundTripped).toEqual(getEntry(id) as unknown as Record<string, unknown>)
 
     // The heavy sseEvents bulk survives the export (guards against a lossy path).
-    expect((roundTripped as HistoryEntry).sseEvents).toHaveLength(2)
+    expect((roundTripped as HistoryEntry).attempts?.at(-1)?.upstreamResponse?.sseEvents).toHaveLength(2)
   })
 
   test("sanitizes a filename-hostile model so the Content-Disposition header stays valid (no 500)", async () => {

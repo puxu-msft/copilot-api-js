@@ -42,7 +42,7 @@ vi.mock("@/hooks/useEntry", () => ({
       startedAt: 0,
       endpoint: "anthropic-messages",
       state: "completed",
-      inboundRequest: { messages: [{ role: "user", content: "convo body text" }] },
+      clientRequest: { messages: [{ role: "user", content: "convo body text" }] },
     },
     isLoading: false,
     isError: false,

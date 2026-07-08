@@ -5,6 +5,16 @@ import type {
   MessageContent,
 } from "./types"
 
+import {
+  //
+  resolveAttemptCount,
+  resolveCurrentStrategy,
+  resolveResponseError,
+  resolveResponseModel,
+  resolveResponseSuccess,
+  resolveResponseUsage,
+} from "./entry-view"
+
 const entries = new Map<string, HistoryEntry>()
 
 /**
@@ -110,14 +120,14 @@ function summarizeMessage(msg: MessageContent): string {
  * most recent non-empty summary so the list stays readable. "" only when
  * nothing is summarizable.
  *
- * Reads ONLY `inboundRequest.messages`. The `Pick<…, "inboundRequest">` param
+ * Reads ONLY `clientRequest.messages`. The `Pick<…, "clientRequest">` param
  * keeps that contract explicit. (The search_index backfill —
  * `sqlite/search-index-backfill.ts` — decodes the FULL entry via
  * `assembleFullEntry` to build the index, so preview recompute rides along with
  * the full object available; no special inbound-only loading is needed there.)
  */
-export function extractPreviewText(entry: Pick<HistoryEntry, "inboundRequest">): string {
-  const messages = entry.inboundRequest.messages
+export function extractPreviewText(entry: Pick<HistoryEntry, "clientRequest">): string {
+  const messages = entry.clientRequest?.messages
   if (!messages || messages.length === 0) return ""
 
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -148,16 +158,16 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     pinned: entry.pinned,
     lastUpdatedAt: entry.lastUpdatedAt,
     queueWaitMs: entry.queueWaitMs,
-    attemptCount: entry.attemptCount,
-    currentStrategy: entry.currentStrategy,
+    attemptCount: resolveAttemptCount(entry),
+    currentStrategy: resolveCurrentStrategy(entry),
     pid: entry.process?.pid,
-    requestModel: entry.inboundRequest.model,
-    stream: entry.inboundRequest.stream,
-    messageCount: entry.inboundRequest.messages?.length ?? 0,
-    responseModel: entry.outboundResponse?.model,
-    responseSuccess: entry.outboundResponse?.success,
-    responseError: entry.outboundResponse?.error ?? entry.failureReason,
-    usage: entry.outboundResponse?.usage,
+    requestModel: entry.clientRequest?.model,
+    stream: entry.clientRequest?.stream,
+    messageCount: entry.clientRequest?.messages?.length ?? 0,
+    responseModel: resolveResponseModel(entry),
+    responseSuccess: resolveResponseSuccess(entry),
+    responseError: resolveResponseError(entry) ?? entry._index?.derived?.failureReason,
+    usage: resolveResponseUsage(entry),
     durationMs: entry.durationMs,
     requestBytes: entry.requestBytes,
     responseBytes: entry.responseBytes,

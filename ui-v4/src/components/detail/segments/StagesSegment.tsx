@@ -1,5 +1,10 @@
 import {
   //
+  finalAttempt,
+  finalUpstreamRequest,
+} from "~backend/lib/history/entry-view"
+import {
+  //
   useEffect,
   useMemo,
   useState,
@@ -45,8 +50,15 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
   const [showDiff, setShowDiff] = useState(false)
   const [rawMode, setRawMode] = useState(false)
 
-  const inboundMessages = entry.inboundRequest.messages
-  const effectiveMessages = entry.effectiveRequest?.messages
+  // Effective (post-rewrite) source + upstream wire request: new per-attempt legs (final attempt).
+  // Inbound (client) messages come from the `clientRequest` structured projection.
+  const newEff = finalAttempt(entry)?.effectiveSource
+  const newWire = finalUpstreamRequest(entry)
+  const effectiveLeg = newEff
+  const wireLeg = newWire
+
+  const inboundMessages = entry.clientRequest?.messages
+  const effectiveMessages = newEff?.messages
   const canDiff = inboundMessages !== undefined && effectiveMessages !== undefined
 
   const { inboundMarks, effectiveMarks } = useMemo(() => deriveRewriteMarks(inboundMessages, effectiveMessages), [inboundMessages, effectiveMessages])
@@ -57,32 +69,32 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
         key: "inbound",
         label: "Inbound (client → proxy)",
         shortLabel: "Inbound",
-        messages: entry.inboundRequest.messages ?? [],
-        rawPayload: entry.inboundRequest,
+        messages: entry.clientRequest?.messages ?? [],
+        rawPayload: entry.clientRequest,
         marks: inboundMarks,
       },
-      entry.effectiveRequest ?
+      effectiveLeg ?
         {
           key: "effective",
           label: "Effective (after rewrites)",
           shortLabel: "Effective",
-          messages: entry.effectiveRequest.messages ?? [],
-          rawPayload: entry.effectiveRequest.payload ?? entry.effectiveRequest,
+          messages: effectiveMessages ?? [],
+          rawPayload: newEff?.body ?? effectiveLeg,
           marks: effectiveMarks,
         }
       : null,
-      entry.outboundRequest ?
+      wireLeg ?
         {
           key: "wire",
           label: "Wire (proxy → upstream)",
           shortLabel: "Wire",
-          messages: entry.outboundRequest.messages ?? [],
-          rawPayload: entry.outboundRequest.payload ?? entry.outboundRequest,
+          messages: newWire?.messages ?? [],
+          rawPayload: newWire?.body ?? wireLeg,
         }
       : null,
     ]
     return built.filter((leg): leg is Leg => leg !== null)
-  }, [entry, inboundMarks, effectiveMarks])
+  }, [entry, inboundMarks, effectiveMarks, effectiveLeg, wireLeg, newEff, newWire, effectiveMessages])
 
   const [selectedLeg, setSelectedLeg] = useState<LegKey>("inbound")
   const [pendingScroll, setPendingScroll] = useState<string | undefined>(undefined)

@@ -20,6 +20,7 @@ import {
 
 import type {
   //
+  ClientRequestLeg,
   EndpointType,
   EntrySummary,
   HistoryEntry,
@@ -62,21 +63,23 @@ function getLastSentMessageOfType(ws: WebSocket, type: string): WSMessage {
 }
 
 /** Helper: create and insert a minimal history entry */
-function createEntry(endpoint: EndpointType, inboundRequest: Partial<HistoryEntry["inboundRequest"]> & { model: string }): HistoryEntry {
+function createEntry(endpoint: EndpointType, clientRequest: Partial<ClientRequestLeg> & { model: string }): HistoryEntry {
   const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
     id: generateId(),
     sessionId,
     startedAt: Date.now(),
     endpoint,
-    inboundRequest: {
-      model: inboundRequest.model,
-      messages: inboundRequest.messages ?? [{ role: "user", content: "Hello" }],
-      stream: inboundRequest.stream ?? false,
-      tools: inboundRequest.tools,
-      max_tokens: inboundRequest.max_tokens,
-      temperature: inboundRequest.temperature,
-      system: inboundRequest.system,
+    model: { requested: clientRequest.model },
+    clientRequest: {
+      format: endpoint,
+      model: clientRequest.model,
+      messages: clientRequest.messages ?? [{ role: "user", content: "Hello" }],
+      stream: clientRequest.stream ?? false,
+      tools: clientRequest.tools,
+      max_tokens: clientRequest.max_tokens,
+      temperature: clientRequest.temperature,
+      system: clientRequest.system,
     },
   }
   insertEntry(entry)
@@ -188,13 +191,20 @@ describe("updateEntry (response) triggers WS notification", () => {
 
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        stop_reason: "end_turn",
-        content: { role: "assistant", content: "Hi there!" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            stopReason: "end_turn",
+            body: { role: "assistant", content: "Hi there!" },
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 150,
     })
 
@@ -214,12 +224,19 @@ describe("updateEntry (response) triggers WS notification", () => {
 
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 200,
     })
 
@@ -240,8 +257,7 @@ describe("updateEntry (response) triggers WS notification", () => {
       state: "streaming",
       active: true,
       queueWaitMs: 320,
-      attemptCount: 2,
-      currentStrategy: "network-retry",
+      _index: { derived: { attemptCount: 2, currentStrategy: "network-retry" } },
       startedAt: entry.startedAt,
       lastUpdatedAt: entry.startedAt + 320,
       durationMs: 320,
@@ -262,13 +278,20 @@ describe("updateEntry (response) triggers WS notification", () => {
 
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: false,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 0 },
-        error: "Rate limited",
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "Rate limited",
+          upstreamResponse: {
+            success: false,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 0 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: false, failureReason: "Rate limited", attemptCount: 1 } },
       durationMs: 50,
     })
 
@@ -344,13 +367,20 @@ describe("full request lifecycle", () => {
 
     // 3. Update with response
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        stop_reason: "end_turn",
-        content: { role: "assistant", content: "Hi there!" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            stopReason: "end_turn",
+            body: { role: "assistant", content: "Hi there!" },
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 300,
     })
 
@@ -377,23 +407,37 @@ describe("full request lifecycle", () => {
 
     const entry1 = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry1.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 100,
     })
 
     const entry2 = createEntry("openai-chat-completions", { model: "gpt-4o" })
     updateEntry(entry2.id, {
-      outboundResponse: {
-        success: true,
-        model: "gpt-4o",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "gpt-4o",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 200,
     })
 
@@ -417,12 +461,19 @@ describe("full request lifecycle", () => {
 
     // Update with response - client should only see this
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 100,
     })
 
@@ -443,12 +494,19 @@ describe("full request lifecycle", () => {
     ;(ws as unknown as { readyState: number }).readyState = WebSocket.CLOSED
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 100,
     })
 
@@ -473,7 +531,9 @@ describe("history disabled", () => {
       sessionId,
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      inboundRequest: {
+      model: { requested: "claude-sonnet-4-20250514" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "Hello" }],
         stream: false,

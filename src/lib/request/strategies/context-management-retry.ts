@@ -28,10 +28,18 @@ import type {
   RetryStrategy,
 } from "../pipeline"
 
-// Matches "<field>: Extra inputs are not permitted" with <field> = identifier
-// (snake/camel case). Restricting to identifier characters avoids false matches
-// in unrelated free-text messages.
-const EXTRA_INPUTS_PATTERN = /\b([a-z_]\w*):\s*Extra inputs are not permitted/i
+// Matches "<field>: Extra inputs are not permitted" with <field> = a TOP-LEVEL
+// body-field identifier (snake/camel case). The `(?<![.\w])` lookbehind anchors
+// the field to a path boundary so only true top-level fields match — e.g.
+// `context_management` / `inference_geo` (preceded by quote/space/brace) still
+// match, but a DOTTED sub-path segment does NOT. This is deliberate: nested
+// rejections like `tools.0.custom.eager_input_streaming: Extra inputs...` or
+// `messages.5.content.0.foo: Extra inputs...` are NOT top-level body fields —
+// stripping the captured leaf as a body field is a no-op (it lives nested, not
+// at payload top level) and would only swallow the error from the strategy that
+// CAN remediate it (tool-field-rejection for the tools path). Restricting to
+// identifier chars also avoids false matches in unrelated free-text messages.
+const EXTRA_INPUTS_PATTERN = /(?<![.\w])([a-z_]\w*):\s*Extra inputs are not permitted/i
 
 export interface ExtraInputsErrorInfo {
   /** The rejected body field name (e.g. "context_management") */

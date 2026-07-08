@@ -25,6 +25,8 @@ import {
   type SocksProxy,
 } from "socks"
 
+import { withErrorSink } from "./crash-safety"
+
 /** Cap on the proxy's CONNECT response header block, guarding against a proxy that never terminates it. */
 const MAX_CONNECT_HEADER_BYTES = 64 * 1024
 
@@ -95,7 +97,10 @@ async function connectViaSocks(url: URL, opts: ProxiedSocketOptions): Promise<ne
     destination: { host: opts.targetHost, port: opts.targetPort },
     timeout: opts.timeoutMs,
   })
-  return socket
+  // withErrorSink: the caller TLS-wraps this raw socket after a microtask gap; an
+  // 'error' in that gap (or later teardown) would otherwise crash the process. See
+  // crash-safety.ts.
+  return withErrorSink(socket)
 }
 
 /**
@@ -120,7 +125,13 @@ function connectViaHttpConnect(url: URL, opts: ProxiedSocketOptions): Promise<ne
   const target = `${opts.targetHost}:${opts.targetPort}`
 
   return new Promise<net.Socket>((resolve, reject) => {
-    const socket = isHttps ? tls.connect({ host: proxyHost, port: proxyPort, servername: proxyHost }) : net.connect({ host: proxyHost, port: proxyPort })
+    // withErrorSink: guards the socket across the CONNECT handshake, the `fail`
+    // teardown, and the handoff to the caller's TLS layer against an orphaned
+    // 'error' → uncaughtException → server crash. `fail` (below) is still the REAL
+    // error handler (it rejects); the sink only prevents the no-listener crash.
+    const socket = withErrorSink(
+      isHttps ? tls.connect({ host: proxyHost, port: proxyPort, servername: proxyHost }) : net.connect({ host: proxyHost, port: proxyPort }),
+    )
 
     let settled = false
     const fail = (err: Error): void => {
@@ -173,9 +184,9 @@ function connectViaHttpConnect(url: URL, opts: ProxiedSocketOptions): Promise<ne
       const leftover = buf.subarray(idx + 4)
       if (leftover.length > 0) socket.unshift(leftover)
 
-      // Keep `fail` attached (inert once `settled`) so the socket always has an
-      // 'error' listener through the handoff to the caller's TLS layer — an
-      // unhandled EventEmitter 'error' throws → process crash.
+      // `fail` stays attached (inert once `settled`) as the socket's REAL error
+      // handler through the handoff to the caller's TLS layer. The withErrorSink at
+      // creation is the belt-and-suspenders backstop against the no-listener crash.
       settled = true
       resolve(socket)
     }

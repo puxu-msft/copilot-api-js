@@ -2,7 +2,7 @@
  * Double-hop web_search orchestration (Anthropic path only).
  *
  * When a request carries a native web_search server tool (or Claude Code's
- * `WebSearch` tool) and `web_search.enabled` is on, this orchestrator:
+ * `WebSearch` tool) and `server_tool_web_search.enabled` is on, this orchestrator:
  *
  *   1. First hop — replaces the native web_search server tool with a plain
  *      function tool `web_search(query)` and calls the MAIN model (non-streaming)

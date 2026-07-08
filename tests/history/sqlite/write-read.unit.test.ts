@@ -42,13 +42,19 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     active: false,
     lastUpdatedAt: Date.now() + 100,
     transport: "http",
-    inboundRequest: { model: "claude-opus-4-7" },
-    outboundResponse: {
-      success: true,
-      model: "claude-opus-4-7",
-      usage: { input_tokens: 1, output_tokens: 2 },
-      content: { role: "assistant", content: "ok" },
-    },
+    clientRequest: { model: "claude-opus-4-7" },
+    attempts: [
+      {
+        index: 0,
+        durationMs: 100,
+        upstreamResponse: {
+          success: true,
+          model: "claude-opus-4-7",
+          usage: { input_tokens: 1, output_tokens: 2 },
+          body: { role: "assistant", content: "ok" },
+        },
+      },
+    ],
     ...overrides,
   } as HistoryEntry
 }
@@ -64,32 +70,22 @@ describe("sqlite write/read", () => {
     await insertCompletedEntry(entry)
     const got = getEntryById("e1")
     expect(got?.id).toBe("e1")
-    expect(got?.outboundResponse?.usage.input_tokens).toBe(1)
+    expect(got?.attempts?.at(-1)?.upstreamResponse?.usage?.input_tokens).toBe(1)
   })
 
   test("queryEntries filters by model", async () => {
     await insertCompletedEntry(
       makeEntry({
         id: "a",
-        inboundRequest: { model: "m1" },
-        outboundResponse: {
-          success: true,
-          model: "m1",
-          usage: { input_tokens: 1, output_tokens: 1 },
-          content: null,
-        },
+        clientRequest: { model: "m1" },
+        attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "m1", usage: { input_tokens: 1, output_tokens: 1 }, body: null } }],
       }),
     )
     await insertCompletedEntry(
       makeEntry({
         id: "b",
-        inboundRequest: { model: "m2" },
-        outboundResponse: {
-          success: true,
-          model: "m2",
-          usage: { input_tokens: 1, output_tokens: 1 },
-          content: null,
-        },
+        clientRequest: { model: "m2" },
+        attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "m2", usage: { input_tokens: 1, output_tokens: 1 }, body: null } }],
       }),
     )
     const byM1 = queryEntries({ model: "m1", limit: 10 })
@@ -130,7 +126,7 @@ describe("sqlite write/read", () => {
     await insertCompletedEntry(
       makeEntry({
         id: "s-summary",
-        inboundRequest: {
+        clientRequest: {
           model: "claude-opus-4-7",
           messages: [
             { role: "user", content: "first user message" },
@@ -217,8 +213,8 @@ describe("sqlite write/read", () => {
   })
 
   test("request_bytes/response_bytes derived + multiplier persisted → EntrySummary + full entry", async () => {
-    // Streaming entry: response bytes = sum of sse frame `raw` bytes; request
-    // bytes derived from the outbound wire payload; multiplier carried on the entry.
+    // Streaming entry: response bytes = sum of upstream sse frame `raw` bytes; request
+    // bytes derived from the upstream wire payload; multiplier carried on the entry.
     const wirePayload = { model: "claude-opus-4-8", messages: [{ role: "user", content: "hi" }] }
     const frames = [
       { offsetMs: 1, type: "message_start", raw: '{"type":"message_start"}' },
@@ -231,8 +227,14 @@ describe("sqlite write/read", () => {
       makeEntry({
         id: "bytes-stream",
         multiplier: 3,
-        outboundRequest: { model: "claude-opus-4-8", payload: wirePayload },
-        sseEvents: frames,
+        attempts: [
+          {
+            index: 0,
+            durationMs: 1,
+            upstreamRequest: { model: "claude-opus-4-8", body: wirePayload },
+            upstreamResponse: { success: true, model: "claude-opus-4-8", usage: { input_tokens: 1, output_tokens: 2 }, sseEvents: frames },
+          },
+        ],
       }),
     )
 
@@ -253,32 +255,44 @@ describe("sqlite write/read", () => {
     await insertCompletedEntry(
       makeEntry({
         id: "bytes-raw",
-        outboundRequest: { model: "m", payload: { a: 1 } },
-        outboundResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 2 }, content: null, rawBody: "abcde" },
+        attempts: [
+          {
+            index: 0,
+            durationMs: 1,
+            upstreamRequest: { model: "m", body: { a: 1 } },
+            upstreamResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 2 }, body: null, rawBody: "abcde" },
+          },
+        ],
       }),
     )
     expect(getEntryById("bytes-raw")?.responseBytes).toBe(5)
 
-    // No rawBody → serialized content bytes.
+    // No rawBody → serialized body bytes.
     const content = { role: "assistant", content: "hello" }
     await insertCompletedEntry(
       makeEntry({
         id: "bytes-content",
-        outboundRequest: { model: "m", payload: { a: 1 } },
-        outboundResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 2 }, content },
+        attempts: [
+          {
+            index: 0,
+            durationMs: 1,
+            upstreamRequest: { model: "m", body: { a: 1 } },
+            upstreamResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 2 }, body: content },
+          },
+        ],
       }),
     )
     expect(getEntryById("bytes-content")?.responseBytes).toBe(Buffer.byteLength(JSON.stringify(content)))
   })
 
   test("absent payloads/multiplier → null columns → undefined fields (old-row backward compat)", async () => {
-    // An entry with no outbound/effective request payload, no sse, no rawBody/content,
+    // An entry with no upstream request payload, no sse, no rawBody/body content,
     // no multiplier mirrors what an OLD row (NULL columns) deserializes to: undefined.
     await insertCompletedEntry(
       makeEntry({
         id: "bytes-absent",
-        inboundRequest: { model: "m" }, // no messages → request bytes null
-        outboundResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, content: null },
+        clientRequest: { model: "m" }, // no messages → request bytes null
+        attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: null } }],
       }),
     )
 
@@ -293,13 +307,14 @@ describe("sqlite write/read", () => {
     expect(full?.multiplier).toBeUndefined()
   })
 
-  test("request_bytes falls back to inbound messages when no outbound/effective payload", async () => {
+  test("request_bytes falls back to inbound messages when no upstream/effective payload", async () => {
     const messages = [{ role: "user", content: "fallback request" }]
     await insertCompletedEntry(
       makeEntry({
         id: "bytes-fallback",
-        inboundRequest: { model: "m", messages },
-        // No outboundRequest / effectiveRequest payload.
+        clientRequest: { model: "m", messages },
+        // No upstreamRequest / effectiveSource payload on the attempt.
+        attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: null } }],
       }),
     )
     expect(getEntryById("bytes-fallback")?.requestBytes).toBe(Buffer.byteLength(JSON.stringify(messages)))

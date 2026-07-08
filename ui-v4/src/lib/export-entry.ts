@@ -1,10 +1,13 @@
+import { resolveResponseModel } from "~backend/lib/history/entry-view"
+
 import type { HistoryEntry } from "@/types"
 
 import { api } from "@/lib/api"
 
 /** Filename for a downloaded entry: `<id>_<model>.json.zst` (response model preferred; model sanitized to filename-safe chars). */
 export function entryExportFilename(entry: HistoryEntry): string {
-  const model = entry.outboundResponse?.model || entry.inboundRequest.model || "unknown"
+  // Response model (new final-attempt `upstreamResponse`) → requested model → unknown.
+  const model = resolveResponseModel(entry) || entry.model?.requested || entry.clientRequest?.model || "unknown"
   return `${entry.id}_${model.replaceAll(/[^\w.-]/g, "_")}.json.zst`
 }
 

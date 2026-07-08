@@ -94,7 +94,7 @@ gh search code --repo microsoft/vscode "isAnthropicToolSearchEnabled" --json pat
 |---|---|---|
 | `modelSupportsContextEditing` | haiku-4-5 / sonnet-4(-5/-6) / opus-4(/-1/-5/-6)；**含 `1m` 的变体返回 false** | `modelSupportsContextEditing`（含 opus-4-7；已加 family fallback） |
 | `modelSupportsInterleavedThinking` | sonnet-4(-5) / haiku-4-5 / opus-4-5 | `modelSupportsInterleavedThinking` |
-| `modelSupportsMemory` | fable-5 / haiku-4-5 / sonnet-4(-5/-6) / opus-4(/-1/-5/-6/-7/-8) | **已镜像**（`features.ts:modelSupportsMemory` + config `memory_tool` 开关默认关，Phase 3） |
+| `modelSupportsMemory` | fable-5 / haiku-4-5 / sonnet-4(-5/-6) / opus-4(/-1/-5/-6/-7/-8) | **已镜像**（`features.ts:modelSupportsMemory` + config `server_tool_memory` 开关默认关，Phase 3） |
 | `modelSupportsExtendedCacheTtl` | fable-5 / opus-4-5..8 / sonnet-4-5/6 / haiku-4-5（比 memory 窄） | **已镜像**（`modelSupportsExtendedCacheTtl` + config `extended_cache_ttl`，Phase 2） |
 | `modelSupportsToolSearch`（default-allow：Claude ≥4.5 放行，拒 Haiku + pre-4.5；OpenAI gpt-5.4/5.5 另支） | 见左（config 门控已删） | `modelSupportsToolSearch` = metadata ?? `tool_search_overrides` ?? `toolSearchDefaultAllow`（Phase 1，仅镜像 Claude 分支）+ 全局 `tool_search` 开关 |
 | `isAnthropicContextEditingEnabled` | `modelSupportsContextEditing` **且** config mode ≠ `'off'` | `isContextEditingEnabled` |
@@ -106,7 +106,7 @@ gh search code --repo microsoft/vscode "isAnthropicToolSearchEnabled" --json pat
 关键常量（`anthropic.ts`）：
 - ~~`TOOL_SEARCH_SUPPORTED_MODELS`~~ 已删除——tool-search 改为 default-allow（`chatModelCapabilities.ts:modelSupportsToolSearch`：deny 非 claude/haiku/pre-4.5，其余 allow）。
 - `TOOL_SEARCH_TOOL_NAME = 'tool_search_tool_regex'`、`TOOL_SEARCH_TOOL_TYPE = 'tool_search_tool_regex_20251119'`、`CUSTOM_TOOL_SEARCH_NAME = 'tool_search'`
-- memory 原生 tool：`{name:'memory', type:'memory_20250818'}`，仅 BYOK 路径注入、共用 `context-management-2025-06-27` beta（CAPI 路径不注入——本项目经 CAPI，故 `memory_tool` 默认关、CAPI 接受性未实测）。
+- memory 原生 tool：`{name:'memory', type:'memory_20250818'}`，仅 BYOK 路径注入、共用 `context-management-2025-06-27` beta（CAPI 路径不注入——本项目经 CAPI，故 `server_tool_memory` 默认关、CAPI 接受性未实测）。
 
 ### context_management 构建（`anthropic.ts:buildContextManagement` / `getContextManagementFromConfig`）
 
@@ -157,7 +157,7 @@ BYOK converters（`extension/byok/common/{gemini,anthropic}*Converter.ts`）本�
 | `chatModelCapabilities.ts:modelSupportsToolSearch`（default-allow） | `features.ts:modelSupportsToolSearch`(=metadata ?? `tool_search_overrides` ?? `toolSearchDefaultAllow`)+全局 `tool_search` 开关 | 已对齐 default-allow（Phase 1，仅镜像 Claude 分支） |
 | `anthropic.ts:modelSupportsExtendedCacheTtl`/`isExtendedCacheTtlEnabled` | `features.ts:modelSupportsExtendedCacheTtl` + `request-preparation.ts` cache 管线 | 已镜像（Phase 2，Agent 门用 isAgentCall 近似） |
 | `anthropic.ts:isAnthropicContextEditingEnabled` | `features.ts:isContextEditingEnabled` | 对齐 |
-| `anthropic.ts:modelSupportsMemory` + BYOK `anthropicProvider.ts` memory 改写 | `features.ts:modelSupportsMemory` + `request-preparation.ts:rewriteMemoryTool` + config `memory_tool` | 已镜像（Phase 3，默认关，CAPI 接受性未实测） |
+| `anthropic.ts:modelSupportsMemory` + BYOK `anthropicProvider.ts` memory 改写 | `features.ts:modelSupportsMemory` + `request-preparation.ts:rewriteMemoryTool` + config `server_tool_memory` | 已镜像（Phase 3，默认关，CAPI 接受性未实测） |
 | `anthropic.ts:buildContextManagement`/`getContextManagementFromConfig` | `features.ts:buildContextManagement` | 默认值本项目改为可配 state |
 | `messagesApi.ts:createMessagesRequestBody`/`AnthropicMessagesProcessor` | `anthropic/client.ts` | 已覆盖 |
 | `responsesApi.ts:createResponsesRequestBody`/`OpenAIResponsesProcessor` | `openai/responses-client.ts` | 已覆盖 |

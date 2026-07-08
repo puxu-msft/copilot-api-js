@@ -44,7 +44,7 @@ function makeEntry(overrides: Partial<HistoryEntry>): HistoryEntry {
     state: "completed",
     active: false,
     lastUpdatedAt: 1_000,
-    inboundRequest: { model: "m", messages: [{ role: "user", content: "hi" }] },
+    clientRequest: { model: "m", messages: [{ role: "user", content: "hi" }] },
     ...overrides,
   } as HistoryEntry
 }
@@ -64,31 +64,30 @@ describe("history incremental persistence + recovery", () => {
 
     const pending = getEntryById("r1")
     expect(pending?.state).toBe("pending")
-    // Head-only row: inboundRequest is floored to { model } from the head column
-    // (its messages live in the not-yet-written inbound_request stage). Partiality
-    // is governed by `state`, not field presence (see assembleFullEntry docstring),
-    // and the read path must not leave the non-optional inboundRequest undefined.
-    expect(pending?.inboundRequest?.model).toBe("m")
-    expect(pending?.inboundRequest?.messages).toBeUndefined()
+    // Head-only row: the heavy `clientRequest` leg lives in the not-yet-written
+    // client_request stage, so it is absent on the assembled entry (partiality is
+    // governed by `state`, not field presence — see assembleFullEntry docstring).
+    // The model stays queryable via the head `model` column (mirrored into summaries).
+    expect(pending?.clientRequest).toBeUndefined()
 
     // Finalize with full data.
     await insertCompletedEntry(
       makeEntry({
         id: "r1",
         state: "completed",
-        outboundResponse: { success: true, model: "m", usage: { input_tokens: 3, output_tokens: 2 }, content: { role: "assistant", content: "ok" } },
+        attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 3, output_tokens: 2 }, body: { role: "assistant", content: "ok" } } }],
       }),
     )
     const done = getEntryById("r1")
     expect(done?.state).toBe("completed")
-    expect(done?.inboundRequest.model).toBe("m")
-    expect(done?.outboundResponse?.usage.input_tokens).toBe(3)
+    expect(done?.clientRequest?.model).toBe("m")
+    expect(done?.attempts?.at(-1)?.upstreamResponse?.usage?.input_tokens).toBe(3)
   })
 
   test("upsertHeadRow status update does NOT cascade-delete stage rows", async () => {
     // Eager head + inbound_request stage (one transaction), then a status bump.
     const entry = makeEntry({ id: "r2", state: "pending" })
-    upsertHeadRow(entry, "pending", [{ stage: "inbound_request", attemptIndex: -1, payload: entry.inboundRequest }])
+    upsertHeadRow(entry, "pending", [{ stage: "client_request", attemptIndex: -1, payload: entry.clientRequest }])
     expect(getDatabase().prepare("SELECT COUNT(*) AS n FROM entry_stages WHERE entry_id='r2'").get()).toEqual({ n: 1 })
 
     // Status transition via ON CONFLICT DO UPDATE must keep the stage row.
@@ -120,7 +119,7 @@ describe("history incremental persistence + recovery", () => {
       makeEntry({
         id: "casc",
         state: "completed",
-        outboundResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
+        attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, body: null } }],
       }),
     )
     const db = getDatabase()
@@ -135,7 +134,7 @@ describe("history incremental persistence + recovery", () => {
         id: "t1",
         sessionId: "S",
         state: "completed",
-        outboundResponse: { success: true, model: "m", usage: { input_tokens: 5, output_tokens: 1 }, content: null },
+        attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 5, output_tokens: 1 }, body: null } }],
       }),
     )
     await insertCompletedEntry(
@@ -143,7 +142,7 @@ describe("history incremental persistence + recovery", () => {
         id: "t2",
         sessionId: "S",
         state: "completed",
-        outboundResponse: { success: true, model: "m", usage: { input_tokens: 7, output_tokens: 1 }, content: null },
+        attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 7, output_tokens: 1 }, body: null } }],
       }),
     )
     upsertHeadRow(makeEntry({ id: "t3", sessionId: "S", state: "pending" }), "pending")
@@ -155,13 +154,14 @@ describe("history incremental persistence + recovery", () => {
 
   test("stats break out aborted/interrupted distinctly; failedRequests stays = only 'failed'", async () => {
     await insertCompletedEntry(
-      makeEntry({ id: "c", state: "completed", outboundResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, content: null } }),
+      makeEntry({ id: "c", state: "completed", attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: null } }] }),
     )
     await insertCompletedEntry(
       makeEntry({
         id: "f",
         state: "failed",
-        outboundResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, error: "boom", content: null },
+        _index: { derived: { responseSuccess: false, failureReason: "boom" } },
+        attempts: [{ index: 0, durationMs: 1, error: "boom", upstreamResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: null } }],
       }),
     )
     await insertCompletedEntry(makeEntry({ id: "a", state: "aborted" }))

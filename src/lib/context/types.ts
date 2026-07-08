@@ -4,6 +4,7 @@ import type {
   EndpointType,
   ForwardedResponse,
   PipelineInfo,
+  PreprocessInfo,
   RequestLifecycleState,
   RequestTransport,
   SanitizationInfo,
@@ -134,6 +135,120 @@ export interface HeadersCapture {
   response?: Record<string, string>
 }
 
+// ─── New client/upstream leg DTOs (RFC 2026-07-07 §3) — producer-side (unknown-based) ───
+// Parallel to the history-store owner interfaces (ModelInfo/ClientRequestLeg/…), which use
+// the structured `MessageContent` type; these use `unknown` for messages/body/system to match
+// what the producer (context/request.ts) actually carries. Coexist with the legacy legs during
+// migration; producers/consumers switch over in later phases.
+
+/** Model identity + billing (parent key, RFC §3). */
+export interface HistoryModelInfo {
+  requested?: string
+  resolved?: string
+  multiplier?: number
+}
+
+/**
+ * Client → Proxy request leg (RFC §3). `body` is the raw inbound payload.
+ *
+ * The structured projections (model/messages/system/max_tokens/temperature/tools/
+ * thinking) mirror the deprecated `inboundRequest` (R1-W7): a NON-authoritative
+ * index of `body` (§2.3) so consumers read the parsed request without re-parsing
+ * `body`. Producer-side (`unknown`-based) parallel of the owner `ClientRequestLeg`.
+ */
+export interface HistoryClientRequestLeg {
+  method?: string
+  path?: string
+  format?: EndpointType
+  headers?: Record<string, string>
+  body?: unknown
+  stream?: boolean
+  // ─── Structured projections mirroring the deprecated inboundRequest (R1-W7) ───
+  model?: string
+  messages?: Array<unknown>
+  system?: unknown
+  max_tokens?: number
+  temperature?: number
+  tools?: Array<unknown>
+  thinking?: unknown
+}
+
+/** Proxy → Client response leg, first-class (RFC §2.1). `status?` new capture. */
+export interface HistoryClientResponseLeg {
+  status?: number
+  headers?: Record<string, string>
+  body?: unknown
+  sseEvents?: Array<SseEventRecord>
+}
+
+/**
+ * Per-attempt effective source leg (RFC §3). `body` = env.body verbatim (SoT); the
+ * structured projections index it non-authoritatively (§2.3). `pipeline` = this
+ * attempt's truncation/sanitization/messageMapping.
+ */
+export interface HistoryEffectiveSourceLeg {
+  format?: EndpointType
+  model?: string
+  messageCount?: number
+  messages?: Array<unknown>
+  system?: unknown
+  body?: unknown
+  pipeline?: PipelineInfo
+}
+
+/**
+ * Per-attempt upstream request leg (RFC §3, R4-FAIL-A): messages/model/system
+ * projection ALONGSIDE headers+body — `rewrites-req` search reads `messages` here.
+ */
+export interface HistoryUpstreamRequestLeg {
+  format?: EndpointType
+  model?: string
+  messages?: Array<unknown>
+  system?: unknown
+  headers?: Record<string, string>
+  body?: unknown
+}
+
+/**
+ * Per-attempt upstream response leg (RFC §3). Every settled attempt carries one
+ * (success = real; failure = synthesized verdict via P2.5). `success` = complete
+ * 2xx with normal protocol termination; client-facing outcome is `entry.state`.
+ */
+export interface HistoryUpstreamResponseData {
+  success: boolean
+  status?: number
+  headers?: Record<string, string>
+  trailers?: Record<string, string>
+  body?: unknown
+  rawBody?: string
+  sseEvents?: Array<SseEventRecord>
+  usage?: ResponseData["usage"]
+  stopReason?: string
+  model?: string
+  responseId?: string
+  copilotAnnotations?: Array<CopilotAnnotations>
+  toolSearchRequests?: number
+}
+
+/**
+ * Derived (recompute-only) + auxiliary index projections (RFC §3, R4-WARN-E).
+ * `derived` recomputes from `attempts` (three-point sync invariant); `aux` free-evolving.
+ */
+export interface HistoryIndexProjection {
+  derived?: {
+    responseSuccess?: boolean
+    currentStrategy?: string
+    failureReason?: string
+    attemptCount?: number
+  }
+  aux?: {
+    requestBytes?: number
+    responseBytes?: number
+    previewText?: string
+    warningMessages?: Array<WarningMessage>
+  }
+}
+
 /** Serialized form of a completed request (decoupled from history store) */
 export interface HistoryEntryData {
   id: string
@@ -145,100 +260,46 @@ export interface HistoryEntryData {
   active: boolean
   lastUpdatedAt: number
   queueWaitMs: number
-  attemptCount: number
-  currentStrategy?: string
   durationMs: number
-  /**
-   * Top-level failure reason for non-success terminal states (failed / aborted /
-   * interrupted), projected from the richest available source —
-   * `outboundResponse.error` else the last attempt's error. A convenience surface
-   * so triage need not crawl `outboundResponse` / `attempts[].error` (RFC
-   * pre-response-abort Q3; the per-leg data is unchanged — this is a projection,
-   * not a new capture). Absent for successful / non-terminal entries.
-   */
-  failureReason?: string
   sessionId?: string
   agentId?: string
   transport?: RequestTransport
   warningMessages?: Array<WarningMessage>
 
-  /** Client → Proxy: the client's raw inbound request. */
-  inboundRequest: {
-    model?: string
-    messages?: Array<unknown>
-    stream?: boolean
-    tools?: Array<unknown>
-    system?: unknown
-    max_tokens?: number
-    temperature?: number
-    thinking?: unknown
-  }
+  // ─── New client/upstream leg model (RFC §3). The legacy top-level legs
+  //     (inboundRequest/effectiveRequest/outboundRequest/outboundResponse/
+  //     inboundResponse/sseEvents/httpHeaders/truncation) and the deprecated
+  //     scalars (attemptCount/currentStrategy/failureReason) were REMOVED in
+  //     P4c-3; the producer now emits ONLY the new legs + `_index.derived`. ───
+  /** Model identity + billing (parent key, RFC §3). */
+  model?: HistoryModelInfo
+  /** Client → Proxy request leg (RFC §3). */
+  clientRequest?: HistoryClientRequestLeg
+  /** Proxy → Client response leg, first-class (RFC §2.1). */
+  clientResponse?: HistoryClientResponseLeg
+  /** One-time inbound preprocessing hoisted to entry level (RFC §4). */
+  preprocessing?: PreprocessInfo
+  /** Derived (recompute-only) + auxiliary index projections (RFC §3). */
+  _index?: HistoryIndexProjection
 
-  effectiveRequest?: {
-    model?: string
-    format?: EndpointType
-    messageCount?: number
-    messages?: Array<unknown>
-    system?: unknown
-    payload?: unknown
-  }
-
-  /** Proxy → Upstream: the final wire request sent upstream. */
-  outboundRequest?: {
-    model?: string
-    format?: EndpointType
-    messageCount?: number
-    messages?: Array<unknown>
-    system?: unknown
-    payload?: unknown
-    /** RFC Phase 3: ② outbound/per-attempt request headers. */
-    headers?: Record<string, string>
-  }
-
-  /** Upstream → Proxy: the upstream-original response. */
-  outboundResponse?: ResponseData
-  /** Proxy → Client: response as actually forwarded to the client, post-rewrite. */
-  inboundResponse?: ForwardedResponse
-  truncation?: TruncationInfo
   pipelineInfo?: PipelineInfo
-  sseEvents?: Array<SseEventRecord>
-  httpHeaders?: {
-    inboundRequest?: Record<string, string>
-    outboundRequest?: Record<string, string>
-    outboundResponse?: Record<string, string>
-    inboundResponse?: Record<string, string>
-    /** HTTP/2 response trailers (trailing HEADERS frame) from upstream, when present — rare from GHC, captured best-effort. */
-    outboundResponseTrailers?: Record<string, string>
-  }
   attempts?: Array<{
     index: number
     strategy?: string
     durationMs: number
     transport?: RequestTransport
     error?: string
-    truncation?: TruncationInfo
-    sanitization?: SanitizationInfo
-    effectiveMessageCount?: number
-    /** Full per-attempt bodies (Bug 3): preserved for every attempt, not just the final one. */
-    effectiveRequest?: {
-      model?: string
-      format?: EndpointType
-      messageCount?: number
-      messages?: Array<unknown>
-      system?: unknown
-      payload?: unknown
-    }
-    wireRequest?: {
-      model?: string
-      format?: EndpointType
-      messageCount?: number
-      messages?: Array<unknown>
-      system?: unknown
-      payload?: unknown
-      /** RFC Phase 3: ② per-attempt outbound request headers. */
-      headers?: Record<string, string>
-    }
-    response?: ResponseData
+    /** New capture (RFC §4): attempt wall-clock start; producer wires in P4. */
+    startedAt?: number
+    /** New capture (RFC §4): rate-limit wait before this attempt; producer wires in P4. */
+    waitMs?: number
+    // ─── New per-attempt legs (RFC §3). Legacy per-attempt legs removed in P4c-3. ───
+    /** Proxy-side effective source (env.body verbatim + this attempt's pipeline). */
+    effectiveSource?: HistoryEffectiveSourceLeg
+    /** Proxy → Upstream wire request (with messages/model/system projection, R4-FAIL-A). */
+    upstreamRequest?: HistoryUpstreamRequestLeg
+    /** Upstream → Proxy response (settled attempts recompute-safe verdict). */
+    upstreamResponse?: HistoryUpstreamResponseData
     /** Per-attempt upstream-original SSE frames (L2 buffered retry / D1) — present on FAILED attempts only. */
     sseEvents?: Array<SseEventRecord>
     /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
@@ -351,6 +412,8 @@ export interface RequestContext {
   setHttpHeaders(capture: HeadersCapture): void
   setInboundRequestHeaders(headers: Record<string, string>): void
   setInboundResponseHeaders(headers: Record<string, string>): void
+  /** P3 (RFC §3): record the HTTP status forwarded to the client (proxy→client). Must be called before complete()/fail()/abort(). Lands on `clientResponse.status`. */
+  setClientResponseStatus(status: number): void
   /** Record upstream HTTP/2 response trailers (best-effort; the h2 transport fires this before stream end). */
   setOutboundResponseTrailers(trailers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void

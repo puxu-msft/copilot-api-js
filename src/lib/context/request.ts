@@ -36,7 +36,10 @@ import type {
   Attempt,
   EffectiveRequest,
   HeadersCapture,
+  HistoryEffectiveSourceLeg,
   HistoryEntryData,
+  HistoryUpstreamRequestLeg,
+  HistoryUpstreamResponseData,
   OriginalRequest,
   PartialResponseInfo,
   RepairOutcomeRecord,
@@ -72,27 +75,84 @@ function extractMaxTokens(p: { max_tokens?: unknown; max_completion_tokens?: unk
   return undefined
 }
 
-/** Project an effective/wire request into the history leg shape (model/format/messages/system/payload). */
-export function legFromEffective(ep: EffectiveRequest): NonNullable<HistoryEntryData["effectiveRequest"]> {
+/**
+ * Aggregate a single attempt's `truncation` + `sanitization` into a per-attempt
+ * `PipelineInfo` for its `effectiveSource.pipeline` (RFC §4: `attempts[].{truncation,
+ * sanitization}` → `effectiveSource.pipeline`). `sanitization` is a single record per
+ * attempt (unlike the top-level `pipelineInfo.sanitization` array), so it is wrapped
+ * in a one-element array to match `PipelineInfo.sanitization: Array<…>`. Returns
+ * undefined when the attempt has neither — so a clean attempt adds no `pipeline` key
+ * (keeps the eager/finalized stage byte-identical when there is nothing to record).
+ */
+export function pipelineFromAttempt(a: Attempt): PipelineInfo | undefined {
+  if (!a.truncation && !a.sanitization) return undefined
   return {
-    model: ep.model,
-    format: ep.format,
-    messageCount: ep.messages.length,
-    messages: ep.messages,
-    system: (ep.payload as Record<string, unknown> | undefined)?.system,
-    payload: ep.payload,
+    ...(a.truncation && { truncation: a.truncation }),
+    ...(a.sanitization && { sanitization: [a.sanitization] }),
   }
 }
 
-export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outboundRequest"]> {
+/**
+ * Project an effective request into the NEW `effectiveSource` leg (RFC §3).
+ * `body` = env.body verbatim (SoT); model/messageCount/messages/system are the
+ * NON-authoritative structured index of that body (§2.3), for search-index and
+ * other structured consumers. `pipeline` carries this attempt's truncation/
+ * sanitization/messageMapping (RFC §4) — passed by the caller since it lives on the
+ * Attempt, not the EffectiveRequest. Parallel to `legFromEffective` (the deprecated
+ * `effectiveRequest` builder) during migration; wired into the producer in P2.
+ */
+export function legFromEffectiveSource(ep: EffectiveRequest, pipeline?: PipelineInfo): HistoryEffectiveSourceLeg {
   return {
-    model: wp.model,
+    format: ep.format,
+    model: ep.model,
+    messageCount: ep.messages.length,
+    messages: ep.messages,
+    system: (ep.payload as Record<string, unknown> | undefined)?.system,
+    body: ep.payload,
+    ...(pipeline && { pipeline }),
+  }
+}
+
+/**
+ * Project a wire request into the NEW `upstreamRequest` leg (RFC §3). Unlike a
+ * naive headers+body wire leg, this ALSO carries the structured
+ * messages/model/system projection (R4-FAIL-A) — the `rewrites-req` search facet
+ * reads `messages` off this leg, so omitting it would silently break that search
+ * facet. Parallel to `legFromWire` (the deprecated `outboundRequest` builder)
+ * during migration; wired into the producer in P2.
+ */
+export function legFromUpstreamRequest(wp: WireRequest): HistoryUpstreamRequestLeg {
+  return {
     format: wp.format,
-    messageCount: wp.messages.length,
+    model: wp.model,
     messages: wp.messages,
     system: (wp.payload as Record<string, unknown> | undefined)?.system,
-    payload: wp.payload,
     headers: wp.headers,
+    body: wp.payload,
+  }
+}
+
+/**
+ * Project an upstream ResponseData into the NEW `upstreamResponse` leg (RFC §3).
+ * Carries the settled verdict (success / status / body / rawBody / usage /
+ * stopReason / model / responseId / annotations). `headers`, `trailers` and
+ * `sseEvents` are NOT on ResponseData — the caller layers them on (per-attempt
+ * response headers, final-attempt trailers, and the unified upstream frames that
+ * resolve §S1). Parallel to `legFromEffectiveSource`/`legFromUpstreamRequest`;
+ * wired into the producer (`toHistoryEntry`) + the eager sink path in P2.
+ */
+export function legFromUpstreamResponse(r: ResponseData): HistoryUpstreamResponseData {
+  return {
+    success: r.success,
+    ...(r.status !== undefined && { status: r.status }),
+    body: r.content,
+    ...(r.responseText !== undefined && { rawBody: r.responseText }),
+    usage: r.usage,
+    ...(r.stop_reason !== undefined && { stopReason: r.stop_reason }),
+    model: r.model,
+    ...(r.responseId !== undefined && { responseId: r.responseId }),
+    ...(r.copilotAnnotations && { copilotAnnotations: r.copilotAnnotations }),
+    ...(r.toolSearchRequests !== undefined && { toolSearchRequests: r.toolSearchRequests }),
   }
 }
 
@@ -112,8 +172,13 @@ export function legFromWire(wp: WireRequest): NonNullable<HistoryEntryData["outb
  * attempt. Non-HTTP failures (network errors, aborts) carry no upstream body, so
  * their `attempt.error` message stays the only record (no empty response stage).
  * Returns undefined when there is nothing to record.
+ *
+ * Exported so the EAGER stage producer (`collectAttemptStages`) can apply the
+ * SAME synthesis the finalized producer (`toHistoryEntry`) does — otherwise an
+ * interrupted row would drop a failed attempt's `upstream_response` stage and
+ * assemble with a divergent stage-KIND set (FAIL-1).
  */
-function synthesizeAttemptErrorResponse(a: Attempt): ResponseData | undefined {
+export function synthesizeAttemptErrorResponse(a: Attempt): ResponseData | undefined {
   if (!a.error) return undefined
   const raw = a.error.raw
   if (!(raw instanceof HTTPError) || !raw.responseText) return undefined
@@ -170,6 +235,12 @@ export function createRequestContext(opts: {
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
   let _forwardedResponse: ForwardedResponse | null = null
+  // P3 (RFC §3): the HTTP status the proxy actually forwards to the client — captured at
+  // the forward boundary (handler `c.json`/`streamSSE` write-out, or the observability
+  // middleware's `completeFromHttpStatus` safety net) BEFORE the terminal snapshot. Distinct
+  // from the upstream leg status (`_response.status`): a failed entry can still forward a 200
+  // (semantic-truncation gate) and a proxy-introduced refusal forwards a 500. undefined until set.
+  let _clientResponseStatus: number | undefined = undefined
   // Request-outcome failure reason set DIRECTLY by fail() when the failure is proxy-introduced
   // AFTER the upstream leg succeeded (opts.upstreamSucceeded) — so `outboundResponse` stays a
   // faithful upstream-leg record (success:true, no error) while the request verdict lives here.
@@ -375,6 +446,16 @@ export function createRequestContext(opts: {
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
+    setClientResponseStatus(status: number) {
+      // P3 (RFC §3): the HTTP status forwarded to the client (proxy→client), captured at the
+      // same forward boundary as `setInboundResponseHeaders` — the handler's built Response
+      // (`c.json`/`streamSSE` → `c.res.status`) or the middleware safety net's `c.res.status`.
+      // MUST land before complete()/fail()/abort() snapshots the entry (mirrors the header
+      // capture ordering). Lands on the first-class `clientResponse` leg in toHistoryEntry.
+      _clientResponseStatus = status
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
+    },
+
     setOutboundResponseTrailers(trailers: Record<string, string>) {
       // Best-effort h2 response-trailers leg (richest-data-flow). The transport fires
       // this before stream end, so it lands before complete()/fail() snapshots the entry.
@@ -573,6 +654,18 @@ export function createRequestContext(opts: {
         }
       }
 
+      // P2.5 producer alignment: land the FULL settled verdict on the final
+      // attempt (symmetric with `complete()`), so the terminal attempt carries
+      // the same rich response the top-level `_response` holds. Placed AFTER the
+      // if/else so it covers BOTH legs — the honest `upstreamSucceeded` leg
+      // (success:true, no error) and the else leg (HTTPError-enriched failure).
+      // Sitting inside the else would drop the upstreamSucceeded leg (WARN-3).
+      // Without this, a failed entry's per-attempt `upstreamResponse` degrades to
+      // the thin `synthesizeAttemptErrorResponse` fallback (no model / partial
+      // usage / stop_reason / partial content). Guarded by the `settled` early
+      // return at the method top, so it never double-writes.
+      ctx.setAttemptResponse(_response)
+
       // Drive state via transition() so `state_changed` fires for the
       // terminal transition — keeps the WS observer view consistent with
       // every non-terminal state change. Safe because finalization is now
@@ -580,12 +673,13 @@ export function createRequestContext(opts: {
       // docstring), not a side effect of the state field.
       ctx.transition("failed")
       const entry = ctx.toHistoryEntry()
+      const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
       publisher?.publish({
         kind: "request.failed",
         ctx: snapshotWithSummary(ctx),
         entry,
-        error: entry.failureReason ?? entry.outboundResponse?.error ?? "Unknown error",
-        ...(entry.outboundResponse?.status !== undefined && { statusCode: entry.outboundResponse.status }),
+        error: entry._index?.derived?.failureReason ?? _response?.error ?? "Unknown error",
+        ...(finalUpstream?.status !== undefined && { statusCode: finalUpstream.status }),
       })
       onSettled?.(id)
     },
@@ -607,6 +701,11 @@ export function createRequestContext(opts: {
         content: null,
         ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
       }
+
+      // P2.5 producer alignment: land the aborted verdict on the final attempt
+      // (symmetric with complete()/fail()). Single leg here — no upstreamSucceeded
+      // branch — so a plain post-`_response` write covers it. Guarded by `settled`.
+      ctx.setAttemptResponse(_response)
 
       ctx.transition("aborted")
       const entry = ctx.toHistoryEntry()
@@ -630,97 +729,159 @@ export function createRequestContext(opts: {
         active: false,
         lastUpdatedAt: endedAt,
         queueWaitMs: _queueWaitMs,
-        attemptCount: _attempts.length,
-        currentStrategy: _attempts.at(-1)?.strategy,
         durationMs: endedAt - startTime,
         ...(ctx.transport ? { transport: ctx.transport } : {}),
         ...(_warningMessages.length > 0 && { warningMessages: [..._warningMessages] }),
-        inboundRequest: {
-          model: _originalRequest?.model,
-          messages: _originalRequest?.messages,
-          stream: _originalRequest?.stream,
-          tools: _originalRequest?.tools,
-          system: _originalRequest?.system,
-          // Auto-extract metadata from payload (no handler changes needed)
+      }
+
+      // Entry-level failure-reason value (RFC pre-response-abort Q3): the richest
+      // available source — the directly-set proxy verdict (`_failureReason`, when the
+      // upstream leg succeeded but the proxy rejected the result) else the settled
+      // response error else the last attempt's error. Only for non-success terminals.
+      // Fed into `_index.derived.failureReason` (recompute-only projection) below.
+      const failureReasonValue =
+        _state === "failed" || _state === "aborted" || _state === "interrupted"
+          ? (_failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message ?? undefined)
+          : undefined
+
+      // New `model` parent key (RFC §3, §2.5): `requested` = client alias (raw inbound
+      // model, == deprecated `inboundRequest.model`); `resolved` = normalized resolved
+      // name (== deprecated `outboundResponse.model` — same value today, RFC §4 note);
+      // `multiplier` = the write-time billing factor (== deprecated top-level `multiplier`,
+      // resolved from the SAME `state.modelIndex` billing source as buildHistoryActivityPatch).
+      // Dual-written alongside the legacy fields; P4c drops those once consumers read `model`.
+      const requestedModel = _originalRequest?.model
+      const resolvedModelName = _resolvedModel !== null ? normalizeModelId(_resolvedModel) : _response?.model
+      const billing = _resolvedModel !== null ? appState.modelIndex.get(_resolvedModel)?.billing : undefined
+      if (requestedModel !== undefined || resolvedModelName !== undefined || billing?.multiplier !== undefined) {
+        entry.model = {
+          ...(requestedModel !== undefined && { requested: requestedModel }),
+          ...(resolvedModelName !== undefined && { resolved: resolvedModelName }),
+          ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+        }
+      }
+
+      // New `clientRequest` leg (RFC §3): `body` = raw inbound payload (SoT); the
+      // structured projections (model/messages/system/max_tokens/temperature/tools/
+      // thinking) mirror the deprecated `inboundRequest` (R1-W7) so consumers read the
+      // parsed request without re-parsing `body`. `headers` = the captured inbound
+      // request headers; `method`/`path`/`format` are new captures. Dual-written
+      // alongside `inboundRequest`; P4c drops `inboundRequest` once consumers migrate.
+      if (_originalRequest) {
+        entry.clientRequest = {
+          method,
+          path,
+          format: opts.endpoint,
+          ...(_httpHeaders?.inboundRequest && { headers: _httpHeaders.inboundRequest }),
+          body: _originalRequest.payload,
+          stream: _originalRequest.stream,
+          model: _originalRequest.model,
+          messages: _originalRequest.messages,
+          system: _originalRequest.system,
           max_tokens: extractMaxTokens(p),
           temperature: typeof p?.temperature === "number" ? p.temperature : undefined,
+          tools: _originalRequest.tools,
           thinking: p?.thinking ?? undefined,
-        },
+        }
       }
 
-      if (_response) {
-        entry.outboundResponse = _response
+      // Entry-level one-time inbound `preprocessing` (RFC §4): hoisted OFF the
+      // top-level `pipelineInfo` (which stays for the deprecated per-attempt
+      // truncation/messageMapping) — preprocessing is a once-per-request transform,
+      // not per-attempt, so it belongs at the entry level.
+      if (_pipelineInfo?.preprocessing) {
+        entry.preprocessing = _pipelineInfo.preprocessing
       }
 
-      // Top-level failure-reason projection (RFC pre-response-abort Q3): surface the
-      // failure reason at the entry level from the richest available source — the
-      // directly-set proxy verdict (`_failureReason`, when the upstream leg succeeded but the
-      // proxy rejected the result) else the settled response error else the last attempt's
-      // error — so triage need not crawl outboundResponse / per-attempt errors. Only for
-      // non-success terminals.
-      if (_state === "failed" || _state === "aborted" || _state === "interrupted") {
-        const reason = _failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message
-        if (reason) entry.failureReason = reason
-      }
-
-      if (_forwardedResponse) {
-        entry.inboundResponse = _forwardedResponse
-      }
-
-      // Find truncation from the last attempt that had one
-      const lastTruncation = _attempts.findLast((a) => a.truncation)?.truncation
-      if (lastTruncation) {
-        entry.truncation = lastTruncation
+      // New client/upstream leg model (RFC §2.1): clientResponse is first-class.
+      // `body`/`sseEvents` = the forwarded content; `status` = the HTTP status
+      // forwarded to the client (P3 capture); `headers` = the proxy→client response
+      // headers (captured via setInboundResponseHeaders). Built when ANY of the
+      // forwarded body / status / headers is known — a defer-settle error path
+      // (handler threw → the middleware settled from `c.res.status`) yields a
+      // status-only clientResponse (no body was forwarded through the handler, but
+      // the client genuinely received that status — richest-data-flow keeps that
+      // observable rather than dropping it).
+      if (_forwardedResponse || _clientResponseStatus !== undefined || _httpHeaders?.inboundResponse) {
+        entry.clientResponse = {
+          ...(_clientResponseStatus !== undefined && { status: _clientResponseStatus }),
+          ...(_httpHeaders?.inboundResponse && { headers: _httpHeaders.inboundResponse }),
+          ...(_forwardedResponse?.content !== undefined && { body: _forwardedResponse.content }),
+          ...(_forwardedResponse?.sseEvents && { sseEvents: _forwardedResponse.sseEvents }),
+        }
       }
 
       if (_pipelineInfo) {
         entry.pipelineInfo = _pipelineInfo
       }
 
-      if (_sseEvents) {
-        entry.sseEvents = _sseEvents
-      }
-
-      // Extract effective request from the final attempt
-      const finalAttempt = _attempts.at(-1)
-      if (finalAttempt?.effectiveRequest) {
-        entry.effectiveRequest = legFromEffective(finalAttempt.effectiveRequest)
-      }
-
-      if (finalAttempt?.wireRequest) {
-        const wp = finalAttempt.wireRequest
-        entry.outboundRequest = legFromWire(wp)
-      }
-
-      // httpHeaders.outboundRequest/outboundResponse are written by the driver during
-      // the exchange (RFC Phase 2 — no finalize-time wireRequest→outboundRequest migration).
-      if (_httpHeaders) {
-        entry.httpHeaders = _httpHeaders
-      }
-
       // Always include attempt details (even for single attempts). Each attempt
-      // now carries its FULL bodies (Bug 3), so retries preserve every wire
-      // payload + upstream response, not only the final attempt's.
+      // carries its FULL new legs (effectiveSource/upstreamRequest/upstreamResponse),
+      // so retries preserve every wire payload + upstream response.
       if (_attempts.length > 0) {
-        entry.attempts = _attempts.map((a) => ({
-          index: a.index,
-          strategy: a.strategy,
-          durationMs: a.durationMs,
-          transport: a.transport,
-          error: a.error?.message,
-          truncation: a.truncation,
-          sanitization: a.sanitization,
-          effectiveMessageCount: a.effectiveRequest?.messages.length,
-          effectiveRequest: a.effectiveRequest ? legFromEffective(a.effectiveRequest) : undefined,
-          wireRequest: a.wireRequest ? legFromWire(a.wireRequest) : undefined,
+        const finalIdx = _attempts.length - 1
+        entry.attempts = _attempts.map((a, i) => {
+          const isFinal = i === finalIdx
           // A failed attempt has no captured `response`; fall back to a response
           // synthesized from its upstream HTTPError body so the failure body
-          // persists on THIS attempt's response stage (RFC gap H). No-op when the
+          // persists on THIS attempt's upstreamResponse leg (RFC gap H). No-op when the
           // attempt already has a response or its error carries no upstream body.
-          response: a.response ?? synthesizeAttemptErrorResponse(a),
-          sseEvents: a.sseEvents,
-          responseHeaders: a.responseHeaders,
-        }))
+          const attemptResponse = a.response ?? synthesizeAttemptErrorResponse(a)
+          // New model (RFC §S1): upstream frames unify into the per-attempt
+          // upstreamResponse. The FINAL attempt's frames are the top-level context
+          // `_sseEvents` (the successful stream); non-final buffered-retry attempts
+          // carry their own committed `a.sseEvents`.
+          const upstreamSse = isFinal ? (_sseEvents ?? a.sseEvents) : a.sseEvents
+          const upstreamResponse: HistoryUpstreamResponseData | undefined = attemptResponse
+            ? {
+                ...legFromUpstreamResponse(attemptResponse),
+                ...(a.responseHeaders && { headers: a.responseHeaders }),
+                ...(isFinal && _httpHeaders?.outboundResponseTrailers && { trailers: _httpHeaders.outboundResponseTrailers }),
+                ...(upstreamSse && { sseEvents: upstreamSse }),
+              }
+            : undefined
+          return {
+            index: a.index,
+            strategy: a.strategy,
+            durationMs: a.durationMs,
+            transport: a.transport,
+            error: a.error?.message,
+            // New captures (RFC §4): attempt wall-clock start + rate-limit wait before
+            // this attempt (already stored on the Attempt by beginAttempt; now output).
+            startedAt: a.startTime,
+            ...(a.waitMs !== undefined && { waitMs: a.waitMs }),
+            // Non-final buffered-retry attempts keep their own committed upstream frames.
+            sseEvents: a.sseEvents,
+            responseHeaders: a.responseHeaders,
+            // ─── New per-attempt legs (RFC §3). effectiveSource carries this attempt's
+            //     aggregated `pipeline` (RFC §4); upstreamResponse carries success/
+            //     trailers/rawBody + unified frames. ───
+            ...(a.effectiveRequest && { effectiveSource: legFromEffectiveSource(a.effectiveRequest, pipelineFromAttempt(a)) }),
+            ...(a.wireRequest && { upstreamRequest: legFromUpstreamRequest(a.wireRequest) }),
+            ...(upstreamResponse && { upstreamResponse }),
+          }
+        })
+      }
+
+      // New `_index.derived` projection (RFC §3, R4-WARN-E): recompute-only subset of
+      // `attempts` — read the SAME fields the migrated consumers read (invariant ④,
+      // three-point sync: here + onTerminal projection + updateEntry allowlist).
+      // `responseSuccess` mirrors the FINAL attempt's `upstreamResponse.success` (the
+      // exact field entry-view `resolveResponseSuccess` reads); `currentStrategy` /
+      // `attemptCount` mirror the deprecated top-level fields; `failureReason` reuses the
+      // entry-level projection value above. Dual-written alongside the legacy fields.
+      const finalUpstreamResponseSuccess = entry.attempts?.at(-1)?.upstreamResponse?.success
+      const derivedCurrentStrategy = _attempts.at(-1)?.strategy
+      entry._index = {
+        derived: {
+          ...(finalUpstreamResponseSuccess !== undefined && { responseSuccess: finalUpstreamResponseSuccess }),
+          ...(derivedCurrentStrategy !== undefined && { currentStrategy: derivedCurrentStrategy }),
+          // Truthy guard (matching `entry.failureReason` at :788) so the recompute-only
+          // `derived.failureReason` stays EXACTLY the entry-level projection — both omit on
+          // a falsy reason, never diverging on a degenerate empty-string error message.
+          ...(failureReasonValue && { failureReason: failureReasonValue }),
+          attemptCount: _attempts.length,
+        },
       }
 
       return entry

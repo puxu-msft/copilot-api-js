@@ -89,14 +89,23 @@ describe("POST /api/debug/dry-run-truncate", () => {
       id,
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "claude-sonnet-4", messages: messages as any, stream: true },
-      outboundResponse: {
-        success: false,
-        model: "claude-sonnet-4",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        error: "prompt is too long: 1001332 tokens > 1000000 maximum",
-        content: null,
-      },
+      state: "failed",
+      clientRequest: { format: "anthropic-messages", model: "claude-sonnet-4", messages: messages as any, stream: true, body: { model: "claude-sonnet-4", messages, stream: true } },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "prompt is too long: 1001332 tokens > 1000000 maximum",
+          upstreamResponse: {
+            success: false,
+            model: "claude-sonnet-4",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            rawBody: "prompt is too long: 1001332 tokens > 1000000 maximum",
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { failureReason: "prompt is too long: 1001332 tokens > 1000000 maximum" } },
     })
 
     const res = await postDryRun({ entryId: id })

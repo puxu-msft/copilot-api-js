@@ -169,7 +169,7 @@ describe("L2 baseline — Anthropic live streaming (locked before L2 lands)", ()
 
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-base-complete", limit: 5 }).entries[0]
     expect(entry?.state).toBe("completed")
-    expect(entry?.outboundResponse?.success).toBe(true)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
   })
 
   test("mid-stream transport-close (NGHTTP2_CANCEL) → partial frames + synthetic error, NO message_stop, history failed", async () => {
@@ -185,7 +185,7 @@ describe("L2 baseline — Anthropic live streaming (locked before L2 lands)", ()
 
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-base-rst", limit: 5 }).entries[0]
     expect(entry?.state).toBe("failed")
-    expect(entry?.outboundResponse?.success).toBe(false)
-    expect(String(entry?.outboundResponse?.error)).toContain("NGHTTP2_CANCEL")
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(String(entry?._index?.derived?.failureReason)).toContain("NGHTTP2_CANCEL")
   })
 })

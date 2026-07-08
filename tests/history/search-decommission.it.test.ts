@@ -31,9 +31,13 @@ import { runReaperOnce } from "~/lib/history/sqlite/reaper"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
 async function seed(id: string, messages: Array<MessageContent>, startedAt: number, sessionId = "s"): Promise<void> {
-  const entry = { id, sessionId, startedAt, endpoint: "anthropic-messages", inboundRequest: { model: "m", messages, stream: true } } as unknown as HistoryEntry
+  const entry = { id, sessionId, startedAt, endpoint: "anthropic-messages", model: { requested: "m" }, clientRequest: { format: "anthropic-messages", model: "m", messages, stream: true } } as unknown as HistoryEntry
   insertEntry(entry)
-  updateEntry(id, { state: "completed", outboundResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null } })
+  updateEntry(id, {
+    state: "completed",
+    attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, body: null } }],
+    _index: { derived: { responseSuccess: true, attemptCount: 1 } },
+  })
   await finalizeEntry(id)
 }
 

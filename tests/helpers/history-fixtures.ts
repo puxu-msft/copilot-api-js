@@ -7,6 +7,7 @@
 
 import type {
   //
+  ClientRequestLeg,
   EndpointType,
   HistoryEntry,
 } from "~/lib/history"
@@ -24,11 +25,13 @@ import { generateId } from "~/lib/utils"
  * (`tools`, `max_tokens`, `temperature`, `system`) are passed through when set.
  *
  * Side-effectful by design — it seeds the global history store so queries /
- * summaries under test have data to read.
+ * summaries under test have data to read. Post-P4c-3 the request lives on the
+ * `clientRequest` leg + the `model` parent key (the legacy `inboundRequest` leg
+ * was removed).
  */
 export function insertHistoryEntry(
   endpoint: EndpointType,
-  request: Partial<HistoryEntry["inboundRequest"]> & { model: string; messages: HistoryEntry["inboundRequest"]["messages"] },
+  request: Partial<ClientRequestLeg> & { model: string; messages: ClientRequestLeg["messages"] },
 ): HistoryEntry {
   const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
@@ -36,7 +39,9 @@ export function insertHistoryEntry(
     sessionId,
     startedAt: Date.now(),
     endpoint,
-    inboundRequest: {
+    model: { requested: request.model },
+    clientRequest: {
+      format: endpoint,
       model: request.model,
       messages: request.messages,
       stream: request.stream ?? true,

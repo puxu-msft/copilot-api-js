@@ -318,7 +318,7 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
       const entry = getEntry(body.entryId)
       if (!entry) return c.json({ error: `History entry not found: ${body.entryId}` }, 404)
       entryEndpoint = entry.endpoint
-      payload = entry.inboundRequest as Record<string, unknown> | undefined
+      payload = (entry.clientRequest?.body as Record<string, unknown> | undefined) ?? (entry.clientRequest as Record<string, unknown> | undefined)
     }
     if (!payload) return c.json({ error: "Request-side stages need `request` (inline payload) or `entryId`" }, 400)
     const format = resolveFormat(body, entryEndpoint)
@@ -347,9 +347,9 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
     const entry = getEntry(body.entryId)
     if (!entry) return c.json({ error: `History entry not found: ${body.entryId}` }, 404)
     entryEndpoint = entry.endpoint
-    const inbound = entry.inboundRequest as { tools?: unknown } | undefined
+    const inbound = entry.clientRequest as { tools?: unknown } | undefined
     tools = inbound?.tools
-    const sse = entry.sseEvents
+    const sse = entry.attempts?.at(-1)?.upstreamResponse?.sseEvents
     const isStream = body.stream ?? (Array.isArray(sse) && sse.length > 0)
     if (isStream) {
       if (!Array.isArray(sse) || sse.length === 0) return c.json({ error: "Entry has no sseEvents to replay (non-streaming? pass stream:false)" }, 400)
@@ -367,8 +367,19 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
           400,
         )
       }
-      const outbound = entry.outboundResponse as Record<string, unknown> | undefined
-      if (!outbound) return c.json({ error: "Entry has no outboundResponse to replay" }, 400)
+      // Map the new-model `upstreamResponse` leg back to the legacy outbound
+      // response shape (content/stop_reason) that rebuildNonStreamingResponse reads.
+      const up = entry.attempts?.at(-1)?.upstreamResponse
+      if (!up) return c.json({ error: "Entry has no upstreamResponse to replay" }, 400)
+      const outbound: Record<string, unknown> = {
+        content: up.body,
+        model: up.model,
+        usage: up.usage,
+        stop_reason: up.stopReason,
+        success: up.success,
+        status: up.status,
+        rawBody: up.rawBody,
+      }
       nonStreamingResponse = rebuildNonStreamingResponse(outbound)
     }
   } else {

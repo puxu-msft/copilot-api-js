@@ -27,6 +27,11 @@ import {
 } from "./sqlite/connection"
 import {
   //
+  runLegacyStageBackfill,
+  stopLegacyStageBackfill,
+} from "./sqlite/legacy-stage-backfill"
+import {
+  //
   startReaper,
   stopReaper,
 } from "./sqlite/reaper"
@@ -110,6 +115,7 @@ export function stopHistoryBackgroundWork(): void {
   // Signal the background backfills to stop BEFORE the DB closes (each saves its
   // cursor per batch and resumes on next start — a post-close prepare would throw).
   stopUsageNormalizeBackfill()
+  stopLegacyStageBackfill()
   stopSearchIndexBackfill()
 }
 
@@ -150,16 +156,33 @@ export function startSearchIndexBackfill(): void {
 }
 
 /**
- * Fire-and-forget the background backfills, serialized: the usage net-of-cache
- * normalization (fast — small blobs, guarded by usage_normalized) runs first,
- * THEN the heavier search-index + preview backfill. Called once from start.ts
- * AFTER the server is listening so it never blocks startup. No-op when history is
- * disabled / the DB is not open. Both runs catch internally; the `.catch`/`.then`
+ * Fire-and-forget the recoverable legacy-stage → client/upstream-stage migration
+ * in the BACKGROUND, THEN chain the heavier search-index backfill. Runs AFTER
+ * usage-normalize completes (the migration defers on usage-normalize's version
+ * flag — see legacy-stage-backfill.ts). No-op when history is disabled / the DB is
+ * not open. `runLegacyStageBackfill` catches internally; the `.catch`/`.finally`
  * here are belt-and-suspenders against an unhandledRejection crashing the process.
+ */
+export function startLegacyStageBackfill(): void {
+  if (!enabled || !isDatabaseOpen()) return
+  void runLegacyStageBackfill(getDatabase())
+    .catch((err: unknown) => consola.warn("[history] legacy-stage backfill failed", err))
+    .finally(() => startSearchIndexBackfill())
+}
+
+/**
+ * Fire-and-forget the background backfills, serialized: usage net-of-cache
+ * normalization (fast — small blobs, guarded by usage_normalized) runs FIRST, then
+ * the legacy-stage → client/upstream-stage migration (which depends on usage being
+ * netted first), then the heavier search-index + preview backfill. Called once from
+ * start.ts AFTER the server is listening so it never blocks startup. No-op when
+ * history is disabled / the DB is not open. Every run catches internally; the
+ * `.catch`/`.finally` here are belt-and-suspenders against an unhandledRejection
+ * crashing the process.
  */
 export function startHistoryBackfills(): void {
   if (!enabled || !isDatabaseOpen()) return
   void runUsageNormalizeBackfill(getDatabase())
     .catch((err: unknown) => consola.warn("[history] usage-normalize backfill failed", err))
-    .finally(() => startSearchIndexBackfill())
+    .finally(() => startLegacyStageBackfill())
 }

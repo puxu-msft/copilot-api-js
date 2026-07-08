@@ -46,7 +46,8 @@ function baseEntry(id: string): HistoryEntry {
     state: "pending",
     active: true,
     lastUpdatedAt: Date.now(),
-    inboundRequest: { model: "claude-opus-4-8" },
+    model: { requested: "claude-opus-4-8" },
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4-8" },
   } as HistoryEntry
 }
 
@@ -56,13 +57,20 @@ function markFailed(id: string): void {
     active: false,
     lastUpdatedAt: Date.now(),
     endedAt: Date.now(),
-    outboundResponse: {
-      success: false,
-      model: "claude-opus-4-8",
-      usage: { input_tokens: 7, output_tokens: 0 },
-      content: null,
-      error: "Stream closed with error code NGHTTP2_CANCEL",
-    },
+    attempts: [
+      {
+        index: 0,
+        durationMs: 0,
+        error: "Stream closed with error code NGHTTP2_CANCEL",
+        upstreamResponse: {
+          success: false,
+          model: "claude-opus-4-8",
+          usage: { input_tokens: 7, output_tokens: 0 },
+          body: null,
+        },
+      },
+    ],
+    _index: { derived: { responseSuccess: false, failureReason: "Stream closed with error code NGHTTP2_CANCEL", attemptCount: 1 } },
   })
 }
 
@@ -144,10 +152,10 @@ describe("history persistence resilience", () => {
     expect(row).toBeDefined()
     expect(row?.state).toBe("failed")
     // Regression guard (review CRITICAL): a head-only tombstone left
-    // inboundRequest undefined and crashed detail/export consumers. The tombstone
-    // now writes the inbound_request + outbound_response stages, so they read back.
-    expect(row?.inboundRequest?.model).toBe("claude-opus-4-8")
-    expect(row?.outboundResponse?.error).toContain("NGHTTP2_CANCEL")
+    // clientRequest undefined and crashed detail/export consumers. The tombstone
+    // now writes the client_request + upstream_response stages, so they read back.
+    expect(row?.clientRequest?.model).toBe("claude-opus-4-8")
+    expect(row?._index?.derived?.failureReason).toContain("NGHTTP2_CANCEL")
   })
 
   test("with the reaper disabled/stopped, a transient failure tombstones immediately (no in-flight leak)", async () => {
@@ -178,20 +186,27 @@ describe("history persistence resilience", () => {
     setHistoryConfig({ historySuccessLimit: 50, historyFailureLimit: 200 }) // restore for sibling tests
   })
 
-  test("a head-only row (no stage rows) reads back without crashing — inboundRequest is floored", async () => {
+  test("a head-only row (no stage rows) reads back without crashing — clientRequest absent, model preserved", async () => {
     // Simulate the worst case: even the tombstone stage write failed, leaving a
-    // head-only row. The read path must floor inboundRequest so consumers
-    // (`entry.inboundRequest.messages`, CSV export) never crash on a partial row.
+    // head-only row. Per the new-model design (see sqlite/incremental-recovery),
+    // the heavy `clientRequest` leg lives in the not-yet-written client_request
+    // stage, so it is ABSENT on the assembled entry — partiality is governed by
+    // `state`, not field presence. Consumers must read it defensively (optional
+    // chaining) so a partial row never crashes the detail view / CSV export.
     const entry = baseEntry("h1")
     entry.state = "failed"
     upsertHeadRow(entry, "failed") // head only, NO stages
 
     const row = getEntryById("h1")
     expect(row).toBeDefined()
-    expect(row?.inboundRequest).toBeDefined()
-    expect(row?.inboundRequest?.model).toBe("claude-opus-4-8")
-    // The crash was `entry.inboundRequest.messages` on undefined inboundRequest.
-    expect(() => row?.inboundRequest?.messages?.length).not.toThrow()
+    // The request model FACT survives via the `model{}` head-meta (also mirrored
+    // into the head `model` column → summaries), even though the clientRequest leg
+    // is absent.
+    expect(row?.model?.requested).toBe("claude-opus-4-8")
+    expect(row?.clientRequest).toBeUndefined()
+    // The historical crash was `entry.inboundRequest.messages` on undefined; the
+    // new-model consumers optional-chain `clientRequest?.messages`, so it can't throw.
+    expect(() => row?.clientRequest?.messages?.length).not.toThrow()
   })
 
   test("finalize succeeds normally when the write works (baseline — entry persisted + removed from in-flight)", async () => {

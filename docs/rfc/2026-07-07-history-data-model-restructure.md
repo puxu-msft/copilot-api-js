@@ -1,6 +1,6 @@
 # RFC: History 数据模型重构 —— client/upstream 双腿 + 逐 attempt 上游轨
 
-- 状态：DRAFT v3（R1 架构 + R2 接地 + R3 集成保真 + R4 换新视角 四轮对抗 review 全并入，发现逐条独立核验——fail()/abort 生产者不对称、Gemini env.body=CC、wire 腿 messages 投影损失均亲手复核属实。命名已定稿。零 FAIL/WARN 后转 writing-plans。）
+- 状态：**已实施**（分支 `history-data-model`，commit 范围 `a87b2aa2..18b70f6e`；P0-P4c 落地 + P5 doc-sync/golden 回归收尾）。设计定稿于 DRAFT v3（R1 架构 + R2 接地 + R3 集成保真 + R4 换新视角 四轮对抗 review 全并入，发现逐条独立核验——fail()/abort 生产者不对称、Gemini env.body=CC、wire 腿 messages 投影损失均亲手复核属实。命名已定稿）。
 - 日期：2026-07-07
 - 关联：ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)、ADR [internal-tool-security-posture](../decisions/2026-07-05-internal-tool-security-posture.md)、skill `telemetry-architecture`、skill `history-sqlite-schema`、skill `persistence-async-invariants`、[DESIGN.md](../DESIGN.md)「类型架构」节
 - 触发：现有 history leg 命名（`inbound*`/`outbound*`/`wire*`/`effective*`）坐标系错误——`inbound`/`outbound` 混「对端」与「流向」、`wire`==`outbound(Request)` 一物两名、顶层 leg 是 final-attempt 隐式投影。

@@ -62,7 +62,7 @@ driver 在 S3 顺序 `apply`，每步 publish `request.rewrite_applied`{name, ch
 |---|---|---|
 | `tool-preprocess(T*)` < `sanitize(A*)` | 02 §2.2 | A8 tool 块校验依赖最终 tools 数组 |
 | `tool-name-sanitize(T7)` 在 T* 后、A* 前 | 02 §2.2 | mapper 用原始 tools 构建，应用在中间 |
-| `rewrite-server-tool-history(A6)` < `tool-blocks(A8)` | sanitize.ts:103 | 让 tool 引用校验看到降级形态 |
+| `rewrite-server-tool-blocks(A6)` < `tool-blocks(A8)` | sanitize.ts:103 | 让 tool 引用校验看到降级形态 |
 | `thinking-sanitize(A7)` < `tool-blocks(A8)` | sanitize.ts:112 | 让空消息清理生效 |
 | `coerce-thinking(B3)` < `adjust-budget(B4)` < `clamp-effort(B5)` | request-preparation.ts:141-143 | thinking 形态依赖链 |
 | `build-beta(B8)` < `merge-beta(B9)` < `filter-beta(B10)` | request-preparation.ts:168-172 | beta header 构造链 |

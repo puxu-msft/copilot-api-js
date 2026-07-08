@@ -428,7 +428,7 @@ describe("POST /responses", () => {
     // image_generation — operators debugging the strip must be able to see the
     // raw client input, not the half-processed in-flight version.
     const historyEntry = getHistory({ endpoint: "openai-responses" }).entries[0]
-    const inboundToolTypes = (historyEntry?.inboundRequest?.tools ?? []).map((t) => (t as { type?: string }).type)
+    const inboundToolTypes = (historyEntry?.clientRequest?.tools ?? []).map((t) => (t as { type?: string }).type)
     expect(inboundToolTypes).toEqual(["function", "image_generation", "web_search"])
   })
 })

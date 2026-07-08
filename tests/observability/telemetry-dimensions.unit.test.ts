@@ -27,9 +27,8 @@ function makeEntry(overrides: Partial<HistoryEntryData> = {}): HistoryEntryData 
     active: false,
     lastUpdatedAt: 1,
     queueWaitMs: 0,
-    attemptCount: 1,
     durationMs: 1,
-    inboundRequest: { model: "claude-opus-4.8" },
+    model: { resolved: "claude-opus-4.8" },
     ...overrides,
   }
 }
@@ -56,20 +55,26 @@ describe("normalizeClient", () => {
 describe("extractToolNames", () => {
   test("extracts distinct Anthropic content-block tool_use names (excludes text/thinking)", () => {
     const entry = makeEntry({
-      outboundResponse: {
-        success: true,
-        model: "claude-opus-4.8",
-        usage: { input_tokens: 1, output_tokens: 1 },
-        content: {
-          role: "assistant",
-          content: [
-            { type: "text", text: "hi" },
-            { type: "tool_use", id: "t1", name: "Read", input: {} },
-            { type: "tool_use", id: "t2", name: "Bash", input: {} },
-            { type: "tool_use", id: "t3", name: "Read", input: {} }, // duplicate name → deduped
-          ],
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-opus-4.8",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            body: {
+              role: "assistant",
+              content: [
+                { type: "text", text: "hi" },
+                { type: "tool_use", id: "t1", name: "Read", input: {} },
+                { type: "tool_use", id: "t2", name: "Bash", input: {} },
+                { type: "tool_use", id: "t3", name: "Read", input: {} }, // duplicate name → deduped
+              ],
+            },
+          },
         },
-      },
+      ],
     })
     expect(extractToolNames(entry).sort()).toEqual(["Bash", "Read"])
   })
@@ -77,19 +82,25 @@ describe("extractToolNames", () => {
   test("extracts OpenAI/Responses tool_calls function names", () => {
     const entry = makeEntry({
       endpoint: "openai-chat-completions",
-      outboundResponse: {
-        success: true,
-        model: "gpt-5.2",
-        usage: { input_tokens: 1, output_tokens: 1 },
-        content: {
-          role: "assistant",
-          content: null,
-          tool_calls: [
-            { id: "c1", type: "function", function: { name: "get_weather", arguments: "{}" } },
-            { id: "c2", type: "function", function: { name: "search", arguments: "{}" } },
-          ],
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "gpt-5.2",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            body: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                { id: "c1", type: "function", function: { name: "get_weather", arguments: "{}" } },
+                { id: "c2", type: "function", function: { name: "search", arguments: "{}" } },
+              ],
+            },
+          },
         },
-      },
+      ],
     })
     expect(extractToolNames(entry).sort()).toEqual(["get_weather", "search"])
   })
@@ -99,7 +110,7 @@ describe("extractToolNames", () => {
     expect(
       extractToolNames(
         makeEntry({
-          outboundResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: { role: "assistant", content: "plain text" } },
+          attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, body: { role: "assistant", content: "plain text" } } }],
         }),
       ),
     ).toEqual([])
@@ -109,12 +120,18 @@ describe("extractToolNames", () => {
 describe("extractThinkingBlockCounts", () => {
   const withBlocks = (blocks: Array<unknown>): HistoryEntryData =>
     makeEntry({
-      outboundResponse: {
-        success: true,
-        model: "claude-opus-4.8",
-        usage: { input_tokens: 1, output_tokens: 1 },
-        content: { role: "assistant", content: blocks },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-opus-4.8",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            body: { role: "assistant", content: blocks },
+          },
+        },
+      ],
     })
 
   test("non-empty thinking → nonEmpty", () => {
@@ -188,12 +205,18 @@ describe("extractThinkingBlockCounts", () => {
   test("CC real shape (content.content is a string) → all zero", () => {
     const entry = makeEntry({
       endpoint: "openai-chat-completions",
-      outboundResponse: {
-        success: true,
-        model: "gpt-5.2",
-        usage: { input_tokens: 1, output_tokens: 1 },
-        content: { role: "assistant", content: "plain assistant text" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "gpt-5.2",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            body: { role: "assistant", content: "plain assistant text" },
+          },
+        },
+      ],
     })
     expect(extractThinkingBlockCounts(entry)).toEqual({ nonEmpty: 0, emptySigned: 0, emptyUnsigned: 0 })
   })
@@ -203,14 +226,14 @@ describe("extractThinkingBlockCounts", () => {
     expect(extractThinkingBlockCounts(makeEntry())).toEqual(zero)
     expect(extractThinkingBlockCounts(withBlocks([]))).toEqual(zero)
     expect(
-      extractThinkingBlockCounts(makeEntry({ outboundResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, content: null } })),
+      extractThinkingBlockCounts(makeEntry({ attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: null } }] })),
     ).toEqual(zero)
   })
 })
 
 describe("extractTelemetryKeys", () => {
   test("resolves every registered dimension; agentKind reflects agentId presence", () => {
-    const main = extractTelemetryKeys(makeEntry({ httpHeaders: { inboundRequest: { "user-agent": "claude-cli/1.0" } } }), ctxStub)
+    const main = extractTelemetryKeys(makeEntry({ clientRequest: { headers: { "user-agent": "claude-cli/1.0" } } }), ctxStub)
     expect(main.model).toBe("claude-opus-4.8")
     expect(main.endpoint).toBe("anthropic-messages")
     expect(main.client).toBe("claude-cli")

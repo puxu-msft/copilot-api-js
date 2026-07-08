@@ -152,7 +152,7 @@ export const RateLimiterConfigSchema = z
 
 export const AnthropicConfigSchema = z
   .object({
-    tool_strip_server: nullableBoolean(),
+    server_tool_strip: nullableBoolean(),
     /**
      * Upstream→client response-header forwarding MODE (Anthropic path). `false`
      * (default) = BLACKLIST: forward everything except `response_header_blacklist`.
@@ -323,7 +323,7 @@ export const AnthropicConfigSchema = z
      *                the assistant turn so the tool_result lands in a user message.
      *   false:       passthrough (default).
      */
-    tool_rewrite_history_server: z
+    server_tool_rewrite: z
       .union([z.literal(false), z.literal("downgrade"), z.null()], {
         error: "Must be one of: false, downgrade",
       })
@@ -347,7 +347,7 @@ export const AnthropicConfigSchema = z
     tool_search: nullableBoolean(),
     // Anthropic memory tool (native memory_20250818 server tool). Default off — rewrites a client tool
     // named `memory` to the server-tool descriptor + forces the context-management beta. See features.ts.
-    memory_tool: nullableBoolean(),
+    server_tool_memory: nullableBoolean(),
     cache_control: nullableEnum(["disabled", "passthrough", "sanitize", "proxied"] as const),
     // Extended prompt-cache TTL (extended-cache-ttl-2025-04-11). Upgrades the cache_control breakpoints
     // the proxy WRITES (cache_control: proxied/sanitize) from the default 5m to 1h. `enabled` is the
@@ -368,6 +368,12 @@ export const AnthropicConfigSchema = z
     effort_overrides: z.record(z.string(), z.array(z.string())).optional(),
     beta_strip_headers: z.record(z.string(), z.array(z.string())).optional(),
     partner_strip_features: z.record(z.string(), z.array(z.string())).optional(),
+    // Custom-tool top-level field names to strip / keep (model-name pattern → field list;
+    // `"*"` = all models). tool_strip_fields ADDS to the built-in default
+    // (`eager_input_streaming`) + reactive learned cache; tool_keep_fields SUBTRACTS
+    // (the reversibility escape hatch — e.g. re-enable a field a future upstream supports).
+    tool_strip_fields: z.record(z.string(), z.array(z.string())).optional(),
+    tool_keep_fields: z.record(z.string(), z.array(z.string())).optional(),
     retry_reject_body_fields: z.record(z.string(), z.array(z.string())).optional(),
     // Tool-name-keyed (NOT model-keyed): keys are matched verbatim against the
     // tool name — must NOT go through normalizeModelKeyedRecord, which would
@@ -730,7 +736,7 @@ export const ConfigSchema = z
      */
     sanitize_tool_names: nullableBoolean(),
     history: nullableSection(HistoryConfigSchema),
-    web_search: nullableSection(WebSearchConfigSchema),
+    server_tool_web_search: nullableSection(WebSearchConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
     model_refresh_interval: nullableNonnegativeInt(),
@@ -772,7 +778,8 @@ export type RecordMergeStrategy = "per-key" | "replace"
 export const RECORD_MERGE_STRATEGIES = new WeakMap<z.ZodType, RecordMergeStrategy>()
 
 RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
-// effort_overrides / beta_strip_headers / partner_strip_features / retry_reject_body_fields intentionally
+// effort_overrides / beta_strip_headers / partner_strip_features / tool_strip_fields /
+// tool_keep_fields / retry_reject_body_fields intentionally
 // omitted — they default to "replace": when the user sets one of these
 // tables, they take responsibility for the entire policy.
 

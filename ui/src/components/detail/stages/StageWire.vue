@@ -1,30 +1,41 @@
 <script setup lang="ts">
+import { computed } from "vue"
+
 import type { HistoryEntry } from "@/types"
 
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
+import {
+  //
+  resolveHeaders,
+  resolveWirePayload,
+} from "@/composables/entry-legs"
 
 import HeadersComparisonSection from "../HeadersComparisonSection.vue"
 import SectionBlock from "../SectionBlock.vue"
 
-defineProps<{ entry: HistoryEntry }>()
+const props = defineProps<{ entry: HistoryEntry }>()
+
+// New final-attempt `upstreamRequest` (legacy `outboundRequest`/`httpHeaders` removed in P4c).
+const outboundHeaders = computed(() => resolveHeaders(props.entry).outboundRequest)
+const wirePayload = computed(() => resolveWirePayload(props.entry))
 </script>
 
 <template>
   <div class="stage-wire">
     <!-- HTTP headers first, then the real wire body sent upstream. -->
     <HeadersComparisonSection
-      v-if="entry.httpHeaders?.outboundRequest"
-      :outbound-request="entry.httpHeaders.outboundRequest"
+      v-if="outboundHeaders"
+      :outbound-request="outboundHeaders"
     />
     <ErrorBoundary label="Outbound wire request">
       <SectionBlock
-        v-if="entry.outboundRequest?.payload != null"
+        v-if="wirePayload != null"
         title="Outbound Wire Request (proxy → upstream)"
         anchor="outbound-wire"
-        :raw-data="entry.outboundRequest.payload"
+        :raw-data="wirePayload"
         raw-title="Outbound wire payload"
       >
-        <pre class="stage-json">{{ JSON.stringify(entry.outboundRequest.payload, null, 2) }}</pre>
+        <pre class="stage-json">{{ JSON.stringify(wirePayload, null, 2) }}</pre>
       </SectionBlock>
       <div
         v-else

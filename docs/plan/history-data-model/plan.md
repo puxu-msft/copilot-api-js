@@ -16,6 +16,8 @@
 - **不建 aspirational 空槽**：`model.capabilities`、raw upstream model 本计划**不实现**（RFC §5 future enrichment）。
 - **红线**：见 [README §通用红线](README.md#通用红线各-phase-引用不在-prompt-里重复)。
 
+> **实施状态总览（2026-07-07，已完成）**：全计划落地于分支 `history-data-model`，commit 范围 `a87b2aa2..18b70f6e`。P0（golden 预捕获）/ P1（新 type 并存）/ P2（serialize 新 stage）/ P2.5（生产者对齐 fail/abort 写 final attempt）/ P2.6（consumer re-point）/ P3（clientResponse 捕获）/ P4a-c（消费者迁移 + 删旧 leg 写路径 + Group-A 标量下沉 `_index.derived` + 读适配器 `adaptLegacyLegsInPlace`）全绿。**Group-B 标量**（requestBytes/responseBytes/multiplier/warningMessages）暂留 `HistoryEntry` 顶层列支撑/扁平，迁 `_index.aux`/`model.multiplier` 入 `docs/todo/deferred-backlog.md`。P5（本 doc-sync + golden 回归收尾）见文末。各阶段执行报告见 `/tmp/hdm-P*`。
+
 ---
 
 ## Factory / 锚点表
@@ -82,6 +84,8 @@
 
 ## P0 — golden 预捕获（在旧代码上锁行为）
 
+> **实施状态**：已落地。三 golden（`entryRowSnapshot`/`assembledStructureSnapshot`/`rewritesReqSnapshot`）在 `tests/history/restructure-golden.it.test.ts` 锁定；`entryRowSnapshot`/`rewritesReqSnapshot` baked 值经全程 P1-P4 逐字节不变（证无行为漂移），`assembledStructureSnapshot` 随新 stage 结构性更新。
+
 **Files:** Create `tests/history/restructure-golden.it.test.ts`
 
 **Interfaces:** Produces 三个 golden 快照函数供 P2.6/P4 复用：`entryRowSnapshot(entry)`、`assembledStructureSnapshot(row, stageRows)`、`rewritesReqSnapshot(entry)`。
@@ -95,6 +99,8 @@
 ---
 
 ## P1 — 新 type 并存（RFC §3）
+
+> **实施状态**：已落地（`ModelInfo`/`ClientRequestLeg`/`ClientResponseLeg`/`EffectiveSourceLeg`/`UpstreamRequestLeg`/`UpstreamResponseData`/`IndexProjection` 于 `src/lib/history/types.ts`；旧 leg 字段已在 P4c-3 从 `HistoryEntry` 删除，仅 live `RequestContext`/`Attempt` 保留旧名 + 读适配器 scratch view 用旧名读旧行）。
 
 **Files:** Modify `src/lib/history/types.ts`、`src/lib/context/types.ts`（`HistoryEntryData`）；新增 leg builder 于 `src/lib/context/request.ts`。
 
@@ -112,6 +118,8 @@
 
 ## P2 — serialize/assemble 新 stage 语义
 
+> **实施状态**：已落地（`STAGE` 增 `client_request`/`client_response`/`effective_source`/`upstream_request`/`upstream_response`；`extractStagePayloads`/`assembleFullEntry`/`collectAttemptStages` 落新 stage；eager 与 finalized 路径 stage 形状一致）。
+
 **Files:** Modify `src/lib/history/sqlite/serialize.ts`、`src/lib/observability/sinks/history.ts`；Test `tests/history/persistence.it.test.ts`（扩）。
 
 **Interfaces:** Consumes P1 类型。Produces 新 stage 落库：`clientResponse` 独立 stage、上游帧统一进 `attempts[i].upstreamResponse.sseEvents`、`upstreamResponse` 富字段（success/trailers/rawBody）落 stage、`upstreamRequest.messages` 投影落 stage。
@@ -127,6 +135,8 @@
 ---
 
 ## P2.5 — 生产者对齐（**承重、严格串行、P2.6 前置**）
+
+> **实施状态**：已落地（`fail()`/`abort()` 单点调 `setAttemptResponse`，final settled attempt 恒载裁决，与 `complete()` 对称；覆盖 `upstreamSucceeded:true` 诚实腿与 HTTPError 富化两支）。
 
 **Files:** Modify `src/lib/context/request.ts`（`fail`/`abort`）；Test `tests/context/request-context.unit.test.ts`。
 
@@ -144,6 +154,8 @@
 
 ## P2.6 — consumer re-point（依赖 P2.5）
 
+> **实施状态**：已落地（`buildHeadRow`/`deriveRequestBytes`/`deriveResponseBytes` 重指 `attempts[final]` 的 upstreamRequest/upstreamResponse；P0 golden `entryRowSnapshot` 逐列等价证无回归）。
+
 **Files:** Modify `src/lib/history/sqlite/serialize.ts`（`buildHeadRow`/`deriveBytes`）、`src/lib/context/request.ts`（`toHistoryEntry` 顶层 leg 派生）；Test P0 golden。
 
 **Interfaces:** Consumes P2.5（final attempt 恒载裁决）。Produces `buildHeadRow`/`deriveBytes`/顶层 leg 全部从 `attempts[final]` 派生。
@@ -160,6 +172,8 @@
 
 ## P3 — clientResponse 捕获（可与 P2.x 并行，不同文件）
 
+> **实施状态**：已落地（`clientResponse.status`/`headers`/`body`/`sseEvents` 在转发边界捕获；`status?` optional，legacy 行缺省 undefined）。
+
 **Files:** Modify transport/route 层（clientResponse.status 捕获点——实现者先 grep 客户端 `Response` 构造点：`src/routes/*/handler-v4.ts` 返回 status / `src/lib/pipeline/client-sink.ts`）；Test 相应 http test。
 
 **Interfaces:** Produces `clientResponse.status`（转发给客户端的 HTTP status）+ `clientResponse.body`（已有 `inboundResponse.content` → 迁移）。
@@ -174,28 +188,30 @@
 
 ## P4 — 消费者迁移 + 删旧顶层（依赖 P2.6 + P3）
 
+> **实施状态（2026-07-07）**：P4a（后端读侧）/ P4b（前端）/ P4c-1（producer 补全）/ P4c-2（读时适配器）已落地（各阶段报告见 `/tmp/hdm-P4*`）。**P4c-3（删旧 leg 写路径 + Group-A 标量）已完成**——按 coordinator 决策 option 1（prepared-only）：删 legacy leg 字段 + `attemptCount`/`currentStrategy`/`failureReason`（Group-A，`_index.derived` 支撑），**保留** `requestBytes`/`responseBytes`/`multiplier`/`warningMessages`（Group-B，列支撑/扁平运营字段，`_index.aux`/`model.multiplier` 迁移入 backlog 独立跟进，见 `docs/todo/deferred-backlog.md`）。读适配器 `adaptLegacyLegsInPlace` 保留（改从 serialize 内部 `LegacyEntryView`/`LegacyAttemptView` scratch 读旧 stage）。golden `entryRowSnapshot`/`rewritesReqSnapshot` baked 值逐字节不变（证删旧无行为漂移），`assembledStructureSnapshot` 结构性更新。全绿：backend 3720 pass / typecheck（+:ui/:ui-v4）/ build:ui/:ui-v4 / grep 收敛。附带修复：单-blob usage-normalize backfill 净化 per-attempt `response.usage`（读适配器现经 `upstreamResponse.usage` 呈现）、Phase-5 in-flight header 镜像重指 client 腿、tombstone stage 过滤重指 `client_request`/`upstream_response`、barrel 导出新腿类型、clientResponse.headers 接线。
+
 **Files:** 见 Factory 表消费者段 + RFC §7.4 全 62 文件。**分组并行**：(a) 后端读侧（search-index / stats / queries / in-flight / telemetry），(b) 前端（ui-v4 segments / ui composables），(c) 删旧顶层字段 + 投影逻辑（最后）。
 
 **Interfaces:** Consumes 新结构全绿。Produces 零旧字段引用。
 
-- [ ] **Step 1（rewrites-req，golden 锁）**：`buildRewritesReq`（search-index-write.ts:139）改读 `attempts.at(-1)?.upstreamRequest?.messages`；`buildRewritesResp`（:174-181）改读 `attempts[final].upstreamResponse.sseEvents` / `clientResponse.sseEvents` / `attempts[final].upstreamResponse.body`。跑 P0 golden `rewritesReqSnapshot` 等价。
-- [ ] **Step 2**：迁 stats/queries/in-flight/telemetry（Factory 表锚点）→ `_index.derived` / `attempts.at(-1)` / `model.resolved`。各自单测绿。**+ 生产者侧变换（WARN-4，`toHistoryEntry` attempts 映射 :705-723 + sink）**：① `attempts[].startedAt?`/`waitMs?` 新捕获（`beginAttempt` 已存 `startTime`/`waitMs` :403-404，但当前不输出——补进 attempts 映射）；② `attempts[].{truncation,sanitization}`（:712-713）→ `effectiveSource.pipeline`；③ 顶层 `pipelineInfo.{truncation,messageMapping}`/`entry.truncation`（:673）去顶层化 → `attempts[final].effectiveSource.pipeline`，`preprocessing` → entry 级。
-- [ ] **Step 3**：迁前端（ui-v4 detail segments、ui composables）。`bun run build:ui`（`~backend/*` 纯度 + rollup 暴露真错，skill `debugging-frontend-tests`）。
-- [ ] **Step 4（删旧）**：`grep -rn "outboundRequest\|outboundResponse\|effectiveRequest\|inboundResponse\|inboundRequest\|wireRequest\|\.sseEvents" src ui ui-v4 --include=*.ts --include=*.tsx --include=*.vue | grep -v test` 应仅剩注释；**含 serialize.ts 内 `inboundRequest` 直读点重指（WARN-5）：`buildHeadRow` :223/:241、`extractStagePayloads` :489、`deserializeEntry` :296 → `clientRequest`/`model.requested`**；删 types 旧字段 + `toHistoryEntry`/sink 投影逻辑。typecheck 绿。
-- [ ] **Step 5**：全 `bun test` + golden + `build:ui` 绿；commit 分组（rewrites / backend-consumers / frontend / drop-legacy 各一）。
+- [x] **Step 1（rewrites-req，golden 锁）**：`buildRewritesReq`（search-index-write.ts:139）改读 `attempts.at(-1)?.upstreamRequest?.messages`；`buildRewritesResp`（:174-181）改读 `attempts[final].upstreamResponse.sseEvents` / `clientResponse.sseEvents` / `attempts[final].upstreamResponse.body`。跑 P0 golden `rewritesReqSnapshot` 等价。
+- [x] **Step 2**：迁 stats/queries/in-flight/telemetry（Factory 表锚点）→ `_index.derived` / `attempts.at(-1)` / `model.resolved`。各自单测绿。**+ 生产者侧变换（WARN-4，`toHistoryEntry` attempts 映射 :705-723 + sink）**：① `attempts[].startedAt?`/`waitMs?` 新捕获（`beginAttempt` 已存 `startTime`/`waitMs` :403-404，但当前不输出——补进 attempts 映射）；② `attempts[].{truncation,sanitization}`（:712-713）→ `effectiveSource.pipeline`；③ 顶层 `pipelineInfo.{truncation,messageMapping}`/`entry.truncation`（:673）去顶层化 → `attempts[final].effectiveSource.pipeline`，`preprocessing` → entry 级。
+- [x] **Step 3**：迁前端（ui-v4 detail segments、ui composables）。`bun run build:ui`（`~backend/*` 纯度 + rollup 暴露真错，skill `debugging-frontend-tests`）。
+- [x] **Step 4（删旧）**：grep 收敛——src 残留仅：live `RequestContext`/`Attempt` 字段（context/types，未删）+ live `_httpHeaders` 捕获袋映射进新腿 + 新腿（upstreamResponse/clientResponse）+ per-attempt `sseEvents`（保留）+ usage-normalize backfill 读 legacy 存储 blob（历史行）+ serialize 内部 `LegacyEntryView` 适配器 scratch；均合法。删 types 旧 leg 字段 + Group-A 标量 + `toHistoryEntry`/sink 投影逻辑。typecheck 绿。
+- [x] **Step 5**：全 `bun test`（3720 pass）+ golden + `build:ui`/`build:ui-v4` 绿。
 
-**Commit invariant:** ② golden 全绿；grep 旧字段零代码残留。
+**Commit invariant:** ② golden 全绿；grep 旧字段零代码残留（仅合法读适配器 scratch + live-context + 历史行 backfill）。
 
 ---
 
 ## P5 — doc-sync + golden 回归（收尾）
 
-**Files:** `docs/DESIGN.md`（类型架构节）、`docs/history.md`、`.claude/skills/history-sqlite-schema/`、RFC 头部实施状态注解。
+> **实施状态（2026-07-07，已完成）**：doc-sync + golden 回归全绿。updated `docs/DESIGN.md`（类型架构新增 History 数据模型子节 + 活的架构现状表 9+ 处 leg 名 + 请求流采样 + 响应腿数据模型 + HTTP header 捕获 + 遥测 thinking-block 源 + dry-run + 运行时选项表 7 处 history leg 引用）、`docs/history.md`（代理管线命名整节重写为 client/upstream 双腿 + stage 表 + 读适配 + eager/tombstone stage 名 + 暂缓项）、`.claude/skills/history-sqlite-schema/`（stage 名 + 读适配器 + dedup 成员）、RFC 头部标「已实施」、plan 各 phase 加实施状态注解。**附带**：跨文档 grep 发现并同步 5 个权威 on-demand skill 的旧 leg 陈述（telemetry-architecture 是真 doc-vs-code drift——model 维度 key 已迁 `model.resolved ?? model.requested`、persistence-async-invariants / ghc-anthropic-upstream / empirical-verification / history-backfill 的调试/oracle 指针）。残留 legacy 引用仅在 `docs/{spec,plan,archive}/*`（landed-state 记录 / 历史计划 / 归档，非当前架构叙述）与 live-context 字段名（`Attempt.{effectiveRequest,wireRequest,response}` 未重构，已显式标注）。**验证全绿**：backend `bun test` 3678 pass/1 skip/0 fail、`typecheck`（+:ui/:ui-v4）clean、`build:ui`/`build:ui-v4` exit 0、P0 golden 6 pass（18 snapshots）。
 
-- [ ] **Step 1**：更新 DESIGN.md 类型架构 + history.md leg 描述 + skill schema（stage 名/字段）。
-- [ ] **Step 2**：跨文档 grep 验证无 `inbound/outbound/wire/effective` leg 旧述残留（skill `session-closeout` 步②）。
-- [ ] **Step 3**：全 `bun test` + `bun run typecheck` + `build:ui` + P0 golden 终跑；RFC 头部标「已实施」。
-- [ ] **Step 4**：commit `docs(history): sync live docs to client/upstream data model`。
+- [x] **Step 1**：更新 DESIGN.md 类型架构 + history.md leg 描述 + skill schema（stage 名/字段）。
+- [x] **Step 2**：跨文档 grep 验证无 `inbound/outbound/wire/effective` leg 旧述残留（skill `session-closeout` 步②）——3 目标 doc + 5 权威 skill 清；spec/plan/archive 残留为 landed-state/历史记录（合法）。
+- [x] **Step 3**：全 `bun test` + `bun run typecheck` + `build:ui`/`build:ui-v4` + P0 golden 终跑绿；RFC 头部标「已实施」。
+- [x] **Step 4**：commit `docs(history): sync live docs to client/upstream data model`。
 
 ---
 

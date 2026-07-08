@@ -49,7 +49,9 @@ async function seedEntry(opts: SeedOpts): Promise<void> {
     agentId: opts.agentId,
     startedAt: opts.startedAt ?? Date.now(),
     endpoint: opts.endpoint ?? "anthropic-messages",
-    inboundRequest: {
+    model: { requested: opts.model },
+    clientRequest: {
+      format: opts.endpoint ?? "anthropic-messages",
       model: opts.model,
       messages: [{ role: "user", content: opts.text ?? "hi" }],
       stream: true,
@@ -58,12 +60,20 @@ async function seedEntry(opts: SeedOpts): Promise<void> {
   insertEntry(entry)
   updateEntry(id, {
     state: opts.state,
-    outboundResponse: {
-      success: opts.state === "completed",
-      model: opts.model,
-      usage: { input_tokens: opts.inputTokens, output_tokens: opts.outputTokens, ...(opts.cacheRead ? { cache_read_input_tokens: opts.cacheRead } : {}) },
-      content: null,
-    },
+    attempts: [
+      {
+        index: 0,
+        durationMs: 0,
+        ...(opts.state === "completed" ? {} : { error: `seeded ${opts.state}` }),
+        upstreamResponse: {
+          success: opts.state === "completed",
+          model: opts.model,
+          usage: { input_tokens: opts.inputTokens, output_tokens: opts.outputTokens, ...(opts.cacheRead ? { cache_read_input_tokens: opts.cacheRead } : {}) },
+          body: null,
+        },
+      },
+    ],
+    _index: { derived: { responseSuccess: opts.state === "completed", attemptCount: 1 } },
   })
   await finalizeEntry(id)
 }
@@ -143,7 +153,9 @@ describe("querySessionSummaries", () => {
       sessionId: "session-Q",
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      inboundRequest: {
+      model: { requested: "claude-a" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-a",
         messages: [
           { role: "user", content: "<system-reminder>noise</system-reminder>真正的开场问题" },
@@ -154,7 +166,11 @@ describe("querySessionSummaries", () => {
         stream: true,
       },
     })
-    updateEntry(id, { state: "completed", outboundResponse: { success: true, model: "claude-a", usage: { input_tokens: 1, output_tokens: 1 }, content: null } })
+    updateEntry(id, {
+      state: "completed",
+      attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "claude-a", usage: { input_tokens: 1, output_tokens: 1 }, body: null } }],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
+    })
     await finalizeEntry(id)
 
     const q = querySessionSummaries().find((s) => s.sessionId === "session-Q")
@@ -192,7 +208,9 @@ describe("querySessionSummaries", () => {
       sessionId: "session-N",
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      inboundRequest: {
+      model: { requested: "claude-a" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-a",
         messages: [
           { role: "user", content: "<system-reminder>x</system-reminder>真问题<ide_open>f</ide_open> The TodoWrite tool hasn't been used recently. blah" },
@@ -200,7 +218,11 @@ describe("querySessionSummaries", () => {
         stream: true,
       },
     })
-    updateEntry(id, { state: "completed", outboundResponse: { success: true, model: "claude-a", usage: { input_tokens: 1, output_tokens: 1 }, content: null } })
+    updateEntry(id, {
+      state: "completed",
+      attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "claude-a", usage: { input_tokens: 1, output_tokens: 1 }, body: null } }],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
+    })
     await finalizeEntry(id)
     const n = querySessionSummaries().find((s) => s.sessionId === "session-N")
     expect(n!.firstPreview).toBe("真问题")

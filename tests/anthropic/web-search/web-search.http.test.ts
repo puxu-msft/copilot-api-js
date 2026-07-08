@@ -474,7 +474,7 @@ describe("POST /v1/messages — web_search double-hop", () => {
     // signature_delta (proves the request was served by processOneStreamEvent).
     const entry = getHistory({ endpoint: "anthropic-messages", limit: 5 }).entries[0]
     expect(entry).toBeDefined()
-    const fwdHasSigDelta = (entry.inboundResponse?.sseEvents ?? [])
+    const fwdHasSigDelta = (entry.clientResponse?.sseEvents ?? [])
       .map((e) => safeParse(e.raw))
       .some((x) => (x?.delta as Record<string, unknown> | undefined)?.type === "signature_delta")
     expect(fwdHasSigDelta).toBe(true)
@@ -484,18 +484,18 @@ describe("POST /v1/messages — web_search double-hop", () => {
     // PERSISTENCE GUARD: assert the SQLite-PERSISTED row is complete after a
     // re-dispatch. getHistory returns the in-flight entry first, so this uses
     // getEntryById (which reassembles the head row + entry_stages sub-rows) to
-    // verify the heavy fields (inboundRequest / sseEvents / inboundResponse /
-    // outboundResponse — all stored as STAGE_TOP_KEYS in entry_stages, not the
-    // head blob) survive finalization for the re-dispatch path.
+    // verify the heavy fields (clientRequest / upstreamResponse.sseEvents /
+    // clientResponse.sseEvents / upstreamResponse — all stored as STAGE_TOP_KEYS in
+    // entry_stages, not the head blob) survive finalization for the re-dispatch path.
     // Finalize is async now (libuv-offloaded compression) — drain it before asserting.
     await drainPendingFinalizations()
     expect(listInFlightEntries().some((e) => e.id === entry.id)).toBe(false) // finalized
     const persisted = getEntryById(entry.id)
     expect(persisted).toBeDefined()
-    expect(persisted!.inboundRequest?.messages?.length ?? 0).toBeGreaterThan(0)
-    expect((persisted!.sseEvents ?? []).length).toBeGreaterThan(0)
-    expect((persisted!.inboundResponse?.sseEvents ?? []).length).toBeGreaterThan(0)
-    expect(persisted!.outboundResponse).toBeDefined()
+    expect(persisted!.clientRequest?.messages?.length ?? 0).toBeGreaterThan(0)
+    expect((persisted!.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? []).length).toBeGreaterThan(0)
+    expect((persisted!.clientResponse?.sseEvents ?? []).length).toBeGreaterThan(0)
+    expect(persisted!.attempts?.at(-1)?.upstreamResponse).toBeDefined()
   })
 
   test("bypass decode (streaming): re-dispatch AskUserQuestion is decoded + header-backfilled on the forwarded stream", async () => {
@@ -529,13 +529,13 @@ describe("POST /v1/messages — web_search double-hop", () => {
     expect(redispatchHits).toBe(1)
     expect(responsesHits).toBe(0)
 
-    // History: forwarded (inboundResponse.sseEvents) decoded; upstream-raw (top-level
-    // sseEvents) keeps the stringified form (richest-data-flow: decode touches only
-    // the forwarded wire, history preserves the upstream anomaly verbatim).
+    // History: forwarded (clientResponse.sseEvents) decoded; upstream-raw
+    // (attempts[-1].upstreamResponse.sseEvents) keeps the stringified form (richest-data-flow: decode
+    // touches only the forwarded wire, history preserves the upstream anomaly verbatim).
     const entry = getHistory({ endpoint: "anthropic-messages", limit: 5 }).entries[0]
     expect(entry).toBeDefined()
-    expect(questionsFromFrames((entry.inboundResponse?.sseEvents ?? []).map((e) => e.raw))).toEqual(ASK_QUESTIONS_DECODED)
-    const upstreamQuestions = questionsFromFrames((entry.sseEvents ?? []).map((e) => e.raw))
+    expect(questionsFromFrames((entry.clientResponse?.sseEvents ?? []).map((e) => e.raw))).toEqual(ASK_QUESTIONS_DECODED)
+    const upstreamQuestions = questionsFromFrames((entry.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? []).map((e) => e.raw))
     expect(typeof upstreamQuestions).toBe("string") // NOT decoded in history
     expect(upstreamQuestions).toBe(ASK_QUESTIONS_STRINGIFIED)
   })
@@ -568,12 +568,12 @@ describe("POST /v1/messages — web_search double-hop", () => {
     expect(redispatchHits).toBe(1)
     expect(responsesHits).toBe(0)
 
-    // History: forwarded (inboundResponse) decoded; upstream-original (outboundResponse) stringified.
+    // History: forwarded (clientResponse.body) decoded; upstream-original (upstreamResponse.body) stringified.
     const entry = getHistory({ endpoint: "anthropic-messages", limit: 5 }).entries[0]
     expect(entry).toBeDefined()
-    const fwdContent = (entry.inboundResponse?.content as { content?: Array<Record<string, unknown>> } | undefined)?.content ?? []
+    const fwdContent = (entry.clientResponse?.body as { content?: Array<Record<string, unknown>> } | undefined)?.content ?? []
     expect(askUserQuestionInput(fwdContent)?.questions).toEqual(ASK_QUESTIONS_DECODED)
-    const upstreamContent = (entry.outboundResponse?.content as { content?: Array<Record<string, unknown>> } | null)?.content ?? []
+    const upstreamContent = (entry.attempts?.at(-1)?.upstreamResponse?.body as { content?: Array<Record<string, unknown>> } | null)?.content ?? []
     expect(typeof askUserQuestionInput(upstreamContent)?.questions).toBe("string") // NOT decoded in history
     expect(askUserQuestionInput(upstreamContent)?.questions).toBe(ASK_QUESTIONS_STRINGIFIED)
   })

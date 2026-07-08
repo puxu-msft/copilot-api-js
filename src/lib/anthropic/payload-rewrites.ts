@@ -107,7 +107,7 @@ const toolNameSanitize: AnthropicPayloadRewrite = {
 
 /**
  * A3–A9 — message sanitization (system/messages reminder removal, inline-system
- * handling, server-tool-history downgrade, corrupt-thinking strip, tool-block
+ * handling, server-tool downgrade, corrupt-thinking strip, tool-block
  * processing, empty-block cleanup). Wraps the cohesive `sanitizeAnthropicMessages`
  * and surfaces its canonical SanitizeResult unchanged.
  */

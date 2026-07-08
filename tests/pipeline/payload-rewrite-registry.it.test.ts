@@ -104,7 +104,7 @@ async function postAndEntry(body: MessagesPayload): Promise<{ effective: unknown
   clearHistory()
   await app.request("/v1/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
   const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
-  return { effective: entry?.effectiveRequest?.payload, pipelineInfo: entry?.pipelineInfo }
+  return { effective: entry?.attempts?.at(-1)?.effectiveSource?.body, pipelineInfo: entry?.pipelineInfo }
 }
 
 describe("request-rewrite migration golden (codec.parse → driver S3)", () => {
@@ -179,6 +179,6 @@ describe("request-rewrite migration golden (codec.parse → driver S3)", () => {
     })
     expect(res.status).toBe(400)
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
-    expect(entry?.effectiveRequest?.payload).toBeUndefined()
+    expect(entry?.attempts?.at(-1)?.effectiveSource?.body).toBeUndefined()
   })
 })

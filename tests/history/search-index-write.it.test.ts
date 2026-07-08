@@ -9,6 +9,7 @@ import type {
   //
   HistoryEntry,
   MessageContent,
+  SseEventRecord,
 } from "~/lib/history/types"
 
 import {
@@ -23,13 +24,51 @@ import { buildSearchIndexForEntry } from "~/lib/history/sqlite/search-index-writ
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
+/** New-leg extras for a seeded terminal entry (mapped onto the final attempt / client legs). */
+interface SeedExtras {
+  /** rewrites-req: the wire messages the proxy actually sent (final attempt's upstreamRequest). */
+  upstreamRequestMessages?: Array<MessageContent>
+  /** req-headers: client→proxy request headers (clientRequest leg). */
+  clientRequestHeaders?: Record<string, string>
+  /** req-headers: proxy→upstream request headers (final attempt's upstreamRequest). */
+  upstreamRequestHeaders?: Record<string, string>
+  /** resp-headers: upstream→proxy response headers (final attempt's upstreamResponse). */
+  upstreamResponseHeaders?: Record<string, string>
+  /** rewrites-resp: upstream-original frames (final attempt's upstreamResponse). */
+  upstreamSseEvents?: Array<SseEventRecord>
+  /** rewrites-resp: proxy→client forwarded frames (clientResponse leg). */
+  forwardedSseEvents?: Array<SseEventRecord>
+}
+
 /** Insert + (optionally patch) + finalize one terminal entry so it lands persisted. */
-async function seed(entry: HistoryEntry, patch?: Partial<HistoryEntry>): Promise<void> {
+async function seed(entry: HistoryEntry, extras?: SeedExtras): Promise<void> {
   insertEntry(entry)
+  const model = entry.clientRequest?.model ?? "m"
   updateEntry(entry.id, {
     state: "completed",
-    outboundResponse: { success: true, model: entry.inboundRequest.model ?? "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null },
-    ...patch,
+    ...(extras?.clientRequestHeaders && { clientRequest: { ...entry.clientRequest, headers: extras.clientRequestHeaders } }),
+    ...(extras?.forwardedSseEvents && { clientResponse: { sseEvents: extras.forwardedSseEvents } }),
+    attempts: [
+      {
+        index: 0,
+        durationMs: 0,
+        ...((extras?.upstreamRequestMessages || extras?.upstreamRequestHeaders) && {
+          upstreamRequest: {
+            ...(extras.upstreamRequestMessages && { messages: extras.upstreamRequestMessages }),
+            ...(extras.upstreamRequestHeaders && { headers: extras.upstreamRequestHeaders }),
+          },
+        }),
+        upstreamResponse: {
+          success: true,
+          model,
+          usage: { input_tokens: 1, output_tokens: 1 },
+          body: null,
+          ...(extras?.upstreamResponseHeaders && { headers: extras.upstreamResponseHeaders }),
+          ...(extras?.upstreamSseEvents && { sseEvents: extras.upstreamSseEvents }),
+        },
+      },
+    ],
+    _index: { derived: { responseSuccess: true, attemptCount: 1 } },
   })
   await finalizeEntry(entry.id)
 }
@@ -40,7 +79,8 @@ function baseEntry(id: string, messages: Array<MessageContent>, startedAt: numbe
     sessionId,
     startedAt,
     endpoint: "anthropic-messages",
-    inboundRequest: { model: "claude-opus-4", messages, stream: true },
+    model: { requested: "claude-opus-4" },
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4", messages, stream: true },
   }
 }
 
@@ -95,7 +135,7 @@ describe("search-index dual-write (P1)", () => {
     const m2: MessageContent = { role: "user", content: "DROPPED_BY_PROXY message" }
     const entry = baseEntry("rw1", [m1, m2], 1000)
     // Proxy sent only m1 upstream → m2 is a removed-side rewrite.
-    await seed(entry, { outboundRequest: { messages: [m1] } })
+    await seed(entry, { upstreamRequestMessages: [m1] })
 
     const db = getDatabase()
     const aux = db.prepare("SELECT text FROM req_aux WHERE req_id = ? AND source = 'rewrites-req'").get("rw1") as { text: string } | undefined
@@ -106,11 +146,9 @@ describe("search-index dual-write (P1)", () => {
   test("req-headers / resp-headers facets concatenate present legs", async () => {
     const entry = baseEntry("h1", [{ role: "user", content: "q" }], 1000)
     await seed(entry, {
-      httpHeaders: {
-        inboundRequest: { "x-client": "claude-code" },
-        outboundRequest: { authorization: "Bearer redacted-but-stored" },
-        outboundResponse: { "x-request-id": "req-xyz" },
-      },
+      clientRequestHeaders: { "x-client": "claude-code" },
+      upstreamRequestHeaders: { authorization: "Bearer redacted-but-stored" },
+      upstreamResponseHeaders: { "x-request-id": "req-xyz" },
     })
 
     const db = getDatabase()
@@ -146,13 +184,13 @@ describe("search-index dual-write (P1)", () => {
 
   test("build throw degrades to empty index without escaping (RFC reviewer M1)", async () => {
     // Force a build-logic throw INDEPENDENT of head serialization: a throwing
-    // getter on inboundRequest.messages. buildSearchIndexForEntry must swallow it
+    // getter on clientRequest.messages. buildSearchIndexForEntry must swallow it
     // and return an empty index (so finalize, which calls it tx-outside, is never
     // aborted by a derived-index failure). A data poison like a BigInt is NOT used
     // here — that breaks head-blob serialization too, so it can't isolate the
     // build's own try/catch contract.
     const poison = baseEntry("x", [], 1000)
-    Object.defineProperty(poison.inboundRequest, "messages", {
+    Object.defineProperty(poison.clientRequest, "messages", {
       get() {
         throw new Error("boom")
       },
@@ -178,8 +216,8 @@ describe("search-index dual-write (P1)", () => {
     const entry = baseEntry("sr1", [{ role: "user", content: "q" }], 1000)
     await seed(entry, {
       // Upstream emitted UPSTREAM_DELTA; the proxy forwarded a rewritten frame.
-      sseEvents: [{ offsetMs: 0, type: "content_block_delta", raw: '{"delta":"UPSTREAM_DELTA"}' }],
-      inboundResponse: { sseEvents: [{ offsetMs: 0, type: "content_block_delta", raw: '{"delta":"FORWARDED_DELTA"}' }] },
+      upstreamSseEvents: [{ offsetMs: 0, type: "content_block_delta", raw: '{"delta":"UPSTREAM_DELTA"}' }],
+      forwardedSseEvents: [{ offsetMs: 0, type: "content_block_delta", raw: '{"delta":"FORWARDED_DELTA"}' }],
     })
 
     const db = getDatabase()

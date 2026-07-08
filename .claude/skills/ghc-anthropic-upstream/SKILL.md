@@ -7,7 +7,7 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 
 ## 探针手法（实证 > 推断）
 
-从常驻 `localhost:4141` 拉真实数据复现（`curl -s :4141/health` 确认在跑，**别自启/kill**）：`GET /history/api/entries?limit=N` 看列表 → `GET /history/api/entries/:id` 取全量（`inboundRequest`/`inboundResponse`/`sseEvents`/`outbound*`），内含真实有效 thinking signature。jq 拼最小请求 `--slurpfile` 防转义、`max_tokens` 调小省 token → `curl -X POST :4141/v1/messages`。**无损取字节**（勿 `tr -d '\n'` 折叠，会误判间隔）。
+从常驻 `localhost:4141` 拉真实数据复现（`curl -s :4141/health` 确认在跑，**别自启/kill**）：`GET /history/api/entries?limit=N` 看列表 → `GET /history/api/entries/:id` 取全量（`clientRequest`/`clientResponse`/`attempts[].{upstreamRequest,upstreamResponse}`/per-attempt `sseEvents`；2026-07-07 重构后旧 `inboundRequest`/`outbound*` 腿名已迁 client/upstream），内含真实有效 thinking signature。jq 拼最小请求 `--slurpfile` 防转义、`max_tokens` 调小省 token → `curl -X POST :4141/v1/messages`。**无损取字节**（勿 `tr -d '\n'` 折叠，会误判间隔）。
 
 ## 症状 → 根因 → 配置
 
@@ -16,9 +16,10 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 | `thinking ... cannot be modified` 400 | 上游 opus-4.8 thinking 全空明文+签名属常态(只发 signature_delta)；个别块签名对不上=毒化，baked 进历史每轮重败；inline `role:system` 驱动 GHC 坍缩使其落进 latest-assistant 严格校验 | proxy 逐字节透传非元凶；`system_messages_sanitize:as_user` 减坍缩救不回旧；剥全部 thinking→200；CC 自动剥重试兜底(暂缓 proxy 修) |
 | 空轮/坏轮、`stop_reason:refusal` 仅 thinking | thinking-only refusal | `refusal_recover_text`。docs/refusal-recovery.md |
 | `call<invoke>…` 文本无 tool_use | GHC 偶发降级成 antml-strip 文本（`stop_reason` 仍 tool_use/或 end_turn 弱信号），标签间是 `\n` 非零间隔 | `tool_recover_call_text`（非本项目 bug，grep antml 零命中） |
-| `references web_search but not server tool` 400 | 历史残留 server_tool_use | `tool_rewrite_history_server:downgrade` + 开 web_search |
-| `Invalid encrypted_content in search_result block` 400 | web_search 双跳合成的 `web_search_tool_result` 结果项 `encrypted_content=""`（`synthesize.ts`，后端产不出真加密内容）回流历史，上游校验真实非空 string（空/null/占位全 400，error-shaped 反而 200） | **always-on 兜底自动降级**（`sanitize/empty-encrypted-search-result.ts`，无需配置）；开 `tool_rewrite_history_server:downgrade` 更宽清理。exp/encrypted-content-400 |
+| `references web_search but not server tool` 400 | 历史残留 server_tool_use | `server_tool_rewrite:downgrade` + 开 web_search |
+| `Invalid encrypted_content in search_result block` 400 | web_search 双跳合成的 `web_search_tool_result` 结果项 `encrypted_content=""`（`synthesize.ts`，后端产不出真加密内容）回流历史，上游校验真实非空 string（空/null/占位全 400，error-shaped 反而 200） | **always-on 兜底自动降级**（`sanitize/empty-encrypted-search-result.ts`，无需配置）；开 `server_tool_rewrite:downgrade` 更宽清理。exp/encrypted-content-400 |
 | 双空块被拒 | shim 把 sig 嵌 start 无 signature_delta（web_search 双跳绕 shim 曾酿此） | `thinking_signature_compat` |
+| `tools.N.custom.<field>: Extra inputs are not permitted` 400 | 新版 CC 给每 tool 挂未知字段（首例 `eager_input_streaming`，官方 Anthropic 认、GHC 版本较旧拒）；`.custom.` 是 pydantic 判别标签、wire 上是 tool 顶层扁平键 | **always-on 内置默认预剥** `eager_input_streaming`（`message-tools.ts` `stripToolFields`，首发零 400）+ 反应式 `tool-field-rejection-retry` 学习任意未来未知字段（端点级账本、matchAll 多字段、LEGIT_TOOL_KEYS deny 守卫放行变体误路由）；config `tool_strip_fields`（加）/ `tool_keep_fields`（减可逆）。注：body-field 正则曾会抢先误认领此 tools 路径（已收紧 `(?<![.\w])`）|
 
 ## 实测关键事实
 

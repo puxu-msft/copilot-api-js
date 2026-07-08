@@ -535,8 +535,8 @@ describe("Gemini streaming partial usage (L-new-2)", () => {
     const captured: Array<{ usage: { input_tokens: number; output_tokens: number }; stop_reason?: string }> = []
     const unsubscribe = getBus().subscribe((evt) => {
       if (evt.kind === "request.failed") {
-        const r = evt.entry.outboundResponse
-        if (r) captured.push({ usage: r.usage, stop_reason: r.stop_reason })
+        const r = evt.entry.attempts?.at(-1)?.upstreamResponse
+        if (r?.usage) captured.push({ usage: r.usage, stop_reason: r.stopReason })
       }
     })
 

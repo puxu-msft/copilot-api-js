@@ -50,13 +50,16 @@ export class TelemetrySink {
     if (event.kind !== "request.completed" && event.kind !== "request.failed") return
 
     const entry = event.entry
+    // The settled verdict/usage live on the final attempt's `upstreamResponse` leg
+    // (`_index.derived.responseSuccess` when the producer wires it).
+    const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
     recordSettledRequest(
       extractTelemetryKeys(entry, event.ctx),
       {
         startedAt: entry.startedAt,
         endedAt: entry.endedAt,
-        success: entry.outboundResponse?.success ?? event.kind === "request.completed",
-        usage: entry.outboundResponse?.usage,
+        success: entry._index?.derived?.responseSuccess ?? finalUpstream?.success ?? event.kind === "request.completed",
+        usage: finalUpstream?.usage,
         // Per-token cost: the billing multiplier rides on the ctx snapshot
         // (state.modelIndex-resolved), not the entry. Undefined for token-based accounts.
         multiplier: event.ctx.multiplier,

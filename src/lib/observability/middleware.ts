@@ -97,6 +97,15 @@ export function observabilityMiddleware(): MiddlewareHandler {
     // completeFromHttpStatus routes 2xx → complete(), 4xx+ → fail().
     // Already-settled ctx are no-op (settled guard in request.ts).
     const ctx = c.get("requestContext") as RequestContext | undefined
-    if (ctx) ctx.completeFromHttpStatus(c.res.status)
+    if (ctx) {
+      // P3: `c.res.status` is the status actually forwarded to the client — the authoritative
+      // proxy→client boundary for defer-settle paths (handler threw a rejection → onError built
+      // the error envelope → the ctx is still unsettled here). Capture it BEFORE
+      // completeFromHttpStatus snapshots the entry, so `clientResponse.status` records the
+      // forwarded status. Self-settled handlers already captured it at their own forward point;
+      // this write lands post-snapshot for them (harmless no-op on the frozen entry).
+      ctx.setClientResponseStatus(c.res.status)
+      ctx.completeFromHttpStatus(c.res.status)
+    }
   }
 }

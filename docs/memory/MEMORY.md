@@ -32,6 +32,7 @@
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 独有 oracle 裁决教学；按消费者契约 + 独立 oracle 裁决，别反射式"让它编译"
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多比较点复发；grep 全仓逐处修 + 抽单一共享 primitive
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 多站点联合加变体的正向版：路由到既有 outcome 复用全 handler + 类型系统前置逼出全站点
+- [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加反应式 retry 策略前先 grep 同错误子串既有 matcher（driver 首命中即止）；实例 tool-field vs body-field "Extra inputs" 抢先认领 → 收紧旧正则 + 新策略排前 + 认领归属回归测试
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴 = 上下文经济 + 可信度非可推导性；目录级关系图 + 现状小节 + L1 存在性守卫测试
 - [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec 免疫 peer 并发 `git add` 的 index race；user skill `git-preference` 未强调这层
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 本项目 2026-06-29 起无 pre-commit 门禁；通用 rollback 见 skill `git-preference:disarming-lint-staged-rollback`
@@ -40,6 +41,8 @@
 
 - [v4 流水线重构](project-v4-pipeline-rearchitecture.md) — v4 P0-P3 + response-pipeline Stage A/B 全落地；权威看 `docs/DESIGN.md`「活的架构现状」+ `docs/archive/2606-landed-rfcs/`
 - [GHC 三特性对齐已落地](project-ghc-feature-alignment-landed.md) — tool-search default-allow / extended-cache-ttl / memory tool；现状看 skill `ghc-api-reference`；memory_tool pending 见 `docs/todo/deferred-backlog.md`
+- [history client/upstream 双腿重构已落地](project-history-client-upstream-legs-landed.md) — inbound/outbound/wire/effective → clientRequest/clientResponse + model{} + attempts[].{effectiveSource,upstreamRequest,upstreamResponse} + _index{derived,aux}；两正交轴（upstreamResponse.success vs entry.state）；旧库行经 adaptLegacyLegsInPlace 读时适配。**已 merge 入 master `5db1aff6`（含 P6 legacy-stage backfill + 审计 fix：适配器保留 outbound_response.error→attempts[].error）**；P6b 删适配器达单轨待运行期 backfill 跑完（no-auto-server）；权威看 `docs/DESIGN.md`「类型架构」+ RFC `docs/rfc/2026-07-07-history-data-model-restructure.md`；Group-B 标量迁移见 `docs/todo/deferred-backlog.md`
+- [thinking-quarantine 三层修复 landed 待 FF](project-thinking-quarantine-landed-pending-ff.md) — 「cannot be modified」400 根因=**相邻性**（非签名毒/非我方 sanitge，PoC 实证）；L1 always-on de-stack 保全 thinking / L2 reactive strip-all / L3 (session,agent)-TTL quarantine 全落地在 `feat/thinking-quarantine`（已 merge master 待 FF，卡在用户未提交 config.yaml）；thinking_block_sanitize 枚举重命名仍排队；权威看 `docs/spec/2026-07-07-thinking-signature-quarantine.md` + DESIGN 活的架构现状 + skill `ghc-anthropic-upstream`（根因已订正）
 
 ## 已删除记忆的话题去向（实质并入正式归属，无独立文件）
 

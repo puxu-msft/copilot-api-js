@@ -1,5 +1,13 @@
 import type { HistoryStats } from "./types"
 
+import {
+  //
+  resolveResponseError,
+  resolveResponseModel,
+  resolveResponseSuccess,
+  resolveResponseUsage,
+  resolveStopReason,
+} from "./entry-view"
 import { listInFlight } from "./in-flight"
 import {
   //
@@ -40,13 +48,15 @@ export function getStats(): HistoryStats {
   let failed = base.failedRequests
 
   for (const entry of inFlight) {
-    const model = entry.outboundResponse?.model ?? entry.inboundRequest.model
+    const model = resolveResponseModel(entry) ?? entry.clientRequest?.model
     if (model) modelDistribution[model] = (modelDistribution[model] ?? 0) + 1
     endpointDistribution[entry.endpoint] = (endpointDistribution[entry.endpoint] ?? 0) + 1
-    totalInputTokens += entry.outboundResponse?.usage.input_tokens ?? 0
-    totalOutputTokens += entry.outboundResponse?.usage.output_tokens ?? 0
-    if (entry.outboundResponse?.success === true) successful += 1
-    else if (entry.outboundResponse?.success === false) failed += 1
+    const usage = resolveResponseUsage(entry)
+    totalInputTokens += usage?.input_tokens ?? 0
+    totalOutputTokens += usage?.output_tokens ?? 0
+    const success = resolveResponseSuccess(entry)
+    if (success === true) successful += 1
+    else if (success === false) failed += 1
   }
 
   return {
@@ -88,25 +98,28 @@ export function exportHistory(format: "json" | "csv" = "json"): string {
     "error",
   ]
 
-  const rows = entries.map((entry) => [
-    entry.id,
-    entry.sessionId ?? "",
-    formatLocalTimestamp(entry.startedAt),
-    entry.endpoint,
-    entry.inboundRequest.model,
-    entry.inboundRequest.messages?.length,
-    entry.inboundRequest.stream,
-    entry.outboundResponse?.success,
-    entry.outboundResponse?.model,
-    entry.outboundResponse?.usage.input_tokens,
-    entry.outboundResponse?.usage.cache_read_input_tokens,
-    entry.outboundResponse?.usage.cache_creation_input_tokens,
-    entry.outboundResponse?.usage.output_tokens,
-    entry.outboundResponse?.usage.output_tokens_details?.reasoning_tokens,
-    entry.durationMs,
-    entry.outboundResponse?.stop_reason,
-    entry.outboundResponse?.error,
-  ])
+  const rows = entries.map((entry) => {
+    const usage = resolveResponseUsage(entry)
+    return [
+      entry.id,
+      entry.sessionId ?? "",
+      formatLocalTimestamp(entry.startedAt),
+      entry.endpoint,
+      entry.clientRequest?.model,
+      entry.clientRequest?.messages?.length,
+      entry.clientRequest?.stream,
+      resolveResponseSuccess(entry),
+      resolveResponseModel(entry),
+      usage?.input_tokens,
+      usage?.cache_read_input_tokens,
+      usage?.cache_creation_input_tokens,
+      usage?.output_tokens,
+      usage?.output_tokens_details?.reasoning_tokens,
+      entry.durationMs,
+      resolveStopReason(entry),
+      resolveResponseError(entry),
+    ]
+  })
 
   return [headers.join(","), ...rows.map((row) => row.map((value) => escapeCsvValue(value)).join(","))].join("\n")
 }

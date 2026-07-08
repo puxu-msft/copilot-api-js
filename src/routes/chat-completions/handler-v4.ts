@@ -203,6 +203,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
     stream.onAbort(() => clientAbort.abort())
     // RFC Phase 4: ④ capture proxy→client response headers (set by streamSSE before this callback).
     env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
+    env.ctx.setClientResponseStatus(c.res.status)
     try {
       await pumpStreamingV4({ stream, driver, upstream, env, getTruncateResult: () => truncateResult })
     } finally {
@@ -241,6 +242,7 @@ function renderNonStreamingV4(
   // RFC Phase 4: ④ build the client response first, capture its headers, THEN complete.
   const httpResponse = c.json(clientResponse)
   env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
+  env.ctx.setClientResponseStatus(httpResponse.status)
 
   // Non-streaming semantic-truncation gate. `.at(0)` (not `[0]`) so an EMPTY choices
   // array (itself a truncation form) flows through as a missing finish_reason → fail,

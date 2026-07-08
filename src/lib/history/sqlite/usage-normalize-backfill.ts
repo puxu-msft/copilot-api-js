@@ -212,11 +212,18 @@ function prepareBlobRewrites(headBlob: Uint8Array | undefined, stageRows: Array<
   // No outbound_response stage row → legacy single-blob row (head blob is the
   // full entry) or a finalized no-response row (head blob has no outboundResponse).
   if (headBlob) {
-    const full = decompress(headBlob) as { outboundResponse?: OutboundResponseShape } | null
-    const usage = full?.outboundResponse?.usage
-    if (usage && netizeUsageInPlace(usage)) {
-      rewrites.push({ blob: compress(full) })
+    const full = decompress(headBlob) as { outboundResponse?: OutboundResponseShape; attempts?: Array<{ response?: OutboundResponseShape }> } | null
+    let changed = false
+    // Top-level legacy mirror (its own usage copy).
+    if (full?.outboundResponse?.usage && netizeUsageInPlace(full.outboundResponse.usage)) changed = true
+    // Per-attempt `response.usage`: the read-time adapter (serialize.ts, P4c-3)
+    // surfaces this as `attempts[].upstreamResponse.usage` — the value the detail
+    // view now reads — so a single-blob row's per-attempt copies must be net-ized
+    // too, else the list column (net) and detail (still-total) would diverge.
+    for (const a of full?.attempts ?? []) {
+      if (a.response?.usage && netizeUsageInPlace(a.response.usage)) changed = true
     }
+    if (changed && full) rewrites.push({ blob: compress(full) })
   }
   return rewrites
 }

@@ -38,7 +38,8 @@ function baseEntry(id: string): HistoryEntry {
     state: "pending",
     active: true,
     lastUpdatedAt: Date.now(),
-    inboundRequest: { model: "claude-opus-4-7" },
+    model: { requested: "claude-opus-4-7" },
+    clientRequest: { format: "anthropic-messages", model: "claude-opus-4-7" },
   } as HistoryEntry
 }
 
@@ -75,12 +76,19 @@ describe("history persistence boundary", () => {
       active: false,
       lastUpdatedAt: Date.now(),
       endedAt: Date.now(),
-      outboundResponse: {
-        success: true,
-        model: "claude-opus-4-7",
-        usage: { input_tokens: 1, output_tokens: 1 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-opus-4-7",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
     })
     // updateEntry no longer auto-persists; finalizeEntry is the explicit step
     // (see entries.ts docstring). State alone is not a side-effect trigger.
@@ -101,13 +109,20 @@ describe("history persistence boundary", () => {
       active: false,
       lastUpdatedAt: Date.now(),
       endedAt: Date.now(),
-      outboundResponse: {
-        success: false,
-        model: "claude-opus-4-7",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        content: null,
-        error: "timeout",
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "timeout",
+          upstreamResponse: {
+            success: false,
+            model: "claude-opus-4-7",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: false, failureReason: "timeout", attemptCount: 1 } },
     })
     await finalizeEntry("e3")
     expect(queryEntryCount()).toBe(1)

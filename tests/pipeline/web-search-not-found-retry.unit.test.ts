@@ -84,7 +84,7 @@ describe("createWebSearchNotFoundRetryStrategy", () => {
       payload: { ...p, messages: p.messages.filter((m) => (m as { role: string }).role !== "assistant") },
       blocksRemoved: 0,
       systemReminderRemovals: 0,
-      stats: { serverToolHistoryDowngraded: 1 } as never,
+      stats: { serverToolDowngraded: 1 } as never,
     })
     const s = createWebSearchNotFoundRetryStrategy({ resanitize, mark: (m) => marked.push(m) })
     const currentPayload = { ...baseline, messages: [{ role: "user", content: "already-mutated" }] } as MessagesPayload
@@ -95,6 +95,6 @@ describe("createWebSearchNotFoundRetryStrategy", () => {
     // fed the BASELINE (2 msgs → 1 after assistant strip), NOT currentPayload (1 msg "already-mutated")
     expect(retry.payload.messages).toHaveLength(1)
     expect((retry.payload.messages[0] as { content: string }).content).toBe("hi")
-    expect(retry.meta.sanitization).toEqual({ serverToolHistoryDowngraded: 1 })
+    expect(retry.meta.sanitization).toEqual({ serverToolDowngraded: 1 })
   })
 })

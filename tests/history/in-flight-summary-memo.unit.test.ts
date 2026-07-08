@@ -36,9 +36,11 @@ function makeEntry(id: string, messageCount: number): HistoryEntry {
     id,
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    inboundRequest: {
+    model: { requested: "claude-sonnet-4.6" },
+    clientRequest: {
+      format: "anthropic-messages",
       model: "claude-sonnet-4.6",
-      messages: messages as unknown as HistoryEntry["inboundRequest"]["messages"],
+      messages: messages as unknown as NonNullable<HistoryEntry["clientRequest"]>["messages"],
     },
   }
 }
@@ -70,7 +72,7 @@ describe("toEntrySummary memoization (M4)", () => {
     const original = makeEntry("e2", 3)
     putInFlight(original)
 
-    const updated = updateInFlight("e2", { attemptCount: 2 })
+    const updated = updateInFlight("e2", { _index: { derived: { attemptCount: 2 } } })
     expect(updated).toBeDefined()
     if (!updated) return
     expect(updated).not.toBe(original) // {...spread} produces a new object
@@ -106,9 +108,11 @@ describe("toEntrySummary memoization (M4)", () => {
       id: "heavy",
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      inboundRequest: {
+      model: { requested: "claude-sonnet-4.6" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-sonnet-4.6",
-        messages: messages as unknown as HistoryEntry["inboundRequest"]["messages"],
+        messages: messages as unknown as NonNullable<HistoryEntry["clientRequest"]>["messages"],
       },
     }
     putInFlight(heavy)

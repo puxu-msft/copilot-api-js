@@ -107,10 +107,10 @@ describe("POST /v1/messages (non-streaming) — unrepairable malformed tool-inpu
     expect(entry.state).toBe("failed")
     // Data-model: upstream delivered a complete 200 body the proxy rejected → outboundResponse stays
     // honest (success:true, no error); the verdict is projected to failureReason.
-    expect(entry.outboundResponse?.success).toBe(true)
-    expect(entry.outboundResponse?.error).toBeUndefined()
-    expect(entry.failureReason?.toLowerCase()).toContain("unrepairable")
-    expect(entry.outboundResponse?.content).not.toBeNull()
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.error).toBeUndefined()
+    expect(entry._index?.derived?.failureReason?.toLowerCase()).toContain("unrepairable")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.body).not.toBeNull()
   })
 
   test("repair mode: a repairable antml-bleed string input → SUCCEEDS with a structured object on the wire", async () => {

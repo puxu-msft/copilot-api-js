@@ -19,7 +19,11 @@ import {
   test,
 } from "bun:test"
 
-import type { HistoryEntry } from "~/lib/history"
+import type {
+  //
+  HistoryEntry,
+  MessageContent,
+} from "~/lib/history"
 
 import {
   //
@@ -34,13 +38,57 @@ function resetEntries(...e: Array<HistoryEntry>): void {
   entries.push(...e)
 }
 
-function makeEntry(opts: Partial<HistoryEntry> & { id: string; startedAt: number }): HistoryEntry {
-  return {
-    endpoint: "openai-responses",
-    state: "completed",
-    inboundRequest: { messages: [] },
-    ...opts,
-  } as HistoryEntry
+/**
+ * Build a HistoryEntry in the post-P4c-3 shape from the legacy-flavored
+ * `inboundRequest`/`outboundResponse` convenience inputs the tests author with:
+ * the client turn lands on the `clientRequest` leg, the response on the final
+ * attempt's `upstreamResponse` leg (`content` → `body`), and the settled verdict
+ * is projected into `_index.derived` (which the consumer reads via entry-view).
+ */
+function makeEntry(opts: {
+  id: string
+  startedAt: number
+  endpoint?: HistoryEntry["endpoint"]
+  state?: HistoryEntry["state"]
+  inboundRequest?: { messages: Array<MessageContent> }
+  outboundResponse?: {
+    success: boolean
+    model?: string
+    usage?: { input_tokens: number; output_tokens: number }
+    content: MessageContent | null
+    error?: string
+  }
+}): HistoryEntry {
+  const { id, startedAt, endpoint = "openai-responses", state = "completed", inboundRequest, outboundResponse } = opts
+  const entry: HistoryEntry = {
+    id,
+    startedAt,
+    endpoint,
+    state,
+    clientRequest: { format: endpoint, messages: inboundRequest?.messages ?? [] },
+  }
+  if (outboundResponse) {
+    entry.attempts = [
+      {
+        index: 0,
+        durationMs: 0,
+        upstreamResponse: {
+          success: outboundResponse.success,
+          ...(outboundResponse.model !== undefined && { model: outboundResponse.model }),
+          ...(outboundResponse.usage && { usage: outboundResponse.usage }),
+          body: outboundResponse.content,
+        },
+      },
+    ]
+    entry._index = {
+      derived: {
+        responseSuccess: outboundResponse.success,
+        attemptCount: 1,
+        ...(outboundResponse.error !== undefined && { failureReason: outboundResponse.error }),
+      },
+    }
+  }
+  return entry
 }
 
 describe("rebuildConversationMessages", () => {

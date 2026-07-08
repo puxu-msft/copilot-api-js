@@ -38,8 +38,9 @@ function fullEntry(id: string): HistoryEntry {
     startedAt: 1,
     state: "completed",
     durationMs: 100,
-    inboundRequest: { model: "opus", messages: [{ role: "user", content: "hi" }] },
-    outboundResponse: { success: true, model: "opus", usage: { input_tokens: 1, output_tokens: 1 }, content: { role: "assistant", content: "ok" } },
+    clientRequest: { model: "opus", messages: [{ role: "user", content: "hi" }] },
+    model: { requested: "opus", resolved: "opus" },
+    attempts: [{ index: 0, durationMs: 100, upstreamResponse: { success: true, model: "opus", usage: { input_tokens: 1, output_tokens: 1 }, body: { role: "assistant", content: "ok" } } }],
   } as HistoryEntry
 }
 const summaries: Array<EntrySummary> = [

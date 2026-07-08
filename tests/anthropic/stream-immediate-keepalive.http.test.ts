@@ -256,7 +256,7 @@ describe("immediate-keepalive — stall cadence ping", () => {
     expect(entry?.state).toBe("failed")
     // richest-data-flow (L-2): the first ping the client genuinely received is persisted to history
     // even on a POST-COMMIT FAILURE entry (the COMMIT finally snapshots forwardedSseEvents).
-    const forwardedTypes = (entry?.inboundResponse?.sseEvents ?? []).map((e) => {
+    const forwardedTypes = (entry?.clientResponse?.sseEvents ?? []).map((e) => {
       try {
         return (JSON.parse(e.raw) as { type?: string }).type
       } catch {

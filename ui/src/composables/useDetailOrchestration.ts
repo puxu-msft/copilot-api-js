@@ -18,6 +18,13 @@ import {
   isToolUseBlock,
 } from "@/utils/typeGuards"
 
+import {
+  //
+  hasEffectiveLeg,
+  resolveEffectiveMessages,
+  resolveEffectiveSystem,
+  resolveUpstreamResponse,
+} from "./entry-legs"
 import { useDetailViewState } from "./useDetailViewState"
 import { usePipelineInfo } from "./usePipelineInfo"
 
@@ -64,7 +71,7 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
     const resultMap: Record<string, ContentBlock> = {}
     const nameMap: Record<string, string> = {}
     if (!entry.value) return { resultMap, nameMap }
-    for (const msg of entry.value.inboundRequest.messages ?? []) {
+    for (const msg of entry.value.clientRequest?.messages ?? []) {
       // Anthropic format: content is ContentBlock[]
       if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
@@ -93,7 +100,7 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
   // Filter messages by role, with pre-computed original indices
   const filteredMessages = computed(() => {
     if (!entry.value) return []
-    const messages = entry.value.inboundRequest.messages ?? []
+    const messages = entry.value.clientRequest?.messages ?? []
     let indexed = messages.map((msg, i) => ({ msg, originalIndex: i }))
     if (detail.detailFilterRole) {
       indexed = indexed.filter(({ msg }) => msg.role === detail.detailFilterRole)
@@ -105,24 +112,27 @@ export function useDetailOrchestration(entry: Ref<HistoryEntry | null> | Compute
   })
 
   const responseMessage = computed<MessageContent | null>(() => {
-    if (!entry.value?.outboundResponse?.content) return null
-    return entry.value.outboundResponse.content
+    // New final-attempt `upstreamResponse.body` (legacy `outboundResponse.content` removed in P4c).
+    const content = entry.value ? resolveUpstreamResponse(entry.value)?.content : null
+    return content ?? null
   })
 
   const requestBadge = computed(() => {
     if (!entry.value) return ""
-    return `${(entry.value.inboundRequest.messages ?? []).length} messages`
+    return `${(entry.value.clientRequest?.messages ?? []).length} messages`
   })
 
   /** Rewritten request payload for the Raw modal */
   const rewrittenRequest = computed(() => {
-    if (!entry.value?.effectiveRequest) return undefined
-    const eff = entry.value.effectiveRequest
-    if (!eff.messages && !eff.system) return undefined
+    const e = entry.value
+    if (!e || !hasEffectiveLeg(e)) return undefined
+    const effMessages = resolveEffectiveMessages(e)
+    const effSystem = resolveEffectiveSystem(e)
+    if (!effMessages && effSystem === undefined) return undefined
     return {
-      ...entry.value.inboundRequest,
-      ...(eff.messages && { messages: eff.messages }),
-      ...(eff.system !== undefined && { system: eff.system }),
+      ...e.clientRequest,
+      ...(effMessages && { messages: effMessages }),
+      ...(effSystem !== undefined && { system: effSystem }),
     }
   })
 

@@ -62,7 +62,9 @@ async function persistToolResultLastEntry(id: string, startedAt: number): Promis
     state: "pending",
     active: true,
     lastUpdatedAt: startedAt,
-    inboundRequest: {
+    model: { requested: "gpt-5" },
+    clientRequest: {
+      format: "openai-chat-completions",
       model: "gpt-5",
       messages: [
         { role: "user", content: "the FIRST user message — old logic landed here" },
@@ -77,7 +79,8 @@ async function persistToolResultLastEntry(id: string, startedAt: number): Promis
     active: false,
     lastUpdatedAt: startedAt,
     endedAt: startedAt,
-    outboundResponse: { success: true, model: "gpt-5", usage: { input_tokens: 5, output_tokens: 3 }, content: null },
+    attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "gpt-5", usage: { input_tokens: 5, output_tokens: 3 }, body: null } }],
+    _index: { derived: { responseSuccess: true, attemptCount: 1 } },
   })
   await finalizeEntry(id)
 }
@@ -212,10 +215,15 @@ describe("sqlite search_index backfill", () => {
         id: `d${i}`,
         startedAt: 1000 + i,
         endpoint: "anthropic-messages",
-        inboundRequest: { model: "m", messages: [shared], stream: true },
+        model: { requested: "m" },
+        clientRequest: { format: "anthropic-messages", model: "m", messages: [shared], stream: true },
       } as unknown as HistoryEntry
       insertEntry(e)
-      updateEntry(e.id, { state: "completed", outboundResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null } })
+      updateEntry(e.id, {
+        state: "completed",
+        attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, body: null } }],
+        _index: { derived: { responseSuccess: true, attemptCount: 1 } },
+      })
       await finalizeEntry(e.id)
       makeLegacy(`d${i}`)
     }

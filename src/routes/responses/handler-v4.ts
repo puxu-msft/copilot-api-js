@@ -182,6 +182,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
     stream.onAbort(() => clientAbort.abort())
     // RFC Phase 4: ④ capture proxy→client response headers (set by streamSSE before this callback).
     env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
+    env.ctx.setClientResponseStatus(c.res.status)
     try {
       await pumpStreamingV4({ stream, driver, codec, upstream, env, viaFallback })
     } finally {
@@ -209,6 +210,7 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesR
   // RFC Phase 4: ④ build the client response first, capture its headers, THEN complete.
   const httpResponse = c.json(clientResponse)
   env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
+  env.ctx.setClientResponseStatus(httpResponse.status)
 
   // Non-streaming semantic-truncation gate (missing / in_progress status → fail, not silent complete).
   const truncationReason = responsesNonStreamingTruncation(resp.status)

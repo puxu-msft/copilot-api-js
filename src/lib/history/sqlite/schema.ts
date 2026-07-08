@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS entries_v2 (
   cache_creation   INTEGER,
   reasoning_tokens INTEGER,
   usage_normalized INTEGER NOT NULL DEFAULT 0,
+  stages_migrated  INTEGER NOT NULL DEFAULT 0,
   stop_reason      TEXT,
   error_message    TEXT,
   message_count    INTEGER,
@@ -63,8 +64,11 @@ CREATE TABLE IF NOT EXISTS response_sessions (
 --
 -- stage: 'inbound_request' | 'effective_request' | 'outbound_request'
 --      | 'outbound_response' | 'inbound_response' | 'sse_events'
+--      | 'client_request' | 'client_response' | 'effective_source'
+--      | 'upstream_request' | 'upstream_response'  (new client/upstream legs, RFC §3)
 -- attempt_index: -1 for leg-independent stages (inbound_request, inbound_response,
---   sse_events); 0..N for per-attempt stages (effective/outbound_request/response).
+--   sse_events, client_request, client_response); 0..N for per-attempt stages
+--   (effective/outbound_request/response, effective_source/upstream_request/upstream_response).
 -- ON DELETE CASCADE: a reaper / deleteSession / clearAll DELETE on the head row
 --   auto-removes its stage rows (PRAGMA foreign_keys = ON is set at open time).
 CREATE TABLE IF NOT EXISTS entry_stages (

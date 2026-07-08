@@ -22,7 +22,7 @@ const entry = {
   id: "r1",
   startedAt: 0,
   endpoint: "anthropic-messages",
-  inboundRequest: {
+  clientRequest: {
     model: "claude-opus-4.8",
     max_tokens: 4096,
     messages: [
@@ -74,7 +74,7 @@ describe("ConvoSegment", () => {
   })
 
   it("no messages → no TOC nav, just the 无消息 placeholder", () => {
-    const empty = { ...entry, inboundRequest: { messages: [] } } as unknown as HistoryEntry
+    const empty = { ...entry, clientRequest: { messages: [] } } as unknown as HistoryEntry
     const { container } = render(<ConvoSegment entry={empty} />)
     expect(container.querySelector("nav")).toBeNull()
     expect(screen.getByText(/无消息/)).toBeDefined()
@@ -111,7 +111,7 @@ describe("ConvoSegment", () => {
   it("does not render the system prompt — it now lives in the System segment", () => {
     const withSystem = {
       ...entry,
-      inboundRequest: { ...(entry.inboundRequest as object), system: "SYSTEM_PROMPT_MARKER" },
+      clientRequest: { ...(entry.clientRequest as object), system: "SYSTEM_PROMPT_MARKER" },
     } as unknown as HistoryEntry
     const { container } = render(<ConvoSegment entry={withSystem} />)
     // Rendered view (default) shows only message turns — no system payload.

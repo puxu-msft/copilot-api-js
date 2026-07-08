@@ -22,9 +22,9 @@ describe("DiagnosticBar", () => {
       endpoint: "anthropic-messages",
       state: "completed",
       durationMs: 1200,
-      attemptCount: 2,
-      inboundRequest: {},
-      outboundResponse: { success: true, model: "claude", usage: { input_tokens: 100, output_tokens: 50 } },
+      _index: { derived: { attemptCount: 2 } },
+      clientRequest: {},
+      attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "claude", usage: { input_tokens: 100, output_tokens: 50 } } }],
     } as HistoryEntry
     render(<DiagnosticBar entry={entry} />)
     expect(screen.getByText(/anthropic-messages/)).toBeDefined()
@@ -39,25 +39,31 @@ describe("DiagnosticBar", () => {
       startedAt: 0,
       endpoint: "anthropic-messages",
       state: "completed",
-      inboundRequest: {},
-      outboundResponse: {
-        success: true,
-        model: "claude",
-        usage: {
-          input_tokens: 600,
-          output_tokens: 250,
-          cache_read_input_tokens: 400,
-          cache_creation_input_tokens: 100,
-          output_tokens_details: { reasoning_tokens: 80 },
+      clientRequest: {},
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude",
+            usage: {
+              input_tokens: 600,
+              output_tokens: 250,
+              cache_read_input_tokens: 400,
+              cache_creation_input_tokens: 100,
+              output_tokens_details: { reasoning_tokens: 80 },
+            },
+          },
         },
-      },
+      ],
     } as HistoryEntry
     render(<DiagnosticBar entry={entry} />)
     // input_tokens is NET (600), disjoint from the cache/reasoning segments.
     expect(screen.getByText(/↑600 ↓250 · cache-read 400 · cache-write 100 · reasoning 80 tok/)).toBeDefined()
   })
   it("omits missing fields gracefully", () => {
-    const entry = { id: "r2", startedAt: 0, endpoint: "anthropic-messages", state: "failed", inboundRequest: {} } as HistoryEntry
+    const entry = { id: "r2", startedAt: 0, endpoint: "anthropic-messages", state: "failed", clientRequest: {} } as HistoryEntry
     render(<DiagnosticBar entry={entry} />)
     expect(screen.getByText(/failed/)).toBeDefined()
   })
@@ -67,8 +73,8 @@ describe("DiagnosticBar", () => {
       startedAt: 0,
       endpoint: "anthropic-messages",
       state: "failed",
-      failureReason: "unrepairable malformed tool_use input (tool=AskUserQuestion)",
-      inboundRequest: {},
+      _index: { derived: { failureReason: "unrepairable malformed tool_use input (tool=AskUserQuestion)" } },
+      clientRequest: {},
     } as HistoryEntry
     render(<DiagnosticBar entry={entry} />)
     expect(screen.getByText(/unrepairable malformed tool_use input/)).toBeDefined()

@@ -1,6 +1,25 @@
 /** Split a HistoryEntry into SQL-indexable columns plus a gzipped JSON blob. */
 
-import type { HistoryEntry } from "~/lib/history/types"
+import type {
+  //
+  ClientRequestLeg,
+  ClientResponseLeg,
+  EffectiveSourceLeg,
+  ForwardedResponse,
+  HistoryEntry,
+  MessageContent,
+  ModelInfo,
+  OutboundResponseData,
+  PipelineInfo,
+  RequestLegData,
+  SanitizationInfo,
+  SseEventRecord,
+  SystemBlock,
+  ToolDefinition,
+  TruncationInfo,
+  UpstreamRequestLeg,
+  UpstreamResponseData,
+} from "~/lib/history/types"
 
 import { extractPreviewText } from "~/lib/history/in-flight"
 
@@ -9,6 +28,63 @@ import {
   compress,
   decompress,
 } from "./compression"
+
+// ============================================================================
+// Internal legacy read-shape (P4c-3)
+// ============================================================================
+// The legacy leg fields + deprecated top-level scalars were REMOVED from the
+// public `HistoryEntry` / `HistoryEntryData` in P4c-3. Legacy DB rows (old blob
+// / old stages) still carry them AT RUNTIME, so the read-time adapter below reads
+// them through these internal views to map an old row into the new legs. Nothing
+// WRITES these anymore — they exist solely as a typed lens over legacy row data.
+
+/** Legacy per-attempt leg fields, removed from the public attempt shape. */
+interface LegacyAttemptView {
+  index: number
+  strategy?: string
+  effectiveRequest?: RequestLegData
+  wireRequest?: RequestLegData
+  response?: OutboundResponseData
+  truncation?: TruncationInfo
+  sanitization?: SanitizationInfo
+  effectiveMessageCount?: number
+  sseEvents?: Array<SseEventRecord>
+  responseHeaders?: Record<string, string>
+}
+
+/** Legacy entry-level leg fields + deprecated scalars, removed from the public entry. */
+interface LegacyEntryView {
+  inboundRequest?: {
+    model?: string
+    messages?: Array<MessageContent>
+    stream?: boolean
+    tools?: Array<ToolDefinition>
+    system?: string | Array<SystemBlock>
+    max_tokens?: number
+    temperature?: number
+    thinking?: unknown
+  }
+  effectiveRequest?: RequestLegData
+  outboundRequest?: RequestLegData
+  outboundResponse?: OutboundResponseData
+  inboundResponse?: ForwardedResponse
+  sseEvents?: Array<SseEventRecord>
+  httpHeaders?: {
+    inboundRequest?: Record<string, string>
+    outboundRequest?: Record<string, string>
+    outboundResponse?: Record<string, string>
+    inboundResponse?: Record<string, string>
+    outboundResponseTrailers?: Record<string, string>
+  }
+  currentStrategy?: string
+  failureReason?: string
+  attemptCount?: number
+}
+
+/** View a runtime entry (which may still carry legacy row data) as legacy-shaped. */
+function asLegacy(entry: HistoryEntry): HistoryEntry & LegacyEntryView {
+  return entry as HistoryEntry & LegacyEntryView
+}
 
 export interface EntryRow {
   id: string
@@ -31,6 +107,15 @@ export interface EntryRow {
   // row written by the current code is born net → 1; pre-migration rows start at
   // DEFAULT 0 and are flipped by usage-normalize-backfill. NOT NULL DEFAULT 0.
   usage_normalized: number
+  // Idempotency marker for the legacy-stage → client/upstream-stage migration
+  // backfill: 1 once this row's persisted stages are confirmed in the new
+  // client/upstream shape (client_request/client_response + per-attempt
+  // effective_source/upstream_request/upstream_response). Every row written by the
+  // current producers is born in the new shape → 1; pre-migration rows (legacy
+  // stages or legacy single-blob) start at DEFAULT 0 and are flipped by
+  // legacy-stage-backfill. NOT NULL DEFAULT 0. Non-optional so every EntryRow
+  // construction site must set it (compile-time proof), mirroring usage_normalized.
+  stages_migrated: number
   stop_reason: string | null
   error_message: string | null
   message_count: number | null
@@ -95,20 +180,48 @@ export const STAGE = {
   outboundResponse: "outbound_response",
   inboundResponse: "inbound_response",
   sseEvents: "sse_events",
+  // ─── New client/upstream leg stages (RFC 2026-07-07 §3) — coexist with the
+  //     legacy stages above during migration (P2 additive; P4 removes legacy). ───
+  /** Client → Proxy request leg (leg-independent, attempt_index -1). RFC §4: legacy `inbound_request` migrates here in P4. */
+  clientRequest: "client_request",
+  /** Proxy → Client response leg, first-class (leg-independent, attempt_index -1). RFC §2.1. */
+  clientResponse: "client_response",
+  /** Per-attempt proxy-side effective source (env.body verbatim + projections). RFC §3. */
+  effectiveSource: "effective_source",
+  /** Per-attempt proxy → upstream wire request (headers+body + messages projection, R4-FAIL-A). RFC §3. */
+  upstreamRequest: "upstream_request",
+  /** Per-attempt upstream → proxy response (success/trailers/rawBody + unified upstream frames). RFC §3, §S1. */
+  upstreamResponse: "upstream_response",
   /**
    * Dedup container (B3): a single row holding the JSON array of the request
    * group's member stages (inbound_request + per-attempt effective/outbound
-   * request) compressed in ONE zstd frame. The three request bodies are >90%
-   * redundant, so a shared frame stores the 2nd/3rd copies near-free. Written
-   * ONLY at finalize (insertCompletedEntry); in-flight rows stay per-stage.
+   * request, AND the new-model per-attempt effective_source / upstream_request)
+   * compressed in ONE zstd frame. All of these request bodies are >90% redundant
+   * with each other (env.body ≈ wire body ≈ the new-leg `body`), so a shared frame
+   * stores the extra copies near-free. Written ONLY at finalize
+   * (insertCompletedEntry); in-flight rows stay per-stage.
    */
   requestGroup: "request_group",
 } as const
 
 export type StageName = (typeof STAGE)[keyof typeof STAGE]
 
-/** Stages packed into the `request_group` dedup frame — the redundant request bodies. */
-const REQUEST_GROUP_STAGES = new Set<string>([STAGE.inboundRequest, STAGE.effectiveRequest, STAGE.outboundRequest])
+/**
+ * Stages packed into the `request_group` dedup frame — the redundant request
+ * bodies. Includes BOTH the legacy request legs (inbound/effective/outbound) and
+ * the new-model per-attempt request-side legs (effective_source/upstream_request),
+ * whose `body` fields are ~90% redundant with the legacy ones during coexistence,
+ * so folding them into the shared frame removes the transitional dual-write bloat
+ * (P4c-2). Response-side legs (outbound_response / upstream_response) are NOT
+ * members — they are not redundant request bodies.
+ */
+const REQUEST_GROUP_STAGES = new Set<string>([
+  STAGE.inboundRequest,
+  STAGE.effectiveRequest,
+  STAGE.outboundRequest,
+  STAGE.effectiveSource,
+  STAGE.upstreamRequest,
+])
 
 /** Is this stage a member of the request-group dedup frame? */
 export function isRequestGroupStage(stage: string): boolean {
@@ -142,9 +255,28 @@ export interface StagePayload {
 }
 
 /** Heavy top-level fields that move OUT of the head blob into stage rows. */
-const STAGE_TOP_KEYS = new Set<string>(["inboundRequest", "effectiveRequest", "outboundRequest", "outboundResponse", "inboundResponse", "sseEvents"])
+const STAGE_TOP_KEYS = new Set<string>([
+  "inboundRequest",
+  "effectiveRequest",
+  "outboundRequest",
+  "outboundResponse",
+  "inboundResponse",
+  "sseEvents",
+  // New leg-independent legs (RFC §3) — coexist with the legacy keys above.
+  "clientRequest",
+  "clientResponse",
+])
 /** Per-attempt heavy bodies that move OUT of the head blob's attempts[] into stage rows. */
-const ATTEMPT_BODY_KEYS = new Set<string>(["effectiveRequest", "wireRequest", "response", "sseEvents"])
+const ATTEMPT_BODY_KEYS = new Set<string>([
+  "effectiveRequest",
+  "wireRequest",
+  "response",
+  "sseEvents",
+  // New per-attempt legs (RFC §3) — coexist with the legacy keys above.
+  "effectiveSource",
+  "upstreamRequest",
+  "upstreamResponse",
+])
 
 /** Strip the heavy per-attempt bodies, keeping only the attempt summary in the head blob. */
 function stripAttemptBodies(attempt: Record<string, unknown>): Record<string, unknown> {
@@ -163,34 +295,50 @@ function payloadBytes(payload: unknown): number | null {
 }
 
 /**
- * DERIVE the request wire byte size (↑) from the best available stored payload:
- * the outbound (final-attempt wire) body the proxy actually sent upstream, then
- * the effective body, then the inbound messages as a last resort. This is an
- * approximation of the on-the-wire size (it re-serializes the parsed payload
- * rather than echoing the exact upstream bytes), which is acceptable for the
+ * DERIVE the request wire byte size (↑) from the best available stored payload.
+ * P2.6 re-point (RFC §6 W1): read the FINAL attempt's new-model legs first —
+ * `attempts[final].upstreamRequest.body` (the wire body the proxy actually sent
+ * upstream) then its `effectiveSource.body` — falling back to the DEPRECATED
+ * top-level `outboundRequest.payload` / `effectiveRequest.payload`, then the
+ * inbound messages as a last resort. The coexistence fallback keeps a legacy-only
+ * entry (no per-attempt upstream legs, e.g. the P0 golden fixture) byte-identical;
+ * P4 drops the top-level middle fallbacks once the deprecated legs are removed.
+ * This is an approximation of the on-the-wire size (it re-serializes the parsed
+ * payload rather than echoing the exact upstream bytes), acceptable for the
  * list-display purpose. Returns null when no payload is available.
  */
 function deriveRequestBytes(entry: HistoryEntry): number | null {
-  return payloadBytes(entry.outboundRequest?.payload) ?? payloadBytes(entry.effectiveRequest?.payload) ?? payloadBytes(entry.inboundRequest.messages)
+  const finalAttempt = entry.attempts?.at(-1)
+  return (
+    payloadBytes(finalAttempt?.upstreamRequest?.body)
+    ?? payloadBytes(finalAttempt?.effectiveSource?.body)
+    // Last resort: the client request's messages (a legacy row's OLD legs are
+    // adapted into the new legs BEFORE serialize, so this reads the new leg).
+    ?? payloadBytes(entry.clientRequest?.messages)
+  )
 }
 
 /**
  * DERIVE the response byte size (↓). Streaming: sum of the upstream SSE frames'
  * `raw` bytes. Non-streaming: the raw upstream body if captured, else the
- * serialized response content. Returns null when nothing is available. Like
- * deriveRequestBytes this is an approximation of the wire size, acceptable for
- * the list display.
+ * serialized response content. Reads the FINAL attempt's `upstreamResponse` leg
+ * (its `sseEvents` / `rawBody` / `body`). Returns null when nothing is available.
+ * Like deriveRequestBytes this is an approximation of the wire size, acceptable
+ * for the list display.
  */
 function deriveResponseBytes(entry: HistoryEntry): number | null {
-  if (entry.sseEvents && entry.sseEvents.length > 0) {
+  const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
+  const sseEvents = finalUpstream?.sseEvents
+  if (sseEvents && sseEvents.length > 0) {
     let total = 0
-    for (const ev of entry.sseEvents) total += Buffer.byteLength(ev.raw)
+    for (const ev of sseEvents) total += Buffer.byteLength(ev.raw)
     return total
   }
-  const resp = entry.outboundResponse
-  if (!resp) return null
-  if (resp.rawBody !== undefined) return Buffer.byteLength(resp.rawBody)
-  return payloadBytes(resp.content)
+  // Non-streaming: raw upstream body then serialized content.
+  const rawBody = finalUpstream?.rawBody
+  if (rawBody !== undefined) return Buffer.byteLength(rawBody)
+  const body = finalUpstream?.body
+  return payloadBytes(body)
 }
 
 /**
@@ -212,7 +360,12 @@ export function serializeHeadEntry(entry: HistoryEntry, statusOverride?: string)
  * compressing inline. See docs/spec/history-finalize-async-offload.md.
  */
 export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undefined, headBlob: Uint8Array): EntryRow {
-  const usage = entry.outboundResponse?.usage
+  // Indexed columns derive from the FINAL attempt's `upstreamResponse` leg + the
+  // `model` / `clientRequest` / `_index.derived` projections. A legacy row's OLD
+  // legs are adapted into these new legs at read time (assembleFullEntry) BEFORE
+  // any re-serialize, so this reads purely new legs.
+  const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
+  const usage = finalUpstream?.usage
   const row: EntryRow = {
     id: entry.id,
     session_id: entry.sessionId ?? null,
@@ -220,7 +373,7 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
     started_at: entry.startedAt,
     ended_at: entry.endedAt ?? null,
     duration_ms: entry.durationMs ?? null,
-    model: entry.outboundResponse?.model ?? entry.inboundRequest.model ?? null,
+    model: finalUpstream?.model ?? entry.model?.resolved ?? entry.clientRequest?.model ?? null,
     endpoint: entry.endpoint,
     transport: entry.transport ?? null,
     status: statusOverride ?? entry.state ?? "unknown",
@@ -233,12 +386,15 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
     // net-of-cache convention, so mark this row already-normalized (the backfill
     // scans WHERE usage_normalized=0 and skips these). INSERT_ENTRY_SQL writes it.
     usage_normalized: 1,
-    stop_reason: entry.outboundResponse?.stop_reason ?? null,
-    // Backfill from the top-level failureReason projection so an entry whose
-    // outboundResponse leg is absent (orphan / interrupted) still surfaces its
-    // failure reason in the list view (RFC pre-response-abort Q3).
-    error_message: entry.outboundResponse?.error ?? entry.failureReason ?? null,
-    message_count: entry.inboundRequest.messages?.length ?? null,
+    // Born in the new client/upstream stage shape: extractStagePayloads emits the
+    // new legs only, so mark this row already-migrated (legacy-stage-backfill scans
+    // WHERE stages_migrated=0 and skips these). INSERT_ENTRY_SQL writes it.
+    stages_migrated: 1,
+    stop_reason: finalUpstream?.stopReason ?? null,
+    // error_message: the `upstreamResponse` leg carries NO error field (it uses
+    // `success` + the durable `_index.derived.failureReason` projection).
+    error_message: entry._index?.derived?.failureReason ?? null,
+    message_count: entry.clientRequest?.messages?.length ?? null,
     preview_text: extractPreviewText(entry),
     // Mirror process identity into columns for SQL filtering; the full object
     // also lives in the head blob (process is not a stage / META key).
@@ -287,13 +443,6 @@ export function deserializeEntry(row: EntryRow, blob?: Uint8Array): HistoryEntry
     ...(row.response_bytes !== null && { responseBytes: row.response_bytes }),
     ...(row.multiplier !== null && { multiplier: row.multiplier }),
     lastUpdatedAt: row.ended_at ?? row.started_at,
-    // Contract floor: `inboundRequest` is non-optional on HistoryEntry, but a
-    // head-only row (e.g. a degraded tombstone whose inbound_request stage was
-    // never written) has it stripped into an absent stage. Default to a minimal
-    // object so detail/export consumers (`entry.inboundRequest.messages`) never
-    // crash on a partial row — model/error/status/timing still live in head
-    // columns. A real inbound_request stage overrides this in assembleFullEntry.
-    inboundRequest: restored.inboundRequest ?? { model: row.model ?? undefined },
   } as HistoryEntry
 }
 
@@ -306,14 +455,30 @@ export function deserializeEntry(row: EntryRow, blob?: Uint8Array): HistoryEntry
  * fields; per-attempt stages fill attempts[i].{effectiveRequest,wireRequest,
  * response} and the top-level outbound/effective mirror the FINAL attempt.
  *
+ * New client/upstream leg stages (RFC §3) layer ADDITIVELY alongside the legacy
+ * ones: `client_request`/`client_response` fill the entry-level `clientRequest`/
+ * `clientResponse`; `effective_source`/`upstream_request`/`upstream_response` fill
+ * per-attempt `attempts[i].{effectiveSource,upstreamRequest,upstreamResponse}`
+ * (no top-level mirror — the upstream track is strictly per-attempt).
+ *
  * Partial / interrupted entries (some stage rows missing) degrade gracefully:
  * missing fields stay `undefined`; the head row `status` column (not field
  * presence) is the authority on whether the entry is partial.
  */
 export function assembleFullEntry(row: EntryRow, stageRows: Array<StageRow>): HistoryEntry {
-  if (stageRows.length === 0) return deserializeEntry(row)
+  if (stageRows.length === 0) {
+    // Legacy single-blob row (pre-stage era): the head blob IS the full entry.
+    // Still run the read-time adapter so its OLD legs map into the new legs
+    // (P4c-2) — a legacy row must render once P4c-3 drops the legacy leg fields.
+    const legacyBlob = deserializeEntry(row)
+    adaptLegacyLegsInPlace(legacyBlob)
+    return legacyBlob
+  }
 
   const base = deserializeEntry(row)
+  // Legacy scratch view over the SAME runtime object: the legacy stage cases below
+  // write old-shape legs here; the adapter reads them to fill the new legs.
+  const legacyBase = asLegacy(base)
   const attempts: Array<Record<string, unknown>> = Array.isArray(base.attempts) ? base.attempts.map((a) => ({ ...a })) : []
 
   const attemptSlot = (idx: number): Record<string, unknown> => {
@@ -328,18 +493,20 @@ export function assembleFullEntry(row: EntryRow, stageRows: Array<StageRow>): Hi
   for (const member of decodeStageRows(stageRows)) {
     const { stage, attemptIndex, payload } = member
     switch (stage) {
+      // ─── Legacy stages (old rows only) — layered into the legacy scratch view;
+      //     the read adapter maps them into the new legs below. ───
       case STAGE.inboundRequest: {
-        base.inboundRequest = payload as HistoryEntry["inboundRequest"]
+        legacyBase.inboundRequest = payload as LegacyEntryView["inboundRequest"]
         break
       }
       case STAGE.inboundResponse: {
-        base.inboundResponse = payload as HistoryEntry["inboundResponse"]
+        legacyBase.inboundResponse = payload as LegacyEntryView["inboundResponse"]
         break
       }
       case STAGE.sseEvents: {
         // attempt_index -1 → the top-level (final/successful) upstream frames; a per-attempt
         // index → a FAILED buffered-retry attempt's frames (L2 / D1).
-        if (attemptIndex === LEG_ATTEMPT_INDEX) base.sseEvents = payload as HistoryEntry["sseEvents"]
+        if (attemptIndex === LEG_ATTEMPT_INDEX) legacyBase.sseEvents = payload as LegacyEntryView["sseEvents"]
         else attemptSlot(attemptIndex).sseEvents = payload
         break
       }
@@ -355,6 +522,29 @@ export function assembleFullEntry(row: EntryRow, stageRows: Array<StageRow>): Hi
         attemptSlot(attemptIndex).response = payload
         break
       }
+      // ─── New client/upstream leg stages (RFC §3). The new per-attempt legs have
+      //     NO top-level mirror (upstream legs live per-attempt only); the client
+      //     legs are already entry-level, so they fill top-level fields directly. ───
+      case STAGE.clientRequest: {
+        base.clientRequest = payload as HistoryEntry["clientRequest"]
+        break
+      }
+      case STAGE.clientResponse: {
+        base.clientResponse = payload as HistoryEntry["clientResponse"]
+        break
+      }
+      case STAGE.effectiveSource: {
+        attemptSlot(attemptIndex).effectiveSource = payload
+        break
+      }
+      case STAGE.upstreamRequest: {
+        attemptSlot(attemptIndex).upstreamRequest = payload
+        break
+      }
+      case STAGE.upstreamResponse: {
+        attemptSlot(attemptIndex).upstreamResponse = payload
+        break
+      }
       default: {
         break
       }
@@ -364,19 +554,236 @@ export function assembleFullEntry(row: EntryRow, stageRows: Array<StageRow>): Hi
   if (attempts.length > 0) {
     attempts.sort((a, b) => (a.index as number) - (b.index as number))
     base.attempts = attempts as HistoryEntry["attempts"]
-    // Top-level outbound/effective mirror the LAST attempt carrying each body.
+    // Legacy top-level outbound/effective mirror the LAST attempt carrying each body
+    // (read into the legacy scratch, consumed only by the adapter below).
     const lastBody = (key: string): unknown => {
       for (let i = attempts.length - 1; i >= 0; i--) {
         if (attempts[i][key] !== undefined) return attempts[i][key]
       }
       return undefined
     }
-    base.outboundRequest ??= lastBody("wireRequest") as HistoryEntry["outboundRequest"]
-    base.outboundResponse ??= lastBody("response") as HistoryEntry["outboundResponse"]
-    base.effectiveRequest ??= lastBody("effectiveRequest") as HistoryEntry["effectiveRequest"]
+    legacyBase.outboundRequest ??= lastBody("wireRequest") as LegacyEntryView["outboundRequest"]
+    legacyBase.outboundResponse ??= lastBody("response") as LegacyEntryView["outboundResponse"]
+    legacyBase.effectiveRequest ??= lastBody("effectiveRequest") as LegacyEntryView["effectiveRequest"]
   }
 
+  // Read-time legacy→new leg adapter (P4c-2): map the assembled OLD legs into the
+  // new client/upstream legs so a legacy row (only old stages) renders after P4c-3
+  // dropped the legacy leg fields. Additive + idempotent (fills only absent new
+  // legs), so a NEW row — new legs already reassembled from its own stages — is a
+  // no-op.
+  adaptLegacyLegsInPlace(base)
+
   return base
+}
+
+/** Non-nullable per-attempt shape (the element type of `HistoryEntry.attempts`). */
+type AssembledAttempt = NonNullable<HistoryEntry["attempts"]>[number]
+
+/**
+ * Aggregate a legacy attempt-summary's `truncation` + `sanitization` into a
+ * per-attempt `PipelineInfo` for the adapted `effectiveSource.pipeline` (RFC §4:
+ * `attempts[].{truncation,sanitization}` → `effectiveSource.pipeline`). Mirrors the
+ * producer's `pipelineFromAttempt` (context/request.ts): `sanitization` is a single
+ * record per attempt so it is wrapped in a one-element array to match
+ * `PipelineInfo.sanitization: Array<…>`. Returns undefined when the attempt has
+ * neither (so a clean attempt adds no `pipeline` key). Inlined here (rather than
+ * imported from context/request) to keep serialize free of the producer's
+ * observability/state dependency graph.
+ */
+function pipelineFromLegacyAttempt(a: LegacyAttemptView): PipelineInfo | undefined {
+  if (!a.truncation && !a.sanitization) return undefined
+  return {
+    ...(a.truncation && { truncation: a.truncation }),
+    ...(a.sanitization && { sanitization: [a.sanitization] }),
+  }
+}
+
+/**
+ * Map a legacy `effectiveRequest` leg (RequestLegData) into the new
+ * `effectiveSource` leg — the read-time twin of the producer's
+ * `legFromEffectiveSource`: `body` = the legacy `payload` (SoT), the structured
+ * projections carry over verbatim, and `pipeline` is aggregated from the attempt's
+ * legacy truncation/sanitization summary.
+ */
+function adaptEffectiveSource(a: LegacyAttemptView): EffectiveSourceLeg {
+  const e = a.effectiveRequest
+  const pipeline = pipelineFromLegacyAttempt(a)
+  const messageCount = e?.messageCount ?? e?.messages?.length ?? a.effectiveMessageCount
+  return {
+    ...(e?.format !== undefined && { format: e.format }),
+    ...(e?.model !== undefined && { model: e.model }),
+    ...(messageCount !== undefined && { messageCount }),
+    ...(e?.messages !== undefined && { messages: e.messages }),
+    ...(e?.system !== undefined && { system: e.system }),
+    body: e?.payload,
+    ...(pipeline && { pipeline }),
+  }
+}
+
+/**
+ * Map a legacy `wireRequest` leg (RequestLegData) into the new `upstreamRequest`
+ * leg — the read-time twin of the producer's `legFromUpstreamRequest`. Carries the
+ * structured `messages`/`model`/`system` projection ALONGSIDE `headers`+`body`
+ * (R4-FAIL-A — the `rewrites-req` search facet reads `messages` off this leg, so
+ * dropping it would silently break search for legacy rows).
+ */
+function adaptUpstreamRequest(w: RequestLegData): UpstreamRequestLeg {
+  return {
+    ...(w.format !== undefined && { format: w.format }),
+    ...(w.model !== undefined && { model: w.model }),
+    ...(w.messages !== undefined && { messages: w.messages }),
+    ...(w.system !== undefined && { system: w.system }),
+    ...(w.headers && { headers: w.headers }),
+    body: w.payload,
+  }
+}
+
+/**
+ * Bridge a legacy `response` leg (OutboundResponseData) into the new
+ * `upstreamResponse` leg — the read-time twin of the producer's
+ * `legFromUpstreamResponse` + its caller-layered fields. `content` → `body`,
+ * `stop_reason` → `stopReason`, `rawBody`/`status`/`success`/`model`/`usage` cross
+ * over. `headers` come from the attempt's legacy `responseHeaders`; §S1 unifies the
+ * upstream frames onto the FINAL attempt (top-level `sseEvents`) while a non-final
+ * buffered-retry attempt keeps its own committed frames; final-attempt `trailers`
+ * come from the top-level `outboundResponseTrailers`. The legacy stored shape
+ * carries no `responseId`/`copilotAnnotations`/`toolSearchRequests` (the sink's
+ * legacy response projection never persisted them), so those stay absent for old rows.
+ */
+function adaptUpstreamResponse(a: LegacyAttemptView, isFinal: boolean, entry: LegacyEntryView): UpstreamResponseData {
+  const r = a.response
+  // §S1: the final attempt's upstream frames are the top-level `sseEvents` (the
+  // successful stream); a non-final buffered-retry attempt keeps its own frames.
+  const sseEvents = isFinal ? (entry.sseEvents ?? a.sseEvents) : a.sseEvents
+  const trailers = isFinal ? entry.httpHeaders?.outboundResponseTrailers : undefined
+  return {
+    success: r?.success ?? false,
+    ...(r?.status !== undefined && { status: r.status }),
+    ...(a.responseHeaders && { headers: a.responseHeaders }),
+    ...(trailers && { trailers }),
+    body: r?.content ?? null,
+    ...(r?.rawBody !== undefined && { rawBody: r.rawBody }),
+    ...(sseEvents && { sseEvents }),
+    ...(r?.usage !== undefined && { usage: r.usage }),
+    ...(r?.stop_reason !== undefined && { stopReason: r.stop_reason }),
+    ...(r?.model !== undefined && { model: r.model }),
+  }
+}
+
+/**
+ * Map the legacy `inboundRequest` (+ endpoint + captured inbound headers) into the
+ * new `clientRequest` leg — the read-time twin of the producer's `clientRequest`
+ * build. Carries the structured projections (model/messages/system/max_tokens/
+ * temperature/tools/thinking) so migrated consumers read the parsed request. A
+ * legacy row has NO stored raw inbound `body`/`payload`, so `body` stays absent
+ * (the richest available for an old row); `format` = the entry endpoint.
+ */
+function adaptClientRequest(entry: HistoryEntry & LegacyEntryView): ClientRequestLeg {
+  const ib = entry.inboundRequest ?? {}
+  return {
+    format: entry.endpoint,
+    ...(entry.httpHeaders?.inboundRequest && { headers: entry.httpHeaders.inboundRequest }),
+    ...(ib.stream !== undefined && { stream: ib.stream }),
+    ...(ib.model !== undefined && { model: ib.model }),
+    ...(ib.messages !== undefined && { messages: ib.messages }),
+    ...(ib.system !== undefined && { system: ib.system }),
+    ...(ib.max_tokens !== undefined && { max_tokens: ib.max_tokens }),
+    ...(ib.temperature !== undefined && { temperature: ib.temperature }),
+    ...(ib.tools !== undefined && { tools: ib.tools }),
+    ...(ib.thinking !== undefined && { thinking: ib.thinking }),
+  }
+}
+
+/**
+ * Map the legacy `inboundResponse` (ForwardedResponse) into the new
+ * `clientResponse` leg (RFC §2.1): `content` → `body`, `sseEvents` carry over,
+ * `headers` from the captured inbound-response headers. `status` is a P3-only
+ * capture that legacy rows never had, so it stays absent.
+ */
+function adaptClientResponse(entry: LegacyEntryView): ClientResponseLeg {
+  const fr = entry.inboundResponse
+  return {
+    ...(entry.httpHeaders?.inboundResponse && { headers: entry.httpHeaders.inboundResponse }),
+    ...(fr?.content !== undefined && { body: fr.content }),
+    ...(fr?.sseEvents && { sseEvents: fr.sseEvents }),
+  }
+}
+
+/** Recompute the `model{}` parent key from the legacy fields (requested/resolved/multiplier). */
+function adaptModel(entry: HistoryEntry & LegacyEntryView): ModelInfo | undefined {
+  const requested = entry.inboundRequest?.model
+  const finalLegacy = entry.attempts?.at(-1) as (AssembledAttempt & LegacyAttemptView) | undefined
+  const resolved = finalLegacy?.upstreamResponse?.model ?? finalLegacy?.response?.model ?? entry.outboundResponse?.model
+  const multiplier = entry.multiplier
+  if (requested === undefined && resolved === undefined && multiplier === undefined) return undefined
+  return {
+    ...(requested !== undefined && { requested }),
+    ...(resolved !== undefined && { resolved }),
+    ...(multiplier !== undefined && { multiplier }),
+  }
+}
+
+/**
+ * Read-time legacy→new leg adapter (P4c-2). Maps the OLD legs assembled from the
+ * legacy stages into the new client/upstream legs, IN PLACE. Every new leg is
+ * filled only when ABSENT, so:
+ *   - a LEGACY row (no new legs) gets the full new-leg projection, and
+ *   - a NEW row (new legs already reassembled from its own stages) is a no-op —
+ *     the adapter never overwrites a genuinely-produced new leg.
+ * Per-attempt legs are adapted FIRST so the entry-level `model`/`_index.derived`
+ * recompute can read the just-adapted `upstreamResponse`.
+ */
+function adaptLegacyLegsInPlace(entry: HistoryEntry): void {
+  const legacyEntry = asLegacy(entry)
+  const attempts = entry.attempts
+  if (attempts && attempts.length > 0) {
+    const finalIdx = attempts.length - 1
+    for (const [i, a] of attempts.entries()) {
+      const la = a as AssembledAttempt & LegacyAttemptView
+      if (la.effectiveRequest && a.effectiveSource === undefined) a.effectiveSource = adaptEffectiveSource(la)
+      if (la.wireRequest && a.upstreamRequest === undefined) a.upstreamRequest = adaptUpstreamRequest(la.wireRequest)
+      if (la.response && a.upstreamResponse === undefined) a.upstreamResponse = adaptUpstreamResponse(la, i === finalIdx, legacyEntry)
+      // AUDIT: the legacy `outbound_response.error` (response-level) has NO home in
+      // the new `UpstreamResponseData` (RFC puts error on `attempts[].error`). An
+      // early failed row often carries the error text ONLY on `response.error` (no
+      // per-attempt `error`, no top-level `failureReason`), so route it into
+      // `attempts[].error` as a FALLBACK — preserving any genuine attempt-level error
+      // (multi-attempt legacy rows keep their per-attempt error). Without this the
+      // error is dropped on read and P6 backfill would make that loss at-rest.
+      if (a.error === undefined && la.response?.error !== undefined) a.error = la.response.error
+    }
+  }
+
+  // Entry-level client legs. `clientRequest` maps whenever a legacy `inboundRequest`
+  // is present; `clientResponse` only when a forwarded response was recorded.
+  if (entry.clientRequest === undefined && legacyEntry.inboundRequest !== undefined) entry.clientRequest = adaptClientRequest(legacyEntry)
+  if (entry.clientResponse === undefined && legacyEntry.inboundResponse !== undefined) entry.clientResponse = adaptClientResponse(legacyEntry)
+
+  // Derived `model{}` parent key.
+  if (entry.model === undefined) {
+    const model = adaptModel(legacyEntry)
+    if (model) entry.model = model
+  }
+
+  // Recompute-only `_index.derived` (RFC §3, R4-WARN-E) — the same subset the
+  // migrated consumers read (responseSuccess/currentStrategy/attemptCount/
+  // failureReason), recomputed from the legacy fields + the adapted final attempt.
+  if (entry._index === undefined) {
+    const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
+    const responseSuccess = finalUpstream?.success ?? legacyEntry.outboundResponse?.success
+    const currentStrategy = legacyEntry.currentStrategy ?? entry.attempts?.at(-1)?.strategy
+    const failureReason = legacyEntry.failureReason
+    const attemptCount = legacyEntry.attemptCount ?? entry.attempts?.length
+    entry._index = {
+      derived: {
+        ...(responseSuccess !== undefined && { responseSuccess }),
+        ...(currentStrategy !== undefined && { currentStrategy }),
+        ...(failureReason !== undefined && { failureReason }),
+        ...(attemptCount !== undefined && { attemptCount }),
+      },
+    }
+  }
 }
 
 /**
@@ -396,36 +803,6 @@ function decodeStageRows(stageRows: Array<StageRow>): Array<RequestGroupMember> 
     }
   }
   return out
-}
-
-/**
- * Extract ONLY the `inboundRequest` payload from a single stage blob, decoding a
- * `request_group` container frame (B3) when needed. Used by the preview backfill,
- * which recomputes `extractPreviewText` (reads only `inboundRequest.messages`)
- * and therefore must decompress ONLY request-side data — NEVER the response legs
- * or `sse_events`.
- *
- * `stage` is the row's stage name and `blob` its compressed bytes:
- *   - `inbound_request` (standalone, in-flight / eager rows) → the blob IS the
- *     inboundRequest object.
- *   - `request_group` (finalized rows) → the dedup frame holds the redundant
- *     request bodies (inbound + per-attempt effective/outbound request); the
- *     inbound_request member's payload is the inboundRequest object. NO response
- *     / sse_events data lives in this frame, so this stays inbound-only.
- *
- * Returns undefined when the blob carries no inbound_request member (the caller
- * then falls back to the legacy head-blob path).
- */
-export function extractInboundRequestFromStageBlob(stage: string, blob: Uint8Array): HistoryEntry["inboundRequest"] | undefined {
-  if (stage === STAGE.inboundRequest) {
-    return decompress(blob) as HistoryEntry["inboundRequest"]
-  }
-  if (stage === STAGE.requestGroup) {
-    const members = decompress(blob) as Array<RequestGroupMember>
-    const inbound = members.find((m) => m.stage === STAGE.inboundRequest)
-    if (inbound) return inbound.payload as HistoryEntry["inboundRequest"]
-  }
-  return undefined
 }
 
 /**
@@ -471,51 +848,28 @@ export function extractHeadMetaPayload(entry: HistoryEntry): Record<string, unkn
 }
 
 /**
- * Extract the stage payloads to persist into `entry_stages`.
+ * Extract the stage payloads to persist into `entry_stages` (new client/upstream
+ * legs only — the legacy stages were removed in P4c-3).
  *
- * Leg-independent stages (inbound_request / inbound_response / sse_events) use
- * attempt_index -1. Per-attempt stages:
- *   - NON-final attempts contribute their own bodies (preserving the wire
- *     payload sent on each retry — Bug 3).
- *   - The FINAL attempt's slot is filled from the authoritative top-level
- *     mirror (entry.effectiveRequest / outboundRequest / outboundResponse).
- *     This matters because on failure the final attempt carries only an error
- *     (no `response`), while the top-level outboundResponse holds the failure
- *     response built by fail() — using the mirror avoids dropping it.
+ * The client legs (`client_request` / `client_response`) are entry-level,
+ * leg-independent (attempt_index -1). The per-attempt legs
+ * (`effective_source` / `upstream_request` / `upstream_response`) are contributed
+ * directly by EVERY attempt (including the final one) — there is NO top-level
+ * mirror, since the new model keeps the upstream track strictly per-attempt
+ * (RFC §2.2). A FAILED buffered-retry attempt's upstream frames ride on that
+ * attempt's `upstream_response.sseEvents`.
  */
 export function extractStagePayloads(entry: HistoryEntry): Array<StagePayload> {
   const stages: Array<StagePayload> = []
-  // inboundRequest is always present (required field) → always its own stage row.
-  stages.push({ stage: STAGE.inboundRequest, attemptIndex: LEG_ATTEMPT_INDEX, payload: entry.inboundRequest })
-  if (entry.inboundResponse) stages.push({ stage: STAGE.inboundResponse, attemptIndex: LEG_ATTEMPT_INDEX, payload: entry.inboundResponse })
-  if (entry.sseEvents) stages.push({ stage: STAGE.sseEvents, attemptIndex: LEG_ATTEMPT_INDEX, payload: entry.sseEvents })
-
   const attempts = entry.attempts ?? []
-  const lastAttempt = attempts.at(-1)
-  const finalIdx = lastAttempt?.index ?? 0
 
-  // Non-final attempts: persist their own bodies (retry wire payloads).
+  if (entry.clientRequest) stages.push({ stage: STAGE.clientRequest, attemptIndex: LEG_ATTEMPT_INDEX, payload: entry.clientRequest })
+  if (entry.clientResponse) stages.push({ stage: STAGE.clientResponse, attemptIndex: LEG_ATTEMPT_INDEX, payload: entry.clientResponse })
   for (const a of attempts) {
-    if (a.index === finalIdx) continue
-    if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveRequest, attemptIndex: a.index, payload: a.effectiveRequest })
-    if (a.wireRequest) stages.push({ stage: STAGE.outboundRequest, attemptIndex: a.index, payload: a.wireRequest })
-    if (a.response) stages.push({ stage: STAGE.outboundResponse, attemptIndex: a.index, payload: a.response })
-    // L2 buffered retry / D1: a FAILED attempt's upstream-original frames (the final/successful
-    // attempt's frames stay at the top-level sse_events row, attempt_index -1).
-    if (a.sseEvents) stages.push({ stage: STAGE.sseEvents, attemptIndex: a.index, payload: a.sseEvents })
+    if (a.effectiveSource) stages.push({ stage: STAGE.effectiveSource, attemptIndex: a.index, payload: a.effectiveSource })
+    if (a.upstreamRequest) stages.push({ stage: STAGE.upstreamRequest, attemptIndex: a.index, payload: a.upstreamRequest })
+    if (a.upstreamResponse) stages.push({ stage: STAGE.upstreamResponse, attemptIndex: a.index, payload: a.upstreamResponse })
   }
-
-  // Final attempt slot = authoritative top-level mirror, falling back to the
-  // final attempt's own bodies when the mirror is absent. The mirror takes
-  // precedence so the failure case (top-level outboundResponse set by fail(),
-  // final attempt.response null) is covered.
-  const finalAttempt = attempts.find((a) => a.index === finalIdx)
-  const finalEffective = entry.effectiveRequest ?? finalAttempt?.effectiveRequest
-  const finalWire = entry.outboundRequest ?? finalAttempt?.wireRequest
-  const finalResponse = entry.outboundResponse ?? finalAttempt?.response
-  if (finalEffective) stages.push({ stage: STAGE.effectiveRequest, attemptIndex: finalIdx, payload: finalEffective })
-  if (finalWire) stages.push({ stage: STAGE.outboundRequest, attemptIndex: finalIdx, payload: finalWire })
-  if (finalResponse) stages.push({ stage: STAGE.outboundResponse, attemptIndex: finalIdx, payload: finalResponse })
 
   return stages
 }

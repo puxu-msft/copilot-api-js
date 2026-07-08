@@ -7,7 +7,7 @@ import {
 
 import type { MessageParam } from "~/types/api/anthropic"
 
-import { rewriteServerToolHistory } from "~/lib/anthropic/sanitize/rewrite-server-tool-history"
+import { rewriteServerToolBlocks } from "~/lib/anthropic/sanitize/rewrite-server-tool-blocks"
 import { setStateForTests } from "~/lib/state"
 
 import { autoRestoreState } from "../helpers/state-fixture"
@@ -47,11 +47,11 @@ function webSearchAssistant(id = "srvtoolu_abc", query = "anthropic tokenizer", 
   ])
 }
 
-describe("rewriteServerToolHistory — downgrade (message-splitting)", () => {
+describe("rewriteServerToolBlocks — downgrade (message-splitting)", () => {
   test("splits a synthesized web_search assistant turn into assistant(tool_use+text) + user(tool_result)", () => {
     const messages = [user([{ type: "text", text: "search please" }]), webSearchAssistant("srvtoolu_abc", "anthropic tokenizer", "The answer.")]
 
-    const { messages: out, rewroteCount } = rewriteServerToolHistory(messages, "downgrade")
+    const { messages: out, rewroteCount } = rewriteServerToolBlocks(messages, "downgrade")
 
     expect(rewroteCount).toBe(1)
     // user (original) + assistant (tool_use+text) + user (tool_result) = 3
@@ -75,7 +75,7 @@ describe("rewriteServerToolHistory — downgrade (message-splitting)", () => {
   })
 
   test("no assistant message retains a tool_result after rewrite", () => {
-    const { messages: out } = rewriteServerToolHistory([webSearchAssistant()], "downgrade")
+    const { messages: out } = rewriteServerToolBlocks([webSearchAssistant()], "downgrade")
     for (const msg of out) {
       if (msg.role !== "assistant") continue
       for (const b of blocks(msg)) {
@@ -91,7 +91,7 @@ describe("rewriteServerToolHistory — downgrade (message-splitting)", () => {
       { type: "server_tool_use", id: "srvtoolu_err", name: "web_search", input: { query: "q" } },
       { type: "web_search_tool_result", tool_use_id: "srvtoolu_err", content: { type: "web_search_tool_result_error", error_code: "unavailable" } },
     ])
-    const { messages: out } = rewriteServerToolHistory([msg], "downgrade")
+    const { messages: out } = rewriteServerToolBlocks([msg], "downgrade")
 
     const last = out.at(-1) as MessageParam
     const usr = blocks(last)
@@ -117,7 +117,7 @@ describe("rewriteServerToolHistory — downgrade (message-splitting)", () => {
       },
       { type: "text", text: "done" },
     ])
-    const { messages: out, rewroteCount } = rewriteServerToolHistory([msg], "downgrade")
+    const { messages: out, rewroteCount } = rewriteServerToolBlocks([msg], "downgrade")
 
     expect(rewroteCount).toBe(2)
     expect(out.length).toBe(2)
@@ -139,7 +139,7 @@ describe("rewriteServerToolHistory — downgrade (message-splitting)", () => {
         content: [{ type: "web_search_result", title: "Fetched", url: "https://x", encrypted_content: "", page_age: null }],
       },
     ])
-    const { messages: out, rewroteCount } = rewriteServerToolHistory([msg], "downgrade")
+    const { messages: out, rewroteCount } = rewriteServerToolBlocks([msg], "downgrade")
     expect(rewroteCount).toBe(1)
     const asst = blocks(out[0])
     expect(asst[0]).toMatchObject({ type: "tool_use", id: "srvtoolu_wf", name: "web_fetch" })
@@ -148,7 +148,7 @@ describe("rewriteServerToolHistory — downgrade (message-splitting)", () => {
   })
 })
 
-describe("rewriteServerToolHistory — thinking protection (block-level, both policies downgrade)", () => {
+describe("rewriteServerToolBlocks — thinking protection (block-level, both policies downgrade)", () => {
   // Under the two-level policy model, `preserve` only protects thinking blocks at the
   // BLOCK level (don't mutate/drop/reorder them) — it does NOT freeze the whole message.
   // server_tool_use downgrade splits the turn so thinking + tool_use stay on assistant
@@ -168,7 +168,7 @@ describe("rewriteServerToolHistory — thinking protection (block-level, both po
           content: [{ type: "web_search_result", title: "T", url: "https://t", encrypted_content: "", page_age: null }],
         },
       ])
-      const { messages: out, rewroteCount } = rewriteServerToolHistory([msg], "downgrade")
+      const { messages: out, rewroteCount } = rewriteServerToolBlocks([msg], "downgrade")
       expect(rewroteCount).toBe(1)
       // thinking + tool_use stay on assistant; tool_result moves to a new user message.
       const asst = blocks(out[0])
@@ -181,10 +181,10 @@ describe("rewriteServerToolHistory — thinking protection (block-level, both po
   }
 })
 
-describe("rewriteServerToolHistory — passthrough & orphans", () => {
+describe("rewriteServerToolBlocks — passthrough & orphans", () => {
   test("mode=false is an identity no-op (same array reference)", () => {
     const messages = [webSearchAssistant()]
-    const { messages: out, rewroteCount } = rewriteServerToolHistory(messages, false)
+    const { messages: out, rewroteCount } = rewriteServerToolBlocks(messages, false)
     expect(rewroteCount).toBe(0)
     expect(out).toBe(messages)
   })
@@ -194,7 +194,7 @@ describe("rewriteServerToolHistory — passthrough & orphans", () => {
       { type: "server_tool_use", id: "srvtoolu_orphan", name: "web_search", input: { query: "q" } },
       { type: "text", text: "hmm" },
     ])
-    const { messages: out } = rewriteServerToolHistory([msg], "downgrade")
+    const { messages: out } = rewriteServerToolBlocks([msg], "downgrade")
     expect(out.length).toBe(1)
     const asst = blocks(out[0])
     expect(asst.map((b) => b.type)).toEqual(["tool_use", "text"])
@@ -208,7 +208,7 @@ describe("rewriteServerToolHistory — passthrough & orphans", () => {
         content: [{ type: "web_search_result", title: "T", url: "https://t", encrypted_content: "", page_age: null }],
       },
     ])
-    const { messages: out } = rewriteServerToolHistory([msg], "downgrade")
+    const { messages: out } = rewriteServerToolBlocks([msg], "downgrade")
     expect(out.length).toBe(1)
     expect(out[0].role).toBe("user")
     const b = blocks(out[0])[0]
@@ -225,7 +225,7 @@ describe("rewriteServerToolHistory — passthrough & orphans", () => {
         content: [{ type: "web_search_result", title: "T", url: "https://t", encrypted_content: "", page_age: null }],
       },
     ])
-    const { messages: out } = rewriteServerToolHistory([msg], "downgrade")
+    const { messages: out } = rewriteServerToolBlocks([msg], "downgrade")
     const asst = blocks(out[0])
     // input passed through unchanged (parseStringifiedInput happens later in processToolBlocks)
     expect(asst[0].type).toBe("tool_use")
@@ -237,22 +237,22 @@ describe("rewriteServerToolHistory — passthrough & orphans", () => {
       { type: "server_tool_use", id: "srvtoolu_str", name: "web_search", input: { query: "q" } },
       { type: "web_search_tool_result", tool_use_id: "srvtoolu_str", content: "raw textual result" },
     ])
-    const { messages: out } = rewriteServerToolHistory([msg], "downgrade")
+    const { messages: out } = rewriteServerToolBlocks([msg], "downgrade")
     const usr = blocks(out.at(-1) as MessageParam)
     expect(usr[0].type).toBe("tool_result")
     expect(String(usr[0].content)).toContain("raw textual result")
   })
 
   test("idempotent — running twice yields the same structure", () => {
-    const first = rewriteServerToolHistory([webSearchAssistant()], "downgrade").messages
-    const second = rewriteServerToolHistory(first, "downgrade").messages
+    const first = rewriteServerToolBlocks([webSearchAssistant()], "downgrade").messages
+    const second = rewriteServerToolBlocks(first, "downgrade").messages
     expect(second.length).toBe(first.length)
     expect(JSON.stringify(second)).toBe(JSON.stringify(first))
   })
 
   test("messages without server tools pass through untouched", () => {
     const messages = [user([{ type: "text", text: "hi" }]), assistant([{ type: "text", text: "hello" }])]
-    const { messages: out, rewroteCount } = rewriteServerToolHistory(messages, "downgrade")
+    const { messages: out, rewroteCount } = rewriteServerToolBlocks(messages, "downgrade")
     expect(rewroteCount).toBe(0)
     expect(out).toBe(messages)
   })

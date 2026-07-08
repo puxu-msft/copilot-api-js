@@ -39,18 +39,18 @@ description: 当在 copilot-api-js 写或改 History 层的后台 backfill 时�
 
 同一 endpoint 的两条腿语义可能不一致。实例：Gemini **流式**腿经 codec `convert-response.ts` 早已把 `promptTokenCount` 净化（2026-06-05 起），**非流式**腿才存含缓存总量——按 endpoint 一刀切减会把已净值的流式历史行**双减腐蚀**。
 
-判据必须是**独立结构信号**，不是 coarse 分类（endpoint）。这里流式 ⟺ 有 `sseEvents`。**关键坑：结构信号的存储位置随历史漂移，须查全部位置**——`sseEvents` 存于两个 entry 字段（`context/request.ts` 确认穷尽）：`entry.sseEvents`（driver `setSseEvents` → top-level `sse_events` stage，2026-06-20 起）与 `entry.inboundResponse.sseEvents`（pump `setForwardedResponse` → `inbound_response` stage，全时期），且各有 stage-split 与 legacy-single-blob 两种落盘形态。只查 top-level `sse_events` stage 会漏 pre-driver 窗口的净值行 → 仍双减（见 `isGeminiAlreadyNet` 的三分支）。
+判据必须是**独立结构信号**，不是 coarse 分类（endpoint）。这里流式 ⟺ 有 `sseEvents`。**关键坑：结构信号的存储位置随历史漂移，须查全部位置**——`sseEvents` 存于两个 entry 字段（`context/request.ts` 确认穷尽；**注**：backfill 直读原始存储 blob，见到的是 **legacy 存储字段名**，非 getEntryById 读适配器映射后的 client/upstream 腿）：`entry.sseEvents`（driver `setSseEvents` → top-level `sse_events` stage，2026-06-20 起）与 `entry.inboundResponse.sseEvents`（pump `setForwardedResponse` → `inbound_response` stage，全时期；新写路径落 `client_response`/`upstream_response`，但新行生来 `usage_normalized=1`、backfill 不触及），且各有 stage-split 与 legacy-single-blob 两种落盘形态。只查 top-level `sse_events` stage 会漏 pre-driver 窗口的净值行 → 仍双减（见 `isGeminiAlreadyNet` 的三分支）。
 
 **偏向「已变换/跳过」是安全方向**：误判 total 行 → 留 total 不腐蚀；误判 net 行 → 双减腐蚀。
 
 ### ③ 双写两处同改，防 list/detail 分叉
 
-同一字段常存两处：列（list / sessions-agg / stats 读）与 blob 的 `outboundResponse.usage`（detail 页经 `assembleFullEntry` 读，finalized 落 `outbound_response` stage 行、legacy 落 head blob）。只改列不改 blob → 同行两视图分叉。两腿各自**独立读 + 独立减**，绝不共享一个 usage 对象对两源各减一次（内存别名会双减）。
+同一字段常存两处：列（list / sessions-agg / stats 读）与 blob 的 `upstreamResponse.usage`（detail 页经 `assembleFullEntry` 读，finalized 新行落 `upstream_response` stage 行；旧行落 `outbound_response` stage/head blob，经读适配器 `adaptLegacyLegsInPlace` 呈现为 `attempts[final].upstreamResponse.usage`）。只改列不改 blob → 同行两视图分叉。两腿各自**独立读 + 独立减**，绝不共享一个 usage 对象对两源各减一次（内存别名会双减）。
 
 ## 测试纪律
 
 - 用**真实写路径** `insertCompletedEntry`（→ stage-split 布局）造夹具，别手造 blob（自洽夹具测不到真实布局，见 [[feedback-pass-null-clean-not-self-validating]]）。
-- 断言列**与** `getEntryById().outboundResponse.usage`（detail 路径）**同时**为终态值（防分叉）。
+- 断言列**与** `getEntryById().attempts.at(-1)?.upstreamResponse?.usage`（detail 路径，经读适配器）**同时**为终态值（防分叉）。
 - 独立 oracle：期望值手算（如净值 = total − cached，对齐 GHC `translator.py`），别用被测代码回推。
 - 覆盖矩阵：各布局（top-level stage / inbound_response stage / legacy 两种）× 已变换/未变换 × 坏 blob 跳过不标记 × 清标记二次跑腐蚀 × 协作停续跑 × ties。
 - 隔离：`useIsolatedRuntime`，并在 `RESETTERS` 注册 `resetXxxBackfillForTests`（skill `test-isolation`）。

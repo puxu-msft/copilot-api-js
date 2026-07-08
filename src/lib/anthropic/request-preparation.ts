@@ -43,7 +43,11 @@ import {
   pruneHeaders,
   selectPassthroughHeaders,
 } from "./header-policy"
-import { stripServerTools } from "./message-tools"
+import {
+  //
+  stripServerTools,
+  stripToolFields,
+} from "./message-tools"
 import {
   //
   PARTNER_FEATURE_STRIP_TARGETS,
@@ -120,6 +124,13 @@ interface PrepareAnthropicRequestOptions {
    * `PrepareHints.excludeServerToolTypes`.
    */
   excludeServerToolTypes?: ReadonlyArray<string>
+  /**
+   * Custom-tool top-level field names to strip from every tool in the next wire
+   * payload, in addition to the built-in defaults / config / negotiation cache.
+   * Supplied by the tool-field-rejection retry strategy via
+   * `PrepareHints.excludeToolFields`.
+   */
+  excludeToolFields?: ReadonlyArray<string>
   /**
    * L2 buffered-retry escalation (RFC §8) from `PrepareHints.contextEscalation`: when set, FORCE
    * an aggressive native `clear_tool_uses` context_management edit on this attempt (independent of
@@ -410,7 +421,7 @@ export function prepareAnthropicRequest(
   steps: ReadonlyArray<PrepareStep> = ANTHROPIC_PREPARE_STEPS,
 ): PreparedAnthropicRequest {
   const ctx: PrepareContext = {
-    wire: buildWirePayload(payload, opts?.rejectFields, opts?.excludeServerToolTypes),
+    wire: buildWirePayload(payload, opts?.rejectFields, opts?.excludeServerToolTypes, opts?.excludeToolFields),
     headers: {},
     opts: opts ?? {},
   }
@@ -422,6 +433,7 @@ function buildWirePayload(
   payload: MessagesPayload,
   rejectFields?: ReadonlyArray<string>,
   excludeServerToolTypes?: ReadonlyArray<string>,
+  excludeToolFields?: ReadonlyArray<string>,
 ): Record<string, unknown> {
   const wire: Record<string, unknown> = {}
   const rejected = collectRejectedFields(payload.model)
@@ -459,6 +471,9 @@ function buildWirePayload(
 
   if (wire.tools) {
     wire.tools = stripServerTools(wire.tools as Array<Tool>, payload.model, excludeServerToolTypes)
+  }
+  if (wire.tools) {
+    wire.tools = stripToolFields(wire.tools as Array<Tool>, payload.model, excludeToolFields)
   }
 
   return wire

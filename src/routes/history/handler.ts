@@ -122,7 +122,7 @@ export async function handleExportEntry(c: Context) {
   }
 
   const blob = await compressAsync(entry)
-  const model = entry.outboundResponse?.model || entry.inboundRequest.model || "unknown"
+  const model = entry.attempts?.at(-1)?.upstreamResponse?.model || entry.clientRequest?.model || "unknown"
   // Model is raw client input; keep only filename-safe chars so `/`, `:`, spaces, or a
   // CRLF-bearing model can't break the Content-Disposition header (which would 500 the export).
   const safeModel = model.replaceAll(/[^\w.-]/g, "_")

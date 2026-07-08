@@ -40,6 +40,11 @@ import {
 } from "~/lib/diff/block-align"
 import {
   //
+  finalUpstreamRequest,
+  finalUpstreamResponse,
+} from "~/lib/history/entry-view"
+import {
+  //
   hashMessage,
   type MessageFormat,
   normalizeMessageForIndex,
@@ -92,7 +97,7 @@ export function formatFromEndpoint(endpoint: EndpointType): MessageFormat {
 
 /** Content-addressed inbound messages: normalize + hash each, position-ordered. */
 function buildInboundMsgs(entry: HistoryEntry, format: MessageFormat): Array<BuiltMsg> {
-  const messages = entry.inboundRequest.messages ?? []
+  const messages = entry.clientRequest?.messages ?? []
   return messages.map((msg, pos) => buildBuiltMsg(msg, pos, format))
 }
 
@@ -113,7 +118,7 @@ const INDEX_BUILD_BATCH = 50
  * messages, so the chunked read stays consistent.
  */
 async function buildInboundMsgsChunked(entry: HistoryEntry, format: MessageFormat): Promise<Array<BuiltMsg>> {
-  const messages = entry.inboundRequest.messages ?? []
+  const messages = entry.clientRequest?.messages ?? []
   const out: Array<BuiltMsg> = []
   for (const [pos, message] of messages.entries()) {
     out.push(buildBuiltMsg(message, pos, format))
@@ -135,8 +140,10 @@ function collectChangedText(rows: Array<AlignRow>): string {
 
 /** rewrites-req: what the proxy changed between the client request and the wire request. */
 function buildRewritesReq(entry: HistoryEntry): string {
-  const inbound = (entry.inboundRequest.messages ?? []) as Array<DiffMessage>
-  const outbound = entry.outboundRequest?.messages as Array<DiffMessage> | undefined
+  const inbound = (entry.clientRequest?.messages ?? []) as Array<DiffMessage>
+  // The wire messages projection lives on the final attempt's `upstreamRequest`
+  // leg (R4-FAIL-A — dropping it silently breaks search).
+  const outbound = finalUpstreamRequest(entry)?.messages as Array<DiffMessage> | undefined
   if (!outbound || outbound.length === 0) return ""
   return collectChangedText(alignMessages(inbound, outbound))
 }
@@ -165,21 +172,25 @@ function coerceContent(value: unknown): string | Array<unknown> | null {
  * path); non-streaming diffs the single response message best-effort.
  *
  * NOTE: per-endpoint structural normalization of the forwarded non-streaming
- * `inboundResponse.content` (Anthropic message vs OpenAI message vs Gemini
+ * `clientResponse.body` (Anthropic message vs OpenAI message vs Gemini
  * response shapes) is a future refinement — P1 captures the whole-message changed
  * text (searchable) and relies on the streaming frame diff for the common case.
- * When `inboundResponse` is absent (no forwarded capture) the source is empty.
+ * When `clientResponse` is absent (no forwarded capture) the source is empty.
  */
 function buildRewritesResp(entry: HistoryEntry): string {
-  const upstreamFrames = entry.sseEvents
-  const forwardedFrames = entry.inboundResponse?.sseEvents
+  // Upstream frames unify into the final attempt's `upstreamResponse.sseEvents`
+  // (RFC §S1); the forwarded (client-visible) frames live on the first-class
+  // `clientResponse` leg.
+  const upstreamResp = finalUpstreamResponse(entry)
+  const upstreamFrames = upstreamResp?.sseEvents
+  const forwardedFrames = entry.clientResponse?.sseEvents
   if ((upstreamFrames && upstreamFrames.length > 0) || (forwardedFrames && forwardedFrames.length > 0)) {
     if (!forwardedFrames) return ""
     return collectChangedFrameRaw(upstreamFrames ?? [], forwardedFrames)
   }
 
-  const upstream = entry.outboundResponse?.content
-  const forwarded = entry.inboundResponse?.content
+  const upstream = upstreamResp?.body
+  const forwarded = entry.clientResponse?.body
   if (upstream === null || upstream === undefined || forwarded === undefined) return ""
   return collectChangedText(alignMessages([toResponseDiffMessage(upstream)], [toResponseDiffMessage(forwarded)]))
 }
@@ -220,12 +231,16 @@ function joinHeaderLegs(legs: Array<Record<string, string> | undefined>): string
 
 /** Build the four flat aux sources, dropping any whose text is empty. */
 function buildAux(entry: HistoryEntry): Array<BuiltAux> {
-  const headers = entry.httpHeaders
+  // Headers now live on the legs (P4c-3): client/upstream request + response.
+  const clientReqHeaders = entry.clientRequest?.headers
+  const upstreamReq = finalUpstreamRequest(entry)
+  const upstreamResp = finalUpstreamResponse(entry)
+  const clientResp = entry.clientResponse
   const candidates: Array<BuiltAux> = [
     { source: "rewrites-req", text: buildRewritesReq(entry) },
     { source: "rewrites-resp", text: buildRewritesResp(entry) },
-    { source: "req-headers", text: joinHeaderLegs([headers?.inboundRequest, headers?.outboundRequest]) },
-    { source: "resp-headers", text: joinHeaderLegs([headers?.outboundResponse, headers?.inboundResponse, headers?.outboundResponseTrailers]) },
+    { source: "req-headers", text: joinHeaderLegs([clientReqHeaders, upstreamReq?.headers]) },
+    { source: "resp-headers", text: joinHeaderLegs([upstreamResp?.headers, clientResp?.headers, upstreamResp?.trailers]) },
   ]
   return candidates.filter((aux) => aux.text.length > 0)
 }

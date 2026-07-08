@@ -1,6 +1,7 @@
 import type { HistoryEntry } from "@/types"
 
 import { api } from "@/api/http"
+import { resolveResponseModel } from "@/composables/entry-legs"
 import { useToast } from "@/composables/useToast"
 import { triggerDownload } from "@/utils/download"
 
@@ -18,7 +19,8 @@ export async function downloadEntryAsZst(entry: HistoryEntry): Promise<void> {
   const { show } = useToast()
   try {
     const blob = await api.fetchEntryExport(entry.id)
-    const model = entry.outboundResponse?.model || entry.inboundRequest.model || "unknown"
+    // Response model (new final-attempt `upstreamResponse`) → requested model → unknown.
+    const model = resolveResponseModel(entry) || entry.model?.requested || entry.clientRequest?.model || "unknown"
     // Sanitize model to filename-safe chars (matches the backend Content-Disposition).
     triggerDownload(blob, `${entry.id}_${model.replaceAll(/[^\w.-]/g, "_")}.json.zst`)
   } catch (error) {

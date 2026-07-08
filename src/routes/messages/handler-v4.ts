@@ -378,6 +378,11 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         // client-disconnect bridge flips it) — NOT error.name (a response-header timeout does NOT
         // flip clientAbort, so it correctly falls through to fail → forwardError 504).
         if (error instanceof Error && isAbortError(error) && clientAbort.signal.aborted) {
+          // 499 is a KNOWN literal decided HERE, before the abort snapshot — so capture it on the
+          // clientResponse leg BEFORE ctx.abort() freezes the entry (mirrors the forward-boundary
+          // status capture on the success paths). Distinct from the inherent settle-timing gap
+          // where the forwarded status is only decided downstream (see docs/todo/deferred-backlog).
+          ctx.setClientResponseStatus(499)
           ctx.abort(resolvedName)
           detachClientAbort()
           return c.body(null, 499 as ContentfulStatusCode)
@@ -423,6 +428,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     return streamSSE(c, async (stream) => {
       stream.onAbort(() => clientAbort.abort())
       env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
+      env.ctx.setClientResponseStatus(c.res.status)
       const { buffered, heartbeatSec } = resolveBufferedAndHeartbeat(env)
       const forwardedSseEvents: Array<SseEventRecord> = []
       const streamStartMs = Date.now()
@@ -499,6 +505,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     stream.onAbort(() => clientAbort.abort()) // register BEFORE the first ping (round-B L1)
     // ④ capture proxy→client headers (set synchronously by streamSSE before this callback).
     commitCtx?.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
+    commitCtx?.setClientResponseStatus(c.res.status)
     try {
       // Immediate first ping on a COLD-START commit (the upstream stalled past the whole window → known
       // slow). It (a) establishes the body stream NOW so a fast upstream failure right after commit is
@@ -716,6 +723,7 @@ function renderNonStreamingV4(
     applyForwardedAnthropicResponseHeaders(c, upstreamHeaders)
     const errResponse = c.json(errorBody, 500)
     reqCtx.setInboundResponseHeaders(Object.fromEntries(errResponse.headers.entries()))
+    reqCtx.setClientResponseStatus(errResponse.status)
     consola.error(`[REFUSAL] upstream thinking-only refusal for ${response.model} -> recorded as error (non-streaming)`)
     reqCtx.recordFeature("refusal-errored")
     // Upstream leg SUCCEEDED (delivered a complete refusal response); the proxy introduced the error
@@ -746,6 +754,7 @@ function renderNonStreamingV4(
   // (proxy→client), THEN complete — finalize must see the inboundResponse leg.
   const clientResponse = c.json(finalResponse)
   reqCtx.setInboundResponseHeaders(Object.fromEntries(clientResponse.headers.entries()))
+  reqCtx.setClientResponseStatus(clientResponse.status)
 
   // Non-streaming semantic-truncation gate: a 200 without stop_reason is a
   // semantically truncated response — record fail() (not silent complete) while

@@ -8,10 +8,15 @@
  *   network → token-refresh → effort-learning → body-field → legacy-thinking →
  *   unsupported-beta → deferred-tool → auto-truncate
  *
- * **v4-only additions** — three strategies absent from the legacy pipeline
- * (intentional divergence, 11 strategies total):
+ * **v4-only additions** — strategies absent from the legacy pipeline
+ * (intentional divergence, 14 strategies total):
  *   - `server-error-retry` — bounded backoff for upstream 5xx, inserted right
  *     after `network-retry` (before `token-refresh`).
+ *   - `tool-field-rejection` — learns unknown custom-tool top-level fields the
+ *     upstream rejects with 400 `tools.N.<variant>.<field>: Extra inputs are not
+ *     permitted` (e.g. `eager_input_streaming`), fixates them endpoint-wide, and
+ *     strips them on retry. Inserted BEFORE `body-field-rejection` (both match
+ *     `Extra inputs are not permitted`; ordering is defense-in-depth).
  *   - two reactive feature-strip strategies inserted between unsupported-beta
  *     and deferred-tool:
  *   - `server-tool-rejection` — learns native server tools (web_search) the
@@ -25,8 +30,9 @@
  *     `output_config.format` on retry (and pre-emptively in prepare).
  *
  * Unlike openai-cc (4 strategies), Anthropic has extra 400-class strategies
- * (effort-learning, body-field, legacy-thinking, unsupported-beta,
- * server-tool-rejection, structured-outputs-rejection) — do not drop any. The
+ * (effort-learning, tool-field-rejection, body-field, legacy-thinking,
+ * unsupported-beta, server-tool-rejection, structured-outputs-rejection) — do
+ * not drop any. The
  * `betaProbe` is the SAME instance the codec records outbound betas into (RFC
  * §2.4 cross-component handle): the unsupported-beta strategy reads its
  * candidates for the laconic `invalid beta flag` path.
@@ -63,6 +69,7 @@ import { createServerToolRejectionStrategy } from "~/lib/request/strategies/serv
 import { createStructuredOutputsRejectionStrategy } from "~/lib/request/strategies/structured-outputs-rejection-retry"
 import { createSystemRejectRetryStrategy } from "~/lib/request/strategies/system-reject-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
+import { createToolFieldRejectionStrategy } from "~/lib/request/strategies/tool-field-rejection-retry"
 import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
 import { createWebSearchNotFoundRetryStrategy } from "~/lib/request/strategies/web-search-not-found-retry"
 import { state } from "~/lib/state"
@@ -91,6 +98,11 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
     adapt(createServerErrorRetryStrategy<MessagesPayload>()),
     adapt(createTokenRefreshStrategy<MessagesPayload>()),
     adapt(createEffortLearningRetryStrategy<MessagesPayload>()),
+    // tool-field-rejection BEFORE body-field: both match `... : Extra inputs are
+    // not permitted`, but tool-field claims the dotted `tools.N.<variant>.<field>`
+    // shape (body-field's tightened lookbehind now excludes dotted paths — this
+    // ordering is defense-in-depth against that coupling).
+    adapt(createToolFieldRejectionStrategy<MessagesPayload>()),
     adapt(createBodyFieldRejectionStrategy<MessagesPayload>()),
     adapt(createLegacyThinkingRetryStrategy<MessagesPayload>()),
     adapt(createUnsupportedBetaRetryStrategy<MessagesPayload>({ getProbeCandidates: () => deps.betaProbe.getCandidates() })),

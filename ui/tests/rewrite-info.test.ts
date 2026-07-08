@@ -26,22 +26,37 @@ import { usePipelineInfo } from "../src/composables/usePipelineInfo"
 
 // ─── Helpers ───
 
-function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
+/**
+ * Authoring shape for these tests: the legacy `inboundRequest`/`effectiveRequest`
+ * projections were removed from `HistoryEntry` in P4c-3, so `makeEntry` translates
+ * this ergonomic shape into the new legs — `inboundRequest` → `clientRequest`, and
+ * `effectiveRequest` → the final attempt's `effectiveSource` (what `usePipelineInfo`
+ * reads). Entry-level `pipelineInfo` (truncation/messageMapping) stays top-level.
+ */
+type EntryAuthoring = Partial<Omit<HistoryEntry, "clientRequest" | "attempts">> & {
+  inboundRequest?: { model?: string; messages?: Array<MessageContent> }
+  effectiveRequest?: { messages?: Array<MessageContent> }
+}
+
+function makeEntry(overrides: EntryAuthoring = {}): HistoryEntry {
+  const { inboundRequest, effectiveRequest, ...rest } = overrides
+  const inbound = inboundRequest ?? {
+    model: "claude-sonnet-4-20250514",
+    messages: [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi there" },
+      { role: "user", content: "how are you" },
+    ],
+  }
   return {
     id: "test-id",
     sessionId: "session-1",
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    inboundRequest: {
-      model: "claude-sonnet-4-20250514",
-      messages: [
-        { role: "user", content: "hello" },
-        { role: "assistant", content: "hi there" },
-        { role: "user", content: "how are you" },
-      ],
-    },
-    ...overrides,
-  }
+    clientRequest: { format: "anthropic-messages", ...inbound },
+    ...(effectiveRequest ? { attempts: [{ index: 0, durationMs: 0, effectiveSource: { ...effectiveRequest } }] } : {}),
+    ...rest,
+  } as HistoryEntry
 }
 
 function msg(role: string, content: string): MessageContent {

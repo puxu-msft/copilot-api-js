@@ -53,7 +53,8 @@ function createEmptyEntry(endpoint: EndpointType): HistoryEntry {
     sessionId,
     startedAt: Date.now(),
     endpoint,
-    inboundRequest: {
+    clientRequest: {
+      format: endpoint,
       model: undefined,
       messages: undefined,
       stream: undefined,
@@ -314,13 +315,20 @@ describe("summary correctness (toSummary)", () => {
     })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 30 },
-        stop_reason: "end_turn",
-        content: { role: "assistant", content: "Hi" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 30 },
+            stopReason: "end_turn",
+            body: { role: "assistant", content: "Hi" },
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 250,
     })
 
@@ -339,13 +347,20 @@ describe("summary correctness (toSummary)", () => {
     })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: false,
-        model: "test",
-        usage: { input_tokens: 10, output_tokens: 0 },
-        error: "Rate limited",
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "Rate limited",
+          upstreamResponse: {
+            success: false,
+            model: "test",
+            usage: { input_tokens: 10, output_tokens: 0 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: false, failureReason: "Rate limited", attemptCount: 1 } },
     })
 
     const summary = getSummary(entry.id)!
@@ -369,7 +384,9 @@ describe("updateEntry (request)", () => {
 
     // Update with actual request data (as consumers.ts does for originalRequest)
     updateEntry(entry.id, {
-      inboundRequest: {
+      model: { requested: "claude-sonnet-4-20250514" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-sonnet-4-20250514",
         messages: [
           { role: "user", content: "What is 2+2?" },
@@ -404,7 +421,9 @@ describe("updateEntry (request)", () => {
 
     // Step 2: Update with request
     updateEntry(entry.id, {
-      inboundRequest: {
+      model: { requested: "claude-sonnet-4-20250514" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "hello" }],
         stream: false,
@@ -417,13 +436,20 @@ describe("updateEntry (request)", () => {
 
     // Step 3: Update with response
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 50, output_tokens: 25 },
-        stop_reason: "end_turn",
-        content: { role: "assistant", content: "Hi there!" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 50, output_tokens: 25 },
+            stopReason: "end_turn",
+            body: { role: "assistant", content: "Hi there!" },
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 300,
     })
     const afterResponse = getSummary(entry.id)!
@@ -498,12 +524,19 @@ describe("getHistorySummaries", () => {
       messages: [{ role: "user", content: "a" }],
     })
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514-v2",
-        usage: { input_tokens: 10, output_tokens: 5 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514-v2",
+            usage: { input_tokens: 10, output_tokens: 5 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
     })
 
     const result = getHistorySummaries({ model: "v2" })
@@ -538,7 +571,8 @@ describe("getHistorySummaries", () => {
       endpoint: "anthropic-messages",
       state: "streaming",
       active: true,
-      inboundRequest: { model: "live-model", messages: [{ role: "user", content: "live" }], stream: true },
+      model: { requested: "live-model" },
+      clientRequest: { format: "anthropic-messages", model: "live-model", messages: [{ role: "user", content: "live" }], stream: true },
     }
     insertEntry(live)
 
@@ -566,7 +600,8 @@ describe("getHistorySummaries", () => {
       endpoint: "anthropic-messages",
       state: "streaming",
       active: true,
-      inboundRequest: { model: "live-model", messages: [{ role: "user", content: "live" }], stream: true },
+      model: { requested: "live-model" },
+      clientRequest: { format: "anthropic-messages", model: "live-model", messages: [{ role: "user", content: "live" }], stream: true },
     }
     insertEntry(streamingRow)
     persistEntryEager(streamingRow) // writes the SQLite head row with status=streaming
@@ -591,16 +626,24 @@ describe("getHistorySummaries", () => {
       messages: [{ role: "user", content: "b" }],
     })
     updateEntry(e1.id, {
-      outboundResponse: { success: true, model: "test", usage: { input_tokens: 0, output_tokens: 0 }, content: null },
+      attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "test", usage: { input_tokens: 0, output_tokens: 0 }, body: null } }],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
     })
     updateEntry(e2.id, {
-      outboundResponse: {
-        success: false,
-        model: "test",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        error: "fail",
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "fail",
+          upstreamResponse: {
+            success: false,
+            model: "test",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: false, failureReason: "fail", attemptCount: 1 } },
     })
 
     const successes = getHistorySummaries({ success: true })
@@ -621,7 +664,8 @@ describe("getHistorySummaries", () => {
       sessionId,
       startedAt: now - 10000,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "old" }] },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "old" }] },
     }
     insertEntry(old)
 
@@ -630,7 +674,8 @@ describe("getHistorySummaries", () => {
       sessionId,
       startedAt: now,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "new" }] },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "new" }] },
     }
     insertEntry(recent)
 
@@ -648,7 +693,8 @@ describe("getHistorySummaries", () => {
       sessionId,
       startedAt: now - 10000,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "old" }] },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "old" }] },
     }
     insertEntry(old)
 
@@ -657,7 +703,8 @@ describe("getHistorySummaries", () => {
       sessionId,
       startedAt: now,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "new" }] },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "new" }] },
     }
     insertEntry(recent)
 
@@ -675,7 +722,8 @@ describe("getHistorySummaries", () => {
       sessionId,
       startedAt: now - 20000,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "old" }] },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "old" }] },
     }
     insertEntry(old)
 
@@ -684,7 +732,8 @@ describe("getHistorySummaries", () => {
       sessionId,
       startedAt: now - 10000,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "mid" }] },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "mid" }] },
     }
     insertEntry(mid)
 
@@ -693,7 +742,8 @@ describe("getHistorySummaries", () => {
       sessionId,
       startedAt: now,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "new" }] },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "new" }] },
     }
     insertEntry(recent)
 
@@ -743,13 +793,20 @@ describe("getHistorySummaries", () => {
       messages: [{ role: "user", content: "hi" }],
     })
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: false,
-        model: "test",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        error: "overloaded_error: server busy",
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "overloaded_error: server busy",
+          upstreamResponse: {
+            success: false,
+            model: "test",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: false, failureReason: "overloaded_error: server busy", attemptCount: 1 } },
     })
 
     // RFC: the outbound response (incl. error) is not indexed for text search.
@@ -836,7 +893,9 @@ describe("summary cache consistency", () => {
 
     // Update 1: request data
     updateEntry(entry.id, {
-      inboundRequest: {
+      model: { requested: "claude-sonnet-4-20250514" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "hello" }],
         stream: true,
@@ -860,12 +919,19 @@ describe("summary cache consistency", () => {
 
     // Update 3: response
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 100, output_tokens: 50 },
-        content: { role: "assistant", content: "Hi" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 100, output_tokens: 50 },
+            body: { role: "assistant", content: "Hi" },
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 200,
     })
     const final = getSummary(entry.id)!
@@ -880,12 +946,19 @@ describe("summary cache consistency", () => {
       messages: [{ role: "user", content: "hello" }],
     })
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 100, output_tokens: 50 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 100, output_tokens: 50 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 200,
     })
 

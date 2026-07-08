@@ -67,8 +67,8 @@ const baseEntry = (effectiveMessages?: Array<MessageContent>): HistoryEntry =>
     id: "r1",
     startedAt: 0,
     endpoint: "anthropic-messages",
-    inboundRequest: { messages: [msg("user", "hello")] },
-    effectiveRequest: effectiveMessages ? { messages: effectiveMessages } : undefined,
+    clientRequest: { messages: [msg("user", "hello")] },
+    ...(effectiveMessages ? { attempts: [{ index: 0, durationMs: 0, effectiveSource: { messages: effectiveMessages } }] } : {}),
   }) as unknown as HistoryEntry
 
 describe("StagesSegment inbound↔effective toggle", () => {

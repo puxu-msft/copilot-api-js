@@ -368,10 +368,10 @@ describe("Responses WebSocket transport", () => {
 
     const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
     expect(entry?.state).toBe("failed")
-    expect(String(entry?.outboundResponse?.error)).toContain("truncated")
+    expect(String(entry?._index?.derived?.failureReason)).toContain("truncated")
     // The error frame the client received (via sendErrorAndClose) is recorded in the forwarded
     // (proxy→client) track — asserts the WS sendErrorAndClose→recordForwarded→fail ordering.
-    expect((entry?.inboundResponse?.sseEvents ?? []).some((e) => e.raw.includes('"error"'))).toBe(true)
+    expect((entry?.clientResponse?.sseEvents ?? []).some((e) => e.raw.includes('"error"'))).toBe(true)
   })
 
   test("keeps socket open after response.completed when clientWebsocketKeepOpen is true", async () => {
@@ -634,7 +634,7 @@ describe("Responses WebSocket transport", () => {
 
     // History inboundRequest: client's original tools array intact.
     const historyEntry = getHistory({ endpoint: "openai-responses" }).entries[0]
-    const inboundToolTypes = (historyEntry?.inboundRequest?.tools ?? []).map((t) => (t as { type?: string }).type)
+    const inboundToolTypes = (historyEntry?.clientRequest?.tools ?? []).map((t) => (t as { type?: string }).type)
     expect(inboundToolTypes).toEqual(["function", "image_generation", "web_search"])
   })
 })

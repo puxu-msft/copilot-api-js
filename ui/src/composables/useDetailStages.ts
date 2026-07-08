@@ -8,14 +8,25 @@ import {
 
 import type { HistoryEntry } from "@/types"
 
+import {
+  //
+  hasEffectiveLeg,
+  resolveEffectiveMessages,
+  resolveEffectiveSystem,
+  resolveForwardedContent,
+  resolveForwardedSse,
+  resolveUpstreamResponse,
+  resolveUpstreamSse,
+  resolveWirePayload,
+} from "./entry-legs"
+
 const isPresent = (v: unknown): boolean => v !== undefined && v !== null
 
 /** Whether the effective (sanitized/rewritten) request differs from the inbound one. */
 function effectiveDiffers(e: HistoryEntry): boolean {
-  const eff = e.effectiveRequest
-  if (!eff) return false
-  if (JSON.stringify(e.inboundRequest.messages ?? []) !== JSON.stringify(eff.messages ?? [])) return true
-  return JSON.stringify(e.inboundRequest.system ?? null) !== JSON.stringify(eff.system ?? null)
+  if (!hasEffectiveLeg(e)) return false
+  if (JSON.stringify(e.clientRequest?.messages ?? []) !== JSON.stringify(resolveEffectiveMessages(e) ?? [])) return true
+  return JSON.stringify(e.clientRequest?.system ?? null) !== JSON.stringify(resolveEffectiveSystem(e) ?? null)
 }
 
 export interface DetailStage {
@@ -51,19 +62,19 @@ export function useDetailStages(
       // the latter only when it actually differs (else it's identical to inbound).
       { key: "inbound", label: "Inbound", icon: "mdi-arrow-up-bold", present: true, tocIds: ["httpHeaders", "request"] },
       { key: "effective", label: "Effective", icon: "mdi-pencil-outline", present: effectiveDiffers(e), tocIds: ["request"] },
-      { key: "wire", label: "Wire", icon: "mdi-transit-connection-variant", present: isPresent(e.outboundRequest?.payload), tocIds: ["httpHeaders"] },
+      { key: "wire", label: "Wire", icon: "mdi-transit-connection-variant", present: isPresent(resolveWirePayload(e)), tocIds: ["httpHeaders"] },
       {
         key: "upstream",
         label: "Upstream",
         icon: "mdi-arrow-down-bold",
-        present: Boolean(e.outboundResponse?.content || e.outboundResponse?.error || e.sseEvents?.length),
+        present: Boolean(resolveUpstreamResponse(e)?.content || resolveUpstreamResponse(e)?.error || resolveUpstreamSse(e)?.length),
         tocIds: ["httpHeaders", "response", "section-sse-events"],
       },
       {
         key: "forwarded",
         label: "Forwarded",
         icon: "mdi-send-outline",
-        present: Boolean(isPresent(e.inboundResponse?.content) || e.inboundResponse?.sseEvents?.length),
+        present: Boolean(isPresent(resolveForwardedContent(e)) || resolveForwardedSse(e)?.length),
         // No message-level toc node for forwarded content (raw JSON / frames).
         tocIds: [],
       },
