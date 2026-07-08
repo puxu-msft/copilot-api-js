@@ -15,24 +15,33 @@ import {
   vi,
 } from "vitest"
 
+// `useModels` is a drivable mock (vi.hoisted so the fn exists before the hoisted
+// vi.mock factory runs) — most tests use the default two-model catalog set in
+// beforeEach, while the error-state test overrides it with an isError result.
+const { mockUseModels } = vi.hoisted(() => ({ mockUseModels: vi.fn() }))
+
 vi.mock("@/hooks/useModels", () => ({
-  useModels: () => ({
-    data: {
-      data: [
-        {
-          id: "claude-opus-4.8",
-          name: "Opus",
-          vendor: "Anthropic",
-          version: "4.8",
-          capabilities: { type: "chat", supports: { vision: true }, limits: { max_context_window_tokens: 1_000_000 } },
-          billing: { multiplier: 3 },
-        },
-        { id: "gpt-5.5", name: "GPT", vendor: "OpenAI", version: "5.5", capabilities: { type: "chat", supports: {}, limits: {} }, billing: { multiplier: 1 } },
-      ],
-    },
-    isLoading: false,
-  }),
+  useModels: () => mockUseModels(),
 }))
+
+const DEFAULT_MODELS_RESULT = {
+  data: {
+    data: [
+      {
+        id: "claude-opus-4.8",
+        name: "Opus",
+        vendor: "Anthropic",
+        version: "4.8",
+        capabilities: { type: "chat", supports: { vision: true }, limits: { max_context_window_tokens: 1_000_000 } },
+        billing: { multiplier: 3 },
+      },
+      { id: "gpt-5.5", name: "GPT", vendor: "OpenAI", version: "5.5", capabilities: { type: "chat", supports: {}, limits: {} }, billing: { multiplier: 1 } },
+    ],
+  },
+  isLoading: false,
+  isError: false,
+  error: null,
+}
 
 vi.mock("@/hooks/useModelTelemetry", () => ({
   useModelTelemetry: () => ({
@@ -83,6 +92,7 @@ describe("ModelsPage", () => {
   // don't leak into the next (jsdom localStorage is shared across a file's tests).
   beforeEach(() => {
     localStorage.clear()
+    mockUseModels.mockReturnValue(DEFAULT_MODELS_RESULT)
   })
 
   it("renders rows, count, and raw toggle", () => {
@@ -184,5 +194,24 @@ describe("ModelsPage", () => {
     renderPage()
     expect(screen.getByText(/Unmatched telemetry/i)).toBeDefined()
     expect(screen.getByText("ghost-alias")).toBeDefined()
+  })
+
+  // Positive control for the error test's negative assertion below: an empty catalog
+  // renders the "No models match…" empty branch, so its ABSENCE in the error case is
+  // a meaningful signal (error ≠ empty). getByText throws when absent; queryByText
+  // returns null (project convention — jest-dom matchers are not registered).
+  it("renders the empty branch when the catalog resolves to zero models", () => {
+    mockUseModels.mockReturnValue({ data: { data: [] }, isLoading: false, isError: false, error: null })
+    renderPage()
+    expect(screen.getByText(/no models match/i)).toBeDefined()
+    expect(screen.queryByText(/failed to load models/i)).toBeNull()
+  })
+
+  it("renders error state distinct from empty when query fails", () => {
+    mockUseModels.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("boom") })
+    renderPage()
+    expect(screen.getByText(/failed to load models/i)).toBeDefined()
+    expect(screen.getByText(/boom/)).toBeDefined()
+    expect(screen.queryByText(/no models match/i)).toBeNull()
   })
 })

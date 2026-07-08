@@ -55,7 +55,7 @@ function loadColumns(): ModelColumnVisibility {
 }
 
 export function ModelsPage() {
-  const { data, isLoading } = useModels()
+  const { data, isLoading, isError, error } = useModels()
   const { data: telemetry } = useModelTelemetry()
   const [searchParams, setSearchParams] = useSearchParams()
   const [raw, setRaw] = useState(false)
@@ -139,6 +139,16 @@ export function ModelsPage() {
   }
 
   if (isLoading) return <div className="mono p-4 text-[#888]">loading…</div>
+  // A query failure is distinct from an empty result — render a dedicated error
+  // branch instead of falling through to the "No models match…" empty state, which
+  // would disguise a load failure as an (incorrectly) empty catalog.
+  if (isError)
+    return (
+      <div className="mono flex flex-col gap-1 p-4 text-[var(--color-fail)]">
+        <div>⚠ failed to load models</div>
+        <div className="text-[12px] text-[var(--color-muted)]">{error instanceof Error ? error.message : String(error)}</div>
+      </div>
+    )
 
   return (
     <div className="mono flex min-h-0 flex-1 flex-col text-[13px]">
