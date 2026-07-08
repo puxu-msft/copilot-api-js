@@ -1,5 +1,6 @@
 import type { SortingState } from "@tanstack/react-table"
 
+import { getEffectiveEndpoints } from "~backend/lib/models/endpoint"
 import {
   //
   useCallback,
@@ -111,6 +112,7 @@ export function ModelsPage() {
     () => ({
       vendors: [...new Set(models.map((m) => m.vendor).filter(Boolean))].sort(),
       types: [...new Set(models.map((m) => m.capabilities?.type).filter((v): v is string => typeof v === "string" && v.length > 0))].sort(),
+      endpoints: [...new Set(models.flatMap((m) => getEffectiveEndpoints(m) ?? []))].sort(),
       restrictedTo: [...new Set(models.flatMap((m) => m.billing?.restricted_to ?? []))].sort(),
       policyStates: [...new Set(models.map((m) => m.policy?.state).filter((v): v is string => typeof v === "string" && v.length > 0))].sort(),
     }),

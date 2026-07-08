@@ -14,6 +14,7 @@ const CAPABILITY_OPTIONS = [
 interface FilterOptions {
   vendors: Array<string>
   types: Array<string>
+  endpoints: Array<string>
   restrictedTo: Array<string>
   policyStates: Array<string>
 }
@@ -66,6 +67,13 @@ export function ModelsFilterBar({ filters, onChange, options }: ModelsFilterBarP
         onChange={(v) => onChange({ type: v })}
         allLabel="all types"
         options={options.types.map((t) => ({ value: t, label: t }))}
+      />
+      <FilterSelect
+        label="Endpoint"
+        value={filters.endpoint}
+        onChange={(v) => onChange({ endpoint: v })}
+        allLabel="all endpoints"
+        options={options.endpoints.map((e) => ({ value: e, label: e }))}
       />
       <FilterSelect
         label="Premium"

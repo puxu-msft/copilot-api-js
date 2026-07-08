@@ -1,11 +1,13 @@
 import type { Model } from "~backend/lib/models/client"
 
 import { deriveCapabilities } from "~backend/lib/models/capabilities"
+import { getEffectiveEndpoints } from "~backend/lib/models/endpoint"
 
 export interface ModelFilters {
   search: string
   vendor: string | null
   type: string | null
+  endpoint: string | null
   /** Derived boolean capability keys the model must ALL satisfy (AND). */
   capabilities: Array<string>
   premium: boolean | null
@@ -18,6 +20,7 @@ export const EMPTY_FILTERS: ModelFilters = {
   search: "",
   vendor: null,
   type: null,
+  endpoint: null,
   capabilities: [],
   premium: null,
   restrictedTo: [],
@@ -39,6 +42,11 @@ export function matchesPolicyState(model: Model, value: string | null): boolean 
   return value === null || model.policy?.state === value
 }
 
+export function matchesEndpoint(model: Model, value: string | null): boolean {
+  if (value === null) return true
+  return getEffectiveEndpoints(model)?.includes(value) ?? false
+}
+
 /** Apply all filters. `hasTelemetry(id)` reports whether the model joined any telemetry. */
 export function filterModels(models: Array<Model>, filters: ModelFilters, hasTelemetry: (id: string) => boolean): Array<Model> {
   const query = filters.search.trim().toLowerCase()
@@ -53,6 +61,7 @@ export function filterModels(models: Array<Model>, filters: ModelFilters, hasTel
     if (!matchesPremium(m, filters.premium)) return false
     if (!matchesRestrictedTo(m, filters.restrictedTo)) return false
     if (!matchesPolicyState(m, filters.policyState)) return false
+    if (!matchesEndpoint(m, filters.endpoint)) return false
     if (filters.hasTelemetry !== null && hasTelemetry(m.id) !== filters.hasTelemetry) return false
     return true
   })

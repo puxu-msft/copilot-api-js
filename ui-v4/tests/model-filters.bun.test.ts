@@ -11,6 +11,7 @@ import {
   //
   EMPTY_FILTERS,
   filterModels,
+  matchesEndpoint,
   matchesPolicyState,
   matchesPremium,
   matchesRestrictedTo,
@@ -48,6 +49,16 @@ describe("model filter predicates", () => {
     expect(matchesPolicyState(m({ policy: { state: "enabled", terms: "" } }), "enabled")).toBe(true)
     expect(matchesPolicyState(m(), "enabled")).toBe(false)
     expect(matchesPolicyState(m(), null)).toBe(true)
+  })
+  it("matchesEndpoint: null = any", () => {
+    expect(matchesEndpoint(m({ supported_endpoints: ["/responses"] }), null)).toBe(true)
+  })
+  it("matchesEndpoint: explicit supported_endpoints", () => {
+    expect(matchesEndpoint(m({ supported_endpoints: ["/responses"] }), "/responses")).toBe(true)
+    expect(matchesEndpoint(m({ supported_endpoints: ["/responses"] }), "/chat/completions")).toBe(false)
+  })
+  it("matchesEndpoint: inferred from capabilities.type when supported_endpoints absent", () => {
+    expect(matchesEndpoint(m({ capabilities: { type: "chat" } }), "/chat/completions")).toBe(true)
   })
 })
 
