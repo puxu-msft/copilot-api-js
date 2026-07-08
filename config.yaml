@@ -108,7 +108,7 @@ disabled_models:
   # - gpt-5.4-mini
   # - gpt-5.4
   # - gpt-5.5
-  # - mai-code-1-flash-internal
+  # - mai-code-1-flash-picker
   # - trajectory-compaction
   - gpt-5-mini
   - gpt-4o-mini-2024-07-18
