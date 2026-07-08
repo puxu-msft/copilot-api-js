@@ -10,6 +10,8 @@ import {
   //
   buildAnthropicBetaHeaders,
   mergeAnthropicBeta,
+  modelHasAdaptiveThinking,
+  modelRequiresEnabledThinking,
   modelSupportsContextEditing,
   modelSupportsExtendedCacheTtl,
   modelSupportsInterleavedThinking,
@@ -22,6 +24,8 @@ import {
   setStateForTests,
   snapshotStateForTests,
 } from "~/lib/state"
+
+import { mockModel } from "../helpers/factories"
 
 describe("modelSupportsInterleavedThinking", () => {
   test("should NOT support claude-opus-4.6 (uses adaptive thinking instead)", () => {
@@ -482,5 +486,45 @@ describe("context_editing / tool_search are metadata-first (supports.X ?? name-l
     // …and a declared true emits it even for a non-name-list model.
     const headers2 = buildAnthropicBetaHeaders("totally-unknown-model", withSupports({ tool_search: true }))
     expect(headers2["anthropic-beta"] ?? "").toContain("advanced-tool-use-2025-11-20")
+  })
+})
+
+describe("modelHasAdaptiveThinking / modelRequiresEnabledThinking — pinned to real upstream metadata (refs/AVAILABLE_MODELS.json, 2026-07-08)", () => {
+  /** Build a resolved model carrying only the thinking-relevant `supports` fields. */
+  function withThinkingSupports(supports: Record<string, unknown>) {
+    return { id: "m", capabilities: { family: "claude", supports } } as unknown as Parameters<typeof modelRequiresEnabledThinking>[0]
+  }
+
+  // The exact shapes the Copilot /models payload ships (verified against
+  // refs/AVAILABLE_MODELS.json). These pin the two-way thinking-coercion gate to
+  // ground truth so an upstream metadata change (or a gate regression) is caught.
+
+  test("enabled-only models (adaptive_thinking absent, positive max_thinking_budget) → requiresEnabled, NOT adaptive", () => {
+    // haiku-4.5 is the reported case; the same shape covers the whole enabled-only set.
+    for (const id of ["claude-haiku-4.5", "claude-sonnet-4.5", "claude-opus-4.5"]) {
+      const model = withThinkingSupports({ max_thinking_budget: 32000, min_thinking_budget: 1024 })
+      expect(modelRequiresEnabledThinking(model)).toBe(true) // adaptive→enabled coercion fires
+      expect(modelHasAdaptiveThinking(id, model)).toBe(false) // enabled→adaptive does NOT
+    }
+  })
+
+  test("LOAD-BEARING: adaptive models carry adaptive_thinking=true AND max_thinking_budget=32000 → the flag short-circuit MUST win (never downgraded)", () => {
+    // The real payload gives opus-4.6/4.7/4.8 + sonnet-4.6/sonnet-5 BOTH a positive
+    // budget and the adaptive flag. A budget-only gate would wrongly downgrade them;
+    // modelRequiresEnabledThinking must return false because adaptive_thinking===true.
+    for (const id of ["claude-opus-4.8", "claude-sonnet-5", "claude-opus-4.6"]) {
+      const model = withThinkingSupports({ adaptive_thinking: true, max_thinking_budget: 32000, min_thinking_budget: 1024 })
+      expect(modelRequiresEnabledThinking(model)).toBe(false) // NOT coerced to enabled
+      expect(modelHasAdaptiveThinking(id, model)).toBe(true) // enabled→adaptive fires instead
+    }
+  })
+
+  test("silent metadata (no supports) → requiresEnabled abstains (reactive net is the floor)", () => {
+    const model = mockModel("claude-mystery", { vendor: "Anthropic" })
+    expect(modelRequiresEnabledThinking(model)).toBe(false)
+  })
+
+  test("no resolved model → abstains", () => {
+    expect(modelRequiresEnabledThinking(undefined)).toBe(false)
   })
 })
