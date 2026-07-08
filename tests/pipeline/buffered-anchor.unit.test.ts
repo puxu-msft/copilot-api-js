@@ -1,0 +1,267 @@
+/**
+ * Task 3.2 — driver buffered anchor INJECTION path (spec 2026-07-08-buffered-keepalive-empty-text-anchor §3.2).
+ *
+ * Drives `runResponseBufferedSink` directly with a mock codec/transport + a REAL RequestContext + a real
+ * SSE sink whose `heartbeat.injectAnchor` is bridged to the driver's `injectAnchor` closure through a
+ * holder (mirroring the Task 4.1 `bindInjector` wiring). Scenario: buffered empty_text, upstream emits
+ * message_start then goes silent; the heartbeat cadence expires → `injectAnchor` forwards message_start +
+ * the synthetic empty-text anchor block (content_block_start@0) + a first empty text_delta@0.
+ *
+ * This Task builds ONLY the injection path — the commit close-off / +1 remap / message_start dedup are
+ * Task 3.3, so the assertions focus on the FORWARDED track during the silence window and deliberately do
+ * NOT check the post-commit stream (where 3.3-not-yet dedup would double-send message_start).
+ */
+
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import type { OpenBlock } from "~/lib/pipeline/client-sink"
+import type { RequestEnvelope } from "~/lib/pipeline/envelope"
+import type {
+  //
+  AnchorHooks,
+  ClientFrame,
+  FormatCodec,
+  PreparedRequest,
+  RunBufferedOpts,
+  Transport,
+  UpstreamFrame,
+  UpstreamStream,
+} from "~/lib/pipeline/types"
+
+import {
+  //
+  anchorDeltaFrame,
+  anchorStartFrame,
+  anchorStopFrame,
+  remapAnthropicBlockIndex,
+} from "~/lib/anthropic/keepalive-anchor"
+import { createRequestContext } from "~/lib/context/request"
+import { makeSseSink } from "~/lib/pipeline/client-sink"
+import {
+  //
+  createPipelineDriver,
+  type DriverDeps,
+} from "~/lib/pipeline/driver"
+
+import { FakeClock } from "../helpers/fake-clock"
+
+// ── frame fixtures ──────────────────────────────────────────────────────────
+
+function f(type: string, extra: Record<string, unknown> = {}): UpstreamFrame {
+  return { event: type, data: JSON.stringify({ type, ...extra }) } as UpstreamFrame
+}
+
+/** An upstream that yields `head`, then parks until `release()`, then yields `tail` (simulates a silent stall). */
+function makeControlledUpstream(head: Array<UpstreamFrame>, tail: Array<UpstreamFrame>): { stream: UpstreamStream; release: () => void } {
+  let release!: () => void
+  const gate = new Promise<void>((r) => {
+    release = r
+  })
+  async function* gen(): AsyncIterable<UpstreamFrame> {
+    for (const fr of head) yield fr
+    await gate
+    for (const fr of tail) yield fr
+  }
+  return { stream: { frames: gen(), headers: new Headers() }, release }
+}
+
+// ── mock codec / driver (identity render — Anthropic bypass-direct) ───────────
+
+function makeCodec(): FormatCodec {
+  return {
+    format: "anthropic",
+    parse: () => {
+      throw new Error("parse not used")
+    },
+    decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
+    translateOut: (env) => env,
+    prepareWire: () => ({ url: "u", headers: new Headers(), body: {}, stream: true }) as PreparedRequest,
+    renderResponse: (frame) => frame,
+    renderResponseNonStreaming: (u) => u,
+    formatError: () => ({ event: "error", data: "{}" }) as ClientFrame,
+    createResponseAccumulator: () => ({ model: "", inputTokens: 0, outputTokens: 0, rawContent: "" }),
+  }
+}
+
+function makeEnv(): RequestEnvelope {
+  const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+  return {
+    clientFormat: "anthropic",
+    targetEndpoint: "/v1/messages",
+    model: {},
+    stream: true,
+    body: {},
+    view: {},
+    prepareHints: {},
+    ctx,
+    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
+      return { ...this, ...patch } as unknown as RequestEnvelope
+    },
+  } as unknown as RequestEnvelope
+}
+
+function makeDriver() {
+  const transport: Transport = {
+    send: () => Promise.reject(new Error("no re-exchange in the injection-path test")),
+  }
+  const deps: DriverDeps = { codec: makeCodec(), transport, strategies: [], maxRetries: 3, maxLearningRetries: 32 }
+  return createPipelineDriver(deps)
+}
+
+/** sawMessageStop tracker fed by onUpstreamFrame (so the buffered path commits on drain). */
+function makeStopTracker() {
+  let saw = false
+  return {
+    onUpstreamFrame: (frame: UpstreamFrame) => {
+      try {
+        if ((JSON.parse(frame.data ?? "{}") as { type?: string }).type === "message_stop") saw = true
+      } catch {
+        /* ignore */
+      }
+    },
+    onAttemptReset: () => {
+      saw = false
+    },
+    sawMessageStop: () => saw,
+  }
+}
+
+/** Block-aware provider (function → the sink tracks the open block). Only used if a 2nd tick fires. */
+const PING: ClientFrame = { event: "ping", data: '{"type":"ping"}' }
+const emptyDeltaFor = (ob?: OpenBlock): ClientFrame => {
+  if (ob?.type === "text")
+    return { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: ob.index, delta: { type: "text_delta", text: "" } }) }
+  return PING
+}
+
+function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
+  const written: Array<{ data: string; event?: string }> = []
+  const stream = {
+    writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
+  } as unknown as Parameters<typeof makeSseSink>[0]
+  return { stream, written }
+}
+
+async function drain(n = 30): Promise<void> {
+  for (let i = 0; i < n; i++) await Promise.resolve()
+}
+// The FakeClock drains 2 microtasks per timer fire; the injectAnchor chain (async closure → serialized
+// public writes → the tick's `.then` → the holder's own `.then`) needs several more turns, so flush
+// generously after an anchor tick until the whole chain settles.
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+}
+
+/** Build the AnchorHooks the Anthropic handler would supply, wiring the holder like Task 4.1. */
+function makeAnchorWiring() {
+  let boundInjector: (() => Promise<boolean>) | undefined
+  let lastInjectResult: boolean | undefined
+  const anchor: AnchorHooks = {
+    isMessageStart: (fr) => {
+      try {
+        return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
+      } catch {
+        return false
+      }
+    },
+    startFrame: anchorStartFrame(),
+    stopFrame: anchorStopFrame(),
+    deltaFrame: anchorDeltaFrame(),
+    remap: remapAnthropicBlockIndex,
+    bindInjector: (fn) => {
+      boundInjector = fn
+    },
+  }
+  // The sink-side heartbeat.injectAnchor indirection (holder) the handler installs in Task 4.1.
+  const heartbeatInjectAnchor = async (): Promise<boolean> => {
+    const did = boundInjector ? await boundInjector() : false
+    lastInjectResult = did
+    return did
+  }
+  return { anchor, heartbeatInjectAnchor, boundInjectorSet: () => boundInjector !== undefined, lastInjectResult: () => lastInjectResult }
+}
+
+describe("runResponseBufferedSink — buffered empty_text anchor injection path (Task 3.2)", () => {
+  const clock = new FakeClock()
+  beforeEach(() => clock.install())
+  afterEach(() => clock.restore())
+
+  test("idle heartbeat injects real message_start + anchor start@0 + empty text_delta@0 onto the forwarded track", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({}) // simulate runRequest's first exchange (attempt 0)
+    const { stream: up, release } = makeControlledUpstream([f("message_start", { message: { id: "msg_anchor" } })], [f("message_stop")])
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const { anchor, heartbeatInjectAnchor, boundInjectorSet, lastInjectResult } = makeAnchorWiring()
+
+    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const tracker = makeStopTracker()
+
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+
+    // Let the buffered loop pull message_start (CAPTURE it) then park awaiting the silent gate.
+    await drain(30)
+    expect(boundInjectorSet()).toBe(true) // the driver bound its injectAnchor into the holder
+    expect(written).toEqual([]) // buffered: message_start NOT forwarded yet (nothing on the wire)
+
+    // Upstream is silent → advance past the heartbeat cadence → the tick injects the anchor.
+    await clock.advance(15_000)
+    await flush()
+
+    // anchorState.injected (observed via the injector's true return).
+    expect(lastInjectResult()).toBe(true)
+    // EXACT forwarded sequence: real message_start, synthetic anchor content_block_start@0, empty text_delta@0.
+    expect(written).toEqual([
+      { data: JSON.stringify({ type: "message_start", message: { id: "msg_anchor" } }), event: "message_start" },
+      { data: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }), event: "content_block_start" },
+      { data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), event: "content_block_delta" },
+    ])
+    // pre-commit transparency: the ONLY content_block_delta is the synthetic empty anchor (no REAL delta).
+    const realContentDeltas = written.filter((w) => w.event === "content_block_delta" && !w.data.includes('"text":""'))
+    expect(realContentDeltas).toEqual([])
+
+    // Release the stall so the buffered call settles. Do NOT assert the post-commit stream — Task 3.3
+    // (commit close-off + message_start dedup) is not built yet, so the flush re-sends message_start here.
+    release()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("complete")
+    sink.close?.()
+  })
+
+  test("no anchor injection before message_start is captured (pre-message_start window → injector returns false)", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // Upstream emits NOTHING then parks — the buffered loop never captures a message_start.
+    const { stream: up, release } = makeControlledUpstream([], [f("message_start", { message: { id: "late" } }), f("message_stop")])
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
+
+    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const tracker = makeStopTracker()
+
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    await drain(30)
+
+    await clock.advance(15_000)
+    await flush()
+
+    // No captured message_start → the driver's injectAnchor returns false; the tick falls back to a ping.
+    expect(lastInjectResult()).toBe(false)
+    expect(written).toEqual([{ data: '{"type":"ping"}', event: "ping" }])
+    // No anchor frames leaked.
+    expect(written.some((w) => w.event === "content_block_start")).toBe(false)
+
+    release()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("complete")
+    sink.close?.()
+  })
+})
