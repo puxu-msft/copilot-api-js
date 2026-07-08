@@ -27,6 +27,7 @@ describe("ANTHROPIC_PREPARE_STEPS order contract", () => {
   test("steps are named and ordered: coerce → adjust → clamp → strip-partner-features → rewrite-memory → cache → headers", () => {
     expect(ANTHROPIC_PREPARE_STEPS.map((s) => s.name)).toEqual([
       "coerce-thinking",
+      "coerce-enabled-thinking",
       "adjust-budget",
       "clamp-effort",
       "strip-partner-features",
@@ -58,6 +59,7 @@ describe("ANTHROPIC_PREPARE_STEPS order contract", () => {
     prepareAnthropicRequest(payload, undefined, spySteps)
     expect(calls).toEqual([
       "coerce-thinking",
+      "coerce-enabled-thinking",
       "adjust-budget",
       "clamp-effort",
       "strip-partner-features",

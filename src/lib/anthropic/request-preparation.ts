@@ -33,6 +33,7 @@ import {
   isContextEditingEnabled,
   mergeAnthropicBeta,
   modelHasAdaptiveThinking,
+  modelRequiresEnabledThinking,
   modelSupportsContextEditing,
   modelSupportsExtendedCacheTtl,
   modelSupportsMemory,
@@ -58,6 +59,11 @@ import {
   collectAllMatching,
   findMostSpecific,
 } from "./per-model-config"
+import {
+  //
+  adaptiveToEnabledThinking,
+  budgetToEffort,
+} from "./thinking-coercion"
 
 export interface PreparedAnthropicRequest {
   wire: Record<string, unknown>
@@ -391,12 +397,14 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
  * initializer that creates the wire the steps mutate.
  *
  * Thinking transforms keep their fixed order (B3<B4<B5): coerce the SHAPE first
- * (enabled→adaptive for adaptive-only models), then clamp the budget (a no-op
- * once adaptive), then clamp the effort against the model whitelist — so an
- * out-of-range value coerceAdaptiveThinking maps can't reach upstream.
+ * (enabled→adaptive for adaptive-only models, else adaptive→enabled for
+ * enabled-only models), then clamp the budget (a no-op once adaptive), then clamp
+ * the effort against the model whitelist — so an out-of-range value the coerce
+ * steps map can't reach upstream.
  */
 export const ANTHROPIC_PREPARE_STEPS: ReadonlyArray<PrepareStep> = [
   { name: "coerce-thinking", apply: (ctx) => coerceAdaptiveThinking(ctx.wire, ctx.opts.resolvedModel) },
+  { name: "coerce-enabled-thinking", apply: (ctx) => coerceEnabledThinking(ctx.wire, ctx.opts.resolvedModel) },
   { name: "adjust-budget", apply: (ctx) => adjustThinkingBudget(ctx.wire, ctx.opts.resolvedModel) },
   { name: "clamp-effort", apply: (ctx) => clampEffortLevel(ctx.wire, ctx.opts.resolvedModel) },
   { name: "strip-partner-features", apply: (ctx) => stripUnsupportedPartnerFeatures(ctx.wire) },
@@ -484,31 +492,6 @@ function buildWirePayload(
 // ============================================================================
 
 /**
- * Heuristic mapping from a legacy `budget_tokens` to an effort level.
- *
- * GHC does NOT derive effort from budget (the two are independent dimensions);
- * this is a copilot-api enhancement to preserve the "thinking intensity" intent
- * of old clients that only had `budget_tokens` to express it. Thresholds carry
- * no semantic guarantee — they are an opt-in best effort (config
- * `anthropic.thinking_coerce_adaptive: best_effort`).
- *
- * Only low/medium/high are produced (GHC's construction side accepts only these
- * three); clampEffortLevel later fits the value to the model's actual whitelist.
- */
-const EFFORT_BUDGET_THRESHOLDS = [
-  { maxBudget: 8_192, effort: "low" },
-  { maxBudget: 24_576, effort: "medium" },
-] as const
-
-function budgetToEffort(budget?: number): "low" | "medium" | "high" | undefined {
-  if (typeof budget !== "number" || budget <= 0) return undefined
-  for (const threshold of EFFORT_BUDGET_THRESHOLDS) {
-    if (budget <= threshold.maxBudget) return threshold.effort
-  }
-  return "high"
-}
-
-/**
  * Coerce a legacy `thinking: { type: "enabled", budget_tokens }` to
  * `{ type: "adaptive" }` when the target model only supports adaptive thinking.
  *
@@ -549,6 +532,51 @@ function coerceAdaptiveThinking(wire: Record<string, unknown>, resolvedModel?: M
   consola.debug(`[DirectAnthropic] Coerced legacy thinking enabled→adaptive (model=${model})`)
 }
 
+/**
+ * Coerce `thinking: { type: "adaptive" }` to `{ type: "enabled", budget_tokens }`
+ * when the target model only accepts the budget-based (enabled) thinking shape.
+ *
+ * The mirror of {@link coerceAdaptiveThinking}: newer clients (e.g. Claude Code
+ * whose main model is an adaptive opus) reuse their `adaptive` thinking config
+ * for fast subagent calls routed to a NON-adaptive model (e.g. haiku-4.5), which
+ * rejects `adaptive` with HTTP 400 ("adaptive thinking is not supported on this
+ * model"). GHC constructs the enabled shape for these models, so coercing to it
+ * matches the upstream contract.
+ *
+ * - Only touches `type: "adaptive"`; enabled/disabled are left as-is (no-op).
+ * - Gated on a POSITIVE enabled-only signal ({@link modelRequiresEnabledThinking}
+ *   = `max_thinking_budget > 0` AND not adaptive). Predictive normalization must
+ *   never downgrade a model that might in fact be adaptive but whose metadata has
+ *   not loaded yet — that silent case is left to the reactive
+ *   `adaptive-thinking-rejection-retry` strategy (ground-truth 400).
+ * - Folds `output_config.effort` into `budget_tokens` (adjustThinkingBudget then
+ *   clamps it to the model window) and drops the now-redundant effort dimension.
+ * - Preserves the `display` field for multi-turn signature continuity.
+ */
+function coerceEnabledThinking(wire: Record<string, unknown>, resolvedModel?: Model): void {
+  if (state.coerceAdaptiveThinking === false) return
+
+  const thinking = wire.thinking as MessagesPayload["thinking"]
+  if (!thinking || thinking.type !== "adaptive") return
+
+  if (!modelRequiresEnabledThinking(resolvedModel)) return
+
+  const outputConfig = wire.output_config as OutputConfig | undefined
+  const display = (thinking as { display?: string }).display
+  wire.thinking = adaptiveToEnabledThinking(outputConfig?.effort, display)
+
+  // `effort` is the adaptive-only intensity dimension — now folded into
+  // budget_tokens, so drop it (keep any other output_config fields, e.g. format).
+  if (outputConfig?.effort !== undefined) {
+    const { effort: _effort, ...rest } = outputConfig
+    if (Object.keys(rest).length === 0) delete wire.output_config
+    else wire.output_config = rest
+  }
+
+  const model = wire.model as string
+  consola.debug(`[DirectAnthropic] Coerced adaptive thinking→enabled (model=${model})`)
+}
+
 function adjustThinkingBudget(wire: Record<string, unknown>, resolvedModel?: Model): void {
   const thinking = wire.thinking as MessagesPayload["thinking"]
   if (!thinking || thinking.type === "disabled" || thinking.type === "adaptive") return
@@ -571,6 +599,17 @@ function adjustThinkingBudget(wire: Record<string, unknown>, resolvedModel?: Mod
 
   if (typeof maxTokens === "number" && adjusted >= maxTokens) {
     adjusted = maxTokens - 1
+    // The max_tokens ceiling can force the budget below the model's min (the min
+    // clamp ran first). That combination is unsatisfiable — Anthropic requires
+    // both budget_tokens < max_tokens AND budget_tokens >= min — so upstream will
+    // reject. Surface it loudly rather than emitting a silently-invalid budget;
+    // the honest resolution (raise max_tokens vs disable thinking) is deferred —
+    // see docs/todo/deferred-backlog.md.
+    if (typeof minBudget === "number" && adjusted < minBudget) {
+      consola.warn(
+        `[DirectAnthropic] max_tokens=${maxTokens} cannot host min thinking budget=${minBudget} (model=${wire.model as string}); budget_tokens=${adjusted} is below the model minimum and will likely be rejected upstream`,
+      )
+    }
   }
 
   if (adjusted !== budgetTokens) {

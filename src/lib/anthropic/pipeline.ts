@@ -39,6 +39,7 @@ import {
 } from "~/lib/anthropic/client"
 import { logPayloadSizeInfoAnthropic } from "~/lib/request/payload"
 import { executeRequestPipeline } from "~/lib/request/pipeline"
+import { createAdaptiveThinkingRejectionRetryStrategy } from "~/lib/request/strategies/adaptive-thinking-rejection-retry"
 import {
   //
   createAutoTruncateStrategy,
@@ -179,6 +180,11 @@ export function buildAnthropicStrategies(args: { betaProbe: BetaProbe; resanitiz
     createEffortLearningRetryStrategy<MessagesPayload>(),
     createBodyFieldRejectionStrategy<MessagesPayload>(),
     createLegacyThinkingRetryStrategy<MessagesPayload>(),
+    // Mirror of legacy-thinking: reactive net for the reverse 400 ("adaptive
+    // thinking is not supported on this model") when `adaptive` reaches a model
+    // that only accepts the enabled shape. Matcher is disjoint from
+    // legacy-thinking's `thinking.type.enabled`, so this position is order-safe.
+    createAdaptiveThinkingRejectionRetryStrategy<MessagesPayload>(),
     // L2 poisoned-thinking strip-all twin: the web_search double-hop replays
     // poisoned assistant history through the same "cannot be modified" 400, so the
     // legacy pipeline needs the same reactive strip-all unblock. Legacy

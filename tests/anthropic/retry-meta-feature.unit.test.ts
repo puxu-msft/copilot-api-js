@@ -43,6 +43,7 @@ describe("retryMetaFeature", () => {
     ["body-field", { rejectedField: "context_management" }],
     ["deferred-tool", { undeferredTool: "Read" }],
     ["legacy-thinking", { coercedAdaptiveThinking: true }],
+    ["adaptive-thinking-rejection", { coercedEnabledThinking: true }],
     ["network", { networkRetry: true }],
     ["token-refresh", { tokenRefreshed: true }],
     ["empty meta", {}],

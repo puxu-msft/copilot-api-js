@@ -265,6 +265,30 @@ export function modelHasAdaptiveThinking(modelId: string, resolvedModel?: Model)
 }
 
 /**
+ * Check whether a model only accepts the budget-based (enabled) thinking shape.
+ *
+ * The strict inverse of the adaptive_thinking flag, used to gate PREDICTIVE
+ * adaptive→enabled coercion ({@link coerceEnabledThinking}). It fires ONLY on a
+ * positive enabled-only metadata signal — `supports.max_thinking_budget > 0` AND
+ * NOT `adaptive_thinking` — never on the silent-metadata fallthrough. This is
+ * deliberately narrower than `!modelHasAdaptiveThinking`: a genuinely-adaptive
+ * model whose `/models` metadata simply hasn't loaded (no thinking fields) would
+ * make `modelHasAdaptiveThinking` return false, but must NOT be downgraded
+ * predictively. That case is left to the reactive `adaptive-thinking-rejection-
+ * retry` strategy, which acts on the ground-truth upstream 400.
+ *
+ * Mirror asymmetry (intentional): the enabled→adaptive direction has a name
+ * allowlist fallback (adaptive models ship faster than metadata), but there is
+ * no enabled-model allowlist — enabled is the legacy default, so a positive
+ * budget signal is the only trustworthy predictive gate here.
+ */
+export function modelRequiresEnabledThinking(resolvedModel?: Model): boolean {
+  const supports = resolvedModel?.capabilities?.supports
+  if (!supports || supports.adaptive_thinking === true) return false
+  return typeof supports.max_thinking_budget === "number" && supports.max_thinking_budget > 0
+}
+
+/**
  * Build anthropic-beta headers based on model capabilities.
  *
  * Logic from chatEndpoint.ts:getExtraHeaders:

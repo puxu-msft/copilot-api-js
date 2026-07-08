@@ -102,12 +102,14 @@ describe("poisoned-thinking-retry wiring — v4 active path", () => {
     })
   }
 
-  test("registered in the v4 list right after legacy-thinking-retry", () => {
+  test("registered in the v4 list right after adaptive-thinking-rejection-retry", () => {
     setStateForTests({ stripThinkingOnReject: true })
     const names = buildV4().map((s) => s.name)
     expect(names).toContain("poisoned-thinking-retry")
-    // ordered among the 400-class handlers, immediately after legacy-thinking-retry
-    expect(names.indexOf("poisoned-thinking-retry")).toBe(names.indexOf("legacy-thinking-retry") + 1)
+    // The two thinking-SHAPE nets (legacy-thinking → adaptive-thinking-rejection)
+    // sit together; poisoned-thinking (a thinking-CONTENT strip) follows them.
+    expect(names.indexOf("adaptive-thinking-rejection-retry")).toBe(names.indexOf("legacy-thinking-retry") + 1)
+    expect(names.indexOf("poisoned-thinking-retry")).toBe(names.indexOf("adaptive-thinking-rejection-retry") + 1)
   })
 
   test("canHandle fires on the real 400, handle returns the NATIVE env-action (strips thinking)", async () => {
@@ -134,11 +136,12 @@ describe("poisoned-thinking-retry wiring — legacy web_search path", () => {
     return buildLegacyStrategies({ betaProbe: createBetaProbe(undefined), resanitize: stubResanitize })
   }
 
-  test("registered in the legacy list right after legacy-thinking-retry", () => {
+  test("registered in the legacy list right after adaptive-thinking-rejection-retry", () => {
     setStateForTests({ stripThinkingOnReject: true })
     const names = buildLegacy().map((s) => s.name)
     expect(names).toContain("poisoned-thinking-retry")
-    expect(names.indexOf("poisoned-thinking-retry")).toBe(names.indexOf("legacy-thinking-retry") + 1)
+    expect(names.indexOf("adaptive-thinking-rejection-retry")).toBe(names.indexOf("legacy-thinking-retry") + 1)
+    expect(names.indexOf("poisoned-thinking-retry")).toBe(names.indexOf("adaptive-thinking-rejection-retry") + 1)
   })
 
   test("canHandle fires on the real 400, handle returns the LEGACY {action,payload,meta} shape (strips thinking)", async () => {

@@ -108,3 +108,26 @@
 - **理想架构**：重命名为「名字=哪个字段空才触发丢弃」的清晰枚举——`false`(关) / `all_empty`(text∧sig 空 = 旧 `empty_thinking`) / `signature_empty`(sig 空 = 旧 `empty_any`) / `thinking_empty`(text 空，**新增**，激进慎用——会删正常空明文块) / `any_empty`(text∨sig 任一空，**新增**)。默认 `all_empty`（= 旧默认行为不变）。
 - **为何暂缓**：与 thinking-quarantine 特性无关的独立小重构；用户已认可映射方向但未启动。
 - **若做需改什么**：schema enum + state 类型/默认 + `filterEmptyThinkingBlocks` 谓词（2→4 模式，按 textEmpty/sigEmpty 组合）+ `config.ts` apply + bundled `config.yaml` + `config.schema.json` regen + `compat.ts` 加**值迁移**（`empty_thinking`→`all_empty` / `empty_any`→`signature_empty`，旧配置自动升级不报错）+ 相关测试。发现方：用户 config-review 提议（2026-07-08）。
+
+## thinking budget 与 max_tokens 冲突的行为化解决（现仅告警，未化解）
+
+- **根因**：`adjustThinkingBudget`（`src/lib/anthropic/request-preparation.ts`）的夹取顺序是「先抬到 min → 再压到 max_thinking_budget → 最后压到 max_tokens-1」，最后一步无 re-floor。当客户端 `max_tokens` ≤ 模型 `min_thinking_budget`（如 max_tokens=1000、min=1024），结果 `budget_tokens=999 < min`——Anthropic 要求 `budget_tokens < max_tokens` **且** `budget_tokens >= min`，二者不可同时满足，是客户端自身矛盾的请求。此路径被 adaptive→enabled 合成预算（`coerceEnabledThinking` / `adaptive-thinking-rejection-retry` 默认 medium=24576）**新近更易触达**（adaptive 客户端本无理由把 max_tokens 设大）。另一相关缺口：reactive 策略恰在**元数据静默**时才触发（prepare 已弃权），故重跑时 `adjustThinkingBudget` 无 min/max 元数据，合成的 medium 预算若超过模型真实 max_thinking_budget 也**无法被夹**，会招致第二个 unhandled 400（预算过大）。
+- **当前行为**：本次已加**观测告警**（`consola.warn`：max_tokens 无法容纳 min budget、budget 低于模型下限、将被上游拒），不再静默发出畸形 wire；但**未行为化解决**——仍原样发出 `budget=maxTokens-1`，上游照旧 400（只是现在可诊断）。静默元数据下合成预算超真实 max 的情形同样只会招致上游 400、无 learning 兜底。
+- **理想架构**：三选一（需用户定夺，属矛盾请求的语义抉择）——① 抬 `max_tokens` 到 `min_thinking_budget+1` 让 thinking 装得下（改客户端输出上限）；② 显式**禁用 thinking**（`type:"disabled"`）让请求至少无 thinking 成功（牺牲客户端 thinking 意图，但比 opaque 400 好）；③ 新增反应式「budget-too-large」learning 策略，从上游 400 学到真实 max 后收缩预算重试（覆盖静默元数据下超 max 的情形）。
+- **为何暂缓**：①②是矛盾请求的行为抉择（改 max_tokens vs 丢 thinking），无客观最优、需用户拍板，超出本次 adaptive→enabled 镜像特性范围；③是独立的新反应式策略工作单元。且现实目标场景（Claude Code haiku 子代理）`max_tokens` 通常 ≥ 数千、真实 thinking max 充裕，边界仅在 max_tokens≤1024 等病态值触达，两 reviewer 均判 LOW。属「独立工作项」非「因范围大降级」，已加告警消除**静默**面。
+- **若做需改什么**：选 ②/③ 需——② `adjustThinkingBudget` 在冲突分支改写 `wire.thinking = { type: "disabled" }` + 记录 warning + 加测试（矛盾 max_tokens → thinking 被禁用而非畸形预算）；③ 新增 `budget-rejection-retry` 策略（matcher 认领「budget too large / exceeds」类 400、从错误体解析上限、收缩预算重试、注册进两个 builder、`canHandle` 与既有 thinking 策略 matcher 互斥核验）+ 单测。发现方：adaptive-thinking 镜像 subagent 双审（silent-failure-hunter R1 + typescript-reviewer LOW，2026-07-08）。
+
+## reactive `extractErrorMessage` 嵌套-vs-顶层 message 解包鲁棒性（两个镜像策略）
+
+- **根因**：`adaptive-thinking-rejection-retry.ts` 与 `legacy-thinking-retry.ts` 的 `extractErrorMessage` 均用 `parsed.error?.message ?? responseText` 解包。当前上游体是**顶层** `{"message":"adaptive thinking is not supported on this model"}`（非嵌套 `error.message`），靠 `responseText` 整串 fallback 命中子串，工作正常。但若未来上游体形如 `{"error":{"message":"<无关>"},"message":"adaptive thinking is..."}`，解包会优先返回**无关的**嵌套 message、跳过 responseText fallback，导致 `canHandle` 静默 false、self-heal 丢失。
+- **当前行为**：对现有两种体形（顶层 message / 嵌套 error.message）都正确命中；仅对「嵌套 error.message 与顶层 message 同时存在且语义不同」的假想体形有漏判风险（当前上游不产生此形）。
+- **理想架构**：解包同时兼顾顶层与嵌套——`parsed.error?.message ?? (parsed as { message?: string }).message ?? responseText`；或更稳的做法：直接对**原始 responseText** 跑 matcher 子串判定（绕过脆弱的字段优先级）。两个镜像策略应**同步改**（避免 extractErrorMessage 逻辑漂移）。
+- **为何暂缓**：纯前瞻性硬化（依赖上游未来改体形），当前零触发、零成本；且改动应对称覆盖两个镜像策略、宜作一次性 extractErrorMessage 抽公共 + 双策略共用的小重构，而非单侧打补丁引入漂移。
+- **若做需改什么**：抽 `extractRejectionText(error, predicate)` 公共原语（放 `src/lib/request/strategies/` 或 leaf），两策略共用；解包兼顾顶层+嵌套 message + responseText fallback；加单测覆盖三种体形（顶层 / 嵌套 / 二者共存且语义冲突）。发现方：silent-failure-hunter R3（2026-07-08）。
+
+## 陈旧交叉引用 `state.ts:384` 指向已迁移的 `budgetToEffort`
+
+- **根因**：本次把 `budgetToEffort` 从 `request-preparation.ts` 迁到新 leaf `src/lib/anthropic/thinking-coercion.ts`，但 `src/lib/state.ts:384` 注释仍写「见 request-preparation.ts budgetToEffort」。
+- **当前行为**：注释指向失效（函数已不在该文件）；纯文档陈旧，无功能影响。
+- **为何暂缓**：`state.ts` 此刻正被并发会话改动（工作区有未提交外来改动），本会话按 concurrent-sessions 纪律**不碰该文件**（pathspec 提交会连带其未提交改动，违「绝不提交他人在飞工作」）。属并发协作让路，非范围降级。
+- **若做需改什么**：待 `state.ts` 并发改动落定后，把该注释指针更新为 `src/lib/anthropic/thinking-coercion.ts`。一行 doc-sync。发现方：typescript-reviewer NIT（2026-07-08）。

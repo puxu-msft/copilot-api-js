@@ -2,11 +2,11 @@
  * v4 pipeline — anthropic-messages env-based retry strategies (P2.6 / C2).
  *
  * Mirrors the legacy `buildAnthropicStrategies` (anthropic/pipeline.ts) by wrapping
- * the unchanged legacy strategies in {@link adaptLegacyStrategy}. The 8 legacy
+ * the unchanged legacy strategies in {@link adaptLegacyStrategy}. The legacy
  * strategies keep their exact order + per-strategy logic (RFC §12.9):
  *
  *   network → token-refresh → effort-learning → body-field → legacy-thinking →
- *   unsupported-beta → deferred-tool → auto-truncate
+ *   adaptive-thinking-rejection → unsupported-beta → deferred-tool → auto-truncate
  *
  * **v4-only additions** — strategies absent from the legacy pipeline
  * (intentional divergence, 14 strategies total):
@@ -58,6 +58,7 @@ import {
   countTotalTokens,
 } from "~/lib/anthropic/auto-truncate"
 import { adaptLegacyStrategy } from "~/lib/pipeline/legacy-strategy-adapter"
+import { createAdaptiveThinkingRejectionRetryStrategy } from "~/lib/request/strategies/adaptive-thinking-rejection-retry"
 import { createAutoTruncateStrategy } from "~/lib/request/strategies/auto-truncate"
 import { createBodyFieldRejectionStrategy } from "~/lib/request/strategies/context-management-retry"
 import { createDeferredToolRetryStrategy } from "~/lib/request/strategies/deferred-tool-retry"
@@ -107,6 +108,10 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
     adapt(createToolFieldRejectionStrategy<MessagesPayload>()),
     adapt(createBodyFieldRejectionStrategy<MessagesPayload>()),
     adapt(createLegacyThinkingRetryStrategy<MessagesPayload>()),
+    // Mirror of legacy-thinking: reactive net for the reverse 400 ("adaptive
+    // thinking is not supported on this model"). Matcher is disjoint from
+    // legacy-thinking's `thinking.type.enabled`, so this position is order-safe.
+    adapt(createAdaptiveThinkingRejectionRetryStrategy<MessagesPayload>()),
     // L2 poisoned-thinking strip-all retry — NATIVE env-strategy, deliberately NOT
     // adapt()-wrapped: L3 (Task 10) reads `env.ctx` in onResolved, which the legacy
     // adapter drops. Its matcher requires "cannot be modified" (disjoint from
