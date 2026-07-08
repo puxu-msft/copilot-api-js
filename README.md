@@ -231,6 +231,7 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 | `/api/models/:model` | GET | Single model (internal full shape) |
 | `/api/config` | GET | Effective runtime configuration |
 | `/api/config/yaml` | GET / PUT | Read / replace `config.yaml` (triggers full re-apply) |
+| `/api/negotiation` | GET / POST | Reactive-learning records (feature-negotiation cache) management. Backs the ui-v4 **Learned** page: view reactive learning records grouped by function, per-category TTL with auto-expiry, per-entry pin / renew / expire-now / delete, and full JSON export. `GET` grouped snapshot, `POST /renew`\|`/expire`\|`/pin`\|`/entry/delete`, `GET /export` full v2 JSON |
 | `/api/logs` | GET | Recent request logs (in-memory ring buffer) |
 | `/api/event_logging/batch` | POST | Silently consumes Anthropic event-logging beacons |
 | `/metrics` | GET | Prometheus text exposition (v0.0.4) — `copilot_api_*_total{dimension,key}` counters + per-dimension histograms (duration/queue/token) |

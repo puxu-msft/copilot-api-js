@@ -1,5 +1,7 @@
 # 反应式学习记录 生命周期 + 查看/编辑页面 · 实施计划总览
 
+> **实施状态：已实现**（`feat/negotiation-lifecycle` 分支，2026-07-08）。Phase 1 + Phase 2 完成并通过 subagent review；待 merge 回 master（并发会话在飞时隔离于 worktree）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实施。步骤用 `- [ ]` 复选框跟踪。
 
 **Goal:** 给反应式学习记录（feature-negotiation 缓存）加 TTL 生命周期（首学/最后确认时间戳、按分类可配 TTL 默认 30d、自动过期、每条可 pin 永不过期），暴露 `/api/negotiation` 管理 API，并在 ui-v4 建「Learned」页面（按功能分组查看 / 整体导出 v2 JSON / 续约·立即失效·pin·删除）。

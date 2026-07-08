@@ -137,6 +137,13 @@
 - **为何暂缓**：与核心生命周期改动解耦，避免把跨切面遥测通道耦进本 spec 的数据模型 + API + UI 三块交付；属「决定数据模型后的后续项」。对抗审查 M3 提出（2026-07-08）。
 - **若做需改什么**：接 request-telemetry registry（skill `telemetry-architecture`）加维度；在 `isEntryActive` 判过期→未施加的消费点、`markX` 再学点、四个 mutation 处发结构化转换事件。
 
+## negotiation lifecycle 交付评审滚存的两处 sharp edge（2026-07-08）
+
+来自 `feat/negotiation-lifecycle` 分支交付审计（code-reviewer + typescript-reviewer + react-reviewer）flag 的两处非阻塞待复访项：
+
+- **flat-category 快照 `value` 是 endpoint 级 modelKey 而非裸模型**：`systemRejectModels` / `serverToolDowngrade` 分类的 `LearnedEntryView.value` 形如 `https://…|anthropic-messages|<model>`（endpoint 级 modelKey），非裸模型名。**当前行为**：前端 `ui-v4/src/lib/learned.ts` 的 `displayValue` 检测 `|anthropic-messages|` 标记并美化为裸模型名展示，功能完整；但后端快照的裸真值只能靠前端字符串切割还原。**若做**：后端 `viewOf` 给这两分类的 `LearnedEntryView.detail` 携带结构化裸模型名（`detail` 字段已存在），前端读 `detail` 而非切 `value`，更干净、少一处前端解析脆弱点。
+- **`negotiation_learning.ttl_days` 整表替换语义易踩**：`config.ts` 把 `ttl_days` 整表替换进 `negotiationTtlOverridesMs`（whole-map replace，非 per-key merge），而默认覆盖含 `partnerFeatures: never`（`Number.POSITIVE_INFINITY`）。**当前行为**：用户设任一 `ttl_days`（如只想改 `toolFields`）而不重列 `partnerFeatures`，会把 `partnerFeatures` 从默认的 `never` 静默打回 `default_ttl_days`（30d）——即 partner-feature 学习记录开始 30d 后过期，非预期。DESIGN 活的架构现状 + 运行时选项表已注记此陷阱。**若做**：在 `config.yaml` / `config.example.yaml` 加一段带注释的 `negotiation_learning` 配置样例，显式演示「改单个分类须重列所有想保留的覆盖（含 `partnerFeatures: 0`=never）」，把陷阱前置到配置发现层。发现方：negotiation-lifecycle 交付审计（2026-07-08）。
+
 ## ui-v4 models-list-parity 落地的两个跟进项（2026-07-08）
 
 来自 `docs/spec/2026-07-08-ui-v4-models-list-parity.md` 落地（分支 `feat/ui-v4-models-list-parity`）时的 not-adopted / deferred：
