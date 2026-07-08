@@ -16,8 +16,7 @@ const HEADERS = [
   "vision",
   "tool_calls",
   "streaming",
-  "adaptive_thinking",
-  "max_thinking_budget",
+  "thinking",
   "billing_multiplier",
   "premium",
   "restricted_to",
@@ -50,11 +49,7 @@ export function modelsToCsv(models: Array<Model>, telemetryFor: (id: string) => 
       String(c.vision),
       String(c.toolCalls),
       String(c.streaming),
-      // Full-fidelity export (richest-data-flow): the granular adaptive flag + raw
-      // budget preserve the same distinction the table cell shows; `thinking` = OR
-      // of these two, so it stays derivable without a lossy boolean column.
-      String(c.adaptiveThinking),
-      s(c.maxThinkingBudget || undefined),
+      String(c.thinking),
       s(model.billing?.multiplier),
       s(model.billing?.is_premium),
       (model.billing?.restricted_to ?? []).join(";"),
