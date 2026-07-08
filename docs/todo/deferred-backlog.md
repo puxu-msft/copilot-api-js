@@ -101,14 +101,6 @@
 - **为何暂缓**：畸形输入才触发 + 优雅降级 + 仅 history 索引受影响（非上游 payload）；且 `insert_text` 策略**本就完全规避此边界**（保持所有块原位），已是现成逃生舱。属「有界且无害的次级效应」，非「因范围大降级」。发现方：`feat/thinking-quarantine` 全分支终审 advisory（2026-07-07）。
 - **若做需改什么**：按上「理想架构」三选一。最小侵入是把默认策略改 `insert_text`（一处 state 默认 + 复核 `insert_text` 的合成 marker 现已被 `stripAllThinking` 连带剥除，见本分支 A4 修复，无泄漏残留）；或给 `messagesMatch` 加首块重排容错 + 对应单测。
 
-## config `anthropic.thinking_block_sanitize` 枚举命名迷惑 → 按「哪个字段空」重命名
-
-- **根因**：现值 `empty_thinking`（默认）实为「thinking 文本 AND signature 都空」（double-empty 损坏块）、`empty_any` 实为「signature 空（不论文本）」——但 opus-4.8 正常 thinking 块恰恰文本空 + 签名有效，`empty_thinking` 极易被误读为「thinking 字段空」。判据核心是 signature，名不达意。
-- **当前行为**：`filterEmptyThinkingBlocks(messages, mode)`（`src/lib/anthropic/sanitize/content-blocks.ts`）按两布尔字段（textEmpty / sigEmpty）判丢弃：`empty_thinking`=text∧sig 都空、`empty_any`=sig 空。类型 `false | "empty_thinking" | "empty_any"`，默认 `empty_thinking`。
-- **理想架构**：重命名为「名字=哪个字段空才触发丢弃」的清晰枚举——`false`(关) / `all_empty`(text∧sig 空 = 旧 `empty_thinking`) / `signature_empty`(sig 空 = 旧 `empty_any`) / `thinking_empty`(text 空，**新增**，激进慎用——会删正常空明文块) / `any_empty`(text∨sig 任一空，**新增**)。默认 `all_empty`（= 旧默认行为不变）。
-- **为何暂缓**：与 thinking-quarantine 特性无关的独立小重构；用户已认可映射方向但未启动。
-- **若做需改什么**：schema enum + state 类型/默认 + `filterEmptyThinkingBlocks` 谓词（2→4 模式，按 textEmpty/sigEmpty 组合）+ `config.ts` apply + bundled `config.yaml` + `config.schema.json` regen + `compat.ts` 加**值迁移**（`empty_thinking`→`all_empty` / `empty_any`→`signature_empty`，旧配置自动升级不报错）+ 相关测试。发现方：用户 config-review 提议（2026-07-08）。
-
 ## thinking budget 与 max_tokens 冲突的行为化解决（现仅告警，未化解）
 
 - **根因**：`adjustThinkingBudget`（`src/lib/anthropic/request-preparation.ts`）的夹取顺序是「先抬到 min → 再压到 max_thinking_budget → 最后压到 max_tokens-1」，最后一步无 re-floor。当客户端 `max_tokens` ≤ 模型 `min_thinking_budget`（如 max_tokens=1000、min=1024），结果 `budget_tokens=999 < min`——Anthropic 要求 `budget_tokens < max_tokens` **且** `budget_tokens >= min`，二者不可同时满足，是客户端自身矛盾的请求。此路径被 adaptive→enabled 合成预算（`coerceEnabledThinking` / `adaptive-thinking-rejection-retry` 默认 medium=24576）**新近更易触达**（adaptive 客户端本无理由把 max_tokens 设大）。另一相关缺口：reactive 策略恰在**元数据静默**时才触发（prepare 已弃权），故重跑时 `adjustThinkingBudget` 无 min/max 元数据，合成的 medium 预算若超过模型真实 max_thinking_budget 也**无法被夹**，会招致第二个 unhandled 400（预算过大）。
