@@ -1,5 +1,7 @@
 # Thinking「cannot be modified」400 三层防治 Implementation Plan
 
+> **实施状态（2026-07-08）**：已实施 landed 于分支 `feat/thinking-quarantine`——全 12 任务 + 全分支终审完成。规格 [../spec/2026-07-07-thinking-signature-quarantine.md](../spec/2026-07-07-thinking-signature-quarantine.md)；活的架构现状见 [../DESIGN.md](../DESIGN.md)「活的架构现状」表 L1/L2/L3 行。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 提前+反应式+持久三层消解 GHC「thinking/redacted_thinking blocks ... cannot be modified」400（根因=折叠后 assistant 消息内两个 thinking 块相邻）。
@@ -788,7 +790,7 @@ bun test tests/anthropic/quarantine-session-key.test.ts && git add -- src/lib/an
 
 **Interfaces:**
 - Consumes: `createDatabase`（`~/lib/history/sqlite/driver`）、`QuarantineKey`/`keyString`（Task 8）
-- Produces: `class ThinkingQuarantineStore { constructor(dbPath: string, ttlMs: number); isPoisoned(k: QuarantineKey, now?: number): boolean; record(k, errorSample, now?): void; touch(k, now?): void; }`（内存缓存 + 写穿透 + never-throw）
+- Produces: `class ThinkingQuarantineStore { constructor(dbPath: string, ttlMs: () => number); isPoisoned(k: QuarantineKey, now?: number): boolean; record(k, errorSample, now?): void; touch(k, now?): void; }`（内存缓存 + 写穿透 + never-throw；`ttlMs` 是活的 thunk，每次 `isPoisoned` 调用时求值 → 热重载 `poisoned_thinking_ttl_hours` 立即生效，无需重建 store / 重启）
 
 - [ ] **Step 1: 写隔离测试（临时目录 DI + TTL 滑动 + never-throw）**
 
@@ -940,7 +942,7 @@ git commit -m "feat(anthropic): durable (session,agent) TTL quarantine store (si
     },
 ```
 
-config（复审 H1：apply 在 config.ts，别漏）：`schema.ts` 加 `poisoned_thinking_quarantine: nullableBoolean()` + `poisoned_thinking_ttl_hours: nullableNumber()`（新增 `nullableNumber` helper 仿 `nullableBoolean`，schema.ts:66）。`state.ts`：`poisonedThinkingQuarantine: boolean`(初始字面量 :1482 + reset :1346 加 `true`) + `poisonedThinkingTtlHours: number`(加 `72`) + `setAnthropicBehavior` Pick 联合加两键。`config.ts`：`if (a.poisoned_thinking_quarantine !== undefined) setAnthropicBehavior({ poisonedThinkingQuarantine: a.poisoned_thinking_quarantine })` + `if (a.poisoned_thinking_ttl_hours !== undefined) setAnthropicBehavior({ poisonedThinkingTtlHours: a.poisoned_thinking_ttl_hours })`。惰性单例 `getQuarantineStore()` 用 `PATHS.THINKING_QUARANTINE_DB` + `state.poisonedThinkingTtlHours*3600_000`。
+config（复审 H1：apply 在 config.ts，别漏）：`schema.ts` 加 `poisoned_thinking_quarantine: nullableBoolean()` + `poisoned_thinking_ttl_hours: nullablePositiveNumber()`（新增 `nullablePositiveNumber` helper 仿 `nullableBoolean`，schema.ts:76）。`state.ts`：`poisonedThinkingQuarantine: boolean`(初始字面量 :1482 + reset :1346 加 `true`) + `poisonedThinkingTtlHours: number`(加 `72`) + `setAnthropicBehavior` Pick 联合加两键。`config.ts`：`if (a.poisoned_thinking_quarantine !== undefined) setAnthropicBehavior({ poisonedThinkingQuarantine: a.poisoned_thinking_quarantine })` + `if (a.poisoned_thinking_ttl_hours !== undefined) setAnthropicBehavior({ poisonedThinkingTtlHours: a.poisoned_thinking_ttl_hours })`。惰性单例 `getQuarantineStore()` 用 `PATHS.THINKING_QUARANTINE_DB` + `state.poisonedThinkingTtlHours*3600_000`。
 
 - [ ] **Step 4: 跑测试 + 提交**
 

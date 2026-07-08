@@ -49,6 +49,7 @@ import { createDeferredToolRetryStrategy } from "~/lib/request/strategies/deferr
 import { createEffortLearningRetryStrategy } from "~/lib/request/strategies/effort-learning-retry"
 import { createLegacyThinkingRetryStrategy } from "~/lib/request/strategies/legacy-thinking-retry"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
+import { createLegacyPoisonedThinkingRetryStrategy } from "~/lib/request/strategies/poisoned-thinking-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
 import { state } from "~/lib/state"
@@ -178,6 +179,13 @@ export function buildAnthropicStrategies(args: { betaProbe: BetaProbe; resanitiz
     createEffortLearningRetryStrategy<MessagesPayload>(),
     createBodyFieldRejectionStrategy<MessagesPayload>(),
     createLegacyThinkingRetryStrategy<MessagesPayload>(),
+    // L2 poisoned-thinking strip-all twin: the web_search double-hop replays
+    // poisoned assistant history through the same "cannot be modified" 400, so the
+    // legacy pipeline needs the same reactive strip-all unblock. Legacy
+    // RetryStrategy<TPayload> shape; NO env.ctx on this path → no L3 commit
+    // (v4-only). Reuses the native strategy's matcher + stripAllThinking so the two
+    // paths cannot drift.
+    createLegacyPoisonedThinkingRetryStrategy<MessagesPayload>(),
     createUnsupportedBetaRetryStrategy<MessagesPayload>({
       getProbeCandidates: () => args.betaProbe.getCandidates(),
     }),

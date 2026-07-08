@@ -541,6 +541,25 @@ anthropic:
   #   stripped: actively delete thinking blocks from old messages / 主动从旧消息删除 thinking 块
   thinking_block_message_policy: preserve
 
+  # De-stack adjacent thinking/redacted_thinking blocks so no two are consecutive in an assistant message — GHC rejects an echoed history with stacked thinking ("thinking blocks cannot be modified" 400). Idempotent: a message without adjacent thinking passes through byte-identical.
+  # 分隔 assistant 消息中相邻的 thinking/redacted_thinking 块使其两两不相邻——GHC 拒绝回显历史里堆叠的 thinking（报 "thinking blocks cannot be modified" 400）。幂等：无相邻 thinking 的消息逐字透传。
+  #   passthrough: leave stacked thinking as-is / 保留堆叠的 thinking，不改动
+  #   insert_text: insert a synthetic text separator between adjacent thinking / 在相邻 thinking 间插入合成文本分隔符
+  #   move_blocks: interleave thinking with real non-thinking blocks (order-preserving), synthetic marker only when insufficient (default) / 与真实非 thinking 块交错（保序），不足时才用合成标记（默认）
+  thinking_destack_strategy: move_blocks
+
+  # Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400 that L1 de-stack (thinking_destack_strategy) did not preempt: strip ALL thinking/redacted_thinking blocks from the echoed history and retry the turn once. true = enable the one-shot strip-and-retry (default); false = let the 400 surface unmodified.
+  # 对 GHC "thinking ... cannot be modified" 400 的反应式兜底（L2），处理 L1 去堆叠（thinking_destack_strategy）未能预防的情形：从回显历史中剥离全部 thinking/redacted_thinking 块并重试一次。true = 启用一次性剥离重试（默认）；false = 让该 400 原样抛出。
+  strip_thinking_on_reject: true
+
+  # L3 durable quarantine (master switch) for the "thinking ... cannot be modified" 400. When true (default), a successful L2 strip-all retry REMEMBERS the offending (session, agent) conversation in a sidecar SQLite store, so later turns are stripped proactively — skipping the reactive 400+retry round-trip. false = keep only the per-turn L2 reaction (no remembering).
+  # 针对 "thinking ... cannot be modified" 400 的 L3 持久隔离（总开关）。true（默认）时，L2 剥离重试一旦成功，就把出问题的 (session, agent) 会话记进旁路 SQLite 存储，使后续轮次提前剥离 thinking——省去反应式的 400+重试往返。false = 仅保留每轮的 L2 反应（不记忆）。
+  poisoned_thinking_quarantine: true
+
+  # Sliding TTL (hours) of an L3 quarantine entry: a conversation stays quarantined this long since its last observed poison hit; one quiet longer than this drops out (its thinking is no longer pre-stripped). Default 72.
+  # L3 隔离条目的滑动 TTL（小时）：会话自最近一次命中 poison 起保持隔离这么久；静默超过此时长的会话退出隔离（其 thinking 不再被提前剥离）。默认 72。
+  poisoned_thinking_ttl_hours: 72
+
   # Drop corrupt thinking blocks before sending upstream — validity decided by SIGNATURE, not text (encrypted thinking has empty text + valid signature, kept).
   # 发送上游前剥离损坏的 thinking 块——有效性由 signature 而非文本判定（加密 thinking 文本为空但有有效 signature，保留）。
   #   empty_thinking: remove double-empty blocks (text AND signature empty) (default) / 移除双空块（文本与 signature 都空）（默认）

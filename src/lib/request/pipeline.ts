@@ -43,8 +43,13 @@ export interface SanitizeResult<TPayload> {
   blocksRemoved: number
   /** Convenience: number of system reminder tags removed */
   systemReminderRemovals: number
-  /** Structured breakdown of what was removed/modified — format-specific detail */
-  stats?: Record<string, number>
+  /**
+   * Structured breakdown of what was removed/modified — format-specific detail.
+   * Values are usually flat counts, but MAY be nested objects (e.g. the Anthropic
+   * `destack` sub-record), so this is `unknown`-valued rather than number-valued;
+   * concrete consumers cast to their format's stats type (e.g. `SanitizationStats`).
+   */
+  stats?: Record<string, unknown>
 }
 
 export interface FormatAdapter<TPayload> {

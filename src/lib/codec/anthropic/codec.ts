@@ -82,6 +82,7 @@ import {
 } from "~/lib/anthropic/sanitize"
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -148,11 +149,18 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   let resanitize: AnthropicSanitizeFn | undefined
   let latestEffectiveMessages: Array<unknown> | undefined
 
-  // The S3 request rewrite (sanitize chain + its recordings), built once per request.
-  // It closes over `preprocessInfo` (route-supplied, not on the env) and writes the
-  // initial sanitization-info back to the closure for the retry-rebuild reads. parse
-  // leaves env.body = pre-sanitize baseline; the driver's S3 runs this (RFC §4.A0).
+  // The S3 request rewrite chain, built once per request. Execution order is by
+  // the sorted `.order` key (NOT array position — assembleRequestRewrites sorts):
+  //   - thinking-quarantine-proactive (250): L3 strip-all for known-poisoned
+  //     conversations — MUST precede sanitize so a quarantined turn has no thinking
+  //     for L1 de-stack to orphan (proactive-filter.ts / RFC §3.4).
+  //   - anthropic-sanitize (300): the sanitize chain + its side-channel recordings.
+  // The sanitize rewrite closes over `preprocessInfo` (route-supplied, not on the env)
+  // and writes the initial sanitization-info back to the closure for the retry-rebuild
+  // reads. parse leaves env.body = pre-sanitize baseline; the driver's S3 runs these
+  // (RFC §4.A0).
   const requestRewrites: ReadonlyArray<RequestRewrite> = [
+    createQuarantineProactiveFilter(),
     createAnthropicSanitizeRewrite({
       preprocessInfo: args.preprocessInfo,
       onInitialSanitizationInfo: (info) => {

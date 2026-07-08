@@ -12,6 +12,7 @@ import type {
   WebSearchToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages"
 
+import type { DestackStats } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { ProcessIdentity } from "~/lib/process-identity"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
@@ -119,6 +120,12 @@ export interface SanitizationInfo {
   /** Corrupt (unsigned) thinking blocks dropped by the thinking_block_sanitize pass */
   emptyThinkingBlocksRemoved: number
   systemReminderRemovals: number
+  /**
+   * Terminal de-stack pass counters (adjacent-thinking separation), present only
+   * when de-stack acted. Pure INSERT/reorder — orthogonal to the block-removal
+   * counts above (see `destackAdjacentThinking` / spec §3.1).
+   */
+  destack?: DestackStats
 }
 
 export interface PreprocessInfo {

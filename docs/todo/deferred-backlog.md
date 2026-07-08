@@ -20,6 +20,14 @@
 - **当前行为（已核实无害）**：`stripToolFields` 的**预剥三源**（内置默认 + 端点级学习缓存 + config）经 `prepareAnthropicRequest` 对**两条路径都生效**——`eager_input_streaming` 及主路径已学到的字段在 hop 上照剥，端点级缓存跨路径共享。唯一残余缺口：**全新未知字段首次且仅出现在 web_search hop** 时，该路径裸 400 且不写缓存（几乎不可能——hop 携带与原请求相同 tools，新字段必先经 v4 主路径学到;且 `webSearchEnabled` 默认 OFF）。
 - **暂缓原因**：与遗留 hop 简化管线边界一致（本就省略全部 v4 反应式策略）；补齐需给遗留 pipeline 加策略 + adapter opts 透传 `excludeToolFields`，属遗留管线退役范畴。发现方：交付审计 subagent（2026-07-07）。
 
+## L3 主动隔离未覆盖 web_search probe/second hop（遗留管线边界，L2 兜底）
+
+- **根因**：web_search 双跳（`web-search/orchestrator.ts` 的 `callMainModel` / `runFirstHopProbe` / `completeWebSearch`）绕过 v4 driver，直接调 `sanitizeAnthropicMessages`、**不挂 L3 proactive filter**；且该路径 `requestContext: undefined`、无 `env.ctx`（session/agent），拿不到隔离键——这正是 L3 只覆盖 driver 路径 + web_search **direct real-send**（`web-search-direct.ts` 的 `runInitialSanitizationAndRecord`，即 no-search re-dispatch）两个接入点的原因。
+- **当前行为（已核实无害）**：中毒的 web_search 会话在每个 probe / second hop 上仍撞 GHC「thinking cannot be modified」400，由 L2 遗留兜底 `createLegacyPoisonedThinkingRetryStrategy`（`pipeline.ts:188`）反应式 strip-all 重试恢复——**结果正确**，但每个此类 hop 都白付一次 400+retry 往返（正是 L3 在其他路径上消除的那笔 round-trip tax）。
+- **理想架构**：把 (session, agent) 从 `handleWebSearchCompletion` 一路穿到 orchestrator 的 hop，并把 `stripAllThinkingIfQuarantined` 组合进 hop 的 `sanitize`；或（更干净）把 web_search 双跳整体迁到 v4 driver，让它自动继承 L3 rewrite（order 250），probe/second hop 免费获得主动隔离。
+- **为何暂缓**：web_search 是 opt-in/罕用（`webSearchEnabled` 默认 OFF）；L2 已兜住正确性；该路径本就是文档化的 `[bypass]`、排期迁到 driver（迁移即自动修复本项）；把 ctx 穿进 orchestrator 会动到脆弱的 hop 路径。属遗留管线退役范畴，非「因范围大降级」。
+- **若做需改什么**：① `web-search/orchestrator.ts` 的 hop sanitize + `handleWebSearchCompletion` 的 ctx 穿线；② 一个 web_search 路径的 L3 集成测试。注意该集成测试当前**缺测试基建**——`runInitialSanitizationAndRecord` 无 store 注入缝（走 `getQuarantineStore()` 惰性单例），而该单例**无 `resetQuarantineStoreForTests` 复位缝**、未登记进 isolated-fixture 的 `RESETTERS`；干净地集成测须先补这个 production 复位缝再登记。**故本次未加 web_search 路径 L3 集成测试**：web_search direct-send 接入点的覆盖当前依赖共享核 `stripAllThinkingIfQuarantined` 的单元测试（`tests/anthropic/quarantine-proactive-filter.test.ts`，测的正是该路径调用的同一 primitive）。发现方：Task 11 交付审查 subagent（2026-07-07）。
+
 ## context-edits 回执 telemetry（7d 分布）
 - **现状**：`applied_edits` 诊断回执已落地（commit f55fd93，`src/lib/anthropic/applied-context-edits.ts`，流式经 accumulator `message_delta` / 非流式经 handler 顶层，两路发 `recordFeature("context-edits-applied", {count, clearedInputTokens, types})`），进 observability feature 维度计数。
 - **暂缓**（用户 2026-06-29"暂时不做"）：接进 `request-telemetry` 做 7d 持久分布（现只 feature 维度计数，无 cleared token 量直方图）；实证开启 `protectStreamingEscalateContext` / `contextEditingMode` 后真有非空 `applied_edits`（当前样本 req_1782713407242_1 全空回执）。
@@ -75,3 +83,10 @@
 - **理想架构**：起一个 mock proxy 测试 harness——HTTP CONNECT 用 `net.createServer` 读 CONNECT 行 + 回 200/非 200/超时；SOCKS5 用轻量 mock 或真 `socks` server——覆盖：隧道成功握手、非 200 拒绝、超时 `fail`、握手期 socket error 不崩进程（withErrorSink 载重）、leftover-bytes unshift 正确性。
 - **为何暂缓**：需搭建 SOCKS5/HTTP-CONNECT mock proxy，属独立测试基建工作单元（宽于本次崩溃修复的范围），且 withErrorSink 应用是单行、与已测站点同构、原语已单测——载重性证据充分。属「独立工作项」非「因范围大降级」，不阻塞本次交付。
 - **若做需改什么**：新增 `tests/transport/proxy-connect.it.test.ts`——① HTTP CONNECT mock proxy（net server）测成功/拒绝/超时 + 断言握手期 socket 'error' 无 uncaughtException（正样本：去掉 `withErrorSink` 则红）；② SOCKS5 路径同理（mock 或真 socks server）；③ leftover unshift 用带 body 的 200 响应验证。发现方：crash-safety class-elimination 重构 reviewer（2026-07-08）。
+## L1 move_blocks 翻转首块类型 → messageMapping fallback（畸形输入边界）
+
+- **根因**：L1 de-stack 默认策略 `move_blocks`（`src/lib/anthropic/sanitize/destack-adjacent-thinking.ts`，state 默认 `thinkingDestackStrategy: "move_blocks"`）在**畸形的 thinking-not-first** assistant 轮上会重排首块：`[text, thinking, thinking]` → `[thinking, text, thinking]`（把唯一的 real separator 挪到两个 thinking 之间），使该 message 的**首块类型从 `text` 翻转为 `thinking`**。而 `buildMessageMapping`（`src/lib/anthropic/message-mapping.ts`）的 `messagesMatch` 按 role + **首块类型**匹配，首块类型对不上 → 该 message 匹配失败 → 回退到 `lastMatched`（沿用上一条已匹配的 origIdx）。
+- **当前行为（已核实无害）**：**有界**——只在畸形输入上发生（thinking-not-first 本就是非法 Anthropic 结构、会被 GHC 拒；合法输入 thinking 必在首位，move_blocks 保持首块仍是 thinking，不翻转）；**优雅**——不崩溃、不抛错，两指针 walk 照常前进；**影响面仅限 history 关联索引**（rwIdx → origIdx 映射用于把改写后消息回指原始消息做 history 对账），**绝不影响送上游的 payload**（payload 是 de-stack 的正确输出，thinking 已合规去堆叠）。
+- **理想架构**：三选一——① 让 de-stack 保持该 message 的首块类型不变（畸形轮也不翻转首块）；② 把默认策略切到 `insert_text`（原地插入 marker、不移动任何块，天然不翻转首块）；③ 让 `messagesMatch` 对首块重排具鲁棒性（如按多块类型集合 / id 匹配而非仅首块）。
+- **为何暂缓**：畸形输入才触发 + 优雅降级 + 仅 history 索引受影响（非上游 payload）；且 `insert_text` 策略**本就完全规避此边界**（保持所有块原位），已是现成逃生舱。属「有界且无害的次级效应」，非「因范围大降级」。发现方：`feat/thinking-quarantine` 全分支终审 advisory（2026-07-07）。
+- **若做需改什么**：按上「理想架构」三选一。最小侵入是把默认策略改 `insert_text`（一处 state 默认 + 复核 `insert_text` 的合成 marker 现已被 `stripAllThinking` 连带剥除，见本分支 A4 修复，无泄漏残留）；或给 `messagesMatch` 加首块重排容错 + 对应单测。

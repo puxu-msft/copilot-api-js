@@ -23,6 +23,7 @@ import {
   filterEmptyThinkingBlocks,
 } from "./content-blocks"
 import { deduplicateToolCalls } from "./deduplicate-tool-calls"
+import { destackAdjacentThinking } from "./destack-adjacent-thinking"
 import { downgradeEmptyEncryptedSearchResults } from "./empty-encrypted-search-result"
 import { stripReadToolResultTags } from "./read-tool-result-tags"
 import { finalizeAnthropicSanitization } from "./result"
@@ -130,7 +131,8 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
 
   const toolResult = processToolBlocks(messages, payload.tools)
   messages = toolResult.messages
-  return finalizeAnthropicSanitization(
+
+  const finalized = finalizeAnthropicSanitization(
     payload,
     messages,
     inlineSystem.system,
@@ -140,11 +142,26 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
     inlineSystem.convertedCount,
     emptyThinkingBlocksRemoved,
   )
+
+  // TERMINAL pass (spec §3.1 / plan review #04 CRITICAL): de-stack adjacent thinking
+  // runs AFTER processToolBlocks AND finalize's `filterEmptyAnthropicTextBlocks`, so
+  // (a) no later pass can delete its synthetic separators (as orphan tool_use / empty
+  // text) and (b) it CATCHES adjacency newly created by orphan-tool deletion. It
+  // operates on the finalized messages (`.payload.messages` — there is NO top-level
+  // `.messages`) and writes the result back there. Its insert/reorder counters are
+  // attached SEPARATELY (`stats.destack`) from finalize's subtractive residual model,
+  // which assumes blocks only ever decrease — de-stack INSERTS.
+  const destacked = destackAdjacentThinking(finalized.payload.messages, state.thinkingDestackStrategy)
+  return {
+    ...finalized,
+    payload: { ...finalized.payload, messages: destacked.messages },
+    stats: { ...finalized.stats, destack: destacked.stats },
+  }
 }
 
 export { deduplicateToolCalls } from "./deduplicate-tool-calls"
 
 export { stripReadToolResultTags } from "./read-tool-result-tags"
-export { type SanitizationStats, toSanitizationInfo } from "./result"
+export { destackActed, type SanitizationStats, toSanitizationInfo } from "./result"
 export { removeAnthropicSystemReminders } from "./system-reminders"
 export { processToolBlocks } from "./tool-blocks"
