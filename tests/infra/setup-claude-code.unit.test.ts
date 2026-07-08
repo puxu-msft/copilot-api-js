@@ -33,8 +33,10 @@ import {
   buildClaudeCodeEnv,
   buildEssentialEnv,
   buildExtensionEnv,
-  computeEnvChanges,
-  formatEnvChanges,
+  computeJsonDiff,
+  decideWriteAction,
+  formatJsonDiff,
+  hasJsonDiff,
   withClaudeCode1mSuffix,
   writeClaudeCodeConfig,
 } from "~/setup-claude-code"
@@ -75,9 +77,7 @@ async function makeTempHome(): Promise<string> {
   return dir
 }
 
-/** Always-approve confirm — destructive changes are applied. */
-const approve = (): Promise<boolean> => Promise.resolve(true)
-/** Always-reject confirm — destructive changes are aborted. */
+/** Always-reject confirm — proposed changes are aborted. */
 const reject = (): Promise<boolean> => Promise.resolve(false)
 
 // Safety net against the past incident (a test wrote the user's REAL ~/.claude):
@@ -280,39 +280,101 @@ describe("buildClaudeCodeEnv", () => {
 })
 
 // ============================================================================
-// computeEnvChanges / formatEnvChanges
+// computeJsonDiff / hasJsonDiff / formatJsonDiff
 // ============================================================================
 
-describe("computeEnvChanges", () => {
-  test("classifies added, changed, and removed keys", () => {
+describe("computeJsonDiff", () => {
+  test("classifies added, changed, and removed top-level leaves", () => {
     const before = { KEEP: "1", CHANGE: "old", DROP: "x" }
     const after = { KEEP: "1", CHANGE: "new", ADD: "y" }
-    const changes = computeEnvChanges(before, after)
-    expect(changes.added).toEqual([{ key: "ADD", before: undefined, after: "y" }])
-    expect(changes.changed).toEqual([{ key: "CHANGE", before: "old", after: "new" }])
-    expect(changes.removed).toEqual([{ key: "DROP", before: "x", after: undefined }])
+    const diff = computeJsonDiff(before, after)
+    expect(diff.added).toEqual([{ path: "ADD", after: "y" }])
+    expect(diff.changed).toEqual([{ path: "CHANGE", before: "old", after: "new" }])
+    expect(diff.removed).toEqual([{ path: "DROP", before: "x" }])
   })
 
-  test("returns empty partitions when nothing differs", () => {
-    const same = { A: "1", B: "2" }
-    const changes = computeEnvChanges(same, { ...same })
-    expect(changes.added).toEqual([])
-    expect(changes.changed).toEqual([])
-    expect(changes.removed).toEqual([])
+  test("walks into nested objects and reports dotted leaf paths", () => {
+    const before = { env: { A: "1", B: "old" }, top: "same" }
+    const after = { env: { A: "1", B: "new", C: "2" }, top: "same" }
+    const diff = computeJsonDiff(before, after)
+    expect(diff.added).toEqual([{ path: "env.C", after: "2" }])
+    expect(diff.changed).toEqual([{ path: "env.B", before: "old", after: "new" }])
+    expect(diff.removed).toEqual([])
+  })
+
+  test("treats a pruned nested key as a removal at its leaf path", () => {
+    const diff = computeJsonDiff({ env: { A: "1", GONE: "x" } }, { env: { A: "1" } })
+    expect(diff.removed).toEqual([{ path: "env.GONE", before: "x" }])
+  })
+
+  test("compares arrays as whole leaves (order-sensitive)", () => {
+    const same = computeJsonDiff({ a: [1, 2] }, { a: [1, 2] })
+    expect(hasJsonDiff(same)).toBe(false)
+    const reordered = computeJsonDiff({ a: [1, 2] }, { a: [2, 1] })
+    expect(reordered.changed).toEqual([{ path: "a", before: [1, 2], after: [2, 1] }])
+  })
+
+  test("a brand-new object is all additions", () => {
+    const diff = computeJsonDiff({}, { env: { A: "1" }, hasCompletedOnboarding: true })
+    expect(diff.added).toEqual([
+      { path: "env.A", after: "1" },
+      { path: "hasCompletedOnboarding", after: true },
+    ])
+    expect(diff.changed).toEqual([])
+    expect(diff.removed).toEqual([])
+  })
+
+  test("hasJsonDiff is false when nothing differs", () => {
+    const same = { a: "1", b: { c: "2" } }
+    expect(hasJsonDiff(computeJsonDiff(same, { a: "1", b: { c: "2" } }))).toBe(false)
   })
 })
 
-describe("formatEnvChanges", () => {
-  test("renders +, ~ and - lines for each change kind", () => {
-    const changes = computeEnvChanges({ CHANGE: "old", DROP: "x" }, { CHANGE: "new", ADD: "y" })
-    const text = formatEnvChanges(changes)
-    expect(text).toContain("  + ADD = y")
-    expect(text).toContain("  ~ CHANGE: old → new")
-    expect(text).toContain("  - DROP  (removed)")
+describe("formatJsonDiff", () => {
+  test("renders +, ~ and - lines with compact JSON values", () => {
+    const diff = computeJsonDiff({ CHANGE: "old", DROP: "x" }, { CHANGE: "new", ADD: "y" })
+    const text = formatJsonDiff(diff)
+    expect(text).toContain(`  + ADD: "y"`)
+    expect(text).toContain(`  ~ CHANGE: "old" → "new"`)
+    expect(text).toContain(`  - DROP: "x"`)
+  })
+
+  test("truncates over-long values", () => {
+    const long = "z".repeat(200)
+    const text = formatJsonDiff(computeJsonDiff({}, { k: long }))
+    expect(text).toContain("...")
+    expect(text.length).toBeLessThan(long.length)
   })
 
   test("renders an empty string when there are no changes", () => {
-    expect(formatEnvChanges({ added: [], changed: [], removed: [] })).toBe("")
+    expect(formatJsonDiff({ added: [], changed: [], removed: [] })).toBe("")
+  })
+})
+
+// ============================================================================
+// decideWriteAction (pure)
+// ============================================================================
+
+describe("decideWriteAction", () => {
+  test("no changes -> skip regardless of other flags", () => {
+    expect(decideWriteAction({ hasChanges: false, dryRun: false, yes: true, isTTY: true })).toBe("skip-no-changes")
+    expect(decideWriteAction({ hasChanges: false, dryRun: true, yes: false, isTTY: false })).toBe("skip-no-changes")
+  })
+
+  test("dry-run wins over --yes and TTY", () => {
+    expect(decideWriteAction({ hasChanges: true, dryRun: true, yes: true, isTTY: true })).toBe("dry-run")
+  })
+
+  test("--yes auto-applies", () => {
+    expect(decideWriteAction({ hasChanges: true, dryRun: false, yes: true, isTTY: false })).toBe("apply")
+  })
+
+  test("non-interactive without --yes aborts", () => {
+    expect(decideWriteAction({ hasChanges: true, dryRun: false, yes: false, isTTY: false })).toBe("abort-non-interactive")
+  })
+
+  test("interactive without --yes prompts", () => {
+    expect(decideWriteAction({ hasChanges: true, dryRun: false, yes: false, isTTY: true })).toBe("prompt")
   })
 })
 
@@ -330,7 +392,7 @@ describe("writeClaudeCodeConfig", () => {
 
   test("on a blank slate writes essential env and onboarding=true (no extensions)", async () => {
     const home = await makeTempHome()
-    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, confirm: approve })
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, yes: true })
 
     const claudeJson = await readJson(join(home, ".claude.json"))
     expect(claudeJson.hasCompletedOnboarding).toBe(true)
@@ -350,13 +412,13 @@ describe("writeClaudeCodeConfig", () => {
   test("creates the .claude directory when missing", async () => {
     const home = await makeTempHome()
     expect(existsSync(join(home, ".claude"))).toBe(false)
-    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, confirm: approve })
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, yes: true })
     expect(existsSync(join(home, ".claude"))).toBe(true)
   })
 
   test("includeExtensions writes the opinionated extension keys", async () => {
     const home = await makeTempHome()
-    await writeClaudeCodeConfig(URL, OPUS_1M, HAIKU, { home, includeExtensions: true, confirm: approve })
+    await writeClaudeCodeConfig(URL, OPUS_1M, HAIKU, { home, includeExtensions: true, yes: true })
 
     const env = await readEnv(home)
     expect(env.DISABLE_NON_ESSENTIAL_MODEL_CALLS).toBe("1")
@@ -371,7 +433,7 @@ describe("writeClaudeCodeConfig", () => {
     const claudeJsonPath = join(home, ".claude.json")
     await fsPromises.writeFile(claudeJsonPath, JSON.stringify({ existingKey: "value", someArray: [1, 2, 3] }, null, 2) + "\n")
 
-    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, confirm: approve })
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, yes: true })
 
     const content = await readJson(claudeJsonPath)
     expect(content.existingKey).toBe("value")
@@ -400,7 +462,7 @@ describe("writeClaudeCodeConfig", () => {
       ) + "\n",
     )
 
-    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, confirm: approve })
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, yes: true })
 
     const settings = await readJson(join(claudeDir, "settings.json"))
     const env = settings.env as Record<string, string>
@@ -412,53 +474,115 @@ describe("writeClaudeCodeConfig", () => {
     expect(settings.permissions).toEqual({ allow: ["Read", "Write"] })
   })
 
-  test("aborts without writing when a destructive change is rejected", async () => {
+  test("interactive: rejecting the prompt writes nothing (every file, even pure additions)", async () => {
     const home = await makeTempHome()
-    const claudeDir = join(home, ".claude")
-    await fsPromises.mkdir(claudeDir, { recursive: true })
-    const settingsPath = join(claudeDir, "settings.json")
-    const original = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://old-server:8080" } }, null, 2) + "\n"
-    await fsPromises.writeFile(settingsPath, original)
-    // No .claude.json yet — onboarding change alone is non-destructive, but the
-    // env overwrite of ANTHROPIC_BASE_URL is destructive and triggers confirm.
+    // Blank slate — both files are pure additions. Design mandates a confirm
+    // even for additions, and default No aborts.
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, isTTY: true, confirm: reject })
 
-    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, confirm: reject })
-
-    // settings.json is untouched.
-    expect(await fsPromises.readFile(settingsPath, "utf8")).toBe(original)
-    // .claude.json was NOT written either (the whole apply is aborted).
     expect(existsSync(join(home, ".claude.json"))).toBe(false)
+    expect(existsSync(join(home, ".claude", "settings.json"))).toBe(false)
   })
 
-  test("pure additions are applied without invoking confirm", async () => {
+  test("interactive: approving the prompt writes both files", async () => {
+    const home = await makeTempHome()
+    let confirmCalls = 0
+    const countingApprove = (): Promise<boolean> => {
+      confirmCalls += 1
+      return Promise.resolve(true)
+    }
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, isTTY: true, confirm: countingApprove })
+
+    // One confirm per target file (each file is confirmed independently).
+    expect(confirmCalls).toBe(2)
+    expect(existsSync(join(home, ".claude.json"))).toBe(true)
+    expect(existsSync(join(home, ".claude", "settings.json"))).toBe(true)
+  })
+
+  test("per-file confirm: rejecting one file still applies the other", async () => {
+    const home = await makeTempHome()
+    // Reject the first target (.claude.json), approve the second (settings.json).
+    let call = 0
+    const confirm = (message: string): Promise<boolean> => {
+      call += 1
+      return Promise.resolve(message.includes("settings.json"))
+    }
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, isTTY: true, confirm })
+
+    expect(call).toBe(2)
+    // .claude.json skipped, settings.json written.
+    expect(existsSync(join(home, ".claude.json"))).toBe(false)
+    expect(existsSync(join(home, ".claude", "settings.json"))).toBe(true)
+  })
+
+  test("--yes auto-applies without prompting", async () => {
     const home = await makeTempHome()
     let confirmCalls = 0
     const countingConfirm = (): Promise<boolean> => {
       confirmCalls += 1
       return Promise.resolve(true)
     }
-
-    // Blank slate: every essential key is an addition, plus onboarding -> non-destructive.
-    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, confirm: countingConfirm })
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, yes: true, isTTY: true, confirm: countingConfirm })
 
     expect(confirmCalls).toBe(0)
     expect(existsSync(join(home, ".claude", "settings.json"))).toBe(true)
   })
 
+  test("non-interactive without --yes aborts (never clobbers)", async () => {
+    const home = await makeTempHome()
+    const claudeDir = join(home, ".claude")
+    await fsPromises.mkdir(claudeDir, { recursive: true })
+    const settingsPath = join(claudeDir, "settings.json")
+    const original = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://old-server:8080" } }, null, 2) + "\n"
+    await fsPromises.writeFile(settingsPath, original)
+
+    // isTTY false + no yes -> abort every file.
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, isTTY: false })
+
+    expect(await fsPromises.readFile(settingsPath, "utf8")).toBe(original)
+    expect(existsSync(join(home, ".claude.json"))).toBe(false)
+  })
+
+  test("--dry-run shows diffs but writes nothing, even with --yes", async () => {
+    const home = await makeTempHome()
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, yes: true, dryRun: true })
+
+    expect(existsSync(join(home, ".claude.json"))).toBe(false)
+    expect(existsSync(join(home, ".claude", "settings.json"))).toBe(false)
+  })
+
+  test("refuses to overwrite a malformed existing file (never swallows parse failure)", async () => {
+    const home = await makeTempHome()
+    const claudeDir = join(home, ".claude")
+    await fsPromises.mkdir(claudeDir, { recursive: true })
+    const settingsPath = join(claudeDir, "settings.json")
+    const garbage = "{ this is not valid json "
+    await fsPromises.writeFile(settingsPath, garbage)
+
+    // --yes would otherwise write; the parse guard must still refuse settings.json.
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, yes: true })
+
+    // Malformed file left untouched (not clobbered).
+    expect(await fsPromises.readFile(settingsPath, "utf8")).toBe(garbage)
+    // The other, well-formed target still gets written independently.
+    expect(existsSync(join(home, ".claude.json"))).toBe(true)
+  })
+
   test("is a no-op when already fully configured", async () => {
     const home = await makeTempHome()
     // First run establishes the configured state.
-    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, confirm: approve })
+    await writeClaudeCodeConfig(URL, SONNET, HAIKU, { home, yes: true })
 
     const settingsPath = join(home, ".claude", "settings.json")
     const claudeJsonPath = join(home, ".claude.json")
     const settingsBefore = await fsPromises.readFile(settingsPath, "utf8")
     const claudeJsonBefore = await fsPromises.readFile(claudeJsonPath, "utf8")
 
-    // Second identical run: no changes and onboarding already true -> early return.
+    // Second identical run: no changes -> skip both files, no prompt.
     let confirmCalls = 0
     await writeClaudeCodeConfig(URL, SONNET, HAIKU, {
       home,
+      isTTY: true,
       confirm: () => {
         confirmCalls += 1
         return Promise.resolve(true)
@@ -472,7 +596,7 @@ describe("writeClaudeCodeConfig", () => {
 
   test("uses the provided server URL and applies [1m] suffix when applicable", async () => {
     const home = await makeTempHome()
-    await writeClaudeCodeConfig("http://192.168.1.100:8080", OPUS_1M, SONNET, { home, confirm: approve })
+    await writeClaudeCodeConfig("http://192.168.1.100:8080", OPUS_1M, SONNET, { home, yes: true })
 
     const env = await readEnv(home)
     expect(env.ANTHROPIC_BASE_URL).toBe("http://192.168.1.100:8080")
