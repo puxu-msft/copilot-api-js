@@ -1,6 +1,6 @@
 # Spec: 模型详情模态抽屉 + 禁用模型可见性
 
-**Status:** Draft v2（已纳入 2 轮对抗 subagent 审查 → 待用户审查 → writing-plans）
+**Status:** **已落地**（分支 `feat/models-drawer-disabled-visibility`，commits `91055d0a..698111db`；7 实现 commit + 1 final-review fix；per-task + 整分支 subagent review 全绿，`build:ui-v4` rollup PASS）。原 Draft v2 已纳入 2 轮对抗 subagent 审查。
 **Date:** 2026-07-08
 **Scope:** ui-v4 Models 页面（前端）+ `/api/models` 内部端点（后端）
 **Owner:** 本会话

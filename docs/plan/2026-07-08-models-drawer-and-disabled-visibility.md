@@ -1,5 +1,7 @@
 # 模型详情模态抽屉 + 禁用模型可见性 — 实施计划
 
+> **实施状态（2026-07-08）：全部完成并落地。** 分支 `feat/models-drawer-disabled-visibility`，commits `91055d0a..698111db`（A1 / A2 / A3+A4 合并 / A5 / A6 / B1 / B2 + final-review fix）。subagent-driven 执行：每任务 per-task review 全 Approved、整分支 final review「Ready to merge」、`build:ui-v4` rollup PASS。已知 4 typecheck + 2 vitest 预存失败属并发 LiveDock 会话（非本分支，已 base checkout 实测确认）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实施。步骤用 checkbox（`- [ ]`）追踪。
 
 **Goal:** 让 ui-v4 模型详情用 Radix Dialog 模态抽屉（不挤占列表宽度），并让 config-disabled 模型在列表可见、三态 status 标记 + 可筛选。

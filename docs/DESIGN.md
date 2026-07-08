@@ -211,8 +211,8 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 
 | 路由 | 说明 |
 |------|------|
-| `/api/models` | 模型列表（内部格式：完整 Copilot 模型数据） |
-| `/api/models/:model` | 单个模型详情（内部格式） |
+| `/api/models` | 模型列表（内部格式：**全量未过滤** Copilot 目录——含被 `config.disabled_models` 禁用的模型，供 UI 可见）+ envelope 顶层 `disabled: string[]`（config-disabled 的实际目录 id，`getConfigDisabledIds()` 归一化匹配）。**与 vendor 端点（`/v1/models`、`/anthropic/v1/models`）正交**：那些仍返 `state.models`（过滤后可用集）；仅内部管理视图看全量。合成标记 `disabled` 只在 envelope，不污染 Model 形状。类型 `InternalModelsResponse`（`src/lib/models/client.ts`，前端 `~backend` re-export）。见 [spec/2026-07-08-models-drawer-and-disabled-visibility.md](spec/2026-07-08-models-drawer-and-disabled-visibility.md) |
+| `/api/models/:model` | 单个模型详情（内部格式）；对**全量目录**解析（`modelIndex.get` 命中可用集，未命中回退 raw 全量 find）→ 禁用模型详情也返 200 |
 | `/api/status` | 服务器状态（含 `requestTelemetry` 的 **model 维度摘要**——运营 stats 的其余维度故意不塞此 health-poll，见 `/api/stats`；另含 feature-specific 计数器 `protect_streaming`、`tool_input_repair`〔strip/jsonrepair/unrepairable〕；另含 `thinking_blocks`〔thinking 块空/非空三桶〕——**注：这是 telemetry `agentKind` 维度 sum 的投影（`getThinkingBlockTotals`），非 `protect_streaming`/`tool_input_repair` 那样的独立 module-global 计数器**） |
 | `/api/stats` | 运营 stats：`?dimension=<model\|endpoint\|client\|agentKind\|tool\|…>&window=<sinceStart\|7d>&limit=<N>` 返回任意注册维度的泛型 breakdown（server-side top-N + `"other"`）。持久 telemetry registry（`lib/request-telemetry.ts`）的唯一泛型读出口。设计见 [spec/operational-stats-and-lineage-removal.md](spec/operational-stats-and-lineage-removal.md) |
 | `/api/tokens` | Token 信息 |
