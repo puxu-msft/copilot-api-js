@@ -12,7 +12,6 @@ import { LiveDock } from "@/components/requests/LiveDock"
 import { RequestFilterChips } from "@/components/requests/RequestFilterChips"
 import { RequestsColumnMenu } from "@/components/requests/RequestsColumnMenu"
 import { RequestsFilterBar } from "@/components/requests/RequestsFilterBar"
-import { useLiveRequests } from "@/hooks/useLiveRequests"
 import { useRequestFilters } from "@/hooks/useRequestFilters"
 import {
   //
@@ -32,7 +31,7 @@ function loadColumnVisibility(): VisibilityState {
 
 /** Requests 列表全屏页(Plan 08 §1):筛选工具条 + 活动 chips + History 列表 + 底部停靠 LiveDock 在途浮窗。 */
 export function RequestsListPage() {
-  useLiveRequests() // 订阅 WS active 事件喂 live-store(挂一次)
+  // 在途订阅已提升到 AppShell(常驻根),避免晚挂载漏掉一次性 `connected` 初始快照;此处只读 live-store。
   const { filters, setFilter, setFilters, clearFilter, clearAll } = useRequestFilters()
 
   // 列可见性提到 Page(单一持有者):菜单驱动 + localStorage 持久化,HistoryList 受控消费。
