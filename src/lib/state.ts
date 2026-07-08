@@ -1,3 +1,4 @@
+import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type {
   //
@@ -49,12 +50,16 @@ export type WarmupPolicy = "allow" | "reject" | "drop" | "fake"
  *
  * Empirically, Anthropic thinking `signature`s are self-contained — they encrypt the
  * thinking content itself (the upstream decrypts and rebuilds it) and do NOT bind to
- * surrounding context or array position. The only real constraint is that thinking blocks
- * must be echoed verbatim and consecutive thinking sequences must not be reordered.
+ * surrounding context or array position. The only real constraints are that thinking blocks
+ * must be echoed verbatim, kept in relative order, and never dropped (their adjacency,
+ * however, is not preserved — see `preserve` below).
  *
- * - `preserve` — Keep thinking blocks verbatim and don't reorder consecutive thinking, but
- *                allow all surrounding cleanup (drop orphan tools, downgrade server tools,
- *                edit/drop non-thinking blocks).
+ * - `preserve` — Keep thinking blocks verbatim, preserve their relative order, and never
+ *                drop them, but allow all surrounding cleanup (drop orphan tools, downgrade
+ *                server tools, edit/drop non-thinking blocks). Thinking *adjacency* is NOT
+ *                protected: the de-stack pass (sanitize/destack-adjacent-thinking.ts) may
+ *                insert non-thinking blocks between consecutive thinking blocks to satisfy
+ *                the upstream "no two thinking blocks adjacent" rule.
  * - `stripped` — Actively delete thinking blocks from old messages; delete the message if
  *                empty after stripping.
  */
@@ -319,6 +324,48 @@ export interface State {
   readonly thinkingBlockMessagePolicy: ThinkingBlockMessagePolicy
   /** Drop corrupt empty thinking blocks before sending upstream (see config `anthropic.thinking_block_sanitize`) */
   readonly thinkingBlockSanitizeCheck: false | "empty_thinking" | "empty_any"
+
+  /**
+   * De-stack strategy for adjacent `thinking`/`redacted_thinking` blocks (config
+   * `anthropic.thinking_destack_strategy`). Ensures no two thinking blocks are
+   * consecutive in an assistant message — GHC rejects an echoed history with
+   * stacked thinking with a "thinking blocks cannot be modified" 400.
+   *
+   * - `"passthrough"` — leave stacked thinking as-is.
+   * - `"insert_text"` — insert a synthetic text separator between adjacent thinking.
+   * - `"move_blocks"` — interleave thinking with real non-thinking blocks
+   *                     (order-preserving), synthetic marker only when insufficient (default).
+   */
+  readonly thinkingDestackStrategy: ThinkingDestackStrategy
+
+  /**
+   * Reactive strip-all fallback (L2) for the GHC "thinking ... cannot be
+   * modified" 400 that L1 de-stack ({@link thinkingDestackStrategy}) did not
+   * preempt (config `anthropic.strip_thinking_on_reject`). When `true` (default)
+   * the `poisoned-thinking-retry` strategy strips ALL thinking/redacted_thinking
+   * blocks from the echoed history and retries the turn once; `false` lets the
+   * 400 surface unmodified.
+   */
+  readonly stripThinkingOnReject: boolean
+
+  /**
+   * L3 durable quarantine master switch (config `anthropic.poisoned_thinking_quarantine`).
+   * When `true` (default), a successful L2 strip-all retry records the offending
+   * `(session, agent)` conversation in a sidecar store so later turns are stripped
+   * proactively; `false` keeps only the per-turn L2 reaction (no remembering).
+   */
+  readonly poisonedThinkingQuarantine: boolean
+
+  /**
+   * Sliding TTL (hours) of an L3 quarantine entry (config
+   * `anthropic.poisoned_thinking_ttl_hours`, default `72`). Read LIVE on every
+   * quarantine check: the store holds a `() => poisonedThinkingTtlHours * 3600_000`
+   * thunk evaluated per `isPoisoned` call (NOT captured when the quarantine store
+   * singleton is first built), so a hot-reloaded value takes effect immediately
+   * without a restart. A conversation quiet longer than this since its last
+   * poison hit drops out of the quarantine.
+   */
+  readonly poisonedThinkingTtlHours: number
 
   /**
    * Coerce legacy `thinking.type="enabled"` to `"adaptive"` when the target
@@ -1004,6 +1051,10 @@ export function setAnthropicBehavior(
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
+      | "thinkingDestackStrategy"
+      | "stripThinkingOnReject"
+      | "poisonedThinkingQuarantine"
+      | "poisonedThinkingTtlHours"
       | "coerceAdaptiveThinking"
       | "systemMessagesSanitize"
       | "systemRejectModels"
@@ -1220,6 +1271,10 @@ export const CONFIG_MANAGED_DEFAULTS = {
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
+  thinkingDestackStrategy: "move_blocks" as ThinkingDestackStrategy,
+  stripThinkingOnReject: true,
+  poisonedThinkingQuarantine: true,
+  poisonedThinkingTtlHours: 72,
   coerceAdaptiveThinking: "basic" as false | "basic" | "best_effort",
   systemMessagesSanitize: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectMode: "as_user" as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
@@ -1345,6 +1400,10 @@ export function resetConfigManagedState(): void {
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+    thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+    stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
+    poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
+    poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
     coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
     systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
     systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
@@ -1481,6 +1540,10 @@ const mutableState: MutableState = {
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+  thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+  stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
+  poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
+  poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
   coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
   systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
   systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,

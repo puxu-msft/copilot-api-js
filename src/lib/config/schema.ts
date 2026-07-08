@@ -36,6 +36,7 @@ import {
 // ============================================================================
 
 const POSITIVE_INT_MSG = "Must be a non-negative integer or null"
+const POSITIVE_NUMBER_MSG = "Must be a positive number or null"
 const BOOLEAN_MSG = "Must be a boolean or null"
 const STRING_MSG = "Must be a string or null"
 const REPAIR_ITEMS_MSG = `Must be a comma-separated subset of: ${REPAIR_ITEMS.join(", ")} (empty string = off)`
@@ -68,6 +69,16 @@ function nullableBoolean() {
     .boolean({ error: BOOLEAN_MSG })
     .nullable()
     .transform((v): boolean | undefined => v ?? undefined)
+    .optional()
+}
+
+/** A strictly-positive number — durations/limits where 0 or negative is nonsensical (e.g. poisoned_thinking_ttl_hours; a 0h TTL would never quarantine). */
+function nullablePositiveNumber() {
+  return z
+    .number({ error: POSITIVE_NUMBER_MSG })
+    .gt(0, POSITIVE_NUMBER_MSG)
+    .nullable()
+    .transform((v): number | undefined => v ?? undefined)
     .optional()
 }
 
@@ -223,6 +234,41 @@ export const AnthropicConfigSchema = z
      */
     tool_inject_claude_code: nullableBoolean(),
     thinking_block_message_policy: nullableEnum(["preserve", "stripped"] as const),
+    /**
+     * De-stack adjacent `thinking`/`redacted_thinking` blocks so no two are
+     * consecutive in an assistant message — GHC rejects an echoed history with
+     * stacked thinking ("thinking blocks cannot be modified" 400). Idempotent:
+     * a message without adjacent thinking passes through byte-identical.
+     *   passthrough — leave stacked thinking as-is
+     *   insert_text — insert a synthetic text separator between adjacent thinking
+     *   move_blocks — interleave thinking with real non-thinking blocks (order-
+     *                 preserving), synthetic marker only when insufficient (default)
+     */
+    thinking_destack_strategy: nullableEnum(["passthrough", "insert_text", "move_blocks"] as const),
+    /**
+     * Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400
+     * that L1 de-stack (`thinking_destack_strategy`) did not preempt: strip ALL
+     * `thinking`/`redacted_thinking` blocks from the echoed history and retry the
+     * turn once. `true` (default) enables the one-shot strip-and-retry; `false`
+     * lets the 400 surface unmodified.
+     */
+    strip_thinking_on_reject: nullableBoolean(),
+    /**
+     * L3 durable quarantine (master switch) for the "thinking ... cannot be
+     * modified" 400. When `true` (default), a successful L2 strip-all retry
+     * REMEMBERS the offending `(session, agent)` conversation in a sidecar SQLite
+     * store, so subsequent turns are proactively stripped ahead of the request
+     * instead of paying the reactive 400+retry round-trip again. `false` disables
+     * the remember/quarantine step (L2 still reacts per-turn).
+     */
+    poisoned_thinking_quarantine: nullableBoolean(),
+    /**
+     * Sliding TTL (hours) for an L3 quarantine entry. A poisoned conversation is
+     * treated as poisoned for this long since its last observed poison hit; a
+     * conversation quiet longer than this drops out (its thinking is no longer
+     * pre-stripped). Default `72`.
+     */
+    poisoned_thinking_ttl_hours: nullablePositiveNumber(),
     /**
      * Drop corrupt thinking blocks before sending upstream. Validity is decided
      * by the SIGNATURE, not the thinking text — a legitimate *encrypted* thinking

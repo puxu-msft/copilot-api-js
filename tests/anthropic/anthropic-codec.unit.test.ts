@@ -2,7 +2,7 @@
  * P2.6 / C2 — anthropic-messages codec + strategies unit tests.
  *
  * Pure-function surface (no manager/state runtime): identity translateOut /
- * renderResponse, the Anthropic-shaped error frame, and the 8-strategy ordered
+ * renderResponse, the Anthropic-shaped error frame, and the 15-strategy ordered
  * assembly (RFC §12.9). `parse` (which needs the runtime) is covered in the
  * sibling `.it.test`.
  */
@@ -115,7 +115,7 @@ describe("buildAnthropicStrategies", () => {
   const stubResanitize = (p: MessagesPayload): SanitizeResult<MessagesPayload> => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 })
   const baseline = { model: "claude-sonnet-4", messages: [], max_tokens: 100 } as unknown as MessagesPayload
 
-  test("yields the 14 strategies in order (8 legacy + v4-only server-error-retry + tool-field-rejection + server-tool-rejection + structured-outputs-rejection + system-reject-retry + web-search-not-found-retry, RFC §12.9)", () => {
+  test("yields the 15 strategies in order (9 shared-with-legacy incl. poisoned-thinking-retry + v4-only server-error-retry + tool-field-rejection + server-tool-rejection + structured-outputs-rejection + system-reject-retry + web-search-not-found-retry, RFC §12.9)", () => {
     const strategies = buildAnthropicStrategies({
       originalPayload: baseline,
       resanitize: stubResanitize,
@@ -131,6 +131,7 @@ describe("buildAnthropicStrategies", () => {
       "tool-field-rejection-retry",
       "body-field-rejection-retry",
       "legacy-thinking-retry",
+      "poisoned-thinking-retry",
       "unsupported-beta-retry",
       "server-tool-rejection-retry",
       "structured-outputs-rejection-retry",

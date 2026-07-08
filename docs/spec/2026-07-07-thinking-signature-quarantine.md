@@ -1,6 +1,6 @@
 # Spec: thinking「cannot be modified」400 三层防治（de-stack + reactive + session quarantine）
 
-- 状态：draft **v4.1（已过复审 #04，1 CRITICAL + 数 HIGH/MEDIUM 全落实）**。待用户 review → 实施计划。复审：[#04 v4 de-stack](2026-07-07-thinking-signature-quarantine-review-2026-07-07-04.md)。关键修正：de-stack = **终末 pass**（放 processToolBlocks 之后，否则分隔符被删自伤 400）；分隔符只计非空块；de-stack 自带计量不进减法残差 + messageMapping 标合成块；**幂等 + byte-lock 守卫**；L3 strip-all 排 L1 前；更新 protection docstring（相邻性非受保护属性）+ 组合测试；合成标记 sentinel + history 标注。
+- 状态：**已实施 landed**——2026-07-08 于分支 `feat/thinking-quarantine` 落地：plan 全 12 任务 + 全分支终审完成。实施计划 [docs/plan/2026-07-07-thinking-quarantine.md](../plan/2026-07-07-thinking-quarantine.md)；设计复审存证 [#04 v4 de-stack](2026-07-07-thinking-signature-quarantine-review-2026-07-07-04.md)（1 CRITICAL + 数 HIGH/MEDIUM 全落实：de-stack 终末 pass、分隔符只计非空块、幂等 + byte-lock、L3 strip-all 排 L1 前、合成 sentinel + history 标注）。
 - 日期：2026-07-07
 - 演进：v1（signature+索引+二分，废）→ v2/v2.1（会话级 strip-all + TTL）→ v3（纯结构 collapse，**因过度简化被否**）→ **v4（三层：结构精确 de-stack + reactive 兜底 + 会话 quarantine 全保留）**。评审存证 [#01](2026-07-07-thinking-signature-quarantine-review-2026-07-07-01.md)/[#02](2026-07-07-thinking-signature-quarantine-review-2026-07-07-02.md)/[#03](2026-07-07-thinking-signature-quarantine-review-2026-07-07-03.md)；PoC [exp/thinking-signature-quarantine/README.md](../../exp/thinking-signature-quarantine/README.md)。
 - 相关 skill：`ghc-anthropic-upstream`、`empirical-verification`、`persistence-async-invariants`、`history-sqlite-schema`、`test-isolation`。
