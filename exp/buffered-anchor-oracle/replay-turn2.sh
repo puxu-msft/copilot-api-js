@@ -15,8 +15,9 @@
 # The mock's `validationRejections` counter is the authoritative oracle here (not the proxy's
 # response shape), because it reflects what actually reached upstream.
 #
-# Prereqs (see README.md): mock running (start-mock.sh) + proxy running with
-#   ghc_api_base_url: http://localhost:$MOCK_PORT, protect_streaming_generation: tool_use_only.
+# Prereqs (see README.md): mock running (start-mock.sh, HTTPS/h2) + proxy running (start-proxy.sh,
+#   Bun :4142) with ghc_api_base_url: https://localhost:$MOCK_PORT, protect_streaming_generation:
+#   tool_use_only.
 #
 # Usage: replay-turn2.sh [label]
 set -u
@@ -24,16 +25,17 @@ LABEL="${1:-replay-turn2}"
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOCK_PORT="${MOCK_PORT:-8890}"
-PROXY_PORT="${PROXY_PORT:-4141}"
+PROXY_PORT="${PROXY_PORT:-4142}"
 PROXY_TOKEN="${PROXY_TOKEN:-copilot-api}"
 MODEL="${MOCK_MODEL:-claude-opus-4-8}"
 
 BODYFILE="$DIR/$LABEL.request.json"
 RESPFILE="$DIR/$LABEL.response.log"
 
-# 1) select the thinking chain (resets counters). validationRejections starts at 0.
+# 1) select the thinking chain (resets counters). validationRejections starts at 0. Mock is
+#    HTTPS/h2 self-signed → curl -k --http2.
 echo "[$LABEL] setting mock chain=thinking (resets counters) …"
-curl -s -X POST "http://localhost:$MOCK_PORT/__mode" -H 'content-type: application/json' -d '{"chain":"thinking"}' || {
+curl -s -k --http2 -X POST "https://localhost:$MOCK_PORT/__mode" -H 'content-type: application/json' -d '{"chain":"thinking"}' || {
   echo "[$LABEL] ERROR: mock not reachable on :$MOCK_PORT — start start-mock.sh first" >&2 ; exit 2 ; }
 echo
 
@@ -77,7 +79,7 @@ HTTP_STATUS=$(curl -s -N -o "$RESPFILE" -w '%{http_code}' \
 echo "[$LABEL] proxy HTTP status: $HTTP_STATUS (response body → $RESPFILE)"
 
 # 4) the AUTHORITATIVE oracle: the mock's counters after the replay.
-COUNTERS=$(curl -s "http://localhost:$MOCK_PORT/__mode")
+COUNTERS=$(curl -s -k --http2 "https://localhost:$MOCK_PORT/__mode")
 echo "[$LABEL] mock counters: $COUNTERS"
 
 REJ=$(printf '%s' "$COUNTERS" | grep -oE '"validationRejections":[0-9]+' | grep -oE '[0-9]+$')

@@ -9,17 +9,29 @@
 `cc-idle-280s` 的 mock 是 CC 的**直接**上游；这里的 mock 是**代理的**上游，夹在代理背后：
 
 ```
-claude CLI ──Anthropic SSE──▶ copilot-api 代理 (:4141) ──Anthropic SSE──▶ 本 mock (:8890)
+claude CLI ──Anthropic SSE──▶ copilot-api 代理 (Bun, :4142) ──Anthropic SSE(h2)──▶ 本 mock (Node h2, :8890)
                               （锚点注入 / buffered-retry 都在代理这一层）
 ```
 
 之所以 wire 仍是原生 Anthropic Messages SSE：Claude 模型在 GHC 上 `supported_endpoints:["/v1/messages"]`，代理对其**逐字透传**到 `${ghc_api_base_url}/v1/messages`（`src/lib/anthropic/client.ts:126`）。mock 只负责复现**上游形状**；被测的锚点 / 保活 / 重试行为全在代理侧。
 
+### 传输：mock = HTTPS/HTTP2（Node）、proxy = Bun（生产同款）
+
+本 harness **prod-faithful**：代理跑在 **Bun**（生产运行时），mock 是 **HTTPS/h2 上游**。为什么这个 split：
+
+- 代理 `upstreamFetch`（`src/lib/transport/upstream-fetch.ts`）对 `https://` 上游走 **node:http2**（在 Bun 正常），对 `http://` 走 undici——而 **undici 在 Bun 下对增量/chunked 响应永久挂死**（这正是所有真实 https GHC 上游迁到 node:http2 的原因）。旧版 mock 是明文 `http://`（Bun.serve 只能 HTTP/1.1）→ 命中 Bun-undici 坏路径 → 任何**帧间有静默**的流（keepalive 320s、retry 截断）挂死或被 +1s abort，逼得独立实例只能跑 Node。**把 mock 改成 https/h2 后，代理走它的生产 node:http2 客户端，整条链在 Bun（生产运行时）下直跑。**
+- mock 本身**必须跑 Node**（不是 Bun）：Bun 的 http2 **服务端** `stream.close(code)` 不发忠实 RST 帧（skill `bun-upstream-transport`），而 retry 链依赖真 RST 触发 buffered-retry。Node 24+ 靠 type-stripping 直接跑 `.ts`，无需构建。
+
+### 自签证书 / TLS 信任
+
+mock 用自签 `localhost` 证书（`mock-cert.pem` / `mock-key.pem`，`start-mock.sh` 缺失时自动生成，SAN 含 `localhost` + `127.0.0.1`）。代理侧 node:tls 须信任它——`start-proxy.sh` 用 **`NODE_EXTRA_CA_CERTS=mock-cert.pem`**（**prod-faithful**：真实证书校验照跑、只把 mock 证书加进信任根；**实测 Bun honor 此变量**）。备选 `ORACLE_TLS_INSECURE=1` → `NODE_TLS_REJECT_UNAUTHORIZED=0`（test-only、仅 :4142）。
+
 ## 前置条件
 
 - 本机装好 `claude` CLI（`claude --version`）。
-- 代理有可用的 GitHub 认证（mock 忽略上游 token，但代理启动仍要拿 copilot token；这是你日常的认证）。
-- mock 必须**先于代理**启动——代理启动时会从 mock 拉 `/models`。
+- 本机装好 **Node 22.6+/24**（跑 mock，靠 type-stripping 直接执行 `.ts`）+ **Bun**（跑代理，生产运行时）。
+- 代理有可用的 GitHub 认证（mock 忽略上游 token，但代理启动仍要拿 copilot token；`start-proxy.sh` 会复用你 live 实例的 `github_token`）。
+- mock 必须**先于代理**启动——代理启动时会从 mock 拉 `/models`（走 TLS，须先信任 mock 证书）。
 
 ## 辅助模型调用的隔离（务必理解，否则链计数会失真）
 
@@ -30,21 +42,29 @@ CC 在后台会用小/快模型（title / topic / quota 的 “haiku”，即 `A
 
 ## 步骤
 
-### 1. 启动 mock GHC 上游（先启动）
+### 1. 启动 mock GHC 上游（先启动，Node h2）
 
 ```bash
 cd exp/buffered-anchor-oracle
-bash start-mock.sh            # 默认 :8890，日志 → exp/buffered-anchor-oracle/mock.log
+bash start-mock.sh            # 默认 https :8890（Node h2），日志 → mock.log；缺失时自动生成自签证书
 # 可调静默窗口：MOCK_SILENCE_SEC=320（keepalive 链，须 > CC 的 300s 死线）
 #              MOCK_ANCHOR_SILENCE_SEC=25（thinking 链，须 > 代理 keepalive cadence）
 ```
 
-### 2. 启动代理，把上游指向 mock + 打开 buffered
+### 2. 启动独立代理（Bun :4142，指向 mock + 打开 buffered）
 
-编辑代理的 `config.yaml`（或用等价 CLI/env），关键项：
+**推荐直接用 `start-proxy.sh`**——它做隔离（`XDG_DATA_HOME` → 独立 `APP_DIR`）、复用 live `github_token`、拷贝 `oracle-config.yaml` 为该实例的 `config.yaml`、设 `NODE_EXTRA_CA_CERTS` 信任 mock 证书，并以 **Bun**（生产运行时）在 **:4142**（非 live :4141）启动：
+
+```bash
+cd exp/buffered-anchor-oracle
+bash start-proxy.sh          # Bun :4142，上游 https://localhost:8890，日志 → proxy.log
+# ORACLE_TLS_INSECURE=1 → 改用 NODE_TLS_REJECT_UNAUTHORIZED=0（test-only 备选）
+```
+
+`oracle-config.yaml` 的关键项（只列相对 bundled 的覆盖，其余深合并）：
 
 ```yaml
-ghc_api_base_url: "http://localhost:8890"     # 指向 mock（不可热更，需重启）
+ghc_api_base_url: "https://localhost:8890"    # 指向 mock（https/h2；不可热更，需重启）
 anthropic:
   protect_streaming_generation: tool_use_only  # 进 buffered 路径（CC 必带 tools）
   stream_keepalive_mode: empty_text            # 被测的锚点模式（新默认）
@@ -53,9 +73,7 @@ anthropic:
   # stream_idle_timeout(timeouts.stream_idle) 默认 900 > 320，别调小否则会先杀上游
 ```
 
-然后正常启动代理（`bun run start` 等，**由你执行**），监听 `:4141`。
-
-> **锚点占位帧确认**：`config.yaml:518` 已把 `stream_keepalive_mode` 默认设为 `empty_text`，但 `protect_streaming_generation` 默认 `false`——务必显式改成 `tool_use_only`（或 `on`），否则不进 buffered 路径、锚点不触发。
+> **锚点占位帧确认**：`config.yaml:518` 已把 `stream_keepalive_mode` 默认设为 `empty_text`，但 `protect_streaming_generation` 默认 `false`——`oracle-config.yaml` 已显式改成 `tool_use_only`，否则不进 buffered 路径、锚点不触发。
 
 ### 3. 逐条跑三条链
 
@@ -115,12 +133,15 @@ bash replay-turn2.sh          # 绕过 CC，直接把 [空text, thinking, tool_u
 
 ## 产物
 
-- `mock.ts` —— mock GHC 上游（`/models` 广播主 + aux 两模型、`/v1/messages`、`/__mode` 控制端点）。
-- `start-mock.sh` —— 启动 mock（先启动）。
-- `run-chain.sh <chain>` —— 切链 + 跑一次 `claude -p` + 采集结果。
+- `mock.ts` —— mock GHC 上游（**node:http2 secure server**，`/models` 广播主 + aux 两模型、`/v1/messages`、`/__mode` 控制端点）。
+- `start-mock.sh` —— 启动 mock（先启动，Node h2，缺失时生成自签证书）。
+- `start-proxy.sh` —— 启动独立代理（Bun :4142、XDG 隔离、复用 live token、`NODE_EXTRA_CA_CERTS` 信任 mock 证书）。
+- `mock-cert.pem` / `mock-key.pem` —— 自签 localhost TLS 材料（gitignore；`start-mock.sh` 幂等生成）。
+- `run-chain.sh <chain>` —— 切链 + 跑一次 `claude -p` + 采集结果（默认 proxy :4142、mock https :8890）。
 - `replay-turn2.sh` —— 链 2 正样本对照：绕过 CC 直接 replay turn-2 体，严格归因“代理在剥”。
-- `mock.log` / `<label>.cli.log` / `settings.<label>.json` / `<label>.request.json` / `<label>.response.log` —— 运行产物（跑后生成）。
-- `REPORT.md` —— 结果表 + 门控判定（待填）。
+- `oracle-config.yaml` —— 独立代理配置覆盖（`start-proxy.sh` 拷贝为该实例 `config.yaml`）。
+- `mock.log` / `proxy.log` / `<label>.cli.log` / `settings.<label>.json` / `<label>.request.json` / `<label>.response.log` —— 运行产物（gitignore，跑后生成）。
+- `REPORT.md` —— 结果表 + 门控判定。
 
 ## 边界 / 注意
 
@@ -128,3 +149,4 @@ bash replay-turn2.sh          # 绕过 CC，直接把 [空text, thinking, tool_u
 - CC 的 aux（haiku/small-fast）流量经独立模型 id + `body.model` 内容分发被 mock 排除在链计数外（见「辅助模型调用的隔离」节）；`/__mode` 的 `messagesSeen`/`validationRejections` 只反映主对话。
 - mock 每条链一进程内长驻、经 `/__mode` 切换（避免代理启动期已缓存 `/models`、后续换 mock 端口失配）。
 - prod-faithful 接线（custom base URL + token，非 first-party assume）—— 与两条 320s incident 完全同路径；`exp/cc-idle-280s/` armP 已证 300s 死线在此路径成立。
+- **代理跑在 Bun（生产运行时）、mock 跑在 Node h2 server** —— 这套 h2 mock 消除了旧版「独立实例必须跑 Node」的 workaround（根因见「传输」节 + REPORT.md）。控制端点 `/__mode` 与 `/models` 是 h2+TLS，`curl` 直连须 `-k --http2`；代理→mock 的 TLS 信任才是被 `NODE_EXTRA_CA_CERTS` 真正校验的那条路。

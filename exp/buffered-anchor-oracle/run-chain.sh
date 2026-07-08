@@ -2,9 +2,9 @@
 # Drive ONE oracle chain: real `claude` CLI → copilot-api proxy → mock GHC upstream.
 #
 # Prereqs (see README.md):
-#   1. mock running (start-mock.sh) on $MOCK_PORT.
-#   2. copilot-api proxy running on $PROXY_PORT with:
-#        ghc_api_base_url: http://localhost:$MOCK_PORT
+#   1. mock running (start-mock.sh) on $MOCK_PORT — HTTPS/h2, under Node.
+#   2. copilot-api proxy running on $PROXY_PORT (Bun, start-proxy.sh) with:
+#        ghc_api_base_url: https://localhost:$MOCK_PORT
 #        protect_streaming_generation: tool_use_only   (or: on)
 #        stream_keepalive_mode: empty_text             (chain=keepalive contrast arm: content_delta)
 #      and the operator's normal GitHub auth (the mock ignores the upstream token).
@@ -18,7 +18,7 @@ LABEL="${2:-$CHAIN}"
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOCK_PORT="${MOCK_PORT:-8890}"
-PROXY_PORT="${PROXY_PORT:-4141}"
+PROXY_PORT="${PROXY_PORT:-4142}"
 PROXY_TOKEN="${PROXY_TOKEN:-copilot-api}"
 MODEL="${MOCK_MODEL:-claude-opus-4-8}"
 # Auxiliary/small-fast model id — CC's title/topic/quota "haiku" traffic is pointed HERE so the
@@ -41,9 +41,10 @@ if [ "$CHAIN" = "thinking" ]; then
   PERM_FLAG="--dangerously-skip-permissions"
 fi
 
-# 1) select the chain on the mock (resets counters).
+# 1) select the chain on the mock (resets counters). Mock is HTTPS/h2 with a self-signed cert →
+# curl needs -k (skip verify; the real TLS-trust test is the proxy→mock path) + --http2.
 echo "[$LABEL] setting mock chain=$CHAIN …"
-curl -s -X POST "http://localhost:$MOCK_PORT/__mode" -H 'content-type: application/json' -d "{\"chain\":\"$CHAIN\"}" || {
+curl -s -k --http2 -X POST "https://localhost:$MOCK_PORT/__mode" -H 'content-type: application/json' -d "{\"chain\":\"$CHAIN\"}" || {
   echo "[$LABEL] ERROR: mock not reachable on :$MOCK_PORT — start start-mock.sh first" >&2 ; exit 2 ; }
 echo
 
@@ -79,7 +80,7 @@ END=$(date +%s.%N)
 WALL=$(echo "$END - $START" | bc)
 echo "[$LABEL] DONE claude rc=$CCRC wall=${WALL}s (timeout ceiling=${CEIL}s)"
 
-echo "[$LABEL] mock counters: $(curl -s "http://localhost:$MOCK_PORT/__mode")"
+echo "[$LABEL] mock counters: $(curl -s -k --http2 "https://localhost:$MOCK_PORT/__mode")"
 echo "[$LABEL] CC result (extract is_error/duration_ms/num_turns/result/subtype):"
 # Prefer jq (handles the `result` string containing commas/braces); fall back to grep -oE, whose
 # `[^,}]*` truncates a `result` value at the first comma/brace — harmless because the full CC json
