@@ -23,15 +23,20 @@ function modelLabel(row: LiveEntry): string {
   return row.resolvedModel ?? row.model ?? row.clientModel ?? "—"
 }
 
-/** 单请求富明细行 —— memo 以避免每秒滴答重渲全部行(仅 elapsed 文本随 nowMs 变)。 */
-export const LiveDetailRow = memo(function LiveDetailRow({ row, nowMs, onClick }: { row: LiveEntry; nowMs: number; onClick: () => void }) {
+/**
+ * 单请求富明细行 —— memo 只挡 NON-tick 重渲(如别的行 byId 变化时不重渲本行)。
+ * 当前可见行仍会每秒随共享 nowMs 刷新 elapsed 文本:这是单一共享 ticker 设计的固有代价,
+ * 对有界的在途行数很廉价 —— 不引入 per-row 计时器(1 个共享 ticker 才是既定设计)。
+ * memo 生效前提:onSelect 必须由父级稳定传入(见 LiveDock 的 useCallback)。
+ */
+export const LiveDetailRow = memo(function LiveDetailRow({ row, nowMs, onSelect }: { row: LiveEntry; nowMs: number; onSelect: (id: string) => void }) {
   const elapsed = formatDuration(Math.max(0, nowMs - row.startTime))
   const attempt = row.attemptCount && row.attemptCount > 1 ? `×${row.attemptCount}` : ""
   const queue = row.queueWaitMs && row.queueWaitMs > 100 ? `q:${formatDuration(row.queueWaitMs)}` : ""
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => onSelect(row.id)}
       className={`${ROW_CLASS} text-[#9db]`}
     >
       <span
@@ -126,7 +131,7 @@ export function LiveGroup({
           key={r.id}
           row={r}
           nowMs={nowMs}
-          onClick={() => onSelect(r.id)}
+          onSelect={onSelect}
         />
       ))}
     </div>

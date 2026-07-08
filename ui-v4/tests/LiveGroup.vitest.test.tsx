@@ -34,7 +34,7 @@ describe("LiveDetailRow", () => {
           retry: { attempt: 2, willRetry: true, nextStrategy: "fallback", waitMs: 800 },
         })}
         nowMs={4000}
-        onClick={() => {}}
+        onSelect={() => {}}
       />,
     )
     expect(screen.getByText(/streaming/)).toBeTruthy()
@@ -43,16 +43,16 @@ describe("LiveDetailRow", () => {
     expect(screen.getByText(/next:/i)).toBeTruthy()
   })
 
-  it("点击触发 onClick", async () => {
-    const onClick = vi.fn()
+  it("点击触发 onSelect(带 row id)", async () => {
+    const onSelect = vi.fn()
     render(
       <LiveDetailRow
         row={row({})}
         nowMs={2000}
-        onClick={onClick}
+        onSelect={onSelect}
       />,
     )
     await userEvent.click(screen.getByRole("button"))
-    expect(onClick).toHaveBeenCalledOnce()
+    expect(onSelect).toHaveBeenCalledWith("r1")
   })
 })
