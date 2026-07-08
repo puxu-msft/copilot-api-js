@@ -86,6 +86,18 @@ function subtreeContains(name: string | undefined, value: unknown, query: string
   return entriesOf(value).some(([key, child]) => subtreeContains(key, child, query))
 }
 
+/**
+ * The entries to actually render for a container. Not paged → all of them (bare-
+ * caller back-compat). Paged + no search → the first `page`. Paged + active search
+ * → the first `page` PLUS any matching entry beyond it (index-order preserved), so
+ * search never force-opens a container yet hides the match it reported.
+ */
+function visibleEntries(entries: Array<[string, unknown]>, paged: boolean, page: number, query: string): Array<[string, unknown]> {
+  if (!paged) return entries
+  if (query === "") return entries.slice(0, page)
+  return entries.filter(([key, child], i) => i < page || subtreeContains(key, child, query))
+}
+
 /** Type-colored inline rendering of a primitive JSON value. */
 function Primitive({ value }: { value: JsonPrimitive }) {
   if (value === null) return <span className="text-[var(--color-muted)]">null</span>
@@ -246,14 +258,27 @@ function TreeNode({ name, value, depth, path }: NodeProps) {
 
   const isArr = Array.isArray(value)
   const childPath = (key: string) => (isArr ? `${path}[${key}]` : `${path}.${key}`)
-  const visible = entries.length > LAZY_THRESHOLD ? entries.slice(0, page) : entries
+
+  // Lazy paging is a toolbar-variant affordance: bare callers render every entry
+  // exactly as before (no cap, no "load more"), so back-compat is byte-behavior-
+  // identical. When paging, an active search still renders matching entries past
+  // the page boundary (index-order preserved) so search never force-opens a
+  // container yet hides the match it reported — `page` itself stays independent of
+  // the bulk signal, keeping the expand-all × lazy invariant intact.
+  const paged = toolbar && entries.length > LAZY_THRESHOLD
+  const visible = visibleEntries(entries, paged, page, query)
 
   // Collapsible disclosure (Radix): the trigger is a real <button> → keyboard-
   // focusable + Enter/Space toggle + aria-expanded. Copy actions sit beside it.
   return (
     <Collapsible.Root
       open={effectiveOpen}
-      onOpenChange={setOpen}
+      // While a search force-opens this node, swallow user toggles so the node's
+      // pre-search `open` (a branch the user had manually expanded) survives query
+      // clear instead of being reset to collapsed by a no-op click.
+      onOpenChange={(next) => {
+        if (!forcedOpen) setOpen(next)
+      }}
     >
       <div
         className="group flex items-center hover:bg-[#1c1a15]"
@@ -279,7 +304,7 @@ function TreeNode({ name, value, depth, path }: NodeProps) {
             path={childPath(key)}
           />
         ))}
-        {page < entries.length && (
+        {paged && page < entries.length && (
           <button
             type="button"
             aria-label={`load more (${entries.length - page} remaining)`}

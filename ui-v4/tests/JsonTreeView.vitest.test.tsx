@@ -116,6 +116,31 @@ describe("JsonTreeView toolbar — lazy large arrays", () => {
     // page grew 200 → 400, so index 300 is now rendered.
     expect(screen.getAllByText("300").length).toBeGreaterThan(0)
   })
+
+  it("does NOT page (nor show load-more) when the toolbar is off — bare-caller back-compat", () => {
+    // A bare caller (toolbar omitted) passing a >200-entry container must render
+    // every entry exactly as before — no cap, no interaction affordance.
+    render(<JsonTreeView value={big} />)
+    expect(screen.queryByRole("button", { name: /load more/i })).toBeNull()
+    // Index 300 (beyond LAZY_THRESHOLD) is present → nothing was hidden.
+    expect(screen.getAllByText("300").length).toBeGreaterThan(0)
+  })
+
+  it("search reveals a matching entry past the first lazy page", () => {
+    // 300-entry array whose only match sits at index 250 (beyond the 200 page).
+    const withDeepMatch = { arr: Array.from({ length: 300 }, (_, i) => (i === 250 ? "needle" : "x")) }
+    render(
+      <JsonTreeView
+        value={withDeepMatch}
+        toolbar
+      />,
+    )
+    // Positive control: hidden before search (default page = 200).
+    expect(screen.queryByText(/needle/)).toBeNull()
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "needle" } })
+    // Search must render the reported match even though it lives past the page.
+    expect(screen.getByText(/needle/)).toBeDefined()
+  })
 })
 
 describe("JsonTreeView toolbar — copy value/path", () => {
