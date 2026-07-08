@@ -8,6 +8,7 @@ import {
 import { useNavigate } from "react-router-dom"
 
 import { LiveGroup } from "@/components/requests/LiveGroup"
+import { useGoLive } from "@/hooks/useGoLive"
 import { useNowTick } from "@/hooks/useNowTick"
 import { formatDuration } from "@/lib/format"
 import { summarizeLive } from "@/lib/live-summary"
@@ -41,7 +42,7 @@ export function LiveDock() {
   // 缓冲的新完成请求(tail 暂停期间到达)——合入 CTA 从 HistoryList 上移到本状态栏。
   const bufferedCount = useListStore((s) => s.bufferedIds.length)
   const tailOn = useListStore((s) => s.tailOn)
-  const dispatch = useListStore((s) => s.dispatch)
+  const goLive = useGoLive()
   const showMerge = !tailOn && bufferedCount > 0
 
   const [expanded, setExpanded] = useState(loadExpanded)
@@ -109,7 +110,7 @@ export function LiveDock() {
         {showMerge ?
           <button
             type="button"
-            onClick={() => dispatch({ kind: "flush" })}
+            onClick={() => goLive("flush")}
             title={`合入 ${bufferedCount} 条新完成请求到历史并恢复实时跟随`}
             className="shrink-0 border-l border-[#2f6f3f] pl-2 text-[#7fd99a] hover:text-[#a8f0c0]"
           >

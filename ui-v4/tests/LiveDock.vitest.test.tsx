@@ -4,7 +4,11 @@ import {
   screen,
 } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { MemoryRouter } from "react-router-dom"
+import {
+  //
+  MemoryRouter,
+  useLocation,
+} from "react-router-dom"
 import {
   //
   afterEach,
@@ -29,6 +33,12 @@ const row = (id: string, over: Partial<LiveEntry> = {}): LiveEntry =>
 
 function seed(rows: Array<LiveEntry>) {
   useLiveStore.setState({ byId: Object.fromEntries(rows.map((r) => [r.id, r])) })
+}
+
+/** 探针:把当前路由 path+search 暴露到 DOM,断言合入 CTA 是否清掉 ?at=。 */
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-testid="loc">{`${loc.pathname}${loc.search}`}</div>
 }
 
 describe("LiveDock", () => {
@@ -104,5 +114,19 @@ describe("LiveDock", () => {
       </MemoryRouter>,
     )
     expect(screen.queryByText(/待合入/)).toBeNull()
+  })
+
+  it("合入时清掉 URL 的 ?at= 定位参数(tail 态不该声明 locate,与头部 resume 同源)", async () => {
+    useListStore.setState({ tailOn: false, bufferedIds: ["a"] })
+    render(
+      <MemoryRouter initialEntries={["/requests?at=xyz"]}>
+        <LiveDock />
+        <LocationProbe />
+      </MemoryRouter>,
+    )
+    expect(screen.getByTestId("loc").textContent).toContain("at=xyz")
+    await userEvent.click(screen.getByRole("button", { name: /待合入/ }))
+    expect(screen.getByTestId("loc").textContent).not.toContain("at=")
+    expect(useListStore.getState().tailOn).toBe(true)
   })
 })

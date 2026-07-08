@@ -38,6 +38,7 @@ import type {
 } from "@/types"
 
 import { Modal } from "@/components/shared/Modal"
+import { useGoLive } from "@/hooks/useGoLive"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
 import { api } from "@/lib/api"
 import {
@@ -175,7 +176,7 @@ interface HistoryListProps {
 
 /**
  * History —— TanStack Table 列模型 + react-virtuoso 虚拟渲染(spec §4.2)。
- * 保留 tail 跟随 / 缓冲横幅 / `?at=` 定位 / goLive;渲染层换为 `TableVirtuoso`,
+ * 保留 tail 跟随 / `?at=` 定位 / goLive(缓冲合入 CTA 已上移 LiveDock 状态栏);渲染层换为 `TableVirtuoso`,
  * `endReached` 触底加载旧页取代旧 onScroll 阈值翻页,离顶(`atTopStateChange`)暂停 tail。
  */
 export function HistoryList({ filters, columnVisibility: controlledVisibility, onColumnVisibilityChange, onClearFilters }: HistoryListProps) {
@@ -417,10 +418,8 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
   )
 
   // 显式跟随实时流:恢复 tail 并清掉 URL 的定位参数(URL-as-truth:tailing 态不该声明 locate)。
-  function goLive(ev: "resume" | "flush") {
-    dispatch({ kind: ev })
-    if (at) void navigate("/requests", { replace: true })
-  }
+  // 共享 hook(useGoLive),与 LiveDock 合入 CTA 同源——避免两处各自实现导致清 at 逻辑漂移/不对称。
+  const goLive = useGoLive()
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
