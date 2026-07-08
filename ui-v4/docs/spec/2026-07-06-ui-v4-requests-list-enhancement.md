@@ -127,7 +127,7 @@ export function matchesGating(e: EntrySummary, f: RequestFilters): boolean  // W
 
 ### 新增 hook / 组件
 
-- **[hooks/useRequestFilters.ts](../../src/hooks/useRequestFilters.ts)**：`{ filters, setFilter, clearFilter, clearAll }`。内部 `useSearchParams` + `navigate({ search }, { replace: true })`，**保留正交的 `?at=`**（合并现有 searchParams，只改筛选键）。
+- **[hooks/useRequestFilters.ts](../../src/hooks/useRequestFilters.ts)**：`{ filters, setFilter, setFilters, clearFilter, clearAll }`。内部 `useSearchParams` + `navigate({ search }, { replace: true })`，**保留正交的 `?at=`**（合并现有 searchParams，只改筛选键）。**多维联动写（如时间范围 from+to、清时间维）用批量 `setFilters(patch)` 一次 write**——`write` 是全量重写（先删所有 filter 键再回填），分次 `setFilter`/`clearFilter` 连调会因 `filters` 闭包旧值在同一事件里互相覆盖、静默丢维度。
 - **[hooks/useDebouncedCallback.ts](../../src/hooks/useDebouncedCallback.ts)**：~10 行（`useRef<timer>` + `useEffect` 清理）。文本维（search/model/pid）输入 300ms 防抖后推 URL；无库覆盖此原语，不值引库（ADR 决策四同判断）。
 - **[components/requests/RequestsFilterBar.tsx](../../src/components/requests/RequestsFilterBar.tsx)**：
   - search / model 防抖 input；pid 防抖 number input。
@@ -135,7 +135,7 @@ export function matchesGating(e: EntrySummary, f: RequestFilters): boolean  // W
   - 时间范围：Radix `Popover` 触发 react-day-picker range mode → 写 from/to（epoch ms）。**日界语义**：`from` = 选中首日 `00:00:00.000`、`to` = 选中末日 `23:59:59.999`（后端 `started_at >= from && <= to`，不含日界会漏掉末日当天请求，M1）。
   - 列可见性：ModelsColumnMenu 范式，驱动 TanStack `VisibilityState`（列显隐持久化到 localStorage，key `ui-v4:requests:columns`，与 Models 列显隐持久化同机制）。**读回时与 `DEFAULT_COLUMN_VISIBILITY` 对账**（未知列忽略、新增列取默认可见）——避免加列后老 localStorage 值吞掉新列（M1）。
   - 本地态镜像 URL（防抖 input 需本地即时反馈），URL 清空时同步回填（`useEffect` watch filters）。
-- **[components/requests/RequestFilterChips.tsx](../../src/components/requests/RequestFilterChips.tsx)**：`activeChips(filters)` → 可关闭 chip（× 调 `clearFilter(key)`）+ 「Clear all」（`clearAll()`）。放 filter bar 与 History header 间；无激活维度时不渲染。
+- **[components/requests/RequestFilterChips.tsx](../../src/components/requests/RequestFilterChips.tsx)**：`activeChips(filters)` → 可关闭 chip（× 调 `clearFilter(key)`；time chip 跨 from+to 两维，× 用批量 `setFilters({ from: null, to: null })` 一次清两维——避免连调 `clearFilter` 被全量重写覆盖只清一个）+ 「Clear all」（`clearAll()`）。放 filter bar 与 History header 间；无激活维度时不渲染。
 - **抽取 [components/shared/FilterSelect.tsx](../../src/components/shared/FilterSelect.tsx)**：从 ModelsFilterBar 内联的 `FilterSelect` 提为 shared，Models 与 Requests 共用（消重复）。
 
 ### 修改

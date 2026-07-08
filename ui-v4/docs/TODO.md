@@ -12,7 +12,7 @@
 
 | `ui/` 页面 | ui-v4 对应 | 对等状态 | 阻断退役 |
 |---|---|---|---|
-| Activity（请求列表） | Requests | ⚠️ 增强骨架 + 缺筛选层 | 是（筛选/深链） |
+| Activity（请求列表） | Requests | ✅ **对等达成且超越**（2026-07 筛选层 + URL 深链 + 虚拟化 + 键盘 + scoped delete） | 否（已解除） |
 | Detail（请求详情） | RequestDetail | ⚠️ 交互增强 + 丢核心诊断 | 是（attempts/meta） |
 | Models | Models | ✅ **对等达成且超越**（2026-07 P1–P4） | 否（已解除） |
 | Config | Config | ❌ **占位实现**（raw JSON textarea） | 是（结构化表单） |
@@ -23,28 +23,30 @@ ui-v4 **确有的真增强**（不因下列缺口抹杀）：Live 泳道（WS）
 
 ---
 
-## Activity — 补筛选层即可（架构已就位）
+## Activity — ✅ 对等达成且超越（2026-07，本节保留作历史缺口记录）
 
-ui-v4 的 Live 泳道/tail/缓冲/富行是真增强，但整个**筛选系统**未迁移。
+> **现状勘误（2026-07，plans [plans/requests-list-enhancement/](plans/requests-list-enhancement/) Phase 0–4）**：下列缺口已全部闭合——URL-as-SSOT 七维筛选层 + 活动 chips + Clear all（🔴）、URL↔筛选深链同步（🔴）、错误态 UI + paused 行内更新（🟡）、空态文案 + 键盘导航 + 清空历史入口（🟢）均落地；「双向游标退化」为**有意不补**（tail + 缓冲横幅提供另一条回最新路径，见 DESIGN §4.2 + spec）。Activity 至此**对等达成且超越** `ui/`，退役阻断已解除。以下逐条保留原缺口记录 + 达成标注。
 
-### 🔴 阻断级
+（原缺口记录）ui-v4 的 Live 泳道/tail/缓冲/富行是真增强，但当时整个**筛选系统**未迁移——**现已全部闭合**（见上方勘误 + 下方逐条 ✅ 标注）。
 
-- **筛选系统完全缺失**（search / model / endpoint / state / pid / sessionId 六维 + 活动筛选 chips + 单个清除 + Clear all）。`ui/` 经 `setFilter` 统一路径做 server-side 过滤（`ui/src/composables/history-store/useHistoryData.ts` 的 `setFilter`/`setSessionFilter` `[已验]`）；ui-v4 `useHistoryInfinite.ts` 写死 `limit=50` 无任何筛选参数，`list-store.ts` 无 filter 字段（grep `setFilter/filter` 全空 `[已验]`）。**这是 Activity 页最大功能块，单独足以阻断退役。**
-- **URL ↔ 筛选同步 / 深链缺失**。`ui/` 有 onMounted hydrate + watch→`router.replace` + onActivated resync（`ui/src/pages/vuetify/VActivityPage.vue`）；ui-v4 grep `useSearchParams/URLSearchParams` 全空 `[已验]`。与筛选缺口连带。
+### 🔴 阻断级（✅ 已达成）
+
+- **✅ 筛选系统已达成**（原缺口：search / model / endpoint / state / pid / sessionId 六维 + 时间范围 + 活动筛选 chips + 单个清除 + Clear all）。`ui/` 经 `setFilter` 统一路径做 server-side 过滤（`ui/src/composables/history-store/useHistoryData.ts` 的 `setFilter`/`setSessionFilter` `[已验]`）；ui-v4 现以 `lib/request-filters.ts`（纯 codec + `matchesGating` + `hasAnyFilter` + chips）+ `hooks/useRequestFilters.ts`（读写 URL）+ `RequestsFilterBar`/`RequestFilterChips` 落地七维筛选，筛选进 `useHistoryInfinite` 的 queryKey → server-side refetch（search 维走后端 FTS）。**→ 已落地**（DESIGN §4 落地态增强）。
+- **✅ URL ↔ 筛选同步 / 深链已达成**。`ui/` 有 onMounted hydrate + watch→`router.replace` + onActivated resync（`ui/src/pages/vuetify/VActivityPage.vue`）；ui-v4 现以 `useRequestFilters` 直接把 URL query 作为筛选唯一真值源（URL-as-SSOT，无本地镜像 state），刷新 / 复制链接 / 前进后退都还原。**→ 已落地**。
 
 ### 🟡 重要
 
-- **双向游标退化为单向无限滚动**：`ui/` 有 prev+next 双游标 + Newer/Older 双按钮（`useHistoryData.ts`）；ui-v4 只 `direction=older`（`useHistoryInfinite.ts`），丢失反向翻页（v4 用 tail+缓冲提供了另一种回最新路径，但翻页能力确失）。
-- **错误态 UI 缺失**：`ui/` 在 `store.error` 渲染错误图标 + toast；ui-v4 `useHistoryInfinite` 不处理 `isError`，拉取失败时只见空白 loading。
-- **WS entry_updated 行内更新部分丢失**：`ui/` 无条件原地替换行 + 选中则刷新详情；ui-v4 仅 `tailOn` 时 invalidate（`useHistoryInfinite.ts`），**paused 浏览时进行中请求的状态变化不反映**。
+- **⏸ 双向游标退化为单向无限滚动（有意不补）**：`ui/` 有 prev+next 双游标 + Newer/Older 双按钮（`useHistoryData.ts`）；ui-v4 只 `direction=older`（`useHistoryInfinite.ts`）。**有意不补**——v4 用 tail + 缓冲横幅提供了另一条回最新路径，反向翻页能力由此替代（见 DESIGN §4.2 三件套 + spec），非遗漏。
+- **✅ 错误态 UI 已达成**：`ui/` 在 `store.error` 渲染错误图标 + toast；ui-v4 `useHistoryInfinite` 现暴露 `isError`/`error`/`refetch`，`HistoryList` 渲染错误消息 + 「重试」按钮（Task 4.1）。**→ 已落地**。
+- **✅ WS entry_updated 行内更新已达成**：`ui/` 无条件原地替换行 + 选中则刷新详情；ui-v4 现在门控顺序里**优先原地更新已加载行**（`gateIncoming` → `inplace` 先于终态 / buffer 门控，顺序互斥），paused 浏览下进行中请求的状态变化如实反映、且不误入缓冲横幅（Phase 1 Task 1.3；端到端渲染层已锁 `tests/useHistoryInfinite.vitest.test.tsx`）。**→ 已落地**。
 
-### 🟢 轻微
+### 🟢 轻微（✅ 已达成）
 
-- 空状态文案缺失（`ui/` "No matching requests" + Clear filters；ui-v4 渲染空容器）。
-- 清空历史入口（`api.ts` 有 `delete` 但 Activity 页无调用入口，需确认是否迁往他处）。
-- 列表层键盘上下选中相邻行缺失。
+- **✅ 空状态文案已达成**（`ui/` "No matching requests" + Clear filters；ui-v4 现渲染「无匹配请求」+ 有筛选时「清除筛选」按钮，Task 4.1）。
+- **✅ 清空历史入口已达成**（`api.ts` 有 `delete`；ui-v4 现于列表 header 加「清空」入口 + 筛选感知确认 Modal，走后端 scoped delete / clear-all，Task 4.3）。
+- **✅ 列表层键盘上下选中相邻行已达成**（↑/↓/Enter/Esc roving 焦点导航，Task 4.2）。
 
-**关联 plan**：无现成 plan 覆盖筛选层本身 → **需新立项**。
+**关联 plan**：[plans/requests-list-enhancement/](plans/requests-list-enhancement/)（Phase 0–4，已执行）。
 
 ---
 
@@ -149,7 +151,7 @@ ui-v4 Overview 是**故意**精简成 6 张健康卡片 + "深度分析见 Grafa
 - 全局 Search 实装 → Plan 07
 
 **需新立项（plan 尚未覆盖）**：
-- **Activity 筛选层 + URL 深链同步**（六维筛选 + chips + 深链）
+- **Activity 筛选层 + URL 深链同步**（七维筛选 + chips + 深链 + 键盘 + scoped delete）✅ **已完成**（2026-07 plans/requests-list-enhancement Phase 0–4）
 - **Detail attempts 诊断移植**（timeline + per-attempt wire diff + per-attempt sse_events）—— richest-data-flow 红线
 - **Detail meta 大网格移植**（sanitization/preprocessing/truncation/cache token/process）
 - **Detail rewrite 导航 + 页面级导航 + 复制**（export 已补齐）

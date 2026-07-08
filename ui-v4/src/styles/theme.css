@@ -43,3 +43,23 @@ body {
 .row-anomaly {
   font-weight: 600;
 }
+
+/* react-day-picker(DateRangePopover)Terminal Amber 皮肤:import 库基础 css 后,把 `--rdp-*`
+ * 变量在 `.rdp-amber` 作用域重映射到项目 `--color-*` token(headless override,不引第三方圆角/阴影)。 */
+.rdp-amber {
+  --rdp-accent-color: var(--color-primary);
+  --rdp-accent-background-color: #3a2f1a;
+  --rdp-today-color: var(--color-primary);
+  --rdp-range_start-color: var(--color-bg);
+  --rdp-range_end-color: var(--color-bg);
+  --rdp-range_start-background: var(--color-primary);
+  --rdp-range_end-background: var(--color-primary);
+  --rdp-range_middle-background-color: #3a2f1a;
+  --rdp-range_middle-color: var(--color-text);
+  --rdp-selected-border: 1px solid var(--color-primary);
+  --rdp-font-family: var(--font-mono);
+}
+.rdp-amber .rdp-day_button:hover {
+  background: #3a2f1a;
+  color: var(--color-primary);
+}

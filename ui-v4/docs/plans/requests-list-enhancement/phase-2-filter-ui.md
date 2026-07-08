@@ -99,14 +99,14 @@ function endOfDay(d: Date): Date { const x = new Date(d); x.setHours(23, 59, 59,
 
 **Interfaces:**
 - Consumes: `RequestFilters`（Task 1.1）；`FilterSelect`（Task 1.4）；`useDebouncedCallback`（2.1）；`DateRangePopover`（2.2）；`TERMINAL_STATES`（1.1）。
-- Produces: `RequestsFilterBar({ filters, setFilter, columnMenuSlot }: { filters: RequestFilters; setFilter: <K extends keyof RequestFilters>(k: K, v: RequestFilters[K]) => void; columnMenuSlot?: React.ReactNode })`。
+- Produces: `RequestsFilterBar({ filters, setFilter, setFilters, columnMenuSlot }: { filters: RequestFilters; setFilter: <K extends keyof RequestFilters>(k: K, v: RequestFilters[K]) => void; setFilters: (patch: Partial<RequestFilters>) => void; columnMenuSlot?: React.ReactNode })`。
 
 **要点**：
 - search / model 文本 input：**本地态** `useState`（即时反馈）+ `useDebouncedCallback((v) => setFilter("search", v), 300)`；`useEffect` 当 `filters.search` 外部清空（chip/clearAll）时回填本地态。
 - pid：number input，防抖，空→null、NaN→null。
 - endpoint：`FilterSelect`，options = 4 端点（`anthropic-messages`/`openai-chat-completions`/`openai-responses`/`gemini-generate-content`）。
 - state：`FilterSelect`，options = **`TERMINAL_STATES`**（只列终态——红线 3；列表 terminalOnly，非终态会被全滤）。
-- 时间：`<DateRangePopover from={filters.from} to={filters.to} onChange={(f,t)=>{ setFilter("from",f); setFilter("to",t) }} />`。
+- 时间：`<DateRangePopover from={filters.from} to={filters.to} onChange={(f,t)=>setFilters({ from: f, to: t })} />`。**多维联动写必须走批量 `setFilters` 一次 write**——分次 `setFilter("from",f); setFilter("to",t)` 会因 `filters` 闭包旧值 + `write` 全量重写在同一事件里互相覆盖，静默丢掉 `from`。
 - `columnMenuSlot`：Phase 3 传入列可见性菜单（本阶段调用方先传 `null`）。
 - 样式镜像 [ModelsFilterBar.tsx:113-114](../../src/components/models/ModelsFilterBar.tsx) 的容器 class。
 
@@ -126,11 +126,11 @@ function endOfDay(d: Date): Date { const x = new Date(d); x.setHours(23, 59, 59,
 
 **Interfaces:**
 - Consumes: `RequestFilters`/`activeChips`（1.1）。
-- Produces: `RequestFilterChips({ filters, clearFilter, clearAll }: { filters: RequestFilters; clearFilter: (k: keyof RequestFilters) => void; clearAll: () => void })` —— 无激活维度返回 `null`。
+- Produces: `RequestFilterChips({ filters, clearFilter, clearAll, setFilters }: { filters: RequestFilters; clearFilter: (k: keyof RequestFilters) => void; clearAll: () => void; setFilters: (patch: Partial<RequestFilters>) => void })` —— 无激活维度返回 `null`（time chip 清除用 `setFilters({ from: null, to: null })` 一次清两维）。
 
 - [ ] **Step 1: 失败测试** — 给 `{ model:"opus", pid:7 }`：渲染 2 chip + "Clear all"；点 model chip × → `clearFilter("model")`；点 Clear all → `clearAll`；`EMPTY_FILTERS` → 渲染 `null`（`container.firstChild` 为 null）。
 - [ ] **Step 2: 确认失败** → FAIL。
-- [ ] **Step 3: 实现** — map `activeChips(filters)` → 每 chip 一个可关闭 pill（× 调 `clearFilter(chip.key)`）；末尾 "Clear all" 按钮。注意 time chip 的 key 可能是 `from` 或 `to`，`clearFilter` 需**同时清 from+to**：给 time chip 特判 → `clearFilter("from"); clearFilter("to")`（或加一个 `clearTimeRange` 分支）。样式镜像老 `ui/` filter-chips。
+- [ ] **Step 3: 实现** — map `activeChips(filters)` → 每 chip 一个可关闭 pill（× 调 `clearFilter(chip.key)`）；末尾 "Clear all" 按钮。注意 time chip 的 key 可能是 `from` 或 `to`，清除需**同时清 from+to**：给 time chip 特判 → 用批量 `setFilters({ from: null, to: null })` 一次清两维（**不可** `clearFilter("from"); clearFilter("to")` 连调——同 Task 2.3 的对偶 bug，第二次 clear 因全量重写只清一个）。样式镜像老 `ui/` filter-chips。
 - [ ] **Step 4: 确认通过** → PASS。
 - [ ] **Step 5: 提交** — msg `feat(ui-v4): RequestFilterChips (closable + clear all)`。
 
@@ -144,7 +144,7 @@ function endOfDay(d: Date): Date { const x = new Date(d); x.setHours(23, 59, 59,
 - Test: `ui-v4/tests/RequestsListPage.vitest.test.tsx`（或扩展现有）
 
 **Interfaces:**
-- `RequestsListPage` 调 `useRequestFilters()`，渲染 `<RequestsFilterBar filters setFilter columnMenuSlot={null} />` + `<RequestFilterChips filters clearFilter clearAll />` + `<LiveLane/>` + `<HistoryList filters={filters} />`。
+- `RequestsListPage` 调 `useRequestFilters()`，渲染 `<RequestsFilterBar filters setFilter setFilters columnMenuSlot={null} />` + `<RequestFilterChips filters clearFilter clearAll setFilters />` + `<LiveLane/>` + `<HistoryList filters={filters} />`。
 - `HistoryList` 新增 `filters: RequestFilters` prop，`useHistoryInfinite(filters)`。
 
 - [ ] **Step 1: 失败测试** — 渲染 Page（含 MemoryRouter + QueryClient），改一维筛选 → 断言触发新的 entries 请求（mock `api.get`，断言 URL 含 `endpoint=…`）。

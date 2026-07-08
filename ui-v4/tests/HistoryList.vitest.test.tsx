@@ -1,3 +1,5 @@
+import type { VisibilityState } from "@tanstack/react-table"
+
 import {
   //
   QueryClient,
@@ -25,13 +27,59 @@ import {
   vi,
 } from "vitest"
 
+import type { RequestFilters } from "@/lib/request-filters"
 import type { EntrySummary } from "@/types"
 
+import { DEFAULT_COLUMN_VISIBILITY } from "@/lib/request-columns"
+import { EMPTY_FILTERS } from "@/lib/request-filters"
 import {
   //
   initialListState,
   useListStore,
 } from "@/stores/list-store"
+
+// hoisted 供 vi.mock 工厂引用的 spy:虚拟列表 scrollToIndex + 单条 summary 查询。
+const { scrollToIndexMock, apiGetMock, apiDeleteMock } = vi.hoisted(() => ({ scrollToIndexMock: vi.fn(), apiGetMock: vi.fn(), apiDeleteMock: vi.fn() }))
+
+// fake TableVirtuoso:确定性渲染(不依赖 jsdom layout/initialItemCount),并经 useImperativeHandle
+// 暴露 scrollToIndex spy 供定位断言。忠实复现 HistoryList 用到的契约:Table/TableRow 子组件 +
+// fixedHeaderContent(表头)+ itemContent(单元格)+ context 注入。真实 Virtuoso 集成由 PoC 测试独立覆盖。
+vi.mock("react-virtuoso", async () => {
+  const {
+    //
+    forwardRef,
+    useImperativeHandle,
+  } = await import("react")
+  const FakeTableVirtuoso = forwardRef(function FakeTableVirtuoso(props: Record<string, unknown>, ref: unknown) {
+    const data = props.data as Array<{ id: string }>
+    const context = props.context
+    const components = props.components as { Table: React.ComponentType<Record<string, unknown>>; TableRow: React.ComponentType<Record<string, unknown>> }
+    const fixedHeaderContent = props.fixedHeaderContent as () => React.ReactNode
+    const itemContent = props.itemContent as (index: number, row: unknown) => React.ReactNode
+    useImperativeHandle(ref as React.Ref<unknown>, () => ({ scrollToIndex: scrollToIndexMock }))
+    const Table = components.Table
+    const Row = components.TableRow
+    return (
+      <Table style={{}}>
+        <thead>{fixedHeaderContent()}</thead>
+        <tbody>
+          {data.map((row, i) => (
+            <Row
+              key={row.id}
+              item={row}
+              context={context}
+            >
+              {itemContent(i, row)}
+            </Row>
+          ))}
+        </tbody>
+      </Table>
+    )
+  })
+  return { TableVirtuoso: FakeTableVirtuoso }
+})
+
+vi.mock("@/lib/api", () => ({ api: { get: apiGetMock, delete: apiDeleteMock } }))
 
 // 可变 mock:各用例设置 entries/hasNextPage/fetchNextPage;工厂在调用时读取(非 import 时)。
 let mockHistory: {
@@ -40,17 +88,29 @@ let mockHistory: {
   isLoading: boolean
   hasNextPage: boolean
   fetchNextPage: () => void
+  isError?: boolean
+  error?: unknown
+  refetch?: () => void
 } = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
 
 vi.mock("@/hooks/useHistoryInfinite", () => ({
   useHistoryInfinite: () => mockHistory,
 }))
 
-const { HistoryList } = await import("@/components/requests/HistoryList")
+const { HistoryList, LOCATE_PAGE_CAP } = await import("@/components/requests/HistoryList")
 
 /** 最小可渲染 History 行(activity-row helpers 对缺省字段有守卫)。 */
 function entry(id: string): EntrySummary {
   return { id, startedAt: 0, endpoint: "anthropic-messages", state: "completed", requestModel: "m" } as unknown as EntrySummary
+}
+
+/**
+ * `GET /history/api/entries/:id` 返回的单条 `HistoryEntry`(归属判定的输入)。忠实于真实契约:
+ * `inboundRequest` 是必填对象(HistoryList 的 entryToGatingSummary 直接取 `inboundRequest.model`),
+ * summary 形状(缺 inboundRequest)会在投影时抛错 → 不代表生产行为。
+ */
+function fetchedEntry(id: string, endpoint: string): unknown {
+  return { id, endpoint, startedAt: 0, state: "completed", inboundRequest: { model: "m" } }
 }
 
 /** 暴露当前 location 供导航断言(clear-at)。 */
@@ -64,11 +124,14 @@ function LocationProbe() {
   )
 }
 
-function renderList(initialEntries: Array<string> = ["/requests"]) {
+function renderList(initialEntries: Array<string> = ["/requests"], filters: RequestFilters = EMPTY_FILTERS, onClearFilters?: () => void) {
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <MemoryRouter initialEntries={initialEntries}>
-        <HistoryList />
+        <HistoryList
+          filters={filters}
+          onClearFilters={onClearFilters}
+        />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -78,6 +141,12 @@ describe("HistoryList", () => {
   beforeEach(() => {
     mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
     useListStore.setState({ ...initialListState })
+    scrollToIndexMock.mockClear()
+    // 默认单条查询解析为一条匹配 anthropic-messages 的 summary(EMPTY_FILTERS 下恒属于筛选集)。
+    apiGetMock.mockReset()
+    apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
+    apiDeleteMock.mockReset()
+    apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
   })
   afterEach(() => vi.restoreAllMocks())
 
@@ -93,32 +162,170 @@ describe("HistoryList", () => {
     expect(screen.getByText(/live/)).toBeDefined()
   })
 
-  it("locates the ?at row: scrolls it into view, flashes it, highlights it, pauses tail", async () => {
-    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView")
+  it("locates the ?at row: highlights it (selection truth = URL) and pauses tail", () => {
+    // 高亮真值 = URL `at`;滚动走 virtuosoRef.scrollToIndex(见下方定位用例)。这里断言选中样式 + tail 暂停。
     mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2")], total: 2 }
     const { container } = renderList(["/requests?at=e2"])
 
     const row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
     expect(row).not.toBeNull()
-    await waitFor(() => expect(scrollSpy).toHaveBeenCalled())
-    expect(row?.classList.contains("toc-flash")).toBe(true)
-    // 高亮真值 = URL:选中样式落在 e2 行(border-l 选中态)。
     expect(row?.className).toContain("border-l-2")
-    // tail 暂停,避免新条目挤走定位行。
     expect(useListStore.getState().tailOn).toBe(false)
   })
 
-  it("load-until-found: fetches next page when ?at is not in the loaded window and there is more", () => {
+  it("renders each loaded entry as a row (TableVirtuoso + TanStack column model)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a"), entry("b"), entry("c")], total: 3 }
+    const { container } = renderList()
+    const rows = container.querySelectorAll("[data-entry-id]")
+    expect(rows.length).toBe(3)
+    expect(container.querySelector('[data-entry-id="a"]')).not.toBeNull()
+    expect(container.querySelector('[data-entry-id="c"]')).not.toBeNull()
+  })
+
+  it("respects columnVisibility: a hidden column's header and cells do not render", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const hidden: VisibilityState = { ...DEFAULT_COLUMN_VISIBILITY, model: false }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList
+            filters={EMPTY_FILTERS}
+            columnVisibility={hidden}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText("Status")).toBeDefined()
+    expect(screen.queryByText("Model")).toBeNull()
+  })
+
+  it("clicking a row navigates to /requests/:id", () => {
+    mockHistory = { ...mockHistory, entries: [entry("clickme")], total: 1 }
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const row = container.querySelector<HTMLElement>('[data-entry-id="clickme"]')
+    expect(row).not.toBeNull()
+    fireEvent.click(row as HTMLElement)
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/clickme")
+  })
+
+  // ── Task 3.3:scrollToIndex 定位 + at×筛选归属判定 + flash 高亮 ──
+
+  it("?at in loaded set → scrollToIndex(center) + flashes the hit row (no per-id fetch)", async () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2")], total: 2 }
+    const { container } = renderList(["/requests?at=e2"])
+    await waitFor(() => expect(scrollToIndexMock).toHaveBeenCalledWith({ index: 1, align: "center" }))
+    const row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
+    expect(row?.className).toContain("toc-flash")
+    // 已在已加载集 → 不查单条 summary。
+    expect(apiGetMock).not.toHaveBeenCalled()
+  })
+
+  it("?at not in set + does NOT match filters → out-of-filter notice, never pages", async () => {
+    const fetchNextPage = vi.fn()
+    mockHistory = { entries: [entry("e1")], total: 99, isLoading: false, hasNextPage: true, fetchNextPage }
+    // 单条 summary 的 endpoint 与激活筛选不同 → matchesGating false。
+    apiGetMock.mockResolvedValue(fetchedEntry("deep", "openai-chat"))
+    const filters: RequestFilters = { ...EMPTY_FILTERS, endpoint: "anthropic-messages" }
+    renderList(["/requests?at=deep"], filters)
+    await screen.findByText(/不在当前筛选内/)
+    expect(fetchNextPage).not.toHaveBeenCalled()
+  })
+
+  it("?at not in set + matches filters → load-until-found (pages within cap)", async () => {
+    const fetchNextPage = vi.fn()
+    mockHistory = { entries: [entry("e1")], total: 99, isLoading: false, hasNextPage: true, fetchNextPage }
+    apiGetMock.mockResolvedValue(fetchedEntry("deep", "anthropic-messages"))
+    const filters: RequestFilters = { ...EMPTY_FILTERS, endpoint: "anthropic-messages" }
+    renderList(["/requests?at=deep"], filters)
+    await waitFor(() => expect(fetchNextPage).toHaveBeenCalled())
+  })
+
+  it("out-of-filter notice: clicking [清除筛选并定位] calls onClearFilters", async () => {
+    const onClearFilters = vi.fn()
+    const fetchNextPage = vi.fn()
+    mockHistory = { entries: [entry("e1")], total: 99, isLoading: false, hasNextPage: true, fetchNextPage }
+    apiGetMock.mockResolvedValue(fetchedEntry("deep", "openai-chat"))
+    const filters: RequestFilters = { ...EMPTY_FILTERS, endpoint: "anthropic-messages" }
+    renderList(["/requests?at=deep"], filters, onClearFilters)
+    const btn = await screen.findByText(/清除筛选并定位/)
+    fireEvent.click(btn)
+    expect(onClearFilters).toHaveBeenCalled()
+  })
+
+  it("load-until-found: fetches next page when ?at matches filters, is not in window, and there is more", async () => {
     const fetchNextPage = vi.fn()
     mockHistory = { entries: [entry("e1")], total: 99, isLoading: false, hasNextPage: true, fetchNextPage }
     renderList(["/requests?at=deep"])
-    expect(fetchNextPage).toHaveBeenCalled()
+    await waitFor(() => expect(fetchNextPage).toHaveBeenCalled())
   })
 
-  it("load-until-found: does NOT fetch when ?at is missing entirely and there is no more page (no infinite loop)", () => {
+  it("load-until-found: keeps paging as new pages arrive until the target is revealed, then scrolls to it", async () => {
+    // fetchNextPage 每次揭示一页(改 mockHistory.entries);第 REVEAL_ON 页放入目标 → 命中滚动。
+    const REVEAL_ON = 3
+    let page = 0
+    const fetchNextPage = vi.fn(() => {
+      page += 1
+      const next = page >= REVEAL_ON ? entry("deep") : entry(`filler-${page}`)
+      mockHistory = { ...mockHistory, entries: [...mockHistory.entries, next], hasNextPage: page < REVEAL_ON }
+    })
+    mockHistory = { entries: [entry("e1")], total: 99, isLoading: false, hasNextPage: true, fetchNextPage }
+    // 每次都造新元素(非同一引用),避免 React 对 `===` 元素跳过子树重渲染 → effect 得以随新页重跑。
+    const makeUi = () => (
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests?at=deep"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    const { rerender } = render(makeUi())
+    // 归属解析 → 首次翻页。
+    await waitFor(() => expect(fetchNextPage).toHaveBeenCalled())
+    // 每次 rerender 反映新页 → effect 重跑 → 继续翻页,直至目标出现被 scrollToIndex 命中。
+    for (let i = 0; i < REVEAL_ON + 2 && scrollToIndexMock.mock.calls.length === 0; i += 1) {
+      rerender(makeUi())
+      await Promise.resolve()
+    }
+    expect(scrollToIndexMock).toHaveBeenCalledWith({ index: expect.any(Number), align: "center" })
+    expect(fetchNextPage.mock.calls.length).toBeGreaterThanOrEqual(REVEAL_ON)
+  })
+
+  it("load-until-found: stops at LOCATE_PAGE_CAP when the target never appears (no runaway paging)", async () => {
+    // 目标永不出现,hasNextPage 恒真 → 唯一的终止是 LOCATE_PAGE_CAP。
+    let page = 0
+    const fetchNextPage = vi.fn(() => {
+      page += 1
+      mockHistory = { ...mockHistory, entries: [...mockHistory.entries, entry(`filler-${page}`)], hasNextPage: true }
+    })
+    mockHistory = { entries: [entry("e1")], total: 99999, isLoading: false, hasNextPage: true, fetchNextPage }
+    const makeUi = () => (
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests?at=deep"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    const { rerender } = render(makeUi())
+    await waitFor(() => expect(fetchNextPage).toHaveBeenCalled())
+    for (let i = 0; i < LOCATE_PAGE_CAP + 5; i += 1) {
+      rerender(makeUi())
+      await Promise.resolve()
+    }
+    expect(scrollToIndexMock).not.toHaveBeenCalled()
+    expect(fetchNextPage.mock.calls.length).toBe(LOCATE_PAGE_CAP)
+  })
+
+  it("no infinite loop: ?at missing entirely and no more page → never pages", async () => {
     const fetchNextPage = vi.fn()
     mockHistory = { entries: [entry("e1")], total: 1, isLoading: false, hasNextPage: false, fetchNextPage }
     renderList(["/requests?at=deep"])
+    await waitFor(() => expect(apiGetMock).toHaveBeenCalled())
     expect(fetchNextPage).not.toHaveBeenCalled()
   })
 
@@ -127,6 +334,7 @@ describe("HistoryList", () => {
     mockHistory = { entries: [entry("e1")], total: 1, isLoading: false, hasNextPage: false, fetchNextPage }
     renderList(["/requests"])
     expect(fetchNextPage).not.toHaveBeenCalled()
+    expect(apiGetMock).not.toHaveBeenCalled()
     expect(useListStore.getState().tailOn).toBe(true)
   })
 
@@ -135,16 +343,222 @@ describe("HistoryList", () => {
     render(
       <QueryClientProvider client={new QueryClient()}>
         <MemoryRouter initialEntries={["/requests?at=e2"]}>
-          <HistoryList />
+          <HistoryList filters={EMPTY_FILTERS} />
           <LocationProbe />
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    // 落地即暂停(定位态)。
     expect(useListStore.getState().tailOn).toBe(false)
     fireEvent.click(screen.getByText(/resume/))
-    // resume 真正生效:tail 恢复,且 URL 清掉 at(URL-as-truth:tailing 态不声明 locate)。
     expect(useListStore.getState().tailOn).toBe(true)
     expect(screen.getByTestId("loc").textContent).toBe("/requests")
+  })
+
+  // ── Task 4.1:error / empty 三态 ──
+
+  it("error state: renders the error message and 重试 calls refetch", () => {
+    const refetch = vi.fn()
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn(), isError: true, error: new Error("boom"), refetch }
+    renderList()
+    expect(screen.getByText(/boom/)).toBeDefined()
+    fireEvent.click(screen.getByText("重试"))
+    expect(refetch).toHaveBeenCalled()
+  })
+
+  it("empty state with active filters: renders 清除筛选 and calls onClearFilters", () => {
+    const onClearFilters = vi.fn()
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
+    const filters: RequestFilters = { ...EMPTY_FILTERS, endpoint: "anthropic-messages" }
+    renderList(["/requests"], filters, onClearFilters)
+    expect(screen.getByText(/无匹配请求/)).toBeDefined()
+    fireEvent.click(screen.getByText("清除筛选"))
+    expect(onClearFilters).toHaveBeenCalled()
+  })
+
+  it("empty state without filters: 无匹配请求 only, no 清除筛选 button", () => {
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
+    renderList()
+    expect(screen.getByText(/无匹配请求/)).toBeDefined()
+    expect(screen.queryByText("清除筛选")).toBeNull()
+  })
+
+  // ── Task 4.2:列表键盘导航（↑/↓/Enter/Esc）+ 行 a11y。roving 焦点：DOM 焦点跟随游标，测试驱动真实焦点路径。 ──
+
+  it("keyboard nav: ArrowDown moves DOM focus to the next row (roving) and scrolls it into view", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = renderList()
+    const e1row = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
+    // 真实键盘路径：焦点先落在某行（初始 tab 停靠 = 首行），对该聚焦行派发 ArrowDown。
+    e1row?.focus()
+    expect(document.activeElement).toBe(e1row)
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
+    // DOM 焦点应随游标移到下一行（roving），且 scrollToIndex 带入视口（向下 → align end）。
+    const e2row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
+    expect(document.activeElement).toBe(e2row)
+    expect(e2row?.getAttribute("data-focused")).toBe("true")
+    expect(scrollToIndexMock).toHaveBeenLastCalledWith({ index: 1, align: "end" })
+  })
+
+  it("keyboard nav: ArrowDown ×2 moves focus/cursor to index 2 (third row)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = renderList()
+    container.querySelector<HTMLElement>('[data-entry-id="e1"]')?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
+    expect(scrollToIndexMock).toHaveBeenLastCalledWith({ index: 2, align: "end" })
+    const e3row = container.querySelector<HTMLElement>('[data-entry-id="e3"]')
+    expect(document.activeElement).toBe(e3row)
+    expect(e3row?.getAttribute("data-focused")).toBe("true")
+  })
+
+  it("keyboard nav: ArrowUp clamps at 0 (never negative)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = renderList()
+    const e1row = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
+    // 初始焦点 index 0（首行 tab 停靠），聚焦首行后 ArrowUp 应 clamp 在 0（向上 → align start），焦点不动。
+    e1row?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowUp" })
+    expect(scrollToIndexMock).toHaveBeenLastCalledWith({ index: 0, align: "start" })
+    expect(document.activeElement).toBe(e1row)
+  })
+
+  it("keyboard nav: Enter activates the CURSOR row, not the initially-focused row0 (real focus path)", () => {
+    // 回归 oracle：Tab 落 row0 → ArrowDown ×2 游标到 e3 → Enter。roving 保证 DOM 焦点已随游标移到 e3，
+    // Enter 由 e3 激活 → 打开 e3（而非旧 bug 的 row0/e1）。修复前 DOM 焦点滞留 e1，Enter 打开 e1 → 本用例失败。
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    container.querySelector<HTMLElement>('[data-entry-id="e1"]')?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" }) // 游标/焦点 → e2
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" }) // 游标/焦点 → e3
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Enter" }) // 由聚焦行 e3 激活
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e3")
+  })
+
+  it("keyboard nav: Escape clears the focus cursor and blurs", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = renderList()
+    container.querySelector<HTMLElement>('[data-entry-id="e1"]')?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" }) // 焦点 → index 1 (e2)
+    expect(container.querySelector('[data-focused="true"]')).not.toBeNull()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" })
+    expect(container.querySelector('[data-focused="true"]')).toBeNull()
+    // Esc 后不应再把焦点抢回旧行（focusRequestRef 已清）。
+    expect(container.contains(document.activeElement)).toBe(false)
+  })
+
+  it("keyboard nav: isTyping guard — ArrowDown from inside an input does not move focus", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    renderList()
+    const scroller = screen.getByTestId("history-scroller")
+    // 在滚动容器内放一个输入框并聚焦：方向键应被 isTyping 守卫拦下，不移动焦点游标。
+    const input = document.createElement("input")
+    scroller.append(input)
+    input.focus()
+    fireEvent.keyDown(input, { key: "ArrowDown" })
+    expect(scrollToIndexMock).not.toHaveBeenCalled()
+  })
+
+  it("row a11y: roving tabindex — only the tab-stop (cursor) row has tabIndex 0, others -1; all are role=button", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = renderList()
+    const e1row = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
+    const e2row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
+    // 初始游标 index 0 → e1 是唯一 tab 停靠（tabIndex 0），其余 -1（仅脚本/方向键可聚焦）。
+    expect(e1row?.getAttribute("role")).toBe("button")
+    expect(e2row?.getAttribute("role")).toBe("button")
+    expect(e1row?.getAttribute("tabindex")).toBe("0")
+    expect(e2row?.getAttribute("tabindex")).toBe("-1")
+    // ArrowDown 后 tab 停靠随游标移到 e2。
+    e1row?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" })
+    expect(e1row?.getAttribute("tabindex")).toBe("-1")
+    expect(e2row?.getAttribute("tabindex")).toBe("0")
+  })
+
+  it("row a11y: Enter on a focused row activates it (row-level activation)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2"), entry("e3")], total: 3 }
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
+    row?.focus()
+    fireEvent.keyDown(row as HTMLElement, { key: "Enter" })
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e2")
+  })
+
+  it("row a11y: Space also activates the row", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2")], total: 2 }
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const row = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
+    fireEvent.keyDown(row as HTMLElement, { key: " " })
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e1")
+  })
+
+  it("row a11y: the selected (?at) row carries aria-current", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2")], total: 2 }
+    const { container } = renderList(["/requests?at=e2"])
+    const row = container.querySelector<HTMLElement>('[data-entry-id="e2"]')
+    expect(row?.getAttribute("aria-current")).toBe("true")
+    const other = container.querySelector<HTMLElement>('[data-entry-id="e1"]')
+    expect(other?.getAttribute("aria-current")).toBeNull()
+  })
+
+  // ── Task 4.3:筛选感知清空历史 + 确认 Modal ──
+
+  it("clear (with filters): modal shows the filtered-count prompt; 确认 issues scoped delete + invalidates", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries")
+    mockHistory = { ...mockHistory, entries: [entry("e1")], total: 3 }
+    const filters: RequestFilters = { ...EMPTY_FILTERS, endpoint: "anthropic-messages" }
+    renderList(["/requests"], filters)
+    fireEvent.click(screen.getByText("清空"))
+    // 有筛选 → 文案含「筛选命中的 3」。
+    expect(screen.getByText(/筛选命中的 3/)).toBeDefined()
+    fireEvent.click(screen.getByText("确认"))
+    await waitFor(() => expect(apiDeleteMock).toHaveBeenCalled())
+    const url = apiDeleteMock.mock.calls[0][0] as string
+    expect(url).toContain("/history/api/entries?")
+    expect(url).toContain("endpoint=anthropic-messages")
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["history-infinite"] }))
+    // 删除后 Modal 关闭。
+    await waitFor(() => expect(screen.queryByText("确认")).toBeNull())
+  })
+
+  it("clear (no filters): modal shows the clear-all prompt; 确认 issues an unscoped delete (no query)", async () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1")], total: 5 }
+    renderList()
+    fireEvent.click(screen.getByText("清空"))
+    // 无筛选 → 文案「全部」+「5」。
+    expect(screen.getByText(/全部 5/)).toBeDefined()
+    fireEvent.click(screen.getByText("确认"))
+    await waitFor(() => expect(apiDeleteMock).toHaveBeenCalledWith("/history/api/entries"))
+  })
+
+  it("clear: 取消 closes the modal without deleting", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1")], total: 5 }
+    renderList()
+    fireEvent.click(screen.getByText("清空"))
+    expect(screen.getByText("确认")).toBeDefined()
+    fireEvent.click(screen.getByText("取消"))
+    expect(screen.queryByText("确认")).toBeNull()
+    expect(apiDeleteMock).not.toHaveBeenCalled()
   })
 })

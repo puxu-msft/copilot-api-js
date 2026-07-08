@@ -1,6 +1,7 @@
 import type {
   //
   HistoryEntry,
+  QueryOptions,
 } from "~/lib/history/types"
 
 import {
@@ -9,6 +10,7 @@ import {
   compressAsync,
 } from "./compression"
 import { getDatabase } from "./connection"
+import { applyWhere } from "./read"
 import {
   //
   buildSearchIndexChunked,
@@ -215,6 +217,34 @@ export function deleteSession(sessionId: string): number {
     deleted = n
     db.prepare("DELETE FROM entries_v2 WHERE session_id = ?").run(sessionId)
     // req_msg/req_aux cascade-removed with the entries; sweep the now-orphaned blobs.
+    if (deleted > 0) db.prepare(GC_ORPHAN_MSG_BLOB_SQL).run()
+  })
+  tx()
+  return deleted
+}
+
+/**
+ * Scoped delete: remove terminal entries matching the SAME filter set the list
+ * query uses (reuses read.ts `applyWhere` for single-source WHERE), never the
+ * in-flight persisted head rows (status NOT IN active states, so a streaming
+ * request being finalized isn't yanked out from under the writer). Mirrors
+ * `deleteSession`: DELETE FROM entries_v2 cascades req_msg/req_aux/entry_stages
+ * (FK ON DELETE CASCADE); the now-orphaned content-addressed msg_blob rows are
+ * swept by GC_ORPHAN_MSG_BLOB_SQL. Pinned rows are NOT exempt (deliberate delete
+ * ignores pin, matching clear-all + deleteSession). Returns terminal rows deleted.
+ */
+export function deleteEntries(filters: QueryOptions): number {
+  const db = getDatabase()
+  const { sql: whereSql, params } = applyWhere(filters)
+  const terminalGuard = "status NOT IN ('pending','executing','streaming')"
+  const where = whereSql ? `${whereSql} AND ${terminalGuard}` : `WHERE ${terminalGuard}`
+  let deleted = 0
+  const tx = db.transaction(() => {
+    // Count head rows BEFORE delete: entry_stages/req_msg/req_aux cascade, so
+    // run().changes would include cascade rows and can't be the entry count.
+    const { n } = db.prepare(`SELECT COUNT(*) AS n FROM entries_v2 ${where}`).get(...params) as { n: number }
+    deleted = n
+    db.prepare(`DELETE FROM entries_v2 ${where}`).run(...params)
     if (deleted > 0) db.prepare(GC_ORPHAN_MSG_BLOB_SQL).run()
   })
   tx()

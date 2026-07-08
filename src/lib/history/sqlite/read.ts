@@ -37,7 +37,7 @@ interface WhereClause {
   params: Array<SqlBinding>
 }
 
-function applyWhere(opts: QueryOptions | undefined): WhereClause {
+export function applyWhere(opts: QueryOptions | undefined): WhereClause {
   const where: Array<string> = []
   const params: Array<SqlBinding> = []
   if (opts?.model) {
