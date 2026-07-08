@@ -421,4 +421,26 @@ describe("makeSseSink buffered anchor injection (injectAnchor tick branch)", () 
     expect(written).toEqual([{ data: '{"type":"ping"}', event: "ping" }])
     sink.close?.()
   })
+
+  test("injectAnchor rejecting (client gone mid-write) still emits one keepalive that tick, then re-arms", async () => {
+    const { stream, written } = stubSseStream()
+    // injectAnchor rejects — models a `sink.write` failing because the client disconnected mid-inject.
+    // The tick's `.catch` must re-arm anchorAttempted AND still emit one keepalive so the "every idle
+    // tick emits exactly one frame" invariant holds (no silently-wasted interval).
+    const injectAnchor = mock(async (): Promise<boolean> => {
+      throw new Error("client disconnected mid-write")
+    })
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor } })
+
+    await clock.advance(15_000)
+    await flush()
+    expect(injectAnchor).toHaveBeenCalledTimes(1)
+    // The reject `.catch` emitted one keepalive (openBlock still undefined → provider yields PING).
+    expect(written).toEqual([{ data: '{"type":"ping"}', event: "ping" }])
+    // Re-armed: the NEXT idle tick retries injectAnchor (anchorAttempted was reset to false).
+    await clock.advance(15_000)
+    await flush()
+    expect(injectAnchor).toHaveBeenCalledTimes(2)
+    sink.close?.()
+  })
 })

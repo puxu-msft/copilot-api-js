@@ -305,7 +305,12 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
             }
           })
           .catch(() => {
+            // injectAnchor rejects only when a sink.write rejected = the client is already gone.
+            // Re-arm and still emit one keepalive so the "every idle tick emits exactly one frame"
+            // invariant holds (the keepalive hits the same closed stream and routes through the
+            // driver's outcome path); without this the tick would silently waste one interval.
             anchorAttempted = false
+            emitKeepalive()
           })
         lastRealMs = Date.now()
         timer = setTimeout(tick, intervalMs)

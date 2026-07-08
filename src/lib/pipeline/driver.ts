@@ -547,9 +547,10 @@ async function runResponseBufferedSink(
   // forwarded record `synthetic:"anchor"` and its noteBlockState lights openBlock={0,text}) + a first empty
   // text_delta@0 (via `writeKeepalive` — marks `synthetic:"keepalive"`; the frame that resets Claude Code's
   // 300s watchdog). All three land on the forwarded track (Task 5.1: real vs anchor vs keepalive stay
-  // distinguishable in history/UI — richest-data-flow). Returns false — gracefully, NEVER throwing (the tick's
-  // catch is pure defense, not a control path) — when it cannot inject yet: no anchor hooks, already injected,
-  // or message_start not captured (the pre-message_start window), so the tick falls back to a ping. Commit-time
+  // distinguishable in history/UI — richest-data-flow). Returns false — gracefully — when it cannot inject
+  // yet: no anchor hooks, already injected, or message_start not captured (the pre-message_start window), so
+  // the tick falls back to a ping. It rejects ONLY if one of its `sink.write`s rejects (= the client is
+  // already gone mid-write); the tick's `.catch` handles that by re-arming + emitting one keepalive. Commit-time
   // close-off / +1 remap / message_start dedup are Task 3.3 (this Task builds only the injection path).
   const injectAnchor = async (): Promise<boolean> => {
     if (!anchor || anchorState.injected || capturedMessageStart === undefined) return false
