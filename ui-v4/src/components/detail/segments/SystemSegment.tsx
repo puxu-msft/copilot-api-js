@@ -7,13 +7,13 @@ import {
 
 import type { HistoryEntry } from "@/types"
 
+import { RawJsonView } from "@/components/common/RawJsonView"
 import {
   //
   SystemMessage,
   systemToBlocks,
   type ViewMode,
 } from "@/components/detail/blocks/SystemMessage"
-import { CodeBlock } from "@/components/detail/CodeBlock"
 import { DetailTocTree } from "@/components/detail/toc/DetailTocTree"
 import { TocSidebar } from "@/components/detail/toc/TocSidebar"
 import { useAnchorScroll } from "@/hooks/useAnchorScroll"
@@ -108,10 +108,9 @@ export function SystemSegment({ entry }: { entry: HistoryEntry }) {
               {rawFromEffective ? "effective system（inbound 无 system，此为 rewrite 注入）" : "inbound system"}。两腿完整对比见上方 Diff 视图或 Stages →
               Inbound/Effective → Raw。
             </div>
-            <CodeBlock
-              code={JSON.stringify(rawSystem, null, 2)}
-              lang="json"
-            />
+            {typeof rawSystem === "string" ?
+              <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">{rawSystem}</pre>
+            : <RawJsonView value={rawSystem} />}
           </>
         : <SystemMessage
             system={inboundSystem ?? ""}
