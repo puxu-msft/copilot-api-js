@@ -15,6 +15,7 @@ import {
 } from "@tanstack/react-table"
 import { useMemo } from "react"
 
+import type { ModelStatus } from "@/lib/model-status"
 import type { JoinedModelTelemetry } from "@/lib/model-telemetry"
 
 import {
@@ -33,6 +34,7 @@ interface ModelsTableProps {
   sorting: SortingState
   onSortingChange: OnChangeFn<SortingState>
   telemetryFor: (id: string) => JoinedModelTelemetry | null
+  statusFor: (model: Model) => ModelStatus
   maxRequests7d: number
   selectedId?: string | null
   onSelect?: (id: string) => void
@@ -49,8 +51,18 @@ interface ModelsTableProps {
  * Column identity, accessors, sort semantics, and cell rendering live in the shared
  * {@link ./model-table-columns} module (the single accessor source).
  */
-export function ModelsTable({ models, columnVisibility, sorting, onSortingChange, telemetryFor, maxRequests7d, selectedId, onSelect }: ModelsTableProps) {
-  const data = useMemo(() => augmentRows(models, telemetryFor), [models, telemetryFor])
+export function ModelsTable({
+  models,
+  columnVisibility,
+  sorting,
+  onSortingChange,
+  telemetryFor,
+  statusFor,
+  maxRequests7d,
+  selectedId,
+  onSelect,
+}: ModelsTableProps) {
+  const data = useMemo(() => augmentRows(models, telemetryFor, statusFor), [models, telemetryFor, statusFor])
   const columns = useMemo(() => buildModelColumns({ maxRequests7d, onSelect }), [maxRequests7d, onSelect])
 
   const table = useReactTable({
@@ -99,10 +111,14 @@ export function ModelsTable({ models, columnVisibility, sorting, onSortingChange
       <tbody>
         {table.getRowModel().rows.map((row) => {
           const selected = row.original.model.id === selectedId
+          // config-disabled rows are muted via a FOREGROUND token (not tr opacity —
+          // opacity would wash out the selected amber background). picker-disabled
+          // rows keep the chip but stay full-contrast.
+          const muted = row.original.status === "config-disabled"
           return (
             <tr
               key={row.id}
-              className={`border-b border-[#1e1e24] ${onSelect ? "cursor-pointer hover:bg-[#1a1a20]" : ""} ${selected ? "border-l-2 border-l-[var(--color-primary)] bg-[#3a2f1a]" : ""}`}
+              className={`border-b border-[#1e1e24] ${onSelect ? "cursor-pointer hover:bg-[#1a1a20]" : ""} ${muted ? "text-[var(--color-muted)]" : ""} ${selected ? "border-l-2 border-l-[var(--color-primary)] bg-[#3a2f1a]" : ""}`}
               aria-current={selected ? "true" : undefined}
               onClick={onSelect ? () => onSelect(row.original.model.id) : undefined}
             >

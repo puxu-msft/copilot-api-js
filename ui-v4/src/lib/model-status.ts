@@ -12,6 +12,6 @@ export type ModelStatus = "enabled" | "config-disabled" | "picker-disabled"
  */
 export function modelStatus(model: Model, configDisabled: ReadonlySet<string>): ModelStatus {
   if (configDisabled.has(model.id)) return "config-disabled"
-  if (model.model_picker_enabled === false) return "picker-disabled"
+  if (!model.model_picker_enabled) return "picker-disabled"
   return "enabled"
 }

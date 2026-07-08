@@ -12,6 +12,7 @@ import { createColumnHelper } from "@tanstack/react-table"
 import { deriveCapabilities } from "~backend/lib/models/capabilities"
 
 import type { ModelColumnKey } from "@/lib/model-columns"
+import type { ModelStatus } from "@/lib/model-status"
 import type { JoinedModelTelemetry } from "@/lib/model-telemetry"
 
 import { formatNumber } from "@/lib/format"
@@ -41,14 +42,21 @@ export interface ModelRow {
   caps: DerivedCapabilities
   /** Joined telemetry requests(7d), 0 when unmatched — pre-resolved for accessor + mini-bar. */
   req: number
+  /** UI status (config/picker-disabled/enabled), pre-resolved once per row. */
+  status: ModelStatus
 }
 
-/** Attach derived capabilities + joined telemetry to each model, once. */
-export function augmentRows(models: Array<Model>, telemetryFor: (id: string) => JoinedModelTelemetry | null): Array<ModelRow> {
+/** Attach derived capabilities + joined telemetry + UI status to each model, once. */
+export function augmentRows(
+  models: Array<Model>,
+  telemetryFor: (id: string) => JoinedModelTelemetry | null,
+  statusFor: (model: Model) => ModelStatus,
+): Array<ModelRow> {
   return models.map((model) => ({
     model,
     caps: deriveCapabilities(model),
     req: telemetryFor(model.id)?.last7d?.requestCount ?? 0,
+    status: statusFor(model),
   }))
 }
 
@@ -202,6 +210,26 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
               <span className="ml-1 text-[10px] text-[var(--color-muted)]">preview</span>
             : null}
           </>
+        )
+      },
+    }),
+    col.accessor((r) => r.status, {
+      id: "status",
+      header: "Status",
+      enableSorting: false,
+      meta: { thClass: HEAD, tdClass: "px-2 py-1" },
+      cell: (c) => {
+        const st = c.getValue<ModelStatus>()
+        if (st === "enabled") return <span className="text-[10px] text-[var(--color-muted)]">on</span>
+        const label = st === "config-disabled" ? "config-off" : "picker-off"
+        const color = st === "config-disabled" ? "var(--color-fail)" : "var(--color-muted)"
+        return (
+          <span
+            className="border px-1.5 py-0.5 text-[10px]"
+            style={{ color, borderColor: color }}
+          >
+            {label}
+          </span>
         )
       },
     }),

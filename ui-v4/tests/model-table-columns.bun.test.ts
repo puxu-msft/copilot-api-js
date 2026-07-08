@@ -12,6 +12,7 @@ import {
   augmentRows,
   sortModelRows,
 } from "@/components/models/model-table-columns"
+import { modelStatus } from "@/lib/model-status"
 
 const telemetryFor = (id: string) =>
   id === "b" ?
@@ -36,7 +37,7 @@ const m = (over: Record<string, unknown> = {}): Model =>
 /** `sortModelRows` is the shared sort backing the CSV export — it must reproduce the
  *  table's TanStack order from the same accessors, given a SortingState. */
 describe("sortModelRows", () => {
-  const rows = (list: Array<Model>) => augmentRows(list, telemetryFor)
+  const rows = (list: Array<Model>) => augmentRows(list, telemetryFor, (model) => modelStatus(model, new Set()))
 
   it("no sorting → input order preserved", () => {
     const list = [m({ id: "z" }), m({ id: "a" })]
@@ -61,5 +62,19 @@ describe("sortModelRows", () => {
   it("is stable on ties (equal keys keep input order)", () => {
     const list = [m({ id: "a", billing: { multiplier: 2 } }), m({ id: "b", billing: { multiplier: 2 } })]
     expect(sortModelRows(rows(list), [{ id: "billing", desc: true }]).map((r) => r.model.id)).toEqual(["a", "b"])
+  })
+})
+
+/** `augmentRows` pre-resolves each row's UI status via the `statusFor` closure so the
+ *  status column + row muting read a stable value (not recomputed per cell). */
+describe("augmentRows status", () => {
+  it("carries status via statusFor", () => {
+    const models = [
+      { id: "a", model_picker_enabled: true },
+      { id: "b", model_picker_enabled: false },
+    ] as unknown as Array<Model>
+    const statusFor = (model: Model) => modelStatus(model, new Set(["a"]))
+    const augmented = augmentRows(models, () => null, statusFor)
+    expect(augmented.map((r) => r.status)).toEqual(["config-disabled", "picker-disabled"])
   })
 })

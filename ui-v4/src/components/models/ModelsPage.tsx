@@ -38,6 +38,7 @@ import {
   modelBillingBounds,
   type ModelFilters,
 } from "@/lib/model-filters"
+import { modelStatus } from "@/lib/model-status"
 import {
   //
   buildModelTelemetryIndex,
@@ -71,6 +72,11 @@ export function ModelsPage() {
   }, [columns])
 
   const models = useMemo(() => data?.data ?? [], [data])
+
+  // Config-disabled ids from the envelope; useMemo so the Set identity is stable
+  // (feeds statusFor → columns/filter/csv; an unstable Set rebuilds the row model).
+  const configDisabledSet = useMemo(() => new Set(data?.disabled ?? []), [data])
+  const statusFor = useMemo(() => (m: (typeof models)[number]) => modelStatus(m, configDisabledSet), [configDisabledSet])
 
   const index = useMemo(() => buildModelTelemetryIndex(telemetry ?? null, models), [telemetry, models])
   const telemetryFor = useMemo(() => (id: string) => telemetryForId(index, id), [index])
@@ -134,7 +140,7 @@ export function ModelsPage() {
   // the SAME shared accessor + SortingState the table uses, so the CSV row order is
   // identical to the on-screen table. Telemetry columns use the same normalized join.
   const exportCsv = () => {
-    const sortedModels = sortModelRows(augmentRows(visible, telemetryFor), sorting).map((r) => r.model)
+    const sortedModels = sortModelRows(augmentRows(visible, telemetryFor, statusFor), sorting).map((r) => r.model)
     const csv = modelsToCsv(sortedModels, telemetryFor)
     triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8" }), "models.csv")
   }
@@ -207,6 +213,7 @@ export function ModelsPage() {
                   models={visible}
                   columnVisibility={columns}
                   telemetryFor={telemetryFor}
+                  statusFor={statusFor}
                   maxRequests7d={maxRequests7d}
                   sorting={sorting}
                   onSortingChange={setSorting}

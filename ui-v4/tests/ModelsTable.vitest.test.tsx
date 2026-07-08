@@ -63,6 +63,7 @@ function Harness({ columnVisibility = {} as VisibilityState, initialSorting = [{
       sorting={sorting}
       onSortingChange={setSorting}
       telemetryFor={telemetryFor}
+      statusFor={() => "enabled"}
       maxRequests7d={42}
       onSelect={() => {}}
     />
@@ -133,7 +134,10 @@ describe("ModelsTable (TanStack)", () => {
     // real TanStack DOM as an independent oracle.
     const sorting: SortingState = [{ id: "context", desc: true }]
     render(<Harness initialSorting={sorting} />)
-    const shared = sortModelRows(augmentRows(MODELS, telemetryFor), sorting).map((r) => r.model.id)
+    const shared = sortModelRows(
+      augmentRows(MODELS, telemetryFor, () => "enabled"),
+      sorting,
+    ).map((r) => r.model.id)
     expect(domRowIds()).toEqual(shared)
     expect(shared).toEqual(["z-model", "a-model"]) // 900 desc before 100
   })
@@ -180,6 +184,7 @@ describe("ModelsTable (TanStack)", () => {
         sorting={[{ id: "id", desc: false }]}
         onSortingChange={() => {}}
         telemetryFor={() => null}
+        statusFor={() => "enabled"}
         maxRequests7d={0}
       />,
     )
@@ -213,5 +218,23 @@ describe("ModelsTable (TanStack)", () => {
     expect(screen.queryByRole("columnheader", { name: /^Think/ })).toBeNull()
     expect(screen.getByRole("columnheader", { name: /^Strm/ })).toBeDefined()
     expect(screen.getByRole("columnheader", { name: /\$×/ })).toBeDefined()
+  })
+
+  it("mutes config-disabled rows and shows a config-off chip", () => {
+    render(
+      <ModelsTable
+        models={[{ id: "d", name: "D", vendor: "V", model_picker_enabled: true } as unknown as Model]}
+        columnVisibility={{}}
+        telemetryFor={() => null}
+        statusFor={() => "config-disabled"}
+        maxRequests7d={1}
+        sorting={[]}
+        onSortingChange={() => {}}
+      />,
+    )
+    expect(screen.getByText("config-off")).toBeDefined()
+    // Row foreground muting class present (a FOREGROUND token, not opacity).
+    const row = screen.getByText("d").closest("tr")
+    expect(row?.className ?? "").toContain("text-[var(--color-muted)]")
   })
 })

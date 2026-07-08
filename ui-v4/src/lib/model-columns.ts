@@ -1,5 +1,6 @@
 /** Toggleable columns for the models table. `id`/`name` are always shown (not here). */
 export type ModelColumnKey =
+  | "status"
   | "vendor"
   | "context"
   | "output"
@@ -14,6 +15,7 @@ export type ModelColumnKey =
   | "requests7d"
 
 export const MODEL_COLUMNS: ReadonlyArray<{ key: ModelColumnKey; label: string }> = [
+  { key: "status", label: "Status" },
   { key: "vendor", label: "Vendor" },
   { key: "context", label: "Context" },
   { key: "output", label: "Output" },
