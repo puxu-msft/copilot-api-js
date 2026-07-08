@@ -145,15 +145,16 @@ describe("ModelsPage", () => {
 
   it("opens the detail panel on row click and closes it via the × button", () => {
     renderPage()
-    expect(screen.queryByRole("region", { name: /Model detail/i })).toBeNull()
+    expect(screen.queryByRole("dialog")).toBeNull()
     fireEvent.click(screen.getByText("claude-opus-4.8"))
-    const panel = screen.getByRole("region", { name: /Model detail: claude-opus-4\.8/i })
+    // ModelDetail is a Radix Dialog (modal drawer) — role=dialog, named by its title (the model id).
+    const panel = screen.getByRole("dialog", { name: /claude-opus-4\.8/i })
     expect(panel).toBeDefined()
     // Overview tab is active by default — the vertical tab rail is present.
     expect(screen.getByRole("tab", { name: "Capabilities" })).toBeDefined()
     expect(screen.getByRole("tab", { name: "Raw JSON" })).toBeDefined()
     fireEvent.click(screen.getByRole("button", { name: /Close model detail/i }))
-    expect(screen.queryByRole("region", { name: /Model detail/i })).toBeNull()
+    expect(screen.queryByRole("dialog")).toBeNull()
   })
 
   it("makes each row's id a keyboard-reachable button that opens the panel", () => {
@@ -162,7 +163,24 @@ describe("ModelsPage", () => {
     const trigger = screen.getByRole("button", { name: /Open details for claude-opus-4\.8/i })
     expect(trigger).toBeDefined()
     fireEvent.click(trigger)
-    expect(screen.getByRole("region", { name: /Model detail: claude-opus-4\.8/i })).toBeDefined()
+    expect(screen.getByRole("dialog", { name: /claude-opus-4\.8/i })).toBeDefined()
+  })
+
+  // Task B2 layout invariant: the detail is a modal Dialog drawer that OVERLAYS the
+  // full-width table (portal, not a co-planar flex sibling that squeezes it) — so
+  // selecting a model must yield a role=dialog while the list stays mounted in the
+  // same tree simultaneously. Radix marks the backdrop content aria-hidden while the
+  // modal is open, so include hidden nodes when asserting the list is still present
+  // (not unmounted). Two tables render (models list + UnmatchedTelemetry); scope to
+  // the models list via its Vendor columnheader, and confirm a non-selected row
+  // (gpt-5.5) is still there — proof the drawer overlays rather than replacing the list.
+  it("renders the model detail as a modal dialog overlaying (not squeezing/unmounting) the list", async () => {
+    renderPage()
+    fireEvent.click(screen.getByText("claude-opus-4.8"))
+    expect(await screen.findByRole("dialog", { name: /claude-opus-4\.8/i })).toBeDefined()
+    expect(screen.getAllByRole("table", { hidden: true }).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByRole("columnheader", { name: /Vendor/i, hidden: true })).toBeDefined()
+    expect(screen.getByText("gpt-5.5")).toBeDefined()
   })
 
   it("sortable headers are keyboard-operable and expose aria-sort", async () => {

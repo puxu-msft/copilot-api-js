@@ -197,41 +197,41 @@ export function ModelsPage() {
             options={options}
             billingBounds={billingBounds}
           />
-          <div className="flex min-h-0 flex-1">
-            <div className="min-h-0 flex-1 overflow-auto">
-              {visible.length === 0 ?
-                <div className="p-4 text-[#888]">
-                  {models.length === 0 ?
-                    "No models in the catalog."
-                  : <>
-                      No models match the current filters.
-                      <div className="mt-1 text-[12px] text-[var(--color-muted)]">Try relaxing your search or clearing a filter.</div>
-                    </>
-                  }
-                </div>
-              : <ModelsTable
-                  models={visible}
-                  columnVisibility={columns}
-                  telemetryFor={telemetryFor}
-                  statusFor={statusFor}
-                  maxRequests7d={maxRequests7d}
-                  sorting={sorting}
-                  onSortingChange={setSorting}
-                  selectedId={selectedId}
-                  onSelect={select}
-                />
-              }
-              <UnmatchedTelemetry rows={index.unmatched} />
-            </div>
-            {selectedModel ?
-              <ModelDetail
-                key={selectedModel.id}
-                model={selectedModel}
-                telemetry={telemetryFor(selectedModel.id)}
-                onClose={clearSelection}
+          <div className="min-h-0 flex-1 overflow-auto">
+            {visible.length === 0 ?
+              <div className="p-4 text-[#888]">
+                {models.length === 0 ?
+                  "No models in the catalog."
+                : <>
+                    No models match the current filters.
+                    <div className="mt-1 text-[12px] text-[var(--color-muted)]">Try relaxing your search or clearing a filter.</div>
+                  </>
+                }
+              </div>
+            : <ModelsTable
+                models={visible}
+                columnVisibility={columns}
+                telemetryFor={telemetryFor}
+                statusFor={statusFor}
+                maxRequests7d={maxRequests7d}
+                sorting={sorting}
+                onSortingChange={setSorting}
+                selectedId={selectedId}
+                onSelect={select}
               />
-            : null}
+            }
+            <UnmatchedTelemetry rows={index.unmatched} />
           </div>
+          {/* Modal drawer (Radix Dialog portal) — overlays the full-width table
+              above rather than sharing a flex row that would squeeze it. */}
+          {selectedModel ?
+            <ModelDetail
+              key={selectedModel.id}
+              model={selectedModel}
+              telemetry={telemetryFor(selectedModel.id)}
+              onClose={clearSelection}
+            />
+          : null}
         </>
       }
     </div>
