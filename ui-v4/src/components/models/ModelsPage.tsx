@@ -154,7 +154,7 @@ export function ModelsPage() {
     <div className="mono flex min-h-0 flex-1 flex-col text-[13px]">
       <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2 py-1">
         <div className="text-[11px] uppercase tracking-wider text-[var(--color-muted)]">
-          Models · {visible.length}/{models.length}
+          Models · {visible.length}/{models.length} · {options.vendors.length} vendors · {options.endpoints.length} endpoints
         </div>
         <div className="ml-auto flex items-center gap-2">
           <ModelsColumnMenu

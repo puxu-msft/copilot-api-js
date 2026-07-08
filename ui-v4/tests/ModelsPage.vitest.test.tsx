@@ -105,6 +105,18 @@ describe("ModelsPage", () => {
     expect(screen.getByText("table")).toBeDefined()
   })
 
+  // The header count region summarizes the catalog's breadth: not just the
+  // visible/total row count but also the distinct vendor and endpoint counts
+  // (parity with the Vue /ui list header). Match header-specific fragments —
+  // `/vendors/`/`/endpoints/` alone would collide with the filter bar's
+  // "all vendors"/"all endpoints" select labels.
+  it("header shows vendors and endpoints counts", () => {
+    renderPage()
+    // Default two-model catalog: Anthropic + OpenAI = 2 vendors; both are
+    // type "chat" → the legacy endpoint map yields a single distinct endpoint.
+    expect(screen.getByText(/Models · 2\/2 · 2 vendors · 1 endpoints/)).toBeDefined()
+  })
+
   it("filters by search (id/name)", () => {
     renderPage()
     fireEvent.change(screen.getByLabelText("Search models"), { target: { value: "gpt" } })
