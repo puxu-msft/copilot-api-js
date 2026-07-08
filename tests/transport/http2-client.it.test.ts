@@ -226,13 +226,16 @@ describe("http2-client", () => {
   // WITHOUT crashing the process. awaitH2Handshake's onTimeout calls
   // settle(new Error(...)): it removes its own 'error' listener, then tears the
   // socket down. The timeout error is the socket's FIRST-EVER 'error' emission, so
-  // if teardown re-emits it (destroy(err)) with no listener attached, Node
-  // RE-THROWS it as an uncaughtException → main.ts process.exit(1) — one connect
-  // timeout crashes the whole server (production incident: "[http2] TLS connect
-  // timeout after 10000ms"). NB: the onError path canNOT reproduce this (its socket
-  // already emitted 'error', so destroy wouldn't re-emit) — only this timeout path
-  // (and the ALPN-downgrade path, which shares settle's fresh-error branch) does.
-  // The fix attaches a no-op 'error' sink before teardown.
+  // if teardown re-emits it with no listener attached, Node RE-THROWS it as an
+  // uncaughtException → main.ts process.exit(1) — one connect timeout crashes the
+  // whole server (production incident: "[http2] TLS connect timeout after
+  // 10000ms"). NB: the onError path canNOT reproduce this (its socket already
+  // emitted 'error', so destroy wouldn't re-emit) — only this timeout path (and the
+  // ALPN-downgrade path, which shares settle's fresh-error branch) does. The guard:
+  // createSession wraps every socket in withErrorSink (crash-safety.ts), whose
+  // permanent inert 'error' listener survives the teardown. This test drives the
+  // real createSession path so it exercises that guard; the primitive itself is
+  // unit-tested in crash-safety.unit.test.ts.
   test("a TLS connect timeout rejects WITHOUT a process uncaughtException", async () => {
     // A raw TCP server that accepts the connection but never speaks TLS — the
     // upstream handshake stalls until the (shortened) connect deadline fires.
@@ -268,6 +271,52 @@ describe("http2-client", () => {
       setConnectTimeoutForTests(undefined)
       closeHttp2Sessions()
       await new Promise<void>((resolve) => blackhole.close(() => resolve()))
+    }
+  })
+
+  // Crash-safety, SESSION leg: a session discarded by the shutdown-drain race
+  // (closeHttp2Sessions() bumps poolEpoch while a session is being established) is
+  // closed WITHOUT the normal-branch `drop` 'error' listener — its ONLY 'error'
+  // listener is the withErrorSink getSession applies at the ownership point. If that
+  // sink is absent, a later session 'error' (a socket RST during/after close) is
+  // unheard → uncaughtException → process.exit(1). This is the site the first
+  // point-fix missed; here the sink is the SOLE guard, so this test locks it
+  // (positive control: drop getSession's withErrorSink → this test reds).
+  test("a session discarded by the shutdown-drain race is crash-safe (sink is sole guard)", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    // Gated factory: getSession awaits this, letting us bump poolEpoch mid-establish.
+    let releaseSession!: (s: http2.ClientHttp2Session) => void
+    const gate = new Promise<http2.ClientHttp2Session>((resolve) => {
+      releaseSession = resolve
+    })
+    setHttp2SessionFactoryForTests(() => gate)
+
+    const seen: Array<unknown> = []
+    const onUncaught = (err: unknown): void => void seen.push(err)
+    process.on("uncaughtException", onUncaught)
+    try {
+      const fetchP = http2Fetch(`${url}/race`, {})
+      fetchP.catch(() => {}) // it rejects (session discarded) — observe so it isn't unhandled
+      await new Promise((r) => setTimeout(r, 20)) // let getSession reach `await sessionFactory`
+      closeHttp2Sessions() // bump poolEpoch → the in-flight creation lands in the race branch
+      // Resolve the factory with a REAL session; getSession sinks it, then the race
+      // branch closes + returns it WITHOUT attaching `drop`.
+      const discarded = http2.connect(url)
+      releaseSession(discarded)
+      await new Promise((r) => setTimeout(r, 20))
+      // The discarded session's only 'error' listener is the withErrorSink. Emit an
+      // 'error' — without the sink this is unheard and crashes the process.
+      discarded.emit("error", new Error("late session RST"))
+      await new Promise((r) => setTimeout(r, 20))
+      expect(seen).toHaveLength(0)
+      await fetchP.catch(() => {})
+    } finally {
+      process.off("uncaughtException", onUncaught)
+      setHttp2SessionFactoryForTests(undefined)
+      closeHttp2Sessions()
     }
   })
 })
