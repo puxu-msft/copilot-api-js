@@ -390,6 +390,16 @@ export interface ClientSink {
    */
   writeKeepalive?(frame: ClientFrame): Promise<void>
   /**
+   * Stop the heartbeat timer WITHOUT closing the sink — `write` stays usable (unlike
+   * {@link close}, which also refuses future ticks). The buffered empty-text-anchor commit /
+   * terminal flush calls this BEFORE its `for (frame of buffer) await write(frame)` loop so a
+   * timer firing mid-flush can't inject a second anchor and collide block indices (spec
+   * 2026-07-08-buffered-keepalive-empty-text-anchor §3.3 C1). Idempotent; a no-op on sinks
+   * whose heartbeat is off (the timer is always undefined). Omitted by sinks with no heartbeat
+   * timer at all (WS/array).
+   */
+  freezeHeartbeat?(): void
+  /**
    * Release sink-held resources (the heartbeat timer). The driver's
    * `runResponseSink` `finally` MUST call this on every exit (normal / throw /
    * abort / write-reject) so a self-rescheduling timer can't leak (design §3.3).

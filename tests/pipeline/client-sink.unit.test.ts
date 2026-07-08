@@ -161,6 +161,44 @@ describe("makeSseSink heartbeat (B2 forward-idle racer)", () => {
     expect(written).toEqual([])
     sink.close?.()
   })
+
+  test("freezeHeartbeat stops further pings but write still works (anchor C1 guard)", async () => {
+    const { stream, written } = stubSseStream()
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 1, pingFrame: PING } })
+    // One idle interval → exactly one keepalive fired.
+    await clock.advance(1_000)
+    expect(written).toEqual([{ data: '{"type":"ping"}', event: "ping" }])
+    // Freeze: clears the timer but does NOT close the sink (unlike close(), write stays usable).
+    sink.freezeHeartbeat?.()
+    // No new synthetic frame across many intervals — the heartbeat is truly stopped.
+    await clock.advance(10_000)
+    expect(written).toEqual([{ data: '{"type":"ping"}', event: "ping" }])
+    // A real write after freeze still reaches the wire (commit/terminal flush can still write).
+    await sink.write({ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 0 }) })
+    expect(written).toEqual([
+      { data: '{"type":"ping"}', event: "ping" },
+      { data: JSON.stringify({ type: "content_block_stop", index: 0 }), event: "content_block_stop" },
+    ])
+    sink.close?.()
+  })
+
+  test("freezeHeartbeat is idempotent and a no-op with no heartbeat", async () => {
+    // Idempotent on the heartbeat path (two freezes never throw / never resurrect the timer).
+    const { stream: s1, written: w1 } = stubSseStream()
+    const sink1 = makeSseSink(s1, { heartbeat: { intervalSec: 1, pingFrame: PING } })
+    sink1.freezeHeartbeat?.()
+    sink1.freezeHeartbeat?.()
+    await clock.advance(10_000)
+    expect(w1).toEqual([])
+    sink1.close?.()
+    // No-op on the heartbeat-off path (timer is always undefined) — still callable, write still works.
+    const { stream: s2, written: w2 } = stubSseStream()
+    const sink2 = makeSseSink(s2, { heartbeat: { intervalSec: 0, pingFrame: PING } })
+    expect(typeof sink2.freezeHeartbeat).toBe("function")
+    sink2.freezeHeartbeat?.()
+    await sink2.write({ data: "ok" })
+    expect(w2).toEqual([{ data: "ok" }])
+  })
 })
 
 // ── makeSseSink forwarded-track sampling (Anthropic cut-over, onForwarded) ─────

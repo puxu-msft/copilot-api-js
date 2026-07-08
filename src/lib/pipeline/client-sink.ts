@@ -227,8 +227,21 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     if (timer) clearTimeout(timer)
   }
 
+  // freezeHeartbeat stops the heartbeat timer WITHOUT closing the sink — `write` stays fully
+  // usable (unlike close(), which sets `stopped` and refuses future ticks). The buffered anchor
+  // commit / terminal flush calls this BEFORE its `for (frame of buffer) await write(frame)` loop
+  // so a timer firing mid-flush can't inject a second anchor and collide block indices
+  // (spec 2026-07-08-buffered-keepalive-empty-text-anchor §3.3 C1). Idempotent; a no-op on the
+  // heartbeat-off path (timer is always undefined).
+  const freezeHeartbeat = (): void => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = undefined
+    }
+  }
+
   if (!heartbeatOn) {
-    return { write, writeSynthetic, writeKeepalive, close }
+    return { write, writeSynthetic, writeKeepalive, close, freezeHeartbeat }
   }
 
   const intervalMs = heartbeat.intervalSec * 1000
@@ -253,7 +266,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // unref so a leaked timer can never hold the event loop / block graceful shutdown.
   ;(timer as unknown as { unref?: () => void }).unref?.()
 
-  return { write, writeSynthetic, writeKeepalive, close }
+  return { write, writeSynthetic, writeKeepalive, close, freezeHeartbeat }
 }
 
 /** {@link makeWsSink} options — forwarded-track sampling (optional). */
