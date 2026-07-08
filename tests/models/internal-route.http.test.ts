@@ -7,7 +7,7 @@ import {
 
 import type { Model } from "~/lib/models/client"
 
-import { setModels } from "~/lib/state"
+import { setModels, setDisabledModels } from "~/lib/state"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { createFullTestApp } from "../helpers/test-app"
@@ -67,5 +67,44 @@ describe("GET /api/models — full field exposure (internal format)", () => {
     expect(m).not.toHaveProperty("created")
     expect(m).not.toHaveProperty("owned_by")
     expect((m.capabilities as Record<string, Record<string, boolean>>).supports.tool_calls).toBe(true)
+  })
+
+  test("returns FULL catalog including config-disabled models + disabled[] envelope", async () => {
+    setModels({ object: "list", data: [mockModel("keep"), mockModel("gpt-4o-2024-11-20")] })
+    setDisabledModels(["gpt-4o-2024-11-20"])
+    const app = createFullTestApp()
+    const res = await app.request("/api/models")
+    const body = (await res.json()) as { data: Array<{ id: string }>; disabled: Array<string> }
+    // 全量：禁用模型仍在 data 里（不再被 applyDisabledFilter 滤除）。
+    expect(body.data.map((m) => m.id).sort()).toEqual(["gpt-4o-2024-11-20", "keep"])
+    expect(body.disabled).toEqual(["gpt-4o-2024-11-20"])
+  })
+
+  test("disabled[] matches via normalized id (dot/hyphen/case irrelevant)", async () => {
+    setModels({ object: "list", data: [mockModel("claude-opus-4.8")] })
+    setDisabledModels(["claude-opus-4-8"]) // config 写 hyphen，上游是 dot
+    const app = createFullTestApp()
+    const res = await app.request("/api/models")
+    const body = (await res.json()) as { disabled: Array<string> }
+    // 回吐实际命中目录的 id（dot 版），非 config 原字符串。
+    expect(body.disabled).toEqual(["claude-opus-4.8"])
+  })
+
+  test("disabled[] is empty when nothing disabled", async () => {
+    setModels({ object: "list", data: [mockModel("a"), mockModel("b")] })
+    const app = createFullTestApp()
+    const res = await app.request("/api/models")
+    const body = (await res.json()) as { disabled: Array<string> }
+    expect(body.disabled).toEqual([])
+  })
+
+  test("single-model route resolves a config-disabled model (200, not 404)", async () => {
+    setModels({ object: "list", data: [mockModel("disabled-one")] })
+    setDisabledModels(["disabled-one"])
+    const app = createFullTestApp()
+    const res = await app.request("/api/models/disabled-one")
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { id: string }
+    expect(body.id).toBe("disabled-one")
   })
 })

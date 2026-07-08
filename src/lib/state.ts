@@ -1038,6 +1038,22 @@ export function getRawModels(): ModelsResponse | undefined {
 }
 
 /**
+ * The upstream ids that `config.disabled_models` currently removes from the usable
+ * set — computed from the cached raw catalog with the SAME normalized match as
+ * {@link applyDisabledFilter} (so config `claude-opus-4-8` reports the actual
+ * catalog id `claude-opus-4.8`). Empty when nothing disabled / no catalog yet.
+ * Consumed by the internal `/api/models` route to annotate the full catalog.
+ */
+export function getConfigDisabledIds(): Array<string> {
+  const raw = rawModels
+  if (!raw) return []
+  const disabled = mutableState.disabledModels
+  if (disabled.length === 0) return []
+  const disabledSet = new Set(disabled.map((id) => normalizeForMatching(id)))
+  return raw.data.filter((m) => disabledSet.has(normalizeForMatching(m.id))).map((m) => m.id)
+}
+
+/**
  * Reset the module-scoped `rawModels` cache (for tests). `rawModels` lives
  * OUTSIDE `mutableState`, so `snapshotStateForTests`/`restoreStateForTests`
  * cannot reach it — without this, a `setModels()` in one test leaks its raw

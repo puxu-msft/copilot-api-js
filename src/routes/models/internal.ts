@@ -5,7 +5,12 @@ import {
   z,
 } from "@hono/zod-openapi"
 
-import { state } from "~/lib/state"
+import {
+  //
+  getConfigDisabledIds,
+  getRawModels,
+  state,
+} from "~/lib/state"
 
 import { ensureModels } from "./shared"
 
@@ -25,6 +30,7 @@ const ModelListSchema = z
   .object({
     object: z.string(),
     data: z.array(ModelSchema),
+    disabled: z.array(z.string()),
   })
   .openapi("CopilotModelList")
 
@@ -64,10 +70,12 @@ const getModelRoute = createRoute({
 
 internalModelsRoutes.openapi(listModelsRoute, async (c) => {
   await ensureModels()
+  const raw = getRawModels()
   return c.json(
     {
-      object: state.models?.object ?? "list",
-      data: state.models?.data ?? [],
+      object: raw?.object ?? "list",
+      data: raw?.data ?? [],
+      disabled: getConfigDisabledIds(),
     },
     200,
   )
@@ -77,7 +85,9 @@ internalModelsRoutes.openapi(getModelRoute, async (c) => {
   await ensureModels()
 
   const modelId = c.req.param("model")
-  const model = state.modelIndex.get(modelId)
+  // Enabled models keep modelIndex's alias resolution; config-disabled models are
+  // absent from the (filtered) index → fall back to an exact match on the full catalog.
+  const model = state.modelIndex.get(modelId) ?? getRawModels()?.data.find((m) => m.id === modelId)
 
   if (!model) {
     return c.json(

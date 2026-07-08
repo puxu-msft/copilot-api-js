@@ -67,6 +67,19 @@ export interface ModelsResponse {
   object: string
 }
 
+/**
+ * Internal `/api/models` envelope: the FULL (unfiltered) upstream catalog plus
+ * `disabled` — the ids this project's `config.disabled_models` removed from the
+ * usable set. Distinct from the upstream {@link ModelsResponse}: `disabled` is a
+ * synthetic annotation (not an upstream field), kept at the envelope top level so
+ * the per-model shape stays verbatim (richest-data-flow ADR).
+ */
+export interface InternalModelsResponse {
+  object: string
+  data: Array<Model>
+  disabled: Array<string>
+}
+
 interface VisionLimits {
   max_prompt_image_size?: number
   max_prompt_images?: number
