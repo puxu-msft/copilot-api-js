@@ -75,7 +75,27 @@ PROBE_ACCOUNT_TYPE=business bun run exp/server-tool-memory-probe/probe.ts
 - 响应体关键片段：`{"content":[{"text":"probe ok","type":"text"}], "context_management":{"applied_edits":[]}, ...}` ——**响应体回显了 `context_management` 字段**（`applied_edits:[]`，本次无可编辑内容故空），证明上游**主动识别并处理了** context-management 特性，而非静默忽略。无 `server_tool_use` 块（memory 工具未被调用——最小 prompt 不触发存取，属预期）。
 - 判定：**接受**。CAPI（enterprise）不拒绝 `memory_20250818` server tool 声明 + `context-management-2025-06-27` beta；`context_management` 回显进一步证明特性被激活。
 - 后续动作 / 边界：
-  - 已确认的是 **wire 接受性**（工具声明 + beta 被上游接纳并处理）；**未**端到端验证 memory 工具的实际存取行为（需一个会触发 memory 读写的 prompt + 查响应 `server_tool_use` / history `sseEvents`）。
+  - 已确认的是 **wire 接受性**（工具声明 + beta 被上游接纳并处理）；端到端 memory 调用**已在后续实测确认**（见下节）。
   - **仅在 enterprise 账户 + enterprise 端点确认**。首跑用默认 individual base URL（`api.githubcopilot.com`）时请求**挂起无响应**（enterprise token 路由到 individual 端点的行为不明），故 individual/business 端点的接受性**未确认**、不可外推。
-  - **可评估**把 `anthropic.server_tool_memory` 默认开（至少对 enterprise）——但建议先补 individual/business 端点确认 + 一次端到端 memory 调用验证，再决定是否翻默认。
-  - 探针进程发完请求打完判据后未干净退出（残留 keepalive/token-refresh timer，被外层 timeout 杀），不影响结论；如需复跑可在打印后加 `process.exit(0)`。
+  - **可评估**把 `anthropic.server_tool_memory` 默认开（至少对 enterprise）——但建议先补 individual/business 端点确认，再决定是否翻默认。
+  - 探针进程发完请求打完判据后现已 `process.exit` 干净退出（改前残留 keepalive/token-refresh timer 被外层 timeout 杀）。
+
+---
+
+## 端到端调用实测（2026-07-08，enterprise）：**memory 工具真被调用 · 确认**
+
+参数化探针加了 `PROBE_PROMPT` / `PROBE_MAX_TOKENS` env（不传时逐字保持默认行为）+ `scanE2e()` 扫描 + `process.exit`。用会诱导 memory 使用的 prompt、`PROBE_MAX_TOKENS=1024` 跑，结果：
+
+- 两个诱导 prompt（"检查你的 memory" / "把这条存进 memory"）**都**让上游产出真实的 memory 工具调用块：
+  `{"name":"memory","type":"tool_use","input":{"command":"view","path":"/memories"},"caller":{"type":"direct"}}`，`stop_reason:"tool_use"`。
+- 这不是文本敷衍（"我记住了"），是结构化 `tool_use`——**端到端激活确认**。
+- **关键细节：memory 是 client-executed 工具（`type:"tool_use"`，非 `server_tool_use`）。** 符合 Anthropic 官方协议：上游只**驱动**工具（发起 view/create/… 命令），实际存取由 **client 侧**（如 Claude Code）执行 `/memories` 后端并 tool_result 喂回，多轮至 `end_turn`。故不会有 memory 相关的 `server_tool_use` 或 `applied_edits`（`applied_edits` 属同 beta 下的 context-editing 特性，与 memory 正交）。本项目侧只需**透传**该 tool_use、不拦截即可，无需自建 memory 后端。
+
+复跑：
+```bash
+timeout 90 bash -c 'PROBE_ACCOUNT_TYPE=enterprise \
+  PROBE_PROMPT="Check your memory for any notes about me, then tell me what you find. Use the memory tool to look." \
+  PROBE_MAX_TOKENS=1024 bun run exp/server-tool-memory-probe/probe.ts'
+```
+
+完整报告：`.superpowers/sdd/memory-e2e-report.md`。
