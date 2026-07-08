@@ -60,7 +60,8 @@ export function LiveDock() {
   return (
     <>
       {showPanel ?
-        <div className="absolute inset-x-0 bottom-0 z-10 max-h-[55%] overflow-auto border-t-2 border-[#2f6f3f] bg-[#0e1712] shadow-[0_-4px_12px_rgba(0,0,0,0.5)]">
+        // bottom-6 == 折叠条高度(h-6),让面板停靠在条上方而非盖住条(保留 ▼ 可点)。
+        <div className="absolute inset-x-0 bottom-6 z-10 max-h-[55%] overflow-auto border-t-2 border-[#2f6f3f] bg-[#0e1712] shadow-[0_-4px_12px_rgba(0,0,0,0.5)]">
           {summary.groups.map((g) => (
             <LiveGroup
               key={g.key}

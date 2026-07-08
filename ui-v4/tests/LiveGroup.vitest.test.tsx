@@ -43,6 +43,18 @@ describe("LiveDetailRow", () => {
     expect(screen.getByText(/next:/i)).toBeTruthy()
   })
 
+  it("渲染已应用特性 chips(features)", () => {
+    render(
+      <LiveDetailRow
+        row={row({ features: [{ feature: "thinking" }, { feature: "truncated" }] })}
+        nowMs={2000}
+        onSelect={() => {}}
+      />,
+    )
+    expect(screen.getByText(/thinking/)).toBeTruthy()
+    expect(screen.getByText(/truncated/)).toBeTruthy()
+  })
+
   it("点击触发 onSelect(带 row id)", async () => {
     const onSelect = vi.fn()
     render(

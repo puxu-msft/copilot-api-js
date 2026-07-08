@@ -98,6 +98,15 @@ export const LiveDetailRow = memo(function LiveDetailRow({ row, nowMs, onSelect 
           ↻ next:{row.retry.nextStrategy ?? "?"} 等{formatDuration(row.retry.waitMs)}
         </span>
       : null}
+      {row.features?.map((f, i) => (
+        <span
+          key={`${f.feature}-${i}`}
+          className="shrink-0 text-[#788]"
+          title={f.feature}
+        >
+          {f.feature}
+        </span>
+      ))}
     </button>
   )
 })
