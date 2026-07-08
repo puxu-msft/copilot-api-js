@@ -27,6 +27,7 @@ import {
   PATHS,
   ensurePaths,
 } from "./lib/config/paths"
+import { snapshotWithSummary } from "./lib/context/activity-summary"
 import { initRequestContextManager } from "./lib/context/manager"
 import { cacheVSCodeVersion } from "./lib/copilot-api"
 import {
@@ -41,6 +42,7 @@ import { cacheModels } from "./lib/models/client"
 import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initBus } from "./lib/observability"
+import { toActiveRequestWire } from "./lib/observability/active-request-wire"
 import { formatBillingLabel } from "./lib/observability/projections/format"
 import { installConsolaRepublish } from "./lib/observability/republish"
 import { attachConsoleSink } from "./lib/observability/sinks/console"
@@ -396,19 +398,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // the bus is the only path for these signals now.
   const contextManager = initRequestContextManager({ publisher: bus.scope("request") })
 
-  // Provide active requests snapshot for WS connected events
-  setConnectedDataFactory(() =>
-    contextManager.getAll().map((ctx) => ({
-      id: ctx.id,
-      endpoint: ctx.endpoint,
-      rawPath: ctx.rawPath,
-      state: ctx.state,
-      startTime: ctx.startTime,
-      durationMs: ctx.durationMs,
-      model: ctx.originalRequest?.model,
-      stream: ctx.originalRequest?.stream,
-    })),
-  )
+  // 在途快照:与 active_request_changed 同源(toActiveRequestWire ∘ snapshotWithSummary),
+  // 保证 WS 重连后已在飞行的行富字段立即非空(attemptCount/queueWaitMs/transport/models…)。
+  setConnectedDataFactory(() => contextManager.getAll().map((ctx) => toActiveRequestWire(snapshotWithSummary(ctx))))
 
   // Start stale request reaper (periodic cleanup of stuck active contexts)
   contextManager.startReaper()

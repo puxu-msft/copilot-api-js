@@ -20,6 +20,11 @@ import type {
   EntrySummary,
   HistoryStats,
 } from "../history/store"
+import type {
+  //
+  ActiveRequestChangedWire,
+  ActiveRequestWire,
+} from "../observability/active-request-wire"
 
 // ============================================================================
 // Types
@@ -91,10 +96,10 @@ const MAX_BUFFERED_PER_CLIENT_BYTES = 4 * 1024 * 1024
  * Set by start.ts after RequestContextManager is initialized.
  * Returns active requests snapshot for the connected event.
  */
-let connectedDataFactory: (() => Array<unknown>) | null = null
+let connectedDataFactory: (() => Array<ActiveRequestWire>) | null = null
 
 /** Set the factory that provides active requests snapshot for connected events */
-export function setConnectedDataFactory(factory: () => Array<unknown>): void {
+export function setConnectedDataFactory(factory: () => Array<ActiveRequestWire>): void {
   connectedDataFactory = factory
 }
 
@@ -381,7 +386,7 @@ export function notifySessionDeleted(sessionId: string): void {
 // ============================================================================
 
 /** Called when active request state changes (topic: "requests") */
-export function notifyActiveRequestChanged(data: unknown): void {
+export function notifyActiveRequestChanged(data: ActiveRequestChangedWire): void {
   if (clients.size === 0) return
 
   broadcast(
