@@ -37,7 +37,7 @@ interface RawJsonViewProps {
    * 纯字符串 tool_result）不走本组件，保留各面既有 `<pre>`/`RawPre`（见 §4 注）。
    */
   value: unknown
-  /** 覆盖初始视图；缺省取全局持久化偏好，再缺省 "tree"。 */
+  /** 覆盖初始视图；缺省 "source"。 */
   defaultMode?: "tree" | "source"
   /** 可选顶部标签（如 "response body"）。 */
   label?: string
@@ -48,7 +48,7 @@ interface RawJsonViewProps {
 
 行为：
 - 顶部工具栏：视图切换 tab「树 / 原文」+ 右侧动作区（复制、以及各视图特有动作）。
-- 视图偏好写 `localStorage`（**全局单键** `copilot-api-ui-v4-rawjson-mode`，所有实例共享，切一处全站一致）。**副作用**：`BlockJsonModal` 默认视图由现 `source`（`:46`）翻转为全局偏好（缺省 tree）——这是统一的有意代价，非 bug。
+- **视图态每实例独立、不持久化**（local component state），**默认 `source`**——不设全局/localStorage 偏好键。这保持 `BlockJsonModal` 现有默认（source）不变，无翻转副作用。
 - `source` 视图：`JSON.stringify(value, null, 2)` → 增强版 `CodeBlock`。
 - `tree` 视图：`value` → 增强版 `JsonTreeView`。
 - `value` 变化时 tree 折叠态按深度默认重置（沿用 `JsonToolsPage` 的 `key={source}` 重挂做法）。
@@ -57,7 +57,7 @@ interface RawJsonViewProps {
 
 现状：`ui-v4/src/components/detail/CodeBlock.tsx` 只读高亮 + 行号。**>500 行截断不在此**——在共享 `LineNumberedText.tsx:28-58` 的 `LineGutter`（`INITIAL_LINE_LIMIT=500` + 已有「显示全部 N 行」展开按钮），故截断/展开**已实现、无需改**。新增（不破坏现有调用方，能力经 props 可选开启，`RawJsonView` 内默认开）：
 - **一键复制**：复用 `copyText` 复制 source 全文，短暂「copied」反馈。
-- **软换行切换**：`whitespace-pre`（横向滚动）↔ `whitespace-pre-wrap`（换行），状态本地持久化。
+- **软换行切换**：`whitespace-pre`（横向滚动）↔ `whitespace-pre-wrap`（换行），local ephemeral（不持久化）。
 - **块内搜索定位**（**行级**）：输入框高亮**命中行**（不做跨 token 的子串级高亮，因 shiki 已按 token 切 `<span>`），`n`/`N` 或上下键在命中行间跳转并滚动到视口。搜索是「高亮 + 跳转」，不隐藏非命中行。
 
 ### 3.3 `JsonTreeView` 增强（自研 Radix 树，新增能力）
@@ -96,11 +96,12 @@ interface RawJsonViewProps {
 - **搜索在两视图语义不同**：source 视图搜文本、**行级**高亮 + 跳转（不做跨 token 子串级）；tree 视图搜 key/value 节点、高亮 + 祖先展开。两者独立实现、不强行统一，但共享输入框 UI 风格。
 - **非结构化 value**：`RawJsonView` 契约仅结构化 JSON；各面在传入前判定，非 JSON 文本保留 `<pre>`（§4 注）。避免 `JSON.stringify(字符串)` 的引号/转义污染。
 - **性能**：超大 JSON（如整条 history entry 规范全量形式）——source 靠 `LineGutter` 已有 >500 行展开、tree 靠大数组懒展开兜底；plan 需对最大真实样本实测（empirical-verification）。
+- **视觉风格（非阻塞）**：本轮 §4#6 的两级 toggle（外层 Raw/Rendered × 内层 tree/source）先按现有 Terminal Amber 风格落地；整体视觉风格（含 toggle affordance 的呈现）留待**未来 ui-v4 全面视觉重构**统一处理，不阻塞本 spec 的功能落地。
 
 ## 6. 测试
 
 - 单元/组件（vitest + @testing-library/react，jsdom）：
-  - `RawJsonView` 默认渲染两视图可切换；偏好 localStorage 往返。
+  - `RawJsonView` 默认渲染 source 视图、可切到 tree（视图态 local ephemeral，不持久化）。
   - `CodeBlock` 复制写剪贴板（mock clipboard）、软换行切换 class、搜索命中计数、>500 行展开。
   - `JsonTreeView` 展开/折叠全部、复制值/path、搜索高亮祖先展开、大数组懒展开阈值。
   - 遵循 [debugging-frontend-tests](../../.claude/skills/debugging-frontend-tests/SKILL.md)：portal 落 body、shiki 异步首帧 plaintext、否定断言先证正向。
@@ -108,7 +109,7 @@ interface RawJsonViewProps {
 
 ## 7. 验收标准
 
-1. 全站 §4 所有面均走 `<RawJsonView>`，每处都能在「树/原文」间切换，偏好全站一致。
+1. 全站 §4 所有面均走 `<RawJsonView>`，每处都能在「树/原文」间切换，默认 source、视图态每实例独立不持久化。
 2. 模型列表 Raw 视图展示完整 API 响应（含 envelope），不再只 dump `models` 数组。
 3. 两视图均支持复制；tree 支持复制节点值/path + 展开折叠全部 + 搜索；source 支持软换行 + 搜索 + >500 行展开。
 4. 零新增第三方依赖；`bun run build:ui-v4` 绿；`bunx eslint <改动文件>`（无缓存）绿。
