@@ -145,7 +145,7 @@ export interface SseEventRecord {
   raw: string
   /**
    * Set when this is a PROXY-SYNTHESIZED frame rather than a real upstream frame the client received
-   * as content. Meaningful only on the FORWARDED track (`inboundResponse.sseEvents`): it lets history /
+   * as content. Meaningful only on the FORWARDED track (`clientResponse.sseEvents`): it lets history /
    * UI / logs tell a proxy-injected frame apart from genuine content, so a silent upstream is NEVER
    * masked as normal streaming (richest-data-flow observability). An empty content_delta keepalive is
    * otherwise byte-indistinguishable from a real content frame. Two variants:
