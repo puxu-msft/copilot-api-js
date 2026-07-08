@@ -52,11 +52,16 @@ export function applyActiveEvent(state: LiveState, ev: ActiveRequestChangedInfo)
     const features = [...(prev.features ?? []), { feature: ev.feature, ...(ev.detail !== undefined && { detail: ev.detail }) }]
     return { byId: { ...state.byId, [ev.requestId]: { ...prev, features } } }
   }
-  // created / state_changed:携完整 request。state_changed 视作新一轮 attempt 起点,清陈旧 retry;
-  // features 跨事件保留(累积)。
-  const prev = ev.request.id in state.byId ? state.byId[ev.request.id] : undefined
-  const merged: LiveEntry = { ...ev.request, ...(prev?.features !== undefined && { features: prev.features }) }
-  return { byId: { ...state.byId, [ev.request.id]: merged } }
+  // created / state_changed:携完整 request。state_changed 视作新一轮 attempt 起点,清陈旧 retry;features 跨事件保留。
+  // 显式判别把 ev 收窄到带 request 的 created/state_changed 臂——tsc 不会因上面各分支的 return 自动排除终态臂,
+  // 故此 if 对类型检查是必需的;no-unnecessary-condition 的收窄算法与 tsc 有分歧、误判第二个比较冗余,就地禁用。
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- tsc 未在此处排除终态臂,判别检查是类型收窄所必需
+  if (ev.action === "created" || ev.action === "state_changed") {
+    const prev = ev.request.id in state.byId ? state.byId[ev.request.id] : undefined
+    const merged: LiveEntry = { ...ev.request, ...(prev?.features !== undefined && { features: prev.features }) }
+    return { byId: { ...state.byId, [ev.request.id]: merged } }
+  }
+  return state // 穷尽兜底(联合已被上面各分支覆盖,理论不可达)
 }
 
 interface LiveStore extends LiveState {

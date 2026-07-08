@@ -13,7 +13,13 @@ import {
   type LiveState,
 } from "@/stores/live-store"
 
-const req = (id: string, state = "streaming"): ActiveRequestInfo => ({ id, endpoint: "anthropic-messages", state, startTime: 0, durationMs: 0 })
+const req = (id: string, state: ActiveRequestInfo["state"] = "streaming"): ActiveRequestInfo => ({
+  id,
+  endpoint: "anthropic-messages",
+  state,
+  startTime: 0,
+  durationMs: 0,
+})
 
 describe("live-store reducer applyActiveEvent", () => {
   it("created adds to the map", () => {

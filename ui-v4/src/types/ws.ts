@@ -1,18 +1,20 @@
 // active-request wire 类型的单一事实源在后端(SSOT)。前端 type-only re-export——
 // isolatedModules 下 import type 被完全擦除,不把后端运行时(activity-summary→state)拖进 bundle。
 // 验收必跑 `bun run build:ui-v4`(typecheck/vitest 对误拖入双假绿)。
-export type {
+import type {
   //
-  ActiveRequestChangedWire as ActiveRequestChangedInfo,
-  ActiveRequestWire as ActiveRequestInfo,
+  ActiveRequestChangedWire,
+  ActiveRequestWire,
 } from "~backend/lib/observability/active-request-wire"
+
+export type ActiveRequestInfo = ActiveRequestWire
+export type ActiveRequestChangedInfo = ActiveRequestChangedWire
 
 import type {
   //
   EntrySummary,
   HistoryStats,
 } from "@/types"
-import type { ActiveRequestInfo } from "@/types/ws"
 
 export interface ConnectedInfo {
   clientCount: number
