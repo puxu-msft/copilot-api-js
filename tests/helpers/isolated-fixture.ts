@@ -62,7 +62,7 @@ import {
   type StateSnapshot,
   snapshotStateForTests,
 } from "~/lib/state"
-import { setHttp2SessionFactoryForTests } from "~/lib/transport/http2-client"
+import { setConnectTimeoutForTests, setHttp2SessionFactoryForTests } from "~/lib/transport/http2-client"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
 
 import { restoreFetch } from "./mock-fetch"
@@ -97,6 +97,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   // mock injected by one test never leaks into the next (RFC §11 R2).
   { name: "setUpstreamWsConnectionFactoryForTests", reset: () => setUpstreamWsConnectionFactoryForTests(null) },
   { name: "setHttp2SessionFactoryForTests", reset: () => setHttp2SessionFactoryForTests(undefined) },
+  { name: "setConnectTimeoutForTests", reset: () => setConnectTimeoutForTests(undefined) },
   { name: "__setTerminalWriterForTests", reset: () => __setTerminalWriterForTests(undefined) },
   // Not `*ForTests`-named (a production reset) but a module-global counter that
   // leaks across tests, so reset it here too.
