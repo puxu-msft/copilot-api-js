@@ -62,6 +62,7 @@
 - 点击切换展开;展开态持久化到 localStorage(与列可见性同款,写入失败吞并 `console.warn`)。
 - `oldest` / 每行 `elapsed` **由 `startTime` 客户端现算并 1s 滴答**;绝不用冻结的 `durationMs` 或后端时钟 `lastUpdatedAt`(跨前后端时钟偏移)。
 - `retrying` 计数来源:在途集合里带有活跃重试态(见 §5.3 reducer 合并的 `willRetry`/attempt 信号)的请求数。
+- **统一活动状态栏(2026-07-08 增补)**:LiveDockBar 兼作「新完成待合入」入口——tail 暂停期间到达的缓冲请求原由 HistoryList 内一条独立横幅承载,现上移为状态栏右侧的 `↓ {N} 待合入` CTA(仅 `!tailOn && buffered>0` 时显)。点击 = flush(合入缓冲 + 恢复 tail),经共享 `useGoLive` hook 与 History 头部 resume 同源(二者都清 `?at=` 定位参数,tail 态不该声明 locate)。这样在途 + 新完成收敛到同一条状态栏,弃用原离色板的紫色横幅。
 
 ## 5. 数据 / 类型架构(SSOT + richest-data-flow)
 
