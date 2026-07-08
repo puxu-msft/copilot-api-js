@@ -11,6 +11,7 @@ import type {
   SseEventRecord,
 } from "@/types"
 
+import { RawJsonView } from "@/components/common/RawJsonView"
 import { MessageBlock } from "@/components/detail/MessageBlock"
 import { LegShell } from "@/components/detail/segments/LegShell"
 import { accumulateForwardedContent } from "@/lib/content/accumulate-forwarded"
@@ -102,8 +103,9 @@ type UpstreamContent = NonNullable<NonNullable<HistoryEntry["attempts"]>[number]
 function UpstreamBody({ content, rawBody, error, code }: { content: UpstreamContent; rawBody?: string; error?: string; code: boolean }) {
   const fallback = rawBody ?? error ?? "(no content)"
   if (code) {
-    const body = content === null || content === undefined ? fallback : JSON.stringify(content, null, 2)
-    return <RawPre>{body}</RawPre>
+    // Structured upstream body → dual view; the string fallback (rawBody / error) stays plain <pre>.
+    if (content === null || content === undefined) return <RawPre>{fallback}</RawPre>
+    return <RawJsonView value={content} />
   }
   if (content) return <MessageBlock message={content} />
   return <RawPre>{fallback}</RawPre>
@@ -115,16 +117,17 @@ function ForwardedBody({ entry, code }: { entry: HistoryEntry; code: boolean }) 
   const frames = entry.clientResponse?.sseEvents ?? []
   const content = entry.clientResponse?.body
   if (content !== undefined) {
-    if (code) return <RawPre>{JSON.stringify(content, null, 2)}</RawPre>
+    if (code) return <RawJsonView value={content} />
     if (isMessageShaped(content)) return <MessageBlock message={content} />
-    return <RawPre>{JSON.stringify(content, null, 2)}</RawPre>
+    return <RawJsonView value={content} />
   }
   // Streaming: reconstruct the client message from the forwarded frames.
   const message = accumulateForwardedContent(frames, entry.endpoint)
   if (code) {
-    // The reconstructed message object as JSON; fall back to the raw frame payloads when nothing
-    // reconstructs (e.g. a stream of only pings + a terminal error frame).
-    return <RawPre>{message ? JSON.stringify(message, null, 2) : frames.map((f) => f.raw).join("\n")}</RawPre>
+    // The reconstructed message object (structured) → dual view; fall back to the raw frame
+    // payloads (non-JSON SSE text) as plain <pre> when nothing reconstructs (e.g. a stream of
+    // only pings + a terminal error frame).
+    return message ? <RawJsonView value={message} /> : <RawPre>{frames.map((f) => f.raw).join("\n")}</RawPre>
   }
   return (
     <ForwardedStream

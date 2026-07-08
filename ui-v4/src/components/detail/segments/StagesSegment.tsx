@@ -15,7 +15,7 @@ import type { MessageContent } from "@/lib/content/types"
 import type { RewriteMark } from "@/lib/diff/block-diff"
 import type { HistoryEntry } from "@/types"
 
-import { CodeBlock } from "@/components/detail/CodeBlock"
+import { RawJsonView } from "@/components/common/RawJsonView"
 import { ConversationView } from "@/components/detail/ConversationView"
 import { MessageDiffView } from "@/components/detail/diff/MessageDiffView"
 import { LegShell } from "@/components/detail/segments/LegShell"
@@ -79,7 +79,7 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
           label: "Effective (after rewrites)",
           shortLabel: "Effective",
           messages: effectiveMessages ?? [],
-          rawPayload: newEff?.body ?? effectiveLeg,
+          rawPayload: newEff.body ?? effectiveLeg,
           marks: effectiveMarks,
         }
       : null,
@@ -88,8 +88,8 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
           key: "wire",
           label: "Wire (proxy → upstream)",
           shortLabel: "Wire",
-          messages: newWire?.messages ?? [],
-          rawPayload: newWire?.body ?? wireLeg,
+          messages: newWire.messages ?? [],
+          rawPayload: newWire.body ?? wireLeg,
         }
       : null,
     ]
@@ -181,10 +181,7 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
         >
           <LegShell label={leg.label}>
             {showRaw ?
-              <CodeBlock
-                code={JSON.stringify(leg.rawPayload, null, 2)}
-                lang="json"
-              />
+              <RawJsonView value={leg.rawPayload} />
             : <ConversationView
                 messages={leg.messages}
                 anchorPrefix={`stage-${leg.key}`}
