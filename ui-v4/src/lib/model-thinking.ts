@@ -9,6 +9,9 @@ import type { DerivedCapabilities } from "~backend/lib/models/capabilities"
 export function thinkingLabel(caps: DerivedCapabilities): { text: string; title: string } {
   if (caps.adaptiveThinking) return { text: "adaptive", title: "adaptive thinking" }
   if (caps.maxThinkingBudget > 0) return { text: `≤${caps.maxThinkingBudget}`, title: `max thinking budget ${caps.maxThinkingBudget}` }
+  // Defensive fallback: `deriveCapabilities` sets `thinking = adaptiveThinking ||
+  // maxThinkingBudget > 0`, so real caps never reach here with `thinking` true and
+  // no budget — kept so the helper stays total for hand-built/future capability shapes.
   if (caps.thinking) return { text: "✓", title: "thinking" }
   return { text: "·", title: "no thinking" }
 }

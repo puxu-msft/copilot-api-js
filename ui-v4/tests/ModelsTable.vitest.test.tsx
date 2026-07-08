@@ -193,4 +193,25 @@ describe("ModelsTable (TanStack)", () => {
     const none = document.querySelector('[title="no thinking"]')
     expect(none?.textContent).toBe("·")
   })
+
+  it("thinking column stays hideable + last of the caps (before billing)", () => {
+    // Guards the CRITICAL invariant: the dedicated thinking cell must keep id
+    // `"thinking"` (column-menu + localStorage key) AND its position — last
+    // capability column, immediately before billing ($×).
+    const { unmount } = render(<Harness />)
+    const cols = screen.getAllByRole("columnheader").map((h) => h.textContent.trim())
+    const think = cols.findIndex((t) => t.startsWith("Think"))
+    const strm = cols.findIndex((t) => t.startsWith("Strm"))
+    const billing = cols.findIndex((t) => t.includes("$×"))
+    expect(think).toBeGreaterThan(-1)
+    expect(strm).toBeLessThan(think) // last of the caps
+    expect(think).toBeLessThan(billing) // immediately before billing
+    unmount()
+
+    // Hiding via the `thinking` visibility key removes only that column.
+    render(<Harness columnVisibility={{ thinking: false }} />)
+    expect(screen.queryByRole("columnheader", { name: /^Think/ })).toBeNull()
+    expect(screen.getByRole("columnheader", { name: /^Strm/ })).toBeDefined()
+    expect(screen.getByRole("columnheader", { name: /\$×/ })).toBeDefined()
+  })
 })
