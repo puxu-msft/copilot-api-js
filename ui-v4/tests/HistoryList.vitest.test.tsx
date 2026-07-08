@@ -150,11 +150,12 @@ describe("HistoryList", () => {
   })
   afterEach(() => vi.restoreAllMocks())
 
-  it("shows the buffer banner with count when paused with buffered ids", () => {
+  it("shows paused in header; buffer merge CTA moved out of HistoryList (now in LiveDock)", () => {
     useListStore.setState({ tailOn: false, bufferedIds: ["a", "b", "c"] })
     renderList()
-    expect(screen.getByText(/3 条新请求/)).toBeDefined()
     expect(screen.getByText(/paused/)).toBeDefined()
+    // 合入横幅已上移到 LiveDock 状态栏(见 LiveDock.vitest)——HistoryList 不再渲染它。
+    expect(screen.queryByText(/条新请求|待合入/)).toBeNull()
   })
   it("no banner when tail-on", () => {
     renderList()

@@ -183,7 +183,6 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
   const [searchParams] = useSearchParams()
   const at = searchParams.get("at")
   const { entries, total, isLoading, isError, error, refetch, hasNextPage, fetchNextPage } = useHistoryInfinite(filters)
-  const bufferedIds = useListStore((s) => s.bufferedIds)
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
   const queryClient = useQueryClient()
@@ -445,15 +444,6 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
           清空
         </button>
       </div>
-      {bufferedIds.length > 0 && (
-        <button
-          type="button"
-          className="mono border-b border-[#4a3a55] bg-[#2a2230] py-1 text-center text-[14px] text-[#caa6e0]"
-          onClick={() => goLive("flush")}
-        >
-          ↓ {bufferedIds.length} 条新请求 —— 点此合入
-        </button>
-      )}
       {outOfFilter && (
         <div className="mono flex items-center justify-center gap-2 border-b border-[#5a4a2a] bg-[#2a2418] py-1 text-center text-[13px] text-[#d8c088]">
           <span>该条目不在当前筛选内</span>

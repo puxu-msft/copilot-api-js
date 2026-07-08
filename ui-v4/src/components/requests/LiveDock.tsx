@@ -11,6 +11,7 @@ import { LiveGroup } from "@/components/requests/LiveGroup"
 import { useNowTick } from "@/hooks/useNowTick"
 import { formatDuration } from "@/lib/format"
 import { summarizeLive } from "@/lib/live-summary"
+import { useListStore } from "@/stores/list-store"
 import { useLiveStore } from "@/stores/live-store"
 
 const EXPANDED_KEY = "livedock.expanded"
@@ -23,8 +24,11 @@ function loadExpanded(): boolean {
 }
 
 /**
- * 在途浮窗 —— 底部停靠、恒高折叠条 + 点击向上展开的分组明细面板(spec §3-§6)。
- * 折叠条恒高(single-line/nowrap/overflow),idle↔active 不改高度、不推挤 History。
+ * 请求活动状态栏 —— 底部停靠、恒高的统一状态条,承载两件事:
+ *  1. 在途请求摘要(点击向上展开分组明细面板,spec §3-§6)。
+ *  2. tail 暂停期间到达的「新完成待合入」CTA —— 从 HistoryList 的独立横幅上移到此,
+ *     使请求活动(在途 + 新完成)收敛到同一条状态栏(融入 LiveDock 设计)。
+ * 折叠条恒高(single-line/nowrap/overflow),idle↔active↔有无待合入 都不改高度、不推挤 History。
  */
 export function LiveDock() {
   const navigate = useNavigate()
@@ -33,6 +37,12 @@ export function LiveDock() {
   const active = rows.length > 0
   const nowMs = useNowTick(active)
   const summary = useMemo(() => summarizeLive(rows, nowMs), [rows, nowMs])
+
+  // 缓冲的新完成请求(tail 暂停期间到达)——合入 CTA 从 HistoryList 上移到本状态栏。
+  const bufferedCount = useListStore((s) => s.bufferedIds.length)
+  const tailOn = useListStore((s) => s.tailOn)
+  const dispatch = useListStore((s) => s.dispatch)
+  const showMerge = !tailOn && bufferedCount > 0
 
   const [expanded, setExpanded] = useState(loadExpanded)
   useEffect(() => {
@@ -73,27 +83,40 @@ export function LiveDock() {
           ))}
         </div>
       : null}
-      <button
-        type="button"
-        aria-expanded={showPanel}
-        disabled={!active}
-        onClick={() => setExpanded((v) => !v)}
-        className="mono flex h-6 w-full shrink-0 items-center gap-2 overflow-hidden whitespace-nowrap border-t-2 border-[#2f6f3f] bg-[#14201a] px-2 text-left text-[12px] text-[#7fd99a] disabled:text-[#4a6a4a]"
-      >
-        {active ?
-          <>
-            <span>● {summary.count} in-flight</span>
-            {summary.streaming > 0 ?
-              <span className="text-[#7a9]">⚡{summary.streaming} streaming</span>
-            : null}
-            {summary.retrying > 0 ?
-              <span className="text-[var(--color-warn)]">↻{summary.retrying} retrying</span>
-            : null}
-            <span className="text-[#688]">oldest {formatDuration(summary.oldestElapsedMs)}</span>
-            <span className="ml-auto">{showPanel ? "▼" : "▲"}</span>
-          </>
-        : <span className="text-[#4a6a4a]">○ idle · 0 in-flight</span>}
-      </button>
+      {/* 恒高状态条:左侧在途摘要(展开 toggle)+ 右侧「待合入」CTA。两个独立可点区(避免嵌套 button)。 */}
+      <div className="mono flex h-6 w-full shrink-0 items-center gap-2 overflow-hidden whitespace-nowrap border-t-2 border-[#2f6f3f] bg-[#14201a] px-2 text-[12px] text-[#7fd99a]">
+        <button
+          type="button"
+          aria-expanded={showPanel}
+          disabled={!active}
+          onClick={() => setExpanded((v) => !v)}
+          className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap text-left disabled:text-[#4a6a4a]"
+        >
+          {active ?
+            <>
+              <span className="shrink-0">● {summary.count} in-flight</span>
+              {summary.streaming > 0 ?
+                <span className="shrink-0 text-[#7a9]">⚡{summary.streaming} streaming</span>
+              : null}
+              {summary.retrying > 0 ?
+                <span className="shrink-0 text-[var(--color-warn)]">↻{summary.retrying} retrying</span>
+              : null}
+              <span className="shrink-0 text-[#688]">oldest {formatDuration(summary.oldestElapsedMs)}</span>
+              <span className="ml-auto shrink-0">{showPanel ? "▼" : "▲"}</span>
+            </>
+          : <span className="text-[#4a6a4a]">○ idle · 0 in-flight</span>}
+        </button>
+        {showMerge ?
+          <button
+            type="button"
+            onClick={() => dispatch({ kind: "flush" })}
+            title={`合入 ${bufferedCount} 条新完成请求到历史并恢复实时跟随`}
+            className="shrink-0 border-l border-[#2f6f3f] pl-2 text-[#7fd99a] hover:text-[#a8f0c0]"
+          >
+            ↓ {bufferedCount} 待合入
+          </button>
+        : null}
+      </div>
     </>
   )
 }
