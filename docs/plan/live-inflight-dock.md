@@ -1,5 +1,7 @@
 # LiveDock 在途浮窗 + active-request wire SSOT — 实施计划
 
+> **实施状态(2026-07-08):已完成**,分支 `feat/livedock`。9 个语义提交(A1..C4)+ B1B2 typecheck:ui-v4 缺口修复 `7acb2697` + final-review I-1/I-2 修复 `0f790741`。每任务经 subagent task-review、末尾 opus 全分支 review。自动门全绿(`typecheck:ui-v4` 仅 4 项预存无关错误、`bun run typecheck`、`build:ui-v4`、bun/vitest)。**待办**:布局三不变量浏览器人工核(C4 Step 6);4 项推迟已登记 `docs/todo/deferred-backlog.md`。执行期计划微调:B1+B2 合并为一提交(B1 单独不可编译);前端 typecheck gate 由 `bun run typecheck` 更正为 `typecheck:ui-v4`(前者不覆盖 ui-v4 子项目)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 ui-v4 请求列表页的在途泳道改为底部停靠、点击向上展开的富信息浮层,并建立 active-request 的 wire 类型单一事实源。

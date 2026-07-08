@@ -166,3 +166,35 @@
 - **理想架构**：`accumulateResponses` 按 `output_index` / `accumulateGemini` 按 part 出现序把 text 与 tool_use 块**按真实交错序**入 `content[]`（类似 `accumulateAnthropic` 的 index 定位），保 wire 顺序保真。
 - **为何暂缓**：本次目标是「让这两端点流式工具在预览列 + 详情页可见」（此前完全不可见），已达；交错顺序保真是保真度增量、对预览列零影响、对详情页仅影响多工具+文本混排的罕见块序；且需给两累加器加序号定位逻辑。属「保真度优化独立工作项」非「因范围大降级」。
 - **若做需改什么**：① `accumulateResponses` 用 `Map<outputIndex, block>` 保 text/tool 混合序（text delta 也按 output_index 归位）→ 按 index 排序出 content；② `accumulateGemini` 按 parts 遍历序交替 push text/tool_use（不再分离两桶）；③ 交错序单测（text→tool→text → 三块保序）。发现方：response-content-preview spec §4 H1 扩展的保真度残余（2026-07-08）。
+
+## LiveDock 在途浮窗:per-group 折叠(现整面板一档折叠)
+
+- **根因**：`LiveDock` 展开面板按 resolved model 分组渲染,但整个面板只有一档「折叠/展开」(`livedock.expanded`),组头(`LiveGroup` `showHeader`)不可单独折叠。spec §2 已显式把 per-group 折叠列为推迟项。
+- **当前行为**：展开时所有组全部铺开;在途请求数少时(典型 1-数条)无碍,组数多、单组行数多时面板变长需内滚。
+- **理想架构**:`LiveGroup` 加 per-group 折叠态(组头点击折叠该组明细),折叠态持久化(如 `livedock.collapsedGroups`)。
+- **为何暂缓**:小 N 价值低(spec §6 已加 `groups.length>1` 才显组头 + N=1 扁平退化);属体验增量,非阻塞。
+- **若做需改什么**:① `LiveGroup` 加 `collapsed` prop + 组头 toggle;② `LiveDock` 维护 per-group 折叠 Set + localStorage;③ 折叠态单测。发现方:live-inflight-dock spec §2(2026-07-08)。
+
+## LiveDock:请求终态淡出动画(现瞬时移除)
+
+- **根因**:`applyActiveEvent` 对 completed/failed/aborted 直接从 `byId` 删除(`live-store.ts`),UI 行随即消失,无过渡。spec §2 列为推迟项。
+- **当前行为**:高频完成时行会突兀消失/面板重排(final review I-1 邻域观察),功能正确仅体验略生硬。
+- **理想架构**:终态行标记 `settling` 保留短暂(如 300ms)播放淡出后再移除,或用 CSS transition + React 退场(如 framer-motion / 手写 timeout)。
+- **为何暂缓**:纯体验项;引入退场态会让 reducer/渲染复杂化(需区分「活跃」与「正在退场」),价值未证。
+- **若做需改什么**:① reducer 终态转 `settling` 而非删除 + 延时清理(注意 never-throw/drain);② `LiveDetailRow` 退场动画;③ 时序单测(fake timers)。发现方:live-inflight-dock spec §2 + final review(2026-07-08)。
+
+## LiveDock:面板内直接 abort 在途请求(现仅跳详情页)
+
+- **根因**:`LiveDetailRow` 点击 `onSelect(id)` → `navigate(/requests/:id)`,abort 操作留在详情页;面板内无 abort 钮。spec §2 列为推迟项。
+- **当前行为**:要中止在途请求须先进详情页;面板是只读监视器。
+- **理想架构**:明细行加 abort 按钮 → 调用现有 abort 端点(详情页所用同一 API),乐观从 `byId` 移除或等 `aborted` 事件。
+- **为何暂缓**:超出「把在途信息可视化」的本次范围;abort 是写操作,需确认交互 + 错误处理,属独立功能单元。
+- **若做需改什么**:① 明细行 abort 钮 + 确认;② 复用详情页 abort API 调用;③ 乐观更新 / 依赖 `aborted` WS 事件回收;④ 交互单测。发现方:live-inflight-dock spec §2(2026-07-08)。
+
+## LiveDock:展开态键盘焦点行被叠加层遮挡时自动滚入(现仅 Escape 缓解)
+
+- **根因**:展开面板 `absolute bottom-6 max-h-[55%]` 叠加在 History 底部;若 HistoryList 键盘 roving 焦点行(`HistoryList.tsx` ArrowDown `align:"end"`)滚到被面板遮住的区域,会「有 DOM 焦点但视觉不可见」。Virtuoso 对 overlay 无感知。spec §2/§6 列为已知限制。
+- **当前行为**:焦点可能落在面板背后;本次以 Escape 收面板缓解,不自动滚入。
+- **理想架构**:展开态下把 History 可视区下界收缩到面板顶(paddingBottom 或 scrollIntoView 计算避让),使焦点行始终滚入未遮区。
+- **为何暂缓**:边缘可访问性场景;需让 History 感知 overlay 高度(跨组件耦合),价值/频次低。
+- **若做需改什么**:① LiveDock 暴露展开高度;② HistoryList 据此调 Virtuoso 视口/scrollToIndex 避让;③ 焦点可见性核验(浏览器)。发现方:live-inflight-dock spec §2/§6 + final review(2026-07-08)。

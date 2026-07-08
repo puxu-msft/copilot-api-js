@@ -1,6 +1,8 @@
 # Spec: Live 在途浮窗(LiveDock)与 active-request wire SSOT
 
-状态:draft(待实施)· 日期:2026-07-08 · 归属:ui-v4 请求列表页 + observability WS wire 类型
+状态:已实施(feat/livedock,9 commits + I-1/I-2 fix `0f790741`;布局三不变量待用户浏览器核验)· 日期:2026-07-08 · 归属:ui-v4 请求列表页 + observability WS wire 类型
+
+> 实施:见 [plan](../plan/live-inflight-dock.md)。§8 功能/数据验收自动门全绿(typecheck:ui-v4 仅 4 项预存无关错误、build:ui-v4、bun/vitest 全过);§3 布局叠加/高度不跳变/最新行不被遮属 jsdom 盲区,须浏览器人工核。
 
 ## 1. 问题 / 动机
 
