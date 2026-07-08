@@ -496,14 +496,19 @@ export const AnthropicConfigSchema = z
      */
     stream_keepalive_ping_sec: nullableNonnegativeInt(),
     /**
-     * Keepalive FRAME type for the client-facing Anthropic stream. `content_delta` (default) injects
-     * an EMPTY content delta matching the current open block (thinking→thinking_delta, text→text_delta,
-     * tool_use→input_json_delta) — this resets Claude Code's 300s no-real-content idle deadline that a
-     * bare `event: ping` does NOT (a ping is not counted as a "chunk"; see exp/cc-idle-280s/REPORT.md).
-     * `ping` restores the classic bare-ping behavior. No open block / redacted_thinking / unknown falls
-     * back to ping either way.
+     * Keepalive FRAME type for the client-facing Anthropic stream. `empty_text` (default) behaves like
+     * `content_delta` when a forwarded block is open, but ADDITIONALLY, in buffered mode with NO open
+     * block yet (pre-commit long silence), lazily injects a synthetic empty text ANCHOR block so an
+     * empty `text_delta` can reset Claude Code's 300s no-real-content deadline (real content stays
+     * buffered; the anchor closes and real blocks flush at index+1 on commit; spec
+     * 2026-07-08-buffered-keepalive-empty-text-anchor). `content_delta` injects an EMPTY content delta
+     * matching the current open block (thinking→thinking_delta, text→text_delta,
+     * tool_use→input_json_delta) but falls back to a bare ping when no block is open — which does NOT
+     * reset the 300s deadline (a ping is not counted as a "chunk"; see exp/cc-idle-280s/REPORT.md).
+     * `ping` restores the classic bare-ping behavior. redacted_thinking / unknown open blocks fall back
+     * to ping either way.
      */
-    stream_keepalive_mode: nullableEnum(["ping", "content_delta"] as const),
+    stream_keepalive_mode: nullableEnum(["ping", "content_delta", "empty_text"] as const),
     /**
      * Delayed-commit window (seconds) for streaming Anthropic requests. The proxy waits up to this
      * long for runRequest to settle before opening the 200 SSE stream — an upstream error within the
