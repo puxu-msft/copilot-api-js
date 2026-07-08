@@ -139,3 +139,14 @@
 - **理想架构**：按 richest-data-flow + telemetry-architecture，给 request-telemetry registry 加 `negotiation_lifecycle` 维度（转换类型 expired/re-learned/manual-expire/renew/pin + 分类 category + model），前端可选呈现重测频率、稳定性诊断。
 - **为何暂缓**：与核心生命周期改动解耦，避免把跨切面遥测通道耦进本 spec 的数据模型 + API + UI 三块交付；属「决定数据模型后的后续项」。对抗审查 M3 提出（2026-07-08）。
 - **若做需改什么**：接 request-telemetry registry（skill `telemetry-architecture`）加维度；在 `isEntryActive` 判过期→未施加的消费点、`markX` 再学点、四个 mutation 处发结构化转换事件。
+
+## ui-v4 models-list-parity 落地的两个跟进项（2026-07-08）
+
+来自 `docs/spec/2026-07-08-ui-v4-models-list-parity.md` 落地（分支 `feat/ui-v4-models-list-parity`）时的 not-adopted / deferred：
+
+- **CSV 粒度 thinking 导出（not-adopted，待用户决策）**：Task 4 执行者曾把 CSV 的单 `thinking` 布尔列拆成 `adaptive_thinking` + `max_thinking_budget` 两列（信息更丰富）。**已回退**——Spec B 第 66 行明确冻结 CSV（保持与 Vue 17 列 parity），且该改动超出 Task 4 范围、未测新列形状、静默偏离 parity oracle。若用户想要更丰富的 CSV 导出，应作为**有意的独立增强**：改 spec 解冻 CSV + 加断言新 header set 的测试 + 明确接受偏离 Vue CSV parity。
+- **billingRange re-clamp（Minor，spec 已声明推迟）**：Spec §2.2 提到对齐 Vue 的 watch-based re-clamp 但显式推迟到「plan 阶段」，落地只硬写了 null-init + 缺失当 0（均已兑现）。当前实务无害：目录来自稳定 react-query fetch、`billingBounds` 不会会话中途变化。若未来某次 refetch 缩小了边界而用户已选窄 `billingRange`，Radix thumb 视觉 clamp 但存储态会留越界值（仍正确过滤、可能显示为 active 但无可见效果）。若做：`ModelsPage.tsx` 的 `billingBounds` memo 处加一个 re-clamp `useEffect`。
+
+## 并发会话预存问题（非本特性引入，2026-07-08 观察）
+
+- **`EntrySummary.responsePreviewText` ui-v4-local tsc 错误（4 处）**：history/requests 测试 fixture（AgentLane / RequestRow / activity-row / useHistoryInfinite）在分支基点 `62ddf224`（另一会话的 `response_preview_text` 落地）已存在 ui-v4-local `tsc` 报错；根 `bun run typecheck` 与 `build:ui-v4` 均绿未捕获。非 models-list-parity 引入，属另一会话领域，未擅自修（concurrent-sessions 边界）。**提示拥有该改动的会话补 fixture 的 `responsePreviewText` 字段**。

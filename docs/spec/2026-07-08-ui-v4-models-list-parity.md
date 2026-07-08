@@ -1,7 +1,7 @@
 # Spec: ui-v4 模型列表页对齐（达到并超越 Vue `ui/`）
 
 - 日期：2026-07-08
-- 状态：draft（待用户复审 → 转 plan）
+- 状态：**landed**（8 项全落地；plan `docs/plan/2026-07-08-ui-v4-models-list-parity.md` subagent-driven 执行完毕；分支 `feat/ui-v4-models-list-parity`，11 commits `62ddf224..f44ff138`；全量 215 bun + 314 vitest 绿、build:ui-v4 绿；最终全分支 review READY TO MERGE）
 - 归属：ui-v4 前端子项目；服务「增量淘汰 Vue `ui/`」路线图
 - 相关：[docs/DESIGN.md](../DESIGN.md)、姊妹 spec [ui-v4-raw-json-dual-view](2026-07-08-ui-v4-raw-json-dual-view.md)（覆盖本页 Raw 视图回退项）
 
