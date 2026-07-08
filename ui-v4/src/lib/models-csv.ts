@@ -2,6 +2,7 @@ import type { Model } from "~backend/lib/models/client"
 
 import { deriveCapabilities } from "~backend/lib/models/capabilities"
 
+import type { ModelStatus } from "@/lib/model-status"
 import type { JoinedModelTelemetry } from "@/lib/model-telemetry"
 
 const HEADERS = [
@@ -22,6 +23,7 @@ const HEADERS = [
   "restricted_to",
   "requests_7d",
   "failures_7d",
+  "status",
 ] as const
 
 /** RFC-4180: wrap in quotes and double inner quotes when the value has , " or newline. */
@@ -33,7 +35,7 @@ const s = (value: string | number | boolean | undefined): string => (value === u
 
 /** Serialize the given models (typically the filtered view) to a flat CSV string.
  *  Telemetry columns come from the same normalized join used by the table. */
-export function modelsToCsv(models: Array<Model>, telemetryFor: (id: string) => JoinedModelTelemetry | null): string {
+export function modelsToCsv(models: Array<Model>, telemetryFor: (id: string) => JoinedModelTelemetry | null, statusFor: (model: Model) => ModelStatus): string {
   const rows = models.map((model) => {
     const c = deriveCapabilities(model)
     const t = telemetryFor(model.id)?.last7d ?? null
@@ -55,6 +57,7 @@ export function modelsToCsv(models: Array<Model>, telemetryFor: (id: string) => 
       (model.billing?.restricted_to ?? []).join(";"),
       s(t?.requestCount),
       s(t?.failureCount),
+      statusFor(model),
     ]
     return cells.map((cell) => esc(cell)).join(",")
   })

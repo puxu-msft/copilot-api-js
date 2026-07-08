@@ -141,7 +141,7 @@ export function ModelsPage() {
   // identical to the on-screen table. Telemetry columns use the same normalized join.
   const exportCsv = () => {
     const sortedModels = sortModelRows(augmentRows(visible, telemetryFor, statusFor), sorting).map((r) => r.model)
-    const csv = modelsToCsv(sortedModels, telemetryFor)
+    const csv = modelsToCsv(sortedModels, telemetryFor, statusFor)
     triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8" }), "models.csv")
   }
 
