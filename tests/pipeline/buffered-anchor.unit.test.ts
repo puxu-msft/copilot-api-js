@@ -490,6 +490,86 @@ describe("runResponseBufferedSink — terminal-failure anchor close-off (Task 3.
   })
 })
 
+// ── Task 5.1: synthetic markers on the forwarded track (anchor vs keepalive vs real) ──
+
+describe("runResponseBufferedSink — Task 5.1 synthetic markers on the forwarded track", () => {
+  const clock = new FakeClock()
+  beforeEach(() => clock.install())
+  afterEach(() => clock.restore())
+
+  test("anchor start/stop marked synthetic:'anchor'; anchor first + heartbeat deltas 'keepalive'; real frames unmarked", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // head = message_start (captured → injection on the idle stall); tail = a real THINKING block + terminal.
+    // The real block is thinking (not text) so it is unambiguously distinguishable from the text anchor block.
+    const { stream: up, release } = makeControlledUpstream(
+      [f("message_start", { message: { id: "msg_syn" } })],
+      [
+        f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }),
+        f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "abc" } }),
+        f("content_block_stop", { index: 0 }),
+        f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } }),
+        f("message_stop"),
+      ],
+    )
+    const driver = makeDriver()
+    const { stream: sseStream } = stubSseStream()
+    // Collect the FORWARDED-track records (history `inboundResponse.sseEvents`) with their synthetic markers.
+    const forwarded: Array<{ raw: string; synthetic?: string }> = []
+    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
+
+    const sink = makeSseSink(sseStream, {
+      heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor },
+      onForwarded: (r) => forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }),
+    })
+    const tracker = makeStopTracker()
+
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+
+    // Pull message_start (CAPTURE), park; first idle tick injects the anchor (start@0 + first empty text_delta@0).
+    await drain(30)
+    await clock.advance(15_000)
+    await flush()
+    expect(lastInjectResult()).toBe(true)
+
+    // A SECOND idle tick (openBlock={0,text} is now lit, still no real content) → heartbeat emits ANOTHER empty
+    // text_delta@0 on the open anchor block — a keepalive continuation, marked synthetic:"keepalive".
+    await clock.advance(15_000)
+    await flush()
+
+    // Release the stall → tail buffers → clean drain (saw message_stop) → COMMIT (anchor stop@0, real +1 remap).
+    release()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("complete")
+
+    // Precise ordered oracle over the FORWARDED track: `type@index#synthetic` (synthetic omitted when unmarked).
+    const seq = forwarded.map((r) => {
+      const p = JSON.parse(r.raw) as { type: string; index?: number }
+      const key = typeof p.index === "number" ? `${p.type}@${p.index}` : p.type
+      return r.synthetic ? `${key}#${r.synthetic}` : key
+    })
+    expect(seq).toEqual([
+      "message_start", // real (captured message_start forwarded via sink.write) — NO marker
+      "content_block_start@0#anchor", // synthetic anchor block start — "anchor"
+      "content_block_delta@0#keepalive", // anchor's first empty text_delta — "keepalive"
+      "content_block_delta@0#keepalive", // heartbeat-continued empty text_delta — "keepalive"
+      "content_block_stop@0#anchor", // anchor close-off at commit — "anchor"
+      "content_block_start@1", // real thinking, remapped +1 — NO marker
+      "content_block_delta@1", // real thinking_delta, remapped +1 — NO marker
+      "content_block_stop@1", // real stop, remapped +1 — NO marker
+      "message_delta", // real — NO marker
+      "message_stop", // real — NO marker
+    ])
+    // Cross-check: every REAL frame (message_start, real content blocks, message_delta/stop) is unmarked.
+    const realUnmarked = forwarded.filter((r) => {
+      const p = JSON.parse(r.raw) as { type: string; index?: number }
+      return p.type === "message_start" || p.type === "message_delta" || p.type === "message_stop" || p.index === 1
+    })
+    expect(realUnmarked.every((r) => r.synthetic === undefined)).toBe(true)
+    sink.close?.()
+  })
+})
+
 describe("runResponseBufferedSink — C1 adversarial: freeze holds across a mid-flush clock jump (Task 3.4)", () => {
   const clock = new FakeClock()
   beforeEach(() => clock.install())

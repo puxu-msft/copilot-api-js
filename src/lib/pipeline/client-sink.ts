@@ -164,7 +164,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
       }),
     )
 
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive"): void => {
+  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor"): void => {
     onForwarded?.({
       offsetMs: Date.now() - streamStartMs,
       type: (forwardedType ?? frameType)(frame),
@@ -233,6 +233,20 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     return writeSse(frame)
   }
 
+  // A proxy-synthesized buffered-anchor STRUCTURAL frame (the empty-text anchor's content_block_start@0
+  // / content_block_stop@0 the driver injects during a pre-commit stall). Unlike writeKeepalive it MUST
+  // update the open-block state (noteBlockState) — lighting openBlock={0,text} on the start so the next
+  // heartbeat tick picks a block-aware empty text_delta, and clearing it on the stop — exactly as the
+  // real-frame `write` does; it just marks the forwarded record `synthetic:"anchor"` so history/UI/logs
+  // never mistake the injected structural frame for a real upstream content block (richest-data-flow).
+  // The anchor's OWN empty text_delta is written via writeKeepalive (it is a heartbeat, not structure).
+  const writeAnchor = (frame: ClientFrame): Promise<void> => {
+    lastRealMs = Date.now()
+    noteBlockState(frame)
+    sampleForwarded(frame, "anchor")
+    return writeSse(frame)
+  }
+
   // close stops the heartbeat timer (no-op when none) — runResponseSink's `finally`
   // MUST call it on every exit so a self-rescheduling timer can't leak.
   const close = (): void => {
@@ -255,7 +269,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   }
 
   if (!heartbeatOn) {
-    return { write, writeSynthetic, writeKeepalive, close, freezeHeartbeat }
+    return { write, writeSynthetic, writeKeepalive, writeAnchor, close, freezeHeartbeat }
   }
 
   const intervalMs = heartbeat.intervalSec * 1000
@@ -307,7 +321,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // unref so a leaked timer can never hold the event loop / block graceful shutdown.
   ;(timer as unknown as { unref?: () => void }).unref?.()
 
-  return { write, writeSynthetic, writeKeepalive, close, freezeHeartbeat }
+  return { write, writeSynthetic, writeKeepalive, writeAnchor, close, freezeHeartbeat }
 }
 
 /** {@link makeWsSink} options — forwarded-track sampling (optional). */

@@ -542,21 +542,23 @@ async function runResponseBufferedSink(
   const anchorState = { injected: false, messageStartForwarded: false }
   let capturedMessageStart: ClientFrame | undefined
   // The sink's idle heartbeat calls this when the forward stream has NO open block yet (pre-commit silence):
-  // it forwards the captured message_start (once) + the synthetic anchor block (content_block_start@0 — the
-  // sink's noteBlockState then lights openBlock={0,text}) + a first empty text_delta@0 (the frame that resets
-  // Claude Code's 300s watchdog). All three go through the sink's PUBLIC `write` so they land on the forwarded
-  // track. Returns false — gracefully, NEVER throwing (the tick's catch is pure defense, not a control path) —
-  // when it cannot inject yet: no anchor hooks, already injected, or message_start not captured (the
-  // pre-message_start window), so the tick falls back to a ping. Commit-time close-off / +1 remap /
-  // message_start dedup are Task 3.3 (this Task builds only the injection path).
+  // it forwards the captured message_start (once, via the sink's real-frame `write` — it is a REAL upstream
+  // frame, unmarked on the forwarded track) + the synthetic anchor block start (via `writeAnchor` — marks the
+  // forwarded record `synthetic:"anchor"` and its noteBlockState lights openBlock={0,text}) + a first empty
+  // text_delta@0 (via `writeKeepalive` — marks `synthetic:"keepalive"`; the frame that resets Claude Code's
+  // 300s watchdog). All three land on the forwarded track (Task 5.1: real vs anchor vs keepalive stay
+  // distinguishable in history/UI — richest-data-flow). Returns false — gracefully, NEVER throwing (the tick's
+  // catch is pure defense, not a control path) — when it cannot inject yet: no anchor hooks, already injected,
+  // or message_start not captured (the pre-message_start window), so the tick falls back to a ping. Commit-time
+  // close-off / +1 remap / message_start dedup are Task 3.3 (this Task builds only the injection path).
   const injectAnchor = async (): Promise<boolean> => {
     if (!anchor || anchorState.injected || capturedMessageStart === undefined) return false
     if (!anchorState.messageStartForwarded) {
-      await sink.write(capturedMessageStart) // public write: samples forwarded (message_start is not a block)
+      await sink.write(capturedMessageStart) // real-frame write: samples forwarded UNMARKED (message_start is not a block)
       anchorState.messageStartForwarded = true
     }
-    await sink.write(anchor.startFrame) // noteBlockState → openBlock={0,text}
-    await sink.write(anchor.deltaFrame) // empty text_delta → resets CC's 300s watchdog immediately
+    await (sink.writeAnchor ?? sink.write)(anchor.startFrame) // "anchor" marker; noteBlockState → openBlock={0,text}
+    await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame) // "keepalive": empty text_delta resets CC's 300s watchdog
     anchorState.injected = true
     return true
   }
@@ -579,7 +581,7 @@ async function runResponseBufferedSink(
     sink.freezeHeartbeat?.()
     if (anchorState.injected && anchor) {
       try {
-        await sink.write(anchor.stopFrame)
+        await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker (structural close-off)
       } catch {
         /* client gone mid-close — best-effort, nothing else to do */
       }
@@ -659,7 +661,7 @@ async function runResponseBufferedSink(
         try {
           // M4: the anchor reserved index 0, so close it off (empty-text content_block_stop@0) BEFORE the
           // real blocks flush, then shift every real content_block_* by +1 so nothing collides at index 0.
-          if (injected && anchor) await sink.write(anchor.stopFrame)
+          if (injected && anchor) await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
           for (const frame of buffer) {
             // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
             // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).

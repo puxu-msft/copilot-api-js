@@ -144,14 +144,18 @@ export interface SseEventRecord {
   type: string
   raw: string
   /**
-   * Set to "keepalive" when this is a PROXY-SYNTHESIZED heartbeat frame (an `event: ping` or an
-   * empty content_delta injected during an upstream stall) rather than a real upstream frame the
-   * client received as content. Meaningful only on the FORWARDED track (`inboundResponse.sseEvents`):
-   * it lets history / UI / logs tell a stalled-upstream keepalive stream apart from genuine content,
-   * so a silent upstream is NEVER masked as normal streaming (richest-data-flow observability). An
-   * empty content_delta keepalive is otherwise byte-indistinguishable from a real content frame.
+   * Set when this is a PROXY-SYNTHESIZED frame rather than a real upstream frame the client received
+   * as content. Meaningful only on the FORWARDED track (`inboundResponse.sseEvents`): it lets history /
+   * UI / logs tell a proxy-injected frame apart from genuine content, so a silent upstream is NEVER
+   * masked as normal streaming (richest-data-flow observability). An empty content_delta keepalive is
+   * otherwise byte-indistinguishable from a real content frame. Two variants:
+   *   - "keepalive" — a heartbeat frame (an `event: ping`, or an empty content_delta injected during an
+   *     upstream stall to reset the client's idle deadline) that does NOT open/close a content block.
+   *   - "anchor" — the buffered empty-text keepalive ANCHOR's structural frames (`content_block_start`
+   *     / `content_block_stop` at the reserved index 0) injected in the pre-commit silence window to
+   *     light an open text block. Its OWN empty text_delta is a "keepalive" (a heartbeat, not structure).
    */
-  synthetic?: "keepalive"
+  synthetic?: "keepalive" | "anchor"
 }
 
 /**
