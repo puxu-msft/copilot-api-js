@@ -48,6 +48,7 @@ import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
+  AnchorHooks,
   ClientSink,
   DriverRequestResult,
   UpstreamFrame,
@@ -67,6 +68,13 @@ import {
 } from "~/lib/anthropic/applied-context-edits"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
+import {
+  //
+  anchorDeltaFrame,
+  anchorStartFrame,
+  anchorStopFrame,
+  remapAnthropicBlockIndex,
+} from "~/lib/anthropic/keepalive-anchor"
 import {
   //
   ANTHROPIC_PING,
@@ -432,15 +440,24 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       const { buffered, heartbeatSec } = resolveBufferedAndHeartbeat(env)
       const forwardedSseEvents: Array<SseEventRecord> = []
       const streamStartMs = Date.now()
+      // empty_text buffered anchor wiring: the injectAnchor closure rides the sink's heartbeat
+      // (late-bound; the driver populates it only on the buffered path), and anchorHooks reach the
+      // pump → runResponseBufferedSink. Inert for ping / content_delta (undefined) and the live path.
+      const anchor = buildAnthropicAnchorWiring(state.streamKeepaliveMode === "empty_text")
       const sink = makeSseSink(stream, {
         onForwarded: (record) => forwardedSseEvents.push(record),
         streamStartMs,
         ...(heartbeatSec > 0 && {
-          heartbeat: { intervalSec: heartbeatSec, pingFrame: resolveAnthropicKeepalive(state.streamKeepaliveMode), clientAbortSignal: clientAbort.signal },
+          heartbeat: {
+            intervalSec: heartbeatSec,
+            pingFrame: resolveAnthropicKeepalive(state.streamKeepaliveMode),
+            clientAbortSignal: clientAbort.signal,
+            ...(anchor.injectAnchor && { injectAnchor: anchor.injectAnchor }),
+          },
         }),
       })
       try {
-        await pumpAnthropicStreamingV4({ sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env })
+        await pumpAnthropicStreamingV4({ sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env, anchorHooks: anchor.hooks })
       } finally {
         sink.close?.() // symmetric with the commit path: keep the heartbeat-timer-stop invariant local
         detachClientAbort()
@@ -495,11 +512,21 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     const pingSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : state.protectStreamingHeartbeat
     const forwardedSseEvents: Array<SseEventRecord> = []
     const streamStartMs = Date.now()
+    // empty_text buffered anchor wiring (delayed-commit path). Built BEFORE the upstream settles, so
+    // `buffered` is not yet known — but the injectAnchor closure is late-bound (the driver populates it
+    // only inside runResponseBufferedSink) and stays inert (falls back to the provider ping) on the live
+    // path, so keying it on empty_text alone is byte-safe. anchorHooks flow to the pump below.
+    const anchor = buildAnthropicAnchorWiring(state.streamKeepaliveMode === "empty_text")
     const sink = makeSseSink(stream, {
       onForwarded: (record) => forwardedSseEvents.push(record),
       streamStartMs,
       ...(pingSec > 0 && {
-        heartbeat: { intervalSec: pingSec, pingFrame: resolveAnthropicKeepalive(state.streamKeepaliveMode), clientAbortSignal: clientAbort.signal },
+        heartbeat: {
+          intervalSec: pingSec,
+          pingFrame: resolveAnthropicKeepalive(state.streamKeepaliveMode),
+          clientAbortSignal: clientAbort.signal,
+          ...(anchor.injectAnchor && { injectAnchor: anchor.injectAnchor }),
+        },
       }),
     })
     stream.onAbort(() => clientAbort.abort()) // register BEFORE the first ping (round-B L1)
@@ -568,7 +595,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       const { upstream, env } = result
       const { buffered } = resolveBufferedAndHeartbeat(env)
       commitCtx?.recordFeature("stream-upstream-resolved", { totalStalledMs: Date.now() - commitInstant })
-      await pumpAnthropicStreamingV4({ sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env })
+      await pumpAnthropicStreamingV4({ sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env, anchorHooks: anchor.hooks })
     } finally {
       sink.close?.()
       detachClientAbort()
@@ -811,6 +838,60 @@ function renderNonStreamingV4(
 // ~/lib/anthropic/keepalive-frame (shared with the web_search bypass heartbeat in streaming-pump.ts).
 
 /**
+ * The two halves of the buffered `empty_text` keepalive anchor wiring, threaded across the caller's
+ * sink construction and the pump's `runResponseBufferedSink` call (spec
+ * 2026-07-08-buffered-keepalive-empty-text-anchor §3.2, layering H2):
+ *   - `injectAnchor` — a LATE-BOUND closure set on the sink's `heartbeat.injectAnchor` at
+ *     construction. It reads a mutable holder that the driver populates via `hooks.bindInjector`
+ *     ONLY on the buffered path (`runResponseBufferedSink`). Until then (and forever on the live
+ *     path, which never binds) it resolves `false`, so the idle tick falls back to the provider
+ *     ping — byte-identical to today. This is the crux: the sink is built by the caller BEFORE the
+ *     upstream settles (the commit path can't yet know `buffered`), so the closure must resolve the
+ *     real injector lazily, not capture it at construction.
+ *   - `hooks` — the format-specific {@link AnchorHooks} (frames + message_start predicate + remap +
+ *     `bindInjector`) handed to the driver via the pump. The driver only ORCHESTRATES; these supply
+ *     the Anthropic-shaped frames and the +1 index remap.
+ *
+ * Enabled ONLY for `stream_keepalive_mode: empty_text`. The buffered gate is enforced downstream by
+ * the driver: `bindInjector` fires solely inside `runResponseBufferedSink`, so on the live path
+ * (`runResponseSink`) the holder stays unbound and every anchor branch is inert (`ping` /
+ * `content_delta` never build this wiring at all). Each streaming response builds its own instance
+ * (its own holder) — the settled-within-window and delayed-commit paths are mutually exclusive per
+ * request.
+ */
+interface AnthropicAnchorWiring {
+  hooks: AnchorHooks | undefined
+  injectAnchor: (() => Promise<boolean>) | undefined
+}
+
+function buildAnthropicAnchorWiring(enabled: boolean): AnthropicAnchorWiring {
+  if (!enabled) return { hooks: undefined, injectAnchor: undefined }
+  // The driver hands its injectAnchor closure back through `bindInjector` (buffered path only); the
+  // sink's heartbeat closure below reads THIS holder late, so a sink built before the upstream
+  // settles still resolves the real injector once the driver binds it.
+  let boundInjector: (() => Promise<boolean>) | undefined
+  const hooks: AnchorHooks = {
+    isMessageStart: (f) => {
+      if (typeof f.data !== "string") return false
+      try {
+        return (JSON.parse(f.data) as { type?: unknown }).type === "message_start"
+      } catch {
+        return false // non-JSON frame (e.g. a keepalive line) — not message_start
+      }
+    },
+    startFrame: anchorStartFrame(),
+    stopFrame: anchorStopFrame(),
+    deltaFrame: anchorDeltaFrame(),
+    remap: remapAnthropicBlockIndex,
+    bindInjector: (fn) => {
+      boundInjector = fn
+    },
+  }
+  const injectAnchor = (): Promise<boolean> => (boundInjector ? boundInjector() : Promise.resolve(false))
+  return { hooks, injectAnchor }
+}
+
+/**
  * Resolve the buffered-retry routing flag + the live heartbeat cadence for an Anthropic
  * streaming request. Single source for both (DRY) — the caller builds the sink (heartbeat)
  * and routes the pump (buffered) from one call.
@@ -845,6 +926,13 @@ interface PumpAnthropicStreamingV4Options {
   driver: ReturnType<typeof createPipelineDriver>
   upstream: UpstreamStream
   env: RequestEnvelope
+  /**
+   * Buffered `empty_text` keepalive anchor hooks (spec 2026-07-08-buffered-keepalive-empty-text-anchor).
+   * Present ONLY on `stream_keepalive_mode: empty_text`; passed straight into `runResponseBufferedSink`
+   * as `opts.anchor` (the live `runResponseSink` branch ignores it). Undefined for `ping` / `content_delta`
+   * → the driver's anchor orchestration is inert (byte-identical to before).
+   */
+  anchorHooks?: AnchorHooks
 }
 
 /**
@@ -872,7 +960,7 @@ interface PumpAnthropicStreamingV4Options {
  * modified tools are reflected (via `createState(env)`).
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
-  const { sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env } = opts
+  const { sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env, anchorHooks } = opts
   const anthropicPayload = env.body as MessagesPayload
   const model = anthropicPayload.model
 
@@ -961,6 +1049,11 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       buffered ?
         await driver.runResponseBufferedSink(upstream, env, sink, {
           onUpstreamFrame,
+          // Buffered empty_text keepalive anchor (spec 2026-07-08): the driver lazily injects a
+          // synthetic empty-text block via the sink's heartbeat.injectAnchor during a pre-commit
+          // stall, then closes it off + remaps real blocks +1 on commit. Undefined for ping /
+          // content_delta → every anchor branch in the driver is inert.
+          anchor: anchorHooks,
           sawMessageStop: () => acc.sawMessageStop,
           // H2 (a terminal upstream `error` frame) is a clean drain WITHOUT message_stop — the same
           // shape as an RST-truncation. This lets the buffered sink COMMIT it (the handler then fails
