@@ -137,4 +137,60 @@ describe("ModelsTable (TanStack)", () => {
     expect(domRowIds()).toEqual(shared)
     expect(shared).toEqual(["z-model", "a-model"]) // 900 desc before 100
   })
+
+  it("thinking cell shows adaptive / ≤N / · with a budget tooltip", () => {
+    // The dedicated thinking column renders the actual budget (adaptive > ≤N > ·),
+    // each carrying a `title` tooltip that thinkingLabel derives from caps.
+    const thinkingModels = [
+      {
+        id: "adaptive-m",
+        name: "AD",
+        vendor: "V",
+        version: "1",
+        preview: false,
+        is_chat_default: false,
+        capabilities: { supports: { adaptive_thinking: true }, limits: {} },
+        billing: { multiplier: 1 },
+      },
+      {
+        id: "budget-m",
+        name: "BD",
+        vendor: "V",
+        version: "1",
+        preview: false,
+        is_chat_default: false,
+        capabilities: { supports: { max_thinking_budget: 8192 }, limits: {} },
+        billing: { multiplier: 1 },
+      },
+      {
+        id: "none-m",
+        name: "NO",
+        vendor: "V",
+        version: "1",
+        preview: false,
+        is_chat_default: false,
+        capabilities: { supports: {}, limits: {} },
+        billing: { multiplier: 1 },
+      },
+    ] as unknown as Array<Model>
+    render(
+      <ModelsTable
+        models={thinkingModels}
+        columnVisibility={{}}
+        sorting={[{ id: "id", desc: false }]}
+        onSortingChange={() => {}}
+        telemetryFor={() => null}
+        maxRequests7d={0}
+      />,
+    )
+    // adaptive form + tooltip
+    const adaptive = document.querySelector('[title="adaptive thinking"]')
+    expect(adaptive?.textContent).toBe("adaptive")
+    // fixed-budget form ≤N + tooltip
+    const budget = document.querySelector('[title="max thinking budget 8192"]')
+    expect(budget?.textContent).toBe("≤8192")
+    // none form · + tooltip
+    const none = document.querySelector('[title="no thinking"]')
+    expect(none?.textContent).toBe("·")
+  })
 })

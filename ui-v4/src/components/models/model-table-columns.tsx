@@ -15,6 +15,7 @@ import type { ModelColumnKey } from "@/lib/model-columns"
 import type { JoinedModelTelemetry } from "@/lib/model-telemetry"
 
 import { formatNumber } from "@/lib/format"
+import { thinkingLabel } from "@/lib/model-thinking"
 
 /**
  * Shared column definition for the Models table (headless-component-stack ADR:
@@ -140,7 +141,6 @@ const CAP_COLS: ReadonlyArray<{ key: ModelColumnKey; deriveKey: keyof DerivedCap
   { key: "parallelToolCalls", deriveKey: "parallelToolCalls", label: "Par" },
   { key: "structuredOutputs", deriveKey: "structuredOutputs", label: "Struct" },
   { key: "streaming", deriveKey: "streaming", label: "Strm" },
-  { key: "thinking", deriveKey: "thinking", label: "Think" },
 ]
 
 const col = createColumnHelper<ModelRow>()
@@ -232,6 +232,27 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
         cell: (c) => (c.getValue<boolean>() ? <span className="text-[var(--color-ok)]">✓</span> : <span className="text-[#3a3a42]">·</span>),
       }),
     ),
+    // Thinking stays the last capability column (id `"thinking"` keeps the column
+    // menu + its localStorage visibility key aligned) but renders a dedicated cell
+    // showing the actual budget (adaptive / ≤N) instead of an opaque ✓.
+    col.accessor((r) => r.caps.thinking, {
+      id: "thinking",
+      header: "Think",
+      enableSorting: false,
+      meta: { thClass: `${HEAD} text-center`, tdClass: "px-2 py-1 text-center text-[11px]" },
+      cell: (c) => {
+        const { text, title } = thinkingLabel(c.row.original.caps)
+        const on = text !== "·"
+        return (
+          <span
+            title={title}
+            className={on ? "text-[var(--color-ok)]" : "text-[#3a3a42]"}
+          >
+            {text}
+          </span>
+        )
+      },
+    }),
     {
       ...sortable("billing", "$×", "px-2 py-1 text-right text-[#cdb]", "text-right"),
       cell: (c) => c.row.original.model.billing?.multiplier ?? "-",
