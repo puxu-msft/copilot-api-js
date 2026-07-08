@@ -15,35 +15,24 @@ import {
 } from "@/lib/activity-row"
 import {
   //
-  formatDuration,
   formatElapsed,
   formatTime,
   statusSignal,
 } from "@/lib/format"
 // 信号色 + cell 文本拼装 helper + 列宽 SSOT 在 request-columns.ts(TanStack 列模型同源)；
-// 本文件的 HistoryRow(AgentLane 泳道复用)/LiveRow 从此处 import,不再各自持副本(Task 3.2 去重)。
-// LiveRow 的共有列宽(status/model/dur)取 COLUMN_WIDTHS(Task 3.4),与 History 表列对齐、改宽度只改一处。
+// 本文件的 HistoryRow(AgentLane 泳道复用)从此处 import,不再各自持副本(Task 3.2 去重)。
 import {
   //
   bytesCellText,
   bytesCellTitle,
-  COLUMN_WIDTHS,
   SIGNAL_COLOR,
   tokensCellText,
   tokensCellTitle,
 } from "@/lib/request-columns"
 
-interface LiveRowInfo {
-  state: string
-  model?: string
-  durationMs?: number
-}
-
 interface RequestRowProps {
   /** History 行:完整 EntrySummary,渲染富统计行。 */
   entry?: EntrySummary
-  /** Live 行:在飞紧凑子集(无 usage / preview)。 */
-  live?: LiveRowInfo
   selected?: boolean
   onClick?: () => void
 }
@@ -52,33 +41,6 @@ const ROW_CLASS = "mono flex w-full items-center gap-2 border-b border-[#222] px
 
 function selectionClass(selected: boolean | undefined): string {
   return selected ? "border-l-2 border-l-[var(--color-primary)] bg-[#3a2f1a] text-[#f0d8a8]" : "text-[#aaa]"
-}
-
-/** Live 紧凑行 —— 信号色状态 + 模型 + 时长(在飞无 token / preview)。 */
-function LiveRow({ live, selected, onClick }: { live: LiveRowInfo; selected?: boolean; onClick?: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`${ROW_CLASS} ${selectionClass(selected)}`}
-    >
-      <span
-        className={`${COLUMN_WIDTHS.status} shrink-0 overflow-hidden text-ellipsis whitespace-nowrap`}
-        style={{ color: SIGNAL_COLOR[statusSignal(live.state)] }}
-      >
-        ◐ {live.state}
-      </span>
-      <span
-        className={`${COLUMN_WIDTHS.model} shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#cdb]`}
-        title={live.model ?? undefined}
-      >
-        {live.model ?? "—"}
-      </span>
-      <span className={`${COLUMN_WIDTHS.dur} ml-auto shrink-0 text-right text-[#888]`}>
-        {live.durationMs === undefined ? "" : formatDuration(live.durationMs)}
-      </span>
-    </button>
-  )
 }
 
 /** History 富行 —— 状态·时间·+耗时·模型·(Nx)·端点·字节·token·×N·预览/失败摘要(spec §4.2)。 */
@@ -171,20 +133,12 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
   )
 }
 
-/** 单行请求摘要 —— History 富行(entry) 或 Live 紧凑行(live)(spec §4.2 列表行)。 */
-export function RequestRow({ entry, live, selected, onClick }: RequestRowProps) {
+/** 单行请求摘要 —— History 富行(entry)(spec §4.2 列表行)。 */
+export function RequestRow({ entry, selected, onClick }: RequestRowProps) {
   if (entry)
     return (
       <HistoryRow
         entry={entry}
-        selected={selected}
-        onClick={onClick}
-      />
-    )
-  if (live)
-    return (
-      <LiveRow
-        live={live}
         selected={selected}
         onClick={onClick}
       />

@@ -117,6 +117,13 @@ describe("RequestsListPage wiring", () => {
     const anyEndpoint = apiGet.mock.calls.some((c) => c[0].includes("endpoint="))
     expect(anyEndpoint).toBe(false)
   })
+
+  it("空在途时渲染 LiveDock idle 条", async () => {
+    useListStore.setState({ ...initialListState })
+    useLiveStore.setState({ byId: {} })
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/idle/i)).toBeTruthy())
+  })
 })
 
 describe("RequestsListPage column visibility (menu + persistence)", () => {

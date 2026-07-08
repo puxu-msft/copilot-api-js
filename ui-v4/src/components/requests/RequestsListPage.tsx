@@ -8,7 +8,7 @@ import {
 } from "react"
 
 import { HistoryList } from "@/components/requests/HistoryList"
-import { LiveLane } from "@/components/requests/LiveLane"
+import { LiveDock } from "@/components/requests/LiveDock"
 import { RequestFilterChips } from "@/components/requests/RequestFilterChips"
 import { RequestsColumnMenu } from "@/components/requests/RequestsColumnMenu"
 import { RequestsFilterBar } from "@/components/requests/RequestsFilterBar"
@@ -30,7 +30,7 @@ function loadColumnVisibility(): VisibilityState {
   }
 }
 
-/** Requests 列表全屏页(Plan 08 §1):筛选工具条 + 活动 chips + Live 泳道 + History 列表。 */
+/** Requests 列表全屏页(Plan 08 §1):筛选工具条 + 活动 chips + History 列表 + 底部停靠 LiveDock 在途浮窗。 */
 export function RequestsListPage() {
   useLiveRequests() // 订阅 WS active 事件喂 live-store(挂一次)
   const { filters, setFilter, setFilters, clearFilter, clearAll } = useRequestFilters()
@@ -69,13 +69,15 @@ export function RequestsListPage() {
         clearAll={clearAll}
         setFilters={setFilters}
       />
-      <LiveLane />
-      <HistoryList
-        filters={filters}
-        columnVisibility={columnVisibility}
-        onColumnVisibilityChange={setColumnVisibility}
-        onClearFilters={clearAll}
-      />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <HistoryList
+          filters={filters}
+          columnVisibility={columnVisibility}
+          onColumnVisibilityChange={setColumnVisibility}
+          onClearFilters={clearAll}
+        />
+        <LiveDock />
+      </div>
     </div>
   )
 }
