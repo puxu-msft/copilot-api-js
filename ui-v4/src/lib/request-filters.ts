@@ -68,8 +68,16 @@ export function hasAnyFilter(f: RequestFilters): boolean {
   )
 }
 
+/**
+ * epoch ms → 短日期串 `YYYY-MM-DD`(**本地时区**)。与 `DateRangePopover` 的 `fmt`
+ * 保持一致:两处对同一 epoch 渲染同一本地日期串。曾用 `toISOString`(UTC)导致
+ * 非 UTC 时区跨午夜时 chip 标签比 popover 标签差一天(epoch/筛选正确,仅展示串不一致)。
+ */
 function fmtDate(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10)
+  const d = new Date(ms)
+  const mm = String(d.getMonth() + 1).padStart(2, "0")
+  const dd = String(d.getDate()).padStart(2, "0")
+  return `${d.getFullYear()}-${mm}-${dd}`
 }
 
 export function activeChips(f: RequestFilters): Array<{ key: ChipKey; label: string }> {

@@ -46,6 +46,18 @@ describe("request-filters", () => {
     expect(keys).toEqual(["model", "pid"])
   })
 
+  test("activeChips date label uses LOCAL tz (mirrors DateRangePopover, not UTC toISOString)", () => {
+    // 固定 epoch;期望串按本地时区从同一 Date 派生 → 时区无关,且锁定“本地格式”不回退 UTC。
+    const from = 1_700_000_000_000 // 2023-11-14 (tz-dependent calendar day)
+    const to = 1_700_086_400_000
+    const localFmt = (ms: number): string => {
+      const d = new Date(ms)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+    }
+    const chip = activeChips({ ...EMPTY_FILTERS, from, to }).find((c) => c.key === "from")
+    expect(chip?.label).toBe(`time: ${localFmt(from)} → ${localFmt(to)}`)
+  })
+
   test("hasAnyFilter", () => {
     expect(hasAnyFilter(EMPTY_FILTERS)).toBe(false)
     expect(hasAnyFilter({ ...EMPTY_FILTERS, search: "x" })).toBe(true)
