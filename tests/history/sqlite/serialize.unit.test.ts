@@ -243,7 +243,12 @@ describe("sqlite/serialize head+stage", () => {
 
     const { row, stages } = serializeHeadEntry(entry)
     // Upstream frames ride on each attempt's upstream_response stage (RFC §S1) — one per attempt.
-    expect(stages.filter((s) => s.stage === "upstream_response").map((s) => s.attemptIndex).sort((a, b) => a - b)).toEqual([0, 1])
+    expect(
+      stages
+        .filter((s) => s.stage === "upstream_response")
+        .map((s) => s.attemptIndex)
+        .sort((a, b) => a - b),
+    ).toEqual([0, 1])
     // The per-attempt upstreamResponse is stripped from the head blob (persisted as stage rows).
     const headMeta = decompress(row.blob_gz) as { attempts?: Array<Record<string, unknown>> }
     expect(headMeta.attempts?.[0].upstreamResponse).toBeUndefined()
@@ -314,7 +319,9 @@ describe("sqlite/serialize head+stage", () => {
       // error_message derives from the durable `_index.derived.failureReason`
       // projection (the upstreamResponse leg carries no error field).
       _index: { derived: { responseSuccess: false, failureReason: "boom" } },
-      attempts: [{ index: 0, durationMs: 1, error: "boom", upstreamResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: null } }],
+      attempts: [
+        { index: 0, durationMs: 1, error: "boom", upstreamResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: null } },
+      ],
     }
     const { row } = serializeHeadEntry(entry)
     expect(row.error_message).toBe("boom")

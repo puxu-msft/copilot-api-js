@@ -8,6 +8,7 @@ import {
   type Row,
   type VisibilityState,
 } from "@tanstack/react-table"
+import { resolveResponseModel } from "~backend/lib/history/entry-view"
 import {
   //
   useCallback,
@@ -35,8 +36,6 @@ import type {
   EntrySummary,
   HistoryEntry,
 } from "@/types"
-
-import { resolveResponseModel } from "~backend/lib/history/entry-view"
 
 import { Modal } from "@/components/shared/Modal"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
