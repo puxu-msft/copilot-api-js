@@ -14,8 +14,11 @@
 import type {
   //
   HistoryEntry,
+  MessageContent,
   UsageData,
 } from "./types"
+
+import { accumulateForwardedContent } from "./accumulate-response"
 
 /** Non-nullable per-attempt shape (the element type of `HistoryEntry.attempts`). */
 type Attempt = NonNullable<HistoryEntry["attempts"]>[number]
@@ -76,4 +79,62 @@ export function resolveAttemptCount(entry: Pick<HistoryEntry, "attempts" | "_ind
 /** Current strategy: `_index.derived.currentStrategy` → live final attempt's `strategy`. */
 export function resolveCurrentStrategy(entry: Pick<HistoryEntry, "attempts" | "_index">): string | undefined {
   return entry._index?.derived?.currentStrategy ?? finalAttempt(entry)?.strategy
+}
+
+/** 截断到 ~100 字（与请求侧 `summarizeMessage` 上限一致）。 */
+const RESPONSE_PREVIEW_MAX = 100
+
+/**
+ * 把一条 assistant 响应消息摘要成 `[ToolA, ToolB] text` —— 工具名在前(方括号逗号
+ * 连接)、其后接首个非空文本。覆盖 string content(CC/Responses/Gemini) 与 array
+ * content(Anthropic) 两种形态 + OpenAI `tool_calls[]`。仅文本→text；仅工具→[A,B]；
+ * 皆无→""。与请求侧 text-优先的 `summarizeMessage` 相反(响应关注模型调了什么工具)。
+ */
+export function summarizeResponseMessage(msg: MessageContent): string {
+  const tools: Array<string> = []
+  let text = ""
+
+  if (typeof msg.content === "string") {
+    text = msg.content
+  } else if (Array.isArray(msg.content)) {
+    for (const block of msg.content) {
+      if (!block || typeof block !== "object") continue
+      const b = block as Record<string, unknown>
+      if ((b.type === "tool_use" || b.type === "server_tool_use") && typeof b.name === "string") tools.push(b.name)
+      else if (b.type === "text" && typeof b.text === "string" && !text && b.text.length > 0) text = b.text
+    }
+  }
+  // OpenAI assistant tool_calls carrier (parallel to string content).
+  for (const tc of msg.tool_calls ?? []) {
+    if (tc.function.name) tools.push(tc.function.name)
+  }
+
+  const toolPart = tools.length > 0 ? `[${tools.join(", ")}]` : ""
+  const combined = [toolPart, text].filter(Boolean).join(" ")
+  return combined.length <= RESPONSE_PREVIEW_MAX ? combined : combined.slice(0, RESPONSE_PREVIEW_MAX)
+}
+
+/** 失败/无内容时的紧凑错误回退(承接 richest-data-flow：已在库的错误不丢)。 */
+function errorFallback(entry: Pick<HistoryEntry, "attempts" | "_index">): string {
+  const err = resolveResponseError(entry) ?? entry._index?.derived?.failureReason ?? finalUpstreamResponse(entry)?.rawBody?.split("\n")[0] ?? ""
+  return err.length <= RESPONSE_PREVIEW_MAX ? err : err.slice(0, RESPONSE_PREVIEW_MAX)
+}
+
+/**
+ * 响应内容预览：非流式取 `finalUpstream.body`(已归一 MessageContent)，流式经
+ * `accumulateForwardedContent(clientResponse.sseEvents, endpoint)` 重建(客户端方言，
+ * 与 endpoint 分派匹配 —— spec C1)，再 `summarizeResponseMessage`。无内容且失败→错误
+ * 回退。在途(无 finalUpstream / 无 forwarded 帧 / 未失败)天然返回 ""。
+ */
+export function extractResponsePreviewText(entry: Pick<HistoryEntry, "attempts" | "clientResponse" | "endpoint" | "_index">): string {
+  const body = finalUpstreamResponse(entry)?.body
+  let assembled: MessageContent | undefined
+  if (body && typeof body === "object" && "content" in body) {
+    assembled = body
+  } else {
+    const frames = entry.clientResponse?.sseEvents
+    if (frames && frames.length > 0) assembled = accumulateForwardedContent(frames, entry.endpoint)
+  }
+  const summary = assembled ? summarizeResponseMessage(assembled) : ""
+  return summary || errorFallback(entry)
 }
