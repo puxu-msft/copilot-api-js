@@ -5,6 +5,7 @@ import {
 } from "react-router-dom"
 
 import { ConfigPage } from "@/components/config/ConfigPage"
+import { LearnedPage } from "@/components/learned/LearnedPage"
 import { ModelsPage } from "@/components/models/ModelsPage"
 import { OverviewPage } from "@/components/overview/OverviewPage"
 import { RequestDetailPage } from "@/components/requests/RequestDetailPage"
@@ -36,6 +37,7 @@ export const router = createHashRouter([
       { path: "overview", element: <OverviewPage /> },
       { path: "models", element: <ModelsPage /> },
       { path: "config", element: <ConfigPage /> },
+      { path: "learned", element: <LearnedPage /> },
       { path: "tools/json", element: <JsonToolsPage /> },
       { path: "sessions", element: <SessionsPage /> },
       { path: "sessions/:id", element: <SessionDetailPage /> },
