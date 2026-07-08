@@ -45,9 +45,12 @@ export function LearnedPage() {
 
   if (actions.query.isLoading) return <div className="mono p-4 text-[#888]">loading…</div>
   const snap = actions.query.data
+  const filtering = filter !== "all"
   const groups = (snap?.categories ?? [])
     .map((g) => ({ ...g, entries: g.entries.filter((e) => matches(filter, e.status)) }))
-    .filter((g) => g.entries.length > 0)
+    // 默认（全部）视图展示所有学习规则分类，含 0 条的空分类（显示分类名 + TTL + 无记录）；
+    // 筛选视图（active/expired/pinned）只留有匹配条目的分类，避免被空分类淹没。
+    .filter((g) => !filtering || g.entries.length > 0)
 
   return (
     <div className="mono flex h-full flex-col gap-2 overflow-auto p-2 text-[13px]">
@@ -88,13 +91,16 @@ export function LearnedPage() {
               {g.entries.length} 条 · TTL {g.ttlMs === null ? "永不" : `${Math.round(g.ttlMs / 86_400_000)}d`}
             </span>
           </div>
-          {g.entries.map((e) => (
-            <LearnedRow
-              key={`${e.key}|${e.value}`}
-              entry={e}
-              actions={actions}
-            />
-          ))}
+          {g.entries.length === 0 ?
+            <div className="px-2 py-1 text-[11px] text-[var(--color-muted)]">无记录</div>
+          : g.entries.map((e) => (
+              <LearnedRow
+                key={`${e.key}|${e.value}`}
+                entry={e}
+                actions={actions}
+              />
+            ))
+          }
         </section>
       ))}
     </div>

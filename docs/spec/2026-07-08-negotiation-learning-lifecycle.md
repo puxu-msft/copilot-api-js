@@ -45,7 +45,7 @@
 - AC4 再确认：上游对某记录再次拒绝触发 `markX` 时，即使 value 已存在也刷新 `lastConfirmedAt=now`、清 `manuallyExpired`、并 schedulePersist。
 - AC5 编辑动作经 API 生效并持久化：续约（刷新 lastConfirmedAt + 清 manuallyExpired）、立即失效（manuallyExpired=true，保留行）、pin/unpin、删除（移除行）。
 - AC6 整体导出：`GET /api/negotiation/export` 返回完整 v2 数据集 JSON（附下载头），可作为 `negotiation-states.json` 再导入。
-- AC7 UI：10 分组分节展示，每行显示 model/key、value、状态徽章、firstLearnedAt/lastConfirmedAt（相对时间）、过期时间、四个动作按钮；空分组折叠；顶部「整体导出」+ 状态筛选。
+- AC7 UI：10 分组分节展示，每行显示 model/key、value、状态徽章、firstLearnedAt/lastConfirmedAt（相对时间）、过期时间、四个动作按钮；**默认（全部）视图展示所有学习规则分类，含 0 条的空分类（显示分类名 + TTL + 无记录），筛选视图只留有匹配条目的分类**；顶部「整体导出」+ 状态筛选。
 - AC8 配置：`negotiation_learning.default_ttl` + 按分类 `ttl.<category>` 可配，`never`/`0`/`null` = 不自动过期。
 
 ## 4. 设计
@@ -215,7 +215,7 @@ interface LearnedEntryView {
 - **类型**：经 `~backend/*` re-export API 响应类型（`LearnedSnapshot` / `LearnedEntryView` / `NegotiationCategory`），SSOT-types。
 - **页面结构**：
   - 顶部：**「整体导出」**按钮（`getBlob('/api/negotiation/export')` → 复用既有下载 util 存 JSON）+ 状态筛选（全部 / active / 已过期 / pinned）。
-  - **10 个功能分组**分节：节头显示分类中文名 + TTL + 条目数；空分组折叠/隐藏。
+  - **10 个功能分组**分节：节头显示分类中文名 + TTL + 条目数；**默认视图展示所有分类（含 0 条空分类，body 显示「无记录」），筛选视图（active/expired/pinned）只留有匹配条目的分类**。
   - 每行：model/key、value、**状态徽章**、firstLearnedAt / lastConfirmedAt（相对时间，`migrated` 加「迁移·首学未知」提示）、过期时间；行内动作 **续约 / 立即失效 / pin·unpin / 删除**（删除二次确认）。
   - **状态徽章合并**（用户决定）：UI 把 `expired` 与 `manually_expired` **合并为一个「已过期」徽章**；后端 status 仍区分四态（数据完整、可导出/诊断区分）。徽章三态：`活跃` / `已过期` / `已固定`。
 

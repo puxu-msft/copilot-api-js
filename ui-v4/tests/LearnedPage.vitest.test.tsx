@@ -75,11 +75,12 @@ beforeEach(() => {
 })
 
 describe("LearnedPage", () => {
-  it("renders grouped entries and hides empty groups", () => {
+  it("renders all rule categories in the default view, incl. empty ones", () => {
     render(<LearnedPage />)
     expect(screen.getByText("context_management")).toBeDefined()
-    // empty 'betas' group hidden
-    expect(screen.queryByText("anthropic-beta 头")).toBeNull()
+    // empty 'betas' category is still shown (header + 无记录 placeholder), not hidden
+    expect(screen.getByText("anthropic-beta 头")).toBeDefined()
+    expect(screen.getAllByText("无记录").length).toBeGreaterThan(0)
   })
   it("renew action calls mutation", () => {
     render(<LearnedPage />)
