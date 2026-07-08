@@ -807,6 +807,22 @@ export const ConfigSchema = z
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
     model_refresh_interval: nullableNonnegativeInt(),
+    /**
+     * Reactive-learning (feature-negotiation) TTL lifecycle. `default_ttl_days`
+     * (default 30) applies to any category without an override; `ttl_days` maps a
+     * category id (camelCase identifier, e.g. `toolFields`) to its TTL in days.
+     * `0` / `null` = never auto-expire. Kept as raw `.nullable().optional()`
+     * (NOT nullableSection) so an explicit `null` survives validation and the
+     * config-UI round-trip can delete the whole section.
+     */
+    negotiation_learning: z
+      .object({
+        default_ttl_days: z.number().int().nonnegative().nullable().optional(),
+        ttl_days: z.record(z.string(), z.number().int().nonnegative()).nullable().optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict()
 

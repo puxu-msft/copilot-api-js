@@ -21,6 +21,7 @@ import {
   setDisabledModels,
   setHistoryConfig,
   setModelOverrides,
+  setNegotiationConfig,
   setResponsesConfig,
   setShutdownConfig,
   setTimeoutConfig,
@@ -711,6 +712,21 @@ export async function applyConfigToState(): Promise<Config> {
     if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
   }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
+
+  // Reactive-learning TTL lifecycle (top-level section). Days → ms; 0/≤0 → never
+  // (Infinity). ttl_days is keyed by internal category id (camelCase). The whole
+  // overrides map is replaced when present (replace semantic); default is retained
+  // on absence, reset via resetConfigManagedState().
+  if (config.negotiation_learning) {
+    const nl = config.negotiation_learning
+    const toMs = (days: number): number => (days <= 0 ? Number.POSITIVE_INFINITY : days * 86_400_000)
+    if (typeof nl.default_ttl_days === "number") setNegotiationConfig({ negotiationDefaultTtlMs: toMs(nl.default_ttl_days) })
+    if (nl.ttl_days) {
+      const overrides: Record<string, number> = {}
+      for (const [cat, days] of Object.entries(nl.ttl_days)) overrides[cat] = toMs(days)
+      setNegotiationConfig({ negotiationTtlOverridesMs: overrides })
+    }
+  }
 
   // Responses API settings (scalar: override only when present)
   const responsesConfig = config.openai_responses

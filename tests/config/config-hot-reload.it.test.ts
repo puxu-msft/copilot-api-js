@@ -851,6 +851,23 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: 16,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
   },
+  {
+    // days → ms in config.ts (0 → Infinity).
+    configKey: "negotiation_learning.default_ttl_days",
+    stateKey: "negotiationDefaultTtlMs",
+    sampleYamlValue: "7",
+    expectedStateValue: 7 * 86_400_000,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
+  },
+  {
+    // ttl_days keyed by internal category id (camelCase); the whole overrides map
+    // is replaced, so only toolFields remains after applying this sample.
+    configKey: "negotiation_learning.ttl_days",
+    stateKey: "negotiationTtlOverridesMs",
+    sampleYamlValue: `\n  toolFields: 10`,
+    expectedStateValue: { toolFields: 10 * 86_400_000 },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs,
+  },
 ]
 
 interface ExemptField {

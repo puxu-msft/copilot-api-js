@@ -270,6 +270,20 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "history")) setNestedScalarContainer(doc, ["history"], body.history)
   if (hasOwn(body, "openai_responses")) setNestedScalarContainer(doc, ["openai_responses"], body.openai_responses)
 
+  if (hasOwn(body, "negotiation_learning")) {
+    const nl = body.negotiation_learning
+    if (nl === null) {
+      doc.deleteIn(["negotiation_learning"])
+    } else if (nl) {
+      if (hasOwn(nl, "default_ttl_days")) setScalar(doc, ["negotiation_learning", "default_ttl_days"], nl.default_ttl_days)
+      if (hasOwn(nl, "ttl_days")) {
+        // nested map: replace the whole ttl_days node so removed categories drop
+        if (nl.ttl_days === null || nl.ttl_days === undefined) doc.deleteIn(["negotiation_learning", "ttl_days"])
+        else doc.setIn(["negotiation_learning", "ttl_days"], nl.ttl_days)
+      }
+    }
+  }
+
   if (hasOwn(body, "anthropic")) {
     const anthropic = body.anthropic as Config["anthropic"] | null
     if (anthropic === null) {
