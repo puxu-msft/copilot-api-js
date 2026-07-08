@@ -66,12 +66,16 @@ PROBE_ACCOUNT_TYPE=business bun run exp/server-tool-memory-probe/probe.ts
 
 ---
 
-## 结论：待跑
+## 结论：接受（enterprise 账户实测）
 
-- 跑的日期 / 模型 / account-type：
-- 上游 HTTP status：
-- `anthropic-beta` 实际值：
-- `wire.tools` 里的 memory 工具形状：
-- 响应体关键片段（400 时贴拒绝原因；2xx 时贴是否出现 memory / server_tool_use 内容块）：
-- 判定（接受 / 拒绝（原因） / 需人工判读）：
-- 后续动作（例：若接受 → 可评估把 `server_tool_memory` 默认开；若拒绝 → 保持默认关，记入 backlog）：
+- 跑的日期 / 模型 / account-type：2026-07-08 / `claude-sonnet-4.5`→resolved `claude-sonnet-5` / **enterprise**（`PROBE_ACCOUNT_TYPE=enterprise`；token `sku=copilot_enterprise_seat_quota`）。
+- 上游 HTTP status：**2xx（接受）**。`stop_reason: end_turn`，正常完成。
+- `anthropic-beta` 实际值：`context-management-2025-06-27,advanced-tool-use-2025-11-20`。
+- `wire.tools` 里的 memory 工具形状：`[{"name":"memory","type":"memory_20250818"}]`（生产 `rewriteMemoryTool` 改写正确）。
+- 响应体关键片段：`{"content":[{"text":"probe ok","type":"text"}], "context_management":{"applied_edits":[]}, ...}` ——**响应体回显了 `context_management` 字段**（`applied_edits:[]`，本次无可编辑内容故空），证明上游**主动识别并处理了** context-management 特性，而非静默忽略。无 `server_tool_use` 块（memory 工具未被调用——最小 prompt 不触发存取，属预期）。
+- 判定：**接受**。CAPI（enterprise）不拒绝 `memory_20250818` server tool 声明 + `context-management-2025-06-27` beta；`context_management` 回显进一步证明特性被激活。
+- 后续动作 / 边界：
+  - 已确认的是 **wire 接受性**（工具声明 + beta 被上游接纳并处理）；**未**端到端验证 memory 工具的实际存取行为（需一个会触发 memory 读写的 prompt + 查响应 `server_tool_use` / history `sseEvents`）。
+  - **仅在 enterprise 账户 + enterprise 端点确认**。首跑用默认 individual base URL（`api.githubcopilot.com`）时请求**挂起无响应**（enterprise token 路由到 individual 端点的行为不明），故 individual/business 端点的接受性**未确认**、不可外推。
+  - **可评估**把 `anthropic.server_tool_memory` 默认开（至少对 enterprise）——但建议先补 individual/business 端点确认 + 一次端到端 memory 调用验证，再决定是否翻默认。
+  - 探针进程发完请求打完判据后未干净退出（残留 keepalive/token-refresh timer，被外层 timeout 杀），不影响结论；如需复跑可在打印后加 `process.exit(0)`。
