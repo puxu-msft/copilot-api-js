@@ -46,6 +46,7 @@ import {
 } from "~/lib/history/entries"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
 import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-stage-backfill"
+import { resetResponsePreviewBackfillForTests } from "~/lib/history/sqlite/response-preview-backfill"
 import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
 import { resetUsageNormalizeBackfillForTests } from "~/lib/history/sqlite/usage-normalize-backfill"
 import { resetModelsEtagForTests } from "~/lib/models/client"
@@ -111,6 +112,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetSearchIndexBackfillForTests", reset: resetSearchIndexBackfillForTests },
   { name: "resetLegacyStageBackfillForTests", reset: resetLegacyStageBackfillForTests },
   { name: "resetUsageNormalizeBackfillForTests", reset: resetUsageNormalizeBackfillForTests },
+  { name: "resetResponsePreviewBackfillForTests", reset: resetResponsePreviewBackfillForTests },
 ]
 
 /** Names registered in RESETTERS — consumed by the L1 completeness guard. */

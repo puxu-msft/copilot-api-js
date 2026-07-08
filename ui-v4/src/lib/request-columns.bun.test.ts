@@ -28,7 +28,7 @@ import {
 } from "@/lib/request-columns"
 
 function sum(o: Partial<EntrySummary> = {}): EntrySummary {
-  return { id: "x", startedAt: 1000, endpoint: "anthropic-messages", messageCount: 0, previewText: "", ...o } as EntrySummary
+  return { id: "x", startedAt: 1000, endpoint: "anthropic-messages", messageCount: 0, previewText: "", responsePreviewText: "", ...o } as EntrySummary
 }
 
 /** 取某列的 accessorFn 并对给定 entry 求值(列必带 accessorFn)。 */
@@ -51,6 +51,7 @@ describe("request-columns", () => {
       "tokens",
       "attempts",
       "preview",
+      "response",
     ])
     // REQUEST_COLUMN_IDS 与列定义顺序一致(单一来源)
     expect(REQUEST_COLUMN_IDS).toEqual(REQUEST_COLUMNS.map((c) => c.id as string))
@@ -86,6 +87,11 @@ describe("request-columns", () => {
   test("preview accessor falls back to failureSummary for non-completed rows", () => {
     const e = sum({ state: "failed", responseSuccess: false, responseError: "boom" })
     expect(accessor("preview", e)).toBe(failureSummary(e))
+  })
+
+  test("response accessor returns responsePreviewText", () => {
+    const e = sum({ state: "completed", responseSuccess: true, responsePreviewText: "[AskUserQuestion] hi" })
+    expect(accessor("response", e)).toBe("[AskUserQuestion] hi")
   })
 
   test("accessor tolerates absent optional fields (undefined/1/0 defaults)", () => {

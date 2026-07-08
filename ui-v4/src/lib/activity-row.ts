@@ -59,10 +59,18 @@ export function tokenCacheRead(entry: EntrySummary): string {
   return n ? formatNumber(n) : "-"
 }
 
+/** 列表截断 primitive：超过 `max` 字则切到 `max-3` 加 "..."(否则原样)。请求/响应预览共用。 */
+function truncAt(text: string, max = 120): string {
+  return text.length <= max ? text : text.slice(0, max - 3) + "..."
+}
+
 export function truncPreview(entry: EntrySummary): string {
-  const text = entry.previewText || entry.responseError || ""
-  if (text.length <= 120) return text
-  return text.slice(0, 117) + "..."
+  return truncAt(entry.previewText || entry.responseError || "")
+}
+
+/** 响应内容预览的列表截断(镜像 truncPreview；后端已算好工具优先格式)。 */
+export function truncResponsePreview(entry: EntrySummary): string {
+  return truncAt(entry.responsePreviewText || "")
 }
 
 /**

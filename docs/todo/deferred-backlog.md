@@ -149,4 +149,28 @@
 
 ## 并发会话预存问题（非本特性引入，2026-07-08 观察）
 
-- **`EntrySummary.responsePreviewText` ui-v4-local tsc 错误（4 处）**：history/requests 测试 fixture（AgentLane / RequestRow / activity-row / useHistoryInfinite）在分支基点 `62ddf224`（另一会话的 `response_preview_text` 落地）已存在 ui-v4-local `tsc` 报错；根 `bun run typecheck` 与 `build:ui-v4` 均绿未捕获。非 models-list-parity 引入，属另一会话领域，未擅自修（concurrent-sessions 边界）。**提示拥有该改动的会话补 fixture 的 `responsePreviewText` 字段**。
+- **`EntrySummary.responsePreviewText` ui-v4-local tsc 错误（4 处）**：history/requests 测试 fixture（AgentLane / RequestRow / activity-row / useHistoryInfinite）在分支基点 `62ddf224`（另一会话的 `response_preview_text` 落地）已存在 ui-v4-local `tsc` 报错；根 `bun run typecheck` 与 `build:ui-v4` 均绿未捕获。非 models-list-parity 引入，属另一会话领域，未擅自修（concurrent-sessions 边界）。**提示拥有该改动的会话补 fixture 的 `responsePreviewText` 字段**（合并 master `c22aa269` 后该会话的后续 commit 可能已修，合并后须重验）。
+
+## response_preview_text 深度 FTS `/api/search` 索引（现仅列表快筛 OR）
+
+- **根因**：response-content-preview（spec `docs/spec/2026-07-08-response-content-preview.md` §6.2）落地时，`response_preview_text` 只接进 `read.ts` 的 `applyWhere` 列表快筛（`preview_text LIKE ? OR response_preview_text LIKE ?`），**未**进内容寻址 `search_index`（深度全文 `/history/api/search` 的 5 源 inbound/rewrites-req/rewrites-resp/req-headers/resp-headers）。spec §6.2 已显式裁决「只做列表内联快筛、不进 search_index」。
+- **当前行为**：列表 `?search=` 能匹配到响应预览子串（快筛，对称请求侧 preview_text）；但专门搜索页 `/history/api/search` 无「响应内容」这一源，无法按响应内容做内容寻址去重搜索 + `contains?hash=` 反查。功能完整、仅深度搜索维度缺一源。
+- **理想架构**：给 search_index 加第 6 源「response」（`req_aux` flat 文本或独立映射），backfill 一并建、`GET /history/api/search?source=response` 可选。
+- **为何暂缓**：spec §6.2 已显式只做快筛（against 过度设计——响应预览是短摘要、列表 LIKE 已够用，深度 FTS 价值未证）；加源牵动 search_index schema + backfill + API + 前端源选择器，属独立搜索特性工作单元，非本 spec 范围。
+- **若做需改什么**：① search_index 加 response 源（`req_aux` 或新表）；② `search-index-backfill.ts` 建该源（须 bump `search_index_version` 重建全索引，代价见 DESIGN 活的架构现状）；③ `/history/api/search` 加 `source=response` 分支 + `partial+builtPct`；④ 前端源单选器加项。发现方：response-content-preview spec §6.2 裁决（2026-07-08）。
+
+## response-preview backfill 靶向 stage 解压（现照 search-index 全解 assembleFullEntry）
+
+- **根因**：`response-preview-backfill.ts`（spec §6.3）实现时照 `search-index-backfill` 先例，per-row `assembleFullEntry(row, allStages)` 全解多腿（含 sse_events）再 `extractResponsePreviewText`；spec §6.3 曾提「靶向只解压 `upstream_response`（取 body）+ `client_response`（取 forwarded sseEvents）两 stage」作为优化，落地时降级为全解以避手工 stage 解码 + 旧行 legacy 适配的复杂度（plan Task 5 注记）。
+- **当前行为**：回填正确但每行全量解压所有 stage blob；`extractResponsePreviewText` 只需 upstream_response.body + client_response.sseEvents 两 stage，其余（inbound_request/outbound_request/per-attempt 等）解压后即弃。大库回填 CPU/IO 有浪费（参照 `methodology-derived-column-backfill-targeted-and-nonblocking`：4.2G 库 `SELECT *` 曾卡 3m53s）。
+- **理想架构**：靶向 `SELECT ... FROM entry_stages WHERE entry_id=? AND stage IN ('upstream_response','client_response')` 只解这两 stage，跳过 `assembleFullEntry` 全解，配等价性 oracle（靶向 vs 全解结果逐字节一致）。
+- **为何暂缓**：正确性已达（全解是超集）；非阻塞后台 + `IS NULL` 谓词跳已建，实际回填一次性；靶向解压需手写 stage 提取 + 兼顾旧库 legacy 单 blob 形态，属性能优化工作单元，价值待大库实测确认。属「独立工作项」非「因范围大降级」。
+- **若做需改什么**：① 抽只解 upstream_response/client_response 两 stage 的靶向解码 helper（兼容 legacy 单 blob 行）；② `processBatch` 改调它代替 `assembleFullEntry`；③ 等价性单测（同一行靶向 vs 全解 → 同一 `response_preview_text`）。发现方：response-content-preview spec §6.3 降级 + plan Task 5 注记（2026-07-08）。
+
+## Responses/Gemini 详情页 Response tab 交错 text/tool wire 顺序保真（现恒 text-先-tools）
+
+- **根因**：`accumulate-response.ts` 的 `accumulateResponses` / `accumulateGemini`（本次新补的 tool_use 抽取）组装 `MessageContent` 时恒把 text 块放最前、tools 块追加其后（`content.push({type:"text"}); for(tools) content.push({type:"tool_use"})`），**不保留**上游 wire 里 text 与 tool 的真实交错顺序。Anthropic（`accumulateAnthropic` 按 index 定位）与 CC（`accumulateOpenAICC` 按 tool_calls 数组）无此问题。
+- **当前行为**：**净新增能力、非回归**——这两端点流式工具此前在详情页 Response tab 根本不显示（既有盲区），本次补抽取后可见，只是多工具与文本交错时顺序被规整为 text-先-tools。响应预览列摘要（工具优先 `[A,B] text`）本就工具先、不受影响；仅详情页 Response tab 的块渲染顺序与真实 wire 可能不同。
+- **理想架构**：`accumulateResponses` 按 `output_index` / `accumulateGemini` 按 part 出现序把 text 与 tool_use 块**按真实交错序**入 `content[]`（类似 `accumulateAnthropic` 的 index 定位），保 wire 顺序保真。
+- **为何暂缓**：本次目标是「让这两端点流式工具在预览列 + 详情页可见」（此前完全不可见），已达；交错顺序保真是保真度增量、对预览列零影响、对详情页仅影响多工具+文本混排的罕见块序；且需给两累加器加序号定位逻辑。属「保真度优化独立工作项」非「因范围大降级」。
+- **若做需改什么**：① `accumulateResponses` 用 `Map<outputIndex, block>` 保 text/tool 混合序（text delta 也按 output_index 归位）→ 按 index 排序出 content；② `accumulateGemini` 按 parts 遍历序交替 push text/tool_use（不再分离两桶）；③ 交错序单测（text→tool→text → 三块保序）。发现方：response-content-preview spec §4 H1 扩展的保真度残余（2026-07-08）。
