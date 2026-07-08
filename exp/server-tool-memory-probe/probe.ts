@@ -103,12 +103,12 @@ function isValidAccountType(v: string | undefined): v is AccountType {
 // 打印助手
 // ----------------------------------------------------------------------------
 
-function hr(title: string): void {
+export function hr(title: string): void {
   console.log(`\n${"=".repeat(78)}\n${title}\n${"=".repeat(78)}`)
 }
 
 /** 从 headers 里取 anthropic-beta（大小写无关）。 */
-function getBetaHeader(headers: Record<string, string>): string | undefined {
+export function getBetaHeader(headers: Record<string, string>): string | undefined {
   for (const [k, v] of Object.entries(headers)) {
     if (k.toLowerCase() === "anthropic-beta") return v
   }
@@ -123,14 +123,14 @@ function getBetaHeader(headers: Record<string, string>): string | undefined {
  *   - `context_management.applied_edits` 非空 → 上游真的执行了 context-management 编辑。
  * 注意：模型在**文本里说**"我记住了"≠ 真调了工具（前者是敷衍幻觉，不算激活）。
  */
-interface E2eScan {
+export interface E2eScan {
   memoryToolBlocks: Array<unknown>
   appliedEdits: Array<unknown>
   contentBlockTypes: Array<string>
   activated: boolean
 }
 
-function scanE2e(response: unknown): E2eScan {
+export function scanE2e(response: unknown): E2eScan {
   const scan: E2eScan = { memoryToolBlocks: [], appliedEdits: [], contentBlockTypes: [], activated: false }
   if (typeof response !== "object" || response === null) return scan
   const obj = response as Record<string, unknown>
@@ -163,10 +163,23 @@ function scanE2e(response: unknown): E2eScan {
 }
 
 // ----------------------------------------------------------------------------
-// 主流程
+// Bootstrap（复用生产启动逻辑；被单跳 main + 多轮探针共用）
 // ----------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+export interface ProbeBootstrap {
+  resolvedName: string
+  resolvedModel: Model
+}
+
+/**
+ * 完整 bootstrap 本项目状态并打开 memory 开关、解析 + 校验模型。与 `runServer` 的
+ * 启动顺序一致（config → account-type → vscode → token → models），随后
+ * `setAnthropicBehavior({ memoryToolEnabled: true })`（探针核心，覆盖默认关闭），
+ * 最后解析 PROBE_MODEL 并校验它落在 memoryModels 允许列表内。
+ *
+ * 单跳 `probe.ts` 与多轮 `probe-multiturn.ts` 共用此函数，避免大段复制。
+ */
+export async function bootstrap(): Promise<ProbeBootstrap> {
   hr("Phase 1 · Bootstrap（复用生产启动逻辑）")
 
   // 1) config → state（含 memoryModels 等默认；与 runServer 的 applyConfigToState 一致）
@@ -217,6 +230,16 @@ async function main(): Promise<void> {
         ` 换一个支持 memory 的 Claude（如 claude-sonnet-4.5 / claude-opus-4.5）：PROBE_MODEL=<id>。`,
     )
   }
+
+  return { resolvedName, resolvedModel }
+}
+
+// ----------------------------------------------------------------------------
+// 主流程（单跳：验 wire 接受性 + 端到端激活）
+// ----------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  const { resolvedName, resolvedModel } = await bootstrap()
 
   hr("Phase 4 · 构造最小请求（plain memory 客户端工具 → 生产管线改写）")
   const payload: MessagesPayload = {
@@ -334,7 +357,11 @@ async function main(): Promise<void> {
   }
 }
 
-await main()
-// 现状进程会残留 keepalive / token-refresh timer 不退出（被外层 timeout 杀）。
-// 2xx 路径已在 Phase 5 内 process.exit(0)；此处兜底覆盖 error 路径，让复跑干净退出。
-process.exit(process.exitCode ?? 0)
+// 只在直接运行 probe.ts 时执行单跳流程；被 probe-multiturn.ts import 时不自动跑
+// （否则 import 的副作用会触发一次真实上游请求）。
+if (import.meta.main) {
+  await main()
+  // 现状进程会残留 keepalive / token-refresh timer 不退出（被外层 timeout 杀）。
+  // 2xx 路径已在 Phase 5 内 process.exit(0)；此处兜底覆盖 error 路径，让复跑干净退出。
+  process.exit(process.exitCode ?? 0)
+}
