@@ -107,6 +107,15 @@ export interface EntryRow {
   // row written by the current code is born net → 1; pre-migration rows start at
   // DEFAULT 0 and are flipped by usage-normalize-backfill. NOT NULL DEFAULT 0.
   usage_normalized: number
+  // Idempotency marker for the legacy-stage → client/upstream-stage migration
+  // backfill: 1 once this row's persisted stages are confirmed in the new
+  // client/upstream shape (client_request/client_response + per-attempt
+  // effective_source/upstream_request/upstream_response). Every row written by the
+  // current producers is born in the new shape → 1; pre-migration rows (legacy
+  // stages or legacy single-blob) start at DEFAULT 0 and are flipped by
+  // legacy-stage-backfill. NOT NULL DEFAULT 0. Non-optional so every EntryRow
+  // construction site must set it (compile-time proof), mirroring usage_normalized.
+  stages_migrated: number
   stop_reason: string | null
   error_message: string | null
   message_count: number | null
@@ -377,6 +386,10 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
     // net-of-cache convention, so mark this row already-normalized (the backfill
     // scans WHERE usage_normalized=0 and skips these). INSERT_ENTRY_SQL writes it.
     usage_normalized: 1,
+    // Born in the new client/upstream stage shape: extractStagePayloads emits the
+    // new legs only, so mark this row already-migrated (legacy-stage-backfill scans
+    // WHERE stages_migrated=0 and skips these). INSERT_ENTRY_SQL writes it.
+    stages_migrated: 1,
     stop_reason: finalUpstream?.stopReason ?? null,
     // error_message: the `upstreamResponse` leg carries NO error field (it uses
     // `success` + the durable `_index.derived.failureReason` projection).

@@ -45,6 +45,7 @@ import {
   drainPendingFinalizations,
 } from "~/lib/history/entries"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-stage-backfill"
 import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
 import { resetUsageNormalizeBackfillForTests } from "~/lib/history/sqlite/usage-normalize-backfill"
 import { resetModelsEtagForTests } from "~/lib/models/client"
@@ -62,7 +63,11 @@ import {
   type StateSnapshot,
   snapshotStateForTests,
 } from "~/lib/state"
-import { setConnectTimeoutForTests, setHttp2SessionFactoryForTests } from "~/lib/transport/http2-client"
+import {
+  //
+  setConnectTimeoutForTests,
+  setHttp2SessionFactoryForTests,
+} from "~/lib/transport/http2-client"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
 
 import { restoreFetch } from "./mock-fetch"
@@ -104,6 +109,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetHistoryPersistErrorStats", reset: resetHistoryPersistErrorStats },
   // search_index backfill module-global stop/running flags.
   { name: "resetSearchIndexBackfillForTests", reset: resetSearchIndexBackfillForTests },
+  { name: "resetLegacyStageBackfillForTests", reset: resetLegacyStageBackfillForTests },
   { name: "resetUsageNormalizeBackfillForTests", reset: resetUsageNormalizeBackfillForTests },
 ]
 

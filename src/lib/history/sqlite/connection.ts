@@ -302,6 +302,13 @@ function migrateEntriesColumns(database: Database): void {
     // written by the current code set this to 1 (born net); pre-migration rows keep
     // 0 until usage-normalize-backfill flips them. Also in SCHEMA_SQL for fresh DBs.
     { name: "usage_normalized", type: "INTEGER NOT NULL DEFAULT 0" },
+    // Legacy-stage → client/upstream-stage migration marker (mirrors `usage_normalized`'s
+    // NOT NULL DEFAULT 0 ALTER — SQLite backfills existing rows to 0 without a table
+    // rewrite). Rows written by the current code are born in the new client/upstream
+    // stage shape → 1; pre-migration rows (legacy stages / legacy single-blob) keep 0
+    // until legacy-stage-backfill re-serializes them into the new stages. Also in
+    // SCHEMA_SQL for fresh DBs.
+    { name: "stages_migrated", type: "INTEGER NOT NULL DEFAULT 0" },
   ]
 
   for (const col of wanted) {

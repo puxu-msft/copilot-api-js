@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS entries_v2 (
   cache_creation   INTEGER,
   reasoning_tokens INTEGER,
   usage_normalized INTEGER NOT NULL DEFAULT 0,
+  stages_migrated  INTEGER NOT NULL DEFAULT 0,
   stop_reason      TEXT,
   error_message    TEXT,
   message_count    INTEGER,
