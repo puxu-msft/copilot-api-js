@@ -824,6 +824,22 @@ export interface State {
    * Default true. Runs after `decodeToolInputFields` (so a stringified `questions` array is structured first).
    */
   readonly backfillQuestionFromHeader: boolean
+
+  /**
+   * Default TTL (ms) for reactive learning records (feature-negotiation cache).
+   * A learned entry auto-expires when `now > lastConfirmedAt + ttl`, unless it is
+   * pinned or its category has a per-category override. `Number.POSITIVE_INFINITY`
+   * = never auto-expire. Hot-reloadable. See `negotiation-lifecycle.ts`.
+   */
+  readonly negotiationDefaultTtlMs: number
+
+  /**
+   * Per-category TTL overrides (ms) for reactive learning records. Keys are
+   * `NegotiationCategory` ids (camelCase, e.g. `toolFields`); values are TTL in ms
+   * (`Number.POSITIVE_INFINITY` = never). A category absent here uses
+   * `negotiationDefaultTtlMs`. Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly negotiationTtlOverridesMs: Record<string, number>
 }
 
 type MutableState = {
@@ -870,6 +886,7 @@ function cloneState(source: MutableState): MutableState {
     modelOverrides: { ...source.modelOverrides },
     toolSearchOverrides: { ...source.toolSearchOverrides },
     effortsOverrides: { ...source.effortsOverrides },
+    negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
     stripToolFields: cloneStripBetaHeaders(source.stripToolFields),
@@ -923,6 +940,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("effortsOverrides" in patch) {
     cloned.effortsOverrides = patch.effortsOverrides ? { ...patch.effortsOverrides } : undefined
+  }
+  if ("negotiationTtlOverridesMs" in patch) {
+    cloned.negotiationTtlOverridesMs = patch.negotiationTtlOverridesMs ? { ...patch.negotiationTtlOverridesMs } : undefined
   }
   if ("stripBetaHeaders" in patch) {
     cloned.stripBetaHeaders = patch.stripBetaHeaders ? cloneStripBetaHeaders(patch.stripBetaHeaders) : undefined
@@ -1158,6 +1178,17 @@ export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGra
   updateState(patch)
 }
 
+/**
+ * Set reactive-learning (feature-negotiation) TTL config. Hot-reloadable.
+ * `negotiationTtlOverridesMs` is replaced wholesale (whole-map replace semantic,
+ * like the other config-managed record fields).
+ */
+export function setNegotiationConfig(
+  patch: Partial<Pick<MutableState, "negotiationDefaultTtlMs" | "negotiationTtlOverridesMs">>,
+): void {
+  updateState(patch)
+}
+
 export function setWebSearchConfig(patch: Partial<Pick<MutableState, "webSearchEnabled" | "webSearchBackend">>): void {
   updateState(patch)
 }
@@ -1386,6 +1417,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   decodeToolInputFields: { AskUserQuestion: ["questions"] } as Record<string, Array<string>>,
   decodeAllToolInputFields: false,
   backfillQuestionFromHeader: true,
+  negotiationDefaultTtlMs: 30 * 86_400_000,
+  negotiationTtlOverridesMs: { toolFields: 90 * 86_400_000, partnerFeatures: Number.POSITIVE_INFINITY } as Record<string, number>,
   disabledModels: [] as ReadonlyArray<string>,
 }
 
@@ -1470,6 +1503,10 @@ export function resetConfigManagedState(): void {
   setShutdownConfig({
     shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
     shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
+  })
+  setNegotiationConfig({
+    negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
+    negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
   })
   setHistoryConfig({
     historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
@@ -1600,6 +1637,8 @@ const mutableState: MutableState = {
   decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
   decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
   backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+  negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
+  negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
   disabledModels: [...CONFIG_MANAGED_DEFAULTS.disabledModels],
   verbose: false,
 }
