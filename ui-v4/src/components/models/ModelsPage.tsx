@@ -129,7 +129,7 @@ export function ModelsPage() {
 
   // Filter only — TanStack owns sorting inside the table (state lifted above so the
   // CSV export can reproduce the exact same order).
-  const visible = useMemo(() => filterModels(models, filters, hasTelemetry), [models, filters, hasTelemetry])
+  const visible = useMemo(() => filterModels(models, filters, hasTelemetry, statusFor), [models, filters, hasTelemetry, statusFor])
   const billingBounds = useMemo(() => modelBillingBounds(models), [models])
 
   const onChange = (patch: Partial<ModelFilters>) => setFilters((f) => ({ ...f, ...patch }))

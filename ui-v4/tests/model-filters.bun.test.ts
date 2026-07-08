@@ -19,6 +19,7 @@ import {
   matchesRestrictedTo,
   modelBillingBounds,
 } from "@/lib/model-filters"
+import { modelStatus } from "@/lib/model-status"
 
 const m = (over: Record<string, unknown> = {}): Model =>
   ({
@@ -36,6 +37,10 @@ const m = (over: Record<string, unknown> = {}): Model =>
   }) as Model
 
 const never = () => false
+
+/** Curry a real `modelStatus` closure over a config-disabled id set. */
+const statusFor = (set: Set<string>) => (model: Model) => modelStatus(model, set)
+const allEnabled = statusFor(new Set())
 
 describe("model filter predicates", () => {
   it("matchesPremium: null = no filter", () => {
@@ -89,18 +94,48 @@ describe("billing-rate filter", () => {
 describe("filterModels", () => {
   it("search matches id or name (case-insensitive)", () => {
     const list = [m({ id: "claude-opus-4.8" }), m({ id: "gpt-4o", name: "GPT-4o" })]
-    expect(filterModels(list, { ...EMPTY_FILTERS, search: "OPUS" }, never).map((x) => x.id)).toEqual(["claude-opus-4.8"])
-    expect(filterModels(list, { ...EMPTY_FILTERS, search: "gpt-4" }, never).map((x) => x.id)).toEqual(["gpt-4o"])
+    expect(filterModels(list, { ...EMPTY_FILTERS, search: "OPUS" }, never, allEnabled).map((x) => x.id)).toEqual(["claude-opus-4.8"])
+    expect(filterModels(list, { ...EMPTY_FILTERS, search: "gpt-4" }, never, allEnabled).map((x) => x.id)).toEqual(["gpt-4o"])
   })
   it("has-telemetry filter uses the membership fn", () => {
     const list = [m({ id: "a" }), m({ id: "b" })]
     const hasT = (id: string) => id === "a"
-    expect(filterModels(list, { ...EMPTY_FILTERS, hasTelemetry: true }, hasT).map((x) => x.id)).toEqual(["a"])
-    expect(filterModels(list, { ...EMPTY_FILTERS, hasTelemetry: false }, hasT).map((x) => x.id)).toEqual(["b"])
+    expect(filterModels(list, { ...EMPTY_FILTERS, hasTelemetry: true }, hasT, allEnabled).map((x) => x.id)).toEqual(["a"])
+    expect(filterModels(list, { ...EMPTY_FILTERS, hasTelemetry: false }, hasT, allEnabled).map((x) => x.id)).toEqual(["b"])
   })
   it("vendor + premium combine (AND)", () => {
     const list = [m({ id: "a", vendor: "Anthropic", billing: { is_premium: true } }), m({ id: "b", vendor: "Anthropic", billing: { is_premium: false } })]
-    expect(filterModels(list, { ...EMPTY_FILTERS, vendor: "Anthropic", premium: true }, never).map((x) => x.id)).toEqual(["a"])
+    expect(filterModels(list, { ...EMPTY_FILTERS, vendor: "Anthropic", premium: true }, never, allEnabled).map((x) => x.id)).toEqual(["a"])
+  })
+})
+
+describe("filterModels: status inclusion (config-disabled / picker-disabled)", () => {
+  it("includes both disabled kinds by default", () => {
+    const models = [
+      { id: "on", name: "on", model_picker_enabled: true },
+      { id: "cfg", name: "cfg", model_picker_enabled: true },
+      { id: "pk", name: "pk", model_picker_enabled: false },
+    ] as unknown as Array<Model>
+    const out = filterModels(models, EMPTY_FILTERS, () => false, statusFor(new Set(["cfg"])))
+    expect(out.map((x) => x.id).sort()).toEqual(["cfg", "on", "pk"])
+  })
+
+  it("hides config-disabled when includeConfigDisabled=false", () => {
+    const models = [
+      { id: "on", name: "on", model_picker_enabled: true },
+      { id: "cfg", name: "cfg", model_picker_enabled: true },
+    ] as unknown as Array<Model>
+    const out = filterModels(models, { ...EMPTY_FILTERS, includeConfigDisabled: false }, () => false, statusFor(new Set(["cfg"])))
+    expect(out.map((x) => x.id)).toEqual(["on"])
+  })
+
+  it("hides picker-disabled when includePickerDisabled=false", () => {
+    const models = [
+      { id: "on", name: "on", model_picker_enabled: true },
+      { id: "pk", name: "pk", model_picker_enabled: false },
+    ] as unknown as Array<Model>
+    const out = filterModels(models, { ...EMPTY_FILTERS, includePickerDisabled: false }, () => false, statusFor(new Set()))
+    expect(out.map((x) => x.id)).toEqual(["on"])
   })
 })
 
@@ -137,5 +172,9 @@ describe("countActiveFilters", () => {
     expect(countActiveFilters({ ...EMPTY_FILTERS, billingRange: [2, 10] }, [0, 10])).toBe(1)
     // lowered upper bound → counted
     expect(countActiveFilters({ ...EMPTY_FILTERS, billingRange: [0, 8] }, [0, 10])).toBe(1)
+  })
+  it("counts each excluded status kind (deviation from default = active)", () => {
+    expect(countActiveFilters({ ...EMPTY_FILTERS, includeConfigDisabled: false }, [0, 0])).toBe(1)
+    expect(countActiveFilters({ ...EMPTY_FILTERS, includeConfigDisabled: false, includePickerDisabled: false }, [0, 0])).toBe(2)
   })
 })

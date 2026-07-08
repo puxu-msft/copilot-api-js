@@ -98,6 +98,18 @@ describe("ModelsFilterBar (Radix Select)", () => {
     expect(onChange).toHaveBeenCalledWith({ restrictedTo: ["pro"] })
   })
 
+  it("toggles includeConfigDisabled off (default on → include everything)", async () => {
+    const onChange = renderBar()
+    await userEvent.setup().click(screen.getByRole("button", { name: "config-off" }))
+    expect(onChange).toHaveBeenCalledWith({ includeConfigDisabled: false })
+  })
+
+  it("toggles includePickerDisabled off", async () => {
+    const onChange = renderBar()
+    await userEvent.setup().click(screen.getByRole("button", { name: "picker-off" }))
+    expect(onChange).toHaveBeenCalledWith({ includePickerDisabled: false })
+  })
+
   it("hides the active-filter chip + clear all when no filters are active", () => {
     renderBar()
     expect(screen.queryByText(/active$/)).toBeNull()

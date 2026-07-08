@@ -3,6 +3,8 @@ import type { Model } from "~backend/lib/models/client"
 import { deriveCapabilities } from "~backend/lib/models/capabilities"
 import { getEffectiveEndpoints } from "~backend/lib/models/endpoint"
 
+import type { ModelStatus } from "@/lib/model-status"
+
 export interface ModelFilters {
   search: string
   vendor: string | null
@@ -16,6 +18,10 @@ export interface ModelFilters {
   restrictedTo: Array<string>
   policyState: string | null
   hasTelemetry: boolean | null
+  /** Include config-disabled (config.disabled_models) rows. Default true. */
+  includeConfigDisabled: boolean
+  /** Include picker-disabled (model_picker_enabled:false) rows. Default true. */
+  includePickerDisabled: boolean
 }
 
 export const EMPTY_FILTERS: ModelFilters = {
@@ -29,6 +35,8 @@ export const EMPTY_FILTERS: ModelFilters = {
   restrictedTo: [],
   policyState: null,
   hasTelemetry: null,
+  includeConfigDisabled: true,
+  includePickerDisabled: true,
 }
 
 export function matchesPremium(model: Model, value: boolean | null): boolean {
@@ -87,13 +95,23 @@ export function countActiveFilters(f: ModelFilters, bounds: [number, number]): n
   if (f.capabilities.length > 0) n++
   if (f.restrictedTo.length > 0) n++
   if (f.billingRange !== null && (f.billingRange[0] > bounds[0] || f.billingRange[1] < bounds[1])) n++
+  if (!f.includeConfigDisabled) n++
+  if (!f.includePickerDisabled) n++
   return n
 }
 
 /** Apply all filters. `hasTelemetry(id)` reports whether the model joined any telemetry. */
-export function filterModels(models: Array<Model>, filters: ModelFilters, hasTelemetry: (id: string) => boolean): Array<Model> {
+export function filterModels(
+  models: Array<Model>,
+  filters: ModelFilters,
+  hasTelemetry: (id: string) => boolean,
+  statusFor: (model: Model) => ModelStatus,
+): Array<Model> {
   const query = filters.search.trim().toLowerCase()
   return models.filter((m) => {
+    const status = statusFor(m)
+    if (status === "config-disabled" && !filters.includeConfigDisabled) return false
+    if (status === "picker-disabled" && !filters.includePickerDisabled) return false
     if (query && !m.id.toLowerCase().includes(query) && !m.name.toLowerCase().includes(query)) return false
     if (filters.vendor && m.vendor !== filters.vendor) return false
     if (filters.type && m.capabilities?.type !== filters.type) return false

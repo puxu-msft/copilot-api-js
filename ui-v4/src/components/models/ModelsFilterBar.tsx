@@ -150,6 +150,24 @@ export function ModelsFilterBar({ filters, onChange, options, billingBounds }: M
         ))}
       </div>
 
+      <div className="flex items-center gap-1">
+        <span className="text-[11px] uppercase text-[var(--color-muted)]">status:</span>
+        <button
+          type="button"
+          onClick={() => onChange({ includeConfigDisabled: !filters.includeConfigDisabled })}
+          className={`border px-1.5 py-0.5 text-[11px] ${filters.includeConfigDisabled ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[#999]"}`}
+        >
+          config-off
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange({ includePickerDisabled: !filters.includePickerDisabled })}
+          className={`border px-1.5 py-0.5 text-[11px] ${filters.includePickerDisabled ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[#999]"}`}
+        >
+          picker-off
+        </button>
+      </div>
+
       {(() => {
         const active = countActiveFilters(filters, billingBounds)
         if (active === 0) return null
