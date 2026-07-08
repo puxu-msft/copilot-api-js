@@ -46,10 +46,12 @@ export function makeAnthropicKeepaliveFrame(openBlock?: OpenBlock): ClientFrame 
 }
 
 /**
- * The keepalive to hand a heartbeat/sink: a block-aware provider (`content_delta` mode) or the
- * fixed ping frame (`ping` mode). Read at stream-start so a hot-reloaded `stream_keepalive_mode`
- * takes effect on new streams.
+ * The keepalive to hand a heartbeat/sink: a block-aware provider (`content_delta` / `empty_text`
+ * modes) or the fixed ping frame (`ping` mode). Read at stream-start so a hot-reloaded
+ * `stream_keepalive_mode` takes effect on new streams. `content_delta` and `empty_text` share the
+ * same block-aware provider here; `empty_text` additionally enables the buffered-pre-commit
+ * synthetic anchor (wired in the sink + driver, NOT here).
  */
-export function resolveAnthropicKeepalive(mode: "ping" | "content_delta"): ClientFrame | ((openBlock?: OpenBlock) => ClientFrame) {
-  return mode === "content_delta" ? makeAnthropicKeepaliveFrame : ANTHROPIC_PING
+export function resolveAnthropicKeepalive(mode: "ping" | "content_delta" | "empty_text"): ClientFrame | ((openBlock?: OpenBlock) => ClientFrame) {
+  return mode === "ping" ? ANTHROPIC_PING : makeAnthropicKeepaliveFrame
 }
