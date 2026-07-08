@@ -87,7 +87,8 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   messages = reminderResult.messages
   const systemReminderRemovals = reminderResult.modifiedCount
 
-  // Handle inline `role:"system"` messages (illegal for the Anthropic API) AFTER
+  // Handle inline `role:"system"` messages (rejected by STRICT upstream backends,
+  // e.g. sonnet-4.6/haiku-4.5; accepted by others like Opus) AFTER
   // reminder stripping, so reminders are cleaned in their original system form
   // first. May rewrite messages and/or fold text into the top-level system.
   // Discount any content blocks the inline-system step removes (merge/drop) from

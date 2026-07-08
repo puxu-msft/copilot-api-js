@@ -386,11 +386,16 @@ export interface State {
   readonly coerceAdaptiveThinking: false | "basic" | "best_effort"
 
   /**
-   * Handle `role:"system"` messages mixed into the `messages` array (illegal for
-   * the Anthropic Messages API — system must be top-level). See config
+   * Handle `role:"system"` messages mixed into the `messages` array. Whether an
+   * inline system message is rejected is PER UPSTREAM BACKEND: STRICT backends
+   * (empirically claude-sonnet-4.6 / claude-haiku-4.5 here) 400 with `Unexpected
+   * role "system"`, while others (e.g. Opus) accept it. This GLOBAL knob governs
+   * only models NOT in `systemRejectModels`. See config
    * `anthropic.system_messages_sanitize`.
    *
-   * - `false`         — passthrough (default; upstream will 400 if present).
+   * - `false`         — passthrough (default). Correct for accepters (Opus); a
+   *                     not-yet-known rejecter's first request 400s, then reactive
+   *                     learning marks it (permanent, no TTL) and retries.
    * - `"drop_invalid"`— remove every inline system message.
    * - `"merge"`       — append their text to the top-level `system`, drop the messages.
    * - `"as_user"`     — rewrite role to `"user"` (recommended; preserves position).

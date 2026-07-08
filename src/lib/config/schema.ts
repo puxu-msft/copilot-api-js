@@ -301,17 +301,23 @@ export const AnthropicConfigSchema = z
       .optional()
       .transform((v) => v ?? undefined),
     /**
-     * Handle `role:"system"` messages mixed into the `messages` array — illegal for
-     * the Anthropic Messages API (system must be the top-level `system` param),
-     * which rejects them with `Unexpected role "system"`. Such inline system
-     * messages come from OpenAI-habit clients or Claude Code's mid-conversation
-     * context injections (hook output / rules / reminders).
+     * Handle `role:"system"` messages mixed into the `messages` array. The
+     * Anthropic Messages API models `system` as a top-level param, not a message
+     * role — but whether an inline `role:"system"` message is rejected is PER
+     * UPSTREAM BACKEND: STRICT backends (empirically claude-sonnet-4.6 /
+     * claude-haiku-4.5 on this account) 400 with `Unexpected role "system"`, while
+     * others (e.g. Opus) accept it. This GLOBAL key governs only models NOT in
+     * `system_reject_models` (which routes known rejecters to `system_reject_mode`).
+     * Such inline system messages come from OpenAI-habit clients or Claude Code's
+     * mid-conversation context injections (hook output / rules / reminders).
      *   drop_invalid:  remove every inline system message
      *   merge:         pull their text out, append to the top-level `system`, drop the messages
      *   as_user:       rewrite role to "user" (keeps position — recommended)
      *   as_assistant:  rewrite role to "assistant" (experimental, not recommended —
      *                  disguises context as model output, highest risk)
-     *   false:         passthrough unchanged (default — will 400 upstream if present)
+     *   false:         passthrough unchanged (default) — correct for accepters like
+     *                  Opus; a not-yet-known rejecter's first request 400s, then
+     *                  reactive learning marks it (permanent, no TTL) and retries
      */
     system_messages_sanitize: z
       .union([z.literal(false), z.literal("drop_invalid"), z.literal("merge"), z.literal("as_user"), z.literal("as_assistant"), z.null()], {

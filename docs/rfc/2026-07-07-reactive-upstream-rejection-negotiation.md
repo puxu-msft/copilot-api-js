@@ -21,6 +21,8 @@
 | B | effort **零支持**变体 `... does not support reasoning effort`（无 `supported values:[...]` 列表）→ parse 在 :580 返 null → learn false → abort。且 negotiation 缓存**无法表达「已知空集」**（`[]` 与「未学习」在 5 处碰撞、含 snapshot/load 两处使空集不可持久化） | 实测 req_1783390118141_26（body 含 `code:invalid_reasoning_effort`、attemptCount=1）。`parseInvalidEffortError` 双正则须匹配（[request-preparation.ts:580](../../src/lib/anthropic/request-preparation.ts#L580)）；空集碰撞详见 §3.3 | effort-learning 部分覆盖 |
 | C | `Tool 'web_search' not found in provided tools` 措辞与 deferred-tool 正则不匹配、补救也不对 | deferred-tool 正则是 `Tool reference '…' not found in available tools`（[deferred-tool-retry.ts:42](../../src/lib/request/strategies/deferred-tool-retry.ts#L42)）；唯一缓解是 proactive `server_tool_rewrite:"downgrade"`（[schema.ts:304](../../src/lib/config/schema.ts#L304)）**默认 false** | 无反应式；默认关 |
 
+> **注（2026-07-08 订正，正文保留原样）**：上表 A 行引用的旧前提「inline `role:"system"` 一律被 Anthropic 拒绝」及 `system_messages_sanitize` 旧注释「default — will 400 upstream if present」**已订正为按上游后端分流**——STRICT 后端（实测 `claude-sonnet-4.6` / `claude-haiku-4.5`）拒绝、其它（如 Opus）接受；该全局键只作用于不在 `system_reject_models` 里的模型（命中者改走 `system_reject_mode`）。撰写时的 `schema.ts:268` 行号亦已漂移。此订正**不改变 A 行债务结论**（inline system 仍需 proactive/reactive 处理），只订正「为何拒绝」的前提；权威以 [config.yaml](../../config.yaml) / [schema.ts](../../src/lib/config/schema.ts) / [DESIGN.md](../DESIGN.md) 当前注释为准。
+
 ### 理论（审计发现、未在当前语料触发，但 parse 逻辑确凿会落空）
 
 | # | 缺口 | 证据 |
