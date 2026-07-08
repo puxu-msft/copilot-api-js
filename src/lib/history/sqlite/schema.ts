@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS entries_v2 (
   error_message    TEXT,
   message_count    INTEGER,
   preview_text     TEXT,
+  response_preview_text TEXT,
   pid              INTEGER,
   boot_time        INTEGER,
   git_sha          TEXT,

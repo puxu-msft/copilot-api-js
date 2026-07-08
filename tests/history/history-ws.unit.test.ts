@@ -48,6 +48,7 @@ function createMockSummary(overrides: Partial<EntrySummary> = {}): EntrySummary 
     stream: false,
     messageCount: 0,
     previewText: "",
+    responsePreviewText: "",
     ...overrides,
   }
 }

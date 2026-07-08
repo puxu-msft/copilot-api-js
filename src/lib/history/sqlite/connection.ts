@@ -277,6 +277,8 @@ function migrateEntriesColumns(database: Database): void {
   const wanted: Array<{ name: string; type: string }> = [
     { name: "message_count", type: "INTEGER" },
     { name: "preview_text", type: "TEXT" },
+    // 响应内容预览派生汇总列(镜像 preview_text)：additive nullable ALTER，旧行回填 NULL→"" on read。
+    { name: "response_preview_text", type: "TEXT" },
     { name: "pid", type: "INTEGER" },
     { name: "boot_time", type: "INTEGER" },
     { name: "git_sha", type: "TEXT" },

@@ -23,6 +23,7 @@ import type {
 
 import { extractPreviewText } from "~/lib/history/in-flight"
 
+import { extractResponsePreviewText } from "../entry-view"
 import {
   //
   compress,
@@ -120,6 +121,7 @@ export interface EntryRow {
   error_message: string | null
   message_count: number | null
   preview_text: string | null
+  response_preview_text: string | null
   // Process-identity columns. These MIRROR `entry.process` (which is also stored
   // in full inside blob_gz); they exist only so records can be SQL-filtered /
   // indexed by pid. Restoration always reads `process` from the blob — never
@@ -396,6 +398,7 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
     error_message: entry._index?.derived?.failureReason ?? null,
     message_count: entry.clientRequest?.messages?.length ?? null,
     preview_text: extractPreviewText(entry),
+    response_preview_text: extractResponsePreviewText(entry),
     // Mirror process identity into columns for SQL filtering; the full object
     // also lives in the head blob (process is not a stage / META key).
     pid: entry.process?.pid ?? null,

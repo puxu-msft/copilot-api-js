@@ -138,6 +138,8 @@ function toEntryRow(r: LegacyRow): EntryRow {
     error_message: r.error_message,
     message_count: r.message_count,
     preview_text: r.preview_text,
+    // Legacy v1 rows have no derived response preview → NULL (→ "" on read).
+    response_preview_text: null,
     pid: null,
     boot_time: null,
     git_sha: null,

@@ -7,6 +7,7 @@ import type {
 
 import {
   //
+  extractResponsePreviewText,
   resolveAttemptCount,
   resolveCurrentStrategy,
   resolveResponseError,
@@ -173,5 +174,6 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     responseBytes: entry.responseBytes,
     multiplier: entry.multiplier,
     previewText: cached.preview,
+    responsePreviewText: extractResponsePreviewText(entry),
   }
 }

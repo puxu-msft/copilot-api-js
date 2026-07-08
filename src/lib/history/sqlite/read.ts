@@ -85,8 +85,8 @@ export function applyWhere(opts: QueryOptions | undefined): WhereClause {
     // deep full-text search. Deep full-text (5 facets) lives at /api/search over
     // the content-addressed index. The trigram FTS is no longer read here (it is
     // dead-read at P2, dropped at P3); there is deliberately NO FTS fallback.
-    where.push("preview_text LIKE ?")
-    params.push(`%${opts.search}%`)
+    where.push("(preview_text LIKE ? OR response_preview_text LIKE ?)")
+    params.push(`%${opts.search}%`, `%${opts.search}%`)
   }
   if (opts?.pid !== undefined) {
     where.push("pid = ?")
@@ -120,7 +120,7 @@ export function querySummaries(opts?: QueryOptions): Array<EntrySummary> {
               model, endpoint, transport, status,
               input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
               stop_reason, error_message,
-              message_count, preview_text, pid, pinned,
+              message_count, preview_text, response_preview_text, pid, pinned,
               request_bytes, response_bytes, multiplier
          FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
     )
@@ -168,6 +168,7 @@ function rowToSummary(r: SummaryRow): EntrySummary {
     responseBytes: r.response_bytes ?? undefined,
     multiplier: r.multiplier ?? undefined,
     previewText: r.preview_text ?? "",
+    responsePreviewText: r.response_preview_text ?? "",
   }
 }
 
@@ -186,7 +187,7 @@ export function loadSummariesByIds(ids: Array<string>): Map<string, EntrySummary
               model, endpoint, transport, status,
               input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
               stop_reason, error_message,
-              message_count, preview_text, pid, pinned,
+              message_count, preview_text, response_preview_text, pid, pinned,
               request_bytes, response_bytes, multiplier
          FROM entries_v2 WHERE id IN (${placeholders})`,
     )

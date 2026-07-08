@@ -138,6 +138,7 @@ describe("sqlite/serialize head+stage", () => {
       error_message: null,
       message_count: 1,
       preview_text: "legacy",
+      response_preview_text: null,
       pid: null,
       boot_time: null,
       git_sha: null,

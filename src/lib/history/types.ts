@@ -592,6 +592,8 @@ export interface EntrySummary {
   /** Billing multiplier (e.g. 3 for opus) captured at write time. Column-backed. */
   multiplier?: number
   previewText: string
+  /** 响应内容预览(工具优先 `[A, B] text`)。派生汇总列 response_preview_text；旧行/在途为 ""。 */
+  responsePreviewText: string
 }
 
 export interface SummaryResult {
