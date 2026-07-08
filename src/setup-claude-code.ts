@@ -375,8 +375,10 @@ async function applyConfigTarget(target: ConfigTarget, ctx: ApplyContext): Promi
       break
     }
     default: {
-      // Exhaustive over WriteAction — no other action reaches a write.
-      break
+      // Exhaustive over WriteAction. The safe default is NOT to write: if a new
+      // WriteAction variant is ever added and left unhandled, `never` flags it at
+      // compile time and this branch refuses to write rather than clobbering.
+      return ((_never: never) => false)(action)
     }
   }
 
