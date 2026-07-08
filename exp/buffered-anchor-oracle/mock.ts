@@ -15,8 +15,9 @@
 // anchor / keepalive / retry behaviour under test is entirely the proxy's. See README.md.
 //
 // ── Endpoints ──────────────────────────────────────────────────────────────────────────────
-//   GET  /models                     → catalogue advertising one anthropic /v1/messages model
+//   GET  /models                     → catalogue advertising the MAIN + AUX anthropic models
 //   POST /v1/messages                → Anthropic SSE stream shaped by the CURRENT chain mode
+//                                       (MAIN model); AUX-model calls get a trivial 200, uncounted
 //   POST /v1/messages/count_tokens   → {input_tokens} stub
 //   POST /__mode  {chain}            → control: set active chain + RESET attempt/turn counters
 //   GET  /__mode                     → control: inspect current chain + counters
@@ -29,11 +30,18 @@
 //                 long enough for the proxy to inject one anchor), then a REAL first block =
 //                 thinking (+signature) followed by a tool_use block + stop_reason:tool_use.
 //                 CC therefore receives [0]=empty-text anchor, [1]=thinking, [2]=tool_use, runs
-//                 the tool, and sends a SECOND turn back. This mock VALIDATES every inbound
-//                 request the way real Anthropic does: if an assistant message carries a thinking
-//                 block that is NOT the first content block (e.g. a leading empty text anchor was
-//                 NOT stripped), it replies 400 — so a passing run proves the proxy's
-//                 `filterEmptyAnthropicTextBlocks` stripped the anchor and thinking is first again.
+//                 the tool, and sends a SECOND turn back. This mock VALIDATES every MAIN-model
+//                 inbound request the way real Anthropic does: if an assistant message carries a
+//                 thinking block that is NOT the first content block (e.g. a leading empty text
+//                 anchor was NOT stripped), it replies 400.
+//                 ATTRIBUTION CAVEAT: a clean end-to-end thinking run (no 400) proves only that
+//                 the leading empty-text anchor did NOT reach upstream un-stripped — i.e. the
+//                 chain is PRODUCTION-SAFE. It does NOT by itself prove the *proxy* stripped it,
+//                 because CC may also drop a leading empty text block when it rebuilds turn-2.
+//                 To strictly isolate the proxy's `filterEmptyAnthropicTextBlocks`, run the
+//                 POSITIVE CONTROL (replay-turn2.sh): hand-craft a turn-2 body carrying
+//                 [empty text, thinking, tool_use] straight to the proxy (bypassing CC) and
+//                 assert the proxy strips it so this mock does NOT 400.
 //   retry         Attempt 1: message_start + content_block_start(text) + a partial text_delta,
 //                 then an ABRUPT transport error (no message_stop) → the proxy's buffered-retry
 //                 must re-run the upstream exchange. Attempt 2+: a full clean text generation.
@@ -45,6 +53,14 @@
 
 const PORT = Number(process.env.MOCK_PORT ?? 8890)
 const MODEL = process.env.MOCK_MODEL ?? "claude-opus-4-8"
+/**
+ * Auxiliary / small-fast model id (CC's title/topic/quota "haiku" traffic). CC issues these as
+ * EXTRA `POST /v1/messages` calls that must NOT pollute the main-chain counters (retry attempt
+ * dispatch) or turn detection. run-chain.sh points `ANTHROPIC_SMALL_FAST_MODEL` /
+ * `ANTHROPIC_DEFAULT_HAIKU_MODEL` at THIS id so the mock can distinguish them by `body.model`
+ * (content dispatch), on top of `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (env mitigation).
+ */
+const AUX_MODEL = process.env.MOCK_AUX_MODEL ?? "claude-mock-haiku"
 /** keepalive chain: upstream silence (s) after the open block — set > CC's 300s deadline. */
 const SILENCE_SEC = Number(process.env.MOCK_SILENCE_SEC ?? 320)
 /** thinking chain: silence (s) before the real thinking block, to let the proxy inject an anchor. */
@@ -63,7 +79,8 @@ type Chain = "keepalive" | "thinking" | "retry"
 
 // ── Mutable per-run control state (reset via POST /__mode) ───────────────────────────────────
 let chain: Chain = (process.env.MOCK_CHAIN as Chain) || "keepalive"
-let messagesSeen = 0 // POST /v1/messages count since last reset (retry chain: attempt number)
+let messagesSeen = 0 // MAIN-model POST /v1/messages count since last reset (retry chain: attempt number)
+let auxRequestsSeen = 0 // auxiliary/small-fast-model POST count (CC title/topic/quota) — excluded from chain dispatch
 let validationRejections = 0 // thinking chain: count of 400s emitted (a passing run must stay 0)
 
 // ── Anthropic SSE builders ───────────────────────────────────────────────────────────────────
@@ -132,7 +149,7 @@ function textAnswer(text: string, index = 0): Array<Uint8Array> {
 // ── Inbound validation (thinking chain): real-Anthropic "thinking must be first block" rule ───
 interface InboundBlock { type?: string, text?: string, thinking?: string }
 interface InboundMsg { role?: string, content?: string | Array<InboundBlock> }
-interface InboundBody { messages?: Array<InboundMsg> }
+interface InboundBody { model?: string, stream?: boolean, messages?: Array<InboundMsg> }
 
 /**
  * Returns a human-readable reason string if the request VIOLATES the thinking-first invariant
@@ -257,19 +274,48 @@ function retryAttempt2Body(): ReadableStream<Uint8Array> {
   })
 }
 
+// ── Auxiliary (small-fast) response ───────────────────────────────────────────────────────────
+// CC's title/topic/quota calls target AUX_MODEL. Answer them trivially and NEVER touch the
+// chain counters/validation, so they can't shift retry-attempt dispatch or thinking turn detection.
+function auxResponse(streaming: boolean): Response {
+  if (streaming) {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(messageStart())
+        for (const f of textAnswer("aux-ok", 0)) controller.enqueue(f)
+        controller.close()
+      },
+    })
+    return new Response(stream, { status: 200, headers: sseHeaders })
+  }
+  return new Response(
+    JSON.stringify({
+      id: `msg_mock_aux_${Date.now().toString(36)}`,
+      type: "message",
+      role: "assistant",
+      model: AUX_MODEL,
+      content: [{ type: "text", text: "aux-ok" }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 8, output_tokens: 2 },
+    }),
+    { headers: { "content-type": "application/json" } },
+  )
+}
+
 // ── Model catalogue ───────────────────────────────────────────────────────────────────────────
-function modelsResponse(): Response {
-  const model = {
-    id: MODEL,
-    name: MODEL,
+function modelEntry(id: string, category: string) {
+  return {
+    id,
+    name: id,
     object: "model",
     vendor: "anthropic",
-    version: MODEL,
+    version: id,
     preview: false,
     model_picker_enabled: true,
-    is_chat_default: true,
+    is_chat_default: id === MODEL,
     is_chat_fallback: false,
-    model_picker_category: "versatile",
+    model_picker_category: category,
     supported_endpoints: ["/v1/messages"],
     capabilities: {
       family: "claude-opus",
@@ -280,7 +326,13 @@ function modelsResponse(): Response {
       limits: { max_context_window_tokens: 200000, max_output_tokens: 16000, max_prompt_tokens: 180000 },
     },
   }
-  return new Response(JSON.stringify({ object: "list", data: [model] }), {
+}
+
+function modelsResponse(): Response {
+  // Advertise BOTH the main model AND the auxiliary/small-fast model so CC's haiku traffic
+  // resolves to a real catalogue entry (and the proxy passes its id through to `body.model`).
+  const data = [modelEntry(MODEL, "versatile"), modelEntry(AUX_MODEL, "lightweight")]
+  return new Response(JSON.stringify({ object: "list", data }), {
     headers: { "content-type": "application/json", etag: `"mock-oracle-${MODEL}"` },
   })
 }
@@ -300,10 +352,11 @@ Bun.serve({
         const b = (await req.json().catch(() => ({}))) as { chain?: string }
         if (b.chain === "keepalive" || b.chain === "thinking" || b.chain === "retry") chain = b.chain
         messagesSeen = 0
+        auxRequestsSeen = 0
         validationRejections = 0
         log(`== control: chain set to '${chain}', counters reset ==`)
       }
-      return new Response(JSON.stringify({ chain, messagesSeen, validationRejections }), {
+      return new Response(JSON.stringify({ chain, messagesSeen, auxRequestsSeen, validationRejections }), {
         headers: { "content-type": "application/json" },
       })
     }
@@ -320,13 +373,24 @@ Bun.serve({
     }
 
     // ── POST /v1/messages ─────────────────────────────────────────────────────────────────
-    messagesSeen++
     const body = (await req.json().catch(() => ({}))) as InboundBody
+    const targetModel = typeof body.model === "string" ? body.model : "(none)"
+
+    // Auxiliary/small-fast-model traffic (CC title/topic/quota "haiku") must NOT touch the
+    // chain counters/validation — otherwise it shifts retry-attempt dispatch (messagesSeen) or
+    // thinking turn detection. Distinguish by `body.model`: only the MAIN model is under test.
+    if (targetModel !== MODEL) {
+      auxRequestsSeen++
+      log(`POST ${path} AUX model=${targetModel} (ignored for chain counters; auxRequestsSeen=${auxRequestsSeen})`)
+      return auxResponse(Boolean(body.stream))
+    }
+
+    messagesSeen++
     const nMsgs = body.messages?.length ?? 0
     const hasAssistantThinking = (body.messages ?? []).some(
       (m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => b.type === "thinking"),
     )
-    log(`POST ${path} chain=${chain} req#${messagesSeen} messages=${nMsgs} assistantThinking=${hasAssistantThinking}`)
+    log(`POST ${path} chain=${chain} model=${targetModel} req#${messagesSeen} messages=${nMsgs} assistantThinking=${hasAssistantThinking}`)
 
     // Validate the thinking-first invariant on EVERY inbound (real Anthropic would 400 otherwise).
     const violation = thinkingFirstViolation(body)
@@ -352,5 +416,5 @@ Bun.serve({
   },
 })
 
-log(`listening on http://localhost:${PORT}  (chain=${chain} model=${MODEL} silence=${SILENCE_SEC}s anchorSilence=${ANCHOR_SILENCE_SEC}s)`)
+log(`listening on http://localhost:${PORT}  (chain=${chain} model=${MODEL} aux=${AUX_MODEL} silence=${SILENCE_SEC}s anchorSilence=${ANCHOR_SILENCE_SEC}s)`)
 log(`point the proxy's ghc_api_base_url at http://localhost:${PORT}; select a chain via POST /__mode {"chain":"keepalive|thinking|retry"}`)

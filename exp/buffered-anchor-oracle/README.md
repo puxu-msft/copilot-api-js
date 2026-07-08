@@ -21,6 +21,13 @@ claude CLI ──Anthropic SSE──▶ copilot-api 代理 (:4141) ──Anthrop
 - 代理有可用的 GitHub 认证（mock 忽略上游 token，但代理启动仍要拿 copilot token；这是你日常的认证）。
 - mock 必须**先于代理**启动——代理启动时会从 mock 拉 `/models`。
 
+## 辅助模型调用的隔离（务必理解，否则链计数会失真）
+
+CC 在后台会用小/快模型（title / topic / quota 的 “haiku”，即 `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL`）打**额外的** `POST /v1/messages`。这些请求若混进 mock 的全局计数器，会污染链 3 的 attempt 分发（`messagesSeen`）和链 2 的回合判定。本 harness 用**双保险**排除干扰：
+
+- **env 缓解**：`run-chain.sh` 设 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`（减少非必要流量），并把 haiku/small-fast 别名指向一个**独立的** aux 模型 id（`claude-mock-haiku`，可用 `MOCK_AUX_MODEL` 改），主/sonnet/opus 别名才是被测的 `$MODEL`。
+- **内容分发**：mock 按 `body.model` 区分——只有**主模型**请求进链分发 + thinking-first 校验 + `messagesSeen`；任何 aux 模型请求返回一个无害 200、只累加独立的 `auxRequestsSeen`，**绝不**碰链计数器。所以 `/__mode` 里 `messagesSeen`/`validationRejections` 只反映主对话，判据里用它们即可；`auxRequestsSeen` 仅供观测。
+
 ## 步骤
 
 ### 1. 启动 mock GHC 上游（先启动）
@@ -69,11 +76,26 @@ bash run-chain.sh keepalive keepalive-content_delta   # 对照臂：应 NG（~30
 
 跑完把 `stream_keepalive_mode` 改回 `empty_text`。
 
-### 4. 观测 wire（可选但推荐）
+### 3.5 链 2 正样本对照（positive control，**门控必需**）
 
-除了 CC 的 `--output-format json`，还可以用代理的 **History API / History Web UI** 检查 forwarded 轨：
-- 链 1：forwarded 轨应有 `content_block_start{text}`（`synthetic:"anchor"`）+ 空 `text_delta`（`synthetic:"keepalive"`）+ commit 时 `content_block_stop@0` + 真实块 index +1。
-- 链 3：forwarded 轨 `message_start` **恰 1 次**、真实块 index 连续、单条完整生成。
+`run-chain.sh thinking` 端到端不 400，只证明**空 text 锚点没有 un-stripped 地到达上游**（生产安全）；它**不能**把“剥离”这件事归因给代理，因为 CC 自己在重建 turn-2 时也可能丢掉前导空 text 块。要严格隔离出**是代理的 `filterEmptyAnthropicTextBlocks` 在剥**，必须做下面两者**之一**（门控必需，二选一即可）：
+
+**(a) 直接 replay turn-2 请求体（推荐，最干净）**：
+
+```bash
+bash replay-turn2.sh          # 绕过 CC，直接把 [空text, thinking, tool_use] 的 turn-2 体打到代理
+```
+
+脚本先把 mock 切到 `thinking` 链（重置计数），再构造一个前导为空 text 块的 assistant 消息直接 POST 到代理 `/v1/messages`（不经 CC）。代理若剥掉空 text，thinking 复位首块 → mock 不 400。**权威判据是 mock 计数器**（非代理响应形状）：`messagesSeen≥1`（请求到达 mock）且 `validationRejections==0` → **PASS（代理在剥）**；`validationRejections≥1` → **NG（代理没剥，生产会 400）**。
+
+**(b) 等价归因证据——查 History inbound 轨**：跑完 `run-chain.sh thinking` 后，用 History API 取该次 turn-2 的**入站**轨（client→proxy，`clientRequest.body` / `_index`），确认它**确实带过**一个前导空 text 块（即锚点被 CC 回传了），再对照上游 outbound 轨（`attempts[].upstreamRequest`）确认该空 text 已被剥、thinking 复位首块。二者之差即代理所为。
+
+### 4. 观测 wire（链 3 门控必需 / 链 1 推荐）
+
+用代理的 **History API**（`GET /history/api/entries` 取最近条目 id → `GET /history/api/entries/:id` 取全生命周期）检查 SSE 轨：
+
+- **链 3（门控必需）**：读该 entry 的 **client-facing forwarded 轨** `clientResponse.sseEvents`，断言 **`message_start` 恰 1 次**、真实块 index **连续**、无双 `message_start`、无中途 `error` 帧；并读 `attempts[]` 确认恰 2 个 attempt（attempt1 截断失败 + attempt2 成功）。**仅凭 CC json 的 `is_error=false` 不足以证明 retry 透明**——buffered-retry 的透明性只有在 wire 轨上（单 `message_start` + index 连续）才能判。
+- **链 1（推荐）**：forwarded 轨（`clientResponse.sseEvents`）应有 `content_block_start{text}`（`synthetic:"anchor"`）+ 空 `text_delta`（`synthetic:"keepalive"`）×N + commit 时 `content_block_stop@0` + 真实 thinking 块在 index 1。
 
 ## GO/NG 判据
 
@@ -81,25 +103,28 @@ bash run-chain.sh keepalive keepalive-content_delta   # 对照臂：应 NG（~30
 |---|---|---|
 | **1 保活（empty_text）** | CC `is_error=false` 且 `duration_ms > 300000`（撑过 300s 死线，收到 mock tail） | `is_error=true` 且 `duration_ms ≈ 300000`，报 `Stream idle timeout - no chunks received` |
 | **1 对照（content_delta）** | 预期 **NG**：`is_error=true`、`duration_ms ≈ 300000`（buffered 无 open block 退 ping、压不住 300s）——证明锚点是 empty_text 独有的效力 | 若这臂反而 GO，说明对照失真，需排查 |
-| **2 thinking-首块良性** | CC `is_error=false`、`num_turns ≥ 2`（走了 tool 回合）；且 **mock `validationRejections == 0`**（`/__mode` 计数器）——代理成功剥掉空 text 锚点、thinking 复位首块、上游不 400 | mock 打出 `400 thinking-first VIOLATION`（`validationRejections ≥ 1`）→ 代理**未**剥空 text 锚点 → 上游会 400 |
-| **3 retry 透明** | CC `is_error=false`、单条完整生成（result 含 `complete-generation`）；mock `messagesSeen == 2`（首 attempt truncation + 重试）；forwarded 轨 `message_start` 恰 1 次、真实块 index 连续 | 半截流 + 错误、双 `message_start`、或 index 断裂 |
+| **2 thinking-首块（端到端）** | CC `is_error=false`、`num_turns ≥ 2`（走了 tool 回合）；且 **mock `validationRejections == 0`**——证明**端到端链不 400（生产安全）**：空 text 锚点没有 un-stripped 地到达上游 | mock 打出 `400 thinking-first VIOLATION`（`validationRejections ≥ 1`）→ 空 text 锚点未被剥 → 上游 400 |
+| **2 正样本对照（门控必需，见 §3.5）** | `replay-turn2.sh` PASS（`messagesSeen≥1` 且 `validationRejections==0`）**或** History inbound/outbound 轨确认代理剥离——**严格归因**：是代理的 `filterEmptyAnthropicTextBlocks` 在剥，非 CC | `replay-turn2.sh` NG（`validationRejections≥1`）→ 代理未剥、生产会 400 |
+| **3 retry 透明** | CC `is_error=false`、单条完整生成（result 含 `complete-generation`）；mock `messagesSeen == 2`；**且 History `clientResponse.sseEvents` 上 `message_start` 恰 1 次 + 真实块 index 连续（门控必需，见 §4）** | 半截流 + 错误、双 `message_start`、或 index 断裂；或只有 CC `is_error=false` 但未验 wire（不足以判透明） |
 
-三臂（含对照）全符合预期才算门控通过；任一 NG（尤其链 2 的 400）阻断上线，回 spec 调锚点收口形状。
+三臂（含对照）**+ 链 2 正样本对照（§3.5）+ 链 3 wire 检查（§4）**全符合预期才算门控通过；任一 NG（尤其链 2 的 400 或正样本对照 NG）阻断上线，回 spec 调锚点收口形状。
 
 ## 结果贴哪
 
-把每条链的 CC json（`<label>.cli.log`）关键字段 + mock 计数器 + 关键 mock 日志片段，填进 [`REPORT.md`](REPORT.md) 的三臂表格，交回 agent 判定。
+把每条链的 CC json（`<label>.cli.log`）关键字段 + mock 计数器 + 关键 mock 日志片段 + 链 2 `replay-turn2.sh` 判定 + 链 3 History wire 摘录，填进 [`REPORT.md`](REPORT.md) 的表格，交回 agent 判定。
 
 ## 产物
 
-- `mock.ts` —— mock GHC 上游（`/models` + `/v1/messages` + `/__mode` 控制端点）。
+- `mock.ts` —— mock GHC 上游（`/models` 广播主 + aux 两模型、`/v1/messages`、`/__mode` 控制端点）。
 - `start-mock.sh` —— 启动 mock（先启动）。
 - `run-chain.sh <chain>` —— 切链 + 跑一次 `claude -p` + 采集结果。
-- `mock.log` / `<label>.cli.log` / `settings.<label>.json` —— 运行产物（跑后生成）。
-- `REPORT.md` —— 三臂结果表 + 门控判定（待填）。
+- `replay-turn2.sh` —— 链 2 正样本对照：绕过 CC 直接 replay turn-2 体，严格归因“代理在剥”。
+- `mock.log` / `<label>.cli.log` / `settings.<label>.json` / `<label>.request.json` / `<label>.response.log` —— 运行产物（跑后生成）。
+- `REPORT.md` —— 结果表 + 门控判定（待填）。
 
 ## 边界 / 注意
 
-- 链 2 依赖 CC **自动执行** mock 返回的 `Bash`(`echo oracle-tool-ran`) 工具以触发第二回合，故用 `--dangerously-skip-permissions`（mock 只返回无害 `echo`，在你的沙箱内运行）。若 CC 版本行为变化不自动续轮，可退而用「直接向代理 replay 一个含 `[空text, thinking, tool_use]` 的 turn-2 请求体」的手工探针复核同一不变量（代理剥空 text → mock 不 400）。
+- 链 2 端到端依赖 CC **自动执行** mock 返回的 `Bash`(`echo oracle-tool-ran`) 工具以触发第二回合，故用 `--dangerously-skip-permissions`（mock 只返回无害 `echo`，在你的沙箱内运行）。**归因严格性**：端到端链只证生产安全，把“代理在剥”这件事严格隔离出来的是 `replay-turn2.sh` 正样本对照（§3.5，门控必需），它绕过 CC 直接把含前导空 text 的 turn-2 体打给代理。若某 CC 版本不自动续轮，端到端链会退化，但正样本对照仍独立成立、足以门控归因。
+- CC 的 aux（haiku/small-fast）流量经独立模型 id + `body.model` 内容分发被 mock 排除在链计数外（见「辅助模型调用的隔离」节）；`/__mode` 的 `messagesSeen`/`validationRejections` 只反映主对话。
 - mock 每条链一进程内长驻、经 `/__mode` 切换（避免代理启动期已缓存 `/models`、后续换 mock 端口失配）。
 - prod-faithful 接线（custom base URL + token，非 first-party assume）—— 与两条 320s incident 完全同路径；`exp/cc-idle-280s/` armP 已证 300s 死线在此路径成立。

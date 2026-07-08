@@ -21,6 +21,10 @@ MOCK_PORT="${MOCK_PORT:-8890}"
 PROXY_PORT="${PROXY_PORT:-4141}"
 PROXY_TOKEN="${PROXY_TOKEN:-copilot-api}"
 MODEL="${MOCK_MODEL:-claude-opus-4-8}"
+# Auxiliary/small-fast model id — CC's title/topic/quota "haiku" traffic is pointed HERE so the
+# mock can distinguish it from the main conversation by `body.model` (content dispatch) and keep it
+# OUT of the chain counters. Must match the mock's MOCK_AUX_MODEL (default claude-mock-haiku).
+AUX_MODEL="${MOCK_AUX_MODEL:-claude-mock-haiku}"
 # Wall-clock ceiling. keepalive chain must exceed the mock silence (default 320s) + tail; give margin.
 CEIL="${CC_CEIL:-380}"
 
@@ -44,14 +48,18 @@ curl -s -X POST "http://localhost:$MOCK_PORT/__mode" -H 'content-type: applicati
 echo
 
 # 2) CC settings → PROXY (prod-faithful: custom base URL + token, exactly the incident wiring).
+# The small-fast/haiku aliases point at $AUX_MODEL so the mock can filter CC's auxiliary traffic
+# out of the chain counters; the main/sonnet/opus aliases stay on $MODEL (the conversation under
+# test). CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is the env-side mitigation (fewer aux calls);
+# the model split is the content-side double insurance (the mock ignores AUX-model calls entirely).
 cat > "$SETTINGS" <<EOF
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:$PROXY_PORT",
     "ANTHROPIC_AUTH_TOKEN": "$PROXY_TOKEN",
     "ANTHROPIC_MODEL": "$MODEL",
-    "ANTHROPIC_SMALL_FAST_MODEL": "$MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "$MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL": "$AUX_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "$AUX_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "$MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "$MODEL",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
@@ -72,6 +80,15 @@ WALL=$(echo "$END - $START" | bc)
 echo "[$LABEL] DONE claude rc=$CCRC wall=${WALL}s (timeout ceiling=${CEIL}s)"
 
 echo "[$LABEL] mock counters: $(curl -s "http://localhost:$MOCK_PORT/__mode")"
-echo "[$LABEL] CC result (extract is_error/duration_ms/num_turns):"
-grep -oE '"(is_error|duration_ms|num_turns|result|subtype)":[^,}]*' "$CCLOG" 2>/dev/null | sed "s/^/[$LABEL]   /" || true
+echo "[$LABEL] CC result (extract is_error/duration_ms/num_turns/result/subtype):"
+# Prefer jq (handles the `result` string containing commas/braces); fall back to grep -oE, whose
+# `[^,}]*` truncates a `result` value at the first comma/brace — harmless because the full CC json
+# is preserved in $CCLOG regardless, this line is just a convenience summary.
+if command -v jq >/dev/null 2>&1; then
+  jq -r '"is_error=\(.is_error)  duration_ms=\(.duration_ms)  num_turns=\(.num_turns)  subtype=\(.subtype)\nresult=\(.result)"' "$CCLOG" 2>/dev/null \
+    | sed "s/^/[$LABEL]   /" \
+    || grep -oE '"(is_error|duration_ms|num_turns|result|subtype)":[^,}]*' "$CCLOG" 2>/dev/null | sed "s/^/[$LABEL]   /" || true
+else
+  grep -oE '"(is_error|duration_ms|num_turns|result|subtype)":[^,}]*' "$CCLOG" 2>/dev/null | sed "s/^/[$LABEL]   /" || true
+fi
 echo "[$LABEL] full CC json → $CCLOG ; mock frame log → $DIR/mock.log"
