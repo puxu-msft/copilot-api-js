@@ -1,39 +1,18 @@
-// WS 消息判别联合(前端专有)。ActiveRequestInfo 是 wire 类型,后端当前未导出为公开 type;
-// TODO(Plan 05): 后端导出后改为从 ~backend re-export(single-source)。
+// active-request wire 类型的单一事实源在后端(SSOT)。前端 type-only re-export——
+// isolatedModules 下 import type 被完全擦除,不把后端运行时(activity-summary→state)拖进 bundle。
+// 验收必跑 `bun run build:ui-v4`(typecheck/vitest 对误拖入双假绿)。
+export type {
+  //
+  ActiveRequestChangedWire as ActiveRequestChangedInfo,
+  ActiveRequestWire as ActiveRequestInfo,
+} from "~backend/lib/observability/active-request-wire"
+
 import type {
   //
   EntrySummary,
   HistoryStats,
 } from "@/types"
-
-export interface ActiveRequestInfo {
-  id: string
-  endpoint: string
-  rawPath?: string
-  state: string
-  startTime: number
-  durationMs: number
-  model?: string
-  stream?: boolean
-  attemptCount?: number
-  currentStrategy?: string
-  queueWaitMs?: number
-}
-
-export interface ActiveRequestChangedInfo {
-  /**
-   * Backend lifecycle action (`src/lib/observability/sinks/ws.ts`). The three
-   * terminal actions (`completed`/`failed`/`aborted`) carry only `requestId`
-   * and must remove the row from the Live lane; `created`/`state_changed` carry
-   * the full `request`. `attempt_failed`/`feature_applied` are non-terminal,
-   * `requestId`-only signals the front-end intentionally ignores (they fall
-   * through `applyActiveEvent` to the `!request` no-op).
-   */
-  action: "created" | "state_changed" | "completed" | "failed" | "aborted" | "attempt_failed" | "feature_applied"
-  request?: ActiveRequestInfo
-  requestId?: string
-  activeCount: number
-}
+import type { ActiveRequestInfo } from "@/types/ws"
 
 export interface ConnectedInfo {
   clientCount: number
