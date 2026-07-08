@@ -374,18 +374,201 @@ describe("runResponseBufferedSink — buffered empty_text anchor commit close-of
     // Anchor never fired (no injection attempt reached completion) → byte-identical to the no-anchor path.
     expect(lastInjectResult()).toBeUndefined()
     // Real blocks keep their ORIGINAL indices (no +1 remap); NO synthetic anchor frames at all.
-    expect(seqOf(written)).toEqual([
-      "message_start",
-      "content_block_start@0",
-      "content_block_delta@0",
-      "content_block_stop@0",
-      "message_delta",
-      "message_stop",
-    ])
+    expect(seqOf(written)).toEqual(["message_start", "content_block_start@0", "content_block_delta@0", "content_block_stop@0", "message_delta", "message_stop"])
     // message_start once; the only @0 content_block_start is the REAL thinking (no anchor text block).
     expect(written.filter((w) => JSON.parse(w.data).type === "message_start")).toHaveLength(1)
     const start0 = written.find((w) => JSON.parse(w.data).type === "content_block_start")
     expect(JSON.parse(start0!.data).content_block.type).toBe("thinking")
+    sink.close?.()
+  })
+})
+
+// ── Task 3.4: terminal-failure anchor close-off (M1) + C1 adversarial mid-flush freeze ──
+
+/**
+ * A stub SSE stream whose Nth (0-based `pauseAt`) `writeSSE` PARKS on a gate the test releases — it
+ * pushes the frame, then suspends. This lets the test advance the FakeClock while a `sink.write` await
+ * is genuinely pending mid-flush (the C1 adversarial timing: a heartbeat that WOULD fire mid-flush must
+ * be blocked by the commit's `freezeHeartbeat`). `paused()` reports whether the write is currently parked.
+ */
+function pausableSseStream(pauseAt: number): {
+  stream: Parameters<typeof makeSseSink>[0]
+  written: Array<{ data: string; event?: string }>
+  releaseGate: () => void
+  paused: () => boolean
+} {
+  const written: Array<{ data: string; event?: string }> = []
+  let count = 0
+  let isPaused = false
+  let releaseGate!: () => void
+  const gate = new Promise<void>((r) => {
+    releaseGate = r
+  })
+  const stream = {
+    writeSSE: async (m: { data: string; event?: string }): Promise<void> => {
+      const idx = count++
+      written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) })
+      if (idx === pauseAt) {
+        isPaused = true
+        await gate
+        isPaused = false
+      }
+    },
+  } as unknown as Parameters<typeof makeSseSink>[0]
+  return { stream, written, releaseGate, paused: () => isPaused }
+}
+
+describe("runResponseBufferedSink — terminal-failure anchor close-off (Task 3.4)", () => {
+  const clock = new FakeClock()
+  beforeEach(() => clock.install())
+  afterEach(() => clock.restore())
+
+  test("terminal failure after anchor injected: freeze + close anchor stop@0 before returning stream-error", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // head = message_start (captured → anchor injection on the idle stall); tail = EMPTY, so releasing the
+    // stall yields a clean drain WITHOUT message_stop = truncation. retryCap 0 → exhausted → the failure
+    // return must FIRST close the still-open anchor block so the client sees no dangling open block.
+    const { stream: up, release } = makeControlledUpstream([f("message_start", { message: { id: "msg_fail" } })], [])
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
+
+    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const tracker = makeStopTracker()
+
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+
+    await drain(30)
+    await clock.advance(15_000)
+    await flush()
+    expect(lastInjectResult()).toBe(true)
+
+    // Release the (empty) stall → clean drain WITHOUT message_stop = truncation → exhausted (retryCap 0).
+    release()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("stream-error")
+
+    // The anchor content_block_start@0 was OPEN on the forwarded track; the terminal-failure return must
+    // close it (content_block_stop@0) BEFORE surfacing the stream-error. The handler then writes its
+    // protocol error frame — but the structural anchor block is already balanced.
+    expect(seqOf(written)).toEqual([
+      "message_start",
+      "content_block_start@0", // anchor (text)
+      "content_block_delta@0", // anchor empty text_delta
+      "content_block_stop@0", // anchor close-off BEFORE the stream-error return (M1)
+    ])
+    // Last forwarded frame is the anchor stop@0 — nothing dangles open.
+    const last = JSON.parse(written.at(-1)!.data) as { type: string; index: number }
+    expect(last.type).toBe("content_block_stop")
+    expect(last.index).toBe(0)
+    // The buffered message_start is NOT re-sent by the close-off path (only the anchor stop is written).
+    expect(written.filter((w) => JSON.parse(w.data).type === "message_start")).toHaveLength(1)
+    sink.close?.()
+  })
+
+  test("no anchor injected → terminal failure writes NO anchor stop (nothing to close)", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // Fast truncation: message_start arrives immediately then the stream ends (no stall → no injection).
+    const up = makeUpstream([f("message_start", { message: { id: "msg_none" } })])
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
+
+    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const tracker = makeStopTracker()
+
+    const outcome = await driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    expect(outcome.kind).toBe("stream-error")
+
+    // Anchor never fired → closeAnchorIfOpen is inert → the forwarded track has ZERO synthetic frames.
+    expect(lastInjectResult()).toBeUndefined()
+    expect(written.some((w) => w.event === "content_block_stop")).toBe(false)
+    expect(written.some((w) => w.event === "content_block_start")).toBe(false)
+    sink.close?.()
+  })
+})
+
+describe("runResponseBufferedSink — C1 adversarial: freeze holds across a mid-flush clock jump (Task 3.4)", () => {
+  const clock = new FakeClock()
+  beforeEach(() => clock.install())
+  afterEach(() => clock.restore())
+
+  test("clock advanced while a commit-flush write is PARKED injects NO second anchor / no ping (freeze holds)", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // head = message_start (captured → injection on stall); tail = a real text block + terminal → COMMIT.
+    const { stream: up, release } = makeControlledUpstream(
+      [f("message_start", { message: { id: "msg_c1" } })],
+      [
+        f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+        f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hi" } }),
+        f("content_block_stop", { index: 0 }),
+        f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } }),
+        f("message_stop"),
+      ],
+    )
+    const driver = makeDriver()
+    // Injection writes 3 frames (message_start, anchor start@0, anchor delta@0). The commit flush's FIRST
+    // write is the anchor close-off (content_block_stop@0) at absolute index 3 — PARK there. At that instant
+    // `noteBlockState(stopFrame)` has already cleared openBlock (===undefined) = the exact window a rogue
+    // tick would try to inject/ping. Freeze (cleared the timer at commit start) must hold across the jump.
+    const { stream: sseStream, written, releaseGate, paused } = pausableSseStream(3)
+    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
+
+    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const tracker = makeStopTracker()
+
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+
+    // Pull message_start (CAPTURE), park; idle heartbeat injects the anchor (reschedules a NEW timer).
+    await drain(30)
+    await clock.advance(15_000)
+    await flush()
+    expect(lastInjectResult()).toBe(true)
+
+    // Release the stall → tail buffers → clean drain (saw message_stop) → COMMIT → freeze → flush begins →
+    // the anchor stop@0 write (index 3) PARKS on the gate.
+    release()
+    await drain(50)
+    expect(paused()).toBe(true) // the flush is genuinely suspended mid-write (a `sink.write` await is pending)
+
+    const writtenAtPause = written.length
+    expect(writtenAtPause).toBe(4) // message_start, anchor start@0, anchor delta@0, anchor stop@0
+
+    // Jump the FakeClock PAST the injection-rescheduled heartbeat's fireAt while the flush is parked. Freeze
+    // cleared that timer at commit start → NO tick fires → nothing is appended (no 2nd anchor, no ping).
+    await clock.advance(60_000)
+    await flush()
+    expect(written.length).toBe(writtenAtPause) // freeze held: zero mid-flush synthetic injection
+
+    // Release the parked write → the flush completes.
+    releaseGate()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("complete")
+
+    // Exactly ONE content_block_start@0 (the anchor) — no second one snuck in during the clock jump.
+    const start0s = written.filter((w) => {
+      const p = JSON.parse(w.data) as { type: string; index?: number }
+      return p.type === "content_block_start" && p.index === 0
+    })
+    expect(start0s).toHaveLength(1)
+    expect((JSON.parse(start0s[0].data) as { content_block: { type: string } }).content_block.type).toBe("text") // the anchor
+    // No synthetic keepalive/ping interleaved anywhere (freeze prevented every mid-flush emit).
+    expect(written.some((w) => w.event === "ping")).toBe(false)
+    // Real block flushed at the remapped index 1 — no collision at index 0.
+    expect(seqOf(written)).toEqual([
+      "message_start",
+      "content_block_start@0", // anchor
+      "content_block_delta@0", // anchor delta
+      "content_block_stop@0", // anchor close-off (the write that parked)
+      "content_block_start@1", // real text, remapped +1 (M4)
+      "content_block_delta@1",
+      "content_block_stop@1",
+      "message_delta", // no index → unchanged
+      "message_stop",
+    ])
     sink.close?.()
   })
 })

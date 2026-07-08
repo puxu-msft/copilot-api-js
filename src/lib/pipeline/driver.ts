@@ -565,6 +565,27 @@ async function runResponseBufferedSink(
   // capture) but the handler owns sink construction, so the holder bridges the two. Called once, here.
   anchor?.bindInjector?.(injectAnchor)
 
+  // Terminal-failure close-off (spec §3.3 M1): when the request FAILS after the anchor was injected (a
+  // truncation/exhaustion, or a post-retreat truncation), the anchor's content_block_start@0 is still OPEN
+  // on the forwarded track. The driver returns `stream-error` and the handler writes its protocol error
+  // frame, but a dangling open block would leave the client's block structure unbalanced. Close it
+  // (empty-text content_block_stop@0 — known-benign) BEFORE the failure return. `freezeHeartbeat` first so
+  // no ping/anchor can fire between here and the stop write; the write is best-effort (the client may
+  // already be gone — a reject is swallowed, there is nothing left to do). NOT called on client-abort /
+  // settled-abort (the client is already gone → closing is meaningless). Idempotent — inert when the anchor
+  // was never injected (fast responses); the commit-SUCCESS path does its own inline close-off (§3.3) and
+  // never routes here, so the anchor is closed exactly once on every terminal path.
+  const closeAnchorIfOpen = async (): Promise<void> => {
+    sink.freezeHeartbeat?.()
+    if (anchorState.injected && anchor) {
+      try {
+        await sink.write(anchor.stopFrame)
+      } catch {
+        /* client gone mid-close — best-effort, nothing else to do */
+      }
+    }
+  }
+
   try {
     for (;;) {
       const buffer: Array<ClientFrame> = []
@@ -611,6 +632,9 @@ async function runResponseBufferedSink(
       if (retreated) {
         opts.onBufferedResolve?.("retreated", attempt)
         if (drained) return { kind: "complete", headers: current.headers }
+        // M1: a post-retreat truncation still leaves the anchor open (it was injected during an idle stall
+        // before the retreat) → close it before surfacing the stream-error.
+        await closeAnchorIfOpen()
         return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
       }
 
@@ -682,6 +706,9 @@ async function runResponseBufferedSink(
       // Exhausted / non-retryable → surface the error (truncation synthesizes one) for the
       // handler to classify + write its protocol error frame (unchanged from the live path). The
       // final failed attempt's frames stay at the top-level slot (no per-attempt snapshot).
+      // M1: close the still-open anchor (if injected) BEFORE the failure return so the client's block
+      // structure is balanced when the handler appends its error frame.
+      await closeAnchorIfOpen()
       opts.onBufferedResolve?.("exhausted", attempt)
       return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
     }
