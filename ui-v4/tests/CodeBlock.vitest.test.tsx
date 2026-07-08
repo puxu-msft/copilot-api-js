@@ -203,4 +203,25 @@ describe("CodeBlock toolbar", () => {
     fireEvent.click(screen.getByRole("button", { name: /next/i }))
     expect(container.querySelectorAll("[data-line-active]").length).toBe(1)
   })
+
+  it("resets the active match to the first when the query is refined", () => {
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {})
+    const { container } = render(
+      <CodeBlock
+        code={"alpha\nbeta\nalpha again\ngamma"}
+        toolbar
+      />,
+    )
+    const input = screen.getByRole("textbox")
+    fireEvent.change(input, { target: { value: "alpha" } })
+    // Jump to the SECOND "alpha" match (row 2), then refine the query.
+    fireEvent.click(screen.getByRole("button", { name: /next/i }))
+    fireEvent.change(input, { target: { value: "beta" } })
+    // Refined query has one match (row 1); active pointer must reset there — not
+    // linger on the stale index-2 position from the previous query.
+    const active = container.querySelector("[data-line-active]")
+    expect(active).not.toBeNull()
+    expect(container.querySelectorAll("[data-line-match]").length).toBe(1)
+    expect(active?.textContent).toContain("beta")
+  })
 })

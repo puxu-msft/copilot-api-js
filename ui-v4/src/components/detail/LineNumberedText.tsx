@@ -48,10 +48,13 @@ export function LineGutter({ lines, className, highlightLines, activeLine, wrap 
   const activeRef = useRef<HTMLDivElement | null>(null)
 
   const total = lines.length
-  // A search jump can target a line past the truncation window; reveal all so the row exists to scroll to.
-  const forceShowAll = activeLine !== undefined && activeLine >= INITIAL_LINE_LIMIT
-  const effectiveShowAll = showAll || forceShowAll
-  const isTruncated = !effectiveShowAll && total > INITIAL_LINE_LIMIT
+  // A search jump can target a line past the truncation window; reveal all so the row exists
+  // to scroll to. The reveal is STICKY (set during render, store-previous style) so stepping
+  // back to an in-window match doesn't re-collapse and flicker the whole list every step.
+  if (activeLine !== undefined && activeLine >= INITIAL_LINE_LIMIT && !showAll) {
+    setShowAll(true)
+  }
+  const isTruncated = !showAll && total > INITIAL_LINE_LIMIT
   const visible = isTruncated ? lines.slice(0, INITIAL_LINE_LIMIT) : lines
   const hiddenCount = total - INITIAL_LINE_LIMIT
 
@@ -67,13 +70,14 @@ export function LineGutter({ lines, className, highlightLines, activeLine, wrap 
       {visible.map((node, i) => {
         const isMatch = highlightLines?.has(i) ?? false
         const isActive = activeLine === i
+        const rowBg = rowHighlightClass(isActive, isMatch)
         return (
           <div
             key={i}
             ref={isActive ? activeRef : undefined}
             data-line-match={isMatch ? "" : undefined}
             data-line-active={isActive ? "" : undefined}
-            className={`flex ${rowHighlightClass(isActive, isMatch)}`}
+            className={rowBg.length > 0 ? `flex ${rowBg}` : "flex"}
           >
             <span className="w-[3.5em] flex-shrink-0 select-none pr-2 text-right text-[var(--color-muted)] opacity-60">{i + 1}</span>
             <span className={`min-w-0 flex-1 ${contentWrap} border-l border-[var(--color-border)] pl-2`}>{node}</span>

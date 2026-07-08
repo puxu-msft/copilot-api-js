@@ -73,23 +73,33 @@ export function CodeBlock({ code, lang = "json", toolbar = false }: CodeBlockPro
   const [activeIdx, setActiveIdx] = useState(0)
   const [copied, setCopied] = useState(false)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const prevQueryRef = useRef(query)
 
   useEffect(() => () => clearTimeout(copiedTimer.current), [])
+
+  // Search line-text is derived from the SAME `lines` the gutter renders (not a second
+  // `code.split("\n")`) so match/jump indices can never drift from the gutter rows —
+  // shiki normalizes a trailing newline, so an independent split would desync by one.
+  const lineTexts = useMemo<Array<string>>(() => lines.map((tokens) => tokens.map((t) => t.text).join("")), [lines])
 
   // Line-level match: 0-based indices of source lines containing the (case-insensitive) query.
   const matches = useMemo<Array<number>>(() => {
     const q = query.trim().toLowerCase()
     if (q.length === 0) return []
     const out: Array<number> = []
-    const src = code.split("\n")
-    for (const [i, line] of src.entries()) {
+    for (const [i, line] of lineTexts.entries()) {
       if (line.toLowerCase().includes(q)) out.push(i)
     }
     return out
-  }, [query, code])
+  }, [query, lineTexts])
 
-  // Reset the active pointer to the first match whenever the query changes.
-  useEffect(() => setActiveIdx(0), [query])
+  // Reset the active pointer to the first match on query change — done during render
+  // (store-previous pattern) rather than in an effect, so we never commit a frame that
+  // scrolls toward the stale match before the reset lands.
+  if (prevQueryRef.current !== query) {
+    prevQueryRef.current = query
+    if (activeIdx !== 0) setActiveIdx(0)
+  }
 
   const highlightLines = useMemo(() => new Set(matches), [matches])
   const activePos = matches.length > 0 ? Math.min(activeIdx, matches.length - 1) : 0
