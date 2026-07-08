@@ -16,6 +16,7 @@ import type { JoinedModelTelemetry } from "@/lib/model-telemetry"
 
 import { formatNumber } from "@/lib/format"
 import { thinkingLabel } from "@/lib/model-thinking"
+import { vendorColor } from "@/lib/vendor-color"
 
 /**
  * Shared column definition for the Models table (headless-component-stack ADR:
@@ -206,7 +207,18 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
     }),
     {
       ...sortable("vendor", "Vendor", "px-2 py-1 text-[#aaa]"),
-      cell: (c) => c.row.original.model.vendor,
+      cell: (c) => {
+        const v = c.row.original.model.vendor
+        const color = vendorColor(v)
+        return (
+          <span
+            className="border px-1.5 py-0.5 text-[11px]"
+            style={{ color, borderColor: color }}
+          >
+            {v || "—"}
+          </span>
+        )
+      },
     },
     {
       ...sortable("context", "Ctx", "px-2 py-1 text-right text-[#cdb]", "text-right"),
