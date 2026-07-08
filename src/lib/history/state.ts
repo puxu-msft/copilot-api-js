@@ -37,6 +37,11 @@ import {
 } from "./sqlite/reaper"
 import {
   //
+  runResponsePreviewBackfill,
+  stopResponsePreviewBackfill,
+} from "./sqlite/response-preview-backfill"
+import {
+  //
   runSearchIndexBackfill,
   stopSearchIndexBackfill,
 } from "./sqlite/search-index-backfill"
@@ -117,6 +122,7 @@ export function stopHistoryBackgroundWork(): void {
   stopUsageNormalizeBackfill()
   stopLegacyStageBackfill()
   stopSearchIndexBackfill()
+  stopResponsePreviewBackfill()
 }
 
 /**
@@ -152,7 +158,22 @@ export function setHistoryMaxEntries(): void {
  */
 export function startSearchIndexBackfill(): void {
   if (!enabled || !isDatabaseOpen()) return
-  void runSearchIndexBackfill(getDatabase()).catch((err: unknown) => consola.warn("[history] search-index backfill failed", err))
+  void runSearchIndexBackfill(getDatabase())
+    .catch((err: unknown) => consola.warn("[history] search-index backfill failed", err))
+    .finally(() => startResponsePreviewBackfill())
+}
+
+/**
+ * Fire-and-forget the recoverable response-preview backfill in the BACKGROUND —
+ * the LAST (heaviest) link of the chain, run AFTER the search-index backfill. Fills
+ * `response_preview_text` for pre-feature rows (NULL column) by reassembling each
+ * entry and extracting its preview. No-op when history is disabled / the DB is not
+ * open. `runResponsePreviewBackfill` catches internally; this `.catch` is a
+ * belt-and-suspenders guard against an unhandledRejection crashing the process.
+ */
+export function startResponsePreviewBackfill(): void {
+  if (!enabled || !isDatabaseOpen()) return
+  void runResponsePreviewBackfill(getDatabase()).catch((err: unknown) => consola.warn("[history] response-preview backfill failed", err))
 }
 
 /**

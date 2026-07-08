@@ -53,6 +53,15 @@ export const STAGE_MIGRATE_VERSION_KEY = "stage_migrate_version"
 /** `history_meta` key: resumable legacy-stage-migration progress (the last processed started_at). */
 export const STAGE_MIGRATE_CURSOR_KEY = "stage_migrate_backfill_cursor"
 
+/** Bump when the response-preview extraction changes and every row must be recomputed. */
+export const RESPONSE_PREVIEW_VERSION = "1"
+
+/** `history_meta` key: set to RESPONSE_PREVIEW_VERSION only when the full backfill completes. */
+export const RESPONSE_PREVIEW_VERSION_KEY = "response_preview_version"
+
+/** `history_meta` key: `(started_at, id)` keyset cursor for cross-restart resume. */
+export const RESPONSE_PREVIEW_CURSOR_KEY = "response_preview_backfill_cursor"
+
 /** Read one history_meta value (null when absent). */
 export function getMeta(db: Database, key: string): string | null {
   // .get() returns null on bun:sqlite / undefined on node:sqlite when no row
