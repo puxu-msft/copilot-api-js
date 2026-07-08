@@ -33,6 +33,11 @@ import {
 
 import type { UpstreamFetchInit } from "./upstream-fetch"
 
+import {
+  //
+  withErrorSink,
+  withRejectionObserver,
+} from "./crash-safety"
 import { connectProxiedSocket } from "./proxy-connect"
 
 /** TCP connect + TLS handshake deadline (mirrors undici's default connectTimeout). */
@@ -90,9 +95,12 @@ async function createSession(origin: string): Promise<http2.ClientHttp2Session> 
     // SOCKS connector (proxy.ts) omits it for its HTTP/1.x use.
     const rawSocket = await connectProxiedSocket({ targetHost: u.hostname, targetPort: port, proxyUrl, timeoutMs: connectTimeoutMs })
     rawSocket.setKeepAlive(true, keepAliveMs)
-    tlsSocket = tls.connect({ socket: rawSocket, servername: u.hostname, ALPNProtocols: ["h2"] })
+    // withErrorSink at creation: guards the WHOLE socket lifetime (handshake
+    // teardown, the handshake→http2.connect handoff gap) against an orphaned
+    // 'error' → uncaughtException → server crash. See crash-safety.ts.
+    tlsSocket = withErrorSink(tls.connect({ socket: rawSocket, servername: u.hostname, ALPNProtocols: ["h2"] }))
   } else {
-    tlsSocket = tls.connect({ host: u.hostname, port, servername: u.hostname, ALPNProtocols: ["h2"] })
+    tlsSocket = withErrorSink(tls.connect({ host: u.hostname, port, servername: u.hostname, ALPNProtocols: ["h2"] }))
     // TCP keepalive — keeps the idle connection alive through middleboxes during long
     // upstream silences (opus adaptive thinking). Set on the socket, not via
     // client.socket (which throws ERR_HTTP2_NO_SOCKET_MANIPULATION).
@@ -100,12 +108,12 @@ async function createSession(origin: string): Promise<http2.ClientHttp2Session> 
   }
 
   await awaitH2Handshake(tlsSocket)
-  // NB: no `await` may be inserted between the handshake resolving and this
-  // http2.connect. On success, awaitH2Handshake removes its own 'error' listener,
-  // so the socket is briefly unguarded; only the microtask-before-I/O ordering
-  // (this continuation runs before any socket 'error' I/O event) keeps that gap
-  // closed. An intervening `await` would yield to the event loop and reopen it —
-  // an unguarded socket 'error' then crashes the process (see awaitH2Handshake).
+  // The returned session is deliberately NOT withErrorSink'd here: {@link getSession}
+  // is the ownership boundary for sessions (it decides pool-vs-discard), so it applies
+  // the sink to whatever the factory returns — covering this prod factory AND injected
+  // test factories uniformly. Do NOT call createSession outside getSession, or the
+  // session would enter the pool/teardown lifecycle unguarded. (The socket, by
+  // contrast, is fully owned HERE — hence its sink is applied at creation above.)
   return http2.connect(origin, { createConnection: () => tlsSocket })
 }
 
@@ -115,6 +123,16 @@ async function createSession(origin: string): Promise<http2.ClientHttp2Session> 
  * proxy offering http/1.1 → a diagnosable error instead of an opaque h2 framing
  * failure). Destroys the socket on any failure. Removes its own listeners on settle so
  * the subsequent `http2.connect` adopts a clean socket.
+ *
+ * Crash-safety (two independent layers): this removes onError, then tears the
+ * socket down — leaving it briefly unguarded. (1) destroy() drops the error arg
+ * (reject already delivers `err` to the awaiter), and destroy() WITHOUT an error
+ * does not re-emit `'error'` — so the classic `destroy(err)` re-emit crash cannot
+ * happen. (2) Independently, the caller creates every `sock` via
+ * {@link withErrorSink} (createSession), whose permanent inert 'error' sink also
+ * absorbs any LATE async socket error during teardown (e.g. an ECONNRESET trailing
+ * a connect timeout). Either layer alone prevents the "[http2] TLS connect timeout"
+ * whole-server crash; both are kept as defense-in-depth.
  */
 function awaitH2Handshake(sock: tls.TLSSocket): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -123,18 +141,6 @@ function awaitH2Handshake(sock: tls.TLSSocket): Promise<void> {
       sock.removeListener("timeout", onTimeout)
       sock.removeListener("secureConnect", onSecure)
       if (err) {
-        // Attach a no-op 'error' sink BEFORE teardown. We've just removed onError,
-        // and sock.destroy() (plus any late async socket error during teardown — e.g.
-        // an ECONNRESET trailing a connect timeout) emits 'error'; on an EventEmitter
-        // with no 'error' listener Node RE-THROWS it as an uncaughtException, which
-        // main.ts turns into process.exit(1) — amplifying one connect-timeout into a
-        // whole-server crash (verified Bun + Node, exp/http2-connect-timeout-crash/).
-        // The error reaches the awaiter via reject(err); the socket only needs
-        // teardown, so destroy() takes no error arg (which would re-throw it). NB:
-        // only the timeout/ALPN-downgrade paths pass a FRESH err here — the onError
-        // path's socket already emitted 'error', so its destroy(err) wouldn't re-emit;
-        // but the sink is unconditional (belt-and-suspenders across all teardowns).
-        sock.on("error", noop)
         sock.destroy()
         reject(err)
         return
@@ -180,17 +186,15 @@ async function getSession(origin: string): Promise<http2.ClientHttp2Session> {
 
   const creation = (async (): Promise<http2.ClientHttp2Session> => {
     const epochAtStart = poolEpoch
-    const session = await sessionFactory(origin)
+    // withErrorSink at the point we take ownership of the session (works for the
+    // prod factory AND an injected test factory): guards every session teardown —
+    // the shutdown-race close below, an eventual socket RST — against an orphaned
+    // 'error' → uncaughtException → server crash. See crash-safety.ts.
+    const session = withErrorSink(await sessionFactory(origin))
     // If closeHttp2Sessions() ran while this session was being established (shutdown
     // drain racing a new tunnel handshake), don't re-insert it into the just-cleared
     // pool — close it instead, so it doesn't leak as an orphaned open session.
     if (poolEpoch !== epochAtStart) {
-      // Absorb any 'error' this discarded session emits during/after close: it's
-      // never inserted into the pool, so it has no other 'error' listener, and an
-      // unhandled EventEmitter 'error' (e.g. its socket RSTs mid-close) would
-      // rethrow as an uncaughtException → main.ts process.exit(1) — the same
-      // whole-server crash class as awaitH2Handshake's teardown. (belt-and-suspenders)
-      session.on("error", noop)
       try {
         session.close()
       } catch {
@@ -253,14 +257,14 @@ function abortError(): Error {
  * Resolve/reject with `p`, but reject early with an AbortError if `signal` aborts
  * first. Crucially, this aborts only the CALLER'S WAIT — `p` (a shared
  * session-creation promise) keeps running for other concurrent callers; cancelling
- * it would wrongly fail them. When abort wins, `p`'s eventual settlement is still
- * observed (`p.then(noop, noop)`) so an orphaned rejection can't reach
+ * it would wrongly fail them. When abort wins, `p`'s eventual rejection is still
+ * observed (via {@link withRejectionObserver}) so an orphaned rejection can't reach
  * `process.unhandledRejection` and crash the server.
  */
 function raceAbort<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return p
   return new Promise<T>((resolve, reject) => {
-    const observe = (): void => void p.then(noop, noop)
+    const observe = (): void => void withRejectionObserver(p)
     if (signal.aborted) {
       observe()
       reject(abortError())
@@ -282,10 +286,6 @@ function raceAbort<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T
       },
     )
   })
-}
-
-const noop = (): void => {
-  /* intentionally empty */
 }
 
 /**
@@ -439,22 +439,6 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     if (init.body !== undefined) req.write(init.body)
     req.end()
   })
-}
-
-/**
- * Attach a no-op rejection observer to `p` so an orphaned (no-awaiter) rejection
- * — specifically a pre-response abort that races past its caller — can never
- * surface as a process-level `unhandledRejection`. The observer does NOT consume
- * the rejection: `p` is returned unchanged, so a real `await`/`.then` consumer
- * still gets the rejection. `.catch` registers a SECOND reaction; both fire
- * independently. Returns the ORIGINAL `p` (not the `.catch` continuation) so the
- * caller's value/rejection semantics are identical to an un-observed promise.
- */
-function withRejectionObserver<T>(p: Promise<T>): Promise<T> {
-  p.catch(() => {
-    /* observed: keep an orphaned abort/RST rejection off process.unhandledRejection */
-  })
-  return p
 }
 
 /** Close all pooled sessions. Called on graceful shutdown. */
