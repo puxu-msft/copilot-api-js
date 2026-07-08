@@ -624,8 +624,24 @@ async function runResponseBufferedSink(
       // live at the top-level slot, so they are NOT snapshotted per-attempt here — only a FAILED
       // (retried) attempt gets a per-attempt `sseEvents` row (D1), set in the retry branch below.
       if (drained && (opts.sawMessageStop() || opts.sawUpstreamError?.())) {
+        // C1 (spec §3.3): stop the idle heartbeat timer BEFORE snapshotting `injected` and flushing.
+        // The flush is `for (frame of buffer) await write(frame)` — every `await` yields the event loop,
+        // so a heartbeat firing mid-flush would inject a SECOND anchor start(0) that collides with real
+        // blocks already flushed at their remapped index. freezeHeartbeat clears the timer (does NOT
+        // close the sink — writes stay usable); the snapshot then pins one `injected` value for the whole
+        // flush so a (now-impossible) late mutation of anchorState can't split the remap decision.
+        sink.freezeHeartbeat?.()
+        const injected = anchorState.injected
         try {
-          for (const frame of buffer) await sink.write(frame)
+          // M4: the anchor reserved index 0, so close it off (empty-text content_block_stop@0) BEFORE the
+          // real blocks flush, then shift every real content_block_* by +1 so nothing collides at index 0.
+          if (injected && anchor) await sink.write(anchor.stopFrame)
+          for (const frame of buffer) {
+            // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
+            // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
+            if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
+            await sink.write(injected && anchor ? anchor.remap(frame, 1) : frame)
+          }
         } catch (error) {
           // Client gone mid-flush (a `sink.write` reject) — map it like the drain path so the
           // buffered sink ALWAYS returns a ResponseOutcome, never a raw throw (mirrors

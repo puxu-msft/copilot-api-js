@@ -265,3 +265,127 @@ describe("runResponseBufferedSink — buffered empty_text anchor injection path 
     sink.close?.()
   })
 })
+
+// ── Task 3.3: commit close-off + index remap +1 + message_start dedup (C1/H1/M4) ──
+
+/** An upstream that yields every frame without parking (fast response — no idle stall). */
+function makeUpstream(frames: Array<UpstreamFrame>): UpstreamStream {
+  async function* gen(): AsyncIterable<UpstreamFrame> {
+    for (const fr of frames) yield fr
+  }
+  return { frames: gen(), headers: new Headers() }
+}
+
+/** Map each written frame to `type` or `type@index` — a precise ordered oracle over the forwarded track. */
+function seqOf(written: Array<{ data: string; event?: string }>): Array<string> {
+  return written.map((w) => {
+    const p = JSON.parse(w.data) as { type: string; index?: number }
+    return typeof p.index === "number" ? `${p.type}@${p.index}` : p.type
+  })
+}
+
+describe("runResponseBufferedSink — buffered empty_text anchor commit close-off (Task 3.3)", () => {
+  const clock = new FakeClock()
+  beforeEach(() => clock.install())
+  afterEach(() => clock.restore())
+
+  test("commit with injected anchor: freeze heartbeat, close anchor, remap real +1, skip forwarded message_start", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // head = message_start (captured, then silent stall triggers injection); tail = a real thinking block + terminal.
+    const { stream: up, release } = makeControlledUpstream(
+      [f("message_start", { message: { id: "msg_c" } })],
+      [
+        f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }),
+        f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "abc" } }),
+        f("content_block_stop", { index: 0 }),
+        f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } }),
+        f("message_stop"),
+      ],
+    )
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
+
+    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const tracker = makeStopTracker()
+
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+
+    // Pull message_start (CAPTURE), park; then the idle heartbeat injects the anchor.
+    await drain(30)
+    await clock.advance(15_000)
+    await flush()
+    expect(lastInjectResult()).toBe(true)
+
+    // Release the stall → tail buffers → clean drain (saw message_stop) → COMMIT.
+    release()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("complete")
+
+    // Precise ordered oracle: injection (msg_start, anchor start@0, anchor delta@0) then commit
+    // (anchor stop@0 close-off, real block remapped to @1, terminal). No index collision, no dup.
+    expect(seqOf(written)).toEqual([
+      "message_start",
+      "content_block_start@0", // anchor (text)
+      "content_block_delta@0", // anchor empty text_delta
+      "content_block_stop@0", // anchor close-off (C1 freeze → stop before flush)
+      "content_block_start@1", // real thinking, remapped +1 (M4)
+      "content_block_delta@1", // real thinking_delta, remapped +1
+      "content_block_stop@1", // real stop, remapped +1
+      "message_delta", // no index → unchanged
+      "message_stop",
+    ])
+    // H1: the real message_start is forwarded EXACTLY once (not re-sent by the buffer flush).
+    expect(written.filter((w) => JSON.parse(w.data).type === "message_start")).toHaveLength(1)
+    // The @0 block is the anchor (text); the @1 block is the real thinking — no collision.
+    const start0 = written.find((w) => JSON.parse(w.data).type === "content_block_start" && JSON.parse(w.data).index === 0)
+    const start1 = written.find((w) => JSON.parse(w.data).type === "content_block_start" && JSON.parse(w.data).index === 1)
+    expect(JSON.parse(start0!.data).content_block.type).toBe("text")
+    expect(JSON.parse(start1!.data).content_block.type).toBe("thinking")
+    // The remapped real thinking_delta lands at index 1.
+    const thinkingDelta = written.find((w) => JSON.parse(w.data).delta?.type === "thinking_delta")
+    expect(JSON.parse(thinkingDelta!.data).index).toBe(1)
+    sink.close?.()
+  })
+
+  test("commit without anchor (fast response) is byte-identical: no stop(0) anchor, no remap, message_start once", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // Fast response: every frame arrives immediately → the heartbeat never fires (clock never advances).
+    const up = makeUpstream([
+      f("message_start", { message: { id: "msg_fast" } }),
+      f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }),
+      f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "xyz" } }),
+      f("content_block_stop", { index: 0 }),
+      f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 3 } }),
+      f("message_stop"),
+    ])
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
+
+    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const tracker = makeStopTracker()
+
+    const outcome = await driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    expect(outcome.kind).toBe("complete")
+
+    // Anchor never fired (no injection attempt reached completion) → byte-identical to the no-anchor path.
+    expect(lastInjectResult()).toBeUndefined()
+    // Real blocks keep their ORIGINAL indices (no +1 remap); NO synthetic anchor frames at all.
+    expect(seqOf(written)).toEqual([
+      "message_start",
+      "content_block_start@0",
+      "content_block_delta@0",
+      "content_block_stop@0",
+      "message_delta",
+      "message_stop",
+    ])
+    // message_start once; the only @0 content_block_start is the REAL thinking (no anchor text block).
+    expect(written.filter((w) => JSON.parse(w.data).type === "message_start")).toHaveLength(1)
+    const start0 = written.find((w) => JSON.parse(w.data).type === "content_block_start")
+    expect(JSON.parse(start0!.data).content_block.type).toBe("thinking")
+    sink.close?.()
+  })
+})
