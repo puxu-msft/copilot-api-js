@@ -1,5 +1,7 @@
 # 请求列表响应内容预览 — 实施计划
 
+> **实施状态：已落地（master）。** 6 个 task 全绿（TDD 红/绿逐任务 + subagent review）+ fix-wave（`47820260` 空响应段隐藏、共享 `truncAt` primitive、诚实 gating 类型）+ opus 全分支终审判 **MERGE-READY**。commit 范围 `3ddcecb6`（Task 1 组装器下沉）..`582b34d7`（lint 收尾），与 spec `docs/spec/2026-07-08-response-content-preview.md` 头部同步。运行期回填效果待用户启动服务器验证（no-auto-server，见 spec §12）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 Requests 列表为每个终态请求增加一列"响应内容预览"（工具优先 `[ToolA, ToolB] text…`），与既有请求预览对称。

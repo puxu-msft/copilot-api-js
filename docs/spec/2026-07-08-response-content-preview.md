@@ -1,7 +1,7 @@
 # Spec：请求列表增加响应内容预览
 
 - 日期：2026-07-08
-- 状态：draft（经两轮对抗 subagent review 修订，待用户确认）
+- 状态：已落地（master, commits 3ddcecb6..582b34d7；opus 全分支终审 MERGE-READY）
 - 归属：History Web UI（`ui-v4/`）+ History 持久化层（`src/lib/history/`）
 - 相关：`docs/DESIGN.md`（类型架构、活的架构现状）、`src/lib/history/in-flight.ts`（`extractPreviewText` 请求预览）、`ui-v4/src/lib/content/accumulate-forwarded.ts`（SSE→content 组装器）
 - Review：本文档 §11 记录两份对抗审查的采纳/未采纳。
@@ -183,3 +183,7 @@ extractResponsePreviewText(entry):
 ## 11. Review 采纳记录
 
 两轮对抗 subagent review（架构可行性 + 行为/完整性）。采纳：C1（流式源方言更正）、H1-behavior（扩展 Responses/Gemini 工具抽取，in-scope）、H2（`toEntrySummary` 同算消矛盾）、H1-arch（SQL 全站点枚举）、M1-arch（string content 分支）、M2-arch（弃死字段 `_index.aux`）、M3-arch（明确派生列非顶层字段）、M2-behavior（失败态错误回退）、L1-arch（靶向 stage 解压）、L2/L3（宽度 + 测试断言）、L4（置于 entry-view.ts）、可选的 `applyWhere` OR（对称可搜索）。冲突裁决：回填**独立 + 靶向**（非搭车），依据 search-index-backfill 已跑完 + bump version 会重建整个索引。
+
+## 12. 运行期待验证（no-auto-server，留给用户）
+
+代码已落地，唯一未在本会话验证的是回填的运行期效果（本项目 no-auto-server 纪律，需用户启动服务器后确认）：跑服务器后查 `history_meta(response_preview_version)=1` + 抽查旧行 `entries_v2.response_preview_text` 非 NULL。
