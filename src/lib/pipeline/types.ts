@@ -286,12 +286,49 @@ export interface RunResponseOpts {
 }
 
 /**
+ * Anthropic-supplied hooks for the buffered empty-text keepalive ANCHOR (spec
+ * 2026-07-08-buffered-keepalive-empty-text-anchor §3.2, layering H2). The
+ * format-agnostic driver only ORCHESTRATES (lazy-inject on idle, freeze + close-off +
+ * remap on commit); the Anthropic handler supplies the format-specific frames + the
+ * message_start predicate + the block-index remap. `ping` / `content_delta` handlers
+ * omit `anchor` entirely, so the driver's anchor path is inert for them.
+ */
+export interface AnchorHooks {
+  /** Is this rendered client frame the `message_start`? (drives the driver's capture + commit-time dedup). */
+  isMessageStart: (frame: ClientFrame) => boolean
+  /** The synthetic anchor `content_block_start{type:"text", text:""}` at index 0 (lights the sink's openBlock). */
+  startFrame: ClientFrame
+  /** The synthetic anchor `content_block_stop` at index 0 — the commit / terminal-failure close-off. */
+  stopFrame: ClientFrame
+  /** The empty `text_delta` anchor keepalive frame — resets CC's 300s watchdog right after the start. */
+  deltaFrame: ClientFrame
+  /**
+   * Shift a real `content_block_*` frame's index by `offset` (the anchor reserved index 0, so all
+   * real blocks flush at +1). Non-block frames (message_delta / message_stop / non-JSON) pass through.
+   */
+  remap: (frame: ClientFrame, offset: number) => ClientFrame
+  /**
+   * Hand the driver's `injectAnchor` closure back to the handler's holder, which threads it into the
+   * already-constructed sink's `heartbeat.injectAnchor` (the driver builds the closure but the handler
+   * owns sink construction — Task 3.2). Called once by the driver when it hoists the anchor state.
+   */
+  bindInjector?: (fn: () => Promise<boolean>) => void
+}
+
+/**
  * Options for `runResponseBufferedSink` (L2 — streaming upstream-RST buffered retry,
  * docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md). Extends {@link RunResponseOpts}
  * (the buffered drain still feeds `onUpstreamFrame` / applies `onRenderedFrame` per
  * attempt) with the buffered-retry control surface.
  */
 export interface RunBufferedOpts extends RunResponseOpts {
+  /**
+   * Anthropic empty-text keepalive anchor hooks (spec 2026-07-08-buffered-keepalive-empty-text-anchor).
+   * Present ONLY when the handler runs `stream_keepalive_mode: empty_text` on the buffered path; the
+   * driver's anchor orchestration (inject / freeze / close-off / remap) is inert when omitted, so
+   * `ping` / `content_delta` and the live path behave byte-identically to before.
+   */
+  anchor?: AnchorHooks
   /**
    * Reads the handler's accumulator: did THIS attempt see `message_stop`? The buffered
    * sink commits ONLY on `drained && sawMessageStop()` — a clean drain alone is NOT
