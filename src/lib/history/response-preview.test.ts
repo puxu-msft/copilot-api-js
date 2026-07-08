@@ -56,6 +56,11 @@ describe("summarizeResponseMessage", () => {
     const long = "x".repeat(200)
     expect(summarizeResponseMessage({ role: "assistant", content: long } as MessageContent).length).toBeLessThanOrEqual(100)
   })
+
+  test("server_tool_use block → [web_search]", () => {
+    const msg = { role: "assistant", content: [{ type: "server_tool_use", id: "s1", name: "web_search", input: {} }] } as MessageContent
+    expect(summarizeResponseMessage(msg)).toBe("[web_search]")
+  })
 })
 
 describe("extractResponsePreviewText", () => {
@@ -90,6 +95,25 @@ describe("extractResponsePreviewText", () => {
       _index: { derived: { failureReason: "upstream 500" } },
     } as unknown as HistoryEntry
     expect(extractResponsePreviewText(entry)).toBe("upstream 500")
+  })
+
+  // errorFallback 第 2 级：无 attempts[].error,退到 _index.derived.failureReason(截断 ~100)。
+  test("errorFallback level 2: no attempts[].error → _index.derived.failureReason (truncated ~100)", () => {
+    const entry = {
+      endpoint: "anthropic-messages",
+      attempts: [{ upstreamResponse: { success: false } }],
+      _index: { derived: { failureReason: "e".repeat(150) } },
+    } as unknown as HistoryEntry
+    expect(extractResponsePreviewText(entry)).toBe("e".repeat(100))
+  })
+
+  // errorFallback 第 3 级：无 error/failureReason,退到 finalUpstreamResponse().rawBody 首行(截断 ~100)。
+  test("errorFallback level 3: no error/failureReason → first line of rawBody", () => {
+    const entry = {
+      endpoint: "anthropic-messages",
+      attempts: [{ upstreamResponse: { success: false, rawBody: "boom: internal error\nstack line 1\nstack line 2" } }],
+    } as unknown as HistoryEntry
+    expect(extractResponsePreviewText(entry)).toBe("boom: internal error")
   })
 
   test("in-flight (no attempts) → ''", () => {
