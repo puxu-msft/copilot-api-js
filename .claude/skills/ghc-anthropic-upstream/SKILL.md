@@ -13,7 +13,7 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 
 | 症状 | 根因 | 处理 |
 |---|---|---|
-| `thinking ... cannot be modified` 400 | 上游 opus-4.8 thinking 全空明文+签名属常态(只发 signature_delta)；个别块签名对不上=毒化，baked 进历史每轮重败；inline `role:system` 驱动 GHC 坍缩使其落进 latest-assistant 严格校验 | proxy 逐字节透传非元凶；`system_messages_sanitize:as_user` 减坍缩救不回旧；剥全部 thinking→200；CC 自动剥重试兜底(暂缓 proxy 修) |
+| `thinking ... cannot be modified` 400 | **根因（PoC 实证订正）= 折叠后 latest-assistant 消息内两个 thinking 块相邻**（留任意 1 个→200 / 任意 2 相邻→400 / 用非 thinking 块交错分隔全保留→200；非签名对不上、非我方 sanitize，inbound==outbound 逐字节同）；客户端把本应交替的 thinking 累积成相邻块 baked 进历史每轮重败。旧说「个别块签名对不上=毒化」不精确 | **已落地三层修复**（`feat/thinking-quarantine`；spec `docs/spec/2026-07-07-thinking-signature-quarantine.md` + DESIGN 活的架构现状；PoC 复现在 `exp/thinking-signature-quarantine/`）：L1 always-on de-stack 交错分隔相邻 thinking **保全部**（分隔符须非空——空/空白 text 被上游 strip 掉无效；config `thinking_destack_strategy`）+ L2 reactive strip-all 重试（`strip_thinking_on_reject`）+ L3 (session,agent)/TTL quarantine（`poisoned_thinking_quarantine`+`ttl_hours`）。旧兜底 strip-all→200 / CC 自剥仍有效 |
 | 空轮/坏轮、`stop_reason:refusal` 仅 thinking | thinking-only refusal | `refusal_recover_text`。docs/refusal-recovery.md |
 | `call<invoke>…` 文本无 tool_use | GHC 偶发降级成 antml-strip 文本（`stop_reason` 仍 tool_use/或 end_turn 弱信号），标签间是 `\n` 非零间隔 | `tool_recover_call_text`（非本项目 bug，grep antml 零命中） |
 | `references web_search but not server tool` 400 | 历史残留 server_tool_use | `server_tool_rewrite:downgrade` + 开 web_search |
@@ -23,7 +23,7 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 
 ## 实测关键事实
 
-- thinking signature **自包含**（加密 thinking 内容本身、非上下文/位置）：跨对话/非首块/重写后均 200；唯一约束=原样不改、连续序列不重排。
+- thinking signature **自包含**（加密 thinking 内容本身、非上下文/位置）：跨对话/非首块/重写后均 200；约束=原样不改 + thinking 块**相对序**不变。**相邻性非约束**（PoC 订正）：把相邻 thinking 用非 thinking 块交错分隔（打破连续）反而 200，正是上游要求的——见 `cannot be modified` 行。
 - tool_use.id 上游不校验格式（`toolu_recovered_0` 也 200），只引用一致性要紧；仍合成 `toolu_`+24base62 防客户端 SDK。
 - 上游兼容矩阵/特性协商属 docs（anthropic-compat.md / refusal-recovery.md），本 skill 只管调试。
 
