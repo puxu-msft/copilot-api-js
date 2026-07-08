@@ -2,6 +2,11 @@ import type { ModelFilters } from "@/lib/model-filters"
 
 import { FilterSelect } from "@/components/shared/FilterSelect"
 import { RangeSlider } from "@/components/shared/RangeSlider"
+import {
+  //
+  countActiveFilters,
+  EMPTY_FILTERS,
+} from "@/lib/model-filters"
 
 const CAPABILITY_OPTIONS = [
   { value: "vision", label: "Vision" },
@@ -144,6 +149,23 @@ export function ModelsFilterBar({ filters, onChange, options, billingBounds }: M
           </button>
         ))}
       </div>
+
+      {(() => {
+        const active = countActiveFilters(filters, billingBounds)
+        if (active === 0) return null
+        return (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-[11px] text-[var(--color-primary)]">{active} active</span>
+            <button
+              type="button"
+              className="border border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[var(--color-muted)] hover:text-[var(--color-text)]"
+              onClick={() => onChange(EMPTY_FILTERS)}
+            >
+              clear all
+            </button>
+          </div>
+        )
+      })()}
     </div>
   )
 }

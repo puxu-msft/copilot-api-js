@@ -9,6 +9,7 @@ import {
 
 import {
   //
+  countActiveFilters,
   EMPTY_FILTERS,
   filterModels,
   matchesBilling,
@@ -79,13 +80,9 @@ describe("billing-rate filter", () => {
     expect(matchesBilling(model, [1, 5])).toBe(false)
   })
   it("modelBillingBounds: [min,max] over multipliers, missing=0", () => {
-    expect(
-      modelBillingBounds([
-        m({ billing: { multiplier: 2 } as Model["billing"] }),
-        m({ billing: { multiplier: 8 } as Model["billing"] }),
-        m({}),
-      ]),
-    ).toEqual([0, 8])
+    expect(modelBillingBounds([m({ billing: { multiplier: 2 } as Model["billing"] }), m({ billing: { multiplier: 8 } as Model["billing"] }), m({})])).toEqual([
+      0, 8,
+    ])
   })
 })
 
@@ -104,5 +101,41 @@ describe("filterModels", () => {
   it("vendor + premium combine (AND)", () => {
     const list = [m({ id: "a", vendor: "Anthropic", billing: { is_premium: true } }), m({ id: "b", vendor: "Anthropic", billing: { is_premium: false } })]
     expect(filterModels(list, { ...EMPTY_FILTERS, vendor: "Anthropic", premium: true }, never).map((x) => x.id)).toEqual(["a"])
+  })
+})
+
+describe("countActiveFilters", () => {
+  it("empty = 0", () => {
+    expect(countActiveFilters(EMPTY_FILTERS, [0, 10])).toBe(0)
+  })
+  it("counts scalar + array dims", () => {
+    expect(countActiveFilters({ ...EMPTY_FILTERS, search: "gpt", vendor: "openai", capabilities: ["vision"] }, [0, 10])).toBe(3)
+  })
+  it("blank search does not count", () => {
+    expect(countActiveFilters({ ...EMPTY_FILTERS, search: "   " }, [0, 10])).toBe(0)
+  })
+  it("counts every remaining dimension", () => {
+    expect(
+      countActiveFilters(
+        {
+          ...EMPTY_FILTERS,
+          type: "chat",
+          endpoint: "/responses",
+          policyState: "enabled",
+          premium: true,
+          hasTelemetry: false,
+          restrictedTo: ["pro"],
+        },
+        [0, 10],
+      ),
+    ).toBe(6)
+  })
+  it("billingRange active only when narrower than bounds", () => {
+    // full-span range → not counted (load-bearing invariant)
+    expect(countActiveFilters({ ...EMPTY_FILTERS, billingRange: [0, 10] }, [0, 10])).toBe(0)
+    // raised lower bound → counted
+    expect(countActiveFilters({ ...EMPTY_FILTERS, billingRange: [2, 10] }, [0, 10])).toBe(1)
+    // lowered upper bound → counted
+    expect(countActiveFilters({ ...EMPTY_FILTERS, billingRange: [0, 8] }, [0, 10])).toBe(1)
   })
 })

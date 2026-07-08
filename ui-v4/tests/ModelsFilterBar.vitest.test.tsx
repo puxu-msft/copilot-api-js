@@ -19,9 +19,12 @@ import { EMPTY_FILTERS } from "@/lib/model-filters"
 const OPTIONS = {
   vendors: ["Anthropic", "OpenAI"],
   types: ["chat", "embeddings"],
+  endpoints: ["/responses", "/chat/completions"],
   restrictedTo: ["pro", "max"],
   policyStates: ["enabled"],
 }
+
+const BOUNDS: [number, number] = [0, 10]
 
 /**
  * `ModelsFilterBar` selects migrated to Radix `Select` (P-radix). The trigger is
@@ -37,6 +40,7 @@ describe("ModelsFilterBar (Radix Select)", () => {
         filters={EMPTY_FILTERS}
         onChange={onChange}
         options={OPTIONS}
+        billingBounds={BOUNDS}
       />,
     )
     return onChange
@@ -68,6 +72,7 @@ describe("ModelsFilterBar (Radix Select)", () => {
         filters={{ ...EMPTY_FILTERS, vendor: "OpenAI" }}
         onChange={onChange}
         options={OPTIONS}
+        billingBounds={BOUNDS}
       />,
     )
     await pick(user, "Vendor", "all vendors")
@@ -91,5 +96,38 @@ describe("ModelsFilterBar (Radix Select)", () => {
     const onChange = renderBar()
     fireEvent.click(screen.getByRole("button", { name: /^pro$/i }))
     expect(onChange).toHaveBeenCalledWith({ restrictedTo: ["pro"] })
+  })
+
+  it("hides the active-filter chip + clear all when no filters are active", () => {
+    renderBar()
+    expect(screen.queryByText(/active$/)).toBeNull()
+    expect(screen.queryByRole("button", { name: /clear all/i })).toBeNull()
+  })
+
+  it("shows the active-filter count once a filter is set", () => {
+    render(
+      <ModelsFilterBar
+        filters={{ ...EMPTY_FILTERS, vendor: "OpenAI", capabilities: ["vision"] }}
+        onChange={vi.fn()}
+        options={OPTIONS}
+        billingBounds={BOUNDS}
+      />,
+    )
+    // getByText throws if the chip is absent, so this asserts presence.
+    expect(screen.getByText("2 active").textContent).toBe("2 active")
+  })
+
+  it("resets every dimension via EMPTY_FILTERS when clear all is clicked", () => {
+    const onChange = vi.fn()
+    render(
+      <ModelsFilterBar
+        filters={{ ...EMPTY_FILTERS, vendor: "OpenAI" }}
+        onChange={onChange}
+        options={OPTIONS}
+        billingBounds={BOUNDS}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: /clear all/i }))
+    expect(onChange).toHaveBeenCalledWith(EMPTY_FILTERS)
   })
 })

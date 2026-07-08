@@ -74,6 +74,22 @@ export function modelBillingBounds(models: Array<Model>): [number, number] {
   return [min, max]
 }
 
+/** 激活筛选维度数。billingRange 用「窄于边界」判据（对齐 Vue），满量程恒不计 active。 */
+export function countActiveFilters(f: ModelFilters, bounds: [number, number]): number {
+  let n = 0
+  if (f.search.trim() !== "") n++
+  if (f.vendor !== null) n++
+  if (f.type !== null) n++
+  if (f.endpoint !== null) n++
+  if (f.policyState !== null) n++
+  if (f.premium !== null) n++
+  if (f.hasTelemetry !== null) n++
+  if (f.capabilities.length > 0) n++
+  if (f.restrictedTo.length > 0) n++
+  if (f.billingRange !== null && (f.billingRange[0] > bounds[0] || f.billingRange[1] < bounds[1])) n++
+  return n
+}
+
 /** Apply all filters. `hasTelemetry(id)` reports whether the model joined any telemetry. */
 export function filterModels(models: Array<Model>, filters: ModelFilters, hasTelemetry: (id: string) => boolean): Array<Model> {
   const query = filters.search.trim().toLowerCase()
