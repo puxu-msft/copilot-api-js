@@ -1,6 +1,6 @@
 import type { ToolUseContentBlock } from "@/lib/content/types"
 
-import { CodeBlock } from "@/components/detail/CodeBlock"
+import { RawJsonView } from "@/components/common/RawJsonView"
 import { ToolJumpButton } from "@/components/detail/ToolJumpButton"
 import { useToolPairing } from "@/components/detail/ToolPairingContext"
 
@@ -20,10 +20,7 @@ export function ToolUseBlock({ block }: { block: ToolUseContentBlock }) {
         : null}
       </div>
       <div className="text-[var(--color-primary)]">{block.name}</div>
-      <CodeBlock
-        code={JSON.stringify(block.input, null, 2)}
-        lang="json"
-      />
+      <RawJsonView value={block.input} />
     </div>
   )
 }
