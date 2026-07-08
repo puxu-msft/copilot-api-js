@@ -110,7 +110,7 @@ export function extractToolNames(entry: HistoryEntryData): Array<string> {
  * - `emptySigned`   — `thinking` blank but `signature` a non-empty string (normal encrypted /
  *   compat block — Anthropic thinking is self-contained in the signature).
  * - `emptyUnsigned` — `thinking` blank AND `signature` empty/missing/null (a corrupt double-empty
- *   block — the upstream-corruption signal `thinkingBlockSanitizeCheck.empty_thinking` strips).
+ *   block — the upstream-corruption signal `thinkingBlockSanitizeCheck.all_empty` strips).
  */
 export interface ThinkingBlockCounts {
   nonEmpty: number

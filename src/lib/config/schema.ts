@@ -272,16 +272,21 @@ export const AnthropicConfigSchema = z
     /**
      * Drop corrupt thinking blocks before sending upstream. Validity is decided
      * by the SIGNATURE, not the thinking text — a legitimate *encrypted* thinking
-     * block has empty text but a valid signature, and is always kept.
-     * `"empty_thinking"` (default) removes only double-empty blocks (both `thinking`
+     * block has empty text but a valid signature, and (except in the aggressive
+     * text-based modes) is kept. The mode names WHICH field being empty triggers
+     * the drop:
+     * `"all_empty"` (default) removes only double-empty blocks (both `thinking`
      * text AND `signature` empty, e.g. a `{thinking:"", signature:""}` block a client
      * echoed back), which upstream rejects with "each thinking block must contain
-     * thinking". `"empty_any"` removes any thinking block with an empty signature,
-     * regardless of text. `false` disables the pass.
+     * thinking". `"signature_empty"` removes any thinking block with an empty
+     * signature, regardless of text. `"thinking_empty"` removes any block with empty
+     * text, regardless of signature (AGGRESSIVE — also deletes legitimate encrypted
+     * thinking). `"any_empty"` removes when EITHER field is empty. `false` disables
+     * the pass.
      */
     thinking_block_sanitize: z
-      .union([z.literal(false), z.literal("empty_thinking"), z.literal("empty_any"), z.null()], {
-        error: "Must be one of: false, empty_thinking, empty_any",
+      .union([z.literal(false), z.literal("all_empty"), z.literal("signature_empty"), z.literal("thinking_empty"), z.literal("any_empty"), z.null()], {
+        error: "Must be one of: false, all_empty, signature_empty, thinking_empty, any_empty",
       })
       .optional()
       .transform((v) => v ?? undefined),

@@ -494,8 +494,8 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
   {
     configKey: "anthropic.thinking_block_sanitize",
     stateKey: "thinkingBlockSanitizeCheck",
-    sampleYamlValue: "empty_any",
-    expectedStateValue: "empty_any",
+    sampleYamlValue: "signature_empty",
+    expectedStateValue: "signature_empty",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
   },
   {

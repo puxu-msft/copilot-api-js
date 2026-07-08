@@ -5,7 +5,10 @@
 ## GHC server_tool_memory 默认关 — CAPI 接受性待探针
 
 - **现状**：`anthropic.server_tool_memory` 默认关。GHC 只在 BYOK 直连注入 `memory_20250818`、CAPI 路径不注入，故本项目经 CAPI 发该 server-tool 类型 + `context-management` beta 的**接受性未实测**。
-- **若做**：先用探针 / history `sseEvents` 实测 CAPI 是否接受（见 skill `empirical-verification`）；被拒时 `unsupported-beta-retry` 只自愈 beta、body 里的 tool 类型无自愈（属未来工作）。保持关直到实测接受。
+- **实测结论（2026-07-08，探针 `exp/server-tool-memory-probe/`）**：**CAPI（enterprise 账户）接受** `memory_20250818` server tool 声明 + `context-management-2025-06-27` beta —— 上游 2xx（`stop_reason:end_turn`）且响应体**回显 `context_management:{applied_edits:[]}`**，证明特性被主动处理而非静默忽略。wire 由生产 `rewriteMemoryTool`/`buildAnthropicBetaHeaders` 正确产出（`[{"name":"memory","type":"memory_20250818"}]`）。**边界**：① 仅 enterprise 端点确认——默认 individual base URL（`api.githubcopilot.com`）首跑请求**挂起无响应**，individual/business 接受性未确认、不可外推；② 已验 **wire 接受性**，**未**端到端触发 memory 存取（无 `server_tool_use` 块，需触发存取的 prompt 才能验实际行为）。结论详见探针 README `## 结论：接受`。
+- **端到端实测（2026-07-08，enterprise，探针参数化 `PROBE_PROMPT`/`PROBE_MAX_TOKENS`）**：**memory 工具端到端被真正调用 · 确认**——诱导 prompt 让上游产出真实 `{"name":"memory","type":"tool_use","input":{"command":"view","path":"/memories"}}` 块（`stop_reason:tool_use`），结构化 tool_use 非文本敷衍。**关键**：memory 是 **client-executed** 工具（`type:"tool_use"` + `caller:{type:"direct"}`，非 `server_tool_use`）——上游只**驱动**（发 view/create 命令），实际 `/memories` 存取由**最终 client**（Claude Code）执行、多轮 tool_result 喂回。故永不会有 memory 的 `server_tool_use`/`applied_edits`。**含义：本项目侧无需自建 memory 后端，只需透传该 tool_use 不拦截**。
+- **多轮透传实测（2026-07-08，enterprise，`probe-multiturn.ts`）**：**请求侧管线多轮 memory 往返透传 · 确认**——含 memory `tool_use`（assistant）+ `tool_result`（user）的续接会话经**完整生产请求侧三段**（`preprocessAnthropicMessages` → `runAnthropicPayloadRewrites` → `createAnthropicMessages`，忠实复刻 `handler-v4` 顺序）后，两块**原样保留、`tool_use_id` 配对未乱**（sanitize orphan 计数 0），上游 Hop2 **2xx 续跑到 `end_turn`** 并消费 tool_result；带签名 thinking 块亦逐字透传、未触发 thinking 400。**探针保真教训**：单跳 `probe.ts` 直调 `createAnthropicMessages` 只跑 prepare、**测不到 sanitizer**（生产里 sanitizer 在路由层更早跑），多轮探针复刻三段才真正验到 `processToolBlocks`。翻默认前的请求侧透传残留点消除。
+- **决策（用户 2026-07-08）**：**保持默认关**（`server_tool_memory` 不改）。enterprise 已 wire + e2e + 多轮透传**三绿**、可放心手动开；唯一未闭合缺口 individual/business 端点**凭据阻塞、不可测**（本账户是 enterprise），故不全局翻默认。若将来拿到 individual/business 凭据复测通过，可评估 account-type 门控或全局翻默认。
 - **权威现状**：skill `ghc-api-reference` + `docs/plan/ghc-feature-alignment-tool-search-cache-ttl-memory.md`。
 
 ## stripToolFields 预剥的深层可观测性（history/telemetry 维度）
@@ -35,7 +38,9 @@
 
 ## setup-claude-code CLI 尊重已有配置（+/~/- diff）
 
-- **现状**：`src/setup-claude-code.ts` 写 `~/.claude.json`/`~/.claude/settings.json`。config-respect UX（检测已存在的自定义配置、破坏性覆盖前展示直观 `+/~/-` diff 并确认、区分 essential=默认写 vs extension=仅 opt-in）**未实现、未文档化**——此设计意图原挂在记忆 `feedback_tests_never_touch_real_env` 的一条 How-to 里（该记忆的主旨是测试隔离、此条属跑题内容），记忆降 stub 时归位至此以免丢失。
+- **[已落地 2026-07-08]**（commit `86cb2ff5`）：`writeClaudeCodeConfig()` 现总是 per-file `+/~/-` diff + 确认再写；`--yes` 自动应用、`--dry-run` 只展示不写、非 TTY 无 `--yes` 时 abort（never-swallow：坏 JSON 文件拒 clobber）；纯函数 `computeJsonDiff` / `decideWriteAction` 已抽出并单测。
+- **Follow-up（learn-by-analogy，本次未做以守范围）**：`src/setup-codex.ts` 与此同构（也写 `~` 下 JSON config）。`computeJsonDiff` / `decideWriteAction` 已文件无关、可直接复用，建议类比给 setup-codex 套用同一 diff/confirm/`--yes`/`--dry-run`/非 TTY-abort UX。
+- **现状（历史）**：`src/setup-claude-code.ts` 写 `~/.claude.json`/`~/.claude/settings.json`。config-respect UX（检测已存在的自定义配置、破坏性覆盖前展示直观 `+/~/-` diff 并确认、区分 essential=默认写 vs extension=仅 opt-in）**未实现、未文档化**——此设计意图原挂在记忆 `feedback_tests_never_touch_real_env` 的一条 How-to 里（该记忆的主旨是测试隔离、此条属跑题内容），记忆降 stub 时归位至此以免丢失。
 - **若做**：给 `writeClaudeCodeConfig()` 加 merge/diff 层（读现有 config → 计算 essential/extension 分类 → 展示 diff → 确认再写）；无 CI/守卫，属独立 UX 特性。
 - **原因**：非承重、无用户明确需求，先记录待用户决定优先级。
 
@@ -65,7 +70,7 @@
 七维筛选 + TableVirtuoso 列表引擎全落地（spec `docs/spec/2026-07-06-ui-v4-requests-list-enhancement.md`、plan `docs/plans/requests-list-enhancement/`）。最终整分支评审判「可合并、无 Critical/Important」，两条合并前建议（H1 守卫测试 + 测试名 overpromise）已补（commit 8f06e678）。以下 Minor 入 backlog：
 
 - **response_sessions 孤儿映射未扫**（`src/lib/history/sqlite/write.ts` `deleteEntries`）：scoped delete 不清 `response_sessions`（该表对 entries_v2 无 FK）。与 `deleteSession` 同款行为、`clearAllEntries` 兜底、无害泄漏（非数据丢失）。spec §9 文字提过。**若做**：`deleteEntries` 内按被删 entry 的 response id 清对应 `response_sessions` 行，或加周期性 orphan sweep。
-- **chip 日期标签 UTC vs popover 本地时区**（`ui-v4/src/lib/request-filters.ts` `activeChips` 用 `toISOString` / `DateRangePopover.tsx` 标签用本地）：非 UTC 时区跨午夜两处显示串可能差一天（epoch 值正确、筛选结果正确，仅标签串不一致）。**若做**：统一两处时区（都本地或都 UTC）。
+- **[已修 2026-07-08]** **chip 日期标签 UTC vs popover 本地时区**（commit `e92c6561`）：`request-filters.ts` 的 `fmtDate` 已改用本地时区、与 `DateRangePopover` 一致（epoch 值 / 筛选结果不动，加了时区无关断言）。原问题：非 UTC 时区跨午夜两处显示串可能差一天。
 - **HistoryRow 硬编码像素宽**（`ui-v4/src/components/requests/RequestRow.tsx`，服务 Sessions AgentLane）：未用 `COLUMN_WIDTHS` SSOT（不同布局语境，History↔Live 的 M4 红线已满足）。**若做**：AgentLane 若要与 History 表列对齐，改用 COLUMN_WIDTHS。
 - **cosmetic**：`selectionClass` 在 HistoryList 与 RequestRow 各一份；清空确认 Modal 删除在途时「取消」按钮未 disabled（删除仍完成、无数据丢失）；列可见性菜单 multiplier 列 label 显示孤立 "×"（表头简写兼作菜单标签）；useRequestFilters 的 `FILTER_KEYS` 手列可派生自 `Object.keys(EMPTY_FILTERS)`。
 - **测试覆盖薄**（非正确性）：useRequestFilters 的 clearAll/数值维 round-trip 未单测；useDebouncedCallback 的 fnRef-latest/卸载清理未单测。
@@ -100,14 +105,6 @@
 - **理想架构**：三选一——① 让 de-stack 保持该 message 的首块类型不变（畸形轮也不翻转首块）；② 把默认策略切到 `insert_text`（原地插入 marker、不移动任何块，天然不翻转首块）；③ 让 `messagesMatch` 对首块重排具鲁棒性（如按多块类型集合 / id 匹配而非仅首块）。
 - **为何暂缓**：畸形输入才触发 + 优雅降级 + 仅 history 索引受影响（非上游 payload）；且 `insert_text` 策略**本就完全规避此边界**（保持所有块原位），已是现成逃生舱。属「有界且无害的次级效应」，非「因范围大降级」。发现方：`feat/thinking-quarantine` 全分支终审 advisory（2026-07-07）。
 - **若做需改什么**：按上「理想架构」三选一。最小侵入是把默认策略改 `insert_text`（一处 state 默认 + 复核 `insert_text` 的合成 marker 现已被 `stripAllThinking` 连带剥除，见本分支 A4 修复，无泄漏残留）；或给 `messagesMatch` 加首块重排容错 + 对应单测。
-
-## config `anthropic.thinking_block_sanitize` 枚举命名迷惑 → 按「哪个字段空」重命名
-
-- **根因**：现值 `empty_thinking`（默认）实为「thinking 文本 AND signature 都空」（double-empty 损坏块）、`empty_any` 实为「signature 空（不论文本）」——但 opus-4.8 正常 thinking 块恰恰文本空 + 签名有效，`empty_thinking` 极易被误读为「thinking 字段空」。判据核心是 signature，名不达意。
-- **当前行为**：`filterEmptyThinkingBlocks(messages, mode)`（`src/lib/anthropic/sanitize/content-blocks.ts`）按两布尔字段（textEmpty / sigEmpty）判丢弃：`empty_thinking`=text∧sig 都空、`empty_any`=sig 空。类型 `false | "empty_thinking" | "empty_any"`，默认 `empty_thinking`。
-- **理想架构**：重命名为「名字=哪个字段空才触发丢弃」的清晰枚举——`false`(关) / `all_empty`(text∧sig 空 = 旧 `empty_thinking`) / `signature_empty`(sig 空 = 旧 `empty_any`) / `thinking_empty`(text 空，**新增**，激进慎用——会删正常空明文块) / `any_empty`(text∨sig 任一空，**新增**)。默认 `all_empty`（= 旧默认行为不变）。
-- **为何暂缓**：与 thinking-quarantine 特性无关的独立小重构；用户已认可映射方向但未启动。
-- **若做需改什么**：schema enum + state 类型/默认 + `filterEmptyThinkingBlocks` 谓词（2→4 模式，按 textEmpty/sigEmpty 组合）+ `config.ts` apply + bundled `config.yaml` + `config.schema.json` regen + `compat.ts` 加**值迁移**（`empty_thinking`→`all_empty` / `empty_any`→`signature_empty`，旧配置自动升级不报错）+ 相关测试。发现方：用户 config-review 提议（2026-07-08）。
 
 ## thinking budget 与 max_tokens 冲突的行为化解决（现仅告警，未化解）
 

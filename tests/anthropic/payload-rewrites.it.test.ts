@@ -101,7 +101,7 @@ const scenarios: Array<Scenario> = [
   },
   {
     name: "corrupt (unsigned empty) thinking block stripped",
-    setup: () => setStateForTests({ thinkingBlockSanitizeCheck: "empty_thinking" }),
+    setup: () => setStateForTests({ thinkingBlockSanitizeCheck: "all_empty" }),
     payload: payload([
       assistant([
         { type: "thinking", thinking: "", signature: "" },

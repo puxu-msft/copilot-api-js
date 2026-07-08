@@ -97,9 +97,32 @@ describe("config compat — legacy key migration (file load)", () => {
     expect(result.anthropic?.effort_overrides).toEqual({ "claude-x": ["high"] })
   })
 
-  test("anthropic.thinking_block_sanitize_check → thinking_block_sanitize", () => {
-    const result = validateConfig({ anthropic: { thinking_block_sanitize_check: "empty_any" } })
-    expect(result.anthropic?.thinking_block_sanitize).toBe("empty_any")
+  test("anthropic.thinking_block_sanitize_check → thinking_block_sanitize (key rename, new-style value)", () => {
+    const result = validateConfig({ anthropic: { thinking_block_sanitize_check: "signature_empty" } })
+    expect(result.anthropic?.thinking_block_sanitize).toBe("signature_empty")
+  })
+
+  describe("anthropic.thinking_block_sanitize value rename (name = which empty field triggers drop)", () => {
+    test('legacy "empty_thinking" → "all_empty" (text AND signature empty)', () => {
+      const result = validateConfig({ anthropic: { thinking_block_sanitize: "empty_thinking" } })
+      expect(result.anthropic?.thinking_block_sanitize).toBe("all_empty")
+    })
+
+    test('legacy "empty_any" → "signature_empty" (signature empty, any text)', () => {
+      const result = validateConfig({ anthropic: { thinking_block_sanitize: "empty_any" } })
+      expect(result.anthropic?.thinking_block_sanitize).toBe("signature_empty")
+    })
+
+    test("old key + old value chain: thinking_block_sanitize_check=empty_thinking → thinking_block_sanitize=all_empty", () => {
+      const result = validateConfig({ anthropic: { thinking_block_sanitize_check: "empty_thinking" } })
+      expect(result.anthropic?.thinking_block_sanitize).toBe("all_empty")
+    })
+
+    test.each(["all_empty", "signature_empty", "thinking_empty", "any_empty", false] as const)("already-valid value %p passes through unchanged", (value) => {
+      const result = validateConfig({ anthropic: { thinking_block_sanitize: value } })
+      // `false` (disable the pass) is kept as-is; only `null` maps to undefined via the schema transform.
+      expect(result.anthropic?.thinking_block_sanitize).toBe(value)
+    })
   })
 
   test("anthropic.system_messages_sanitize → system_default_mode", () => {
