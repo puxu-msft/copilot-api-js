@@ -24,6 +24,13 @@ describe("RawJsonView 双视图切换", () => {
     expect(treeTab.getAttribute("aria-selected")).toBe("false")
   })
 
+  it("默认 source 视图正向渲染序列化 JSON", () => {
+    const { container } = render(<RawJsonView value={{ alpha: 42 }} />)
+    // 正断言:source 路径确实把 JSON.stringify 结果喂给 CodeBlock。
+    // shiki 首帧为 plaintext,序列化文本落入 DOM textContent。
+    expect(container.textContent).toContain('"alpha": 42')
+  })
+
   it("默认 source 视图不渲染树节点(负断言 + 正控制:切树后节点出现)", () => {
     render(<RawJsonView value={{ uniquekey: 1 }} />)
     // 正控制:切到树后确实能找到键节点,证明查询手法有效。
@@ -54,29 +61,40 @@ describe("RawJsonView 双视图切换", () => {
     expect(screen.getByText("a")).toBeDefined()
   })
 
-  it("value 变更时树重挂载:手动折叠态被重置为深度默认", () => {
-    // outer 深度 0 < AUTO_COLLAPSE_DEPTH(3),默认展开 → inner 子值可见。
+  it("value 变更时树重挂载:手动折叠态重置;同 value rerender 则保留(证明 key 绑定 source 而非无条件重挂)", () => {
+    // outer 深度 1 < AUTO_COLLAPSE_DEPTH(3),默认展开 → inner 子值可见。
     const { rerender } = render(
       <RawJsonView
         value={{ outer: { inner: 1 } }}
         defaultMode="tree"
       />,
     )
-    // 手动折叠 outer → 子值 "1" 消失。toolbar 模式下每个节点还有 copy 按钮也含 "outer",
-    // 故按 aria-expanded 精确锁定 Collapsible 触发器(仅它有该属性)。
-    const trigger = screen.getAllByRole("button").find((b) => b.getAttribute("aria-expanded") !== null)
-    if (!trigger) throw new Error("expected a Collapsible trigger with aria-expanded")
-    fireEvent.click(trigger)
+    // 带 aria-expanded 的触发器有两个:[0]=根节点(无 key 标签)、[1]=嵌套的 outer。
+    // 取 outer(index 1)以精确验证嵌套节点的折叠重置。toolbar 模式下每个节点还有 copy
+    // 按钮(aria-label 含 "outer"),故不能按 name 匹配,只能靠 aria-expanded 属性锁定触发器。
+    const triggers = screen.getAllByRole("button").filter((b) => b.getAttribute("aria-expanded") !== null)
+    expect(triggers.length).toBeGreaterThanOrEqual(2)
+    fireEvent.click(triggers[1]) // 折叠 outer → 子值 "1" 消失
     expect(screen.queryByText("1")).toBeNull()
 
-    // 换新 value(source 串不同)→ key 变 → JsonTreeView 重挂载 → outer 回到默认展开。
+    // 正控制:相同 value → source 串不变 → key 不变 → 不重挂载 → 手动折叠态保留,"1" 仍隐藏。
+    // 这一步把 key={source} 与 key={random}/无条件重挂区分开(后者会使 "1" 复现)。
+    rerender(
+      <RawJsonView
+        value={{ outer: { inner: 1 } }}
+        defaultMode="tree"
+      />,
+    )
+    expect(screen.queryByText("1")).toBeNull()
+
+    // 换新 value(source 串不同)→ key 变 → JsonTreeView 重挂载 → outer 回默认展开。
     rerender(
       <RawJsonView
         value={{ outer: { inner: 2 } }}
         defaultMode="tree"
       />,
     )
-    // 若未重挂载,手动折叠态会保留,"2" 应被隐藏;可见即证明重挂载重置。
+    // 可见即证明重挂载把手动折叠态重置回深度默认。
     expect(screen.getByText("2")).toBeDefined()
   })
 
