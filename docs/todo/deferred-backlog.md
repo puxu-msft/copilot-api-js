@@ -6,7 +6,9 @@
 
 - **现状**：`anthropic.server_tool_memory` 默认关。GHC 只在 BYOK 直连注入 `memory_20250818`、CAPI 路径不注入，故本项目经 CAPI 发该 server-tool 类型 + `context-management` beta 的**接受性未实测**。
 - **实测结论（2026-07-08，探针 `exp/server-tool-memory-probe/`）**：**CAPI（enterprise 账户）接受** `memory_20250818` server tool 声明 + `context-management-2025-06-27` beta —— 上游 2xx（`stop_reason:end_turn`）且响应体**回显 `context_management:{applied_edits:[]}`**，证明特性被主动处理而非静默忽略。wire 由生产 `rewriteMemoryTool`/`buildAnthropicBetaHeaders` 正确产出（`[{"name":"memory","type":"memory_20250818"}]`）。**边界**：① 仅 enterprise 端点确认——默认 individual base URL（`api.githubcopilot.com`）首跑请求**挂起无响应**，individual/business 接受性未确认、不可外推；② 已验 **wire 接受性**，**未**端到端触发 memory 存取（无 `server_tool_use` 块，需触发存取的 prompt 才能验实际行为）。结论详见探针 README `## 结论：接受`。
-- **若做（翻默认前的门槛）**：先补 individual/business 端点确认 + 一次端到端 memory 调用验证；被拒时 `unsupported-beta-retry` 只自愈 beta、body 里的 tool 类型无自愈（属未来工作）。enterprise 已实测接受，可评估对 enterprise 先行默认开。
+- **端到端实测（2026-07-08，enterprise，探针参数化 `PROBE_PROMPT`/`PROBE_MAX_TOKENS`）**：**memory 工具端到端被真正调用 · 确认**——诱导 prompt 让上游产出真实 `{"name":"memory","type":"tool_use","input":{"command":"view","path":"/memories"}}` 块（`stop_reason:tool_use`），结构化 tool_use 非文本敷衍。**关键**：memory 是 **client-executed** 工具（`type:"tool_use"` + `caller:{type:"direct"}`，非 `server_tool_use`）——上游只**驱动**（发 view/create 命令），实际 `/memories` 存取由**最终 client**（Claude Code）执行、多轮 tool_result 喂回。故永不会有 memory 的 `server_tool_use`/`applied_edits`。**含义：本项目侧无需自建 memory 后端，只需透传该 tool_use 不拦截**。
+- **翻默认剩余缺口（无法闭合）**：individual/business 端点接受性**不可测**（当前唯一凭据是 enterprise 账户，enterprise token 发 individual 端点挂起无响应）。被拒时 body 里的 tool 类型无 `unsupported-beta-retry` 自愈 → 全局翻默认对 individual/business 有破坏风险。**决策面（待用户定）**：① 保持默认关、enterprise 用户手动开；② 全局翻开（接受 individual/business 未知风险）；③ 按 account-type 门控（仅 enterprise 默认开）。enterprise 已 wire+e2e 双绿。
+- **若做**：透传 memory tool_use（确认 v4 管线不拦截 client-executed memory 工具的 tool_use/tool_result 往返）；若选门控默认，按 token account-type 决定注入。
 - **权威现状**：skill `ghc-api-reference` + `docs/plan/ghc-feature-alignment-tool-search-cache-ttl-memory.md`。
 
 ## stripToolFields 预剥的深层可观测性（history/telemetry 维度）
