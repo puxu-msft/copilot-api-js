@@ -148,7 +148,7 @@
         {
           "type": "object",
           "properties": {
-            "tool_strip_server": {
+            "server_tool_strip": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -322,11 +322,19 @@
                 },
                 {
                   "type": "string",
-                  "const": "empty_thinking"
+                  "const": "all_empty"
                 },
                 {
                   "type": "string",
-                  "const": "empty_any"
+                  "const": "signature_empty"
+                },
+                {
+                  "type": "string",
+                  "const": "thinking_empty"
+                },
+                {
+                  "type": "string",
+                  "const": "any_empty"
                 },
                 {
                   "type": "null"
@@ -352,7 +360,7 @@
                 }
               ]
             },
-            "system_messages_sanitize": {
+            "system_default_mode": {
               "anyOf": [
                 {
                   "type": "boolean",
@@ -439,7 +447,7 @@
                 }
               ]
             },
-            "tool_rewrite_history_server": {
+            "server_tool_rewrite": {
               "anyOf": [
                 {
                   "type": "boolean",
@@ -584,7 +592,7 @@
                 }
               ]
             },
-            "memory_tool": {
+            "server_tool_memory": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -1308,7 +1316,7 @@
         }
       ]
     },
-    "web_search": {
+    "server_tool_web_search": {
       "anyOf": [
         {
           "type": "object",

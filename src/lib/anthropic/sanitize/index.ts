@@ -122,10 +122,11 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // adjacent same-role risk introduced beyond what processToolBlocks already produces.
   // Validity is decided by the SIGNATURE (see filterEmptyThinkingBlocks); a legitimate
   // encrypted thinking block has empty `thinking` text but a valid `signature` and is
-  // kept. Gated by `thinkingBlockSanitizeCheck` (off / empty_thinking / empty_any).
+  // kept. Gated by `thinkingBlockSanitizeCheck` (off / all_empty / signature_empty /
+  // thinking_empty / any_empty — the mode names WHICH empty field triggers the drop).
   const sanitizeCheck = state.thinkingBlockSanitizeCheck
   const beforeThinkingBlocks = countAnthropicContentBlocks(messages)
-  if (sanitizeCheck === "empty_thinking" || sanitizeCheck === "empty_any") {
+  if (sanitizeCheck !== false) {
     messages = filterEmptyThinkingBlocks(messages, sanitizeCheck)
   }
   const emptyThinkingBlocksRemoved = Math.max(0, beforeThinkingBlocks - countAnthropicContentBlocks(messages))

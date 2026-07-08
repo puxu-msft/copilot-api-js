@@ -1,3 +1,4 @@
+import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
 import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type {
@@ -322,8 +323,8 @@ export interface State {
    * cleanup. Set to `"stripped"` to aggressively remove thinking blocks from old messages.
    */
   readonly thinkingBlockMessagePolicy: ThinkingBlockMessagePolicy
-  /** Drop corrupt empty thinking blocks before sending upstream (see config `anthropic.thinking_block_sanitize`) */
-  readonly thinkingBlockSanitizeCheck: false | "empty_thinking" | "empty_any"
+  /** Drop corrupt empty thinking blocks before sending upstream (see config `anthropic.thinking_block_sanitize`); `false` disables. Mode names WHICH field being empty triggers the drop — see {@link ThinkingBlockSanitizeMode}. */
+  readonly thinkingBlockSanitizeCheck: false | ThinkingBlockSanitizeMode
 
   /**
    * De-stack strategy for adjacent `thinking`/`redacted_thinking` blocks (config
@@ -1276,7 +1277,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   protectStreamingEscalateContext: false,
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
-  thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
+  thinkingBlockSanitizeCheck: "all_empty" as false | ThinkingBlockSanitizeMode,
   thinkingDestackStrategy: "move_blocks" as ThinkingDestackStrategy,
   stripThinkingOnReject: true,
   poisonedThinkingQuarantine: true,

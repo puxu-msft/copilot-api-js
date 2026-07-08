@@ -203,6 +203,27 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // anthropic.* renames (consistency + name-vs-reality)
   renameLeaf("anthropic.efforts_overrides", "anthropic.effort_overrides"),
   renameLeaf("anthropic.thinking_block_sanitize_check", "anthropic.thinking_block_sanitize"),
+  // thinking_block_sanitize value rename: the enum is now named by WHICH empty field
+  // triggers the drop (empirically clearer — opus-4.8's normal encrypted thinking is
+  // exactly text-empty + signature-valid, which the old "empty_thinking" name wrongly
+  // implied it would strip). Legacy "empty_thinking" (text AND signature both empty) →
+  // "all_empty"; "empty_any" (signature empty, any text) → "signature_empty". Behavior
+  // unchanged — pure spelling. Value-gated so already-valid values pass silently; the
+  // NEW modes ("thinking_empty" / "any_empty") have no legacy predecessor. These fire
+  // on the current key (post the check→sanitize key rename above), so a config that set
+  // either the old key OR the new key to the legacy value is migrated.
+  migrateValue(
+    "anthropic.thinking_block_sanitize",
+    (v) => v === "empty_thinking",
+    "all_empty",
+    'anthropic.thinking_block_sanitize "empty_thinking" is renamed to "all_empty" (text AND signature both empty); update your config.yaml',
+  ),
+  migrateValue(
+    "anthropic.thinking_block_sanitize",
+    (v) => v === "empty_any",
+    "signature_empty",
+    'anthropic.thinking_block_sanitize "empty_any" is renamed to "signature_empty" (signature empty, any text); update your config.yaml',
+  ),
   // system_messages_sanitize → system_default_mode: the key names the DEFAULT/fallback
   // inline-`role:"system"` mode (applied to models NOT in system_reject_models), paired
   // with system_reject_mode; the old "sanitize" spelling misleadingly read as a global
