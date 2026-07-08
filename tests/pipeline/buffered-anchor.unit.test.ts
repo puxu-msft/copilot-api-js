@@ -652,3 +652,106 @@ describe("runResponseBufferedSink — C1 adversarial: freeze holds across a mid-
     sink.close?.()
   })
 })
+
+// ── B1 adversarial: commit snapshots `injected` while injectAnchor is STILL IN FLIGHT (spec §3.3) ──
+
+/**
+ * B1 (whole-branch review Blocking): the C1 window the existing test above does NOT cover. The existing
+ * adversarial test parks at the COMMIT-flush write — injection has ALREADY completed (`injected===true`).
+ * The uncovered subcase: `injectAnchor` is fire-and-forget from the heartbeat tick, and `freezeHeartbeat`
+ * only clears the timer — it CANNOT cancel an injectAnchor already in flight. So a torn window existed:
+ * the anchor's `content_block_start@0` was already enqueued on the wire, but (in the pre-fix code, which set
+ * `anchorState.injected = true` AFTER the awaits) `injected` was still false. If the commit branch's
+ * `const injected = anchorState.injected` snapshot landed in that window it read false → NO +1 remap → the
+ * real `content_block_start@0` collided with the anchor's @0 = TWO index-0 blocks = protocol violation.
+ *
+ * The fix flips `injected` SYNCHRONOUSLY before the first await, so once the anchor's `content_block_start@0`
+ * is enqueued, `injected` is already true — no observable torn state. This test reproduces the EXACT window:
+ * park injectAnchor at its OWN third write (`content_block_delta@0`, wire index 2) — at that instant the
+ * anchor `content_block_start@0` (wire index 1) is already on the wire, and the pre-fix code had NOT yet
+ * run `anchorState.injected = true` (it sat after this parked write). Then drive the commit to snapshot
+ * `injected` while that write is genuinely pending. The oracle: exactly ONE `content_block_start@0` (the
+ * anchor) + the real block remapped to @1. On the pre-fix code this asserts-FAILS (two @0 starts, no anchor
+ * stop, no remap); on the fixed code it passes.
+ */
+describe("runResponseBufferedSink — B1 adversarial: commit snapshots injected while injectAnchor is in flight (spec §3.3)", () => {
+  const clock = new FakeClock()
+  beforeEach(() => clock.install())
+  afterEach(() => clock.restore())
+
+  test("injectAnchor parked at its own delta@0 write (start@0 already enqueued): commit still remaps real to @1, no index-0 collision", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // head = message_start (captured → injection on the idle stall); tail = a real thinking block + terminal → COMMIT.
+    const { stream: up, release } = makeControlledUpstream(
+      [f("message_start", { message: { id: "msg_b1" } })],
+      [
+        f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }),
+        f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "abc" } }),
+        f("content_block_stop", { index: 0 }),
+        f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } }),
+        f("message_stop"),
+      ],
+    )
+    const driver = makeDriver()
+    // PARK at wire index 2 = injectAnchor's THIRD write (content_block_delta@0). At that instant the anchor
+    // content_block_start@0 (wire index 1) is already enqueued — the exact torn window. In the pre-fix code
+    // `anchorState.injected` was set on the line AFTER this parked write, so a commit snapshot here read false.
+    const { stream: sseStream, written, releaseGate, paused } = pausableSseStream(2)
+    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
+
+    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const tracker = makeStopTracker()
+
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+
+    // Pull message_start (CAPTURE), park on the stall; the idle heartbeat fires injectAnchor. Its first two
+    // writes (message_start @wire0, anchor start@0 @wire1) complete; the third (anchor delta@0 @wire2) PARKS.
+    await drain(30)
+    await clock.advance(15_000)
+    await flush()
+    expect(paused()).toBe(true) // injectAnchor is genuinely suspended mid-write (a sink.write await is pending)
+    expect(written.length).toBe(3) // message_start, anchor start@0, anchor delta@0 (the parked one)
+    // The anchor content_block_start@0 is ALREADY on the wire — this is the torn window the pre-fix code left open.
+    expect(seqOf(written)).toEqual(["message_start", "content_block_start@0", "content_block_delta@0"])
+
+    // Release the stall → tail buffers (no sink writes) → clean drain (saw message_stop) → COMMIT. The commit's
+    // `const injected = anchorState.injected` snapshot runs WHILE injectAnchor's delta@0 write is still parked.
+    // The fix set injected=true synchronously at injectAnchor entry, so the snapshot sees true → +1 remap.
+    release()
+    await drain(50)
+    // The flush is blocked behind the parked injectAnchor write on the shared serializer → still 3 on the wire.
+    expect(paused()).toBe(true)
+    expect(written.length).toBe(3)
+
+    // Release the parked write → injectAnchor completes (returns true) → the commit flush drains.
+    releaseGate()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("complete")
+    expect(lastInjectResult()).toBe(true)
+
+    // ORACLE (fails on pre-fix code): exactly ONE content_block_start@0 (the anchor) and the real block at @1.
+    const start0s = written.filter((w) => {
+      const p = JSON.parse(w.data) as { type: string; index?: number }
+      return p.type === "content_block_start" && p.index === 0
+    })
+    expect(start0s).toHaveLength(1) // pre-fix: 2 (anchor @0 + un-remapped real @0) = protocol violation
+    expect((JSON.parse(start0s[0].data) as { content_block: { type: string } }).content_block.type).toBe("text") // the anchor
+    // Full ordered oracle: anchor block closed off, real thinking remapped +1, no collision, message_start once.
+    expect(seqOf(written)).toEqual([
+      "message_start",
+      "content_block_start@0", // anchor (text)
+      "content_block_delta@0", // anchor empty text_delta (the write that parked)
+      "content_block_stop@0", // anchor close-off — proves injected snapshot was true (pre-fix skipped this)
+      "content_block_start@1", // real thinking, remapped +1 (proves the +1 remap fired)
+      "content_block_delta@1",
+      "content_block_stop@1",
+      "message_delta",
+      "message_stop",
+    ])
+    expect(written.filter((w) => JSON.parse(w.data).type === "message_start")).toHaveLength(1) // message_start exactly once
+    const start1 = written.find((w) => JSON.parse(w.data).type === "content_block_start" && JSON.parse(w.data).index === 1)
+    expect(JSON.parse(start1!.data).content_block.type).toBe("thinking") // the real block landed at @1
+    sink.close?.()
+  })
+})

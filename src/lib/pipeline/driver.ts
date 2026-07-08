@@ -553,13 +553,21 @@ async function runResponseBufferedSink(
   // close-off / +1 remap / message_start dedup are Task 3.3 (this Task builds only the injection path).
   const injectAnchor = async (): Promise<boolean> => {
     if (!anchor || anchorState.injected || capturedMessageStart === undefined) return false
-    if (!anchorState.messageStartForwarded) {
-      await sink.write(capturedMessageStart) // real-frame write: samples forwarded UNMARKED (message_start is not a block)
-      anchorState.messageStartForwarded = true
-    }
+    // C1 sync-state (spec §3.3): flip `injected` + `messageStartForwarded` SYNCHRONOUSLY — before the
+    // first `await` — so no one can observe the torn mid-state (anchor frames already enqueued on the wire
+    // but `injected` still false). JS is single-threaded: once past the guard, control is not yielded until
+    // the `await` below, so a commit-branch snapshot of `anchorState.injected` sees EITHER false (this
+    // injectAnchor never entered) OR true (its writes are already enqueue-first → correct wire order + the
+    // real block gets the +1 remap). Setting them after the awaits left a window where a heartbeat tick's
+    // fire-and-forget injectAnchor had enqueued content_block_start@0 but `injected` was still false → the
+    // commit snapshot could skip the remap and collide two index-0 blocks (protocol violation).
+    const messageStart = capturedMessageStart // snapshot into a local before any await (race-free)
+    const needMessageStart = !anchorState.messageStartForwarded
+    anchorState.injected = true
+    anchorState.messageStartForwarded = true
+    if (needMessageStart) await sink.write(messageStart) // real-frame write: samples forwarded UNMARKED (message_start is not a block)
     await (sink.writeAnchor ?? sink.write)(anchor.startFrame) // "anchor" marker; noteBlockState → openBlock={0,text}
     await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame) // "keepalive": empty text_delta resets CC's 300s watchdog
-    anchorState.injected = true
     return true
   }
   // Hand the closure back to the handler's holder (Task 4.1), which threads it into the ALREADY-constructed
