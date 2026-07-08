@@ -80,9 +80,9 @@ keepalive 要知道「当前 open block 的 index+type」才能发对应空 delt
 ## 6. 已知边界 / 暂缓(未来 AI 勿重复踩)
 
 三处「无 forwarded open block → fallback ping → 若 >300s 仍断」的同源边界,均**已文档化未修**:
-1. **pre-first-block 静默**:`message_start` 后、首个 `content_block_start` 前(或 pre-response cold-start),openBlock 空 → ping。实际罕见(opus pre-response 实测 ≤~13s、content_block_start 通常 <1s)。
+1. **pre-first-block 静默**:`message_start` 后、首个 `content_block_start` 前(或 pre-response cold-start),openBlock 空 → ping。实际罕见(opus pre-response 实测 ≤~13s、content_block_start 通常 <1s)。**（部分仍存**：纯 pre-message_start 窗口即完全无任何 forwarded 帧时仍 fallback ping；但一旦进入 buffered 缓冲期，见第 3 条已由 empty_text 锚点兜住。**）**
 2. **web_search search-合成阻塞期**:`web-search-handler.ts` 的 `completeWebSearch()` 是阻塞调用,期间零 content block forward,openBlock 空 → ping。修法(占位 block + 真实 events index remap)有破坏合成输出风险,web_search 又是 opt-in,故暂缓。
-3. **L2 buffered pre-commit**(`protect_streaming_generation`):buffered 模式 commit 前不转发任何帧,openBlock 恒空 → 心跳 fallback ping。见 `resolveBufferedAndHeartbeat` 注释。
+3. **L2 buffered pre-commit**(`protect_streaming_generation`):buffered 模式 commit 前不转发任何帧,openBlock 恒空 → 心跳 fallback ping。见 `resolveBufferedAndHeartbeat` 注释。**（已由 [2026-07-08-buffered-keepalive-empty-text-anchor.md](2026-07-08-buffered-keepalive-empty-text-anchor.md) 兑现**：新增 `stream_keepalive_mode: empty_text`（现默认），buffered pre-commit 无 open block 时懒注入合成空 text 锚点块保活，空 text_delta 重置 CC 300s no-content 墙、真实块 commit 时 index+1 remap。**）**
 
 ## 7. 验证方法(复现 / 回归)
 
