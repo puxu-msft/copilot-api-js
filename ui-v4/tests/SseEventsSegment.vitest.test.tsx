@@ -74,9 +74,21 @@ describe("SseEventsSegment", () => {
   })
 
   it("badges synthetic anchor + keepalive frames so proxy-injected frames are distinguishable", () => {
-    render(<SseEventsSegment entry={withSyntheticFrames} />)
+    const { container } = render(<SseEventsSegment entry={withSyntheticFrames} />)
     // Forwarded track carries the two anchor frames + one keepalive delta.
     expect(screen.getAllByText("anchor").length).toBeGreaterThanOrEqual(2)
     expect(screen.getAllByText("keepalive").length).toBeGreaterThanOrEqual(1)
+    // Each synthetic frame ROW is dimmed (opacity-60) so it visually recedes vs real content.
+    // r3 has 3 synthetic forwarded frames and 1 real upstream frame → exactly 3 dimmed rows.
+    expect(container.querySelectorAll(".opacity-60").length).toBe(3)
+  })
+
+  it("does NOT badge or dim real (non-synthetic) frames", () => {
+    const { container } = render(<SseEventsSegment entry={withFrames} />)
+    // withFrames carries only real frames (synthetic===undefined) on both tracks → no proxy badges…
+    expect(screen.queryByText("anchor")).toBeNull()
+    expect(screen.queryByText("keepalive")).toBeNull()
+    // …and no dimmed rows.
+    expect(container.querySelectorAll(".opacity-60").length).toBe(0)
   })
 })
