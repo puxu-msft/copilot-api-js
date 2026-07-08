@@ -11,10 +11,12 @@ import {
   //
   EMPTY_FILTERS,
   filterModels,
+  matchesBilling,
   matchesEndpoint,
   matchesPolicyState,
   matchesPremium,
   matchesRestrictedTo,
+  modelBillingBounds,
 } from "@/lib/model-filters"
 
 const m = (over: Record<string, unknown> = {}): Model =>
@@ -59,6 +61,31 @@ describe("model filter predicates", () => {
   })
   it("matchesEndpoint: inferred from capabilities.type when supported_endpoints absent", () => {
     expect(matchesEndpoint(m({ capabilities: { type: "chat" } }), "/chat/completions")).toBe(true)
+  })
+})
+
+describe("billing-rate filter", () => {
+  it("matchesBilling: null = any", () => {
+    expect(matchesBilling(m({ billing: { multiplier: 5 } as Model["billing"] }), null)).toBe(true)
+  })
+  it("matchesBilling: within range inclusive", () => {
+    const model = m({ billing: { multiplier: 3 } as Model["billing"] })
+    expect(matchesBilling(model, [1, 5])).toBe(true)
+    expect(matchesBilling(model, [4, 5])).toBe(false)
+  })
+  it("matchesBilling: missing multiplier treated as 0 (aligns Vue) → excluded when min>0", () => {
+    const model = m({})
+    expect(matchesBilling(model, [0, 5])).toBe(true)
+    expect(matchesBilling(model, [1, 5])).toBe(false)
+  })
+  it("modelBillingBounds: [min,max] over multipliers, missing=0", () => {
+    expect(
+      modelBillingBounds([
+        m({ billing: { multiplier: 2 } as Model["billing"] }),
+        m({ billing: { multiplier: 8 } as Model["billing"] }),
+        m({}),
+      ]),
+    ).toEqual([0, 8])
   })
 })
 

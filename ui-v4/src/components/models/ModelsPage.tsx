@@ -34,6 +34,7 @@ import {
   //
   EMPTY_FILTERS,
   filterModels,
+  modelBillingBounds,
   type ModelFilters,
 } from "@/lib/model-filters"
 import {
@@ -122,6 +123,7 @@ export function ModelsPage() {
   // Filter only — TanStack owns sorting inside the table (state lifted above so the
   // CSV export can reproduce the exact same order).
   const visible = useMemo(() => filterModels(models, filters, hasTelemetry), [models, filters, hasTelemetry])
+  const billingBounds = useMemo(() => modelBillingBounds(models), [models])
 
   const onChange = (patch: Partial<ModelFilters>) => setFilters((f) => ({ ...f, ...patch }))
   const toggleColumn = (key: ModelColumnKey) => setColumns((c) => ({ ...c, [key]: !c[key] }))
@@ -174,6 +176,7 @@ export function ModelsPage() {
             filters={filters}
             onChange={onChange}
             options={options}
+            billingBounds={billingBounds}
           />
           <div className="flex min-h-0 flex-1">
             <div className="min-h-0 flex-1 overflow-auto">

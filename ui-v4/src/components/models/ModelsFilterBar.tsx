@@ -1,6 +1,7 @@
 import type { ModelFilters } from "@/lib/model-filters"
 
 import { FilterSelect } from "@/components/shared/FilterSelect"
+import { RangeSlider } from "@/components/shared/RangeSlider"
 
 const CAPABILITY_OPTIONS = [
   { value: "vision", label: "Vision" },
@@ -23,6 +24,7 @@ interface ModelsFilterBarProps {
   filters: ModelFilters
   onChange: (patch: Partial<ModelFilters>) => void
   options: FilterOptions
+  billingBounds: [number, number]
 }
 
 /** Encode a tri-state boolean filter as a Select string value (null = any). */
@@ -34,7 +36,7 @@ function valueToTri(v: string | null): boolean | null {
   return v === null ? null : v === "yes"
 }
 
-export function ModelsFilterBar({ filters, onChange, options }: ModelsFilterBarProps) {
+export function ModelsFilterBar({ filters, onChange, options, billingBounds }: ModelsFilterBarProps) {
   const toggleCapability = (value: string) => {
     const has = filters.capabilities.includes(value)
     onChange({ capabilities: has ? filters.capabilities.filter((c) => c !== value) : [...filters.capabilities, value] })
@@ -117,6 +119,16 @@ export function ModelsFilterBar({ filters, onChange, options }: ModelsFilterBarP
             </button>
           ))}
         </div>
+      : null}
+
+      {billingBounds[1] > billingBounds[0] ?
+        <RangeSlider
+          label="$×"
+          min={billingBounds[0]}
+          max={billingBounds[1]}
+          value={filters.billingRange}
+          onChange={(v) => onChange({ billingRange: v })}
+        />
       : null}
 
       <div className="flex items-center gap-1">
