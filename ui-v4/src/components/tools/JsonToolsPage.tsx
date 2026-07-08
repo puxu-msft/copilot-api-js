@@ -4,15 +4,12 @@ import {
   useState,
 } from "react"
 
-import { CodeBlock } from "@/components/detail/CodeBlock"
-import { JsonTreeView } from "@/components/tools/JsonTreeView"
+import { RawJsonView } from "@/components/common/RawJsonView"
 import {
   //
   parseJson,
   unescapeJsonString,
 } from "@/lib/json-tools"
-
-type TreeMode = "tree" | "source"
 
 const SECTION = "flex min-h-0 flex-1 flex-col gap-2 border border-[var(--color-border)] bg-[#111014] p-2"
 const LABEL = "text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
@@ -31,11 +28,9 @@ const BTN = "border border-[var(--color-primary)] px-2 py-0.5 text-[11px] text-[
 export function JsonToolsPage() {
   const [escInput, setEscInput] = useState("")
   const [treeInput, setTreeInput] = useState("")
-  const [treeMode, setTreeMode] = useState<TreeMode>("tree")
 
   const escResult = useMemo(() => unescapeJsonString(escInput), [escInput])
   const treeResult = useMemo(() => parseJson(treeInput), [treeInput])
-  const treeSource = useMemo(() => (treeResult.ok ? JSON.stringify(treeResult.value, null, 2) : ""), [treeResult])
 
   const escHasInput = escInput.trim() !== ""
   const treeHasInput = treeInput.trim() !== ""
@@ -43,24 +38,9 @@ export function JsonToolsPage() {
   function renderTreePanel() {
     if (!treeHasInput) return <div className="p-1 text-[12px] text-[var(--color-muted)]">等待输入…</div>
     if (!treeResult.ok) return <div className="p-1 text-[12px] text-[var(--color-fail)]">{treeResult.error}</div>
-    if (treeMode === "tree") {
-      return (
-        <div className="p-1">
-          {/* Remount on a new parsed value so per-node collapse state resets to
-              its depth default (e.g. after the "→ 传入 Tree" handoff). */}
-          <JsonTreeView
-            key={treeSource}
-            value={treeResult.value}
-          />
-        </div>
-      )
-    }
-    return (
-      <CodeBlock
-        code={treeSource}
-        lang="json"
-      />
-    )
+    // RawJsonView owns its own 树/原文 toggle, per-view copy, and remounts the tree on a
+    // new parsed value (key={source}) — so the "→ 传入 Tree" handoff resets collapse state.
+    return <RawJsonView value={treeResult.value} />
   }
 
   return (
@@ -84,7 +64,6 @@ export function JsonToolsPage() {
             onClick={() => {
               if (escResult.ok) {
                 setTreeInput(escResult.value)
-                setTreeMode("tree")
               }
             }}
           >
@@ -112,23 +91,7 @@ export function JsonToolsPage() {
           spellCheck={false}
           placeholder={'粘贴 JSON，如 {"a":[1,2],"b":null}'}
         />
-        <div className="flex border-b border-[var(--color-border)]">
-          {(["tree", "source"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              className={`-mb-px border-b-2 px-3 py-1 text-[11px] ${
-                treeMode === m ?
-                  "border-[var(--color-primary)] text-[var(--color-primary)]"
-                : "border-transparent text-[var(--color-muted)] hover:text-[var(--color-text)]"
-              }`}
-              onClick={() => setTreeMode(m)}
-            >
-              {m === "tree" ? "树" : "原文"}
-            </button>
-          ))}
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto border border-[var(--color-border)] border-t-0 bg-[#0f0f12] p-1">{renderTreePanel()}</div>
+        <div className="min-h-0 flex-1 overflow-auto border border-[var(--color-border)] bg-[#0f0f12] p-1">{renderTreePanel()}</div>
       </section>
     </div>
   )
