@@ -36,6 +36,8 @@ import type {
   HistoryEntry,
 } from "@/types"
 
+import { resolveResponseModel } from "~backend/lib/history/entry-view"
+
 import { Modal } from "@/components/shared/Modal"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
 import { api } from "@/lib/api"
@@ -78,17 +80,19 @@ interface RowContext {
 
 /**
  * `GET /history/api/entries/:id` 返回完整 `HistoryEntry`,而 `matchesGating` 吃 `EntrySummary` 形状。
- * 投影出归属判定所需字段:model/pid 在 HistoryEntry 里是嵌套的(inboundRequest.model / outboundResponse.model /
- * process.pid),顶层 sessionId/endpoint/startedAt/state 直接透传。携带原 entry 全字段(richest-data-flow),
+ * 投影出归属判定所需字段:model/pid 在 HistoryEntry 里是嵌套的(clientRequest.model /
+ * resolveResponseModel(attempts) / process.pid),顶层 sessionId/endpoint/startedAt/state 直接透传。
+ * 与后端 `toEntrySummary`(`src/lib/history/in-flight.ts`)投影**单源同构**——responseModel 复用后端纯函数
+ * `resolveResponseModel`(经 `~backend/*` re-export),而非手写副本。携带原 entry 全字段(richest-data-flow),
  * 只补齐 EntrySummary 必填占位。
  */
 function entryToGatingSummary(e: HistoryEntry): EntrySummary {
   return {
     ...e,
     pid: e.process?.pid,
-    requestModel: e.inboundRequest.model,
-    responseModel: e.outboundResponse?.model,
-    messageCount: e.inboundRequest.messages?.length ?? 0,
+    requestModel: e.clientRequest?.model,
+    responseModel: resolveResponseModel(e),
+    messageCount: e.clientRequest?.messages?.length ?? 0,
     previewText: "",
   } as EntrySummary
 }

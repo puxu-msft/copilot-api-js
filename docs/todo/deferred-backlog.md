@@ -56,7 +56,6 @@
 
 七维筛选 + TableVirtuoso 列表引擎全落地（spec `docs/spec/2026-07-06-ui-v4-requests-list-enhancement.md`、plan `docs/plans/requests-list-enhancement/`）。最终整分支评审判「可合并、无 Critical/Important」，两条合并前建议（H1 守卫测试 + 测试名 overpromise）已补（commit 8f06e678）。以下 Minor 入 backlog：
 
-- **entryToGatingSummary 双源**（`ui-v4/src/components/requests/HistoryList.tsx`）：`?at=` 归属判定用的 HistoryEntry→summary gating 投影手写复制了后端 `toEntrySummary`（`src/lib/history/in-flight.ts`）的派生。已核实字段对齐、仅单条 `?at=` 路径、低漂移风险。**理想**：把后端 summary 投影里 gating 相关的纯函数下沉为可 `~backend/*` re-export 的共享 primitive，消除双源。**若做**：抽 `src/lib/history/` 里的 gating-projection 纯函数 + 前端 re-export，删前端手写副本。
 - **response_sessions 孤儿映射未扫**（`src/lib/history/sqlite/write.ts` `deleteEntries`）：scoped delete 不清 `response_sessions`（该表对 entries_v2 无 FK）。与 `deleteSession` 同款行为、`clearAllEntries` 兜底、无害泄漏（非数据丢失）。spec §9 文字提过。**若做**：`deleteEntries` 内按被删 entry 的 response id 清对应 `response_sessions` 行，或加周期性 orphan sweep。
 - **chip 日期标签 UTC vs popover 本地时区**（`ui-v4/src/lib/request-filters.ts` `activeChips` 用 `toISOString` / `DateRangePopover.tsx` 标签用本地）：非 UTC 时区跨午夜两处显示串可能差一天（epoch 值正确、筛选结果正确，仅标签串不一致）。**若做**：统一两处时区（都本地或都 UTC）。
 - **HistoryRow 硬编码像素宽**（`ui-v4/src/components/requests/RequestRow.tsx`，服务 Sessions AgentLane）：未用 `COLUMN_WIDTHS` SSOT（不同布局语境，History↔Live 的 M4 红线已满足）。**若做**：AgentLane 若要与 History 表列对齐，改用 COLUMN_WIDTHS。

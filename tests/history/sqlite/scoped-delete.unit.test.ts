@@ -17,13 +17,19 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     active: false,
     lastUpdatedAt: Date.now() + 100,
     transport: "http",
-    inboundRequest: { model: "claude-opus-4-7", messages: [{ role: "user", content: "hello world" }] },
-    outboundResponse: {
-      success: true,
-      model: "claude-opus-4-7",
-      usage: { input_tokens: 1, output_tokens: 2 },
-      content: { role: "assistant", content: "ok" },
-    },
+    clientRequest: { model: "claude-opus-4-7", messages: [{ role: "user", content: "hello world" }] },
+    attempts: [
+      {
+        index: 0,
+        durationMs: 100,
+        upstreamResponse: {
+          success: true,
+          model: "claude-opus-4-7",
+          usage: { input_tokens: 1, output_tokens: 2 },
+          body: { role: "assistant", content: "ok" },
+        },
+      },
+    ],
     ...overrides,
   } as HistoryEntry
 }
@@ -47,15 +53,17 @@ describe("deleteEntries (scoped)", () => {
     // One entry per filter dimension, each targetable by exactly one filter:
     // byModel is the only opus row; bySession the only sess-target row; byPid the
     // only pid=4242 row; byState the only failed row (the rest are completed).
-    // NOTE: the persisted `model` column derives from outboundResponse.model
-    // (serialize.ts) — makeEntry defaults it to "claude-opus-4-7", so the three
-    // non-model rows must override outboundResponse.model to "gpt-5" or they'd
-    // also match the opus filter.
-    const gpt5Response = { success: true as const, model: "gpt-5", usage: { input_tokens: 1, output_tokens: 2 }, content: { role: "assistant", content: "ok" } }
-    await insertCompletedEntry(makeEntry({ id: "byModel", inboundRequest: { model: "claude-opus-4-7" } }))
-    await insertCompletedEntry(makeEntry({ id: "bySession", inboundRequest: { model: "gpt-5" }, sessionId: "sess-target", outboundResponse: gpt5Response }))
-    await insertCompletedEntry(makeEntry({ id: "byPid", inboundRequest: { model: "gpt-5" }, process: { pid: 4242, bootTime: 0, version: "0.0.0" }, outboundResponse: gpt5Response }))
-    await insertCompletedEntry(makeEntry({ id: "byState", inboundRequest: { model: "gpt-5" }, state: "failed", outboundResponse: { success: false, model: "gpt-5", usage: { input_tokens: 0, output_tokens: 0 }, content: { role: "assistant", content: "" } } }))
+    // NOTE: the persisted `model` column derives from the response model
+    // (serialize.ts → resolveResponseModel(entry) = final attempt's
+    // upstreamResponse.model, falling back to clientRequest.model) — makeEntry
+    // defaults it to "claude-opus-4-7", so the three non-model rows must override
+    // BOTH the attempt's upstreamResponse.model AND clientRequest.model to "gpt-5"
+    // or they'd also match the opus filter.
+    const gpt5Attempts = [{ index: 0, durationMs: 100, upstreamResponse: { success: true as const, model: "gpt-5", usage: { input_tokens: 1, output_tokens: 2 }, body: { role: "assistant", content: "ok" } } }]
+    await insertCompletedEntry(makeEntry({ id: "byModel", clientRequest: { model: "claude-opus-4-7" } }))
+    await insertCompletedEntry(makeEntry({ id: "bySession", clientRequest: { model: "gpt-5" }, sessionId: "sess-target", attempts: gpt5Attempts }))
+    await insertCompletedEntry(makeEntry({ id: "byPid", clientRequest: { model: "gpt-5" }, process: { pid: 4242, bootTime: 0, version: "0.0.0" }, attempts: gpt5Attempts }))
+    await insertCompletedEntry(makeEntry({ id: "byState", clientRequest: { model: "gpt-5" }, state: "failed", attempts: [{ index: 0, durationMs: 100, upstreamResponse: { success: false, model: "gpt-5", usage: { input_tokens: 0, output_tokens: 0 }, body: { role: "assistant", content: "" } } }] }))
 
     // Each filter deletes exactly its one matching row (model LIKE %opus%, session_id =, pid =, status =).
     expect(deleteEntries({ model: "opus" })).toBe(1)
@@ -80,22 +88,20 @@ describe("deleteEntries (scoped)", () => {
     // hashes to its OWN msg_blob row. Content-addressing dedups identical
     // messages into a single shared row; different text guarantees two
     // independent blobs, so A's orphan-GC reclamation can't be masked by B still
-    // referencing a shared blob. httpHeaders seed a req_aux row per entry
+    // referencing a shared blob. clientRequest.headers seed a req_aux row per entry
     // (buildAux → req-headers facet), giving req_aux something to survive/cascade.
     await insertCompletedEntry(
       makeEntry({
         id: "A",
         endpoint: "anthropic-messages",
-        inboundRequest: { model: "claude-opus-4-7", messages: [{ role: "user", content: "unique inbound message for entry A" }] },
-        httpHeaders: { inboundRequest: { "x-entry": "a" } },
+        clientRequest: { model: "claude-opus-4-7", messages: [{ role: "user", content: "unique inbound message for entry A" }], headers: { "x-entry": "a" } },
       }),
     )
     await insertCompletedEntry(
       makeEntry({
         id: "B",
         endpoint: "openai-chat-completions",
-        inboundRequest: { model: "gpt-5", messages: [{ role: "user", content: "unique inbound message for entry B" }] },
-        httpHeaders: { inboundRequest: { "x-entry": "b" } },
+        clientRequest: { model: "gpt-5", messages: [{ role: "user", content: "unique inbound message for entry B" }], headers: { "x-entry": "b" } },
       }),
     )
 
