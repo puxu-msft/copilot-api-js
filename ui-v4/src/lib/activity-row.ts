@@ -65,6 +65,13 @@ export function truncPreview(entry: EntrySummary): string {
   return text.slice(0, 117) + "..."
 }
 
+/** 响应内容预览的列表截断(镜像 truncPreview；后端已算好工具优先格式)。 */
+export function truncResponsePreview(entry: EntrySummary): string {
+  const text = entry.responsePreviewText || ""
+  if (text.length <= 120) return text
+  return text.slice(0, 117) + "..."
+}
+
 /**
  * Structured failure/abort attribution for non-completed rows, so diagnosis can
  * happen in the LIST without opening the detail page. Examples:

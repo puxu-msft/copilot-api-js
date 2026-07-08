@@ -11,6 +11,7 @@ import {
   tokenIn,
   tokenOut,
   truncPreview,
+  truncResponsePreview,
 } from "@/lib/activity-row"
 import {
   //
@@ -158,6 +159,12 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
           {failureSummary(entry)}
         </span>
       }
+      <span
+        className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[#8a9a8a]"
+        title={entry.responsePreviewText || undefined}
+      >
+        {truncResponsePreview(entry)}
+      </span>
     </button>
   )
 }

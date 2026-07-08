@@ -31,6 +31,7 @@ import {
   tokenIn,
   tokenOut,
   truncPreview,
+  truncResponsePreview,
 } from "@/lib/activity-row"
 import {
   //
@@ -130,6 +131,7 @@ export const COLUMN_WIDTHS: Record<string, string> = {
   tokens: "w-[130px]",
   attempts: "w-[40px]",
   preview: "min-w-0 flex-1",
+  response: "min-w-0 flex-1",
 }
 
 /**
@@ -233,7 +235,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
   },
   {
     id: "preview",
-    header: "Preview",
+    header: "Request",
     accessorFn: (e) => (requestState(e) === "completed" ? truncPreview(e) : failureSummary(e)),
     cell: ({ row }) => {
       const e = row.original
@@ -243,6 +245,16 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
       return span(className, completed ? truncPreview(e) : failureSummary(e), { title })
     },
     meta: { width: COLUMN_WIDTHS.preview },
+  },
+  {
+    id: "response",
+    header: "Response",
+    accessorFn: (e) => truncResponsePreview(e),
+    cell: ({ row }) => {
+      const e = row.original
+      return span(`${ELLIPSIS} text-[#8a9a8a]`, truncResponsePreview(e), { title: e.responsePreviewText || "" })
+    },
+    meta: { width: COLUMN_WIDTHS.response },
   },
 ]
 
