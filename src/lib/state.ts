@@ -1183,9 +1183,7 @@ export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGra
  * `negotiationTtlOverridesMs` is replaced wholesale (whole-map replace semantic,
  * like the other config-managed record fields).
  */
-export function setNegotiationConfig(
-  patch: Partial<Pick<MutableState, "negotiationDefaultTtlMs" | "negotiationTtlOverridesMs">>,
-): void {
+export function setNegotiationConfig(patch: Partial<Pick<MutableState, "negotiationDefaultTtlMs" | "negotiationTtlOverridesMs">>): void {
   updateState(patch)
 }
 
