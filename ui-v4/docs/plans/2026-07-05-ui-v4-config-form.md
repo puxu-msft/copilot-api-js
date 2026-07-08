@@ -15,7 +15,7 @@
 4. **merge 行为三分 + 描述符 `mergeMode`（命脉，防「保存丢键」）**：核验 `mergeConfigIntoDocument`（route.ts:257-290）后端有**三种**语义,前端必须逐字段区分（不可混为「整体替换」一类）：
    - **`per-key`**：顶层 section（`history`/`timeouts`/`rate_limiter`/`shutdown`/`openai_responses`/`auto_truncate`）+ anthropic 顶层——`setNestedScalarContainer` 逐子键 `setScalar`。前端**只发改动的 sparse 子键**,**绝不整份发**（否则丢隐藏键，如 deprecated `history.limit`）。
    - **`whole`**：anthropic 的**子对象**（`extended_cache_ttl`/`model_capabilities`）+ **record 字段**（`effort_overrides`/`beta_strip_headers`/`partner_strip_features`/`retry_reject_body_fields`/`tool_decode_input_fields`）——其 value 被 `setIn` 整体写入。改任一子键 → **整份重发该 value**。
-   - **`collection`**：`model_overrides`/`system_prompt_overrides`/`anthropic.system_rewrite_reminders`/`anthropic.tool_non_deferred`——`replaceCollection` 整体替换。
+   - **`collection`**：`model_overrides`/`system_prompt_overrides`/`anthropic.system_rewrite_reminders`/`anthropic.tool_search_non_deferred`——`replaceCollection` 整体替换。
    - **落成元数据**：每描述符带 `mergeMode: "per-key"|"whole"|"collection"`,从 route.ts 真实 dispatch **机械派生**（不靠 control 类型反推——control ≠ mergeMode）。加 **drift-guard**：断言描述符 mergeMode 集 ≡ route.ts merge dispatch（从 `ANTHROPIC_COLLECTION_KEYS` + setNestedScalarContainer 调用点派生），防前后端双源漂移。`computeSparsePatch` 据 mergeMode 决定 sparse 子键 vs 整份 value。
 5. **secret 不误发**：api_key 未被用户键入 → 不进 PUT body（初始态是「已设标记」非占位串，spec §7）。
 6. **每 phase 门禁全绿**：`typecheck:ui-v4` + `build:ui-v4` + `test:ui-v4`（bun+vitest）+ `bunx eslint ui-v4/src`（**无缓存**，0 error）+ 后端 `bun test`（config 相关）。

@@ -608,7 +608,7 @@
               },
               "additionalProperties": false
             },
-            "tool_non_deferred": {
+            "tool_search_non_deferred": {
               "anyOf": [
                 {
                   "type": "array",

@@ -37,6 +37,8 @@ import { connectProxiedSocket } from "./proxy-connect"
 
 /** TCP connect + TLS handshake deadline (mirrors undici's default connectTimeout). */
 const CONNECT_TIMEOUT_MS = 10_000
+/** Effective connect deadline; overridable in tests via {@link setConnectTimeoutForTests}. */
+let connectTimeoutMs = CONNECT_TIMEOUT_MS
 /** Fallback keepalive delay when `upstreamKeepaliveDelay` is 0/unset. */
 const DEFAULT_KEEPALIVE_MS = 15_000
 
@@ -86,7 +88,7 @@ async function createSession(origin: string): Promise<http2.ClientHttp2Session> 
     // Tunnel a raw pre-TLS socket through the proxy, then layer the upstream's TLS.
     // ALPN h2 MUST be set here — http2 needs the negotiated protocol, and the undici
     // SOCKS connector (proxy.ts) omits it for its HTTP/1.x use.
-    const rawSocket = await connectProxiedSocket({ targetHost: u.hostname, targetPort: port, proxyUrl, timeoutMs: CONNECT_TIMEOUT_MS })
+    const rawSocket = await connectProxiedSocket({ targetHost: u.hostname, targetPort: port, proxyUrl, timeoutMs: connectTimeoutMs })
     rawSocket.setKeepAlive(true, keepAliveMs)
     tlsSocket = tls.connect({ socket: rawSocket, servername: u.hostname, ALPNProtocols: ["h2"] })
   } else {
@@ -98,6 +100,12 @@ async function createSession(origin: string): Promise<http2.ClientHttp2Session> 
   }
 
   await awaitH2Handshake(tlsSocket)
+  // NB: no `await` may be inserted between the handshake resolving and this
+  // http2.connect. On success, awaitH2Handshake removes its own 'error' listener,
+  // so the socket is briefly unguarded; only the microtask-before-I/O ordering
+  // (this continuation runs before any socket 'error' I/O event) keeps that gap
+  // closed. An intervening `await` would yield to the event loop and reopen it —
+  // an unguarded socket 'error' then crashes the process (see awaitH2Handshake).
   return http2.connect(origin, { createConnection: () => tlsSocket })
 }
 
@@ -115,7 +123,19 @@ function awaitH2Handshake(sock: tls.TLSSocket): Promise<void> {
       sock.removeListener("timeout", onTimeout)
       sock.removeListener("secureConnect", onSecure)
       if (err) {
-        sock.destroy(err)
+        // Attach a no-op 'error' sink BEFORE teardown. We've just removed onError,
+        // and sock.destroy() (plus any late async socket error during teardown — e.g.
+        // an ECONNRESET trailing a connect timeout) emits 'error'; on an EventEmitter
+        // with no 'error' listener Node RE-THROWS it as an uncaughtException, which
+        // main.ts turns into process.exit(1) — amplifying one connect-timeout into a
+        // whole-server crash (verified Bun + Node, exp/http2-connect-timeout-crash/).
+        // The error reaches the awaiter via reject(err); the socket only needs
+        // teardown, so destroy() takes no error arg (which would re-throw it). NB:
+        // only the timeout/ALPN-downgrade paths pass a FRESH err here — the onError
+        // path's socket already emitted 'error', so its destroy(err) wouldn't re-emit;
+        // but the sink is unconditional (belt-and-suspenders across all teardowns).
+        sock.on("error", noop)
+        sock.destroy()
         reject(err)
         return
       }
@@ -123,7 +143,7 @@ function awaitH2Handshake(sock: tls.TLSSocket): Promise<void> {
       resolve()
     }
     const onError = (err: Error): void => settle(err)
-    const onTimeout = (): void => settle(new Error(`[http2] TLS connect timeout after ${CONNECT_TIMEOUT_MS}ms`))
+    const onTimeout = (): void => settle(new Error(`[http2] TLS connect timeout after ${connectTimeoutMs}ms`))
     const onSecure = (): void => {
       if (sock.alpnProtocol !== "h2") {
         settle(new Error(`[http2] upstream did not negotiate HTTP/2 (alpn=${String(sock.alpnProtocol)}) — check for a TLS-terminating proxy`))
@@ -131,7 +151,7 @@ function awaitH2Handshake(sock: tls.TLSSocket): Promise<void> {
       }
       settle()
     }
-    sock.setTimeout(CONNECT_TIMEOUT_MS)
+    sock.setTimeout(connectTimeoutMs)
     sock.once("error", onError)
     sock.once("timeout", onTimeout)
     sock.once("secureConnect", onSecure)
@@ -165,6 +185,12 @@ async function getSession(origin: string): Promise<http2.ClientHttp2Session> {
     // drain racing a new tunnel handshake), don't re-insert it into the just-cleared
     // pool — close it instead, so it doesn't leak as an orphaned open session.
     if (poolEpoch !== epochAtStart) {
+      // Absorb any 'error' this discarded session emits during/after close: it's
+      // never inserted into the pool, so it has no other 'error' listener, and an
+      // unhandled EventEmitter 'error' (e.g. its socket RSTs mid-close) would
+      // rethrow as an uncaughtException → main.ts process.exit(1) — the same
+      // whole-server crash class as awaitH2Handshake's teardown. (belt-and-suspenders)
+      session.on("error", noop)
       try {
         session.close()
       } catch {
@@ -203,6 +229,17 @@ let sessionFactory: (origin: string) => http2.ClientHttp2Session | Promise<http2
 export function setHttp2SessionFactoryForTests(fn: ((origin: string) => http2.ClientHttp2Session | Promise<http2.ClientHttp2Session>) | undefined): void {
   closeHttp2Sessions()
   sessionFactory = fn ?? createSession
+}
+
+/**
+ * Test-only: shorten (or restore) the TLS connect/handshake deadline so the
+ * timeout→teardown path — the one that produced the "[http2] TLS connect timeout
+ * after 10000ms" whole-server crash — is fast and deterministic to exercise
+ * against a peer that accepts TCP but never completes TLS. `undefined` restores
+ * the production {@link CONNECT_TIMEOUT_MS}.
+ */
+export function setConnectTimeoutForTests(ms: number | undefined): void {
+  connectTimeoutMs = ms ?? CONNECT_TIMEOUT_MS
 }
 
 /** An AbortError-named Error (the WHATWG abort convention consumers check via `err.name`). */

@@ -28,7 +28,7 @@ export function messagesMatch(orig: MessageParam, rewritten: MessageParam): bool
   const ob = origBlocks[0]
   const rb = rwBlocks[0]
 
-  // A downgraded server_tool_use (rewriteServerToolHistory turns server_tool_use
+  // A downgraded server_tool_use (rewriteServerToolBlocks turns server_tool_use
   // → tool_use) must still match its original assistant message by id.
   const obToolUse = ob.type === "tool_use" || ob.type === "server_tool_use"
   const rbToolUse = rb.type === "tool_use" || rb.type === "server_tool_use"
@@ -46,7 +46,7 @@ export function messagesMatch(orig: MessageParam, rewritten: MessageParam): bool
  * same relative order), so a rewritten message matches the next original at or
  * after the current cursor; skipped originals were deleted.
  *
- * Insertions are also supported: `rewriteServerToolHistory` splits one original
+ * Insertions are also supported: `rewriteServerToolBlocks` splits one original
  * assistant turn (server_tool_use + result + text) into TWO rewritten messages
  * (assistant tool_use+text, then a new user tool_result). The split-out message
  * has no original of its own, so it maps to the LAST matched original index

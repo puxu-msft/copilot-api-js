@@ -490,7 +490,7 @@ export async function applyConfigToState(): Promise<Config> {
   // Anthropic settings (scalar: override only when present)
   if (config.anthropic) {
     const a = config.anthropic
-    if (a.tool_strip_server !== undefined) setAnthropicBehavior({ stripServerTools: a.tool_strip_server })
+    if (a.server_tool_strip !== undefined) setAnthropicBehavior({ stripServerTools: a.server_tool_strip })
     if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
     if (a.response_header_blacklist !== undefined) setAnthropicBehavior({ responseHeaderBlacklist: a.response_header_blacklist })
     if (a.response_header_whitelist !== undefined) setAnthropicBehavior({ responseHeaderWhitelist: a.response_header_whitelist })
@@ -536,8 +536,8 @@ export async function applyConfigToState(): Promise<Config> {
     }
     if (a.system_reject_models !== undefined) setAnthropicBehavior({ systemRejectModels: a.system_reject_models })
     if (a.system_reject_mode !== undefined) setAnthropicBehavior({ systemRejectMode: a.system_reject_mode })
-    if (a.tool_rewrite_history_server !== undefined) {
-      setAnthropicBehavior({ rewriteHistoryServerTools: a.tool_rewrite_history_server })
+    if (a.server_tool_rewrite !== undefined) {
+      setAnthropicBehavior({ rewriteServerTools: a.server_tool_rewrite })
     }
     if (a.thinking_signature_compat !== undefined) {
       setAnthropicBehavior({ thinkingSignatureCompat: a.thinking_signature_compat })
@@ -552,7 +552,7 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.context_editing_keep_tools !== undefined) setAnthropicBehavior({ contextEditingKeepTools: a.context_editing_keep_tools })
     if (a.context_editing_keep_thinking !== undefined) setAnthropicBehavior({ contextEditingKeepThinking: a.context_editing_keep_thinking })
     if (a.tool_search !== undefined) setAnthropicBehavior({ toolSearchEnabled: a.tool_search })
-    if (a.memory_tool !== undefined) setAnthropicBehavior({ memoryToolEnabled: a.memory_tool })
+    if (a.server_tool_memory !== undefined) setAnthropicBehavior({ memoryToolEnabled: a.server_tool_memory })
     if (a.cache_control !== undefined) {
       setAnthropicBehavior({ cacheControlMode: a.cache_control })
     }
@@ -562,7 +562,7 @@ export async function applyConfigToState(): Promise<Config> {
       if (ect.tools_system_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlToolsSystem: ect.tools_system_ttl })
       if (ect.messages_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlMessages: ect.messages_ttl })
     }
-    if (a.tool_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_non_deferred })
+    if (a.tool_search_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_search_non_deferred })
     if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })
     if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
     // Collection fields: retain-on-absence semantic — a missing key keeps the
@@ -579,6 +579,14 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.partner_strip_features !== undefined)
       setAnthropicBehavior({
         stripPartnerFeatures: normalizeModelKeyedRecord(a.partner_strip_features, "anthropic.partner_strip_features"),
+      })
+    if (a.tool_strip_fields !== undefined)
+      setAnthropicBehavior({
+        stripToolFields: normalizeModelKeyedRecord(a.tool_strip_fields, "anthropic.tool_strip_fields"),
+      })
+    if (a.tool_keep_fields !== undefined)
+      setAnthropicBehavior({
+        keepToolFields: normalizeModelKeyedRecord(a.tool_keep_fields, "anthropic.tool_keep_fields"),
       })
     if (a.retry_reject_body_fields !== undefined)
       setAnthropicBehavior({
@@ -669,8 +677,8 @@ export async function applyConfigToState(): Promise<Config> {
   }
 
   // Web search settings (nested: override only when present)
-  if (config.web_search) {
-    const w = config.web_search
+  if (config.server_tool_web_search) {
+    const w = config.server_tool_web_search
     if (w.enabled !== undefined) setWebSearchConfig({ webSearchEnabled: w.enabled })
     if (w.backend !== undefined) setWebSearchConfig({ webSearchBackend: w.backend })
   }

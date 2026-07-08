@@ -44,9 +44,9 @@ import type {
 import { isServerToolResultType } from "../server-tool-filter"
 
 /** Rewrite mode. Currently only `"downgrade"`; the union keeps room for future modes (e.g. `"strip"`). */
-export type RewriteServerToolHistoryMode = false | "downgrade"
+export type RewriteServerToolMode = false | "downgrade"
 
-export interface RewriteServerToolHistoryResult {
+export interface RewriteServerToolResult {
   messages: Array<MessageParam>
   /** Number of server_tool_use blocks rewritten into plain tool_use. */
   rewroteCount: number
@@ -120,7 +120,7 @@ function isServerToolResult(block: { type: string }): boolean {
  *
  * Never mutates the input.
  */
-export function rewriteServerToolHistory(messages: Array<MessageParam>, mode: RewriteServerToolHistoryMode): RewriteServerToolHistoryResult {
+export function rewriteServerToolBlocks(messages: Array<MessageParam>, mode: RewriteServerToolMode): RewriteServerToolResult {
   if (mode === false) return { messages, rewroteCount: 0 }
 
   const result: Array<MessageParam> = []

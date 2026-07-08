@@ -208,12 +208,29 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // unchanged — only the user-facing yaml key spelling. Already-grouped keys (thinking_block_*,
   // context_editing*, tool_search, cache_control, system_messages_sanitize, …) keep their names.
   renameLeaf("anthropic.coerce_adaptive_thinking", "anthropic.thinking_coerce_adaptive"),
-  renameLeaf("anthropic.strip_server_tools", "anthropic.tool_strip_server"),
+  // server-tool sub-concern regrouping: the four keys dealing with Anthropic NATIVE
+  // server tools (web_search / memory / code_execution …) move under a `server_tool_*`
+  // sub-prefix, distinguishing them from the custom/client-tool keys that keep `tool_*`.
+  // `strip_server_tools` (strip declarations) and `rewrite_history_server_tools` (rewrite
+  // residual prior-turn blocks) previously carried a trailing `_server` suffix; the ancient
+  // legacy names below now point DIRECTLY at the final `server_tool_*` names (no chaining).
+  renameLeaf("anthropic.strip_server_tools", "anthropic.server_tool_strip"),
+  renameLeaf("anthropic.tool_strip_server", "anthropic.server_tool_strip"),
+  renameLeaf("anthropic.rewrite_history_server_tools", "anthropic.server_tool_rewrite"),
+  renameLeaf("anthropic.tool_rewrite_history_server", "anthropic.server_tool_rewrite"),
+  renameLeaf("anthropic.memory_tool", "anthropic.server_tool_memory"),
+  // web_search is a TOP-LEVEL section (not under anthropic.*) — renamed to
+  // server_tool_web_search to disambiguate the native server tool from any custom
+  // client tool named "web_search". Inner fields (enabled/backend) keep their names.
+  renameSection("web_search", "server_tool_web_search"),
   renameLeaf("anthropic.inject_claude_code_tools", "anthropic.tool_inject_claude_code"),
-  renameLeaf("anthropic.rewrite_history_server_tools", "anthropic.tool_rewrite_history_server"),
   renameLeaf("anthropic.dedup_tool_calls", "anthropic.tool_dedup_calls"),
   renameLeaf("anthropic.strip_read_tool_result_tags", "anthropic.tool_strip_read_result_tags"),
-  renameLeaf("anthropic.non_deferred_tools", "anthropic.tool_non_deferred"),
+  renameLeaf("anthropic.non_deferred_tools", "anthropic.tool_search_non_deferred"),
+  // tool_non_deferred → tool_search_non_deferred: the non-defer allowlist only
+  // applies when tool_search is enabled, so it now carries the tool_search_ sub-concern
+  // prefix. Same string[]→string[] shape, no value transform.
+  renameLeaf("anthropic.tool_non_deferred", "anthropic.tool_search_non_deferred"),
   renameLeaf("anthropic.decode_tool_input_fields", "anthropic.tool_decode_input_fields"),
   renameLeaf("anthropic.decode_all_tool_input_fields", "anthropic.tool_decode_all_input_fields"),
   renameLeaf("anthropic.recover_tool_call_text", "anthropic.tool_recover_call_text"),

@@ -35,10 +35,14 @@
  *                    from a `does not support reasoning effort` 400 (no supported-
  *                    values list). Independent membership set, mutually exclusive
  *                    with `efforts`.
- *   - serverToolHistoryDowngrade — models whose upstream rejects prior-turn
- *                    server-tool history, learned from a `Tool '…' not found in
+ *   - serverToolDowngrade — models whose upstream rejects prior-turn
+ *                    server-tool blocks, learned from a `Tool '…' not found in
  *                    provided tools` 400. A flat model-key set; consumers downgrade
- *                    server-tool history for these models.
+ *                    prior-turn server-tool blocks for these models.
+ *   - toolFields   — custom-tool top-level field names (e.g. `eager_input_streaming`)
+ *                    the upstream rejects as `tools.N.<variant>.<field>: Extra inputs
+ *                    are not permitted`. Keyed model-AGNOSTICALLY (endpoint only) —
+ *                    the field is an upstream-version property, not a per-model one.
  *
  * Persisted to `PATHS.NEGOTIATION_STATES`.
  */
@@ -85,12 +89,31 @@ const unsupportedPartnerFeatures = new Map<string, Set<string>>()
 /** Models whose upstream rejects inline role:"system", LEARNED reactively (config
  *  twin = state.systemRejectModels; effective set = config ∪ this learned set). */
 const learnedSystemRejectModels = new Set<string>()
-/** Models whose upstream rejects prior-turn server-tool history, LEARNED reactively
+/** Models whose upstream rejects prior-turn server-tool blocks, LEARNED reactively
  *  from a `Tool '…' not found in provided tools` 400. 1-level membership set. */
-const serverToolHistoryDowngradeModels = new Set<string>()
+const serverToolDowngradeModels = new Set<string>()
+/**
+ * toolFields[endpointKey] = Set<custom-tool top-level field name> the upstream
+ * rejects as "Extra inputs are not permitted" (e.g. `eager_input_streaming`).
+ * Keyed model-AGNOSTICALLY (endpoint only) — see {@link endpointKey}.
+ */
+const unsupportedToolFields = new Map<string, Set<string>>()
 
 function modelKey(modelId: string): string {
   return `${copilotBaseUrl(state)}|anthropic-messages|${normalizeForMatching(modelId)}`
+}
+
+/**
+ * Endpoint-only key (NO model segment). Tool-field rejection is an UPSTREAM
+ * (GHC-version) property, not a per-model one: the client attaches the field to
+ * every tool regardless of model, and whether GHC rejects it depends only on the
+ * upstream API version. Keying model-agnostically means one 400 on ANY model
+ * immunizes every model on the same upstream endpoint — the most general
+ * learning (unlike the per-(endpoint, model) server-tool / partner-feature cache,
+ * whose rejections ARE model-specific).
+ */
+function endpointKey(): string {
+  return `${copilotBaseUrl(state)}|anthropic-messages`
 }
 
 function effortKey(modelId: string): string {
@@ -285,25 +308,52 @@ export function isSystemRejectModelLearned(modelId: string): boolean {
 }
 
 // ============================================================================
-// Learned server-tool history downgrade set
+// Learned server-tool downgrade set
 // ============================================================================
 
 /**
- * Mark a model whose upstream rejects prior-turn server-tool history (learned
+ * Mark a model whose upstream rejects prior-turn server-tool blocks (learned
  * reactively from a `Tool '…' not found in provided tools` 400). A 1-level
  * membership set — the fact is a per-model boolean, no sub-dimension. Consumers
- * downgrade server-tool history for these models on subsequent requests.
+ * downgrade prior-turn server-tool blocks for these models on subsequent requests.
  */
-export function markServerToolHistoryDowngrade(modelId: string): void {
-  if (!serverToolHistoryDowngradeModels.has(modelKey(modelId))) {
-    serverToolHistoryDowngradeModels.add(modelKey(modelId))
+export function markServerToolDowngrade(modelId: string): void {
+  if (!serverToolDowngradeModels.has(modelKey(modelId))) {
+    serverToolDowngradeModels.add(modelKey(modelId))
     schedulePersist()
   }
 }
 
-/** Whether server-tool history downgrade was learned for the given model. */
-export function isServerToolHistoryDowngradeLearned(modelId: string): boolean {
-  return serverToolHistoryDowngradeModels.has(modelKey(modelId))
+/** Whether server-tool downgrade was learned for the given model. */
+export function isServerToolDowngradeLearned(modelId: string): boolean {
+  return serverToolDowngradeModels.has(modelKey(modelId))
+}
+
+// ============================================================================
+// Unsupported custom-tool fields (endpoint-level, model-agnostic)
+// ============================================================================
+
+/**
+ * Mark custom-tool top-level field names (e.g. `eager_input_streaming`) the
+ * upstream rejects as `tools.N.<variant>.<field>: Extra inputs are not
+ * permitted`. Learned reactively; keyed model-agnostically (see
+ * {@link endpointKey}) so one 400 immunizes every model on this endpoint.
+ * Accepts a batch because pydantic reports all offending fields in one response.
+ */
+export function markAnthropicUnsupportedToolFields(fields: ReadonlyArray<string>): void {
+  const key = endpointKey()
+  let changed = false
+  for (const field of fields) {
+    const trimmed = field.trim()
+    if (trimmed && addToSetMap(unsupportedToolFields, key, trimmed)) changed = true
+  }
+  if (changed) schedulePersist()
+}
+
+/** Return all custom-tool field names marked unsupported for the current endpoint. */
+export function getUnsupportedToolFields(): Array<string> {
+  const set = unsupportedToolFields.get(endpointKey())
+  return set ? [...set] : []
 }
 
 // ============================================================================
@@ -320,7 +370,15 @@ interface NegotiationStateFile {
   serverTools: Record<string, Array<string>>
   partnerFeatures: Record<string, Array<string>>
   systemRejectModels: Array<string>
-  serverToolHistoryDowngrade: Array<string>
+  serverToolDowngrade: Array<string>
+  /**
+   * Legacy key (pre-`server_tool_` rename) — read-only for startup auto-migration.
+   * Old on-disk snapshots stored the same set under `serverToolHistoryDowngrade`;
+   * load falls back to it when the new key is absent, and the next persist rewrites
+   * under `serverToolDowngrade` (the legacy key then drops naturally). Never written.
+   */
+  serverToolHistoryDowngrade?: Array<string>
+  toolFields: Record<string, Array<string>>
 }
 
 function snapshotSetMap(map: Map<string, Set<string>>): Record<string, Array<string>> {
@@ -369,7 +427,8 @@ export const persistFeatureNegotiation = createSerializedAsyncFn(async () => {
     serverTools: snapshotSetMap(unsupportedServerTools),
     partnerFeatures: snapshotSetMap(unsupportedPartnerFeatures),
     systemRejectModels: [...learnedSystemRejectModels],
-    serverToolHistoryDowngrade: [...serverToolHistoryDowngradeModels],
+    serverToolDowngrade: [...serverToolDowngradeModels],
+    toolFields: snapshotSetMap(unsupportedToolFields),
   }
   try {
     await atomicWriteJson(PATHS.NEGOTIATION_STATES, data)
@@ -430,7 +489,8 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
       + loadSetMap(unsupportedServerTools, data.serverTools)
       + loadSetMap(unsupportedPartnerFeatures, data.partnerFeatures)
       + loadStringSet(learnedSystemRejectModels, data.systemRejectModels)
-      + loadStringSet(serverToolHistoryDowngradeModels, data.serverToolHistoryDowngrade)
+      + loadStringSet(serverToolDowngradeModels, data.serverToolDowngrade ?? data.serverToolHistoryDowngrade)
+      + loadSetMap(unsupportedToolFields, data.toolFields)
     if (total > 0) {
       consola.info(`[FeatureNegotiation] Loaded ${total} negotiated entries from ${PATHS.NEGOTIATION_STATES}`)
     }
@@ -454,7 +514,8 @@ function clearNegotiationMaps(): void {
   unsupportedServerTools.clear()
   unsupportedPartnerFeatures.clear()
   learnedSystemRejectModels.clear()
-  serverToolHistoryDowngradeModels.clear()
+  serverToolDowngradeModels.clear()
+  unsupportedToolFields.clear()
 }
 
 export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void> {
@@ -476,7 +537,7 @@ export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void
  * does NOT drain/persist — a per-test afterEach should not incur sandbox disk
  * I/O on every test, and there is nothing worth flushing (the maps are about to
  * be wiped). Cancels the debounce timer so no enqueued persist fires after the
- * next test starts, then clears the 9 collections. Use the async drain-reset only when
+ * next test starts, then clears the 10 collections. Use the async drain-reset only when
  * a caller explicitly needs the cleared state flushed to disk.
  */
 export function clearAnthropicFeatureNegotiationForTests(): void {

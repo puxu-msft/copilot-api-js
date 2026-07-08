@@ -199,11 +199,11 @@ JSON 键级合并已够，YAGNI。（可顺手修 setup-claude-code 解析失败
 ## Phase 4 — #3 web_search 双跳（默认关闭，仅 Anthropic 路径）
 
 ### 目标
-当客户端请求含 native web_search server tool 且 `web_search.enabled` 时，拦截请求、执行真实搜索、把结果回填后由主模型二次生成，合成标准 Anthropic 响应（含 server_tool_use + web_search_tool_result + text）返回。
+当客户端请求含 native web_search server tool 且 `server_tool_web_search.enabled` 时，拦截请求、执行真实搜索、把结果回填后由主模型二次生成，合成标准 Anthropic 响应（含 server_tool_use + web_search_tool_result + text）返回。
 
-### 配置（顶层 section `web_search`，默认关闭）
+### 配置（顶层 section `server_tool_web_search`，默认关闭）
 ```yaml
-web_search:
+server_tool_web_search:
   enabled: false
   backend: ""   # "" / "<copilot-responses-search-model, 如 gpt-5.5>" / "searxng"
 ```
@@ -212,7 +212,7 @@ web_search:
 
 ### 触发与拦截点
 `src/routes/messages/handler.ts:118` `handleMessages` 内，model 解析 + reqCtx 创建 + preprocess 之后、`handleDirectAnthropicCompletion`（`:198`）之前：
-- 判断 `web_search.enabled` 且 payload.tools 含 `isServerToolType(t.type)` 且 `type.startsWith("web_search_")`（或 Claude Code `WebSearch` 工具）。
+- 判断 `server_tool_web_search.enabled` 且 payload.tools 含 `isServerToolType(t.type)` 且 `type.startsWith("web_search_")`（或 Claude Code `WebSearch` 工具）。
 - 命中 → 走新建的 `handleWebSearchCompletion`，否则原路。
 
 ### 双跳流程（新建 `src/lib/anthropic/web-search/` 模块）

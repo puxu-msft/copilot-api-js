@@ -94,7 +94,7 @@ describe("GET /api/config — effective config snapshot", () => {
       "coerceAdaptiveThinking",
       "thinkingBlockSanitizeCheck",
       "systemMessagesSanitize",
-      "rewriteHistoryServerTools",
+      "rewriteServerTools",
       "streamKeepalivePingSec",
       "sanitizeToolNames",
     ]) {
