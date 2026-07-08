@@ -1,7 +1,6 @@
 import type {
   //
   EntryStatus,
-  LearnedSnapshot,
   NegotiationCategory,
 } from "@/types"
 
@@ -49,9 +48,4 @@ export function relativeTime(ms: number, now: number = Date.now()): string {
   if (hours < 24) return `${hours} 小时前`
   const days = Math.floor(hours / 24)
   return `${days} 天前`
-}
-
-/** 客户端 JSON blob（若改用后端 /export 则不需要 —— 见 F4）。 */
-export function snapshotToJsonBlob(snap: LearnedSnapshot): Blob {
-  return new Blob([JSON.stringify(snap, null, 2)], { type: "application/json" })
 }

@@ -14,6 +14,14 @@ import {
 
 type Filter = "all" | "active" | "expired" | "pinned"
 
+/** 过滤按钮的显示标签（值不变，仅渲染文案本地化 —— 见 spec §4.5）。 */
+const FILTER_LABELS: Record<Filter, string> = {
+  all: "全部",
+  active: "active",
+  expired: "已过期",
+  pinned: "pinned",
+}
+
 function matches(filter: Filter, status: EntryStatus): boolean {
   if (filter === "all") return true
   return badgeKind(status) === filter
@@ -53,7 +61,7 @@ export function LearnedPage() {
               className={`border px-2 py-0.5 text-[11px] ${filter === f ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[var(--color-muted)]"}`}
               onClick={() => setFilter(f)}
             >
-              {f}
+              {FILTER_LABELS[f]}
             </button>
           ))}
           <button
