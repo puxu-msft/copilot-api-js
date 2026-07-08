@@ -299,6 +299,48 @@ function legacyFailedHttp(): LegacyEntry {
   })
 }
 
+/**
+ * Fixture 2b (AUDIT): an EARLY failed legacy row whose error text lives ONLY on
+ * `outbound_response.error` — NO per-attempt `error`, NO top-level `failureReason`.
+ * This is the pre-`failureReason`-projection shape found in the real history.db: the
+ * error is recoverable ONLY from `response.error`, so the adapter must route it into
+ * `attempts[].error` (the new model's home for error) or it is permanently dropped
+ * (and P6 backfill would make that at-rest — the legacy blob is rewritten away).
+ */
+function legacyFailedErrorOnlyInResponse(): LegacyEntry {
+  const inbound = [msg("user", "early failure")]
+  const failResp: OutboundResponseData = {
+    success: false,
+    model: "claude-opus-4-7",
+    usage: { input_tokens: 0, output_tokens: 0 },
+    error: "upstream 503: service unavailable",
+    status: 503,
+    content: null,
+    rawBody: `{"error":"service unavailable"}`,
+  }
+  const e = legacyBase("l2b-error-only-in-response", {
+    state: "failed",
+    inboundRequest: { model: "claude-opus-4-7", messages: inbound },
+    effectiveRequest: leg(inbound),
+    outboundRequest: leg(inbound),
+    outboundResponse: failResp,
+    // NO failureReason (early rows predate the top-level failureReason projection).
+    attempts: [
+      {
+        index: 0,
+        strategy: "primary",
+        durationMs: 300,
+        // NO attempt-level `error` — the error text is ONLY on response.error.
+        effectiveRequest: leg(inbound),
+        wireRequest: leg(inbound),
+        response: failResp,
+      },
+    ],
+  })
+  delete (e as { failureReason?: string }).failureReason
+  return e
+}
+
 /** Fixture 3: multi-attempt retry success — legacy shape (attempt 0 failed w/ own frames). */
 function legacyRetrySuccess(): LegacyEntry {
   const inbound = [msg("user", "retry me")]
@@ -416,6 +458,34 @@ describe("P4c-2 read adapter — legacy stages map into new legs", () => {
     expect(a0?.upstreamResponse?.usage).toEqual(oldResp?.usage)
     expect(a0?.upstreamResponse?.rawBody).toBe(oldResp?.rawBody)
     expect(a0?.upstreamResponse?.body).toEqual(oldResp?.content)
+  })
+
+  test("AUDIT: legacy outbound_response.error is preserved onto attempts[].error (error's new home)", () => {
+    // Early failed rows carry the error text ONLY on response.error (no attempt.error,
+    // no top-level failureReason). The new UpstreamResponseData has NO error field
+    // (RFC puts error on attempts[].error), so the adapter must route response.error
+    // there — else it is permanently dropped (and P6 backfill makes that at-rest).
+    const entry = legacyFailedErrorOnlyInResponse()
+    const { row, stageRows } = serializeToRawRows(entry)
+    const back = assembleFullEntry(row, stageRows)
+    // Independent oracle: the ASSEMBLED legacy response leg (the exact value read).
+    const oldRespError = legacyView(back).attempts?.at(-1)?.response?.error
+    // Anti-vacuous: the fixture's error text is genuinely non-empty AND matches.
+    expect(oldRespError).toBe("upstream 503: service unavailable")
+    expect(back.attempts?.at(-1)?.error).toBe("upstream 503: service unavailable")
+    // The new upstreamResponse leg still has NO error field (error is not its home).
+    expect((back.attempts?.at(-1)?.upstreamResponse as { error?: string })?.error).toBeUndefined()
+  })
+
+  test("AUDIT: an existing attempt.error is NOT overwritten by response.error (fallback only)", () => {
+    // When the per-attempt error is already present (multi-attempt legacy rows keep
+    // it), the response-level error must NOT clobber it — it is a fallback only.
+    const entry = legacyFailedHttp()
+    entry.attempts![0].error = "attempt-level error wins"
+    entry.attempts![0].response = { ...entry.attempts![0].response!, error: "response-level error" }
+    const { row, stageRows } = serializeToRawRows(entry)
+    const back = assembleFullEntry(row, stageRows)
+    expect(back.attempts?.at(-1)?.error).toBe("attempt-level error wins")
   })
 
   test("success verdict bridges stopReason + response headers + trailers", () => {

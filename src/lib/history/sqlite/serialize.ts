@@ -744,6 +744,14 @@ function adaptLegacyLegsInPlace(entry: HistoryEntry): void {
       if (la.effectiveRequest && a.effectiveSource === undefined) a.effectiveSource = adaptEffectiveSource(la)
       if (la.wireRequest && a.upstreamRequest === undefined) a.upstreamRequest = adaptUpstreamRequest(la.wireRequest)
       if (la.response && a.upstreamResponse === undefined) a.upstreamResponse = adaptUpstreamResponse(la, i === finalIdx, legacyEntry)
+      // AUDIT: the legacy `outbound_response.error` (response-level) has NO home in
+      // the new `UpstreamResponseData` (RFC puts error on `attempts[].error`). An
+      // early failed row often carries the error text ONLY on `response.error` (no
+      // per-attempt `error`, no top-level `failureReason`), so route it into
+      // `attempts[].error` as a FALLBACK — preserving any genuine attempt-level error
+      // (multi-attempt legacy rows keep their per-attempt error). Without this the
+      // error is dropped on read and P6 backfill would make that loss at-rest.
+      if (a.error === undefined && la.response?.error !== undefined) a.error = la.response.error
     }
   }
 

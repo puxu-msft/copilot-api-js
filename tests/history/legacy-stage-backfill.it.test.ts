@@ -121,6 +121,39 @@ function seedLegacyStageSplit(id: string, startedAt: number, extraStages: Array<
   for (const s of extraStages) insertStageRow(id, s.stage, s.attemptIndex, s.payload)
 }
 
+/**
+ * Seed a LEGACY STAGE-SPLIT FAILED row whose error text lives ONLY on
+ * `outbound_response.error` — NO per-attempt `error` (the head-meta attempt summary
+ * carries index/strategy/durationMs only), NO top-level `failureReason`. This is the
+ * pre-`failureReason`-projection shape in the real history.db: the error is
+ * recoverable ONLY from the response leg. The read adapter routes it into
+ * `attempts[].error`; this backfill then re-serializes that adapted read, so the
+ * error text must survive at-rest (the legacy `outbound_response` blob is rewritten
+ * away into an `upstream_response` stage that has no error field).
+ */
+function seedLegacyFailedErrorOnlyInResponse(id: string, startedAt: number, errorText: string): void {
+  const headMeta = { state: "failed", attempts: [{ index: 0, strategy: "primary", durationMs: 7 }] }
+  getDatabase()
+    .prepare(
+      "INSERT INTO entries_v2 (id, started_at, endpoint, transport, status, model, input_tokens, output_tokens, usage_normalized, stages_migrated, blob_gz) "
+        + "VALUES (?,?,?,?,?,?,?,?,1,0,?)",
+    )
+    .run(id, startedAt, "openai-chat-completions", "http", "failed", "gpt-5", 0, 0, compress(headMeta))
+  const body = { model: "gpt-5", messages: [{ role: "user", content: "boom" }] }
+  insertStageRow(id, "inbound_request", -1, { model: "gpt-5", messages: [{ role: "user", content: "boom" }] })
+  insertStageRow(id, "effective_request", 0, { format: "openai-chat-completions", model: "gpt-5", messages: body.messages, payload: body })
+  insertStageRow(id, "outbound_request", 0, { format: "openai-chat-completions", model: "gpt-5", headers: { authorization: "tok" }, payload: body })
+  insertStageRow(id, "outbound_response", 0, {
+    success: false,
+    status: 503,
+    model: "gpt-5",
+    usage: { input_tokens: 0, output_tokens: 0 },
+    error: errorText,
+    content: null,
+    rawBody: `{"error":"${errorText}"}`,
+  })
+}
+
 /** Seed a LEGACY SINGLE-BLOB row (head blob IS the full entry; NO stage rows). */
 function seedLegacySingleBlob(id: string, startedAt: number): void {
   const full = {
@@ -181,6 +214,31 @@ describe("sqlite legacy-stage migration backfill", () => {
     // Marker + completion flag set.
     expect(marker("ss1")).toBe(1)
     expect(getMeta(getDatabase(), STAGE_MIGRATE_VERSION_KEY)).toBe("1")
+  })
+
+  test("AUDIT: legacy outbound_response.error survives migration at-rest on attempts[].error", async () => {
+    const errText = "upstream 503: service unavailable"
+    seedLegacyFailedErrorOnlyInResponse("err1", 1000, errText)
+    setUsageGate()
+
+    // Pre-migration read (through the adapter) already routes response.error → attempts[].error.
+    const beforeEntry = getEntryById("err1")
+    expect(beforeEntry?.attempts?.at(-1)?.error).toBe(errText)
+    // Anti-vacuous: the persisted legacy stage really carried the error on the response leg.
+    const before = newLegProjection("err1")
+    expect(marker("err1")).toBe(0)
+
+    await runLegacyStageBackfill(getDatabase())
+
+    // The legacy `outbound_response` (which held the error) is rewritten away.
+    expect(stageNames("err1")).toEqual(["client_request", "request_group", "upstream_response"])
+    // Equivalence oracle: the migrated new-leg projection is field-identical to the
+    // pre-migration adapter read — and it now COVERS the error (attempts[].error rides
+    // the head-meta blob, so the equivalence held BOTH before and after this fix).
+    expect(newLegProjection("err1")).toBe(before)
+    // At-rest: the migrated head blob still carries the error text on attempts[].error.
+    expect(getEntryById("err1")?.attempts?.at(-1)?.error).toBe(errText)
+    expect(marker("err1")).toBe(1)
   })
 
   test("legacy SINGLE-BLOB row: heavy legs moved to stages; head blob stripped; read field-equal", async () => {
