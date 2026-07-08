@@ -6,7 +6,11 @@ import {
   promises as fsPromises,
 } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import {
+  //
+  dirname,
+  join,
+} from "node:path"
 import invariant from "tiny-invariant"
 
 import { applyConfigToState } from "./lib/config/config"
@@ -121,54 +125,132 @@ export function buildClaudeCodeEnv(
   }
 }
 
-/** A single proposed env-var change (a value of `undefined` means removed). */
-interface EnvChange {
-  key: string
-  before: string | undefined
-  after: string | undefined
+// ============================================================================
+// Generic JSON leaf-path diff (pure)
+//
+// The setup writes real JSON files, so the diff must reflect the actual bytes
+// that will land. We walk both the existing object and the proposed final
+// object down to their leaves (primitives and arrays; plain objects are
+// recursed into) and partition every differing leaf path into added / changed
+// / removed. This is target-file agnostic: `.claude.json` renders
+// `hasCompletedOnboarding`, `settings.json` renders `env.ANTHROPIC_MODEL`, etc.
+// ============================================================================
+
+/** A plain JSON object (recursed into during the leaf walk). */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-/** Partitioned changes between an existing env block and the proposed one. */
-export interface EnvChangeSet {
-  added: Array<EnvChange>
-  changed: Array<EnvChange>
-  removed: Array<EnvChange>
+/**
+ * Collect every leaf of `obj` into `out`, keyed by dotted path. Plain objects
+ * are recursed into; arrays and primitives are treated as leaf values (arrays
+ * compared as a whole — element order is significant). An empty object
+ * contributes no leaf, so pruning all of an object's keys surfaces as removals.
+ */
+function collectLeaves(obj: Record<string, unknown>, prefix: string, out: Map<string, unknown>): void {
+  for (const [key, value] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}.${key}` : key
+    if (isPlainObject(value)) collectLeaves(value, path, out)
+    else out.set(path, value)
+  }
 }
 
-/** Diff the proposed env against the existing one, partitioned by change kind. */
-export function computeEnvChanges(before: Record<string, string>, after: Record<string, string>): EnvChangeSet {
-  const added: Array<EnvChange> = []
-  const changed: Array<EnvChange> = []
-  const removed: Array<EnvChange> = []
+/** Structural equality for leaf values (primitives / arrays), order-sensitive. */
+function leafEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
 
-  for (const key of Object.keys(after)) {
-    if (!(key in before)) added.push({ key, before: undefined, after: after[key] })
-    else if (before[key] !== after[key]) changed.push({ key, before: before[key], after: after[key] })
+/** A single JSON leaf-path change. `before`/`after` absent means added/removed. */
+export interface JsonLeafChange {
+  path: string
+  before?: unknown
+  after?: unknown
+}
+
+/** Leaf-path changes between an existing object and the proposed one. */
+export interface JsonDiff {
+  added: Array<JsonLeafChange>
+  changed: Array<JsonLeafChange>
+  removed: Array<JsonLeafChange>
+}
+
+/** Diff two JSON objects at leaf-path granularity, partitioned by change kind. */
+export function computeJsonDiff(before: Record<string, unknown>, after: Record<string, unknown>): JsonDiff {
+  const beforeLeaves = new Map<string, unknown>()
+  const afterLeaves = new Map<string, unknown>()
+  collectLeaves(before, "", beforeLeaves)
+  collectLeaves(after, "", afterLeaves)
+
+  const added: Array<JsonLeafChange> = []
+  const changed: Array<JsonLeafChange> = []
+  const removed: Array<JsonLeafChange> = []
+
+  for (const [path, afterValue] of afterLeaves) {
+    if (!beforeLeaves.has(path)) added.push({ path, after: afterValue })
+    else if (!leafEqual(beforeLeaves.get(path), afterValue)) changed.push({ path, before: beforeLeaves.get(path), after: afterValue })
   }
-  for (const key of Object.keys(before)) {
-    if (!(key in after)) removed.push({ key, before: before[key], after: undefined })
+  for (const [path, beforeValue] of beforeLeaves) {
+    if (!afterLeaves.has(path)) removed.push({ path, before: beforeValue })
   }
 
+  const byPath = (x: JsonLeafChange, y: JsonLeafChange): number => x.path.localeCompare(y.path)
+  added.sort(byPath)
+  changed.sort(byPath)
+  removed.sort(byPath)
   return { added, changed, removed }
 }
 
-/** True when the change set would alter anything. */
-export function hasEnvChanges(changes: EnvChangeSet): boolean {
-  return changes.added.length > 0 || changes.changed.length > 0 || changes.removed.length > 0
+/** True when the diff would alter anything. */
+export function hasJsonDiff(diff: JsonDiff): boolean {
+  return diff.added.length > 0 || diff.changed.length > 0 || diff.removed.length > 0
 }
 
-/** True when the change set overwrites or deletes an existing user value. */
-function isDestructive(changes: EnvChangeSet): boolean {
-  return changes.changed.length > 0 || changes.removed.length > 0
+/** Max rendered length of a single leaf value before truncation. */
+const DIFF_VALUE_MAX_LEN = 80
+
+/**
+ * Render a leaf value as compact JSON, truncated when long. Leaf values come
+ * from parsed JSON (primitives and arrays), so `JSON.stringify` always yields a
+ * string here — never `undefined`.
+ */
+function formatLeafValue(value: unknown): string {
+  const text = JSON.stringify(value)
+  return text.length > DIFF_VALUE_MAX_LEN ? `${text.slice(0, DIFF_VALUE_MAX_LEN)}...` : text
 }
 
-/** Render a change set as an intuitive `+ / ~ / -` description. */
-export function formatEnvChanges(changes: EnvChangeSet): string {
+/** Render a diff as an intuitive `+ / ~ / -` block (empty string when no changes). */
+export function formatJsonDiff(diff: JsonDiff): string {
   const lines: Array<string> = []
-  for (const { key, after } of changes.added) lines.push(`  + ${key} = ${after}`)
-  for (const { key, before, after } of changes.changed) lines.push(`  ~ ${key}: ${before} → ${after}`)
-  for (const { key } of changes.removed) lines.push(`  - ${key}  (removed)`)
+  for (const { path, after } of diff.added) lines.push(`  + ${path}: ${formatLeafValue(after)}`)
+  for (const { path, before, after } of diff.changed) lines.push(`  ~ ${path}: ${formatLeafValue(before)} → ${formatLeafValue(after)}`)
+  for (const { path, before } of diff.removed) lines.push(`  - ${path}: ${formatLeafValue(before)}`)
   return lines.join("\n")
+}
+
+// ============================================================================
+// Write-decision (pure)
+// ============================================================================
+
+/** What to do with a single target file once its diff is known. */
+export type WriteAction =
+  | "skip-no-changes" // diff is empty — nothing to write, no prompt
+  | "dry-run" // changes exist but `--dry-run` forbids writing
+  | "apply" // `--yes` — write without prompting
+  | "prompt" // interactive confirmation required
+  | "abort-non-interactive" // changes exist, no `--yes`, and stdin is not a TTY
+
+/**
+ * Decide the write action for one target file. Pure — no IO, no prompting.
+ * Precedence: no-changes > dry-run > --yes > non-interactive-abort > prompt.
+ * The safe default is never to write silently: without `--yes`, a non-TTY
+ * aborts rather than clobbering, and a TTY must confirm (default No).
+ */
+export function decideWriteAction(params: { hasChanges: boolean; dryRun: boolean; yes: boolean; isTTY: boolean }): WriteAction {
+  if (!params.hasChanges) return "skip-no-changes"
+  if (params.dryRun) return "dry-run"
+  if (params.yes) return "apply"
+  if (!params.isTTY) return "abort-non-interactive"
+  return "prompt"
 }
 
 /** Options for `writeClaudeCodeConfig` — also the seam tests use for isolation. */
@@ -177,96 +259,197 @@ export interface WriteClaudeCodeConfigOptions {
   home?: string
   /** Write the opinionated extension env vars too. Default `false`. */
   includeExtensions?: boolean
+  /** Auto-apply every file without prompting (CI / scripts). Default `false`. */
+  yes?: boolean
+  /** Only compute and print diffs; never write — even with `yes`. Default `false`. */
+  dryRun?: boolean
   /**
-   * Decide whether to apply destructive changes (overwrites/removals of
-   * existing keys). Called only when such changes exist. Defaults to an
-   * interactive y/N prompt. Tests inject a deterministic decision.
+   * Whether stdin is an interactive TTY. Controls the non-interactive safety
+   * abort. Defaults to `process.stdin.isTTY`. Tests inject this explicitly.
    */
-  confirm?: () => Promise<boolean>
+  isTTY?: boolean
+  /**
+   * Prompt implementation, called per file when confirmation is required.
+   * Receives the prompt message and returns the user's y/N answer. Defaults to
+   * an interactive consola confirm that defaults to No. Tests inject a
+   * deterministic decision.
+   */
+  confirm?: (message: string) => Promise<boolean>
+}
+
+/** Raised when an existing target file cannot be parsed — we refuse to clobber it. */
+class JsonParseError extends Error {
+  readonly path: string
+  readonly reason: unknown
+  constructor(path: string, reason: unknown) {
+    super(`Failed to parse ${path} as JSON`)
+    this.name = "JsonParseError"
+    this.path = path
+    this.reason = reason
+  }
+}
+
+/**
+ * Read+parse a JSON object file. Returns `{}` when the file is missing (a blank
+ * slate is safe to write). Never swallows a parse failure: a malformed or
+ * non-object existing file throws `JsonParseError` so the caller can refuse to
+ * overwrite it rather than silently clobbering the user's data.
+ */
+async function readJsonObject(path: string): Promise<Record<string, unknown>> {
+  if (!existsSync(path)) return {}
+  const buffer = await fsPromises.readFile(path)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(buffer.toString())
+  } catch (error) {
+    throw new JsonParseError(path, error)
+  }
+  if (!isPlainObject(parsed)) throw new JsonParseError(path, `expected a JSON object, got ${Array.isArray(parsed) ? "array" : typeof parsed}`)
+  return parsed
+}
+
+/** One target config file: its path and how the final content is merged. */
+interface ConfigTarget {
+  path: string
+  /** Merge the setup's changes into the existing content (merge semantics preserved). */
+  computeFinal: (existing: Record<string, unknown>) => Record<string, unknown>
+}
+
+/** Resolved per-file settings for `applyConfigTarget`. */
+interface ApplyContext {
+  dryRun: boolean
+  yes: boolean
+  isTTY: boolean
+  confirm: (message: string) => Promise<boolean>
+}
+
+/**
+ * Diff, show, confirm, and (maybe) write a single target file. Always prints
+ * the leaf-path diff — a brand-new file shows as all `+`. Returns `true` iff
+ * the file was written.
+ */
+async function applyConfigTarget(target: ConfigTarget, ctx: ApplyContext): Promise<boolean> {
+  // Never assume a blank slate — read and respect existing content. A parse
+  // failure means we cannot safely diff, so we abort this file (never clobber).
+  let existing: Record<string, unknown>
+  try {
+    existing = await readJsonObject(target.path)
+  } catch (error) {
+    if (error instanceof JsonParseError) {
+      consola.error(`${target.path}: cannot parse existing file as JSON — refusing to overwrite. Fix or remove it, then re-run. (${String(error.reason)})`)
+      return false
+    }
+    throw error
+  }
+
+  const final = target.computeFinal(existing)
+  const diff = computeJsonDiff(existing, final)
+  const changed = hasJsonDiff(diff)
+
+  // Always show exactly what would change.
+  consola.info(`${target.path}:\n${changed ? formatJsonDiff(diff) : "  (no changes)"}`)
+
+  const action = decideWriteAction({ hasChanges: changed, dryRun: ctx.dryRun, yes: ctx.yes, isTTY: ctx.isTTY })
+  switch (action) {
+    case "skip-no-changes": {
+      consola.success(`${target.path} already up to date — no changes needed.`)
+      return false
+    }
+    case "dry-run": {
+      consola.info(`${target.path}: dry run — not written.`)
+      return false
+    }
+    case "abort-non-interactive": {
+      consola.warn(`${target.path}: non-interactive; pass --yes to apply. Skipped.`)
+      return false
+    }
+    case "prompt": {
+      const approved = await ctx.confirm(`Apply these changes to ${target.path}?`)
+      if (!approved) {
+        consola.info(`${target.path}: skipped — no changes written.`)
+        return false
+      }
+      break
+    }
+    case "apply": {
+      break
+    }
+    default: {
+      // Exhaustive over WriteAction. The safe default is NOT to write: if a new
+      // WriteAction variant is ever added and left unhandled, `never` flags it at
+      // compile time and this branch refuses to write rather than clobbering.
+      return ((_never: never) => false)(action)
+    }
+  }
+
+  const dir = dirname(target.path)
+  if (!existsSync(dir)) {
+    await fsPromises.mkdir(dir, { recursive: true })
+    consola.info(`Created directory: ${dir}`)
+  }
+  await fsPromises.writeFile(target.path, JSON.stringify(final, null, 2) + "\n")
+  consola.success(`Updated ${target.path}`)
+  return true
 }
 
 /**
  * Write Claude Code configuration for use with Copilot API.
  *
- * Respects existing config: existing settings are merged (not clobbered), the
- * proposed change set is shown before writing, and when the change would
- * overwrite or delete keys the user already has, confirmation is requested
- * first. Updates:
+ * Respects existing config (merge semantics): for each target file the existing
+ * content is read, the setup's changes are merged in, and the resulting
+ * leaf-path diff is always shown before writing. Each file is confirmed
+ * independently (default No); `--yes` auto-applies, `--dry-run` writes nothing,
+ * and a non-interactive shell without `--yes` aborts rather than clobbering.
+ * Targets:
  * - `$HOME/.claude.json` — sets `hasCompletedOnboarding: true`
  * - `$HOME/.claude/settings.json` — sets the essential env (+ extensions if opted in)
  */
 export async function writeClaudeCodeConfig(serverUrl: string, model: Model, smallModel: Model, options: WriteClaudeCodeConfigOptions = {}): Promise<void> {
   const home = options.home ?? homedir()
   const claudeJsonPath = join(home, ".claude.json")
-  const claudeDir = join(home, ".claude")
-  const settingsPath = join(claudeDir, "settings.json")
+  const settingsPath = join(home, ".claude", "settings.json")
 
-  // Read existing config (respect it — never assume a blank slate).
-  const claudeJson = await readJsonOrEmpty(claudeJsonPath)
-  const settings = await readJsonOrEmpty(settingsPath)
-  const existingEnv = (settings.env as Record<string, string> | undefined) ?? {}
-
-  const proposedEnv = buildClaudeCodeEnv(serverUrl, model, smallModel, existingEnv, {
-    includeExtensions: options.includeExtensions,
-  })
-  const changes = computeEnvChanges(existingEnv, proposedEnv)
-  const onboardingChange = claudeJson.hasCompletedOnboarding !== true
-
-  if (!hasEnvChanges(changes) && !onboardingChange) {
-    consola.success("Claude Code already configured for Copilot API — no changes needed.")
-    return
+  const ctx: ApplyContext = {
+    dryRun: options.dryRun ?? false,
+    yes: options.yes ?? false,
+    isTTY: options.isTTY ?? process.stdin.isTTY,
+    confirm: options.confirm ?? ((message: string) => consola.prompt(message, { type: "confirm", initial: false })),
   }
 
-  // Show an intuitive description of exactly what will change.
-  if (hasEnvChanges(changes)) {
-    consola.info(`Claude Code env changes (${settingsPath}):\n${formatEnvChanges(changes)}`)
+  const targets: Array<ConfigTarget> = [
+    {
+      path: claudeJsonPath,
+      computeFinal: (existing) => ({ ...existing, hasCompletedOnboarding: true }),
+    },
+    {
+      path: settingsPath,
+      computeFinal: (existing) => {
+        const existingEnv = (existing.env as Record<string, string> | undefined) ?? {}
+        const proposedEnv = buildClaudeCodeEnv(serverUrl, model, smallModel, existingEnv, {
+          includeExtensions: options.includeExtensions,
+        })
+        return { ...existing, env: proposedEnv }
+      },
+    },
+  ]
+
+  let wroteAny = false
+  for (const target of targets) {
+    // Sequential (not parallel): the diffs and prompts must read in order.
+    const wrote = await applyConfigTarget(target, ctx)
+    wroteAny = wroteAny || wrote
   }
-  if (onboardingChange) {
-    consola.info(`${claudeJsonPath}: set hasCompletedOnboarding = true`)
-  }
 
-  // Only gate on confirmation when we would overwrite/remove existing keys —
-  // pure additions are non-destructive and applied directly.
-  if (isDestructive(changes)) {
-    const confirm = options.confirm ?? (() => consola.prompt("Apply these changes?", { type: "confirm" }))
-    const approved = await confirm()
-    if (!approved) {
-      consola.info("Aborted — no changes written.")
-      return
-    }
-  }
-
-  if (!existsSync(claudeDir)) {
-    await fsPromises.mkdir(claudeDir, { recursive: true })
-    consola.info(`Created directory: ${claudeDir}`)
-  }
-
-  claudeJson.hasCompletedOnboarding = true
-  await fsPromises.writeFile(claudeJsonPath, JSON.stringify(claudeJson, null, 2) + "\n")
-  consola.success(`Updated ${claudeJsonPath}`)
-
-  settings.env = proposedEnv
-  await fsPromises.writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n")
-  consola.success(`Updated ${settingsPath}`)
-
-  consola.box(
-    `Claude Code configured!\n\n`
-      + `Model: ${proposedEnv.ANTHROPIC_MODEL}\n`
-      + `Small Model: ${proposedEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL}\n`
-      + `API URL: ${serverUrl}\n\n`
-      + `Run 'claude' to start Claude Code.`,
-  )
-}
-
-/** Read+parse a JSON object file, returning `{}` when missing or unparseable. */
-async function readJsonOrEmpty(path: string): Promise<Record<string, unknown>> {
-  if (!existsSync(path)) return {}
-  try {
-    const buffer = await fsPromises.readFile(path)
-    return JSON.parse(buffer.toString()) as Record<string, unknown>
-  } catch {
-    consola.warn(`Failed to parse ${path}, treating as empty`)
-    return {}
+  if (wroteAny) {
+    const mainModelId = withClaudeCode1mSuffix(model.id, getMaxPromptTokens(model))
+    const smallModelId = withClaudeCode1mSuffix(smallModel.id, getMaxPromptTokens(smallModel))
+    consola.box(
+      `Claude Code configured!\n\n`
+        + `Model: ${mainModelId}\n`
+        + `Small Model: ${smallModelId}\n`
+        + `API URL: ${serverUrl}\n\n`
+        + `Run 'claude' to start Claude Code.`,
+    )
   }
 }
 
@@ -280,8 +463,10 @@ interface SetupClaudeCodeOptions {
   verbose: boolean
   /** Also write the opinionated extension env vars. */
   withExtras: boolean
-  /** Skip the confirmation prompt for destructive changes. */
+  /** Auto-apply all changes without prompting (CI / scripts). */
   yes: boolean
+  /** Only show the diffs; never write. */
+  dryRun: boolean
 }
 
 /** Resolve a model id to its Model object, exiting with a clear error if missing. */
@@ -352,9 +537,11 @@ export async function runSetupClaudeCode(options: SetupClaudeCodeOptions): Promi
 
   await writeClaudeCodeConfig(serverUrl, selectedModel, selectedSmallModel, {
     includeExtensions: options.withExtras,
-    // `--yes` auto-approves destructive changes; otherwise the default
-    // interactive prompt is used.
-    confirm: options.yes ? () => Promise.resolve(true) : undefined,
+    // `--yes` auto-applies every file; `--dry-run` shows diffs but writes
+    // nothing. Otherwise each changed file is confirmed interactively (default
+    // No), and a non-interactive shell aborts rather than clobbering.
+    yes: options.yes,
+    dryRun: options.dryRun,
   })
 }
 
@@ -406,7 +593,12 @@ export const setupClaudeCode = defineCommand({
       alias: "y",
       type: "boolean",
       default: false,
-      description: "Skip the confirmation prompt when overwriting existing config",
+      description: "Auto-apply all changes without prompting (CI / scripts)",
+    },
+    "dry-run": {
+      type: "boolean",
+      default: false,
+      description: "Show the +/~/- diff for each config file but write nothing",
     },
     verbose: {
       alias: "v",
@@ -426,6 +618,7 @@ export const setupClaudeCode = defineCommand({
       verbose: args.verbose,
       withExtras: args["with-extras"],
       yes: args.yes,
+      dryRun: args["dry-run"],
     })
   },
 })

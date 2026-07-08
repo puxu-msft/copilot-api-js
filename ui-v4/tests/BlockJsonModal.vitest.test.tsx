@@ -47,25 +47,27 @@ describe("BlockJsonModal", () => {
     expect(screen.queryByText(/keys/)).toBeNull()
   })
 
-  it("switches to a collapsible tree when Tree is selected", () => {
+  it("switches to a collapsible tree when the Tree tab is selected", () => {
     render(
       <BlockJsonModal
         value={BLOCK}
         onClose={() => {}}
       />,
     )
-    fireEvent.click(screen.getByText("Tree"))
+    // RawJsonView labels its tabs 原文 / 树; click the tree tab.
+    fireEvent.click(screen.getByRole("tab", { name: /树|tree/i }))
     // Root object has 4 keys (type/id/name/input) → tree summary appears.
     expect(screen.getByText(/4 keys/)).toBeDefined()
   })
 
-  it("copies the pretty-printed block JSON", () => {
+  it("copies the pretty-printed block JSON via the Source toolbar", () => {
     render(
       <BlockJsonModal
         value={BLOCK}
         onClose={() => {}}
       />,
     )
+    // Copy now lives in the CodeBlock toolbar (default Source view), routed through copyText.
     fireEvent.click(screen.getByText("Copy"))
     expect(copyText).toHaveBeenCalledWith(JSON.stringify(BLOCK, null, 2))
   })

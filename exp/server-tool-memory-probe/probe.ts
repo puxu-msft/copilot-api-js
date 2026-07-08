@@ -79,6 +79,19 @@ const PROBE_MODEL = process.env.PROBE_MODEL ?? "claude-sonnet-4.5"
  */
 const PROBE_ACCOUNT_TYPE = process.env.PROBE_ACCOUNT_TYPE
 
+/**
+ * user message 文本。默认逐字保持现状（"probe ok" 那句，不触发工具）。
+ * 传 `PROBE_PROMPT=...` 覆盖成一个会诱导模型实际使用 memory 工具的 prompt，
+ * 用于端到端验证 memory 是否真被调用（而非仅声明被接纳）。
+ */
+const PROBE_PROMPT = process.env.PROBE_PROMPT ?? "Reply with exactly the two words: probe ok. Do not use any tool."
+
+/**
+ * max_tokens。默认逐字保持现状 64（最小请求）。端到端触发 memory 调用时建议设
+ * `PROBE_MAX_TOKENS=1024`，给模型足够 token 空间发工具调用块。
+ */
+const PROBE_MAX_TOKENS = process.env.PROBE_MAX_TOKENS ? Number(process.env.PROBE_MAX_TOKENS) : 64
+
 const VALID_ACCOUNT_TYPES = ["individual", "business", "enterprise"] as const
 type AccountType = (typeof VALID_ACCOUNT_TYPES)[number]
 
@@ -90,23 +103,83 @@ function isValidAccountType(v: string | undefined): v is AccountType {
 // 打印助手
 // ----------------------------------------------------------------------------
 
-function hr(title: string): void {
+export function hr(title: string): void {
   console.log(`\n${"=".repeat(78)}\n${title}\n${"=".repeat(78)}`)
 }
 
 /** 从 headers 里取 anthropic-beta（大小写无关）。 */
-function getBetaHeader(headers: Record<string, string>): string | undefined {
+export function getBetaHeader(headers: Record<string, string>): string | undefined {
   for (const [k, v] of Object.entries(headers)) {
     if (k.toLowerCase() === "anthropic-beta") return v
   }
   return undefined
 }
 
+/**
+ * 扫描 2xx 响应，判定 memory 工具是否**端到端被真正调用**。
+ * 区分：
+ *   - `content[]` 里出现 `type:"tool_use"` / `type:"server_tool_use"` 且 name/type 涉及 memory
+ *     的块 → 模型真的发起了 memory 工具调用（端到端激活的强证据）。
+ *   - `context_management.applied_edits` 非空 → 上游真的执行了 context-management 编辑。
+ * 注意：模型在**文本里说**"我记住了"≠ 真调了工具（前者是敷衍幻觉，不算激活）。
+ */
+export interface E2eScan {
+  memoryToolBlocks: Array<unknown>
+  appliedEdits: Array<unknown>
+  contentBlockTypes: Array<string>
+  activated: boolean
+}
+
+export function scanE2e(response: unknown): E2eScan {
+  const scan: E2eScan = { memoryToolBlocks: [], appliedEdits: [], contentBlockTypes: [], activated: false }
+  if (typeof response !== "object" || response === null) return scan
+  const obj = response as Record<string, unknown>
+
+  // 1) content[] 里涉及 memory 的 tool_use / server_tool_use 块
+  const content = obj.content
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (typeof block !== "object" || block === null) continue
+      const b = block as Record<string, unknown>
+      const t = typeof b.type === "string" ? b.type : ""
+      scan.contentBlockTypes.push(t)
+      const isToolUse = t === "tool_use" || t === "server_tool_use"
+      const name = typeof b.name === "string" ? b.name.toLowerCase() : ""
+      const rawType = t.toLowerCase()
+      const mentionsMemory = name.includes("memory") || rawType.includes("memory")
+      if (isToolUse && mentionsMemory) scan.memoryToolBlocks.push(block)
+    }
+  }
+
+  // 2) context_management.applied_edits 非空
+  const cm = obj.context_management
+  if (typeof cm === "object" && cm !== null) {
+    const edits = (cm as Record<string, unknown>).applied_edits
+    if (Array.isArray(edits)) scan.appliedEdits = edits
+  }
+
+  scan.activated = scan.memoryToolBlocks.length > 0 || scan.appliedEdits.length > 0
+  return scan
+}
+
 // ----------------------------------------------------------------------------
-// 主流程
+// Bootstrap（复用生产启动逻辑；被单跳 main + 多轮探针共用）
 // ----------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+export interface ProbeBootstrap {
+  resolvedName: string
+  resolvedModel: Model
+}
+
+/**
+ * 完整 bootstrap 本项目状态并打开 memory 开关、解析 + 校验模型。与 `runServer` 的
+ * 启动顺序一致（config → account-type → vscode → token → models），随后
+ * `setAnthropicBehavior({ memoryToolEnabled: true })`（探针核心，覆盖默认关闭），
+ * 最后解析 PROBE_MODEL 并校验它落在 memoryModels 允许列表内。
+ *
+ * 单跳 `probe.ts` 与多轮 `probe-multiturn.ts` 共用此函数，避免大段复制。
+ */
+export async function bootstrap(): Promise<ProbeBootstrap> {
   hr("Phase 1 · Bootstrap（复用生产启动逻辑）")
 
   // 1) config → state（含 memoryModels 等默认；与 runServer 的 applyConfigToState 一致）
@@ -158,15 +231,25 @@ async function main(): Promise<void> {
     )
   }
 
+  return { resolvedName, resolvedModel }
+}
+
+// ----------------------------------------------------------------------------
+// 主流程（单跳：验 wire 接受性 + 端到端激活）
+// ----------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  const { resolvedName, resolvedModel } = await bootstrap()
+
   hr("Phase 4 · 构造最小请求（plain memory 客户端工具 → 生产管线改写）")
   const payload: MessagesPayload = {
     model: resolvedName,
-    max_tokens: 64,
+    max_tokens: PROBE_MAX_TOKENS,
     stream: false,
     messages: [
       {
         role: "user",
-        content: 'Reply with exactly the two words: probe ok. Do not use any tool.',
+        content: PROBE_PROMPT,
       },
     ],
     // Plain 客户端工具（无 type）。生产管线的 rewrite-memory-tool 步骤会把它改写成
@@ -203,14 +286,33 @@ async function main(): Promise<void> {
     // 到这里 = 上游 2xx，没抛 HTTPError。
     hr("结果：上游 HTTP 2xx —— ✅ 接受")
     console.log("[verdict] ACCEPTED: 上游未拒绝 memory_20250818 server tool + context-management beta。")
-    console.log("[verdict] 响应体（截断到 2000 字符）：")
+    console.log("[verdict] 响应体（截断到 4000 字符）：")
     const body = typeof response === "object" ? JSON.stringify(response, null, 2) : String(response)
-    console.log(body.slice(0, 2000))
+    console.log(body.slice(0, 4000))
+
+    // ----- 端到端激活判据：扫描 content[] 的 memory tool_use 块 + applied_edits -----
+    const scan = scanE2e(response)
+    hr("端到端激活判据（memory 工具是否真被调用）")
+    console.log(`[e2e] content[] 块类型序列 = ${JSON.stringify(scan.contentBlockTypes)}`)
+    console.log(`[e2e] memory 相关 tool_use/server_tool_use 块数 = ${scan.memoryToolBlocks.length}`)
+    if (scan.memoryToolBlocks.length > 0) {
+      console.log(`[e2e] memory 工具块内容 = ${JSON.stringify(scan.memoryToolBlocks, null, 2)}`)
+    }
+    console.log(`[e2e] context_management.applied_edits 条数 = ${scan.appliedEdits.length}`)
+    if (scan.appliedEdits.length > 0) {
+      console.log(`[e2e] applied_edits 内容 = ${JSON.stringify(scan.appliedEdits, null, 2)}`)
+    }
+    if (scan.activated) {
+      console.log("[e2e] >>> memory 工具被端到端调用：是 <<<（观测到 memory tool_use 块或非空 applied_edits）")
+    } else {
+      console.log("[e2e] >>> memory 工具被端到端调用：否 <<<（无 memory tool_use 块、applied_edits 恒空）")
+      console.log("[e2e] 注意：模型若只在文本里说'我记住了'不算激活——那是敷衍幻觉，不是真的工具调用。")
+    }
     console.log(
-      "\n[note] 2xx 只证明上游没有硬拒绝该 wire 形状。要确认 memory 工具是否被真正" +
-        "\n       启用（而非被静默忽略），需检查响应里是否出现 server_tool_use / memory 相关" +
-        "\n       内容块，或在 history 的 sseEvents 里核对上游原始帧。",
+      "\n[note] 2xx 只证明上游没有硬拒绝该 wire 形状。端到端激活须看上面 [e2e] 段：" +
+        "\n       出现 memory 相关 server_tool_use / tool_use 块 = 真被调用；恒空 = 接纳声明但未观测到激活。",
     )
+    process.exit(0)
   } catch (error) {
     // 即使失败也打印我们试图发出的 wire（onPrepared 在 fetch 前已回调）。
     if (prepared) {
@@ -255,4 +357,11 @@ async function main(): Promise<void> {
   }
 }
 
-await main()
+// 只在直接运行 probe.ts 时执行单跳流程；被 probe-multiturn.ts import 时不自动跑
+// （否则 import 的副作用会触发一次真实上游请求）。
+if (import.meta.main) {
+  await main()
+  // 现状进程会残留 keepalive / token-refresh timer 不退出（被外层 timeout 杀）。
+  // 2xx 路径已在 Phase 5 内 process.exit(0)；此处兜底覆盖 error 路径，让复跑干净退出。
+  process.exit(process.exitCode ?? 0)
+}

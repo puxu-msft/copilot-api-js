@@ -1,6 +1,7 @@
 import type { DerivedCapabilities } from "~backend/lib/models/capabilities"
 import type { Model } from "~backend/lib/models/client"
 
+import { RawJsonView } from "@/components/common/RawJsonView"
 import {
   //
   Bool,
@@ -8,7 +9,6 @@ import {
   Row,
   Section,
 } from "@/components/models/detail-tabs/DetailParts"
-import { JsonTreeView } from "@/components/tools/JsonTreeView"
 
 const DERIVED_ROWS: ReadonlyArray<{ key: keyof DerivedCapabilities; label: string }> = [
   { key: "vision", label: "vision" },
@@ -52,7 +52,7 @@ export function CapabilitiesTab({ model, caps }: { model: Model; caps: DerivedCa
 
       <Section title="Raw supports map">
         {Object.keys(supports).length > 0 ?
-          <JsonTreeView value={supports} />
+          <RawJsonView value={supports} />
         : renderValue(undefined)}
       </Section>
     </div>

@@ -1,14 +1,17 @@
 import {
   //
+  fireEvent,
   render,
   screen,
   waitFor,
 } from "@testing-library/react"
 import {
   //
+  afterEach,
   describe,
   expect,
   it,
+  vi,
 } from "vitest"
 
 import { CodeBlock } from "@/components/detail/CodeBlock"
@@ -121,5 +124,104 @@ describe("CodeBlock", () => {
     // No line rows, no token spans, but the bordered shell still mounts.
     expect(container.querySelector("span[style*='color']")).toBeNull()
     expect(container.querySelector("[class*='border-l-2']")).not.toBeNull()
+  })
+})
+
+/**
+ * Toolbar mode (`<CodeBlock toolbar />`) adds an OPTIONAL control row above the
+ * gutter: copy (reuses `copyText`), soft-wrap toggle, and LINE-LEVEL search
+ * (highlight matching lines + prev/next jump). Default (`toolbar` omitted) must
+ * stay byte-identical to the legacy renderer — the back-compat guard below is the
+ * negative control paired with the positive controls-present assertions.
+ */
+describe("CodeBlock toolbar", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("toolbar=false renders no controls (back-compat)", () => {
+    render(<CodeBlock code={'{"a":1}'} />)
+    expect(screen.queryByRole("button", { name: /copy/i })).toBeNull()
+    expect(screen.queryByRole("button", { name: /wrap/i })).toBeNull()
+    expect(screen.queryByRole("textbox")).toBeNull()
+  })
+
+  it("toolbar=true renders copy, wrap, and search controls", () => {
+    render(
+      <CodeBlock
+        code={"x"}
+        toolbar
+      />,
+    )
+    expect(screen.getByRole("button", { name: /copy/i })).toBeDefined()
+    expect(screen.getByRole("button", { name: /wrap/i })).toBeDefined()
+    expect(screen.getByRole("textbox")).toBeDefined()
+  })
+
+  it("copy button calls copyText with the code", async () => {
+    const spy = vi.spyOn(await import("@/lib/clipboard"), "copyText").mockResolvedValue(true)
+    render(
+      <CodeBlock
+        code={'{"a":1}'}
+        toolbar
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: /copy/i }))
+    await waitFor(() => expect(spy).toHaveBeenCalledWith('{"a":1}'))
+  })
+
+  it("soft-wrap toggle flips the wrapping state", () => {
+    const { container } = render(
+      <CodeBlock
+        code={"x"}
+        toolbar
+      />,
+    )
+    const shell = container.querySelector<HTMLElement>("[data-soft-wrap]")
+    expect(shell).not.toBeNull()
+    // Starts un-wrapped (`whitespace-pre`, horizontal scroll).
+    expect(shell?.dataset.softWrap).toBe("false")
+    fireEvent.click(screen.getByRole("button", { name: /wrap/i }))
+    expect(shell?.dataset.softWrap).toBe("true")
+  })
+
+  it("line search highlights matching lines and jumps between them", () => {
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {})
+    const { container } = render(
+      <CodeBlock
+        code={"alpha\nbeta\nalpha again\ngamma"}
+        toolbar
+      />,
+    )
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "alpha" } })
+    // Two source lines contain "alpha" (rows 0 and 2) → two match-highlighted rows.
+    expect(container.querySelectorAll("[data-line-match]").length).toBe(2)
+    // The active match is scrolled into view.
+    expect(scroll).toHaveBeenCalled()
+    // Exactly one active row at a time; Next moves it to the second match.
+    expect(container.querySelectorAll("[data-line-active]").length).toBe(1)
+    fireEvent.click(screen.getByRole("button", { name: /next/i }))
+    expect(container.querySelectorAll("[data-line-active]").length).toBe(1)
+  })
+
+  it("resets the active match to the first when the query is refined", () => {
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {})
+    const { container } = render(
+      <CodeBlock
+        code={"alpha\nbeta\nalpha again\ngamma"}
+        toolbar
+      />,
+    )
+    const input = screen.getByRole("textbox")
+    fireEvent.change(input, { target: { value: "alpha" } })
+    // Jump to the SECOND "alpha" match (row 2), then refine the query.
+    fireEvent.click(screen.getByRole("button", { name: /next/i }))
+    fireEvent.change(input, { target: { value: "beta" } })
+    // Refined query has one match (row 1); active pointer must reset there — not
+    // linger on the stale index-2 position from the previous query.
+    const active = container.querySelector("[data-line-active]")
+    expect(active).not.toBeNull()
+    expect(container.querySelectorAll("[data-line-match]").length).toBe(1)
+    expect(active?.textContent).toContain("beta")
   })
 })

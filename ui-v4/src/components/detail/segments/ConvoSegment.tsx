@@ -6,7 +6,7 @@ import {
 
 import type { HistoryEntry } from "@/types"
 
-import { CodeBlock } from "@/components/detail/CodeBlock"
+import { RawJsonView } from "@/components/common/RawJsonView"
 import { ConversationView } from "@/components/detail/ConversationView"
 import { DetailTocTree } from "@/components/detail/toc/DetailTocTree"
 import { TocSidebar } from "@/components/detail/toc/TocSidebar"
@@ -72,10 +72,7 @@ export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
             <div className="mono mb-1.5 text-[11px] text-[var(--color-muted)]">
               仅消息数组。完整请求 body（system · tools · 参数）见 Stages → Inbound → Raw。
             </div>
-            <CodeBlock
-              code={JSON.stringify(messages, null, 2)}
-              lang="json"
-            />
+            <RawJsonView value={messages} />
           </>
         : <ToolPairingProvider value={{ pairing, scrollTo }}>
             <ConversationView
