@@ -29,12 +29,12 @@ const entries = new Map<string, HistoryEntry>()
  * ...patch }`), so the WeakMap entry is naturally invalidated — we compute once
  * per entry instance and never again.
  */
-const summaryTextCache = new WeakMap<HistoryEntry, { preview: string }>()
+const summaryTextCache = new WeakMap<HistoryEntry, { preview: string; responsePreview: string }>()
 
-function getCachedSummaryText(entry: HistoryEntry): { preview: string } {
+function getCachedSummaryText(entry: HistoryEntry): { preview: string; responsePreview: string } {
   const hit = summaryTextCache.get(entry)
   if (hit) return hit
-  const computed = { preview: extractPreviewText(entry) }
+  const computed = { preview: extractPreviewText(entry), responsePreview: extractResponsePreviewText(entry) }
   summaryTextCache.set(entry, computed)
   return computed
 }
@@ -174,6 +174,6 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     responseBytes: entry.responseBytes,
     multiplier: entry.multiplier,
     previewText: cached.preview,
-    responsePreviewText: extractResponsePreviewText(entry),
+    responsePreviewText: cached.responsePreview,
   }
 }
