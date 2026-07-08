@@ -86,9 +86,14 @@ const TELEMETRY: JoinedModelTelemetry = {
   },
 }
 
-/** Text content of the active tab panel (tab bodies split text across many spans). */
+/**
+ * Text content of the active OUTER tab panel. The Capabilities + Raw JSON tabs now
+ * embed a shared `RawJsonView`, which mounts its own nested `role="tabpanel"`; the
+ * outer Radix panel is always first in document order, and its `textContent`
+ * transitively includes the nested view's text.
+ */
 function panelText(): string {
-  return screen.getByRole("tabpanel").textContent
+  return screen.getAllByRole("tabpanel")[0].textContent
 }
 
 /** Radix Tabs activate on a real pointer/focus sequence — use userEvent, not fireEvent.click. */
@@ -129,6 +134,13 @@ describe("ModelDetail", () => {
     // Numeric/array supports surfaced.
     expect(text).toContain("max_thinking_budget")
     expect(text).toContain("reasoning_effort")
+
+    // The raw supports map is the shared dual view: default source, switchable to tree.
+    const treeTab = screen.getByRole("tab", { name: "树" })
+    expect(screen.getByRole("tab", { name: "原文" }).getAttribute("aria-selected")).toBe("true")
+    await user.click(treeTab)
+    expect(treeTab.getAttribute("aria-selected")).toBe("true")
+    expect(panelText()).toContain("custom_future_flag")
   })
 
   it("Limits + Vision tab renders the Vision block only when limits.vision exists", async () => {
@@ -204,7 +216,7 @@ describe("ModelDetail", () => {
     expect(panelText()).toContain("no runtime telemetry")
   })
 
-  it("Raw JSON tab includes request_headers (no longer stripped)", async () => {
+  it("Raw JSON tab is a dual view (source default + tree) and includes request_headers", async () => {
     const user = userEvent.setup()
     render(
       <ModelDetail
@@ -214,9 +226,20 @@ describe("ModelDetail", () => {
       />,
     )
     await selectTab(user, "Raw JSON")
-    const text = panelText()
-    expect(text).toContain("request_headers")
-    expect(text).toContain("sentinel-value")
+    // Defaults to the source view; the full model JSON (incl. request_headers) is shown.
+    const sourceTab = screen.getByRole("tab", { name: "原文" })
+    const treeTab = screen.getByRole("tab", { name: "树" })
+    expect(sourceTab.getAttribute("aria-selected")).toBe("true")
+    expect(treeTab.getAttribute("aria-selected")).toBe("false")
+    expect(panelText()).toContain("request_headers")
+    expect(panelText()).toContain("sentinel-value")
+
+    // Switching to the tree view keeps the data visible (nothing is dropped).
+    await user.click(treeTab)
+    expect(treeTab.getAttribute("aria-selected")).toBe("true")
+    expect(sourceTab.getAttribute("aria-selected")).toBe("false")
+    expect(panelText()).toContain("request_headers")
+    expect(panelText()).toContain("sentinel-value")
   })
 
   it("closes on Escape", () => {
@@ -280,7 +303,7 @@ describe("ModelDetail", () => {
     expect(capabilities.getAttribute("aria-selected")).toBe("true")
     expect(overview.getAttribute("aria-selected")).toBe("false")
     // Radix wires the panel back to the active tab (aria-labelledby → trigger id).
-    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe(capabilities.getAttribute("id"))
+    expect(screen.getAllByRole("tabpanel")[0].getAttribute("aria-labelledby")).toBe(capabilities.getAttribute("id"))
     // Roving tabindex: only the active/focused tab is Tab-focusable.
     expect(capabilities.getAttribute("tabindex")).toBe("0")
     expect(overview.getAttribute("tabindex")).toBe("-1")
