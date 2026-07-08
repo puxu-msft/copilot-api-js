@@ -309,7 +309,10 @@ function modelEntry(id: string, category: string) {
     id,
     name: id,
     object: "model",
-    vendor: "anthropic",
+    // Real GHC advertises Anthropic models with a capital-A vendor; the proxy's
+    // supportsDirectAnthropicApi() gates /v1/messages on exactly `vendor === "Anthropic"`
+    // (src/lib/anthropic/features.ts:40). Lowercase here makes the proxy reject with 400.
+    vendor: "Anthropic",
     version: id,
     preview: false,
     model_picker_enabled: true,
