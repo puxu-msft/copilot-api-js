@@ -18,11 +18,13 @@ import {
   test,
 } from "bun:test"
 import http2 from "node:http2"
+import net from "node:net"
 
 import {
   //
   closeHttp2Sessions,
   http2Fetch,
+  setConnectTimeoutForTests,
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
 
@@ -218,5 +220,54 @@ describe("http2-client", () => {
     await res.text()
     await new Promise((r) => setTimeout(r, 20))
     expect(called).toBe(false)
+  })
+
+  // Crash-safety: a TLS connect that TIMES OUT must reject the fetch promise
+  // WITHOUT crashing the process. awaitH2Handshake's onTimeout calls
+  // settle(new Error(...)): it removes its own 'error' listener, then tears the
+  // socket down. The timeout error is the socket's FIRST-EVER 'error' emission, so
+  // if teardown re-emits it (destroy(err)) with no listener attached, Node
+  // RE-THROWS it as an uncaughtException → main.ts process.exit(1) — one connect
+  // timeout crashes the whole server (production incident: "[http2] TLS connect
+  // timeout after 10000ms"). NB: the onError path canNOT reproduce this (its socket
+  // already emitted 'error', so destroy wouldn't re-emit) — only this timeout path
+  // (and the ALPN-downgrade path, which shares settle's fresh-error branch) does.
+  // The fix attaches a no-op 'error' sink before teardown.
+  test("a TLS connect timeout rejects WITHOUT a process uncaughtException", async () => {
+    // A raw TCP server that accepts the connection but never speaks TLS — the
+    // upstream handshake stalls until the (shortened) connect deadline fires.
+    // Bind on `localhost` (not "127.0.0.1"): the client dials `https://localhost`
+    // below, and binding the server to the SAME hostname makes both resolve to the
+    // same address family — otherwise a `localhost`→::1 environment would dial ::1
+    // while the server listens on 127.0.0.1 → ECONNREFUSED → the onError path, not
+    // the timeout path we're locking (flaky red, not a false green).
+    const blackhole = net.createServer(() => {
+      /* accept, then never respond — no ServerHello, no RST */
+    })
+    await new Promise<void>((resolve) => blackhole.listen(0, "localhost", resolve))
+    const port = (blackhole.address() as AddressInfo).port
+
+    const seen: Array<unknown> = []
+    const onUncaught = (err: unknown): void => {
+      seen.push(err)
+    }
+    process.on("uncaughtException", onUncaught)
+    // Use the real prod TLS factory (createSession/awaitH2Handshake), NOT the
+    // injected h2c one which bypasses the handshake entirely; shorten the deadline.
+    setHttp2SessionFactoryForTests(undefined)
+    setConnectTimeoutForTests(150)
+    try {
+      // `localhost` (a hostname), not an IP literal — TLS SNI forbids IP servernames;
+      // the blackhole above binds the same hostname so the address family agrees.
+      await expect(http2Fetch(`https://localhost:${port}/x`, {})).rejects.toThrow(/connect timeout/)
+      // Let any orphaned socket 'error' re-emit flush before asserting.
+      await new Promise((r) => setTimeout(r, 80))
+      expect(seen).toHaveLength(0)
+    } finally {
+      process.off("uncaughtException", onUncaught)
+      setConnectTimeoutForTests(undefined)
+      closeHttp2Sessions()
+      await new Promise<void>((resolve) => blackhole.close(() => resolve()))
+    }
   })
 })

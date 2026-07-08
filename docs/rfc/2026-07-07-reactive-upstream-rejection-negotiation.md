@@ -19,7 +19,7 @@
 |---|---|---|---|
 | A | inline `role:"system"` 消息被上游严格后端拒绝，**无任何 strategy 匹配** | 实测 9 条终态失败；错误 `Unexpected role "system". The Messages API accepts a top-level system parameter`；唯一缓解是 proactive `sanitizeInlineSystemMessages`（[sanitize/system-messages.ts:102](../../src/lib/anthropic/sanitize/system-messages.ts#L102)），受 `system_messages_sanitize` 驱动、**默认 false/passthrough**（[schema.ts:268](../../src/lib/config/schema.ts#L268) 注释自认「default — will 400 upstream if present」） | 无反应式；默认关 |
 | B | effort **零支持**变体 `... does not support reasoning effort`（无 `supported values:[...]` 列表）→ parse 在 :580 返 null → learn false → abort。且 negotiation 缓存**无法表达「已知空集」**（`[]` 与「未学习」在 5 处碰撞、含 snapshot/load 两处使空集不可持久化） | 实测 req_1783390118141_26（body 含 `code:invalid_reasoning_effort`、attemptCount=1）。`parseInvalidEffortError` 双正则须匹配（[request-preparation.ts:580](../../src/lib/anthropic/request-preparation.ts#L580)）；空集碰撞详见 §3.3 | effort-learning 部分覆盖 |
-| C | `Tool 'web_search' not found in provided tools` 措辞与 deferred-tool 正则不匹配、补救也不对 | deferred-tool 正则是 `Tool reference '…' not found in available tools`（[deferred-tool-retry.ts:42](../../src/lib/request/strategies/deferred-tool-retry.ts#L42)）；唯一缓解是 proactive `tool_rewrite_history_server:"downgrade"`（[schema.ts:304](../../src/lib/config/schema.ts#L304)）**默认 false** | 无反应式；默认关 |
+| C | `Tool 'web_search' not found in provided tools` 措辞与 deferred-tool 正则不匹配、补救也不对 | deferred-tool 正则是 `Tool reference '…' not found in available tools`（[deferred-tool-retry.ts:42](../../src/lib/request/strategies/deferred-tool-retry.ts#L42)）；唯一缓解是 proactive `server_tool_rewrite:"downgrade"`（[schema.ts:304](../../src/lib/config/schema.ts#L304)）**默认 false** | 无反应式；默认关 |
 
 ### 理论（审计发现、未在当前语料触发，但 parse 逻辑确凿会落空）
 
@@ -108,8 +108,8 @@
 
 ### 3.4 C：web_search-not-found 反应式化
 
-- 优先方案：新增反应式 strategy 检测 `Tool '…' not found in provided tools`（注意区别于 deferred-tool 的 `Tool reference '…' not found in available tools`）→ 触发既有 server-tool-history downgrade（[rewrite-server-tool-history.ts](../../src/lib/anthropic/sanitize/rewrite-server-tool-history.ts)）→ 重试。
-- **Open question O1**（见 §6）：是「加反应式 strategy」还是「翻转 `tool_rewrite_history_server` 默认为 downgrade」——需用户裁决。
+- 优先方案：新增反应式 strategy 检测 `Tool '…' not found in provided tools`（注意区别于 deferred-tool 的 `Tool reference '…' not found in available tools`）→ 触发既有 server-tool-history downgrade（[rewrite-server-tool-blocks.ts](../../src/lib/anthropic/sanitize/rewrite-server-tool-blocks.ts)）→ 重试。
+- **Open question O1**（见 §6）：是「加反应式 strategy」还是「翻转 `server_tool_rewrite` 默认为 downgrade」——需用户裁决。
 
 ### 3.5 D/E/F/G：变体缺口补全
 

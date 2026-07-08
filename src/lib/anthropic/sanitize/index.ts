@@ -15,7 +15,7 @@ import type {
 
 import { state } from "~/lib/state"
 
-import { resolveServerToolHistoryMode } from "../server-tool-history-mode"
+import { resolveServerToolMode } from "../server-tool-rewrite-mode"
 import { resolveSystemSanitizeMode } from "../system-reject-mode"
 import {
   //
@@ -27,7 +27,7 @@ import { destackAdjacentThinking } from "./destack-adjacent-thinking"
 import { downgradeEmptyEncryptedSearchResults } from "./empty-encrypted-search-result"
 import { stripReadToolResultTags } from "./read-tool-result-tags"
 import { finalizeAnthropicSanitization } from "./result"
-import { rewriteServerToolHistory } from "./rewrite-server-tool-history"
+import { rewriteServerToolBlocks } from "./rewrite-server-tool-blocks"
 import { sanitizeInlineSystemMessages } from "./system-messages"
 import { sanitizeAnthropicSystemPrompt } from "./system-prompt"
 import { removeAnthropicSystemReminders } from "./system-reminders"
@@ -99,19 +99,19 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   messages = inlineSystem.messages
   const inlineBlocksRemoved = beforeInlineBlocks - countAnthropicContentBlocks(messages)
 
-  // Downgrade native server-tool blocks left in history by the web_search
+  // Downgrade native server-tool blocks left in prior turns by the web_search
   // double-hop (server_tool_use{web_search} + *_tool_result) into plain
   // tool_use + tool_result. MUST run BEFORE processToolBlocks so the tool
   // reference validation sees the already-downgraded (plain) blocks. No-op when
-  // disabled. See rewrite-server-tool-history.ts for the self-poisoning loop.
-  messages = rewriteServerToolHistory(messages, resolveServerToolHistoryMode(payload.model)).messages
+  // disabled. See rewrite-server-tool-blocks.ts for the self-poisoning loop.
+  messages = rewriteServerToolBlocks(messages, resolveServerToolMode(payload.model)).messages
 
   // Fallback (always-on): downgrade any synthesized web_search turn whose result
   // `encrypted_content` is empty/missing — upstream rejects it with "Invalid
   // encrypted_content in search_result block" and there is no valid value we can
   // supply (empirically, even a non-empty placeholder is rejected). Runs AFTER
   // the config-driven downgrade (which, when enabled, already removed all
-  // server-tool history so this is a no-op) and narrowly targets only the
+  // prior-turn server-tool blocks so this is a no-op) and narrowly targets only the
   // proven-broken shape. See empty-encrypted-search-result.ts.
   messages = downgradeEmptyEncryptedSearchResults(messages).messages
 

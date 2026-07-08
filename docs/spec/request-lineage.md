@@ -269,7 +269,7 @@ Two caveats:
 
 2. **Web-search double-hop synthesis** ([web-search/synthesize.ts](../../src/lib/anthropic/web-search/synthesize.ts)): for entries that took the double-hop path, `outboundResponse.content` is hand-synthesized with `server_tool_use` + `web_search_tool_result` blocks. The next request's echo of these blocks may have:
    - SDK-level serialization differences (`encrypted_content: ""` vs omitted, `page_age: null` vs omitted).
-   - The `rewriteHistoryServerTools: "downgrade"` config rewrites the next *inbound* `server_tool_use` to `tool_use` on the wire path — but `inboundRequest` stored is pre-transform, so this doesn't bite here.
+   - The `rewriteServerTools: "downgrade"` config rewrites the next *inbound* `server_tool_use` to `tool_use` on the wire path — but `inboundRequest` stored is pre-transform, so this doesn't bite here.
 
    **v1 behavior:** lineage for web_search-using requests may show no parent edge. Documented limitation. **v1.1 mitigation:** add a canonicalizer pass that drops empty/null-valued `encrypted_content` and `page_age` fields before hashing.
 
@@ -627,7 +627,7 @@ Empirically observed: `req_1781546985683_1948` (failed, claude-opus-4-8 with inl
 
 ### 8.4 Web-search double-hop
 
-When `web_search.enabled` + `rewriteHistoryServerTools: "downgrade"` are active, `outboundResponse.content` is hand-synthesized. The next request's echo of `server_tool_use`/`web_search_tool_result` blocks may have SDK-level field-presence differences (`encrypted_content: ""` vs omitted, `page_age: null` vs omitted). v1 may show no parent edge for such requests.
+When `server_tool_web_search.enabled` + `rewriteServerTools: "downgrade"` are active, `outboundResponse.content` is hand-synthesized. The next request's echo of `server_tool_use`/`web_search_tool_result` blocks may have SDK-level field-presence differences (`encrypted_content: ""` vs omitted, `page_age: null` vs omitted). v1 may show no parent edge for such requests.
 
 **v1.1 mitigation:** add a canonicalizer that drops empty/null `encrypted_content`/`page_age` before hashing.
 

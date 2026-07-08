@@ -425,7 +425,7 @@ export interface State {
    * `tool_use` + `tool_result` (splitting the assistant turn so the tool_result
    * lands in a user message, per protocol). `false` passes through (default).
    */
-  readonly rewriteHistoryServerTools: false | "downgrade"
+  readonly rewriteServerTools: false | "downgrade"
 
   /**
    * Client compatibility shim for the thinking frame some Copilot upstreams emit
@@ -1059,7 +1059,7 @@ export function setAnthropicBehavior(
       | "systemMessagesSanitize"
       | "systemRejectModels"
       | "systemRejectMode"
-      | "rewriteHistoryServerTools"
+      | "rewriteServerTools"
       | "thinkingSignatureCompat"
       | "dedupToolCalls"
       | "stripReadToolResultTags"
@@ -1279,7 +1279,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   systemMessagesSanitize: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectMode: "as_user" as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] as Array<string>,
-  rewriteHistoryServerTools: false as false | "downgrade",
+  rewriteServerTools: false as false | "downgrade",
   thinkingSignatureCompat: "signature_delta" as false | "signature_delta" | "redacted_thinking",
   dedupToolCalls: false as const,
   stripReadToolResultTags: false,
@@ -1408,7 +1408,7 @@ export function resetConfigManagedState(): void {
     systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
     systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
     systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
-    rewriteHistoryServerTools: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
+    rewriteServerTools: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
     thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
     dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
     stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
@@ -1548,7 +1548,7 @@ const mutableState: MutableState = {
   systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
   systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
   systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
-  rewriteHistoryServerTools: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
+  rewriteServerTools: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
   thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,

@@ -7,7 +7,7 @@
 - **Tool blocks**：`tool-blocks.ts` 校验 tool_use/tool_result 配对、删孤儿；`deduplicate-tool-calls.ts` 去重；`tool-name-sanitize.ts` 配合顶层 `src/lib/tool-name-mapper.ts` 清洗非法/超长/冲突名（响应侧还原）。
 - **内容块**：`content-blocks.ts` / `text-blocks.ts` 过滤空/空白块；损坏 thinking 块按 signature 有效性丢弃。
 - **System**：`system-prompt.ts` / `system-messages.ts` / `system-reminders.ts` 处理顶层 system、inline `role:system` 消息、`<system-reminder>` 标签。
-- **server tool 历史**：`rewrite-server-tool-history.ts` 降级残留 native server-tool block；`read-tool-result-tags.ts` 剥 Read 结果标签。
+- **server tool 历史**：`rewrite-server-tool-blocks.ts` 降级残留 native server-tool block；`read-tool-result-tags.ts` 剥 Read 结果标签。
 
 统计产出见 `result.ts`（`SanitizationStats`：orphan、fixedName、空块、损坏 thinking）。
 

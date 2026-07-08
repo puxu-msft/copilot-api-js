@@ -257,7 +257,7 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── anthropic.* scalars ────────────────────────────────────────────
   {
-    configKey: "anthropic.tool_strip_server",
+    configKey: "anthropic.server_tool_strip",
     stateKey: "stripServerTools",
     sampleYamlValue: "true",
     expectedStateValue: true,
@@ -404,7 +404,7 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.memoryModels,
   },
   {
-    configKey: "anthropic.memory_tool",
+    configKey: "anthropic.server_tool_memory",
     stateKey: "memoryToolEnabled",
     sampleYamlValue: "true",
     expectedStateValue: true,
@@ -528,11 +528,11 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
   },
   {
-    configKey: "anthropic.tool_rewrite_history_server",
-    stateKey: "rewriteHistoryServerTools",
+    configKey: "anthropic.server_tool_rewrite",
+    stateKey: "rewriteServerTools",
     sampleYamlValue: "downgrade",
     expectedStateValue: "downgrade",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
   },
   {
     configKey: "anthropic.thinking_signature_compat",
@@ -762,16 +762,16 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyDbPath,
   },
 
-  // ── web_search.* ───────────────────────────────────────────────────
+  // ── server_tool_web_search.* ───────────────────────────────────────────────────
   {
-    configKey: "web_search.enabled",
+    configKey: "server_tool_web_search.enabled",
     stateKey: "webSearchEnabled",
     sampleYamlValue: "true",
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
   },
   {
-    configKey: "web_search.backend",
+    configKey: "server_tool_web_search.backend",
     stateKey: "webSearchBackend",
     sampleYamlValue: '"searxng"',
     expectedStateValue: "searxng",

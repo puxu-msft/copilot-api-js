@@ -161,7 +161,7 @@ history 记失败 + 保留残缺投影；客户端据合成 error 帧原生重�
 - OQ2：fail 兜底在 text 已转发后触发（protect_streaming 关时），客户端拿"部分 text + error"——文档化为已知限制（同截断检测 post-content 暂缓），还是建议与 protect_streaming 同开以转透明重试？
 - OQ-reemit：单个修复后 `input_json_delta` 替代原多个小 delta 的客户端等价性——以 recover/decode 既有 golden + Anthropic SDK 实测作**独立 oracle** 钉死（self-consistent-needs-independent-oracle），不口头断言。
 - OQ-name：修复后 tool_use 经 filter(300)/`sanitizeToolNames` 的 name 还原是否仍正确？本特性只改 input 字节、不碰 name，预期 name-agnostic，须确认。
-- OQ-回流：客户端把修复后 input 回传上游，上游看到的是"代理修过的 input"而非自己生成的畸形——是否触发后续轮次一致性/prompt-cache 问题（类比 `rewriteHistoryServerTools` 的回流处理）？
+- OQ-回流：客户端把修复后 input 回传上游，上游看到的是"代理修过的 input"而非自己生成的畸形——是否触发后续轮次一致性/prompt-cache 问题（类比 `rewriteServerTools` 的回流处理）？
 - OQ-范围：实测仅 Anthropic 见此畸形，故 YAGNI 排除 OpenAI/Responses。若日后 `tool_calls.arguments`/`function_call.arguments` 同源畸形有实证，则把"缓冲+parse+修复"抽共享 primitive 三格式复用（§2.0 备选）。
 
 ## 6. 落地后 doc-sync（completion-includes-doc-sync）

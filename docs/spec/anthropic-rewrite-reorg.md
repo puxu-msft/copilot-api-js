@@ -64,6 +64,8 @@
 
 `anthropic.*` **34 键**按关注点前缀统一改名，**不嵌套**（键仍 `anthropic.foo`）。`sanitize_tool_names` 留顶层（§2 更正）。前缀方案：`thinking_*`（coerce/block/signature_compat）、`tool_*`（search/dedup/non_deferred/recover_call_text/decode_*/strip_*/rewrite_history_server）、`cache_control`、`context_editing_*`（已分组）、`system_*`（messages_sanitize/rewrite_reminders）。具体 34 键映射表在实现时定（约束：concern-prefix、flat、1:1）。
 
+> **后续细化（2026-07-07）**：`tool_*` 家族里**专属 Anthropic 原生 server tool** 的键进一步收拢为 `server_tool_*` 子前缀，与作用于 custom/client tool 的 `tool_*` 区分开——`tool_strip_server`→`server_tool_strip`、`tool_rewrite_history_server`→`server_tool_rewrite`、`memory_tool`→`server_tool_memory`；顶层 `web_search` section→`server_tool_web_search`（消歧于同名 client tool）。仍是 concern-first + flat + 1:1，是本方案的细化而非违背。compat 里古名与中间 `tool_*` 名均**直接**映射到终名（不链式）。同时内部标识符去掉「history」误称（`rewriteHistoryServerTools`→`rewriteServerTools`、`server-tool-history-*.ts`→`server-tool-rewrite-*.ts`），此处 history 指消息历史而非本项目的 History 持久层。
+
 **扁平选择的成本（~1×，远低于嵌套）**：
 1. **schema** 34 键改名（仍 `.strict()` 平铺）
 2. **`config.ts:applyConfigToState`** 58 处 `a.<field>` **1:1 改名**（非嵌套那样 `a.x`→`a.group?.x` 的结构改写）

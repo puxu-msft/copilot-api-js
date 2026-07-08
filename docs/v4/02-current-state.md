@@ -68,7 +68,7 @@ Retry-After：`extractRetryAfterFromBody`(parsing.ts:25) + `parseRetryAfterHeade
 - **A3** system prompt 去 reminder — 始终 — `sanitize/system-prompt.ts:15`
 - **A4** messages 去 reminder — 始终（标签策略 `state.rewriteSystemReminders`） — `sanitize/system-reminders.ts:92`
 - **A5** 内联 `role:"system"` 消息处理 — `state.systemMessagesSanitize` — `sanitize/system-messages.ts:102`
-- **A6** 历史 server-tool 块降级 — `state.rewriteHistoryServerTools` — `sanitize/rewrite-server-tool-history.ts:123`（**必须先于 A8**）
+- **A6** 历史 server-tool 块降级 — `state.rewriteServerTools` — `sanitize/rewrite-server-tool-blocks.ts:123`（**必须先于 A8**）
 - **A7** 丢损坏 thinking 块 — `state.thinkingBlockSanitizeCheck` — `sanitize/content-blocks.ts:70`（**先于 A8**）
 - **A8** tool 块统一处理（名称修正 + input 解析 + 孤儿过滤 + 空消息丢弃） — 始终 — `sanitize/tool-blocks.ts:32`
 - **A9** 终末空 text 块清理 — 始终 — `sanitize/content-blocks.ts:11,30`

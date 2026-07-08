@@ -75,10 +75,12 @@ model_overrides:
   # claude-sonnet-4.5: claude-opus-4.6
   # claude-sonnet-4.6: claude-opus-4.6
 
+  # Use latest haiku
+  haiku: claude-haiku-4.5
+
   # Upgrade haiku to sonnet / 把 haiku 升级到 sonnet
-  # haiku: claude-haiku-4.5
-  haiku: claude-sonnet-4.6
-  claude-haiku-4.5: claude-sonnet-4.6
+  # haiku: claude-sonnet-4.6
+  # claude-haiku-4.5: claude-sonnet-4.6
 
 # ============================================================================
 # Disabled Models / 禁用模型
@@ -209,7 +211,7 @@ history:
 # When enabled and a request carries a native web_search server tool (or Claude Code's WebSearch tool), the proxy intercepts it, runs a real search, and feeds the results back to the model for a second-pass answer (double-hop). Default off.
 # 启用后，若请求带原生 web_search 服务端工具（或 Claude Code 的 WebSearch 工具），代理会拦截它、执行真实搜索，并把结果回喂模型做二次生成（双跳）。默认关闭。
 
-web_search:
+server_tool_web_search:
   # Enable the double-hop web_search implementation (default: false)
   # 启用双跳 web_search 实现（默认 false）
   enabled: false
@@ -260,6 +262,7 @@ anthropic:
       - claude-opus-4-8
       - claude-sonnet-4-5
       - claude-sonnet-4-6
+      - claude-sonnet-5
       - claude-haiku-4-5
     # Native memory tool (memory_20250818) support. Mirrors GHC modelSupportsMemory — BROADER than
     # extended-cache-ttl. The bare `claude-sonnet-4` / `claude-opus-4` entries are load-bearing (cover all
@@ -272,6 +275,7 @@ anthropic:
       - claude-sonnet-4
       - claude-sonnet-4-5
       - claude-sonnet-4-6
+      - claude-sonnet-5
       - claude-opus-4
       - claude-opus-4-1
       - claude-opus-4-5
@@ -407,18 +411,18 @@ anthropic:
   # Anthropic memory 工具（原生 memory_20250818）。默认 FALSE——CAPI 是否接受该 server-tool 类型未实测（GHC 仅在直连 BYOK
   # 路径发，不经 CAPI）。为 true 且模型支持时，把客户端 `memory` 工具改写为 {name,type} 并强制 context-management beta；
   # 由客户端执行、无响应侧处理。关闭时按普通 custom tool 透传。
-  memory_tool: false
+  server_tool_memory: false
 
   # Additional tool names that should never be deferred when tool_search is enabled.
   # tool_search 启用时额外永不延迟的工具名。
-  # tool_non_deferred:
+  # tool_search_non_deferred:
   #   - my_custom_tool
 
   # Strip server-side tools (web_search, etc.) from requests.
   # 从请求中剥离服务端工具（web_search 等）。
   # This is the unconditional global switch. Even when false, a server tool the upstream rejects with 400 ("web search tool is not supported") is learned and stripped pre-emptively for that (endpoint, model) on subsequent requests (server-tool-rejection self-healing). See docs/v4/03-spec/server-tool-rejection-retry.md
   # 这是无条件的全局开关。即使为 false，被上游用 400（"web search tool is not supported"）拒绝过的服务端工具也会被学习，并对后续同 (endpoint, model) 请求预先剥离（server-tool-rejection 自愈）。详见 docs/v4/03-spec/server-tool-rejection-retry.md
-  tool_strip_server: false
+  server_tool_strip: false
 
   # Rewrite native server-tool blocks left in message history before sending upstream.
   # 发送上游前改写消息历史里残留的原生 server-tool 块。
@@ -427,7 +431,7 @@ anthropic:
   # Recommended ON together with web_search.enabled. / 建议与 web_search.enabled 同时开启。
   #   downgrade: rewrite the pair into plain tool_use + tool_result (splits the assistant turn so the tool_result lands in a user message) / 把该对降级为普通 tool_use + tool_result（拆分 assistant turn，使 tool_result 落入 user 消息）
   #   false:     passthrough (default — will 400 upstream when a historical server_tool_use survives without a matching server-tool definition) / 透传（默认——残留 server_tool_use 无配套 server-tool 定义时会 400）
-  tool_rewrite_history_server: false
+  server_tool_rewrite: false
 
   # Cache control mode for prompt caching. / prompt 缓存的 cache control 模式。
   #   disabled:    strip all cache_control fields (no caching) / 剥离所有 cache_control 字段（不缓存）
