@@ -458,7 +458,11 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
 
 3d. 更新 `clearNegotiationMaps`（[feature-negotiation.ts:508-519](../../../src/lib/anthropic/feature-negotiation.ts#L508-L519)）：类型不变（仍 `.clear()`），10 个 map 名不变 —— 无需改逻辑，仅确认编译通过。
 
-> B2 阶段 marker/reader 尚未改（B3/B4 做）。为让文件编译，本步同时把 `addToSetMap` 调用替换为 `recordEntry(map, key, value, nowMs())`（6 处），把扁平 `.add` / `.has` marker 暂保持行为（B3 补 meta 刷新）。**具体**：`markX` 里 `addToSetMap(map, key, val)` → `recordEntry(map, key, val, nowMs())`；`markEffortUnsupported`/`markSystemRejectModel`/`markServerToolDowngrade` 的 `set.has/add` → `map.has/set(key, {firstLearnedAt:now,lastConfirmedAt:now})`；`setSupportedEfforts` 存 `{values, meta}`。reader 的 `.get(k)?.has(v)` → `.get(k)?.has(v)`（Map.has 仍可用，B4 加门控）。getter `[...set]` → `[...inner.keys()]`。
+> B2 阶段 marker/reader 尚未改（B3/B4 做）。为让文件编译，本步同时把 `addToSetMap` 调用替换为 `recordEntry(map, key, value, nowMs())`（6 处），把扁平 `.add` / `.has` marker 暂保持行为（B3 补 meta 刷新）。**具体**：`markX` 里 `addToSetMap(map, key, val)` → `recordEntry(map, key, val, nowMs())`；`markEffortUnsupported`/`markSystemRejectModel`/`markServerToolDowngrade` 的 `set.has/add` → `map.has/set(key, {firstLearnedAt:now,lastConfirmedAt:now})`；`setSupportedEfforts` 存 `{values, meta}`。reader 的 `.get(k)?.has(v)` 仍可用（Map.has，B4 加门控）；record getter `[...set]` → `[...inner.keys()]`。
+>
+> **L2（务必改）**：`getAllLearnedEfforts`（[feature-negotiation.ts:190-194](../../../src/lib/anthropic/feature-negotiation.ts#L190-L194)）现 `out[key] = [...value]`，v2 下 `value` 是 `{ values, meta }` → 改 `out[key] = [...value.values]`，否则编译错。此 reader 保持**原始**（无 live 消费者、供快照/导出），不加门控。
+>
+> **L4（务必保留）**：重写 `loadPersistedFeatureNegotiation` 时保留末尾的载入计数日志（原 [:494-496](../../../src/lib/anthropic/feature-negotiation.ts#L494-L496)）：迁移/加载后累加各 map size，`consola.info` 打 `Loaded ${total} negotiated entries`。
 
 - [ ] **Step 4: 跑绿（迁移测试 + 全部既有测试）**
 
@@ -509,12 +513,22 @@ describe("markX re-confirm refreshes meta without changing return contract", () 
     expect(t2.features[key1].context_management.firstLearnedAt).toBe(t1.features[key1].context_management.firstLearnedAt)
   })
 
-  test("setSupportedEfforts returns false on unchanged whitelist but still refreshes meta", async () => {
+  test("setSupportedEfforts returns false on unchanged ACTIVE whitelist but still refreshes meta", async () => {
     clearAnthropicFeatureNegotiationForTests()
     expect(setSupportedEfforts("m", ["low", "high"])).toBe(true)
-    expect(setSupportedEfforts("m", ["low", "high"])).toBe(false) // unchanged → false (retry-driver contract)
-    // meta still refreshed: firstLearnedAt preserved, entry present
+    expect(setSupportedEfforts("m", ["low", "high"])).toBe(false) // active + unchanged → false (loop guard)
     expect(getSupportedEfforts("m")).toEqual(["low", "high"])
+  })
+
+  test("setSupportedEfforts returns true when reviving an EXPIRED entry (H3)", () => {
+    clearAnthropicFeatureNegotiationForTests()
+    setSystemTime(new Date(0))
+    setSupportedEfforts("m", ["low", "high"])
+    setSystemTime(new Date(31 * 86_400_000)) // expired (default 30d)
+    // same whitelist, but entry was inactive → revival → true (else effort strategy would abort)
+    expect(setSupportedEfforts("m", ["low", "high"])).toBe(true)
+    expect(getSupportedEfforts("m")).toEqual(["low", "high"]) // active again
+    setSystemTime(new Date())
   })
 
   test("markEffortUnsupported drops sibling efforts meta (mutual exclusivity)", () => {
@@ -533,21 +547,28 @@ describe("markX re-confirm refreshes meta without changing return contract", () 
 
 3a. 6 个走 `recordEntry` 的 marker：已在 B2 Step-3d 改为 `recordEntry(...)`，其 re-hit 刷新已含。确认 `markAnthropicFeatureUnsupported`/`markAnthropicBetaUnsupported`/`markToolUndeferred`/`markAnthropicServerToolUnsupported`/`markAnthropicPartnerFeatureUnsupported`/`markAnthropicUnsupportedToolFields` 各调 `recordEntry` 并 `schedulePersist()`（返回 true 或 false 都 persist，因 re-hit 刷了 meta）—— 现状仅 `if(changed) schedulePersist`，改为**始终 `schedulePersist()`**（re-hit 刷新也需落盘）。
 
-3b. `setSupportedEfforts`（[feature-negotiation.ts:173-183](../../../src/lib/anthropic/feature-negotiation.ts#L173-L183)）—— 分离 meta 与返回值:
+3b. `setSupportedEfforts`（[feature-negotiation.ts:173-183](../../../src/lib/anthropic/feature-negotiation.ts#L173-L183)）—— 分离 meta 与返回值，**并处理过期条目复活**（H3，关键）:
+
+> **H3 根因**：B4 门控 `getSupportedEfforts` 后，一条**已过期**的 effort 条目被上游以**相同**白名单再拒时，若仍返 false，则 `learnEffortsFromError`（[request-preparation.ts:685-688](../../../src/lib/anthropic/request-preparation.ts#L685-L688)）返 false → effort retry 策略（[effort-learning-retry.ts:73-77](../../../src/lib/request/strategies/effort-learning-retry.ts#L73-L77)）**放弃**，客户端吃 400——尽管重新准备本会 clamp 成功。且正常活跃期 `clampEffortLevel` 预剥、上游从不 400 → `lastConfirmedAt` 永不刷新 → effort 条目**每 ~30d 必过期一次**、下次请求失败一次。这是 efforts 独有（其余 void marker 的策略无条件重试、同请求自愈）。修法：条目**此前不活跃（复活）**时返 true（重新准备会不同），仅「此前活跃 + 白名单未变」才返 false（真正的 loop 守卫）。
+
 ```ts
+import { isEntryActive } from "~/lib/anthropic/negotiation-lifecycle"
+
 export function setSupportedEfforts(modelName: string, supported: Array<string>): boolean {
   const key = effortKey(modelName)
   const now = nowMs()
   effortUnsupportedModels.delete(key) // 互斥：设白名单撤销 unsupported（连 meta 一起删）
   const existing = supportedEfforts.get(key)
   if (existing) {
+    const wasActive = isEntryActive(existing.meta, "efforts", now) // 复活判定须在 touchFlagMeta 之前
     const same = existing.values.length === supported.length && existing.values.every((e, i) => e === supported[i])
-    touchFlagMeta(existing.meta, now) // 副作用：始终刷新 meta（含 re-hit）
-    if (same) {
+    touchFlagMeta(existing.meta, now) // 副作用：始终刷新 meta（含 re-hit / 复活）
+    if (same && wasActive) {
       schedulePersist()
-      return false // retry-driver 契约：白名单未变 = 无前进
+      return false // 真 loop 守卫：条目仍活跃却被同白名单再拒 = 无前进
     }
-    existing.values = [...supported]
+    // 白名单变了，或条目此前已过期（复活）—— 重新准备会不同，值得重试
+    if (!same) existing.values = [...supported]
     schedulePersist()
     return true
   }
@@ -623,7 +644,7 @@ describe("reader gating by TTL (features)", () => {
   })
 })
 ```
-（其余 9 分类同构，各一条：betas/efforts/effortUnsupported/deferredTools/serverTools/partnerFeatures/systemRejectModels/serverToolDowngrade/toolFields。）
+（其余 9 分类同构，各一条：betas/efforts/effortUnsupported/deferredTools/serverTools/partnerFeatures/systemRejectModels/serverToolDowngrade/toolFields。**M1 注意 shipped 默认非一律 30d**：`toolFields` 默认 90d → 该分类守卫用 `>90d`（如 `new Date(91 * DAY)`）;`partnerFeatures` 默认 never（Infinity）→ 时间维度无法过期，改用 B5 的 `expireEntry` 注入过期（见 B5 Step-5 每分类守卫），或该测试前 `setNegotiationConfig({ negotiationTtlOverridesMs: { partnerFeatures: 30 * 86_400_000 } })` 覆到有限值。`clearAnthropicFeatureNegotiationForTests` 只清 map、不清 config，故 config 默认在测试中生效。）
 
 - [ ] **Step 2: 跑红** — Expected: FAIL（31d 后仍返 true —— 无门控）。
 
@@ -676,7 +697,7 @@ EOF
   - `interface LearnedSnapshot { categories: Array<{ category: NegotiationCategory; ttlMs: number | null; entries: Array<LearnedEntryView> }> }`
   - `function getGroupedSnapshot(): LearnedSnapshot`
   - `function exportAll(): NegotiationStateFileV2`
-  - `function renewEntry(category, key, value): boolean` / `expireEntry(...)` / `setPinned(category, key, value, pinned): boolean` / `deleteEntry(category, key, value): boolean` —— 返回是否命中（false → 404）。
+  - `function renewEntry(category, key, value): LearnedEntryView | null` / `expireEntry(...): LearnedEntryView | null` / `setPinned(category, key, value, pinned): LearnedEntryView | null` —— 命中则返回更新后的 view（richest-data-flow，履行冻结契约 `{ok, entry}`），未命中返 `null`（→ 404）。`deleteEntry(category, key, value): boolean`（删后无 view，返是否命中）。
 
 - [ ] **Step 1: 写失败测试**
 ```ts
@@ -695,16 +716,19 @@ describe("mutations + snapshot", () => {
     expect(feat.entries[0].status).toBe("active")
   })
 
-  test("expireEntry sets manually_expired, keeps row; renew revives", () => {
+  test("expireEntry sets manually_expired, keeps row; miss returns null", () => {
     clearAnthropicFeatureNegotiationForTests()
     markAnthropicBetaUnsupported("m", "beta-x")
-    expect(expireEntry("betas", "", "beta-x")).toBe(false) // wrong key → miss? see addressing
+    expect(expireEntry("betas", "", "beta-x")).toBeNull() // wrong key (betas needs real modelKey) → miss
+    const e = getGroupedSnapshot().categories.find((c) => c.category === "betas")!.entries[0]
+    const view = expireEntry("betas", e.key, e.value)
+    expect(view?.status).toBe("manually_expired") // row kept, view returned
   })
 
-  test("efforts addressing: key='' value=model", () => {
+  test("efforts addressing: key='' value=model; setPinned returns updated view", () => {
     clearAnthropicFeatureNegotiationForTests()
     setSupportedEfforts("opus", ["low"])
-    expect(setPinned("efforts", "", "opus", true)).toBe(true)
+    expect(setPinned("efforts", "", "opus", true)?.status).toBe("pinned")
     const snap = getGroupedSnapshot()
     expect(snap.categories.find((c) => c.category === "efforts")!.entries[0].status).toBe("pinned")
   })
@@ -760,7 +784,20 @@ function locateMeta(category: NegotiationCategory, key: string, value: string): 
     case "effortUnsupported": return effortUnsupportedModels.get(value)
     case "systemRejectModels": return learnedSystemRejectModels.get(value)
     case "serverToolDowngrade": return serverToolDowngradeModels.get(value)
+    default: { const _exhaustive: never = category; return _exhaustive } // L1: 编译期穷尽守卫
   }
+}
+
+/** efforts 的 detail（values）供 view 用；其余分类无 detail。 */
+function locateDetail(category: NegotiationCategory, value: string): unknown {
+  return category === "efforts" ? supportedEfforts.get(value)?.values : undefined
+}
+
+/** 命中则构建更新后的 view（renew/expire/pin 履行 {ok, entry} 契约）。 */
+function viewFor(category: NegotiationCategory, key: string, value: string): LearnedEntryView | null {
+  const meta = locateMeta(category, key, value)
+  if (!meta) return null
+  return viewOf(category, key, value, meta, nowMs(), locateDetail(category, value))
 }
 
 function deleteLocated(category: NegotiationCategory, key: string, value: string): boolean {
@@ -775,31 +812,32 @@ function deleteLocated(category: NegotiationCategory, key: string, value: string
     case "effortUnsupported": return effortUnsupportedModels.delete(value)
     case "systemRejectModels": return learnedSystemRejectModels.delete(value)
     case "serverToolDowngrade": return serverToolDowngradeModels.delete(value)
+    default: { const _exhaustive: never = category; return _exhaustive } // L1: 编译期穷尽守卫
   }
 }
 
-export function renewEntry(category: NegotiationCategory, key: string, value: string): boolean {
+export function renewEntry(category: NegotiationCategory, key: string, value: string): LearnedEntryView | null {
   const meta = locateMeta(category, key, value)
-  if (!meta) return false
+  if (!meta) return null
   meta.lastConfirmedAt = nowMs()
   delete meta.manuallyExpired
   schedulePersist()
-  return true
+  return viewFor(category, key, value)
 }
-export function expireEntry(category: NegotiationCategory, key: string, value: string): boolean {
+export function expireEntry(category: NegotiationCategory, key: string, value: string): LearnedEntryView | null {
   const meta = locateMeta(category, key, value)
-  if (!meta) return false
+  if (!meta) return null
   meta.manuallyExpired = true
   schedulePersist()
-  return true
+  return viewFor(category, key, value)
 }
-export function setPinned(category: NegotiationCategory, key: string, value: string, pinned: boolean): boolean {
+export function setPinned(category: NegotiationCategory, key: string, value: string, pinned: boolean): LearnedEntryView | null {
   const meta = locateMeta(category, key, value)
-  if (!meta) return false
+  if (!meta) return null
   if (pinned) meta.pinned = true
   else delete meta.pinned
   schedulePersist()
-  return true
+  return viewFor(category, key, value)
 }
 export function deleteEntry(category: NegotiationCategory, key: string, value: string): boolean {
   const hit = deleteLocated(category, key, value)
@@ -920,7 +958,9 @@ negotiation_learning:
     negotiationDefaultTtlMs: 30 * 86_400_000,
     negotiationTtlOverridesMs: { toolFields: 90 * 86_400_000, partnerFeatures: Number.POSITIVE_INFINITY } as Record<string, number>,
     ```
-  - clone 站点（record 字段）：仿 `effortsOverrides` 在 [state.ts:868-871](../../../src/lib/state.ts#L868-L871)、[:920-930](../../../src/lib/state.ts#L920-L930)、[:1447-1450](../../../src/lib/state.ts#L1447-L1450)、[:1590-1593](../../../src/lib/state.ts#L1590-L1593) 各加 `negotiationTtlOverridesMs` 的浅拷贝分支（`{ ...patch.negotiationTtlOverridesMs }`）。**先 `git status` 查 state.ts 外来改动**。
+  - clone 站点（**H1，两类不同**）：
+    - `state.ts:868`（`cloneState`）+ `:920`（`cloneStatePatch`）**spread `...source`/`...patch`** —— 标量 `negotiationDefaultTtlMs` 自动带过，**只需**给 record 字段 `negotiationTtlOverridesMs` 加浅拷贝分支（仿 `effortsOverrides`：`if ("negotiationTtlOverridesMs" in patch) cloned.negotiationTtlOverridesMs = patch.negotiationTtlOverridesMs ? { ...patch.negotiationTtlOverridesMs } : undefined`）。
+    - `state.ts:1447`（`resetConfigManagedState` 内）+ `:1590`（初始 `mutableState` 字面量）**逐字段显式枚举、不 spread** —— 因 `negotiationDefaultTtlMs` 是**非可选** `readonly number`，这两处**必须同时列** `negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs` **和** `negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs }`，否则 `:1590` tsc 报 "Property 'negotiationDefaultTtlMs' is missing"、`:1447` 热重载 reset 不还原默认。**先 `git status` 查 state.ts 外来改动**。
   - setter：
     ```ts
     export function setNegotiationConfig(patch: Partial<Pick<MutableState, "negotiationDefaultTtlMs" | "negotiationTtlOverridesMs">>): void {
@@ -967,6 +1007,7 @@ if (hasOwn(body, "negotiation_learning")) {
 }
 ```
 - [ ] **Step 5（effective-config 守卫）**：`negotiationDefaultTtlMs` / `negotiationTtlOverridesMs` 在 `CONFIG_MANAGED_DEFAULTS` → `buildEffectiveConfig` 自动 emit（无需改 route）。跑既有守卫测试确认：`bun test tests/routes/config-effective-route.http.test.ts`（完备性守卫应因 CONFIG_MANAGED_DEFAULTS 新键自动通过；若守卫断言固定键数，更新其期望）。
+  > **L3（预期行为）**：`negotiationTtlOverridesMs` 里的 `Number.POSITIVE_INFINITY`（如 `partnerFeatures`）经 `c.json` → `JSON.stringify(Infinity)` = `null`，故 `/api/config` 显示 `partnerFeatures: null`。这是**有意的**——`null` = never（自文档化），守卫只查键存在性、不受影响。无需 sentinel。
 - [ ] **Step 6（TTL 生效测试）**：
 ```ts
 test("per-category TTL override changes expiry (toolFields 90d)", () => {
@@ -1051,7 +1092,7 @@ describe("/api/negotiation", () => {
 
 - [ ] **Step 2: 跑红** — Expected: FAIL（module 缺）。
 
-- [ ] **Step 3: 实现** `src/routes/negotiation/route.ts`（handler-side safeParse 约定，仿 debug 路由）:
+- [ ] **Step 3: 实现** `src/routes/negotiation/route.ts`（handler-side safeParse 约定，仿 debug 路由；**内联 try/catch 不抽 parseRef helper** —— M3：`.openapi` 重载泛型，`Parameters<>` 取 Context 不可靠）:
 ```ts
 /** 反应式学习记录（feature-negotiation 缓存）的查看 / 编辑管理 API。 */
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi"
@@ -1059,13 +1100,14 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi"
 import {
   deleteEntry, expireEntry, exportAll, getGroupedSnapshot, renewEntry, setPinned,
 } from "~/lib/anthropic/feature-negotiation"
-import { NEGOTIATION_CATEGORIES } from "~/lib/anthropic/negotiation-lifecycle"
+import { type NegotiationCategory, NEGOTIATION_CATEGORIES } from "~/lib/anthropic/negotiation-lifecycle"
 
 export const negotiationRoutes = new OpenAPIHono()
 
 const AnyJson = z.record(z.string(), z.unknown())
 const ErrorSchema = z.object({ error: z.string() }).openapi("NegotiationError")
-const CategoryEnum = z.enum(NEGOTIATION_CATEGORIES as unknown as [string, ...Array<string>])
+// H2：保留 NegotiationCategory 联合（勿退化成 string，否则传给 mutator 报 TS2345）
+const CategoryEnum = z.enum(NEGOTIATION_CATEGORIES as unknown as readonly [NegotiationCategory, ...Array<NegotiationCategory>])
 const EntryRefSchema = z.object({ category: CategoryEnum, key: z.string(), value: z.string() }).strict()
 const PinSchema = EntryRefSchema.extend({ pinned: z.boolean() })
 
@@ -1075,14 +1117,6 @@ const getRoute = createRoute({
   responses: { 200: { description: "snapshot", content: { "application/json": { schema: AnyJson } } } },
 })
 negotiationRoutes.openapi(getRoute, (c) => c.json(getGroupedSnapshot()))
-
-async function parseRef<T extends z.ZodTypeAny>(c: Parameters<Parameters<typeof negotiationRoutes.openapi>[1]>[0], schema: T) {
-  let raw: unknown
-  try { raw = await c.req.json() } catch { return { error: "Invalid JSON body" as const } }
-  const p = schema.safeParse(raw)
-  if (!p.success) return { error: "Invalid request" as const }
-  return { data: p.data as z.infer<T> }
-}
 
 function refRoute(path: string, summary: string) {
   return createRoute({
@@ -1095,28 +1129,37 @@ function refRoute(path: string, summary: string) {
   })
 }
 
+// 每 handler 内联 body 解析（仿 debug/route.ts:136-145），避免脆弱的 Context 泛型标注。
 negotiationRoutes.openapi(refRoute("/renew", "Renew (extend expiry) an entry"), async (c) => {
-  const r = await parseRef(c, EntryRefSchema)
-  if ("error" in r) return c.json({ error: r.error }, 400)
-  const ok = renewEntry(r.data.category, r.data.key, r.data.value)
-  return ok ? c.json({ ok: true }) : c.json({ error: "entry not found" }, 404)
+  let raw: unknown
+  try { raw = await c.req.json() } catch { return c.json({ error: "Invalid JSON body" }, 400) }
+  const p = EntryRefSchema.safeParse(raw)
+  if (!p.success) return c.json({ error: "Invalid request" }, 400)
+  const entry = renewEntry(p.data.category, p.data.key, p.data.value)
+  return entry ? c.json({ ok: true, entry }) : c.json({ error: "entry not found" }, 404)
 })
 negotiationRoutes.openapi(refRoute("/expire", "Expire now (keep row)"), async (c) => {
-  const r = await parseRef(c, EntryRefSchema)
-  if ("error" in r) return c.json({ error: r.error }, 400)
-  const ok = expireEntry(r.data.category, r.data.key, r.data.value)
-  return ok ? c.json({ ok: true }) : c.json({ error: "entry not found" }, 404)
+  let raw: unknown
+  try { raw = await c.req.json() } catch { return c.json({ error: "Invalid JSON body" }, 400) }
+  const p = EntryRefSchema.safeParse(raw)
+  if (!p.success) return c.json({ error: "Invalid request" }, 400)
+  const entry = expireEntry(p.data.category, p.data.key, p.data.value)
+  return entry ? c.json({ ok: true, entry }) : c.json({ error: "entry not found" }, 404)
 })
 negotiationRoutes.openapi(refRoute("/pin", "Pin/unpin (never expire)"), async (c) => {
-  const r = await parseRef(c, PinSchema)
-  if ("error" in r) return c.json({ error: r.error }, 400)
-  const ok = setPinned(r.data.category, r.data.key, r.data.value, r.data.pinned)
-  return ok ? c.json({ ok: true }) : c.json({ error: "entry not found" }, 404)
+  let raw: unknown
+  try { raw = await c.req.json() } catch { return c.json({ error: "Invalid JSON body" }, 400) }
+  const p = PinSchema.safeParse(raw)
+  if (!p.success) return c.json({ error: "Invalid request" }, 400)
+  const entry = setPinned(p.data.category, p.data.key, p.data.value, p.data.pinned)
+  return entry ? c.json({ ok: true, entry }) : c.json({ error: "entry not found" }, 404)
 })
 negotiationRoutes.openapi(refRoute("/entry/delete", "Delete an entry"), async (c) => {
-  const r = await parseRef(c, EntryRefSchema)
-  if ("error" in r) return c.json({ error: r.error }, 400)
-  const ok = deleteEntry(r.data.category, r.data.key, r.data.value)
+  let raw: unknown
+  try { raw = await c.req.json() } catch { return c.json({ error: "Invalid JSON body" }, 400) }
+  const p = EntryRefSchema.safeParse(raw)
+  if (!p.success) return c.json({ error: "Invalid request" }, 400)
+  const ok = deleteEntry(p.data.category, p.data.key, p.data.value)
   return ok ? c.json({ ok: true }) : c.json({ error: "entry not found" }, 404)
 })
 
@@ -1130,7 +1173,6 @@ negotiationRoutes.openapi(exportRoute, (c) => {
   return c.json(exportAll())
 })
 ```
-> 若 `parseRef` 的 `c` 类型难标注，简化为在每个 handler 内联 `try{await c.req.json()}catch`（仿 debug 路由 [:120-151](../../../src/routes/debug/route.ts#L120-L151)），不抽 helper。
 
 - [ ] **Step 4: 挂载** `src/routes/index.ts`（import + 在 `/api/*` 群、`registerOpenApiDocs` 调用前）:
 ```ts

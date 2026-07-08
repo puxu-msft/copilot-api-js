@@ -120,7 +120,7 @@ function isEntryActive(meta: LearnedEntryMeta, category: NegotiationCategory, no
 实现纪律：先 `grep` 全仓这些符号的调用点、逐一核对（方法论见记忆 [fix-all-comparison-sites]），每分类配一条「过期后不再施加」的守卫测试。
 
 **门控位置（消费 vs 原始读取）**：`isEntryActive` 过滤只加在**上述面向管线消费的 exported reader** 内部。**内部 mutator 与快照/导出走原始（不门控）路径**，二者必须区分：
-- **写路径存在性探针**：`learnEffortsFromError`（[request-preparation.ts:685-688](../../src/lib/anthropic/request-preparation.ts#L685-L688)）用 `getSupportedEfforts` 判 `isFirstLearn`。门控后过期 effort 会被判为「首学」→ 日志打 `Learned` 而非 `Updated`（**仅日志措辞漂移，无害**）；`firstLearnedAt` 的保真由 `setSupportedEfforts` 内部**直接读原始 meta**保证（不经门控 reader）。
+- **写路径存在性探针**：`learnEffortsFromError`（[request-preparation.ts:685-688](../../src/lib/anthropic/request-preparation.ts#L685-L688)）用 `getSupportedEfforts` 判 `isFirstLearn`，并用 `setSupportedEfforts` 的 `changed` 返回值驱动 effort retry 策略（`if(!changed) return false` → 策略放弃）。门控后过期 effort 会被判为「首学」→ 日志打 `Learned` 而非 `Updated`（仅日志措辞漂移，无害）；`firstLearnedAt` 的保真由 `setSupportedEfforts` 内部**直接读原始 meta**保证（不经门控 reader）。**但返回值须处理「复活」**（对抗审查 H3）：门控后一条**已过期**的 effort 条目被同白名单再拒时，`setSupportedEfforts` 必须返 `true`（条目此前不活跃 → 重新准备会 clamp 成功、值得重试），仅「此前活跃 + 白名单未变」才返 `false`（真 loop 守卫）。否则该腿会放弃、客户端吃 400；且 `clampEffortLevel` 预剥使正常期永不刷新 `lastConfirmedAt`，effort 条目会每 ~TTL 必过期一次。此为 efforts 独有（其余 void marker 的策略无条件重试、同请求自愈）。
 - **快照 / 导出**：`getGroupedSnapshot` / `exportAll` **直接读原始 map + 自行计算 status**，绝不经门控 reader（否则过期行不显示 —— 与「管理过期记录」的目标相悖）。`getAllLearnedEfforts`（[feature-negotiation.ts:190](../../src/lib/anthropic/feature-negotiation.ts#L190)，当前无 live 消费者）保持原始，供快照/导出用。
 
 **自然重测环**：过期记录读作「没学过」→ workaround 不施加 → 上游再拒 → 对应 reactive-rejection 策略再学 → `markX` 刷新 `lastConfirmedAt`。无需独立的重测调度器。
