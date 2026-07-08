@@ -24,11 +24,16 @@ function FrameList({ label, frames, startedAt }: { label: string; frames: Array<
         {frames.map((f, i) => (
           <div
             key={i}
-            className="mono overflow-hidden text-ellipsis whitespace-nowrap px-2 py-0.5 text-[13px] text-[#aaa]"
+            className={`mono overflow-hidden text-ellipsis whitespace-nowrap px-2 py-0.5 text-[13px] text-[#aaa] ${f.synthetic ? "opacity-60" : ""}`}
           >
             <span className="text-[var(--color-muted)]">
               {formatClockMs(startedAt + f.offsetMs)} {formatElapsed(f.offsetMs)}
             </span>{" "}
+            {f.synthetic ?
+              <span className="mono mr-1 border border-[var(--color-border)] px-1 text-[10px] uppercase tracking-wider text-[var(--color-muted)]">
+                {f.synthetic}
+              </span>
+            : null}
             <span className="text-[#9ad]">{f.type}</span> {f.raw}
           </div>
         ))}
