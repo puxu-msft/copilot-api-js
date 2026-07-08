@@ -2,7 +2,7 @@
  * Resolve the effective inline-`role:"system"` sanitize mode for a given resolved
  * OUTBOUND model name. A model in the reject set (config `system_reject_models`
  * ∪ the learned negotiation set) uses `system_reject_mode`; every other model
- * falls back to the global `system_messages_sanitize` (default passthrough).
+ * falls back to the global `system_default_mode` (default passthrough).
  *
  * The reject membership is a SYMPTOM ("this outbound model rejects inline system"),
  * NOT a Vertex assertion (Vertex is this account's known cause but is not asserted).
@@ -27,5 +27,5 @@ export function isSystemRejectModel(model: string): boolean {
 }
 
 export function resolveSystemSanitizeMode(model: string): SystemMessagesSanitizeMode {
-  return isSystemRejectModel(model) ? state.systemRejectMode : state.systemMessagesSanitize
+  return isSystemRejectModel(model) ? state.systemRejectMode : state.systemDefaultMode
 }

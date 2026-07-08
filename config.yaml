@@ -368,8 +368,10 @@ anthropic:
   #   claude-opus-4.7: [medium]
   #   claude-opus-4.7-1m-internal: [medium]
 
-  # Handle role:"system" messages mixed into the messages array. Anthropic models `system` as a top-level param, not a message role — but whether an inline system message is rejected is PER UPSTREAM BACKEND: STRICT backends (empirically claude-sonnet-4.6 / claude-haiku-4.5 on this account) 400 with `Unexpected role "system"`; others (e.g. Opus) accept it. This GLOBAL key governs only models NOT in system_reject_models below.
-  # 处理混入 messages 数组的 role:"system" 消息。Anthropic 把 system 建模为顶层参数而非消息角色——但 inline system 是否被拒**取决于上游后端**：STRICT 后端（本账号实测为 claude-sonnet-4.6 / claude-haiku-4.5）报 `Unexpected role "system"` 400；其它（如 Opus）接受。此全局键**只作用于不在下方 system_reject_models 里的模型**。
+  # DEFAULT mode for inline role:"system" messages (mixed into the messages array) — the fallback applied to every model NOT in system_reject_models below. Rejecters in that set use the system_reject_mode override instead; the two keys share this same mode enum and differ only in which model bucket they apply to.
+  # inline role:"system" 消息（混入 messages 数组）的**默认 mode**——作用于所有不在下方 system_reject_models 里的模型。命中 reject 集的模型改用 system_reject_mode 覆盖；两个键共用同一 mode 枚举，只差作用在哪桶模型。
+  # Whether inline system needs handling at all is PER UPSTREAM BACKEND: STRICT backends (empirically claude-sonnet-4.6 / claude-haiku-4.5 on this account) 400 with `Unexpected role "system"`; others (e.g. Opus) accept it — hence the false default.
+  # inline system 是否需要处理**取决于上游后端**：STRICT 后端（本账号实测 claude-sonnet-4.6 / claude-haiku-4.5）报 `Unexpected role "system"` 400；其它（如 Opus）接受——故默认 false。
   # Such inline system messages come from OpenAI-habit clients or Claude Code mid-conversation context injections (hook output / rules / reminders).
   # 这类 inline system 来自 OpenAI 习惯客户端或 Claude Code 对话中途注入的上下文（hook 输出 / 规则 / 提醒）。
   #   as_user:      rewrite role to "user" — keeps conversation position (recommended) / 改 role 为 "user"——保留对话位置（推荐）
@@ -377,12 +379,12 @@ anthropic:
   #   drop_invalid: remove them entirely (loses the context) / 直接删除（丢失上下文）
   #   as_assistant: rewrite role to "assistant" (experimental, NOT recommended — disguises context as model output) / 改 role 为 "assistant"（实验性、不推荐——把上下文伪装成模型输出）
   #   false:        passthrough unchanged (default) — correct for accepters like Opus; a not-yet-known rejecter's first request 400s, then reactive learning marks it (permanent, no TTL) + retries / 原样透传（默认）——对 Opus 这类接受者是对的；未知拒绝者首个请求会 400，随后反应式学习标记它（永久、无 TTL）并重试
-  system_messages_sanitize: false
+  system_default_mode: false
 
   # 上游严格后端拒绝 inline role:"system" 的模型集（观测症状，非 vertex 硬断言）。子串匹配 resolved outbound 名（归一化）。
-  # 命中 → 用 system_reject_mode；未命中 → 回退 system_messages_sanitize。运行时还会从上游拒绝中学习扩展该集。
+  # 命中 → 用 system_reject_mode；未命中 → 回退 system_default_mode。运行时还会从上游拒绝中学习扩展该集。
   # Models whose upstream STRICT backend rejects inline role:"system" (observed symptom, not a Vertex assertion).
-  # Substring set matched against the resolved outbound model name. Matched → system_reject_mode; else → system_messages_sanitize.
+  # Substring set matched against the resolved outbound model name. Matched → system_reject_mode; else → system_default_mode.
   # Default [claude-sonnet-4.6, claude-haiku-4.5] + as_user (empirically confirmed: these two reject inline system, Opus etc. accept). / 默认命中集 + as_user（实测确认：这两个拒绝 inline system，Opus 等接受）。
   # system_reject_models:
   #   - claude-sonnet-4.6

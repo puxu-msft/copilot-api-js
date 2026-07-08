@@ -51,7 +51,7 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
   // for EVERY model (not GHC's lenient first-party leg) — so ALWAYS sanitize, independent
   // of the reject set. Use as_user (position-preserving); fall back to the global mode only
   // when it is a non-false mode the operator explicitly chose otherwise.
-  const countMode = state.systemMessagesSanitize === false ? "as_user" : state.systemMessagesSanitize
+  const countMode = state.systemDefaultMode === false ? "as_user" : state.systemDefaultMode
   const inlineSystem = sanitizeInlineSystemMessages(payload.messages, attributionStrippedSystem, countMode)
   const countPayload = { ...payload, model, system: inlineSystem.system, messages: inlineSystem.messages }
 

@@ -102,6 +102,12 @@ describe("config compat — legacy key migration (file load)", () => {
     expect(result.anthropic?.thinking_block_sanitize).toBe("empty_any")
   })
 
+  test("anthropic.system_messages_sanitize → system_default_mode", () => {
+    const result = validateConfig({ anthropic: { system_messages_sanitize: "as_user" } })
+    expect(result.anthropic?.system_default_mode).toBe("as_user")
+    expect((result.anthropic as Record<string, unknown> | undefined)?.system_messages_sanitize).toBeUndefined()
+  })
+
   // anthropic.* concern-prefix normalization (RFC anthropic-rewrite-reorg §6, Phase 4).
   // Per-key round-trip: legacy flat key in → new concern-prefixed key out. Guards against
   // a forgotten renameLeaf silently dropping the user's value under the strict schema

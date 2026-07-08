@@ -386,12 +386,13 @@ export interface State {
   readonly coerceAdaptiveThinking: false | "basic" | "best_effort"
 
   /**
-   * Handle `role:"system"` messages mixed into the `messages` array. Whether an
-   * inline system message is rejected is PER UPSTREAM BACKEND: STRICT backends
-   * (empirically claude-sonnet-4.6 / claude-haiku-4.5 here) 400 with `Unexpected
-   * role "system"`, while others (e.g. Opus) accept it. This GLOBAL knob governs
-   * only models NOT in `systemRejectModels`. See config
-   * `anthropic.system_messages_sanitize`.
+   * DEFAULT inline-`role:"system"` handling mode — the fallback applied to every
+   * model NOT in `systemRejectModels` (rejecters use the `systemRejectMode`
+   * override instead; both share this mode enum, differing only by model bucket).
+   * Whether an inline system message needs handling is PER UPSTREAM BACKEND: STRICT
+   * backends (empirically claude-sonnet-4.6 / claude-haiku-4.5 here) 400 with
+   * `Unexpected role "system"`, while others (e.g. Opus) accept it. See config
+   * `anthropic.system_default_mode`.
    *
    * - `false`         — passthrough (default). Correct for accepters (Opus); a
    *                     not-yet-known rejecter's first request 400s, then reactive
@@ -401,7 +402,7 @@ export interface State {
    * - `"as_user"`     — rewrite role to `"user"` (recommended; preserves position).
    * - `"as_assistant"`— rewrite role to `"assistant"` (experimental, not recommended).
    */
-  readonly systemMessagesSanitize: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
+  readonly systemDefaultMode: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
 
   /**
    * Config-declared set of models whose upstream STRICT backend rejects inline
@@ -409,7 +410,7 @@ export interface State {
    * this account but NOT asserted). A substring set matched against the resolved
    * outbound model name (normalized at match time, NOT here). A matched model
    * uses `systemRejectMode`; unmatched models fall back to the global
-   * `systemMessagesSanitize`. Union'd at match time with the runtime-learned
+   * `systemDefaultMode`. Union'd at match time with the runtime-learned
    * reject set. Default `["claude-sonnet-4.6", "claude-haiku-4.5"]`.
    */
   readonly systemRejectModels: Array<string>
@@ -1061,7 +1062,7 @@ export function setAnthropicBehavior(
       | "poisonedThinkingQuarantine"
       | "poisonedThinkingTtlHours"
       | "coerceAdaptiveThinking"
-      | "systemMessagesSanitize"
+      | "systemDefaultMode"
       | "systemRejectModels"
       | "systemRejectMode"
       | "rewriteServerTools"
@@ -1281,7 +1282,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   poisonedThinkingQuarantine: true,
   poisonedThinkingTtlHours: 72,
   coerceAdaptiveThinking: "basic" as false | "basic" | "best_effort",
-  systemMessagesSanitize: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
+  systemDefaultMode: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectMode: "as_user" as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] as Array<string>,
   rewriteServerTools: false as false | "downgrade",
@@ -1410,7 +1411,7 @@ export function resetConfigManagedState(): void {
     poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
     poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
     coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
-    systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
+    systemDefaultMode: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
     systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
     systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
     rewriteServerTools: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
@@ -1550,7 +1551,7 @@ const mutableState: MutableState = {
   poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
   poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
   coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
-  systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
+  systemDefaultMode: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
   systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
   systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
   rewriteServerTools: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,

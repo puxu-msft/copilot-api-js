@@ -1068,7 +1068,7 @@ function findLastIndex<T>(items: Array<T>, predicate: (item: T) => boolean): num
  * tool_result blocks (`isToolResultMessage`); GHC's `User` role = a user message
  * WITHOUT tool_result (a real prompt); GHC's `Assistant` with no tool calls = an
  * assistant message with no tool_use block. Inline `role:"system"` messages (which
- * survive when `systemMessagesSanitize` is off) are skipped without flipping
+ * survive when `systemDefaultMode` is off) are skipped without flipping
  * `isBelowCurrentUserMessage`, mirroring GHC's first-pass handling of
  * `Raw.ChatRole.System`.
  *

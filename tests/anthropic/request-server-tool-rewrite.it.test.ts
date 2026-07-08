@@ -138,8 +138,8 @@ describe("sanitizeAnthropicMessages × rewriteServerTools", () => {
     expect(allBlocks.some((b) => b.type === "tool_use" && b.id === "srvtoolu_root")).toBe(true)
   })
 
-  test("downgrade composes with system_messages_sanitize without producing orphans", () => {
-    setStateForTests({ rewriteServerTools: "downgrade", systemMessagesSanitize: "as_user" })
+  test("downgrade composes with system_default_mode without producing orphans", () => {
+    setStateForTests({ rewriteServerTools: "downgrade", systemDefaultMode: "as_user" })
     const messages = [{ role: "system", content: "inline system note" } as unknown as MessageParam, webSearchTurn("srvtoolu_compose")]
     const out = sanitizeAnthropicMessages(payload(messages)).payload
     const allBlocks = out.messages.flatMap((m) => (typeof m.content === "string" ? [] : (m.content as unknown as Array<Block>)))

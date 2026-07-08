@@ -506,11 +506,11 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
   },
   {
-    configKey: "anthropic.system_messages_sanitize",
-    stateKey: "systemMessagesSanitize",
+    configKey: "anthropic.system_default_mode",
+    stateKey: "systemDefaultMode",
     sampleYamlValue: "merge",
     expectedStateValue: "merge",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
   },
   {
     configKey: "anthropic.system_reject_models",

@@ -23,7 +23,7 @@ export interface SanitizationStats {
   /** Corrupt (unsigned) thinking blocks dropped by the thinking_block_sanitize pass */
   emptyThinkingBlocksRemoved: number
   systemReminderRemovals: number
-  /** Inline `role:"system"` messages converted/dropped by system_messages_sanitize (NOT a block-removal count) */
+  /** Inline `role:"system"` messages converted/dropped by system_default_mode (NOT a block-removal count) */
   inlineSystemConverted: number
   totalBlocksRemoved: number
   /**
@@ -70,7 +70,7 @@ export function finalizeAnthropicSanitization(
   }
 
   if (inlineSystemConverted > 0) {
-    consola.info(`[Sanitizer:Anthropic] Handled ${inlineSystemConverted} inline system message(s) [${state.systemMessagesSanitize}]`)
+    consola.info(`[Sanitizer:Anthropic] Handled ${inlineSystemConverted} inline system message(s) [${state.systemDefaultMode}]`)
   }
 
   return {

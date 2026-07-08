@@ -543,8 +543,8 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.thinking_coerce_adaptive !== undefined) {
       setAnthropicBehavior({ coerceAdaptiveThinking: a.thinking_coerce_adaptive })
     }
-    if (a.system_messages_sanitize !== undefined) {
-      setAnthropicBehavior({ systemMessagesSanitize: a.system_messages_sanitize })
+    if (a.system_default_mode !== undefined) {
+      setAnthropicBehavior({ systemDefaultMode: a.system_default_mode })
     }
     if (a.system_reject_models !== undefined) setAnthropicBehavior({ systemRejectModels: a.system_reject_models })
     if (a.system_reject_mode !== undefined) setAnthropicBehavior({ systemRejectMode: a.system_reject_mode })

@@ -203,10 +203,15 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // anthropic.* renames (consistency + name-vs-reality)
   renameLeaf("anthropic.efforts_overrides", "anthropic.effort_overrides"),
   renameLeaf("anthropic.thinking_block_sanitize_check", "anthropic.thinking_block_sanitize"),
+  // system_messages_sanitize → system_default_mode: the key names the DEFAULT/fallback
+  // inline-`role:"system"` mode (applied to models NOT in system_reject_models), paired
+  // with system_reject_mode; the old "sanitize" spelling misleadingly read as a global
+  // switch and overlapped system_reject_mode's description. Same enum value, no transform.
+  renameLeaf("anthropic.system_messages_sanitize", "anthropic.system_default_mode"),
   // anthropic.* concern-prefix normalization (RFC anthropic-rewrite-reorg §6, Phase 4):
   // every key is concern-first (thinking_/tool_/system_/beta_/retry_/stream_). Behavior
   // unchanged — only the user-facing yaml key spelling. Already-grouped keys (thinking_block_*,
-  // context_editing*, tool_search, cache_control, system_messages_sanitize, …) keep their names.
+  // context_editing*, tool_search, cache_control, …) keep their names.
   renameLeaf("anthropic.coerce_adaptive_thinking", "anthropic.thinking_coerce_adaptive"),
   // server-tool sub-concern regrouping: the four keys dealing with Anthropic NATIVE
   // server tools (web_search / memory / code_execution …) move under a `server_tool_*`

@@ -6,7 +6,7 @@
  * Such inline system messages come from OpenAI-habit clients or Claude Code's
  * mid-conversation context injections (hook output / rules / reminders).
  *
- * Driven by `state.systemMessagesSanitize` (config `anthropic.system_messages_sanitize`).
+ * Driven by `state.systemDefaultMode` (config `anthropic.system_default_mode`).
  * The mode is passed in explicitly (not read from state) so this stays a pure,
  * directly-testable function.
  */

@@ -130,7 +130,7 @@ const scenarios: Array<Scenario> = [
   },
   {
     name: "inline system message converted to user",
-    setup: () => setStateForTests({ systemMessagesSanitize: "as_user" }),
+    setup: () => setStateForTests({ systemDefaultMode: "as_user" }),
     payload: payload([{ role: "system", content: "inline sys" } as unknown as MessageParam, user("q")]),
     ctx: NO_MAPPER,
     didWork: (s) => s.inlineSystemConverted > 0,
@@ -148,7 +148,7 @@ const scenarios: Array<Scenario> = [
     // fire in one request — the strongest order-sensitivity assertion (the
     // intermediate payload must thread correctly through all three modules).
     name: "composite — tool-name + inline-system + orphan cleanup together",
-    setup: () => setStateForTests({ sanitizeToolNames: true, systemMessagesSanitize: "as_user" }),
+    setup: () => setStateForTests({ sanitizeToolNames: true, systemDefaultMode: "as_user" }),
     payload: payload(
       [
         { role: "system", content: "inline sys" } as unknown as MessageParam,

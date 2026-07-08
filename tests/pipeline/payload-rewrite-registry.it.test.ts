@@ -148,7 +148,7 @@ describe("request-rewrite migration golden (codec.parse → driver S3)", () => {
   })
 
   test("inline-system convert: effectiveRequest reflects the convert, but NO pipelineInfo (gate excludes inlineSystemConverted)", async () => {
-    setStateForTests({ systemMessagesSanitize: "as_user" })
+    setStateForTests({ systemDefaultMode: "as_user" })
     const input = payload([
       { role: "system", content: "inline sys" },
       { role: "user", content: "q" },

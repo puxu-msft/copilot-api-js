@@ -683,7 +683,7 @@ describe("cache_control modes", () => {
         messages: [
           { role: "user", content: [{ type: "text", text: "prompt" }] },
           { role: "assistant", content: [{ type: "text", text: "answer" }] },
-          // Non-standard inline system message that survives when systemMessagesSanitize is off.
+          // Non-standard inline system message that survives when systemDefaultMode is off.
           { role: "system", content: [{ type: "text", text: "reminder" }] } as never,
         ],
       })

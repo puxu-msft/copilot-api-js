@@ -301,25 +301,27 @@ export const AnthropicConfigSchema = z
       .optional()
       .transform((v) => v ?? undefined),
     /**
-     * Handle `role:"system"` messages mixed into the `messages` array. The
-     * Anthropic Messages API models `system` as a top-level param, not a message
-     * role — but whether an inline `role:"system"` message is rejected is PER
-     * UPSTREAM BACKEND: STRICT backends (empirically claude-sonnet-4.6 /
-     * claude-haiku-4.5 on this account) 400 with `Unexpected role "system"`, while
-     * others (e.g. Opus) accept it. This GLOBAL key governs only models NOT in
-     * `system_reject_models` (which routes known rejecters to `system_reject_mode`).
-     * Such inline system messages come from OpenAI-habit clients or Claude Code's
-     * mid-conversation context injections (hook output / rules / reminders).
+     * DEFAULT inline-`role:"system"` handling mode — the fallback applied to every
+     * model NOT in `system_reject_models`. (Rejecters in that set use the
+     * `system_reject_mode` override instead; the two keys share this same mode enum
+     * and differ only in which model bucket they apply to.)
+     *
+     * Whether an inline system message needs handling at all is PER UPSTREAM
+     * BACKEND: STRICT backends (empirically claude-sonnet-4.6 / claude-haiku-4.5 on
+     * this account) 400 with `Unexpected role "system"`, while others (e.g. Opus)
+     * accept it — hence the `false` default. Such inline system messages come from
+     * OpenAI-habit clients or Claude Code's mid-conversation context injections
+     * (hook output / rules / reminders).
+     *   false:         passthrough unchanged (DEFAULT) — correct for accepters like
+     *                  Opus; a not-yet-known rejecter's first request 400s, then
+     *                  reactive learning marks it (permanent, no TTL) and retries
      *   drop_invalid:  remove every inline system message
      *   merge:         pull their text out, append to the top-level `system`, drop the messages
      *   as_user:       rewrite role to "user" (keeps position — recommended)
      *   as_assistant:  rewrite role to "assistant" (experimental, not recommended —
      *                  disguises context as model output, highest risk)
-     *   false:         passthrough unchanged (default) — correct for accepters like
-     *                  Opus; a not-yet-known rejecter's first request 400s, then
-     *                  reactive learning marks it (permanent, no TTL) and retries
      */
-    system_messages_sanitize: z
+    system_default_mode: z
       .union([z.literal(false), z.literal("drop_invalid"), z.literal("merge"), z.literal("as_user"), z.literal("as_assistant"), z.null()], {
         error: "Must be one of: false, drop_invalid, merge, as_user, as_assistant",
       })
@@ -330,14 +332,17 @@ export const AnthropicConfigSchema = z
      * (observed SYMPTOM — Vertex is this account's known cause but NOT asserted).
      * A substring set matched against the resolved OUTBOUND model name (normalized).
      * A matched model uses `system_reject_mode`; unmatched models fall back to the
-     * global `system_messages_sanitize`. Also grows at runtime (reactive learning).
+     * global `system_default_mode`. Also grows at runtime (reactive learning).
      * Default `[claude-sonnet-4.6, claude-haiku-4.5]` (empirically confirmed).
      */
     system_reject_models: nullableNonemptyStringArray(),
     /**
-     * Effective sanitize mode for models in `system_reject_models` (∪ the learned
-     * reject set). Reuses the SystemMessagesSanitizeMode enum. Default `as_user`
-     * (keeps position — most prompt-cache-friendly).
+     * OVERRIDE mode for models in `system_reject_models` (∪ the reactively-learned
+     * reject set) — models whose upstream is known to reject inline `role:"system"`.
+     * Same mode enum as `system_default_mode` (see there for what each value does);
+     * this key only changes WHICH mode the reject bucket gets. Default `as_user`
+     * (keeps position — most prompt-cache-friendly). `false` here would passthrough
+     * and re-trigger the upstream 400, so it is rarely useful.
      */
     system_reject_mode: z
       .union([z.literal(false), z.literal("drop_invalid"), z.literal("merge"), z.literal("as_user"), z.literal("as_assistant"), z.null()], {
