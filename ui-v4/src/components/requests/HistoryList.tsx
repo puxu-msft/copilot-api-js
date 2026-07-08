@@ -94,6 +94,7 @@ function entryToGatingSummary(e: HistoryEntry): EntrySummary {
     responseModel: resolveResponseModel(e),
     messageCount: e.clientRequest?.messages?.length ?? 0,
     previewText: "",
+    responsePreviewText: "",
   } as EntrySummary
 }
 

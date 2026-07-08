@@ -19,15 +19,17 @@ import {
 const entries = new Map<string, HistoryEntry>()
 
 /**
- * Memoized preview text per HistoryEntry instance.
+ * Memoized preview + response-preview text per HistoryEntry instance.
  *
  * `extractPreviewText` iterates the messages array and content blocks; for long
  * conversations with frequent SSE-driven `updateInFlight` calls the cost is
  * O(updates × messages × blocks) and the result was previously recomputed on
- * every WebSocket push. Cache keyed by HistoryEntry identity: each `putInFlight`
- * / `updateInFlight` produces a fresh entry object (due to `{ ...existing,
- * ...patch }`), so the WeakMap entry is naturally invalidated — we compute once
- * per entry instance and never again.
+ * every WebSocket push. `extractResponsePreviewText` likewise iterates the
+ * attempts / response content blocks, so it is memoized in the SAME WeakMap cell
+ * and shares the entry's invalidation fate. Cache keyed by HistoryEntry identity:
+ * each `putInFlight` / `updateInFlight` produces a fresh entry object (due to
+ * `{ ...existing, ...patch }`), so the WeakMap entry is naturally invalidated —
+ * we compute once per entry instance and never again.
  */
 const summaryTextCache = new WeakMap<HistoryEntry, { preview: string; responsePreview: string }>()
 
