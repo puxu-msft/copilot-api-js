@@ -9,11 +9,16 @@ import {
   beforeEach,
   describe,
   expect,
+  mock,
   test,
 } from "bun:test"
 
 import type { OpenBlock } from "~/lib/pipeline/client-sink"
-import type { ClientFrame } from "~/lib/pipeline/types"
+import type {
+  //
+  ClientFrame,
+  ClientSink,
+} from "~/lib/pipeline/types"
 
 import {
   //
@@ -339,6 +344,81 @@ describe("makeSseSink block-aware keepalive (provider pingFrame)", () => {
     await sink.write(blockStart(0, "thinking")) // fixed mode ignores this for keepalive selection
     await clock.advance(15_000)
     expect(written.at(-1)).toEqual({ event: "ping", data: '{"type":"ping"}' })
+    sink.close?.()
+  })
+})
+
+// ── makeSseSink buffered anchor injection (injectAnchor tick branch, empty_text mode) ─────
+// In buffered empty_text mode there is NO open block yet when the first idle tick fires (nothing
+// has been forwarded). The tick calls the driver/pump-supplied `injectAnchor` closure, which forwards
+// message_start + a synthetic empty-text anchor block via the sink's PUBLIC `write` — that lights
+// openBlock={0,text}. A second idle tick then sees the open block and emits a real empty text_delta
+// (the frame that resets Claude Code's 300s watchdog). If injectAnchor cannot inject yet (returns
+// false in the pre-message_start window) the tick falls back to a ping.
+
+describe("makeSseSink buffered anchor injection (injectAnchor tick branch)", () => {
+  const clock = new FakeClock()
+  beforeEach(() => clock.install())
+  afterEach(() => clock.restore())
+
+  // Block-aware provider: an open text block → empty text_delta@index; nothing open → fallback ping.
+  const emptyDeltaFor = (ob?: OpenBlock): ClientFrame => {
+    if (ob?.type === "text")
+      return { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: ob.index, delta: { type: "text_delta", text: "" } }) }
+    return PING // pre-anchor (no open block) → fallback ping
+  }
+  // The synthetic anchor content_block_start (equivalent to keepalive-anchor.ts anchorStartFrame()).
+  const anchorStartData = JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+  const anchorStart: ClientFrame = { event: "content_block_start", data: anchorStartData }
+  // The FakeClock drains 2 microtasks per timer fire; the injectAnchor chain (async closure → serialized
+  // public write → the tick's `.then`) needs a few more turns, so flush explicitly after an anchor tick.
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+  }
+
+  test("first idle tick injects anchor via injectAnchor; the next idle tick emits an empty text_delta", async () => {
+    const { stream, written } = stubSseStream()
+    // Holder (mirrors the real Task 3/4 bindInjector pattern): injectAnchor forwards the anchor start
+    // through the sink's PUBLIC write → noteBlockState lights openBlock={0,text}. Returns true
+    // (message_start already seen). The holder lets injectAnchor be `const` yet reach the later sink.
+    const ref: { sink?: ClientSink } = {}
+    const injectAnchor = mock(async (): Promise<boolean> => {
+      await ref.sink?.write(anchorStart)
+      return true
+    })
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor } })
+    ref.sink = sink
+
+    // First idle interval → openBlock===undefined → tick calls injectAnchor (NOT the provider path).
+    await clock.advance(15_000)
+    await flush()
+    expect(injectAnchor).toHaveBeenCalledTimes(1)
+    // The anchor start reached the wire via the public write → openBlock is now {0,text}.
+    expect(written).toContainEqual({ event: "content_block_start", data: anchorStartData })
+
+    // Second idle interval → openBlock={0,text} now set → provider path emits an empty text_delta@0
+    // (the real keepalive), and injectAnchor is NOT called again.
+    await clock.advance(15_000)
+    await flush()
+    expect(injectAnchor).toHaveBeenCalledTimes(1)
+    expect(written.at(-1)).toEqual({
+      event: "content_block_delta",
+      data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }),
+    })
+    sink.close?.()
+  })
+
+  test("injectAnchor returning false (pre-message_start window) falls back to a ping", async () => {
+    const { stream, written } = stubSseStream()
+    // Pre-message_start: injectAnchor cannot forward the anchor yet → returns false.
+    const injectAnchor = mock(async (): Promise<boolean> => false)
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor } })
+
+    await clock.advance(15_000)
+    await flush()
+    expect(injectAnchor).toHaveBeenCalledTimes(1)
+    // false → that tick falls back to the provider/ping frame (openBlock still undefined → PING).
+    expect(written).toEqual([{ data: '{"type":"ping"}', event: "ping" }])
     sink.close?.()
   })
 })

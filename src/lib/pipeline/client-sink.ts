@@ -69,6 +69,16 @@ export interface SseSinkHeartbeat {
   pingFrame: ClientFrame | ((openBlock?: OpenBlock) => ClientFrame)
   /** Suppress pings once the client has disconnected. */
   clientAbortSignal?: AbortSignal
+  /**
+   * Buffered-pre-commit anchor injector (empty_text mode). Called by the tick when the forward
+   * stream has NO open block yet: it forwards message_start + a synthetic empty-text anchor block
+   * (via the sink's PUBLIC {@link ClientSink.write}, so `noteBlockState` lights openBlock={0,text})
+   * + a first empty text_delta. Returns `false` when it cannot inject yet (the pre-message_start
+   * window) → that tick falls back to the provider/ping frame. Registered ONLY on the buffered
+   * path (the live path never sets it; a live stream always has real forwarded blocks to derive the
+   * open block from). The closure itself is supplied by the driver/handler (Task 3/4).
+   */
+  injectAnchor?: () => Promise<boolean>
 }
 
 /** {@link makeSseSink} options — heartbeat (optional) + forwarded-track sampling (optional). */
@@ -189,6 +199,10 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   let lastRealMs = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
+  // One-shot guard so concurrent/re-entrant ticks can't fire a second anchor injection (which would
+  // collide block indices). Reset to false when an injection reports `did===false` (pre-message_start),
+  // so the NEXT idle tick retries once message_start has arrived (spec §3.3 lazy injection).
+  let anchorAttempted = false
 
   // Real frame → sample forwarded + write. noteRealFrame BEFORE the await so a timer
   // firing mid-write sees the fresh ts and skips a redundant ping.
@@ -245,18 +259,45 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   }
 
   const intervalMs = heartbeat.intervalSec * 1000
+  // Emit ONE keepalive frame (fixed ping, or provider-chosen block-aware empty delta) into the
+  // forwarded track + wire. Does NOT reschedule the timer (each caller reschedules as appropriate).
+  const emitKeepalive = (): void => {
+    // Synthetic keepalive — a FIXED ping frame, or (provider mode) a block-aware empty delta chosen
+    // from the current open block. Sampled into the forwarded track (a keepalive IS a proxy→client
+    // frame), shares the chain (no byte-interleave). Errors swallowed: the next real write hits the
+    // same closed stream and routes through the driver's outcome path.
+    const frame = typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(openBlock) : heartbeat.pingFrame
+    sampleForwarded(frame, "keepalive")
+    void writeSse(frame).catch(() => undefined)
+    lastRealMs = Date.now()
+  }
   const tick = (): void => {
     if (stopped || heartbeat.clientAbortSignal?.aborted) return
     const elapsed = Date.now() - lastRealMs
     if (elapsed >= intervalMs) {
-      // Synthetic keepalive — a FIXED ping frame, or (provider mode) a block-aware empty delta
-      // chosen from the current open block. Sampled into the forwarded track (a keepalive IS a
-      // proxy→client frame), shares the chain (no byte-interleave). Errors swallowed: the next
-      // real write hits the same closed stream and routes through the driver's outcome path.
-      const frame = typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(openBlock) : heartbeat.pingFrame
-      sampleForwarded(frame, "keepalive")
-      void writeSse(frame).catch(() => undefined)
-      lastRealMs = Date.now()
+      // Buffered empty_text anchor (§3.3): the forward stream has NO open block yet → light one by
+      // asking the driver-supplied closure to forward message_start + the empty-text anchor block
+      // (through the PUBLIC write, so noteBlockState updates openBlock). Runs BEFORE the provider
+      // frame is chosen — a provider called with openBlock===undefined would only yield a bare ping.
+      if (heartbeat.injectAnchor && openBlock === undefined && !anchorAttempted) {
+        anchorAttempted = true
+        void heartbeat
+          .injectAnchor()
+          .then((did) => {
+            // false = pre-message_start window → this tick falls back to a ping; re-arm for the next.
+            if (!did) {
+              anchorAttempted = false
+              emitKeepalive()
+            }
+          })
+          .catch(() => {
+            anchorAttempted = false
+          })
+        lastRealMs = Date.now()
+        timer = setTimeout(tick, intervalMs)
+        return
+      }
+      emitKeepalive()
       timer = setTimeout(tick, intervalMs)
     } else {
       timer = setTimeout(tick, intervalMs - elapsed)
