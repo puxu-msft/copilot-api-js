@@ -16,7 +16,7 @@
 - [逐字节等价是代理按消费者校准](feedback-byte-equivalence-is-proxy-calibrate-by-consumer.md) → skill `large-refactor` §7 — 真 invariant = 对在意消费者无可观测变化；三层 SSE / GHC wire oracle / history tripwire
 - [sed 碰过的文件裹入在飞工作](sed-touched-files-bundle-inflight-work.md) → skill `large-refactor` §6 — `git diff --cached --stat` 逐文件对账 tripwire（1 行 cosmetic 显 170 churn = 红旗）
 - [声称完备前多维度自审](feedback-multidim-completeness-audit-before-claiming-done.md) → skill `empirical-verification` — 活路径 / 传输分层 / 可观测性（合成 vs 真实可区分，最易漏）/ 副作用四维
-- [UI 交付必跑 build:ui](feedback-verify-ui-with-build-not-just-typecheck.md) → skill `debugging-frontend-tests` — `~backend/*` 模块须纯（不 import `~/lib/state`）；typecheck + vitest stub 双假绿，只有 rollup 暴露
+- [UI 交付必跑 build:ui](feedback-verify-ui-with-build-not-just-typecheck.md) → skill `debugging-frontend-tests` — ui-v4 两条正交盲区:① 根 typecheck 不覆盖 ui-v4 子项目 + build:ui-v4(esbuild)不做类型检查 → 前端类型错双绿,权威门 `typecheck:ui-v4`;② `~backend/*` 模块须纯(不 import `~/lib/state`),typecheck+vitest 假绿只 rollup 暴露
 - [动大工程前核实命名目标](feedback-verify-named-target-resolves-before-large-work.md) — 用户命名的目标（"ui-v4"）先 find/ls 核实解析到哪个真实产物，别凭记忆/plan 命名假设；踩坑：整套做进 Vue `ui/`、实际是 React `ui-v4/`（5173）；名字歧义 + 用户重复词 + 端口/URL = 必查锚点；同仓常多前端并存
 - [测试绝不碰真实环境](feedback_tests_never_touch_real_env.md) → skill `test-isolation` — DI 注入临时目录（Bun `os.homedir()` 忽略 `env.HOME`）；地板 = bunfig preload 沙箱 + 守卫测试
 
