@@ -44,6 +44,17 @@ class FakeSocket extends EventTarget implements WebSocketLike {
   }
 }
 
+/** Mimics undici's WHATWG close-code validation: throws on any code that is
+ *  neither 1000 nor within [3000,4999], exactly like the real client WebSocket. */
+class StrictFakeSocket extends FakeSocket {
+  override close(code?: number, reason?: string): void {
+    if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) {
+      throw new DOMException("invalid code", "InvalidAccessError")
+    }
+    super.close(code, reason)
+  }
+}
+
 describe("upstream websocket connection", () => {
   let socket: FakeSocket
 
@@ -152,8 +163,23 @@ describe("upstream websocket connection", () => {
       expect(error).toBeInstanceOf(Error)
       expect((error as Error).message).toBe("Upstream WebSocket handshake failed")
     }
-    expect(socket.closeCalls).toEqual([{ code: 1001, reason: "Handshake failed" }])
+    expect(socket.closeCalls).toEqual([{ code: 1000, reason: "Handshake failed" }])
     expect(connection.isOpen).toBe(false)
+  })
+
+  test("closes with WHATWG-legal 1000 on handshake failure (strict socket does not throw)", () => {
+    const socket = new StrictFakeSocket()
+    const connection = createUpstreamWsConnection({
+      headers: {},
+      model: "gpt-5.5",
+      createSocket: () => socket,
+    })
+    // connect() must run first so the handshake error listener is attached; the
+    // rejection is expected (handshake fails) so we swallow it here.
+    void connection.connect().catch(() => {})
+    // Handshake error before open → active close. Must NOT throw, and must use 1000.
+    expect(() => socket.dispatchEvent(new Event("error"))).not.toThrow()
+    expect(socket.closeCalls).toEqual([{ code: 1000, reason: "Handshake failed" }])
   })
 
   test("normalizes nested CAPI error frames", async () => {

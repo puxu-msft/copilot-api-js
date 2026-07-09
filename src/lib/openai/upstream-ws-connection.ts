@@ -11,7 +11,7 @@ import { copilotWsUrl } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
 
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000
-const CLOSE_CODE_GOING_AWAY = 1001
+const CLOSE_CODE_NORMAL = 1000
 const TERMINAL_EVENTS = new Set(["response.completed", "response.failed", "response.incomplete", "error"])
 
 export interface CreateUpstreamWsConnectionOptions {
@@ -57,6 +57,18 @@ interface AsyncQueue<T> {
   iterate(): AsyncGenerator<T>
 }
 
+/** Close an upstream WS with the WHATWG-legal normal-closure code (1000).
+ *  undici's client WebSocket throws DOMException('invalid code') for any code
+ *  outside {1000} ∪ [3000,4999] (e.g. the going-away / server-error codes);
+ *  the try/catch is defense-in-depth so a close never escalates a callback throw. */
+function closeUpstreamWs(socket: WebSocketLike | null | undefined, reason: string): void {
+  try {
+    socket?.close(CLOSE_CODE_NORMAL, reason)
+  } catch (error) {
+    consola.warn(`[upstream-ws] close(${CLOSE_CODE_NORMAL}) threw (ignored): ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptions): UpstreamWsConnection {
   const createSocket = opts.createSocket ?? ((url, headers) => new WebSocket(url, { headers }))
   const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
@@ -98,7 +110,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     clearIdleTimer()
     if (!socket || busy || socket.readyState !== socket.OPEN || idleTimeoutMs <= 0) return
     idleTimer = setTimeout(() => {
-      socket?.close(CLOSE_CODE_GOING_AWAY, "Idle timeout")
+      closeUpstreamWs(socket, "Idle timeout")
     }, idleTimeoutMs)
   }
 
@@ -143,7 +155,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       // is likely also malformed. Mark unusable synchronously so any same-tick
       // findReusable() lookup ignores this connection, then drop the socket.
       markUnusable()
-      socket?.close(CLOSE_CODE_GOING_AWAY, "Parse error")
+      closeUpstreamWs(socket, "Parse error")
     }
   }
 
@@ -157,7 +169,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     // close event — that latency window is where stale connections leak into
     // findReusable() and cause an extra fallback hop.
     markUnusable()
-    socket?.close(CLOSE_CODE_GOING_AWAY, "Socket error")
+    closeUpstreamWs(socket, "Socket error")
   }
 
   let closeHandled = false
@@ -215,7 +227,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
 
           const onOpenError = () => {
             cleanup()
-            ws.close(CLOSE_CODE_GOING_AWAY, "Handshake failed")
+            closeUpstreamWs(ws, "Handshake failed")
             reject(new Error("Upstream WebSocket handshake failed"))
           }
 
@@ -291,7 +303,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
         // the connection unusable synchronously so any same-tick reuse lookup
         // skips it, then tear down the socket.
         markUnusable()
-        socket.close(CLOSE_CODE_GOING_AWAY, "Send failed")
+        closeUpstreamWs(socket, "Send failed")
       }
 
       const queue = currentQueue
@@ -338,7 +350,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       if (socket) {
         // Has a live or closing socket — close it; handleClose will fire the
         // onClose callback so the manager removes us from the pool.
-        socket.close(CLOSE_CODE_GOING_AWAY, "Going away")
+        closeUpstreamWs(socket, "Going away")
       } else if (!closeHandled) {
         // No socket yet (handshake either in progress or never started) — we
         // still need to inform the manager so a placeholder created via
