@@ -154,8 +154,14 @@ export interface SseEventRecord {
    *   - "anchor" — the buffered empty-text keepalive ANCHOR's structural frames (`content_block_start`
    *     / `content_block_stop` at the reserved index 0) injected in the pre-commit silence window to
    *     light an open text block. Its OWN empty text_delta is a "keepalive" (a heartbeat, not structure).
+   *   - "synthetic-message-start" — a FABRICATED `message_start` envelope injected when the upstream
+   *     stalls before ever emitting its real `message_start`, so the client's stream is well-formed
+   *     enough to keep an open block alive (spec keepalive timeout-safety). Heavier than the structural
+   *     "anchor": it carries a fake `id` + zeroed `usage`, an accepted wire/billing divergence, so it is
+   *     marked distinctly rather than folded into "anchor" (richest-data-flow: real vs synthetic must
+   *     stay distinguishable).
    */
-  synthetic?: "keepalive" | "anchor"
+  synthetic?: "keepalive" | "anchor" | "synthetic-message-start"
 }
 
 /**
