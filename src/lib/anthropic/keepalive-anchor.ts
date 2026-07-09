@@ -1,5 +1,12 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
+import type {
+  //
+  AnchorHooks,
+  AnchorState,
+  ClientSink,
+} from "~/lib/pipeline/types"
+
 import { anthropicSseFrame } from "./sse-frame"
 
 /**
@@ -78,4 +85,66 @@ export function remapAnthropicBlockIndex(frame: ServerSentEventMessage, offset: 
     })
   }
   return frame
+}
+
+/**
+ * The UNIQUE synthetic keepalive injector (spec 2026-07-08-buffered-keepalive-empty-text-anchor §10.1.5
+ * C1). The Anthropic handler builds ONE per streaming request and attaches it to the sink's
+ * `heartbeat.injectAnchor` at sink construction — so it fires on an idle heartbeat tick with NO open
+ * block INDEPENDENTLY of the driver/pump. This is the crux of the pre-response fix: while `await p`
+ * (runRequest) is still pending the pump/driver never run, yet the sink's heartbeat is already ticking;
+ * the old driver-bound injector (bound only inside `runResponseBufferedSink`) was therefore inert in that
+ * window and fell back to a bare ping → 300s CC disconnect.
+ *
+ * On the first idle tick it: (1) forwards the REAL captured message_start when the driver's buffered
+ * drain already saw one (`state.capturedMessageStart`, UNMARKED — it is a real upstream frame), else
+ * FABRICATES one (`anchor.syntheticMessageStart`, marked `synthetic-message-start`) so the client stream
+ * is well-formed enough to open a block (live pre-response silence, or the buffered pre-message_start
+ * window); (2) writes the synthetic empty-text anchor `content_block_start@0` (`writeAnchor` →
+ * `noteBlockState` lights openBlock={0,text}); (3) writes the first empty `text_delta@0` (the frame that
+ * resets CC's 300s watchdog). Subsequent idle ticks see openBlock={0,text} and emit block-aware empty
+ * text_deltas via the provider — no injector re-entry (the `injected` guard).
+ *
+ * `state` is SHARED with the driver's buffered commit/close-off/remap and (Phase 4) the live-path
+ * reconciliation, so `injected`/`messageStartForwarded` flip is observed on ONE object. It flips them
+ * SYNCHRONOUSLY before the first `await` (spec §3.3 B1/C1): once the anchor's `content_block_start@0` is
+ * enqueued, `injected` is already true, so a commit-branch snapshot can never read the torn mid-state
+ * (which would skip the +1 remap and collide two index-0 blocks). `getSink` reads the sink at CALL time
+ * (the sink construction args are evaluated before the sink exists, so the handler bridges via a
+ * `let sinkRef` holder). Returns false — gracefully, re-arming the tick to a ping — only when the sink is
+ * not yet wired, the anchor is already injected, or there is neither a real nor a synthesizable
+ * message_start (defensive: `empty_text` always supplies `syntheticMessageStart`). Rejects ONLY if a
+ * `sink.write` rejects (the client is already gone mid-write); the tick's `.catch` re-arms + emits one
+ * keepalive.
+ */
+export function makeSyntheticAnchorInjector(args: {
+  anchor: AnchorHooks
+  state: AnchorState
+  getSink: () => ClientSink | undefined
+  resolvedName: string
+  reqId: string
+}): () => Promise<boolean> {
+  const { anchor, state, getSink, resolvedName, reqId } = args
+  return async (): Promise<boolean> => {
+    const sink = getSink()
+    if (!sink || state.injected) return false
+    const real = state.capturedMessageStart
+    if (real) {
+      // C1/B1 sync-flip (before the first await — race-free vs the commit snapshot; see docstring).
+      state.injected = true
+      state.messageStartForwarded = true
+      await sink.write(real) // real captured → forwarded UNMARKED (a real upstream frame)
+    } else {
+      const synthesize = anchor.syntheticMessageStart
+      // Need SOME message_start to open a well-formed prelude; without a synthesizer we cannot (defensive:
+      // `empty_text` always supplies `syntheticMessageStart`) — bail so the tick re-arms to a ping.
+      if (!synthesize) return false
+      state.injected = true
+      state.messageStartForwarded = true
+      await (sink.writeSyntheticEnvelope ?? sink.write)(synthesize(resolvedName, reqId)) // fabricated → "synthetic-message-start"
+    }
+    await (sink.writeAnchor ?? sink.write)(anchor.startFrame) // "anchor"; noteBlockState → openBlock={0,text}
+    await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame) // "keepalive": empty text_delta resets CC's 300s watchdog
+    return true
+  }
 }

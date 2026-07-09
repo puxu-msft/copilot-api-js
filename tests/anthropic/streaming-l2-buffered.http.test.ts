@@ -370,6 +370,12 @@ describe("L2 buffered retry — forced heartbeat during the buffer window (strea
       staleRequestMaxAge: 0,
       // User did NOT configure a heartbeat — the buffered path must FORCE one from protect_streaming_heartbeat.
       streamKeepalivePingSec: 0,
+      // Pin `ping` mode so this test stays focused on its distinct subject — the FORCED heartbeat that the
+      // buffered path derives from protect_streaming_heartbeat when the operator set no ping cadence — and
+      // asserts the bare-ping escape hatch (§10.9). The DEFAULT `empty_text` mode instead injects the
+      // synthetic anchor prelude in this pre-message_start window (spec §10.2/§10.8), covered by
+      // keepalive-buffered-anchor-e2e.http.test.ts + live-pre-response-anchor.test.ts.
+      streamKeepaliveMode: "ping",
       protectStreamingGeneration: "on",
       protectStreamingMaxRetries: 3,
       protectStreamingHeartbeat: 10,

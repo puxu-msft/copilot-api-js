@@ -1,15 +1,12 @@
 /**
- * Task 3.2 — driver buffered anchor INJECTION path (spec 2026-07-08-buffered-keepalive-empty-text-anchor §3.2).
+ * Driver buffered anchor orchestration (spec 2026-07-08-buffered-keepalive-empty-text-anchor §3.2 / §10.1.5).
  *
  * Drives `runResponseBufferedSink` directly with a mock codec/transport + a REAL RequestContext + a real
- * SSE sink whose `heartbeat.injectAnchor` is bridged to the driver's `injectAnchor` closure through a
- * holder (mirroring the Task 4.1 `bindInjector` wiring). Scenario: buffered empty_text, upstream emits
- * message_start then goes silent; the heartbeat cadence expires → `injectAnchor` forwards message_start +
- * the synthetic empty-text anchor block (content_block_start@0) + a first empty text_delta@0.
- *
- * This Task builds ONLY the injection path — the commit close-off / +1 remap / message_start dedup are
- * Task 3.3, so the assertions focus on the FORWARDED track during the silence window and deliberately do
- * NOT check the post-commit stream (where 3.3-not-yet dedup would double-send message_start).
+ * SSE sink whose `heartbeat.injectAnchor` is the handler-owned UNIQUE injector ({@link makeSyntheticAnchorInjector},
+ * reading the SHARED AnchorState the driver's commit/close-off/remap also read). Scenario: buffered empty_text,
+ * upstream emits message_start then goes silent; the heartbeat cadence expires → the injector forwards the
+ * captured message_start (or synthesizes one) + the synthetic empty-text anchor block (content_block_start@0)
+ * + a first empty text_delta@0; commit closes the anchor off + remaps real blocks +1 + dedups message_start.
  */
 
 import {
@@ -21,12 +18,15 @@ import {
   test,
 } from "bun:test"
 
+import type { SseEventRecord } from "~/lib/history"
 import type { OpenBlock } from "~/lib/pipeline/client-sink"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
   AnchorHooks,
+  AnchorState,
   ClientFrame,
+  ClientSink,
   FormatCodec,
   PreparedRequest,
   RunBufferedOpts,
@@ -40,7 +40,9 @@ import {
   anchorDeltaFrame,
   anchorStartFrame,
   anchorStopFrame,
+  makeSyntheticAnchorInjector,
   remapAnthropicBlockIndex,
+  syntheticMessageStartFrame,
 } from "~/lib/anthropic/keepalive-anchor"
 import { createRequestContext } from "~/lib/context/request"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
@@ -159,10 +161,19 @@ const flush = async (): Promise<void> => {
   for (let i = 0; i < 20; i++) await Promise.resolve()
 }
 
-/** Build the AnchorHooks the Anthropic handler would supply, wiring the holder like Task 4.1. */
-function makeAnchorWiring() {
-  let boundInjector: (() => Promise<boolean>) | undefined
-  let lastInjectResult: boolean | undefined
+/**
+ * Build the sink + the handler-owned UNIQUE injector the Anthropic handler wires (spec §10.1.5 C1): a
+ * shared {@link AnchorState}, the {@link AnchorHooks}, and the injector attached to `heartbeat.injectAnchor`
+ * via a `sinkRef` self-reference (the injector reads its sink at CALL time, since sink construction args are
+ * evaluated before the sink exists). The SAME `anchorState` is passed to `runResponseBufferedSink` so the
+ * driver's buffered commit/close-off/remap and the injector observe ONE object. `lastInjectResult` surfaces
+ * the injector's last return (true=injected, false=couldn't, undefined=never fired) for the assertions.
+ */
+function buildAnchoredSink(
+  stream: Parameters<typeof makeSseSink>[0],
+  opts: { onForwarded?: (record: SseEventRecord) => void } = {},
+): { sink: ClientSink; anchor: AnchorHooks; anchorState: AnchorState; lastInjectResult: () => boolean | undefined } {
+  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorClosed: false }
   const anchor: AnchorHooks = {
     isMessageStart: (fr) => {
       try {
@@ -174,18 +185,29 @@ function makeAnchorWiring() {
     startFrame: anchorStartFrame(),
     stopFrame: anchorStopFrame(),
     deltaFrame: anchorDeltaFrame(),
+    syntheticMessageStart: syntheticMessageStartFrame,
     remap: remapAnthropicBlockIndex,
-    bindInjector: (fn) => {
-      boundInjector = fn
-    },
   }
-  // The sink-side heartbeat.injectAnchor indirection (holder) the handler installs in Task 4.1.
-  const heartbeatInjectAnchor = async (): Promise<boolean> => {
-    const did = boundInjector ? await boundInjector() : false
+  const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
+  let lastInjectResult: boolean | undefined
+  const realInjector = makeSyntheticAnchorInjector({
+    anchor,
+    state: anchorState,
+    getSink: () => sinkHolder.current,
+    resolvedName: "claude-test",
+    reqId: "test",
+  })
+  const injectAnchor = async (): Promise<boolean> => {
+    const did = await realInjector()
     lastInjectResult = did
     return did
   }
-  return { anchor, heartbeatInjectAnchor, boundInjectorSet: () => boundInjector !== undefined, lastInjectResult: () => lastInjectResult }
+  const sink = makeSseSink(stream, {
+    heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor },
+    ...(opts.onForwarded && { onForwarded: opts.onForwarded }),
+  })
+  sinkHolder.current = sink
+  return { sink, anchor, anchorState, lastInjectResult: () => lastInjectResult }
 }
 
 describe("runResponseBufferedSink — buffered empty_text anchor injection path (Task 3.2)", () => {
@@ -199,16 +221,13 @@ describe("runResponseBufferedSink — buffered empty_text anchor injection path 
     const { stream: up, release } = makeControlledUpstream([f("message_start", { message: { id: "msg_anchor" } })], [f("message_stop")])
     const driver = makeDriver()
     const { stream: sseStream, written } = stubSseStream()
-    const { anchor, heartbeatInjectAnchor, boundInjectorSet, lastInjectResult } = makeAnchorWiring()
-
-    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream)
     const tracker = makeStopTracker()
 
-    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, anchorState, retryCap: 0 } as RunBufferedOpts)
 
     // Let the buffered loop pull message_start (CAPTURE it) then park awaiting the silent gate.
     await drain(30)
-    expect(boundInjectorSet()).toBe(true) // the driver bound its injectAnchor into the holder
     expect(written).toEqual([]) // buffered: message_start NOT forwarded yet (nothing on the wire)
 
     // Upstream is silent → advance past the heartbeat cadence → the tick injects the anchor.
@@ -235,33 +254,42 @@ describe("runResponseBufferedSink — buffered empty_text anchor injection path 
     sink.close?.()
   })
 
-  test("no anchor injection before message_start is captured (pre-message_start window → injector returns false)", async () => {
+  test("buffered pre-message_start window: no captured message_start → injector SYNTHESIZES a prelude, not a ping (spec §10.2/§10.8 M2)", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})
-    // Upstream emits NOTHING then parks — the buffered loop never captures a message_start.
+    // Upstream emits NOTHING then parks — the buffered loop never captures a message_start before the
+    // heartbeat fires. The relocated UNIQUE injector then SYNTHESIZES a message_start (fake id + usage:0)
+    // rather than falling back to a bare ping (the pre-response incident fix). The real "late" message_start
+    // that arrives after release is DEDUPED at commit (messageStartForwarded), so the client sees exactly one.
     const { stream: up, release } = makeControlledUpstream([], [f("message_start", { message: { id: "late" } }), f("message_stop")])
     const driver = makeDriver()
     const { stream: sseStream, written } = stubSseStream()
-    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
-
-    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream)
     const tracker = makeStopTracker()
 
-    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, anchorState, retryCap: 0 } as RunBufferedOpts)
     await drain(30)
 
     await clock.advance(15_000)
     await flush()
 
-    // No captured message_start → the driver's injectAnchor returns false; the tick falls back to a ping.
-    expect(lastInjectResult()).toBe(false)
-    expect(written).toEqual([{ data: '{"type":"ping"}', event: "ping" }])
-    // No anchor frames leaked.
-    expect(written.some((w) => w.event === "content_block_start")).toBe(false)
+    // Synthesized (NOT a bare ping): the injector returned true and wrote a fabricated message_start + anchor.
+    expect(lastInjectResult()).toBe(true)
+    expect(written.some((w) => w.event === "ping")).toBe(false)
+    // The first forwarded frame is the SYNTHETIC message_start (fake id + zeroed usage — spec §10.2).
+    expect(JSON.parse(written[0].data)).toMatchObject({ type: "message_start", message: { id: "msg_synthetic_test", usage: { input_tokens: 0 } } })
+    expect(seqOf(written)).toEqual(["message_start", "content_block_start@0", "content_block_delta@0"])
 
     release()
     const outcome = await outcomeP
     expect(outcome.kind).toBe("complete")
+
+    // The real "late" message_start is deduped → the client sees exactly ONE message_start (the synthetic),
+    // the anchor is closed off at commit, and no bare ping ever appeared (§10.8 M2: single message_start).
+    const messageStarts = written.filter((w) => JSON.parse(w.data).type === "message_start")
+    expect(messageStarts).toHaveLength(1)
+    expect(JSON.parse(messageStarts[0].data).message.id).toBe("msg_synthetic_test")
+    expect(seqOf(written)).toEqual(["message_start", "content_block_start@0", "content_block_delta@0", "content_block_stop@0", "message_stop"])
     sink.close?.()
   })
 })
@@ -305,12 +333,10 @@ describe("runResponseBufferedSink — buffered empty_text anchor commit close-of
     )
     const driver = makeDriver()
     const { stream: sseStream, written } = stubSseStream()
-    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
-
-    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream)
     const tracker = makeStopTracker()
 
-    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, anchorState, retryCap: 0 } as RunBufferedOpts)
 
     // Pull message_start (CAPTURE), park; then the idle heartbeat injects the anchor.
     await drain(30)
@@ -363,12 +389,10 @@ describe("runResponseBufferedSink — buffered empty_text anchor commit close-of
     ])
     const driver = makeDriver()
     const { stream: sseStream, written } = stubSseStream()
-    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
-
-    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream)
     const tracker = makeStopTracker()
 
-    const outcome = await driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    const outcome = await driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, anchorState, retryCap: 0 } as RunBufferedOpts)
     expect(outcome.kind).toBe("complete")
 
     // Anchor never fired (no injection attempt reached completion) → byte-identical to the no-anchor path.
@@ -432,12 +456,10 @@ describe("runResponseBufferedSink — terminal-failure anchor close-off (Task 3.
     const { stream: up, release } = makeControlledUpstream([f("message_start", { message: { id: "msg_fail" } })], [])
     const driver = makeDriver()
     const { stream: sseStream, written } = stubSseStream()
-    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
-
-    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream)
     const tracker = makeStopTracker()
 
-    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, anchorState, retryCap: 0 } as RunBufferedOpts)
 
     await drain(30)
     await clock.advance(15_000)
@@ -474,12 +496,10 @@ describe("runResponseBufferedSink — terminal-failure anchor close-off (Task 3.
     const up = makeUpstream([f("message_start", { message: { id: "msg_none" } })])
     const driver = makeDriver()
     const { stream: sseStream, written } = stubSseStream()
-    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
-
-    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream)
     const tracker = makeStopTracker()
 
-    const outcome = await driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    const outcome = await driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, anchorState, retryCap: 0 } as RunBufferedOpts)
     expect(outcome.kind).toBe("stream-error")
 
     // Anchor never fired → closeAnchorIfOpen is inert → the forwarded track has ZERO synthetic frames.
@@ -516,15 +536,12 @@ describe("runResponseBufferedSink — Task 5.1 synthetic markers on the forwarde
     const { stream: sseStream } = stubSseStream()
     // Collect the FORWARDED-track records (history `inboundResponse.sseEvents`) with their synthetic markers.
     const forwarded: Array<{ raw: string; synthetic?: string }> = []
-    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
-
-    const sink = makeSseSink(sseStream, {
-      heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor },
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream, {
       onForwarded: (r) => forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }),
     })
     const tracker = makeStopTracker()
 
-    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, anchorState, retryCap: 0 } as RunBufferedOpts)
 
     // Pull message_start (CAPTURE), park; first idle tick injects the anchor (start@0 + first empty text_delta@0).
     await drain(30)
@@ -595,12 +612,10 @@ describe("runResponseBufferedSink — C1 adversarial: freeze holds across a mid-
     // `noteBlockState(stopFrame)` has already cleared openBlock (===undefined) = the exact window a rogue
     // tick would try to inject/ping. Freeze (cleared the timer at commit start) must hold across the jump.
     const { stream: sseStream, written, releaseGate, paused } = pausableSseStream(3)
-    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
-
-    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream)
     const tracker = makeStopTracker()
 
-    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, anchorState, retryCap: 0 } as RunBufferedOpts)
 
     // Pull message_start (CAPTURE), park; idle heartbeat injects the anchor (reschedules a NEW timer).
     await drain(30)
@@ -698,12 +713,10 @@ describe("runResponseBufferedSink — B1 adversarial: commit snapshots injected 
     // content_block_start@0 (wire index 1) is already enqueued — the exact torn window. In the pre-fix code
     // `anchorState.injected` was set on the line AFTER this parked write, so a commit snapshot here read false.
     const { stream: sseStream, written, releaseGate, paused } = pausableSseStream(2)
-    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
-
-    const sink = makeSseSink(sseStream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor } })
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream)
     const tracker = makeStopTracker()
 
-    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, anchorState, retryCap: 0 } as RunBufferedOpts)
 
     // Pull message_start (CAPTURE), park on the stall; the idle heartbeat fires injectAnchor. Its first two
     // writes (message_start @wire0, anchor start@0 @wire1) complete; the third (anchor delta@0 @wire2) PARKS.

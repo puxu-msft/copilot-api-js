@@ -33,12 +33,15 @@ import {
   test,
 } from "bun:test"
 
+import type { SseEventRecord } from "~/lib/history"
 import type { OpenBlock } from "~/lib/pipeline/client-sink"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
   AnchorHooks,
+  AnchorState,
   ClientFrame,
+  ClientSink,
   FormatCodec,
   PreparedRequest,
   RunBufferedOpts,
@@ -52,7 +55,9 @@ import {
   anchorDeltaFrame,
   anchorStartFrame,
   anchorStopFrame,
+  makeSyntheticAnchorInjector,
   remapAnthropicBlockIndex,
+  syntheticMessageStartFrame,
 } from "~/lib/anthropic/keepalive-anchor"
 import { createRequestContext } from "~/lib/context/request"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
@@ -171,10 +176,19 @@ const flush = async (): Promise<void> => {
   for (let i = 0; i < 20; i++) await Promise.resolve()
 }
 
-/** Build the AnchorHooks the Anthropic handler supplies, wiring the holder like the Task 4.1 sink bridge. */
-function makeAnchorWiring() {
-  let boundInjector: (() => Promise<boolean>) | undefined
-  let lastInjectResult: boolean | undefined
+/**
+ * Build the sink + the handler-owned UNIQUE injector the Anthropic handler wires (spec §10.1.5 C1): a
+ * shared {@link AnchorState}, the {@link AnchorHooks}, and the injector attached to `heartbeat.injectAnchor`
+ * via a `sinkRef` self-reference (the injector reads its sink at CALL time). The SAME `anchorState` is
+ * passed to `runResponseBufferedSink` so the driver's buffered commit/close-off/remap and the injector
+ * observe ONE object. In this canonical scenario a REAL message_start IS captured, so the injector forwards
+ * it UNMARKED (the synthetic-envelope fallback is not exercised) — the golden arrays are unchanged.
+ */
+function buildAnchoredSink(
+  stream: Parameters<typeof makeSseSink>[0],
+  onForwarded: (record: SseEventRecord) => void,
+): { sink: ClientSink; anchor: AnchorHooks; anchorState: AnchorState; lastInjectResult: () => boolean | undefined } {
+  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorClosed: false }
   const anchor: AnchorHooks = {
     isMessageStart: (fr) => {
       try {
@@ -186,17 +200,29 @@ function makeAnchorWiring() {
     startFrame: anchorStartFrame(),
     stopFrame: anchorStopFrame(),
     deltaFrame: anchorDeltaFrame(),
+    syntheticMessageStart: syntheticMessageStartFrame,
     remap: remapAnthropicBlockIndex,
-    bindInjector: (fn) => {
-      boundInjector = fn
-    },
   }
-  const heartbeatInjectAnchor = async (): Promise<boolean> => {
-    const did = boundInjector ? await boundInjector() : false
+  const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
+  let lastInjectResult: boolean | undefined
+  const realInjector = makeSyntheticAnchorInjector({
+    anchor,
+    state: anchorState,
+    getSink: () => sinkHolder.current,
+    resolvedName: "claude-test",
+    reqId: "test",
+  })
+  const injectAnchor = async (): Promise<boolean> => {
+    const did = await realInjector()
     lastInjectResult = did
     return did
   }
-  return { anchor, heartbeatInjectAnchor, lastInjectResult: () => lastInjectResult }
+  const sink = makeSseSink(stream, {
+    heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor },
+    onForwarded,
+  })
+  sinkHolder.current = sink
+  return { sink, anchor, anchorState, lastInjectResult: () => lastInjectResult }
 }
 
 /** Map each forwarded record to `type@index#synthetic` (synthetic marker omitted when unmarked). */
@@ -234,15 +260,12 @@ describe("GOLDEN — buffered empty_text anchor forwarded-track baseline (P2.0 e
     const { stream: sseStream, written } = stubSseStream()
     // Collect the FORWARDED-track records (history `inboundResponse.sseEvents`) WITH their synthetic markers.
     const forwarded: Array<{ raw: string; synthetic?: string }> = []
-    const { anchor, heartbeatInjectAnchor, lastInjectResult } = makeAnchorWiring()
-
-    const sink = makeSseSink(sseStream, {
-      heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: heartbeatInjectAnchor },
-      onForwarded: (r) => forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }),
-    })
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream, (r) =>
+      forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }),
+    )
     const tracker = makeStopTracker()
 
-    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, retryCap: 0 } as RunBufferedOpts)
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, { ...tracker, anchor, anchorState, retryCap: 0 } as RunBufferedOpts)
 
     // Let the buffered loop pull message_start (CAPTURE) + the thinking start, then park on the silent gate.
     await drain(30)

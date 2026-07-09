@@ -532,49 +532,19 @@ async function runResponseBufferedSink(
   let currentEnv = env
   let attempt = 0
 
-  // Buffered empty-text keepalive anchor (spec 2026-07-08-buffered-keepalive-empty-text-anchor §3.2).
-  // Hoisted OUTSIDE the retry loop: a retry re-buffers its own frames, but the anchor — once injected on
-  // the forwarded track during an idle stall — stays injected, and message_start, once forwarded, is not
-  // re-sent. The format-agnostic driver only ORCHESTRATES the injection; the Anthropic handler supplies the
-  // format-specific frames + the message_start predicate via `opts.anchor` (H2). `anchor` is undefined for
-  // ping / content_delta / the live path, so every anchor branch below is inert (byte-identical to before).
+  // Buffered empty-text keepalive anchor (spec 2026-07-08-buffered-keepalive-empty-text-anchor §3.2 +
+  // §10.1.5 H1). The anchor STATE is now HANDLER-OWNED and threaded in via `opts.anchorState` so the
+  // handler's UNIQUE injector (attached to the sink's `heartbeat.injectAnchor`) and this buffered
+  // commit/close-off/remap observe ONE shared object — `injected`/`messageStartForwarded`/
+  // `capturedMessageStart` flip on the same instance. The driver only ORCHESTRATES the buffered commit
+  // side (freeze + close-off + +1 remap + message_start dedup); it no longer BUILDS an injector (that
+  // moved to the handler, subsumed by the single `heartbeat.injectAnchor` slot — spec §10.1.5 C1 / B1).
+  // The Anthropic handler supplies the format-specific frames + the message_start predicate via
+  // `opts.anchor` (H2). `anchor` is undefined for ping / enveloped_ping / the live path, so every anchor
+  // branch below is inert (byte-identical to before). `anchorState` falls back to a driver-local object
+  // when the caller does not thread one (e.g. a `ping`-mode buffered stream that never injects).
   const anchor = opts.anchor
-  const anchorState = { injected: false, messageStartForwarded: false }
-  let capturedMessageStart: ClientFrame | undefined
-  // The sink's idle heartbeat calls this when the forward stream has NO open block yet (pre-commit silence):
-  // it forwards the captured message_start (once, via the sink's real-frame `write` — it is a REAL upstream
-  // frame, unmarked on the forwarded track) + the synthetic anchor block start (via `writeAnchor` — marks the
-  // forwarded record `synthetic:"anchor"` and its noteBlockState lights openBlock={0,text}) + a first empty
-  // text_delta@0 (via `writeKeepalive` — marks `synthetic:"keepalive"`; the frame that resets Claude Code's
-  // 300s watchdog). All three land on the forwarded track (Task 5.1: real vs anchor vs keepalive stay
-  // distinguishable in history/UI — richest-data-flow). Returns false — gracefully — when it cannot inject
-  // yet: no anchor hooks, already injected, or message_start not captured (the pre-message_start window), so
-  // the tick falls back to a ping. It rejects ONLY if one of its `sink.write`s rejects (= the client is
-  // already gone mid-write); the tick's `.catch` handles that by re-arming + emitting one keepalive. Commit-time
-  // close-off / +1 remap / message_start dedup are Task 3.3 (this Task builds only the injection path).
-  const injectAnchor = async (): Promise<boolean> => {
-    if (!anchor || anchorState.injected || capturedMessageStart === undefined) return false
-    // C1 sync-state (spec §3.3): flip `injected` + `messageStartForwarded` SYNCHRONOUSLY — before the
-    // first `await` — so no one can observe the torn mid-state (anchor frames already enqueued on the wire
-    // but `injected` still false). JS is single-threaded: once past the guard, control is not yielded until
-    // the `await` below, so a commit-branch snapshot of `anchorState.injected` sees EITHER false (this
-    // injectAnchor never entered) OR true (its writes are already enqueue-first → correct wire order + the
-    // real block gets the +1 remap). Setting them after the awaits left a window where a heartbeat tick's
-    // fire-and-forget injectAnchor had enqueued content_block_start@0 but `injected` was still false → the
-    // commit snapshot could skip the remap and collide two index-0 blocks (protocol violation).
-    const messageStart = capturedMessageStart // snapshot into a local before any await (race-free)
-    const needMessageStart = !anchorState.messageStartForwarded
-    anchorState.injected = true
-    anchorState.messageStartForwarded = true
-    if (needMessageStart) await sink.write(messageStart) // real-frame write: samples forwarded UNMARKED (message_start is not a block)
-    await (sink.writeAnchor ?? sink.write)(anchor.startFrame) // "anchor" marker; noteBlockState → openBlock={0,text}
-    await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame) // "keepalive": empty text_delta resets CC's 300s watchdog
-    return true
-  }
-  // Hand the closure back to the handler's holder (Task 4.1), which threads it into the ALREADY-constructed
-  // sink's heartbeat.injectAnchor — the driver builds the closure (it owns anchorState + the message_start
-  // capture) but the handler owns sink construction, so the holder bridges the two. Called once, here.
-  anchor?.bindInjector?.(injectAnchor)
+  const anchorState = opts.anchorState ?? { injected: false, messageStartForwarded: false, anchorClosed: false }
 
   // Terminal-failure close-off (spec §3.3 M1): when the request FAILS after the anchor was injected (a
   // truncation/exhaustion, or a post-retreat truncation), the anchor's content_block_start@0 is still OPEN
@@ -614,10 +584,10 @@ async function runResponseBufferedSink(
             await sink.write(toWrite)
             continue
           }
-          // Capture the FIRST message_start (before buffering it) so the idle anchor injector can forward it
-          // AHEAD of the anchor block. It is STILL buffered as normal — the commit flush (Task 3.3) is what
-          // skips the already-forwarded copy; this Task builds only the injection path (no flush change yet).
-          if (anchor && capturedMessageStart === undefined && anchor.isMessageStart(toWrite)) capturedMessageStart = toWrite
+          // Capture the FIRST message_start (before buffering it) into the SHARED anchorState so the
+          // handler's unique idle injector can forward it AHEAD of the anchor block. It is STILL buffered
+          // as normal — the commit flush skips the already-forwarded copy (H1 dedup below).
+          if (anchor && anchorState.capturedMessageStart === undefined && anchor.isMessageStart(toWrite)) anchorState.capturedMessageStart = toWrite
           buffer.push(toWrite)
           bufferedBytes += (toWrite.data?.length ?? 0) + (toWrite.event?.length ?? 0)
           if (bufferCapBytes > 0 && bufferedBytes > bufferCapBytes) {

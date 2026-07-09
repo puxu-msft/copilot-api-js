@@ -314,12 +314,6 @@ export interface AnchorHooks {
    * real blocks flush at +1). Non-block frames (message_delta / message_stop / non-JSON) pass through.
    */
   remap: (frame: ClientFrame, offset: number) => ClientFrame
-  /**
-   * Hand the driver's `injectAnchor` closure back to the handler's holder, which threads it into the
-   * already-constructed sink's `heartbeat.injectAnchor` (the driver builds the closure but the handler
-   * owns sink construction — Task 3.2). Called once by the driver when it hoists the anchor state.
-   */
-  bindInjector?: (fn: () => Promise<boolean>) => void
 }
 
 /**
