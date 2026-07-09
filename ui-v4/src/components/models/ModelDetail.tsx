@@ -126,18 +126,23 @@ export function ModelDetail({ model, telemetry, status, onClose }: ModelDetailPr
               <Dialog.Title className="min-w-0 flex-1 truncate text-[13px] text-[var(--color-primary)]">{model.id}</Dialog.Title>
               {sm ?
                 <span
+                  role="img"
+                  aria-label={sm.title}
                   title={sm.title}
-                  aria-label={sm.label ?? "enabled"}
-                  className="inline-flex shrink-0 items-center gap-1 text-[11px] uppercase tracking-wide"
-                  style={{ color: sm.colorVar }}
+                  className="inline-flex shrink-0 items-center gap-1 text-[11px] uppercase tracking-wide text-[var(--color-text)]"
                 >
-                  <span aria-hidden="true">{sm.glyph}</span>
+                  <span
+                    aria-hidden="true"
+                    style={{ color: sm.colorVar }}
+                  >
+                    {sm.glyph}
+                  </span>
                   {sm.label}
                 </span>
               : null}
               <Dialog.Close
                 aria-label="Close model detail"
-                className="px-1 text-[16px] leading-none text-[var(--color-muted)] hover:text-[var(--color-text)]"
+                className="flex h-6 w-6 shrink-0 items-center justify-center text-[16px] leading-none text-[var(--color-muted)] hover:text-[var(--color-text)]"
               >
                 ×
               </Dialog.Close>

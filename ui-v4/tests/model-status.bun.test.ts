@@ -31,11 +31,13 @@ describe("modelStatus", () => {
 })
 
 describe("statusMeta (presentational SSOT shared by table + drawer)", () => {
-  test("enabled is dot-only (no label), green, filled dot", () => {
+  test("enabled is dot-only (no label), a quiet muted filled dot", () => {
     const meta = statusMeta("enabled")
     expect(meta.label).toBeNull()
     expect(meta.glyph).toBe("●")
-    expect(meta.colorVar).toBe("var(--color-ok)")
+    // Muted (not signal-green): only config-disabled carries a color, so the
+    // exception pops instead of a wall of green dots on the majority.
+    expect(meta.colorVar).toBe("var(--color-muted)")
     expect(meta.title).toBe("enabled")
   })
   test("config-disabled is a red filled dot labelled 'disabled'", () => {

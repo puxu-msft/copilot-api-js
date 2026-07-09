@@ -221,18 +221,26 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
       meta: { thClass: HEAD, tdClass: "px-2 py-1" },
       cell: (c) => {
         // Dot-based status (SSOT vocabulary in `statusMeta`): enabled is a quiet
-        // green dot only (majority default → no per-row text noise); the two
-        // disabled kinds add a short label + a shape cue (● vs ○) so meaning is
-        // never color-only. Full meaning lives in the title/aria-label.
+        // muted dot only (majority default → no per-row text noise); the two
+        // disabled kinds add a short label + a shape cue (● vs ○). `role="img"` +
+        // `aria-label` give the full reason a real accessible name (a bare span's
+        // aria-label is dropped by AT); the label text stays `--color-text` for
+        // readable contrast (the muted/red color rides on the dot, which is
+        // non-text UI at the lower 3:1 bar).
         const m = statusMeta(c.getValue<ModelStatus>())
         return (
           <span
+            role="img"
+            aria-label={m.title}
             title={m.title}
-            aria-label={m.label ?? "enabled"}
-            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide"
-            style={{ color: m.colorVar }}
+            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-[var(--color-text)]"
           >
-            <span aria-hidden="true">{m.glyph}</span>
+            <span
+              aria-hidden="true"
+              style={{ color: m.colorVar }}
+            >
+              {m.glyph}
+            </span>
             {m.label}
           </span>
         )

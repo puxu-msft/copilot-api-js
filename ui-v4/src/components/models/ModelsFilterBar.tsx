@@ -150,18 +150,24 @@ export function ModelsFilterBar({ filters, onChange, options, billingBounds }: M
         ))}
       </div>
 
-      <div className="flex items-center gap-1">
+      <div
+        role="group"
+        aria-label="Show disabled model kinds"
+        className="flex items-center gap-1"
+      >
         {/* Checkbox affordance disambiguates the filter (fixes the old "highlight =
-            included" ambiguity): [✓] = shown, [ ] + strike = hidden. `show:` prefix +
-            aria-pressed make the toggle semantics explicit; the ✓ glyph is aria-hidden
-            so the accessible name stays the bare "config-off"/"picker-off". */}
+            included" ambiguity): [✓] = shown, [ ] + strike = hidden. The `role=group`
+            + label gives AT the "show" context the visible prefix carries; each button
+            keeps `aria-pressed` + its bare name ("config-off"/"picker-off", so 2.5.3
+            Label-in-Name holds). Excluded state uses `--color-text` + line-through (not
+            a dimmed muted token, which fails 4.5:1 text contrast). */}
         <span className="text-[11px] uppercase text-[var(--color-muted)]">show:</span>
         <button
           type="button"
           aria-pressed={filters.includeConfigDisabled}
           title={filters.includeConfigDisabled ? "showing config-disabled models — click to hide" : "config-disabled models hidden — click to show"}
           onClick={() => onChange({ includeConfigDisabled: !filters.includeConfigDisabled })}
-          className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-[11px] ${filters.includeConfigDisabled ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[var(--color-muted)] line-through opacity-70"}`}
+          className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-[11px] ${filters.includeConfigDisabled ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[var(--color-text)] line-through"}`}
         >
           <span aria-hidden="true">{filters.includeConfigDisabled ? "[✓]" : "[ ]"}</span>
           config-off
@@ -171,7 +177,7 @@ export function ModelsFilterBar({ filters, onChange, options, billingBounds }: M
           aria-pressed={filters.includePickerDisabled}
           title={filters.includePickerDisabled ? "showing picker-disabled models — click to hide" : "picker-disabled models hidden — click to show"}
           onClick={() => onChange({ includePickerDisabled: !filters.includePickerDisabled })}
-          className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-[11px] ${filters.includePickerDisabled ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[var(--color-muted)] line-through opacity-70"}`}
+          className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-[11px] ${filters.includePickerDisabled ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[var(--color-text)] line-through"}`}
         >
           <span aria-hidden="true">{filters.includePickerDisabled ? "[✓]" : "[ ]"}</span>
           picker-off
