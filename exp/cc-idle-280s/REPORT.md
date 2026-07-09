@@ -87,3 +87,78 @@ mock：`mock.ts`（`idle:TYPE:N:M` 模式，first-party watchdog 经 `run-arm.sh
 - **search 合成**（`web-search-handler.ts:131` `completeWebSearch` 阻塞期）：**无 open block**（仅 upfront ping 发过，真实 events 在阻塞返回后才发）。content_delta 不适用。方案：`completeWebSearch` 前 flush 一个**占位 block**（thinking 或 text，空 delta 保活）+ 完成后 stop 占位、真实 events index 顺延（remap +1）。占位 block keepalive 有效性 = armB/armPT 已证；占位可见性 Phase 3 实测确认。
 
 **结论**：覆盖 thinking/text/tool_use 三种 open block 的空 delta 全部实测有效，无「fallback-会-断」的常见场景残留；web_search 两路径方案明确，Phase 3 实现。
+
+---
+
+## 7. LIVE 路径 pre-response 保活臂（task 7.1，2026-07-09）—— 端到端经代理，**待用户实测**
+
+> **状态：harness 已写、结果待填。** §1-§6 各臂是 **CC ← mock 直连**（测 CC watchdog 认不认某帧型）。本节的臂是 **CC → copilot-api 代理 → mock 上游**（测**代理**在上游全静默时**合成** `empty_text` 前奏能否让 CC 存活 >300s）。对应 spec [2026-07-08-buffered-keepalive-empty-text-anchor](../../docs/spec/2026-07-08-buffered-keepalive-empty-text-anchor.md) §10.8 + ADR [2026-07-09-unconditional-keepalive-timeout-safety](../../docs/decisions/2026-07-09-unconditional-keepalive-timeout-safety.md)。
+
+### 7.1 为什么需要新拓扑（不能复用 §1-§6 的直连 mock）
+
+§1-§6 的 `mock.ts` 由 mock **自己**发 keepalive 帧、CC 直连 mock——证明的是「CC 的 watchdog 认不认这个帧型」，**完全绕过了代理的合成逻辑**。而 incident `req_1783609043247_663`（ADR）的根因是**代理**在 live/delayed-commit 路径、上游**纯 pre-response 静默**（连响应头都没返回）时，本应合成 `empty_text` 前奏却退回裸 ping。要验证修复，必须让**代理**处在被测回路里：
+
+```
+real claude (CC)  ──ANTHROPIC_BASE_URL=:4141──▶  copilot-api 代理  ──ghc_api_base_url──▶  mock-upstream.ts（静默）
+```
+
+`mock-upstream.ts` 模拟 GHC 上游：`/v1/messages` **持住响应（不发任何头）** `SILENCE_SEC` 秒（默认 330 > CC 的 300s 墙），再返回干净 200 尾（`message_start` + 小 text 块 + `message_stop`）——代理把尾 pump 给 CC 即证 CC 仍在线。另供 `/models`（读 `refs/AVAILABLE_MODELS.json`，代理据此建模型索引）+ `/count_tokens`。
+
+### 7.2 臂设计（三臂，`empty_text` 为门控、其余对照）
+
+| 臂 | 代理 `stream_keepalive_mode` | 预期 CC 结果 | 证明 |
+|---|---|---|---|
+| **armLive-empty_text**（门控） | `empty_text` | ✅ `is_error=false`、`duration_ms > 300000` | 合成 message_start 前奏 + 空 text_delta **无条件**重置 CC 300s watchdog；上游 330s 后吐尾、CC 收到真实 "ok" 干净收尾 |
+| **armLive-ping**（对照） | `ping` | ❌ `is_error=true`、`duration_ms ≈ 300000-320000`、`Stream idle timeout - no chunks received` | 纯裸 ping 压不住 300s no-real-content 墙（复现 incident） |
+| **armLive-enveloped_ping**（确认，**非门控**） | `enveloped_ping` | ❌（预期）`is_error=true`、`≈300s` 断 | 合成 message_start 信封 + 裸 ping、无 content block/空 delta → 理论同 `ping` 层撑不住（现有 armP 证据）；仅闭合「message_start 单独是否影响 watchdog」缝隙，不阻塞主线 |
+
+### 7.3 运行指令（用户执行——`no-auto-server`：agent 写 harness、不起代理）
+
+**前提**：用户已 GitHub 认证（代理正常跑生产的凭据即可——Copilot token 交换仍走真实 `api.github.com`，只有 `/v1/messages` + `/models` 数据面被 `ghc_api_base_url` 改道到 mock）。
+
+**每臂三步**（每臂重复；`stream_keepalive_mode` 可热重载、无需重启代理，其余 config 恒定）：
+
+1. **起代理**（终端 A，用户手动——脚本不代劳）。config.yaml 关键项：
+   ```yaml
+   anthropic:
+     protect_streaming_generation: false   # 走 LIVE / delayed-commit（非 buffered）
+     stream_commit_after_sec: 20
+     stream_keepalive_ping_sec: 20
+     stream_keepalive_mode: empty_text      # ← 每臂改此值（empty_text / ping / enveloped_ping）
+   timeouts:
+     response_header: 900                   # 必须 > SILENCE_SEC（默认 330），否则代理先 abort 上游
+     stream_idle: 900
+   ```
+   启动加 `--ghc-api-base-url http://localhost:8799`（把 GHC 数据面指向 mock）。确认代理监听 :4141。
+
+2. **跑臂**（终端 B——脚本起 mock 上游 + 驱动 headless CC）：
+   ```bash
+   cd exp/cc-idle-280s
+   bash run-proxy-arm.sh armLive-empty_text     empty_text        # 门控，预期 ✅ >300s
+   # 改 config.yaml stream_keepalive_mode: ping，等热重载，再：
+   bash run-proxy-arm.sh armLive-ping           ping              # 对照，预期 ❌ ~300s
+   # 改 config.yaml stream_keepalive_mode: enveloped_ping，再：
+   bash run-proxy-arm.sh armLive-enveloped_ping enveloped_ping    # 确认，预期 ❌ ~300s（非门控）
+   ```
+   脚本读 CC 的 `--output-format json` 出 `is_error` / `duration_ms` / `subtype`，日志落 `armLive-*.cli.log`（CC 裁决）+ `armLive-*.mock-upstream.log`（mock 静默/尾/abort 时刻）。
+
+3. **回填 §7.4 表**（下方 `duration_ms` 待用户填实测值）。
+
+可调环境变量：`SILENCE`（默认 330）、`CC_CEIL`（默认 420，CC 墙钟上限）、`MOCK_UPSTREAM_PORT`（默认 8799）、`PROXY_URL`（默认 http://localhost:4141）、`PROXY_TOKEN`（默认 `copilot-api`）。
+
+### 7.4 结果（**待用户填实测 `duration_ms`**）
+
+| 臂 | `stream_keepalive_mode` | 预期 | 实测 `is_error` | 实测 `duration_ms` | 裁决 |
+|---|---|---|---|---|---|
+| armLive-empty_text | `empty_text` | ✅ 存活 >300s | _待填_ | _待填_ | _待填_ |
+| armLive-ping | `ping` | ❌ ~300-320s 断 | _待填_ | _待填_ | _待填_ |
+| armLive-enveloped_ping | `enveloped_ping` | ❌ ~300s 断（非门控） | _待填_ | _待填_ | _待填_ |
+
+**上线门控**：`armLive-empty_text` 的 `is_error=false` 且 `duration_ms > 300000` = 直接证明 ADR §1 的「无条件 timeout-safe」在 live pre-response 路径成立（C1 修复生效）。`armLive-ping` 对照复现 incident。`armLive-enveloped_ping` 仅确认现有 armP 外推（预期断、不阻塞）。
+
+### 7.5 排障提示
+
+- **CC 在 ~300s 就断且是 empty_text 臂** → 检查代理是否真在 live 路径（`protect_streaming_generation: false`）、`stream_keepalive_mode` 是否热重载生效（看代理日志 keepalive 帧型）；查 `armLive-*.mock-upstream.log` 是否记了「proxy ABORTED」（= 代理 timeouts 未抬到 >SILENCE）。
+- **mock 日志记「proxy ABORTED at ~300s」** → `timeouts.response_header` / `timeouts.stream_idle` 仍是默认 300，抬到 900。
+- **CC 立刻 400/404** → 模型没解析：确认 mock `/models` 返回含 `claude-opus-4.8`（vendor Anthropic + `/v1/messages`）的 `refs/AVAILABLE_MODELS.json`、代理模型索引已建。
+- **代理立刻报无 token** → 用户未认证；本实验不改认证路径（Copilot token 仍走真实 GitHub），需先 `copilot-api auth`。
