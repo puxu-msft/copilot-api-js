@@ -1,5 +1,7 @@
 # 无条件 keepalive timeout-safety 实现计划
 
+> **✅ 实施状态（2026-07-09）：已落地，分支 `feat/keepalive-timeout-safety`（17+ commits，基于 master `80366363`）。** 全阶段 P0-P8 经 subagent-driven-development 逐任务实现 + 每阶段独立 task-review + opus whole-branch 终审 + I-1 承重缺口修复 + 独立复核。回归 2183 pass/0 fail、backend typecheck 对特性文件 clean、引入零新 lint/typecheck 错（48 lint + e2e-ui tsc 错为 master 既有存量债、正交）。**唯一待办 = user-run oracle 门**（`exp/cc-idle-280s/` 实测 live empty_text 存活 >300s，no-auto-server 须用户跑）+ merge 决策。deferred：POST-COMMIT error 帧不进 history（已落 backlog）。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实现。步骤用 `- [ ]` 复选框追踪。**大型结构性重构**——同时遵循 skill `large-refactor`（commit invariants + 过渡态显式无害 + golden-fixture 预捕获）。
 
 **Goal:** 让 keepalive 在安全模式下无条件重置 CC 的 300s no-real-content watchdog（含 live/delayed-commit 路径的纯 pre-response 静默），使客户端永不因超时报错。
