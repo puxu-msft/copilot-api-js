@@ -323,6 +323,25 @@ export interface AnchorHooks {
 }
 
 /**
+ * The mutable buffered empty-text keepalive ANCHOR state — the single source of truth shared across
+ * the cross-handler injector, the driver's buffered path, and the live-path reconciliation (spec
+ * 2026-07-08-buffered-keepalive-empty-text-anchor §10.1.5 H1). Today the driver owns/creates it
+ * internally; the upcoming "injector moves to the handler" refactor threads a handler-owned instance
+ * in via {@link RunBufferedOpts.anchorState} so both sides observe the SAME injection/close state
+ * (no torn snapshot — §3.3 B1 flips `injected` synchronously before the first sink write).
+ */
+export interface AnchorState {
+  /** The synthetic anchor block has been injected onto the forwarded track (start@0 enqueued). */
+  injected: boolean
+  /** The (real or synthetic) `message_start` has been forwarded — the commit flush skips the buffered copy (H1 dedup). */
+  messageStartForwarded: boolean
+  /** The anchor `content_block_start@0` has been closed off by a `content_block_stop@0` (commit / terminal-failure). */
+  anchorClosed: boolean
+  /** First REAL `message_start` captured on the buffered track; the injector prefers it over a synthetic one ("prefer real, else synthetic"). */
+  capturedMessageStart?: ClientFrame
+}
+
+/**
  * Options for `runResponseBufferedSink` (L2 — streaming upstream-RST buffered retry,
  * docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md). Extends {@link RunResponseOpts}
  * (the buffered drain still feeds `onUpstreamFrame` / applies `onRenderedFrame` per
@@ -336,6 +355,14 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * `ping` / `content_delta` and the live path behave byte-identically to before.
    */
   anchor?: AnchorHooks
+  /**
+   * The shared {@link AnchorState} the handler owns when it drives the injector (the upcoming
+   * "injector moves to the handler" refactor). When supplied, the driver reads/writes THIS instance
+   * instead of a locally-created one, so the handler-side injector and the driver's buffered
+   * commit/close-off observe the same injection/close state. Omitted during the transition — the
+   * driver self-creates an internal `AnchorState`, keeping every existing call site byte-identical.
+   */
+  anchorState?: AnchorState
   /**
    * Reads the handler's accumulator: did THIS attempt see `message_stop`? The buffered
    * sink commits ONLY on `drained && sawMessageStop()` — a clean drain alone is NOT
