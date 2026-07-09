@@ -74,6 +74,7 @@ import {
   anchorStartFrame,
   anchorStopFrame,
   remapAnthropicBlockIndex,
+  syntheticMessageStartFrame,
 } from "~/lib/anthropic/keepalive-anchor"
 import {
   //
@@ -882,6 +883,7 @@ function buildAnthropicAnchorWiring(enabled: boolean): AnthropicAnchorWiring {
     startFrame: anchorStartFrame(),
     stopFrame: anchorStopFrame(),
     deltaFrame: anchorDeltaFrame(),
+    syntheticMessageStart: (model, reqId) => syntheticMessageStartFrame(model, reqId),
     remap: remapAnthropicBlockIndex,
     bindInjector: (fn) => {
       boundInjector = fn

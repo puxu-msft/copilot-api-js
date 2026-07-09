@@ -303,6 +303,13 @@ export interface AnchorHooks {
   /** The empty `text_delta` anchor keepalive frame — resets CC's 300s watchdog right after the start. */
   deltaFrame: ClientFrame
   /**
+   * Fabricate a `message_start` envelope (fake id + zeroed usage) for when the upstream stalls before
+   * emitting its own real `message_start`, so the client stream is well-formed enough to open a block.
+   * Optional: only the empty_text buffered path supplies it (P3 injector consumes it); the driver's
+   * anchor path stays inert when omitted.
+   */
+  syntheticMessageStart?: (model: string, reqId: string) => ClientFrame
+  /**
    * Shift a real `content_block_*` frame's index by `offset` (the anchor reserved index 0, so all
    * real blocks flush at +1). Non-block frames (message_delta / message_stop / non-JSON) pass through.
    */
