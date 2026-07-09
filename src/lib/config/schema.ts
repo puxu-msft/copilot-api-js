@@ -665,6 +665,8 @@ export const TimeoutsConfigSchema = z
     response_header: nullableNonnegativeInt(),
     /** Upstream TCP keepalive initial-probe delay in seconds (0 = use undici default 60s). Keeps GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it. Node-only. */
     upstream_keepalive: nullableNonnegativeInt(),
+    /** Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled). Application-layer complement to `upstream_keepalive`: GHC does NOT forward Anthropic's SSE `ping` frames, so a long thinking silence is a truly idle stream a connection-idle reaper (middlebox/GHC edge) severs WITHOUT `message_stop` (a real cut fired at ~112s) — a periodic PING puts a real frame on the wire. Default 15. Node-only (node:http2 transport). */
+    upstream_h2_ping: nullableNonnegativeInt(),
     /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled). Was top-level `stale_request_max_age`. */
     stale_request_max_age: nullableNonnegativeInt(),
   })

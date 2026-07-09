@@ -639,6 +639,19 @@ export interface State {
   readonly upstreamKeepaliveDelay: number
 
   /**
+   * Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled).
+   *
+   * The application-layer complement to `upstreamKeepaliveDelay` (TCP keepalive):
+   * GHC's CAPI proxy does NOT forward Anthropic's SSE `event: ping` frames, so a
+   * long thinking silence is a truly idle upstream stream. TCP keepalive keeps L4
+   * alive through NAT but does not defeat a connection-idle reaper (middlebox or
+   * GHC edge) counting application-layer silence; a periodic h2 PING puts a real
+   * frame on the wire. Kept WELL below observed idle-reaper windows (a real cut
+   * fired at ~112s). Default: 15. Node-only (the node:http2 transport).
+   */
+  readonly upstreamH2PingInterval: number
+
+  /**
    * Shutdown Phase 2 timeout in seconds.
    * Wait for in-flight requests to complete naturally before sending abort signal.
    * Default: 60.
@@ -1214,7 +1227,12 @@ export function setAutoTruncateConfig(
 }
 
 export function setTimeoutConfig(
-  patch: Partial<Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval" | "upstreamKeepaliveDelay">>,
+  patch: Partial<
+    Pick<
+      MutableState,
+      "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval" | "upstreamKeepaliveDelay" | "upstreamH2PingInterval"
+    >
+  >,
 ): void {
   const transportChanged =
     (patch.responseHeaderTimeout !== undefined && patch.responseHeaderTimeout !== mutableState.responseHeaderTimeout)
@@ -1402,6 +1420,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   responseHeaderTimeout: 300,
   streamIdleTimeout: 300,
   upstreamKeepaliveDelay: 15,
+  upstreamH2PingInterval: 15,
   staleRequestMaxAge: 600,
   modelRefreshInterval: 600,
   shutdownGracefulWait: 60,
@@ -1511,6 +1530,7 @@ export function resetConfigManagedState(): void {
     responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
     streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
     upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
+    upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
     staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
     modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   })
@@ -1630,6 +1650,7 @@ const mutableState: MutableState = {
   modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
+  upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
   stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
   normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,

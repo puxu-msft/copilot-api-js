@@ -28,6 +28,7 @@ import tls from "node:tls"
 import {
   //
   getProxyUrlForOrigin,
+  getUpstreamH2PingIntervalMs,
   getUpstreamKeepAliveDelayMs,
 } from "~/lib/proxy"
 
@@ -164,6 +165,42 @@ function awaitH2Handshake(sock: tls.TLSSocket): Promise<void> {
   })
 }
 
+/** No-op ack for keepalive PINGs — see {@link scheduleH2KeepalivePing}. */
+const NOOP_PING_ACK = (): void => {}
+
+/**
+ * Periodic HTTP/2 PING keepalive for a pooled upstream session. The application-
+ * layer complement to the socket's TCP keepalive (createSession): GHC's CAPI
+ * proxy does NOT forward Anthropic's SSE `event: ping` frames, so a long thinking
+ * silence is a truly idle stream (verified via the upstream-original sseEvents
+ * track: content for ~3s, then 112s of total wire silence, then a close WITHOUT
+ * `message_stop`). TCP keepalive keeps L4 alive through NAT but does not defeat a
+ * connection-idle reaper (middlebox or GHC edge) that counts application-layer
+ * silence — a PING puts a real frame on the wire.
+ *
+ * Best-effort: the ack is ignored. A lost ack means the connection is dying, which
+ * the session `error`/`close`/`goaway` handlers already drop + fail the in-flight
+ * request. Unacked-ping liveness teardown (fast-fail a dead session before its
+ * own idle timeout) is a separate concern — see docs/todo/deferred-backlog.md.
+ *
+ * `intervalMs <= 0` disables it (returns undefined). The timer is `unref`'d so it
+ * never keeps the process alive at shutdown; the caller clears it on session end.
+ */
+export function scheduleH2KeepalivePing(session: Pick<http2.ClientHttp2Session, "ping">, intervalMs: number): NodeJS.Timeout | undefined {
+  if (intervalMs <= 0) return undefined
+  const timer = setInterval(() => {
+    try {
+      session.ping(NOOP_PING_ACK)
+    } catch {
+      // Session closed/destroyed between the timer firing and this call
+      // (ERR_HTTP2_INVALID_SESSION) — the session `close` handler clears this
+      // timer; swallow so a benign teardown race is not an unhandled throw.
+    }
+  }, intervalMs)
+  timer.unref()
+  return timer
+}
+
 /**
  * Get (or create) the pooled h2 session for `origin`. Async because the proxy
  * tunnel handshake (CONNECT / SOCKS5) is async, while node:http2's
@@ -203,12 +240,25 @@ async function getSession(origin: string): Promise<http2.ClientHttp2Session> {
       return session
     }
     // The factory (test or prod) owns connection setup; pool management is shared.
-    const drop = (): void => {
+    // Two distinct responsibilities, split by event: `removeFromPool` stops routing
+    // NEW requests to this session (all of error/close/goaway — a GOAWAY'd session
+    // must not take new streams); `clearInterval` stops the keepalive PING only on
+    // actual session death (error/close). A `goaway` does NOT destroy the session —
+    // its already-in-flight streams keep running, so the keepalive must keep pinging
+    // them until `close` fires (which is guaranteed to follow, and clears the timer
+    // then). Clearing on `goaway` would strand a draining long-thinking stream in
+    // exactly the silence this keepalive exists to defeat.
+    const pingTimer = scheduleH2KeepalivePing(session, getUpstreamH2PingIntervalMs())
+    const removeFromPool = (): void => {
       if (sessions.get(origin) === session) sessions.delete(origin)
     }
-    session.on("error", drop)
-    session.on("close", drop)
-    session.on("goaway", drop)
+    const dispose = (): void => {
+      if (pingTimer) clearInterval(pingTimer)
+      removeFromPool()
+    }
+    session.on("error", dispose)
+    session.on("close", dispose)
+    session.on("goaway", removeFromPool)
     session.unref()
     sessions.set(origin, session)
     return session

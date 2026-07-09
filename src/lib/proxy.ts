@@ -73,6 +73,25 @@ export function getUpstreamKeepAliveDelayMs(): number | undefined {
 }
 
 /**
+ * Upstream HTTP/2 PING keepalive interval in milliseconds (0 = disabled).
+ *
+ * Derived from `state.upstreamH2PingInterval` (seconds). The application-layer
+ * complement to the TCP keepalive above: GHC's CAPI proxy does NOT forward
+ * Anthropic's SSE `event: ping` frames, so a long thinking silence is a truly
+ * idle upstream stream (verified via the upstream-original sseEvents track: a
+ * real request saw content for ~3s, then 112s of total wire silence, then the
+ * stream was closed WITHOUT `message_stop`). TCP keepalive keeps L4 alive
+ * through NAT but does not defeat a connection-idle reaper (middlebox or GHC
+ * edge) counting application-layer silence — periodic h2 PING puts real frames
+ * on the wire. Consumed by http2-client.ts:scheduleH2KeepalivePing. Node-only
+ * (the node:http2 transport); the plaintext undici path has no long silences.
+ */
+export function getUpstreamH2PingIntervalMs(): number {
+  const sec = state.upstreamH2PingInterval
+  return sec > 0 ? Math.ceil(sec * 1000) : 0
+}
+
+/**
  * Build undici Agent options from current runtime state.
  *
  * - `headersTimeout` follows `responseHeaderTimeout` (time to first response headers)

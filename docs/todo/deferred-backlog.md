@@ -240,3 +240,11 @@
 - **理想架构**：retreat 路径在 `anchorState.injected` 时对 retreat-flush 帧与后续 live-write 帧统一施加 `anchor.remap(frame, 1)` + `messageStartForwarded && isMessageStart → skip`（镜像 commit 分支 driver.ts:662-668 的变换）。
 - **为何暂缓（2026-07-09：罕见残留、不修）**：retreat 触发需 `bufferedBytes > 16MiB`（driver.ts:622 计 `frame.data.length + frame.event.length`），上游对 Anthropic 路径硬上限 `max_output_tokens: 64000` + `max_thinking_budget: 32000`（refs/AVAILABLE_MODELS.json），典型响应帧字节远低于 16MiB。**但不可达估算不硬**（plan review N4）：细粒度小 delta 的逐帧 framing 开销 + thinking signature 可把帧字节推高，pathological 下逼近 16MiB 非绝无可能。故定位为**罕见残留协议违规**（非「证明不可达」），叠加「先注锚点」后更罕见——用户 2026-07-09 明确不做。keepalive-timeout-safety 特性的 live 对账 gate 在 `buffered===false`、结构上够不到 retreat（在 buffered 内），故不会误碰。若未来实测确证可达需修：改 driver retreat 分支复用 commit 分支 remap+dedup 读共享 anchorState。锚点特性主路径（commit + 终末失败）正确性已实证。
 - **若做需改什么**：`src/lib/pipeline/driver.ts` 的 retreat 分支（:601-620 附近）——注入锚点时对 live 路径帧施加与 commit flush 同一的 remap+1 + message_start dedup；补一条 retreated+anchor 的单元测试（buffer 超 cap + 锚点已注入 → 断言真实块 @1 无碰撞、message_start 恰 1 次）。执行期发现（Task 3.4，2026-07-08）。
+
+## 上游 h2 PING 保活的 unacked-ping 死连接快速 teardown（liveness 探测）
+
+- **背景（2026-07-09 落地）**：为对抗「GHC 长思考静默期连接被空闲回收、上游流无 `message_stop` 截断」，加了上游 HTTP/2 PING 周期保活（`timeouts.upstream_h2_ping` 默认 15s，`transport/http2-client.ts:scheduleH2KeepalivePing`）。v1 是**纯保活**：`session.ping()` 的 ack 回调忽略（`NOOP_PING_ACK`）。
+- **现状**：连接真死时，靠 node:http2 session 的 `error`/`close`/`goaway` 事件落 `drop`（清 timer + 移出池）+ 让在途请求失败——但这依赖底层 socket/session 自己察觉死亡（可能拖到它自己的 idle timeout 才 emit）。PING 的 ack **没被用来主动判活**。
+- **理想架构**：记录每次 PING 的发出时刻，若连续 N 个 PING 在 `ackTimeoutMs`（如 2×interval）内无 ack，判定连接已死 → 主动 `session.destroy()`，把「静默挂死」转成**及时的可重试错误**（配合 L2 缓冲重试快速换新连接）。这是把 PING 从「保活」升级为「保活 + liveness 探测」。
+- **为何暂缓**：本次修复目标是**阻止**空闲回收（放真帧上 wire），已由纯保活达成；unacked-ping 的死连接快速 teardown 是**正交的另一个关注点**（加速失败恢复，非阻止截断），且引入「慢但活的连接被误判 teardown」的假阳性风险，需实测标定 `ackTimeoutMs`。against-yagni 的反面不适用——它不是本 bug 的必需件，是独立增强。
+- **若做需改什么**：`scheduleH2KeepalivePing` 的 ack 回调改为记 in-flight ping 计数/时刻 + 一个 `ackTimeoutMs` 守卫（连续无 ack → `session.destroy(new Error("h2 keepalive ping unacked — dead connection"))`）；加 config 旋钮 `timeouts.upstream_h2_ping_ack_timeout`；夹具用 Node http2 server（Bun server 的 ping ack 行为不忠实，见 skill `bun-upstream-transport`）跑一个「server 停 ack → 客户端在 timeout 内 destroy」的集成测试。发现方：本特性落地设计取舍（2026-07-09）。

@@ -162,6 +162,15 @@ timeouts:
   # Bun 与 Node 均生效——所有上游请求统一经一个 undici dispatcher（Bun 的全局 fetch 会忽略它，故经文件子路径加载真 undici）。
   upstream_keepalive: 15
 
+  # Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled).
+  # 上游 HTTP/2 PING 保活间隔秒数（0 = 禁用）。
+  # Application-layer complement to upstream_keepalive: GHC's CAPI proxy does NOT forward Anthropic's SSE `event: ping` frames, so a long thinking silence is a truly idle stream.
+  # upstream_keepalive 的应用层补充：GHC 的 CAPI 代理不透传 Anthropic 的 SSE `event: ping` 帧，故长思考静默期是一条真正空闲的流。
+  # TCP keepalive keeps L4 alive through NAT but does not defeat a connection-idle reaper (middlebox/GHC edge) counting application-layer silence (a real cut fired at ~112s) — a PING puts a real frame on the wire.
+  # TCP keepalive 只维持 L4 不被 NAT 回收，挡不住按应用层静默计时的空闲回收方（中间设备/GHC 边缘，实测 ~112s 掐断）——PING 在 wire 上放一个真帧。
+  # Node-only (the node:http2 transport). / 仅 Node（node:http2 传输）。
+  upstream_h2_ping: 15
+
   # Max seconds an active request can live before the stale reaper forces it to fail (0 = disabled).
   # 活跃请求被 stale reaper 强制失败前的最大存活秒数（0 = 禁用）。
   # Safety net for requests that never complete/fail normally. / 兜底永不正常完成/失败的请求。

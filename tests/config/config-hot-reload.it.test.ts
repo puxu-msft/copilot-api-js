@@ -188,6 +188,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
   },
   {
+    configKey: "timeouts.upstream_h2_ping",
+    stateKey: "upstreamH2PingInterval",
+    sampleYamlValue: "20",
+    expectedStateValue: 20,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+  },
+  {
     configKey: "timeouts.stale_request_max_age",
     stateKey: "staleRequestMaxAge",
     sampleYamlValue: "1234",

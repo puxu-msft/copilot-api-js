@@ -709,6 +709,7 @@ export async function applyConfigToState(): Promise<Config> {
     if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
     if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
     if (t.upstream_keepalive !== undefined) setTimeoutConfig({ upstreamKeepaliveDelay: t.upstream_keepalive })
+    if (t.upstream_h2_ping !== undefined) setTimeoutConfig({ upstreamH2PingInterval: t.upstream_h2_ping })
     if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
   }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
