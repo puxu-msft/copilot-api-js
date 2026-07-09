@@ -1,0 +1,223 @@
+/**
+ * Unit coverage for the LIVE-path anchor reconciliation (spec §10.3): the pure {@link reconcileLiveFrame}
+ * transform (each branch) + the {@link makeReconcilingSink} decorator (write expansion + method forwarding).
+ * The end-to-end collision-elimination proof (real driver + decorated sink + injector) lives in
+ * tests/pipeline/live-reconcile-collision-e2e.test.ts.
+ */
+
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import type {
+  //
+  AnchorState,
+  ClientFrame,
+  ClientSink,
+} from "~/lib/pipeline/types"
+
+import {
+  //
+  anchorStopFrame,
+  remapAnthropicBlockIndex,
+} from "~/lib/anthropic/keepalive-anchor"
+import {
+  //
+  makeReconcilingSink,
+  reconcileLiveFrame,
+  type ReconcileHooks,
+} from "~/lib/anthropic/live-reconcile"
+
+// ── fixtures ──────────────────────────────────────────────────────────────
+
+function f(type: string, extra: Record<string, unknown> = {}): ClientFrame {
+  return { event: type, data: JSON.stringify({ type, ...extra }) }
+}
+
+function hooks(): ReconcileHooks {
+  return {
+    isMessageStart: (fr) => {
+      try {
+        return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
+      } catch {
+        return false
+      }
+    },
+    stopFrame: anchorStopFrame(),
+    remap: remapAnthropicBlockIndex,
+  }
+}
+
+function injectedState(): AnchorState {
+  // The post-injection shared state the handler's unique injector leaves behind (prelude already sent).
+  return { injected: true, messageStartForwarded: true, anchorClosed: false }
+}
+
+/** Map a frame to `type@index` (index omitted when absent) for compact sequence assertions. */
+function key(fr: ClientFrame): string {
+  const p = JSON.parse(fr.data as string) as { type: string; index?: number }
+  return typeof p.index === "number" ? `${p.type}@${p.index}` : p.type
+}
+
+// ── reconcileLiveFrame — the pure transform ─────────────────────────────────
+
+describe("reconcileLiveFrame", () => {
+  test("NOT injected → every frame passes through byte-identically (fast-response equivalence)", () => {
+    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorClosed: false }
+    const h = hooks()
+    const frames = [
+      f("message_start", { message: { id: "m" } }),
+      f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }),
+      f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "x" } }),
+      f("message_stop"),
+    ]
+    for (const fr of frames) {
+      const out = reconcileLiveFrame(fr, state, h)
+      expect(out).toEqual([fr]) // same object, untouched
+    }
+    // Passthrough must NOT mutate state.
+    expect(state).toEqual({ injected: false, messageStartForwarded: false, anchorClosed: false })
+  })
+
+  test("injected: the real upstream sequence reconciles to [drop MS, stop@0 + block@1, delta@1, stop@1, message_delta, message_stop]", () => {
+    const state = injectedState()
+    const h = hooks()
+    const upstream = [
+      f("message_start", { message: { id: "real" } }),
+      f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }),
+      f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "reasoning" } }),
+      f("content_block_stop", { index: 0 }),
+      f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } }),
+      f("message_stop"),
+    ]
+    const emitted = upstream.flatMap((fr) => reconcileLiveFrame(fr, state, h))
+
+    expect(emitted.map(key)).toEqual([
+      // real message_start → DROPPED (empty), so it never appears
+      "content_block_stop@0", //  anchor close-off inserted before the first real block
+      "content_block_start@1", // real thinking block, remapped +1
+      "content_block_delta@1", // real thinking_delta, remapped +1
+      "content_block_stop@1", //  real content_block_stop, remapped +1
+      "message_delta", //         no index → unchanged
+      "message_stop", //          no index → unchanged
+    ])
+
+    // Single message_start on the client (0 real ones survive; the injected one is the only message_start).
+    expect(emitted.filter((fr) => key(fr) === "message_start")).toHaveLength(0)
+    // No real content_block_* collides with the anchor's reserved index 0 (only the close-off sits at @0).
+    const at0 = emitted.filter((fr) => {
+      const p = JSON.parse(fr.data as string) as { type: string; index?: number }
+      return p.type.startsWith("content_block_") && p.index === 0
+    })
+    expect(at0.map(key)).toEqual(["content_block_stop@0"]) // exactly the close-off, nothing else at @0
+    expect(state.anchorClosed).toBe(true)
+  })
+
+  test("injected + message_start → dropped ([]), messageStartForwarded stays set", () => {
+    const state = injectedState()
+    expect(reconcileLiveFrame(f("message_start", { message: { id: "x" } }), state, hooks())).toEqual([])
+    expect(state.messageStartForwarded).toBe(true)
+  })
+
+  test("injected + first content_block_start closes the anchor exactly once (later blocks just +1)", () => {
+    const state = injectedState()
+    const h = hooks()
+    const first = reconcileLiveFrame(f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }), state, h)
+    expect(first.map(key)).toEqual(["content_block_stop@0", "content_block_start@1"])
+    expect(state.anchorClosed).toBe(true)
+    // A SECOND real content_block_start (a multi-block response) must NOT re-close the anchor.
+    const second = reconcileLiveFrame(f("content_block_start", { index: 1, content_block: { type: "text", text: "" } }), state, h)
+    expect(second.map(key)).toEqual(["content_block_start@2"]) // just +1, no extra stop@0
+  })
+
+  test("injected: message_delta / message_stop pass through unchanged (real usage/stop_reason delivered)", () => {
+    const state = injectedState()
+    const h = hooks()
+    const md = f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 9 } })
+    const ms = f("message_stop")
+    expect(reconcileLiveFrame(md, state, h)).toEqual([md])
+    expect(reconcileLiveFrame(ms, state, h)).toEqual([ms])
+  })
+})
+
+// ── makeReconcilingSink — the decorator ─────────────────────────────────────
+
+/** A stub inner sink recording (method, frame) tuples in order. */
+function stubSink(): { sink: ClientSink; calls: Array<{ m: string; frame?: ClientFrame }> } {
+  const calls: Array<{ m: string; frame?: ClientFrame }> = []
+  const sink: ClientSink = {
+    write: (frame) => (calls.push({ m: "write", frame }), Promise.resolve()),
+    writeSynthetic: (frame) => (calls.push({ m: "writeSynthetic", frame }), Promise.resolve()),
+    writeKeepalive: (frame) => (calls.push({ m: "writeKeepalive", frame }), Promise.resolve()),
+    writeSyntheticEnvelope: (frame) => (calls.push({ m: "writeSyntheticEnvelope", frame }), Promise.resolve()),
+    writeAnchor: (frame) => (calls.push({ m: "writeAnchor", frame }), Promise.resolve()),
+    freezeHeartbeat: () => calls.push({ m: "freezeHeartbeat" }),
+    close: () => calls.push({ m: "close" }),
+  }
+  return { sink, calls }
+}
+
+describe("makeReconcilingSink", () => {
+  test("NOT injected: write forwards each frame verbatim to inner.write (no anchor routing)", async () => {
+    const { sink, calls } = stubSink()
+    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorClosed: false }
+    const dec = makeReconcilingSink(sink, state, hooks())
+    const fr = f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hi" } })
+    await dec.write(fr)
+    expect(calls).toEqual([{ m: "write", frame: fr }])
+  })
+
+  test("injected: write expands the real sequence onto inner; the close-off routes via writeAnchor (synthetic mark)", async () => {
+    const { sink, calls } = stubSink()
+    const state = injectedState()
+    const dec = makeReconcilingSink(sink, state, hooks())
+
+    await dec.write(f("message_start", { message: { id: "real" } })) // dropped → no inner call
+    await dec.write(f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }))
+    await dec.write(f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "r" } }))
+    await dec.write(f("content_block_stop", { index: 0 }))
+    await dec.write(f("message_stop"))
+
+    // The close-off stop@0 is the ONLY writeAnchor call; everything real goes through write, remapped +1.
+    expect(calls.map((c) => `${c.m}:${c.frame ? key(c.frame) : ""}`)).toEqual([
+      "writeAnchor:content_block_stop@0", // synthetic close-off → marked "anchor" on the forwarded track
+      "write:content_block_start@1",
+      "write:content_block_delta@1",
+      "write:content_block_stop@1",
+      "write:message_stop",
+    ])
+  })
+
+  test("every non-write method forwards to the inner sink", async () => {
+    const { sink, calls } = stubSink()
+    const dec = makeReconcilingSink(sink, injectedState(), hooks())
+    const err = f("error")
+    await dec.writeSynthetic?.(err)
+    await dec.writeKeepalive?.(err)
+    await dec.writeSyntheticEnvelope?.(err)
+    await dec.writeAnchor?.(err)
+    dec.freezeHeartbeat?.()
+    dec.close?.()
+    expect(calls.map((c) => c.m)).toEqual(["writeSynthetic", "writeKeepalive", "writeSyntheticEnvelope", "writeAnchor", "freezeHeartbeat", "close"])
+  })
+
+  test("optional inner methods absent → decorator leaves them undefined (array/WS sinks)", () => {
+    const bare: ClientSink = { write: () => Promise.resolve() }
+    const dec = makeReconcilingSink(bare, injectedState(), hooks())
+    expect(dec.writeSynthetic).toBeUndefined()
+    expect(dec.writeAnchor).toBeUndefined()
+    expect(dec.freezeHeartbeat).toBeUndefined()
+    expect(dec.close).toBeUndefined()
+  })
+
+  test("close-off falls back to inner.write when the inner sink has no writeAnchor", async () => {
+    const calls: Array<ClientFrame> = []
+    const bare: ClientSink = { write: (frame) => (calls.push(frame), Promise.resolve()) }
+    const dec = makeReconcilingSink(bare, injectedState(), hooks())
+    await dec.write(f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }))
+    expect(calls.map(key)).toEqual(["content_block_stop@0", "content_block_start@1"]) // both via write
+  })
+})
