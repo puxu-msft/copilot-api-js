@@ -173,7 +173,7 @@ function buildAnchoredSink(
   stream: Parameters<typeof makeSseSink>[0],
   opts: { onForwarded?: (record: SseEventRecord) => void } = {},
 ): { sink: ClientSink; anchor: AnchorHooks; anchorState: AnchorState; lastInjectResult: () => boolean | undefined } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorClosed: false }
+  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
   const anchor: AnchorHooks = {
     isMessageStart: (fr) => {
       try {

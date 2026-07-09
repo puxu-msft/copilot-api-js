@@ -325,10 +325,22 @@ export interface AnchorHooks {
  * (no torn snapshot — §3.3 B1 flips `injected` synchronously before the first sink write).
  */
 export interface AnchorState {
-  /** The synthetic anchor block has been injected onto the forwarded track (start@0 enqueued). */
+  /** The synthetic prelude has been injected onto the forwarded track (message_start — and, in `empty_text`, the anchor block@0 — enqueued). */
   injected: boolean
   /** The (real or synthetic) `message_start` has been forwarded — the commit flush skips the buffered copy (H1 dedup). */
   messageStartForwarded: boolean
+  /**
+   * The injector opened a synthetic anchor `content_block@0` at index 0 — the discriminator between the two
+   * injected preludes (spec §10.4 / §10.6):
+   *   - `empty_text` (default): TRUE. The injector reserved index 0 with an empty-text anchor block, so the
+   *     live reconcile / buffered commit must close it off (`content_block_stop@0`) before the first real
+   *     block AND shift every real `content_block_*` +1 around it.
+   *   - `enveloped_ping` (experimental): FALSE. The injector wrote ONLY the message_start envelope — no anchor
+   *     block, no empty delta — so real blocks pass through at their ORIGINAL index and NO close-off is written.
+   * Distinct from {@link anchorClosed} (which tracks whether the `stop@0` was emitted): `anchorBlockOpen` stays
+   * TRUE for the whole stream once set (index 0 remains reserved even after the anchor is closed).
+   */
+  anchorBlockOpen: boolean
   /** The anchor `content_block_start@0` has been closed off by a `content_block_stop@0` (commit / terminal-failure). */
   anchorClosed: boolean
   /** First REAL `message_start` captured on the buffered track; the injector prefers it over a synthetic one ("prefer real, else synthetic"). */
@@ -343,10 +355,11 @@ export interface AnchorState {
  */
 export interface RunBufferedOpts extends RunResponseOpts {
   /**
-   * Anthropic empty-text keepalive anchor hooks (spec 2026-07-08-buffered-keepalive-empty-text-anchor).
-   * Present ONLY when the handler runs `stream_keepalive_mode: empty_text` on the buffered path; the
-   * driver's anchor orchestration (inject / freeze / close-off / remap) is inert when omitted, so
-   * `ping` / `content_delta` and the live path behave byte-identically to before.
+   * Anthropic synthetic-prelude keepalive anchor hooks (spec 2026-07-08-buffered-keepalive-empty-text-anchor).
+   * Present when the handler runs a synthetic-prelude mode (`empty_text` or `enveloped_ping`) on the buffered
+   * path; the commit reads `anchorState.anchorBlockOpen` to remap+close-off (`empty_text`) vs only dedup the
+   * message_start (`enveloped_ping`). The driver's anchor orchestration is inert when omitted, so `ping` and
+   * the live path behave byte-identically to before.
    */
   anchor?: AnchorHooks
   /**

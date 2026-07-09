@@ -75,6 +75,7 @@ import {
   anchorStartFrame,
   anchorStopFrame,
   makeSyntheticAnchorInjector,
+  makeSyntheticEnvelopeInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
 } from "~/lib/anthropic/keepalive-anchor"
@@ -444,10 +445,11 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       const { buffered, heartbeatSec } = resolveBufferedAndHeartbeat(env)
       const forwardedSseEvents: Array<SseEventRecord> = []
       const streamStartMs = Date.now()
-      // empty_text keepalive anchor: the sink's heartbeat carries the handler-owned UNIQUE injector
-      // (spec §10.1.5 C1) + a shared AnchorState threaded to the pump → driver's buffered commit/close-off/
-      // remap. Inert for ping / enveloped_ping (undefined injector + hooks) and byte-equivalent on the live
-      // path (lazy — no idle stall → no injection).
+      // Synthetic-prelude keepalive: the sink's heartbeat carries the handler-owned UNIQUE injector (spec
+      // §10.1.5 C1) + a shared AnchorState threaded to the pump → driver's buffered commit/close-off/remap.
+      // `empty_text` → full anchor injector; `enveloped_ping` → envelope-only injector (message_start + bare
+      // ping, no block/remap); `ping` → inert (undefined injector + hooks). Byte-equivalent on the live path
+      // when no idle stall occurs (lazy — no injection).
       const { sink, anchorState, anchorHooks } = makeAnchoredSseSink(stream, {
         onForwarded: (record) => forwardedSseEvents.push(record),
         streamStartMs,
@@ -512,11 +514,12 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     const pingSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : state.protectStreamingHeartbeat
     const forwardedSseEvents: Array<SseEventRecord> = []
     const streamStartMs = Date.now()
-    // empty_text keepalive anchor (delayed-commit path). Built BEFORE the upstream settles — this is the
+    // Synthetic-prelude keepalive (delayed-commit path). Built BEFORE the upstream settles — this is the
     // PURE pre-response window the incident hit: the sink's heartbeat carries the handler-owned UNIQUE
     // injector (spec §10.1.5 C1) which fires INDEPENDENTLY of the driver/pump (they don't run until
     // `await p` resolves), synthesizing a message_start prelude when the upstream is silent (no captured
-    // message_start). The shared AnchorState + hooks flow to the pump below. Inert for ping / enveloped_ping.
+    // message_start) — a full empty-text anchor (`empty_text`) or a message_start-only envelope
+    // (`enveloped_ping`). The shared AnchorState + hooks flow to the pump below. Inert for `ping`.
     const { sink, anchorState, anchorHooks } = makeAnchoredSseSink(stream, {
       onForwarded: (record) => forwardedSseEvents.push(record),
       streamStartMs,
@@ -540,7 +543,9 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // Idempotent (`!anchorClosed`) — a close-off already done by the live reconciliation is not repeated;
     // inert when no anchor was injected (`injected` false → byte-equivalent to the no-anchor path).
     const closeAnchorIfOpen = async (): Promise<void> => {
-      if (anchorHooks && anchorState.injected && !anchorState.anchorClosed) {
+      // Only `empty_text` (anchorBlockOpen) opened a content_block@0 that needs balancing before the error
+      // terminus; `enveloped_ping` injected a message_start-only envelope (no block) → nothing to close off.
+      if (anchorHooks && anchorState.injected && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
         anchorState.anchorClosed = true
         sink.freezeHeartbeat?.()
         await sink.writeAnchor?.(anchorHooks.stopFrame)
@@ -861,11 +866,14 @@ function renderNonStreamingV4(
  *
  * The driver only ORCHESTRATES the buffered commit side (freeze + close-off + remap + dedup, reading the
  * SHARED {@link AnchorState}); the actual injection is driven by the handler's UNIQUE injector
- * ({@link makeSyntheticAnchorInjector}) attached to the sink's `heartbeat.injectAnchor` — so it fires in
- * the pre-response `await p` window, independently of the driver/pump (spec §10.1.5 C1). Enabled ONLY for
- * `stream_keepalive_mode: empty_text`; `ping` / `enveloped_ping` return undefined so every anchor branch
- * stays inert (byte-identical to before). No `bindInjector` holder anymore — the handler owns both the
- * injector construction and the sink, wiring them via a `sinkRef` self-reference at the call sites.
+ * ({@link makeSyntheticAnchorInjector} for empty_text / {@link makeSyntheticEnvelopeInjector} for
+ * enveloped_ping) attached to the sink's `heartbeat.injectAnchor` — so it fires in the pre-response
+ * `await p` window, independently of the driver/pump (spec §10.1.5 C1). Built for BOTH synthetic-prelude
+ * modes (`empty_text` + `enveloped_ping`); `ping` returns undefined so every anchor branch stays inert
+ * (byte-identical to before). The enveloped_ping hooks carry the (unused) anchor start/stop/delta frames too
+ * — the AnchorHooks shape is uniform; the injector + `anchorBlockOpen` state, not the hooks, decide whether
+ * an anchor block is actually opened. No `bindInjector` holder anymore — the handler owns both the injector
+ * construction and the sink, wiring them via a `sinkRef` self-reference at the call sites.
  */
 function buildAnthropicAnchorHooks(enabled: boolean): AnchorHooks | undefined {
   if (!enabled) return undefined
@@ -910,13 +918,20 @@ function makeAnchoredSseSink(
   },
 ): { sink: ClientSink; anchorState: AnchorState; anchorHooks: AnchorHooks | undefined } {
   const { onForwarded, streamStartMs, heartbeatSec, clientAbortSignal, resolvedName, reqId } = args
-  const anchorHooks = buildAnthropicAnchorHooks(state.streamKeepaliveMode === "empty_text")
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorClosed: false }
+  // Hooks are built for BOTH synthetic-prelude modes (empty_text + enveloped_ping); only `ping` opts out.
+  // The mode then selects WHICH injector runs (full anchor vs envelope-only) and whether `anchorBlockOpen`
+  // is set — the hooks themselves are the same format primitives.
+  const anchorHooks = buildAnthropicAnchorHooks(state.streamKeepaliveMode !== "ping")
+  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
   // Late-bind holder: the injector must read its sink at CALL time (an idle tick), but the sink's options
   // are evaluated before the sink exists — so `getSink` reads this holder, assigned right after construction.
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
+  // `empty_text` → full anchor injector (message_start + anchor block@0 + empty delta, anchorBlockOpen=true);
+  // `enveloped_ping` → envelope-only injector (message_start ONLY, anchorBlockOpen stays false → bare ping
+  // after, no block, no remap — spec §10.6).
+  const makeInjector = state.streamKeepaliveMode === "enveloped_ping" ? makeSyntheticEnvelopeInjector : makeSyntheticAnchorInjector
   const injectAnchor =
-    anchorHooks ? makeSyntheticAnchorInjector({ anchor: anchorHooks, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId }) : undefined
+    anchorHooks ? makeInjector({ anchor: anchorHooks, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId }) : undefined
   const sink = makeSseSink(stream, {
     onForwarded,
     streamStartMs,
@@ -969,29 +984,32 @@ interface PumpAnthropicStreamingV4Options {
   upstream: UpstreamStream
   env: RequestEnvelope
   /**
-   * Buffered `empty_text` keepalive anchor hooks (spec 2026-07-08-buffered-keepalive-empty-text-anchor).
-   * Present ONLY on `stream_keepalive_mode: empty_text`; passed straight into `runResponseBufferedSink`
-   * as `opts.anchor` (the live `runResponseSink` branch ignores it). Undefined for `ping` / `content_delta`
-   * → the driver's anchor orchestration is inert (byte-identical to before).
+   * Synthetic-prelude keepalive anchor hooks (spec 2026-07-08-buffered-keepalive-empty-text-anchor).
+   * Present on both synthetic-prelude modes (`empty_text` + `enveloped_ping`); passed straight into
+   * `runResponseBufferedSink` as `opts.anchor` (the live `runResponseSink` branch wraps the sink via
+   * {@link liveReconcilingSink} instead). The driver's buffered commit reads `anchorState.anchorBlockOpen`
+   * to decide whether to remap (`empty_text`) or only dedup the message_start (`enveloped_ping`). Undefined
+   * for `ping` → the driver's anchor orchestration is inert (byte-identical to before).
    */
   anchorHooks?: AnchorHooks
   /**
    * The handler-owned SHARED {@link AnchorState} (spec §10.1.5 H1). The handler's unique injector
    * (attached to the sink's `heartbeat.injectAnchor`) and the driver's buffered commit/close-off/remap
-   * both read/write THIS instance, so `injected`/`messageStartForwarded`/`capturedMessageStart` are one
-   * source of truth. Threaded into `runResponseBufferedSink` as `opts.anchorState`. Undefined for
-   * ping / enveloped_ping (the driver then self-creates an inert local).
+   * both read/write THIS instance, so `injected`/`messageStartForwarded`/`anchorBlockOpen`/
+   * `capturedMessageStart` are one source of truth. Threaded into `runResponseBufferedSink` as
+   * `opts.anchorState`. Undefined for `ping` (the driver then self-creates an inert local).
    */
   anchorState?: AnchorState
 }
 
 /**
- * Wrap the live pump's sink in the §10.3 anchor reconciliation (drop the real message_start, close the
- * anchor off before the first real content_block_start, remap real blocks +1) — but ONLY the LIVE path
- * (§10.1.5 C2). The buffered path does its remap INSIDE the driver (commit flush), so decorating there
- * would double-apply the non-idempotent index+offset; this helper is therefore called EXCLUSIVELY on the
- * `runResponseSink` (live) branch. Returns the RAW sink unchanged when the anchor is inert (no
- * `empty_text` hooks / no shared state — ping / enveloped_ping), keeping the live path byte-equivalent.
+ * Wrap the live pump's sink in the §10.3 reconciliation (drop the real message_start; for `empty_text` also
+ * close the anchor off before the first real content_block_start + remap real blocks +1; for `enveloped_ping`
+ * pass real blocks through at their original index) — but ONLY the LIVE path (§10.1.5 C2). The buffered path
+ * does its remap INSIDE the driver (commit flush), so decorating there would double-apply the non-idempotent
+ * index+offset; this helper is therefore called EXCLUSIVELY on the `runResponseSink` (live) branch. Returns
+ * the RAW sink unchanged when the anchor is inert (no hooks / no shared state — `ping`), keeping the live path
+ * byte-equivalent. The transform itself branches on `anchorState.anchorBlockOpen` (§10.6).
  */
 function liveReconcilingSink(sink: ClientSink, anchorHooks: AnchorHooks | undefined, anchorState: AnchorState | undefined): ClientSink {
   return anchorHooks && anchorState ? makeReconcilingSink(sink, anchorState, anchorHooks) : sink
@@ -1111,10 +1129,11 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       buffered ?
         await driver.runResponseBufferedSink(upstream, env, sink, {
           onUpstreamFrame,
-          // Buffered empty_text keepalive anchor (spec 2026-07-08): the driver lazily injects a
-          // synthetic empty-text block via the sink's heartbeat.injectAnchor during a pre-commit
-          // stall, then closes it off + remaps real blocks +1 on commit. Undefined for ping /
-          // content_delta → every anchor branch in the driver is inert.
+          // Buffered synthetic-prelude keepalive (spec 2026-07-08 / §10.6): the handler's injector lazily
+          // forwards a message_start prelude via the sink's heartbeat.injectAnchor during a pre-commit stall.
+          // On commit the driver dedups the buffered message_start and — for `empty_text` (anchorBlockOpen) —
+          // closes the anchor off + remaps real blocks +1; for `enveloped_ping` (no block) it only dedups.
+          // Undefined for `ping` → every anchor branch in the driver is inert.
           anchor: anchorHooks,
           anchorState,
           sawMessageStop: () => acc.sawMessageStop,

@@ -37,22 +37,26 @@ function isContentBlockStart(frame: ClientFrame): boolean {
 export type ReconcileHooks = Pick<AnchorHooks, "isMessageStart" | "stopFrame" | "remap">
 
 /**
- * Reconcile ONE real upstream frame against the injected anchor prelude (spec §10.3). Returns the frame
- * sequence to write (0, 1, or 2 frames):
+ * Reconcile ONE real upstream frame against the injected prelude (spec §10.3 / §10.6). Returns the frame
+ * sequence to write (0, 1, or 2 frames). The `anchorBlockOpen` flag on the shared {@link AnchorState}
+ * discriminates the two injected preludes:
  *
  *   - NOT injected → `[frame]` (transparent passthrough — byte-identical to the no-anchor live path; a
  *     fast response that produced real content before the first idle tick never injected, so `injected`
  *     stays false and every frame flows through untouched).
  *   - injected + `message_start` → `[]` (DROP it: the client already received the injected message_start,
- *     and the protocol forbids a second one — the "already forwarded a message_start → skip any later
- *     one" rule, unifying live + the buffered commit dedup). Flips `messageStartForwarded` for symmetry.
- *   - injected + FIRST real `content_block_start` (anchor not yet closed) → `[stopFrame, remap(frame, 1)]`
- *     (close the anchor off at index 0, then emit the real block shifted to index+1 so it can't collide
- *     with the anchor's reserved index 0). Flips `anchorClosed`.
- *   - injected + any other `content_block_*` → `[remap(frame, 1)]` (shift by +1; the anchor still occupies
- *     index 0).
- *   - injected + `message_delta` / `message_stop` (no block index) → `[remap(frame, 1)]` — `remap` returns
- *     index-less frames unchanged, so the real `stop_reason` + `usage` reach the client verbatim.
+ *     and the protocol forbids a second one — the "already forwarded a message_start → skip any later one"
+ *     rule, unifying live + the buffered commit dedup). Applies to BOTH preludes. Flips `messageStartForwarded`.
+ *   - injected + `anchorBlockOpen` (`empty_text`) — the injector reserved a synthetic anchor block@0:
+ *       - FIRST real `content_block_start` (anchor not yet closed) → `[stopFrame, remap(frame, 1)]` (close the
+ *         anchor off at index 0, then emit the real block shifted to index+1 so it can't collide with the
+ *         anchor's reserved index 0). Flips `anchorClosed`.
+ *       - any other `content_block_*` → `[remap(frame, 1)]` (shift by +1; the anchor still occupies index 0).
+ *       - `message_delta` / `message_stop` (no block index) → `[remap(frame, 1)]` — `remap` returns
+ *         index-less frames unchanged, so the real `stop_reason` + `usage` reach the client verbatim.
+ *   - injected + `!anchorBlockOpen` (`enveloped_ping`) — only a message_start envelope was injected, NO anchor
+ *     block reserved index 0 → every non-message_start frame passes through VERBATIM (`[frame]`): real content
+ *     blocks keep their ORIGINAL index, and no close-off `stop@0` is written (there is no block to balance).
  *
  * PURE except for the state-flag flips (`messageStartForwarded` / `anchorClosed`) that the shared
  * {@link AnchorState} carries; it does NOT touch the sink or the heartbeat (the decorator owns writing +
@@ -63,8 +67,12 @@ export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks
 
   if (hooks.isMessageStart(frame)) {
     state.messageStartForwarded = true
-    return [] // drop the real message_start — the injected one already opened the message
+    return [] // drop the real message_start — the injected one already opened the message (both preludes)
   }
+
+  // enveloped_ping: only a message_start envelope was injected — no anchor block occupies index 0, so real
+  // content frames pass through at their ORIGINAL index (no +1 remap) and no close-off is ever written.
+  if (!state.anchorBlockOpen) return [frame]
 
   const out: Array<ClientFrame> = []
   if (isContentBlockStart(frame) && !state.anchorClosed) {

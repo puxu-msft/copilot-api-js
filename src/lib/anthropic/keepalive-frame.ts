@@ -50,10 +50,13 @@ export function makeAnthropicKeepaliveFrame(openBlock?: OpenBlock): ClientFrame 
  * The keepalive to hand a heartbeat/sink: the block-aware provider (`empty_text` mode) or the fixed
  * ping frame (`ping` / `enveloped_ping` modes). Read at stream-start so a hot-reloaded
  * `stream_keepalive_mode` takes effect on new streams. `empty_text` additionally enables the
- * buffered-pre-commit synthetic anchor (wired in the sink + driver, NOT here). `enveloped_ping`
- * currently resolves to a bare ping (transitional); its synthetic-envelope behavior lands in Phase 6.
+ * buffered-pre-commit synthetic ANCHOR (empty-text block@0 + empty delta — wired in the sink + driver,
+ * NOT here). `enveloped_ping` also injects a synthetic prelude, but ONLY a `message_start` envelope (the
+ * envelope-only injector, spec §10.6) — its keepalive is a BARE ping (no anchor block, no empty delta, no
+ * index remap), so it resolves to the same fixed {@link ANTHROPIC_PING} as `ping`. The two differ only in
+ * whether a message_start envelope is injected (handler-side), not in the heartbeat frame itself.
  */
 export function resolveAnthropicKeepalive(mode: "ping" | "enveloped_ping" | "empty_text"): ClientFrame | ((openBlock?: OpenBlock) => ClientFrame) {
-  // enveloped_ping 行为在 Phase 6 实现，此处临时=ping 让类型编过
+  // `ping` + `enveloped_ping` keepalive = a bare ping; `empty_text` = the block-aware empty-delta provider.
   return mode === "ping" || mode === "enveloped_ping" ? ANTHROPIC_PING : makeAnthropicKeepaliveFrame
 }

@@ -131,8 +131,14 @@ export function makeSyntheticAnchorInjector(args: {
     const real = state.capturedMessageStart
     if (real) {
       // C1/B1 sync-flip (before the first await — race-free vs the commit snapshot; see docstring).
+      // `anchorBlockOpen` flips HERE too (not after the writeAnchor await): once `injected` is true the
+      // injector is COMMITTED to opening the anchor block@0, so the buffered commit's `injected`+
+      // `anchorBlockOpen` snapshot can never read `injected:true, anchorBlockOpen:false` (which would wrongly
+      // skip the +1 remap). See {@link makeSyntheticEnvelopeInjector} for the enveloped_ping counterpart that
+      // leaves it false.
       state.injected = true
       state.messageStartForwarded = true
+      state.anchorBlockOpen = true
       await sink.write(real) // real captured → forwarded UNMARKED (a real upstream frame)
     } else {
       const synthesize = anchor.syntheticMessageStart
@@ -141,10 +147,67 @@ export function makeSyntheticAnchorInjector(args: {
       if (!synthesize) return false
       state.injected = true
       state.messageStartForwarded = true
+      state.anchorBlockOpen = true
       await (sink.writeSyntheticEnvelope ?? sink.write)(synthesize(resolvedName, reqId)) // fabricated → "synthetic-message-start"
     }
     await (sink.writeAnchor ?? sink.write)(anchor.startFrame) // "anchor"; noteBlockState → openBlock={0,text}
     await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame) // "keepalive": empty text_delta resets CC's 300s watchdog
+    return true
+  }
+}
+
+/**
+ * The ENVELOPE-ONLY synthetic keepalive injector for `enveloped_ping` mode (spec §10.6). A leaner sibling of
+ * {@link makeSyntheticAnchorInjector}: on the first idle tick it forwards ONLY the `message_start` envelope
+ * (the REAL captured one when the buffered drain already saw it, else a FABRICATED one marked
+ * `synthetic-message-start`) and flips `injected` + `messageStartForwarded` — but does NOT open a synthetic
+ * anchor content block, does NOT write an empty text_delta, and leaves `anchorBlockOpen` FALSE. The client
+ * therefore receives a well-formed `message_start` (the "message envelope") but the keepalive itself stays a
+ * BARE ping: the anchor branch in the heartbeat tick sees no open block AND `anchorAttempted` already set
+ * (this injector ran once), so every subsequent idle tick falls back to the provider/ping frame
+ * (= {@link ANTHROPIC_PING} for this mode). Because `anchorBlockOpen` stays false, the live reconcile
+ * ({@link reconcileLiveFrame}) and the buffered commit pass real content blocks through at their ORIGINAL
+ * index (no +1 remap) and never write a close-off `stop@0` — they only DROP the upstream's own duplicate
+ * `message_start`.
+ *
+ * Positioning (spec §10.6): `enveloped_ping` is an experimental hook expected to still time out at CC's 300s
+ * watchdog (exp/cc-idle-280s/REPORT.md armP: even a fully-open content block + bare ping disconnected at
+ * 300s, so a message_start-only envelope + bare ping almost certainly does too). It is NOT a production-safe
+ * mode; `empty_text` remains the default. Kept as a ready entry point for future watchdog experiments.
+ *
+ * Like {@link makeSyntheticAnchorInjector} it flips its state flags SYNCHRONOUSLY before the first `await`
+ * (race-free vs the buffered commit snapshot) and returns false — re-arming the tick to a ping — only when
+ * the sink is not yet wired, the envelope is already injected, or there is neither a real nor a synthesizable
+ * message_start. Rejects ONLY if the single `sink.write` rejects (the client is already gone).
+ */
+export function makeSyntheticEnvelopeInjector(args: {
+  anchor: AnchorHooks
+  state: AnchorState
+  getSink: () => ClientSink | undefined
+  resolvedName: string
+  reqId: string
+}): () => Promise<boolean> {
+  const { anchor, state, getSink, resolvedName, reqId } = args
+  return async (): Promise<boolean> => {
+    const sink = getSink()
+    if (!sink || state.injected) return false
+    const real = state.capturedMessageStart
+    if (real) {
+      // Sync-flip before the await (race-free vs the commit snapshot). `anchorBlockOpen` stays FALSE — this
+      // mode injects NO anchor block, so real blocks flush at their original index (no remap, no close-off).
+      state.injected = true
+      state.messageStartForwarded = true
+      await sink.write(real) // real captured → forwarded UNMARKED (a real upstream frame)
+    } else {
+      const synthesize = anchor.syntheticMessageStart
+      // Need SOME message_start to open the envelope; without a synthesizer bail so the tick re-arms to a ping.
+      if (!synthesize) return false
+      state.injected = true
+      state.messageStartForwarded = true
+      await (sink.writeSyntheticEnvelope ?? sink.write)(synthesize(resolvedName, reqId)) // fabricated → "synthetic-message-start"
+    }
+    // No anchor block, no empty delta: the next idle tick (no open block + anchorAttempted already set) falls
+    // back to a bare ping — exactly the `enveloped_ping` semantics.
     return true
   }
 }

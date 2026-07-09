@@ -84,7 +84,7 @@ function buildOnStream(
   resolvedName: string,
   reqId: string,
 ): { sink: ClientSink; anchorState: AnchorState } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorClosed: false }
+  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
   const anchor = anchorHooks()
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
   const injector = makeSyntheticAnchorInjector({ anchor, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })

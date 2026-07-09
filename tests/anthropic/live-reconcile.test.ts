@@ -52,8 +52,14 @@ function hooks(): ReconcileHooks {
 }
 
 function injectedState(): AnchorState {
-  // The post-injection shared state the handler's unique injector leaves behind (prelude already sent).
-  return { injected: true, messageStartForwarded: true, anchorClosed: false }
+  // The post-injection shared state the handler's empty_text anchor injector leaves behind (message_start +
+  // anchor block@0 + empty delta already sent → anchorBlockOpen=true).
+  return { injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
+}
+
+/** The post-injection state the enveloped_ping ENVELOPE-ONLY injector leaves behind (message_start only, no block). */
+function envelopeInjectedState(): AnchorState {
+  return { injected: true, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false }
 }
 
 /** Map a frame to `type@index` (index omitted when absent) for compact sequence assertions. */
@@ -66,7 +72,7 @@ function key(fr: ClientFrame): string {
 
 describe("reconcileLiveFrame", () => {
   test("NOT injected → every frame passes through byte-identically (fast-response equivalence)", () => {
-    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorClosed: false }
+    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
     const h = hooks()
     const frames = [
       f("message_start", { message: { id: "m" } }),
@@ -79,7 +85,7 @@ describe("reconcileLiveFrame", () => {
       expect(out).toEqual([fr]) // same object, untouched
     }
     // Passthrough must NOT mutate state.
-    expect(state).toEqual({ injected: false, messageStartForwarded: false, anchorClosed: false })
+    expect(state).toEqual({ injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false })
   })
 
   test("injected: the real upstream sequence reconciles to [drop MS, stop@0 + block@1, delta@1, stop@1, message_delta, message_stop]", () => {
@@ -141,6 +147,49 @@ describe("reconcileLiveFrame", () => {
     expect(reconcileLiveFrame(md, state, h)).toEqual([md])
     expect(reconcileLiveFrame(ms, state, h)).toEqual([ms])
   })
+
+  // ── enveloped_ping: injected + anchorBlockOpen=false (envelope-only, NO anchor block) ────────────────
+  test("enveloped_ping (anchorBlockOpen=false): real message_start dropped, real blocks keep ORIGINAL index, NO stop@0", () => {
+    const state = envelopeInjectedState()
+    const h = hooks()
+    const upstream = [
+      f("message_start", { message: { id: "real" } }),
+      f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }),
+      f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "reasoning" } }),
+      f("content_block_stop", { index: 0 }),
+      f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } }),
+      f("message_stop"),
+    ]
+    const emitted = upstream.flatMap((fr) => reconcileLiveFrame(fr, state, h))
+
+    // Only the duplicate message_start is dropped; every real block passes through VERBATIM at index 0
+    // (no +1 remap) and NO synthetic close-off stop@0 is inserted (there is no anchor block to balance).
+    expect(emitted.map(key)).toEqual(["content_block_start@0", "content_block_delta@0", "content_block_stop@0", "message_delta", "message_stop"])
+    expect(emitted.filter((fr) => key(fr) === "message_start")).toHaveLength(0)
+    // anchorClosed must NOT flip — no close-off happened.
+    expect(state.anchorClosed).toBe(false)
+    // The real content frames are the SAME objects (no remap allocation) — byte-equivalent passthrough.
+    expect(emitted[0]).toBe(upstream[1])
+    expect(emitted[1]).toBe(upstream[2])
+    expect(emitted[2]).toBe(upstream[3])
+  })
+
+  test("enveloped_ping: injected + message_start → dropped ([]), messageStartForwarded stays set", () => {
+    const state = envelopeInjectedState()
+    expect(reconcileLiveFrame(f("message_start", { message: { id: "x" } }), state, hooks())).toEqual([])
+    expect(state.messageStartForwarded).toBe(true)
+  })
+
+  test("enveloped_ping: no content_block_* frame is ever remapped (anchor index 0 stays free for the real block)", () => {
+    const state = envelopeInjectedState()
+    const h = hooks()
+    // A multi-block response: both real blocks keep their original indices 0 and 1.
+    const b0 = reconcileLiveFrame(f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }), state, h)
+    const b1 = reconcileLiveFrame(f("content_block_start", { index: 1, content_block: { type: "text", text: "" } }), state, h)
+    expect(b0.map(key)).toEqual(["content_block_start@0"])
+    expect(b1.map(key)).toEqual(["content_block_start@1"])
+    expect(state.anchorClosed).toBe(false)
+  })
 })
 
 // ── makeReconcilingSink — the decorator ─────────────────────────────────────
@@ -163,7 +212,7 @@ function stubSink(): { sink: ClientSink; calls: Array<{ m: string; frame?: Clien
 describe("makeReconcilingSink", () => {
   test("NOT injected: write forwards each frame verbatim to inner.write (no anchor routing)", async () => {
     const { sink, calls } = stubSink()
-    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorClosed: false }
+    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
     const dec = makeReconcilingSink(sink, state, hooks())
     const fr = f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hi" } })
     await dec.write(fr)

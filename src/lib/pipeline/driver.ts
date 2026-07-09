@@ -540,11 +540,14 @@ async function runResponseBufferedSink(
   // side (freeze + close-off + +1 remap + message_start dedup); it no longer BUILDS an injector (that
   // moved to the handler, subsumed by the single `heartbeat.injectAnchor` slot — spec §10.1.5 C1 / B1).
   // The Anthropic handler supplies the format-specific frames + the message_start predicate via
-  // `opts.anchor` (H2). `anchor` is undefined for ping / enveloped_ping / the live path, so every anchor
-  // branch below is inert (byte-identical to before). `anchorState` falls back to a driver-local object
-  // when the caller does not thread one (e.g. a `ping`-mode buffered stream that never injects).
+  // `opts.anchor` (H2). `anchor` is present for BOTH synthetic-prelude modes (`empty_text` +
+  // `enveloped_ping`) but undefined for `ping` / the live path; the commit branches read
+  // `anchorState.anchorBlockOpen` to remap+close-off (`empty_text`) vs only dedup the message_start
+  // (`enveloped_ping`). When `anchor` is undefined every anchor branch below is inert (byte-identical to
+  // before). `anchorState` falls back to a driver-local object when the caller does not thread one (e.g. a
+  // `ping`-mode buffered stream that never injects).
   const anchor = opts.anchor
-  const anchorState = opts.anchorState ?? { injected: false, messageStartForwarded: false, anchorClosed: false }
+  const anchorState = opts.anchorState ?? { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
 
   // Terminal-failure close-off (spec §3.3 M1): when the request FAILS after the anchor was injected (a
   // truncation/exhaustion, or a post-retreat truncation), the anchor's content_block_start@0 is still OPEN
@@ -558,7 +561,9 @@ async function runResponseBufferedSink(
   // never routes here, so the anchor is closed exactly once on every terminal path.
   const closeAnchorIfOpen = async (): Promise<void> => {
     sink.freezeHeartbeat?.()
-    if (anchorState.injected && anchor) {
+    // Only `empty_text` (anchorBlockOpen) reserved a content_block@0 that needs balancing; `enveloped_ping`
+    // injected a message_start-only envelope (no block) → nothing to close off.
+    if (anchorState.injected && anchor && anchorState.anchorBlockOpen) {
       try {
         await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker (structural close-off)
       } catch {
@@ -637,15 +642,22 @@ async function runResponseBufferedSink(
         // flush so a (now-impossible) late mutation of anchorState can't split the remap decision.
         sink.freezeHeartbeat?.()
         const injected = anchorState.injected
+        // anchorBlockOpen discriminates the two injected preludes (spec §10.4): `empty_text` reserved a
+        // content_block@0 → close it off + remap real blocks +1; `enveloped_ping` injected a message_start-only
+        // envelope → NO block, so NO close-off and NO remap (real blocks keep their original index). Snapshotted
+        // alongside `injected` (both sync-flipped by the injector before its first await) so one pinned value
+        // drives the whole flush.
+        const anchorBlockOpen = anchorState.anchorBlockOpen
         try {
           // M4: the anchor reserved index 0, so close it off (empty-text content_block_stop@0) BEFORE the
           // real blocks flush, then shift every real content_block_* by +1 so nothing collides at index 0.
-          if (injected && anchor) await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
+          if (injected && anchor && anchorBlockOpen) await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
           for (const frame of buffer) {
             // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
             // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
+            // Dedup applies to BOTH preludes (empty_text + enveloped_ping both forward one message_start).
             if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
-            await sink.write(injected && anchor ? anchor.remap(frame, 1) : frame)
+            await sink.write(injected && anchor && anchorBlockOpen ? anchor.remap(frame, 1) : frame)
           }
         } catch (error) {
           // Client gone mid-flush (a `sink.write` reject) — map it like the drain path so the
