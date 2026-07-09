@@ -529,6 +529,23 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // ④ capture proxy→client headers (set synchronously by streamSSE before this callback).
     commitCtx?.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     commitCtx?.setClientResponseStatus(c.res.status)
+    // empty_text anchor terminal close-off (spec §10.5 / §3.4). When the pre-response injector lit a
+    // synthetic empty-text anchor block during the stall (§10.1.5 C1) and the request THEN fails
+    // POST-COMMIT, the client is otherwise left with an OPEN content_block@0 — a protocol-incomplete
+    // stream. Every branch that writes an `event: error` frame first closes the anchor off (stop@0,
+    // synthetic:"anchor") so the block structure stays balanced. UNLIKE the live-reconcile close-off
+    // (§10.3), this DOES `freezeHeartbeat`: a terminal failure has NO subsequent real stream (it is an
+    // error terminus), so freezing is harmless AND prevents a heartbeat tick racing the error frame;
+    // the live close-off, by contrast, still has real blocks streaming after it, so it must NOT freeze.
+    // Idempotent (`!anchorClosed`) — a close-off already done by the live reconciliation is not repeated;
+    // inert when no anchor was injected (`injected` false → byte-equivalent to the no-anchor path).
+    const closeAnchorIfOpen = async (): Promise<void> => {
+      if (anchorHooks && anchorState.injected && !anchorState.anchorClosed) {
+        anchorState.anchorClosed = true
+        sink.freezeHeartbeat?.()
+        await sink.writeAnchor?.(anchorHooks.stopFrame)
+      }
+    }
     try {
       // Immediate first ping on a COLD-START commit (the upstream stalled past the whole window → known
       // slow). It (a) establishes the body stream NOW so a fast upstream failure right after commit is
@@ -560,6 +577,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           }
           // (f) reaper-cancel (reaper already settled it; the `settled` guard dedups) / (d) timeout.
           ctx?.fail(resolvedName, error)
+          await closeAnchorIfOpen() // balance an open pre-response anchor before the error terminus (§10.5)
           await sink.writeSynthetic?.(
             kind === "reaper-cancel" ?
               anthropicErrorFrame("api_error", "Request cancelled by the stale-request reaper")
@@ -571,10 +589,12 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           // (c) upstream 4xx/5xx — the dominant POST-COMMIT divergence. The rich frame preserves
           // error.type (+ retry_after) so the client SDK still branches correctly (Q2 §4.2.5).
           ctx?.fail(resolvedName, error)
+          await closeAnchorIfOpen() // balance an open pre-response anchor before the error terminus (§10.5)
           await sink.writeSynthetic?.(anthropicHttpErrorFrame(error))
           return
         }
         ctx?.fail(resolvedName, error) // unknown non-HTTP, non-abort
+        await closeAnchorIfOpen() // balance an open pre-response anchor before the error terminus (§10.5)
         await sink.writeSynthetic?.(anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error)))
         return
       }
@@ -583,6 +603,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         const ctx = codec.getContext()
         ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }) // forwarded pings before settling (richest-data-flow)
         ctx?.fail(resolvedName, new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason))
+        await closeAnchorIfOpen() // balance an open pre-response anchor before the error terminus (§10.5, M1 — was missing in the first plan)
         await sink.writeSynthetic?.(anthropicRejectErrorFrame(result.rejection.status, result.rejection.reason))
         return
       }
