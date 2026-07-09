@@ -461,6 +461,18 @@ export interface ClientSink {
    */
   writeKeepalive?(frame: ClientFrame): Promise<void>
   /**
+   * Write a proxy-synthesized FABRICATED `message_start` envelope (fake id + zeroed usage) to the wire
+   * AND sample it into the forwarded track WITH a `synthetic:"synthetic-message-start"` marker. The
+   * unique keepalive injector writes it ahead of the anchor block when the upstream stalled before ever
+   * emitting its own real `message_start` (live pre-response silence, or the buffered pre-message_start
+   * window — spec keepalive timeout-safety §10.2). Distinct from {@link writeKeepalive}/{@link writeAnchor}:
+   * the fabricated envelope's fake id + usage:0 is a heavier synthetic than a structural anchor frame (an
+   * accepted wire/billing divergence — richest-data-flow), so it carries its own marker. Like
+   * {@link writeSynthetic} it does NOT touch the open-block state (a message_start opens no content block).
+   * Omitted by sinks with no heartbeat (WS/array) — callers fall back to {@link write}.
+   */
+  writeSyntheticEnvelope?(frame: ClientFrame): Promise<void>
+  /**
    * Write a proxy-synthesized buffered-anchor STRUCTURAL frame (the empty-text anchor's
    * `content_block_start@0` / `content_block_stop@0`) to the wire AND sample it into the forwarded
    * track WITH a `synthetic:"anchor"` marker — so history/UI/logs never mistake the injected anchor

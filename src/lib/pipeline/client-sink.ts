@@ -164,7 +164,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
       }),
     )
 
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor"): void => {
+  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start"): void => {
     onForwarded?.({
       offsetMs: Date.now() - streamStartMs,
       type: (forwardedType ?? frameType)(frame),
@@ -233,6 +233,19 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     return writeSse(frame)
   }
 
+  // A proxy-synthesized FABRICATED `message_start` envelope (fake id + zeroed usage) the injector writes
+  // ahead of the anchor block when the upstream stalled before ever emitting its own real message_start
+  // (live pre-response silence, or the buffered pre-message_start window — spec keepalive timeout-safety
+  // §10.2). Sampled into the forwarded track with a `synthetic:"synthetic-message-start"` marker so
+  // history/UI/logs never mistake the fabricated envelope for a real one (its fake id + usage:0 is an
+  // accepted wire/billing divergence — richest-data-flow). Unlike writeAnchor it does NOT touch the
+  // open-block state: a message_start opens no content block, so noteBlockState is a deliberate no-op on it
+  // (the anchor's content_block_start@0, written via writeAnchor, is what lights openBlock={0,text}).
+  const writeSyntheticEnvelope = (frame: ClientFrame): Promise<void> => {
+    sampleForwarded(frame, "synthetic-message-start")
+    return writeSse(frame)
+  }
+
   // A proxy-synthesized buffered-anchor STRUCTURAL frame (the empty-text anchor's content_block_start@0
   // / content_block_stop@0 the driver injects during a pre-commit stall). Unlike writeKeepalive it MUST
   // update the open-block state (noteBlockState) — lighting openBlock={0,text} on the start so the next
@@ -269,7 +282,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   }
 
   if (!heartbeatOn) {
-    return { write, writeSynthetic, writeKeepalive, writeAnchor, close, freezeHeartbeat }
+    return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat }
   }
 
   const intervalMs = heartbeat.intervalSec * 1000
@@ -326,7 +339,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // unref so a leaked timer can never hold the event loop / block graceful shutdown.
   ;(timer as unknown as { unref?: () => void }).unref?.()
 
-  return { write, writeSynthetic, writeKeepalive, writeAnchor, close, freezeHeartbeat }
+  return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat }
 }
 
 /** {@link makeWsSink} options — forwarded-track sampling (optional). */
