@@ -45,7 +45,7 @@ Codex（Responses API）是本项目**一等公民**支持对象；`ws:responses
 
 1. **WHATWG-WS 关闭码正确性（上游 + 下游姊妹路径）**：上游 WebSocket lifecycle 关闭永不用 WHATWG 禁用码；下游 WS-to-client（`ws.ts`）的 1011/1013 关闭码经**实测**核验其服务端运行时（Bun/Hono `WSContext`）是否抛出，据实修复。§1.1 触发场景端到端转绿（恢复 HTTP 降级）。
 2. **崩溃防护**：任何上游-WS lifecycle 回调（EventTarget 监听器、定时器）内的抛出**不能**升级为 `uncaughtException` / `process.exit`。消除一类向量。
-3. **下游客户端保活**：Responses 流式路径对 Codex 注入 Responses 专属保活帧，长 reasoning 静默期不触发 Codex 的 300s idle 超时；复用 Anthropic 保活的**节流间隔**（帧型不复用，见 R3）。
+3. **下游客户端保活**：Responses 流式路径对 Codex 注入 Responses 专属保活帧，长 reasoning 静默期不触发 Codex 的 300s idle 超时；复用 Anthropic 保活的**节流间隔**（帧型不复用，见 R3）。下游 WS-to-client（`ws.ts`）路径一并纳入保活对齐（R3.5）。
 4. **传输失败重试对齐（分两层）**：(pre) before-first-event 传输失败经 WS→HTTP 降级恢复（R1 解锁后即生效，核验有无残缺）；(mid) mid-stream 传输中断经**采用 driver 既有的 `runResponseBufferedSink`**（opt-in、门控）获得重试能力，对齐 Anthropic。
 5. **上游保活 / 截断检测**：以**实测**确定上游-WS 是否可获等价保活（undici 客户端 WS 无应用层 ping API 是硬约束）；若不可行则 mid-stream buffered 重试成为 WS 的承重防线。截断检测在**实际使用的 sink 路径**上核验/落地。
 6. **测试覆盖**：每条配回归测试，含 L1 守卫（本可拦下 close(1001) / 1011 / 1013 的契约测试）与 §1.1 的 before-first-event 黄金回归。
@@ -83,7 +83,7 @@ Codex（Responses API）是本项目**一等公民**支持对象；`ws:responses
 - **R3.2** 保活帧打项目**合成标记**（ADR richest-data-flow：注入真实流的合成物必可辨识），history forwarded 轨记录、上游轨不含。复用既有 `makeSseSink` 的 heartbeat 机制（`client-sink.ts` 的 `pingFrame` provider + `synthetic:"keepalive"` 标记）——加法式复用既有 hook。
 - **R3.3**（更正 v1）**只复用间隔，不复用 mode**：间隔用 `streamKeepalivePingSec`（默认 20s ≪ 300s）；但 `streamKeepaliveMode`（`"ping"|"content_delta"|"empty_text"`，`state.ts:283`）是 **Anthropic 帧型**枚举（非-`ping` 值发 Anthropic `content_block_delta` 帧），语义上不能用于 Responses 流。Responses 需**独立的帧型/mode**（Responses-shaped）。plan 定：是复用 `streamKeepalivePingSec` + 固定 Responses 帧，还是引入 Responses 专属 keepalive 配置键。
 - **R3.4** 保活覆盖"上游响应头前静默"与"上游响应中 reasoning 静默"两段（对齐 skill `claude-code-connection` 的两层 idle 认知）。
-- **R3.5**（新增）**下游 WS-to-client（`ws.ts`）保活的显式范围判定**：`ws.ts:290` 现"no heartbeat for WS"。需明确 Responses 客户端能否走此路径、是否需保活 parity。判据：浏览器/标准 WS 有协议级 ping/pong（运行时自保活），需求与 SSE 不同——**须明述**该理由再定 in/out scope，不静默略过姊妹路径（`against-yagni`）。
+- **R3.5**（新增，**纳入范围** — 用户已确认）**下游 WS-to-client（`ws.ts`）保活对齐**：`ws.ts:290` 现"no heartbeat for WS"。为其补保活 parity。注意：浏览器/标准 WS 有协议级 ping/pong（运行时可自保活），故此路径的保活形态可与 SSE 不同——plan 阶段核定应发**应用层保活帧**（对齐 SSE 语义）还是依赖/主动发**协议级 WS ping**，以真正 keep-alive 为准（避免只是"看起来有保活"）。姊妹路径不静默略过（`against-yagni`）。
 - **验收**：模拟上游长静默（>20s，<300s），断言下游按间隔收到带标记保活帧、且以 `refs/codex` 容忍契约为 oracle（合法 JSON + 未知 type 不报错、重置 idle）。
 
 ### R4 — Responses 传输失败重试对齐（拆两层）
@@ -94,7 +94,7 @@ Codex（Responses API）是本项目**一等公民**支持对象；`ws:responses
 - **R4.2 采用 buffered sink 的接线**（driver 签名不变，全走 opts）：`sawMessageStop: () => acc.status !== ""`（Responses 终止符 `response.completed/.incomplete/.failed` 均 set `acc.status`，复用 `handler-v4.ts:359` 既有判据）；`anchor: undefined`（anchor 是 Anthropic empty_text 专属，driver 各 anchor 分支在 undefined 时 inert）；`retryCap`/`bufferCapBytes` 需 Responses 侧对等 config（对齐 `state.protectStreaming*`）。
 - **R4.3 两条承重约束（必须显式）**：
   - **(a) R4-mid 依赖 R3 保活**：buffered 模式 commit 前不投递真实帧，长 reasoning 静默会自触发 Codex 300s idle。故 **buffering ⇒ 强制启用 R3 保活**（对齐 Anthropic `resolveBufferedAndHeartbeat` 的 `buffered?forcedHeartbeatSec`，`messages/handler-v4.ts:905-912`）。
-  - **(b) buffered 必须 opt-in**：切 buffered 改客户端可见时序（帧末尾 burst、失去真流式 UX），门控如 `state.protectStreaming`。默认仍 live `runResponseSink`（mid-stream 掉线→fail + 保留 partial + 截断 error frame，即今 `handler-v4.ts:359-369` 行为不变）。**mid-stream 重试仅在 opt-in buffered 模式可达**——此 tradeoff 写进验收，消除 v1「live 模式先重试又保留 partial」的自相矛盾。
+  - **(b) buffered 必须 opt-in（用户已确认：Codex 默认不做 mid-stream auto-retry）**：默认走 live `runResponseSink`（mid-stream 掉线→fail + 保留 partial + 截断 error frame，即今 `handler-v4.ts:359-369` 行为不变）。切 buffered 改客户端可见时序（帧末尾 burst、失去真流式 UX），故设为**可配置启用**的保护开关（门控如 `state.protectStreaming`）。**mid-stream 重试仅在 opt-in buffered 模式可达**——此 tradeoff 写进验收，消除 v1「live 模式先重试又保留 partial」的自相矛盾。
 - **R4.4** 新增传输策略前 grep 同错误子串既有 matcher，避免被更宽的先命中遮蔽（记忆 `new-strategy-shadowed-by-broader-first-match`）。
 - **验收**：mid-stream 上游-WS drop（buffered 模式）触发重试（attempts>1）、成功路径最终成功、彻底失败保留语义；live 模式 drop 保持 fail+partial；before-first-event 失败降级 HTTP。
 
@@ -160,8 +160,10 @@ Codex（Responses API）是本项目**一等公民**支持对象；`ws:responses
 - **O2** R4-mid 的 buffered 门控配置形态（复用/对等 `protectStreaming*`）与 live 默认的边界。
 - **O3** R5.1 PoC 两问（TCP keepalive 可否 + GHC 容忍带外帧否）——结论以实测为准，预置"不可行则 R4 承重"。
 - **O4** 保活帧对非-Codex 标准 OpenAI Responses SDK 消费者的兼容（§4 选择对其亦最稳，plan 以标准 SDK 复核）。
-- **O5** R3.5 下游 WS-to-client 保活 in/out scope 的最终判定与理由。
+- **O5** R3.5 下游 WS-to-client 保活的**实现形态**（应用层保活帧 vs 协议级 WS ping）——范围已定为纳入，形态留 plan（以真正 keep-alive 为准）。
 - **O6** `ws.ts` 1011/1013 的运行时实测结论（改 vs 记录容忍）。
+
+> **待探究点动态捕获（用户约定）**：实施过程中若发现可作为下一步方向 / 扩展的探究点（非本 spec 范围但有长期价值），**一并落文档**——归入 `docs/todo/deferred-backlog.md`（含根因 / 当前行为 / 理想架构 / 为何暂缓 / 若做需改什么），并在此 §8 追加 O 编号指针。不静默丢弃潜在需求（`defer-potential-demand-over-cut-it`）。已知候选见 §7 的条件性提取项（liveness 调度器共享化、完整传输合流）。
 
 ## 9. 验收总览（Definition of Done）
 
