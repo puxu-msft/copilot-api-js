@@ -151,19 +151,29 @@ export function ModelsFilterBar({ filters, onChange, options, billingBounds }: M
       </div>
 
       <div className="flex items-center gap-1">
-        <span className="text-[11px] uppercase text-[var(--color-muted)]">status:</span>
+        {/* Checkbox affordance disambiguates the filter (fixes the old "highlight =
+            included" ambiguity): [✓] = shown, [ ] + strike = hidden. `show:` prefix +
+            aria-pressed make the toggle semantics explicit; the ✓ glyph is aria-hidden
+            so the accessible name stays the bare "config-off"/"picker-off". */}
+        <span className="text-[11px] uppercase text-[var(--color-muted)]">show:</span>
         <button
           type="button"
+          aria-pressed={filters.includeConfigDisabled}
+          title={filters.includeConfigDisabled ? "showing config-disabled models — click to hide" : "config-disabled models hidden — click to show"}
           onClick={() => onChange({ includeConfigDisabled: !filters.includeConfigDisabled })}
-          className={`border px-1.5 py-0.5 text-[11px] ${filters.includeConfigDisabled ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[#999]"}`}
+          className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-[11px] ${filters.includeConfigDisabled ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[var(--color-muted)] line-through opacity-70"}`}
         >
+          <span aria-hidden="true">{filters.includeConfigDisabled ? "[✓]" : "[ ]"}</span>
           config-off
         </button>
         <button
           type="button"
+          aria-pressed={filters.includePickerDisabled}
+          title={filters.includePickerDisabled ? "showing picker-disabled models — click to hide" : "picker-disabled models hidden — click to show"}
           onClick={() => onChange({ includePickerDisabled: !filters.includePickerDisabled })}
-          className={`border px-1.5 py-0.5 text-[11px] ${filters.includePickerDisabled ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[#999]"}`}
+          className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-[11px] ${filters.includePickerDisabled ? "border-[var(--color-primary)] text-[var(--color-primary)]" : "border-[var(--color-border)] text-[var(--color-muted)] line-through opacity-70"}`}
         >
+          <span aria-hidden="true">{filters.includePickerDisabled ? "[✓]" : "[ ]"}</span>
           picker-off
         </button>
       </div>

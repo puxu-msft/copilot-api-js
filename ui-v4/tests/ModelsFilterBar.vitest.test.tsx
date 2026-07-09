@@ -110,6 +110,14 @@ describe("ModelsFilterBar (Radix Select)", () => {
     expect(onChange).toHaveBeenCalledWith({ includePickerDisabled: false })
   })
 
+  it("status toggles expose aria-pressed reflecting inclusion (default on = pressed)", () => {
+    renderBar()
+    // Default EMPTY_FILTERS includes both → both toggles are pressed (checkbox affordance
+    // = shown), disambiguating the old "highlight = included" reading.
+    expect(screen.getByRole("button", { name: "config-off" }).getAttribute("aria-pressed")).toBe("true")
+    expect(screen.getByRole("button", { name: "picker-off" }).getAttribute("aria-pressed")).toBe("true")
+  })
+
   it("hides the active-filter chip + clear all when no filters are active", () => {
     renderBar()
     expect(screen.queryByText(/active$/)).toBeNull()
