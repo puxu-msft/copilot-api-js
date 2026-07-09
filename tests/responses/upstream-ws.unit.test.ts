@@ -7,17 +7,29 @@ import {
   test,
 } from "bun:test"
 
+import type { PreparedOpenAIRequest } from "~/lib/openai/request-preparation"
 import type {
   //
   CreateUpstreamWsConnectionOptions,
   UpstreamWsConnection,
+  WebSocketLike,
 } from "~/lib/openai/upstream-ws-connection"
+import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import {
   //
   createUpstreamWsManager,
+  resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
+import { attemptUpstreamResponsesWs } from "~/lib/openai/upstream-ws-attempt"
+import { createUpstreamWsConnection } from "~/lib/openai/upstream-ws-connection"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+} from "~/lib/state"
 
 function createConnection(overrides: Partial<UpstreamWsConnection> = {}): UpstreamWsConnection {
   return {
@@ -455,5 +467,129 @@ describe("upstream websocket manager", () => {
     } finally {
       Date.now = realNow
     }
+  })
+})
+
+/**
+ * Mimics undici's client WebSocket: WHATWG close-code validation throws
+ * DOMException('invalid code') for any code that is neither 1000 nor within
+ * [3000,4999]. `scheduleOpen()` is called from the test's `createSocket` so the
+ * "open" event fires one microtask after connect() attaches its open listener,
+ * driving the real connection to OPEN deterministically; `send()` invokes
+ * `onSend` once `response.create` is written so a test can drive a
+ * before-first-event failure while the socket is still open.
+ */
+class StrictAttemptSocket extends EventTarget implements WebSocketLike {
+  readyState = 0
+  readonly OPEN = 1
+  readonly CONNECTING = 0
+  readonly CLOSED = 3
+  sent: Array<string> = []
+  closeCalls: Array<{ code?: number; reason?: string }> = []
+  private readonly onSend: () => void
+
+  constructor(onSend: () => void) {
+    super()
+    this.onSend = onSend
+  }
+
+  /** Fire "open" on the next microtask — call AFTER connect() attaches listeners. */
+  scheduleOpen(): void {
+    queueMicrotask(() => {
+      this.readyState = this.OPEN
+      this.dispatchEvent(new Event("open"))
+    })
+  }
+
+  send(data: string): void {
+    this.sent.push(data)
+    this.onSend()
+  }
+
+  close(code?: number, reason?: string): void {
+    if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) {
+      throw new DOMException("invalid code", "InvalidAccessError")
+    }
+    this.closeCalls.push({ code, reason })
+    this.readyState = this.CLOSED
+    this.dispatchEvent(new CloseEvent("close", { code: code ?? 1000, reason: reason ?? "" }))
+  }
+}
+
+/**
+ * §1.1 golden regression (docs/plan/2026-07-09-codex-responses-tier1-hardening/plan-0-close-codes.md,
+ * Task 0.3): a before-first-event upstream-WS failure must resolve to
+ * `{ kind: "fallback" }` so the caller degrades to HTTP. The root cause was the
+ * fallback-catch's `connection.close()` closing the socket with a WHATWG-forbidden
+ * code (1001), which made undici throw DOMException('invalid code') and preempted
+ * the `return { kind: "fallback" }` — defeating the HTTP fallback. This test drives
+ * a REAL connection over a strict (undici-faithful) socket so `connection.close()`
+ * exercises the actual `closeUpstreamWs()` path, and asserts the close used the
+ * legal 1000 code (so the strict socket accepts it, not throws).
+ */
+describe("attemptUpstreamResponsesWs — §1.1 before-first-event fallback", () => {
+  const originalState = snapshotStateForTests()
+
+  beforeEach(() => {
+    resetUpstreamWsManagerForTests()
+    setStateForTests({
+      accountType: "individual",
+      // Disable the first-event timeout signal so the failure below is driven
+      // deterministically by the abort, not a wall-clock timer.
+      responseHeaderTimeout: 0,
+    })
+  })
+
+  afterEach(() => {
+    setUpstreamWsConnectionFactoryForTests(null)
+    resetUpstreamWsManagerForTests()
+    restoreStateForTests(originalState)
+  })
+
+  test("before-first-event WS failure falls back to HTTP (close does not defeat fallback)", async () => {
+    // The abort fires once `response.create` is sent — one microtask later, after
+    // `attemptUpstreamResponsesWs` has begun awaiting the first event. That fails
+    // the request BEFORE any event arrives while the socket is still OPEN, so the
+    // fallback-catch's `connection.close()` closes a live socket (the exact §1.1
+    // shape) rather than a socket already torn down by an upstream close/error.
+    const clientAbort = new AbortController()
+    const socket = new StrictAttemptSocket(() => {
+      queueMicrotask(() => clientAbort.abort())
+    })
+
+    setUpstreamWsConnectionFactoryForTests((opts: CreateUpstreamWsConnectionOptions) =>
+      createUpstreamWsConnection({
+        headers: opts.headers,
+        model: opts.model,
+        conversationId: opts.conversationId,
+        onClose: opts.onClose,
+        idleTimeoutMs: 0,
+        createSocket: () => {
+          // Attach happens synchronously in connect() right after this returns;
+          // schedule the "open" event for the following microtask.
+          socket.scheduleOpen()
+          return socket
+        },
+      }),
+    )
+
+    const prepared: PreparedOpenAIRequest<ResponsesPayload> = {
+      wire: { model: "gpt-5.2", input: "hello", stream: true },
+      headers: {},
+    }
+
+    // `attempt.kind === "fallback"` guards the fallback-return path. Note it is
+    // NOT the load-bearing guard for the close-code regression: the current fix is
+    // defense-in-depth (legal 1000 constant AND a try/catch in closeUpstreamWs), so
+    // reverting the constant to 1001 does NOT reject this await — closeUpstreamWs
+    // swallows the DOMException. The empty-closeCalls assertion below is what bites.
+    const attempt = await attemptUpstreamResponsesWs(prepared, { clientAbortSignal: clientAbort.signal })
+
+    expect(attempt.kind).toBe("fallback")
+    // Load-bearing regression guard: the strict socket only records a close for a
+    // WHATWG-legal code. Recording exactly { code: 1000 } proves the fallback-catch
+    // close used the legal code — a 1001 regression throws before recording, so
+    // this array would be empty and this assertion fails.
+    expect(socket.closeCalls).toEqual([{ code: 1000, reason: "Going away" }])
   })
 })
