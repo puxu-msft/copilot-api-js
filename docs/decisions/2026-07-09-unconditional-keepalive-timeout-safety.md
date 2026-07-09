@@ -44,7 +44,7 @@ History 库只读探针取 `req_1783609043247_663`（claude-opus-4.8，↑435.7K
 心跳到期时：
 
 - **有真实 open block（thinking / text / tool_use）**：发匹配类型的**空 delta**（`thinking_delta{""}` / `text_delta{""}` / `input_json_delta{""}`）→ 同时重置 60s + 300s。
-- **无 open block（pre-response 静默 / message_start 后首块前 / buffered pre-commit）**：注入**合成 message_start + 空 text 锚点块(0) + 空 text_delta** → 重置 300s。合成 message_start 只需 model 名（env 恒有）→ **任何时刻都能锚定**，不再依赖捕获真实 message_start。
+- **无 open block（pre-response 静默 / message_start 后首块前 / buffered pre-commit）**：注入**合成 message_start + 空 text 锚点块(0) + 空 text_delta** → 重置 300s。合成 message_start 只需 model 名（pre-response 窗口用闭包内的 `resolvedName`——`env` 此时尚未解构，见 spec §10.1.5 H2）→ **任何时刻都能锚定**，不再依赖捕获真实 message_start。
 
 裸 ping 从安全模式的保活路径**彻底消失**。唯一残留的理论超时缝隙：`redacted_thinking` open block（无 streaming delta 语义、无法发空 delta；通常 start+stop 即时完成、不悬挂）——文档化于 spec §10，不阻塞。
 
@@ -59,26 +59,26 @@ History 库只读探针取 `req_1783609043247_663`（claude-opus-4.8，↑435.7K
 
 **这是计费/显示层的 wire 分歧,非协议破坏**,用户已明确接受（2026-07-09）。契合 ADR [internal-tool-security-posture](2026-07-05-internal-tool-security-posture.md)（内部工具,运维价值 > 假想代价）与项目哲学「架构健康 > 向后兼容 / 回归风险」。可用性（客户端永不超时）压倒 message_start 元数据的逐字节保真。
 
-### 3. mode taxonomy：保留 legacy `ping`，合并出单一安全默认，新增 `content_ping`
+### 3. mode taxonomy：保留 legacy `ping`，合并出单一安全默认，新增 `enveloped_ping`
 
-`stream_keepalive_mode` enum 从 `["ping", "content_delta", "empty_text"]` → **`["ping", "content_ping", "empty_text"]`**，默认 `empty_text`：
+`stream_keepalive_mode` enum 从 `["ping", "content_delta", "empty_text"]` → **`["ping", "enveloped_ping", "empty_text"]`**，默认 `empty_text`：
 
 | 模式 | 静默时合成 message_start | keepalive 帧（无真实 block） | 重置 300s | 合成 content block / index remap |
 |---|---|---|---|---|
 | **`ping`**（legacy 逃生舱） | 否 | 裸 ping（裸流上） | 否，会超时 | 否 |
-| **`content_ping`**（新） | **是**（提交 message 信封） | 裸 ping（message 内） | 现有 armP 证据预期**否**（§4） | 否（不造 content block，无需 remap） |
+| **`enveloped_ping`**（新） | **是**（提交 message 信封） | 裸 ping（message 内） | 现有 armP 证据预期**否**（§4） | 否（不造 content block，无需 remap） |
 | **`empty_text`**（默认，安全） | 是 | 锚点块上空 `text_delta` | **是** | 是（锚点 @0，真实块 +1） |
 
 - **`content_delta` → 迁移到 `empty_text`**（`config/compat.ts` 的 **`migrateValue`**（带值门控；**非** `renameLeaf`——那 rename 键、会误触发合法值的 delete/warn），warn-and-migrate）。在无条件重置下 `content_delta` 与 `empty_text` 等价（前者只是没有 pre-response 锚点，而锚点现已无条件）。
 - **保留 `ping`** 作为知情逃生舱：某些客户端可能不吃空 delta / 合成 content block 时可回退（纯裸 ping、classic 行为、可能 >300s 超时）。项目无向后兼容负担,但保留一个真正的「关掉所有合成」开关有诊断价值。
-- **`content_ping`（新增,用户 2026-07-09 要求）**：合成 message_start 提交 message 信封,但 keepalive 只发裸 ping、**不造合成 content block、不发空 content delta**（故无需 index remap、不污染消息为空块）。相对 `empty_text` 更「干净」,代价是保活靠裸 ping。
+- **`enveloped_ping`（新增,用户 2026-07-09 要求；命名=裹在 message 信封里的 ping）**：合成 message_start 提交 message 信封,但 keepalive 只发裸 ping、**不造合成 content block、不发空 content delta**（故无需 index remap、不污染消息为空块）。相对 `empty_text` 更「干净」,**但现有证据（armP，§4）判其撑不住 300s**——故**不作生产安全模式,保留在 enum 里作未来实验钩子**（日后想验证不同信封形态对 CC watchdog 的影响时有现成入口）。
 
-### 4. content_ping 的定位（现有实测证据已近定论,非上线门控）
+### 4. enveloped_ping 的定位（现有实测证据已近定论,非上线门控）
 
-`content_ping`（合成 message_start + 裸 ping、不造 content block）的 300s 安全性由**现有实测证据基本判定**：`exp/cc-idle-280s/REPORT.md` armP =「thinking block 已开 + 裸 ping」（prod-faithful）→ 仍 **300s 断**（`duration_ms=300186`）。既然「完整开着的 content_block + ping」都压不住 300s，`content_ping`（更弱：仅 message_start、无 content block）**几乎必然也压不住**。
+`enveloped_ping`（合成 message_start + 裸 ping、不造 content block）的 300s 安全性由**现有实测证据基本判定**：`exp/cc-idle-280s/REPORT.md` armP =「thinking block 已开 + 裸 ping」（prod-faithful）→ 仍 **300s 断**（`duration_ms=300186`）。既然「完整开着的 content_block + ping」都压不住 300s，`enveloped_ping`（更弱：仅 message_start、无 content block）**几乎必然也压不住**。
 
-- **主结论**：`content_ping` 大概率 >300s 断，定位为「带 message 信封的**知情逃生舱**」（比 `ping` 多给客户端信封）。**默认保持 `empty_text`**。
-- **残留缝隙（低优先级确认臂,非门控）**：armP 是「message_start + content_block_start + ping」,content_ping 是「message_start + ping（无 content_block_start）」;二者对 CC 300s 层理论等价（都无 content_block_delta）。可加确认臂闭合「message_start 单独是否影响 watchdog」,但**不阻塞 `empty_text` 主线**;仅若反常证明「撑过 300s」才回头提 content_ping 为候选默认。
+- **主结论**：`enveloped_ping` 大概率 >300s 断，定位为「带 message 信封的**知情逃生舱**」（比 `ping` 多给客户端信封）。**默认保持 `empty_text`**。
+- **残留缝隙（低优先级确认臂,非门控）**：armP 是「message_start + content_block_start + ping」,enveloped_ping 是「message_start + ping（无 content_block_start）」;二者对 CC 300s 层理论等价（都无 content_block_delta）。可加确认臂闭合「message_start 单独是否影响 watchdog」,但**不阻塞 `empty_text` 主线**;仅若反常证明「撑过 300s」才回头提 enveloped_ping 为候选默认。
 
 裁决依据是亲手实测（skill `empirical-verification`：真实 CC 作独立 oracle,复用 `exp/cc-idle-280s/`），不凭推断。
 
