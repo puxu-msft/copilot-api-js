@@ -33,6 +33,41 @@ function isContentBlockStart(frame: ClientFrame): boolean {
   }
 }
 
+/**
+ * Is this rendered client frame a terminal `error` SSE event? Two live-path producers forward one through
+ * the normal `sink.write` (→ this reconcile), BEFORE any real content block: a terminal upstream `error`
+ * event (H2 — e.g. `overloaded_error`, accumulated to `acc.streamError`) and the refusal→error S5 rewrite
+ * (a zero-content refusal). Either arriving while the anchor is still open would otherwise be forwarded
+ * straight after an OPEN `content_block@0` — the same protocol-incomplete shape §10.5 eliminates. Treating
+ * it as a close-off trigger (like the first `content_block_start`) inserts `stop@0` BEFORE it.
+ */
+function isErrorEvent(frame: ClientFrame): boolean {
+  if (typeof frame.data !== "string") return false
+  try {
+    return (JSON.parse(frame.data) as { type?: unknown }).type === "error"
+  } catch {
+    return false // non-JSON frame — not an error event
+  }
+}
+
+/**
+ * Is this a message-level terminator (`message_delta` / `message_stop`)? If one arrives while the anchor is
+ * still open, NO real `content_block_start` ever opened — a ZERO-CONTENT completion. The message is closing
+ * with a dangling open `content_block@0` (protocol-incomplete). Closing the anchor off before it makes the
+ * live path SYMMETRIC with the buffered commit (which always closes on commit, driver.ts) — the anchor is
+ * closed on EVERY terminus, not just failures. In a normal (≥1 block) response the first `content_block_start`
+ * already flipped `anchorClosed`, so this never fires there (the `!anchorClosed` guard short-circuits).
+ */
+function isMessageTerminator(frame: ClientFrame): boolean {
+  if (typeof frame.data !== "string") return false
+  try {
+    const t = (JSON.parse(frame.data) as { type?: unknown }).type
+    return t === "message_delta" || t === "message_stop"
+  } catch {
+    return false // non-JSON frame — not a message terminator
+  }
+}
+
 /** The subset of {@link AnchorHooks} the live reconciliation needs (message_start predicate + close-off + remap). */
 export type ReconcileHooks = Pick<AnchorHooks, "isMessageStart" | "stopFrame" | "remap">
 
@@ -51,9 +86,16 @@ export type ReconcileHooks = Pick<AnchorHooks, "isMessageStart" | "stopFrame" | 
  *       - FIRST real `content_block_start` (anchor not yet closed) → `[stopFrame, remap(frame, 1)]` (close the
  *         anchor off at index 0, then emit the real block shifted to index+1 so it can't collide with the
  *         anchor's reserved index 0). Flips `anchorClosed`.
+ *       - a terminal `error` event before any real block (anchor not yet closed) → `[stopFrame, frame]` (close
+ *         the anchor off BEFORE the forwarded error so the client never sees an OPEN block straight into an
+ *         error — H2 upstream error / refusal→error rewrite, spec §10.5). `remap` leaves the non-block error
+ *         frame unchanged. Flips `anchorClosed`.
+ *       - a `message_delta` / `message_stop` before any real block (anchor not yet closed) → `[stopFrame, frame]`
+ *         (ZERO-CONTENT completion: no real block ever opened, so close the anchor off before the message
+ *         terminator — symmetry with the buffered commit close-off). Flips `anchorClosed`.
  *       - any other `content_block_*` → `[remap(frame, 1)]` (shift by +1; the anchor still occupies index 0).
- *       - `message_delta` / `message_stop` (no block index) → `[remap(frame, 1)]` — `remap` returns
- *         index-less frames unchanged, so the real `stop_reason` + `usage` reach the client verbatim.
+ *       - `message_delta` / `message_stop` AFTER the anchor was already closed by a real block → `[remap(frame, 1)]`
+ *         — `remap` returns index-less frames unchanged, so the real `stop_reason` + `usage` reach the client verbatim.
  *   - injected + `!anchorBlockOpen` (`enveloped_ping`) — only a message_start envelope was injected, NO anchor
  *     block reserved index 0 → every non-message_start frame passes through VERBATIM (`[frame]`): real content
  *     blocks keep their ORIGINAL index, and no close-off `stop@0` is written (there is no block to balance).
@@ -75,13 +117,19 @@ export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks
   if (!state.anchorBlockOpen) return [frame]
 
   const out: Array<ClientFrame> = []
-  if (isContentBlockStart(frame) && !state.anchorClosed) {
-    // First real block after the injected anchor: close the anchor (stop@0) BEFORE the real block so
-    // the client's block structure stays balanced, then shift the real block to +1.
+  if ((isContentBlockStart(frame) || isErrorEvent(frame) || isMessageTerminator(frame)) && !state.anchorClosed) {
+    // Close the anchor (stop@0) BEFORE this frame so the client's block structure stays balanced. Triggers:
+    //   - first real `content_block_start` → then shift the real block +1 (below);
+    //   - a terminal `error` event before any real block (H2 upstream error / refusal→error rewrite, §10.5);
+    //   - a `message_delta` / `message_stop` before any real block (ZERO-CONTENT completion — symmetry with
+    //     the buffered commit close-off, so the anchor closes on EVERY terminus, not only failures).
+    // All three are non-anchor-block frames, so `remap` below leaves them unchanged; a content_block_start is
+    // then shifted +1. The `!anchorClosed` guard makes this fire at most once (a normal ≥1-block stream
+    // closed at its first content_block_start → later message_delta/stop pass through untouched).
     state.anchorClosed = true
     out.push(hooks.stopFrame)
   }
-  out.push(hooks.remap(frame, 1)) // content_block_* → +1; message_delta / message_stop pass through
+  out.push(hooks.remap(frame, 1)) // content_block_* → +1; message_delta / message_stop / error pass through
   return out
 }
 

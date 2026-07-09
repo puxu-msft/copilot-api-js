@@ -557,13 +557,16 @@ async function runResponseBufferedSink(
   // no ping/anchor can fire between here and the stop write; the write is best-effort (the client may
   // already be gone — a reject is swallowed, there is nothing left to do). NOT called on client-abort /
   // settled-abort (the client is already gone → closing is meaningless). Idempotent — inert when the anchor
-  // was never injected (fast responses); the commit-SUCCESS path does its own inline close-off (§3.3) and
-  // never routes here, so the anchor is closed exactly once on every terminal path.
+  // was never injected (fast responses) OR already closed. Setting `anchorState.anchorClosed` is
+  // LOAD-BEARING for cross-site coordination (spec §10.5): after this returns `stream-error`, the pump's
+  // own terminal-branch `closeAnchorIfOpen` reads the SAME shared `anchorClosed` and short-circuits, so the
+  // buffered exhaustion path emits exactly ONE stop@0 (driver's), not a second from the pump.
   const closeAnchorIfOpen = async (): Promise<void> => {
     sink.freezeHeartbeat?.()
     // Only `empty_text` (anchorBlockOpen) reserved a content_block@0 that needs balancing; `enveloped_ping`
     // injected a message_start-only envelope (no block) → nothing to close off.
-    if (anchorState.injected && anchor && anchorState.anchorBlockOpen) {
+    if (anchorState.injected && anchor && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
+      anchorState.anchorClosed = true
       try {
         await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker (structural close-off)
       } catch {
@@ -651,7 +654,12 @@ async function runResponseBufferedSink(
         try {
           // M4: the anchor reserved index 0, so close it off (empty-text content_block_stop@0) BEFORE the
           // real blocks flush, then shift every real content_block_* by +1 so nothing collides at index 0.
-          if (injected && anchor && anchorBlockOpen) await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
+          // Sets `anchorState.anchorClosed` (shared guard, spec §10.5) so a later error terminus — e.g. the
+          // pump's catch after an H2 commit — never emits a second stop@0.
+          if (injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
+            anchorState.anchorClosed = true
+            await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
+          }
           for (const frame of buffer) {
             // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
             // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).

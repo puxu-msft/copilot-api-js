@@ -74,6 +74,7 @@ import {
   anchorDeltaFrame,
   anchorStartFrame,
   anchorStopFrame,
+  closeAnchorIfOpen,
   makeSyntheticAnchorInjector,
   makeSyntheticEnvelopeInjector,
   remapAnthropicBlockIndex,
@@ -535,22 +536,12 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // empty_text anchor terminal close-off (spec §10.5 / §3.4). When the pre-response injector lit a
     // synthetic empty-text anchor block during the stall (§10.1.5 C1) and the request THEN fails
     // POST-COMMIT, the client is otherwise left with an OPEN content_block@0 — a protocol-incomplete
-    // stream. Every branch that writes an `event: error` frame first closes the anchor off (stop@0,
-    // synthetic:"anchor") so the block structure stays balanced. UNLIKE the live-reconcile close-off
-    // (§10.3), this DOES `freezeHeartbeat`: a terminal failure has NO subsequent real stream (it is an
-    // error terminus), so freezing is harmless AND prevents a heartbeat tick racing the error frame;
-    // the live close-off, by contrast, still has real blocks streaming after it, so it must NOT freeze.
-    // Idempotent (`!anchorClosed`) — a close-off already done by the live reconciliation is not repeated;
-    // inert when no anchor was injected (`injected` false → byte-equivalent to the no-anchor path).
-    const closeAnchorIfOpen = async (): Promise<void> => {
-      // Only `empty_text` (anchorBlockOpen) opened a content_block@0 that needs balancing before the error
-      // terminus; `enveloped_ping` injected a message_start-only envelope (no block) → nothing to close off.
-      if (anchorHooks && anchorState.injected && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
-        anchorState.anchorClosed = true
-        sink.freezeHeartbeat?.()
-        await sink.writeAnchor?.(anchorHooks.stopFrame)
-      }
-    }
+    // stream. Every branch below that writes an `event: error` frame first closes the anchor off via the
+    // SHARED {@link closeAnchorIfOpen} primitive (stop@0, synthetic:"anchor") so the block structure stays
+    // balanced. The SAME primitive collapses the pre-pump (here) + pump terminal (pumpAnthropicStreamingV4)
+    // + live-reconcile + driver-buffered close-off sites onto one `anchorState.anchorClosed` guard — the
+    // anchor is closed exactly once no matter which terminus fires first (idempotent; inert when no anchor
+    // was injected → byte-equivalent to the no-anchor path).
     try {
       // Immediate first ping on a COLD-START commit (the upstream stalled past the whole window → known
       // slow). It (a) establishes the body stream NOW so a fast upstream failure right after commit is
@@ -582,7 +573,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           }
           // (f) reaper-cancel (reaper already settled it; the `settled` guard dedups) / (d) timeout.
           ctx?.fail(resolvedName, error)
-          await closeAnchorIfOpen() // balance an open pre-response anchor before the error terminus (§10.5)
+          await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
           await sink.writeSynthetic?.(
             kind === "reaper-cancel" ?
               anthropicErrorFrame("api_error", "Request cancelled by the stale-request reaper")
@@ -594,12 +585,12 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           // (c) upstream 4xx/5xx — the dominant POST-COMMIT divergence. The rich frame preserves
           // error.type (+ retry_after) so the client SDK still branches correctly (Q2 §4.2.5).
           ctx?.fail(resolvedName, error)
-          await closeAnchorIfOpen() // balance an open pre-response anchor before the error terminus (§10.5)
+          await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
           await sink.writeSynthetic?.(anthropicHttpErrorFrame(error))
           return
         }
         ctx?.fail(resolvedName, error) // unknown non-HTTP, non-abort
-        await closeAnchorIfOpen() // balance an open pre-response anchor before the error terminus (§10.5)
+        await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
         await sink.writeSynthetic?.(anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error)))
         return
       }
@@ -608,7 +599,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         const ctx = codec.getContext()
         ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }) // forwarded pings before settling (richest-data-flow)
         ctx?.fail(resolvedName, new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason))
-        await closeAnchorIfOpen() // balance an open pre-response anchor before the error terminus (§10.5, M1 — was missing in the first plan)
+        await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5, M1 — was missing in the first plan)
         await sink.writeSynthetic?.(anthropicRejectErrorFrame(result.rejection.status, result.rejection.reason))
         return
       }
@@ -1200,6 +1191,12 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
       const errorMessage = error instanceof Error ? error.message : String(error)
       const errorType = anthropicStreamErrorType(error)
+      // §10.5 gap (whole-branch review I-1): the live pump can stream-error BEFORE the first real
+      // content_block_start (a delayed-commit stall injected the anchor, then the upstream body threw) —
+      // reconcileLiveFrame never got to close the anchor, so it is still OPEN. Close it off (stop@0) BEFORE
+      // the error frame or the client is left with a dangling block. Idempotent + inert (shared anchorClosed
+      // guard): a no-op when reconcile already closed it, or when no anchor was injected.
+      await closeAnchorIfOpen(sink, anchorHooks, anchorState)
       await sink
         .writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
         .catch(() => undefined)
@@ -1277,6 +1274,10 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       const tool = env.ctx.unrepairableToolInput
       const partial = buildAnthropicResponseData(acc, model)
       consola.error(`[REPAIR] unrepairable malformed tool_use input for ${acc.model || model} (tool=${tool}) -> recorded as error`)
+      // §10.5 close-off (I-1): balance any still-open anchor before the error terminus. Almost always inert
+      // here — an unrepairable tool_use requires a real content_block_start (which reconcile already closed
+      // the anchor at) — but the shared idempotent guard keeps every error-frame terminus uniformly safe.
+      await closeAnchorIfOpen(sink, anchorHooks, anchorState)
       await sink
         .writeSynthetic?.(anthropicErrorFrame("invalid_request_error", `Tool call input for ${tool} was malformed and could not be repaired`))
         .catch(() => undefined)
@@ -1297,6 +1298,11 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // Order: writeSynthetic (samples the error frame) → recordForwarded → fail (see H3 branch).
       const partial = buildAnthropicResponseData(acc, model)
       consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
+      // §10.5 gap (I-1): the live pump can truncate (clean EOF, no message_stop) BEFORE the first real
+      // content_block_start — a delayed-commit stall injected the anchor, then the upstream closed silently.
+      // reconcile never closed the anchor, so close it off (stop@0) before the error frame. Idempotent (a
+      // real first block already closed it → no-op) + inert (no anchor injected → byte-equivalent).
+      await closeAnchorIfOpen(sink, anchorHooks, anchorState)
       await sink
         .writeSynthetic?.({
           event: "error",
@@ -1317,6 +1323,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     // frame + record it into the forwarded track, THEN settle so the persisted inboundResponse
     // includes the client-received error frame (writeSynthetic → recordForwarded → fail).
     const msg = error instanceof Error ? error.message : String(error)
+    // §10.5 close-off (I-1): an unexpected throw is also an error terminus — balance any open anchor before
+    // the synthetic error frame (idempotent + inert via the shared anchorClosed guard).
+    await closeAnchorIfOpen(sink, anchorHooks, anchorState)
     await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) }).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {

@@ -139,13 +139,77 @@ describe("reconcileLiveFrame", () => {
     expect(second.map(key)).toEqual(["content_block_start@2"]) // just +1, no extra stop@0
   })
 
-  test("injected: message_delta / message_stop pass through unchanged (real usage/stop_reason delivered)", () => {
+  test("injected: message_delta / message_stop AFTER a real block closed the anchor pass through unchanged (real usage/stop_reason delivered)", () => {
     const state = injectedState()
     const h = hooks()
+    // A real block already closed the anchor (the normal ≥1-block stream) → later terminators pass through.
+    reconcileLiveFrame(f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }), state, h)
+    expect(state.anchorClosed).toBe(true)
     const md = f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 9 } })
     const ms = f("message_stop")
     expect(reconcileLiveFrame(md, state, h)).toEqual([md])
     expect(reconcileLiveFrame(ms, state, h)).toEqual([ms])
+  })
+
+  // ── zero-content completion: message terminator before any real block (symmetry with buffered commit) ──
+  test("injected: a `message_delta` before any real block (zero-content completion) → [stop@0, message_delta]", () => {
+    const state = injectedState()
+    const h = hooks()
+    const md = f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 0 } })
+    const out = reconcileLiveFrame(md, state, h)
+    expect(out.map(key)).toEqual(["content_block_stop@0", "message_delta"]) // anchor closed before the terminator
+    expect(state.anchorClosed).toBe(true)
+    expect(out[1]).toBe(md) // the terminator itself is untouched (no index → remap passthrough)
+    // A following message_stop must NOT re-close (idempotent).
+    expect(reconcileLiveFrame(f("message_stop"), state, h).map(key)).toEqual(["message_stop"])
+  })
+
+  test("injected: a `message_stop` before any real block (no message_delta) → [stop@0, message_stop]", () => {
+    const state = injectedState()
+    const h = hooks()
+    const out = reconcileLiveFrame(f("message_stop"), state, h)
+    expect(out.map(key)).toEqual(["content_block_stop@0", "message_stop"])
+    expect(state.anchorClosed).toBe(true)
+  })
+
+  test("enveloped_ping (anchorBlockOpen=false): a `message_delta` / `message_stop` before any block passes through, NO stop@0", () => {
+    const state = envelopeInjectedState()
+    const h = hooks()
+    const md = f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 0 } })
+    expect(reconcileLiveFrame(md, state, h)).toEqual([md]) // no anchor block → nothing to close off
+    expect(reconcileLiveFrame(f("message_stop"), state, h).map(key)).toEqual(["message_stop"])
+    expect(state.anchorClosed).toBe(false)
+  })
+
+  // ── terminal error event before any real block (H2 upstream error / refusal→error rewrite, §10.5) ──────
+  test("injected: a terminal `error` event before any real block → [stop@0, error] (close-off precedes the error)", () => {
+    const state = injectedState()
+    const h = hooks()
+    const err = f("error", { error: { type: "overloaded_error", message: "overloaded" } })
+    const out = reconcileLiveFrame(err, state, h)
+    // The anchor is closed off (stop@0) BEFORE the forwarded error frame — no OPEN block straight into an error.
+    expect(out.map(key)).toEqual(["content_block_stop@0", "error"])
+    expect(state.anchorClosed).toBe(true)
+    // The error frame itself is untouched (non-content_block_* → remap passes it through verbatim).
+    expect(out[1]).toBe(err)
+  })
+
+  test("injected: `error` after the anchor was already closed by a real block → no second stop@0", () => {
+    const state = injectedState()
+    const h = hooks()
+    // A real block already closed the anchor.
+    reconcileLiveFrame(f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }), state, h)
+    expect(state.anchorClosed).toBe(true)
+    // A later error event must NOT re-close (idempotent) — it just passes through.
+    const err = f("error", { error: { type: "api_error", message: "x" } })
+    expect(reconcileLiveFrame(err, state, h)).toEqual([err])
+  })
+
+  test("enveloped_ping (anchorBlockOpen=false): a terminal `error` event passes through VERBATIM, NO stop@0", () => {
+    const state = envelopeInjectedState()
+    const err = f("error", { error: { type: "overloaded_error", message: "overloaded" } })
+    expect(reconcileLiveFrame(err, state, hooks())).toEqual([err]) // no anchor block → nothing to close off
+    expect(state.anchorClosed).toBe(false)
   })
 
   // ── enveloped_ping: injected + anchorBlockOpen=false (envelope-only, NO anchor block) ────────────────
