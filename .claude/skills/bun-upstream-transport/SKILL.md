@@ -1,6 +1,6 @@
 ---
 name: bun-upstream-transport
-description: 当调试 copilot-api-js 上游 fetch/连接问题时使用——Bun 原生 fetch 写死 300s 超时、TimeoutError、无 TCP keepalive、socket 被中间设备回收(transport-close)、undici dispatcher 被静默丢弃、node:http2 vs undici 选路、keepalive 须 ss 验证、pin undici 7。涉及 transport/upstream-fetch.ts、http2-client.ts、proxy.ts、长 thinking 断连。
+description: 当调试 copilot-api-js 上游 fetch/连接问题时使用——Bun 原生 fetch 写死 300s 超时、TimeoutError、无 TCP keepalive、socket 被中间设备回收(transport-close)、undici dispatcher 被静默丢弃、node:http2 vs undici 选路、keepalive 须 ss 验证、pin undici 7；两层上游保活(TCP keepalive + h2 PING)对抗长 thinking 静默截断(GHC 不透传 SSE ping、上游流无 message_stop 被关闭)。涉及 transport/upstream-fetch.ts、http2-client.ts、proxy.ts、长 thinking 断连。
 ---
 
 # Bun 上游传输：三陷阱与排查
@@ -25,6 +25,14 @@ https 上游绕过 undici，故代理也不能靠 undici ProxyAgent——在 `tr
 ## 为什么换库/node:https 救不了
 
 须最终走 node:net/tls 真 socket 调 setKeepAlive。裸 `undici`→shim 丢 dispatcher；got/axios/node:https→Bun shim 旁路 socket 注入、keepAlive 只动 L7 池；`Bun.connect` setKeepAlive delay 坏。**唯一解 = `undici/index.js` 子路径**绕 shim。https GHC h2 chunked 在 undici-on-Bun 永久挂 → 走 `node:http2`。
+
+## 两层上游保活：TCP keepalive + h2 PING（缺一不可）
+
+长 thinking 静默截断（客户端见前 ~3s 内容 → 数十秒~112s 全静默 → 上游流无 `message_stop` 被关闭，报 `Upstream stream truncated before completion (no message_stop)`）的根因是**双重**的，两层保活正交、缺一不可：
+
+- **上游真静默不是我方造的**：GHC 的 CAPI 代理**不透传** Anthropic 协议本该周期发的 SSE `event: ping` 帧。判据看 history **上游原始轨** `attempts[].upstreamResponse.sseEvents`（driver.ts 在 rewrite 前**全量无过滤** tap、`case "ping"` 不丢，故轨里没 ping = 上游真没发，非我方丢；**别看转发轨** `clientResponse.sseEvents`——那含我方注入的合成 ping，打了 `synthetic:"keepalive"` 标记）。于是长 thinking 期 wire 上唯一活动只剩保活。
+- **L4：TCP keepalive**（`upstreamKeepaliveDelay` 默认 15s，`http2-client.ts` createConnection socket 上 `setKeepAlive`）维持连接不被 NAT 回收。⚠️ 但 Bun 下 `setKeepAlive` delay 参数已知坏——`ss -tno` 看 `timer:(keepalive,Nsec)` 的 **N 若 ~7200s** 就是回落 OS 默认、15s 没落地（复现机取证首查此点）。
+- **L7：h2 PING**（`upstreamH2PingInterval` 默认 15s，`http2-client.ts:scheduleH2KeepalivePing` 在 pooled session 上 `setInterval`→`session.ping()`，timer `unref`，`getSession` 里 dispose 拆两职责：removeFromPool 在 error/close/goaway、clearInterval 只在 error/close——**goaway 不销毁 session、in-flight 流继续跑，保活须 ping 到 close**）。**为何 TCP keepalive 不够**：它只维持 L4，挡不住按**应用层静默**计时的空闲回收方（中间设备 or GHC 边缘）；h2 PING 放真帧上 wire 刷新其计时。**局限**：请求 `req.end()`（END_STREAM）后客户端不能在响应流补 DATA，PING 是**连接级**、刷新不了单条**流**的 idle 计时——若掐断方是 GHC 对单流的应用层超时，PING 救不了，须靠 L2 缓冲重试（`protect_streaming_generation`）兜底。取证判别 A(中间设备/连接级，PING 可救) vs B(GHC 单流超时，PING 无效)：看关闭 `rstCode`（`http2-client.ts` 的 `[http2] upstream stream closed before end (rstCode=N)`）+ 有无 GOAWAY。unacked-ping 死连接快速 teardown（liveness）是正交待办，见 `docs/todo/deferred-backlog.md`。
 
 ## http2 流错误分类（REFUSED 可安全重试）
 
