@@ -265,7 +265,7 @@ commit（或终末失败）时：
 buffered 路径在 commit flush 时一次性 remap（§3.3）；**live 路径帧实时逐个流经 `sink.write`**，故注入合成前奏后需一套 **Anthropic-aware 对账变换**，**仅施加于 live pump 路径**（`runResponseSink`）、读 handler 持有的共享 `anchorState`（§10.1.5 H1/C2——**绝非包住单一 sink 全部 write 的盲装饰器**，否则与 buffered driver 内部 remap 双重 +1）。`anchorState.injected` 后，对 live 流经每帧：
 
 - **丢弃**首个真实 `message_start`（客户端已收合成的，协议不允许第二个）。规则统一为「已转发过 message_start → skip 后续任何 message_start」（覆盖 live + 承 §3.3 buffered 去重）。
-- 首个真实 `content_block_start` **之前**先插 `content_block_stop{index:0}` 收口锚点（`freezeHeartbeat` 后，防心跳与收口交错，承 §3.3 C1）。
+- 首个真实 `content_block_start` **之前**先插 `content_block_stop{index:0}` 收口锚点（经 `writeAnchor` 打 `synthetic:"anchor"` 标记）。**注意（实现期修正 2026-07-09）：live 收口 NOT `freezeHeartbeat`**——buffered §3.3 C1 的 freeze 是终末 flush（其后无真实流），但 live 收口在**首个真实块**、其后真实块@1 仍可 mid-stream 静默数百秒（§1.2 事故原型），冻结即无保活→复活断连。live 无需 freeze 且不引 race：`write`/`writeAnchor` 同步刷 `lastRealMs`（收口后心跳 tick 见 elapsed≈0 只重排不 emit）+ `noteBlockState` 同步清 `openBlock`（最坏交错只退裸 ping、绝不产生已收口块上的越界空 delta）+ `anchorAttempted` 一次性守卫防二次注入。freeze 仅用于 buffered commit（§3.3）与终末失败收口（§3.4/§10.5，其后确无真实流）。
 - 所有真实 `content_block_*` 帧 `index` **+1**（复用 [`remapAnthropicBlockIndex`](../../src/lib/anthropic/keepalive-anchor.ts)）。
 - `message_delta` / `message_stop`（无 index）原样——真实 `stop_reason` + `output_tokens` 由此送达，补齐 CC 最终消息。
 
