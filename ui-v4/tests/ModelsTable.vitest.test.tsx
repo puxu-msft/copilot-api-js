@@ -220,7 +220,7 @@ describe("ModelsTable (TanStack)", () => {
     expect(screen.getByRole("columnheader", { name: /\$×/ })).toBeDefined()
   })
 
-  it("mutes config-disabled rows and shows a config-off chip", () => {
+  it("mutes config-disabled rows and shows a disabled status dot", () => {
     render(
       <ModelsTable
         models={[{ id: "d", name: "D", vendor: "V", model_picker_enabled: true } as unknown as Model]}
@@ -232,7 +232,8 @@ describe("ModelsTable (TanStack)", () => {
         onSortingChange={() => {}}
       />,
     )
-    expect(screen.getByText("config-off")).toBeDefined()
+    // Status column: config-disabled renders the "disabled" label (dot is aria-hidden).
+    expect(screen.getByText("disabled")).toBeDefined()
     // Row foreground muting class present (a FOREGROUND token, not opacity).
     const row = screen.getByText("d").closest("tr")
     expect(row?.className ?? "").toContain("text-[var(--color-muted)]")

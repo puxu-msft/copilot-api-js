@@ -1,11 +1,19 @@
-import { describe, expect, test } from "bun:test"
-
 import type { Model } from "~backend/lib/models/client"
 
-import { modelStatus } from "@/lib/model-status"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-const m = (id: string, pickerEnabled = true): Model =>
-  ({ id, model_picker_enabled: pickerEnabled } as unknown as Model)
+import {
+  //
+  modelStatus,
+  statusMeta,
+} from "@/lib/model-status"
+
+const m = (id: string, pickerEnabled = true): Model => ({ id, model_picker_enabled: pickerEnabled }) as unknown as Model
 
 describe("modelStatus", () => {
   test("config-disabled wins (highest priority) even if picker-enabled", () => {
@@ -19,5 +27,29 @@ describe("modelStatus", () => {
   })
   test("enabled otherwise", () => {
     expect(modelStatus(m("x", true), new Set())).toBe("enabled")
+  })
+})
+
+describe("statusMeta (presentational SSOT shared by table + drawer)", () => {
+  test("enabled is dot-only (no label), green, filled dot", () => {
+    const meta = statusMeta("enabled")
+    expect(meta.label).toBeNull()
+    expect(meta.glyph).toBe("●")
+    expect(meta.colorVar).toBe("var(--color-ok)")
+    expect(meta.title).toBe("enabled")
+  })
+  test("config-disabled is a red filled dot labelled 'disabled'", () => {
+    const meta = statusMeta("config-disabled")
+    expect(meta.label).toBe("disabled")
+    expect(meta.glyph).toBe("●")
+    expect(meta.colorVar).toBe("var(--color-fail)")
+    expect(meta.title).toContain("config.disabled_models")
+  })
+  test("picker-disabled is a hollow muted dot labelled 'picker-off' (distinct shape cue)", () => {
+    const meta = statusMeta("picker-disabled")
+    expect(meta.label).toBe("picker-off")
+    expect(meta.glyph).toBe("○") // hollow ≠ filled: non-color cue vs the other states
+    expect(meta.colorVar).toBe("var(--color-muted)")
+    expect(meta.title).toContain("model_picker_enabled")
   })
 })

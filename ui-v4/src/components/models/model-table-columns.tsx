@@ -16,6 +16,7 @@ import type { ModelStatus } from "@/lib/model-status"
 import type { JoinedModelTelemetry } from "@/lib/model-telemetry"
 
 import { formatNumber } from "@/lib/format"
+import { statusMeta } from "@/lib/model-status"
 import { thinkingLabel } from "@/lib/model-thinking"
 import { vendorColor } from "@/lib/vendor-color"
 
@@ -219,16 +220,20 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
       enableSorting: false,
       meta: { thClass: HEAD, tdClass: "px-2 py-1" },
       cell: (c) => {
-        const st = c.getValue<ModelStatus>()
-        if (st === "enabled") return <span className="text-[10px] text-[var(--color-muted)]">on</span>
-        const label = st === "config-disabled" ? "config-off" : "picker-off"
-        const color = st === "config-disabled" ? "var(--color-fail)" : "var(--color-muted)"
+        // Dot-based status (SSOT vocabulary in `statusMeta`): enabled is a quiet
+        // green dot only (majority default → no per-row text noise); the two
+        // disabled kinds add a short label + a shape cue (● vs ○) so meaning is
+        // never color-only. Full meaning lives in the title/aria-label.
+        const m = statusMeta(c.getValue<ModelStatus>())
         return (
           <span
-            className="border px-1.5 py-0.5 text-[10px]"
-            style={{ color, borderColor: color }}
+            title={m.title}
+            aria-label={m.label ?? "enabled"}
+            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide"
+            style={{ color: m.colorVar }}
           >
-            {label}
+            <span aria-hidden="true">{m.glyph}</span>
+            {m.label}
           </span>
         )
       },
