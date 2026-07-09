@@ -531,8 +531,14 @@ anthropic:
   # 客户端-代理流式 keepalive ping cadence 秒数。0 = 禁用；默认 20。commit 窗口开 200 后，连接级心跳（与上游解耦）距上次写客户端 N 秒就发一帧 ping——无论上游静默/thinking/buffered——故长 mid-stream/buffered 停滞绝不触发 Claude Code ~60s 空闲看门狗。cadence = ping 之间的最小间隔（真帧或 ping 都推进锚点）；冷启动 commit 先发一个立即 ping，之后由它节流。clamp 到远低于 60 的大余量（实测安全上界 ~45s）。心跳不重置上游 idle-timeout；只记入 forwardedSseEvents。
   stream_keepalive_ping_sec: 20
 
-  # Keepalive FRAME type for the client-facing Anthropic stream. empty_text (default) injects an EMPTY content delta matching the open block (like content_delta), AND — in buffered mode with no open block yet (pre-commit long silence) — lazily injects a synthetic empty text ANCHOR block so an empty text_delta resets Claude Code's 300s no-real-content deadline (real content stays buffered; the anchor closes and real blocks flush at index+1 on commit). content_delta injects the same empty delta when a block is open but degrades to a bare ping when no block is open, which does NOT reset the 300s deadline (a ping is not counted as a "chunk"; see exp/cc-idle-280s/REPORT.md). ping restores the classic bare-ping behavior.
-  # 客户端流式 keepalive 帧类型。empty_text（默认）注入匹配 open block 的空 content delta（同 content_delta），并且——在 buffered 模式且尚无 open block 时（pre-commit 长静默）——懒注入一个合成空 text 锚点块，使空 text_delta 重置 Claude Code 的 300s「必须收到真实内容」上限（真实内容全缓冲；commit 时锚点收口、真实块在 index+1 flush）。content_delta 在有 open block 时注入相同的空 delta，但无 open block 时退回裸 ping，重置不了 300s（ping 不算 chunk，见 exp/cc-idle-280s/REPORT.md）。ping 恢复旧的裸 ping 行为。
+  # Keepalive FRAME type for the client-facing Anthropic stream. Three modes:
+  #   empty_text (default) — UNCONDITIONALLY timeout-safe. Injects an EMPTY content delta matching the open block, AND — in buffered mode with no open block yet (pre-commit long silence) — lazily injects a synthetic empty text ANCHOR block so an empty text_delta resets Claude Code's 300s no-real-content deadline (real content stays buffered; the anchor closes and real blocks flush at index+1 on commit).
+  #   ping — legacy bare-ping escape hatch. Restores the classic bare-ping behavior, which does NOT reset the 300s deadline (a ping is not counted as a "chunk"; see exp/cc-idle-280s/REPORT.md), so a long pre-content silence CAN still time out. Kept only as an escape hatch.
+  #   enveloped_ping — synthetic envelope + bare ping. Future experimental mode; still expected to time out on long pre-content silence.
+  # 客户端流式 keepalive 帧类型。三种模式：
+  #   empty_text（默认）——无条件 timeout-safe。注入匹配 open block 的空 content delta，并且——在 buffered 模式且尚无 open block 时（pre-commit 长静默）——懒注入一个合成空 text 锚点块，使空 text_delta 重置 Claude Code 的 300s「必须收到真实内容」上限（真实内容全缓冲；commit 时锚点收口、真实块在 index+1 flush）。
+  #   ping —— legacy 裸 ping 逃生舱。恢复旧的裸 ping 行为，重置不了 300s（ping 不算 chunk，见 exp/cc-idle-280s/REPORT.md），故长时间 pre-content 静默仍可能超时。仅作为逃生舱保留。
+  #   enveloped_ping —— 合成信封 + 裸 ping。未来实验模式；长时间 pre-content 静默预期仍会超时。
   stream_keepalive_mode: empty_text
 
   # L2 — transactional buffered retry for streaming generations cut short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge contexts). Buffers the whole response and commits only after message_stop, re-running the upstream exchange on a transport-close / truncation — so the client transparently receives ONE complete generation instead of a half stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.

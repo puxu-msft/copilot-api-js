@@ -281,4 +281,14 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("stale_request_max_age", "timeouts.stale_request_max_age"),
   // compress toggle joins its threshold under auto_truncate
   renameLeaf("compress_tool_results_before_truncate", "auto_truncate.compress_tool_results"),
+  // stream_keepalive_mode "content_delta" → "empty_text": the keepalive reset is now
+  // unconditional (no pre-response gating that once distinguished a content-delta emit
+  // from an empty-text emit), so the two collapse into the timeout-safe empty_text frame.
+  // Value-gated so already-valid ping/enveloped_ping/empty_text pass through silently.
+  migrateValue(
+    "anthropic.stream_keepalive_mode",
+    (v) => v === "content_delta",
+    "empty_text",
+    "anthropic.stream_keepalive_mode: content_delta 在无条件重置下已并入 empty_text（无 pre-response 门控差异），自动迁移",
+  ),
 ]
