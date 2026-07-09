@@ -232,7 +232,7 @@
 - **现状**：模型详情模态抽屉（spec `docs/spec/2026-07-08-models-drawer-and-disabled-visibility.md`）默认 60vw、min 320px；窄屏（< ~640px）下 320px 抽屉 + 遮罩仍会挤压，未做「窄屏全宽」响应式。
 - **暂缓原因**：用户明确「移动端响应式未来用户要求了再做」（2026-07-08）。本项目主要是桌面端内部工具。
 - **若做**：抽屉 `Dialog.Content` 宽度加断点——`< sm` 时 `w-full`（占满、min 让位）、`>= sm` 时用 resizable 60vw；或用 CSS `min(60vw, 100vw)` 之类。属独立 UX 增强。
-||||||| parent of b03bfa48 (docs(todo): record retreated+anchor index-collision + double message_start gap)
+
 ## retreated（OOM cap）+ empty_text 锚点 → index 碰撞 + 双 message_start
 
 - **根因**：`runResponseBufferedSink` 的 retreat 路径（buffer 超 `protectStreamingBufferCapBytes` 默认 16MiB → 放弃缓冲、转 live 写透，driver.ts:601-620）**不做 +1 index remap、不 dedup message_start**——这两个变换只在 commit 成功分支（Task 3.3）做。但 empty_text 锚点（Task 3.2/3.3）一旦经心跳注入，就占了客户端 index 0 且已转发一次 message_start。
