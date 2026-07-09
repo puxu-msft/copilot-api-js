@@ -162,3 +162,14 @@ real claude (CC)  ──ANTHROPIC_BASE_URL=:4141──▶  copilot-api 代理  �
 - **mock 日志记「proxy ABORTED at ~300s」** → `timeouts.response_header` / `timeouts.stream_idle` 仍是默认 300，抬到 900。
 - **CC 立刻 400/404** → 模型没解析：确认 mock `/models` 返回含 `claude-opus-4.8`（vendor Anthropic + `/v1/messages`）的 `refs/AVAILABLE_MODELS.json`、代理模型索引已建。
 - **代理立刻报无 token** → 用户未认证；本实验不改认证路径（Copilot token 仍走真实 GitHub），需先 `copilot-api auth`。
+
+## 8. LIVE-path oracle 实测结果（2026-07-09，真实 CC + branch 代码，隔离实例）
+
+拓扑：真实 `claude` → 隔离 copilot-api 代理（branch `feat/keepalive-timeout-safety` sha 6ab75fb5，`XDG_DATA_HOME=/tmp/oracle-xdg`，独立 config/history.db，端口 4142/4143 避开用户真实 4141）→ mock-upstream `:8799`（`silent:330:text` 纯 pre-response 静默）。`protect_streaming_generation:false`（live/delayed-commit）+ `stream_commit_after_sec:20` + `stream_keepalive_ping_sec:20` + `timeouts.{response_header,stream_idle}:900`。
+
+| 臂 | `stream_keepalive_mode` | CC 结果 | 判定 |
+|---|---|---|---|
+| **armLive-empty_text**（修复） | `empty_text` | `is_error=false` · `duration_ms=330523` · `terminal_reason=completed` · `result="ok"` | ✅ **存活 330.5s（>300s）并正常完成** |
+| **armLive-ping**（对照） | `ping` | 代理日志：`req_...1` **320.1s client disconnected**（精确复现 incident req_1783609043247_663 的 320.2s）→ `req_...2` 顺序重试 108.3s（被 ceiling 截断） | ✅ **死于 300s 层、复现 incident + 重试风暴** |
+
+**结论（GO）**：empty_text 合成 message_start 前奏在纯 pre-response 静默期让真实 CC 撑过其 300s no-real-content watchdog（收到空 text_delta 保活），上游 330s 吐内容后 CC 正常收尾；裸 ping 则在 320.1s 逐字节复现原始 incident。**修复经真实 CC 端到端实证成立。** enveloped_ping 确认臂（预期同 ping 断）未跑——现有证据 + ping 臂已充分，非门控。
