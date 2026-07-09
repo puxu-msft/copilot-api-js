@@ -11,6 +11,7 @@ import {
   anchorStopFrame,
   anchorDeltaFrame,
   remapAnthropicBlockIndex,
+  syntheticMessageStartFrame,
 } from "~/lib/anthropic/keepalive-anchor"
 
 test("anchor start is an empty text content_block_start at index 0 with event line", () => {
@@ -68,4 +69,19 @@ test("remap leaves message_delta/message_stop (no index) unchanged", () => {
 test("remap leaves non-JSON frames unchanged", () => {
   const done = { data: "[DONE]" }
   expect(remapAnthropicBlockIndex(done, 1)).toEqual(done)
+})
+
+test("syntheticMessageStartFrame shape + event line", () => {
+  const f = syntheticMessageStartFrame("claude-opus-4.8", "req_x")
+  expect(f.event).toBe("message_start") // event 行不变量
+  const p = JSON.parse(f.data as string)
+  expect(p.type).toBe("message_start")
+  expect(p.message.id).toBe("msg_synthetic_req_x")
+  expect(p.message.type).toBe("message")
+  expect(p.message.model).toBe("claude-opus-4.8")
+  expect(p.message.role).toBe("assistant")
+  expect(p.message.content).toEqual([])
+  expect(p.message.usage).toEqual({ input_tokens: 0, output_tokens: 0 })
+  expect(p.message.stop_reason).toBeNull()
+  expect(p.message.stop_sequence).toBeNull()
 })

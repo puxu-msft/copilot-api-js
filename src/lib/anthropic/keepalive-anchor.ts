@@ -33,6 +33,31 @@ export function anchorStopFrame(): ServerSentEventMessage {
 }
 
 /**
+ * Fabricated `message_start` envelope for the pre-response silence window, used when the upstream
+ * stalls before ever emitting its own `message_start` (spec keepalive timeout-safety §10.2). `model`
+ * is the pre-resolved name (the pre-response window has not yet destructured the real env), and the
+ * fake `id` + zeroed `usage` are an accepted wire/billing divergence (richest-data-flow ADR §2). This
+ * builder ONLY constructs the frame; marking the forwarded record `synthetic:"synthetic-message-start"`
+ * is the sampling point's responsibility. Routed through `anthropicSseFrame` so the `event:` line
+ * (= `message_start`) invariant holds.
+ */
+export function syntheticMessageStartFrame(model: string, reqId: string): ServerSentEventMessage {
+  return anthropicSseFrame({
+    type: "message_start",
+    message: {
+      id: `msg_synthetic_${reqId}`,
+      type: "message",
+      role: "assistant",
+      model,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  })
+}
+
+/**
  * Shift the `index` of a content_block_* Anthropic SSE ClientFrame by `offset` (used when a
  * pre-commit anchor reserved index 0, so all real blocks flush at +1). Only content_block_*
  * frames carry a block index — message_delta / message_stop / non-JSON are returned unchanged.
