@@ -132,6 +132,11 @@ export function getClientCount(): number {
 export function closeAllClients(): void {
   for (const { ws } of clients.values()) {
     try {
+      // 1001 (going away) is an RFC-6455-legal SERVER close code; Bun's
+      // ServerWebSocket tolerates it (audit Task 0.1, locked by
+      // server-ws-close-code-tolerance test). Do NOT "fix" to 1000 by analogy
+      // with the undici CLIENT fix (upstream-ws-connection.ts) — that runtime
+      // is WHATWG-strict and throws on 1001; this server runtime does not.
       ws.close(1001, "Server shutting down")
     } catch {
       // Ignore errors during shutdown

@@ -141,6 +141,10 @@ function sendErrorAndClose(ws: WSContext, message: string, code?: string, forwar
     // WebSocket might already be closed
   }
   try {
+    // 1011/1013 below are RFC-6455-legal SERVER close codes; Bun's WSContext
+    // tolerates them (audit Task 0.1, locked by server-ws-close-code-tolerance
+    // test). Do NOT "fix" these to 1000 by analogy with the undici CLIENT fix
+    // (upstream-ws-connection.ts) — that runtime is WHATWG-strict, this one is not.
     ws.close(1011, message.slice(0, 123)) // WS close reason max 123 bytes
   } catch {
     // Already closed
@@ -493,6 +497,8 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
           // Best-effort
         }
         try {
+          // 1013 is an RFC-6455-legal SERVER close code Bun tolerates — do NOT
+          // rewrite to 1000 by analogy with the undici client fix (see :144).
           ws.close(1013, "Try again later")
         } catch {
           // Already closed
@@ -592,6 +598,8 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
       wsClientAborts.get(ws)?.abort()
       wsClientAborts.delete(ws)
       try {
+        // 1011 is an RFC-6455-legal SERVER close code Bun tolerates — do NOT
+        // rewrite to 1000 by analogy with the undici client fix (see :144).
         ws.close(1011, "Internal error")
       } catch {
         // Already closed
