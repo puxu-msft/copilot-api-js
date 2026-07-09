@@ -10,9 +10,14 @@ import {
   test,
 } from "bun:test"
 
-import { makeAnthropicKeepaliveFrame, resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import type { OpenBlock } from "~/lib/pipeline/client-sink"
 import type { ClientFrame } from "~/lib/pipeline/types"
+
+import {
+  //
+  makeAnthropicKeepaliveFrame,
+  resolveAnthropicKeepalive,
+} from "~/lib/anthropic/keepalive-frame"
 
 const PING = { event: "ping", data: '{"type":"ping"}' }
 const delta = (index: number, d: unknown) => ({ event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index, delta: d }) })
@@ -49,11 +54,11 @@ describe("resolveAnthropicKeepalive", () => {
     expect(resolveAnthropicKeepalive("ping")).toEqual(PING)
   })
 
-  test("content_delta resolves to the block-aware provider", () => {
-    expect(resolveAnthropicKeepalive("content_delta")).toBe(makeAnthropicKeepaliveFrame)
+  test("enveloped_ping resolves to the fixed ping frame (transitional — real behavior lands in Phase 6)", () => {
+    expect(resolveAnthropicKeepalive("enveloped_ping")).toEqual(PING)
   })
 
-  test("empty_text resolves to the block-aware provider (same as content_delta)", () => {
+  test("empty_text resolves to the block-aware provider", () => {
     const p = resolveAnthropicKeepalive("empty_text")
     expect(typeof p).toBe("function")
     // text open block -> empty text_delta

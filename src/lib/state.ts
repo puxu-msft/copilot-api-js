@@ -273,14 +273,14 @@ export interface State {
   readonly streamKeepalivePingSec: number
 
   /**
-   * Keepalive frame type for the client-facing Anthropic stream: `empty_text` (default) behaves like
-   * `content_delta` when a block is open, but in buffered mode with no open block yet lazily injects a
-   * synthetic empty text anchor block so an empty text_delta resets CC's 300s no-real-content deadline
-   * (spec 2026-07-08-buffered-keepalive-empty-text-anchor); `content_delta` injects an empty content
-   * delta matching the open block but degrades to a bare ping when no block is open; `ping` restores
-   * classic bare-ping. Default empty_text.
+   * Keepalive frame type for the client-facing Anthropic stream: `empty_text` (default) injects an
+   * empty content delta matching the open block, and in buffered mode with no open block yet lazily
+   * injects a synthetic empty text anchor block so an empty text_delta resets CC's 300s no-real-content
+   * deadline (spec 2026-07-08-buffered-keepalive-empty-text-anchor); `ping` restores the classic
+   * bare-ping (may time out — a ping is not a "chunk"); `enveloped_ping` (experimental, expected to time
+   * out) synthesizes an envelope then emits a bare ping. Default empty_text.
    */
-  readonly streamKeepaliveMode: "ping" | "content_delta" | "empty_text"
+  readonly streamKeepaliveMode: "ping" | "enveloped_ping" | "empty_text"
 
   /**
    * Delayed-commit window (seconds) for streaming Anthropic requests. The proxy waits up to this long
@@ -1334,7 +1334,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   responseHeaderWhitelist: ["request-id", "x-request-id", "anthropic-ratelimit-*", "anthropic-organization-id", "retry-after"] as ReadonlyArray<string>,
   stripAttributionHeader: true,
   streamKeepalivePingSec: 20,
-  streamKeepaliveMode: "empty_text" as "ping" | "content_delta" | "empty_text",
+  streamKeepaliveMode: "empty_text" as "ping" | "enveloped_ping" | "empty_text",
   streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   protectStreamingMaxRetries: 3,

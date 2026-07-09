@@ -2,7 +2,7 @@
  * END-TO-END active-path proof: a real /v1/messages streaming request through the real handler
  * (route → handleMessagesV4 → settled-within-window sink → pumpAnthropicStreamingV4 →
  * runResponseSink), with a TEST-CONTROLLED upstream body so we can open a thinking block, stall,
- * and observe that the LIVE heartbeat injects an empty thinking_delta (content_delta mode, default)
+ * and observe that the LIVE heartbeat injects an empty thinking_delta (empty_text mode, default)
  * — NOT a bare ping. This is the scenario the user's incident hit (mid-stream pre-content thinking).
  */
 
@@ -55,7 +55,7 @@ async function drain(n = 30): Promise<void> {
   for (let i = 0; i < n; i++) await Promise.resolve()
 }
 
-describe("keepalive e2e — mid-stream thinking stall injects content_delta (active path)", () => {
+describe("keepalive e2e — mid-stream thinking stall injects empty_text delta (active path)", () => {
   useIsolatedRuntime()
   const clock = new FakeClock()
   let ctrl: ReadableStreamDefaultController<Uint8Array> | undefined
@@ -86,7 +86,7 @@ describe("keepalive e2e — mid-stream thinking stall injects content_delta (act
       streamIdleTimeout: 0,
       streamKeepalivePingSec: 2, // cadence 2s
       streamCommitAfterSec: 10, // large → runRequest settles (Response received) within window → settled-within-window path (:429)
-      streamKeepaliveMode: "content_delta", // default; the frame under test
+      streamKeepaliveMode: "empty_text", // default; the block-aware frame under test (open block ⇒ empty delta)
     })
     applyFetchMock(fetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })

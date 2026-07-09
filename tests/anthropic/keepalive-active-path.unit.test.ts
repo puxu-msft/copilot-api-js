@@ -1,6 +1,6 @@
 /**
  * Active-path integration: the EXACT sink + keepalive-provider pair the Anthropic streaming handler
- * wires up (handler-v4.ts:429/492 pass `resolveAnthropicKeepalive(state.streamKeepaliveMode)` as the
+ * wires up (handler-v4.ts:453/526 pass `resolveAnthropicKeepalive(state.streamKeepaliveMode)` as the
  * makeSseSink heartbeat `pingFrame`). This drives that real pair with real mid-stream Anthropic frame
  * sequences + a fake clock and asserts what the heartbeat injects during a stall — proving the wired
  * components (not a test double) produce a block-matched empty content delta, and that `ping` mode
@@ -66,13 +66,13 @@ describe("keepalive active-path (real makeSseSink + real resolveAnthropicKeepali
   beforeEach(() => clock.install())
   afterEach(() => clock.restore())
 
-  // Exactly what handler-v4.ts:429/492 passes as the sink heartbeat pingFrame.
-  const contentDelta = resolveAnthropicKeepalive("content_delta")
+  // Exactly what handler-v4.ts:453/526 passes as the sink heartbeat pingFrame.
+  const emptyText = resolveAnthropicKeepalive("empty_text")
   const pingMode = resolveAnthropicKeepalive("ping")
 
   test("mid-stream THINKING stall → injects an empty thinking_delta (NOT a ping)", async () => {
     const { stream, written } = stubStream()
-    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 2, pingFrame: contentDelta } })
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 2, pingFrame: emptyText } })
     await sink.write(messageStart())
     await sink.write(blockStart(0, "thinking")) // thinking block opens → openBlock={0,thinking}
     await clock.advance(2_500) // cadence elapsed with no real frame → heartbeat tick
@@ -82,7 +82,7 @@ describe("keepalive active-path (real makeSseSink + real resolveAnthropicKeepali
 
   test("mid-stream TOOL_USE stall → injects an empty input_json_delta (NOT a ping) — the tool scenario", async () => {
     const { stream, written } = stubStream()
-    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 2, pingFrame: contentDelta } })
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 2, pingFrame: emptyText } })
     await sink.write(messageStart())
     await sink.write(blockStart(0, "tool_use")) // tool_use block opens
     await clock.advance(2_500)
@@ -92,7 +92,7 @@ describe("keepalive active-path (real makeSseSink + real resolveAnthropicKeepali
 
   test("mid-stream TEXT stall → injects an empty text_delta", async () => {
     const { stream, written } = stubStream()
-    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 2, pingFrame: contentDelta } })
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 2, pingFrame: emptyText } })
     await sink.write(messageStart())
     await sink.write(blockStart(0, "text"))
     await clock.advance(2_500)
@@ -102,7 +102,7 @@ describe("keepalive active-path (real makeSseSink + real resolveAnthropicKeepali
 
   test("after content_block_stop (block closed) → openBlock cleared → fallback ping", async () => {
     const { stream, written } = stubStream()
-    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 2, pingFrame: contentDelta } })
+    const sink = makeSseSink(stream, { heartbeat: { intervalSec: 2, pingFrame: emptyText } })
     await sink.write(messageStart())
     await sink.write(blockStart(0, "thinking"))
     await sink.write(blockStop(0)) // block closed → no open block

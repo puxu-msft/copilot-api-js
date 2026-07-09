@@ -4,9 +4,10 @@
  * web_search bypass heartbeat (streaming-pump), so it lives here (not in handler-v4) to avoid
  * the handler-v4 → web-search-handler → web-search-direct import cycle.
  *
- * `content_delta` mode injects an EMPTY delta matching the current open block, which resets
+ * `empty_text` mode injects an EMPTY delta matching the current open block, which resets
  * Claude Code's 300s no-real-content idle deadline that a bare `event: ping` does NOT (a ping is
- * not counted as a "chunk"). `ping` mode / no open block / redacted_thinking / unknown → bare ping.
+ * not counted as a "chunk"). `ping` / `enveloped_ping` mode / no open block / redacted_thinking /
+ * unknown → bare ping.
  */
 
 import type { OpenBlock } from "~/lib/pipeline/client-sink"
@@ -46,12 +47,13 @@ export function makeAnthropicKeepaliveFrame(openBlock?: OpenBlock): ClientFrame 
 }
 
 /**
- * The keepalive to hand a heartbeat/sink: a block-aware provider (`content_delta` / `empty_text`
- * modes) or the fixed ping frame (`ping` mode). Read at stream-start so a hot-reloaded
- * `stream_keepalive_mode` takes effect on new streams. `content_delta` and `empty_text` share the
- * same block-aware provider here; `empty_text` additionally enables the buffered-pre-commit
- * synthetic anchor (wired in the sink + driver, NOT here).
+ * The keepalive to hand a heartbeat/sink: the block-aware provider (`empty_text` mode) or the fixed
+ * ping frame (`ping` / `enveloped_ping` modes). Read at stream-start so a hot-reloaded
+ * `stream_keepalive_mode` takes effect on new streams. `empty_text` additionally enables the
+ * buffered-pre-commit synthetic anchor (wired in the sink + driver, NOT here). `enveloped_ping`
+ * currently resolves to a bare ping (transitional); its synthetic-envelope behavior lands in Phase 6.
  */
-export function resolveAnthropicKeepalive(mode: "ping" | "content_delta" | "empty_text"): ClientFrame | ((openBlock?: OpenBlock) => ClientFrame) {
-  return mode === "ping" ? ANTHROPIC_PING : makeAnthropicKeepaliveFrame
+export function resolveAnthropicKeepalive(mode: "ping" | "enveloped_ping" | "empty_text"): ClientFrame | ((openBlock?: OpenBlock) => ClientFrame) {
+  // enveloped_ping 行为在 Phase 6 实现，此处临时=ping 让类型编过
+  return mode === "ping" || mode === "enveloped_ping" ? ANTHROPIC_PING : makeAnthropicKeepaliveFrame
 }
