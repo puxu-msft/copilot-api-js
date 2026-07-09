@@ -4,7 +4,7 @@
 
 **Goal:** 让 keepalive 在安全模式下无条件重置 CC 的 300s no-real-content watchdog（含 live/delayed-commit 路径的纯 pre-response 静默），使客户端永不因超时报错。
 
-**Architecture:** 把合成注入器从 driver 的 `bindInjector` 重定位到 **handler 层**（sink 构造时挂 `heartbeat.injectAnchor`，独立于 driver/pump，故 `await p` 挂起的 pre-response 窗口即生效）；`anchorState`（含 `capturedMessageStart`）hoist 到 handler streamSSE 回调、按引用共享给心跳注入器 + driver buffered opts + live 对账；无真实 message_start 时合成一个（`resolvedName`）；live pump（`buffered===false`）外围做实时对账（丢真实 message_start + content_block_* 索引 +1 + 首真实块前收口锚点）。
+**Architecture:** 把合成注入器从 driver 的 `bindInjector` 重定位到 **handler 层，且 handler 注入器是唯一注入器**（sink 构造时挂 `heartbeat.injectAnchor`，独立于 driver/pump，故 `await p` 挂起的 pre-response 窗口即生效；delayed-commit sink 构造早于 `await p`、buffered 未知，无法构造时按 buffered 择一，故必须单一注入器）。**driver 侧的 `injectAnchor` + `bindInjector` 删除**——handler 注入器读共享 `anchorState.capturedMessageStart`（buffered drain 里 driver 捕获、写共享态）subsume 了它：有真实则转发、无则合成（`resolvedName`）。driver 只保留对共享 `anchorState` 的读写（commit remap/dedup/close）。`anchorState`（含 `capturedMessageStart`）hoist 到 handler streamSSE 回调、按引用共享给心跳注入器 + driver buffered opts + live 对账；live pump（`buffered===false`）外围经 **sink 装饰器**做实时对账（丢真实 message_start + content_block_* 索引 +1 + 首真实块前收口锚点；`onRenderedFrame` 类型上放不下 1→2 帧，故必须装饰器，见 P4）。
 
 **Tech Stack:** TypeScript / Bun；Hono `streamSSE`；`@anthropic-ai/sdk` SSE 协议；vitest/bun:test；真实 Claude Code 作 oracle（`exp/cc-idle-280s/`）。
 
@@ -17,7 +17,7 @@
 - **合成帧不变量**：任何代理合成的 Anthropic SSE 帧**必须带 `event:` 行**（= 帧 JSON 的 `type`），否则 `@anthropic-ai/sdk` 的 `SSEDecoder` 静默丢帧——一律经 `anthropicSseFrame(payload)`（[src/lib/anthropic/sse-frame.ts](../../src/lib/anthropic/sse-frame.ts)）构造。
 - **合成帧标记不变量（richest-data-flow ADR）**：所有合成帧在 forwarded 轨打 `SseEventRecord.synthetic` 标记；**上游轨 `upstreamResponse.sseEvents` 绝不含合成物**。keepalive=`"keepalive"`、结构锚点 start/stop=`"anchor"`、合成信封 message_start=`"synthetic-message-start"`（本计划新增）。
 - **过渡态无害（large-refactor）**：每个 commit 的终态是一个不变量、中间态绝不半坏；新行为在完全接线前必须 inert（对现有 `empty_text` buffered 路径逐字节等价，直到 Phase 3 接线 live）。
-- **retreat 明确排除**：上游 Anthropic 硬上限 `max_output_tokens 64000` + `max_thinking_budget 32000` ≈ 病态最坏 ~10.5 MiB < 16 MiB retreat cap → retreat 实际不可达（spec §10.3）。**不碰 retreat 分支**。
+- **retreat 明确排除（保留 deferred，本 scope 不修）**：retreat（buffer >16MiB 转 live 写透）+ 锚点会 index 碰撞（deferred-backlog 条）。上游 Anthropic 硬上限 `max_output_tokens 64000` + `max_thinking_budget 32000` 下，典型响应 SSE 帧字节远低于 16MiB。**注意（plan review N4）：此不可达估算不硬**——`bufferedBytes` 计 SSE 帧字节（`driver.ts:622` `data.length + event.length`），细粒度小 delta 的逐帧 framing 开销 + thinking signature 可把帧字节推高，pathological 下逼近 16MiB 非绝无可能。故定位为**罕见残留协议违规、本特性不修**（用户 2026-07-09 决定），**不碰 driver retreat 分支**。spec §10.3 / backlog / ADR 已按此软化措辞记录。
 - **enveloped_ping**：留作未来实验钩子，现有证据（armP）判其撑不住 300s；实现其分支但**不作默认**、oracle 只加非门控确认臂。
 
 ---
@@ -28,16 +28,18 @@
 |---|---|---|
 | `src/lib/config/schema.ts` | enum `["ping","enveloped_ping","empty_text"]` | P0 |
 | `src/lib/config/compat.ts` | `migrateValue` content_delta→empty_text | P0 |
+| `src/lib/anthropic/keepalive-frame.ts` | `resolveAnthropicKeepalive` 参数 union 改 + `enveloped_ping` 臂（P0 改类型编过、P6 加行为） | P0/P6 |
+| `src/routes/messages/web-search-direct.ts:429`、`web-search-handler.ts:174` | `resolveAnthropicKeepalive` 调用点被 union 变更**传递性波及**（须 recompile，行为不变） | P0 |
 | `src/lib/config/config.ts` | apply（已有，enum 值透传，确认 clamp 不涉及） | P0 |
 | `src/lib/state.ts` | 类型 + 默认 `empty_text`（已是默认，改 union 成员） | P0 |
 | `config.yaml` | 三模式注释 | P0 |
 | `src/lib/history/types.ts` | `SseEventRecord.synthetic` 联合加 `"synthetic-message-start"` | P1 |
 | `src/lib/anthropic/keepalive-anchor.ts` | `syntheticMessageStartFrame(model, reqId)` builder | P1 |
-| `src/lib/pipeline/types.ts` | `AnchorHooks` 加 `syntheticMessageStart`；共享 `AnchorState` 类型；`RunBufferedOpts.anchorState` | P1/P2 |
-| `src/lib/pipeline/driver.ts` | anchorState 改 opts 传入（hoist）；`bindInjector` 反转 | P2 |
-| `src/routes/messages/handler-v4.ts` | handler-owned anchorState + 合成注入器挂 heartbeat + live 对账 + 终末收口 | P2-P5 |
-| `src/lib/anthropic/live-reconcile.ts`（新 leaf） | live 路径对账变换（drop msg_start + remap + close） | P4 |
-| `src/lib/anthropic/keepalive-frame.ts` | `resolveAnthropicKeepalive` 加 `enveloped_ping` 臂 | P6 |
+| `src/lib/pipeline/types.ts` | `AnchorHooks` 加 `syntheticMessageStart`；共享 `AnchorState` 类型；`RunBufferedOpts.anchorState`；**删 `AnchorHooks.bindInjector`**（B1） | P1/P2 |
+| `src/lib/pipeline/driver.ts` | anchorState 改 opts 传入（hoist）；**删 driver 的 `injectAnchor` + `bindInjector` 调用**（B1，handler 注入器唯一）；只留共享 anchorState 读写（commit remap/dedup/close + drain 捕获 capturedMessageStart） | P2 |
+| `src/routes/messages/handler-v4.ts` | handler-owned anchorState + 唯一合成注入器挂 heartbeat + live 装饰器对账 + 终末收口 | P2-P5 |
+| `src/lib/anthropic/live-reconcile.ts`（新 leaf） | live 路径对账变换 + **sink 装饰器**（drop msg_start + remap + close） | P4 |
+| `src/lib/anthropic/keepalive-frame.ts` | `resolveAnthropicKeepalive` 加 `enveloped_ping` 行为臂 | P6 |
 | `exp/cc-idle-280s/` | oracle 新臂（live pre-response empty_text 存活 >300s） | P7 |
 | `docs/DESIGN.md` | 活的架构现状行同步 | P8 |
 | `tests/pipeline/`、`tests/anthropic/` | 回归测试 | 各阶段 |
@@ -259,22 +261,24 @@ export interface AnchorState {
 - [ ] **Step 1: 加类型** —— 如上。typecheck PASS。
 - [ ] **Step 2: commit** —— msg：`feat(pipeline): shared AnchorState type + RunBufferedOpts.anchorState`。
 
-### Task 2.2：driver 用传入的 anchorState（替局部）
+### Task 2.2：driver 用传入的 anchorState + 删 driver 注入器（B1）
 
 **Files:**
-- Modify: `src/lib/pipeline/driver.ts:542-543`（局部 → `const anchorState = opts.anchorState ?? { injected:false, messageStartForwarded:false, anchorClosed:false }`）、`:565-568`（注入翻转）、`:591`（close）、`:620`（capturedMessageStart 捕获 → 写 `anchorState.capturedMessageStart`）、`:669`（commit snapshot）、`:677`（dedup）。
-- Modify: `src/lib/pipeline/driver.ts:555` `injectAnchor` 闭包：读 `anchorState.capturedMessageStart`；无则用 `anchor.syntheticMessageStart?.(env model, reqId)` 合成（buffered 路径 env 已知——见注）。
+- Modify: `src/lib/pipeline/driver.ts` —— **删除** `injectAnchor` 闭包（`:555-573`）与 `bindInjector` 调用（`:577`）；`anchorState`/`capturedMessageStart` 局部（`:542-543`）→ `const anchorState = opts.anchorState ?? { injected:false, messageStartForwarded:false, anchorClosed:false }`；drain 捕获点（`:620`）→ 写 `anchorState.capturedMessageStart`；commit snapshot（`:669`）/ dedup（`:677`）/ close（`:591`）读写共享 `anchorState`。
+- Modify: `src/lib/pipeline/types.ts` —— **删 `AnchorHooks.bindInjector`**（`:315`，无消费者）。
 - Test: golden（2.0）+ 新单测 `tests/pipeline/anchor-state-shared.test.ts`。
 
 **Interfaces:**
-- Consumes: `AnchorState`、`AnchorHooks.syntheticMessageStart`。
-- Produces: driver 读写传入的 `anchorState`（含 capturedMessageStart）；`bindInjector` 仍回传闭包（P3 handler 侧改为不依赖它 wire live，但 buffered 仍用）。
+- Consumes: `AnchorState`（2.1）。
+- Produces: driver 只读写传入的 `anchorState`（含 capturedMessageStart）；**driver 不再持有/绑定任何注入器**——注入器由 handler 唯一持有（P3）。commit remap/dedup/close 逻辑不变（读共享 `anchorState.injected`/`messageStartForwarded`）。
 
-- [ ] **Step 1: 改 driver** —— 局部 `anchorState`/`capturedMessageStart` 全部替换为读写 `opts.anchorState`（capturedMessageStart 成为 anchorState 的字段）。injectAnchor 里 `capturedMessageStart === undefined` 分支：改为「有则转发真实，无则若 `anchor.syntheticMessageStart` 存在则合成（buffered 极窄 pre-message_start 窗兜底，spec §10.2）」。
-- [ ] **Step 2: golden 等价** —— `bun test tests/pipeline/buffered-anchor-golden.test.ts` 仍 PASS（buffered 有真实 message_start 时行为不变）。
-- [ ] **Step 3: 新单测** —— buffered + 无真实 message_start（上游返 headers 但 message_start 未到心跳先触发）→ 合成兜底 → 断言单 message_start、重试不双发（spec §10.8 M2 测试）。
-- [ ] **Step 4: typecheck + eslint** —— PASS。
-- [ ] **Step 5: commit** —— msg：`refactor(pipeline): driver reads shared anchorState (hoist prep)`。
+> **B1 关键**：`heartbeat.injectAnchor` 只有一个槽；delayed-commit sink 构造早于 `await p`（buffered 未知），无法构造时择一挂载。故 handler 注入器必须唯一，driver 的 injectAnchor（有真实 message_start 才注）被 handler 注入器（读共享 capturedMessageStart：有则真实、无则合成）subsume。删 driver 注入器不丢功能——buffered 路径心跳照样调 handler 注入器，此时 `capturedMessageStart` 已由 driver drain 写入共享态。
+
+- [ ] **Step 1: 删 driver 注入器 + 共享 anchorState** —— 删 `:555-573` injectAnchor + `:577` bindInjector；局部 anchorState/capturedMessageStart 全部改读写 `opts.anchorState`（capturedMessageStart 成为其字段）。commit/close/dedup 分支不动逻辑、只换状态来源。
+- [ ] **Step 2: golden 等价** —— `bun test tests/pipeline/buffered-anchor-golden.test.ts`。**注意**：此 commit 后 buffered 路径的注入器暂时缺失（handler 注入器 P3 才挂）——故 golden 会因「无注入器→退 ping」而与旧行为分叉。**过渡态处理**：P2 分支上 golden 断言暂时放宽为「anchorState 读写正确 + commit remap/dedup 不变」，注入行为的等价在 **P3 完成后**由 golden 完整校验（large-refactor 过渡态：此中间态显式记录、P3 收口）。若要 P2 独立绿，Step 1 与 P3 Task 3.1 可合并为一个「注入器搬家」提交（推荐，避免中间态注入器真空）。
+- [ ] **Step 3: 新单测** —— buffered + 无真实 message_start（headers 返回但 message_start 未到、心跳先触发）→ handler 注入器合成兜底（P3 后）→ 断言单 message_start、重试不双发（spec §10.8 M2）。**此测试在 P3 后转绿**。
+- [ ] **Step 4: typecheck + eslint** —— PASS（删 bindInjector 后无悬引用）。
+- [ ] **Step 5: commit** —— msg：`refactor(pipeline): delete driver injector, driver reads shared anchorState`。（若与 P3 3.1 合并则见 P3。）
 
 ### Task 2.3：handler 持有 anchorState、传入 driver
 
@@ -322,51 +326,46 @@ test("live pre-response silence injects synthetic prelude, not bare ping", async
 ```
 
 - [ ] **Step 2: 确认失败** —— 现 heartbeat.injectAnchor 未挂 handler 注入器 → 退 ping → FAIL。
-- [ ] **Step 3: 实现注入器闭包**（两回调共用一个工厂）：
+- [ ] **Step 3a: 先给 sink 加 `writeSyntheticEnvelope`（原 3.2，前移避免中间态错标记 N6）** —— `client-sink.ts` 仿 `writeAnchor`（[:237](../../src/lib/pipeline/client-sink.ts#L237)）加 `writeSyntheticEnvelope(frame)`：`sampleForwarded(frame, "synthetic-message-start")` + 写（message_start 不点亮 block，noteBlockState 对它 no-op）。`ClientSink` 类型加该方法；`makeWsSink` no-op/omit（WS 无此路径）。
+- [ ] **Step 3b: 实现注入器闭包（唯一注入器，B1）+ heartbeat 对所有模式保留（N5）**：
 
 ```ts
-// src/routes/messages/handler-v4.ts （在两 streamSSE 回调内，sink 构造后）
-// 一个 `let sink` 自引用 holder：注入器在【调用时】读 sink（构造入参求值时 sink 尚未绑定）。
-let sinkRef: ClientSink | undefined
+// src/routes/messages/handler-v4.ts （两 streamSSE 回调内，sink 构造后）
+const reqId = codec.getContext()?.id ?? "unknown"   // N1：req id 取自 ctx（context/types.ts:254 id:string）
+let sinkRef: ClientSink | undefined                 // 自引用：注入器【调用时】读 sink（构造入参求值时 sink 未绑）
 const makeSyntheticInjector = (state: AnchorState) => async (): Promise<boolean> => {
   const s = sinkRef
   if (!s || state.injected) return false
-  state.injected = true                 // 首个 await 前同步翻转（race-safe，同 driver.ts:557-568）
+  state.injected = true                 // 首个 await 前同步翻转（race-safe，同旧 driver.ts:557-568）
   state.messageStartForwarded = true
-  const msgStart = state.capturedMessageStart
-    ?? anchor.syntheticMessageStart!(resolvedName, reqId) // 无真实 → 合成
-  await (s.writeKeepalive ?? s.write)(msgStart)   // synthetic-message-start 标记见 3.2
-  await (s.writeAnchor ?? s.write)(anchor.startFrame)   // "anchor"；noteBlockState→openBlock={0,text}
-  await (s.writeKeepalive ?? s.write)(anchor.deltaFrame) // "keepalive"：空 text_delta 重置 300s
+  const real = state.capturedMessageStart
+  if (real) await s.write(real)                             // 真实：不打合成标记
+  else await (s.writeSyntheticEnvelope ?? s.write)(anchor.syntheticMessageStart!(resolvedName, reqId)) // 合成：synthetic-message-start
+  await (s.writeAnchor ?? s.write)(anchor.startFrame)       // "anchor"；noteBlockState→openBlock={0,text}
+  await (s.writeKeepalive ?? s.write)(anchor.deltaFrame)    // "keepalive"：空 text_delta 重置 300s
   return true
 }
+// heartbeat 对【所有模式】保留（N5：只有 injectAnchor 挂载条件化，帧形态由 resolveAnthropicKeepalive 定）
 const sink = makeSseSink(stream, {
   onForwarded, streamStartMs,
-  ...(pingSec > 0 && state.streamKeepaliveMode === "empty_text" && {
-    heartbeat: { intervalSec: pingSec, pingFrame: resolveAnthropicKeepalive(state.streamKeepaliveMode),
-      clientAbortSignal: clientAbort.signal, injectAnchor: makeSyntheticInjector(anchorState) },
+  ...(pingSec > 0 && {
+    heartbeat: {
+      intervalSec: pingSec,
+      pingFrame: resolveAnthropicKeepalive(state.streamKeepaliveMode), // ping→裸ping / empty_text→provider / enveloped_ping→裸ping(P6)
+      clientAbortSignal: clientAbort.signal,
+      // 仅 empty_text 挂锚点注入器；ping 无注入器（纯裸 ping）；enveloped_ping 的 envelope-only 注入器见 P6
+      ...(state.streamKeepaliveMode === "empty_text" && { injectAnchor: makeSyntheticInjector(anchorState) }),
+    },
   }),
-  ...(/* enveloped_ping / ping 分支见 Phase 6 */),
 })
 sinkRef = sink
 ```
 
-> **注（synthetic-message-start 标记，衔接 3.2）**：合成 message_start 经 `writeKeepalive` 会打 `"keepalive"` 标记——不对。需一个能打 `"synthetic-message-start"` 的写法：Task 3.2 给 sink 加 `writeSyntheticEnvelope`（或让注入器经 `writeAnchor` 变体传标记）。本 step 先用占位写法让测试跑起来，3.2 修标记。
 
-- [ ] **Step 4: 确认通过（帧序列）** —— `bun test tests/anthropic/live-pre-response-anchor.test.ts` 帧序列 PASS（标记在 3.2 修）。
+- [ ] **Step 4: 确认通过（帧序列 + 正确标记）** —— `bun test tests/anthropic/live-pre-response-anchor.test.ts`：合成 message_start 标记 `"synthetic-message-start"`、anchor start `"anchor"`、text_delta `"keepalive"`；另一用例 capturedMessageStart 存在时真实 message_start 无 synthetic 标记。PASS。
 - [ ] **Step 5: 快响应等价** —— 加测试：上游在首个心跳间隔内即出真实 message_start → injector 未 fire（`openBlock` 由真实帧点亮前，`anchorAttempted` 未触发）→ 无合成前奏、逐字节等价。
-- [ ] **Step 6: commit** —— msg：`feat(anthropic): handler-level synthetic injector for live pre-response`。
-
-### Task 3.2：合成 message_start 的 `synthetic-message-start` 标记
-
-**Files:**
-- Modify: `src/lib/pipeline/client-sink.ts`（加 `writeSyntheticEnvelope(frame)`：采样打 `"synthetic-message-start"`，同 `writeAnchor` 机制但标记不同）；`ClientSink` 类型加该方法。
-- Modify: `handler-v4.ts` 注入器：合成分支用 `writeSyntheticEnvelope`，真实分支（capturedMessageStart）用 `write`（真实帧不打合成标记）。
-
-- [ ] **Step 1: 加 sink 方法** —— `client-sink.ts` 仿 `writeAnchor`（[:237](../../src/lib/pipeline/client-sink.ts#L237)）加 `writeSyntheticEnvelope`，`sampleForwarded(frame, "synthetic-message-start")` + noteBlockState（message_start 不点亮 block，noteBlockState 对它 no-op）。返回结构 + `makeWsSink` 若需对称（WS 无此路径，可 no-op/omit）。
-- [ ] **Step 2: 注入器分野** —— 合成 → `writeSyntheticEnvelope`；真实 capturedMessageStart → `write`（不打标记，真实帧）。
-- [ ] **Step 3: 测试标记** —— 更新 3.1 测试断言合成 message_start 标记 `"synthetic-message-start"`、真实（另一用例，capturedMessageStart 存在）无 synthetic 标记。PASS。
-- [ ] **Step 4: commit** —— msg：`feat(pipeline): writeSyntheticEnvelope marks synthetic message_start`。
+- [ ] **Step 6: buffered golden 收口（承 P2 Task 2.2 过渡态）** —— handler 注入器现已挂 → buffered empty_text 心跳注入恢复 → `bun test tests/pipeline/buffered-anchor-golden.test.ts` 完整等价 PASS；P2 Task 2.3 的合成兜底新单测转绿。**若 P2 Task 2.2 与本任务合并为一个「注入器搬家」提交，则此 step 即该合并提交的验证。**
+- [ ] **Step 7: commit** —— msg：`feat(anthropic): handler-level unique synthetic injector for pre-response silence`。
 
 ---
 
@@ -412,21 +411,27 @@ export function reconcileLiveFrame(
 - [ ] **Step 4: 确认通过 + 非注入等价** —— injected=false 时逐帧透传（`[frame]`）。PASS。
 - [ ] **Step 5: commit** —— msg：`feat(anthropic): live-path anchor reconciliation transform`。
 
-### Task 4.2：接线 live pump（buffered===false）
+### Task 4.2：接线 live pump（buffered===false）——sink 装饰器（B2 定死）
 
 **Files:**
-- Modify: `src/routes/messages/handler-v4.ts:598`（delayed-commit）、`:460`（settled-within-window）—— live 分支（`buffered===false`）把 pump 的 sink.write 经 `reconcileLiveFrame` 转换。
+- Modify: `src/lib/anthropic/live-reconcile.ts`（加 `makeReconcilingSink(inner: ClientSink, state, hooks): ClientSink` 装饰器）
+- Modify: `src/routes/messages/handler-v4.ts:598`（delayed-commit）、`:460`（settled-within-window）—— live 分支（`buffered===false`）把传给 pump 的 sink 换成 `makeReconcilingSink(sink, anchorState, hooks)`。
 
-**接线方式（二选一，plan 定 A）：**
-- **A（推荐）**：给 live pump 传一个 `onRenderedFrame`-like 的 reconcile transform（若 `runResponseSink` 已有 `onRenderedFrame` 钩子则复用：Anthropic 现走 `onUpstreamFrame`，需确认——若 live Anthropic 无 render-后钩子，则用 sink 装饰器仅包 live pump 的 sink，装饰 `write` 经 reconcileLiveFrame）。
-- [ ] **Step 0: 调研接线点** —— 读 `pumpAnthropicStreamingV4` live 分支（`runResponseSink`）如何写帧，确认 transform 注入点（`onRenderedFrame` 或 sink 装饰）。**这是实现期第一个调研步**，据实选 A 的具体形态并回写本任务。
-- [ ] **Step 1: 写 e2e 失败测试** —— live delayed-commit + 上游全静默过心跳（注前奏）+ 随后上游续帧 → 断言客户端收 `[synthetic message_start, anchor@0, keepalive×N, stop@0, real block@1...]` 单 message_start、无碰撞（复用 4.1 序列，端到端经真实 pump）。
-- [ ] **Step 2: 确认失败** —— 现 live 无对账 → 真实 message_start 双发 + 索引碰撞 → FAIL。
-- [ ] **Step 3: 接线** —— live 分支 write 经 reconcileLiveFrame（injected 时）。
-- [ ] **Step 4: 确认通过 + golden** —— e2e PASS；非注入 live golden（快响应）逐字节等价。
-- [ ] **Step 5: commit** —— msg：`feat(anthropic): wire live reconciliation on delayed-commit live pump`。
+> **B2 定死 sink 装饰器（不用 onRenderedFrame）**：`reconcileLiveFrame` 返回 `ClientFrame[]`（首真实块前 1→2 帧插 `stop@0`），而 `onRenderedFrame` 签名是 `(frame) => ClientFrame | undefined`（[types.ts:257](../../src/lib/pipeline/types.ts#L257)，单帧/skip，**放不下数组**）。故必须装饰器。装饰器**只包 `write`**（经 `reconcileLiveFrame` 展开 0/1/2 帧写内层）；`writeAnchor`/`writeKeepalive`/`writeSyntheticEnvelope`/`writeSynthetic`/`freezeHeartbeat`/`close` **全部转发内层 sink**（注入器 + 心跳 + 终末收口仍写内层，靠内层单一 `makeSerializer` 保序、不与装饰的 `write` 交错）。装饰器仅用于 live pump 的帧流；handler 注入器、终末收口直接用内层 `sink`（未装饰），共享同一 `anchorState`。
+
+**Interfaces:**
+- Consumes: `reconcileLiveFrame`（4.1）、`ClientSink`、`AnchorState`。
+- Produces: `makeReconcilingSink(inner, state, hooks): ClientSink` —— `write(frame)` = `for (f of reconcileLiveFrame(frame, state, hooks)) await inner.write(f)`；其余方法 `= inner.<method>`。
+
+- [ ] **Step 1: 写装饰器 + 单测** —— `makeReconcilingSink`：`write` 展开、余方法转发。单测：injected state 下喂真实序列 → 内层收到对账后序列（复用 4.1 断言）；非 injected → 逐帧透传。
+- [ ] **Step 2: 写 e2e 失败测试** —— live delayed-commit + 上游全静默过心跳（注前奏）+ 随后上游续帧 → 断言客户端收 `[synthetic message_start, anchor@0, keepalive×N, stop@0, real block@1...]` 单 message_start、无碰撞（端到端经真实 pump + 装饰 sink）。
+- [ ] **Step 3: 确认失败** —— 现 live 无对账 → 真实 message_start 双发 + 索引碰撞 → FAIL。
+- [ ] **Step 4: 接线** —— live 分支（`buffered===false`）pump 收 `makeReconcilingSink(sink, anchorState, hooks)`；buffered 分支仍收裸 `sink`（driver 内部 remap，C2 互斥）。
+- [ ] **Step 5: 确认通过 + golden** —— e2e PASS；非注入 live golden（快响应）逐字节等价；buffered golden 不受影响（未装饰）。
+- [ ] **Step 6: commit** —— msg：`feat(anthropic): reconciling sink decorator for live pump`。
 
 ---
+
 
 ## Phase 5 — 终末失败收口（live POST-COMMIT）
 
@@ -520,3 +525,15 @@ export function reconcileLiveFrame(
 - §10.2（合成前奏）→ P1 + P3；§10.3（live 对账 + retreat 排除）→ P4；§10.4（mode taxonomy + migrateValue）→ P0；§10.5（无条件不变量）→ P3；§10.6（enveloped_ping）→ P6；§10.7（触及文件）→ 全阶段；§10.8（测试）→ 各阶段 + P7；§10.9（边界）→ redacted_thinking 退 ping 属既有 fallback（P3 注入器只在 empty_text + openBlock===undefined 触发，redacted_thinking open block 走 provider ping，无需特处）。
 - ADR §2 降级清单 → P1 builder（usage:0 + 假 id）+ P4 drop 真实 message_start（丢 model/cache tokens/message.id）。
 - **retreat 排除** → 全程不碰 driver retreat 分支（Global Constraints）。
+
+## Plan-review 修复记录（对抗 subagent，2026-07-09）
+
+一轮 plan 可执行性审查（裁判轴：长远正确 + 完整 + 可执行）对照真实代码，抓到两个设计级留白 + 数处行为错误，均已修：
+- **B1（阻塞）**：`heartbeat.injectAnchor` 单槽，delayed-commit sink 构造早于 `await p`（buffered 未知）→ **handler 注入器必须唯一，driver 侧 injectAnchor+bindInjector 删除**（Architecture + P2 Task 2.2 + 文件表）。原「保留 driver 注入器 + bindInjector 反转」是幽灵步骤。
+- **B2（阻塞）**：`onRenderedFrame` 签名 `(frame)=>ClientFrame|undefined` 放不下 `reconcileLiveFrame` 的 1→2 帧 → **定死 sink 装饰器**（P4 Task 4.2），删「A/调研 Step 0」歧义。
+- **N1**：reqId 取 `codec.getContext()?.id`（P3 Task 3.1）。
+- **N2**：P0 触及文件补 `keepalive-frame.ts` + `web-search-direct.ts:429`/`web-search-handler.ts:174`（union 变更传递性波及）。
+- **N4**：retreat「实际不可达」软化为「罕见残留、估算不硬」（Global Constraints + spec §10.3 + backlog + ADR 同步回写）。
+- **N5**：P3 heartbeat 对**所有模式**保留（`pingSec>0`），只 `injectAnchor` 条件化 `empty_text`——否则 ping 模式 P3-P5 期间无保活。
+- **N6**：P3 Task 3.2（writeSyntheticEnvelope）前移合并进 3.1 Step 3a，避免中间提交错标记。
+- 正样本：C1 核心机制接线经代码核验正确（心跳 tick 独立于 pump、`sinkRef` 自引用解鸡生蛋、`capturedMessageStart` 已入共享 AnchorState）。
