@@ -85,7 +85,7 @@ History 库只读探针取 `req_1783609043247_663`（claude-opus-4.8，↑435.7K
 ## 后果
 
 - **正面**：live/delayed-commit 路径的 pre-response 静默（生产 20/短期条 incident 的主因）被根治;buffered 路径的 pre-message_start 窄窗一并覆盖;保活行为从「分路径、有门控」收敛为「无条件不变量」,更易推理与测试。
-- **负面 / 代价**：合成 message_start 的 wire 分歧（§2,已接受）;live 路径需新增实时逐帧对账（丢真实 message_start + content_block_* 索引 +1 + 首真实块前收口锚点）——比 buffered 的 flush-时 remap 复杂。**retreat（OOM cap）路径不在 scope**：其触发需 buffer >16MiB，而上游 Anthropic 硬上限 64K 输出 + 32K thinking ≈ 病态最坏 ~10.5 MiB < 16 MiB，**实际不可达**，故 retreat+锚点碰撞（deferred-backlog 条）保留 deferred、不修（用户 2026-07-09）。
+- **负面 / 代价**：合成 message_start 的 wire 分歧（§2,已接受）;live 路径需新增实时逐帧对账（丢真实 message_start + content_block_* 索引 +1 + 首真实块前收口锚点）——比 buffered 的 flush-时 remap 复杂。**retreat（OOM cap）路径不在 scope**：其触发需 buffer >16MiB，上游 Anthropic 硬上限 64K 输出 + 32K thinking 下典型响应远低于此（**但估算不硬——细粒度 delta 的 framing 开销 pathological 下可逼近 16MiB**）,故 retreat+锚点碰撞（deferred-backlog 条）定位为**罕见残留、保留 deferred、不修**（用户 2026-07-09）。
 - **迁移**：`content_delta` 配置自动迁移到 `empty_text`;显式 `ping` 保留;无双轨包袱。
 - **未采纳**：① 完全移除 mode 旋钮（用户选保留 `ping` legacy）;② 把 pre-response 锚点做成仅 live 路径（用户选统一 live+buffered）;③ 上游 stall 快检提前触发 retry（spec 2026-07-08 §2 已否——heavy-thinking 合法慢会误伤）。
 
