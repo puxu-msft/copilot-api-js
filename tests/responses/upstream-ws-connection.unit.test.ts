@@ -433,4 +433,123 @@ describe("upstream websocket connection", () => {
     expect(connection.isOpen).toBe(false)
     expect(socket.closeCalls.some((c) => c.reason === "Parse error")).toBe(true)
   })
+
+  // ── L1 contract guard ────────────────────────────────────────────────────
+  // Drives EACH of the 6 upstream-WS lifecycle close paths over a StrictFakeSocket
+  // (which throws DOMException on any WHATWG-forbidden close code, mimicking undici's
+  // real client WebSocket) and asserts, per path, that (a) driving it never throws and
+  // (b) every recorded closeCall.code === 1000. This is the guard that would have caught
+  // the original close(1001) bug AND catches a layer-2 regression (removing the try/catch
+  // in closeUpstreamWs): with a forbidden code the strict socket throws, either surfacing
+  // through the .not.toThrow() assertion or leaving closeCalls empty so the code===1000
+  // assertion fails. Each path uses its own fresh socket+connection so the paths are
+  // exercised in genuine isolation, not smeared into one shared lifecycle.
+  describe("L1 guard: no lifecycle close path uses a WHATWG-forbidden code", () => {
+    const makeStrict = (
+      overrides?: Partial<Parameters<typeof createUpstreamWsConnection>[0]>,
+    ) => {
+      const strict = new StrictFakeSocket()
+      const connection = createUpstreamWsConnection({
+        headers: { authorization: "Bearer test" },
+        model: "gpt-5.2",
+        createSocket: () => strict,
+        ...overrides,
+      })
+      return { strict, connection }
+    }
+
+    /** Every recorded close on a strict socket must be WHATWG-legal 1000, and at
+     *  least one close must have fired for the named reason (guards against a
+     *  vacuous pass where the path never closed at all). */
+    const assertGuard = (strict: StrictFakeSocket, reason: string) => {
+      expect(strict.closeCalls.length).toBeGreaterThanOrEqual(1)
+      expect(strict.closeCalls.every((c) => c.code === 1000)).toBe(true)
+      expect(strict.closeCalls.some((c) => c.reason === reason)).toBe(true)
+    }
+
+    test("Handshake failed", () => {
+      const { strict, connection } = makeStrict({ headers: {}, model: "gpt-5.5" })
+      // connect() attaches the handshake error listener; rejection is expected.
+      void connection.connect().catch(() => {})
+      // Handshake error before open → active close. Must NOT throw, must use 1000.
+      expect(() => strict.dispatchEvent(new Event("error"))).not.toThrow()
+      assertGuard(strict, "Handshake failed")
+    })
+
+    test("Going away (connection.close)", async () => {
+      const { strict, connection } = makeStrict()
+      const connectPromise = connection.connect()
+      strict.open()
+      await connectPromise
+      expect(() => connection.close()).not.toThrow()
+      assertGuard(strict, "Going away")
+    })
+
+    test("Socket error (idle)", async () => {
+      const { strict, connection } = makeStrict()
+      const connectPromise = connection.connect()
+      strict.open()
+      await connectPromise
+      // Error event while idle → markUnusable + active close.
+      expect(() => strict.dispatchEvent(new Event("error"))).not.toThrow()
+      assertGuard(strict, "Socket error")
+    })
+
+    test("Parse error (mid-stream)", async () => {
+      const { strict, connection } = makeStrict()
+      const connectPromise = connection.connect()
+      strict.open()
+      await connectPromise
+      const iterator = connection
+        .sendRequest({ model: "gpt-5.2", input: "hello", stream: true })
+        [Symbol.asyncIterator]()
+      // Malformed JSON → handleMessage parse throws → defensive close. The close
+      // happens synchronously inside dispatchEvent, so wrap it in not.toThrow().
+      expect(() =>
+        strict.dispatchEvent(new MessageEvent("message", { data: "{not json" })),
+      ).not.toThrow()
+      // Drain the now-failed iterator so its rejection is observed.
+      await iterator.next().then(
+        () => {},
+        () => {},
+      )
+      assertGuard(strict, "Parse error")
+    })
+
+    test("Send failed", async () => {
+      const { strict, connection } = makeStrict()
+      const connectPromise = connection.connect()
+      strict.open()
+      await connectPromise
+      strict.send = () => {
+        throw new Error("send failed")
+      }
+      // sendRequest catches the send throw internally and closes defensively; it
+      // must not itself throw, and the close must use 1000.
+      let iterator: AsyncIterator<unknown> | undefined
+      expect(() => {
+        iterator = connection
+          .sendRequest({ model: "gpt-5.2", input: "hello", stream: true })
+          [Symbol.asyncIterator]()
+      }).not.toThrow()
+      await iterator?.next().then(
+        () => {},
+        () => {},
+      )
+      assertGuard(strict, "Send failed")
+    })
+
+    test("Idle timeout", async () => {
+      // A short idle timeout lets the scheduled idle-close timer fire after the
+      // handshake. The close runs inside a setTimeout callback, so it can't be
+      // wrapped in not.toThrow() — but a forbidden code would make StrictFakeSocket
+      // throw before recording, leaving closeCalls empty and failing assertGuard.
+      const { strict, connection } = makeStrict({ idleTimeoutMs: 1 })
+      const connectPromise = connection.connect()
+      strict.open()
+      await connectPromise
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      assertGuard(strict, "Idle timeout")
+    })
+  })
 })
