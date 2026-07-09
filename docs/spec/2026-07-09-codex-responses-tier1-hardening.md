@@ -64,9 +64,11 @@ Codex（Responses API）是本项目**一等公民**支持对象；`ws:responses
 
 - **R1.1** 抽取单一上游关闭原语 `closeUpstreamWs(socket, reason)`，内部用 `1000`（normal closure），替换 `upstream-ws-connection.ts` 全部 6 处 `close(1001)`。
 - **R1.2** `closeUpstreamWs` 对 `close()` 自身任何同步抛出 try/catch + 记日志（纵深防御）。
-- **R1.3** 合规扫描**两个** WS 文件：
-  - 上游客户端 `upstream-ws-connection.ts`（undici WebSocket，严格）。
-  - 下游服务端 `src/routes/responses/ws.ts`（Hono `WSContext` on Bun，`ws.close(1011)` `:144/:595`、`ws.close(1013)` `:496`）——**实测**该运行时对 1011/1013 是否抛出（服务端 1011/1013 于 RFC 6455 合法，Bun/Hono 很可能容忍）。**仅当实测证明会抛**才改；否则记录"服务端运行时容忍 1011/1013"的结论，不盲目改动语义正确的码。
+- **R1.3** 合规扫描**全仓** WS 关闭码站点（先 grep 审计再动手，`消除同族`）：
+  - 上游客户端 `upstream-ws-connection.ts`（undici WebSocket，严格，6 处 `close(1001)`）——**必须改 1000**。
+  - 下游服务端 `src/routes/responses/ws.ts`（Hono `WSContext` on Bun，`ws.close(1011)` `:144/:595`、`ws.close(1013)` `:496`）——**实测**运行时是否抛。
+  - 下游服务端 `src/lib/ws/broadcast.ts:135`（History UI 广播 `ws.close(1001)`）——**实测**运行时是否抛。
+  服务端 1011/1013/1001 于 RFC 6455 合法，Bun/Hono 很可能容忍：**仅当实测证明会抛**才改；否则记录结论、加固化测试，不盲改语义正确的码。
 - **R1.4** `send()` 已被 `readyState===OPEN` 守卫（无 bug），以测试固化该前置。
 - **验收**：(a) mock undici WebSocket 触发每处上游 lifecycle 关闭，断言不抛 `DOMException`、以 1000 关闭；(b) §1.1 before-first-event 场景：注入首事件前失败，断言**当前**会抛 "invalid code" 且降级被击败、**修复后**降级到 HTTP；(c) `ws.ts` 1011/1013 的运行时行为有测试或实测结论记录。
 
