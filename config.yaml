@@ -168,6 +168,8 @@ timeouts:
   # upstream_keepalive 的应用层补充：GHC 的 CAPI 代理不透传 Anthropic 的 SSE `event: ping` 帧，故长思考静默期是一条真正空闲的流。
   # TCP keepalive keeps L4 alive through NAT but does not defeat a connection-idle reaper (middlebox/GHC edge) counting application-layer silence (a real cut fired at ~112s) — a PING puts a real frame on the wire.
   # TCP keepalive 只维持 L4 不被 NAT 回收，挡不住按应用层静默计时的空闲回收方（中间设备/GHC 边缘，实测 ~112s 掐断）——PING 在 wire 上放一个真帧。
+  # With a network proxy this is the ONLY keepalive covering the full path to the real upstream: https stays h2 end-to-end through the CONNECT/SOCKS tunnel, so TCP keepalive only protects the local↔proxy leg (loopback if the proxy is local) while these PING frames traverse the tunnel to GHC.
+  # 经网络 proxy 时这是唯一覆盖到真上游全程的保活：https 经 CONNECT/SOCKS 隧道仍是 h2 端到端，TCP keepalive 只护「我方↔proxy」腿（本地 proxy 则为 loopback），而这些 PING 帧穿隧道直达 GHC。
   # Node-only (the node:http2 transport). / 仅 Node（node:http2 传输）。
   upstream_h2_ping: 15
 
