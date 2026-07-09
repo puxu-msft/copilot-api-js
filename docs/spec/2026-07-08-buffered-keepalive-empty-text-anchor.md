@@ -77,7 +77,7 @@ req_78 恰在 req_77 断连时刻起 = CC 断连后的**顺序重试**（非孪�
 | `content_delta` | 空 delta 匹配 open block（重置 300s） | fallback 裸 ping（= 本 incident 现状） |
 | **`empty_text`（默认）** | 同 `content_delta`（空 delta 匹配 open block） | **懒注入合成空 text 锚点**（§3.2）→ 之后即「有 open block」发空 `text_delta` |
 
-即 `empty_text` = `content_delta` 的**严格超集**：唯一区别是 buffered pre-commit 无 open block 时，不再 fallback ping、而是注入锚点。**live 路径行为不变**——不是因为「live 恒有 open block」（live 也有 pre-first-block 窗口：message_start 后、首 content_block_start 前，`noteBlockState` 不认 message_start → 无 open block），而是因为**只有 buffered pump 注册 `injectAnchor` 闭包、live pump（`runResponseSink`）不注册**（§3.3 M1），故 live 该窗口仍退 ping、逐字节不变。运维可回退 `content_delta`/`ping` 保留旧行为。
+即 `empty_text` = `content_delta` 的**严格超集**：唯一区别是 buffered pre-commit 无 open block 时，不再 fallback ping、而是注入锚点。**live 路径行为不变**——不是因为「live 恒有 open block」（live 也有 pre-first-block 窗口：message_start 后、首 content_block_start 前，`noteBlockState` 不认 message_start → 无 open block），而是因为**只有 buffered pump 注册 `injectAnchor` 闭包、live pump（`runResponseSink`）不注册**（§3.3 M1），故 live 该窗口仍退 ping、逐字节不变。运维可回退 `content_delta`/`ping` 保留旧行为。<br>**（→ §10 更新，本段已过时）**：`content_delta` 已在 §10.4 移除/迁移到 `empty_text`；「只有 buffered 注册 injectAnchor、live 不注册」已被 §10.1.5 C1 反转（handler 层注入器覆盖 live pre-response）。「严格超集」的表述失效。
 
 ### 3.2 机制：合成空 text 锚点
 
@@ -120,7 +120,7 @@ commit（或终末失败）时：
 - **注入一次**：`anchorState.injected` 幂等守卫，跨重试只注一次。
 - **commit 成功**：入口先 `sink.freezeHeartbeat()` + 快照 `injected`（§3.3 C1）；`injected` 则先 `content_block_stop(0)` 关锚点、真实块 remap +1 flush；否则原样 flush（字节等价）。
 - **终末失败**（exhaustion [driver.ts:632](../../src/lib/pipeline/driver.ts#L632) / H3 throw / H2 upstream error）：各终末分支入口同样先 `sink.freezeHeartbeat()` + 快照；若 `injected`，须在 error 帧**前**发 `content_block_stop(0)` 关锚点，否则客户端残留 open 锚点块（协议不完整）。空 text 锚点收口 known-benign。**注意（reviewer H2）**：收口 stop(0) 帧亦由 handler 经 `anchor.stopFrame` 提供、driver 只写；终末失败分支须能读到 `anchorState`（driver 编排层持有，跨 handler/driver 分工须确保可达）。
-- **H1 usage（reviewer，用户接受）**：锚点注入已转发 attempt-1 的 `message_start`（携 `usage.input_tokens`/`id`）；重试后客户端复用它、input_tokens 停留 attempt-1 值。**仅当锚点已注入（慢响应）且随后重试**才发生——快响应无锚点、message_start 随 commit flush（attempt-N 真实值，无陈旧）。可用 flush 出的终末 `message_delta`（真实 output usage）部分纠正；`input_tokens` 陈旧为**已文档化的可接受降级**（计费/显示层，非协议破坏，用户已接受）。
+- **H1 usage（reviewer，用户接受）**：锚点注入已转发 attempt-1 的 `message_start`（携 `usage.input_tokens`/`id`）；重试后客户端复用它、input_tokens 停留 attempt-1 值。**仅当锚点已注入（慢响应）且随后重试**才发生——快响应无锚点、message_start 随 commit flush（attempt-N 真实值，无陈旧）。可用 flush 出的终末 `message_delta`（真实 output usage）部分纠正；`input_tokens` 陈旧为**已文档化的可接受降级**（计费/显示层，非协议破坏，用户已接受）。<br>**（→ §10 更新）**：§10.2 的**合成** message_start 分支（无真实可捕获时）比本条更强——`input_tokens` **恒为 0**、`id` 是假的，且丢真实 message_start 时还一并丢真实 `model`（alias 解析后可能异于 resolvedName）、`cache_read_input_tokens`/`cache_creation_input_tokens`、真实 `message.id`（ADR §2 降级清单已按对抗审查 M2 补全）。同属已接受的 wire 分歧。
 
 ### 3.5 合成帧标记（reviewer M2 + richest-data-flow ADR）
 
@@ -138,7 +138,7 @@ commit（或终末失败）时：
 合成锚点支持**全部首块类型**（thinking/text/tool_use/redacted——锚点与真实首块类型无关），故 eager 方案的类型门控边界消失。仅剩：
 
 - **纯 pre-message_start 静默**：上游返回 headers 但 `message_start` **尚未缓冲**时心跳到期——无 message_start 可先行转发 → `injectAnchor` 暂不可行、退 ping。极窄（incident 中 message_start 在 1ms 到达，20s 心跳时早已在缓冲）。可选未来增强：合成 message_start（usage/id 占位），本 spec 不做。
-- **mode = `ping` / `content_delta`（运维显式选择）**：buffered pre-commit 无锚点 → ping → >300s 仍断。运维知情取舍（默认 `empty_text` 已避免）。
+- **mode = `ping` / `content_delta`（运维显式选择）**：buffered pre-commit 无锚点 → ping → >300s 仍断。运维知情取舍（默认 `empty_text` 已避免）。**（→ §10.4 更新）**：`content_delta` 已移除/迁移到 `empty_text`；新 taxonomy 见 §10.4。
 - **web_search bypass 路径**（前身 spec §6 第 2 条）：独立心跳（`streaming-pump.ts`），本 spec 不动（其亦可后续复用 `empty_text` 锚点）。
 
 ## 5. 触及文件 / 代码锚点
@@ -234,11 +234,25 @@ commit（或终末失败）时：
 
 根因（§1.3 的 live-path 变体）：`protect_streaming_generation: false` → **live/delayed-commit 路径**（非 buffered）→ `buildAnthropicAnchorWiring` 的 `bindInjector` **只在 `runResponseBufferedSink` 调用**（[handler-v4.ts:867](../../src/routes/messages/handler-v4.ts#L867) + [driver.ts:577](../../src/lib/pipeline/driver.ts#L577)）→ live 路径 injectAnchor 恒 `Promise.resolve(false)` → 心跳退 `ANTHROPIC_PING` → 撞 300s。
 
+### 10.1.5 架构重定位（对抗审查 C1/C2/H1/H2 修正，**核心**）
+
+> 首版 §10 把合成注入器定位在 driver 的 `bindInjector`（承 §3.3 buffered 机制）——**对抗审查证明这在事故窗口失效**，本节重定位。
+
+**C1（致命，已证）：注入器必须由 handler 持有、在 sink 构造时挂到 `heartbeat.injectAnchor`，独立于 driver/pump。** 事故 `req_1783609043247_663` 是纯 pre-response：`await p`（[handler-v4.ts:549](../../src/routes/messages/handler-v4.ts#L549)）在上游返回响应头前永不 resolve，pump（[handler-v4.ts:598](../../src/routes/messages/handler-v4.ts#L598)，`await p` **之后**）与 driver 的 `runResponseBufferedSink`/`runResponseSink` **在该窗口从不运行**。16 帧裸 ping 全部来自 sink 心跳（[handler-v4.ts:520](../../src/routes/messages/handler-v4.ts#L520) 构造 + [:544](../../src/routes/messages/handler-v4.ts#L544) 冷启动首 ping）自发 fire。而心跳持有的 `injectAnchor` = `buildAnthropicAnchorWiring` 闭包 `boundInjector ? boundInjector() : Promise.resolve(false)`（[handler-v4.ts:890](../../src/routes/messages/handler-v4.ts#L890)），`boundInjector` **只由 `bindInjector` 设值、只在 `runResponseBufferedSink` 调用**（[driver.ts:577](../../src/lib/pipeline/driver.ts#L577)）→ pre-response 窗口 `boundInjector===undefined` → `injectAnchor()` 恒 false → 退裸 ping。**故「经 driver bindInjector 绑定」修不了事故。**
+
+**修正**：新增一个 **handler 层合成注入器**，在 sink 构造时（[:520-531](../../src/routes/messages/handler-v4.ts#L520)）就赋给 `heartbeat.injectAnchor`（不再是 late-bind 的 `anchor.injectAnchor` holder）。它在心跳 tick、无 open block 时**立即可运行**（不依赖 driver/pump），合成 message_start（§10.2）+ 锚点 + 空 delta。settled-within-window 路径（[:436-447](../../src/routes/messages/handler-v4.ts#L436)）同样挂。
+
+**H1（已证）：`anchorState` 由 handler 持有、跨「pump 前/后」共享。** 现 `anchorState`/`capturedMessageStart` 是 `runResponseBufferedSink` 的**函数内局部**（[driver.ts:542-543](../../src/lib/pipeline/driver.ts#L542)）——handler 注入器与 pump 后的对账都够不到。修正：把 `anchorState`（`{injected, messageStartForwarded, anchorClosed}`）**hoist 到 handler 的 streamSSE 回调局部**，按引用传入：① handler 注入器（心跳）② driver 的 buffered opts（其现有 remap/dedup 读同一对象）③ live 对账（§10.3）。`bindInjector` 方向反转为 **handler→driver**（handler 建注入器/持状态，driver 复用），消除「driver 建、handler holder late-bind」的两段式。
+
+**H2（已证）：合成 message_start 的 model 取 `resolvedName`，不是 `env`。** `env` 只在 `await p` **之后**解构（[handler-v4.ts:595](../../src/routes/messages/handler-v4.ts#L595)），pre-response 窗口 undefined。用闭包内已有的 `resolvedName`（[handler-v4.ts:295](../../src/routes/messages/handler-v4.ts#L295) / 传参）。
+
+**C2（已证）：remap 双重 +1 冲突——buffered 与 live remap 互斥。** buffered 路径**已在 driver 内 remap**：commit flush `anchor.remap(frame, 1)` + dedup message_start + `stop(0)`（[driver.ts:673-678](../../src/lib/pipeline/driver.ts#L673)）。`remapAnthropicBlockIndex` 是 `index+offset`**非幂等**（[keepalive-anchor.ts:40-56](../../src/lib/anthropic/keepalive-anchor.ts#L40)）→ 施加两次 = +2。故 live 对账的 remap **只施加于 live 路径**（`runResponseSink`），buffered 路径仍由 driver 内部 remap（读共享 anchorState）——**绝不做成包住单一 sink 全部 write 的盲装饰器**（那会把 buffered 已 remap 的帧再 remap）。一次请求 EITHER buffered OR live（pump 二选一），故两套 remap 天然互斥;handler 只在 `buffered===false` 的 live pump 调用外围施加对账变换。
+
 ### 10.2 机制：合成 message_start 前奏（无真实可用时兜底）
 
 `empty_text` 模式、心跳到期、无 forwarded open block、**且无真实 message_start 可转发**时，注入完整**合成前奏**（三帧，均带 `event:` 行 + synthetic 标记，上游轨绝不含）：
 
-1. **合成 `message_start`**——proxy 构造：`id:"msg_synthetic_<reqid>"`、`model` 取 env 真实模型名、`role:"assistant"`、`content:[]`、`stop_reason:null`、`stop_sequence:null`、`usage:{input_tokens:0, output_tokens:0}`。打 `synthetic:"anchor"`。
+1. **合成 `message_start`**——proxy 构造：`id:"msg_synthetic_<reqid>"`、`model` 取 **`resolvedName`**（闭包内已有；`env` 在 pre-response 窗口尚未解构，见 §10.1.5 H2）、`role:"assistant"`、`content:[]`、`stop_reason:null`、`stop_sequence:null`、`usage:{input_tokens:0, output_tokens:0}`。打 **`synthetic:"synthetic-message-start"`**（M4：伪造信封是比结构锚点性质更重的合成物——假 id + usage:0 = ADR §2 承认的计费分歧，单列标记保可观测区分度；结构锚点 start/stop 仍 `"anchor"`）。
 2. **合成 `content_block_start{index:0, content_block:{type:"text", text:""}}`**——经公开 `sink.write` → `noteBlockState` 点亮 openBlock={0,text}。打 `synthetic:"anchor"`。
 3. **空 `text_delta{index:0, text:""}`**（本次及后续心跳）——重置 CC 300s（§3 覆盖矩阵实证）。打 `synthetic:"keepalive"`。
 
@@ -248,7 +262,7 @@ commit（或终末失败）时：
 
 ### 10.3 live 路径对账（核心新机制，比 buffered flush-remap 复杂）
 
-buffered 路径在 commit flush 时一次性 remap（§3.3）；**live 路径帧实时逐个流经 `sink.write`**，故注入合成前奏后需一个 **Anthropic-aware 对账拦截器**（sink 装饰器，包在 pump 与真实 sink 之间；持共享 `anchorState`）。`anchorState.injected` 后，对流经每帧：
+buffered 路径在 commit flush 时一次性 remap（§3.3）；**live 路径帧实时逐个流经 `sink.write`**，故注入合成前奏后需一套 **Anthropic-aware 对账变换**，**仅施加于 live pump 路径**（`runResponseSink`）、读 handler 持有的共享 `anchorState`（§10.1.5 H1/C2——**绝非包住单一 sink 全部 write 的盲装饰器**，否则与 buffered driver 内部 remap 双重 +1）。`anchorState.injected` 后，对 live 流经每帧：
 
 - **丢弃**首个真实 `message_start`（客户端已收合成的，协议不允许第二个）。规则统一为「已转发过 message_start → skip 后续任何 message_start」（覆盖 live + 承 §3.3 buffered 去重）。
 - 首个真实 `content_block_start` **之前**先插 `content_block_stop{index:0}` 收口锚点（`freezeHeartbeat` 后，防心跳与收口交错，承 §3.3 C1）。
@@ -277,38 +291,42 @@ buffered 路径在 commit flush 时一次性 remap（§3.3）；**live 路径帧
 | 心跳到期时 | 发什么 | 路径 |
 |---|---|---|
 | 有真实 open block（thinking/text/tool_use） | 匹配类型空 delta | live + buffered，天然 |
-| 无 open block | 合成 message_start 前奏 + 空 text_delta（§10.2） | **live + buffered 均绑 injectAnchor** |
+| 无 open block | 合成 message_start 前奏 + 空 text_delta（§10.2） | **handler 层注入器**（§10.1.5 C1），live + buffered 均覆盖 |
 
-即 §3.1 的「只有 buffered pump 注册 injectAnchor、live 不注册」**被反转**：`bindInjector` 现在 live/delayed-commit 路径（[handler-v4.ts:509+](../../src/routes/messages/handler-v4.ts#L509) COMMIT 分支的 sink）也绑，配 live 对账拦截器（§10.3）。快响应（首个心跳间隔内即出真实内容）仍**不触发锚点、字节等价**（懒注入，承 §3.3）。
+即 §3.1 的「只有 buffered pump 注册 injectAnchor、live 不注册」**被反转**：注入器改由 **handler 在 sink 构造时挂到 `heartbeat.injectAnchor`**（§10.1.5 C1，独立于 driver/pump，故 pre-response `await p` 窗口即生效）；delayed-commit（[handler-v4.ts:509+](../../src/routes/messages/handler-v4.ts#L509)）与 settled-within-window（[:436+](../../src/routes/messages/handler-v4.ts#L436)）两个 live sink 都挂。pump 后的 live 对账（§10.3）读同一 handler-owned anchorState。快响应（首个心跳间隔内即出真实内容）仍**不触发锚点、字节等价**（懒注入，承 §3.3）。
 
 ### 10.6 `content_ping` 与实证问号（上线门控，可能改默认）
 
 `content_ping`（用户 2026-07-09 要求）：合成 message_start 提交 message 信封，但 keepalive **只发裸 ping、不造合成 content block、不发空 content delta**——故无需 index remap、不把消息污染为前导空块。相对 `empty_text` 更「干净」。
 
-**开放实证问题**：「forwarded message_start + 裸 ping」重不重置 CC 300s **从未干净测过**——§1.2 / §10.1 两 incident 里 message_start 要么被缓冲没转发、要么根本没发，客户端只见裸流上的 ping；skill `claude-code-connection` 的「ping 不算 chunk」结论是在**无 message_start 的裸流**上测的。故：
+**实证证据（比首版表述更接近定论）**：`exp/cc-idle-280s/REPORT.md` armP = **thinking block 已开 + 裸 ping**（prod-faithful 接线）→ 仍 **300s 断**（`duration_ms=300186`，`no chunks received`）。既然「**完整开着的 content_block** + ping」都压不住 300s，`content_ping` 的「仅 message_start（更弱、连 content block 都没有）+ ping」**几乎必然也压不住**。故：
 
-- 若 oracle 证 **message_start + 裸 ping 撑不过 300s**（现有证据倾向此）：`content_ping` 记为「知情、可能超时」中间档，默认保持 `empty_text`。
-- 若 oracle 证 **能撑过 300s**：`content_ping` 是**更干净的安全模式**（无假 block、无 remap、不污染消息），应取代 `empty_text` 当默认——届时更新本 spec + ADR §4。
+- **主结论（现有证据支撑）**：`content_ping` 大概率 >300s 断，定位为「带 message 信封的知情逃生舱」（比 `ping` 多给客户端信封，但同样会超时）。**默认保持 `empty_text`**（armP/armPT 加固）。
+- **残留实证问号（低优先级确认臂）**：armP 是「message_start + content_block_start + ping」；`content_ping` 是「message_start + ping、无 content_block_start」。二者对 CC 300s 层理论等价（都无 content_block_delta），但为闭合「message_start 单独是否影响 watchdog」的最后缝隙，可加一个确认臂。**非上线门控**（不阻塞 `empty_text` 主线）；若反常地证明「message_start+ping 撑过 300s」才回头把 content_ping 提为候选默认 + 更新 ADR §4。
 
-裁决 = 真实 CC 独立 oracle（skill `empirical-verification`，复用 `exp/cc-idle-280s/`），不凭推断。**这是本扩展的关键上线门控之一。**
+裁决 = 真实 CC 独立 oracle（skill `empirical-verification`，复用 `exp/cc-idle-280s/`），不凭推断。
 
 ### 10.7 触及文件（增量于 §5）
 
 | 关注点 | 文件 |
 |---|---|
-| enum 改 `content_ping` + 默认 + 三模式注释；`content_delta`→`empty_text` 迁移 | [schema.ts:511](../../src/lib/config/schema.ts#L511) · [state.ts:283/1319](../../src/lib/state.ts#L283) · [config/compat.ts](../../src/lib/config/compat.ts) · [config.yaml:525](../../config.yaml#L525) |
-| 合成 message_start 帧构造 + `syntheticMessageStartFrame(model,reqId)` 入 `AnchorHooks` | [keepalive-anchor.ts](../../src/lib/anthropic/keepalive-anchor.ts) · [handler-v4.ts](../../src/routes/messages/handler-v4.ts) `buildAnthropicAnchorWiring` |
-| **live 对账拦截器**（丢真实 message_start + content_block_* +1 remap + 首真实块前收口 + retreat 路径）——Anthropic-aware sink 装饰器 | 新 leaf `src/lib/anthropic/` + [handler-v4.ts:509+](../../src/routes/messages/handler-v4.ts#L509) delayed-commit pump 调用 |
-| live/delayed-commit + buffered 均绑 `injectAnchor`（反转 §3.1 的 buffered-only） | [handler-v4.ts](../../src/routes/messages/handler-v4.ts) · [driver.ts](../../src/lib/pipeline/driver.ts) |
-| 终末失败收口延伸到 live delayed-commit 全 POST-COMMIT 失败分支 | [handler-v4.ts:566-582](../../src/routes/messages/handler-v4.ts#L566) |
-| `content_ping` 分支：合成 message_start + 裸 ping、无 remap | [keepalive-frame.ts](../../src/lib/anthropic/keepalive-frame.ts) `resolveAnthropicKeepalive` |
-| retreat + 锚点 remap/去重（闭合 deferred-backlog 条） | [driver.ts:601-620](../../src/lib/pipeline/driver.ts#L601) |
+| enum 改 `content_ping` + 默认 + 三模式注释；`content_delta`→`empty_text` 值迁移 | [schema.ts:511](../../src/lib/config/schema.ts#L511) · [state.ts:283/1319](../../src/lib/state.ts#L283) · [config/compat.ts](../../src/lib/config/compat.ts) 用 **`migrateValue`**（:137，带值门控；**非** `renameLeaf`——那 rename 键、对同键会误触发 delete/warn 合法值；先例 `thinking_block_sanitize` @:215）· [config.yaml:525](../../config.yaml#L525) |
+| 合成 message_start 帧构造 `syntheticMessageStartFrame(resolvedName, reqId)`（model 取 resolvedName，§10.1.5 H2）入 `AnchorHooks` | [keepalive-anchor.ts](../../src/lib/anthropic/keepalive-anchor.ts) · [handler-v4.ts](../../src/routes/messages/handler-v4.ts) |
+| **handler 层合成注入器**（§10.1.5 C1）：sink 构造时（[:520-531](../../src/routes/messages/handler-v4.ts#L520)/[:447](../../src/routes/messages/handler-v4.ts#L447)）挂 `heartbeat.injectAnchor`，独立于 driver/pump；**hoist `anchorState` 到 handler streamSSE 回调**（§10.1.5 H1），按引用传心跳注入器 + driver buffered opts + live 对账 | [handler-v4.ts:436-460 / 509-598](../../src/routes/messages/handler-v4.ts#L509) · [driver.ts](../../src/lib/pipeline/driver.ts)（anchorState 改 opts 传入、`bindInjector` 反转 handler→driver） |
+| **live 对账变换**（§10.3，仅 live 路径、读共享 anchorState、非盲装饰器）：丢真实 message_start + content_block_* +1 remap + 首真实块前收口 + retreat 路径 | 新 leaf `src/lib/anthropic/` + [handler-v4.ts:598](../../src/routes/messages/handler-v4.ts#L598) live pump 外围（`buffered===false` 时施加） |
+| 终末失败收口延伸到 live：**所有发 error 帧的 POST-COMMIT 分支**——reaper/timeout（[:566-572](../../src/routes/messages/handler-v4.ts#L566)）、HTTPError（[:574-580](../../src/routes/messages/handler-v4.ts#L574)）、unknown（[:581-583](../../src/routes/messages/handler-v4.ts#L581)）、**decideRoute-reject（[:585-592](../../src/routes/messages/handler-v4.ts#L585)，首版漏，M1）**；client-abort（[:561-564](../../src/routes/messages/handler-v4.ts#L561)，不发帧、可接受）除外。均需 error 帧前 `freezeHeartbeat` + `content_block_stop{0}`（读共享 anchorState；live 现无 `closeAnchorIfOpen`，须 handler 层新建） | [handler-v4.ts:561-592](../../src/routes/messages/handler-v4.ts#L561) |
+| **DESIGN.md「活的架构现状」行同步（M3，落地时必改）**：行 72（Anthropic 延迟-commit keepalive 描述）、75（buffered 锚点「旧 content_delta/ping」）、341（`streamKeepalivePingSec` 帧形态）、342（`streamKeepaliveMode` 类型 `ping\|content_delta\|empty_text` + 「live 退化为 content_delta」+ web_search 暂缓注）、343、345——全反转为无条件 timeout-safe + 三档新 taxonomy | [../DESIGN.md](../DESIGN.md) |
+| `content_ping` 分支：合成 message_start + 裸 ping、无 remap、无 content block | [keepalive-frame.ts](../../src/lib/anthropic/keepalive-frame.ts) `resolveAnthropicKeepalive` |
+| retreat + 锚点 remap/去重（闭合 deferred-backlog 条）——live 对账变换覆盖 retreat 的 `sink.write`（[driver.ts:614/629](../../src/lib/pipeline/driver.ts#L614)） | [driver.ts:601-620](../../src/lib/pipeline/driver.ts#L601) |
+| 合成标记联合增 `"synthetic-message-start"`（M4，区别于结构 `"anchor"`） | [history/types.ts:158](../../src/lib/history/types.ts#L158) + UI 消费端 |
 
 ### 10.8 oracle / 测试（增量于 §6）
 
-- **live 保活有效（核心）**：live delayed-commit + 上游全静默 → `empty_text` 合成前奏 → CC 存活 >300s（`ping` 臂仍 320s 断作对照）。复用 `exp/cc-idle-280s/`。
-- **`content_ping` 300s 问号（§10.6，上线门控）**：`content_ping` 臂 = 合成 message_start + 裸 ping → 测 CC 是否撑过 300s。结论决定 `content_ping` 定位/默认。
+- **live 保活有效（核心）**：live delayed-commit + 上游全静默 → `empty_text` 合成前奏 → CC 存活 >300s（`ping` 臂仍 320s 断作对照）。复用 `exp/cc-idle-280s/`。**这是本扩展的关键上线门控**（直接证 C1 修复）。
+- **`content_ping` 确认臂（§10.6 L3，非门控）**：`content_ping` 臂 = 合成 message_start + 裸 ping → 确认 CC 是否 >300s 断（现有 armP 证据预期断）。不阻塞 `empty_text` 主线。
+- **buffered 合成 message_start 兜底（M2 完整性）**：buffered 路径 + 上游返回 headers 但 message_start **尚未缓冲**时心跳到期 → 合成兜底 → 断言单 message_start（不与随后到达的真实 message_start 双发）、重试不双发。首版 §10.2「统一现有 buffered 锚点」声称此行为，须有覆盖。
 - **live 对账正确**：合成前奏后真实上游吐 [thinking, text, tool_use] → CC 收 [0=空text, 1=thinking, 2=text, 3=tool_use]，**单 message_start**、无索引碰撞/乱序；终末 message_delta 带真实 usage/stop_reason。
+- **remap 不双重施加（C2 回归守卫）**：buffered 路径注锚点 → commit flush → 断言真实块恰 +1（driver 内部 remap，非 +2）；live 路径注锚点 → 断言真实块恰 +1（对账变换，未经 driver remap）。构造两路径各自的用例证明互斥。
 - **retreat + 锚点**：buffer 超 16MiB + 锚点已注入 → 真实块 @index+1 无碰撞、message_start 恰 1 次（闭合 backlog 条）。
 - **终末失败收口（live）**：注锚点后 pre-response 超时 / 上游 4xx → error 帧前有 `content_block_stop{0}`、客户端无残留 open 块。
 - **懒注入字节等价**：快响应（<心跳间隔即出真实内容）不注锚点、不 remap、逐字节同旧。
@@ -321,3 +339,4 @@ buffered 路径在 commit flush 时一次性 remap（§3.3）；**live 路径帧
 - **`ping` 模式（运维显式选）**：纯裸 ping、无合成、可能 >300s 断——知情逃生舱。
 - **`content_ping` 若 oracle 判「撑不过 300s」**：同 `ping` 会超时，但客户端有 message 信封——知情中间档。
 - **web_search bypass 独立心跳**（[streaming-pump.ts](../../src/routes/messages/streaming-pump.ts)，§4）：本扩展不动，可后续复用合成前奏。
+- **其他端点（OpenAI CC / Gemini / Responses）scope（L2，`defer-potential-demand`）**：300s no-real-content 是 **CC 客户端特有** watchdog；这些端点服务其他客户端，其超时行为未实测。本扩展**仅 scope Anthropic `/v1/messages`**。是否有类似 pre-response 超时风险、是否需同类保活——**记录待查**（`docs/todo/deferred-backlog.md`），不静默省略、也不在本次做（无实测证据前不臆断）。

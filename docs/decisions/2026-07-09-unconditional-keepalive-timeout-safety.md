@@ -50,7 +50,12 @@ History 库只读探针取 `req_1783609043247_663`（claude-opus-4.8，↑435.7K
 
 ### 2. wire 分歧（合成 message_start）是可接受降级
 
-合成 message_start 带假 `id`（`msg_synthetic_<reqid>`）与 `usage.input_tokens:0`（真实 input token 数永不送达客户端——Anthropic 只在 message_start 携 input_tokens，终末 message_delta 只带 output_tokens）。真实上游帧到达时丢弃真实 message_start、真实 content block 索引 +1（锚点占 index 0）。
+合成 message_start 带假 `id`（`msg_synthetic_<reqid>`）与 `usage.input_tokens:0`。真实上游帧到达时**丢弃真实 message_start**、真实 content block 索引 +1（锚点占 index 0）——故真实 message_start 携带的这些字段**一并不送达客户端**（对抗审查 M2 补全清单）：
+
+- `usage.input_tokens`（Anthropic 只在 message_start 携带；终末 message_delta 只带 output_tokens → 真实 input token 数永不送达）。
+- `usage.cache_read_input_tokens` / `cache_creation_input_tokens`（prompt cache 命中数，同样只在 message_start）。
+- 真实 `model`（alias 解析后可能异于 `resolvedName`——合成用 resolvedName 兜底）。
+- 真实 `message.id`（CC 可能用于关联；合成用 `msg_synthetic_<reqid>`）。
 
 **这是计费/显示层的 wire 分歧,非协议破坏**,用户已明确接受（2026-07-09）。契合 ADR [internal-tool-security-posture](2026-07-05-internal-tool-security-posture.md)（内部工具,运维价值 > 假想代价）与项目哲学「架构健康 > 向后兼容 / 回归风险」。可用性（客户端永不超时）压倒 message_start 元数据的逐字节保真。
 
@@ -61,19 +66,19 @@ History 库只读探针取 `req_1783609043247_663`（claude-opus-4.8，↑435.7K
 | 模式 | 静默时合成 message_start | keepalive 帧（无真实 block） | 重置 300s | 合成 content block / index remap |
 |---|---|---|---|---|
 | **`ping`**（legacy 逃生舱） | 否 | 裸 ping（裸流上） | 否，会超时 | 否 |
-| **`content_ping`**（新） | **是**（提交 message 信封） | 裸 ping（message 内） | **待 oracle 实测**（现有证据倾向否） | 否（不造 content block，无需 remap） |
+| **`content_ping`**（新） | **是**（提交 message 信封） | 裸 ping（message 内） | 现有 armP 证据预期**否**（§4） | 否（不造 content block，无需 remap） |
 | **`empty_text`**（默认，安全） | 是 | 锚点块上空 `text_delta` | **是** | 是（锚点 @0，真实块 +1） |
 
-- **`content_delta` → 迁移到 `empty_text`**（`config/compat.ts` renameLeaf / valueMap，warn-and-migrate）。在无条件重置下 `content_delta` 与 `empty_text` 等价（前者只是没有 pre-response 锚点，而锚点现已无条件）。
+- **`content_delta` → 迁移到 `empty_text`**（`config/compat.ts` 的 **`migrateValue`**（带值门控；**非** `renameLeaf`——那 rename 键、会误触发合法值的 delete/warn），warn-and-migrate）。在无条件重置下 `content_delta` 与 `empty_text` 等价（前者只是没有 pre-response 锚点，而锚点现已无条件）。
 - **保留 `ping`** 作为知情逃生舱：某些客户端可能不吃空 delta / 合成 content block 时可回退（纯裸 ping、classic 行为、可能 >300s 超时）。项目无向后兼容负担,但保留一个真正的「关掉所有合成」开关有诊断价值。
 - **`content_ping`（新增,用户 2026-07-09 要求）**：合成 message_start 提交 message 信封,但 keepalive 只发裸 ping、**不造合成 content block、不发空 content delta**（故无需 index remap、不污染消息为空块）。相对 `empty_text` 更「干净」,代价是保活靠裸 ping。
 
-### 4. content_ping 的实证问号（上线门控,可能改默认）
+### 4. content_ping 的定位（现有实测证据已近定论,非上线门控）
 
-「forwarded message_start + 裸 ping」到底重不重置 CC 300s **从未被干净测过**——原 incident 里 message_start 是**被缓冲、没转发**给客户端的(客户端只见 ping),而 skill 结论「ping 不算 chunk」是在无 message_start 的裸流上测的。故这是开放实证问题：
+`content_ping`（合成 message_start + 裸 ping、不造 content block）的 300s 安全性由**现有实测证据基本判定**：`exp/cc-idle-280s/REPORT.md` armP =「thinking block 已开 + 裸 ping」（prod-faithful）→ 仍 **300s 断**（`duration_ms=300186`）。既然「完整开着的 content_block + ping」都压不住 300s，`content_ping`（更弱：仅 message_start、无 content block）**几乎必然也压不住**。
 
-- 若 oracle 证明 **message_start + 裸 ping 撑不过 300s**（现有证据倾向此）：`content_ping` 记为「知情、可能超时」的中间档,默认保持 `empty_text`。
-- 若 oracle 证明 **message_start + 裸 ping 能撑过 300s**：`content_ping` 反而是**更干净的安全模式**（无假 content block、无 remap、不污染消息）,应取代 `empty_text` 当默认。
+- **主结论**：`content_ping` 大概率 >300s 断，定位为「带 message 信封的**知情逃生舱**」（比 `ping` 多给客户端信封）。**默认保持 `empty_text`**。
+- **残留缝隙（低优先级确认臂,非门控）**：armP 是「message_start + content_block_start + ping」,content_ping 是「message_start + ping（无 content_block_start）」;二者对 CC 300s 层理论等价（都无 content_block_delta）。可加确认臂闭合「message_start 单独是否影响 watchdog」,但**不阻塞 `empty_text` 主线**;仅若反常证明「撑过 300s」才回头提 content_ping 为候选默认。
 
 裁决依据是亲手实测（skill `empirical-verification`：真实 CC 作独立 oracle,复用 `exp/cc-idle-280s/`），不凭推断。
 
