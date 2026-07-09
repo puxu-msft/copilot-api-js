@@ -83,6 +83,7 @@ import {
   ANTHROPIC_PING,
   resolveAnthropicKeepalive,
 } from "~/lib/anthropic/keepalive-frame"
+import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
@@ -964,6 +965,18 @@ interface PumpAnthropicStreamingV4Options {
 }
 
 /**
+ * Wrap the live pump's sink in the §10.3 anchor reconciliation (drop the real message_start, close the
+ * anchor off before the first real content_block_start, remap real blocks +1) — but ONLY the LIVE path
+ * (§10.1.5 C2). The buffered path does its remap INSIDE the driver (commit flush), so decorating there
+ * would double-apply the non-idempotent index+offset; this helper is therefore called EXCLUSIVELY on the
+ * `runResponseSink` (live) branch. Returns the RAW sink unchanged when the anchor is inert (no
+ * `empty_text` hooks / no shared state — ping / enveloped_ping), keeping the live path byte-equivalent.
+ */
+function liveReconcilingSink(sink: ClientSink, anchorHooks: AnchorHooks | undefined, anchorState: AnchorState | undefined): ClientSink {
+  return anchorHooks && anchorState ? makeReconcilingSink(sink, anchorState, anchorHooks) : sink
+}
+
+/**
  * Stream pump for the v4 Anthropic path — **owns-the-sink** (Stage B Anthropic cut-over).
  * The driver now OWNS the client write-out: it applies the S5 response-rewrite chain
  * (recover/thinking/decode/filter via `ANTHROPIC_RESPONSE_REWRITES`) + `flushChain`, then
@@ -1121,7 +1134,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
             consola.debug(`[protect-stream] ${outcome} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
           },
         })
-      : await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
+      : await driver.runResponseSink(upstream, env, liveReconcilingSink(sink, anchorHooks, anchorState), { onUpstreamFrame })
 
     recordForwarded() // before any ctx.settle (settle finalizes the entry); finally re-guards a throw
     // Flush the COMMITTED attempt's tool-input repair outcomes once (telemetry + feature tag + log).
