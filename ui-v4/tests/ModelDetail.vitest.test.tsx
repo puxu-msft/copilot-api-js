@@ -290,6 +290,32 @@ describe("ModelDetail", () => {
     expect(dialog.contains(document.activeElement) || document.activeElement === dialog).toBe(true)
   })
 
+  it("shows the status label in the header when a status is passed (mirrors the table)", () => {
+    render(
+      <ModelDetail
+        model={VISION_MODEL}
+        telemetry={null}
+        status="config-disabled"
+        onClose={() => {}}
+      />,
+    )
+    // The header echoes the table's status vocabulary (config-disabled → "disabled").
+    expect(screen.getByText("disabled")).toBeDefined()
+  })
+
+  it("omits the header status dot when no status is passed", () => {
+    render(
+      <ModelDetail
+        model={VISION_MODEL}
+        telemetry={null}
+        onClose={() => {}}
+      />,
+    )
+    // No status prop → no "disabled"/"picker-off" label in the header (dot omitted).
+    expect(screen.queryByText("disabled")).toBeNull()
+    expect(screen.queryByText("picker-off")).toBeNull()
+  })
+
   it("switches tab + wires panel aria + roving tabindex (Radix Tabs)", async () => {
     const user = userEvent.setup()
     render(

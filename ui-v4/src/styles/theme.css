@@ -63,3 +63,23 @@ body {
   background: #3a2f1a;
   color: var(--color-primary);
 }
+
+/* 模型详情模态抽屉入场:遮罩淡入 + 面板从右缘滑入(Radix data-state=open)。
+ * 关闭走即时卸载(selectedModel→null),故只有入场动效。曲线偏 ease-out 使停靠利落。 */
+@keyframes drawer-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes drawer-slide-in {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+/* 尊重系统"减少动态效果"偏好:近乎瞬时,不残留位移/透明度。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

@@ -229,6 +229,7 @@ export function ModelsPage() {
               key={selectedModel.id}
               model={selectedModel}
               telemetry={telemetryFor(selectedModel.id)}
+              status={statusFor(selectedModel)}
               onClose={clearSelection}
             />
           : null}
