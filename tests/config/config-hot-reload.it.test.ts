@@ -817,6 +817,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
   },
   {
+    configKey: "openai_responses.buffered_retry",
+    stateKey: "responsesBufferedRetry",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
+  },
+  {
     configKey: "openai_responses.fix_stream_ids",
     stateKey: "fixResponsesStreamIds",
     sampleYamlValue: "false",
