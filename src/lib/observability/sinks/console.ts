@@ -20,7 +20,8 @@
 
 import consola from "consola"
 import pc from "picocolors"
-import stringWidth from "string-width"
+
+import { buildActiveFooter } from "~/lib/tui/render/footer"
 
 import type {
   //
@@ -34,11 +35,8 @@ import type { LogLineParts } from "../projections/log-line"
 import { assertNever } from "../index"
 import {
   //
-  formatBytes,
   formatDuration,
-  formatStreamInfo,
   formatTime,
-  truncateToWidth,
 } from "../projections/format"
 import { formatLogLine } from "../projections/log-line"
 
@@ -361,111 +359,14 @@ export class ConsoleSink {
   // ============================================================================
 
   /**
-   * Build the active-request footer as **plain text** (no ANSI). Every branch
-   * returns an uncolored inner string; {@link finalizeFooter} is the single
-   * exit that strips control chars, width-truncates, and applies the one
-   * `pc.dim` wrap. This structure guarantees the footer never exceeds one
-   * physical line regardless of concurrency or content — see the hard
-   * invariant documented on {@link finalizeFooter}.
+   * Build the active-request footer. Delegates to the pure
+   * {@link buildActiveFooter} — this sink only supplies the live inputs:
+   * the active-request snapshots, the current wall clock, and the sanitized
+   * terminal width ({@link getColumns} applies the non-positive → 80 fallback,
+   * so the builder receives a clean number).
    */
   private buildFooter(): string {
-    const count = this.active.size
-    if (count === 0) return ""
-    const now = Date.now()
-
-    if (count === 1) {
-      const entry = this.active.values().next().value
-      if (!entry) return ""
-      const elapsed = formatDuration(now - entry.ctx.startTime)
-      const model = entry.ctx.resolvedModel ? ` ${entry.ctx.resolvedModel}` : ""
-      const streamInfo = formatStreamInfo({
-        bytesIn: entry.streamBytesIn,
-        eventsIn: entry.streamEventsIn,
-        blockType: entry.streamBlockType,
-      })
-      return this.finalizeFooter(`[<-->] ${entry.ctx.method} ${entry.ctx.path}${model} ${elapsed}${streamInfo}`)
-    }
-
-    // Multi-request: group by resolved model (unresolved → "(resolving)"), one
-    // compact segment per group. Width-driven inclusion replaces a fixed cap —
-    // segments are added greedily until the budget (reserving room for the
-    // dim `[<-->] ` prefix and a ` | +K more` tail) is exhausted.
-    const segments = this.buildModelGroupSegments(now)
-    const budget = this.getColumns() - 1
-    const PREFIX = "[<-->] "
-    const shown: Array<string> = []
-    let usedWidth = PREFIX.length // ASCII prefix — width === length
-    for (let i = 0; i < segments.length; i++) {
-      const sep = shown.length > 0 ? 3 : 0 // " | "
-      const remaining = segments.length - i
-      // Reserve space for a " | +K more" tail if any groups will be dropped.
-      const moreTail = remaining > 1 ? ` | +${remaining - 1} more`.length : 0
-      const segWidth = stringWidth(segments[i])
-      if (usedWidth + sep + segWidth + moreTail > budget && shown.length > 0) break
-      usedWidth += sep + segWidth
-      shown.push(segments[i])
-    }
-    const overflow = segments.length - shown.length
-    if (overflow > 0) shown.push(`+${overflow} more`)
-    return this.finalizeFooter(`${PREFIX}${shown.join(" | ")}`)
-  }
-
-  /**
-   * One compact plain-text segment per model group: `<model> ×N ↓<sumBytes>
-   * <maxElapsed>`. Groups are sorted by descending count, then by oldest
-   * request first. `sumBytes` is only shown when the group has streaming
-   * progress; `maxElapsed` is the group's longest-running request.
-   */
-  private buildModelGroupSegments(now: number): Array<string> {
-    interface Group {
-      model: string
-      count: number
-      sumBytes: number
-      hasBytes: boolean
-      oldestStart: number
-    }
-    const groups = new Map<string, Group>()
-    for (const entry of this.active.values()) {
-      const model = entry.ctx.resolvedModel ?? "(resolving)"
-      let g = groups.get(model)
-      if (!g) {
-        g = { model, count: 0, sumBytes: 0, hasBytes: false, oldestStart: entry.ctx.startTime }
-        groups.set(model, g)
-      }
-      g.count += 1
-      if (entry.streamBytesIn !== undefined) {
-        g.sumBytes += entry.streamBytesIn
-        g.hasBytes = true
-      }
-      if (entry.ctx.startTime < g.oldestStart) g.oldestStart = entry.ctx.startTime
-    }
-    return Array.from(groups.values())
-      .sort((a, b) => b.count - a.count || a.oldestStart - b.oldestStart)
-      .map((g) => {
-        const bytes = g.hasBytes ? ` ↓${formatBytes(g.sumBytes)}` : ""
-        const elapsed = formatDuration(now - g.oldestStart)
-        return `${g.model} ×${g.count}${bytes} ${elapsed}`
-      })
-  }
-
-  /**
-   * Single exit for all footer branches. Enforces the **footer ≤ 1 physical
-   * line** invariant that {@link clearFooterForLog} and {@link renderFooter}
-   * (single-line `CLEAR_LINE`) depend on:
-   *  1. strip control chars (`\n`/`\r`/…) so no embedded newline can force a
-   *     wrap regardless of model-name / path content;
-   *  2. truncate to `getColumns() - 1` display columns (the -1 avoids the
-   *     last-column auto-wrap some terminals do);
-   *  3. apply the single `pc.dim` wrap (zero-width ANSI, does not affect
-   *     display width).
-   * `inner` must be plain text — truncation slices on code points.
-   */
-  private finalizeFooter(inner: string): string {
-    // Strip all C0 control chars (\n, \r, \t, …) — any of them would force a
-    // second physical line and break the single-line invariant.
-    // eslint-disable-next-line no-control-regex -- intentional C0 range
-    const oneLine = inner.replaceAll(/[\x00-\x1f]+/g, " ")
-    return pc.dim(truncateToWidth(oneLine, this.getColumns() - 1))
+    return buildActiveFooter({ active: [...this.active.values()], now: Date.now(), columns: this.getColumns() })
   }
 
   private renderFooter(): void {
