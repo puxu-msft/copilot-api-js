@@ -1,3 +1,13 @@
+// No upstream WS application-layer keepalive here (unlike http2-client.ts's
+// socket.setKeepAlive + scheduleH2KeepalivePing). PoC-verified (Task 4.1,
+// exp/ws-upstream-keepalive/REPORT.md): `import {WebSocket} from "undici"` is
+// runtime-split — under Bun it is native globalThis.WebSocket WITH a working
+// .ping()/.pong(), under Node it is real undici with NO ping() and no socket
+// accessor. But even Bun's WS PING is a control frame that does NOT produce a
+// ResponsesStreamEvent, so it does NOT reset state.streamIdleTimeout (same as
+// h2 PING) — it is at most prevention, never recovery, and its real GHC benefit
+// is unproven. Do NOT "just add a WS ping": the recovery defense for WS long
+// silences is Phase 3 buffered retry (spec R5.1). See docs/todo/deferred-backlog.md.
 import consola from "consola"
 import { WebSocket } from "undici"
 
