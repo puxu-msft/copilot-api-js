@@ -1,5 +1,5 @@
 /**
- * Unit tests for the crash-safety primitives (crash-safety.ts) — the two
+ * Unit tests for the crash-safety primitives (crash-safety.ts) — the three
  * class-elimination guards that keep benign escaped events off main.ts's
  * process.exit(1) global handlers. These test the primitives in isolation; the
  * end-to-end transport behaviour is covered in http2-client.it.test.ts.
@@ -7,8 +7,9 @@
  * unicorn/prefer-event-target is disabled on purpose: withErrorSink guards
  * node:EventEmitter specifically — the "an unheard 'error' event is rethrown as
  * an uncaughtException" semantics under test are EventEmitter's, not
- * EventTarget's (which has no such behaviour). Using EventTarget here would test
- * the wrong contract.
+ * EventTarget's (which has no such behaviour). Using EventTarget for the
+ * withErrorSink tests would test the wrong contract. (guardCallback's tests DO
+ * use EventTarget — that is its actual domain, the EventTarget twin.)
  */
 /* eslint-disable unicorn/prefer-event-target */
 
@@ -16,12 +17,14 @@ import {
   //
   describe,
   expect,
+  mock,
   test,
 } from "bun:test"
 import { EventEmitter } from "node:events"
 
 import {
   //
+  guardCallback,
   withErrorSink,
   withRejectionObserver,
 } from "~/lib/transport/crash-safety"
@@ -80,5 +83,53 @@ describe("withRejectionObserver", () => {
   test("returns the SAME promise instance", () => {
     const p = Promise.resolve(1)
     expect(withRejectionObserver(p)).toBe(p)
+  })
+})
+
+describe("guardCallback", () => {
+  test("forwards args and return-less call when fn does not throw", () => {
+    const seen: Array<unknown> = []
+    const onEscape = mock(() => {})
+    const guarded = guardCallback((a: number, b: string) => {
+      seen.push(a, b)
+    }, onEscape)
+    guarded(1, "x")
+    expect(seen).toEqual([1, "x"])
+    expect(onEscape).not.toHaveBeenCalled()
+  })
+
+  test("catches a synchronous throw, routes it to onEscape, and does not rethrow", () => {
+    const err = new Error("boom")
+    let captured: unknown = null
+    const guarded = guardCallback(
+      () => {
+        throw err
+      },
+      (e) => {
+        captured = e
+      },
+    )
+    expect(() => guarded()).not.toThrow() // meaningful HERE: guardCallback itself must swallow
+    expect(captured).toBe(err)
+  })
+
+  test("a throwing guarded EventTarget listener does not escape dispatchEvent", () => {
+    // Locks the empirical model: without a guard the throw escapes as uncaughtException;
+    // guarded, onEscape absorbs it and dispatchEvent completes cleanly.
+    const target = new EventTarget()
+    let escaped: unknown = null
+    target.addEventListener(
+      "x",
+      guardCallback(
+        () => {
+          throw new Error("listener-boom")
+        },
+        (e) => {
+          escaped = e
+        },
+      ),
+    )
+    expect(() => target.dispatchEvent(new Event("x"))).not.toThrow()
+    expect(escaped).toBeInstanceOf(Error)
   })
 })
