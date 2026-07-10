@@ -2,8 +2,6 @@ import { useUiStore } from "@/stores/ui-store"
 
 export function TopBar() {
   const wsConnected = useUiStore((s) => s.wsConnected)
-  const theme = useUiStore((s) => s.theme)
-  const setTheme = useUiStore((s) => s.setTheme)
   return (
     <div className="flex items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5">
       <input
@@ -13,13 +11,6 @@ export function TopBar() {
       <span className={`mono px-2 py-0.5 text-[13px] ${wsConnected ? "text-[var(--color-ok)]" : "text-[var(--color-fail)]"}`}>
         ● {wsConnected ? "WS connected" : "WS offline"}
       </span>
-      <button
-        type="button"
-        className="mono px-2 py-0.5 text-[13px] text-[#bbb]"
-        onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-      >
-        ◐ {theme}
-      </button>
     </div>
   )
 }
