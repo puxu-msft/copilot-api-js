@@ -1,9 +1,9 @@
 # RFC: ui-v4 shadcn/ui 重设计迁移（v3）
 
-- 状态: Draft（v3 已吸收 round2 对抗 review 的 3 FAIL + 8 WARN + 主会话 ground-truth 裁决；v2 已吸收 round1 + 地基 PoC + 用户 OQ 决议；待进 commit 序列）
+- 状态: **Approved-for-planning（3 轮对抗 review 收敛：round3 零 FAIL、2 WARN 已就地收口——golden 仅预热、bun A′ 断言纳入 C2）**。v3 吸收 round2 3 FAIL + 8 WARN + 主会话 ground-truth 裁决；v2 吸收 round1 + 地基 PoC + 用户 OQ 决议。下一步：据本 RFC 派生 C0–C7 架子阶段实施 plan（subagent-driven）。
 - 日期: 2026-07-10
 - 派生自: ADR [../decisions/2026-07-10-ui-v4-shadcn-adoption.md](../decisions/2026-07-10-ui-v4-shadcn-adoption.md)（决策 1–11）
-- 前置证据: PoC [../../../../exp/shadcn-tw4-poc/CONCLUSION.md](../../../../exp/shadcn-tw4-poc/CONCLUSION.md)（地基可行，F1 由 FAIL 降 WARN）、round1 review [design-review-2026-07-10-1.md](design-review-2026-07-10-1.md)（6 FAIL + 6 WARN）、round2 review [design-review-2026-07-10-2.md](design-review-2026-07-10-2.md)（3 FAIL + 8 WARN + 主会话 ground-truth 裁决：全 components 域 `var(--color)`=450、`VirtuosoMockContext` 零命中、`.toc-flash` 全局 amber 泄漏）
+- 前置证据: PoC [../../../../exp/shadcn-tw4-poc/CONCLUSION.md](../../../../exp/shadcn-tw4-poc/CONCLUSION.md)（地基可行，F1 由 FAIL 降 WARN）、round1 review [design-review-2026-07-10-1.md](design-review-2026-07-10-1.md)（6 FAIL + 6 WARN）、round2 review [design-review-2026-07-10-2.md](design-review-2026-07-10-2.md)（3 FAIL + 8 WARN + 主会话 ground-truth 裁决：全 components 域 `var(--color)`=450、`VirtuosoMockContext` 零命中、`.toc-flash` 全局 amber 泄漏）、round3 收敛 review（0 FAIL；A4 三治分治抽样核实无 B 误划入 D、B3/B6 复核；2 WARN 已就地收口）
 - 方法论: skill `large-refactor`（RFC-first + commit invariants + 过渡态显式无害 + golden 预捕获）
 
 > **v2→v3 的根本变化**：round2 对抗 review 用 file:line 证伪了 v2 的三处承重主张——① **中性化 scope 被框死在 `detail/` 单目录（152），实测全 components 域 `var(--color)`=450**，Models/Sessions/Learned/Tools/Overview/Common 的 B 内容体 + A′ 列构建器同样耦合 amber，若不一并前置中性化会滑进逐页、破 INV-1「中性化全前置」；② **A′ 锚点错置**——`lib/model-columns.ts` 实测**零色**（纯 A，误归 A′），真带色的是 `components/models/model-table-columns.tsx`（10 `var(--color)` + 2 hex + import vendorColor，v2 漏分类）；③ **`VirtuosoMockContext` 不存在**（全仓零命中），真实基建是手写 `FakeTableVirtuoso` + `ResizeObserver` stub。v3 据实**撤回 v2「工作量下调」框架**（中性化面 = detail 152、全域 450，不小于 round1），并修正测试策略、golden flaky、C4 泄漏面、C7 过度抽象、INV-FIDELITY-1 强制手段五处。
@@ -193,6 +193,7 @@ main.tsx  RouterProvider（单 router，不 fork）
 **策略**：
 
 1. **断言层去 amber 具体值**：这 8 个颜色断言文件从「断言具体 `var(--color-*)`/hex」改为断言**语义 token 名 / `data-*` role / `getByRole`+可访问名**。因中性化后两树共用同一语义 token 名，**断言语义 token 存在而非其解析色值**。round2-B1 证实 tab-role 断言可迁：`DetailSubRail.tsx:15-27` Radix Tabs → shadcn Tabs 仍 `role=tab` 同名，`getByRole("tab")` 不碎。
+   - **§8.1a · bun A′ 颜色断言必须同法纳入（round3 硬 gap，须 C2 前解）**：上述「8 个」只是 **vitest** 计数，**漏了断 A′ 构建器输出色值的 bun 测试**——`tests/vendor-color.bun.test.ts`（**9 处** `expect(vendorColor("Anthropic")).toBe("#b48ead")` 硬编码 hex）+ `tests/model-status.bun.test.ts`（**3 处** `expect(meta.colorVar).toBe("var(--color-muted)")`）。C2 中性化 `vendor-color.ts`/`model-status.ts`（hex→`--vendor-*`、`var(--color-*)`→`--signal-*`）**直接改变这两函数返回值** → 这些 bun 断言必碎、卡 INV-4「bun 27 每 commit 绿」。故 **C2 的定义须含这两个 bun 测试的断言迁移**（断语义 token 名而非解析值，同 8 个 vitest 文件之法），否则 C2 无法变绿。
 
 2. **§8.2 · D 测试从 leaf-import 重写为 fork-routed 渲染（round2-B2，一等项非「直接复用」）**：**round2-B2 修正 v2「参数化 designVersion 直接复用」的低估**——实测 D 测试**leaf-import 具体 legacy 组件**（`DetailPanel.test:36` / `ConvoSegment.test:19` / `RequestsListPage.test:82`），**翻 store flag 不换所渲 DOM**。`colorPreset` 翻转（纯 CSS，B/A′ 层，一套断言测两 preset 可行）与 `designVersion` 翻转（换整棵组件树，D 层）**是两回事，v2 混为一谈**。故：
    - **B/A′ 内容体测试**：中性化后 `colorPreset` 两 preset 各跑一遍断言语义 token，**基本直接复用**（内容不变）。
@@ -203,7 +204,7 @@ main.tsx  RouterProvider（单 router，不 fork）
 
 4. **§8.4 · golden 从零建，且区分同步/高亮两类（round2-B6 修 flaky）**：现无 `toMatchSnapshot`。**round2-B6 修正——golden 不能一律 `toMatchSnapshot`**：`shiki.ts:90-109` highlighter 是**进程级异步单例**（`highlighterPromise`/`loadedHighlighter`），`toMatchSnapshot` 依测试序产出 plaintext（未加载）或高亮（前序已加载）**二态**——`CodeBlock.test` 正是用 `await waitFor` 绕开（`CodeBlock.test:39-114`），snapshot 无法 await 自身内容 → golden 自身 flaky，**不能作 INV-3 闸**。故 golden 分两类：
    - **纯同步体**（Meta/Headers/非高亮 segment、非 code-bearing 内容）：直接 `toMatchSnapshot`。
-   - **含 CodeBlock 的 code-bearing 体**：测试前 `await getHighlighter()` 预热 + `beforeEach` 重置 shiki 单例（`highlighterPromise`/`loadedHighlighter` 置 undefined），使 snapshot 确定性产高亮态；否则不作 INV-3 闸。
+   - **含 CodeBlock 的 code-bearing 体**：测试前 `await getHighlighter()` **预热单例**（预热后单例整文件保持 loaded，每个 snapshot 确定性产高亮态）。**注意（round3 修正）**：`shiki.ts` 的 `highlighterPromise`/`loadedHighlighter` 是**模块私有 `let`、无 reset 导出**（实测只导出 `getHighlighter`/`getLoadedHighlighter`），故「beforeEach 置 undefined」**按字面不可操作**、且与「预热到 loaded」目标相悖。采用 **仅预热**（`beforeEach: await getHighlighter()`，不 reset — 单一确定性高亮态即可作 golden）；**唯有确需跨测试隔离**时才在 `shiki.ts` 显式加 test-only `resetHighlighter()` 导出（置二私有 `let` 为 undefined），并写清「reset → 重新 await getHighlighter → 再 snapshot」的顺序（否则 reset 后不重新 await 会退回二态）。默认取仅预热。
    - golden 中性化前锁 `amber-legacy` 渲染，中性化/作用域化后须仍过。
 
 5. **§8.5 · virtuoso 真行为另立契约（round2-B3 删 VirtuosoMockContext 事实错）**：**round2-B3 修正——`VirtuosoMockContext` 全仓零命中，v2 引用了不存在的 primitive**。真实基建是：
