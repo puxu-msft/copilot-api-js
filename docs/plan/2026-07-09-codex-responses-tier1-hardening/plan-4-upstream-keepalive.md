@@ -82,14 +82,14 @@ git commit -m "docs(upstream-ws): PoC + conclusion on WS upstream-keepalive feas
 **Interfaces:**
 - Consumes: `state.streamIdleTimeout`、`guardSseIterable`（`src/lib/stream`）、`raceIteratorNext`（WS）。
 
-- [ ] **Step 1：核定 idle guard 的独立性（R5.3 关键不变量）**
+- [x] **Step 1：核定 idle guard 的独立性（R5.3 关键不变量）**
 
 用测试/代码核实并锁定三条关系：
 1. `state.streamIdleTimeout`（默认 300s）是**上游帧静默上限**，SSE（`guardSseIterable`）与 WS（`raceIteratorNext`）**同一 knob**。
 2. **下游保活（Phase 2）不重置上游 idle guard**——二者不同 racer（下游在 sink，上游在 transport guard）。一次 > streamIdleTimeout 的上游帧静默仍被杀，与下游是否发保活无关。
 3. h2 的 TCP keepalive / h2 PING 保连接活但**不产帧**，故也不重置帧-idle guard——300s 上限对 h2 与 WS 一致。
 
-- [ ] **Step 2：写关系锁定测试**
+- [x] **Step 2：写关系锁定测试**
 
 ```ts
 // Assert: an upstream that goes frame-silent > streamIdleTimeout is killed by the upstream guard,
@@ -101,7 +101,7 @@ test("downstream keepalive does NOT extend the upstream frame-idle guard", async
 ```
 （用既有 `guardSseIterable` 测试 harness 形态；时序测试连跑 10× 无 flaky。）
 
-- [ ] **Step 3：产出 idle 余量结论**
+- [x] **Step 3：产出 idle 余量结论**
 
 在 REPORT（复用 4.1 的 `exp/ws-upstream-keepalive/REPORT.md` 或 DESIGN 注解）记：
 - 300s 是上游静默上限，可配（`streamIdleTimeout`）。
@@ -109,7 +109,7 @@ test("downstream keepalive does NOT extend the upstream frame-idle guard", async
 - 长 reasoning 若真静默 > 300s 需调大 `streamIdleTimeout`；下游保活不代偿。
 - 判定：300s 默认对 gpt-5.5 是否足够（reasoning 通常有中间帧）——给出运维建议，非强制改默认。
 
-- [ ] **Step 4：运行 + typecheck + 提交**
+- [x] **Step 4：运行 + typecheck + 提交**
 
 Run: `bun test tests/responses/ && bun run typecheck 2>&1 | tail -2`
 ```bash
@@ -123,7 +123,7 @@ git commit -m "test(upstream): lock idle-guard independence from downstream keep
 
 - [ ] R5.1 PoC 有实测结论（undici WS 无 ping() 确认；TCP keepalive 可达性；承重判定）（4.1）。
 - [ ] 结论落 `exp/` + `deferred-backlog` + 防误加注释（4.1）。
-- [ ] R5.3 idle guard 独立性锁定测试 + 余量结论（4.2）。
+- [x] R5.3 idle guard 独立性锁定测试 + 余量结论（4.2）。
 - [ ] `bun run typecheck` + `bun test tests/responses/` 绿；时序测试 10× 无 flaky。
 - [ ] 各 task 细粒度 pathspec 提交。
 

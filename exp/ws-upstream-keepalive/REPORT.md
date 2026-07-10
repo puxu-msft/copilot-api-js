@@ -104,3 +104,21 @@ ESTAB 0 0 127.0.0.1:45206 127.0.0.1:35587 users:(("bun",pid=...,fd=12)) ...
 - **TCP keepalive**：不可经 WHATWG 面配置、默认不开 → **不落地代码**（无 speculative code），记入 `docs/todo/deferred-backlog.md`。
 - **Bun-only app-level WS ping**：功能性可行但（a）运行时不对称（Node CLI 无此能力）、（b）仅预防非恢复、不重置 idle guard、（c）真实 GHC 收益未证 → **不落地 speculative 代码**，作为带完整根因/触发条件的 backlog 项记录（`defer-potential-demand-over-cut-it`：记录而非静默砍）。
 - **防误加注释**：`upstream-ws-connection.ts` 顶部加指向本结论的注释——**关键是别把注释写成“WS ping 不可能、别加”**（那对 Bun 是假的），而是准确写明“运行时分裂 + 只是预防层 + 不重置 idle guard + 收益未证 → 见 backlog”。
+
+---
+
+## Idle-guard margin —— 结论（Task 4.2 / spec R5.3）
+
+> 归属：`docs/plan/2026-07-09-codex-responses-tier1-hardening/plan-4-upstream-keepalive.md` Task 4.2。
+> 锁定测试：`tests/responses/upstream-idle-margin.unit.test.ts`（3 tests，FakeClock 确定性、10× 无 flaky）。
+
+**承重结论：`state.streamIdleTimeout`（默认 300s）是上游帧-静默上限，SSE 与 WS 同一 knob，且不被下游/连接级保活延长。**
+
+- **同一 knob**：SSE 路径（`guardSseIterable`，responses/handler.ts + fallback.ts）与 WS 路径（`raceIteratorNext`，upstream-ws-attempt.ts 的 `streamWsEvents`）都从**同一** `state.streamIdleTimeout` 派生 `idleTimeoutMs`（`state.streamIdleTimeout > 0 ? *1000 : 0`）。300s 上限对 SSE、WS、h2 一致。
+- **两个独立 racer**：下游客户端保活（Phase 2，`makeSseSink`/`makeWsSink` 的 heartbeat）是**驻留在 sink 的 SOFT forward-idle racer**（注入客户端 ping，让 Codex 自己的 300s reader deadline 不在合法静默上误杀）；上游帧-idle guard 是**驻留在 transport 的 HARD racer**（上游 `streamIdleTimeout` 无帧则杀流）。一个下游 ping **不是**上游帧，故**永不重置**上游 guard。锁定测试全程触发真实下游保活 timer（同一 FakeClock），断言上游 guard 仍在 `streamIdleTimeout` 精确 idle-kill——若保活能重置 guard，`rejects(StreamIdleTimeoutError)` 永不 settle、测试失败（已用变异体证明断言有牙）。
+- **连接级保活也不重置**（承接 4.1）：WS PING（Bun-only 控制帧）/ h2 PING / TCP keepalive 保**连接**活但**不产应用帧**，故同样不重置帧-idle guard。
+- **§1.1 事件非本 guard 触发**：§1.1 是 124s < 300s（详见本报告 §1.1 语境），是**关闭码 bug**（`1001` 被 undici 同步抛 → 降级被击败），已 Phase 0 修（`1001→1000` + try/catch）。**不是** idle guard 误杀。
+
+**运维建议（非强制改默认）：**
+- **合法 > 300s 静默 reasoning**：若某模型真会连续 > 300s 不产任何中间帧，需**调大** `streamIdleTimeout`（config `timeouts.stream_idle`）；下游保活**不代偿**（它只防 Codex reader 端超时，不延长本代理的上游 guard，也救不回一条真正 wedged 的上游连接——那是 Phase 3 buffered 重试的职责）。
+- **300s 默认对 gpt-5.5 是否足够**：reasoning 模型通常有中间帧（token/进度事件），每帧刷新两端 deadline，故 300s **连续零帧**窗口在实践中极少触及。默认**不改**（无证据其错，且与 Codex 自身 300s reader deadline 对齐）；确遇长静默上游再按上条调大即可。
