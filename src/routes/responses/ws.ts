@@ -31,6 +31,7 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
+import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
 import {
@@ -201,14 +202,15 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
  * `stopAfterFrame` predicate so the driver stops after a terminal event (response.completed/…)
  * — the direct-path early-stop that never reads past the terminal (legacy WS break). Forwarded
  * sampling is in the sink (`onForwarded`); the H3 error path uses `sendErrorAndClose` (the WS
- * analog of the HTTP `writeSynthetic`, unsampled) + 1011 close; clean completion closes 1000
- * unless `clientWebsocketKeepOpen`.
+ * analog of the HTTP `writeSynthetic`, sampled into the forwarded track via its `forwarded` arg) +
+ * 1011 close; clean completion closes 1000 unless `clientWebsocketKeepOpen`.
  *
  * Unlike the legacy WS path (direct /responses only, rejecting unsupported models), the driver
  * also routes the Responses→CC fallback, so CC-only / Google models work over WS via fallback.
  * The direct path's `fixStreamEventIds` runs in the driver's S5 response-rewrite registry (A.C —
  * the SAME instance the HTTP pump uses); the fallback drains the codec's closing lifecycle via
- * `flushResponse`. Responses has no `[DONE]` / no H2 / no heartbeat.
+ * `flushResponse`. Responses has no `[DONE]` / no H2; the WS sink now runs a forward-idle app-layer
+ * keepalive (Task 2.2 / R3.5 — see the sink construction below for the protocol-ping-vs-app-frame decision).
  */
 async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
   const requestedModel = rawPayload.model
@@ -291,8 +293,30 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const streamStartMs = Date.now()
   let eventsReceived = 0
 
-  // The driver-owned WS sink: ws.send write-out + forwarded sampling (no heartbeat for WS).
-  const sink = makeWsSink(ws, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs })
+  // The driver-owned WS sink: ws.send write-out + forwarded sampling + a forward-idle keepalive
+  // (Phase 2 Task 2.2 / R3.5). EMPIRICAL DECISION — app-layer frame, NOT protocol ping:
+  //   - Bun.serve DOES auto-send protocol pings (`websocket.sendPings` defaults true) and keeps its
+  //     own 120s socket idle-timeout alive — a TRANSPORT-level keepalive that survives silence.
+  //   - BUT a protocol ping surfaces to a standard WS consumer as a (non-standard) `ping` EVENT,
+  //     never an application `message` (probed on a 127.0.0.1 Bun.serve loopback; 固化 in
+  //     responses-ws-keepalive.unit.test.ts). A Codex-style consumer that resets its idle deadline on
+  //     application events/messages is therefore NOT kept alive by the protocol ping — the exact WS
+  //     analog of "a bare SSE comment does not reset Codex's SSE idle clock" (Task 2.1, spec §4).
+  //   ⟹ the WS path injects the SAME app-layer `responsesKeepaliveFrame()` the SSE path does, every
+  //     `streamKeepalivePingSec` of forward silence, marked `synthetic:"keepalive"` in the forwarded
+  //     track (never the upstream track). Reuses the keepalive INTERVAL only — not `streamKeepaliveMode`.
+  const keepaliveSec = state.streamKeepalivePingSec
+  const sink = makeWsSink(ws, {
+    onForwarded: (record) => forwardedSseEvents.push(record),
+    streamStartMs,
+    ...(keepaliveSec > 0 && {
+      heartbeat: {
+        intervalSec: keepaliveSec,
+        pingFrame: responsesKeepaliveFrame(),
+        clientAbortSignal: clientAbort.signal, // client disconnect suppresses pings
+      },
+    }),
+  })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
   /**
@@ -363,8 +387,8 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     // Drain the CC→Responses translator's closing lifecycle (output_text.done … response.completed),
     // counted + forward-sampled like loop frames (WS parity). (Kept handler-side: the "move this into
     // a driver S6 flush" idea was evaluated and rejected — besides the truncation-detection entanglement,
-    // the WS sink has no `writeSynthetic`/`close` and its error terminator is the transport-coupled
-    // `sendErrorAndClose`+1011, which a uniform driver finalize cannot model. See
+    // the WS sink's error terminator is the transport-coupled `sendErrorAndClose`+1011 (it must CLOSE the
+    // socket, which `sink.writeSynthetic` does not), which a uniform driver finalize cannot model. See
     // docs/archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md.)
     for (const closing of codec.flushResponse(env)) {
       const out = restoreAccumulateCount(closing)
@@ -377,9 +401,9 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
 
   // Truncation: a complete Responses stream carries a terminal response event (sets `acc.status`);
   // an empty `acc.status` after the drain means the upstream truncated before any terminal. Mirrors
-  // the HTTP handler, but the WS sink has NO `writeSynthetic` — use `sendErrorAndClose` (the WS H3
-  // analog, 1011) to emit the error + close. Checked AFTER the viaFallback drain (whose synthesized
-  // `response.completed` sets `acc.status`). See docs/spec/upstream-stream-truncation-detection.md.
+  // the HTTP handler, but `sink.writeSynthetic` only SENDS the frame — use `sendErrorAndClose` (the WS
+  // H3 analog) to emit the error AND close the socket 1011. Checked AFTER the viaFallback drain (whose
+  // synthesized `response.completed` sets `acc.status`). See docs/spec/upstream-stream-truncation-detection.md.
   if (acc.status === "") {
     const partial = buildResponsesResponseData(acc, resolvedModel)
     const truncErr = new Error("Upstream stream truncated before completion (no response.completed)")

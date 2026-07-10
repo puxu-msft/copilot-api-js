@@ -342,7 +342,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat }
 }
 
-/** {@link makeWsSink} options — forwarded-track sampling (optional). */
+/** {@link makeWsSink} options — forwarded-track sampling (optional) + forward-idle heartbeat (optional). */
 export interface WsSinkOptions {
   /**
    * Forwarded-track sampler invoked per written frame (→ history `inboundResponse.sseEvents`).
@@ -352,27 +352,132 @@ export interface WsSinkOptions {
   onForwarded?: (record: SseEventRecord) => void
   /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
   streamStartMs?: number
+  /**
+   * Forward-idle keepalive (omitted / `intervalSec<=0` → no timer). The WS analog of
+   * {@link SseSinkHeartbeat} — a Codex-style WS consumer resets its idle deadline on application
+   * MESSAGES, and a Bun protocol ping (auto-sent, `websocket.sendPings` default true) surfaces to a
+   * standard WS client as a `ping` EVENT, never a `message` — so protocol pings keep the SOCKET alive
+   * but do NOT reset an app-level idle clock (the WS parallel of "a bare SSE comment doesn't reset
+   * Codex's SSE clock"). Hence the WS path injects the SAME app-layer keepalive frame the SSE path
+   * does (R3.5; empirically固化 in responses-ws-keepalive.unit.test.ts).
+   */
+  heartbeat?: WsSinkHeartbeat
+}
+
+/**
+ * Forward-idle heartbeat config for {@link makeWsSink}. The fixed-frame subset of {@link SseSinkHeartbeat}:
+ * WS frames carry only `data` (no content-block structure to derive a block-aware delta from), so the
+ * ping is always a FIXED frame — never a provider — and there is no anchor path.
+ */
+export interface WsSinkHeartbeat {
+  /** Seconds of client-forward silence before a synthetic keepalive is injected (<=0 disables). */
+  intervalSec: number
+  /** The FIXED keepalive frame to inject on forward-idle (Responses: `responsesKeepaliveFrame()`). */
+  pingFrame: ClientFrame
+  /** Suppress pings once the client has disconnected (a ping to a departed client is wasteful). */
+  clientAbortSignal?: AbortSignal
+}
+
+/**
+ * A minimal forward-idle heartbeat timer for a FIXED keepalive frame — the generic core the WS sink
+ * uses (the SSE sink keeps its own richer block-aware/anchor variant inline, so this stays private to
+ * `client-sink.ts` and never touches `makeSseSink`'s behavior). Fires `emit` once each time
+ * `intervalSec` elapses with no `noteActivity()` (a real forwarded frame) since the last emit/frame;
+ * after a ping the next interval counts from the ping (mirrors `emitKeepalive`'s `lastRealMs` reset).
+ * `noteActivity` (called by the sink's real `write`) pushes the deadline out. `stop` (idempotent) is
+ * called by the sink's `close` so a self-rescheduling timer can't leak; every timer is `unref`'d for
+ * the same reason. Pings are suppressed once `clientAbortSignal` is aborted.
+ */
+function startFixedForwardIdleHeartbeat(
+  intervalSec: number,
+  emit: () => void,
+  clientAbortSignal?: AbortSignal,
+): { noteActivity: () => void; stop: () => void } {
+  const intervalMs = intervalSec * 1000
+  let lastRealMs = Date.now()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
+  const arm = (ms: number): void => {
+    timer = setTimeout(tick, ms)
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+  }
+  function tick(): void {
+    if (stopped || clientAbortSignal?.aborted) return
+    const elapsed = Date.now() - lastRealMs
+    if (elapsed >= intervalMs) {
+      emit()
+      lastRealMs = Date.now() // count the next interval from THIS ping (parity with emitKeepalive)
+      arm(intervalMs)
+    } else {
+      arm(intervalMs - elapsed)
+    }
+  }
+  arm(intervalMs)
+  return {
+    noteActivity: () => {
+      lastRealMs = Date.now()
+    },
+    stop: () => {
+      if (stopped) return
+      stopped = true
+      if (timer) clearTimeout(timer)
+    },
+  }
 }
 
 /** WS sink — writes JSON frame strings through a Hono `WSContext` (the Responses WS path). */
 export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
-  const { onForwarded, streamStartMs = Date.now() } = opts
+  const { onForwarded, streamStartMs = Date.now(), heartbeat } = opts
   const enqueue = makeSerializer()
-  // Sample the forwarded track synchronously at call time (before the enqueued send), then
-  // write. WS frames carry only `data` (no SSE event/id/retry line), matching legacy `ws.send`.
-  const send = (frame: ClientFrame): Promise<void> => {
-    onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "" })
-    return enqueue(() => {
+
+  // Sample the forwarded track synchronously at call time (before the enqueued send). WS frames carry
+  // only `data` (no SSE event/id/retry line), matching legacy `ws.send`. `synthetic` marks a proxy-
+  // injected keepalive so history/UI/logs never mistake a heartbeat for real upstream content.
+  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive"): void => {
+    onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) })
+  }
+  const sendRaw = (frame: ClientFrame): Promise<void> =>
+    enqueue(() => {
       ws.send(frame.data ?? "")
     })
+
+  // Forward-idle heartbeat — armed only when configured. Built BEFORE `write` so `write` can push the
+  // idle countdown out on every real frame. `hb` is undefined on the no-heartbeat path, so `write`'s
+  // `hb?.noteActivity()` no-ops and the returned sink omits `close` — byte-identical to before Task 2.2.
+  const heartbeatOn = heartbeat !== undefined && heartbeat.intervalSec > 0
+  const hb =
+    heartbeatOn ?
+      startFixedForwardIdleHeartbeat(
+        heartbeat.intervalSec,
+        // Emit ONE app-layer keepalive frame into the forwarded track (marked) + wire. Errors are
+        // swallowed: the next real write hits the same closed stream and routes through the driver's
+        // outcome path (same as the SSE sink's `emitKeepalive`).
+        () => {
+          sampleForwarded(heartbeat.pingFrame, "keepalive")
+          void sendRaw(heartbeat.pingFrame).catch(() => undefined)
+        },
+        heartbeat.clientAbortSignal, // client disconnect suppresses pings
+      )
+    : undefined
+
+  // Real frame → note activity (resets the idle countdown) + sample forwarded UNMARKED + send.
+  const write = (frame: ClientFrame): Promise<void> => {
+    hb?.noteActivity()
+    sampleForwarded(frame)
+    return sendRaw(frame)
   }
-  return {
-    write: send,
-    // A handler-synthesized terminal error frame IS a proxy→client frame (the WS analog of the
-    // HTTP `writeSynthetic`) — sample + send it identically so it lands in `inboundResponse.sseEvents`.
-    // The handler must `recordForwarded()` after this and before `ctx.fail` (see makeSseSink).
-    writeSynthetic: send,
+  // A handler-synthesized terminal error frame IS a proxy→client frame (the WS analog of the HTTP
+  // `writeSynthetic`) — sample + send it identically so it lands in `inboundResponse.sseEvents`. Does
+  // NOT note activity (it's terminal). The handler must `recordForwarded()` after this and before
+  // `ctx.fail` (see makeSseSink).
+  const writeSynthetic = (frame: ClientFrame): Promise<void> => {
+    sampleForwarded(frame)
+    return sendRaw(frame)
   }
+
+  // `close` stops the heartbeat timer — runResponseSink's `finally` MUST call it on every exit so a
+  // self-rescheduling timer can't leak (the timer is also `unref`'d). Omitted with no heartbeat.
+  return hb ? { write, writeSynthetic, close: hb.stop } : { write, writeSynthetic }
 }
 
 /**
