@@ -138,7 +138,7 @@ src/lib/tui/
 
 ## 10. 分阶段（各带 commit invariants）
 
-- **P0 重组（行为等价）**：建 `src/lib/tui/`；从 console.ts 抽 footer/syslog 渲染 → tui/render/；**format/log-line 留 projections/**；terminal-ui 直接订 bus **接管请求事件 + system.log 两条流**取代 ConsoleSink；加 ESLint 边界。**golden-fixture 预捕获**（从重构前 commit 锁旧 stdout 字节流）——fixture **必须含**「请求行 + 100ms footer 重画 + system.log 行」三者交织的**非空**样本（评审 §5b：正样本证捕获触达渲染路径，否则空对空空洞通过）。纯搬家、零行为变化。
+- **P0 重组（行为等价）** — **✅ 已实施（2026-07-10）**：`docs/plan/2026-07-10-tui-terminal-reorg-p0.md`（6 task 全绿 + 各 task 过审、golden-fixture 逐字等价）。建 `src/lib/tui/`；从 console.ts 抽 footer/syslog 渲染 → tui/render/；**format/log-line 留 projections/**；terminal-ui 直接订 bus **接管请求事件 + system.log 两条流**取代 ConsoleSink（旧 `sinks/console.ts` 已删）；加 ESLint 边界。**golden-fixture 预捕获**（从重构前 commit 锁旧 stdout 字节流）——fixture **必须含**「请求行 + 100ms footer 重画 + system.log 行」三者交织的**非空**样本（评审 §5b：正样本证捕获触达渲染路径，否则空对空空洞通过）。纯搬家、零行为变化。
 - **P1 只读面板**：`region.ts`（PoC-2 定技术）多行 sticky + 宽×高 clamp + **选中滚动触达溢出**（§6）；`keys.ts`+`controller.ts` 展开/收回/导航；`panel.ts` 逐条 + detail（跨事件累积）；raw-mode 全程常驻 + **exit-hook 还原**（PoC-4 gate）。无破坏性动作。PoC-1/2/4 须先绿。
 - **P2 破坏性动作**：abort（镜像 reaper `reapInFlight()`+settle + Q5 `user-abort` provenance + 客户端语义）+ req_id 复制（Q3）+ 确认门显被打断请求详情 + drain scheme（Q6）。
 

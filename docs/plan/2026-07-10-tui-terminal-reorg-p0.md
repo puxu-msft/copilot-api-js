@@ -1,6 +1,6 @@
 # TUI 终端层重组（P0）实现计划
 
-> **实施状态（2026-07-10）：待实施（ADR 签字为前置门）。** 已过 subagent 审查（3 MAJOR + 3 MINOR 全部修入：去 require、L1 正样本自证、golden 场景补 error 腿/启动行、消费者清单剔除 3 个仅注释文件、footer Consumes 补全、doc-sync 分历史注释）。P0 纯重组、行为等价、零 PoC 依赖。
+> **实施状态（2026-07-10）：已实施（6 task 全绿 + 各 task 过审，golden 逐字等价）。** 终态：`src/lib/tui/{terminal-ui,index}.ts` + `render/{footer,syslog}.ts` 落地，`src/lib/observability/sinks/console.ts` 已删，`start.ts` 切 `attachTerminalUi`，ESLint 边界 + L1 守卫就位。已过 subagent 审查（3 MAJOR + 3 MINOR 全部修入：去 require、L1 正样本自证、golden 场景补 error 腿/启动行、消费者清单剔除 3 个仅注释文件、footer Consumes 补全、doc-sync 分历史注释）。P0 纯重组、行为等价、零 PoC 依赖。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

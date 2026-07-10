@@ -165,7 +165,7 @@ export class FileSink {
   }
 }
 
-/** Attach a FileSink to the bus. Mirrors attachConsoleSink / attachHistorySink. */
+/** Attach a FileSink to the bus. Mirrors attachTerminalUi / attachHistorySink. */
 export function attachFileSink(bus: ObservabilityBus, options: FileSinkOptions): () => void {
   const sink = new FileSink(bus, options)
   return () => {
