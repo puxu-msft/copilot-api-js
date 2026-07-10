@@ -111,6 +111,8 @@ Hash 路由（`createWebHashHistory`），所有路由懒加载：
 所有遗留路径（`/v/*`、`/history`、`/logs`、`/usage`）已重定向到新路径。
 
 > **模型视图已退役**（2026-07-10）：`/models` 页（VModelsPage + `components/models/` + `useModelsCatalog`/`useModelDetail`/`useModelColumns` 等）已删除，模型目录 UI 由 React `ui-v4/`（`/ui-v4`）承担并已超越旧版。`useModelTelemetry` 保留（Dashboard 共享）。
+>
+> **本 Vue `ui/` 正被逐页退役到 `ui-v4/`。** 退役哪些页、门控、可复用方法论、退役检查清单，见 [docs/vue-ui-retirement.md](../docs/vue-ui-retirement.md)（单一事实源）。剩余页 Dashboard/Activity/Detail/Config 的 parity **未审**（退役前须先做深度对比）；`/search` 是**门控**——ui-v4 尚无内容寻址搜索对应，须先建再退。
 
 ## 状态管理
 

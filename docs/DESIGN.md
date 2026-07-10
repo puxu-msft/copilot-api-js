@@ -235,7 +235,8 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 | `/docs` | Scalar 交互式 API 文档页（消费 `/openapi.json`，与 Vue 前端 `/ui` 分离） |
 | `/history/api/*` | History REST API（含 `POST /history/api/entries/:id/pin`、`.../unpin` 切换 debug-pin——pinned 条目豁免 reaper 淘汰+计数，返回更新后的完整 entry；`GET /history/api/entries/:id/export` 把单条 entry 的**规范全量形式**（`getEntry` → 所有 stage / per-attempt sseEvents / 各腿 headers）服务端 zstd 压缩为 `.json.zst` 附件下载〔`Content-Type: application/zstd`，复用 `sqlite/compression.ts` 的 `compressAsync`；两套前端 UI 的 Export 都走它、前端零压缩依赖〕；`GET /history/api/entries?terminalOnly=true` 按 state 剔除 active 在飞行、只返回终态条目〔给有独立 Live 泳道的消费者 ui-v4 用，避免 streaming 请求同时进 History 列表；过滤作用于 merge 后结果故 `total`/游标分页正确〕；`GET /history/api/search?source=&q=&limit=&cursor=` 内容寻址全文搜索〔5 源单选 inbound/rewrites-req/rewrites-resp/req-headers/resp-headers，backfill 未完成时 inbound 返 `partial+builtPct`〕+ `GET /history/api/search/contains?hash=` 懒取某消息 hash 的全部引用请求。列表 `?search=` 是轻量 `preview_text` 快筛、与专门搜索分离，见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md)） |
 | `/ws` | History WebSocket |
-| `/ui/*` | History UI v3 静态文件 |
+| `/ui/*` | 旧 Vue History UI 静态文件（**legacy，正逐页退役到 `/ui-v4`**；`/models` 已退役 2026-07-10；退役路线图 [vue-ui-retirement.md](vue-ui-retirement.md)） |
+| `/ui-v4/*` | 当前活的 React History UI 静态文件 |
 
 ### 前端子项目
 
