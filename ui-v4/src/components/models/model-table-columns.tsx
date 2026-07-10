@@ -23,18 +23,17 @@ import { vendorColor } from "@/lib/vendor-color"
 /**
  * Shared column definition for the Models table (headless-component-stack ADR:
  * data table = TanStack Table). This is the SINGLE source of column identity,
- * accessors, sort semantics, and Terminal Amber cell rendering — consumed by two
- * places that must agree on order:
+ * accessors, sort semantics, and Terminal Amber cell rendering.
  *
- * 1. `ModelsTable` — turns {@link buildModelColumns} into a `useReactTable`
- *    instance (TanStack owns sorting + `columnVisibility`).
- * 2. `ModelsPage` CSV export — sorts the same augmented rows via
- *    {@link sortModelRows}, using the SAME accessors + comparator as the columns'
- *    `sortingFn`, so the exported row order is provably identical to the table's
- *    (spec §7: export the current filtered/**sorted** view).
+ * `ModelsTable` turns {@link buildModelColumns} into a `useReactTable` instance
+ * (TanStack owns sorting + `columnVisibility`). The standalone {@link sortModelRows}
+ * reproduces that order off the same {@link ACCESSORS} + {@link compareValues}, so
+ * any out-of-table sort matches the on-screen order without a second sort
+ * implementation.
  *
- * Because both consumers share {@link ACCESSORS} + {@link compareValues}, there is
- * no second sort implementation to drift out of sync with TanStack.
+ * NOTE: {@link sortModelRows}'s only production consumer (the CSV export) was
+ * removed; it is currently exercised only by tests. Retained as a pure helper —
+ * dead-code cleanup deferred to an explicit decision.
  */
 
 export interface ModelRow {
@@ -95,7 +94,7 @@ const NUMERIC_COLUMNS: ReadonlySet<SortableColumnId> = new Set(["context", "outp
 /**
  * Shared comparator (ascending). Numbers subtract; anything else compares as a
  * locale string. Used BOTH as the columns' `sortingFn` and by {@link sortModelRows},
- * so the table row order and the CSV row order are computed identically.
+ * so an out-of-table sort matches the on-screen order.
  */
 function compareValues(a: SortableValue, b: SortableValue): number {
   return typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b))
@@ -110,7 +109,8 @@ function sharedSortingFn(a: Row<ModelRow>, b: Row<ModelRow>, columnId: string): 
  * Apply a TanStack {@link SortingState} to augmented rows using the SAME accessors
  * + comparator the table uses — a stable, multi-key sort matching
  * `getSortedRowModel`. Given identical input order + identical SortingState, the
- * result equals `table.getRowModel().rows` (guarantees CSV order ≡ table order).
+ * result equals `table.getRowModel().rows` (order ≡ the on-screen table).
+ * Currently test-only (its CSV-export consumer was removed).
  */
 export function sortModelRows(rows: Array<ModelRow>, sorting: SortingState): Array<ModelRow> {
   if (sorting.length === 0) return rows

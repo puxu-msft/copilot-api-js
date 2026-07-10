@@ -67,7 +67,7 @@ export function ModelsPage() {
   const models = useMemo(() => data?.data ?? [], [data])
 
   // Config-disabled ids from the envelope; useMemo so the Set identity is stable
-  // (feeds statusFor → columns/filter/csv; an unstable Set rebuilds the row model).
+  // (feeds statusFor → columns/filter; an unstable Set rebuilds the row model).
   const configDisabledSet = useMemo(() => new Set(data?.disabled ?? []), [data])
   const statusFor = useMemo(() => (m: (typeof models)[number]) => modelStatus(m, configDisabledSet), [configDisabledSet])
 
@@ -120,8 +120,8 @@ export function ModelsPage() {
     [models],
   )
 
-  // Filter only — TanStack owns sorting inside the table (state lifted above so the
-  // CSV export can reproduce the exact same order).
+  // Filter only — TanStack owns sorting inside the table (state lifted above as
+  // controlled state passed to ModelsTable).
   const visible = useMemo(() => filterModels(models, filters, hasTelemetry, statusFor), [models, filters, hasTelemetry, statusFor])
   const billingBounds = useMemo(() => modelBillingBounds(models), [models])
 

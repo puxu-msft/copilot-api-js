@@ -30,7 +30,7 @@ interface ModelsTableProps {
   models: Array<Model>
   /** Controlled column visibility (keys are `ModelColumnKey`) — owned by ModelsPage/column menu. */
   columnVisibility: VisibilityState
-  /** Controlled sort state — lifted to ModelsPage so the CSV export sorts identically. */
+  /** Controlled sort state — lifted to ModelsPage, passed back down to the table. */
   sorting: SortingState
   onSortingChange: OnChangeFn<SortingState>
   telemetryFor: (id: string) => JoinedModelTelemetry | null
@@ -46,9 +46,8 @@ interface ModelsTableProps {
  * (`VisibilityState`); this component only renders the Terminal Amber `<table>` —
  * headless means we emit the exact same markup/classes as the hand-written version.
  *
- * Sorting + visibility state are CONTROLLED (lifted to ModelsPage) so the CSV export
- * can sort the same rows with the same {@link sortModelRows} accessor → identical order.
- * Column identity, accessors, sort semantics, and cell rendering live in the shared
+ * Sorting + visibility state are CONTROLLED (lifted to ModelsPage). Column identity,
+ * accessors, sort semantics, and cell rendering live in the shared
  * {@link ./model-table-columns} module (the single accessor source).
  */
 export function ModelsTable({

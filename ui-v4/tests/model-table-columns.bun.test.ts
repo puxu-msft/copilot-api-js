@@ -34,8 +34,8 @@ const m = (over: Record<string, unknown> = {}): Model =>
     ...over,
   }) as Model
 
-/** `sortModelRows` is the shared sort backing the CSV export — it must reproduce the
- *  table's TanStack order from the same accessors, given a SortingState. */
+/** `sortModelRows` reproduces the table's TanStack order from the same accessors,
+ *  given a SortingState. (Its former CSV-export consumer was removed; test-only now.) */
 describe("sortModelRows", () => {
   const rows = (list: Array<Model>) => augmentRows(list, telemetryFor, (model) => modelStatus(model, new Set()))
 

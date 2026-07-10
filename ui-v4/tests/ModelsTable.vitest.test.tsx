@@ -128,10 +128,10 @@ describe("ModelsTable (TanStack)", () => {
     expect(screen.getByRole("columnheader", { name: /Ctx/i })).toBeDefined()
   })
 
-  it("CSV order === table order: sortModelRows reproduces the DOM row order", () => {
-    // Render with a concrete sorting; the shared sort (backing CSV) must match the
-    // table's rendered order exactly — the spec §7 guarantee, verified against the
-    // real TanStack DOM as an independent oracle.
+  it("sortModelRows reproduces the DOM row order (out-of-table sort ≡ table order)", () => {
+    // Render with a concrete sorting; the shared standalone sort must match the
+    // table's rendered order exactly, verified against the real TanStack DOM as an
+    // independent oracle. (Formerly backed the CSV export, now the helper's only test.)
     const sorting: SortingState = [{ id: "context", desc: true }]
     render(<Harness initialSorting={sorting} />)
     const shared = sortModelRows(
