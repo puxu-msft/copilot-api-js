@@ -55,7 +55,7 @@ vi.mock("react-virtuoso", async () => {
     const context = props.context
     const components = props.components as { Table: React.ComponentType<Record<string, unknown>>; TableRow: React.ComponentType<Record<string, unknown>> }
     const fixedHeaderContent = props.fixedHeaderContent as () => React.ReactNode
-    const itemContent = props.itemContent as (index: number, row: unknown) => React.ReactNode
+    const itemContent = props.itemContent as (index: number, row: unknown, context: unknown) => React.ReactNode
     useImperativeHandle(ref as React.Ref<unknown>, () => ({ scrollToIndex: scrollToIndexMock }))
     const Table = components.Table
     const Row = components.TableRow
@@ -69,7 +69,7 @@ vi.mock("react-virtuoso", async () => {
               item={row}
               context={context}
             >
-              {itemContent(i, row)}
+              {itemContent(i, row, context)}
             </Row>
           ))}
         </tbody>
@@ -571,5 +571,56 @@ describe("HistoryList", () => {
     fireEvent.click(screen.getByText("取消"))
     expect(screen.queryByText("确认")).toBeNull()
     expect(apiDeleteMock).not.toHaveBeenCalled()
+  })
+})
+
+describe("HistoryList — session 色带（Task 2 默认态）", () => {
+  beforeEach(() => {
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
+    useListStore.setState({ ...initialListState })
+    scrollToIndexMock.mockClear()
+    apiGetMock.mockReset()
+    apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
+    apiDeleteMock.mockReset()
+    apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  const withSessions = () => {
+    mockHistory = {
+      ...mockHistory,
+      entries: [
+        { ...entry("a"), sessionId: "S1" }, // main
+        { ...entry("b"), sessionId: "S1", agentId: "ag1" }, // subagent
+        { ...entry("c") }, // 无 session（entry() 默认无 sessionId）
+      ],
+      total: 3,
+    }
+  }
+
+  it("带 session 行渲染色带按钮；无 session 行无（=2）", () => {
+    withSessions()
+    renderList(["/requests"])
+    const bars = document.querySelectorAll('button[aria-label="toggle session highlight"]')
+    expect(bars.length).toBe(2)
+  })
+
+  it("默认态：带 session 行有淡背景 rgba style", () => {
+    withSessions()
+    renderList(["/requests"])
+    const rowA = document.querySelector('[data-entry-id="a"]') as HTMLElement
+    expect(rowA.style.backgroundColor).toMatch(/^rgba\(/)
+    const rowC = document.querySelector('[data-entry-id="c"]') as HTMLElement
+    expect(rowC.style.backgroundColor).toBe("") // 无 session → 无背景
+  })
+
+  it("subagent 行 status 单元格缩进（pl-3），main 行不缩进", () => {
+    withSessions()
+    renderList(["/requests"])
+    const rowB = document.querySelector('[data-entry-id="b"]') as HTMLElement
+    const rowA = document.querySelector('[data-entry-id="a"]') as HTMLElement
+    // tds[0]=session 色列, tds[1]=status
+    expect(rowB.querySelectorAll("td")[1].className).toContain("pl-3")
+    expect(rowA.querySelectorAll("td")[1].className).not.toContain("pl-3")
   })
 })

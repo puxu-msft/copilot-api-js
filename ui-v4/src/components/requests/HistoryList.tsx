@@ -51,6 +51,13 @@ import {
   hasAnyFilter,
   toQueryString,
 } from "@/lib/request-filters"
+import {
+  //
+  computeSessionRuns,
+  DEFAULT_PALETTE_NAME,
+  SESSION_PALETTES,
+  type RunInfo,
+} from "@/lib/session-color"
 import { useListStore } from "@/stores/list-store"
 
 /** load-until-found 翻页上限:防止 `at` 指向不存在/已淘汰 id 时无限拉取(仅在归属判定为「属于」时才翻页)。导出供测试断言 CAP 终止。 */
@@ -75,6 +82,8 @@ interface RowContext {
   /** roving tabindex 的唯一 tab 停靠行 id:等于焦点行;无焦点(初始/Esc 清空后)回退首行作为入口。同一时刻仅此行 `tabIndex=0`,余行 `-1`。 */
   tabStopId: string | null
   onSelect: (id: string) => void
+  /** 每行 run 元信息(色带色/段帽/缩进/tint);无 sessionId 行不在 map。 */
+  runs: Map<string, RunInfo>
 }
 
 /**
@@ -133,6 +142,9 @@ const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableR
   const flashing = id === context.flashId
   const focused = id === context.focusedId
   const isTabStop = id === context.tabStopId
+  const info = context.runs.get(id)
+  // 背景优先级(Task 2 只有:选中→类背景;默认淡 tint)。Task 3 插入选择态强 tint / dim。
+  const bg = selected ? undefined : info?.faintTint
   return (
     <tr
       {...props}
@@ -143,6 +155,7 @@ const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableR
       // 保证列表整体只占一个 Tab 停靠点,方向键在行间移动 DOM 焦点(见容器 onKeyDown + focus effect)。
       tabIndex={isTabStop ? 0 : -1}
       aria-current={selected ? "true" : undefined}
+      style={bg ? { backgroundColor: bg } : undefined}
       onClick={() => context.onSelect(id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -221,6 +234,11 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
     getCoreRowModel: getCoreRowModel(),
   })
   const rows = table.getRowModel().rows
+
+  // session 色带的 run 元信息(色/段帽/缩进/tint):跑在已加载全部页拼接的 entries 上(非虚拟化窗口)。
+  // Task 3 会把 DEFAULT_PALETTE_NAME 换成色板态(localStorage 持久化 + 切换 UI)。
+  const activePalette = SESSION_PALETTES.find((p) => p.name === DEFAULT_PALETTE_NAME) ?? SESSION_PALETTES[0]
+  const runs = useMemo(() => computeSessionRuns(entries, activePalette), [entries, activePalette])
 
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // 每个 `at` 的定位进度:done 命中后不再重滚(WS invalidate 会换 entries 引用,否则抖动);
@@ -369,8 +387,8 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
     // roving tab 停靠:焦点行即停靠行;无焦点(初始/Esc 清空)回退首行作为 Tab 入口,保证列表始终有且仅一个 Tab 停靠点。
     const firstId = rows.length > 0 ? rows[0].original.id : null
     const tabStopId = focusedId ?? firstId
-    return { at, flashId, focusedId, tabStopId, onSelect: selectRow }
-  }, [at, flashId, focusedIndex, rows, selectRow])
+    return { at, flashId, focusedId, tabStopId, onSelect: selectRow, runs }
+  }, [at, flashId, focusedIndex, rows, selectRow, runs])
 
   // 容器级键盘导航(↑/↓/Esc):方向键从聚焦行冒泡到此,移动焦点游标 + 同步 DOM 焦点(roving)+ scrollToIndex 带入视口。
   // Enter/Space 激活不在此处理 —— 由 DOM 聚焦行(即游标行,roving 保证同步)的行级 onKeyDown 承担,语义统一到行级。
@@ -504,15 +522,39 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
                   </tr>
                 ))
               }
-              itemContent={(_index, row) =>
-                row.getVisibleCells().map((cell) => (
-                  <td
-                    key={cell.id}
-                    className={`${cell.column.columnDef.meta?.width ?? ""} overflow-hidden px-2 py-1 align-middle`}
-                  >
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                ))
+              itemContent={(_index, row, context) =>
+                row.getVisibleCells().map((cell) => {
+                  if (cell.column.id === "session") {
+                    const info = context.runs.get(row.original.id)
+                    return (
+                      <td
+                        key={cell.id}
+                        className="relative w-[10px] p-0"
+                      >
+                        {info && (
+                          <button
+                            type="button"
+                            aria-label="toggle session highlight"
+                            tabIndex={-1}
+                            className={`absolute inset-0 -bottom-px${info.isRunStart ? " session-cap-top" : ""}${info.isRunEnd ? " session-cap-bottom" : ""}`}
+                            style={{ backgroundColor: info.indent ? info.shade : info.color }}
+                          />
+                        )}
+                      </td>
+                    )
+                  }
+                  // status 缩进用 `pr-2 pl-3`(而非 `px-2`+`pl-3` 叠同属性,避免依赖 Tailwind 生成序);其余列 `px-2`。
+                  const indented = cell.column.id === "status" && context.runs.get(row.original.id)?.indent
+                  const padX = indented ? "pr-2 pl-3" : "px-2"
+                  return (
+                    <td
+                      key={cell.id}
+                      className={`${cell.column.columnDef.meta?.width ?? ""} overflow-hidden ${padX} py-1 align-middle`}
+                    >
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  )
+                })
               }
             />
             {/* 空态:保留表头(列可见性等外层结构),仅在表体区叠加「无匹配请求」提示(+ 有筛选时清除筛选)。 */}

@@ -41,6 +41,7 @@ function accessor(id: string, entry: EntrySummary): unknown {
 describe("request-columns", () => {
   test("column id set matches the agreed schema", () => {
     expect(REQUEST_COLUMNS.map((c) => c.id as string)).toEqual([
+      "session",
       "status",
       "time",
       "dur",

@@ -121,6 +121,7 @@ const ELLIPSIS = "overflow-hidden text-ellipsis whitespace-nowrap"
  * (Task 3.4) import 本表对齐，故改宽度只改这一处。preview 列吃满剩余空间。
  */
 export const COLUMN_WIDTHS: Record<string, string> = {
+  session: "w-[10px]",
   status: "w-[92px]",
   time: "w-[68px]",
   dur: "w-[64px]",
@@ -140,6 +141,12 @@ export const COLUMN_WIDTHS: Record<string, string> = {
  * 渲染富内容(信号色/tooltip/anomaly)。`meta.width` 引 COLUMN_WIDTHS(SSOT)。
  */
 export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
+  {
+    id: "session",
+    header: "",
+    cell: () => null, // 实际色块在 HistoryList itemContent 首列特判渲染(审查:ColumnDef.cell 拿不到 runs)
+    meta: { width: COLUMN_WIDTHS.session },
+  },
   {
     id: "status",
     header: "Status",
