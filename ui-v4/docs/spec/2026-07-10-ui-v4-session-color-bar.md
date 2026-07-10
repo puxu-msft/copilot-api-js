@@ -145,7 +145,7 @@ export const SESSION_PALETTES = [
     { base: "#2f9af2", shade: "#007bd0" }, { base: "#4a78f9", shade: "#2f58d6" }, { base: "#6f48f3", shade: "#561ed0" },
     { base: "#953cd1", shade: "#7710af" }, { base: "#a442a8", shade: "#842089" }, { base: "#ab448e", shade: "#8a2470" },
   ] },
-  { name: "oceanic-jewel", label: "冷色宝石（深浓通透·与 amber 最和谐·faint 分离最佳）", faintAlpha: 0.12, strongAlpha: 0.18, colors: [
+  { name: "oceanic-jewel", label: "冷色宝石（深浓通透·与 amber 最和谐）", faintAlpha: 0.12, strongAlpha: 0.18, colors: [
     { base: "#00968b", shade: "#00786e" }, { base: "#0093a5", shade: "#007586" }, { base: "#008dc3", shade: "#006fa3" },
     { base: "#2569a8", shade: "#004c88" }, { base: "#5874ea", shade: "#3e55c8" }, { base: "#7746e0", shade: "#5c1fbe" },
     { base: "#a43ecf", shade: "#8513ae" }, { base: "#b321a2", shade: "#910083" },
