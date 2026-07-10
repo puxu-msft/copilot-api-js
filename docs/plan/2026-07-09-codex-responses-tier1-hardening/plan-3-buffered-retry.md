@@ -87,14 +87,14 @@ EOF
 **Interfaces:**
 - Consumes: `resolveResponsesBufferedAndHeartbeat`（3.1）、`driver.runResponseBufferedSink`、`acc.status`。
 
-- [ ] **Step 1：核定 Responses upstream-error 终止的处理（sawUpstreamError）**
+- [x] **Step 1：核定 Responses upstream-error 终止的处理（sawUpstreamError）**
 
 Run: `grep -n "\"error\"\|case \"error\"\|streamError\|type === \"error\"" src/lib/openai/responses-stream-accumulator.ts src/routes/responses/handler-v4.ts`
 判据：Responses 流的终止 `error` 事件是否 set `acc.status`（或另有信号）。
 - 若 `response.failed` 已 set `acc.status`（是，`:81`）→ 一个 CAPI/SSE `error` 帧是否也走 failed？确认 driver/codec 是否把 upstream `error` 映射成终止。
 - 若 upstream `error` 事件**不** set `acc.status` → 它会被当 truncation 重试。决定：加 `sawUpstreamError: () => <error 事件已见>`（让 buffered commit + 由 handler fail，不浪费重试），或确认重试该 error 是无害的。将结论写进 handler 注释。
 
-- [ ] **Step 2：写失败测试（buffered mid-stream drop → 重试成功；live → fail+partial）**
+- [x] **Step 2：写失败测试（buffered mid-stream drop → 重试成功；live → fail+partial）**
 
 `tests/responses/responses-buffered.it.test.ts`：用一个可编程的 fake `UpstreamStream`（首次 attempt 中途 transport-close 抛、重试 attempt 干净 drain 到 `response.completed`），驱动 `pumpStreamingV4`：
 ```ts
@@ -113,9 +113,9 @@ test("live mode (default) fails a mid-stream drop and preserves the partial", as
 ```
 （参考 Anthropic 的 buffered 测试 `tests/anthropic/streaming-l2-baseline.http.test.ts` 的 transport-fault harness 形态。）
 
-- [ ] **Step 3：运行，确认失败**（buffered 分支未实现，测试 1 失败）。
+- [x] **Step 3：运行，确认失败**（buffered 分支未实现，测试 1 失败）。
 
-- [ ] **Step 4：实现 buffered/live 分支**
+- [x] **Step 4：实现 buffered/live 分支**
 
 在 `pumpStreamingV4`：
 - 顶部 `const { buffered, heartbeatSec } = resolveResponsesBufferedAndHeartbeat()`。
@@ -140,17 +140,19 @@ const outcome = buffered
 - live 分支保持 `handler-v4.ts:306` 现行为（不变）；buffered 仅当 opt-in。
 - 保持 `recordForwarded()` 在 settle 前（现有顺序）。
 
-- [ ] **Step 5：运行通过 + 全 responses 测试 + typecheck**
+> **实施补充（超出上方伪代码，必需的正确性修复）：** Responses `acc` 原为单个 `const`、跨 buffered 重试复用，`buildResponsesResponseData(acc)` 读追加式 `contentParts`/`toolCalls`——会把被丢弃尝试的 partial 泄漏进已提交生成的历史记录。已改 `const acc` → `let acc` 并向 buffered opts 加 `onAttemptReset: () => { acc = createResponsesStreamAccumulator(); bytesIn = 0; eventsIn = 0 }`（对齐 Anthropic 的 `let acc` + reset）。集成测试断言 `upstreamResponse.body` 只含 attempt-2 内容（去掉 reset 实测为 `"PARTIAL_ATTEMPT_1COMPLETE_ATTEMPT_2"`，故为承重断言）。`forwardedSseEvents` 不重置（buffered 仅在 commit 写客户端，wire 连续）。
+
+- [x] **Step 5：运行通过 + 全 responses 测试 + typecheck**
 
 Run: `bun test tests/responses/ && bun run typecheck 2>&1 | tail -2`
 Expected: PASS（buffered 重试测试 + live 不变测试 + 既有 266）。
 
-- [ ] **Step 6：Anthropic 爆炸半径 tripwire**
+- [x] **Step 6：Anthropic 爆炸半径 tripwire**
 
 Run: `bun test tests/anthropic/streaming-l2-baseline.http.test.ts tests/anthropic/keepalive-e2e.http.test.ts 2>&1 | grep -E "pass|fail" | tail -2`
 Expected: 绿（证 driver 共享原语未因 Responses 采用而回归 Anthropic）。
 
-- [ ] **Step 7：提交**
+- [x] **Step 7：提交**
 
 ```bash
 git add -- src/routes/responses/handler-v4.ts tests/responses/responses-buffered.it.test.ts
