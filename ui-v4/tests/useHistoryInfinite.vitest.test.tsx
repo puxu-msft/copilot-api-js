@@ -76,7 +76,7 @@ vi.mock("react-virtuoso", async () => {
     const context = props.context
     const components = props.components as { Table: React.ComponentType<Record<string, unknown>>; TableRow: React.ComponentType<Record<string, unknown>> }
     const fixedHeaderContent = props.fixedHeaderContent as () => React.ReactNode
-    const itemContent = props.itemContent as (index: number, row: unknown) => React.ReactNode
+    const itemContent = props.itemContent as (index: number, row: unknown, context: unknown) => React.ReactNode
     useImperativeHandle(ref as React.Ref<unknown>, () => ({ scrollToIndex: () => {} }))
     const Table = components.Table
     const Row = components.TableRow
@@ -90,7 +90,7 @@ vi.mock("react-virtuoso", async () => {
               item={row}
               context={context}
             >
-              {itemContent(i, row)}
+              {itemContent(i, row, context)}
             </Row>
           ))}
         </tbody>
