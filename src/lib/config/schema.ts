@@ -598,6 +598,8 @@ export const ResponsesConfigSchema = z
   .object({
     normalize_call_ids: nullableBoolean(),
     upstream_ws: nullableBoolean(),
+    /** Opt-in mid-stream buffered retry for the Responses SSE/HTTP path (default false; Codex auto-retry is opt-in). */
+    buffered_retry: nullableBoolean(),
     fix_stream_ids: nullableBoolean(),
     client_ws_keep_open: nullableBoolean(),
     /**

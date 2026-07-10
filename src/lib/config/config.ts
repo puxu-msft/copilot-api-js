@@ -733,6 +733,7 @@ export async function applyConfigToState(): Promise<Config> {
   const responsesConfig = config.openai_responses
   if (responsesConfig && responsesConfig.normalize_call_ids !== undefined) setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
   if (responsesConfig && responsesConfig.upstream_ws !== undefined) setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_ws })
+  if (responsesConfig && responsesConfig.buffered_retry !== undefined) setResponsesConfig({ responsesBufferedRetry: responsesConfig.buffered_retry })
   if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
   if (responsesConfig && responsesConfig.strip_image_generation_tool !== undefined)
     setResponsesConfig({ stripImageGenerationTool: responsesConfig.strip_image_generation_tool })

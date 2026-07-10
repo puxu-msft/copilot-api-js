@@ -697,6 +697,20 @@ export interface State {
   readonly upstreamWebSocket: boolean
 
   /**
+   * Opt-in transactional buffered retry for the Responses (SSE/HTTP) streaming
+   * path — the Codex-tier analog of `protectStreamingGeneration`. When `true`,
+   * Responses adopts the driver's `runResponseBufferedSink`: every rendered
+   * frame is buffered until a terminal event and only committed on a clean
+   * drain, so a mid-stream upstream transport close/truncation re-runs the
+   * exchange up to the retry cap and delivers exactly one complete generation.
+   * `false` (default) keeps the live `runResponseSink` path (mid-stream drop →
+   * fail + preserved partial + truncation error frame). Buffering forces a
+   * client keepalive interval (see `resolveResponsesBufferedAndHeartbeat`).
+   * Enable with config openai_responses.buffered_retry: true.
+   */
+  readonly responsesBufferedRetry: boolean
+
+  /**
    * Keep the client-side Responses WebSocket connection open after a response
    * terminates, allowing the client to send a follow-up `response.create` on the
    * same socket (Phase 2 long-lived client WS). When false (default), the
@@ -1263,6 +1277,7 @@ export function setResponsesConfig(
       MutableState,
       | "normalizeResponsesCallIds"
       | "upstreamWebSocket"
+      | "responsesBufferedRetry"
       | "fixResponsesStreamIds"
       | "stripImageGenerationTool"
       | "clientWebsocketKeepOpen"
@@ -1433,6 +1448,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   webSearchBackend: "",
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
+  responsesBufferedRetry: false,
   fixResponsesStreamIds: true,
   stripImageGenerationTool: false,
   clientWebsocketKeepOpen: false,
@@ -1555,6 +1571,7 @@ export function resetConfigManagedState(): void {
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
+    responsesBufferedRetry: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
     fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
     stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
     clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
@@ -1655,6 +1672,7 @@ const mutableState: MutableState = {
   stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
   normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
   upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
+  responsesBufferedRetry: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
   fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
   stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
   clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
