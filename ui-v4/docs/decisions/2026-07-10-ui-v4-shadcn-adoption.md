@@ -43,6 +43,7 @@ ui-v4 是 copilot-api 的 request inspector / History Web UI（React 19.2 + Type
 6. **默认落地页**：`/requests` → **`/overview`**（对齐后台默认落地 Dashboard 的通用直觉）。
 7. **在途请求浮窗（LiveDock）提升为全局**：从 RequestsListPage 专属提取为**常驻 `AppShell` 的全局浮窗**（订阅 `useLiveRequests()` 早已在 AppShell，本项把浮窗 UI 也上移），任意页面可见在途活动。
 8. **详情抽屉统一为公共组件**：Models 详情与 Requests 详情**共用一个公共抽屉/面板容器**（容器共享、内容各自渲染）。与形态 A 不矛盾：整页路由与抽屉/未来 peek 都复用 `DetailPanel` 内容层；两处详情呈现有差异但容器实现共享。
+9. **改造期新旧双版本共存 + 全局切换（过渡脚手架，非 per-page）**：迁移期间**新旧两套设计并存于同一 ui-v4**（不另起 `ui-v5/`），由一个**全局切换入口**（TopBar 按钮，持久化到 ui-store `designVersion: "amber-legacy" | "shadcn"`）**整版切换**——**非 per-page**（始终呈现完整、自洽的一版，不出现半新半旧混合），目的是让用户随时对照两版、确认迭代方向。实现分层：**共享单份**（数据层 / hooks / stores / api / types / 可视化内容渲染 detail/diff/SSE/shiki，与设计无关，两版共用）；**过渡期双份**（AppShell / NavRail / TopBar / 各页 shell + 组件皮肤 + 布局，由 `designVersion` 选择挂载哪棵**呈现树**）。**与决策 3 区分**：决策 3 的 Amber 色板是**永久换色 preset**；本项是**过渡期整版本开关**（旧 Amber 组件+旧布局 ↔ 新 shadcn 组件+新布局）。**against-yagni 的脚手架纪律**：新设计确认且完整后**拆除旧呈现树 + 移除版本开关**（可降级为决策 3 的色板 preset），不留永久双轨债。
 
 ## 理由
 
@@ -58,6 +59,7 @@ ui-v4 是 copilot-api 的 request inspector / History Web UI（React 19.2 + Type
 - LiveDock 上移 + 详情抽屉共用组件抽取，属结构调整（有测试 oracle 兜底）。
 - dashboard 布局需自拼（shadcn 是组件集合非成套框架，可参考官方 blocks）。
 - 属 ≥1000 行结构性重构，实施须走 RFC-first（skill `large-refactor`）+ 对抗 subagent review。
+- **双呈现树脚手架成本**（决策 9）：过渡期 shell/布局/皮肤维持两份、由 `designVersion` 切换，须防止逻辑层被复制（只有呈现层双份）；完工后有一步**明确的拆除**（删旧呈现树 + 移开关），需在 RFC 里排成收尾 phase、不可遗留。
 - 需同步更新 DESIGN.md §2/§8（技术栈措辞从「Radix Primitives」升级为「shadcn/ui on Radix」、视觉方向从定制 Amber 改为「shadcn + Amber preset」）。
 
 ## 未采纳（record-not-adopted）
@@ -69,6 +71,7 @@ ui-v4 是 copilot-api 的 request inspector / History Web UI（React 19.2 + Type
 - **只换主题不换组件库**：部分采纳。"换观感 = 换 token"洞察被吸收进决策 3；但诉求含"统一组件层"，仍引入 shadcn 组件。
 - **维持现状不动**：否。现有组件缺跨组件一致性（每个 Radix 封装各写各的 className），shadcn 以同源最小代价提供一致约定。
 - **（继承自 [adopt-radix ADR](2026-07-05-adopt-radix-primitives.md)）弃 shadcn 成品样式、只用裸 Radix**：**本 ADR 放宽此条**——理由见上「与 2026-07-05 ADR 的结论差异」。
+- **另起 `ui-v5/` 平行重建**：**否**（用户 2026-07-10 定：保留在 ui-v4 原地改）。不同于当年 Vue→React（v4）跨框架必须平行重写，本次同栈（React/Vite/Tailwind/Radix）、ui-v4 约 80%（数据层/hooks/stores/可视化渲染）可直接复用；平行重建会为重刷 20% 皮肤而复制 80% 价值层，纯负债。故定位为 **ui-v4 原地 major 重设计（同前端世代），非新世代 v5**。改造期双版本共存由决策 9 的过渡开关承载，而非双目录。
 
 ## 尚在讨论（本 ADR 将随对话增补）
 
