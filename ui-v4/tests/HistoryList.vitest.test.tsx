@@ -98,6 +98,8 @@ vi.mock("@/hooks/useHistoryInfinite", () => ({
 }))
 
 const { HistoryList, LOCATE_PAGE_CAP } = await import("@/components/requests/HistoryList")
+const { LiveDock } = await import("@/components/requests/LiveDock")
+const { useLiveStore } = await import("@/stores/live-store")
 
 /** 最小可渲染 History 行(activity-row helpers 对缺省字段有守卫)。 */
 function entry(id: string): EntrySummary {
@@ -340,6 +342,27 @@ describe("HistoryList", () => {
     expect(fetchNextPage).not.toHaveBeenCalled()
     expect(apiGetMock).not.toHaveBeenCalled()
     expect(useListStore.getState().tailOn).toBe(true)
+  })
+
+  it("LiveDock resume while HistoryList located: re-enables tail + clears ?at, and the at-effect does NOT re-pause (edge-triggered, deps exclude tailOn)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2")], total: 2 }
+    useLiveStore.setState({ byId: {} })
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests?at=e2"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+          <LiveDock />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    // 定位(?at=e2)使 tail 暂停。
+    expect(useListStore.getState().tailOn).toBe(false)
+    // 点 LiveDock 的 ⏸ paused 开关恢复:tail 转 on + 清 ?at;且 HistoryList 的 at-effect
+    // (deps 故意排除 tailOn、edge-triggered)不因 tailOn 变化把 tail 再暂停(否则 resume 在定位态永久失效)。
+    fireEvent.click(screen.getByText(/paused/))
+    expect(useListStore.getState().tailOn).toBe(true)
+    expect(screen.getByTestId("loc").textContent).toBe("/requests")
   })
 
   // ── Task 4.1:error / empty 三态 ──

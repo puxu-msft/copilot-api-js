@@ -5,7 +5,11 @@ import {
   useMemo,
   useState,
 } from "react"
-import { useNavigate } from "react-router-dom"
+import {
+  //
+  useLocation,
+  useNavigate,
+} from "react-router-dom"
 
 import { LiveGroup } from "@/components/requests/LiveGroup"
 import { useGoLive } from "@/hooks/useGoLive"
@@ -25,11 +29,11 @@ function loadExpanded(): boolean {
 }
 
 /**
- * 请求活动状态栏 —— 底部停靠、恒高的统一状态条,承载两件事:
- *  1. 在途请求摘要(点击向上展开分组明细面板,spec §3-§6)。
- *  2. tail 暂停期间到达的「新完成待合入」CTA —— 从 HistoryList 的独立横幅上移到此,
- *     使请求活动(在途 + 新完成)收敛到同一条状态栏(融入 LiveDock 设计)。
- * 折叠条恒高(single-line/nowrap/overflow),idle↔active↔有无待合入 都不改高度、不推挤 History。
+ * 请求活动状态栏 —— 底部停靠、恒高的统一状态条,**全局浮窗**(挂在 AppShell,所有页面可见)。承载:
+ *  1. 在途请求信息(摘要 + 点击向上展开分组明细面板,spec §3-§6)—— 全局显示。
+ *  2. tail 暂停/恢复开关 + 「新完成待合入」CTA —— 请求**列表**专属控件(操作 History 列表的 tail/缓冲),
+ *     仅在 `/requests` 列表页显示(别页无 History 列表可操作,显示无意义)。
+ * 折叠条恒高(single-line/nowrap/overflow),idle↔active↔有无控件 都不改高度、不推挤内容。
  */
 export function LiveDock() {
   const navigate = useNavigate()
@@ -39,12 +43,14 @@ export function LiveDock() {
   const nowMs = useNowTick(active)
   const summary = useMemo(() => summarizeLive(rows, nowMs), [rows, nowMs])
 
-  // 缓冲的新完成请求(tail 暂停期间到达)——合入 CTA 从 HistoryList 上移到本状态栏。
+  // 缓冲的新完成请求(tail 暂停期间到达)——合入 CTA。tail 开关 + 该 CTA 均为请求列表专属控件。
   const bufferedCount = useListStore((s) => s.bufferedIds.length)
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
   const goLive = useGoLive()
-  const showMerge = !tailOn && bufferedCount > 0
+  // LiveDock 已全局化(所有页面显示在途信息);tail/缓冲控件只在请求列表页有意义(它们操作的是 History 列表)。
+  const onRequestsList = useLocation().pathname === "/requests"
+  const showMerge = onRequestsList && !tailOn && bufferedCount > 0
 
   const [expanded, setExpanded] = useState(loadExpanded)
   useEffect(() => {
@@ -118,16 +124,18 @@ export function LiveDock() {
             ↓ {bufferedCount} 待合入
           </button>
         : null}
-        {/* 自动刷新(tail)开关:live 时点击暂停、paused 时点击恢复。这是列表自动刷新的显式控制 + 状态显示。 */}
-        <button
-          type="button"
-          aria-pressed={tailOn}
-          onClick={() => (tailOn ? dispatch({ kind: "pause" }) : goLive("resume"))}
-          title={tailOn ? "自动刷新中 · 点击暂停" : "已暂停自动刷新 · 点击恢复实时跟随"}
-          className={`shrink-0 border-l border-[#2f6f3f] pl-2 ${tailOn ? "text-[#7fd99a] hover:text-[#a8f0c0]" : "text-[#4a6a4a] hover:text-[#7fd99a]"}`}
-        >
-          {tailOn ? "▶ live" : "⏸ paused"}
-        </button>
+        {/* 自动刷新(tail)开关 —— 请求列表专属:live 时点击暂停、paused 时点击恢复。全局浮窗下别页不显。 */}
+        {onRequestsList ?
+          <button
+            type="button"
+            aria-pressed={tailOn}
+            onClick={() => (tailOn ? dispatch({ kind: "pause" }) : goLive("resume"))}
+            title={tailOn ? "自动刷新中 · 点击暂停" : "已暂停自动刷新 · 点击恢复实时跟随"}
+            className={`shrink-0 border-l border-[#2f6f3f] pl-2 ${tailOn ? "text-[#7fd99a] hover:text-[#a8f0c0]" : "text-[#4a6a4a] hover:text-[#7fd99a]"}`}
+          >
+            {tailOn ? "▶ live" : "⏸ paused"}
+          </button>
+        : null}
       </div>
     </>
   )

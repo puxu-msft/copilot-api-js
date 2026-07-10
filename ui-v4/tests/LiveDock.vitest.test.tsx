@@ -92,7 +92,7 @@ describe("LiveDock", () => {
   it("tail 暂停且有 buffered:状态栏显「待合入」CTA,点击 flush 合入并恢复 tail", async () => {
     useListStore.setState({ tailOn: false, bufferedIds: ["a", "b", "c"] })
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/requests"]}>
         <LiveDock />
       </MemoryRouter>,
     )
@@ -109,7 +109,7 @@ describe("LiveDock", () => {
     // tail-on(默认)即使有 buffered 也不显(缓冲只在 paused 期填充,tail-on 时应为空)
     useListStore.setState({ tailOn: true, bufferedIds: [] })
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/requests"]}>
         <LiveDock />
       </MemoryRouter>,
     )
@@ -133,7 +133,7 @@ describe("LiveDock", () => {
   it("tail 开关:live 时显 ▶ live,点击暂停自动刷新(tailOn→false)", async () => {
     useListStore.setState({ tailOn: true, bufferedIds: [] })
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/requests"]}>
         <LiveDock />
       </MemoryRouter>,
     )
@@ -158,5 +158,20 @@ describe("LiveDock", () => {
     await userEvent.click(toggle)
     expect(useListStore.getState().tailOn).toBe(true)
     expect(screen.getByTestId("loc").textContent).not.toContain("at=")
+  })
+
+  it("非 /requests 路由(全局浮窗):显示在途信息,但 tail 开关 / 待合入 CTA 均隐藏(列表专属)", () => {
+    seed([row("a"), row("b")])
+    useListStore.setState({ tailOn: false, bufferedIds: ["x", "y"] }) // 有缓冲 + 暂停,但非列表页
+    render(
+      <MemoryRouter initialEntries={["/overview"]}>
+        <LiveDock />
+      </MemoryRouter>,
+    )
+    // 在途摘要全局显示
+    expect(screen.getByText(/2 in-flight/)).toBeTruthy()
+    // 列表专属控件隐藏
+    expect(screen.queryByText(/待合入/)).toBeNull()
+    expect(screen.queryByText(/▶ live|⏸ paused/)).toBeNull()
   })
 })

@@ -1,4 +1,8 @@
-import { render } from "@testing-library/react"
+import {
+  //
+  render,
+  screen,
+} from "@testing-library/react"
 import {
   //
   MemoryRouter,
@@ -63,5 +67,25 @@ describe("AppShell 全局在途订阅(连接快照不因页面挂载时机丢失
     for (const cb of acquired) cb.onConnected?.(info)
     // 修复前:AppShell 不订阅在途请求 → byId 空(useLiveRequests 只在 requests 页、挂载太晚);修复后:已落地。
     expect(Object.keys(useLiveStore.getState().byId)).toContain("pre1")
+  })
+
+  it("LiveDock 全局挂在 AppShell:非 /requests 路由也渲染在途信息,tail/合入控件隐藏", () => {
+    useLiveStore.setState({ byId: { r1: { id: "r1", endpoint: "anthropic-messages", state: "streaming", startTime: 0 } } })
+    render(
+      <MemoryRouter initialEntries={["/overview"]}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route
+              path="overview"
+              element={<div>ov</div>}
+            />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+    // LiveDock 全局挂载(在 AppShell)+ 读 live-store → 非 requests 页也显示在途摘要。
+    expect(screen.getByText(/1 in-flight/)).toBeTruthy()
+    // tail 开关 / 待合入 CTA 是列表专属,别页隐藏。
+    expect(screen.queryByText(/▶ live|⏸ paused|待合入/)).toBeNull()
   })
 })
