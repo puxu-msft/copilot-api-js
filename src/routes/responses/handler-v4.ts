@@ -18,8 +18,11 @@
  * direct post-loop via `acc.responseId`). The stateful `fixStreamEventIds` (DIRECT only) runs in the driver's S5
  * response-rewrite registry (A.C), shared with the WS transport. The error frame is built
  * inline (raw upstream message) rather than via `codec.formatError` (P2.2-D4). Responses has
- * no `[DONE]` (it ends with `response.completed`) and no H2 (the accumulator tracks no
- * `streamError`), so the only failure paths are H3 (`stream-error`) / client-abort.
+ * no `[DONE]` (it ends with `response.completed`). Failure paths: H2 (a terminal in-band `error`
+ * event, tracked as `acc.streamError` — Task 3.2) fails from the accumulator WITHOUT a synthetic
+ * frame (the real error frame already reached the client — forwarded live / flushed by the buffered
+ * commit); H3 (`stream-error`, a thrown transport failure) and the clean-drain truncation gate each
+ * synthesize a client error terminator; plus client-abort.
  */
 
 import type { Context } from "hono"
@@ -353,8 +356,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // alone would treat it as a transport truncation and wastefully RETRY it (then relabel the real
   // error as "truncated" on exhaustion). So we add `sawUpstreamError: () => acc.streamError !==
   // undefined` (the accumulator records the `error` event into `streamError`, mirroring Anthropic's
-  // `acc.streamError`) → the buffered sink COMMITS the error frame and the handler fails via the
-  // truncation gate below (acc.status still ""), exactly mirroring the live path.
+  // `acc.streamError`) → the buffered sink COMMITS the error frame and the handler fails via the H2
+  // `acc.streamError` branch below (the REAL code/message, no synthetic frame), exactly mirroring the
+  // live path — NOT the generic truncation gate.
   const outcome =
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
@@ -428,6 +432,24 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     // Direct registers the session after the loop with the upstream-reported id.
     if (!env.ctx.sessionId && acc.responseId) env.ctx.setSessionId(acc.responseId)
     registerResponseSession(acc.responseId, env.ctx.sessionId)
+  }
+
+  // H2 — a TERMINAL upstream `error` SSE event (Responses `type: "error"`; overload / server_error)
+  // reached the client as a real content frame: forwarded live through the sink, OR flushed by the
+  // buffered commit (driver.ts:661 `sawUpstreamError`). It drains cleanly (never a thrown error →
+  // outcome is `complete`) but sets NO `acc.status` (only response.completed/.failed/.incomplete do),
+  // so it must be handled HERE — BEFORE the `acc.status === ""` truncation gate, which would otherwise
+  // misfire: it would write a SECOND synthetic error frame (double-terminate the stream) and relabel
+  // the REAL cause as "truncated" in history. Fail from the accumulator (the real code/message) with
+  // NO synthetic frame — the real error frame is already on the wire. Exactly mirrors the live path
+  // and Anthropic's H2 (messages/handler-v4.ts:1146). The forwarded track already holds the real error
+  // frame (sink `onForwarded` sampled it on the live write / buffered commit), so snapshot THEN fail.
+  if (acc.streamError) {
+    const partial = buildResponsesResponseData(acc, model)
+    consola.error(`[Responses:v4] Upstream error for ${acc.model || model}: ${acc.streamError.code} — ${acc.streamError.message}`)
+    recordForwarded()
+    env.ctx.fail(acc.model || model, new Error(`${acc.streamError.code}: ${acc.streamError.message}`), { usage: partial.usage, content: partial.content })
+    return
   }
 
   // Truncation: a complete Responses stream ALWAYS carries a terminal `response.completed` /

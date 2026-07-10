@@ -67,12 +67,32 @@ function partialFrames(model: string): Array<string> {
   ]
 }
 
+/** The real upstream error code/message (a terminal server_error decision — Responses' H2). */
+const UPSTREAM_ERROR_CODE = "server_error"
+const UPSTREAM_ERROR_MESSAGE = "The model is overloaded. Please try again later."
+
+/**
+ * A generation that drains CLEANLY (no transport cut) but the upstream's terminal frame is an
+ * in-band `type: "error"` event (overload / server_error) instead of `response.completed` — the
+ * Responses analog of Anthropic's H2. It sets NO `acc.status` (only response.completed/.failed/
+ * .incomplete do), so the handler must fail via `acc.streamError`, NOT the truncation gate.
+ */
+function terminalErrorFrames(model: string): Array<string> {
+  return [
+    `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "resp_up_err", object: "response", status: "in_progress", model, output: [] } })}\n\n`,
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", sequence_number: 1, item_id: "msg_e", output_index: 0, content_index: 0, delta: "PARTIAL_BEFORE_ERROR" })}\n\n`,
+    `event: error\ndata: ${JSON.stringify({ type: "error", sequence_number: 2, message: UPSTREAM_ERROR_MESSAGE, code: UPSTREAM_ERROR_CODE })}\n\n`,
+  ]
+}
+
 const RST_ERROR = new Error("Stream closed with error code NGHTTP2_CANCEL")
 
 /** Number of leading upstream attempts that RST before the upstream finally completes. */
 let rstBeforeComplete = 0
 /** When true, EVERY attempt cleanly drains WITHOUT a terminal (live truncation scenario). */
 let truncateClean = false
+/** When true, the upstream drains cleanly but ends with a terminal in-band `error` frame (H2). */
+let terminalError = false
 let upstreamCalls = 0
 
 const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
@@ -84,6 +104,7 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   const model = payload.model ?? MODEL
   if (url.endsWith("/responses")) {
     upstreamCalls += 1
+    if (terminalError) return Promise.resolve(createSseResponse(terminalErrorFrames(model))) // clean drain, terminal error frame
     if (truncateClean) return Promise.resolve(createSseResponse(partialFrames(model))) // clean EOF, no terminal
     const rst = upstreamCalls <= rstBeforeComplete
     return Promise.resolve(rst ? createSseResponseThenError(partialFrames(model), RST_ERROR) : createSseResponse(completeFrames(model)))
@@ -112,6 +133,7 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     upstreamCalls = 0
     rstBeforeComplete = 0
     truncateClean = false
+    terminalError = false
     setStateForTests({
       copilotToken: "test-token",
       accountType: "individual",
@@ -187,5 +209,60 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     expect(entry?.state).toBe("failed")
     expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
     expect(String(entry?._index?.derived?.failureReason)).toContain("truncated")
+  })
+
+  // ── Terminal upstream `error` frame (H2) — the real error must surface, NOT "truncated" ──
+  // A clean-draining stream whose terminal frame is an in-band `type:"error"` (overload/server_error)
+  // is an upstream DECISION to fail, delivered as a real content frame the client already received.
+  // The handler must fail via `acc.streamError` (the REAL code/message), NOT synthesize a SECOND
+  // "truncated" error frame (double-terminate) NOR mislabel the cause as "truncated". Locks both modes.
+
+  test("live mode: a terminal upstream error frame surfaces the real error exactly once (not 'truncated')", async () => {
+    setStateForTests({ responsesBufferedRetry: false })
+    terminalError = true
+
+    const sse = await (await streamRequest()).text()
+
+    // The REAL upstream error frame reached the client (forwarded live, verbatim).
+    expect(sse).toContain(UPSTREAM_ERROR_MESSAGE)
+    expect(sse).toContain(UPSTREAM_ERROR_CODE)
+    // …exactly ONCE — no second synthetic "truncated" error frame double-terminating the stream.
+    expect(sse.split("event: error").length - 1).toBe(1)
+    expect(sse).not.toContain("truncated")
+    // No retry on live.
+    expect(upstreamCalls).toBe(1)
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("failed")
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    // The recorded failure reason is the REAL upstream cause, NOT "truncated".
+    const reason = String(entry?._index?.derived?.failureReason)
+    expect(reason).toContain(UPSTREAM_ERROR_CODE)
+    expect(reason).toContain(UPSTREAM_ERROR_MESSAGE)
+    expect(reason).not.toContain("truncated")
+  })
+
+  test("buffered mode: a terminal upstream error frame commits + surfaces the real error once (not 'truncated', no retry)", async () => {
+    setStateForTests({ responsesBufferedRetry: true, protectStreamingMaxRetries: 2, streamKeepalivePingSec: 20 })
+    terminalError = true
+
+    const sse = await (await streamRequest()).text()
+
+    // The buffered sink COMMITS the terminal error frame (driver.ts:661 sawUpstreamError) → the client
+    // receives the REAL error, exactly once, and the handler fails via acc.streamError (no retry).
+    expect(sse).toContain(UPSTREAM_ERROR_MESSAGE)
+    expect(sse).toContain(UPSTREAM_ERROR_CODE)
+    expect(sse.split("event: error").length - 1).toBe(1)
+    expect(sse).not.toContain("truncated")
+    // An upstream `error` is a terminal DECISION — the buffered path commits it, it is NOT retried.
+    expect(upstreamCalls).toBe(1)
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("failed")
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    const reason = String(entry?._index?.derived?.failureReason)
+    expect(reason).toContain(UPSTREAM_ERROR_CODE)
+    expect(reason).toContain(UPSTREAM_ERROR_MESSAGE)
+    expect(reason).not.toContain("truncated")
   })
 })
