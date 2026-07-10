@@ -110,8 +110,11 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
    * `sink`) ONLY on a clean drain that saw `message_stop`; on a transport-close RST (or a
    * truncation = clean drain without message_stop) re-runs the exchange for a fresh stream and
    * re-buffers, up to `opts.retryCap`. All-or-nothing: a partially-generated response is never
-   * forwarded (the client gets ONE complete generation, or the surfaced error). Default OFF
-   * (Phase 1: no consumer — every handler still uses `runResponseSink`).
+   * forwarded (the client gets ONE complete generation, or the surfaced error). The terminal is
+   * format-agnostic via the `sawMessageStop` opt (Anthropic `message_stop`; Responses
+   * `acc.status !== ""`). Opt-in per endpoint, default OFF: consumed by Anthropic
+   * (`protect_streaming_generation`) and Responses (`responsesBufferedRetry`) — every other
+   * handler still uses `runResponseSink`.
    */
   runResponseBufferedSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: RunBufferedOpts): Promise<ResponseOutcome>
 }

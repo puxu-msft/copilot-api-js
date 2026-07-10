@@ -69,9 +69,12 @@ interface AsyncQueue<T> {
 }
 
 /** Close an upstream WS with the WHATWG-legal normal-closure code (1000).
- *  undici's client WebSocket throws DOMException('invalid code') for any code
- *  outside {1000} ∪ [3000,4999] (e.g. the going-away / server-error codes);
- *  the try/catch is defense-in-depth so a close never escalates a callback throw. */
+ *  RUNTIME-SPLIT (Task 4.1 PoC): `import { WebSocket } from "undici"` resolves to real undici
+ *  (WHATWG-strict) on Node, but to Bun's NATIVE WebSocket on Bun. Real undici throws
+ *  DOMException('invalid code') for any code outside {1000} ∪ [3000,4999] (e.g. the going-away /
+ *  server-error codes); Bun-native tolerates 1001 et al. `1000` is safe on BOTH runtimes — the
+ *  §1.1 incident ran on a real-undici/Node path where close(1001) threw and defeated the WS→HTTP
+ *  fallback. The try/catch is defense-in-depth so a close never escalates a callback throw. */
 function closeUpstreamWs(socket: WebSocketLike | null | undefined, reason: string): void {
   try {
     socket?.close(CLOSE_CODE_NORMAL, reason)
