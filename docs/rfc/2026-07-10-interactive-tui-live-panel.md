@@ -123,16 +123,18 @@ src/lib/tui/
 
 ## 9. Open Questions（PoC + 决策待定）
 
-| # | 问题 | 解法 | 阻塞面 |
-|---|---|---|---|
-| Q1 | Bun raw-mode 下 Ctrl-C 是否 `0x03`、SIGINT 是否触发 | PoC-1 `raw-ctrlc.ts` | §7 转发实现 |
-| Q2 | sticky region：DECSTBM vs 相对光标，Bun 下超高/resize/原生滚动谁存活 | PoC-2 bench-off `sticky-region{,-decstbm}.ts` | **可能推翻交互模型**（§4 fallback），非纯战术 |
-| Q3 | OSC 52 跨终端可行性 | PoC-3 `osc52-copy.ts`；否则退回显示 | 仅复制实现 |
-| Q4 | Bun exit-hook 同步 flush 还原终端 | PoC-4 `crash-restore.ts` | §7 崩溃还原承重 |
-| Q5 | user-abort 的终态 settle + provenance + 客户端语义 + **遥测计数后果** | 新 `user-abort` StreamErrorKind + 镜像 reaper 成对调用；显式报错 vs 静默待定；终态方法选择（`fail()`/`abort()`/新终态）决定是否污染 per-model 失败率（telemetry 排除 aborted、计入 failed，评审 MINOR-b） | §5 abort 正确性，P2 设计入口 |
-| Q6 | drain 期间 stdout 所有权 / 多次 Ctrl-C 升级 | 方案 A（还原 cooked）vs B（持续转发），倾向 A | §7，用户/执行期定 |
+**PoC 实测状态（2026-07-10，pty 无人化 · 结论回填 `exp/tui-rawmode/README.md`）**：Q1/Q4 已实证闭合、Q2 DECSTBM byte 级胜出（**交互模型未被推翻**）、Q3 wire 正确。剩余真人终端复验项见下表「残留」列。
 
-架构对 Q1/Q3/Q4 鲁棒；**Q2 可能推翻交互模型**（§4 已列 fallback）。
+| # | 问题 | 解法 | 实测状态 |
+|---|---|---|---|
+| Q1 | Bun raw-mode 下 Ctrl-C 是否 `0x03`、SIGINT 是否触发 | PoC-1 `raw-ctrlc.ts` | **闭合**：Ctrl-C 以 `0x03` 进 stdin、**不产 SIGINT**、进程存活 → controller 必须捕获转发（§7） |
+| Q2 | sticky region：DECSTBM vs 相对光标 | PoC-2 bench-off | **DECSTBM 胜出**（byte 级 correct-by-construction、退出 `\x1b[r` 复位）→ `region.ts` 默认 DECSTBM。**残留真人复验**：原生滚动下视觉锚点漂移 + 100ms 重画闪烁观感。**模型未推翻、§4 fallback 未触发** |
+| Q3 | OSC 52 跨终端可行性 | PoC-3 `osc52-copy.ts` | **wire 闭合**（字节 `\x1b]52;c;<b64>\x07` 正确解码）。**残留真人复验**：系统剪贴板是否真写入（跨终端/tmux/ssh + clipboard 权限）；否则退回显示 req_id |
+| Q4 | Bun exit-hook 同步 flush 还原终端 | PoC-4 `crash-restore.ts` | **闭合**：stdout 为 TTY 时 `process.on("exit")` 同步转义序列**被 flush**、`\x1b[?25h` 到达、退出码 1。雷区未触发。**稳健建议**：throw 点/finally 仍留同步还原、exit-hook 作兜底（stdout 若被重定向为 pipe flush 行为可能不同） |
+| Q5 | user-abort 的终态 settle + provenance + 客户端语义 + 遥测计数后果 | 新 `user-abort` StreamErrorKind + 镜像 reaper 成对调用；显式报错 vs 静默待定；终态方法选择决定是否污染 per-model 失败率（telemetry 排除 aborted、计入 failed） | **P2 设计入口**（未跑 PoC，纯设计决策） |
+| Q6 | drain 期间 stdout 所有权 / 多次 Ctrl-C 升级 | 方案 A（还原 cooked）vs B（持续转发），倾向 A | **待用户/执行期定**（倾向 A） |
+
+**PoC 结论**：Q2 DECSTBM 可行 → **「可展开面板叠在日志流上」的交互模型成立、§14 全屏 dashboard fallback 不触发**。剩 Q2 视觉观感 + Q3 剪贴板两项真人复验（非阻塞架构，属实现验收）。
 
 ## 10. 分阶段（各带 commit invariants）
 
