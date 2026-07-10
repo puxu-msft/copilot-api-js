@@ -40,7 +40,7 @@ import { readFileSync } from "node:fs"
 import type { RequestContextSnapshot } from "~/lib/observability"
 
 import { createBus } from "~/lib/observability"
-import { attachConsoleSink } from "~/lib/observability/sinks/console" // Task 3 Step 4 → attachTerminalUi from "~/lib/tui"
+import { attachTerminalUi } from "~/lib/tui"
 
 const NOW = 1_700_000_000_000
 
@@ -91,7 +91,7 @@ afterEach(() => {
 
 describe("golden fixture (P0 equivalence oracle)", () => {
   test("current renderer output matches the committed golden", () => {
-    const out = renderGoldenScenario(attachConsoleSink as never)
+    const out = renderGoldenScenario(attachTerminalUi as never)
     const golden = readFileSync(new URL("./__fixtures__/console-golden.txt", import.meta.url), "utf8")
     expect(out).toBe(golden)
   })

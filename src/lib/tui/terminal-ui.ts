@@ -1,5 +1,5 @@
 /**
- * Console sink — renders observability events as a single-line terminal log
+ * Terminal UI sink — renders observability events as a single-line terminal log
  * stream with an active-request footer.
  *
  * Subscribes to:
@@ -14,15 +14,12 @@
  * - `system.shutdown_phase_changed` / `system.rate_limit_state` — non-line
  *   side effects (no console output currently; reserved for future UX).
  *
- * Replaces `lib/tui/console-renderer.ts` (deleted in commit 4). ConsoleSink
+ * Replaces `lib/tui/console-renderer.ts` (deleted in commit 4). TerminalUi
  * is the authoritative stdout renderer for request lifecycle lines + footer.
  */
 
 import consola from "consola"
 import pc from "picocolors"
-
-import { buildActiveFooter } from "~/lib/tui/render/footer"
-import { renderSystemLogLine } from "~/lib/tui/render/syslog"
 
 import type {
   //
@@ -30,16 +27,19 @@ import type {
   ObservabilityBus,
   ObservabilityEvent,
   RequestContextSnapshot,
-} from "../index"
-import type { LogLineParts } from "../projections/log-line"
+} from "~/lib/observability"
+import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
-import { assertNever } from "../index"
+import { assertNever } from "~/lib/observability"
 import {
   //
   formatDuration,
   formatTime,
-} from "../projections/format"
-import { formatLogLine } from "../projections/log-line"
+} from "~/lib/observability/projections/format"
+import { formatLogLine } from "~/lib/observability/projections/log-line"
+
+import { buildActiveFooter } from "./render/footer"
+import { renderSystemLogLine } from "./render/syslog"
 
 // ANSI escape code for "clear to end of line, return to column 0"
 const CLEAR_LINE = "\x1b[2K\r"
@@ -68,7 +68,7 @@ interface ActiveRequest {
   attemptCount: number
 }
 
-export interface ConsoleSinkOptions {
+export interface TerminalUiOptions {
   stdout?: NodeJS.WritableStream
   isTTY?: boolean
   /**
@@ -89,7 +89,7 @@ export interface ConsoleSinkOptions {
   silent?: boolean
 }
 
-export class ConsoleSink {
+export class TerminalUi {
   private readonly stdout: NodeJS.WritableStream
   private readonly isTTY: boolean
   private readonly columns: number | (() => number)
@@ -100,7 +100,7 @@ export class ConsoleSink {
   private footerTimer: ReturnType<typeof setInterval> | null = null
   private readonly unsubscribe: () => void
 
-  constructor(bus: ObservabilityBus, options?: ConsoleSinkOptions) {
+  constructor(bus: ObservabilityBus, options?: TerminalUiOptions) {
     this.stdout = options?.stdout ?? process.stdout
     this.isTTY = options?.isTTY ?? process.stdout.isTTY
     this.columns = options?.columns ?? (() => (this.stdout as Partial<{ columns: number }>).columns ?? 80)
@@ -201,7 +201,7 @@ export class ConsoleSink {
       // history.* / system.* — currently no console output (reserved).
       //
       // request.context_updated is consumed by HistorySink only — see the
-      // event doc in events.ts. ConsoleSink already receives the
+      // event doc in events.ts. TerminalUi already receives the
       // higher-fidelity signals (state_changed / feature_applied / etc.)
       // and would only get duplicates from context_updated.
       case "history.entry_added":
@@ -386,9 +386,10 @@ export class ConsoleSink {
   /**
    * Clear the footer before writing a log line. The single-line `CLEAR_LINE`
    * (`\x1b[2K\r`) only erases the current physical line — this is correct
-   * *because* {@link finalizeFooter} guarantees the footer is always ≤ 1
-   * physical line. If footer truncation is ever relaxed, this clear (and
-   * {@link renderFooter}'s overwrite) would leave residue on wrapped lines.
+   * *because* the footer builder's finalize step in `~/lib/tui/render/footer`
+   * guarantees the footer is always ≤ 1 physical line. If footer truncation is
+   * ever relaxed, this clear (and {@link renderFooter}'s overwrite) would leave
+   * residue on wrapped lines.
    */
   private clearFooterForLog(): void {
     if (this.footerVisible && this.isTTY) {
@@ -430,8 +431,8 @@ export class ConsoleSink {
   /**
    * Render a republished consola log (`system.log` event) through the same
    * footer-coordinated path the old hijack reporter used. `message` is already
-   * args-joined by republish.ts; `consolaPrefix` supplies the `[INFO] HH:MM:SS`
-   * prefix from the log's own timestamp.
+   * args-joined by republish.ts; {@link renderSystemLogLine} produces the full
+   * `[INFO] HH:MM:SS message` line from the log's own timestamp.
    */
   private onSystemLog(event: Extract<ObservabilityEvent, { kind: "system.log" }>): void {
     this.printLog(renderSystemLogLine(event))
@@ -513,8 +514,8 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
 // Attachment helper (mirrors attachHistorySink / attachTelemetrySink shape)
 // ============================================================================
 
-export function attachConsoleSink(bus: ObservabilityBus, options?: ConsoleSinkOptions): () => void {
-  const sink = new ConsoleSink(bus, options)
+export function attachTerminalUi(bus: ObservabilityBus, options?: TerminalUiOptions): () => void {
+  const sink = new TerminalUi(bus, options)
   return () => {
     sink.destroy()
   }

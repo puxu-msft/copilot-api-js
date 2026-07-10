@@ -9,7 +9,7 @@ import consola from "consola"
 
 import { createBus } from "~/lib/observability/bus"
 import { installConsolaRepublish } from "~/lib/observability/republish"
-import { ConsoleSink } from "~/lib/observability/sinks/console"
+import { TerminalUi } from "~/lib/tui"
 
 /** Collect stdout bytes from a sink, normalizing the HH:MM:SS stamp. */
 function makeCapture() {
@@ -35,7 +35,7 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
 
     const cap = makeCapture()
     const bus = createBus()
-    const sink = new ConsoleSink(bus, { stdout: cap.stdout, isTTY: false })
+    const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
     const uninstall = installConsolaRepublish(bus.scope("system"))
     cleanups.push(() => {
       uninstall()
@@ -52,7 +52,7 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
   test("system.log interleaves with request lifecycle lines in publish order", () => {
     const cap = makeCapture()
     const bus = createBus()
-    const sink = new ConsoleSink(bus, { stdout: cap.stdout, isTTY: false })
+    const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
     const uninstall = installConsolaRepublish(bus.scope("system"))
     cleanups.push(() => {
       uninstall()
@@ -75,7 +75,7 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     // (to stderr) instead of re-publishing into an infinite fan-out.
     const cap = makeCapture()
     const bus = createBus()
-    const sink = new ConsoleSink(bus, { stdout: cap.stdout, isTTY: false })
+    const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
     const uninstall = installConsolaRepublish(bus.scope("system"))
     // A second subscriber that calls consola.warn on every system.log — the
     // classic recursion trigger.

@@ -35,7 +35,7 @@ import type {
 } from "~/lib/observability"
 
 import { createBus } from "~/lib/observability"
-import { ConsoleSink } from "~/lib/observability/sinks/console"
+import { TerminalUi } from "~/lib/tui"
 
 type RequestEvent = Extract<ObservabilityEvent, { kind: `request.${string}` }>
 
@@ -88,7 +88,7 @@ function created(ctx: RequestContextSnapshot): RequestEvent {
 function renderFooter(opts: { contexts: Array<RequestContextSnapshot>; columns: number }): { footer: string; width: number } {
   const cap = makeCapture()
   const bus = createBus()
-  const sink = new ConsoleSink(bus, { stdout: cap.stdout, isTTY: true, columns: opts.columns })
+  const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: true, columns: opts.columns })
   cleanups.push(() => sink.destroy())
 
   const pub = bus.scope("request")
