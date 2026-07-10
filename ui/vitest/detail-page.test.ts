@@ -100,7 +100,6 @@ async function mountDetail(router: Router) {
       stubs: {
         ContentRenderer: true,
         RawJsonModal: true,
-        JsonViewerSurface: true,
         SseEventsSection: true,
         AttemptsTimeline: true,
         TocTree: true,
