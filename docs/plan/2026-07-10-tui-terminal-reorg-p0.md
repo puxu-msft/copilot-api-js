@@ -1,5 +1,7 @@
 # TUI 终端层重组（P0）实现计划
 
+> **实施状态（2026-07-10）：待实施（ADR 签字为前置门）。** 已过 subagent 审查（3 MAJOR + 3 MINOR 全部修入：去 require、L1 正样本自证、golden 场景补 error 腿/启动行、消费者清单剔除 3 个仅注释文件、footer Consumes 补全、doc-sync 分历史注释）。P0 纯重组、行为等价、零 PoC 依赖。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把终端渲染从 `observability/sinks/console.ts` 重组进新的 `src/lib/tui/` 层，`terminal-ui` 作为 bus 订阅者接管「请求事件 + system.log 两条 stdout 流」取代 ConsoleSink，**行为逐字等价**——为 P1/P2 的交互式面板铺路。
@@ -51,17 +53,19 @@ src/lib/observability/
 - Reference: [console.ts](../../src/lib/observability/sinks/console.ts)（当前被锁的渲染器）、[console-footer.unit.test.ts](../../tests/observability/console-footer.unit.test.ts)（capture harness 范式）
 
 **Interfaces:**
-- Produces: `renderGoldenScenario(sink 或 attach 函数): string` —— 驱动一组固定事件（`request.created`×3 不同 model + `stream_progress` + 一条 `system.log` + `request.completed` + footer 定时重画一拍）经渲染器，返回 stdout 字节流（含 CLEAR_LINE/ANSI，时间戳归一化）。P1+ 复用同一 scenario 断言等价。
+- Produces: `renderGoldenScenario(attach): string` —— 驱动一组固定事件（`request.created`×3 不同 model + `stream_progress` + 一条 `system.log` + 一条 `request.failed`（覆盖 `onTerminal` error 腿）+ `request.completed` + `consola.level=5` 触发 `[....]` 启动行）经渲染器，返回 stdout 字节流（含 CLEAR_LINE/ANSI，时间戳归一化）。P1+ 复用同一 scenario 断言等价。
+- **等价 oracle 定位（评审校正）**：golden 是**补充** oracle；行为等价主要由**保留的 `console-footer`/`console-system-log`/`console-thinking`/`pipeline-retry-tui` 回归测试**每步复跑兜底。golden 不含 100ms timer 定时重画（冻结时钟 + 同步执行下 `setInterval` 不触发，且真塞 timer tick 会让 fixture flaky——**有意不加**），但覆盖 footer 内容（经 `printLog→renderFooter`）+ system.log + 启动行 + error 腿。
 
 - [ ] **Step 1: 写捕获测试（对当前 ConsoleSink）**
 
-固定 `columns`、`isTTY:true`、冻结时钟（`setSystemTime`），复刻 console-footer 测试的 capture stdout。事件序列须**三流交织**：请求生命周期行 + footer 重画 + system.log 行（评审 BLOCK-1 要求非空正样本）。把 chunks join 后 `.replaceAll(/\d\d:\d\d:\d\d/g,"TT:TT:TT")` 归一化时间戳。
+固定 `columns`、`isTTY:true`、冻结时钟（`setSystemTime`），复刻 console-footer 测试的 capture stdout。事件序列须**三流交织**：请求生命周期行（含 completed + failed）+ footer 重画 + system.log 行 + `[....]` 启动行（评审 BLOCK-1 非空正样本 + MAJOR-3 覆盖 error 腿/启动行）。把 chunks join 后 `.replaceAll(/\d\d:\d\d:\d\d/g,"TT:TT:TT")` 归一化时间戳。**不用 `require()`**（项目 `@typescript-eslint/no-require-imports` 为 error、全仓纯 ESM）——顶部直接 `import { attachConsoleSink }`（Task 3 Step 4 随其它测试改为 `attachTerminalUi`）。
 
 ```ts
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test"
-import { createBus } from "~/lib/observability"
-import { ConsoleSink } from "~/lib/observability/sinks/console" // Task 4 后改为 ~/lib/tui
+import consola from "consola"
 import { readFileSync } from "node:fs"
+import { createBus } from "~/lib/observability"
+import { attachConsoleSink } from "~/lib/observability/sinks/console" // Task 3 Step 4 → attachTerminalUi from "~/lib/tui"
 
 const NOW = 1_700_000_000_000
 function makeCapture() {
@@ -72,17 +76,23 @@ function makeCapture() {
 export function renderGoldenScenario(attach: (bus: ReturnType<typeof createBus>, o: unknown) => () => void): string {
   const cap = makeCapture()
   const bus = createBus()
+  const prevLevel = consola.level
+  consola.level = 5 // render the [....] start line (console.ts onCreated guard)
   const detach = attach(bus, { stdout: cap.stdout, isTTY: true, columns: 80 })
   const req = bus.scope("request")
   const sys = bus.scope("system")
   const ctxA = { id: "a", endpoint: "anthropic-messages", method: "POST", path: "/v1/messages", resolvedModel: "claude-opus-4-8", state: "streaming", startTime: NOW - 3000, queueWaitMs: 0 } as never
   const ctxB = { ...ctxA, id: "b", resolvedModel: "gpt-5", startTime: NOW - 1000 } as never
+  const ctxC = { ...ctxA, id: "c", resolvedModel: "gpt-5", startTime: NOW - 500 } as never
   req.publish({ kind: "request.created", ctx: ctxA })
   req.publish({ kind: "request.created", ctx: ctxB })
+  req.publish({ kind: "request.created", ctx: ctxC })
   req.publish({ kind: "request.stream_progress", ctx: ctxA, bytesIn: 12_345, eventsIn: 42 } as never)
   sys.publish({ kind: "system.log", logType: "info", message: "golden line", time: NOW })
   req.publish({ kind: "request.completed", ctx: ctxA, entry: { id: "a", endpoint: "anthropic-messages", state: "completed" } } as never)
+  req.publish({ kind: "request.failed", ctx: ctxB, statusCode: 429, error: "rate_limited" } as never) // error 腿
   detach()
+  consola.level = prevLevel
   return cap.text()
 }
 
@@ -92,8 +102,7 @@ afterEach(() => { for (const c of cleanups.splice(0)) c(); setSystemTime() })
 
 describe("golden fixture (P0 equivalence oracle)", () => {
   test("current renderer output matches the committed golden", () => {
-    const attach = (bus: never, o: never) => { const { attachConsoleSink } = require("~/lib/observability/sinks/console"); return attachConsoleSink(bus, o) }
-    const out = renderGoldenScenario(attach as never)
+    const out = renderGoldenScenario(attachConsoleSink as never)
     const golden = readFileSync(new URL("./__fixtures__/console-golden.txt", import.meta.url), "utf8")
     expect(out).toBe(golden)
   })
@@ -102,7 +111,7 @@ describe("golden fixture (P0 equivalence oracle)", () => {
 
 - [ ] **Step 2: 生成 golden 产物**
 
-先让测试**失败**（fixture 不存在）确认 scenario 触达渲染路径（正样本），再把当次 `out` 写进 `console-golden.txt`。用一次性脚本或 `test.only` 打印 `out` 后手工存盘；确认 fixture **非空**且含 `[<-->]`（footer）、`[INFO]`（system.log）、`[ OK ]`（completed）三类行。
+先让测试**失败**（fixture 不存在）确认 scenario 触达渲染路径（正样本），再把当次 `out` 写进 `console-golden.txt`。用 `test.only` 打印 `out` 后手工存盘；确认 fixture **非空**且含 `[....]`（启动行）、`[<-->]`（footer）、`[INFO]`（system.log）、`[ OK ]`（completed）、`[FAIL]`（failed）五类行。
 
 Run: `bun test tests/tui/golden-fixture.unit.test.ts`
 Expected: 先 FAIL（no fixture）→ 存盘后 PASS。
@@ -126,7 +135,7 @@ git commit -F <msgfile> -- tests/tui/golden-fixture.unit.test.ts tests/tui/__fix
 
 **Interfaces:**
 - Produces: `buildActiveFooter(args: { active: ReadonlyArray<ActiveRequestView>, now: number, columns: number }): string` —— 纯函数，返回已 `pc.dim` + 截断的 footer 串（空则 `""`）。`ActiveRequestView = { ctx: RequestContextSnapshot, streamBytesIn?: number, streamEventsIn?: number, streamBlockType?: string }`（footer 只需这几个字段的只读视图）。
-- Consumes: `truncateToWidth`/`formatDuration`/`formatStreamInfo`/`formatBytes`（from `~/lib/observability/projections/format`）。
+- Consumes: `truncateToWidth`/`formatDuration`/`formatStreamInfo`/`formatBytes`（from `~/lib/observability/projections/format`）、`stringWidth`（from `string-width`，多请求分支贪心计宽用）、`pc`（from `picocolors`，`finalizeFooter` 的 `pc.dim`）。
 
 - [ ] **Step 1: 写 footer.ts 单元测试**（把 console-footer 的 footer 断言下移为对 `buildActiveFooter` 的直接测，冻结时钟 + 固定 columns，断言分组 `model ×N`、宽度 `stringWidth ≤ columns-1`、`(resolving)` 桶）。代码见 console-footer.unit.test.ts 现有断言，改为直接调 `buildActiveFooter({ active, now: NOW, columns })`。
 
@@ -181,7 +190,7 @@ git commit -F <msgfile> -- src/lib/tui/render/syslog.ts tests/tui/render/syslog.
 
 **Files:**
 - Create: `src/lib/tui/terminal-ui.ts`、`src/lib/tui/index.ts`
-- Modify: `src/start.ts:252`、`tests/observability/{sink-ordering,console-footer,console-system-log,console-thinking}.unit.test.ts`、`tests/pipeline/pipeline-retry-tui.unit.test.ts`、`tests/helpers/test-bootstrap.ts`、`tests/tui/golden-fixture.unit.test.ts`（import 改 `~/lib/tui`）
+- Modify: `src/start.ts`（:48 import + :252 attach）、`tests/observability/{console-footer,console-system-log,console-thinking}.unit.test.ts`、`tests/tui/golden-fixture.unit.test.ts`（**真实 import 者**：精确 grep `from "~/lib/observability/sinks/console"` 只命中 start.ts + 这 3 个 console-* + golden；`sink-ordering`/`pipeline-retry-tui`/`test-bootstrap` 仅注释提及 ConsoleSink、**无 import**，不在本批——对它们做 import Edit 会匹配失败）
 - Delete: `src/lib/observability/sinks/console.ts`
 
 **Interfaces:**
@@ -194,7 +203,7 @@ git commit -F <msgfile> -- src/lib/tui/render/syslog.ts tests/tui/render/syslog.
 
 - [ ] **Step 3: 切换 start.ts**——`import { attachTerminalUi } from "./lib/tui"`；`attachConsoleSink(bus)` → `attachTerminalUi(bus)`。删 `attachConsoleSink` import。
 
-- [ ] **Step 4: 批量改测试 import**——所有 `from "~/lib/observability/sinks/console"` → `from "~/lib/tui"`；`ConsoleSink` → `TerminalUi`、`attachConsoleSink` → `attachTerminalUi`（sink-ordering/console-footer/console-system-log/console-thinking/pipeline-retry-tui/test-bootstrap/golden-fixture）。golden-fixture 的 `attach` 闭包改 `attachTerminalUi`。**独立跨文件 Edit 消息内并行**。
+- [ ] **Step 4: 批量改测试 import**——**仅真实 import 者**（3 个 console-* + golden-fixture）：`from "~/lib/observability/sinks/console"` → `from "~/lib/tui"`；`ConsoleSink` → `TerminalUi`、`attachConsoleSink` → `attachTerminalUi`。golden-fixture 的 import 改 `attachTerminalUi`。**独立跨文件 Edit 消息内并行**。（`sink-ordering`/`pipeline-retry-tui`/`test-bootstrap` 只有注释提及、无 import——不动；如需更新其注释文字属 Task 5 doc-sync，非本批。）
 
 - [ ] **Step 5: 删除 console.ts**。`git rm src/lib/observability/sinks/console.ts`。
 
@@ -202,7 +211,7 @@ git commit -F <msgfile> -- src/lib/tui/render/syslog.ts tests/tui/render/syslog.
 
 - [ ] **Step 7: lint + commit（原子）**。`bunx eslint src/lib/tui/ src/start.ts`（无缓存）。
 ```bash
-git commit -F <msgfile> -- src/lib/tui/terminal-ui.ts src/lib/tui/index.ts src/start.ts tests/observability/sink-ordering.unit.test.ts tests/observability/console-footer.unit.test.ts tests/observability/console-system-log.unit.test.ts tests/observability/console-thinking.unit.test.ts tests/pipeline/pipeline-retry-tui.unit.test.ts tests/helpers/test-bootstrap.ts tests/tui/golden-fixture.unit.test.ts src/lib/observability/sinks/console.ts
+git commit -F <msgfile> -- src/lib/tui/terminal-ui.ts src/lib/tui/index.ts src/start.ts tests/observability/console-footer.unit.test.ts tests/observability/console-system-log.unit.test.ts tests/observability/console-thinking.unit.test.ts tests/tui/golden-fixture.unit.test.ts src/lib/observability/sinks/console.ts
 # msg: refactor(tui): relocate ConsoleSink to tui/terminal-ui as bus subscriber
 ```
 
@@ -231,18 +240,33 @@ git commit -F <msgfile> -- src/lib/tui/terminal-ui.ts src/lib/tui/index.ts src/s
 ```
 （注：`context/manager` + `~/lib/observability` 订阅**允许**，故不列入禁止组；`keys/controller/region/actions` 互不 import 的 path-group 约束在 P1 引入这些文件时补，P0 尚无它们。）
 
-- [ ] **Step 2: 写 L1 守卫测试**——读 `src/lib/tui/` 各 `.ts` 源文本，断言：① 无文件 import `~/lib/observability/sinks/`（terminal-ui 自身除外——它 re-export 无、已删 console）；② P0 阶段 `setRawMode`/`process.stdin` 不应出现在 tui/（那是 P1）——`grep` 断言当前为 0（防提前泄漏）。用 `readFileSync` + 正则。
+- [ ] **Step 2: 写 L1 守卫测试**——读 `src/lib/tui/` 各 `.ts` 源文本，断言：① 无文件 import `~/lib/observability/sinks/`；② P0 阶段 `setRawMode`/`process.stdin` 不应出现在 tui/（那是 P1）。**否定断言须正样本自证**（评审 MAJOR-2，`pass-null` 教训）：先断言 `tuiFiles().length > 0`（否则空集合真空通过），再用一个已知含 `setRawMode` 的字符串证正则真能命中。
 
 ```ts
 import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
-function tuiFiles(): Array<string> { /* 递归列 src/lib/tui/**/*.ts 绝对路径 */ }
+import { fileURLToPath } from "node:url"
+
+function tuiFiles(): Array<string> {
+  const root = fileURLToPath(new URL("../../src/lib/tui/", import.meta.url))
+  return readdirSync(root, { recursive: true, encoding: "utf8" })
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => root + f)
+}
+const SINK_IMPORT = /from\s+["']~\/lib\/observability\/sinks\//
+const RAW_STDIN = /setRawMode|process\.stdin/
+
 describe("tui layer boundaries (L1 guard)", () => {
+  test("guard reaches real files (positive control)", () => {
+    expect(tuiFiles().length).toBeGreaterThan(0) // 空集合会让下面断言真空通过
+    expect(RAW_STDIN.test("stdin.setRawMode(true)")).toBe(true) // 证正则真能命中
+    expect(SINK_IMPORT.test('import x from "~/lib/observability/sinks/file"')).toBe(true)
+  })
   test("no tui file imports another observability sink", () => {
-    for (const f of tuiFiles()) expect(readFileSync(f, "utf8")).not.toMatch(/from\s+["']~\/lib\/observability\/sinks\//)
+    for (const f of tuiFiles()) expect(readFileSync(f, "utf8")).not.toMatch(SINK_IMPORT)
   })
   test("P0 tui has no stdin/raw-mode usage yet (that is P1)", () => {
-    for (const f of tuiFiles()) expect(readFileSync(f, "utf8")).not.toMatch(/setRawMode|process\.stdin/)
+    for (const f of tuiFiles()) expect(readFileSync(f, "utf8")).not.toMatch(RAW_STDIN)
   })
 })
 ```
@@ -264,11 +288,11 @@ git commit -F <msgfile> -- eslint.config.js tests/tui/layer-boundaries.unit.test
 
 - [ ] **Step 1: 全套件回归**。Run: `bun test tests/tui/ tests/observability/` && `bun run typecheck` && `bun run lint:all` Expected: 全绿。
 
-- [ ] **Step 2: doc-sync + 跨文档 grep 验证**——`grep -rn "ConsoleSink\|sinks/console" docs/ src/ --include="*.md" --include="*.ts"` 确认活文档/代码无残留旧引用（archived RFC 除外）；DESIGN.md「Console UI」footer 段的 `ConsoleSink.finalizeFooter` 等引用更新为 `tui/render/footer.ts`。
+- [ ] **Step 2: doc-sync + 跨文档 grep 验证**——`grep -rn "ConsoleSink\|sinks/console" docs/ src/ --include="*.md" --include="*.ts"`。**区分两类残留**：① **活文档现状**（DESIGN.md「Console UI」footer 段的 `ConsoleSink.finalizeFooter` 等）→ 更新为 `tui/render/footer.ts`、`TerminalUi`；② **src 内 10+ 处历史性解释注释**（`manager.ts:15`、`events.ts:239`、`types.ts:334`、`request.ts:277`、`activity-summary.ts:108`、`streaming-pump.ts:169`、`republish.ts:6`、`main.ts:18`、`shutdown.ts:527` 等描述旧架构的注释）→ **不逐一改**（它们是历史叙述、非活引用），唯一须改的是 `sinks/file.ts:168` 的 `Mirrors attachConsoleSink` → `attachTerminalUi`（活的类比引用）。archived RFC 不动。此分界写进 commit 说明，避免「无残留」目标与现实冲突。
 
 - [ ] **Step 3: Commit**。
 ```bash
-git commit -F <msgfile> -- docs/DESIGN.md docs/rfc/2026-07-10-interactive-tui-live-panel.md docs/plan/2026-07-10-tui-terminal-reorg-p0.md
+git commit -F <msgfile> -- docs/DESIGN.md docs/rfc/2026-07-10-interactive-tui-live-panel.md docs/plan/2026-07-10-tui-terminal-reorg-p0.md src/lib/observability/sinks/file.ts
 # msg: docs(tui): sync DESIGN/RFC/plan for P0 terminal-layer reorg
 ```
 
