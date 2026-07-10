@@ -17,6 +17,6 @@ ui-v4（React 19 + Tailwind v4 + Vite，request inspector）正在讨论**全面
 
 **已否决/defer**：antd 本体（PoC `exp/antd-poc/` 实证**可行但价值/成本错配**否决，见 [[project-antd-poc-rejected]]）· Mantine/MUI · 强制 master-detail 分栏（形态 B）· 双入口 peek+整页（形态 C，**defer 不砍**、记 `docs/todo/deferred-backlog.md`「ui-v4 列表↔详情双入口」）。
 
-**尚在讨论**：详情内 7 段 sub-rail 竖排→顶部水平 tabs（倾向改未定）· NavRail（左侧导航条，现 150px 无图标纯文本）加宽+图标（未定）。
+**尚在讨论**：无——设计基调 2026-07-10 全部敲定（决策 1–11）。详情内 7 段 sub-rail **竖排→顶部水平 tabs**（理由:太占横向空间 + 多层左栏嵌套）、NavRail **加宽~200–240px + 加图标(lucide-react)** 均已定。下一步派生迁移 RFC（RFC-first + 分期，skill `large-refactor`）。
 
 背景与「Radix migration P0–P3」历史（手搓→迁到 Radix 拿回 a11y→现在罩 shadcn 一致皮肤）见 ADR 正文。相关：[[feedback-ui-v4-code-authored-by-agents]]。

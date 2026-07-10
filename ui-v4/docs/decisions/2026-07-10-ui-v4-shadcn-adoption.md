@@ -44,6 +44,8 @@ ui-v4 是 copilot-api 的 request inspector / History Web UI（React 19.2 + Type
 7. **在途请求浮窗（LiveDock）提升为全局**：从 RequestsListPage 专属提取为**常驻 `AppShell` 的全局浮窗**（订阅 `useLiveRequests()` 早已在 AppShell，本项把浮窗 UI 也上移），任意页面可见在途活动。
 8. **详情抽屉统一为公共组件**：Models 详情与 Requests 详情**共用一个公共抽屉/面板容器**（容器共享、内容各自渲染）。与形态 A 不矛盾：整页路由与抽屉/未来 peek 都复用 `DetailPanel` 内容层；两处详情呈现有差异但容器实现共享。
 9. **改造期新旧双版本共存 + 全局切换（过渡脚手架，非 per-page）**：迁移期间**新旧两套设计并存于同一 ui-v4**（不另起 `ui-v5/`），由一个**全局切换入口**（TopBar 按钮，持久化到 ui-store `designVersion: "amber-legacy" | "shadcn"`）**整版切换**——**非 per-page**（始终呈现完整、自洽的一版，不出现半新半旧混合），目的是让用户随时对照两版、确认迭代方向。实现分层：**共享单份**（数据层 / hooks / stores / api / types / 可视化内容渲染 detail/diff/SSE/shiki，与设计无关，两版共用）；**过渡期双份**（AppShell / NavRail / TopBar / 各页 shell + 组件皮肤 + 布局，由 `designVersion` 选择挂载哪棵**呈现树**）。**与决策 3 区分**：决策 3 的 Amber 色板是**永久换色 preset**；本项是**过渡期整版本开关**（旧 Amber 组件+旧布局 ↔ 新 shadcn 组件+新布局）。**against-yagni 的脚手架纪律**：新设计确认且完整后**拆除旧呈现树 + 移除版本开关**（可降级为决策 3 的色板 preset），不留永久双轨债。
+10. **详情内 segment 导航：竖排 sub-rail → 顶部水平 tabs**（用户 2026-07-10 定）。理由：竖排 sub-rail **太占横向空间**（详情主任务需要全宽展示 SSE/diff/对话），且与主 NavRail 形成「NavRail + sub-rail」多层左栏嵌套。`DetailSubRail` / `ModelDetailSubRail`（现 Radix `Tabs` vertical orientation，[DetailPanel.tsx](../../src/components/detail/DetailPanel.tsx)）改为**顶部水平 Tabs**（shadcn `Tabs` 封装、horizontal orientation）；7 段（Convo/System/Stages/Response/SSE/Headers/Meta）横排于详情顶部。
+11. **NavRail：加宽 + 加图标**（用户 2026-07-10 定，采纳我方提案）。现 150px 无图标纯文本 → 加宽至主流侧边导航区间（~200–240px）+ 每项配图标（shadcn 生态默认 `lucide-react`）。`components/shell/NavRail.tsx` 的 `ITEMS` 各项补 icon，选中/hover 态走 shadcn token。
 
 ## 理由
 
@@ -73,7 +75,6 @@ ui-v4 是 copilot-api 的 request inspector / History Web UI（React 19.2 + Type
 - **（继承自 [adopt-radix ADR](2026-07-05-adopt-radix-primitives.md)）弃 shadcn 成品样式、只用裸 Radix**：**本 ADR 放宽此条**——理由见上「与 2026-07-05 ADR 的结论差异」。
 - **另起 `ui-v5/` 平行重建**：**否**（用户 2026-07-10 定：保留在 ui-v4 原地改）。不同于当年 Vue→React（v4）跨框架必须平行重写，本次同栈（React/Vite/Tailwind/Radix）、ui-v4 约 80%（数据层/hooks/stores/可视化渲染）可直接复用；平行重建会为重刷 20% 皮肤而复制 80% 价值层，纯负债。故定位为 **ui-v4 原地 major 重设计（同前端世代），非新世代 v5**。改造期双版本共存由决策 9 的过渡开关承载，而非双目录。
 
-## 尚在讨论（本 ADR 将随对话增补）
+## 设计基调状态（2026-07-10 全部敲定）
 
-- 详情内 7 段 segment：竖排 sub-rail → 顶部水平 tabs（倾向改，未定）。
-- NavRail（左侧导航条，现 150px 无图标纯文本 `components/shell/NavRail.tsx`）：加宽 + 加图标（未定）。
+决策 1–11 已全部由用户拍板，设计基调闭合。下一步：派生迁移 RFC（RFC-first + 分期 + 对抗 subagent review，skill `large-refactor`），把基调转成组件映射清单 / 主题 token 方案 / 双呈现树脚手架 + 收尾拆除 phase / bundle 与测试策略。本 ADR 保持 Proposed 直到 RFC 落地并开始实施。
