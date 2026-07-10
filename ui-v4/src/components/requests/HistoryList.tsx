@@ -37,6 +37,7 @@ import type {
   HistoryEntry,
 } from "@/types"
 
+import { SessionPaletteSelect } from "@/components/requests/SessionPaletteSelect"
 import { Modal } from "@/components/shared/Modal"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
 import { api } from "@/lib/api"
@@ -55,6 +56,7 @@ import {
   //
   computeSessionRuns,
   DEFAULT_PALETTE_NAME,
+  PALETTE_STORAGE_KEY,
   SESSION_PALETTES,
   type RunInfo,
 } from "@/lib/session-color"
@@ -84,6 +86,10 @@ interface RowContext {
   onSelect: (id: string) => void
   /** 每行 run 元信息(色带色/段帽/缩进/tint);无 sessionId 行不在 map。 */
   runs: Map<string, RunInfo>
+  /** 当前处于对比高亮选择集里的 sessionId 集合;空集 = 默认态(全部淡 tint)。 */
+  selectedSessions: Set<string>
+  /** 切换某会话的对比高亮(点色带 / 键盘 f);undefined(无 sessionId 行)时 no-op。 */
+  onToggleSession: (sid: string | undefined) => void
 }
 
 /**
@@ -143,8 +149,18 @@ const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableR
   const focused = id === context.focusedId
   const isTabStop = id === context.tabStopId
   const info = context.runs.get(id)
-  // 背景优先级(Task 2 只有:选中→类背景;默认淡 tint)。Task 3 插入选择态强 tint / dim。
-  const bg = selected ? undefined : info?.faintTint
+  const sid = item.original.sessionId
+  const selecting = context.selectedSessions.size > 0
+  const selectedThisSession = sid !== undefined && context.selectedSessions.has(sid)
+  // 对比态里非选中会话(且非 `at` 选中行)变灰:仅用 opacity-40,不叠 muted 文字类。
+  const dim = selecting && !selectedThisSession && !selected
+  // §3 单值背景优先级:`at` 选中→类背景(不设 inline);对比态选中会话→强 tint;
+  // 对比态非选中→无 tint(靠 dim);默认态→淡 tint;无 sessionId→无。
+  let bg: string | undefined
+  if (!selected) {
+    if (selecting) bg = selectedThisSession ? info?.strongTint : undefined
+    else bg = info?.faintTint
+  }
   return (
     <tr
       {...props}
@@ -167,7 +183,7 @@ const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableR
         }
         // 方向键不在此处理:放行冒泡到容器 onKeyDown 统一移动游标 + DOM 焦点(roving)。
       }}
-      className={`${ROW_CLASS} ${selectionClass(selected)}${flashing ? " toc-flash" : ""}${focusClass(focused)}`}
+      className={`${ROW_CLASS} ${selectionClass(selected)}${flashing ? " toc-flash" : ""}${focusClass(focused)}${dim ? " opacity-40" : ""}`}
     />
   )
 }
@@ -236,9 +252,34 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
   const rows = table.getRowModel().rows
 
   // session 色带的 run 元信息(色/段帽/缩进/tint):跑在已加载全部页拼接的 entries 上(非虚拟化窗口)。
-  // Task 3 会把 DEFAULT_PALETTE_NAME 换成色板态(localStorage 持久化 + 切换 UI)。
-  const activePalette = SESSION_PALETTES.find((p) => p.name === DEFAULT_PALETTE_NAME) ?? SESSION_PALETTES[0]
+  // 色板态:localStorage 持久化 + 头部 SessionPaletteSelect 切换;未知名回退首套。
+  const [selectedSessions, setSelectedSessions] = useState<Set<string>>(() => new Set())
+  const [paletteName, setPaletteName] = useState<string>(() => {
+    try {
+      return localStorage.getItem(PALETTE_STORAGE_KEY) ?? DEFAULT_PALETTE_NAME
+    } catch {
+      return DEFAULT_PALETTE_NAME
+    }
+  })
+  const activePalette = SESSION_PALETTES.find((p) => p.name === paletteName) ?? SESSION_PALETTES[0]
   const runs = useMemo(() => computeSessionRuns(entries, activePalette), [entries, activePalette])
+  const setPalette = useCallback((name: string) => {
+    setPaletteName(name)
+    try {
+      localStorage.setItem(PALETTE_STORAGE_KEY, name)
+    } catch {
+      // localStorage 不可用(隐私模式/配额)时静默降级:仅本会话生效,不阻塞。
+    }
+  }, [])
+  const onToggleSession = useCallback((sid: string | undefined) => {
+    if (!sid) return // H1:无 sessionId 行 no-op
+    setSelectedSessions((prev) => {
+      const next = new Set(prev)
+      if (next.has(sid)) next.delete(sid)
+      else next.add(sid)
+      return next
+    })
+  }, [])
 
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // 每个 `at` 的定位进度:done 命中后不再重滚(WS invalidate 会换 entries 引用,否则抖动);
@@ -387,8 +428,8 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
     // roving tab 停靠:焦点行即停靠行;无焦点(初始/Esc 清空)回退首行作为 Tab 入口,保证列表始终有且仅一个 Tab 停靠点。
     const firstId = rows.length > 0 ? rows[0].original.id : null
     const tabStopId = focusedId ?? firstId
-    return { at, flashId, focusedId, tabStopId, onSelect: selectRow, runs }
-  }, [at, flashId, focusedIndex, rows, selectRow, runs])
+    return { at, flashId, focusedId, tabStopId, onSelect: selectRow, runs, selectedSessions, onToggleSession }
+  }, [at, flashId, focusedIndex, rows, selectRow, runs, selectedSessions, onToggleSession])
 
   // 容器级键盘导航(↑/↓/Esc):方向键从聚焦行冒泡到此,移动焦点游标 + 同步 DOM 焦点(roving)+ scrollToIndex 带入视口。
   // Enter/Space 激活不在此处理 —— 由 DOM 聚焦行(即游标行,roving 保证同步)的行级 onKeyDown 承担,语义统一到行级。
@@ -423,6 +464,15 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
           focusRequestRef.current = null
           setFocusedIndex(-1)
           if (e.target instanceof HTMLElement) e.target.blur()
+          setSelectedSessions(new Set()) // 同时清空对比高亮选择集
+          break
+        }
+        case "f": {
+          // 把光标行所属会话切入/切出对比高亮集(点色带的键盘等价物)。
+          e.preventDefault()
+          // 光标可能为空(Esc 后 focusedIndex=-1)或越界:先 bounds-check 再取行(同 rowContext memo 的模式)。
+          const row = focusedIndex >= 0 && focusedIndex < rows.length ? rows[focusedIndex] : undefined
+          if (row) onToggleSession(row.original.sessionId)
           break
         }
         default: {
@@ -431,7 +481,7 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
         }
       }
     },
-    [rows, focusedIndex],
+    [rows, focusedIndex, onToggleSession],
   )
 
   // 显式跟随实时流 / 暂停自动刷新的控制已上移到 LiveDock 状态栏(useGoLive + list-store pause);
@@ -441,6 +491,10 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mono flex items-center gap-2 border-b border-[#222] px-2 py-1 text-[12px] uppercase tracking-wider text-[var(--color-muted)]">
         <span>History · {total} total</span>
+        <SessionPaletteSelect
+          value={paletteName}
+          onChange={setPalette}
+        />
         {/* tail(自动刷新)状态 + 暂停/恢复控制已上移到底部 LiveDock 状态栏(见 LiveDock 的 ▶ live/⏸ paused 开关)。 */}
         <button
           type="button"
@@ -536,6 +590,11 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
                             type="button"
                             aria-label="toggle session highlight"
                             tabIndex={-1}
+                            onClick={(e) => {
+                              // stopPropagation:切换对比高亮,不冒泡到行 onClick(否则会 navigate 到详情)。
+                              e.stopPropagation()
+                              context.onToggleSession(row.original.sessionId)
+                            }}
                             className={`absolute inset-0 -bottom-px${info.isRunStart ? " session-cap-top" : ""}${info.isRunEnd ? " session-cap-bottom" : ""}`}
                             style={{ backgroundColor: info.indent ? info.shade : info.color }}
                           />

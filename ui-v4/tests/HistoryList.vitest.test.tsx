@@ -12,6 +12,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import {
   //
   MemoryRouter,
@@ -32,6 +33,11 @@ import type { EntrySummary } from "@/types"
 
 import { DEFAULT_COLUMN_VISIBILITY } from "@/lib/request-columns"
 import { EMPTY_FILTERS } from "@/lib/request-filters"
+import {
+  //
+  PALETTE_STORAGE_KEY,
+  SESSION_PALETTES,
+} from "@/lib/session-color"
 import {
   //
   initialListState,
@@ -622,5 +628,106 @@ describe("HistoryList — session 色带（Task 2 默认态）", () => {
     // tds[0]=session 色列, tds[1]=status
     expect(rowB.querySelectorAll("td")[1].className).toContain("pl-3")
     expect(rowA.querySelectorAll("td")[1].className).not.toContain("pl-3")
+  })
+})
+
+describe("HistoryList — 多选对比 + 键盘 + 色板（Task 3）", () => {
+  beforeEach(() => {
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
+    useListStore.setState({ ...initialListState })
+    scrollToIndexMock.mockClear()
+    apiGetMock.mockReset()
+    apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
+    apiDeleteMock.mockReset()
+    apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
+    localStorage.clear()
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    localStorage.clear()
+  })
+
+  const twoSessions = () => {
+    mockHistory = {
+      ...mockHistory,
+      entries: [
+        { ...entry("a"), sessionId: "S1" },
+        { ...entry("b"), sessionId: "S2" },
+      ],
+      total: 2,
+    }
+  }
+  const bar = (id: string) => document.querySelector(`[data-entry-id="${id}"] button[aria-label="toggle session highlight"]`) as HTMLElement
+
+  it("点色带 → 该会话行强背景、非选中行变灰", async () => {
+    const user = userEvent.setup()
+    twoSessions()
+    renderList(["/requests"])
+    await user.click(bar("a"))
+    const rowA = document.querySelector('[data-entry-id="a"]') as HTMLElement
+    const rowB = document.querySelector('[data-entry-id="b"]') as HTMLElement
+    expect(rowA.style.backgroundColor).toMatch(/^rgba\(/) // A 强背景
+    expect(rowB.className).toContain("opacity-40") // B 变灰
+  })
+
+  it("点色带 stopPropagation：不导航到 /requests/:id", async () => {
+    const user = userEvent.setup()
+    twoSessions()
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList filters={EMPTY_FILTERS} />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await user.click(bar("a"))
+    expect(screen.getByTestId("loc").textContent).toBe("/requests") // 未变 /requests/a
+  })
+
+  it("多选：再点 B → A、B 各自强背景、无行变灰", async () => {
+    const user = userEvent.setup()
+    twoSessions()
+    renderList(["/requests"])
+    await user.click(bar("a"))
+    await user.click(bar("b"))
+    const rowA = document.querySelector('[data-entry-id="a"]') as HTMLElement
+    const rowB = document.querySelector('[data-entry-id="b"]') as HTMLElement
+    expect(rowA.className).not.toContain("opacity-40")
+    expect(rowB.className).not.toContain("opacity-40")
+    expect(rowA.style.backgroundColor).toMatch(/^rgba\(/)
+    expect(rowB.style.backgroundColor).toMatch(/^rgba\(/)
+  })
+
+  it("再点已选 A → 移出；集空回默认（无变灰）", async () => {
+    const user = userEvent.setup()
+    twoSessions()
+    renderList(["/requests"])
+    await user.click(bar("a"))
+    await user.click(bar("a"))
+    const rowB = document.querySelector('[data-entry-id="b"]') as HTMLElement
+    expect(rowB.className).not.toContain("opacity-40")
+  })
+
+  it("键盘 f 聚焦光标行会话；Esc 清空选择集", () => {
+    twoSessions()
+    const { container } = renderList(["/requests"])
+    const rowA = container.querySelector<HTMLElement>('[data-entry-id="a"]')
+    rowA?.focus()
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "f" }) // 光标在 index 0=a(S1)
+    expect((container.querySelector('[data-entry-id="b"]') as HTMLElement).className).toContain("opacity-40")
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" })
+    expect((container.querySelector('[data-entry-id="b"]') as HTMLElement).className).not.toContain("opacity-40")
+  })
+
+  it("切色板 → 行色带色变 + localStorage 持久化", async () => {
+    const user = userEvent.setup()
+    twoSessions()
+    renderList(["/requests"])
+    const before = bar("a").style.backgroundColor
+    await user.click(screen.getByRole("combobox", { name: /色板/ }))
+    await user.click(screen.getByRole("option", { name: SESSION_PALETTES[1].label }))
+    expect(bar("a").style.backgroundColor).not.toBe(before)
+    expect(localStorage.getItem(PALETTE_STORAGE_KEY)).toBe("oceanic-jewel")
   })
 })
