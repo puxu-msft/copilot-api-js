@@ -433,6 +433,7 @@ ui/
 - **日志格式**：`[PREFIX] HH:MM:SS METHOD /path ...` — 状态前缀在前，时间戳在后
 - **只显示相关信息**：非模型请求（如 `/health`）不应显示模型名、token 数或 "unknown"
 - **流式指示器**：长时间运行的请求显示 `streaming...` 状态，使用 `[<-->]` 前缀
+- **footer 行宽感知 + 按模型分组**：底部 `[<-->]` 在途请求 footer 恒渲染为**单物理行**——由 `ConsoleSink.finalizeFooter` 单一收口保证（先 strip C0 控制字符防内嵌换行撑行，再 `truncateToWidth` 截到 `columns-1` 显示宽度，`columns` 每次渲染读活值故 resize 后 ≤100ms 自愈）。多请求时**按 resolvedModel 分组**为 `model ×N ↓sumBytes maxElapsed` 段（未解析归 `(resolving)` 桶，count 降序），显示几组由终端宽度贪心驱动、溢出收进 `+K more`（替代旧的固定 `MAX_SHOWN=3`）。宽度原语 `truncateToWidth`（`projections/format.ts`）用 `string-width` 按 code point 计宽，仅接纯文本、着色只在末端 `pc.dim` 一次
 - **诚实展示 retry**：每次被 retry strategy 接受的请求失败都打印一行 `[RETRY-n]`（n=1-based 失败次数），由 `executeRequestPipeline` 在 budget gate 通过后统一发射。格式示例：`[RETRY-1] 12:34:56 429 POST /v1/messages claude-opus-4.8 (3x) 1.2s ↑15KB: rate_limited (retryable: network-retry, wait 1.0s)`。前缀黄色、状态码红色、`(retryable: ...)` dim；之后仍照常打印最终 `[ OK ]` / `[FAIL]` 行。包含 token-refresh、learning probe（额外 `, learning` 后缀）、deferred-tool、unsupported-beta 等所有重试策略；无策略接受的错误直接进入 `[FAIL]`，不出 `[RETRY-n]`
 
 ### History Web UI

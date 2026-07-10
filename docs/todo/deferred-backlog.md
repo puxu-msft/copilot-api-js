@@ -2,6 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## Console footer 宽度感知落地的跟进项（2026-07-10）
+
+- **背景**：footer 行宽感知 + 按模型分组已落地（`docs/plan/2026-07-10-tui-footer-width-aware-grouping.md`）。以下四项经计划评审明确推迟（footer-only 瞬时损失、完成态 log line 补回，可接受），非本次范围：
+  - **`renderFeatureTag` detail 富化**：`tool-input-decode-failed` / `context-edits-applied`（带 `{count,clearedInputTokens,types}`）/ `protect-streaming-retry`（带 `{outcome,retries}`）/ `tool-input-repaired` 等 8 个 recovery/repair case 当前只渲染裸标签名，未展开各自 `detail`。若做：在 `console.ts` 的 `renderFeatureTag` 对应 case 里读 detail 拼富标签（如 `context-edits:3`），加对应单测。
+  - **单请求 footer 富化**：count===1 分支仍只显 method/path/model/elapsed/stream，未显已应用 tags/thinking/attempt 次数（有富数据但末端未呈现）。若做：在 count===1 分支追加 tag 摘要，仍经 `finalizeFooter` 截断。
+  - **外部直写 stdout 撞 footer**：任何绕过 `printLog` 的 `console.log` 会撞坏 footer 协调。当前 republish 已收编 consola，残余风险低。若做：需一个全局 stdout 写入拦截层。
+  - **`(resolving)` 桶丢 path**：未解析模型的请求在分组里归 `(resolving) ×N`，丢了各自 path（现状逐条显示会带 path）。footer-only 瞬时损失，完成态 log line 补回。若做：`(resolving)` 桶特殊化为逐条显示 method+path。
+
 ## GHC server_tool_memory 默认关 — CAPI 接受性待探针
 
 - **现状**：`anthropic.server_tool_memory` 默认关。GHC 只在 BYOK 直连注入 `memory_20250818`、CAPI 路径不注入，故本项目经 CAPI 发该 server-tool 类型 + `context-management` beta 的**接受性未实测**。
