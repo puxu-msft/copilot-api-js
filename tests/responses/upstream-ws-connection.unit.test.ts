@@ -276,6 +276,33 @@ describe("upstream websocket connection", () => {
     expect(connection.isOpen).toBe(false)
   })
 
+  test("a throwing onClose does not escape handleClose (guarded)", async () => {
+    const socket = new FakeSocket()
+    let onCloseCalled = false
+    const connection = createUpstreamWsConnection({
+      headers: {},
+      model: "gpt-5.5",
+      createSocket: () => socket,
+      onClose: () => {
+        onCloseCalled = true
+        throw new Error("onClose boom")
+      },
+    })
+    void connection.connect().catch(() => {})
+    socket.open()
+    // Drive a close; handleClose calls opts.onClose which throws. Guarded → must
+    // NOT propagate out of dispatchEvent (the async uncaughtException escape point).
+    // (.not.toThrow() alone is weak — a throwing EventTarget listener escapes
+    // asynchronously, not out of dispatchEvent; the faithful no-uncaughtException
+    // proof is the Task 1.3 subprocess test. bun:test additionally attributes the
+    // async escape to this test, so unwired it goes red — verified red→green.)
+    expect(() => socket.dispatchEvent(new CloseEvent("close", { code: 1000, reason: "x" }))).not.toThrow()
+    // Side-effect oracle: handleClose actually ran (onClose invoked) and the throw
+    // was absorbed by the guard, leaving the connection cleanly torn down.
+    expect(onCloseCalled).toBe(true)
+    expect(connection.isOpen).toBe(false)
+  })
+
   test("closes socket when send throws synchronously", async () => {
     const connection = createUpstreamWsConnection({
       headers: { authorization: "Bearer test" },

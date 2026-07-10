@@ -9,6 +9,7 @@ import type {
 
 import { copilotWsUrl } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
+import { guardCallback } from "~/lib/transport/crash-safety"
 
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000
 const CLOSE_CODE_NORMAL = 1000
@@ -109,9 +110,18 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
   const scheduleIdleClose = () => {
     clearIdleTimer()
     if (!socket || busy || socket.readyState !== socket.OPEN || idleTimeoutMs <= 0) return
-    idleTimer = setTimeout(() => {
-      closeUpstreamWs(socket, "Idle timeout")
-    }, idleTimeoutMs)
+    idleTimer = setTimeout(
+      guardCallback(
+        () => {
+          closeUpstreamWs(socket, "Idle timeout")
+        },
+        (error) => {
+          consola.warn(`[upstream-ws] idle-timer callback threw (model=${opts.model}): ${toError(error).message}`)
+          markUnusable()
+        },
+      ),
+      idleTimeoutMs,
+    )
   }
 
   const finishRequest = () => {
@@ -131,7 +141,21 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     currentQueue = null
   }
 
-  const handleMessage = (event: Event) => {
+  const toError = (error: unknown): Error => (error instanceof Error ? error : new Error(String(error)))
+
+  /**
+   * Per-callback escape for the lifecycle / in-request listeners: a throw that
+   * would otherwise escalate to `uncaughtException → process.exit(1)` is downgraded
+   * to warn + mark the connection unusable + fail the in-flight request (Phase 3
+   * recoverable). Must itself be throw-free (only warn + set flags + failRequest).
+   */
+  const onCallbackEscape = (error: unknown): void => {
+    consola.warn(`[upstream-ws] callback threw; failing request + dropping connection (model=${opts.model}): ${toError(error).message}`)
+    markUnusable()
+    failRequest(toError(error))
+  }
+
+  const handleMessage = guardCallback((event: Event) => {
     if (!(event instanceof MessageEvent)) return
     if (!currentQueue) return
 
@@ -157,9 +181,9 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       markUnusable()
       closeUpstreamWs(socket, "Parse error")
     }
-  }
+  }, onCallbackEscape)
 
-  const handleError = () => {
+  const handleError = guardCallback(() => {
     if (busy && currentQueue) {
       consola.warn(`[upstream-ws] Socket error mid-request (model=${opts.model}); failing request and dropping connection`)
       failRequest(new Error("Upstream WebSocket error"))
@@ -170,10 +194,10 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     // findReusable() and cause an extra fallback hop.
     markUnusable()
     closeUpstreamWs(socket, "Socket error")
-  }
+  }, onCallbackEscape)
 
   let closeHandled = false
-  const handleClose = (event: Event) => {
+  const handleClose = guardCallback((event: Event) => {
     // Defensive re-entry guard: some WS implementations dispatch close more than
     // once (e.g. after an error). Reuse-of-stale-event would re-fire failRequest
     // with a stale reason and re-trigger opts.onClose, masking the real cause.
@@ -192,7 +216,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     const closeEvent = event as CloseEvent
     consola.warn(`[upstream-ws] Connection closed mid-request (${closeEvent.code}: ${closeEvent.reason || "unknown"}, model=${opts.model})`)
     failRequest(new Error(`Upstream WebSocket closed (${closeEvent.code}: ${closeEvent.reason || "unknown"})`))
-  }
+  }, onCallbackEscape)
 
   return {
     connect(connectOpts) {
@@ -212,24 +236,36 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
             ws.removeEventListener("error", onOpenError)
           }
 
-          const onOpen = () => {
-            cleanup()
-            // Only after a successful handshake do we (a) bind the long-lived
-            // lifecycle listeners and (b) promote `ws` to the module-level
-            // `socket`. A failed handshake leaves no shared state behind.
-            socket = ws
-            ws.addEventListener("message", handleMessage)
-            ws.addEventListener("error", handleError)
-            ws.addEventListener("close", handleClose)
-            scheduleIdleClose()
-            resolve()
-          }
+          const onOpen = guardCallback(
+            () => {
+              cleanup()
+              // Only after a successful handshake do we (a) bind the long-lived
+              // lifecycle listeners and (b) promote `ws` to the module-level
+              // `socket`. A failed handshake leaves no shared state behind.
+              socket = ws
+              ws.addEventListener("message", handleMessage)
+              ws.addEventListener("error", handleError)
+              ws.addEventListener("close", handleClose)
+              scheduleIdleClose()
+              resolve()
+            },
+            (error) => {
+              cleanup()
+              reject(toError(error))
+            },
+          )
 
-          const onOpenError = () => {
-            cleanup()
-            closeUpstreamWs(ws, "Handshake failed")
-            reject(new Error("Upstream WebSocket handshake failed"))
-          }
+          const onOpenError = guardCallback(
+            () => {
+              cleanup()
+              closeUpstreamWs(ws, "Handshake failed")
+              reject(new Error("Upstream WebSocket handshake failed"))
+            },
+            (error) => {
+              cleanup()
+              reject(toError(error))
+            },
+          )
 
           ws.addEventListener("open", onOpen, { once: true })
           ws.addEventListener("error", onOpenError, { once: true })
@@ -246,10 +282,16 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       // rejection without affecting the shared handshake (other joined callers
       // continue waiting for the real outcome).
       return new Promise<void>((resolve, reject) => {
-        const onAbort = () => {
-          signal.removeEventListener("abort", onAbort)
-          reject(new Error("Upstream WebSocket connection aborted"))
-        }
+        const onAbort = guardCallback(
+          () => {
+            signal.removeEventListener("abort", onAbort)
+            reject(new Error("Upstream WebSocket connection aborted"))
+          },
+          (error) => {
+            signal.removeEventListener("abort", onAbort)
+            reject(toError(error))
+          },
+        )
         if (signal.aborted) {
           reject(new Error("Upstream WebSocket connection aborted"))
           return
@@ -282,9 +324,9 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       currentQueue = createAsyncQueue<ResponsesStreamEvent>()
 
       const abortSignal = requestOpts?.abortSignal
-      const onAbort = () => {
+      const onAbort = guardCallback(() => {
         failRequest(new Error("Upstream WebSocket request aborted"))
-      }
+      }, onCallbackEscape)
 
       currentAbortCleanup = () => {
         abortSignal?.removeEventListener("abort", onAbort)
