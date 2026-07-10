@@ -212,7 +212,7 @@ history:
   failure_limit: 500
   # Seconds between reaper passes that trim each bucket (0 = disabled, default: 600)
   # reaper 修剪各桶的周期秒数（0 = 禁用，默认 600）
-  reaper_interval: 600
+  reaper_interval: 3600
 
 # ============================================================================
 # Web Search (double-hop) / 网络搜索（双跳）
