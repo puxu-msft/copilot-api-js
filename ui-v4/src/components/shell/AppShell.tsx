@@ -20,16 +20,15 @@ export function AppShell() {
   return (
     <div className="flex h-full">
       <NavRail />
-      {/* relative:LiveDock 展开面板 `absolute bottom-6` 的定位锚。 */}
-      <div className="relative flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col">
         <TopBar />
         <main className="min-h-0 flex-1 overflow-auto p-2">
           <Outlet />
         </main>
-        {/* 在途活动状态栏提升为全局浮窗:所有页面都能看到在途请求信息(摘要 + 展开明细);
-            tail 开关 / 待合入 CTA 是请求列表专属控件,LiveDock 内按路由(/requests)自门控。 */}
-        <LiveDock />
       </div>
+      {/* 在途活动状态栏 = fixed 浮岛(自身定位到视口底部),脱离子布局、全局所有页面可见;
+          放这里只为常驻挂载,fixed 定位不参与 flex 布局流。tail/待合入 控件在 LiveDock 内按 /requests 自门控。 */}
+      <LiveDock />
     </div>
   )
 }
