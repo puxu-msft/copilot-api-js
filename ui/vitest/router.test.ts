@@ -67,7 +67,6 @@ describe("router table", () => {
       ["/history", "/activity"],
       ["/logs", "/activity"],
       ["/usage", "/dashboard"],
-      ["/v/models", "/models"],
       ["/v/config", "/config"],
     ] as const) {
       const r = testRouter()

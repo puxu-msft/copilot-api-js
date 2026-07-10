@@ -107,9 +107,10 @@ Hash 路由（`createWebHashHistory`），所有路由懒加载：
 | `/activity/:id` | VDetailPage — 请求详情 |
 | `/search` | VSearchPage — 内容寻址全文搜索（5 源单选切换，消费 `/history/api/search` + `/search/contains`；与 `/activity` 列表的轻量 preview 快筛分离） |
 | `/config` | VConfigPage — config.yaml 编辑器 |
-| `/models` | VModelsPage — 模型目录：密集可排序表（可配置列 + 遥测列）+ 右侧详情抽屉（6 tab 全字段 + 运行遥测 join）+ 新过滤（premium/restricted-to/policy/has-telemetry）+ CSV 导出 + 未关联遥测小节 |
 
 所有遗留路径（`/v/*`、`/history`、`/logs`、`/usage`）已重定向到新路径。
+
+> **模型视图已退役**（2026-07-10）：`/models` 页（VModelsPage + `components/models/` + `useModelsCatalog`/`useModelDetail`/`useModelColumns` 等）已删除，模型目录 UI 由 React `ui-v4/`（`/ui-v4`）承担并已超越旧版。`useModelTelemetry` 保留（Dashboard 共享）。
 
 ## 状态管理
 
@@ -164,9 +165,9 @@ DetailPanel → SectionBlock → MessageBlock → ContentRenderer
 - `usePolling` → `useIntervalFn`（轮询 interval 自动清理）
 - `useCopyToClipboard` → `useClipboard`（剪贴板 + `isSupported` 检测）
 - `useKeyboard` → `useEventListener`（document keydown 自动清理）
-- `useAppTheme` / `useModelColumns` → `useLocalStorage`（主题、Models 列显隐持久化）
+- `useAppTheme` → `useLocalStorage`（主题持久化）
 - `RequestList.vue` → `watchDebounced`（搜索 300ms 防抖）
-- `VDetailPage.vue` / `ModelDetailDrawer.vue` → `onKeyStroke`（j/k/Esc、抽屉 Esc 关闭；共用 `utils/keyboard.ts` 的 `isTyping` 守卫）
+- `VDetailPage.vue` → `onKeyStroke`（j/k/Esc；用 `utils/keyboard.ts` 的 `isTyping` 守卫）
 
 **刻意保留手写实现的**：
 - `useSharedResizeObserver` — 共享单实例 + rAF 合并，VueUse 每次创建新实例
