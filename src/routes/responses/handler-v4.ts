@@ -46,6 +46,7 @@ import type {
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
+import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
 import { HTTPError } from "~/lib/error"
@@ -184,7 +185,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
     env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     env.ctx.setClientResponseStatus(c.res.status)
     try {
-      await pumpStreamingV4({ stream, driver, codec, upstream, env, viaFallback })
+      await pumpStreamingV4({ stream, driver, codec, upstream, env, viaFallback, clientAbortSignal: clientAbort.signal })
     } finally {
       detachClientAbort()
     }
@@ -248,6 +249,12 @@ interface PumpStreamingV4Options {
   upstream: UpstreamStream
   env: RequestEnvelope
   viaFallback: boolean
+  /**
+   * The downstream client-disconnect signal (the route's `clientAbort`), threaded into the sink's
+   * forward-idle heartbeat so keepalive pings STOP once the client has left (a ping to a dead
+   * socket is wasted work + would keep sampling the forwarded track after the client is gone).
+   */
+  clientAbortSignal?: AbortSignal
 }
 
 async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
@@ -258,13 +265,28 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
 
   // Forwarded SSE frames — what the client ACTUALLY received (tool-name restored). Filled by
   // the sink's `onForwarded` sampler; the upstream-original track is the driver's (runResponse
-  // loop-top samples the raw frames before render). No heartbeat (Responses has none).
+  // loop-top samples the raw frames before render). Forward-idle keepalive (Phase 2, spec §4 /
+  // R3): during a long reasoning silence the sink injects a synthetic `response.ping` every
+  // `streamKeepalivePingSec` so Codex's 300s idle clock (and other consumers) never times out;
+  // the ping is marked `synthetic:"keepalive"` in the forwarded track (never the upstream track).
+  // Reuses the keepalive INTERVAL only — NOT the Anthropic-shaped `streamKeepaliveMode` enum.
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   let bytesIn = 0
   let eventsIn = 0
 
-  const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs })
+  const keepaliveSec = state.streamKeepalivePingSec
+  const sink = makeSseSink(stream, {
+    onForwarded: (record) => forwardedSseEvents.push(record),
+    streamStartMs,
+    ...(keepaliveSec > 0 && {
+      heartbeat: {
+        intervalSec: keepaliveSec,
+        pingFrame: responsesKeepaliveFrame(),
+        ...(opts.clientAbortSignal && { clientAbortSignal: opts.clientAbortSignal }),
+      },
+    }),
+  })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
   /**
