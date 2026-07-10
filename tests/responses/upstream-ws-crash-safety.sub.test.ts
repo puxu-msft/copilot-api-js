@@ -14,29 +14,45 @@ import { describe, expect, test } from "bun:test"
  *   - 42 = process crashed (uncaughtException policy fired)
  *   -  0 = clean survival (guard absorbed the throw)
  *
+ * The guarded leg additionally captures the child's stderr and asserts the
+ * `onCallbackEscape` WARN ("callback threw; failing request ...") — exit 0 alone
+ * is vacuity-prone (a refactor that leaves the callback unbound would also exit 0),
+ * so the WARN proves the guard was actually EXERCISED, not silently skipped.
+ *
  * `~/*` path aliases resolve in the spawned `bun <file>` via the worktree tsconfig
  * `paths` — verified by running the fixture directly during implementation.
  */
-async function runProbe(mode: "guarded" | "raw-control"): Promise<number> {
+async function runProbe(mode: "guarded" | "raw-control"): Promise<{ exitCode: number; stderr: string }> {
   const proc = Bun.spawn(["bun", "tests/responses/fixtures/ws-crash-probe.ts", mode], {
     stdout: "pipe",
     stderr: "pipe",
   })
-  // Drain the child's exit code. The child binds no network and self-exits, so
-  // there is no port/socket/process leak to clean up here.
-  return await proc.exited
+  // Capture stderr so the guarded leg can prove the guard was actually EXERCISED
+  // (the onCallbackEscape WARN), not merely that the process happened to exit 0.
+  // Read the stream to completion, then drain the exit code. The child binds no
+  // network and self-exits, so there is no port/socket/process leak here.
+  const stderr = await new Response(proc.stderr).text()
+  const exitCode = await proc.exited
+  return { exitCode, stderr }
 }
 
 describe("upstream-ws crash safety (subprocess)", () => {
   test("raw unguarded throwing EventTarget listener crashes (exit 42) — positive control", async () => {
     // Proves the harness can actually detect a crash: without guardCallback, the
     // async uncaughtException escape drives main.ts's exit policy.
-    expect(await runProbe("raw-control")).toBe(42)
+    const { exitCode } = await runProbe("raw-control")
+    expect(exitCode).toBe(42)
   })
 
-  test("guarded upstream-ws lifecycle callback throw does NOT crash (exit 0)", async () => {
+  test("guarded upstream-ws lifecycle callback throw does NOT crash (exit 0) AND the guard is exercised", async () => {
     // A real createUpstreamWsConnection onClose callback throws; guardCallback must
     // absorb it (warn + mark unusable + fail request) so no uncaughtException fires.
-    expect(await runProbe("guarded")).toBe(0)
+    const { exitCode, stderr } = await runProbe("guarded")
+    expect(exitCode).toBe(0)
+    // Exit 0 alone is vacuity-prone: a future refactor that leaves handleClose
+    // unbound (or never invokes onClose) would ALSO exit 0 and pass green. Assert
+    // the onCallbackEscape WARN so the guard is PROVABLY exercised — the throw was
+    // actually caught by guardCallback, not silently skipped.
+    expect(stderr).toMatch(/\[upstream-ws\] callback threw; failing request/)
   })
 })
