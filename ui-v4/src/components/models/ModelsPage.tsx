@@ -11,11 +11,6 @@ import {
 import { useSearchParams } from "react-router-dom"
 
 import { RawJsonView } from "@/components/common/RawJsonView"
-import {
-  //
-  augmentRows,
-  sortModelRows,
-} from "@/components/models/model-table-columns"
 import { ModelDetail } from "@/components/models/ModelDetail"
 import { ModelsColumnMenu } from "@/components/models/ModelsColumnMenu"
 import { ModelsFilterBar } from "@/components/models/ModelsFilterBar"
@@ -23,7 +18,6 @@ import { ModelsTable } from "@/components/models/ModelsTable"
 import { UnmatchedTelemetry } from "@/components/models/UnmatchedTelemetry"
 import { useModels } from "@/hooks/useModels"
 import { useModelTelemetry } from "@/hooks/useModelTelemetry"
-import { triggerDownload } from "@/lib/export-entry"
 import {
   //
   DEFAULT_COLUMN_VISIBILITY,
@@ -44,7 +38,6 @@ import {
   buildModelTelemetryIndex,
   telemetryForId,
 } from "@/lib/model-telemetry"
-import { modelsToCsv } from "@/lib/models-csv"
 
 const COLUMNS_KEY = "copilot-api-ui-v4-models-columns"
 
@@ -63,8 +56,8 @@ export function ModelsPage() {
   const [raw, setRaw] = useState(false)
   const [columns, setColumns] = useState<ModelColumnVisibility>(loadColumns)
   const [filters, setFilters] = useState<ModelFilters>(EMPTY_FILTERS)
-  // Sort state is lifted here (controlled) so the CSV export can sort the same rows
-  // with the same shared accessor as the table — TanStack owns the sort inside the table.
+  // Sort state is lifted here (controlled) and passed to ModelsTable; TanStack owns
+  // the actual sort inside the table.
   const [sorting, setSorting] = useState<SortingState>([{ id: "id", desc: false }])
 
   useEffect(() => {
@@ -136,15 +129,6 @@ export function ModelsPage() {
   const toggleColumn = (key: ModelColumnKey) => setColumns((c) => ({ ...c, [key]: !c[key] }))
   const resetColumns = () => setColumns({ ...DEFAULT_COLUMN_VISIBILITY })
 
-  // Export the CURRENT filtered/sorted view (spec §7): sort the filtered rows with
-  // the SAME shared accessor + SortingState the table uses, so the CSV row order is
-  // identical to the on-screen table. Telemetry columns use the same normalized join.
-  const exportCsv = () => {
-    const sortedModels = sortModelRows(augmentRows(visible, telemetryFor, statusFor), sorting).map((r) => r.model)
-    const csv = modelsToCsv(sortedModels, telemetryFor, statusFor)
-    triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8" }), "models.csv")
-  }
-
   if (isLoading) return <div className="mono p-4 text-[#888]">loading…</div>
   // A query failure is distinct from an empty result — render a dedicated error
   // branch instead of falling through to the "No models match…" empty state, which
@@ -169,13 +153,6 @@ export function ModelsPage() {
             onToggle={toggleColumn}
             onReset={resetColumns}
           />
-          <button
-            type="button"
-            className="mono border border-[var(--color-border)] px-2 py-1 text-[12px] text-[var(--color-text)] hover:text-[var(--color-primary)]"
-            onClick={exportCsv}
-          >
-            Export CSV
-          </button>
           <button
             type="button"
             className="text-[12px] text-[var(--color-primary)]"

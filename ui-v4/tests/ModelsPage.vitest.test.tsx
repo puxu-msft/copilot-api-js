@@ -72,10 +72,6 @@ vi.mock("@/hooks/useModelTelemetry", () => ({
   }),
 }))
 
-vi.mock("@/lib/export-entry", () => ({ triggerDownload: vi.fn() }))
-
-const { triggerDownload } = await import("@/lib/export-entry")
-
 const { ModelsPage } = await import("@/components/models/ModelsPage")
 
 /** ModelsPage now reads selection from the URL (`?model=`), so it needs a router. */
@@ -192,32 +188,6 @@ describe("ModelsPage", () => {
     // TanStack's controlled sort (Vendor is a string column → ascending first).
     await user.click(screen.getByRole("button", { name: /Vendor/i }))
     expect(vendorHeader.getAttribute("aria-sort")).toBe("ascending")
-  })
-
-  it("exports the current view as a text/csv download", () => {
-    vi.mocked(triggerDownload).mockClear()
-    renderPage()
-    fireEvent.click(screen.getByText("Export CSV"))
-    expect(triggerDownload).toHaveBeenCalledTimes(1)
-    const [blob, filename] = vi.mocked(triggerDownload).mock.calls[0]
-    expect(filename).toBe("models.csv")
-    expect(blob.type).toContain("text/csv")
-  })
-
-  it("CSV export reflects the active sort order (spec §7: sorted view)", async () => {
-    const user = userEvent.setup()
-    vi.mocked(triggerDownload).mockClear()
-    renderPage()
-    // Default is id-asc (claude before gpt). Click Ctx twice → ascending (gpt=0
-    // context before claude=1M) → the CSV row order must flip to match the table.
-    await user.click(screen.getByRole("button", { name: /^Ctx/i }))
-    await user.click(screen.getByRole("button", { name: /^Ctx/i }))
-    fireEvent.click(screen.getByText("Export CSV"))
-    const [blob] = vi.mocked(triggerDownload).mock.calls[0]
-    const text = await blob.text()
-    const dataRows = text.split("\n").slice(1) // drop header
-    expect(dataRows[0].startsWith("gpt-5.5")).toBe(true)
-    expect(dataRows[1].startsWith("claude-opus-4.8")).toBe(true)
   })
 
   it("surfaces unmatched telemetry (no catalog model) rather than dropping it", () => {
