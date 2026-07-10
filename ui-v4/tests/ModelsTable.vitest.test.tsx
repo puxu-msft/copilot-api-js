@@ -23,7 +23,6 @@ import {
 import {
   //
   augmentRows,
-  sortModelRows,
 } from "@/components/models/model-table-columns"
 import { ModelsTable } from "@/components/models/ModelsTable"
 
@@ -75,14 +74,6 @@ function firstRowId(): string {
   return screen.getAllByRole("row")[1].querySelector("td")?.textContent ?? ""
 }
 
-/** All data rows' first-cell (Model id) text, in DOM order. */
-function domRowIds(): Array<string | null> {
-  return screen
-    .getAllByRole("row")
-    .slice(1)
-    .map((r) => within(r).getByRole("button", { name: /Open details/i }).textContent)
-}
-
 describe("ModelsTable (TanStack)", () => {
   it("renders derived (Ctx/caps) + joined (Req 7d) columns", () => {
     render(<Harness columnVisibility={{ requests7d: true }} />)
@@ -126,20 +117,6 @@ describe("ModelsTable (TanStack)", () => {
     render(<Harness columnVisibility={{ vendor: false }} />)
     expect(screen.queryByRole("columnheader", { name: /Vendor/i })).toBeNull()
     expect(screen.getByRole("columnheader", { name: /Ctx/i })).toBeDefined()
-  })
-
-  it("sortModelRows reproduces the DOM row order (out-of-table sort ≡ table order)", () => {
-    // Render with a concrete sorting; the shared standalone sort must match the
-    // table's rendered order exactly, verified against the real TanStack DOM as an
-    // independent oracle. (Formerly backed the CSV export, now the helper's only test.)
-    const sorting: SortingState = [{ id: "context", desc: true }]
-    render(<Harness initialSorting={sorting} />)
-    const shared = sortModelRows(
-      augmentRows(MODELS, telemetryFor, () => "enabled"),
-      sorting,
-    ).map((r) => r.model.id)
-    expect(domRowIds()).toEqual(shared)
-    expect(shared).toEqual(["z-model", "a-model"]) // 900 desc before 100
   })
 
   it("thinking cell shows adaptive / ≤N / · with a budget tooltip", () => {

@@ -3,7 +3,6 @@ import type {
   ColumnDef,
   Row,
   RowData,
-  SortingState,
 } from "@tanstack/react-table"
 import type { DerivedCapabilities } from "~backend/lib/models/capabilities"
 import type { Model } from "~backend/lib/models/client"
@@ -26,14 +25,8 @@ import { vendorColor } from "@/lib/vendor-color"
  * accessors, sort semantics, and Terminal Amber cell rendering.
  *
  * `ModelsTable` turns {@link buildModelColumns} into a `useReactTable` instance
- * (TanStack owns sorting + `columnVisibility`). The standalone {@link sortModelRows}
- * reproduces that order off the same {@link ACCESSORS} + {@link compareValues}, so
- * any out-of-table sort matches the on-screen order without a second sort
- * implementation.
- *
- * NOTE: {@link sortModelRows}'s only production consumer (the CSV export) was
- * removed; it is currently exercised only by tests. Retained as a pure helper —
- * dead-code cleanup deferred to an explicit decision.
+ * (TanStack owns sorting + `columnVisibility`), reading the shared {@link ACCESSORS}
+ * + {@link compareValues} so there is one place a sortable value is derived.
  */
 
 export interface ModelRow {
@@ -76,8 +69,8 @@ type SortableColumnId = "id" | "vendor" | "context" | "output" | "billing" | "re
 type SortableValue = string | number
 
 /**
- * Single accessor source for the sortable columns. Both the ColumnDef `accessorFn`
- * and {@link sortModelRows} read these — the ONLY place a sortable value is derived.
+ * Single accessor source for the sortable columns. The ColumnDef `accessorFn`
+ * reads these — the ONLY place a sortable value is derived.
  */
 const ACCESSORS = {
   id: (r) => r.model.id,
@@ -93,8 +86,7 @@ const NUMERIC_COLUMNS: ReadonlySet<SortableColumnId> = new Set(["context", "outp
 
 /**
  * Shared comparator (ascending). Numbers subtract; anything else compares as a
- * locale string. Used BOTH as the columns' `sortingFn` and by {@link sortModelRows},
- * so an out-of-table sort matches the on-screen order.
+ * locale string. Used as the columns' `sortingFn`.
  */
 function compareValues(a: SortableValue, b: SortableValue): number {
   return typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b))
@@ -103,29 +95,6 @@ function compareValues(a: SortableValue, b: SortableValue): number {
 /** TanStack `sortingFn`: read the (shared) accessor value off each row and compare. */
 function sharedSortingFn(a: Row<ModelRow>, b: Row<ModelRow>, columnId: string): number {
   return compareValues(a.getValue<SortableValue>(columnId), b.getValue<SortableValue>(columnId))
-}
-
-/**
- * Apply a TanStack {@link SortingState} to augmented rows using the SAME accessors
- * + comparator the table uses — a stable, multi-key sort matching
- * `getSortedRowModel`. Given identical input order + identical SortingState, the
- * result equals `table.getRowModel().rows` (order ≡ the on-screen table).
- * Currently test-only (its CSV-export consumer was removed).
- */
-export function sortModelRows(rows: Array<ModelRow>, sorting: SortingState): Array<ModelRow> {
-  if (sorting.length === 0) return rows
-  return rows
-    .map((row, index) => ({ row, index }))
-    .sort((x, y) => {
-      for (const entry of sorting) {
-        const accessor = ACCESSORS[entry.id as SortableColumnId] as ((row: ModelRow) => SortableValue) | undefined
-        if (!accessor) continue
-        const cmp = compareValues(accessor(x.row), accessor(y.row))
-        if (cmp !== 0) return entry.desc ? -cmp : cmp
-      }
-      return x.index - y.index // stable tiebreak (mirrors Array.sort/TanStack stability)
-    })
-    .map((entry) => entry.row)
 }
 
 /** WAI-ARIA `aria-sort` from TanStack `getIsSorted()`. */
