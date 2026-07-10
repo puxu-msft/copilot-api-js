@@ -1,6 +1,6 @@
 # RFC: 交互式 TUI live query 面板 + 终端层重组
 
-- **状态**：Draft v2（吸收两轮对抗评审 · 待 PoC 回填 + ADR 用户签字 + 用户评审）
+- **状态**：Draft v2（吸收两轮对抗评审 · **两评审已达 consensus** · 待 PoC 回填 + ADR 用户签字 + 用户评审）
 - **日期**：2026-07-10
 - **类型**：大型结构重构（≥1000 行）+ 新交互特性 · RFC-first（skill `large-refactor`）
 - **关联**：反转 [observability-rewrite](../archive/2606-landed-rfcs/observability-rewrite.md) 对 console 渲染件摆放 + 「ConsoleSink 只读」的部分决定（**须先补 ADR 并经用户签字**，见 §12）；复用 [DESIGN.md](../DESIGN.md)「Console UI」footer 宽度不变量；PoC 在 `exp/tui-rawmode/`
@@ -25,6 +25,8 @@ v1 把 observability 当成 archived RFC 的旧状态，漏了已演进的复杂
 - **FileSink 不碰 stdout**：只订 `system.log` 写 `copilot-api.log`（[file.ts:110-115](../../src/lib/observability/sinks/file.ts#L110)），重组不影响它。
 
 **含义（BLOCK-1）**：region owner 必须成为 stdout **唯一**写者，接管**请求事件 + system.log 两条流**。否则请求行走 region、consola 日志仍直写 → 两个写者撕裂多行 region（每条 warn/info 常态触发）。
+
+**残余 stderr 逃逸（评审 MINOR-a）**：两条错误路径直写 `process.stderr` 绕过 stdout 唯一写者——[republish.ts:59](../../src/lib/observability/republish.ts#L59)（reentrant 守卫逃逸）与 [file.ts:132](../../src/lib/observability/sinks/file.ts#L132)（FileSink 写盘失败）。stderr 与 stdout 在 TTY 上渲染同一屏，磁盘满/重入等错误路径下偶发一行 stderr 会撕裂 region。这是边缘错误路径、不常态触发；region 显示期须**容忍偶发错误行**（下一次定时重画自愈），不追求拦截 stderr（那会吞掉诊断输出，违反 internal-tool 全量暴露取向）。
 
 ## 3. 目标 / 非目标
 
@@ -127,7 +129,7 @@ src/lib/tui/
 | Q2 | sticky region：DECSTBM vs 相对光标，Bun 下超高/resize/原生滚动谁存活 | PoC-2 bench-off `sticky-region{,-decstbm}.ts` | **可能推翻交互模型**（§4 fallback），非纯战术 |
 | Q3 | OSC 52 跨终端可行性 | PoC-3 `osc52-copy.ts`；否则退回显示 | 仅复制实现 |
 | Q4 | Bun exit-hook 同步 flush 还原终端 | PoC-4 `crash-restore.ts` | §7 崩溃还原承重 |
-| Q5 | user-abort 的终态 settle + provenance + 客户端语义 | 新 `user-abort` StreamErrorKind + 镜像 reaper 成对调用；显式报错 vs 静默待定 | §5 abort 正确性，P2 设计入口 |
+| Q5 | user-abort 的终态 settle + provenance + 客户端语义 + **遥测计数后果** | 新 `user-abort` StreamErrorKind + 镜像 reaper 成对调用；显式报错 vs 静默待定；终态方法选择（`fail()`/`abort()`/新终态）决定是否污染 per-model 失败率（telemetry 排除 aborted、计入 failed，评审 MINOR-b） | §5 abort 正确性，P2 设计入口 |
 | Q6 | drain 期间 stdout 所有权 / 多次 Ctrl-C 升级 | 方案 A（还原 cooked）vs B（持续转发），倾向 A | §7，用户/执行期定 |
 
 架构对 Q1/Q3/Q4 鲁棒；**Q2 可能推翻交互模型**（§4 已列 fallback）。
