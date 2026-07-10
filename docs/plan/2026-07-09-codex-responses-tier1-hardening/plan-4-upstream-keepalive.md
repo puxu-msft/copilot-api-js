@@ -7,6 +7,7 @@
 
 **Architecture / 已知约束（待 PoC 严格确认）：**
 - undici 的客户端 WebSocket 是 **WHATWG** 实现：只有 `send()` / `close()` / 事件处理器，**无 `ping()`**（协议级 ping/pong 被浏览器式 API 隐藏），也不暴露底层 socket。⟹ **应用层 WS ping 由 API 约束即不可行**；TCP keepalive 是否可经 undici WS 的连接设置是唯一开放问题。
+> **⚠️ PoC 后更正（Task 4.1，2026-07-09）**：上一句「无 `ping()`」是 **runtime-split** 的——`import{WebSocket}from"undici"` 只在 **Node/real-undici** 无 `ping()`；**Bun**（`dev`/`start` 主运行时）解析到原生 WS、**有** `ping()`。但即便 Bun 可发 WS PING 也是 **prevention-only**（控制帧、不产 `ResponsesStreamEvent`、不重置帧-idle guard），承重结论（buffered 重试）不变。下列 Step 的 `has ping(): false` / 「无 `ping()`」`Expected` 是 PoC **前**假设，已被推翻其 flat 形态——权威见 `exp/ws-upstream-keepalive/REPORT.md` + `docs/todo/deferred-backlog.md`「上游 WebSocket 应用层保活」条 + spec R5.1。
 - 对比 h2 路径两层（`http2-client.ts`：`socket.setKeepAlive` + `scheduleH2KeepalivePing`）。GHC 对 WS 的收割理由与 h2 同构（长静默 = 真 idle 流被 middlebox/GHC edge 收割）。
 - **R5.3 关键洞察**：`state.streamIdleTimeout`（默认 **300s**）是**上游帧静默的硬上限**，对 h2 与 WS **都**适用——TCP/h2-PING keepalive 保连接活但**不产生帧**，故不重置帧-idle guard；下游保活（Phase 2）也**不**重置上游 guard（不同 racer）。即一次 > 300s 的合法 reasoning 静默会被我方 guard 杀掉，两路皆然。
 - **预置结论分支（spec R5.1）**：若 WS 两层保活皆不可行，则上游-WS **无法预防收割、只能恢复** → Phase 3 的 buffered 重试成为 WS 的**承重恢复防线**（对 WS 比对 h2 更关键）。
