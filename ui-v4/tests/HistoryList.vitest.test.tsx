@@ -150,17 +150,20 @@ describe("HistoryList", () => {
   })
   afterEach(() => vi.restoreAllMocks())
 
-  it("shows paused in header; buffer merge CTA moved out of HistoryList (now in LiveDock)", () => {
+  it("tail 控制(live/paused/resume)与合入横幅均已上移 LiveDock;HistoryList 头部不再渲染它们", () => {
     useListStore.setState({ tailOn: false, bufferedIds: ["a", "b", "c"] })
     renderList()
-    expect(screen.getByText(/paused/)).toBeDefined()
-    // 合入横幅已上移到 LiveDock 状态栏(见 LiveDock.vitest)——HistoryList 不再渲染它。
+    // tail 状态 + 暂停/恢复控制已移到底部 LiveDock 状态栏(见 LiveDock.vitest)。
+    expect(screen.queryByText(/paused|▶ live|resume/)).toBeNull()
+    // 合入横幅也已上移。
     expect(screen.queryByText(/条新请求|待合入/)).toBeNull()
+    // 头部仍保留 History 总数。
+    expect(screen.getByText(/total/)).toBeDefined()
   })
-  it("no banner when tail-on", () => {
+  it("no merge banner and no tail indicator in HistoryList when tail-on (both moved to LiveDock)", () => {
     renderList()
     expect(screen.queryByText(/条新请求/)).toBeNull()
-    expect(screen.getByText(/live/)).toBeDefined()
+    expect(screen.queryByText(/▶ live|paused/)).toBeNull()
   })
 
   it("locates the ?at row: highlights it (selection truth = URL) and pauses tail", () => {
@@ -337,22 +340,6 @@ describe("HistoryList", () => {
     expect(fetchNextPage).not.toHaveBeenCalled()
     expect(apiGetMock).not.toHaveBeenCalled()
     expect(useListStore.getState().tailOn).toBe(true)
-  })
-
-  it("resume while located re-enables tail and clears ?at (no re-pause fight)", () => {
-    mockHistory = { ...mockHistory, entries: [entry("e1"), entry("e2")], total: 2 }
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter initialEntries={["/requests?at=e2"]}>
-          <HistoryList filters={EMPTY_FILTERS} />
-          <LocationProbe />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    )
-    expect(useListStore.getState().tailOn).toBe(false)
-    fireEvent.click(screen.getByText(/resume/))
-    expect(useListStore.getState().tailOn).toBe(true)
-    expect(screen.getByTestId("loc").textContent).toBe("/requests")
   })
 
   // ── Task 4.1:error / empty 三态 ──

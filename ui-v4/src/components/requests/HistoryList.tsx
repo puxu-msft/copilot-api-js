@@ -38,7 +38,6 @@ import type {
 } from "@/types"
 
 import { Modal } from "@/components/shared/Modal"
-import { useGoLive } from "@/hooks/useGoLive"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
 import { api } from "@/lib/api"
 import {
@@ -417,27 +416,17 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
     [rows, focusedIndex],
   )
 
-  // 显式跟随实时流:恢复 tail 并清掉 URL 的定位参数(URL-as-truth:tailing 态不该声明 locate)。
-  // 共享 hook(useGoLive),与 LiveDock 合入 CTA 同源——避免两处各自实现导致清 at 逻辑漂移/不对称。
-  const goLive = useGoLive()
+  // 显式跟随实时流 / 暂停自动刷新的控制已上移到 LiveDock 状态栏(useGoLive + list-store pause);
+  // HistoryList 只被动暂停 tail(locate / scroll-up),不再自持 resume 入口。
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mono flex items-center gap-2 border-b border-[#222] px-2 py-1 text-[12px] uppercase tracking-wider text-[var(--color-muted)]">
         <span>History · {total} total</span>
-        <span className="ml-auto">{tailOn ? "▶ live" : "⏸ paused"}</span>
-        {!tailOn && (
-          <button
-            type="button"
-            className="text-[var(--color-primary)]"
-            onClick={() => goLive("resume")}
-          >
-            resume
-          </button>
-        )}
+        {/* tail(自动刷新)状态 + 暂停/恢复控制已上移到底部 LiveDock 状态栏(见 LiveDock 的 ▶ live/⏸ paused 开关)。 */}
         <button
           type="button"
-          className="text-[var(--color-primary)]"
+          className="ml-auto text-[var(--color-primary)]"
           onClick={() => setClearOpen(true)}
         >
           清空

@@ -129,4 +129,34 @@ describe("LiveDock", () => {
     expect(screen.getByTestId("loc").textContent).not.toContain("at=")
     expect(useListStore.getState().tailOn).toBe(true)
   })
+
+  it("tail 开关:live 时显 ▶ live,点击暂停自动刷新(tailOn→false)", async () => {
+    useListStore.setState({ tailOn: true, bufferedIds: [] })
+    render(
+      <MemoryRouter>
+        <LiveDock />
+      </MemoryRouter>,
+    )
+    const toggle = screen.getByRole("button", { name: /live/i })
+    expect(toggle.getAttribute("aria-pressed")).toBe("true")
+    await userEvent.click(toggle)
+    expect(useListStore.getState().tailOn).toBe(false)
+    // 暂停后 CTA 文案变为 paused
+    expect(screen.getByRole("button", { name: /paused/i })).toBeTruthy()
+  })
+
+  it("tail 开关:paused 时显 ⏸ paused,点击恢复(tailOn→true)并清掉 ?at=", async () => {
+    useListStore.setState({ tailOn: false, bufferedIds: [] })
+    render(
+      <MemoryRouter initialEntries={["/requests?at=xyz"]}>
+        <LiveDock />
+        <LocationProbe />
+      </MemoryRouter>,
+    )
+    const toggle = screen.getByRole("button", { name: /paused/i })
+    expect(toggle.getAttribute("aria-pressed")).toBe("false")
+    await userEvent.click(toggle)
+    expect(useListStore.getState().tailOn).toBe(true)
+    expect(screen.getByTestId("loc").textContent).not.toContain("at=")
+  })
 })

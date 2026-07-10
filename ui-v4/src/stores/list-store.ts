@@ -13,6 +13,7 @@ export type ListEvent =
   | { kind: "incoming"; id: string }
   | { kind: "flush" }
   | { kind: "resume" }
+  | { kind: "pause" }
   | { kind: "locate" }
   | { kind: "scroll-up" }
   | { kind: "reset" }
@@ -32,6 +33,11 @@ export function reduceListEvent(state: ListState, ev: ListEvent): ListState {
     case "flush":
     case "resume": {
       return { ...state, tailOn: true, bufferedIds: [] }
+    }
+    case "pause": {
+      // 用户显式暂停自动刷新(tail):停止跟随实时流。保留已缓冲的新完成项(不清 bufferedIds)、
+      // 不碰 URL `?at=`(暂停≠定位)。幂等:已暂停返回原引用,避免无谓 re-render。
+      return state.tailOn ? { ...state, tailOn: false } : state
     }
     case "locate": {
       // 定位到具体条目(点行进详情 / URL 带 ?at=)→ 暂停 tail,避免新条目把定位行挤走。

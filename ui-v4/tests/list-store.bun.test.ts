@@ -46,4 +46,13 @@ describe("list-store reducer", () => {
     const next = reduceListEvent({ ...initialListState, tailOn: false, bufferedIds: ["x"] }, { kind: "resume" })
     expect(next).toMatchObject({ tailOn: true, bufferedIds: [] })
   })
+  it("pause turns tail off but KEEPS the buffer (explicit user pause, ≠ resume)", () => {
+    const next = reduceListEvent({ ...initialListState, tailOn: true, bufferedIds: ["x"] }, { kind: "pause" })
+    expect(next.tailOn).toBe(false)
+    expect(next.bufferedIds).toEqual(["x"]) // 暂停不清缓冲(区别于 resume/flush)
+  })
+  it("pause is idempotent when already paused (returns same ref → no needless re-render)", () => {
+    const paused: ListState = { ...initialListState, tailOn: false }
+    expect(reduceListEvent(paused, { kind: "pause" })).toBe(paused)
+  })
 })

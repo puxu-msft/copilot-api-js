@@ -42,6 +42,7 @@ export function LiveDock() {
   // 缓冲的新完成请求(tail 暂停期间到达)——合入 CTA 从 HistoryList 上移到本状态栏。
   const bufferedCount = useListStore((s) => s.bufferedIds.length)
   const tailOn = useListStore((s) => s.tailOn)
+  const dispatch = useListStore((s) => s.dispatch)
   const goLive = useGoLive()
   const showMerge = !tailOn && bufferedCount > 0
 
@@ -117,6 +118,16 @@ export function LiveDock() {
             ↓ {bufferedCount} 待合入
           </button>
         : null}
+        {/* 自动刷新(tail)开关:live 时点击暂停、paused 时点击恢复。这是列表自动刷新的显式控制 + 状态显示。 */}
+        <button
+          type="button"
+          aria-pressed={tailOn}
+          onClick={() => (tailOn ? dispatch({ kind: "pause" }) : goLive("resume"))}
+          title={tailOn ? "自动刷新中 · 点击暂停" : "已暂停自动刷新 · 点击恢复实时跟随"}
+          className={`shrink-0 border-l border-[#2f6f3f] pl-2 ${tailOn ? "text-[#7fd99a] hover:text-[#a8f0c0]" : "text-[#4a6a4a] hover:text-[#7fd99a]"}`}
+        >
+          {tailOn ? "▶ live" : "⏸ paused"}
+        </button>
       </div>
     </>
   )
