@@ -304,9 +304,6 @@
 - **为何暂缓（用户 2026-07-10 决策）**：形态 A 已满足用户核心偏好（喜欢整页全宽）+ 补 prev/next 后同时满足通用直觉（连续浏览 + 不丢列表上下文），是最小改动解；双入口是**严格增量**演进，形态 A 不挡路（prev/next 与 peek 可共存演进）；peek 面板引入 master-detail 分栏基建 + 单击/回车双语义交互复杂度 + 用户教育成本，价值待「实测更多在扫读比对而非深看单条」后再证。属独立 UX 演进工作单元，非「因范围大降级」。
 - **若做需改什么**：① 引入右侧 peek 面板组件（可复用 `DetailPanel` 的 segment 渲染、窄宽版）；② 列表行「单击 → peek / 回车 · 双击 → `navigate(/requests/:id)` 整页」的双语义路由；③ peek 与形态 A 的 prev/next 快捷键协调（peek 内也可 j/k 翻相邻）；④ Models 详情统一到同一双入口（替换现抽屉，或把抽屉视作 peek 的一种）；⑤ 交互 + 键盘可访问性测试。**前置**：形态 A（整页 + prev/next 连续性）先落地。发现方：ui-v4 shadcn 重设计布局讨论（2026-07-10）。
 
-## Vue 模型退役 + CSV 移除留下的孤儿（2026-07-10）
+## Vue 模型退役 + CSV 移除留下的孤儿（2026-07-10，已解决）
 
-退役 Vue `/models` 视图（master `af13c45b`）+ 移除 ui-v4 CSV 导出后，两处成为孤儿（保守保留，未擅删——no-destructive「绝不以无消费者为名擅自删」；待用户决定清理）：
-
-- **`ui/src/components/ui/JsonViewerSurface.vue` 零引用**：删除前仅被 3 个已删模型文件（ModelsRawView / detail RawJsonTab / VModelsPage）引用，现零生产引用（仅 `ui/vitest/detail-page.test.ts` 一个惰性 stub）。它是通用 JSON 查看组件、非用户点名的「模型视图」，故保留。若确认不再需要 → 删该组件 + detail-page.test.ts 的惰性 stub；Vue 详情 raw JSON 用的是 `RawJsonModal.vue`（vue-json-pretty），不受影响。
-- **ui-v4 `sortModelRows` 成 CSV-孤儿纯函数**：`model-table-columns.tsx:sortModelRows`（+ `model-table-columns.bun.test.ts` / `ModelsTable.vitest.test.tsx` 各一测试）唯一生产消费者是已移除的 CSV 导出，现仅测试引用。保留为纯 helper（注释已标注 test-only）。若确认不留 → 删 `sortModelRows` + 两处测试；表格自身排序（TanStack `getSortedRowModel`）不依赖它。附带：ModelsPage 的 `sorting` 受控 lift 现仅用于把排序态传给 ModelsTable，若嫌多余可下沉回表格内部（TanStack 自持），属独立 refactor。
+退役 Vue `/models` 视图 + 移除 ui-v4 CSV 导出后，两处成孤儿，**已按用户决策清理**（2026-07-10，commits `ee838f63` + `62d14d7d`）：删 `ui/src/components/ui/JsonViewerSurface.vue`（+ detail-page.test.ts 惰性 stub）、删 ui-v4 `sortModelRows` 及其两处测试与连带 unused imports。表格自身排序（TanStack `getSortedRowModel`）不受影响。**残留独立 refactor（未做）**：ModelsPage 的 `sorting` 受控 lift 现仅用于把排序态传给 ModelsTable，若嫌多余可下沉回表格内部（TanStack 自持）——属独立小重构，非孤儿。
