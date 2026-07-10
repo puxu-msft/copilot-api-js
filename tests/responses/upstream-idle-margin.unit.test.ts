@@ -41,9 +41,18 @@ import {
 import type { SseEventRecord } from "~/lib/history"
 
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { makeSseSink, makeWsSink } from "~/lib/pipeline/client-sink"
+import {
+  //
+  makeSseSink,
+  makeWsSink,
+} from "~/lib/pipeline/client-sink"
 import { state } from "~/lib/state"
-import { StreamIdleTimeoutError, guardSseIterable, raceIteratorNext } from "~/lib/stream"
+import {
+  //
+  StreamIdleTimeoutError,
+  guardSseIterable,
+  raceIteratorNext,
+} from "~/lib/stream"
 
 import { FakeClock } from "../helpers/fake-clock"
 

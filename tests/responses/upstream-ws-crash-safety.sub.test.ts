@@ -1,4 +1,9 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 /**
  * Subprocess crash-safety proof for the upstream-WS lifecycle callbacks.
