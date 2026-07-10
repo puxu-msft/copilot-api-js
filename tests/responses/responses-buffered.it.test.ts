@@ -177,6 +177,35 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     expect(getProtectStreamingStats()).toEqual({ success: 1, exhausted: 0, retreated: 0, totalRetries: 1 })
   })
 
+  test("buffered mode EXHAUSTION: every attempt truncates up to retryCap → settle FAIL, last partial preserved, exhausted outcome", async () => {
+    // retryCap = protectStreamingMaxRetries (2) → 1 original + 2 re-exchanges = 3 attempts, all RST.
+    setStateForTests({ responsesBufferedRetry: true, protectStreamingMaxRetries: 2, streamKeepalivePingSec: 20 })
+    rstBeforeComplete = 99 // EVERY attempt RSTs mid-stream — the upstream never reaches a terminal
+
+    const sse = await (await streamRequest()).text()
+
+    // All-or-nothing: nothing committed → the client gets ZERO content frames, only the synthetic
+    // error terminator (the buffered path never live-forwards a discarded attempt's partial).
+    expect(sse).not.toContain("PARTIAL_ATTEMPT_1")
+    expect(sse).not.toContain("COMPLETE_ATTEMPT_2")
+    expect(frameTypesInOrder(sse)).not.toContain("response.completed")
+    expect(sse).toContain("event: error")
+
+    // attempts == retryCap + 1 (3 upstream exchanges: original + 2 retries, all RST).
+    expect(upstreamCalls).toBe(3)
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    // settle FAIL — retries exhausted, surfaced as a stream error.
+    expect(entry?.state).toBe("failed")
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(entry?._index?.derived?.attemptCount).toBe(3)
+    // The LAST attempt's partial is preserved in its history record (the final failed attempt keeps
+    // its upstream-original frames at the top-level slot — D1 — so a diagnosis is never lost).
+    expect(JSON.stringify(entry?.attempts?.at(-1))).toContain("PARTIAL_ATTEMPT_1")
+    // onBufferedResolve("exhausted", 2): the L2 engagement is recorded as an exhaustion, NOT a save.
+    expect(getProtectStreamingStats()).toEqual({ success: 0, exhausted: 1, retreated: 0, totalRetries: 2 })
+  })
+
   test("buffered mode: a clean first-try commit is NOT counted as a retry", async () => {
     setStateForTests({ responsesBufferedRetry: true, protectStreamingMaxRetries: 2, streamKeepalivePingSec: 20 })
     rstBeforeComplete = 0 // upstream completes first try — the buffered happy path, zero retries

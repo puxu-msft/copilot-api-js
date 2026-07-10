@@ -407,6 +407,28 @@ describe("Responses v4 driver path", () => {
     expect((v4 as { id?: string }).id).toBe("resp_up_1")
   })
 
+  // R4-pre (before-first-event transport failure) — the STREAMING twin of the non-streaming
+  // network-retry above. A transport error thrown BEFORE the upstream yields its first frame is
+  // caught by `runExchange` (transport establishment, format-agnostic) and routed through the S4
+  // strategy layer (`buildOpenAiResponsesStrategiesForEnv` → network-retry, ECONNRESET =
+  // network_error), which re-exchanges once and then streams cleanly. This locks the conclusion that
+  // the pre-stream transport failure is covered by the strategy layer on the HTTP path (the WS path's
+  // before-first-event failure degrades to HTTP — openai-responses-client.it.test.ts "falls back to
+  // HTTP before first websocket event"). No new strategy is needed; this固定s the existing coverage.
+  test("R4-pre: a before-first-event transport error on a STREAMING request retries then streams to completion", async () => {
+    throwOnce = true
+    respHits = 0
+    const text = await (await post({ model: "gpt-resp", input: "hi", stream: true })).text()
+
+    // 2 upstream exchanges: the first throws pre-first-frame (ECONNRESET), the retry streams cleanly.
+    expect(respHits).toBe(2)
+    expect(text).toContain("response.created")
+    expect(text).toContain("response.completed")
+    // No error frame reached the client — the retry recovered transparently before any frame shipped.
+    expect(text).not.toContain("event: error")
+    expect(getHistory({ endpoint: "openai-responses" }).entries[0]?.state).toBe("completed")
+  })
+
   test("history: non-streaming success finalizes the entry (completed)", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: false }
 
