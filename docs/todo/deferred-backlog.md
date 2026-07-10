@@ -248,6 +248,24 @@
 - **理想架构**：记录每次 PING 的发出时刻，若连续 N 个 PING 在 `ackTimeoutMs`（如 2×interval）内无 ack，判定连接已死 → 主动 `session.destroy()`，把「静默挂死」转成**及时的可重试错误**（配合 L2 缓冲重试快速换新连接）。这是把 PING 从「保活」升级为「保活 + liveness 探测」。
 - **为何暂缓**：本次修复目标是**阻止**空闲回收（放真帧上 wire），已由纯保活达成；unacked-ping 的死连接快速 teardown 是**正交的另一个关注点**（加速失败恢复，非阻止截断），且引入「慢但活的连接被误判 teardown」的假阳性风险，需实测标定 `ackTimeoutMs`。against-yagni 的反面不适用——它不是本 bug 的必需件，是独立增强。
 - **若做需改什么**：`scheduleH2KeepalivePing` 的 ack 回调改为记 in-flight ping 计数/时刻 + 一个 `ackTimeoutMs` 守卫（连续无 ack → `session.destroy(new Error("h2 keepalive ping unacked — dead connection"))`）；加 config 旋钮 `timeouts.upstream_h2_ping_ack_timeout`；夹具用 Node http2 server（Bun server 的 ping ack 行为不忠实，见 skill `bun-upstream-transport`）跑一个「server 停 ack → 客户端在 timeout 内 destroy」的集成测试。发现方：本特性落地设计取舍（2026-07-09）。
+
+## 上游主动发帧手段盘点（END_STREAM 后无流级保活杠杆）+ h2 PING 运行时可观测性
+
+- **背景（2026-07-10 排查 `req_1783704300404_484` 引出）**：一条 anthropic-messages 请求上游静默 ~169s 后爆发部分 `tool_use` 即被截断（无 `message_stop`），追问「h2 PING 有没有生效 / 有没有记录 / 还有什么主动发帧手段」。前两问结论：PING 按默认配置启用（`upstream_h2_ping: 15`），但运行时对 ping 的发送/ack **零可观测**（`NOOP_PING_ACK` 丢弃 ack，无 log/计数/telemetry；history record 是 single-request 视角、结构上不含 connection-level 的 ping 痕迹）。可观测性修法已并入上一条「unacked-ping teardown」的「记录每次 PING 发出时刻」——**不重复**，那条落地时顺带补 per-session `sent/acked` 计数即可让「ping 生效吗」可从 telemetry 回答。
+- **现状（实测枚举，2026-07-10 node v24 探针）**：我方请求流是 `req.write(body); req.end()`（`http2-client.ts:489-490`），`req.end()` 后 `writableEnded=true`（END_STREAM 已发、写端半关闭）。此后客户端**仍能主动上 wire 的帧**只有：
+
+  | 帧 / API | 作用域 | 能否刷新单条流的应用层 idle | 备注 |
+  |---|---|---|---|
+  | `session.ping(payload, cb)` PING | 连接级 | ✗（连接级） | 已用；唯一带 ack 回调可测 RTT/liveness |
+  | `session.settings()` SETTINGS | 连接级 | ✗ | 非保活语义 |
+  | `session.setLocalWindowSize()` → WINDOW_UPDATE | 连接级 | ✗ | 流级 WINDOW_UPDATE 仅在有 DATA 可 ack 时随消费自动发；静默期无帧可发 |
+  | `req.priority()` PRIORITY | **流级** | ✗（多数服务端忽略） | RFC 9113 已废弃 stream priority，唯一 references 本流的客户端帧、但收益存疑 |
+  | `req.sendTrailers()` | 流级 | — | 仅 END_STREAM **前**有效，`req.end()` 后已太晚 |
+
+- **结论（承重）**：HTTP/2 协议**不提供半关闭流的流级 keepalive**——所有可主动发的帧要么连接级（刷新的是整条 h2 连接的 idle，防中间盒/连接回收，已由 PING 覆盖），要么是已废弃/被忽略的 PRIORITY。故若掐断方是 **GHC 对单条 stream 的应用层超时**，我方**没有任何新的主动发帧杠杆**能阻止它（case B）；预防层到 PING 为止，恢复层只能靠 **L2 缓冲重试**（`protect_streaming_generation`，默认 OFF）。WebSocket 路径同构：`client.ping()`（Bun-only）也是连接/预防级、不重置帧-idle guard，PoC 已判不落地（见下方 R5.1 条）。
+- **为何暂缓**：这是一次**盘点/定性**而非缺陷——现有 PING 预防层 + buffered-retry 恢复层已是协议允许范围内的完整应对，不存在「漏掉的主动手段」可补。记录它是为了封存「能不能给单条流保活」这个反复会被重新提起的问题（答案：协议层面不能），避免后续 speculative 地去实现 PRIORITY-poke 之类无收益改动。
+- **若做需改什么**：无需实现主动发帧新杠杆。唯一有收益的动作是把 PING 从 fire-and-forget 升级为**观测 + 判活**——完全落在上一条 unacked-ping teardown 的范围内（那条的 ack 记账即同时补齐本条的可观测性）。若未来实测发现 GHC 对连接级 PING 有响应式续期收益，可再评估缩短 `upstream_h2_ping`；PRIORITY-poke 明确**不做**（废弃帧、收益存疑）。发现方：`req_484` 截断排查（2026-07-10）。
+
 ## POST-COMMIT 失败的 error 帧 + 锚点收口帧不进 history clientResponse.sseEvents
 
 - **现状（2026-07-09 Phase 5 审查实证）**：delayed-commit 的 catch 块在 `setForwardedResponse({sseEvents:[...forwardedSseEvents]})` 快照**之后**才写 error 帧（`writeSynthetic`）——`git show` 父提交确认这是**既有** pattern（error 帧本就在快照后写、早已不进 history 轨）。这违反 `client-sink.ts:24-29` 明文契约（handler 应按 `writeSynthetic → recordForwarded → settle` 顺序，即先写 error 帧再快照）。
