@@ -22,6 +22,7 @@ import consola from "consola"
 import pc from "picocolors"
 
 import { buildActiveFooter } from "~/lib/tui/render/footer"
+import { renderSystemLogLine } from "~/lib/tui/render/syslog"
 
 import type {
   //
@@ -433,8 +434,7 @@ export class ConsoleSink {
    * prefix from the log's own timestamp.
    */
   private onSystemLog(event: Extract<ObservabilityEvent, { kind: "system.log" }>): void {
-    const prefix = consolaPrefix(event.logType, new Date(event.time))
-    this.printLog(prefix ? `${prefix} ${event.message}` : event.message)
+    this.printLog(renderSystemLogLine(event))
   }
 }
 
@@ -505,31 +505,6 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
     default: {
       // Exhaustiveness check — a new FeatureKind becomes a compile-time error.
       return assertNever(feature)
-    }
-  }
-}
-
-function consolaPrefix(type: string, date?: Date): string {
-  const time = pc.dim(formatTime(date))
-  switch (type) {
-    case "error":
-    case "fatal": {
-      return `${pc.red("[ERR ]")} ${time}`
-    }
-    case "warn": {
-      return `${pc.yellow("[WARN]")} ${time}`
-    }
-    case "info": {
-      return `${pc.cyan("[INFO]")} ${time}`
-    }
-    case "success": {
-      return `${pc.green("[SUCC]")} ${time}`
-    }
-    case "debug": {
-      return `${pc.gray("[DBG ]")} ${time}`
-    }
-    default: {
-      return time
     }
   }
 }
