@@ -263,6 +263,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
               resolve()
             },
             (error) => {
+              consola.warn(`[upstream-ws] handshake callback threw (model=${opts.model}): ${toError(error).message}`)
               cleanup()
               reject(toError(error))
             },
@@ -275,6 +276,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
               reject(new Error("Upstream WebSocket handshake failed"))
             },
             (error) => {
+              consola.warn(`[upstream-ws] handshake callback threw (model=${opts.model}): ${toError(error).message}`)
               cleanup()
               reject(toError(error))
             },
@@ -301,6 +303,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
             reject(new Error("Upstream WebSocket connection aborted"))
           },
           (error) => {
+            consola.warn(`[upstream-ws] handshake callback threw (model=${opts.model}): ${toError(error).message}`)
             signal.removeEventListener("abort", onAbort)
             reject(toError(error))
           },
