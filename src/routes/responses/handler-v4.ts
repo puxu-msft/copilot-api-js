@@ -45,6 +45,7 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
+import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
@@ -77,6 +78,8 @@ import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
+
+import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
 
 /** Responses has no learning-budget strategy; the value is inert (passed for completeness). */
 const MAX_LEARNING_RETRIES = 32
@@ -259,7 +262,11 @@ interface PumpStreamingV4Options {
 
 async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const { stream, driver, codec, upstream, env, viaFallback } = opts
-  const acc = createResponsesStreamAccumulator()
+  // `let` (not `const`) so the buffered `onAttemptReset` can rebind a FRESH accumulator between
+  // retries: each retry is a new generation, and the closures below (`restoreAndAccumulate` /
+  // `onRenderedFrame`) read the CURRENT binding — so a discarded attempt's text/tool-call/usage
+  // never leaks into the committed generation's history record (parity with Anthropic's `let acc`).
+  let acc = createResponsesStreamAccumulator()
   const mapper = env.ctx.toolNameMapper
   const model = (env.body as ResponsesPayload).model
 
@@ -267,21 +274,28 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // the sink's `onForwarded` sampler; the upstream-original track is the driver's (runResponse
   // loop-top samples the raw frames before render). Forward-idle keepalive (Phase 2, spec §4 /
   // R3): during a long reasoning silence the sink injects a synthetic `response.ping` every
-  // `streamKeepalivePingSec` so Codex's 300s idle clock (and other consumers) never times out;
-  // the ping is marked `synthetic:"keepalive"` in the forwarded track (never the upstream track).
-  // Reuses the keepalive INTERVAL only — NOT the Anthropic-shaped `streamKeepaliveMode` enum.
+  // `heartbeatSec` so Codex's 300s idle clock (and other consumers) never times out; the ping is
+  // marked `synthetic:"keepalive"` in the forwarded track (never the upstream track). Reuses the
+  // keepalive INTERVAL only — NOT the Anthropic-shaped `streamKeepaliveMode` enum.
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   let bytesIn = 0
   let eventsIn = 0
 
-  const keepaliveSec = state.streamKeepalivePingSec
+  // L2 buffered-retry routing + the forced client keepalive cadence (Task 3.2). `buffered`
+  // (opt-in `responsesBufferedRetry`) selects the driver's `runResponseBufferedSink` — the SAME
+  // shared primitive the Anthropic pump uses (messages/handler-v4.ts:1050), Responses being its
+  // second consumer (driver signatures unchanged, all via opts). `heartbeatSec` is FORCED in
+  // buffered mode (commit withholds every real frame until the terminal → long silence would
+  // otherwise trip Codex's idle deadline; buffered forces a ping even when the operator left
+  // `streamKeepalivePingSec` at 0). See resolveResponsesBufferedAndHeartbeat.
+  const { buffered, heartbeatSec } = resolveResponsesBufferedAndHeartbeat()
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
-    ...(keepaliveSec > 0 && {
+    ...(heartbeatSec > 0 && {
       heartbeat: {
-        intervalSec: keepaliveSec,
+        intervalSec: heartbeatSec,
         pingFrame: responsesKeepaliveFrame(),
         ...(opts.clientAbortSignal && { clientAbortSignal: opts.clientAbortSignal }),
       },
@@ -325,7 +339,53 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     return restoreAndAccumulate(frame)
   }
 
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onRenderedFrame })
+  // L2 buffered path (opt-in) vs live default. Buffered adopts the driver's shared
+  // `runResponseBufferedSink`: it buffers every rendered frame and commits the WHOLE generation to
+  // the sink ONLY on a clean drain that reached a terminal — retrying a transport-close/truncation
+  // up to `retryCap` so the client sees exactly ONE complete generation. Live (default) is the
+  // unchanged `runResponseSink` (a mid-stream drop → fail + preserved partial + truncation frame).
+  //
+  // Step 1 conclusion (upstream-error gate): a Responses TERMINAL `error` event (type "error") is
+  // NOT a `response.*` lifecycle terminal, so the accumulator does NOT set `acc.status` for it
+  // (only `response.completed/.failed/.incomplete` do — responses-stream-accumulator.ts). It is an
+  // upstream DECISION to fail (overload / server_error) delivered as a clean SSE frame — the exact
+  // shape of Anthropic's H2. Without a dedicated gate, `sawMessageStop: () => acc.status !== ""`
+  // alone would treat it as a transport truncation and wastefully RETRY it (then relabel the real
+  // error as "truncated" on exhaustion). So we add `sawUpstreamError: () => acc.streamError !==
+  // undefined` (the accumulator records the `error` event into `streamError`, mirroring Anthropic's
+  // `acc.streamError`) → the buffered sink COMMITS the error frame and the handler fails via the
+  // truncation gate below (acc.status still ""), exactly mirroring the live path.
+  const outcome =
+    buffered ?
+      await driver.runResponseBufferedSink(upstream, env, sink, {
+        onRenderedFrame, // restore + accumulate (the buffered drain invokes it per frame)
+        anchor: undefined, // the empty-text keepalive anchor is Anthropic-only → every driver anchor branch is inert
+        sawMessageStop: () => acc.status !== "", // terminal seen (completed/failed/incomplete) = the R5.2 gate, reused from live
+        sawUpstreamError: () => acc.streamError !== undefined, // terminal upstream `error` frame → commit + fail (not retry); see above
+        // Per-attempt isolation: rebind a FRESH accumulator + zero the progress counters before each
+        // re-exchange so a discarded attempt's text/tool-calls/usage/bytes never fold into the committed
+        // generation's history record (mirrors Anthropic's onAttemptReset). `forwardedSseEvents` is
+        // deliberately NOT reset — the buffered path only writes to the client on commit, so it holds
+        // the committed attempt's frames plus any heartbeat pings already on the wire (continuous stream).
+        onAttemptReset: () => {
+          acc = createResponsesStreamAccumulator()
+          bytesIn = 0
+          eventsIn = 0
+        },
+        retryCap: state.protectStreamingMaxRetries,
+        bufferCapBytes: state.protectStreamingBufferCapBytes,
+        // Hit-rate telemetry parity with Anthropic (messages/handler-v4.ts:1088): counted ONLY for an
+        // actual L2 engagement (a save after ≥1 retry, an exhaustion, or a buffer-cap retreat). A clean
+        // first-try commit (retries === 0, no RST) is the silent happy path — tagging it would put
+        // `protect-streaming-retry` on essentially every buffered 200 and inflate the "success" rate.
+        onBufferedResolve: (o, retries) => {
+          if (o === "success" && retries === 0) return
+          recordProtectStreamingOutcome(o, retries)
+          env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries })
+          consola.debug(`[protect-stream:responses] ${o} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
+        },
+      })
+    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
