@@ -472,9 +472,7 @@ describe("upstream websocket connection", () => {
   // assertion fails. Each path uses its own fresh socket+connection so the paths are
   // exercised in genuine isolation, not smeared into one shared lifecycle.
   describe("L1 guard: no lifecycle close path uses a WHATWG-forbidden code", () => {
-    const makeStrict = (
-      overrides?: Partial<Parameters<typeof createUpstreamWsConnection>[0]>,
-    ) => {
+    const makeStrict = (overrides?: Partial<Parameters<typeof createUpstreamWsConnection>[0]>) => {
       const strict = new StrictFakeSocket()
       const connection = createUpstreamWsConnection({
         headers: { authorization: "Bearer test" },
@@ -527,14 +525,10 @@ describe("upstream websocket connection", () => {
       const connectPromise = connection.connect()
       strict.open()
       await connectPromise
-      const iterator = connection
-        .sendRequest({ model: "gpt-5.2", input: "hello", stream: true })
-        [Symbol.asyncIterator]()
+      const iterator = connection.sendRequest({ model: "gpt-5.2", input: "hello", stream: true })[Symbol.asyncIterator]()
       // Malformed JSON → handleMessage parse throws → defensive close. The close
       // happens synchronously inside dispatchEvent, so wrap it in not.toThrow().
-      expect(() =>
-        strict.dispatchEvent(new MessageEvent("message", { data: "{not json" })),
-      ).not.toThrow()
+      expect(() => strict.dispatchEvent(new MessageEvent("message", { data: "{not json" }))).not.toThrow()
       // Drain the now-failed iterator so its rejection is observed.
       await iterator.next().then(
         () => {},
@@ -555,9 +549,7 @@ describe("upstream websocket connection", () => {
       // must not itself throw, and the close must use 1000.
       let iterator: AsyncIterator<unknown> | undefined
       expect(() => {
-        iterator = connection
-          .sendRequest({ model: "gpt-5.2", input: "hello", stream: true })
-          [Symbol.asyncIterator]()
+        iterator = connection.sendRequest({ model: "gpt-5.2", input: "hello", stream: true })[Symbol.asyncIterator]()
       }).not.toThrow()
       await iterator?.next().then(
         () => {},
