@@ -82,12 +82,8 @@ export function renderGoldenScenario(attach: (bus: ReturnType<typeof createBus>,
   return cap.text()
 }
 
-const cleanups: Array<() => void> = []
 beforeEach(() => setSystemTime(new Date(NOW)))
-afterEach(() => {
-  for (const c of cleanups.splice(0)) c()
-  setSystemTime()
-})
+afterEach(() => setSystemTime())
 
 describe("golden fixture (P0 equivalence oracle)", () => {
   test("current renderer output matches the committed golden", () => {
