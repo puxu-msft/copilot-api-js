@@ -12,7 +12,7 @@ import ActivityRow from "@/components/activity/ActivityRow.vue"
 import { mountWithVuetifyStubs } from "./helpers/mount"
 
 function entry(over: Partial<EntrySummary> = {}): EntrySummary {
-  return { id: "e1", startedAt: 0, endpoint: "anthropic-messages", messageCount: 0, previewText: "", ...over }
+  return { id: "e1", startedAt: 0, endpoint: "anthropic-messages", messageCount: 0, previewText: "", responsePreviewText: "", ...over }
 }
 
 function mountRow(e: EntrySummary) {
