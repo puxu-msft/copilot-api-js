@@ -111,7 +111,7 @@ export function sortCaret(sorted: false | "asc" | "desc"): string {
   return ""
 }
 
-const HEAD = "px-2 py-1 text-left text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
+const HEAD = "px-2 py-1 text-left text-[11px] uppercase tracking-wider text-[var(--content-muted)]"
 
 /** Capability matrix columns: derived boolean, centred, non-sortable ✓/· cells. */
 const CAP_COLS: ReadonlyArray<{ key: ModelColumnKey; deriveKey: keyof DerivedCapabilities; label: string }> = [
@@ -168,16 +168,16 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
                   onSelect(m.id)
                 }}
                 aria-label={`Open details for ${m.id}`}
-                className="text-left text-[var(--color-primary)] hover:underline"
+                className="text-left text-[var(--content-accent)] hover:underline"
               >
                 {m.id}
               </button>
-            : <span className="text-[var(--color-primary)]">{m.id}</span>}
+            : <span className="text-[var(--content-accent)]">{m.id}</span>}
             {m.is_chat_default ?
-              <span className="ml-1 text-[10px] text-[var(--color-muted)]">default</span>
+              <span className="ml-1 text-[10px] text-[var(--content-muted)]">default</span>
             : null}
             {m.preview ?
-              <span className="ml-1 text-[10px] text-[var(--color-muted)]">preview</span>
+              <span className="ml-1 text-[10px] text-[var(--content-muted)]">preview</span>
             : null}
           </>
         )
@@ -202,7 +202,7 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
             role="img"
             aria-label={m.title}
             title={m.title}
-            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-[var(--color-text)]"
+            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-[var(--content-text)]"
           >
             <span
               aria-hidden="true"
@@ -216,7 +216,7 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
       },
     }),
     {
-      ...sortable("vendor", "Vendor", "px-2 py-1 text-[#aaa]"),
+      ...sortable("vendor", "Vendor", "px-2 py-1 text-[var(--content-secondary)]"),
       cell: (c) => {
         const v = c.row.original.model.vendor
         const color = vendorColor(v)
@@ -231,18 +231,18 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
       },
     },
     {
-      ...sortable("context", "Ctx", "px-2 py-1 text-right text-[#cdb]", "text-right"),
+      ...sortable("context", "Ctx", "px-2 py-1 text-right text-[var(--content-value)]", "text-right"),
       cell: (c) => formatNumber(c.row.original.caps.contextWindow),
     },
     {
-      ...sortable("output", "Out", "px-2 py-1 text-right text-[#cdb]", "text-right"),
+      ...sortable("output", "Out", "px-2 py-1 text-right text-[var(--content-value)]", "text-right"),
       cell: (c) => formatNumber(c.row.original.caps.maxOutput),
     },
     col.accessor((r) => r.caps.reasoningEffort.join("/"), {
       id: "effort",
       header: "Effort",
       enableSorting: false,
-      meta: { thClass: `${HEAD} text-right`, tdClass: "px-2 py-1 text-right text-[var(--color-muted)]" },
+      meta: { thClass: `${HEAD} text-right`, tdClass: "px-2 py-1 text-right text-[var(--content-muted)]" },
       cell: (c) => c.getValue<string>() || "-",
     }),
     ...CAP_COLS.map((cap) =>
@@ -251,7 +251,7 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
         header: cap.label,
         enableSorting: false,
         meta: { thClass: `${HEAD} text-center`, tdClass: "px-2 py-1 text-center" },
-        cell: (c) => (c.getValue<boolean>() ? <span className="text-[var(--color-ok)]">✓</span> : <span className="text-[#3a3a42]">·</span>),
+        cell: (c) => (c.getValue<boolean>() ? <span className="text-[var(--signal-ok)]">✓</span> : <span className="text-[var(--content-off)]">·</span>),
       }),
     ),
     // Thinking stays the last capability column (id `"thinking"` keeps the column
@@ -268,7 +268,7 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
         return (
           <span
             title={title}
-            className={on ? "text-[var(--color-ok)]" : "text-[#3a3a42]"}
+            className={on ? "text-[var(--signal-ok)]" : "text-[var(--content-off)]"}
           >
             {text}
           </span>
@@ -276,11 +276,11 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
       },
     }),
     {
-      ...sortable("billing", "$×", "px-2 py-1 text-right text-[#cdb]", "text-right"),
+      ...sortable("billing", "$×", "px-2 py-1 text-right text-[var(--content-value)]", "text-right"),
       cell: (c) => c.row.original.model.billing?.multiplier ?? "-",
     },
     {
-      ...sortable("requests7d", "Req 7d", "relative px-2 py-1 text-right text-[#cdb]", "text-right"),
+      ...sortable("requests7d", "Req 7d", "relative px-2 py-1 text-right text-[var(--content-value)]", "text-right"),
       cell: (c) => {
         const req = c.row.original.req
         return (
@@ -288,7 +288,7 @@ export function buildModelColumns({ maxRequests7d, onSelect }: BuildColumnsOptio
             {req || "-"}
             {req > 0 ?
               <span
-                className="absolute bottom-0 left-0 h-[2px] bg-[var(--color-primary)] opacity-60"
+                className="absolute bottom-0 left-0 h-[2px] bg-[var(--content-accent)] opacity-60"
                 style={{ width: `${maxRequests7d > 0 ? (req / maxRequests7d) * 100 : 0}%` }}
               />
             : null}

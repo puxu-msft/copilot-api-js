@@ -52,16 +52,20 @@ declare module "@tanstack/react-table" {
 }
 
 /**
- * 工业信号色 → CSS 变量。本文件是该表 + 下面 cell 文本拼装 helper 的单一真值源;
+ * 工业信号色 → 中性语义 token。本文件是该表 + 下面 cell 文本拼装 helper 的单一真值源;
  * RequestRow.tsx 的 HistoryRow(仍服务 AgentLane 泳道)/LiveRow 从此处 import 复用
  * (Task 3.2 去重:原先两文件各持一份副本,现收敛到这里)。
+ *
+ * C2 中性化:amber `--color-*` → `--signal-*` 语义 token(theme.css 两 preset 拥有具体色)。
+ * `live` 历史上映射为 amber `ok`(绿,非 primary),为保 amber 逐值等价映射到
+ * `--signal-ok`(而非 `--signal-live`,后者 amber 解析为 primary,会改值)。
  */
 export const SIGNAL_COLOR: Record<Signal, string> = {
-  ok: "var(--color-ok)",
-  fail: "var(--color-fail)",
-  warn: "var(--color-warn)",
-  live: "var(--color-ok)",
-  muted: "var(--color-muted)",
+  ok: "var(--signal-ok)",
+  fail: "var(--signal-fail)",
+  warn: "var(--signal-warn)",
+  live: "var(--signal-ok)",
+  muted: "var(--signal-muted)",
 }
 
 // ── cell 文本拼装(SSOT;RequestRow.tsx 的 HistoryRow/LiveRow 复用本组 helper) ──
@@ -154,7 +158,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
     id: "time",
     header: "Time",
     accessorFn: (e) => e.startedAt,
-    cell: ({ row }) => span("text-[#777]", formatTime(row.original.startedAt), { title: new Date(row.original.startedAt).toISOString() }),
+    cell: ({ row }) => span("text-[var(--content-faint)]", formatTime(row.original.startedAt), { title: new Date(row.original.startedAt).toISOString() }),
     meta: { width: COLUMN_WIDTHS.time },
   },
   {
@@ -164,7 +168,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
     cell: ({ row }) => {
       const e = row.original
       const anomaly = rowAnomaly(e)
-      const className = anomaly.slow ? "row-anomaly text-[var(--color-warn)]" : "text-[#888]"
+      const className = anomaly.slow ? "row-anomaly text-[var(--signal-warn)]" : "text-[var(--content-dim)]"
       return span(className, e.durationMs === undefined ? "" : formatElapsed(e.durationMs), {
         title: anomaly.slow ? "slow request (>60s)" : undefined,
       })
@@ -175,7 +179,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
     id: "model",
     header: "Model",
     accessorFn: (e) => modelName(e),
-    cell: ({ row }) => span(`${ELLIPSIS} text-[#cdb]`, modelName(row.original), { title: modelName(row.original) }),
+    cell: ({ row }) => span(`${ELLIPSIS} text-[var(--content-value)]`, modelName(row.original), { title: modelName(row.original) }),
     meta: { width: COLUMN_WIDTHS.model },
   },
   {
@@ -185,7 +189,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
     cell: ({ row }) => {
       const m = row.original.multiplier
       const show = m !== undefined && m !== 1
-      return span("text-[var(--color-muted)]", show ? `(${m}x)` : "")
+      return span("text-[var(--content-muted)]", show ? `(${m}x)` : "")
     },
     meta: { width: COLUMN_WIDTHS.multiplier },
   },
@@ -193,7 +197,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
     id: "endpoint",
     header: "Endpoint",
     accessorFn: (e) => endpointLabel(e),
-    cell: ({ row }) => span(`${ELLIPSIS} text-[#777]`, endpointLabel(row.original), { title: endpointLabel(row.original) }),
+    cell: ({ row }) => span(`${ELLIPSIS} text-[var(--content-faint)]`, endpointLabel(row.original), { title: endpointLabel(row.original) }),
     meta: { width: COLUMN_WIDTHS.endpoint },
   },
   {
@@ -202,7 +206,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
     accessorFn: (e) => (e.requestBytes ?? 0) + (e.responseBytes ?? 0),
     cell: ({ row }) => {
       const e = row.original
-      return span(`${ELLIPSIS} text-right text-[var(--color-muted)]`, bytesCellText(e.requestBytes, e.responseBytes), {
+      return span(`${ELLIPSIS} text-right text-[var(--content-muted)]`, bytesCellText(e.requestBytes, e.responseBytes), {
         title: bytesCellTitle(e.requestBytes, e.responseBytes),
       })
     },
@@ -216,7 +220,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
       const e = row.original
       const anomaly = rowAnomaly(e)
       const text = tokensCellText(tokenIn(e), tokenOut(e), tokenCacheRead(e))
-      const className = anomaly.cacheMiss ? "row-anomaly text-[var(--color-warn)]" : "text-[#9a9]"
+      const className = anomaly.cacheMiss ? "row-anomaly text-[var(--signal-warn)]" : "text-[var(--content-muted-cool)]"
       return span(`${ELLIPSIS} text-right ${className}`, text, {
         title: anomaly.cacheMiss ? "cache miss: large input with no cache read" : tokensCellTitle(e, text),
       })
@@ -229,7 +233,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
     accessorFn: (e) => e.attemptCount ?? 1,
     cell: ({ row }) => {
       const n = row.original.attemptCount
-      return span("text-right text-[#a87]", n && n > 1 ? `×${n}` : "")
+      return span("text-right text-[var(--content-warm-faint)]", n && n > 1 ? `×${n}` : "")
     },
     meta: { width: COLUMN_WIDTHS.attempts },
   },
@@ -241,7 +245,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
       const e = row.original
       const completed = requestState(e) === "completed"
       const title = completed ? e.previewText || truncPreview(e) : failureSummary(e)
-      const className = completed ? `${ELLIPSIS} text-[#8a8a7a]` : `${ELLIPSIS} text-[var(--color-fail)]`
+      const className = completed ? `${ELLIPSIS} text-[var(--content-preview)]` : `${ELLIPSIS} text-[var(--signal-fail)]`
       return span(className, completed ? truncPreview(e) : failureSummary(e), { title })
     },
     meta: { width: COLUMN_WIDTHS.preview },
@@ -252,7 +256,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
     accessorFn: (e) => truncResponsePreview(e),
     cell: ({ row }) => {
       const e = row.original
-      return span(`${ELLIPSIS} text-[#8a9a8a]`, truncResponsePreview(e), { title: e.responsePreviewText || "" })
+      return span(`${ELLIPSIS} text-[var(--content-preview-response)]`, truncResponsePreview(e), { title: e.responsePreviewText || "" })
     },
     meta: { width: COLUMN_WIDTHS.response },
   },

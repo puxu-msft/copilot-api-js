@@ -14,7 +14,10 @@ import type {
 import { createHighlighterCore } from "@shikijs/core"
 import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript"
 
+import type { ColorPreset } from "@/stores/ui-store"
+
 import { AMBER_THEME } from "@/lib/highlight/amber-theme"
+import { NEUTRAL_THEME } from "@/lib/highlight/neutral-theme"
 
 /**
  * shiki-based syntax highlighter (replaces the old lowlight/highlight.js path).
@@ -40,8 +43,18 @@ import { AMBER_THEME } from "@/lib/highlight/amber-theme"
  * highlight synchronously without a plaintext flash.
  */
 
-/** The custom theme's `name`, passed to `codeToHast`. */
-const THEME_NAME = AMBER_THEME.name ?? "terminal-amber"
+/**
+ * The two registered theme `name`s, passed to `codeToHast`. Both themes are
+ * registered up-front on the single highlighter (a one-time cost); highlighting
+ * picks one per call by name — no re-init or reset needed to switch preset.
+ */
+export const AMBER_THEME_NAME = AMBER_THEME.name ?? "terminal-amber"
+export const NEUTRAL_THEME_NAME = NEUTRAL_THEME.name ?? "neutral-syntax"
+
+/** Map the active color preset → the shiki theme name (amber ↔ neutral). */
+export function themeNameForPreset(preset: ColorPreset): string {
+  return preset === "neutral" ? NEUTRAL_THEME_NAME : AMBER_THEME_NAME
+}
 
 /**
  * Broad set of common languages registered up-front (each a dynamic grammar
@@ -97,7 +110,7 @@ export function getHighlighter(): Promise<HighlighterCore> {
       const langModules = await Promise.all(LANG_LOADERS.map((load) => load()))
       const langs = langModules.map((mod) => mod.default)
       const highlighter = await createHighlighterCore({
-        themes: [AMBER_THEME],
+        themes: [AMBER_THEME, NEUTRAL_THEME],
         langs,
         engine: createJavaScriptRegexEngine(),
       })
@@ -164,20 +177,22 @@ export function plaintextLines(code: string): Array<HighlightLine> {
 
 /**
  * Highlight `code` as `lang` into per-line token arrays using the (already
- * loaded) `highlighter`.
+ * loaded) `highlighter`, baking colors from `themeName` (defaults to the amber
+ * theme so bare callers stay byte-identical; pass {@link NEUTRAL_THEME_NAME} — or
+ * the result of {@link themeNameForPreset} — for the neutral preset).
  *
  * Falls back to a plaintext rendering when `lang` is not registered, and to
  * raw-text-per-line if `codeToHast` throws for any reason (never crashes the
  * caller).
  */
-export function highlightToLines(highlighter: HighlighterCore, code: string, lang: string): Array<HighlightLine> {
+export function highlightToLines(highlighter: HighlighterCore, code: string, lang: string, themeName: string = AMBER_THEME_NAME): Array<HighlightLine> {
   if (code.length === 0) return []
 
   const language = highlighter.getLoadedLanguages().includes(lang) ? lang : "text"
 
   let root: Root
   try {
-    root = highlighter.codeToHast(code, { lang: language, theme: THEME_NAME })
+    root = highlighter.codeToHast(code, { lang: language, theme: themeName })
   } catch {
     return plaintextLines(code)
   }
