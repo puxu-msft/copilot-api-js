@@ -213,4 +213,21 @@ export default defineConfigWithVueTs(
       ],
     },
   },
+  {
+    files: ["src/lib/tui/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["~/lib/observability/sinks", "~/lib/observability/sinks/*"],
+              message:
+                "tui/ must not import other sinks — subscribe to the bus (like FileSink). See ADR docs/decisions/2026-07-10-tui-terminal-ownership.md.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 )
