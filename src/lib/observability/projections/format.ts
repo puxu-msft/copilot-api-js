@@ -14,6 +14,7 @@
  */
 
 import pc from "picocolors"
+import stringWidth from "string-width"
 
 import { state } from "~/lib/state"
 
@@ -77,4 +78,39 @@ export function formatStreamInfo(args: { bytesIn?: number; eventsIn?: number; bl
   const events = args.eventsIn ?? 0
   const blockType = args.blockType ? ` [${args.blockType}]` : ""
   return ` ↓${bytes} ${events}ev${blockType}`
+}
+
+/**
+ * Truncate a **plain-text** (no ANSI) string to a display width of at most
+ * `maxCols` columns, appending `…` (width 1) when characters are dropped.
+ *
+ * Iterates by Unicode code point (`for...of`) so surrogate pairs (emoji) and
+ * combining sequences are never split mid-character; a wide (CJK/emoji, width
+ * 2) character is dropped whole if it would exceed the budget rather than
+ * leaving half a glyph. Reserves 1 column for the ellipsis, so the returned
+ * width is guaranteed `≤ maxCols`.
+ *
+ * Callers must pass plain text — the function counts display width and slices
+ * on code points, so an ANSI escape would be measured as width 0 but could be
+ * cut mid-sequence. The footer applies its single `pc.dim` wrap *after* this.
+ *
+ * Degenerate `maxCols <= 0` clamps to `""` (an ellipsis alone is width 1 and
+ * would violate the `≤ maxCols` contract).
+ */
+export function truncateToWidth(plain: string, maxCols: number): string {
+  if (maxCols <= 0) return ""
+  const total = stringWidth(plain)
+  if (total <= maxCols) return plain
+
+  // Must truncate — reserve 1 column for the ellipsis.
+  const budget = maxCols - 1
+  let width = 0
+  let out = ""
+  for (const ch of plain) {
+    const w = stringWidth(ch)
+    if (width + w > budget) break
+    width += w
+    out += ch
+  }
+  return out + "…"
 }

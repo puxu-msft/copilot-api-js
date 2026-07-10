@@ -20,9 +20,11 @@
 
 import consola from "consola"
 import pc from "picocolors"
+import stringWidth from "string-width"
 
 import type {
   //
+  FeatureKind,
   ObservabilityBus,
   ObservabilityEvent,
   RequestContextSnapshot,
@@ -32,9 +34,11 @@ import type { LogLineParts } from "../projections/log-line"
 import { assertNever } from "../index"
 import {
   //
+  formatBytes,
   formatDuration,
   formatStreamInfo,
   formatTime,
+  truncateToWidth,
 } from "../projections/format"
 import { formatLogLine } from "../projections/log-line"
 
@@ -68,6 +72,14 @@ interface ActiveRequest {
 export interface ConsoleSinkOptions {
   stdout?: NodeJS.WritableStream
   isTTY?: boolean
+  /**
+   * Terminal width source for footer truncation. A number pins a fixed width
+   * (tests); a function is read live on each render (production reads
+   * `process.stdout.columns` so SIGWINCH resizes are picked up ≤100ms later by
+   * the footer timer, no resize listener needed). Default: read the stdout's
+   * live `columns`, falling back to 80.
+   */
+  columns?: number | (() => number)
   /** Show `[....]` start lines (only in `consola.level >= 5`). Default true. */
   showActive?: boolean
   /**
@@ -81,6 +93,7 @@ export interface ConsoleSinkOptions {
 export class ConsoleSink {
   private readonly stdout: NodeJS.WritableStream
   private readonly isTTY: boolean
+  private readonly columns: number | (() => number)
   private readonly showActive: boolean
   private readonly silent: boolean
   private readonly active = new Map<string, ActiveRequest>()
@@ -91,12 +104,19 @@ export class ConsoleSink {
   constructor(bus: ObservabilityBus, options?: ConsoleSinkOptions) {
     this.stdout = options?.stdout ?? process.stdout
     this.isTTY = options?.isTTY ?? process.stdout.isTTY
+    this.columns = options?.columns ?? (() => (this.stdout as Partial<{ columns: number }>).columns ?? 80)
     this.showActive = options?.showActive ?? true
     this.silent = options?.silent ?? false
 
     this.unsubscribe = bus.subscribe((event) => {
       this.handle(event)
     })
+  }
+
+  /** Current terminal width (read live per render). Non-positive → 80 fallback. */
+  private getColumns(): number {
+    const raw = typeof this.columns === "function" ? this.columns() : this.columns
+    return raw > 0 ? raw : 80
   }
 
   destroy(): void {
@@ -340,6 +360,14 @@ export class ConsoleSink {
   // Footer
   // ============================================================================
 
+  /**
+   * Build the active-request footer as **plain text** (no ANSI). Every branch
+   * returns an uncolored inner string; {@link finalizeFooter} is the single
+   * exit that strips control chars, width-truncates, and applies the one
+   * `pc.dim` wrap. This structure guarantees the footer never exceeds one
+   * physical line regardless of concurrency or content — see the hard
+   * invariant documented on {@link finalizeFooter}.
+   */
   private buildFooter(): string {
     const count = this.active.size
     if (count === 0) return ""
@@ -355,25 +383,89 @@ export class ConsoleSink {
         eventsIn: entry.streamEventsIn,
         blockType: entry.streamBlockType,
       })
-      return pc.dim(`[<-->] ${entry.ctx.method} ${entry.ctx.path}${model} ${elapsed}${streamInfo}`)
+      return this.finalizeFooter(`[<-->] ${entry.ctx.method} ${entry.ctx.path}${model} ${elapsed}${streamInfo}`)
     }
 
-    const MAX_SHOWN = 3
-    const all = Array.from(this.active.values()).sort((a, b) => a.ctx.startTime - b.ctx.startTime)
-    const shown = all.slice(0, MAX_SHOWN)
-    const items = shown.map((entry) => {
-      const elapsed = formatDuration(now - entry.ctx.startTime)
-      const label = entry.ctx.resolvedModel ?? `${entry.ctx.method} ${entry.ctx.path}`
-      const streamInfo = formatStreamInfo({
-        bytesIn: entry.streamBytesIn,
-        eventsIn: entry.streamEventsIn,
-        blockType: entry.streamBlockType,
+    // Multi-request: group by resolved model (unresolved → "(resolving)"), one
+    // compact segment per group. Width-driven inclusion replaces a fixed cap —
+    // segments are added greedily until the budget (reserving room for the
+    // dim `[<-->] ` prefix and a ` | +K more` tail) is exhausted.
+    const segments = this.buildModelGroupSegments(now)
+    const budget = this.getColumns() - 1
+    const PREFIX = "[<-->] "
+    const shown: Array<string> = []
+    let usedWidth = PREFIX.length // ASCII prefix — width === length
+    for (let i = 0; i < segments.length; i++) {
+      const sep = shown.length > 0 ? 3 : 0 // " | "
+      const remaining = segments.length - i
+      // Reserve space for a " | +K more" tail if any groups will be dropped.
+      const moreTail = remaining > 1 ? ` | +${remaining - 1} more`.length : 0
+      const segWidth = stringWidth(segments[i])
+      if (usedWidth + sep + segWidth + moreTail > budget && shown.length > 0) break
+      usedWidth += sep + segWidth
+      shown.push(segments[i])
+    }
+    const overflow = segments.length - shown.length
+    if (overflow > 0) shown.push(`+${overflow} more`)
+    return this.finalizeFooter(`${PREFIX}${shown.join(" | ")}`)
+  }
+
+  /**
+   * One compact plain-text segment per model group: `<model> ×N ↓<sumBytes>
+   * <maxElapsed>`. Groups are sorted by descending count, then by oldest
+   * request first. `sumBytes` is only shown when the group has streaming
+   * progress; `maxElapsed` is the group's longest-running request.
+   */
+  private buildModelGroupSegments(now: number): Array<string> {
+    interface Group {
+      model: string
+      count: number
+      sumBytes: number
+      hasBytes: boolean
+      oldestStart: number
+    }
+    const groups = new Map<string, Group>()
+    for (const entry of this.active.values()) {
+      const model = entry.ctx.resolvedModel ?? "(resolving)"
+      let g = groups.get(model)
+      if (!g) {
+        g = { model, count: 0, sumBytes: 0, hasBytes: false, oldestStart: entry.ctx.startTime }
+        groups.set(model, g)
+      }
+      g.count += 1
+      if (entry.streamBytesIn !== undefined) {
+        g.sumBytes += entry.streamBytesIn
+        g.hasBytes = true
+      }
+      if (entry.ctx.startTime < g.oldestStart) g.oldestStart = entry.ctx.startTime
+    }
+    return Array.from(groups.values())
+      .sort((a, b) => b.count - a.count || a.oldestStart - b.oldestStart)
+      .map((g) => {
+        const bytes = g.hasBytes ? ` ↓${formatBytes(g.sumBytes)}` : ""
+        const elapsed = formatDuration(now - g.oldestStart)
+        return `${g.model} ×${g.count}${bytes} ${elapsed}`
       })
-      return `${label} ${elapsed}${streamInfo}`
-    })
-    const overflow = count - MAX_SHOWN
-    if (overflow > 0) items.push(`+${overflow} more`)
-    return pc.dim(`[<-->] ${items.join(" | ")}`)
+  }
+
+  /**
+   * Single exit for all footer branches. Enforces the **footer ≤ 1 physical
+   * line** invariant that {@link clearFooterForLog} and {@link renderFooter}
+   * (single-line `CLEAR_LINE`) depend on:
+   *  1. strip control chars (`\n`/`\r`/…) so no embedded newline can force a
+   *     wrap regardless of model-name / path content;
+   *  2. truncate to `getColumns() - 1` display columns (the -1 avoids the
+   *     last-column auto-wrap some terminals do);
+   *  3. apply the single `pc.dim` wrap (zero-width ANSI, does not affect
+   *     display width).
+   * `inner` must be plain text — truncation slices on code points.
+   */
+  private finalizeFooter(inner: string): string {
+    // Strip all C0 control chars (\n, \r, \t, …) — any of them would force a
+    // second physical line and break the single-line invariant.
+    // eslint-disable-next-line no-control-regex -- intentional C0 range
+    const oneLine = inner.replaceAll(/[\x00-\x1f]+/g, " ")
+    return pc.dim(truncateToWidth(oneLine, this.getColumns() - 1))
   }
 
   private renderFooter(): void {
@@ -389,6 +481,13 @@ export class ConsoleSink {
     }
   }
 
+  /**
+   * Clear the footer before writing a log line. The single-line `CLEAR_LINE`
+   * (`\x1b[2K\r`) only erases the current physical line — this is correct
+   * *because* {@link finalizeFooter} guarantees the footer is always ≤ 1
+   * physical line. If footer truncation is ever relaxed, this clear (and
+   * {@link renderFooter}'s overwrite) would leave residue on wrapped lines.
+   */
   private clearFooterForLog(): void {
     if (this.footerVisible && this.isTTY) {
       this.stdout.write(CLEAR_LINE)
@@ -456,9 +555,15 @@ export function formatThinkingTag(thinking: { requested?: string; effective: str
 /**
  * Render a `FeatureKind` + detail blob into a human-readable tag for the
  * `[ OK ] ... (foo, bar)` suffix. (`thinking` is handled separately as a
- * terminal field — see {@link formatThinkingTag}.)
+ * terminal field — see {@link formatThinkingTag} — and is excluded from the
+ * parameter type via the caller's narrowing at the `feature === "thinking"`
+ * early return.)
+ *
+ * The switch is **exhaustive** over `Exclude<FeatureKind, "thinking">`: a new
+ * `FeatureKind` fails to compile at `assertNever` rather than silently leaking
+ * its bare name as a tag.
  */
-function renderFeatureTag(feature: string, detail?: Record<string, unknown>): string | undefined {
+function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Record<string, unknown>): string | undefined {
   switch (feature) {
     // Stream keepalive lifecycle is operational noise — not surfaced as a TUI tag.
     case "stream-immediate-keepalive":
@@ -469,6 +574,18 @@ function renderFeatureTag(feature: string, detail?: Record<string, unknown>): st
     case "via-chat-completions-fallback":
     case "via-responses":
     case "dropped-params": {
+      return feature
+    }
+    // Recovery / repair outcomes — surfaced as bare-name tags (detail
+    // enrichment deferred to backlog; keeping the pre-exhaustiveness behavior).
+    case "tool-call-recovered":
+    case "refusal-recovered":
+    case "refusal-errored":
+    case "tool-input-decode-failed":
+    case "protect-streaming-retry":
+    case "context-edits-applied":
+    case "tool-input-repaired":
+    case "tool-input-unrepairable": {
       return feature
     }
     case "beta-stripped": {
@@ -485,7 +602,8 @@ function renderFeatureTag(feature: string, detail?: Record<string, unknown>): st
       return undefined
     }
     default: {
-      return feature
+      // Exhaustiveness check — a new FeatureKind becomes a compile-time error.
+      return assertNever(feature)
     }
   }
 }
