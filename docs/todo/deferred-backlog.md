@@ -295,3 +295,11 @@
 - **理想架构**：给计数器加 `format`/`endpoint` 维度（`Record<format, ProtectStreamingStats>` 或 counters bag 泛型化，见 skill `telemetry-architecture` 的可扩展 registry 三支柱），`recordProtectStreamingOutcome(outcome, retries, format)` 各端点传自己的 format，`/api/status.protect_streaming` 按端点分列；`recordFeature` 的 meta 补 `format`。
 - **为何暂缓**：per-entry history 已可事后按端点聚合（真值不丢，仅实时聚合视图缺维度）；加端点维度属遥测 registry 扩展工作单元（跨切面，牵动 status API + 前端展示），价值待「需实时对比两端点命中率」的运维需求证实。属「决定数据模型后的后续项」非「因范围大降级」。遥测架构见 skill `telemetry-architecture`。
 - **若做需改什么**：① `protect-streaming-stats.ts` 计数器加 `format` 维度（`Record<ClientFormat, ProtectStreamingStats>`）+ `recordProtectStreamingOutcome` 加 format 参；② Anthropic + Responses 两 `onBufferedResolve` 各传自己 format；③ `getProtectStreamingStats` + `/api/status` 快照按端点分列；④ `recordFeature("protect-streaming-retry", {…, format})` 补维度；⑤ 前端 status 展示分端点。发现方：Task 3.2 Minor（2026-07-08，Responses 作 buffered 第二消费者时暴露共享计数器无归因）。
+
+## ui-v4 列表↔详情「双入口」（Linear 式 peek + 整页）— shadcn 重设计的未来演进
+
+- **背景（2026-07-10 设计讨论）**：ui-v4 正在讨论全面切换到 shadcn/ui（new-york 变体 + 锐角 + 可调色默认继承现有 Amber 暗色 + 标准密度）。列表↔详情的组织方式定了基调 **形态 A**：保留现有「整页详情」（详情独占全宽，契合 request-inspector「深看单条」的主任务）+ 补「连续性」（相邻请求 prev/next 快捷键翻页 + 返回列表定位 `?at=id`），以消除「孤岛式整页」这个真正违反直觉的根源（而非整页本身）。双入口（形态 C）作为未来演进被显式 defer，不砍。
+- **当前行为**：Requests 列表 `/requests` → 点击**整页跳转** `/requests/:id`（`RequestDetailPage` + `DetailPanel` 占满主内容区，顶部「‹ 返回列表」）；Models 详情用**右侧抽屉**（两处详情模式不一致）。无 peek 面板、无相邻导航。
+- **理想架构（形态 C 双入口）**：单击列表行 = **右侧 peek 面板**（快速扫读、不离开列表上下文）；回车 / 双击 = **整页详情**（深度审查，即现有整页视图）；深链 `/requests/:id` 直达整页。兼得「快速扫读比对」与「全宽深看」，与主流（Linear / Jira / 邮件客户端）双入口一致。
+- **为何暂缓（用户 2026-07-10 决策）**：形态 A 已满足用户核心偏好（喜欢整页全宽）+ 补 prev/next 后同时满足通用直觉（连续浏览 + 不丢列表上下文），是最小改动解；双入口是**严格增量**演进，形态 A 不挡路（prev/next 与 peek 可共存演进）；peek 面板引入 master-detail 分栏基建 + 单击/回车双语义交互复杂度 + 用户教育成本，价值待「实测更多在扫读比对而非深看单条」后再证。属独立 UX 演进工作单元，非「因范围大降级」。
+- **若做需改什么**：① 引入右侧 peek 面板组件（可复用 `DetailPanel` 的 segment 渲染、窄宽版）；② 列表行「单击 → peek / 回车 · 双击 → `navigate(/requests/:id)` 整页」的双语义路由；③ peek 与形态 A 的 prev/next 快捷键协调（peek 内也可 j/k 翻相邻）；④ Models 详情统一到同一双入口（替换现抽屉，或把抽屉视作 peek 的一种）；⑤ 交互 + 键盘可访问性测试。**前置**：形态 A（整页 + prev/next 连续性）先落地。发现方：ui-v4 shadcn 重设计布局讨论（2026-07-10）。
