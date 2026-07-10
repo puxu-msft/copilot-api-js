@@ -40,6 +40,8 @@
 - [一次性 connected 快照须常驻根订阅](methodology-one-shot-connected-snapshot-needs-root-subscriber.md) — WS `connected` 携初始在途快照是一次性事件、无缓存;页面级 `useLiveRequests` 晚挂载漏掉 → 「只显示打开后新请求」;修=订阅提升到常驻 `AppShell`(连接建立前必已注册),附带修 Overview 同 bug + 重连重同步;通用:snapshot-then-delta 的快照消费者须挂连接前就位的常驻宿主
 
 ## project 现状 stub（权威看正式归属）
+- [ui-v4 shadcn 重设计决策（讨论中/未实施）](project-ui-v4-shadcn-redesign-decisions.md) — 全面切 shadcn/ui new-york + 锐角 + tokenized 可调色默认 Amber + 标准密度 + 布局形态 A（整页详情+prev/next）；本轮加：默认页 /overview、LiveDock 提全局、详情抽屉共用组件；否 antd（PoC 可行但错配）；权威看 ADR `ui-v4/docs/decisions/2026-07-10-ui-v4-shadcn-adoption.md`（重访 adopt-radix-primitives「弃 shadcn 样式」旧结论）；**代码是 agent 协作写的非人类手搓** [[feedback-ui-v4-code-authored-by-agents]]
+- [ui-v4 代码由 agent 协作编写（非手搓）](feedback-ui-v4-code-authored-by-agents.md) — 用户要求记住；措辞不用"手搓"贬义、重构自由度放宽（agent 创建可自由重写、守可恢复性底线）
 - [keepalive 无条件 timeout-safety 已落地](project-keepalive-unconditional-timeout-safety-landed.md) — 分支 feat/keepalive-timeout-safety 19 commits、MERGE-READY 待 user-run oracle（live empty_text >300s）+ merge；权威看 ADR 2026-07-09 + spec §10
 
 - [v4 流水线重构](project-v4-pipeline-rearchitecture.md) — v4 P0-P3 + response-pipeline Stage A/B 全落地；权威看 `docs/DESIGN.md`「活的架构现状」+ `docs/archive/2606-landed-rfcs/`
