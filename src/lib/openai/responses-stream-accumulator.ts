@@ -27,6 +27,16 @@ export interface ResponsesStreamAccumulator extends BaseStreamAccumulator {
   reasoningTokens: number
   /** Cached input tokens (from input_tokens_details) */
   cachedInputTokens: number
+  /**
+   * A TERMINAL upstream `error` event (Responses `type: "error"`), if one was seen.
+   * Symmetric with the Anthropic accumulator's `streamError` (stream-accumulator.ts):
+   * an in-band `error` event is an upstream DECISION to fail (overload / server error),
+   * delivered as a clean SSE frame that drains without setting `status` (unlike
+   * `response.completed/.failed/.incomplete`). The buffered-retry path reads it via
+   * `sawUpstreamError` to COMMIT the error (the handler then fails) instead of wastefully
+   * retrying it as a transport truncation. Undefined = no terminal error frame seen.
+   */
+  streamError?: { message: string; code: string }
 }
 
 export function createResponsesStreamAccumulator(): ResponsesStreamAccumulator {
@@ -79,6 +89,16 @@ export function accumulateResponsesStreamEvent(event: ResponsesStreamEvent, acc:
     case "response.failed":
     case "response.incomplete": {
       acc.status = event.response.status
+      break
+    }
+
+    case "error": {
+      // A TERMINAL upstream error event (overload / server_error). It does NOT set `status`
+      // (only the `response.*` lifecycle terminals do) — record it separately so the buffered
+      // path can distinguish "upstream decided to fail" (commit + fail) from a transport
+      // truncation (a clean drain with no terminal at all → retryable). Mirrors the Anthropic
+      // accumulator's `error` case.
+      acc.streamError = { message: event.message, code: event.code }
       break
     }
 

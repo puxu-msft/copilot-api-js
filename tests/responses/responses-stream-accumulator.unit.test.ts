@@ -90,6 +90,26 @@ describe("accumulateResponsesStreamEvent", () => {
     expect(acc.status).toBe("incomplete")
   })
 
+  // ── terminal upstream `error` event (buffered-retry gate; symmetric with Anthropic) ──
+
+  test("records a terminal `error` event into streamError WITHOUT setting status", () => {
+    const acc = createResponsesStreamAccumulator()
+    accumulateResponsesStreamEvent(
+      {
+        type: "error",
+        message: "The server had an error while processing your request.",
+        code: "server_error",
+        sequence_number: 7,
+      } as any,
+      acc,
+    )
+    // The buffered path reads streamError (via sawUpstreamError) to commit the error rather
+    // than retry it as a truncation. It is NOT a `response.*` lifecycle terminal, so `status`
+    // stays "" — the live truncation gate (`status === ""`) is unaffected by this addition.
+    expect(acc.streamError).toEqual({ message: "The server had an error while processing your request.", code: "server_error" })
+    expect(acc.status).toBe("")
+  })
+
   // ── response.completed with usage ──
 
   test("extracts usage from response.completed", () => {
