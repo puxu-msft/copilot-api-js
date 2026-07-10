@@ -64,6 +64,7 @@ const ServerStatusSchema = z
     shutdown: z.object({ phase: z.unknown() }),
     models: z.object({ totalCount: z.number().int(), availableCount: z.number().int() }),
     upstream_ws: z.record(z.string(), z.unknown()),
+    responses: z.record(z.string(), z.unknown()),
     protect_streaming: z.record(z.string(), z.unknown()),
     tool_input_repair: z.record(z.string(), z.unknown()),
     thinking_blocks: z.record(z.string(), z.unknown()),
@@ -223,6 +224,14 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
         // Operators can derive "recovers in N seconds" client-side instead of us
         // hardcoding the recovery window in the response shape.
         disabled_until_ms: upstreamWs?.disabledUntilMs ?? 0,
+      },
+
+      // Responses (SSE/HTTP) path toggles. `buffered_retry` (opt-in `responsesBufferedRetry`)
+      // routes the pump through the driver's `runResponseBufferedSink` for mid-stream upstream-drop
+      // retry (default OFF — Codex mid-stream auto-retry is opt-in). Its hit-rate counters share the
+      // `protect_streaming` block below (the same driver primitive drives both endpoints).
+      responses: {
+        buffered_retry: state.responsesBufferedRetry,
       },
 
       // L2 buffered-retry hit-rate counters (RFC §10): since-restart aggregate.
