@@ -29,6 +29,7 @@
 
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — 通用手法见 user skill `verifying-authoritative-claims`；本条是 verification 簇（合并原 self-consistent / verify-doc-vs-code）在本项目的高发实例 + 三陷阱钩子
 - [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — `--cache` 对缓存过期文件假绿（实测掩盖 P2 5 error + 后来 44 存量债）；2026-07-07 起 `lint:all` 已去 --cache（全量权威可信）、`lint` targeted 仍带缓存故核单文件须无缓存 `bunx eslint <path>`；`.tsx` 测试不在 test-relaxation glob；ui-v4 现有 react-hooks/jsx-a11y
+- [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — node_modules 里有某包可能是 `bun install` 会 prune 的游离 orphan（不在 bun.lock）；选依赖前 `grep '"<pkg>@' bun.lock` 证真被锁定；提升传递依赖为直接依赖须 `bun add <name>@^<锁里现版本>` 钉版号（裸 bun add 拉最新 major）；实例 footer 弃 cli-truncate 改钉 string-width@^7.2.0
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 独有 oracle 裁决教学；按消费者契约 + 独立 oracle 裁决，别反射式"让它编译"
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多比较点复发；grep 全仓逐处修 + 抽单一共享 primitive
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 多站点联合加变体的正向版：路由到既有 outcome 复用全 handler + 类型系统前置逼出全站点
