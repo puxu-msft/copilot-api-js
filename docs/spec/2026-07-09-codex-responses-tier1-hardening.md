@@ -15,17 +15,17 @@
 **唯一自洽的触发链（经代码消去法 + undici 实测锁定）：**
 
 1. 请求走上游 WebSocket 尝试。在**首个事件到达前**（长 reasoning 静默 / header 等待 / 握手超时等），`attemptUpstreamResponsesWs` 的 fallback 分支 `catch`（`src/lib/openai/upstream-ws-attempt.ts:184-196`）触发，本应 `manager.recordFallback()` 后 `connection.close()` 再 `return { kind: "fallback" }` 降级 HTTP。
-2. 但 `connection.close()`（`upstream-ws-connection.ts:337-341`）内部调 `socket.close(CLOSE_CODE_GOING_AWAY /* =1001 */, "Going away")`。undici 的 WHATWG WebSocket `close()` 只允许 `1000` 或 `3000–4999`，对 `1001` 同步抛 `DOMException('invalid code','InvalidAccessError')`（`node_modules/undici/lib/web/websocket/util.js:288-295` `validateCloseCodeAndReason`；`websocket.js:202-222` `close()` → `closeWebSocketConnection(...,validate=true)`，`connection.js:227-235`）。
-3. 该抛出**先占（pre-empt）了 `return { kind: "fallback" }`**——即**既有的 WS→HTTP 降级被这个 close 抛出击败**——异常经 awaited try/catch 向上传播，被记录为 `attempt.error="invalid code"`、`state=failed`。
+2. 但 `connection.close()`（`upstream-ws-connection.ts:337-341`）内部调 `socket.close(CLOSE_CODE_GOING_AWAY /* =1001 */, "Going away")`。**运行时分叉（Task 4.1 PoC 更正）**：`import { WebSocket } from "undici"` 在 **Node**（发布 CLI）解析到真 undici 的 WHATWG WebSocket、`close()` 只允许 `1000` 或 `3000–4999`，对 `1001` 同步抛 `DOMException('invalid code','InvalidAccessError')`（`node_modules/undici/lib/web/websocket/util.js:288-295` `validateCloseCodeAndReason`；`websocket.js:202-222` `close()` → `closeWebSocketConnection(...,validate=true)`，`connection.js:227-235`）；在 **Bun**（`dev`/`start` 主运行时）解析到 Bun 原生 WebSocket，**容忍** 1001 不抛。本触发事件跑在 **real-undici/Node 路径**故抛出。
+3. 该抛出**先占（pre-empt）了 `return { kind: "fallback" }`**——即**既有的 WS→HTTP 降级被这个 close 抛出击败**——异常经 awaited try/catch 向上传播，被记录为 `attempt.error="invalid code"`、`state=failed`。（fix 用 `close(1000)`——两运行时皆安全，见 R1。）
 
 **关键推论：**
 
 - **这是 before-first-event 失败**，本应无缝降级 HTTP（很可能随后成功）。bug 让降级失效，把一次可恢复的传输波动变成了终态失败。
 - **R1（关闭码 1001→1000）单独即可修复本触发事件**：`connection.close()` 不再抛 → `return { kind: "fallback" }` 执行 → HTTP 降级正常进行。
-- 旧的 `ws` 包容忍 1001（RFC 6455 层面 1001 是合法**线路**关闭码）；迁到 undici 客户端 WebSocket 后，其 WHATWG API 层的禁令让 latent bug 暴露。
+- 旧的 `ws` 包容忍 1001（RFC 6455 层面 1001 是合法**线路**关闭码）；迁到 undici 客户端 WebSocket 后，在 **Node/real-undici** 上其 WHATWG API 层的禁令让 latent bug 暴露（Bun 原生 WS 仍容忍 1001，故本 bug 是 **runtime-conditional**，只在 Node 路径显形）。
 - 记录里 `transport: http` 反映的是失败发生在 WS 尝试的 fallback 边界（attempt 上报口径），与"WS 尝试→降级失败"一致。
 
-> 证据可复现：`"invalid code"` 全仓源码无匹配，node_modules 内唯一来源即上述 undici 校验；用本项目 undici 实测 `close(1001)` → `InvalidAccessError: invalid code`，`close(1000)` 正常。
+> 证据可复现：`"invalid code"` 全仓源码无匹配，node_modules 内唯一来源即上述 undici 校验；用本项目 undici 实测（**Node**）`close(1001)` → `InvalidAccessError: invalid code`，`close(1000)` 正常（Bun 原生 WS 两码皆不抛，见 R5.1 Task 4.1 PoC）。
 
 ### 1.2 同族缺口：进程崩溃向量（真实但潜伏，与 §1.1 不同源）
 
@@ -102,7 +102,7 @@ Codex（Responses API）是本项目**一等公民**支持对象；`ws:responses
 
 ### R5 — 上游保活 / 截断检测
 
-- **R5.1（实测优先，硬约束前置）** 上游-WS **双缺**已确认（grep `upstream-ws-*.ts` 无任何 ping/keepalive 机制；唯一 idle 计时器是**关闭**空闲池连接，保活的反面）。h2 路径有两层（TCP `setKeepAlive` + 应用层 `scheduleH2KeepalivePing`，`http2-client.ts:98/108/189`）；GHC 对 WS 的收割理由与 h2 同构（长静默=真 idle 流被 middlebox/GHC edge 收割）。但 WHATWG WebSocket API 双重设障：无底层 socket 访问（不能像 h2 那样 `setKeepAlive`）、**无 `ping()` 方法**。故 R5.1 是 **PoC**：(a) undici WS upgrade socket 能否开 TCP keepalive（`ss` 验 `timer:(keepalive,...)`，复刻 h2 手法）；(b) GHC 是否转发/容忍带外 WS 帧。**预置结论分支**：若两层皆不可行，则 WS 路径**无法预防收割、只能恢复** → R4-mid（buffered 重试）成为 WS 的**承重防线**（对 WS 比对 h2 更关键，优先级反转）。
+- **R5.1（实测优先，硬约束前置）** 上游-WS **双缺**已确认（grep `upstream-ws-*.ts` 无任何 ping/keepalive 机制；唯一 idle 计时器是**关闭**空闲池连接，保活的反面）。h2 路径有两层（TCP `setKeepAlive` + 应用层 `scheduleH2KeepalivePing`，`http2-client.ts:98/108/189`）；GHC 对 WS 的收割理由与 h2 同构（长静默=真 idle 流被 middlebox/GHC edge 收割）。但 WHATWG WebSocket API 双重设障：无底层 socket 访问（不能像 h2 那样 `setKeepAlive`）、**`ping()` 方法运行时分叉（Task 4.1 PoC 更正）**——`import { WebSocket } from "undici"` 在 **Node/real-undici 无 `ping()`**（WHATWG 实现）、在 **Bun 原生 WS 有 `ping()`**，但**即便 Bun 可发 WS PING 也是 prevention-only**：WS PING 是控制帧、不产生 `ResponsesStreamEvent`、**不重置** `state.streamIdleTimeout` 帧-idle guard（与 h2 PING 同构），且真实 GHC 收益未证 + 落地会造成两运行时行为分裂。故 R5.1 是 **PoC**：(a) undici WS upgrade socket 能否开 TCP keepalive（`ss` 验 `timer:(keepalive,...)`，复刻 h2 手法）；(b) GHC 是否转发/容忍带外 WS 帧。**预置结论分支**：若无有效预防层，则 WS 路径**无法预防收割、只能恢复** → R4-mid（buffered 重试）成为 WS 的**承重防线**（对 WS 比对 h2 更关键，优先级反转）。**PoC 结论（Task 4.1）**：Bun 有 `ping()` 但 prevention-only、Node 无 `ping()`、TCP keepalive 两运行时皆不可经 WHATWG 构造器开——判**不落地 speculative code**，buffered 重试承重（`docs/todo/deferred-backlog.md`「上游 WebSocket 应用层保活」条 + `exp/ws-upstream-keepalive/REPORT.md`）。
 - **R5.2（折入 Phase 3）** 截断检测（clean drain 而无终止符 → 重试/失败，不冒充成功）：非缓冲 `runResponseSink` 在任何 clean drain 返回 `complete`（`driver.ts:490`），靠 handler 累加器 + `stopAfterFrame` 察觉缺失的 `response.completed`。须在**实际路径**（`runResponseSink` + handler 判据）核验，别假定与 buffered driver 逻辑 parity。buffered 的 commit/retry gate（`sawMessageStop` vs clean-drain-without-terminal）**就是**截断检测器——故 R5.2 是 R4-mid 的判据、属 **Phase 3**，非 Phase 4。
 - **R5.3（独立项）** R3 的**下游**保活（Codex↔proxy）**不重置**我方**上游** idle guard（proxy↔GHC，`guardSseIterable` + `raceIteratorNext` 计帧间静默）。故一次 >`state.streamIdleTimeout` 的合法长 reasoning 静默会被我方上游 guard 杀掉（h2/WS 皆然；h2 PING 保 TCP 但不产帧、不重置帧间 idle）。须独立核 `state.streamIdleTimeout` 相对最长预期 reasoning 静默的余量。
 
@@ -187,7 +187,7 @@ Codex（Responses API）是本项目**一等公民**支持对象；`ws:responses
 - **[HIGH] R1 姊妹路径**：`ws.ts` 下游 1011/1013 同属禁用类，纳入 R1.3 合规扫描（服务端运行时实测，据实修）。
 - **[MEDIUM] R3.3 更正**：`streamKeepaliveMode` 是 Anthropic 帧型枚举，不可复用于 Responses；只复用间隔，帧型 Responses 专属。
 - **[MEDIUM] R3.5 新增**：下游 WS-to-client 保活的显式范围判定 + 理由。
-- **[MEDIUM] R5.1 强化**：上游-WS 无应用层 ping 是硬约束，PoC 前置 + "不可行则 R4 承重"分支。
+- **[MEDIUM] R5.1 强化**：上游-WS 无有效应用层保活是硬约束，PoC 前置 + "不可行则 R4 承重"分支。（**Task 4.1 PoC 后续更正**：`ping()` 是 runtime-split——Bun 有/Node 无，但即便 Bun 可发也 prevention-only、不重置帧-idle guard，结论「buffered 承重」不变。）
 - **[LOW] R5.2**：在实际 `runResponseSink` 路径核验截断，折入 Phase 3（buffered 的 commit gate）。
 - **[LOW] driver.ts:114 陈旧注释** doc-sync。
 - **O1（架构）** `guardCallback` 原语形态；**O2（架构）** buffered/live 分层三层（intra-send fallback / S4 / L2）；**Phase 排序** R5.2→Phase 3。
