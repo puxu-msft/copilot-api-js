@@ -37,14 +37,16 @@
 - [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec 免疫 peer 并发 `git add` 的 index race；user skill `git-preference` 未强调这层
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 本项目 2026-06-29 起无 pre-commit 门禁；通用 rollback 见 skill `git-preference:disarming-lint-staged-rollback`
 - [覆写迁移前审计真实库原始字段(oracle 盲区)](methodology-migration-audit-raw-fields-not-just-projection-oracle.md) — projection-等价 oracle 对「已死字段」是盲的；覆写 blob 的 backfill 前须只读探针枚举真实库实际字段 vs 适配器映射，任何被 drop 的除非可派生一律当丢失；实例=history 双腿适配器丢 outbound_response.error，审计真库才抓到、修=路由 attempts[].error
+- [一次性 connected 快照须常驻根订阅](methodology-one-shot-connected-snapshot-needs-root-subscriber.md) — WS `connected` 携初始在途快照是一次性事件、无缓存;页面级 `useLiveRequests` 晚挂载漏掉 → 「只显示打开后新请求」;修=订阅提升到常驻 `AppShell`(连接建立前必已注册),附带修 Overview 同 bug + 重连重同步;通用:snapshot-then-delta 的快照消费者须挂连接前就位的常驻宿主
 
 ## project 现状 stub（权威看正式归属）
+- [keepalive 无条件 timeout-safety 已落地](project-keepalive-unconditional-timeout-safety-landed.md) — 分支 feat/keepalive-timeout-safety 19 commits、MERGE-READY 待 user-run oracle（live empty_text >300s）+ merge；权威看 ADR 2026-07-09 + spec §10
 
 - [v4 流水线重构](project-v4-pipeline-rearchitecture.md) — v4 P0-P3 + response-pipeline Stage A/B 全落地；权威看 `docs/DESIGN.md`「活的架构现状」+ `docs/archive/2606-landed-rfcs/`
 - [GHC 三特性对齐已落地](project-ghc-feature-alignment-landed.md) — tool-search default-allow / extended-cache-ttl / memory tool；现状看 skill `ghc-api-reference`；memory_tool pending 见 `docs/todo/deferred-backlog.md`
 - [history client/upstream 双腿重构已落地](project-history-client-upstream-legs-landed.md) — inbound/outbound/wire/effective → clientRequest/clientResponse + model{} + attempts[].{effectiveSource,upstreamRequest,upstreamResponse} + _index{derived,aux}；两正交轴（upstreamResponse.success vs entry.state）；旧库行经 adaptLegacyLegsInPlace 读时适配。**已 merge 入 master `5db1aff6`（含 P6 legacy-stage backfill + 审计 fix：适配器保留 outbound_response.error→attempts[].error）**；P6b 删适配器达单轨待运行期 backfill 跑完（no-auto-server）；权威看 `docs/DESIGN.md`「类型架构」+ RFC `docs/rfc/2026-07-07-history-data-model-restructure.md`；Group-B 标量迁移见 `docs/todo/deferred-backlog.md`
 - thinking「cannot be modified」400 三层修复（已并 master）→ 权威全在正规文档：`docs/spec/2026-07-07-thinking-signature-quarantine.md` + `docs/DESIGN.md` 活的架构现状（L1/L2/L3 行 + 4 config 键）+ skill `ghc-anthropic-upstream`（根因=相邻性）；待办 thinking_block_sanitize 重命名见 `docs/todo/deferred-backlog.md`
-- [反应式学习记录 TTL 生命周期 + Learned 页面](project-negotiation-learning-lifecycle-landed.md) — feature-negotiation 缓存加 per-entry TTL meta + 分类可配 TTL(默认30d) + pin，单一判据 `isEntryActive`(新 leaf negotiation-lifecycle.ts)，`/api/negotiation` 管理 API + ui-v4 Learned 页；承重不变量 meta刷新≠changed返回值(H3)/门控只在reader/v1→v2迁移/config五触点；**分支 feat/negotiation-lifecycle 待 merge**（并发会话隔离于 worktree）；权威看 `docs/spec/2026-07-08-negotiation-learning-lifecycle.md` + plan 同名目录 + DESIGN.md
+- [反应式学习记录 TTL 生命周期 + Learned 页面](project-negotiation-learning-lifecycle-landed.md) — feature-negotiation 缓存加 per-entry TTL meta + 分类可配 TTL(默认30d) + pin，单一判据 `isEntryActive`(新 leaf negotiation-lifecycle.ts)，`/api/negotiation` 管理 API + ui-v4 Learned 页；承重不变量 meta刷新≠changed返回值(H3)/门控只在reader/v1→v2迁移/config五触点；**已 merge 入 master `67afa1af`**（rebase 零冲突 + FF，隔离 worktree 避并发会话）；权威看 `docs/spec/2026-07-08-negotiation-learning-lifecycle.md` + plan 同名目录 + DESIGN.md
 
 ## 已删除记忆的话题去向（实质并入正式归属，无独立文件）
 

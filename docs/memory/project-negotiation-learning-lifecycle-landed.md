@@ -17,4 +17,4 @@ metadata:
 
 工作流实例：spec(对抗审查)→两阶段 plan(对抗审查抓 H1/H2/H3 编译+回归 bug 折入)→subagent-driven 执行（**隔离 worktree** 避并发会话对 schema.ts/state.ts 在飞改动）→Phase1 review(Spec✅/Approved,7 红线全过)→Phase2 review(Spec✅/Changes-requested:2 spec 列测试+死码)→fix。权威：`docs/spec/2026-07-08-negotiation-learning-lifecycle.md` + `docs/plan/2026-07-08-negotiation-learning-lifecycle/` + `docs/DESIGN.md`。生命周期转换遥测暂缓见 `docs/todo/deferred-backlog.md`。
 
-**待办**：分支 `feat/negotiation-lifecycle` 待 merge 回 master（并发会话提交 schema.ts/state.ts 后，行级共存解冲突）；ui-v4 pre-existing typecheck 错 `EntrySummary.responsePreviewText` 属并发 history 会话漂移、非本特性。
+**待办**：无阻塞项。分支 `feat/negotiation-lifecycle` 已 rebase 干净（零冲突）+ FF **merge 入 master**（`67afa1af`，后续跟进 `c4fb8f85` 空分类显示）；worktree 已移除、分支已删。ui-v4 pre-existing typecheck 错 `EntrySummary.responsePreviewText` 属并发 history 会话漂移、非本特性、归那条会话修。生命周期转换遥测暂缓见 `docs/todo/deferred-backlog.md`。
