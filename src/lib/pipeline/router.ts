@@ -55,9 +55,16 @@ export function decideRoute(env: RequestEnvelope, bridge: RouteBridge): RouteDec
     case "openai-responses": {
       return decideOpenAiResponsesRoute(env.model as Model | undefined)
     }
+    case "gemini": {
+      // gemini has no endpoint gate of its own — its route mirrors the openai-cc decision
+      // (the codec delegated to its internal cc codec's decideRoute; RFC §4.3 W-priority
+      // "gemini: cc > responses").
+      return decideOpenAiCcRoute(env.model as Model | undefined)
+    }
     default: {
-      // Transition bridge (T0.3): gemini still resolves through its live codec.decideRoute
-      // until T0.4 migrates it here.
+      // All 4 ClientFormats are migrated (T0.1–T0.4); this bridge is now an unreachable
+      // defensive fallback. The `bridge` param + this case are removed in T0.5 together with
+      // the FormatCodec.decideRoute interface method.
       return bridge(env)
     }
   }
