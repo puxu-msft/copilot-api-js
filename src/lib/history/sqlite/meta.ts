@@ -62,6 +62,23 @@ export const RESPONSE_PREVIEW_VERSION_KEY = "response_preview_version"
 /** `history_meta` key: `(started_at, id)` keyset cursor for cross-restart resume. */
 export const RESPONSE_PREVIEW_CURSOR_KEY = "response_preview_backfill_cursor"
 
+/** Completion-flag value written once the calibration seed backfill finishes. */
+export const CALIBRATION_BACKFILL_VERSION = "1"
+
+/** `history_meta` key: set to CALIBRATION_BACKFILL_VERSION only when the full calibration backfill completes. */
+export const CALIBRATION_BACKFILL_VERSION_KEY = "calibration_backfill_version"
+
+/** `history_meta` key: resumable calibration-backfill progress (`(started_at, id)` keyset cursor). */
+export const CALIBRATION_BACKFILL_CURSOR_KEY = "calibration_backfill_cursor"
+
+/**
+ * `history_meta` key: the resumable per-model bucket accumulators (raw Σreal/Σest),
+ * JSON-serialized. Persisted every batch alongside the cursor so a mid-run restart
+ * resumes the tok-weighted aggregate exactly rather than losing partial progress.
+ * Cleared once the run completes and the final buckets are applied.
+ */
+export const CALIBRATION_BACKFILL_ACCUM_KEY = "calibration_backfill_accum"
+
 /** Read one history_meta value (null when absent). */
 export function getMeta(db: Database, key: string): string | null {
   // .get() returns null on bun:sqlite / undefined on node:sqlite when no row

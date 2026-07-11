@@ -311,8 +311,8 @@ export interface HistoryEntryData {
 
 /** One malformed tool-input repair outcome for the current attempt (see `recordRepairOutcome`). */
 export interface RepairOutcomeRecord {
-  /** Repair-item layer that won (`strip`/`unicode`/`jsonrepair`), or `unrepairable` when no enabled item produced valid JSON. */
-  outcome: "strip" | "unicode" | "jsonrepair" | "unrepairable"
+  /** Repair-item layer that won (`strip`/`unicode`/`jsonrepair`/`unicode-lossy`), or `unrepairable` when no enabled item produced valid JSON. */
+  outcome: "strip" | "unicode" | "jsonrepair" | "unicode-lossy" | "unrepairable"
   /** The tool whose input was repaired / found unrepairable. */
   tool: string
   /** Raw malformed JSON length (repaired outcomes only; for the `[REWRITE]` log). */
@@ -427,6 +427,8 @@ export interface RequestContext {
   setAttemptError(error: ApiError): void
   /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
   commitAttemptSseEvents(): void
+  /** 定稿当前 attempt 的 durationMs（截断路径无 error/response setter 时用）。见 request.ts。 */
+  finalizeCurrentAttemptDuration(): void
   /** L2 buffered retry: clear the top-level upstream sseEvents so the next attempt starts fresh. */
   resetSseEvents(): void
   addQueueWaitMs(ms: number): void

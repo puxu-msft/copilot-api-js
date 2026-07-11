@@ -65,14 +65,15 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 
 `anthropic.tool_repair_malformed_input`：**逗号分隔的修复项目集**（`tags`/`unicode`/`jsonrepair` 的子集），默认 `""`（关）。
 
-> **配置形态演进（landed）**：原始设计为 `false | "tags" | "repair"` 三档枚举（`repair` 隐含串行层 = tags+jsonrepair）。后重构为**可叠加的逗号分隔修复项目集**——每项独立可选、按固定规范顺序 `tags → unicode → jsonrepair` 级联、每项把变换叠加在前一项输出上。**干净破坏**（项目未发布，无 compat）：旧 `false`/`"tags"`/`"repair"` 三档枚举废弃，`"repair"` 现等价 `"tags,jsonrepair"`、off 用 `""`。书写顺序无关（dedup + 规范序）。`REPAIR_ITEMS` 单一源（schema 校验/级联/遥测共用），下文 §2.3 的 "Layer 1/Layer 2" 历史措辞对应项目 `tags`/`jsonrepair`。
+> **配置形态演进（landed）**：原始设计为 `false | "tags" | "repair"` 三档枚举（`repair` 隐含串行层 = tags+jsonrepair）。后重构为**可叠加的逗号分隔修复项目集**——每项独立可选、按固定规范顺序 `tags → unicode → jsonrepair → unicode-lossy` 级联、每项把变换叠加在前一项输出上。**干净破坏**（项目未发布，无 compat）：旧 `false`/`"tags"`/`"repair"` 三档枚举废弃，`"repair"` 现等价 `"tags,jsonrepair"`、off 用 `""`。书写顺序无关（dedup + 规范序）。`REPAIR_ITEMS` 单一源（schema 校验/级联/遥测共用），下文 §2.3 的 "Layer 1/Layer 2" 历史措辞对应项目 `tags`/`jsonrepair`。
 
 - `""`（默认）：关，逐字节同前（golden 锁）。解码器缓冲集不扩展（维持现状）。
 - `tags`：结构感知剥 antml 标签（§2.3 Layer 1）。正对 antml-bleed（1304 类）。
 - `unicode`：修空白打断的 `\uXXXX` 转义（`\u9 ed8`→`默`，真实 case `req_1782778207147_144`）。保守只修「`\u` 后 4 位 hex 被空白字符打断」、去空白凑齐 4 位；合法 `\uXXXX`/紧跟空白/少位/非 hex 一律不动（误修面≈0，200k fuzz 实证）。**jsonrepair 对坏 `\u` 转义直接抛异常，故须独立项目修，不能靠 `jsonrepair`**。
 - `jsonrepair`：jsonrepair 库（§2.3 Layer 2）。额外覆盖结构缺括号/trailing comma 类（965 类）。
+- `unicode-lossy`（landed 2026-07-11 新增）：**有损兜底**。修**丢了 hex 位**的 `\uXXXX` 转义（`\u9 44`——空格 + 仅 3 位 hex，无损不可能因缺失 nibble 不可知），把无法凑齐 4 位的整个 `\u…` 段替换成 U+FFFD（`�`），再跑一遍 jsonrepair 收残余结构。**严格排在所有无损项之后**（`fixBadUnicodeEscapesLossy`：4 位可凑齐（含跳过前导空格）则输出干净 `\uXXXX` 无损、少于 4 位才 U+FFFD）；仅当 tags/unicode/jsonrepair 全失败才触发。代价 = 每个坏转义糊 1 个字符（真实 2 例 `req_1783388427550_233`/`req_1783431413629_204` 各糊 1/2 字，落在 option description 散文、结构零损伤）。层名/遥测名 `unicode-lossy`。
 
-**诚实标注覆盖率**：`tags` 只修 antml-bleed（实测 A 类 3 例中 1 例）；`unicode` 只修空白打断的转义；965/921 这类结构错只有 `jsonrepair` 能修。retain-on-absence 语义同其它 anthropic.* 标量；hot-reload 经 `applyConfigToState`。`server_tool_use` 永不受影响。
+**诚实标注覆盖率**：`tags` 只修 antml-bleed（实测 A 类 3 例中 1 例）；`unicode` 只修空白打断的转义；965/921 这类结构错只有 `jsonrepair` 能修；**丢 hex 位的转义只有有损 `unicode-lossy` 能救**（全 DB 扫描实测：20 例 AskUserQuestion 真畸形中 18 无损可修、余 2 丢 hex 位需有损，见 `exp/askuserquestion-decode/`）。retain-on-absence 语义同其它 anthropic.* 标量；hot-reload 经 `applyConfigToState`。`server_tool_use` 永不受影响。
 
 ### 2.2 流式流程（复用 decode 缓冲 + finalize）
 
@@ -87,13 +88,13 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 
 延迟成本近零：客户端本就需完整 input 才能执行工具，input 延到 `content_block_stop` 不改变可动作时点（recover/decode 已是同款延迟，golden 锁过）。
 
-### 2.3 分层修复（项目级联，顺序 `tags → unicode → jsonrepair`）
+### 2.3 分层修复（项目级联，顺序 `tags → unicode → jsonrepair → unicode-lossy`）
 
 - **Layer 1 — 结构感知剥 antml 标签**（项目 `tags`）：**修订自旧 spec 的"位置锚定"**（审查 H2：位置窗口对单样本 1304 过拟合，对中置/多处/单层对象标签会漏修或锚点退化）。改为**结构感知**：对 input 串做轻量 JSON 词法扫描，剥离**字符串字面量之外**的 antml 标签（`</invoke>`、`</parameter>`、`<invoke …>`、`<parameter …>`）——这样既能命中末尾/中置/多处 bleed，又**绝不**误伤字符串值里合法含 `</parameter>` 字面量的内容（本项目自己的文档就有该字面量）。剥后 re-validate。
 - **unicode — 空白打断的 `\uXXXX` 转义修复**（项目 `unicode`，landed 后新增）：`fixBadUnicodeEscapes` 单遍扫描器。遇 `\u` → 若紧跟 4 hex 原样透传；否则从 `\u` 后收集 hex、**仅跳过 hex 之间的空白**（空格/tab/CR/LF），去空白后**恰好** 4 hex 且确实消费过空白才输出 `\u`+4hex，否则原样不动。保守边界：`\u` 紧跟空白 / 少于 4 hex / 非 hex 字符一律不修；`\\u…`（转义反斜杠 + 字面文本）经 backslash 跟踪不误判。**误修面≈0**（合法 JSON 的 `\u` 后绝无空白；200k 合法 JSON + 全控制字符转义 fuzz 零字节变更）。**必要性**：jsonrepair 对坏 `\u` 转义直接 `throw`（`Invalid unicode character`），故这类只有 `unicode` 项目能修（真实 case `req_1782778207147_144`：`默`=`\u9 ed8`）。剥后 re-validate。
 - **Layer 2 — jsonrepair 库**（项目 `jsonrepair`）：仍非法时跑 `jsonrepair`（npm，纯 JS、无 node-gyp、bun-first 合规，实测 3.14.1 活跃维护）。**必须 try/catch 包裹**——实测对 antml-bleed 与坏 `\u` 转义都会 `throw`（§7-C2），不能让异常冒泡污染改写链。jsonrepair 是**启发式**：修结构缺括号/多余括号/trailing comma 有效（965 实测正确、语义保真），但对个别输入可能产出"合法但语义偏移"的结果。故**保留 before/after 字节供审计**（§3），且仅在 jsonrepair 输出能 re-parse 时采用。
 
-每项后都 re-validate；任一启用项产出合法 JSON（且是 plausible tool input = JSON object）即采用并停（顺序 `tags → unicode → jsonrepair`，省 happy-path 与 antml-bleed/坏转义的 jsonrepair-throw 开销，§5 OQ1 定稿）。**项目可叠加**：每项把变换叠加在前一项输出的 `current` 上（如 strip 后再 fix unicode 再 jsonrepair），故混合畸形可被组合修复。
+每项后都 re-validate；任一启用项产出合法 JSON（且是 plausible tool input = JSON object）即采用并停（顺序 `tags → unicode → jsonrepair → unicode-lossy`，省 happy-path 与 antml-bleed/坏转义的 jsonrepair-throw 开销，§5 OQ1 定稿）。**项目可叠加**：每项把变换叠加在前一项输出的 `current` 上（如 strip 后再 fix unicode 再 jsonrepair），故混合畸形可被组合修复。
 
 ### 2.4 不可修复兜底：判 fail 让客户端重试（含跨层信号通道设计）
 

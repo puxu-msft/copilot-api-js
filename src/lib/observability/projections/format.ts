@@ -44,10 +44,54 @@ export function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`
 }
 
-/** Compact integer with K/M suffix. */
+/**
+ * Severity color for a request's wall-clock duration: fast requests stay white,
+ * escalating as latency grows (a slow request is worth noticing). Shares the
+ * yellow → red → bold-red escalation with {@link cacheHitColor} for a unified
+ * palette; no `dim` (which the terminal renders as grey) and no magenta (which
+ * clashes with the model-name color in the log line).
+ *   ≤ 20s → white   ≤ 60s → yellow   ≤ 180s → red   > 180s → bold red
+ */
+export function durationColor(ms: number): (s: string) => string {
+  if (ms <= 20_000) return pc.white
+  if (ms <= 60_000) return pc.yellow
+  if (ms <= 180_000) return pc.red
+  return (s) => pc.bold(pc.red(s))
+}
+
+/**
+ * 判定 `lastMs`（最后一次 attempt 自身耗时）是否可用于 last/total 展示。
+ * 无效：undefined / 非正 / 超过整请求墙钟（脏数据或未定稿的 0 初值）。
+ */
+function isValidLastMs(lastMs: number | undefined, totalMs: number): lastMs is number {
+  return lastMs !== undefined && lastMs > 0 && lastMs <= totalMs
+}
+
+/**
+ * 重试时长字段：无重试时与 {@link formatDuration} 逐字节一致（`total` 单值）；
+ * 有重试时展开为 `last/total(N)`；`lastMs` 无效时兜底 `total(N)`，绝不抛。
+ * 纯函数、不含颜色——着色由调用方按 {@link resolveDurationColorMs} 决定。
+ */
+export function formatDurationField(args: { lastMs: number | undefined; totalMs: number; retries: number }): string {
+  const { lastMs, totalMs, retries } = args
+  if (retries <= 0) return formatDuration(totalMs)
+  if (isValidLastMs(lastMs, totalMs)) return `${formatDuration(lastMs)}/${formatDuration(totalMs)}(${retries})`
+  return `${formatDuration(totalMs)}(${retries})`
+}
+
+/**
+ * 着色驱动值：整个 duration 字段按「实际显示的头部值」的 severity 着色。
+ * 有重试且 lastMs 有效 → 按 last（贴合「这次尝试多慢」）；否则按 total（N=0 零回归）。
+ */
+export function resolveDurationColorMs(args: { lastMs: number | undefined; totalMs: number; retries: number }): number {
+  const { lastMs, totalMs, retries } = args
+  return retries >= 1 && isValidLastMs(lastMs, totalMs) ? lastMs : totalMs
+}
+
+/** Compact integer with a lowercase k/m suffix. */
 export function formatNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
 }
 
@@ -59,15 +103,69 @@ export function formatBytes(n: number): string {
 }
 
 /**
- * Token-count column: `↑<input>+<cacheRead>+<cacheCreation> ↓<output>`.
- * Cache breakdowns are dim/cyan to deemphasize relative to fresh tokens.
+ * Token-count column: `↑<input>+<cacheRead>+<cacheCreation> ↻<hit%>+<new%> ↓<output>`.
+ * Cache breakdowns are dim/cyan to deemphasize relative to fresh tokens; the
+ * woven-in prompt-cache rate marker ({@link formatCacheRate}) sits between the
+ * input group and `↓output` (cache is an input-side property) and is suppressed
+ * when there is no cache activity.
  */
 export function formatTokens(input?: number, output?: number, cacheRead?: number, cacheCreation?: number): string {
   if (input === undefined && output === undefined) return "-"
   let result = `↑${formatNumber(input ?? 0)}`
   if (cacheRead) result += pc.dim(`+${formatNumber(cacheRead)}`)
   if (cacheCreation) result += pc.cyan(`+${formatNumber(cacheCreation)}`)
+  const rate = formatCacheRate(input, cacheRead, cacheCreation)
+  if (rate) result += ` ${rate}`
   result += ` ↓${formatNumber(output ?? 0)}`
+  return result
+}
+
+/**
+ * Severity color for the cache-hit percentage: a LOW hit rate means the cache
+ * did not pay off (expensive fresh tokens), so it is emphasized progressively;
+ * a healthy rate stays dim. `+new%` (cache written this request) is neutral.
+ *   ≥ 80% → dim (healthy)   ≥ 40% → yellow (watch)
+ *   ≥ 20% → red (poor)      < 20% → bold red (severe)
+ *
+ * Exported so tests can assert the returned color function by reference (the
+ * only env-independent check — under `pc.isColorSupported === false` every
+ * color collapses to identity, so comparing colored strings proves nothing).
+ */
+export function cacheHitColor(pct: number): (s: string) => string {
+  if (pct >= 80) return pc.dim
+  if (pct >= 40) return pc.yellow
+  if (pct >= 20) return pc.red
+  return (s) => pc.bold(pc.red(s))
+}
+
+/**
+ * Prompt-cache rate marker: `↻<hit%>+<new%>` where
+ *   hit% = cacheRead / (input + cacheRead + cacheCreation)   — severity-colored
+ *   new% = cacheCreation / (input + cacheRead + cacheCreation) — cyan (written this request)
+ *
+ * The denominator is total billed input; `input` here is the NET fresh count,
+ * disjoint from the cache fields (see request/usage-normalize.ts), so the three
+ * sum to total input. `hit%` is colored by {@link cacheHitColor} (dim when
+ * healthy, escalating to bold red as it drops); `new%` is cyan like the cache-
+ * creation token segment. Returns `""` when there is no cache activity (both
+ * cache fields 0/undefined). The `+new%` segment is only appended when
+ * `cacheCreation > 0`.
+ */
+export function formatCacheRate(input?: number, cacheRead?: number, cacheCreation?: number): string {
+  const read = cacheRead ?? 0
+  const creation = cacheCreation ?? 0
+  if (read === 0 && creation === 0) return ""
+  const total = (input ?? 0) + read + creation
+  // Defensive: the guard above already forces total > 0 (read + creation ≥ 1,
+  // token counts non-negative), but keep the divide-by-zero belt if that guard
+  // is ever relaxed.
+  if (total === 0) return ""
+  const hitPct = Math.round((read / total) * 100)
+  let result = cacheHitColor(hitPct)(`↻${hitPct}%`)
+  if (creation > 0) {
+    const newPct = Math.round((creation / total) * 100)
+    result += pc.cyan(`+${newPct}%`)
+  }
   return result
 }
 

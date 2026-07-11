@@ -150,8 +150,8 @@ export function calculateTokenLimit(model: Model, config: AutoTruncateConfig): n
   }
 
   const learned = getLearnedLimits(model.id)
-  if (learned) {
-    const margin = computeSafetyMargin(learned.sampleCount)
+  if (learned?.tokenLimit !== undefined && learned.tokenLimit > 0) {
+    const margin = computeSafetyMargin(learned.liveSampleCount)
     return Math.floor(learned.tokenLimit * (1 - margin))
   }
 

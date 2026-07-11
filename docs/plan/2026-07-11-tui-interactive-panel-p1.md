@@ -1,6 +1,6 @@
 # TUI 交互式只读面板（P1）实现计划
 
-> **实施状态（2026-07-11）：待实施（已过 opus 对抗 review 回炉，1 BLOCK + 5 MAJOR 全部修入；Q2 真终端视觉复验建议先做但不阻塞）。** 依赖 P0 已 merge。P1 = 只读交互（无破坏性动作，abort/复制在 P2）。回炉要点：collapsed 统一走 Region（方案 A 对齐 RFC「N=1 退化」，golden 有意更新 + seam 测试）、printLog 在 DECSTBM 下分叉、options 注入 stdin/rows/onShutdownSignal/registerExitHook（gate 仅显式注入才碰 process.stdin，护 test-isolation）、attempts[] 富累积、终端还原覆盖 exit/crash/shutdown 四路径。
+> **实施状态（2026-07-11）：✅ 已实施（8 task 全绿 + 各 task 过审含 opus 集成审查；Reading B 裁决 golden 零 churn）。** 依赖 P0 已 merge。P1 = 只读交互（无破坏性动作，abort/复制在 P2）。四叶子 keys/region/panel/controller + Task5 集成 + Task6 还原 scheme A + Task7 eslint 边界 + Task8 doc。承重接缝（统一 Region 消灭双路径、printLog DECSTBM 分叉、options 注入护 test-isolation、raw-mode Ctrl-C 转发 + exit-hook 还原、attempts[] 富累积、滚动数学同源对齐）均实测过审。**真终端反馈修入**：req_id 显全（`1c23e6f4`）、面板固定高度 3 行消除空行 churn（`cfc4f05e`，+ F3 联合对齐回归测试）。残留打磨（help-toggle 滚动 F1、1↔2↔3 微动 F2）见 `docs/todo/deferred-backlog.md`。**待用户真终端验收（见文末清单）**。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **P1 只读**：绝无破坏性动作（abort/复制/清屏改状态都不在 P1）。detail 视图纯呈现 `ActiveRequest` 累积数据。
-- **collapsed 走 Region（N=1，方案 A，对齐 RFC §4「同一套代码」）**：collapsed/panel/detail **统一经 `Region.render(lines)`**——collapsed 即 `lines.length===1`（内容 = `buildActiveFooter` + 可选 dim keybar 提示）。**不保留 P0 的双路径**（评审 BLOCK-1：两路径在 collapsed↔panel 转换时 DECSTBM 滚动区不复位、光标模型冲突，且 golden oracle 对该转换是盲的）。**golden fixture 是有意变更**：collapsed 单行 region 视觉须与 P0 footer 等效（评审确认视觉不劣化，`large-refactor` §7：真 invariant 是「对终端视觉消费者无可观测变化」而非字节等价）；更新 `console-golden.txt` 为新单行 region 输出，并**新增 collapsed↔panel↔collapsed 往返 seam 测试**（断言 DECSTBM 复位 `\x1b[r` 在收回时出现——P0 golden 对此盲）。
+- **collapsed 走 Region（方案 A，仅在交互实例内；对齐 RFC §4「同一套代码」）**：**交互实例**里 collapsed/panel/detail **统一经 `Region.render(lines)`**——collapsed 即 `lines.length===1`（`buildCollapsedLines` 内容 = `buildActiveFooter` + 可选 dim keybar）。panel→collapsed 是 Region 内 N:多→1 的重锚（DECSTBM 缩到 1 行）、`active.size===0` 走 `region.clear()` 拆 DECSTBM，**一个交互实例内不存在 P0 单行 + DECSTBM 双路径**（消灭 BLOCK-1 接缝）。**非交互实例**（无注入 stdin）全程走 P0 footer 路径、不建 Region——这是**实例级 mode 两分**（构造时定死、终身不变、无接缝），非会话内切换。**golden fixture 不动（Reading B，确认于 2026-07-11 Task5 集成期）**：golden/attach-order/usage 测试不注入 stdin → 非交互 → P0 路径 → 输出**逐字不变**（原计划「golden 有意变更」是 Reading-A 残留，已被 stdin-gate 加固取代）。collapsed↔panel↔collapsed **往返 seam 测试**放**新 `terminal-ui-interactive.unit.test.ts`**（注入 stdin+isTTY），断言收回时 `\x1b[r` 出现——不在 golden。
 - **横×竖双向 clamp 是硬不变量**：每行 `truncateToWidth(columns-1)`（复用 `render/footer.ts` 原语）；region 高 = `min(所需, rows-预留)`，溢出显 `+K more below` + 选中滚动可达（RFC §6）。resize 时全清旧位置（`\x1b[2J` 或逐行清 orphan）+ 按新 rows 重设 DECSTBM 重锚（评审 §7：非平凡 orphan 清理）。`active.size===0` 时 region `clear()`（拆 DECSTBM、回归纯日志）。
 - **raw mode 全程常驻**（**仅显式交互时**）：门控 `!silent && stdout.isTTY && typeof stdin.setRawMode === "function"`，**且仅当显式注入 `stdin` 选项或 `interactive:true`**才触碰 `process.stdin`（评审 §3：否则真终端跑 `bun test` 会让 golden 等既有测试的 `setRawMode` 打到真实 process.stdin，违反 `test-isolation`）。接管 Ctrl-C（`0x03`→注入的 `onShutdownSignal`，PoC-1 确认）；退出/崩溃/destroy/shutdown 必还原（`setRawMode(false)` + `stdin.removeListener("data")` + `stdin.pause()` + 显光标 + region `clear()` 复位 DECSTBM `\x1b[r`），exit-hook 承重（PoC-4，注入 `registerExitHook`）+ throw 点兜底。
 - **`printLog` 统一经 Region 协调**（评审 §2）：交互态 region 独占底部保留区；`printLog` 只 `write(message+"\n")`（光标由上次 `Region.render()` 的 DECRC 停泊在 DECSTBM 滚动区底，日志落上方滚动区），再 `renderRegion()`。**不再 `clearFooterForLog`+`CLEAR_LINE`**（那是 P0 单路径；DECSTBM 下会错清保留区）。`Region.render()` 契约：render 结束后光标**停泊在滚动区最后一行**（DECRC）。非交互态退回 P0 的 `printLog`（无 region）。
@@ -251,3 +251,24 @@ git commit -F <msgfile> -- docs/DESIGN.md docs/rfc/2026-07-10-interactive-tui-li
 ## Execution Handoff
 
 见会话——P1 建议 subagent-driven 执行（同 P0）。Task2（DECSTBM region）+ Task5（集成）是承重、须仔细审。**强烈建议实施 Task2 前用户先真终端跑 Q2 视觉复验**（`bun exp/tui-rawmode/sticky-region-decstbm.ts`）确认 DECSTBM 观感 + collapsed 单行 region 视觉 OK——虽 byte 级已选定，视觉是 pty 盲区、也是 golden 有意更新的前提。
+
+---
+
+## 用户真终端验收清单（pty 盲区，须真人）
+
+P1 全绿 + 逐 task 过审，但以下是 pty 证不了、须在真终端跑 `bun run start`（或你的启动方式，交互面板仅在真 TTY + stdin 下激活）观察的项。逐项打勾：
+
+- [ ] **展开/收回**：`space`/`Tab` 折叠 footer ↔ 展开面板，无残影、无破屏。
+- [ ] **导航 + 选中**：`↑↓`/`k`/`j` 移动，选中行反色高亮跟随。
+- [ ] **detail**：`enter` 进单条详情（req_id 全 / model / attempts 明细），`esc` 逐级返回。
+- [ ] **面板固定高度**：在途 >3 时面板恒 3 行、`↑K ↓M more` 双向指示，上下键滚动能触达所有在途请求。
+- [ ] **空行 churn 已消除**：在途请求数量大幅变动（如并发涌入/退去）时，面板与日志之间**不再冒空行**（本轮根因修复的验收）。
+- [ ] **req_id 显全**：面板逐条行的 req_id 完整（如 `req_1783706112773_1180`）、非 `req_1783` 前缀。
+- [ ] **resize**：拖动终端改大小，面板贴底重锚、不破屏、无 orphan 行。
+- [ ] **Ctrl-C 能停**：raw mode 下按 `Ctrl-C` 服务器优雅关闭（不卡死）。
+- [ ] **退出还原**：退出后终端正常——光标可见、echo 正常、可正常打字。
+- [ ] **崩溃还原**（可选）：若遇崩溃，退出后终端仍还原（exit-hook）。
+
+**已知残留（非阻塞，见 backlog）**：① 按 `?` 开 help 时选中行可能瞬时脱窗、下次导航自愈；② 在途在 1↔2↔3 之间小幅变时面板高度仍会微动一下（大摆幅已消除）。若这两项实测困扰，告知即修。
+
+**P2 待做**（本清单不含）：`x` abort 在途请求、`c` 复制 req_id（OSC52）。

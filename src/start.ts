@@ -45,6 +45,7 @@ import { initBus } from "./lib/observability"
 import { toActiveRequestWire } from "./lib/observability/active-request-wire"
 import { formatBillingLabel } from "./lib/observability/projections/format"
 import { installConsolaRepublish } from "./lib/observability/republish"
+import { attachCalibrationSink } from "./lib/observability/sinks/calibration"
 import { attachFileSink } from "./lib/observability/sinks/file"
 import { attachHistorySink } from "./lib/observability/sinks/history"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
@@ -249,7 +250,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const systemPublisher = bus.scope("system")
   setShutdownPublisher(systemPublisher)
   setRateLimitPublisher(systemPublisher)
-  attachTerminalUi(bus)
+  // Explicitly pass process.stdin so the interactive raw-mode panel gates on
+  // (evaluator §3): tests that omit stdin stay on the non-interactive P0 path.
+  attachTerminalUi(bus, { stdin: process.stdin })
   attachFileSink(bus, { path: PATHS.COPILOT_LOG })
   installConsolaRepublish(systemPublisher)
 
@@ -367,6 +370,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setHistoryPublisher(historyPublisher)
   attachHistorySink(bus, { publisher: historyPublisher })
   attachTelemetrySink(bus)
+  attachCalibrationSink(bus)
   attachWsSink(bus)
 
   // Rate limiter — config-driven, constructed after observability is live so

@@ -2,6 +2,19 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## 交互式 TUI（P1）打磨项（真终端 + review 暴露，2026-07-11）
+
+- **help 切换时选中行瞬时脱窗（review F1，minor，自愈）**：`controller.ts` 的 `reduce` 处理 `help` 键（翻转 showHelp）时不重算 `scrollOffset`；而 showHelp 使可见内容行数 -1（capped 小窗放大此瞬态）。已复现：overflow 态 sel=4/off=3 按 `?` → 选中脱窗一帧，下次 nav 键 visibleRows 重算即拉回。**若做**：干净修需把 scroll-clamp 在 help 切换时用**新** showHelp 的 visibleRows 重算——但 `reduce` 纯函数只拿到单个 `ctx.visibleRows`（terminal-ui 用**旧** showHelp 算的），故要么 terminal-ui 在 `reduce` 后按新 showHelp 重算 visibleRows 再 `scrollToShow` 重夹（scroll-clamp 部分移到集成层），要么给 `UiContext` 传 `panelRows`+`activeCount` 让 reduce 自算 `panelContentRows(新showHelp)`。属架构小调整，自愈故非阻塞。
+- **~~面板高度 1↔2↔3 残留 churn（review F2）~~ 已解决（commit 069c2293）**：恒高修复（内容补空行、总高恒 min(rows,3)）彻底消除所有高度变化，不止大摆幅——F2 关闭。原文备查：：空行根因修（commit `cfc4f05e`）把大摆幅 churn 消除（在途 ≥3 恒 3 行），但在途在 0↔1↔2↔3 之间变时 `panelContentRows` 仍返 1/2/3，`Region` 仍走 geometryChanged 重锚 → 理论上 1-3 并发时仍可能冒 stray blank line。**若做（彻底消除）**：panel 恒 `MAX_PANEL_ROWS` 行、不足补 dim 空行（几何全常）——代价是 1 个在途也占 3 行、浪费屏幕。用户明确要「最高 3」（动态 ≤3），故先取当前取舍；若用户实测 1-3 区间仍频繁空行再切恒高。
+
+## per-model 上游过载背压（用户 2026-07-11 决策：spec 完成即止、作可选增强）
+
+- **背景/动机**：GHC 对 opus-4.8 等间歇过载——单次 attempt 挂数百秒后返 502 GitHub Unicorn 页 / `NGHTTP2_REFUSED_STREAM`，`server-error-retry` 重放**同 payload** 再烧几百秒（实测 `req_300` = 71s→502→再挂满 300s→abort = 371s 白烧）。502 横跨 07-04/05/08/11 反复、单日 6+ 次。根因应对 = GHC 过载时**按模型降速退避**（背压），非盲目逐请求重放。
+- **规格（已与用户敲定七项承重决策）**：见 `docs/spec/2026-07-11-per-model-overload-backpressure.md`。要点——D1 滞动窗口 N-in-M 检测；D2 事件集 = 5xx server_error + REFUSED + 上游 idle-timeout；D3 复用已存在的 TTFB/idle 超时（`response_header`/`stream_idle`）；D4 idle-timeout 熔断可重试且计入窗口；D5 复用现有 `AdaptiveRateLimiter` 状态机 + 原因 tag（429 vs upstream-overload）；D6 窗口 per-model；D7 节流 per-model（429 仍全局）。
+- **暂缓原因**：用户明确「推进到 spec 完成后结束、作可选后续增强」。急性症状（请求"卡住"）已由**配置修复**消除——事故时 `response_header=0` 禁用了 TTFB 超时，改回 300 后单请求不再无界挂起（根因排查见 `exp/ttfb-timeout-queued/report.md`，已加 `response_header=0`/`stream_idle=0` 防呆告警）。故本特性从"急性修复"降为"过载浪费优化"，价值在但不紧急。
+- **若做需改什么**：新增 `PerModelOverloadGovernor`（`Map<modelId, {滞动窗口 + 复用的 AdaptiveRateLimiter 实例}>`）；请求路径在全局 429 限流器后叠 per-model 层（`http-transport.ts` 的 `executeWithAdaptiveRateLimit` 包裹点）；transport 侧 attempt 失败经 `classify.ts` 的 error type 调 `reportOverloadSignal(modelId, kind)`；配置新增 `overload_backpressure.{enabled,window_sec,threshold}`；`/api/status` + WS `system.rate_limit_state` 扩 model 维度 + 原因 tag。实现分两 phase（governor+窗口纯单元 → 信号桥+接线+可观测）。开放问题：GovernorUnit 空闲回收、是否按 endpoint 再细分（默认否）。
+
+
 ## Console footer 宽度感知落地的跟进项（2026-07-10）
 
 - **背景**：footer 行宽感知 + 按模型分组已落地（`docs/plan/2026-07-10-tui-footer-width-aware-grouping.md`）。以下四项经计划评审明确推迟（footer-only 瞬时损失、完成态 log line 补回，可接受），非本次范围：
@@ -10,12 +23,11 @@
   - **外部直写 stdout 撞 footer**：任何绕过 `printLog` 的 `console.log` 会撞坏 footer 协调。当前 republish 已收编 consola，残余风险低。若做：需一个全局 stdout 写入拦截层。
   - **`(resolving)` 桶丢 path**：未解析模型的请求在分组里归 `(resolving) ×N`，丢了各自 path（现状逐条显示会带 path）。footer-only 瞬时损失，完成态 log line 补回。若做：`(resolving)` 桶特殊化为逐条显示 method+path。
 
-## 分组 footer 自适应显示最久的 N 个请求时间（用户 2026-07-10 要求，待 P0 后做）
+## ✅ 已解决：分组 footer 自适应显示最久的 N 个请求时间（用户 2026-07-10 要求 → 2026-07-11 落地 097404df/f1d0492a）
 
 - **背景/动机**：现状多请求分组 footer 每组只显**单个** `maxElapsed`（最老请求）。用户要求：根据组数自适应显示每组**最久的几个**请求时间。
 - **规格（已与用户敲定 + 默认补全）**：每组显示条数 = f(组数)——**1 组→最久 5 个 · 2 组→每组最久 3 个 · 3 组→每组最久 1 个 · 4+ 组→每组最久 1 个**（横向空间紧，默认，仍受 `columns-1` 宽度截断兜底）。组内「最久的 N 个」= 组内请求按 elapsed 降序取前 N 的 elapsed。段形如 `claude-opus-4-8 ×5 ↓12KB 9.1s 7.3s 5.0s 3.2s 1.1s`。
-- **为何待 P0 后**：这是**行为变更**，而 P0 是行为逐字等价的纯重组（golden-fixture 锁 footer 输出）；现在改会污染等价 oracle。P0 落地后作独立 feat，只碰 `tui/render/footer.ts`（重组后 footer 的家）+ 测试 + 一次**有意的** golden 更新。
-- **若做需改什么**：`buildActiveFooter`/`buildModelGroupSegments`（重组后在 `tui/render/footer.ts`）——组内保留 top-N elapsed（现只留 oldest）；段构建按 f(组数) 取 N 个 elapsed 拼接；宽度驱动纳入循环的 segment 宽度估算随之变长（`stringWidth` 仍兜底）；golden-fixture 场景须体现多组多时间；补单测覆盖 1/2/3/4 组各自的 N。
+- **落地实现**：`buildModelGroupSegments`（`src/lib/tui/render/footer.ts`）改 `oldestStart: number` → `startTimes: Array<number>` 累积组内全部起始时刻；新 `timesPerGroup(groupCount)`（1→5/2→3/3+→1）；段内 `startTimes` 升序取前 N（= elapsed 降序 = 最老 N 个）拼 `formatDuration`。宽度驱动纳入循环的 `stringWidth` 兜底不变。golden-fixture 场景（2 组：gpt-5 ×2 + claude-opus-4-8 ×1）已重生为 `gpt-5 ×2 1.0s 500ms`；`console-footer.unit.test.ts` 加 1/2/3 组各自 N 的直接单测（正样本：旧单时间码会红）。
 
 ## GHC server_tool_memory 默认关 — CAPI 接受性待探针
 
@@ -348,3 +360,21 @@
 - **理想架构**：① reorder 加 `KeyboardSensor({coordinateGetter: sortableKeyboardCoordinates})`；② resize 手柄改可聚焦元素 + 方向键调宽（或提供数字输入）。
 - **为何暂缓**：本期 spec 明确只要求指针拖拽；键盘路径是正交增强，不阻塞核心可配置能力。内部工具、单用户，优先级低。
 - **若做需改什么**：`RequestsListPage` 的 `useSensors` 加 KeyboardSensor；`SortableHeaderCell` 补键盘激活语义；resize 手柄换 focusable + keydown 调 `columnSizing`；补键盘交互测试。发现方：column-config Task 3 审查（2026-07-11）。
+
+## 组成/tool-密度感知 calibration factor（size 无法解释的残差 ~7%，2026-07-11 暂缓）
+
+- **根因**：size-aware calibration（spec/plan `2026-07-11-size-aware-calibration-learning`，Phase 1 已落地）把 factor 从「单标量」升为「per-bucket（按 localEstimate 规模分 6 桶）tok-weighted 滑动加权均值」，离线实测把 count_tokens 误差从 ~50% 高估砍到 **MAPE 6.9%**（时间留出集 6.4%，非过拟合）。**残差 ~7% 是纯 size 维度无法解释的部分**——来自请求**组成 / tool 密度**（同规模但 tool_use/tool_result/code 占比不同的请求，o200k↔Claude tokenizer 失配率略有差异）。当前 factor 只按 `localEstimate` 分桶，对同桶内不同组成的请求用同一 factor。
+- **当前行为（已核实足够）**：两个消费者（`count_tokens` route 的客户端 compact 判定 + `debug` route）配安全边际后，~7% 残差**均可接受**——离线验证 p90 仅 17.6%，且 size-aware 已消除主要偏差（50%→7%）。size 分桶已把 400-regime（顶桶）与典型-regime（中桶）自动隔离。功能完整、仅精度还有第二维可挖。
+- **理想架构**：给 factor 模型加**第二维**（组成/tool 密度）——如按 `(sizeBucket, toolDensityBucket)` 二维分桶，或在 per-bucket factor 上叠加一个 tool-ratio 线性修正项；学习信号仍来自成功腿 usage + local estimate，只是落桶键多一维。`countTotalTokens` 已能从 payload 算出 tool block 占比作第二维特征。
+- **为何暂缓**：残差已在两消费者可接受范围内（against over-engineering——精度收益边际递减，第二维把 6.9%→可能 ~4-5%，价值未证）；二维分桶会稀释每桶样本量（需更多 live/backfill 数据才收敛）、增加 seed 表维度与迁移复杂度；spec §2/§11 已显式列为暂缓项、两轮 subagent 对抗审查均认可暂不加。属「独立精度增强工作单元」非「因范围大降级」。
+- **若做需改什么**：① `engine.ts` 的 `FactorBucket` 落桶键加 tool-density 维度（`bucketIndexFor` → 二维索引，或 factor 叠加 tool-ratio 项）；② `CalibrationSink` + `calibration-backfill.ts` 落桶时算 tool 密度特征（复用 `countTotalTokens` 的 tool block 统计）；③ `DEFAULT_FACTOR_SEED` 表升二维 + `boundsVersion` bump 触发重 seed；④ 离线 `exp/token-calibration-size-aware/` 重训二维模型验证残差实际降幅、时间留出集不过拟合；⑤ 迁移路径（一维 v2 → 二维 v3）。发现方：size-aware calibration spec §2/§11 暂缓裁决（2026-07-11）。
+
+## size-aware calibration 的廉价 follow-up（2026-07-11 全分支终审 triage）
+
+三条长远正确的低成本增强，`feat/size-aware-calibration` 终审判为非阻塞、记此暂缓：
+
+- **CalibrationSink model-miss 静默无日志**：`src/lib/observability/sinks/calibration.ts` 在 `state.modelIndex.get(body.model)` 未命中时裸 `return`，与 backfill `processRow` 打 skip 计数不对称。**若做**：补 `consola.debug`（never-swallow 观测性），使「某端点 wire 名 ≠ index id 导致全程不学」可见。发现方：Task 5 review + 全分支终审。
+- **backfill cursor+accum 两次 setMeta 非原子**：`src/lib/history/sqlite/calibration-backfill.ts` 相邻两条同步 sqlite 写之间无 await，仅 SIGKILL/断电撕裂窗可致 1 批（~100 行）cursor/accum 漂移；有界 + seed 自 CAP 封顶自愈。sibling backfills（usage-normalize / response-preview）同款 pattern。**若做**：统一用 `db.transaction` 包裹 cursor+accum 双写（系统性、非单点）。发现方：Task 6 review + 全分支终审。
+- **calibration 靶向测试缺口**：CalibrationSink 的 REAL_FLOOR/EST_FLOOR/model-miss/usage-缺-cache 分支、pre-flight driver 接缝「首轮只调一次」均无直接单测（经读码 + 505 回归间接覆盖，行为已核实正确）。**若做**：补靶向 golden 用例。发现方：Task 5/9 review + 全分支终审。
+
+**待实测验证项（spec 已 defer，§3.2-S2/§11）**：400 腿 `reportedCurrent` 是否含 cache token（whole-prompt 口径）。Task 1-4 实施时探针初判含 cache（opus 400 报 ~1M 只可能 cache-inclusive），但未在活服务器端到端复验。若某天发现 cache-heavy 请求两腿口径偏差，回查此处。400 几乎总落顶桶 + CAP 封顶，影响边际。

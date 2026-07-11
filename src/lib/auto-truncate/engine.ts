@@ -54,18 +54,48 @@ export const DEFAULT_AUTO_TRUNCATE_CONFIG: AutoTruncateConfig = {
 // Learned Limits (per-model, with calibration)
 // ============================================================================
 
-/** Per-model learned limits with tokenizer calibration */
-export interface ModelLimits {
-  /** Token upper bound (from error response's reported limit) */
-  tokenLimit: number
-  /** Calibration factor: actualTokens / gptEstimatedTokens.
-   *  > 1.0 means GPT tokenizer underestimates (Claude tokenizer produces more tokens).
-   *  < 1.0 means GPT tokenizer overestimates. */
-  calibrationFactor: number
-  /** Number of calibration samples (higher = more reliable factor) */
+export const BUCKET_BOUNDS: ReadonlyArray<number> = [0, 15_000, 30_000, 60_000, 120_000, 240_000, Infinity]
+export const WEIGHT_CAP = 2000
+export const FACTOR_BOUNDS_VERSION = 1
+const CALIBRATION_MIN = 0.5
+const CALIBRATION_MAX = 3.0
+
+/** One size bucket's running tok-weighted calibration aggregate. */
+export interface FactorBucket {
+  sumReal: number
+  sumEst: number
   sampleCount: number
-  /** Last updated timestamp (ms since epoch) */
+  meanEst: number
+}
+/** Per-model size-aware factor model: one aggregate per size bucket. */
+export interface FactorModel {
+  boundsVersion: number
+  buckets: Array<FactorBucket>
+}
+/** Per-model learned limits with size-aware tokenizer calibration */
+export interface ModelLimits {
+  /** Only set once a 400 taught us the real cap; seed-only models leave it undefined
+   *  so calculateTokenLimit falls back to model capabilities. */
+  tokenLimit?: number
+  factorModel: FactorModel
+  /** LIVE learning events only (success + 400); seed/backfill do NOT bump it.
+   *  Drives computeSafetyMargin so synthetic priors never collapse the margin. */
+  liveSampleCount: number
   updatedAt: number
+}
+
+export function emptyFactorModel(): FactorModel {
+  return {
+    boundsVersion: FACTOR_BOUNDS_VERSION,
+    buckets: Array.from({ length: BUCKET_BOUNDS.length - 1 }, () => ({ sumReal: 0, sumEst: 0, sampleCount: 0, meanEst: 0 })),
+  }
+}
+
+export function bucketIndexFor(est: number): number {
+  for (let i = 0; i < BUCKET_BOUNDS.length - 1; i++) {
+    if (est >= BUCKET_BOUNDS[i] && est < BUCKET_BOUNDS[i + 1]) return i
+  }
+  return BUCKET_BOUNDS.length - 2
 }
 
 const learnedLimits = new Map<string, ModelLimits>()
@@ -89,33 +119,27 @@ export function hasKnownLimits(modelId: string): boolean {
 
 /**
  * Called when a token limit error (400) occurs.
- * Records the learned limit and optionally updates calibration.
+ * Records the learned limit and feeds calibration into the size bucket.
  */
 export function onTokenLimitExceeded(modelId: string, reportedLimit: number, reportedCurrent?: number, estimatedTokens?: number): void {
-  // Update learned limits (with calibration data for future pre-checks)
-  const existing = learnedLimits.get(modelId)
+  // Ensure a (seeded) entry exists, then update the learned cap.
+  const limits = ensureModelLimits(modelId)
 
-  // Only update if this is the first time or the new limit is lower (more restrictive)
-  if (!existing || reportedLimit < existing.tokenLimit) {
-    learnedLimits.set(modelId, {
-      tokenLimit: reportedLimit,
-      calibrationFactor: existing?.calibrationFactor ?? 1.0,
-      sampleCount: existing?.sampleCount ?? 0,
-      updatedAt: Date.now(),
-    })
+  // N1: seed-only models start with tokenLimit === undefined, so the first 400
+  // must write it; afterward only tighten (lower = more restrictive).
+  if (limits.tokenLimit === undefined || reportedLimit < limits.tokenLimit) {
+    limits.tokenLimit = reportedLimit
+    limits.updatedAt = Date.now()
     consola.info(`[AutoTruncate] Learned token limit for ${modelId}: ${reportedLimit}`)
   }
 
-  // Calibrate tokenizer if we have both actual and estimated token counts
+  // Feed the 400's (estimate, real) pair into the size-aware calibration model.
   if (reportedCurrent !== undefined && estimatedTokens !== undefined && estimatedTokens > 0) {
-    updateCalibration(modelId, reportedCurrent, estimatedTokens)
-    const lim = learnedLimits.get(modelId)
-    if (lim) {
-      consola.info(
-        `[AutoTruncate] Calibration for ${modelId}: actual=${reportedCurrent} vs estimated=${estimatedTokens}`
-          + ` → factor=${lim.calibrationFactor.toFixed(3)} (${lim.sampleCount} samples)`,
-      )
-    }
+    learnCalibration(modelId, estimatedTokens, reportedCurrent, { isLive: true })
+    consola.info(
+      `[AutoTruncate] Calibration for ${modelId}: actual=${reportedCurrent} vs estimated=${estimatedTokens}`
+        + ` → factor=${factorAt(modelId, estimatedTokens).toFixed(3)}`,
+    )
   }
 
   schedulePersist()
@@ -131,42 +155,154 @@ export function resetAllLimitsForTesting(): void {
 }
 
 // ============================================================================
-// Calibration (EWMA)
+// Size-Aware Calibration (per-bucket sliding tok-weighted mean)
 // ============================================================================
 
-const CALIBRATION_ALPHA = 0.3
-const CALIBRATION_MIN = 0.5
-const CALIBRATION_MAX = 3.0
-
-/**
- * Update the per-model calibration factor using EWMA.
- *
- * Called after a token limit error when we know both the GPT tokenizer estimate
- * and the actual token count (from the error response). The ratio between them
- * tells us how much the GPT tokenizer over/under-estimates for this model.
- */
-export function updateCalibration(modelId: string, actualTokens: number, estimatedTokens: number): void {
-  if (estimatedTokens <= 0) return
-  const limits = learnedLimits.get(modelId)
-  if (!limits) return
-
-  const rawFactor = actualTokens / estimatedTokens
-  const clamped = Math.max(CALIBRATION_MIN, Math.min(CALIBRATION_MAX, rawFactor))
-
-  if (limits.sampleCount === 0) {
-    limits.calibrationFactor = clamped
-  } else {
-    limits.calibrationFactor = CALIBRATION_ALPHA * clamped + (1 - CALIBRATION_ALPHA) * limits.calibrationFactor
-  }
-  limits.sampleCount++
-  limits.updatedAt = Date.now()
+/** Read a bucket's factor = clamp(Σreal/Σest). Undefined when the bucket is empty. */
+function bucketFactor(b: FactorBucket): number | undefined {
+  if (b.sampleCount === 0 || b.sumEst <= 0) return undefined
+  return Math.max(CALIBRATION_MIN, Math.min(CALIBRATION_MAX, b.sumReal / b.sumEst))
 }
 
-/** Apply calibration factor to a GPT tokenizer estimate */
-export function calibrate(modelId: string, gptEstimate: number): number {
+/** size-aware factor via log-linear interpolation between populated bucket anchors
+ *  (anchor x = bucket.meanEst, y = bucketFactor). Empty model → 1.0 (no-op). */
+export function factorAt(modelId: string, est: number): number {
   const limits = learnedLimits.get(modelId)
-  if (!limits || limits.sampleCount === 0) return gptEstimate
-  return Math.ceil(gptEstimate * limits.calibrationFactor)
+  if (!limits) return 1.0
+  const anchors: Array<{ x: number; y: number }> = []
+  for (const b of limits.factorModel.buckets) {
+    const y = bucketFactor(b)
+    if (y !== undefined && b.meanEst > 0) anchors.push({ x: b.meanEst, y })
+  }
+  if (anchors.length === 0) return 1.0
+  anchors.sort((a, b) => a.x - b.x)
+  const first = anchors[0]
+  const last = anchors.at(-1) ?? first
+  if (est <= first.x) return first.y
+  if (est >= last.x) return last.y
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const a = anchors[i]
+    const b = anchors[i + 1]
+    if (est >= a.x && est <= b.x) {
+      const t = (Math.log(est) - Math.log(a.x)) / (Math.log(b.x) - Math.log(a.x))
+      return a.y + t * (b.y - a.y)
+    }
+  }
+  return last.y
+}
+
+export const DEFAULT_FACTOR_SEED: Record<string, Array<{ factor: number; meanEst: number } | null>> = {
+  "claude-opus-4.8": [
+    null,
+    { factor: 1.284, meanEst: 23_877 },
+    { factor: 1.313, meanEst: 48_784 },
+    { factor: 1.434, meanEst: 85_238 },
+    { factor: 1.625, meanEst: 163_889 },
+    { factor: 1.826, meanEst: 333_152 },
+  ],
+}
+
+/** Synthetic seed weight — small enough that real live/backfill data dominates
+ *  within a few hundred samples, non-zero so the anchor exists pre-backfill. */
+const SEED_WEIGHT = 500
+
+export function seedFactorModel(modelId: string): FactorModel {
+  const fm = emptyFactorModel()
+  // Record index access is typed non-undefined here, but an unknown modelId is a
+  // real runtime case — cast so the guard below is honest, not "unnecessary".
+  const seed = DEFAULT_FACTOR_SEED[modelId] as Array<{ factor: number; meanEst: number } | null> | undefined
+  if (!seed) return fm
+  for (const [i, s] of seed.entries()) {
+    if (!s) continue
+    fm.buckets[i] = { sumEst: SEED_WEIGHT * s.meanEst, sumReal: SEED_WEIGHT * s.meanEst * s.factor, sampleCount: SEED_WEIGHT, meanEst: s.meanEst }
+  }
+  return fm
+}
+
+/** Migration helper: lift a v1 scalar factor into the top size bucket only,
+ *  so an unseeded legacy model keeps its learned factor as a single anchor. */
+function seedTopBucketOnly(factor: number): FactorModel {
+  const fm = emptyFactorModel()
+  const top = fm.buckets.length - 1
+  fm.buckets[top] = { sumEst: SEED_WEIGHT * 300_000, sumReal: SEED_WEIGHT * 300_000 * factor, sampleCount: SEED_WEIGHT, meanEst: 300_000 }
+  return fm
+}
+
+export function ensureModelLimits(modelId: string): ModelLimits {
+  let limits = learnedLimits.get(modelId)
+  if (!limits) {
+    limits = { factorModel: seedFactorModel(modelId), liveSampleCount: 0, updatedAt: Date.now() }
+    learnedLimits.set(modelId, limits)
+  }
+  return limits
+}
+
+/** Feed one (localEstimate, realTokens) sample into its size bucket as a
+ *  ~WEIGHT_CAP sliding tok-weighted mean. Success + 400 legs share this. */
+export function learnCalibration(modelId: string, localEstimate: number, realTokens: number, opts: { isLive: boolean }): void {
+  if (localEstimate <= 0 || realTokens <= 0) return
+  const limits = ensureModelLimits(modelId)
+  const b = limits.factorModel.buckets[bucketIndexFor(localEstimate)]
+  const effWeight = b.sampleCount
+  if (effWeight >= WEIGHT_CAP) {
+    const decay = WEIGHT_CAP / (WEIGHT_CAP + 1)
+    b.sumReal *= decay
+    b.sumEst *= decay
+  }
+  b.sumReal += realTokens
+  b.sumEst += localEstimate
+  const w = Math.min(effWeight, WEIGHT_CAP)
+  b.meanEst = (b.meanEst * w + localEstimate) / (w + 1)
+  b.sampleCount = Math.min(b.sampleCount + 1, WEIGHT_CAP)
+  if (opts.isLive) limits.liveSampleCount++
+  limits.updatedAt = Date.now()
+  schedulePersist()
+}
+
+/** Apply size-aware calibration to a gpt-tokenizer estimate. Signature unchanged;
+ *  an unlearned/empty model returns the estimate unchanged (factorAt → 1.0). */
+export function calibrate(modelId: string, gptEstimate: number): number {
+  return Math.ceil(gptEstimate * factorAt(modelId, gptEstimate))
+}
+
+/** Batch aggregate for one size bucket (raw Σreal/Σest, not yet capped/scaled). */
+export interface BackfillBucketAgg {
+  sumReal: number
+  sumEst: number
+  count: number
+  meanEst: number
+}
+
+/**
+ * Overwrite selected buckets from batch aggregates (history backfill). Per-bucket:
+ * only buckets present (non-null, non-empty) in `agg` are replaced — empty/sparse
+ * buckets keep their factory seed (P-B6), so a bucket the history never populated
+ * still has its prior. Weight is capped at WEIGHT_CAP (Σreal/Σest scaled down
+ * proportionally) so a huge backfilled count can't freeze the sliding window
+ * against later LIVE learning (P-B5). Backfill is NOT live: `liveSampleCount` is
+ * untouched, so computeSafetyMargin keeps its conservative width until real
+ * success/400 events arrive. Called once at the END of a run (never mid-scan). The
+ * per-bucket overwrite DISCARDS any live samples the CalibrationSink learned into
+ * these same buckets during the scan window — a bounded one-time cold-start artifact
+ * (a handful of samples, re-learned by the live sink immediately; negligible margin
+ * effect). Since `liveSampleCount` is not rewritten here, it may briefly read a touch
+ * higher than the overwritten bucket sums reflect until the next live sample re-syncs
+ * them (self-healing, not a leak).
+ */
+export function applyBackfillBuckets(modelId: string, agg: Array<BackfillBucketAgg | null>): void {
+  const limits = ensureModelLimits(modelId)
+  for (const [i, a] of agg.entries()) {
+    if (!a || a.count === 0 || a.sumEst <= 0) continue
+    const scale = a.count > WEIGHT_CAP ? WEIGHT_CAP / a.count : 1
+    limits.factorModel.buckets[i] = {
+      sumReal: a.sumReal * scale,
+      sumEst: a.sumEst * scale,
+      sampleCount: Math.min(a.count, WEIGHT_CAP),
+      meanEst: a.meanEst,
+    }
+  }
+  limits.updatedAt = Date.now()
+  schedulePersist()
 }
 
 // ============================================================================
@@ -195,7 +331,7 @@ export function computeSafetyMargin(sampleCount: number): number {
 // ============================================================================
 
 interface LearnedLimitsFile {
-  version: 1
+  version: 2
   limits: Record<string, ModelLimits>
 }
 
@@ -236,7 +372,7 @@ let persistFailureLogged = false
 
 export const persistLimits = createSerializedAsyncFn(async () => {
   if (learnedLimits.size === 0) return
-  const data: LearnedLimitsFile = { version: 1, limits: Object.fromEntries(learnedLimits) }
+  const data: LearnedLimitsFile = { version: 2, limits: Object.fromEntries(learnedLimits) }
   try {
     await atomicWriteJson(learnedLimitsPath ?? PATHS.LEARNED_LIMITS, data)
     persistFailureLogged = false
@@ -255,14 +391,32 @@ export const persistLimits = createSerializedAsyncFn(async () => {
 export async function loadPersistedLimits(): Promise<void> {
   try {
     const raw = await fs.readFile(learnedLimitsPath ?? PATHS.LEARNED_LIMITS, "utf8")
-    const data = JSON.parse(raw) as LearnedLimitsFile
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: persisted file may have unexpected version
-    if (data.version !== 1) return
-    for (const [modelId, lim] of Object.entries(data.limits)) {
-      if (lim.tokenLimit > 0 && lim.calibrationFactor >= CALIBRATION_MIN && lim.calibrationFactor <= CALIBRATION_MAX) {
-        learnedLimits.set(modelId, lim)
+    const data = JSON.parse(raw) as { version: number; limits: Record<string, unknown> }
+    if (data.version === 2) {
+      for (const [modelId, lim] of Object.entries(data.limits as Record<string, Partial<ModelLimits>>)) {
+        // boundsVersion 不匹配（或缺 factorModel）→ 丢桶重 seed（保留 tokenLimit/liveSampleCount）
+        const persisted = lim.factorModel
+        const fm = persisted && persisted.boundsVersion === FACTOR_BOUNDS_VERSION ? persisted : seedFactorModel(modelId)
+        learnedLimits.set(modelId, {
+          ...(lim.tokenLimit !== undefined && { tokenLimit: lim.tokenLimit }),
+          factorModel: fm,
+          liveSampleCount: lim.liveSampleCount ?? 0,
+          updatedAt: lim.updatedAt ?? Date.now(),
+        })
+      }
+    } else if (data.version === 1) {
+      for (const [modelId, lim] of Object.entries(data.limits as Record<string, { tokenLimit: number; calibrationFactor: number; sampleCount?: number }>)) {
+        const fm = Object.hasOwn(DEFAULT_FACTOR_SEED, modelId) ? seedFactorModel(modelId) : seedTopBucketOnly(lim.calibrationFactor)
+        learnedLimits.set(modelId, {
+          ...(lim.tokenLimit > 0 && { tokenLimit: lim.tokenLimit }),
+          factorModel: fm,
+          liveSampleCount: lim.sampleCount ?? 0,
+          updatedAt: Date.now(),
+        })
       }
     }
+    // version 0/unknown falls through — no persisted entries loaded, but seed
+    // materialization below still runs (fresh-install parity).
     if (learnedLimits.size > 0) {
       consola.info(`[AutoTruncate] Loaded learned limits for ${learnedLimits.size} model(s)`)
     }
@@ -273,6 +427,19 @@ export async function loadPersistedLimits(): Promise<void> {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       consola.warn("[AutoTruncate] learned-limits file unreadable/corrupted, starting fresh:", err)
     }
+  }
+
+  // Materialize the factory bake-in seed for any (model) not already loaded from
+  // disk, UNCONDITIONALLY — success, ENOENT, and corrupt paths all reach here.
+  // Without this, fresh installs leave DEFAULT_FACTOR_SEED unmaterialized, so
+  // hasKnownLimits() is false and count_tokens skips the seed-calibrated
+  // pre-check on the first request (spec §5.2 + goal 3: cold-start convergence).
+  // ensureModelLimits does NOT overwrite an existing entry, so real/migrated
+  // learned data always wins over the seed. Seed is a code constant — do NOT
+  // schedulePersist() here (ensureModelLimits deliberately doesn't) to avoid
+  // writing recomputable data to disk.
+  for (const modelId of Object.keys(DEFAULT_FACTOR_SEED)) {
+    ensureModelLimits(modelId)
   }
 }
 

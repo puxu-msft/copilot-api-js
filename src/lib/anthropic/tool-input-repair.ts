@@ -148,6 +148,74 @@ export function fixBadUnicodeEscapes(input: string): string {
 }
 
 /**
+ * Best-effort (LOSSY) `\uXXXX` escape repair — last resort for escapes a hex digit was DROPPED from.
+ *
+ * `fixBadUnicodeEscapes` (lossless) can only rescue whitespace-SPLIT escapes that still carry four
+ * hex digits (`\u9 ed8` → `默`). Real opus-4.8 captures also drop a digit outright — `\u9 44`
+ * (a space plus only THREE hex) — which is fundamentally unrecoverable (the missing nibble is
+ * unknowable). This pass converts each un-completable `\u…` run into a single U+FFFD replacement
+ * character so the surrounding JSON becomes valid, at the cost of one garbled glyph. It is strictly
+ * more aggressive than the lossless pass:
+ *   - four hex digits recoverable (skipping any whitespace, INCLUDING a leading space `\u 9ed8`)
+ *     → emit the clean `\uXXXX` escape (no loss).
+ *   - fewer than four hex digits before a non-hex terminator → emit U+FFFD, keep the terminator.
+ * A legal `\uXXXX` and a non-`\u` backslash escape (`\n`, `\"`, `\\`) pass through byte-identical.
+ * Idempotent: a U+FFFD it introduced is a plain char with no `\u`, never re-scanned.
+ */
+export function fixBadUnicodeEscapesLossy(input: string): string {
+  let out = ""
+  let i = 0
+  const n = input.length
+  while (i < n) {
+    if (input[i] === "\\" && input[i + 1] === "u") {
+      // Already-valid `\uXXXX` (four hex immediately after) → pass through untouched.
+      if (isHexChar(input[i + 2]) && isHexChar(input[i + 3]) && isHexChar(input[i + 4]) && isHexChar(input[i + 5])) {
+        out += input.slice(i, i + 6)
+        i += 6
+        continue
+      }
+      // Collect up to four hex digits from after `\u`, skipping ANY whitespace (including a leading
+      // space, unlike the conservative lossless pass which requires the first char to be hex).
+      const hexes: Array<string> = []
+      let j = i + 2
+      while (j < n && hexes.length < 4) {
+        const c = input[j]
+        if (isHexChar(c)) {
+          hexes.push(c)
+          j++
+        } else if (isEscapeBreakWhitespace(c)) {
+          j++
+        } else {
+          break
+        }
+      }
+      if (hexes.length === 4) {
+        // Four digits recovered → clean escape, no loss.
+        out += `\\u${hexes.join("")}`
+        i = j
+        continue
+      }
+      // Fewer than four hex digits available → un-completable. Replace the whole broken `\u…` run
+      // (the `\u` marker plus any hex/whitespace we consumed) with a single U+FFFD; keep the
+      // terminator at `j`. Advance past at least `\u` so the scan always makes progress.
+      out += "�"
+      i = Math.max(j, i + 2)
+      continue
+    }
+    if (input[i] === "\\") {
+      // A non-`\u` backslash escape (`\n`, `\"`, `\\`): copy both bytes so the escaped char is
+      // never re-interpreted as the start of a `\u` scan.
+      out += input.slice(i, i + 2)
+      i += 2
+      continue
+    }
+    out += input[i]
+    i++
+  }
+  return out
+}
+
+/**
  * Layer 2 — jsonrepair-backed structural repair.
  *
  * Runs `jsonrepair` (which completes missing brackets/quotes, fixes trailing
@@ -176,18 +244,20 @@ export function tryJsonRepair(input: string): string | undefined {
  * `anthropic.tool_repair_malformed_input` is a SUBSET of these; enabling an item applies its
  * transform, cascaded in THIS order regardless of config spelling (`"jsonrepair,tags"` and
  * `"tags,jsonrepair"` behave identically). Order is the dependency order: `tags` (antml-tag strip)
- * → `unicode` (whitespace-broken `\uXXXX` escape fix) → `jsonrepair` (structural repair); the
- * cheaper / more-targeted fixes run first so jsonrepair (the broad heuristic) is the last resort.
+ * → `unicode` (whitespace-broken `\uXXXX` escape fix) → `jsonrepair` (structural repair) →
+ * `unicode-lossy` (best-effort lossy `\uXXXX` fix); the cheaper / more-targeted / LOSSLESS fixes
+ * run first so the broad heuristic (jsonrepair) and finally the LOSSY last resort (`unicode-lossy`,
+ * which garbles ≥1 char) only run when everything non-destructive has failed.
  *
- * Item → layer/telemetry name: `tags`→`strip`, `unicode`→`unicode`, `jsonrepair`→`jsonrepair` (the
- * layer name is the repair MECHANISM name, which differs from the config ITEM name only for
- * `tags`/`strip`).
+ * Item → layer/telemetry name: `tags`→`strip`, `unicode`→`unicode`, `jsonrepair`→`jsonrepair`,
+ * `unicode-lossy`→`unicode-lossy` (the layer name is the repair MECHANISM name, which differs from
+ * the config ITEM name only for `tags`/`strip`).
  */
-export const REPAIR_ITEMS = ["tags", "unicode", "jsonrepair"] as const
+export const REPAIR_ITEMS = ["tags", "unicode", "jsonrepair", "unicode-lossy"] as const
 export type RepairItem = (typeof REPAIR_ITEMS)[number]
 
 /** Outcome of a layered repair attempt. `layer` names which layer produced the fix. */
-export type RepairResult = { repaired: unknown; layer: "strip" | "unicode" | "jsonrepair" } | { unrepairable: true }
+export type RepairResult = { repaired: unknown; layer: "strip" | "unicode" | "jsonrepair" | "unicode-lossy" } | { unrepairable: true }
 
 function parseJsonOrFail(s: string): { ok: true; value: unknown } | { ok: false } {
   try {
@@ -240,6 +310,20 @@ export function repairToolInput(raw: string, items: ReadonlyArray<RepairItem>): 
     if (repaired !== undefined) {
       const parsed = JSON.parse(repaired) as unknown
       if (isPlausibleToolInput(parsed)) return { repaired: parsed, layer: "jsonrepair" }
+    }
+  }
+
+  if (items.includes("unicode-lossy")) {
+    // LAST resort — lossy. Replace un-completable `\uXXXX` escapes with U+FFFD, then re-run
+    // jsonrepair for any residual structural issue on the now-lossy string. Only reached when every
+    // non-destructive item above failed; costs ≥1 garbled glyph but rescues an otherwise-dead input.
+    current = fixBadUnicodeEscapesLossy(current)
+    const afterLossy = parseJsonOrFail(current)
+    if (afterLossy.ok && isPlausibleToolInput(afterLossy.value)) return { repaired: afterLossy.value, layer: "unicode-lossy" }
+    const repaired = tryJsonRepair(current)
+    if (repaired !== undefined) {
+      const parsed = JSON.parse(repaired) as unknown
+      if (isPlausibleToolInput(parsed)) return { repaired: parsed, layer: "unicode-lossy" }
     }
   }
 

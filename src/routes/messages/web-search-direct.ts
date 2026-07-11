@@ -289,7 +289,7 @@ function recordRetryPipelineState(args: RecordRetryPipelineStateArgs): void {
 
   // Publish features observed on this retry attempt. Replaces the legacy
   // `tuiLogger.updateRequest({ tags: [...] })` direct call. Per-attempt
-  // retry counter / diagnostics are emitted as [RETRY-n] lines by
+  // retry counter / diagnostics are emitted as [RETRY] lines by
   // `executeRequestPipeline` — kept out of feature events to avoid
   // duplicating the same information. `retryMetaFeature` gates `truncated`
   // on an actual truncate meta (an unconditional `else` here falsely branded

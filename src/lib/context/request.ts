@@ -281,6 +281,7 @@ export function createRequestContext(opts: {
   function snapshot(): RequestContextSnapshot {
     const resolvedForLookup = _resolvedModel ?? undefined
     const billing = resolvedForLookup ? appState.modelIndex.get(resolvedForLookup)?.billing : undefined
+    const currentAttempt = _attempts.at(-1)
     return {
       id,
       endpoint: opts.endpoint,
@@ -295,6 +296,8 @@ export function createRequestContext(opts: {
       queueWaitMs: _queueWaitMs,
       ...(requestBodySize !== undefined && { requestBodySize }),
       ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+      ...(currentAttempt?.startTime !== undefined && { currentAttemptStartedAt: currentAttempt.startTime }),
+      ...(_attempts.length > 0 && { attemptCount: _attempts.length }),
     }
   }
 
@@ -555,6 +558,18 @@ export function createRequestContext(opts: {
     commitAttemptSseEvents() {
       const attempt = ctx.currentAttempt
       if (attempt) attempt.sseEvents = _sseEvents ? [..._sseEvents] : undefined
+    },
+
+    /**
+     * L2 截断重试路径既不走 setAttemptResponse 也不走 setAttemptError，
+     * durationMs 停在 beginAttempt 初值 0。发 attempt_failed 前调此定稿，
+     * 使 [RETRY] 行的 lastMs 有真值。已定稿（>0）则不覆盖。
+     */
+    finalizeCurrentAttemptDuration() {
+      const attempt = ctx.currentAttempt
+      if (attempt && attempt.durationMs === 0) {
+        attempt.durationMs = Date.now() - attempt.startTime
+      }
     },
 
     /**
@@ -935,6 +950,7 @@ export function createRequestContext(opts: {
       const a = ctx.currentAttempt
       const snap: AttemptSnapshot = {
         attemptIndex: a?.index ?? 0,
+        ...(a?.durationMs !== undefined && { durationMs: a.durationMs }),
         ...(a?.strategy !== undefined && { strategy: a.strategy }),
         ...(a?.transport !== undefined && { transport: a.transport }),
         // a?.wireRequest is `WireRequest | null | undefined` (null when not yet

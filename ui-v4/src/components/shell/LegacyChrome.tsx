@@ -17,7 +17,9 @@ export function LegacyChrome(): React.ReactElement {
       <NavRail />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar />
-        <main className="min-h-0 flex-1 overflow-auto p-2">
+        {/* pb-14:给底部 fixed 浮岛(LiveDock,bottom-3 + h-8 ≈ 44px 折叠占位)预留清空高度,
+            使页面内容滚到底也不被浮岛遮住。展开面板是瞬时/用户触发的,不为它常驻预留(否则白占半屏)。 */}
+        <main className="min-h-0 flex-1 overflow-auto p-2 pb-14">
           <Outlet />
         </main>
       </div>

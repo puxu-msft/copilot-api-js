@@ -118,6 +118,12 @@ describe("validateConfig — type errors", () => {
       "tags",
       "jsonrepair",
     ])
+    // hyphenated `unicode-lossy` token accepted and lands LAST in canonical order regardless of spelling
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "unicode-lossy,jsonrepair,unicode" } }).anthropic?.tool_repair_malformed_input).toEqual([
+      "unicode",
+      "jsonrepair",
+      "unicode-lossy",
+    ])
     // empty string == off (empty set)
     expect(validateConfig({ anthropic: { tool_repair_malformed_input: "" } }).anthropic?.tool_repair_malformed_input).toEqual([])
     // clean break (project unreleased): the legacy "repair" tier and boolean `false` are no longer valid → stripped + warn

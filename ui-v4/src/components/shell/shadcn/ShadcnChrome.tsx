@@ -18,7 +18,9 @@ export function ShadcnChrome(): React.ReactElement {
       <ShadcnNavRail />
       <div className="flex min-w-0 flex-1 flex-col">
         <ShadcnTopBar />
-        <main className="min-h-0 flex-1 overflow-auto p-3">
+        {/* pb-14:给底部 fixed 浮岛(ShadcnLiveDock,同 legacy dock 尺寸)预留清空高度,
+            使页面内容滚到底也不被浮岛遮住。与 LegacyChrome 对称(master 在 legacy 侧引入)。 */}
+        <main className="min-h-0 flex-1 overflow-auto p-3 pb-14">
           <Outlet />
         </main>
       </div>

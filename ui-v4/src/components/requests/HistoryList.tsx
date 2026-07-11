@@ -81,6 +81,16 @@ const INITIAL_ITEM_COUNT = 20
 /** 命中行瞬态高亮(`toc-flash`)存留时长(ms),与 useAnchorScroll 的 TOC flash 对齐。 */
 const FLASH_MS = 1200
 
+/** 自动加载(触底自动翻页)开关的持久化键。默认关:滚动不自动拉取,用户点「加载更多」才翻页。 */
+const AUTOLOAD_STORAGE_KEY = "ui-v4:requests:auto-load:v1"
+function loadAutoLoad(): boolean {
+  try {
+    return localStorage.getItem(AUTOLOAD_STORAGE_KEY) === "1"
+  } catch {
+    return false
+  }
+}
+
 /** TableVirtuoso 的行数据 = TanStack 行对象(`row.original` 即 EntrySummary)。 */
 type HistoryRowModel = Row<EntrySummary>
 
@@ -284,10 +294,24 @@ export function HistoryList({
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const at = searchParams.get("at")
-  const { entries, total, isLoading, isError, error, refetch, hasNextPage, fetchNextPage } = useHistoryInfinite(filters)
+  const { entries, total, isLoading, isError, error, refetch, hasNextPage, fetchNextPage, isFetchingNextPage } = useHistoryInfinite(filters)
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
   const queryClient = useQueryClient()
+
+  // 自动加载开关(默认关):关时滚动不触底自拉,只靠列底「加载更多」手动翻页;开时恢复触底自动翻页。持久化。
+  const [autoLoad, setAutoLoad] = useState(loadAutoLoad)
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTOLOAD_STORAGE_KEY, autoLoad ? "1" : "0")
+    } catch (err) {
+      console.warn("[HistoryList] 自动加载开关持久化失败:", err)
+    }
+  }, [autoLoad])
+
+  // 列底「加载更多」footer 只在滚到底(atBottom)才显 —— 不常驻(用户诉求)。
+  // 短列表(内容不溢出)由 react-virtuoso 报 atBottom=true → 即时可见;长列表滚到底才露出。
+  const [atBottom, setAtBottom] = useState(false)
 
   // 清空历史确认 Modal:开合 + 删除在途(防重复提交)。筛选感知——有筛选走 scoped delete、无筛选走 clear-all。
   const [clearOpen, setClearOpen] = useState(false)
@@ -337,6 +361,8 @@ export function HistoryList({
     getCoreRowModel: getCoreRowModel(),
   })
   const rows = table.getRowModel().rows
+  // 列底加载 footer 的 colSpan = 当前可见叶子列数(随列可见性/顺序变)。
+  const visibleColCount = table.getVisibleLeafColumns().length
 
   // session 色带的 run 元信息(色/段帽/缩进/tint):跑在已加载全部页拼接的 entries 上(非虚拟化窗口)。
   // 色板态:localStorage 持久化 + 头部 SessionPaletteSelect 切换;未知名回退首套。
@@ -582,10 +608,20 @@ export function HistoryList({
           value={paletteName}
           onChange={setPalette}
         />
-        {/* tail(自动刷新)状态 + 暂停/恢复控制已上移到底部 LiveDock 状态栏(见 LiveDock 的 ▶ live/⏸ paused 开关)。 */}
+        {/* 自动加载开关 —— 关(默认):滚动不触底自拉,点列底「加载更多」手动翻页;开:恢复触底自动翻页。
+            tail(自动刷新)控制已上移 LiveDock 状态栏(▶ live/⏸ paused)。 */}
         <button
           type="button"
-          className="ml-auto text-[var(--color-primary)]"
+          aria-pressed={autoLoad}
+          className={`ml-auto ${autoLoad ? "text-[var(--color-primary)]" : "text-[var(--color-muted)]"}`}
+          title={autoLoad ? "自动加载中(触底自动翻页)· 点击关闭" : "手动加载(点列底「加载更多」)· 点击开启自动翻页"}
+          onClick={() => setAutoLoad((v) => !v)}
+        >
+          {autoLoad ? "⟳ 自动" : "⟳ 手动"}
+        </button>
+        <button
+          type="button"
+          className="text-[var(--color-primary)]"
           onClick={() => setClearOpen(true)}
         >
           清空
@@ -639,13 +675,53 @@ export function HistoryList({
               // jsdom 无 layout,靠 initialItemCount 强制首屏渲染前 N 行(见 CONCLUSION.md)。
               initialItemCount={Math.min(rows.length, INITIAL_ITEM_COUNT)}
               components={TABLE_COMPONENTS}
+              // 触底翻页只在「自动加载」开时发生(默认关 → 手动:滚动不自拉,靠列底「加载更多」footer)。
               endReached={() => {
-                if (hasNextPage) void fetchNextPage()
+                if (autoLoad && hasNextPage) void fetchNextPage()
               }}
               // 离顶(用户上滚)→ 暂停 tail,避免新条目把当前浏览位置挤走(取代旧 onScroll 阈值判断)。
               atTopStateChange={(atTop) => {
                 if (!atTop && tailOn) dispatch({ kind: "scroll-up" })
               }}
+              atBottomStateChange={setAtBottom}
+              // atBottom 容差调到大于 footer 高度(~29px)—— 否则 footer 一出现就给列表增高 ~29px,
+              // 把「到底」判定(默认阈值仅 4px)推翻成 false → 隐藏 footer → 又到底 → 显示…无限抖动。
+              // 48px 让 footer 自身高度落在「仍算到底」容差内,打破该反馈回环(footer 内容变高须同步上调)。
+              atBottomThreshold={48}
+              // 列底「加载更多」footer —— 只在滚到底(atBottom)才出现、不常驻(fixedFooterContent 本是 sticky,
+              // 故用 atBottom 门控:非底 → 传 null 不渲染;到底 → 露出加载条,视觉即列尾)。手动翻页唯一入口;
+              // 定位 load-until-found 正交(仍自动)。
+              fixedFooterContent={
+                atBottom ?
+                  () => {
+                    let inner: React.ReactNode = null
+                    if (hasNextPage) {
+                      inner = (
+                        <button
+                          type="button"
+                          disabled={isFetchingNextPage}
+                          onClick={() => void fetchNextPage()}
+                          className="w-full px-2 py-1.5 text-[var(--color-primary)] hover:bg-[#181818] disabled:text-[var(--color-muted)]"
+                        >
+                          {isFetchingNextPage ? "加载中…" : `↓ 加载更多 · 还有 ${Math.max(0, total - entries.length)} 条`}
+                        </button>
+                      )
+                    } else if (entries.length > 0) {
+                      inner = <div className="px-2 py-1.5 text-[var(--color-muted)]">— 已到底 · 共 {total} 条 —</div>
+                    }
+                    return (
+                      <tr>
+                        <td
+                          colSpan={visibleColCount}
+                          className="mono border-t border-[#222] bg-[#111] p-0 text-center text-[12px]"
+                        >
+                          {inner}
+                        </td>
+                      </tr>
+                    )
+                  }
+                : null
+              }
               fixedHeaderContent={() =>
                 table.getHeaderGroups().map((hg) => {
                   // SortableContext 的 items = 当前列序里的非 session 列 id(顺序须与渲染的可拖 th 一致)。

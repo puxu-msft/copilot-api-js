@@ -251,8 +251,18 @@ async function runExchange(
   let activeStrategy: RetryStrategy | undefined
   // The accepted retry's meta (post-gate), threaded to onMeta + onResolved (C0-②).
   let activeMeta: Record<string, unknown> | undefined
+  // First-attempt-only pre-send hook guard (Task 9): the codec may pre-truncate
+  // env.body ONCE before the initial send; reactive retry takes over afterward, so
+  // we never re-run it per attempt (which would re-truncate an already-trimmed body).
+  let preflightDone = false
 
   for (;;) {
+    if (!preflightDone) {
+      preflightDone = true
+      // MUST run before prepareWire below — otherwise the wire is built from the
+      // un-truncated body and the pre-flight trim would not take effect this attempt.
+      if (deps.codec.preSend) current = await deps.codec.preSend(current)
+    }
     const wire = deps.codec.prepareWire(current)
     current.ctx.beginAttempt({ ...(activeStrategy && { strategy: activeStrategy.name }) })
     // S4 per-attempt sampling (P2.3-S): the codec derives the history effective +
@@ -696,6 +706,10 @@ async function runResponseBufferedSink(
         // (The final attempt — success-commit above OR exhaustion-return below — keeps its frames
         // at the top-level slot only, matching `extractStagePayloads`' finalIdx skip: no dup.)
         currentEnv.ctx.commitAttemptSseEvents()
+        // BLOCK-1: L2 缓冲重试也发 attempt_failed → 打 [RETRY] 行，与 L1 一致可见。
+        // 先定稿本次（截断/transport-close）attempt 的 durationMs（截断路径无 error/response setter）。
+        currentEnv.ctx.finalizeCurrentAttemptDuration()
+        currentEnv.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "buffered-retry" })
         opts.onAttemptReset?.()
         currentEnv.ctx.resetSseEvents()
         // L2 escalation (RFC §8): let the caller tighten this retry's env (e.g. force aggressive
@@ -712,6 +726,8 @@ async function runResponseBufferedSink(
       // final failed attempt's frames stay at the top-level slot (no per-attempt snapshot).
       // M1: close the still-open anchor (if injected) BEFORE the failure return so the client's block
       // structure is balanced when the handler appends its error frame.
+      // 穷尽/非重试：最终失败 attempt 也 finalize duration，供终端汇总行 last（截断路径无 setter）。
+      currentEnv.ctx.finalizeCurrentAttemptDuration()
       await closeAnchorIfOpen()
       opts.onBufferedResolve?.("exhausted", attempt)
       return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }

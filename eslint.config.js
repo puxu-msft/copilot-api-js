@@ -230,4 +230,93 @@ export default defineConfigWithVueTs(
       ],
     },
   },
+
+  // ── P1 TUI internal layer boundaries (ADR docs/decisions/2026-07-10-tui-terminal-ownership.md) ──
+  //
+  // The tui subsystem is a set of pure leaves with a strict, one-directional
+  // dependency graph so each stays unit-testable without a terminal:
+  //   render/*        — presentation builders (no input, no control flow)
+  //   input/*         — Buffer→KeyEvent parsing (no rendering, no control flow)
+  //   controller.ts   — pure reducer (depends only on the KeyEvent *type*)
+  //   terminal-ui.ts  — the integration OWNER that wires all leaves + drives the
+  //                     raw-mode lifecycle; intentionally NOT constrained below
+  //                     (it is the orchestration layer, allowed to import any leaf).
+  //
+  // These blocks use @typescript-eslint/no-restricted-imports (a distinct rule
+  // id from the core `no-restricted-imports` sink guard above) so both fire
+  // together: the tui-wide sink ban still covers every tui file, and the ts
+  // variant's per-group `allowTypeImports` lets the controller keep its
+  // `import type { KeyEvent }` while runtime input/render imports stay banned.
+  // Patterns cover both the `~/lib/tui/*` alias form and the relative form used
+  // by the actual sources (`./`, `../`).
+  {
+    files: ["src/lib/tui/render/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["~/lib/tui/input", "~/lib/tui/input/*", "../input", "../input/*"],
+              message:
+                "render/ builds presentation only — it must not import input/ (key parsing). See ADR docs/decisions/2026-07-10-tui-terminal-ownership.md.",
+            },
+            {
+              group: ["~/lib/tui/controller", "../controller"],
+              message:
+                "render/ must not import the controller (reducer) — presentation is downstream of state, wired by terminal-ui.ts. See ADR docs/decisions/2026-07-10-tui-terminal-ownership.md.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/lib/tui/input/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["~/lib/tui/render", "~/lib/tui/render/*", "../render", "../render/*"],
+              message:
+                "input/ parses keys only — it must not import render/ (presentation). See ADR docs/decisions/2026-07-10-tui-terminal-ownership.md.",
+            },
+            {
+              group: ["~/lib/tui/controller", "../controller"],
+              message:
+                "input/ must not import the controller (reducer) — key parsing is upstream of state, wired by terminal-ui.ts. See ADR docs/decisions/2026-07-10-tui-terminal-ownership.md.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/lib/tui/controller.ts"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["~/lib/tui/render", "~/lib/tui/render/*", "./render", "./render/*"],
+              message:
+                "controller is a pure reducer — it must not import render/ (presentation). See ADR docs/decisions/2026-07-10-tui-terminal-ownership.md.",
+            },
+            {
+              // Runtime imports from input/ are banned; the KeyEvent *type* is
+              // permitted via allowTypeImports — the reducer keys off the
+              // KeyEvent shape, never the parser implementation.
+              group: ["~/lib/tui/input", "~/lib/tui/input/*", "./input", "./input/*"],
+              allowTypeImports: true,
+              message:
+                "controller may depend only on the KeyEvent *type* from input/ (use `import type`) — never the parser implementation. See ADR docs/decisions/2026-07-10-tui-terminal-ownership.md.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 )

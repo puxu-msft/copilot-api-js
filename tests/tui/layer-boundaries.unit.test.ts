@@ -24,17 +24,36 @@ function tuiFiles(): Array<string> {
 const SINK_IMPORT = /from\s+["']~\/lib\/observability\/sinks[/"']/
 const RAW_STDIN = /setRawMode|process\.stdin/
 
+/**
+ * Raw-mode / stdin ownership (P1): the terminal integration owner
+ * (`terminal-ui.ts`) drives the raw-mode lifecycle. The pure leaves —
+ * `controller.ts` (state machine), `render/*` (presentation builders + Region),
+ * and `input/keys.ts` (a pure Buffer→KeyEvent parser that never reads a stream)
+ * — must stay raw-mode-free so they remain unit-testable without a terminal.
+ * (The `eslint.config.js` path-group formalization lands in the dedicated P1
+ * boundary task.)
+ */
+const RAW_MODE_OWNER = "terminal-ui.ts"
+const isPureLeaf = (f: string): boolean => !f.endsWith(RAW_MODE_OWNER)
+
 describe("tui layer boundaries (L1 guard)", () => {
   test("guard reaches real files (positive control)", () => {
     expect(tuiFiles().length).toBeGreaterThan(0) // 空集合会让下面断言真空通过
     expect(RAW_STDIN.test("stdin.setRawMode(true)")).toBe(true) // 证正则真能命中
     expect(SINK_IMPORT.test('import x from "~/lib/observability/sinks/file"')).toBe(true)
     expect(SINK_IMPORT.test('import x from "~/lib/observability/sinks"')).toBe(true) // barrel form
+    // Positive control: the raw-mode owner really does use raw mode (else the
+    // "pure leaves" assertion below could pass vacuously if the owner were renamed).
+    const owner = tuiFiles().find((f) => f.endsWith(RAW_MODE_OWNER))
+    expect(owner).toBeDefined()
+    expect(readFileSync(owner!, "utf8")).toMatch(RAW_STDIN)
   })
   test("no tui file imports another observability sink", () => {
     for (const f of tuiFiles()) expect(readFileSync(f, "utf8")).not.toMatch(SINK_IMPORT)
   })
-  test("P0 tui has no stdin/raw-mode usage yet (that is P1)", () => {
-    for (const f of tuiFiles()) expect(readFileSync(f, "utf8")).not.toMatch(RAW_STDIN)
+  test("raw-mode/stdin is confined to the integration owner — pure leaves stay terminal-free", () => {
+    for (const f of tuiFiles().filter(isPureLeaf)) {
+      expect(readFileSync(f, "utf8")).not.toMatch(RAW_STDIN)
+    }
   })
 })

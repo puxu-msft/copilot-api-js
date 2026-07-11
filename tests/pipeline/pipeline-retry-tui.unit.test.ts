@@ -5,7 +5,7 @@
  * Verifies that the pipeline calls `ctx.recordAttemptFailure` (which
  * publishes `request.attempt_failed { willRetry: true, ... }` on the bus)
  * for every retry-eligible failure AFTER the budget gate accepts the
- * retry. Sinks (ConsoleSink) render this as `[RETRY-n]` lines.
+ * retry. Sinks (ConsoleSink) render this as `[RETRY]` lines.
  *
  * Covers:
  *  - Single retry → one attempt_failed event with correct

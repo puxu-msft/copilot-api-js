@@ -802,7 +802,7 @@ function adaptLegacyLegsInPlace(entry: HistoryEntry): void {
  * into its member stages. Legacy per-stage rows (gzip or zstd) pass through
  * 1:1, so assembleFullEntry's per-stage logic is identical for both layouts.
  */
-function decodeStageRows(stageRows: Array<StageRow>): Array<RequestGroupMember> {
+export function decodeStageRows(stageRows: Array<StageRow>): Array<RequestGroupMember> {
   const out: Array<RequestGroupMember> = []
   for (const sr of stageRows) {
     if (sr.stage === STAGE.requestGroup) {

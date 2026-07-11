@@ -20,6 +20,7 @@ import {
   //
   formatBytes,
   formatDuration,
+  formatDurationField,
   formatStreamInfo,
   truncateToWidth,
 } from "~/lib/observability/projections/format"
@@ -53,7 +54,13 @@ export function buildActiveFooter(args: { active: ReadonlyArray<ActiveRequestVie
 
   if (count === 1) {
     const entry = active[0]
-    const elapsed = formatDuration(now - entry.ctx.startTime)
+    // 有重试时 elapsed 展开为 last/total(N)：last = 当前 attempt 已跑时长、total = 整请求墙钟、
+    // N = 已发生的重试次数。顶层标量由 Task 4 的轻量 snapshot 保证（读 ctx 顶层、非 .summary）。
+    // 纯文本不着色——整行会喂 truncateToWidth，嵌入 ANSI 会被按显示宽切断。
+    const totalMs = now - entry.ctx.startTime
+    const retries = (entry.ctx.attemptCount ?? 1) - 1
+    const lastMs = entry.ctx.currentAttemptStartedAt !== undefined ? now - entry.ctx.currentAttemptStartedAt : undefined
+    const elapsed = formatDurationField({ lastMs, totalMs, retries })
     const model = entry.ctx.resolvedModel ? ` ${entry.ctx.resolvedModel}` : ""
     const streamInfo = formatStreamInfo({
       bytesIn: entry.streamBytesIn,
@@ -88,10 +95,25 @@ export function buildActiveFooter(args: { active: ReadonlyArray<ActiveRequestVie
 }
 
 /**
+ * How many of each group's longest-running requests to show, as a function of
+ * how many model groups there are — fewer groups get more per-group detail,
+ * more groups get less (horizontal space is shared). 1 group → 5 times, 2 → 3,
+ * 3+ → 1. Within a group the times are the N largest elapsed (oldest requests),
+ * shown longest-first.
+ */
+function timesPerGroup(groupCount: number): number {
+  if (groupCount === 1) return 5
+  if (groupCount === 2) return 3
+  return 1
+}
+
+/**
  * One compact plain-text segment per model group: `<model> ×N ↓<sumBytes>
- * <maxElapsed>`. Groups are sorted by descending count, then by oldest
- * request first. `sumBytes` is only shown when the group has streaming
- * progress; `maxElapsed` is the group's longest-running request.
+ * <t1> <t2> …`. Groups are sorted by descending count, then by oldest request
+ * first. `sumBytes` shown only when the group has streaming progress. The times
+ * are the group's {@link timesPerGroup} longest-running requests (elapsed
+ * descending = oldest first), so at a glance you see not just how long the
+ * oldest has run but the spread of the slowest few.
  */
 function buildModelGroupSegments(active: ReadonlyArray<ActiveRequestView>, now: number): Array<string> {
   interface Group {
@@ -99,29 +121,36 @@ function buildModelGroupSegments(active: ReadonlyArray<ActiveRequestView>, now: 
     count: number
     sumBytes: number
     hasBytes: boolean
-    oldestStart: number
+    startTimes: Array<number>
   }
   const groups = new Map<string, Group>()
   for (const entry of active) {
     const model = entry.ctx.resolvedModel ?? "(resolving)"
     let g = groups.get(model)
     if (!g) {
-      g = { model, count: 0, sumBytes: 0, hasBytes: false, oldestStart: entry.ctx.startTime }
+      g = { model, count: 0, sumBytes: 0, hasBytes: false, startTimes: [] }
       groups.set(model, g)
     }
     g.count += 1
+    g.startTimes.push(entry.ctx.startTime)
     if (entry.streamBytesIn !== undefined) {
       g.sumBytes += entry.streamBytesIn
       g.hasBytes = true
     }
-    if (entry.ctx.startTime < g.oldestStart) g.oldestStart = entry.ctx.startTime
   }
+  const perGroup = timesPerGroup(groups.size)
+  const oldestStart = (g: Group): number => Math.min(...g.startTimes)
   return Array.from(groups.values())
-    .sort((a, b) => b.count - a.count || a.oldestStart - b.oldestStart)
+    .sort((a, b) => b.count - a.count || oldestStart(a) - oldestStart(b))
     .map((g) => {
       const bytes = g.hasBytes ? ` ↓${formatBytes(g.sumBytes)}` : ""
-      const elapsed = formatDuration(now - g.oldestStart)
-      return `${g.model} ×${g.count}${bytes} ${elapsed}`
+      // Longest-running first = oldest first = ascending startTime; take top N.
+      const times = [...g.startTimes]
+        .sort((a, b) => a - b)
+        .slice(0, perGroup)
+        .map((start) => formatDuration(now - start))
+        .join(" ")
+      return `${g.model} ×${g.count}${bytes} ${times}`
     })
 }
 

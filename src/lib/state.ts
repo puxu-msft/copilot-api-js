@@ -132,6 +132,15 @@ export interface State {
   readonly autoTruncateCompressThreshold: number
 
   /**
+   * Main-path pre-flight truncation: before sending, predict via the learned
+   * size-aware calibration factor whether the request will exceed the model's
+   * token limit and pre-truncate it, saving a guaranteed-to-fail 400 round-trip.
+   * Reactive truncation stays the fallback. Opt-in; default false. Config
+   * `auto_truncate.preflight`.
+   */
+  readonly autoTruncatePreflight: boolean
+
+  /**
    * Account is on token-based (PAYG) billing rather than premium-request
    * multipliers. Populated from `/copilot_internal/user` at startup. When
    * true, the per-model multiplier suffix in model listings is omitted
@@ -1235,7 +1244,9 @@ export function setWebSearchConfig(patch: Partial<Pick<MutableState, "webSearchE
 }
 
 export function setAutoTruncateConfig(
-  patch: Partial<Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateMaxRetries" | "autoTruncateCompressThreshold">>,
+  patch: Partial<
+    Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateMaxRetries" | "autoTruncateCompressThreshold" | "autoTruncatePreflight">
+  >,
 ): void {
   updateState(patch)
 }
@@ -1402,6 +1413,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   autoTruncateTargetFactor: 0.9,
   autoTruncateMaxRetries: 5,
   autoTruncateCompressThreshold: 10000,
+  autoTruncatePreflight: false,
   compressToolResultsBeforeTruncate: true,
   sanitizeToolNames: false,
   recoverToolCallText: false,
@@ -1580,12 +1592,14 @@ export function resetConfigManagedState(): void {
     maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
   })
   // auto-truncate is a top-level toggle (CLI flag + config.yaml `auto_truncate.enabled`)
-  // plus three tuning fields, all reset via setAutoTruncateConfig.
+  // plus tuning fields (target_factor / max_retries / compress_threshold / preflight),
+  // all reset via setAutoTruncateConfig.
   setAutoTruncateConfig({
     autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
     autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
     autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
     autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
+    autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
   })
 }
 
@@ -1596,6 +1610,7 @@ const mutableState: MutableState = {
   autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
   autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
   autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
+  autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
   tokenBasedBilling: false,
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
