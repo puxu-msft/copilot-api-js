@@ -1,20 +1,83 @@
-import { useParams } from "react-router-dom"
+import {
+  //
+  Link,
+  useParams,
+} from "react-router-dom"
 
+import type { EntrySummary } from "@/types"
+
+import { AgentLane } from "@/components/sessions/AgentLane"
+import { Card } from "@/components/ui/card"
 import { useSessionEntries } from "@/hooks/useSessionEntries"
 
+/** 按 agentId 分组:main(agentId === undefined)+ 每个 subagent 一组(不透明 agentId,无种类名,spec §5)。 */
+function groupByAgent(entries: Array<EntrySummary>): Array<{ name: string; entries: Array<EntrySummary> }> {
+  const main: Array<EntrySummary> = []
+  const subs = new Map<string, Array<EntrySummary>>()
+  for (const e of entries) {
+    if (e.agentId === undefined) main.push(e)
+    else {
+      const list = subs.get(e.agentId) ?? []
+      list.push(e)
+      subs.set(e.agentId, list)
+    }
+  }
+  const lanes: Array<{ name: string; entries: Array<EntrySummary> }> = []
+  if (main.length > 0) lanes.push({ name: "main agent", entries: main })
+  for (const [agentId, list] of subs) lanes.push({ name: `subagent ${agentId.slice(0, 10)}`, entries: list })
+  return lanes
+}
+
 /**
- * fork B · Session 详情 shadcn 页元素(P5 骨架 → 后续子 commit 填成完整)。
- * `data-testid=session-detail-shadcn` 供 fork B 互斥挂载守卫。中性语义 token(neutral surface)。
+ * fork B · Session 详情 shadcn 页元素(P5 完整版)。
+ *
+ * 与 legacy(`SessionDetailLegacy`)读**同一数据源**(`useSessionEntries`)+ 同一 `groupByAgent` 分组语义,
+ * 仅呈现层不同:
+ *  - 每个 agent 一组请求复用 **B 内容体 `AgentLane`**(C3 中性化,两树共用),逐字复用、零改动。
+ *  - 页壳用 shadcn `Card` + 中性语义 token,返回列表是中性 `Link`(role=link)。
+ * `data-testid=session-detail-shadcn` 供 fork B 互斥挂载守卫。
  */
 export function SessionDetailShadcn() {
   const { id } = useParams()
-  const { isLoading } = useSessionEntries(id)
+  const { data, isLoading } = useSessionEntries(id)
   if (!id) return <div className="p-4 text-muted-foreground">no session</div>
   if (isLoading) return <div className="p-4 text-muted-foreground">loading…</div>
+  const entries = (data?.entries ?? []).slice().sort((a, b) => a.startedAt - b.startedAt)
+  const lanes = groupByAgent(entries)
   return (
     <div
       data-testid="session-detail-shadcn"
-      className="p-1 text-foreground"
-    />
+      className="flex flex-col gap-3 p-1 text-foreground"
+    >
+      <div className="flex items-center gap-3 text-sm">
+        <Link
+          to="/sessions"
+          className="font-medium text-primary underline-offset-4 hover:underline"
+        >
+          ‹ Sessions
+        </Link>
+        <span
+          className="text-muted-foreground"
+          title={id}
+        >
+          {id.slice(0, 16)}… · {entries.length} req · {lanes.length} lanes
+        </span>
+      </div>
+      {lanes.length === 0 ?
+        <div className="px-1 py-6 text-sm text-muted-foreground">No requests in this session.</div>
+      : lanes.map((lane) => (
+          <Card
+            key={lane.name}
+            className="overflow-hidden py-0"
+          >
+            {/* AgentLane(B)自带 lane 标题(名 + 摘要 + failed)+ 请求列表,逐字复用、零改动。 */}
+            <AgentLane
+              name={lane.name}
+              entries={lane.entries}
+            />
+          </Card>
+        ))
+      }
+    </div>
   )
 }
