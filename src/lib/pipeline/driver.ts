@@ -661,7 +661,16 @@ export async function runResponseBufferedSink(
             // drain" to "at each boundary". `committedAny` closes the retry window (a committed prefix is
             // on the wire, un-retryable) and routes a later truncation to `partial-degrade`. Skipped
             // entirely when `commitBoundaries` is undefined → the terminal-only path is byte-identical (R1).
+            //
+            // §4.4 concurrency guard: SUSPEND the heartbeat around this per-block flush (recoverable), so a
+            // tick firing on one of the loop's `await sink.write` yields can't splice an empty keepalive
+            // delta into the middle of THIS real block's deltas. RESUME after — unlike the terminal path's
+            // permanent freeze, the block-level flush is followed by MORE streaming, so the inter-block idle
+            // must keep its keepalives. (`flushBufferedFrames`' internal freeze clears the timer; resume
+            // re-arms a fresh interval, so the heartbeat recovers for the next inter-block gap.)
+            sink.suspendHeartbeat?.()
             const res = await flushBufferedFrames(buffer)
+            sink.resumeHeartbeat?.()
             buffer.length = 0
             committedAny = true
             if (res.kind === "client-abort") return { kind: "settled-abort" }

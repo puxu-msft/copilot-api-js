@@ -545,6 +545,22 @@ export interface ClientSink {
    */
   freezeHeartbeat?(): void
   /**
+   * Suspend the heartbeat's tick injection WITHOUT clearing the timer — the RECOVERABLE counterpart of
+   * {@link freezeHeartbeat} (spec 2026-07-11-block-level-buffered-retry §4.4). The block-level buffered
+   * commit brackets each boundary block's `for (frame of block) await sink.write(frame)` loop with
+   * `suspendHeartbeat()` … `resumeHeartbeat()`, so a timer firing mid-flush can't splice an empty keepalive
+   * delta into the middle of a real block's deltas — while the INTER-block idle still gets keepalives
+   * (freezeHeartbeat would kill them permanently after the first block). Idempotent; a no-op on sinks whose
+   * heartbeat is off. Omitted by sinks with no heartbeat timer at all (WS/array).
+   */
+  suspendHeartbeat?(): void
+  /**
+   * Resume a {@link suspendHeartbeat}-suspended heartbeat, re-arming a FRESH interval counted from the
+   * resume (§4.4). A no-op when not currently suspended (the single live timer is untouched) or on a closed
+   * sink (never resurrects a timer). Omitted by sinks with no heartbeat timer (WS/array).
+   */
+  resumeHeartbeat?(): void
+  /**
    * Release sink-held resources (the heartbeat timer). The driver's
    * `runResponseSink` `finally` MUST call this on every exit (normal / throw /
    * abort / write-reject) so a self-rescheduling timer can't leak (design §3.3).

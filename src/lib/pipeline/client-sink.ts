@@ -208,6 +208,16 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   let lastRealMs = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
+  // Recoverable per-block flush guard (spec 2026-07-11-block-level-buffered-retry §4.4). Distinct from
+  // freezeHeartbeat (PERMANENT — clears the timer, never resumes): `suspendHeartbeat` only STOPS the tick
+  // from INJECTING (the tick top-guards on this flag and early-returns WITHOUT rescheduling), so a timer
+  // firing mid-flush can't splice an empty delta into a real block's deltas; `resumeHeartbeat` re-arms a
+  // fresh interval so the INTER-block idle still gets keepalives. The block-level path suspends around each
+  // boundary flush loop; the whole-response path keeps using freezeHeartbeat (a one-shot terminal commit).
+  let heartbeatSuspended = false
+  // Re-arm hook set on the heartbeat-ON path (below, once `tick`/`intervalMs` exist). Stays a no-op on the
+  // heartbeat-OFF path so `resumeHeartbeat` is a defined-but-inert primitive there (parity with freezeHeartbeat).
+  let rearmHeartbeat = (): void => {}
   // One-shot guard so concurrent/re-entrant ticks can't fire a second anchor injection (which would
   // collide block indices). Reset to false when an injection reports `did===false` (pre-message_start),
   // so the NEXT idle tick retries once message_start has arrived (spec §3.3 lazy injection).
@@ -290,8 +300,26 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     }
   }
 
+  // suspendHeartbeat / resumeHeartbeat — the RECOVERABLE per-block-flush guard (spec §4.4). suspend flips
+  // the flag the tick top-guards on: a timer firing while suspended early-returns WITHOUT injecting AND
+  // WITHOUT rescheduling (so no empty delta lands mid-block). resume re-arms a FRESH interval (counted from
+  // resume, `lastRealMs` reset) so the inter-block idle keeps getting keepalives. `rearmHeartbeat` clears any
+  // still-live timer before arming so a suspend→resume WITHIN one interval (no tick fired) leaves EXACTLY one
+  // timer (never a double-ping). Idempotent: resume is a no-op when not suspended (the single live timer is
+  // untouched); both are inert no-ops on the heartbeat-OFF path (rearmHeartbeat stays the empty default).
+  const suspendHeartbeat = (): void => {
+    heartbeatSuspended = true
+  }
+  const resumeHeartbeat = (): void => {
+    if (!heartbeatSuspended) return
+    heartbeatSuspended = false
+    lastRealMs = Date.now()
+    if (stopped) return // closed sink — don't resurrect a timer
+    rearmHeartbeat()
+  }
+
   if (!heartbeatOn) {
-    return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat }
+    return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
   }
 
   const intervalMs = heartbeat.intervalSec * 1000
@@ -308,7 +336,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     lastRealMs = Date.now()
   }
   const tick = (): void => {
-    if (stopped || heartbeat.clientAbortSignal?.aborted) return
+    if (stopped || heartbeatSuspended || heartbeat.clientAbortSignal?.aborted) return
     const elapsed = Date.now() - lastRealMs
     if (elapsed >= intervalMs) {
       // Buffered empty_text anchor (§3.3): the forward stream has NO open block yet → light one by
@@ -347,8 +375,17 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   timer = setTimeout(tick, intervalMs)
   // unref so a leaked timer can never hold the event loop / block graceful shutdown.
   ;(timer as unknown as { unref?: () => void }).unref?.()
+  // Wire the resume re-arm (now that `tick`/`intervalMs` exist): clear any still-live timer, then arm a
+  // fresh interval + unref. Clearing first makes a suspend→resume WITHIN one interval leave EXACTLY one
+  // timer (a suspended tick that already fired left a dead chain; one that didn't left a live timer we must
+  // not duplicate). Guarded by `stopped` inside `resumeHeartbeat`, so a post-close resume never resurrects.
+  rearmHeartbeat = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(tick, intervalMs)
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+  }
 
-  return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat }
+  return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
 }
 
 /** {@link makeWsSink} options — forwarded-track sampling (optional) + forward-idle heartbeat (optional). */
