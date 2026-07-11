@@ -58,7 +58,10 @@ const transport = {
 const RAW = { body: {}, headers: new Headers(), path: "/v1/messages", method: "POST" } as unknown as RawHttpRequest
 
 function driverWith(codec: FormatCodec, requestRewrites: ReadonlyArray<RequestRewrite> = []) {
-  return createPipelineDriver({ codec, transport, strategies: [], maxRetries: 0, maxLearningRetries: 0, requestRewrites })
+  // Route decision moved to the free-function `router.decideRoute` (ADR 2026-07-11); this
+  // orchestration test injects the mock codec's decision via the `deps.decideRoute` DI seam
+  // (route-decision correctness is covered by router-golden.it.test.ts, not here).
+  return createPipelineDriver({ codec, transport, strategies: [], maxRetries: 0, maxLearningRetries: 0, requestRewrites, decideRoute: (env) => codec.decideRoute(env) })
 }
 
 describe("driver.inspectRequest", () => {

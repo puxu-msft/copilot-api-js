@@ -20,6 +20,7 @@ import { classifyError } from "~/lib/error"
 import { classifyStreamError } from "~/lib/stream"
 
 import type { RequestEnvelope } from "./envelope"
+import { decideRoute } from "./router"
 import type {
   //
   ClientFrame,
@@ -33,6 +34,7 @@ import type {
   ResponseOutcome,
   RetryAction,
   RetryStrategy,
+  RouteDecision,
   RunBufferedOpts,
   RunResponseOpts,
   Transport,
@@ -83,6 +85,17 @@ export interface DriverDeps {
    * observability sinks. `env` is the post-retry env carrying that meta.
    */
   onMeta?: (meta: Record<string, unknown>, env: RequestEnvelope) => void
+  /**
+   * S2 route decision override — a test seam (DI-consistent with `transport` / `strategies`).
+   * Production omits it: the driver calls the free-function `router.decideRoute` (ADR
+   * 2026-07-11), which reads real upstream model capabilities. Driver ORCHESTRATION unit
+   * tests (which drive a mock codec through a fake model with no `state.modelIndex`) inject a
+   * fixed decision here so they exercise stage sequencing without needing a live model index;
+   * route-decision CORRECTNESS is covered by `tests/pipeline/router-golden.it.test.ts`, not the
+   * orchestration tests. When omitted the driver uses the router (+ the Phase 0 transition
+   * bridge back to `codec.decideRoute` for formats not yet migrated).
+   */
+  decideRoute?: (env: RequestEnvelope) => RouteDecision
 }
 
 /** The driver with its non-streaming response variant (envelope-driver.md §3). */
@@ -135,13 +148,27 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
 // Request side (S1→S4)
 // ============================================================================
 
+/**
+ * S2 route decision. Prefers the `deps.decideRoute` test override; otherwise the
+ * free-function `router.decideRoute` (ADR 2026-07-11) with the Phase 0 transition bridge
+ * back to `deps.codec.decideRoute` for formats not yet migrated into the router (removed
+ * T0.5). Both driver call sites (`runRequest` S2, `inspectRequest` S2) go through here so
+ * the routing seam is single-sourced.
+ */
+function resolveRouteDecision(deps: DriverDeps, parsed: RequestEnvelope): RouteDecision {
+  if (deps.decideRoute) return deps.decideRoute(parsed)
+  return decideRoute(parsed, (e) => deps.codec.decideRoute(e))
+}
+
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */
 async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<DriverRequestResult> {
   // S1 — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model).
   const parsed = deps.codec.parse(raw)
 
   // S2 — Translate-in: decideRoute (passthrough / translate / reject) + translateOut.
-  const decision = deps.codec.decideRoute(parsed)
+  // The route decision moved to the free-function `router.decideRoute` (ADR 2026-07-11),
+  // resolved via `resolveRouteDecision` (test override → router → Phase 0 transition bridge).
+  const decision = resolveRouteDecision(deps, parsed)
   if (decision.kind === "reject") {
     // No dangling history entry — reject before committing the request (aligns
     // with current messages:165 rejecting before context creation). Carry the
@@ -198,8 +225,9 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   stages.parse = { clientFormat: parsed.clientFormat, targetEndpoint: parsed.targetEndpoint, model: parsed.model, body: snapshotBody(parsed.body) }
   if (stopAfter === "parse") return { stoppedAt: "parse", stages }
 
-  // S2 — route / translate.
-  const decision = deps.codec.decideRoute(parsed)
+  // S2 — route / translate. Via `resolveRouteDecision` (test override → free-function router
+  // → Phase 0 transition bridge).
+  const decision = resolveRouteDecision(deps, parsed)
   if (decision.kind === "reject") return { stoppedAt: "reject", rejected: { status: decision.status, reason: decision.reason }, stages }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
   const routed = deps.codec.translateOut(parsed.with({ targetEndpoint }))

@@ -56,6 +56,7 @@ import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { decideRoute } from "~/lib/pipeline/router"
 import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
@@ -99,11 +100,14 @@ function codecFor(clientFormat: ClientFormat, modelId: string): FormatCodec {
 
 // ═════════════════════════════════════════════════════════════════════════════════════
 // THE MOVING SEAM — updated per T0.x to track the production routing call site.
-// T0.0: the codec's still-live decideRoute (no router yet).
+// T0.1+: the free-function `router.decideRoute`, dispatching by clientFormat (anthropic
+// native; others via the transition bridge back to codec.decideRoute, shrinking as T0.2–
+// T0.4 migrate each format; the bridge is removed in T0.5).
 // ═════════════════════════════════════════════════════════════════════════════════════
 function routeDecisionUnderTest(clientFormat: ClientFormat, model: Model | undefined, modelId: string): RouteDecision {
+  const codec = codecFor(clientFormat, modelId)
   const env = envFor(model, clientFormat)
-  return codecFor(clientFormat, modelId).decideRoute(env)
+  return decideRoute(env, (e) => codec.decideRoute(e))
 }
 
 // ── frozen matrix (the immutable oracle) ─────────────────────────────────────────────
