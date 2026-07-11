@@ -291,6 +291,11 @@ git commit -F <msg> -- <上述>   # dialog seam fork first
 
 ## Task P5 · Sessions（页壳 shadcn 化）
 
+> **实施状态: DONE**（2 子 commit,分支 `feat/ui-v4-shadcn-redesign`,HEAD `6f869268`）。
+> ① `ed0558d6` 提取 `SessionsLegacy`/`SessionDetailLegacy`(原 SessionsPage/SessionDetailPage body 逐字冻结)+ 两 RoutePage 变薄 `DesignFork` wrapper + `SessionsShadcn`/`SessionDetailShadcn` 骨架(`data-testid=sessions-shadcn`/`session-detail-shadcn`)。既有 legacy 测试经 wrapper 在默认 amber-legacy 下透传通过。
+> ② `6f869268` `SessionsShadcn` 完整(shadcn `Card` 壳 + 计数头 + 空态 + `SessionRow` B 富行逐字复用,导航透传)、`SessionDetailShadcn` 完整(返回 `Link` + summary `id · N req · M lanes` + 每 agent 一 `Card` 包 `AgentLane` B lane 逐字复用,同 legacy `groupByAgent` 分组语义:main=agentId undefined + 每 subagent 一 lane)。中性面(neutral surface)仅用语义 token(`text-foreground`/`text-muted-foreground`/`Card`/`--radius`),amber-reflow 守卫绿。fork-routed 测试(`tests/SessionsShadcn.vitest.test.tsx`,6 例):shadcn 断互斥挂载 + B 复用 + 空态 + 返回导航;amber-legacy 断 legacy 内容 + shadcn 标记缺席(正样本先红后绿)。
+> INV-4 四绿(每子 commit):typecheck / build(index 1096.18KB,基线 1094.03KB,+2.15KB shadcn 壳)/ test(254 bun + 514 vitest 全绿:新增 SessionsShadcn 6)/ eslint 无缓存;scope 守卫绿(`sessions/` 零 designVersion)。legacy `SessionsLegacy`/`SessionDetailLegacy` body 与 pre-P5 基线 `103135d6` 逐字一致、`SessionRow`/`AgentLane`(B)零改动(git diff 空)。**交用户 UX 检查项见文末**:① session 列表/详情密度、Card 分组 vs 密行(legacy 是无 Card 的密行,shadcn 每 lane 一 Card——观感取舍待定)、② agent lane 呈现(AgentLane 自带 lane 标题 + border-l accent,shadcn Card 外层是否冗余)、③ 返回 chrome(Link vs shadcn Button)。**是否含 SessionDetailPage: 是**(两 RoutePage 都在 App.tsx 路由,同法 fork 提取)。
+
 - **对应 RFC/决策**: §4 P5。
 - **目标**: shadcn 侧 Sessions 列表页 + Session 详情页壳；import 中性化 B 内容（`SessionRow`/`AgentLane`，已 C3 中性化）+ C primitive。**legacy `SessionsPage`/`SessionDetailPage` 冻结。**
 - **commit invariant**: `SessionRow`/`AgentLane`（B）零改动、共用；INV-2 fork B；INV-4 四绿。
