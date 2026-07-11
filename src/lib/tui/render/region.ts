@@ -39,6 +39,8 @@ const RESET_SCROLL_REGION = "\x1b[r"
 const cursorTo = (row: number): string => `\x1b[${row};1H`
 /** Erase the entire current line. */
 const CLEAR_LINE = "\x1b[2K"
+/** Erase from the cursor to the end of the screen. */
+const ERASE_TO_END = "\x1b[0J"
 /** DECSC / DECRC: save / restore cursor position. */
 const SAVE_CURSOR = "\x1b7"
 const RESTORE_CURSOR = "\x1b8"
@@ -158,19 +160,32 @@ export class Region {
   }
 
   /**
-   * Tear down the panel: reset the scroll region to the full screen, show the
-   * cursor, and reset internal state so the next `render` re-establishes DECSTBM
+   * Tear down the panel: reset the scroll region to the full screen, **erase the
+   * panel's rows**, park the cursor directly below the last log line, and show
+   * the cursor. Resets internal state so the next `render` re-establishes DECSTBM
    * from scratch. Idempotent — safe to call when no region is established.
+   *
+   * Erasing + repositioning is load-bearing: `RESET_SCROLL_REGION` alone leaves
+   * the cursor mid-screen (parked at the old scroll-region bottom by the last
+   * render's DECRC) with the stale panel rows still drawn below. Subsequent
+   * output — shutdown logs, the shell prompt after Ctrl-C — would then start
+   * mid-screen and overwrite downward, with panel remnants lingering. Instead we
+   * move to the panel's top row (`panelTop`, one below the scroll region's last
+   * log line), `\x1b[0J` erases from there to end of screen (the whole panel),
+   * and the cursor stays there so output continues cleanly at the bottom.
    *
    * The `established` guard makes a repeat `clear()` a genuine no-op: an idle
    * interactive session funnels every `printLog` through `renderRegion → empty
-   * lines → clear()`, and without the guard each of those would re-emit
-   * `\x1b[r\x1b[?25h` even though the scroll region was already torn down and
-   * the cursor already shown. The first collapse still emits exactly one reset.
+   * lines → clear()`; without the guard each would re-emit the teardown even
+   * though the panel is already gone. The first collapse still emits exactly one.
    */
   clear(): void {
     if (!this.established) return
-    this.stdout.write(RESET_SCROLL_REGION + SHOW_CURSOR)
+    const { rows, panelHeight } = this.established
+    const panelTop = rows - panelHeight + 1
+    // Reset scroll region → move to the panel's top (just below the last log) →
+    // erase to end of screen (wipes the panel) → show cursor, leaving it there.
+    this.stdout.write(RESET_SCROLL_REGION + cursorTo(panelTop) + ERASE_TO_END + SHOW_CURSOR)
     this.established = undefined
   }
 }

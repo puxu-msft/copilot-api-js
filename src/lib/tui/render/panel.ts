@@ -130,13 +130,19 @@ export function buildCollapsedLines(args: { active: ReadonlyArray<ActiveRequestV
 }
 
 /**
- * Expanded mode: a fixed-height table (≤ {@link MAX_PANEL_ROWS}). Shows
- * {@link panelContentRows} request rows from the scroll window
- * `active.slice(scrollOffset, scrollOffset + contentRows)`; when the list is
- * longer than fits, a dim `↑<above> ↓<below> more` indicator line summarises the
- * hidden entries on both sides. The row whose global index equals
- * `selectedIndex` is wrapped in reverse-video. Every line is truncated to
- * `columns-1` before styling.
+ * Expanded mode: a **fixed-height** table. The total line count is constant —
+ * `content (padded) + overflow-indicator? + keybar?` always sums to
+ * `min(rows, MAX_PANEL_ROWS)` regardless of the in-flight count — because the
+ * indicator absorbs exactly the one content row it costs. Fixed height is
+ * load-bearing: a panel that grew/shrank with the request count made the DECSTBM
+ * {@link Region} resize its scroll region, which both left churn blank lines AND
+ * ate already-printed history lines as the region reclaimed a log row. Short
+ * lists are padded with blank rows to hold the height.
+ *
+ * Content is the scroll window `active.slice(scrollOffset, scrollOffset +
+ * contentRows)`; a dim `↑<above> ↓<below> more` indicator summarises hidden
+ * entries when the list overflows. The row at `selectedIndex` is reverse-video.
+ * Every line is truncated to `columns-1` before styling.
  */
 export function buildPanelLines(args: {
   active: ReadonlyArray<DetailView>
@@ -157,6 +163,11 @@ export function buildPanelLines(args: {
     const row = truncateToWidth(formatPanelRow(view, now), budget)
     return globalIndex === selectedIndex ? `${REVERSE_ON}${row}${REVERSE_OFF}` : row
   })
+
+  // Pad with blank rows so the panel height stays constant even when the list is
+  // shorter than the window — this is what keeps the DECSTBM region from
+  // resizing (and thus eating history lines) as requests come and go.
+  while (lines.length < contentRows) lines.push("")
 
   // Bidirectional overflow indicator — only when the list is longer than the
   // content window (`panelContentRows` reserved a row for it in that case).

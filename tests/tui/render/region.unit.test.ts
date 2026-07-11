@@ -209,15 +209,20 @@ describe("Region (DECSTBM sticky bottom panel)", () => {
     expect(out).not.toContain("line9")
   })
 
-  test("clear() resets DECSTBM and shows the cursor", () => {
+  test("clear() resets DECSTBM, erases the panel, reparks the cursor, shows it", () => {
     const { region, io } = makeRegion(80, rowsRef)
-    region.render(["a", "b"])
+    region.render(["a", "b"]) // panelHeight 2, panel at rows 23..24 (rowsRef 24)
     const mark = io.chunks.length
     region.clear()
     const out = io.chunks.slice(mark).join("")
 
     expect(out).toContain("\x1b[r") // reset scroll region to full screen
+    expect(out).toContain("\x1b[23;1H") // move to the panel's top row (just below the last log)
+    expect(out).toContain("\x1b[0J") // erase from there to end of screen (wipes the panel)
     expect(out).toContain("\x1b[?25h") // show cursor
+    // Order: reset → reposition → erase → show, so nothing is left mid-screen.
+    expect(out.indexOf("\x1b[r")).toBeLessThan(out.indexOf("\x1b[23;1H"))
+    expect(out.indexOf("\x1b[23;1H")).toBeLessThan(out.indexOf("\x1b[0J"))
   })
 
   test("clear() resets internal state: next render re-establishes DECSTBM", () => {

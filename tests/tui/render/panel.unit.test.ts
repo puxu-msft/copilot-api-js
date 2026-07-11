@@ -294,6 +294,43 @@ describe("panelContentRows (fixed-height contract — kills geometry-churn blank
     // 4 active → overflows the cap of 3 → one row yields to the indicator.
     expect(panelContentRows(10, 4, false)).toBe(2)
   })
+
+  test("buildPanelLines TOTAL height is CONSTANT across active counts (the eat-history fix)", () => {
+    // Root cause of "the panel eats already-printed history lines": the panel's
+    // TOTAL line count changed with the in-flight count, so the DECSTBM region
+    // resized and reclaimed a log row. Padding short lists to a fixed height
+    // holds the total at min(rows, MAX_PANEL_ROWS) for EVERY active count, so the
+    // region geometry never changes on request arrival/departure.
+    const columns = 100
+    for (const rows of [10, 24]) {
+      for (const showHelp of [false, true]) {
+        const heights = [1, 2, 3, 4, 5, 20, 100].map(
+          (active) =>
+            buildPanelLines({
+              active: panelViews(active),
+              now: NOW,
+              columns,
+              selectedIndex: 0,
+              scrollOffset: 0,
+              rows,
+              showHelp,
+            }).length,
+        )
+        // Every active count yields the same total height.
+        expect(new Set(heights).size).toBe(1)
+        expect(heights[0]).toBe(Math.min(rows, MAX_PANEL_ROWS))
+      }
+    }
+  })
+
+  test("short lists are padded with blank rows to hold the height", () => {
+    // 1 active, budget 3, no help → 1 content row + 2 blank pad rows = 3 total.
+    const lines = buildPanelLines({ active: panelViews(1), now: NOW, columns: 100, selectedIndex: 0, scrollOffset: 0, rows: 10, showHelp: false })
+    expect(lines.length).toBe(3)
+    expect(lines[0]).toContain("req-0000") // the one real row
+    expect(lines[1]).toBe("") // blank pad
+    expect(lines[2]).toBe("") // blank pad
+  })
 })
 
 // ============================================================================
