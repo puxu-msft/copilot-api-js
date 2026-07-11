@@ -751,6 +751,28 @@ export async function applyConfigToState(): Promise<Config> {
   if (hasApplied && currentMtime !== lastAppliedMtimeMs) {
     consola.info("[config] Reloaded config.yaml")
   }
+
+  // Guardrail: an upstream silence-guard timeout explicitly set to 0 is DISABLED.
+  // With `response_header: 0` the TTFB abort signal is undefined, so a silently
+  // hung GHC upstream keeps a single streaming request pending for MINUTES until
+  // the upstream itself 502s (observed: a 691s pre-response hang; the timeout
+  // mechanism itself is sound — disabling it is the footgun, see
+  // exp/ttfb-timeout-queued/report.md). `stream_idle: 0` is the same class
+  // (mid-stream silence unbounded). Warn at first apply / on actual change only —
+  // gated like the reload log so the per-request hot-reload path never spams.
+  if (!hasApplied || currentMtime !== lastAppliedMtimeMs) {
+    const disabledGuards: Array<string> = []
+    if (config.timeouts?.response_header === 0) disabledGuards.push("response_header (TTFB / time-to-first-byte)")
+    if (config.timeouts?.stream_idle === 0) disabledGuards.push("stream_idle (mid-stream silence)")
+    if (disabledGuards.length > 0) {
+      consola.warn(
+        `[config] upstream silence guard(s) DISABLED: ${disabledGuards.join(", ")}. `
+          + `A hung upstream (e.g. GHC overload) will keep a request pending until the upstream itself responds/closes `
+          + `(observed hundreds of seconds). Set a positive timeout unless you are deliberately debugging long silences.`,
+      )
+    }
+  }
+
   hasApplied = true
   lastAppliedMtimeMs = currentMtime
 
