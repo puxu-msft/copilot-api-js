@@ -80,7 +80,10 @@ export function LiveDock() {
 
   return (
     // fixed 浮岛:脱离子布局、悬浮视口底部。z-40 压过内容、让位 Modal(z-50)。2px 圆角覆盖全局锐角规则。
-    <div className="livedock-island fixed inset-x-3 bottom-3 z-40 flex flex-col overflow-hidden border border-[var(--color-primary)] bg-[var(--color-surface)] shadow-xl">
+    <div
+      data-testid="dock-legacy"
+      className="livedock-island fixed inset-x-3 bottom-3 z-40 flex flex-col overflow-hidden border border-[var(--color-primary)] bg-[var(--color-surface)] shadow-xl"
+    >
       {showPanel ?
         <div className="max-h-[55vh] overflow-auto border-b border-[var(--color-border)]">
           {summary.groups.map((g) => (

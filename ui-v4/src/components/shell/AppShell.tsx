@@ -1,34 +1,48 @@
 import { useMemo } from "react"
-import { Outlet } from "react-router-dom"
 
 import { LiveDock } from "@/components/requests/LiveDock"
-import { NavRail } from "@/components/shell/NavRail"
-import { TopBar } from "@/components/shell/TopBar"
+import { DesignFork } from "@/components/shell/DesignFork"
+import { LegacyChrome } from "@/components/shell/LegacyChrome"
+import { ShadcnChrome } from "@/components/shell/shadcn/ShadcnChrome"
+import { ShadcnLiveDock } from "@/components/shell/shadcn/ShadcnLiveDock"
 import { useLiveRequests } from "@/hooks/useLiveRequests"
 import { useWs } from "@/hooks/useWs"
 import { useUiStore } from "@/stores/ui-store"
 
+/**
+ * AppShell = **常驻 L0**(round2-A1 结构隔离)。本组件体持有跨切换存活的一切:
+ *  - `useWs`:WS 订阅(effect deps=[],挂载一次 acquire;socket 打开的**一次性 connected 快照**只派发给
+ *    当时已注册的订阅者,故必须常驻)。
+ *  - `useLiveRequests`:把在飞请求维护进常驻 live-store(晚挂载页面不再漏初始在途集,见 AppShellLiveSubscription)。
+ *  - `<LiveDock/>` 挂载点(fork C 只 fork 呈现层,数据源不 fork)。
+ *
+ * **INV-FIDELITY-1(结构隔离强制)**:本组件体**源码零 `designVersion` 引用** —— 三 fork 点的
+ * designVersion 读取全部下沉到 `<DesignFork/>` 原语(唯一读取者)。故切换 designVersion 绝无可能触发
+ * L0 重渲染 / 重挂 WS 订阅 / 丢一次性 connected 快照。守卫见 AppShellForkStructure + DesignVersionForks。
+ *
+ * 三 fork 点(§5):A=shell chrome(NavRail/TopBar/布局 + `<Outlet/>`)、B=页元素(每 RoutePage 内部,
+ * 逐页 plan)、C=LiveDock 呈现层。router 保持单树,fork 只在 L0 之下互斥挂载子树。
+ */
 export function AppShell() {
   const setWsConnected = useUiStore((s) => s.setWsConnected)
   const callbacks = useMemo(() => ({ onStatusChange: (c: boolean) => setWsConnected(c) }), [setWsConnected])
   useWs(callbacks)
-  // 在途请求订阅提升到常驻根:socket 打开时的一次性 `connected` 快照(含打开前已在飞行的请求)只派发给
-  // 当时已注册的订阅者。若只在 requests 页订阅,页面晚挂载(默认路由非 requests / 导航过去)会漏掉初始快照,
-  // 表现为「只显示打开页面后的在途请求」。放在常驻的 AppShell 保证从应用启动即持续维护 live-store。
-  // 见 AppShellLiveSubscription 回归测试。
   useLiveRequests()
   return (
-    <div className="flex h-full">
-      <NavRail />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar />
-        <main className="min-h-0 flex-1 overflow-auto p-2">
-          <Outlet />
-        </main>
-      </div>
-      {/* 在途活动状态栏 = fixed 浮岛(自身定位到视口底部),脱离子布局、全局所有页面可见;
-          放这里只为常驻挂载,fixed 定位不参与 flex 布局流。tail/待合入 控件在 LiveDock 内按 /requests 自门控。 */}
-      <LiveDock />
-    </div>
+    <>
+      {/* fork A · chrome(含 `<Outlet/>` 布局):legacy vs shadcn 骨架互斥挂载。
+          注:两版 chrome 是不同组件类型,切换会连同 `<Outlet/>` remount 当前被路由页 → 页级本地态
+          (未保存表单 / 滚动位置 / 展开态)按设计重置(§5b 可接受);数据经 react-query 缓存 + live-store
+          (均在 fork 之上/之外)无损存活。 */}
+      <DesignFork
+        legacy={<LegacyChrome />}
+        shadcn={<ShadcnChrome />}
+      />
+      {/* fork C · LiveDock 呈现层:读同一常驻 live-store,切换不丢数据。挂载点常驻在 L0。 */}
+      <DesignFork
+        legacy={<LiveDock />}
+        shadcn={<ShadcnLiveDock />}
+      />
+    </>
   )
 }

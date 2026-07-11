@@ -1,3 +1,4 @@
+import { DesignVersionToggle } from "@/components/shell/DesignVersionToggle"
 import { useUiStore } from "@/stores/ui-store"
 
 export function TopBar() {
@@ -11,6 +12,8 @@ export function TopBar() {
       <span className={`mono px-2 py-0.5 text-[13px] ${wsConnected ? "text-[var(--color-ok)]" : "text-[var(--color-fail)]"}`}>
         ● {wsConnected ? "WS connected" : "WS offline"}
       </span>
+      {/* designVersion 切换(C6):切到 shadcn 树。DesignVersionToggle 内部读 designVersion,TopBar 本体不含。 */}
+      <DesignVersionToggle />
     </div>
   )
 }
