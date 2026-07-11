@@ -1,7 +1,3 @@
-import { useState } from "react"
-
-import type { EntryStatus } from "@/types"
-
 import { LearnedRow } from "@/components/learned/LearnedRow"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -12,38 +8,19 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { useLearned } from "@/hooks/useLearned"
-import { api } from "@/lib/api"
-import { triggerDownload } from "@/lib/export-entry"
 import {
   //
-  badgeKind,
-  CATEGORY_LABELS,
-} from "@/lib/learned"
-
-type Filter = "all" | "active" | "expired" | "pinned"
-
-/** 过滤按钮的显示标签（值不变，仅渲染文案本地化 —— 见 spec §4.5）。 */
-const FILTER_LABELS: Record<Filter, string> = {
-  all: "全部",
-  active: "active",
-  expired: "已过期",
-  pinned: "pinned",
-}
-
-const FILTERS = ["all", "active", "expired", "pinned"] as const
-
-function matches(filter: Filter, status: EntryStatus): boolean {
-  if (filter === "all") return true
-  return badgeKind(status) === filter
-}
+  LEARNED_FILTER_LABELS,
+  LEARNED_FILTERS,
+  useLearnedView,
+} from "@/hooks/useLearnedView"
+import { CATEGORY_LABELS } from "@/lib/learned"
 
 /**
  * fork B · Learned 页元素(shadcn 页壳,P7 完整版)。
  *
- * 与 legacy(`LearnedLegacy`)共用 A 数据 hook `useLearned` + export 逻辑(两树共用,不复制数据层)。
- * 视图编排(filter 状态 / matches / groups 派生 / export)本 commit 内联,后续 commit 单向抽共享 hook。
- * 本组件只负责呈现层:
+ * 与 legacy(`LearnedLegacy`)共用 A 层视图编排 hook `useLearnedView`(filter 状态 / matches / groups
+ * 派生 / 整体导出,两树共用,不复制逻辑;legacy 保留内联冻结副本到 Z1)。本组件只负责呈现层:
  *  - 页壳用 shadcn `Card` + `Button` + `Badge` + 中性语义 token(`text-foreground`/`bg-card`/
  *    `text-muted-foreground`),圆角随 `--radius`。
  *  - 每个学习规则分类一张 `Card`(分类名 + 条数 + TTL),内嵌**中性化后的 B 内容体** `LearnedRow`
@@ -51,40 +28,29 @@ function matches(filter: Filter, status: EntryStatus): boolean {
  * `data-testid=learned-shadcn` 供 fork B 互斥挂载守卫(loading 态亦保留,便于守卫恒可定位)。
  */
 export function LearnedShadcn() {
-  const actions = useLearned()
-  const [filter, setFilter] = useState<Filter>("all")
-  const [exporting, setExporting] = useState(false)
-
-  async function onExport() {
-    if (exporting) return
-    setExporting(true)
-    try {
-      const blob = await api.getBlob("/api/negotiation/export")
-      triggerDownload(blob, "negotiation-states.json")
-    } finally {
-      setExporting(false)
-    }
-  }
-
-  const snap = actions.query.data
-  const filtering = filter !== "all"
-  const groups = (snap?.categories ?? [])
-    .map((g) => ({ ...g, entries: g.entries.filter((e) => matches(filter, e.status)) }))
-    // 默认（全部）视图展示所有学习规则分类，含 0 条的空分类；筛选视图只留有匹配条目的分类。
-    .filter((g) => !filtering || g.entries.length > 0)
+  const {
+    //
+    actions,
+    filter,
+    setFilter,
+    groups,
+    exporting,
+    onExport,
+    isLoading,
+  } = useLearnedView()
 
   return (
     <div
       data-testid="learned-shadcn"
       className="flex h-full flex-col gap-2 overflow-auto p-1 text-foreground"
     >
-      {actions.query.isLoading ?
+      {isLoading ?
         <div className="p-4 text-sm text-muted-foreground">loading…</div>
       : <>
           <div className="flex flex-wrap items-center gap-2 px-1">
             <div className="text-[11px] tracking-wider text-muted-foreground uppercase">反应式学习记录</div>
             <div className="ml-auto flex flex-wrap items-center gap-1">
-              {FILTERS.map((f) => (
+              {LEARNED_FILTERS.map((f) => (
                 <Button
                   key={f}
                   type="button"
@@ -93,7 +59,7 @@ export function LearnedShadcn() {
                   aria-pressed={filter === f}
                   onClick={() => setFilter(f)}
                 >
-                  {FILTER_LABELS[f]}
+                  {LEARNED_FILTER_LABELS[f]}
                 </Button>
               ))}
               <Button
