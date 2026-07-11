@@ -348,6 +348,21 @@ export interface AnchorState {
 }
 
 /**
+ * The terminal resolution label of a buffered-retry generation — the single source of truth
+ * for this union, PRODUCED by the driver's buffered sink (emitted through {@link
+ * RunBufferedOpts.onBufferedResolve}) and CONSUMED by the vendor-keyed telemetry counter
+ * (`~/lib/anthropic/protect-streaming-stats` re-exports THIS type rather than redeclaring it, so
+ * the two never drift). Defined here in the format-agnostic pipeline layer — the producer — so the
+ * pipeline never has to import the anthropic telemetry module (which would invert the dependency).
+ *   - `"success"`:         committed a complete generation (retries > 0 = a save).
+ *   - `"exhausted"`:       all retries failed → surfaced as a stream error.
+ *   - `"retreated"`:       buffer cap exceeded → retreated to live forwarding.
+ *   - `"partial-degrade"`: block-level path only — a boundary block was already committed live,
+ *     then the stream truncated (un-retryable). A graceful degrade distinct from `exhausted`.
+ */
+export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "partial-degrade"
+
+/**
  * Options for `runResponseBufferedSink` (L2 — streaming upstream-RST buffered retry,
  * docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md). Extends {@link RunResponseOpts}
  * (the buffered drain still feeds `onUpstreamFrame` / applies `onRenderedFrame` per
@@ -424,7 +439,7 @@ export interface RunBufferedOpts extends RunResponseOpts {
    *     degrade distinct from `exhausted` (which committed nothing). Never emitted on the
    *     terminal-only path ({@link commitBoundaries} undefined) — `committedAny` stays false there.
    */
-  onBufferedResolve?: (outcome: "success" | "exhausted" | "retreated" | "partial-degrade", retries: number, meta: { vendor: string }) => void
+  onBufferedResolve?: (outcome: ProtectStreamingOutcome, retries: number, meta: { vendor: string }) => void
   /**
    * Block-commit boundary predicate (P0 mechanism floor). When PROVIDED, the buffered sink flushes
    * (commits live) the buffered frames up to and including every frame this returns `true` for,

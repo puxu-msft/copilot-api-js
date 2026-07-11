@@ -207,8 +207,15 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     expect(entry?.attempts?.[0]?.sseEvents?.length).toBeGreaterThan(0)
     expect(entry?.attempts?.[1]?.sseEvents?.length).toBeGreaterThan(0)
     expect(entry?.attempts?.[2]?.sseEvents).toBeUndefined()
-    // Hit-rate telemetry: one save after 2 retries (RFC §10).
-    expect(getProtectStreamingStats()).toEqual({ success: 1, exhausted: 0, retreated: 0, totalRetries: 2 })
+    // Hit-rate telemetry: one save after 2 retries (RFC §10), under the `anthropic` vendor.
+    expect(getProtectStreamingStats().anthropic).toEqual({
+      success: 1,
+      exhausted: 0,
+      retreated: 0,
+      partialDegrade: 0,
+      totalRetries: 2,
+      retriesBeforeDegrade: 0,
+    })
   })
 
   test("clean first-try buffered commit (no RST) is NOT counted or tagged as a retry", async () => {
@@ -221,8 +228,8 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-clean", limit: 5 }).entries[0]
     expect(entry?.state).toBe("completed")
     // L2 never ENGAGED (no RST) → no telemetry, no `protect-streaming-retry` feature tag (which would
-    // otherwise appear on essentially every buffered 200 and inflate the hit-rate).
-    expect(getProtectStreamingStats()).toEqual({ success: 0, exhausted: 0, retreated: 0, totalRetries: 0 })
+    // otherwise appear on essentially every buffered 200 and inflate the hit-rate). No vendor bucket.
+    expect(getProtectStreamingStats()).toEqual({})
   })
 
   test("acc reset regression — even 3 leading RSTs commit a single non-summed generation", async () => {

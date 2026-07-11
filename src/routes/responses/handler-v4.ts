@@ -378,19 +378,21 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         },
         retryCap: state.protectStreamingMaxRetries,
         bufferCapBytes: state.protectStreamingBufferCapBytes,
-        // Hit-rate telemetry parity with Anthropic (messages/handler-v4.ts:1088): counted ONLY for an
-        // actual L2 engagement (a save after ≥1 retry, an exhaustion, or a buffer-cap retreat). A clean
-        // first-try commit (retries === 0, no RST) is the silent happy path — tagging it would put
-        // `protect-streaming-retry` on essentially every buffered 200 and inflate the "success" rate.
-        onBufferedResolve: (o, retries) => {
+        // Vendor label the driver injects into onBufferedResolve's `meta.vendor` → the vendor-keyed
+        // telemetry bucket. The handler forwards `meta` verbatim (no re-hardcoding the vendor string).
+        telemetryVendor: "responses",
+        // Hit-rate telemetry parity with Anthropic (messages/handler-v4.ts): counted ONLY for an actual
+        // L2 engagement (a save after ≥1 retry, an exhaustion, a buffer-cap retreat, or a
+        // `partial-degrade`). A clean first-try commit (retries === 0, no RST) is the silent happy path —
+        // tagging it would put `protect-streaming-retry` on essentially every buffered 200 and inflate
+        // the "success" rate. `partial-degrade` is runtime-UNREACHABLE here today (this handler does not
+        // yet pass `commitBoundaries`, so `committedAny` never sets) — but the accounting is wired
+        // verbatim so P2 flipping on the Responses block-level predicate records it with zero further
+        // change; the driver-injected `meta` (vendor) is forwarded as-is (no vendor re-hardcoding).
+        onBufferedResolve: (o, retries, meta) => {
           if (o === "success" && retries === 0) return
-          // `partial-degrade` (block-level commit terminal) is UNREACHABLE here today — this handler
-          // does not yet pass `commitBoundaries`, so the terminal-only path never sets `committedAny`.
-          // P2 wires the Responses block-level predicate + P0 Task 2 widens the telemetry to record it;
-          // until then, skip it (narrows `o` to the current `ProtectStreamingOutcome` union).
-          if (o === "partial-degrade") return
-          recordProtectStreamingOutcome(o, retries)
-          env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries })
+          recordProtectStreamingOutcome(o, retries, meta)
+          env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries, vendor: meta.vendor })
           consola.debug(`[protect-stream:responses] ${o} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
         },
       })

@@ -1135,6 +1135,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           onAttemptReset,
           retryCap: state.protectStreamingMaxRetries,
           bufferCapBytes: state.protectStreamingBufferCapBytes,
+          // Vendor label the driver injects into onBufferedResolve's `meta.vendor` → the vendor-keyed
+          // telemetry bucket. The handler forwards `meta` verbatim (no re-hardcoding the vendor string).
+          telemetryVendor: "anthropic",
           // L2 escalation (RFC §8, opt-in): on each retry FORCE a progressively aggressive
           // clear_tool_uses (halve the input-token trigger, shrink keep) so the regenerated response
           // is smaller/faster — more likely to finish before the next RST. Independent of
@@ -1154,19 +1157,18 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           }),
           // L2 hit-rate telemetry (RFC §10): aggregate counter (→ /api/status.protect_streaming) +
           // a per-entry feature tag + an operator log line — recorded ONLY for an actual L2 engagement:
-          // a save after ≥1 retry, an exhaustion, or a buffer-cap retreat. A clean first-try commit
-          // (retries === 0, no RST) is the silent buffered happy path — tagging/counting it would put
-          // `protect-streaming-retry` on essentially every 200 and inflate the "success" hit-rate with
-          // requests L2 never actually engaged on.
-          onBufferedResolve: (outcome, retries) => {
+          // a save after ≥1 retry, an exhaustion, a buffer-cap retreat, or a `partial-degrade` (a
+          // block-level commit-then-truncate). A clean first-try commit (retries === 0, no RST) is the
+          // silent buffered happy path — tagging/counting it would put `protect-streaming-retry` on
+          // essentially every 200 and inflate the "success" hit-rate with requests L2 never engaged on.
+          // `partial-degrade` is runtime-UNREACHABLE here today (this handler does not yet pass
+          // `commitBoundaries`, so `committedAny` never sets) — but the accounting is wired verbatim so
+          // P1 flipping on the Anthropic block-level predicate records it with zero further change; the
+          // driver-injected `meta` (vendor) is forwarded as-is (no vendor re-hardcoding).
+          onBufferedResolve: (outcome, retries, meta) => {
             if (outcome === "success" && retries === 0) return
-            // `partial-degrade` (block-level commit terminal) is UNREACHABLE here today — this handler
-            // does not yet pass `commitBoundaries`, so the terminal-only path never sets `committedAny`.
-            // P1 wires the Anthropic block-level predicate + P0 Task 2 widens the telemetry to record it;
-            // until then, skip it (narrows `outcome` to the current `ProtectStreamingOutcome` union).
-            if (outcome === "partial-degrade") return
-            recordProtectStreamingOutcome(outcome, retries)
-            env.ctx.recordFeature("protect-streaming-retry", { outcome, retries })
+            recordProtectStreamingOutcome(outcome, retries, meta)
+            env.ctx.recordFeature("protect-streaming-retry", { outcome, retries, vendor: meta.vendor })
             consola.debug(`[protect-stream] ${outcome} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
           },
         })

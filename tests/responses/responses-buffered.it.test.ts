@@ -173,8 +173,15 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     const committedBody = JSON.stringify(entry?.attempts?.at(-1)?.upstreamResponse?.body)
     expect(committedBody).toContain("COMPLETE_ATTEMPT_2")
     expect(committedBody).not.toContain("PARTIAL_ATTEMPT_1")
-    // Hit-rate telemetry parity with Anthropic: one save after 1 retry.
-    expect(getProtectStreamingStats()).toEqual({ success: 1, exhausted: 0, retreated: 0, totalRetries: 1 })
+    // Hit-rate telemetry parity with Anthropic: one save after 1 retry, under the `responses` vendor.
+    expect(getProtectStreamingStats().responses).toEqual({
+      success: 1,
+      exhausted: 0,
+      retreated: 0,
+      partialDegrade: 0,
+      totalRetries: 1,
+      retriesBeforeDegrade: 0,
+    })
   })
 
   test("buffered mode EXHAUSTION: every attempt truncates up to retryCap → settle FAIL, last partial preserved, exhausted outcome", async () => {
@@ -203,7 +210,14 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     // its upstream-original frames at the top-level slot — D1 — so a diagnosis is never lost).
     expect(JSON.stringify(entry?.attempts?.at(-1))).toContain("PARTIAL_ATTEMPT_1")
     // onBufferedResolve("exhausted", 2): the L2 engagement is recorded as an exhaustion, NOT a save.
-    expect(getProtectStreamingStats()).toEqual({ success: 0, exhausted: 1, retreated: 0, totalRetries: 2 })
+    expect(getProtectStreamingStats().responses).toEqual({
+      success: 0,
+      exhausted: 1,
+      retreated: 0,
+      partialDegrade: 0,
+      totalRetries: 2,
+      retriesBeforeDegrade: 0,
+    })
   })
 
   test("buffered mode: a clean first-try commit is NOT counted as a retry", async () => {
@@ -216,8 +230,8 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
 
     const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
     expect(entry?.state).toBe("completed")
-    // L2 never ENGAGED (no RST) → no telemetry (would otherwise inflate the hit-rate).
-    expect(getProtectStreamingStats()).toEqual({ success: 0, exhausted: 0, retreated: 0, totalRetries: 0 })
+    // L2 never ENGAGED (no RST) → no telemetry (would otherwise inflate the hit-rate). No vendor bucket.
+    expect(getProtectStreamingStats()).toEqual({})
   })
 
   test("live mode (default) fails a mid-stream drop and preserves the partial", async () => {
