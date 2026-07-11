@@ -88,10 +88,25 @@ export function buildActiveFooter(args: { active: ReadonlyArray<ActiveRequestVie
 }
 
 /**
+ * How many of each group's longest-running requests to show, as a function of
+ * how many model groups there are — fewer groups get more per-group detail,
+ * more groups get less (horizontal space is shared). 1 group → 5 times, 2 → 3,
+ * 3+ → 1. Within a group the times are the N largest elapsed (oldest requests),
+ * shown longest-first.
+ */
+function elapsedsPerGroup(groupCount: number): number {
+  if (groupCount === 1) return 5
+  if (groupCount === 2) return 3
+  return 1
+}
+
+/**
  * One compact plain-text segment per model group: `<model> ×N ↓<sumBytes>
- * <maxElapsed>`. Groups are sorted by descending count, then by oldest
- * request first. `sumBytes` is only shown when the group has streaming
- * progress; `maxElapsed` is the group's longest-running request.
+ * <t1> <t2> …`. Groups are sorted by descending count, then by oldest request
+ * first. `sumBytes` shown only when the group has streaming progress. The times
+ * are the group's {@link elapsedsPerGroup} longest-running requests (elapsed
+ * descending = oldest first), so at a glance you see not just how long the
+ * oldest has run but the spread of the slowest few.
  */
 function buildModelGroupSegments(active: ReadonlyArray<ActiveRequestView>, now: number): Array<string> {
   interface Group {
@@ -99,29 +114,36 @@ function buildModelGroupSegments(active: ReadonlyArray<ActiveRequestView>, now: 
     count: number
     sumBytes: number
     hasBytes: boolean
-    oldestStart: number
+    startTimes: Array<number>
   }
   const groups = new Map<string, Group>()
   for (const entry of active) {
     const model = entry.ctx.resolvedModel ?? "(resolving)"
     let g = groups.get(model)
     if (!g) {
-      g = { model, count: 0, sumBytes: 0, hasBytes: false, oldestStart: entry.ctx.startTime }
+      g = { model, count: 0, sumBytes: 0, hasBytes: false, startTimes: [] }
       groups.set(model, g)
     }
     g.count += 1
+    g.startTimes.push(entry.ctx.startTime)
     if (entry.streamBytesIn !== undefined) {
       g.sumBytes += entry.streamBytesIn
       g.hasBytes = true
     }
-    if (entry.ctx.startTime < g.oldestStart) g.oldestStart = entry.ctx.startTime
   }
+  const perGroup = elapsedsPerGroup(groups.size)
+  const oldestStart = (g: Group): number => Math.min(...g.startTimes)
   return Array.from(groups.values())
-    .sort((a, b) => b.count - a.count || a.oldestStart - b.oldestStart)
+    .sort((a, b) => b.count - a.count || oldestStart(a) - oldestStart(b))
     .map((g) => {
       const bytes = g.hasBytes ? ` ↓${formatBytes(g.sumBytes)}` : ""
-      const elapsed = formatDuration(now - g.oldestStart)
-      return `${g.model} ×${g.count}${bytes} ${elapsed}`
+      // Longest-running first = oldest first = ascending startTime; take top N.
+      const times = [...g.startTimes]
+        .sort((a, b) => a - b)
+        .slice(0, perGroup)
+        .map((start) => formatDuration(now - start))
+        .join(" ")
+      return `${g.model} ×${g.count}${bytes} ${times}`
     })
 }
 
