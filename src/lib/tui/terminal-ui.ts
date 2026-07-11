@@ -640,6 +640,16 @@ export class TerminalUi {
   private printLog(message: string): void {
     if (this.silent) return
     if (this.interactive) {
+      if (this.detailActive) {
+        // The alt-screen detail view has no scrolling log area of its own — the
+        // Region (and its DECSTBM scroll region) is torn down while detail is
+        // open. Writing here or calling `renderRegion` would corrupt the
+        // full-screen detail paint (renderRegion's `region.clear()` branch
+        // writes RESET_SCROLL_REGION + ERASE_TO_END + SHOW_CURSOR straight into
+        // the alt screen). Drop the line for now; P1.3 queues it in
+        // `replayQueue` and replays on `exitDetail` instead of dropping it.
+        return
+      }
       // The Region owns the reserved bottom area; the last `Region.render` parked
       // the cursor (DECRC) inside the DECSTBM scroll region, so this log line
       // lands in the scrolling area *above* the panel. No `CLEAR_LINE` here — under
@@ -683,13 +693,15 @@ export class TerminalUi {
   }
 
   /**
-   * The single render dispatcher (interactive → Region or detail alt-screen,
-   * else → P0 footer). All redraw triggers (bus events via the footer timer,
-   * terminal-event settle, keyboard input) funnel through here so a TerminalUi
-   * instance never mixes rendering models within its lifetime (evaluator
-   * BLOCK-1): non-interactive always uses the P0 inline footer;  interactive
-   * always uses `Region.render` for collapsed/panel, or the alt-screen detail
-   * path — never both within one visit.
+   * The render dispatcher for bus-driven redraws (footer timer, terminal-event
+   * settle, keyboard input via {@link onInput}) — interactive → Region or
+   * detail alt-screen, else → P0 footer: non-interactive always uses the P0
+   * inline footer; interactive always uses `Region.render` for
+   * collapsed/panel, or the alt-screen detail path — never both within one
+   * visit. {@link printLog} (log-line redraws from `system.log` /
+   * request-lifecycle events) does NOT funnel through here — it has its own
+   * `detailActive` guard and calls {@link renderRegion} directly when not in
+   * detail, so a log line never dispatches into {@link renderDetail}.
    */
   private render(): void {
     if (!this.interactive) {

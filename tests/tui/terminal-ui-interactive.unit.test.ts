@@ -258,6 +258,52 @@ describe("TerminalUi — P1 interactive integration", () => {
     ui.destroy()
   })
 
+  test("printLog guards the detail alt-screen: concurrent log lines while detail is open don't corrupt it", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    const req = bus.scope("request")
+    req.publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
+    chunks.length = 0 // only inspect output produced while detail is open
+
+    // Concurrent request lifecycle events — each would normally reach
+    // `printLog` (via `onCreated`/`onTerminal`/`onSystemLog`) and, absent the
+    // `detailActive` guard, call `renderRegion` → `region.clear()`, which
+    // writes `RESET_SCROLL_REGION` + `ERASE_TO_END` + `SHOW_CURSOR` straight
+    // into the alt screen and wipes the detail paint.
+    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "concurrent", time: Date.now() } as never)
+    req.publish({ kind: "request.created", ctx: makeCtx("bbbbbbbb", "gpt-5", 500) })
+    req.publish({
+      kind: "request.completed",
+      ctx: makeCtx("bbbbbbbb", "gpt-5", 500),
+      entry: { id: "bbbbbbbb", endpoint: "anthropic-messages", state: "completed" },
+    } as never)
+
+    const out = chunks.join("")
+    // `region.clear()`'s signature bytes must not have leaked into the alt
+    // screen — that would mean the guard is missing (or bypassed) and the
+    // detail paint got corrupted.
+    // eslint-disable-next-line no-control-regex -- intentional ESC control chars under test
+    expect(out).not.toMatch(/\x1b\[0J/) // ERASE_TO_END
+    // eslint-disable-next-line no-control-regex -- intentional ESC control chars under test
+    expect(out).not.toMatch(/\x1b\[\?25h/) // SHOW_CURSOR
+    // The alt screen must still be open — no premature exit sequence either.
+    // eslint-disable-next-line no-control-regex -- intentional ESC control chars under test
+    expect(out).not.toMatch(/\x1b\[\?1049l/)
+    ui.destroy()
+  })
+
   test("INV-1: collapsed→panel→collapsed round-trip does not overwrite prior log rows", () => {
     const stdin = new FakeStdin()
     const { stdout, chunks } = makeStdout()
