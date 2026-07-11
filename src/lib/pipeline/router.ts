@@ -21,7 +21,12 @@
 import type { Model } from "~/lib/models/client"
 
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
-import { ENDPOINT } from "~/lib/models/endpoint"
+import {
+  //
+  ENDPOINT,
+  isEndpointSupported,
+  isResponsesSupported,
+} from "~/lib/models/endpoint"
 
 import type { RequestEnvelope } from "./envelope"
 import type { RouteDecision } from "./types"
@@ -39,10 +44,19 @@ export type RouteBridge = (env: RequestEnvelope) => RouteDecision
  * delegates to `bridge` (see module docstring).
  */
 export function decideRoute(env: RequestEnvelope, bridge: RouteBridge): RouteDecision {
-  if (env.clientFormat === "anthropic") return decideAnthropicRoute(env)
-  // Transition bridge (T0.1): openai-cc / openai-responses / gemini still resolve through
-  // their live codec.decideRoute until T0.2 / T0.3 / T0.4 migrate them here.
-  return bridge(env)
+  switch (env.clientFormat) {
+    case "anthropic": {
+      return decideAnthropicRoute(env)
+    }
+    case "openai-cc": {
+      return decideOpenAiCcRoute(env.model as Model | undefined)
+    }
+    default: {
+      // Transition bridge (T0.2): openai-responses / gemini still resolve through their live
+      // codec.decideRoute until T0.3 / T0.4 migrate them here.
+      return bridge(env)
+    }
+  }
 }
 
 // ============================================================================
@@ -61,4 +75,30 @@ function decideAnthropicRoute(env: RequestEnvelope): RouteDecision {
     return { kind: "reject", status: 400, reason: `Model "${id}" does not support /v1/messages: ${decision.reason}` }
   }
   return { kind: "passthrough", endpoint: ENDPOINT.MESSAGES }
+}
+
+// ============================================================================
+// openai-cc (T0.2)
+// ============================================================================
+
+/**
+ * openai-cc: passthrough `/chat/completions` / translate `/responses` (via) / reject 400
+ * (docs/v4/03-spec/codec.md §2).
+ *   - `isEndpointSupported(/chat/completions)` → passthrough
+ *   - elif `isResponsesSupported`             → translate `/responses`
+ *   - else                                    → reject 400
+ *
+ * Non-uniform default (preserved): `isEndpointSupported` treats a model with no
+ * `supported_endpoints` as supporting everything (legacy fallback) — so unknown gpt-* models
+ * passthrough to /chat/completions.
+ */
+function decideOpenAiCcRoute(model: Model | undefined): RouteDecision {
+  if (isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)) {
+    return { kind: "passthrough", endpoint: ENDPOINT.CHAT_COMPLETIONS }
+  }
+  if (isResponsesSupported(model)) {
+    return { kind: "translate", to: ENDPOINT.RESPONSES }
+  }
+  const id = model?.id ?? "unknown"
+  return { kind: "reject", status: 400, reason: `Model "${id}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint` }
 }

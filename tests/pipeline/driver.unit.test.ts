@@ -140,7 +140,7 @@ describe("driver.runRequest — orchestration", () => {
       sent = wire
       return okStream()
     })
-    const driver = createPipelineDriver({ ...BASE, codec, transport })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport })
 
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
 
@@ -159,7 +159,7 @@ describe("driver.runRequest — orchestration", () => {
     const { codec } = makeCodec({ env, decideRoute: () => ({ kind: "reject", status: 400, reason: "no endpoint" }) })
     let sendCalled = false
     const transport = makeTransport(async () => ((sendCalled = true), okStream()))
-    const driver = createPipelineDriver({ ...BASE, codec, transport })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport })
 
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
 
@@ -184,7 +184,7 @@ describe("driver.runRequest — orchestration", () => {
         return e
       },
     })
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
 
     await driver.runRequest({ body: {}, headers: new Headers() })
     expect(seenEndpoint).toBe("/responses")
@@ -205,7 +205,7 @@ describe("driver.runRequest — orchestration", () => {
     })
     let bodySent: unknown
     const transport = makeTransport(async (_wire, e) => ((bodySent = e.body), okStream()))
-    const driver = createPipelineDriver({ ...BASE, codec, transport, requestRewrites: [mkRewrite("b", 200), mkRewrite("a", 100)] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, requestRewrites: [mkRewrite("b", 200), mkRewrite("a", 100)] })
 
     await driver.runRequest({ body: {}, headers: new Headers() })
     expect((bodySent as { steps: Array<string> }).steps).toEqual(["a", "b"])
@@ -232,7 +232,7 @@ describe("driver.runExchange — error-driven retry", () => {
         onResolved++
       },
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
 
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
     expect(result.ok).toBe(true)
@@ -251,7 +251,7 @@ describe("driver.runExchange — error-driven retry", () => {
       throw new Error("boom")
     })
     const strategy: RetryStrategy = { name: "nope", canHandle: () => false, handle: async (_e, e) => ({ kind: "retry", env: e }) }
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
 
     await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
   })
@@ -266,7 +266,7 @@ describe("driver.runExchange — error-driven retry", () => {
       throw new Error("boom")
     })
     const strategy: RetryStrategy = { name: "always", canHandle: () => true, handle: async (_e, e) => ({ kind: "retry", env: e }) }
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy], maxRetries: 2 })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy], maxRetries: 2 })
 
     await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
     // attempt 1 (fail, retry#1) + 2 (fail, retry#2) + 3 (fail, over budget) = 3
@@ -285,7 +285,7 @@ describe("driver.runExchange — error-driven retry", () => {
     const strategy: RetryStrategy = { name: "learner", canHandle: () => true, handle: async (_e, e) => ({ kind: "retry", env: e, learning: true, waitMs: 0 }) }
     // maxRetries:0 would stop a normal retry immediately, but learning retries use
     // maxLearningRetries:2 → fail#1 (0>=2 F) + fail#2 (1>=2 F) + fail#3 (2>=2 T) = 3.
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy], maxRetries: 0, maxLearningRetries: 2 })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy], maxRetries: 0, maxLearningRetries: 2 })
 
     await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
     expect(attempts).toBe(3)
@@ -310,7 +310,7 @@ describe("driver.runExchange — error-driven retry", () => {
         throw new Error("strategy internal failure")
       },
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
 
     await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toBe(original)
   })
@@ -325,7 +325,7 @@ describe("driver.runExchange — error-driven retry", () => {
     })
     const abortErr = { type: "bad_request", message: "aborted" } as unknown as ApiError
     const strategy: RetryStrategy = { name: "abort", canHandle: () => true, handle: async () => ({ kind: "abort", error: abortErr }) }
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
 
     await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toBe(original)
     expect(calls.setAttemptError).toHaveLength(1)
@@ -343,7 +343,7 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     const { ctx, calls } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const frames: Array<UpstreamFrame> = [{ data: "1" }, { data: "2" }]
 
     const out = await collect(driver.runResponse(okStream(frames), env))
@@ -377,7 +377,7 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
       appliesTo: () => true,
       transform: (frame): FrameAction => ({ kind: "emit", frames: [{ data: `${frame.data}!` }] }),
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [r2, r1] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()), responseRewrites: [r2, r1] })
     const frames: Array<UpstreamFrame> = [{ data: "keep" }, { data: "drop" }, { data: "also" }]
 
     const out = await collect(driver.runResponse(okStream(frames), env))
@@ -402,7 +402,7 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
       },
       flush: (state): Array<UpstreamFrame> => [{ data: (state as BufState).buf.join(",") }],
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [accumulate] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()), responseRewrites: [accumulate] })
     const frames: Array<UpstreamFrame> = [{ data: "a" }, { data: "b" }, { data: "c" }]
 
     const out = await collect(driver.runResponse(okStream(frames), env))
@@ -430,7 +430,7 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
       appliesTo: () => true,
       transform: (frame): FrameAction => ({ kind: "emit", frames: [{ data: `[${frame.data}]` }] }),
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [buffer, tagAfter] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()), responseRewrites: [buffer, tagAfter] })
 
     const out = await collect(driver.runResponse(okStream([{ data: "x" }]), env))
     // x is buffered by rewrite[0]; on flush its output threads rewrite[1] → "[x]"
@@ -457,7 +457,7 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
       },
       flush: (state): Array<UpstreamFrame> => [{ data: (state as BufState).buf.join(",") }],
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [accumulate] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()), responseRewrites: [accumulate] })
 
     // Upstream yields two frames, then throws (mid-stream transport blow-up).
     async function* throwAfter(items: Array<UpstreamFrame>): AsyncIterable<UpstreamFrame> {
@@ -498,7 +498,7 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
       appliesTo: () => true,
       transform: (frame): FrameAction => ({ kind: "emit", frames: [{ data: `S(${frame.data})` }] }),
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [tag] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()), responseRewrites: [tag] })
     const frames: Array<UpstreamFrame> = [{ data: "1" }, { data: "2" }]
 
     const rendered = await collect(driver.runResponse(okStream(frames), env))
@@ -527,7 +527,7 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
       },
       flush: (state): Array<UpstreamFrame> => [{ data: (state as BufState).buf.join(",") }],
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [accumulate] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()), responseRewrites: [accumulate] })
     const frames: Array<UpstreamFrame> = [{ data: "a" }, { data: "b" }]
 
     // The only output frame comes from flushChain (everything was buffered). skipRender
@@ -566,7 +566,7 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
         return { kind: "buffer" }
       },
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [filter, bufTilStop] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()), responseRewrites: [filter, bufTilStop] })
     const frames: Array<UpstreamFrame> = [{ data: "keep" }, { data: "drop" }, { data: "stop" }]
 
     const sampled: Array<{ name: string; frameIndex: number; kind: string }> = []
@@ -592,7 +592,7 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
     const r: ResponseRewrite = { name: "id", order: 100, appliesTo: () => true, transform: (f): FrameAction => ({ kind: "emit", frames: [f] }) }
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()), responseRewrites: [r] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()), responseRewrites: [r] })
     // No opts → no hook; just assert it runs cleanly (the hook ref is undefined, never called).
     const out = await collect(driver.runResponse(okStream([{ data: "x" }]), env))
     expect(out.map((f) => f.data)).toEqual(["x"])
@@ -608,7 +608,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
   test("equivalence: sink frame sequence == generator yield sequence; outcome=complete+headers", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const frames: Array<UpstreamFrame> = [{ data: "1" }, { data: "2" }, { data: "3" }]
 
     // generator yield sequence
@@ -627,7 +627,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
   test("drops the [DONE] transport sentinel — never written to a sink (B2 cut-over red line)", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const { sink, frames } = makeArraySink()
 
     // The generator YIELDS the [DONE] frame (identity render); the sink must NOT receive it.
@@ -640,7 +640,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
   test("rejecting sink (client disconnect mid-write) → non-complete outcome, never complete", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const { sink, frames: sunk } = makeArraySink({ rejectAtFrame: 1 })
 
     const outcome = await driver.runResponseSink(okStream([{ data: "1" }, { data: "2" }, { data: "3" }]), makeEnv(ctx), sink)
@@ -655,7 +655,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
   test("sink.close() runs on BOTH normal completion and an upstream throw", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
 
     let closedOk = 0
     const okArr = makeArraySink()
@@ -673,7 +673,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
   test("a thrown StreamClientAbortError → settled-abort (not stream-error)", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
 
     async function* abortingStream(): AsyncIterable<UpstreamFrame> {
       yield { data: "1" }
@@ -691,7 +691,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
   test("stream-error carries the RAW thrown error (richest-data-flow), not a {type,message} summary", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
 
     const raw = new Error("upstream blew up")
     async function* throwRaw(): AsyncIterable<UpstreamFrame> {
@@ -708,7 +708,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
   test("sink.close() runs on the abort + write-reject exits too (full leak matrix)", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
 
     // Exit 3 — client abort.
     let closedAbort = 0
@@ -735,7 +735,7 @@ describe("driver.runResponseNonStreaming", () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
     const { codec, spy } = makeCodec({ env })
-    const driver = createPipelineDriver({ ...BASE, codec, transport: makeTransport(async () => okStream()) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
 
     const rendered = driver.runResponseNonStreaming(okStream([], { raw: "body" }), env)
     expect(spy.renderResponseNonStreaming).toBe(1)
@@ -763,7 +763,7 @@ describe("driver C0 — post-retry env + post-gate meta channel", () => {
       canHandle: () => true,
       handle: async (_e, e) => ({ kind: "retry", env: e.with({ body: { v: 42 } }) }),
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy] })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
 
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
     expect(result.ok).toBe(true)
@@ -796,7 +796,7 @@ describe("driver C0 — post-retry env + post-gate meta channel", () => {
     const onMeta = (meta: Record<string, unknown>): void => {
       metaSeen.push(meta)
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy], onMeta })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy], onMeta })
 
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
     expect(result.ok).toBe(true)
@@ -828,7 +828,7 @@ describe("driver C0 — post-retry env + post-gate meta channel", () => {
     }
     // maxRetries:1 → attempt1 fail → retry#1 meta{1} ACCEPTED (0>=1 F) → attempt2 fail
     //   → retry#2 meta{2} REJECTED by budget gate (1>=1 T) → throw, meta{2} discarded.
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy], onMeta, maxRetries: 1 })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy], onMeta, maxRetries: 1 })
 
     await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
     expect(metaSeen).toEqual([{ truncated: 1 }]) // only the accepted retry, NOT {truncated:2}
@@ -854,7 +854,7 @@ describe("driver C0 — post-retry env + post-gate meta channel", () => {
         resolvedCalled++
       },
     }
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies: [strategy] }) // no onMeta
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] }) // no onMeta
 
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
     expect(result.ok).toBe(true)
@@ -896,7 +896,7 @@ describe("driver C0 — CC truncateResult phantom guard (RFC §12.3)", () => {
     })
     const features: Array<string> = []
     const strategies = [adaptLegacyStrategy(truncateLegacy(), { attemptRef: { value: 0 }, originalPayload: { v: 0 }, model: undefined, maxRetries: 1 })]
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies, onMeta: ccOnMeta(features), maxRetries: 1 })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies, onMeta: ccOnMeta(features), maxRetries: 1 })
 
     const result = await driver.runRequest({ body: { v: 0 }, headers: new Headers() })
     expect(result.ok).toBe(true)
@@ -915,7 +915,7 @@ describe("driver C0 — CC truncateResult phantom guard (RFC §12.3)", () => {
     // maxRetries:0 → the first truncate retry is rejected by the budget gate
     // (0>=0) → throw before its meta emits. The old pre-gate adapter onMeta would
     // have fired a phantom "truncated" here.
-    const driver = createPipelineDriver({ ...BASE, codec, transport, strategies, onMeta: ccOnMeta(features), maxRetries: 0 })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies, onMeta: ccOnMeta(features), maxRetries: 0 })
 
     await expect(driver.runRequest({ body: { v: 0 }, headers: new Headers() })).rejects.toThrow("limit")
     expect(features).toEqual([])
