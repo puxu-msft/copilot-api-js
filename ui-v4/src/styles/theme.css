@@ -229,21 +229,31 @@ body {
   font-size: 15px;
 }
 
-/* 工业骨架：全局锐角、左对齐(不居中) */
-*, *::before, *::after { border-radius: 0 !important; box-sizing: border-box; }
+/* box-sizing 是布局基建(非 amber),两版树都需要 → 保持全局无作用域(C4)。 */
+*, *::before, *::after { box-sizing: border-box; }
+
+/* 工业骨架:全局锐角。C4 round2-B8 作用域化到 amber-legacy 树——shadcn 树自此按 `--radius` token
+ * 出圆角、不被 `border-radius:0!important` 压平。amber-legacy 树因根带 `data-design` 属性仍全局锐角。 */
+[data-design="amber-legacy"] *,
+[data-design="amber-legacy"] *::before,
+[data-design="amber-legacy"] *::after { border-radius: 0 !important; }
 .mono { font-family: var(--font-mono); }
 
-/* 浮岛(LiveDock)破例:全局 `*{border-radius:0!important}` 抹平圆角,唯浮岛用极小 2px 软化轮廓。
- * 与用户敲定的样式;类选择器(0,1,0)+ !important 压过全局通配符(0,0,0)+ !important。 */
-.livedock-island { border-radius: 2px !important; }
+/* 浮岛(LiveDock)破例:作用域化的 `[data-design] *{border-radius:0!important}` 抹平圆角,唯浮岛用极小
+ * 2px 软化轮廓。C4 一并作用域化(legacy 专属例外);`[data-design] .livedock-island`(0,2,0)+ !important
+ * 仍压过同作用域的通配符锐角 `[data-design] *`(0,1,0)+ !important。 */
+[data-design="amber-legacy"] .livedock-island { border-radius: 2px !important; }
 
 /* 语法高亮 —— shiki(VS Code TextMate grammars/themes)把 token 颜色 baked 进每个 token span 的内联
  * style="color:#..."(无 token CSS class),调色板见 src/lib/highlight/amber-theme.ts 的 AMBER_THEME。 */
 
-/* TOC 跳转后的瞬态高亮(useAnchorScroll 加/移 .toc-flash);outline + 暖底,~1.2s 后由 hook 移除并淡出。 */
+/* TOC 跳转后的瞬态高亮(useAnchorScroll 加/移 .toc-flash);outline + 暖底,~1.2s 后由 hook 移除并淡出。
+ * C4 round2-B8:此规则由**共享** `useAnchorScroll` / HistoryList 施加于 B 段,双树共用 → 不作用域化,
+ * 改引 per-preset 中性 token(C1 已备,两 preset 各映射):amber-legacy 解析回 #2a2212 / amber primary
+ * (像素等价 INV-3),shadcn 解析到 slate/blue。两树各得正确 flash,免作用域化后 shadcn 树 flash 失样。 */
 .toc-flash {
-  outline: 1px solid var(--color-primary);
-  background: #2a2212;
+  outline: 1px solid var(--content-accent);
+  background: var(--surface-flash);
   transition: outline-color 1s ease-out, background-color 1s ease-out;
 }
 
@@ -253,8 +263,9 @@ body {
 }
 
 /* react-day-picker(DateRangePopover)Terminal Amber 皮肤:import 库基础 css 后,把 `--rdp-*`
- * 变量在 `.rdp-amber` 作用域重映射到项目 `--color-*` token(headless override,不引第三方圆角/阴影)。 */
-.rdp-amber {
+ * 变量在 `.rdp-amber` 作用域重映射到项目 `--color-*` token(headless override,不引第三方圆角/阴影)。
+ * C4 round2-B8:amber 专属皮肤 → 作用域化到 amber-legacy 树;shadcn 树的 day-picker 皮肤后续另立。 */
+[data-design="amber-legacy"] .rdp-amber {
   --rdp-accent-color: var(--color-primary);
   --rdp-accent-background-color: #3a2f1a;
   --rdp-today-color: var(--color-primary);
@@ -267,7 +278,7 @@ body {
   --rdp-selected-border: 1px solid var(--color-primary);
   --rdp-font-family: var(--font-mono);
 }
-.rdp-amber .rdp-day_button:hover {
+[data-design="amber-legacy"] .rdp-amber .rdp-day_button:hover {
   background: #3a2f1a;
   color: var(--color-primary);
 }
