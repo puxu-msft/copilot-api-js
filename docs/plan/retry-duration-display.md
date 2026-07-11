@@ -163,12 +163,12 @@ git commit -m "feat(observability): add formatDurationField last/total(N) format
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `tests/context/attempt-snapshot-duration.unit.test.ts`。参照 `tests/pipeline/driver.unit.test.ts` 里创建 RequestContext 的方式（用 `createRequestContext` 或等价工厂 —— 实现时先 grep `createRequestContext` 找到工厂签名）：
+创建 `tests/context/attempt-snapshot-duration.unit.test.ts`。参照 `tests/pipeline/buffered-sink.unit.test.ts:92` 的真实 `createRequestContext` 用法（driver.unit.test.ts 用的是 mock ctx、无 `finalizeCurrentAttemptDuration` 等方法，勿参照）：
 
 ```ts
 import { describe, expect, it } from "bun:test"
 
-import { InMemoryPublisher } from "~/lib/observability/bus" // 若不存在，改用 driver.unit.test.ts 中的 publisher stub
+import type { ObservabilityEvent } from "~/lib/observability/events"
 import type { ObservabilityEvent } from "~/lib/observability/events"
 import { createRequestContext } from "~/lib/context/request"
 
@@ -194,7 +194,7 @@ describe("recordAttemptFailure 透传 durationMs", () => {
 })
 ```
 
-> 注：实现者先读 `tests/pipeline/driver.unit.test.ts` 与 `src/lib/context/request.ts` 的 `createRequestContext` 真实签名，把上面的构造改成可编译的最小形态；断言逻辑不变。
+> 注：实现者先读 `tests/pipeline/buffered-sink.unit.test.ts:92` 的真实 `createRequestContext` 签名，把上面的构造改成可编译的最小形态；断言逻辑不变。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -246,7 +246,7 @@ git commit -m "feat(observability): carry per-attempt durationMs on AttemptSnaps
 
 **Files:**
 - Modify: `src/lib/context/request.ts`（新增 `finalizeCurrentAttemptDuration()`；接口在 `src/lib/context/types.ts` 补声明）
-- Modify: `src/lib/pipeline/driver.ts:692-708`（buffered 循环 retry 分支）
+- Modify: `src/lib/pipeline/driver.ts:702-709`（buffered 循环 retry 分支：`if (retryable && attempt < cap)` @:702、`commitAttemptSseEvents()` @:708、`onAttemptReset()` @:709）
 - Test: `tests/pipeline/l2-buffered-retry-attempt-failed.unit.test.ts`
 
 **Interfaces:**
@@ -255,14 +255,13 @@ git commit -m "feat(observability): carry per-attempt durationMs on AttemptSnaps
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `tests/pipeline/l2-buffered-retry-attempt-failed.unit.test.ts`。参照 `tests/pipeline/driver.unit.test.ts` 现有的 buffered-sink 驱动方式（先读该文件找到 `runResponseBufferedSink` 的测试 harness / mock transport 构造），构造一个「首个 attempt 截断（无 message_stop）、第二个 attempt 成功」的场景，断言中途发了一条 `attempt_failed`：
+创建 `tests/pipeline/l2-buffered-retry-attempt-failed.unit.test.ts`。参照 `tests/pipeline/buffered-sink.unit.test.ts` 现有的 buffered-sink 驱动方式（它用真实 `createRequestContext({ endpoint: "anthropic-messages" })` + `env.ctx.beginAttempt({})`；driver.unit.test.ts 是 mock ctx、不驱动 `runResponseBufferedSink`，勿参照），构造一个「首个 attempt 截断（无 message_stop）、第二个 attempt 成功」的场景，断言中途发了一条 `attempt_failed`：
 
 ```ts
 import { describe, expect, it } from "bun:test"
 
 import type { ObservabilityEvent } from "~/lib/observability/events"
-// 复用 driver.unit.test.ts 的 harness：mockDeps / makeEnv / truncatedThenComplete upstream
-// （实现者从 driver.unit.test.ts import 或复制其工厂）
+// 复用 buffered-sink.unit.test.ts 的 harness：真实 createRequestContext + mock transport（截断 then 完整两次交换）
 
 describe("L2 缓冲重试发 attempt_failed", () => {
   it("首个 attempt 截断→重试成功：中途一条 attempt_failed，durationMs 非 0，strategy=buffered-retry", async () => {
@@ -279,7 +278,7 @@ describe("L2 缓冲重试发 attempt_failed", () => {
 })
 ```
 
-> 注：实现者先读 `tests/pipeline/driver.unit.test.ts`，复用其 mock transport / upstream-stream 工厂来造「截断 then 完整」两次交换；断言逻辑不变。
+> 注：实现者先读 `tests/pipeline/buffered-sink.unit.test.ts`，复用其真实 ctx + mock transport 工厂来造「截断 then 完整」两次交换；断言逻辑不变。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -313,7 +312,7 @@ Expected: FAIL（`failed.length` 为 0——L2 今天不发 attempt_failed）。
 
 - [ ] **Step 4: buffered 循环发 attempt_failed**
 
-`src/lib/pipeline/driver.ts` 的 retry 分支（:692-708），在 `commitAttemptSseEvents()` 与 `onAttemptReset()` 之间插入 finalize + 发事件：
+`src/lib/pipeline/driver.ts` 的 retry 分支（:702-709），在 `commitAttemptSseEvents()`（:708）与 `onAttemptReset()`（:709）之间插入 finalize + 发事件：
 
 ```ts
       if (retryable && attempt < cap) {
@@ -333,10 +332,19 @@ Expected: FAIL（`failed.length` 为 0——L2 今天不发 attempt_failed）。
       }
 ```
 
+并在**穷尽/非重试返回前**（driver.ts:725 `await closeAnchorIfOpen()` 之前）也 finalize 一次，使 L2-截断-穷尽请求的终端汇总行 `last` 完整（否则末 attempt durationMs 停在 0，汇总退化为 `total(N)`——建议-1）：
+
+```ts
+      // 穷尽/非重试：最终失败 attempt 也 finalize duration，供汇总行 last（截断路径无 setter）。
+      currentEnv.ctx.finalizeCurrentAttemptDuration()
+      await closeAnchorIfOpen()
+      opts.onBufferedResolve?.("exhausted", attempt)
+```
+
 - [ ] **Step 5: 跑测试确认通过 + 回归 driver 既有测试**
 
-Run: `bun test tests/pipeline/l2-buffered-retry-attempt-failed.unit.test.ts tests/pipeline/driver.unit.test.ts`
-Expected: 新测 PASS；driver.unit.test.ts 全绿（确认没打破既有 buffered/telemetry 行为，尤其 `onBufferedResolve` 计数不受影响——`attempt_failed` 与 `protect_streaming` 计数是两条独立通道）。
+Run: `bun test tests/pipeline/l2-buffered-retry-attempt-failed.unit.test.ts tests/pipeline/buffered-sink.unit.test.ts tests/pipeline/driver.unit.test.ts`
+Expected: 新测 PASS；buffered-sink 与 driver.unit 全绿（确认没打破既有 buffered/telemetry 行为，尤其 `onBufferedResolve` 计数不受影响——`attempt_failed` 与 `protect_streaming` 计数是两条独立通道）。
 
 - [ ] **Step 6: 验证 ws sink 消费者不回归**
 
@@ -354,14 +362,20 @@ git commit -m "feat(pipeline): L2 buffered retry emits attempt_failed for [RETRY
 
 ---
 
-## Task 4: `RequestActivitySnapshot.currentAttemptStartedAt`
+## Task 4: 暴露 current-attempt 计时（顶层标量 + summary）
+
+> **BLOCK-1 修正（计划技术审查）**：footer/panel 的 `entry.ctx` 被高频 `stream_progress` 的**无 `summary`** 轻量 `snapshot()`（request.ts:281）覆盖，故**不能**读 `.summary`。本 task 给**轻量 `RequestContextSnapshot` 顶层**加两个廉价标量（footer/panel 用），并**同时**给 `RequestActivitySnapshot`（summary）加 `currentAttemptStartedAt`（前端 WS 路径用）。
 
 **Files:**
-- Modify: `src/lib/context/activity-summary.ts:16`（接口）+ `:37`（`summarizeRequestContext`）
+- Modify: `src/lib/observability/events.ts:72`（`RequestContextSnapshot` 顶层）
+- Modify: `src/lib/context/request.ts:281`（`snapshot()` 填充顶层标量）
+- Modify: `src/lib/context/activity-summary.ts:27`（接口）+ `:57`（`summarizeRequestContext`）
 - Test: `tests/observability/activity-current-attempt.unit.test.ts`
 
 **Interfaces:**
-- Produces: `RequestActivitySnapshot.currentAttemptStartedAt?: number = context.currentAttempt?.startTime`。Task 7 的 footer/panel 消费它算 `lastMs = now - currentAttemptStartedAt`。
+- Produces:
+  - `RequestContextSnapshot.currentAttemptStartedAt?: number` + `RequestContextSnapshot.attemptCount?: number`（顶层，`snapshot()` 每事件填充）——Task 7 的 footer/panel 消费。
+  - `RequestActivitySnapshot.currentAttemptStartedAt?: number`（summary，前端 WS 路径）。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -386,12 +400,14 @@ describe("summarizeRequestContext.currentAttemptStartedAt", () => {
 })
 ```
 
+> 顶层 `snapshot()` 标量的真实-bus 验证放在 Task 7 的集成测试（驱动 stream_progress 后读 footer）。
+
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `bun test tests/observability/activity-current-attempt.unit.test.ts`
 Expected: FAIL（字段不存在）。
 
-- [ ] **Step 3: 加字段**
+- [ ] **Step 3: 加 summary 字段**
 
 `src/lib/context/activity-summary.ts` 接口（:27 `attemptCount` 附近）加：
 
@@ -408,18 +424,39 @@ Expected: FAIL（字段不存在）。
     ...(context.currentAttempt?.startTime !== undefined ? { currentAttemptStartedAt: context.currentAttempt.startTime } : {}),
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [ ] **Step 4: 加顶层标量到 RequestContextSnapshot + snapshot()**
 
-Run: `bun test tests/observability/activity-current-attempt.unit.test.ts`
-Expected: PASS。
+`src/lib/observability/events.ts` 的 `RequestContextSnapshot`（:72），在 `multiplier?: number` 之后、`summary?` 之前加：
 
-- [ ] **Step 5: typecheck + lint + 提交**
+```ts
+  multiplier?: number
+  /** 当前在途 attempt 的 startTime（footer/panel 用；轻量 snapshot() 每事件填充，故高频 stream_progress 也带）。 */
+  currentAttemptStartedAt?: number
+  /** 已发生的 attempt 数（_attempts.length）；footer/panel 算 retries=attemptCount-1。 */
+  attemptCount?: number
+  summary?: RequestActivitySnapshot
+```
+
+`src/lib/context/request.ts` 的 `snapshot()`（:281-299），在 return 对象里 `multiplier` 之后加（`_attempts` 是内部 attempts 数组、`currentAttempt` getter 已存在——实现时确认 `snapshot()` 闭包内可见 `_attempts`；若不可见用 `ctx.currentAttempt`/`_attempts.length`）：
+
+```ts
+      ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+      ...(_attempts.at(-1)?.startTime !== undefined && { currentAttemptStartedAt: _attempts.at(-1)!.startTime }),
+      ...(_attempts.length > 0 && { attemptCount: _attempts.length }),
+```
+
+- [ ] **Step 5: 跑测试确认通过 + 回归 snapshot 消费者**
+
+Run: `bun test tests/observability/activity-current-attempt.unit.test.ts tests/observability`
+Expected: PASS；observability 套件全绿（新增可选顶层字段不破坏既有 snapshot 断言）。
+
+- [ ] **Step 6: typecheck + lint + 提交**
 
 ```bash
 bun run typecheck
-bunx eslint src/lib/context/activity-summary.ts tests/observability/activity-current-attempt.unit.test.ts
-git add -- src/lib/context/activity-summary.ts tests/observability/activity-current-attempt.unit.test.ts
-git commit -m "feat(observability): expose currentAttemptStartedAt on activity snapshot"
+bunx eslint src/lib/observability/events.ts src/lib/context/request.ts src/lib/context/activity-summary.ts tests/observability/activity-current-attempt.unit.test.ts
+git add -- src/lib/observability/events.ts src/lib/context/request.ts src/lib/context/activity-summary.ts tests/observability/activity-current-attempt.unit.test.ts
+git commit -m "feat(observability): expose current-attempt start + count on snapshot"
 ```
 
 ---
@@ -614,11 +651,12 @@ git commit -m "feat(tui): [RETRY] prefix + 1-based last/total(N)"
 
 **Files:**
 - Modify: `src/lib/tui/render/footer.ts:54-64`（单请求分支；聚合行 `buildModelGroupSegments` **不动**）
-- Modify: `src/lib/tui/render/panel.ts:184`
+- Modify: `src/lib/tui/render/panel.ts:195`（`formatPanelRow` 的 elapsed）+ `:220`（`buildDetailLines` 的 elapsed 明细行）
 - Test: `tests/tui/retry-duration-display.unit.test.ts`（追加）
+- Test: `tests/tui/footer-live-attempt.integration.test.ts`（新建——驱动真实 bus + stream_progress，BLOCK-1 守卫）
 
 **Interfaces:**
-- Consumes: `formatDurationField`（Task 1），`entry.ctx.summary?.currentAttemptStartedAt` / `.attemptCount`（Task 4，经 `RequestContextSnapshot.summary`）。**不着色**（`truncateToWidth` 只接受纯文本）。
+- Consumes: `formatDurationField`（Task 1），`entry.ctx.currentAttemptStartedAt` / `entry.ctx.attemptCount`（Task 4 **顶层标量**，非 `.summary`）。**不着色**（`truncateToWidth` 只接受纯文本）。
 
 - [ ] **Step 1: 追加失败测试**
 
@@ -633,18 +671,16 @@ describe("footer 单请求 triplet（纯文本）", () => {
     const active = [{
       ctx: {
         method: "POST", path: "/v1/messages", resolvedModel: "claude-opus-4.8", startTime: now - 400_000,
-        summary: { attemptCount: 3, currentAttemptStartedAt: now - 45_200 },
+        currentAttemptStartedAt: now - 45_200, attemptCount: 3,
       },
     }] as never
     const out = buildActiveFooter({ active, now, columns: 200 })
     expect(out).toContain("45.2s/400.0s(2)")
-    // eslint-disable-next-line no-control-regex
-    expect(out).not.toMatch(/\[/) // 无裸 ANSI（除 finalizeFooter 的整体 dim 包裹外，triplet 段本身纯文本）
   })
 
   it("无 currentAttemptStartedAt → 兜底单值 total", () => {
     const now = 1_000_000
-    const active = [{ ctx: { method: "POST", path: "/v1/messages", resolvedModel: "m", startTime: now - 400_000, summary: { attemptCount: 1 } } }] as never
+    const active = [{ ctx: { method: "POST", path: "/v1/messages", resolvedModel: "m", startTime: now - 400_000, attemptCount: 1 } }] as never
     const out = buildActiveFooter({ active, now, columns: 200 })
     expect(out).toContain("400.0s")
     expect(out).not.toContain("/")
@@ -664,10 +700,9 @@ Expected: 新 2 例 FAIL。
 ```ts
   if (count === 1) {
     const entry = active[0]
-    const summary = entry.ctx.summary
     const totalMs = now - entry.ctx.startTime
-    const retries = (summary?.attemptCount ?? 1) - 1
-    const lastMs = summary?.currentAttemptStartedAt !== undefined ? now - summary.currentAttemptStartedAt : undefined
+    const retries = (entry.ctx.attemptCount ?? 1) - 1
+    const lastMs = entry.ctx.currentAttemptStartedAt !== undefined ? now - entry.ctx.currentAttemptStartedAt : undefined
     const elapsed = formatDurationField({ lastMs, totalMs, retries }) // 原 formatDuration(now - entry.ctx.startTime)
     const model = entry.ctx.resolvedModel ? ` ${entry.ctx.resolvedModel}` : ""
     const streamInfo = formatStreamInfo({ bytesIn: entry.streamBytesIn, eventsIn: entry.streamEventsIn, blockType: entry.streamBlockType })
@@ -679,28 +714,51 @@ Expected: 新 2 例 FAIL。
 
 - [ ] **Step 4: 改 panel elapsed 行**
 
-`src/lib/tui/render/panel.ts:184`。先读 :180-210 确认 `ctx` 是 `RequestContextSnapshot`、有 `.summary`。将 `const elapsed = formatDuration(now - ctx.startTime)` 改为：
+`src/lib/tui/render/panel.ts`。先读 `:190-225` 定位 `formatPanelRow`（:195 附近）与 `buildDetailLines`（:220 附近）的 `formatDuration(now - ctx.startTime)`。两处均替换（`ctx` 是 `RequestContextSnapshot`，顶层标量已由 Task 4 保证）：
 
 ```ts
-  const pSummary = ctx.summary
-  const pRetries = (pSummary?.attemptCount ?? 1) - 1
-  const pLastMs = pSummary?.currentAttemptStartedAt !== undefined ? now - pSummary.currentAttemptStartedAt : undefined
+  const pRetries = (ctx.attemptCount ?? 1) - 1
+  const pLastMs = ctx.currentAttemptStartedAt !== undefined ? now - ctx.currentAttemptStartedAt : undefined
   const elapsed = formatDurationField({ lastMs: pLastMs, totalMs: now - ctx.startTime, retries: pRetries })
 ```
 
-`:209` 的 `elapsed: ${formatDuration(now - ctx.startTime)}` 明细行同样替换为 `formatDurationField(...)`（复用上面的 `pRetries/pLastMs`）。import 补 `formatDurationField`。
+:220 的 `buildDetailLines` elapsed 明细行同样替换（复用上面的 `pRetries/pLastMs`）。import 补 `formatDurationField`。
 
-- [ ] **Step 5: 跑测试确认通过**
+- [ ] **Step 5: 新建真实-bus 集成测试（BLOCK-1 防回归）**
 
-Run: `bun test tests/tui/retry-duration-display.unit.test.ts`
+创建 `tests/tui/footer-live-attempt.integration.test.ts`。**这是 BLOCK-1 的关键守卫**——单测注入 ctx 标量会假绿（真实路径 `entry.ctx` 被 `stream_progress` 的无 summary 轻量 snapshot 覆盖）。本测驱动真实 `RequestContext` → bus，证明 `stream_progress` 的轻量 snapshot 顶层携带 `currentAttemptStartedAt`。参照 `tests/pipeline/buffered-sink.unit.test.ts:92` 的 `createRequestContext` 用法：
+
+```ts
+import { describe, expect, it } from "bun:test"
+
+import { createRequestContext } from "~/lib/context/request"
+
+describe("BLOCK-1 回归：stream_progress 后轻量 snapshot 仍带 currentAttemptStartedAt", () => {
+  it("真实 ctx beginAttempt + recordStreamProgress → stream_progress 顶层带 attempt 计时", () => {
+    const events: Array<unknown> = []
+    const ctx = createRequestContext({ endpoint: "anthropic-messages", publisher: { publish: (e: never) => void events.push(e) } } as never)
+    ctx.beginAttempt({})
+    ctx.recordStreamProgress({ bytesIn: 10, eventsIn: 1 })
+    const progress = events.find((e) => (e as { kind?: string }).kind === "request.stream_progress") as { ctx: { currentAttemptStartedAt?: number; attemptCount?: number } }
+    expect(progress.ctx.currentAttemptStartedAt).toBeGreaterThan(0)
+    expect(progress.ctx.attemptCount).toBe(1)
+  })
+})
+```
+
+> 实现者对齐 `createRequestContext` 真实签名（`buffered-sink.unit.test.ts:92`）。断言逻辑不变：证明**轻量 snapshot 路径**携带顶层标量（BLOCK-1 根因修复点）。
+
+- [ ] **Step 6: 跑测试确认通过**
+
+Run: `bun test tests/tui/retry-duration-display.unit.test.ts tests/tui/footer-live-attempt.integration.test.ts`
 Expected: 全 PASS。
 
-- [ ] **Step 6: typecheck + lint + 提交**
+- [ ] **Step 7: typecheck + lint + 提交**
 
 ```bash
 bun run typecheck
-bunx eslint src/lib/tui/render/footer.ts src/lib/tui/render/panel.ts tests/tui/retry-duration-display.unit.test.ts
-git add -- src/lib/tui/render/footer.ts src/lib/tui/render/panel.ts tests/tui/retry-duration-display.unit.test.ts
+bunx eslint src/lib/tui/render/footer.ts src/lib/tui/render/panel.ts tests/tui/retry-duration-display.unit.test.ts tests/tui/footer-live-attempt.integration.test.ts
+git add -- src/lib/tui/render/footer.ts src/lib/tui/render/panel.ts tests/tui/retry-duration-display.unit.test.ts tests/tui/footer-live-attempt.integration.test.ts
 git commit -m "feat(tui): footer/panel show last/total(N) plain-text on retries"
 ```
 

@@ -76,13 +76,15 @@ export function formatDurationField(args: { lastMs: number | undefined; totalMs:
 |---|---|---|
 | 终端汇总行 | `historyEntry.attempts` | **无需补字段**。`attempts[].durationMs` 在 `setAttemptResponse`/`setAttemptError`（[request.ts:527](../../src/lib/context/request.ts#L527)/[544](../../src/lib/context/request.ts#L544)）定稿，`toHistoryEntry` 投影（[request.ts:848](../../src/lib/context/request.ts#L848)）。注意 `attempts` 在零-attempt 终态为 `undefined`（[request.ts:821](../../src/lib/context/request.ts#L821) 仅 `length>0` 才赋值）。 |
 | `[RETRY]` 行 | `AttemptSnapshot` 事件 | [events.ts:106](../../src/lib/observability/events.ts#L106) `AttemptSnapshot` 加 `durationMs?: number`；[request.ts:936](../../src/lib/context/request.ts#L936) `recordAttemptFailure` snapshot 透传 `a.durationMs`。顺序已核实安全：L1 路径 `setAttemptError`（driver.ts:292）先于 `recordAttemptFailure`（driver.ts:339）；L2 路径由 §2 显式 finalize 保证。 |
-| footer/panel 实时 | `RequestActivitySnapshot` | [activity-summary.ts:16](../../src/lib/context/activity-summary.ts#L16) 加 `currentAttemptStartedAt?: number = context.currentAttempt?.startTime`（[summarizeRequestContext](../../src/lib/context/activity-summary.ts#L37) 填充）。 |
+| footer/panel 实时 | **轻量 `RequestContextSnapshot` 顶层标量** | 见下方 BLOCK-plan 修正：footer/panel 的 `entry.ctx` 被高频 `stream_progress` 的**无 summary** 轻量 `snapshot()` 覆盖，故**不能**读 `.summary`。改为给 [events.ts:72](../../src/lib/observability/events.ts#L72) `RequestContextSnapshot` 顶层加 `currentAttemptStartedAt?` + `attemptCount?`，在 [request.ts:281](../../src/lib/context/request.ts#L281) `snapshot()` 填充（每个事件都带、廉价标量）。另在 [activity-summary.ts:16](../../src/lib/context/activity-summary.ts#L16) `RequestActivitySnapshot` 加 `currentAttemptStartedAt?`（服务前端 WS 路径，[summarizeRequestContext](../../src/lib/context/activity-summary.ts#L37) 填充）。 |
+
+> **BLOCK-plan 修正（计划技术审查抓出）**：初稿设想 footer/panel 读 `entry.ctx.summary?.currentAttemptStartedAt`。核实发现 footer/panel 的 `entry.ctx` 在每个事件被 `upsertCtx` 覆盖，而高频 `stream_progress`（[request.ts:917](../../src/lib/context/request.ts#L917)）、`attempt_started`（:931）、`attempt_failed`（:958）用的是**无 `summary`** 的轻量 `snapshot()`（[request.ts:281](../../src/lib/context/request.ts#L281)）——在途请求绝大多数时间 `entry.ctx.summary` 为 undefined，triplet 永不出现且单测因直接注入 `ctx.summary` 而假绿（"测绿生产死"）。故 footer/panel 走**顶层标量**，并须补一条驱动真实 bus + `stream_progress` 的集成测试。
 
 ### 4. 三处渲染点
 
 - **[terminal-ui.ts:525](../../src/lib/tui/terminal-ui.ts#L525) `onTerminal`**：`duration` 用 `formatDurationField`，`retries = (historyEntry?.attempts?.length ?? 1) - 1`（**防 undefined，应修-4**），`lastMs = historyEntry?.attempts?.at(-1)?.durationMs`，`totalMs = durationMs`；log-line 的 `durationMs`（着色）字段传 `colorMs`。
 - **[terminal-ui.ts:452](../../src/lib/tui/terminal-ui.ts#L452) `onAttemptFailed`**：prefix `[RETRY-${attemptN}]` → **`[RETRY]`**；`duration` 用 `formatDurationField({ lastMs: event.attempt.durationMs, totalMs: elapsedMs, retries: event.attempt.attemptIndex + 1 })`；log-line `durationMs`（着色）传 `colorMs`。
-- **[footer.ts:56](../../src/lib/tui/render/footer.ts#L56)（单请求行）+ [panel.ts:184](../../src/lib/tui/render/panel.ts#L184)**：`formatDuration(now-startTime)` → `formatDurationField`，`lastMs = snapshot.currentAttemptStartedAt ? now - currentAttemptStartedAt : undefined`，`retries = attemptCount - 1`；**不加色**（决策 7），保持今天的 dim/纯文本。**footer 聚合行**（[footer.ts:123](../../src/lib/tui/render/footer.ts#L123) `oldestStart`，多请求折叠）**保持 total-only 不动**。
+- **[footer.ts:56](../../src/lib/tui/render/footer.ts#L56)（单请求行）+ [panel.ts:195](../../src/lib/tui/render/panel.ts#L195)（`formatPanelRow`）/ [panel.ts:220](../../src/lib/tui/render/panel.ts#L220)（`buildDetailLines`）**：`formatDuration(now-startTime)` → `formatDurationField`，`lastMs = entry.ctx.currentAttemptStartedAt ? now - currentAttemptStartedAt : undefined`（**顶层标量**，非 `.summary`），`retries = (entry.ctx.attemptCount ?? 1) - 1`；**不加色**（决策 7），保持今天的 dim/纯文本。**footer 聚合行**（[footer.ts:123](../../src/lib/tui/render/footer.ts#L123) `oldestStart`，多请求折叠）**保持 total-only 不动**。
 
 ### 5. log-line 纯格式化器不改
 
@@ -119,9 +121,9 @@ export function formatDurationField(args: { lastMs: number | undefined; totalMs:
 | 文件 | 改动 |
 |---|---|
 | `src/lib/observability/projections/format.ts` | 新增 `formatDurationField` + 着色驱动值辅助 |
-| `src/lib/observability/events.ts` | `AttemptSnapshot` 加 `durationMs?` |
-| `src/lib/context/request.ts` | `recordAttemptFailure` snapshot 透传 `durationMs`；新增/复用 attempt duration finalize |
-| `src/lib/context/activity-summary.ts` | `RequestActivitySnapshot` 加 `currentAttemptStartedAt?` |
+| `src/lib/observability/events.ts` | `AttemptSnapshot` 加 `durationMs?`；`RequestContextSnapshot` 顶层加 `currentAttemptStartedAt?` + `attemptCount?` |
+| `src/lib/context/request.ts` | `recordAttemptFailure` snapshot 透传 `durationMs`；新增/复用 attempt duration finalize；轻量 `snapshot()` 填充顶层 `currentAttemptStartedAt`/`attemptCount` |
+| `src/lib/context/activity-summary.ts` | `RequestActivitySnapshot` 加 `currentAttemptStartedAt?`（前端 WS 路径） |
 | `src/lib/pipeline/driver.ts` | buffered 循环失败分支 finalize durationMs + 调 `recordAttemptFailure`（L2 也发 `attempt_failed`） |
 | `src/lib/tui/terminal-ui.ts` | `onTerminal` + `onAttemptFailed`（`[RETRY]` 前缀 + 1-based + triplet + colorMs） |
 | `src/lib/tui/render/footer.ts` | 单请求行改 triplet（纯文本）；聚合行不变 |
