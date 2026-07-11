@@ -48,6 +48,10 @@ vi.mock("@/hooks/useEntry", () => ({
   }),
 }))
 
+// prev/next 由 useRequestNeighbors 据当前列表顺序算相邻 id;mock 列表顺序以控制邻居。
+let mockEntries: Array<{ id: string }> = []
+vi.mock("@/hooks/useHistoryInfinite", () => ({ useHistoryInfinite: () => ({ entries: mockEntries }) }))
+
 const { RequestDetailPage } = await import("@/components/requests/RequestDetailPage")
 const { useUiStore } = await import("@/stores/ui-store")
 
@@ -138,5 +142,43 @@ describe("RequestDetailPage · fork B (designVersion routes legacy vs shadcn)", 
     fireEvent.keyDown(document.body, { key: "Escape" })
     expect(screen.getByTestId("loc").textContent).toBe("/requests/r1")
     dialog.remove()
+  })
+})
+
+describe("RequestDetailShadcn · prev/next neighbor navigation (decision 5, closes P2 M1)", () => {
+  beforeEach(() => {
+    // 列表顺序 [e0, r1, e2] ⟹ 当前 r1 的 prev=e0、next=e2。
+    mockEntries = [{ id: "e0" }, { id: "r1" }, { id: "e2" }]
+    act(() => useUiStore.getState().setDesignVersion("shadcn"))
+  })
+  afterEach(() => {
+    mockEntries = []
+    act(() => useUiStore.getState().setDesignVersion("amber-legacy"))
+  })
+
+  it("renders prev/next controls; next button navigates to the following entry (stays in detail)", () => {
+    renderDetail()
+    fireEvent.click(screen.getByRole("button", { name: /下一条/ }))
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e2")
+  })
+
+  it("prev button navigates to the previous entry", () => {
+    renderDetail()
+    fireEvent.click(screen.getByRole("button", { name: /上一条/ }))
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e0")
+  })
+
+  it("keyboard ArrowRight / j navigates to the next neighbor (bindKeys)", () => {
+    renderDetail()
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }))
+    })
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e2")
+  })
+
+  it("at the last entry, next control is disabled (no next neighbor)", () => {
+    mockEntries = [{ id: "e0" }, { id: "r1" }]
+    renderDetail()
+    expect(screen.getByRole("button", { name: /下一条/ })).toHaveProperty("disabled", true)
   })
 })
