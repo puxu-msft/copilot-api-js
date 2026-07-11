@@ -10,11 +10,14 @@ import { Modal } from "@/components/shared/Modal"
  * depend on this neutral adapter instead of importing `shared/Modal` (the legacy
  * tree's hand-rolled Radix skin) directly.
  *
- * Today it delegates to the legacy `shared/Modal` — the only dialog primitive
- * that exists before C5 lands `components/ui/dialog`. **C6 turns this file into
- * the fork point**: read `designVersion` and mount the shadcn `Dialog` (neutral
- * skin) vs the legacy `Modal`, **without touching any B file**. Keeping the seam
- * here (not in B) is what lets `designVersion` stay out of the B grep-guard dirs.
+ * Today it still delegates to the legacy `shared/Modal` — C6 landed the dual-tree
+ * `designVersion` switch but deliberately left this seam delegating to legacy, so
+ * `BlockJsonModal` shows the legacy modal skin even inside the shadcn tree for now.
+ * **The `designVersion` fork of this seam is deferred to the per-page phase** (a
+ * per-page backlog item): that is where this file becomes the fork point — read
+ * `designVersion` and mount the shadcn `Dialog` (neutral skin) vs the legacy
+ * `Modal`, **without touching any B file**. Keeping the seam here (not in B) is
+ * what lets `designVersion` stay out of the B grep-guard dirs when that fork lands.
  *
  * Contract preserved verbatim (the legacy `Modal` renders these, so the tests in
  * `Modal.vitest`/`BlockJsonModal.vitest` keep passing): `title` → Dialog.Title,
