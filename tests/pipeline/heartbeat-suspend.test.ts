@@ -91,8 +91,15 @@ describe("makeSseSink suspend/resume heartbeat (§4.4 recoverable per-block guar
     const { stream, written } = stubSseStream()
     const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: PING } })
     await clock.advance(5_000) // partway into the first interval, no tick yet
+    expect(clock.liveTimerCount).toBe(1) // the single construction-armed timer
     sink.suspendHeartbeat?.()
     sink.resumeHeartbeat?.() // suspend→resume with no intervening tick
+    // DIRECT invariant oracle (§4.4 clearTimeout-first): resume's rearm must CLEAR the still-live
+    // construction timer before arming the fresh one — so exactly ONE live timer remains. This is the
+    // load-bearing guard: the ping-count assertion below is BLIND to a leaked timer here, because the
+    // leaked timer fires at t+15000 with elapsed=10000 < interval and merely reschedules (no ping). Only
+    // the live-timer count distinguishes "rearm cleared the old timer" from "rearm leaked a second one".
+    expect(clock.liveTimerCount).toBe(1)
     await clock.advance(15_000) // one full interval since resume
     expect(written).toEqual([{ data: '{"type":"ping"}', event: "ping" }]) // exactly ONE ping, not two
     sink.close?.()
