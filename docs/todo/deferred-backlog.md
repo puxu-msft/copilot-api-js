@@ -361,3 +361,11 @@
 - **理想架构**：① reorder 加 `KeyboardSensor({coordinateGetter: sortableKeyboardCoordinates})`；② resize 手柄改可聚焦元素 + 方向键调宽（或提供数字输入）。
 - **为何暂缓**：本期 spec 明确只要求指针拖拽；键盘路径是正交增强，不阻塞核心可配置能力。内部工具、单用户，优先级低。
 - **若做需改什么**：`RequestsListPage` 的 `useSensors` 加 KeyboardSensor；`SortableHeaderCell` 补键盘激活语义；resize 手柄换 focusable + keydown 调 `columnSizing`；补键盘交互测试。发现方：column-config Task 3 审查（2026-07-11）。
+
+## 组成/tool-密度感知 calibration factor（size 无法解释的残差 ~7%，2026-07-11 暂缓）
+
+- **根因**：size-aware calibration（spec/plan `2026-07-11-size-aware-calibration-learning`，Phase 1 已落地）把 factor 从「单标量」升为「per-bucket（按 localEstimate 规模分 6 桶）tok-weighted 滑动加权均值」，离线实测把 count_tokens 误差从 ~50% 高估砍到 **MAPE 6.9%**（时间留出集 6.4%，非过拟合）。**残差 ~7% 是纯 size 维度无法解释的部分**——来自请求**组成 / tool 密度**（同规模但 tool_use/tool_result/code 占比不同的请求，o200k↔Claude tokenizer 失配率略有差异）。当前 factor 只按 `localEstimate` 分桶，对同桶内不同组成的请求用同一 factor。
+- **当前行为（已核实足够）**：两个消费者（`count_tokens` route 的客户端 compact 判定 + `debug` route）配安全边际后，~7% 残差**均可接受**——离线验证 p90 仅 17.6%，且 size-aware 已消除主要偏差（50%→7%）。size 分桶已把 400-regime（顶桶）与典型-regime（中桶）自动隔离。功能完整、仅精度还有第二维可挖。
+- **理想架构**：给 factor 模型加**第二维**（组成/tool 密度）——如按 `(sizeBucket, toolDensityBucket)` 二维分桶，或在 per-bucket factor 上叠加一个 tool-ratio 线性修正项；学习信号仍来自成功腿 usage + local estimate，只是落桶键多一维。`countTotalTokens` 已能从 payload 算出 tool block 占比作第二维特征。
+- **为何暂缓**：残差已在两消费者可接受范围内（against over-engineering——精度收益边际递减，第二维把 6.9%→可能 ~4-5%，价值未证）；二维分桶会稀释每桶样本量（需更多 live/backfill 数据才收敛）、增加 seed 表维度与迁移复杂度；spec §2/§11 已显式列为暂缓项、两轮 subagent 对抗审查均认可暂不加。属「独立精度增强工作单元」非「因范围大降级」。
+- **若做需改什么**：① `engine.ts` 的 `FactorBucket` 落桶键加 tool-density 维度（`bucketIndexFor` → 二维索引，或 factor 叠加 tool-ratio 项）；② `CalibrationSink` + `calibration-backfill.ts` 落桶时算 tool 密度特征（复用 `countTotalTokens` 的 tool block 统计）；③ `DEFAULT_FACTOR_SEED` 表升二维 + `boundsVersion` bump 触发重 seed；④ 离线 `exp/token-calibration-size-aware/` 重训二维模型验证残差实际降幅、时间留出集不过拟合；⑤ 迁移路径（一维 v2 → 二维 v3）。发现方：size-aware calibration spec §2/§11 暂缓裁决（2026-07-11）。
