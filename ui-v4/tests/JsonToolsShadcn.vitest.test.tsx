@@ -50,6 +50,8 @@ describe("JsonToolsPage · fork B (designVersion routes legacy vs shadcn)", () =
 
   it("amber-legacy: mounts JsonToolsLegacy (no shadcn marker); both tool labels visible", () => {
     renderTools()
+    // 互斥挂载判据 = testid 计数(legacy=0 / shadcn=1,见下一用例)。下面的 label 断言
+    // 两树文本相同、不区分 legacy/shadcn,仅作"legacy 内容确实渲染"的次级校验,勿当互斥 oracle。
     expect(screen.queryAllByTestId("json-tools-shadcn")).toHaveLength(0)
     expect(screen.getByText("unescape JSON in string")).toBeDefined()
     expect(screen.getByText("JSON tree")).toBeDefined()
