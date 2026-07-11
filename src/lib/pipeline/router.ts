@@ -27,6 +27,7 @@ import {
   isEndpointSupported,
   isResponsesSupported,
 } from "~/lib/models/endpoint"
+import { shouldForceChatCompletionsFallback } from "~/routes/responses/fallback"
 
 import type { RequestEnvelope } from "./envelope"
 import type { RouteDecision } from "./types"
@@ -51,9 +52,12 @@ export function decideRoute(env: RequestEnvelope, bridge: RouteBridge): RouteDec
     case "openai-cc": {
       return decideOpenAiCcRoute(env.model as Model | undefined)
     }
+    case "openai-responses": {
+      return decideOpenAiResponsesRoute(env.model as Model | undefined)
+    }
     default: {
-      // Transition bridge (T0.2): openai-responses / gemini still resolve through their live
-      // codec.decideRoute until T0.3 / T0.4 migrate them here.
+      // Transition bridge (T0.3): gemini still resolves through its live codec.decideRoute
+      // until T0.4 migrates it here.
       return bridge(env)
     }
   }
@@ -101,4 +105,33 @@ function decideOpenAiCcRoute(model: Model | undefined): RouteDecision {
   }
   const id = model?.id ?? "unknown"
   return { kind: "reject", status: 400, reason: `Model "${id}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint` }
+}
+
+// ============================================================================
+// openai-responses (T0.3)
+// ============================================================================
+
+/**
+ * openai-responses: passthrough `/responses` / translate `/chat/completions` (fallback) /
+ * reject 400. Mirrors the legacy `handleResponses` dispatch:
+ *   useFallback = !isResponsesSupported(model) || forceFallback(Google)
+ *   !useFallback                                   → passthrough /responses
+ *   useFallback ∧ (isEndpointSupported(CC) ∨ force) → translate /chat/completions
+ *   else                                           → reject 400
+ *
+ * Non-uniform defaults (preserved): `isResponsesSupported` absent → false (do not implicitly
+ * enable); the Google force-list is exempt from the CC support check (Copilot's endpoint
+ * metadata for those SKUs is unreliable, so force-fallback to CC even without advertised CC).
+ */
+function decideOpenAiResponsesRoute(model: Model | undefined): RouteDecision {
+  const forceFallback = shouldForceChatCompletionsFallback(model)
+  const useFallback = !isResponsesSupported(model) || forceFallback
+  if (!useFallback) {
+    return { kind: "passthrough", endpoint: ENDPOINT.RESPONSES }
+  }
+  if (forceFallback || isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)) {
+    return { kind: "translate", to: ENDPOINT.CHAT_COMPLETIONS }
+  }
+  const id = model?.id ?? "unknown"
+  return { kind: "reject", status: 400, reason: `Model "${id}" does not support /responses or /chat/completions` }
 }
