@@ -69,6 +69,64 @@ function drive(opts: { entry: unknown; startTime: number; kind: "completed" | "f
   return cap.text()
 }
 
+/**
+ * 驱动一个 attempt_failed 事件到 TerminalUi，返回捕获的全部 stdout 文本。
+ * `startTime` 决定 total = NOW - startTime；`attemptIndex` 0-based（首次重试为 0）；
+ * `lastMs` 作为本次 attempt 自身耗时（AttemptSnapshot.durationMs）。
+ */
+function driveAttemptFailed(opts: { attemptIndex: number; lastMs: number; startTime: number }): string {
+  const cap = makeCapture()
+  const bus = createBus()
+  const prevLevel = consola.level
+  consola.level = 5
+  const detach = attachTerminalUi(bus, { stdout: cap.stdout, isTTY: true, columns: 200 })
+  const ctx = {
+    id: "a",
+    endpoint: "anthropic-messages",
+    method: "POST",
+    path: "/v1/messages",
+    resolvedModel: "claude-opus-4-8",
+    state: "streaming",
+    startTime: opts.startTime,
+    queueWaitMs: 0,
+  } satisfies RequestContextSnapshot
+  const req = bus.scope("request")
+  req.publish({ kind: "request.created", ctx })
+  req.publish({
+    kind: "request.attempt_failed",
+    ctx,
+    attempt: {
+      attemptIndex: opts.attemptIndex,
+      durationMs: opts.lastMs,
+      strategy: "backoff",
+      error: { status: 500, message: "boom", type: "upstream_error" },
+    },
+    willRetry: true,
+    nextStrategy: "backoff",
+  } as never)
+  detach()
+  consola.level = prevLevel
+  return cap.text()
+}
+
+describe("onAttemptFailed [RETRY] 行", () => {
+  test("前缀 [RETRY]（无 -N）+ 1-based (N) + 本次/累计", () => {
+    const out = driveAttemptFailed({ attemptIndex: 1, lastMs: 120_000, startTime: NOW - 300_000 })
+    const retry = out.split("\n").find((l) => l.includes("[RETRY]"))
+    expect(retry).toBeDefined()
+    expect(retry).not.toContain("[RETRY-") // 前缀去序号
+    expect(retry).toContain("120.0s/300.0s(2)") // attemptIndex+1 = 2
+  })
+
+  test("首次重试（attemptIndex=0）→ (1)，不出现 (0)", () => {
+    const out = driveAttemptFailed({ attemptIndex: 0, lastMs: 60_000, startTime: NOW - 60_000 })
+    const retry = out.split("\n").find((l) => l.includes("[RETRY]"))
+    expect(retry).toBeDefined()
+    expect(retry).toContain("(1)")
+    expect(retry).not.toContain("(0)")
+  })
+})
+
 describe("onTerminal 汇总行 last/total(N)", () => {
   test("有重试（3 attempts）→ 汇总显示 last/total(2)", () => {
     const out = drive({

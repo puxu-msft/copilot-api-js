@@ -447,12 +447,15 @@ export class TerminalUi {
     const retryableMeta = `(${metaParts.join(", ")})`
 
     const elapsedMs = Date.now() - event.ctx.startTime
-    const elapsed = formatDuration(elapsedMs)
+    const lastMs = event.attempt.durationMs
+    const retries = event.attempt.attemptIndex + 1 // 1-based：这是第 N 次重试
+    const durationField = formatDurationField({ lastMs, totalMs: elapsedMs, retries })
+    const colorMs = resolveDurationColorMs({ lastMs, totalMs: elapsedMs, retries })
     const errMsg = event.attempt.error?.message
     const extra = errMsg ? `: ${errMsg}` : undefined
 
     const message = formatLogLine({
-      prefix: `[RETRY-${attemptN}]`,
+      prefix: `[RETRY]`,
       time: formatTime(),
       method: event.ctx.method,
       path: event.ctx.path,
@@ -460,8 +463,8 @@ export class TerminalUi {
       clientModel: event.ctx.clientModel,
       multiplier: event.ctx.multiplier,
       status: event.attempt.error?.status,
-      duration: elapsed,
-      durationMs: elapsedMs,
+      duration: durationField,
+      durationMs: colorMs,
       requestBodySize: event.ctx.requestBodySize,
       responseBodySize: entry.streamBytesIn,
       extra,
