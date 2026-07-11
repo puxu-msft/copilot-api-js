@@ -328,6 +328,11 @@ git commit -F <msg> -- <上述>   # dialog seam fork first
 
 ## Task P6 · Config（页壳 shadcn 化）
 
+> **实施状态: DONE**（2 子 commit,分支 `feat/ui-v4-shadcn-redesign`,HEAD `60443b68`）。
+> ① `f59cd53d` 提取 `ConfigLegacy`(原 ConfigPage body 逐字冻结:JSON textarea 编辑 + save + 解析/保存反馈)+ `ConfigPage` 变薄 `DesignFork` wrapper + `ConfigShadcn` 骨架(`data-testid=config-shadcn`)。默认 amber-legacy 下既有 `ConfigPage.vitest` 经 wrapper 透传通过。legacy body 与基线 `c3c758bc` 逐字等价(git diff 证 VERBATIM IDENTICAL)。
+> ② `60443b68` `ConfigShadcn` 完整表单页壳:复用**同一 A 数据 hook `useConfigYaml`**(两树共用,不 fork 数据/保存逻辑)+ 同构 edit/parse/`save.mutate`;呈现层 shadcn `Card`/`Button` + 中性语义 token(`bg-card`/`border-input`/`--signal-*`);JSON 编辑器是带 `<label htmlFor>` 可访问名的原生 `<textarea>`(多行 JSON 编辑本质,jsx-a11y 过);保存/解析错误/保存失败/已保存 = 中性信号 `Badge`;`data-testid=config-shadcn` 在 loading 态亦保留(守卫恒可定位)。fork-routed 测试 `tests/ConfigShadcn.vitest.test.tsx`(6):shadcn 断互斥挂载 + config JSON 入编辑器 + save mutate 解析对象 + 解析错误路径 + 已保存确认 + loading;amber-legacy 断 legacy(no shadcn marker)。
+> INV-4 四绿(每子 commit):typecheck / build(index 1098.37KB,基线 1096.18KB,+2.19KB shadcn 表单)/ test(254 bun + 527 vitest 全绿:新增 ConfigShadcn 6)/ eslint 无缓存;scope 守卫绿(`config/` 零 designVersion)。legacy `ConfigLegacy` 冻结(body 逐字等价)。**交用户 UX 检查项**:表单布局/分组/校验反馈观感、Card 包裹 vs 密排、JSON 单 textarea vs 结构化字段表单(当前对齐 legacy 的 JSON 编辑形态,未上结构化字段)。
+
 - **对应 RFC/决策**: §4 P6。
 - **目标**: shadcn 侧 Config 页壳（表单用 `ui/{input,select,slider,button}`）；import 中性化内容 + C primitive。**legacy `ConfigPage` 冻结。**
 - **commit invariant**: INV-2 fork B；INV-4 四绿；a11y（表单 label/role，jsx-a11y 规则）。
