@@ -568,7 +568,9 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
                     {hg.headers.map((header) => (
                       <th
                         key={header.id}
-                        className={`${header.column.columnDef.meta?.width ?? ""} px-2 py-1 text-left font-normal`}
+                        // session 色列表头须镜像其 body td 的无水平 padding(p-0):table-fixed 下列宽由首行(表头)决定,
+                        // 若 session th 带 px-2(16px)会在 w-[10px] 上被 padding 撑大、与 p-0 的 body 色列错位并挤占后续列宽。
+                        className={`${header.column.columnDef.meta?.width ?? ""} ${header.column.id === "session" ? "p-0" : "px-2 py-1"} text-left font-normal`}
                       >
                         {flexRender(header.column.columnDef.header, header.getContext())}
                       </th>
