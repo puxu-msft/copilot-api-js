@@ -176,6 +176,23 @@ describe("RequestDetailShadcn · prev/next neighbor navigation (decision 5, clos
     expect(screen.getByTestId("loc").textContent).toBe("/requests/e2")
   })
 
+  it("keyboard ArrowRight while a TAB is focused does NOT hijack to next request (tab roving owns arrows)", () => {
+    renderDetail()
+    const tab = screen.getByRole("tab", { name: "System" })
+    tab.focus()
+    // 方向键归 Radix tab roving 所有;邻居翻页必须让位,不得导航走(否则详情子树卸载、tab nav 失效)。
+    fireEvent.keyDown(tab, { key: "ArrowRight" })
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/r1")
+  })
+
+  it("keyboard j/k still page neighbors even when a tab is focused (no arrow-widget conflict)", () => {
+    renderDetail()
+    const tab = screen.getByRole("tab", { name: "System" })
+    tab.focus()
+    fireEvent.keyDown(tab, { key: "j" })
+    expect(screen.getByTestId("loc").textContent).toBe("/requests/e2")
+  })
+
   it("at the last entry, next control is disabled (no next neighbor)", () => {
     mockEntries = [{ id: "e0" }, { id: "r1" }]
     renderDetail()

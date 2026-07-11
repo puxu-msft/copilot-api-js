@@ -38,6 +38,19 @@ function isTyping(target: EventTarget | null): boolean {
 }
 
 /**
+ * 「方向键归自身」的 ARIA roving 组件选择器(tab/menu/listbox/grid/tree/radiogroup/slider/spinbutton/combobox…)。
+ * 焦点落在其内时,ArrowLeft/Right 是该组件的 roving 导航键(如水平 `HorizontalTabs` 切 tab)——邻居翻页
+ * 必须**让位**,否则一次方向键既移组件焦点又导航到相邻请求(详情子树卸载),劫持组件键盘可达性。
+ * j/k(非标准组件键)不受此约束,任何焦点下都翻页。
+ */
+const ARROW_OWNING_ROLE_SELECTOR =
+  '[role="tablist"],[role="tab"],[role="menu"],[role="menubar"],[role="menuitem"],[role="listbox"],[role="option"],[role="grid"],[role="tree"],[role="radiogroup"],[role="radio"],[role="slider"],[role="spinbutton"],[role="combobox"]'
+
+function ownsArrowKeys(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(ARROW_OWNING_ROLE_SELECTOR) !== null
+}
+
+/**
  * 请求相邻导航 hook —— **design-agnostic(A 类,零设计版本标识符/颜色)**,shadcn 详情页 / 列表复用。
  *
  * 据当前 URL 筛选(`useRequestFilters`)复用同一 `useHistoryInfinite` 查询(react-query 共享缓存,
@@ -73,6 +86,9 @@ export function useRequestNeighbors(
     if (!bindKeys) return
     const onKey = (e: KeyboardEvent) => {
       if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+      // 方向键落在 roving 组件(tab/menu/listbox…)内时让位给该组件,不劫持其键盘导航;j/k 不受限。
+      const isArrow = e.key === "ArrowLeft" || e.key === "ArrowRight"
+      if (isArrow && ownsArrowKeys(e.target)) return
       if (e.key === "ArrowLeft" || e.key === "k") {
         if (prevId === null) return
         e.preventDefault()
