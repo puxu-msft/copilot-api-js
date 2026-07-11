@@ -309,6 +309,10 @@ export function HistoryList({
     }
   }, [autoLoad])
 
+  // 列底「加载更多」footer 只在滚到底(atBottom)才显 —— 不常驻(用户诉求)。
+  // 短列表(内容不溢出)由 react-virtuoso 报 atBottom=true → 即时可见;长列表滚到底才露出。
+  const [atBottom, setAtBottom] = useState(false)
+
   // 清空历史确认 Modal:开合 + 删除在途(防重复提交)。筛选感知——有筛选走 scoped delete、无筛选走 clear-all。
   const [clearOpen, setClearOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
@@ -679,35 +683,41 @@ export function HistoryList({
               atTopStateChange={(atTop) => {
                 if (!atTop && tailOn) dispatch({ kind: "scroll-up" })
               }}
-              // 列底常驻加载条(sticky footer):有下一页 → 「加载更多」手动翻页;无更多 → 「已到底」。
-              // 手动加载(autoLoad 关)时这是唯一翻页入口;定位 load-until-found 与之正交(仍自动)。
-              fixedFooterContent={() => {
-                let inner: React.ReactNode = null
-                if (hasNextPage) {
-                  inner = (
-                    <button
-                      type="button"
-                      disabled={isFetchingNextPage}
-                      onClick={() => void fetchNextPage()}
-                      className="w-full px-2 py-1.5 text-[var(--color-primary)] hover:bg-[#181818] disabled:text-[var(--color-muted)]"
-                    >
-                      {isFetchingNextPage ? "加载中…" : `↓ 加载更多 · 还有 ${Math.max(0, total - entries.length)} 条`}
-                    </button>
-                  )
-                } else if (entries.length > 0) {
-                  inner = <div className="px-2 py-1.5 text-[var(--color-muted)]">— 已到底 · 共 {total} 条 —</div>
-                }
-                return (
-                  <tr>
-                    <td
-                      colSpan={visibleColCount}
-                      className="mono border-t border-[#222] bg-[#111] p-0 text-center text-[12px]"
-                    >
-                      {inner}
-                    </td>
-                  </tr>
-                )
-              }}
+              atBottomStateChange={setAtBottom}
+              // 列底「加载更多」footer —— 只在滚到底(atBottom)才出现、不常驻(fixedFooterContent 本是 sticky,
+              // 故用 atBottom 门控:非底 → 传 null 不渲染;到底 → 露出加载条,视觉即列尾)。手动翻页唯一入口;
+              // 定位 load-until-found 正交(仍自动)。
+              fixedFooterContent={
+                atBottom ?
+                  () => {
+                    let inner: React.ReactNode = null
+                    if (hasNextPage) {
+                      inner = (
+                        <button
+                          type="button"
+                          disabled={isFetchingNextPage}
+                          onClick={() => void fetchNextPage()}
+                          className="w-full px-2 py-1.5 text-[var(--color-primary)] hover:bg-[#181818] disabled:text-[var(--color-muted)]"
+                        >
+                          {isFetchingNextPage ? "加载中…" : `↓ 加载更多 · 还有 ${Math.max(0, total - entries.length)} 条`}
+                        </button>
+                      )
+                    } else if (entries.length > 0) {
+                      inner = <div className="px-2 py-1.5 text-[var(--color-muted)]">— 已到底 · 共 {total} 条 —</div>
+                    }
+                    return (
+                      <tr>
+                        <td
+                          colSpan={visibleColCount}
+                          className="mono border-t border-[#222] bg-[#111] p-0 text-center text-[12px]"
+                        >
+                          {inner}
+                        </td>
+                      </tr>
+                    )
+                  }
+                : null
+              }
               fixedHeaderContent={() =>
                 table.getHeaderGroups().map((hg) => {
                   // SortableContext 的 items = 当前列序里的非 session 列 id(顺序须与渲染的可拖 th 一致)。

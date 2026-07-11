@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-query"
 import {
   //
+  act,
   fireEvent,
   render,
   screen,
@@ -48,12 +49,13 @@ import {
   useListStore,
 } from "@/stores/list-store"
 
-// hoisted 供 vi.mock 工厂引用的 spy:虚拟列表 scrollToIndex + 单条 summary 查询 + 捕获 endReached(供测门控)。
-const { scrollToIndexMock, apiGetMock, apiDeleteMock, endReachedRef } = vi.hoisted(() => ({
+// hoisted 供 vi.mock 工厂引用的 spy:虚拟列表 scrollToIndex + 单条 summary 查询 + 捕获 endReached / atBottom(供测门控/滚到底)。
+const { scrollToIndexMock, apiGetMock, apiDeleteMock, endReachedRef, atBottomRef } = vi.hoisted(() => ({
   scrollToIndexMock: vi.fn(),
   apiGetMock: vi.fn(),
   apiDeleteMock: vi.fn(),
   endReachedRef: { current: null as null | (() => void) },
+  atBottomRef: { current: null as null | ((v: boolean) => void) },
 }))
 
 // fake TableVirtuoso:确定性渲染(不依赖 jsdom layout/initialItemCount),并经 useImperativeHandle
@@ -70,8 +72,9 @@ vi.mock("react-virtuoso", async () => {
     const context = props.context
     const components = props.components as { Table: React.ComponentType<Record<string, unknown>>; TableRow: React.ComponentType<Record<string, unknown>> }
     const fixedHeaderContent = props.fixedHeaderContent as () => React.ReactNode
-    const fixedFooterContent = props.fixedFooterContent as (() => React.ReactNode) | undefined
+    const fixedFooterContent = props.fixedFooterContent as (() => React.ReactNode) | null | undefined
     endReachedRef.current = (props.endReached as (() => void) | undefined) ?? null
+    atBottomRef.current = (props.atBottomStateChange as ((v: boolean) => void) | undefined) ?? null
     const itemContent = props.itemContent as (index: number, row: unknown, context: unknown) => React.ReactNode
     useImperativeHandle(ref as React.Ref<unknown>, () => ({ scrollToIndex: scrollToIndexMock }))
     const Table = components.Table
@@ -186,19 +189,28 @@ describe("HistoryList", () => {
     expect(screen.queryByText(/▶ live|paused/)).toBeNull()
   })
 
-  it("列底加载条:有下一页显「加载更多 · 还有 N 条」,点击调用 fetchNextPage(手动翻页)", () => {
+  it("列底加载条:未滚到底(atBottom false)时不显 —— 不常驻", () => {
+    mockHistory = { entries: [entry("a")], total: 50, isLoading: false, hasNextPage: true, fetchNextPage: vi.fn() }
+    renderList()
+    // 初始 atBottom=false → footer 不渲染。
+    expect(screen.queryByText(/加载更多|已到底/)).toBeNull()
+  })
+
+  it("列底加载条:滚到底(atBottom)显「加载更多 · 还有 N 条」,点击调用 fetchNextPage(手动翻页)", () => {
     const fetchNextPage = vi.fn()
     mockHistory = { entries: [entry("a")], total: 50, isLoading: false, hasNextPage: true, fetchNextPage }
     renderList()
+    act(() => atBottomRef.current?.(true)) // 模拟滚到底
     const btn = screen.getByRole("button", { name: /加载更多/ })
     expect(btn.textContent).toMatch(/还有 49 条/)
     fireEvent.click(btn)
     expect(fetchNextPage).toHaveBeenCalledOnce()
   })
 
-  it("列底加载条:无下一页显「已到底」、不显加载更多", () => {
+  it("列底加载条:滚到底、无下一页显「已到底」、不显加载更多", () => {
     mockHistory = { entries: [entry("a")], total: 1, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
     renderList()
+    act(() => atBottomRef.current?.(true))
     expect(screen.getByText(/已到底/)).toBeDefined()
     expect(screen.queryByText(/加载更多/)).toBeNull()
   })
