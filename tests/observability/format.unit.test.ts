@@ -16,6 +16,8 @@ import stringWidth from "string-width"
 
 import {
   //
+  cacheHitColor,
+  durationColor,
   formatCacheRate,
   formatNumber,
   truncateToWidth,
@@ -119,9 +121,56 @@ describe("formatCacheRate", () => {
     expect(stripAnsi(formatCacheRate(0, 1, 0))).toBe("↻100%")
   })
 
-  test("the hit segment is dim and the new-cache segment is cyan (color parity with the token column)", () => {
-    // Parity assertion built through picocolors itself, so it holds whether or
-    // not the test env has color enabled (both sides render identically).
-    expect(formatCacheRate(1000, 8000, 1000)).toBe(`${pc.dim("↻80%")}${pc.cyan("+10%")}`)
+  test("the new-cache segment text follows the hit segment", () => {
+    // Text shape only (color is asserted by reference below — under
+    // pc.isColorSupported === false every color collapses to identity, so
+    // comparing colored strings would prove nothing about the coloring).
+    expect(stripAnsi(formatCacheRate(1000, 8000, 1000))).toBe("↻80%+10%")
+  })
+})
+
+// Color-band routing is asserted by the RETURNED color-fn reference, not by
+// applying it to a string: bun's test env has `pc.isColorSupported === false`,
+// which collapses pc.dim/yellow/red/bold(red) all to the identity function, so a
+// string-comparison would pass even if every band returned the wrong color. The
+// three single-color bands are stable pc references; the composite bands (bold
+// red / dim yellow) are fresh closures, so they are pinned by exclusion. The
+// composite bands' actual ANSI is proven empirically in the FORCE_COLOR
+// integration test (tests/tui/log-line-color.integration.test.ts).
+describe("cacheHitColor (severity by hit rate)", () => {
+  test("single-color bands return the exact pc reference (≥80 dim / ≥40 yellow / ≥20 red)", () => {
+    expect(cacheHitColor(80)).toBe(pc.dim)
+    expect(cacheHitColor(100)).toBe(pc.dim)
+    expect(cacheHitColor(79)).toBe(pc.yellow)
+    expect(cacheHitColor(40)).toBe(pc.yellow)
+    expect(cacheHitColor(39)).toBe(pc.red)
+    expect(cacheHitColor(20)).toBe(pc.red)
+  })
+
+  test("the <20 severe band is a distinct fn, not mis-routed to a named band", () => {
+    const fn = cacheHitColor(19)
+    expect(fn).not.toBe(pc.dim)
+    expect(fn).not.toBe(pc.yellow)
+    expect(fn).not.toBe(pc.red)
+  })
+})
+
+describe("durationColor (request-duration severity)", () => {
+  test("single-color bands return the exact pc reference (≤20s white / ≤180s yellow / >180s red)", () => {
+    expect(durationColor(1200)).toBe(pc.white)
+    expect(durationColor(20_000)).toBe(pc.white) // 20s boundary inclusive
+    expect(durationColor(60_001)).toBe(pc.yellow)
+    expect(durationColor(180_000)).toBe(pc.yellow) // 180s boundary inclusive
+    expect(durationColor(180_001)).toBe(pc.red)
+    expect(durationColor(600_000)).toBe(pc.red)
+  })
+
+  test("the 20s–60s dim-yellow band is a distinct fn, not mis-routed to a named band", () => {
+    for (const ms of [20_001, 45_000, 60_000]) {
+      const fn = durationColor(ms)
+      expect(fn).not.toBe(pc.white)
+      expect(fn).not.toBe(pc.yellow)
+      expect(fn).not.toBe(pc.red)
+    }
   })
 })

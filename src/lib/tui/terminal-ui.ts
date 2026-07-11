@@ -286,7 +286,8 @@ export class TerminalUi {
     if (event.learning) metaParts.push("learning")
     const retryableMeta = `(${metaParts.join(", ")})`
 
-    const elapsed = formatDuration(Date.now() - event.ctx.startTime)
+    const elapsedMs = Date.now() - event.ctx.startTime
+    const elapsed = formatDuration(elapsedMs)
     const errMsg = event.attempt.error?.message
     const extra = errMsg ? `: ${errMsg}` : undefined
 
@@ -300,6 +301,7 @@ export class TerminalUi {
       multiplier: event.ctx.multiplier,
       status: event.attempt.error?.status,
       duration: elapsed,
+      durationMs: elapsedMs,
       requestBodySize: event.ctx.requestBodySize,
       responseBodySize: entry.streamBytesIn,
       extra,
@@ -362,6 +364,7 @@ export class TerminalUi {
       multiplier: ctx.multiplier,
       status,
       duration: formatDuration(durationMs),
+      durationMs,
       queueWait,
       requestBodySize: ctx.requestBodySize,
       responseBodySize: entry.streamBytesIn,

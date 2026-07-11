@@ -1,6 +1,6 @@
 /**
  * Pure formatter for the canonical log line shape:
- *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↓<out> ↻<hit%>+<new%> <extra> <retryableMeta>
+ *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> <extra> <retryableMeta>
  *
  * Shared source of truth for the log-line shape, consumed by
  * `~/lib/tui/terminal-ui.ts` (the TerminalUi renderer) and its `render/`
@@ -18,9 +18,9 @@ import { isSameModelName } from "~/lib/models/resolver"
 
 import {
   //
+  durationColor,
   formatBillingLabel,
   formatBytes,
-  formatCacheRate,
   formatTokens,
 } from "./format"
 
@@ -35,6 +35,8 @@ export interface LogLineParts {
   multiplier?: number
   status?: number
   duration?: string
+  /** Raw duration in ms — colors {@link duration} by severity (durationColor); falls back to yellow when absent. */
+  durationMs?: number
   requestBodySize?: number
   responseBodySize?: number
   inputTokens?: number
@@ -71,6 +73,7 @@ export function formatLogLine(parts: LogLineParts): string {
     multiplier,
     status,
     duration,
+    durationMs,
     requestBodySize,
     responseBodySize,
     inputTokens,
@@ -117,7 +120,11 @@ export function formatLogLine(parts: LogLineParts): string {
     coloredModel = clientModel && !isSameModelName(clientModel, model) ? ` ${pc.dim(clientModel)} → ${pc.magenta(model)}` : pc.magenta(` ${model}`)
   }
   const coloredMultiplier = pc.dim(formatBillingLabel(multiplier))
-  const coloredDuration = duration ? ` ${pc.yellow(duration)}` : ""
+  // Duration is severity-colored by raw ms (durationColor) at every production
+  // call site (retry + terminal both pass durationMs); the plain-yellow branch
+  // is a defensive fallback for any caller that supplies only the string.
+  const durationColorFn = durationMs !== undefined ? durationColor(durationMs) : pc.yellow
+  const coloredDuration = duration ? ` ${durationColorFn(duration)}` : ""
   const coloredQueueWait = queueWait ? ` ${pc.dim(`(queued ${queueWait})`)}` : ""
 
   // req/resp body sizes with ↑↓ arrows
@@ -129,18 +136,11 @@ export function formatLogLine(parts: LogLineParts): string {
     if (sizes) sizeInfo = ` ${pc.dim(sizes)}`
   }
 
-  // in-tokens/out-tokens (with cache breakdown)
+  // in-tokens/out-tokens (cache breakdown + woven-in cache-rate marker `↻…`,
+  // which formatTokens places between the input group and ↓output).
   let tokenInfo = ""
   if (model && (inputTokens !== undefined || outputTokens !== undefined)) {
     tokenInfo = ` ${formatTokens(inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens)}`
-  }
-
-  // Prompt-cache rate marker (`↻<hit%>+<new%>`), following the token column.
-  // Empty (suppressed) when there is no cache activity — see formatCacheRate.
-  let cacheInfo = ""
-  if (model) {
-    const rate = formatCacheRate(inputTokens, cacheReadInputTokens, cacheCreationInputTokens)
-    if (rate) cacheInfo = ` ${rate}`
   }
 
   let extraPart = ""
@@ -157,5 +157,5 @@ export function formatLogLine(parts: LogLineParts): string {
 
   const statusAndMethod = coloredStatus ? `${coloredStatus} ${coloredMethod}` : coloredMethod
 
-  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${cacheInfo}${extraPart}${retryableMetaPart}${reqIdPart}`
+  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}${retryableMetaPart}${reqIdPart}`
 }

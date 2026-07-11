@@ -44,6 +44,18 @@ export function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`
 }
 
+/**
+ * Severity color for a request's wall-clock duration: fast requests stay white,
+ * escalating as latency grows (a slow request is worth noticing).
+ *   ≤ 20s → white   ≤ 60s → dim yellow   ≤ 180s → yellow   > 180s → red
+ */
+export function durationColor(ms: number): (s: string) => string {
+  if (ms <= 20_000) return pc.white
+  if (ms <= 60_000) return (s) => pc.dim(pc.yellow(s))
+  if (ms <= 180_000) return pc.yellow
+  return pc.red
+}
+
 /** Compact integer with a lowercase k/m suffix. */
 export function formatNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`
@@ -59,28 +71,52 @@ export function formatBytes(n: number): string {
 }
 
 /**
- * Token-count column: `↑<input>+<cacheRead>+<cacheCreation> ↓<output>`.
- * Cache breakdowns are dim/cyan to deemphasize relative to fresh tokens.
+ * Token-count column: `↑<input>+<cacheRead>+<cacheCreation> ↻<hit%>+<new%> ↓<output>`.
+ * Cache breakdowns are dim/cyan to deemphasize relative to fresh tokens; the
+ * woven-in prompt-cache rate marker ({@link formatCacheRate}) sits between the
+ * input group and `↓output` (cache is an input-side property) and is suppressed
+ * when there is no cache activity.
  */
 export function formatTokens(input?: number, output?: number, cacheRead?: number, cacheCreation?: number): string {
   if (input === undefined && output === undefined) return "-"
   let result = `↑${formatNumber(input ?? 0)}`
   if (cacheRead) result += pc.dim(`+${formatNumber(cacheRead)}`)
   if (cacheCreation) result += pc.cyan(`+${formatNumber(cacheCreation)}`)
+  const rate = formatCacheRate(input, cacheRead, cacheCreation)
+  if (rate) result += ` ${rate}`
   result += ` ↓${formatNumber(output ?? 0)}`
   return result
 }
 
 /**
+ * Severity color for the cache-hit percentage: a LOW hit rate means the cache
+ * did not pay off (expensive fresh tokens), so it is emphasized progressively;
+ * a healthy rate stays dim. `+new%` (cache written this request) is neutral.
+ *   ≥ 80% → dim (healthy)   ≥ 40% → yellow (watch)
+ *   ≥ 20% → red (poor)      < 20% → bold red (severe)
+ *
+ * Exported so tests can assert the returned color function by reference (the
+ * only env-independent check — under `pc.isColorSupported === false` every
+ * color collapses to identity, so comparing colored strings proves nothing).
+ */
+export function cacheHitColor(pct: number): (s: string) => string {
+  if (pct >= 80) return pc.dim
+  if (pct >= 40) return pc.yellow
+  if (pct >= 20) return pc.red
+  return (s) => pc.bold(pc.red(s))
+}
+
+/**
  * Prompt-cache rate marker: `↻<hit%>+<new%>` where
- *   hit% = cacheRead / (input + cacheRead + cacheCreation)   — dim (served from cache)
+ *   hit% = cacheRead / (input + cacheRead + cacheCreation)   — severity-colored
  *   new% = cacheCreation / (input + cacheRead + cacheCreation) — cyan (written this request)
  *
  * The denominator is total billed input; `input` here is the NET fresh count,
  * disjoint from the cache fields (see request/usage-normalize.ts), so the three
- * sum to total input. Coloring mirrors {@link formatTokens} (cache read dim,
- * cache creation cyan). Returns `""` when there is no cache activity (both cache
- * fields 0/undefined). The `+new%` segment is only appended when
+ * sum to total input. `hit%` is colored by {@link cacheHitColor} (dim when
+ * healthy, escalating to bold red as it drops); `new%` is cyan like the cache-
+ * creation token segment. Returns `""` when there is no cache activity (both
+ * cache fields 0/undefined). The `+new%` segment is only appended when
  * `cacheCreation > 0`.
  */
 export function formatCacheRate(input?: number, cacheRead?: number, cacheCreation?: number): string {
@@ -93,7 +129,7 @@ export function formatCacheRate(input?: number, cacheRead?: number, cacheCreatio
   // is ever relaxed.
   if (total === 0) return ""
   const hitPct = Math.round((read / total) * 100)
-  let result = pc.dim(`↻${hitPct}%`)
+  let result = cacheHitColor(hitPct)(`↻${hitPct}%`)
   if (creation > 0) {
     const newPct = Math.round((creation / total) * 100)
     result += pc.cyan(`+${newPct}%`)

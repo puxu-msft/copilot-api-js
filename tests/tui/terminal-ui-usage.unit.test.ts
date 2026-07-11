@@ -84,7 +84,7 @@ describe("TerminalUi — completion line usage threading", () => {
     )
     const okLine = out.split("\n").find((l) => l.includes("[ OK ]"))
     expect(okLine).toBeDefined()
-    expect(okLine).toContain("↑1.0k+8.0k+1.0k ↓456 ↻80%+10%")
+    expect(okLine).toContain("↑1.0k+8.0k+1.0k ↻80%+10% ↓456")
   })
 
   test("entry without usage (no attempts) renders no token column — golden path unchanged", () => {

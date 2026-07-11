@@ -3,9 +3,10 @@
  * TerminalUi renderer and its `render/` helpers.
  *
  * These tests pin the token column + cache-rate marker that surface on
- * completion lines: `↑<in>+<cacheRead>+<cacheCreation> ↓<out> ↻<hit%>+<new%>`.
- * Color is stripped so assertions target the plain rendered text; a separate
- * `format.unit.test.ts` block pins the dim/cyan coloring of the marker itself.
+ * completion lines: `↑<in>+<cacheRead>+<cacheCreation> ↻<hit%>+<new%> ↓<out>`,
+ * plus the severity-colored duration. Color is stripped for text-shape
+ * assertions; the `format.unit.test.ts` block pins the marker/duration colors
+ * themselves, and one test here checks duration gets `durationColor(durationMs)`.
  */
 
 import {
@@ -42,7 +43,7 @@ describe("formatLogLine — token column + cache-rate marker", () => {
     expect(line).toContain("↑1.0k ↓456")
   })
 
-  test("cache breakdown and rate marker follow the token column", () => {
+  test("cache breakdown and rate marker sit between the input group and ↓output", () => {
     const line = stripAnsi(
       formatLogLine(
         okParts({
@@ -53,8 +54,8 @@ describe("formatLogLine — token column + cache-rate marker", () => {
         }),
       ),
     )
-    // token column carries the +read+creation breakdown, then the ↻ marker.
-    expect(line).toContain("↑1.0k+8.0k+1.0k ↓456 ↻80%+10%")
+    // ↑input+read+creation, then the ↻ marker, then ↓output (cache is input-side).
+    expect(line).toContain("↑1.0k+8.0k+1.0k ↻80%+10% ↓456")
   })
 
   test("marker is omitted when there is no cache activity", () => {
@@ -92,5 +93,17 @@ describe("formatLogLine — token column + cache-rate marker", () => {
     )
     expect(line).not.toContain("↻")
     expect(line).not.toContain("↑1.0k")
+  })
+})
+
+describe("formatLogLine — duration rendering", () => {
+  // The duration *text* is asserted here (env-independent); the severity COLOR
+  // routing (durationMs → durationColor vs the plain-yellow fallback) can only
+  // be observed with color enabled, so it is proven in the FORCE_COLOR
+  // integration test (tests/tui/log-line-color.integration.test.ts) — under
+  // bun's `pc.isColorSupported === false` all colors collapse to identity.
+  test("the duration string is rendered whether or not durationMs is supplied", () => {
+    expect(stripAnsi(formatLogLine(okParts({ duration: "200.0s", durationMs: 200_000 })))).toContain("200.0s")
+    expect(stripAnsi(formatLogLine(okParts({ duration: "1.2s", durationMs: undefined, isRetry: true })))).toContain("1.2s")
   })
 })
