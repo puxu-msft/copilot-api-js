@@ -13,6 +13,7 @@ import {
   beforeEach,
   describe,
   expect,
+  it,
   setSystemTime,
   test,
 } from "bun:test"
@@ -22,6 +23,7 @@ import type { RequestContextSnapshot } from "~/lib/observability"
 
 import { createBus } from "~/lib/observability"
 import { attachTerminalUi } from "~/lib/tui"
+import { buildActiveFooter } from "~/lib/tui/render/footer"
 
 const NOW = 1_700_000_000_000
 // eslint-disable-next-line no-control-regex -- intentional ANSI escape range
@@ -177,5 +179,34 @@ describe("onTerminal 汇总行 last/total(N)", () => {
     expect(fail).toBeDefined()
     expect(fail).toMatch(/\b\d+\.\ds\b/) // 单值形态
     expect(fail).not.toContain("/") // 无 triplet 斜杠
+  })
+})
+
+describe("footer 单请求 triplet（纯文本）", () => {
+  it("有重试 → last/total(N)，无 ANSI", () => {
+    const now = 1_000_000
+    const active = [
+      {
+        ctx: {
+          method: "POST",
+          path: "/v1/messages",
+          resolvedModel: "claude-opus-4.8",
+          startTime: now - 400_000,
+          currentAttemptStartedAt: now - 45_200,
+          attemptCount: 3,
+        },
+      },
+    ] as never
+    const out = buildActiveFooter({ active, now, columns: 200 })
+    expect(out).toContain("45.2s/400.0s(2)")
+  })
+
+  it("无 currentAttemptStartedAt → 兜底单值 total", () => {
+    const now = 1_000_000
+    // slashless path 使 not.toContain("/") 只针对 duration 字段有意义（对齐上方 onTerminal 用法）。
+    const active = [{ ctx: { method: "POST", path: "messages", resolvedModel: "m", startTime: now - 400_000, attemptCount: 1 } }] as never
+    const out = buildActiveFooter({ active, now, columns: 200 })
+    expect(out).toContain("400.0s")
+    expect(out).not.toContain("/")
   })
 })

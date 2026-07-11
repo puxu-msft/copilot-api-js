@@ -29,6 +29,7 @@ import {
   //
   formatBytes,
   formatDuration,
+  formatDurationField,
   truncateToWidth,
 } from "~/lib/observability/projections/format"
 
@@ -192,7 +193,10 @@ function formatPanelRow(view: DetailView, now: number): string {
   // so `truncateToWidth` (which trims the tail) never eats it.
   const id = ctx.id
   const model = ctx.resolvedModel ?? "(resolving)"
-  const elapsed = formatDuration(now - ctx.startTime)
+  // 有重试时 elapsed 展开为 last/total(N)（顶层标量由 Task 4 轻量 snapshot 保证）；纯文本不着色。
+  const pRetries = (ctx.attemptCount ?? 1) - 1
+  const pLastMs = ctx.currentAttemptStartedAt !== undefined ? now - ctx.currentAttemptStartedAt : undefined
+  const elapsed = formatDurationField({ lastMs: pLastMs, totalMs: now - ctx.startTime, retries: pRetries })
   const bytes = formatByteFlow(ctx.requestBodySize, view.streamBytesIn)
   const events = `${view.streamEventsIn ?? 0}ev`
   const tags = view.tags && view.tags.length > 0 ? ` [${view.tags.join(",")}]` : ""
@@ -211,13 +215,17 @@ export function buildDetailLines(args: { entry: DetailView; now: number; columns
   const budget = columns - 1
   const { ctx } = entry
 
+  // 与 formatPanelRow 一致：有重试时 elapsed 展开为 last/total(N)，纯文本不着色。
+  const pRetries = (ctx.attemptCount ?? 1) - 1
+  const pLastMs = ctx.currentAttemptStartedAt !== undefined ? now - ctx.currentAttemptStartedAt : undefined
+
   const raw: Array<string> = [
     `req_id: ${ctx.id}`,
     `${ctx.method} ${ctx.path}`,
     `model: ${ctx.clientModel ?? "?"} → ${ctx.resolvedModel ?? "(resolving)"}`,
     ...(ctx.multiplier === undefined ? [] : [`multiplier: ${ctx.multiplier}x`]),
     `state: ${ctx.state}`,
-    `elapsed: ${formatDuration(now - ctx.startTime)}`,
+    `elapsed: ${formatDurationField({ lastMs: pLastMs, totalMs: now - ctx.startTime, retries: pRetries })}`,
     `queueWait: ${formatDuration(ctx.queueWaitMs)}`,
     `bytes: ${formatByteFlow(ctx.requestBodySize, entry.streamBytesIn)}`,
     `events: ${entry.streamEventsIn ?? 0}`,

@@ -20,6 +20,7 @@ import {
   //
   formatBytes,
   formatDuration,
+  formatDurationField,
   formatStreamInfo,
   truncateToWidth,
 } from "~/lib/observability/projections/format"
@@ -53,7 +54,13 @@ export function buildActiveFooter(args: { active: ReadonlyArray<ActiveRequestVie
 
   if (count === 1) {
     const entry = active[0]
-    const elapsed = formatDuration(now - entry.ctx.startTime)
+    // 有重试时 elapsed 展开为 last/total(N)：last = 当前 attempt 已跑时长、total = 整请求墙钟、
+    // N = 已发生的重试次数。顶层标量由 Task 4 的轻量 snapshot 保证（读 ctx 顶层、非 .summary）。
+    // 纯文本不着色——整行会喂 truncateToWidth，嵌入 ANSI 会被按显示宽切断。
+    const totalMs = now - entry.ctx.startTime
+    const retries = (entry.ctx.attemptCount ?? 1) - 1
+    const lastMs = entry.ctx.currentAttemptStartedAt !== undefined ? now - entry.ctx.currentAttemptStartedAt : undefined
+    const elapsed = formatDurationField({ lastMs, totalMs, retries })
     const model = entry.ctx.resolvedModel ? ` ${entry.ctx.resolvedModel}` : ""
     const streamInfo = formatStreamInfo({
       bytesIn: entry.streamBytesIn,
