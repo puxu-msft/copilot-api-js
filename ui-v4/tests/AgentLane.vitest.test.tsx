@@ -27,8 +27,8 @@ const base = (over: Partial<EntrySummary>): EntrySummary => ({
   endpoint: "anthropic-messages",
   messageCount: 0,
   previewText: "",
-  responsePreviewText: "",
   ...over,
+  responsePreviewText: over.responsePreviewText ?? "",
 })
 
 function renderLane(name: string, entries: Array<EntrySummary>) {
