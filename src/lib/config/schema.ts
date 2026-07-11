@@ -453,10 +453,13 @@ export const AnthropicConfigSchema = z
      * Repair malformed `tool_use` input that upstream emitted as invalid JSON on
      * the Anthropic response wire. A **comma-separated set of repair items** — a
      * subset of `tags` (structure-aware antml-tag stripping), `unicode`
-     * (whitespace-broken `\uXXXX` escape fix), and `jsonrepair` (jsonrepair
-     * structural fix). Items cascade in a fixed canonical order (spelling order is
-     * ignored) and stack on each other. Empty string (default) = off. History keeps
-     * the upstream-original bytes — only the forwarded stream/response is repaired.
+     * (whitespace-broken `\uXXXX` escape fix), `jsonrepair` (jsonrepair structural
+     * fix), and `unicode-lossy` (LOSSY best-effort: un-completable `\uXXXX` escapes
+     * → U+FFFD, garbling ≥1 char to rescue an otherwise-dead input). Items cascade in
+     * a fixed canonical order (spelling order is ignored) and stack on each other;
+     * the lossy `unicode-lossy` runs LAST, only when every lossless item failed.
+     * Empty string (default) = off. History keeps the upstream-original bytes — only
+     * the forwarded stream/response is repaired.
      */
     tool_repair_malformed_input: z
       .string({ error: REPAIR_ITEMS_MSG })

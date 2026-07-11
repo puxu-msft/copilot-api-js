@@ -183,7 +183,7 @@ timeouts:
 # Keeps /models cache fresh for long-running instances without requiring a restart.
 # 让长时间运行的实例无需重启即可保持 /models 缓存新鲜。
 # (Stays top-level — a refresh interval, not a timeout.) / （保留顶层——这是刷新周期，不是超时。）
-model_refresh_interval: 900
+model_refresh_interval: 3600
 
 # ============================================================================
 # Shutdown / 关闭
@@ -685,14 +685,16 @@ anthropic:
   #   tags        = structure-aware antml-tag stripping (fixes antml wrapper tags like `…]</parameter></invoke>` bleeding into the input).
   #   unicode     = whitespace-broken `\uXXXX` escape fix (e.g. `\u9 ed8` → 默, where a space split the 4 hex digits; jsonrepair THROWS on these so it needs its own item).
   #   jsonrepair  = jsonrepair structural fix (missing brackets / truncated structures; heuristic).
-  #   e.g. "tags" / "tags,jsonrepair" / "unicode" / "tags,unicode,jsonrepair".
+  #   unicode-lossy = LOSSY last resort — un-completable `\uXXXX` escapes (a hex digit dropped, e.g. `\u9 44`) → U+FFFD; rescues an otherwise-dead input at the cost of ≥1 garbled char. Runs AFTER all lossless items; only reached when they fail.
+  #   e.g. "tags" / "tags,jsonrepair" / "unicode" / "tags,unicode,jsonrepair" / "tags,unicode,jsonrepair,unicode-lossy".
   # If no enabled item yields valid JSON, the request is recorded failed + a synthetic error frame is emitted (never a silent broken tool call). See docs/spec/anthropic-malformed-tool-input-repair.md.
   # 修复上游偶发漏出的畸形 tool_use input JSON。逗号分隔的修复项目集（字符串里的顺序无关；项目按固定规范顺序级联、互相叠加）。仅作用于转发流——history 的 sseEvents 保留上游原始畸形字节。
   #   ""          = 关（默认）——原样转发畸形字节。
   #   tags        = 结构感知剥 antml 标签（修 antml 包裹标签如 `…]</parameter></invoke>` 溢入 input）。
   #   unicode     = 修空白打断的 `\uXXXX` 转义（如 `\u9 ed8` → 默，空格把 4 位 hex 打断；jsonrepair 对这类会抛异常故需独立项目）。
   #   jsonrepair  = jsonrepair 结构修复（缺括号/截断结构；启发式）。
-  #   例：'tags' / 'tags,jsonrepair' / 'unicode' / 'tags,unicode,jsonrepair'。
+  #   unicode-lossy = 有损兜底——无法凑齐 4 位的 `\uXXXX` 转义（丢了 hex 位，如 `\u9 44`）替换成 U+FFFD；以糊 ≥1 个字符为代价救活否则必死的输入。排在所有无损项之后，仅当它们全失败才触发。
+  #   例：'tags' / 'tags,jsonrepair' / 'unicode' / 'tags,unicode,jsonrepair' / 'tags,unicode,jsonrepair,unicode-lossy'。
   # 任一启用项都修不出合法 JSON 则请求记为失败 + 发合成 error 帧（绝不静默转发坏的工具调用）。详见 docs/spec/anthropic-malformed-tool-input-repair.md。
   tool_repair_malformed_input: "tags,unicode"
 

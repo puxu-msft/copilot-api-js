@@ -70,7 +70,7 @@ export interface ToolInputRewriteOptions {
    * `layer` names the winning repair layer; `beforeLength`/`afterLength` are the raw-vs-repaired
    * JSON sizes (for the `[REWRITE]` log + outcome telemetry). Fires once per repaired block.
    */
-  onRepair?: (info: { tool: string; layer: "strip" | "unicode" | "jsonrepair"; beforeLength: number; afterLength: number }) => void
+  onRepair?: (info: { tool: string; layer: "strip" | "unicode" | "jsonrepair" | "unicode-lossy"; beforeLength: number; afterLength: number }) => void
   /**
    * Called when a tool_use input the decoder buffered (selected for field decoding OR `AskUserQuestion` header backfill) couldn't be rewritten:
    *   - `input-parse-failed` — the whole buffered input JSON didn't parse (a COMPLETE block, not an abort). Fires for ANY buffered tool, including a backfill-only selection.

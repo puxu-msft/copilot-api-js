@@ -311,8 +311,8 @@ export interface HistoryEntryData {
 
 /** One malformed tool-input repair outcome for the current attempt (see `recordRepairOutcome`). */
 export interface RepairOutcomeRecord {
-  /** Repair-item layer that won (`strip`/`unicode`/`jsonrepair`), or `unrepairable` when no enabled item produced valid JSON. */
-  outcome: "strip" | "unicode" | "jsonrepair" | "unrepairable"
+  /** Repair-item layer that won (`strip`/`unicode`/`jsonrepair`/`unicode-lossy`), or `unrepairable` when no enabled item produced valid JSON. */
+  outcome: "strip" | "unicode" | "jsonrepair" | "unicode-lossy" | "unrepairable"
   /** The tool whose input was repaired / found unrepairable. */
   tool: string
   /** Raw malformed JSON length (repaired outcomes only; for the `[REWRITE]` log). */
