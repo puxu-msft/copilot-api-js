@@ -249,7 +249,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const systemPublisher = bus.scope("system")
   setShutdownPublisher(systemPublisher)
   setRateLimitPublisher(systemPublisher)
-  attachTerminalUi(bus)
+  // Explicitly pass process.stdin so the interactive raw-mode panel gates on
+  // (evaluator §3): tests that omit stdin stay on the non-interactive P0 path.
+  attachTerminalUi(bus, { stdin: process.stdin })
   attachFileSink(bus, { path: PATHS.COPILOT_LOG })
   installConsolaRepublish(systemPublisher)
 
