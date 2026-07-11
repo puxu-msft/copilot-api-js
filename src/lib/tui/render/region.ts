@@ -161,8 +161,15 @@ export class Region {
    * Tear down the panel: reset the scroll region to the full screen, show the
    * cursor, and reset internal state so the next `render` re-establishes DECSTBM
    * from scratch. Idempotent — safe to call when no region is established.
+   *
+   * The `established` guard makes a repeat `clear()` a genuine no-op: an idle
+   * interactive session funnels every `printLog` through `renderRegion → empty
+   * lines → clear()`, and without the guard each of those would re-emit
+   * `\x1b[r\x1b[?25h` even though the scroll region was already torn down and
+   * the cursor already shown. The first collapse still emits exactly one reset.
    */
   clear(): void {
+    if (!this.established) return
     this.stdout.write(RESET_SCROLL_REGION + SHOW_CURSOR)
     this.established = undefined
   }

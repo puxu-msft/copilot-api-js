@@ -11,8 +11,11 @@
  *   (per-attempt retry visualization; the entry remains active).
  * - `request.completed` / `request.failed` / `request.aborted` — render
  *   `[ OK ]` / `[FAIL]` line and remove from active.
- * - `system.shutdown_phase_changed` / `system.rate_limit_state` — non-line
- *   side effects (no console output currently; reserved for future UX).
+ * - `system.shutdown_phase_changed` — on the `draining` transition (scheme A,
+ *   RFC §7) restore the terminal from raw mode and stop owning the bottom
+ *   region, reverting the drain period to a plain log stream.
+ * - `system.rate_limit_state` — non-line side effect (no console output
+ *   currently; reserved for future UX).
  *
  * Replaces `lib/tui/console-renderer.ts` (deleted in commit 4). TerminalUi
  * is the authoritative stdout renderer for request lifecycle lines + footer.
@@ -183,6 +186,13 @@ export class TerminalUi {
   /** Idempotency latch for {@link restoreTerminal} (exit-hook + destroy race). */
   private restored = false
   /**
+   * Set once the shutdown drain phase begins (scheme A, RFC §7). After this,
+   * {@link renderRegion} no-ops so the drain period reverts to a plain log
+   * stream — the terminal is already restored to cooked mode, so a subsequent
+   * Ctrl-C becomes a real SIGINT that `shutdown.ts` escalates to the next phase.
+   */
+  private shuttingDown = false
+  /**
    * Reentrancy guard for {@link renderRegion} (mirrors `republish.ts` H1): a
    * synchronous render must never re-enter itself (e.g. a write that logs). All
    * renders are synchronous, so a set flag means "drop this nested call".
@@ -337,6 +347,19 @@ export class TerminalUi {
         this.onSystemLog(event)
         return
       }
+      // Scheme A (RFC §7): the moment the server begins draining, restore the
+      // terminal from raw mode and stop owning the bottom region. The drain
+      // period reverts to a plain log stream; a further Ctrl-C now lands on a
+      // cooked terminal → real SIGINT → shutdown.ts escalates the phase. Only
+      // the first `draining` transition acts; later phase bumps are inert
+      // (restoreTerminal is idempotent, and the flag is already set).
+      case "system.shutdown_phase_changed": {
+        if (event.phase === "draining" && !this.shuttingDown) {
+          this.shuttingDown = true
+          this.restoreTerminal()
+        }
+        return
+      }
       // history.* / system.* — currently no console output (reserved).
       //
       // request.context_updated is consumed by HistorySink only — see the
@@ -349,7 +372,6 @@ export class TerminalUi {
       case "history.cleared":
       case "history.session_deleted":
       case "system.rate_limit_state":
-      case "system.shutdown_phase_changed":
       case "system.shutdown_completed":
       case "request.context_updated": {
         return
@@ -676,7 +698,7 @@ export class TerminalUi {
    * Synchronous + reentrancy-guarded (mirrors `republish.ts`).
    */
   private renderRegion(): void {
-    if (this.silent || !this.region) return
+    if (this.silent || !this.region || this.shuttingDown) return
     if (this.rendering) return
     this.rendering = true
     try {
@@ -735,10 +757,10 @@ export class TerminalUi {
   }
 
   /**
-   * Restore the terminal from raw mode (idempotent — exit-hook and `destroy()`
-   * both call it). Detaches the stdin listener, pauses stdin, leaves raw mode,
-   * and tears down the Region (DECSTBM reset `\x1b[r` + cursor shown). No-op when
-   * non-interactive or already restored.
+   * Restore the terminal from raw mode (idempotent — exit-hook, `destroy()`,
+   * and the shutdown-drain phase all call it). Detaches the stdin listener,
+   * pauses stdin, leaves raw mode, and tears down the Region (DECSTBM reset
+   * `\x1b[r` + cursor shown). No-op when non-interactive or already restored.
    */
   private restoreTerminal(): void {
     if (!this.interactive || this.restored) return

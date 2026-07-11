@@ -230,6 +230,23 @@ describe("Region (DECSTBM sticky bottom panel)", () => {
     expect(out).toContain("\x1b[1;22r")
   })
 
+  test("clear() is idempotent: a repeat clear emits no second RESET (established guard)", () => {
+    const { region, io } = makeRegion(80, rowsRef)
+    region.render(["a", "b"]) // establish
+    region.clear() // first collapse: emits exactly one reset
+    const mark = io.chunks.length
+    region.clear() // repeat: no-op, region already torn down
+    const out = io.chunks.slice(mark).join("")
+    expect(out).toBe("") // nothing re-emitted
+    expect(countOf(io.all(), "\x1b[r")).toBe(1) // exactly one RESET across both clears
+  })
+
+  test("clear() before any render is a no-op (no RESET on an unestablished region)", () => {
+    const { region, io } = makeRegion(80, rowsRef)
+    region.clear()
+    expect(io.all()).toBe("")
+  })
+
   test("empty lines tears the region down (no sticky panel)", () => {
     const { region, io } = makeRegion(80, rowsRef)
     region.render(["a", "b"])
