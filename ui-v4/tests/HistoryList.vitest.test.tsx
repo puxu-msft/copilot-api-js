@@ -65,6 +65,7 @@ vi.mock("react-virtuoso", async () => {
     const context = props.context
     const components = props.components as { Table: React.ComponentType<Record<string, unknown>>; TableRow: React.ComponentType<Record<string, unknown>> }
     const fixedHeaderContent = props.fixedHeaderContent as () => React.ReactNode
+    const fixedFooterContent = props.fixedFooterContent as (() => React.ReactNode) | undefined
     const itemContent = props.itemContent as (index: number, row: unknown, context: unknown) => React.ReactNode
     useImperativeHandle(ref as React.Ref<unknown>, () => ({ scrollToIndex: scrollToIndexMock }))
     const Table = components.Table
@@ -83,6 +84,7 @@ vi.mock("react-virtuoso", async () => {
             </Row>
           ))}
         </tbody>
+        <tfoot>{fixedFooterContent?.()}</tfoot>
       </Table>
     )
   })
@@ -176,6 +178,33 @@ describe("HistoryList", () => {
     renderList()
     expect(screen.queryByText(/条新请求/)).toBeNull()
     expect(screen.queryByText(/▶ live|paused/)).toBeNull()
+  })
+
+  it("列底加载条:有下一页显「加载更多 · 还有 N 条」,点击调用 fetchNextPage(手动翻页)", () => {
+    const fetchNextPage = vi.fn()
+    mockHistory = { entries: [entry("a")], total: 50, isLoading: false, hasNextPage: true, fetchNextPage }
+    renderList()
+    const btn = screen.getByRole("button", { name: /加载更多/ })
+    expect(btn.textContent).toMatch(/还有 49 条/)
+    fireEvent.click(btn)
+    expect(fetchNextPage).toHaveBeenCalledOnce()
+  })
+
+  it("列底加载条:无下一页显「已到底」、不显加载更多", () => {
+    mockHistory = { entries: [entry("a")], total: 1, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
+    renderList()
+    expect(screen.getByText(/已到底/)).toBeDefined()
+    expect(screen.queryByText(/加载更多/)).toBeNull()
+  })
+
+  it("自动加载开关:默认「手动」(不触底自拉),点击切「自动」并持久化", () => {
+    localStorage.removeItem("ui-v4:requests:auto-load:v1")
+    renderList()
+    const toggle = screen.getByRole("button", { name: /手动/ })
+    expect(toggle.getAttribute("aria-pressed")).toBe("false")
+    fireEvent.click(toggle)
+    expect(screen.getByRole("button", { name: /自动/ })).toBeDefined()
+    expect(localStorage.getItem("ui-v4:requests:auto-load:v1")).toBe("1")
   })
 
   it("locates the ?at row: highlights it (selection truth = URL) and pauses tail", () => {
