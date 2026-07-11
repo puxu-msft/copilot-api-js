@@ -104,6 +104,29 @@ describe("Region (DECSTBM sticky bottom panel)", () => {
     expect(out.endsWith("\x1b8")).toBe(true)
   })
 
+  test("parks the cursor at the scroll-region bottom row before DECSC (printLog tail contract)", () => {
+    const { region, io } = makeRegion(80, rowsRef)
+    region.render(["a", "b"])
+    const out = io.all()
+
+    // rows=24, N=2 → bottom = rows - N = 22. DECSTBM homes the cursor to the
+    // page TOP row (1,1) (VT510); the port must then move it into the scroll
+    // region's BOTTOM row so the DECSC/DECRC bracket saves+restores THAT row —
+    // else printLog's first log lines land at screen top instead of tailing
+    // the panel. Regression guard: without the cursorTo(bottom) step this
+    // sequence never appears (bottom=22 is not a panel row — those are 23/24).
+    const parkBottom = "\x1b[22;1H"
+    expect(out).toContain(parkBottom)
+
+    // Order: DECSTBM set → move to bottom row → DECSC save → draw → DECRC.
+    const decstbm = out.indexOf("\x1b[1;22r")
+    const parkIdx = out.indexOf(parkBottom)
+    const saveIdx = out.indexOf("\x1b7")
+    expect(decstbm).toBeGreaterThanOrEqual(0)
+    expect(decstbm).toBeLessThan(parkIdx)
+    expect(parkIdx).toBeLessThan(saveIdx)
+  })
+
   test("panel with no overflow draws every line, no '+K more below'", () => {
     const { region, io } = makeRegion(80, rowsRef)
     region.render(["x", "y", "z"])

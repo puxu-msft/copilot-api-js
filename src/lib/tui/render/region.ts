@@ -126,6 +126,13 @@ export class Region {
       }
       const bottom = rows - panelHeight
       out += setScrollRegion(1, bottom)
+      // DECSTBM homes the cursor to page (1,1) = the scroll region's TOP row
+      // (VT510). Left there, the DECSC below would save the top row and the
+      // closing DECRC would park the cursor at the top — so printLog's first
+      // log lines land at screen top instead of tailing the panel. Move into
+      // the scroll region's BOTTOM row so DECSC/DECRC park there (PoC line 58,
+      // `exp/tui-rawmode/sticky-region-decstbm.ts` "move into scroll region").
+      out += cursorTo(bottom)
       this.established = { rows, panelHeight }
     }
 
