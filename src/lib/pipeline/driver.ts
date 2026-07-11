@@ -637,8 +637,13 @@ export async function runResponseBufferedSink(
           const toWrite = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
           if (!toWrite) continue
           if (retreated) {
-            // Buffer cap already exceeded → live write-through for the rest (no more buffering).
-            await sink.write(toWrite)
+            // Buffer cap already exceeded → live write-through for the rest (no more buffering). When an anchor
+            // was injected BEFORE the retreat, the live continuation must stay consistent with the retreat
+            // flush's +1 remap (spec §6.3): shift every real content_block_* by +1 (the anchor holds @0) and
+            // DROP a duplicate message_start (H1 — the injector already forwarded it). Inert (byte-identical to
+            // the raw forward) when no anchor was injected — `injected`/`anchorBlockOpen` stay false.
+            if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(toWrite)) continue // H1 dedup
+            await sink.write(anchorState.injected && anchor && anchorState.anchorBlockOpen ? anchor.remap(toWrite, 1) : toWrite)
             continue
           }
           // Capture the FIRST message_start (before buffering it) into the SHARED anchorState so the
@@ -653,8 +658,26 @@ export async function runResponseBufferedSink(
             // forwarded). Documented tradeoff (RFC §7 / §12 Q4) — pathological huge responses are rare.
             retreated = true
             opts.onRetreat?.()
-            for (const f of buffer) await sink.write(f)
+            // §6.3: flush the buffered prefix through the SAME anchor-aware transform as the terminal commit
+            // (one-time anchor close-off `stop@0` → H1 message_start dedup → +1 remap), so an anchor injected
+            // before the retreat can't collide the real @0 block with the anchor's @0 or re-send message_start.
+            // On the no-anchor path this is byte-identical to the previous raw `for (f of buffer) write(f)`
+            // (every anchor branch inert). SUSPEND/RESUME (recoverable) around the flush — NOT the terminal
+            // path's permanent freeze — because retreat is followed by MORE (live) streaming: a subsequent
+            // live stall must still get keepalives (the anchor is now closed, so the tick emits a block-aware
+            // empty delta on the live-open block, or a ping). `flushBufferedFrames`' internal freeze clears the
+            // timer; resume re-arms a fresh interval so the heartbeat recovers for the live continuation.
+            sink.suspendHeartbeat?.()
+            const res = await flushBufferedFrames(buffer)
+            sink.resumeHeartbeat?.()
             buffer.length = 0
+            if (res.kind === "client-abort") return { kind: "settled-abort" }
+            if (res.kind === "write-error") {
+              // Client gone mid-retreat-flush — the forwarded prefix is on the wire (un-retryable). Surface as a
+              // retreated resolution (never-swallow the write error). The `finally` closes the sink.
+              opts.onBufferedResolve?.("retreated", attempt, { vendor })
+              return { kind: "stream-error", error: res.error }
+            }
           } else if (opts.commitBoundaries?.(toWrite)) {
             // Block-level commit (P0): this frame closes a block → flush the buffered frames up to and
             // including it, COMMITTING the block live. Inverts the commit point from "once at terminal

@@ -248,7 +248,10 @@
 - **暂缓原因**：用户明确「移动端响应式未来用户要求了再做」（2026-07-08）。本项目主要是桌面端内部工具。
 - **若做**：抽屉 `Dialog.Content` 宽度加断点——`< sm` 时 `w-full`（占满、min 让位）、`>= sm` 时用 resizable 60vw；或用 CSS `min(60vw, 100vw)` 之类。属独立 UX 增强。
 
-## retreated（OOM cap）+ empty_text 锚点 → index 碰撞 + 双 message_start
+## ~~retreated（OOM cap）+ empty_text 锚点 → index 碰撞 + 双 message_start~~（已修复 2026-07-11，block-level-buffered-retry P1 Task 7）
+
+> **已关闭**：默认 `on` 翻转（spec `2026-07-11-block-level-buffered-retry` §6.3）把此罕见残留放大，故本 spec P1 一并修复（不再「罕见不修」）。修法即下方「理想架构」：retreat 分支复用 `flushBufferedFrames`（一次性 anchor close-off `stop@0` → H1 message_start dedup → +1 remap），后续 live-write 帧统一施加同一 remap + dedup（`driver.ts:639-648` 的 retreat live 分支 + `:655-680` 的 retreat flush）。retreat flush 用 `suspendHeartbeat`/`resumeHeartbeat`（可恢复）而非终末 permanent freeze——retreat 后仍有 live 流、须保活。M1 post-retreat close-off 经共享 `anchorClosed` 幂等（retreat flush 已关则短路，无双 `stop@0`）。测试 `tests/pipeline/retreat-anchor-collision.test.ts`（retreated-complete + retreated-stream-error + no-anchor 中性三例；注入 bug 证 FAIL：raw flush → 双 message_start + @0 碰撞、live-write raw → 块跨 @0/@1 撕裂）。
+
 
 - **根因**：`runResponseBufferedSink` 的 retreat 路径（buffer 超 `protectStreamingBufferCapBytes` 默认 16MiB → 放弃缓冲、转 live 写透，driver.ts:601-620）**不做 +1 index remap、不 dedup message_start**——这两个变换只在 commit 成功分支（Task 3.3）做。但 empty_text 锚点（Task 3.2/3.3）一旦经心跳注入，就占了客户端 index 0 且已转发一次 message_start。
 - **当前行为**：若「先 idle-stall >20s 触发锚点注入 → 之后上游爆发 >16MB 触发 retreat」这一罕见复合条件命中，retreat 的 flush + live write-through 会：① 真实 `content_block_start@0` 与锚点 @0 **index 碰撞**；② buffer 里已转发的 message_start **被重发**（双 message_start）。两者皆客户端可见协议违规。retreated-complete 与 retreated-stream-error 两子路径都有。Task 3.4 的 `closeAnchorIfOpen` 只补一个 stop@0、无法挽回已 live 发出的真实帧。
