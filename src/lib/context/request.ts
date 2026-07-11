@@ -935,6 +935,7 @@ export function createRequestContext(opts: {
       const a = ctx.currentAttempt
       const snap: AttemptSnapshot = {
         attemptIndex: a?.index ?? 0,
+        ...(a?.durationMs !== undefined && { durationMs: a.durationMs }),
         ...(a?.strategy !== undefined && { strategy: a.strategy }),
         ...(a?.transport !== undefined && { transport: a.transport }),
         // a?.wireRequest is `WireRequest | null | undefined` (null when not yet

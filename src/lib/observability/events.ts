@@ -105,6 +105,8 @@ export interface RequestContextSnapshot {
  */
 export interface AttemptSnapshot {
   attemptIndex: number
+  /** 本次 attempt 自身的墙钟耗时（ms）——由 setAttemptError / setAttemptResponse 定稿。供 [RETRY] 行作 lastMs。 */
+  durationMs?: number
   strategy?: string
   transport?: TransportKind
   /** Exact payload sent upstream (post-sanitize/truncate). */
