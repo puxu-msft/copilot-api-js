@@ -159,13 +159,14 @@ export type RetryAction =
 // ============================================================================
 
 /**
- * S2 routing outcome (codec.decideRoute). Unifies the 4 scattered passthrough
- * checks + Gemini's no-gate translate (docs/v4/03-spec/codec.md §2).
+ * S2 routing outcome (`router.decideRoute` — ADR 2026-07-11, extracted from the codecs).
+ * Unifies the 4 scattered passthrough checks + Gemini's no-gate translate
+ * (docs/v4/03-spec/codec.md §2).
  *
  * The `translate` variant omits a `from` field: the source format is always
  * available as `env.clientFormat`, so carrying it here would duplicate state.
- * (docs/v4/01-architecture.md §6 shows a `from`-bearing variant; codec.md — the
- * authoritative decideRoute spec — omits it, and that is the version used here.)
+ * (docs/v4/01-architecture.md §6 shows a `from`-bearing variant; the router — the
+ * authoritative decideRoute site — omits it, and that is the version used here.)
  */
 export type RouteDecision =
   | { kind: "passthrough"; endpoint: UpstreamEndpoint }
