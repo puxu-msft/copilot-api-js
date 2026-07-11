@@ -778,6 +778,10 @@ rate_limiter:
 #   # Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress
 #   # everything. Default: 10000.
 #   compress_threshold: 10000
+#   # Main-path pre-flight truncation. Before sending, predict via the learned size-aware calibration factor
+#   # whether the request will exceed the model's token limit and pre-truncate it, saving a guaranteed-to-fail
+#   # 400 round-trip. Reactive truncation (above) stays the fallback. Opt-in. Default: false.
+#   preflight: false
 
 # Compress old tool_result content before truncating messages. When enabled, large tool_result content blocks
 # are compressed to reduce context size before resorting to message removal. Default: true.

@@ -656,6 +656,8 @@ export const AutoTruncateConfigSchema = z
     compress_tool_results: nullableBoolean(),
     /** Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress everything. Default 10000. */
     compress_threshold: nullableNonnegativeInt(),
+    /** Main-path pre-flight truncation: before sending, use the learned size-aware calibration factor to predict whether the request will exceed the model's token limit and pre-truncate it, saving a guaranteed-to-fail 400 round-trip. Reactive truncation (on upstream limit errors) remains the fallback. Opt-in; default false. */
+    preflight: nullableBoolean(),
   })
   .strict()
 

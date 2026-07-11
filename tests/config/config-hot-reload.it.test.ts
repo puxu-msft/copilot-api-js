@@ -250,6 +250,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: 5000,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
   },
+  {
+    configKey: "auto_truncate.preflight",
+    stateKey: "autoTruncatePreflight",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
+  },
 
   // ── system_prompt_overrides (array; sample is a single rule) ────────
   {
