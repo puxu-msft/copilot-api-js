@@ -472,20 +472,31 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
  */
 async function anthropicPreSend(env: RequestEnvelope): Promise<RequestEnvelope> {
   if (!state.autoTruncatePreflight) return env
-  const model = env.model
-  const body = env.body as MessagesPayload
 
-  const est = await countTotalTokens(body, model)
-  const factor = factorAt(model.id, est)
-  const predicted = Math.ceil(est * factor)
-  const limit = calculateTokenLimit(model, DEFAULT_AUTO_TRUNCATE_CONFIG)
-  // No resolvable limit (unlearned + no capability limit) or the prediction fits →
-  // let the request through unchanged; the reactive retry still catches a real 400.
-  if (limit === undefined || predicted <= limit) return env
+  // Pre-flight is an OPTIMIZATION (skip the necessarily-doomed 400 → reactive-retry
+  // round-trip), NOT a correctness gate: the reactive truncation strategy stays as
+  // the fallback (spec §7). So any error in the predict/truncate path must DEGRADE
+  // to "send unchanged" — never become a new hard-failure surface — while still
+  // being logged (not silently swallowed) so a systematic pre-flight fault is visible.
+  try {
+    const model = env.model
+    const body = env.body as MessagesPayload
 
-  const targetGpt = Math.floor(limit / factor)
-  const truncated = await autoTruncateAnthropic(body, model, { checkTokenLimit: true, targetTokenLimit: targetGpt })
-  return truncated.wasTruncated ? env.with({ body: truncated.payload }) : env
+    const est = await countTotalTokens(body, model)
+    const factor = factorAt(model.id, est)
+    const predicted = Math.ceil(est * factor)
+    const limit = calculateTokenLimit(model, DEFAULT_AUTO_TRUNCATE_CONFIG)
+    // No resolvable limit (unlearned + no capability limit) or the prediction fits →
+    // let the request through unchanged; the reactive retry still catches a real 400.
+    if (limit === undefined || predicted <= limit) return env
+
+    const targetGpt = Math.floor(limit / factor)
+    const truncated = await autoTruncateAnthropic(body, model, { targetTokenLimit: targetGpt })
+    return truncated.wasTruncated ? env.with({ body: truncated.payload }) : env
+  } catch (err) {
+    consola.warn("[preflight] skipped due to error, falling back to reactive truncation:", err)
+    return env
+  }
 }
 
 // ============================================================================

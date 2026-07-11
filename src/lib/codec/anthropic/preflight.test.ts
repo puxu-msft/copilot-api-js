@@ -142,6 +142,25 @@ test("② predicted <= limit → preSend returns the env unchanged", async () =>
   expect((out?.body as MessagesPayload).messages.length).toBe(body.messages.length)
 })
 
+test("④ pre-flight path throws → degrades to reactive (no throw, returns env unchanged)", async () => {
+  setStateForTests({ autoTruncatePreflight: true })
+  // A malformed body whose `messages` is non-iterable makes `countTotalTokens`
+  // throw inside the pre-flight path. spec §7: pre-flight is an OPTIMIZATION with
+  // reactive truncation as the fallback, so a pre-flight error must degrade to
+  // "send unchanged" (the reactive strategy still catches a real over-limit),
+  // NEVER become a new hard-failure surface. Assert preSend does not reject and
+  // returns the env unchanged.
+  const badBody = { model: MODEL_ID, messages: null, stream: false } as unknown as MessagesPayload
+  const model = makeModel(3000)
+  const codec = makeCodec()
+
+  const env = makeEnv(badBody, model)
+  const out = await codec.preSend?.(env)
+
+  expect(out).toBe(env)
+  expect(out?.body).toBe(badBody)
+})
+
 test("③ predicted > limit → truncates with gpt-caliber target floor(limit/factor)", async () => {
   const codec = makeCodec()
   const body = makeBody(40)
