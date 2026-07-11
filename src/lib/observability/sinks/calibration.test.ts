@@ -104,7 +104,10 @@ test("learns from a completed anthropic-messages request", async () => {
     ctx: fakeCtx(),
     entry: fakeEntry({
       format: "anthropic-messages",
-      body: { model: "claude-opus-4.8", messages: [{ role: "user", content: "x".repeat(200_000) }] },
+      // ~750 tokens: clears EST_FLOOR (500) without the ~53s countTotalTokens cost
+      // of a 200k-char string (multi-file batch runs were timing out on it). NB:
+      // repeated "x" BPE-compresses hard, so 6000 chars ≈ 754 tokens (3000 ≈ 379).
+      body: { model: "claude-opus-4.8", messages: [{ role: "user", content: "x".repeat(6000) }] },
       usage: { input_tokens: 60_000, output_tokens: 100, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 0 },
     }),
   })

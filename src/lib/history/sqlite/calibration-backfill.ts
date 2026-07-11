@@ -149,22 +149,28 @@ function serializeCursor(ts: number, id: string): string {
 
 /**
  * Restore the compound cursor from the persisted meta row. Returns `{ ts: 0, id: "" }`
- * when there is no cursor. Tolerates the LEGACY bare-number form (`"<ts>"`, written
- * before the id was persisted) by parsing it as `{ ts, id: "" }` — safe because a
- * legacy partial run also had no per-model marker, so a fresh full re-scan (id="")
- * is the only correct recovery. THROWS on a corrupt non-legacy value so the caller
- * can restart the whole aggregate rather than resume from a bogus position.
+ * when there is no cursor. THROWS on ANY value that is not a well-formed compound
+ * `{ ts, id }` object — this INCLUDES the LEGACY bare-number form (`"<ts>"`, written
+ * before the id was persisted) as well as any corrupt value. A throw funnels the
+ * caller into the SAME lock-step full reset as a corrupt cursor: `{ ts: 0, id: "" }`
+ * PLUS an EMPTY accumulator (the caller only restores the accum on the success path).
+ * A legacy bare-number cursor is NOT a safe partial-resume point: resuming it as
+ * `{ ts, id: "" }` while restoring the non-empty accumulator would re-scan the
+ * boundary `started_at` tie-group (`id > ""` matches the whole tie-group) on top of
+ * an accumulator that already holds those rows → double count (C1). So it must
+ * trigger a clean full re-scan with a fresh accumulator instead.
  */
 function deserializeCursor(raw: string | null): CursorPosition {
   if (raw === null) return { ts: 0, id: "" }
-  // Legacy form: a bare number string with no id component.
-  const legacy = Number(raw)
-  if (raw.trim() !== "" && !raw.trimStart().startsWith("{") && Number.isFinite(legacy)) {
-    return { ts: legacy, id: "" }
+  const parsed = JSON.parse(raw) as unknown
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new TypeError(`calibration cursor is not a compound {ts,id} object: ${raw}`)
   }
-  const parsed = JSON.parse(raw) as Partial<CursorPosition>
-  const ts = Number(parsed.ts)
-  return { ts: Number.isFinite(ts) ? ts : 0, id: typeof parsed.id === "string" ? parsed.id : "" }
+  const { ts, id } = parsed as Partial<CursorPosition>
+  if (!Number.isFinite(Number(ts)) || typeof id !== "string") {
+    throw new TypeError(`calibration cursor missing a finite ts or string id: ${raw}`)
+  }
+  return { ts: Number(ts), id }
 }
 
 /** Serialize the accumulator to JSON for the resumable meta row. */

@@ -35,10 +35,12 @@ import {
 } from "~/lib/history/sqlite/connection"
 import {
   //
+  CALIBRATION_BACKFILL_ACCUM_KEY,
   CALIBRATION_BACKFILL_CURSOR_KEY,
   CALIBRATION_BACKFILL_VERSION,
   CALIBRATION_BACKFILL_VERSION_KEY,
   getMeta,
+  setMeta,
 } from "~/lib/history/sqlite/meta"
 import { insertCompletedEntry } from "~/lib/history/sqlite/write"
 import { setStateForTests } from "~/lib/state"
@@ -272,4 +274,56 @@ describe("calibration backfill", () => {
     // Run completes; the bad row contributed nothing.
     expect(getMeta(db, CALIBRATION_BACKFILL_VERSION_KEY)).toBe(CALIBRATION_BACKFILL_VERSION)
   })
+
+  test("legacy bare-number cursor triggers a lock-step full re-scan (no double count, no lost progress)", async () => {
+    const db = getDatabase()
+
+    // All rows share ONE body (→ one est, one bucket) and ONE started_at, so a
+    // legacy bare-number cursor ("<ts>", id implicitly "") would, if honored as a
+    // partial-resume point, re-scan the whole started_at tie-group (id > "") on top
+    // of the restored accumulator → double count (C1). The fix funnels a legacy
+    // cursor into the SAME clean full reset as a corrupt one: ts=0 + EMPTY accum.
+    const body = bodyOfChars(240_000)
+    const est = await countTotalTokens(body as never, TEST_MODEL)
+    const bucket = bucketIndexFor(est)
+    const N = 30
+    const SHARED_TS = 5000
+    const FACTOR = 1.55
+
+    let sumReal = 0
+    let sumEst = 0
+    for (let i = 0; i < N; i++) {
+      const real = Math.round(est * FACTOR)
+      sumReal += real
+      sumEst += est
+      const id = `r${String(i).padStart(3, "0")}`
+      await insertCompletedEntry(calEntry(id, SHARED_TS, { body, usage: { input_tokens: real, output_tokens: 1 }, withUpstreamRequest: true }))
+    }
+
+    // Plant a LEGACY bare-number cursor AND a non-empty accumulator that already
+    // "counted" a large batch at a DIFFERENT factor. Honoring either would corrupt
+    // the result: extra samples skew sampleCount, a wrong factor skews the ratio.
+    setMeta(db, CALIBRATION_BACKFILL_CURSOR_KEY, String(SHARED_TS))
+    const bogus = emptyBucketArray(bucket, { sumReal: 999_999, sumEst: 100_000, count: 1000, meanEst: est })
+    setMeta(db, CALIBRATION_BACKFILL_ACCUM_KEY, JSON.stringify({ [MODEL_ID]: bogus }))
+
+    await runCalibrationBackfill(db)
+    expect(getMeta(db, CALIBRATION_BACKFILL_VERSION_KEY)).toBe(CALIBRATION_BACKFILL_VERSION)
+
+    const buckets = getLearnedLimits(MODEL_ID)?.factorModel.buckets
+    expect(buckets).toBeDefined()
+    const b = buckets![bucket]
+    // Full re-scan with a FRESH accumulator → exactly one pass over N rows.
+    // A honored legacy cursor + restored accum would yield 1000 + N (double count).
+    expect(b.sampleCount).toBe(N)
+    // Ratio matches the single-pass oracle; the bogus accum's factor never leaks in.
+    expect(b.sumReal / b.sumEst).toBeCloseTo(sumReal / sumEst, 4)
+  })
 })
+
+/** Build a 6-bucket accum array with one populated bucket (test fixture for meta). */
+function emptyBucketArray(idx: number, agg: { sumReal: number; sumEst: number; count: number; meanEst: number }): Array<unknown> {
+  const arr: Array<unknown> = Array.from({ length: 6 }, () => null)
+  arr[idx] = agg
+  return arr
+}
