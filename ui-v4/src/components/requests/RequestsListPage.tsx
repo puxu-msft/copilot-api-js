@@ -1,51 +1,18 @@
-import type { VisibilityState } from "@tanstack/react-table"
-
-import {
-  //
-  useCallback,
-  useEffect,
-  useState,
-} from "react"
-
 import { HistoryList } from "@/components/requests/HistoryList"
 import { RequestFilterChips } from "@/components/requests/RequestFilterChips"
 import { RequestsColumnMenu } from "@/components/requests/RequestsColumnMenu"
 import { RequestsFilterBar } from "@/components/requests/RequestsFilterBar"
+import { useColumnState } from "@/hooks/useColumnState"
 import { useRequestFilters } from "@/hooks/useRequestFilters"
-import {
-  //
-  COLUMN_STORAGE_KEY,
-  DEFAULT_COLUMN_VISIBILITY,
-  mergeColumnVisibility,
-} from "@/lib/request-columns"
-
-/** 从 localStorage 读列可见性,容错(JSON 解析失败 / storage 不可用 → 默认全显);mergeColumnVisibility 对账未知/缺失列。 */
-function loadColumnVisibility(): VisibilityState {
-  try {
-    return mergeColumnVisibility(JSON.parse(localStorage.getItem(COLUMN_STORAGE_KEY) ?? "null") as Partial<VisibilityState> | null)
-  } catch {
-    return { ...DEFAULT_COLUMN_VISIBILITY }
-  }
-}
 
 /** Requests 列表全屏页(Plan 08 §1):筛选工具条 + 活动 chips + History 列表。在途浮窗 LiveDock 已全局化到 AppShell。 */
 export function RequestsListPage() {
   // 在途订阅 + LiveDock 浮窗均已提升到 AppShell(常驻根、全局可见);此处只渲染请求列表本体。
   const { filters, setFilter, setFilters, clearFilter, clearAll } = useRequestFilters()
 
-  // 列可见性提到 Page(单一持有者):菜单驱动 + localStorage 持久化,HistoryList 受控消费。
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(loadColumnVisibility)
-  useEffect(() => {
-    // localStorage 写入可能抛(隐私模式 / 禁用)—— 不阻塞渲染,吞并记 warn(内部工具可观测性)。
-    try {
-      localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(columnVisibility))
-    } catch (err) {
-      console.warn("[RequestsListPage] 列可见性持久化失败:", err)
-    }
-  }, [columnVisibility])
-
-  const toggleColumn = useCallback((id: string) => setColumnVisibility((c) => ({ ...c, [id]: !(c[id] ?? true) })), [])
-  const resetColumns = useCallback(() => setColumnVisibility({ ...DEFAULT_COLUMN_VISIBILITY }), [])
+  // 列状态(visibility + sizing + order)提到 Page(单一持有者):版本化统一键持久化,菜单/HistoryList 受控消费。
+  // Task 1 先把三态通到 table,菜单仍只 toggle 显隐;resize 手柄(Task 2)/dnd 重排(Task 3)后续接 setSizing/setOrder。
+  const cs = useColumnState()
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -55,9 +22,10 @@ export function RequestsListPage() {
         setFilters={setFilters}
         columnMenuSlot={
           <RequestsColumnMenu
-            columns={columnVisibility}
-            onToggle={toggleColumn}
-            onReset={resetColumns}
+            columns={cs.visibility}
+            order={cs.order}
+            onToggle={cs.toggleColumn}
+            onReset={cs.reset}
           />
         }
       />
@@ -69,8 +37,12 @@ export function RequestsListPage() {
       />
       <HistoryList
         filters={filters}
-        columnVisibility={columnVisibility}
-        onColumnVisibilityChange={setColumnVisibility}
+        columnVisibility={cs.visibility}
+        onColumnVisibilityChange={cs.setVisibility}
+        columnSizing={cs.sizing}
+        onColumnSizingChange={cs.setSizing}
+        columnOrder={cs.order}
+        onColumnOrderChange={cs.setOrder}
         onClearFilters={clearAll}
       />
     </div>

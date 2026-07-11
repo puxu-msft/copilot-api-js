@@ -19,9 +19,12 @@ import {
 } from "@/lib/activity-row"
 import {
   //
-  COLUMN_STORAGE_KEY,
-  COLUMN_WIDTHS,
+  COLUMN_STATE_KEY,
+  DEFAULT_COLUMN_ORDER,
+  DEFAULT_COLUMN_SIZING,
   DEFAULT_COLUMN_VISIBILITY,
+  mergeColumnOrder,
+  mergeColumnSizing,
   mergeColumnVisibility,
   REQUEST_COLUMN_IDS,
   REQUEST_COLUMNS,
@@ -46,6 +49,7 @@ describe("request-columns", () => {
       "time",
       "dur",
       "model",
+      "cache",
       "multiplier",
       "endpoint",
       "bytes",
@@ -104,16 +108,14 @@ describe("request-columns", () => {
     expect(accessor("attempts", e)).toBe(1)
   })
 
-  test("DEFAULT_COLUMN_VISIBILITY is all-true, keyed by column ids", () => {
+  test("DEFAULT_COLUMN_VISIBILITY hides curated columns (endpoint/multiplier/tokens/attempts), rest visible", () => {
     expect(Object.keys(DEFAULT_COLUMN_VISIBILITY).sort()).toEqual([...REQUEST_COLUMN_IDS].sort())
-    expect(Object.values(DEFAULT_COLUMN_VISIBILITY).every(Boolean)).toBe(true)
-  })
-
-  test("COLUMN_WIDTHS has a non-empty width string per column id", () => {
+    for (const id of ["endpoint", "multiplier", "tokens", "attempts"]) expect(DEFAULT_COLUMN_VISIBILITY[id]).toBe(false)
     for (const id of REQUEST_COLUMN_IDS) {
-      expect(typeof COLUMN_WIDTHS[id]).toBe("string")
-      expect(COLUMN_WIDTHS[id].length).toBeGreaterThan(0)
+      if (!["attempts", "endpoint", "multiplier", "tokens"].includes(id)) expect(DEFAULT_COLUMN_VISIBILITY[id]).toBe(true)
     }
+    // cache 列默认可见。
+    expect(DEFAULT_COLUMN_VISIBILITY.cache).toBe(true)
   })
 
   test("mergeColumnVisibility(null) equals defaults", () => {
@@ -121,11 +123,12 @@ describe("request-columns", () => {
   })
 
   test("mergeColumnVisibility overrides only the persisted keys, keeps rest default", () => {
+    // bytes 默认可见(true),显式覆盖为 false。
     const merged = mergeColumnVisibility({ bytes: false })
     expect(merged.bytes).toBe(false)
-    // every other known column stays default(true)
+    // 其它已知列保持各自默认(non-all-true:endpoint/multiplier/tokens/attempts 默认 false)。
     for (const id of REQUEST_COLUMN_IDS) {
-      if (id !== "bytes") expect(merged[id]).toBe(true)
+      if (id !== "bytes") expect(merged[id]).toBe(DEFAULT_COLUMN_VISIBILITY[id])
     }
   })
 
@@ -135,7 +138,63 @@ describe("request-columns", () => {
     expect(merged).toEqual(DEFAULT_COLUMN_VISIBILITY)
   })
 
-  test("COLUMN_STORAGE_KEY is the requests-scoped key", () => {
-    expect(COLUMN_STORAGE_KEY).toBe("ui-v4:requests:columns")
+  test("COLUMN_STATE_KEY is the versioned requests-scoped key", () => {
+    expect(COLUMN_STATE_KEY).toBe("ui-v4:requests:column-state:v1")
+  })
+
+  // ── DEFAULT_COLUMN_ORDER / DEFAULT_COLUMN_SIZING ──
+
+  test("DEFAULT_COLUMN_ORDER is session-first and covers every column id", () => {
+    expect(DEFAULT_COLUMN_ORDER[0]).toBe("session")
+    expect([...DEFAULT_COLUMN_ORDER].sort()).toEqual([...REQUEST_COLUMN_IDS].sort())
+    // cache 紧随 model。
+    expect(DEFAULT_COLUMN_ORDER.indexOf("cache")).toBe(DEFAULT_COLUMN_ORDER.indexOf("model") + 1)
+  })
+
+  test("DEFAULT_COLUMN_SIZING covers only fixed columns (excludes session + elastic preview/response)", () => {
+    // session / preview / response 是弹性/gutter,不设 size。
+    expect("session" in DEFAULT_COLUMN_SIZING).toBe(false)
+    expect("preview" in DEFAULT_COLUMN_SIZING).toBe(false)
+    expect("response" in DEFAULT_COLUMN_SIZING).toBe(false)
+    // 固定列有数值宽。
+    for (const id of ["status", "time", "dur", "model", "cache", "multiplier", "endpoint", "bytes", "tokens", "attempts"]) {
+      expect(typeof DEFAULT_COLUMN_SIZING[id]).toBe("number")
+      expect(DEFAULT_COLUMN_SIZING[id]).toBeGreaterThan(0)
+    }
+  })
+
+  // ── mergeColumnOrder ──
+
+  test("mergeColumnOrder(null) → default order (session first)", () => {
+    expect(mergeColumnOrder(null)).toEqual([...DEFAULT_COLUMN_ORDER])
+  })
+
+  test("mergeColumnOrder keeps persisted order, drops unknown ids, appends new columns, forces session first", () => {
+    // 持久序缺 cache/attempts(新列),含未知 nope;session 在中间应被拉到首位。
+    const persisted = ["status", "nope", "session", "model", "time"]
+    const merged = mergeColumnOrder(persisted)
+    expect(merged[0]).toBe("session") // session 锁首
+    expect(merged).not.toContain("nope") // 未知丢弃
+    // 持久已知列保序(session 除外)。
+    expect(merged.indexOf("status")).toBeLessThan(merged.indexOf("model"))
+    expect(merged.indexOf("model")).toBeLessThan(merged.indexOf("time"))
+    // 新列(cache/attempts/…)补位在后。
+    expect(merged).toContain("cache")
+    expect(merged).toContain("attempts")
+    // 覆盖全部已知列且无重复。
+    expect([...merged].sort()).toEqual([...REQUEST_COLUMN_IDS].sort())
+  })
+
+  // ── mergeColumnSizing ──
+
+  test("mergeColumnSizing(null) equals defaults", () => {
+    expect(mergeColumnSizing(null)).toEqual(DEFAULT_COLUMN_SIZING)
+  })
+
+  test("mergeColumnSizing overrides persisted numeric widths, drops unknown keys, keeps default for absent", () => {
+    const merged = mergeColumnSizing({ model: 240, nope: 999 })
+    expect(merged.model).toBe(240) // 覆盖
+    expect("nope" in merged).toBe(false) // 未知丢弃
+    expect(merged.status).toBe(DEFAULT_COLUMN_SIZING.status) // 缺失取默认
   })
 })

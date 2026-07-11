@@ -4,6 +4,7 @@ import {
   flexRender,
   getCoreRowModel,
   useReactTable,
+  type ColumnSizingState,
   type OnChangeFn,
   type Row,
   type VisibilityState,
@@ -132,7 +133,7 @@ function isTyping(target: EventTarget | null): boolean {
 
 // ── Virtuoso 子组件(模块级、稳定引用,避免 inline 定义导致每帧重挂)。动态数据经 `context` 注入。 ──
 
-/** `<table>` 外壳:必须透传 Virtuoso 注入的 `style`(布局);table-fixed + 列宽(th/td meta.width)决定列宽。 */
+/** `<table>` 外壳:必须透传 Virtuoso 注入的 `style`(布局);table-fixed + 列宽(固定列 th/td inline width=ColumnDef.size,弹性列自适应)决定列宽。 */
 const TableShell: NonNullable<TableComponents<HistoryRowModel, RowContext>["Table"]> = ({ style, ...props }) => (
   <table
     {...props}
@@ -195,9 +196,15 @@ const TABLE_COMPONENTS: TableComponents<HistoryRowModel, RowContext> = {
 
 interface HistoryListProps {
   filters: RequestFilters
-  /** 列可见性(受控);缺省则组件自持内部 state(全显)。Task 3.4 由 RequestsListPage 提升 + localStorage 持久化。 */
+  /** 列可见性(受控);缺省则组件自持内部 state(用默认可见性)。RequestsListPage 经 useColumnState 提升 + localStorage 持久化。 */
   columnVisibility?: VisibilityState
   onColumnVisibilityChange?: OnChangeFn<VisibilityState>
+  /** 列宽(受控,px);缺省 → TanStack 内部默认(列定义 size)。Task 2 加 resize 手柄写回。 */
+  columnSizing?: ColumnSizingState
+  onColumnSizingChange?: OnChangeFn<ColumnSizingState>
+  /** 列序(受控);缺省 → 列定义序。Task 3 加 dnd 重排写回。 */
+  columnOrder?: Array<string>
+  onColumnOrderChange?: OnChangeFn<Array<string>>
   /** 清除全部筛选(保留 `?at=`)。定位目标不属于当前筛选集时,行内提示的「清除筛选并定位」按钮调用它。 */
   onClearFilters?: () => void
 }
@@ -207,7 +214,16 @@ interface HistoryListProps {
  * 保留 tail 跟随 / `?at=` 定位 / goLive(缓冲合入 CTA 已上移 LiveDock 状态栏);渲染层换为 `TableVirtuoso`,
  * `endReached` 触底加载旧页取代旧 onScroll 阈值翻页,离顶(`atTopStateChange`)暂停 tail。
  */
-export function HistoryList({ filters, columnVisibility: controlledVisibility, onColumnVisibilityChange, onClearFilters }: HistoryListProps) {
+export function HistoryList({
+  filters,
+  columnVisibility: controlledVisibility,
+  onColumnVisibilityChange,
+  columnSizing,
+  onColumnSizingChange,
+  columnOrder,
+  onColumnOrderChange,
+  onClearFilters,
+}: HistoryListProps) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const at = searchParams.get("at")
@@ -245,8 +261,18 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
   const table = useReactTable({
     data: entries,
     columns: REQUEST_COLUMNS,
-    state: { columnVisibility },
+    // 仅在受控时把 sizing/order 放进 state:传 `columnSizing: undefined` 会覆盖 TanStack 内部
+    // 默认 `{}`、令 getSize() 崩(读 undefined[id])。缺省(HistoryList 独立渲染/测试)时省略键，
+    // 交给 TanStack 内部默认(列定义 size + 定义序)。
+    state: {
+      columnVisibility,
+      ...(columnSizing !== undefined ? { columnSizing } : {}),
+      ...(columnOrder !== undefined ? { columnOrder } : {}),
+    },
     onColumnVisibilityChange: setColumnVisibility,
+    onColumnSizingChange,
+    onColumnOrderChange,
+    defaultColumn: { minSize: 40 },
     getCoreRowModel: getCoreRowModel(),
   })
   const rows = table.getRowModel().rows
@@ -565,16 +591,22 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
                     key={hg.id}
                     className="mono border-b border-[#222] bg-[#111] text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
                   >
-                    {hg.headers.map((header) => (
-                      <th
-                        key={header.id}
-                        // session 色列表头须镜像其 body td 的无水平 padding(p-0):table-fixed 下列宽由首行(表头)决定,
-                        // 若 session th 带 px-2(16px)会在 w-[10px] 上被 padding 撑大、与 p-0 的 body 色列错位并挤占后续列宽。
-                        className={`${header.column.columnDef.meta?.width ?? ""} ${header.column.id === "session" ? "p-0" : "px-2 py-1"} text-left font-normal`}
-                      >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                      </th>
-                    ))}
+                    {hg.headers.map((header) => {
+                      // 仅固定列 emit inline width(getSize() 永不返 undefined,无 size 回退 150);
+                      // 弹性列(preview/response,enableResizing:false)/session gutter 不设宽,自适应剩余/特判 10px。
+                      const isFixed = header.column.columnDef.enableResizing !== false && header.column.id !== "session"
+                      return (
+                        <th
+                          key={header.id}
+                          // session 色列表头须镜像其 body td 的无水平 padding(p-0):table-fixed 下列宽由首行(表头)决定,
+                          // 若 session th 带 px-2(16px)会在 w-[10px] 上被 padding 撑大、与 p-0 的 body 色列错位并挤占后续列宽。
+                          className={`${header.column.id === "session" ? "p-0 w-[10px]" : "px-2 py-1"} text-left font-normal`}
+                          style={isFixed ? { width: header.getSize() } : undefined}
+                        >
+                          {flexRender(header.column.columnDef.header, header.getContext())}
+                        </th>
+                      )
+                    })}
                   </tr>
                 ))
               }
@@ -607,10 +639,14 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
                   // status 缩进用 `pr-2 pl-3`(而非 `px-2`+`pl-3` 叠同属性,避免依赖 Tailwind 生成序);其余列 `px-2`。
                   const indented = cell.column.id === "status" && context.runs.get(row.original.id)?.indent
                   const padX = indented ? "pr-2 pl-3" : "px-2"
+                  // 仅固定列 emit inline width(镜像表头,table-fixed 下列宽由表头决定,body 补齐防抖动);
+                  // 弹性列(preview/response)/session 不设宽。session 已在上面的特判分支提前返回。
+                  const isFixed = cell.column.columnDef.enableResizing !== false && cell.column.id !== "session"
                   return (
                     <td
                       key={cell.id}
-                      className={`${cell.column.columnDef.meta?.width ?? ""} overflow-hidden ${padX} py-1 align-middle`}
+                      className={`overflow-hidden ${padX} py-1 align-middle`}
+                      style={isFixed ? { width: cell.column.getSize() } : undefined}
                     >
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </td>

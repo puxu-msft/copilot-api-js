@@ -16,6 +16,7 @@ import type { EntrySummary } from "@/types"
 
 import {
   //
+  cacheHitCell,
   endpointLabel,
   failureSummary,
   isTerminalSummary,
@@ -180,5 +181,30 @@ describe("rowAnomaly", () => {
   test("no cacheMiss when not completed", () => {
     const failed = base({ state: "failed", usage: { input_tokens: 30_000, output_tokens: 100 } })
     expect(rowAnomaly(failed).cacheMiss).toBe(false)
+  })
+})
+
+// ── cacheHitCell (cache-read hit ratio + hover raw counts + warn signal) ──
+
+describe("cacheHitCell", () => {
+  const u = (input: number, read: number, creation = 0): EntrySummary =>
+    ({
+      id: "x",
+      startedAt: 0,
+      endpoint: "anthropic-messages",
+      state: "completed",
+      usage: { input_tokens: input, output_tokens: 0, cache_read_input_tokens: read, cache_creation_input_tokens: creation },
+    }) as unknown as EntrySummary
+  test("命中率 = read/(input+read+creation)", () => {
+    // 15 read /(5 input + 15 read + 0) = 75%
+    expect(cacheHitCell(u(5, 15)).text).toBe("75%")
+    // 分母含 creation: 10/(10+10+20)=25%
+    expect(cacheHitCell(u(10, 10, 20)).text).toBe("25%")
+  })
+  test("无 usage → 空", () => {
+    expect(cacheHitCell({ id: "x", startedAt: 0, endpoint: "anthropic-messages" } as unknown as EntrySummary).text).toBe("")
+  })
+  test("大 input 无 cache → warn", () => {
+    expect(cacheHitCell(u(25_000, 0)).signal).toBe("warn")
   })
 })

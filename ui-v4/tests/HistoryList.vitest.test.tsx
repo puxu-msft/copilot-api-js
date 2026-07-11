@@ -580,6 +580,71 @@ describe("HistoryList", () => {
   })
 })
 
+describe("HistoryList — 列策展 + cache 列 + inline width（Task 1）", () => {
+  beforeEach(() => {
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
+    useListStore.setState({ ...initialListState })
+    scrollToIndexMock.mockClear()
+    apiGetMock.mockReset()
+    apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
+    apiDeleteMock.mockReset()
+    apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  it("默认视图隐藏策展列（endpoint/multiplier/tokens/attempts 表头不渲染），cache/status/model 显示", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    renderList()
+    // 默认可见列。
+    expect(screen.getByText("Status")).toBeDefined()
+    expect(screen.getByText("Model")).toBeDefined()
+    expect(screen.getByText("Cache")).toBeDefined()
+    // 默认隐藏列表头缺席。
+    expect(screen.queryByText("Endpoint")).toBeNull()
+    expect(screen.queryByText("Tokens")).toBeNull()
+    expect(screen.queryByText("Att")).toBeNull()
+  })
+
+  it("cache 列渲染命中率百分比单元格（read/(input+read+creation)）", () => {
+    // 5 input + 15 read → 75%。
+    const withUsage = { ...entry("a"), usage: { input_tokens: 5, output_tokens: 0, cache_read_input_tokens: 15 } } as unknown as EntrySummary
+    mockHistory = { ...mockHistory, entries: [withUsage], total: 1 }
+    renderList()
+    expect(screen.getByText("75%")).toBeDefined()
+  })
+
+  it("固定列 th 有 inline width style（=ColumnDef.size）；弹性列（preview/response）与 session 无 inline width", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const { container } = renderList()
+    const ths = Array.from(container.querySelectorAll("thead th"))
+    const byText = (t: string) => ths.find((th) => th.textContent === t) as HTMLElement | undefined
+    // 固定列:status size 92 → width:92px。
+    expect(byText("Status")?.style.width).toBe("92px")
+    // model size 180。
+    expect(byText("Model")?.style.width).toBe("180px")
+    // cache size 64。
+    expect(byText("Cache")?.style.width).toBe("64px")
+    // 弹性列 preview（"Request"）/ response（"Response"）无 inline width。
+    expect(byText("Request")?.style.width).toBe("")
+    expect(byText("Response")?.style.width).toBe("")
+    // session gutter（表头文本空）无 inline width,靠 w-[10px] 类。
+    const sessionTh = ths.find((th) => th.className.includes("w-[10px]")) as HTMLElement | undefined
+    expect(sessionTh).toBeDefined()
+    expect(sessionTh?.style.width).toBe("")
+  })
+
+  it("固定列 td 也带 inline width（table-fixed body 补齐防抖动）", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const { container } = renderList()
+    const row = container.querySelector('[data-entry-id="a"]') as HTMLElement
+    const tds = Array.from(row.querySelectorAll("td"))
+    // tds[0]=session 色列（w-[10px] p-0,无 inline width）;后续固定列有 inline width。
+    expect(tds[0].style.width).toBe("")
+    const statusTd = tds[1]
+    expect(statusTd.style.width).toBe("92px")
+  })
+})
+
 describe("HistoryList — session 色带（Task 2 默认态）", () => {
   beforeEach(() => {
     mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }

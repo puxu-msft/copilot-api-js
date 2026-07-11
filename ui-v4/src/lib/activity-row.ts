@@ -2,7 +2,11 @@
 // 让诊断在 LIST 行内完成,无需展开详情页(spec §4.2 富行)。
 import type { EntrySummary } from "@/types"
 
-import { formatNumber } from "@/lib/format"
+import {
+  //
+  formatNumber,
+  type Signal,
+} from "@/lib/format"
 
 /**
  * Display-only state label for a row. Heuristic (falls back to `responseSuccess`
@@ -96,4 +100,19 @@ export function rowAnomaly(entry: EntrySummary): { slow: boolean; cacheMiss: boo
   const slow = (entry.durationMs ?? 0) > 60_000
   const cacheMiss = requestState(entry) === "completed" && (entry.usage?.input_tokens ?? 0) > 20_000 && !entry.usage?.cache_read_input_tokens
   return { slow, cacheMiss }
+}
+
+/** cache 命中率单元格:read/(input+read+creation) 百分比 + hover 原始数 + 信号(大 input 无 cache→warn)。 */
+export function cacheHitCell(entry: EntrySummary): { text: string; title: string; signal: Signal } {
+  const u = entry.usage
+  if (!u) return { text: "", title: "", signal: "muted" }
+  const read = u.cache_read_input_tokens ?? 0
+  const total = u.input_tokens + read + (u.cache_creation_input_tokens ?? 0)
+  if (total === 0) return { text: "", title: "", signal: "muted" }
+  const pct = Math.round((read / total) * 100)
+  // 大 input 无 cache read → warn(复用 rowAnomaly.cacheMiss);否则有命中→ok、无命中→muted。
+  let signal: Signal = "muted"
+  if (rowAnomaly(entry).cacheMiss) signal = "warn"
+  else if (read > 0) signal = "ok"
+  return { text: `${pct}%`, title: `↺${read} / ${total}`, signal }
 }
