@@ -7,7 +7,7 @@
  *   — track active requests; render `[....]` start line in debug mode.
  * - `request.feature_applied` / `request.stream_progress` — mutate active
  *   entry's display state (streaming bytes, feature tags).
- * - `request.attempt_failed { willRetry: true }` — render `[RETRY-n]` line
+ * - `request.attempt_failed { willRetry: true }` — render `[RETRY]` line
  *   (per-attempt retry visualization; the entry remains active).
  * - `request.completed` / `request.failed` / `request.aborted` — render
  *   `[ OK ]` / `[FAIL]` line and remove from active.
@@ -293,7 +293,7 @@ export class TerminalUi {
       }
       case "request.attempt_failed": {
         // Accumulate the richer (error-carrying) snapshot for the detail view
-        // regardless of `willRetry`; the `[RETRY-n]` log line is retry-only.
+        // regardless of `willRetry`; the `[RETRY]` log line is retry-only.
         const entry = this.upsertCtx(event.ctx)
         this.recordAttempt(entry, event.attempt)
         if (event.willRetry) this.onAttemptFailed(event)

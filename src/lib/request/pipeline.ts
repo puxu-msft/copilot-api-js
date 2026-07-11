@@ -365,7 +365,7 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
         normalRetries++
       }
 
-      // Surface the failed attempt in the TUI as a [RETRY-n] line. Runs AFTER
+      // Surface the failed attempt in the TUI as a [RETRY] line. Runs AFTER
       // the budget gate so retries about to be discarded don't produce noise.
       // Web-search internal hops naturally skip — they pass `requestContext: undefined`.
       // Note: setAttemptError was already called above with apiError, so the
