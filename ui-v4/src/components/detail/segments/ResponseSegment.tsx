@@ -22,11 +22,11 @@ import {
 } from "@/lib/format"
 
 const SIGNAL_COLOR: Record<Signal, string> = {
-  ok: "var(--color-ok)",
-  fail: "var(--color-fail)",
-  warn: "var(--color-warn)",
-  live: "var(--color-ok)",
-  muted: "var(--color-muted)",
+  ok: "var(--signal-ok)",
+  fail: "var(--signal-fail)",
+  warn: "var(--signal-warn)",
+  live: "var(--signal-ok)",
+  muted: "var(--signal-muted)",
 }
 
 /**
@@ -61,7 +61,7 @@ function errorFrameMessage(f: SseEventRecord): string {
 
 /** Monospace pre block for raw text/JSON. */
 function RawPre({ children }: { children: string }) {
-  return <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">{children}</pre>
+  return <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[var(--content-secondary)]">{children}</pre>
 }
 
 /** The rewritten content actually forwarded to the client on a streaming response. */
@@ -78,14 +78,14 @@ function ForwardedStream({ frames, endpoint }: { frames: Array<SseEventRecord>; 
           <pre
             key={i}
             className="mono mt-1 whitespace-pre-wrap break-all text-[13px]"
-            style={{ color: "var(--color-fail)" }}
+            style={{ color: "var(--signal-fail)" }}
           >
             {errorFrameMessage(f)}
           </pre>
         ))
       : null}
       {message || errorFrames.length > 0 ? null : (
-        <div className="mono text-[13px] text-[var(--color-muted)]">{frames.length} frames forwarded · 完整原始帧见 SSE 标签页</div>
+        <div className="mono text-[13px] text-[var(--content-muted)]">{frames.length} frames forwarded · 完整原始帧见 SSE 标签页</div>
       )}
     </div>
   )
@@ -144,14 +144,14 @@ function ViewToggle({ code, onChange }: { code: boolean; onChange: (code: boolea
       <button
         type="button"
         onClick={() => onChange(false)}
-        className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${code ? "" : "text-[var(--color-primary)]"}`}
+        className={`mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px] ${code ? "" : "text-[var(--content-accent)]"}`}
       >
         Rendered
       </button>
       <button
         type="button"
         onClick={() => onChange(true)}
-        className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${code ? "text-[var(--color-primary)]" : ""}`}
+        className={`mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px] ${code ? "text-[var(--content-accent)]" : ""}`}
       >
         Code
       </button>
@@ -190,7 +190,7 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
   // proxy failure reason that would otherwise be buried in / absent from the leg sections.
   const showOutcome = signal === "fail" && verdict !== undefined
 
-  if (!hasUpstream && !hasForwarded && !showOutcome) return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无响应数据</div>
+  if (!hasUpstream && !hasForwarded && !showOutcome) return <div className="mono p-2 text-[13px] text-[var(--content-muted)]">无响应数据</div>
 
   return (
     <div>
@@ -212,7 +212,7 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
           </div>
           <pre
             className="mono mt-1 whitespace-pre-wrap break-all text-[13px]"
-            style={{ color: "var(--color-fail)" }}
+            style={{ color: "var(--signal-fail)" }}
           >
             {verdict}
           </pre>
@@ -220,7 +220,7 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
       : null}
       {hasUpstream ?
         <LegShell label="Upstream (upstream → proxy)">
-          <div className="mono mb-1 text-[13px] text-[#888]">
+          <div className="mono mb-1 text-[13px] text-[var(--content-dim)]">
             status {upstreamStatus ?? "—"} · {upstreamModel} · {upstreamSuccess ? "ok" : "fail"}
           </div>
           <UpstreamBody

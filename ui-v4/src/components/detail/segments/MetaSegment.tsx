@@ -14,7 +14,7 @@ function Row({ label, value }: { label: string; value?: string | number }) {
   if (value === undefined) return null
   return (
     <div className="flex gap-2">
-      <span className="w-[100px] text-[var(--color-muted)]">{label}</span>
+      <span className="w-[100px] text-[var(--content-muted)]">{label}</span>
       <span>{value}</span>
     </div>
   )
@@ -24,7 +24,7 @@ export function MetaSegment({ entry }: { entry: HistoryEntry }) {
   // New legs (`_index.derived` / final attempt `upstreamResponse`); legacy top-level legs removed in P4c.
   const usage = resolveResponseUsage(entry)
   return (
-    <div className="mono flex flex-col gap-2 text-[13px] text-[#aaa]">
+    <div className="mono flex flex-col gap-2 text-[13px] text-[var(--content-secondary)]">
       <Row
         label="strategy"
         value={resolveCurrentStrategy(entry)}
@@ -53,11 +53,11 @@ export function MetaSegment({ entry }: { entry: HistoryEntry }) {
       : null}
       {entry.warningMessages && entry.warningMessages.length > 0 ?
         <div>
-          <div className="text-[11px] uppercase tracking-wider text-[var(--color-warn)]">warnings</div>
+          <div className="text-[11px] uppercase tracking-wider text-[var(--signal-warn)]">warnings</div>
           {entry.warningMessages.map((w, i) => (
             <div
               key={i}
-              className="text-[var(--color-warn)]"
+              className="text-[var(--signal-warn)]"
             >
               {w.code}: {w.message}
             </div>

@@ -7,7 +7,7 @@ export function ToolJumpButton({ label, ariaLabel, onJump }: { label: string; ar
       aria-label={ariaLabel}
       title={ariaLabel}
       onClick={onJump}
-      className="mono border border-[var(--color-border)] px-1 text-[11px] leading-tight text-[var(--color-muted)] hover:text-[var(--color-primary)]"
+      className="mono border border-[var(--surface-border)] px-1 text-[11px] leading-tight text-[var(--content-muted)] hover:text-[var(--content-accent)]"
     >
       {label}
     </button>

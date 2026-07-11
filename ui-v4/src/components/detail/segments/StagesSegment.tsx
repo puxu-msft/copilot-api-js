@@ -142,18 +142,18 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
       : null}
       <div className="min-w-0 flex-1">
         <div className="mb-2 flex flex-wrap items-center gap-2">
-          <span className="mono text-[11px] uppercase tracking-wider text-[var(--color-primary)]">{leg.label}</span>
+          <span className="mono text-[11px] uppercase tracking-wider text-[var(--content-accent)]">{leg.label}</span>
           <button
             type="button"
             onClick={() => setRawMode(false)}
-            className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${showRaw ? "" : "text-[var(--color-primary)]"}`}
+            className={`mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px] ${showRaw ? "" : "text-[var(--content-accent)]"}`}
           >
             Rendered
           </button>
           <button
             type="button"
             onClick={() => setRawMode(true)}
-            className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${showRaw ? "text-[var(--color-primary)]" : ""}`}
+            className={`mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px] ${showRaw ? "text-[var(--content-accent)]" : ""}`}
           >
             Raw
           </button>
@@ -161,7 +161,7 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
             <button
               type="button"
               onClick={() => setShowDiff((v) => !v)}
-              className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${showDiff ? "text-[var(--color-warn)]" : "text-[var(--color-primary)]"}`}
+              className={`mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px] ${showDiff ? "text-[var(--signal-warn)]" : "text-[var(--content-accent)]"}`}
             >
               ↔ show full diff
             </button>

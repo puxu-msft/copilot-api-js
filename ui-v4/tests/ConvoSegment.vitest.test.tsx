@@ -70,7 +70,7 @@ describe("ConvoSegment", () => {
     render(<ConvoSegment entry={entry} />)
     fireEvent.click(screen.getByText(/assistant: second hi/))
     const activeRow = screen.getByText(/assistant: second hi/).closest("div")
-    expect(activeRow?.className).toContain("text-[var(--color-primary)]")
+    expect(activeRow?.className).toContain("text-[var(--content-accent)]")
   })
 
   it("no messages → no TOC nav, just the 无消息 placeholder", () => {

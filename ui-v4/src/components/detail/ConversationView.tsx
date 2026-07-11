@@ -12,7 +12,7 @@ interface ConversationViewProps {
 }
 
 export function ConversationView({ messages, anchorPrefix, marks }: ConversationViewProps) {
-  if (messages.length === 0) return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无消息</div>
+  if (messages.length === 0) return <div className="mono p-2 text-[13px] text-[var(--content-muted)]">无消息</div>
   return (
     <div className="flex flex-col">
       {messages.map((m, i) => (

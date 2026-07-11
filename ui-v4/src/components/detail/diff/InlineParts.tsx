@@ -5,8 +5,8 @@ interface InlinePartsProps {
 }
 
 function partClass(part: InlineDiffPart): string {
-  if (part.added) return "bg-[color-mix(in_srgb,var(--color-ok)_22%,transparent)]"
-  if (part.removed) return "bg-[color-mix(in_srgb,var(--color-fail)_22%,transparent)] line-through"
+  if (part.added) return "bg-[color-mix(in_srgb,var(--content-add)_22%,transparent)]"
+  if (part.removed) return "bg-[color-mix(in_srgb,var(--content-del)_22%,transparent)] line-through"
   return ""
 }
 

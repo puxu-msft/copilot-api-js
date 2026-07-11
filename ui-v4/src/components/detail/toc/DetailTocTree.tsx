@@ -25,24 +25,24 @@ interface DetailTocTreeProps {
  */
 const KIND_COLOR: Record<string, string> = {
   // roles (mirror MessageBlock ROLE_COLOR)
-  user: "var(--color-primary)",
-  assistant: "#9ad",
-  system: "var(--color-muted)",
-  tool: "#4a6a4a",
+  user: "var(--content-accent)",
+  assistant: "var(--content-role-assistant)",
+  system: "var(--content-muted)",
+  tool: "var(--content-tool-dim)",
   // Stages leg
-  leg: "var(--color-primary)",
+  leg: "var(--content-accent)",
   // block types
-  text: "var(--color-muted)",
-  tool_use: "#7fae7f",
-  tool_result: "#7fae7f",
-  thinking: "#9a8ad0",
-  redacted_thinking: "#9a8ad0",
-  image: "#9ad",
+  text: "var(--content-muted)",
+  tool_use: "var(--content-tool)",
+  tool_result: "var(--content-tool)",
+  thinking: "var(--content-thinking-accent)",
+  redacted_thinking: "var(--content-thinking-accent)",
+  image: "var(--content-role-assistant)",
 }
 
 /** Resolve a kind's tint color, falling back to muted for unknown kinds. */
 function kindColor(kind: string): string {
-  return KIND_COLOR[kind] ?? "var(--color-muted)"
+  return KIND_COLOR[kind] ?? "var(--content-muted)"
 }
 
 /** Collect the anchorIds of every node that has children (for default-collapse). */
@@ -71,7 +71,9 @@ function TocRow({ node, number, collapsed, onToggle, onSelect, activeAnchor }: T
       <div
         data-active={isActive ? "" : undefined}
         className={`mono flex items-center border-l-2 text-[13px] leading-tight transition-colors ${
-          isActive ? "border-l-[var(--color-primary)] bg-[#221b0e] text-[var(--color-primary)]" : "border-l-transparent hover:bg-[#1c1a14]"
+          isActive ?
+            "border-l-[var(--content-accent)] bg-[var(--surface-toc-active)] text-[var(--content-accent)]"
+          : "border-l-transparent hover:bg-[var(--surface-toc-hover)]"
         }`}
       >
         {hasChildren ?
@@ -83,14 +85,14 @@ function TocRow({ node, number, collapsed, onToggle, onSelect, activeAnchor }: T
               e.stopPropagation()
               onToggle(node.anchorId)
             }}
-            className="flex w-4 shrink-0 items-center justify-center text-[12px] font-bold text-[var(--color-muted)] hover:text-[var(--color-text)]"
+            className="flex w-4 shrink-0 items-center justify-center text-[12px] font-bold text-[var(--content-muted)] hover:text-[var(--content-text)]"
           >
             {isCollapsed ? "+" : "−"}
           </button>
         : <span className="w-4 shrink-0" />}
         <span
           aria-hidden="true"
-          className="mr-1.5 shrink-0 text-[12px] text-[var(--color-muted)] select-none"
+          className="mr-1.5 shrink-0 text-[12px] text-[var(--content-muted)] select-none"
         >
           {number}
         </span>
@@ -105,7 +107,7 @@ function TocRow({ node, number, collapsed, onToggle, onSelect, activeAnchor }: T
         </button>
       </div>
       {hasChildren && !isCollapsed ?
-        <div className="ml-2 border-l border-[var(--color-border)]/60 pl-1">
+        <div className="ml-2 border-l border-[var(--surface-border)]/60 pl-1">
           {children.map((child, j) => (
             <TocRow
               key={child.anchorId}
@@ -164,7 +166,7 @@ export function DetailTocTree({ nodes, onSelect, activeAnchor, defaultExpanded =
         <button
           type="button"
           onClick={toggleAll}
-          className="mono mb-0.5 self-start px-1 text-[11px] text-[var(--color-muted)] hover:text-[var(--color-text)]"
+          className="mono mb-0.5 self-start px-1 text-[11px] text-[var(--content-muted)] hover:text-[var(--content-text)]"
         >
           {allExpanded ? "− 全部收起" : "+ 全部展开"}
         </button>

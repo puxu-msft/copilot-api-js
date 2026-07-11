@@ -61,19 +61,19 @@ function SystemBlocksBody({ blocks, anchorPrefix }: { blocks: Array<SystemBlock>
         <div
           key={i}
           id={anchorPrefix !== undefined ? systemBlockAnchorId(anchorPrefix, i) : undefined}
-          className={multiple ? "mb-2 border border-[var(--color-border)] p-1.5 last:mb-0" : ""}
+          className={multiple ? "mb-2 border border-[var(--surface-border)] p-1.5 last:mb-0" : ""}
         >
           {multiple || block.cache_control ?
-            <div className="mono mb-1 flex items-center gap-2 text-[11px] text-[var(--color-muted)]">
+            <div className="mono mb-1 flex items-center gap-2 text-[11px] text-[var(--content-muted)]">
               {multiple ?
                 <span>text[{i}]</span>
               : null}
               {block.cache_control ?
-                <span className="italic text-[var(--color-warn)]">[cache: {block.cache_control.type}]</span>
+                <span className="italic text-[var(--signal-warn)]">[cache: {block.cache_control.type}]</span>
               : null}
             </div>
           : null}
-          <div className="text-[var(--color-text)]">
+          <div className="text-[var(--content-text)]">
             <LineNumberedText text={block.text} />
           </div>
         </div>
@@ -82,10 +82,10 @@ function SystemBlocksBody({ blocks, anchorPrefix }: { blocks: Array<SystemBlock>
   )
 }
 
-const TOGGLE_BASE = "mono border border-[var(--color-border)] px-2 py-0.5 text-[12px]"
+const TOGGLE_BASE = "mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px]"
 
 function modeClass(active: boolean): string {
-  return `${TOGGLE_BASE} ${active ? "text-[var(--color-primary)]" : "text-[var(--color-muted)]"}`
+  return `${TOGGLE_BASE} ${active ? "text-[var(--content-accent)]" : "text-[var(--content-muted)]"}`
 }
 
 /**
@@ -113,16 +113,16 @@ function classifyRewrite(opts: {
 function RewriteBadge({ kind }: { kind: RewriteKind }) {
   switch (kind) {
     case "removed": {
-      return <span className="mono text-[11px] text-[var(--color-fail)]">removed</span>
+      return <span className="mono text-[11px] text-[var(--content-del)]">removed</span>
     }
     case "added": {
-      return <span className="mono text-[11px] text-[var(--color-ok)]">added</span>
+      return <span className="mono text-[11px] text-[var(--content-add)]">added</span>
     }
     case "modified": {
-      return <span className="mono text-[11px] text-[var(--color-warn)]">modified</span>
+      return <span className="mono text-[11px] text-[var(--signal-warn)]">modified</span>
     }
     case "unchanged": {
-      return <span className="mono text-[11px] text-[var(--color-muted)]">rewritten</span>
+      return <span className="mono text-[11px] text-[var(--content-muted)]">rewritten</span>
     }
     default: {
       return null
@@ -156,7 +156,7 @@ function SystemBody({ mode, hasRewrite, originalBlocks, rewrittenBlocks, origina
   return (
     <>
       {originalBlocks.length !== rewrittenBlocks.length ?
-        <div className="mono mb-1 text-[11px] font-semibold text-[var(--color-warn)]">
+        <div className="mono mb-1 text-[11px] font-semibold text-[var(--signal-warn)]">
           Block count changed: {originalBlocks.length} → {rewrittenBlocks.length}
         </div>
       : null}
@@ -190,20 +190,20 @@ export function SystemMessage({ system, rewrittenSystem, hasEffective, originalP
   const hasCacheControl = originalBlocks.some((b) => b.cache_control)
 
   return (
-    <div className="mb-2 border border-[var(--color-border)]">
-      <div className="flex items-center justify-between bg-[#161616] px-2 py-1">
+    <div className="mb-2 border border-[var(--surface-border)]">
+      <div className="flex items-center justify-between bg-[var(--surface-block)] px-2 py-1">
         <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
             onClick={() => setCollapsed((v) => !v)}
-            className="select-none text-[10px] text-[var(--color-muted)]"
+            className="select-none text-[10px] text-[var(--content-muted)]"
             aria-label={collapsed ? "Expand system" : "Collapse system"}
           >
             {collapsed ? "▸" : "▾"}
           </button>
-          <span className="mono text-[11px] uppercase tracking-wider text-[var(--color-muted)]">system</span>
+          <span className="mono text-[11px] uppercase tracking-wider text-[var(--content-muted)]">system</span>
           {hasCacheControl ?
-            <span className="mono text-[11px] text-[var(--color-warn)]">cached</span>
+            <span className="mono text-[11px] text-[var(--signal-warn)]">cached</span>
           : null}
           <RewriteBadge kind={rewriteKind} />
         </div>

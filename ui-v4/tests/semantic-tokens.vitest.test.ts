@@ -104,36 +104,91 @@ describe("semantic token layer (C1)", () => {
   })
 
   // amber 等价性 golden:独立 oracle = theme.css --color-* 字面量(经桥接)+ 全域实测 hex 字面量。
-  // 值须与源码里被替换的字面量**逐字节相等**(#888 保持 #888,不写 #888888),保 C2/C3 像素等价。
+  // 值须与源码里被替换的字面量**逐字节相等**(#888 保持 #888,不写 #888888),保 C2/C3/C3 像素等价。
+  //
+  // C3 扩展(承重 INV-3 gate):此表覆盖**全域 B/A′ 中性化实际使用的每一个语义 token**。
+  // C3 用「CSS/运行值解析 oracle」取代「DOM golden 快照」——中性化把 `#hex`/`var(--color-*)`
+  // 换成 `var(--content-*)` 等,DOM 内联 style 字符串**必然改变**(literal→var),故 `toMatchSnapshot`
+  // 的「快照须不变」自相矛盾,且 code-bearing 体经 shiki 进程级异步单例会 flaky(§8.4/B6)。
+  // 真 INV-3 逐值等价判据 = amber preset 下 token 解析回被替换的原始字面量,由本表钉死。
   const AMBER_GOLDEN: Record<string, string> = {
+    // 信号语义 --signal-*
     "--signal-ok": "#7fd99a",
     "--signal-fail": "#e08a8a",
     "--signal-warn": "#d4a04a",
     "--signal-muted": "#8a7a55",
     "--signal-live": "#d4a04a",
+    // 厂商语义 --vendor-*
     "--vendor-anthropic": "#b48ead",
     "--vendor-openai": "#5aa2d0",
     "--vendor-google": "#8fbf7f",
     "--vendor-other": "#d08fb4",
     "--vendor-muted": "#8a7a55",
+    // 内容语义 --content-*
+    "--content-text": "#d8cdbb",
+    "--content-value": "#cdb",
+    "--content-text-block": "#cdc",
+    "--content-secondary": "#aaa",
+    "--content-inactive": "#999",
+    "--content-dim": "#888",
+    "--content-faint": "#777",
+    "--content-placeholder": "#666",
+    "--content-disabled": "#555",
+    "--content-muted": "#8a7a55",
+    "--content-muted-cool": "#9a9",
+    "--content-warm-faint": "#a87",
+    "--content-preview": "#8a8a7a",
+    "--content-preview-response": "#8a9a8a",
+    "--content-selected": "#f0d8a8",
+    "--content-accent": "#d4a04a",
+    "--content-off": "#3a3a42",
+    "--content-dot-dim": "#6a5a3a",
+    "--content-divider": "#d8c088",
+    "--content-info-text": "#5a7a9a",
+    "--content-error-inline": "#c88",
+    "--content-error-soft": "#e0a0a0",
+    "--content-number": "#7aa2d0",
+    "--content-role-assistant": "#9ad",
+    "--content-add": "#7fd99a",
+    "--content-del": "#e08a8a",
     "--content-thinking": "#a89ac0",
     "--content-thinking-dim": "#6a5a8a",
     "--content-thinking-accent": "#9a8ad0",
     "--content-tool": "#7fae7f",
     "--content-tool-dim": "#4a6a4a",
-    "--content-add": "#7fd99a",
-    "--content-del": "#e08a8a",
-    "--content-muted": "#8a7a55",
-    "--content-dim": "#888",
-    "--content-text": "#d8cdbb",
-    "--content-role-assistant": "#9ad",
+    // 表面/近黑语义 --surface-*
     "--surface-base": "#141210",
     "--surface-raised": "#16161a",
+    "--surface-raised-alt": "#1a1a1f",
+    "--surface-hover": "#1a1a20",
     "--surface-border": "#2a2a32",
     "--surface-border-subtle": "#1e1e24",
+    "--surface-border-row": "#222",
     "--surface-code": "#100e0b",
-    "--surface-active": "#3a2f1a",
     "--surface-input": "#0f0f12",
+    "--surface-panel": "#111014",
+    "--surface-nav": "#15151a",
+    "--surface-rail": "#14141a",
+    "--surface-block": "#161616",
+    "--surface-block-border": "#444",
+    "--surface-diagnostic": "#1c1c22",
+    "--surface-tree-hover": "#1c1a15",
+    "--surface-toc-hover": "#1c1a14",
+    "--surface-toc-active": "#221b0e",
+    "--surface-active": "#3a2f1a",
+    "--surface-sticky": "#111",
+    "--surface-match": "#463a12",
+    "--surface-info": "#10161f",
+    "--surface-info-border": "#2f4a6f",
+    "--surface-history-divider": "#2a2418",
+    "--surface-divider-border": "#5a4a2a",
+    "--surface-text-block": "#12161c",
+    "--surface-text-block-border": "#3a4656",
+    "--surface-tool-use": "#1f1a12",
+    "--surface-tool-result": "#141a14",
+    "--surface-thinking": "#1a1820",
+    "--surface-agent": "#1a160e",
+    "--surface-flash": "#2a2212",
   }
 
   it("amber preset resolves each semantic token back to its equivalent amber value (INV-3)", () => {

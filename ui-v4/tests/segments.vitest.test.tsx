@@ -153,7 +153,7 @@ describe("detail segments", () => {
     const badges = screen.getAllByText(/^rewritten$/)
     expect(badges.length).toBe(1)
     // Unchanged message ("keep me") is not marked — only one badge total.
-    expect(badges[0].style.color).toContain("--color-warn")
+    expect(badges[0].style.color).toContain("--signal-warn")
   })
   it("StagesSegment keeps the inbound↔effective full-diff toggle", () => {
     const e = {

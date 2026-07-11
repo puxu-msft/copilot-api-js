@@ -14,17 +14,17 @@ const KIND_SIGN: Record<AlignKind, string> = {
 }
 
 const KIND_COLOR: Record<AlignKind, string> = {
-  same: "var(--color-muted)",
-  added: "var(--color-ok)",
-  removed: "var(--color-fail)",
-  modified: "var(--color-warn)",
+  same: "var(--content-muted)",
+  added: "var(--content-add)",
+  removed: "var(--content-del)",
+  modified: "var(--signal-warn)",
 }
 
 const KIND_TINT: Record<AlignKind, string> = {
   same: "",
-  added: "bg-[color-mix(in_srgb,var(--color-ok)_8%,transparent)]",
-  removed: "bg-[color-mix(in_srgb,var(--color-fail)_8%,transparent)]",
-  modified: "bg-[color-mix(in_srgb,var(--color-warn)_8%,transparent)]",
+  added: "bg-[color-mix(in_srgb,var(--content-add)_8%,transparent)]",
+  removed: "bg-[color-mix(in_srgb,var(--content-del)_8%,transparent)]",
+  modified: "bg-[color-mix(in_srgb,var(--signal-warn)_8%,transparent)]",
 }
 
 interface DiffRowProps {
@@ -44,12 +44,12 @@ export function DiffRow({ kind, label, bodyText, inlineParts }: DiffRowProps) {
       >
         {KIND_SIGN[kind]}
       </span>
-      {label !== undefined && <span className="shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--color-muted)]">{label}</span>}
+      {label !== undefined && <span className="shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--content-muted)]">{label}</span>}
       {kind === "modified" && inlineParts ?
-        <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[var(--color-text)]">
+        <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[var(--content-text)]">
           <InlineParts parts={inlineParts} />
         </span>
-      : <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--color-text)]">{bodyText}</span>}
+      : <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--content-text)]">{bodyText}</span>}
     </div>
   )
 }
