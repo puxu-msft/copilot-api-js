@@ -38,12 +38,12 @@ learned `calibrationFactor` 的**唯一消费者**是 `checkNeedsCompactionAnthr
 
 | 模型 | MAPE | median | p90 |
 |---|---|---|---|
-| 当前生产（固定 2.202，仅 400 学） | 50.1% | 50.6% | 78.6% |
-| 单标量（成功学习 ~1.5） | 13.2% | 11.5% | 26.3% |
-| **size-bucketed** | **7.6%** | 6.0% | 17.1% |
-| size-bucketed（时间留出集，后 30% 未来请求） | **6.8%** | 5.0% | 16.6% |
+| 当前生产（固定 2.202，仅 400 学） | 49.4% | 48.8% | 77.7% |
+| 单标量（成功学习 ~1.5） | 12.8% | 10.7% | 26.2% |
+| **size-bucketed（log 插值）** | **6.9%** | 4.8% | 17.6% |
+| size-bucketed（时间留出集，后 30% 未来请求） | **6.4%** | 3.9% | 17.5% |
 
-size-aware 把误差从 50% 砍到 7.6%，且在**未来请求**上同样成立（6.8%）——稳定可靠、非过拟合。残差 ~7% 是规模无法解释的 tool 密度噪声，对两消费者配安全边际均可接受。
+size-aware 把误差从 50% 砍到 6.9%，且在**未来请求**上同样成立（6.4%）——稳定可靠、非过拟合。残差 ~7% 是规模无法解释的 tool 密度噪声，对两消费者配安全边际均可接受。
 
 ## 2. Non-Goals / 暂缓
 
@@ -84,24 +84,33 @@ interface ModelLimits {
 - **x 轴统一为 localEstimate（o200k 计数）**：学习/查询同口径落桶，无需换算。
 - 空桶（`sampleCount==0`）不参与 §3.3 插值。
 
-### 3.2 学习（落桶 cumulative）
+### 3.2 学习（落桶滑动加权均值）
 
 ```
 learnCalibration(modelId, localEstimate, realTokens, { isLive }):
   确保 modelId 有 ModelLimits（新模型：seed 填充 + factorModel 初始化，见 §5）
   b = bucketIndex(localEstimate)
+  // 强制窗口衰减（见下「为何强制 CAP」）：达权重上限前纯累加，之后按比例衰减保持有效窗 ≈ CAP
+  effWeight = bucket[b].sampleCount           // 权重 ≈ 样本数
+  if effWeight >= WEIGHT_CAP:
+     decay = WEIGHT_CAP / (WEIGHT_CAP + 1)
+     bucket[b].sumReal *= decay ; bucket[b].sumEst *= decay ; effWeight = WEIGHT_CAP
   bucket[b].sumReal += realTokens ; bucket[b].sumEst += localEstimate
-  bucket[b].meanEst = 累计均值更新(bucket[b].meanEst, bucket[b].sampleCount, localEstimate)
-  bucket[b].sampleCount++
-  if isLive: model.liveSampleCount++    // seed/backfill 传 isLive=false
-  // 可选软上限：sumReal/sumEst 超过某权重上限后按比例衰减，允许缓慢适应而不引入 recency 抖动
+  bucket[b].meanEst = (bucket[b].meanEst * effWeight + localEstimate) / (effWeight + 1)   // 锚点 x 同窗滑动
+  bucket[b].sampleCount = min(bucket[b].sampleCount + 1, WEIGHT_CAP)
+  if isLive: model.liveSampleCount++          // seed/backfill 传 isLive=false（不计入 margin）
 ```
+
+`factor = clamp(sumReal / sumEst, 0.5, 3.0)`（读时算）。这是 **~WEIGHT_CAP 样本的滑动 tok-weighted 加权均值**。
+
+**为何强制 CAP（闭合 review 重要-2）**：cumulative 纯累加 + 覆盖式 backfill 会让 live 学习冻结——主力桶 backfill 后 `sumEst≈1671×90k≈1.5e8`，一条 live 样本只挪 factor ~6e-6，live 形同死代码，且与「live 精修覆盖」矛盾。**强制 CAP** 二者兼得：`WEIGHT_CAP`（定 **2000**）下，桶内 stddev 0.1 / √2000 ≈ 0.002 抖动可忽略（稳定，无 EWMA 的 recency 抖），但若 tokenizer 真变（新模型版本换 tokenizer）live 能在 ~2000 请求内漂移适应（不冻结）。backfill 若已写满 2000 权重则 live 立即进入滑动窗，与 backfill 同一估计量、无缝接管。
 
 **成功样本与 400 样本喂同一套 per-bucket 累计**——400 天然落最大桶、成功横跨全桶，size 分桶自动隔离两个 regime，交接文档 #4「成功 vs 400 共用 factor」张力**由分桶结构消解**。
 
 **两条 live 学习腿的接线**（闭合 review S1）：
 - **成功腿**：§4 `CalibrationSink`，`isLive=true`。
 - **400 腿**：现 `onTokenLimitExceeded`→`updateCalibration(actualTokens, estimatedTokens)`（engine.ts:94/148）切成 `learnCalibration(modelId, estimatedTokens/*localEstimate*/, actualTokens/*real*/, {isLive:true})`——注意**参序调整**（localEstimate 在前）+ 400 自然落顶桶。新模型首个 400 建 ModelLimits 时须初始化 `factorModel`（含 seed），否则空模型。
+  **N1（tokenLimit 可选的交互）**：`onTokenLimitExceeded` 的降值守卫 `reportedLimit < existing.tokenLimit`（engine.ts:99）在 seed 建了 `existing.tokenLimit===undefined` 时会 `< undefined` → NaN → false → **400 学到的 tokenLimit 永不写入**。须改为 `existing.tokenLimit === undefined || reportedLimit < existing.tokenLimit`。
 - **口径对齐**（闭合 review S2）：成功腿 real = `input_tokens + cache_read + cache_creation`（整 prompt 口径）；400 腿 `reportedCurrent` 来自错误文案「current: N」。两腿须同为整 prompt 口径才能同桶累计——实施时对拍一条真实 400 确认 N 含缓存（Claude Code 缓存占比大，若 N 只含非缓存 input 则 cache-heavy 请求两腿偏）。
 
 ### 3.3 查询（`calibrate` 内部改，签名保持）
@@ -148,18 +157,25 @@ factorAt(est):
 
 ### 5.2 出厂 bake-in 默认表
 
-离线**全量 3848 样本**训练得到的 per-bucket tok-weighted factor 作为**代码内常量默认表**（对齐 `BUCKET_BOUNDS`）：
+离线**全量 3848 样本**训练得到的 per-bucket `{factor, meanEst}` 作为**代码内常量默认表**。**必须同时 ship 每桶 `meanEst`（插值 x 锚点，闭合 review 重要-1）**——否则 seed-only 模型在 backfill 跑完前 `factorAt` 无合法 x、插值退化。analyze.ts 的「SEED TABLE」小节现成 emit（见 CONCLUSIONS）：
 
 ```ts
-// 由 exp/token-calibration-size-aware 全量训练得出（见 CONCLUSIONS「出厂 seed 表」）
+// factor = tok-weighted Σreal/Σest；meanEst = 该桶样本 est 均值（插值锚点 x）。全量 4000 样本训练
 DEFAULT_FACTOR_SEED = {
-  "claude-opus-4.8": [ /*[0,15k)*/ null, 1.302, 1.306, 1.428, 1.619, 1.831 ],
+  "claude-opus-4.8": [
+    /*[0,15k)*/    null,
+    /*[15k,30k)*/  { factor: 1.284, meanEst: 23877 },
+    /*[30k,60k)*/  { factor: 1.313, meanEst: 48784 },
+    /*[60k,120k)*/ { factor: 1.434, meanEst: 85238 },
+    /*[120k,240k)*/{ factor: 1.625, meanEst: 163889 },
+    /*[240k,inf)*/ { factor: 1.826, meanEst: 333152 },
+  ],
 }
 ```
 
-seed 写入桶时以合成权重落 `sumReal/sumEst`（如 `sumEst=基准权重W, sumReal=factor×W`），`sampleCount` 记合成计数、**`liveSampleCount` 不加**（seed 不驱动 margin，§3.1/I2）。`null` 桶（[0,15k)）留空、查询向 [15k,30k) 外推。
+seed 写桶时以合成权重 `W`（定 = `WEIGHT_CAP` 的一部分，如 500，使真实 live/backfill 能在合理样本内主导）落 `sumEst=W, sumReal=factor×W, meanEst=表值, sampleCount=W`，`liveSampleCount` **不加**（seed 不驱动 margin，§3.1/I2）。`null` 桶（[0,15k)）留空、查询向 [15k,30k) 锚点外推。
 
-**理由**（用户决策）：factor 由 opus-4.8 原生 tokenizer 词表失配驱动、是模型固有属性、跨用户可泛化，故离线结果可作出厂 seed。启动 `loadPersistedLimits` 后，对**未持久化或空桶**的 (model,bucket) 用 seed 填充；backfill/live 随后精修覆盖。
+**理由**（用户决策）：factor 由 opus-4.8 原生 tokenizer 词表失配驱动、是模型固有属性、跨用户可泛化，故离线结果可作出厂 seed。启动 `loadPersistedLimits` 后，对**未持久化或空桶**的 (model,bucket) 用 seed 填充；backfill/live 随后精修。
 
 ### 5.3 factor 模型与 tokenLimit 解耦（闭合 review B2）
 
@@ -174,13 +190,13 @@ calculateTokenLimit:
   return capabilities 回退（max_context_window_tokens × (1 - safetyMarginPercent/100)）
 ```
 
-这样 seed-only 模型走 capabilities 上限（opus ~1M），count-tokens pre-check 用**准确的** calibrated currentTokens（~1.4x）对比 1M，典型请求 `needed:false` → 返回诚实计数（正是目标）。`computeSafetyMargin` 改喂 **`liveSampleCount`**（seed/backfill 不收窄 margin，I2）。
+这样 seed-only 模型走 capabilities 上限（opus ~1M），count-tokens pre-check 用**准确的** calibrated currentTokens（~1.4x）对比 1M，典型请求 `needed:false` → 返回诚实计数（正是目标）。`computeSafetyMargin` 改喂 **`liveSampleCount`**（seed/backfill 不收窄 margin，I2）。（注：现逻辑对 tokenLimit 缺失实际返回 `floor(undefined×…)=NaN` 而非 0，`tokenLimit>0` 守卫同样堵住 NaN。）
 
 ### 5.4 v1→v2 迁移（load 时）
 
 `loadPersistedLimits` 读到 `version:1`：
 - 保留 `tokenLimit`（从 400 学的，机制不变）。
-- 旧标量 `calibrationFactor`（如 opus-4.8 2.202/397）是 400-偏置的巨型请求 factor，**不铺满所有桶**——**优先用 §5.2 seed 表**填该模型桶；seed 表没有的模型，把旧标量只填进**最大桶**（400 真实归属桶），其余桶留空待学。旧 `sampleCount` → `liveSampleCount`（保留已有 margin 收窄）。
+- 旧标量 `calibrationFactor`（如 opus-4.8 2.202/397）是 400-偏置的巨型请求 factor，**不铺满所有桶**——**优先用 §5.2 seed 表**填该模型桶（含 meanEst 锚点）；seed 表没有的模型，把旧标量只填进**最大桶**（400 真实归属桶）、给该桶一个合理 meanEst（如 300k），其余桶留空待学（单锚点时插值退化为常数，自洽）。旧 `sampleCount` → `liveSampleCount`（保留已有 margin 收窄）。
 - 只写 v2。`boundsVersion` 不匹配（未来改桶边界）同样丢弃桶、重 seed。
 
 ## 6. backfill 冷启动（批统计 seed）
@@ -190,7 +206,7 @@ calculateTokenLimit:
 - **可恢复**：`history_meta` 存 `calibration_backfill_v1` 完成 flag + `(started_at, id)` keyset 续跑游标；跑完置 flag，重启不重跑。
 - **协作 stop**：匹配 shutdown phase，never-throw，分批（每批 200）让出事件循环。
 - **数据来源**（闭合 review Y1——`upstream_request` 在盘上被打包进 `request_group` zstd 帧、非独立 stage）：`entries_v2`（`status=completed` ∧ claude ∧ `input_tokens` 非空）读列 `input_tokens/cache_read/cache_creation`（**短列名**，schema.ts:25-26）；stage blob 经 **export 后的 `decodeStageRows`** 展开 `request_group` 帧取 member `{stage,attemptIndex,payload}`，用 **`decompress()` 双格式嗅探**（zstd 新 / gzip legacy，compression.ts）——非单纯 zstd。取最后一个 `upstream_request` member 的 `.body`（`format==="anthropic-messages"` 门控，同 §4）→ `countTotalTokens` → 累加桶 `sumReal/sumEst`。
-- **批统计 seed（`isLive=false`）**（用户决策）：按桶累计 `Σreal / Σest`，一次性写桶 `sumReal/sumEst/sampleCount/meanEst`。**幂等**（重跑同库同结果、不受顺序影响、不双计），`liveSampleCount` 不加。写入**覆盖** §5.2 出厂 seed（用户真实数据 > 泛化值）。
+- **批统计 seed（`isLive=false`）**（用户决策）：按桶累计真实 `Σreal / Σest` + `mean(est)`，一次性写桶。**写入权重封顶 `WEIGHT_CAP`**（§3.2）：若某桶真实样本 > CAP，则按比例缩放 `sumReal/sumEst` 使 `sampleCount=CAP` 而 factor 不变——这样 live 学习**立即进入滑动窗**、不在 backfill 后再冻结一段。**幂等**（重跑同库同结果、不受顺序影响、不双计），`liveSampleCount` 不加。写入**覆盖** §5.2 出厂 seed（用户真实数据 > 泛化值）。
 - **覆盖率**（闭合 review S3）：历史早期行可能只有 legacy `outbound_request`、无 `upstream_request`（新腿 restructure 后才写）→ 会被跳过。实施时**显式打 skip 计数 / 覆盖率**评估老数据 seed 是否变薄；必要时经 legacy 腿适配。
 
 ## 7. pre-flight（Phase 2，config 门控默认 OFF）
@@ -199,7 +215,8 @@ calculateTokenLimit:
 
 主 `/v1/messages` 走 **v4 driver**（`handler-v4.ts` → `driver.ts`），当前**完全不 tokenize**。真实 post-preprocessTools wire 在 `codec.prepareWire(current)`（driver.ts:256）产生、`transport.send(wire)`（driver.ts:268）发送。pre-flight 须落在这两者间的**异步接缝**——但 driver 是格式无关的、`wire` 是 `WireEnvelope`（headers 为 `Headers`），而 `autoTruncateAnthropic` 吃 Anthropic `MessagesPayload`。故：
 
-- 新增一个 **codec 级 async pre-send hook**（Anthropic codec 实现、其他 codec no-op），在 driver `prepareWire → send` 之间调用；hook 内对 `env.body`（MessagesPayload）判超限、超则截断并**重跑 `prepareWire`**。这样把 Anthropic 专属截断收进 codec、不污染通用 driver。
+- 新增一个 **codec 级 async pre-send hook**（Anthropic codec 实现、其他 codec no-op，如可选 `preSend?(env): Promise<RequestEnvelope>`），在 driver `prepareWire → send` 之间调用；hook 内对 `env.body`（MessagesPayload）判超限、超则截断并经 `env.with({body})` 回灌 + 重跑 `prepareWire`（`prepareWire` 契约声明幂等不写回 env.body）。这样把 Anthropic 专属截断收进 codec、不污染通用 driver。
+- **N2（触发时机）**：driver 主循环 `for(;;)`（driver.ts:255）每轮 `prepareWire→send`；hook 若插循环内则每次重试都重跑 `countTotalTokens`（反应式补截时冗余）。须**仅首 attempt 触发**（或进入重试循环前一次性执行）——pre-flight 是「首发前预截」，反应式已接管后续重试。
 - 精确接缝（哪个 driver 方法插 hook、截断后 env 如何回灌）留给实施计划钉死，避免双重预处理 / 口径漂移。
 
 判超限逻辑（口径不变量见下）：
@@ -261,12 +278,19 @@ if predicted > limit:
 
 ## 12. 审查意见处置（record-not-adopted）
 
-两轮 subagent 对抗审查（架构 + 可行性）的处置：
+两轮 subagent 对抗审查（架构 + 可行性）+ 复审的处置：
 
-**已采纳并修订**：B1（schema 删字段打爆消费者→§8 明列非零改动 + `liveSampleCount` 分离）、B2（seed→tokenLimit=0 反向→§5.3 解耦 + tokenLimit>0 守卫）、B3-feasibility（wire 入口错→§4 改 `entry.attempts.at(-1)`）、B3-arch（验证≠落地算法→离线实测插值 7.4% 背书，§3.3）、B4/I5（主路径 v4 driver→§7.1 codec pre-send hook）、I1（format 门控，§4）、I2（seed 不驱动 margin→`liveSampleCount`）、I3（EWMA→cumulative tok-weighted，§3.1）、I4（顶桶中心→meanEst 锚点）、S1（400 腿参序，§3.2）、S2（cache 口径实测，§11）、S3（legacy 覆盖率，§6/§11）、S4（§1.2 措辞已含 OpenAI）、Y1（decode 展开+双格式+短列名，§6）、Y3（config 归 `auto_truncate.*`，§7.1）。
+**第一轮已采纳并修订**：B1（schema 删字段打爆消费者→§8 明列非零改动 + `liveSampleCount` 分离）、B2（seed→tokenLimit=0 反向→§5.3 解耦 + tokenLimit>0 守卫）、B3-feasibility（wire 入口错→§4 改 `entry.attempts.at(-1)`）、B3-arch（验证≠落地算法→离线实测插值 7.4% 背书，§3.3）、B4/I5（主路径 v4 driver→§7.1 codec pre-send hook）、I1（format 门控，§4）、I2（seed 不驱动 margin→`liveSampleCount`）、I3（EWMA→cumulative tok-weighted，§3.1）、I4（顶桶中心→meanEst 锚点）、S1（400 腿参序，§3.2）、S2（cache 口径实测，§11）、S3（legacy 覆盖率，§6/§11）、S4（§1.2 措辞已含 OpenAI）、Y1（decode 展开+双格式+短列名，§6）、Y3（config 归 `auto_truncate.*`，§7.1）。
+
+**第二轮复审（修订自身引入）已闭合**：
+- N1（feasibility）：`onTokenLimitExceeded` 降值守卫对 seed 建的 `tokenLimit===undefined` 会 NaN 短路 → §3.2 补 `=== undefined || <` 守卫。
+- N2（feasibility）：pre-flight hook 在 driver `for(;;)` 每轮触发 → §7.1 限「仅首 attempt」。
+- 重要-1（architecture）：seed/迁移缺 `meanEst` 插值锚点 → §5.2 seed 表 ship `{factor, meanEst}`、§5.4 迁移最大桶给 meanEst。
+- 重要-2（architecture）：cumulative + 覆盖式 backfill 让 live 冻结、与「精修」矛盾、软上限未定义 → §3.2 **软上限转正为强制 `WEIGHT_CAP=2000` 滑动窗**（稳定 + 不冻结二者兼得），§6 backfill 写入权重封顶 CAP 使 live 立即进滑动窗。
 
 **未采纳/暂缓**（附理由）：
 - 组成/tool-密度感知 factor（超越 size 的第二维，解释残差 ~7%）：暂缓项，精度已足够两消费者（§2、§11）。
 - 6 桶固定边界加维度：`boundsVersion` 留后路，当前够用，两审查者均认可暂不加。
+- 「backfill 定盘、live 只填空桶」（重要-2 选项 a）：**未采纳**，改选项 b（WEIGHT_CAP 滑动窗）——让 live 学习真正有意义（tokenizer 变更可漂移适应），而非冻结成死代码，符合 long-term-correct。
 - reviewer 建议「桶用更小 alpha」：直接改 cumulative tok-weighted（不用 EWMA），比调 alpha 更根本，采纳其意图而非字面手段。
 
