@@ -48,8 +48,13 @@ import {
   useListStore,
 } from "@/stores/list-store"
 
-// hoisted 供 vi.mock 工厂引用的 spy:虚拟列表 scrollToIndex + 单条 summary 查询。
-const { scrollToIndexMock, apiGetMock, apiDeleteMock } = vi.hoisted(() => ({ scrollToIndexMock: vi.fn(), apiGetMock: vi.fn(), apiDeleteMock: vi.fn() }))
+// hoisted 供 vi.mock 工厂引用的 spy:虚拟列表 scrollToIndex + 单条 summary 查询 + 捕获 endReached(供测门控)。
+const { scrollToIndexMock, apiGetMock, apiDeleteMock, endReachedRef } = vi.hoisted(() => ({
+  scrollToIndexMock: vi.fn(),
+  apiGetMock: vi.fn(),
+  apiDeleteMock: vi.fn(),
+  endReachedRef: { current: null as null | (() => void) },
+}))
 
 // fake TableVirtuoso:确定性渲染(不依赖 jsdom layout/initialItemCount),并经 useImperativeHandle
 // 暴露 scrollToIndex spy 供定位断言。忠实复现 HistoryList 用到的契约:Table/TableRow 子组件 +
@@ -66,6 +71,7 @@ vi.mock("react-virtuoso", async () => {
     const components = props.components as { Table: React.ComponentType<Record<string, unknown>>; TableRow: React.ComponentType<Record<string, unknown>> }
     const fixedHeaderContent = props.fixedHeaderContent as () => React.ReactNode
     const fixedFooterContent = props.fixedFooterContent as (() => React.ReactNode) | undefined
+    endReachedRef.current = (props.endReached as (() => void) | undefined) ?? null
     const itemContent = props.itemContent as (index: number, row: unknown, context: unknown) => React.ReactNode
     useImperativeHandle(ref as React.Ref<unknown>, () => ({ scrollToIndex: scrollToIndexMock }))
     const Table = components.Table
@@ -205,6 +211,25 @@ describe("HistoryList", () => {
     fireEvent.click(toggle)
     expect(screen.getByRole("button", { name: /自动/ })).toBeDefined()
     expect(localStorage.getItem("ui-v4:requests:auto-load:v1")).toBe("1")
+  })
+
+  it("触底(endReached)门控:autoLoad 关(默认)→ 不自动翻页", () => {
+    localStorage.removeItem("ui-v4:requests:auto-load:v1")
+    const fetchNextPage = vi.fn()
+    mockHistory = { entries: [entry("a")], total: 50, isLoading: false, hasNextPage: true, fetchNextPage }
+    renderList()
+    endReachedRef.current?.() // 模拟滚到底
+    expect(fetchNextPage).not.toHaveBeenCalled()
+  })
+
+  it("触底(endReached)门控:autoLoad 开 → 自动翻页", () => {
+    localStorage.setItem("ui-v4:requests:auto-load:v1", "1")
+    const fetchNextPage = vi.fn()
+    mockHistory = { entries: [entry("a")], total: 50, isLoading: false, hasNextPage: true, fetchNextPage }
+    renderList()
+    endReachedRef.current?.()
+    expect(fetchNextPage).toHaveBeenCalledOnce()
+    localStorage.removeItem("ui-v4:requests:auto-load:v1")
   })
 
   it("locates the ?at row: highlights it (selection truth = URL) and pauses tail", () => {
