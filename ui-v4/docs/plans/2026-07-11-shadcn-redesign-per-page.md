@@ -128,6 +128,13 @@ git commit -F <msg> -- <上述路径>
 
 ## Task P2 · Requests（列表 + 形态 A 整页详情入口 + prev/next + ?at 返回定位 + LiveDock 呈现层）
 
+> **实施状态: DONE**（4 子 commit,分支 `feat/ui-v4-shadcn-redesign`,HEAD `aece8521`）。
+> ① `c6fd8247` 提取 `RequestsListLegacy`(逐字冻结)+ `RequestsListPage` 变薄 `DesignFork` wrapper。
+> ② `6eab9d38` `RequestsListShadcn` 完整壳 + 重接 master 列配置三态(`useColumnState`/`REQUEST_COLUMNS`/`reorderColumns` 共用数据层 + 自持 `DndContext`)；新 `HistoryListShadcn`(**虚拟化容器 fork 决策 = 选 A**:保 `TableVirtuoso`、`FakeTableVirtuoso` 契约沿用;中性化 + shadcn `Dialog` 替 `Modal`;逐字同构 legacy 的 `?at` 定位/load-until-found/键盘 roving/session 色带/清空)；新 shadcn D-shell:`RequestsFilterBarShadcn`/`RequestFilterChipsShadcn`/`RequestsColumnMenuShadcn`/`SessionPaletteSelectShadcn`/`DateRangePopoverShadcn`;theme.css 加 `.rdp-neutral` 皮肤(作用域化 `[data-design=shadcn]`)。行点击 → 整页详情(形态 A);`?at=` 返回定位复现。
+> ③ `6f1b9e78` 新 A 类 `useRequestNeighbors`(design-agnostic prev/next hook,决策 5 新特性;P3 详情 chrome 消费)。
+> ④ `aece8521` `ShadcnLiveDock` 填成完整(展开分组明细 `LiveGroupShadcn` + tail 开关 + 待合入 CTA + Escape,读同一 live-store)。
+> INV-4 四绿(每子 commit):typecheck / build(index 1071.18KB,基线 1040.82KB,+30KB shadcn 列表+dock)/ test(481 全绿:新增 RequestsListShadcn 9 + useRequestNeighbors 11 + ShadcnLiveDock 6)/ eslint 无缓存;grep 守卫绿。**交用户 UX 检查项见文末**:live 信号绿/琥珀(未擅改 SIGNAL_COLOR 源值)、列表密度/resize 手感、virtuoso 真虚拟化保真、LiveDock 展开面板观感、prev/next 键位(j/k vs Arrow)、`.rdp-neutral` 日历皮肤观感。legacy Requests 全套零改动。
+
 - **对应 RFC/决策**: §4 P2、决策 5（形态 A 整页详情 + prev/next + `?at` 返回定位）、决策 7（LiveDock 呈现层 shadcn 化，结构已在 AppShell）、**master 列配置特性**（见下专节）。
 - **目标**: shadcn 侧完整 Requests 列表页——筛选工具条 + 活动 chips + 虚拟化 History 列表（**接 dnd 重排 / resize / columnOrder / 列可见性**）+ 行点击进整页详情 + `?at=id` 返回定位 + prev/next 键盘快捷键 + `ShadcnLiveDock` 呈现层填成完整。**legacy Requests 全套冻结。**
 - **commit invariant**: INV-1（`RequestRow` 内容体已 C3 中性化，零 `designVersion`；新 shadcn 列表壳属 D，`designVersion` 只在 RoutePage fork）；INV-2（`RequestsListPage` fork B）；INV-FIDELITY-1（LiveDock 呈现层读同一常驻 `live-store`，切换不丢在飞请求——`ShadcnLiveDock` 已如此）；INV-4 四绿。
