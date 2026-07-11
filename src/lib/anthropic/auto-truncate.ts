@@ -438,8 +438,9 @@ export async function checkNeedsCompactionAnthropic(
 
   const rawTokens = await countTotalTokens(payload, model)
 
-  // Apply calibration to adjust the GPT tokenizer estimate
-  const currentTokens = learned && learned.sampleCount > 0 ? calibrate(model.id, rawTokens) : rawTokens
+  // Apply size-aware calibration to adjust the GPT tokenizer estimate
+  // (empty/unlearned model → factorAt 1.0, so this is a no-op there).
+  const currentTokens = calibrate(model.id, rawTokens)
 
   const exceedsTokens = cfg.checkTokenLimit && currentTokens > tokenLimit
 

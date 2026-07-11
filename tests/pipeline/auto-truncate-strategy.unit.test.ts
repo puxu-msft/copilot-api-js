@@ -27,6 +27,7 @@ import type {
 
 import {
   //
+  factorAt,
   getLearnedLimits,
   resetAllLimitsForTesting,
 } from "~/lib/auto-truncate"
@@ -282,9 +283,11 @@ describe("createAutoTruncateStrategy - token caliber conversion", () => {
 
     const learned = getLearnedLimits("claude-sonnet-4")
     expect(learned).toBeDefined()
-    // EWMA seeds the first sample with the raw (clamped) factor; 135355/64000 ≈ 2.115.
-    expect(learned!.calibrationFactor).toBeCloseTo(135355 / gptCount, 2)
-    expect(learned!.sampleCount).toBe(1)
+    // Size-aware model: the 400's (est, real) sample lands in its size bucket;
+    // factorAt at that estimate ≈ 135355/64000 ≈ 2.115. liveSampleCount tracks
+    // the single live learning event.
+    expect(factorAt("claude-sonnet-4", gptCount)).toBeCloseTo(135355 / gptCount, 2)
+    expect(learned!.liveSampleCount).toBe(1)
   })
 
   test("falls back to raw reported target when gptCount is 0", async () => {
