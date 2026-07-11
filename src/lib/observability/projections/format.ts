@@ -46,13 +46,16 @@ export function formatDuration(ms: number): string {
 
 /**
  * Severity color for a request's wall-clock duration: fast requests stay white,
- * escalating as latency grows (a slow request is worth noticing).
- *   ≤ 20s → white   ≤ 60s → dim yellow   ≤ 180s → yellow   > 180s → red
+ * escalating through distinct hues as latency grows (a slow request is worth
+ * noticing). All four bands are distinct single colors — no `dim`, which the
+ * terminal renders as grey and would break the monotonic "slower = louder"
+ * ordering.
+ *   ≤ 20s → white   ≤ 60s → yellow   ≤ 180s → magenta   > 180s → red
  */
 export function durationColor(ms: number): (s: string) => string {
   if (ms <= 20_000) return pc.white
-  if (ms <= 60_000) return (s) => pc.dim(pc.yellow(s))
-  if (ms <= 180_000) return pc.yellow
+  if (ms <= 60_000) return pc.yellow
+  if (ms <= 180_000) return pc.magenta
   return pc.red
 }
 

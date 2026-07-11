@@ -17,7 +17,6 @@ import stringWidth from "string-width"
 import {
   //
   cacheHitColor,
-  durationColor,
   formatCacheRate,
   formatNumber,
   truncateToWidth,
@@ -131,32 +130,23 @@ describe("formatCacheRate", () => {
 
 // In-process (bun test) has `pc.isColorSupported === false`, under which
 // picocolors collapses EVERY color to the SAME identity reference:
-// `pc.white === pc.yellow === pc.red === pc.dim === String` (verified). So a
-// single-color band's `.toBe(pc.white)` is really `.toBe(String)` here — it
-// cannot distinguish bands nor catch an "always red" mutation, so we do NOT
-// assert it in-process. What IS observable in-process is that the COMPOSITE
-// bands (bold-red / dim-yellow) are fresh closures, hence `!== String`; a
-// mutation that flattens them to a single pc color makes them collapse to
-// `String` and these `.not.toBe` checks fail. Every band's ACTUAL color — the
-// three single-color bands and all threshold boundaries — is proven
+// `pc.white === pc.yellow === pc.magenta === pc.red === pc.dim === String`
+// (verified). So a single-color band's `.toBe(pc.white)` is really
+// `.toBe(String)` here — it cannot distinguish bands nor catch an "always red"
+// mutation, so we do NOT assert it in-process. What IS observable in-process is
+// that a COMPOSITE band (e.g. cacheHitColor's `bold(red)`) is a fresh closure,
+// hence `!== String`; a mutation that flattens it to a single pc color makes it
+// collapse to `String` and the `.not.toBe` check fails. Every band's ACTUAL
+// color — all single-color bands and all threshold boundaries — is proven
 // authoritatively in the FORCE_COLOR integration test
-// (tests/tui/log-line-color.integration.test.ts).
+// (tests/tui/log-line-color.integration.test.ts). durationColor has no composite
+// band (all four are single colors), so it has no in-process guard here; it is
+// covered entirely by the integration test.
 describe("cacheHitColor (severity by hit rate — in-process routing guard)", () => {
   test("the <20 severe band is a distinct fresh closure, not collapsed to a named band", () => {
     const fn = cacheHitColor(19)
     expect(fn).not.toBe(pc.dim)
     expect(fn).not.toBe(pc.yellow)
     expect(fn).not.toBe(pc.red)
-  })
-})
-
-describe("durationColor (request-duration severity — in-process routing guard)", () => {
-  test("the 20s–60s dim-yellow band is a distinct fresh closure, not collapsed to a named band", () => {
-    for (const ms of [20_001, 45_000, 60_000]) {
-      const fn = durationColor(ms)
-      expect(fn).not.toBe(pc.white)
-      expect(fn).not.toBe(pc.yellow)
-      expect(fn).not.toBe(pc.red)
-    }
   })
 })

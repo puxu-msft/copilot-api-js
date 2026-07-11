@@ -3,15 +3,17 @@
  *
  * This is the AUTHORITATIVE per-band color test. bun's in-process test env has
  * `pc.isColorSupported === false`, under which picocolors collapses EVERY color
- * to the SAME identity reference: `pc.white === pc.yellow === pc.red === pc.dim
- * === String` (verified). So in-process a single-color band's `.toBe(pc.white)`
- * is really `.toBe(String)` — it cannot distinguish bands and cannot catch an
- * "always red" mutation. The only in-process signal is that the COMPOSITE bands
- * (bold-red / dim-yellow) are fresh closures `!== String` (see the `.not.toBe`
- * tests in format.unit.test.ts). Every band's ACTUAL color — including the three
- * single-color bands and all threshold boundaries — is proven here, by rendering
- * real `formatLogLine` in a `FORCE_COLOR=3` child process and asserting exact SGR
- * bytes. Boundary cases (≥/≤ inclusivity) guard against off-by-one mutations.
+ * to the SAME identity reference: `pc.white === pc.yellow === pc.magenta ===
+ * pc.red === pc.dim === String` (verified). So in-process a single-color band's
+ * `.toBe(pc.white)` is really `.toBe(String)` — it cannot distinguish bands and
+ * cannot catch an "always red" mutation. The only in-process signal is that a
+ * COMPOSITE band (cacheHitColor's `bold(red)`) is a fresh closure `!== String`
+ * (see the `.not.toBe` test in format.unit.test.ts). Every band's ACTUAL color —
+ * all single-color bands (incl. durationColor's white/yellow/magenta/red, which
+ * have no composite guard) and all threshold boundaries — is proven here, by
+ * rendering real `formatLogLine` in a `FORCE_COLOR=3` child process and asserting
+ * exact SGR bytes. Boundary cases (≤ inclusivity) guard against off-by-one
+ * mutations.
  */
 
 import {
@@ -28,6 +30,7 @@ const DIM = "\x1b[2m"
 const BOLD = "\x1b[1m"
 const WHITE = "\x1b[37m"
 const YELLOW = "\x1b[33m"
+const MAGENTA = "\x1b[35m"
 const RED = "\x1b[31m"
 
 // The exact bytes picocolors emits for each severity band (probed under FORCE_COLOR).
@@ -35,9 +38,9 @@ const band = {
   dim: (s: string) => `${DIM}${s}${OFF}`,
   white: (s: string) => `${WHITE}${s}${RESET_FG}`,
   yellow: (s: string) => `${YELLOW}${s}${RESET_FG}`,
+  magenta: (s: string) => `${MAGENTA}${s}${RESET_FG}`,
   red: (s: string) => `${RED}${s}${RESET_FG}`,
   boldRed: (s: string) => `${BOLD}${RED}${s}${RESET_FG}${OFF}`,
-  dimYellow: (s: string) => `${DIM}${YELLOW}${s}${RESET_FG}${OFF}`,
 }
 
 /**
@@ -57,10 +60,10 @@ const cacheCases: Array<{ label: string; i: number; r: number; expect: string }>
 const durationCases: Array<{ label: string; ms: number; expect: string }> = [
   { label: "3s → white", ms: 3000, expect: band.white("3s") },
   { label: "20s → white (≤20 boundary)", ms: 20_000, expect: band.white("20s") },
-  { label: "20.001s → dim yellow", ms: 20_001, expect: band.dimYellow("20.001s") },
-  { label: "60s → dim yellow (≤60 boundary)", ms: 60_000, expect: band.dimYellow("60s") },
-  { label: "60.001s → yellow", ms: 60_001, expect: band.yellow("60.001s") },
-  { label: "180s → yellow (≤180 boundary)", ms: 180_000, expect: band.yellow("180s") },
+  { label: "20.001s → yellow", ms: 20_001, expect: band.yellow("20.001s") },
+  { label: "60s → yellow (≤60 boundary)", ms: 60_000, expect: band.yellow("60s") },
+  { label: "60.001s → magenta", ms: 60_001, expect: band.magenta("60.001s") },
+  { label: "180s → magenta (≤180 boundary)", ms: 180_000, expect: band.magenta("180s") },
   { label: "180.001s → red", ms: 180_001, expect: band.red("180.001s") },
   { label: "200s → red", ms: 200_000, expect: band.red("200s") },
 ]
