@@ -4,29 +4,10 @@ import {
   useParams,
 } from "react-router-dom"
 
-import type { EntrySummary } from "@/types"
-
 import { AgentLane } from "@/components/sessions/AgentLane"
+import { groupByAgent } from "@/components/sessions/group-by-agent"
 import { Card } from "@/components/ui/card"
 import { useSessionEntries } from "@/hooks/useSessionEntries"
-
-/** 按 agentId 分组:main(agentId === undefined)+ 每个 subagent 一组(不透明 agentId,无种类名,spec §5)。 */
-function groupByAgent(entries: Array<EntrySummary>): Array<{ name: string; entries: Array<EntrySummary> }> {
-  const main: Array<EntrySummary> = []
-  const subs = new Map<string, Array<EntrySummary>>()
-  for (const e of entries) {
-    if (e.agentId === undefined) main.push(e)
-    else {
-      const list = subs.get(e.agentId) ?? []
-      list.push(e)
-      subs.set(e.agentId, list)
-    }
-  }
-  const lanes: Array<{ name: string; entries: Array<EntrySummary> }> = []
-  if (main.length > 0) lanes.push({ name: "main agent", entries: main })
-  for (const [agentId, list] of subs) lanes.push({ name: `subagent ${agentId.slice(0, 10)}`, entries: list })
-  return lanes
-}
 
 /**
  * fork B · Session 详情 shadcn 页元素(P5 完整版)。

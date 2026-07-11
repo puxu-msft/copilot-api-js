@@ -150,6 +150,13 @@ describe("SessionsPage · fork B (designVersion routes legacy vs shadcn)", () =>
     expect(screen.queryAllByTestId("sessions-shadcn")).toHaveLength(1)
     expect(screen.getByText(/no sessions/i)).toBeDefined()
   })
+
+  it("shadcn: shows a loading state while the session list is pending", () => {
+    mockUseSessions.mockReturnValue({ data: undefined, isLoading: true })
+    act(() => useUiStore.getState().setDesignVersion("shadcn"))
+    renderSessions()
+    expect(screen.getByText(/loading/i)).toBeDefined()
+  })
 })
 
 describe("SessionDetailPage · fork B (designVersion routes legacy vs shadcn)", () => {
@@ -181,5 +188,21 @@ describe("SessionDetailPage · fork B (designVersion routes legacy vs shadcn)", 
     renderDetail()
     fireEvent.click(screen.getByRole("link", { name: /sessions/i }))
     expect(screen.getByText("sessions-list")).toBeDefined()
+  })
+
+  it("shadcn: renders an empty-lanes state when the session has no entries", () => {
+    mockUseSessionEntries.mockReturnValue({ data: { entries: [], total: 0 }, isLoading: false })
+    act(() => useUiStore.getState().setDesignVersion("shadcn"))
+    renderDetail()
+    expect(screen.queryAllByTestId("session-detail-shadcn")).toHaveLength(1)
+    expect(screen.getByText(/no requests in this session/i)).toBeDefined()
+    expect(screen.getByText(/0 req · 0 lanes/)).toBeDefined()
+  })
+
+  it("shadcn: shows a loading state while entries are pending", () => {
+    mockUseSessionEntries.mockReturnValue({ data: undefined, isLoading: true })
+    act(() => useUiStore.getState().setDesignVersion("shadcn"))
+    renderDetail()
+    expect(screen.getByText(/loading/i)).toBeDefined()
   })
 })
