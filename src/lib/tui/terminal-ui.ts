@@ -58,6 +58,7 @@ import {
   buildCollapsedLines,
   buildDetailLines,
   buildPanelLines,
+  panelContentRows,
 } from "./render/panel"
 import {
   //
@@ -682,10 +683,14 @@ export class TerminalUi {
     }
   }
 
-  /** Request rows the panel can show at once (help keybar steals one row). */
+  /**
+   * Request rows the panel shows at once — the controller's `visibleRows` for
+   * scroll math. Uses the SAME {@link panelContentRows} helper `buildPanelLines`
+   * uses, from the same inputs, so the selection window stays exactly aligned
+   * (a mismatch would let the cursor scroll out of the visible window).
+   */
   private visibleRequestRows(): number {
-    const rows = this.panelRows()
-    return this.uiState.showHelp ? Math.max(1, rows - 1) : rows
+    return panelContentRows(this.panelRows(), this.active.size, this.uiState.showHelp)
   }
 
   /**

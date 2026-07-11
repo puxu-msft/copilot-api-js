@@ -67,6 +67,38 @@ export interface DetailView extends ActiveRequestView {
   attempts?: Array<AttemptSnapshot>
 }
 
+/**
+ * Total lines the expanded panel may occupy at once (content + overflow
+ * indicator + keybar). A *bounded* height is the whole point: the panel's height
+ * drove the blank-line bug — as the in-flight count changed, the panel grew and
+ * shrank, forcing {@link Region} to tear down and rebuild its DECSTBM scroll
+ * region every time (geometry churn leaves stray blank rows). Capping the height
+ * keeps it constant while the list is long, so the region only re-establishes on
+ * first-open / resize, not on every request arrival; overflow is reached via the
+ * selection cursor (controller scroll) with an on-panel `↑K ↓M more` indicator.
+ */
+export const MAX_PANEL_ROWS = 3
+
+/**
+ * How many request rows the panel's scroll window shows, given the total row
+ * budget, the active count, and whether the keybar is shown. The budget is
+ * capped at {@link MAX_PANEL_ROWS}; one line is reserved for the keybar
+ * (`showHelp`) and one for the overflow indicator (when the list is longer than
+ * fits). Always ≥ 1.
+ *
+ * Depends ONLY on the totals — never on `scrollOffset` — so the controller's
+ * `visibleRows`, computed from the same inputs, stays exactly aligned with the
+ * window `buildPanelLines` slices, regardless of where the user scrolled. (A
+ * scroll-dependent count would feed back: scroll changes the indicator, the
+ * indicator changes the window, the window changes the scroll.)
+ */
+export function panelContentRows(totalRows: number, activeCount: number, showHelp: boolean): number {
+  const budget = Math.min(totalRows, MAX_PANEL_ROWS)
+  const afterKeybar = Math.max(1, showHelp ? budget - 1 : budget)
+  const overflow = activeCount > afterKeybar
+  return overflow ? Math.max(1, afterKeybar - 1) : afterKeybar
+}
+
 /** ` ↑<reqBytes> ↓<respBytes>` — either side omitted (`-`) when unknown. */
 function formatByteFlow(reqBytes: number | undefined, respBytes: number | undefined): string {
   const up = reqBytes === undefined ? "-" : formatBytes(reqBytes)
@@ -98,11 +130,13 @@ export function buildCollapsedLines(args: { active: ReadonlyArray<ActiveRequestV
 }
 
 /**
- * Expanded mode: one table row per visible request within the scroll window
- * `active.slice(scrollOffset, scrollOffset + entryRows)`, where `entryRows` is
- * `rows` minus one when `showHelp` reserves the trailing keybar. The row whose
- * global index equals `selectedIndex` is wrapped in reverse-video. Every row is
- * truncated to `columns-1` before styling.
+ * Expanded mode: a fixed-height table (≤ {@link MAX_PANEL_ROWS}). Shows
+ * {@link panelContentRows} request rows from the scroll window
+ * `active.slice(scrollOffset, scrollOffset + contentRows)`; when the list is
+ * longer than fits, a dim `↑<above> ↓<below> more` indicator line summarises the
+ * hidden entries on both sides. The row whose global index equals
+ * `selectedIndex` is wrapped in reverse-video. Every line is truncated to
+ * `columns-1` before styling.
  */
 export function buildPanelLines(args: {
   active: ReadonlyArray<DetailView>
@@ -115,14 +149,22 @@ export function buildPanelLines(args: {
 }): Array<string> {
   const { active, now, columns, selectedIndex, scrollOffset, rows, showHelp } = args
   const budget = columns - 1
-  const entryRows = showHelp ? Math.max(0, rows - 1) : rows
-  const window = active.slice(scrollOffset, scrollOffset + entryRows)
+  const contentRows = panelContentRows(rows, active.length, showHelp)
+  const window = active.slice(scrollOffset, scrollOffset + contentRows)
 
   const lines = window.map((view, i) => {
     const globalIndex = scrollOffset + i
     const row = truncateToWidth(formatPanelRow(view, now), budget)
     return globalIndex === selectedIndex ? `${REVERSE_ON}${row}${REVERSE_OFF}` : row
   })
+
+  // Bidirectional overflow indicator — only when the list is longer than the
+  // content window (`panelContentRows` reserved a row for it in that case).
+  const above = scrollOffset
+  const below = Math.max(0, active.length - (scrollOffset + contentRows))
+  if (above > 0 || below > 0) {
+    lines.push(pc.dim(truncateToWidth(`↑${above} ↓${below} more`, budget)))
+  }
 
   if (showHelp) {
     lines.push(pc.dim(truncateToWidth("↑↓ nav · enter detail · esc back · q quit", budget)))
