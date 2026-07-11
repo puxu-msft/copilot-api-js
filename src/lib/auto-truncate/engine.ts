@@ -374,9 +374,9 @@ export async function loadPersistedLimits(): Promise<void> {
           updatedAt: Date.now(),
         })
       }
-    } else {
-      return
     }
+    // version 0/unknown falls through — no persisted entries loaded, but seed
+    // materialization below still runs (fresh-install parity).
     if (learnedLimits.size > 0) {
       consola.info(`[AutoTruncate] Loaded learned limits for ${learnedLimits.size} model(s)`)
     }
@@ -387,6 +387,19 @@ export async function loadPersistedLimits(): Promise<void> {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       consola.warn("[AutoTruncate] learned-limits file unreadable/corrupted, starting fresh:", err)
     }
+  }
+
+  // Materialize the factory bake-in seed for any (model) not already loaded from
+  // disk, UNCONDITIONALLY — success, ENOENT, and corrupt paths all reach here.
+  // Without this, fresh installs leave DEFAULT_FACTOR_SEED unmaterialized, so
+  // hasKnownLimits() is false and count_tokens skips the seed-calibrated
+  // pre-check on the first request (spec §5.2 + goal 3: cold-start convergence).
+  // ensureModelLimits does NOT overwrite an existing entry, so real/migrated
+  // learned data always wins over the seed. Seed is a code constant — do NOT
+  // schedulePersist() here (ensureModelLimits deliberately doesn't) to avoid
+  // writing recomputable data to disk.
+  for (const modelId of Object.keys(DEFAULT_FACTOR_SEED)) {
+    ensureModelLimits(modelId)
   }
 }
 

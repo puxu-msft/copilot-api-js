@@ -17,6 +17,7 @@ import {
   //
   factorAt,
   getLearnedLimits,
+  hasKnownLimits,
   loadPersistedLimits,
   resetAllLimitsForTesting,
   seedFactorModel,
@@ -49,4 +50,18 @@ test("v1 file migrates: scalar → max bucket, sampleCount → liveSampleCount",
   expect(lim?.liveSampleCount).toBe(40)
   expect(lim?.tokenLimit).toBe(900_000)
   expect(factorAt("claude-mystery", 400_000)).toBeCloseTo(2.2, 1) // top bucket
+})
+
+test("fresh install (ENOENT) materializes the bake-in seed", async () => {
+  // Point at a path that does not exist yet → loadPersistedLimits hits ENOENT.
+  const dir = mkdtempSync(join(tmpdir(), "cal-"))
+  const path = join(dir, "does-not-exist.json")
+  setLearnedLimitsPathForTests(path)
+  await loadPersistedLimits()
+  // Seed table must materialize even with no file on disk, so hasKnownLimits
+  // gates count_tokens ON at cold start (spec §5.2 + goal 3).
+  expect(hasKnownLimits("claude-opus-4.8")).toBe(true)
+  expect(factorAt("claude-opus-4.8", 85_238)).toBeCloseTo(1.434, 2) // seed bucket 3
+  // Seed-only model must not carry a learned cap (undefined until a 400 teaches it).
+  expect(getLearnedLimits("claude-opus-4.8")?.tokenLimit).toBeUndefined()
 })
