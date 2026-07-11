@@ -60,6 +60,7 @@ import {
   buildCollapsedLines,
   buildDetailLines,
   buildPanelLines,
+  MAX_PANEL_ROWS,
   panelContentRows,
 } from "./render/panel"
 import {
@@ -256,6 +257,17 @@ export class TerminalUi {
   /** Max panel rows the Region can show (height minus the reserved log rows). */
   private panelRows(): number {
     return Math.max(1, this.getRows() - RESERVED_LOG_ROWS)
+  }
+
+  /**
+   * Constant panel height for interactive instances (spec INV-2): the DECSTBM
+   * scroll region's height must never change on a view switch (collapsed ↔
+   * panel), only on an actual geometry change (resize / first establish). Both
+   * `collapsed` and `panel` are padded to this height in {@link renderRegion};
+   * `detail` is a separate path (P1) and is not padded here.
+   */
+  private interactivePanelHeight(): number {
+    return Math.min(this.panelRows(), MAX_PANEL_ROWS)
   }
 
   destroy(): void {
@@ -721,6 +733,15 @@ export class TerminalUi {
     this.rendering = true
     try {
       const lines = this.buildViewLines()
+      // Constant height (spec INV-2): pad collapsed/panel to the constant
+      // interactive panel height so the DECSTBM scroll region's geometry never
+      // changes across a view switch — zero churn. `detail` uses a separate
+      // path (P1) and is left unpadded here; `buildPanelLines` already returns
+      // exactly H rows, so padding is a no-op for the panel view.
+      if (this.uiState.view !== "detail" && lines.length > 0) {
+        const h = this.interactivePanelHeight()
+        while (lines.length < h) lines.push("")
+      }
       if (lines.length === 0) {
         this.region.clear()
       } else {

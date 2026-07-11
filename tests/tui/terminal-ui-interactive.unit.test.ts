@@ -13,8 +13,10 @@
  *     `\x1b[1;<N>r`, per-row content);
  *   - `down` → selection moves (reverse-video on the next row);
  *   - `enter` → detail (`req_id:` block);
- *   - `escape ×2` → back to collapsed, emitting the DECSTBM reset `\x1b[r` on
- *     the shrink-back (BLOCK-1 seam: collapsed↔panel↔collapsed round-trip);
+ *   - `escape ×2` → back to collapsed; the region is now constant-height
+ *     (spec INV-2), so the round-trip does NOT re-emit the DECSTBM reset
+ *     `\x1b[r` (BLOCK-1 seam: collapsed↔panel↔collapsed round-trip is zero
+ *     churn — same scroll-region geometry throughout);
  *   - `ctrl-c` (0x03) → injected `onShutdownSignal("SIGINT")`;
  *   - `destroy()` → `setRawMode(false)` + `removeListener("data")` + `pause()`
  *     + region reset;
@@ -50,6 +52,9 @@ const DECSTBM_SET = /\x1b\[1;\d+r/
 // Built dynamically so no-control-regex has no static literal to flag.
 const reverseRow = (id: string): RegExp => new RegExp(`\\x1b\\[7m${id}`)
 // DECSTBM reset — the scroll region is torn back down to the full screen.
+// Only expected on an actual geometry change (resize / first establish /
+// teardown); a collapsed↔panel view switch is now constant-height (spec
+// INV-2) and must NOT emit this.
 const SCROLL_RESET = "\x1b[r"
 
 /**
@@ -152,13 +157,15 @@ describe("TerminalUi — P1 interactive integration", () => {
     const detailOut = sliceFrom(mark)
     expect(detailOut).toContain("req_id: bbbbbbbb")
 
-    // ⑤ escape ×2 → detail → panel → collapsed; the shrink-back emits the
-    //    DECSTBM reset `\x1b[r` (BLOCK-1 round-trip seam).
+    // ⑤ escape ×2 → detail → panel → collapsed. Constant-height (spec INV-2):
+    //    collapsed is now padded to the same panel height as `panel`, so the
+    //    shrink-back does NOT re-issue the DECSTBM reset — zero-churn geometry
+    //    across the whole collapsed↔panel↔collapsed round-trip.
     stdin.emit("data", Buffer.from([0x1b])) // escape → panel
     mark = since()
-    stdin.emit("data", Buffer.from([0x1b])) // escape → collapsed (N: multi → 1)
+    stdin.emit("data", Buffer.from([0x1b])) // escape → collapsed (constant height, no resize)
     const collapseOut = sliceFrom(mark)
-    expect(collapseOut).toContain(SCROLL_RESET) // scroll region reset on collapse
+    expect(collapseOut).not.toContain(SCROLL_RESET) // no DECSTBM reset — geometry unchanged
 
     // ⑥ ctrl-c → injected shutdown signal.
     stdin.emit("data", Buffer.from([0x03]))
@@ -197,5 +204,31 @@ describe("TerminalUi — P1 interactive integration", () => {
     const out = text()
     expect(out).not.toMatch(DECSTBM_SET) // no DECSTBM — P0 footer path, not Region
     expect(out).toContain("[ OK ]") // P0 log line still rendered
+  })
+
+  test("constant geometry: collapsed↔panel toggle never resizes the DECSTBM region", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
+    // Trigger a collapsed render synchronously (the footer timer is async) via
+    // `system.log` → `printLog` → `renderRegion` — the existing golden-test
+    // technique, rather than adding a render-only test hook.
+    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "x", time: Date.now() } as never)
+    chunks.length = 0
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    stdin.emit("data", Buffer.from(" ")) // panel → collapsed
+    const regions = chunks.join("").match(/\x1b\[1;(\d+)r/g) ?? []
+    const bottoms = new Set(regions.map((r) => /1;(\d+)r/.exec(r)![1]))
+    expect(bottoms.size).toBe(1) // constant geometry — collapsed no longer shrinks the region
+    ui.destroy()
   })
 })
