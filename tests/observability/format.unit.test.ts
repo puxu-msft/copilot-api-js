@@ -17,6 +17,7 @@ import stringWidth from "string-width"
 import {
   //
   cacheHitColor,
+  durationColor,
   formatCacheRate,
   formatNumber,
   truncateToWidth,
@@ -139,13 +140,22 @@ describe("formatCacheRate", () => {
 // collapse to `String` and the `.not.toBe` check fails. Every band's ACTUAL
 // color — all single-color bands and all threshold boundaries — is proven
 // authoritatively in the FORCE_COLOR integration test
-// (tests/tui/log-line-color.integration.test.ts). durationColor has no composite
-// band (all four are single colors), so it has no in-process guard here; it is
-// covered entirely by the integration test.
+// (tests/tui/log-line-color.integration.test.ts). Both cacheHitColor and
+// durationColor share the yellow → red → bold-red escalation; only their
+// bold-red composite band is a fresh closure observable in-process.
 describe("cacheHitColor (severity by hit rate — in-process routing guard)", () => {
   test("the <20 severe band is a distinct fresh closure, not collapsed to a named band", () => {
     const fn = cacheHitColor(19)
     expect(fn).not.toBe(pc.dim)
+    expect(fn).not.toBe(pc.yellow)
+    expect(fn).not.toBe(pc.red)
+  })
+})
+
+describe("durationColor (request-duration severity — in-process routing guard)", () => {
+  test("the >180s severe band is a distinct fresh closure (bold red), not collapsed to a named band", () => {
+    const fn = durationColor(180_001)
+    expect(fn).not.toBe(pc.white)
     expect(fn).not.toBe(pc.yellow)
     expect(fn).not.toBe(pc.red)
   })

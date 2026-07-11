@@ -46,17 +46,17 @@ export function formatDuration(ms: number): string {
 
 /**
  * Severity color for a request's wall-clock duration: fast requests stay white,
- * escalating through distinct hues as latency grows (a slow request is worth
- * noticing). All four bands are distinct single colors — no `dim`, which the
- * terminal renders as grey and would break the monotonic "slower = louder"
- * ordering.
- *   ≤ 20s → white   ≤ 60s → yellow   ≤ 180s → magenta   > 180s → red
+ * escalating as latency grows (a slow request is worth noticing). Shares the
+ * yellow → red → bold-red escalation with {@link cacheHitColor} for a unified
+ * palette; no `dim` (which the terminal renders as grey) and no magenta (which
+ * clashes with the model-name color in the log line).
+ *   ≤ 20s → white   ≤ 60s → yellow   ≤ 180s → red   > 180s → bold red
  */
 export function durationColor(ms: number): (s: string) => string {
   if (ms <= 20_000) return pc.white
   if (ms <= 60_000) return pc.yellow
-  if (ms <= 180_000) return pc.magenta
-  return pc.red
+  if (ms <= 180_000) return pc.red
+  return (s) => pc.bold(pc.red(s))
 }
 
 /** Compact integer with a lowercase k/m suffix. */
