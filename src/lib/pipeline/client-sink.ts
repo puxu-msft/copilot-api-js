@@ -182,18 +182,27 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // (fixed-frame mode does zero parsing → byte-identical to before). Generic content-block state
   // machine reading JSON fields shared by content-block-structured SSE streams; no Anthropic import.
   const trackOpenBlock = heartbeatOn && typeof heartbeat.pingFrame === "function"
-  let openBlock: OpenBlock | undefined
+  // Open content blocks as a STACK, not a single slot (C1). An anchor@0 injected in buffered pre-commit
+  // stays OPEN at the BOTTOM of the stack for the whole stream; every real block flushes at index+1 ABOVE
+  // it (push on content_block_start, pop on content_block_stop). The keepalive rides the TOP (`at(-1)`):
+  // while a real block is open the tick continues THAT block; once the real block closes the stack falls
+  // back to the still-open anchor → the inter-block tick emits an empty `text_delta@0` (real content that
+  // resets Claude Code's 300s deadline) instead of a BARE ping (a single slot was overwritten by the real
+  // block's start@+1, then cleared by its stop@+1 → undefined → bare ping → 300s disconnect). For a single
+  // block (no anchor beneath) the stack depth is ≤1, so this is byte-for-byte the old single-slot behavior.
+  let openBlockStack: Array<OpenBlock> = []
+  const currentOpenBlock = (): OpenBlock | undefined => openBlockStack.at(-1)
   const noteBlockState = (frame: ClientFrame): void => {
     if (!trackOpenBlock || frame.data === undefined) return
     try {
       const p = JSON.parse(frame.data) as { type?: unknown; index?: unknown; content_block?: { type?: unknown } }
       if (p.type === "content_block_start" && typeof p.index === "number" && typeof p.content_block?.type === "string") {
-        openBlock = { index: p.index, type: p.content_block.type }
-      } else if (p.type === "content_block_stop" && typeof p.index === "number" && openBlock?.index === p.index) {
-        openBlock = undefined
+        openBlockStack.push({ index: p.index, type: p.content_block.type })
+      } else if (p.type === "content_block_stop" && typeof p.index === "number") {
+        openBlockStack = openBlockStack.filter((b) => b.index !== p.index) // pop the closed block (by index; may be below the top for out-of-order stops)
       }
     } catch {
-      // non-JSON frame → not a content-block boundary; leave openBlock unchanged
+      // non-JSON frame → not a content-block boundary; leave the stack unchanged
     }
   }
   let lastRealMs = Date.now()
@@ -293,7 +302,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     // from the current open block. Sampled into the forwarded track (a keepalive IS a proxy→client
     // frame), shares the chain (no byte-interleave). Errors swallowed: the next real write hits the
     // same closed stream and routes through the driver's outcome path.
-    const frame = typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(openBlock) : heartbeat.pingFrame
+    const frame = typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(currentOpenBlock()) : heartbeat.pingFrame
     sampleForwarded(frame, "keepalive")
     void writeSse(frame).catch(() => undefined)
     lastRealMs = Date.now()
@@ -304,9 +313,9 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     if (elapsed >= intervalMs) {
       // Buffered empty_text anchor (§3.3): the forward stream has NO open block yet → light one by
       // asking the driver-supplied closure to forward message_start + the empty-text anchor block
-      // (through the PUBLIC write, so noteBlockState updates openBlock). Runs BEFORE the provider
-      // frame is chosen — a provider called with openBlock===undefined would only yield a bare ping.
-      if (heartbeat.injectAnchor && openBlock === undefined && !anchorAttempted) {
+      // (through the PUBLIC write, so noteBlockState pushes openBlock={0,text} onto the stack). Runs BEFORE
+      // the provider frame is chosen — a provider called with no open block would only yield a bare ping.
+      if (heartbeat.injectAnchor && openBlockStack.length === 0 && !anchorAttempted) {
         anchorAttempted = true
         void heartbeat
           .injectAnchor()
