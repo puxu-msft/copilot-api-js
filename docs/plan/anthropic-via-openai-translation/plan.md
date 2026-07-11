@@ -42,6 +42,10 @@ Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/respons
 - **factory 锚点**：`supportsDirectAnthropicApi`([features.ts:38](../../../src/lib/anthropic/features.ts#L38))、`decideOpenAiCcRoute`、`decideOpenAiResponsesRoute`、`shouldForceChatCompletionsFallback`([fallback.ts](../../../src/routes/responses/fallback.ts))、`isEndpointSupported`/`isResponsesSupported`([endpoint.ts](../../../src/lib/models/endpoint.ts))。
 - **invariant**：**5 decideRoute 对 codec 闭包纯**（已核实，只读 env.model）→ 可无损搬无状态 router。
 
+**Phase 0 实施记录（2026-07-11，landed）**：
+- 两处对书面 plan 的自觉偏离（`sync-plan-with-impl`，均无害且更忠实）：① **router 签名保留 `decideRoute(env: RequestEnvelope)` 而非窄类型 `RouteInput`**——原 `codec.decideRoute(env)` 就吃 env，保 env 输入使 golden 逐字节等价 + DI seam 与旧接口对称；`RouteInput`/`routeOverride` 解耦推迟到 **Phase 1**（加 openai-anthropic 翻译真正需要 routeOverride 时引入，env 签名带全上下文、更有能力，不阻塞）。② **新增 DI 测试 seam `DriverDeps.decideRoute?`**——自由函数 router 绕过 mock，编排单测经此注入固定决策；生产 8 处 createPipelineDriver 均不设、走真 router（路由正确性由 golden 独占覆盖 + http reject 测试覆盖生产接缝）。
+- 交付：7 commit（T0.0 golden→T0.5 删接口+doc），typecheck 0 / golden 52 pass / pipeline 558 pass，decideRoute 零残留，code review 无 BLOCK。
+
 ---
 
 ## Phase 1：路由骨架 + 二维门控切换
