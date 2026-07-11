@@ -197,4 +197,22 @@ export class Region {
     this.stdout.write(RESET_SCROLL_REGION + cursorTo(panelTop) + ERASE_TO_END + SHOW_CURSOR)
     this.established = undefined
   }
+
+  /**
+   * Force the next `render` to treat the region as never-established (P1.2,
+   * detail exit). Unlike `clear()` this writes nothing — the caller (a detail
+   * alt-screen exit) has already left the alternate screen via `\x1b[?1049l`,
+   * which silently discards whatever DECSTBM margins were active in the
+   * alternate screen's buffer AND restores the primary screen's own prior
+   * margins (also stale, since entering detail reset them to full-screen via
+   * `\x1b[r`). Either way the terminal's real scroll-region state no longer
+   * matches `established`, so the next `render` must re-run the "first
+   * establish" branch (HIDE_CURSOR + fresh DECSTBM) instead of the
+   * unchanged-geometry idempotent reassert, which only re-issues DECSTBM
+   * without restoring the cursor/erase choreography a genuine (re-)establish
+   * needs after an alt-screen round-trip.
+   */
+  forceReestablish(): void {
+    this.established = undefined
+  }
 }

@@ -304,6 +304,43 @@ describe("TerminalUi — P1 interactive integration", () => {
     ui.destroy()
   })
 
+  test("esc from detail leaves the alt screen and re-establishes the region (P1.2)", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
+    chunks.length = 0
+    stdin.emit("data", Buffer.from("\x1b")) // detail → panel (esc)
+    const out = chunks.join("")
+    const iOff = out.indexOf("\x1b[?1049l")
+    const iRegion = out.indexOf("\x1b[1;", iOff) // retreat off the alt screen, then rebuild DECSTBM
+    expect(iOff).toBeGreaterThanOrEqual(0)
+    expect(iRegion).toBeGreaterThan(iOff)
+    // Discriminating assertion (the geometry hasn't changed — 24 rows, same
+    // panel height — so `Region.render`'s "unchanged geometry" branch alone
+    // would idempotently reassert DECSTBM without a real teardown/rebuild,
+    // making the assertion above pass even with a no-op `exitDetail`).
+    // `forceReestablish` must force `Region`'s "first establish" branch, whose
+    // tell is `HIDE_CURSOR` (`\x1b[?25l`) — the idempotent-reassert branch
+    // never emits it. Its presence after the alt-screen exit proves the
+    // region was actually torn down and rebuilt from scratch, not merely
+    // reasserted.
+    const iHideCursor = out.indexOf("\x1b[?25l", iOff)
+    expect(iHideCursor).toBeGreaterThan(iOff)
+    ui.destroy()
+  })
+
   test("INV-1: collapsed→panel→collapsed round-trip does not overwrite prior log rows", () => {
     const stdin = new FakeStdin()
     const { stdout, chunks } = makeStdout()

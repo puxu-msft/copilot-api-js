@@ -862,18 +862,43 @@ export class TerminalUi {
   }
 
   /**
-   * Leave the detail alternate screen. P1.1 gives the minimal exit needed for
-   * this task's C1 assertions (drop the alt screen, clear the latch, repaint
-   * via the dispatcher); P1.2 fleshes this out further (reconstitute the
-   * Region/DECSTBM scroll margin and replay any log lines queued while detail
-   * was open, per the plan's `replayQueue`).
+   * Leave the detail alternate screen (P1.2). Order is load-bearing, mirroring
+   * `renderDetail`'s C1 entry choreography in reverse:
+   *
+   * 1. `\x1b[?1049l` drops the alternate screen buffer, returning to the
+   *    primary screen — whatever DECSTBM margins were live in either buffer
+   *    (the alt screen's full-width reset from entry, or the primary screen's
+   *    pre-detail panel margins) are now stale/irrelevant.
+   * 2. `region.forceReestablish()` marks the Region's tracked geometry
+   *    unknown, so the very next `render()` retakes the "first establish"
+   *    branch (HIDE_CURSOR + a fresh DECSTBM) instead of the unchanged-
+   *    geometry idempotent reassert — the alt-screen round-trip means the
+   *    terminal's real scroll-region state no longer matches what `Region`
+   *    last recorded, even though the logical panel height (`interactivePanelHeight`)
+   *    hasn't changed.
+   * 3. `flushReplayQueue()` — P1.3 will drain log lines queued by `printLog`'s
+   *    `detailActive` guard while detail was open; left as a no-op placeholder
+   *    here so this task doesn't reach into the queue itself.
+   * 4. `renderRegion()` repaints the (now current) `panel`/`collapsed` view
+   *    into the freshly re-established region.
    */
   private exitDetail(): void {
-    if (this.detailActive) {
-      this.detailActive = false
-      this.stdout.write("\x1b[?1049l")
-    }
-    this.render()
+    if (!this.detailActive) return
+    this.detailActive = false
+    this.stdout.write("\x1b[?1049l")
+    this.region?.forceReestablish()
+    this.flushReplayQueue()
+    this.renderRegion()
+  }
+
+  /**
+   * Drain log lines queued while `detailActive` blocked `printLog` from
+   * touching the Region. Placeholder for P1.2 — P1.3 introduces the bounded
+   * `replayQueue` (capped at `REPLAY_CAP`) and fills this in; deliberately a
+   * no-op until then so `exitDetail` has a stable call site to build on.
+   */
+  private flushReplayQueue(): void {
+    // Intentionally empty — see P1.3.
   }
 
   /**
