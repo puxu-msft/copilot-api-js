@@ -281,8 +281,13 @@ export interface BackfillBucketAgg {
  * proportionally) so a huge backfilled count can't freeze the sliding window
  * against later LIVE learning (P-B5). Backfill is NOT live: `liveSampleCount` is
  * untouched, so computeSafetyMargin keeps its conservative width until real
- * success/400 events arrive. Called once at the END of a run (never mid-scan) so
- * it never races the CalibrationSink's live per-request writes.
+ * success/400 events arrive. Called once at the END of a run (never mid-scan). The
+ * per-bucket overwrite DISCARDS any live samples the CalibrationSink learned into
+ * these same buckets during the scan window — a bounded one-time cold-start artifact
+ * (a handful of samples, re-learned by the live sink immediately; negligible margin
+ * effect). Since `liveSampleCount` is not rewritten here, it may briefly read a touch
+ * higher than the overwritten bucket sums reflect until the next live sample re-syncs
+ * them (self-healing, not a leak).
  */
 export function applyBackfillBuckets(modelId: string, agg: Array<BackfillBucketAgg | null>): void {
   const limits = ensureModelLimits(modelId)

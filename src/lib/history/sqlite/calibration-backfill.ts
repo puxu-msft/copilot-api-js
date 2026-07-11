@@ -13,8 +13,14 @@
  *     idempotent — a re-run would drift. Accumulating raw Σreal/Σest and applying
  *     once is order-free and exactly reproducible.
  *   - `applyBackfillBuckets` overwrites ONLY the buckets history populated; sparse
- *     buckets keep their factory seed. It is applied at the END of the run, never
- *     mid-scan, so it never races the live CalibrationSink writing the same buckets.
+ *     buckets keep their factory seed. It is applied ONCE at the END of the run.
+ *     The overwrite is per-bucket integer replacement, so it DISCARDS the few live
+ *     samples the CalibrationSink may have learned into those same buckets during
+ *     the scan window (a bounded, one-time cold-start artifact — a handful of
+ *     samples that the live sink re-learns immediately; the effect on the safety
+ *     margin is negligible). `liveSampleCount` is left untouched by the overwrite,
+ *     so it may briefly read slightly higher than the bucket sums reflect until the
+ *     next live sample lands and re-syncs them — self-healing, not a leak.
  *   - Backfill is synthetic → `isLive:false` semantics: `liveSampleCount` stays 0,
  *     so `computeSafetyMargin` keeps its conservative width until real events land.
  *
@@ -22,8 +28,12 @@
  *   - **Guard**: `history_meta(calibration_backfill_version)` short-circuits once
  *     the full scan completes — a re-run is a no-op.
  *   - **Cursor**: `history_meta(calibration_backfill_cursor)` gives a compound
- *     `(started_at, id)` keyset resume. The backfill is READ-ONLY over `entries_v2`
- *     (no marker column), so the cursor is the sole within-run progress mechanism.
+ *     `(started_at, id)` keyset resume, persisted as JSON `{ts, id}`. The backfill
+ *     is READ-ONLY over `entries_v2` (no per-row marker column), so the cursor is
+ *     the SOLE within-run progress mechanism — it MUST carry the `id` too. A
+ *     started_at-only cursor would resume with `id=""` and re-scan the boundary
+ *     `started_at` tie-group, re-accumulating already-counted rows (double count),
+ *     since the accumulator (persisted alongside) already holds those rows.
  *   - **Accumulator**: `history_meta(calibration_backfill_accum)` persists the
  *     per-model bucket aggregates each batch, so a mid-run restart resumes the
  *     tok-weighted aggregate exactly rather than losing partial progress. Cleared
@@ -126,6 +136,37 @@ function emptyBuckets(): Array<BackfillBucketAgg | null> {
   return Array.from({ length: BUCKET_COUNT }, () => null)
 }
 
+/** The compound keyset position persisted across restarts (see serializeCursor). */
+interface CursorPosition {
+  ts: number
+  id: string
+}
+
+/** Serialize the compound `(started_at, id)` keyset for the resumable meta row. */
+function serializeCursor(ts: number, id: string): string {
+  return JSON.stringify({ ts, id } satisfies CursorPosition)
+}
+
+/**
+ * Restore the compound cursor from the persisted meta row. Returns `{ ts: 0, id: "" }`
+ * when there is no cursor. Tolerates the LEGACY bare-number form (`"<ts>"`, written
+ * before the id was persisted) by parsing it as `{ ts, id: "" }` — safe because a
+ * legacy partial run also had no per-model marker, so a fresh full re-scan (id="")
+ * is the only correct recovery. THROWS on a corrupt non-legacy value so the caller
+ * can restart the whole aggregate rather than resume from a bogus position.
+ */
+function deserializeCursor(raw: string | null): CursorPosition {
+  if (raw === null) return { ts: 0, id: "" }
+  // Legacy form: a bare number string with no id component.
+  const legacy = Number(raw)
+  if (raw.trim() !== "" && !raw.trimStart().startsWith("{") && Number.isFinite(legacy)) {
+    return { ts: legacy, id: "" }
+  }
+  const parsed = JSON.parse(raw) as Partial<CursorPosition>
+  const ts = Number(parsed.ts)
+  return { ts: Number.isFinite(ts) ? ts : 0, id: typeof parsed.id === "string" ? parsed.id : "" }
+}
+
 /** Serialize the accumulator to JSON for the resumable meta row. */
 function serializeAccum(accum: Accum): string {
   return JSON.stringify(Object.fromEntries(accum))
@@ -150,7 +191,7 @@ function deserializeAccum(raw: string | null): Accum {
   return accum
 }
 
-/** Fold one (est, real) sample into `accum[modelId][bucket]` (incremental tok-weighted mean of est). */
+/** Fold one (est, real) sample into `accum[modelId][bucket]` (accumulates Σreal/Σest + a running arithmetic mean of est). */
 function accumulate(accum: Accum, modelId: string, bucket: number, est: number, real: number): void {
   let buckets = accum.get(modelId)
   if (!buckets) {
@@ -158,6 +199,8 @@ function accumulate(accum: Accum, modelId: string, bucket: number, est: number, 
     accum.set(modelId, buckets)
   }
   const agg: BackfillBucketAgg = buckets[bucket] ?? { sumReal: 0, sumEst: 0, count: 0, meanEst: 0 }
+  // meanEst is the plain arithmetic mean of the per-sample est (each sample weight 1),
+  // updated incrementally; the calibration FACTOR itself is Σreal/Σest (below).
   agg.meanEst = (agg.meanEst * agg.count + est) / (agg.count + 1)
   agg.sumReal += real
   agg.sumEst += est
@@ -201,7 +244,13 @@ async function processRow(scan: ScanRow, accum: Accum, stageSelect: ReturnType<D
     accumulate(accum, model.id, bucketIndexFor(est), est, real)
     return "aggregated"
   } catch (err: unknown) {
-    // Undecodable blob / malformed leg / a DB op racing shutdown → skip this row.
+    // Two distinct causes land here and are NOT reliably distinguishable from the
+    // thrown value (a bun:sqlite "database is closed" error and a decode failure
+    // both surface as generic Errors): an undecodable/malformed stage blob, or a
+    // DB op racing shutdown. Either way the row contributes nothing to the
+    // aggregate — the "error" outcome differs from "skipped" ONLY in the log tally
+    // (it flags rows lost to a real fault vs. legitimately filtered-out rows), so a
+    // misattributed close-race merely inflates the error count in the summary line.
     consola.debug(`[calibration-backfill] skipped entry ${scan.id}`, err)
     return "error"
   }
@@ -220,12 +269,29 @@ export async function runCalibrationBackfill(db: Database): Promise<void> {
     if (getMeta(db, CALIBRATION_BACKFILL_VERSION_KEY) === CALIBRATION_BACKFILL_VERSION) return
 
     const cursorRaw = getMeta(db, CALIBRATION_BACKFILL_CURSOR_KEY)
-    let cursorTs = cursorRaw === null ? 0 : Number(cursorRaw)
-    if (!Number.isFinite(cursorTs)) cursorTs = 0
 
-    // Resume the aggregate from the persisted accumulator (only meaningful when a
-    // prior partial run left a cursor; a fresh run has neither).
-    const accum: Accum = cursorRaw === null ? new Map() : deserializeAccum(getMeta(db, CALIBRATION_BACKFILL_ACCUM_KEY))
+    // Restore the compound `(started_at, id)` keyset AND the matching accumulator
+    // TOGETHER — they are a coupled pair (the accum holds exactly the rows up to
+    // and including the cursor position). This backfill has no per-row marker over
+    // `entries_v2`, so the cursor is the SOLE within-run progress mechanism: it
+    // must carry the `id` too, else a resume with `id=""` re-scans the boundary
+    // `started_at` tie-group and re-accumulates already-counted rows (double count).
+    // If the cursor is unreadable, restart the whole aggregate from scratch (both
+    // reset in lock-step) rather than resume from a bogus position with stale accum.
+    let boundaryTs = 0
+    let lastId = ""
+    let accum: Accum = new Map()
+    if (cursorRaw !== null) {
+      try {
+        const pos = deserializeCursor(cursorRaw)
+        boundaryTs = pos.ts
+        lastId = pos.id
+        accum = deserializeAccum(getMeta(db, CALIBRATION_BACKFILL_ACCUM_KEY))
+      } catch (err: unknown) {
+        consola.debug("[calibration-backfill] cursor parse failed — restarting full scan", err)
+      }
+    }
+
     const counts: BackfillCounts = { aggregated: 0, skipped: 0, errors: 0 }
     const total = (
       db.prepare("SELECT COUNT(*) AS n FROM entries_v2 WHERE status = 'completed' AND model LIKE 'claude%' AND input_tokens IS NOT NULL").get() as { n: number }
@@ -237,9 +303,6 @@ export async function runCalibrationBackfill(db: Database): Promise<void> {
         + "AND (started_at > ? OR (started_at = ? AND id > ?)) ORDER BY started_at ASC, id ASC LIMIT ?",
     )
     const stageSelect = db.prepare("SELECT entry_id, stage, attempt_index, created_at, blob_gz FROM entry_stages WHERE entry_id = ?")
-
-    let boundaryTs = cursorTs
-    let lastId = ""
 
     for (;;) {
       if (isStopRequested()) break
@@ -263,8 +326,9 @@ export async function runCalibrationBackfill(db: Database): Promise<void> {
         if (last) {
           boundaryTs = last.started_at
           lastId = last.id
-          // Persist cursor + accumulator together so a restart resumes both.
-          setMeta(db, CALIBRATION_BACKFILL_CURSOR_KEY, String(boundaryTs))
+          // Persist the compound cursor + accumulator together so a restart resumes
+          // BOTH from the same position (id included → no boundary-tie re-scan).
+          setMeta(db, CALIBRATION_BACKFILL_CURSOR_KEY, serializeCursor(boundaryTs, lastId))
           setMeta(db, CALIBRATION_BACKFILL_ACCUM_KEY, serializeAccum(accum))
         }
       } catch (err: unknown) {

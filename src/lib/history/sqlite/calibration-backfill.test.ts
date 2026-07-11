@@ -206,6 +206,62 @@ describe("calibration backfill", () => {
     expect(getMeta(db, CALIBRATION_BACKFILL_CURSOR_KEY)).not.toBeNull()
   })
 
+  test("resume across a persisted cursor does not double-count boundary-tie rows", async () => {
+    const db = getDatabase()
+
+    // All rows share ONE body (→ one est, one bucket) and ONE started_at, so the
+    // batch boundary (row #99) TIES with row #100 on started_at — the exact shape
+    // that a started_at-only cursor mishandles: a resume with lastId="" re-scans
+    // the whole tie group and re-accumulates the already-counted first batch.
+    // The first 100 rows carry factor F1, the tail 50 carry F2 (F1 ≠ F2) so a
+    // double-count of the first batch skews Σreal/Σest, not just the sample count.
+    const body = bodyOfChars(240_000)
+    const est = await countTotalTokens(body as never, TEST_MODEL)
+    const bucket = bucketIndexFor(est)
+    const F1 = 1.4
+    const F2 = 1.9
+    const N = 150 // > BACKFILL_BATCH_SIZE (100) so batch 1 persists a mid-run cursor
+    const SHARED_TS = 5000
+
+    // Independent oracle: every row counted EXACTLY once.
+    let sumReal = 0
+    let sumEst = 0
+    for (let i = 0; i < N; i++) {
+      const factor = i < 100 ? F1 : F2
+      const real = Math.round(est * factor)
+      sumReal += real
+      sumEst += est
+      // Zero-padded ids so ORDER BY id ASC matches insertion order (r000 first).
+      const id = `r${String(i).padStart(3, "0")}`
+      await insertCompletedEntry(calEntry(id, SHARED_TS, { body, usage: { input_tokens: real, output_tokens: 1 }, withUpstreamRequest: true }))
+    }
+
+    // Partial run: stop right after batch 1 (100 rows) persists cursor + accum.
+    const p = runCalibrationBackfill(db)
+    stopCalibrationBackfill()
+    await p
+    expect(getMeta(db, CALIBRATION_BACKFILL_VERSION_KEY)).not.toBe(CALIBRATION_BACKFILL_VERSION) // stopped mid-run
+    expect(getMeta(db, CALIBRATION_BACKFILL_CURSOR_KEY)).not.toBeNull()
+
+    // Simulate a process restart: drop in-memory learned limits + module flags, but
+    // KEEP the persisted meta (cursor + accum live in the DB) so the re-run resumes.
+    resetAllLimitsForTesting()
+    resetCalibrationBackfillForTests()
+
+    // Resume run: must pick up strictly AFTER the persisted boundary row, not re-scan
+    // the tie group. Completes the scan and applies the buckets.
+    await runCalibrationBackfill(db)
+    expect(getMeta(db, CALIBRATION_BACKFILL_VERSION_KEY)).toBe(CALIBRATION_BACKFILL_VERSION)
+
+    const buckets = getLearnedLimits(MODEL_ID)?.factorModel.buckets
+    expect(buckets).toBeDefined()
+    const b = buckets![bucket]
+    // Each row counted once → sampleCount === N. A double-count of batch 1 yields 250.
+    expect(b.sampleCount).toBe(N)
+    // Ratio is order- and resume-independent; a double-count of the F1 batch skews it.
+    expect(b.sumReal / b.sumEst).toBeCloseTo(sumReal / sumEst, 4)
+  })
+
   test("never throws on an undecodable stage blob", async () => {
     const db = getDatabase()
     const body = bodyOfChars(240_000)
