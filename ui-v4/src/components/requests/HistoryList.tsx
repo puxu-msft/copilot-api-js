@@ -273,6 +273,10 @@ export function HistoryList({
     onColumnSizingChange,
     onColumnOrderChange,
     defaultColumn: { minSize: 40 },
+    // 列宽 resize:onChange 模式即时写回 sizing(拖拽像素 → columnSizing state → inline width)。
+    // getCanResize() 对 enableResizing:false 的弹性列(preview/response)/session gutter 返 false,天然排除手柄。
+    enableColumnResizing: true,
+    columnResizeMode: "onChange",
     getCoreRowModel: getCoreRowModel(),
   })
   const rows = table.getRowModel().rows
@@ -600,10 +604,25 @@ export function HistoryList({
                           key={header.id}
                           // session 色列表头须镜像其 body td 的无水平 padding(p-0):table-fixed 下列宽由首行(表头)决定,
                           // 若 session th 带 px-2(16px)会在 w-[10px] 上被 padding 撑大、与 p-0 的 body 色列错位并挤占后续列宽。
-                          className={`${header.column.id === "session" ? "p-0 w-[10px]" : "px-2 py-1"} text-left font-normal`}
+                          // relative:供 resize 手柄绝对定位到 th 右边界。
+                          className={`relative ${header.column.id === "session" ? "p-0 w-[10px]" : "px-2 py-1"} text-left font-normal`}
                           style={isFixed ? { width: header.getSize() } : undefined}
                         >
                           {flexRender(header.column.columnDef.header, header.getContext())}
+                          {/* 列宽 resize 手柄:仅可 resize 列(getCanResize())出现——enableResizing:false 的弹性列/session 返 false 天然排除。
+                              onMouseDown/onTouchStart 驱动 TanStack resize;onPointerDown stopPropagation 挡 Task 3 dnd useSortable 的 pointerdown(HIGH-2)。 */}
+                          {header.column.getCanResize() && (
+                            // resize 手柄纯 mouse/touch 拖拽 affordance(键盘调宽非本期范围),强加 role/keyboard 会扭曲语义;
+                            // 与本文件滚动容器同款按项目约定禁用该规则而非扭曲代码。
+                            // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+                            <span
+                              data-resize-handle
+                              onMouseDown={header.getResizeHandler()}
+                              onTouchStart={header.getResizeHandler()}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              className="absolute inset-y-0 right-0 w-1 cursor-col-resize select-none hover:bg-[var(--color-primary)]"
+                            />
+                          )}
                         </th>
                       )
                     })}

@@ -580,6 +580,87 @@ describe("HistoryList", () => {
   })
 })
 
+describe("HistoryList — 列宽 resize（Task 2）", () => {
+  beforeEach(() => {
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
+    useListStore.setState({ ...initialListState })
+    scrollToIndexMock.mockClear()
+    apiGetMock.mockReset()
+    apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
+    apiDeleteMock.mockReset()
+    apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  /** 从 DOM 节点取 React 合成 props(fiber)——直接断言手柄的事件 props 存在(HIGH-2 无法从裸 DOM 查)。 */
+  function reactProps(el: HTMLElement): Record<string, unknown> {
+    const key = Object.keys(el).find((k) => k.startsWith("__reactProps$"))
+    return key ? (el as unknown as Record<string, Record<string, unknown>>)[key] : {}
+  }
+  const thByText = (container: HTMLElement, t: string) =>
+    Array.from(container.querySelectorAll("thead th")).find((th) => th.textContent === t) as HTMLElement | undefined
+
+  it("固定列 th 带 resize 手柄([data-resize-handle]);session/弹性列(preview/response)无", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const { container } = renderList()
+    // 固定且默认可见列:status/model/cache 有手柄。
+    expect(thByText(container, "Status")?.querySelector("[data-resize-handle]")).not.toBeNull()
+    expect(thByText(container, "Model")?.querySelector("[data-resize-handle]")).not.toBeNull()
+    expect(thByText(container, "Cache")?.querySelector("[data-resize-handle]")).not.toBeNull()
+    // 弹性列(enableResizing:false)无手柄。
+    expect(thByText(container, "Request")?.querySelector("[data-resize-handle]")).toBeNull()
+    expect(thByText(container, "Response")?.querySelector("[data-resize-handle]")).toBeNull()
+    // session gutter(w-[10px],enableResizing:false)无手柄。
+    const sessionTh = Array.from(container.querySelectorAll("thead th")).find((th) => th.className.includes("w-[10px]")) as HTMLElement | undefined
+    expect(sessionTh?.querySelector("[data-resize-handle]")).toBeNull()
+  })
+
+  it("固定列 th relative 定位(供手柄绝对定位)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const { container } = renderList()
+    expect(thByText(container, "Status")?.className).toContain("relative")
+  })
+
+  it("手柄挂 onMouseDown/onTouchStart(resize 驱动)+ onPointerDown stopPropagation(HIGH-2:挡 Task 3 dnd pointerdown)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const { container } = renderList()
+    const handle = thByText(container, "Status")?.querySelector<HTMLElement>("[data-resize-handle]")
+    expect(handle).not.toBeNull()
+    const props = reactProps(handle as HTMLElement)
+    expect(typeof props.onMouseDown).toBe("function")
+    expect(typeof props.onTouchStart).toBe("function")
+    expect(typeof props.onPointerDown).toBe("function")
+    // onPointerDown 须 stopPropagation:合成事件冒泡被拦(否则 Task 3 的 dnd useSortable pointerdown 会误触拖拽)。
+    const stopPropagation = vi.fn()
+    const evt = { stopPropagation } as unknown as React.PointerEvent
+    ;(props.onPointerDown as (e: React.PointerEvent) => void)(evt)
+    expect(stopPropagation).toHaveBeenCalled()
+  })
+
+  it("拖拽手柄(columnResizeMode:onChange)写回 onColumnSizingChange", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const onColumnSizingChange = vi.fn()
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList
+            filters={EMPTY_FILTERS}
+            columnSizing={{}}
+            onColumnSizingChange={onColumnSizingChange}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const handle = thByText(container, "Status")?.querySelector<HTMLElement>("[data-resize-handle]")
+    expect(handle).not.toBeNull()
+    // 模拟拖拽:mousedown 起手(TanStack 在 document 挂 mousemove)→ mousemove 位移 → onChange 模式即时写回。
+    fireEvent.mouseDown(handle as HTMLElement, { clientX: 0 })
+    fireEvent.mouseMove(document, { clientX: 40 })
+    expect(onColumnSizingChange).toHaveBeenCalled()
+    fireEvent.mouseUp(document)
+  })
+})
+
 describe("HistoryList — 列策展 + cache 列 + inline width（Task 1）", () => {
   beforeEach(() => {
     mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
