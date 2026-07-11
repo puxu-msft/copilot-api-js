@@ -110,6 +110,14 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 - 窄屏退化成横向标签式（见 §8）。
 - 待定子项：Request stages 段间 diff 默认并排 vs 按需开（取决于 diff 高频程度）。
 
+### 4.4 Session 色带 + 多选对比高亮（已实施 2026-07-10）
+
+Requests 列表左侧一条按 `session_id` 稳定着色的色带（相邻同会话竖直贯通成链、段首圆顶段尾圆底；subagent 行 status 内容缩进 + 色带更深一档区分 main）。**默认**每行按会话色铺淡背景分组；点色带或键盘 `f` 把会话加入选择集（`Set`，多选）→ 选中会话铺强背景全彩、非选中行 `opacity-40` 变灰，直观对比多会话在时间线上如何交错；`Esc` 清空选择。全局时序不动、后端零改动。4 套可切换色板（`terminal-neon` 默认 / `oceanic-jewel` / `pastel-cool` / `slate-muted`，dataviz validator 实测、避开语义信号色），下拉切换 + `localStorage` 持久化。
+
+- 配色纯函数 leaf：[src/lib/session-color.ts](../../src/lib/session-color.ts)（色板注册表 + FNV-1a hash + tint + run 边界，bun 单测）。
+- 渲染：[HistoryList.tsx](../../src/components/requests/HistoryList.tsx) itemContent 对 session 列**特判**（经 Virtuoso `context` 第三参取 runs，非 TanStack `ColumnDef.cell`）；圆角走 theme.css 破例类 `.session-cap-*`（压过全局 `border-radius:0!important`）；色板选择器 [SessionPaletteSelect.tsx](../../src/components/requests/SessionPaletteSelect.tsx)。
+- 权威 spec：[docs/spec/2026-07-10-ui-v4-session-color-bar.md](spec/2026-07-10-ui-v4-session-color-bar.md)、计划 [docs/plans/2026-07-10-session-color-bar.md](plans/2026-07-10-session-color-bar.md)。
+
 ## 5. Sessions + Agent
 
 数据模型（实证 `src/lib/history/sessions.ts`）：

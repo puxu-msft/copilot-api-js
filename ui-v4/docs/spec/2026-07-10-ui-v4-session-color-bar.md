@@ -5,7 +5,7 @@
 > 类型：纯前端特性（视觉分组 + 多选对比交互）。
 > 前置基线：[2026-07-06-ui-v4-requests-list-enhancement.md](2026-07-06-ui-v4-requests-list-enhancement.md)（Requests 页已是 react-virtuoso + TanStack Table 引擎、七维筛选、`?at=` 定位、tail/缓冲、键盘 roving 光标）。
 > 审查：两轮 subagent 对抗审查已纳入（见 §11 审查纪要）。
-> 状态：**用户已复核批准（2026-07-10）** → 进入 writing-plans 拆实施计划
+> 状态：**已实施（2026-07-10，分支 feat/ui-v4-session-color-bar）** — 3 Task TDD 逐件过审 + 回归修复；待用户人工视觉核验 + merge
 
 本规格在**已落地**的扁平时序 Requests 列表上，叠加一层**按 `session_id` 的视觉聚合与对比**：
 
