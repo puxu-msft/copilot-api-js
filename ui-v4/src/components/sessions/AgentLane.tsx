@@ -33,19 +33,19 @@ export function AgentLane({ name, entries }: { name: string; entries: Array<Entr
   const { count, input, output, cache, failed } = laneSummary(entries)
   return (
     <div className="mono">
-      <div className="flex items-center gap-2 border-b border-[#1e1e24] border-l-2 border-l-[var(--color-primary)] bg-[#1a160e] py-1 pl-2 text-[12px]">
+      <div className="flex items-center gap-2 border-b border-[var(--surface-border-subtle)] border-l-2 border-l-[var(--content-accent)] bg-[var(--surface-agent)] py-1 pl-2 text-[12px]">
         <span
-          className="shrink-0 truncate font-bold text-[var(--color-primary)]"
+          className="shrink-0 truncate font-bold text-[var(--content-accent)]"
           title={name}
         >
           {name}
         </span>
-        <span className="text-[var(--color-muted)]">
+        <span className="text-[var(--content-muted)]">
           {count} req · ↑{formatNumber(input)} ↓{formatNumber(output)}
           {cache > 0 ? ` · cache ${formatNumber(cache)}` : ""}
         </span>
         {failed > 0 ?
-          <span className="text-[var(--color-fail)]">{failed} failed</span>
+          <span className="text-[var(--signal-fail)]">{failed} failed</span>
         : null}
       </div>
       <div>

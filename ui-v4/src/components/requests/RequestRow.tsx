@@ -37,10 +37,10 @@ interface RequestRowProps {
   onClick?: () => void
 }
 
-const ROW_CLASS = "mono flex w-full items-center gap-2 border-b border-[#222] px-2 py-1 text-left text-[13px]"
+const ROW_CLASS = "mono flex w-full items-center gap-2 border-b border-[var(--surface-border-row)] px-2 py-1 text-left text-[13px]"
 
 function selectionClass(selected: boolean | undefined): string {
-  return selected ? "border-l-2 border-l-[var(--color-primary)] bg-[#3a2f1a] text-[#f0d8a8]" : "text-[#aaa]"
+  return selected ? "border-l-2 border-l-[var(--content-accent)] bg-[var(--surface-active)] text-[var(--content-selected)]" : "text-[var(--content-secondary)]"
 }
 
 /** History 富行 —— 状态·时间·+耗时·模型·(Nx)·端点·字节·token·×N·预览/失败摘要(spec §4.2)。 */
@@ -68,54 +68,56 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
         ● {state}
       </span>
       <span
-        className="w-[68px] shrink-0 text-[#777]"
+        className="w-[68px] shrink-0 text-[var(--content-faint)]"
         title={new Date(entry.startedAt).toISOString()}
       >
         {formatTime(entry.startedAt)}
       </span>
       <span
-        className={`w-[64px] shrink-0 ${anomaly.slow ? "row-anomaly text-[var(--color-warn)]" : "text-[#888]"}`}
+        className={`w-[64px] shrink-0 ${anomaly.slow ? "row-anomaly text-[var(--signal-warn)]" : "text-[var(--content-dim)]"}`}
         title={anomaly.slow ? "slow request (>60s)" : undefined}
       >
         {entry.durationMs === undefined ? "" : formatElapsed(entry.durationMs)}
       </span>
       <span
-        className="w-[180px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#cdb]"
+        className="w-[180px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--content-value)]"
         title={modelName(entry)}
       >
         {modelName(entry)}
       </span>
       {showMultiplier ?
-        <span className="w-[34px] shrink-0 text-[var(--color-muted)]">({entry.multiplier}x)</span>
+        <span className="w-[34px] shrink-0 text-[var(--content-muted)]">({entry.multiplier}x)</span>
       : null}
       <span
-        className="w-[90px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[#777]"
+        className="w-[90px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--content-faint)]"
         title={endpointLabel(entry)}
       >
         {endpointLabel(entry)}
       </span>
       <span
-        className="w-[118px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-right text-[var(--color-muted)]"
+        className="w-[118px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-right text-[var(--content-muted)]"
         title={bytesCellTitle(entry.requestBytes, entry.responseBytes)}
       >
         {bytesText}
       </span>
       <span
-        className={`w-[130px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-right ${anomaly.cacheMiss ? "row-anomaly text-[var(--color-warn)]" : "text-[#9a9]"}`}
+        className={`w-[130px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-right ${anomaly.cacheMiss ? "row-anomaly text-[var(--signal-warn)]" : "text-[var(--content-muted-cool)]"}`}
         title={anomaly.cacheMiss ? "cache miss: large input with no cache read" : tokensCellTitle(entry, tokensText)}
       >
         {tokensText}
       </span>
-      <span className="w-[40px] shrink-0 text-right text-[#a87]">{entry.attemptCount && entry.attemptCount > 1 ? `×${entry.attemptCount}` : ""}</span>
+      <span className="w-[40px] shrink-0 text-right text-[var(--content-warm-faint)]">
+        {entry.attemptCount && entry.attemptCount > 1 ? `×${entry.attemptCount}` : ""}
+      </span>
       {completed ?
         <span
-          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[#8a8a7a]"
+          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--content-preview)]"
           title={previewTitle}
         >
           {truncPreview(entry)}
         </span>
       : <span
-          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--color-fail)]"
+          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--signal-fail)]"
           title={previewTitle}
         >
           {failureSummary(entry)}
@@ -123,7 +125,7 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
       }
       {entry.responsePreviewText ?
         <span
-          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[#8a9a8a]"
+          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--content-preview-response)]"
           title={entry.responsePreviewText}
         >
           {truncResponsePreview(entry)}

@@ -14,7 +14,7 @@ import type { ReactNode } from "react"
 export function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="mb-4">
-      <div className="mb-1 border-b border-[var(--color-border)] pb-1 text-[11px] uppercase tracking-wider text-[var(--color-muted)]">{title}</div>
+      <div className="mb-1 border-b border-[var(--surface-border)] pb-1 text-[11px] uppercase tracking-wider text-[var(--content-muted)]">{title}</div>
       <div className="flex flex-col gap-px">{children}</div>
     </div>
   )
@@ -24,25 +24,25 @@ export function Section({ title, children }: { title: string; children: ReactNod
 export function Row({ label, value, children }: { label: string; value?: string | number | boolean | null; children?: ReactNode }) {
   return (
     <div className="flex gap-2 py-0.5 text-[12px]">
-      <span className="w-[190px] shrink-0 text-[var(--color-muted)]">{label}</span>
-      <span className="min-w-0 flex-1 break-words text-[var(--color-text)]">{children ?? renderValue(value)}</span>
+      <span className="w-[190px] shrink-0 text-[var(--content-muted)]">{label}</span>
+      <span className="min-w-0 flex-1 break-words text-[var(--content-text)]">{children ?? renderValue(value)}</span>
     </div>
   )
 }
 
 /** dim em-dash for absent; `yes`/`no` for booleans; otherwise the string form. */
 export function renderValue(v: string | number | boolean | null | undefined): ReactNode {
-  if (v === undefined || v === null || v === "") return <span className="text-[#555]">—</span>
-  if (typeof v === "boolean") return v ? <span className="text-[var(--color-ok)]">yes</span> : <span className="text-[#888]">no</span>
+  if (v === undefined || v === null || v === "") return <span className="text-[var(--content-disabled)]">—</span>
+  if (typeof v === "boolean") return v ? <span className="text-[var(--signal-ok)]">yes</span> : <span className="text-[var(--content-dim)]">no</span>
   return String(v)
 }
 
 /** A tonal chip (plan / policy / media-type). */
 export function Chip({ children }: { children: ReactNode }) {
-  return <span className="mr-1 inline-block border border-[var(--color-border)] px-1.5 py-0.5 text-[11px] text-[#cdb]">{children}</span>
+  return <span className="mr-1 inline-block border border-[var(--surface-border)] px-1.5 py-0.5 text-[11px] text-[var(--content-value)]">{children}</span>
 }
 
 /** ✓ (ok) / · (dim) capability cell. */
 export function Bool({ on }: { on: boolean }) {
-  return on ? <span className="text-[var(--color-ok)]">✓ yes</span> : <span className="text-[#555]">· no</span>
+  return on ? <span className="text-[var(--signal-ok)]">✓ yes</span> : <span className="text-[var(--content-disabled)]">· no</span>
 }

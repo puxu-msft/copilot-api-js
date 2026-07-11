@@ -17,7 +17,7 @@ function Window({ title, stats }: { title: string; stats: ModelTelemetryStats | 
   if (!stats) {
     return (
       <Section title={title}>
-        <div className="py-0.5 text-[12px] text-[#555]">no traffic</div>
+        <div className="py-0.5 text-[12px] text-[var(--content-disabled)]">no traffic</div>
       </Section>
     )
   }
@@ -33,7 +33,7 @@ function Window({ title, stats }: { title: string; stats: ModelTelemetryStats | 
         value={stats.successCount}
       />
       <Row label="failure">
-        <span className={stats.failureCount > 0 ? "text-[var(--color-fail)]" : undefined}>{stats.failureCount}</span>
+        <span className={stats.failureCount > 0 ? "text-[var(--signal-fail)]" : undefined}>{stats.failureCount}</span>
       </Row>
       <Row
         label="avg duration"
@@ -80,8 +80,8 @@ export function TelemetryTab({ telemetry }: { telemetry: JoinedModelTelemetry | 
   if (!telemetry || (!telemetry.last7d && !telemetry.sinceStart)) {
     return (
       <div>
-        <div className="py-0.5 text-[12px] text-[#888]">{renderValue(undefined)} no runtime telemetry joined to this model.</div>
-        <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-muted)]">
+        <div className="py-0.5 text-[12px] text-[var(--content-dim)]">{renderValue(undefined)} no runtime telemetry joined to this model.</div>
+        <p className="mt-2 text-[11px] leading-relaxed text-[var(--content-muted)]">
           Failure counts aggregate by upstream canonical name; pure-alias failing requests appear in the page's Unmatched telemetry section.
         </p>
       </div>
@@ -97,7 +97,7 @@ export function TelemetryTab({ telemetry }: { telemetry: JoinedModelTelemetry | 
         title="Since start"
         stats={telemetry.sinceStart}
       />
-      <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-muted)]">
+      <p className="mt-2 text-[11px] leading-relaxed text-[var(--content-muted)]">
         Failure counts aggregate by upstream canonical name; pure-alias failing requests appear in the page's Unmatched telemetry section.
       </p>
     </div>
