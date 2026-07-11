@@ -179,6 +179,16 @@ describe("legacy protect_streaming_* key migration", () => {
     expect(resolveBufferedCaps("anthropic").heartbeatSec).toBe(30)
   })
 
+  test("a heartbeat above the keepalive-cadence ceiling is clamped (in mapBufferedCaps)", async () => {
+    // clampKeepaliveCadence ceiling = CLIENT_IDLE_DEADLINE_SEC(60) - 20 = 40. Locks that the
+    // clamp lives in the config-read path (mapBufferedCaps), covering both the shared key and
+    // the migrated legacy key (same clamp).
+    await applyYaml(`buffered_retry:\n  heartbeat_sec: 50\n`)
+    expect(resolveBufferedCaps("anthropic").heartbeatSec).toBe(40)
+    await applyYaml(`anthropic:\n  protect_streaming_heartbeat: 55\n`)
+    expect(resolveBufferedCaps("anthropic").heartbeatSec).toBe(40)
+  })
+
   test("protect_streaming_buffer_cap_bytes migrates to anthropic override buffer_cap_bytes", async () => {
     await applyYaml(`anthropic:\n  protect_streaming_buffer_cap_bytes: 8388608\n`)
     expect(resolveBufferedCaps("anthropic").bufferCapBytes).toBe(8_388_608)
