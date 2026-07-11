@@ -364,6 +364,14 @@ git commit -F <msg> -- <上述>   # dialog seam fork first
 
 ## Task P7 · Learned（页壳 shadcn 化）
 
+> **实施状态: DONE**（4 子 commit,分支 `feat/ui-v4-shadcn-redesign`,HEAD `f842a7f6`）。
+> ① `d79d2723` 提取 `LearnedLegacy`(原 LearnedPage body 逐字冻结:反应式学习记录标题 + all/active/expired/pinned 筛选 + 整体导出 + 分类分组)+ `LearnedPage` 变薄 `DesignFork` wrapper + `LearnedShadcn` 骨架(`data-testid=learned-shadcn`)。默认 amber-legacy 下既有 `LearnedPage.vitest` 经 wrapper 透传通过。legacy body 与基线 `d8349a6a` 逐字等价(git diff 仅 docstring 差异)。
+> ② `5f0ffd52` `LearnedShadcn` 完整页壳:呈现层 shadcn `Card`/`Button`/`Badge` + 中性语义 token(`text-foreground`/`bg-card`/`text-muted-foreground`);筛选按钮带 `aria-pressed`(legacy 无,净 a11y 改进);每个学习规则分类一张 `Card`(分类名 + 条数 + TTL),内嵌**中性化后的 B 内容体** `LearnedRow`(续约/失效/固定/删除 + `StatusBadge`)逐字复用;复用 A 数据 hook `useLearned` + export 逻辑(`api.getBlob` + `triggerDownload`)。fork-routed 测试 `tests/LearnedShadcn.vitest.test.tsx`(7):shadcn 断互斥挂载 + B 复用 + 状态徽章 + 分组计数/TTL + active/expired 筛选 + 整体导出 + 空态 + loading;amber-legacy 断 legacy 内容仍在、shadcn 标记缺席。
+> ③ `b10c4e65` subagent review 范式(单向抽取):视图编排(filter 状态 / matches / groups 派生含空分类默认留-筛选裁 / 整体导出 exporting 守卫)原在 LearnedLegacy/LearnedShadcn 各持逐字副本,抽出 design-agnostic A 层 hook **`useLearnedView`**(对齐 P5 `groupByAgent` / P6 `useConfigEditor`:shadcn 侧导入之只做呈现,legacy 保留内联冻结副本到 Z1 删文件,不碰冻结体);新 `tests/useLearnedView.vitest.test.ts` 直接断纯编排(默认 all 保留空分类 / expired 合并 manually_expired + 裁空分类 / active 只留 active / 导出 / loading)。
+> ④ `f842a7f6` subagent review NIT 采纳:补 `pinned` 筛选腿独立断言(review 指出该腿从未被 exercise、drift 盲点)+ shadcn 测试断 "1 条 · TTL 30d" 徽章使 docstring 名副其实。
+> subagent review(`ecc:react-reviewer`,裁判轴长远正确+完整)**Approve,无 MAJOR/MINOR**:legacy 冻结实测逐字一致、B 零改动、功能对等、hook 语义同构、scope 守卫零 designVersion、React 正确性 + a11y 净改进、测试双分支真语义断言无假绿。
+> INV-4 四绿(每子 commit):typecheck 0 / build(index 1100.87KB,基线 1098.53KB,+2.34KB shadcn 壳+hook)/ test(254 bun + 544 vitest 全绿:新增 LearnedShadcn 7 + useLearnedView 6)/ eslint 无缓存;grep 守卫绿(`learned/` + `useLearnedView` 零 designVersion)。legacy `LearnedLegacy` 冻结、`LearnedRow`/`StatusBadge`(B)零改动(git diff 空)。**交用户 UX 检查项见文末**:Learned 列表密度、分类 Card 分组 vs legacy 密行(legacy 是无 Card 的 section,shadcn 每分类一 Card——观感取舍待定)、TTL 徽章 vs 内联文本、筛选按钮 secondary/ghost 活动态观感、导出按钮位置。**已知局限(review NIT 已闭合)**:无。
+
 - **对应 RFC/决策**: §4 P7。
 - **目标**: shadcn 侧 Learned 页壳（filter + 导出 + 列表）；import 中性化 B（`LearnedRow`/`StatusBadge`，已 C3 中性化）+ C primitive。**legacy `LearnedPage` 冻结。**
 - **commit invariant**: `LearnedRow`/`StatusBadge`（B）零改动、共用；INV-2 fork B；INV-4 四绿。
