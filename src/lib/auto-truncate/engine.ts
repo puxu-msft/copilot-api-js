@@ -265,6 +265,41 @@ export function calibrate(modelId: string, gptEstimate: number): number {
   return Math.ceil(gptEstimate * factorAt(modelId, gptEstimate))
 }
 
+/** Batch aggregate for one size bucket (raw Σreal/Σest, not yet capped/scaled). */
+export interface BackfillBucketAgg {
+  sumReal: number
+  sumEst: number
+  count: number
+  meanEst: number
+}
+
+/**
+ * Overwrite selected buckets from batch aggregates (history backfill). Per-bucket:
+ * only buckets present (non-null, non-empty) in `agg` are replaced — empty/sparse
+ * buckets keep their factory seed (P-B6), so a bucket the history never populated
+ * still has its prior. Weight is capped at WEIGHT_CAP (Σreal/Σest scaled down
+ * proportionally) so a huge backfilled count can't freeze the sliding window
+ * against later LIVE learning (P-B5). Backfill is NOT live: `liveSampleCount` is
+ * untouched, so computeSafetyMargin keeps its conservative width until real
+ * success/400 events arrive. Called once at the END of a run (never mid-scan) so
+ * it never races the CalibrationSink's live per-request writes.
+ */
+export function applyBackfillBuckets(modelId: string, agg: Array<BackfillBucketAgg | null>): void {
+  const limits = ensureModelLimits(modelId)
+  for (const [i, a] of agg.entries()) {
+    if (!a || a.count === 0 || a.sumEst <= 0) continue
+    const scale = a.count > WEIGHT_CAP ? WEIGHT_CAP / a.count : 1
+    limits.factorModel.buckets[i] = {
+      sumReal: a.sumReal * scale,
+      sumEst: a.sumEst * scale,
+      sampleCount: Math.min(a.count, WEIGHT_CAP),
+      meanEst: a.meanEst,
+    }
+  }
+  limits.updatedAt = Date.now()
+  schedulePersist()
+}
+
 // ============================================================================
 // Dynamic Safety Margin
 // ============================================================================

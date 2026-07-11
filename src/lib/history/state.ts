@@ -20,6 +20,11 @@ import {
 import { clearInFlight } from "./in-flight"
 import {
   //
+  runCalibrationBackfill,
+  stopCalibrationBackfill,
+} from "./sqlite/calibration-backfill"
+import {
+  //
   closeDatabase,
   getDatabase,
   isDatabaseOpen,
@@ -123,6 +128,7 @@ export function stopHistoryBackgroundWork(): void {
   stopLegacyStageBackfill()
   stopSearchIndexBackfill()
   stopResponsePreviewBackfill()
+  stopCalibrationBackfill()
 }
 
 /**
@@ -165,15 +171,32 @@ export function startSearchIndexBackfill(): void {
 
 /**
  * Fire-and-forget the recoverable response-preview backfill in the BACKGROUND —
- * the LAST (heaviest) link of the chain, run AFTER the search-index backfill. Fills
+ * the heaviest link, run AFTER the search-index backfill, THEN chains the final
+ * calibration seed backfill. Fills
  * `response_preview_text` for pre-feature rows (NULL column) by reassembling each
  * entry and extracting its preview. No-op when history is disabled / the DB is not
- * open. `runResponsePreviewBackfill` catches internally; this `.catch` is a
- * belt-and-suspenders guard against an unhandledRejection crashing the process.
+ * open. `runResponsePreviewBackfill` catches internally; the `.catch`/`.finally`
+ * here are belt-and-suspenders against an unhandledRejection crashing the process.
  */
 export function startResponsePreviewBackfill(): void {
   if (!enabled || !isDatabaseOpen()) return
-  void runResponsePreviewBackfill(getDatabase()).catch((err: unknown) => consola.warn("[history] response-preview backfill failed", err))
+  void runResponsePreviewBackfill(getDatabase())
+    .catch((err: unknown) => consola.warn("[history] response-preview backfill failed", err))
+    .finally(() => startCalibrationBackfill())
+}
+
+/**
+ * Fire-and-forget the recoverable calibration seed backfill in the BACKGROUND —
+ * the FINAL link of the chain. Pairs each completed anthropic-messages row's real
+ * prompt tokens with its recomputed local estimate and seed-calibrates the
+ * size-aware factor model (cold-start bootstrap, spec §6). No-op when history is
+ * disabled / the DB is not open. `runCalibrationBackfill` catches internally; this
+ * `.catch` is a belt-and-suspenders guard against an unhandledRejection crashing
+ * the process.
+ */
+export function startCalibrationBackfill(): void {
+  if (!enabled || !isDatabaseOpen()) return
+  void runCalibrationBackfill(getDatabase()).catch((err: unknown) => consola.warn("[history] calibration backfill failed", err))
 }
 
 /**
