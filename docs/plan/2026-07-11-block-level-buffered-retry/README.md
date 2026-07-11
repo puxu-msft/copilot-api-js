@@ -48,6 +48,34 @@ P2 Responses   P3 Chat      P4 Responses-WS
 - **R4** 默认 on（P1 末 / P2/P3/P4 末）必须在该端点的 keepalive 实证门（PoC/oracle）通过**之后**的 commit——绝不先翻默认再验证。
 - **R5** 每阶段 landing 关闭对应 backlog 条（session-closeout doc-sync）：P1→retreat-bug(:251-257)；P2→Responses caps(:308-314)；P3→backlog:316 CC 腿；P4→backlog:300-306；telemetry→vendor-blind(:324-330)。
 
+## 冻结契约（single source of truth — P0 产出、P1-P4 逐字消费）
+
+> plan-review 发现混合起草导致契约分裂（C1/H1/H3）。以下为**唯一权威签名**，P0 实施前冻结，任何 plan 文件的代码样例与此冲突时**以本节为准**：
+
+```typescript
+// RunBufferedOpts 新增字段（P0 Task 1 加进 src/lib/pipeline/types.ts）
+commitBoundaries?: (frame: ClientFrame) => boolean   // 缺省=terminal-only=现行为
+telemetryVendor?: string                             // driver 注入进 onBufferedResolve.meta.vendor
+
+// onBufferedResolve 唯一签名（vendor 由 driver 从 opts.telemetryVendor 注入；
+// retriesBeforeDegrade 由 stats 从 retries 形参推导，NOT 经 meta 传）
+onBufferedResolve?: (outcome: ProtectStreamingOutcome, retries: number, meta: { vendor: string }) => void
+
+// telemetry（P0 Task 2 改 src/lib/anthropic/protect-streaming-stats.ts）
+type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "partial-degrade"
+function recordProtectStreamingOutcome(o: ProtectStreamingOutcome, retries: number, meta: { vendor: string }): void
+function getProtectStreamingStats(): Record<string /*vendor*/, ProtectStreamingStats> // 单对象→Record（breaking，无兼容负担）
+
+// 配置解析（P0 Task 3 加进 src/lib/state.ts）
+function resolveBufferedCaps(vendor: string): { maxRetries: number; bufferCapBytes: number; heartbeatSec: number }
+state.chatCompletionsBufferedRetry: boolean   // 新 config 字段（P0 Task 3 建 chat_completions 配置节 + CONFIG_MANAGED_DEFAULTS 三处，默认 false）
+
+// vendor 取值：anthropic / responses / chat_completions / responses_ws
+// ClientSink 新增（P1 Task 3）：suspendHeartbeat?(): void / resumeHeartbeat?(): void
+```
+
+**消费方对齐**：P2/P3/P4 的 handler **不再硬编码 vendor、不读 meta.retriesBeforeDegrade**——把 `commitBoundaries` + `telemetryVendor:"<vendor>"` 传进 opts，`onBufferedResolve: (o,r,meta)=>recordProtectStreamingOutcome(o,r,meta)` 原样透传 driver 注入的 `meta={vendor}`。既有 caps 消费者（`messages/handler-v4.ts:1136-1137`、`responses/handler-v4.ts:379-380`）在 P0 Task 3 一并迁到 `resolveBufferedCaps`（无双轨）。
+
 ## 阶段文件
 
 | 文件 | 阶段 | 交付物 | 状态 |

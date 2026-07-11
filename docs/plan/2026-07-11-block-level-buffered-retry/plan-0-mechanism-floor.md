@@ -23,15 +23,17 @@
 ### Task 1: `commitBoundaries` 谓词字段 + driver 块级提交骨架（行为中性）
 
 **Files:**
-- Modify: `src/lib/pipeline/types.ts`（`RunBufferedOpts` 加 `commitBoundaries?`）
+- Modify: `src/lib/pipeline/types.ts`（`RunBufferedOpts` 加 `commitBoundaries?` **+ `telemetryVendor?: string`** —— 二者均本 Task 加，见冻结契约）
 - Modify: `src/lib/pipeline/driver.ts:580-720`（`runResponseBufferedSink` 提交循环）
 - Test: `tests/pipeline/buffered-block-level.test.ts`（新建）
 
 **Interfaces:**
-- Produces（P1-P4 消费）：
-  - `RunBufferedOpts.commitBoundaries?: (frame: ClientFrame) => boolean` —— 该渲染帧是否一个「块完成、可安全 flush」的 commit 边界。缺省（undefined）= driver 仅在终止（`sawMessageStop()||sawUpstreamError()`）提交 = 现整响应行为。
-  - driver 内部：`committedAny: boolean`（是否已 flush 过任一 commit 边界的帧）；重试判据升级为 `retryable && !committedAny && !retreated`。
-  - `onBufferedResolve` 新增终局 `"partial-degrade"`（见 Task 4）。
+- Produces（P1-P4 消费，逐字见 README「冻结契约」）：
+  - `RunBufferedOpts.commitBoundaries?: (frame: ClientFrame) => boolean` —— 缺省（undefined）= terminal-only = 现整响应行为。
+  - `RunBufferedOpts.telemetryVendor?: string` —— driver 注入进 `onBufferedResolve` 的 `meta.vendor`（H1：本 Task 显式加，非「见别处」）。
+  - driver 内部：`committedAny: boolean`；重试判据升级为 `retryable && !committedAny && !retreated`。
+  - `onBufferedResolve` 新增终局 `"partial-degrade"`（Task 2）。
+  - **drained 语义重定义（spec §3.2 / 审查 M1）**：`commitBoundaries` 提供时，终止帧（message_stop/error）走**循环内** flush；循环后终止块**仅做分类**（读 `committedAny`+`sawMessageStop`）**不再二次 flush**——避免终止帧既被循环内边界 flush、又被循环后块重复 flush。`commitBoundaries===undefined` 时维持现「循环后一次 flush」（行为中性）。
 
 - [ ] **Step 1: 写失败测试 — 块级谓词多次提交 + 首块后截断走 partial-degrade**
 
@@ -146,6 +148,10 @@ if (committedAny) {
 ```
 
 > 关键：`commitBoundaries===undefined` 时上面循环内的 `if (opts.commitBoundaries && …)` 整块被跳过，`committedAny` 恒 false，重试判据 `!committedAny` 恒真 = 与现行为逐字一致（R1）。`flushBufferedBlock` 从现终止提交块（`freezeHeartbeat`/anchor close-off/remap/H1 dedup）抽取，供循环内与终止共用；`first` 参数控制 anchor close-off 只在首块做（P1 会重写 anchor 部分，P0 先保持 terminal-only 下等价）。
+>
+> **M1 终止去重（drained 重定义）**：当 `commitBoundaries` 提供且终止帧（message_stop/error）本身命中边界 → 它在**循环内**已 flush。循环后的终止块须改为：`commitBoundaries` 提供时**只分类不再 flush**（`if (committedAny || opts.commitBoundaries) { /* 已在循环内 flush，仅 onBufferedResolve 分类 */ } else { /* 现整响应路径：循环后一次 flush */ }`）。补回归断言「终止帧只 flush 一次」（Step 1 加一测：commitBoundaries 提供 + message_stop 是最后帧 → sink 里 message_stop 只出现一次）。
+>
+> **L1 四调用点补 meta**：现 driver 的 `onBufferedResolve?.("retreated"/"success"/"exhausted", attempt)`（driver.ts:625/681/684/716）全部补 `, { vendor: opts.telemetryVendor ?? "unknown" }`，否则新签名 typecheck 不过。
 
 - [ ] **Step 5: 跑测试证通过 + 回归**
 
@@ -166,7 +172,7 @@ git commit -m "feat(pipeline): commitBoundaries predicate + block-level commit s
 **Files:**
 - Modify: `src/lib/anthropic/protect-streaming-stats.ts`
 - Modify: `src/lib/pipeline/types.ts`（`onBufferedResolve` 签名）
-- Modify: `src/routes/status/route.ts`（/api/status 聚合按 vendor）
+- Modify: `src/routes/status/route.ts`（**M4**：`/api/status` 的 protect_streaming 聚合点——`getProtectStreamingStats()` 返回类型由单对象 → `Record<vendor, Stats>` 是 **breaking change**，须同步改聚合遍历 vendor 分桶 + 各 vendor hit-rate；无向后兼容负担，显式记）
 - Test: `tests/observability/protect-streaming-stats.test.ts`（新建或扩现有）
 
 **Interfaces:**
@@ -263,15 +269,16 @@ git commit -m "feat(telemetry): partial-degrade outcome + per-vendor protect-str
 ### Task 3: 共享配置键 `buffered_retry.*` + per-vendor 覆盖 + 旧键一次性迁移
 
 **Files:**
-- Modify: `src/lib/config/schema.ts:526-586`（加 `buffered_retry` 共享 section + `<vendor>.buffered_retry` map；`anthropic.protect_streaming_generation` 保留）
-- Modify: `src/lib/config/config.ts:503-509`（读取 + 迁移旧键）
-- Modify: `src/lib/state.ts`（CONFIG_MANAGED_DEFAULTS 三处 :1354/:1487/:1633 + 解析器）
+- Modify: `src/lib/config/schema.ts:526-586`（加 `buffered_retry` 共享 section + `<vendor>.buffered_retry` map；**H3**：新建 `chat_completions` 配置节 + `chat_completions.buffered_retry`；`anthropic.protect_streaming_generation` 保留）
+- Modify: `src/lib/config/config.ts:503-509`（读取 + 迁移旧键 + **H3** 读 `chat_completions.buffered_retry`）
+- Modify: `src/lib/state.ts`（CONFIG_MANAGED_DEFAULTS 三处 :1354/:1487/:1633 + 解析器 + **H3** `chatCompletionsBufferedRetry: false` 三处默认）
 - Modify: `src/lib/config/validation.ts:53-68`（告警文案改新键名）
+- **H2 既有 caps 消费者一并迁移（否则违反 R1 或留双轨）**：`src/routes/messages/handler-v4.ts:1136-1137`（`state.protectStreamingMaxRetries`/`protectStreamingBufferCapBytes` → `resolveBufferedCaps("anthropic")`）、`src/routes/responses/handler-v4.ts:379-380`（→ `resolveBufferedCaps("responses")`）、`src/routes/responses/buffered-config.ts`（heartbeat 读取 → `resolveBufferedCaps("responses").heartbeatSec`）
 - Modify: `config.yaml:549-561`、`config.example.yaml`
 - Test: `tests/config/buffered-retry-keys.test.ts`（新建）
 
 **Interfaces:**
-- Produces（P1-P4 消费）：解析后 state 暴露 per-vendor resolved caps —— 新增 resolver `resolveBufferedCaps(vendor: "anthropic"|"responses"|"chat_completions"): { maxRetries: number; bufferCapBytes: number; heartbeatSec: number }`（优先级 per-vendor 覆盖 > 共享 > 内置默认 3/16777216/15）。`anthropic.protect_streaming_generation` 三态开关不变；`<vendor>.buffered_retry.enabled` 布尔开关（responses/chat_completions）。
+- Produces（P1-P4 消费，见 README 冻结契约）：`resolveBufferedCaps(vendor)`（优先级 per-vendor 覆盖 > 共享 > 内置默认 3/16777216/15）；`state.chatCompletionsBufferedRetry: boolean`（默认 false，P3 消费）；`anthropic.protect_streaming_generation` 三态不变；`<vendor>.buffered_retry.enabled` 布尔（responses/chat_completions）。**H2：迁移后旧 `state.protectStreamingMaxRetries/Heartbeat/BufferCapBytes` 独立字段删除，两个 handler + buffered-config 全部改读 `resolveBufferedCaps`，无双轨（R1 由「resolveBufferedCaps 对 anthropic 返回值 === 旧字段值」的等价测试守）。**
 
 - [ ] **Step 1: 写失败测试（优先级 + 迁移）**
 

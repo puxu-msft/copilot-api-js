@@ -223,12 +223,15 @@ git commit -m "feat(client-sink): suspend/resume heartbeat around per-block flus
 ```typescript
 // tests/codec/anthropic/block-internal-release.test.ts
 import { expect, test } from "bun:test"
-import { makeToolInputDecoder } from "~/lib/anthropic/decode-tool-input"
+import { createToolInputStreamDecoder } from "~/lib/anthropic/decode-tool-input"
+// 真实 API（decode-tool-input.ts:185）：createToolInputStreamDecoder(cfg, opts) → { processEvent, flush }；
+// processEvent 签名（:157）：(parsed: StreamEvent | undefined, raw: ServerSentEventMessage) => ServerSentEventMessage[]。
+// 实施前 grep 现有 decode 测试复用其 cfg/opts 构造，勿凭空造。
 // 喂 [start(tool_use,idx0), delta(partial_json), stop(0), start(text,idx1)]；
 // 断言 decode 在处理 stop(0) 时已 emit 该块全部帧（不 hold 到 idx1 的边界之后）。
 test("decode releases block frames at its own content_block_stop, before next block", () => {
-  const dec = makeToolInputDecoder(/* toolSchemas */ {} as any)
-  const emit = (raw: any) => dec.processEvent(raw, { data: JSON.stringify(raw) } as any)
+  const dec = createToolInputStreamDecoder(/* cfg */ {} as any, /* opts */ {} as any)
+  const emit = (o: any) => dec.processEvent(o, { data: JSON.stringify(o) } as any)
   emit({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t", name: "Write", input: {} } })
   emit({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"a":1}' } })
   const atStop = emit({ type: "content_block_stop", index: 0 })

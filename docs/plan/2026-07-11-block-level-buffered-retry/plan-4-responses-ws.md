@@ -26,7 +26,7 @@
 
 **Interfaces:**
 - Consumes：`resolveResponsesBufferedAndHeartbeat`（`responses/buffered-config.ts`，复用）；P2 Responses 谓词（terminal 用法）；P0 骨架 + `partial-degrade`。
-- **fallback 核实**：P2 发现 Responses via-chat-completions fallback 的终止帧 post-loop 合成、块级看不到。**核实 WS 路径是否触及该 fallback**——若 `handleResponseCreateV4` 可能走 fallback，则 `buffered && !viaFallback`（fallback 保持 live），与 P2 一致。
+- **fallback 核实（H4，已确证非占位）**：`ws.ts:279` 已有 `const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS`，`ws.ts:386` 有 `if (viaFallback) codec.flushResponse` 循环外后置合成——与 P2 direct 子路径**同根因**。故 buffered 分支**直接**门控 `buffered && !viaFallback`（复用 ws.ts:279、fallback 保持 live），并加 fallback+buffered=live 回归测试（同 P2 Task 3）。
 
 - [ ] **Step 1: 写失败测试（terminal-only buffered + mid-stream drop 重试）**
 
@@ -45,7 +45,7 @@ test("WS buffered: mid-stream upstream drop before terminal → retried & recove
 ```typescript
 // responses/ws.ts handleResponseCreateV4 替换 :359
 const { buffered, heartbeatSec } = resolveResponsesBufferedAndHeartbeat()
-const viaFallback = /* 核实：该 WS 请求是否走 via-chat-completions fallback */ false
+const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS // 复用 ws.ts:279 已有实现（H4：WS 确有 via-cc-fallback，flushResponse 后置合成见 ws.ts:386，与 P2 同根因）
 const outcome = (buffered && !viaFallback)
   ? await driver.runResponseBufferedSink(upstream, env, makeWsSink(ws, { heartbeatSec }), {
       onRenderedFrame: restoreAccumulateCount,

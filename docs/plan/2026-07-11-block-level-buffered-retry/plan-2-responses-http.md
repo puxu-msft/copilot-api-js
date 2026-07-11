@@ -3,6 +3,8 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实施。步骤用 `- [ ]` 复选框跟踪。
 >
 > **权威 spec:** [`docs/spec/2026-07-11-block-level-buffered-retry.md`](../../spec/2026-07-11-block-level-buffered-retry.md)（已获批）§3.1 / §7.2 / §9 / §11 M-2 / §12。总览 [`README.md`](README.md)。冲突以 spec 为准。
+>
+> **⚠ 契约修正（plan-review C1，以 README「冻结契约」为准）**：本文档若干处（契约 3/4、Task 2 Step 3 的 `recordProtectStreamingOutcome(o,r,{vendor:"responses"})` 硬编码 + `meta?.retriesBeforeDegrade` 读取）是**过时局部**。统一签名 `onBufferedResolve(outcome, retries, meta:{vendor})`——**vendor 由 driver 从 `opts.telemetryVendor:"responses"` 注入**，handler 不硬编码 vendor、**不读 `meta.retriesBeforeDegrade`**（由 P0 stats 从 `retries` 形参推导）。Task 2 Step 3 改为：opts 传 `telemetryVendor:"responses"` + `onBufferedResolve:(o,r,meta)=>recordProtectStreamingOutcome(o,r,meta)` 原样透传。既有 caps 读取（`responses/handler-v4.ts:379-380`）在 P0 Task 3 已迁 `resolveBufferedCaps("responses")`。
 
 ## Plan Document Header
 
