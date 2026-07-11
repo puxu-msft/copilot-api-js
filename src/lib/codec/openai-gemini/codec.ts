@@ -154,10 +154,6 @@ export function createOpenAiGeminiCodec(modelId: string): OpenAiGeminiCodec {
     // touch cc's parse-created closure state (requestContext/truncateBaseline are
     // ours); the only cc closure state used is its via-responses stream translator,
     // lazily built inside cc.renderResponse.
-    decideRoute(env) {
-      return cc.decideRoute(env)
-    },
-
     translateOut(env) {
       return cc.translateOut(env)
     },
@@ -288,7 +284,7 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
   const filledPayload = fillMaxCompletionTokens(sanitizedPayload, selectedModel)
 
   const env = makeEnvelope({
-    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites via decideRoute
+    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
     model: selectedModel as ResolvedModel,
     stream: filledPayload.stream ?? false,
     body: filledPayload,

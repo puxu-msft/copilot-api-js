@@ -6,16 +6,8 @@
  * (`supported_endpoints` / vendor) to choose a protocol leg or reject — the concern
  * ADR pulls out of the codecs so a codec becomes a pure format translator. It unifies
  * the 5 previously-per-codec decisions (anthropic / openai-cc / openai-responses /
- * openai-gemini) behind one `clientFormat`-dispatched function.
- *
- * ── Phase 0 transition (large-refactor commit invariant) ──────────────────────────────
- * The migration is incremental: each `clientFormat` moves from its codec's still-live
- * `decideRoute` into this function one commit at a time (T0.1 anthropic, T0.2 cc, T0.3
- * responses incl. the Google force-fallback, T0.4 gemini). Until a format is migrated,
- * `decideRoute` delegates it to the `bridge` — the driver's thunk back to
- * `codec.decideRoute` — so EVERY commit keeps the full 4-format golden
- * (`tests/pipeline/router-golden.it.test.ts`) byte-equivalent. The `bridge` parameter is
- * removed in T0.5 once all five codec implementations are deleted.
+ * openai-gemini) behind one `clientFormat`-dispatched function. Route-decision behavior is
+ * frozen byte-for-byte by `tests/pipeline/router-golden.it.test.ts` (Phase 0 golden oracle).
  */
 
 import type { Model } from "~/lib/models/client"
@@ -33,18 +25,10 @@ import type { RequestEnvelope } from "./envelope"
 import type { RouteDecision } from "./types"
 
 /**
- * Transition delegate to a not-yet-migrated codec's live `decideRoute` (Phase 0 T0.1–T0.4).
- * The driver supplies `(env) => deps.codec.decideRoute(env)`; the bridge shrinks as each
- * format migrates and is dropped in T0.5.
- */
-export type RouteBridge = (env: RequestEnvelope) => RouteDecision
-
-/**
  * S2 — passthrough / translate / reject, dispatched by `env.clientFormat`. The only reader
- * of upstream model capabilities. During the Phase 0 migration a format not yet moved here
- * delegates to `bridge` (see module docstring).
+ * of upstream model capabilities (`supported_endpoints` / vendor).
  */
-export function decideRoute(env: RequestEnvelope, bridge: RouteBridge): RouteDecision {
+export function decideRoute(env: RequestEnvelope): RouteDecision {
   switch (env.clientFormat) {
     case "anthropic": {
       return decideAnthropicRoute(env)
@@ -60,12 +44,6 @@ export function decideRoute(env: RequestEnvelope, bridge: RouteBridge): RouteDec
       // (the codec delegated to its internal cc codec's decideRoute; RFC §4.3 W-priority
       // "gemini: cc > responses").
       return decideOpenAiCcRoute(env.model as Model | undefined)
-    }
-    default: {
-      // All 4 ClientFormats are migrated (T0.1–T0.4); this bridge is now an unreachable
-      // defensive fallback. The `bridge` param + this case are removed in T0.5 together with
-      // the FormatCodec.decideRoute interface method.
-      return bridge(env)
     }
   }
 }

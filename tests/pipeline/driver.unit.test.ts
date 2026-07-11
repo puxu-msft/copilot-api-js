@@ -92,15 +92,25 @@ function makeEnv(ctx: RequestContext, body: unknown = { v: 0 }): RequestEnvelope
 
 // ── mock codec / transport / strategies ─────────────────────────────────────
 
-function makeCodec(over: Partial<FormatCodec> & { env?: RequestEnvelope } = {}): { codec: FormatCodec; spy: Record<string, number> } {
+/**
+ * A mock codec plus a routing decision. `decideRoute` is NOT a FormatCodec method anymore
+ * (it moved to the free-function `router.decideRoute`, ADR 2026-07-11) — these orchestration
+ * tests drive routing through the `DriverDeps.decideRoute` DI override, so the mock carries a
+ * `decideRoute` closure on a side-channel (via intersection) that the call sites wire in.
+ */
+type MockCodec = FormatCodec & { decideRoute: (env: RequestEnvelope) => RouteDecision }
+
+function makeCodec(over: Partial<FormatCodec> & { env?: RequestEnvelope; decideRoute?: (env: RequestEnvelope) => RouteDecision } = {}): {
+  codec: MockCodec
+  spy: Record<string, number>
+} {
   const spy: Record<string, number> = { parse: 0, decideRoute: 0, translateOut: 0, prepareWire: 0, renderResponse: 0, renderResponseNonStreaming: 0 }
-  const codec: FormatCodec = {
+  const base: FormatCodec = {
     format: "openai-cc",
     parse: (_raw) => {
       spy.parse++
       return over.env ?? makeEnv(makeCtx().ctx)
     },
-    decideRoute: over.decideRoute ?? (() => ({ kind: "passthrough", endpoint: "/chat/completions" }) as RouteDecision),
     translateOut: over.translateOut ?? ((env) => (spy.translateOut++, env)),
     prepareWire: over.prepareWire ?? (() => (spy.prepareWire++, { url: "u", headers: new Headers(), body: {}, stream: true } as PreparedRequest)),
     renderResponse: over.renderResponse ?? ((frame) => (spy.renderResponse++, frame)),
@@ -108,9 +118,10 @@ function makeCodec(over: Partial<FormatCodec> & { env?: RequestEnvelope } = {}):
     formatError: over.formatError ?? ((_err, _env) => ({ event: "error", data: "{}" }) as ClientFrame),
     createResponseAccumulator: over.createResponseAccumulator ?? (() => ({ model: "", inputTokens: 0, outputTokens: 0, rawContent: "" })),
   }
-  // patch decideRoute to count
-  const baseDecide = codec.decideRoute
-  codec.decideRoute = (env) => (spy.decideRoute++, baseDecide(env))
+  // The routing decision, spy-counted. Wired into the driver via `deps.decideRoute` at each
+  // call site (`decideRoute: (e) => codec.decideRoute(e)`).
+  const decide = over.decideRoute ?? (() => ({ kind: "passthrough", endpoint: "/chat/completions" }) as RouteDecision)
+  const codec = Object.assign(base, { decideRoute: (env: RequestEnvelope) => (spy.decideRoute++, decide(env)) }) as MockCodec
   return { codec, spy }
 }
 

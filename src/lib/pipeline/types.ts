@@ -622,9 +622,6 @@ export interface FormatCodec {
   /** S1: parse inbound HTTP → envelope (model resolution, body extraction, ctx). */
   parse(raw: RawHttpRequest): RequestEnvelope
 
-  /** S2: passthrough / translate / reject decision (unifies the 4 scattered checks). */
-  decideRoute(env: RequestEnvelope): RouteDecision
-
   /** S2: translate body to the target-endpoint format (passthrough = identity). */
   translateOut(env: RequestEnvelope): RequestEnvelope
 

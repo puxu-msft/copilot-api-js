@@ -67,7 +67,6 @@ import type {
   RawHttpRequest,
   RequestSample,
   ResponseAccumulator,
-  RouteDecision,
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
@@ -97,8 +96,6 @@ import {
 import {
   //
   ENDPOINT,
-  isEndpointSupported,
-  isResponsesSupported,
 } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import {
@@ -189,10 +186,6 @@ export function createOpenAiCcCodec(): OpenAiCcCodec {
 
     getContext() {
       return requestContext
-    },
-
-    decideRoute(env) {
-      return decideOpenAiCcRoute(env.model)
     },
 
     // S2 translateOut is identity: the CC→Responses translation is NOT done here
@@ -319,7 +312,7 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
   const { payload: sanitizedPayload } = sanitizeOpenAIMessages(renamedPayload)
 
   const env = makeEnvelope({
-    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites via decideRoute
+    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
     model: selectedModel as ResolvedModel,
     stream: sanitizedPayload.stream ?? false,
     body: sanitizedPayload,
@@ -335,31 +328,6 @@ function parseContentLength(header: string | null): number | undefined {
   if (header === null) return undefined
   const n = Number.parseInt(header, 10)
   return Number.isFinite(n) ? n : undefined
-}
-
-// ============================================================================
-// S2 — decideRoute
-// ============================================================================
-
-/**
- * S2: passthrough / translate / reject (docs/v4/03-spec/codec.md §2).
- *   - `isEndpointSupported(/chat/completions)` → passthrough
- *   - elif `isResponsesSupported`             → translate `/responses`
- *   - else                                    → reject 400
- *
- * Non-uniform default (preserved): `isEndpointSupported` treats a model with no
- * `supported_endpoints` as supporting everything (legacy fallback) — so unknown
- * gpt-* models passthrough to /chat/completions.
- */
-function decideOpenAiCcRoute(model: Model | undefined): RouteDecision {
-  if (isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)) {
-    return { kind: "passthrough", endpoint: ENDPOINT.CHAT_COMPLETIONS }
-  }
-  if (isResponsesSupported(model)) {
-    return { kind: "translate", to: ENDPOINT.RESPONSES }
-  }
-  const id = model?.id ?? "unknown"
-  return { kind: "reject", status: 400, reason: `Model "${id}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint` }
 }
 
 // ============================================================================

@@ -92,8 +92,7 @@ export interface DriverDeps {
    * tests (which drive a mock codec through a fake model with no `state.modelIndex`) inject a
    * fixed decision here so they exercise stage sequencing without needing a live model index;
    * route-decision CORRECTNESS is covered by `tests/pipeline/router-golden.it.test.ts`, not the
-   * orchestration tests. When omitted the driver uses the router (+ the Phase 0 transition
-   * bridge back to `codec.decideRoute` for formats not yet migrated).
+   * orchestration tests. When omitted the driver uses the free-function `router.decideRoute`.
    */
   decideRoute?: (env: RequestEnvelope) => RouteDecision
 }
@@ -150,14 +149,12 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
 
 /**
  * S2 route decision. Prefers the `deps.decideRoute` test override; otherwise the
- * free-function `router.decideRoute` (ADR 2026-07-11) with the Phase 0 transition bridge
- * back to `deps.codec.decideRoute` for formats not yet migrated into the router (removed
- * T0.5). Both driver call sites (`runRequest` S2, `inspectRequest` S2) go through here so
- * the routing seam is single-sourced.
+ * free-function `router.decideRoute` (ADR 2026-07-11), the single reader of upstream model
+ * capabilities. Both driver call sites (`runRequest` S2, `inspectRequest` S2) go through
+ * here so the routing seam is single-sourced.
  */
 function resolveRouteDecision(deps: DriverDeps, parsed: RequestEnvelope): RouteDecision {
-  if (deps.decideRoute) return deps.decideRoute(parsed)
-  return decideRoute(parsed, (e) => deps.codec.decideRoute(e))
+  return (deps.decideRoute ?? decideRoute)(parsed)
 }
 
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */
@@ -167,7 +164,7 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
 
   // S2 — Translate-in: decideRoute (passthrough / translate / reject) + translateOut.
   // The route decision moved to the free-function `router.decideRoute` (ADR 2026-07-11),
-  // resolved via `resolveRouteDecision` (test override → router → Phase 0 transition bridge).
+  // resolved via `resolveRouteDecision` (test override → router).
   const decision = resolveRouteDecision(deps, parsed)
   if (decision.kind === "reject") {
     // No dangling history entry — reject before committing the request (aligns
@@ -225,8 +222,7 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   stages.parse = { clientFormat: parsed.clientFormat, targetEndpoint: parsed.targetEndpoint, model: parsed.model, body: snapshotBody(parsed.body) }
   if (stopAfter === "parse") return { stoppedAt: "parse", stages }
 
-  // S2 — route / translate. Via `resolveRouteDecision` (test override → free-function router
-  // → Phase 0 transition bridge).
+  // S2 — route / translate. Via `resolveRouteDecision` (test override → free-function router).
   const decision = resolveRouteDecision(deps, parsed)
   if (decision.kind === "reject") return { stoppedAt: "reject", rejected: { status: decision.status, reason: decision.reason }, stages }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to

@@ -45,7 +45,7 @@ function anthropicBody(over?: Partial<MessagesPayload>): MessagesPayload {
   return { model: "claude-sonnet-4", messages: [{ role: "user", content: "hi" }], max_tokens: 100, ...over } as MessagesPayload
 }
 
-describe("anthropic codec — parse / decideRoute / prepareWire / sampleRequest", () => {
+describe("anthropic codec — parse / prepareWire / sampleRequest", () => {
   useIsolatedRuntime()
 
   beforeEach(() => {
@@ -101,24 +101,6 @@ describe("anthropic codec — parse / decideRoute / prepareWire / sampleRequest"
     const result = resanitize?.(anthropicBody())
     expect(result?.payload).toBeDefined()
     expect(result?.stats).toBeDefined()
-  })
-
-  test("decideRoute: Anthropic-vendor model → passthrough /v1/messages", () => {
-    const codec = makeCodec()
-    const env = codec.parse(rawReq(anthropicBody()))
-    const decision = codec.decideRoute(env)
-    expect(decision).toEqual({ kind: "passthrough", endpoint: "/v1/messages" })
-  })
-
-  test("decideRoute: non-Anthropic model → reject 400 with the /v1/messages reason", () => {
-    const codec = makeCodec()
-    const env = codec.parse(rawReq(anthropicBody({ model: "gpt-4o" }), { preResolved: { name: "gpt-4o", model: undefined } }))
-    const decision = codec.decideRoute(env)
-    expect(decision.kind).toBe("reject")
-    if (decision.kind === "reject") {
-      expect(decision.status).toBe(400)
-      expect(decision.reason).toContain("does not support /v1/messages")
-    }
   })
 
   test("prepareWire produces a /v1/messages wire + records the outbound betas on the probe", () => {

@@ -64,7 +64,6 @@ import type {
   RawHttpRequest,
   RequestSample,
   ResponseAccumulator,
-  RouteDecision,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
 import type {
@@ -79,7 +78,6 @@ import {
   countTotalTokens,
 } from "~/lib/anthropic/auto-truncate"
 import { calculateTokenLimit } from "~/lib/anthropic/auto-truncate/truncation"
-import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
 import {
@@ -213,10 +211,6 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     },
     getRequestRewrites() {
       return requestRewrites
-    },
-
-    decideRoute(env) {
-      return decideAnthropicRoute(env)
     },
 
     // S2/S6 are identity — Anthropic is a bypass-direct format (no translation).
@@ -368,23 +362,6 @@ function parseContentLength(header: string | null): number | undefined {
   if (header === null) return undefined
   const n = Number.parseInt(header, 10)
   return Number.isFinite(n) ? n : undefined
-}
-
-// ============================================================================
-// S2 — decideRoute
-// ============================================================================
-
-/**
- * S2: passthrough `/v1/messages` or reject 400 — NO translate/fallback (the
- * bypass-direct Anthropic endpoint has no downgrade path, RFC §2.2 / messages:167).
- */
-function decideAnthropicRoute(env: RequestEnvelope): RouteDecision {
-  const id = (env.model as Model | undefined)?.id ?? (env.body as MessagesPayload).model
-  const decision = supportsDirectAnthropicApi(id)
-  if (!decision.supported) {
-    return { kind: "reject", status: 400, reason: `Model "${id}" does not support /v1/messages: ${decision.reason}` }
-  }
-  return { kind: "passthrough", endpoint: ENDPOINT.MESSAGES }
 }
 
 // ============================================================================

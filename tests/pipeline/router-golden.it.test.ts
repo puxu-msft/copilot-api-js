@@ -46,15 +46,9 @@ import type {
 } from "~/lib/pipeline/envelope"
 import type {
   //
-  FormatCodec,
   RouteDecision,
 } from "~/lib/pipeline/types"
 
-import { createBetaProbe } from "~/lib/anthropic/pipeline"
-import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
-import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
-import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
-import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { decideRoute } from "~/lib/pipeline/router"
 import { setModels } from "~/lib/state"
@@ -80,34 +74,14 @@ function envFor(model: Model | undefined, clientFormat: ClientFormat): RequestEn
   } as RequestEnvelope
 }
 
-// ── per-format codec factory (decideRoute is pure; a fresh instance per call) ─────────
-function codecFor(clientFormat: ClientFormat, modelId: string): FormatCodec {
-  switch (clientFormat) {
-    case "anthropic": {
-      return createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
-    }
-    case "openai-cc": {
-      return createOpenAiCcCodec()
-    }
-    case "openai-responses": {
-      return createOpenAiResponsesCodec()
-    }
-    case "gemini": {
-      return createOpenAiGeminiCodec(modelId)
-    }
-  }
-}
-
 // ═════════════════════════════════════════════════════════════════════════════════════
 // THE MOVING SEAM — updated per T0.x to track the production routing call site.
-// T0.1+: the free-function `router.decideRoute`, dispatching by clientFormat (anthropic
-// native; others via the transition bridge back to codec.decideRoute, shrinking as T0.2–
-// T0.4 migrate each format; the bridge is removed in T0.5).
+// T0.5 (final): the free-function `router.decideRoute(env)`, dispatching by clientFormat. All
+// 5 codec `decideRoute` implementations + the transition bridge are gone; routing is the
+// router's sole responsibility, and this frozen table is its byte-equivalence oracle.
 // ═════════════════════════════════════════════════════════════════════════════════════
-function routeDecisionUnderTest(clientFormat: ClientFormat, model: Model | undefined, modelId: string): RouteDecision {
-  const codec = codecFor(clientFormat, modelId)
-  const env = envFor(model, clientFormat)
-  return decideRoute(env, (e) => codec.decideRoute(e))
+function routeDecisionUnderTest(clientFormat: ClientFormat, model: Model | undefined): RouteDecision {
+  return decideRoute(envFor(model, clientFormat))
 }
 
 // ── frozen matrix (the immutable oracle) ─────────────────────────────────────────────
@@ -283,16 +257,16 @@ describe("Phase 0 T0.0 — golden decideRoute matrix (frozen pre-refactor oracle
       row.modelUndefined ? undefined : mockModel(row.id, { vendor: row.vendor, ...(row.endpoints !== undefined && { supported_endpoints: row.endpoints }) })
 
     test(`anthropic: ${label}`, () => {
-      expect(routeDecisionUnderTest("anthropic", modelOf(), row.id)).toEqual(row.anthropic)
+      expect(routeDecisionUnderTest("anthropic", modelOf())).toEqual(row.anthropic)
     })
     test(`openai-cc: ${label}`, () => {
-      expect(routeDecisionUnderTest("openai-cc", modelOf(), row.id)).toEqual(row.cc)
+      expect(routeDecisionUnderTest("openai-cc", modelOf())).toEqual(row.cc)
     })
     test(`openai-responses: ${label}`, () => {
-      expect(routeDecisionUnderTest("openai-responses", modelOf(), row.id)).toEqual(row.responses)
+      expect(routeDecisionUnderTest("openai-responses", modelOf())).toEqual(row.responses)
     })
     test(`gemini: ${label}`, () => {
-      expect(routeDecisionUnderTest("gemini", modelOf(), row.id)).toEqual(row.gemini)
+      expect(routeDecisionUnderTest("gemini", modelOf())).toEqual(row.gemini)
     })
   }
 })
