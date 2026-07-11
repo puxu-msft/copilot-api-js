@@ -139,7 +139,7 @@ src/lib/tui/
 ## 10. 分阶段（各带 commit invariants）
 
 - **P0 重组（行为等价）** — **✅ 已实施（2026-07-10）**：`docs/plan/2026-07-10-tui-terminal-reorg-p0.md`（6 task 全绿 + 各 task 过审、golden-fixture 逐字等价）。建 `src/lib/tui/`；从 console.ts 抽 footer/syslog 渲染 → tui/render/；**format/log-line 留 projections/**；terminal-ui 直接订 bus **接管请求事件 + system.log 两条流**取代 ConsoleSink（旧 `sinks/console.ts` 已删）；加 ESLint 边界。**golden-fixture 预捕获**（从重构前 commit 锁旧 stdout 字节流）——fixture **必须含**「请求行 + 100ms footer 重画 + system.log 行」三者交织的**非空**样本（评审 §5b：正样本证捕获触达渲染路径，否则空对空空洞通过）。纯搬家、零行为变化。
-- **P1 只读面板**：`region.ts`（PoC-2 定技术）多行 sticky + 宽×高 clamp + **选中滚动触达溢出**（§6）；`keys.ts`+`controller.ts` 展开/收回/导航；`panel.ts` 逐条 + detail（跨事件累积）；raw-mode 全程常驻 + **exit-hook 还原**（PoC-4 gate）。无破坏性动作。PoC-1/2/4 须先绿。
+- **P1 只读面板** — **✅ 已实施（2026-07-11）**：`docs/plan/2026-07-11-tui-interactive-panel-p1.md`（8 task 全绿 + 各 task 过审含 opus 集成审查；四叶子 keys/region/panel/controller + 集成 + 还原 scheme A + eslint 边界 + doc）。`region.ts` DECSTBM 多行 sticky + 宽×高 clamp + **选中滚动触达溢出**（§6，`panelContentRows` 共享 helper 对齐 controller/renderer 窗口）；`keys.ts`+`controller.ts` 展开/收回/导航；`panel.ts` 逐条 + detail（跨事件累积 attempts[]）；raw-mode 常驻（Reading B：仅显式注入 stdin 才 interactive，护 test-isolation）+ **exit-hook 还原**。无破坏性动作。真终端反馈修入：req_id 显全（`1c23e6f4`）、**面板固定高度 3 行消除空行 churn**（`cfc4f05e`）。残留打磨项（help-toggle 滚动、1↔2↔3 微动）见 `docs/todo/deferred-backlog.md`。**用户真终端验收清单见 plan 末**。
 - **P2 破坏性动作**：abort（镜像 reaper `reapInFlight()`+settle + Q5 `user-abort` provenance + 客户端语义）+ req_id 复制（Q3）+ 确认门显被打断请求详情 + drain scheme（Q6）。
 
 ## 11. 测试
