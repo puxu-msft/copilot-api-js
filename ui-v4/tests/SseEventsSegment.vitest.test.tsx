@@ -50,11 +50,18 @@ const withSyntheticFrames = {
   startedAt: 0,
   endpoint: "anthropic-messages",
   clientRequest: { messages: [] },
-  attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, sseEvents: [{ offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` }] } }],
+  attempts: [
+    { index: 0, durationMs: 0, upstreamResponse: { success: true, sseEvents: [{ offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` }] } },
+  ],
   clientResponse: {
     sseEvents: [
       { offsetMs: 0, type: "content_block_start", raw: `{"type":"content_block_start","index":0}`, synthetic: "anchor" },
-      { offsetMs: 5, type: "content_block_delta", raw: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}`, synthetic: "keepalive" },
+      {
+        offsetMs: 5,
+        type: "content_block_delta",
+        raw: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}`,
+        synthetic: "keepalive",
+      },
       { offsetMs: 9, type: "content_block_stop", raw: `{"type":"content_block_stop","index":0}`, synthetic: "anchor" },
     ],
   },
