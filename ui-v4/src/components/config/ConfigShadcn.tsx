@@ -1,9 +1,3 @@
-import {
-  //
-  useEffect,
-  useState,
-} from "react"
-
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -14,7 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { useConfigYaml } from "@/hooks/useConfigYaml"
+import { useConfigEditor } from "@/hooks/useConfigEditor"
 import { cn } from "@/lib/utils"
 
 const EDITOR_ID = "config-yaml-editor"
@@ -22,8 +16,9 @@ const EDITOR_ID = "config-yaml-editor"
 /**
  * fork B · Config 页元素(shadcn 页壳,P6 完整版)。
  *
- * 与 legacy(`ConfigLegacy`)读**同一数据源**(`useConfigYaml`,A 数据 hook,两树共用),
- * 编辑 / 解析 / 保存逻辑同构(JSON 序列化编辑 → parse → `save.mutate`),仅呈现层不同:
+ * 与 legacy(`ConfigLegacy`)共用 A 层编辑编排 hook `useConfigEditor`(两树共用,不复制逻辑;
+ * legacy 保留内联冻结副本到 Z1)——text↔query.data 同步 / JSON parse / `save.mutate` 全在 hook。
+ * 本组件只负责呈现层:
  *  - 页壳用 shadcn `Card` + `Button` + 中性语义 token(`text-foreground`/`bg-card`/`border-input`),
  *    圆角随 `--radius`。
  *  - 保存态反馈用中性信号色(`--signal-fail`/`--signal-ok`)——解析错误 / 保存失败 / 已保存。
@@ -32,29 +27,22 @@ const EDITOR_ID = "config-yaml-editor"
  * `data-testid=config-shadcn` 供 fork B 互斥挂载守卫(loading 态亦保留,便于守卫恒可定位)。
  */
 export function ConfigShadcn() {
-  const { query, save } = useConfigYaml()
-  const [text, setText] = useState("")
-  const [parseError, setParseError] = useState<string | null>(null)
-  useEffect(() => {
-    if (query.data) setText(JSON.stringify(query.data, null, 2))
-  }, [query.data])
-
-  function onSave() {
-    setParseError(null)
-    try {
-      const parsed = JSON.parse(text) as Record<string, unknown>
-      save.mutate(parsed)
-    } catch (e) {
-      setParseError(e instanceof Error ? e.message : "parse error")
-    }
-  }
+  const {
+    //
+    text,
+    setText,
+    parseError,
+    onSave,
+    isLoading,
+    save,
+  } = useConfigEditor()
 
   return (
     <div
       data-testid="config-shadcn"
       className="flex h-full flex-col p-1 text-foreground"
     >
-      {query.isLoading ?
+      {isLoading ?
         <div className="p-4 text-sm text-muted-foreground">loading…</div>
       : <Card className="flex min-h-0 flex-1 flex-col">
           <CardHeader className="flex-row items-center gap-3">
