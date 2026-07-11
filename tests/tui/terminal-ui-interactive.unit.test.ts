@@ -233,4 +233,36 @@ describe("TerminalUi — P1 interactive integration", () => {
     expect(bottoms.size).toBe(1) // constant geometry — collapsed no longer shrinks the region
     ui.destroy()
   })
+
+  test("INV-1: collapsed→panel→collapsed round-trip does not overwrite prior log rows", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
+    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "SENTINEL", time: Date.now() } as never)
+    chunks.length = 0
+    stdin.emit("data", Buffer.from(" ")) // → panel
+    stdin.emit("data", Buffer.from(" ")) // → collapsed
+    const out = chunks.join("")
+    // Positive sample: the panel must never overwrite the log row where
+    // SENTINEL landed. Under constant geometry the panel only ever paints the
+    // bottom 3 rows — the discriminating assertion is that every absolute
+    // cursor positioning (CUP) target during the round-trip stays within the
+    // protected bottom panel rows (>= panelTop), never walking back into the
+    // scrolling log region above it.
+    // eslint-disable-next-line no-control-regex -- intentional ESC control char
+    const cups = [...out.matchAll(/\x1b\[(\d+);1H/g)].map((m) => Number(m[1]))
+    // rows=24, panelHeight=3 → panel rows are only 22/23/24; any row < 22
+    // would mean a CUP+clear reached back into the log region.
+    expect(cups.every((row) => row >= 22)).toBe(true) // mutation: a round-trip resize clearing log rows → row<22 → red
+    ui.destroy()
+  })
 })
