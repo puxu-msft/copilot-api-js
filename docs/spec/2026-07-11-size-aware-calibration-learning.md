@@ -1,7 +1,7 @@
 # Spec：auto-truncate calibration —— size-aware 学习 + 从成功请求学习 + history backfill
 
 **日期**：2026-07-11
-**状态**：草案 v2（已过两轮 subagent 对抗审查 + 全部 BLOCKER/I 级修订，待用户确认）
+**状态**：**已实施**（Phase 1 + Phase 2 均落地，分支 `feat/size-aware-calibration`）。原草案 v2 已过两轮 subagent 对抗审查 + 全部 BLOCKER/I 级修订并经用户确认。
 **关联**：认知底稿 [docs/sync-ghc-api/token-counting.md](../sync-ghc-api/token-counting.md)；离线验证 [exp/token-calibration-size-aware/CONCLUSIONS.md](../../exp/token-calibration-size-aware/CONCLUSIONS.md)；交接底稿 [docs/todo/better-count-tokens.md](../todo/better-count-tokens.md)。
 
 ## 1. 问题与目标
@@ -257,6 +257,8 @@ if predicted > limit:
 
 - **Phase 1**（可独立落地验证）：§3 factor 模型 + §5 v2/迁移/seed + §4 CalibrationSink + §6 backfill。价值：count_tokens 端点精度。
 - **Phase 2**：§7 pre-flight（门控 OFF）。价值：主路径省往返。
+
+> **实施状态**：Phase 1 + Phase 2 均已实施（分支 `feat/size-aware-calibration`）。pre-flight 走 `src/lib/codec/anthropic/codec.ts` 的 `preSend` hook（driver 主循环首轮、`prepareWire` 之前），config `auto_truncate.preflight` 默认 OFF、opt-in，pre-flight 抛错降级为反应式兜底。
 
 ## 10. 测试（TDD）
 

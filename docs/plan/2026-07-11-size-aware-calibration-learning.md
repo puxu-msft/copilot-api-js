@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐 task 实施。步骤用 checkbox（`- [ ]`）跟踪。
 >
-> **实施状态**：未开始（spec 已定稿 + 用户批准，见 [docs/spec/2026-07-11-size-aware-calibration-learning.md](../spec/2026-07-11-size-aware-calibration-learning.md)）。
+> **实施状态**：**已实施完成**（Tasks 1-10，subagent-driven，各 task 经独立 subagent review 审干净；分支 `feat/size-aware-calibration`，commit 范围 `07fd968b..09eae78d`——Phase 1 = size-aware 模型/seed/迁移/CalibrationSink/backfill，Phase 2 = `d40f8e02` config flag + `7d9a3964` pre-flight hook + `09eae78d` 降级兜底；per-task 审查账本见 `.superpowers/sdd/handoff/`）。见 [docs/spec/2026-07-11-size-aware-calibration-learning.md](../spec/2026-07-11-size-aware-calibration-learning.md)。
 
 **Goal**：把 auto-truncate calibration 从「单标量、仅从 400 学」改成「size-aware per-bucket 滑动加权均值、也从成功请求学 + history backfill 冷启动」，并加主路径 pre-flight（Phase 2，门控 OFF）。
 
