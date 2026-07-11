@@ -288,6 +288,26 @@ body {
   color: var(--color-primary);
 }
 
+/* react-day-picker(DateRangePopoverShadcn)shadcn/neutral 皮肤:把 `--rdp-*` 重映射到中性 shadcn
+ * token(oklch primary/accent/foreground/popover),作用域化到 shadcn 树。P2 落地(scaffold plan 预告
+ * 「shadcn 树的 day-picker 皮肤后续另立」)。不引第三方圆角/阴影,圆角随 `--radius`。 */
+[data-design="shadcn"] .rdp-neutral {
+  --rdp-accent-color: var(--primary);
+  --rdp-accent-background-color: var(--accent);
+  --rdp-today-color: var(--primary);
+  --rdp-range_start-color: var(--primary-foreground);
+  --rdp-range_end-color: var(--primary-foreground);
+  --rdp-range_start-background: var(--primary);
+  --rdp-range_end-background: var(--primary);
+  --rdp-range_middle-background-color: var(--accent);
+  --rdp-range_middle-color: var(--accent-foreground);
+  --rdp-selected-border: 1px solid var(--primary);
+}
+[data-design="shadcn"] .rdp-neutral .rdp-day_button:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
 /* 模型详情模态抽屉入场:遮罩淡入 + 面板从右缘滑入(Radix data-state=open)。
  * 关闭走即时卸载(selectedModel→null),故只有入场动效。曲线偏 ease-out 使停靠利落。 */
 @keyframes drawer-overlay-in {
