@@ -109,6 +109,29 @@ describe("useLearnedView", () => {
     expect(result.current.groups[0].entries.map((e) => e.value)).toEqual(["active_feature"])
   })
 
+  it("pinned filter keeps only pinned rows and drops empty categories", () => {
+    mockUseLearned.mockReturnValue(
+      state({
+        categories: [
+          {
+            category: "features",
+            ttlMs: 2_592_000_000,
+            entries: [
+              mkEntry({ category: "features", value: "pinned_feature", status: "pinned", pinned: true }),
+              mkEntry({ category: "features", value: "active_feature", status: "active" }),
+            ],
+          },
+          { category: "betas", ttlMs: 2_592_000_000, entries: [] },
+        ],
+      }),
+    )
+    const { result } = renderHook(() => useLearnedView())
+    act(() => result.current.setFilter("pinned"))
+    // 空分类被裁掉,只留有 pinned 匹配条目的分类。
+    expect(result.current.groups).toHaveLength(1)
+    expect(result.current.groups[0].entries.map((e) => e.value)).toEqual(["pinned_feature"])
+  })
+
   it("onExport fetches the blob and triggers a download", async () => {
     const blob = new Blob(["{}"], { type: "application/json" })
     getBlobMock.mockResolvedValueOnce(blob)

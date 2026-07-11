@@ -126,6 +126,8 @@ describe("LearnedPage · fork B (designVersion routes legacy vs shadcn)", () => 
     // 默认视图展示所有分类,含 0 条空分类(分类名 + TTL)。
     expect(screen.getByText("请求体字段（Extra inputs）")).toBeDefined()
     expect(screen.getByText("anthropic-beta 头")).toBeDefined()
+    // 分组徽章呈现条数 + TTL(features 有 1 条,TTL 30d)。
+    expect(screen.getByText(/1 条 · TTL 30d/)).toBeDefined()
   })
 
   it("shadcn: row action mutations round-trip the RAW ref via reused LearnedRow", () => {
