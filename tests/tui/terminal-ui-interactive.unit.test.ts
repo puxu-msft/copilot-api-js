@@ -226,8 +226,10 @@ describe("TerminalUi — P1 interactive integration", () => {
     chunks.length = 0
     stdin.emit("data", Buffer.from(" ")) // collapsed → panel
     stdin.emit("data", Buffer.from(" ")) // panel → collapsed
-    const regions = chunks.join("").match(/\x1b\[1;(\d+)r/g) ?? []
-    const bottoms = new Set(regions.map((r) => /1;(\d+)r/.exec(r)![1]))
+    const bottoms = new Set(
+      // eslint-disable-next-line no-control-regex -- intentional ESC control char
+      [...chunks.join("").matchAll(/\x1b\[1;(\d+)r/g)].map((m) => m[1]),
+    )
     expect(bottoms.size).toBe(1) // constant geometry — collapsed no longer shrinks the region
     ui.destroy()
   })
