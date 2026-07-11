@@ -138,7 +138,7 @@
 ## 6. 新增 / 修改文件
 
 - **[request-columns.ts](../../src/lib/request-columns.ts)**：
-  - `REQUEST_COLUMNS` 加 `cache` 列（display，accessorFn/cell 用新 `cacheHitCell`）；各固定列 `ColumnDef` 加 `size`/`minSize`/`maxSize`（数值，取代 `COLUMN_WIDTHS` 的 Tailwind 宽度语义）；preview/response `enableResizing:false` 无 size；session `size:10` `enableResizing:false`。
+  - `REQUEST_COLUMNS` 加 `cache` 列（display，accessorFn/cell 用新 `cacheHitCell`）；各固定列 `ColumnDef` 加 `size`/`minSize`/`maxSize`（数值，取代 `COLUMN_WIDTHS` 的 Tailwind 宽度语义）；preview/response `enableResizing:false` 无 size；session `enableResizing:false` **不设 size**（宽度靠 HistoryList 特判 `w-[10px]`，§3 MEDIUM-6 唯一真值源）。
   - `DEFAULT_COLUMN_VISIBILITY` 改：endpoint/multiplier/tokens/attempts → `false`，其余 true，cache true。
   - 新 `DEFAULT_COLUMN_ORDER: string[]`（§2 顺序）+ `mergeColumnOrder(persisted)`；新 `DEFAULT_COLUMN_SIZING: Record<string,number>` + `mergeColumnSizing(persisted)`。
   - `COLUMN_WIDTHS`（Tailwind 类）**退役**（固定列宽度改由 `size` 驱动 inline width）；session gutter 保留其 `w-[10px]` 特判（§3 MEDIUM-6）。**同时清理陈旧 SSOT 死注释**：[request-columns.ts:5/122](../../src/lib/request-columns.ts) 与 [RequestRow.tsx:22-23](../../src/components/requests/RequestRow.tsx) 宣称「Live 泳道 import 本表对齐」是 aspirational 假话（RequestRow 实为硬编码宽度、从不 import COLUMN_WIDTHS），退役时一并删/改。
