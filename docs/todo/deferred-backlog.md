@@ -340,3 +340,11 @@
 ## Vue 模型退役 + CSV 移除留下的孤儿（2026-07-10，已解决）
 
 退役 Vue `/models` 视图 + 移除 ui-v4 CSV 导出后，两处成孤儿，**已按用户决策清理**（2026-07-10，commits `ee838f63` + `62d14d7d`）：删 `ui/src/components/ui/JsonViewerSurface.vue`（+ detail-page.test.ts 惰性 stub）、删 ui-v4 `sortModelRows` 及其两处测试与连带 unused imports。表格自身排序（TanStack `getSortedRowModel`）不受影响。**残留独立 refactor（未做）**：ModelsPage 的 `sorting` 受控 lift 现仅用于把排序态传给 ModelsTable，若嫌多余可下沉回表格内部（TanStack 自持）——属独立小重构，非孤儿。
+
+## Requests 列配置的键盘 a11y 路径（2026-07-11，暂缓）
+
+- **根因**：列配置特性（resize + reorder，spec `2026-07-11-ui-v4-requests-column-config`）的两个拖拽交互都只走指针设备。
+- **当前行为**：列宽 resize 手柄仅 `onMouseDown/onTouchStart`（无键盘调宽）；列 reorder 的 `DndContext` 仅注册 `PointerSensor`（无 `KeyboardSensor` + `sortableKeyboardCoordinates`）。键盘用户无法 resize/reorder 列（仍可经 Columns 菜单显隐 + Reset）。
+- **理想架构**：① reorder 加 `KeyboardSensor({coordinateGetter: sortableKeyboardCoordinates})`；② resize 手柄改可聚焦元素 + 方向键调宽（或提供数字输入）。
+- **为何暂缓**：本期 spec 明确只要求指针拖拽；键盘路径是正交增强，不阻塞核心可配置能力。内部工具、单用户，优先级低。
+- **若做需改什么**：`RequestsListPage` 的 `useSensors` 加 KeyboardSensor；`SortableHeaderCell` 补键盘激活语义；resize 手柄换 focusable + keydown 调 `columnSizing`；补键盘交互测试。发现方：column-config Task 3 审查（2026-07-11）。
