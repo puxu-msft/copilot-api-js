@@ -88,6 +88,9 @@ Z1 收尾（触发条件 OQ-4 待用户定；不阻塞 P1-P8）
 
 ## Task P1 · Overview（默认页切换 + fork B 范式打磨 + grep 守卫自动化）
 
+> **实施状态: DONE**(commit `add4f520`,分支 `feat/ui-v4-shadcn-redesign`)。OverviewShadcn 填成完整(6 项健康指标 parity + Server info 深度段 + 真 `/metrics` 链接);默认路由 `/overview`(App.tsx export `routes`);grep 守卫**改为 fail-closed**(扫全 src / 全中性面、只排除有界合法者,逐页天然覆盖)——采纳 subagent review 的 fail-open→fail-closed 建议,经 mutation 实测有效。新增 shadcn `ui/card.tsx`。INV-4 四绿(bundle 1040.51KB)。交用户 UX 检查项见文末。
+
+
 - **对应 RFC/决策**: §4 P1、决策 6（默认页 `/requests`→`/overview`）、fork B 范式（`OverviewPage`）。
 - **目标（commit 终态）**: `OverviewShadcn` 从 Card 骨架填成完整 Overview（in-flight / rate-limiter / quota / active / history-entries + 深度指标呈现或 Grafana 指引）；默认路由改 `/overview`；建立 B/A′/B 域 `designVersion` grep 守卫自动化测试。**legacy `OverviewLegacy` 零改动。**
 - **commit invariant**: INV-1（`overview/` 零 `designVersion`/颜色字面量——`StatCard` 已在 C3 中性化，shadcn 侧只用语义 token class）；INV-2（`OverviewPage` fork B 互斥挂载）；INV-4 四绿。
