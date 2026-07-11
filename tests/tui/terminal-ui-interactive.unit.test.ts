@@ -341,6 +341,71 @@ describe("TerminalUi — P1 interactive integration", () => {
     ui.destroy()
   })
 
+  test("logs during detail are queued (not written to alt screen) and replayed on exit", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
+    chunks.length = 0
+
+    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "DURING-DETAIL", time: Date.now() } as never)
+    expect(chunks.join("")).not.toContain("DURING-DETAIL") // queued, not written to the alt screen
+
+    stdin.emit("data", Buffer.from("\x1b")) // esc → exit detail + replay
+    expect(chunks.join("")).toContain("DURING-DETAIL") // replayed into the scrollback on exit
+    ui.destroy()
+  })
+
+  test("replay queue is bounded at REPLAY_CAP — oldest entries drop, newest survive", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
+    chunks.length = 0
+
+    const system = bus.scope("system")
+    const REPLAY_CAP = 200
+    const overflow = 10
+    // Zero-padded so no message is a substring of another (e.g. "LOG-9" would
+    // otherwise false-positive-match inside "LOG-90"/"LOG-99"/…).
+    const label = (i: number) => `LOG-${String(i).padStart(4, "0")}`
+    for (let i = 0; i < REPLAY_CAP + overflow; i++) {
+      system.publish({ kind: "system.log", logType: "info", message: label(i), time: Date.now() } as never)
+    }
+
+    stdin.emit("data", Buffer.from("\x1b")) // esc → exit detail + replay
+    const out = chunks.join("")
+    // Oldest entries (dropped by the bound) must not survive the replay.
+    expect(out).not.toContain(label(0))
+    expect(out).not.toContain(label(overflow - 1))
+    // The most recent REPLAY_CAP entries must survive, in order.
+    expect(out).toContain(label(overflow))
+    expect(out).toContain(label(REPLAY_CAP + overflow - 1))
+    ui.destroy()
+  })
+
   test("INV-1: collapsed→panel→collapsed round-trip does not overwrite prior log rows", () => {
     const stdin = new FakeStdin()
     const { stdout, chunks } = makeStdout()

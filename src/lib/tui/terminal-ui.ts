@@ -74,6 +74,15 @@ import { renderSystemLogLine } from "./render/syslog"
 const CLEAR_LINE = "\x1b[2K\r"
 // Hide the cursor for the interactive panel's lifetime (restored on teardown).
 const HIDE_CURSOR = "\x1b[?25l"
+/**
+ * Bound on {@link TerminalUi.replayQueue} (P1.3): log lines that arrive while
+ * `detailActive` are queued instead of dropped, but the queue must not grow
+ * unbounded for a long-lived detail visit — the oldest entries are shifted
+ * out past this cap. Durability is unaffected: `FileSink` persists every log
+ * line independently, so a dropped replay entry is only missing from this
+ * process's scrollback, never from the log file.
+ */
+const REPLAY_CAP = 200
 
 /** Mutable per-request display state — replaces `TuiLogEntry`. */
 interface ActiveRequest {
@@ -210,6 +219,13 @@ export class TerminalUi {
    * scroll margins. Cleared by `exitDetail` (P1.2).
    */
   private detailActive = false
+  /**
+   * Log lines queued by {@link printLog}'s `detailActive` guard while the
+   * alt-screen detail view is open (P1.3) — replayed into the scrollback by
+   * {@link flushReplayQueue} on {@link exitDetail}. Bounded at
+   * {@link REPLAY_CAP}; best-effort only (durability is `FileSink`'s job).
+   */
+  private readonly replayQueue: Array<string> = []
 
   constructor(bus: ObservabilityBus, options?: TerminalUiOptions) {
     this.stdout = options?.stdout ?? process.stdout
@@ -646,8 +662,11 @@ export class TerminalUi {
         // open. Writing here or calling `renderRegion` would corrupt the
         // full-screen detail paint (renderRegion's `region.clear()` branch
         // writes RESET_SCROLL_REGION + ERASE_TO_END + SHOW_CURSOR straight into
-        // the alt screen). Drop the line for now; P1.3 queues it in
-        // `replayQueue` and replays on `exitDetail` instead of dropping it.
+        // the alt screen). Queue it instead — `exitDetail` drains
+        // `replayQueue` into the scrollback via `flushReplayQueue` once the
+        // alt screen is gone (P1.3).
+        this.replayQueue.push(message)
+        if (this.replayQueue.length > REPLAY_CAP) this.replayQueue.shift() // bounded; durability is FileSink's job
         return
       }
       // The Region owns the reserved bottom area; the last `Region.render` parked
@@ -876,9 +895,11 @@ export class TerminalUi {
    *    terminal's real scroll-region state no longer matches what `Region`
    *    last recorded, even though the logical panel height (`interactivePanelHeight`)
    *    hasn't changed.
-   * 3. `flushReplayQueue()` — P1.3 will drain log lines queued by `printLog`'s
-   *    `detailActive` guard while detail was open; left as a no-op placeholder
-   *    here so this task doesn't reach into the queue itself.
+   * 3. `flushReplayQueue()` drains log lines queued by `printLog`'s
+   *    `detailActive` guard while detail was open, writing them straight to
+   *    the (now primary-screen) stdout so they land in the scrollback above
+   *    the panel — same synchronous `onInput` turn as the rest of this
+   *    method (M8), so no interleaving with a subsequent `renderRegion`.
    * 4. `renderRegion()` repaints the (now current) `panel`/`collapsed` view
    *    into the freshly re-established region.
    */
@@ -893,12 +914,16 @@ export class TerminalUi {
 
   /**
    * Drain log lines queued while `detailActive` blocked `printLog` from
-   * touching the Region. Placeholder for P1.2 — P1.3 introduces the bounded
-   * `replayQueue` (capped at `REPLAY_CAP`) and fills this in; deliberately a
-   * no-op until then so `exitDetail` has a stable call site to build on.
+   * touching the Region (P1.3). Writes each queued line straight to stdout —
+   * mirroring `printLog`'s non-detail branch's `this.stdout.write(message +
+   * "\n")` — so it lands in the scrollback above the panel; the caller
+   * (`exitDetail`) repaints the panel via `renderRegion()` right after.
+   * `.splice(0)` drains and empties `replayQueue` in one step, so a re-entrant
+   * `printLog` call during the write (there is none today, but the guard
+   * costs nothing) can't see stale queued entries replayed twice.
    */
   private flushReplayQueue(): void {
-    // Intentionally empty — see P1.3.
+    for (const message of this.replayQueue.splice(0)) this.stdout.write(message + "\n")
   }
 
   /**
