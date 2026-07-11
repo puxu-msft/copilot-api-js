@@ -684,6 +684,10 @@ export function HistoryList({
                 if (!atTop && tailOn) dispatch({ kind: "scroll-up" })
               }}
               atBottomStateChange={setAtBottom}
+              // atBottom 容差调到大于 footer 高度(~29px)—— 否则 footer 一出现就给列表增高 ~29px,
+              // 把「到底」判定(默认阈值仅 4px)推翻成 false → 隐藏 footer → 又到底 → 显示…无限抖动。
+              // 48px 让 footer 自身高度落在「仍算到底」容差内,打破该反馈回环(footer 内容变高须同步上调)。
+              atBottomThreshold={48}
               // 列底「加载更多」footer —— 只在滚到底(atBottom)才出现、不常驻(fixedFooterContent 本是 sticky,
               // 故用 atBottom 门控:非底 → 传 null 不渲染;到底 → 露出加载条,视觉即列尾)。手动翻页唯一入口;
               // 定位 load-until-found 正交(仍自动)。
