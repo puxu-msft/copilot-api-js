@@ -87,7 +87,7 @@ Esc → 清空 set + 清 roving 光标
 
 | 优先级 | 条件 | 背景 | 透明度 |
 |---|---|---|---|
-| 1（最高） | `?at=` 选中行 | 选中琥珀 `#3a2f1a`（现值） | 若同时非选中会话则叠 dim |
+| 1（最高） | `?at=` 选中行 | 选中琥珀 `#3a2f1a`（现值） | **不叠 dim**（选中态优先于变灰，`?at=` 选中行始终保持琥珀高亮 + 全亮，即使其会话未被选中） |
 | 2 | 对比态 且 `sessionId ∈ selectedSessions` | 会话色 **强** tint（`palette.strongAlpha`，18–20%） | 全彩 |
 | 3 | 对比态 且 `sessionId ∉ selectedSessions` | 无 tint（或极淡） | **dim**（`opacity-40`） |
 | 4 | 默认态（空选择集）且有 `sessionId` | 会话色 **淡** tint（`palette.faintAlpha`，按套 12–16%，做分组底纹） | 全彩 |
@@ -212,7 +212,7 @@ session 列专属 td（脱统一外壳）：
 | `Esc` | 清 roving 光标（现有）**且**清空选择集 → 回默认态 |
 | 点行非色带区 | 照常进 `/requests/:id`（色带 `stopPropagation`，审查 #4 成立） |
 | tail 揭示新行（对比态） | 新行属选中会话→强背景全彩，否则变灰；选择按 `sessionId` 记忆，不因 `entries` 换引用而丢 |
-| `?at=` 选中行叠加对比态 | 背景取优先级1（选中琥珀）；若其会话非选中则叠 dim；border-l 仍在（降透明度） |
+| `?at=` 选中行叠加对比态 | 背景取优先级1（选中琥珀）；选中行**不**变灰（选中态优先），背景保持琥珀、border-l 仍在 |
 | 无 sessionId 行 | 无色带背景、无淡 tint；对比态下变灰（不属任何选中会话）；`f` 在其上 no-op（H1） |
 
 ---

@@ -730,4 +730,28 @@ describe("HistoryList — 多选对比 + 键盘 + 色板（Task 3）", () => {
     expect(bar("a").style.backgroundColor).not.toBe(before)
     expect(localStorage.getItem(PALETTE_STORAGE_KEY)).toBe("oceanic-jewel")
   })
+
+  it("`?at=` 选中行豁免对比 dim：选中态优先于变灰（正样本对比 —— 未选中且非 at 行确实变灰）", async () => {
+    // 三会话:a(S1, ?at= 选中行) / b(S2) / c(S3)。点 b 色带 → 选中集={S2}。
+    // 断言:a 属未选中会话 S1 但因是 ?at= 选中行 → 不变灰(选中态优先);b 属选中会话 → 不变灰;
+    // c 未选中且非选中行 → 变灰(证明 dim 逻辑确实在工作、只是豁免了 selected 行)。
+    const user = userEvent.setup()
+    mockHistory = {
+      ...mockHistory,
+      entries: [
+        { ...entry("a"), sessionId: "S1" },
+        { ...entry("b"), sessionId: "S2" },
+        { ...entry("c"), sessionId: "S3" },
+      ],
+      total: 3,
+    }
+    renderList(["/requests?at=a"]) // 行 a = ?at= 选中行
+    await user.click(bar("b")) // 聚焦 S2 → a 属未选中会话 S1
+    const rowA = document.querySelector('[data-entry-id="a"]') as HTMLElement
+    const rowB = document.querySelector('[data-entry-id="b"]') as HTMLElement
+    const rowC = document.querySelector('[data-entry-id="c"]') as HTMLElement
+    expect(rowA.className).not.toContain("opacity-40") // 选中态优先、豁免变灰
+    expect(rowB.className).not.toContain("opacity-40") // 选中会话、不变灰
+    expect(rowC.className).toContain("opacity-40") // 未选中且非选中行 → 变灰(dim 生效的正样本)
+  })
 })
