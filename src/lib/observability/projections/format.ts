@@ -59,6 +59,35 @@ export function durationColor(ms: number): (s: string) => string {
   return (s) => pc.bold(pc.red(s))
 }
 
+/**
+ * 判定 `lastMs`（最后一次 attempt 自身耗时）是否可用于 last/total 展示。
+ * 无效：undefined / 非正 / 超过整请求墙钟（脏数据或未定稿的 0 初值）。
+ */
+function isValidLastMs(lastMs: number | undefined, totalMs: number): lastMs is number {
+  return lastMs !== undefined && lastMs > 0 && lastMs <= totalMs
+}
+
+/**
+ * 重试时长字段：无重试时与 {@link formatDuration} 逐字节一致（`total` 单值）；
+ * 有重试时展开为 `last/total(N)`；`lastMs` 无效时兜底 `total(N)`，绝不抛。
+ * 纯函数、不含颜色——着色由调用方按 {@link resolveDurationColorMs} 决定。
+ */
+export function formatDurationField(args: { lastMs: number | undefined; totalMs: number; retries: number }): string {
+  const { lastMs, totalMs, retries } = args
+  if (retries <= 0) return formatDuration(totalMs)
+  if (isValidLastMs(lastMs, totalMs)) return `${formatDuration(lastMs)}/${formatDuration(totalMs)}(${retries})`
+  return `${formatDuration(totalMs)}(${retries})`
+}
+
+/**
+ * 着色驱动值：整个 duration 字段按「实际显示的头部值」的 severity 着色。
+ * 有重试且 lastMs 有效 → 按 last（贴合「这次尝试多慢」）；否则按 total（N=0 零回归）。
+ */
+export function resolveDurationColorMs(args: { lastMs: number | undefined; totalMs: number; retries: number }): number {
+  const { lastMs, totalMs, retries } = args
+  return retries >= 1 && isValidLastMs(lastMs, totalMs) ? lastMs : totalMs
+}
+
 /** Compact integer with a lowercase k/m suffix. */
 export function formatNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`
