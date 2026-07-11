@@ -1160,6 +1160,11 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           // requests L2 never actually engaged on.
           onBufferedResolve: (outcome, retries) => {
             if (outcome === "success" && retries === 0) return
+            // `partial-degrade` (block-level commit terminal) is UNREACHABLE here today — this handler
+            // does not yet pass `commitBoundaries`, so the terminal-only path never sets `committedAny`.
+            // P1 wires the Anthropic block-level predicate + P0 Task 2 widens the telemetry to record it;
+            // until then, skip it (narrows `outcome` to the current `ProtectStreamingOutcome` union).
+            if (outcome === "partial-degrade") return
             recordProtectStreamingOutcome(outcome, retries)
             env.ctx.recordFeature("protect-streaming-retry", { outcome, retries })
             consola.debug(`[protect-stream] ${outcome} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)

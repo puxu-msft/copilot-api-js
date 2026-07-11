@@ -384,6 +384,11 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         // `protect-streaming-retry` on essentially every buffered 200 and inflate the "success" rate.
         onBufferedResolve: (o, retries) => {
           if (o === "success" && retries === 0) return
+          // `partial-degrade` (block-level commit terminal) is UNREACHABLE here today — this handler
+          // does not yet pass `commitBoundaries`, so the terminal-only path never sets `committedAny`.
+          // P2 wires the Responses block-level predicate + P0 Task 2 widens the telemetry to record it;
+          // until then, skip it (narrows `o` to the current `ProtectStreamingOutcome` union).
+          if (o === "partial-degrade") return
           recordProtectStreamingOutcome(o, retries)
           env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries })
           consola.debug(`[protect-stream:responses] ${o} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)

@@ -413,12 +413,41 @@ export interface RunBufferedOpts extends RunResponseOpts {
   /**
    * Called exactly once at the buffered path's terminal resolution (NOT on a client-abort, which
    * is the client leaving, not a generation outcome) with the outcome label + the number of
-   * re-exchanges consumed (`retries`). Drives the L2 hit-rate telemetry (RFC §10):
-   *   - `"success"`:   committed a complete generation (retries > 0 = a save).
-   *   - `"exhausted"`: all retries failed → surfaced as a stream error.
-   *   - `"retreated"`: buffer cap exceeded → retreated to live forwarding.
+   * re-exchanges consumed (`retries`) + a `meta.vendor` label (injected by the driver from
+   * {@link telemetryVendor}, so the handler forwards it into the vendor-keyed telemetry without
+   * re-hardcoding it). Drives the L2 hit-rate telemetry (RFC §10):
+   *   - `"success"`:         committed a complete generation (retries > 0 = a save).
+   *   - `"exhausted"`:       all retries failed → surfaced as a stream error.
+   *   - `"retreated"`:       buffer cap exceeded → retreated to live forwarding.
+   *   - `"partial-degrade"`: block-level path only — a boundary block was already committed live,
+   *     then the stream truncated (un-retryable, the committed prefix is on the wire). A graceful
+   *     degrade distinct from `exhausted` (which committed nothing). Never emitted on the
+   *     terminal-only path ({@link commitBoundaries} undefined) — `committedAny` stays false there.
    */
-  onBufferedResolve?: (outcome: "success" | "exhausted" | "retreated", retries: number) => void
+  onBufferedResolve?: (outcome: "success" | "exhausted" | "retreated" | "partial-degrade", retries: number, meta: { vendor: string }) => void
+  /**
+   * Block-commit boundary predicate (P0 mechanism floor). When PROVIDED, the buffered sink flushes
+   * (commits live) the buffered frames up to and including every frame this returns `true` for,
+   * inverting the commit point from "once at the terminal drain" to "at each block boundary". Once
+   * a boundary block is committed the retry window closes (`committedAny` → the retry gate tightens
+   * to `!committedAny && !retreated`), and a subsequent truncation degrades to `partial-degrade`
+   * instead of retrying (the committed prefix is un-retryable — already on the wire).
+   *
+   * UNDEFINED (default) = terminal-only = the legacy whole-response buffered behaviour, byte-for-byte:
+   * `committedAny` stays false, the block-commit branch is skipped, and the buffer commits exactly
+   * once at the terminal drain (`sawMessageStop` / `sawUpstreamError`). This is the R1 landing gate —
+   * an undefined predicate MUST reproduce the whole-response path verbatim (anchor/retreat/terminal
+   * commit paths all unchanged).
+   */
+  commitBoundaries?: (frame: ClientFrame) => boolean
+  /**
+   * Vendor label the driver injects into {@link onBufferedResolve}'s `meta.vendor` (e.g.
+   * `"anthropic"` / `"responses"` / `"chat_completions"` / `"responses_ws"`). Lets the handlers
+   * forward one vendor-keyed telemetry sink without each re-hardcoding its own vendor string
+   * (frozen contract — the driver owns the injection point). Omitted → `meta.vendor` falls back to
+   * `"unknown"`.
+   */
+  telemetryVendor?: string
   /**
    * Per-retry env transform applied BEFORE each re-exchange (L2 escalation, RFC §8). Returns a new
    * env (e.g. with `prepareHints.contextEscalation` set to progressively tighter context_management)
