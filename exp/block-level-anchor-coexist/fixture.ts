@@ -82,13 +82,6 @@ export const STEPS: Array<Step> = [
   { role: "terminal", frame: frame("message_stop", { type: "message_stop" }) },
 ]
 
-/** The empty-text anchor keepalive frame the heartbeat SHOULD emit in the inter-block gap. */
-export const EXPECTED_GAP_DELTA = {
-  type: "content_block_delta",
-  index: 0,
-  deltaType: "text_delta",
-} as const
-
 /** Serialize a ClientFrame to raw Anthropic SSE bytes (`event:` line + `data:` line + blank line). */
 export function toSseBytes(f: ClientFrame): string {
   return `event: ${f.event}\ndata: ${f.data}\n\n`

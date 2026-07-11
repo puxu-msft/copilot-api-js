@@ -33,6 +33,8 @@
 import Anthropic from "@anthropic-ai/sdk"
 import { Stream } from "@anthropic-ai/sdk/core/streaming"
 
+import { makeAnthropicKeepaliveFrame } from "~/lib/anthropic/keepalive-frame"
+
 import { STEPS, toSseBytes } from "./fixture"
 
 // ── args ────────────────────────────────────────────────────────────────────────────
@@ -46,9 +48,12 @@ const PORT = Number(process.env.PROBE_PORT ?? 8791)
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
-// The inter-block-gap keepalive the server injects during the idle: content_block_delta@0 text_delta
-// (the SAME frame stage 1 proved the sink produces — real content that resets CC's 300s deadline).
-const GAP_KEEPALIVE = `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } })}\n\n`
+// The inter-block-gap keepalive the server injects during the idle. DERIVED from the SAME production
+// builder the sink uses (makeAnthropicKeepaliveFrame with the anchor's open block = text@0) and
+// serialized with the SAME toSseBytes as every fixture frame — so if the empty_text keepalive shape
+// ever changes, stage 2's replay changes with it and stage 1's wire oracle catches the drift. This
+// is the SINGLE source of the gap frame: production emits it (stage 1 verifies), we replay it here.
+const GAP_KEEPALIVE = toSseBytes(makeAnthropicKeepaliveFrame({ index: 0, type: "text" }))
 
 /** Stream the fixture as SSE bytes, inserting the idle + keepalives at the marked inter-block gap. */
 function fixtureStream(): ReadableStream<Uint8Array> {
@@ -116,6 +121,10 @@ if (serveOnly) {
 
   try {
     // ── Path A: RAW SSEDecoder (Stream.fromSSEResponse) — the literal "@anthropic-ai/sdk SSEDecoder". ──
+    // NOTE: `sawCoexistence` below is PROBE-COMPUTED (we track openIndices ourselves), NOT judged by the
+    // SDK — Stream.fromSSEResponse only JSON-decodes each frame and has NO content-block state machine, so
+    // it PASSES any well-formed JSON SSE and CANNOT structurally FAIL on coexistence. Path A proves only
+    // "the fixture is well-formed SSE"; the load-bearing acceptance check is Path B (the accumulator).
     const resp = await fetch(`${base}/v1/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -146,7 +155,7 @@ if (serveOnly) {
     if (!final.content || final.content.length === 0) problems.push("MessageStream produced an EMPTY final message (accumulator rejected the shape)")
     console.log("── STAGE 2 probe — AUTOMATED SDK check (criterion ①) ──")
     console.log(`  raw SSEDecoder events:        ${rawEventCount}`)
-    console.log(`  two-block coexistence parsed: ${sawCoexistence}`)
+    console.log(`  two-block coexistence (probe-computed, not SDK-judged): ${sawCoexistence}`)
     console.log(`  accumulator events:           ${accumEvents}`)
     console.log(`  final message content blocks: ${final.content?.length ?? 0} (${(final.content ?? []).map((b) => b.type).join(", ")})`)
     console.log("")
@@ -158,6 +167,9 @@ if (serveOnly) {
 
   if (problems.length === 0) {
     console.log("STAGE 2 (①): PASS — @anthropic-ai/sdk decoded + accumulated the two-block-coexist shape with no error/drop.")
+    console.log("  SCOPE: this proves the SDK ACCUMULATOR tolerates the shape — it does NOT prove the Claude Code")
+    console.log("  CLI renderer accepts it (CC is an independent consumer with a possibly stricter SSE state machine),")
+    console.log("  and the accumulator is index-indifferent. ① is NECESSARY-NOT-SUFFICIENT: it cannot replace ②.")
     console.log("  NOTE: criterion ② (300s deadline) is NOT covered here — the SDK has no 300s clock. Run with")
     console.log("  `--serve --long-idle=310` and a REAL Claude Code CLI to verify ② (see README).")
     process.exit(0)

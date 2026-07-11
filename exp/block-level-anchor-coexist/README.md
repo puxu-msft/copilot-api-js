@@ -66,10 +66,15 @@ bun run exp/block-level-anchor-coexist/probe.ts
 ```
 
 起 server 回放 fixture，用 `@anthropic-ai/sdk` 两条路径消费：
-- **路径 A**：`Stream.fromSSEResponse`（裸 SSEDecoder）—— 断言每帧解码无报错、无丢帧（解码事件数 ≥ fixture 帧数）、观测到 anchor@0 与真实块并存 open。
+- **路径 A**：`Stream.fromSSEResponse`（裸 SSEDecoder）—— 断言每帧解码无报错、无丢帧（解码事件数 ≥ fixture 帧数），并观测到 anchor@0 与真实块并存 open。
 - **路径 B**：`client.messages.stream()`（MessageStream 累积器，Claude Code 自身的消费路径）—— 断言累积器不抛错、组装出非空 final message。
 
-**判据 ①**：SDK 解码 + 累积**无报错、无丢帧**，且两块并存 open 被接受。默认用短 idle（`--long-idle` 默认 2s）快速走完 gap。
+**判据 ①**：SDK 解码 + 累积**无报错、无丢帧**，且累积器接受该形状。默认用短 idle（`--long-idle` 默认 2s）快速走完 gap。
+
+> ⚠ **① 的力度校准（别高估这个 PASS）**：
+> - **路径 A 的 `sawCoexistence` 是探针自算的同义反复，不是 SDK 判的。** 探针自己维护 `openIndices` 集合、自己检测「@0 与另一块同时 open」——`Stream.fromSSEResponse` 只是逐帧 JSON 解码，对**任何良构 JSON SSE** 都 PASS，**结构上无法在「两块并存」这件事上 FAIL**（它根本不理解 content-block 状态机）。所以路径 A 证的只是「fixture 是良构 SSE」，不是「客户端接受并存 open」。
+> - **真 load-bearing 的是路径 B（`MessageStream` 累积器）**，它才有 content-block 状态机。但它 **index-indifferent**（对 index 值不敏感，只按到达顺序累积块）——所以 ① PASS 只证「**`@anthropic-ai/sdk` 累积器容忍该形状**」，**不证「Claude Code CLI 渲染器接受」**。CC 是**独立的消费者**，其 SSE 状态机可能更严（如对 index 跳变、并存 open 有额外校验），累积器容忍不蕴含 CC 渲染器容忍。
+> - **因此「默认 on 翻转」的真门仍是 ② 的真实 Claude Code 运行**。① PASS **不可替代** ②——① 覆盖的是 **SDK-累积器**失败面，不是 **CC-CLI** 失败面。① FAIL 能提前否决（SDK 都不接受就不用测 CC 了），但 ① PASS 只是必要非充分。
 
 ### 真实 Claude Code 死线测试（criterion ②：须真 CC）
 
