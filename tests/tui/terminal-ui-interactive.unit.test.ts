@@ -234,6 +234,30 @@ describe("TerminalUi — P1 interactive integration", () => {
     ui.destroy()
   })
 
+  test("detail enters the alternate screen and resets scroll margins (C1)", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
+    const out = chunks.join("")
+    const iAlt = out.indexOf("\x1b[?1049h")
+    const iReset = out.indexOf("\x1b[r", iAlt)
+    expect(iAlt).toBeGreaterThanOrEqual(0) // entered the alternate screen
+    expect(iReset).toBeGreaterThan(iAlt) // C1: reset scroll margins AFTER entering (order matters)
+    ui.destroy()
+  })
+
   test("INV-1: collapsed→panel→collapsed round-trip does not overwrite prior log rows", () => {
     const stdin = new FakeStdin()
     const { stdout, chunks } = makeStdout()
