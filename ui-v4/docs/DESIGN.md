@@ -110,6 +110,26 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 - 窄屏退化成横向标签式（见 §8）。
 - 待定子项：Request stages 段间 diff 默认并排 vs 按需开（取决于 diff 高频程度）。
 
+### 4.4 Session 色带 + 多选对比高亮（已实施 2026-07-10）
+
+Requests 列表左侧一条按 `session_id` 稳定着色的色带（相邻同会话竖直贯通成链、段首圆顶段尾圆底；subagent 行 status 内容缩进 + 色带更深一档区分 main）。**默认**每行按会话色铺淡背景分组；点色带或键盘 `f` 把会话加入选择集（`Set`，多选）→ 选中会话铺强背景全彩、非选中行 `opacity-40` 变灰，直观对比多会话在时间线上如何交错；`Esc` 清空选择。全局时序不动、后端零改动。4 套可切换色板（`terminal-neon` 默认 / `oceanic-jewel` / `pastel-cool` / `slate-muted`，dataviz validator 实测、避开语义信号色），下拉切换 + `localStorage` 持久化。
+
+- 配色纯函数 leaf：[src/lib/session-color.ts](../../src/lib/session-color.ts)（色板注册表 + FNV-1a hash + tint + run 边界，bun 单测）。
+- 渲染：[HistoryList.tsx](../../src/components/requests/HistoryList.tsx) itemContent 对 session 列**特判**（经 Virtuoso `context` 第三参取 runs，非 TanStack `ColumnDef.cell`）；圆角走 theme.css 破例类 `.session-cap-*`（压过全局 `border-radius:0!important`）；色板选择器 [SessionPaletteSelect.tsx](../../src/components/requests/SessionPaletteSelect.tsx)。
+- 权威 spec：[docs/spec/2026-07-10-ui-v4-session-color-bar.md](spec/2026-07-10-ui-v4-session-color-bar.md)、计划 [docs/plans/2026-07-10-session-color-bar.md](plans/2026-07-10-session-color-bar.md)。
+
+### 4.5 列完全可配置 —— 策展 + resize + reorder（已实施 2026-07-11）
+
+Requests 列表列从「固定集/固定序/写死宽/仅显隐」升级为完全可配置：
+
+- **策展**：默认显示 session(gutter)·status·time·dur·model·**cache命中(新)**·bytes·preview·response；默认隐藏（菜单可开）endpoint·multiplier·tokens·attempts。新 cache 命中列 = `cache_read/(input+cache_read+cache_creation)` 百分比（`cacheHitCell`）。
+- **列宽 resize**：列宽从 Tailwind 类迁到 TanStack `columnSizing`（`ColumnDef.size/minSize/maxSize`），**仅固定列** emit inline width（弹性列 preview/response 保自适应充满、`enableResizing:false`）；表头右边界拖拽手柄（`columnResizeMode:"onChange"`）。
+- **列序 reorder**：TanStack `columnOrder` + dnd-kit（`@dnd-kit/core`+`sortable`+`modifiers`，`restrictToHorizontalAxis`、`PointerSensor{distance:4}`）拖表头改序；session gutter 锁首、不入 SortableContext、不可拖。resize 手柄 `onPointerDown stopPropagation` 与拖拽分区。
+- **持久化**：三态（visibility/sizing/order）经**版本化统一键** `ui-v4:requests:column-state:v1` 持久化（旧键 `ui-v4:requests:columns` 弃用、一次性重 seed），`useColumnState` hook 统一持有 + 一键 Reset。
+- 纯逻辑：[request-columns.ts](../../src/lib/request-columns.ts)（`DEFAULT_COLUMN_ORDER/SIZING` + `mergeColumnOrder/Sizing` + `reorderColumns`，bun 测）、[activity-row.ts](../../src/lib/activity-row.ts) `cacheHitCell`；hook [useColumnState.ts](../../src/hooks/useColumnState.ts)；`COLUMN_WIDTHS` 已退役。AgentLane/RequestRow（Session 详情泳道）保持自有固定宽、不加 cache 列。
+- 权威 spec：[docs/spec/2026-07-11-ui-v4-requests-column-config.md](spec/2026-07-11-ui-v4-requests-column-config.md)、计划 [docs/plans/2026-07-11-requests-column-config.md](plans/2026-07-11-requests-column-config.md)。
+- **待办**：列 reorder/resize 无键盘 a11y 路径（仅 PointerSensor），见 [docs/todo/deferred-backlog.md](../../../docs/todo/deferred-backlog.md)。
+
 ## 5. Sessions + Agent
 
 数据模型（实证 `src/lib/history/sessions.ts`）：

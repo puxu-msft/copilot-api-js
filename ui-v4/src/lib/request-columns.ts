@@ -1,17 +1,19 @@
 // Requests 列表的 TanStack 列模型 —— 把 RequestRow.tsx 的 HistoryRow 富行(逐个
 // `<span>`)转成结构化 ColumnDef，信号色/tooltip/anomaly 逻辑平移进 `cell`。
 //
-// 三条单一真值源在此定义、供别处 import：
-//   · COLUMN_WIDTHS  —— 列宽(Live 泳道 Task 3.4 import 对齐，红线 M4)。
-//   · DEFAULT_COLUMN_VISIBILITY / mergeColumnVisibility —— 列可见性 + schema 对账(镜像 model-columns.ts)。
-//   · REQUEST_COLUMNS —— 渲染列定义(HistoryList Task 3.2 喂给 useReactTable)。
+// 单一真值源在此定义、供别处 import：
+//   · 列宽 = ColumnDef.size —— 固定列自带 size(px)，弹性列(preview/response)/session
+//     用 `enableResizing:false` + 不设 size；Live 泳道 RequestRow 自持硬编码宽(不复用本表)。
+//   · DEFAULT_COLUMN_VISIBILITY / DEFAULT_COLUMN_ORDER / DEFAULT_COLUMN_SIZING + 三个 merge
+//     纯函数 —— 版本化列状态默认值 + 持久化对账(useColumnState 消费)。
+//   · REQUEST_COLUMNS —— 渲染列定义(HistoryList 喂给 useReactTable)。
 import type {
   //
   ColumnDef,
-  RowData,
   VisibilityState,
 } from "@tanstack/react-table"
 
+import { arrayMove } from "@dnd-kit/sortable"
 import {
   //
   createElement,
@@ -22,6 +24,7 @@ import type { EntrySummary } from "@/types"
 
 import {
   //
+  cacheHitCell,
   endpointLabel,
   failureSummary,
   modelName,
@@ -41,15 +44,6 @@ import {
   statusSignal,
   type Signal,
 } from "@/lib/format"
-
-// 列宽经 `meta.width` 走 TanStack 的 ColumnMeta(SSOT = COLUMN_WIDTHS)；augment 声明它。
-declare module "@tanstack/react-table" {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  interface ColumnMeta<TData extends RowData, TValue> {
-    /** 列宽 Tailwind 类(取自 COLUMN_WIDTHS)，HistoryList 套在单元格外壳上。 */
-    width?: string
-  }
-}
 
 /**
  * 工业信号色 → 中性语义 token。本文件是该表 + 下面 cell 文本拼装 helper 的单一真值源;
@@ -105,7 +99,7 @@ export function bytesCellTitle(requestBytes: number | undefined, responseBytes: 
   return [up, down].filter(Boolean).join(" · ")
 }
 
-/** 小工具:一个带 className/style/title 的 span cell(width 由 COLUMN_WIDTHS 在外层套壳，故不含宽度类)。 */
+/** 小工具:一个带 className/style/title 的 span cell(列宽由 ColumnDef.size 在 th/td 上套 inline width，故不含宽度类)。 */
 function span(className: string, text: string, opts?: { color?: string; title?: string }): ReactNode {
   return createElement(
     "span",
@@ -121,29 +115,19 @@ function span(className: string, text: string, opts?: { color?: string; title?: 
 const ELLIPSIS = "overflow-hidden text-ellipsis whitespace-nowrap"
 
 /**
- * 列宽单一真值源(Tailwind 宽度类)。RequestRow.tsx 现有像素宽逐字搬来；Live 泳道
- * (Task 3.4) import 本表对齐，故改宽度只改这一处。preview 列吃满剩余空间。
- */
-export const COLUMN_WIDTHS: Record<string, string> = {
-  status: "w-[92px]",
-  time: "w-[68px]",
-  dur: "w-[64px]",
-  model: "w-[180px]",
-  multiplier: "w-[34px]",
-  endpoint: "w-[90px]",
-  bytes: "w-[118px]",
-  tokens: "w-[130px]",
-  attempts: "w-[40px]",
-  preview: "min-w-0 flex-1",
-  response: "min-w-0 flex-1",
-}
-
-/**
- * REQUEST_COLUMNS —— 状态·时间·+耗时·模型·(Nx)·端点·字节·token·×N·预览/失败摘要
+ * REQUEST_COLUMNS —— 状态·时间·+耗时·模型·cache·(Nx)·端点·字节·token·×N·预览/失败摘要
  * (spec §4.2)。每列 `accessorFn` 给出可排序/筛选的域值(复用 activity-row)，`cell`
- * 渲染富内容(信号色/tooltip/anomaly)。`meta.width` 引 COLUMN_WIDTHS(SSOT)。
+ * 渲染富内容(信号色/tooltip/anomaly)。固定列自带 `size`(px) + minSize/maxSize(resize
+ * 边界)；弹性列(preview/response)与 session gutter 用 `enableResizing:false` 且不设 size
+ * (自适应剩余空间 / HistoryList 特判 10px)。
  */
 export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
+  {
+    id: "session",
+    header: "",
+    cell: () => null, // 实际色块在 HistoryList itemContent 首列特判渲染(审查:ColumnDef.cell 拿不到 runs)
+    enableResizing: false, // gutter：宽度靠 HistoryList 特判 p-0 w-[10px]，不设 size、排除出 sizing
+  },
   {
     id: "status",
     header: "Status",
@@ -152,14 +136,18 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
       const state = requestState(row.original)
       return span(ELLIPSIS, `● ${state}`, { color: SIGNAL_COLOR[statusSignal(state)] })
     },
-    meta: { width: COLUMN_WIDTHS.status },
+    size: 92,
+    minSize: 60,
+    maxSize: 160,
   },
   {
     id: "time",
     header: "Time",
     accessorFn: (e) => e.startedAt,
     cell: ({ row }) => span("text-[var(--content-faint)]", formatTime(row.original.startedAt), { title: new Date(row.original.startedAt).toISOString() }),
-    meta: { width: COLUMN_WIDTHS.time },
+    size: 68,
+    minSize: 56,
+    maxSize: 120,
   },
   {
     id: "dur",
@@ -173,14 +161,30 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
         title: anomaly.slow ? "slow request (>60s)" : undefined,
       })
     },
-    meta: { width: COLUMN_WIDTHS.dur },
+    size: 64,
+    minSize: 48,
+    maxSize: 120,
   },
   {
     id: "model",
     header: "Model",
     accessorFn: (e) => modelName(e),
     cell: ({ row }) => span(`${ELLIPSIS} text-[var(--content-value)]`, modelName(row.original), { title: modelName(row.original) }),
-    meta: { width: COLUMN_WIDTHS.model },
+    size: 180,
+    minSize: 80,
+    maxSize: 360,
+  },
+  {
+    id: "cache",
+    header: "Cache",
+    accessorFn: (e) => cacheHitCell(e).text,
+    cell: ({ row }) => {
+      const c = cacheHitCell(row.original)
+      return span(`${ELLIPSIS} text-right`, c.text, { color: SIGNAL_COLOR[c.signal], title: c.title })
+    },
+    size: 64,
+    minSize: 44,
+    maxSize: 120,
   },
   {
     id: "multiplier",
@@ -191,14 +195,18 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
       const show = m !== undefined && m !== 1
       return span("text-[var(--content-muted)]", show ? `(${m}x)` : "")
     },
-    meta: { width: COLUMN_WIDTHS.multiplier },
+    size: 34,
+    minSize: 28,
+    maxSize: 48,
   },
   {
     id: "endpoint",
     header: "Endpoint",
     accessorFn: (e) => endpointLabel(e),
     cell: ({ row }) => span(`${ELLIPSIS} text-[var(--content-faint)]`, endpointLabel(row.original), { title: endpointLabel(row.original) }),
-    meta: { width: COLUMN_WIDTHS.endpoint },
+    size: 120,
+    minSize: 60,
+    maxSize: 240,
   },
   {
     id: "bytes",
@@ -210,7 +218,9 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
         title: bytesCellTitle(e.requestBytes, e.responseBytes),
       })
     },
-    meta: { width: COLUMN_WIDTHS.bytes },
+    size: 118,
+    minSize: 70,
+    maxSize: 200,
   },
   {
     id: "tokens",
@@ -225,7 +235,9 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
         title: anomaly.cacheMiss ? "cache miss: large input with no cache read" : tokensCellTitle(e, text),
       })
     },
-    meta: { width: COLUMN_WIDTHS.tokens },
+    size: 130,
+    minSize: 80,
+    maxSize: 220,
   },
   {
     id: "attempts",
@@ -235,7 +247,9 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
       const n = row.original.attemptCount
       return span("text-right text-[var(--content-warm-faint)]", n && n > 1 ? `×${n}` : "")
     },
-    meta: { width: COLUMN_WIDTHS.attempts },
+    size: 40,
+    minSize: 32,
+    maxSize: 80,
   },
   {
     id: "preview",
@@ -248,7 +262,7 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
       const className = completed ? `${ELLIPSIS} text-[var(--content-preview)]` : `${ELLIPSIS} text-[var(--signal-fail)]`
       return span(className, completed ? truncPreview(e) : failureSummary(e), { title })
     },
-    meta: { width: COLUMN_WIDTHS.preview },
+    enableResizing: false, // 弹性列：吃满剩余空间，不设 size、不 emit inline width
   },
   {
     id: "response",
@@ -258,21 +272,46 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
       const e = row.original
       return span(`${ELLIPSIS} text-[var(--content-preview-response)]`, truncResponsePreview(e), { title: e.responsePreviewText || "" })
     },
-    meta: { width: COLUMN_WIDTHS.response },
+    enableResizing: false, // 弹性列：吃满剩余空间，不设 size、不 emit inline width
   },
 ]
 
 /** 列 id 顺序(单一来源，供可见性默认/对账/菜单迭代)。 */
 export const REQUEST_COLUMN_IDS: ReadonlyArray<string> = REQUEST_COLUMNS.map((c) => c.id as string)
 
-/** localStorage 键 —— Requests 列表的列可见性持久化。 */
-export const COLUMN_STORAGE_KEY = "ui-v4:requests:columns"
+/** 版本化 localStorage 键 —— Requests 列表的统一列状态(visibility + sizing + order)。旧键 `ui-v4:requests:columns` 已弃用(新键不存在→从新默认 seed)。 */
+export const COLUMN_STATE_KEY = "ui-v4:requests:column-state:v1"
 
-/** 全列默认可见(true)。 */
-export const DEFAULT_COLUMN_VISIBILITY: VisibilityState = Object.fromEntries(REQUEST_COLUMN_IDS.map((id) => [id, true]))
+/** 默认隐藏列:endpoint/multiplier/tokens/attempts(策展默认视图,余含 cache 皆显)。 */
+const DEFAULT_HIDDEN = new Set(["endpoint", "multiplier", "tokens", "attempts"])
+
+/** 列默认可见性:DEFAULT_HIDDEN 内为 false，余为 true。 */
+export const DEFAULT_COLUMN_VISIBILITY: VisibilityState = Object.fromEntries(REQUEST_COLUMN_IDS.map((id) => [id, !DEFAULT_HIDDEN.has(id)]))
+
+/** 默认列序(session 恒首;cache 紧随 model)。持久序缺失/新列时的补位基准。 */
+export const DEFAULT_COLUMN_ORDER: ReadonlyArray<string> = [
+  "session",
+  "status",
+  "time",
+  "dur",
+  "model",
+  "cache",
+  "bytes",
+  "preview",
+  "response",
+  "endpoint",
+  "multiplier",
+  "tokens",
+  "attempts",
+]
+
+/** 默认列宽(px):仅固定列(enableResizing !== false 且自带 size)入表;弹性列/session 不在内(宽度自适应/特判)。 */
+export const DEFAULT_COLUMN_SIZING: Record<string, number> = Object.fromEntries(
+  REQUEST_COLUMNS.filter((c) => c.enableResizing !== false && typeof c.size === "number").map((c) => [c.id as string, c.size as number]),
+)
 
 /**
- * 把持久化的可见性 blob 合并到默认之上:未知/缺失列取默认可见(retain-on-absence
+ * 把持久化的可见性 blob 合并到默认之上:未知/缺失列取默认(retain-on-absence
  * —— 早于新列的旧 blob 仍可用)，未知的持久化键被丢弃。逐字镜像 model-columns.ts。
  */
 export function mergeColumnVisibility(persisted: Partial<VisibilityState> | null | undefined): VisibilityState {
@@ -284,4 +323,34 @@ export function mergeColumnVisibility(persisted: Partial<VisibilityState> | null
     }
   }
   return merged
+}
+
+/** 持久序为基 + 新列按默认序补位 + 删列忽略 + session 恒首。 */
+export function mergeColumnOrder(persisted: ReadonlyArray<string> | null | undefined): Array<string> {
+  const known = new Set(REQUEST_COLUMN_IDS)
+  const base = (persisted ?? []).filter((id) => known.has(id))
+  for (const id of DEFAULT_COLUMN_ORDER) if (!base.includes(id)) base.push(id) // 新列补位
+  return ["session", ...base.filter((id) => id !== "session")] // session 锁首
+}
+
+/** 持久值覆盖 + 未知列丢弃 + 新列取默认 size。 */
+export function mergeColumnSizing(persisted: Record<string, number> | null | undefined): Record<string, number> {
+  const merged = { ...DEFAULT_COLUMN_SIZING }
+  if (persisted && typeof persisted === "object")
+    for (const id of Object.keys(DEFAULT_COLUMN_SIZING)) if (typeof persisted[id] === "number") merged[id] = persisted[id]
+  return merged
+}
+
+/**
+ * dnd 重排(Task 3)的纯计算:把 `activeId` 列移到 `overId` 列的位置,session gutter 恒锁首、不参与重排。
+ * 从 `order` 剥掉 session → 在余下列上 `arrayMove(from→to)` → 复位 session 到首。activeId/overId 任一
+ * 不在非 session 列里(如误传 session、未知 id)则原样返回(不动)。返回值仍会经 `mergeColumnOrder` 幂等归一
+ * (useColumnState.setOrder),此处提前锁首是 belt-and-suspenders:即便下游归一化改动,重排本身也不破坏 session 首位。
+ */
+export function reorderColumns(order: ReadonlyArray<string>, activeId: string, overId: string): Array<string> {
+  const ids = order.filter((id) => id !== "session")
+  const from = ids.indexOf(activeId)
+  const to = ids.indexOf(overId)
+  if (from === -1 || to === -1) return [...order]
+  return ["session", ...arrayMove(ids, from, to)]
 }

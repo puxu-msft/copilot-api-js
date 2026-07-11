@@ -93,7 +93,7 @@ function renderPage(initialEntries: Array<string> = ["/requests"]) {
   )
 }
 
-const COLUMN_STORAGE_KEY = "ui-v4:requests:columns"
+const COLUMN_STATE_KEY = "ui-v4:requests:column-state:v1"
 
 describe("RequestsListPage wiring", () => {
   beforeEach(() => {
@@ -143,13 +143,13 @@ describe("RequestsListPage column visibility (menu + persistence)", () => {
 
     // 表头 Model 列消失(菜单里的 Model 项在 Portal,不在 thead)。
     await waitFor(() => expect(headText(container)).not.toContain("Model"))
-    // 持久化到 localStorage(mergeColumnVisibility 读回对账)。
-    const stored = JSON.parse(localStorage.getItem(COLUMN_STORAGE_KEY) ?? "null") as Record<string, boolean> | null
-    expect(stored?.model).toBe(false)
+    // 持久化到 localStorage 的版本化键(useColumnState 的 { visibility, sizing, order } 包裹形状)。
+    const stored = JSON.parse(localStorage.getItem(COLUMN_STATE_KEY) ?? "null") as { visibility?: Record<string, boolean> } | null
+    expect(stored?.visibility?.model).toBe(false)
   })
 
   it("restores column visibility from localStorage on remount", async () => {
-    localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify({ model: false }))
+    localStorage.setItem(COLUMN_STATE_KEY, JSON.stringify({ visibility: { model: false } }))
     const user = userEvent.setup()
     const { container } = renderPage(["/requests"])
     // 新实例读 localStorage → Model 列表头开箱即隐(等 thead settle,但 Model 始终不出现)。

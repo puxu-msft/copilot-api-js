@@ -19,8 +19,9 @@ import {
   formatTime,
   statusSignal,
 } from "@/lib/format"
-// 信号色 + cell 文本拼装 helper + 列宽 SSOT 在 request-columns.ts(TanStack 列模型同源)；
-// 本文件的 HistoryRow(AgentLane 泳道复用)从此处 import,不再各自持副本(Task 3.2 去重)。
+// 信号色 + cell 文本拼装 helper 在 request-columns.ts(TanStack 列模型同源)；本文件的
+// HistoryRow(AgentLane 泳道复用)从此处 import,不再各自持副本(Task 3.2 去重)。列宽 =
+// ColumnDef.size(Requests 列表用);Live 泳道 RequestRow 自持硬编码宽,不复用本表。
 import {
   //
   bytesCellText,

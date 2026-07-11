@@ -13,6 +13,8 @@ node_modules/
 .superpowers
 .env
 *.txt
+# ...but committed golden test fixtures are tracked oracle data, not scratch.
+!tests/**/__fixtures__/*.txt
 *.log
 .worktrees/
 

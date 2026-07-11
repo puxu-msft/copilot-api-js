@@ -45,7 +45,6 @@ import { initBus } from "./lib/observability"
 import { toActiveRequestWire } from "./lib/observability/active-request-wire"
 import { formatBillingLabel } from "./lib/observability/projections/format"
 import { installConsolaRepublish } from "./lib/observability/republish"
-import { attachConsoleSink } from "./lib/observability/sinks/console"
 import { attachFileSink } from "./lib/observability/sinks/file"
 import { attachHistorySink } from "./lib/observability/sinks/history"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
@@ -71,6 +70,7 @@ import {
 } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 import { getCopilotUsage } from "./lib/token/copilot-client"
+import { attachTerminalUi } from "./lib/tui"
 import {
   //
   createWebSocketAdapter,
@@ -249,7 +249,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const systemPublisher = bus.scope("system")
   setShutdownPublisher(systemPublisher)
   setRateLimitPublisher(systemPublisher)
-  attachConsoleSink(bus)
+  attachTerminalUi(bus)
   attachFileSink(bus, { path: PATHS.COPILOT_LOG })
   installConsolaRepublish(systemPublisher)
 

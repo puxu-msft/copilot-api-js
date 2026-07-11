@@ -244,6 +244,11 @@ body {
  * 仍压过同作用域的通配符锐角 `[data-design] *`(0,1,0)+ !important。 */
 [data-design="amber-legacy"] .livedock-island { border-radius: 2px !important; }
 
+/* session 色带段帽破例:全局 `*{border-radius:0!important}` 抹平圆角,段首/段尾用极小 2px 软化。
+ * 类选择器(0,1,0)+ !important 压过全局通配符,照 .livedock-island 先例。 */
+.session-cap-top { border-top-left-radius: 2px !important; border-top-right-radius: 2px !important; }
+.session-cap-bottom { border-bottom-left-radius: 2px !important; border-bottom-right-radius: 2px !important; }
+
 /* 语法高亮 —— shiki(VS Code TextMate grammars/themes)把 token 颜色 baked 进每个 token span 的内联
  * style="color:#..."(无 token CSS class),调色板见 src/lib/highlight/amber-theme.ts 的 AMBER_THEME。 */
 

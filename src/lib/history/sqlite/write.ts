@@ -36,7 +36,7 @@ import {
 const INSERT_ENTRY_SQL = `
 INSERT INTO entries_v2 (
   id, session_id, agent_id, started_at, ended_at, duration_ms,
-  model, endpoint, transport, status,
+  model, endpoint, raw_path, transport, status,
   input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
   usage_normalized, stages_migrated,
   stop_reason, error_message,
@@ -44,10 +44,10 @@ INSERT INTO entries_v2 (
   pid, boot_time, git_sha,
   request_bytes, response_bytes, multiplier,
   blob_gz
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   session_id = excluded.session_id, agent_id = excluded.agent_id, started_at = excluded.started_at, ended_at = excluded.ended_at,
-  duration_ms = excluded.duration_ms, model = excluded.model, endpoint = excluded.endpoint,
+  duration_ms = excluded.duration_ms, model = excluded.model, endpoint = excluded.endpoint, raw_path = excluded.raw_path,
   transport = excluded.transport, status = excluded.status,
   input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
   cache_read = excluded.cache_read, cache_creation = excluded.cache_creation,
@@ -78,6 +78,7 @@ function runHeadInsert(db: ReturnType<typeof getDatabase>, row: EntryRow): void 
     row.duration_ms,
     row.model,
     row.endpoint,
+    row.raw_path,
     row.transport,
     row.status,
     row.input_tokens,

@@ -28,9 +28,9 @@ import type {
 import { createBus } from "~/lib/observability"
 import {
   //
-  ConsoleSink,
   formatThinkingTag,
-} from "~/lib/observability/sinks/console"
+  TerminalUi,
+} from "~/lib/tui"
 
 /** Request-scoped events (what `bus.scope("request").publish` accepts). */
 type RequestEvent = Extract<ObservabilityEvent, { kind: `request.${string}` }>
@@ -62,7 +62,7 @@ afterEach(() => {
 function renderLine(events: Array<(ctx: RequestContextSnapshot) => RequestEvent>): string {
   const cap = makeCapture()
   const bus = createBus()
-  const sink = new ConsoleSink(bus, { stdout: cap.stdout, isTTY: false })
+  const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
   cleanups.push(() => sink.destroy())
   const ctx = makeCtx()
   const pub = bus.scope("request")

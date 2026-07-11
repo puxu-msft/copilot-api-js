@@ -120,6 +120,8 @@ function toEntryRow(r: LegacyRow): EntryRow {
     duration_ms: r.duration_ms,
     model: r.model,
     endpoint: r.endpoint,
+    // Legacy v1 rows never captured the request URL path — NULL (endpoint enum only).
+    raw_path: null,
     transport: r.transport,
     status: r.status,
     input_tokens: r.input_tokens,

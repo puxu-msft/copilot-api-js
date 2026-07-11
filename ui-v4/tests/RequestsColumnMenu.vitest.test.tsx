@@ -13,7 +13,11 @@ import {
 } from "vitest"
 
 import { RequestsColumnMenu } from "@/components/requests/RequestsColumnMenu"
-import { DEFAULT_COLUMN_VISIBILITY } from "@/lib/request-columns"
+import {
+  //
+  DEFAULT_COLUMN_ORDER,
+  DEFAULT_COLUMN_VISIBILITY,
+} from "@/lib/request-columns"
 
 /**
  * `RequestsColumnMenu` 镜像 `ModelsColumnMenu`(Radix `DropdownMenu`),驱动 TanStack
@@ -30,6 +34,7 @@ describe("RequestsColumnMenu (Radix DropdownMenu)", () => {
     render(
       <RequestsColumnMenu
         columns={{ ...DEFAULT_COLUMN_VISIBILITY, model: false }}
+        order={DEFAULT_COLUMN_ORDER}
         onToggle={() => {}}
         onReset={() => {}}
       />,
@@ -45,6 +50,7 @@ describe("RequestsColumnMenu (Radix DropdownMenu)", () => {
     render(
       <RequestsColumnMenu
         columns={DEFAULT_COLUMN_VISIBILITY}
+        order={DEFAULT_COLUMN_ORDER}
         onToggle={onToggle}
         onReset={() => {}}
       />,
@@ -59,6 +65,7 @@ describe("RequestsColumnMenu (Radix DropdownMenu)", () => {
     render(
       <RequestsColumnMenu
         columns={DEFAULT_COLUMN_VISIBILITY}
+        order={DEFAULT_COLUMN_ORDER}
         onToggle={() => {}}
         onReset={() => {}}
       />,
@@ -75,6 +82,7 @@ describe("RequestsColumnMenu (Radix DropdownMenu)", () => {
     render(
       <RequestsColumnMenu
         columns={DEFAULT_COLUMN_VISIBILITY}
+        order={DEFAULT_COLUMN_ORDER}
         onToggle={() => {}}
         onReset={onReset}
       />,

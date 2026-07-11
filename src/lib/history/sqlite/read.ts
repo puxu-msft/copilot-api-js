@@ -117,7 +117,7 @@ export function querySummaries(opts?: QueryOptions): Array<EntrySummary> {
   const rows = db
     .prepare(
       `SELECT id, session_id, agent_id, started_at, ended_at, duration_ms,
-              model, endpoint, transport, status,
+              model, endpoint, raw_path, transport, status,
               input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
               stop_reason, error_message,
               message_count, preview_text, response_preview_text, pid, pinned,
@@ -144,6 +144,7 @@ function rowToSummary(r: SummaryRow): EntrySummary {
     startedAt: r.started_at,
     endedAt: r.ended_at ?? undefined,
     endpoint: r.endpoint as EntrySummary["endpoint"],
+    rawPath: r.raw_path ?? undefined,
     state: (r.status as EntrySummary["state"]) ?? undefined,
     active: false,
     pinned: r.pinned === 1,
@@ -184,7 +185,7 @@ export function loadSummariesByIds(ids: Array<string>): Map<string, EntrySummary
   const rows = db
     .prepare(
       `SELECT id, session_id, agent_id, started_at, ended_at, duration_ms,
-              model, endpoint, transport, status,
+              model, endpoint, raw_path, transport, status,
               input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
               stop_reason, error_message,
               message_count, preview_text, response_preview_text, pid, pinned,

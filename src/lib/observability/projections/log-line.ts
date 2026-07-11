@@ -2,10 +2,10 @@
  * Pure formatter for the canonical log line shape:
  *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↓<out> <extra> <retryableMeta>
  *
- * Shared between the existing `lib/tui/console-renderer.ts` (kept in
- * commits 1-3) and the new `lib/observability/sinks/console.ts` (added in
- * commit 2). When commit 4 deletes `lib/tui/`, this remains the single
- * source of truth.
+ * Shared source of truth for the log-line shape, consumed by
+ * `~/lib/tui/terminal-ui.ts` (the TerminalUi renderer) and its `render/`
+ * helpers. Lives under `observability/projections/` because it is a pure
+ * formatter shared across consumers, not owned by the tui layer.
  *
  * The function is pure — no I/O, no global state — but reads
  * `state.tokenBasedBilling` via `formatBillingLabel` (account-wide

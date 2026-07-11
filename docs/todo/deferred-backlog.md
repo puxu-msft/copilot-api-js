@@ -10,6 +10,13 @@
   - **外部直写 stdout 撞 footer**：任何绕过 `printLog` 的 `console.log` 会撞坏 footer 协调。当前 republish 已收编 consola，残余风险低。若做：需一个全局 stdout 写入拦截层。
   - **`(resolving)` 桶丢 path**：未解析模型的请求在分组里归 `(resolving) ×N`，丢了各自 path（现状逐条显示会带 path）。footer-only 瞬时损失，完成态 log line 补回。若做：`(resolving)` 桶特殊化为逐条显示 method+path。
 
+## 分组 footer 自适应显示最久的 N 个请求时间（用户 2026-07-10 要求，待 P0 后做）
+
+- **背景/动机**：现状多请求分组 footer 每组只显**单个** `maxElapsed`（最老请求）。用户要求：根据组数自适应显示每组**最久的几个**请求时间。
+- **规格（已与用户敲定 + 默认补全）**：每组显示条数 = f(组数)——**1 组→最久 5 个 · 2 组→每组最久 3 个 · 3 组→每组最久 1 个 · 4+ 组→每组最久 1 个**（横向空间紧，默认，仍受 `columns-1` 宽度截断兜底）。组内「最久的 N 个」= 组内请求按 elapsed 降序取前 N 的 elapsed。段形如 `claude-opus-4-8 ×5 ↓12KB 9.1s 7.3s 5.0s 3.2s 1.1s`。
+- **为何待 P0 后**：这是**行为变更**，而 P0 是行为逐字等价的纯重组（golden-fixture 锁 footer 输出）；现在改会污染等价 oracle。P0 落地后作独立 feat，只碰 `tui/render/footer.ts`（重组后 footer 的家）+ 测试 + 一次**有意的** golden 更新。
+- **若做需改什么**：`buildActiveFooter`/`buildModelGroupSegments`（重组后在 `tui/render/footer.ts`）——组内保留 top-N elapsed（现只留 oldest）；段构建按 f(组数) 取 N 个 elapsed 拼接；宽度驱动纳入循环的 segment 宽度估算随之变长（`stringWidth` 仍兜底）；golden-fixture 场景须体现多组多时间；补单测覆盖 1/2/3/4 组各自的 N。
+
 ## GHC server_tool_memory 默认关 — CAPI 接受性待探针
 
 - **现状**：`anthropic.server_tool_memory` 默认关。GHC 只在 BYOK 直连注入 `memory_20250818`、CAPI 路径不注入，故本项目经 CAPI 发该 server-tool 类型 + `context-management` beta 的**接受性未实测**。
@@ -333,3 +340,11 @@
 ## Vue 模型退役 + CSV 移除留下的孤儿（2026-07-10，已解决）
 
 退役 Vue `/models` 视图 + 移除 ui-v4 CSV 导出后，两处成孤儿，**已按用户决策清理**（2026-07-10，commits `ee838f63` + `62d14d7d`）：删 `ui/src/components/ui/JsonViewerSurface.vue`（+ detail-page.test.ts 惰性 stub）、删 ui-v4 `sortModelRows` 及其两处测试与连带 unused imports。表格自身排序（TanStack `getSortedRowModel`）不受影响。**残留独立 refactor（未做）**：ModelsPage 的 `sorting` 受控 lift 现仅用于把排序态传给 ModelsTable，若嫌多余可下沉回表格内部（TanStack 自持）——属独立小重构，非孤儿。
+
+## Requests 列配置的键盘 a11y 路径（2026-07-11，暂缓）
+
+- **根因**：列配置特性（resize + reorder，spec `2026-07-11-ui-v4-requests-column-config`）的两个拖拽交互都只走指针设备。
+- **当前行为**：列宽 resize 手柄仅 `onMouseDown/onTouchStart`（无键盘调宽）；列 reorder 的 `DndContext` 仅注册 `PointerSensor`（无 `KeyboardSensor` + `sortableKeyboardCoordinates`）。键盘用户无法 resize/reorder 列（仍可经 Columns 菜单显隐 + Reset）。
+- **理想架构**：① reorder 加 `KeyboardSensor({coordinateGetter: sortableKeyboardCoordinates})`；② resize 手柄改可聚焦元素 + 方向键调宽（或提供数字输入）。
+- **为何暂缓**：本期 spec 明确只要求指针拖拽；键盘路径是正交增强，不阻塞核心可配置能力。内部工具、单用户，优先级低。
+- **若做需改什么**：`RequestsListPage` 的 `useSensors` 加 KeyboardSensor；`SortableHeaderCell` 补键盘激活语义；resize 手柄换 focusable + keydown 调 `columnSizing`；补键盘交互测试。发现方：column-config Task 3 审查（2026-07-11）。

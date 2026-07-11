@@ -1,9 +1,17 @@
+import {
+  //
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable"
 import { useQueryClient } from "@tanstack/react-query"
 import {
   //
   flexRender,
   getCoreRowModel,
   useReactTable,
+  type ColumnSizingState,
+  type Header,
   type OnChangeFn,
   type Row,
   type VisibilityState,
@@ -16,6 +24,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react"
 import {
@@ -37,6 +46,7 @@ import type {
   HistoryEntry,
 } from "@/types"
 
+import { SessionPaletteSelect } from "@/components/requests/SessionPaletteSelect"
 import { Modal } from "@/components/shared/Modal"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
 import { api } from "@/lib/api"
@@ -51,6 +61,14 @@ import {
   hasAnyFilter,
   toQueryString,
 } from "@/lib/request-filters"
+import {
+  //
+  computeSessionRuns,
+  DEFAULT_PALETTE_NAME,
+  PALETTE_STORAGE_KEY,
+  SESSION_PALETTES,
+  type RunInfo,
+} from "@/lib/session-color"
 import { useListStore } from "@/stores/list-store"
 
 /** load-until-found 翻页上限:防止 `at` 指向不存在/已淘汰 id 时无限拉取(仅在归属判定为「属于」时才翻页)。导出供测试断言 CAP 终止。 */
@@ -75,6 +93,12 @@ interface RowContext {
   /** roving tabindex 的唯一 tab 停靠行 id:等于焦点行;无焦点(初始/Esc 清空后)回退首行作为入口。同一时刻仅此行 `tabIndex=0`,余行 `-1`。 */
   tabStopId: string | null
   onSelect: (id: string) => void
+  /** 每行 run 元信息(色带色/段帽/缩进/tint);无 sessionId 行不在 map。 */
+  runs: Map<string, RunInfo>
+  /** 当前处于对比高亮选择集里的 sessionId 集合;空集 = 默认态(全部淡 tint)。 */
+  selectedSessions: Set<string>
+  /** 切换某会话的对比高亮(点色带 / 键盘 f);undefined(无 sessionId 行)时 no-op。 */
+  onToggleSession: (sid: string | undefined) => void
 }
 
 /**
@@ -117,7 +141,7 @@ function isTyping(target: EventTarget | null): boolean {
 
 // ── Virtuoso 子组件(模块级、稳定引用,避免 inline 定义导致每帧重挂)。动态数据经 `context` 注入。 ──
 
-/** `<table>` 外壳:必须透传 Virtuoso 注入的 `style`(布局);table-fixed + 列宽(th/td meta.width)决定列宽。 */
+/** `<table>` 外壳:必须透传 Virtuoso 注入的 `style`(布局);table-fixed + 列宽(固定列 th/td inline width=ColumnDef.size,弹性列自适应)决定列宽。 */
 const TableShell: NonNullable<TableComponents<HistoryRowModel, RowContext>["Table"]> = ({ style, ...props }) => (
   <table
     {...props}
@@ -133,6 +157,19 @@ const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableR
   const flashing = id === context.flashId
   const focused = id === context.focusedId
   const isTabStop = id === context.tabStopId
+  const info = context.runs.get(id)
+  const sid = item.original.sessionId
+  const selecting = context.selectedSessions.size > 0
+  const selectedThisSession = sid !== undefined && context.selectedSessions.has(sid)
+  // 对比态里非选中会话(且非 `at` 选中行)变灰:仅用 opacity-40,不叠 muted 文字类。
+  const dim = selecting && !selectedThisSession && !selected
+  // §3 单值背景优先级:`at` 选中→类背景(不设 inline);对比态选中会话→强 tint;
+  // 对比态非选中→无 tint(靠 dim);默认态→淡 tint;无 sessionId→无。
+  let bg: string | undefined
+  if (!selected) {
+    if (selecting) bg = selectedThisSession ? info?.strongTint : undefined
+    else bg = info?.faintTint
+  }
   return (
     <tr
       {...props}
@@ -143,6 +180,7 @@ const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableR
       // 保证列表整体只占一个 Tab 停靠点,方向键在行间移动 DOM 焦点(见容器 onKeyDown + focus effect)。
       tabIndex={isTabStop ? 0 : -1}
       aria-current={selected ? "true" : undefined}
+      style={bg ? { backgroundColor: bg } : undefined}
       onClick={() => context.onSelect(id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -154,7 +192,7 @@ const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableR
         }
         // 方向键不在此处理:放行冒泡到容器 onKeyDown 统一移动游标 + DOM 焦点(roving)。
       }}
-      className={`${ROW_CLASS} ${selectionClass(selected)}${flashing ? " toc-flash" : ""}${focusClass(focused)}`}
+      className={`${ROW_CLASS} ${selectionClass(selected)}${flashing ? " toc-flash" : ""}${focusClass(focused)}${dim ? " opacity-40" : ""}`}
     />
   )
 }
@@ -164,11 +202,66 @@ const TABLE_COMPONENTS: TableComponents<HistoryRowModel, RowContext> = {
   TableRow,
 }
 
+/**
+ * 可拖拽重排的表头单元(Task 3)——非 session 列的 `<th>`。经 `useSortable(id=列 id)` 接入
+ * `SortableContext`(HistoryList 表头行)+ 上层 `DndContext`(RequestsListPage):
+ *   · `{...attributes} {...listeners}` 挂在 th 主体 → 抓表头即可拖动整列(PointerSensor,activationConstraint
+ *     distance:4 见 RequestsListPage;微动/点击不误判拖拽)。
+ *   · resize 手柄(Task 2)的 `onPointerDown` 已 stopPropagation → 抓手柄调宽不触发本 th 的拖拽激活(HIGH-2 分区)。
+ *   · `restrictToHorizontalAxis`(RequestsListPage modifier)锁水平位移,故 transform 只取 `x`(译成 translate3d)。
+ * session gutter 不用本组件——它是纯 th、不入 SortableContext、恒锁首、不可拖(见 fixedHeaderContent 特判)。
+ * 固定列(非弹性、非 session)emit inline width;弹性列(preview/response)不设宽(自适应),二者皆可拖。
+ */
+function SortableHeaderCell({ header }: { header: Header<EntrySummary, unknown> }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: header.column.id })
+  const isFixed = header.column.columnDef.enableResizing !== false // 本组件不渲染 session,故等价于「固定列」判定
+  const style: CSSProperties = {
+    ...(isFixed ? { width: header.getSize() } : {}),
+    // restrictToHorizontalAxis 锁水平,只需 translateX;transform 为 null(未拖)时省略。
+    transform: transform ? `translate3d(${transform.x}px, 0, 0)` : undefined,
+    transition,
+    opacity: isDragging ? 0.6 : undefined,
+    // 表头整体即拖拽把手:抓非手柄区域拖动整列(手柄区 pointerdown 被 stopPropagation 拦下走 resize)。
+    cursor: "grab",
+  }
+  return (
+    <th
+      ref={setNodeRef}
+      style={style}
+      className="relative px-2 py-1 text-left font-normal"
+      {...attributes}
+      {...listeners}
+    >
+      {flexRender(header.column.columnDef.header, header.getContext())}
+      {/* 列宽 resize 手柄:仅可 resize 列(getCanResize())出现——enableResizing:false 的弹性列返 false 天然排除。
+          onMouseDown/onTouchStart 驱动 TanStack resize;onPointerDown stopPropagation 挡 dnd useSortable 的 pointerdown(HIGH-2)。 */}
+      {header.column.getCanResize() && (
+        // resize 手柄纯 mouse/touch 拖拽 affordance(键盘调宽非本期范围),强加 role/keyboard 会扭曲语义;
+        // 与本文件滚动容器同款按项目约定禁用该规则而非扭曲代码。
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+        <span
+          data-resize-handle
+          onMouseDown={header.getResizeHandler()}
+          onTouchStart={header.getResizeHandler()}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute inset-y-0 right-0 w-1 cursor-col-resize select-none hover:bg-[var(--color-primary)]"
+        />
+      )}
+    </th>
+  )
+}
+
 interface HistoryListProps {
   filters: RequestFilters
-  /** 列可见性(受控);缺省则组件自持内部 state(全显)。Task 3.4 由 RequestsListPage 提升 + localStorage 持久化。 */
+  /** 列可见性(受控);缺省则组件自持内部 state(用默认可见性)。RequestsListPage 经 useColumnState 提升 + localStorage 持久化。 */
   columnVisibility?: VisibilityState
   onColumnVisibilityChange?: OnChangeFn<VisibilityState>
+  /** 列宽(受控,px);缺省 → TanStack 内部默认(列定义 size)。Task 2 加 resize 手柄写回。 */
+  columnSizing?: ColumnSizingState
+  onColumnSizingChange?: OnChangeFn<ColumnSizingState>
+  /** 列序(受控);缺省 → 列定义序。Task 3 加 dnd 重排写回。 */
+  columnOrder?: Array<string>
+  onColumnOrderChange?: OnChangeFn<Array<string>>
   /** 清除全部筛选(保留 `?at=`)。定位目标不属于当前筛选集时,行内提示的「清除筛选并定位」按钮调用它。 */
   onClearFilters?: () => void
 }
@@ -178,7 +271,16 @@ interface HistoryListProps {
  * 保留 tail 跟随 / `?at=` 定位 / goLive(缓冲合入 CTA 已上移 LiveDock 状态栏);渲染层换为 `TableVirtuoso`,
  * `endReached` 触底加载旧页取代旧 onScroll 阈值翻页,离顶(`atTopStateChange`)暂停 tail。
  */
-export function HistoryList({ filters, columnVisibility: controlledVisibility, onColumnVisibilityChange, onClearFilters }: HistoryListProps) {
+export function HistoryList({
+  filters,
+  columnVisibility: controlledVisibility,
+  onColumnVisibilityChange,
+  columnSizing,
+  onColumnSizingChange,
+  columnOrder,
+  onColumnOrderChange,
+  onClearFilters,
+}: HistoryListProps) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const at = searchParams.get("at")
@@ -216,11 +318,55 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
   const table = useReactTable({
     data: entries,
     columns: REQUEST_COLUMNS,
-    state: { columnVisibility },
+    // 仅在受控时把 sizing/order 放进 state:传 `columnSizing: undefined` 会覆盖 TanStack 内部
+    // 默认 `{}`、令 getSize() 崩(读 undefined[id])。缺省(HistoryList 独立渲染/测试)时省略键，
+    // 交给 TanStack 内部默认(列定义 size + 定义序)。
+    state: {
+      columnVisibility,
+      ...(columnSizing !== undefined ? { columnSizing } : {}),
+      ...(columnOrder !== undefined ? { columnOrder } : {}),
+    },
     onColumnVisibilityChange: setColumnVisibility,
+    onColumnSizingChange,
+    onColumnOrderChange,
+    defaultColumn: { minSize: 40 },
+    // 列宽 resize:onChange 模式即时写回 sizing(拖拽像素 → columnSizing state → inline width)。
+    // getCanResize() 对 enableResizing:false 的弹性列(preview/response)/session gutter 返 false,天然排除手柄。
+    enableColumnResizing: true,
+    columnResizeMode: "onChange",
     getCoreRowModel: getCoreRowModel(),
   })
   const rows = table.getRowModel().rows
+
+  // session 色带的 run 元信息(色/段帽/缩进/tint):跑在已加载全部页拼接的 entries 上(非虚拟化窗口)。
+  // 色板态:localStorage 持久化 + 头部 SessionPaletteSelect 切换;未知名回退首套。
+  const [selectedSessions, setSelectedSessions] = useState<Set<string>>(() => new Set())
+  const [paletteName, setPaletteName] = useState<string>(() => {
+    try {
+      return localStorage.getItem(PALETTE_STORAGE_KEY) ?? DEFAULT_PALETTE_NAME
+    } catch {
+      return DEFAULT_PALETTE_NAME
+    }
+  })
+  const activePalette = SESSION_PALETTES.find((p) => p.name === paletteName) ?? SESSION_PALETTES[0]
+  const runs = useMemo(() => computeSessionRuns(entries, activePalette), [entries, activePalette])
+  const setPalette = useCallback((name: string) => {
+    setPaletteName(name)
+    try {
+      localStorage.setItem(PALETTE_STORAGE_KEY, name)
+    } catch {
+      // localStorage 不可用(隐私模式/配额)时静默降级:仅本会话生效,不阻塞。
+    }
+  }, [])
+  const onToggleSession = useCallback((sid: string | undefined) => {
+    if (!sid) return // H1:无 sessionId 行 no-op
+    setSelectedSessions((prev) => {
+      const next = new Set(prev)
+      if (next.has(sid)) next.delete(sid)
+      else next.add(sid)
+      return next
+    })
+  }, [])
 
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   // 每个 `at` 的定位进度:done 命中后不再重滚(WS invalidate 会换 entries 引用,否则抖动);
@@ -369,8 +515,8 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
     // roving tab 停靠:焦点行即停靠行;无焦点(初始/Esc 清空)回退首行作为 Tab 入口,保证列表始终有且仅一个 Tab 停靠点。
     const firstId = rows.length > 0 ? rows[0].original.id : null
     const tabStopId = focusedId ?? firstId
-    return { at, flashId, focusedId, tabStopId, onSelect: selectRow }
-  }, [at, flashId, focusedIndex, rows, selectRow])
+    return { at, flashId, focusedId, tabStopId, onSelect: selectRow, runs, selectedSessions, onToggleSession }
+  }, [at, flashId, focusedIndex, rows, selectRow, runs, selectedSessions, onToggleSession])
 
   // 容器级键盘导航(↑/↓/Esc):方向键从聚焦行冒泡到此,移动焦点游标 + 同步 DOM 焦点(roving)+ scrollToIndex 带入视口。
   // Enter/Space 激活不在此处理 —— 由 DOM 聚焦行(即游标行,roving 保证同步)的行级 onKeyDown 承担,语义统一到行级。
@@ -405,6 +551,15 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
           focusRequestRef.current = null
           setFocusedIndex(-1)
           if (e.target instanceof HTMLElement) e.target.blur()
+          setSelectedSessions(new Set()) // 同时清空对比高亮选择集
+          break
+        }
+        case "f": {
+          // 把光标行所属会话切入/切出对比高亮集(点色带的键盘等价物)。
+          e.preventDefault()
+          // 光标可能为空(Esc 后 focusedIndex=-1)或越界:先 bounds-check 再取行(同 rowContext memo 的模式)。
+          const row = focusedIndex >= 0 && focusedIndex < rows.length ? rows[focusedIndex] : undefined
+          if (row) onToggleSession(row.original.sessionId)
           break
         }
         default: {
@@ -413,7 +568,7 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
         }
       }
     },
-    [rows, focusedIndex],
+    [rows, focusedIndex, onToggleSession],
   )
 
   // 显式跟随实时流 / 暂停自动刷新的控制已上移到 LiveDock 状态栏(useGoLive + list-store pause);
@@ -423,6 +578,10 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mono flex items-center gap-2 border-b border-[#222] px-2 py-1 text-[12px] uppercase tracking-wider text-[var(--color-muted)]">
         <span>History · {total} total</span>
+        <SessionPaletteSelect
+          value={paletteName}
+          onChange={setPalette}
+        />
         {/* tail(自动刷新)状态 + 暂停/恢复控制已上移到底部 LiveDock 状态栏(见 LiveDock 的 ▶ live/⏸ paused 开关)。 */}
         <button
           type="button"
@@ -488,31 +647,85 @@ export function HistoryList({ filters, columnVisibility: controlledVisibility, o
                 if (!atTop && tailOn) dispatch({ kind: "scroll-up" })
               }}
               fixedHeaderContent={() =>
-                table.getHeaderGroups().map((hg) => (
-                  <tr
-                    key={hg.id}
-                    className="mono border-b border-[#222] bg-[#111] text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
-                  >
-                    {hg.headers.map((header) => (
-                      <th
-                        key={header.id}
-                        className={`${header.column.columnDef.meta?.width ?? ""} px-2 py-1 text-left font-normal`}
+                table.getHeaderGroups().map((hg) => {
+                  // SortableContext 的 items = 当前列序里的非 session 列 id(顺序须与渲染的可拖 th 一致)。
+                  // session gutter 不入 items、不可拖(恒锁首,见下方特判分支)。
+                  const sortableIds = hg.headers.filter((h) => h.column.id !== "session").map((h) => h.column.id)
+                  return (
+                    <tr
+                      key={hg.id}
+                      className="mono border-b border-[#222] bg-[#111] text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
+                    >
+                      <SortableContext
+                        items={sortableIds}
+                        strategy={horizontalListSortingStrategy}
                       >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                      </th>
-                    ))}
-                  </tr>
-                ))
+                        {hg.headers.map((header) => {
+                          // session gutter:纯 th(不 useSortable、不可拖、恒锁首)。镜像其 body td 的无水平 padding(p-0):
+                          // table-fixed 下列宽由首行(表头)决定,若带 px-2 会在 w-[10px] 上被 padding 撑大、与 p-0 的 body 色列错位。
+                          if (header.column.id === "session") {
+                            return (
+                              <th
+                                key={header.id}
+                                className="p-0 w-[10px] text-left font-normal"
+                              />
+                            )
+                          }
+                          // 非 session 列:可拖表头单元(useSortable + resize 手柄,见 SortableHeaderCell)。
+                          return (
+                            <SortableHeaderCell
+                              key={header.id}
+                              header={header}
+                            />
+                          )
+                        })}
+                      </SortableContext>
+                    </tr>
+                  )
+                })
               }
-              itemContent={(_index, row) =>
-                row.getVisibleCells().map((cell) => (
-                  <td
-                    key={cell.id}
-                    className={`${cell.column.columnDef.meta?.width ?? ""} overflow-hidden px-2 py-1 align-middle`}
-                  >
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                ))
+              itemContent={(_index, row, context) =>
+                row.getVisibleCells().map((cell) => {
+                  if (cell.column.id === "session") {
+                    const info = context.runs.get(row.original.id)
+                    return (
+                      <td
+                        key={cell.id}
+                        className="relative w-[10px] p-0"
+                      >
+                        {info && (
+                          <button
+                            type="button"
+                            aria-label="toggle session highlight"
+                            tabIndex={-1}
+                            onClick={(e) => {
+                              // stopPropagation:切换对比高亮,不冒泡到行 onClick(否则会 navigate 到详情)。
+                              e.stopPropagation()
+                              context.onToggleSession(row.original.sessionId)
+                            }}
+                            className={`absolute inset-0 -bottom-px${info.isRunStart ? " session-cap-top" : ""}${info.isRunEnd ? " session-cap-bottom" : ""}`}
+                            style={{ backgroundColor: info.indent ? info.shade : info.color }}
+                          />
+                        )}
+                      </td>
+                    )
+                  }
+                  // status 缩进用 `pr-2 pl-3`(而非 `px-2`+`pl-3` 叠同属性,避免依赖 Tailwind 生成序);其余列 `px-2`。
+                  const indented = cell.column.id === "status" && context.runs.get(row.original.id)?.indent
+                  const padX = indented ? "pr-2 pl-3" : "px-2"
+                  // 仅固定列 emit inline width(镜像表头,table-fixed 下列宽由表头决定,body 补齐防抖动);
+                  // 弹性列(preview/response)/session 不设宽。session 已在上面的特判分支提前返回。
+                  const isFixed = cell.column.columnDef.enableResizing !== false && cell.column.id !== "session"
+                  return (
+                    <td
+                      key={cell.id}
+                      className={`overflow-hidden ${padX} py-1 align-middle`}
+                      style={isFixed ? { width: cell.column.getSize() } : undefined}
+                    >
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  )
+                })
               }
             />
             {/* 空态:保留表头(列可见性等外层结构),仅在表体区叠加「无匹配请求」提示(+ 有筛选时清除筛选)。 */}

@@ -1,6 +1,6 @@
 # ADR: TUI 终端所有权 —— 交互层从只读 sink 剥离
 
-- **状态**：Proposed（**待用户签字**——本 ADR 反转前决策，须用户明确同意方可 Accepted）
+- **状态**：Accepted（用户 2026-07-10 签字：「这个反转没问题」）
 - **日期**：2026-07-10
 - **相关**：反转 [observability-rewrite](../archive/2606-landed-rfcs/observability-rewrite.md)（其把 ConsoleSink 定为 "read-only display" 并用 ESLint 钉死分层边界 [eslint.config.js:166-214](../../eslint.config.js#L166)）的部分决定；驱动特性 RFC [interactive-tui-live-panel](../rfc/2026-07-10-interactive-tui-live-panel.md)；CLAUDE.md `architecture-health-first` / `subagent-explicit-rubric`（ADR 反转须用户签字）
 
@@ -11,6 +11,15 @@ observability-rewrite（landed RFC）把散落的 `src/lib/tui/` god-module 解�
 现在用户要**交互式 live query TUI**：终端里可展开在途请求面板、选中某条、**abort 它**。这引入两个 ConsoleSink 从未有过的能力：① **读 stdin**（raw-mode 键盘输入）；② **写 request lifecycle**（abort 一个在途请求，经 `manager.get(id).reapInFlight()` + 终态 settle）。二者都是**控制** concern，与「只读显示」不变量正面冲突。
 
 摆在面前的是一个架构决策：**把控制能力硬塞进只读 sink（破坏不变量），还是新建一个拥有终端的层、让 sink 回归纯显示？**
+
+### 澄清：这是「呈现/逻辑」两分演进为「呈现/逻辑/控制」三分（用户 2026-07-10 签字点）
+
+分层要分两个时代看，避免把本决策误记为「首次拆分呈现与逻辑」：
+
+- **observability-rewrite 之前的 `tracker.ts`** 确实**杂糅**：一个 class 同时管请求状态机 + footer 队列 + 渲染派发（那份 RFC 记为 D1 god-module）。「以前呈现与逻辑杂糅」指的是这个时代。
+- **observability-rewrite 已完成呈现/逻辑分离**：请求状态机在 `context/`、纯呈现在 sink 层，ConsoleSink 当时已是「只读呈现」。
+
+故本决策**不是**首次分层，而是在已分层基础上**引入第三个 concern——控制/输入**（读 stdin + abort 请求）。真正的架构轴是三分：**呈现（render）/ 逻辑（context 请求状态机）/ 控制（input + actions）**。核心判断（呈现与逻辑必须分层）成立且已由前一次重写落地；本次是从两分演进到三分，并给呈现一个专属的家 `src/lib/tui/`，把新引入的控制 concern 与呈现同置于该层、但内部再拆 render/input/controller/actions 各自单一职责——控制永不回流到*其它* sink，逻辑（状态机）永远留在 `context/`。
 
 ## 定夺
 

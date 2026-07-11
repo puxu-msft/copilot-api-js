@@ -1,5 +1,5 @@
 /**
- * Console sink — renders observability events as a single-line terminal log
+ * Terminal UI sink — renders observability events as a single-line terminal log
  * stream with an active-request footer.
  *
  * Subscribes to:
@@ -14,13 +14,12 @@
  * - `system.shutdown_phase_changed` / `system.rate_limit_state` — non-line
  *   side effects (no console output currently; reserved for future UX).
  *
- * Replaces `lib/tui/console-renderer.ts` (deleted in commit 4). ConsoleSink
+ * Replaces `lib/tui/console-renderer.ts` (deleted in commit 4). TerminalUi
  * is the authoritative stdout renderer for request lifecycle lines + footer.
  */
 
 import consola from "consola"
 import pc from "picocolors"
-import stringWidth from "string-width"
 
 import type {
   //
@@ -28,19 +27,19 @@ import type {
   ObservabilityBus,
   ObservabilityEvent,
   RequestContextSnapshot,
-} from "../index"
-import type { LogLineParts } from "../projections/log-line"
+} from "~/lib/observability"
+import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
-import { assertNever } from "../index"
+import { assertNever } from "~/lib/observability"
 import {
   //
-  formatBytes,
   formatDuration,
-  formatStreamInfo,
   formatTime,
-  truncateToWidth,
-} from "../projections/format"
-import { formatLogLine } from "../projections/log-line"
+} from "~/lib/observability/projections/format"
+import { formatLogLine } from "~/lib/observability/projections/log-line"
+
+import { buildActiveFooter } from "./render/footer"
+import { renderSystemLogLine } from "./render/syslog"
 
 // ANSI escape code for "clear to end of line, return to column 0"
 const CLEAR_LINE = "\x1b[2K\r"
@@ -69,7 +68,7 @@ interface ActiveRequest {
   attemptCount: number
 }
 
-export interface ConsoleSinkOptions {
+export interface TerminalUiOptions {
   stdout?: NodeJS.WritableStream
   isTTY?: boolean
   /**
@@ -90,7 +89,7 @@ export interface ConsoleSinkOptions {
   silent?: boolean
 }
 
-export class ConsoleSink {
+export class TerminalUi {
   private readonly stdout: NodeJS.WritableStream
   private readonly isTTY: boolean
   private readonly columns: number | (() => number)
@@ -101,7 +100,7 @@ export class ConsoleSink {
   private footerTimer: ReturnType<typeof setInterval> | null = null
   private readonly unsubscribe: () => void
 
-  constructor(bus: ObservabilityBus, options?: ConsoleSinkOptions) {
+  constructor(bus: ObservabilityBus, options?: TerminalUiOptions) {
     this.stdout = options?.stdout ?? process.stdout
     this.isTTY = options?.isTTY ?? process.stdout.isTTY
     this.columns = options?.columns ?? (() => (this.stdout as Partial<{ columns: number }>).columns ?? 80)
@@ -202,7 +201,7 @@ export class ConsoleSink {
       // history.* / system.* — currently no console output (reserved).
       //
       // request.context_updated is consumed by HistorySink only — see the
-      // event doc in events.ts. ConsoleSink already receives the
+      // event doc in events.ts. TerminalUi already receives the
       // higher-fidelity signals (state_changed / feature_applied / etc.)
       // and would only get duplicates from context_updated.
       case "history.entry_added":
@@ -361,111 +360,14 @@ export class ConsoleSink {
   // ============================================================================
 
   /**
-   * Build the active-request footer as **plain text** (no ANSI). Every branch
-   * returns an uncolored inner string; {@link finalizeFooter} is the single
-   * exit that strips control chars, width-truncates, and applies the one
-   * `pc.dim` wrap. This structure guarantees the footer never exceeds one
-   * physical line regardless of concurrency or content — see the hard
-   * invariant documented on {@link finalizeFooter}.
+   * Build the active-request footer. Delegates to the pure
+   * {@link buildActiveFooter} — this sink only supplies the live inputs:
+   * the active-request snapshots, the current wall clock, and the sanitized
+   * terminal width ({@link getColumns} applies the non-positive → 80 fallback,
+   * so the builder receives a clean number).
    */
   private buildFooter(): string {
-    const count = this.active.size
-    if (count === 0) return ""
-    const now = Date.now()
-
-    if (count === 1) {
-      const entry = this.active.values().next().value
-      if (!entry) return ""
-      const elapsed = formatDuration(now - entry.ctx.startTime)
-      const model = entry.ctx.resolvedModel ? ` ${entry.ctx.resolvedModel}` : ""
-      const streamInfo = formatStreamInfo({
-        bytesIn: entry.streamBytesIn,
-        eventsIn: entry.streamEventsIn,
-        blockType: entry.streamBlockType,
-      })
-      return this.finalizeFooter(`[<-->] ${entry.ctx.method} ${entry.ctx.path}${model} ${elapsed}${streamInfo}`)
-    }
-
-    // Multi-request: group by resolved model (unresolved → "(resolving)"), one
-    // compact segment per group. Width-driven inclusion replaces a fixed cap —
-    // segments are added greedily until the budget (reserving room for the
-    // dim `[<-->] ` prefix and a ` | +K more` tail) is exhausted.
-    const segments = this.buildModelGroupSegments(now)
-    const budget = this.getColumns() - 1
-    const PREFIX = "[<-->] "
-    const shown: Array<string> = []
-    let usedWidth = PREFIX.length // ASCII prefix — width === length
-    for (let i = 0; i < segments.length; i++) {
-      const sep = shown.length > 0 ? 3 : 0 // " | "
-      const remaining = segments.length - i
-      // Reserve space for a " | +K more" tail if any groups will be dropped.
-      const moreTail = remaining > 1 ? ` | +${remaining - 1} more`.length : 0
-      const segWidth = stringWidth(segments[i])
-      if (usedWidth + sep + segWidth + moreTail > budget && shown.length > 0) break
-      usedWidth += sep + segWidth
-      shown.push(segments[i])
-    }
-    const overflow = segments.length - shown.length
-    if (overflow > 0) shown.push(`+${overflow} more`)
-    return this.finalizeFooter(`${PREFIX}${shown.join(" | ")}`)
-  }
-
-  /**
-   * One compact plain-text segment per model group: `<model> ×N ↓<sumBytes>
-   * <maxElapsed>`. Groups are sorted by descending count, then by oldest
-   * request first. `sumBytes` is only shown when the group has streaming
-   * progress; `maxElapsed` is the group's longest-running request.
-   */
-  private buildModelGroupSegments(now: number): Array<string> {
-    interface Group {
-      model: string
-      count: number
-      sumBytes: number
-      hasBytes: boolean
-      oldestStart: number
-    }
-    const groups = new Map<string, Group>()
-    for (const entry of this.active.values()) {
-      const model = entry.ctx.resolvedModel ?? "(resolving)"
-      let g = groups.get(model)
-      if (!g) {
-        g = { model, count: 0, sumBytes: 0, hasBytes: false, oldestStart: entry.ctx.startTime }
-        groups.set(model, g)
-      }
-      g.count += 1
-      if (entry.streamBytesIn !== undefined) {
-        g.sumBytes += entry.streamBytesIn
-        g.hasBytes = true
-      }
-      if (entry.ctx.startTime < g.oldestStart) g.oldestStart = entry.ctx.startTime
-    }
-    return Array.from(groups.values())
-      .sort((a, b) => b.count - a.count || a.oldestStart - b.oldestStart)
-      .map((g) => {
-        const bytes = g.hasBytes ? ` ↓${formatBytes(g.sumBytes)}` : ""
-        const elapsed = formatDuration(now - g.oldestStart)
-        return `${g.model} ×${g.count}${bytes} ${elapsed}`
-      })
-  }
-
-  /**
-   * Single exit for all footer branches. Enforces the **footer ≤ 1 physical
-   * line** invariant that {@link clearFooterForLog} and {@link renderFooter}
-   * (single-line `CLEAR_LINE`) depend on:
-   *  1. strip control chars (`\n`/`\r`/…) so no embedded newline can force a
-   *     wrap regardless of model-name / path content;
-   *  2. truncate to `getColumns() - 1` display columns (the -1 avoids the
-   *     last-column auto-wrap some terminals do);
-   *  3. apply the single `pc.dim` wrap (zero-width ANSI, does not affect
-   *     display width).
-   * `inner` must be plain text — truncation slices on code points.
-   */
-  private finalizeFooter(inner: string): string {
-    // Strip all C0 control chars (\n, \r, \t, …) — any of them would force a
-    // second physical line and break the single-line invariant.
-    // eslint-disable-next-line no-control-regex -- intentional C0 range
-    const oneLine = inner.replaceAll(/[\x00-\x1f]+/g, " ")
-    return pc.dim(truncateToWidth(oneLine, this.getColumns() - 1))
+    return buildActiveFooter({ active: [...this.active.values()], now: Date.now(), columns: this.getColumns() })
   }
 
   private renderFooter(): void {
@@ -484,9 +386,10 @@ export class ConsoleSink {
   /**
    * Clear the footer before writing a log line. The single-line `CLEAR_LINE`
    * (`\x1b[2K\r`) only erases the current physical line — this is correct
-   * *because* {@link finalizeFooter} guarantees the footer is always ≤ 1
-   * physical line. If footer truncation is ever relaxed, this clear (and
-   * {@link renderFooter}'s overwrite) would leave residue on wrapped lines.
+   * *because* the footer builder's finalize step in `~/lib/tui/render/footer`
+   * guarantees the footer is always ≤ 1 physical line. If footer truncation is
+   * ever relaxed, this clear (and {@link renderFooter}'s overwrite) would leave
+   * residue on wrapped lines.
    */
   private clearFooterForLog(): void {
     if (this.footerVisible && this.isTTY) {
@@ -528,12 +431,11 @@ export class ConsoleSink {
   /**
    * Render a republished consola log (`system.log` event) through the same
    * footer-coordinated path the old hijack reporter used. `message` is already
-   * args-joined by republish.ts; `consolaPrefix` supplies the `[INFO] HH:MM:SS`
-   * prefix from the log's own timestamp.
+   * args-joined by republish.ts; {@link renderSystemLogLine} produces the full
+   * `[INFO] HH:MM:SS message` line from the log's own timestamp.
    */
   private onSystemLog(event: Extract<ObservabilityEvent, { kind: "system.log" }>): void {
-    const prefix = consolaPrefix(event.logType, new Date(event.time))
-    this.printLog(prefix ? `${prefix} ${event.message}` : event.message)
+    this.printLog(renderSystemLogLine(event))
   }
 }
 
@@ -608,37 +510,12 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
   }
 }
 
-function consolaPrefix(type: string, date?: Date): string {
-  const time = pc.dim(formatTime(date))
-  switch (type) {
-    case "error":
-    case "fatal": {
-      return `${pc.red("[ERR ]")} ${time}`
-    }
-    case "warn": {
-      return `${pc.yellow("[WARN]")} ${time}`
-    }
-    case "info": {
-      return `${pc.cyan("[INFO]")} ${time}`
-    }
-    case "success": {
-      return `${pc.green("[SUCC]")} ${time}`
-    }
-    case "debug": {
-      return `${pc.gray("[DBG ]")} ${time}`
-    }
-    default: {
-      return time
-    }
-  }
-}
-
 // ============================================================================
 // Attachment helper (mirrors attachHistorySink / attachTelemetrySink shape)
 // ============================================================================
 
-export function attachConsoleSink(bus: ObservabilityBus, options?: ConsoleSinkOptions): () => void {
-  const sink = new ConsoleSink(bus, options)
+export function attachTerminalUi(bus: ObservabilityBus, options?: TerminalUiOptions): () => void {
+  const sink = new TerminalUi(bus, options)
   return () => {
     sink.destroy()
   }

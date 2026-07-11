@@ -125,6 +125,7 @@ describe("sqlite/serialize head+stage", () => {
       duration_ms: 100,
       model: "old-model",
       endpoint: "anthropic-messages",
+      raw_path: null,
       transport: "http",
       status: "completed",
       input_tokens: 1,
