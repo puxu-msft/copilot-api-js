@@ -129,25 +129,20 @@ describe("formatCacheRate", () => {
   })
 })
 
-// Color-band routing is asserted by the RETURNED color-fn reference, not by
-// applying it to a string: bun's test env has `pc.isColorSupported === false`,
-// which collapses pc.dim/yellow/red/bold(red) all to the identity function, so a
-// string-comparison would pass even if every band returned the wrong color. The
-// three single-color bands are stable pc references; the composite bands (bold
-// red / dim yellow) are fresh closures, so they are pinned by exclusion. The
-// composite bands' actual ANSI is proven empirically in the FORCE_COLOR
-// integration test (tests/tui/log-line-color.integration.test.ts).
-describe("cacheHitColor (severity by hit rate)", () => {
-  test("single-color bands return the exact pc reference (≥80 dim / ≥40 yellow / ≥20 red)", () => {
-    expect(cacheHitColor(80)).toBe(pc.dim)
-    expect(cacheHitColor(100)).toBe(pc.dim)
-    expect(cacheHitColor(79)).toBe(pc.yellow)
-    expect(cacheHitColor(40)).toBe(pc.yellow)
-    expect(cacheHitColor(39)).toBe(pc.red)
-    expect(cacheHitColor(20)).toBe(pc.red)
-  })
-
-  test("the <20 severe band is a distinct fn, not mis-routed to a named band", () => {
+// In-process (bun test) has `pc.isColorSupported === false`, under which
+// picocolors collapses EVERY color to the SAME identity reference:
+// `pc.white === pc.yellow === pc.red === pc.dim === String` (verified). So a
+// single-color band's `.toBe(pc.white)` is really `.toBe(String)` here — it
+// cannot distinguish bands nor catch an "always red" mutation, so we do NOT
+// assert it in-process. What IS observable in-process is that the COMPOSITE
+// bands (bold-red / dim-yellow) are fresh closures, hence `!== String`; a
+// mutation that flattens them to a single pc color makes them collapse to
+// `String` and these `.not.toBe` checks fail. Every band's ACTUAL color — the
+// three single-color bands and all threshold boundaries — is proven
+// authoritatively in the FORCE_COLOR integration test
+// (tests/tui/log-line-color.integration.test.ts).
+describe("cacheHitColor (severity by hit rate — in-process routing guard)", () => {
+  test("the <20 severe band is a distinct fresh closure, not collapsed to a named band", () => {
     const fn = cacheHitColor(19)
     expect(fn).not.toBe(pc.dim)
     expect(fn).not.toBe(pc.yellow)
@@ -155,17 +150,8 @@ describe("cacheHitColor (severity by hit rate)", () => {
   })
 })
 
-describe("durationColor (request-duration severity)", () => {
-  test("single-color bands return the exact pc reference (≤20s white / ≤180s yellow / >180s red)", () => {
-    expect(durationColor(1200)).toBe(pc.white)
-    expect(durationColor(20_000)).toBe(pc.white) // 20s boundary inclusive
-    expect(durationColor(60_001)).toBe(pc.yellow)
-    expect(durationColor(180_000)).toBe(pc.yellow) // 180s boundary inclusive
-    expect(durationColor(180_001)).toBe(pc.red)
-    expect(durationColor(600_000)).toBe(pc.red)
-  })
-
-  test("the 20s–60s dim-yellow band is a distinct fn, not mis-routed to a named band", () => {
+describe("durationColor (request-duration severity — in-process routing guard)", () => {
+  test("the 20s–60s dim-yellow band is a distinct fresh closure, not collapsed to a named band", () => {
     for (const ms of [20_001, 45_000, 60_000]) {
       const fn = durationColor(ms)
       expect(fn).not.toBe(pc.white)
