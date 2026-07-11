@@ -706,6 +706,10 @@ async function runResponseBufferedSink(
         // (The final attempt — success-commit above OR exhaustion-return below — keeps its frames
         // at the top-level slot only, matching `extractStagePayloads`' finalIdx skip: no dup.)
         currentEnv.ctx.commitAttemptSseEvents()
+        // BLOCK-1: L2 缓冲重试也发 attempt_failed → 打 [RETRY] 行，与 L1 一致可见。
+        // 先定稿本次（截断/transport-close）attempt 的 durationMs（截断路径无 error/response setter）。
+        currentEnv.ctx.finalizeCurrentAttemptDuration()
+        currentEnv.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "buffered-retry" })
         opts.onAttemptReset?.()
         currentEnv.ctx.resetSseEvents()
         // L2 escalation (RFC §8): let the caller tighten this retry's env (e.g. force aggressive
@@ -722,6 +726,8 @@ async function runResponseBufferedSink(
       // final failed attempt's frames stay at the top-level slot (no per-attempt snapshot).
       // M1: close the still-open anchor (if injected) BEFORE the failure return so the client's block
       // structure is balanced when the handler appends its error frame.
+      // 穷尽/非重试：最终失败 attempt 也 finalize duration，供终端汇总行 last（截断路径无 setter）。
+      currentEnv.ctx.finalizeCurrentAttemptDuration()
       await closeAnchorIfOpen()
       opts.onBufferedResolve?.("exhausted", attempt)
       return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }

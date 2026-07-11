@@ -558,6 +558,18 @@ export function createRequestContext(opts: {
     },
 
     /**
+     * L2 截断重试路径既不走 setAttemptResponse 也不走 setAttemptError，
+     * durationMs 停在 beginAttempt 初值 0。发 attempt_failed 前调此定稿，
+     * 使 [RETRY] 行的 lastMs 有真值。已定稿（>0）则不覆盖。
+     */
+    finalizeCurrentAttemptDuration() {
+      const attempt = ctx.currentAttempt
+      if (attempt && attempt.durationMs === 0) {
+        attempt.durationMs = Date.now() - attempt.startTime
+      }
+    },
+
+    /**
      * L2 buffered retry: clear the top-level upstream `_sseEvents` so the NEXT
      * buffered attempt's `runResponse` starts fresh (the just-finished attempt's
      * frames are already snapshotted via `commitAttemptSseEvents`). Without this,
