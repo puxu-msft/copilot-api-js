@@ -353,27 +353,12 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: "tool_use_only",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
   },
-  {
-    configKey: "anthropic.protect_streaming_max_retries",
-    stateKey: "protectStreamingMaxRetries",
-    sampleYamlValue: "5",
-    expectedStateValue: 5,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
-  },
-  {
-    configKey: "anthropic.protect_streaming_heartbeat",
-    stateKey: "protectStreamingHeartbeat",
-    sampleYamlValue: "30",
-    expectedStateValue: 30,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
-  },
-  {
-    configKey: "anthropic.protect_streaming_buffer_cap_bytes",
-    stateKey: "protectStreamingBufferCapBytes",
-    sampleYamlValue: "8388608",
-    expectedStateValue: 8388608,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
-  },
+  // NOTE: the former protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} scalar
+  // FieldSpecs moved out of this registry — they are now the object-shaped
+  // bufferedRetryShared / bufferedRetryOverrides state (vendor-neutral shared caps +
+  // per-vendor overrides), which the scalar registry can't express. R1/R2/R3 (apply /
+  // retain / reset) + legacy-key migration coverage lives in
+  // tests/config/buffered-retry-keys.test.ts.
   {
     configKey: "anthropic.protect_streaming_escalate_context",
     stateKey: "protectStreamingEscalateContext",
@@ -926,6 +911,31 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
   {
     configKey: "system_prompt_append",
     reason: "Reserved key; not yet wired into applyConfigToState (no state field exists)",
+  },
+  // Buffered-retry caps + mode switches map to the object-shaped bufferedRetryShared /
+  // bufferedRetryOverrides state (+ per-vendor `enabled`), which the scalar FieldSpec
+  // registry can't express. R1/R2/R3 + legacy-key migration coverage lives in
+  // tests/config/buffered-retry-keys.test.ts.
+  { configKey: "buffered_retry.enabled", reason: "shared caps have no mode switch; `enabled` ignored — see buffered-retry-keys.test.ts" },
+  { configKey: "buffered_retry.max_retries", reason: "vendor-neutral shared cap → bufferedRetryShared; see buffered-retry-keys.test.ts" },
+  { configKey: "buffered_retry.buffer_cap_bytes", reason: "vendor-neutral shared cap → bufferedRetryShared; see buffered-retry-keys.test.ts" },
+  { configKey: "buffered_retry.heartbeat_sec", reason: "vendor-neutral shared cap → bufferedRetryShared; see buffered-retry-keys.test.ts" },
+  {
+    configKey: "anthropic.buffered_retry.enabled",
+    reason: "Anthropic's switch is protect_streaming_generation; `enabled` ignored — see buffered-retry-keys.test.ts",
+  },
+  { configKey: "anthropic.buffered_retry.max_retries", reason: "per-vendor cap override → bufferedRetryOverrides.anthropic; see buffered-retry-keys.test.ts" },
+  {
+    configKey: "anthropic.buffered_retry.buffer_cap_bytes",
+    reason: "per-vendor cap override → bufferedRetryOverrides.anthropic; see buffered-retry-keys.test.ts",
+  },
+  {
+    configKey: "anthropic.buffered_retry.heartbeat_sec",
+    reason: "per-vendor cap override → bufferedRetryOverrides.anthropic; see buffered-retry-keys.test.ts",
+  },
+  {
+    configKey: "chat_completions.buffered_retry",
+    reason: "bool|map mode switch + caps → chatCompletionsBufferedRetry + bufferedRetryOverrides.chat_completions; see buffered-retry-keys.test.ts",
   },
 ]
 

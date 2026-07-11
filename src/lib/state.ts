@@ -78,6 +78,18 @@ export interface CompiledRewriteRule {
   modelPattern?: RegExp
 }
 
+/**
+ * Resolved buffered-retry caps for one vendor (`resolveBufferedCaps` return
+ * shape). `maxRetries` = transport-close/truncation retry cap (loop/cost guard);
+ * `bufferCapBytes` = OOM guard before retreating to live forwarding (0 =
+ * unlimited); `heartbeatSec` = forced keepalive interval during the buffer window.
+ */
+export interface BufferedRetryCaps {
+  maxRetries: number
+  bufferCapBytes: number
+  heartbeatSec: number
+}
+
 export interface State {
   readonly githubToken?: string
   readonly copilotToken?: string
@@ -300,12 +312,24 @@ export interface State {
    * `tools`. See docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md.
    */
   readonly protectStreamingGeneration: false | "on" | "tool_use_only"
-  /** Max transport-close / truncation retries for the buffered-retry path (loop/cost guard; 0 = no retry). */
-  readonly protectStreamingMaxRetries: number
-  /** Forced heartbeat interval (seconds) for the buffered-retry path; falls back here when `streamKeepalivePingSec` is 0. */
-  readonly protectStreamingHeartbeat: number
-  /** Max bytes to buffer before retreating to live forwarding (OOM guard; 0 = unlimited). */
-  readonly protectStreamingBufferCapBytes: number
+  /**
+   * Vendor-neutral SHARED buffered-retry caps. Overridden per-vendor by
+   * {@link bufferedRetryOverrides}; resolve via `resolveBufferedCaps(vendor)`.
+   * Built-in default: `{ maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 }`.
+   */
+  readonly bufferedRetryShared: BufferedRetryCaps
+  /**
+   * Per-vendor buffered-retry cap overrides (keyed by vendor: `anthropic` /
+   * `responses` / `chat_completions` / `responses_ws`). Each override sets only
+   * the fields it declares; unset fields fall through to {@link bufferedRetryShared}.
+   */
+  readonly bufferedRetryOverrides: Record<string, Partial<BufferedRetryCaps>>
+  /**
+   * Chat Completions buffered-retry mode switch (P3). `false` (default) keeps the
+   * live streaming path; `true` adopts the terminal-only buffered sink. Caps come
+   * from `resolveBufferedCaps("chat_completions")`.
+   */
+  readonly chatCompletionsBufferedRetry: boolean
   /** On each buffered retry, force progressively aggressive context_management compression (RFC §8). Default false. */
   readonly protectStreamingEscalateContext: boolean
 
@@ -903,6 +927,15 @@ function cloneStripBetaHeaders(source: Record<string, Array<string>>): Record<st
   return out
 }
 
+/** Deep-clone the per-vendor buffered-retry override map (each vendor entry is its own object). */
+function cloneBufferedRetryOverrides(source: Record<string, Partial<BufferedRetryCaps>>): Record<string, Partial<BufferedRetryCaps>> {
+  const out: Record<string, Partial<BufferedRetryCaps>> = {}
+  for (const [vendor, caps] of Object.entries(source)) {
+    out[vendor] = { ...caps }
+  }
+  return out
+}
+
 function cloneState(source: MutableState): MutableState {
   return {
     ...source,
@@ -914,6 +947,8 @@ function cloneState(source: MutableState): MutableState {
     toolSearchOverrides: { ...source.toolSearchOverrides },
     effortsOverrides: { ...source.effortsOverrides },
     negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
+    bufferedRetryShared: { ...source.bufferedRetryShared },
+    bufferedRetryOverrides: cloneBufferedRetryOverrides(source.bufferedRetryOverrides),
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
     stripToolFields: cloneStripBetaHeaders(source.stripToolFields),
@@ -970,6 +1005,12 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("negotiationTtlOverridesMs" in patch) {
     cloned.negotiationTtlOverridesMs = patch.negotiationTtlOverridesMs ? { ...patch.negotiationTtlOverridesMs } : undefined
+  }
+  if ("bufferedRetryShared" in patch) {
+    cloned.bufferedRetryShared = patch.bufferedRetryShared ? { ...patch.bufferedRetryShared } : undefined
+  }
+  if ("bufferedRetryOverrides" in patch) {
+    cloned.bufferedRetryOverrides = patch.bufferedRetryOverrides ? cloneBufferedRetryOverrides(patch.bufferedRetryOverrides) : undefined
   }
   if ("stripBetaHeaders" in patch) {
     cloned.stripBetaHeaders = patch.stripBetaHeaders ? cloneStripBetaHeaders(patch.stripBetaHeaders) : undefined
@@ -1117,9 +1158,6 @@ export function setAnthropicBehavior(
       | "streamKeepaliveMode"
       | "streamCommitAfterSec"
       | "protectStreamingGeneration"
-      | "protectStreamingMaxRetries"
-      | "protectStreamingHeartbeat"
-      | "protectStreamingBufferCapBytes"
       | "protectStreamingEscalateContext"
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
@@ -1290,6 +1328,48 @@ export function setResponsesConfig(
   updateState(patch)
 }
 
+/** Chat Completions buffered-retry mode switch (P3). Hot-reloadable. */
+export function setChatCompletionsConfig(patch: Partial<Pick<MutableState, "chatCompletionsBufferedRetry">>): void {
+  updateState(patch)
+}
+
+/**
+ * Set the vendor-neutral SHARED buffered-retry caps (partial merge — only the
+ * declared fields are overwritten, the rest retain their prior value). Hot-reloadable.
+ */
+export function setBufferedRetryShared(patch: Partial<BufferedRetryCaps>): void {
+  updateState({ bufferedRetryShared: { ...state.bufferedRetryShared, ...patch } })
+}
+
+/**
+ * Set a per-vendor buffered-retry cap override (partial merge into that vendor's
+ * existing override). Fields NOT set here fall through to {@link setBufferedRetryShared}
+ * / the built-in default at resolve time. Hot-reloadable.
+ */
+export function setBufferedRetryOverride(vendor: string, patch: Partial<BufferedRetryCaps>): void {
+  const prev = state.bufferedRetryOverrides[vendor] ?? {}
+  updateState({
+    bufferedRetryOverrides: { ...state.bufferedRetryOverrides, [vendor]: { ...prev, ...patch } },
+  })
+}
+
+/**
+ * Resolve the effective buffered-retry caps for one vendor. Priority (highest
+ * first): per-vendor override ({@link State.bufferedRetryOverrides}) > shared
+ * caps ({@link State.bufferedRetryShared}) > built-in default. Every consumer of
+ * `maxRetries` / `bufferCapBytes` / `heartbeatSec` MUST route through this (no
+ * direct scalar-field reads — single resolution point).
+ */
+export function resolveBufferedCaps(vendor: string): BufferedRetryCaps {
+  const o = state.bufferedRetryOverrides[vendor] ?? {}
+  const s = state.bufferedRetryShared
+  return {
+    maxRetries: o.maxRetries ?? s.maxRetries,
+    bufferCapBytes: o.bufferCapBytes ?? s.bufferCapBytes,
+    heartbeatSec: o.heartbeatSec ?? s.heartbeatSec,
+  }
+}
+
 /**
  * Capture a deep-enough clone of state for test restoration.
  * Tests should prefer this over direct mutation snapshots so State can stay readonly.
@@ -1352,9 +1432,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   streamKeepaliveMode: "empty_text" as "ping" | "enveloped_ping" | "empty_text",
   streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
-  protectStreamingMaxRetries: 3,
-  protectStreamingHeartbeat: 15,
-  protectStreamingBufferCapBytes: 16_777_216,
+  bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } as BufferedRetryCaps,
+  bufferedRetryOverrides: {} as Record<string, Partial<BufferedRetryCaps>>,
+  chatCompletionsBufferedRetry: false,
   protectStreamingEscalateContext: false,
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
@@ -1485,9 +1565,6 @@ export function resetConfigManagedState(): void {
     streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
-    protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
-    protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
-    protectStreamingBufferCapBytes: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
     protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
@@ -1579,6 +1656,14 @@ export function resetConfigManagedState(): void {
     maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
     maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
   })
+  // Buffered-retry caps (vendor-neutral shared + per-vendor overrides) + the
+  // chat_completions mode switch. Reset via updateState (whole-object replace of
+  // the shared caps + overrides map, cloned off the frozen defaults).
+  updateState({
+    bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
+    bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
+    chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
+  })
   // auto-truncate is a top-level toggle (CLI flag + config.yaml `auto_truncate.enabled`)
   // plus three tuning fields, all reset via setAutoTruncateConfig.
   setAutoTruncateConfig({
@@ -1631,9 +1716,9 @@ const mutableState: MutableState = {
   streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
-  protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
-  protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
-  protectStreamingBufferCapBytes: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
+  bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
+  bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
+  chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
   protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,

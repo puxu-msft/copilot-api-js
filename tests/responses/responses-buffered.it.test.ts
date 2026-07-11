@@ -146,7 +146,11 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
   })
 
   test("buffered mode retries a mid-stream upstream drop and delivers ONE complete generation", async () => {
-    setStateForTests({ responsesBufferedRetry: true, protectStreamingMaxRetries: 2, streamKeepalivePingSec: 20 })
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
     rstBeforeComplete = 1 // attempt 1 RSTs mid-stream, attempt 2 (retry) completes
 
     const sse = await (await streamRequest()).text()
@@ -185,8 +189,12 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
   })
 
   test("buffered mode EXHAUSTION: every attempt truncates up to retryCap → settle FAIL, last partial preserved, exhausted outcome", async () => {
-    // retryCap = protectStreamingMaxRetries (2) → 1 original + 2 re-exchanges = 3 attempts, all RST.
-    setStateForTests({ responsesBufferedRetry: true, protectStreamingMaxRetries: 2, streamKeepalivePingSec: 20 })
+    // retryCap = resolveBufferedCaps("responses").maxRetries (2) → 1 original + 2 re-exchanges = 3 attempts, all RST.
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
     rstBeforeComplete = 99 // EVERY attempt RSTs mid-stream — the upstream never reaches a terminal
 
     const sse = await (await streamRequest()).text()
@@ -221,7 +229,11 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
   })
 
   test("buffered mode: a clean first-try commit is NOT counted as a retry", async () => {
-    setStateForTests({ responsesBufferedRetry: true, protectStreamingMaxRetries: 2, streamKeepalivePingSec: 20 })
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
     rstBeforeComplete = 0 // upstream completes first try — the buffered happy path, zero retries
 
     const sse = await (await streamRequest()).text()
@@ -286,7 +298,11 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
   })
 
   test("buffered mode: a terminal upstream error frame commits + surfaces the real error once (not 'truncated', no retry)", async () => {
-    setStateForTests({ responsesBufferedRetry: true, protectStreamingMaxRetries: 2, streamKeepalivePingSec: 20 })
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
     terminalError = true
 
     const sse = await (await streamRequest()).text()

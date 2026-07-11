@@ -251,7 +251,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
     // settle `completed`, with NO error frame and an UN-inflated counter — the per-attempt outcomes
     // are cleared in onAttemptReset, so the discarded attempt's signal can't poison the committed one.
     configure(["tags", "jsonrepair"])
-    setStateForTests({ protectStreamingGeneration: "on", protectStreamingMaxRetries: 3 })
+    setStateForTests({ protectStreamingGeneration: "on", bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } })
     let attempt = 0
     frameBuilder = (model: string): Array<string> =>
       attempt++ === 0 ?

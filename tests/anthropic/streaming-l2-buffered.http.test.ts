@@ -152,8 +152,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
       staleRequestMaxAge: 0,
       streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
-      protectStreamingMaxRetries: 3,
-      protectStreamingHeartbeat: 15,
+      bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
     })
     applyFetchMock(upstreamFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
@@ -269,7 +268,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
 
   test("buffer cap (tiny) → retreat to live, client still gets the full generation, history completed", async () => {
     rstBeforeComplete = 0 // a clean complete stream; the cap forces a retreat, not a retry
-    setStateForTests({ protectStreamingBufferCapBytes: 10 }) // 10 bytes → exceeded almost immediately
+    setStateForTests({ bufferedRetryOverrides: { anthropic: { bufferCapBytes: 10 } } }) // 10 bytes → exceeded almost immediately
     const sse = await streamRequest("l2-buf-cap")
 
     // Retreat forwards the whole generation live (the cap only forfeits buffering, not delivery).
@@ -384,8 +383,7 @@ describe("L2 buffered retry — forced heartbeat during the buffer window (strea
       // keepalive-buffered-anchor-e2e.http.test.ts + live-pre-response-anchor.test.ts.
       streamKeepaliveMode: "ping",
       protectStreamingGeneration: "on",
-      protectStreamingMaxRetries: 3,
-      protectStreamingHeartbeat: 10,
+      bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 10 },
     })
     applyFetchMock(gatedFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })

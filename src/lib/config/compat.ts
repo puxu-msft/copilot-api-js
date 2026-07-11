@@ -270,6 +270,21 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("anthropic.reject_body_fields", "anthropic.retry_reject_body_fields"),
   renameLeaf("anthropic.fake_sse_heartbeat", "anthropic.stream_keepalive_ping_sec"),
   renameLeaf("anthropic.stream_fake_sse_heartbeat", "anthropic.stream_keepalive_ping_sec"),
+  // buffered-retry caps unified under the vendor-neutral `buffered_retry.*` map (P0
+  // Task 3): the three anthropic-only scalars move into `anthropic.buffered_retry.{max_retries,
+  // heartbeat_sec,buffer_cap_bytes}` — a per-vendor override of the new shared top-level
+  // `buffered_retry.*`. The three rules accumulate into the one `anthropic.buffered_retry`
+  // section via the missing-only merge; a user-set new key always wins. `protect_streaming_generation`
+  // (the tri-state mode switch) is UNCHANGED — only the caps moved.
+  renameLeaf("anthropic.protect_streaming_max_retries", "anthropic.buffered_retry.max_retries", {
+    message: "anthropic.protect_streaming_max_retries is renamed to anthropic.buffered_retry.max_retries; update your config.yaml",
+  }),
+  renameLeaf("anthropic.protect_streaming_heartbeat", "anthropic.buffered_retry.heartbeat_sec", {
+    message: "anthropic.protect_streaming_heartbeat is renamed to anthropic.buffered_retry.heartbeat_sec; update your config.yaml",
+  }),
+  renameLeaf("anthropic.protect_streaming_buffer_cap_bytes", "anthropic.buffered_retry.buffer_cap_bytes", {
+    message: "anthropic.protect_streaming_buffer_cap_bytes is renamed to anthropic.buffered_retry.buffer_cap_bytes; update your config.yaml",
+  }),
   // rate_limiter unit unification: minutes → seconds (value auto-converted ×60)
   renameLeaf("rate_limiter.recovery_timeout", "rate_limiter.recovery_interval", {
     transform: (v) => (typeof v === "number" ? v * 60 : v),

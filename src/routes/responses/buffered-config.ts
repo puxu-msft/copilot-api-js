@@ -1,4 +1,8 @@
-import { state } from "~/lib/state"
+import {
+  //
+  resolveBufferedCaps,
+  state,
+} from "~/lib/state"
 
 /**
  * Resolve buffered-retry mode + the forced client keepalive interval for the
@@ -13,12 +17,12 @@ import { state } from "~/lib/state"
  * - `heartbeatSec`: the buffered path withholds ALL real frames until commit, so
  *   long upstream silence would otherwise trip Codex's 300s idle deadline. It
  *   therefore FORCES a keepalive interval (`streamKeepalivePingSec` when the
- *   operator set it, else the `protectStreamingHeartbeat` fallback). The live
- *   path heartbeats only when the operator set `streamKeepalivePingSec`.
+ *   operator set it, else `resolveBufferedCaps("responses").heartbeatSec`). The
+ *   live path heartbeats only when the operator set `streamKeepalivePingSec`.
  */
 export function resolveResponsesBufferedAndHeartbeat(): { buffered: boolean; heartbeatSec: number } {
   const buffered = state.responsesBufferedRetry
-  const forcedHeartbeatSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : state.protectStreamingHeartbeat
+  const forcedHeartbeatSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : resolveBufferedCaps("responses").heartbeatSec
   const heartbeatSec = buffered ? forcedHeartbeatSec : state.streamKeepalivePingSec
   return { buffered, heartbeatSec }
 }

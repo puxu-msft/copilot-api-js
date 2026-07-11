@@ -78,7 +78,11 @@ import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { responsesNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
-import { state } from "~/lib/state"
+import {
+  //
+  resolveBufferedCaps,
+  state,
+} from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 
@@ -376,8 +380,8 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
           bytesIn = 0
           eventsIn = 0
         },
-        retryCap: state.protectStreamingMaxRetries,
-        bufferCapBytes: state.protectStreamingBufferCapBytes,
+        retryCap: resolveBufferedCaps("responses").maxRetries,
+        bufferCapBytes: resolveBufferedCaps("responses").bufferCapBytes,
         // Vendor label the driver injects into onBufferedResolve's `meta.vendor` → the vendor-keyed
         // telemetry bucket. The handler forwards `meta` verbatim (no re-hardcoding the vendor string).
         telemetryVendor: "responses",

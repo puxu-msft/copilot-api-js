@@ -138,7 +138,11 @@ import {
   createTruncationMarker,
   prependMarkerToResponse,
 } from "~/lib/request"
-import { state } from "~/lib/state"
+import {
+  //
+  resolveBufferedCaps,
+  state,
+} from "~/lib/state"
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 
@@ -512,7 +516,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   return streamSSE(c, async (stream) => {
     // Cadence: streamKeepalivePingSec when set, else the protect-streaming heartbeat (buffered needs
     // a forced heartbeat; live tolerates it). 0 = both disabled. P2 lowers the default + clamps < 60.
-    const pingSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : state.protectStreamingHeartbeat
+    const pingSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : resolveBufferedCaps("anthropic").heartbeatSec
     const forwardedSseEvents: Array<SseEventRecord> = []
     const streamStartMs = Date.now()
     // Synthetic-prelude keepalive (delayed-commit path). Built BEFORE the upstream settles — this is the
@@ -947,15 +951,16 @@ function makeAnchoredSseSink(
  * - `buffered` (L2, RFC §9): `"on"` buffers every stream; `"tool_use_only"` buffers only
  *   when the request carries `tools`.
  * - `heartbeatSec`: the buffered path withholds ALL real frames until message_stop, so it
- *   FORCES a heartbeat (`streamKeepalivePingSec` when set, else `protectStreamingHeartbeat`
- *   fallback). The live path heartbeats only when the operator set `streamKeepalivePingSec`.
+ *   FORCES a heartbeat (`streamKeepalivePingSec` when set, else
+ *   `resolveBufferedCaps("anthropic").heartbeatSec` fallback). The live path heartbeats only
+ *   when the operator set `streamKeepalivePingSec`.
  */
 function resolveBufferedAndHeartbeat(env: RequestEnvelope): { buffered: boolean; heartbeatSec: number } {
   const anthropicPayload = env.body as MessagesPayload
   const buffered =
     state.protectStreamingGeneration === "on"
     || (state.protectStreamingGeneration === "tool_use_only" && Array.isArray(anthropicPayload.tools) && anthropicPayload.tools.length > 0)
-  const forcedHeartbeatSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : state.protectStreamingHeartbeat
+  const forcedHeartbeatSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : resolveBufferedCaps("anthropic").heartbeatSec
   const heartbeatSec = buffered ? forcedHeartbeatSec : state.streamKeepalivePingSec
   return { buffered, heartbeatSec }
 }
@@ -1133,8 +1138,8 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           // via acc.streamError, mirroring live) instead of wastefully retrying it as a truncation.
           sawUpstreamError: () => acc.streamError !== undefined,
           onAttemptReset,
-          retryCap: state.protectStreamingMaxRetries,
-          bufferCapBytes: state.protectStreamingBufferCapBytes,
+          retryCap: resolveBufferedCaps("anthropic").maxRetries,
+          bufferCapBytes: resolveBufferedCaps("anthropic").bufferCapBytes,
           // Vendor label the driver injects into onBufferedResolve's `meta.vendor` → the vendor-keyed
           // telemetry bucket. The handler forwards `meta` verbatim (no re-hardcoding the vendor string).
           telemetryVendor: "anthropic",

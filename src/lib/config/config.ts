@@ -14,10 +14,15 @@ import { z } from "zod"
 
 import {
   //
+  type BufferedRetryCaps,
   type CompiledRewriteRule,
   DEFAULT_MODEL_OVERRIDES,
+  resolveBufferedCaps,
   setAnthropicBehavior,
   setAutoTruncateConfig,
+  setBufferedRetryOverride,
+  setBufferedRetryShared,
+  setChatCompletionsConfig,
   setDisabledModels,
   setHistoryConfig,
   setModelOverrides,
@@ -66,6 +71,7 @@ export {
 
 import type {
   //
+  BufferedRetryOverride,
   Config,
   RewriteRule,
 } from "./schema"
@@ -156,6 +162,38 @@ function clampKeepaliveCadence(sec: number): number {
     )
   }
   return KEEPALIVE_CADENCE_MAX
+}
+
+/**
+ * Translate a validated `buffered_retry` map (snake_case config keys) into a
+ * partial {@link BufferedRetryCaps} state patch (camelCase). `heartbeat_sec` is
+ * clamped to stay under the client idle deadline (same clamp as the other
+ * keepalive cadences). `enabled` is a mode switch (handled by the caller), not a
+ * cap, so it is not mapped here. Only declared fields are included — an omitted
+ * field falls through to the shared caps / built-in default at resolve time.
+ */
+function mapBufferedCaps(m: BufferedRetryOverride): Partial<BufferedRetryCaps> {
+  const out: Partial<BufferedRetryCaps> = {}
+  if (m.max_retries !== undefined) out.maxRetries = m.max_retries
+  if (m.buffer_cap_bytes !== undefined) out.bufferCapBytes = m.buffer_cap_bytes
+  if (m.heartbeat_sec !== undefined) out.heartbeatSec = clampKeepaliveCadence(m.heartbeat_sec)
+  return out
+}
+
+/**
+ * Apply a per-vendor `buffered_retry` config value that carries an `enabled` mode
+ * switch (Responses / Chat Completions). A bare boolean is the `enabled` shorthand;
+ * a map sets `enabled` (when present) via `setEnabled` and routes its caps into the
+ * vendor's override (resolveBufferedCaps). Vendors WITHOUT a mode switch (anthropic,
+ * shared) don't use this — they map caps directly.
+ */
+function applyVendorBufferedRetry(value: boolean | BufferedRetryOverride, vendor: string, setEnabled: (enabled: boolean) => void): void {
+  if (typeof value === "boolean") {
+    setEnabled(value)
+    return
+  }
+  if (value.enabled !== undefined) setEnabled(value.enabled)
+  setBufferedRetryOverride(vendor, mapBufferedCaps(value))
 }
 
 /** Bundled defaults cache — file is immutable for the process lifetime. */
@@ -503,9 +541,11 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.stream_keepalive_mode !== undefined) setAnthropicBehavior({ streamKeepaliveMode: a.stream_keepalive_mode })
     if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampKeepaliveCadence(a.stream_commit_after_sec) })
     if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })
-    if (a.protect_streaming_max_retries !== undefined) setAnthropicBehavior({ protectStreamingMaxRetries: a.protect_streaming_max_retries })
-    if (a.protect_streaming_heartbeat !== undefined) setAnthropicBehavior({ protectStreamingHeartbeat: clampKeepaliveCadence(a.protect_streaming_heartbeat) })
-    if (a.protect_streaming_buffer_cap_bytes !== undefined) setAnthropicBehavior({ protectStreamingBufferCapBytes: a.protect_streaming_buffer_cap_bytes })
+    // Per-vendor buffered-retry cap override for Anthropic (legacy
+    // protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} migrate here via
+    // CONFIG_MIGRATIONS). `enabled` is ignored — Anthropic's mode switch is
+    // protect_streaming_generation above.
+    if (a.buffered_retry) setBufferedRetryOverride("anthropic", mapBufferedCaps(a.buffered_retry))
     if (a.protect_streaming_escalate_context !== undefined) setAnthropicBehavior({ protectStreamingEscalateContext: a.protect_streaming_escalate_context })
     // Model-capability allowlists (retain-on-absence per sub-key; an explicit empty list clears).
     if (a.model_capabilities) {
@@ -624,12 +664,17 @@ export async function applyConfigToState(): Promise<Config> {
     }
   }
 
+  // Shared (vendor-neutral) buffered-retry caps. Applied regardless of the
+  // anthropic section — it is the base layer every vendor's per-vendor override
+  // falls through to (resolveBufferedCaps). `enabled` is ignored (no shared mode switch).
+  if (config.buffered_retry) setBufferedRetryShared(mapBufferedCaps(config.buffered_retry))
+
   // L2 cross-field guard: buffered streaming with NO keepalive heartbeat = clients idle out.
   // Checked on the EFFECTIVE state (post-apply, so bundled defaults + hot-reload retain are reflected).
   warnProtectStreamingHeartbeatOnce({
     protectStreamingGeneration: state.protectStreamingGeneration,
     fakeHeartbeat: state.streamKeepalivePingSec,
-    protectHeartbeat: state.protectStreamingHeartbeat,
+    protectHeartbeat: resolveBufferedCaps("anthropic").heartbeatSec,
   })
 
   // System prompt overrides (collection: entire replacement)
@@ -733,7 +778,11 @@ export async function applyConfigToState(): Promise<Config> {
   const responsesConfig = config.openai_responses
   if (responsesConfig && responsesConfig.normalize_call_ids !== undefined) setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
   if (responsesConfig && responsesConfig.upstream_ws !== undefined) setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_ws })
-  if (responsesConfig && responsesConfig.buffered_retry !== undefined) setResponsesConfig({ responsesBufferedRetry: responsesConfig.buffered_retry })
+  // buffered_retry: boolean shorthand = `enabled`; map = `{ enabled, caps }` where
+  // caps override the shared buffered_retry.* for the `responses` vendor.
+  if (responsesConfig && responsesConfig.buffered_retry !== undefined) {
+    applyVendorBufferedRetry(responsesConfig.buffered_retry, "responses", (enabled) => setResponsesConfig({ responsesBufferedRetry: enabled }))
+  }
   if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
   if (responsesConfig && responsesConfig.strip_image_generation_tool !== undefined)
     setResponsesConfig({ stripImageGenerationTool: responsesConfig.strip_image_generation_tool })
@@ -743,6 +792,16 @@ export async function applyConfigToState(): Promise<Config> {
     setResponsesConfig({ maxClientWsConnections: responsesConfig.max_client_ws_connections })
   if (responsesConfig && responsesConfig.max_upstream_ws_connections !== undefined)
     setResponsesConfig({ maxUpstreamWsConnections: responsesConfig.max_upstream_ws_connections })
+
+  // Chat Completions settings. buffered_retry: boolean shorthand = `enabled`; map =
+  // `{ enabled, caps }` where caps override the shared buffered_retry.* for the
+  // `chat_completions` vendor. Default off (P3 flips the default to true).
+  const chatCompletionsConfig = config.chat_completions
+  if (chatCompletionsConfig && chatCompletionsConfig.buffered_retry !== undefined) {
+    applyVendorBufferedRetry(chatCompletionsConfig.buffered_retry, "chat_completions", (enabled) =>
+      setChatCompletionsConfig({ chatCompletionsBufferedRetry: enabled }),
+    )
+  }
 
   syncModelRefreshLoop()
 

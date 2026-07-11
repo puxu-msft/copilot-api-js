@@ -98,7 +98,7 @@ describe("keepalive buffered-anchor e2e — pre-commit thinking stall injects em
       streamCommitAfterSec: 10, // large → runRequest settles within window → settled-within-window path
       streamKeepaliveMode: "empty_text", // the mode under test
       protectStreamingGeneration: "on", // buffer EVERY stream → nothing forwarded pre-commit → no open block
-      protectStreamingMaxRetries: 0, // no retry (buffer + commit only)
+      bufferedRetryShared: { maxRetries: 0, bufferCapBytes: 16_777_216, heartbeatSec: 15 }, // no retry (buffer + commit only)
     })
     applyFetchMock(fetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })

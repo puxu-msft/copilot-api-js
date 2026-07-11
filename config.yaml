@@ -547,15 +547,6 @@ anthropic:
   #   on:              buffer every streaming Anthropic response. / 缓冲每个流式 Anthropic 响应。
   #   tool_use_only:   buffer only when the request carries `tools` (the large Write/Edit scenario); pure-text chat stays live. / 仅当请求带 `tools`（大 Write/Edit 场景）才缓冲；纯文本对话仍实时。
   protect_streaming_generation: false
-  # Max transport-close / truncation retries (loop/cost guard, NOT a timeout guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
-  # transport-close/truncation 最大重试次数（loop/成本闸，非超时闸——客户端由下方强制心跳保活）。0 = 不重试。
-  protect_streaming_max_retries: 3
-  # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until message_stop, so a heartbeat is constructed UNCONDITIONALLY — using stream_keepalive_ping_sec when >0, else this fallback.
-  # 缓冲路径的强制心跳间隔秒数：缓冲期在 message_stop 前不发任何真实帧，故无条件构造心跳——stream_keepalive_ping_sec >0 时取其值，否则用本值兜底。
-  protect_streaming_heartbeat: 15
-  # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering and retreating to live forwarding for the rest of THIS response (which then loses L2 protection — a live RST fails as today). Prevents a pathologically huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
-  # 缓冲路径内存守卫：累计缓冲超此字节即放弃缓冲、本响应剩余部分退回实时转发（随之失去 L2 保护——实时 RST 仍如现状失败）。防止病态超大生成无界缓冲导致 OOM。0 = 无限制。默认 16MiB。
-  protect_streaming_buffer_cap_bytes: 16777216
   # On each buffered RST/truncation retry, FORCE a progressively aggressive native clear_tool_uses context_management edit (lower trigger + smaller keep) to compress the context so the generation finishes faster — within the next RST window. Independent of context_editing (retry-only emergency compression); skipped when the model doesn't support context_management. Changes request semantics (drops more old context). Default false (opt-in; enable only after telemetry shows plain retry's hit rate is low for over-budget requests).
   # 每次缓冲 RST/truncation 重试时，FORCE 一次渐进激进的原生 clear_tool_uses context_management（更低 trigger + 更少 keep）压缩上下文，让生成更快、更可能在下个 RST 窗口前完成。独立于 context_editing（仅重试时的应急压缩）；模型不支持 context_management 时跳过。改变请求语义（删更多旧上下文）。默认 false（opt-in；建议遥测证实裸重试命中率低后再开）。
   protect_streaming_escalate_context: false
@@ -740,6 +731,43 @@ openai_responses:
   # 在 `response.completed` 后保持客户端侧 WebSocket 打开，让客户端在同一 socket 上发后续 `response.create`。false（默认）时每次请求后以 code 1000 关闭（HTTP 式一次性语义）。
   # Concurrent `response.create` on the same socket is rejected with an error frame. / 同 socket 上并发 `response.create` 会被 error 帧拒绝。
   client_ws_keep_open: false
+
+# ============================================================================
+# Buffered-retry caps (vendor-neutral SHARED) + per-vendor overrides
+# 缓冲重试上限（vendor 中立共享）+ 各 vendor 覆盖
+# ============================================================================
+# max_retries / buffer_cap_bytes / heartbeat_sec three caps are SHARED across all
+# vendors (anthropic / responses / chat_completions), overridden per-vendor via
+# <vendor>.buffered_retry.*. Resolution priority: per-vendor override > shared
+# buffered_retry.* > built-in default (3 / 16777216 / 15).
+# 三项 caps 对所有 vendor 共享，可被 <vendor>.buffered_retry.* 覆盖。优先级：per-vendor 覆盖 > 共享 > 内置默认。
+# Legacy anthropic.protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} migrate
+# here automatically (warn-once on the old key). / 旧键自动迁移到此（读旧键 warn 一次）。
+
+buffered_retry:
+  # Max transport-close / truncation retries (loop/cost guard, NOT a timeout guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
+  # transport-close/truncation 最大重试次数（loop/成本闸，非超时闸——客户端由下方强制心跳保活）。0 = 不重试。
+  max_retries: 3
+  # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering and retreating to live forwarding for the rest of THIS response (which then loses L2 protection). Prevents a pathologically huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
+  # 缓冲路径内存守卫：累计缓冲超此字节即放弃缓冲、本响应剩余部分退回实时转发（随之失去 L2 保护）。防止病态超大生成无界缓冲导致 OOM。0 = 无限制。默认 16MiB。
+  buffer_cap_bytes: 16777216
+  # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until commit, so a heartbeat is constructed UNCONDITIONALLY — using stream_keepalive_ping_sec when >0, else this fallback.
+  # 缓冲路径的强制心跳间隔秒数：缓冲期在提交前不发任何真实帧，故无条件构造心跳——stream_keepalive_ping_sec >0 时取其值，否则用本值兜底。
+  heartbeat_sec: 15
+
+# Per-vendor overrides + enabled mode switch (examples, commented out by default):
+# 各 vendor 覆盖 + enabled 开关（示例，默认注释）：
+#   anthropic.buffered_retry — caps override only; Anthropic's switch is anthropic.protect_streaming_generation (enabled ignored here).
+#   anthropic.buffered_retry — 仅覆盖 caps；Anthropic 的开关是 protect_streaming_generation（此处 enabled 被忽略）。
+#   openai_responses.buffered_retry / chat_completions.buffered_retry — boolean shorthand = enabled, or map { enabled, max_retries, buffer_cap_bytes, heartbeat_sec }.
+#   openai_responses.buffered_retry / chat_completions.buffered_retry — bool 简写 = enabled，或 map { enabled, ...caps }。
+# anthropic:
+#   buffered_retry:
+#     max_retries: 5
+# openai_responses:
+#   buffered_retry: true            # or: { enabled: true, max_retries: 4 }
+# chat_completions:
+#   buffered_retry: false           # default off; P3 flips the default to true
 
 # ============================================================================
 # Rate Limiter / 速率限制

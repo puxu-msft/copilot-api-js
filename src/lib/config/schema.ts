@@ -161,6 +161,47 @@ export const RateLimiterConfigSchema = z
   })
   .strict()
 
+/**
+ * Vendor-neutral buffered-retry caps override. Shared shape for:
+ *   - top-level `buffered_retry` (shared caps, no `enabled` semantic),
+ *   - `anthropic.buffered_retry` (per-vendor cap override; Anthropic's mode
+ *     switch is the tri-state `protect_streaming_generation`, so `enabled` is
+ *     ignored here),
+ *   - `openai_responses.buffered_retry` / `chat_completions.buffered_retry`
+ *     (per-vendor override PLUS the `enabled` mode switch — see
+ *     {@link nullableBufferedRetry}, which also accepts a bare boolean as the
+ *     `enabled` shorthand).
+ *
+ * Resolution priority (see `resolveBufferedCaps` in state.ts): per-vendor
+ * override > shared `buffered_retry.*` > built-in default (max_retries 3 /
+ * buffer_cap_bytes 16777216 / heartbeat_sec 15).
+ */
+export const BufferedRetryOverrideSchema = z
+  .object({
+    /** Mode switch (responses / chat_completions only; ignored for shared + anthropic). */
+    enabled: nullableBoolean(),
+    /** Max transport-close / truncation retries (loop/cost guard; 0 = no retry). */
+    max_retries: nullableNonnegativeInt(),
+    /** Max bytes to buffer before retreating to live forwarding (OOM guard; 0 = unlimited). */
+    buffer_cap_bytes: nullableNonnegativeInt(),
+    /** Forced heartbeat interval (seconds) for the buffered path; clamped < client idle deadline. */
+    heartbeat_sec: nullableNonnegativeInt(),
+  })
+  .strict()
+
+/**
+ * `buffered_retry` value schema for vendors that carry an `enabled` mode switch
+ * (Responses / Chat Completions): either a bare boolean (`enabled` shorthand)
+ * or the full {@link BufferedRetryOverrideSchema} map.
+ */
+function nullableBufferedRetry() {
+  return z
+    .union([z.boolean(), BufferedRetryOverrideSchema])
+    .nullable()
+    .transform((v): boolean | z.infer<typeof BufferedRetryOverrideSchema> | undefined => v ?? undefined)
+    .optional()
+}
+
 export const AnthropicConfigSchema = z
   .object({
     server_tool_strip: nullableBoolean(),
@@ -534,18 +575,15 @@ export const AnthropicConfigSchema = z
       .optional()
       .transform((v) => v ?? undefined),
     /**
-     * Max transport-close / truncation retries for the buffered-retry path (a
-     * loop/cost guard, NOT a timeout guard — the client is kept alive by the
-     * forced heartbeat). `0` = no retry (buffer + commit only). Default 3.
+     * Per-vendor buffered-retry cap override for the Anthropic path (max_retries /
+     * buffer_cap_bytes / heartbeat_sec). Overrides the shared top-level
+     * `buffered_retry.*`, which overrides the built-in defaults (3 / 16777216 / 15).
+     * The `enabled` field is IGNORED here — Anthropic's buffered mode switch is the
+     * tri-state `protect_streaming_generation` above. (Legacy
+     * `protect_streaming_{max_retries,heartbeat,buffer_cap_bytes}` migrate here;
+     * see CONFIG_MIGRATIONS in compat.ts.)
      */
-    protect_streaming_max_retries: nullableNonnegativeInt(),
-    /**
-     * L2 buffered-path memory guard: max bytes to buffer before ABANDONING buffering and
-     * retreating to live forwarding for the rest of THIS response (the response then loses
-     * L2 protection — a live RST fails as today). Prevents a pathologically huge generation
-     * from buffering unbounded → OOM. `0` = unlimited. Default 16MiB.
-     */
-    protect_streaming_buffer_cap_bytes: nullableNonnegativeInt(),
+    buffered_retry: nullableSection(BufferedRetryOverrideSchema),
     /**
      * On each buffered RST/truncation retry, FORCE a progressively aggressive native
      * `clear_tool_uses` context_management edit (lower trigger + smaller keep) to compress the
@@ -576,14 +614,6 @@ export const AnthropicConfigSchema = z
       })
       .strict()
       .optional(),
-    /**
-     * Forced heartbeat interval (seconds) for the buffered-retry path. The buffered
-     * sink withholds all real frames until `message_stop`, so the client would idle
-     * out without a ping; the buffered path constructs a heartbeat UNCONDITIONALLY,
-     * using `stream_keepalive_ping_sec` when positive, otherwise this fallback.
-     * Default 15.
-     */
-    protect_streaming_heartbeat: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -598,8 +628,13 @@ export const ResponsesConfigSchema = z
   .object({
     normalize_call_ids: nullableBoolean(),
     upstream_ws: nullableBoolean(),
-    /** Opt-in mid-stream buffered retry for the Responses SSE/HTTP path (default false; Codex auto-retry is opt-in). */
-    buffered_retry: nullableBoolean(),
+    /**
+     * Opt-in mid-stream buffered retry for the Responses SSE/HTTP path (default false; Codex
+     * auto-retry is opt-in). Accepts a bare boolean (`enabled` shorthand) or a map
+     * `{ enabled, max_retries, buffer_cap_bytes, heartbeat_sec }` whose caps override the
+     * shared top-level `buffered_retry.*` for this vendor (see resolveBufferedCaps).
+     */
+    buffered_retry: nullableBufferedRetry(),
     fix_stream_ids: nullableBoolean(),
     client_ws_keep_open: nullableBoolean(),
     /**
@@ -614,6 +649,18 @@ export const ResponsesConfigSchema = z
     max_client_ws_connections: nullableNonnegativeInt(),
     /** Soft cap on upstream WS pool size (default 32; 0 = unlimited). */
     max_upstream_ws_connections: nullableNonnegativeInt(),
+  })
+  .strict()
+
+/**
+ * `chat_completions` top-level section. Currently holds only the buffered-retry
+ * mode switch + per-vendor cap override (P3 net-new terminal-only buffering for
+ * the Chat Completions path). Boolean shorthand = `enabled`; map form overrides
+ * the shared `buffered_retry.*` caps for the `chat_completions` vendor.
+ */
+export const ChatCompletionsConfigSchema = z
+  .object({
+    buffered_retry: nullableBufferedRetry(),
   })
   .strict()
 
@@ -784,6 +831,17 @@ export const ConfigSchema = z
     rate_limiter: nullableSection(RateLimiterConfigSchema),
     anthropic: nullableSection(AnthropicConfigSchema),
     openai_responses: nullableSection(ResponsesConfigSchema),
+    chat_completions: nullableSection(ChatCompletionsConfigSchema),
+    /**
+     * Vendor-neutral SHARED buffered-retry caps (`max_retries` / `buffer_cap_bytes`
+     * / `heartbeat_sec`). Overridden per-vendor by `anthropic.buffered_retry` /
+     * `openai_responses.buffered_retry` / `chat_completions.buffered_retry`, and in
+     * turn overrides the built-in defaults (3 / 16777216 / 15). Top-level (not under
+     * a vendor) because the caps are protocol-neutral; only the `enabled` mode switch
+     * is per-vendor. The `enabled` field here is ignored (there is no shared mode
+     * switch). See resolveBufferedCaps in state.ts.
+     */
+    buffered_retry: nullableSection(BufferedRetryOverrideSchema),
     model_overrides: ModelOverridesSchema.nullable()
       .transform((v): z.infer<typeof ModelOverridesSchema> | undefined => v ?? undefined)
       .optional(),
@@ -877,6 +935,8 @@ export type RateLimiterConfig = z.infer<typeof RateLimiterConfigSchema>
 export type AnthropicConfig = z.infer<typeof AnthropicConfigSchema>
 export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
+export type ChatCompletionsConfig = z.infer<typeof ChatCompletionsConfigSchema>
+export type BufferedRetryOverride = z.infer<typeof BufferedRetryOverrideSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
 export type WebSearchConfig = z.infer<typeof WebSearchConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
