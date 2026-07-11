@@ -136,6 +136,15 @@ export class Region {
       // `exp/tui-rawmode/sticky-region-decstbm.ts` "move into scroll region").
       out += cursorTo(bottom)
       this.established = { rows, panelHeight }
+    } else {
+      // fix A (spec INV-4): re-assert DECSTBM even when geometry is unchanged,
+      // so any unexpected disturbance (a bypass write, a terminal quirk) is
+      // self-healed on the very next frame. SAVE_CURSOR/RESTORE_CURSOR (DECSC/
+      // DECRC) bracket it to absorb DECSTBM's cursor-home side effect (VT510) —
+      // the cursor never visibly moves, no flicker, and re-issuing the same
+      // region is idempotent.
+      const bottom = rows - panelHeight
+      out += SAVE_CURSOR + setScrollRegion(1, bottom) + RESTORE_CURSOR
     }
 
     // Draw the panel. DECSC before, DECRC after, so the cursor returns to

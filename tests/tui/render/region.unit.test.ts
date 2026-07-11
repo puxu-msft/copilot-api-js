@@ -11,8 +11,9 @@
  *   - `render(lines)` sets the scroll region (`\x1b[1;<rows-N>r`), positions +
  *     clears each panel row absolutely, and brackets the draw in DECSC/DECRC so
  *     the cursor ends parked back inside the scroll region (printLog contract);
- *   - a steady-state re-render with unchanged rows/N does NOT re-issue DECSTBM
- *     (the region is tracked, not blindly reset every frame);
+ *   - a steady-state re-render with unchanged rows/N still re-asserts DECSTBM
+ *     every frame (fix A self-heal: an unexpected disturbance recovers on the
+ *     very next render, since the region is tracked but reasserted regardless);
  *   - shrinking `getRows()` re-anchors: old region is torn down (`\x1b[r`), the
  *     orphan panel rows are cleared, and a new DECSTBM is set at the new bottom;
  *   - vertical clamp: `N = min(lines.length, rows - RESERVED_LOG_ROWS)`; when
@@ -138,20 +139,33 @@ describe("Region (DECSTBM sticky bottom panel)", () => {
     expect(countOf(out, "\x1b[2K")).toBe(3) // N = 3
   })
 
-  test("steady-state re-render with unchanged rows/N does NOT re-issue DECSTBM", () => {
+  test("steady-state re-render with unchanged rows/N re-asserts DECSTBM (fix A self-heal)", () => {
     const { region, io } = makeRegion(80, rowsRef)
     region.render(["a", "b"])
     const mark = io.chunks.length
     region.render(["c", "d"]) // same N, same rows
     const second = io.chunks.slice(mark).join("")
 
-    expect(second).not.toContain("\x1b[1;22r") // no re-set of the scroll region
-    // eslint-disable-next-line no-control-regex -- intentional ESC in DECSTBM pattern
-    expect(second).not.toMatch(/\x1b\[1;\d+r/) // no DECSTBM set at all
+    // fix A (spec INV-4): even though geometry is unchanged, DECSTBM is
+    // re-asserted every render so an unexpected disturbance (a stray write, a
+    // terminal quirk) self-heals on the very next frame.
+    expect(second).toContain("\x1b[1;22r")
     // But it still redraws the panel content.
     expect(second).toContain("c")
     expect(second).toContain("d")
     expect(second.endsWith("\x1b8")).toBe(true)
+  })
+
+  test("fix A: a same-geometry re-render re-asserts the DECSTBM scroll region", () => {
+    const { region, io } = makeRegion(80, rowsRef)
+    region.render(["line-a"]) // first establish (geometryChanged=true)
+    const mark = io.chunks.length
+    region.render(["line-b"]) // same-geometry re-render
+    const out = io.chunks.slice(mark).join("")
+    // Positive sample: a same-geometry re-render must re-assert the scroll
+    // region too, otherwise an unexpected disturbance could never self-heal.
+    // rows=24, panelHeight=1 → bottom = rows - panelHeight = 23.
+    expect(out).toContain("\x1b[1;23r")
   })
 
   test("shrinking getRows() re-anchors: tears down old region and sets new DECSTBM at new bottom", () => {
