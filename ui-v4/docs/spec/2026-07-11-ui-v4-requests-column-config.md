@@ -194,7 +194,7 @@
 **rawPath 持久化后端修复**（endpoint 列内容根因）：
 - 根因（实测）：`rawPath` 在 in-flight 捕获（active 条目有 `/v1/messages`），但 entries_v2 **无 raw_path 列**、write/read 均不含 → 终态条目 `rawPath=None` → 列表（terminalOnly）全回退枚举串。
 - 修复：entries_v2 加 `raw_path` 列（Umzug 迁移）+ `insertCompletedEntry` 写入 + `rowToSummary` 读回；老行 rawPath 已永久丢失（从没存过）→ 只能新行生效，老行继续回退直至 reaper 淘汰。
-- 属 richest-data-flow 违背（上游有、落盘丢），单独 spec 立项修复。前端 endpoint 列本期默认隐藏、后端修好自动显真路径。
+- 属 richest-data-flow 违背（上游有、落盘丢）。**已修复（2026-07-11，commit `90e54da5`）**：entries_v2 加 `raw_path` 列（`migrateEntriesColumns` 幂等 ALTER，镜像 pid/prev_req_id 只读列）+ `buildHeadRow` 写入 + `rowToSummary` 读回；blob 仍是 SoT（未动 META_KEYS）。**新行**起 endpoint 列显真实路径（前端 `endpointLabel` 早已优先 rawPath）；**老行** rawPath 从没持久化过、只能靠 endpoint 枚举回退。
 
 ---
 
