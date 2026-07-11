@@ -2,6 +2,19 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## 交互式 TUI（P1）打磨项（真终端 + review 暴露，2026-07-11）
+
+- **help 切换时选中行瞬时脱窗（review F1，minor，自愈）**：`controller.ts` 的 `reduce` 处理 `help` 键（翻转 showHelp）时不重算 `scrollOffset`；而 showHelp 使可见内容行数 -1（capped 小窗放大此瞬态）。已复现：overflow 态 sel=4/off=3 按 `?` → 选中脱窗一帧，下次 nav 键 visibleRows 重算即拉回。**若做**：干净修需把 scroll-clamp 在 help 切换时用**新** showHelp 的 visibleRows 重算——但 `reduce` 纯函数只拿到单个 `ctx.visibleRows`（terminal-ui 用**旧** showHelp 算的），故要么 terminal-ui 在 `reduce` 后按新 showHelp 重算 visibleRows 再 `scrollToShow` 重夹（scroll-clamp 部分移到集成层），要么给 `UiContext` 传 `panelRows`+`activeCount` 让 reduce 自算 `panelContentRows(新showHelp)`。属架构小调整，自愈故非阻塞。
+- **面板高度 1↔2↔3 残留 churn（review F2，minor）**：空行根因修（commit `cfc4f05e`）把大摆幅 churn 消除（在途 ≥3 恒 3 行），但在途在 0↔1↔2↔3 之间变时 `panelContentRows` 仍返 1/2/3，`Region` 仍走 geometryChanged 重锚 → 理论上 1-3 并发时仍可能冒 stray blank line。**若做（彻底消除）**：panel 恒 `MAX_PANEL_ROWS` 行、不足补 dim 空行（几何全常）——代价是 1 个在途也占 3 行、浪费屏幕。用户明确要「最高 3」（动态 ≤3），故先取当前取舍；若用户实测 1-3 区间仍频繁空行再切恒高。
+
+## per-model 上游过载背压（用户 2026-07-11 决策：spec 完成即止、作可选增强）
+
+- **背景/动机**：GHC 对 opus-4.8 等间歇过载——单次 attempt 挂数百秒后返 502 GitHub Unicorn 页 / `NGHTTP2_REFUSED_STREAM`，`server-error-retry` 重放**同 payload** 再烧几百秒（实测 `req_300` = 71s→502→再挂满 300s→abort = 371s 白烧）。502 横跨 07-04/05/08/11 反复、单日 6+ 次。根因应对 = GHC 过载时**按模型降速退避**（背压），非盲目逐请求重放。
+- **规格（已与用户敲定七项承重决策）**：见 `docs/spec/2026-07-11-per-model-overload-backpressure.md`。要点——D1 滞动窗口 N-in-M 检测；D2 事件集 = 5xx server_error + REFUSED + 上游 idle-timeout；D3 复用已存在的 TTFB/idle 超时（`response_header`/`stream_idle`）；D4 idle-timeout 熔断可重试且计入窗口；D5 复用现有 `AdaptiveRateLimiter` 状态机 + 原因 tag（429 vs upstream-overload）；D6 窗口 per-model；D7 节流 per-model（429 仍全局）。
+- **暂缓原因**：用户明确「推进到 spec 完成后结束、作可选后续增强」。急性症状（请求"卡住"）已由**配置修复**消除——事故时 `response_header=0` 禁用了 TTFB 超时，改回 300 后单请求不再无界挂起（根因排查见 `exp/ttfb-timeout-queued/report.md`，已加 `response_header=0`/`stream_idle=0` 防呆告警）。故本特性从"急性修复"降为"过载浪费优化"，价值在但不紧急。
+- **若做需改什么**：新增 `PerModelOverloadGovernor`（`Map<modelId, {滞动窗口 + 复用的 AdaptiveRateLimiter 实例}>`）；请求路径在全局 429 限流器后叠 per-model 层（`http-transport.ts` 的 `executeWithAdaptiveRateLimit` 包裹点）；transport 侧 attempt 失败经 `classify.ts` 的 error type 调 `reportOverloadSignal(modelId, kind)`；配置新增 `overload_backpressure.{enabled,window_sec,threshold}`；`/api/status` + WS `system.rate_limit_state` 扩 model 维度 + 原因 tag。实现分两 phase（governor+窗口纯单元 → 信号桥+接线+可观测）。开放问题：GovernorUnit 空闲回收、是否按 endpoint 再细分（默认否）。
+
+
 ## Console footer 宽度感知落地的跟进项（2026-07-10）
 
 - **背景**：footer 行宽感知 + 按模型分组已落地（`docs/plan/2026-07-10-tui-footer-width-aware-grouping.md`）。以下四项经计划评审明确推迟（footer-only 瞬时损失、完成态 log line 补回，可接受），非本次范围：
