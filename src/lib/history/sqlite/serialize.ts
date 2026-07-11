@@ -96,6 +96,12 @@ export interface EntryRow {
   duration_ms: number | null
   model: string | null
   endpoint: string | null
+  // Inbound request URL path mirror (e.g. "/v1/messages"). Column-only mirror of
+  // `entry.rawPath` (which also lives in the head blob) — exists so the SUMMARY
+  // (list) path, reading columns not the blob, can surface the real path. Restore
+  // always reads rawPath from the blob (rawPath is NOT in META_KEYS), so the blob
+  // stays the single source of truth; this column is a read-only projection.
+  raw_path: string | null
   transport: string | null
   status: string
   input_tokens: number | null
@@ -377,6 +383,7 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
     duration_ms: entry.durationMs ?? null,
     model: finalUpstream?.model ?? entry.model?.resolved ?? entry.clientRequest?.model ?? null,
     endpoint: entry.endpoint,
+    raw_path: entry.rawPath ?? null,
     transport: entry.transport ?? null,
     status: statusOverride ?? entry.state ?? "unknown",
     input_tokens: usage?.input_tokens ?? null,

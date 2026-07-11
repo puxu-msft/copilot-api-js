@@ -299,6 +299,14 @@ function migrateEntriesColumns(database: Database): void {
     // No FK (a dangling ref when the predecessor is reaped is harmless — threading
     // UI handles it); deliberately decoupled from search (never read by search).
     { name: "prev_req_id", type: "TEXT" },
+    // Inbound request URL path (e.g. "/v1/messages"). Captured in-flight on the
+    // entry (entry.rawPath) and ALSO in the head blob, but MIRRORED here as a
+    // read-only column (like pid) so the terminal SUMMARY (list) path — which
+    // reads columns, not the blob — can surface the real path instead of the
+    // mangled endpoint enum. NOT in CREATE TABLE — single ALTER path (fresh AND
+    // existing DBs). Old rows backfill NULL (rawPath was never persisted); only
+    // rows written by the current code get it. Never read by restore (blob wins).
+    { name: "raw_path", type: "TEXT" },
     // Usage net-of-cache normalization marker (mirrors `pinned`'s NOT NULL DEFAULT 0
     // ALTER — SQLite backfills existing rows to 0 without a table rewrite). Rows
     // written by the current code set this to 1 (born net); pre-migration rows keep
