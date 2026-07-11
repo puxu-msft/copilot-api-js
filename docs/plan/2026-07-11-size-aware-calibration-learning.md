@@ -26,6 +26,10 @@
 
 价值：count_tokens 端点精度（factor 从 50% 高估降到 ~7%，不再误触发过早客户端压缩）。
 
+> **⚠️ ATOMIC GROUP：Task 1-4 是一次原子迁移，必须合并提交。**
+> `ModelLimits` 形状变更牵一发动全身——engine.ts 内 `onTokenLimitExceeded`/`loadPersistedLimits`/`persistLimits` 与外部消费者（`anthropic/auto-truncate.ts`、`openai/auto-truncate.ts`、`truncation.ts`）全都读旧标量 `calibrationFactor`/`sampleCount`。**中途整站 typecheck 必然红**，这是 schema 迁移的固有原子性，不是缺陷。
+> 规则：Task 1-3 各步用 **`bun test <目标测试文件>`** 验证（bun test 逐文件转译、不整站 typecheck，故其它文件的类型错不阻塞目标测试）；**`bun run typecheck`（整站绿）+ `git commit` 只在 Task 4 Step 5 一次性做**（覆盖 engine + 全部消费者的原子提交）。Task 1-3 结束时**不提交**。
+
 ## Task 1: factor 模型数据结构 + bucketIndex + factorAt（log 插值）
 
 **Files:**
@@ -50,11 +54,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 
 import {
   bucketIndexFor,
-  emptyFactorModel,
   factorAt,
-  learnCalibration,
   resetAllLimitsForTesting,
-  WEIGHT_CAP,
 } from "./engine"
 
 afterEach(() => resetAllLimitsForTesting())
@@ -73,23 +74,11 @@ describe("factorAt", () => {
   test("empty model → 1.0 (no-op)", () => {
     expect(factorAt("unknown-model", 50_000)).toBe(1.0)
   })
-
-  test("log-interpolates between adjacent populated bucket anchors", () => {
-    // two anchors: bucket3 meanEst≈85k factor 1.434, bucket4 meanEst≈164k factor 1.625
-    learnCalibration("m", 85_238, Math.round(85_238 * 1.434), { isLive: true })
-    learnCalibration("m", 163_889, Math.round(163_889 * 1.625), { isLive: true })
-    // below first anchor → clamp to first factor
-    expect(factorAt("m", 50_000)).toBeCloseTo(1.434, 2)
-    // above last anchor → clamp to last factor
-    expect(factorAt("m", 300_000)).toBeCloseTo(1.625, 2)
-    // midpoint in log space between the two anchors → between the two factors
-    const mid = Math.exp((Math.log(85_238) + Math.log(163_889)) / 2)
-    const f = factorAt("m", mid)
-    expect(f).toBeGreaterThan(1.434)
-    expect(f).toBeLessThan(1.625)
-  })
+  // NOTE: 插值（多锚点）测试在 Task 2（需 learnCalibration 建锚点）。本 task 只验空模型分支。
 })
 ```
+
+（import 里暂不需要 `learnCalibration`/`WEIGHT_CAP`——Task 1 测试只用 `bucketIndexFor`/`factorAt`/`resetAllLimitsForTesting`。）
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -176,18 +165,14 @@ export function factorAt(modelId: string, est: number): number {
 
 （`learnCalibration` 在 Task 2 加；本步先让 test 的 import 存在——可先加一个抛错的 stub，Task 2 落实现。若逐 task 严格 TDD，可把 Task1 测试里的 learnCalibration 调用推迟到 Task 2，Task1 只测 bucketIndexFor + factorAt(empty)。）
 
-- [ ] **Step 4: 跑测试确认通过（bucketIndexFor + factorAt empty 分支）**
+- [ ] **Step 4: 跑测试确认通过（bucketIndexFor + factorAt empty）**
 
-Run: `bun test src/lib/auto-truncate/engine.factor-model.test.ts -t bucketIndexFor`
+Run: `bun test src/lib/auto-truncate/engine.factor-model.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: typecheck + 提交**
+- [ ] **Step 5: 不提交（ATOMIC GROUP）**
 
-```bash
-bun run typecheck
-git add -- src/lib/auto-truncate/engine.ts src/lib/auto-truncate/engine.factor-model.test.ts
-git commit -m "feat(calibration): size-aware factor model — buckets + log-interp factorAt"
-```
+Task 1-4 是原子迁移。此时 engine.ts 内 `onTokenLimitExceeded`/`loadPersistedLimits` 仍读旧字段 → 整站 typecheck 红是预期的。**不跑 `bun run typecheck`、不 commit**，直接进 Task 2。（`bun test <file>` 能过是因为 bun 逐文件转译。）
 
 ## Task 2: learnCalibration（滑动加权均值 + WEIGHT_CAP）+ calibrate 重写
 
@@ -210,6 +195,17 @@ test("learnCalibration accumulates tok-weighted factor in the right bucket", () 
   learnCalibration("m", 100_000, 160_000, { isLive: true }) // factor 1.6, same bucket3
   // tok-weighted mean = (112k+160k)/(80k+100k) = 272/180 ≈ 1.511
   expect(factorAt("m", 90_000)).toBeCloseTo(1.511, 2)
+})
+
+test("log-interpolates between adjacent populated bucket anchors (moved from Task 1, P-Y2)", () => {
+  learnCalibration("m", 85_238, Math.round(85_238 * 1.434), { isLive: true }) // bucket3 anchor
+  learnCalibration("m", 163_889, Math.round(163_889 * 1.625), { isLive: true }) // bucket4 anchor
+  expect(factorAt("m", 50_000)).toBeCloseTo(1.434, 2) // below first anchor → clamp
+  expect(factorAt("m", 300_000)).toBeCloseTo(1.625, 2) // above last anchor → clamp
+  const mid = Math.exp((Math.log(85_238) + Math.log(163_889)) / 2)
+  const f = factorAt("m", mid)
+  expect(f).toBeGreaterThan(1.434)
+  expect(f).toBeLessThan(1.625)
 })
 
 test("clamps factor to [0.5, 3.0]", () => {
@@ -283,13 +279,9 @@ export function calibrate(modelId: string, gptEstimate: number): number {
 Run: `bun test src/lib/auto-truncate/engine.factor-model.test.ts`
 Expected: PASS（全部）
 
-- [ ] **Step 5: typecheck + 提交**
+- [ ] **Step 5: 不提交（ATOMIC GROUP）**
 
-```bash
-bun run typecheck
-git add -- src/lib/auto-truncate/engine.ts src/lib/auto-truncate/engine.factor-model.test.ts
-git commit -m "feat(calibration): learnCalibration sliding tok-weighted mean + calibrate rewrite"
-```
+`bun test src/lib/auto-truncate/engine.factor-model.test.ts` 应全绿。仍**不 typecheck、不 commit**（消费者未改，整站红）——进 Task 3。
 
 ## Task 3: 持久化 v2 + DEFAULT_FACTOR_SEED + v1→v2 迁移
 
@@ -402,14 +394,9 @@ if (data.version === 2) {
 Run: `bun test src/lib/auto-truncate/engine.persist.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: 全量单测 + typecheck + 提交**
+- [ ] **Step 5: 不提交（ATOMIC GROUP）**
 
-```bash
-bun test src/lib/auto-truncate/
-bun run typecheck
-git add -- src/lib/auto-truncate/engine.ts src/lib/auto-truncate/engine.persist.test.ts
-git commit -m "feat(calibration): v2 persistence, bake-in seed table, v1->v2 migration"
-```
+`bun test src/lib/auto-truncate/engine.persist.test.ts` 应全绿。仍**不 typecheck、不 commit**——进 Task 4（消费者 rewire 后整站才绿，一次性原子提交 Task 1-4）。
 
 ## Task 4: 消费者更新（去 sampleCount 守卫、margin 改 liveSampleCount、tokenLimit>0 守卫、400 腿 rewire + N1）
 
@@ -475,13 +462,17 @@ const currentTokens = calibrate(model.id, rawTokens) // 去掉 learned && learne
 Run: `bun test src/lib/auto-truncate/ src/lib/anthropic/auto-truncate.test.ts src/lib/openai/`
 Expected: PASS（注意既有测试若断言旧 `sampleCount`/`calibrationFactor` 字段需同步更新——按 skill `debugging-test-pollution` 判定是测试过时而非源码错）
 
-- [ ] **Step 5: typecheck（全站）+ 提交**
+- [ ] **Step 5: 整站 typecheck 绿（首次）+ 原子提交 Task 1-4**
+
+此时 engine + 全部消费者已自洽，整站 typecheck 应绿。
 
 ```bash
 bun run typecheck
-git add -- src/lib/auto-truncate/engine.ts src/lib/anthropic/auto-truncate.ts src/lib/openai/auto-truncate.ts src/lib/anthropic/auto-truncate/truncation.ts src/lib/auto-truncate/engine.consumers.test.ts
-git commit -m "feat(calibration): rewire consumers to size-aware model + liveSampleCount margin + N1 guard"
+git add -- src/lib/auto-truncate/engine.ts src/lib/auto-truncate/engine.factor-model.test.ts src/lib/auto-truncate/engine.persist.test.ts src/lib/auto-truncate/engine.consumers.test.ts src/lib/anthropic/auto-truncate.ts src/lib/openai/auto-truncate.ts src/lib/anthropic/auto-truncate/truncation.ts
+git commit -m "feat(calibration): size-aware per-bucket factor model (buckets+interp+sliding-window), v2 persistence+seed+migration, consumer rewire"
 ```
+
+> **S2 实测（此 task 内做）**：对拍一条真实 400 的 `reportedCurrent` 是否含缓存 token（整 prompt 口径），确认 400 腿与成功腿同口径。可从 history 查一条 opus-4.8 `failed` 且 upstream 400 的 entry，读其错误文案 current vs 该请求 usage 的 input+cache。若不含缓存则记入 spec §11 待处理。
 
 ## Task 5: CalibrationSink（成功腿）
 
@@ -527,6 +518,7 @@ import consola from "consola"
 
 import { countTotalTokens } from "~/lib/anthropic/auto-truncate"
 import { learnCalibration } from "~/lib/auto-truncate"
+import { state } from "~/lib/state"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import type { ObservabilityBus, ObservabilityEvent } from "../index"
@@ -554,9 +546,12 @@ export class CalibrationSink {
       const real = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
       if (real < REAL_FLOOR) return
       const body = req.body as MessagesPayload | undefined
-      const model = event.ctx.resolvedModel // {id, capabilities} — confirm accessor at impl time
-      if (!body || !model) return
-      const est = await countTotalTokens(body, model as never)
+      if (!body?.model) return
+      // P-B1: RequestContextSnapshot.resolvedModel is a STRING, not a Model. The
+      // Model (with capabilities.tokenizer) comes from the resolved index by name.
+      const model = state.modelIndex.get(body.model)
+      if (!model) return
+      const est = await countTotalTokens(body, model)
       if (est < EST_FLOOR) return
       learnCalibration(model.id, est, real, { isLive: true })
     } catch (err) {
@@ -569,7 +564,7 @@ export function attachCalibrationSink(bus: ObservabilityBus): () => void {
   return () => sink.destroy()
 }
 ```
-> 实施注意：`event.ctx` 上 model 的确切 accessor（`resolvedModel`/`model`）+ 是否带 `capabilities.tokenizer` 需在实现时对 `RequestContextSnapshot` 核实（B3 复审确认 usage/body/format 可达，但 model 对象口径要落实）。若快照不带 capabilities，改从 `state.modelIndex.get(req.body.model)` 取 Model。
+> `req.body` 的 `.model` 是 wire body 的模型名（resolved dotted name，如 `claude-opus-4.8`），`state.modelIndex` 以此为键。`countTotalTokens(body, model)` 的 model 带 `capabilities.tokenizer`。
 
 - [ ] **Step 4: 跑测试通过 + 注册**
 
@@ -615,15 +610,43 @@ test("backfill aggregates tok-weighted factor idempotently", async () => {
 Run: `bun test src/lib/history/sqlite/calibration-backfill.test.ts`
 Expected: FAIL
 
-- [ ] **Step 3: 实现 backfill（镜像 usage-normalize-backfill 骨架）**
+- [ ] **Step 3: 实现 backfill（镜像 usage-normalize-backfill 骨架 + 内存累加批写）**
 
-要点（完整代码按 `usage-normalize-backfill.ts:295-367` 骨架改写）：
-- `CALIBRATION_BACKFILL_VERSION_KEY = "calibration_backfill_version"`、`CURSOR_KEY = "calibration_backfill_cursor"`、`VERSION = 1`。version 命中 → return。
-- 首次运行（cursor==0）：对 seed 目标模型的桶**清零**（`ensureModelLimits(model).factorModel.buckets` 重置为空），避免叠加出厂 seed。
-- keyset：`SELECT id, started_at, model, input_tokens, cache_read, cache_creation FROM entries_v2 WHERE status='completed' AND model LIKE 'claude%' AND input_tokens IS NOT NULL AND (started_at > ? OR (started_at=? AND id>?)) ORDER BY started_at, id LIMIT ?`。
-- 每行：读 `entry_stages` 的 `request_group` blob → `decompress()`（双格式）→ `decodeStageRows()` 展开 → 取最后一个 `stage==="upstream_request"` member 的 `payload.body`（`format==="anthropic-messages"` 门控）→ `countTotalTokens` → `learnCalibration(model, est, real, { isLive: false })`。缺 `upstream_request`（legacy）→ `counts.skipped++`。
-- 每批 setMeta cursor；`await sleep(0)` 让出；协作 `isStopRequested()`；never-throw（顶层 try/catch consola.warn）。
-- 收尾（未被 stop）：对每个 seed 目标模型的桶按 `sampleCount>WEIGHT_CAP` 比例缩放到 CAP（让 live 立即进滑动窗）；setMeta version；`schedulePersist()`；log skip 覆盖率。
+**关键（闭合复审 P-B5/B6）**：**不**逐条调 `learnCalibration`（其 WEIGHT_CAP 滑动窗顺序敏感 → 大桶重跑不幂等，且与收尾缩放双重限幅）。改为**内存累加原始 Σreal/Σest**、跑完**按桶覆盖**（仅有数据的桶）。
+
+先在 engine.ts 加批写原语（Task 6 顺带交付）：
+```ts
+/** Overwrite selected buckets from batch aggregates (backfill). Per-bucket:
+ *  only buckets present in `agg` are replaced (empty/sparse buckets keep their
+ *  seed — P-B6). Weight capped at WEIGHT_CAP so live learning stays live (P-B5).
+ *  isLive=false: does NOT touch liveSampleCount. */
+export function applyBackfillBuckets(
+  modelId: string,
+  agg: Array<{ sumReal: number; sumEst: number; count: number; meanEst: number } | null>,
+): void {
+  const limits = ensureModelLimits(modelId)
+  agg.forEach((a, i) => {
+    if (!a || a.count === 0 || a.sumEst <= 0) return
+    const scale = a.count > WEIGHT_CAP ? WEIGHT_CAP / a.count : 1
+    limits.factorModel.buckets[i] = {
+      sumReal: a.sumReal * scale,
+      sumEst: a.sumEst * scale,
+      sampleCount: Math.min(a.count, WEIGHT_CAP),
+      meanEst: a.meanEst,
+    }
+  })
+  limits.updatedAt = Date.now()
+  schedulePersist()
+}
+```
+
+backfill 主体（`usage-normalize-backfill.ts:295-367` 骨架）：
+- version key `calibration_backfill_version` / cursor key `calibration_backfill_cursor` / `VERSION=1`。version 命中 → return。
+- **per-model 内存累加器** `Map<modelId, Array<{sumReal,sumEst,count,meanEst}>>`（6 桶）。**resumable 累加持久到 meta**：每批把累加器 JSON setMeta（`calibration_backfill_accum`），启动时从 meta 恢复（cursor>0 时）——避免中断丢进度。**不动内存 learnedLimits 桶**（P-B6：跑完才 apply，绝不中途清零/写活桶，避开与 CalibrationSink live 并发）。
+- keyset：`SELECT id, started_at, model, input_tokens, cache_read, cache_creation FROM entries_v2 WHERE status='completed' AND model LIKE 'claude%' AND input_tokens IS NOT NULL AND (started_at>? OR (started_at=? AND id>?)) ORDER BY started_at, id LIMIT ?`。real = `input_tokens+cache_read+cache_creation`（短列名）；real<1000 跳过。
+- wire：查该 entry 的 `entry_stages` 原始行组 `StageRow[]`（含 `blob_gz`）→ **直接 `decodeStageRows(rows)`**（它内部已 `decompress` 双格式 + 展开 request_group，**不要预先 decompress** —— P-Y1）→ 取最后一个 `stage==="upstream_request"` member 的 `payload.body`；`body.format`... 实为 `payload.format==="anthropic-messages"` 门控（核实 member payload 形状：`.body` 是 Anthropic payload、`.format` 在 member 层）→ `countTotalTokens(body, state.modelIndex.get(model))`（est<500 跳过）→ 累加到 `accum[model][bucketIndexFor(est)]`（sumReal+=real, sumEst+=est, count++, meanEst 增量均值）。缺 `upstream_request`（legacy）→ `counts.skipped++`。
+- 每批 setMeta cursor + accum；`await sleep(0)`；协作 `isStopRequested()`；顶层 try/catch never-throw（consola.warn）。
+- 收尾（未 stop）：对每个 model 调 `applyBackfillBuckets(model, accum[model])`；setMeta version；清 accum meta；log `skipped/total`（覆盖率）。
 
 - [ ] **Step 4: 跑测试通过 + 接线背景启动**
 
@@ -687,13 +710,23 @@ git commit -m "feat(calibration): recoverable history backfill (batch-stat seed)
 
 - [ ] **Step 3**：实现——
   - `types.ts`：`FormatCodec` 加 `preSend?(env: RequestEnvelope): Promise<RequestEnvelope>`（可选，其它 codec 省略）。
-  - `driver.ts`：在 `for(;;)` 循环**首 attempt**（`attempt===0`）、`prepareWire` 前或 `prepareWire→send` 之间：`if (attempt === 0) current = await deps.codec.preSend?.(current) ?? current`。
+  - `driver.ts`（闭合复审 P-B2/B3）：循环内**没有 `attempt` 变量**（只有 `normalRetries`/`learningRetries`）。preSend 须**仅首轮**且**在 `const wire = deps.codec.prepareWire(current)`（driver.ts:256）之前**（否则 wire 已用未截断 body 建好、当轮截断不生效）。用循环前 `let preflightDone = false` 守卫：
+    ```ts
+    let preflightDone = false
+    for (;;) {
+      if (!preflightDone) {
+        preflightDone = true
+        if (deps.codec.preSend) current = await deps.codec.preSend(current)
+      }
+      const wire = deps.codec.prepareWire(current)   // 现 driver.ts:256，preSend 之后
+      ...
+    ```
   - Anthropic `codec.ts` `preSend`：
     ```ts
     async preSend(env) {
       if (!state.autoTruncatePreflight) return env
       const body = env.body as MessagesPayload
-      const model = env.model // ResolvedModel → Model
+      const model = env.model // ResolvedModel = Model（envelope.ts:29/90，带 .id + capabilities）
       const est = await countTotalTokens(body, model)
       const factor = factorAt(model.id, est)
       const predicted = Math.ceil(est * factor)
@@ -701,10 +734,10 @@ git commit -m "feat(calibration): recoverable history backfill (batch-stat seed)
       if (limit === undefined || predicted <= limit) return env
       const targetGpt = Math.floor(limit / factor)
       const truncated = await autoTruncateAnthropic(body, model, { checkTokenLimit: true, targetTokenLimit: targetGpt })
-      return truncated.wasTruncated ? env.with({ body: truncated.payload }) : env
+      return truncated.wasTruncated ? env.with({ body: truncated.payload }) : env  // env.with 真实 API（envelope.ts:108）
     }
     ```
-    （截断后 driver 循环下一步的 `prepareWire(current)` 会用新 body 重建 wire —— 无需 hook 内重跑 prepareWire。核实 driver 循环顺序确保 preSend 在 prepareWire 之前。）
+    截断后循环下一行 `prepareWire(current)` 用新 body 重建 wire —— 无需 hook 内重跑 prepareWire。
 
 - [ ] **Step 4**：跑测试通过 + 全量 pipeline/codec 单测 + typecheck。
 
@@ -726,4 +759,17 @@ git commit -m "feat(calibration): recoverable history backfill (batch-stat seed)
 - §8 消费者非零改动 → Task 4 ✓
 - §11 暂缓项 → Task 7 Step 3 ✓
 - §12 N1（降值守卫）→ Task 4 ✓；N2（首 attempt）→ Task 9 Step 3 ✓；重要-1（meanEst ship）→ Task 3 seed ✓；重要-2（WEIGHT_CAP）→ Task 2 ✓
-- S2（400 cache 口径实测）→ Task 4 实施时对拍一条真实 400（记 §11）；S3（backfill skip 覆盖率）→ Task 6 Step 3 skip 计数 ✓
+- S2（400 cache 口径实测）→ Task 4 Step 5 实测一条真实 400 ✓；S3（backfill skip 覆盖率）→ Task 6 Step 3 skip 计数 ✓
+
+## 计划复审处置（subagent，2026-07-11）
+
+一轮可行性复审（代码签名锚定）抓出 6 BLOCKER + 2 minor，全部已核实并修：
+- **P-B1**：Task 5 `event.ctx.resolvedModel` 是 string 非 Model → 改 `state.modelIndex.get(body.model)`（已亲验 events.ts:81）。
+- **P-B2/B3**：driver 循环无 `attempt` 变量、preSend 须在 `prepareWire`（driver.ts:256）之前 → Task 9 用循环前 `preflightDone` 守卫、插在 prepareWire 之前（已亲验 driver.ts:248-256）。
+- **P-B4**（最关键）：Task 1-3 的整站 typecheck 绿灯门在 Task 4 前不可达（ModelLimits 形状迁移固有原子性）→ Task 1-4 标 **ATOMIC GROUP**，中途只 `bun test <file>`，Task 4 Step 5 一次性整站 typecheck + 原子提交。
+- **P-B5**：Task 6 逐条 `learnCalibration`（滑动窗顺序敏感）破坏幂等 → 改内存累加 Σreal/Σest + `applyBackfillBuckets` 批写。
+- **P-B6**：Task 6 全清桶丢稀疏桶 seed → 改 per-bucket 覆盖（仅有数据的桶）、跑完才 apply（不中途碰活桶，避开与 live 并发）。
+- **P-Y1**：`decodeStageRows` 内部已 decompress → 不预解压，直接传 `StageRow[]`（已亲验 serialize.ts:805-809）。
+- **P-Y2**：Task 1 插值测试依赖 Task 2 的 learnCalibration → 移到 Task 2。
+
+已核实正确、无需改：Task 9 `env.model`(=Model)/`env.with`、`calculateTokenLimit` 守卫、`onTokenLimitExceeded` 参序、config 全路径、ESLint 边界、`decodeStageRows`/`decompress`/`StageRow` export 状态、`countTotalTokens` re-export。
