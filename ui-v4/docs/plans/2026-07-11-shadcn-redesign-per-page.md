@@ -403,6 +403,11 @@ git commit -F <msg> -- <上述>   # dialog seam fork first
 
 ## Task P8 · Tools（JSON decode 页壳 shadcn 化）
 
+> **实施状态: DONE**（2 子 commit,分支 `feat/ui-v4-shadcn-redesign`,HEAD `969a8c24`。**逐页 P1-P8 最后一页**）。
+> ① `e1d3f5a3` 提取 `JsonToolsLegacy`(原 `JsonToolsPage` body 逐字冻结:两工具共享状态 + `→ 传入 Tree` 交接 + 等待/错误/树三态)+ `JsonToolsPage` 变薄 `DesignFork` wrapper + `JsonToolsShadcn` 骨架(`data-testid=json-tools-shadcn`)。legacy body 与基线 `ba625514` 逐字等价(git diff 仅函数名 `JsonToolsPage`→`JsonToolsLegacy` + docstring 差异)。
+> ② `969a8c24` `JsonToolsShadcn` 完整双面板页壳:呈现层 shadcn `Card`/`Button` + 中性语义 token(`text-foreground`/`border-input`/`--signal-fail`/`--signal-ok`);复用 **A 层纯逻辑** `unescapeJsonString`/`parseJson`(`lib/json-tools`,两树共用不复制算法)+ **B 内容体** `RawJsonView`(`common/`,已 C3 中性化;内部即 `JsonTreeView` 树视图 + 原文/树 tab,逐字复用——**legacy 树面板正是渲染 `RawJsonView`,非 `JsonTreeView` 直用**,故 shadcn 侧同复用 `RawJsonView` 对齐更忠实,plan 字面写的 `JsonTreeView` 是其内层)。三 textarea 带 `aria-label` 可访问名(jsx-a11y)。fork-routed 测试 `tests/JsonToolsShadcn.vitest.test.tsx`(6):shadcn 断互斥挂载 + 双面板 + A 逻辑单层解码 + 解码失败 output 抑制(never-swallow-errors)+ `→ 传入 Tree` 交接渲染树 + 树面板等待/错误占位;amber-legacy 断 legacy 内容仍在、shadcn 标记缺席(INV-2)。
+> INV-4 四绿(每子 commit):typecheck 0 / build(index 1103.46KB,基线 P7 1100.87KB,+2.59KB shadcn 页壳)/ test(254 bun + 550 vitest 全绿:新增 JsonToolsShadcn 6)/ eslint 无缓存 0;scope 守卫绿(`tools/` 零 designVersion)。legacy `JsonToolsLegacy` 冻结、`JsonTreeView`/`RawJsonView`/`lib/json-tools`(B/A)零改动(git diff 空)。**已知设计判定(非回归)**:legacy `unescapeJsonString` 的「解码结果不是字符串」错误分支对字符串输入不可达(引号字面量总解析为 string、裸输入被包引号),两树共有,非 P8 引入。**交用户 UX 检查项见文末**:双面板 Card 分组 vs legacy 密排 section、textarea 描边/信号色观感、`→ 传入 Tree` 按钮位置、树面板高度分配。
+
 - **对应 RFC/决策**: §4 P8。
 - **目标**: shadcn 侧 JSON Tools 页壳（unescape + tree 两面板）；import 中性化 B（`JsonTreeView`，已 C3 中性化）+ C primitive。**legacy `JsonToolsPage` 冻结。**
 - **commit invariant**: `JsonTreeView`（B）零改动、共用；INV-2 fork B；INV-4 四绿。
