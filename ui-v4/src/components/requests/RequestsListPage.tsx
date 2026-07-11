@@ -1,9 +1,20 @@
+import {
+  //
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import { restrictToHorizontalAxis } from "@dnd-kit/modifiers"
+
 import { HistoryList } from "@/components/requests/HistoryList"
 import { RequestFilterChips } from "@/components/requests/RequestFilterChips"
 import { RequestsColumnMenu } from "@/components/requests/RequestsColumnMenu"
 import { RequestsFilterBar } from "@/components/requests/RequestsFilterBar"
 import { useColumnState } from "@/hooks/useColumnState"
 import { useRequestFilters } from "@/hooks/useRequestFilters"
+import { reorderColumns } from "@/lib/request-columns"
 
 /** Requests 列表全屏页(Plan 08 §1):筛选工具条 + 活动 chips + History 列表。在途浮窗 LiveDock 已全局化到 AppShell。 */
 export function RequestsListPage() {
@@ -11,8 +22,15 @@ export function RequestsListPage() {
   const { filters, setFilter, setFilters, clearFilter, clearAll } = useRequestFilters()
 
   // 列状态(visibility + sizing + order)提到 Page(单一持有者):版本化统一键持久化,菜单/HistoryList 受控消费。
-  // Task 1 先把三态通到 table,菜单仍只 toggle 显隐;resize 手柄(Task 2)/dnd 重排(Task 3)后续接 setSizing/setOrder。
+  // 三态皆已通到 table;dnd 重排(本 Task)经 DndContext.onDragEnd → reorderColumns → cs.setOrder(内部再过 mergeColumnOrder 幂等锁首)。
   const cs = useColumnState()
+
+  // dnd 列序重排:PointerSensor + activationConstraint distance:4(HIGH-2)——微动/点击不误判拖拽,且与 resize 手柄
+  // (已 onPointerDown stopPropagation)分区。restrictToHorizontalAxis 锁水平位移(列表头只沿横轴重排)。
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    if (over && active.id !== over.id) cs.setOrder((o) => reorderColumns(o, String(active.id), String(over.id)))
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -35,16 +53,22 @@ export function RequestsListPage() {
         clearAll={clearAll}
         setFilters={setFilters}
       />
-      <HistoryList
-        filters={filters}
-        columnVisibility={cs.visibility}
-        onColumnVisibilityChange={cs.setVisibility}
-        columnSizing={cs.sizing}
-        onColumnSizingChange={cs.setSizing}
-        columnOrder={cs.order}
-        onColumnOrderChange={cs.setOrder}
-        onClearFilters={clearAll}
-      />
+      <DndContext
+        sensors={sensors}
+        modifiers={[restrictToHorizontalAxis]}
+        onDragEnd={onDragEnd}
+      >
+        <HistoryList
+          filters={filters}
+          columnVisibility={cs.visibility}
+          onColumnVisibilityChange={cs.setVisibility}
+          columnSizing={cs.sizing}
+          onColumnSizingChange={cs.setSizing}
+          columnOrder={cs.order}
+          onColumnOrderChange={cs.setOrder}
+          onClearFilters={clearAll}
+        />
+      </DndContext>
     </div>
   )
 }

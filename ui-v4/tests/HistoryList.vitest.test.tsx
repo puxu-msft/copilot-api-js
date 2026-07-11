@@ -31,7 +31,11 @@ import {
 import type { RequestFilters } from "@/lib/request-filters"
 import type { EntrySummary } from "@/types"
 
-import { DEFAULT_COLUMN_VISIBILITY } from "@/lib/request-columns"
+import {
+  //
+  DEFAULT_COLUMN_VISIBILITY,
+  reorderColumns,
+} from "@/lib/request-columns"
 import { EMPTY_FILTERS } from "@/lib/request-filters"
 import {
   //
@@ -899,5 +903,106 @@ describe("HistoryList — 多选对比 + 键盘 + 色板（Task 3）", () => {
     expect(rowA.className).not.toContain("opacity-40") // 选中态优先、豁免变灰
     expect(rowB.className).not.toContain("opacity-40") // 选中会话、不变灰
     expect(rowC.className).toContain("opacity-40") // 未选中且非选中行 → 变灰(dim 生效的正样本)
+  })
+})
+
+describe("HistoryList — dnd 列序 reorder（Task 3）", () => {
+  beforeEach(() => {
+    mockHistory = { entries: [], total: 0, isLoading: false, hasNextPage: false, fetchNextPage: vi.fn() }
+    useListStore.setState({ ...initialListState })
+    scrollToIndexMock.mockClear()
+    apiGetMock.mockReset()
+    apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
+    apiDeleteMock.mockReset()
+    apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  /** 从 DOM 节点取 React 合成 props(fiber):断言 useSortable 注入的 listeners（onPointerDown）存在。 */
+  function reactProps(el: HTMLElement): Record<string, unknown> {
+    const key = Object.keys(el).find((k) => k.startsWith("__reactProps$"))
+    return key ? (el as unknown as Record<string, Record<string, unknown>>)[key] : {}
+  }
+  const thByText = (container: HTMLElement, t: string) =>
+    Array.from(container.querySelectorAll("thead th")).find((th) => th.textContent === t) as HTMLElement | undefined
+  const sessionTh = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll("thead th")).find((th) => th.className.includes("w-[10px]")) as HTMLElement | undefined
+
+  function renderWithOrder(order: Array<string>) {
+    return render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={["/requests"]}>
+          <HistoryList
+            filters={EMPTY_FILTERS}
+            columnOrder={order}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it("表头 th 顺序反映 columnOrder（session 恒首）", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    // 自定义序:session 首 + model 前置到 status 之前(仅取默认可见列,隐藏列不渲染表头)。
+    const { container } = renderWithOrder(["session", "model", "status", "time", "dur", "cache", "preview", "response"])
+    const heads = Array.from(container.querySelectorAll<HTMLElement>("thead th"))
+    // 首列是 session gutter(w-[10px])。
+    expect(heads[0].className).toContain("w-[10px]")
+    // 次列是 Model(被前置到 Status 之前)。
+    expect(heads[1].textContent).toBe("Model")
+    expect(heads[2].textContent).toBe("Status")
+  })
+
+  it("非 session 列 th 是 sortable（带 useSortable 的 aria-roledescription + onPointerDown listener）；session gutter 不可拖", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const { container } = renderWithOrder(["session", "status", "time", "dur", "model", "cache", "preview", "response"])
+    const statusTh = thByText(container, "Status")
+    expect(statusTh).not.toBeUndefined()
+    // useSortable 的 attributes 打了 aria-roledescription(sortable 标记)。
+    expect(statusTh?.getAttribute("aria-roledescription")).not.toBeNull()
+    // DndContext(在 RequestsListPage)提供 PointerSensor → listeners 含 onPointerDown 拖拽激活器;
+    // 但 HistoryList 独立渲染(无 DndContext)时 listeners 为空,故只断言 attributes 标记 + 会话 th 无标记。
+    // session gutter 是纯 th(不入 SortableContext、不 useSortable)→ 无 sortable 标记。
+    expect(sessionTh(container)?.getAttribute("aria-roledescription")).toBeNull()
+  })
+
+  it("弹性列(preview/response)也可拖(sortable 标记),同样在 SortableContext 内", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const { container } = renderWithOrder(["session", "status", "time", "dur", "model", "cache", "preview", "response"])
+    expect(thByText(container, "Request")?.getAttribute("aria-roledescription")).not.toBeNull()
+    expect(thByText(container, "Response")?.getAttribute("aria-roledescription")).not.toBeNull()
+  })
+
+  it("resize 手柄 onPointerDown stopPropagation 挡住 th 的 dnd 拖拽激活(HIGH-2 分区)", () => {
+    mockHistory = { ...mockHistory, entries: [entry("a")], total: 1 }
+    const { container } = renderWithOrder(["session", "status", "time", "dur", "model", "cache", "preview", "response"])
+    const handle = thByText(container, "Status")?.querySelector<HTMLElement>("[data-resize-handle]")
+    expect(handle).not.toBeNull()
+    const props = reactProps(handle as HTMLElement)
+    const stopPropagation = vi.fn()
+    ;(props.onPointerDown as (e: React.PointerEvent) => void)({ stopPropagation } as unknown as React.PointerEvent)
+    expect(stopPropagation).toHaveBeenCalled()
+  })
+
+  describe("reorderColumns 纯计算（onDragEnd 复用）", () => {
+    const ORDER = ["session", "status", "time", "dur", "model", "cache"]
+    it("把 active 列移到 over 列位置,session 恒首", () => {
+      // model → status 之前:非 session 序 [status,time,dur,model,cache],把 model(idx3)移到 status(idx0)。
+      expect(reorderColumns(ORDER, "model", "status")).toEqual(["session", "model", "status", "time", "dur", "cache"])
+    })
+    it("向后移动同样正确", () => {
+      // status(idx0) 移到 cache(idx4):[time,dur,model,cache,status]。
+      expect(reorderColumns(ORDER, "status", "cache")).toEqual(["session", "time", "dur", "model", "cache", "status"])
+    })
+    it("session 绝不参与重排:即便误传 session 也原样返回", () => {
+      expect(reorderColumns(ORDER, "session", "status")).toEqual([...ORDER])
+      expect(reorderColumns(ORDER, "status", "session")).toEqual([...ORDER])
+    })
+    it("未知 id 原样返回(不动)", () => {
+      expect(reorderColumns(ORDER, "nope", "status")).toEqual([...ORDER])
+    })
+    it("active===over(未移动)→ 顺序不变", () => {
+      expect(reorderColumns(ORDER, "model", "model")).toEqual([...ORDER])
+    })
   })
 })

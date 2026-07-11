@@ -13,6 +13,7 @@ import type {
   VisibilityState,
 } from "@tanstack/react-table"
 
+import { arrayMove } from "@dnd-kit/sortable"
 import {
   //
   createElement,
@@ -334,4 +335,18 @@ export function mergeColumnSizing(persisted: Record<string, number> | null | und
   if (persisted && typeof persisted === "object")
     for (const id of Object.keys(DEFAULT_COLUMN_SIZING)) if (typeof persisted[id] === "number") merged[id] = persisted[id]
   return merged
+}
+
+/**
+ * dnd 重排(Task 3)的纯计算:把 `activeId` 列移到 `overId` 列的位置,session gutter 恒锁首、不参与重排。
+ * 从 `order` 剥掉 session → 在余下列上 `arrayMove(from→to)` → 复位 session 到首。activeId/overId 任一
+ * 不在非 session 列里(如误传 session、未知 id)则原样返回(不动)。返回值仍会经 `mergeColumnOrder` 幂等归一
+ * (useColumnState.setOrder),此处提前锁首是 belt-and-suspenders:即便下游归一化改动,重排本身也不破坏 session 首位。
+ */
+export function reorderColumns(order: ReadonlyArray<string>, activeId: string, overId: string): Array<string> {
+  const ids = order.filter((id) => id !== "session")
+  const from = ids.indexOf(activeId)
+  const to = ids.indexOf(overId)
+  if (from === -1 || to === -1) return [...order]
+  return ["session", ...arrayMove(ids, from, to)]
 }

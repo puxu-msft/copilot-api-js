@@ -1,3 +1,9 @@
+import {
+  //
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable"
 import { useQueryClient } from "@tanstack/react-query"
 import {
   //
@@ -5,6 +11,7 @@ import {
   getCoreRowModel,
   useReactTable,
   type ColumnSizingState,
+  type Header,
   type OnChangeFn,
   type Row,
   type VisibilityState,
@@ -17,6 +24,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react"
 import {
@@ -192,6 +200,55 @@ const TableRow: NonNullable<TableComponents<HistoryRowModel, RowContext>["TableR
 const TABLE_COMPONENTS: TableComponents<HistoryRowModel, RowContext> = {
   Table: TableShell,
   TableRow,
+}
+
+/**
+ * 可拖拽重排的表头单元(Task 3)——非 session 列的 `<th>`。经 `useSortable(id=列 id)` 接入
+ * `SortableContext`(HistoryList 表头行)+ 上层 `DndContext`(RequestsListPage):
+ *   · `{...attributes} {...listeners}` 挂在 th 主体 → 抓表头即可拖动整列(PointerSensor,activationConstraint
+ *     distance:4 见 RequestsListPage;微动/点击不误判拖拽)。
+ *   · resize 手柄(Task 2)的 `onPointerDown` 已 stopPropagation → 抓手柄调宽不触发本 th 的拖拽激活(HIGH-2 分区)。
+ *   · `restrictToHorizontalAxis`(RequestsListPage modifier)锁水平位移,故 transform 只取 `x`(译成 translate3d)。
+ * session gutter 不用本组件——它是纯 th、不入 SortableContext、恒锁首、不可拖(见 fixedHeaderContent 特判)。
+ * 固定列(非弹性、非 session)emit inline width;弹性列(preview/response)不设宽(自适应),二者皆可拖。
+ */
+function SortableHeaderCell({ header }: { header: Header<EntrySummary, unknown> }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: header.column.id })
+  const isFixed = header.column.columnDef.enableResizing !== false // 本组件不渲染 session,故等价于「固定列」判定
+  const style: CSSProperties = {
+    ...(isFixed ? { width: header.getSize() } : {}),
+    // restrictToHorizontalAxis 锁水平,只需 translateX;transform 为 null(未拖)时省略。
+    transform: transform ? `translate3d(${transform.x}px, 0, 0)` : undefined,
+    transition,
+    opacity: isDragging ? 0.6 : undefined,
+    // 表头整体即拖拽把手:抓非手柄区域拖动整列(手柄区 pointerdown 被 stopPropagation 拦下走 resize)。
+    cursor: "grab",
+  }
+  return (
+    <th
+      ref={setNodeRef}
+      style={style}
+      className="relative px-2 py-1 text-left font-normal"
+      {...attributes}
+      {...listeners}
+    >
+      {flexRender(header.column.columnDef.header, header.getContext())}
+      {/* 列宽 resize 手柄:仅可 resize 列(getCanResize())出现——enableResizing:false 的弹性列返 false 天然排除。
+          onMouseDown/onTouchStart 驱动 TanStack resize;onPointerDown stopPropagation 挡 dnd useSortable 的 pointerdown(HIGH-2)。 */}
+      {header.column.getCanResize() && (
+        // resize 手柄纯 mouse/touch 拖拽 affordance(键盘调宽非本期范围),强加 role/keyboard 会扭曲语义;
+        // 与本文件滚动容器同款按项目约定禁用该规则而非扭曲代码。
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+        <span
+          data-resize-handle
+          onMouseDown={header.getResizeHandler()}
+          onTouchStart={header.getResizeHandler()}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute inset-y-0 right-0 w-1 cursor-col-resize select-none hover:bg-[var(--color-primary)]"
+        />
+      )}
+    </th>
+  )
 }
 
 interface HistoryListProps {
@@ -590,44 +647,42 @@ export function HistoryList({
                 if (!atTop && tailOn) dispatch({ kind: "scroll-up" })
               }}
               fixedHeaderContent={() =>
-                table.getHeaderGroups().map((hg) => (
-                  <tr
-                    key={hg.id}
-                    className="mono border-b border-[#222] bg-[#111] text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
-                  >
-                    {hg.headers.map((header) => {
-                      // 仅固定列 emit inline width(getSize() 永不返 undefined,无 size 回退 150);
-                      // 弹性列(preview/response,enableResizing:false)/session gutter 不设宽,自适应剩余/特判 10px。
-                      const isFixed = header.column.columnDef.enableResizing !== false && header.column.id !== "session"
-                      return (
-                        <th
-                          key={header.id}
-                          // session 色列表头须镜像其 body td 的无水平 padding(p-0):table-fixed 下列宽由首行(表头)决定,
-                          // 若 session th 带 px-2(16px)会在 w-[10px] 上被 padding 撑大、与 p-0 的 body 色列错位并挤占后续列宽。
-                          // relative:供 resize 手柄绝对定位到 th 右边界。
-                          className={`relative ${header.column.id === "session" ? "p-0 w-[10px]" : "px-2 py-1"} text-left font-normal`}
-                          style={isFixed ? { width: header.getSize() } : undefined}
-                        >
-                          {flexRender(header.column.columnDef.header, header.getContext())}
-                          {/* 列宽 resize 手柄:仅可 resize 列(getCanResize())出现——enableResizing:false 的弹性列/session 返 false 天然排除。
-                              onMouseDown/onTouchStart 驱动 TanStack resize;onPointerDown stopPropagation 挡 Task 3 dnd useSortable 的 pointerdown(HIGH-2)。 */}
-                          {header.column.getCanResize() && (
-                            // resize 手柄纯 mouse/touch 拖拽 affordance(键盘调宽非本期范围),强加 role/keyboard 会扭曲语义;
-                            // 与本文件滚动容器同款按项目约定禁用该规则而非扭曲代码。
-                            // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-                            <span
-                              data-resize-handle
-                              onMouseDown={header.getResizeHandler()}
-                              onTouchStart={header.getResizeHandler()}
-                              onPointerDown={(e) => e.stopPropagation()}
-                              className="absolute inset-y-0 right-0 w-1 cursor-col-resize select-none hover:bg-[var(--color-primary)]"
+                table.getHeaderGroups().map((hg) => {
+                  // SortableContext 的 items = 当前列序里的非 session 列 id(顺序须与渲染的可拖 th 一致)。
+                  // session gutter 不入 items、不可拖(恒锁首,见下方特判分支)。
+                  const sortableIds = hg.headers.filter((h) => h.column.id !== "session").map((h) => h.column.id)
+                  return (
+                    <tr
+                      key={hg.id}
+                      className="mono border-b border-[#222] bg-[#111] text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
+                    >
+                      <SortableContext
+                        items={sortableIds}
+                        strategy={horizontalListSortingStrategy}
+                      >
+                        {hg.headers.map((header) => {
+                          // session gutter:纯 th(不 useSortable、不可拖、恒锁首)。镜像其 body td 的无水平 padding(p-0):
+                          // table-fixed 下列宽由首行(表头)决定,若带 px-2 会在 w-[10px] 上被 padding 撑大、与 p-0 的 body 色列错位。
+                          if (header.column.id === "session") {
+                            return (
+                              <th
+                                key={header.id}
+                                className="p-0 w-[10px] text-left font-normal"
+                              />
+                            )
+                          }
+                          // 非 session 列:可拖表头单元(useSortable + resize 手柄,见 SortableHeaderCell)。
+                          return (
+                            <SortableHeaderCell
+                              key={header.id}
+                              header={header}
                             />
-                          )}
-                        </th>
-                      )
-                    })}
-                  </tr>
-                ))
+                          )
+                        })}
+                      </SortableContext>
+                    </tr>
+                  )
+                })
               }
               itemContent={(_index, row, context) =>
                 row.getVisibleCells().map((cell) => {
