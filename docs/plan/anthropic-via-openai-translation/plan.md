@@ -1,0 +1,116 @@
+# Master Plan：通用翻译矩阵实施计划
+
+设计源（WHY+契约）：[RFC v5](../../rfc/2026-07-11-anthropic-via-openai-translation.md)｜ADR [decideRoute 拆分](../../decisions/2026-07-11-route-decision-separated-from-format-codec.md) + [全矩阵](../../decisions/2026-07-11-universal-codec-translation-matrix.md)
+本文（HOW+锚点）：每 phase 的 TDD task 步骤 + factory/锚点表 + commit invariant。per-phase kickoff 见 [prompts/](prompts/)。
+状态：待 subagent review → 逐 phase 实现。
+
+## 全局 commit invariant（每 commit 终态）
+1. `bun run typecheck` 绿 + `bun test` 全套件通过。
+2. **现状 4×3 矩阵已有 6 格行为逐字不变**（golden 锁）——直到该格被有意扩展。
+3. 中间态绝不半坏（过渡态显式无害：dead code / silent flag）。
+4. 细粒度 pathspec 提交（`git commit -F msg -- 精确路径`），conventional commits，无模型署名。
+
+## Phase 依赖 DAG
+```
+Phase 0 (codec 纯化) ──前置阻塞全部──┐
+                                      ▼
+Phase 1 (路由骨架+二维门控) ─→ Phase 2 (hub+请求翻译) ─→ Phase 3 (非流式响应)
+                                      │
+                                      ▼
+                              Phase 4 (流式两向+handler缝合) [byte-critical 串行]
+                                      │
+                                      ▼
+Phase 5 (反向格子接线) [格式独立可并行,除 gemini→messages] ─→ Phase 6 (doc-sync)
+```
+Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/responses→messages 可并行，gemini→messages 依赖 hub 两段 translator 组合）；Phase 6 收尾。
+
+---
+
+## Phase 0：FormatCodec 纯化（decideRoute → router 自由函数）
+
+**目标**：`decideRoute` 从 5 codec 拆到 `src/lib/pipeline/router.ts` 自由函数，`FormatCodec` 接口去 `decideRoute`。**行为逐字节等价**（纯重构）。
+
+**Golden 预捕获（改动前，large-refactor §4）**：
+- T0.0 写 `tests/pipeline/router-golden.it.test.ts`：对 4 端点 × 全场景（每 vendor 的 passthrough/translate/reject + Google force-fallback + @后缀）断言 `RouteDecision`。**在改动前的 HEAD 上跑通**（锁定现状）。
+
+**Task（每个一 commit）**：
+- T0.1 建 `router.ts`：`decideRoute(RouteInput): RouteDecision` + 搬 **anthropic** 的 `supportsDirectAnthropicApi` 逻辑；driver 单调用点（[driver.ts:144](../../../src/lib/pipeline/driver.ts#L144)，`deps.codec.decideRoute` 影响全格式）改 `router.decideRoute`，**router 按 clientFormat 分派：anthropic 走新逻辑、cc/responses/gemini 走过渡桥委托回各 codec 仍 live 的 decideRoute**（守全套件绿，桥随 T0.2-0.4 逐格移除）。anthropic codec decideRoute 留 dead。全 4 格 golden 过。
+- T0.2 搬 **openai-cc** 的 `decideOpenAiCcRoute`（[openai-cc/codec.ts:354](../../../src/lib/codec/openai-cc/codec.ts#L354)）→ router，移 cc 过渡桥。golden 全过。
+- T0.3 搬 **openai-responses** 的 `decideOpenAiResponsesRoute`（[openai-responses/codec.ts:381](../../../src/lib/codec/openai-responses/codec.ts#L381)，**含 Google force-fallback**）→ router，移 responses 桥。golden 全过。
+- T0.4 搬 **gemini**（委托 cc 的 decideRoute）→ router，移 gemini 桥。golden 全过。
+- T0.5 `FormatCodec` 接口删 `decideRoute`（[types.ts:626](../../../src/lib/pipeline/types.ts#L626)）+ 删 5 codec 实现 + driver `inspectRequest`([:202](../../../src/lib/pipeline/driver.ts#L202)) 同步 + dry-run-pipeline 消费点。此时桥已全移除。typecheck 绿 = 无残留调用。
+- **factory 锚点**：`supportsDirectAnthropicApi`([features.ts:38](../../../src/lib/anthropic/features.ts#L38))、`decideOpenAiCcRoute`、`decideOpenAiResponsesRoute`、`shouldForceChatCompletionsFallback`([fallback.ts](../../../src/routes/responses/fallback.ts))、`isEndpointSupported`/`isResponsesSupported`([endpoint.ts](../../../src/lib/models/endpoint.ts))。
+- **invariant**：**5 decideRoute 对 codec 闭包纯**（已核实，只读 env.model）→ 可无损搬无状态 router。
+
+---
+
+## Phase 1：路由骨架 + 二维门控切换
+
+**目标**：resolveModelTarget 后缀 + routeOverride 通路 + router 全矩阵决策树 + 改写/策略 appliesTo 轴切换。**现状默认腿零回归**。
+
+**Task**：
+- T1.1 `resolveModelTarget(model):{name,routeOverride}`（[resolver.ts](../../../src/lib/models/resolver.ts)）：入口剥顶层后缀（W-c 客户端直发）+ `resolveOverrideTarget`([:218](../../../src/lib/models/resolver.ts#L218)) 递归内每环剥（FAIL-1）；后缀枚举 3 值 `{cc,responses,messages}`。`resolveModelName=resolveModelTarget(_).name` 薄封装。单测：modifier+@cc、override 链、客户端直发、@messages、`@xxx` 不识别。
+- T1.2 `RequestEnvelope`/`RawHttpRequest.preResolved` 加 `routeOverride?`（W-b 通路）；各 route 调 `resolveModelTarget` 经 preResolved 线程化。
+- T1.3 router 全矩阵决策树（[RFC §4.3](../../rfc/2026-07-11-anthropic-via-openai-translation.md)）：候选 targetEndpoint 解析 + **force-fallback 移 targetEndpoint 解析后统一拦截**（FAIL-Google-2）+ 每入站 W-priority 序 + FAIL-3 严格 gate + W4 legacy 放行。单测全矩阵决策树。
+- T1.4 **改写/策略 registry 全格式装配**（FAIL-P）：driver S3/S5 从 `{targetEndpoint→改写册}` 全格式表 assemble（取代 per-route 单格式注入 `BUILTIN_*=[]`）。6 Anthropic 改写 appliesTo `clientFormat==="anthropic"`→`targetEndpoint==="/v1/messages"`（[request-rewrite-adapter.ts:60](../../../src/lib/codec/anthropic/request-rewrite-adapter.ts#L60)、[response-rewrite-adapters.ts:96](../../../src/lib/codec/anthropic/response-rewrite-adapters.ts#L96) ANTHROPIC）；CC 改写册 appliesTo 扩 `targetEndpoint∈{cc,responses}`。单测：二维门控每腿 fire 正确册。
+- T1.4b **策略 stack 按 targetEndpoint 供料**（WARN-1/W-strategies-builder）：driver 按 targetEndpoint 装配 strategies——Anthropic strategy 的 `resanitize`/`betaProbe` 供料由**共享 registry 提供格式专属 builder，不依赖 route 自有 codec**（反向 cc/responses→messages 走非-messages route 时也能拿到 Anthropic strategy 料）。单测：反向腿上游 Anthropic sanitize 有料。
+- T1.5 web_search 前置步先 router.decideRoute（[handler-v4.ts:225](../../../src/routes/messages/handler-v4.ts#L225)）+ reject 经 ctx（FAIL-2/W-d）。
+- T1.6 **可观测性落库**（WARN-2/W6/W-reject-obs）：history 记录 `model{}` 的 **routeOverride + 实际出站腿** + **翻译腿 format 标签**（镜像 openai-gemini `ENDPOINT_TYPE`，区分翻译 vs direct）+ reject 经 ctx 有记录 + **sampleRequest 按 targetEndpoint**（翻译腿采 CC wire，N-sampleRequest）。符合 richest-data-flow（后端完整存）。
+- **invariant**：现状各格式默认腿 passthrough 零变（golden T0.0 仍全过，含 Google force）；anthropic-direct 二维门控翻转等价（Phase 1 期间翻译腿未出现，`clientFormat==="anthropic" ⟺ targetEndpoint==="/v1/messages"` 恒真，逐字节等价）。
+
+---
+
+## Phase 2：hub 共享翻译层 + Anthropic↔CC 请求翻译
+
+**目标**：抽 hub 共享层 + 一对请求翻译器，anthropic codec 翻译腿委托 hub。
+
+**Task**：
+- T2.1 建 `src/lib/pipeline/hub-translate.ts`：`(sourceFormat, targetEndpoint, env)→wire + 反向 render` 委托层。内部持 CC↔Anthropic + CC↔Responses primitive。
+- T2.2 `anthropic-to-cc-request.ts`（正向，[openai/translate/](../../../src/lib/openai/translate/)）：Anthropic Messages→CC（继承 spec §6 映射表 + 多 choices 感知）。单测各 block 类型。
+- T2.3 `cc-to-anthropic-request.ts`（反向）：CC→Anthropic Messages，**含 WARN-E 硬约束清单**（thinking 绝不合成红线、tool_use.id 格式、cache_control 不注入、server tools 剥离）。单测 + 反向硬约束逐项。
+- T2.4 anthropic codec `translateOut`/`prepareWire` 按 targetEndpoint 委托 hub（翻译腿产 CC wire）；truncate 基线取 translateOut 后 CC body（W-truncate-baseline）。
+- **factory 锚点**：`responses-to-cc-request.ts`（对称参照）、gemini `convert-request.ts`、openai-cc codec `prepareWire`。
+
+---
+
+## Phase 3：非流式响应两向
+
+**Task**：
+- T3.1 `cc-to-anthropic`（非流式）：CC choices→Anthropic content[]（tool_calls→tool_use、finish_reason→stop_reason、usage、toolu_ 透传、多 choices 折叠）。
+- T3.2 `anthropic-to-cc`（非流式，反向）：Anthropic content[]→CC choices（thinking 丢弃、tool_use→tool_calls、stop_reason→finish_reason）。
+- T3.3 anthropic codec `renderResponseNonStreaming` 按 targetEndpoint；OQ4 错误透传非流式两路。
+- 单测 + @responses 四跳往返 oracle。
+
+---
+
+## Phase 4：流式两向 translator + handler 缝合（最难 byte-critical）
+
+**Task**：
+- T4.1 `cc-to-anthropic-stream.ts`（正向）：`renderFrame/flush/getMeta` 自供（WARN-C）；W1 block-index 分配器 + W2 thinking-first + W3 message_start usage 占位 + 多 choices 折叠 + N1 event-line 全合成点。**golden 预捕获 + 独立 Anthropic SDK oracle**。
+- T4.2 anthropic 入站 handler 缝合（[RFC §7.2](../../rfc/2026-07-11-anthropic-via-openai-translation.md)）：翻译分支入站 CC acc（onRenderedFrame）+ 出站 Anthropic 心跳（`makeAnchoredSseSink` 复用）+ prelude/translator/reconcile 三方 message_start（NIT-H：reconcile 现状机制已适配 render 后帧，无需改识别）+ 截断读 getStreamMeta().finishReason（F2）。
+- T4.3 cc 腿单跳 vs responses 腿二跳区分（WARN-F）；responses 腿 getStreamMeta 信号链（Responses翻译→CC帧→累积）。
+- T4.4 **流式 reasoning 实测**（OQ1 剩余，golden 预捕获时探针）。
+- **invariant**：anthropic-direct 流式 golden 逐字节不变（心跳/anchor/reconcile 复用不回归）。
+
+---
+
+## Phase 5：反向格子接线（cc/responses/gemini → messages 出站）
+
+**Task**：
+- T5.1 `anthropic-to-cc-stream.ts`（反向流式，FAIL-A'）：**逐帧穷举表**——锚定真实帧集 [stream-accumulator.ts:156-186](../../../src/lib/anthropic/stream-accumulator.ts#L156)（顶层 8 类含 ping swallow/error 映射）+ [:248-278](../../../src/lib/anthropic/stream-accumulator.ts#L248)（block 5 类含 **server_tool_use 剥离**、redacted_thinking 丢弃）+ [:311-334](../../../src/lib/anthropic/stream-accumulator.ts#L311)（delta 4 类）。**content_block_stop→CC finish 状态转换**（主干）。逐帧 golden。
+- T5.2 cc→messages 接线：cc handler render 经 hub Anthropic→CC + 心跳保持 CC 现状机制（无心跳）+ §7.3 上游保护归属。
+- T5.3 responses→messages 接线：hub 二跳（Anthropic→CC→Responses render，串联点在 hub 内部，WARN-F）。
+- T5.4 gemini→messages 接线（W-gemini-hub-composition）：hub 内串两段有状态 translator（Anthropic→CC + 现有 CC→Gemini geminiTranslator 闭包）。**依赖 hub 组合契约，非纯并行**。
+- 单测 + 反向 tool-name oracle（W-mapper-format）+ gemini→messages 最长链 oracle。
+
+---
+
+## Phase 6：doc-sync
+DESIGN.md 活的架构现状加矩阵表 + router 层 + 二维门控 + hub 共享层 + 配置语法（@cc/@responses/@messages）；count_tokens 后缀剥离；spec §10 删反向 YAGNI 标注；**NIT-E 文档点明「thinking signature 硬约束在翻译矩阵天然规避」**（消实现者疑虑）。**OQ2**（reasoning_effort 档位映射）若 Phase 2 未做则记 `docs/todo/`。
+
+---
+
+## 测试锚点汇总
+- Golden 预捕获点：T0.0（router）、T4.1（正向流式）、Phase 5（反向逐帧）。
+- 独立 oracle：Anthropic SDK（流式 event-line）、@responses 四跳、gemini→messages 最长链、反向 tool-name。
+- 隔离：DI/fetch-mock、useIsolatedRuntime（需 runtime 的测试）。
