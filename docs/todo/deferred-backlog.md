@@ -369,3 +369,13 @@
 - **理想架构**：给 factor 模型加**第二维**（组成/tool 密度）——如按 `(sizeBucket, toolDensityBucket)` 二维分桶，或在 per-bucket factor 上叠加一个 tool-ratio 线性修正项；学习信号仍来自成功腿 usage + local estimate，只是落桶键多一维。`countTotalTokens` 已能从 payload 算出 tool block 占比作第二维特征。
 - **为何暂缓**：残差已在两消费者可接受范围内（against over-engineering——精度收益边际递减，第二维把 6.9%→可能 ~4-5%，价值未证）；二维分桶会稀释每桶样本量（需更多 live/backfill 数据才收敛）、增加 seed 表维度与迁移复杂度；spec §2/§11 已显式列为暂缓项、两轮 subagent 对抗审查均认可暂不加。属「独立精度增强工作单元」非「因范围大降级」。
 - **若做需改什么**：① `engine.ts` 的 `FactorBucket` 落桶键加 tool-density 维度（`bucketIndexFor` → 二维索引，或 factor 叠加 tool-ratio 项）；② `CalibrationSink` + `calibration-backfill.ts` 落桶时算 tool 密度特征（复用 `countTotalTokens` 的 tool block 统计）；③ `DEFAULT_FACTOR_SEED` 表升二维 + `boundsVersion` bump 触发重 seed；④ 离线 `exp/token-calibration-size-aware/` 重训二维模型验证残差实际降幅、时间留出集不过拟合；⑤ 迁移路径（一维 v2 → 二维 v3）。发现方：size-aware calibration spec §2/§11 暂缓裁决（2026-07-11）。
+
+## size-aware calibration 的廉价 follow-up（2026-07-11 全分支终审 triage）
+
+三条长远正确的低成本增强，`feat/size-aware-calibration` 终审判为非阻塞、记此暂缓：
+
+- **CalibrationSink model-miss 静默无日志**：`src/lib/observability/sinks/calibration.ts` 在 `state.modelIndex.get(body.model)` 未命中时裸 `return`，与 backfill `processRow` 打 skip 计数不对称。**若做**：补 `consola.debug`（never-swallow 观测性），使「某端点 wire 名 ≠ index id 导致全程不学」可见。发现方：Task 5 review + 全分支终审。
+- **backfill cursor+accum 两次 setMeta 非原子**：`src/lib/history/sqlite/calibration-backfill.ts` 相邻两条同步 sqlite 写之间无 await，仅 SIGKILL/断电撕裂窗可致 1 批（~100 行）cursor/accum 漂移；有界 + seed 自 CAP 封顶自愈。sibling backfills（usage-normalize / response-preview）同款 pattern。**若做**：统一用 `db.transaction` 包裹 cursor+accum 双写（系统性、非单点）。发现方：Task 6 review + 全分支终审。
+- **calibration 靶向测试缺口**：CalibrationSink 的 REAL_FLOOR/EST_FLOOR/model-miss/usage-缺-cache 分支、pre-flight driver 接缝「首轮只调一次」均无直接单测（经读码 + 505 回归间接覆盖，行为已核实正确）。**若做**：补靶向 golden 用例。发现方：Task 5/9 review + 全分支终审。
+
+**待实测验证项（spec 已 defer，§3.2-S2/§11）**：400 腿 `reportedCurrent` 是否含 cache token（whole-prompt 口径）。Task 1-4 实施时探针初判含 cache（opus 400 报 ~1M 只可能 cache-inclusive），但未在活服务器端到端复验。若某天发现 cache-heavy 请求两腿口径偏差，回查此处。400 几乎总落顶桶 + CAP 封顶，影响边际。
