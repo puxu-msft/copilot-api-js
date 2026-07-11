@@ -85,6 +85,10 @@ export interface RequestContextSnapshot {
   requestBodySize?: number
   /** Pre-resolved billing multiplier (from state.modelIndex) for display. */
   multiplier?: number
+  /** 当前在途 attempt 的 startTime（footer/panel 用；轻量 snapshot() 每事件填充，故高频 stream_progress 也带）。 */
+  currentAttemptStartedAt?: number
+  /** 已发生的 attempt 数（_attempts.length）；footer/panel 算 retries=attemptCount-1。 */
+  attemptCount?: number
   /**
    * Activity summary (the `summarizeRequestContext(ctx)` shape used by the
    * front-end's WS activity view). Populated by the producer (manager.ts)

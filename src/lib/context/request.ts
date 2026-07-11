@@ -281,6 +281,7 @@ export function createRequestContext(opts: {
   function snapshot(): RequestContextSnapshot {
     const resolvedForLookup = _resolvedModel ?? undefined
     const billing = resolvedForLookup ? appState.modelIndex.get(resolvedForLookup)?.billing : undefined
+    const currentAttempt = _attempts.at(-1)
     return {
       id,
       endpoint: opts.endpoint,
@@ -295,6 +296,8 @@ export function createRequestContext(opts: {
       queueWaitMs: _queueWaitMs,
       ...(requestBodySize !== undefined && { requestBodySize }),
       ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+      ...(currentAttempt?.startTime !== undefined && { currentAttemptStartedAt: currentAttempt.startTime }),
+      ...(_attempts.length > 0 && { attemptCount: _attempts.length }),
     }
   }
 
