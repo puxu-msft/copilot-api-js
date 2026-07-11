@@ -46,7 +46,10 @@ function isTyping(target: EventTarget | null): boolean {
  * `bindKeys`(默认关):挂 document keydown,`ArrowLeft`/`k` → prev、`ArrowRight`/`j` → next
  * (isTyping + 修饰键守卫);消费方(P3 详情 chrome)开启即得键盘翻页。键位是**交用户 UX 检查项**。
  */
-export function useRequestNeighbors(currentId: string | null, opts?: { bindKeys?: boolean }): Neighbors & {
+export function useRequestNeighbors(
+  currentId: string | null,
+  opts?: { bindKeys?: boolean },
+): Neighbors & {
   goPrev: () => void
   goNext: () => void
   hasPrev: boolean
@@ -69,17 +72,15 @@ export function useRequestNeighbors(currentId: string | null, opts?: { bindKeys?
   useEffect(() => {
     if (!bindKeys) return
     const onKey = (e: KeyboardEvent) => {
-      if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
+      if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
       if (e.key === "ArrowLeft" || e.key === "k") {
-        if (prevId !== null) {
-          e.preventDefault()
-          goPrev()
-        }
+        if (prevId === null) return
+        e.preventDefault()
+        goPrev()
       } else if (e.key === "ArrowRight" || e.key === "j") {
-        if (nextId !== null) {
-          e.preventDefault()
-          goNext()
-        }
+        if (nextId === null) return
+        e.preventDefault()
+        goNext()
       }
     }
     document.addEventListener("keydown", onKey)
