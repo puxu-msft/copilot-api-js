@@ -39,7 +39,9 @@ import { assertNever } from "~/lib/observability"
 import {
   //
   formatDuration,
+  formatDurationField,
   formatTime,
+  resolveDurationColorMs,
 } from "~/lib/observability/projections/format"
 import { formatLogLine } from "~/lib/observability/projections/log-line"
 import { handleShutdownSignal } from "~/lib/shutdown"
@@ -500,6 +502,14 @@ export class TerminalUi {
     const durationMs = Date.now() - ctx.startTime
     const queueWait = ctx.queueWaitMs > 100 ? formatDuration(ctx.queueWaitMs) : undefined
 
+    // 重试时长字段：有重试（attempts 多于 1 条）展开为 `last/total(N)`，无重试保持单值。
+    // 零 attempt 终态（early failure）时 attempts 为 undefined，retries 兜底 0、单值不崩。
+    const attempts = historyEntry?.attempts
+    const retries = (attempts?.length ?? 1) - 1
+    const lastMs = attempts?.at(-1)?.durationMs
+    const durationField = formatDurationField({ lastMs, totalMs: durationMs, retries })
+    const durationColorMs = resolveDurationColorMs({ lastMs, totalMs: durationMs, retries })
+
     // Thinking is a terminal field rendered once here (prepended), then the
     // accumulated feature tags.
     const allTags = entry.thinking ? [formatThinkingTag(entry.thinking), ...entry.tags] : entry.tags
@@ -522,8 +532,8 @@ export class TerminalUi {
       clientModel: ctx.clientModel,
       multiplier: ctx.multiplier,
       status,
-      duration: formatDuration(durationMs),
-      durationMs,
+      duration: durationField,
+      durationMs: durationColorMs,
       queueWait,
       requestBodySize: ctx.requestBodySize,
       responseBodySize: entry.streamBytesIn,
