@@ -223,8 +223,8 @@
 
 html, body, #root { height: 100%; margin: 0; }
 body {
-  background: var(--color-bg);
-  color: var(--color-text);
+  background: var(--surface-base);
+  color: var(--content-text);
   font-family: ui-sans-serif, system-ui, sans-serif;
   font-size: 15px;
 }
