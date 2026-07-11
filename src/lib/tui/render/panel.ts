@@ -130,16 +130,20 @@ export function buildPanelLines(args: {
   return lines
 }
 
-/** One plain-text table row: `<id8> <model> <method> <path> <elapsed> <bytes> <events>ev <tags>`. */
+/** One plain-text table row: `<req_id> <model> <method> <path> <elapsed> <bytes> <events>ev <tags>`. */
 function formatPanelRow(view: DetailView, now: number): string {
   const { ctx } = view
-  const shortId = ctx.id.slice(0, 8)
+  // Full request id, not a prefix slice: real ids look like `req_<ts>_<seq>`
+  // where the DISTINGUISHING part is the trailing `_<seq>` — a leading slice
+  // would show only the shared `req_<ts>` prefix. The id sits at the row head,
+  // so `truncateToWidth` (which trims the tail) never eats it.
+  const id = ctx.id
   const model = ctx.resolvedModel ?? "(resolving)"
   const elapsed = formatDuration(now - ctx.startTime)
   const bytes = formatByteFlow(ctx.requestBodySize, view.streamBytesIn)
   const events = `${view.streamEventsIn ?? 0}ev`
   const tags = view.tags && view.tags.length > 0 ? ` [${view.tags.join(",")}]` : ""
-  return `${shortId} ${model} ${ctx.method} ${ctx.path} ${elapsed} ${bytes} ${events}${tags}`
+  return `${id} ${model} ${ctx.method} ${ctx.path} ${elapsed} ${bytes} ${events}${tags}`
 }
 
 /**

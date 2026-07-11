@@ -193,11 +193,21 @@ describe("buildPanelLines", () => {
     expectAllFit(lines, columns)
   })
 
-  test("rows a short id form is rendered (not the full id)", () => {
-    const columns = 80
-    const [line] = buildPanelLines({ active: [makeDetail({ id: "abcdefgh-1234-5678-9012", model: "m", elapsedMs: 1000 })], now: NOW, columns, selectedIndex: -1, scrollOffset: 0, rows: 10, showHelp: false })
-    expect(line).toContain("abcdefgh")
-    expect(line).not.toContain("abcdefgh-1234-5678-9012")
+  test("rows render the full request id (not a leading prefix slice)", () => {
+    // Real ids look like `req_<ts>_<seq>` where the DISTINGUISHING part is the
+    // trailing `_<seq>` — a leading slice would show only the shared prefix.
+    // The id sits at the row head so truncateToWidth (tail-trim) never eats it.
+    const columns = 120
+    const [line] = buildPanelLines({
+      active: [makeDetail({ id: "req_1783706112773_1180", model: "m", elapsedMs: 1000 })],
+      now: NOW,
+      columns,
+      selectedIndex: -1,
+      scrollOffset: 0,
+      rows: 10,
+      showHelp: false,
+    })
+    expect(line).toContain("req_1783706112773_1180")
   })
 
   test("scrollOffset selects the visible window; selected row is reversed at its window position", () => {
@@ -238,7 +248,7 @@ describe("buildPanelLines", () => {
     const lines = buildPanelLines({ active, now: NOW, columns, selectedIndex: 0, scrollOffset: 0, rows: 4, showHelp: true })
     // rows=4 → 3 entry rows + 1 keybar row.
     expect(lines.length).toBe(4)
-    const keybar = lines[lines.length - 1]
+    const keybar = lines.at(-1)
     expect(keybar).toContain("nav")
     expect(keybar).toContain("detail")
     expect(keybar).toContain("quit")
