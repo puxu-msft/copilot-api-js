@@ -21,6 +21,7 @@
 import consola from "consola"
 import pc from "picocolors"
 
+import type { HistoryEntryData } from "~/lib/context/types"
 import type {
   //
   FeatureKind,
@@ -177,18 +178,23 @@ export class TerminalUi {
         return
       }
       case "request.completed": {
-        this.onTerminal(event.ctx, "completed", { statusCode: 200 })
+        this.onTerminal(event.ctx, "completed", { statusCode: 200 }, event.entry)
         return
       }
       case "request.failed": {
-        this.onTerminal(event.ctx, "failed", {
-          statusCode: event.statusCode,
-          error: event.error,
-        })
+        this.onTerminal(
+          event.ctx,
+          "failed",
+          {
+            statusCode: event.statusCode,
+            error: event.error,
+          },
+          event.entry,
+        )
         return
       }
       case "request.aborted": {
-        this.onTerminal(event.ctx, "aborted", { error: "client disconnected" })
+        this.onTerminal(event.ctx, "aborted", { error: "client disconnected" }, event.entry)
         return
       }
       // Non-HTTP consola logs republished onto the bus (republish.ts). Rendered
@@ -303,7 +309,12 @@ export class TerminalUi {
     this.printLog(message)
   }
 
-  private onTerminal(ctx: RequestContextSnapshot, kind: "completed" | "failed" | "aborted", info: { statusCode?: number; error?: string }): void {
+  private onTerminal(
+    ctx: RequestContextSnapshot,
+    kind: "completed" | "failed" | "aborted",
+    info: { statusCode?: number; error?: string },
+    historyEntry?: HistoryEntryData,
+  ): void {
     const entry = this.active.get(ctx.id) ?? {
       ctx,
       tags: [],
@@ -335,6 +346,12 @@ export class TerminalUi {
     const errorStr = isError && info.error ? `: ${info.error}` : ""
     const extra = tagStr + errorStr || undefined
 
+    // Token/cache columns come from the terminal event's history entry (final
+    // attempt's upstream usage — the same direct optional-chain access used by
+    // context/request.ts). Undefined usage (no attempts / failed early) omits
+    // the columns; the log-line formatter is null-tolerant.
+    const usage = historyEntry?.attempts?.at(-1)?.upstreamResponse?.usage
+
     const message = formatLogLine({
       prefix: isError ? "[FAIL]" : "[ OK ]",
       time: formatTime(),
@@ -348,6 +365,10 @@ export class TerminalUi {
       queueWait,
       requestBodySize: ctx.requestBodySize,
       responseBodySize: entry.streamBytesIn,
+      inputTokens: usage?.input_tokens,
+      outputTokens: usage?.output_tokens,
+      cacheReadInputTokens: usage?.cache_read_input_tokens,
+      cacheCreationInputTokens: usage?.cache_creation_input_tokens,
       extra,
       reqId: isError ? ctx.id : undefined,
       isError,

@@ -1,6 +1,6 @@
 /**
  * Pure formatter for the canonical log line shape:
- *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↓<out> <extra> <retryableMeta>
+ *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↓<out> ↻<hit%>+<new%> <extra> <retryableMeta>
  *
  * Shared source of truth for the log-line shape, consumed by
  * `~/lib/tui/terminal-ui.ts` (the TerminalUi renderer) and its `render/`
@@ -20,6 +20,7 @@ import {
   //
   formatBillingLabel,
   formatBytes,
+  formatCacheRate,
   formatTokens,
 } from "./format"
 
@@ -134,6 +135,14 @@ export function formatLogLine(parts: LogLineParts): string {
     tokenInfo = ` ${formatTokens(inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens)}`
   }
 
+  // Prompt-cache rate marker (`↻<hit%>+<new%>`), following the token column.
+  // Empty (suppressed) when there is no cache activity — see formatCacheRate.
+  let cacheInfo = ""
+  if (model) {
+    const rate = formatCacheRate(inputTokens, cacheReadInputTokens, cacheCreationInputTokens)
+    if (rate) cacheInfo = ` ${rate}`
+  }
+
   let extraPart = ""
   if (extra) {
     // Retry lines reuse the same red coloring as [FAIL] for the error message.
@@ -148,5 +157,5 @@ export function formatLogLine(parts: LogLineParts): string {
 
   const statusAndMethod = coloredStatus ? `${coloredStatus} ${coloredMethod}` : coloredMethod
 
-  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}${retryableMetaPart}${reqIdPart}`
+  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${cacheInfo}${extraPart}${retryableMetaPart}${reqIdPart}`
 }

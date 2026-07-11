@@ -44,10 +44,10 @@ export function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`
 }
 
-/** Compact integer with K/M suffix. */
+/** Compact integer with a lowercase k/m suffix. */
 export function formatNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
 }
 
@@ -68,6 +68,36 @@ export function formatTokens(input?: number, output?: number, cacheRead?: number
   if (cacheRead) result += pc.dim(`+${formatNumber(cacheRead)}`)
   if (cacheCreation) result += pc.cyan(`+${formatNumber(cacheCreation)}`)
   result += ` ↓${formatNumber(output ?? 0)}`
+  return result
+}
+
+/**
+ * Prompt-cache rate marker: `↻<hit%>+<new%>` where
+ *   hit% = cacheRead / (input + cacheRead + cacheCreation)   — dim (served from cache)
+ *   new% = cacheCreation / (input + cacheRead + cacheCreation) — cyan (written this request)
+ *
+ * The denominator is total billed input; `input` here is the NET fresh count,
+ * disjoint from the cache fields (see request/usage-normalize.ts), so the three
+ * sum to total input. Coloring mirrors {@link formatTokens} (cache read dim,
+ * cache creation cyan). Returns `""` when there is no cache activity (both cache
+ * fields 0/undefined). The `+new%` segment is only appended when
+ * `cacheCreation > 0`.
+ */
+export function formatCacheRate(input?: number, cacheRead?: number, cacheCreation?: number): string {
+  const read = cacheRead ?? 0
+  const creation = cacheCreation ?? 0
+  if (read === 0 && creation === 0) return ""
+  const total = (input ?? 0) + read + creation
+  // Defensive: the guard above already forces total > 0 (read + creation ≥ 1,
+  // token counts non-negative), but keep the divide-by-zero belt if that guard
+  // is ever relaxed.
+  if (total === 0) return ""
+  const hitPct = Math.round((read / total) * 100)
+  let result = pc.dim(`↻${hitPct}%`)
+  if (creation > 0) {
+    const newPct = Math.round((creation / total) * 100)
+    result += pc.cyan(`+${newPct}%`)
+  }
   return result
 }
 
