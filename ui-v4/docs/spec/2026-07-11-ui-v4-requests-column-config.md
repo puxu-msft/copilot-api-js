@@ -5,7 +5,7 @@
 > 类型：纯前端特性（列策展 + 列宽 resize + 列序 reorder，均持久化）。
 > 前置基线：[2026-07-06-ui-v4-requests-list-enhancement.md](2026-07-06-ui-v4-requests-list-enhancement.md)（列引擎 = TanStack Table + react-virtuoso，已有列显隐菜单 + localStorage 持久化）、[2026-07-10-ui-v4-session-color-bar.md](2026-07-10-ui-v4-session-color-bar.md)（session gutter 列 + itemContent 首列特判）。
 > 相关（**独立后端 spec，不在本范围**）：endpoint 列显示枚举串而非 URL path 的根因 = `rawPath` 从未持久化到终态（entries_v2 无 raw_path 列）；实测证实 active 条目有 `rawPath=/v1/messages`、终态条目 `rawPath=None`。修复 = 后端 schema 迁移 + write + read，单独立项。本 spec 里 endpoint 列**默认隐藏**，不阻塞。
-> 状态：**已实施（2026-07-11，分支 feat/ui-v4-column-config）** — 3 Task TDD 逐件过审；待用户人工视觉核验 + merge
+> 状态：**已实施并合入 master（2026-07-11，`d7806021`，经 feat/ui-v4-column-config FF）** — 3 Task TDD 逐件过审 + opus 合并态审查 + 关联 rawPath 后端修复 `90e54da5`；待用户人工视觉核验
 
 把 Requests 列表的列从「固定列集 + 固定顺序 + 写死宽度 + 仅显隐可调」升级到**完全可配置**：重新策展默认列集/顺序 + 新增 cache 命中列、支持**拖拽调列宽**、支持**拖拽改列序**，三者均持久化 + 可一键复位。
 

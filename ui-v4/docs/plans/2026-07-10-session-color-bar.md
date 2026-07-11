@@ -1,5 +1,7 @@
 # Session 色带 + 多选对比高亮 + 可切换色板 — 实施计划
 
+> **实施状态：已完成（2026-07-10 合入 master，`a9293478`）** — 3 Task TDD 逐件过审 + opus 合并态审查；权威现状见 [ui-v4/docs/DESIGN.md §4.4](../DESIGN.md) + spec 同名文件。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 ui-v4 Requests 列表左侧加 session 稳定色带（subagent 缩进+色深），默认按会话淡底纹分组，点色带/按 `f` 多选会话对比高亮（选中强背景、其余变灰），4 套可切换色板持久化；全局时序不动、后端零改动。

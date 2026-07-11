@@ -1,5 +1,7 @@
 # Requests 列完全可配置 — 实施计划
 
+> **实施状态：已完成（2026-07-11 合入 master，`dade8f60`→`d7806021`）** — 3 Task TDD 逐件过审 + opus 合并态审查；关联 rawPath 后端修复 `90e54da5`。权威现状见 [ui-v4/docs/DESIGN.md §4.5](../DESIGN.md) + spec 同名文件。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Requests 列表列升级为完全可配置——重策展默认集/顺序 + 新 cache 命中列 + 拖拽调列宽(resize) + dnd-kit 拖表头改列序(reorder)，三态版本化持久化 + 一键 Reset。
