@@ -73,6 +73,12 @@ import type {
   MessagesPayload,
 } from "~/types/api/anthropic"
 
+import {
+  //
+  autoTruncateAnthropic,
+  countTotalTokens,
+} from "~/lib/anthropic/auto-truncate"
+import { calculateTokenLimit } from "~/lib/anthropic/auto-truncate/truncation"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
@@ -83,6 +89,11 @@ import {
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
+import {
+  //
+  DEFAULT_AUTO_TRUNCATE_CONFIG,
+  factorAt,
+} from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -230,6 +241,10 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
         // mutates enabled→adaptive on retry).
         requestedThinkingType: (truncateBaseline?.thinking as { type?: string } | undefined)?.type,
       })
+    },
+
+    preSend(env) {
+      return anthropicPreSend(env)
     },
 
     sampleRequest(wire, env): RequestSample {
@@ -435,6 +450,42 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
     body: prepared.wire,
     stream: (prepared.wire.stream as boolean | undefined) ?? false,
   }
+}
+
+// ============================================================================
+// S4 — preSend (main-path pre-flight truncation)
+// ============================================================================
+
+/**
+ * First-attempt pre-send hook (size-aware calibration §7). When
+ * `state.autoTruncatePreflight` is ON, predict the request's ANTHROPIC-caliber size
+ * = `est * factorAt` (est is the gpt-tokenizer count) and, if it exceeds the model's
+ * limit, pre-truncate BEFORE the initial send so the necessarily-doomed 400 →
+ * reactive-retry round-trip is skipped. OFF (the default) → strict no-op.
+ *
+ * Caliber invariant: `countTotalTokens` / the truncation engine's internal counts are
+ * gpt caliber, but `learned.tokenLimit` / the predicted size are anthropic caliber. So
+ * the exceed test runs in anthropic caliber (`predicted` vs `limit`), while the target
+ * handed to `autoTruncateAnthropic` MUST be converted back to gpt caliber
+ * (`floor(limit / factor)`) — otherwise the (much larger) anthropic limit sits above
+ * the gpt token count and the engine under-truncates ("everything fits").
+ */
+async function anthropicPreSend(env: RequestEnvelope): Promise<RequestEnvelope> {
+  if (!state.autoTruncatePreflight) return env
+  const model = env.model
+  const body = env.body as MessagesPayload
+
+  const est = await countTotalTokens(body, model)
+  const factor = factorAt(model.id, est)
+  const predicted = Math.ceil(est * factor)
+  const limit = calculateTokenLimit(model, DEFAULT_AUTO_TRUNCATE_CONFIG)
+  // No resolvable limit (unlearned + no capability limit) or the prediction fits →
+  // let the request through unchanged; the reactive retry still catches a real 400.
+  if (limit === undefined || predicted <= limit) return env
+
+  const targetGpt = Math.floor(limit / factor)
+  const truncated = await autoTruncateAnthropic(body, model, { checkTokenLimit: true, targetTokenLimit: targetGpt })
+  return truncated.wasTruncated ? env.with({ body: truncated.payload }) : env
 }
 
 // ============================================================================

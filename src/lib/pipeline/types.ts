@@ -635,6 +635,19 @@ export interface FormatCodec {
    */
   prepareWire(env: RequestEnvelope): PreparedRequest
 
+  /**
+   * S4 first-attempt only: an async pre-send hook the driver awaits ONCE before the
+   * first `prepareWire`, so a codec can rewrite env.body ahead of the initial send
+   * (returns the same env unchanged when it declines). The main-path pre-flight
+   * truncation lives here: the Anthropic codec predicts the request's calibrated
+   * size (est * learned factor) and, when it exceeds the model's limit, pre-truncates
+   * BEFORE sending — skipping the necessarily-doomed 400 round-trip that the reactive
+   * retry would otherwise take (size-aware calibration §7). Optional — codecs omit it
+   * (no-op). Gated per-implementation (`state.autoTruncatePreflight`, default OFF);
+   * the driver runs it unconditionally when present and lets the codec decide.
+   */
+  preSend?(env: RequestEnvelope): Promise<RequestEnvelope>
+
   /** S6: translate one upstream frame back to the client protocol (passthrough = identity). */
   renderResponse(frame: UpstreamFrame, env: RequestEnvelope): ClientFrame | Array<ClientFrame>
 

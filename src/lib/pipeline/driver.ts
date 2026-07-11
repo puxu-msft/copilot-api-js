@@ -251,8 +251,18 @@ async function runExchange(
   let activeStrategy: RetryStrategy | undefined
   // The accepted retry's meta (post-gate), threaded to onMeta + onResolved (C0-②).
   let activeMeta: Record<string, unknown> | undefined
+  // First-attempt-only pre-send hook guard (Task 9): the codec may pre-truncate
+  // env.body ONCE before the initial send; reactive retry takes over afterward, so
+  // we never re-run it per attempt (which would re-truncate an already-trimmed body).
+  let preflightDone = false
 
   for (;;) {
+    if (!preflightDone) {
+      preflightDone = true
+      // MUST run before prepareWire below — otherwise the wire is built from the
+      // un-truncated body and the pre-flight trim would not take effect this attempt.
+      if (deps.codec.preSend) current = await deps.codec.preSend(current)
+    }
     const wire = deps.codec.prepareWire(current)
     current.ctx.beginAttempt({ ...(activeStrategy && { strategy: activeStrategy.name }) })
     // S4 per-attempt sampling (P2.3-S): the codec derives the history effective +
