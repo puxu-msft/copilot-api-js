@@ -5,7 +5,7 @@
 ## 交互式 TUI（P1）打磨项（真终端 + review 暴露，2026-07-11）
 
 - **help 切换时选中行瞬时脱窗（review F1，minor，自愈）**：`controller.ts` 的 `reduce` 处理 `help` 键（翻转 showHelp）时不重算 `scrollOffset`；而 showHelp 使可见内容行数 -1（capped 小窗放大此瞬态）。已复现：overflow 态 sel=4/off=3 按 `?` → 选中脱窗一帧，下次 nav 键 visibleRows 重算即拉回。**若做**：干净修需把 scroll-clamp 在 help 切换时用**新** showHelp 的 visibleRows 重算——但 `reduce` 纯函数只拿到单个 `ctx.visibleRows`（terminal-ui 用**旧** showHelp 算的），故要么 terminal-ui 在 `reduce` 后按新 showHelp 重算 visibleRows 再 `scrollToShow` 重夹（scroll-clamp 部分移到集成层），要么给 `UiContext` 传 `panelRows`+`activeCount` 让 reduce 自算 `panelContentRows(新showHelp)`。属架构小调整，自愈故非阻塞。
-- **面板高度 1↔2↔3 残留 churn（review F2，minor）**：空行根因修（commit `cfc4f05e`）把大摆幅 churn 消除（在途 ≥3 恒 3 行），但在途在 0↔1↔2↔3 之间变时 `panelContentRows` 仍返 1/2/3，`Region` 仍走 geometryChanged 重锚 → 理论上 1-3 并发时仍可能冒 stray blank line。**若做（彻底消除）**：panel 恒 `MAX_PANEL_ROWS` 行、不足补 dim 空行（几何全常）——代价是 1 个在途也占 3 行、浪费屏幕。用户明确要「最高 3」（动态 ≤3），故先取当前取舍；若用户实测 1-3 区间仍频繁空行再切恒高。
+- **~~面板高度 1↔2↔3 残留 churn（review F2）~~ 已解决（commit 069c2293）**：恒高修复（内容补空行、总高恒 min(rows,3)）彻底消除所有高度变化，不止大摆幅——F2 关闭。原文备查：：空行根因修（commit `cfc4f05e`）把大摆幅 churn 消除（在途 ≥3 恒 3 行），但在途在 0↔1↔2↔3 之间变时 `panelContentRows` 仍返 1/2/3，`Region` 仍走 geometryChanged 重锚 → 理论上 1-3 并发时仍可能冒 stray blank line。**若做（彻底消除）**：panel 恒 `MAX_PANEL_ROWS` 行、不足补 dim 空行（几何全常）——代价是 1 个在途也占 3 行、浪费屏幕。用户明确要「最高 3」（动态 ≤3），故先取当前取舍；若用户实测 1-3 区间仍频繁空行再切恒高。
 
 ## per-model 上游过载背压（用户 2026-07-11 决策：spec 完成即止、作可选增强）
 
@@ -23,12 +23,11 @@
   - **外部直写 stdout 撞 footer**：任何绕过 `printLog` 的 `console.log` 会撞坏 footer 协调。当前 republish 已收编 consola，残余风险低。若做：需一个全局 stdout 写入拦截层。
   - **`(resolving)` 桶丢 path**：未解析模型的请求在分组里归 `(resolving) ×N`，丢了各自 path（现状逐条显示会带 path）。footer-only 瞬时损失，完成态 log line 补回。若做：`(resolving)` 桶特殊化为逐条显示 method+path。
 
-## 分组 footer 自适应显示最久的 N 个请求时间（用户 2026-07-10 要求，待 P0 后做）
+## ✅ 已解决：分组 footer 自适应显示最久的 N 个请求时间（用户 2026-07-10 要求 → 2026-07-11 落地 097404df/f1d0492a）
 
 - **背景/动机**：现状多请求分组 footer 每组只显**单个** `maxElapsed`（最老请求）。用户要求：根据组数自适应显示每组**最久的几个**请求时间。
 - **规格（已与用户敲定 + 默认补全）**：每组显示条数 = f(组数)——**1 组→最久 5 个 · 2 组→每组最久 3 个 · 3 组→每组最久 1 个 · 4+ 组→每组最久 1 个**（横向空间紧，默认，仍受 `columns-1` 宽度截断兜底）。组内「最久的 N 个」= 组内请求按 elapsed 降序取前 N 的 elapsed。段形如 `claude-opus-4-8 ×5 ↓12KB 9.1s 7.3s 5.0s 3.2s 1.1s`。
-- **为何待 P0 后**：这是**行为变更**，而 P0 是行为逐字等价的纯重组（golden-fixture 锁 footer 输出）；现在改会污染等价 oracle。P0 落地后作独立 feat，只碰 `tui/render/footer.ts`（重组后 footer 的家）+ 测试 + 一次**有意的** golden 更新。
-- **若做需改什么**：`buildActiveFooter`/`buildModelGroupSegments`（重组后在 `tui/render/footer.ts`）——组内保留 top-N elapsed（现只留 oldest）；段构建按 f(组数) 取 N 个 elapsed 拼接；宽度驱动纳入循环的 segment 宽度估算随之变长（`stringWidth` 仍兜底）；golden-fixture 场景须体现多组多时间；补单测覆盖 1/2/3/4 组各自的 N。
+- **落地实现**：`buildModelGroupSegments`（`src/lib/tui/render/footer.ts`）改 `oldestStart: number` → `startTimes: Array<number>` 累积组内全部起始时刻；新 `elapsedsPerGroup(groupCount)`（1→5/2→3/3+→1）；段内 `startTimes` 升序取前 N（= elapsed 降序 = 最老 N 个）拼 `formatDuration`。宽度驱动纳入循环的 `stringWidth` 兜底不变。golden-fixture 场景（2 组：gpt-5 ×2 + claude-opus-4-8 ×1）已重生为 `gpt-5 ×2 1.0s 500ms`；`console-footer.unit.test.ts` 加 1/2/3 组各自 N 的直接单测（正样本：旧单时间码会红）。
 
 ## GHC server_tool_memory 默认关 — CAPI 接受性待探针
 
