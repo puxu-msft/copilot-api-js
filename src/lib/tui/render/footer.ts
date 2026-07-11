@@ -94,7 +94,7 @@ export function buildActiveFooter(args: { active: ReadonlyArray<ActiveRequestVie
  * 3+ → 1. Within a group the times are the N largest elapsed (oldest requests),
  * shown longest-first.
  */
-function elapsedsPerGroup(groupCount: number): number {
+function timesPerGroup(groupCount: number): number {
   if (groupCount === 1) return 5
   if (groupCount === 2) return 3
   return 1
@@ -104,7 +104,7 @@ function elapsedsPerGroup(groupCount: number): number {
  * One compact plain-text segment per model group: `<model> ×N ↓<sumBytes>
  * <t1> <t2> …`. Groups are sorted by descending count, then by oldest request
  * first. `sumBytes` shown only when the group has streaming progress. The times
- * are the group's {@link elapsedsPerGroup} longest-running requests (elapsed
+ * are the group's {@link timesPerGroup} longest-running requests (elapsed
  * descending = oldest first), so at a glance you see not just how long the
  * oldest has run but the spread of the slowest few.
  */
@@ -131,7 +131,7 @@ function buildModelGroupSegments(active: ReadonlyArray<ActiveRequestView>, now: 
       g.hasBytes = true
     }
   }
-  const perGroup = elapsedsPerGroup(groups.size)
+  const perGroup = timesPerGroup(groups.size)
   const oldestStart = (g: Group): number => Math.min(...g.startTimes)
   return Array.from(groups.values())
     .sort((a, b) => b.count - a.count || oldestStart(a) - oldestStart(b))

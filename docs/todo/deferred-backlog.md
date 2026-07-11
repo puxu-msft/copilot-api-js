@@ -27,7 +27,7 @@
 
 - **背景/动机**：现状多请求分组 footer 每组只显**单个** `maxElapsed`（最老请求）。用户要求：根据组数自适应显示每组**最久的几个**请求时间。
 - **规格（已与用户敲定 + 默认补全）**：每组显示条数 = f(组数)——**1 组→最久 5 个 · 2 组→每组最久 3 个 · 3 组→每组最久 1 个 · 4+ 组→每组最久 1 个**（横向空间紧，默认，仍受 `columns-1` 宽度截断兜底）。组内「最久的 N 个」= 组内请求按 elapsed 降序取前 N 的 elapsed。段形如 `claude-opus-4-8 ×5 ↓12KB 9.1s 7.3s 5.0s 3.2s 1.1s`。
-- **落地实现**：`buildModelGroupSegments`（`src/lib/tui/render/footer.ts`）改 `oldestStart: number` → `startTimes: Array<number>` 累积组内全部起始时刻；新 `elapsedsPerGroup(groupCount)`（1→5/2→3/3+→1）；段内 `startTimes` 升序取前 N（= elapsed 降序 = 最老 N 个）拼 `formatDuration`。宽度驱动纳入循环的 `stringWidth` 兜底不变。golden-fixture 场景（2 组：gpt-5 ×2 + claude-opus-4-8 ×1）已重生为 `gpt-5 ×2 1.0s 500ms`；`console-footer.unit.test.ts` 加 1/2/3 组各自 N 的直接单测（正样本：旧单时间码会红）。
+- **落地实现**：`buildModelGroupSegments`（`src/lib/tui/render/footer.ts`）改 `oldestStart: number` → `startTimes: Array<number>` 累积组内全部起始时刻；新 `timesPerGroup(groupCount)`（1→5/2→3/3+→1）；段内 `startTimes` 升序取前 N（= elapsed 降序 = 最老 N 个）拼 `formatDuration`。宽度驱动纳入循环的 `stringWidth` 兜底不变。golden-fixture 场景（2 组：gpt-5 ×2 + claude-opus-4-8 ×1）已重生为 `gpt-5 ×2 1.0s 500ms`；`console-footer.unit.test.ts` 加 1/2/3 组各自 N 的直接单测（正样本：旧单时间码会红）。
 
 ## GHC server_tool_memory 默认关 — CAPI 接受性待探针
 
