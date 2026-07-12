@@ -634,6 +634,26 @@ export interface State {
   readonly streamIdleTimeout: number
 
   /**
+   * Per-model stream-idle timeout override (seconds), keyed by model-name
+   * substring with `"*"` wildcard (same `findMostSpecific` semantics as
+   * `effortsOverrides`). A match wins over the `streamIdleTimeout` scalar; a
+   * value of 0 means disabled. Bundled default `{ "gpt-5.5": 600 }` (gpt-5.5's
+   * single 400s+ silent-reasoning gap exceeds the 300s scalar). App-guard only —
+   * does NOT touch the undici dispatcher. Hot-reloadable: per-key merged with
+   * bundled, entirely re-applied on config reload. Resolved via
+   * `resolveStreamIdleTimeout*` in `~/lib/models/timeout-resolver`.
+   */
+  readonly streamIdleTimeoutOverrides: Record<string, number>
+
+  /**
+   * Per-model response-header (first-byte) timeout override (seconds), same
+   * keying/merge semantics as `streamIdleTimeoutOverrides`. A match wins over
+   * the `responseHeaderTimeout` scalar; 0 = disabled. Bundled default `{}` (no
+   * built-in value). App-guard only. Resolved via `resolveResponseHeaderTimeout*`.
+   */
+  readonly responseHeaderTimeoutOverrides: Record<string, number>
+
+  /**
    * Upstream TCP keepalive initial-probe delay in seconds.
    * Sets `keepAliveInitialDelay` on the undici socket connecting to GHC, so the
    * kernel emits TCP keepalive probes after this much idle time (and every such
@@ -938,6 +958,8 @@ function cloneState(source: MutableState): MutableState {
     modelOverrides: { ...source.modelOverrides },
     toolSearchOverrides: { ...source.toolSearchOverrides },
     effortsOverrides: { ...source.effortsOverrides },
+    streamIdleTimeoutOverrides: { ...source.streamIdleTimeoutOverrides },
+    responseHeaderTimeoutOverrides: { ...source.responseHeaderTimeoutOverrides },
     negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
     stripCacheControlSubfields: cloneStripBetaHeaders(source.stripCacheControlSubfields),
@@ -993,6 +1015,12 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("effortsOverrides" in patch) {
     cloned.effortsOverrides = patch.effortsOverrides ? { ...patch.effortsOverrides } : undefined
+  }
+  if ("streamIdleTimeoutOverrides" in patch) {
+    cloned.streamIdleTimeoutOverrides = patch.streamIdleTimeoutOverrides ? { ...patch.streamIdleTimeoutOverrides } : undefined
+  }
+  if ("responseHeaderTimeoutOverrides" in patch) {
+    cloned.responseHeaderTimeoutOverrides = patch.responseHeaderTimeoutOverrides ? { ...patch.responseHeaderTimeoutOverrides } : undefined
   }
   if ("negotiationTtlOverridesMs" in patch) {
     cloned.negotiationTtlOverridesMs = patch.negotiationTtlOverridesMs ? { ...patch.negotiationTtlOverridesMs } : undefined
@@ -1192,6 +1220,8 @@ export function setAnthropicBehavior(
       | "anthropicApiKey"
       | "warmupPolicy"
       | "effortsOverrides"
+      | "streamIdleTimeoutOverrides"
+      | "responseHeaderTimeoutOverrides"
       | "stripBetaHeaders"
       | "stripCacheControlSubfields"
       | "stripPartnerFeatures"
@@ -1209,6 +1239,19 @@ export function setAnthropicBehavior(
 
 export function setModelOverrides(modelOverrides: Record<string, string>): void {
   updateState({ modelOverrides })
+}
+
+/**
+ * Replace the per-model stream-idle / response-header timeout override maps.
+ * Replace semantics per field (the maps are already per-key merged with the
+ * bundled defaults upstream in `mergeConfigs`). Deliberately does NOT fire
+ * `transportTimeoutListeners` — these are app-guard-only knobs with no bearing
+ * on the undici dispatcher (which serves plaintext SearXNG on the scalar
+ * `streamIdleTimeout`; GHC rides node:http2 with no transport body-idle). See
+ * ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
+ */
+export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "streamIdleTimeoutOverrides" | "responseHeaderTimeoutOverrides">>): void {
+  updateState(patch)
 }
 
 export function setHistoryConfig(
@@ -1500,6 +1543,13 @@ export const CONFIG_MANAGED_DEFAULTS = {
   anthropicApiKey: "",
   warmupPolicy: "allow" as WarmupPolicy,
   effortsOverrides: {} as Record<string, Array<string>>,
+  // Empty by design — the bundled `gpt-5.5: 600` product default lives in
+  // config.yaml (`timeouts.stream_idle_overrides`), NOT here, mirroring
+  // `model_overrides` (H1: BUILTIN code-constant + union would be wrong; this is
+  // per-key merge with the shippable config, degrading to scalar if config.yaml
+  // is absent). See docs/spec/2026-07-12-per-model-idle-timeout.md §4.2.
+  streamIdleTimeoutOverrides: {} as Record<string, number>,
+  responseHeaderTimeoutOverrides: {} as Record<string, number>,
   stripBetaHeaders: {} as Record<string, Array<string>>,
   stripCacheControlSubfields: {} as Record<string, Array<string>>,
   stripPartnerFeatures: {} as Record<string, Array<string>>,
@@ -1576,6 +1626,8 @@ export function resetConfigManagedState(): void {
     anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+    streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },
+    responseHeaderTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
     stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),
     stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
@@ -1735,6 +1787,8 @@ const mutableState: MutableState = {
   anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
   warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
   effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+  streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },
+  responseHeaderTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides },
   stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
   stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),
   stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),

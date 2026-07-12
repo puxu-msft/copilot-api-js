@@ -682,12 +682,39 @@ export const AutoTruncateConfigSchema = z
   })
   .strict()
 
+/**
+ * Per-model timeout override maps (seconds). Named const so the base `ZodRecord`
+ * reference is stable for `RECORD_MERGE_STRATEGIES` (WeakMap key) — an inline
+ * `z.record(...)` inside the parent shape would get a fresh object each access
+ * and the per-key merge would silently degrade to `replace`.
+ */
+const StreamIdleOverridesSchema = z.record(z.string(), z.number({ error: POSITIVE_INT_MSG }).int(POSITIVE_INT_MSG).nonnegative(POSITIVE_INT_MSG))
+const ResponseHeaderOverridesSchema = z.record(z.string(), z.number({ error: POSITIVE_INT_MSG }).int(POSITIVE_INT_MSG).nonnegative(POSITIVE_INT_MSG))
+
 export const TimeoutsConfigSchema = z
   .object({
     /** Max seconds between SSE events (0 = no timeout). Was top-level `stream_idle_timeout`. */
     stream_idle: nullableNonnegativeInt(),
     /** Max seconds from request start to receiving HTTP response headers (0 = no timeout). Was top-level `fetch_timeout`. */
     response_header: nullableNonnegativeInt(),
+    /**
+     * Per-model stream-idle timeout override (seconds), keyed by model-name
+     * substring with `"*"` wildcard. A match wins over `stream_idle`; 0 = disabled.
+     * Bundled default `{ gpt-5.5: 600 }`. Per-key merged with the user table
+     * (a user `{}` does NOT wipe the bundled entry). App-guard only — does not
+     * touch the undici dispatcher. See ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
+     */
+    stream_idle_overrides: StreamIdleOverridesSchema.nullable()
+      .transform((v): z.infer<typeof StreamIdleOverridesSchema> | undefined => v ?? undefined)
+      .optional(),
+    /**
+     * Per-model response-header (first-byte) timeout override (seconds), same
+     * keying/merge semantics as `stream_idle_overrides`. A match wins over
+     * `response_header`; 0 = disabled. Bundled default `{}` (no built-in value).
+     */
+    response_header_overrides: ResponseHeaderOverridesSchema.nullable()
+      .transform((v): z.infer<typeof ResponseHeaderOverridesSchema> | undefined => v ?? undefined)
+      .optional(),
     /** Upstream TCP keepalive initial-probe delay in seconds (0 = use undici default 60s). Keeps GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it. Node-only. */
     upstream_keepalive: nullableNonnegativeInt(),
     /** Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled). Application-layer complement to `upstream_keepalive`: GHC does NOT forward Anthropic's SSE `ping` frames, so a long thinking silence is a truly idle stream a connection-idle reaper (middlebox/GHC edge) severs WITHOUT `message_stop` (a real cut fired at ~112s) — a periodic PING puts a real frame on the wire. Default 15. Node-only (node:http2 transport). */
@@ -889,6 +916,8 @@ export type RecordMergeStrategy = "per-key" | "replace"
 export const RECORD_MERGE_STRATEGIES = new WeakMap<z.ZodType, RecordMergeStrategy>()
 
 RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
+RECORD_MERGE_STRATEGIES.set(StreamIdleOverridesSchema, "per-key")
+RECORD_MERGE_STRATEGIES.set(ResponseHeaderOverridesSchema, "per-key")
 // effort_overrides / beta_strip_headers / partner_strip_features / tool_strip_fields /
 // tool_keep_fields / retry_reject_body_fields intentionally
 // omitted — they default to "replace": when the user sets one of these

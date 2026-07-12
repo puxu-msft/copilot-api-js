@@ -181,6 +181,23 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   },
   {
+    configKey: "timeouts.stream_idle_overrides",
+    stateKey: "streamIdleTimeoutOverrides",
+    // normalizeModelKeyedRecord folds the "." in "gpt-5.5" to "gpt-5-5" (state
+    // stores the normalized key; findMostSpecific normalizes the query too, so
+    // resolveStreamIdleTimeout("gpt-5.5") still matches).
+    sampleYamlValue: `\n  "gpt-5.5":\n    600`,
+    expectedStateValue: { "gpt-5-5": 600 },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides,
+  },
+  {
+    configKey: "timeouts.response_header_overrides",
+    stateKey: "responseHeaderTimeoutOverrides",
+    sampleYamlValue: `\n  "gpt-5.5":\n    500`,
+    expectedStateValue: { "gpt-5-5": 500 },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides,
+  },
+  {
     configKey: "timeouts.upstream_keepalive",
     stateKey: "upstreamKeepaliveDelay",
     sampleYamlValue: "20",

@@ -26,6 +26,7 @@ import {
   setResponsesConfig,
   setShutdownConfig,
   setTimeoutConfig,
+  setTimeoutOverridesConfig,
   setWebSearchConfig,
   state,
 } from "~/lib/state"
@@ -726,6 +727,16 @@ export async function applyConfigToState(): Promise<Config> {
     if (t.upstream_keepalive !== undefined) setTimeoutConfig({ upstreamKeepaliveDelay: t.upstream_keepalive })
     if (t.upstream_h2_ping !== undefined) setTimeoutConfig({ upstreamH2PingInterval: t.upstream_h2_ping })
     if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
+    // Per-model override maps (already bundled+user per-key merged upstream).
+    // Replace semantics per field; app-guard only (no dispatcher rebuild).
+    if (t.stream_idle_overrides !== undefined) {
+      setTimeoutOverridesConfig({ streamIdleTimeoutOverrides: normalizeModelKeyedRecord(t.stream_idle_overrides, "timeouts.stream_idle_overrides") })
+    }
+    if (t.response_header_overrides !== undefined) {
+      setTimeoutOverridesConfig({
+        responseHeaderTimeoutOverrides: normalizeModelKeyedRecord(t.response_header_overrides, "timeouts.response_header_overrides"),
+      })
+    }
   }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 

@@ -38,4 +38,11 @@ describe("bundled config.yaml", () => {
     expect(overrides.sonnet).toBeDefined()
     expect(overrides.haiku).toBeDefined()
   })
+
+  test("bundled defaults declare gpt-5.5 stream-idle override (600s)", async () => {
+    // §4.2: the built-in per-model idle override lives in bundled config.yaml
+    // (per-key merged with the user table), NOT in CONFIG_MANAGED_DEFAULTS.
+    const config = await loadBundledDefaultConfig()
+    expect(config.timeouts?.stream_idle_overrides?.["gpt-5.5"]).toBe(600)
+  })
 })

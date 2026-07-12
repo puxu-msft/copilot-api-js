@@ -154,6 +154,19 @@ timeouts:
   # 作用于所有流式路径（Anthropic、Chat Completions、Responses）。
   stream_idle: 300
 
+  # Per-model stream_idle override (seconds), keyed by model-name substring; "*" = all models.
+  # 按模型覆盖 stream_idle（秒），键为模型名子串；"*" = 所有模型。
+  # A match wins over the scalar stream_idle above; 0 = disabled (no idle timeout). Longest-substring match wins.
+  # 命中项优先于上面的标量 stream_idle；0 = 禁用（无空闲超时）。最长子串匹配胜出。
+  # gpt-5.5 (effort=high) emits a single 266–462s zero-frame silent-reasoning gap before a terminal burst — the 300s scalar would kill it as a false idle timeout (measured 2026-07-12). App-guard only.
+  # gpt-5.5（effort=high）在末尾爆发前有单个 266–462s 的零帧静默推理段——300s 标量会把它误判为空闲超时掐断（2026-07-12 实测）。仅作用于应用层 guard。
+  stream_idle_overrides:
+    gpt-5.5: 600
+
+  # Per-model response_header override (seconds), same keying as stream_idle_overrides. No built-in value.
+  # 按模型覆盖 response_header（秒），键规则同 stream_idle_overrides。无内置值。
+  response_header_overrides: {}
+
   # Upstream TCP keepalive initial-probe delay in seconds (0 = use undici's 60s default).
   # 上游 TCP keepalive 首探针延迟秒数（0 = 用 undici 内置默认 60s）。
   # Keeps the GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it ("terminated (cause: other side closed)").
