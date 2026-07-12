@@ -134,8 +134,9 @@ export function buildOpenAIResponseData(acc: OpenAIStreamAccumulator, fallbackMo
     success: true,
     model: acc.model || fallbackModel,
     // acc.inputTokens is the OpenAI `prompt_tokens` (TOTAL incl cached); normalize
-    // to the canonical net convention. See usage-normalize.ts.
-    usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }),
+    // to the canonical net convention. See usage-normalize.ts. cache_write (subset of
+    // prompt_tokens) → cache_creation; modality/prediction carried blob-only.
+    usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, cacheCreation: acc.cacheWriteTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     stop_reason: acc.finishReason || undefined,
     content: {
       role: "assistant",
@@ -176,8 +177,9 @@ export function buildResponsesResponseData(acc: ResponsesStreamAccumulator, fall
     model: acc.model || fallbackModel,
     ...(acc.responseId && { responseId: acc.responseId }),
     // acc.inputTokens is the Responses `input_tokens` (TOTAL incl cached); normalize
-    // to the canonical net convention. See usage-normalize.ts.
-    usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+    // to the canonical net convention. See usage-normalize.ts. cache_write (subset)
+    // → cache_creation; modality/prediction carried blob-only.
+    usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     stop_reason: acc.status || undefined,
     content:
       finalContent || toolCalls.length > 0 ?
