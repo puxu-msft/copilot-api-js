@@ -48,7 +48,7 @@ hook 模块 `export` 关心的挂载点，全部可选；**未导出该挂载点
 
 | 挂载点 | phase / 位置 | 签名 | 覆盖用途 |
 |---|---|---|---|
-| `onRequest` | **一次性**请求点：`runRequest` 内、`runRewriteIn` 后、`runExchange` 前（[driver.ts:187-196](../../src/lib/pipeline/driver.ts#L187) 之间） | `(env: RequestEnvelope) => RequestEnvelope \| void` | 人体工学地改写逻辑请求（返回 void 直通） |
+| `onRequest` | **一次性**请求点：`runRequest` 内、`runRewriteIn` 后、`runExchange` 前（[driver.ts:187-196](../../src/lib/pipeline/driver.ts#L187) 之间） | `(env: RequestEnvelope) => RequestEnvelope \| undefined` | 人体工学地改写逻辑请求（不返回 / 返回 undefined 直通） |
 | `onExchange` | S4 上游交换（**核心**），包裹 `deps.transport.send`（[driver.ts:310](../../src/lib/pipeline/driver.ts#L310)） | `(wire: PreparedRequest, env: RequestEnvelope, next: () => Promise<UpstreamStream>) => Promise<UpstreamStream>` | 四用途全覆盖（见 §3.3） |
 | `rewriteUpstreamFrame` | 响应逐帧，**在 driver 上游-original 采样之后、rewrite 链之前**（[driver.ts:446-449](../../src/lib/pipeline/driver.ts#L446) 之间） | `(frame: UpstreamFrame, env: RequestEnvelope) => UpstreamFrame \| undefined` | 逐帧改写；返回 `undefined` 丢弃该帧 |
 
@@ -95,7 +95,7 @@ hook 模块 `export` 关心的挂载点，全部可选；**未导出该挂载点
 // exp/my-hook.ts —— 同一模块按 wire/env/frame 参数自辨，无声明式匹配
 import { mockUpstreamError, mockAnthropicMessage, replayFromHistory } from "~/lib/pipeline/hooks"
 
-export const onRequest = (env) => { /* 改 env.body / 返回 void 直通 */ }
+export const onRequest = (env) => { /* 改 env.body / 不返回（undefined）直通 */ }
 
 export const onExchange = async (wire, env, next) => {
   if (env.model?.id === "claude-opus-4-8") return mockUpstreamError(400, { type: "invalid_request_error" })

@@ -7,8 +7,7 @@ import type {
 } from "~/lib/pipeline/types"
 
 export interface UpstreamHook {
-  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- spec §6: returning void = passthrough (ergonomic no-return hook body)
-  onRequest?: (env: RequestEnvelope) => RequestEnvelope | void
+  onRequest?: (env: RequestEnvelope) => RequestEnvelope | undefined
   onExchange?: (wire: PreparedRequest, env: RequestEnvelope, next: () => Promise<UpstreamStream>) => Promise<UpstreamStream>
   rewriteUpstreamFrame?: (frame: UpstreamFrame, env: RequestEnvelope) => UpstreamFrame | undefined
 }

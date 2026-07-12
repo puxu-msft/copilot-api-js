@@ -7,7 +7,7 @@
 ```ts
 // src/lib/pipeline/hooks/types.ts
 export interface UpstreamHook {
-  onRequest?: (env: RequestEnvelope) => RequestEnvelope | void
+  onRequest?: (env: RequestEnvelope) => RequestEnvelope | undefined
   onExchange?: (wire: PreparedRequest, env: RequestEnvelope, next: () => Promise<UpstreamStream>) => Promise<UpstreamStream>
   rewriteUpstreamFrame?: (frame: UpstreamFrame, env: RequestEnvelope) => UpstreamFrame | undefined
 }
