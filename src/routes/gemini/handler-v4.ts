@@ -230,6 +230,10 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
     }),
     stop_reason: choice?.finish_reason ?? undefined,
     content: choice?.message,
+    // G6 (richest-data-flow): persist upstream (CC-shaped) body into rawBody
+    // (responseText → rawBody) so non-streaming rows can re-derive cache_write
+    // later. Re-serialized from parsed pristine `chat` (data-lossless). Spec §6.1.
+    responseText: JSON.stringify(chat),
   }
   if (truncationReason) {
     env.ctx.fail(chat.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })

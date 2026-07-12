@@ -271,6 +271,13 @@ function renderNonStreamingV4(
     }),
     stop_reason: choice?.finish_reason ?? undefined,
     content: choice?.message,
+    // G6 (richest-data-flow): persist the upstream response body into rawBody
+    // (legFromUpstreamResponse maps responseText → rawBody), so non-streaming rows
+    // can re-derive cache_write / any usage field later. Re-serialized from the
+    // parsed pristine `originalResponse` (transport already discarded the raw text
+    // at .json(); a re-serialization is data-lossless — only formatting differs).
+    // See docs/spec/2026-07-12-ghc-usage-details.md §6.1 (G6).
+    responseText: JSON.stringify(originalResponse),
   }
   if (truncationReason) {
     env.ctx.fail(response.model, new Error(truncationReason), {
