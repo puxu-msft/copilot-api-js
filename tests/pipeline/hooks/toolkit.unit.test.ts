@@ -33,6 +33,7 @@ import {
 import { readOrigin } from "~/lib/pipeline/hooks/origin"
 import {
   //
+  delay,
   mockAnthropicMessage,
   mockCcChunks,
   mockGeminiResponse,
@@ -41,6 +42,7 @@ import {
   replayFromHistory,
   sse,
   streamOf,
+  truncateAfter,
 } from "~/lib/pipeline/hooks/toolkit"
 import { CC_SUBFIELD_PRESENT as CACHE_CONTROL_SUBFIELD_PATTERN } from "~/lib/request/strategies/cache-control-subfield-rejection-retry"
 import { SERVER_TOOL_REJECTION_TABLE } from "~/lib/request/strategies/server-tool-rejection-retry"
@@ -436,5 +438,51 @@ describe("replayFromHistory", () => {
 
   test("throws when no entry matches the selector", async () => {
     await expect(replayFromHistory("no-such-entry-id")).rejects.toThrow()
+  })
+})
+
+describe("truncateAfter", () => {
+  test("yields only the first n frames, dropping the rest", async () => {
+    const [a, b, c] = [sse("a", { x: 1 }), sse("b", { x: 2 }), sse("c", { x: 3 })]
+    const frames = await collect(truncateAfter(2, streamOf([a, b, c])).frames)
+
+    expect(frames).toEqual([a, b])
+  })
+
+  test("yields all frames when n exceeds the stream length", async () => {
+    const [a, b] = [sse("a", { x: 1 }), sse("b", { x: 2 })]
+    const frames = await collect(truncateAfter(5, streamOf([a, b])).frames)
+
+    expect(frames).toEqual([a, b])
+  })
+
+  test("yields nothing when n is 0", async () => {
+    const frames = await collect(truncateAfter(0, streamOf([sse("a", { x: 1 })])).frames)
+
+    expect(frames).toEqual([])
+  })
+
+  test("preserves the stream's headers and hook-origin tag (spreads the input stream)", () => {
+    const s = streamOf([], new Headers({ "x-test": "1" }))
+    const truncated = truncateAfter(2, s)
+
+    expect(truncated.headers.get("x-test")).toBe("1")
+    expect(readOrigin(truncated)).toBe("hook-mock")
+  })
+})
+
+describe("delay", () => {
+  test("resolves to the given value, having actually awaited (Bun.sleep, not a same-tick passthrough)", async () => {
+    const start = performance.now()
+    const result = await delay(5)("payload")
+    const elapsed = performance.now() - start
+
+    expect(result).toBe("payload")
+    expect(elapsed).toBeGreaterThanOrEqual(4) // small slack for timer jitter
+  })
+
+  test("passes through non-string values untouched", async () => {
+    const obj = { a: 1 }
+    expect(await delay(1)(obj)).toBe(obj)
   })
 })

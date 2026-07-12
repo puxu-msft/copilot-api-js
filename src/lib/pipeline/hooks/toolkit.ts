@@ -219,3 +219,32 @@ export async function replayFromHistory(selector: string | { model?: string; end
 
   return tagStream(rawStream(frames, rebuildHeaders(entry)), "hook-replay")
 }
+
+// ============================================================================
+// delay / truncateAfter — fault injection: latency + abrupt truncation
+// ============================================================================
+
+/** Build a delay-injecting passthrough: `delay(ms)(value)` awaits `ms` (real `Bun.sleep`, not a
+ *  same-tick no-op) then resolves to `value` unchanged. Curried so a hook author can drop it into
+ *  a pipeline stage, e.g. `onExchange: async (wire, env, next) => delay(2000)(await next())`. */
+export function delay(ms: number): <T>(value: T) => Promise<T> {
+  return async <T>(value: T): Promise<T> => {
+    await Bun.sleep(ms)
+    return value
+  }
+}
+
+/** Truncate a stream after its first `n` frames — simulates an upstream that abruptly stops mid-response
+ *  (dropped connection, truncated SSE). Spreads the input `stream` (preserves `headers` + whatever
+ *  hook-origin tag/symbol-keyed properties it carries — including `HOOK_ORIGIN`, since `Object.assign`/
+ *  spread carries own Symbol keys along, mirroring `tagFrameRewritten`'s documented behavior in origin.ts). */
+export function truncateAfter(n: number, stream: UpstreamStream): UpstreamStream {
+  async function* gen() {
+    let i = 0
+    for await (const f of stream.frames) {
+      if (i++ >= n) return
+      yield f
+    }
+  }
+  return { ...stream, frames: gen() }
+}
