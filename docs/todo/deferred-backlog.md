@@ -382,3 +382,18 @@
 - **calibration 靶向测试缺口**：CalibrationSink 的 REAL_FLOOR/EST_FLOOR/model-miss/usage-缺-cache 分支、pre-flight driver 接缝「首轮只调一次」均无直接单测（经读码 + 505 回归间接覆盖，行为已核实正确）。**若做**：补靶向 golden 用例。发现方：Task 5/9 review + 全分支终审。
 
 **待实测验证项（spec 已 defer，§3.2-S2/§11）**：400 腿 `reportedCurrent` 是否含 cache token（whole-prompt 口径）。Task 1-4 实施时探针初判含 cache（opus 400 报 ~1M 只可能 cache-inclusive），但未在活服务器端到端复验。若某天发现 cache-heavy 请求两腿口径偏差，回查此处。400 几乎总落顶桶 + CAP 封顶，影响边际。
+
+## 翻译矩阵正向流式 OQ1（流式 reasoning 帧形态活服务器实测）+ L2 缓冲重试（2026-07-12，Phase 4 暂缓）
+
+翻译矩阵 Phase 4（正向 CC→Anthropic 流式 + handler 缝合）落地时，两项留待后续：
+
+- **OQ1 流式 reasoning 帧形态未活服务器实测**：非流式已实测（PROBE-FINDINGS：cc 腿无 `reasoning`/`reasoning_content` 字段、responses 腿 `reasoning.summary:null`——两腿均不回传 reasoning 内容）；**流式**帧形态本会话未实测——`no-auto-server` 禁止自启服务器，且运行中的 4141 实例仅有 anthropic-messages 流量（零 CC/Responses/Gemini 流式条目、零翻译腿条目，特性刚落地无真实流量），无法只读观测原始 CC/Responses 流式 reasoning 帧。
+  - **当前行为（已核实正确、与实测无关）**：`cc-to-anthropic-stream.ts` translator **识别** `delta.reasoning`/`reasoning_content`（经 CC accumulator 累积 `reasoning_tokens` 进 usage）但**从 content 丢弃**——绝不合成无 signature 的 thinking 块（反向红线 WARN-B，`ghc-anthropic-upstream` "cannot be modified" 400/毒化）。无论 GHC 是否流式回传 reasoning delta，此行为都安全：不回传→no-op；回传→丢弃出 content、reasoning_tokens 仍计入 usage。单元测试已锁 W2 thinking-drop。
+  - **为何暂缓**：best-effort 丢弃已实现且正确（不依赖流式帧形态实测）；活服务器流式帧形态验证需用户跑服务器 + 真实 `@cc`/`@responses` 流式请求（省配额 + no-auto-server）。属**用户可验证的实测项**，非阻塞正向流式解锁。
+  - **若做需改什么**：① 用户跑服务器 + 发真实 claude-via-cc / responses 流式请求，经 4141 History 只读观测某翻译腿条目的 `attempts[].upstreamResponse.sseEvents`（原始 CC/Responses 帧）确认 GHC 是否流式发 reasoning delta、形态如何；② 若发现 GHC 流式回传**带 signature 的**可复用 thinking（当前实测两腿都不回传），再评估是否透传（当前一律丢弃是安全上界）。发现方：Phase 4 golden 预捕获期（2026-07-12，OQ1 剩余）。
+
+- **翻译腿流式 L2 缓冲重试（`protect_streaming_generation`）未接**：`pumpTranslateLegStreamingV4` 走 LIVE 路径（`runResponseSink`），**不接** buffered-retry。原因：buffered commit 的 `sawMessageStop` gate 读 Anthropic `message_stop` 终止符，但翻译腿的 message_stop 由 `flushResponse` 在 render 循环**之后**合成（上游 CC/Responses 流携带的是 `finish_reason` 而非 Anthropic `message_stop`），buffered driver 在循环内提交前看不到它。
+  - **当前行为（已核实完整）**：LIVE 路径对正向流式解锁字节正确且完整——逐帧翻译 + 心跳复用 + reconcile + 截断检测（getStreamMeta F2）全在。仅缺「上游 RST 时缓冲重试整代」这一 opt-in 增强（默认 OFF，与直连腿默认一致）。
+  - **理想架构**：给 buffered driver 的 `sawMessageStop` 一个「翻译腿感知」信号——buffered 消费上游 CC/Responses 帧、在上游终止（CC `finish_reason` / Responses `response.completed`）时提交，flush 的 Anthropic 终止符在 commit 后附加；或让翻译腿的 outbound 累加器暴露「上游是否见终止」供 gate 读（对齐 Responses buffered 的 `acc.status !== ""` 模式，见 `routes/responses/handler-v4.ts` 的 `sawMessageStop: () => acc.status !== ""`）。
+  - **为何暂缓**：LIVE 路径完整解锁正向流式（核心目标达成）；buffered-retry 是正交 opt-in 增强（默认 OFF），翻译腿的终止符时序与直连腿不同需专门接线（独立工作单元，`learn-by-analogy` 同 Responses 作 buffered 第二消费者的模式但需翻译腿专属 gate）。属「决定形状后的后续增强」非「因范围大降级」。
+  - **若做需改什么**：① `pumpTranslateLegStreamingV4` 按 `resolveBufferedAndHeartbeat` 分 buffered/live；② buffered 分支 `runResponseBufferedSink` 的 `sawMessageStop` 读翻译腿 outbound 累加器的上游终止信号（cc: `ccAcc.finishReason !== ""`；responses: `respAcc.status !== ""`）；③ `onAttemptReset` 重建 CC/Responses 累加器 + 重置 translator（translator 需支持重置或每 attempt 重建）；④ commit 后 flush 附加 Anthropic 终止符；⑤ 缓冲重试回归测试（对齐 `streaming-l2-buffered.http.test.ts`）。发现方：Phase 4 T4.2 handler 缝合（2026-07-12）。

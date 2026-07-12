@@ -134,6 +134,24 @@ Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/respons
 - T4.4 **流式 reasoning 实测**（OQ1 剩余，golden 预捕获时探针）。
 - **invariant**：anthropic-direct 流式 golden 逐字节不变（心跳/anchor/reconcile 复用不回归）。
 
+**Phase 4 实施记录（2026-07-12，landed，分支 `feat/translation-matrix-phase4`）**：
+- 交付 3 commit：T4.0 direct-流式 byte golden 预捕获（`test(anthropic): T4.0 ...`）→ T4.1 CC→Anthropic 流式 translator + SDK oracle（`feat(translate): CC → Anthropic Messages streaming ...`）→ T4.2/T4.3 codec + handler 缝合（`feat(codec,pipeline): stream-translate the forward leg + handler seam`）。每 commit `bun run typecheck` 0 error + direct-流式 golden 逐字节 + Phase 0 router golden 52 全过。
+- **T4.0 golden 预捕获**（`tests/anthropic/direct-stream-golden-phase4.http.test.ts`）：改动前 HEAD 锁 direct `/v1/messages` 流式的 thinking→text→tool_use→terminal 混合流逐字节输出（identity 转发）+ N1 event-line 扫描。改动后逐字节不变（零回归硬证）。
+- **T4.1 translator**（`src/lib/openai/translate/cc-to-anthropic-stream.ts`）：`renderFrame/flush/getMeta` 自供（WARN-C）。W1 = **单一单调计数器**跨 text+tool 块（CC `tool_calls[].index` 首现时分配 Anthropic index，前导 text 占 0 → 首 tool 落 1）；W2 = reasoning delta **识别并丢弃**（累积 reasoning_tokens 进 usage，绝不合成无 signature thinking——反向红线）；W3 = message_start `input_tokens:0` 占位 + flush 的 message_delta 补正净 usage（复用 `netInputTokens`，B1 不双计 cached）；多 choices 折叠（走每 choice 非仅 choices[0]）；N1 全合成点经 `anthropicSseFrame`。
+  - **独立 Anthropic SDK oracle**（`tests/openai/cc-to-anthropic-stream.unit.test.ts`）：合成帧喂真 `@anthropic-ai/sdk` 的 `Stream.fromSSEResponse`（真 SSEDecoder，静默丢 event-less 帧）重建 Message 验证幸存；**含正样本对照**（剥掉 event 行的帧被 SDK 丢弃 → 重建 text 为空，证 oracle 非 no-op）。
+- **T4.2/T4.3 缝合**：
+  - hub `createForwardStreamTranslator(targetEndpoint, modelId)` 统一分派——cc 腿单跳（CC→Anthropic）、responses 腿二跳（Responses→CC→Anthropic 在 hub 内组合，WARN-F 信号链 Responses翻译→CC帧→累积）；替换 Phase-4 `renderResponseVia` throw 骨架，反向腿仍 throw（Phase 5）。
+  - codec：`renderResponse`（流式）翻译腿驱动 per-request forward translator（原 fail-fast throw）；加 `flushResponse`（终止 message_delta+message_stop）+ `getStreamMeta`；**`createResponseAccumulator(env)` 签名恢复**（RFC §4.1 / T3.4）+ 按腿分派（direct→Anthropic、cc→CC、responses→Responses 累加器，outboundResponse 存「上游腿形」）；其余 4 codec + FormatCodec 接口同步加 `env`（对它们 leg-independent）。
+  - handler：`pumpAnthropicStreamingDispatch` 按 targetEndpoint 分派——**direct 腿 byte-critical pump 完全不动**；翻译腿走新 `pumpTranslateLegStreamingV4`，**复用同一 anchored keepalive sink + live reconcile**（心跳复用不镜像 gemini 无心跳——客户端仍是 Claude Code 300s 断连），累积原始上游进 per-leg outbound 累加器，drain flushResponse，按 getStreamMeta 结算（F2 截断 = 干净 drain 无 stop_reason → 合成 Anthropic error 帧 + fail）。
+- **对书面 plan 的自觉偏离 / 说明**（`sync-plan-with-impl`）：
+  1. **T4.2 用独立翻译腿 pump 而非在 `pumpAnthropicStreamingV4` 内分支**：direct pump 是 byte-critical，翻译腿的上游帧类型（CC/Responses）+ 累加器 + 终止符时序均不同；独立 pump 保 direct 路径逐字节零改动（golden 硬证），翻译腿复用共享原语（sink/reconcile/closeAnchorIfOpen/keepalive）不重写。
+  2. **T4.2 `onUpstreamFrame` 累积原始上游而非 `onRenderedFrame`**：plan 提「入站 CC acc（onRenderedFrame）」，但 driver 的 `onRenderedFrame` 是 forwarded 侧转换钩子；上游原始累积（outboundResponse honest）该用 `onUpstreamFrame`（render 前 raw 帧，RFC §4.A1），与 direct pump 对称。已用 onUpstreamFrame。
+  3. **T4.4 OQ1 流式 reasoning 未活服务器实测**：no-auto-server + 运行中 4141 仅 anthropic-messages 流量（零翻译腿/CC/Responses 流式条目），无法只读观测原始流式 reasoning 帧。translator 的 best-effort 丢弃已实现且正确（不依赖帧形态实测），活服务器验证留用户。记 `docs/todo/deferred-backlog.md`。
+  4. **翻译腿流式 L2 缓冲重试暂缓**：终止符时序不同（flush 后合成 message_stop）需专门 gate 接线，LIVE 路径已完整解锁正向流式，buffered 是正交 opt-in（默认 OFF）。记 `docs/todo/deferred-backlog.md`。
+- **反向流式仍 fail-fast**：`createForwardStreamTranslator` 对 `/v1/messages` 腿 throw（Phase 5）；hub `translateRequestVia` 反向请求侧仍在（Phase 2 落地），反向响应流式未接。
+- 新增测试：`direct-stream-golden-phase4.http.test.ts`（T4.0 byte golden）、`cc-to-anthropic-stream.unit.test.ts`（11，W1/W2/W3/多choices/SDK oracle + 正样本对照）、`anthropic-stream-roundtrip.it.test.ts`（2，cc/responses 腿端到端 + 真 SDK 解码 oracle）、`hub-translate.unit.test.ts`（+3 forward stream dispatch）、`anthropic-codec.unit.test.ts`/`anthropic-codec-forward-leg.it.test.ts`/`openai-cc-codec.unit.test.ts`（per-leg accumulator + 流式 translate 更新）。
+- 现状零回归：direct-流式 golden + Phase 0 golden 52 逐 commit 全过；`bun test` 全绿（仅预存在 UI shell 404 例外）。
+
 ---
 
 ## Phase 5：反向格子接线（cc/responses/gemini → messages 出站）
