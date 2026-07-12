@@ -31,13 +31,18 @@ import type { SSEStreamingApi } from "hono/streaming"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { OpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import type { SseEventRecord } from "~/lib/history/store"
+import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
   ClientFrame,
   DriverRequestResult,
+  UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type {
@@ -46,13 +51,27 @@ import type {
   ResponsesResponse,
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
+import {
+  //
+  accumulateAnthropicStreamEvent,
+  createAnthropicStreamAccumulator,
+} from "~/lib/anthropic/stream-accumulator"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
+import {
+  //
+  buildReverseResanitize,
+  createReverseAnthropicMapperHolder,
+  createReverseAnthropicSanitizeRewrite,
+} from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
 import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
+import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -75,8 +94,8 @@ import {
 } from "~/lib/openai/tool-name-sanitize"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { responsesNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
-import { buildResponsesResponseData } from "~/lib/request/recording"
+import { anthropicNonStreamingTruncation, responsesNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
+import { buildAnthropicResponseData, buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
@@ -105,7 +124,11 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
   const conversationId = getSessionIdFromHeaders(c.req.raw.headers)
-  const codec = createOpenAiResponsesCodec()
+  // REVERSE `@messages` leg (Phase 5): shared beta probe + Anthropic mapper holder (INERT on the
+  // direct/fallback legs — the reverse rewrite/strategies gate MESSAGES).
+  const reverseBetaProbe = createBetaProbe(undefined)
+  const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, selectedModel?.vendor)
+  const codec = createOpenAiResponsesCodec({ reverseBetaProbe })
   const transport = createUpstreamResponsesTransport({
     clientAbortSignal: clientAbort.signal,
     idleTimeoutMs: state.streamIdleTimeout * 1000,
@@ -115,13 +138,30 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   const driver = createPipelineDriver({
     codec,
     transport,
+    // S3 request rewrites: the reverse Anthropic sanitize rewrite gates MESSAGES (inert on the
+    // direct/fallback Responses legs).
+    requestRewrites: [createReverseAnthropicSanitizeRewrite(reverseMapperHolder)],
     // S5 — the Responses response-rewrite chain (fix-stream-ids, DIRECT only). The driver
     // applies it before render (A.C); the handler forwards the yielded (fixed) frames. Tool-name
     // restore stays handler-side (forwarded-only, post-accumulate, must run on rendered frames).
-    // Full-format union (RFC §7.1); `appliesTo` keeps it fixStreamIds-only for the /responses leg
-    // and empty for the CC-fallback leg — identical to the prior per-route array.
+    // Full-format union (RFC §7.1); on a reverse `@messages` leg the ANTHROPIC册 fires on the upstream
+    // Anthropic frames; on the direct/fallback legs it stays fixStreamIds-only / empty.
     responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
+      // REVERSE `@messages` leg: the ANTHROPIC strategy stack (outbound wire is Anthropic), supplied from
+      // the hub (env.body is the translated + sanitized Anthropic body). resanitize + the sanitize rewrite
+      // share ONE mapper holder.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) {
+        return assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, {
+          anthropic: {
+            originalPayload: env.body as MessagesPayload,
+            resanitize: buildReverseResanitize(reverseMapperHolder),
+            model: env.model as Model | undefined,
+            maxRetries: state.autoTruncateMaxRetries,
+            betaProbe: reverseBetaProbe,
+          },
+        })
+      }
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
       return buildOpenAiResponsesStrategiesForEnv(env)
     },
@@ -165,10 +205,14 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
 
   const { upstream, env } = result
   const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
+  const reverseMessages = env.targetEndpoint === ENDPOINT.MESSAGES
 
   if (!env.stream) {
     try {
       const resp = driver.runResponseNonStreaming(upstream, env) as ResponsesResponse
+      // REVERSE `@messages` leg (Phase 5): the client body is the Responses render, but the OUTBOUND leg
+      // recorded is the honest Anthropic upstream (richest-data-flow).
+      if (reverseMessages) return renderReverseNonStreamingV4(c, env, resp, upstream.nonStream as AnthropicMessageResponse)
       return renderNonStreamingV4(c, env, resp)
     } finally {
       detachClientAbort()
@@ -195,7 +239,11 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
     env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     env.ctx.setClientResponseStatus(c.res.status)
     try {
-      await pumpStreamingV4({ stream, driver, codec, upstream, env, viaFallback, clientAbortSignal: clientAbort.signal })
+      // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic — accumulate the raw Anthropic frames
+      // for the honest outbound while forwarding the rendered Responses frames (no heartbeat — a Responses
+      // client is not Claude Code). The direct/fallback legs keep the existing pump.
+      if (reverseMessages) await pumpReverseAnthropicLegV4({ stream, driver, codec, upstream, env, clientAbortSignal: clientAbort.signal })
+      else await pumpStreamingV4({ stream, driver, codec, upstream, env, viaFallback, clientAbortSignal: clientAbort.signal })
     } finally {
       detachClientAbort()
     }
@@ -485,4 +533,150 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
 
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, model))
+}
+
+// ============================================================================
+// REVERSE `@messages` leg (Phase 5) — non-streaming render + streaming pump
+// ============================================================================
+
+/**
+ * Non-streaming render for a REVERSE `@messages` leg (responses→messages). The client-facing body is the
+ * Responses render (`resp`, translated Anthropic→CC→Responses via the reverse-exchange, 疑点 5), tool-name
+ * restored; the OUTBOUND leg recorded is the HONEST Anthropic upstream (`anthropicUpstream`), NOT the
+ * Responses form (richest-data-flow). Truncation is judged on the Anthropic `stop_reason`.
+ */
+function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesResponse, anthropicUpstream: AnthropicMessageResponse): Response {
+  if (!env.ctx.sessionId && resp.id) env.ctx.setSessionId(resp.id)
+  registerResponseSession(resp.id, env.ctx.sessionId)
+
+  const clientResponse = restoreResponsesOutputToolNames(resp, env.ctx.toolNameMapper)
+  env.ctx.setForwardedResponse({ content: responsesOutputToContent(clientResponse.output) })
+
+  const httpResponse = c.json(clientResponse)
+  env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
+  env.ctx.setClientResponseStatus(httpResponse.status)
+
+  const truncationReason = anthropicNonStreamingTruncation(anthropicUpstream.stop_reason)
+  const responseData = {
+    success: !truncationReason,
+    model: anthropicUpstream.model,
+    usage: {
+      input_tokens: anthropicUpstream.usage.input_tokens,
+      output_tokens: anthropicUpstream.usage.output_tokens,
+      ...(anthropicUpstream.usage.cache_read_input_tokens != null && { cache_read_input_tokens: anthropicUpstream.usage.cache_read_input_tokens }),
+      ...(anthropicUpstream.usage.cache_creation_input_tokens != null && { cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens }),
+    },
+    stop_reason: anthropicUpstream.stop_reason ?? undefined,
+    content: { role: "assistant" as const, content: anthropicUpstream.content },
+    responseText: JSON.stringify(anthropicUpstream),
+  }
+  if (truncationReason) {
+    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
+  } else {
+    env.ctx.complete(responseData)
+  }
+  return httpResponse
+}
+
+interface PumpReverseAnthropicLegOptions {
+  stream: SSEStreamingApi
+  driver: ReturnType<typeof createPipelineDriver>
+  codec: OpenAiResponsesCodec
+  upstream: UpstreamStream
+  env: RequestEnvelope
+  clientAbortSignal?: AbortSignal
+}
+
+/**
+ * Stream pump for a REVERSE `@messages` leg (responses→messages) — the upstream is an Anthropic SSE stream,
+ * the codec's two-hop `renderResponse` translates each Anthropic frame to Responses event(s), and the client
+ * receives the Responses stream. This handler:
+ *   - accumulates the RAW UPSTREAM Anthropic frame into the Anthropic accumulator via `onUpstreamFrame` for
+ *     the honest `outboundResponse` (RFC §4.1 / richest-data-flow),
+ *   - forwards the rendered Responses frames (tool-name restored) + MUST call `codec.flushResponse` (the
+ *     reverse translator's Responses `response.completed` terminal — 疑点 7b; without it the client never
+ *     gets the terminal),
+ *   - has NO heartbeat / anchor (a Responses client is not Claude Code),
+ *   - settles from `codec.getStreamMeta()`: a clean drain WITHOUT a finish_reason is an upstream truncation
+ *     (F2), failed with a synthetic Responses error terminator.
+ */
+async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): Promise<void> {
+  const { stream, driver, codec, upstream, env } = opts
+  const model = (env.body as MessagesPayload).model
+  const mapper = env.ctx.toolNameMapper
+
+  const anthropicAcc = createAnthropicStreamAccumulator()
+  const onUpstreamFrame = (frame: UpstreamFrame): void => {
+    const raw = frame as ServerSentEventMessage
+    if (!raw.data || raw.data === "[DONE]") return
+    try {
+      accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, anthropicAcc)
+    } catch (error) {
+      consola.error("[Responses:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
+    }
+  }
+
+  const forwardedSseEvents: Array<SseEventRecord> = []
+  const streamStartMs = Date.now()
+  let bytesIn = 0
+  let eventsIn = 0
+  const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs })
+  const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+
+  // Restore function_call names on the rendered Responses frame (forwarded-only). The ANTHROPIC
+  // server-tool-filter already restored on the upstream frames, so this is an idempotent safety net.
+  const restore = (frame: ClientFrame): ClientFrame | undefined => {
+    if (!frame.data) return undefined
+    let event: ResponsesStreamEvent
+    try {
+      event = JSON.parse(frame.data) as ResponsesStreamEvent
+    } catch {
+      return undefined
+    }
+    return { event: frame.event ?? event.type, data: restoreResponsesStreamFrameToolNames(frame.data, event.type, mapper) }
+  }
+  const onRenderedFrame = (frame: ClientFrame): ClientFrame | undefined => {
+    if (!frame.data) return undefined
+    bytesIn += frame.data.length
+    eventsIn++
+    env.ctx.recordStreamProgress({ bytesIn, eventsIn })
+    return restore(frame)
+  }
+
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, onRenderedFrame })
+
+  if (outcome.kind === "settled-abort") {
+    recordForwarded()
+    consola.debug("[Responses:v4:reverse] Client disconnected mid-stream — recording aborted")
+    env.ctx.abort(anthropicAcc.model || model, buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+
+  if (outcome.kind === "stream-error") {
+    const error = outcome.error
+    consola.error("[Responses:v4:reverse] Stream error:", error)
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+
+  // outcome.kind === "complete" — the CC finish_reason is the F2 signal (undefined ⇒ truncation).
+  const meta = codec.getStreamMeta()
+  if (meta?.finishReason === undefined) {
+    const truncErr = new Error("Upstream Anthropic stream truncated before completion (no finish_reason)")
+    consola.error(`[Responses:v4:reverse] Upstream truncated for ${anthropicAcc.model || model}: drained without a finish_reason`)
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+  // Drain the reverse translator's closing lifecycle (response.completed) — the per-frame render has no
+  // stream-end hook (疑点 7b). Each closing frame is restored + forwarded (sampled by the sink).
+  for (const closing of codec.flushResponse(env)) {
+    const out = restore(closing)
+    if (out) await sink.write(out)
+  }
+  recordForwarded()
+  env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
 }

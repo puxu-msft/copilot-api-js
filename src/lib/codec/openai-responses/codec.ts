@@ -36,6 +36,7 @@
 
 import consola from "consola"
 
+import type { BetaProbe } from "~/lib/anthropic/pipeline"
 import type { RequestContext } from "~/lib/context/request"
 import type {
   //
@@ -44,7 +45,12 @@ import type {
 } from "~/lib/context/types"
 import type { EndpointType } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
-import type { CCToResponsesStreamTranslator } from "~/lib/openai/translate"
+import type {
+  //
+  AnthropicToCcStreamMeta,
+  CCToResponsesStreamTranslator,
+  TranslateExchangeContext,
+} from "~/lib/openai/translate"
 import type {
   //
   ClientFormat,
@@ -56,6 +62,7 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { ReverseStreamTranslator } from "~/lib/pipeline/hub-translate"
 import type {
   //
   ClassifiedStreamError,
@@ -77,12 +84,16 @@ import type {
   ResponsesInputItem,
   ResponsesPayload,
 } from "~/types/api/openai-responses"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
+import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
+import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   captureInboundHeaders,
 } from "~/lib/fetch-utils"
+import { sanitizeHeadersForHistory } from "~/lib/fetch-utils"
 import {
   //
   getAgentIdFromHeaders,
@@ -123,6 +134,12 @@ import {
   translateCCToResponsesResponse,
   translateResponsesToChatCompletions,
 } from "~/lib/openai/translate"
+import {
+  //
+  createReverseStreamTranslator,
+  renderResponseNonStreamingVia,
+  translateRequestVia,
+} from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 import { rebuildConversationMessages } from "~/routes/responses/conversation-rebuild"
 
@@ -130,6 +147,8 @@ const CLIENT_FORMAT: ClientFormat = "openai-responses"
 const ENDPOINT_TYPE: EndpointType = "openai-responses"
 /** History `format` label for the fallback wire (the actual upstream endpoint). */
 const CC_ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
+/** History `format` label for the REVERSE `@messages`-leg wire (the actual upstream endpoint). */
+const ANTHROPIC_MESSAGES_ENDPOINT_TYPE: EndpointType = "anthropic-messages"
 
 /** Per-request fallback exchange state (stable IDs + rebuilt prior conversation). */
 interface FallbackExchange {
@@ -152,12 +171,27 @@ export interface OpenAiResponsesCodec extends FormatCodec {
   /** The fallback exchange's `resp_` id (handler session registration). `undefined` for direct / before translateOut. */
   getFallbackResponseId(): string | undefined
   /**
-   * Stream-end flush of the fallback CC→Responses closing lifecycle events
-   * (`output_text.done` … `response.completed`). Returns `[]` for the direct
-   * path. The handler calls it after the `driver.runResponse` loop (the per-frame
-   * `renderResponse` has no stream-end hook).
+   * Stream-end flush of the fallback CC→Responses OR reverse Anthropic→CC→Responses closing lifecycle
+   * events (`output_text.done` … `response.completed`). Returns `[]` for the direct path. The handler
+   * calls it after the `driver.runResponse` loop (the per-frame `renderResponse` has no stream-end hook).
    */
   flushResponse(env: RequestEnvelope): Array<ClientFrame>
+  /**
+   * REVERSE `@messages`-leg terminal stream meta (Phase 5): the CC `finish_reason` (undefined ⇒
+   * truncation, F2) + grossed-up usage the Anthropic→CC translator accumulated. `undefined` for the
+   * direct/fallback legs.
+   */
+  getStreamMeta(): AnthropicToCcStreamMeta | undefined
+}
+
+/** Args for {@link createOpenAiResponsesCodec}. */
+export interface CreateOpenAiResponsesCodecArgs {
+  /**
+   * REVERSE `@messages` leg only: the shared per-request beta probe (also injected into the reverse
+   * Anthropic strategies). `prepareWire` records the outbound Anthropic betas into it. Absent for the
+   * direct/fallback legs.
+   */
+  reverseBetaProbe?: BetaProbe
 }
 
 /** Generate a short, collision-safe ID using crypto.randomUUID (matches the legacy fallback). */
@@ -169,19 +203,32 @@ function genShortId(): string {
  * Build the openai-responses codec for one request. The returned instance holds
  * the per-request fallback exchange + CC→Responses translator in its closure.
  */
-export function createOpenAiResponsesCodec(): OpenAiResponsesCodec {
+export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs): OpenAiResponsesCodec {
   let requestContext: RequestContext | undefined
-  // The resolved upstream model name (for the fallback translator's clientModel).
+  // The resolved upstream model name (for the fallback / reverse translator's clientModel).
   let resolvedModelName = ""
   // Fallback (Responses→CC) exchange state, initialized once in translateOut.
   let fallback: FallbackExchange | undefined
   // Lazily-built CC→Responses per-frame translator (fallback response side).
   let ccTranslator: CCToResponsesStreamTranslator | null = null
+  // REVERSE `@messages` leg (Phase 5): the reverse-exchange (responseId/itemId/clientModel) the two-hop
+  // Anthropic→CC→Responses render needs (疑点 5), built once in translateOut, + the reverse translator.
+  let reverseExchange: TranslateExchangeContext | undefined
+  let reverseTranslator: ReverseStreamTranslator | undefined
 
   const ensureCcTranslator = (): CCToResponsesStreamTranslator | null => {
     if (!fallback) return null
     ccTranslator ??= createCCToResponsesStreamTranslator({ responseId: fallback.responseId, itemId: fallback.itemId, clientModel: fallback.clientModel })
     return ccTranslator
+  }
+
+  /** Build the reverse-exchange once (also used by the non-streaming translateCCToResponsesResponse). */
+  const ensureReverseExchange = (env: RequestEnvelope): TranslateExchangeContext =>
+    (reverseExchange ??= { responseId: `resp_${genShortId()}`, itemId: `item_${genShortId()}`, clientModel: resolvedModelName || (env.body as { model?: string }).model || "" })
+
+  const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
+    const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
+    return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, ensureReverseExchange(env)))
   }
 
   return {
@@ -202,9 +249,10 @@ export function createOpenAiResponsesCodec(): OpenAiResponsesCodec {
       return fallback?.responseId
     },
 
-    // S2 translateOut is identity (Responses-shaped body stays through S3/S4 — see
-    // module docstring P2.2-D1 parity). For the fallback it ALSO sets up the
-    // per-request fallback exchange (stable IDs + rebuilt prior conversation) once.
+    // S2 translateOut is identity for the direct/fallback legs (Responses-shaped body stays through
+    // S3/S4 — module docstring P2.2-D1 parity). For the fallback it ALSO sets up the per-request
+    // fallback exchange. For a REVERSE `@messages` leg (Phase 5) it delegates to the hub (two-hop
+    // Responses→CC→Anthropic body) + builds the reverse-exchange the response two-hop needs.
     translateOut(env) {
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) {
         fallback ??= {
@@ -213,17 +261,29 @@ export function createOpenAiResponsesCodec(): OpenAiResponsesCodec {
           clientModel: resolvedModelName || (env.body as ResponsesPayload).model,
           rebuiltMessages: rebuildConversationMessages(env.ctx.sessionId),
         }
+        return env
+      }
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) {
+        ensureReverseExchange(env)
+        const anthropicBody = translateRequestVia(CLIENT_FORMAT, env.targetEndpoint, env.body, { model: env.model as Model | undefined })
+        return env.with({ body: anthropicBody })
       }
       return env
     },
 
     prepareWire(env) {
+      // REVERSE `@messages` leg: the body is Anthropic-shaped (translateOut delegated to the hub) →
+      // build the Anthropic wire (a Responses client sends no anthropic-beta; the handler's probe records
+      // the outbound betas). The direct/fallback legs stay Responses/CC.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) return prepareReverseAnthropicWire(env, args?.reverseBetaProbe)
       return prepareOpenAiResponsesWire(env, fallback)
     },
 
     renderResponse(frame, env) {
       // Direct (/responses): forward the upstream Responses frame verbatim.
       if (env.targetEndpoint === ENDPOINT.RESPONSES) return frame
+      // REVERSE `@messages` leg (Phase 5): two-hop Anthropic→CC→Responses via the reverse translator.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).renderFrame(frame)
       // Fallback (/chat/completions): translate each CC SSE frame → Responses event(s).
       const translator = ensureCcTranslator()
       if (!translator) return []
@@ -231,14 +291,27 @@ export function createOpenAiResponsesCodec(): OpenAiResponsesCodec {
     },
 
     flushResponse(env) {
+      // REVERSE `@messages` leg: the reverse translator's flush emits the Responses `response.completed`
+      // (疑点 7b — MUST be drained or the client never gets the terminal).
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).flush()
       if (env.targetEndpoint === ENDPOINT.RESPONSES) return []
       const translator = ensureCcTranslator()
       if (!translator) return []
       return translator.flush().map((ev): ClientFrame => ({ event: ev.event, data: ev.data }))
     },
 
+    getStreamMeta() {
+      return reverseTranslator?.getMeta()
+    },
+
     renderResponseNonStreaming(upstream, env) {
       if (env.targetEndpoint === ENDPOINT.RESPONSES) return upstream
+      // REVERSE `@messages` leg (Phase 5): Anthropic upstream → CC-canonical (hub) → Responses (二跳,
+      // 疑点 5 — translateCCToResponsesResponse eats the reverse-exchange).
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) {
+        const cc = renderResponseNonStreamingVia(ENDPOINT.MESSAGES, upstream).rendered as ChatCompletionResponse
+        return translateCCToResponsesResponse(cc, ensureReverseExchange(env))
+      }
       if (!fallback) return upstream
       return translateCCToResponsesResponse(upstream as ChatCompletionResponse, {
         responseId: fallback.responseId,
@@ -251,10 +324,10 @@ export function createOpenAiResponsesCodec(): OpenAiResponsesCodec {
       return formatOpenAiResponsesError(err)
     },
 
-    createResponseAccumulator(_env): ResponseAccumulator {
-      // The upstream is Responses-shaped for BOTH legs (direct /responses; the CC-fallback leg's per-frame
-      // translation to Responses happens in `renderResponse`, so the accumulated frames are Responses).
-      // Leg-independent; `_env` is accepted for the interface (RFC §4.1).
+    createResponseAccumulator(env): ResponseAccumulator {
+      // REVERSE `@messages` leg's upstream is Anthropic → the Anthropic accumulator (honest outbound,
+      // RFC §4.1). The direct/fallback legs' upstream is Responses-shaped.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) return createAnthropicStreamAccumulator()
       return createResponsesStreamAccumulator()
     },
 
@@ -368,6 +441,31 @@ function parseContentLength(header: string | null): number | undefined {
 // ============================================================================
 
 /**
+ * S4 last-mile for the REVERSE `@messages` leg (Phase 5): the body is Anthropic-shaped (translateOut
+ * delegated to the hub), so build the Anthropic `/v1/messages` wire via `prepareAnthropicRequest`. A
+ * Responses client sends no `anthropic-beta`; the handler's shared probe records the outbound betas.
+ */
+function prepareReverseAnthropicWire(env: RequestEnvelope, betaProbe: BetaProbe | undefined): PreparedRequest {
+  const model = env.model as Model | undefined
+  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
+    ...(model && { resolvedModel: model }),
+    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
+    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
+    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
+    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
+    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
+    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
+  })
+  betaProbe?.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
+  return {
+    url: ENDPOINT.MESSAGES,
+    headers: new Headers(prepared.headers),
+    body: prepared.wire,
+    stream: (prepared.wire.stream as boolean | undefined) ?? false,
+  }
+}
+
+/**
  * S4 last-mile: env → wire, dispatched by `targetEndpoint`.
  *   - `/responses` (direct): `prepareResponsesRequest`.
  *   - `/chat/completions` (fallback): Responses→CC translation + prior-conversation
@@ -428,6 +526,28 @@ function prepareOpenAiResponsesWire(env: RequestEnvelope, fallback: FallbackExch
  * = CC (`messages`, `openai-chat-completions`).
  */
 function sampleOpenAiResponsesRequest(wire: PreparedRequest, env: RequestEnvelope): RequestSample {
+  // REVERSE `@messages` leg (Phase 5): env.body + wire are Anthropic-shaped (translateOut delegated to
+  // the hub) → sample the Anthropic wire (`messages`; format label `anthropic-messages`).
+  if (env.targetEndpoint === ENDPOINT.MESSAGES) {
+    const effBody = env.body as { model?: unknown; messages?: unknown }
+    const effective: EffectiveRequest = {
+      model: typeof effBody.model === "string" ? effBody.model : "",
+      resolvedModel: env.model as Model | undefined,
+      messages: Array.isArray(effBody.messages) ? effBody.messages : [],
+      payload: env.body,
+      format: ANTHROPIC_MESSAGES_ENDPOINT_TYPE,
+    }
+    const wireBody = wire.body as { model?: unknown; messages?: unknown }
+    const wireRequest: WireRequest = {
+      model: typeof wireBody.model === "string" ? wireBody.model : "",
+      messages: Array.isArray(wireBody.messages) ? wireBody.messages : [],
+      payload: wire.body,
+      headers: Object.fromEntries(wire.headers.entries()),
+      format: ANTHROPIC_MESSAGES_ENDPOINT_TYPE,
+    }
+    return { effective, wire: wireRequest }
+  }
+
   const effBody = env.body as { model?: unknown; messages?: unknown }
   const effective: EffectiveRequest = {
     model: typeof effBody.model === "string" ? effBody.model : "",
