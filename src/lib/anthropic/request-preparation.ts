@@ -68,6 +68,8 @@ import {
 export interface PreparedAnthropicRequest {
   wire: Record<string, unknown>
   headers: Record<string, string>
+  /** passthrough 剥掉的 cache_control 子字段列表（供 codec recordFeature 记 history，spec §8）。 */
+  strippedCacheControlSubfields?: ReadonlyArray<string>
 }
 
 /**
@@ -91,6 +93,8 @@ export interface PrepareContext {
    * shared `context-management-2025-06-27` beta (memory rides it, GHC-style).
    */
   hasMemoryTool?: boolean
+  /** Set by the `cache-control` step (passthrough): cache_control 子字段被剥的列表；透出到 PreparedAnthropicRequest 供 history。 */
+  strippedCacheControlSubfields?: ReadonlyArray<string>
 }
 
 /** One named prepare step. Mutates `ctx.wire` and/or `ctx.headers` in place. */
@@ -137,6 +141,11 @@ interface PrepareAnthropicRequestOptions {
    * `PrepareHints.excludeToolFields`.
    */
   excludeToolFields?: ReadonlyArray<string>
+  /**
+   * 源④ per-attempt：cache_control 子字段 rejection retry 腿注入，剥掉刚被上游拒的子字段。
+   * 供 `PrepareHints.excludeCacheControlSubfields` → codec 桥接 → 此入参 → passthrough 消费。
+   */
+  excludeCacheControlSubfields?: ReadonlyArray<string>
   /**
    * L2 buffered-retry escalation (RFC §8) from `PrepareHints.contextEscalation`: when set, FORCE
    * an aggressive native `clear_tool_uses` context_management edit on this attempt (independent of
@@ -283,6 +292,24 @@ function collectRejectedFields(modelName: string): Set<string> {
   }
   for (const field of getUnsupportedFeatures(modelName)) reject.add(field)
   return reject
+}
+
+/** GHC 上游不支持的 cache_control 子字段（内置地雷）。scope 由 prompt-caching-scope beta 引入，GHC 未启用。 */
+const BUILTIN_UNSUPPORTED_CACHE_CONTROL_SUBFIELDS: ReadonlyArray<string> = ["scope"]
+
+/**
+ * 收集应从 passthrough cache_control 剥除的子字段。四源 union（对齐 collectStripBetas）：
+ * ① 内置地雷 ② config anthropic.cache_control_strip_subfields（per-model + "*"）
+ * ③ negotiation 学习集（Phase 2 接入，本阶段缺席）④ per-attempt hint（Phase 2 注入）
+ */
+export function collectUnsupportedCacheControlSubfields(model: string, hints?: ReadonlyArray<string>): Set<string> {
+  const strip = new Set<string>(BUILTIN_UNSUPPORTED_CACHE_CONTROL_SUBFIELDS)
+  for (const fields of collectAllMatching(model, state.stripCacheControlSubfields)) {
+    for (const field of fields) strip.add(field)
+  }
+  // 源③ negotiation：Phase 2 在此追加 getUnsupportedCacheControlSubfields()
+  for (const field of hints ?? []) strip.add(field)
+  return strip
 }
 
 /**
@@ -499,7 +526,11 @@ export function prepareAnthropicRequest(
     opts: opts ?? {},
   }
   for (const step of steps) step.apply(ctx)
-  return { wire: ctx.wire, headers: ctx.headers }
+  return {
+    wire: ctx.wire,
+    headers: ctx.headers,
+    ...(ctx.strippedCacheControlSubfields && { strippedCacheControlSubfields: ctx.strippedCacheControlSubfields }),
+  }
 }
 
 function buildWirePayload(
@@ -984,6 +1015,10 @@ function applyCacheControlMode(ctx: PrepareContext): void {
       break
     }
     case "passthrough": {
+      // 只挖已知地雷（GHC 未支持的 cache_control 子字段，如 scope），保留客户端精调断点。
+      const blacklist = collectUnsupportedCacheControlSubfields(model, ctx.opts.excludeCacheControlSubfields)
+      const stripped = filterCacheControlSubfields(wire, blacklist)
+      if (stripped.length > 0) ctx.strippedCacheControlSubfields = stripped
       break
     }
     case "sanitize": {
@@ -1238,6 +1273,28 @@ function placeCacheControlOnLastBlock(message: MessageParam, ephemeral: Ephemera
  * - an object: replace the cache_control field with this value
  */
 type CacheControlSection = "system" | "messages" | "tools"
+
+/**
+ * 就地删除 wire 中所有 cache_control 的黑名单子字段，保留其余（红线1：正常态绝不返回 undefined，
+ * 那会删掉整个 cache_control 退化成 disabled）。返回实际剥掉的字段去重列表（供 history 标记）。
+ * L2 兜底：剥后 cc 若失去 type（畸形输入只含被剥字段），空/无 type 的 cache_control 会 400，
+ * 此时删掉整个 cc 更安全（回退 disabled）；真实 scope 场景 cc 恒含 type，此分支只为畸形兜底。
+ */
+export function filterCacheControlSubfields(wire: Record<string, unknown>, blacklist: Set<string>): Array<string> {
+  if (blacklist.size === 0) return []
+  const stripped = new Set<string>()
+  walkCacheControl(wire, (current) => {
+    const cc = current as Record<string, unknown>
+    for (const field of blacklist) {
+      if (field in cc) {
+        Reflect.deleteProperty(cc, field)
+        stripped.add(field)
+      }
+    }
+    return typeof cc.type === "string" ? (cc as { type: string }) : undefined
+  })
+  return [...stripped]
+}
 
 function walkCacheControl(wire: Record<string, unknown>, handler: (current: unknown, section: CacheControlSection) => { type: string } | undefined): void {
   for (const key of ["system", "messages", "tools"] as const) {

@@ -461,6 +461,7 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
     ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
     ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
     ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
+    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
     ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
   })
 
@@ -479,6 +480,11 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
       ...(deps.requestedThinkingType !== undefined && { requested: deps.requestedThinkingType }),
       effective: wireThinking.type,
     })
+  }
+
+  // passthrough 剥掉 GHC 未支持的 cache_control 子字段（如 scope）——记 history 让运维可见缓存语义降级（spec §8）。
+  if (prepared.strippedCacheControlSubfields?.length) {
+    deps.requestContext?.recordFeature("cache-control-stripped", { fields: prepared.strippedCacheControlSubfields })
   }
 
   return {

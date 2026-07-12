@@ -429,6 +429,9 @@ export const AnthropicConfigSchema = z
     // Free-form Records — key = model-name pattern, value = list
     effort_overrides: z.record(z.string(), z.array(z.string())).optional(),
     beta_strip_headers: z.record(z.string(), z.array(z.string())).optional(),
+    // GHC 未支持的 cache_control 子字段黑名单（model-name pattern → 子字段列表；"*" = 所有模型）。
+    // passthrough 模式下剥除。ADDS to 内置 {scope} + reactive learned cache。
+    cache_control_strip_subfields: z.record(z.string(), z.array(z.string())).optional(),
     partner_strip_features: z.record(z.string(), z.array(z.string())).optional(),
     // Custom-tool top-level field names to strip / keep (model-name pattern → field list;
     // `"*"` = all models). tool_strip_fields ADDS to the built-in default

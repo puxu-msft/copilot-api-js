@@ -799,6 +799,8 @@ export interface State {
    * Hot-reloadable: entirely replaced on config reload.
    */
   readonly stripBetaHeaders: Record<string, Array<string>>
+  /** GHC 未支持的 cache_control 子字段黑名单（per-model + 通配 "*"）。passthrough 模式下剥除。内置 {scope} 在读取端注入，此处仅 config 覆盖。 */
+  readonly stripCacheControlSubfields: Record<string, Array<string>>
 
   /**
    * Per-model partner-model feature names (e.g. `structured_outputs`) the upstream
@@ -924,6 +926,7 @@ function cloneState(source: MutableState): MutableState {
     effortsOverrides: { ...source.effortsOverrides },
     negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
+    stripCacheControlSubfields: cloneStripBetaHeaders(source.stripCacheControlSubfields),
     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
     stripToolFields: cloneStripBetaHeaders(source.stripToolFields),
     keepToolFields: cloneStripBetaHeaders(source.keepToolFields),
@@ -982,6 +985,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("stripBetaHeaders" in patch) {
     cloned.stripBetaHeaders = patch.stripBetaHeaders ? cloneStripBetaHeaders(patch.stripBetaHeaders) : undefined
+  }
+  if ("stripCacheControlSubfields" in patch) {
+    cloned.stripCacheControlSubfields = patch.stripCacheControlSubfields ? cloneStripBetaHeaders(patch.stripCacheControlSubfields) : undefined
   }
   if ("stripPartnerFeatures" in patch) {
     cloned.stripPartnerFeatures = patch.stripPartnerFeatures ? cloneStripBetaHeaders(patch.stripPartnerFeatures) : undefined
@@ -1173,6 +1179,7 @@ export function setAnthropicBehavior(
       | "warmupPolicy"
       | "effortsOverrides"
       | "stripBetaHeaders"
+      | "stripCacheControlSubfields"
       | "stripPartnerFeatures"
       | "stripToolFields"
       | "keepToolFields"
@@ -1471,6 +1478,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   warmupPolicy: "allow" as WarmupPolicy,
   effortsOverrides: {} as Record<string, Array<string>>,
   stripBetaHeaders: {} as Record<string, Array<string>>,
+  stripCacheControlSubfields: {} as Record<string, Array<string>>,
   stripPartnerFeatures: {} as Record<string, Array<string>>,
   stripToolFields: {} as Record<string, Array<string>>,
   keepToolFields: {} as Record<string, Array<string>>,
@@ -1544,6 +1552,7 @@ export function resetConfigManagedState(): void {
     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
+    stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),
     stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
     stripToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripToolFields),
     keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
@@ -1698,6 +1707,7 @@ const mutableState: MutableState = {
   warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
   effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
   stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
+  stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),
   stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
   stripToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripToolFields),
   keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
