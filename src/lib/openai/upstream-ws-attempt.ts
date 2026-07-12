@@ -33,6 +33,7 @@ import {
   getHeaderCaseInsensitive,
 } from "~/lib/fetch-utils"
 import { isWsResponsesSupported } from "~/lib/models/endpoint"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
@@ -174,6 +175,7 @@ export async function attemptUpstreamResponsesWs(
         shutdownSignal,
         clientAbortSignal,
         reaperSignal,
+        idleTimeoutMs: resolveStreamIdleTimeoutMs(wire.model),
         onComplete: () => {
           shutdownSignal.removeEventListener("abort", onExternalAbort)
           clientAbortSignal?.removeEventListener("abort", onExternalAbort)
@@ -203,12 +205,13 @@ interface StreamWsEventsOptions {
   shutdownSignal: AbortSignal | undefined
   clientAbortSignal: AbortSignal | undefined
   reaperSignal: AbortSignal | undefined
+  /** Per-model frame-idle timeout (ms; 0 = disabled), resolved by the caller (INV-2 — this deep fn never sees the model). */
+  idleTimeoutMs: number
   onComplete: () => void
 }
 
 async function* streamWsEvents(opts: StreamWsEventsOptions): AsyncGenerator<ServerSentEventMessage> {
-  const { firstEvent, iterator, requestAbort, shutdownSignal, clientAbortSignal, reaperSignal, onComplete } = opts
-  const idleTimeoutMs = state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0
+  const { firstEvent, iterator, requestAbort, shutdownSignal, clientAbortSignal, reaperSignal, idleTimeoutMs, onComplete } = opts
   const idleAbortSignal = combineAbortSignals(shutdownSignal, clientAbortSignal, reaperSignal)
 
   try {

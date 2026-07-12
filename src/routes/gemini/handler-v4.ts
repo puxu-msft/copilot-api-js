@@ -69,6 +69,7 @@ import {
 } from "~/lib/gemini"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
@@ -107,7 +108,7 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, vendor)
   const codec = createOpenAiGeminiCodec(modelId, { reverseBetaProbe })
-  const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: state.streamIdleTimeout * 1000 })
+  const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
   const driver = createPipelineDriver({
     codec,

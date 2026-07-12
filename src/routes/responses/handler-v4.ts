@@ -80,6 +80,7 @@ import {
 } from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { responsesOutputToContent } from "~/lib/openai/responses-conversion"
 import {
   //
@@ -132,7 +133,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   const codec = createOpenAiResponsesCodec({ reverseBetaProbe })
   const transport = createUpstreamResponsesTransport({
     clientAbortSignal: clientAbort.signal,
-    idleTimeoutMs: state.streamIdleTimeout * 1000,
+    idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName),
     ...(conversationId !== undefined && { conversationId }),
   })
 

@@ -43,6 +43,7 @@ import {
   ENDPOINT,
 } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import {
   //
   accumulateResponsesStreamEvent,
@@ -226,7 +227,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const codec = createOpenAiResponsesCodec()
   const transport = createUpstreamResponsesTransport({
     clientAbortSignal: clientAbort.signal,
-    idleTimeoutMs: state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0,
+    idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedModel),
   })
   const driver = createPipelineDriver({
     codec,

@@ -83,6 +83,7 @@ import {
 } from "~/lib/anthropic/stream"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { stripAllThinkingIfQuarantined } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -430,7 +431,13 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
   })
 
   try {
-    for await (const { raw: rawEvent, parsed } of processAnthropicStream(response, acc, clientAbortSignal)) {
+    for await (const { raw: rawEvent, parsed } of processAnthropicStream(
+      response,
+      acc,
+      clientAbortSignal,
+      undefined,
+      resolveStreamIdleTimeoutMs(anthropicPayload.model),
+    )) {
       await processOneStreamEvent({
         rawEvent,
         parsed,

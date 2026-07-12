@@ -133,6 +133,7 @@ import {
   resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import {
   //
   accumulateResponsesStreamEvent,
@@ -347,7 +348,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   // rewritten to a retryable 529 inside the send core, in the driver loop's place.
   const transport = createUpstreamHttpTransport({
     clientAbortSignal: clientAbort.signal,
-    idleTimeoutMs: state.streamIdleTimeout * 1000,
+    idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName),
     rewriteShutdownAbort: true,
   })
 

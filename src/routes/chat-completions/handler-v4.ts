@@ -66,6 +66,7 @@ import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import {
   //
   createTruncationResponseMarkerOpenAI,
@@ -142,7 +143,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, selectedModel?.vendor)
   const codec = createOpenAiCcCodec({ reverseBetaProbe })
-  const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: state.streamIdleTimeout * 1000 })
+  const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
   // Truncation result for the response marker (captured from the strategy factory).
   let truncateResult: OpenAIAutoTruncateResult | undefined
