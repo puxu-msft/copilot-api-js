@@ -31,6 +31,10 @@ export default defineConfigWithVueTs(
       // typed linting can only emit "not found by the project service" parse
       // errors. Experiments are intentionally throwaway (see exp/ convention).
       "exp/**",
+      // Skill reference templates (`.claude/skills/**/references/`) — illustrative
+      // code meant to be copied & adapted, not part of the TS project graph (same
+      // rationale as exp/**: typed linting can only emit parse errors here).
+      ".claude/skills/**/references/**",
       // Local ESLint rule sources — not part of the TS project graph.
       "scripts/eslint-rules/**",
       // Generated declaration files — not in tsconfig either.
