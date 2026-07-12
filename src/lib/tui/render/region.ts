@@ -121,6 +121,15 @@ export class Region {
         // rows into scrollback, bottom `delta` rows freed to blank) so the new
         // panel claims blank rows instead of overwriting logs. Shrink direction
         // needs no such care — freed rows just become blank gaps (tolerated).
+        //
+        // The `rows === prev.rows` guard is load-bearing, NOT laziness: `oldBottom`
+        // is derived from `prev.rows`, so on a genuine terminal resize (`rows`
+        // changed) those coordinates are stale — parking at `prev.rows -
+        // prev.panelHeight` would target a row from the OLD height that the
+        // emulator has already reflowed. A resize+grow in the SAME frame (SIGWINCH
+        // coinciding with a view toggle — rare, and the emulator reflows anyway)
+        // therefore falls through to the plain re-anchor and MAY eat a bottom row;
+        // documented as a known narrow seam in `docs/todo/deferred-backlog.md`.
         if (rows === prev.rows && panelHeight > prev.panelHeight) {
           const delta = panelHeight - prev.panelHeight
           const oldBottom = prev.rows - prev.panelHeight
