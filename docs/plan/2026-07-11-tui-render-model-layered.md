@@ -1,5 +1,7 @@
 # TUI 渲染模型分层 —— 实施计划
 
+> **实施状态（2026-07-11）**：✅ **全部完成**。P0/P1/P2 共 11 task 经 subagent-driven 逐件实施 + task-review，合并态 whole-branch review（opus）闭环——无 Critical，3 个 Important 集成缺陷（I1 detail 冻结→根因修稳定身份解析、I2 durability 注释、I3 coordinator reset）全闭环。commit 链 fb6cc508→2c8f826a（本地 master，与并发会话 pipeline 重构行级共存）。真终端 INV-4 复验待用户（oracle `exp/tui-rawmode/log-coordination-regression.ts`）。逐 task 提交/审查详见 `.superpowers/sdd/progress-tui-render-model.md`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐 task 实施。步骤用 checkbox（`- [ ]`）追踪。
 
 **Goal:** 消除 TUI 交互面板的 DECSTBM 几何 churn（视图切换吃日志行 / 留空行 / footer 泄漏），把渲染协调改为「交互实例恒定高度区 + detail 备用屏 + 自愈 + 全协调」。

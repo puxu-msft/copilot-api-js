@@ -1,6 +1,6 @@
 # Spec: TUI 渲染模型 —— 恒定高度区 + detail 备用屏，消除 DECSTBM 几何 churn
 
-- **状态**：Draft v2（待用户签字；v1 经两轮对抗审查 + 用户真终端实测重写）
+- **状态**：✅ 已实现（用户 2026-07-11 签字；v1 经两轮对抗审查 + 用户真终端实测重写为 v2）。实施见 plan [2026-07-11-tui-render-model-layered](../plan/2026-07-11-tui-render-model-layered.md)（P0/P1/P2 全 11 task 逐件过审 + 合并态 whole-branch review 闭环，commit fb6cc508→2c8f826a）。**真终端 INV-4 复验待用户**（oracle `exp/tui-rawmode/log-coordination-regression.ts`）。
 - **日期**：2026-07-11
 - **类型**：架构级修复（bug 根因驱动 + 渲染协调重构）
 - **相关**：
