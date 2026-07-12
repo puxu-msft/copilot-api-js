@@ -1,11 +1,13 @@
 ---
 name: project-tui-interactive-live-panel
-description: 交互式 TUI live 面板项目现状——P0 终端层重组已 merge，P1/P2 待做，待用户真终端复验 Q2/Q3
+description: 交互式 TUI live 面板项目现状——P0/P1 已 merge，渲染模型分层重构（恒定高度区+detail备用屏）已落地，P2 破坏性动作待做，待用户真终端复验
 metadata:
   type: project
 ---
 
 交互式 TUI live query 面板（折叠分组 footer ↔ 展开逐条面板 ↔ 单条 detail，行级动作：高亮/回车详情/abort 在途请求/复制 req_id）。大型结构重构 + 新交互特性，RFC-first 分 P0/P1/P2 三阶段。
+
+**⚠️ 渲染模型已重构（2026-07-11）**：P1 落地后用户真终端实测暴露 DECSTBM 几何 churn（视图切换吃日志行/留空行/footer 泄漏），已重构为**交互实例恒定高度区 + detail 备用屏 + fix A 自愈 + 三态 emergencyWrite 协调**（11 task 逐件过审 + 合并态 review 闭环，commit fb6cc508→2c8f826a）。**现状权威看 `docs/DESIGN.md`「交互式 live 面板」节 + spec/plan `2026-07-11-tui-render-model-layered` + ADR 决策 4 双补记**。下方旧 P0/P1 权威文档是那两阶段的时点产物（Region N=1 collapsed 等描述已被恒定高度取代）。
 
 **权威文档**（现状看这些，非本 stub）：
 - RFC `docs/rfc/2026-07-10-interactive-tui-live-panel.md`（v2，两轮对抗评审 consensus，PoC 结果回填）
