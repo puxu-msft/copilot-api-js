@@ -31,5 +31,22 @@
 | OQ1 非流式 reasoning | cc 腿无字段 / responses 腿 summary:null | 支持 spec 的 **best-effort 丢弃/占位默认**；**流式侧未测**（reasoning 常在流式帧，留实现阶段 Phase 3/4 探针）|
 | 多 choices 分裂（新增发现）| cc 腿 text/tool 拆两 choices | 翻译状态机**必须处理多 choices**，非单 choice 假设 |
 
+## Probe 3：W2 门控——GHC Anthropic 腿是否接受非 `toolu_` 入站 tool_use.id（2026-07-12，Phase 5 前置）
+
+实测时间：2026-07-12｜方式：经运行中的 4141 实例直打 `/v1/messages`（`claude-haiku-4.5`，max_tokens=64，非流式），构造含 `assistant.tool_use` + `user.tool_result`（id 两端匹配）的多轮对话强制 GHC 校验入站 tool_use.id 前缀｜脚本 `/tmp/w2-probe.py`（对照三组）。
+
+**背景**：Phase 2 `cc-to-anthropic-request.ts` 反向请求侧把 CC `tool_call.id` **verbatim 透传**成 Anthropic `tool_use.id`（WARN-E ②）。探针只测过 **outbound**（GHC 返回 `toolu_`/`call_`），**未测 GHC Anthropic 腿是否接受 `call_*` 作入站 request tool id**。反向腿（cc/responses/gemini→messages）接上游前必须实测（`verifying-authoritative-claims`：别继承 Phase 2 注释当已验证事实）。
+
+**关键发现（W2 CLEARED）**：
+
+| 组 | 入站 tool_use.id | 结果 |
+|---|---|---|
+| CONTROL | `toolu_01ABCDEFGHIJKLMNOPQRSTUV`（Anthropic 原生）| HTTP 200，`stop=end_turn`，正确用 tool_result 内容回答（18°C sunny）|
+| TEST | `call_ABC123def456GHI789jkl`（OpenAI 原生）| **HTTP 200**，正确关联 tool_result 回答 |
+| TEST2 | `fc_0a1b2c3d4e5f6g7h8i9j`（任意前缀）| **HTTP 200**，正确关联 tool_result 回答 |
+
+**裁决**：GHC 的 Anthropic `/v1/messages` 腿**接受任意前缀的入站 tool_use.id**（不强制 `toolu_`），且正确按 id 关联 `tool_use`↔`tool_result`。→ **反向腿 `call_*`/`fc_*` verbatim 透传设计成立，无需 id 归一/改写**（WARN-E ② 收口：透传是唯一且正确的选择）。
+
 ## 未测（留实现阶段）
-- **流式帧形态**（§7.2 状态机的真实输入，F1 最难 phase 依据）：cc 腿 + responses 腿的 SSE delta 序列、reasoning 是否在流式帧回传、tool_call 流式 index 形态。省配额，留 Phase 3/4 用 golden 预捕获时实测。
+- **反向流式帧形态**（§8.2 反向状态机的真实输入）：上游 Anthropic `/v1/messages` 的 SSE 帧序列（message_start/content_block_*/message_delta/message_stop/ping/error），已由 `src/lib/anthropic/stream-accumulator.ts:156-334` 完整锚定真实帧集（Phase 5 逐帧 golden 依据）。
+- ~~**流式帧形态**（§7.2 状态机的真实输入，F1 最难 phase 依据）：cc 腿 + responses 腿的 SSE delta 序列~~ —— Phase 4 已用 golden 预捕获实测（正向 CC/Responses→Anthropic 流式已 landed）。
