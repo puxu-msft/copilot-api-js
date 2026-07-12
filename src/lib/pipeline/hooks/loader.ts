@@ -34,6 +34,14 @@ export function setUpstreamHookForTests(hook: UpstreamHook | undefined): void {
 
 const HOOK_POINTS = ["onRequest", "onExchange", "rewriteUpstreamFrame"] as const
 
+// Monotonic counter backing `version` below. `Date.now()` alone is NOT sufficient to satisfy the
+// "changes on every successful reload" contract (see the `version` field's openapi description in
+// `src/routes/hooks/route.ts`): two reloads landing within the same millisecond would otherwise
+// produce an identical `String(loadedAt)` version, silently breaking any caller that polls
+// `version` to detect a fresh reload. This counter is bumped on every successful load, regardless
+// of wall-clock resolution, so `version` is always unique and strictly increasing.
+let loadSeq = 0
+
 /** Load (or reload) the hook module via data-URL (bypasses Bun's path-keyed ESM cache). */
 export async function loadUpstreamHook(modulePath: string): Promise<UpstreamHookState> {
   const src = readFileSync(modulePath, "utf8")
@@ -50,7 +58,7 @@ export async function loadUpstreamHook(modulePath: string): Promise<UpstreamHook
     hook,
     module: modulePath,
     loadedAt,
-    version: String(loadedAt),
+    version: `${loadedAt}-${++loadSeq}`,
     exports: [...exports],
   }
   return hookState

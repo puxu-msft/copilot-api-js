@@ -16,7 +16,7 @@ export interface UpstreamHookState {
   hook: UpstreamHook
   module: string
   loadedAt: number
-  version: string // String(loadedAt)
+  version: string // `${loadedAt}-${monotonic seq}` — unique + strictly increasing across reloads, even within the same millisecond
   exports: Array<string> // ["onExchange", ...] actual mount-point names exported
   lastReloadError?: string
 }

@@ -35,7 +35,10 @@ const HooksStateSchema = z
     declaredModule: z.string().nullable().openapi({ description: "Declared config: hooks.upstream_module (null if unset)" }),
     loadedModule: z.string().nullable().openapi({ description: "Module path of the currently EFFECTIVE (loaded) hook, if any" }),
     loadedAt: z.number().nullable().openapi({ description: "Epoch ms when the effective hook was loaded" }),
-    version: z.string().nullable().openapi({ description: "String(loadedAt) — changes on every successful reload" }),
+    version: z
+      .string()
+      .nullable()
+      .openapi({ description: "`${loadedAt}-${seq}` — monotonically unique, changes on every successful reload (even within the same millisecond)" }),
     exports: z.array(z.string()).openapi({ description: 'Hook mount points exported by the effective module, e.g. ["onExchange"]' }),
     lastReloadError: z.string().optional().openapi({ description: "Present only if the most recent reload attempt failed" }),
   })

@@ -169,6 +169,11 @@ describe("Task 5.3a — reload via the /api/hooks/reload API/state path, verifie
     const r2 = await reload()
     expect(r2.ok).toBe(true)
     const s2 = await hooksState()
+    // `version` carries a monotonic sequence suffix (loader.ts's `loadSeq`) in addition to
+    // `loadedAt`, so this assertion holds deterministically — not just "usually true because the
+    // clock ticked between reloads" (two reloads landing in the same millisecond would otherwise
+    // produce an identical `String(loadedAt)` version; see loader.unit.test.ts's dedicated
+    // same-millisecond regression test).
     expect(s2.version).not.toBe(v1Version)
 
     // Independent oracle: NOT just "version changed" — a REAL driver run through

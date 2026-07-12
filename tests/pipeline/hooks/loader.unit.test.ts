@@ -52,7 +52,10 @@ describe("loadUpstreamHook", () => {
 
     expect(state.module).toBe(validHookPath)
     expect(state.exports).toContain("onExchange")
-    expect(state.version).toBe(String(state.loadedAt))
+    // `version` embeds `loadedAt` but is NOT identical to `String(loadedAt)` — it also carries a
+    // monotonic sequence suffix so two reloads landing in the same millisecond still get distinct,
+    // strictly-increasing versions (see `loader.ts`'s `loadSeq` counter).
+    expect(state.version.startsWith(`${state.loadedAt}-`)).toBe(true)
 
     const hook = getUpstreamHook()
     expect(hook).toBeDefined()
@@ -72,6 +75,27 @@ describe("loadUpstreamHook", () => {
     resetUpstreamHook()
     expect(getUpstreamHook()).toBeUndefined()
     expect(getUpstreamHookState()).toBeUndefined()
+  })
+
+  test("two reloads landing in the SAME millisecond still get distinct, monotonically increasing versions", async () => {
+    // Regression test: `version` used to be `String(Date.now())` alone, so two reloads within
+    // the same millisecond (routine on a fast machine / CI) produced an identical version,
+    // silently violating the "changes on every successful reload" contract. Pin `Date.now()` to
+    // a single fixed value across both loads to deterministically force the collision that a
+    // real clock only sometimes reproduces, and prove the monotonic sequence suffix still
+    // disambiguates them.
+    const originalNow = Date.now
+    Date.now = () => 1_700_000_000_000
+    try {
+      const s1 = await loadUpstreamHook(validHookPath)
+      const s2 = await loadUpstreamHook(validHookPath)
+
+      expect(s1.loadedAt).toBe(s2.loadedAt) // clock genuinely collided
+      expect(s1.version).not.toBe(s2.version) // version still disambiguates
+      expect(s2.version > s1.version).toBe(true) // and strictly increases (string-compares fine: same loadedAt prefix, numeric seq suffix grows)
+    } finally {
+      Date.now = originalNow
+    }
   })
 })
 
