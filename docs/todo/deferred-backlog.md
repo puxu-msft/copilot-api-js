@@ -422,3 +422,14 @@
 - **理想架构**:`HookedTransport`(decorator 包裹 `Transport.send`,[types.ts:108](../../src/lib/pipeline/types.ts#L108)/[driver.ts:310](../../src/lib/pipeline/driver.ts#L310)),hook 签名 `(wire, env, next) => UpstreamStream`,统一四用途(mock/拦截改写/录制回放/注入故障)。config 声明 + ad-hoc JS/TS 文件动态 import,生产默认不加载。
 - **为何待做(非暂缓,是新特性)**:用户已确认范围(四用途全选 + config+ad-hoc 挂载),但会话超长,按 handover 原则移交新会话做完整 SDD。属独立新特性工作单元。
 - **若做需改什么**:见完整 kickoff [docs/plan/2026-07-12-upstream-hook-middleware-KICKOFF.md](../plan/2026-07-12-upstream-hook-middleware-KICKOFF.md)——含统一抽象、锚点、四个未决设计问题(尤其 #3:录制回放可能直接复用 history.db 的 sseEvents)。新会话从 brainstorming 起。发现方:cache_control 实测(2026-07-12)。
+
+## `hook-rewrite` forwarded 标记覆盖缺口：Responses(HTTP+WS) + 全部 translate 腿（2026-07-12，Task 2.3 实现后核实）
+
+- **背景**：Task 2.3（`docs/plan/2026-07-12-upstream-hook-middleware/plan-2-history-provenance.md`）给 `rewriteUpstreamFrame` 改写的帧接了 forwarded 轨 `synthetic:"hook-rewrite"` 标记——用一个 Symbol-keyed 属性打在改写后的帧对象上（`hooks/origin.ts` 的 `tagFrameRewritten`/`wasFrameRewritten`），靠对象引用/`{...frame}` 展开语义存活到 `client-sink.ts` 的 `write()`。
+- **实测覆盖矩阵**（读代码 + 单测锁定，非猜测）：
+  - **可靠**：Anthropic `/v1/messages` 直连（`codec.ts:293` `renderResponse` 对非-translate leg `return frame` 逐字返回）、CC `/chat/completions` 直连（`openai-cc/codec.ts:207-209` 同样逐字返回 + `chat-completions/handler-v4.ts:384` 的 `onRenderedFrame` 用 `{...frame, data: X}` 展开——对象展开会复制 Symbol 键，亲手用 `bun -e` 实测确认）。
+  - **丢失（已知、已用测试锁定预期行为，见 `driver-provenance.unit.test.ts` 两个"KNOWN GAP"用例）**：
+    1. **任何 translate 腿的 `codec.renderResponse`**（CC→Anthropic / CC→Responses / CC→Gemini 的 stream translator）——这些是**跨多个上游帧的有状态 N:1/1:N 累加器**，构造全新帧对象、不展开输入，"这个输出帧对应哪个输入帧"本身就 ill-defined（spec §3.4/§8 已预见）。
+    2. **`routes/responses/handler-v4.ts` 的 `restoreAndAccumulate`（Responses HTTP，direct 腿也中招）** 与 **`routes/responses/ws.ts` 的 `restoreAccumulateCount`（Responses WS）**——两者重建全新 `{event, data}`/`{data}` 字面量（不展开 `frame`），**连 direct 腿也丢**——这是一个与 hook 特性无关、独立存在的既有模式（顺带也丢了 `id`/`retry` 字段，只是历史上无人关心）。
+- **为何暂缓**：Task 2.3 的验收门槛是"passthrough 腿至少可靠"（已达成，覆盖最常用的 Anthropic/CC 直连），核心透传机制（driver.ts 打标 + client-sink.ts 读标，纯 `src/lib/pipeline/` 层，3 个小文件）本身干净、无需为了覆盖 Responses/Gemini 去动 handler 业务逻辑（那会把改动面扩到 `routes/responses/handler-v4.ts` + `routes/responses/ws.ts`，且需谨慎不能意外改变 Responses 帧重建后的 wire 形状）。这是 Task 2.3 执行时**新发现**、比 brief 预判更细的一层缺口（brief 只预期"translate 腿 ill-defined"，未预期 Responses 的 direct 腿也因**独立**的帧重建模式丢标）。
+- **若做需改什么**：① Responses 缺口——让 `restoreAndAccumulate`/`restoreAccumulateCount` 从 `{...frame, event: ..., data: ...}` 展开构造（而非全新字面量），顺带补上 `id`/`retry` 字段保真（需评估是否改变现有 wire 字节——这两个字段目前从未被写出，加上后需重新对齐 golden 等价测试）；② translate 腿缺口——本质上是"改写单帧 vs 累加器多帧"的语义冲突，除非重新设计 stream translator 让它逐帧携带 provenance 位（侵入式改造，不值当只为一个可观测性标记），否则建议保持现状、接受可辨识性缺口，靠上游轨/forwarded 轨的**内容 diff**（两轨都已如实记录）间接定位改写。发现方：Task 2.3 实现 + `bun -e` 实测对象展开语义（2026-07-12）。

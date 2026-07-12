@@ -53,8 +53,10 @@ driver.ts 行 440（`runResponse` 入参 `upstream` 若带 origin，则 push 时
 
 > **接缝提示**（评审确认非平凡）：forwarded 采样 `sampleForwarded` 在 handler/sink 侧、经 `onForwarded` 回调，透传布尔要跨 owns-sink 边界。执行者若实测此接线成本远超预期，**须回来向用户报告、由用户签字决定是否降级**（记 spec §3.4/§9 修订 + backlog），**不得在 commit 里静默降级**（`no-silently-cut-but-defer`）。上游轨纯净底线由 Task 1.3 独立保证，与本项无关。
 
-- [ ] **Step 1：写失败测试** — 挂改写 hook，断言 forwarded 轨改写帧带 `hook-rewrite`、上游轨仍是 pre-hook 纯净帧。
-- [ ] **Step 2-4：跑失败 → 实现透传 + 扩联合 → 跑绿 + typecheck + typecheck:ui-v4**。
-- [ ] **Step 5：commit**。
+- [x] **Step 1：写失败测试** — 挂改写 hook，断言 forwarded 轨改写帧带 `hook-rewrite`、上游轨仍是 pre-hook 纯净帧。（`tests/pipeline/hooks/driver-provenance.unit.test.ts` 新增 describe「hook-rewrite forwarded-track hook-rewrite marking (Task 2.3)」5 个用例。）
+- [x] **Step 2-4：跑失败 → 实现透传 + 扩联合 → 跑绿 + typecheck + typecheck:ui-v4**。
+- [x] **Step 5：commit**。
+
+**实际实现（与初稿设想略有出入，记录以免复议）**：未采用"布尔透传经 opts 回调"的形状，改用 Symbol-keyed 帧标记（`hooks/origin.ts` 新增 `tagFrameRewritten`/`wasFrameRewritten`，`tagStream`/`HOOK_ORIGIN` 的帧级近亲）——driver 在 rewriteUpstreamFrame 返回 ≠ 原帧时打标，`client-sink.ts` 的 `write()`（SSE + WS 两个工厂）直接读标决定 `sampleForwarded` 的第二参，**不新增 `ClientSink` 接口方法**（未走 writeKeepalive/writeAnchor 那种"driver 主动选调用点"的形状——因为 hook-rewrite 帧是普通内容帧、和其他真实帧走同一个 `write()` 调用，driver 没有独立调用点可选）。改动 3 文件（driver.ts / client-sink.ts / hooks/origin.ts），均属 `src/lib/pipeline/` 编排层，未碰任何 handler。**覆盖实测**（非猜测，`bun -e` 验证过对象展开保留 Symbol 键）：Anthropic `/v1/messages` 直连 + CC `/chat/completions` 直连可靠；Responses(HTTP+WS) 直连（既有 `restoreAndAccumulate`/`restoreAccumulateCount` 重建全新字面量，与 hook 无关的既有模式）+ 全部 translate 腿（stream translator 是有状态 N:1/1:N 累加器，"帧"边界本身不对应）**丢标——记入 backlog**「`hook-rewrite` forwarded 标记覆盖缺口」，非静默降级。
 
 **Phase 2 出口验收**：mock/replay 帧上游轨带标记、真实帧不带、改写不污染上游轨；`typecheck` + `typecheck:ui-v4` 绿。

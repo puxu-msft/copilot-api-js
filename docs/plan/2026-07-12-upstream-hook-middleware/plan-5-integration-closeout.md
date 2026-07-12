@@ -35,7 +35,7 @@
 
 - [ ] **doc-sync**：更新 [docs/DESIGN.md](../../DESIGN.md)「活的架构现状」加 hook 挂载点行（driver 编排三挂载点、config-gated、data-URL reload）；配置节加 `hooks` section。跨文档 grep 验证引用一致。**顺手订正 spec 陈旧路径**（评审 LOW-4）：spec §4.2/§11 写的 `src/lib/anthropic/tool-field-rejection-retry.ts` 真实位置是 `src/lib/request/strategies/tool-field-rejection-retry.ts`（plan-3 已用正确目录，仅 spec 引用需订正）。
 - [ ] **ADR 判定**：hook 机制是新架构层——补 `docs/decisions/2026-07-12-driver-orchestrated-upstream-hooks.md`（记「为何 driver 编排多挂载点而非 transport decorator」+「为何 data-URL 而非 ?v=」），或评审认为不够格则跳过并记理由。
-- [ ] **backlog**：上游 WS 腿 hook、`hook-rewrite` forwarded 标记（若 Task 2.3 降级）、attempt 级 `source` provenance → [docs/todo/deferred-backlog.md](../../todo/deferred-backlog.md)。
+- [ ] **backlog**：上游 WS 腿 hook、attempt 级 `source` provenance → [docs/todo/deferred-backlog.md](../../todo/deferred-backlog.md)。（Task 2.3 已实现，非降级——passthrough 腿(Anthropic/CC 直连)可靠打标；Responses(HTTP+WS) 直连 + 全部 translate 腿的覆盖缺口已记入 backlog「`hook-rewrite` forwarded 标记覆盖缺口」条目。）
 - [ ] **plan 归档**：本 plan 目录头部标注实施状态（landed/partial）；README 更新 DAG 完成态。
 - [ ] **记忆维护**：更新 [project-upstream-hook-middleware](../../memory/project-upstream-hook-middleware.md) stub 为 landed；`reference-bun-esm-cache-busting` 若下沉 skill `bun-node-runtime-gotchas` 则改 stub。
 - [ ] **subagent 合并态评审**：全部 landed 后派 subagent 做 merged-state review（doc-vs-code 对账、集成接缝、上游轨纯净不变量的实际验证）。
