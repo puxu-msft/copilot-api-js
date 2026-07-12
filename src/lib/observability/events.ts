@@ -172,6 +172,12 @@ export type FeatureKind =
   | "tool-input-repaired"
   /** a malformed tool_use input could not be repaired (strip + jsonrepair both failed) — `detail: { tool }` */
   | "tool-input-unrepairable"
+  /**
+   * translation matrix: a forward-leg (anthropic→cc/responses) upstream choice finished with
+   * `content_filter`, which has no Anthropic stop_reason and was mapped to `end_turn` on the client
+   * wire (N3) — this marker keeps the degradation observably distinguishable (richest-data-flow). `detail: {}`.
+   */
+  | "translated-content-filter"
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 

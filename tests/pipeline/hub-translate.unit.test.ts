@@ -3,8 +3,9 @@
  *
  * Verifies `translateRequestVia` routes each (sourceFormat × targetEndpoint) cell to the correct
  * translator (asserting the OUTPUT SHAPE, not re-testing the translators' internals — those have
- * their own suites), and that the response-side skeleton throws (translation legs are end-to-end
- * fail-fast until Phase 3/4).
+ * their own suites), that the NON-STREAMING response dispatch `renderResponseNonStreamingVia` routes
+ * both directions (T3.3), and that the STREAMING response-side skeleton throws (streaming translation
+ * legs are end-to-end fail-fast until Phase 4).
  */
 
 import {
@@ -14,13 +15,14 @@ import {
   test,
 } from "bun:test"
 
-import type { MessagesPayload } from "~/types/api/anthropic"
-import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+import type { Message as AnthropicResponse, MessagesPayload } from "~/types/api/anthropic"
+import type { ChatCompletionResponse, ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
+  renderResponseNonStreamingVia,
   renderResponseVia,
   translateRequestVia,
 } from "~/lib/pipeline/hub-translate"
@@ -92,8 +94,50 @@ describe("translateRequestVia — reverse legs (→ /v1/messages)", () => {
   })
 })
 
-describe("renderResponseVia — response side is fail-fast (Phase 3/4)", () => {
-  test("throws (translation legs stay end-to-end fail-fast until response translation lands)", () => {
-    expect(() => renderResponseVia()).toThrow(/response-side translation is not wired/)
+describe("renderResponseNonStreamingVia — non-streaming response dispatch (T3.3)", () => {
+  const ccUpstream: ChatCompletionResponse = {
+    id: "msg_x",
+    object: "chat.completion",
+    created: 0,
+    model: "claude-x",
+    choices: [{ index: 0, finish_reason: "stop", logprobs: null, message: { role: "assistant", content: "hi" } }],
+    usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+  }
+  const anthropicUpstream = {
+    id: "msg_y",
+    type: "message",
+    role: "assistant",
+    model: "claude-x",
+    content: [{ type: "text", text: "hi" }],
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: 3, output_tokens: 1 },
+  } as unknown as AnthropicResponse
+
+  test("FORWARD /chat/completions leg: CC upstream → Anthropic response", () => {
+    const { rendered, contentFiltered } = renderResponseNonStreamingVia(ENDPOINT.CHAT_COMPLETIONS, ccUpstream)
+    expect((rendered as { type: string }).type).toBe("message")
+    expect((rendered as { content: unknown }).content).toEqual([{ type: "text", text: "hi" }])
+    expect(contentFiltered).toBe(false)
+  })
+
+  test("FORWARD leg surfaces contentFiltered (N3) when a choice finished with content_filter", () => {
+    const filtered = { ...ccUpstream, choices: [{ ...ccUpstream.choices[0], finish_reason: "content_filter" as const }] }
+    const { rendered, contentFiltered } = renderResponseNonStreamingVia(ENDPOINT.CHAT_COMPLETIONS, filtered)
+    expect((rendered as { stop_reason: string }).stop_reason).toBe("end_turn")
+    expect(contentFiltered).toBe(true)
+  })
+
+  test("REVERSE /v1/messages leg: Anthropic upstream → CC-canonical response", () => {
+    const { rendered, contentFiltered } = renderResponseNonStreamingVia(ENDPOINT.MESSAGES, anthropicUpstream)
+    expect((rendered as { object: string }).object).toBe("chat.completion")
+    expect((rendered as { choices: Array<{ message: { content: string } }> }).choices[0].message.content).toBe("hi")
+    expect(contentFiltered).toBe(false)
+  })
+})
+
+describe("renderResponseVia — STREAMING response side is fail-fast (Phase 4)", () => {
+  test("throws (streaming translation legs stay end-to-end fail-fast until Phase 4)", () => {
+    expect(() => renderResponseVia()).toThrow(/STREAMING response-side translation is not wired/)
   })
 })

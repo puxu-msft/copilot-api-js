@@ -7,8 +7,8 @@
  *   1. FORWARD leg (anthropic + `@cc`): `stopAfter=prepare-wire` yields a CC-shaped wire at
  *      `/chat/completions` (the request translation reached the wire) — the hub delegation works.
  *   2. DIRECT leg (no suffix): the wire stays Anthropic-shaped at `/v1/messages` (zero regression).
- *   3. Response-side FAIL-FAST: `renderResponse` / `renderResponseNonStreaming` THROW for a translate
- *      leg, so the leg is end-to-end fail-fast (an un-translated CC response is never returned).
+ *   3. Response-side FAIL-FAST: streaming `renderResponse` THROWS for a translate leg (Phase 4), while
+ *      non-streaming `renderResponseNonStreaming` now TRANSLATES the CC response back to Anthropic (T3.3).
  */
 
 import {
@@ -110,26 +110,50 @@ describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectR
   })
 })
 
-describe("T2.4 — response side is fail-fast for a translate leg", () => {
+describe("T3.3 — non-streaming response side translates for a translate leg; streaming stays fail-fast", () => {
   useIsolatedRuntime()
 
   function translateLegEnv(): RequestEnvelope {
-    return { targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, body: {}, model: {} } as unknown as RequestEnvelope
+    return { targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, body: {}, model: {}, ctx: {} } as unknown as RequestEnvelope
   }
   function directEnv(): RequestEnvelope {
     return { targetEndpoint: ENDPOINT.MESSAGES, body: {}, model: {} } as unknown as RequestEnvelope
   }
   const codec = () => createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
 
-  test("renderResponse THROWS for a translate leg (never returns un-translated CC to the client)", () => {
-    expect(() => codec().renderResponse({ data: "{}", event: "message" }, translateLegEnv())).toThrow(/response translation is not wired yet/)
+  test("renderResponse (STREAMING) THROWS for a translate leg (per-frame state machine is Phase 4)", () => {
+    expect(() => codec().renderResponse({ data: "{}", event: "message" }, translateLegEnv())).toThrow(/STREAMING response-side translation is not wired yet/)
   })
 
-  test("renderResponseNonStreaming THROWS for a translate leg", () => {
-    expect(() => codec().renderResponseNonStreaming({ id: "x" }, translateLegEnv())).toThrow(/response translation is not wired yet/)
+  test("renderResponseNonStreaming TRANSLATES a CC completion back to an Anthropic response (T3.3)", () => {
+    const ccResponse = {
+      id: "msg_x",
+      object: "chat.completion",
+      created: 0,
+      model: "claude-x",
+      choices: [{ index: 0, finish_reason: "stop", logprobs: null, message: { role: "assistant", content: "hello from cc" } }],
+      usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+    }
+    const out = codec().renderResponseNonStreaming(ccResponse, translateLegEnv()) as {
+      type: string
+      role: string
+      content: Array<{ type: string; text?: string }>
+      stop_reason: string
+      usage: { input_tokens: number; output_tokens: number }
+    }
+    expect(out.type).toBe("message")
+    expect(out.role).toBe("assistant")
+    expect(out.content).toEqual([{ type: "text", text: "hello from cc" }])
+    expect(out.stop_reason).toBe("end_turn")
+    expect(out.usage).toEqual({ input_tokens: 5, output_tokens: 2 })
   })
 
-  test("direct-leg render stays identity (no throw)", () => {
+  test("direct-leg non-streaming render stays identity (no translation)", () => {
+    const upstream = { id: "msg_direct", type: "message", content: [] }
+    expect(codec().renderResponseNonStreaming(upstream, directEnv())).toBe(upstream)
+  })
+
+  test("direct-leg streaming render stays identity (no throw)", () => {
     const frame = { data: '{"type":"content_block_delta"}', event: "content_block_delta" }
     expect(codec().renderResponse(frame, directEnv())).toBe(frame)
   })

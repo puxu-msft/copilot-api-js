@@ -17,8 +17,9 @@
  * Phase 2 scope: the REQUEST dispatch (`translateRequestVia`) — every (sourceFormat × targetEndpoint)
  * cell resolves to the right translator, whether or not a codec consumes it yet (the forward
  * anthropic→cc/responses cells are wired by the anthropic codec in T2.4; the reverse `→ messages`
- * cells are wired in Phase 5). The RESPONSE-side dispatch (`renderResponseVia`) is a Phase 3/4 skeleton
- * that throws — the translation legs stay end-to-end fail-fast until response translation lands.
+ * cells are wired in Phase 5). The NON-STREAMING RESPONSE-side dispatch (`renderResponseNonStreamingVia`)
+ * is wired here in Phase 3 (both directions); the STREAMING response-side dispatch (`renderResponseVia`)
+ * stays a Phase 4 skeleton that throws — streaming translation legs stay end-to-end fail-fast until then.
  */
 
 import type { Model } from "~/lib/models/client"
@@ -27,15 +28,18 @@ import type {
   ClientFormat,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
-import type { MessagesPayload } from "~/types/api/anthropic"
-import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
-import type { ResponsesPayload } from "~/types/api/openai-responses"
+import type { Message as AnthropicResponse, MessagesPayload } from "~/types/api/anthropic"
+import type { ChatCompletionResponse, ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+import type { ResponsesPayload, ResponsesResponse } from "~/types/api/openai-responses"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
+  translateAnthropicResponseToCC,
   translateAnthropicToChatCompletions,
+  translateCCResponseToAnthropic,
   translateChatCompletionsToAnthropic,
+  translateResponsesResponseToCC,
   translateResponsesToChatCompletions,
 } from "~/lib/openai/translate"
 
@@ -107,16 +111,50 @@ function toCcBody(sourceFormat: ClientFormat, body: unknown, ctx?: HubTranslateC
 }
 
 /**
- * Response-side translation dispatch — Phase 3 (non-streaming) / Phase 4 (streaming) skeleton.
+ * Response-side NON-STREAMING translation dispatch — Phase 3 (T3.3).
  *
- * Until response translation lands, a translation leg is INTENTIONALLY end-to-end fail-fast (RFC §7 /
- * the Phase-2 commit invariant): letting an anthropic→cc request reach the upstream and return a CC
- * response un-translated to the Anthropic client would return corrupt data. Throwing here (mirrored by
- * the codec's `renderResponse`/`getStreamMeta` fail-fast) makes the leg fail loudly instead. Phase 3/4
- * replace this with the real CC↔Anthropic response translators.
+ * The mirror of {@link translateRequestVia}, dispatched purely on `targetEndpoint` (which fully
+ * determines the upstream response shape + the render direction):
+ *   - `/v1/messages` leg → the upstream is an Anthropic response (a REVERSE `→ messages` leg); render
+ *     it to CC-canonical (the cc/responses/gemini client codec does any further CC→its-format hop — WARN-F).
+ *   - `/chat/completions` | `/responses` legs → the upstream is a CC / Responses response (a FORWARD
+ *     anthropic→cc/responses leg); normalize it to CC (identity for the cc leg; Responses→CC for the
+ *     responses leg — the WARN-F two-hop) then render CC→Anthropic.
+ *
+ * Returns a small envelope so the FORWARD path can surface the `contentFiltered` degradation (N3) to
+ * the codec's ctx observability WITHOUT the pure translators taking a ctx dependency. The STREAMING
+ * response side stays the {@link renderResponseVia} fail-fast skeleton (Phase 4).
+ */
+export interface RenderedNonStreamingResponse {
+  /** The rendered response body in the client-canonical shape (Anthropic for a forward leg, CC for a reverse leg). */
+  rendered: unknown
+  /** FORWARD leg only: a CC choice finished with `content_filter` (mapped to end_turn on the wire, N3). */
+  contentFiltered: boolean
+}
+
+export function renderResponseNonStreamingVia(targetEndpoint: UpstreamEndpoint, upstream: unknown): RenderedNonStreamingResponse {
+  if (targetEndpoint === ENDPOINT.MESSAGES) {
+    // REVERSE leg: Anthropic upstream → CC-canonical (the client codec renders any further hop).
+    return { rendered: translateAnthropicResponseToCC(upstream as AnthropicResponse), contentFiltered: false }
+  }
+  // FORWARD leg (anthropic client): normalize the upstream to CC, then CC → Anthropic.
+  const cc = targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? (upstream as ChatCompletionResponse) : translateResponsesResponseToCC(upstream as ResponsesResponse)
+  const { response, contentFiltered } = translateCCResponseToAnthropic(cc)
+  return { rendered: response, contentFiltered }
+}
+
+/**
+ * Response-side STREAMING translation dispatch — Phase 4 skeleton.
+ *
+ * Until STREAMING response translation lands, a streaming translation leg is INTENTIONALLY end-to-end
+ * fail-fast (RFC §7 / the Phase-2 commit invariant): letting an anthropic→cc request reach the upstream
+ * and return CC frames un-translated to the Anthropic client would forward corrupt data. Throwing here
+ * (mirrored by the codec's per-frame `renderResponse` fail-fast) makes the leg fail loudly instead. The
+ * NON-STREAMING path is wired (see {@link renderResponseNonStreamingVia}); Phase 4 replaces this with the
+ * real CC↔Anthropic streaming translators.
  */
 export function renderResponseVia(): never {
   throw new Error(
-    "[hub-translate] response-side translation is not wired yet (Phase 3 non-streaming / Phase 4 streaming) — translation legs are end-to-end fail-fast until then",
+    "[hub-translate] STREAMING response-side translation is not wired yet (Phase 4) — streaming translation legs are end-to-end fail-fast until then (non-streaming is wired via renderResponseNonStreamingVia)",
   )
 }

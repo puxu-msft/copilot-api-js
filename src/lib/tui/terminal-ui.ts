@@ -1242,7 +1242,8 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
     case "protect-streaming-retry":
     case "context-edits-applied":
     case "tool-input-repaired":
-    case "tool-input-unrepairable": {
+    case "tool-input-unrepairable":
+    case "translated-content-filter": {
       return feature
     }
     case "beta-stripped": {

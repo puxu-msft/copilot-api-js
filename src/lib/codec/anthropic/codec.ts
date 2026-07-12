@@ -1,9 +1,11 @@
 /**
  * v4 pipeline — anthropic-messages FormatCodec (P2.6 / C2).
  *
- * Anthropic /v1/messages is the "bypass direct" format: there is NO protocol
- * translation — `translateOut` / `renderResponse` / `renderResponseNonStreaming`
- * are all identity (the upstream IS the Anthropic Messages API). What makes it the
+ * Anthropic /v1/messages is the "bypass direct" format for the DIRECT leg: there is
+ * NO protocol translation — `translateOut` / `renderResponse` / `renderResponseNonStreaming`
+ * are all identity (the upstream IS the Anthropic Messages API). A FORWARD translate leg
+ * (`@cc`/`@responses`) instead delegates request + non-streaming-response translation to the
+ * hub (streaming response translation is still fail-fast until Phase 4). What makes it the
  * heaviest codec is the request side: the ordered sanitize chain (tool-preprocess
  * → tool-name → sanitize, B/A steps) and the B1-B12 wire preparation, plus the 8
  * retry strategies (anthropic-strategies.ts) and the beta-probe negotiation.
@@ -109,7 +111,11 @@ import {
   resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
-import { translateRequestVia } from "~/lib/pipeline/hub-translate"
+import {
+  //
+  renderResponseNonStreamingVia,
+  translateRequestVia,
+} from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
 import {
@@ -243,18 +249,24 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       return env.with({ body: ccBody })
     },
 
-    // S6 render: the direct path is identity. A FORWARD translate leg is END-TO-END FAIL-FAST — response
-    // translation (CC→Anthropic) is Phase 3 (non-streaming) / Phase 4 (streaming); until then, letting a
-    // translate leg return an un-translated CC response to the Anthropic client would be corrupt data, so
-    // render THROWS (never-swallow, WARN-1). Mirrors the hub's renderResponseVia + prepareWire's symmetric
-    // throw for legs the cc delegate can't yet serve.
+    // S6 render (streaming): the direct path is identity. A FORWARD translate leg is STILL end-to-end
+    // fail-fast for STREAMING — the per-frame CC→Anthropic streaming state machine is Phase 4; until then,
+    // yielding un-translated CC frames to the Anthropic client would forward corrupt data, so render
+    // THROWS (never-swallow, WARN-1). Mirrors the hub's renderResponseVia streaming skeleton.
     renderResponse(frame, env) {
       if (!isForwardTranslateLeg(env.targetEndpoint)) return frame
       throw new Error(failFastResponseMessage(env.targetEndpoint))
     },
+    // S6 render (non-streaming): the direct path is identity. A FORWARD translate leg (Phase 3, T3.3)
+    // delegates to the hub's CC→Anthropic response translator (`renderResponseNonStreamingVia`), turning
+    // the upstream CC / Responses completion back into the Anthropic Messages response the client expects
+    // — the leg is now end-to-end wired for non-streaming. A content_filter degradation (N3) is recorded
+    // as a ctx marker so the wire end_turn stays observably distinguishable (richest-data-flow).
     renderResponseNonStreaming(upstream, env) {
       if (!isForwardTranslateLeg(env.targetEndpoint)) return upstream
-      throw new Error(failFastResponseMessage(env.targetEndpoint))
+      const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.targetEndpoint, upstream)
+      if (contentFiltered) env.ctx.recordFeature?.("translated-content-filter")
+      return rendered
     },
 
     prepareWire(env) {
@@ -309,9 +321,9 @@ function isForwardTranslateLeg(targetEndpoint: UpstreamEndpoint | undefined): ta
   return targetEndpoint === ENDPOINT.CHAT_COMPLETIONS || targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES
 }
 
-/** The fail-fast error message for a translate leg's response side (response translation lands Phase 3/4). */
+/** The fail-fast error message for a translate leg's STREAMING response side (per-frame translation lands Phase 4). */
 function failFastResponseMessage(targetEndpoint: UpstreamEndpoint): string {
-  return `anthropic codec cannot render a response for the ${targetEndpoint} translate leg — CC→Anthropic response translation is not wired yet (Phase 3 non-streaming / Phase 4 streaming); the leg is intentionally end-to-end fail-fast so an un-translated CC response is never returned to the Anthropic client`
+  return `anthropic codec cannot render a STREAMING response for the ${targetEndpoint} translate leg — the per-frame CC→Anthropic STREAMING response-side translation is not wired yet (Phase 4); the streaming leg is intentionally end-to-end fail-fast so un-translated CC frames are never returned to the Anthropic client (non-streaming is wired via renderResponseNonStreaming, Phase 3)`
 }
 
 // ============================================================================
