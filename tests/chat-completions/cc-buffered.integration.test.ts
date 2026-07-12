@@ -58,10 +58,29 @@ function partialFrames(model: string): Array<string> {
   ]
 }
 
+/** The real upstream error code/message (a terminal server_error decision — CC's H2). */
+const UPSTREAM_ERROR_CODE = "server_error"
+const UPSTREAM_ERROR_MESSAGE = "The model is overloaded. Please try again later."
+
+/**
+ * A generation that drains CLEANLY (no transport cut) but the upstream's terminal frame is an
+ * in-band `{"error":{...}}` chunk instead of a `finish_reason` chunk — the CC analog of
+ * Anthropic/Responses' H2. It never sets `finish_reason` (only a real completion/tool_calls
+ * chunk does), so the handler must fail via `acc.streamError`, NOT the truncation gate.
+ */
+function terminalErrorFrames(model: string): Array<string> {
+  return [
+    `data: ${JSON.stringify({ id: "s_err", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta: { role: "assistant", content: "PARTIAL_BEFORE_ERROR" }, finish_reason: null, logprobs: null }] })}\n\n`,
+    `data: ${JSON.stringify({ error: { message: UPSTREAM_ERROR_MESSAGE, type: UPSTREAM_ERROR_CODE } })}\n\n`,
+  ]
+}
+
 /** Number of leading upstream attempts that drain cleanly WITHOUT a finish_reason (truncation). */
 let rstBeforeComplete = 0
 /** When true, EVERY attempt truncates (retries exhausted scenario). */
 let alwaysTruncate = false
+/** When true, the (single) upstream attempt drains with a terminal in-band `error` frame (H2). */
+let terminalError = false
 let upstreamCalls = 0
 
 const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
@@ -73,6 +92,7 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   const model = payload.model ?? MODEL
   if (url.endsWith("/chat/completions")) {
     upstreamCalls += 1
+    if (terminalError) return Promise.resolve(createSseResponse(terminalErrorFrames(model)))
     const truncate = alwaysTruncate || upstreamCalls <= rstBeforeComplete
     return Promise.resolve(createSseResponse(truncate ? partialFrames(model) : completeFrames(model)))
   }
@@ -100,6 +120,7 @@ describe("CC buffered-retry adoption (P3 Task 2)", () => {
     upstreamCalls = 0
     rstBeforeComplete = 0
     alwaysTruncate = false
+    terminalError = false
     setStateForTests({
       copilotToken: "test-token",
       accountType: "individual",
@@ -198,6 +219,43 @@ describe("CC buffered-retry adoption (P3 Task 2)", () => {
       totalRetries: 2,
       retriesBeforeDegrade: 0,
     })
+  })
+
+  // ── Terminal upstream `error` frame (H2) — the real error must surface, NOT "truncated" ──
+  // A clean-draining stream whose terminal frame is an in-band `{"error":{...}}` chunk
+  // (overload/server_error) is an upstream DECISION to fail, delivered as a real content frame
+  // the client already received. The handler must fail via `acc.streamError` (the REAL
+  // code/message), NOT retry it as a truncation NOR mislabel the cause as "truncated". Mirrors
+  // tests/responses/responses-buffered.it.test.ts's H2 buffered test.
+
+  test("CC buffered: a terminal upstream error frame commits + surfaces the real error once (not 'truncated', no retry)", async () => {
+    setStateForTests({ chatCompletionsBufferedRetry: true, streamKeepalivePingSec: 20 })
+    setBufferedRetryOverride("chat_completions", { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 })
+    terminalError = true
+
+    const sse = await (await streamRequest()).text()
+
+    // The buffered sink COMMITS the terminal error frame (ccCommitBoundaries / sawUpstreamError)
+    // → the client receives the REAL error, forwarded verbatim (a raw upstream `data:` frame with
+    // NO `event:` line — CC's in-band error has no SSE `event` name, unlike Anthropic/Responses'
+    // synthesized `event: error`), exactly once, and the handler fails via acc.streamError (no
+    // retry as a truncation, no SECOND synthetic error frame appended).
+    expect(sse).toContain(UPSTREAM_ERROR_MESSAGE)
+    expect(sse).toContain(UPSTREAM_ERROR_CODE)
+    expect(sse.split('"error":{').length - 1).toBe(1)
+    expect(sse).not.toContain("event: error") // no synthesized truncation-style error frame
+    expect(sse).not.toContain("truncated")
+    expect(sse).not.toContain("[DONE]") // a failed request never gets the post-loop [DONE]
+    // An upstream `error` is a terminal DECISION — the buffered path commits it, it is NOT retried.
+    expect(upstreamCalls).toBe(1)
+
+    const entry = getHistory({ endpoint: "openai-chat-completions", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("failed")
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    const reason = String(entry?._index?.derived?.failureReason)
+    expect(reason).toContain(UPSTREAM_ERROR_CODE)
+    expect(reason).toContain(UPSTREAM_ERROR_MESSAGE)
+    expect(reason).not.toContain("truncated")
   })
 
   test("CC live mode (default off) fails a mid-stream truncation and preserves the partial (unchanged)", async () => {
