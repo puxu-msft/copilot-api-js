@@ -71,8 +71,8 @@ Phase 0 (PoC 净公式)  ──gate──►  Phase 1 (fix-forward)  ──►  
 
 ## 实施状态
 
-> 收尾时逐 Phase 回填：`未开始 / 进行中 / 已完成（commit <sha>）`。
-- Phase 0：未开始
-- Phase 1：未开始
-- Phase 2：未开始
-- Phase 3：未开始
+> 分支 `feat/ghc-usage-details`（worktree `.worktrees/ghc-usage-details`）。
+- Phase 0：**已完成**（commit `fc926c62`）——净公式=子集，见 poc-conclusion.md。
+- Phase 1：**已完成**（8 commits `6428db0f`..`59d5be8c`）——fix-forward 全线，全套件 4381 pass、typecheck 绿。含 G6 偏离（局部 JSON.stringify 而非 transport 透传，见 `59d5be8c`）。
+- Phase 2：**进行中**——Task 2.1 标记列**已完成**（`cd8ec789`）；Task 2.2 backfill leaf + 2.3 接线**待做**，续做笔记见 [RESUME-task-2.2.md](RESUME-task-2.2.md)。
+- Phase 3：未开始。
