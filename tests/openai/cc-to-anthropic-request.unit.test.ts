@@ -179,6 +179,65 @@ describe("translateChatCompletionsToAnthropic — tools / tool_choice", () => {
   })
 })
 
+describe("translateChatCompletionsToAnthropic — W3 empty/placeholder guards (reverse leg, pre-upstream)", () => {
+  test("a tool message MISSING tool_call_id is SKIPPED (never produces tool_use_id:\"\" — GHC 400 risk)", () => {
+    const a = translateChatCompletionsToAnthropic(
+      cc({
+        messages: [
+          { role: "tool", content: "orphan result" } as ChatCompletionsPayload["messages"][number], // no tool_call_id
+          { role: "user", content: "next" },
+        ],
+      }),
+    )
+    // The orphan tool_result never becomes a message (would fail to match any tool_use → GHC 400).
+    expect(a.messages).toEqual([{ role: "user", content: "next" }])
+    // Defensive: nowhere in the payload is an empty-string tool_use_id.
+    expect(JSON.stringify(a)).not.toContain('"tool_use_id":""')
+  })
+
+  test("mixed tool messages: only the one WITH a tool_call_id survives the fold", () => {
+    const a = translateChatCompletionsToAnthropic(
+      cc({
+        messages: [
+          { role: "tool", tool_call_id: "call_ok", content: "kept" },
+          { role: "tool", content: "dropped" } as ChatCompletionsPayload["messages"][number],
+        ],
+      }),
+    )
+    expect(a.messages).toEqual([{ role: "user", content: [{ type: "tool_result", tool_use_id: "call_ok", content: "kept" }] }])
+  })
+
+  test("all tool messages missing ids → NO empty user turn is emitted (no content:[])", () => {
+    const a = translateChatCompletionsToAnthropic(
+      cc({ messages: [{ role: "tool", content: "x" } as ChatCompletionsPayload["messages"][number], { role: "user", content: "hi" }] }),
+    )
+    expect(a.messages).toEqual([{ role: "user", content: "hi" }])
+  })
+
+  test("a user message with an EMPTY content array is SKIPPED (never produces content:[] — GHC 400 risk)", () => {
+    const a = translateChatCompletionsToAnthropic(
+      cc({ messages: [{ role: "user", content: [] }, { role: "user", content: "real" }] }),
+    )
+    expect(a.messages).toEqual([{ role: "user", content: "real" }])
+    expect(JSON.stringify(a)).not.toContain('"content":[]')
+  })
+
+  test("a user message with an EMPTY string content is SKIPPED (symmetric guard)", () => {
+    const a = translateChatCompletionsToAnthropic(
+      cc({ messages: [{ role: "user", content: "" }, { role: "user", content: "real" }] }),
+    )
+    expect(a.messages).toEqual([{ role: "user", content: "real" }])
+  })
+
+  test("a user message whose only parts are non-text drops nothing meaningful → still emits (image survives)", () => {
+    const a = translateChatCompletionsToAnthropic(
+      cc({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x/y.png" } }] }] }),
+    )
+    expect(a.messages).toHaveLength(1)
+    expect((a.messages[0]?.content as Array<ContentBlockParam>)[0]).toMatchObject({ type: "image" })
+  })
+})
+
 describe("translateChatCompletionsToAnthropic — WARN-E RED LINE (never synthesize thinking)", () => {
   test("reasoning_effort is DROPPED, never mapped to a thinking block or thinking config", () => {
     const a = translateChatCompletionsToAnthropic(cc({ reasoning_effort: "high", messages: [{ role: "user", content: "hi" }] }))

@@ -82,7 +82,11 @@ export function translateChatCompletionsToAnthropic(payload: ChatCompletionsPayl
 
   for (const message of payload.messages) {
     if (message.role === "tool") {
-      pendingToolResults.push(toolMessageToResultBlock(message))
+      // W3 guard: a tool message with no `tool_call_id` would produce `tool_use_id:""`, which
+      // matches no assistant tool_use and hits GHC's Anthropic 400 — skip it (warned, never a
+      // silent empty string). See toolMessageToResultBlock.
+      const block = toolMessageToResultBlock(message)
+      if (block) pendingToolResults.push(block)
       continue
     }
     flushToolResults()
@@ -100,8 +104,11 @@ export function translateChatCompletionsToAnthropic(payload: ChatCompletionsPayl
         break
       }
       default: {
-        // user
-        messages.push(translateUserMessage(message))
+        // user — W3 guard: an empty-content user turn (empty array OR empty string) would produce
+        // `content:[]` / `content:""`, an Anthropic 400; skip it (symmetric with the forward
+        // `translateUserBlocks` `userParts.length > 0` guard). See translateUserMessage.
+        const userMessage = translateUserMessage(message)
+        if (userMessage) messages.push(userMessage)
         break
       }
     }
@@ -136,19 +143,35 @@ export function translateChatCompletionsToAnthropic(payload: ChatCompletionsPayl
 // Messages
 // ============================================================================
 
-/** CC `role:"tool"` message → Anthropic `tool_result` block (tool_call_id passed through — WARN-E ②). */
-function toolMessageToResultBlock(message: Message): ToolResultBlockParam {
+/**
+ * CC `role:"tool"` message → Anthropic `tool_result` block (tool_call_id passed through — WARN-E ②).
+ *
+ * W3 guard: returns undefined when `tool_call_id` is missing/empty. An empty `tool_use_id` matches no
+ * assistant `tool_use` on the Anthropic wire → GHC 400; dropping the orphan result (warned) is the
+ * only well-formed choice (a recognizable placeholder would ALSO fail to match — never-swallow).
+ */
+function toolMessageToResultBlock(message: Message): ToolResultBlockParam | undefined {
+  if (!message.tool_call_id) {
+    consola.warn(`[CC→Anthropic] dropping tool result with no tool_call_id (would produce an unmatched empty tool_use_id → GHC 400): ${ccContentToText(message.content).slice(0, 120)}`)
+    return undefined
+  }
   return {
     type: "tool_result",
-    tool_use_id: message.tool_call_id ?? "",
+    tool_use_id: message.tool_call_id,
     content: ccContentToText(message.content),
   }
 }
 
-/** CC user message → Anthropic user message (text/image blocks; string stays a string). */
-function translateUserMessage(message: Message): MessageParam {
+/**
+ * CC user message → Anthropic user message (text/image blocks; string stays a string).
+ *
+ * W3 guard: returns undefined for an EMPTY user turn (empty content array OR empty string). An empty
+ * `content` is an Anthropic 400; skipping it mirrors the forward `translateUserBlocks` guard
+ * (`userParts.length > 0`).
+ */
+function translateUserMessage(message: Message): MessageParam | undefined {
   if (typeof message.content === "string") {
-    return { role: "user", content: message.content }
+    return message.content.length > 0 ? { role: "user", content: message.content } : undefined
   }
   const blocks: Array<ContentBlockParam> = []
   for (const part of message.content ?? []) {
@@ -156,6 +179,7 @@ function translateUserMessage(message: Message): MessageParam {
     if (part.type === "text") blocks.push({ type: "text", text: part.text })
     else blocks.push(imagePartToBlock(part))
   }
+  if (blocks.length === 0) return undefined
   return { role: "user", content: blocks }
 }
 

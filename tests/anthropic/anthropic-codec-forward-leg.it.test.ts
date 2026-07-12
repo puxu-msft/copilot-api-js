@@ -71,6 +71,13 @@ describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectR
   const seedModel = () =>
     setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
 
+  // claude-r additionally advertises the /responses leg (for the @responses forward-leg IT — W4).
+  const seedResponsesModel = () =>
+    setModels({
+      object: "list",
+      data: [mockModel("claude-r", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES] })],
+    })
+
   test("@cc forward leg → prepare-wire yields a CC-shaped wire at /chat/completions (translation reached the wire)", () => {
     seedModel()
     const insp = inspect("claude-x@cc", "prepare-wire")
@@ -92,6 +99,27 @@ describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectR
     expect(Array.isArray(wbody.messages)).toBe(true)
     // No Anthropic-only fields leaked onto the CC wire.
     expect(wbody.thinking).toBeUndefined()
+  })
+
+  test("@responses forward leg → prepare-wire yields a Responses-shaped wire at /responses (input[], not messages[]) — W4", () => {
+    seedResponsesModel()
+    const insp = inspect("claude-r@responses", "prepare-wire")
+    expect(insp.stoppedAt).toBe("prepare-wire")
+
+    // translate stage: env.body is CC-canonical (the hub stops at CC for the responses leg; the
+    // CC→Responses wire step is deferred to prepareWire — P2.2-D1 parity).
+    const translated = insp.stages.translate
+    expect(translated?.targetEndpoint).toBe(ENDPOINT.RESPONSES)
+    const tbody = translated?.body as { model: string; messages?: Array<{ role: string }> }
+    expect(tbody.model).toBe("claude-r")
+    expect(Array.isArray(tbody.messages)).toBe(true) // still CC-shaped at the translate stage
+
+    // prepare-wire: the outbound wire targets /responses and is Responses-shaped (input[], no messages[]).
+    const wire = insp.stages["prepare-wire"]
+    expect(wire?.url).toBe(ENDPOINT.RESPONSES)
+    const wbody = wire?.body as { input?: unknown; messages?: unknown }
+    expect(Array.isArray(wbody.input)).toBe(true)
+    expect(wbody.messages).toBeUndefined()
   })
 
   test("DIRECT leg (no suffix) → wire stays Anthropic-shaped at /v1/messages (zero regression)", () => {
