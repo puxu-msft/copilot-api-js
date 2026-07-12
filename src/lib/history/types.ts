@@ -160,8 +160,15 @@ export interface SseEventRecord {
    *     "anchor": it carries a fake `id` + zeroed `usage`, an accepted wire/billing divergence, so it is
    *     marked distinctly rather than folded into "anchor" (richest-data-flow: real vs synthetic must
    *     stay distinguishable).
+   *   - "hook-mock" / "hook-replay" — the UPSTREAM-original track's frames came from an `onExchange`
+   *     upstream-hook mock/replay stream (`tagStream`/`readOrigin`, ~/lib/pipeline/hooks/origin), NOT a
+   *     real GHC upstream response — richest-data-flow requires this be distinguishable from genuine
+   *     upstream traffic.
+   *   - "hook-rewrite" — the FORWARDED track's frame was produced by a `rewriteUpstreamFrame` hook
+   *     (differs from the pre-hook frame the upstream track kept); the upstream track itself never
+   *     carries this variant (it always records the pre-hook original — spec §3.2/§3.4 H2).
    */
-  synthetic?: "keepalive" | "anchor" | "synthetic-message-start"
+  synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-mock" | "hook-rewrite" | "hook-replay"
 }
 
 /**

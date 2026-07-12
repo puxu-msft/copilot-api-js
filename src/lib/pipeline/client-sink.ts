@@ -164,7 +164,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
       }),
     )
 
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start"): void => {
+  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite"): void => {
     onForwarded?.({
       offsetMs: Date.now() - streamStartMs,
       type: (forwardedType ?? frameType)(frame),
