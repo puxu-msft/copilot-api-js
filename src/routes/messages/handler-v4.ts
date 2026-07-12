@@ -113,8 +113,8 @@ import {
 } from "~/lib/anthropic/warmup"
 import { payloadHasWebSearch } from "~/lib/anthropic/web-search/detect"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
-import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
 import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
+import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -345,12 +345,19 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // have thrown before the factory runs).
       const resanitize = codec.getResanitize()
       if (!resanitize) throw new Error("[Anthropic:v4] resanitize chain unavailable — codec.parse did not run")
-      return buildAnthropicStrategies({
-        originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
-        resanitize,
-        model: env.model as Model | undefined,
-        maxRetries: state.autoTruncateMaxRetries,
-        betaProbe,
+      // Resolve strategies through the full-format registry keyed by the OUTBOUND leg
+      // (RFC §7.1 / W-strategies-builder): the Anthropic supply is decoupled from the route
+      // codec, so the reverse leg (cc/responses→/v1/messages, Phase 5) can fill the SAME supply
+      // from the hub. For anthropic-direct `env.targetEndpoint` is always /v1/messages → the
+      // Anthropic builder runs with identical args → byte-identical to the prior inline call.
+      return assembleStrategiesForEndpoint(env.targetEndpoint, {
+        anthropic: {
+          originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
+          resanitize,
+          model: env.model as Model | undefined,
+          maxRetries: state.autoTruncateMaxRetries,
+          betaProbe,
+        },
       })
     },
     maxRetries: state.autoTruncateMaxRetries,
