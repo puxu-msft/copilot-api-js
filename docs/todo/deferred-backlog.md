@@ -397,3 +397,11 @@
   - **理想架构**：给 buffered driver 的 `sawMessageStop` 一个「翻译腿感知」信号——buffered 消费上游 CC/Responses 帧、在上游终止（CC `finish_reason` / Responses `response.completed`）时提交，flush 的 Anthropic 终止符在 commit 后附加；或让翻译腿的 outbound 累加器暴露「上游是否见终止」供 gate 读（对齐 Responses buffered 的 `acc.status !== ""` 模式，见 `routes/responses/handler-v4.ts` 的 `sawMessageStop: () => acc.status !== ""`）。
   - **为何暂缓**：LIVE 路径完整解锁正向流式（核心目标达成）；buffered-retry 是正交 opt-in 增强（默认 OFF），翻译腿的终止符时序与直连腿不同需专门接线（独立工作单元，`learn-by-analogy` 同 Responses 作 buffered 第二消费者的模式但需翻译腿专属 gate）。属「决定形状后的后续增强」非「因范围大降级」。
   - **若做需改什么**：① `pumpTranslateLegStreamingV4` 按 `resolveBufferedAndHeartbeat` 分 buffered/live；② buffered 分支 `runResponseBufferedSink` 的 `sawMessageStop` 读翻译腿 outbound 累加器的上游终止信号（cc: `ccAcc.finishReason !== ""`；responses: `respAcc.status !== ""`）；③ `onAttemptReset` 重建 CC/Responses 累加器 + 重置 translator（translator 需支持重置或每 attempt 重建）；④ commit 后 flush 附加 Anthropic 终止符；⑤ 缓冲重试回归测试（对齐 `streaming-l2-buffered.http.test.ts`）。发现方：Phase 4 T4.2 handler 缝合（2026-07-12）。
+
+## 上游 Transport middleware(ad-hoc hook 机制,2026-07-12 待做)
+
+- **根因/源起**:cache_control 实测暴露「验证代理行为不得不真发 GHC」(耗额度、依赖网络、无法构造 400 测 reactive 腿)。用户要 hook 机制:既用 proxy 完整管线又给 mock 上游交互。
+- **当前行为**:只有 config 层 rewrite rules(作用请求体),无上游 mock/拦截机制,请求总真发 GHC。
+- **理想架构**:`HookedTransport`(decorator 包裹 `Transport.send`,[types.ts:108](../../src/lib/pipeline/types.ts#L108)/[driver.ts:310](../../src/lib/pipeline/driver.ts#L310)),hook 签名 `(wire, env, next) => UpstreamStream`,统一四用途(mock/拦截改写/录制回放/注入故障)。config 声明 + ad-hoc JS/TS 文件动态 import,生产默认不加载。
+- **为何待做(非暂缓,是新特性)**:用户已确认范围(四用途全选 + config+ad-hoc 挂载),但会话超长,按 handover 原则移交新会话做完整 SDD。属独立新特性工作单元。
+- **若做需改什么**:见完整 kickoff [docs/plan/2026-07-12-upstream-hook-middleware-KICKOFF.md](../plan/2026-07-12-upstream-hook-middleware-KICKOFF.md)——含统一抽象、锚点、四个未决设计问题(尤其 #3:录制回放可能直接复用 history.db 的 sseEvents)。新会话从 brainstorming 起。发现方:cache_control 实测(2026-07-12)。
