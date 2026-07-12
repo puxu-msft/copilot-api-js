@@ -44,6 +44,7 @@
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴 = 上下文经济 + 可信度非可推导性；目录级关系图 + 现状小节 + L1 存在性守卫测试
 - [交用户前先 subagent review（含 in-chat 提案）](feedback-subagent-review-before-any-user-facing-proposal.md) — 审查门适用任何交付物，包括对话里直接呈现的设计分节非只书面 spec/plan；brainstorming 的 present-design 前须插 subagent 对抗审查
 - [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec 免疫 peer 并发 `git add` 的 index race；user skill `git-preference` 未强调这层
+- [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 共享 worktree 里对宽文件集 `--fix` 会机械清理并发会话留的既有 lint 违规(展开/重排 import 块)、churn 30→167 且碰撞 peer 在飞 import；宽集只 check 不 fix、手 import 自己排序、恢复用单文件 `git show HEAD:f>f` 非多文件 checkout、显式 pathspec 只提交自己文件；[[sed-touched-files-bundle-inflight-work]] 的 eslint 版
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 本项目 2026-06-29 起无 pre-commit 门禁；通用 rollback 见 skill `git-preference:disarming-lint-staged-rollback`
 - [覆写迁移前审计真实库原始字段(oracle 盲区)](methodology-migration-audit-raw-fields-not-just-projection-oracle.md) — projection-等价 oracle 对「已死字段」是盲的；覆写 blob 的 backfill 前须只读探针枚举真实库实际字段 vs 适配器映射，任何被 drop 的除非可派生一律当丢失；实例=history 双腿适配器丢 outbound_response.error，审计真库才抓到、修=路由 attempts[].error
 - [一次性 connected 快照须常驻根订阅](methodology-one-shot-connected-snapshot-needs-root-subscriber.md) — WS `connected` 携初始在途快照是一次性事件、无缓存;页面级 `useLiveRequests` 晚挂载漏掉 → 「只显示打开后新请求」;修=订阅提升到常驻 `AppShell`(连接建立前必已注册),附带修 Overview 同 bug + 重连重同步;通用:snapshot-then-delta 的快照消费者须挂连接前就位的常驻宿主

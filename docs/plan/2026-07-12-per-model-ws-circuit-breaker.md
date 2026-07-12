@@ -1,5 +1,7 @@
 # Plan — 上游 WS 熔断器 per-model 化（A）
 
+> **实施状态（2026-07-12）**：已落地 master（commit a28d9d89）。manager per-key 化 + 消费端 threading + /api/status per_model + rollup + 迁移 43 既有测试 + per-model 隔离/懒删/snapshot 新测试。typecheck/lint/ui-v4 绿、19 单测过。
+
 > 状态：草稿，待 subagent 对抗评审 → 用户审 → 实施。
 > 源起：2026-07-12 生产日志分析。gpt-5.5 的 responses 请求走上游 WS 时被 GHC 服务端 `close(1000, "idle timeout")` 系统性掐断（pre-first-event 长 reasoning 静默），触发熔断器把 WS 路径**整体**禁用 5 分钟——连坐了本来 WS 好用的其他模型。
 > 关联但正交：C（WS-ping 实验）另派后台 agent，gate「是否值得写上游 WS ping 保活」，**不在本计划范围**。本计划只做熔断器 per-model 化，不依赖 C 的结论。
