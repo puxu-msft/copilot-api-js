@@ -122,6 +122,12 @@ export function translateCCResponseToAnthropic(response: ChatCompletionResponse)
     if (choice.finish_reason === "content_filter") contentFiltered = true
   }
 
+  // Real Anthropic responses ALWAYS carry ≥1 content block (output_tokens is non-zero even for an
+  // empty string — SDK docs). An empty upstream completion (all choices empty + no tool_calls, e.g. a
+  // content_filter that blocked everything) would otherwise yield `content:[]`, which a client
+  // assuming ≥1 block may choke on — degrade to a single empty text block to stay wire-faithful.
+  if (content.length === 0) content.push({ type: "text", text: "" } satisfies TextBlockParam)
+
   return {
     response: {
       id: response.id,

@@ -150,4 +150,16 @@ describe("translateAnthropicResponseToCC — usage", () => {
     )
     expect(cc.usage).toEqual({ prompt_tokens: 100, completion_tokens: 40, total_tokens: 140, prompt_tokens_details: { cached_tokens: 25 } })
   })
+
+  test("cache_creation_input_tokens forwarded to prompt_tokens_details.cache_write_tokens (symmetric with forward leg)", () => {
+    const cc = translateAnthropicResponseToCC(
+      anthropicResponse([block({ type: "text", text: "x" })], {
+        usage: { input_tokens: 100, output_tokens: 40, cache_read_input_tokens: 25, cache_creation_input_tokens: 8 } as never,
+      }),
+    )
+    expect(cc.usage?.prompt_tokens_details).toEqual({ cached_tokens: 25, cache_write_tokens: 8 } as never)
+    expect(cc.usage?.prompt_tokens).toBe(100)
+    expect(cc.usage?.completion_tokens).toBe(40)
+    expect(cc.usage?.total_tokens).toBe(140)
+  })
 })

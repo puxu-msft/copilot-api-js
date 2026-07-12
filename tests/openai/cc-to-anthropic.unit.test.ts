@@ -51,11 +51,11 @@ describe("translateCCResponseToAnthropic — top-level envelope", () => {
     expect(response.stop_reason).toBe("end_turn")
   })
 
-  test("empty / null content emits no text block", () => {
+  test("empty / null content with no tool_calls → a single empty text block (Anthropic always has ≥1 block)", () => {
     const { response: nullResp } = translateCCResponseToAnthropic(ccResponse([choice({ content: null })]))
-    expect(nullResp.content).toEqual([])
+    expect(nullResp.content).toEqual([{ type: "text", text: "" }])
     const { response: emptyResp } = translateCCResponseToAnthropic(ccResponse([choice({ content: "" })]))
-    expect(emptyResp.content).toEqual([])
+    expect(emptyResp.content).toEqual([{ type: "text", text: "" }])
   })
 })
 

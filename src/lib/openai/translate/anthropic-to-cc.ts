@@ -153,16 +153,26 @@ function mapStopReason(stopReason: AnthropicResponse["stop_reason"], hasToolCall
 
 /**
  * Anthropic `usage` → CC `usage`. `input_tokens`→`prompt_tokens`, `output_tokens`→`completion_tokens`,
- * total = sum; best-effort forwards `cache_read_input_tokens`→`prompt_tokens_details.cached_tokens`.
+ * total = sum; best-effort forwards BOTH cache legs symmetrically with the forward translator
+ * (`cache_read_input_tokens`→`prompt_tokens_details.cached_tokens`, `cache_creation_input_tokens`→
+ * `prompt_tokens_details.cache_write_tokens` — the GHC extension the forward leg reads back, richest-data-flow).
  */
 function mapUsage(usage: AnthropicResponse["usage"]): ChatCompletionUsage {
   const inputTokens = usage.input_tokens
   const outputTokens = usage.output_tokens
-  const cached = usage.cache_read_input_tokens
+  const cacheRead = usage.cache_read_input_tokens
+  const cacheCreation = usage.cache_creation_input_tokens
+  const promptDetails =
+    cacheRead != null || cacheCreation != null ?
+      {
+        ...(cacheRead != null && { cached_tokens: cacheRead }),
+        ...(cacheCreation != null && { cache_write_tokens: cacheCreation }),
+      }
+    : undefined
   return {
     prompt_tokens: inputTokens,
     completion_tokens: outputTokens,
     total_tokens: inputTokens + outputTokens,
-    ...(cached != null && { prompt_tokens_details: { cached_tokens: cached } }),
+    ...(promptDetails && { prompt_tokens_details: promptDetails }),
   }
 }
