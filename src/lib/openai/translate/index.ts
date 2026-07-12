@@ -4,6 +4,12 @@ export { translateAnthropicResponseToCC } from "./anthropic-to-cc"
 export { translateChatCompletionsToAnthropic } from "./cc-to-anthropic-request"
 export { translateCCResponseToAnthropic } from "./cc-to-anthropic"
 export type { CcToAnthropicResult, TranslatedAnthropicResponse, TranslatedAnthropicUsage } from "./cc-to-anthropic"
+export {
+  //
+  createCcToAnthropicStreamTranslator,
+  translateCCStreamToAnthropicStream,
+} from "./cc-to-anthropic-stream"
+export type { CcToAnthropicStreamMeta, CcToAnthropicStreamStep, CcToAnthropicStreamTranslator } from "./cc-to-anthropic-stream"
 export { splitInstructionsAndConversation, translateChatCompletionsToResponses } from "./cc-to-responses"
 export { translateResponsesResponseToCC } from "./responses-to-cc"
 export {
