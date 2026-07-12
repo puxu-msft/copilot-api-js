@@ -878,6 +878,20 @@ export interface State {
    * `negotiationDefaultTtlMs`. Hot-reloadable: entirely replaced on config reload.
    */
   readonly negotiationTtlOverridesMs: Record<string, number>
+
+  /**
+   * Path to an ad-hoc TS hook module for mocking/intercepting the upstream transport
+   * (dev/test only). Declarative: this field alone does not load anything — the module is
+   * loaded at startup (`start.ts`, when `hooksEnabled`) or via a future reload API. Empty
+   * string = no module configured. Config-managed (`hooks.upstream_module`).
+   */
+  readonly hooksUpstreamModule: string
+
+  /**
+   * Whether to load the upstream hook module named by `hooksUpstreamModule`. Default false —
+   * the feature is fully off unless explicitly true. Declarative only; see `hooksUpstreamModule`.
+   */
+  readonly hooksEnabled: boolean
 }
 
 type MutableState = {
@@ -1238,6 +1252,15 @@ export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGra
 }
 
 /**
+ * Set the upstream-hook declarative config (`hooksUpstreamModule` / `hooksEnabled`). Declarative
+ * only — never triggers a module (re)load itself; that happens at startup (`start.ts`) or via a
+ * future reload API.
+ */
+export function setHooksConfig(patch: Partial<Pick<MutableState, "hooksUpstreamModule" | "hooksEnabled">>): void {
+  updateState(patch)
+}
+
+/**
  * Set reactive-learning (feature-negotiation) TTL config. Hot-reloadable.
  * `negotiationTtlOverridesMs` is replaced wholesale (whole-map replace semantic,
  * like the other config-managed record fields).
@@ -1489,6 +1512,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   negotiationDefaultTtlMs: 30 * 86_400_000,
   negotiationTtlOverridesMs: { toolFields: 90 * 86_400_000, partnerFeatures: Number.POSITIVE_INFINITY } as Record<string, number>,
   disabledModels: [] as ReadonlyArray<string>,
+  hooksUpstreamModule: "",
+  hooksEnabled: false,
 }
 
 export function resetConfigManagedState(): void {
@@ -1574,6 +1599,10 @@ export function resetConfigManagedState(): void {
   setShutdownConfig({
     shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
     shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
+  })
+  setHooksConfig({
+    hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
+    hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
   })
   setNegotiationConfig({
     negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
@@ -1718,6 +1747,8 @@ const mutableState: MutableState = {
   negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
   negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
   disabledModels: [...CONFIG_MANAGED_DEFAULTS.disabledModels],
+  hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
+  hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
   verbose: false,
 }
 

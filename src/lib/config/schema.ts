@@ -623,6 +623,21 @@ export const ResponsesConfigSchema = z
   })
   .strict()
 
+/**
+ * Ad-hoc TS hook module for mocking/intercepting the upstream transport (dev/test only).
+ * `upstream_module` is the path loaded by `loadUpstreamHookSafe` at startup (and, in future
+ * phases, a reload API); `enabled` gates whether it is loaded at all — the feature is fully
+ * off unless explicitly true. Declarative only: this schema/state wiring never triggers the
+ * module load itself (see `applyConfigToState` / `start.ts`).
+ */
+export const HooksConfigSchema = z
+  .object({
+    upstream_module: nullableString(),
+    enabled: nullableBoolean(),
+  })
+  .strict()
+export type HooksConfig = z.infer<typeof HooksConfigSchema>
+
 export const HistoryConfigSchema = z
   .object({
     /** @deprecated 兼容旧配置;缺省的 success_limit/failure_limit 回退到它 */
@@ -815,6 +830,7 @@ export const ConfigSchema = z
      */
     sanitize_tool_names: nullableBoolean(),
     history: nullableSection(HistoryConfigSchema),
+    hooks: nullableSection(HooksConfigSchema),
     server_tool_web_search: nullableSection(WebSearchConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
