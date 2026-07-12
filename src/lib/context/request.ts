@@ -250,6 +250,16 @@ export function createRequestContext(opts: {
   // The failureReason projection reads this first, then falls back to `_response.error`.
   let _failureReason: string | null = null
   let _pipelineInfo: PipelineInfo | null = null
+  // Cross-request-lifecycle scalar diagnostics (per-model effective timeouts),
+  // kept PARALLEL to `_pipelineInfo` because the 4 existing `setPipelineInfo`
+  // call sites do a full-replace and are gated on sanitization/truncation changes
+  // (many requests never trigger any of them). Merging via `mergedPipelineInfo()`
+  // lets these fields survive regardless, without touching those 4 call sites.
+  let _streamTimeouts: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number } | null = null
+  const mergedPipelineInfo = (): PipelineInfo | null => {
+    if (!_pipelineInfo && !_streamTimeouts) return null
+    return { ..._pipelineInfo, ..._streamTimeouts }
+  }
   let _sseEvents: Array<SseEventRecord> | null = null
   let _httpHeaders: {
     inboundRequest?: Record<string, string>
@@ -367,7 +377,7 @@ export function createRequestContext(opts: {
       return _forwardedResponse
     },
     get pipelineInfo() {
-      return _pipelineInfo
+      return mergedPipelineInfo()
     },
     get httpHeaders() {
       return _httpHeaders
@@ -411,6 +421,14 @@ export function createRequestContext(opts: {
     setPipelineInfo(info: PipelineInfo) {
       // Direct assignment — caller assembles the complete PipelineInfo
       _pipelineInfo = info
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
+    },
+
+    setStreamTimeouts(patch: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number }) {
+      // Merge (the two fields are independent). Kept separate from `_pipelineInfo`
+      // so the 4 gated `setPipelineInfo` full-replace call sites never clobber it.
+      // Reuses the `pipelineInfo` context_updated event kind (no new event type).
+      _streamTimeouts = { ..._streamTimeouts, ...patch }
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
 
@@ -844,8 +862,13 @@ export function createRequestContext(opts: {
         }
       }
 
-      if (_pipelineInfo) {
-        entry.pipelineInfo = _pipelineInfo
+      // onTerminal projection reads the private var directly (NOT the getter), so
+      // it must merge in `_streamTimeouts` explicitly. The `preprocessing` hoist
+      // above (825) only reads `_pipelineInfo.preprocessing` — orthogonal to the
+      // stream-timeout fields, intentionally left as-is (not a missed read point).
+      const mergedInfo = mergedPipelineInfo()
+      if (mergedInfo) {
+        entry.pipelineInfo = mergedInfo
       }
 
       // Always include attempt details (even for single attempts). Each attempt

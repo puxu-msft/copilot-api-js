@@ -429,6 +429,8 @@ export interface RequestContext {
   setOriginalRequest(req: OriginalRequest): void
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
+  /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */
+  setStreamTimeouts(patch: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number }): void
   setSseEvents(events: Array<SseEventRecord>): void
   /** Record the response as forwarded to the client (proxy→client). Must be called before complete()/fail(). */
   setForwardedResponse(forwarded: ForwardedResponse): void

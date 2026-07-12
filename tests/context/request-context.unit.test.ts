@@ -973,3 +973,53 @@ describe("createRequestContext - P2.5 producer alignment (fail/abort → final a
     expect(last?.upstreamResponse?.rawBody).toBe("body-1")
   })
 })
+
+// ─── setStreamTimeouts / mergedPipelineInfo (D2 diagnostics, Phase 4a) ───
+
+describe("setStreamTimeouts merges into pipelineInfo without clobbering", () => {
+  test("stream timeouts survive when setPipelineInfo is never called", () => {
+    // The D2 core requirement: every request gets the diagnostic field, even
+    // when no sanitization/truncation ever triggers setPipelineInfo.
+    const { ctx } = makeContext()
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    expect(ctx.pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
+  })
+
+  test("setStreamTimeouts before setPipelineInfo: both survive", () => {
+    const { ctx } = makeContext()
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    ctx.setPipelineInfo({ sanitization: [] })
+    expect(ctx.pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
+    expect(ctx.pipelineInfo?.sanitization).toEqual([])
+  })
+
+  test("setStreamTimeouts after setPipelineInfo: full-replace does not clobber it", () => {
+    const { ctx } = makeContext()
+    ctx.setPipelineInfo({ sanitization: [] })
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    expect(ctx.pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
+    expect(ctx.pipelineInfo?.sanitization).toEqual([])
+  })
+
+  test("merge semantics: two setStreamTimeouts calls accumulate", () => {
+    const { ctx } = makeContext()
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    ctx.setStreamTimeouts({ responseHeaderTimeoutMs: 420_000 })
+    expect(ctx.pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
+    expect(ctx.pipelineInfo?.responseHeaderTimeoutMs).toBe(420_000)
+  })
+
+  test("toHistoryEntry (onTerminal projection) carries the merged stream timeouts", () => {
+    const { ctx } = makeContext()
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
+    expect(ctx.toHistoryEntry().pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
+  })
+
+  test("setStreamTimeouts publishes a pipelineInfo context_updated event", () => {
+    const { ctx, events } = makeContext()
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    const updated = events.filter((e) => e.kind === "request.context_updated" && e.field === "pipelineInfo")
+    expect(updated.length).toBeGreaterThanOrEqual(1)
+  })
+})

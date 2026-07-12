@@ -196,6 +196,10 @@ export interface PipelineInfo {
   messageMapping?: Array<number>
   /** passthrough 剥掉的 GHC 未支持 cache_control 子字段（如 scope）。持久化到 history 供运维审计缓存语义降级（spec §8）。 */
   cacheControlStripped?: Array<string>
+  /** 本请求的 per-model 有效帧-idle 超时（ms；`resolveStreamIdleTimeoutMs`）。诊断：直接解释「为何 462s 才完成 / 为何被掐」（spec 2026-07-12-per-model-idle-timeout §8）。 */
+  streamIdleTimeoutMs?: number
+  /** 本请求的 per-model 有效首字节超时（ms；`resolveResponseHeaderTimeoutMs`）。 */
+  responseHeaderTimeoutMs?: number
 }
 
 export interface WarningMessage {
