@@ -161,7 +161,7 @@ Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/respons
 
 ## Phase 5：反向格子接线（cc/responses/gemini → messages 出站）
 
-> **实施状态（2026-07-12，隔离 worktree `feat/translation-matrix-phase5`，待合并）**：**T5.0–T5.4 全部 landed**（6 commit）。
+> **实施状态（2026-07-12，已 landed master FF `b00d52e2`）**：**T5.0–T5.4 全部 landed**（7 commit + 1 review-fix commit）。
 > - **T5.0**：W3 反向守卫（`cc-to-anthropic-request.ts`：缺 `tool_call_id` 的 tool_result 跳过、空 content user turn 跳过）+ W4 `@responses` 前向端到端 IT（Responses-shaped wire）。
 > - **T5.1**：`anthropic-to-cc-stream.ts`（逐帧穷举表全类型 + 逆折叠单 choice + 净 usage gross-up 复用 `mapUsage`/`mapStopReason`（已从 `anthropic-to-cc.ts` export）+ 独立 CC 累加器 oracle + 正样本对照）。flush=[]（finish/usage inline on message_delta）。
 > - **T5.2**：hub `createReverseStreamTranslator`（按 clientFormat 分派）+ cc codec MESSAGES 腿五方法 + `reverse-anthropic-rewrite.ts`（专属 Anthropic sanitize + 共享 mapper holder，**非** ctx.toolNameMapper 的 CC mapper）+ cc handler 专属反向 pump（无心跳、`onUpstreamFrame`→Anthropic 累加器记 honest outbound、getStreamMeta F2 截断）+ 反向非流式 render 记 honest Anthropic outbound。
@@ -169,6 +169,8 @@ Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/respons
 > - **T5.4**：gemini codec 经 cc delegate 继承 Anthropic→CC + geminiTranslator wrap CC→Gemini（`reverseBetaProbe` 透传 delegate）+ 反向 pump（`onUpstreamFrame` 补 Anthropic 累加器、截断读 `anthropicAcc.sawMessageStop`、必调 flushResponse）。
 > - **前置门控**：W2（inbound tool_use.id 接受性）✅ CLEARED（2026-07-12 探针，PROBE-FINDINGS Probe 3）；W3/W4 ✅ 本 phase T5.0。
 > - **测试**：`anthropic-to-cc-stream.unit.test.ts`（11）+ hub 反向分派（hub-translate.unit.test.ts）+ 三格反向端到端 IT（`reverse-cc-messages` / `reverse-responses-messages` / `reverse-gemini-messages`，各含独立消费者 oracle）。
+> - **交付后独立 code review（主会话补，非自派）抓 HIGH-1 + MEDIUM-1，已修（`b00d52e2`）**：三反向 pump 缺 `anthropicAcc.streamError` 门（H2 终端上游 Anthropic error 帧被误判为截断 → 吞真实 code/message + 客户端双 error 终止帧，never-swallow 违规；直连 Anthropic pump [messages/handler-v4.ts:1292] 有此门反向没有）。修=抽共享 `src/lib/pipeline/reverse-terminal.ts` 的 `classifyReverseAnthropicTerminal`（upstream-error → truncated → complete 优先序，`fix-all-comparison-sites` 单一事实源防三 pump 漂移）+ `reverse-terminal.unit.test.ts` 正样本对照（error 帧 `sawMessageStop=false` 须分类 upstream-error 非 truncated）。**MEDIUM-1**：截断信号统一为 `!sawMessageStop`（对齐直连 pump；cc/responses 原用 `finishReason===undefined` 会漏「message_delta 后 message_stop 前被切」的截断）。测试盲区教训：现有反向 IT 只覆盖正常 message_delta+message_stop 流、无终端 error 帧用例，otherwise-green 掩盖 error 分支缺陷。
+> - **kickoff 对抗审查（交付前）抓 4 BLOCK + 2 MEDIUM 全采纳**（记录于 `prompts/phase-5.md`「Kickoff 对抗审查记录」节）：反向 pump 非平凡复用 / responses 二跳 `TranslateExchangeContext` / 反向 sanitize 专属 Anthropic mapper / resanitize 内联同源 / 帧表 swallow / usage helper export。
 > - **承重红线**：反向请求侧零 thinking 合成（沿用 T2 red-line 测试）；byte-critical 独立 oracle（CC 累加器 / Responses 累加器 / Gemini 帧消费）。
 
 **Task**：
