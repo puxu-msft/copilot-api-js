@@ -6,11 +6,20 @@
  * (`supported_endpoints` / vendor) to choose a protocol leg or reject — the concern
  * ADR pulls out of the codecs so a codec becomes a pure format translator. It unifies
  * the 5 previously-per-codec decisions (anthropic / openai-cc / openai-responses /
- * openai-gemini) behind one `clientFormat`-dispatched function. Route-decision behavior is
- * frozen byte-for-byte by `tests/pipeline/router-golden.it.test.ts` (Phase 0 golden oracle).
+ * openai-gemini) behind one `clientFormat`-dispatched function.
+ *
+ * Phase 1 (translation-matrix) turns this into the full-matrix decision tree
+ * (RFC 2026-07-11-anthropic-via-openai-translation §4.3) via {@link RouteInput}: a
+ * client can pin the outbound leg with a `@cc`/`@responses`/`@messages` suffix
+ * (`env.routeOverride`, parsed by `resolveModelTarget`). The NO-SUFFIX path is left
+ * byte-identical to Phase 0 (each inbound reduces to its original decideXxxRoute), so
+ * `tests/pipeline/router-golden.it.test.ts` (the Phase 0 golden oracle) still passes
+ * byte-for-byte. The SUFFIX path is purely additive (the golden exercises no suffix),
+ * establishing the routing skeleton the later translation phases wire end-to-end.
  */
 
 import type { Model } from "~/lib/models/client"
+import type { RouteOverride } from "~/lib/models/normalize-id"
 
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import {
@@ -21,53 +30,190 @@ import {
 } from "~/lib/models/endpoint"
 import { shouldForceChatCompletionsFallback } from "~/routes/responses/fallback"
 
-import type { RequestEnvelope } from "./envelope"
+import type { ClientFormat, RequestEnvelope, UpstreamEndpoint } from "./envelope"
 import type { RouteDecision } from "./types"
 
 /**
- * S2 — passthrough / translate / reject, dispatched by `env.clientFormat`. The only reader
- * of upstream model capabilities (`supported_endpoints` / vendor).
+ * The narrow routing input the router reads (RFC §4.2) — the decoupled subset of the
+ * envelope decideRoute actually needs, so the routing logic never depends on the full
+ * envelope shape. `modelName` is the resolved id (`model?.id ?? body.model`) the
+ * anthropic gate + reject reasons key on; `model` is the indexed capabilities (undefined
+ * on an index miss — legacy-true defaults apply); `routeOverride` is the explicit leg pin.
+ */
+export interface RouteInput {
+  clientFormat: ClientFormat
+  modelName: string
+  routeOverride?: RouteOverride
+  model: Model | undefined
+}
+
+/** Extract the narrow {@link RouteInput} from the envelope (the router's only env read). */
+function toRouteInput(env: RequestEnvelope): RouteInput {
+  const model = env.model as Model | undefined
+  const modelName = model?.id ?? (env.body as { model: string }).model
+  return {
+    clientFormat: env.clientFormat,
+    modelName,
+    ...(env.routeOverride && { routeOverride: env.routeOverride }),
+    model,
+  }
+}
+
+/**
+ * S2 — passthrough / translate / reject. The only reader of upstream model
+ * capabilities (`supported_endpoints` / vendor). Splits on whether the client pinned
+ * an explicit outbound leg (`env.routeOverride`):
+ *   - suffix present → {@link decideExplicitLeg} (the full-matrix gate — RFC §4.3).
+ *   - no suffix      → the per-inbound default logic, BYTE-IDENTICAL to Phase 0.
  */
 export function decideRoute(env: RequestEnvelope): RouteDecision {
-  switch (env.clientFormat) {
+  return decideRouteFromInput(toRouteInput(env))
+}
+
+/** {@link decideRoute} on the narrow input — the testable core (RFC §4.2/§4.3). */
+export function decideRouteFromInput(input: RouteInput): RouteDecision {
+  if (input.routeOverride) return decideExplicitLeg(input)
+
+  // ── NO-SUFFIX: reduce to Phase 0 per-inbound behavior (golden byte-identity) ──
+  switch (input.clientFormat) {
     case "anthropic": {
-      return decideAnthropicRoute(env)
+      return decideAnthropicRoute(input.modelName)
     }
     case "openai-cc": {
-      return decideOpenAiCcRoute(env.model as Model | undefined)
+      return decideOpenAiCcRoute(input.model)
     }
     case "openai-responses": {
-      return decideOpenAiResponsesRoute(env.model as Model | undefined)
+      return decideOpenAiResponsesRoute(input.model)
     }
     case "gemini": {
       // gemini has no endpoint gate of its own — its route mirrors the openai-cc decision
-      // (the codec delegated to its internal cc codec's decideRoute; RFC §4.3 W-priority
-      // "gemini: cc > responses").
-      return decideOpenAiCcRoute(env.model as Model | undefined)
+      // (RFC §4.3 W-priority "gemini: cc > responses"; the codec delegated to its internal
+      // cc codec's decideRoute).
+      return decideOpenAiCcRoute(input.model)
     }
   }
 }
 
 // ============================================================================
-// anthropic (T0.1)
+// Explicit-leg routing (RFC §4.3, `@cc` / `@responses` / `@messages`)
+// ============================================================================
+
+/** The inbound format's DEFAULT outbound leg — a targetEndpoint == this default is `passthrough`, else `translate`. */
+const DEFAULT_LEG: Record<ClientFormat, UpstreamEndpoint> = {
+  anthropic: ENDPOINT.MESSAGES,
+  "openai-cc": ENDPOINT.CHAT_COMPLETIONS,
+  "openai-responses": ENDPOINT.RESPONSES,
+  gemini: ENDPOINT.CHAT_COMPLETIONS,
+}
+
+/** The outbound leg a `@<route>` suffix names. */
+const OVERRIDE_LEG: Record<RouteOverride, UpstreamEndpoint> = {
+  cc: ENDPOINT.CHAT_COMPLETIONS,
+  responses: ENDPOINT.RESPONSES,
+  messages: ENDPOINT.MESSAGES,
+}
+
+/**
+ * Route an explicit `@<route>` suffix (RFC §4.3 candidate-resolution + unified
+ * force-fallback + strict gate):
+ *
+ *   1. leg = OVERRIDE_LEG[routeOverride].
+ *   2. Unified force-fallback (FAIL-Google-2, "force-vendor 优先于显式后缀"): a `/responses`
+ *      leg on a force-vendor model (Google's Copilot /responses is a broken leg — an
+ *      operational reality) is retargeted to `/chat/completions` — EVEN over an explicit
+ *      `@responses`. This is the unified interception the RFC pulls out of the per-inbound
+ *      logic; it is applied only on the explicit-suffix path here so the NO-SUFFIX cc/gemini
+ *      translate-to-`/responses` legs stay byte-identical to Phase 0 (the golden), where
+ *      force-fallback fires only for the responses-inbound default. Making it universal for
+ *      the no-suffix cc/gemini legs is a deferred behavior change (would flip the golden's
+ *      `google-resp` cc/gemini cells `/responses`→CC).
+ *   3. Strict gate (FAIL-3): the model must actually support the (post-force) leg, else
+ *      reject 400 — an explicit pin to an unsupported leg is an error, never a silent reroute.
+ *      W4 legacy-true: a model with no `supported_endpoints` passes the CC/messages gate
+ *      (legacy universal-fallback default), matching `isEndpointSupported`.
+ *   4. kind = leg == the inbound's DEFAULT leg ? passthrough : translate.
+ */
+function decideExplicitLeg(input: RouteInput): RouteDecision {
+  const routeOverride = input.routeOverride
+  if (!routeOverride) return decideRouteFromInput(input) // unreachable (caller gated); keeps the type narrow
+
+  let leg = OVERRIDE_LEG[routeOverride]
+
+  // Unified force-fallback: force-vendor's /responses → /chat/completions (overrides @responses).
+  // The retarget to CC is EXEMPT from the CC-support gate below — exactly as
+  // `decideOpenAiResponsesRoute` treats the force list (`forceFallback || isEndpointSupported(CC)`):
+  // Copilot's endpoint metadata for those SKUs is unreliable, so a Google model that advertises
+  // ONLY /responses (google-resp) must still translate to CC, never reject.
+  let forcedToCc = false
+  if (leg === ENDPOINT.RESPONSES && shouldForceChatCompletionsFallback(input.model)) {
+    leg = ENDPOINT.CHAT_COMPLETIONS
+    forcedToCc = true
+  }
+
+  if (!forcedToCc && !isLegSupported(input, leg)) {
+    return { kind: "reject", status: 400, reason: explicitRejectReason(input.modelName, routeOverride, leg) }
+  }
+
+  const kind = leg === DEFAULT_LEG[input.clientFormat] ? "passthrough" : "translate"
+  return kind === "passthrough" ? { kind: "passthrough", endpoint: leg } : { kind: "translate", to: leg }
+}
+
+/**
+ * The support check for an explicit leg — the semantically-correct gate PER LEG (each
+ * mirrors how that leg's support is checked elsewhere), which is a deliberate refinement
+ * over RFC §4.3's literal `isEndpointSupported(model, leg)` pseudocode:
+ *   - `/chat/completions` → `isEndpointSupported` (legacy-true default).
+ *   - `/responses`        → `isResponsesSupported` (covers the `ws:/responses` transport too).
+ *   - `/v1/messages`      → `supportsDirectAnthropicApi` (the real direct-Anthropic gate:
+ *     Anthropic vendor + messages support), NOT a bare `isEndpointSupported` — an OpenAI
+ *     model that happens to list `/v1/messages` cannot serve an Anthropic-wire request.
+ */
+function isLegSupported(input: RouteInput, leg: UpstreamEndpoint): boolean {
+  switch (leg) {
+    case ENDPOINT.MESSAGES: {
+      return supportsDirectAnthropicApi(input.modelName).supported
+    }
+    case ENDPOINT.RESPONSES:
+    case ENDPOINT.WS_RESPONSES: {
+      return isResponsesSupported(input.model)
+    }
+    default: {
+      return isEndpointSupported(input.model, leg)
+    }
+  }
+}
+
+/** Descriptive 400 reason for an explicit-leg pin the model cannot serve (suffix path only; not golden-frozen). */
+function explicitRejectReason(modelName: string, routeOverride: RouteOverride, leg: UpstreamEndpoint): string {
+  if (leg === ENDPOINT.MESSAGES) {
+    return `Model "${modelName}" does not support /v1/messages: ${supportsDirectAnthropicApi(modelName).reason}`
+  }
+  return `Model "${modelName}" pinned to @${routeOverride} but does not support the ${leg} endpoint`
+}
+
+// ============================================================================
+// anthropic (no-suffix — Phase 0, unchanged)
 // ============================================================================
 
 /**
  * anthropic /v1/messages is bypass-direct: passthrough `/v1/messages` or reject 400 — NO
- * translate/fallback (RFC §2.2 / messages:167). `id` falls back to the request body's model
- * when the index missed (`env.model` undefined).
+ * translate/fallback in Phase 1 (RFC §2.2 / messages:167). `modelName` is the resolved id
+ * (falls back to the request body's model when the index missed).
+ *
+ * The RFC §4.3 anthropic priority `messages > cc > responses` is `[新增]` (the translation
+ * legs land in Phase 2); until then no-suffix anthropic stays reject-if-unsupported, exactly
+ * as Phase 0 froze it.
  */
-function decideAnthropicRoute(env: RequestEnvelope): RouteDecision {
-  const id = (env.model as Model | undefined)?.id ?? (env.body as { model: string }).model
-  const decision = supportsDirectAnthropicApi(id)
+function decideAnthropicRoute(modelName: string): RouteDecision {
+  const decision = supportsDirectAnthropicApi(modelName)
   if (!decision.supported) {
-    return { kind: "reject", status: 400, reason: `Model "${id}" does not support /v1/messages: ${decision.reason}` }
+    return { kind: "reject", status: 400, reason: `Model "${modelName}" does not support /v1/messages: ${decision.reason}` }
   }
   return { kind: "passthrough", endpoint: ENDPOINT.MESSAGES }
 }
 
 // ============================================================================
-// openai-cc (T0.2)
+// openai-cc (no-suffix — Phase 0, unchanged)
 // ============================================================================
 
 /**
@@ -93,7 +239,7 @@ function decideOpenAiCcRoute(model: Model | undefined): RouteDecision {
 }
 
 // ============================================================================
-// openai-responses (T0.3)
+// openai-responses (no-suffix — Phase 0, unchanged)
 // ============================================================================
 
 /**
@@ -107,6 +253,8 @@ function decideOpenAiCcRoute(model: Model | undefined): RouteDecision {
  * Non-uniform defaults (preserved): `isResponsesSupported` absent → false (do not implicitly
  * enable); the Google force-list is exempt from the CC support check (Copilot's endpoint
  * metadata for those SKUs is unreliable, so force-fallback to CC even without advertised CC).
+ * The Google force-fallback stays embedded HERE (not the unified explicit-leg interception)
+ * so the no-suffix golden reduces byte-identically.
  */
 function decideOpenAiResponsesRoute(model: Model | undefined): RouteDecision {
   const forceFallback = shouldForceChatCompletionsFallback(model)
