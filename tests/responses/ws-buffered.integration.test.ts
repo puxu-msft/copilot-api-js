@@ -99,6 +99,25 @@ function partialFrames(model: string): Array<string> {
   ]
 }
 
+/**
+ * A partial generation that reaches a NON-terminal `response.output_item.done` (an output item
+ * finished, but NOT the whole response — no `response.completed`) before the upstream body ERRORS.
+ * Discriminates WS terminal-only buffered retry (spec §7.3) from the HTTP block-level predicate
+ * (`isResponsesCommitBoundary`, which treats `response.output_item.done` as a commit boundary): if
+ * the WS wiring reuses that predicate, this frame commits block 0 live (`committedAny=true`),
+ * closing the retry window — the subsequent RST degrades to `partial-degrade` (NOT retried).
+ * Terminal-only correctly buffers past `output_item.done` and only commits at a REAL terminal, so
+ * the RST here is a truncation (no terminal reached) → retried.
+ */
+function partialFramesPastItemDone(model: string): Array<string> {
+  return [
+    `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: baseResponse(model, "in_progress") })}\n\n`,
+    `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { id: "oi_attempt1", type: "message", role: "assistant", status: "in_progress", content: [] } })}\n\n`,
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "PARTIAL_ATTEMPT_1_ITEM_DONE", sequence_number: 2 })}\n\n`,
+    `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", sequence_number: 3, output_index: 0, item: { id: "oi_attempt1", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "PARTIAL_ATTEMPT_1_ITEM_DONE", annotations: [] }] } })}\n\n`,
+  ]
+}
+
 /** A clean one-shot CC (`/chat/completions`) SSE stream — mirrors responses-buffered.it.test.ts's ccStreamFrames. */
 function ccStreamFrames(model: string): Array<string> {
   return [
@@ -113,6 +132,10 @@ const RST_ERROR = new Error("Stream closed with error code NGHTTP2_CANCEL")
 let upstreamCalls = 0
 /** Number of leading attempts that RST before the upstream finally completes. */
 let rstBeforeComplete = 0
+/** When true, the RST'd leading attempt(s) use `partialFramesPastItemDone` (past a NON-terminal
+ * `response.output_item.done`) instead of the plain `partialFrames` (RST before ANY output item
+ * completes). Discriminates the terminal-only vs block-level commit-boundary predicate. */
+let rstPastItemDone = false
 
 const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
   const url =
@@ -129,7 +152,11 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   if (url.endsWith("/responses")) {
     upstreamCalls += 1
     const rst = upstreamCalls <= rstBeforeComplete
-    return Promise.resolve(rst ? createSseResponseThenError(partialFrames(model), RST_ERROR) : createSseResponse(completeFrames(model)))
+    if (rst) {
+      const frames = rstPastItemDone ? partialFramesPastItemDone(model) : partialFrames(model)
+      return Promise.resolve(createSseResponseThenError(frames, RST_ERROR))
+    }
+    return Promise.resolve(createSseResponse(completeFrames(model)))
   }
   throw new Error(`unexpected upstream URL in mock: ${url}`)
 })
@@ -229,6 +256,7 @@ describe("Responses WS buffered retry (P4 Task 1)", () => {
   beforeEach(() => {
     upstreamCalls = 0
     rstBeforeComplete = 0
+    rstPastItemDone = false
     upstreamFetchMock.mockClear()
     setStateForTests({
       accountType: "individual",
@@ -286,6 +314,66 @@ describe("Responses WS buffered retry (P4 Task 1)", () => {
 
     // Hit-rate telemetry: one save after 1 retry, under the distinct `responses_ws` vendor bucket
     // (separable from HTTP's `responses` bucket in /api/status.protect_streaming.by_vendor).
+    expect(getProtectStreamingStats().responses_ws).toEqual({
+      success: 1,
+      exhausted: 0,
+      retreated: 0,
+      partialDegrade: 0,
+      totalRetries: 1,
+      retriesBeforeDegrade: 0,
+    })
+  })
+
+  test("buffered ON: mid-stream upstream drop AFTER a non-terminal response.output_item.done → still retried & recovered (terminal-only, not block-level)", async () => {
+    // Discriminating test (P4 Task 1 defect fix). WS buffered retry must be TERMINAL-ONLY: the
+    // commit-boundary set must contain ONLY the lifecycle terminals (response.completed/.failed/
+    // .incomplete/error), never the HTTP block-level predicate's `response.output_item.done`. This
+    // attempt-1 stream reaches a NON-terminal `output_item.done` (one output item completed, but the
+    // response itself never did) before the upstream body errors. Terminal-only correctly treats this
+    // as a truncation (no `response.completed` reached) → retryable. If the WS wiring instead reused
+    // the block-level predicate, `output_item.done` would commit block 0 live (`committedAny=true`),
+    // closing the retry window — the RST would degrade to `partial-degrade` (NOT retried), and the
+    // client would receive a half generation instead of the complete retried one.
+    setModels({
+      object: "list",
+      data: [mockModel(MODEL, { vendor: "OpenAI", supported_endpoints: ["/responses"] })],
+    })
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
+    rstBeforeComplete = 1 // attempt 1 RSTs mid-stream (past output_item.done), attempt 2 completes
+    rstPastItemDone = true
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: MODEL, input: "hi" } }))
+
+    const result = await closePromise
+
+    // The client received ONLY the complete second generation — no leak of the attempt-1 item
+    // (which reached output_item.done) before the retry kicked in.
+    const messageBlob = JSON.stringify(result.messages)
+    expect(messageBlob).not.toContain("PARTIAL_ATTEMPT_1_ITEM_DONE")
+    expect(messageBlob).toContain("COMPLETE_ATTEMPT_2")
+    expect(result.messages.map((m) => m.type)).toEqual(["response.created", "response.output_text.delta", "response.completed"])
+    expect(result.code).toBe(1000)
+    expect(result.reason).toBe("done")
+
+    // The retry actually happened — 2 upstream exchanges. On the (buggy) block-level wiring this
+    // would be 1 (output_item.done commits live, closing the retry window; the RST then
+    // partial-degrades instead of retrying).
+    expect(upstreamCalls).toBe(2)
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+
+    // Hit-rate telemetry: a `success` after 1 retry — NOT a `partial-degrade` (which the block-level
+    // predicate would have recorded once `output_item.done` committed block 0 live).
     expect(getProtectStreamingStats().responses_ws).toEqual({
       success: 1,
       exhausted: 0,

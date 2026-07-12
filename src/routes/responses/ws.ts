@@ -32,7 +32,6 @@ import type {
 
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
-import { isResponsesCommitBoundary } from "~/lib/codec/openai-responses/commit-boundaries"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
@@ -358,6 +357,10 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   // response.completed/failed/incomplete/error (legacy WS break — an upstream that emits trailing
   // frames or stalls without closing would otherwise hang to idle-timeout). The fallback's terminal
   // (response.completed) comes from `flushResponse` below, not the loop, so this never fires there.
+  // NOTE: `stopAfterFrame` is inert on the BUFFERED path below — only `runResponseSink` (the LIVE
+  // branch) reads it; `runResponseBufferedSink` drains the upstream loop to its natural EOF/RST and
+  // decides retry-vs-commit from that, not from an early stop. It is passed here only because the
+  // fallback branch (`viaFallback`, always LIVE) and the non-buffered branch both need it.
   const isTerminal = (frame: ClientFrame): boolean => {
     if (!frame.data) return false
     try {
@@ -368,17 +371,21 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   }
 
   // P4 Task 1 — terminal-only buffered-retry selrouting (block-level-buffered-retry spec §7.3).
-  // Reuses the SAME `responses.buffered_retry` config key + the P2 Responses commit-boundary
-  // predicate (terminal usage only — WS has no mid-stream block/anchor needs; every `TERMINAL_EVENTS`
-  // member IS a P2 commit-boundary type, so gating on `stopAfterFrame:isTerminal` for the early-stop
-  // AND `commitBoundaries:isResponsesCommitBoundary` for the commit is consistent: WS never sees a
-  // `response.output_item.done` mid-generation boundary flush because it never reads past the
-  // terminal anyway — this degenerates to the whole-response buffered shape, byte-identical in
-  // spirit to the HTTP handler's non-block-level predecessor). `buffered && !viaFallback`: the
-  // via-chat-completions fallback synthesizes its terminal lifecycle (output_item.done →
-  // response.completed) POST-loop via `codec.flushResponse` (see the `viaFallback` branch below),
-  // invisible to the driver's in-loop commit/sawMessageStop gate — same structural root cause as the
-  // HTTP handler's fallback exclusion (P2 Task 3 / handler-v4.ts:301-307). Fallback stays LIVE.
+  // Reuses the SAME `responses.buffered_retry` config key the HTTP handlers use, but `commitBoundaries`
+  // is DELIBERATELY OMITTED: per `RunBufferedOpts.commitBoundaries`'s doc (types.ts), UNDEFINED means
+  // terminal-only — the buffer commits exactly once, at the terminal drain (`sawMessageStop` /
+  // `sawUpstreamError`), never mid-generation. WS must NOT reuse the HTTP block-level predicate
+  // (`isResponsesCommitBoundary`): that predicate treats `response.output_item.done` (an output ITEM
+  // finishing, not the whole response) as a commit boundary, which would commit a block live and close
+  // the retry window (`committedAny`) before the response actually reaches a terminal — a drop after
+  // `output_item.done` but before `response.completed` would then wrongly degrade to `partial-degrade`
+  // instead of retrying, delivering a half generation to the client (P4 Task 1 review finding). WS has
+  // no mid-stream block/anchor needs, so terminal-only (byte-identical in spirit to the HTTP handler's
+  // pre-block-level whole-response buffered predecessor) is the correct — and only — shape here.
+  // `buffered && !viaFallback`: the via-chat-completions fallback synthesizes its terminal lifecycle
+  // (output_item.done → response.completed) POST-loop via `codec.flushResponse` (see the `viaFallback`
+  // branch below), invisible to the driver's in-loop commit/sawMessageStop gate — same structural root
+  // cause as the HTTP handler's fallback exclusion (P2 Task 3 / handler-v4.ts:301-307). Fallback stays LIVE.
   const { buffered: bufferedConfigured } = resolveResponsesBufferedAndHeartbeat()
   const buffered = bufferedConfigured && !viaFallback
   const outcome =
@@ -386,12 +393,8 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       await driver.runResponseBufferedSink(upstream, env, sink, {
         onRenderedFrame: restoreAccumulateCount,
         stopAfterFrame: isTerminal,
-        // P2 predicate (terminal usage): every member of TERMINAL_EVENTS above is ALSO a P2 commit
-        // boundary type (response.completed/.failed/.incomplete/error) — `response.output_item.done`
-        // never fires as a live in-generation boundary here because `stopAfterFrame:isTerminal` never
-        // lets the loop run past a terminal in the first place. Reused verbatim (not re-implemented)
-        // so WS and HTTP never drift on what counts as a Responses commit boundary.
-        commitBoundaries: isResponsesCommitBoundary,
+        // commitBoundaries intentionally OMITTED — see the comment above. Terminal-only: the driver's
+        // own `sawMessageStop` gate below is the ONLY commit trigger.
         sawMessageStop: () => acc.status !== "",
         // H2 — a terminal upstream `error` frame (clean drain, no response.completed/.failed/.incomplete).
         // Committing it (rather than retrying as a truncation) lets the handler fail via the REAL
