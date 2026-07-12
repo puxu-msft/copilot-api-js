@@ -35,19 +35,34 @@ const DEFAULT_MAX_CONNECTIONS = 32
 
 let connectionFactory: (opts: CreateUpstreamWsConnectionOptions) => UpstreamWsConnection = createUpstreamWsConnection
 
+interface WsBreakerEntry {
+  consecutiveFallbacks: number
+  disabledUntil: number
+}
+
+/** Per-model circuit-breaker snapshot row for /api/status (richest-data-flow). */
+export interface WsBreakerSnapshotRow {
+  model: string
+  consecutiveFallbacks: number
+  temporarilyDisabled: boolean
+  disabledUntilMs: number
+}
+
 export interface UpstreamWsManager {
   findReusable(opts: { previousResponseId?: string; conversationId?: string; model: string }): UpstreamWsConnection | undefined
   create(opts: { headers: Record<string, string>; model: string; conversationId?: string }): Promise<UpstreamWsConnection>
   stopNew(): void
   closeAll(): void
   resetRuntimeState(): void
-  recordSuccessfulStart(): void
-  recordFallback(): void
+  recordSuccessfulStart(key: string): void
+  recordFallback(key: string): void
   readonly activeCount: number
-  readonly consecutiveFallbacks: number
-  readonly temporarilyDisabled: boolean
-  /** Unix epoch ms when the half-open recovery window expires (0 when not disabled). */
-  readonly disabledUntilMs: number
+  consecutiveFallbacks(key: string): number
+  temporarilyDisabled(key: string): boolean
+  /** Unix epoch ms when the half-open recovery window expires for `key` (0 when not disabled). */
+  disabledUntilMs(key: string): number
+  /** Per-model breaker rows (only models with a live entry appear — clean models are omitted). */
+  breakerSnapshot(): Array<WsBreakerSnapshotRow>
   readonly stopped: boolean
 }
 
@@ -70,8 +85,19 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
   const connections = new Map<string, UpstreamWsConnection>()
   const lastUsedAt = new Map<string, number>()
   let stopped = false
-  let consecutiveFallbacks = 0
-  let disabledUntil = 0
+  // Per-model circuit breaker: `consecutiveFallbacks`/`disabledUntil` keyed by
+  // the bare model string (same key space as the connection pool's
+  // `connection.model` reuse-match). A missing entry = clean (0 fallbacks, not
+  // disabled) — read paths return the clean default without creating an entry;
+  // `recordSuccessfulStart` deletes the entry (lazy GC; only failing/disabled
+  // models occupy a slot). This isolates a chronically-failing model (gpt-5.5's
+  // WS pre-first-event idle-close) from disabling the WS path for good models.
+  const breaker = new Map<string, WsBreakerEntry>()
+
+  const isDisabled = (key: string): boolean => {
+    const entry = breaker.get(key)
+    return entry !== undefined && Date.now() < entry.disabledUntil
+  }
 
   const touch = (key: string) => {
     lastUsedAt.set(key, Date.now())
@@ -117,7 +143,7 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
   return {
     findReusable({ previousResponseId, conversationId, model }) {
       if (stopped) return undefined
-      if (Date.now() < disabledUntil) return undefined
+      if (isDisabled(model)) return undefined
 
       // Primary key: statefulMarker matches (strongest — upstream state chained)
       if (previousResponseId) {
@@ -201,29 +227,41 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
 
     resetRuntimeState() {
       stopped = false
-      consecutiveFallbacks = 0
-      disabledUntil = 0
+      breaker.clear()
       this.closeAll()
     },
 
-    recordSuccessfulStart() {
-      consecutiveFallbacks = 0
-      disabledUntil = 0
+    recordSuccessfulStart(key) {
+      // Lazy GC: a success ends the failure episode — drop the entry entirely so
+      // only failing/disabled models occupy a slot. Equivalent to resetting to
+      // clean. Do NOT add a read-path sweep of clean entries: `recordSuccessfulStart`
+      // is the ONLY delete point, and it is unreachable while a model is disabled
+      // (the `canUseUpstreamWebSocket` gate is false → attempt never runs → no
+      // success), so a disabled entry survives its whole episode and
+      // `wasDisabledRecently` (below) stays correct.
+      breaker.delete(key)
     },
 
-    recordFallback() {
+    recordFallback(key) {
       const now = Date.now()
+      const entry = breaker.get(key) ?? { consecutiveFallbacks: 0, disabledUntil: 0 }
       // Inside an armed disabled window, the counter must NOT keep incrementing.
       // Otherwise `consecutive_fallbacks` (exposed in /api/status) drifts into
       // meaningless large numbers under chronic intermittent failures — the
       // counter's purpose is to track "consecutive failures since last success",
       // not "total failures ever". Frozen-while-disabled keeps it stable at the
       // threshold value (or whatever it grew to on the half-open probe).
-      const armedAndInsideWindow = disabledUntil > 0 && now < disabledUntil
-      if (armedAndInsideWindow) return
+      const armedAndInsideWindow = entry.disabledUntil > 0 && now < entry.disabledUntil
+      if (armedAndInsideWindow) {
+        breaker.set(key, entry)
+        return
+      }
 
-      consecutiveFallbacks += 1
-      if (consecutiveFallbacks < MAX_CONSECUTIVE_WS_FALLBACKS) return
+      entry.consecutiveFallbacks += 1
+      if (entry.consecutiveFallbacks < MAX_CONSECUTIVE_WS_FALLBACKS) {
+        breaker.set(key, entry)
+        return
+      }
 
       // Only arm the window on transitions:
       //   1. First time we cross the failure threshold.
@@ -232,10 +270,11 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
       //      probe failed.
       // The armed-window early return above means we never reach here while
       // already disabled, so this assignment is always a transition.
-      const wasDisabledRecently = disabledUntil > 0
-      disabledUntil = now + DISABLE_RECOVERY_WINDOW_MS
+      const wasDisabledRecently = entry.disabledUntil > 0
+      entry.disabledUntil = now + DISABLE_RECOVERY_WINDOW_MS
+      breaker.set(key, entry)
       consola.warn(
-        `[upstream-ws] ${wasDisabledRecently ? "Half-open probe failed" : `Temporarily disabled after ${consecutiveFallbacks} consecutive fallbacks`}; `
+        `[upstream-ws] ${wasDisabledRecently ? "Half-open probe failed" : `Temporarily disabled after ${entry.consecutiveFallbacks} consecutive fallbacks`} (model=${key}); `
           + `will retry in ${DISABLE_RECOVERY_WINDOW_MS / 60_000} min`,
       )
     },
@@ -248,18 +287,32 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
       return count
     },
 
-    get consecutiveFallbacks() {
-      return consecutiveFallbacks
+    consecutiveFallbacks(key) {
+      return breaker.get(key)?.consecutiveFallbacks ?? 0
     },
 
-    get temporarilyDisabled() {
-      return Date.now() < disabledUntil
+    temporarilyDisabled(key) {
+      return isDisabled(key)
     },
 
-    get disabledUntilMs() {
+    disabledUntilMs(key) {
       // Always report the raw timestamp — consumers can compare with Date.now()
       // themselves and decide whether to surface "X seconds until retry".
-      return disabledUntil
+      return breaker.get(key)?.disabledUntil ?? 0
+    },
+
+    breakerSnapshot() {
+      const now = Date.now()
+      const rows: Array<WsBreakerSnapshotRow> = []
+      for (const [model, entry] of breaker) {
+        rows.push({
+          model,
+          consecutiveFallbacks: entry.consecutiveFallbacks,
+          temporarilyDisabled: now < entry.disabledUntil,
+          disabledUntilMs: entry.disabledUntil,
+        })
+      }
+      return rows
     },
 
     get stopped() {

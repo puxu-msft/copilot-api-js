@@ -99,17 +99,74 @@ describe("upstream websocket manager", () => {
   test("temporarily disables websocket after three consecutive fallbacks and resets on success", () => {
     const manager = createUpstreamWsManager()
 
-    manager.recordFallback()
-    manager.recordFallback()
-    expect(manager.temporarilyDisabled).toBe(false)
+    manager.recordFallback("A")
+    manager.recordFallback("A")
+    expect(manager.temporarilyDisabled("A")).toBe(false)
 
-    manager.recordFallback()
-    expect(manager.temporarilyDisabled).toBe(true)
-    expect(manager.consecutiveFallbacks).toBe(3)
+    manager.recordFallback("A")
+    expect(manager.temporarilyDisabled("A")).toBe(true)
+    expect(manager.consecutiveFallbacks("A")).toBe(3)
 
-    manager.recordSuccessfulStart()
-    expect(manager.temporarilyDisabled).toBe(false)
-    expect(manager.consecutiveFallbacks).toBe(0)
+    manager.recordSuccessfulStart("A")
+    expect(manager.temporarilyDisabled("A")).toBe(false)
+    expect(manager.consecutiveFallbacks("A")).toBe(0)
+  })
+
+  test("per-model isolation: disabling model A does not affect model B (I1)", () => {
+    const manager = createUpstreamWsManager()
+
+    manager.recordFallback("A")
+    manager.recordFallback("A")
+    manager.recordFallback("A")
+
+    expect(manager.temporarilyDisabled("A")).toBe(true)
+    expect(manager.consecutiveFallbacks("A")).toBe(3)
+    // B is untouched — a chronically-failing A must not disable the WS path for B.
+    expect(manager.temporarilyDisabled("B")).toBe(false)
+    expect(manager.consecutiveFallbacks("B")).toBe(0)
+  })
+
+  test("recordSuccessfulStart deletes the entry (I6 lazy GC); clean models are omitted from snapshot", () => {
+    const manager = createUpstreamWsManager()
+
+    manager.recordFallback("A")
+    manager.recordFallback("B")
+    // Two failing models occupy breaker rows.
+    expect(
+      manager
+        .breakerSnapshot()
+        .map((r) => r.model)
+        .sort(),
+    ).toEqual(["A", "B"])
+
+    manager.recordSuccessfulStart("A")
+    // A's entry is dropped (clean models don't occupy a slot); B remains.
+    expect(manager.breakerSnapshot().map((r) => r.model)).toEqual(["B"])
+    expect(manager.consecutiveFallbacks("A")).toBe(0)
+    expect(manager.temporarilyDisabled("A")).toBe(false)
+  })
+
+  test("breakerSnapshot reports per-model rows with correct fields", () => {
+    const realNow = Date.now
+    try {
+      const now = 1_000_000
+      Date.now = () => now
+      const manager = createUpstreamWsManager()
+
+      manager.recordFallback("A") // 1 fallback, not disabled
+      manager.recordFallback("B")
+      manager.recordFallback("B")
+      manager.recordFallback("B") // 3 fallbacks → disabled
+
+      const rows = Object.fromEntries(manager.breakerSnapshot().map((r) => [r.model, r]))
+      expect(rows.A.consecutiveFallbacks).toBe(1)
+      expect(rows.A.temporarilyDisabled).toBe(false)
+      expect(rows.B.consecutiveFallbacks).toBe(3)
+      expect(rows.B.temporarilyDisabled).toBe(true)
+      expect(rows.B.disabledUntilMs).toBeGreaterThan(now)
+    } finally {
+      Date.now = realNow
+    }
   })
 
   test("half-open recovery: additional failures inside an armed window do not extend it", () => {
@@ -119,40 +176,40 @@ describe("upstream websocket manager", () => {
 
     try {
       const manager = createUpstreamWsManager()
-      manager.recordFallback()
-      manager.recordFallback()
-      manager.recordFallback()
-      expect(manager.temporarilyDisabled).toBe(true)
-      expect(manager.consecutiveFallbacks).toBe(3)
+      manager.recordFallback("A")
+      manager.recordFallback("A")
+      manager.recordFallback("A")
+      expect(manager.temporarilyDisabled("A")).toBe(true)
+      expect(manager.consecutiveFallbacks("A")).toBe(3)
       const firstArmEnd = now + 5 * 60_000
 
       // Additional failures inside the window must NOT extend it and must NOT
       // increment the counter — the counter is meant to track "consecutive
       // failures since last success", not "total failures while disabled".
       now += 60_000
-      manager.recordFallback()
-      manager.recordFallback()
-      expect(manager.consecutiveFallbacks).toBe(3)
+      manager.recordFallback("A")
+      manager.recordFallback("A")
+      expect(manager.consecutiveFallbacks("A")).toBe(3)
       // Right before the original window ends — still disabled
       now = firstArmEnd - 1
-      expect(manager.temporarilyDisabled).toBe(true)
+      expect(manager.temporarilyDisabled("A")).toBe(true)
       // At the original deadline — window expires, half-open allows a probe
       now = firstArmEnd + 1
-      expect(manager.temporarilyDisabled).toBe(false)
+      expect(manager.temporarilyDisabled("A")).toBe(false)
 
       // The probe (the next recordFallback) re-arms once for another fixed window
       // and increments the counter (it's now outside the previous window).
-      manager.recordFallback()
-      expect(manager.temporarilyDisabled).toBe(true)
-      expect(manager.consecutiveFallbacks).toBe(4)
+      manager.recordFallback("A")
+      expect(manager.temporarilyDisabled("A")).toBe(true)
+      expect(manager.consecutiveFallbacks("A")).toBe(4)
       const secondArmEnd = now + 5 * 60_000
 
       // Inside the second window, failures still don't extend and counter stays frozen.
       now += 60_000
-      manager.recordFallback()
-      expect(manager.consecutiveFallbacks).toBe(4)
+      manager.recordFallback("A")
+      expect(manager.consecutiveFallbacks("A")).toBe(4)
       now = secondArmEnd + 1
-      expect(manager.temporarilyDisabled).toBe(false)
+      expect(manager.temporarilyDisabled("A")).toBe(false)
     } finally {
       Date.now = realNow
     }
@@ -165,14 +222,14 @@ describe("upstream websocket manager", () => {
 
     try {
       const manager = createUpstreamWsManager()
-      manager.recordFallback()
-      manager.recordFallback()
-      manager.recordFallback()
-      expect(manager.temporarilyDisabled).toBe(true)
+      manager.recordFallback("A")
+      manager.recordFallback("A")
+      manager.recordFallback("A")
+      expect(manager.temporarilyDisabled("A")).toBe(true)
 
-      manager.recordSuccessfulStart()
-      expect(manager.temporarilyDisabled).toBe(false)
-      expect(manager.consecutiveFallbacks).toBe(0)
+      manager.recordSuccessfulStart("A")
+      expect(manager.temporarilyDisabled("A")).toBe(false)
+      expect(manager.consecutiveFallbacks("A")).toBe(0)
     } finally {
       Date.now = realNow
     }
@@ -360,20 +417,20 @@ describe("upstream websocket manager", () => {
 
     try {
       const manager = createUpstreamWsManager()
-      expect(manager.disabledUntilMs).toBe(0)
+      expect(manager.disabledUntilMs("A")).toBe(0)
 
-      manager.recordFallback()
-      manager.recordFallback()
-      manager.recordFallback()
+      manager.recordFallback("A")
+      manager.recordFallback("A")
+      manager.recordFallback("A")
       const expectedDeadline = now + 5 * 60_000
-      expect(manager.disabledUntilMs).toBe(expectedDeadline)
+      expect(manager.disabledUntilMs("A")).toBe(expectedDeadline)
 
       // Operators can compute "seconds until retry" from this.
-      const recoveryMs = manager.disabledUntilMs - now
+      const recoveryMs = manager.disabledUntilMs("A") - now
       expect(recoveryMs).toBe(5 * 60_000)
 
-      manager.recordSuccessfulStart()
-      expect(manager.disabledUntilMs).toBe(0)
+      manager.recordSuccessfulStart("A")
+      expect(manager.disabledUntilMs("A")).toBe(0)
     } finally {
       Date.now = realNow
     }

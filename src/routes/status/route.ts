@@ -215,16 +215,24 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
         availableCount: state.modelIds.size,
       },
 
-      upstream_ws: {
-        enabled: state.upstreamWebSocket,
-        active_connections: upstreamWs?.activeCount ?? 0,
-        consecutive_fallbacks: upstreamWs?.consecutiveFallbacks ?? 0,
-        temporarily_disabled: upstreamWs?.temporarilyDisabled ?? false,
-        // Absolute deadline (epoch ms) for half-open recovery; 0 when not disabled.
-        // Operators can derive "recovers in N seconds" client-side instead of us
-        // hardcoding the recovery window in the response shape.
-        disabled_until_ms: upstreamWs?.disabledUntilMs ?? 0,
-      },
+      upstream_ws: (() => {
+        // Per-model circuit breaker: expose the full per-model rows (only models
+        // with a live entry appear) + a top-level aggregate rollup so existing
+        // summary consumers keep a scalar view (any-disabled / max-fallbacks /
+        // latest-recovery) without needing per-model logic. richest-data-flow.
+        const perModel = upstreamWs?.breakerSnapshot() ?? []
+        return {
+          enabled: state.upstreamWebSocket,
+          active_connections: upstreamWs?.activeCount ?? 0,
+          per_model: perModel,
+          // Aggregate rollup across all per-model breaker rows.
+          consecutive_fallbacks: perModel.reduce((max, r) => Math.max(max, r.consecutiveFallbacks), 0),
+          temporarily_disabled: perModel.some((r) => r.temporarilyDisabled),
+          // Latest half-open recovery deadline (epoch ms) across models; 0 when none disabled.
+          // Operators derive "recovers in N seconds" client-side.
+          disabled_until_ms: perModel.reduce((latest, r) => Math.max(latest, r.disabledUntilMs), 0),
+        }
+      })(),
 
       // Responses (SSE/HTTP) path toggles. `buffered_retry` (opt-in `responsesBufferedRetry`)
       // routes the pump through the driver's `runResponseBufferedSink` for mid-stream upstream-drop
