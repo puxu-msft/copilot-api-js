@@ -1,3 +1,4 @@
+import consola from "consola"
 import { readFileSync } from "node:fs"
 
 import type {
@@ -42,4 +43,22 @@ export async function loadUpstreamHook(modulePath: string): Promise<UpstreamHook
     exports: [...exports],
   }
   return hookState
+}
+
+/**
+ * Warn-continue wrapper around {@link loadUpstreamHook}: load/validation failures never throw
+ * to the caller (and never crash the process). On failure, the previous hook state is kept in
+ * place and `lastReloadError` is recorded on it; on success, the freshly-built state naturally
+ * has no `lastReloadError`.
+ */
+export async function loadUpstreamHookSafe(modulePath: string): Promise<{ ok: true; state: UpstreamHookState } | { ok: false; error: string }> {
+  try {
+    const state = await loadUpstreamHook(modulePath)
+    return { ok: true, state }
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e)
+    consola.warn(`[hooks] failed to load ${modulePath}: ${error} — keeping previous hook`)
+    if (hookState) hookState.lastReloadError = error
+    return { ok: false, error }
+  }
 }

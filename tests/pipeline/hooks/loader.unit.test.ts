@@ -20,12 +20,14 @@ import {
   getUpstreamHook,
   getUpstreamHookState,
   loadUpstreamHook,
+  loadUpstreamHookSafe,
   resetUpstreamHook,
 } from "~/lib/pipeline/hooks/loader"
 
 const fixtureDir = join(import.meta.dir, "fixtures")
 const validHookPath = join(fixtureDir, "valid-hook.ts")
 const noExportsPath = join(fixtureDir, "no-exports.ts")
+const missingPath = join(fixtureDir, "does-not-exist.ts")
 
 beforeEach(() => {
   resetUpstreamHook()
@@ -57,6 +59,43 @@ describe("loadUpstreamHook", () => {
     resetUpstreamHook()
     expect(getUpstreamHook()).toBeUndefined()
     expect(getUpstreamHookState()).toBeUndefined()
+  })
+})
+
+describe("loadUpstreamHookSafe", () => {
+  test("keeps the previous hook and records lastReloadError when loading fails", async () => {
+    await loadUpstreamHook(validHookPath)
+    const previousState = getUpstreamHookState()
+
+    const result = await loadUpstreamHookSafe(missingPath)
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).toBeTruthy()
+    }
+    expect(getUpstreamHookState()).toBe(previousState)
+    expect(getUpstreamHook()).toBe(previousState?.hook)
+    expect(getUpstreamHookState()?.lastReloadError).toBeTruthy()
+  })
+
+  test("returns ok:false without recording lastReloadError shape violations differently", async () => {
+    const result = await loadUpstreamHookSafe(noExportsPath)
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).toContain("exports none of")
+    }
+  })
+
+  test("clears lastReloadError on a subsequent successful load", async () => {
+    await loadUpstreamHook(validHookPath)
+    await loadUpstreamHookSafe(missingPath)
+    expect(getUpstreamHookState()?.lastReloadError).toBeTruthy()
+
+    const result = await loadUpstreamHookSafe(validHookPath)
+
+    expect(result.ok).toBe(true)
+    expect(getUpstreamHookState()?.lastReloadError).toBeUndefined()
   })
 })
 
