@@ -49,5 +49,13 @@ describe("sanitize 收窄（新行为）", () => {
     expect(sys[0].cache_control).toEqual({ type: "ephemeral" })
     expect(msg[0].cache_control).toEqual({ type: "ephemeral" }) // 被降到 ≤system
   })
+
+  test("头部 delta（M2）：sanitize 保留 1h → 发 extended-cache-ttl beta（旧语义降 5m 不发）", () => {
+    setStateForTests({ cacheControlMode: "sanitize", copilotToken: "t", vsCodeVersion: "1.100.0", accountType: "individual" })
+    const prepared = prepareAnthropicRequest(
+      payloadWith([{ type: "text", text: "sys", cache_control: { type: "ephemeral", ttl: "1h" } as never }]),
+    )
+    expect(prepared.headers["anthropic-beta"] ?? "").toContain("extended-cache-ttl-2025-04-11")
+  })
 })
 
