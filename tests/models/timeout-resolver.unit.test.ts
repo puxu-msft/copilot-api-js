@@ -99,3 +99,23 @@ describe("resolveResponseHeaderTimeout", () => {
     expect(resolveResponseHeaderTimeoutMs("gpt-5.5")).toBe(500_000)
   })
 })
+
+describe("key-space consistency (LOW — spec §5.4 review tail)", () => {
+  // stream_idle threading keys on the handler's `resolvedName`; response_header
+  // keys on send.ts's `modelId` (= the codec's resolved outbound `wire.body.model`).
+  // For one request those are the same resolved outbound model (verified in the
+  // plan review's call-graph trace). Both resolvers additionally share the same
+  // key space (findMostSpecific → normalizeForMatching on both key and model), so
+  // any dotted/dashed spelling of the same model resolves identically on both knobs.
+  test("both knobs resolve dotted vs dashed spellings of the same model identically", () => {
+    setStateForTests({
+      streamIdleTimeout: 300,
+      responseHeaderTimeout: 300,
+      streamIdleTimeoutOverrides: { "gpt-5.5": 600 },
+      responseHeaderTimeoutOverrides: { "gpt-5.5": 500 },
+    })
+    // "gpt-5.5" and "gpt-5-5" normalize to the same key.
+    expect(resolveStreamIdleTimeoutSec("gpt-5.5")).toBe(resolveStreamIdleTimeoutSec("gpt-5-5"))
+    expect(resolveResponseHeaderTimeoutSec("gpt-5.5")).toBe(resolveResponseHeaderTimeoutSec("gpt-5-5"))
+  })
+})

@@ -117,7 +117,14 @@ export async function createAnthropicMessages(
   // `clientAbortSignal` (when supplied) is always folded in: a client
   // disconnect should terminate the upstream call on both stream and
   // non-stream paths.
-  const upstreamSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(), payload.stream ? undefined : getShutdownSignal(), opts?.clientAbortSignal)
+  // `model` = `wire.model` (the resolved outbound name, same key space as send.ts's
+  // `modelId`) — NOT `payload.model` (client's raw name), so the per-model timeout
+  // key matches what the request is actually sent as.
+  const upstreamSignal = combineAbortSignals(
+    createResponseHeaderTimeoutSignal(model),
+    payload.stream ? undefined : getShutdownSignal(),
+    opts?.clientAbortSignal,
+  )
 
   let response: Response
   try {

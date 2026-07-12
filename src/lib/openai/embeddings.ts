@@ -25,7 +25,7 @@ export const createEmbeddings = async (payload: EmbeddingRequest) => {
     body: JSON.stringify(normalizedPayload),
     // Embeddings are always non-streaming, so fold in the shutdown signal: a
     // Phase 3 abort interrupts the request instead of hanging until force-close.
-    signal: combineAbortSignals(createResponseHeaderTimeoutSignal(), getShutdownSignal()),
+    signal: combineAbortSignals(createResponseHeaderTimeoutSignal(payload.model), getShutdownSignal()),
   })
 
   if (!response.ok) throw await HTTPError.fromResponse("Failed to create embeddings", response)

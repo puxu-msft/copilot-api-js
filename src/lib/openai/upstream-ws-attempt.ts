@@ -136,7 +136,7 @@ export async function attemptUpstreamResponsesWs(
   clientAbortSignal?.addEventListener("abort", onExternalAbort, { once: true })
   reaperSignal?.addEventListener("abort", onExternalAbort, { once: true })
 
-  const fetchSignal = createResponseHeaderTimeoutSignal()
+  const fetchSignal = createResponseHeaderTimeoutSignal(wire.model)
   const onFetchTimeout = () => {
     requestAbort.abort(new Error("Upstream WebSocket first-event timeout"))
   }

@@ -65,7 +65,7 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
         "anthropic-beta": "token-counting-2024-11-01",
       },
       body: JSON.stringify(countPayload),
-      signal: createResponseHeaderTimeoutSignal(),
+      signal: createResponseHeaderTimeoutSignal(model),
     })
 
     if (!response.ok) {

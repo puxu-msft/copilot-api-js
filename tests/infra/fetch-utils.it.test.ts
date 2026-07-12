@@ -50,6 +50,27 @@ describe("createResponseHeaderTimeoutSignal", () => {
     expect(signal).toBeDefined()
     expect(signal?.aborted).toBe(false)
   })
+
+  test("per-model override wins over a disabled scalar", () => {
+    // scalar disabled (0) but the model has an override → a signal is produced.
+    setStateForTests({ responseHeaderTimeout: 0, responseHeaderTimeoutOverrides: { "gpt-5.5": 5 } })
+
+    expect(createResponseHeaderTimeoutSignal("gpt-5.5")).toBeDefined()
+    // A non-matching model falls back to the (disabled) scalar → undefined.
+    expect(createResponseHeaderTimeoutSignal("gpt-4.1")).toBeUndefined()
+  })
+
+  test("per-model override of 0 disables even when the scalar is set", () => {
+    setStateForTests({ responseHeaderTimeout: 1, responseHeaderTimeoutOverrides: { "gpt-5.5": 0 } })
+
+    expect(createResponseHeaderTimeoutSignal("gpt-5.5")).toBeUndefined()
+  })
+
+  test("undefined model uses the scalar (no-arg behavior unchanged)", () => {
+    setStateForTests({ responseHeaderTimeout: 1, responseHeaderTimeoutOverrides: { "gpt-5.5": 5 } })
+
+    expect(createResponseHeaderTimeoutSignal()).toBeDefined()
+  })
 })
 
 describe("captureHttpHeaders", () => {
