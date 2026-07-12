@@ -720,6 +720,35 @@ shutdown:
     expect(written).not.toContain("graceful_wait:")
   })
 
+  test("PUT /api/config/yaml persists a hooks section instead of silently discarding it", async () => {
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        hooks: {
+          enabled: true,
+          upstream_module: "./exp/my-hook.ts",
+        },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      hooks: {
+        enabled: true,
+        upstream_module: "./exp/my-hook.ts",
+      },
+    })
+
+    const written = await readConfig()
+    expect(written).toContain("hooks:")
+    expect(written).toContain("enabled: true")
+    expect(written).toContain("upstream_module: ./exp/my-hook.ts")
+
+    expect(state.hooksEnabled).toBe(true)
+    expect(state.hooksUpstreamModule).toBe("./exp/my-hook.ts")
+  })
+
   test("PUT /api/config/yaml preserves untouched anthropic sibling keys during partial updates", async () => {
     await writeConfig(`
 anthropic:

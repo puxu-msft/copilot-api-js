@@ -797,3 +797,18 @@ rate_limiter:
 # Sanitize tool names that violate the target model's constraints (illegal characters like dots, over-length, or collisions) into legal names before sending upstream, then restore the client's original names in the response. Deterministic and stateless (rebuilt per request). Spans Anthropic + Chat Completions + Responses paths. Top-level (cross-protocol), not under anthropic.*. Default: false.
 # 发送上游前把违反目标模型约束的工具名（点号等非法字符、超长、冲突）清洗为合法名，再在响应里还原客户端原始名。确定性且无状态（每请求重建）。跨 Anthropic + Chat Completions + Responses 三条路径。顶层（跨协议），不在 anthropic.* 下。默认 false。
 sanitize_tool_names: true
+
+# ============================================================================
+# Upstream Hook (dev/test only) / 上游 Hook（仅开发/测试环境）
+# ============================================================================
+# Declarative only: setting these keys never loads anything by itself. The module is loaded
+# at startup when `enabled` is true (a future reload API will also honor this section).
+# 仅声明态：这些键本身不会加载任何东西。`enabled` 为 true 时在启动期加载该模块（未来的 reload API 也会遵循本段）。
+
+hooks:
+  # Path to an ad-hoc TS hook module for mocking/intercepting upstream. Dev/test only.
+  # 指向一个 ad-hoc TS hook 模块，用于 mock/拦截上游。仅开发/测试环境。
+  # upstream_module: "./exp/my-hook.ts"
+  # Load the hook module. Default false — the feature is fully off unless true.
+  # 是否加载 hook 模块。默认 false——除非 true 否则特性完全关闭。
+  enabled: false

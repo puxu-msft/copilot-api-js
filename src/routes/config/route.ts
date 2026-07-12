@@ -268,6 +268,7 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "rate_limiter")) setNestedScalarContainer(doc, ["rate_limiter"], body.rate_limiter)
   if (hasOwn(body, "shutdown")) setNestedScalarContainer(doc, ["shutdown"], body.shutdown)
   if (hasOwn(body, "history")) setNestedScalarContainer(doc, ["history"], body.history)
+  if (hasOwn(body, "hooks")) setNestedScalarContainer(doc, ["hooks"], body.hooks)
   if (hasOwn(body, "openai_responses")) setNestedScalarContainer(doc, ["openai_responses"], body.openai_responses)
 
   if (hasOwn(body, "negotiation_learning")) {

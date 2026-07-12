@@ -20,6 +20,7 @@ import {
   setAutoTruncateConfig,
   setDisabledModels,
   setHistoryConfig,
+  setHooksConfig,
   setModelOverrides,
   setNegotiationConfig,
   setResponsesConfig,
@@ -699,6 +700,15 @@ export async function applyConfigToState(): Promise<Config> {
     const w = config.server_tool_web_search
     if (w.enabled !== undefined) setWebSearchConfig({ webSearchEnabled: w.enabled })
     if (w.backend !== undefined) setWebSearchConfig({ webSearchBackend: w.backend })
+  }
+
+  // Upstream hook module (nested: override only when present). Declarative only — writes
+  // state so start.ts (and, in future phases, a reload API) can decide whether/what to load;
+  // never triggers the module load itself.
+  if (config.hooks) {
+    const hk = config.hooks
+    if (hk.upstream_module !== undefined) setHooksConfig({ hooksUpstreamModule: hk.upstream_module })
+    if (hk.enabled !== undefined) setHooksConfig({ hooksEnabled: hk.enabled })
   }
 
   // Shutdown timing (scalar: override only when present)

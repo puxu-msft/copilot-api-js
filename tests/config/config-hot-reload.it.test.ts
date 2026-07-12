@@ -815,6 +815,22 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   },
 
+  // ── hooks.* (declarative only — see applyConfigToState) ─────────────
+  {
+    configKey: "hooks.upstream_module",
+    stateKey: "hooksUpstreamModule",
+    sampleYamlValue: '"./exp/my-hook.ts"',
+    expectedStateValue: "./exp/my-hook.ts",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
+  },
+  {
+    configKey: "hooks.enabled",
+    stateKey: "hooksEnabled",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
+  },
+
   // ── openai_responses.* ─────────────────────────────────────────────
   {
     configKey: "openai_responses.normalize_call_ids",
