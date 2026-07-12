@@ -88,6 +88,18 @@ Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/respons
 - T2.4 anthropic codec `translateOut`/`prepareWire` 按 targetEndpoint 委托 hub（翻译腿产 CC wire）；truncate 基线取 translateOut 后 CC body（W-truncate-baseline）。
 - **factory 锚点**：`responses-to-cc-request.ts`（对称参照）、gemini `convert-request.ts`、openai-cc codec `prepareWire`。
 
+**Phase 2 实施记录（2026-07-12，landed，分支 `feat/translation-matrix-phase2`）**：
+- 交付 4 commit：T2.2 正向翻译器（`feat(translate): Anthropic Messages → CC ...`）→ T2.3 反向翻译器 + WARN-E 红线（`feat(translate): CC → Anthropic Messages ...`）→ T2.1 hub（`feat(pipeline): hub shared request-translation layer`）→ T2.4 codec 委托（`feat(codec): anthropic codec ... delegate the forward leg to the hub`）。每 commit `bun run typecheck` 0 error + Phase 0 golden 52 逐字节 pass + 相关套件全绿。
+- **对书面 plan 的自觉偏离 / 说明**（`sync-plan-with-impl`）：
+  1. **实现顺序 T2.2→T2.3→T2.1→T2.4（非编号顺序）**：hub（T2.1）依赖两个纯翻译器，故先落地翻译器再落 hub，每步 commit 终态自洽。
+  2. **hub `translateRequestVia` 只做请求侧；响应侧 `renderResponseVia` 是 Phase 3/4 骨架、直接 throw**——这是 Phase 2 最微妙的 commit invariant 的落地：翻译腿端到端仍 fail-fast（响应未翻译前绝不返回坏 CC）。codec 的 `renderResponse`/`renderResponseNonStreaming` 对翻译腿对称 throw。
+  3. **hub 只翻到 CC-canonical、不含 CC→Responses wire 步**：沿用 openai-cc P2.2-D1，`/responses` 正向腿的 CC→Responses wire 翻译留在 codec 的 `prepareWire`（env.body 保持 CC 形，供 CC 请求改写 + auto-truncate）。
+  4. **codec 持内部 openai-cc delegate**（镜像 gemini codec）：正向翻译腿的 `prepareWire`/`preSend`/`sampleRequest` 委托 cc delegate；`translateOut` 委托 hub 产 CC body。`isForwardTranslateLeg` 守卫把 `/v1/messages` 与 **undefined**（隔离单测 env）都当 direct/identity 路径，只有显式 CC/Responses 腿走翻译分支——现状 codec 单测（targetEndpoint 未设）逐条零回归。
+  5. **W-truncate-baseline 由 cc delegate 天然承载**：翻译腿的 truncate 基线 = cc delegate 对 CC body 的自有 baseline（无需 anthropic codec 额外接线）。
+  6. **端到端 runRequest 正向腿仍在 Phase-1 strategy registry fail-fast**（无 CC strategy builder，A1 已记录）——发生在 prepareWire 之前。故 Phase 2 的 wire 验证走 **dry-run inspector（`driver.inspectRequest`，不建 strategies、不发上游）**，实测正向腿产正确 CC wire（`stopAfter=prepare-wire` → `/chat/completions`、system 折叠成 system message、tools 映射、thinking/Anthropic 字段不泄漏）；运行期正向腿在 Phase 3+ 接响应翻译 + CC strategy builder 后完整打通。
+- 新增测试：`tests/openai/anthropic-to-cc-request.unit.test.ts`（24，spec §6 全表 + 多 choices 折叠）、`tests/openai/cc-to-anthropic-request.unit.test.ts`（14，含 WARN-E 红线：输出零 thinking 块 + 无 cache_control）、`tests/pipeline/hub-translate.unit.test.ts`（9，分派矩阵 + fail-fast 骨架）、`tests/anthropic/anthropic-codec-forward-leg.it.test.ts`（5，dry-run wire 验证 + 响应侧 fail-fast）。
+- 现状零回归：Phase 0 golden 52 逐 commit 全过；现状 anthropic codec 单测 / it 测全过（direct 路径 identity 不变）。
+
 ---
 
 ## Phase 3：非流式响应两向
