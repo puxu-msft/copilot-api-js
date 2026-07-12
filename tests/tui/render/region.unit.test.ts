@@ -276,4 +276,70 @@ describe("Region (DECSTBM sticky bottom panel)", () => {
     // eslint-disable-next-line no-control-regex -- intentional ESC in DECSTBM pattern
     expect(out).not.toMatch(/\x1b\[1;\d+r/) // no new DECSTBM
   })
+
+  describe("isEstablished / clearPanelString / redrawString (P2.2 emergencyWrite hooks)", () => {
+    test("isEstablished() is false before any render, true after, false again after clear()", () => {
+      const { region } = makeRegion(80, rowsRef)
+      expect(region.isEstablished()).toBe(false)
+      region.render(["a", "b"])
+      expect(region.isEstablished()).toBe(true)
+      region.clear()
+      expect(region.isEstablished()).toBe(false)
+    })
+
+    test("clearPanelString() is '' when unestablished (nothing to clear, no write)", () => {
+      const { region } = makeRegion(80, rowsRef)
+      expect(region.clearPanelString()).toBe("")
+    })
+
+    test("clearPanelString() blanks every panel row and parks the cursor at the scroll-region bottom, without writing", () => {
+      const { region, io } = makeRegion(80, rowsRef)
+      region.render(["a", "b"]) // rows=24, N=2 → panel rows 23,24; bottom=22
+      const mark = io.chunks.length
+
+      const s = region.clearPanelString()
+      expect(io.chunks.length).toBe(mark) // pure — no write happened
+
+      expect(s).toContain("\x1b[23;1H")
+      expect(s).toContain("\x1b[24;1H")
+      expect(countOf(s, "\x1b[2K")).toBe(2) // one clear per panel row
+      expect(s.endsWith("\x1b[22;1H")).toBe(true) // parked at scroll-region bottom row, ready for a log write
+    })
+
+    test("redrawString() is '' when unestablished", () => {
+      const { region } = makeRegion(80, rowsRef)
+      expect(region.redrawString(["x"])).toBe("")
+    })
+
+    test("redrawString() reasserts DECSTBM and repaints the given lines, without writing", () => {
+      const { region, io } = makeRegion(80, rowsRef)
+      region.render(["a", "b"]) // establishes rows=24, N=2 → bottom=22
+      const mark = io.chunks.length
+
+      const s = region.redrawString(["c", "d"])
+      expect(io.chunks.length).toBe(mark) // pure — no write happened
+
+      expect(s).toContain("\x1b[1;22r") // DECSTBM reassert at the established bottom
+      expect(s).toContain("\x1b7") // DECSC
+      expect(s).toContain("\x1b8") // DECRC
+      expect(s).toContain("c")
+      expect(s).toContain("d")
+      expect(s.endsWith("\x1b8")).toBe(true)
+    })
+
+    test("clearPanel then redrawString compose exactly like a normal steady-state re-render", () => {
+      // Emergency-write shape (spec §4 "region" state): clearPanel + line + redrawPanel.
+      // This test pins that composing the two P2.2 primitives around an out-of-band
+      // line reproduces content indistinguishable from a normal re-render.
+      const { region, io } = makeRegion(80, rowsRef)
+      region.render(["a", "b"])
+      const mark = io.chunks.length
+
+      const emergency = region.clearPanelString() + "EMERGENCY LINE\n" + region.redrawString(["a", "b"])
+      expect(io.chunks.length).toBe(mark) // still nothing written by the coordinator itself
+      expect(emergency).toContain("EMERGENCY LINE")
+      expect(emergency).toContain("a")
+      expect(emergency).toContain("b")
+    })
+  })
 })

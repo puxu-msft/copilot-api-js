@@ -47,6 +47,7 @@ import { formatLogLine } from "~/lib/observability/projections/log-line"
 import { handleShutdownSignal } from "~/lib/shutdown"
 
 import type { UiState } from "./controller"
+import type { TerminalRegionState } from "./terminal-coordinator"
 
 import {
   //
@@ -69,6 +70,7 @@ import {
   RESERVED_LOG_ROWS,
 } from "./render/region"
 import { renderSystemLogLine } from "./render/syslog"
+import { registerTerminal } from "./terminal-coordinator"
 
 // ANSI escape code for "clear to end of line, return to column 0"
 const CLEAR_LINE = "\x1b[2K\r"
@@ -235,6 +237,12 @@ export class TerminalUi {
    * {@link REPLAY_CAP}; best-effort only (durability is `FileSink`'s job).
    */
   private readonly replayQueue: Array<string> = []
+  /**
+   * Unregisters this instance from `terminal-coordinator` (P2.2) — called at
+   * {@link destroy}. A no-op when `silent` (never registered — see the
+   * constructor comment) so `destroy()` can call it unconditionally.
+   */
+  private readonly unregisterCoordinator: () => void
 
   constructor(bus: ObservabilityBus, options?: TerminalUiOptions) {
     this.stdout = options?.stdout ?? process.stdout
@@ -270,6 +278,24 @@ export class TerminalUi {
       ;(options.registerExitHook ?? ((fn: () => void) => process.on("exit", fn)))(() => this.restoreTerminal())
     }
 
+    // Register with the terminal-coordinator singleton (P2.2) so republish.ts's
+    // reentrant fallback and FileSink's write-failure fallback can route an
+    // emergency line through this instance's bottom-of-screen state instead of
+    // a bare `process.stderr.write` — see `emergencyWriteState`/`emergencyClearPanel`/
+    // `emergencyRedrawPanel`/`emergencyWriteLine` below. Skipped when `silent`
+    // (a silent sink draws nothing, so there is no bottom-of-screen state to
+    // coordinate — the coordinator's "unregistered" stderr fallback is correct
+    // for it, same as before this instance ever registers).
+    this.unregisterCoordinator =
+      this.silent ?
+        () => {}
+      : registerTerminal({
+          state: () => this.emergencyWriteState(),
+          clearPanel: () => this.emergencyClearPanel(),
+          redrawPanel: () => this.emergencyRedrawPanel(),
+          write: (s) => this.emergencyWriteLine(s),
+        })
+
     this.unsubscribe = bus.subscribe((event) => {
       this.handle(event)
     })
@@ -304,6 +330,7 @@ export class TerminalUi {
   }
 
   destroy(): void {
+    this.unregisterCoordinator()
     this.unsubscribe()
     this.stopFooterTimer()
     if (this.interactive) {
@@ -798,15 +825,7 @@ export class TerminalUi {
     if (this.rendering) return
     this.rendering = true
     try {
-      const lines = this.buildViewLines()
-      // Constant height (spec INV-2): pad collapsed/panel to the constant
-      // interactive panel height so the DECSTBM scroll region's geometry never
-      // changes across a view switch — zero churn. `buildPanelLines` already
-      // returns exactly H rows, so padding is a no-op for the panel view.
-      if (lines.length > 0) {
-        const h = this.interactivePanelHeight()
-        while (lines.length < h) lines.push("")
-      }
+      const lines = this.paddedViewLines()
       if (lines.length === 0) {
         this.region.clear()
       } else {
@@ -815,6 +834,26 @@ export class TerminalUi {
     } finally {
       this.rendering = false
     }
+  }
+
+  /**
+   * {@link buildViewLines}, padded to the constant interactive panel height
+   * (spec INV-2) — the exact lines {@link renderRegion} hands to `Region.render`.
+   * Pulled out so `emergencyRedrawPanel` (P2.2, `terminal-coordinator`) can
+   * redraw the SAME content an ordinary re-render would, without duplicating
+   * the padding rule.
+   */
+  private paddedViewLines(): Array<string> {
+    const lines = this.buildViewLines()
+    // Constant height (spec INV-2): pad collapsed/panel to the constant
+    // interactive panel height so the DECSTBM scroll region's geometry never
+    // changes across a view switch — zero churn. `buildPanelLines` already
+    // returns exactly H rows, so padding is a no-op for the panel view.
+    if (lines.length > 0) {
+      const h = this.interactivePanelHeight()
+      while (lines.length < h) lines.push("")
+    }
+    return lines
   }
 
   /**
@@ -986,6 +1025,73 @@ export class TerminalUi {
     this.stdin?.pause()
     this.stdin?.setRawMode(false)
     this.region?.clear()
+  }
+
+  // ============================================================================
+  // terminal-coordinator hooks (P2.2) — the `TerminalHooks` this instance
+  // supplies to `registerTerminal` at construction, so `emergencyWrite` (an
+  // out-of-band write from `republish.ts`'s reentrant fallback or `FileSink`'s
+  // write-failure fallback) can land without corrupting whatever this instance
+  // is currently drawing at the bottom of the screen. `state`/`clearPanel`/
+  // `redrawPanel` are pure query/string-producing methods — no writes, no
+  // mutation — matching the `TerminalHooks` contract; `write` is the one
+  // side-effecting hook.
+  // ============================================================================
+
+  /**
+   * Current bottom-of-screen render state for `emergencyWrite`'s three-way
+   * branch (spec §4 INV-3): `"alt"` when the detail alternate screen is open
+   * (`detailActive`); `"region"` when this instance is interactive AND its
+   * `Region` has an established DECSTBM scroll region; `"inline"` when this
+   * instance is non-interactive AND its P0 footer is currently drawn
+   * (`footerVisible`); `"none"` otherwise (interactive-but-idle-collapsed with
+   * no established region, non-interactive-with-no-footer, or `silent`/non-TTY —
+   * covered defensively even though `silent` instances never register).
+   */
+  private emergencyWriteState(): TerminalRegionState {
+    if (this.detailActive) return "alt"
+    if (this.interactive) return this.region?.isEstablished() ? "region" : "none"
+    return this.footerVisible ? "inline" : "none"
+  }
+
+  /**
+   * `clearPanel` hook: escape sequence(s) that blank whatever is currently
+   * drawn at the bottom of the screen, for BOTH the `"region"` state (delegates
+   * to `Region.clearPanelString()`) and the `"inline"` P0 footer state (the
+   * same single-physical-line `CLEAR_LINE` `clearFooterForLog`/`renderFooter`
+   * already use — the footer builder guarantees ≤ 1 physical line). Only
+   * called by `emergencyWrite` when its own `state()` query returned `"region"`
+   * or `"inline"`, so this never needs to handle `"alt"`/`"none"` — those states
+   * write-through with no clear/redraw (see `terminal-coordinator.ts`).
+   */
+  private emergencyClearPanel(): string {
+    if (this.interactive) return this.region?.clearPanelString() ?? ""
+    return CLEAR_LINE
+  }
+
+  /**
+   * `redrawPanel` hook: the counterpart to {@link emergencyClearPanel} — repaint
+   * whatever the coordinator just cleared, using the SAME padded view lines
+   * (`"region"`, via {@link paddedViewLines}) or footer text (`"inline"`, via
+   * {@link buildFooter}) an ordinary re-render would produce, so an emergency
+   * line never leaves the bottom of the screen looking different from a normal
+   * frame.
+   */
+  private emergencyRedrawPanel(): string {
+    if (this.interactive) return this.region?.redrawString(this.paddedViewLines()) ?? ""
+    return this.buildFooter()
+  }
+
+  /**
+   * `write` hook: the coordinator's single side-effecting sink. Deliberately
+   * `this.stdout.write` directly — NOT routed through `renderRegion`/`printLog`
+   * — so it is never subject to the {@link rendering} reentrancy guard (spec I4:
+   * an emergency write, e.g. a reentrant consola call or a `FileSink` disk-full
+   * error, must never be silently swallowed by a guard meant only to stop a
+   * render from recursing into itself).
+   */
+  private emergencyWriteLine(s: string): void {
+    this.stdout.write(s)
   }
 }
 
