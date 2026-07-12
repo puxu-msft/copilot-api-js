@@ -80,6 +80,8 @@ import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
+import { mapInputDetails, mapOutputDetails, nonNegOrUndef } from "~/types/api/ghc-usage"
+import type { GhcCompletionTokensDetails } from "~/types/api/ghc-usage"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 
 import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
@@ -232,7 +234,10 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesR
       totalInput: resp.usage?.input_tokens ?? 0,
       output: resp.usage?.output_tokens ?? 0,
       cacheRead: resp.usage?.input_tokens_details?.cached_tokens,
+      cacheCreation: nonNegOrUndef(resp.usage?.input_tokens_details?.cache_write_tokens),
       reasoning: resp.usage?.output_tokens_details?.reasoning_tokens,
+      inputDetails: mapInputDetails(resp.usage?.input_tokens_details),
+      outputDetails: mapOutputDetails(resp.usage?.output_tokens_details as GhcCompletionTokensDetails | undefined),
     }),
     stop_reason: resp.status,
     content: responsesOutputToContent(resp.output),
@@ -397,7 +402,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     recordForwarded()
     consola.debug("[Responses:v4] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(acc.model || model, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     })
     return
   }
@@ -411,7 +416,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     })
     return
   }

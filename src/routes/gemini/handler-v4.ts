@@ -60,6 +60,8 @@ import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
+import { mapInputDetails, mapOutputDetails, nonNegOrUndef } from "~/types/api/ghc-usage"
+import type { GhcCompletionTokensDetails, GhcPromptTokensDetails } from "~/types/api/ghc-usage"
 import { classifyStreamError } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
@@ -221,7 +223,10 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
       totalInput: usage?.prompt_tokens ?? 0,
       output: usage?.completion_tokens ?? 0,
       cacheRead: usage?.prompt_tokens_details?.cached_tokens,
+      cacheCreation: nonNegOrUndef((usage?.prompt_tokens_details as GhcPromptTokensDetails | undefined)?.cache_write_tokens),
       reasoning: usage?.completion_tokens_details?.reasoning_tokens,
+      inputDetails: mapInputDetails(usage?.prompt_tokens_details as GhcPromptTokensDetails | undefined),
+      outputDetails: mapOutputDetails(usage?.completion_tokens_details as GhcCompletionTokensDetails | undefined),
     }),
     stop_reason: choice?.finish_reason ?? undefined,
     content: choice?.message,

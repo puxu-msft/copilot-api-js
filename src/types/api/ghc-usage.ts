@@ -50,3 +50,23 @@ export interface GhcInputTokensDetails {
 export function nonNegOrUndef(v: number | null | undefined): number | undefined {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined
 }
+
+/**
+ * 把 GHC 的 prompt/input details（`*_tokens` 后缀）映射为 canonical `input_tokens_details`
+ * 形状（无后缀）。空值剔除交由 `usageFromTotalInput` 的 pruneEmpty。
+ */
+export function mapInputDetails(d: GhcPromptTokensDetails | GhcInputTokensDetails | undefined): { text?: number; audio?: number; image?: number; video?: number } {
+  return { text: nonNegOrUndef(d?.text_tokens), audio: nonNegOrUndef(d?.audio_tokens), image: nonNegOrUndef(d?.image_tokens), video: nonNegOrUndef(d?.video_tokens) }
+}
+
+/** 把 GHC 的 completion details 映射为 canonical `output_tokens_details` 的模态/prediction 部分（reasoning 由调用方另传）。 */
+export function mapOutputDetails(d: GhcCompletionTokensDetails | undefined): { text?: number; audio?: number; image?: number; video?: number; accepted_prediction_tokens?: number; rejected_prediction_tokens?: number } {
+  return {
+    text: nonNegOrUndef(d?.text_tokens),
+    audio: nonNegOrUndef(d?.audio_tokens),
+    image: nonNegOrUndef(d?.image_tokens),
+    video: nonNegOrUndef(d?.video_tokens),
+    accepted_prediction_tokens: nonNegOrUndef(d?.accepted_prediction_tokens),
+    rejected_prediction_tokens: nonNegOrUndef(d?.rejected_prediction_tokens),
+  }
+}

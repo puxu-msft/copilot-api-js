@@ -74,6 +74,8 @@ import {
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+import { mapInputDetails, mapOutputDetails, nonNegOrUndef } from "~/types/api/ghc-usage"
+import type { GhcCompletionTokensDetails, GhcPromptTokensDetails } from "~/types/api/ghc-usage"
 
 /** CC has no learning-budget strategy; the value is inert (passed for completeness). */
 const MAX_LEARNING_RETRIES = 32
@@ -262,7 +264,10 @@ function renderNonStreamingV4(
       totalInput: usage?.prompt_tokens ?? 0,
       output: usage?.completion_tokens ?? 0,
       cacheRead: usage?.prompt_tokens_details?.cached_tokens,
+      cacheCreation: nonNegOrUndef((usage?.prompt_tokens_details as GhcPromptTokensDetails | undefined)?.cache_write_tokens),
       reasoning: usage?.completion_tokens_details?.reasoning_tokens,
+      inputDetails: mapInputDetails(usage?.prompt_tokens_details as GhcPromptTokensDetails | undefined),
+      outputDetails: mapOutputDetails(usage?.completion_tokens_details as GhcCompletionTokensDetails | undefined),
     }),
     stop_reason: choice?.finish_reason ?? undefined,
     content: choice?.message,
@@ -380,7 +385,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     recordForwarded()
     consola.debug("[ChatCompletions:v4] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(acc.model || model, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }),
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, cacheCreation: acc.cacheWriteTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     })
     return
   }
@@ -395,7 +400,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }),
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, cacheCreation: acc.cacheWriteTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     })
     return
   }
