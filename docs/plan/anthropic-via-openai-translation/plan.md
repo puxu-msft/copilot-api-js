@@ -161,6 +161,16 @@ Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/respons
 
 ## Phase 5：反向格子接线（cc/responses/gemini → messages 出站）
 
+> **实施状态（2026-07-12，隔离 worktree `feat/translation-matrix-phase5`，待合并）**：**T5.0–T5.4 全部 landed**（6 commit）。
+> - **T5.0**：W3 反向守卫（`cc-to-anthropic-request.ts`：缺 `tool_call_id` 的 tool_result 跳过、空 content user turn 跳过）+ W4 `@responses` 前向端到端 IT（Responses-shaped wire）。
+> - **T5.1**：`anthropic-to-cc-stream.ts`（逐帧穷举表全类型 + 逆折叠单 choice + 净 usage gross-up 复用 `mapUsage`/`mapStopReason`（已从 `anthropic-to-cc.ts` export）+ 独立 CC 累加器 oracle + 正样本对照）。flush=[]（finish/usage inline on message_delta）。
+> - **T5.2**：hub `createReverseStreamTranslator`（按 clientFormat 分派）+ cc codec MESSAGES 腿五方法 + `reverse-anthropic-rewrite.ts`（专属 Anthropic sanitize + 共享 mapper holder，**非** ctx.toolNameMapper 的 CC mapper）+ cc handler 专属反向 pump（无心跳、`onUpstreamFrame`→Anthropic 累加器记 honest outbound、getStreamMeta F2 截断）+ 反向非流式 render 记 honest Anthropic outbound。
+> - **T5.3**：responses codec MESSAGES 腿（**二跳 + reverse-exchange** `{responseId,itemId,clientModel}`，`createCCToResponsesStreamTranslator`/`translateCCToResponsesResponse` 吃 `TranslateExchangeContext`）+ 反向 pump **必调 flushResponse**（response.completed 终帧）。
+> - **T5.4**：gemini codec 经 cc delegate 继承 Anthropic→CC + geminiTranslator wrap CC→Gemini（`reverseBetaProbe` 透传 delegate）+ 反向 pump（`onUpstreamFrame` 补 Anthropic 累加器、截断读 `anthropicAcc.sawMessageStop`、必调 flushResponse）。
+> - **前置门控**：W2（inbound tool_use.id 接受性）✅ CLEARED（2026-07-12 探针，PROBE-FINDINGS Probe 3）；W3/W4 ✅ 本 phase T5.0。
+> - **测试**：`anthropic-to-cc-stream.unit.test.ts`（11）+ hub 反向分派（hub-translate.unit.test.ts）+ 三格反向端到端 IT（`reverse-cc-messages` / `reverse-responses-messages` / `reverse-gemini-messages`，各含独立消费者 oracle）。
+> - **承重红线**：反向请求侧零 thinking 合成（沿用 T2 red-line 测试）；byte-critical 独立 oracle（CC 累加器 / Responses 累加器 / Gemini 帧消费）。
+
 **Task**：
 - T5.1 `anthropic-to-cc-stream.ts`（反向流式，FAIL-A'）：**逐帧穷举表**——锚定真实帧集 [stream-accumulator.ts:156-186](../../../src/lib/anthropic/stream-accumulator.ts#L156)（顶层 8 类含 ping swallow/error 映射）+ [:248-278](../../../src/lib/anthropic/stream-accumulator.ts#L248)（block 5 类含 **server_tool_use 剥离**、redacted_thinking 丢弃）+ [:311-334](../../../src/lib/anthropic/stream-accumulator.ts#L311)（delta 4 类）。**content_block_stop→CC finish 状态转换**（主干）。逐帧 golden。
 - T5.2 cc→messages 接线：cc handler render 经 hub Anthropic→CC + 心跳保持 CC 现状机制（无心跳）+ §7.3 上游保护归属。
