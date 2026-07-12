@@ -45,6 +45,7 @@ import type {
   PreprocessInfo,
 } from "~/lib/history/types"
 import type { Model } from "~/lib/models/client"
+import type { CcToAnthropicStreamMeta } from "~/lib/openai/translate"
 import type {
   //
   ClientFormat,
@@ -67,7 +68,6 @@ import type {
   RequestSample,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
-import type { CcToAnthropicStreamMeta } from "~/lib/openai/translate"
 import type { PrepareHints } from "~/lib/request/pipeline"
 import type {
   //
@@ -112,8 +112,8 @@ import {
   resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
-import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import { createResponsesStreamAccumulator } from "~/lib/openai/responses-stream-accumulator"
+import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import {
   //
   createForwardStreamTranslator,

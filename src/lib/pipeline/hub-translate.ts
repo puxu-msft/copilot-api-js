@@ -33,9 +33,22 @@ import type {
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
 import type { ClientFrame } from "~/lib/pipeline/types"
-import type { Message as AnthropicResponse, MessagesPayload } from "~/types/api/anthropic"
-import type { ChatCompletionResponse, ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
-import type { ResponsesPayload, ResponsesResponse, ResponsesStreamEvent } from "~/types/api/openai-responses"
+import type {
+  //
+  Message as AnthropicResponse,
+  MessagesPayload,
+} from "~/types/api/anthropic"
+import type {
+  //
+  ChatCompletionResponse,
+  ChatCompletionsPayload,
+} from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ResponsesPayload,
+  ResponsesResponse,
+  ResponsesStreamEvent,
+} from "~/types/api/openai-responses"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {

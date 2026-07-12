@@ -39,18 +39,17 @@
  * message — text block(s) then tool_use blocks, in first-appearance order.
  */
 
+import type { StopReason } from "@anthropic-ai/sdk/resources/messages"
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import consola from "consola"
 
 import type { UsageData } from "~/lib/history/types"
-import type { StopReason } from "@anthropic-ai/sdk/resources/messages"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 
 import { anthropicSseFrame } from "~/lib/anthropic/sse-frame"
 import {
   //
-  type OpenAIStreamAccumulator,
   accumulateOpenAIStreamEvent,
   createOpenAIStreamAccumulator,
 } from "~/lib/openai/stream-accumulator"
@@ -251,7 +250,9 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
               closeOpenBlock(out)
               openBlock = { index: anthropicIdx, kind: "tool_use" }
             }
-            out.push({ frame: anthropicSseFrame({ type: "content_block_delta", index: anthropicIdx, delta: { type: "input_json_delta", partial_json: args } }) })
+            out.push({
+              frame: anthropicSseFrame({ type: "content_block_delta", index: anthropicIdx, delta: { type: "input_json_delta", partial_json: args } }),
+            })
           }
         }
 
@@ -273,21 +274,23 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
 
       const meta = getMeta()
       const usage = meta.usage
-      // Terminal message_delta: the Anthropic stop_reason + the CORRECTED net usage (W3 — the message_start
-      // placeholder was input_tokens:0). Include input/cache tokens so the client sees the final usage.
-      out.push({
-        frame: anthropicSseFrame({
-          type: "message_delta",
-          delta: { stop_reason: meta.stopReason ?? null, stop_sequence: null },
-          usage: {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            ...(usage.cache_read_input_tokens !== undefined && { cache_read_input_tokens: usage.cache_read_input_tokens }),
-            ...(usage.cache_creation_input_tokens !== undefined && { cache_creation_input_tokens: usage.cache_creation_input_tokens }),
-          },
-        }),
-      })
-      out.push({ frame: anthropicSseFrame({ type: "message_stop" }) })
+      // Terminal frames: message_delta (the Anthropic stop_reason + the CORRECTED net usage — W3, the
+      // message_start placeholder was input_tokens:0) then message_stop. Pushed together (single call).
+      out.push(
+        {
+          frame: anthropicSseFrame({
+            type: "message_delta",
+            delta: { stop_reason: meta.stopReason ?? null, stop_sequence: null },
+            usage: {
+              input_tokens: usage.input_tokens,
+              output_tokens: usage.output_tokens,
+              ...(usage.cache_read_input_tokens !== undefined && { cache_read_input_tokens: usage.cache_read_input_tokens }),
+              ...(usage.cache_creation_input_tokens !== undefined && { cache_creation_input_tokens: usage.cache_creation_input_tokens }),
+            },
+          }),
+        },
+        { frame: anthropicSseFrame({ type: "message_stop" }) },
+      )
       return out
     },
   }
@@ -298,7 +301,10 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
  * {@link createCcToAnthropicStreamTranslator} — the driver drives the factory per-frame; this
  * generator is the equivalence oracle for the whole-stream tests.
  */
-export async function* translateCCStreamToAnthropicStream(source: AsyncIterable<ServerSentEventMessage>, modelId: string): AsyncGenerator<ServerSentEventMessage> {
+export async function* translateCCStreamToAnthropicStream(
+  source: AsyncIterable<ServerSentEventMessage>,
+  modelId: string,
+): AsyncGenerator<ServerSentEventMessage> {
   const translator = createCcToAnthropicStreamTranslator(modelId)
   for await (const ev of source) {
     for (const step of translator.renderFrame(ev)) yield step.frame
@@ -307,4 +313,4 @@ export async function* translateCCStreamToAnthropicStream(source: AsyncIterable<
 }
 
 /** Re-exported so the CC accumulator's shape is a known dependency (the translator holds one). */
-export type { OpenAIStreamAccumulator }
+export { type OpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"

@@ -1446,7 +1446,9 @@ function isMessageTerminatorFrame(frame: ClientFrame): boolean {
  */
 async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchOptions): Promise<void> {
   const { sink, forwardedSseEvents, streamStartMs, driver, codec, upstream, env, anchorHooks, anchorState } = opts
-  const model = (env.body as { model?: string }).model ?? env.model?.id ?? "unknown"
+  // The translate-leg env.body is the CC-canonical wire body (translateOut delegated to the hub), so it
+  // carries the resolved model name; fall back to a literal when absent (defensive, never for a real leg).
+  const model = (env.body as { model?: string }).model ?? "unknown"
   const targetEndpoint = env.targetEndpoint
 
   // OUTBOUND-leg (raw upstream) accumulator: cc leg → CC accumulator; responses leg → Responses
@@ -1471,7 +1473,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
   /** The OUTBOUND-leg ResponseData (honest upstream shape) for the terminal settle. */
   const outboundResponseData = (): ReturnType<typeof buildOpenAIResponseData> =>
-    ccAcc ? buildOpenAIResponseData(ccAcc, model) : buildResponsesResponseData(respAcc!, model)
+    ccAcc ? buildOpenAIResponseData(ccAcc, model) : buildResponsesResponseData(respAcc as NonNullable<typeof respAcc>, model)
 
   try {
     // LIVE owns-sink: the driver drives codec.renderResponse (CC/Responses→Anthropic per-frame) + writes
@@ -1483,7 +1485,10 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       recordForwarded()
       consola.debug("[Anthropic:v4:translate] Client disconnected mid-stream — recording aborted")
       const meta = codec.getStreamMeta()
-      env.ctx.abort(model, { usage: { input_tokens: meta?.usage.input_tokens ?? 0, output_tokens: meta?.usage.output_tokens ?? 0 }, ...(meta?.stopReason && { stop_reason: meta.stopReason }) })
+      env.ctx.abort(model, {
+        usage: { input_tokens: meta?.usage.input_tokens ?? 0, output_tokens: meta?.usage.output_tokens ?? 0 },
+        ...(meta?.stopReason && { stop_reason: meta.stopReason }),
+      })
       return
     }
 
@@ -1492,9 +1497,22 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       // Anthropic error terminator, snapshot the forwarded track, THEN fail (order load-bearing — ctx.fail
       // freezes inboundResponse; a post-fail snapshot misses the error frame).
       const error = outcome.error
-      logUpstreamStreamError(error, { model, streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false }, acc: createAnthropicStreamAccumulator(), sseEvents: [] })
+      logUpstreamStreamError(error, {
+        model,
+        streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
+        acc: createAnthropicStreamAccumulator(),
+        sseEvents: [],
+      })
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
-      await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) } }) }).catch(() => undefined)
+      await sink
+        .writeSynthetic?.({
+          event: "error",
+          data: JSON.stringify({
+            type: "error",
+            error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) },
+          }),
+        })
+        .catch(() => undefined)
       recordForwarded()
       env.ctx.fail(model, error, outboundResponseData())
       return
@@ -1511,7 +1529,12 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         if (!isMessageTerminatorFrame(frame)) await sink.write(frame)
       }
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
-      await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }) }).catch(() => undefined)
+      await sink
+        .writeSynthetic?.({
+          event: "error",
+          data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
+        })
+        .catch(() => undefined)
       recordForwarded()
       consola.error(`[Anthropic:v4:translate] Upstream truncated for ${model}: drained without a finish_reason`)
       env.ctx.fail(model, new Error("upstream stream truncated: closed without finish_reason"), outboundResponseData())
@@ -1526,7 +1549,12 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
   } catch (error) {
     // Unexpected throw from the driver/sink: synthesize an Anthropic error terminator + record it, THEN fail.
     await closeAnchorIfOpen(sink, anchorHooks, anchorState)
-    await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: error instanceof Error ? error.message : String(error) } }) }).catch(() => undefined)
+    await sink
+      .writeSynthetic?.({
+        event: "error",
+        data: JSON.stringify({ type: "error", error: { type: "api_error", message: error instanceof Error ? error.message : String(error) } }),
+      })
+      .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(model, error, outboundResponseData())
   } finally {
