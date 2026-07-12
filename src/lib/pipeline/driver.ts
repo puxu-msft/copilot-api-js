@@ -17,6 +17,7 @@ import consola from "consola"
 import type { SseEventRecord } from "~/lib/history"
 
 import { classifyError } from "~/lib/error"
+import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
 import { classifyStreamError } from "~/lib/stream"
 
 import type { RequestEnvelope } from "./envelope"
@@ -186,14 +187,19 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
   // S3 — Rewrite-in: assemble + run the request-rewrite chain.
   const rewritten = runRewriteIn(deps, routed)
 
+  // Hook point: onRequest — one-shot logical-request rewrite, OUTSIDE the retry loop
+  // (a per-attempt replay would clobber reactive strategies' env fixes — spec §3.2 H1).
+  const hook = getUpstreamHook()
+  const afterHook = hook?.onRequest ? (hook.onRequest(rewritten) ?? rewritten) : rewritten
+
   // S4 — Exchange: error-driven retry loop (prepareWire → transport → strategy re-env).
   // Resolve the strategy factory now that the envelope (model + codec state) exists.
-  const strategies = typeof deps.strategies === "function" ? deps.strategies(rewritten) : deps.strategies
+  const strategies = typeof deps.strategies === "function" ? deps.strategies(afterHook) : deps.strategies
   // C0-① (RFC §11.1): runExchange returns the POST-retry env (the final attempt's
   // env), not `rewritten` (pre-exchange). Consumers — e.g. the Anthropic pump
   // building the tool-call recoverer from env.body.tools, which deferred-tool-retry
   // mutates — must see what was actually sent on the successful attempt.
-  const { upstream, env: settled } = await runExchange(deps, rewritten, strategies)
+  const { upstream, env: settled } = await runExchange(deps, afterHook, strategies)
   return { ok: true, upstream, env: settled }
 }
 
@@ -307,7 +313,9 @@ async function runExchange(
     }
     current.ctx.transition("executing")
     try {
-      const upstream = await deps.transport.send(wire, current)
+      const hook = getUpstreamHook()
+      const upstream =
+        hook?.onExchange ? await hook.onExchange(wire, current, () => deps.transport.send(wire, current)) : await deps.transport.send(wire, current)
       // RFC history-http-header-capture Phase 2: driver owns the outbound header
       // capture (no handler-side HeadersCapture bag). ② outboundRequest = the wire
       // headers in hand; ③ outboundResponse = the upstream response headers carried

@@ -25,14 +25,15 @@ import type {
 
 export interface CtxCalls {
   setSseEvents: Array<unknown>
+  setAttemptError: Array<unknown>
 }
 
 export function makeCtx(): { ctx: RequestContext; calls: CtxCalls } {
-  const calls: CtxCalls = { setSseEvents: [] }
+  const calls: CtxCalls = { setSseEvents: [], setAttemptError: [] }
   const ctx = {
     beginAttempt: () => {},
     transition: () => {},
-    setAttemptError: () => {},
+    setAttemptError: (e: unknown) => calls.setAttemptError.push(e),
     recordAttemptFailure: () => {},
     setSseEvents: (e: unknown) => calls.setSseEvents.push(e),
     setHttpHeaders: () => {},

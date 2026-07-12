@@ -21,6 +21,17 @@ export function resetUpstreamHook(): void {
   hookState = undefined
 }
 
+/**
+ * Test-only DI seam: install an arbitrary {@link UpstreamHook} directly (bypassing the
+ * file-loading path) so driver hook-mount-point tests can mount closures that count
+ * calls / mutate captured test state, which a real on-disk module (loaded via a
+ * data-URL import) cannot express. Production code never calls this — only
+ * `loadUpstreamHook`/`loadUpstreamHookSafe` populate `hookState` at runtime.
+ */
+export function setUpstreamHookForTests(hook: UpstreamHook | undefined): void {
+  hookState = hook && { hook, module: "<test>", loadedAt: 0, version: "test", exports: Object.keys(hook) }
+}
+
 const HOOK_POINTS = ["onRequest", "onExchange", "rewriteUpstreamFrame"] as const
 
 /** Load (or reload) the hook module via data-URL (bypasses Bun's path-keyed ESM cache). */
