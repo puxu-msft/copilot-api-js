@@ -50,6 +50,7 @@ import { attachFileSink } from "./lib/observability/sinks/file"
 import { attachHistorySink } from "./lib/observability/sinks/history"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
 import { attachWsSink } from "./lib/observability/sinks/ws"
+import { loadUpstreamHookSafe } from "./lib/pipeline/hooks/loader"
 import { initProcessIdentity } from "./lib/process-identity"
 import { initProxy } from "./lib/proxy"
 import { initRequestTelemetry } from "./lib/request-telemetry"
@@ -301,6 +302,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   const config = await applyConfigToState()
+
+  // Upstream hook module (dev/test only) — declarative state was already set by
+  // applyConfigToState above; load it here if enabled. warn-continue: a bad/missing hook
+  // module must never block startup (see loadUpstreamHookSafe).
+  if (state.hooksEnabled && state.hooksUpstreamModule) {
+    await loadUpstreamHookSafe(state.hooksUpstreamModule)
+  }
 
   // GHC API base URL — CLI > config.yaml. Not hot-reloadable: changing
   // the upstream endpoint mid-flight would mis-route active requests.
