@@ -1,6 +1,6 @@
 # Spec: cache_control 子字段剥离 + sanitize 语义收窄
 
-- 状态：草案（待 subagent 评审 → 用户批准 → writing-plans）
+- 状态：**已实施（landed master，2026-07-12）** —— 三阶段全落地，见 plan `docs/plan/2026-07-12-cache-control-subfield-stripping/`。实现期两处偏离：① `resolveSanitizedTtls` 收窄为「仅规范化已有断点、缺层 undefined」（sanitize NOT 注入）；② proxied 未收口到共享原语（sanitize/proxied TTL 语义本质不同，各自 owner）。history 标记走 `recordFeature("cache-control-stripped")` 而非 leg（弃跨端点共享 WireRequest 加专属字段的 SSOT smell）。
 - 日期：2026-07-12
 - 归属：`docs/spec/`（模块契约 / 兼容行为，见 CLAUDE.md 文档路由）
 - 相关：ADR `docs/decisions/2026-07-05-richest-data-flow.md`、skill `ghc-api-reference` / `ghc-anthropic-upstream`

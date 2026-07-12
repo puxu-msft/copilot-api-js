@@ -1,5 +1,7 @@
 # Phase 1：passthrough 黑名单子字段过滤
 
+> **实施状态（2026-07-12 landed，commits 3906688d/ed068bb2/2ba49ea1）**：全部完成。实现期偏离：① history 标记落 `recordFeature("cache-control-stripped")`（弃 leg 全链路，SSOT 避跨端点共享 WireRequest 加专属字段）；② `FeatureKind` 新成员打爆的穷尽点是 `tui/terminal-ui.ts`（非 plan 猜的 ui-v4），typecheck 逼出、加展示 case；③ config schema 覆盖守卫要求真实 config→state 测试，正好满足评审 H3。
+
 **Goal**：passthrough 模式下剥掉 GHC 未支持的 cache_control 子字段（内置 `scope`），保留客户端精调断点；history 记可辨识剥离标记。
 
 **与 Phase 0 正交**：只改 `applyCacheControlMode` 的 `passthrough` 分支 + 新增读取端/filter/config/history 字段。

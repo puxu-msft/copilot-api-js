@@ -1,5 +1,7 @@
 # Phase 2：反应式学习腿（自愈新未知子字段）
 
+> **实施状态（2026-07-12 landed，commit 53b5f19d）**：全部完成。扇出实为**十一处**（union/array/Map/mark/get/V2 接口/snapshot/load/count/locateMeta/deleteLocated/getGroupedSnapshot/clear）+ ui-v4 CATEGORY_LABELS。三路径遮蔽回归证实 disjoint。附带更新三个计数守卫：NEGOTIATION_CATEGORIES 10→11、snapshot 分类 10→11、策略列表 16→17（cache-control-subfield 在 body-field 之后）。
+
 **Goal**：GHC 拒绝新 cache_control 子字段时，自动学习该字段、剥掉重试、endpoint-level fixate，后续经 Phase 1 读取端预剥。
 
 **依赖**：Phase 1（读取端源③/④注入点、`PrepareHints.excludeCacheControlSubfields`）。
