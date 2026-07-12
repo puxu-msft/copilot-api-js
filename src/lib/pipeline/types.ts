@@ -656,8 +656,14 @@ export interface FormatCodec {
   /** S7: shape a mid-stream lifecycle error into this protocol's error frame. */
   formatError(err: ClassifiedStreamError, env: RequestEnvelope): ClientFrame
 
-  /** observability: the format's response accumulator factory (HistorySink rebuild). */
-  createResponseAccumulator(): ResponseAccumulator
+  /**
+   * observability: the format's response accumulator factory (HistorySink rebuild). Takes the
+   * post-route `env` so the accumulator matches the OUTBOUND-leg shape (RFC §4.1, targetEndpoint axis):
+   * a translate leg's upstream is a DIFFERENT format than the client (anthropic→cc → a CC accumulator),
+   * so a leg-blind factory would produce a malformed outboundResponse. The direct/passthrough legs return
+   * their native accumulator regardless of `env` (byte-identical to before the `env` param was restored).
+   */
+  createResponseAccumulator(env: RequestEnvelope): ResponseAccumulator
 
   /**
    * observability (S4 per-attempt): derive the history-side effective + wire

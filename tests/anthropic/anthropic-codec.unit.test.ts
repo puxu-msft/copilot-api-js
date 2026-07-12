@@ -73,12 +73,22 @@ describe("anthropic codec — formatError (Anthropic-shaped, double-typed)", () 
 })
 
 describe("anthropic codec — createResponseAccumulator", () => {
-  test("returns a fresh Anthropic stream accumulator (streamError control signal present in shape)", () => {
+  test("direct leg returns a fresh Anthropic stream accumulator (streamError control signal present in shape)", () => {
     const codec = makeCodec()
-    const acc = codec.createResponseAccumulator()
+    const acc = codec.createResponseAccumulator({ targetEndpoint: "/v1/messages" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
     expect(acc.model).toBe("")
     expect(acc.inputTokens).toBe(0)
     expect(acc.outputTokens).toBe(0)
+    // Anthropic accumulator has the Anthropic-specific `stopReason` field.
+    expect("stopReason" in acc).toBe(true)
+  })
+
+  test("FORWARD translate leg (@cc) returns a CC stream accumulator (RFC §4.1 per-leg dispatch)", () => {
+    const codec = makeCodec()
+    const acc = codec.createResponseAccumulator({ targetEndpoint: "/chat/completions" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
+    // CC accumulator has `toolCallMap`, the Anthropic one does not (proof it's the CC-leg accumulator).
+    expect("toolCallMap" in acc).toBe(true)
+    expect("stopReason" in acc).toBe(false)
   })
 })
 

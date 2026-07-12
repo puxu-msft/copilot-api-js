@@ -221,7 +221,9 @@ export function createOpenAiCcCodec(): OpenAiCcCodec {
       return formatOpenAiCcError(err)
     },
 
-    createResponseAccumulator(): ResponseAccumulator {
+    createResponseAccumulator(_env): ResponseAccumulator {
+      // openai-cc's upstream is always CC-shaped (passthrough or via-responses normalized to CC), so
+      // the accumulator is leg-independent; `_env` is accepted for the interface (RFC §4.1).
       return createOpenAIStreamAccumulator()
     },
 

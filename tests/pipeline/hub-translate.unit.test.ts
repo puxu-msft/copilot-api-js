@@ -22,8 +22,8 @@ import type { ResponsesPayload } from "~/types/api/openai-responses"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
+  createForwardStreamTranslator,
   renderResponseNonStreamingVia,
-  renderResponseVia,
   translateRequestVia,
 } from "~/lib/pipeline/hub-translate"
 
@@ -136,8 +136,42 @@ describe("renderResponseNonStreamingVia — non-streaming response dispatch (T3.
   })
 })
 
-describe("renderResponseVia — STREAMING response side is fail-fast (Phase 4)", () => {
-  test("throws (streaming translation legs stay end-to-end fail-fast until Phase 4)", () => {
-    expect(() => renderResponseVia()).toThrow(/STREAMING response-side translation is not wired/)
+describe("createForwardStreamTranslator — STREAMING forward-leg dispatch (Phase 4)", () => {
+  /** A CC SSE chunk frame. */
+  const ccChunk = (obj: unknown): { data: string; event: string } => ({ data: JSON.stringify(obj), event: "message" })
+
+  test("cc leg (/chat/completions): single-hop CC → Anthropic frames + terminal meta", () => {
+    const t = createForwardStreamTranslator(ENDPOINT.CHAT_COMPLETIONS, "claude-x")
+    const frames = [
+      ...t.renderFrame(ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }] })),
+      ...t.renderFrame(ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2 } })),
+      ...t.flush(),
+    ]
+    const types = frames.map((f) => JSON.parse(f.data ?? "{}").type)
+    expect(types).toEqual(["message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"])
+    expect(t.getMeta().stopReason).toBe("end_turn")
+    expect(t.getMeta().usage.input_tokens).toBe(5)
+  })
+
+  test("responses leg (/responses): two-hop Responses → CC → Anthropic frames", () => {
+    const t = createForwardStreamTranslator(ENDPOINT.RESPONSES, "gpt-x")
+    const rEvent = (obj: unknown): { data: string; event: string } => ({ data: JSON.stringify(obj), event: "message" })
+    const frames = [
+      ...t.renderFrame(rEvent({ type: "response.created", response: { id: "resp_1", model: "gpt-x" } })),
+      ...t.renderFrame(rEvent({ type: "response.output_text.delta", delta: "hello" })),
+      ...t.renderFrame(rEvent({ type: "response.completed", response: { id: "resp_1", model: "gpt-x", usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } } })),
+      ...t.flush(),
+    ]
+    const types = frames.map((f) => JSON.parse(f.data ?? "{}").type)
+    expect(types).toContain("message_start")
+    expect(types).toContain("content_block_delta")
+    expect(types).toContain("message_stop")
+    // The getStreamMeta signal chain (Responses翻译→CC帧→累积) surfaces the net usage.
+    expect(t.getMeta().usage.input_tokens).toBe(7)
+    expect(t.getMeta().stopReason).toBe("end_turn")
+  })
+
+  test("REVERSE leg (/v1/messages) throws (Phase 5 — never-swallow)", () => {
+    expect(() => createForwardStreamTranslator(ENDPOINT.MESSAGES, "claude-x")).toThrow(/REVERSE streaming leg .* not wired yet \(Phase 5\)/)
   })
 })

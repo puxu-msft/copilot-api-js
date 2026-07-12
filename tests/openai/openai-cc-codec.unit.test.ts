@@ -318,7 +318,7 @@ describe("openai-cc codec — formatError", () => {
 describe("openai-cc codec — createResponseAccumulator", () => {
   test("returns a fresh OpenAI stream accumulator", () => {
     const codec = createOpenAiCcCodec()
-    const acc = codec.createResponseAccumulator()
+    const acc = codec.createResponseAccumulator({ targetEndpoint: "/chat/completions" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
     expect(acc).toMatchObject({ model: "", inputTokens: 0, outputTokens: 0, rawContent: "" })
   })
 })
