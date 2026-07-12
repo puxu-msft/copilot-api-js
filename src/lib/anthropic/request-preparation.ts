@@ -18,6 +18,7 @@ import {
 import {
   //
   getSupportedEfforts,
+  getUnsupportedCacheControlSubfields,
   getUnsupportedFeatures,
   isAnthropicBetaUnsupported,
   isAnthropicFeatureUnsupported,
@@ -307,7 +308,8 @@ export function collectUnsupportedCacheControlSubfields(model: string, hints?: R
   for (const fields of collectAllMatching(model, state.stripCacheControlSubfields)) {
     for (const field of fields) strip.add(field)
   }
-  // 源③ negotiation：Phase 2 在此追加 getUnsupportedCacheControlSubfields()
+  // 源③ negotiation：reactive 腿学到的字段进入后续请求 proactive 预剥（对齐 tool-field 双层）。
+  for (const field of getUnsupportedCacheControlSubfields()) strip.add(field)
   for (const field of hints ?? []) strip.add(field)
   return strip
 }

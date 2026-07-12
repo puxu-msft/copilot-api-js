@@ -21,9 +21,9 @@ function meta(over: Partial<LearnedEntryMeta> = {}): LearnedEntryMeta {
 }
 
 describe("negotiation-lifecycle", () => {
-  test("NEGOTIATION_CATEGORIES has all 10", () => {
-    expect(NEGOTIATION_CATEGORIES.length).toBe(10)
-    expect(new Set(NEGOTIATION_CATEGORIES).size).toBe(10)
+  test("NEGOTIATION_CATEGORIES has all 11", () => {
+    expect(NEGOTIATION_CATEGORIES.length).toBe(11)
+    expect(new Set(NEGOTIATION_CATEGORIES).size).toBe(11)
   })
 
   test("default TTL is 30d for an unconfigured category", () => {

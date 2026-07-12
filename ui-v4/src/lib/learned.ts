@@ -4,7 +4,7 @@ import type {
   NegotiationCategory,
 } from "@/types"
 
-/** 10 个功能分组的中文名（面向用户）。 */
+/** 11 个功能分组的中文名（面向用户）。 */
 export const CATEGORY_LABELS: Record<NegotiationCategory, string> = {
   features: "请求体字段（Extra inputs）",
   betas: "anthropic-beta 头",
@@ -16,6 +16,7 @@ export const CATEGORY_LABELS: Record<NegotiationCategory, string> = {
   systemRejectModels: "拒 role:system 的模型",
   serverToolDowngrade: "需降级 prior-turn server-tool 的模型",
   toolFields: "不支持的 custom-tool 字段（endpoint 级）",
+  cacheControlSubfields: "不支持的 cache_control 子字段（endpoint 级）",
 }
 
 /** 合并 expired 与 manually_expired 为同一「已过期」徽章（后端仍区分四态）。 */
