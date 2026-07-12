@@ -51,8 +51,8 @@ import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -60,7 +60,7 @@ import {
   registerResponseSession,
 } from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import { resolveModelTarget } from "~/lib/models/resolver"
 import { responsesOutputToContent } from "~/lib/openai/responses-conversion"
 import {
   //
@@ -80,6 +80,8 @@ import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
+import { mapInputDetails, mapOutputDetails, nonNegOrUndef } from "~/types/api/ghc-usage"
+import type { GhcCompletionTokensDetails } from "~/types/api/ghc-usage"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 
 import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
@@ -95,7 +97,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   // the sync codec.parse, passing the client raw separately for the history
   // snapshot. Resolve the model HERE (before processResponsesInstructions' config
   // reload) and pass it as `preResolved` — matching the legacy handler's order.
-  const resolvedName = resolveModelName(azureModelOverride ?? clientRaw.model)
+  const { name: resolvedName, routeOverride } = resolveModelTarget(azureModelOverride ?? clientRaw.model)
   const selectedModel = state.modelIndex.get(resolvedName)
   const wireInstructions = await processResponsesInstructions(clientRaw.instructions, resolvedName)
   const wireBody: ResponsesPayload = { ...clientRaw, instructions: wireInstructions }
@@ -116,7 +118,9 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
     // S5 — the Responses response-rewrite chain (fix-stream-ids, DIRECT only). The driver
     // applies it before render (A.C); the handler forwards the yielded (fixed) frames. Tool-name
     // restore stays handler-side (forwarded-only, post-accumulate, must run on rendered frames).
-    responseRewrites: RESPONSES_RESPONSE_REWRITES,
+    // Full-format union (RFC §7.1); `appliesTo` keeps it fixStreamIds-only for the /responses leg
+    // and empty for the CC-fallback leg — identical to the prior per-route array.
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
       return buildOpenAiResponsesStrategiesForEnv(env)
@@ -133,7 +137,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
-      preResolved: { name: resolvedName, model: selectedModel },
+      preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
       clientAbortSignal: clientAbort.signal,
     })
@@ -230,10 +234,17 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesR
       totalInput: resp.usage?.input_tokens ?? 0,
       output: resp.usage?.output_tokens ?? 0,
       cacheRead: resp.usage?.input_tokens_details?.cached_tokens,
+      cacheCreation: nonNegOrUndef(resp.usage?.input_tokens_details?.cache_write_tokens),
       reasoning: resp.usage?.output_tokens_details?.reasoning_tokens,
+      inputDetails: mapInputDetails(resp.usage?.input_tokens_details),
+      outputDetails: mapOutputDetails(resp.usage?.output_tokens_details as GhcCompletionTokensDetails | undefined),
     }),
     stop_reason: resp.status,
     content: responsesOutputToContent(resp.output),
+    // G6 (richest-data-flow): persist upstream body into rawBody (responseText →
+    // rawBody) so non-streaming rows can re-derive cache_write later. Re-serialized
+    // from the parsed pristine `resp` (data-lossless). Spec §6.1 (G6).
+    responseText: JSON.stringify(resp),
   }
   if (truncationReason) {
     env.ctx.fail(resp.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
@@ -395,7 +406,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     recordForwarded()
     consola.debug("[Responses:v4] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(acc.model || model, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     })
     return
   }
@@ -409,7 +420,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     })
     return
   }

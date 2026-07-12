@@ -45,6 +45,7 @@ import {
   drainPendingFinalizations,
 } from "~/lib/history/entries"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import { resetCacheWriteBackfillForTests } from "~/lib/history/sqlite/cache-write-backfill"
 import { resetCalibrationBackfillForTests } from "~/lib/history/sqlite/calibration-backfill"
 import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-stage-backfill"
 import { resetResponsePreviewBackfillForTests } from "~/lib/history/sqlite/response-preview-backfill"
@@ -71,6 +72,7 @@ import {
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
+import { resetTerminalCoordinatorForTests } from "~/lib/tui/terminal-coordinator"
 
 import { restoreFetch } from "./mock-fetch"
 import {
@@ -113,8 +115,13 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetSearchIndexBackfillForTests", reset: resetSearchIndexBackfillForTests },
   { name: "resetLegacyStageBackfillForTests", reset: resetLegacyStageBackfillForTests },
   { name: "resetUsageNormalizeBackfillForTests", reset: resetUsageNormalizeBackfillForTests },
+  { name: "resetCacheWriteBackfillForTests", reset: resetCacheWriteBackfillForTests },
   { name: "resetResponsePreviewBackfillForTests", reset: resetResponsePreviewBackfillForTests },
   { name: "resetCalibrationBackfillForTests", reset: resetCalibrationBackfillForTests },
+  // TUI terminal-coordinator module-level singleton (whole-branch review I3):
+  // a test that constructs a non-`silent` TerminalUi and forgets `destroy()`
+  // would otherwise leak its registration into the next test file.
+  { name: "resetTerminalCoordinatorForTests", reset: resetTerminalCoordinatorForTests },
 ]
 
 /** Names registered in RESETTERS — consumed by the L1 completeness guard. */

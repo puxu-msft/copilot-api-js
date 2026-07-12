@@ -32,8 +32,8 @@ import type {
 
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import {
   //
   registerResponseSession,
@@ -42,7 +42,7 @@ import {
   //
   ENDPOINT,
 } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import { resolveModelTarget } from "~/lib/models/resolver"
 import {
   //
   accumulateResponsesStreamEvent,
@@ -214,7 +214,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
  */
 async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
   const requestedModel = rawPayload.model
-  const resolvedModel = resolveModelName(requestedModel)
+  const { name: resolvedModel, routeOverride } = resolveModelTarget(requestedModel)
   const selectedModel = state.modelIndex.get(resolvedModel)
 
   // The system-prompt instructions injection is async + non-idempotent — apply it
@@ -231,9 +231,9 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const driver = createPipelineDriver({
     codec,
     transport,
-    // S5 — the SAME Responses response-rewrite chain the HTTP handler uses (fix-stream-ids,
-    // DIRECT only): registering once makes HTTP + WS share one stateful rewrite instance (A.C).
-    responseRewrites: RESPONSES_RESPONSE_REWRITES,
+    // S5 — the full-format response-rewrite union (RFC §7.1); `appliesTo` filters it to
+    // fix-stream-ids for the /responses leg (DIRECT only), identical to the prior per-route array.
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
       return buildOpenAiResponsesStrategiesForEnv(env)
@@ -250,7 +250,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       headers: new Headers(), // WS transport: no inbound HTTP headers to capture
       method: "WS",
       path: "/v1/responses",
-      preResolved: { name: resolvedModel, model: selectedModel },
+      preResolved: { name: resolvedModel, model: selectedModel, ...(routeOverride && { routeOverride }) },
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -362,7 +362,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     recordForwarded()
     consola.debug("[WS] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(acc.model || resolvedModel, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     })
     return
   }
@@ -377,7 +377,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), { events: forwardedSseEvents, streamStartMs })
     recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, error, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, reasoning: acc.reasoningTokens }),
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     })
     return
   }

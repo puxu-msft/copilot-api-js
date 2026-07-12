@@ -24,6 +24,7 @@ import { streamSSE } from "hono/streaming"
 
 import type { OpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import type { SseEventRecord } from "~/lib/history"
+import type { UsageData } from "~/lib/history/types"
 import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
@@ -46,6 +47,7 @@ import type {
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -53,12 +55,14 @@ import {
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import { resolveModelTarget } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
+import { mapInputDetails, mapOutputDetails, nonNegOrUndef } from "~/types/api/ghc-usage"
+import type { GhcCompletionTokensDetails, GhcPromptTokensDetails } from "~/types/api/ghc-usage"
 import { classifyStreamError } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
@@ -83,6 +87,9 @@ function buildGeminiDriver(c: Context, modelId: string): GeminiDriverBundle {
   const driver = createPipelineDriver({
     codec,
     transport,
+    // Full-format S5 union (RFC §7.1). Inert for the Gemini-inbound legs today; carries the
+    // mechanism for the future reverse leg (gemini→/v1/messages via hub composition, Phase 5).
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
       if (env.targetEndpoint === ENDPOINT.RESPONSES) env.ctx.recordFeature("via-responses")
       return buildOpenAiCcStrategies({
@@ -106,7 +113,7 @@ async function runGeminiRequest(
   modelId: string,
   stream: boolean,
 ): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
-  const resolvedName = resolveModelName(modelId)
+  const { name: resolvedName, routeOverride } = resolveModelTarget(modelId)
   const selectedModel = state.modelIndex.get(resolvedName)
 
   // Translate Gemini → CC, then inject the system-prompt on the CC messages
@@ -125,7 +132,7 @@ async function runGeminiRequest(
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
-      preResolved: { name: resolvedName, model: selectedModel },
+      preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -217,10 +224,17 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
       totalInput: usage?.prompt_tokens ?? 0,
       output: usage?.completion_tokens ?? 0,
       cacheRead: usage?.prompt_tokens_details?.cached_tokens,
+      cacheCreation: nonNegOrUndef((usage?.prompt_tokens_details as GhcPromptTokensDetails | undefined)?.cache_write_tokens),
       reasoning: usage?.completion_tokens_details?.reasoning_tokens,
+      inputDetails: mapInputDetails(usage?.prompt_tokens_details as GhcPromptTokensDetails | undefined),
+      outputDetails: mapOutputDetails(usage?.completion_tokens_details as GhcCompletionTokensDetails | undefined),
     }),
     stop_reason: choice?.finish_reason ?? undefined,
     content: choice?.message,
+    // G6 (richest-data-flow): persist upstream (CC-shaped) body into rawBody
+    // (responseText → rawBody) so non-streaming rows can re-derive cache_write
+    // later. Re-serialized from parsed pristine `chat` (data-lossless). Spec §6.1.
+    responseText: JSON.stringify(chat),
   }
   if (truncationReason) {
     env.ctx.fail(chat.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
@@ -244,11 +258,11 @@ interface PumpGeminiStreamingV4Options {
 }
 
 /** Map the Gemini stream meta (codec-accumulated) → the ctx usage shape (legacy parity). */
-function geminiUsageFromMeta(meta: ReturnType<OpenAiGeminiCodec["getStreamMeta"]>): {
-  input_tokens: number
-  output_tokens: number
-  cache_read_input_tokens?: number
-} {
+function geminiUsageFromMeta(meta: ReturnType<OpenAiGeminiCodec["getStreamMeta"]>): UsageData {
+  // Prefer the canonical UsageData built from the CC accumulator (carries cache_write
+  // → cache_creation + modality/prediction details). Fall back to the Gemini-shaped
+  // usageMetadata only if the translator produced no canonical usage (defensive).
+  if (meta.usage) return meta.usage
   const u = meta.usageMetadata
   return {
     input_tokens: u?.promptTokenCount ?? 0,

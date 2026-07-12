@@ -65,7 +65,6 @@ import type {
   RawHttpRequest,
   RequestSample,
   ResponseAccumulator,
-  RouteDecision,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
 import type {
@@ -93,10 +92,12 @@ import {
 import {
   //
   ENDPOINT,
-  isEndpointSupported,
-  isResponsesSupported,
 } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  resolveModelTarget,
+  type RouteOverride,
+} from "~/lib/models/resolver"
 import {
   //
   prepareChatCompletionsRequest,
@@ -124,7 +125,6 @@ import {
 } from "~/lib/openai/translate"
 import { state } from "~/lib/state"
 import { rebuildConversationMessages } from "~/routes/responses/conversation-rebuild"
-import { shouldForceChatCompletionsFallback } from "~/routes/responses/fallback"
 
 const CLIENT_FORMAT: ClientFormat = "openai-responses"
 const ENDPOINT_TYPE: EndpointType = "openai-responses"
@@ -200,10 +200,6 @@ export function createOpenAiResponsesCodec(): OpenAiResponsesCodec {
 
     getFallbackResponseId() {
       return fallback?.responseId
-    },
-
-    decideRoute(env) {
-      return decideOpenAiResponsesRoute(env.model)
     },
 
     // S2 translateOut is identity (Responses-shaped body stays through S3/S4 — see
@@ -300,7 +296,9 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
   // Azure deployment routes inject the deployment name as an explicit override
   // (path wins over body.model).
   const clientModel = raw.modelOverride ?? incoming.model
-  const resolvedName = raw.preResolved?.name ?? resolveModelName(clientModel)
+  const resolvedTarget = raw.preResolved ?? resolveModelTarget(clientModel)
+  const resolvedName = resolvedTarget.name
+  const routeOverride = resolvedTarget.routeOverride
   if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
   working.model = resolvedName
@@ -345,7 +343,8 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
   })
 
   const env = makeEnvelope({
-    targetEndpoint: ENDPOINT.RESPONSES, // initial; the driver overwrites via decideRoute
+    targetEndpoint: ENDPOINT.RESPONSES, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
+    ...(routeOverride && { routeOverride }),
     model: selectedModel as ResolvedModel,
     stream: processed.stream ?? false,
     body: processed,
@@ -359,36 +358,6 @@ function parseContentLength(header: string | null): number | undefined {
   if (header === null) return undefined
   const n = Number.parseInt(header, 10)
   return Number.isFinite(n) ? n : undefined
-}
-
-// ============================================================================
-// S2 — decideRoute
-// ============================================================================
-
-/**
- * S2: passthrough `/responses` / translate `/chat/completions` (fallback) /
- * reject (docs/v4/03-spec/codec.md §2). Mirrors the legacy `handleResponses`
- * dispatch (handler.ts:138-148):
- *   useFallback = !isResponsesSupported(model) || forceFallback(Google)
- *   !useFallback                              → passthrough /responses
- *   useFallback ∧ (isEndpointSupported(CC) ∨ force) → translate /chat/completions
- *   else                                      → reject 400
- *
- * Non-uniform defaults (preserved): `isResponsesSupported` absent → false (do not
- * implicitly enable); the Google force-list is exempt from the CC support check
- * (Copilot's endpoint metadata for those SKUs is unreliable).
- */
-function decideOpenAiResponsesRoute(model: Model | undefined): RouteDecision {
-  const forceFallback = shouldForceChatCompletionsFallback(model)
-  const useFallback = !isResponsesSupported(model) || forceFallback
-  if (!useFallback) {
-    return { kind: "passthrough", endpoint: ENDPOINT.RESPONSES }
-  }
-  if (forceFallback || isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)) {
-    return { kind: "translate", to: ENDPOINT.CHAT_COMPLETIONS }
-  }
-  const id = model?.id ?? "unknown"
-  return { kind: "reject", status: 400, reason: `Model "${id}" does not support /responses or /chat/completions` }
 }
 
 // ============================================================================
@@ -430,6 +399,11 @@ function prepareOpenAiResponsesWire(env: RequestEnvelope, fallback: FallbackExch
     }
   }
 
+  if (env.targetEndpoint !== ENDPOINT.RESPONSES) {
+    // Symmetric loud-fail: a `translate` decision to a leg this codec cannot serve
+    // (reverse `@messages`, Phase 5) throws instead of silently downgrading to /responses.
+    throw new Error(`openai-responses codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`)
+  }
   const prepared = prepareResponsesRequest(env.body as ResponsesPayload, { resolvedModel: model })
   return {
     url: ENDPOINT.RESPONSES,
@@ -499,6 +473,7 @@ function formatOpenAiResponsesError(err: ClassifiedStreamError): ClientFrame {
 
 interface EnvelopeInit {
   targetEndpoint: UpstreamEndpoint
+  routeOverride?: RouteOverride
   model: ResolvedModel
   stream: boolean
   body: unknown
@@ -511,6 +486,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
   const env: RequestEnvelope = {
     clientFormat: CLIENT_FORMAT,
     targetEndpoint: init.targetEndpoint,
+    ...(init.routeOverride && { routeOverride: init.routeOverride }),
     model: init.model,
     stream: init.stream,
     body: init.body,
@@ -522,6 +498,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     with(patch) {
       return makeEnvelope({
         targetEndpoint: env.targetEndpoint,
+        routeOverride: env.routeOverride,
         model: env.model,
         stream: env.stream,
         body: env.body,

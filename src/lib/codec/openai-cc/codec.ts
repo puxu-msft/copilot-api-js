@@ -67,7 +67,6 @@ import type {
   RawHttpRequest,
   RequestSample,
   ResponseAccumulator,
-  RouteDecision,
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
@@ -97,10 +96,12 @@ import {
 import {
   //
   ENDPOINT,
-  isEndpointSupported,
-  isResponsesSupported,
 } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  resolveModelTarget,
+  type RouteOverride,
+} from "~/lib/models/resolver"
 import {
   //
   fillMaxCompletionTokens,
@@ -191,10 +192,6 @@ export function createOpenAiCcCodec(): OpenAiCcCodec {
       return requestContext
     },
 
-    decideRoute(env) {
-      return decideOpenAiCcRoute(env.model)
-    },
-
     // S2 translateOut is identity: the CC→Responses translation is NOT done here
     // (it lives in prepareWire — see P2.2-D1 / `prepareWire`). Keeping it identity
     // means `env.body` stays CC-shaped through S3, which the CC-format request
@@ -276,7 +273,9 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
   const clientModel = raw.modelOverride ?? incoming.model
   // Prefer the route's pre-reload resolution (legacy timing — before the
   // system-prompt config reload, P2.2-D3); else resolve + look up here.
-  const resolvedName = raw.preResolved?.name ?? resolveModelName(clientModel)
+  const resolvedTarget = raw.preResolved ?? resolveModelTarget(clientModel)
+  const resolvedName = resolvedTarget.name
+  const routeOverride = resolvedTarget.routeOverride
   if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
 
@@ -319,7 +318,8 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
   const { payload: sanitizedPayload } = sanitizeOpenAIMessages(renamedPayload)
 
   const env = makeEnvelope({
-    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites via decideRoute
+    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
+    ...(routeOverride && { routeOverride }),
     model: selectedModel as ResolvedModel,
     stream: sanitizedPayload.stream ?? false,
     body: sanitizedPayload,
@@ -335,31 +335,6 @@ function parseContentLength(header: string | null): number | undefined {
   if (header === null) return undefined
   const n = Number.parseInt(header, 10)
   return Number.isFinite(n) ? n : undefined
-}
-
-// ============================================================================
-// S2 — decideRoute
-// ============================================================================
-
-/**
- * S2: passthrough / translate / reject (docs/v4/03-spec/codec.md §2).
- *   - `isEndpointSupported(/chat/completions)` → passthrough
- *   - elif `isResponsesSupported`             → translate `/responses`
- *   - else                                    → reject 400
- *
- * Non-uniform default (preserved): `isEndpointSupported` treats a model with no
- * `supported_endpoints` as supporting everything (legacy fallback) — so unknown
- * gpt-* models passthrough to /chat/completions.
- */
-function decideOpenAiCcRoute(model: Model | undefined): RouteDecision {
-  if (isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)) {
-    return { kind: "passthrough", endpoint: ENDPOINT.CHAT_COMPLETIONS }
-  }
-  if (isResponsesSupported(model)) {
-    return { kind: "translate", to: ENDPOINT.RESPONSES }
-  }
-  const id = model?.id ?? "unknown"
-  return { kind: "reject", status: 400, reason: `Model "${id}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint` }
 }
 
 // ============================================================================
@@ -406,6 +381,13 @@ function prepareOpenAiCcWire(env: RequestEnvelope): PreparedRequest {
     }
   }
 
+  if (env.targetEndpoint !== ENDPOINT.CHAT_COMPLETIONS) {
+    // A `translate` decision to any leg this codec cannot yet serve (e.g. the reverse
+    // `@messages` leg, wired in Phase 5) must fail LOUDLY, symmetric with the anthropic
+    // side's registry-throw 500 — never silently downgrade to /chat/completions and lie
+    // in observability (`setRouteInfo` already recorded outboundEndpoint/translated).
+    throw new Error(`openai-cc codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`)
+  }
   const prepared = prepareChatCompletionsRequest(ccPayload, { resolvedModel: model })
   return {
     url: ENDPOINT.CHAT_COMPLETIONS,
@@ -549,6 +531,7 @@ function formatOpenAiCcError(err: ClassifiedStreamError): ClientFrame {
 
 interface EnvelopeInit {
   targetEndpoint: UpstreamEndpoint
+  routeOverride?: RouteOverride
   model: ResolvedModel
   stream: boolean
   body: unknown
@@ -566,6 +549,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
   const env: RequestEnvelope = {
     clientFormat: CLIENT_FORMAT,
     targetEndpoint: init.targetEndpoint,
+    ...(init.routeOverride && { routeOverride: init.routeOverride }),
     model: init.model,
     stream: init.stream,
     body: init.body,
@@ -577,6 +561,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     with(patch) {
       return makeEnvelope({
         targetEndpoint: env.targetEndpoint,
+        routeOverride: env.routeOverride,
         model: env.model,
         stream: env.stream,
         body: env.body,

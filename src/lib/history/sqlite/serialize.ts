@@ -123,6 +123,10 @@ export interface EntryRow {
   // legacy-stage-backfill. NOT NULL DEFAULT 0. Non-optional so every EntryRow
   // construction site must set it (compile-time proof), mirroring usage_normalized.
   stages_migrated: number
+  // cache_write backfill marker (mirrors usage_normalized). Non-optional so every
+  // EntryRow construction site must set it. Born rows set 1 (cache_write captured
+  // by fix-forward); the backfill scans WHERE cache_write_backfilled=0.
+  cache_write_backfilled: number
   stop_reason: string | null
   error_message: string | null
   message_count: number | null
@@ -399,6 +403,9 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
     // new legs only, so mark this row already-migrated (legacy-stage-backfill scans
     // WHERE stages_migrated=0 and skips these). INSERT_ENTRY_SQL writes it.
     stages_migrated: 1,
+    // Born with cache_write captured by fix-forward → mark backfilled so the
+    // cache-write-backfill scans WHERE cache_write_backfilled=0 and skips these.
+    cache_write_backfilled: 1,
     stop_reason: finalUpstream?.stopReason ?? null,
     // error_message: the `upstreamResponse` leg carries NO error field (it uses
     // `success` + the durable `_index.derived.failureReason` projection).

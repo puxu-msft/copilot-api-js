@@ -60,6 +60,7 @@ import {
 import { adaptLegacyStrategy } from "~/lib/pipeline/legacy-strategy-adapter"
 import { createAdaptiveThinkingRejectionRetryStrategy } from "~/lib/request/strategies/adaptive-thinking-rejection-retry"
 import { createAutoTruncateStrategy } from "~/lib/request/strategies/auto-truncate"
+import { createCacheControlSubfieldRejectionStrategy } from "~/lib/request/strategies/cache-control-subfield-rejection-retry"
 import { createBodyFieldRejectionStrategy } from "~/lib/request/strategies/context-management-retry"
 import { createDeferredToolRetryStrategy } from "~/lib/request/strategies/deferred-tool-retry"
 import { createEffortLearningRetryStrategy } from "~/lib/request/strategies/effort-learning-retry"
@@ -107,6 +108,10 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
     // ordering is defense-in-depth against that coupling).
     adapt(createToolFieldRejectionStrategy<MessagesPayload>()),
     adapt(createBodyFieldRejectionStrategy<MessagesPayload>()),
+    // cache_control 子字段 rejection：也 match `... : Extra inputs are not permitted`，但正则要求
+    // 四段 `.cache_control.<variant>.<field>:`（disjoint 于 tool-field 的 tools.N.<f>: 与 body-field
+    // 的 top-level lookbehind，三路径遮蔽由回归测试证实）。排在两者之后作 defense-in-depth。
+    adapt(createCacheControlSubfieldRejectionStrategy<MessagesPayload>()),
     adapt(createLegacyThinkingRetryStrategy<MessagesPayload>()),
     // Mirror of legacy-thinking: reactive net for the reverse 400 ("adaptive
     // thinking is not supported on this model"). Matcher is disjoint from

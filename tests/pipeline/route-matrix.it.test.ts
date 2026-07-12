@@ -1,22 +1,23 @@
 /**
- * P3.1 — unified pass-through route matrix.
+ * Unified route-decision matrix (client format × model `supported_endpoints`).
  *
- * `decideRoute` was folded into each codec during P2, replacing the legacy 4
- * scattered decision sites (messages:165 / cc:305 / responses:138 / responses-ws)
- * + Gemini's no-gate. This table-driven test asserts the *collective*
- * RouteDecision across (client format × model `supported_endpoints`), pinning the
- * deliberately non-uniform defaults (docs/v4/03-spec/codec.md §2) so a future
- * "tidy-up" cannot silently flatten them:
+ * `decideRoute` was extracted from the per-codec methods into the free-function
+ * `router.decideRoute` (ADR 2026-07-11-route-decision-separated-from-format-codec), the single
+ * reader of upstream model capabilities. This table-driven test asserts the *collective*
+ * RouteDecision the router produces, pinning the deliberately non-uniform defaults
+ * (docs/v4/03-spec/codec.md §2) so a future "tidy-up" cannot silently flatten them:
  *   - `isEndpointSupported` absent → true  → legacy/unknown models passthrough.
- *   - Gemini has no endpoint gate          → its decision delegates to the cc codec.
+ *   - Gemini has no endpoint gate          → its decision mirrors the openai-cc decision.
  *   - the Responses Google force-list      → translate /chat/completions even when
  *                                             the model does NOT advertise CC.
  * (`isWsResponsesSupported` absent → false is a transport concern — HTTP-vs-WS
  * second choice in upstream-ws-attempt.ts — NOT a decideRoute branch, so it is
  * out of this matrix.)
  *
- * Needs `state.modelIndex` (the anthropic codec resolves vendor by id through
- * `supportsDirectAnthropicApi`), hence `.it.test`.
+ * Complements `router-golden.it.test.ts` (the Phase 0 frozen oracle that also freezes the exact
+ * reject `reason` strings); this one keeps the `norm()`-based collective assertion + the explicit
+ * gemini==cc delegation framing. Needs `state.modelIndex` (the anthropic decision resolves vendor
+ * by id through `supportsDirectAnthropicApi`), hence `.it.test`.
  */
 
 import {
@@ -37,16 +38,11 @@ import type {
 } from "~/lib/pipeline/envelope"
 import type {
   //
-  FormatCodec,
   RouteDecision,
 } from "~/lib/pipeline/types"
 
-import { createBetaProbe } from "~/lib/anthropic/pipeline"
-import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
-import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
-import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
-import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { decideRoute } from "~/lib/pipeline/router"
 import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
@@ -69,12 +65,6 @@ function envFor(model: Model | undefined, clientFormat: ClientFormat): RequestEn
       return { ...this, ...patch } as RequestEnvelope
     },
   } as RequestEnvelope
-}
-
-// ── codec factories (decideRoute is pure; fresh per call for isolation) ───────
-
-function anthropicCodec(): FormatCodec {
-  return createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
 }
 
 // ── normalized decision (drop the reason string; it varies per model) ─────────
@@ -162,7 +152,7 @@ const MATRIX: Array<MatrixRow> = [
   },
 ]
 
-describe("P3.1 — unified decideRoute matrix (client format × supported_endpoints)", () => {
+describe("unified decideRoute matrix (client format × supported_endpoints)", () => {
   useIsolatedRuntime()
 
   beforeEach(() => {
@@ -175,33 +165,28 @@ describe("P3.1 — unified decideRoute matrix (client format × supported_endpoi
   for (const row of MATRIX) {
     const label = `${row.id} (vendor=${row.vendor}, endpoints=${row.endpoints ? row.endpoints.join("+") : "none"}${row.modelUndefined ? ", model=undefined" : ""})`
 
+    const modelOf = (): Model | undefined =>
+      row.modelUndefined ? undefined : mockModel(row.id, { vendor: row.vendor, ...(row.endpoints !== undefined && { supported_endpoints: row.endpoints }) })
+
     test(`anthropic: ${label}`, () => {
-      const model =
-        row.modelUndefined ? undefined : mockModel(row.id, { vendor: row.vendor, ...(row.endpoints !== undefined && { supported_endpoints: row.endpoints }) })
-      expect(norm(anthropicCodec().decideRoute(envFor(model, "anthropic")))).toEqual(row.anthropic)
+      expect(norm(decideRoute(envFor(modelOf(), "anthropic")))).toEqual(row.anthropic)
     })
 
     test(`openai-cc: ${label}`, () => {
-      const model =
-        row.modelUndefined ? undefined : mockModel(row.id, { vendor: row.vendor, ...(row.endpoints !== undefined && { supported_endpoints: row.endpoints }) })
-      expect(norm(createOpenAiCcCodec().decideRoute(envFor(model, "openai-cc")))).toEqual(row.cc)
+      expect(norm(decideRoute(envFor(modelOf(), "openai-cc")))).toEqual(row.cc)
     })
 
     test(`openai-responses: ${label}`, () => {
-      const model =
-        row.modelUndefined ? undefined : mockModel(row.id, { vendor: row.vendor, ...(row.endpoints !== undefined && { supported_endpoints: row.endpoints }) })
-      expect(norm(createOpenAiResponsesCodec().decideRoute(envFor(model, "openai-responses")))).toEqual(row.responses)
+      expect(norm(decideRoute(envFor(modelOf(), "openai-responses")))).toEqual(row.responses)
     })
 
-    // Gemini has no endpoint gate of its own — its decideRoute delegates to the
-    // internal cc codec, so it must equal the cc decision for the same model.
-    test(`gemini delegates to cc: ${label}`, () => {
-      const model =
-        row.modelUndefined ? undefined : mockModel(row.id, { vendor: row.vendor, ...(row.endpoints !== undefined && { supported_endpoints: row.endpoints }) })
-      const env = envFor(model, "gemini")
-      expect(norm(createOpenAiGeminiCodec(row.id).decideRoute(env))).toEqual(norm(createOpenAiCcCodec().decideRoute(env)))
+    // Gemini has no endpoint gate of its own — the router mirrors the openai-cc decision for
+    // the same model, so it must equal the cc decision.
+    test(`gemini mirrors cc: ${label}`, () => {
+      const model = modelOf()
+      expect(norm(decideRoute(envFor(model, "gemini")))).toEqual(norm(decideRoute(envFor(model, "openai-cc"))))
       // …and that shared decision is the cc expectation.
-      expect(norm(createOpenAiGeminiCodec(row.id).decideRoute(env))).toEqual(row.cc)
+      expect(norm(decideRoute(envFor(model, "gemini")))).toEqual(row.cc)
     })
   }
 })

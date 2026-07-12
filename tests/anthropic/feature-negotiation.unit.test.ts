@@ -384,11 +384,11 @@ describe("reader gating by TTL (time-driven)", () => {
 })
 
 describe("mutations + resolver + snapshot", () => {
-  test("snapshot groups all 10 categories with ttl + entries", () => {
+  test("snapshot groups all 11 categories with ttl + entries", () => {
     clearAnthropicFeatureNegotiationForTests()
     markAnthropicFeatureUnsupported("m", "context_management")
     const snap = getGroupedSnapshot()
-    expect(snap.categories.length).toBe(10)
+    expect(snap.categories.length).toBe(11)
     const feat = snap.categories.find((c) => c.category === "features")!
     expect(feat.entries[0].value).toBe("context_management")
     expect(feat.entries[0].status).toBe("active")

@@ -83,7 +83,7 @@ export function formatUsageTokens(usage: {
   output_tokens: number
   cache_read_input_tokens?: number
   cache_creation_input_tokens?: number
-  output_tokens_details?: { reasoning_tokens: number }
+  output_tokens_details?: { reasoning_tokens?: number }
 }): string {
   let s = `↑${usage.input_tokens} ↓${usage.output_tokens}`
   if (usage.cache_read_input_tokens) s += ` · cache-read ${usage.cache_read_input_tokens}`

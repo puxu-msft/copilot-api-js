@@ -47,6 +47,7 @@ import { formatLogLine } from "~/lib/observability/projections/log-line"
 import { handleShutdownSignal } from "~/lib/shutdown"
 
 import type { UiState } from "./controller"
+import type { TerminalRegionState } from "./terminal-coordinator"
 
 import {
   //
@@ -60,6 +61,7 @@ import {
   buildCollapsedLines,
   buildDetailLines,
   buildPanelLines,
+  MAX_PANEL_ROWS,
   panelContentRows,
 } from "./render/panel"
 import {
@@ -68,11 +70,31 @@ import {
   RESERVED_LOG_ROWS,
 } from "./render/region"
 import { renderSystemLogLine } from "./render/syslog"
+import { registerTerminal } from "./terminal-coordinator"
 
 // ANSI escape code for "clear to end of line, return to column 0"
 const CLEAR_LINE = "\x1b[2K\r"
 // Hide the cursor for the interactive panel's lifetime (restored on teardown).
 const HIDE_CURSOR = "\x1b[?25l"
+/**
+ * Bound on {@link TerminalUi.replayQueue} (P1.3): log lines that arrive while
+ * `detailActive` are queued instead of dropped, but the queue must not grow
+ * unbounded for a long-lived detail visit — the oldest entries are shifted
+ * out past this cap. Durability of a dropped replay entry depends on WHICH
+ * kind of line it was (I2, whole-branch review) — `replayQueue` mixes two
+ * durability backends via {@link printLog}'s two callers: `system.log` lines
+ * (from {@link onSystemLog}) are independently persisted by `FileSink`
+ * (`~/lib/observability/sinks/file.ts`), but request-lifecycle lines
+ * (`[....]`/`[RETRY]`/`[ OK ]`/`[FAIL]`, from {@link onCreated} /
+ * {@link onAttemptFailed} / {@link onTerminal}) are NOT — `FileSink`'s own
+ * header comment states it "deliberately does NOT write request lifecycle
+ * lines" (they live in history.db instead, in a structured form, not as this
+ * rendered text). So a dropped `system.log` entry is only missing from this
+ * process's scrollback (still in the log file); a dropped lifecycle entry's
+ * rendered text is gone for good — though the underlying data survives in
+ * history.db, just not as this exact console line.
+ */
+const REPLAY_CAP = 200
 
 /** Mutable per-request display state — replaces `TuiLogEntry`. */
 interface ActiveRequest {
@@ -201,6 +223,55 @@ export class TerminalUi {
    * renders are synchronous, so a set flag means "drop this nested call".
    */
   private rendering = false
+  /**
+   * Latch for the detail alternate-screen entry (P1.1 C1): `true` once
+   * `\x1b[?1049h` has been written for the current detail visit, so a
+   * re-render (e.g. a bus event arriving while detail is open) repaints
+   * content without re-entering the alternate screen or re-resetting the
+   * scroll margins. Cleared by `exitDetail` (P1.2).
+   */
+  private detailActive = false
+  /**
+   * Stable identity of the request currently shown in the alt-screen detail
+   * view (root-cause fix, whole-branch review I1 re-review): captured once at
+   * detail entry ({@link renderDetail}'s first-entry branch) and used for
+   * EVERY subsequent lookup — `this.active.get(this.detailReqId)` — instead of
+   * re-resolving `[...active.values()].at(selectedIndex)` against a `Map`
+   * that's being concurrently mutated by `onTerminal`'s `active.delete()`.
+   * Index-based re-lookup is unsound the moment any active entry ahead of the
+   * viewed one terminates: deleting it left-shifts `Map` iteration order, so
+   * `.at(selectedIndex)` silently resolves to whichever OTHER request shifted
+   * into that now-stale slot — a silent switch, not a degrade (this is what
+   * bit the prior fix: it only handled the viewed request's OWN termination,
+   * not a sibling's). Id-based lookup is immune: `Map.get` doesn't care where
+   * an entry sits, only whether it still exists. Cleared by {@link exitDetail}
+   * and {@link restoreTerminal} alongside {@link detailActive}/{@link detailRows}.
+   */
+  private detailReqId?: string
+  /**
+   * Terminal row count as of the last {@link renderDetail} write, so a
+   * `getRows()` change while detail is already open (a live SIGWINCH resize,
+   * M7) is distinguishable from an ordinary content repaint — see
+   * {@link renderDetail}'s resize branch. `undefined` before the first detail
+   * entry (which always resets margins regardless via the `detailActive`
+   * one-shot branch, so no comparison is needed there).
+   */
+  private detailRows?: number
+  /**
+   * Log lines queued by {@link printLog}'s `detailActive` guard while the
+   * alt-screen detail view is open (P1.3) — replayed into the scrollback by
+   * {@link flushReplayQueue} on {@link exitDetail}. Bounded at
+   * {@link REPLAY_CAP}; best-effort only — see {@link REPLAY_CAP}'s doc for
+   * which lines that drop is (`FileSink`-durable) or isn't (lifecycle lines,
+   * only in history.db in structured form) durable elsewhere.
+   */
+  private readonly replayQueue: Array<string> = []
+  /**
+   * Unregisters this instance from `terminal-coordinator` (P2.2) — called at
+   * {@link destroy}. A no-op when `silent` (never registered — see the
+   * constructor comment) so `destroy()` can call it unconditionally.
+   */
+  private readonly unregisterCoordinator: () => void
 
   constructor(bus: ObservabilityBus, options?: TerminalUiOptions) {
     this.stdout = options?.stdout ?? process.stdout
@@ -236,6 +307,24 @@ export class TerminalUi {
       ;(options.registerExitHook ?? ((fn: () => void) => process.on("exit", fn)))(() => this.restoreTerminal())
     }
 
+    // Register with the terminal-coordinator singleton (P2.2) so republish.ts's
+    // reentrant fallback and FileSink's write-failure fallback can route an
+    // emergency line through this instance's bottom-of-screen state instead of
+    // a bare `process.stderr.write` — see `emergencyWriteState`/`emergencyClearPanel`/
+    // `emergencyRedrawPanel`/`emergencyWriteLine` below. Skipped when `silent`
+    // (a silent sink draws nothing, so there is no bottom-of-screen state to
+    // coordinate — the coordinator's "unregistered" stderr fallback is correct
+    // for it, same as before this instance ever registers).
+    this.unregisterCoordinator =
+      this.silent ?
+        () => {}
+      : registerTerminal({
+          state: () => this.emergencyWriteState(),
+          clearPanel: () => this.emergencyClearPanel(),
+          redrawPanel: () => this.emergencyRedrawPanel(),
+          write: (s) => this.emergencyWriteLine(s),
+        })
+
     this.unsubscribe = bus.subscribe((event) => {
       this.handle(event)
     })
@@ -258,7 +347,19 @@ export class TerminalUi {
     return Math.max(1, this.getRows() - RESERVED_LOG_ROWS)
   }
 
+  /**
+   * Constant panel height for interactive instances (spec INV-2): the DECSTBM
+   * scroll region's height must never change on a view switch (collapsed ↔
+   * panel), only on an actual geometry change (resize / first establish). Both
+   * `collapsed` and `panel` are padded to this height in {@link renderRegion};
+   * `detail` is a separate path (P1) and is not padded here.
+   */
+  private interactivePanelHeight(): number {
+    return Math.min(this.panelRows(), MAX_PANEL_ROWS)
+  }
+
   destroy(): void {
+    this.unregisterCoordinator()
     this.unsubscribe()
     this.stopFooterTimer()
     if (this.interactive) {
@@ -480,6 +581,17 @@ export class TerminalUi {
     info: { statusCode?: number; error?: string },
     historyEntry?: HistoryEntryData,
   ): void {
+    // Detail-view continuity (whole-branch review I1, root-cause re-fix):
+    // `this.detailReqId` is the stable identity {@link renderDetail} latches
+    // at detail entry and resolves by on every repaint — reading it here
+    // (rather than re-deriving `[...active.values()].at(selectedIndex)`, which
+    // is exactly the index-based resolution this fix replaces) tells apart
+    // "the viewed request itself just terminated" from "some OTHER request
+    // terminated while a different one is being viewed", with no dependency
+    // on `active`'s iteration order or the timing of the `active.delete()`
+    // below.
+    const viewingId = this.detailActive ? this.detailReqId : undefined
+
     const entry = this.active.get(ctx.id) ?? {
       ctx,
       tags: [],
@@ -497,7 +609,14 @@ export class TerminalUi {
     // Skip completed log line for history access (only errors are shown).
     const isError = kind !== "completed" || (info.statusCode !== undefined && info.statusCode >= 400)
     if (entry.isHistoryAccess && !isError) {
-      this.render()
+      // I1: the entry whose detail is open just terminated — degrade instead
+      // of leaving the alt screen on stale content (see the fuller comment at
+      // the end of this method, the mirror of this branch).
+      if (viewingId === ctx.id) {
+        this.exitDetail()
+      } else {
+        this.render()
+      }
       return
     }
 
@@ -549,6 +668,25 @@ export class TerminalUi {
       isError,
     } satisfies LogLineParts)
     this.printLog(message)
+
+    // I1 (whole-branch review, root-cause re-fix): `printLog`'s `detailActive`
+    // guard queues this line into `replayQueue` and returns WITHOUT
+    // re-rendering — by design, detail must never be polluted by a log line.
+    // That means a terminated request whose detail is the one currently on
+    // screen never reaches `renderDetail` on its own from THIS event — nothing
+    // here calls `render()`/`renderDetail()`. Two things now make that safe
+    // either way:
+    //   1. `renderDetail` resolves the viewed entry via `this.detailReqId`
+    //      (not `selectedIndex`), so even if this call were skipped, the next
+    //      driver of `render()` (the 100ms footer timer, if any OTHER active
+    //      request keeps it alive; a keypress; a bus event) would find
+    //      `active.get(detailReqId) === undefined` and degrade correctly — no
+    //      silent switch to a sibling that shifted into the old index slot.
+    //   2. This explicit call makes that degrade IMMEDIATE (no waiting for the
+    //      next timer tick, and it still fires even if `active.size` just hit
+    //      0 and the timer was stopped above) when the VIEWED entry itself is
+    //      the one that just terminated.
+    if (viewingId === ctx.id) this.exitDetail()
   }
 
   // ============================================================================
@@ -620,6 +758,19 @@ export class TerminalUi {
   private printLog(message: string): void {
     if (this.silent) return
     if (this.interactive) {
+      if (this.detailActive) {
+        // The alt-screen detail view has no scrolling log area of its own — the
+        // Region (and its DECSTBM scroll region) is torn down while detail is
+        // open. Writing here or calling `renderRegion` would corrupt the
+        // full-screen detail paint (renderRegion's `region.clear()` branch
+        // writes RESET_SCROLL_REGION + ERASE_TO_END + SHOW_CURSOR straight into
+        // the alt screen). Queue it instead — `exitDetail` drains
+        // `replayQueue` into the scrollback via `flushReplayQueue` once the
+        // alt screen is gone (P1.3).
+        this.replayQueue.push(message)
+        if (this.replayQueue.length > REPLAY_CAP) this.replayQueue.shift() // bounded — see REPLAY_CAP's doc for per-line-kind durability
+        return
+      }
       // The Region owns the reserved bottom area; the last `Region.render` parked
       // the cursor (DECRC) inside the DECSTBM scroll region, so this log line
       // lands in the scrolling area *above* the panel. No `CLEAR_LINE` here — under
@@ -663,24 +814,35 @@ export class TerminalUi {
   }
 
   /**
-   * The single render dispatcher (interactive → Region, else → P0 footer). All
-   * redraw triggers (bus events via the footer timer, terminal-event settle,
-   * keyboard input) funnel through here so a TerminalUi instance never mixes the
-   * two rendering models within its lifetime (evaluator BLOCK-1).
+   * The render dispatcher for bus-driven redraws (footer timer, terminal-event
+   * settle, keyboard input via {@link onInput}) — interactive → Region or
+   * detail alt-screen, else → P0 footer: non-interactive always uses the P0
+   * inline footer; interactive always uses `Region.render` for
+   * collapsed/panel, or the alt-screen detail path — never both within one
+   * visit. {@link printLog} (log-line redraws from `system.log` /
+   * request-lifecycle events) does NOT funnel through here — it has its own
+   * `detailActive` guard and calls {@link renderRegion} directly when not in
+   * detail, so a log line never dispatches into {@link renderDetail}.
    */
   private render(): void {
-    if (this.interactive) {
-      this.renderRegion()
-    } else {
+    if (!this.interactive) {
       this.renderFooter()
+    } else if (this.uiState.view === "detail") {
+      this.renderDetail()
+    } else {
+      this.renderRegion()
     }
   }
 
   /**
    * Decode a raw-mode stdin chunk and drive the UI. `ctrl-c` is forwarded to the
    * injected shutdown handler (raw mode swallowed the kernel SIGINT); every other
-   * key advances the pure {@link reduce} state machine and re-renders. P1 is
-   * read-only — the reducer no-ops on `x`/`c`/`char`.
+   * key advances the pure {@link reduce} state machine and re-renders via the
+   * single {@link render} dispatcher (evaluator BLOCK-1/C2) — never calls
+   * `renderRegion` directly, so a transition into `detail` reaches
+   * {@link renderDetail} (the alt-screen path) instead of the Region, which
+   * would clear the just-entered detail screen. P1 is read-only — the reducer
+   * no-ops on `x`/`c`/`char`.
    */
   private onInput(chunk: Buffer): void {
     for (const key of parseKeys(chunk)) {
@@ -688,11 +850,18 @@ export class TerminalUi {
         this.onShutdownSignal("SIGINT")
         continue
       }
+      const prevView = this.uiState.view
       this.uiState = reduce(this.uiState, key, {
         activeCount: this.active.size,
         visibleRows: this.visibleRequestRows(),
       })
-      this.renderRegion()
+      // Leaving detail (detail→panel via `esc`) must exit the alternate screen
+      // (P1.2 fleshes out the full restore — reconstitute region + replay).
+      if (prevView === "detail" && this.uiState.view !== "detail") {
+        this.exitDetail()
+      } else {
+        this.render()
+      }
     }
   }
 
@@ -707,20 +876,22 @@ export class TerminalUi {
   }
 
   /**
-   * The interactive render entry point (replaces `renderFooter` when
-   * interactive). Composes the lines for the current view and hands them to the
-   * Region — collapsed is N=1 (the same footer content plus a discoverability
-   * hint), panel/detail are the multi-line builders. When there is nothing to
-   * show (no active requests while collapsed) the Region is torn down so the
-   * scroll region is reset and the terminal returns to a plain log stream.
-   * Synchronous + reentrancy-guarded (mirrors `republish.ts`).
+   * The interactive render entry point for `collapsed`/`panel` (replaces
+   * `renderFooter` when interactive; `detail` is dispatched to
+   * {@link renderDetail} instead — see {@link render}). Composes the lines for
+   * the current view and hands them to the Region — collapsed is N=1 (the same
+   * footer content plus a discoverability hint), panel is the multi-line
+   * selection table. When there is nothing to show (no active requests while
+   * collapsed) the Region is torn down so the scroll region is reset and the
+   * terminal returns to a plain log stream. Synchronous + reentrancy-guarded
+   * (mirrors `republish.ts`).
    */
   private renderRegion(): void {
     if (this.silent || !this.region || this.shuttingDown) return
     if (this.rendering) return
     this.rendering = true
     try {
-      const lines = this.buildViewLines()
+      const lines = this.paddedViewLines()
       if (lines.length === 0) {
         this.region.clear()
       } else {
@@ -731,7 +902,32 @@ export class TerminalUi {
     }
   }
 
-  /** Compose the lines for the current {@link UiState.view} (pure builders). */
+  /**
+   * {@link buildViewLines}, padded to the constant interactive panel height
+   * (spec INV-2) — the exact lines {@link renderRegion} hands to `Region.render`.
+   * Pulled out so `emergencyRedrawPanel` (P2.2, `terminal-coordinator`) can
+   * redraw the SAME content an ordinary re-render would, without duplicating
+   * the padding rule.
+   */
+  private paddedViewLines(): Array<string> {
+    const lines = this.buildViewLines()
+    // Constant height (spec INV-2): pad collapsed/panel to the constant
+    // interactive panel height so the DECSTBM scroll region's geometry never
+    // changes across a view switch — zero churn. `buildPanelLines` already
+    // returns exactly H rows, so padding is a no-op for the panel view.
+    if (lines.length > 0) {
+      const h = this.interactivePanelHeight()
+      while (lines.length < h) lines.push("")
+    }
+    return lines
+  }
+
+  /**
+   * Compose the lines for the current `collapsed`/`panel` {@link UiState.view}
+   * (pure builders). `detail` is handled entirely by {@link renderDetail} (the
+   * alt-screen path) and never reaches this builder — `render()` dispatches
+   * `detail` there before either `renderRegion` or this method run.
+   */
   private buildViewLines(): Array<string> {
     const now = Date.now()
     const columns = this.getColumns()
@@ -755,19 +951,6 @@ export class TerminalUi {
           showHelp: this.uiState.showHelp,
         })
       }
-      case "detail": {
-        // `.at()` returns `ActiveRequest | undefined` — honest about the stale
-        // selection (the request completed while its detail was open), which the
-        // guard below handles by degrading to the collapsed footer.
-        const entry = views.at(this.uiState.selectedIndex)
-        // Selection fell out of range — degrade to the collapsed footer rather
-        // than render nothing.
-        if (!entry) {
-          if (views.length === 0) return []
-          return buildCollapsedLines({ active: views, now, columns, showHelp: this.uiState.showHelp })
-        }
-        return buildDetailLines({ entry, now, columns })
-      }
       default: {
         return []
       }
@@ -775,18 +958,239 @@ export class TerminalUi {
   }
 
   /**
+   * The detail alt-screen render path (P1.1, resize handling added P1.5/M7).
+   * Entered once per detail visit (latched by {@link detailActive}): writes
+   * the alternate-screen sequence, then resets the DECSTBM scroll margins left
+   * over from the panel/collapsed Region — order is load-bearing (C1):
+   * entering the alt screen first, then resetting margins, then defensively
+   * turning off DECOM (origin mode), then clearing, ensures the full-screen
+   * detail paint isn't clipped to the panel's old 1–3-row scroll region. Every
+   * call (first entry, a bus-triggered repaint, or a post-resize repaint while
+   * already in detail) repaints the full-screen detail content.
+   *
+   * **M7 (resize while detail is open)**: unlike the panel/collapsed path
+   * (whose geometry churn is `Region`'s `geometryChanged` re-anchor), detail
+   * has no `Region` of its own — the alt screen is a single full-width,
+   * full-height canvas with no sticky panel to re-anchor. So a terminal resize
+   * while detail is open is handled entirely here, comparing the live
+   * `getRows()` against {@link detailRows} (the row count as of the last
+   * write): a change re-issues the margin-reset choreography (`\x1b[r` +
+   * DECOM off) before repainting, exactly mirroring the one-shot entry
+   * sequence, so any stale DECSTBM margins from a mid-resize terminal quirk
+   * are cleared. This is deliberately **not** routed through `Region.render`'s
+   * `geometryChanged` branch (that class owns the panel/collapsed sticky
+   * region only — see plan constraint "不走 panel 的 geometryChanged 重锚").
+   */
+  private renderDetail(): void {
+    if (this.silent || !this.region || this.shuttingDown) return
+    // Root-cause fix (whole-branch review I1 re-review): on the FIRST call for
+    // this detail visit, latch the viewed request's stable id from the
+    // then-current `selectedIndex` — this is the only point where
+    // index-based resolution is safe (nothing has been deleted from `active`
+    // between the `enter` keypress and this paint). Every subsequent call
+    // (bus-triggered repaint, resize, footer-timer tick) resolves by that
+    // latched id instead of re-deriving from `selectedIndex`, so a sibling
+    // entry's deletion (which left-shifts `Map` iteration order) can never
+    // cause this method to silently paint whichever OTHER request shifted
+    // into the stale index slot.
+    this.detailReqId ??= [...this.active.values()].at(this.uiState.selectedIndex)?.ctx.id
+    const entry = this.detailReqId === undefined ? undefined : this.active.get(this.detailReqId)
+    if (!entry) {
+      // The viewed request is gone (terminated, or selection fell out of
+      // range before a first paint) — degrade back to the panel/collapsed
+      // Region rather than render a stale or empty alternate screen.
+      this.exitDetail()
+      return
+    }
+    const rows = this.getRows()
+    const resized = this.detailActive && this.detailRows !== undefined && this.detailRows !== rows
+    if (!this.detailActive) {
+      this.detailActive = true
+      // C1 (load-bearing order): enter alt screen → reset DECSTBM margins →
+      // DECOM off (defensive) → clear + home cursor.
+      this.stdout.write("\x1b[?1049h" + "\x1b[r" + "\x1b[?6l" + "\x1b[H\x1b[2J")
+    } else if (resized) {
+      // M7: a live resize while already in detail — re-run the margin-reset
+      // half of the entry choreography (no alt-screen re-entry needed, we're
+      // already there) before the full-screen repaint below.
+      this.stdout.write("\x1b[r" + "\x1b[?6l")
+    }
+    this.detailRows = rows
+    // `ActiveRequest` is structurally a `DetailView` (tags/thinking/attempts are
+    // all optional and `ActiveRequest` carries them all) — passed directly,
+    // matching the prior `buildViewLines` detail branch's usage; no conversion
+    // function is needed.
+    const now = Date.now()
+    const columns = this.getColumns()
+    const lines = buildDetailLines({ entry, now, columns })
+    this.stdout.write("\x1b[H\x1b[2J" + lines.join("\r\n"))
+  }
+
+  /**
+   * Leave the detail alternate screen (P1.2). Order is load-bearing, mirroring
+   * `renderDetail`'s C1 entry choreography in reverse:
+   *
+   * 1. `\x1b[?1049l` drops the alternate screen buffer, returning to the
+   *    primary screen — whatever DECSTBM margins were live in either buffer
+   *    (the alt screen's full-width reset from entry, or the primary screen's
+   *    pre-detail panel margins) are now stale/irrelevant.
+   * 2. `region.forceReestablish()` marks the Region's tracked geometry
+   *    unknown, so the very next `render()` retakes the "first establish"
+   *    branch (HIDE_CURSOR + a fresh DECSTBM) instead of the unchanged-
+   *    geometry idempotent reassert — the alt-screen round-trip means the
+   *    terminal's real scroll-region state no longer matches what `Region`
+   *    last recorded, even though the logical panel height (`interactivePanelHeight`)
+   *    hasn't changed.
+   * 3. `flushReplayQueue()` drains log lines queued by `printLog`'s
+   *    `detailActive` guard while detail was open, writing them straight to
+   *    the (now primary-screen) stdout so they land in the scrollback above
+   *    the panel — same synchronous `onInput` turn as the rest of this
+   *    method (M8), so no interleaving with a subsequent `renderRegion`.
+   * 4. `renderRegion()` repaints the (now current) `panel`/`collapsed` view
+   *    into the freshly re-established region.
+   *
+   * Root-cause fix (whole-branch review I1 re-review): also resets
+   * `uiState.view` to `"panel"` here — NOT just via the reducer's `escape`
+   * transition. `onInput`'s `escape` path already runs `reduce()` first (which
+   * sets `view: "panel"`) before calling this method, so the reset below is a
+   * no-op there; but the two OTHER call sites — `renderDetail`'s own
+   * out-of-range degrade, and `onTerminal`'s "viewed request terminated"
+   * branch — invoke `exitDetail()` directly, bypassing the reducer entirely.
+   * Without this reset, `uiState.view` stayed `"detail"` after either of those
+   * degrades: `detailActive` was correctly cleared, but the very next
+   * `render()` (the next 100ms footer-timer tick) reads `view === "detail"`
+   * and calls `renderDetail()` again — which unconditionally re-enters the alt
+   * screen (`\x1b[?1049h`) and repaints, because entry is looked up fresh
+   * against a `detailReqId` that has just been cleared below, immediately
+   * treated as "no id yet" and re-latched from the CURRENT (post-mutation)
+   * `selectedIndex` — a spurious bounce back into detail on stale/shifted
+   * content. Setting `view: "panel"` here makes the event-triggered and
+   * keyboard-triggered exits converge on the same terminal state, so the next
+   * `render()` dispatches to `renderRegion()` like an ordinary `esc`.
+   */
+  private exitDetail(): void {
+    if (!this.detailActive) return
+    this.detailActive = false
+    this.detailRows = undefined
+    this.detailReqId = undefined
+    this.uiState = { ...this.uiState, view: "panel" }
+    this.stdout.write("\x1b[?1049l")
+    this.region?.forceReestablish()
+    this.flushReplayQueue()
+    this.renderRegion()
+  }
+
+  /**
+   * Drain log lines queued while `detailActive` blocked `printLog` from
+   * touching the Region (P1.3). Writes each queued line straight to stdout —
+   * mirroring `printLog`'s non-detail branch's `this.stdout.write(message +
+   * "\n")` — so it lands in the scrollback above the panel; the caller
+   * (`exitDetail`) repaints the panel via `renderRegion()` right after.
+   * `.splice(0)` drains and empties `replayQueue` in one step, so a re-entrant
+   * `printLog` call during the write (there is none today, but the guard
+   * costs nothing) can't see stale queued entries replayed twice.
+   */
+  private flushReplayQueue(): void {
+    for (const message of this.replayQueue.splice(0)) this.stdout.write(message + "\n")
+  }
+
+  /**
    * Restore the terminal from raw mode (idempotent — exit-hook, `destroy()`,
    * and the shutdown-drain phase all call it). Detaches the stdin listener,
    * pauses stdin, leaves raw mode, and tears down the Region (DECSTBM reset
    * `\x1b[r` + cursor shown). No-op when non-interactive or already restored.
+   *
+   * C2 (alt-screen-aware): a crash, exit-hook, or shutdown-drain can fire
+   * while a detail view is still on the alternate screen (`detailActive`) —
+   * unlike `exitDetail()`'s normal `escape`-driven path, none of those events
+   * runs the controller's `detail → panel` transition first. Left unhandled,
+   * the process would exit with the terminal stuck in the alt buffer. So
+   * `\x1b[?1049l` is written *before* `region.clear()`'s DECSTBM reset +
+   * cursor show, dropping back to the primary screen first — mirroring
+   * `exitDetail`'s ordering, but without its `forceReestablish` / replay /
+   * repaint (there is no more panel to repaint once the terminal is being
+   * torn down for good).
    */
   private restoreTerminal(): void {
     if (!this.interactive || this.restored) return
     this.restored = true
+    if (this.detailActive) {
+      this.stdout.write("\x1b[?1049l")
+      this.detailActive = false
+      this.detailRows = undefined
+      this.detailReqId = undefined
+    }
     if (this.onData) this.stdin?.removeListener("data", this.onData)
     this.stdin?.pause()
     this.stdin?.setRawMode(false)
     this.region?.clear()
+  }
+
+  // ============================================================================
+  // terminal-coordinator hooks (P2.2) — the `TerminalHooks` this instance
+  // supplies to `registerTerminal` at construction, so `emergencyWrite` (an
+  // out-of-band write from `republish.ts`'s reentrant fallback or `FileSink`'s
+  // write-failure fallback) can land without corrupting whatever this instance
+  // is currently drawing at the bottom of the screen. `state`/`clearPanel`/
+  // `redrawPanel` are pure query/string-producing methods — no writes, no
+  // mutation — matching the `TerminalHooks` contract; `write` is the one
+  // side-effecting hook.
+  // ============================================================================
+
+  /**
+   * Current bottom-of-screen render state for `emergencyWrite`'s three-way
+   * branch (spec §4 INV-3): `"alt"` when the detail alternate screen is open
+   * (`detailActive`); `"region"` when this instance is interactive AND its
+   * `Region` has an established DECSTBM scroll region; `"inline"` when this
+   * instance is non-interactive AND its P0 footer is currently drawn
+   * (`footerVisible`); `"none"` otherwise (interactive-but-idle-collapsed with
+   * no established region, non-interactive-with-no-footer, or `silent`/non-TTY —
+   * covered defensively even though `silent` instances never register).
+   */
+  private emergencyWriteState(): TerminalRegionState {
+    if (this.detailActive) return "alt"
+    if (this.interactive) return this.region?.isEstablished() ? "region" : "none"
+    return this.footerVisible ? "inline" : "none"
+  }
+
+  /**
+   * `clearPanel` hook: escape sequence(s) that blank whatever is currently
+   * drawn at the bottom of the screen, for BOTH the `"region"` state (delegates
+   * to `Region.clearPanelString()`) and the `"inline"` P0 footer state (the
+   * same single-physical-line `CLEAR_LINE` `clearFooterForLog`/`renderFooter`
+   * already use — the footer builder guarantees ≤ 1 physical line). Only
+   * called by `emergencyWrite` when its own `state()` query returned `"region"`
+   * or `"inline"`, so this never needs to handle `"alt"`/`"none"` — those states
+   * write-through with no clear/redraw (see `terminal-coordinator.ts`).
+   */
+  private emergencyClearPanel(): string {
+    if (this.interactive) return this.region?.clearPanelString() ?? ""
+    return CLEAR_LINE
+  }
+
+  /**
+   * `redrawPanel` hook: the counterpart to {@link emergencyClearPanel} — repaint
+   * whatever the coordinator just cleared, using the SAME padded view lines
+   * (`"region"`, via {@link paddedViewLines}) or footer text (`"inline"`, via
+   * {@link buildFooter}) an ordinary re-render would produce, so an emergency
+   * line never leaves the bottom of the screen looking different from a normal
+   * frame.
+   */
+  private emergencyRedrawPanel(): string {
+    if (this.interactive) return this.region?.redrawString(this.paddedViewLines()) ?? ""
+    return this.buildFooter()
+  }
+
+  /**
+   * `write` hook: the coordinator's single side-effecting sink. Deliberately
+   * `this.stdout.write` directly — NOT routed through `renderRegion`/`printLog`
+   * — so it is never subject to the {@link rendering} reentrancy guard (spec I4:
+   * an emergency write, e.g. a reentrant consola call or a `FileSink` disk-full
+   * error, must never be silently swallowed by a guard meant only to stop a
+   * render from recursing into itself).
+   */
+  private emergencyWriteLine(s: string): void {
+    this.stdout.write(s)
   }
 }
 
@@ -838,7 +1242,8 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
     case "protect-streaming-retry":
     case "context-edits-applied":
     case "tool-input-repaired":
-    case "tool-input-unrepairable": {
+    case "tool-input-unrepairable":
+    case "translated-content-filter": {
       return feature
     }
     case "beta-stripped": {
@@ -847,6 +1252,13 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
         return `beta-strip:${betas.join(",")}`
       }
       return "beta-stripped"
+    }
+    case "cache-control-stripped": {
+      const fields = detail?.fields
+      if (Array.isArray(fields) && fields.length > 0) {
+        return `cc-strip:${fields.join(",")}`
+      }
+      return "cache-control-stripped"
     }
     case "transport": {
       const kind = detail?.kind

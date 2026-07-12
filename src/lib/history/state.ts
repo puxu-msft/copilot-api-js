@@ -37,6 +37,11 @@ import {
 } from "./sqlite/legacy-stage-backfill"
 import {
   //
+  runCacheWriteBackfill,
+  stopCacheWriteBackfill,
+} from "./sqlite/cache-write-backfill"
+import {
+  //
   startReaper,
   stopReaper,
 } from "./sqlite/reaper"
@@ -126,6 +131,7 @@ export function stopHistoryBackgroundWork(): void {
   // cursor per batch and resumes on next start — a post-close prepare would throw).
   stopUsageNormalizeBackfill()
   stopLegacyStageBackfill()
+  stopCacheWriteBackfill()
   stopSearchIndexBackfill()
   stopResponsePreviewBackfill()
   stopCalibrationBackfill()
@@ -211,6 +217,20 @@ export function startLegacyStageBackfill(): void {
   if (!enabled || !isDatabaseOpen()) return
   void runLegacyStageBackfill(getDatabase())
     .catch((err: unknown) => consola.warn("[history] legacy-stage backfill failed", err))
+    .finally(() => startCacheWriteBackfill())
+}
+
+/**
+ * Backfill `cache_creation` (from GHC cache_write) for historical STREAMING
+ * OpenAI-family rows. Chained AFTER legacy-stage (needs the new upstream_response
+ * stage layout) and BEFORE search-index. It recomputes the whole usage split from
+ * the raw sse_events frames (never re-subtracts the already-net column — C2). No-op
+ * when history is disabled / the DB is not open; catches internally.
+ */
+export function startCacheWriteBackfill(): void {
+  if (!enabled || !isDatabaseOpen()) return
+  void runCacheWriteBackfill(getDatabase())
+    .catch((err: unknown) => consola.warn("[history] cache-write backfill failed", err))
     .finally(() => startSearchIndexBackfill())
 }
 

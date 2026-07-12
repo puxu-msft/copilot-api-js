@@ -43,6 +43,8 @@ description: 当在 copilot-api-js 写或改 History 层的后台 backfill 时�
 
 **偏向「已变换/跳过」是安全方向**：误判 total 行 → 留 total 不腐蚀；误判 net 行 → 双减腐蚀。
 
+**结构信号的存储位置还取决于本 backfill 在链中的位置**（2026-07-12 cache-write-backfill 实例）：usage-normalize 只见 legacy 布局（新行生来 `usage_normalized=1` 被跳过），故读 `sse_events` stage / `inbound_response` stage / legacy blob。但**由后加的标记列门控 + 串在 legacy-stage 迁移之后**的 backfill（如 `cache_write_backfilled`，列晚加故 post-migration 行也 =0）看到的是**已迁移的新布局**——`extractStagePayloads` 从不发独立 `sse_events` stage，把帧**嵌进 `upstream_response` stage payload 的 `.sseEvents`**（per attempt_index），且 legacy-stage 迁移 `DELETE FROM entry_stages` 清掉旧 stage、head blob 经 `extractHeadMetaPayload` 剥掉 `sseEvents`。此类 backfill 帧源**主读** `upstream_response` stage（max attempt_index，与列派生源 `attempts.at(-1).upstreamResponse` 对齐、与 usage 写回目标同一行），`sse_events` stage / head-blob 仅作未迁移 fallback。**踩坑**：手搓 `sse_events` stage 夹具时 6 个 golden 全绿，但对生产 post-migration 行是**静默 no-op + 永久误标记**（走 `!split` 分支 markStmt），合并态审查用真实 write-path 探针才逮住——正是下方「测试纪律」第一条的反面教材（先读本 skill 再写 backfill 可免此坑）。
+
 ### ③ 双写两处同改，防 list/detail 分叉
 
 同一字段常存两处：列（list / sessions-agg / stats 读）与 blob 的 `upstreamResponse.usage`（detail 页经 `assembleFullEntry` 读，finalized 新行落 `upstream_response` stage 行；旧行落 `outbound_response` stage/head blob，经读适配器 `adaptLegacyLegsInPlace` 呈现为 `attempts[final].upstreamResponse.usage`）。只改列不改 blob → 同行两视图分叉。两腿各自**独立读 + 独立减**，绝不共享一个 usage 对象对两源各减一次（内存别名会双减）。

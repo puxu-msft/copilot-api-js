@@ -67,7 +67,6 @@ import {
   extractAppliedEdits,
   summarizeAppliedEdits,
 } from "~/lib/anthropic/applied-context-edits"
-import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
 import {
   //
@@ -113,8 +112,8 @@ import {
 } from "~/lib/anthropic/warmup"
 import { payloadHasWebSearch } from "~/lib/anthropic/web-search/detect"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
-import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrite-adapters"
-import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
+import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -127,10 +126,15 @@ import {
   getAgentIdFromHeaders,
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
-import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  resolveModelTarget,
+  type RouteOverride,
+} from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
+import { decideRouteFromInput } from "~/lib/pipeline/router"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -194,7 +198,7 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
   // → then system-prompt reload). Otherwise a `disabled_models` reload during
   // system-prompt would shift parse's model lookup vs. legacy.
   const clientModel = payload.model
-  const resolvedName = resolveModelName(clientModel)
+  const { name: resolvedName, routeOverride } = resolveModelTarget(clientModel)
   const selectedModel = state.modelIndex.get(resolvedName)
 
   // Snapshot the client's raw inbound body BEFORE the system-prompt injection —
@@ -223,22 +227,36 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
   // the driver (RFC §1 / §12.7). Re-creates the legacy lightweight ctx (the codec
   // is bypassed entirely for this path).
   if (state.webSearchEnabled && payloadHasWebSearch(wireBody)) {
-    // The web_search path bypasses the driver, so it ALSO bypasses the driver's
-    // decideRoute route-validation. Replicate legacy's pre-ctx check here
-    // (handler.ts: supportsDirectAnthropicApi runs before web_search) so an
-    // unsupported model + web_search rejects identically (400) instead of
-    // silently proceeding into the double-hop.
-    const routing = supportsDirectAnthropicApi(resolvedName)
-    if (!routing.supported) {
-      const msg = `Model "${resolvedName}" does not support /v1/messages: ${routing.reason}`
-      throw new HTTPError(msg, 400, msg)
+    // The web_search double-hop requires the DIRECT Anthropic /v1/messages leg, so it runs the
+    // SAME router decision the driver would (RFC §6 / FAIL-2) instead of a bare
+    // `supportsDirectAnthropicApi` check: ONLY a `passthrough` (/v1/messages) decision may enter
+    // the double-hop. A `reject` (unsupported model) OR a `translate` leg (@cc/@responses —
+    // translation-path web_search is a non-goal, RFC §2) is surfaced as a ctx-RECORDED 400
+    // (W-reject-obs): build the ctx first (createWebSearchContext c.set's it; the observability
+    // middleware finalizes the entry from the 4xx status), so the reject gets a history entry
+    // instead of a ctx-less bare throw. For the no-suffix unsupported case the router's reason is
+    // byte-identical to the prior `supportsDirectAnthropicApi` message (zero regression).
+    const decision = decideRouteFromInput({
+      clientFormat: "anthropic",
+      modelName: resolvedName,
+      ...(routeOverride && { routeOverride }),
+      model: selectedModel,
+    })
+    if (decision.kind !== "passthrough") {
+      const reason =
+        decision.kind === "reject" ?
+          decision.reason
+        : `Model "${resolvedName}" pinned to @${routeOverride} cannot use web_search: the double-hop requires the direct /v1/messages leg (translation-path web_search is unsupported)`
+      // Build + expose the ctx so the reject is recorded in history (not a ctx-less throw).
+      createWebSearchContext(c, clientRaw, wireBody, resolvedName, clientModel, selectedModel)
+      throw new HTTPError(reason, 400, reason)
     }
     consola.debug("[WebSearch] Intercepting request with native web_search tool (v4 route → legacy handler)")
     const reqCtx = createWebSearchContext(c, clientRaw, wireBody, resolvedName, clientModel, selectedModel)
     return handleWebSearchCompletion(c, wireBody, reqCtx, selectedModel, preprocessInfo)
   }
 
-  return runMessagesDriver(c, { wireBody, clientRaw, resolvedName, selectedModel, preprocessInfo })
+  return runMessagesDriver(c, { wireBody, clientRaw, resolvedName, selectedModel, preprocessInfo, ...(routeOverride && { routeOverride }) })
 }
 
 /**
@@ -295,6 +313,8 @@ interface RunMessagesDriverArgs {
   resolvedName: string
   selectedModel: Model | undefined
   preprocessInfo: PreprocessInfo
+  /** The client's explicit `@cc/@responses/@messages` leg pin, threaded to the driver via `preResolved`. */
+  routeOverride?: RouteOverride
 }
 
 async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promise<Response> {
@@ -327,22 +347,31 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // codec.parse into a per-request RequestRewrite (RFC §4.A0). The codec owns them
     // (they close over preprocessInfo + write initialSanitizationInfo back).
     requestRewrites: codec.getRequestRewrites(),
-    // S5 — the Anthropic response-rewrite chain (recover/thinking/decode/filter),
-    // lifted from the handler's hand-nested pump into the driver (RFC §4.A1). The
-    // driver applies + flushes them; the handler just forwards the yielded frames.
-    responseRewrites: ANTHROPIC_RESPONSE_REWRITES,
+    // S5 — the FULL-FORMAT response-rewrite union (RFC §7.1); the driver's
+    // `assembleResponseRewrites` filters it to the outbound leg by each rewrite's
+    // `targetEndpoint`-keyed `appliesTo`. For anthropic-direct (targetEndpoint===/v1/messages)
+    // that subset is exactly the Anthropic chain (recover/thinking/decode/filter/refusal) — the
+    // per-route array this replaced — so forwarded bytes are unchanged.
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
       // parse resolves the factory AFTER parse populated resanitize, so it is
       // present here; the guard is defensive (an unreachable parse failure would
       // have thrown before the factory runs).
       const resanitize = codec.getResanitize()
       if (!resanitize) throw new Error("[Anthropic:v4] resanitize chain unavailable — codec.parse did not run")
-      return buildAnthropicStrategies({
-        originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
-        resanitize,
-        model: env.model as Model | undefined,
-        maxRetries: state.autoTruncateMaxRetries,
-        betaProbe,
+      // Resolve strategies through the full-format registry keyed by the OUTBOUND leg
+      // (RFC §7.1 / W-strategies-builder): the Anthropic supply is decoupled from the route
+      // codec, so the reverse leg (cc/responses→/v1/messages, Phase 5) can fill the SAME supply
+      // from the hub. For anthropic-direct `env.targetEndpoint` is always /v1/messages → the
+      // Anthropic builder runs with identical args → byte-identical to the prior inline call.
+      return assembleStrategiesForEndpoint(env.targetEndpoint, {
+        anthropic: {
+          originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
+          resanitize,
+          model: env.model as Model | undefined,
+          maxRetries: state.autoTruncateMaxRetries,
+          betaProbe,
+        },
       })
     },
     maxRetries: state.autoTruncateMaxRetries,
@@ -368,7 +397,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     headers: c.req.raw.headers,
     method: c.req.method,
     path: c.req.path,
-    preResolved: { name: resolvedName, model: args.selectedModel },
+    preResolved: { name: resolvedName, model: args.selectedModel, ...(args.routeOverride && { routeOverride: args.routeOverride }) },
     clientAbortSignal: clientAbort.signal,
   })
 
@@ -655,6 +684,7 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
   const retryMessageMapping =
     baseline && effectiveMessages ? buildMessageMapping(baseline.messages, effectiveMessages as MessagesPayload["messages"]) : undefined
 
+  const strippedCacheControl = codec.getLatestStrippedCacheControlSubfields()
   ctx.setPipelineInfo({
     preprocessing: preprocessInfo,
     sanitization: allSanitization,
@@ -669,6 +699,7 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
         }
       : undefined,
     ...(retryMessageMapping && { messageMapping: retryMessageMapping }),
+    ...(strippedCacheControl?.length && { cacheControlStripped: [...strippedCacheControl] }),
   })
 
   // Sticky feature tag for the accepted retry. Beta-strip and truncation are

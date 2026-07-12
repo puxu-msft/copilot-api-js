@@ -36,6 +36,21 @@ const RAW_STDIN = /setRawMode|process\.stdin/
 const RAW_MODE_OWNER = "terminal-ui.ts"
 const isPureLeaf = (f: string): boolean => !f.endsWith(RAW_MODE_OWNER)
 
+/**
+ * `terminal-coordinator.ts` (P2.1/P2.2, ADR `docs/decisions/2026-07-10-tui-terminal-ownership.md`)
+ * is documented as a pure leaf: it imports nothing from `~/lib/tui/*` (render/,
+ * input/, controller.ts, terminal-ui.ts — whether via the `~/lib/tui/...` alias
+ * or a relative `./render`/`./terminal-ui`/`./input`/`./controller` path) or
+ * `~/lib/observability/*`. Observability/terminal-ui import the coordinator,
+ * never the reverse — this regex formalizes that one-directional edge so a
+ * future PR wiring the coordinator back into `region`/`terminal-ui`/`sinks`/
+ * observability internals (which would create the cycle the ADR forbids) fails
+ * a test instead of only a code-review eyeball.
+ */
+const COORDINATOR_NAME = "terminal-coordinator.ts"
+const TUI_INTERNAL_OR_OBSERVABILITY_IMPORT =
+  /from\s+["'](?:\.\/(?:render|terminal-ui|input|controller)(?:\/[^"']*)?|~\/lib\/tui\/(?:render|terminal-ui|input|controller)(?:\/[^"']*)?|~\/lib\/observability(?:\/[^"']*)?)["']/
+
 describe("tui layer boundaries (L1 guard)", () => {
   test("guard reaches real files (positive control)", () => {
     expect(tuiFiles().length).toBeGreaterThan(0) // 空集合会让下面断言真空通过
@@ -55,5 +70,26 @@ describe("tui layer boundaries (L1 guard)", () => {
     for (const f of tuiFiles().filter(isPureLeaf)) {
       expect(readFileSync(f, "utf8")).not.toMatch(RAW_STDIN)
     }
+  })
+  test("guard for coordinator purity reaches the real file + regex has discriminating power (positive control)", () => {
+    const coordinator = tuiFiles().find((f) => f.endsWith(COORDINATOR_NAME))
+    expect(coordinator).toBeDefined() // 文件不存在会让下面断言真空通过
+    // Prove the regex actually fires on every forbidden import shape before
+    // trusting its absence below — aliased tui-internal, relative tui-internal,
+    // and aliased observability (bare + sub-path).
+    expect(TUI_INTERNAL_OR_OBSERVABILITY_IMPORT.test('import { Region } from "~/lib/tui/render/region"')).toBe(true)
+    expect(TUI_INTERNAL_OR_OBSERVABILITY_IMPORT.test('import { TerminalUi } from "./terminal-ui"')).toBe(true)
+    expect(TUI_INTERNAL_OR_OBSERVABILITY_IMPORT.test('import { parseKeys } from "./input/keys"')).toBe(true)
+    expect(TUI_INTERNAL_OR_OBSERVABILITY_IMPORT.test('import { reduce } from "./controller"')).toBe(true)
+    expect(TUI_INTERNAL_OR_OBSERVABILITY_IMPORT.test('import type { ObservabilityBus } from "~/lib/observability"')).toBe(true)
+    expect(TUI_INTERNAL_OR_OBSERVABILITY_IMPORT.test('import { publish } from "~/lib/observability/bus"')).toBe(true)
+    // Negative control: an unrelated import must NOT trip the regex, or the
+    // assertion below would be trivially satisfied by an over-eager pattern.
+    expect(TUI_INTERNAL_OR_OBSERVABILITY_IMPORT.test('import consola from "consola"')).toBe(false)
+  })
+  test("terminal-coordinator stays a pure leaf — no tui-internal or observability imports", () => {
+    const coordinator = tuiFiles().find((f) => f.endsWith(COORDINATOR_NAME))
+    expect(coordinator).toBeDefined()
+    expect(readFileSync(coordinator!, "utf8")).not.toMatch(TUI_INTERNAL_OR_OBSERVABILITY_IMPORT)
   })
 })

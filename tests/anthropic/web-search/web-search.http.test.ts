@@ -602,6 +602,34 @@ describe("POST /v1/messages — web_search double-hop", () => {
     expect(body.content[0]).toMatchObject({ type: "tool_use", name: "web_search" })
   })
 
+  test("web_search on a model without /v1/messages support → 400 via the router pre-step (T1.5/FAIL-2), no upstream hop", async () => {
+    // A non-Anthropic model cannot serve the direct /v1/messages double-hop. The router pre-step
+    // (decideRouteFromInput) returns reject → the handler surfaces a ctx-recorded 400 instead of
+    // entering the double-hop. Model is index-registered so it resolves; the router rejects on vendor.
+    setModels({
+      object: "list",
+      data: [mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] })],
+    })
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "latest TS?" }],
+        max_tokens: 256,
+        tools: [webSearchTool],
+        stream: false,
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    // Never entered the double-hop — no upstream calls made.
+    expect(messagesHits).toBe(0)
+    expect(responsesHits).toBe(0)
+    const body = (await res.json()) as { error?: { message?: string } }
+    expect(body.error?.message).toContain("/v1/messages")
+  })
+
   test("hard first-hop failure: non-streaming surfaces an error status (reqCtx.fail + rethrow path)", async () => {
     firstHopStatus = 500
     const res = await app.request("/v1/messages", {

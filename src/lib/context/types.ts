@@ -56,19 +56,34 @@ export interface WireRequest {
 export interface ResponseData {
   success: boolean
   model: string
+  // usage: ONE of TWO lockstep owner points — the other is `UsageData` in
+  // `src/lib/history/types.ts`. NOT a shared reference (kept inline so context has
+  // no history-store type dependency), so this literal MUST stay field-for-field
+  // identical to UsageData. See docs/spec/2026-07-12-ghc-usage-details.md §5.1 (C1).
   usage: {
     input_tokens: number
     output_tokens: number
     cache_read_input_tokens?: number
     cache_creation_input_tokens?: number
-    output_tokens_details?: { reasoning_tokens: number }
+    input_tokens_details?: { text?: number; audio?: number; image?: number; video?: number }
+    output_tokens_details?: {
+      reasoning_tokens?: number
+      text?: number
+      audio?: number
+      image?: number
+      video?: number
+      accepted_prediction_tokens?: number
+      rejected_prediction_tokens?: number
+    }
   }
   content: unknown
   stop_reason?: string
   error?: string
   /** HTTP status code from upstream (only on error) */
   status?: number
-  /** Raw response body from upstream (only on error, for post-mortem debugging) */
+  /** Raw upstream response body. Set on error (post-mortem) AND, since G6, on the
+   * non-streaming success path (JSON.stringify of the pristine upstream response →
+   * rawBody), so non-streaming rows can re-derive usage fields. See spec §6.1. */
   responseText?: string
   /** Responses API: upstream response id (`resp_...`) from event.response.id */
   responseId?: string
@@ -146,6 +161,10 @@ export interface HistoryModelInfo {
   requested?: string
   resolved?: string
   multiplier?: number
+  /** Routing observability (translation-matrix RFC §10 / W6). Mirrors the owner `ModelInfo`. */
+  routeOverride?: "cc" | "responses" | "messages"
+  outboundEndpoint?: string
+  translated?: boolean
 }
 
 /**
@@ -492,6 +511,14 @@ export interface RequestContext {
    * tests that omit the publisher).
    */
   setResolvedModel(args: { resolved: string; client?: string }): void
+  /**
+   * Record the S2 routing decision for observability (translation-matrix RFC §10 / W6): the
+   * client's explicit leg pin (`routeOverride`), the actual outbound leg (`outboundEndpoint =
+   * env.targetEndpoint`), and whether that leg required a format translation (`translated`) vs a
+   * direct passthrough. Projected into the history `model{}`. Called by the driver right after
+   * the route decision (non-reject); optional so mock/legacy ctxs that omit it are unaffected.
+   */
+  setRouteInfo?(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean }): void
   /**
    * Record an applied feature (truncate / thinking / beta-strip / transport /
    * via-X-fallback / dropped-params). Replaces the legacy `tags: string[]`

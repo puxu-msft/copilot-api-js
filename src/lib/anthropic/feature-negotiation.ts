@@ -114,6 +114,13 @@ const serverToolDowngradeModels = new Map<string, LearnedEntryMeta>()
  */
 const unsupportedToolFields = new Map<string, Map<string, LearnedEntryMeta>>()
 
+/**
+ * cacheControlSubfields[endpointKey] = Map<cache_control 子字段名, meta>，上游以
+ * `<section>.N...cache_control.<variant>.<field>: Extra inputs are not permitted` 拒绝时学习。
+ * 键 model-AGNOSTIC（endpoint only）——上游版本属性，一次 400 免疫所有模型。
+ */
+const unsupportedCacheControlSubfields = new Map<string, Map<string, LearnedEntryMeta>>()
+
 function modelKey(modelId: string): string {
   return `${copilotBaseUrl(state)}|anthropic-messages|${normalizeForMatching(modelId)}`
 }
@@ -418,6 +425,22 @@ export function getUnsupportedToolFields(): Array<string> {
   return activeKeys(unsupportedToolFields.get(endpointKey()), "toolFields")
 }
 
+/**
+ * Mark a cache_control subfield the upstream rejected (endpoint-level, one 400 immunizes all models).
+ * 触发场景：`<section>.N...cache_control.<variant>.<field>: Extra inputs are not permitted`。
+ */
+export function markAnthropicUnsupportedCacheControlSubfield(field: string): void {
+  const trimmed = field.trim()
+  if (!trimmed) return
+  recordEntry(unsupportedCacheControlSubfields, endpointKey(), trimmed, nowMs())
+  schedulePersist()
+}
+
+/** All cache_control subfields marked unsupported (and still active) for the current endpoint. */
+export function getUnsupportedCacheControlSubfields(): Array<string> {
+  return activeKeys(unsupportedCacheControlSubfields.get(endpointKey()), "cacheControlSubfields")
+}
+
 /** Filter a record-map inner Map to the keys whose meta is still active. */
 function activeKeys(inner: Map<string, LearnedEntryMeta> | undefined, category: NegotiationCategory): Array<string> {
   if (!inner) return []
@@ -448,6 +471,7 @@ interface NegotiationStateFileV2 {
   systemRejectModels: MetaFlatMap
   serverToolDowngrade: MetaFlatMap
   toolFields: MetaRecordMap
+  cacheControlSubfields: MetaRecordMap
 }
 
 function snapshotRecordMap(map: Map<string, Map<string, LearnedEntryMeta>>): MetaRecordMap {
@@ -481,6 +505,7 @@ function buildV2Snapshot(): NegotiationStateFileV2 {
     systemRejectModels: snapshotFlatMap(learnedSystemRejectModels),
     serverToolDowngrade: snapshotFlatMap(serverToolDowngradeModels),
     toolFields: snapshotRecordMap(unsupportedToolFields),
+    cacheControlSubfields: snapshotRecordMap(unsupportedCacheControlSubfields),
   }
 }
 
@@ -587,6 +612,7 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
     loadFlatMap(learnedSystemRejectModels, data.systemRejectModels, now)
     loadFlatMap(serverToolDowngradeModels, data.serverToolDowngrade ?? data.serverToolHistoryDowngrade, now)
     loadRecordMap(unsupportedToolFields, data.toolFields as Record<string, unknown> | undefined, now)
+    loadRecordMap(unsupportedCacheControlSubfields, data.cacheControlSubfields as Record<string, unknown> | undefined, now)
     const total =
       countRecordMap(unsupportedFeatures)
       + countRecordMap(unsupportedBetas)
@@ -598,6 +624,7 @@ export async function loadPersistedFeatureNegotiation(): Promise<void> {
       + learnedSystemRejectModels.size
       + serverToolDowngradeModels.size
       + countRecordMap(unsupportedToolFields)
+      + countRecordMap(unsupportedCacheControlSubfields)
     if (total > 0) {
       consola.info(`[FeatureNegotiation] Loaded ${total} negotiated entries from ${PATHS.NEGOTIATION_STATES}`)
     }
@@ -652,6 +679,9 @@ function locateMeta(category: NegotiationCategory, key: string, value: string): 
     case "toolFields": {
       return unsupportedToolFields.get(key)?.get(value)
     }
+    case "cacheControlSubfields": {
+      return unsupportedCacheControlSubfields.get(key)?.get(value)
+    }
     case "efforts": {
       return supportedEfforts.get(value)?.meta
     }
@@ -695,6 +725,9 @@ function deleteLocated(category: NegotiationCategory, key: string, value: string
     }
     case "toolFields": {
       return unsupportedToolFields.get(key)?.delete(value) ?? false
+    }
+    case "cacheControlSubfields": {
+      return unsupportedCacheControlSubfields.get(key)?.delete(value) ?? false
     }
     case "efforts": {
       return supportedEfforts.delete(value)
@@ -792,6 +825,7 @@ export function getGroupedSnapshot(): LearnedSnapshot {
     ["serverTools", unsupportedServerTools],
     ["partnerFeatures", unsupportedPartnerFeatures],
     ["toolFields", unsupportedToolFields],
+    ["cacheControlSubfields", unsupportedCacheControlSubfields],
   ]
   const flatMaps: Array<[NegotiationCategory, Map<string, LearnedEntryMeta>]> = [
     ["effortUnsupported", effortUnsupportedModels],
@@ -844,6 +878,7 @@ function clearNegotiationMaps(): void {
   learnedSystemRejectModels.clear()
   serverToolDowngradeModels.clear()
   unsupportedToolFields.clear()
+  unsupportedCacheControlSubfields.clear()
 }
 
 export async function resetAnthropicFeatureNegotiationForTesting(): Promise<void> {

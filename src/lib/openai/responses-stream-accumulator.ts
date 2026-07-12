@@ -4,7 +4,10 @@
  */
 
 import type { BaseStreamAccumulator } from "~/lib/stream"
+import type { GhcCompletionTokensDetails, GhcInputTokensDetails } from "~/types/api/ghc-usage"
 import type { ResponsesStreamEvent } from "~/types/api/openai-responses"
+
+import { nonNegOrUndef } from "~/types/api/ghc-usage"
 
 /** Internal tool call accumulator using string array to avoid O(n²) concatenation */
 interface ToolCallAccumulator {
@@ -13,6 +16,10 @@ interface ToolCallAccumulator {
   name: string
   argumentParts: Array<string>
 }
+
+/** GHC modality/prediction detail bags carried alongside the scalar token counts. */
+type InputDetails = { text?: number; audio?: number; image?: number; video?: number }
+type OutputDetails = { text?: number; audio?: number; image?: number; video?: number; accepted_prediction_tokens?: number; rejected_prediction_tokens?: number }
 
 /** Stream accumulator for Responses API format */
 export interface ResponsesStreamAccumulator extends BaseStreamAccumulator {
@@ -27,6 +34,12 @@ export interface ResponsesStreamAccumulator extends BaseStreamAccumulator {
   reasoningTokens: number
   /** Cached input tokens (from input_tokens_details) */
   cachedInputTokens: number
+  /** GHC cache_write_tokens from input_tokens_details (subset of input_tokens). */
+  cacheWriteInputTokens: number
+  /** GHC input-side modality breakdown (blob-only). */
+  inputDetails?: InputDetails
+  /** GHC output-side modality + prediction breakdown (blob-only). */
+  outputDetails?: OutputDetails
   /**
    * A TERMINAL upstream `error` event (Responses `type: "error"`), if one was seen.
    * Symmetric with the Anthropic accumulator's `streamError` (stream-accumulator.ts):
@@ -52,6 +65,7 @@ export function createResponsesStreamAccumulator(): ResponsesStreamAccumulator {
     contentParts: [],
     reasoningTokens: 0,
     cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
   }
 }
 
@@ -81,7 +95,19 @@ export function accumulateResponsesStreamEvent(event: ResponsesStreamEvent, acc:
         acc.inputTokens = event.response.usage.input_tokens
         acc.outputTokens = event.response.usage.output_tokens
         acc.reasoningTokens = event.response.usage.output_tokens_details?.reasoning_tokens ?? 0
-        acc.cachedInputTokens = event.response.usage.input_tokens_details?.cached_tokens ?? 0
+        const idet = event.response.usage.input_tokens_details as GhcInputTokensDetails | undefined
+        acc.cachedInputTokens = idet?.cached_tokens ?? 0
+        acc.cacheWriteInputTokens = nonNegOrUndef(idet?.cache_write_tokens) ?? 0
+        acc.inputDetails = { text: nonNegOrUndef(idet?.text_tokens), audio: nonNegOrUndef(idet?.audio_tokens), image: nonNegOrUndef(idet?.image_tokens), video: nonNegOrUndef(idet?.video_tokens) }
+        const odet = event.response.usage.output_tokens_details as GhcCompletionTokensDetails | undefined
+        acc.outputDetails = {
+          text: nonNegOrUndef(odet?.text_tokens),
+          audio: nonNegOrUndef(odet?.audio_tokens),
+          image: nonNegOrUndef(odet?.image_tokens),
+          video: nonNegOrUndef(odet?.video_tokens),
+          accepted_prediction_tokens: nonNegOrUndef(odet?.accepted_prediction_tokens),
+          rejected_prediction_tokens: nonNegOrUndef(odet?.rejected_prediction_tokens),
+        }
       }
       break
     }

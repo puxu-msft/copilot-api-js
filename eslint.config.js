@@ -319,4 +319,49 @@ export default defineConfigWithVueTs(
       ],
     },
   },
+  // ── P2 terminal-coordinator purity (ADR docs/decisions/2026-07-10-tui-terminal-ownership.md) ──
+  //
+  // `terminal-coordinator.ts` is a module-level singleton that observability
+  // (`republish.ts`, `sinks/file.ts`) and `terminal-ui.ts` import — never the
+  // reverse. It must stay a pure leaf with zero imports from any other tui/
+  // internal (render/, input/, controller.ts, terminal-ui.ts) or from
+  // `~/lib/observability/*` (broader than the tui-wide sinks-only ban above),
+  // so wiring it back into either can never create the cycle the ADR forbids.
+  // Mirrors `tests/tui/layer-boundaries.unit.test.ts`'s coordinator-purity
+  // guard — ESLint catches it at edit time, the test formalizes it structurally.
+  {
+    files: ["src/lib/tui/terminal-coordinator.ts"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "~/lib/tui/render",
+                "~/lib/tui/render/*",
+                "~/lib/tui/input",
+                "~/lib/tui/input/*",
+                "~/lib/tui/controller",
+                "~/lib/tui/terminal-ui",
+                "./render",
+                "./render/*",
+                "./input",
+                "./input/*",
+                "./controller",
+                "./terminal-ui",
+              ],
+              message:
+                "terminal-coordinator is a pure leaf — it must not import any other tui/ internal (render/, input/, controller, terminal-ui). Observability/terminal-ui import the coordinator, never the reverse. See ADR docs/decisions/2026-07-10-tui-terminal-ownership.md.",
+            },
+            {
+              group: ["~/lib/observability", "~/lib/observability/*"],
+              message:
+                "terminal-coordinator is a pure leaf — it must not import ~/lib/observability/* (broader than the tui-wide sinks-only ban). See ADR docs/decisions/2026-07-10-tui-terminal-ownership.md.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 )

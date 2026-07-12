@@ -488,14 +488,16 @@ describe("cache_control modes", () => {
   })
 
   describe("passthrough", () => {
-    test("preserves all client cache_control including non-standard fields", () => {
+    test("strips blacklisted subfields (scope) but preserves other client cache_control breakpoints", () => {
       setStateForTests({ ...stateBase, cacheControlMode: "passthrough" })
 
       const prepared = prepareAnthropicRequest(payloadWithScopedCacheControl())
 
+      // 内置黑名单 scope 被剥（GHC 未支持，否则 400）——但 cache_control 断点本身保留（type 仍在）。
       const system = prepared.wire.system as Array<Record<string, unknown>>
-      expect(system[1].cache_control).toEqual({ type: "ephemeral", scope: "global" })
+      expect(system[1].cache_control).toEqual({ type: "ephemeral" })
 
+      // 无黑名单字段的断点原样保留。
       const tools = prepared.wire.tools as Array<Record<string, unknown>>
       expect(tools[0].cache_control).toEqual({ type: "ephemeral" })
 

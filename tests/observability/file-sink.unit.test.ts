@@ -3,6 +3,7 @@ import {
   afterEach,
   describe,
   expect,
+  mock,
   test,
 } from "bun:test"
 import fs from "node:fs"
@@ -11,6 +12,7 @@ import path from "node:path"
 
 import { createBus } from "~/lib/observability/bus"
 import { FileSink } from "~/lib/observability/sinks/file"
+import { TerminalUi } from "~/lib/tui"
 
 const tmpDirs: Array<string> = []
 function freshLogPath(): string {
@@ -105,7 +107,7 @@ describe("FileSink ← system.log", () => {
     expect(fs.existsSync(`${logPath}.1`)).toBe(false) // no rotation happened
   })
 
-  test("a write failure does not throw (isolated to stderr)", () => {
+  test("a write failure does not throw (isolated to stderr via emergencyWrite's unregistered fallback)", () => {
     // Point the sink at a path whose parent is a FILE, so mkdir/append fails.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-filesink-"))
     tmpDirs.push(dir)
@@ -113,9 +115,50 @@ describe("FileSink ← system.log", () => {
     fs.writeFileSync(blocker, "x")
     const badPath = path.join(blocker, "nested", "copilot-api.log")
 
+    const stderrWrite = mock((_s: string | Uint8Array) => true)
+    const original = process.stderr.write
+    process.stderr.write = stderrWrite as unknown as typeof process.stderr.write
+
     const bus = createBus()
+    const sink = new FileSink(bus, { path: badPath })
+    try {
+      expect(() => bus.scope("system").publish({ kind: "system.log", logType: "error", message: "boom", time: Date.now() })).not.toThrow()
+    } finally {
+      process.stderr.write = original
+      sink.destroy()
+    }
+
+    // No TerminalUi is registered in this test — `emergencyWrite`'s
+    // unregistered fallback writes straight to stderr (P2.2, matching the
+    // pre-refactor bare `process.stderr.write` behavior). The exact OS error
+    // text is platform-dependent (ENOTDIR vs similar), so only pin the
+    // `[FileSink] write failed:` prefix + the trailing newline `emergencyWrite`
+    // appends.
+    expect(stderrWrite).toHaveBeenCalledTimes(1)
+    const written = stderrWrite.mock.calls[0][0] as string
+    expect(written.startsWith("[FileSink] write failed:")).toBe(true)
+    expect(written.endsWith("\n")).toBe(true)
+  })
+
+  test("a write failure routes through a registered TerminalUi's coordinator hooks (not a bare stderr write)", () => {
+    // Point the sink at a path whose parent is a FILE, so mkdir/append fails.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-filesink-"))
+    tmpDirs.push(dir)
+    const blocker = path.join(dir, "blocker")
+    fs.writeFileSync(blocker, "x")
+    const badPath = path.join(blocker, "nested", "copilot-api.log")
+
+    const chunks: Array<string> = []
+    const stdout = { write: (s: string) => (chunks.push(s), true), isTTY: false } as unknown as NodeJS.WritableStream
+    const bus = createBus()
+    const terminal = new TerminalUi(bus, { stdout, isTTY: false }) // non-interactive, no footer → "none" state → write-through
+
     const sink = new FileSink(bus, { path: badPath })
     expect(() => bus.scope("system").publish({ kind: "system.log", logType: "error", message: "boom", time: Date.now() })).not.toThrow()
     sink.destroy()
+    terminal.destroy()
+
+    // Landed on the registered TerminalUi's stdout, not a bare stderr write.
+    expect(chunks.join("")).toContain("[FileSink] write failed:")
   })
 })

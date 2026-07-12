@@ -657,6 +657,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripBetaHeaders,
   },
   {
+    configKey: "anthropic.cache_control_strip_subfields",
+    stateKey: "stripCacheControlSubfields",
+    sampleYamlValue: `\n  "*":\n    - scope`,
+    expectedStateValue: { "*": ["scope"] },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields,
+  },
+  {
     configKey: "anthropic.partner_strip_features",
     stateKey: "stripPartnerFeatures",
     sampleYamlValue: `\n  "*":\n    - structured_outputs`,

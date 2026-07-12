@@ -30,8 +30,9 @@ export type NegotiationCategory =
   | "systemRejectModels"
   | "serverToolDowngrade"
   | "toolFields"
+  | "cacheControlSubfields"
 
-/** 全部 10 个分类 —— 遍历 / 穷尽用。顺序即 UI/快照展示顺序。 */
+/** 全部 11 个分类 —— 遍历 / 穷尽用。顺序即 UI/快照展示顺序。 */
 export const NEGOTIATION_CATEGORIES: ReadonlyArray<NegotiationCategory> = [
   "features",
   "betas",
@@ -43,6 +44,7 @@ export const NEGOTIATION_CATEGORIES: ReadonlyArray<NegotiationCategory> = [
   "systemRejectModels",
   "serverToolDowngrade",
   "toolFields",
+  "cacheControlSubfields",
 ]
 
 export type EntryStatus = "active" | "expired" | "pinned" | "manually_expired"

@@ -367,6 +367,35 @@ describe("createRequestContext - toHistoryEntry", () => {
     expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
   })
 
+  test("setRouteInfo projects routing observability into model{} (RFC §10 / T1.6)", () => {
+    const { ctx } = makeContext({ endpoint: "anthropic-messages" })
+    ctx.setOriginalRequest({ model: "claude-opus-4.8", messages: [{ role: "user", content: "hi" }], stream: false, payload: {} })
+    ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
+    // Direct anthropic leg: no client suffix, outbound /v1/messages, not translated.
+    ctx.setRouteInfo?.({ outboundEndpoint: "/v1/messages", translated: false })
+    ctx.beginAttempt({})
+    ctx.complete({ success: true, model: "claude-opus-4.8", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.model?.outboundEndpoint).toBe("/v1/messages")
+    expect(entry.model?.translated).toBe(false)
+    // routeOverride omitted when the client typed no suffix.
+    expect(entry.model?.routeOverride).toBeUndefined()
+    // Existing fields untouched (zero regression).
+    expect(entry.model?.resolved).toBe("claude-opus-4.8")
+  })
+
+  test("setRouteInfo records an explicit @messages pin + a translate leg label", () => {
+    const { ctx } = makeContext({ endpoint: "anthropic-messages" })
+    ctx.setOriginalRequest({ model: "claude-opus-4.8@messages", messages: [{ role: "user", content: "hi" }], stream: false, payload: {} })
+    ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
+    ctx.setRouteInfo?.({ routeOverride: "messages", outboundEndpoint: "/v1/messages", translated: false })
+    ctx.beginAttempt({})
+    ctx.complete({ success: true, model: "claude-opus-4.8", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
+
+    expect(ctx.toHistoryEntry().model?.routeOverride).toBe("messages")
+  })
+
   test("synthesizes a failed non-final attempt's response carrying the upstream error rawBody (gap H)", () => {
     const B0 = '{"error":{"message":"attempt-0 upstream 500","type":"server_error"}}'
     const { ctx } = makeContext()

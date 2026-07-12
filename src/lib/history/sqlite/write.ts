@@ -38,13 +38,13 @@ INSERT INTO entries_v2 (
   id, session_id, agent_id, started_at, ended_at, duration_ms,
   model, endpoint, raw_path, transport, status,
   input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
-  usage_normalized, stages_migrated,
+  usage_normalized, stages_migrated, cache_write_backfilled,
   stop_reason, error_message,
   message_count, preview_text, response_preview_text,
   pid, boot_time, git_sha,
   request_bytes, response_bytes, multiplier,
   blob_gz
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   session_id = excluded.session_id, agent_id = excluded.agent_id, started_at = excluded.started_at, ended_at = excluded.ended_at,
   duration_ms = excluded.duration_ms, model = excluded.model, endpoint = excluded.endpoint, raw_path = excluded.raw_path,
@@ -52,7 +52,8 @@ ON CONFLICT(id) DO UPDATE SET
   input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
   cache_read = excluded.cache_read, cache_creation = excluded.cache_creation,
   reasoning_tokens = excluded.reasoning_tokens, usage_normalized = excluded.usage_normalized,
-  stages_migrated = excluded.stages_migrated, stop_reason = excluded.stop_reason,
+  stages_migrated = excluded.stages_migrated, cache_write_backfilled = excluded.cache_write_backfilled,
+  stop_reason = excluded.stop_reason,
   error_message = excluded.error_message, message_count = excluded.message_count,
   preview_text = excluded.preview_text,
   response_preview_text = excluded.response_preview_text,
@@ -88,6 +89,7 @@ function runHeadInsert(db: ReturnType<typeof getDatabase>, row: EntryRow): void 
     row.reasoning_tokens,
     row.usage_normalized,
     row.stages_migrated,
+    row.cache_write_backfilled,
     row.stop_reason,
     row.error_message,
     row.message_count,

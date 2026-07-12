@@ -136,11 +136,31 @@ export class Region {
       // `exp/tui-rawmode/sticky-region-decstbm.ts` "move into scroll region").
       out += cursorTo(bottom)
       this.established = { rows, panelHeight }
+    } else {
+      // fix A (spec INV-4): re-assert DECSTBM even when geometry is unchanged,
+      // so any unexpected disturbance (a bypass write, a terminal quirk) is
+      // self-healed on the very next frame. SAVE_CURSOR/RESTORE_CURSOR (DECSC/
+      // DECRC) bracket it to absorb DECSTBM's cursor-home side effect (VT510) —
+      // the cursor never visibly moves, no flicker, and re-issuing the same
+      // region is idempotent.
+      const bottom = rows - panelHeight
+      out += SAVE_CURSOR + setScrollRegion(1, bottom) + RESTORE_CURSOR
     }
 
-    // Draw the panel. DECSC before, DECRC after, so the cursor returns to
-    // wherever the scroll region left it (printLog contract).
-    out += SAVE_CURSOR
+    out += this.panelContentString(lines, rows, panelHeight, clampWidth)
+
+    this.stdout.write(out)
+  }
+
+  /**
+   * The panel-content-only drawing bytes shared by `render()`'s tail and
+   * {@link redrawString} (P2.2): DECSC → per-row absolute cursor + clear +
+   * content (last row becomes `+K more below` on overflow) → DECRC. Pulled out
+   * of `render()` so `redrawString` can reproduce an identical repaint without
+   * duplicating the vertical-clamp / overflow-indicator logic.
+   */
+  private panelContentString(lines: ReadonlyArray<string>, rows: number, panelHeight: number, clampWidth: (s: string) => string): string {
+    let out = SAVE_CURSOR
     const panelTop = rows - panelHeight + 1
     const overflow = lines.length > panelHeight
     for (let i = 0; i < panelHeight; i++) {
@@ -151,12 +171,11 @@ export class Region {
         const hidden = lines.length - (panelHeight - 1)
         out += clampWidth(`+${hidden} more below`)
       } else {
-        out += clampWidth(lines[i])
+        out += clampWidth(lines[i] ?? "")
       }
     }
     out += RESTORE_CURSOR
-
-    this.stdout.write(out)
+    return out
   }
 
   /**
@@ -187,5 +206,75 @@ export class Region {
     // erase to end of screen (wipes the panel) → show cursor, leaving it there.
     this.stdout.write(RESET_SCROLL_REGION + cursorTo(panelTop) + ERASE_TO_END + SHOW_CURSOR)
     this.established = undefined
+  }
+
+  /**
+   * Force the next `render` to treat the region as never-established (P1.2,
+   * detail exit). Unlike `clear()` this writes nothing — the caller (a detail
+   * alt-screen exit) has already left the alternate screen via `\x1b[?1049l`,
+   * which silently discards whatever DECSTBM margins were active in the
+   * alternate screen's buffer AND restores the primary screen's own prior
+   * margins (also stale, since entering detail reset them to full-screen via
+   * `\x1b[r`). Either way the terminal's real scroll-region state no longer
+   * matches `established`, so the next `render` must re-run the "first
+   * establish" branch (HIDE_CURSOR + fresh DECSTBM) instead of the
+   * unchanged-geometry idempotent reassert, which only re-issues DECSTBM
+   * without restoring the cursor/erase choreography a genuine (re-)establish
+   * needs after an alt-screen round-trip.
+   */
+  forceReestablish(): void {
+    this.established = undefined
+  }
+
+  /**
+   * Whether a scroll region is currently established (P2.2, `terminal-coordinator`
+   * `"region"` state query) — `true` once `render()` has set up DECSTBM and stayed
+   * there (idle-and-collapsed-to-nothing goes back through `clear()`, which resets
+   * this to `undefined`).
+   */
+  isEstablished(): boolean {
+    return this.established !== undefined
+  }
+
+  /**
+   * Pure (no write, no state mutation) escape string that blanks every
+   * currently-drawn panel row and parks the cursor at the scroll region's
+   * bottom row — ready for a log-line write. Used by {@link TerminalUi}'s
+   * `terminal-coordinator` `clearPanel` hook (P2.2): unlike the normal
+   * `printLog` path (which relies on the cursor already being parked from the
+   * prior `render()`'s DECRC), an out-of-band emergency write cannot assume
+   * where the cursor is — it may be invoked reentrantly mid-render. Explicitly
+   * clearing + repositioning by absolute row makes the write correct
+   * regardless of the cursor's prior position. `""` when no region is
+   * established (nothing to clear).
+   */
+  clearPanelString(): string {
+    if (!this.established) return ""
+    const { rows, panelHeight } = this.established
+    const panelTop = rows - panelHeight + 1
+    let out = ""
+    for (let i = 0; i < panelHeight; i++) out += cursorTo(panelTop + i) + CLEAR_LINE
+    out += cursorTo(rows - panelHeight)
+    return out
+  }
+
+  /**
+   * Pure (no write) redraw string for the CURRENTLY established scroll
+   * region: the same idempotent reassert-and-repaint bytes `render()`'s
+   * unchanged-geometry branch emits (`DECSC` + DECSTBM reassert + `DECRC`,
+   * then the panel content draw via {@link panelContentString}) — used by
+   * {@link TerminalUi}'s `terminal-coordinator` `redrawPanel` hook (P2.2) to
+   * repaint the panel after an out-of-band emergency line without duplicating
+   * `render()`'s vertical-clamp / overflow-indicator logic. `lines` should be
+   * the caller's current (already height-padded) view lines. `""` when no
+   * region is established (nothing to redraw).
+   */
+  redrawString(lines: ReadonlyArray<string>): string {
+    if (!this.established) return ""
+    const { rows, panelHeight } = this.established
+    const cols = this.getColumns()
+    const clampWidth = (s: string): string => truncateToWidth(s, cols - 1)
+    const bottom = rows - panelHeight
+    return SAVE_CURSOR + setScrollRegion(1, bottom) + RESTORE_CURSOR + this.panelContentString(lines, rows, panelHeight, clampWidth)
   }
 }

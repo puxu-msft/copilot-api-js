@@ -44,9 +44,10 @@ import type {
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import { resolveModelTarget } from "~/lib/models/resolver"
 import {
   //
   createTruncationResponseMarkerOpenAI,
@@ -73,6 +74,8 @@ import {
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+import { mapInputDetails, mapOutputDetails, nonNegOrUndef } from "~/types/api/ghc-usage"
+import type { GhcCompletionTokensDetails, GhcPromptTokensDetails } from "~/types/api/ghc-usage"
 
 /** CC has no learning-budget strategy; the value is inert (passed for completeness). */
 const MAX_LEARNING_RETRIES = 32
@@ -106,7 +109,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   // it to parse as `preResolved`, matching the legacy handler's order (read model
   // → then system-prompt reload). Otherwise a `disabled_models` reload during
   // system-prompt would shift parse's model lookup vs. legacy.
-  const resolvedName = resolveModelName(azureModelOverride ?? clientRaw.model)
+  const { name: resolvedName, routeOverride } = resolveModelTarget(azureModelOverride ?? clientRaw.model)
   const selectedModel = state.modelIndex.get(resolvedName)
   const wireMessages = await processOpenAIMessages(clientRaw.messages, resolvedName)
   const wireBody: ChatCompletionsPayload = { ...clientRaw, messages: wireMessages }
@@ -122,6 +125,10 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   const driver = createPipelineDriver({
     codec,
     transport,
+    // Full-format S5 union (RFC §7.1). Inert for the CC-inbound legs today (no rewrite's
+    // `appliesTo` matches targetEndpoint ∈ {/chat/completions, /responses} for clientFormat
+    // openai-cc); it carries the mechanism for the future reverse leg (cc→/v1/messages, Phase 5).
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
       const viaResponses = env.targetEndpoint === ENDPOINT.RESPONSES
       if (viaResponses) env.ctx.recordFeature("via-responses") // P2.2-D6
@@ -155,7 +162,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
-      preResolved: { name: resolvedName, model: selectedModel },
+      preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
       clientAbortSignal: clientAbort.signal,
     })
@@ -257,10 +264,20 @@ function renderNonStreamingV4(
       totalInput: usage?.prompt_tokens ?? 0,
       output: usage?.completion_tokens ?? 0,
       cacheRead: usage?.prompt_tokens_details?.cached_tokens,
+      cacheCreation: nonNegOrUndef((usage?.prompt_tokens_details as GhcPromptTokensDetails | undefined)?.cache_write_tokens),
       reasoning: usage?.completion_tokens_details?.reasoning_tokens,
+      inputDetails: mapInputDetails(usage?.prompt_tokens_details as GhcPromptTokensDetails | undefined),
+      outputDetails: mapOutputDetails(usage?.completion_tokens_details as GhcCompletionTokensDetails | undefined),
     }),
     stop_reason: choice?.finish_reason ?? undefined,
     content: choice?.message,
+    // G6 (richest-data-flow): persist the upstream response body into rawBody
+    // (legFromUpstreamResponse maps responseText → rawBody), so non-streaming rows
+    // can re-derive cache_write / any usage field later. Re-serialized from the
+    // parsed pristine `originalResponse` (transport already discarded the raw text
+    // at .json(); a re-serialization is data-lossless — only formatting differs).
+    // See docs/spec/2026-07-12-ghc-usage-details.md §6.1 (G6).
+    responseText: JSON.stringify(originalResponse),
   }
   if (truncationReason) {
     env.ctx.fail(response.model, new Error(truncationReason), {
@@ -375,7 +392,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     recordForwarded()
     consola.debug("[ChatCompletions:v4] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(acc.model || model, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }),
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, cacheCreation: acc.cacheWriteTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     })
     return
   }
@@ -390,7 +407,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, reasoning: acc.reasoningTokens }),
+      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, cacheCreation: acc.cacheWriteTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     })
     return
   }

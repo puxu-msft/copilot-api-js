@@ -13,10 +13,14 @@
  * throws (bus.ts publishSync catch). During a `system.log` fan-out that would
  * re-enter this reporter and re-publish, looping a disk-full FileSink error
  * into a log storm. While publishing we set a flag; any consola call that
- * arrives reentrantly is written straight to stderr and NOT re-published.
+ * arrives reentrantly is routed through `terminal-coordinator`'s `emergencyWrite`
+ * (P2.2) and NOT re-published — region-aware when an interactive `TerminalUi`
+ * is registered, a bare `process.stderr.write` otherwise (unchanged fallback).
  */
 
 import consola from "consola"
+
+import { emergencyWrite } from "~/lib/tui/terminal-coordinator"
 
 import type { ScopedPublisher } from "./bus"
 
@@ -55,8 +59,11 @@ export function installConsolaRepublish(publisher: ScopedPublisher<"system">): (
       const message = joinArgs(logObj.args)
       if (reentrant) {
         // A consola call raised DURING our own fan-out (e.g. bus diagnostics or
-        // a sink that logged). Break the cycle — write straight to stderr.
-        process.stderr.write(`${logObj.type === "error" || logObj.type === "fatal" ? "[ERR ]" : "[LOG ]"} ${message}\n`)
+        // a sink that logged). Break the cycle — route through the region-aware
+        // coordinator (P2.2) instead of a bare stderr write, so an interactive
+        // TerminalUi's bottom-of-screen panel/footer isn't corrupted by it.
+        // `emergencyWrite` appends its own trailing "\n" — pass the line bare.
+        emergencyWrite(`${logObj.type === "error" || logObj.type === "fatal" ? "[ERR ]" : "[LOG ]"} ${message}`)
         return
       }
       reentrant = true

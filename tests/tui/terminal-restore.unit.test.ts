@@ -43,6 +43,11 @@ const NOW = 1_700_000_000_000
 const DECSTBM_SET = /\x1b\[1;\d+r/
 // DECSTBM reset — the scroll region is torn back down to the full screen.
 const SCROLL_RESET = "\x1b[r"
+// Alternate-screen leave sequence — the terminal must drop back to the
+// primary screen before any cooked-mode teardown runs (C2).
+const ALT_SCREEN_LEAVE = "\x1b[?1049l"
+// Cursor-show sequence written by `Region.clear()` at the tail of restore.
+const SHOW_CURSOR = "\x1b[?25h"
 
 /**
  * Fake raw-mode stdin: an EventEmitter with the ReadStream methods spied
@@ -177,6 +182,51 @@ describe("TerminalUi — terminal restore robustness (Task 6)", () => {
     sys.publish({ kind: "system.shutdown_phase_changed", phase: "draining", previousPhase: "draining", needsFlush: false })
     sys.publish({ kind: "system.shutdown_phase_changed", phase: "aborting", previousPhase: "draining", needsFlush: false })
     expect(stdin.setRawMode.mock.calls.length).toBe(rawModeCalls)
+  })
+
+  test("restore while in detail leaves the alt screen first (C2)", () => {
+    const { bus, stdin, chunks, sliceFrom, exitHook } = makeInteractiveUi()
+
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "gpt-5", 1000) })
+    stdin.emit("data", Buffer.from(" ")) // space → panel
+    stdin.emit("data", Buffer.from("\r")) // enter → detail (alt screen entered)
+
+    const hook = exitHook()
+    expect(hook).toBeDefined()
+
+    const mark = chunks.length
+    hook?.() // simulate a crash/exit path — restoreTerminal fires while still in detail
+    const out = sliceFrom(mark)
+
+    const altScreenLeaveAt = out.indexOf(ALT_SCREEN_LEAVE)
+    expect(altScreenLeaveAt).toBeGreaterThanOrEqual(0) // leaves the alt screen first
+    expect(altScreenLeaveAt).toBeLessThan(out.indexOf(SHOW_CURSOR)) // …before cursor/scroll-region teardown
+  })
+
+  test("shutdown-drain while detail is open leaves the alt screen before restoring (P1.5 regression)", () => {
+    const { bus, stdin, chunks, sliceFrom } = makeInteractiveUi()
+
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "gpt-5", 1000) })
+    stdin.emit("data", Buffer.from(" ")) // space → panel
+    stdin.emit("data", Buffer.from("\r")) // enter → detail (alt screen entered)
+
+    const mark = chunks.length
+    // Drain arrives via the real event path (not a simulated exit hook) while
+    // detail is still on the alternate screen.
+    bus.scope("system").publish({ kind: "system.shutdown_phase_changed", phase: "draining", previousPhase: null, needsFlush: false })
+    const out = sliceFrom(mark)
+
+    const altScreenLeaveAt = out.indexOf(ALT_SCREEN_LEAVE)
+    expect(altScreenLeaveAt).toBeGreaterThanOrEqual(0) // must drop back to the primary screen
+    expect(altScreenLeaveAt).toBeLessThan(out.indexOf(SHOW_CURSOR)) // …before the region's cursor/scroll teardown
+    expect(stdin.setRawMode).toHaveBeenLastCalledWith(false) // raw mode also left
+
+    // No stale detail repaint is attempted afterward: a further redraw trigger
+    // (e.g. an inert key) must not re-enter the alt screen or re-render detail.
+    const afterMark = chunks.length
+    stdin.emit("data", Buffer.from([0x1b, 0x5b, 0x41])) // \x1b[A — inert, but exercises render() post-drain
+    const afterOut = sliceFrom(afterMark)
+    expect(afterOut).not.toContain("\x1b[?1049h") // never re-enters the alt screen
   })
 
   test("non-interactive (no stdin) → shutdown-drain + restore are inert, no exit hook", () => {

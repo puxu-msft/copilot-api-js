@@ -21,6 +21,7 @@ import type {
   WireRequest,
 } from "~/lib/context/types"
 import type { ApiError } from "~/lib/error"
+import type { RouteOverride } from "~/lib/models/normalize-id"
 import type {
   //
   BaseStreamAccumulator,
@@ -159,13 +160,14 @@ export type RetryAction =
 // ============================================================================
 
 /**
- * S2 routing outcome (codec.decideRoute). Unifies the 4 scattered passthrough
- * checks + Gemini's no-gate translate (docs/v4/03-spec/codec.md §2).
+ * S2 routing outcome (`router.decideRoute` — ADR 2026-07-11, extracted from the codecs).
+ * Unifies the 4 scattered passthrough checks + Gemini's no-gate translate
+ * (docs/v4/03-spec/codec.md §2).
  *
  * The `translate` variant omits a `from` field: the source format is always
  * available as `env.clientFormat`, so carrying it here would duplicate state.
- * (docs/v4/01-architecture.md §6 shows a `from`-bearing variant; codec.md — the
- * authoritative decideRoute spec — omits it, and that is the version used here.)
+ * (docs/v4/01-architecture.md §6 shows a `from`-bearing variant; the router — the
+ * authoritative decideRoute site — omits it, and that is the version used here.)
  */
 export type RouteDecision =
   | { kind: "passthrough"; endpoint: UpstreamEndpoint }
@@ -222,7 +224,7 @@ export interface RawHttpRequest {
    * happens during system-prompt cannot shift the model lookup relative to the
    * legacy handler. `model: undefined` is a valid value (unknown gpt-* fallback).
    */
-  readonly preResolved?: { name: string; model: ResolvedModel | undefined }
+  readonly preResolved?: { name: string; model: ResolvedModel | undefined; routeOverride?: RouteOverride }
   /** Downstream client-disconnect signal, folded into the upstream fetch signal. */
   readonly clientAbortSignal?: AbortSignal
 }
@@ -621,9 +623,6 @@ export interface FormatCodec {
 
   /** S1: parse inbound HTTP → envelope (model resolution, body extraction, ctx). */
   parse(raw: RawHttpRequest): RequestEnvelope
-
-  /** S2: passthrough / translate / reject decision (unifies the 4 scattered checks). */
-  decideRoute(env: RequestEnvelope): RouteDecision
 
   /** S2: translate body to the target-endpoint format (passthrough = identity). */
   translateOut(env: RequestEnvelope): RequestEnvelope
