@@ -23,6 +23,7 @@ import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
   createForwardStreamTranslator,
+  createReverseStreamTranslator,
   renderResponseNonStreamingVia,
   translateRequestVia,
 } from "~/lib/pipeline/hub-translate"
@@ -171,7 +172,55 @@ describe("createForwardStreamTranslator — STREAMING forward-leg dispatch (Phas
     expect(t.getMeta().stopReason).toBe("end_turn")
   })
 
-  test("REVERSE leg (/v1/messages) throws (Phase 5 — never-swallow)", () => {
-    expect(() => createForwardStreamTranslator(ENDPOINT.MESSAGES, "claude-x")).toThrow(/REVERSE streaming leg .* not wired yet \(Phase 5\)/)
+  test("forward translator REJECTS the /v1/messages leg (it is a REVERSE leg — use createReverseStreamTranslator)", () => {
+    expect(() => createForwardStreamTranslator(ENDPOINT.MESSAGES, "claude-x")).toThrow(/\/v1\/messages leg is a REVERSE leg/)
+  })
+})
+
+describe("createReverseStreamTranslator — REVERSE-leg dispatch (Phase 5, T5.2/T5.3/T5.4)", () => {
+  const aev = (obj: unknown): { data: string; event: string } => ({ data: JSON.stringify(obj), event: (obj as { type: string }).type })
+  const start = aev({ type: "message_start", message: { id: "msg_r", type: "message", role: "assistant", model: "claude-x", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } })
+  const textStart = aev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+  const textDelta = aev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } })
+  const textStop = aev({ type: "content_block_stop", index: 0 })
+  const msgDelta = aev({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } })
+  const msgStop = aev({ type: "message_stop" })
+
+  test("cc leg: single-hop Anthropic → CC frames (role chunk + content + finish, getMeta net usage)", () => {
+    const t = createReverseStreamTranslator("openai-cc", "claude-x")
+    const frames = [...t.renderFrame(start), ...t.renderFrame(textStart), ...t.renderFrame(textDelta), ...t.renderFrame(textStop), ...t.renderFrame(msgDelta), ...t.renderFrame(msgStop), ...t.flush()]
+    const objs = frames.map((f) => JSON.parse(f.data ?? "{}") as { object?: string; choices?: Array<{ delta?: Record<string, unknown>; finish_reason?: unknown }> })
+    // First CC chunk is the role delta; a content delta carries delta.content; a finish chunk carries finish_reason.
+    expect(objs[0].choices?.[0]?.delta).toEqual({ role: "assistant" })
+    expect(objs.some((o) => o.choices?.[0]?.delta?.content === "hi")).toBe(true)
+    expect(objs.some((o) => o.choices?.[0]?.finish_reason === "stop")).toBe(true)
+    expect(t.getMeta().finishReason).toBe("stop")
+    expect(t.getMeta().usage?.prompt_tokens).toBe(5)
+    expect(t.getMeta().sawMessageStop).toBe(true)
+  })
+
+  test("gemini leg: single-hop Anthropic → CC frames (the gemini codec does the CC→Gemini second hop)", () => {
+    const t = createReverseStreamTranslator("gemini", "claude-x")
+    const frames = [...t.renderFrame(start), ...t.renderFrame(textStart), ...t.renderFrame(textDelta), ...t.renderFrame(textStop), ...t.renderFrame(msgDelta), ...t.renderFrame(msgStop)]
+    expect(frames.some((f) => (JSON.parse(f.data ?? "{}") as { choices?: Array<{ delta?: { content?: string } }> }).choices?.[0]?.delta?.content === "hi")).toBe(true)
+  })
+
+  test("responses leg: two-hop Anthropic → CC → Responses lifecycle events (needs the reverse exchange)", () => {
+    const t = createReverseStreamTranslator("openai-responses", "claude-x", { responseId: "resp_r", itemId: "item_r", clientModel: "claude-x" })
+    const frames = [...t.renderFrame(start), ...t.renderFrame(textStart), ...t.renderFrame(textDelta), ...t.renderFrame(textStop), ...t.renderFrame(msgDelta), ...t.renderFrame(msgStop), ...t.flush()]
+    const events = frames.map((f) => f.event)
+    expect(events).toContain("response.created")
+    expect(events).toContain("response.output_text.delta")
+    expect(events).toContain("response.completed")
+    // getMeta is the Anthropic→CC translator's meta (the truncation signal source).
+    expect(t.getMeta().finishReason).toBe("stop")
+  })
+
+  test("responses leg WITHOUT an exchange ctx throws (never-swallow — the handler must build a reverse-exchange)", () => {
+    expect(() => createReverseStreamTranslator("openai-responses", "claude-x")).toThrow(/requires an exchangeCtx/)
+  })
+
+  test("anthropic clientFormat (direct leg) never reaches a reverse translator → throws", () => {
+    expect(() => createReverseStreamTranslator("anthropic", "claude-x")).toThrow(/unhandled clientFormat/)
   })
 })

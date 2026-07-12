@@ -26,5 +26,5 @@ export {
   translateCCToResponsesResponse,
   translateResponsesToChatCompletions,
 } from "./responses-to-cc-request"
-export type { CCToResponsesStreamTranslator } from "./responses-to-cc-request"
+export type { CCToResponsesStreamTranslator, TranslateExchangeContext } from "./responses-to-cc-request"
 export { createStreamTranslator, translateResponsesStream } from "./responses-to-cc-stream"
