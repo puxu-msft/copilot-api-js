@@ -53,6 +53,7 @@ import type {
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
+import { ccKeepaliveFrame } from "~/lib/codec/openai-cc/keepalive"
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
@@ -222,7 +223,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
     env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     env.ctx.setClientResponseStatus(c.res.status)
     try {
-      await pumpStreamingV4({ stream, driver, upstream, env, getTruncateResult: () => truncateResult })
+      await pumpStreamingV4({ stream, driver, upstream, env, getTruncateResult: () => truncateResult, clientAbortSignal: clientAbort.signal })
     } finally {
       detachClientAbort()
     }
@@ -302,6 +303,12 @@ interface PumpStreamingV4Options {
   upstream: UpstreamStream
   env: RequestEnvelope
   getTruncateResult: () => OpenAIAutoTruncateResult | undefined
+  /**
+   * The downstream client-disconnect signal (the route's `clientAbort`), threaded into the sink's
+   * forward-idle heartbeat so keepalive chunks STOP once the client has left (mirrors Responses'
+   * `PumpStreamingV4Options.clientAbortSignal`, `routes/responses/handler-v4.ts`).
+   */
+  clientAbortSignal?: AbortSignal
 }
 
 /**
@@ -331,11 +338,15 @@ interface PumpStreamingV4Options {
  * P3 (block-level buffered retry, terminal-only): `resolveCcBufferedAndHeartbeat` selects
  * `driver.runResponseBufferedSink` (terminal-only commit — `ccCommitBoundaries` treats only an
  * in-band upstream `error` frame as a frame-level boundary; the real terminal commit is
- * `sawMessageStop = () => acc.finishReason !== ""`) instead of `runResponseSink`. The forced
- * first-block keepalive chunk (backlog CC leg) is Task 3's deliverable — this task only wires
- * the driver selection + `[DONE]` synthesis ordering; `makeSseSink` carries no `heartbeat` yet
- * on either branch (CC has no `pingFrame` shape today), so the buffered/live sink construction
- * stays byte-identical.
+ * `sawMessageStop = () => acc.finishReason !== ""`) instead of `runResponseSink`.
+ *
+ * P3 Task 3 (backlog:316 CC leg): the buffered path withholds ALL real frames until the terminal
+ * commit, so a long upstream silence would otherwise trip a CC consumer's idle deadline with zero
+ * visible chunks. `resolveCcBufferedAndHeartbeat`'s `heartbeatSec` (forced > 0 whenever buffered)
+ * is wired into `makeSseSink`'s `heartbeat` option with `ccKeepaliveFrame` as the fixed pingFrame —
+ * mirrors Responses' `responsesKeepaliveFrame` wiring (`routes/responses/handler-v4.ts`). The live
+ * (non-buffered) branch only heartbeats when the operator explicitly set `streamKeepalivePingSec`
+ * (same `heartbeatSec > 0` gate `resolveCcBufferedAndHeartbeat` resolves either way).
  */
 async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env } = opts
@@ -345,18 +356,35 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
 
   // Forwarded SSE frames — what the client ACTUALLY received (tool-name restored). Filled by
   // the sink's `onForwarded` sampler; the upstream-original track is the driver's (runResponse
-  // loop-top samples the raw frames before render).
+  // loop-top samples the raw frames before render). Forward-idle keepalive (P3 Task 3, backlog:316
+  // CC leg): during a long upstream silence the sink injects a synthetic `ccKeepaliveFrame` every
+  // `heartbeatSec` so a CC consumer's idle deadline never fires; the chunk is marked
+  // `synthetic:"keepalive"` in the forwarded track (never the upstream track).
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   let bytesIn = 0
   let eventsIn = 0
 
-  // The driver-owned client sink: SSE write-out + forwarded sampling. No heartbeat yet on either
-  // branch (CC has no `stream_keepalive_ping_sec` / CC-shape keepalive chunk — Task 3). The sink
-  // preserves SSE id/retry framing it is given.
+  // L2 buffered-retry routing + the forced client keepalive cadence (P3 Task 3). `buffered`
+  // selects the driver's shared `runResponseBufferedSink` — CC being its third consumer (driver
+  // signatures unchanged, all via opts). `heartbeatSec` is FORCED in buffered mode (the buffered
+  // commit withholds every real frame until the terminal — long silence would otherwise trip a CC
+  // consumer's idle deadline); the live path heartbeats only when the operator set
+  // `streamKeepalivePingSec`. See resolveCcBufferedAndHeartbeat.
+  const { buffered, heartbeatSec } = resolveCcBufferedAndHeartbeat()
+
+  // The driver-owned client sink: SSE write-out + forwarded sampling. The sink preserves SSE
+  // id/retry framing it is given.
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
+    ...(heartbeatSec > 0 && {
+      heartbeat: {
+        intervalSec: heartbeatSec,
+        pingFrame: ccKeepaliveFrame(),
+        ...(opts.clientAbortSignal && { clientAbortSignal: opts.clientAbortSignal }),
+      },
+    }),
   })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
@@ -397,12 +425,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     return { ...frame, data: restoreStreamToolNames(frame.data, mapper) }
   }
 
-  // L2 buffered-retry routing (P3, terminal-only). `buffered` selects the driver's shared
+  // `buffered` (resolved above alongside `heartbeatSec`) selects the driver's shared
   // `runResponseBufferedSink` — the SAME primitive Anthropic/Responses use, CC being its third
-  // consumer (driver signatures unchanged, all via opts). `heartbeatSec` is resolved but unused
-  // here (Task 3 wires the forced keepalive into `sink`); wiring it now would silently no-op
-  // since `makeSseSink` has no `heartbeat` option applied on this branch yet.
-  const { buffered } = resolveCcBufferedAndHeartbeat()
+  // consumer (driver signatures unchanged, all via opts).
   const outcome =
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
