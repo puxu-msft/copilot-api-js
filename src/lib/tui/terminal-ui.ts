@@ -537,7 +537,7 @@ export class TerminalUi {
 
     const elapsedMs = Date.now() - event.ctx.startTime
     const lastMs = event.attempt.durationMs
-    const retries = event.attempt.attemptIndex + 1 // 1-based：这是第 N 次重试
+    const retries = attemptN // 1-based：这是第 N 次重试（复用上方 attemptN，同为 attemptIndex + 1）
     const durationField = formatDurationField({ lastMs, totalMs: elapsedMs, retries })
     const colorMs = resolveDurationColorMs({ lastMs, totalMs: elapsedMs, retries })
     const errMsg = event.attempt.error?.message
