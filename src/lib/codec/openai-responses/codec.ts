@@ -93,7 +93,11 @@ import {
   //
   ENDPOINT,
 } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  resolveModelTarget,
+  type RouteOverride,
+} from "~/lib/models/resolver"
 import {
   //
   prepareChatCompletionsRequest,
@@ -292,7 +296,9 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
   // Azure deployment routes inject the deployment name as an explicit override
   // (path wins over body.model).
   const clientModel = raw.modelOverride ?? incoming.model
-  const resolvedName = raw.preResolved?.name ?? resolveModelName(clientModel)
+  const resolvedTarget = raw.preResolved ?? resolveModelTarget(clientModel)
+  const resolvedName = resolvedTarget.name
+  const routeOverride = resolvedTarget.routeOverride
   if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
   working.model = resolvedName
@@ -338,6 +344,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
 
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.RESPONSES, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
+    ...(routeOverride && { routeOverride }),
     model: selectedModel as ResolvedModel,
     stream: processed.stream ?? false,
     body: processed,
@@ -461,6 +468,7 @@ function formatOpenAiResponsesError(err: ClassifiedStreamError): ClientFrame {
 
 interface EnvelopeInit {
   targetEndpoint: UpstreamEndpoint
+  routeOverride?: RouteOverride
   model: ResolvedModel
   stream: boolean
   body: unknown
@@ -473,6 +481,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
   const env: RequestEnvelope = {
     clientFormat: CLIENT_FORMAT,
     targetEndpoint: init.targetEndpoint,
+    ...(init.routeOverride && { routeOverride: init.routeOverride }),
     model: init.model,
     stream: init.stream,
     body: init.body,
@@ -484,6 +493,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     with(patch) {
       return makeEnvelope({
         targetEndpoint: env.targetEndpoint,
+        routeOverride: env.routeOverride,
         model: env.model,
         stream: env.stream,
         body: env.body,

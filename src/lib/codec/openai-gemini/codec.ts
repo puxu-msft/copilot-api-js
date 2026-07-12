@@ -85,7 +85,11 @@ import {
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  resolveModelTarget,
+  type RouteOverride,
+} from "~/lib/models/resolver"
 import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { state } from "~/lib/state"
@@ -234,7 +238,9 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
   const ccBody = raw.body as ChatCompletionsPayload
   const geminiSnapshot = structuredClone(raw.originalBodyForHistory as GenerateContentRequest)
 
-  const resolvedName = raw.preResolved?.name ?? resolveModelName(modelId)
+  const resolvedTarget = raw.preResolved ?? resolveModelTarget(modelId)
+  const resolvedName = resolvedTarget.name
+  const routeOverride = resolvedTarget.routeOverride
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
 
   // Re-derive the lossy-translation dropped params from the raw Gemini body. The
@@ -285,6 +291,7 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
 
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
+    ...(routeOverride && { routeOverride }),
     model: selectedModel as ResolvedModel,
     stream: filledPayload.stream ?? false,
     body: filledPayload,
@@ -362,6 +369,7 @@ function formatGeminiError(err: ClassifiedStreamError): ClientFrame {
 
 interface EnvelopeInit {
   targetEndpoint: UpstreamEndpoint
+  routeOverride?: RouteOverride
   model: ResolvedModel
   stream: boolean
   body: unknown
@@ -374,6 +382,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
   const env: RequestEnvelope = {
     clientFormat: CLIENT_FORMAT,
     targetEndpoint: init.targetEndpoint,
+    ...(init.routeOverride && { routeOverride: init.routeOverride }),
     model: init.model,
     stream: init.stream,
     body: init.body,
@@ -385,6 +394,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     with(patch) {
       return makeEnvelope({
         targetEndpoint: env.targetEndpoint,
+        routeOverride: env.routeOverride,
         model: env.model,
         stream: env.stream,
         body: env.body,

@@ -46,7 +46,7 @@ import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import { resolveModelTarget } from "~/lib/models/resolver"
 import {
   //
   createTruncationResponseMarkerOpenAI,
@@ -106,7 +106,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   // it to parse as `preResolved`, matching the legacy handler's order (read model
   // → then system-prompt reload). Otherwise a `disabled_models` reload during
   // system-prompt would shift parse's model lookup vs. legacy.
-  const resolvedName = resolveModelName(azureModelOverride ?? clientRaw.model)
+  const { name: resolvedName, routeOverride } = resolveModelTarget(azureModelOverride ?? clientRaw.model)
   const selectedModel = state.modelIndex.get(resolvedName)
   const wireMessages = await processOpenAIMessages(clientRaw.messages, resolvedName)
   const wireBody: ChatCompletionsPayload = { ...clientRaw, messages: wireMessages }
@@ -155,7 +155,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
-      preResolved: { name: resolvedName, model: selectedModel },
+      preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
       clientAbortSignal: clientAbort.signal,
     })

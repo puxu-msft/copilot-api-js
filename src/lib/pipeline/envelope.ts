@@ -12,6 +12,7 @@
 
 import type { RequestContext } from "~/lib/context/request"
 import type { Model } from "~/lib/models/client"
+import type { RouteOverride } from "~/lib/models/normalize-id"
 import type { PrepareHints } from "~/lib/request/pipeline"
 
 /** Client-facing inbound format (route prefix determines it). */
@@ -87,6 +88,13 @@ export interface RequestEnvelope {
   readonly clientFormat: ClientFormat
   /** Written by S2 (decideRoute); S4 selects the client by it. */
   targetEndpoint: UpstreamEndpoint
+  /**
+   * The explicit outbound-leg pin (`@cc` / `@responses` / `@messages`) parsed off the
+   * client's model name by `resolveModelTarget` at S1 (RFC §4.3 / §5). `undefined` = the
+   * client typed no suffix, so the router uses the per-inbound default/priority leg.
+   * The router (S2) reads it to select `targetEndpoint`; S1 only carries it here.
+   */
+  readonly routeOverride?: RouteOverride
   readonly model: ResolvedModel
   readonly stream: boolean
 

@@ -127,7 +127,11 @@ import {
   getAgentIdFromHeaders,
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
-import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  resolveModelTarget,
+  type RouteOverride,
+} from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
@@ -194,7 +198,7 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
   // → then system-prompt reload). Otherwise a `disabled_models` reload during
   // system-prompt would shift parse's model lookup vs. legacy.
   const clientModel = payload.model
-  const resolvedName = resolveModelName(clientModel)
+  const { name: resolvedName, routeOverride } = resolveModelTarget(clientModel)
   const selectedModel = state.modelIndex.get(resolvedName)
 
   // Snapshot the client's raw inbound body BEFORE the system-prompt injection —
@@ -238,7 +242,7 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
     return handleWebSearchCompletion(c, wireBody, reqCtx, selectedModel, preprocessInfo)
   }
 
-  return runMessagesDriver(c, { wireBody, clientRaw, resolvedName, selectedModel, preprocessInfo })
+  return runMessagesDriver(c, { wireBody, clientRaw, resolvedName, selectedModel, preprocessInfo, ...(routeOverride && { routeOverride }) })
 }
 
 /**
@@ -295,6 +299,8 @@ interface RunMessagesDriverArgs {
   resolvedName: string
   selectedModel: Model | undefined
   preprocessInfo: PreprocessInfo
+  /** The client's explicit `@cc/@responses/@messages` leg pin, threaded to the driver via `preResolved`. */
+  routeOverride?: RouteOverride
 }
 
 async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promise<Response> {
@@ -368,7 +374,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     headers: c.req.raw.headers,
     method: c.req.method,
     path: c.req.path,
-    preResolved: { name: resolvedName, model: args.selectedModel },
+    preResolved: { name: resolvedName, model: args.selectedModel, ...(args.routeOverride && { routeOverride: args.routeOverride }) },
     clientAbortSignal: clientAbort.signal,
   })
 

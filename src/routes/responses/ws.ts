@@ -42,7 +42,7 @@ import {
   //
   ENDPOINT,
 } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import { resolveModelTarget } from "~/lib/models/resolver"
 import {
   //
   accumulateResponsesStreamEvent,
@@ -214,7 +214,7 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
  */
 async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
   const requestedModel = rawPayload.model
-  const resolvedModel = resolveModelName(requestedModel)
+  const { name: resolvedModel, routeOverride } = resolveModelTarget(requestedModel)
   const selectedModel = state.modelIndex.get(resolvedModel)
 
   // The system-prompt instructions injection is async + non-idempotent — apply it
@@ -250,7 +250,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       headers: new Headers(), // WS transport: no inbound HTTP headers to capture
       method: "WS",
       path: "/v1/responses",
-      preResolved: { name: resolvedModel, model: selectedModel },
+      preResolved: { name: resolvedModel, model: selectedModel, ...(routeOverride && { routeOverride }) },
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {

@@ -53,7 +53,7 @@ import {
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import { resolveModelTarget } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
@@ -106,7 +106,7 @@ async function runGeminiRequest(
   modelId: string,
   stream: boolean,
 ): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
-  const resolvedName = resolveModelName(modelId)
+  const { name: resolvedName, routeOverride } = resolveModelTarget(modelId)
   const selectedModel = state.modelIndex.get(resolvedName)
 
   // Translate Gemini → CC, then inject the system-prompt on the CC messages
@@ -125,7 +125,7 @@ async function runGeminiRequest(
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
-      preResolved: { name: resolvedName, model: selectedModel },
+      preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {

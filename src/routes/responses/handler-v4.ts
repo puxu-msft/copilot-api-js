@@ -60,7 +60,7 @@ import {
   registerResponseSession,
 } from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import { resolveModelTarget } from "~/lib/models/resolver"
 import { responsesOutputToContent } from "~/lib/openai/responses-conversion"
 import {
   //
@@ -95,7 +95,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   // the sync codec.parse, passing the client raw separately for the history
   // snapshot. Resolve the model HERE (before processResponsesInstructions' config
   // reload) and pass it as `preResolved` — matching the legacy handler's order.
-  const resolvedName = resolveModelName(azureModelOverride ?? clientRaw.model)
+  const { name: resolvedName, routeOverride } = resolveModelTarget(azureModelOverride ?? clientRaw.model)
   const selectedModel = state.modelIndex.get(resolvedName)
   const wireInstructions = await processResponsesInstructions(clientRaw.instructions, resolvedName)
   const wireBody: ResponsesPayload = { ...clientRaw, instructions: wireInstructions }
@@ -133,7 +133,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
-      preResolved: { name: resolvedName, model: selectedModel },
+      preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       ...(azureModelOverride !== undefined && { modelOverride: azureModelOverride }),
       clientAbortSignal: clientAbort.signal,
     })

@@ -21,6 +21,7 @@ import type {
   WireRequest,
 } from "~/lib/context/types"
 import type { ApiError } from "~/lib/error"
+import type { RouteOverride } from "~/lib/models/normalize-id"
 import type {
   //
   BaseStreamAccumulator,
@@ -223,7 +224,7 @@ export interface RawHttpRequest {
    * happens during system-prompt cannot shift the model lookup relative to the
    * legacy handler. `model: undefined` is a valid value (unknown gpt-* fallback).
    */
-  readonly preResolved?: { name: string; model: ResolvedModel | undefined }
+  readonly preResolved?: { name: string; model: ResolvedModel | undefined; routeOverride?: RouteOverride }
   /** Downstream client-disconnect signal, folded into the upstream fetch signal. */
   readonly clientAbortSignal?: AbortSignal
 }

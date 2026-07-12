@@ -97,7 +97,11 @@ import {
   //
   ENDPOINT,
 } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  resolveModelTarget,
+  type RouteOverride,
+} from "~/lib/models/resolver"
 import {
   //
   fillMaxCompletionTokens,
@@ -269,7 +273,9 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
   const clientModel = raw.modelOverride ?? incoming.model
   // Prefer the route's pre-reload resolution (legacy timing — before the
   // system-prompt config reload, P2.2-D3); else resolve + look up here.
-  const resolvedName = raw.preResolved?.name ?? resolveModelName(clientModel)
+  const resolvedTarget = raw.preResolved ?? resolveModelTarget(clientModel)
+  const resolvedName = resolvedTarget.name
+  const routeOverride = resolvedTarget.routeOverride
   if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
 
@@ -313,6 +319,7 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
 
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
+    ...(routeOverride && { routeOverride }),
     model: selectedModel as ResolvedModel,
     stream: sanitizedPayload.stream ?? false,
     body: sanitizedPayload,
@@ -517,6 +524,7 @@ function formatOpenAiCcError(err: ClassifiedStreamError): ClientFrame {
 
 interface EnvelopeInit {
   targetEndpoint: UpstreamEndpoint
+  routeOverride?: RouteOverride
   model: ResolvedModel
   stream: boolean
   body: unknown
@@ -534,6 +542,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
   const env: RequestEnvelope = {
     clientFormat: CLIENT_FORMAT,
     targetEndpoint: init.targetEndpoint,
+    ...(init.routeOverride && { routeOverride: init.routeOverride }),
     model: init.model,
     stream: init.stream,
     body: init.body,
@@ -545,6 +554,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     with(patch) {
       return makeEnvelope({
         targetEndpoint: env.targetEndpoint,
+        routeOverride: env.routeOverride,
         model: env.model,
         stream: env.stream,
         body: env.body,
