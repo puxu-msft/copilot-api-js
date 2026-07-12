@@ -13,7 +13,7 @@
 1. `opus: claude-opus-4.8@cc`——希望 Claude 模型改走 OpenAI chat/completions 协议腿（后缀语法当前不存在，`@cc` 会被当成模型名一部分、解析失败）。
 2. `claude-opus-4.8: gpt-5.5`——把一个模型映射到非 Anthropic vendor 模型，当前在 decideRoute 直接 400。
 
-### 1.2 关键上游事实（来自 `refs/AVAILABLE_MODELS.json`，权威能力信息）
+### 1.2 关键上游事实（来自 `.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json`，权威能力信息）
 
 GHC 上游对模型暴露 `supported_endpoints`。关键发现：**Anthropic vendor 模型本身同时支持两条协议腿**：
 

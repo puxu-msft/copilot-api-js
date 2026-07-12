@@ -489,14 +489,14 @@ describe("context_editing / tool_search are metadata-first (supports.X ?? name-l
   })
 })
 
-describe("modelHasAdaptiveThinking / modelRequiresEnabledThinking — pinned to real upstream metadata (refs/AVAILABLE_MODELS.json, 2026-07-08)", () => {
+describe("modelHasAdaptiveThinking / modelRequiresEnabledThinking — pinned to real upstream metadata (.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json, 2026-07-08)", () => {
   /** Build a resolved model carrying only the thinking-relevant `supports` fields. */
   function withThinkingSupports(supports: Record<string, unknown>) {
     return { id: "m", capabilities: { family: "claude", supports } } as unknown as Parameters<typeof modelRequiresEnabledThinking>[0]
   }
 
   // The exact shapes the Copilot /models payload ships (verified against
-  // refs/AVAILABLE_MODELS.json). These pin the two-way thinking-coercion gate to
+  // .claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json). These pin the two-way thinking-coercion gate to
   // ground truth so an upstream metadata change (or a gate regression) is caught.
 
   test("enabled-only models (adaptive_thinking absent, positive max_thinking_budget) → requiresEnabled, NOT adaptive", () => {

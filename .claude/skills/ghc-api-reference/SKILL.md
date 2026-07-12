@@ -47,6 +47,7 @@ gh search code --repo microsoft/vscode "isAnthropicToolSearchEnabled" --json pat
 | 想查 | 读 |
 |---|---|
 | 模型能力判断表（thinking/context-editing/tool-search/memory/cache-ttl）、anthropic-beta header、context_management 形状、thinking 配置、关键常量 | `references/capability-matrix.md` |
+| **模型目录 + 能力检测**（某模型支持哪些 endpoint/adaptive_thinking/reasoning_effort/vision、tokenizer、billing；`Model` 类型形状 + `src/lib/models/` 消费地图 + grep 食谱 + 刷新） | `references/models-catalog.md`（原始快照 `references/AVAILABLE_MODELS.json`，即 `GET /models` 实抓） |
 | 本项目↔上游 映射总表、文件地图（想查什么→哪个文件+grep）、同步维护 checklist | `references/project-mapping.md` |
 | GHC usage 数据升级的 wire 事实（cache_write / `include:[usage]` 被拒 → 客户端 chat `stream_options.include_usage` 流式为何 400 / copilot_usage sidecar 帧 / usage 0/0 / 实测手法） | `references/usage-wire.md` |
 

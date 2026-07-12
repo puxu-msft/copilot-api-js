@@ -13,7 +13,7 @@ import { setModels } from "~/lib/state"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { createFullTestApp } from "../helpers/test-app"
 
-// Real Copilot Claude entry from refs/AVAILABLE_MODELS.json (first item)
+// Real Copilot Claude entry from .claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json (first item)
 const CLAUDE_OPUS_FIXTURE: Model = {
   id: "claude-opus-4.6-1m",
   name: "Claude Opus 4.6 (1M context)(Internal only)",

@@ -8,7 +8,7 @@
 
 设计 anthropic-via-openai-translation（让 Claude Code 用 gpt-5.5）时，用户提出泛化：这不该是 anthropic 的特例，而应是**通用的入站格式 × 出站协议腿翻译矩阵**。
 
-一手事实（`refs/AVAILABLE_MODELS.json`，40 模型）：
+一手事实（`.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json`，40 模型）：
 - **入站格式（ClientFormat）4 种**：anthropic / openai-cc / openai-responses / gemini。
 - **出站协议腿（UpstreamEndpoint）3 种**：`/v1/messages`(anthropic, 8 模型) / `/chat/completions`(cc, 13) / `/responses`(含 ws 变体, 9)。**无独立 Gemini 出站腿**（Gemini 只作客户端入站，Google vendor 模型经 cc/responses 暴露）。
 

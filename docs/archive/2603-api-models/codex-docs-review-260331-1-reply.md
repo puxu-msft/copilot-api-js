@@ -67,10 +67,10 @@ policy?: {
 
 **验证：有效。**
 
-Codex 正确指出：`refs/AVAILABLE_MODELS.json` 快照中并不包含 `request_headers` 字段，但文档前半部分以该快照锚定"上游完整字段集"，后半部分又把 `request_headers` 当作"上游特殊字段"——两处证据源不一致。
+Codex 正确指出：`.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json` 快照中并不包含 `request_headers` 字段，但文档前半部分以该快照锚定"上游完整字段集"，后半部分又把 `request_headers` 当作"上游特殊字段"——两处证据源不一致。
 
 **已实施改动**：
-- "上游数据结构"章节明确为"基于 `refs/AVAILABLE_MODELS.json` 观测到的公开字段集"
+- "上游数据结构"章节明确为"基于 `.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json` 观测到的公开字段集"
 - 新增段落说明 `request_headers` 来源："另外，根据当前请求准备代码，`Model` 还允许携带运行时上游附加的 `request_headers` 字段。该字段不来自上述快照，属于内部敏感元数据，应在 route 层剥离。"
 - `request_headers 的处理` 章节开头强调"不出现在快照中"
 

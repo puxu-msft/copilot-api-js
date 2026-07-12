@@ -13,7 +13,7 @@
 - `src/lib/models/client.ts` 的现状描述已修正为：
   - `policy`、`request_headers` 已存在
   - 真正缺少的是 `is_chat_default`、`is_chat_fallback`
-- `request_headers` 已区分为“运行时可能出现的内部字段”，不再与 `refs/AVAILABLE_MODELS.json` 的快照字段集混淆。
+- `request_headers` 已区分为“运行时可能出现的内部字段”，不再与 `.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json` 的快照字段集混淆。
 - 测试计划已补入 `tests/e2e-ui/api-endpoints.pw.ts`，并明确 `GET /models?detail=true` 需要验证兼容语义。
 
 ## 当前判断

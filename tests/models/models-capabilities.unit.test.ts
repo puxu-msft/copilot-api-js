@@ -29,7 +29,7 @@ function makeModel(overrides?: Partial<Model>): Model {
   }
 }
 
-// Real Copilot Claude entry — keep aligned with refs/AVAILABLE_MODELS.json (first entry)
+// Real Copilot Claude entry — keep aligned with .claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json (first entry)
 const CLAUDE_OPUS_FIXTURE: Model = {
   id: "claude-opus-4.6-1m",
   name: "Claude Opus 4.6 (1M context)(Internal only)",

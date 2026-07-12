@@ -520,7 +520,7 @@ EOF
 
 **Interfaces:** 无生产代码。拓扑：`real Codex/openai Responses client ──▶ copilot-api 代理（buffered on）──ghc_api_base_url──▶ mock-upstream.ts（静默）`。模仿 `exp/cc-idle-280s/`（§7 LIVE 拓扑 + `run-proxy-arm.sh`）。
 
-**Step 5.1 — mock 上游。** 创建 `exp/responses-keepalive-idle-oracle/mock-upstream.ts`：`/responses` 持住不发任何帧 `SILENCE_SEC`（默认 330 > 300s 墙），再吐干净双 output_item + `response.completed`；另供 `/models`（读 `refs/AVAILABLE_MODELS.json` 或最小 Codex 模型）+ `/count_tokens`。逐帧时间戳落 `mock-upstream.log`。（帧构造复用 Task 2 `twoItemFrames` 语义，Bun `serve` 起 :8799。）
+**Step 5.1 — mock 上游。** 创建 `exp/responses-keepalive-idle-oracle/mock-upstream.ts`：`/responses` 持住不发任何帧 `SILENCE_SEC`（默认 330 > 300s 墙），再吐干净双 output_item + `response.completed`；另供 `/models`（读 `.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json` 或最小 Codex 模型）+ `/count_tokens`。逐帧时间戳落 `mock-upstream.log`。（帧构造复用 Task 2 `twoItemFrames` 语义，Bun `serve` 起 :8799。）
 
 **Step 5.2 — 臂设计（两臂，`response.ping` 为门控、对照 = 无 heartbeat）:**
 
