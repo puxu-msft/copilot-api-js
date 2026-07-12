@@ -172,4 +172,4 @@ export function createCacheControlSubfieldRejectionStrategy<
 
 - [x] Phase 0 — landed (5a9ba6cf..e5e37515)
 - [x] Phase 1 — landed (3906688d 核心 + ed068bb2 history + 2ba49ea1 config-e2e)
-- [ ] Phase 2 — 未开始
+- [x] Phase 2 — landed (53b5f19d)
