@@ -221,7 +221,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   // The system-prompt instructions injection is async + non-idempotent — apply it
   // before the sync codec.parse (the route's pre-step), passing the client raw
   // separately for the history snapshot.
-  const wireInstructions = await processResponsesInstructions(rawPayload.instructions, resolvedModel)
+  const wireInstructions = await processResponsesInstructions(rawPayload.instructions, resolvedModel, "openai-responses")
   const wireBody: ResponsesPayload = { ...rawPayload, instructions: wireInstructions }
 
   const codec = createOpenAiResponsesCodec()
@@ -277,6 +277,8 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   }
 
   const { upstream, env } = result
+  // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
+  env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedModel) })
   const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
 
   // Fallback registers the session eagerly so a mid-stream follow-up resolves it.

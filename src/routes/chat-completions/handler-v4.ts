@@ -132,7 +132,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   // system-prompt would shift parse's model lookup vs. legacy.
   const { name: resolvedName, routeOverride } = resolveModelTarget(azureModelOverride ?? clientRaw.model)
   const selectedModel = state.modelIndex.get(resolvedName)
-  const wireMessages = await processOpenAIMessages(clientRaw.messages, resolvedName)
+  const wireMessages = await processOpenAIMessages(clientRaw.messages, resolvedName, "openai-cc")
   const wireBody: ChatCompletionsPayload = { ...clientRaw, messages: wireMessages }
 
   const clientAbort = new AbortController()
@@ -239,6 +239,11 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   }
 
   const { upstream, env } = result
+
+  // D2 diagnostic: record the per-model effective frame-idle timeout for this
+  // request (ctx is guaranteed live here — post-runRequest, result.ok). Covers
+  // both stream + non-stream paths.
+  env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
   if (!env.stream) {
     try {

@@ -162,7 +162,7 @@ async function runGeminiRequest(
   // Translate Gemini → CC, then inject the system-prompt on the CC messages
   // (async, non-idempotent) BEFORE the sync codec.parse.
   const { payload: ccPayload } = convertGeminiRequestToOpenAI(geminiBody, { model: resolvedName, stream })
-  ccPayload.messages = await processOpenAIMessages(ccPayload.messages, resolvedName)
+  ccPayload.messages = await processOpenAIMessages(ccPayload.messages, resolvedName, "gemini")
 
   const bundle = buildGeminiDriver(c, modelId, resolvedName, selectedModel?.vendor)
   const { driver, codec, clientAbort, detachClientAbort } = bundle
@@ -196,6 +196,9 @@ async function runGeminiRequest(
     detachClientAbort()
     throw new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason)
   }
+
+  // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
+  result.env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
   return { bundle, result }
 }

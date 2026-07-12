@@ -15,6 +15,7 @@ import { z } from "zod"
 import {
   //
   type CompiledRewriteRule,
+  type CompiledSystemPromptEntry,
   DEFAULT_MODEL_OVERRIDES,
   setAnthropicBehavior,
   setAutoTruncateConfig,
@@ -31,6 +32,12 @@ import {
   state,
 } from "~/lib/state"
 
+import type {
+  //
+  EndpointScope,
+  SystemPromptEntry,
+} from "./schema"
+
 import { loadPersistedLimits } from "../auto-truncate"
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
@@ -46,7 +53,17 @@ import {
 } from "./validation"
 
 // Re-export Zod-inferred types so existing imports of these names keep working.
-export type { AnthropicConfig, Config, HistoryConfig, RateLimiterConfig, ResponsesConfig, RewriteRule, ShutdownConfig } from "./schema"
+export type {
+  AnthropicConfig,
+  Config,
+  EndpointScope,
+  HistoryConfig,
+  RateLimiterConfig,
+  ResponsesConfig,
+  RewriteRule,
+  ShutdownConfig,
+  SystemPromptEntry,
+} from "./schema"
 
 export {
   AnthropicConfigSchema,
@@ -84,22 +101,43 @@ import {
 // shape).
 // ============================================================================
 
-/** Compile a raw rewrite rule into a CompiledRewriteRule. Returns null for invalid regex. */
-export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null {
-  const method = raw.method ?? "regex"
-
-  // Compile model filter regex (shared by both line and regex methods)
+/**
+ * Compile the shared model/endpoint scope carried by rewrite rules and
+ * system-prompt entries. Returns `null` if the model regex is invalid (caller
+ * skips the whole rule/entry). undefined axes = apply to all.
+ */
+export function compileScope(raw: { model?: string; endpoint?: EndpointScope | Array<EndpointScope> }): {
+  modelPattern?: RegExp
+  endpointSet?: ReadonlySet<string>
+} | null {
   let modelPattern: RegExp | undefined
   if (raw.model) {
     try {
       modelPattern = new RegExp(raw.model, "i")
     } catch (err) {
-      consola.warn(`[config] Invalid model regex in rewrite rule: "${raw.model}"`, err)
+      consola.warn(`[config] Invalid model regex in system-prompt scope: "${raw.model}"`, err)
       return null
     }
   }
 
-  if (method === "line") return { from: raw.from, to: raw.to, method, modelPattern }
+  let endpointSet: ReadonlySet<string> | undefined
+  if (raw.endpoint) {
+    endpointSet = new Set(Array.isArray(raw.endpoint) ? raw.endpoint : [raw.endpoint])
+  }
+
+  return { modelPattern, endpointSet }
+}
+
+/** Compile a raw rewrite rule into a CompiledRewriteRule. Returns null for invalid regex. */
+export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null {
+  const method = raw.method ?? "regex"
+
+  // Compile the shared model/endpoint scope (invalid model regex skips the rule).
+  const scope = compileScope(raw)
+  if (scope === null) return null
+  const { modelPattern, endpointSet } = scope
+
+  if (method === "line") return { from: raw.from, to: raw.to, method, modelPattern, endpointSet }
   try {
     // Strip leading inline flags (?flags) — merge with base gms flags
     // e.g. "(?i)pattern" → pattern "pattern", flags "gmsi"
@@ -114,7 +152,7 @@ export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null
         if (!flags.includes(f)) flags += f
       }
     }
-    return { from: new RegExp(pattern, flags), to: raw.to, method, modelPattern }
+    return { from: new RegExp(pattern, flags), to: raw.to, method, modelPattern, endpointSet }
   } catch (err) {
     consola.warn(`[config] Invalid regex in rewrite rule: "${raw.from}"`, err)
     return null
@@ -124,6 +162,28 @@ export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null
 /** Compile an array of raw rewrite rules, skipping invalid ones */
 export function compileRewriteRules(raws: Array<RewriteRule>): Array<CompiledRewriteRule> {
   return raws.map((r) => compileRewriteRule(r)).filter((r): r is CompiledRewriteRule => r !== null)
+}
+
+/**
+ * Compile the config `system_prompt_prepend` / `system_prompt_append` value
+ * (`string | Entry | Entry[] | undefined`) into scoped {@link CompiledSystemPromptEntry}
+ * list. A plain string becomes a single unscoped entry. Entries whose model regex
+ * fails to compile are skipped (warned by {@link compileScope}).
+ */
+export function compileSystemPromptEntries(raw: string | SystemPromptEntry | Array<SystemPromptEntry> | undefined): Array<CompiledSystemPromptEntry> {
+  if (raw === undefined) return []
+  let entries: Array<SystemPromptEntry>
+  if (typeof raw === "string") entries = [{ text: raw }]
+  else if (Array.isArray(raw)) entries = raw
+  else entries = [raw]
+
+  const compiled: Array<CompiledSystemPromptEntry> = []
+  for (const entry of entries) {
+    const scope = compileScope(entry)
+    if (scope === null) continue
+    compiled.push({ text: entry.text, modelPattern: scope.modelPattern, endpointSet: scope.endpointSet })
+  }
+  return compiled
 }
 
 // ============================================================================
@@ -643,6 +703,14 @@ export async function applyConfigToState(): Promise<Config> {
     setAnthropicBehavior({
       systemPromptOverrides: config.system_prompt_overrides.length > 0 ? compileRewriteRules(config.system_prompt_overrides) : [],
     })
+  }
+
+  // System prompt prepend/append (scoped entries: entire replacement per key).
+  if (config.system_prompt_prepend !== undefined) {
+    setAnthropicBehavior({ systemPromptPrepend: compileSystemPromptEntries(config.system_prompt_prepend) })
+  }
+  if (config.system_prompt_append !== undefined) {
+    setAnthropicBehavior({ systemPromptAppend: compileSystemPromptEntries(config.system_prompt_append) })
   }
 
   // Model overrides: retain-on-absence. An explicit `model_overrides: {}` (or

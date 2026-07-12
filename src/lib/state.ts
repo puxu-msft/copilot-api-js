@@ -76,6 +76,23 @@ export interface CompiledRewriteRule {
   method?: "regex" | "line"
   /** Compiled regex for model name filtering. undefined = apply to all models. */
   modelPattern?: RegExp
+  /** Endpoint-scope set (ClientFormat values). undefined = apply to all endpoints. */
+  endpointSet?: ReadonlySet<string>
+}
+
+/**
+ * A compiled system-prompt prepend/append entry: the literal `text` plus the
+ * pre-compiled model/endpoint scope (same two-axis AND semantics as
+ * {@link CompiledRewriteRule}). A plain-string config entry compiles to
+ * `{ text, modelPattern: undefined, endpointSet: undefined }` (unscoped).
+ */
+export interface CompiledSystemPromptEntry {
+  /** The prepend/append text. */
+  text: string
+  /** Compiled regex for model name filtering. undefined = apply to all models. */
+  modelPattern?: RegExp
+  /** Endpoint-scope set (ClientFormat values). undefined = apply to all endpoints. */
+  endpointSet?: ReadonlySet<string>
 }
 
 export interface State {
@@ -568,6 +585,12 @@ export interface State {
   /** Pre-compiled system prompt override rules from config.yaml */
   readonly systemPromptOverrides: Array<CompiledRewriteRule>
 
+  /** Pre-compiled scoped `system_prompt_prepend` entries (top-down; matching ones concatenated). */
+  readonly systemPromptPrepend: Array<CompiledSystemPromptEntry>
+
+  /** Pre-compiled scoped `system_prompt_append` entries (top-down; matching ones concatenated). */
+  readonly systemPromptAppend: Array<CompiledSystemPromptEntry>
+
   /**
    * Maximum number of successful (non-failed) history entries to keep in SQLite.
    * The reaper trims the success bucket (status != 'failed') to this size.
@@ -976,6 +999,8 @@ function cloneState(source: MutableState): MutableState {
     models: cloneModels(source.models),
     rewriteSystemReminders: cloneRewriteRules(source.rewriteSystemReminders),
     systemPromptOverrides: [...source.systemPromptOverrides],
+    systemPromptPrepend: [...source.systemPromptPrepend],
+    systemPromptAppend: [...source.systemPromptAppend],
     tokenInfo: source.tokenInfo ? { ...source.tokenInfo } : undefined,
   }
 }
@@ -1009,6 +1034,12 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("systemPromptOverrides" in patch) {
     cloned.systemPromptOverrides = patch.systemPromptOverrides ? [...patch.systemPromptOverrides] : undefined
+  }
+  if ("systemPromptPrepend" in patch) {
+    cloned.systemPromptPrepend = patch.systemPromptPrepend ? [...patch.systemPromptPrepend] : undefined
+  }
+  if ("systemPromptAppend" in patch) {
+    cloned.systemPromptAppend = patch.systemPromptAppend ? [...patch.systemPromptAppend] : undefined
   }
   if ("tokenInfo" in patch) {
     cloned.tokenInfo = patch.tokenInfo ? { ...patch.tokenInfo } : undefined
@@ -1206,6 +1237,8 @@ export function setAnthropicBehavior(
       | "nonDeferredTools"
       | "rewriteSystemReminders"
       | "systemPromptOverrides"
+      | "systemPromptPrepend"
+      | "systemPromptAppend"
       | "compressToolResultsBeforeTruncate"
       | "sanitizeToolNames"
       | "recoverToolCallText"
@@ -1479,6 +1512,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   nonDeferredTools: [] as ReadonlyArray<string>,
   rewriteSystemReminders: false as const,
   systemPromptOverrides: [] as Array<CompiledRewriteRule>,
+  systemPromptPrepend: [] as Array<CompiledSystemPromptEntry>,
+  systemPromptAppend: [] as Array<CompiledSystemPromptEntry>,
   autoTruncate: false,
   // Defaults mirror the engine constants AUTO_TRUNCATE_RETRY_FACTOR / MAX_AUTO_TRUNCATE_RETRIES /
   // LARGE_TOOL_RESULT_THRESHOLD. Inlined (not imported) to avoid a state ↔ auto-truncate ↔
@@ -1612,6 +1647,8 @@ export function resetConfigManagedState(): void {
     nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
     rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
+    systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
+    systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
@@ -1774,6 +1811,8 @@ const mutableState: MutableState = {
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
   upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
+  systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
+  systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
   stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
   normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
   upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,

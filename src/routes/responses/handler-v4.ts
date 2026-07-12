@@ -120,7 +120,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   // reload) and pass it as `preResolved` — matching the legacy handler's order.
   const { name: resolvedName, routeOverride } = resolveModelTarget(azureModelOverride ?? clientRaw.model)
   const selectedModel = state.modelIndex.get(resolvedName)
-  const wireInstructions = await processResponsesInstructions(clientRaw.instructions, resolvedName)
+  const wireInstructions = await processResponsesInstructions(clientRaw.instructions, resolvedName, "openai-responses")
   const wireBody: ResponsesPayload = { ...clientRaw, instructions: wireInstructions }
 
   const clientAbort = new AbortController()
@@ -206,6 +206,8 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   }
 
   const { upstream, env } = result
+  // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
+  env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
   const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
   const reverseMessages = env.targetEndpoint === ENDPOINT.MESSAGES
 

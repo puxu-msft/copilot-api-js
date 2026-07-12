@@ -112,14 +112,55 @@ function nullableNonemptyStringArray() {
 // Shared primitives
 // ============================================================================
 
+/**
+ * Endpoint-scope values for system-prompt rules/entries. MUST stay in sync with
+ * `ClientFormat` in `~/lib/pipeline/envelope.ts` — inlined here (not imported) to
+ * keep the config schema layer free of a pipeline import. A rule/entry is applied
+ * only when the request's inbound client format is in this set (undefined = all).
+ */
+export const ENDPOINT_SCOPE_VALUES = ["anthropic", "openai-cc", "openai-responses", "gemini"] as const
+
+/** `endpoint?: <one> | [<many>]` — a single endpoint value or an array of them. */
+const endpointScope = () =>
+  z.union([z.enum(ENDPOINT_SCOPE_VALUES), z.array(z.enum(ENDPOINT_SCOPE_VALUES)).nonempty("Must be a non-empty array of endpoints")]).optional()
+
 export const RewriteRuleSchema = z
   .object({
     from: z.string().nonempty("Must be a non-empty string"),
     to: z.string({ error: "Must be a string" }),
     method: z.enum(["line", "regex"], { error: "Must be 'line' or 'regex'" }).optional(),
+    /** Model-name regex filter (case-insensitive). undefined = all models. */
     model: z.string().optional(),
+    /** Endpoint scope. undefined = all endpoints. */
+    endpoint: endpointScope(),
   })
   .strict()
+
+/**
+ * A single scoped system-prompt prepend/append entry: the `text` plus optional
+ * `model` / `endpoint` scope (same two-axis AND semantics as {@link RewriteRuleSchema}).
+ */
+export const SystemPromptEntrySchema = z
+  .object({
+    text: z.string({ error: "Must be a string" }),
+    /** Model-name regex filter (case-insensitive). undefined = all models. */
+    model: z.string().optional(),
+    /** Endpoint scope. undefined = all endpoints. */
+    endpoint: endpointScope(),
+  })
+  .strict()
+
+/**
+ * `system_prompt_prepend` / `system_prompt_append` accept, for backward compat:
+ *   - a plain string (legacy; unscoped single entry), or
+ *   - a single {@link SystemPromptEntrySchema}, or
+ *   - an array of entries (evaluated top-down, matching entries concatenated).
+ */
+const SystemPromptTextListSchema = z
+  .union([z.string(), SystemPromptEntrySchema, z.array(SystemPromptEntrySchema)])
+  .nullable()
+  .transform((v): string | z.infer<typeof SystemPromptEntrySchema> | Array<z.infer<typeof SystemPromptEntrySchema>> | undefined => v ?? undefined)
+  .optional()
 
 const RewriteRuleListSchema = z
   .array(RewriteRuleSchema)
@@ -829,8 +870,8 @@ export const ConfigSchema = z
     proxy: ProxySchema,
     ghc_api_base_url: GhcApiBaseUrlSchema,
     system_prompt_overrides: RewriteRuleListSchema,
-    system_prompt_prepend: nullableString(),
-    system_prompt_append: nullableString(),
+    system_prompt_prepend: SystemPromptTextListSchema,
+    system_prompt_append: SystemPromptTextListSchema,
     rate_limiter: nullableSection(RateLimiterConfigSchema),
     anthropic: nullableSection(AnthropicConfigSchema),
     openai_responses: nullableSection(ResponsesConfigSchema),
@@ -926,6 +967,9 @@ RECORD_MERGE_STRATEGIES.set(ResponseHeaderOverridesSchema, "per-key")
 // ============================================================================
 
 export type RewriteRule = z.infer<typeof RewriteRuleSchema>
+export type SystemPromptEntry = z.infer<typeof SystemPromptEntrySchema>
+/** Endpoint-scope value — one of {@link ENDPOINT_SCOPE_VALUES}; mirrors `ClientFormat`. */
+export type EndpointScope = (typeof ENDPOINT_SCOPE_VALUES)[number]
 export type RateLimiterConfig = z.infer<typeof RateLimiterConfigSchema>
 export type AnthropicConfig = z.infer<typeof AnthropicConfigSchema>
 export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>

@@ -224,7 +224,7 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
   // System-prompt collection + config overrides (async, non-idempotent) on the
   // model-resolved wire body, BEFORE the sync codec.parse.
   const wireBody: MessagesPayload = { ...payload, model: resolvedName }
-  if (wireBody.system) wireBody.system = await processAnthropicSystem(wireBody.system, resolvedName)
+  if (wireBody.system) wireBody.system = await processAnthropicSystem(wireBody.system, resolvedName, "anthropic")
 
   // Phase 1: one-time message-level preprocessing (idempotent). The ctx's
   // toolNameMapper is NOT yet built here (that's codec.parse) — but
@@ -465,6 +465,9 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
 
     const { upstream, env } = result
 
+    // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
+    env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
+
     if (!env.stream) {
       // Non-streaming: render the real HTTP status with the upstream-decided body.
       try {
@@ -650,6 +653,8 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // (a) ok → hand the SAME sink to the pump (single-sink, no rebuild). The commit ping cadence
       // baked into the sink continues as the post-commit keepalive during generation.
       const { upstream, env } = result
+      // D2 diagnostic (POST-COMMIT branch): per-model effective frame-idle timeout.
+      env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
       const { buffered } = resolveBufferedAndHeartbeat(env)
       commitCtx?.recordFeature("stream-upstream-resolved", { totalStalledMs: Date.now() - commitInstant })
       await pumpAnthropicStreamingDispatch({ sink, buffered, forwardedSseEvents, streamStartMs, driver, codec, upstream, env, anchorHooks, anchorState })
