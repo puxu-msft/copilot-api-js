@@ -188,6 +188,66 @@ function resolveExtendedTtls(): { toolsSystem: CacheTtl; messages: CacheTtl } {
   return { toolsSystem, messages }
 }
 
+export interface PerLayerClientTtls {
+  tools?: CacheTtl
+  system?: CacheTtl
+  messages?: CacheTtl
+}
+export interface SanitizedLayerTtls {
+  tools: CacheTtl
+  system: CacheTtl
+  messages: CacheTtl
+}
+
+/** ttl 大小比较：5m < 1h。 */
+function maxTtl(a: CacheTtl, b: CacheTtl): CacheTtl {
+  return a === "1h" || b === "1h" ? "1h" : "5m"
+}
+function minTtl(a: CacheTtl, b: CacheTtl): CacheTtl {
+  return a === "5m" || b === "5m" ? "5m" : "1h"
+}
+
+/**
+ * TTL 决策单一 owner（sanitize + proxied 共用）。对每层取 max(客户端最大 ttl, extended floor)，
+ * 再沿 tools→system→messages 单调化（后层 ≤ 前层），满足 Anthropic 前缀递减约束（spec §4.3）。
+ * extended 未激活时所有 floor = 5m。
+ */
+export function resolveSanitizedTtls(
+  clientMax: PerLayerClientTtls,
+  extendedActive: boolean,
+  extendedTtls: { toolsSystem: CacheTtl; messages: CacheTtl },
+): SanitizedLayerTtls {
+  const floorToolsSystem: CacheTtl = extendedActive ? extendedTtls.toolsSystem : "5m"
+  const floorMessages: CacheTtl = extendedActive ? extendedTtls.messages : "5m"
+  const tools = maxTtl(clientMax.tools ?? "5m", floorToolsSystem)
+  const system = minTtl(maxTtl(clientMax.system ?? "5m", floorToolsSystem), tools)
+  const messages = minTtl(maxTtl(clientMax.messages ?? "5m", floorMessages), system)
+  return { tools, system, messages }
+}
+
+/** 扫 wire 每层（system/messages/tools + 嵌套 content），返回该层出现的最大 cache_control ttl（缺则 undefined）。 */
+export function collectPerLayerClientTtls(wire: Record<string, unknown>): PerLayerClientTtls {
+  const result: PerLayerClientTtls = {}
+  for (const section of ["tools", "system", "messages"] as const) {
+    if (!Array.isArray(wire[section])) continue
+    let layerMax: CacheTtl | undefined
+    const visit = (items: Array<Record<string, unknown> | null | undefined>): void => {
+      for (const item of items) {
+        if (!item || typeof item !== "object") continue
+        const cc = item.cache_control as { ttl?: unknown } | undefined
+        if (cc) {
+          const ttl: CacheTtl = cc.ttl === "1h" ? "1h" : "5m"
+          layerMax = layerMax === undefined ? ttl : maxTtl(layerMax, ttl)
+        }
+        if (Array.isArray(item.content)) visit(item.content as Array<Record<string, unknown>>)
+      }
+    }
+    visit(wire[section] as Array<Record<string, unknown>>)
+    result[section] = layerMax
+  }
+  return result
+}
+
 /** True when any cache_control in the wire (system / messages / tools) carries `ttl:"1h"` — read-only. */
 function wireHasOneHourTtl(wire: Record<string, unknown>): boolean {
   return ["system", "messages", "tools"].some((key) => hasOneHourTtlDeep(wire[key]))
