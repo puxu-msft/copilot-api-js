@@ -108,6 +108,7 @@ Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/respons
 - T3.1 `cc-to-anthropic`（非流式）：CC choices→Anthropic content[]（tool_calls→tool_use、finish_reason→stop_reason、usage、toolu_ 透传、多 choices 折叠）。
 - T3.2 `anthropic-to-cc`（非流式，反向）：Anthropic content[]→CC choices（thinking 丢弃、tool_use→tool_calls、stop_reason→finish_reason）。
 - T3.3 anthropic codec `renderResponseNonStreaming` 按 targetEndpoint；OQ4 错误透传非流式两路。
+- **T3.4（Phase 2 review 揪出的 latent gap，承接 RFC §4.1）** anthropic codec `createResponseAccumulator` 须按出站腿分派：翻译腿上游是 CC 形，须委托 `ccDelegate().createResponseAccumulator()`（现状恒返 Anthropic accumulator，若喂 CC 帧会产畸形/空 `outboundResponse`，违 richest-data-flow「后端存储必须完整」）。**但当前 `FormatCodec.createResponseAccumulator()` 无 `env` 参**（Phase 0/1 接口态），而 RFC §4.1 明确签名是 `createResponseAccumulator(env)`——故 Phase 3 须先恢复 `env` 参（改接口 + 5 codec + 调用方），再按 `targetEndpoint` 分派。Phase 2 不受影响（翻译腿在 renderResponse 之前 fail-fast，accumulator 不可达），故推迟至此、不在请求侧 Phase 2 扩接口。
 - 单测 + @responses 四跳往返 oracle。
 
 ---
