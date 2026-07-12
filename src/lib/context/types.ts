@@ -56,12 +56,25 @@ export interface WireRequest {
 export interface ResponseData {
   success: boolean
   model: string
+  // usage: ONE of TWO lockstep owner points — the other is `UsageData` in
+  // `src/lib/history/types.ts`. NOT a shared reference (kept inline so context has
+  // no history-store type dependency), so this literal MUST stay field-for-field
+  // identical to UsageData. See docs/spec/2026-07-12-ghc-usage-details.md §5.1 (C1).
   usage: {
     input_tokens: number
     output_tokens: number
     cache_read_input_tokens?: number
     cache_creation_input_tokens?: number
-    output_tokens_details?: { reasoning_tokens: number }
+    input_tokens_details?: { text?: number; audio?: number; image?: number; video?: number }
+    output_tokens_details?: {
+      reasoning_tokens?: number
+      text?: number
+      audio?: number
+      image?: number
+      video?: number
+      accepted_prediction_tokens?: number
+      rejected_prediction_tokens?: number
+    }
   }
   content: unknown
   stop_reason?: string

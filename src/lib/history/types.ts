@@ -194,12 +194,34 @@ export interface WarningMessage {
   message: string
 }
 
+/**
+ * Canonical usage shape. ONE of TWO lockstep owner points — the other is the
+ * inline `ResponseData.usage` literal in `src/lib/context/types.ts`. The two are
+ * NOT linked by a shared reference (context/types.ts does not import this), so any
+ * field change here MUST be mirrored there in the same commit, or the context→
+ * complete/fail/abort chain silently loses the new fields (and reasoning-optional
+ * would break assignment). See docs/spec/2026-07-12-ghc-usage-details.md §5.1 (C1).
+ *
+ * The modality (`text`/`audio`/`image`/`video`) and prediction fields are GHC
+ * extensions stored blob-only (no SQLite column); mostly null for text models.
+ */
 export interface UsageData {
   input_tokens: number
   output_tokens: number
   cache_read_input_tokens?: number
   cache_creation_input_tokens?: number
-  output_tokens_details?: { reasoning_tokens: number }
+  /** Input-side modality breakdown (GHC extension, blob-only; non-empty only). */
+  input_tokens_details?: { text?: number; audio?: number; image?: number; video?: number }
+  /** Output-side: reasoning (now optional, matching the non-zero-only convention) + modality + prediction (GHC extension, blob-only). */
+  output_tokens_details?: {
+    reasoning_tokens?: number
+    text?: number
+    audio?: number
+    image?: number
+    video?: number
+    accepted_prediction_tokens?: number
+    rejected_prediction_tokens?: number
+  }
 }
 
 export interface SystemBlock {
