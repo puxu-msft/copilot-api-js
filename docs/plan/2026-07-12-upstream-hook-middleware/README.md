@@ -23,21 +23,18 @@
 ## 阶段 DAG（依赖关系）
 
 ```
-Phase 0 (loader + config 地基)  ─┬─→ Phase 1 (driver 三挂载点)  ─┬─→ Phase 5 (集成测试 + 收尾)
-                                 │                              │
-                                 └─→ Phase 2 (history 可辨识性) ─┤
-                                                                │
-Phase 3 (helper 工具箱) ─────────────────────────────────────────┤
-  (依赖 Phase 0 的 loader 类型，可与 Phase 1/2 并行)               │
-                                                                │
-Phase 4 (API 路由 + 根路径) ──────────────────────────────────────┘
-  (依赖 Phase 0 的 loader reload 接口)
+Phase 0 (loader + config + origin.ts 地基) ─┬─→ Phase 1 (driver 三挂载点) ─┬─→ Phase 5 (集成测试 + 收尾)
+                                            │                            │
+                                            ├─→ Phase 2 (history 可辨识性) ┤
+                                            │                            │
+                                            ├─→ Phase 3 (helper 工具箱) ───┤
+                                            │                            │
+                                            └─→ Phase 4 (API 路由 + 根路径) ┘
 ```
 
-- **Phase 0** 是地基（loader 单例 + config section），所有后续依赖 `getUpstreamHook()` 与 `UpstreamHook` 类型。
+- **Phase 0** 是地基（loader 单例 + config section + `origin.ts` 标记原语），所有后续依赖 `getUpstreamHook()`/`UpstreamHook` 类型 + `tagStream`/`readOrigin`。
 - **Phase 1**（driver 挂载点）与 **Phase 2**（history 标记）耦合紧（rewriteUpstreamFrame 的标记落点），建议同一执行者连做。
-- **Phase 3**（helper）只依赖 Phase 0 的类型，可并行。
-- **Phase 4**（API）依赖 Phase 0 的 `loadUpstreamHook`/`getUpstreamHook`。
+- **Phase 2 / Phase 3 / Phase 4 三者相互独立、均只依赖 Phase 0**，可真并行（评审 HIGH-1：`origin.ts` 上移 Phase 0 后，Phase 3 不再依赖 Phase 2）。
 - **Phase 5**（集成 + 收尾）依赖全部。
 
 ## 阶段文件

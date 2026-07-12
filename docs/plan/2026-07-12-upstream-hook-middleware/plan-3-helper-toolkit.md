@@ -1,6 +1,8 @@
 # Phase 3：helper 工具箱
 
-> 依赖：Phase 0（`UpstreamHook` 类型）+ Phase 2（`HOOK_ORIGIN`/`tagStream`）。可与 Phase 1 并行。产出：hook 文件从 `~/lib/pipeline/hooks` 导入的 helper 集。
+> 依赖：Phase 0（`UpstreamHook` 类型 + `origin.ts` 的 `tagStream`/`rawStream`⚠️见下）。**可与 Phase 1/2 真并行**（评审 HIGH-1：`origin.ts` 已上移 Phase 0 Task 0.7，Phase 3 不再依赖 Phase 2）。产出：hook 文件从 `~/lib/pipeline/hooks` 导入的 helper 集。
+
+> 注：`rawStream` 是本 Phase Task 3.1 建的 toolkit 内部函数；`tagStream`/`HOOK_ORIGIN` 来自 Phase 0 `origin.ts`。
 
 **Interfaces produced（hook 作者 import 的公共面）**：
 
@@ -80,7 +82,11 @@ mockUpstreamError.serverToolRejection = () =>
   mockUpstreamError(400, { error: { message: "The use of the web search tool is not supported.", code: "unsupported_value" } })
 mockUpstreamError.cacheControlSubfield = () =>
   mockUpstreamError(400, "system.1.cache_control.ephemeral.scope: Extra inputs are not permitted")
+mockUpstreamError.unsupportedBeta = () =>  // 评审 MEDIUM-2：spec §4.2 明列的第 4 个预设，正则 BETA_ERROR_PATTERN 存在
+  mockUpstreamError(400, "unsupported beta header(s): interleaved-thinking-2025-05-14")
 ```
+
+> 4 个预设对应 4 条真实 reactive 学习腿（spec §4.2）：`toolFieldRejection`/`serverToolRejection`/`cacheControlSubfield`/`unsupportedBeta`（后者命中 `src/lib/request/strategies/unsupported-beta-retry.ts` 的 `BETA_ERROR_PATTERN = /unsupported beta header\(s\)|invalid beta flag/i`）。namespace 声明须同步补 `unsupportedBeta(): never`。
 
 - [ ] **Step 1：写失败测试** — `mockUpstreamError(400, {...})` 抛 `HTTPError`、`.status===400`、`.responseText` 含 body；预设的 responseText 匹配各策略正则（用勘探 D.3 的正则直接断言 `TOOL_FIELD_EXTRA_INPUTS.test(err.responseText)===true`）。
 - [ ] **Step 2-4：跑失败 → 写 → 跑绿**（策略真触发在 Phase 5 端到端实测，此处只证 responseText 命中正则）。
@@ -126,6 +132,6 @@ export function truncateAfter(n: number, stream: UpstreamStream): UpstreamStream
 
 - [ ] **Step 1：写失败测试** — `truncateAfter(2, streamOf([a,b,c]))` 只产 2 帧；`delay(10)` 包装可 await。barrel `import { mockUpstreamError, replayFromHistory } from "~/lib/pipeline/hooks"` 可解析。
 - [ ] **Step 2-4：跑失败 → 写 + barrel → 跑绿 + typecheck**。
-- [ ] **Step 5：commit**。
+- [ ] **Step 5：写 hook 作者文档（评审 LOW-3）** — 建 `src/lib/pipeline/hooks/README.md`（或 barrel 顶部 JSDoc），显式写两条 spec 要求的警告：① `onExchange` 被调 **L1×L2 次**（同一客户端请求内多次，spec §3.2），有状态 hook 须知；② 不调 `next` 的 mock 流**绕过** `guardSseIterable`（idle/shutdown/client-abort 守卫）+ rate-limiter（spec §4.2），要测超时/断流须自行在 raw 逃生口构造。commit。
 
 **Phase 3 出口验收**：全 helper 单测绿（格式 mock 经独立 accumulator oracle 校验、mockUpstreamError 命中策略正则）；barrel 从 `~/lib/pipeline/hooks` 可导入；`typecheck` 绿。

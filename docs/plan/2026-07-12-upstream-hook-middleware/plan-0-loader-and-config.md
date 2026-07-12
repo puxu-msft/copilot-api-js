@@ -198,3 +198,25 @@ if (state.hooksEnabled && state.hooksUpstreamModule) {
 - [ ] **Step 2：commit**。
 
 **Phase 0 出口验收**：`bun test` 全绿 + `bun run typecheck` + `typecheck:ui-v4` 绿；`hooks` 未配置时零行为改变（`getUpstreamHook()` === undefined）。
+
+## Task 0.7：`origin.ts` — hook 产物流标记原语（评审 HIGH-1 上移）
+
+**Files:** Create `src/lib/pipeline/hooks/origin.ts`；Test `tests/pipeline/hooks/origin.unit.test.ts`。
+
+从 Phase 2 上移到此（纯符号 + tag/read，无 driver 依赖），使 Phase 2（history 标记）与 Phase 3（helper）都只依赖 Phase 0、恢复 DAG 宣称的并行性。
+
+```ts
+// src/lib/pipeline/hooks/origin.ts
+import type { UpstreamStream } from "~/lib/pipeline/types"
+export const HOOK_ORIGIN = Symbol("hookOrigin")
+export type HookOrigin = "hook-mock" | "hook-replay"
+export function tagStream(s: UpstreamStream, origin: HookOrigin): UpstreamStream {
+  return Object.assign(s, { [HOOK_ORIGIN]: origin })
+}
+export function readOrigin(s: UpstreamStream): HookOrigin | undefined {
+  return (s as Record<symbol, unknown>)[HOOK_ORIGIN] as HookOrigin | undefined
+}
+```
+
+- [ ] **Step 1：写失败测试** — `tagStream(s, "hook-mock")` 后 `readOrigin(s) === "hook-mock"`；未标记流 `readOrigin` === undefined。
+- [ ] **Step 2-4：跑失败 → 写 origin.ts → 跑绿 + typecheck** → **Step 5：commit**。

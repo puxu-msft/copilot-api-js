@@ -78,14 +78,20 @@
       // so the upstream track keeps pre-hook real frames (spec §3.2/§3.4 H2). undefined → drop.
       const hook = getUpstreamHook()
       let effFrame: UpstreamFrame | undefined = frame
-      if (hook?.rewriteUpstreamFrame && frame.data !== "[DONE]") {
-        effFrame = hook.rewriteUpstreamFrame(frame, env)
-        if (effFrame === undefined) continue  // dropped
+      if (hook?.rewriteUpstreamFrame && frame.data !== "[DONE]") effFrame = hook.rewriteUpstreamFrame(frame, env)
+      // Guard the rewrite chain instead of `continue` — so行 456 `frameIndex++` ALWAYS runs
+      // (评审 LOW-1：continue 会跳过 frameIndex++ 致 dry-run 序号错乱). Dropped frame (undefined)
+      // simply skips passThrough, but frameIndex still advances.
+      if (effFrame !== undefined) {
+        for (const rewritten of passThrough([effFrame], rewrites, states, 0, sampleAction)) {
+          if (opts?.skipRender) yield rewritten
+          else yield* renderFrames(deps, rewritten, env)
+        }
       }
-      for (const rewritten of passThrough([effFrame], rewrites, states, 0, sampleAction)) {
+      frameIndex++
 ```
 
-> 注：`hook` getter 每帧调开销极小（module-global 读）；未配置时 `hook===undefined` 直接跳过，`effFrame===frame`，`passThrough([frame], …)` 与原行 449 逐字节等价。
+> 注：`hook` getter 每帧调开销极小（module-global 读）；未配置时 `hook===undefined`、`effFrame===frame`、`passThrough([frame], …)` 与原行 449 逐字节等价，且 `frameIndex++` 恒执行（评审 LOW-1 修正——不用 `continue`）。
 
 - [ ] **Step 1：写失败测试** —
   - 挂改写 hook（改 `frame.data`）→ forwarded 帧是改后的、**上游轨 `upstreamSse` 是 pre-hook 原始帧**（关键不变量，读 `env.ctx` 的 sseEvents 断言）。
