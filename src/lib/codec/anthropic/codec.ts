@@ -109,8 +109,14 @@ import {
   resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
+import { translateRequestVia } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
+import {
+  //
+  createOpenAiCcCodec,
+  type OpenAiCcCodec,
+} from "../openai-cc/codec"
 import { createAnthropicSanitizeRewrite } from "./request-rewrite-adapter"
 
 const CLIENT_FORMAT: ClientFormat = "anthropic"
@@ -161,6 +167,14 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   let initialSanitizationInfo: SanitizationInfo | undefined
   let resanitize: AnthropicSanitizeFn | undefined
   let latestEffectiveMessages: Array<unknown> | undefined
+
+  // Internal openai-cc delegate for the FORWARD translation legs (anthropic → cc/responses). Built
+  // lazily on the first translate-leg call (a direct `/v1/messages` request never touches it). Its
+  // methods are pure over `env` (+ its own lazily-built via-responses translator closure), so — like
+  // the gemini codec's cc delegate — they work standalone without cc's own `parse` (RFC §4.2). The
+  // codec's own ctx / baseline / sanitize state stay ours; only cc's CC-wire prep + sampling are reused.
+  let cc: OpenAiCcCodec | undefined
+  const ccDelegate = (): OpenAiCcCodec => (cc ??= createOpenAiCcCodec())
 
   // The S3 request rewrite chain, built once per request. Execution order is by
   // the sorted `.order` key (NOT array position — assembleRequestRewrites sorts):
@@ -217,18 +231,36 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       return requestRewrites
     },
 
-    // S2/S6 are identity — Anthropic is a bypass-direct format (no translation).
+    // S2 translateOut: direct `/v1/messages` (the only leg the bypass-direct path uses) is identity,
+    // byte-for-byte — as is an unset targetEndpoint (isolated unit-test envs). A FORWARD translate leg
+    // (`@cc`/`@responses` → CC/Responses) delegates to the hub, producing a CC-canonical body that the
+    // cc delegate's prepareWire turns into the CC / Responses wire (T2.4 / RFC §4.2). env.body becomes
+    // CC-shaped from here on, so the Anthropic request rewrites (gated on targetEndpoint===/v1/messages)
+    // correctly do NOT fire on the translated body.
     translateOut(env) {
-      return env
+      if (!isForwardTranslateLeg(env.targetEndpoint)) return env
+      const ccBody = translateRequestVia(CLIENT_FORMAT, env.targetEndpoint, env.body, { model: env.model })
+      return env.with({ body: ccBody })
     },
-    renderResponse(frame) {
-      return frame
+
+    // S6 render: the direct path is identity. A FORWARD translate leg is END-TO-END FAIL-FAST — response
+    // translation (CC→Anthropic) is Phase 3 (non-streaming) / Phase 4 (streaming); until then, letting a
+    // translate leg return an un-translated CC response to the Anthropic client would be corrupt data, so
+    // render THROWS (never-swallow, WARN-1). Mirrors the hub's renderResponseVia + prepareWire's symmetric
+    // throw for legs the cc delegate can't yet serve.
+    renderResponse(frame, env) {
+      if (!isForwardTranslateLeg(env.targetEndpoint)) return frame
+      throw new Error(failFastResponseMessage(env.targetEndpoint))
     },
-    renderResponseNonStreaming(upstream) {
-      return upstream
+    renderResponseNonStreaming(upstream, env) {
+      if (!isForwardTranslateLeg(env.targetEndpoint)) return upstream
+      throw new Error(failFastResponseMessage(env.targetEndpoint))
     },
 
     prepareWire(env) {
+      // FORWARD translate leg: the body is CC-shaped (translateOut delegated to the hub), so the cc
+      // delegate's prepareWire does the CC / CC→Responses wire prep (openai-cc P2.2-D1).
+      if (isForwardTranslateLeg(env.targetEndpoint)) return ccDelegate().prepareWire(env)
       return prepareAnthropicWire(env, {
         betaProbe: args.betaProbe,
         clientAnthropicBeta,
@@ -242,10 +274,17 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     },
 
     preSend(env) {
+      // Pre-flight truncation is Anthropic-caliber (calibrated on the Anthropic body); on a translate
+      // leg the body is CC-shaped, so skip it (the cc leg's own truncation strategy handles size).
+      if (isForwardTranslateLeg(env.targetEndpoint)) return Promise.resolve(env)
       return anthropicPreSend(env)
     },
 
     sampleRequest(wire, env): RequestSample {
+      // Translate leg: the effective + wire are CC-shaped — delegate to the cc sampler (correct format
+      // labels + Responses `input` extraction). latestEffectiveMessages stays unset (only the messages
+      // leg's retry rebuild reads it).
+      if (isForwardTranslateLeg(env.targetEndpoint)) return ccDelegate().sampleRequest?.(wire, env) as RequestSample
       const sample = sampleAnthropicRequest(wire, env)
       latestEffectiveMessages = sample.effectiveMessages
       return sample.requestSample
@@ -259,6 +298,20 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       return createAnthropicStreamAccumulator()
     },
   }
+}
+
+/**
+ * Is the outbound leg a FORWARD translate leg (anthropic → CC / Responses)? The bypass-direct path
+ * uses `/v1/messages`; an unset leg (isolated unit-test envs, before the driver's S2 overwrite) is
+ * treated as direct too. Only an explicit CC / Responses leg takes the hub-delegated translate path.
+ */
+function isForwardTranslateLeg(targetEndpoint: UpstreamEndpoint | undefined): targetEndpoint is Exclude<UpstreamEndpoint, "/v1/messages"> {
+  return targetEndpoint === ENDPOINT.CHAT_COMPLETIONS || targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES
+}
+
+/** The fail-fast error message for a translate leg's response side (response translation lands Phase 3/4). */
+function failFastResponseMessage(targetEndpoint: UpstreamEndpoint): string {
+  return `anthropic codec cannot render a response for the ${targetEndpoint} translate leg — CC→Anthropic response translation is not wired yet (Phase 3 non-streaming / Phase 4 streaming); the leg is intentionally end-to-end fail-fast so an un-translated CC response is never returned to the Anthropic client`
 }
 
 // ============================================================================
