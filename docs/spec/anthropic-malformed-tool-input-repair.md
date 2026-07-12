@@ -75,6 +75,18 @@ A 类 3 例按**根因**进一步细分（决定哪条 Layer 修得了，实测�
 
 **诚实标注覆盖率**：`tags` 只修 antml-bleed（实测 A 类 3 例中 1 例）；`unicode` 只修空白打断的转义；965/921 这类结构错只有 `jsonrepair` 能修；**丢 hex 位的转义只有有损 `unicode-lossy` 能救**（全 DB 扫描实测：20 例 AskUserQuestion 真畸形中 18 无损可修、余 2 丢 hex 位需有损，见 `exp/askuserquestion-decode/`）。retain-on-absence 语义同其它 anthropic.* 标量；hot-reload 经 `applyConfigToState`。`server_tool_use` 永不受影响。
 
+### 2.1bis stringified 内层字段修复（2026-07-12 新增）——外层合法 / 内层畸形
+
+上述 §2.1 修的是**整个 tool_use input** 是非法 JSON。另有一个**更大、更隐蔽**的类（全 DB 扫描 **43 例**，全 `status=completed` 即静默转发给客户端、客户端解析失败）：**外层 input `{"questions":"..."}` 合法解析，但 decode-目标字段 `questions` 是个 stringified JSON，其内层内容自身畸形**（截断等）。触发案例 `req_1783844271353_1895`。
+
+- 根因：`decodeToolUseInput`→`tryDecodeJsonString` 对内层 parse 失败的字段返回 `undefined`，保留原畸形串转发；整层修复级联只作用于外层、从不进入 stringified 字段。
+- 修复：repair 开启时，在 decode 前对**显式** decode 字段（`cfg.fields[name]`，如 `AskUserQuestion.questions`；**不含** `cfg.all`——那里非 JSON 串是合法明文）中「是非空字符串但 `JSON.parse` 失败」者跑同一 `repairToolInput` 级联（落地 `decode-tool-input.ts` 的 `repairStringifiedDecodeFields`，流式 finalize + 非流式两路都接）。
+- **gate 放宽**：字段级修复用 `repairToolInput(v, items, {allowArrayResult:true})`——`questions` 内层合法就是 **array**，故 gate 认 object-或-array；**顶层整输入仍 object-only**（防 jsonrepair 把 scalar/array 当 tool input 造假，audit H3 不回退）。array-或-object gate 仍拒 scalar，故明文串字段不被误改。
+- 实测（全 DB 43 例，真实源全级联 `tags,unicode,jsonrepair,unicode-lossy` + allowArrayResult）：**43 例全可修**（7 unicode / 32 jsonrepair / 4 unicode-lossy，0 不可修）。
+- 遥测：字段级修复的 `onRepair` 带 `field`（如 `questions`），进 `RepairOutcomeRecord.field` + `[REWRITE] ... field=questions` 日志 + `tool-input-repaired` feature 的 `field`，与整输入修复可区分（richest-data-flow）。
+- **AskUserQuestion 真畸形全人群修正**：20（外层）+ 43（内层）= 63；内层 43 是当前静默命中客户端的主体。
+
+
 ### 2.2 流式流程（复用 decode 缓冲 + finalize）
 
 解码器现有逐帧逻辑不变，仅在 `finalize`（content_block_stop）的 parse-失败分支插入修复：

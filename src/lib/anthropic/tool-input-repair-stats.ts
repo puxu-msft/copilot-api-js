@@ -68,8 +68,8 @@ export function flushToolInputRepairObservability(ctx: RequestContext): void {
     if (r.outcome === "unrepairable") {
       ctx.recordFeature("tool-input-unrepairable", { tool: r.tool })
     } else {
-      ctx.recordFeature("tool-input-repaired", { tool: r.tool, layer: r.outcome })
-      consola.info(`[REWRITE] tool-input-repair tool=${r.tool} layer=${r.outcome} ${r.beforeLength}→${r.afterLength}B`)
+      ctx.recordFeature("tool-input-repaired", { tool: r.tool, layer: r.outcome, field: r.field })
+      consola.info(`[REWRITE] tool-input-repair tool=${r.tool}${r.field ? ` field=${r.field}` : ""} layer=${r.outcome} ${r.beforeLength}→${r.afterLength}B`)
     }
   }
 }

@@ -278,38 +278,61 @@ function isPlausibleToolInput(v: unknown): boolean {
 }
 
 /**
+ * Field-level gate: accepts a JSON object OR array. Used when repairing a stringified decode-target
+ * FIELD (e.g. AskUserQuestion `questions`, which is legitimately an array) rather than a whole tool
+ * input. Still rejects jsonrepair's scalar fabrications (bare string/number/null) — only object/array
+ * are structured JSON a field could plausibly hold.
+ */
+function isPlausibleObjectOrArray(v: unknown): boolean {
+  return typeof v === "object" && v !== null
+}
+
+/** Options for {@link repairToolInput}. */
+export interface RepairToolInputOptions {
+  /**
+   * Accept a repaired ARRAY as success, not just an object. Set when repairing a stringified
+   * decode-target field whose expected shape is an array (AskUserQuestion `questions`). The default
+   * (false) keeps the object-only gate for whole-input repair, where a bare array is not a valid tool
+   * argument map. In BOTH modes a bare scalar (string/number/null) is still rejected.
+   */
+  allowArrayResult?: boolean
+}
+
+/**
  * Cascade the enabled repair `items` (in canonical {@link REPAIR_ITEMS} order) over a malformed
  * tool_use input JSON string. Each enabled item applies its transform to the running `current`
  * string — so items **stack** (e.g. `tags`-strip THEN `jsonrepair` on the stripped form) — and
- * re-validates; the first item whose result parses AND is a plausible tool input (a JSON object)
- * wins, returning the parsed object with its layer name. `{ unrepairable: true }` when no enabled
- * item yields valid JSON. Idempotent on already-valid input (each layer is a no-op on well-formed
- * JSON). The caller decides forward-as-is vs fail on an unrepairable result.
+ * re-validates; the first item whose result parses AND is a plausible tool input (a JSON object,
+ * or object/array when `opts.allowArrayResult`) wins, returning the parsed value with its layer
+ * name. `{ unrepairable: true }` when no enabled item yields valid JSON. Idempotent on already-valid
+ * input (each layer is a no-op on well-formed JSON). The caller decides forward-as-is vs fail on an
+ * unrepairable result.
  *
  * `tags`-only ≡ the legacy `"tags"` tier; `["tags","jsonrepair"]` ≡ the legacy `"repair"` tier
  * (jsonrepair on the stripped form). Decoupled items also allow new combinations the tiers
  * couldn't express (e.g. `jsonrepair` without `tags`).
  */
-export function repairToolInput(raw: string, items: ReadonlyArray<RepairItem>): RepairResult {
+export function repairToolInput(raw: string, items: ReadonlyArray<RepairItem>, opts: RepairToolInputOptions = {}): RepairResult {
+  const plausible = opts.allowArrayResult ? isPlausibleObjectOrArray : isPlausibleToolInput
   let current = raw
 
   if (items.includes("tags")) {
     current = stripAntmlTagsOutsideStrings(current)
     const afterStrip = parseJsonOrFail(current)
-    if (afterStrip.ok && isPlausibleToolInput(afterStrip.value)) return { repaired: afterStrip.value, layer: "strip" }
+    if (afterStrip.ok && plausible(afterStrip.value)) return { repaired: afterStrip.value, layer: "strip" }
   }
 
   if (items.includes("unicode")) {
     current = fixBadUnicodeEscapes(current)
     const afterUnicode = parseJsonOrFail(current)
-    if (afterUnicode.ok && isPlausibleToolInput(afterUnicode.value)) return { repaired: afterUnicode.value, layer: "unicode" }
+    if (afterUnicode.ok && plausible(afterUnicode.value)) return { repaired: afterUnicode.value, layer: "unicode" }
   }
 
   if (items.includes("jsonrepair")) {
     const repaired = tryJsonRepair(current)
     if (repaired !== undefined) {
       const parsed = JSON.parse(repaired) as unknown
-      if (isPlausibleToolInput(parsed)) return { repaired: parsed, layer: "jsonrepair" }
+      if (plausible(parsed)) return { repaired: parsed, layer: "jsonrepair" }
     }
   }
 
@@ -319,11 +342,11 @@ export function repairToolInput(raw: string, items: ReadonlyArray<RepairItem>): 
     // non-destructive item above failed; costs ≥1 garbled glyph but rescues an otherwise-dead input.
     current = fixBadUnicodeEscapesLossy(current)
     const afterLossy = parseJsonOrFail(current)
-    if (afterLossy.ok && isPlausibleToolInput(afterLossy.value)) return { repaired: afterLossy.value, layer: "unicode-lossy" }
+    if (afterLossy.ok && plausible(afterLossy.value)) return { repaired: afterLossy.value, layer: "unicode-lossy" }
     const repaired = tryJsonRepair(current)
     if (repaired !== undefined) {
       const parsed = JSON.parse(repaired) as unknown
-      if (isPlausibleToolInput(parsed)) return { repaired: parsed, layer: "unicode-lossy" }
+      if (plausible(parsed)) return { repaired: parsed, layer: "unicode-lossy" }
     }
   }
 

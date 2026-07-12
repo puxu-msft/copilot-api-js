@@ -390,3 +390,31 @@ describe("repairToolInput — unicode-lossy item (best-effort last resort)", () 
     expect(q[0].options).toHaveLength(1)
   })
 })
+
+describe("repairToolInput — allowArrayResult (field-level repair of a stringified array like AskUserQuestion.questions)", () => {
+  test("default gate rejects a repaired ARRAY (a bare array is not a plausible top-level tool input)", () => {
+    // The inner `questions` value is a JSON array; without the opt-in it's treated as unrepairable.
+    const truncatedArray = String.raw`[{"header":"a","options":[{"label":"x"}`
+    expect(repairToolInput(truncatedArray, ["jsonrepair"])).toEqual({ unrepairable: true })
+  })
+
+  test("allowArrayResult accepts a repaired ARRAY via jsonrepair → layer jsonrepair", () => {
+    const truncatedArray = String.raw`[{"header":"a","options":[{"label":"x"}`
+    const r = repairToolInput(truncatedArray, ["jsonrepair"], { allowArrayResult: true })
+    expect(r).toMatchObject({ layer: "jsonrepair" })
+    const arr = "repaired" in r ? (r.repaired as Array<{ header: string }>) : []
+    expect(Array.isArray(arr)).toBe(true)
+    expect(arr[0].header).toBe("a")
+  })
+
+  test("allowArrayResult still rejects a bare scalar (jsonrepair fabrication guard holds)", () => {
+    // `not json` → jsonrepair makes the bare string "not json"; array-or-object gate still rejects it.
+    expect(repairToolInput("not json", ["jsonrepair"], { allowArrayResult: true })).toEqual({ unrepairable: true })
+  })
+
+  test("allowArrayResult also accepts an object result (superset of the default gate)", () => {
+    const r = repairToolInput(String.raw`{"a":1`, ["jsonrepair"], { allowArrayResult: true })
+    expect(r).toMatchObject({ layer: "jsonrepair" })
+    expect("repaired" in r && r.repaired).toEqual({ a: 1 })
+  })
+})

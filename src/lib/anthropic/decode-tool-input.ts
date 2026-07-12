@@ -70,7 +70,13 @@ export interface ToolInputRewriteOptions {
    * `layer` names the winning repair layer; `beforeLength`/`afterLength` are the raw-vs-repaired
    * JSON sizes (for the `[REWRITE]` log + outcome telemetry). Fires once per repaired block.
    */
-  onRepair?: (info: { tool: string; layer: "strip" | "unicode" | "jsonrepair" | "unicode-lossy"; beforeLength: number; afterLength: number }) => void
+  onRepair?: (info: {
+    tool: string
+    layer: "strip" | "unicode" | "jsonrepair" | "unicode-lossy"
+    beforeLength: number
+    afterLength: number
+    field?: string
+  }) => void
   /**
    * Called when a tool_use input the decoder buffered (selected for field decoding OR `AskUserQuestion` header backfill) couldn't be rewritten:
    *   - `input-parse-failed` — the whole buffered input JSON didn't parse (a COMPLETE block, not an abort). Fires for ANY buffered tool, including a backfill-only selection.
@@ -90,6 +96,44 @@ function isParseableJson(s: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Repair malformed stringified decode-target FIELDS whose OUTER input parses but the field's inner
+ * JSON string is itself malformed — e.g. AskUserQuestion `questions: "[{…truncated}"` (the outer
+ * `{"questions":"…"}` is valid, so whole-input repair never fires; `tryDecodeJsonString` then leaves
+ * the broken string in place and it is forwarded unrepaired → client decode error). Runs the repair
+ * cascade per explicit decode field with the ARRAY-accepting gate (a field like `questions` is
+ * legitimately an array). Restricted to EXPLICIT `cfg.fields[name]` — never `cfg.all`, where a
+ * non-parseable string is a legitimate plain string, not malformed. The array-or-object gate still
+ * rejects jsonrepair scalar fabrications, so a genuinely plain-string field is left untouched.
+ * Returns a NEW input object when any field was repaired, else the original reference.
+ */
+function repairStringifiedDecodeFields(
+  name: string,
+  input: unknown,
+  cfg: DecodeToolInputConfig,
+  repairItems: ReadonlyArray<RepairItem>,
+  onRepair: ToolInputRewriteOptions["onRepair"],
+): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input
+  // Explicit fields only — under `cfg.all`, a string that doesn't parse is a legitimate plain value.
+  if (cfg.all || !Object.hasOwn(cfg.fields, name)) return input
+
+  const obj = input as Record<string, unknown>
+  let result: Record<string, unknown> | undefined
+  for (const field of cfg.fields[name]) {
+    const value = obj[field]
+    // Only a NON-empty string that FAILS to parse is a malformed encoded field. A valid stringified
+    // field decodes normally downstream; an empty string / non-string is not this repair's concern.
+    if (typeof value !== "string" || value === "" || isParseableJson(value)) continue
+    const repaired = repairToolInput(value, repairItems, { allowArrayResult: true })
+    if (!("repaired" in repaired)) continue // unrepairable → leave as string; reportUndecodedFields flags it
+    if (!result) result = { ...obj }
+    result[field] = repaired.repaired
+    onRepair?.({ tool: name, layer: repaired.layer, field, beforeLength: value.length, afterLength: JSON.stringify(repaired.repaired).length })
+  }
+  return result ?? input
 }
 
 /** Build a per-scope deduping reporter (`() => {}` when no sink). Dedup key = `tool:field:reason`. */
@@ -227,7 +271,17 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
     }
 
     // Decode stringified fields first, then backfill — so a stringified `questions` array is structured before its items are inspected.
-    const decoded = decodeToolUseInput(buf.name, inputObj, cfg)
+    // Before decoding: repair any decode-target field whose OUTER-valid input carries a MALFORMED
+    // inner JSON string (e.g. a truncated `questions` array) — otherwise it stays a broken string.
+    let repairedInput = inputObj
+    if (repairEnabled) {
+      const afterFieldRepair = repairStringifiedDecodeFields(buf.name, inputObj, cfg, repairItems, opts.onRepair)
+      if (afterFieldRepair !== inputObj) {
+        repairedInput = afterFieldRepair
+        wasRepaired = true
+      }
+    }
+    const decoded = decodeToolUseInput(buf.name, repairedInput, cfg)
     const normalized = backfill ? backfillAskUserQuestionHeaders(buf.name, decoded) : decoded
     reportUndecodedFields(buf.name, normalized, cfg, report)
     if (!wasRepaired && normalized === inputObj) {
@@ -333,6 +387,9 @@ export function decodeToolInputBlocksInResponse(
         }
       }
     }
+    // Repair a decode-target FIELD whose inner JSON string is malformed while the OUTER input is a
+    // valid object (e.g. `questions: "[{…truncated}"`). Mirrors the streaming finalize field-repair.
+    if (repairEnabled) input = repairStringifiedDecodeFields(b.name, input, cfg, repairItems, opts.onRepair)
     const decoded = decodeToolUseInput(b.name, input, cfg)
     const normalized = backfill ? backfillAskUserQuestionHeaders(b.name, decoded) : decoded
     reportUndecodedFields(b.name, normalized, cfg, report)

@@ -338,6 +338,8 @@ export interface RepairOutcomeRecord {
   beforeLength?: number
   /** Repaired JSON length (repaired outcomes only). */
   afterLength?: number
+  /** Decode-target field whose stringified inner JSON was repaired (e.g. `questions`); absent for whole-input repair. */
+  field?: string
 }
 
 export interface RequestContext {

@@ -266,3 +266,60 @@ describe("decodeToolInputBlocksInResponse — non-streaming malformed-string rep
     expect(failures.some((f) => f.reason === "input-unrepairable")).toBe(true)
   })
 })
+
+// A decode-target field (AskUserQuestion `questions`) that arrives as a stringified JSON whose INNER
+// content is malformed: the OUTER input `{"questions":"..."}` parses fine, so whole-input repair never
+// fires, and `tryDecodeJsonString` leaves the broken string in place → forwarded unrepaired → client
+// decode error. Real capture req_1783844271353_1895 (inner `questions` array truncated).
+const RAW_INNER_QUESTIONS = loadRaw("askuserquestion-inner-questions-truncated-1783844271353-1895.json")
+const askCfg = { fields: { AskUserQuestion: ["questions"] }, all: false }
+
+describe("stringified decode-target FIELD repair (inner questions malformed, outer valid)", () => {
+  test("streaming: a malformed inner `questions` string is repaired to a valid array on the wire", () => {
+    const d = createToolInputStreamDecoder(askCfg, { repairMalformedInput: ["tags", "unicode", "jsonrepair"] })
+    const out = runRaw(d, [start(0, "AskUserQuestion"), delta(0, RAW_INNER_QUESTIONS), stop(0)])
+    expect(out).toHaveLength(3) // start, single rebuilt delta, stop
+    const rebuilt = dataOf(out[1]) as { delta: { partial_json: string } }
+    const parsed = JSON.parse(rebuilt.delta.partial_json) as { questions: Array<{ header: string; options: Array<unknown> }> }
+    expect(Array.isArray(parsed.questions)).toBe(true) // decoded from string → array
+    expect(parsed.questions.length).toBeGreaterThan(0)
+    expect(parsed.questions[0].options.length).toBeGreaterThan(0)
+  })
+
+  test("streaming: the re-emitted delta carries its event line (SDK dispatch invariant)", () => {
+    const d = createToolInputStreamDecoder(askCfg, { repairMalformedInput: ["tags", "unicode", "jsonrepair"] })
+    const out = runRaw(d, [start(0, "AskUserQuestion"), delta(0, RAW_INNER_QUESTIONS), stop(0)])
+    expect(out.find((m) => dataOf(m).type === "content_block_delta")?.event).toBe("content_block_delta")
+  })
+
+  test("non-streaming: a malformed inner `questions` string is repaired to a valid array", () => {
+    const outerObj = JSON.parse(RAW_INNER_QUESTIONS) as { questions: string }
+    const response = {
+      id: "msg_ns",
+      type: "message",
+      role: "assistant",
+      model: "claude-opus-4.8",
+      content: [{ type: "tool_use", id: "t0", name: "AskUserQuestion", input: outerObj }],
+      stop_reason: "tool_use",
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }
+    const out = decodeToolInputBlocksInResponse(response as unknown as AnthropicMessageResponse, askCfg, {
+      repairMalformedInput: ["tags", "unicode", "jsonrepair"],
+    }) as unknown as { content: Array<ToolUseBlock> }
+    const input = out.content[0].input as { questions: Array<{ options: Array<unknown> }> }
+    expect(Array.isArray(input.questions)).toBe(true)
+    expect(input.questions[0].options.length).toBeGreaterThan(0)
+  })
+
+  test("repair OFF: the malformed inner `questions` string is left untouched (current behavior)", () => {
+    const d = createToolInputStreamDecoder(askCfg, { repairMalformedInput: [] })
+    const out = runRaw(d, [start(0, "AskUserQuestion"), delta(0, RAW_INNER_QUESTIONS), stop(0)])
+    // No repair item → original bytes replay verbatim (start, original delta, stop).
+    const joined = out
+      .filter((m) => dataOf(m).type === "content_block_delta")
+      .map((m) => (dataOf(m) as { delta: { partial_json: string } }).delta.partial_json)
+      .join("")
+    expect(joined).toBe(RAW_INNER_QUESTIONS)
+  })
+})

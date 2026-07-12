@@ -205,7 +205,8 @@ interface DecodeState extends RewriteState {
  */
 function repairObservers(ctx: RequestContext): Pick<Parameters<typeof createToolInputStreamDecoder>[1] & object, "onRepair" | "onDecodeFailure"> {
   return {
-    onRepair: (info) => ctx.recordRepairOutcome({ outcome: info.layer, tool: info.tool, beforeLength: info.beforeLength, afterLength: info.afterLength }),
+    onRepair: (info) =>
+      ctx.recordRepairOutcome({ outcome: info.layer, tool: info.tool, beforeLength: info.beforeLength, afterLength: info.afterLength, field: info.field }),
     onDecodeFailure: (info: DecodeFailureInfo) => {
       reportDecodeFailure(info, ctx)
       if (info.reason === "input-unrepairable") ctx.recordRepairOutcome({ outcome: "unrepairable", tool: info.tool })
