@@ -67,7 +67,6 @@ import {
   extractAppliedEdits,
   summarizeAppliedEdits,
 } from "~/lib/anthropic/applied-context-edits"
-import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
 import {
   //
@@ -134,6 +133,7 @@ import {
 } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { decideRouteFromInput } from "~/lib/pipeline/router"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
@@ -227,15 +227,29 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
   // the driver (RFC §1 / §12.7). Re-creates the legacy lightweight ctx (the codec
   // is bypassed entirely for this path).
   if (state.webSearchEnabled && payloadHasWebSearch(wireBody)) {
-    // The web_search path bypasses the driver, so it ALSO bypasses the driver's
-    // decideRoute route-validation. Replicate legacy's pre-ctx check here
-    // (handler.ts: supportsDirectAnthropicApi runs before web_search) so an
-    // unsupported model + web_search rejects identically (400) instead of
-    // silently proceeding into the double-hop.
-    const routing = supportsDirectAnthropicApi(resolvedName)
-    if (!routing.supported) {
-      const msg = `Model "${resolvedName}" does not support /v1/messages: ${routing.reason}`
-      throw new HTTPError(msg, 400, msg)
+    // The web_search double-hop requires the DIRECT Anthropic /v1/messages leg, so it runs the
+    // SAME router decision the driver would (RFC §6 / FAIL-2) instead of a bare
+    // `supportsDirectAnthropicApi` check: ONLY a `passthrough` (/v1/messages) decision may enter
+    // the double-hop. A `reject` (unsupported model) OR a `translate` leg (@cc/@responses —
+    // translation-path web_search is a non-goal, RFC §2) is surfaced as a ctx-RECORDED 400
+    // (W-reject-obs): build the ctx first (createWebSearchContext c.set's it; the observability
+    // middleware finalizes the entry from the 4xx status), so the reject gets a history entry
+    // instead of a ctx-less bare throw. For the no-suffix unsupported case the router's reason is
+    // byte-identical to the prior `supportsDirectAnthropicApi` message (zero regression).
+    const decision = decideRouteFromInput({
+      clientFormat: "anthropic",
+      modelName: resolvedName,
+      ...(routeOverride && { routeOverride }),
+      model: selectedModel,
+    })
+    if (decision.kind !== "passthrough") {
+      const reason =
+        decision.kind === "reject" ?
+          decision.reason
+        : `Model "${resolvedName}" pinned to @${routeOverride} cannot use web_search: the double-hop requires the direct /v1/messages leg (translation-path web_search is unsupported)`
+      // Build + expose the ctx so the reject is recorded in history (not a ctx-less throw).
+      createWebSearchContext(c, clientRaw, wireBody, resolvedName, clientModel, selectedModel)
+      throw new HTTPError(reason, 400, reason)
     }
     consola.debug("[WebSearch] Intercepting request with native web_search tool (v4 route → legacy handler)")
     const reqCtx = createWebSearchContext(c, clientRaw, wireBody, resolvedName, clientModel, selectedModel)
