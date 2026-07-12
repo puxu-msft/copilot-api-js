@@ -1,6 +1,7 @@
 # Spec: TUI 渲染模型 —— 恒定高度区 + detail 备用屏，消除 DECSTBM 几何 churn
 
-- **状态**：✅ 已实现（用户 2026-07-11 签字；v1 经两轮对抗审查 + 用户真终端实测重写为 v2）。实施见 plan [2026-07-11-tui-render-model-layered](../plan/2026-07-11-tui-render-model-layered.md)（P0/P1/P2 全 11 task 逐件过审 + 合并态 whole-branch review 闭环，commit fb6cc508→2c8f826a）。**真终端 INV-4 复验待用户**（oracle `exp/tui-rawmode/log-coordination-regression.ts`）。
+- **状态**：✅ 已实现（用户 2026-07-11 签字；v1 经两轮对抗审查 + 用户真终端实测重写为 v2）。实施见 plan [2026-07-11-tui-render-model-layered](../plan/2026-07-11-tui-render-model-layered.md)（P0/P1/P2 全 11 task 逐件过审 + 合并态 whole-branch review 闭环，commit fb6cc508→2c8f826a）。
+- **⚠️ 修订（2026-07-11，用户指令反转 INV-2）**：用户实测后否决**恒定高度**取舍（默认折叠常驻 2 空行不可接受），改为 **collapsed 默认 N=1 + 允许切换出空行 + `Region` scroll-before-grow 严禁吞行**（commit e603fd91）。故下文 **INV-2「恒定几何」及 §3.1「collapsed 补空行到恒高」已作废**——现状权威看 `docs/DESIGN.md`「渲染模型」bullet + `docs/todo/deferred-backlog.md`（scroll-before-grow 窄缝）。本 spec 其余部分（detail 备用屏 C1/C2、回放、emergencyWrite 三态协调、fix A 自愈）不变。用 pty+pyte 自测（`exp/tui-rawmode/pty_grid_test.py`）取代 `log-coordination-regression.ts` 作为无吞行的自动化 oracle。
 - **日期**：2026-07-11
 - **类型**：架构级修复（bug 根因驱动 + 渲染协调重构）
 - **相关**：
