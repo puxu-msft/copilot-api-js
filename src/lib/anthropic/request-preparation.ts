@@ -194,9 +194,9 @@ export interface PerLayerClientTtls {
   messages?: CacheTtl
 }
 export interface SanitizedLayerTtls {
-  tools: CacheTtl
-  system: CacheTtl
-  messages: CacheTtl
+  tools?: CacheTtl
+  system?: CacheTtl
+  messages?: CacheTtl
 }
 
 /** ttl 大小比较：5m < 1h。 */
@@ -208,20 +208,25 @@ function minTtl(a: CacheTtl, b: CacheTtl): CacheTtl {
 }
 
 /**
- * TTL 决策单一 owner（sanitize + proxied 共用）。对每层取 max(客户端最大 ttl, extended floor)，
- * 再沿 tools→system→messages 单调化（后层 ≤ 前层），满足 Anthropic 前缀递减约束（spec §4.3）。
- * extended 未激活时所有 floor = 5m。
+ * sanitize 的 TTL 决策（规范化已有断点，NOT 注入）。对每个**有客户端断点**的层取
+ * max(客户端最大 ttl, extended floor)，再沿 tools→system→messages 单调化——后层 ≤ 最近的
+ * 前面有断点层（满足 Anthropic 前缀递减约束，spec §4.3）。**无断点层返回 undefined**：它不产生
+ * 断点，也不作为后层的上界约束（约束只对实际存在的断点成立）。
+ * extended 未激活时所有 floor = 5m。proxied 不用此函数（它自注入固定 floor，见 applyCacheControlMode）。
  */
 export function resolveSanitizedTtls(
   clientMax: PerLayerClientTtls,
   extendedActive: boolean,
   extendedTtls: { toolsSystem: CacheTtl; messages: CacheTtl },
 ): SanitizedLayerTtls {
-  const floorToolsSystem: CacheTtl = extendedActive ? extendedTtls.toolsSystem : "5m"
-  const floorMessages: CacheTtl = extendedActive ? extendedTtls.messages : "5m"
-  const tools = maxTtl(clientMax.tools ?? "5m", floorToolsSystem)
-  const system = minTtl(maxTtl(clientMax.system ?? "5m", floorToolsSystem), tools)
-  const messages = minTtl(maxTtl(clientMax.messages ?? "5m", floorMessages), system)
+  const floorTS: CacheTtl = extendedActive ? extendedTtls.toolsSystem : "5m"
+  const floorM: CacheTtl = extendedActive ? extendedTtls.messages : "5m"
+  const tools = clientMax.tools !== undefined ? maxTtl(clientMax.tools, floorTS) : undefined
+  const systemRaw = clientMax.system !== undefined ? maxTtl(clientMax.system, floorTS) : undefined
+  const system = systemRaw !== undefined && tools !== undefined ? minTtl(systemRaw, tools) : systemRaw
+  const msgCeil = system ?? tools // 最近的前面有断点层
+  const messagesRaw = clientMax.messages !== undefined ? maxTtl(clientMax.messages, floorM) : undefined
+  const messages = messagesRaw !== undefined && msgCeil !== undefined ? minTtl(messagesRaw, msgCeil) : messagesRaw
   return { tools, system, messages }
 }
 
@@ -982,9 +987,13 @@ function applyCacheControlMode(ctx: PrepareContext): void {
       break
     }
     case "sanitize": {
-      // Normalize every existing (client) breakpoint to ephemeral, per layer: message breakpoints get
-      // the messages TTL, tool/system breakpoints the tools/system TTL. Does NOT inject new breakpoints.
-      walkCacheControl(wire, (_current, section) => (section === "messages" ? messagesEphemeral : toolsSystemEphemeral))
+      // 收窄语义（spec §4）：保留客户端合法 ttl（不再无条件降 5m），剥非白名单子字段（scope 等），
+      // 跨层单调化满足 Anthropic tools→system→messages 递减约束。TTL 决策归 resolveSanitizedTtls。
+      const clientMax = collectPerLayerClientTtls(wire)
+      const ttls = resolveSanitizedTtls(clientMax, extendedTtlActive, { toolsSystem, messages: messagesTtl })
+      // 同层统一为 effective ttl（规范化）；ephemeralFor 只产 {type,ttl?} → scope 等子字段自动剥除。
+      // handler 仅对有断点的 item 调用 → ttls[section] 必非 undefined（?? "5m" 仅防御性兜底）。
+      walkCacheControl(wire, (_current, section) => ephemeralFor(ttls[section] ?? "5m"))
       break
     }
     case "proxied": {

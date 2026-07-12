@@ -4,8 +4,8 @@ import { collectPerLayerClientTtls, resolveSanitizedTtls } from "~/lib/anthropic
 
 const ext = { toolsSystem: "1h" as const, messages: "5m" as const }
 
-describe("resolveSanitizedTtls", () => {
-  test("合法递减原样保留（extended 未激活）", () => {
+describe("resolveSanitizedTtls（仅规范化已有断点，不注入缺层）", () => {
+  test("三层都有断点、合法递减 → 原样保留（extended 未激活）", () => {
     expect(resolveSanitizedTtls({ tools: "1h", system: "5m", messages: "5m" }, false, ext)).toEqual({
       tools: "1h",
       system: "5m",
@@ -13,25 +13,33 @@ describe("resolveSanitizedTtls", () => {
     })
   })
 
-  test("C1 非法组合：system=5m + messages=1h → messages 被降到 ≤system", () => {
+  test("C1 非法组合：system=5m + messages=1h → messages 降到 ≤system；tools 无断点不产生", () => {
     expect(resolveSanitizedTtls({ system: "5m", messages: "1h" }, false, ext)).toEqual({
-      tools: "5m",
+      tools: undefined,
       system: "5m",
       messages: "5m",
     })
   })
 
-  test("缺层默认 5m", () => {
-    expect(resolveSanitizedTtls({}, false, ext)).toEqual({ tools: "5m", system: "5m", messages: "5m" })
+  test("无任何断点 → 全 undefined（sanitize 不注入）", () => {
+    expect(resolveSanitizedTtls({}, false, ext)).toEqual({ tools: undefined, system: undefined, messages: undefined })
   })
 
-  test("extended 激活：floor 升级 + 仍满足递减", () => {
-    // tools/system floor=1h, messages floor=5m；客户端全缺
-    expect(resolveSanitizedTtls({}, true, ext)).toEqual({ tools: "1h", system: "1h", messages: "5m" })
+  test("extended 激活：只抬升已有断点的 floor（无断点层仍 undefined）", () => {
+    // 只有 system 有断点，floorTS=1h → system 抬到 1h；tools/messages 无断点不产生
+    expect(resolveSanitizedTtls({ system: "5m" }, true, ext)).toEqual({
+      tools: undefined,
+      system: "1h",
+      messages: undefined,
+    })
   })
 
-  test("extended 激活 + 客户端 messages=1h → messages 可保 1h（递减成立）", () => {
-    expect(resolveSanitizedTtls({ messages: "1h" }, true, ext)).toEqual({ tools: "1h", system: "1h", messages: "1h" })
+  test("extended 激活 + system=5m + messages=1h → system 抬到 1h、messages 保 1h（递减成立）", () => {
+    expect(resolveSanitizedTtls({ system: "5m", messages: "1h" }, true, ext)).toEqual({
+      tools: undefined,
+      system: "1h",
+      messages: "1h",
+    })
   })
 })
 
