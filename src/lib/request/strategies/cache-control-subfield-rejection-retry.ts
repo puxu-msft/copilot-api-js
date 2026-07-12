@@ -38,8 +38,10 @@ import type {
 
 /** 捕获每个 `...cache_control.<variant>.<field>: Extra inputs are not permitted` 的 field（去重）。 */
 const CC_SUBFIELD_EXTRA_INPUTS = /\.cache_control\.\w+\.([a-z_]\w*): Extra inputs are not permitted/gi
-/** 非 global 孪生正则，作廉价 presence 测试（matchAll 需 global flag）。 */
-const CC_SUBFIELD_PRESENT = /\.cache_control\.\w+\.[a-z_]\w*: Extra inputs are not permitted/i
+/** 非 global 孪生正则，作廉价 presence 测试（matchAll 需 global flag）。导出为
+ *  `mockUpstreamError.cacheControlSubfield` 自身 oracle 测试（~/lib/pipeline/hooks
+ *  toolkit.unit.test.ts）的单一事实源正则，避免另抄一份漂移。 */
+export const CC_SUBFIELD_PRESENT = /\.cache_control\.\w+\.[a-z_]\w*: Extra inputs are not permitted/i
 
 function extractErrorText(error: ApiError): string | null {
   if (CC_SUBFIELD_PRESENT.test(error.message)) return error.message

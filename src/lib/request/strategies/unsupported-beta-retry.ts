@@ -46,8 +46,10 @@ import type {
 
 const UNSUPPORTED_BETA_PATTERN = /unsupported beta header\(s\):\s*([^"}]+)/i
 const INVALID_BETA_FLAG_PATTERN = /invalid beta flag/i
-/** Either upstream beta-error form — used to decide whether `error.message` already carries the upstream text. */
-const BETA_ERROR_PATTERN = /unsupported beta header\(s\)|invalid beta flag/i
+/** Either upstream beta-error form — used to decide whether `error.message` already carries the
+ *  upstream text. Exported as the single source of truth for `mockUpstreamError.unsupportedBeta`'s
+ *  own oracle test (~/lib/pipeline/hooks toolkit.unit.test.ts) — no duplicated pattern literal to drift. */
+export const BETA_ERROR_PATTERN = /unsupported beta header\(s\)|invalid beta flag/i
 
 /** Hard cap on how many exclusion subsets a single request will probe. Mirrors
  *  the pipeline's learning-retry cap; full enumeration of ≤5 candidates fits. */

@@ -11,6 +11,7 @@ import type {
 } from "~/lib/pipeline/types"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 
+import { HTTPError } from "~/lib/error"
 import { createGeminiStreamTranslator } from "~/lib/gemini/convert-stream"
 
 import { tagStream } from "./origin"
@@ -113,3 +114,40 @@ export function mockGeminiResponse(text: string): UpstreamStream {
   ]
   return streamOf(frames)
 }
+
+// ============================================================================
+// mockUpstreamError — inject a fault in place of a real upstream fetch
+// ============================================================================
+
+/**
+ * Throw a real `HTTPError` (never a plain `Error`/string) so a hook's
+ * `onExchange` can `return mockUpstreamError(400, ...)` in place of a real
+ * upstream call to simulate an upstream rejection. `body` is serialized into
+ * `responseText` — the pipeline's reactive retry strategies read
+ * `error.raw.responseText` (see e.g. `tool-field-rejection-retry.ts`'s
+ * `extractErrorText`), so a hook mocking a specific rejection MUST land its
+ * text there, not just in `.message`, or `canHandle` never fires.
+ */
+function mockUpstreamErrorImpl(status: number, body?: unknown): never {
+  throw new HTTPError(`hook mock ${status}`, status, typeof body === "string" ? body : JSON.stringify(body ?? {}))
+}
+
+/**
+ * `mockUpstreamError` + four ready-made presets, one per real reactive-rejection learning leg
+ * the driver's retry strategies recognize (spec §4.2). `Object.assign` (function + static-method
+ * idiom) attaches the presets AND types them onto the exported callable in one step — no `namespace`
+ * merging needed. Each preset's `responseText` is verified (toolkit.unit.test.ts) against the EXACT
+ * regex constant its strategy module exports — not a hand-copied duplicate — so the two can never
+ * silently drift apart.
+ */
+export const mockUpstreamError = Object.assign(mockUpstreamErrorImpl, {
+  /** Hits `tool-field-rejection-retry.ts`'s `TOOL_FIELD_PRESENT`. */
+  toolFieldRejection: (): never => mockUpstreamErrorImpl(400, "tools.0.custom.eager_input_streaming: Extra inputs are not permitted"),
+  /** Hits `server-tool-rejection-retry.ts`'s `SERVER_TOOL_REJECTION_TABLE` pattern. */
+  serverToolRejection: (): never =>
+    mockUpstreamErrorImpl(400, { error: { message: "The use of the web search tool is not supported.", code: "unsupported_value" } }),
+  /** Hits `cache-control-subfield-rejection-retry.ts`'s `CC_SUBFIELD_PRESENT`. */
+  cacheControlSubfield: (): never => mockUpstreamErrorImpl(400, "system.1.cache_control.ephemeral.scope: Extra inputs are not permitted"),
+  /** Hits `unsupported-beta-retry.ts`'s `BETA_ERROR_PATTERN`. */
+  unsupportedBeta: (): never => mockUpstreamErrorImpl(400, "unsupported beta header(s): interleaved-thinking-2025-05-14"),
+})

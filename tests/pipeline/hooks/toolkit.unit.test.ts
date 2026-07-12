@@ -14,6 +14,7 @@ import {
   createAnthropicStreamAccumulator,
   getTextContent,
 } from "~/lib/anthropic/stream-accumulator"
+import { HTTPError } from "~/lib/error"
 import {
   //
   accumulateOpenAIStreamEvent,
@@ -25,10 +26,15 @@ import {
   mockAnthropicMessage,
   mockCcChunks,
   mockGeminiResponse,
+  mockUpstreamError,
   rawStream,
   sse,
   streamOf,
 } from "~/lib/pipeline/hooks/toolkit"
+import { CC_SUBFIELD_PRESENT as CACHE_CONTROL_SUBFIELD_PATTERN } from "~/lib/request/strategies/cache-control-subfield-rejection-retry"
+import { SERVER_TOOL_REJECTION_TABLE } from "~/lib/request/strategies/server-tool-rejection-retry"
+import { TOOL_FIELD_PRESENT } from "~/lib/request/strategies/tool-field-rejection-retry"
+import { BETA_ERROR_PATTERN } from "~/lib/request/strategies/unsupported-beta-retry"
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<Array<T>> {
   const out: Array<T> = []
@@ -181,5 +187,94 @@ describe("mockGeminiResponse — independent oracle (source CC accumulator + res
     const s = mockGeminiResponse("x")
     expect(readOrigin(s)).toBe("hook-mock")
     for await (const frame of s.frames) expect(frame.event).toBeUndefined()
+  })
+})
+
+describe("mockUpstreamError", () => {
+  test("throws a real HTTPError carrying status + a JSON-serialized body in responseText", () => {
+    expect(() => mockUpstreamError(400, { error: { message: "boom" } })).toThrow(HTTPError)
+    try {
+      mockUpstreamError(503, { error: { message: "boom" } })
+      throw new Error("mockUpstreamError should have thrown")
+    } catch (e) {
+      expect(e).toBeInstanceOf(HTTPError)
+      const err = e as HTTPError
+      expect(err.status).toBe(503)
+      expect(err.responseText).toBe(JSON.stringify({ error: { message: "boom" } }))
+    }
+  })
+
+  test("accepts a raw string body verbatim (no double JSON-encoding)", () => {
+    try {
+      mockUpstreamError(400, "raw text body")
+      throw new Error("mockUpstreamError should have thrown")
+    } catch (e) {
+      expect((e as HTTPError).responseText).toBe("raw text body")
+    }
+  })
+
+  test("defaults body to {} when omitted", () => {
+    try {
+      mockUpstreamError(500)
+      throw new Error("mockUpstreamError should have thrown")
+    } catch (e) {
+      expect((e as HTTPError).responseText).toBe("{}")
+    }
+  })
+
+  describe("4 reactive-strategy presets — each responseText hits the SAME regex its real strategy uses (single source of truth, not a re-typed copy)", () => {
+    test("toolFieldRejection hits tool-field-rejection-retry's TOOL_FIELD_PRESENT", () => {
+      try {
+        mockUpstreamError.toolFieldRejection()
+        throw new Error("should have thrown")
+      } catch (e) {
+        expect(TOOL_FIELD_PRESENT.test((e as HTTPError).responseText)).toBe(true)
+      }
+    })
+
+    test("serverToolRejection hits server-tool-rejection-retry's SERVER_TOOL_REJECTION_TABLE pattern", () => {
+      try {
+        mockUpstreamError.serverToolRejection()
+        throw new Error("should have thrown")
+      } catch (e) {
+        const text = (e as HTTPError).responseText
+        expect(SERVER_TOOL_REJECTION_TABLE.some((row) => row.pattern.test(text))).toBe(true)
+      }
+    })
+
+    test("cacheControlSubfield hits cache-control-subfield-rejection-retry's CC_SUBFIELD_PRESENT", () => {
+      try {
+        mockUpstreamError.cacheControlSubfield()
+        throw new Error("should have thrown")
+      } catch (e) {
+        expect(CACHE_CONTROL_SUBFIELD_PATTERN.test((e as HTTPError).responseText)).toBe(true)
+      }
+    })
+
+    test("unsupportedBeta hits unsupported-beta-retry's BETA_ERROR_PATTERN", () => {
+      try {
+        mockUpstreamError.unsupportedBeta()
+        throw new Error("should have thrown")
+      } catch (e) {
+        expect(BETA_ERROR_PATTERN.test((e as HTTPError).responseText)).toBe(true)
+      }
+    })
+
+    test("each preset throws HTTPError with status 400", () => {
+      for (const preset of [
+        mockUpstreamError.toolFieldRejection,
+        mockUpstreamError.serverToolRejection,
+        mockUpstreamError.cacheControlSubfield,
+        mockUpstreamError.unsupportedBeta,
+      ]) {
+        try {
+          preset()
+          throw new Error("should have thrown")
+        } catch (e) {
+          expect(e).toBeInstanceOf(HTTPError)
+          expect((e as HTTPError).status).toBe(400)
+        }
+      }
+    })
   })
 })
