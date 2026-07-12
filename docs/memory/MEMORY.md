@@ -35,7 +35,7 @@
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — node_modules 里有某包可能是 `bun install` 会 prune 的游离 orphan（不在 bun.lock）；选依赖前 `grep '"<pkg>@' bun.lock` 证真被锁定；提升传递依赖为直接依赖须 `bun add <name>@^<锁里现版本>` 钉版号（裸 bun add 拉最新 major）；实例 footer 弃 cli-truncate 改钉 string-width@^7.2.0
 - [worktree bun add 后主树须补 install](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — 隔离 worktree 里 `bun add` 只进该树 node_modules；FF 合并把 package.json+bun.lock 带回 master 但主树 node_modules 陈旧 → Vite「dependencies could not be resolved」；worktree SDD 收尾若动过 deps 须主树补 `bun install` + `typecheck:ui-v4` 验解析；实例 dnd-kit reorder 合并后
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 独有 oracle 裁决教学；按消费者契约 + 独立 oracle 裁决，别反射式"让它编译"
-- [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多比较点复发；grep 全仓逐处修 + 抽单一共享 primitive
+- [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多比较点复发；grep 全仓逐处修 + 抽单一共享 primitive；**盲区**：grep 共享 primitive 漏「分叉源」腿（Gemini 流式用 geminiUsageFromMeta 不调 usageFromTotalInput），靠合并态审查逮 + born-marking 放大成永久丢失
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 多站点联合加变体的正向版：路由到既有 outcome 复用全 handler + 类型系统前置逼出全站点
 - [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加反应式 retry 策略前先 grep 同错误子串既有 matcher（driver 首命中即止）；实例 tool-field vs body-field "Extra inputs" 抢先认领 → 收紧旧正则 + 新策略排前 + 认领归属回归测试
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴 = 上下文经济 + 可信度非可推导性；目录级关系图 + 现状小节 + L1 存在性守卫测试
