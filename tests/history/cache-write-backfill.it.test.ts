@@ -17,6 +17,7 @@ import { describe, expect, test } from "bun:test"
 import { compress } from "~/lib/history/sqlite/compression"
 import { getDatabase } from "~/lib/history/sqlite/connection"
 import { getEntryById } from "~/lib/history/sqlite/read"
+import { insertCompletedEntry } from "~/lib/history/sqlite/write"
 import { runCacheWriteBackfill } from "~/lib/history/sqlite/cache-write-backfill"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -148,5 +149,46 @@ describe("cache-write backfill", () => {
     const c = col("req_anthropic")
     expect(c.cache_creation).toBe(200)
     expect(c.cache_write_backfilled).toBe(0)
+  })
+
+  // Strongest oracle: build the row through the REAL producer write path
+  // (insertCompletedEntry → extractStagePayloads), immune to the hand-built-fixture
+  // vs production layout gap that merge review caught. The row carries frames on
+  // attempts[].upstreamResponse.sseEvents; we then reset it to the pre-fix-forward
+  // state (net-of-cached input, no cache_creation, marker 0) and backfill.
+  test("recovers cache_write from a row written via the REAL producer path (extractStagePayloads)", async () => {
+    const frame = JSON.stringify({ choices: [], usage: { prompt_tokens: 1000, completion_tokens: 50, prompt_tokens_details: { cached_tokens: 600, cache_write_tokens: 300 } } })
+    await insertCompletedEntry({
+      id: "req_real",
+      startedAt: 2000,
+      endpoint: "openai-chat-completions",
+      state: "completed",
+      attempts: [
+        {
+          index: 0,
+          durationMs: 1,
+          // pre-fix-forward stored usage: net-of-CACHED only, no cache_creation.
+          upstreamResponse: {
+            success: true,
+            model: "gpt-5",
+            usage: { input_tokens: 400, output_tokens: 50, cache_read_input_tokens: 600 },
+            body: null,
+            sseEvents: [{ offsetMs: 1, type: "message", raw: frame }],
+          },
+        },
+      ],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    // Simulate a historical row: clear the born cache_write_backfilled marker.
+    getDatabase().prepare("UPDATE entries_v2 SET cache_write_backfilled = 0 WHERE id = 'req_real'").run()
+
+    await runCacheWriteBackfill(getDatabase())
+
+    const c = col("req_real")
+    expect(c.input_tokens).toBe(100) // 1000 − 600 − 300
+    expect(c.cache_creation).toBe(300)
+    expect(c.cache_read).toBe(600)
+    expect(c.cache_write_backfilled).toBe(1)
+    expect(blobUsage("req_real")).toMatchObject({ input_tokens: 100, cache_creation_input_tokens: 300 })
   })
 })
