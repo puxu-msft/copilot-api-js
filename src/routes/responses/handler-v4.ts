@@ -94,6 +94,7 @@ import {
 } from "~/lib/openai/tool-name-sanitize"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
 import { anthropicNonStreamingTruncation, responsesNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { buildAnthropicResponseData, buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
@@ -661,11 +662,20 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     return
   }
 
-  // outcome.kind === "complete" — the CC finish_reason is the F2 signal (undefined ⇒ truncation).
-  const meta = codec.getStreamMeta()
-  if (meta?.finishReason === undefined) {
-    const truncErr = new Error("Upstream Anthropic stream truncated before completion (no finish_reason)")
-    consola.error(`[Responses:v4:reverse] Upstream truncated for ${anthropicAcc.model || model}: drained without a finish_reason`)
+  // outcome.kind === "complete" — classify the terminal state via the shared reverse classifier (no
+  // drift across the three reverse pumps): terminal upstream error (H2) → truncation (F2) → complete.
+  const terminal = classifyReverseAnthropicTerminal(anthropicAcc)
+  if (terminal.kind === "upstream-error") {
+    // H2 — the reverse translator already forwarded a Responses error frame; settle fail with the REAL
+    // cause + honest Anthropic outbound, no second synthetic terminator (mirrors the direct pump gate).
+    consola.error(`[Responses:v4:reverse] Upstream error for ${anthropicAcc.model || model}: ${terminal.error.type} — ${terminal.error.message}`)
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, new Error(`${terminal.error.type}: ${terminal.error.message}`), buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+  if (terminal.kind === "truncated") {
+    const truncErr = new Error("Upstream Anthropic stream truncated before completion (no message_stop)")
+    consola.error(`[Responses:v4:reverse] Upstream truncated for ${anthropicAcc.model || model}: drained without message_stop`)
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))

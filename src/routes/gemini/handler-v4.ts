@@ -71,6 +71,7 @@ import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
 import { anthropicNonStreamingTruncation, openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { buildAnthropicResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
@@ -573,10 +574,22 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     return
   }
 
-  // outcome.kind === "complete" — truncation on the honest Anthropic accumulator: a clean drain WITHOUT
-  // the mandatory `message_stop` = upstream truncation (F2). Drop the geminiTranslator's terminal frame
-  // (misleading UNSPECIFIED finishReason) but forward any buffered partial (a tool_call flushed before the cut).
-  if (!anthropicAcc.sawMessageStop) {
+  // outcome.kind === "complete" — classify the terminal state via the shared reverse classifier (no
+  // drift across the three reverse pumps): a terminal upstream Anthropic `error` frame (H2) wins, else
+  // a missing `message_stop` is truncation (F2), else complete.
+  const terminal = classifyReverseAnthropicTerminal(anthropicAcc)
+  if (terminal.kind === "upstream-error") {
+    // H2 — the reverse translator already forwarded a Gemini error frame; settle fail with the REAL
+    // cause + honest Anthropic outbound, no second synthetic terminator (mirrors the direct pump gate).
+    consola.error(`[gemini:v4:reverse] Upstream error for ${anthropicAcc.model || model}: ${terminal.error.type} — ${terminal.error.message}`)
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, new Error(`${terminal.error.type}: ${terminal.error.message}`), buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+  // Truncation (F2): a clean drain WITHOUT the mandatory `message_stop`. Drop the geminiTranslator's
+  // terminal frame (misleading UNSPECIFIED finishReason) but forward any buffered partial (a tool_call
+  // flushed before the cut).
+  if (terminal.kind === "truncated") {
     for (const frame of codec.flushResponse(env)) {
       if (!isGeminiTerminalFrame(frame)) await sink.write(frame)
     }
