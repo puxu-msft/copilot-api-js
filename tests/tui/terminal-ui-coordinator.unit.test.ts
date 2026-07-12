@@ -172,7 +172,17 @@ describe("TerminalUi ↔ terminal-coordinator registration (P2.2)", () => {
     ui.destroy()
   })
 
-  test("reentrant emergencyWrite during a render is NOT swallowed by the `rendering` guard (spec I4)", () => {
+  test("bus-subscriber reentrancy: a system.log subscriber calling emergencyWrite does not get swallowed by bus/republish fan-out (distinct from the `rendering` guard — see the next test)", () => {
+    // NOTE: this scenario is a *cross-tick* reentry through the bus's own
+    // subscriber fan-out, not a reentry into `TerminalUi.renderRegion` itself —
+    // by the time this subscriber runs, the `printLog → renderRegion` call this
+    // same `system.log` event triggers on `ui` has already returned and reset
+    // `this.rendering` to `false` (bun:test's synchronous `EventEmitter.emit`
+    // dispatches subscribers one after another, not nested). So this test does
+    // NOT exercise the `rendering` reentrancy guard's bypass (spec I4) — it
+    // guards against a different, also-real hazard: log-storm suppression in
+    // the bus/republish plumbing swallowing an out-of-band write. Kept for that
+    // value; the guard-bypass claim itself is pinned by the next test.
     const bus = createBus()
     const { stdout, chunks } = makeStdout()
     const stdin = new FakeStdin()
@@ -188,9 +198,6 @@ describe("TerminalUi ↔ terminal-coordinator registration (P2.2)", () => {
     bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "gpt-5", 1000) })
     stdin.emit("data", Buffer.from(" ")) // panel established
 
-    // Simulate a reentrant call arriving WHILE a render is in flight: a
-    // system.log subscriber that calls emergencyWrite synchronously during the
-    // bus fan-out that also drives this instance's own printLog→renderRegion.
     const unsub = bus.subscribe((e) => {
       if (e.kind === "system.log") emergencyWrite("REENTRANT EMERGENCY")
     })
@@ -199,12 +206,71 @@ describe("TerminalUi ↔ terminal-coordinator registration (P2.2)", () => {
     bus.scope("system").publish({ kind: "system.log", logType: "info", message: "trigger", time: Date.now() })
     const out = chunks.slice(mark).join("")
 
-    // The reentrant emergency line must actually reach stdout — not be dropped
-    // by TerminalUi's `rendering` reentrancy guard (that guard exists to stop a
-    // render recursing into itself, not to gate emergency writes).
     expect(out).toContain("REENTRANT EMERGENCY")
 
     unsub()
+    ui.destroy()
+  })
+
+  test("reentrant emergencyWrite occurring INSIDE TerminalUi's own render call (this.rendering === true) reaches stdout — the `write` hook bypasses the rendering guard (spec I4)", () => {
+    // Unlike the previous test (a cross-tick bus-subscriber reentry, which
+    // never sees `this.rendering === true`), this test triggers `emergencyWrite`
+    // synchronously from *inside* `Region.render`'s own `stdout.write(out)`
+    // call — the actual window `renderRegion` holds `this.rendering = true`
+    // for. It pins the real regression this suite is meant to catch: an
+    // `emergencyWriteLine` that (re-)gains an `if (this.rendering) return`
+    // guard would silently drop this line, and none of the other tests in
+    // this file would notice (confirmed by mutation below).
+    const bus = createBus()
+    const { stdout, chunks } = makeStdout()
+    const stdin = new FakeStdin()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 10,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "gpt-5", 1000) })
+    stdin.emit("data", Buffer.from(" ")) // panel established — Region's first render (geometry establish)
+
+    // One-shot hook on the fake stdout: the NEXT write whose bytes start with
+    // `Region`'s SAVE_CURSOR escape (`\x1b7`, `\x1b` = ESC) is `Region.render`'s
+    // own unchanged-geometry tail write (`SAVE_CURSOR + DECSTBM reassert +
+    // RESTORE_CURSOR + panel content` — see `render/region.ts`'s `render()`
+    // `else` branch) — i.e. it fires from inside the live call stack
+    // `renderRegion → region.render → stdout.write`, exactly where
+    // `this.rendering === true`. Calling `emergencyWrite` synchronously from
+    // there is genuine in-render reentrancy, not a re-implementation of it.
+    const SAVE_CURSOR_ESC = "\x1b7"
+    const rawStdout = stdout as unknown as { write: (s: string) => boolean }
+    const original = rawStdout.write.bind(rawStdout)
+    let armed = true
+    rawStdout.write = (s: string) => {
+      if (armed && s.startsWith(SAVE_CURSOR_ESC)) {
+        armed = false // one-shot — don't recurse into the emergency write's own stdout.write below
+        emergencyWrite("REENTRANT EMERGENCY")
+      }
+      return original(s)
+    }
+
+    const mark = chunks.length
+    // A `system.log` line's `printLog` → `renderRegion` re-renders the
+    // already-established panel (unchanged geometry ⇒ the SAVE_CURSOR-prefixed
+    // branch the hook above is watching for).
+    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "trigger", time: Date.now() })
+    const out = chunks.slice(mark).join("")
+
+    // The reentrant emergency line must actually reach stdout from inside the
+    // render — not be dropped by TerminalUi's `rendering` reentrancy guard
+    // (that guard exists to stop a render recursing into itself, not to gate
+    // emergency writes) — AND the render's own panel bytes must still land
+    // intact around it (the bypass must not corrupt the in-flight frame).
+    expect(out).toContain("REENTRANT EMERGENCY")
+    expect(out).toContain("aaaaaaaa") // the panel content the in-flight render was writing
+
     ui.destroy()
   })
 
