@@ -1,3 +1,5 @@
+export { translateAnthropicToChatCompletions } from "./anthropic-to-cc-request"
+export type { AnthropicToCcOptions } from "./anthropic-to-cc-request"
 export { splitInstructionsAndConversation, translateChatCompletionsToResponses } from "./cc-to-responses"
 export { translateResponsesResponseToCC } from "./responses-to-cc"
 export {
