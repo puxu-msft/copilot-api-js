@@ -65,7 +65,7 @@
 执行 docs/plan/2026-07-12-cache-control-subfield-stripping/plan-2-reactive-learning.md 的 Task 2.1→2.3。
 
 承重红线：
-- 红线3：Task 2.1 新增 NegotiationCategory "cacheControlSubfields" 必须补全所有 never 穷尽守卫。先 grep '_exhaustive: never' src/lib/anthropic/feature-negotiation.ts 得所有 switch，逐处加 case。八点扇出清单见 plan Task 2.1 Step 3，一处不漏否则编译失败。
+- 红线3：Task 2.1 新增 NegotiationCategory "cacheControlSubfields" 必须补全所有 never 穷尽守卫。先 grep '_exhaustive: never' src/lib/anthropic/feature-negotiation.ts 得所有 switch，逐处加 case。十点扇出清单见 plan Task 2.1 Step 3，一处不漏否则编译失败。
 - 红线4：Task 2.2 的三路径遮蔽回归测试必须含 system.N / tools.N / messages.N.content.M 三条 cache_control 路径，尤其最险的 tools.N.cache_control.*（共享 tools. 前缀）。断言：新腿认领全部三条 + tool-field 腿对全部三条返 null。
 - 完成后跑 bun test tests/pipeline/ 全量确认 tool-field 不回归。
 ```

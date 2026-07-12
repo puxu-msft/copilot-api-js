@@ -41,7 +41,11 @@ Phase 0 (sanitize 收窄)  ⊥  Phase 1 (passthrough filter)
 
 1. **filter handler 绝不返回 `undefined`**——那会删掉整个 `cache_control`（退化成 disabled 语义）。必须原地 `delete cc[field]` 后 `return cc`（identity），走 replace 分支但对象不变。见 spec §5.2。
 2. **跨层单调化只降后层、绝不升前层**——方向与现有 `resolveExtendedTtls` clamp 一致（降 messages，非升 tools）。见 spec §4.3。
-3. **Phase 2 新增 `NegotiationCategory` 必须补全所有 `never` 穷尽守卫**（[feature-negotiation.ts:668](../../../src/lib/anthropic/feature-negotiation.ts#L668) `locateMeta` + [:712](../../../src/lib/anthropic/feature-negotiation.ts#L712) `deleteLocated`）——不补编译报错。完整扇出见 spec §6.1 八点。
+3. **Phase 2 新增 `NegotiationCategory` 必须补全所有穷尽点**（评审 H1/M1）——不补编译报错或测试污染：
+   - 后端 `never` 守卫：[feature-negotiation.ts:668](../../../src/lib/anthropic/feature-negotiation.ts#L668) `locateMeta` + [:712](../../../src/lib/anthropic/feature-negotiation.ts#L712) `deleteLocated`
+   - **ui-v4 穷尽 Record**：[ui-v4/src/lib/learned.ts:8](../../../ui-v4/src/lib/learned.ts#L8) `CATEGORY_LABELS: Record<NegotiationCategory,string>`——**根 typecheck 不覆盖 ui-v4**，须跑 `bun run typecheck:ui-v4`（项目记忆 verify-ui-with-build-not-just-typecheck）
+   - 测试污染防护：[feature-negotiation.ts:836](../../../src/lib/anthropic/feature-negotiation.ts#L836) `clearNegotiationMaps()` 加新 map 的 `.clear()`
+   - 完整十点扇出见 spec §6.1 + plan-2 Task 2.1。
 4. **遮蔽风险回归测试必须含三路径**（`system.N.` / `tools.N.` / `messages.N.content.M.` 的 cache_control，尤其最险的 `tools.N.cache_control.*`）。见 spec §6.3。
 5. **内置 `{scope}` 在读取端注入、不在 config 默认值里**——config 默认 `{}` 表示「无额外覆盖」，与内置正交。见 spec §5.5。
 
@@ -96,26 +100,47 @@ export function collectUnsupportedCacheControlSubfields(
 function filterCacheControlSubfields(wire: Record<string, unknown>, blacklist: Set<string>): Array<string>
 //   返回值 = 实际剥掉的字段名去重列表（供 history 标记；空数组=未剥）
 
-// PrepareContext 新增出参（对齐 wroteExtendedTtl 模式）
+// PrepareContext 新增出参（对齐 wroteExtendedTtl 模式，request-preparation.ts:78）
 interface PrepareContext {
   // ...现有字段
-  strippedCacheControlSubfields?: ReadonlyArray<string>  // 由 cache-control step 写，codec 读入 history
+  strippedCacheControlSubfields?: ReadonlyArray<string>  // 由 cache-control step 写
 }
 
-// PrepareHints 新增（Phase 1 建字段、Phase 2 注入）
-interface PrepareHints {
-  // ...现有 excludeBetas / excludeToolFields
-  excludeCacheControlSubfields?: ReadonlyArray<string>
+// ⚠️ 两个不同接口，勿混（评审 C1）：
+//   PrepareAnthropicRequestOptions（request-preparation.ts:~124）—— prepare 入参，excludeBetas/excludeToolFields 在此
+//   PrepareHints（pipeline.ts:96）—— retry 腿 RetryAction.prepareHints 的类型，是 per-attempt hint 的源
+// 源④ hint 是端到端多跳通道，必须逐跳接（漏一跳则 hint 恒 undefined、静默死接线）：
+//   ① pipeline.ts:96 PrepareHints 加字段
+//   ② codec/anthropic/codec.ts:~407-411 逐字段白名单桥接加一行 env.prepareHints.X → opts.X
+//   ③ request-preparation.ts PrepareAnthropicRequestOptions 加字段 + passthrough 消费点
+interface PrepareHints {              // pipeline.ts:96
+  // ...现有 excludeBetas / excludeToolFields / rejectFields / excludeServerToolTypes / contextEscalation
+  excludeCacheControlSubfields?: ReadonlyArray<string>   // 源④
 }
+interface PrepareAnthropicRequestOptions {   // request-preparation.ts
+  // ...现有
+  excludeCacheControlSubfields?: ReadonlyArray<string>   // 源④ 落到 prepare 入参
+}
+
+// PreparedAnthropicRequest（request-preparation.ts:67）—— prepareAnthropicRequest 的 return
+// 现只有 { wire, headers }；Task 1.5 加 strippedCacheControlSubfields 出参：
+interface PreparedAnthropicRequest {
+  wire: Record<string, unknown>
+  headers: Record<string, string>
+  strippedCacheControlSubfields?: ReadonlyArray<string>   // Task 1.5：从 ctx 透出供 codec recordFeature
+}
+
+// history 诊断落点 = recordFeature 通道（评审 H2 + SSOT）：
+// 弃「给跨端点共享的 WireRequest/UpstreamRequestLeg 加 anthropic 专属字段」（SSOT smell），
+// 改用现成的 deps.requestContext?.recordFeature(kind, detail)（codec.ts:423 thinking coercion 先例，
+// 已验证进 history）。codec 读 prepared.strippedCacheControlSubfields → recordFeature。
+// FeatureKind（context/types.ts）加成员 "cache_control_strip"。
 
 // state.ts 新增 config-managed 字段
 readonly stripCacheControlSubfields: Record<string, Array<string>>   // 默认 {}
-
-// history 类型 UpstreamRequestLeg 新增诊断字段（richest-data-flow 后端完整存）
-interface UpstreamRequestLeg {
-  // ...现有字段
-  strippedCacheControlSubfields?: Array<string>
-}
+// config 键名 = anthropic.cache_control_strip_subfields（对齐 beta_strip_headers/tool_strip_fields 的
+// <noun>_strip_<field> 约定，评审 M2；strip_cache_control_subfields 是 compat.ts:265 已废弃的旧模式）
+// config→state 映射是 MANDATORY（config.ts:588+ 每键显式，漏则源② 死路径，评审 H3）
 ```
 
 ### Phase 2 产出

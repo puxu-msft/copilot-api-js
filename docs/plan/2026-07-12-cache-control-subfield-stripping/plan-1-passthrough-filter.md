@@ -59,7 +59,7 @@ const BUILTIN_UNSUPPORTED_CACHE_CONTROL_SUBFIELDS: ReadonlyArray<string> = ["sco
 
 /**
  * 收集应从 passthrough cache_control 剥除的子字段。四源 union（对齐 collectStripBetas）：
- * ① 内置地雷 ② config anthropic.strip_cache_control_subfields（per-model + "*"）
+ * ① 内置地雷 ② config anthropic.cache_control_strip_subfields（per-model + "*"）
  * ③ negotiation 学习集（Phase 2 接入，本阶段缺席）④ per-attempt hint（Phase 2 注入）
  */
 export function collectUnsupportedCacheControlSubfields(model: string, hints?: ReadonlyArray<string>): Set<string> {
@@ -93,19 +93,16 @@ Expected: PASS（内置 scope 用例过；config 用例需 Task 1.3 的 state �
 - Test: `tests/config/`（对齐现有 config 测试；或经 Task 1.1 的 config 用例间接覆盖）
 
 **Interfaces:**
-- Produces: `state.stripCacheControlSubfields: Record<string, Array<string>>`（默认 `{}`）+ config 键 `anthropic.strip_cache_control_subfields`。
+- Produces: `state.stripCacheControlSubfields: Record<string, Array<string>>`（默认 `{}`）+ config 键 `anthropic.cache_control_strip_subfields`。
 
 - [ ] **Step 1：schema.ts 加键**
 
-紧邻 `cache_control: nullableEnum(...)` 后：
+紧邻兄弟 strip 键群（[beta_strip_headers:431 / partner_strip_features:432 / tool_strip_fields:437](../../../src/lib/config/schema.ts#L431)），命名遵循 `<noun>_strip_<field>` 约定：
 
 ```ts
 // GHC 未支持的 cache_control 子字段黑名单（per-model + 通配 "*"）。passthrough 模式下剥除。
 // 内置 {scope} 在读取端注入，此处默认 {} 表示无额外覆盖（正交）。
-strip_cache_control_subfields: z
-  .record(z.string(), z.array(z.string()))
-  .optional()
-  .transform((v) => v ?? undefined),
+cache_control_strip_subfields: z.record(z.string(), z.array(z.string())).optional(),
 ```
 
 - [ ] **Step 2：state.ts 五处落点**（严格对齐 `stripBetaHeaders`——grep `stripBetaHeaders` 得 [801/926/983/1175/1473/1546/1700](../../../src/lib/state.ts#L801) 每处平行加 `stripCacheControlSubfields`）
@@ -117,10 +114,18 @@ strip_cache_control_subfields: z
 - CONFIG_MANAGED_DEFAULTS（[:1473](../../../src/lib/state.ts#L1473)）：`stripCacheControlSubfields: {} as Record<string, Array<string>>,`
 - 二次 clone 落点（[:1546](../../../src/lib/state.ts#L1546)/[:1700](../../../src/lib/state.ts#L1700)）：`stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),`
 
-- [ ] **Step 3：config.ts schema→state 映射**（若存在，对齐 stripBetaHeaders 的 `anthropic.strip_beta_headers` → `stripBetaHeaders` 映射）
+- [ ] **Step 3：config.ts schema→state 映射（MANDATORY，非「若有」——评审 H3）**
 
-Run 先定位: `bunx eslint --rulesdir /dev/null 2>/dev/null; rg -n "stripBetaHeaders|strip_beta_headers" src/lib/config/config.ts`
-按同款加 `strip_cache_control_subfields` → `stripCacheControlSubfields`。
+`config.ts:588+` 每个 strip 键都显式映射，漏则 config 键被解析却永不流入 state（源② 死路径，且 `setStateForTests` 直注的测试会假绿掩盖）。紧邻 [beta_strip_headers 映射:588-590](../../../src/lib/config/config.ts#L588) 加：
+
+```ts
+if (a.cache_control_strip_subfields !== undefined)
+  setAnthropicBehavior({
+    stripCacheControlSubfields: normalizeModelKeyedRecord(a.cache_control_strip_subfields, "anthropic.cache_control_strip_subfields"),
+  })
+```
+
+（`normalizeModelKeyedRecord` 已 import [config.ts:36](../../../src/lib/config/config.ts#L36)，对齐 per-model 键归一化；`setAnthropicBehavior` 是现有 patch 入口。）
 
 - [ ] **Step 4：typecheck**
 
@@ -195,11 +200,16 @@ export function filterCacheControlSubfields(wire: Record<string, unknown>, black
         stripped.add(field)
       }
     }
-    return cc as { type: string } // 红线1：identity，走 replace 分支但对象不变
+    // 红线1：identity（走 replace 分支但对象不变）。评审 L2 防御：删后 cc 若失去 type（畸形输入
+    // 只含被剥字段），空/无 type 的 cache_control 会 400；此时删掉整个 cc 更安全（回退 disabled 语义）。
+    // 真实 scope 场景 cc 恒含 type，此分支只为畸形输入兜底。
+    return typeof cc.type === "string" ? (cc as { type: string }) : undefined
   })
   return [...stripped]
 }
 ```
+
+注意：`return undefined` 在此**仅**用于「剥后 cc 失去 type」的畸形兜底（删整个 cc），与红线1「正常态绝不返回 undefined」不冲突——正常态 cc 恒含 type 走 identity 分支。Step 1 测试须补一个「畸形 `{scope}` 无 type → 删整个 cc」用例锁此边界。
 
 - [ ] **Step 4：跑测试确认通过**
 
@@ -220,12 +230,14 @@ EOF
 ### Task 1.4：接线 passthrough 分支 + PrepareContext/PrepareHints 出参
 
 **Files:**
-- Modify: `src/lib/anthropic/request-preparation.ts`（[passthrough 分支:921](../../../src/lib/anthropic/request-preparation.ts#L921) + [PrepareContext:78](../../../src/lib/anthropic/request-preparation.ts#L78) + PrepareHints [:124](../../../src/lib/anthropic/request-preparation.ts#L124)）
+- Modify: `src/lib/anthropic/request-preparation.ts`（[passthrough 分支:921](../../../src/lib/anthropic/request-preparation.ts#L921) + [PrepareContext:78](../../../src/lib/anthropic/request-preparation.ts#L78) + `PrepareAnthropicRequestOptions` [:124](../../../src/lib/anthropic/request-preparation.ts#L124)）
+- Modify: `src/lib/request/pipeline.ts`（[PrepareHints:96](../../../src/lib/request/pipeline.ts#L96) 加源④字段——**此接口在 pipeline.ts 非 request-preparation.ts**）
+- Modify: `src/lib/codec/anthropic/codec.ts`（[:407-411](../../../src/lib/codec/anthropic/codec.ts#L407) 逐字段白名单桥接加一行）
 - Test: `tests/anthropic/cache-control-subfield-strip.unit.test.ts`（追加集成用例，用 spec §1.1 实测形态）
 
 **Interfaces:**
 - Consumes: `collectUnsupportedCacheControlSubfields`、`filterCacheControlSubfields`。
-- Produces: `PrepareContext.strippedCacheControlSubfields`、`PrepareHints.excludeCacheControlSubfields`（README 契约）。
+- Produces: `PrepareContext.strippedCacheControlSubfields`、`PrepareAnthropicRequestOptions.excludeCacheControlSubfields`、`PrepareHints.excludeCacheControlSubfields`（README 契约，两个不同接口）。
 
 - [ ] **Step 1：写失败集成测试（§1.1 实测形态）**
 
@@ -252,23 +264,37 @@ test("passthrough 剥 scope、保留其余客户端断点（§1.1 实测形态�
 Run: `bun test tests/anthropic/cache-control-subfield-strip.unit.test.ts -t "passthrough 剥 scope"`
 Expected: FAIL（passthrough 现纯 break，scope 仍在）。
 
-- [ ] **Step 3：接线**
+- [ ] **Step 3：接线（含源④ 端到端多跳通道，评审 C1）**
 
-PrepareContext（[:78](../../../src/lib/anthropic/request-preparation.ts#L78)）加出参字段：
+PrepareContext（[request-preparation.ts:78](../../../src/lib/anthropic/request-preparation.ts#L78)）加出参字段：
 
 ```ts
 /** 由 cache-control step 写：passthrough 剥掉的 cache_control 子字段列表（供 history 可辨识标记，spec §8）。 */
 strippedCacheControlSubfields?: ReadonlyArray<string>
 ```
 
-PrepareHints（[:124](../../../src/lib/anthropic/request-preparation.ts#L124) 附近，excludeToolFields 旁）加：
+**源④ hint 是端到端多跳通道，逐跳都要接（漏一跳则 hint 恒 undefined、静默死接线）**：
+
+① `PrepareAnthropicRequestOptions`（[request-preparation.ts:~124](../../../src/lib/anthropic/request-preparation.ts#L124)，`excludeToolFields` 旁）加 prepare 入参字段：
 
 ```ts
-/** 源④ per-attempt：Phase 2 retry 腿注入，剥掉刚被上游拒的 cache_control 子字段。 */
 excludeCacheControlSubfields?: ReadonlyArray<string>
 ```
 
-passthrough 分支（[:921](../../../src/lib/anthropic/request-preparation.ts#L921)）：
+② `PrepareHints`（[pipeline.ts:96](../../../src/lib/request/pipeline.ts#L96)，`excludeToolFields:120` 旁——**注意此接口在 pipeline.ts 非 request-preparation.ts**）加 per-attempt hint 字段：
+
+```ts
+/** 源④：Phase 2 retry 腿注入，剥掉刚被上游拒的 cache_control 子字段。 */
+excludeCacheControlSubfields?: ReadonlyArray<string>
+```
+
+③ codec 桥接（[codec/anthropic/codec.ts:407-411](../../../src/lib/codec/anthropic/codec.ts#L407)，`env.prepareHints.X → opts.X` 逐字段白名单）加一行：
+
+```ts
+...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
+```
+
+④ passthrough 分支（[request-preparation.ts:921](../../../src/lib/anthropic/request-preparation.ts#L921)）消费：
 
 ```ts
 case "passthrough": {
@@ -279,7 +305,7 @@ case "passthrough": {
 }
 ```
 
-（`model` 是分支上方 [:905](../../../src/lib/anthropic/request-preparation.ts#L905) 已取的 `wire.model`；`ctx.opts` 是 PrepareContext.opts。）
+（`model` 是分支上方 [:905](../../../src/lib/anthropic/request-preparation.ts#L905) 已取的 `wire.model`；`ctx.opts` 是 PrepareContext.opts。Phase 1 源④ 恒 undefined，Phase 2 经此注入——但通道 Phase 1 就建好。）
 
 - [ ] **Step 4：跑测试确认通过 + 回归**
 
@@ -290,25 +316,29 @@ Expected: PASS（passthrough 现有测试不回归——无 scope 的请求 blac
 
 ```bash
 bun run typecheck
-git add -- src/lib/anthropic/request-preparation.ts tests/anthropic/cache-control-subfield-strip.unit.test.ts
-git commit -F - -- src/lib/anthropic/request-preparation.ts tests/anthropic/cache-control-subfield-strip.unit.test.ts <<'EOF'
+git add -- src/lib/anthropic/request-preparation.ts src/lib/request/pipeline.ts src/lib/codec/anthropic/codec.ts tests/anthropic/cache-control-subfield-strip.unit.test.ts
+git commit -F - -- src/lib/anthropic/request-preparation.ts src/lib/request/pipeline.ts src/lib/codec/anthropic/codec.ts tests/anthropic/cache-control-subfield-strip.unit.test.ts <<'EOF'
 feat: passthrough 接线 cache_control 子字段过滤（剥 scope 消除 400）
+
+含源④ hint 端到端通道：PrepareHints(pipeline.ts) + codec 桥接 + prepare 入参
 EOF
 ```
 
 ---
 
-### Task 1.5：history 剥离标记（UpstreamRequestLeg 诊断字段）
+### Task 1.5：history 剥离标记（recordFeature 通道，评审 H2）
+
+**落点决策**：弃「给跨端点共享的 `WireRequest`/`UpstreamRequestLeg` 加 anthropic 专属字段」（SSOT smell——那类型被 openai-cc/openai-responses 三 codec 共用）。改用现成 `deps.requestContext?.recordFeature(kind, detail)` 通道（[codec.ts:423](../../../src/lib/codec/anthropic/codec.ts#L423) thinking coercion 先例，已验证进 history）。
 
 **Files:**
-- Modify: `src/lib/history/types.ts`（[UpstreamRequestLeg:353](../../../src/lib/history/types.ts#L353) 加字段）
-- Modify: `src/lib/codec/anthropic/codec.ts`（构造 outbound leg 处读 `prepared.strippedCacheControlSubfields` 写入）
-- Modify: `src/lib/anthropic/client.ts`（[prepared 结果](../../../src/lib/anthropic/client.ts) 透出 `strippedCacheControlSubfields`，对齐 wire/headers）
-- Test: `tests/anthropic/cache-control-subfield-strip.unit.test.ts` 或 history 集成测试
+- Modify: `src/lib/anthropic/request-preparation.ts`（[PreparedAnthropicRequest 接口:67](../../../src/lib/anthropic/request-preparation.ts#L67) 加字段 + [return:437](../../../src/lib/anthropic/request-preparation.ts#L437) 透出 `ctx.strippedCacheControlSubfields`）
+- Modify: `src/lib/context/types.ts`（`FeatureKind` union 加成员 `"cache_control_strip"`）
+- Modify: `src/lib/codec/anthropic/codec.ts`（紧邻 [thinking recordFeature:423](../../../src/lib/codec/anthropic/codec.ts#L423) 加 cache_control_strip 记录）
+- Test: `tests/anthropic/cache-control-subfield-strip.unit.test.ts`
 
 **Interfaces:**
-- Consumes: `PrepareContext.strippedCacheControlSubfields`（Task 1.4）。
-- Produces: `UpstreamRequestLeg.strippedCacheControlSubfields`（README 契约）。
+- Consumes: `PrepareContext.strippedCacheControlSubfields`（Task 1.4）、`recordFeature`（[context/types.ts:527](../../../src/lib/context/types.ts#L527)）。
+- Produces: `PreparedAnthropicRequest.strippedCacheControlSubfields`（README 契约）、`FeatureKind` 新成员。
 
 - [ ] **Step 1：写失败测试（prepared 透出该字段）**
 
@@ -324,31 +354,36 @@ test("prepared 结果透出 strippedCacheControlSubfields", () => {
 })
 ```
 
-（若 `prepareAnthropicRequest`（client.ts wrapper）当前只透 `{wire, headers}`，本 step 会 FAIL 于字段缺失。）
-
 - [ ] **Step 2：跑测试确认失败**
 
 Run: `bun test tests/anthropic/cache-control-subfield-strip.unit.test.ts -t "prepared 结果透出"`
-Expected: FAIL。
+Expected: FAIL（`PreparedAnthropicRequest` 现只 return `{wire, headers}`）。
 
 - [ ] **Step 3：三处接线**
 
-- history types（[UpstreamRequestLeg:353](../../../src/lib/history/types.ts#L353)）加：`strippedCacheControlSubfields?: Array<string>`
-- client.ts wrapper：`prepared` 返回对象加 `strippedCacheControlSubfields: ctx.strippedCacheControlSubfields`（对齐现有 `wire`/`headers` 透出）
-- codec.ts 构造 upstreamRequest leg 处：`strippedCacheControlSubfields: prepared.strippedCacheControlSubfields`（richest-data-flow：后端完整存，即使前端暂不呈现）
+① `PreparedAnthropicRequest` 接口（[:67](../../../src/lib/anthropic/request-preparation.ts#L67)）加：`strippedCacheControlSubfields?: ReadonlyArray<string>`
+② `prepareAnthropicRequest` return（[:437](../../../src/lib/anthropic/request-preparation.ts#L437)）：`return { wire: ctx.wire, headers: ctx.headers, ...(ctx.strippedCacheControlSubfields && { strippedCacheControlSubfields: ctx.strippedCacheControlSubfields }) }`
+③ `FeatureKind`（[context/types.ts](../../../src/lib/context/types.ts)，grep `type FeatureKind` 定位 union）加成员 `| "cache_control_strip"`
+④ codec.ts（紧邻 [thinking recordFeature:423](../../../src/lib/codec/anthropic/codec.ts#L423)）：
 
-- [ ] **Step 4：跑测试确认通过 + typecheck**
+```ts
+if (prepared.strippedCacheControlSubfields?.length) {
+  deps.requestContext?.recordFeature("cache_control_strip", { fields: prepared.strippedCacheControlSubfields })
+}
+```
+
+- [ ] **Step 4：跑测试确认通过 + typecheck（根 + 若 FeatureKind 被 ui-v4 消费则 ui-v4）**
 
 Run: `bun test tests/anthropic/cache-control-subfield-strip.unit.test.ts && bun run typecheck`
-Expected: PASS。
+Expected: PASS。（若 `FeatureKind` 被 ui-v4 穷尽消费——grep `FeatureKind` in ui-v4——追加 `bun run typecheck:ui-v4`。）
 
 - [ ] **Step 5：lint + 提交**
 
 ```bash
-bunx eslint src/lib/anthropic/request-preparation.ts src/lib/history/types.ts src/lib/codec/anthropic/codec.ts src/lib/anthropic/client.ts
-git add -- src/lib/history/types.ts src/lib/codec/anthropic/codec.ts src/lib/anthropic/client.ts tests/anthropic/cache-control-subfield-strip.unit.test.ts
-git commit -F - -- src/lib/history/types.ts src/lib/codec/anthropic/codec.ts src/lib/anthropic/client.ts tests/anthropic/cache-control-subfield-strip.unit.test.ts <<'EOF'
-feat: history 记 cache_control 子字段剥离标记（静默降级可观测）
+bunx eslint src/lib/anthropic/request-preparation.ts src/lib/context/types.ts src/lib/codec/anthropic/codec.ts
+git add -- src/lib/anthropic/request-preparation.ts src/lib/context/types.ts src/lib/codec/anthropic/codec.ts tests/anthropic/cache-control-subfield-strip.unit.test.ts
+git commit -F - -- src/lib/anthropic/request-preparation.ts src/lib/context/types.ts src/lib/codec/anthropic/codec.ts tests/anthropic/cache-control-subfield-strip.unit.test.ts <<'EOF'
+feat: history 记 cache_control 子字段剥离（recordFeature，静默降级可观测）
 EOF
 ```
 
@@ -357,6 +392,7 @@ EOF
 ## Phase 1 完成判据
 
 - passthrough 剥 scope、消除 §1.1 的 400、保留其余客户端断点。
-- config 键 `anthropic.strip_cache_control_subfields` 可追加字段（per-model + 通配）。
-- history 的 upstreamRequest leg 含 `strippedCacheControlSubfields`（运维可见缓存语义降级）。
-- 源③/④在读取端已留 union 位（源③ Phase 2 追加一行、源④已接 hint）。
+- config 键 `anthropic.cache_control_strip_subfields` 可追加字段（per-model + 通配），经 config.ts 映射真实流入 state（非仅 setStateForTests）。
+- history 经 recordFeature 记 `cache_control_strip`（运维可见缓存语义降级）。
+- 源④ hint 端到端通道（PrepareHints → codec 桥接 → opts → passthrough）Phase 1 建好、Phase 2 注入。
+- 源③在读取端留 union 位（Phase 2 追加一行）。

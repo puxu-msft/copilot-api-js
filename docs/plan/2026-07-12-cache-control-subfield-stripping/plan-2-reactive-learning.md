@@ -4,11 +4,11 @@
 
 **依赖**：Phase 1（读取端源③/④注入点、`PrepareHints.excludeCacheControlSubfields`）。
 
-**承重**：spec §6.1（新 `NegotiationCategory` 八点扇出、红线3）+ §6.3（三路径遮蔽回归、红线4）。对齐 [tool-field-rejection-retry.ts](../../../src/lib/request/strategies/tool-field-rejection-retry.ts)（endpoint-level、batch matchAll、手写非通用原语）。
+**承重**：spec §6.1（新 `NegotiationCategory` 十点扇出、红线3）+ §6.3（三路径遮蔽回归、红线4）。对齐 [tool-field-rejection-retry.ts](../../../src/lib/request/strategies/tool-field-rejection-retry.ts)（endpoint-level、batch matchAll、手写非通用原语）。
 
 ---
 
-### Task 2.1：negotiation cache 新分类（八点扇出，红线3）
+### Task 2.1：negotiation cache 新分类（十点扇出，红线3）
 
 **Files:**
 - Modify: `src/lib/anthropic/negotiation-lifecycle.ts`（[NegotiationCategory:22](../../../src/lib/anthropic/negotiation-lifecycle.ts#L22) + [NEGOTIATION_CATEGORIES:35](../../../src/lib/anthropic/negotiation-lifecycle.ts#L35)）
@@ -44,7 +44,7 @@ describe("cacheControlSubfields negotiation", () => {
 Run: `bun test tests/pipeline/cache-control-subfield-rejection-retry.unit.test.ts`
 Expected: FAIL（未定义）。
 
-- [ ] **Step 3：八点扇出实现**（严格对齐 `unsupportedToolFields` / `toolFields` 分类——grep 每处逐一平行加）
+- [ ] **Step 3：十点扇出实现**（严格对齐 `unsupportedToolFields` / `toolFields` 分类——grep 每处逐一平行加）
 
 1. negotiation-lifecycle.ts `NegotiationCategory` union 加 `| "cacheControlSubfields"`
 2. negotiation-lifecycle.ts `NEGOTIATION_CATEGORIES` 数组末尾加 `"cacheControlSubfields"`
@@ -69,18 +69,20 @@ export function getUnsupportedCacheControlSubfields(): Array<string> {
 6. [deleteLocated:712](../../../src/lib/anthropic/feature-negotiation.ts#L712) 同款加 case
 7. [NegotiationStateFileV2:439](../../../src/lib/anthropic/feature-negotiation.ts#L439) 接口 + [buildV2Snapshot:471](../../../src/lib/anthropic/feature-negotiation.ts#L471) + [loadPersistedFeatureNegotiation:563](../../../src/lib/anthropic/feature-negotiation.ts#L563)（loadRecordMap + count 累加）+ [getGroupedSnapshot:788](../../../src/lib/anthropic/feature-negotiation.ts#L788) recordMaps 数组，逐处平行加 `cacheControlSubfields`
 8. state.ts `negotiationTtlOverridesMs`（若存在 per-category）加分类默认 TTL
+9. **（评审 M1）** [clearNegotiationMaps:836](../../../src/lib/anthropic/feature-negotiation.ts#L836) 加 `unsupportedCacheControlSubfields.clear()`——漏则测试间泄漏（静默污染，非编译错）
+10. **（评审 H1）** [ui-v4/src/lib/learned.ts:8](../../../ui-v4/src/lib/learned.ts#L8) `CATEGORY_LABELS: Record<NegotiationCategory,string>` 加键（穷尽 Record，缺键 ui-v4 tsc 报错）。中文标签取可解码措辞，如 `cacheControlSubfields: "不支持的 cache_control 子字段（endpoint 级）"`
 
-- [ ] **Step 4：跑测试通过 + typecheck（穷尽守卫全绿）**
+- [ ] **Step 4：跑测试通过 + typecheck（根 + ui-v4 双门，评审 H1）**
 
-Run: `bun test tests/pipeline/cache-control-subfield-rejection-retry.unit.test.ts && bun run typecheck`
-Expected: PASS（无 `never` 编译错、mark→get 往返绿）。
+Run: `bun test tests/pipeline/cache-control-subfield-rejection-retry.unit.test.ts && bun run typecheck && bun run typecheck:ui-v4`
+Expected: PASS（无 `never` 编译错、mark→get 往返绿、**ui-v4 CATEGORY_LABELS 穷尽绿**——根 typecheck 不覆盖 ui-v4，必须显式跑 typecheck:ui-v4）。
 
 - [ ] **Step 5：提交**
 
 ```bash
-git add -- src/lib/anthropic/negotiation-lifecycle.ts src/lib/anthropic/feature-negotiation.ts src/lib/state.ts tests/pipeline/cache-control-subfield-rejection-retry.unit.test.ts
-git commit -F - -- src/lib/anthropic/negotiation-lifecycle.ts src/lib/anthropic/feature-negotiation.ts src/lib/state.ts tests/pipeline/cache-control-subfield-rejection-retry.unit.test.ts <<'EOF'
-feat: cacheControlSubfields negotiation 分类（八点扇出 + endpoint-level 学习）
+git add -- src/lib/anthropic/negotiation-lifecycle.ts src/lib/anthropic/feature-negotiation.ts src/lib/state.ts ui-v4/src/lib/learned.ts tests/pipeline/cache-control-subfield-rejection-retry.unit.test.ts
+git commit -F - -- src/lib/anthropic/negotiation-lifecycle.ts src/lib/anthropic/feature-negotiation.ts src/lib/state.ts ui-v4/src/lib/learned.ts tests/pipeline/cache-control-subfield-rejection-retry.unit.test.ts <<'EOF'
+feat: cacheControlSubfields negotiation 分类（十点扇出 + endpoint-level 学习）
 EOF
 ```
 

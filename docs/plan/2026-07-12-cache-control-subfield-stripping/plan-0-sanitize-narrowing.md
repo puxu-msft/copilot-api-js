@@ -389,7 +389,8 @@ EOF
 
 ## Phase 0 完成判据
 
-- `resolveSanitizedTtls` 是 sanitize + proxied 的唯一 TTL 决策点（extended clamp 逻辑内聚）。
+- `resolveSanitizedTtls` 是 **wire 层** TTL 单调化的唯一决策点，sanitize + proxied 共用。
+- **分层裁决（评审 L1）**：`resolveExtendedTtls`（config 层：extended 配置 clamp + 一次性 warn）与 `resolveSanitizedTtls`（wire 层：客户端 ttl × floor 的跨层单调化）职责不同，**刻意不合并**——warn 属 config 校验，不该混进 wire 单调化。后者接收前者的产物作 floor 入参。双 clamp 幂等（`min` 幂等），功能正确。这不是「single-owner 只做一半」，而是 config 层与 wire 层的正确分工。
 - sanitize 保留客户端合法 ttl、剥 scope、跨层满足递减。
 - 头部 mirror 逻辑不变（body 有 1h → 发 beta）。
 - 现有 anthropic 测试套件不回归（旧 sanitize 降级断言若存在须更新为新行为）。
