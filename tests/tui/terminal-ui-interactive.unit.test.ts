@@ -499,4 +499,77 @@ describe("TerminalUi — P1 interactive integration", () => {
     expect(cups.every((row) => row >= 22)).toBe(true) // mutation: a round-trip resize clearing log rows → row<22 → red
     ui.destroy()
   })
+
+  test("I1: viewing the ONLY active request's detail — it completes → detail degrades instead of freezing", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    const req = bus.scope("request")
+    req.publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    stdin.emit("data", Buffer.from("\r")) // panel → detail (enter), viewing aaaaaaaa
+    chunks.length = 0
+
+    // The viewed request completes WITHOUT any further user input — no esc, no
+    // keypress. Before the I1 fix this only queued the log line into
+    // replayQueue and never re-rendered: the alt screen stayed frozen on stale
+    // content until the user manually pressed esc.
+    req.publish({
+      kind: "request.completed",
+      ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000),
+      entry: { id: "aaaaaaaa", endpoint: "anthropic-messages", state: "completed" },
+    } as never)
+
+    const out = chunks.join("")
+    expect(out).toContain("\x1b[?1049l") // alt screen exited — degrade, not frozen
+    ui.destroy()
+  })
+
+  test("I1: viewing a non-last active request's detail — it completes → degrades (never silently shows a different entry)", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    const req = bus.scope("request")
+    req.publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 3000) })
+    req.publish({ kind: "request.created", ctx: makeCtx("bbbbbbbb", "gpt-5", 2000) })
+    req.publish({ kind: "request.created", ctx: makeCtx("cccccccc", "gpt-5", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel, selectedIndex 0 (aaaaaaaa)
+    stdin.emit("data", Buffer.from("\r")) // panel → detail, viewing aaaaaaaa (index 0, NOT last)
+    chunks.length = 0
+
+    // The VIEWED request (aaaaaaaa, at index 0 — not the last) completes.
+    // Removing it left-shifts the array so index 0 now holds bbbbbbbb — the
+    // pre-fix bug rendered bbbbbbbb's detail INTO the still-open alt screen via
+    // the next footer-timer tick's index-based lookup, silently switching the
+    // view without any user action. The fix tracks the viewed identity, so it
+    // must degrade instead of ever painting a different request.
+    req.publish({
+      kind: "request.completed",
+      ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 3000),
+      entry: { id: "aaaaaaaa", endpoint: "anthropic-messages", state: "completed" },
+    } as never)
+
+    const out = chunks.join("")
+    expect(out).not.toContain("req_id: bbbbbbbb") // never silently switched to a different entry
+    expect(out).toContain("\x1b[?1049l") // degrades (exits alt screen) instead
+    ui.destroy()
+  })
 })

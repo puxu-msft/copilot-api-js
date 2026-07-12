@@ -80,9 +80,19 @@ const HIDE_CURSOR = "\x1b[?25l"
  * Bound on {@link TerminalUi.replayQueue} (P1.3): log lines that arrive while
  * `detailActive` are queued instead of dropped, but the queue must not grow
  * unbounded for a long-lived detail visit — the oldest entries are shifted
- * out past this cap. Durability is unaffected: `FileSink` persists every log
- * line independently, so a dropped replay entry is only missing from this
- * process's scrollback, never from the log file.
+ * out past this cap. Durability of a dropped replay entry depends on WHICH
+ * kind of line it was (I2, whole-branch review) — `replayQueue` mixes two
+ * durability backends via {@link printLog}'s two callers: `system.log` lines
+ * (from {@link onSystemLog}) are independently persisted by `FileSink`
+ * (`~/lib/observability/sinks/file.ts`), but request-lifecycle lines
+ * (`[....]`/`[RETRY]`/`[ OK ]`/`[FAIL]`, from {@link onCreated} /
+ * {@link onAttemptFailed} / {@link onTerminal}) are NOT — `FileSink`'s own
+ * header comment states it "deliberately does NOT write request lifecycle
+ * lines" (they live in history.db instead, in a structured form, not as this
+ * rendered text). So a dropped `system.log` entry is only missing from this
+ * process's scrollback (still in the log file); a dropped lifecycle entry's
+ * rendered text is gone for good — though the underlying data survives in
+ * history.db, just not as this exact console line.
  */
 const REPLAY_CAP = 200
 
@@ -234,7 +244,9 @@ export class TerminalUi {
    * Log lines queued by {@link printLog}'s `detailActive` guard while the
    * alt-screen detail view is open (P1.3) — replayed into the scrollback by
    * {@link flushReplayQueue} on {@link exitDetail}. Bounded at
-   * {@link REPLAY_CAP}; best-effort only (durability is `FileSink`'s job).
+   * {@link REPLAY_CAP}; best-effort only — see {@link REPLAY_CAP}'s doc for
+   * which lines that drop is (`FileSink`-durable) or isn't (lifecycle lines,
+   * only in history.db in structured form) durable elsewhere.
    */
   private readonly replayQueue: Array<string> = []
   /**
@@ -552,6 +564,17 @@ export class TerminalUi {
     info: { statusCode?: number; error?: string },
     historyEntry?: HistoryEntryData,
   ): void {
+    // Detail-view continuity (whole-branch review I1): capture the id of the
+    // request currently shown in the alt-screen detail view — BEFORE mutating
+    // `active` below. Deleting the terminated entry left-shifts Map iteration
+    // order, so an index-based re-lookup *after* the delete (what
+    // `renderDetail` does via `selectedIndex`) could resolve to a DIFFERENT
+    // request that shifted into the same slot — a silent switch, not a
+    // degrade. Capturing identity here (while the pre-delete order still
+    // holds) lets us tell "the viewed request itself terminated" apart from
+    // "some other request terminated while a different one is being viewed".
+    const viewingId = this.detailActive ? [...this.active.values()].at(this.uiState.selectedIndex)?.ctx.id : undefined
+
     const entry = this.active.get(ctx.id) ?? {
       ctx,
       tags: [],
@@ -569,7 +592,14 @@ export class TerminalUi {
     // Skip completed log line for history access (only errors are shown).
     const isError = kind !== "completed" || (info.statusCode !== undefined && info.statusCode >= 400)
     if (entry.isHistoryAccess && !isError) {
-      this.render()
+      // I1: the entry whose detail is open just terminated — degrade instead
+      // of leaving the alt screen on stale content (see the fuller comment at
+      // the end of this method, the mirror of this branch).
+      if (viewingId === ctx.id) {
+        this.exitDetail()
+      } else {
+        this.render()
+      }
       return
     }
 
@@ -621,6 +651,24 @@ export class TerminalUi {
       isError,
     } satisfies LogLineParts)
     this.printLog(message)
+
+    // I1 (whole-branch review): `printLog`'s `detailActive` guard queues this
+    // line into `replayQueue` and returns WITHOUT re-rendering — by design,
+    // detail must never be polluted by a log line. But that guard also means a
+    // terminated request whose detail is the one currently on screen never
+    // reaches `renderDetail`'s own "selection fell out of range → exitDetail"
+    // degrade path, because that path is only ever entered FROM `render()`
+    // (footer timer / keyboard input), and `printLog` never calls `render()`.
+    // Left alone, the alt screen freezes on stale content until the user
+    // manually presses esc (or, if other requests are still active, the next
+    // 100ms footer-timer tick silently re-resolves `selectedIndex` to whatever
+    // request shifted into that slot — a silent switch). This is the
+    // orthogonal fix: when the VIEWED entry is the one that just terminated,
+    // degrade directly via `exitDetail()` — NOT `render()`/`renderDetail()`,
+    // which re-resolves the viewed entry by `selectedIndex` against the
+    // POST-delete `active` map and would silently paint whichever request
+    // shifted into that now-vacant slot instead of degrading.
+    if (viewingId === ctx.id) this.exitDetail()
   }
 
   // ============================================================================
@@ -702,7 +750,7 @@ export class TerminalUi {
         // `replayQueue` into the scrollback via `flushReplayQueue` once the
         // alt screen is gone (P1.3).
         this.replayQueue.push(message)
-        if (this.replayQueue.length > REPLAY_CAP) this.replayQueue.shift() // bounded; durability is FileSink's job
+        if (this.replayQueue.length > REPLAY_CAP) this.replayQueue.shift() // bounded — see REPLAY_CAP's doc for per-line-kind durability
         return
       }
       // The Region owns the reserved bottom area; the last `Region.render` parked
