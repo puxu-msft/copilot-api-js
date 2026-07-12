@@ -25,7 +25,7 @@ Phase 2 引入请求翻译，但**翻译腿端到端必须仍 fail-fast**——�
 - [master plan Phase 2](../plan.md#phase-2hub-共享翻译层--anthropiccc-请求翻译)（T2.1-T2.4 + factory 锚点）+ Phase 0/1 实施记录。
 - [探针实测 PROBE-FINDINGS](../../../exp/anthropic-via-openai-translation/PROBE-FINDINGS.md)（cc 腿 claude 返 toolu_ 透传、多 choices 分裂）。
 - [prompts/README](README.md) 通用红线。
-- **dry-run inspector**：`/api/debug/dry-run-pipeline`（见 skill `api-endpoints` 或 `src/routes/debug/dry-run-pipeline.ts`）——离线把合成请求喂进真实 driver、`stopAfter=translate/prepare-wire` 输出请求翻译中间态，**不发上游**。这是 Phase 2 请求翻译的主验证工具。
+- **dry-run inspector**：`/api/debug/dry-run-pipeline`（见 skill `proxy-api-reference` 或 `src/routes/debug/dry-run-pipeline.ts`）——离线把合成请求喂进真实 driver、`stopAfter=translate/prepare-wire` 输出请求翻译中间态，**不发上游**。这是 Phase 2 请求翻译的主验证工具。
 
 ## 目标
 建请求翻译基础设施，**现状零回归 + 翻译腿端到端 fail-fast**：

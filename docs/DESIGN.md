@@ -426,7 +426,7 @@ ui/
 | [ws-webui.md](ws-webui.md) | WebUI `/ws` topic 广播（history/requests/status、背压保护、bus→WsSink 溯源、前端重连） |
 | [shutdown.md](shutdown.md) | 优雅关闭、请求生命周期、Stale Reaper |
 
-> Bun 上游传输三陷阱（300s/keepalive/undici shim）已迁为 skill `debugging-ghc-api-upstream-transport`；测试隔离速查见 skill `test-isolation`；端点/schema 查阅入口见 skill `api-endpoints`、`history-sqlite-schema`。
+> Bun 上游传输三陷阱（300s/keepalive/undici shim）已迁为 skill `debugging-ghc-api-upstream-transport`；测试隔离速查见 skill `test-isolation`；端点/schema 查阅入口见 skill `proxy-api-reference`、`history-sqlite-schema`。
 
 ## UI 设计原则
 

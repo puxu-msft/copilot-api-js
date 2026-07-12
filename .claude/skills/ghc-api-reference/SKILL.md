@@ -61,6 +61,6 @@ gh search code --repo microsoft/vscode "isAnthropicToolSearchEnabled" --json pat
 
 ## 何时用本 skill vs 相邻 skill
 
-- **本 skill（ghc-api-reference）**：以官方客户端源码为准，**对齐**请求格式/能力/wire 形状（正向核对、新增 feature、新模型同步）。
+- **本 skill（ghc-api-reference）**：**上游 / 我们消费的** GHC/Copilot API——以官方客户端源码为准，**对齐**请求格式/能力/wire 形状（正向核对、新增 feature、新模型同步）。
+- **`proxy-api-reference`**：**入站 / 我们对客户端暴露的** HTTP 端点（OpenAI/Anthropic/Gemini/Azure 兼容 + 管理 API + History REST + WS）。姊妹参考，方向相反——查「怎么调我们的端点」用它。
 - **`ghc-anthropic-upstream`**：排查上游返回的**异常症状**（signature 400、空 thinking 毒化、tool_use 文本降级等）。
-- **`ghc-api-reference` 的 usage 段（references/usage-wire.md）**：GHC usage 数据升级的 wire 事实与已修 bug 指针。

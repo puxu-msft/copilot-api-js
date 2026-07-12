@@ -1,9 +1,11 @@
 ---
-name: api-endpoints
-description: 当需要查阅/调用 copilot-api-js 暴露的任意 HTTP 端点时使用——OpenAI(chat/models/embeddings/responses)、Anthropic(messages/count_tokens)、Gemini(generateContent)、Azure deployments、管理 API(/api/*)、History REST、/metrics、/health、WebSocket。包含前缀变体、按 vendor 分组、以及如何用 /openapi.json 获取活的真相。
+name: proxy-api-reference
+description: 当需要查阅/调用 copilot-api-js（本代理）**对客户端暴露**的任意 HTTP 端点时使用——OpenAI(chat/models/embeddings/responses)、Anthropic(messages/count_tokens)、Gemini(generateContent)、Azure deployments、管理 API(/api/*)、History REST、/metrics、/health、WebSocket。包含前缀变体、按 vendor 分组、以及如何用 /openapi.json 获取活的真相。区别于 ghc-api-reference（我们**消费的上游** GHC/Copilot API）。
 ---
 
-# API Endpoints 总览
+# Proxy API 端点参考（copilot-api-js 对外暴露的入站面）
+
+> **方向**：本 skill 是**入站 / 我们暴露给客户端**的 HTTP 端点。**上游 / 我们消费的 GHC/Copilot API**（模型目录、能力、beta header、wire 格式）见姊妹 skill `ghc-api-reference`。
 
 ## 权威真相源（优先用，别凭记忆）
 
