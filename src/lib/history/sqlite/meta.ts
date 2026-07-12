@@ -44,6 +44,15 @@ export const USAGE_NORMALIZE_VERSION_KEY = "usage_normalize_version"
 /** `history_meta` key: resumable usage-backfill progress (the last processed started_at). */
 export const USAGE_NORMALIZE_CURSOR_KEY = "usage_normalize_backfill_cursor"
 
+/** Completion-flag value written once the cache-write backfill finishes. */
+export const CACHE_WRITE_BACKFILL_VERSION = "1"
+
+/** `history_meta` key: set to CACHE_WRITE_BACKFILL_VERSION only when the cache-write backfill completes. */
+export const CACHE_WRITE_BACKFILL_VERSION_KEY = "cache_write_backfill_version"
+
+/** `history_meta` key: resumable cache-write-backfill progress (the last processed started_at). */
+export const CACHE_WRITE_BACKFILL_CURSOR_KEY = "cache_write_backfill_cursor"
+
 /** Completion-flag value written once the legacy-stage → client/upstream-stage migration finishes. */
 export const STAGE_MIGRATE_VERSION = "1"
 

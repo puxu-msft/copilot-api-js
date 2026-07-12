@@ -50,6 +50,7 @@ import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-st
 import { resetResponsePreviewBackfillForTests } from "~/lib/history/sqlite/response-preview-backfill"
 import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
 import { resetUsageNormalizeBackfillForTests } from "~/lib/history/sqlite/usage-normalize-backfill"
+import { resetCacheWriteBackfillForTests } from "~/lib/history/sqlite/cache-write-backfill"
 import { resetModelsEtagForTests } from "~/lib/models/client"
 import {
   //
@@ -113,6 +114,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetSearchIndexBackfillForTests", reset: resetSearchIndexBackfillForTests },
   { name: "resetLegacyStageBackfillForTests", reset: resetLegacyStageBackfillForTests },
   { name: "resetUsageNormalizeBackfillForTests", reset: resetUsageNormalizeBackfillForTests },
+  { name: "resetCacheWriteBackfillForTests", reset: resetCacheWriteBackfillForTests },
   { name: "resetResponsePreviewBackfillForTests", reset: resetResponsePreviewBackfillForTests },
   { name: "resetCalibrationBackfillForTests", reset: resetCalibrationBackfillForTests },
 ]
