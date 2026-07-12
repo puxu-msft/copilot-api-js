@@ -220,7 +220,7 @@ describe("openai-cc codec — renderResponse via-responses (/responses)", () => 
     expect((chunks[0] as { choices: Array<{ delta: { role?: string } }> }).choices[0]?.delta.role).toBe("assistant")
   })
 
-  test("response.completed → finish + usage chunks (includeUsage), preserving order", () => {
+  test("response.completed → finish + usage chunks (always emitted), preserving order", () => {
     const codec = createOpenAiCcCodec()
     const env = viaEnv(true)
     // prime translator state with response id/model

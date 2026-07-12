@@ -6,7 +6,7 @@
 
 ## 1. 背景与实证（Why）
 
-GHC 升级了 usage 数据（见 ghc-usage-details spec）。运行期验证 fix-forward 时，对**经 CC→Responses 桥路由的模型**（gpt-5.x 等，`outboundEndpoint: /responses`）发流式 chat/completions，实测暴露**两个 live bug**（直连 CC + Gemini 腿不受影响）：
+GHC 升级了 usage 数据（见 ghc-usage-details spec）。运行期验证 fix-forward 时，对**经 CC→Responses 桥路由的模型**（gpt-5.x 等，`outboundEndpoint: /responses`）发流式 chat/completions，实测暴露**两个 live bug**（**只影响 CC→Responses 桥**——直连 CC passthrough + Gemini/直连的非-responses 路径不受影响；但 gemini 客户端请求经 Responses 路由的模型时委托同一 cc codec 且 `gemini/convert-request.ts` 强制 `include_usage:true`，故 **gemini-via-responses 也曾撞 bug 1、本修复一并修好**）：
 
 **探针矩阵**（实测 4141 History API）：
 
