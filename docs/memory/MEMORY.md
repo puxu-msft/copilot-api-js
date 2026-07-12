@@ -27,6 +27,8 @@
 - [合成帧必打可辨识标记](feedback-synthetic-data-must-be-distinguishable-from-real.md) → ADR `docs/decisions/2026-07-05-richest-data-flow.md`（对称面）— 上游轨绝不含合成物、合成物只进 forwarded 轨打标记
 
 ## 精炼保留（无 skill 域 / 独有教学价值 / 只读 skill 不覆盖）
+- [面向用户永久只用中文、禁日语](feedback-chinese-only-never-japanese.md) — 本会话连续误用日语、用户 4 次强纠正；输出层自检语言=中文，内部推理语言无所谓
+- [写 plan 引用现有接线须核实位置与端到端桥接](methodology-plan-verify-interface-location-and-wiring-channel.md) — 同名 interface 核实确切文件（PrepareHints 在 pipeline.ts 非 request-preparation）；per-attempt hint 是多跳通道逐跳接（codec 逐字段白名单桥接漏一行则死接线）；**recordFeature 只到 live TUI/WS 不落盘（history sink 显式丢 feature_applied）——持久化 prepare 诊断须走 pipelineInfo（经 context_updated 落盘），别拿 thinking feature 当「已验证进 history」先例**；history 诊断别给跨端点共享 WireRequest 加专属字段；config→state 映射 mandatory 非「若有」；新 union 成员打爆 ui-v4 穷尽 Record（须 typecheck:ui-v4）+ clearNegotiationMaps。实例=cache_control 子字段 plan 评审抓 1C+3H、合并态审查抓 recordFeature 不落盘 HIGH-1，算法/正则反而对、错在想当然复用接线
 - [畸形 tool_use 全人群扫描法](methodology-malformed-tooluse-full-population-scan.md) — 查全 decode error 别只看 error_message（漏被修好/原样转发的）；扫 upstream_response blob 的 sseEvents + content_block_stop 分真缺陷 vs abort 伪畸形；实例=AskUserQuestion 中文 \uXXXX 转义击中 opus-4.8，20 真缺陷 18 无损修+2 丢hex位 unicode-lossy
 
 - [配置哲学独立：留兼容层 + 警告并继续](feedback-config-philosophy-separate-compat-and-warn-continue.md) — 配置**不**享代码「无向后兼容负担」；键重命名 / 收窄作用域须留旧键别名读时映射，加载遇弃用 / 未知 / 无效键默认警告并继续（唯启动期可 fail-fast，运行时热重载绝不因配置问题杀进程）；触发场景=改配置 schema / 迁移配置键

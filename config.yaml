@@ -696,7 +696,7 @@ anthropic:
   #   unicode-lossy = 有损兜底——无法凑齐 4 位的 `\uXXXX` 转义（丢了 hex 位，如 `\u9 44`）替换成 U+FFFD；以糊 ≥1 个字符为代价救活否则必死的输入。排在所有无损项之后，仅当它们全失败才触发。
   #   例：'tags' / 'tags,jsonrepair' / 'unicode' / 'tags,unicode,jsonrepair' / 'tags,unicode,jsonrepair,unicode-lossy'。
   # 任一启用项都修不出合法 JSON 则请求记为失败 + 发合成 error 帧（绝不静默转发坏的工具调用）。详见 docs/spec/anthropic-malformed-tool-input-repair.md。
-  tool_repair_malformed_input: "tags,unicode"
+  tool_repair_malformed_input: "tags,unicode,unicode-lossy,jsonrepair"
 
   # How to handle the upstream thinking-only refusal (stop_reason:"refusal" with only a thinking block, no text/tool_use). Three modes:
   #   "refusal"  = pass the upstream refusal through unchanged (client gets a dead/empty turn).

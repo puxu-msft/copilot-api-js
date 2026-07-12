@@ -1,6 +1,6 @@
 # Spec: 统一 block 级延迟提交缓冲重试（block-level buffered retry）
 
-状态：草稿 v2（已整合两轮设计 + 两轮 spec 对抗审查 + 用户 6 项裁决，待用户复核定稿）· 日期：2026-07-11 · 归属：`docs/spec/`
+状态：**已获用户批准（2026-07-11）** · 三轮对抗审查定稿 · 实施计划见 `docs/plan/2026-07-11-block-level-buffered-retry/` · 日期：2026-07-11 · 归属：`docs/spec/`
 
 关联：ADR `docs/decisions/2026-07-11-block-level-buffered-retry.md`（决策级：整响应缓冲退役 + 块级默认，待建）· 前身 RFC `docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md`（整响应版，本 spec 退役之）· `docs/DESIGN.md`「活的架构现状」流式写出行/driver 例外行/运行时配置表 · `docs/streaming.md`（活文档，须同步）· backlog `docs/todo/deferred-backlog.md`。
 
