@@ -394,3 +394,11 @@
 - **理想架构**：在两翻译器的 `prompt_tokens_details` 构建处对称加 `cache_write_tokens`（仅目标格式有槽位处），对称既有 cached_tokens 转发。
 - **为何暂缓**：随 Phase 3 一并暂缓（与高风险 backfill 同批 defer，避免长会话尾部散碎收尾）；纯客户端呈现增强，history/计费不受影响。属「独立小增强」。
 - **若做需改什么**：`responses-to-cc.ts:98` + `responses-to-cc-stream.ts:197` 加 cache_write 转发 + 测试（spec §7 / plan Task 3.1）。发现方：ghc-usage-details Phase 3 defer（2026-07-12）。
+
+## 嵌套子字段剥离一般化 + 6 套 negotiation-strip 机制收敛（2026-07-12 暂缓）
+
+- **根因**：`cache_control.scope` 400 揭示的一般问题——GHC 上游落后于 Claude Code 时，不只顶层 body 字段/beta/tool 字段会被拒，**任意嵌套子对象内部的新字段**都可能被拒（cache_control、output_config、thinking、tool.custom 内部均可能重演）。现有剥离机制的粒度只到「顶层字段」，缺「嵌套子字段」这一层。
+- **当前行为**：`docs/spec/2026-07-12-cache-control-subfield-stripping.md` 为 cache_control 子字段**手搓了第 6 套**近乎同构的机制（`collectAllMatching(config) ∪ negotiation cache ∪ per-attempt hint → strip + 手写 reactive strategy`）。已有 5 套：betas / body-fields / tool-fields / server-tools / partner-features。每套都是逐字同构的 collect-union-读取端 + endpoint/per-model 学习 + 手写 matchAll reactive 腿 + 遮蔽风险处理。
+- **理想架构**：抽一个「negotiated strip target 通用注册表」——每个 target 声明 `{ wire 路径选择器, 学习键粒度(endpoint|model), 剥离原语, 错误正则 }`，把 6 套收敛成配置化的一套注册表 + 一个通用 reactive 腿工厂（现有 `createReactiveRejectionStrategy` 是雏形，但不支持 batch matchAll + model-agnostic，须扩展）。新 GHC 落后字段只需注册一条，不再建第 N 套。
+- **为何暂缓**：① 是独立的大型重构（触及 6 处现有 strip + negotiation schema + Learned 页），不应阻塞当前 scope 400 修复；② 收敛前需先有第 6 个同构实例落地，规律才充分显形（本 spec 正是第 6 个）；③ 属「HOW 层去重」非「砍数据/功能」，符合 long-term-wins 但可择时。
+- **若做需改什么**：设计通用注册表接口 → 逐个把 betas/body-fields/tool-fields/server-tools/partner-features/cache-control-subfields 迁移到注册表 → 扩展 reactive 腿工厂支持 batch matchAll + endpoint-level 学习键 → 统一遮蔽风险的 ordering 与认领归属测试。发现方：cache-control-subfield-stripping spec §9 决策（2026-07-12），评审 MEDIUM-4。
