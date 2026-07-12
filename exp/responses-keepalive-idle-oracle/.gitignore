@@ -1,0 +1,8 @@
+# Self-signed TLS material — regenerated idempotently by run-proxy-arm.sh (never commit a private key).
+mock-cert.pem
+mock-key.pem
+
+# Run artifacts (regenerated each arm run).
+*.oracle.log
+*.codex.jsonl
+*.mock-upstream.log
