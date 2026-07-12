@@ -71,8 +71,10 @@ Phase 0 (PoC 净公式)  ──gate──►  Phase 1 (fix-forward)  ──►  
 
 ## 实施状态
 
-> 分支 `feat/ghc-usage-details`（worktree `.worktrees/ghc-usage-details`）。
-- Phase 0：**已完成**（commit `fc926c62`）——净公式=子集，见 poc-conclusion.md。
-- Phase 1：**已完成**（8 commits `6428db0f`..`59d5be8c`）——fix-forward 全线，全套件 4381 pass、typecheck 绿。含 G6 偏离（局部 JSON.stringify 而非 transport 透传，见 `59d5be8c`）。
-- Phase 2：**进行中**——Task 2.1 标记列**已完成**（`cd8ec789`）；Task 2.2 backfill leaf + 2.3 接线**待做**，续做笔记见 [RESUME-task-2.2.md](RESUME-task-2.2.md)。
-- Phase 3：未开始。
+> **已 rebase + FF 合并入 master**（tip `fe6b2aa6`，2026-07-12）。SHA 为 rebase 后。
+- Phase 0：**已完成**——净公式=子集（live DB 无样本，fallback + backfill oracle 双重防护），见 [poc-conclusion.md](poc-conclusion.md)。
+- Phase 1：**已完成**——fix-forward 全 8 task + 合并态审查抓到的 **Gemini 流式腿补捉**（第 4 腿，见 `fe6b2aa6`）。含 G6 偏离（局部 JSON.stringify 而非 transport 透传原始字节）。
+- Phase 2：**部分完成**——Task 2.1 标记列**已完成并合并**；**Task 2.2 backfill leaf + 2.3 接线暂缓**（C2 高风险、本部署收益近零），已记入 [docs/todo/deferred-backlog.md](../../todo/deferred-backlog.md)，续做笔记 [RESUME-task-2.2.md](RESUME-task-2.2.md)。
+- Phase 3：**部分**——Task 3.1 出向转发 cache_write **暂缓**（记入 backlog）；Task 3.2 文档同步 = 本次收尾。
+
+**合并态审查结论**：write.ts INSERT 计数一致性（合并阻塞项）完全正确；抓到 1 HIGH（Gemini 流式漏 cache_write + born-marking 使其不可恢复）**已当场修复**（补 canonical usage 进 GeminiStreamMeta）；1 LOW（responseText 注释陈旧）已修。
