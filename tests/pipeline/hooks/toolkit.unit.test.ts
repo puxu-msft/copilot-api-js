@@ -1,5 +1,7 @@
 import {
   //
+  afterEach,
+  beforeEach,
   describe,
   expect,
   test,
@@ -17,6 +19,14 @@ import {
 import { HTTPError } from "~/lib/error"
 import {
   //
+  clearHistory,
+  initHistory,
+  insertEntry,
+  shutdownHistory,
+  updateEntry,
+} from "~/lib/history"
+import {
+  //
   accumulateOpenAIStreamEvent,
   createOpenAIStreamAccumulator,
 } from "~/lib/openai/stream-accumulator"
@@ -28,6 +38,7 @@ import {
   mockGeminiResponse,
   mockUpstreamError,
   rawStream,
+  replayFromHistory,
   sse,
   streamOf,
 } from "~/lib/pipeline/hooks/toolkit"
@@ -35,6 +46,26 @@ import { CC_SUBFIELD_PRESENT as CACHE_CONTROL_SUBFIELD_PATTERN } from "~/lib/req
 import { SERVER_TOOL_REJECTION_TABLE } from "~/lib/request/strategies/server-tool-rejection-retry"
 import { TOOL_FIELD_PRESENT } from "~/lib/request/strategies/tool-field-rejection-retry"
 import { BETA_ERROR_PATTERN } from "~/lib/request/strategies/unsupported-beta-retry"
+import { setStateForTests } from "~/lib/state"
+import { generateId } from "~/lib/utils"
+
+import { autoRestoreState } from "../../helpers/state-fixture"
+
+// Snapshot global state once and restore after every test — the `replayFromHistory` describe block
+// below seeds the module-global history store (in-flight map + memory-backed SQLite), matching the
+// established isolation pattern (tests/history/history-store.it.test.ts).
+autoRestoreState()
+
+beforeEach(() => {
+  setStateForTests({ historyDbPath: ":memory:" })
+  initHistory(true, 200)
+})
+
+afterEach(async () => {
+  clearHistory()
+  await shutdownHistory()
+  setStateForTests({ historyDbPath: "" })
+})
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<Array<T>> {
   const out: Array<T> = []
@@ -276,5 +307,134 @@ describe("mockUpstreamError", () => {
         }
       }
     })
+  })
+})
+
+/** Build + insert a minimal terminal `HistoryEntry` whose last attempt carries `sseEvents`, for
+ *  `replayFromHistory` to read back. Mirrors `tests/helpers/history-fixtures.ts`'s `insertEntry`
+ *  wiring, extended with the per-attempt `upstreamResponse.sseEvents` replayFromHistory reads. */
+function insertReplayFixture(opts: {
+  endpoint: "anthropic-messages" | "openai-chat-completions"
+  model: string
+  sseEvents: Array<{ offsetMs: number; type: string; raw: string; synthetic?: "keepalive" | "hook-mock" }>
+}): string {
+  const id = generateId()
+  insertEntry({
+    id,
+    startedAt: Date.now(),
+    endpoint: opts.endpoint,
+    model: { requested: opts.model, resolved: opts.model },
+    clientRequest: { format: opts.endpoint, model: opts.model, messages: [] },
+  })
+  updateEntry(id, {
+    state: "completed",
+    attempts: [
+      {
+        index: 0,
+        durationMs: 1,
+        upstreamResponse: {
+          success: true,
+          model: opts.model,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          body: null,
+          sseEvents: opts.sseEvents,
+        },
+      },
+    ],
+  })
+  return id
+}
+
+describe("replayFromHistory", () => {
+  test("Anthropic entry: replays with event lines (type is a REAL event name, lossless per H4)", async () => {
+    const id = insertReplayFixture({
+      endpoint: "anthropic-messages",
+      model: "claude-mock",
+      sseEvents: [
+        { offsetMs: 0, type: "message_start", raw: JSON.stringify({ type: "message_start" }) },
+        { offsetMs: 5, type: "content_block_delta", raw: JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }) },
+        { offsetMs: 10, type: "message_stop", raw: JSON.stringify({ type: "message_stop" }) },
+      ],
+    })
+
+    const s = await replayFromHistory(id)
+    expect(readOrigin(s)).toBe("hook-replay")
+    const frames = await collect(s.frames)
+    expect(frames).toEqual([
+      { event: "message_start", data: JSON.stringify({ type: "message_start" }) },
+      { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }) },
+      { event: "message_stop", data: JSON.stringify({ type: "message_stop" }) },
+    ])
+  })
+
+  test('CC entry: replays WITHOUT event lines (type is a FABRICATED "message" label, per driver.ts\'s frame.event ?? "message")', async () => {
+    const id = insertReplayFixture({
+      endpoint: "openai-chat-completions",
+      model: "gpt-mock",
+      sseEvents: [
+        { offsetMs: 0, type: "message", raw: JSON.stringify({ choices: [{ delta: { content: "hi" }, index: 0, finish_reason: null }] }) },
+        { offsetMs: 5, type: "message", raw: JSON.stringify({ choices: [{ delta: {}, index: 0, finish_reason: "stop" }] }) },
+      ],
+    })
+
+    const s = await replayFromHistory(id)
+    expect(readOrigin(s)).toBe("hook-replay")
+    const frames = await collect(s.frames)
+    expect(frames.every((f) => f.event === undefined)).toBe(true)
+    expect(frames.map((f) => f.data)).toEqual([
+      JSON.stringify({ choices: [{ delta: { content: "hi" }, index: 0, finish_reason: null }] }),
+      JSON.stringify({ choices: [{ delta: {}, index: 0, finish_reason: "stop" }] }),
+    ])
+  })
+
+  test("filters out synthetic (keepalive/hook-*) records — only genuine upstream frames replay", async () => {
+    const id = insertReplayFixture({
+      endpoint: "anthropic-messages",
+      model: "claude-mock",
+      sseEvents: [
+        { offsetMs: 0, type: "message_start", raw: JSON.stringify({ type: "message_start" }) },
+        { offsetMs: 3, type: "ping", raw: JSON.stringify({ type: "ping" }), synthetic: "keepalive" },
+        { offsetMs: 10, type: "message_stop", raw: JSON.stringify({ type: "message_stop" }) },
+      ],
+    })
+
+    const frames = await collect((await replayFromHistory(id)).frames)
+    expect(frames.map((f) => f.event)).toEqual(["message_start", "message_stop"])
+  })
+
+  test("string selector reads the entry by id (getEntry)", async () => {
+    const id = insertReplayFixture({ endpoint: "anthropic-messages", model: "m1", sseEvents: [{ offsetMs: 0, type: "message_stop", raw: "{}" }] })
+    const frames = await collect((await replayFromHistory(id)).frames)
+    expect(frames).toHaveLength(1)
+  })
+
+  test("object selector filters by model and picks the latest match", async () => {
+    insertReplayFixture({ endpoint: "anthropic-messages", model: "target-model", sseEvents: [{ offsetMs: 0, type: "message_start", raw: "older" }] })
+    await Bun.sleep(2)
+    const latestId = insertReplayFixture({
+      endpoint: "anthropic-messages",
+      model: "target-model",
+      sseEvents: [{ offsetMs: 0, type: "message_start", raw: "newer" }],
+    })
+    insertReplayFixture({ endpoint: "anthropic-messages", model: "other-model", sseEvents: [{ offsetMs: 0, type: "message_start", raw: "unrelated" }] })
+
+    const frames = await collect((await replayFromHistory({ model: "target-model" })).frames)
+    expect(frames).toEqual([{ event: "message_start", data: "newer" }])
+
+    // Cross-check: getEntry(latestId) really is the entry replayFromHistory picked.
+    const byId = await collect((await replayFromHistory(latestId)).frames)
+    expect(byId).toEqual(frames)
+  })
+
+  test("object selector filters by endpoint", async () => {
+    insertReplayFixture({ endpoint: "openai-chat-completions", model: "shared-model", sseEvents: [{ offsetMs: 0, type: "message", raw: "cc-body" }] })
+    insertReplayFixture({ endpoint: "anthropic-messages", model: "shared-model", sseEvents: [{ offsetMs: 0, type: "message_start", raw: "anthropic-body" }] })
+
+    const frames = await collect((await replayFromHistory({ endpoint: "openai-chat-completions" })).frames)
+    expect(frames).toEqual([{ event: undefined, data: "cc-body" }])
+  })
+
+  test("throws when no entry matches the selector", async () => {
+    await expect(replayFromHistory("no-such-entry-id")).rejects.toThrow()
   })
 })

@@ -6,6 +6,11 @@
 
 import type {
   //
+  EndpointType,
+  HistoryEntry,
+} from "~/lib/history"
+import type {
+  //
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
@@ -13,6 +18,11 @@ import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 
 import { HTTPError } from "~/lib/error"
 import { createGeminiStreamTranslator } from "~/lib/gemini/convert-stream"
+import {
+  //
+  getEntry,
+  getHistory,
+} from "~/lib/history"
 
 import { tagStream } from "./origin"
 
@@ -151,3 +161,61 @@ export const mockUpstreamError = Object.assign(mockUpstreamErrorImpl, {
   /** Hits `unsupported-beta-retry.ts`'s `BETA_ERROR_PATTERN`. */
   unsupportedBeta: (): never => mockUpstreamErrorImpl(400, "unsupported beta header(s): interleaved-thinking-2025-05-14"),
 })
+
+// ============================================================================
+// replayFromHistory — rebuild an UpstreamStream from a recorded history entry
+// ============================================================================
+
+/** Select a history entry by id, or by the given (model/endpoint) filters — always the LATEST
+ *  match (`~/lib/history`'s `getHistory` already sorts newest-first; `getEntry` is an exact-id
+ *  lookup that bypasses the filter/sort path entirely). `latest` has no distinct semantics of its
+ *  own today (there is no oldest-first mode to opt out of) — it is accepted for API-shape parity
+ *  with the plan's public signature and simply documents the caller's intent. */
+function findHistoryEntry(selector: string | { model?: string; endpoint?: string; latest?: boolean }): HistoryEntry | undefined {
+  if (typeof selector === "string") return getEntry(selector)
+  const { model, endpoint } = selector
+  return getHistory({ model, endpoint: endpoint as EndpointType | undefined, limit: 1 }).entries[0]
+}
+
+/** Rebuild a `Headers` instance from the entry's LAST attempt's captured upstream response
+ *  headers. Prefers the per-attempt `responseHeaders` capture (RFC Phase 3 ③, the driver writes
+ *  it for every attempt); falls back to the settled `upstreamResponse.headers` for older rows
+ *  that predate that capture. Absent on both → an empty `Headers` (same default as `rawStream`). */
+function rebuildHeaders(entry: HistoryEntry): Headers {
+  const attempt = entry.attempts?.at(-1)
+  const headers = new Headers()
+  const src = attempt?.responseHeaders ?? attempt?.upstreamResponse?.headers
+  if (src) for (const [k, v] of Object.entries(src)) headers.set(k, v)
+  return headers
+}
+
+/**
+ * Rebuild an `UpstreamStream` from a recorded history entry's LAST attempt's upstream-original SSE
+ * frames — so a hook's `onExchange` can `return await replayFromHistory(selector)` to deterministically
+ * re-play a real captured exchange instead of a hand-built mock.
+ *
+ * FORMAT-LAYERED FIDELITY (H4, spec §5): a recorded `SseEventRecord.raw` is only ever the `data:`
+ * payload — the driver fabricates `type:"message"` for any event-less frame (`frame.event ??
+ * (frame.data ? "message" : "keepalive")`, driver.ts), which is exactly what a genuine CC/Gemini
+ * upstream frame is (OpenAI-style SSE has no `event:` line). Anthropic frames, by contrast, DO carry
+ * a real `event:` line whose name is `type`. So:
+ *   - Anthropic entries (`endpoint === "anthropic-messages"`) replay `{ event: rec.type, data: rec.raw }`
+ *     — lossless, `rec.type` IS the real event name.
+ *   - Every other endpoint replays `{ data: rec.raw }` — dropping `rec.type` (it is the driver's
+ *     fabricated "message" sentinel, not a real wire label) rather than re-emitting it as a bogus
+ *     `event:` line the client never actually received.
+ *
+ * `synthetic` records (keepalive/anchor/hook-mock/hook-replay/hook-rewrite) are excluded — they are
+ * proxy-injected or hook-origin frames, never genuine upstream traffic (the upstream-original track
+ * itself should never carry `synthetic`, but the filter is defense-in-depth per the plan).
+ */
+export async function replayFromHistory(selector: string | { model?: string; endpoint?: string; latest?: boolean }): Promise<UpstreamStream> {
+  const entry = findHistoryEntry(selector)
+  if (!entry) throw new Error(`replayFromHistory: no history entry matches selector ${JSON.stringify(selector)}`)
+
+  const recs = entry.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? []
+  const isAnthropic = entry.endpoint === "anthropic-messages"
+  const frames: Array<UpstreamFrame> = recs.filter((r) => !r.synthetic).map((r) => (isAnthropic ? { event: r.type, data: r.raw } : { data: r.raw }))
+
+  return tagStream(rawStream(frames, rebuildHeaders(entry)), "hook-replay")
+}
