@@ -23,10 +23,9 @@ export interface StreamTranslatorState {
   toolCallIndexMap: Map<number, number>
   nextToolCallIndex: number
   toolCallIds: Map<number, string>
-  includeUsage: boolean
 }
 
-export function createStreamTranslator(opts: { includeUsage: boolean }): {
+export function createStreamTranslator(): {
   translate(event: ResponsesStreamEvent): Array<ChatCompletionChunk>
   getState(): StreamTranslatorState
 } {
@@ -37,7 +36,6 @@ export function createStreamTranslator(opts: { includeUsage: boolean }): {
     toolCallIndexMap: new Map(),
     nextToolCallIndex: 0,
     toolCallIds: new Map(),
-    includeUsage: opts.includeUsage,
   }
 
   function translate(event: ResponsesStreamEvent): Array<ChatCompletionChunk> {
@@ -98,7 +96,12 @@ export function createStreamTranslator(opts: { includeUsage: boolean }): {
       case "response.completed": {
         syncStateFromResponse(state, event.response)
         const chunks = [buildChunk(state, {}, state.nextToolCallIndex > 0 ? "tool_calls" : "stop")]
-        if (state.includeUsage && event.response.usage) {
+        // Always emit the usage chunk when the upstream carries usage — consistent
+        // with the direct-CC path (which unconditionally forwards GHC's usage chunk)
+        // and required so history/telemetry capture usage even when the client did
+        // not set stream_options.include_usage. Previously gated on `includeUsage`,
+        // which silently zeroed usage for CC→Responses streaming. See spec.
+        if (event.response.usage) {
           chunks.push(buildUsageChunk(state, event.response))
         }
         return chunks

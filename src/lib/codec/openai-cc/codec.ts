@@ -208,7 +208,7 @@ export function createOpenAiCcCodec(): OpenAiCcCodec {
       // Passthrough (/chat/completions): forward the upstream CC frame verbatim.
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return frame
       // via-responses (/responses): translate each Responses SSE frame → CC chunk(s).
-      streamTranslator ??= createStreamTranslator({ includeUsage: includeUsageOf(env.body) })
+      streamTranslator ??= createStreamTranslator()
       return renderResponsesFrameToCc(frame, streamTranslator)
     },
 
@@ -492,10 +492,6 @@ function renderResponsesFrameToCc(frame: UpstreamFrame, translator: StreamTransl
   }
 
   return translator.translate(event).map((chunk: ChatCompletionChunk): ClientFrame => ({ data: JSON.stringify(chunk), event: "message" }))
-}
-
-function includeUsageOf(body: unknown): boolean {
-  return (body as ChatCompletionsPayload).stream_options?.include_usage ?? false
 }
 
 // ============================================================================

@@ -76,7 +76,11 @@ export function translateChatCompletionsToResponses(payload: ChatCompletionsPayl
         format: translateResponseFormat(payload.response_format),
       },
     }),
-    ...(payload.stream_options?.include_usage && { include: ["usage"] }),
+    // NOTE: we no longer translate `stream_options.include_usage` into a Responses
+    // `include: ["usage"]`. GHC's usage upgrade made `"usage"` an INVALID `include`
+    // value (the Responses API now 400s: "Invalid value: 'usage'"), and it emits
+    // `response.completed.usage` by DEFAULT — so the include is both rejected and
+    // unnecessary. See docs/spec/2026-07-12-cc-responses-streaming-usage.md.
   }
 
   return {
