@@ -185,11 +185,42 @@ describe("Region (DECSTBM sticky bottom panel)", () => {
     expect(second.endsWith("\x1b8")).toBe(true)
   })
 
+  test("scroll-before-grow: growing the panel (same rows) scrolls old bottom logs up BEFORE re-anchor, never eats them", () => {
+    const { region, io } = makeRegion(80, rowsRef) // rows=24
+    region.render(["a"]) // establish panelHeight=1 → scroll region 1..23, panel row 24
+    const mark = io.chunks.length
+
+    region.render(["a", "b", "c"]) // grow to panelHeight=3 → scroll region 1..21, panel 22..24
+    const grow = io.chunks.slice(mark).join("")
+
+    // The 2 rows the taller panel will claim (22, 23) currently hold the newest
+    // logs. Scroll-before-grow parks at the OLD scroll-region bottom (row 23,
+    // still the active region) and emits delta=2 newlines to push that content
+    // up into scrollback BEFORE tearing the region down.
+    const iScroll = grow.indexOf("\x1b[23;1H\n\n")
+    const iReset = grow.indexOf("\x1b[r")
+    expect(iScroll).toBeGreaterThanOrEqual(0) // scrolled the old region up by delta=2
+    expect(iReset).toBeGreaterThan(iScroll) // ...strictly BEFORE the RESET/re-anchor
+    expect(grow).toContain("\x1b[1;21r") // then the new (shorter) DECSTBM
+  })
+
+  test("no scroll-before-grow when the panel SHRINKS (freed rows become blank gaps, tolerated)", () => {
+    const { region, io } = makeRegion(80, rowsRef) // rows=24
+    region.render(["a", "b", "c"]) // establish panelHeight=3
+    const mark = io.chunks.length
+
+    region.render(["a"]) // shrink to panelHeight=1
+    const shrink = io.chunks.slice(mark).join("")
+
+    expect(shrink).toContain("\x1b[r") // still re-anchors (geometry changed)
+    expect(shrink).toContain("\x1b[1;23r") // new taller scroll region
+    expect(shrink).not.toContain("\x1b[21;1H\n") // but NO scroll-before-grow newlines
+  })
+
   test("vertical clamp: overflow shows '+K more below' and panel fits above the top", () => {
     rowsRef = { rows: 6 }
     const cols = 80
     const lines = Array.from({ length: 10 }, (_, i) => `line${i}`)
-
     // Positive sample: WITHOUT clamping, an N=10 panel on a 6-row screen would
     // start at row (rows - N + 1) = -3 — spilling off the top of the screen.
     const unclampedPanelTop = rowsRef.rows - lines.length + 1

@@ -113,6 +113,19 @@ export class Region {
 
     if (geometryChanged) {
       if (prev) {
+        // Scroll-before-grow (never eat a log line): when the panel grows —
+        // same terminal height, larger panelHeight ⇒ the scroll region's bottom
+        // moves UP — the rows about to be reclaimed by the taller panel still
+        // hold the newest log lines. Emitting `delta` newlines at the OLD scroll
+        // region's bottom (region still active) scrolls that content up (top
+        // rows into scrollback, bottom `delta` rows freed to blank) so the new
+        // panel claims blank rows instead of overwriting logs. Shrink direction
+        // needs no such care — freed rows just become blank gaps (tolerated).
+        if (rows === prev.rows && panelHeight > prev.panelHeight) {
+          const delta = panelHeight - prev.panelHeight
+          const oldBottom = prev.rows - prev.panelHeight
+          out += cursorTo(oldBottom) + "\n".repeat(delta)
+        }
         // Re-anchor: tear down the old scroll region and wipe its orphan panel
         // rows before setting the new one, else stale panel content lingers at
         // the old bottom after a resize.

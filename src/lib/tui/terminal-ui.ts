@@ -61,7 +61,6 @@ import {
   buildCollapsedLines,
   buildDetailLines,
   buildPanelLines,
-  MAX_PANEL_ROWS,
   panelContentRows,
 } from "./render/panel"
 import {
@@ -345,17 +344,6 @@ export class TerminalUi {
   /** Max panel rows the Region can show (height minus the reserved log rows). */
   private panelRows(): number {
     return Math.max(1, this.getRows() - RESERVED_LOG_ROWS)
-  }
-
-  /**
-   * Constant panel height for interactive instances (spec INV-2): the DECSTBM
-   * scroll region's height must never change on a view switch (collapsed ↔
-   * panel), only on an actual geometry change (resize / first establish). Both
-   * `collapsed` and `panel` are padded to this height in {@link renderRegion};
-   * `detail` is a separate path (P1) and is not padded here.
-   */
-  private interactivePanelHeight(): number {
-    return Math.min(this.panelRows(), MAX_PANEL_ROWS)
   }
 
   destroy(): void {
@@ -910,16 +898,14 @@ export class TerminalUi {
    * the padding rule.
    */
   private paddedViewLines(): Array<string> {
-    const lines = this.buildViewLines()
-    // Constant height (spec INV-2): pad collapsed/panel to the constant
-    // interactive panel height so the DECSTBM scroll region's geometry never
-    // changes across a view switch — zero churn. `buildPanelLines` already
-    // returns exactly H rows, so padding is a no-op for the panel view.
-    if (lines.length > 0) {
-      const h = this.interactivePanelHeight()
-      while (lines.length < h) lines.push("")
-    }
-    return lines
+    // Default collapsed = N=1 (single footer line, no padding): the idle/default
+    // view occupies just one row (user 2026-07-11). `buildPanelLines` already
+    // returns its own constant height. The scroll region's geometry now DOES
+    // change across a collapsed↔panel toggle — blank gaps on shrink are
+    // tolerable, but the grow direction must never EAT a log line, which
+    // `Region.render`'s scroll-before-grow guarantees (verified via the
+    // pty+pyte self-test `exp/tui-rawmode/pty_grid_test.py`).
+    return this.buildViewLines()
   }
 
   /**
@@ -1039,8 +1025,7 @@ export class TerminalUi {
    *    branch (HIDE_CURSOR + a fresh DECSTBM) instead of the unchanged-
    *    geometry idempotent reassert — the alt-screen round-trip means the
    *    terminal's real scroll-region state no longer matches what `Region`
-   *    last recorded, even though the logical panel height (`interactivePanelHeight`)
-   *    hasn't changed.
+   *    last recorded, even though the logical panel height hasn't changed.
    * 3. `flushReplayQueue()` drains log lines queued by `printLog`'s
    *    `detailActive` guard while detail was open, writing them straight to
    *    the (now primary-screen) stdout so they land in the scrollback above

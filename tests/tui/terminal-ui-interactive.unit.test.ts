@@ -13,10 +13,10 @@
  *     `\x1b[1;<N>r`, per-row content);
  *   - `down` → selection moves (reverse-video on the next row);
  *   - `enter` → detail (`req_id:` block);
- *   - `escape ×2` → back to collapsed; the region is now constant-height
- *     (spec INV-2), so the round-trip does NOT re-emit the DECSTBM reset
- *     `\x1b[r` (BLOCK-1 seam: collapsed↔panel↔collapsed round-trip is zero
- *     churn — same scroll-region geometry throughout);
+ *   - `escape ×2` → back to collapsed; collapsed default is N=1 (user
+ *     2026-07-11), so the panel→collapsed shrink DOES re-emit the DECSTBM
+ *     reset `\x1b[r` (geometry changes). The grow direction never eats a log
+ *     line via Region scroll-before-grow (pty+pyte oracle `pty_grid_test.py`).
  *   - `ctrl-c` (0x03) → injected `onShutdownSignal("SIGINT")`;
  *   - `destroy()` → `setRawMode(false)` + `removeListener("data")` + `pause()`
  *     + region reset;
@@ -157,15 +157,17 @@ describe("TerminalUi — P1 interactive integration", () => {
     const detailOut = sliceFrom(mark)
     expect(detailOut).toContain("req_id: bbbbbbbb")
 
-    // ⑤ escape ×2 → detail → panel → collapsed. Constant-height (spec INV-2):
-    //    collapsed is now padded to the same panel height as `panel`, so the
-    //    shrink-back does NOT re-issue the DECSTBM reset — zero-churn geometry
-    //    across the whole collapsed↔panel↔collapsed round-trip.
+    // ⑤ escape ×2 → detail → panel → collapsed. Default collapsed = N=1
+    //    (user 2026-07-11): the panel→collapsed shrink DOES change geometry, so
+    //    the region re-anchors (DECSTBM reset re-issued). Blank gaps on shrink
+    //    are tolerated; the grow direction is what must never eat a log line
+    //    (Region scroll-before-grow — see the dedicated tests below + the
+    //    pty+pyte oracle `exp/tui-rawmode/pty_grid_test.py`).
     stdin.emit("data", Buffer.from([0x1b])) // escape → panel
     mark = since()
-    stdin.emit("data", Buffer.from([0x1b])) // escape → collapsed (constant height, no resize)
+    stdin.emit("data", Buffer.from([0x1b])) // escape → collapsed (3→1 shrink, re-anchors)
     const collapseOut = sliceFrom(mark)
-    expect(collapseOut).not.toContain(SCROLL_RESET) // no DECSTBM reset — geometry unchanged
+    expect(collapseOut).toContain(SCROLL_RESET) // DECSTBM reset re-issued — geometry shrank
 
     // ⑥ ctrl-c → injected shutdown signal.
     stdin.emit("data", Buffer.from([0x03]))
@@ -206,7 +208,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     expect(out).toContain("[ OK ]") // P0 log line still rendered
   })
 
-  test("constant geometry: collapsed↔panel toggle never resizes the DECSTBM region", () => {
+  test("collapsed default is a single row (N=1), not padded to the panel height", () => {
     const stdin = new FakeStdin()
     const { stdout, chunks } = makeStdout()
     const bus = createBus()
@@ -219,18 +221,45 @@ describe("TerminalUi — P1 interactive integration", () => {
       registerExitHook: () => {},
     })
     bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
-    // Trigger a collapsed render synchronously (the footer timer is async) via
-    // `system.log` → `printLog` → `renderRegion` — the existing golden-test
-    // technique, rather than adding a render-only test hook.
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "x", time: Date.now() } as never)
     chunks.length = 0
-    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
-    stdin.emit("data", Buffer.from(" ")) // panel → collapsed
+    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "x", time: Date.now() } as never)
+    // Collapsed with a single in-flight request: the DECSTBM region reserves
+    // exactly ONE bottom row (rows-1 = 23) — user 2026-07-11 wants the default
+    // view to occupy one row, not the padded MAX_PANEL_ROWS.
     const bottoms = new Set(
       // eslint-disable-next-line no-control-regex -- intentional ESC control char
       [...chunks.join("").matchAll(/\x1b\[1;(\d+)r/g)].map((m) => m[1]),
     )
-    expect(bottoms.size).toBe(1) // constant geometry — collapsed no longer shrinks the region
+    expect(bottoms).toEqual(new Set(["23"])) // 24 rows, panelHeight 1 → scroll region 1..23
+    ui.destroy()
+  })
+
+  test("scroll-before-grow: collapsed→panel (region grows) pushes bottom logs into scrollback, never eats them", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
+    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "x", time: Date.now() } as never)
+    chunks.length = 0
+    stdin.emit("data", Buffer.from(" ")) // collapsed (N=1) → panel (N=3): region grows by 2
+    const out = chunks.join("")
+    // Before the taller region is (re)established, the old scroll region's
+    // bottom is scrolled up by delta=2 (two newlines parked at the old bottom
+    // row 23) so the 2 log rows the taller panel is about to claim are pushed
+    // into scrollback instead of overwritten. Positive control: without this,
+    // the pty+pyte oracle reports eaten lines (see the experiment log).
+    const iScroll = out.indexOf("\x1b[23;1H\n\n")
+    const iReset = out.indexOf(SCROLL_RESET)
+    expect(iScroll).toBeGreaterThanOrEqual(0) // scroll-before-grow emitted
+    expect(iReset).toBeGreaterThan(iScroll) // ...before the region tear-down/re-anchor
     ui.destroy()
   })
 
@@ -468,7 +497,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     ui.destroy()
   })
 
-  test("INV-1: collapsed→panel→collapsed round-trip does not overwrite prior log rows", () => {
+  test("INV-1: collapsed→panel→collapsed round-trip — grow leg scroll-before-grows (no eat), shrink leg re-anchors", () => {
     const stdin = new FakeStdin()
     const { stdout, chunks } = makeStdout()
     const bus = createBus()
@@ -483,20 +512,21 @@ describe("TerminalUi — P1 interactive integration", () => {
     bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
     bus.scope("system").publish({ kind: "system.log", logType: "info", message: "SENTINEL", time: Date.now() } as never)
     chunks.length = 0
-    stdin.emit("data", Buffer.from(" ")) // → panel
-    stdin.emit("data", Buffer.from(" ")) // → collapsed
-    const out = chunks.join("")
-    // Positive sample: the panel must never overwrite the log row where
-    // SENTINEL landed. Under constant geometry the panel only ever paints the
-    // bottom 3 rows — the discriminating assertion is that every absolute
-    // cursor positioning (CUP) target during the round-trip stays within the
-    // protected bottom panel rows (>= panelTop), never walking back into the
-    // scrolling log region above it.
-    // eslint-disable-next-line no-control-regex -- intentional ESC control char
-    const cups = [...out.matchAll(/\x1b\[(\d+);1H/g)].map((m) => Number(m[1]))
-    // rows=24, panelHeight=3 → panel rows are only 22/23/24; any row < 22
-    // would mean a CUP+clear reached back into the log region.
-    expect(cups.every((row) => row >= 22)).toBe(true) // mutation: a round-trip resize clearing log rows → row<22 → red
+    stdin.emit("data", Buffer.from(" ")) // collapsed (N=1) → panel (N=3): GROW
+    const growOut = chunks.join("")
+    chunks.length = 0
+    stdin.emit("data", Buffer.from(" ")) // panel (N=3) → collapsed (N=1): SHRINK
+    const shrinkOut = chunks.join("")
+    // Grow leg: scroll-before-grow (park at old bottom row 23, emit delta=2
+    // newlines) pushes the 2 log rows the taller panel will claim into
+    // scrollback BEFORE the region tear-down — so no log line is overwritten.
+    // (End-to-end no-eat across many toggles is proven by the pty+pyte oracle
+    // `exp/tui-rawmode/pty_grid_test.py`; this pins the load-bearing byte.)
+    expect(growOut).toContain("\x1b[23;1H\n\n")
+    // Shrink leg: freed rows just become blank gaps (tolerated, user 2026-07-11);
+    // the region re-anchors (DECSTBM reset). No scroll-before-grow needed.
+    expect(shrinkOut).toContain(SCROLL_RESET)
+    expect(shrinkOut).not.toContain("\x1b[23;1H\n\n") // shrink does NOT scroll-before-grow
     ui.destroy()
   })
 
