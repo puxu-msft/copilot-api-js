@@ -47,6 +47,7 @@ import type {
 } from "~/types/api/openai-chat-completions"
 
 import { repairToolInput } from "~/lib/anthropic/tool-input-repair"
+import { netInputTokens } from "~/lib/request/usage-normalize"
 
 /** The default repair cascade for a malformed tool-call `arguments` JSON string (full battle-tested stack). */
 const RESPONSE_TOOL_REPAIR_ITEMS = ["tags", "unicode", "jsonrepair"] as const
@@ -198,10 +199,16 @@ export type MappedFinishReason = FinishReason
 function mapUsage(usage: ChatCompletionUsage | undefined): TranslatedAnthropicUsage {
   if (usage === undefined) return { input_tokens: 0, output_tokens: 0 }
   const promptDetails = usage.prompt_tokens_details as { cached_tokens?: number; cache_write_tokens?: number } | undefined
+  const cacheRead = promptDetails?.cached_tokens
+  const cacheCreation = promptDetails?.cache_write_tokens
   return {
-    input_tokens: usage.prompt_tokens,
+    // CC `prompt_tokens` is the TOTAL prompt INCLUDING cached tokens; the Anthropic wire
+    // convention is that `input_tokens` is the NET uncached input, disjoint from
+    // cache_read/cache_creation (usage-normalize.ts; GHC translator.py oracle). Reuse the
+    // shared `netInputTokens` primitive so the cached amount is not double-counted (B1).
+    input_tokens: netInputTokens(usage.prompt_tokens, cacheRead ?? 0, cacheCreation ?? 0),
     output_tokens: usage.completion_tokens,
-    ...(promptDetails?.cached_tokens !== undefined && { cache_read_input_tokens: promptDetails.cached_tokens }),
-    ...(promptDetails?.cache_write_tokens !== undefined && { cache_creation_input_tokens: promptDetails.cache_write_tokens }),
+    ...(cacheRead !== undefined && { cache_read_input_tokens: cacheRead }),
+    ...(cacheCreation !== undefined && { cache_creation_input_tokens: cacheCreation }),
   }
 }

@@ -169,10 +169,15 @@ function mapUsage(usage: AnthropicResponse["usage"]): ChatCompletionUsage {
         ...(cacheCreation != null && { cache_write_tokens: cacheCreation }),
       }
     : undefined
+  // Anthropic `input_tokens` is the NET uncached input (disjoint from the cache legs); CC
+  // `prompt_tokens` is the TOTAL prompt INCLUDING cached tokens (usage-normalize.ts oracle).
+  // Rebuild the CC total by adding the cache legs back, else a downstream `usageFromTotalInput`
+  // would subtract cached a second time and UNDER-count (W-rev, mirror of B1's over-count).
+  const promptTokens = inputTokens + (cacheRead ?? 0) + (cacheCreation ?? 0)
   return {
-    prompt_tokens: inputTokens,
+    prompt_tokens: promptTokens,
     completion_tokens: outputTokens,
-    total_tokens: inputTokens + outputTokens,
+    total_tokens: promptTokens + outputTokens,
     ...(promptDetails && { prompt_tokens_details: promptDetails }),
   }
 }

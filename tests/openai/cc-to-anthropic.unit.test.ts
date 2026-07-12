@@ -172,7 +172,7 @@ describe("translateCCResponseToAnthropic — usage", () => {
   test("cache tokens (GHC extensions) forwarded when present", () => {
     const usage = { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140, prompt_tokens_details: { cached_tokens: 30, cache_write_tokens: 10 } } as unknown as ChatCompletionUsage
     const { response } = translateCCResponseToAnthropic(ccResponse([choice({ content: "x" })], { usage }))
-    expect(response.usage).toEqual({ input_tokens: 100, output_tokens: 40, cache_read_input_tokens: 30, cache_creation_input_tokens: 10 })
+    expect(response.usage).toEqual({ input_tokens: 60, output_tokens: 40, cache_read_input_tokens: 30, cache_creation_input_tokens: 10 })
   })
 
   test("absent usage → zeroed tokens", () => {
