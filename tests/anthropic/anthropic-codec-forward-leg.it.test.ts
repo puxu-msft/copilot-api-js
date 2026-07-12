@@ -114,7 +114,7 @@ describe("T3.3 — non-streaming response side translates for a translate leg; s
   useIsolatedRuntime()
 
   function translateLegEnv(): RequestEnvelope {
-    return { targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, body: {}, model: {}, ctx: {} } as unknown as RequestEnvelope
+    return { targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, body: {}, model: {}, ctx: { recordFeature: () => {} } } as unknown as RequestEnvelope
   }
   function directEnv(): RequestEnvelope {
     return { targetEndpoint: ENDPOINT.MESSAGES, body: {}, model: {} } as unknown as RequestEnvelope

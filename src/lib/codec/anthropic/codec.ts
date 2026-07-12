@@ -265,7 +265,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     renderResponseNonStreaming(upstream, env) {
       if (!isForwardTranslateLeg(env.targetEndpoint)) return upstream
       const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.targetEndpoint, upstream)
-      if (contentFiltered) env.ctx.recordFeature?.("translated-content-filter")
+      if (contentFiltered) env.ctx.recordFeature("translated-content-filter")
       return rendered
     },
 

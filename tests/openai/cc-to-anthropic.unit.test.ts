@@ -57,6 +57,11 @@ describe("translateCCResponseToAnthropic — top-level envelope", () => {
     const { response: emptyResp } = translateCCResponseToAnthropic(ccResponse([choice({ content: "" })]))
     expect(emptyResp.content).toEqual([{ type: "text", text: "" }])
   })
+
+  test("structured-output refusal is forwarded as a text block (never-swallow, richest-data-flow)", () => {
+    const { response } = translateCCResponseToAnthropic(ccResponse([choice({ content: null, refusal: "I can't help with that." } as Partial<ResponseMessage>)]))
+    expect(response.content).toEqual([{ type: "text", text: "I can't help with that." }])
+  })
 })
 
 describe("translateCCResponseToAnthropic — tool_use", () => {

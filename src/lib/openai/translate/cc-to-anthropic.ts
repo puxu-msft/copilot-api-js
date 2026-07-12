@@ -42,7 +42,6 @@ import type {
   //
   ChatCompletionResponse,
   ChatCompletionUsage,
-  FinishReason,
   ToolCall,
 } from "~/types/api/openai-chat-completions"
 
@@ -111,6 +110,13 @@ export function translateCCResponseToAnthropic(response: ChatCompletionResponse)
     const message = choice.message
     if (typeof message.content === "string" && message.content.length > 0) {
       content.push({ type: "text", text: message.content } satisfies TextBlockParam)
+    }
+    // A structured-output refusal (`message.refusal`, OpenAI native field) carries the refusal
+    // text — forward it as a text block rather than swallow it (richest-data-flow / never-swallow;
+    // mirrors responses-to-cc.ts pushing `part.refusal`). GHC's cc leg may or may not populate it;
+    // when absent this is a no-op.
+    if (typeof message.refusal === "string" && message.refusal.length > 0) {
+      content.push({ type: "text", text: message.refusal } satisfies TextBlockParam)
     }
     if (message.tool_calls) {
       for (const call of message.tool_calls) {
@@ -187,9 +193,6 @@ function aggregateStopReason(sawToolUse: boolean, sawLength: boolean): StopReaso
   if (sawLength) return "max_tokens"
   return "end_turn"
 }
-
-/** The subset of CC finish reasons this maps distinctly (documentation aid — the aggregate covers the rest). */
-export type MappedFinishReason = FinishReason
 
 /**
  * CC `usage` → Anthropic `usage`. `prompt_tokens`→`input_tokens`, `completion_tokens`→`output_tokens`;
