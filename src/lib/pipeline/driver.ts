@@ -18,6 +18,7 @@ import type { SseEventRecord } from "~/lib/history"
 
 import { classifyError } from "~/lib/error"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
+import { readOrigin } from "~/lib/pipeline/hooks/origin"
 import { classifyStreamError } from "~/lib/stream"
 
 import type { RequestEnvelope } from "./envelope"
@@ -436,6 +437,11 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
   const onRewriteAction = opts?.onRewriteAction
   const sampleAction = onRewriteAction ? (name: string, action: FrameAction) => onRewriteAction(name, frameIndex, action) : undefined
 
+  // Task 2.2: the hook-mock/hook-replay origin tag (if the upstream stream was tagged via
+  // `tagStream`) is constant for the WHOLE stream — read it ONCE outside the loop rather
+  // than per-frame (spec LOW-2).
+  const origin = readOrigin(upstream)
+
   try {
     for await (const frame of upstream.frames) {
       // Skip the `[DONE]` sentinel — it's a gateway-injected transport terminator
@@ -445,7 +451,12 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
       // real content frames (no mislabeled `type:"message"` sentinel) + matches the
       // pre-P3.2b Anthropic baseline. Forwarded never carried it either (pump breaks).
       if (frame.data !== "[DONE]") {
-        upstreamSse.push({ offsetMs: Date.now() - streamStartMs, type: frame.event ?? (frame.data ? "message" : "keepalive"), raw: frame.data ?? "" })
+        upstreamSse.push({
+          offsetMs: Date.now() - streamStartMs,
+          type: frame.event ?? (frame.data ? "message" : "keepalive"),
+          raw: frame.data ?? "",
+          ...(origin && { synthetic: origin }),
+        })
         if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
         // Hand the raw upstream frame to the handler's upstream-side work (accumulate
         // → outboundResponse, repetition, progress, diagnostics) BEFORE the rewrite
@@ -453,14 +464,25 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
         // frames the loop yields below). Same skip-[DONE] condition as upstreamSse.
         opts?.onUpstreamFrame?.(frame)
       }
-      // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
-      for (const rewritten of passThrough([frame], rewrites, states, 0, sampleAction)) {
-        // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.
-        // skipRender (dry-run T1) yields the S5 frame verbatim — the consumer wants the
-        // rewrite-chain output BEFORE the S6 render translation.
-        if (opts?.skipRender) yield rewritten
-        else yield* renderFrames(deps, rewritten, env)
+      // Hook point: rewriteUpstreamFrame — per-frame rewrite AFTER upstream-original sampling,
+      // so the upstream track keeps pre-hook real frames (spec §3.2/§3.4 H2). undefined → drop.
+      const hook = getUpstreamHook()
+      let effFrame: UpstreamFrame | undefined = frame
+      if (hook?.rewriteUpstreamFrame && frame.data !== "[DONE]") effFrame = hook.rewriteUpstreamFrame(frame, env)
+      // Guard the rewrite chain instead of `continue` — so `frameIndex++` below ALWAYS
+      // runs (评审 LOW-1: `continue` would skip it, corrupting dry-run frame ordinals).
+      // A dropped frame (undefined) just skips passThrough; frameIndex still advances.
+      if (effFrame !== undefined) {
+        // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
+        for (const rewritten of passThrough([effFrame], rewrites, states, 0, sampleAction)) {
+          // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.
+          // skipRender (dry-run T1) yields the S5 frame verbatim — the consumer wants the
+          // rewrite-chain output BEFORE the S6 render translation.
+          if (opts?.skipRender) yield rewritten
+          else yield* renderFrames(deps, rewritten, env)
+        }
       }
+
       frameIndex++
     }
   } finally {
