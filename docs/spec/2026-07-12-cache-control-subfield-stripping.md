@@ -1,6 +1,6 @@
 # Spec: cache_control 子字段剥离 + sanitize 语义收窄
 
-- 状态：**已实施（landed master，2026-07-12）** —— 三阶段全落地，见 plan `docs/plan/2026-07-12-cache-control-subfield-stripping/`。实现期两处偏离：① `resolveSanitizedTtls` 收窄为「仅规范化已有断点、缺层 undefined」（sanitize NOT 注入）；② proxied 未收口到共享原语（sanitize/proxied TTL 语义本质不同，各自 owner）。history 标记走 `recordFeature("cache-control-stripped")` 而非 leg（弃跨端点共享 WireRequest 加专属字段的 SSOT smell）。
+- 状态：**已实施（landed master，2026-07-12）** —— 三阶段全落地，见 plan `docs/plan/2026-07-12-cache-control-subfield-stripping/`。实现期三处偏离：① `resolveSanitizedTtls` 收窄为「仅规范化已有断点、缺层 undefined」（sanitize NOT 注入）；② proxied 未收口到共享原语（sanitize/proxied TTL 语义本质不同，各自 owner）；③ history 标记**双通道**——`recordFeature("cache-control-stripped")` 记 live TUI/WS 看板 + `pipelineInfo.cacheControlStripped` 持久化 history（合并态审查 HIGH-1 修正：feature_applied 被 history sink 丢弃、只走 recordFeature 不落盘；改经 pipelineInfo 这个 prepare 诊断持久容器，弃跨端点共享 WireRequest 加专属字段的 SSOT smell）。
 - 日期：2026-07-12
 - 归属：`docs/spec/`（模块契约 / 兼容行为，见 CLAUDE.md 文档路由）
 - 相关：ADR `docs/decisions/2026-07-05-richest-data-flow.md`、skill `ghc-api-reference` / `ghc-anthropic-upstream`
@@ -166,7 +166,7 @@ Phase 0 有**两处**可观测变化，golden 须同时锁：
 
 ### 5.6 测试
 
-单元覆盖：剥 `scope` / 保留合法 `ttl`+`type` / per-layer（system·messages·tools）/ 嵌套 tool_result.content / config 追加字段生效 / 空黑名单 no-op / system=string no-op / passthrough 保留其余客户端断点不变。集成：模拟 §1.1 的实测 body，断言过 passthrough 后 `system[1].cache_control == {type:ephemeral}`（scope 已剥）、`system[2]` 不变、且 history 记录含 `strippedCacheControlSubfields: ["scope"]` 可辨识标记（§8 静默降级可观测性）。
+单元覆盖：剥 `scope` / 保留合法 `ttl`+`type` / per-layer（system·messages·tools）/ 嵌套 tool_result.content / config 追加字段生效 / 空黑名单 no-op / system=string no-op / passthrough 保留其余客户端断点不变。集成：模拟 §1.1 的实测 body，断言过 passthrough 后 `system[1].cache_control == {type:ephemeral}`（scope 已剥）、`system[2]` 不变、且 history 的 `pipelineInfo.cacheControlStripped == ["scope"]` 可辨识标记（§8 静默降级可观测性；注：**不能**走 `recordFeature` 单通道——feature_applied 被 history sink 丢弃、只到 live TUI）。
 
 ## 6. Phase 2：反应式学习腿
 
