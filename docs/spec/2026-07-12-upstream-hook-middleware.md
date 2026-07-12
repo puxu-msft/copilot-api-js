@@ -213,7 +213,8 @@ ad-hoc hook 文件用 `import()` 在**同进程**加载（Bun 直接跑 .ts）�
   - helper 工具箱：各 mock 产出合法帧序列——用独立 accumulator oracle 校验（§4.2），非自证。`mockUpstreamError` 的判别性 body 预设 → 真跑 driver 确认对应 reactive 策略 `canHandle` 命中（评审 H3，独立 oracle 非自证）。
   - driver 各挂载点触发：未导出=直通的**字节等价**；`onExchange` 的 **L1×L2 调用多重性**（评审 M1，挂计数 hook 观测真实调用次数）；`onRequest` 一次性（retry 多轮只调一次，评审 H1）。
 - **可观测性（评审 BLOCK-1/H2/MEDIUM-3，承重）**：
-  - mock 帧在 history `upstreamResponse.sseEvents` 带 `synthetic:"hook-mock"`、`rewriteUpstreamFrame` 改写帧带 `hook-rewrite`、`replayFromHistory` 帧带 `hook-replay`；真实上游帧**不带**标记。
+  - **`hook-mock`/`hook-replay`** 落**上游轨**（`attempts[].upstreamResponse.sseEvents`）：`onExchange` 不调 `next` 的整个 mock 流带 `synthetic:"hook-mock"`、`replayFromHistory` 回放帧带 `synthetic:"hook-replay"`；真实上游帧**不带**标记（§3.4 决策 3、§5 步骤 4）。
+  - **`hook-rewrite`** 落**forwarded 轨**（`clientResponse.sseEvents`，非上游轨——`rewriteUpstreamFrame` 在 driver 上游-original 采样**之后**介入，改写只影响转发投递侧，§3.2/§3.4 决策 2）：`rewriteUpstreamFrame` 改写/注入的单帧打此标记，**但仅 Anthropic `/v1/messages` 直连 + CC `/chat/completions` 直连腿可靠保留**（两者 `renderResponse` 逐字返回帧、`onRenderedFrame` 对象展开保留 Symbol 键）——**Responses 直连腿因 `restoreAndAccumulate`/`restoreAccumulateCount` 重建全新帧字面量而丢标**、**全部 translate 腿**（CC→Anthropic/Responses/Gemini 的有状态 N:1/1:N 累加器）因"改写单帧 vs 累加多帧"语义冲突而**标记归属 ill-defined**。这是一个已知、接受的可观测性覆盖缺口（非本特性阻断项），详见覆盖矩阵与理由 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)「`hook-rewrite` forwarded 标记覆盖缺口」节。
   - **上游-original track 记 pre-hook 真实帧**：挂一个改写 hook，断言上游轨是原始帧、forwarded 轨才是改写后帧。
   - `GET /api/hooks` 生效态 + 重载回执 `exports` 与**实际触发**的挂载点一致（挂带副作用 hook 观测真被调，非只信自报，对齐 `pass-null 不自证`）。
 - **集成**（非 4141 端口起隔离实例，protect-user-main-server）：
