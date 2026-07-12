@@ -81,7 +81,9 @@ export interface ResponseData {
   error?: string
   /** HTTP status code from upstream (only on error) */
   status?: number
-  /** Raw response body from upstream (only on error, for post-mortem debugging) */
+  /** Raw upstream response body. Set on error (post-mortem) AND, since G6, on the
+   * non-streaming success path (JSON.stringify of the pristine upstream response →
+   * rawBody), so non-streaming rows can re-derive usage fields. See spec §6.1. */
   responseText?: string
   /** Responses API: upstream response id (`resp_...`) from event.response.id */
   responseId?: string

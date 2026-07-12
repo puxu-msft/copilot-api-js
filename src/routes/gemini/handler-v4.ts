@@ -24,6 +24,7 @@ import { streamSSE } from "hono/streaming"
 
 import type { OpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import type { SseEventRecord } from "~/lib/history"
+import type { UsageData } from "~/lib/history/types"
 import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
@@ -257,11 +258,11 @@ interface PumpGeminiStreamingV4Options {
 }
 
 /** Map the Gemini stream meta (codec-accumulated) → the ctx usage shape (legacy parity). */
-function geminiUsageFromMeta(meta: ReturnType<OpenAiGeminiCodec["getStreamMeta"]>): {
-  input_tokens: number
-  output_tokens: number
-  cache_read_input_tokens?: number
-} {
+function geminiUsageFromMeta(meta: ReturnType<OpenAiGeminiCodec["getStreamMeta"]>): UsageData {
+  // Prefer the canonical UsageData built from the CC accumulator (carries cache_write
+  // → cache_creation + modality/prediction details). Fall back to the Gemini-shaped
+  // usageMetadata only if the translator produced no canonical usage (defensive).
+  if (meta.usage) return meta.usage
   const u = meta.usageMetadata
   return {
     input_tokens: u?.promptTokenCount ?? 0,
