@@ -182,6 +182,92 @@ describe("onTerminal 汇总行 last/total(N)", () => {
   })
 })
 
+/**
+ * 合并态一致性守卫：驱动**同一请求**连续 attempt_failed×N → completed，
+ * 断言末条 `[RETRY]` 行的 `(N)` 与终端汇总行 `[ OK ]` 的 `(N)` 数值对齐。
+ * 不变量：末次失败 attempt 的 attemptIndex = length-2，其 `[RETRY]` N = attemptIndex+1 = length-1；
+ * 汇总 N = attempts.length-1。两者恒等。此测把「跨面 N 终态对齐」从结构推理固化为回归守卫。
+ */
+function driveSequence(opts: { startTime: number; failed: Array<{ attemptIndex: number; lastMs: number }>; entry: unknown }): string {
+  const cap = makeCapture()
+  const bus = createBus()
+  const prevLevel = consola.level
+  consola.level = 5
+  const detach = attachTerminalUi(bus, { stdout: cap.stdout, isTTY: true, columns: 200 })
+  const ctx = {
+    id: "seq",
+    endpoint: "anthropic-messages",
+    method: "POST",
+    path: "/v1/messages",
+    resolvedModel: "claude-opus-4-8",
+    state: "streaming",
+    startTime: opts.startTime,
+    queueWaitMs: 0,
+  } satisfies RequestContextSnapshot
+  const req = bus.scope("request")
+  req.publish({ kind: "request.created", ctx })
+  for (const f of opts.failed) {
+    req.publish({
+      kind: "request.attempt_failed",
+      ctx,
+      attempt: { attemptIndex: f.attemptIndex, durationMs: f.lastMs, strategy: "backoff", error: { status: 500, message: "boom", type: "upstream_error" } },
+      willRetry: true,
+      nextStrategy: "backoff",
+    } as never)
+  }
+  req.publish({ kind: "request.completed", ctx, entry: opts.entry } as never)
+  detach()
+  consola.level = prevLevel
+  return cap.text()
+}
+
+/** 从形如 `...(N)` 的行尾三元组提取 N；无则 undefined。 */
+function parseParenN(line: string | undefined): number | undefined {
+  const m = line?.match(/\((\d+)\)/)
+  return m ? Number(m[1]) : undefined
+}
+
+describe("合并态一致：末 [RETRY] 的 N == 汇总 N", () => {
+  test("3 attempts（2 失败 + 1 成功）→ 末 [RETRY](2) 与 [ OK ](2) 对齐", () => {
+    const startTime = NOW - 300_000 // total 冻结在 300.0s
+    const out = driveSequence({
+      startTime,
+      failed: [
+        { attemptIndex: 0, lastMs: 100_000 }, // [RETRY] (1)
+        { attemptIndex: 1, lastMs: 120_000 }, // [RETRY] (2) —— 末条
+      ],
+      entry: {
+        id: "seq",
+        endpoint: "anthropic-messages",
+        state: "completed",
+        attempts: [
+          { index: 0, durationMs: 100_000 },
+          { index: 1, durationMs: 120_000 },
+          { index: 2, durationMs: 45_200 },
+        ],
+      },
+    })
+    const lines = out.split("\n")
+    const retryLines = lines.filter((l) => l.includes("[RETRY]"))
+    const okLine = lines.find((l) => l.includes("[ OK ]"))
+
+    expect(retryLines).toHaveLength(2) // 两次失败各一条 [RETRY]
+    expect(okLine).toBeDefined()
+
+    const lastRetryN = parseParenN(retryLines.at(-1))
+    const summaryN = parseParenN(okLine)
+
+    // 核心不变量：末 [RETRY] 的 N == 汇总 N == attempts.length - 1 == 2
+    expect(lastRetryN).toBe(2)
+    expect(summaryN).toBe(2)
+    expect(lastRetryN).toBe(summaryN)
+
+    // 顺带确认末条 [RETRY] 与汇总的具体形态
+    expect(retryLines.at(-1)).toContain("120.0s/300.0s(2)")
+    expect(okLine).toContain("45.2s/300.0s(2)")
+  })
+})
+
 describe("footer 单请求 triplet（纯文本）", () => {
   it("有重试 → last/total(N)，无 ANSI", () => {
     const now = 1_000_000
