@@ -62,6 +62,17 @@ Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/respons
 - T1.6 **可观测性落库**（WARN-2/W6/W-reject-obs）：history 记录 `model{}` 的 **routeOverride + 实际出站腿** + **翻译腿 format 标签**（镜像 openai-gemini `ENDPOINT_TYPE`，区分翻译 vs direct）+ reject 经 ctx 有记录 + **sampleRequest 按 targetEndpoint**（翻译腿采 CC wire，N-sampleRequest）。符合 richest-data-flow（后端完整存）。
 - **invariant**：现状各格式默认腿 passthrough 零变（golden T0.0 仍全过，含 Google force）；anthropic-direct 二维门控翻转等价（Phase 1 期间翻译腿未出现，`clientFormat==="anthropic" ⟺ targetEndpoint==="/v1/messages"` 恒真，逐字节等价）。
 
+**Phase 1 实施记录（2026-07-12，landed，分支 `feat/translation-matrix-phase1`）**：
+- 交付 8 commit（T1.1 `ef85e446` → T1.2 `55135823` → T1.3 `6da7b837` → T1.4 `1e4e7e74` → T1.4b `e8990cb7` → T1.5 `46019395` → T1.6 `101528b9` → lint `72719840`）。每 commit `bun run typecheck` 0 error + Phase 0 golden 52 pass（逐 commit 实测过）+ 全套件绿（仅预存在 UI shell 404 例外）。
+- 对书面 plan 的自觉偏离 / 补充（`sync-plan-with-impl`）：
+  1. **T1.4 补 `quarantine-proactive-filter` 的轴切换**：plan/RFC 列举「6 个 Anthropic 改写」（1 请求 sanitize + 5 响应）成文早于 `thinking-quarantine-proactive`（order 250）落地。该 filter 同样处理上游 Anthropic `/v1/messages` 请求 wire，按 §3.1 同理应门控 `targetEndpoint===MESSAGES`。已一并切换（Phase 1 co-true 逐字节等价），否则 Phase 5 反向腿会漏 strip、正向 anthropic→cc 腿会误 strip。测试 env 同步补 `targetEndpoint`。
+  2. **T1.3 显式腿 gate 用「语义正确的 per-leg 支持检查」而非 RFC §4.3 字面 `isEndpointSupported(model,leg)`**：`/v1/messages`→`supportsDirectAnthropicApi`（真 direct-Anthropic gate，非裸端点列表）、`/responses`→`isResponsesSupported`（含 ws 传输）、`/chat/completions`→`isEndpointSupported`。force-fallback→CC 豁免 CC 支持检查（对齐 `decideOpenAiResponsesRoute` 的 `forceFallback || isEndpointSupported`，Google 元数据不可靠）。
+  3. **T1.3 force-fallback 统一拦截「只在显式后缀路径」**：no-suffix 路径直接 reduce 回 Phase 0 的 per-inbound 函数（golden 逐字节）。把 §4.3 的「universal force-fallback 拦截」用于 no-suffix cc/gemini 腿会翻掉 golden 的 `google-resp` cc/gemini 格（`/responses`→CC），故留作 Phase 2+ 的有意行为变更（已注释标注）。
+  4. **T1.4b 只注册 `/v1/messages` builder**：CC/Responses 的 builder 供料（尤其翻译后 CC body 的 truncate 基线）要等 hub 产出（Phase 2+），现注册即臆测；已在 registry 里对未落地腿 throw 明确报错、不静默。
+  5. **T1.6 `sampleRequest 按 targetEndpoint` 属 Phase 2+**：Phase 1 无翻译腿，各 codec 的 sampleRequest 采 direct wire 即正确；已落地的是 `model{}` 的 `routeOverride`/`outboundEndpoint`/`translated` 三字段（存 blob，无 allowlist 需改）。
+- 新增测试：`tests/pipeline/route-explicit-leg.it.test.ts`（全矩阵显式腿）、`tests/pipeline/two-axis-gating.it.test.ts`（targetEndpoint 轴门控每腿 fire 正确册 + 反向/正向腿形状）、`tests/pipeline/strategy-registry.unit.test.ts`、`tests/models/model-resolver.it.test.ts`（+11 resolveModelTarget 双层剥离）、`tests/context/request-context.unit.test.ts`（+2 观测投影）、`tests/anthropic/web-search/web-search.http.test.ts`（+1 reject-via-ctx）。
+- 预存在遗留（非本 phase 引入）：① `bun test` 的 UI shell 404（kickoff 已豁免）；② `typecheck:ui-v4` 的 `EntrySummary.responsePreviewText` 错（并发会话遗留，stash 本 phase 改动后仍复现，与本 phase 无关）；③ `request.ts:696`（现 698）`no-unnecessary-condition` lint（base 已存在于 `failed()` 方法，非本 phase 代码）。
+
 ---
 
 ## Phase 2：hub 共享翻译层 + Anthropic↔CC 请求翻译
