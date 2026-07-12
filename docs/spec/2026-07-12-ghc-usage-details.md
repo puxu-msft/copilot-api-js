@@ -125,6 +125,8 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 
 这些新字段**只进压缩 usage blob**（`upstreamResponse.usage` / `OutboundResponseData.usage`），**不加 SQLite 列、不改 schema**。SQL 聚合仍只用现有 5 列。
 
+**类型接缝（SSOT）**：`UsageData` 是 usage 的唯一定义处，`ResponseData["usage"]` 与 `PartialResponseInfo.usage`（`src/lib/context/types.ts`）都引用它——扩 `UsageData` 一处即传导到 `complete()`/`fail()`/`abort()` 全链，无需多处改型。
+
 ### 5.2 提取 + 累积
 
 - `src/lib/request/usage-normalize.ts` `usageFromTotalInput`：新增 `cacheCreation`（来自 cache_write）入参 + 一个 details 直通包（把模态/prediction 明细原样挂上，非零/非空才挂）。净公式按 §3 PoC 结论。
@@ -136,10 +138,25 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 
 ## 6. 历史 backfill（G3）
 
-新 leaf `src/lib/history/sqlite/cache-write-backfill.ts`，遵循 history-backfill skill 铁律：
+### 6.1 数据源现实（实测取证，empirical-verification）——**backfill 只对流式行可行**
+
+已亲手核实存储路径，backfill 源**并非**对所有行都存在，spec 早期「原始 usage blob 里仍存着 cache_write」的笼统假设**仅对流式行成立**：
+
+| 行类型 | 存了什么原始 usage | cache_write 可恢复？ |
+|---|---|---|
+| **流式**（Copilot 主流量） | `driver.ts:432` 把每个上游帧的 `data:` **逐字**存进 `sseEvents`；`include_usage:true` 被**强制**（`responses-to-cc-request.ts:135` / `cc-to-responses.ts:79` / `gemini/convert-request.ts:109`），上游必发末尾 usage chunk，其原始 JSON 含 `cache_write_tokens` | ✅ **有源**（解析 sseEvents 末帧） |
+| **非流式** | `handler-v4.ts:251` 只把**已归一化**的 `UsageData`（cache_write 提取时已丢）写入 `responseData`；原始上游 JSON 不入 `rawBody`（`responseText` 未设） | ❌ **无源，历史非流式行不可恢复** |
+
+诚实取舍（no-silently-cut）：这**不否掉 G3**——流式是 Copilot 绝大多数流量，仍可恢复；且 **fix-forward（§5）从此对流式 + 非流式都补齐** cache_write，「不可恢复」只限**历史非流式行**这一小子集。额外 caveat：流式行的上游 `sseEvents` track 是「sseEvents for all transports」修复后才有的，更早的历史流式行可能也无源——backfill 遇无源行**跳过并标记**（幂等），不臆造。
+
+**次要修正（fix-forward 侧）**：非流式 handler（`handler-v4.ts:251` 等）应顺手把原始上游 `response` 的 `responseText` 存入 `rawBody`（richest-data-flow：原始上游体本就该留），这样**未来**非流式行也具备重导出能力——属 §5 fix-forward 的一部分，与本节 backfill 正交。
+
+### 6.2 backfill 实现（遵循 history-backfill skill 铁律）
+
+新 leaf `src/lib/history/sqlite/cache-write-backfill.ts`：
 
 - **幂等标记列**：新增 `cache_write_backfilled INTEGER NOT NULL DEFAULT 0`（Umzug 迁移，hybrid forward-runner，只追 001+）。
-- **靶向**：只扫 OpenAI 家族行（endpoint ∈ `openai-chat-completions`/`openai-responses`/`gemini-generate-content`）且标记=0；**精确解压** usage blob（非 `SELECT *`——4.2G 库 `SELECT *` 曾卡 3m53s），从原始 `cache_write_tokens` 重导出。
+- **靶向**：只扫 OpenAI 家族**流式**行（endpoint ∈ `openai-chat-completions`/`openai-responses`/`gemini-generate-content` 且有 `sseEvents`）且标记=0；**精确解压**（非 `SELECT *`——4.2G 库 `SELECT *` 曾卡 3m53s），从 sseEvents 末帧的原始 `cache_write_tokens` 重导出。无源行（非流式 / 无 usage 帧）标记跳过。
 - **双写**：`cache_creation` 列 + usage blob 内 `cache_creation_input_tokens`（防 list/detail 分叉），并按 §3 PoC 结论重算净 `input_tokens`（列 + blob 双写）。
 - **可恢复骨架**：`(started_at,id)` keyset 续跑、协作 stop 匹配 shutdown phase、非阻塞分批、never-throw、history_meta version 守卫。
 - **等价性 oracle**：backfill 后 `input + cache_read + cache_creation` 应等于原始 `prompt_tokens`（子集情形）；dedup-ratio tripwire 防异常。
@@ -176,8 +193,12 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 
 ## 10. 审查采纳/未采纳记录
 
-（待 subagent 对抗审查后填充。）
+**Subagent 审查（2026-07-12）**：派了两个对抗审查者（general-purpose + 异模型 gpt-second-opinion），聚焦「backfill 数据源假设是否成立」这个致命门。两者均因**基础设施/API 错误**中途崩溃（gpt-second-opinion 撞到本项目正在修的 Anthropic `/v1/messages` 拒非-Anthropic vendor bug；general-purpose 撞到上游 500），未产出完整报告。**但**：
+- 致命假设已由**主会话独立取证**（§6.1 表，亲手读 `driver.ts:432` / `handler-v4.ts:251` / 存储路径）。
+- general-purpose 崩溃前的转录**独立佐证**了关键机制：`include_usage:true` 对流式被强制（→ 流式必有 usage 帧入 sseEvents），且验证了 `ResponseData["usage"]`/`PartialResponseInfo.usage` 类型接缝、stages `ON DELETE CASCADE`。
+- 据此已修订 §6（backfill 仅流式可行、非流式历史不可恢复、fix-forward 双覆盖）+ §5.1（类型接缝）。
+- **修订后 spec 将再派一个全新审查者复审**（no-self-review），结论回填此处。
 
 **用户裁决（设计阶段）：**
 - Tier 2 存储深度 = **blob-only**（扩 UsageData JSON，不加 SQLite 列、不 backfill 模态/prediction）。未采纳「Full 去规范化加列」（当前无 SQL 聚合消费者、字段多为 null，加列 + 7.8G backfill 属过早去规范化）与「折中：仅 prediction 加列」。
-- 历史 backfill = **fix-forward + 补历史 backfill**（Tier 1 cache_write）。未采纳「仅 fix-forward」（长期成本聚合仍偏低，且原始 blob 已有数据可无损重导出，符合 long-term-wins/cost-fidelity）。
+- 历史 backfill = **fix-forward + 补历史 backfill**（Tier 1 cache_write）。未采纳「仅 fix-forward」（长期成本聚合仍偏低，且流式行原始 blob 已有数据可无损重导出，符合 long-term-wins/cost-fidelity）。注：backfill 的可行范围经实测收窄为**流式行**（§6.1）。
