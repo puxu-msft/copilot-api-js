@@ -1,5 +1,5 @@
 ---
-name: bun-upstream-transport
+name: debugging-ghc-api-upstream-transport
 description: 当调试 copilot-api-js 上游 fetch/连接问题时使用——Bun 原生 fetch 写死 300s 超时、TimeoutError、无 TCP keepalive、socket 被中间设备回收(transport-close)、undici dispatcher 被静默丢弃、node:http2 vs undici 选路、keepalive 须 ss 验证、pin undici 7；两层上游保活(TCP keepalive + h2 PING)对抗长 thinking 静默截断(GHC 不透传 SSE ping、上游流无 message_stop 被关闭)。涉及 transport/upstream-fetch.ts、http2-client.ts、proxy.ts、长 thinking 断连。
 ---
 

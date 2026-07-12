@@ -1,6 +1,6 @@
 ---
 name: project-upstream-hook-middleware
-description: 上游 Transport hook 中间件特性（spec 定稿中，待 subagent 评审后转 plan）
+description: 上游 Transport hook 中间件特性（已实施 landed feat/upstream-hook-middleware，34 commits，待合并 master）
 metadata: 
   node_type: memory
   type: project
@@ -17,4 +17,4 @@ metadata:
 
 **正交微改动**（单独 commit）：根路径 `/` [server.ts:88] 从 `c.text("Server running")` 改 302 重定向到 `/openapi.json`。
 
-进度：spec v2 定稿（全部承重断言亲手实测核实：Bun ?v= 失效/data-URL 可行/别名解析/driver 三点先后/L1×L2 调用）→ 待用户审 spec → writing-plans。异模型 gpt 第二意见因 vendor 拒绝失败(正是本特性要解决的问题)，已用第二 Claude 角色补位。相关：[[feedback-config-philosophy-separate-compat-and-warn-continue]] [[feedback-synthetic-data-must-be-distinguishable-from-real]] [[reference-bun-esm-cache-busting-query-fails-data-url-works]]。
+进度：**已实施完成**（subagent-driven 执行 6 Phase，34 commits 于 feat/upstream-hook-middleware，隔离 worktree）。每 Phase task review + 整分支 opus 合并态评审全过；**特性经独立 oracle 实测证实可用**——reactive retry 腿真被生产策略 tool-field-rejection-retry 触发（达成原始动机）、离线回放零上游调用、reload 经 API 真改运行时。承重不变量合并态验证成立（字节等价 driver.unit.test.ts 未改动仍绿 + 上游轨记 pre-hook 帧 + onRequest 一次性）。已 landed 的偏离：forwarded hook-rewrite 标记仅 Anthropic/CC 直连腿可靠（Responses/translate 腿丢标，backlog 记录）；version 单调化（loadSeq，避 Date.now 同毫秒碰撞）。权威文档：spec + plan 目录 + ADR `docs/decisions/2026-07-12-driver-orchestrated-upstream-hooks.md` + DESIGN.md 活的架构现状。deferred：上游 WS 腿 hook、attempt 级 source provenance（backlog）。**新教训**：Bun data-URL import 除忽略 ?v= 外，还会在 yield 内联嵌套对象字面量时丢具名导出（见 [[reference-bun-esm-cache-busting-query-fails-data-url-works]] 第二坑）。相关：[[feedback-config-philosophy-separate-compat-and-warn-continue]] [[feedback-synthetic-data-must-be-distinguishable-from-real]] [[reference-bun-esm-cache-busting-query-fails-data-url-works]]。

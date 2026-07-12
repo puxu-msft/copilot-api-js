@@ -1,11 +1,11 @@
 ---
-name: claude-code-connection
-description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连接/流式行为时使用——CC 请求超时两层（60s byte-idle 任意字节/ping 重置 + 300s no-real-content 只有真实 content_block_delta 重置，长 pre-content thinking 静默撞第二层断连）、keepalive 发空 content-delta 而非裸 ping、合成帧必须打 synthetic 标记 + 必带 event: 行（否则 @anthropic-ai/sdk SSEDecoder 静默丢帧）、SDK 对 200+SSE-error 走裸 APIError 零重试；以及事后判别一条 `[FAIL] … The operation was aborted.`/断流 incident 是 client-abort vs reaper vs header-timeout（三类都抛同一字面量、靠 History `state`(failed≠aborted)/上游 0 帧 status null/durationMs≈300 vs 600 判，附 offsetMs commit-relative 时间基陷阱）。下游客户端行为，区别于上游传输（skill bun-upstream-transport）与上游 Anthropic wire（skill ghc-anthropic-upstream）。
+name: debugging-claude-client-connection
+description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连接/流式行为时使用——CC 请求超时两层（60s byte-idle 任意字节/ping 重置 + 300s no-real-content 只有真实 content_block_delta 重置，长 pre-content thinking 静默撞第二层断连）、keepalive 发空 content-delta 而非裸 ping、合成帧必须打 synthetic 标记 + 必带 event: 行（否则 @anthropic-ai/sdk SSEDecoder 静默丢帧）、SDK 对 200+SSE-error 走裸 APIError 零重试；以及事后判别一条 `[FAIL] … The operation was aborted.`/断流 incident 是 client-abort vs reaper vs header-timeout（三类都抛同一字面量、靠 History `state`(failed≠aborted)/上游 0 帧 status null/durationMs≈300 vs 600 判，附 offsetMs commit-relative 时间基陷阱）。下游客户端行为，区别于上游传输（skill debugging-ghc-api-upstream-transport）与上游 Anthropic wire（skill ghc-anthropic-upstream）。
 ---
 
 # Claude Code 客户端连接与流式行为
 
-排查「CC 为何断流/重试/丢帧」。对象是**下游客户端**（Claude Code CLI + 其封装的 `@anthropic-ai/sdk`）如何连接我方代理、如何超时/重试、如何解析我方（可能合成的）帧。与上游传输（skill `bun-upstream-transport`）、上游 Anthropic wire 异常（skill `ghc-anthropic-upstream`）正交。
+排查「CC 为何断流/重试/丢帧」。对象是**下游客户端**（Claude Code CLI + 其封装的 `@anthropic-ai/sdk`）如何连接我方代理、如何超时/重试、如何解析我方（可能合成的）帧。与上游传输（skill `debugging-ghc-api-upstream-transport`）、上游 Anthropic wire 异常（skill `ghc-anthropic-upstream`）正交。
 
 ## 探针方法（真实 CC 作独立 oracle）
 

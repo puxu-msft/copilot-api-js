@@ -9,7 +9,7 @@ copilot-api-js 正建通用「入站×出站」翻译矩阵。Phase 3 接上了*
 
 ## ⚠️ 为什么这是最难的 phase（4 个硬约束，任一违反都挂客户端）
 1. **byte-critical**：转发给客户端的 Anthropic SSE 被 Claude Code 的 @anthropic-ai/sdk 苛刻解析。帧顺序、content_block index 连续、event 行、signature 都有硬期待。语义等价但字节不同的帧流能直接挂客户端。
-2. **event-line 契约（N1，最易静默失败）**：所有合成 Anthropic SSE 帧**必须经 `src/lib/anthropic/sse-frame.ts` 的 `anthropicSseFrame`**（event 行 = 帧 type）。**纯 `data:` 帧（无 event 行）会被 SDK 的 SSEDecoder 按 event 名分发时静默丢弃**——测试可能过、客户端丢帧。skill `claude-code-connection`。
+2. **event-line 契约（N1，最易静默失败）**：所有合成 Anthropic SSE 帧**必须经 `src/lib/anthropic/sse-frame.ts` 的 `anthropicSseFrame`**（event 行 = 帧 type）。**纯 `data:` 帧（无 event 行）会被 SDK 的 SSEDecoder 按 event 名分发时静默丢弃**——测试可能过、客户端丢帧。skill `debugging-claude-client-connection`。
 3. **心跳缝合（非镜像 gemini）**：翻译路径客户端仍是 Claude Code（**300s no-real-content 断连**，reasoning 模型 pre-content 静默最易撞）。出站给客户端是 Anthropic SSE，**必须复用 Anthropic 的 `makeAnchoredSseSink` + keepalive + delayed-commit + prelude**（[handler-v4.ts:446-463](../../../src/routes/messages/handler-v4.ts#L446)）。gemini handler [无心跳](../../../src/routes/gemini/handler-v4.ts#L271)，**别镜像它**。
 4. **三方 message_start reconcile**：翻译分支的 message_start 有三个来源——prelude 合成（delayed-commit 期 [:883](../../../src/routes/messages/handler-v4.ts#L883)）× translator W3 首帧（CC 首帧到达）× `makeReconcilingSink` drop（[:997](../../../src/routes/messages/handler-v4.ts#L997)）。现状 reconcile 作用于**渲染后 client frame** 用 `isMessageStart` 判 type（Phase 2/3 review NIT-H 核实：translator 产出的 message_start 天然命中、**无需改识别逻辑**），但三者交互须 golden 锁双 message_start 不出现。
 
@@ -18,7 +18,7 @@ copilot-api-js 正建通用「入站×出站」翻译矩阵。Phase 3 接上了*
 - [spec §7.2](../../spec/anthropic-via-openai-translation.md)（流式状态机映射）。
 - [master plan Phase 4](../plan.md#phase-4流式两向-translator--handler-缝合最难-byte-critical)（T4.1-T4.4 + Phase 3 排入的 createResponseAccumulator 按腿分派）+ Phase 0/1/2/3 实施记录。
 - [探针 PROBE-FINDINGS](../../../exp/anthropic-via-openai-translation/PROBE-FINDINGS.md)（cc 腿多 choices、toolu_ 透传；**流式帧形态未测——本 phase 用 golden 预捕获时探针实测 OQ1 流式 reasoning**）。
-- skill `claude-code-connection`（300s 断连、event 行契约）、`ghc-anthropic-upstream`（thinking signature）、`large-refactor`（§4 golden-fixture 预捕获、§7 byte-critical 校准）、`empirical-verification`。
+- skill `debugging-claude-client-connection`（300s 断连、event 行契约）、`ghc-anthropic-upstream`（thinking signature）、`large-refactor`（§4 golden-fixture 预捕获、§7 byte-critical 校准）、`empirical-verification`。
 - 现有 **`src/lib/gemini/convert-stream.ts`**（`createGeminiStreamTranslator` 的 `renderFrame`/`flush`/`getMeta` 结构模板——**只借状态机结构，不借无心跳的 handler**）+ `src/lib/anthropic/sse-frame.ts`（anthropicSseFrame）+ `src/lib/anthropic/keepalive-anchor.ts`/`keepalive-frame.ts`。
 
 ## 目标

@@ -2,7 +2,7 @@
 
 > **实施状态：已完成**
 > **落地**：09e4e09
-> **现状锚点**：`src/lib/transport/proxy-connect.ts`；DESIGN 运行时兼容表「代理」格；skill bun-upstream-transport
+> **现状锚点**：`src/lib/transport/proxy-connect.ts`；DESIGN 运行时兼容表「代理」格；skill debugging-ghc-api-upstream-transport
 > **备注**：node:http2 隧道 honor 代理（CONNECT/HTTPS + SOCKS5，Bun/Node 两端），Bun SOCKS5 限制解除
 
 ## Context（为什么做这个改动）
@@ -92,7 +92,7 @@ export function getProxyUrlForOrigin(origin: URL): string | undefined {
 
 - [DESIGN.md](docs/DESIGN.md)：transport 行 + proxy 表行 + 运行时兼容表的"代理"格——更新为"https 经 http2-client 隧道 honor 代理（CONNECT/SOCKS5，两 runtime）"；删除"https 绕过代理"的隐含描述。
 - [upstream-http2-transport.md §2.3](docs/spec/upstream-http2-transport.md)：Phase 1"无代理直连/配 proxy 启动报错"→标注 Phase 2 已实装代理隧道。
-- skill `bun-upstream-transport`：补 http2 代理隧道 + Bun SOCKS5 已解除。
+- skill `debugging-ghc-api-upstream-transport`：补 http2 代理隧道 + Bun SOCKS5 已解除。
 - memory：新增"http2 上游代理隧道"reference（关联 [[feedback-bun-first-dependency-selection]]）；若 socks-on-Bun 探针证伪则改记暂缓。
 
 ## 验证（empirical-verification）

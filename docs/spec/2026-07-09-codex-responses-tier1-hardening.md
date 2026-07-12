@@ -3,7 +3,7 @@
 - 状态：草案 v2（已并入两轮对抗 subagent 审查 + 亲手代码核验；待用户复核）
 - 日期：2026-07-09
 - 归属：`docs/spec/`；配套 plan 落 `docs/plan/`，ADR（如需）落 `docs/decisions/`
-- 相关：[upstream-stream-truncation-detection](./upstream-stream-truncation-detection.md)、[upstream-http2-transport](./upstream-http2-transport.md)、`docs/v4/03-spec/retry-transport.md`、ADR richest-data-flow、skill `debugging-server-crashes` / `bun-upstream-transport` / `claude-code-connection` / `ghc-api-reference` / `empirical-verification`
+- 相关：[upstream-stream-truncation-detection](./upstream-stream-truncation-detection.md)、[upstream-http2-transport](./upstream-http2-transport.md)、`docs/v4/03-spec/retry-transport.md`、ADR richest-data-flow、skill `debugging-server-crashes` / `debugging-ghc-api-upstream-transport` / `debugging-claude-client-connection` / `ghc-api-reference` / `empirical-verification`
 - 修订说明（v1→v2）：见 §10「审查并入与更正记录」——修正了根因触发点（before-first-event fallback 被击败，非 mid-stream idle-timeout）、R4 机制（采用 driver 的 buffered sink，而非新增策略）、R3 保活配置复用边界、R5 上游保活可行性约束、Phase 排序、以及 `ws.ts` 姊妹路径缺口。
 
 ## 1. 背景与动机（Why）
@@ -84,7 +84,7 @@ Codex（Responses API）是本项目**一等公民**支持对象；`ws:responses
 - **R3.1** Responses **SSE**（HTTP）流式路径注入保活帧。帧型经 `refs/codex` 核定（§4）：`event: <合成标记>` + `data: {"type":"response.<keepalive>"}`（合法 JSON、未知 `type`）。Codex 双重容忍（未知 type→`Ok(None)` 忽略；解析失败→`continue`），零客户端可见副作用，且重置其 idle 钟。对标准 OpenAI Responses SDK 消费者亦以"合法 JSON + 未知 type"为最稳（O4，plan 以标准 SDK 复核）。
 - **R3.2** 保活帧打项目**合成标记**（ADR richest-data-flow：注入真实流的合成物必可辨识），history forwarded 轨记录、上游轨不含。复用既有 `makeSseSink` 的 heartbeat 机制（`client-sink.ts` 的 `pingFrame` provider + `synthetic:"keepalive"` 标记）——加法式复用既有 hook。
 - **R3.3**（更正 v1）**只复用间隔，不复用 mode**：间隔用 `streamKeepalivePingSec`（默认 20s ≪ 300s）；但 `streamKeepaliveMode`（`"ping"|"content_delta"|"empty_text"`，`state.ts:283`）是 **Anthropic 帧型**枚举（非-`ping` 值发 Anthropic `content_block_delta` 帧），语义上不能用于 Responses 流。Responses 需**独立的帧型/mode**（Responses-shaped）。plan 定：是复用 `streamKeepalivePingSec` + 固定 Responses 帧，还是引入 Responses 专属 keepalive 配置键。
-- **R3.4** 保活覆盖"上游响应头前静默"与"上游响应中 reasoning 静默"两段（对齐 skill `claude-code-connection` 的两层 idle 认知）。
+- **R3.4** 保活覆盖"上游响应头前静默"与"上游响应中 reasoning 静默"两段（对齐 skill `debugging-claude-client-connection` 的两层 idle 认知）。
 - **R3.5**（新增，**纳入范围** — 用户已确认）**下游 WS-to-client（`ws.ts`）保活对齐**：`ws.ts:290` 现"no heartbeat for WS"。为其补保活 parity。注意：浏览器/标准 WS 有协议级 ping/pong（运行时可自保活），故此路径的保活形态可与 SSE 不同——plan 阶段核定应发**应用层保活帧**（对齐 SSE 语义）还是依赖/主动发**协议级 WS ping**，以真正 keep-alive 为准（避免只是"看起来有保活"）。姊妹路径不静默略过（`against-yagni`）。
 - **验收**：模拟上游长静默（>20s，<300s），断言下游按间隔收到带标记保活帧、且以 `refs/codex` 容忍契约为 oracle（合法 JSON + 未知 type 不报错、重置 idle）。
 

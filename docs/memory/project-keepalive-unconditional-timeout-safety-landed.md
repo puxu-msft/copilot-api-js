@@ -17,4 +17,4 @@ keepalive 无条件 timeout-safety（修生产 incident：live/delayed-commit �
 
 **deferred（已落 backlog）**：POST-COMMIT error 帧 + 锚点 stop@0 不进 history clientResponse.sseEvents（既有 pattern、wire 协议完整）。
 
-此特性已完结。本记忆可保留为已合并 stub 或后续清理（并发会话另在仓库 MEMORY.md e809a760 记有条目）。**Related:** skill `claude-code-connection`（CC 两层 watchdog）、`empirical-verification`（oracle）。
+此特性已完结。本记忆可保留为已合并 stub 或后续清理（并发会话另在仓库 MEMORY.md e809a760 记有条目）。**Related:** skill `debugging-claude-client-connection`（CC 两层 watchdog）、`empirical-verification`（oracle）。

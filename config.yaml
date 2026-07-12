@@ -146,13 +146,13 @@ timeouts:
   # Max seconds from request start to receiving HTTP response headers (0 = no timeout).
   # 从请求开始到收到 HTTP 响应头的最大秒数（0 = 不超时）。
   # Applies to all upstream API clients. / 作用于所有上游 API 客户端。
-  response_header: 900
+  response_header: 600
 
   # Max seconds between SSE events (0 = no timeout).
   # SSE 事件之间的最大间隔秒数（0 = 不超时）。
   # Applies to all streaming paths (Anthropic, Chat Completions, Responses).
   # 作用于所有流式路径（Anthropic、Chat Completions、Responses）。
-  stream_idle: 900
+  stream_idle: 300
 
   # Upstream TCP keepalive initial-probe delay in seconds (0 = use undici's 60s default).
   # 上游 TCP keepalive 首探针延迟秒数（0 = 用 undici 内置默认 60s）。
@@ -176,7 +176,7 @@ timeouts:
   # Max seconds an active request can live before the stale reaper forces it to fail (0 = disabled).
   # 活跃请求被 stale reaper 强制失败前的最大存活秒数（0 = 禁用）。
   # Safety net for requests that never complete/fail normally. / 兜底永不正常完成/失败的请求。
-  stale_request_max_age: 1800
+  stale_request_max_age: 1200
 
 # Seconds between background model list refreshes (0 = disabled).
 # 后台刷新模型列表的间隔秒数（0 = 禁用）。
@@ -293,6 +293,7 @@ anthropic:
       - claude-opus-4-6
       - claude-opus-4-7
       - claude-opus-4-8
+
     # Native server-side tool_search is DEFAULT-ALLOW for Claude ≥4.5 (Haiku + pre-4.5 denied), mirroring
     # GHC — new Claude models are picked up automatically, no list to maintain. This map holds per-model
     # OVERRIDES only: keys are model-name substrings ("*" = wildcard), value true=force-on / false=force-off.

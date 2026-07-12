@@ -122,3 +122,68 @@ ESTAB 0 0 127.0.0.1:45206 127.0.0.1:35587 users:(("bun",pid=...,fd=12)) ...
 **运维建议（非强制改默认）：**
 - **合法 > 300s 静默 reasoning**：若某模型真会连续 > 300s 不产任何中间帧，需**调大** `streamIdleTimeout`（config `timeouts.stream_idle`）；下游保活**不代偿**（它只防 Codex reader 端超时，不延长本代理的上游 guard，也救不回一条真正 wedged 的上游连接——那是 Phase 3 buffered 重试的职责）。
 - **300s 默认对 gpt-5.5 是否足够**：reasoning 模型通常有中间帧（token/进度事件），每帧刷新两端 deadline，故 300s **连续零帧**窗口在实践中极少触及。默认**不改**（无证据其错，且与 Codex 自身 300s reader deadline 对齐）；确遇长静默上游再按上条调大即可。
+
+---
+
+## 2026-07-12 — GHC 服务端 WS idle 计时器对 client PING 的响应（gate 问题）
+
+> 归属：本 gate 问题决定「是否值得写 Bun-only 周期 `socket.ping()` 上游 WS 保活」（类比 `scheduleH2KeepalivePing`）。
+> PoC 代码：`probe-ghc-idle.mjs`（PoC-C，真打 GHC 上游）、`smoke-ghc-ws.mjs`（wire 正样本对照）。原始逐行日志：`raw-poc-c-run-logs.txt`。
+> 实测环境：`bun 1.3.14`、undici `7.28.0`、Linux WSL2；账号类型 enterprise（token 响应 `endpoints.api = https://api.enterprise.githubcopilot.com` → `wss://api.enterprise.githubcopilot.com/responses`）。鉴权非交互：读 `~/.local/share/copilot-api/github_token`（40B `gho_…`）→ 打 `https://api.github.com/copilot_internal/v2/token` 换 copilot token，全程**未碰 4141 用户主服务器**（pid 602300，只读旁路）。
+
+### 裁决：gate 问题 **INCONCLUSIVE**；工程决策 **不要写 WS ping 代码（NO）**
+
+两者不矛盾——literal gate 问题因**正样本对照未成立**而 INCONCLUSIVE，但实验产出了一个**比原假设更强**的结论，直接否掉了 ping 代码的价值。
+
+**承重实测事实：GHC 对上游 WS 静默连接在 ≤462s 内没有任何可观测的 idle-close。** 5 次运行（gpt-5.5 `reasoning.effort=high`、单条 `response.created` 于 0.4s 后进入**单个**长静默、末尾一次性 burst 全部 content + `response.completed`）：
+
+| 臂 | run | 最长单次静默（无帧）| 静默期 PING 数 | 结局 | close |
+|---|---|---|---|---|---|
+| no-ping | 1 | 266.0s | 0 | 正常完成（1721 events）| `code=1000 reason=""` |
+| no-ping | 2 | 284.8s | 0 | 正常完成（4977 events）| `code=1000 reason=""` |
+| no-ping | 3 | 352.4s | 0 | 正常完成（5106 events）| `code=1000 reason=""` |
+| ping | 1 | 381.8s | 38 | 正常完成（5723 events）| `code=1000 reason=""` |
+| ping | 2 | 462.1s | 46 | 正常完成（5860 events）| `code=1000 reason=""` |
+
+**每一条**（含 no-ping 的 352s、ping 的 462s）都撑过了长静默、拿到完整响应、正常关闭。**没有任何一次** GHC 主动 `close(1000, "idle timeout")`。
+
+### 逐项对照经验裁判轴
+
+1. **正样本对照未成立 → gate INCONCLUSIVE（不许推断 YES）**。rubric #1 要求 no-ping 臂**先真的复现** GHC 的 pre-first-event `close(1000, "idle timeout")`。它**没有复现**——三次 no-ping（静默 266/285/352s）GHC 全部维持连接到正常完成。既然 GHC 的 idle 计时器在 ≤352s 从未触发，就**无法**判断 client PING 是否会重置它；严格标 INCONCLUSIVE，**不从 ping 臂"没被掐断"推断 YES**（ping 臂本来就没进入任何 GHC idle 窗口）。
+2. **wire 正样本先证**（`smoke-ghc-ws.mjs`）：trivial 请求 0.74s 收到 `response.created`、1.41s `response.completed`、11 帧——证明鉴权/握手/发送/接收链路真通，长静默存活不是"根本没连上"的假象。
+3. **时序确定性**：no-ping 3 次 + ping 2 次，静默从 266s 递增到 462s，结论（GHC 不 idle-close）**5/5 稳定**，非单次侥幸。
+4. **Bun-only caveat**：本实验在 Bun 下跑，`import{WebSocket}from"undici" === globalThis.WebSocket`、`.ping()` 存在且真发帧（承接 PoC-A/B）。Node 发布版无 `.ping()`——即便结论是 YES 也只对 Bun 成立。此处结论是 NO/moot，运行时分裂不改变它。
+
+### 生产 `close(1000, "idle timeout")` 的真正来源：**GHC-originated 关闭帧**，不是我方 line-129（2026-07-12 归因更正）
+
+> ⚠️ 本节更正本报告初版的错误归因。初版曾断言"生产 close 是我方 300s guard"——**错**。经 coordinator 三处代码事实核对 + 复核源码，生产那条 close 是 **GHC 服务端主动发的关闭帧**。三条铁证：
+>
+> 1. **大小写**：line 129 是 `closeUpstreamWs(socket, "Idle timeout")`——**Title-Case**。全仓 grep：我方**所有** `closeUpstreamWs` reason 都是 Title-Case（`"Idle timeout"`/`"Parse error"`/`"Socket error"`/`"Handshake failed"`/`"Send failed"`/`"Going away"`），`src/` 里**没有任何一处**发出小写 `idle timeout`，也**没有**对 reason 做 `toLowerCase`。而生产日志 `closeEvent.reason` 是**小写** `idle timeout`——只能是 **GHC 关闭帧回填**进 `CloseEvent.reason`（`CloseEvent.reason` 携带对端发来的 close-frame reason）。
+> 2. **busy gating**：line-129 的 `scheduleIdleClose` 有 `if (!socket || busy || ...) return`（connection.ts:125）——**只在非-busy（空闲池连接）时**开火。而生产日志是 `mid-request`。`handleClose` 的 mid-request 日志（connection.ts:230-231）只在 `busy && currentQueue` 时打；line-129 的空闲关闭走到 handleClose 会在 227 行 `if (!busy||!currentQueue) return` 直接返回，**不可能**产生 mid-request 日志。
+> 3. **错误串路径**：生产 fallback 的 `Upstream WebSocket closed (1000: idle timeout)` 逐字来自 handleClose:231 的 **close-EVENT 路径**（`${closeEvent.reason}` 回填）。我方 300s `responseHeaderTimeout` fetch-timeout abort 走的是 onAbort→failRequest（`"request aborted"`/`"first-event timeout"`），**不产生**这个串。故生产事件是**真 GHC close 帧**，不是我方 guard 掐的。
+
+**为什么我 5 次没复现？regime 不同。** 生产日志是 **pre-first-event**（`failed before first event, falling back to HTTP (5/3)`）——GHC 在**连 `response.created` 都还没发**时就自己 idle-close 了。而我 5 次 probe 里 `response.created` **恒在 0.4s 到达**（请求被即时受理），我全程处于 **post-first-event** 的帧间静默 regime。两者是**正交的两个问题**：
+
+### 两个正交问题（reconciliation 成立）
+
+- **问题 A（GHC pre-first-event idle-close，真实、我未复现）**：GHC 在某条件下（我未触及——可能大 input / 后端排队 / 负载 / edge，使 GHC 迟迟不发 `response.created`）会**自己**发 `close(1000, "idle timeout")`。我的触发器每次都拿到 0.4s 的 `response.created`，从未进入这个 pre-first-event 静默窗口，故**5 次未复现**、也**无从测** client PING 是否能重置 GHC 这个 pre-first-event 计时器。对问题 A，literal gate **INCONCLUSIVE**（且 ping 的价值**未证**，不能说无用、也不能说有用）。修复方向：**per-model 熔断**（连续 pre-first-event 失败→暂停 WS 走 HTTP，即现有 `consecutiveFallbacks`/half-open 机制）+ buffered 重试恢复。
+- **问题 B（我方 300s guard 对 gpt-5.5 太短，我的实测发现、独立 bug）**：gpt-5.5 `effort=high` 在 WS 上的典型形态是**单个 266–462s 连续零帧静默**、末尾一次性 burst 全部 content（5000+ 帧）+ `response.completed`——**无**周期性中间帧刷新 deadline。post-first-event 路径 `streamWsEvents` 用 `raceIteratorNext(idleTimeoutMs = streamIdleTimeout*1000 = 300s)`（upstream-ws-attempt.ts:211）。故 **`response.created` 后到 burst 之间 >300s 的合法静默，会被我方 `streamIdleTimeout` 在 300s 掐死**（抛 `StreamIdleTimeoutError`，症状是 post-first-event 的 stream-error，**不同于**问题 A 的 pre-first-event fallback 日志）。**即使 GHC 不掐（实测 ≤462s 不掐），我方也会掐**。这是一个当前潜伏/已发生的独立 bug。
+
+> 这更正了本报告 §124 旧断言"reasoning 模型通常有中间帧…300s 连续零帧极少触及，默认不改"——**实测反驳**：gpt-5.5 的正常形态就是 400s+ 单个零帧静默。
+
+### ping 代码：仍**不落地**，但理由更新（非"证明无用"，而是"未证有用 + 有更确定的修复"）
+
+- 对**问题 B**：WS PING 是控制帧、不产生 `ResponsesStreamEvent`、**不重置** `streamIdleTimeout`（PoC-A/B + Task 4.2 已定）——ping 对 B **确定无用**，B 的修复是**调大 guard**。
+- 对**问题 A**：ping 是否能重置 GHC 的 pre-first-event 计时器**未证**（我未复现 A）。speculative 写 ping 不成立；且 A 有**更确定**的修复（per-model 熔断 + buffered 重试）。
+- 结论：**现在不写 ping**。仅当未来**复现问题 A** 且**实测证明 client PING 能重置 GHC 计时器**时才重新评估。
+
+### 承重修复建议值 + 风险
+
+- **`streamIdleTimeout`（问题 B 承重修复）**：实测单次静默达 462s，且更难的 prompt 只会更长（462s 是**地板不是天花板**）。建议**≥600s**，且**优先做 per-model override**（gpt-5.5 类 reasoning 模型给 600s+，其余保持 300s）而非全局一刀切——因为这是 SSE/h2/WS **共用的同一 knob**（Task 4.2），全局调大会同时拖慢 SSE/h2 的死连接检测。
+- **`responseHeaderTimeout`（pre-first-event，对问题 A 价值有限）**：仅当 GHC "慢但活着"时有用；若 GHC 自己先 close（问题 A 实况），我方 timeout **moot**。可小幅上调（300→420–600s）配合熔断，但别指望它单独解决 A。
+- **调太大的风险**：真正 wedged/死连接要拖到 timeout 才被 reap，占着连接池槽位 + 延迟客户端失败/fallback。**缓解 = 与恢复层配合**：(1) **buffered 重试**让长 timeout 不等于丢结果（Phase 3）；(2) **per-model 熔断**（连续 pre-first-event 失败 trip → 暂停 WS）让问题 A 不至于反复长等；(3) **per-model override** 把死连接检测延迟的代价只加在真需要的模型上。注意 buffered 重试**单独不够**治 B——若每次尝试都 >300s 静默，每次都撞同一堵 300s 墙，**必须**配合调大 guard。
+
+### 交付边界
+
+- 未复现问题 A（GHC pre-first-event idle-close）——我的触发器恒得 0.4s `response.created`，进不了该 regime。要闭合 literal gate（GHC pre-first-event 计时器阈值 + ping 是否重置），需构造能让 GHC 迟发 `response.created` 的触发器（疑似大 input / 特定负载），再跑 no-ping 正样本复现，然后加 ping 臂对照。
+- 已确证：post-first-event regime 下 GHC ≤462s 不 idle-close（5/5 稳定），问题 B 独立于 GHC 行为成立。

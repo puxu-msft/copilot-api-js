@@ -10,7 +10,7 @@ description: 当 copilot-api-js 服务器意外整进程退出（一条良性取
 - **`process.on("unhandledRejection")`** ← **孤儿 promise 的 reject**（无 live awaiter）。
 - **`process.on("uncaughtException")`** ← **EventEmitter emit `'error'` 时无监听者**（Node 把无人监听的 `'error'` 事件同步 rethrow）。
 
-**这是跨层崩溃防御模式**，不是某传输专属：实例虽出在 `http2Fetch`（传输层），但两个根因模式会出现在 transport / 持久化 fire-and-forget / reaper 等任何「产生 promise/EventEmitter 但可能没人接住其 reject/'error'」的地方。故独立成 skill，不并入 `bun-upstream-transport`。
+**这是跨层崩溃防御模式**，不是某传输专属：实例虽出在 `http2Fetch`（传输层），但两个根因模式会出现在 transport / 持久化 fire-and-forget / reaper 等任何「产生 promise/EventEmitter 但可能没人接住其 reject/'error'」的地方。故独立成 skill，不并入 `debugging-ghc-api-upstream-transport`。
 
 ## 症状 → 根因
 

@@ -94,7 +94,7 @@ undici 自动解压;node:http2 **不自动解压**。需在适配器按 `content
 1. **C1 — http2-client.ts 核心**:session 池 + Response 适配器 + 非流式请求。*Invariant:* GET /models 经新客户端返回等价 Response(status/json/headers),unit 测试(注入 mock h2 或对 httpbin-like)绿。
 2. **C2 — 流式 + 超时 + AbortSignal**:body ReadableStream、responseHeaderTimeout/streamIdleTimeout 映射、signal→cancel。*Invariant:* SSE 流增量可读;超时触发对应错误类;abort 取消 stream。
 3. **C3 — 切换 productionUpstreamFetch + proxy.ts 连接工厂**:undici → http2-client;无代理直连;配 proxy 时启动报错(Phase 1)。*Invariant:* 11 消费端不改;`setUpstreamFetchForTests` 不变;全 offline 测试套件绿;Bun 下 /models 不再挂(对真实端点的 e2e 探针,门控)。
-4. **C4 — 清理**:删 undici 依赖路径(upstream 侧)/或保留作 Phase-2 代理参考;更新 DESIGN/skill bun-upstream-transport。
+4. **C4 — 清理**:删 undici 依赖路径(upstream 侧)/或保留作 Phase-2 代理参考;更新 DESIGN/skill debugging-ghc-api-upstream-transport。
 
 > 每个中间 commit 自洽:C1/C2 新客户端与旧 undici 并存(未切换),C3 才切换。回退靠 `setUpstreamFetchForTests` / 单点切换。
 

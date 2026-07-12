@@ -40,4 +40,4 @@ P0 ──前置阻塞全部──→ P1 ──→ P2 ──→ P3 ──→ P4 [
 - RFC §3.1（二维门控轴）、§4.2（hub 共享层）、§7（缝合落地契约）。
 - ADR 两份（codec 纯化 + 全矩阵）。
 - 探针实测 [PROBE-FINDINGS](../../../exp/anthropic-via-openai-translation/PROBE-FINDINGS.md)。
-- skill：`large-refactor`（RFC-first/commit invariant/golden）、`ghc-anthropic-upstream`（thinking signature 400）、`claude-code-connection`（300s 断连）、`empirical-verification`。
+- skill：`large-refactor`（RFC-first/commit invariant/golden）、`ghc-anthropic-upstream`（thinking signature 400）、`debugging-claude-client-connection`（300s 断连）、`empirical-verification`。

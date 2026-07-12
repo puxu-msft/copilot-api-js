@@ -5,7 +5,7 @@ description: 当 copilot-api-js 在 Bun/Node 双运行时下遇到「stdlib/Web 
 
 # Bun / Node 跨运行时 stdlib 陷阱
 
-本项目 bun-first 但 history 走 bun:sqlite（一等）/ node:sqlite（兼容）双驱动、上游 fetch 走 undici（见 skill `bun-upstream-transport`），故常撞「同一 API 两 runtime 行为分歧」。这类 bug 的共性：**Bun 下恰好成立会掩盖 Node 路径的 bug**，`bun test` 测不到。判据永远是**实测两 runtime**，别凭直觉。
+本项目 bun-first 但 history 走 bun:sqlite（一等）/ node:sqlite（兼容）双驱动、上游 fetch 走 undici（见 skill `debugging-ghc-api-upstream-transport`），故常撞「同一 API 两 runtime 行为分歧」。这类 bug 的共性：**Bun 下恰好成立会掩盖 Node 路径的 bug**，`bun test` 测不到。判据永远是**实测两 runtime**，别凭直觉。
 
 ## undici.Response ≠ globalThis.Response（别用 `instanceof Response` 跨 realm）
 

@@ -2,12 +2,12 @@
 
 > **实施状态：已完成**
 > **落地**：—
-> **现状锚点**：`.claude/skills/`（api-endpoints/history-sqlite-schema/bun-upstream-transport/test-isolation/ghc-anthropic-upstream）
+> **现状锚点**：`.claude/skills/`（proxy-api-reference/history-sqlite-schema/debugging-ghc-api-upstream-transport/test-isolation/ghc-anthropic-upstream）
 > **备注**：5 个 skill 全建（anthropic-debug 换名 ghc-anthropic-upstream）；bun-runtime-timeout.md 已 MOVE 进 skill
 
 ## Context
 
-已建 api-endpoints / history-sqlite-schema 两个薄 skill。用户要：大幅充实现有 skill、把"方法/调试/陷阱"型文档迁进 skill，活文档仍留 docs。skill 引用活文档、不重复其字段级真相；只吸收调试/经验/速查。
+已建 proxy-api-reference / history-sqlite-schema 两个薄 skill。用户要：大幅充实现有 skill、把"方法/调试/陷阱"型文档迁进 skill，活文档仍留 docs。skill 引用活文档、不重复其字段级真相；只吸收调试/经验/速查。
 
 ## 分诊（已与用户敲定）
 
@@ -20,12 +20,12 @@
 
 ## 1. 充实现有两 skill
 
-- api-endpoints：补管理 API 子端点、Azure/前缀矩阵、调用示例（curl + 探针），指 `/openapi.json`。
+- proxy-api-reference：补管理 API 子端点、Azure/前缀矩阵、调用示例（curl + 探针），指 `/openapi.json`。
 - history-sqlite-schema：补查询配方（按 session/status 过滤、解 blob_gz）、reaper 桶语义、in-flight 双源、debug-pin，指 history.md。
 
-## 2. MOVE：bun-upstream-transport skill ← bun-runtime-timeout.md
+## 2. MOVE：debugging-ghc-api-upstream-transport skill ← bun-runtime-timeout.md
 
-迁内容到 `.claude/skills/bun-upstream-transport/SKILL.md`（300s 陷阱 / undici 子路径 / node:http2 / keepalive ss 验证），`mv` 删 docs。repoint 3 处反向引用：DESIGN.md 模块表+transport 行、spec/upstream-http2-transport.md、memory/feedback-bun-first-dependency-selection.md。
+迁内容到 `.claude/skills/debugging-ghc-api-upstream-transport/SKILL.md`（300s 陷阱 / undici 子路径 / node:http2 / keepalive ss 验证），`mv` 删 docs。repoint 3 处反向引用：DESIGN.md 模块表+transport 行、spec/upstream-http2-transport.md、memory/feedback-bun-first-dependency-selection.md。
 
 ## 3. 新建 anthropic-debug skill
 

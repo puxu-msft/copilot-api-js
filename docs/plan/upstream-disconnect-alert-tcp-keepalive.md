@@ -2,7 +2,7 @@
 
 > **实施状态：已完成**
 > **落地**：0788d0a
-> **现状锚点**：运行时选项 `upstreamKeepaliveDelay`；`transport/upstream-fetch.ts`；skill bun-upstream-transport
+> **现状锚点**：运行时选项 `upstreamKeepaliveDelay`；`transport/upstream-fetch.ts`；skill debugging-ghc-api-upstream-transport
 > **备注**：告警 keepalive 字段 + getUpstreamDispatcher 落地；https 热路径后续进一步迁 node:http2（更彻底）
 
 ## Context（为什么做这件事）
