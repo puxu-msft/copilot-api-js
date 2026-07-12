@@ -378,27 +378,3 @@
 - **calibration 靶向测试缺口**：CalibrationSink 的 REAL_FLOOR/EST_FLOOR/model-miss/usage-缺-cache 分支、pre-flight driver 接缝「首轮只调一次」均无直接单测（经读码 + 505 回归间接覆盖，行为已核实正确）。**若做**：补靶向 golden 用例。发现方：Task 5/9 review + 全分支终审。
 
 **待实测验证项（spec 已 defer，§3.2-S2/§11）**：400 腿 `reportedCurrent` 是否含 cache token（whole-prompt 口径）。Task 1-4 实施时探针初判含 cache（opus 400 报 ~1M 只可能 cache-inclusive），但未在活服务器端到端复验。若某天发现 cache-heavy 请求两腿口径偏差，回查此处。400 几乎总落顶桶 + CAP 封顶，影响边际。
-
-## cache-write backfill leaf + 串行接线（2026-07-12 暂缓）
-
-- **根因**：GHC 升级 usage 新增 `cache_write_tokens`（→ `cache_creation_input_tokens`），fix-forward 已让新请求全捕获（spec/plan `2026-07-12-ghc-usage-details`，Phase 0/1/2.1 已合并 master `fe6b2aa6`），但**存量流式行**的历史 `cache_creation` 仍为 NULL（提取时才丢的 cache_write，其原始值仍逐字在 `sse_events` stage 帧里）。
-- **当前行为**：存量 OpenAI 家族流式行 `cache_creation` 列/blob 为 NULL（计费历史聚合略低估）；新行经 fix-forward 已正确并 born-mark `cache_write_backfilled=1`。标记列 + born-marking 已落地（`daead010`），只差扫 `WHERE cache_write_backfilled=0` 的 backfill leaf。
-- **理想架构**：`src/lib/history/sqlite/cache-write-backfill.ts`（新 leaf）—— 靶向流式 OpenAI 家族行，从上游原始 `sse_events` 帧**整份重算** `input/cache_read/cache_creation`（**C2 铁律：绝不对已被 usage-normalize 净化的 input_tokens 增量减**），双写列+blob，子集 oracle 自校验（不符则跳过不损坏）；串行接线进 `startHistoryBackfills`（usage-normalize + legacy-stage 之后）。详见 [docs/plan/2026-07-12-ghc-usage-details/RESUME-task-2.2.md](../plan/2026-07-12-ghc-usage-details/RESUME-task-2.2.md)（已固化存储事实：`sse_events` stage `attempt_index=-1`、per-endpoint 字段分裂 M3、算法、导出签名）。
-- **为何暂缓**：它是全特性**唯一有腐蚀风险**的代码（C2），其 golden 测试是防腐蚀唯一安全网，值得独立一轮 TDD + subagent review 而非长会话尾部仓促写；**本部署收益近零**——实测 endpointDistribution 为 anthropic 9788 vs openai 家族仅 1+1，几乎无历史行可 backfill。属「独立高风险工作单元」非「因范围大降级」；fix-forward（高价值低风险核心）已完整合并。
-- **若做需改什么**：按 RESUME 笔记实现 leaf + 迁移已就绪（标记列已在）+ state.ts 串行接线 + golden 测试（重算正确/不二次减/幂等/跳过非流式）。发现方：ghc-usage-details Phase 2 主动暂停（2026-07-12）。
-
-## 出向转发 cache_write（responses→cc 翻译器，2026-07-12 暂缓）
-
-- **根因**：ghc-usage-details Phase 3 Task 3.1——出向翻译器 `responses-to-cc.ts` / `responses-to-cc-stream.ts` 已转发 `prompt_tokens_details.cached_tokens`，但未对称转发新的 `cache_write_tokens`。
-- **当前行为**：经 Responses→CC 翻译路径返回客户端的 usage 缺 `cache_write_tokens`（history 侧已完整捕获，仅客户端可见 usage 少这一维）。richest-data-flow 的客户端呈现层缺口，非数据丢失。
-- **理想架构**：在两翻译器的 `prompt_tokens_details` 构建处对称加 `cache_write_tokens`（仅目标格式有槽位处），对称既有 cached_tokens 转发。
-- **为何暂缓**：随 Phase 3 一并暂缓（与高风险 backfill 同批 defer，避免长会话尾部散碎收尾）；纯客户端呈现增强，history/计费不受影响。属「独立小增强」。
-- **若做需改什么**：`responses-to-cc.ts:98` + `responses-to-cc-stream.ts:197` 加 cache_write 转发 + 测试（spec §7 / plan Task 3.1）。发现方：ghc-usage-details Phase 3 defer（2026-07-12）。
-
-## 嵌套子字段剥离一般化 + 6 套 negotiation-strip 机制收敛（2026-07-12 暂缓）
-
-- **根因**：`cache_control.scope` 400 揭示的一般问题——GHC 上游落后于 Claude Code 时，不只顶层 body 字段/beta/tool 字段会被拒，**任意嵌套子对象内部的新字段**都可能被拒（cache_control、output_config、thinking、tool.custom 内部均可能重演）。现有剥离机制的粒度只到「顶层字段」，缺「嵌套子字段」这一层。
-- **当前行为**：`docs/spec/2026-07-12-cache-control-subfield-stripping.md` 为 cache_control 子字段**手搓了第 6 套**近乎同构的机制（`collectAllMatching(config) ∪ negotiation cache ∪ per-attempt hint → strip + 手写 reactive strategy`）。已有 5 套：betas / body-fields / tool-fields / server-tools / partner-features。每套都是逐字同构的 collect-union-读取端 + endpoint/per-model 学习 + 手写 matchAll reactive 腿 + 遮蔽风险处理。
-- **理想架构**：抽一个「negotiated strip target 通用注册表」——每个 target 声明 `{ wire 路径选择器, 学习键粒度(endpoint|model), 剥离原语, 错误正则 }`，把 6 套收敛成配置化的一套注册表 + 一个通用 reactive 腿工厂（现有 `createReactiveRejectionStrategy` 是雏形，但不支持 batch matchAll + model-agnostic，须扩展）。新 GHC 落后字段只需注册一条，不再建第 N 套。
-- **为何暂缓**：① 是独立的大型重构（触及 6 处现有 strip + negotiation schema + Learned 页），不应阻塞当前 scope 400 修复；② 收敛前需先有第 6 个同构实例落地，规律才充分显形（本 spec 正是第 6 个）；③ 属「HOW 层去重」非「砍数据/功能」，符合 long-term-wins 但可择时。
-- **若做需改什么**：设计通用注册表接口 → 逐个把 betas/body-fields/tool-fields/server-tools/partner-features/cache-control-subfields 迁移到注册表 → 扩展 reactive 腿工厂支持 batch matchAll + endpoint-level 学习键 → 统一遮蔽风险的 ordering 与认领归属测试。发现方：cache-control-subfield-stripping spec §9 决策（2026-07-12），评审 MEDIUM-4。
