@@ -220,6 +220,15 @@ export class TerminalUi {
    */
   private detailActive = false
   /**
+   * Terminal row count as of the last {@link renderDetail} write, so a
+   * `getRows()` change while detail is already open (a live SIGWINCH resize,
+   * M7) is distinguishable from an ordinary content repaint — see
+   * {@link renderDetail}'s resize branch. `undefined` before the first detail
+   * entry (which always resets margins regardless via the `detailActive`
+   * one-shot branch, so no comparison is needed there).
+   */
+  private detailRows?: number
+  /**
    * Log lines queued by {@link printLog}'s `detailActive` guard while the
    * alt-screen detail view is open (P1.3) — replayed into the scrollback by
    * {@link flushReplayQueue} on {@link exitDetail}. Bounded at
@@ -844,15 +853,28 @@ export class TerminalUi {
   }
 
   /**
-   * The detail alt-screen render path (P1.1). Entered once per detail visit
-   * (latched by {@link detailActive}): writes the alternate-screen sequence,
-   * then resets the DECSTBM scroll margins left over from the panel/collapsed
-   * Region — order is load-bearing (C1): entering the alt screen first, then
-   * resetting margins, then defensively turning off DECOM (origin mode), then
-   * clearing, ensures the full-screen detail paint isn't clipped to the
-   * panel's old 1–3-row scroll region. Every call (first entry or a
-   * bus-triggered repaint while already in detail) repaints the full-screen
-   * detail content; only the alt-screen entry + margin reset is one-shot.
+   * The detail alt-screen render path (P1.1, resize handling added P1.5/M7).
+   * Entered once per detail visit (latched by {@link detailActive}): writes
+   * the alternate-screen sequence, then resets the DECSTBM scroll margins left
+   * over from the panel/collapsed Region — order is load-bearing (C1):
+   * entering the alt screen first, then resetting margins, then defensively
+   * turning off DECOM (origin mode), then clearing, ensures the full-screen
+   * detail paint isn't clipped to the panel's old 1–3-row scroll region. Every
+   * call (first entry, a bus-triggered repaint, or a post-resize repaint while
+   * already in detail) repaints the full-screen detail content.
+   *
+   * **M7 (resize while detail is open)**: unlike the panel/collapsed path
+   * (whose geometry churn is `Region`'s `geometryChanged` re-anchor), detail
+   * has no `Region` of its own — the alt screen is a single full-width,
+   * full-height canvas with no sticky panel to re-anchor. So a terminal resize
+   * while detail is open is handled entirely here, comparing the live
+   * `getRows()` against {@link detailRows} (the row count as of the last
+   * write): a change re-issues the margin-reset choreography (`\x1b[r` +
+   * DECOM off) before repainting, exactly mirroring the one-shot entry
+   * sequence, so any stale DECSTBM margins from a mid-resize terminal quirk
+   * are cleared. This is deliberately **not** routed through `Region.render`'s
+   * `geometryChanged` branch (that class owns the panel/collapsed sticky
+   * region only — see plan constraint "不走 panel 的 geometryChanged 重锚").
    */
   private renderDetail(): void {
     if (this.silent || !this.region || this.shuttingDown) return
@@ -864,12 +886,20 @@ export class TerminalUi {
       this.exitDetail()
       return
     }
+    const rows = this.getRows()
+    const resized = this.detailActive && this.detailRows !== undefined && this.detailRows !== rows
     if (!this.detailActive) {
       this.detailActive = true
       // C1 (load-bearing order): enter alt screen → reset DECSTBM margins →
       // DECOM off (defensive) → clear + home cursor.
       this.stdout.write("\x1b[?1049h" + "\x1b[r" + "\x1b[?6l" + "\x1b[H\x1b[2J")
+    } else if (resized) {
+      // M7: a live resize while already in detail — re-run the margin-reset
+      // half of the entry choreography (no alt-screen re-entry needed, we're
+      // already there) before the full-screen repaint below.
+      this.stdout.write("\x1b[r" + "\x1b[?6l")
     }
+    this.detailRows = rows
     // `ActiveRequest` is structurally a `DetailView` (tags/thinking/attempts are
     // all optional and `ActiveRequest` carries them all) — passed directly,
     // matching the prior `buildViewLines` detail branch's usage; no conversion
@@ -906,6 +936,7 @@ export class TerminalUi {
   private exitDetail(): void {
     if (!this.detailActive) return
     this.detailActive = false
+    this.detailRows = undefined
     this.stdout.write("\x1b[?1049l")
     this.region?.forceReestablish()
     this.flushReplayQueue()
@@ -949,6 +980,7 @@ export class TerminalUi {
     if (this.detailActive) {
       this.stdout.write("\x1b[?1049l")
       this.detailActive = false
+      this.detailRows = undefined
     }
     if (this.onData) this.stdin?.removeListener("data", this.onData)
     this.stdin?.pause()

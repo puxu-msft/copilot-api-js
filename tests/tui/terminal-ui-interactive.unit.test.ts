@@ -406,6 +406,68 @@ describe("TerminalUi — P1 interactive integration", () => {
     ui.destroy()
   })
 
+  test("detail re-renders full-screen with reset margins on terminal resize (M7), never via the panel's Region/geometryChanged path", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const rowsRef = { rows: 24 }
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: () => rowsRef.rows,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
+    chunks.length = 0 // only inspect output produced after entering detail
+
+    // Simulate a terminal resize while detail is open, then trigger a redraw
+    // via an inert key (`up` is a no-op in detail per the reducer, but `onInput`
+    // still calls `render()` afterward — the same path a footer-timer tick or a
+    // bus-triggered repaint would take).
+    rowsRef.rows = 40
+    stdin.emit("data", Buffer.from([0x1b, 0x5b, 0x41])) // \x1b[A (up arrow)
+
+    const out = chunks.join("")
+    expect(out).toContain("\x1b[r") // margins reset defensively on resize (M7)
+    expect(out).toContain("\x1b[H\x1b[2J") // full-screen repaint
+    expect(out).not.toMatch(DECSTBM_SET) // must NOT re-anchor via the panel's Region/geometryChanged path
+    ui.destroy()
+  })
+
+  test("detail re-render WITHOUT a resize does not reset margins again", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const rowsRef = { rows: 24 }
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: () => rowsRef.rows,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
+    chunks.length = 0
+
+    // No resize — geometry unchanged. An inert key still triggers a repaint
+    // (content refresh), but must NOT re-emit the margin reset.
+    stdin.emit("data", Buffer.from([0x1b, 0x5b, 0x41])) // \x1b[A (up arrow), no-op in detail
+
+    const out = chunks.join("")
+    expect(out).toContain("\x1b[H\x1b[2J") // still repaints content
+    expect(out).not.toContain("\x1b[r") // no margin reset — geometry unchanged
+    ui.destroy()
+  })
+
   test("INV-1: collapsed→panel→collapsed round-trip does not overwrite prior log rows", () => {
     const stdin = new FakeStdin()
     const { stdout, chunks } = makeStdout()
