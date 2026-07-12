@@ -319,6 +319,11 @@ function migrateEntriesColumns(database: Database): void {
     // until legacy-stage-backfill re-serializes them into the new stages. Also in
     // SCHEMA_SQL for fresh DBs.
     { name: "stages_migrated", type: "INTEGER NOT NULL DEFAULT 0" },
+    // cache_write backfill marker (mirrors usage_normalized/stages_migrated's NOT NULL
+    // DEFAULT 0 ALTER). Rows written by the current code are born with cache_write already
+    // captured → 1; pre-fix-forward rows keep 0 until cache-write-backfill re-derives
+    // cache_creation from their upstream sseEvents frames. Also in SCHEMA_SQL for fresh DBs.
+    { name: "cache_write_backfilled", type: "INTEGER NOT NULL DEFAULT 0" },
   ]
 
   for (const col of wanted) {
