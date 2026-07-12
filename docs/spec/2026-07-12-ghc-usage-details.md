@@ -78,6 +78,7 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 - G3（历史保真）backfill 存量 OpenAI 家族行：从原始 usage blob 重导出 cache_write，补 `cache_creation` 列并按净公式重算 `input_tokens`。
 - G4（类型 SSOT）为 GHC 扩展 usage 建**自有类型**，不 module-augment SDK 类型。
 - G5（对称转发）出向翻译器在目标格式有槽位处转发 cache_write（对称既有 cached_tokens 转发）。
+- G6（非流式 rawBody 补存，richest-data-flow）非流式 handler 把原始上游响应体（`upstream.nonStream` 层现被解析后丢弃的原始文本）存入 `rawBody`（经 `responseData.responseText` → `legFromUpstreamResponse` 映射）。这既是 richest-data-flow 补完（原始上游体本就该留），也让**未来**非流式行具备 cache_write / 任意字段的重导出能力，抹平 §6.1 的非流式盲区（对历史行无效，只对新行）。
 
 **非目标：**
 - N1 **不**为 Tier 2 模态/prediction 字段加 SQLite 列、不 backfill 它们（用户裁决：blob-only；无 SQL 聚合消费者前不加列——见 §7 未采纳记录）。
@@ -133,6 +134,7 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 - 4 个非流式提取点：`src/routes/chat-completions/handler-v4.ts:256`、`src/routes/responses/handler-v4.ts:229`、`src/routes/gemini/handler-v4.ts:216`、`src/routes/responses/ws.ts:365`——读 cache_write + 模态/prediction 明细传入。
 - 2 个 stream accumulator：`src/lib/openai/stream-accumulator.ts`、`src/lib/openai/responses-stream-accumulator.ts`——新增字段累积（cache_write + 模态 + prediction），终帧 usage 到达时读取（现有 cachedTokens/reasoningTokens 同址）。
 - `src/types/api/openai-responses.ts:207` `ResponsesUsage.input_tokens_details` 对称加 cache_write（若 GHC Responses 也发；PoC 顺带确认）。
+- **非流式 rawBody 补存（G6）**：非流式 handler（`chat-completions`/`responses`/`gemini` 的 `renderNonStreamingV4` 等）把原始上游响应体文本串接到 `responseData.responseText`——`legFromUpstreamResponse`（`src/lib/context/request.ts:149`）已把 `responseText → rawBody`，故只需在 codec `renderResponseNonStreaming` / handler 层把 `upstream.nonStream` 的原始文本透传下来（现被解析后丢）。与 usage 提取正交、同属 fix-forward。
 
 ---
 
@@ -149,7 +151,7 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 
 诚实取舍（no-silently-cut）：这**不否掉 G3**——流式是 Copilot 绝大多数流量，仍可恢复；且 **fix-forward（§5）从此对流式 + 非流式都补齐** cache_write，「不可恢复」只限**历史非流式行**这一小子集。额外 caveat：流式行的上游 `sseEvents` track 是「sseEvents for all transports」修复后才有的，更早的历史流式行可能也无源——backfill 遇无源行**跳过并标记**（幂等），不臆造。
 
-**次要修正（fix-forward 侧）**：非流式 handler（`handler-v4.ts:251` 等）应顺手把原始上游 `response` 的 `responseText` 存入 `rawBody`（richest-data-flow：原始上游体本就该留），这样**未来**非流式行也具备重导出能力——属 §5 fix-forward 的一部分，与本节 backfill 正交。
+**非流式 rawBody 补存（G6，用户已批准 2026-07-12）**：非流式 handler（`handler-v4.ts:251` 等）把原始上游 `response` 的 `responseText` 存入 `rawBody`（richest-data-flow：原始上游体本就该留），这样**未来**非流式行也具备重导出能力——属 §5 fix-forward（G6），与本节 backfill 正交。对**历史**非流式行无效（它们已无源）。
 
 ### 6.2 backfill 实现（遵循 history-backfill skill 铁律）
 
