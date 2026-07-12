@@ -50,10 +50,6 @@ const EXEMPT: Record<string, string> = {
   setLearnedLimitsPathForTests: "path setter — per-test opt-in",
   _setRequestTelemetryFilePathForTests: "path setter — per-test opt-in",
   setBundledConfigForTests: "config injector — reset via resetBundledConfigCacheForTests",
-  // Upstream-hook DI seam — reset via the dedicated `resetUpstreamHook()` (not `*ForTests`-named),
-  // called explicitly in every hook test's beforeEach/afterEach (pre-existing gap from Phase 0-4,
-  // closed here while verifying Phase 5's integration tests).
-  setUpstreamHookForTests: "hook DI seam — reset via resetUpstreamHook()",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {
@@ -90,10 +86,12 @@ describe("RESETTERS table is complete (no module-global reset drifts unregistere
   })
 
   test("no stale entries: every RESETTER name and every EXEMPT key still exists in src", () => {
+    // Names in the table that are not `*ForTest(s|ing)`-named (production resets,
+    // not test-only injectors) — the enumeration regex never finds these, so skip
+    // the existence check for them.
+    const NOT_FOR_TESTS_NAMED = new Set(["resetHistoryPersistErrorStats", "resetUpstreamHook"])
     for (const name of RESETTER_NAMES) {
-      // `resetHistoryPersistErrorStats` is in the table but not `*ForTests`-named,
-      // so it won't appear in `enumerated`; skip the existence check for it.
-      if (name === "resetHistoryPersistErrorStats") continue
+      if (NOT_FOR_TESTS_NAMED.has(name)) continue
       expect(enumerated.has(name)).toBe(true)
     }
     for (const name of Object.keys(EXEMPT)) {

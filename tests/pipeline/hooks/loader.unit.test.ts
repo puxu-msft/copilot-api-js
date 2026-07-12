@@ -1,6 +1,7 @@
 import {
   //
   afterAll,
+  afterEach,
   beforeEach,
   describe,
   expect,
@@ -30,6 +31,18 @@ const noExportsPath = join(fixtureDir, "no-exports.ts")
 const missingPath = join(fixtureDir, "does-not-exist.ts")
 
 beforeEach(() => {
+  resetUpstreamHook()
+})
+
+// Belt-and-suspenders: also clear the singleton after each test, not just before.
+// This file mounts real hook modules via `loadUpstreamHook` (a data-URL import,
+// not a mock) directly against the module-global `hookState` — without this,
+// the LAST test's mounted hook survives into whichever file bun runs next in
+// this same process (cross-file leak, whole-branch review I-1). The registered
+// `resetUpstreamHook` RESETTERS entry (tests/helpers/isolated-fixture.ts) is the
+// systemic backstop for `useIsolatedRuntime()` consumers; this file doesn't use
+// that fixture, so it must clean up after itself directly.
+afterEach(() => {
   resetUpstreamHook()
 })
 

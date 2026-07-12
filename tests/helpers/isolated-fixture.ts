@@ -57,6 +57,11 @@ import {
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
+import {
+  //
+  resetUpstreamHook,
+  setUpstreamHookForTests,
+} from "~/lib/pipeline/hooks/loader"
 import { resetProcessIdentityForTests } from "~/lib/process-identity"
 import { _resetRequestTelemetryForTests } from "~/lib/request-telemetry"
 import {
@@ -122,6 +127,19 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   // a test that constructs a non-`silent` TerminalUi and forgets `destroy()`
   // would otherwise leak its registration into the next test file.
   { name: "resetTerminalCoordinatorForTests", reset: resetTerminalCoordinatorForTests },
+  // Upstream-hook DI seam (module-global `hookState`, read at driver-suite level
+  // via `getUpstreamHook()`): a test file that loads/injects a hook and forgets
+  // its own afterEach would otherwise leak the mounted hook into any later test —
+  // including files that never import the hooks module at all (whole-branch
+  // review I-1). Not `*ForTests`-named (a production reset), like
+  // `resetHistoryPersistErrorStats` above.
+  { name: "resetUpstreamHook", reset: resetUpstreamHook },
+  // The DI-seam setter itself: reset to its default (undefined) so an injected
+  // test hook never leaks, mirroring the other injected-seam entries above.
+  // Functionally redundant with `resetUpstreamHook` (both clear the same
+  // `hookState`), kept as its own entry for parity with the other `set*ForTests`
+  // seams in this table and so the L1 guard sees it registered, not exempted.
+  { name: "setUpstreamHookForTests", reset: () => setUpstreamHookForTests(undefined) },
 ]
 
 /** Names registered in RESETTERS — consumed by the L1 completeness guard. */
