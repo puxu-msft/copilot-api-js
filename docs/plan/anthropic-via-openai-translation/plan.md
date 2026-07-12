@@ -188,6 +188,9 @@ Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/respons
 ---
 
 ## Phase 6：doc-sync
+
+> **实施状态（2026-07-12，已 landed master）**：DESIGN.md「活的架构现状」加**通用翻译矩阵行**（路由自由函数 + 二维门控轴 + hub 共享层 + 前向/反向腿 + 承重约束 + 配置语法）+ 路由节加 `@cc/@responses/@messages` 后缀说明（含 count_tokens 剥离）；spec §10 反向 YAGNI 标注注解为「已被 RFC v5 超越、反向 Phase 5 已实现」+ **NIT-E**（thinking signature 硬约束翻译矩阵天然规避）点明；记忆 stub + MEMORY.md 索引同步 Phase 0-5 landed。**OQ2**（reasoning_effort 档位映射）+ **M1/M2**（Phase 4 记录：createResponseAccumulator 死方法收敛 / flush-reconcile 完整 SDK harness）+ **OQ6**（反向 L2 buffered-retry 截断重试）待并入 `docs/todo/deferred-backlog.md`（该文件本轮被并发 peer 占用、避让，见执行说明）。
+
 DESIGN.md 活的架构现状加矩阵表 + router 层 + 二维门控 + hub 共享层 + 配置语法（@cc/@responses/@messages）；count_tokens 后缀剥离；spec §10 删反向 YAGNI 标注；**NIT-E 文档点明「thinking signature 硬约束在翻译矩阵天然规避」**（消实现者疑虑）。**OQ2**（reasoning_effort 档位映射）若 Phase 2 未做则记 `docs/todo/`。
 
 ---
