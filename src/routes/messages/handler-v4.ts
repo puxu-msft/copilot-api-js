@@ -1479,7 +1479,14 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     // LIVE owns-sink: the driver drives codec.renderResponse (CC/Responses→Anthropic per-frame) + writes
     // the Anthropic frames to the reconciling sink (the anchor prelude's three-way message_start reconcile
     // + block +1 remap applies — the translator's own message_start is dropped when the anchor injected one).
-    const outcome = await driver.runResponseSink(upstream, env, liveReconcilingSink(sink, anchorHooks, anchorState), { onUpstreamFrame })
+    // The SAME reconciling sink is reused for the stream-end `flushResponse` drain below: the translator
+    // closes its LAST open block only at flush (a finish_reason chunk does not close it), so that terminal
+    // `content_block_stop` MUST pass through the SAME +1 remap the live loop applied to its matching
+    // `content_block_start` — writing it to the raw sink would emit it at the un-remapped index (block-index
+    // mismatch / dangling block) under `empty_text` anchor. reconcile leaves index-less message_delta /
+    // message_stop unchanged, and is a transparent passthrough when no anchor was injected (byte-equivalent).
+    const clientSink = liveReconcilingSink(sink, anchorHooks, anchorState)
+    const outcome = await driver.runResponseSink(upstream, env, clientSink, { onUpstreamFrame })
 
     if (outcome.kind === "settled-abort") {
       recordForwarded()
@@ -1524,9 +1531,10 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     if (meta?.stopReason === undefined) {
       // Truncation: forward the translator's block-close frames (partial content stays balanced) but DROP
       // its terminal message_delta/message_stop (they'd signal a clean completion), then write a synthetic
-      // Anthropic error terminator + fail (mirrors the gemini truncation gate + the direct pump's).
+      // Anthropic error terminator + fail (mirrors the gemini truncation gate + the direct pump's). The
+      // block-close frame goes through `clientSink` so its index is +1-remapped under an injected anchor.
       for (const frame of codec.flushResponse(env)) {
-        if (!isMessageTerminatorFrame(frame)) await sink.write(frame)
+        if (!isMessageTerminatorFrame(frame)) await clientSink.write(frame)
       }
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
       await sink
@@ -1541,9 +1549,11 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       return
     }
 
-    // Clean completion: drain the translator's terminal frames (message_delta + message_stop) to the sink,
-    // snapshot the forwarded track, then settle complete with the OUTBOUND-leg (upstream) response data.
-    for (const frame of codec.flushResponse(env)) await sink.write(frame)
+    // Clean completion: drain the translator's terminal frames (the last block's content_block_stop +
+    // message_delta + message_stop) through `clientSink` so the block-close is +1-remapped under an injected
+    // anchor (message_delta / message_stop are index-less → passthrough), snapshot the forwarded track, then
+    // settle complete with the OUTBOUND-leg (upstream) response data.
+    for (const frame of codec.flushResponse(env)) await clientSink.write(frame)
     recordForwarded()
     env.ctx.complete(outboundResponseData())
   } catch (error) {
