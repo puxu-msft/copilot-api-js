@@ -125,6 +125,8 @@ export interface Attempt {
   strategy?: string
   sanitization?: SanitizationInfo
   truncation?: TruncationInfo
+  /** passthrough 剥掉的 GHC 未支持 cache_control 子字段（如 scope）——每 attempt 记，经 pipelineFromAttempt 落 history（spec §8）。 */
+  cacheControlStripped?: Array<string>
   /** Wait time before this retry (rate-limit) */
   waitMs?: number
   startTime: number
@@ -440,6 +442,8 @@ export interface RequestContext {
   addWarningMessage(warning: WarningMessage): void
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: RequestTransport }): void
   setAttemptSanitization(info: SanitizationInfo): void
+  /** 记录本 attempt passthrough 剥掉的 cache_control 子字段（→ pipelineFromAttempt → history）。 */
+  setAttemptCacheControlStripped(fields: ReadonlyArray<string>): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void
   setAttemptWireRequest(req: WireRequest): void
   setAttemptTransport(transport: RequestTransport): void

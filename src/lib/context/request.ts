@@ -85,10 +85,11 @@ function extractMaxTokens(p: { max_tokens?: unknown; max_completion_tokens?: unk
  * (keeps the eager/finalized stage byte-identical when there is nothing to record).
  */
 export function pipelineFromAttempt(a: Attempt): PipelineInfo | undefined {
-  if (!a.truncation && !a.sanitization) return undefined
+  if (!a.truncation && !a.sanitization && !a.cacheControlStripped) return undefined
   return {
     ...(a.truncation && { truncation: a.truncation }),
     ...(a.sanitization && { sanitization: [a.sanitization] }),
+    ...(a.cacheControlStripped && { cacheControlStripped: a.cacheControlStripped }),
   }
 }
 
@@ -498,6 +499,13 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.sanitization = info
+      }
+    },
+
+    setAttemptCacheControlStripped(fields: ReadonlyArray<string>) {
+      const attempt = ctx.currentAttempt
+      if (attempt && fields.length > 0) {
+        attempt.cacheControlStripped = [...fields]
       }
     },
 

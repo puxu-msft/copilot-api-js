@@ -308,6 +308,11 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       if (isForwardTranslateLeg(env.targetEndpoint)) return ccDelegate().sampleRequest?.(wire, env) as RequestSample
       const sample = sampleAnthropicRequest(wire, env)
       latestEffectiveMessages = sample.effectiveMessages
+      // 把本 attempt prepareWire 剥掉的 cache_control 子字段挂到 currentAttempt（beginAttempt 已建立）→
+      // pipelineFromAttempt 落 history。覆盖首次成功 + retry 全路径（handler 顶层 pipelineInfo 只覆盖 accepted-retry）。
+      if (requestContext && latestStrippedCacheControlSubfields?.length) {
+        requestContext.setAttemptCacheControlStripped(latestStrippedCacheControlSubfields)
+      }
       return sample.requestSample
     },
 

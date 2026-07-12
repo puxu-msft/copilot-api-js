@@ -147,6 +147,20 @@ describe("createRequestContext - attempt lifecycle", () => {
     })
   })
 
+  test("setAttemptCacheControlStripped stores on currentAttempt (HIGH-1 per-attempt 持久化)", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    ctx.setAttemptCacheControlStripped(["scope"])
+    expect(ctx.currentAttempt!.cacheControlStripped).toEqual(["scope"])
+  })
+
+  test("setAttemptCacheControlStripped 空数组 no-op（不建空标记）", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    ctx.setAttemptCacheControlStripped([])
+    expect(ctx.currentAttempt!.cacheControlStripped).toBeUndefined()
+  })
+
   test("setAttemptEffectiveRequest stores on currentAttempt", () => {
     const { ctx } = makeContext()
     ctx.beginAttempt({})
