@@ -32,7 +32,7 @@ import type {
 
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
 import {
   //
@@ -231,9 +231,9 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const driver = createPipelineDriver({
     codec,
     transport,
-    // S5 — the SAME Responses response-rewrite chain the HTTP handler uses (fix-stream-ids,
-    // DIRECT only): registering once makes HTTP + WS share one stateful rewrite instance (A.C).
-    responseRewrites: RESPONSES_RESPONSE_REWRITES,
+    // S5 — the full-format response-rewrite union (RFC §7.1); `appliesTo` filters it to
+    // fix-stream-ids for the /responses leg (DIRECT only), identical to the prior per-route array.
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
       return buildOpenAiResponsesStrategiesForEnv(env)

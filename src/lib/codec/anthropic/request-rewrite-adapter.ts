@@ -29,6 +29,7 @@ import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
+import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
   destackActed,
@@ -57,7 +58,11 @@ export function createAnthropicSanitizeRewrite(deps: AnthropicRequestRewriteDeps
   return {
     name: "anthropic-sanitize",
     order: ORDER_SANITIZE,
-    appliesTo: (env) => env.clientFormat === "anthropic",
+    // Two-axis gate (RFC §3.1 / §7.1): the sanitize chain produces the UPSTREAM Anthropic
+    // `/v1/messages` wire, so it gates on the OUTBOUND leg (`targetEndpoint`), not the inbound
+    // `clientFormat`. Byte-identical to the prior `clientFormat==="anthropic"` gate in Phase 1
+    // (anthropic-direct has both axes co-true; no translation leg exists yet).
+    appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES,
     apply: (env) => applyAnthropicSanitize(env, deps),
   }
 }

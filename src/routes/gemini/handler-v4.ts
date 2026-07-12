@@ -46,6 +46,7 @@ import type {
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -83,6 +84,9 @@ function buildGeminiDriver(c: Context, modelId: string): GeminiDriverBundle {
   const driver = createPipelineDriver({
     codec,
     transport,
+    // Full-format S5 union (RFC §7.1). Inert for the Gemini-inbound legs today; carries the
+    // mechanism for the future reverse leg (gemini→/v1/messages via hub composition, Phase 5).
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
       if (env.targetEndpoint === ENDPOINT.RESPONSES) env.ctx.recordFeature("via-responses")
       return buildOpenAiCcStrategies({

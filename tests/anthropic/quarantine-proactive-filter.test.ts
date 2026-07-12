@@ -75,6 +75,9 @@ function makeEnv(opts: { sessionId?: string; agentId?: string; messages: Array<u
   const body = { model: "claude-x", max_tokens: 8, messages: opts.messages } as unknown as MessagesPayload
   const env = {
     clientFormat: "anthropic" as const,
+    // The proactive filter gates on the OUTBOUND leg (RFC §3.1) — anthropic-direct routes to
+    // /v1/messages, so the env must carry it for the rewrite to apply (mirrors the real codec).
+    targetEndpoint: "/v1/messages" as const,
     ctx: { sessionId: opts.sessionId, agentId: opts.agentId },
     body,
     with(patch: { body?: unknown }) {
@@ -98,10 +101,11 @@ test("order 250 (< ORDER_SANITIZE 300) — runs before L1 de-stack", () => {
   expect(filter.order).toBeLessThan(300)
 })
 
-test("appliesTo gates on anthropic clientFormat", () => {
+test("appliesTo gates on the /v1/messages outbound leg (targetEndpoint axis, RFC §3.1)", () => {
   const filter = createQuarantineProactiveFilter({ store })
-  expect(filter.appliesTo({ clientFormat: "anthropic" } as unknown as RequestEnvelope)).toBe(true)
-  expect(filter.appliesTo({ clientFormat: "openai-cc" } as unknown as RequestEnvelope)).toBe(false)
+  expect(filter.appliesTo({ targetEndpoint: "/v1/messages" } as unknown as RequestEnvelope)).toBe(true)
+  // A forward-translation leg (anthropic→cc) or any non-messages leg must NOT fire it.
+  expect(filter.appliesTo({ targetEndpoint: "/chat/completions" } as unknown as RequestEnvelope)).toBe(false)
 })
 
 test("中毒会话 → strip 全部 thinking + touch 续期，changed=true", () => {

@@ -113,8 +113,8 @@ import {
 } from "~/lib/anthropic/warmup"
 import { payloadHasWebSearch } from "~/lib/anthropic/web-search/detect"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
-import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrite-adapters"
 import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -333,10 +333,12 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // codec.parse into a per-request RequestRewrite (RFC §4.A0). The codec owns them
     // (they close over preprocessInfo + write initialSanitizationInfo back).
     requestRewrites: codec.getRequestRewrites(),
-    // S5 — the Anthropic response-rewrite chain (recover/thinking/decode/filter),
-    // lifted from the handler's hand-nested pump into the driver (RFC §4.A1). The
-    // driver applies + flushes them; the handler just forwards the yielded frames.
-    responseRewrites: ANTHROPIC_RESPONSE_REWRITES,
+    // S5 — the FULL-FORMAT response-rewrite union (RFC §7.1); the driver's
+    // `assembleResponseRewrites` filters it to the outbound leg by each rewrite's
+    // `targetEndpoint`-keyed `appliesTo`. For anthropic-direct (targetEndpoint===/v1/messages)
+    // that subset is exactly the Anthropic chain (recover/thinking/decode/filter/refusal) — the
+    // per-route array this replaced — so forwarded bytes are unchanged.
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
       // parse resolves the factory AFTER parse populated resanitize, so it is
       // present here; the guard is defensive (an unreachable parse failure would

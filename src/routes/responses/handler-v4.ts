@@ -51,7 +51,7 @@ import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
 import { HTTPError } from "~/lib/error"
 import {
@@ -116,7 +116,9 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
     // S5 — the Responses response-rewrite chain (fix-stream-ids, DIRECT only). The driver
     // applies it before render (A.C); the handler forwards the yielded (fixed) frames. Tool-name
     // restore stays handler-side (forwarded-only, post-accumulate, must run on rendered frames).
-    responseRewrites: RESPONSES_RESPONSE_REWRITES,
+    // Full-format union (RFC §7.1); `appliesTo` keeps it fixStreamIds-only for the /responses leg
+    // and empty for the CC-fallback leg — identical to the prior per-route array.
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
       return buildOpenAiResponsesStrategiesForEnv(env)

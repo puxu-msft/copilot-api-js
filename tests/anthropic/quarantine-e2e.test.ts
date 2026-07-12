@@ -115,6 +115,9 @@ function makeEnv(opts: { sessionId?: string; agentId?: string; messages: Array<u
   const body = { model: "claude-opus-4.8", max_tokens: 100, messages: opts.messages } as unknown as MessagesPayload
   const env = {
     clientFormat: "anthropic" as const,
+    // Both Anthropic-wire request rewrites (L3 proactive @250, L1 sanitize @300) gate on the
+    // OUTBOUND leg (RFC §3.1); anthropic-direct routes to /v1/messages, so the env carries it.
+    targetEndpoint: "/v1/messages" as const,
     ctx: {
       sessionId: opts.sessionId,
       agentId: opts.agentId,

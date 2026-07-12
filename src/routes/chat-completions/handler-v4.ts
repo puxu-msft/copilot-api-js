@@ -44,6 +44,7 @@ import type {
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
@@ -122,6 +123,10 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   const driver = createPipelineDriver({
     codec,
     transport,
+    // Full-format S5 union (RFC §7.1). Inert for the CC-inbound legs today (no rewrite's
+    // `appliesTo` matches targetEndpoint ∈ {/chat/completions, /responses} for clientFormat
+    // openai-cc); it carries the mechanism for the future reverse leg (cc→/v1/messages, Phase 5).
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
       const viaResponses = env.targetEndpoint === ENDPOINT.RESPONSES
       if (viaResponses) env.ctx.recordFeature("via-responses") // P2.2-D6

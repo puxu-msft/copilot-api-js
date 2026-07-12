@@ -75,6 +75,7 @@ import {
   restoreToolNamesInResponse,
 } from "~/lib/anthropic/server-tool-filter"
 import { applyThinkingSignatureCompat } from "~/lib/anthropic/thinking-signature-compat"
+import { ENDPOINT } from "~/lib/models/endpoint"
 import { RESPONSE_REWRITE_ORDER } from "~/lib/pipeline/rewrite-registry"
 import { state } from "~/lib/state"
 
@@ -93,7 +94,17 @@ function bufferOrEmit(out: Array<ServerSentEventMessage>): FrameAction {
   return out.length === 0 ? { kind: "buffer" } : { kind: "emit", frames: out as Array<UpstreamFrame> }
 }
 
-const ANTHROPIC = (env: RequestEnvelope): boolean => env.clientFormat === "anthropic"
+/**
+ * Two-axis gate (RFC 2026-07-11-anthropic-via-openai-translation §3.1 / §7.1): all six
+ * Anthropic rewrites process the UPSTREAM Anthropic `/v1/messages` wire, so they gate on the
+ * OUTBOUND leg (`targetEndpoint`), NOT the client-facing `clientFormat`. In Phase 1 the two
+ * axes are co-true for anthropic-direct (no translation leg exists yet, so
+ * `clientFormat==="anthropic" ⟺ targetEndpoint==="/v1/messages"`), so this switch is
+ * byte-identical to the previous `clientFormat`-keyed gate. Later phases wire the reverse
+ * leg (cc/responses/gemini → `/v1/messages`), where these must fire on the Anthropic wire
+ * regardless of the inbound client format — which the `targetEndpoint` axis expresses.
+ */
+const ANTHROPIC = (env: RequestEnvelope): boolean => env.targetEndpoint === ENDPOINT.MESSAGES
 
 // ============================================================================
 // recover-tool-call (order 100, buffer/flush)
