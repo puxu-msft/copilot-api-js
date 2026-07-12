@@ -351,3 +351,11 @@
 - **理想架构**：① reorder 加 `KeyboardSensor({coordinateGetter: sortableKeyboardCoordinates})`；② resize 手柄改可聚焦元素 + 方向键调宽（或提供数字输入）。
 - **为何暂缓**：本期 spec 明确只要求指针拖拽；键盘路径是正交增强，不阻塞核心可配置能力。内部工具、单用户，优先级低。
 - **若做需改什么**：`RequestsListPage` 的 `useSensors` 加 KeyboardSensor；`SortableHeaderCell` 补键盘激活语义；resize 手柄换 focusable + keydown 调 `columnSizing`；补键盘交互测试。发现方：column-config Task 3 审查（2026-07-11）。
+
+## Responses via-chat-completions fallback 子路径未采用块级 buffered（flushResponse post-loop 结构不兼容）
+
+- **根因**：Responses HTTP 的 **via-chat-completions fallback**（模型不支持 `/responses` → CC 上游 + CC→Responses translator）的终止生命周期 `output_item.done` + `response.completed` 由 `codec.flushResponse(env)`（`src/routes/responses/handler-v4.ts:454` post-loop 闭合 drain）在 driver 循环**外**合成——translator `translate()` 只发 `output_item.added`（`src/lib/openai/translate/responses-to-cc-request.ts:297,345`），`.done`/`.completed` 只在 `flush()`（`:418,446,459`）产出。故 buffered 循环**内**：块级 `commitBoundaries` 永不见 `output_item.done`、`sawMessageStop`（`acc.status`）drain 时仍 false → driver 误判干净 fallback 收尾为截断、重试到 exhausted。与 Gemini（§7.4，`flushResponse` post-loop 不可见）**同根因**。
+- **当前行为（已修为无害）**：P2 Task 3 把 fallback 子路径**排除 buffered、保持 live**（`bufferedConfigured && !viaFallback`，`src/routes/responses/handler-v4.ts:307`）；direct 子路径走块级 buffered。fallback 功能完整（live 收尾正确），仅缺 buffered 保护（截断→fail+保留 partial，与 buffered off 等价）。
+- **理想架构**：把 `codec.flushResponse` 的终止生命周期产出重构进 driver 的 buffered 提交单元（`runResponse` 循环内产出 `output_item.done`/`response.completed`，或让 buffered sink 感知 handler 的 post-loop flush 作为最终 commit 边界）——则 fallback 与 direct 统一块级。Gemini 同一重构可一并解（两者都卡 flushResponse-post-loop）。
+- **为何暂缓（不落地 speculative code）**：需动 translator 的 emit 时序（把 `flush()` 的终止事件前移进 `translate()` 的 finish_reason 处理，或让 driver 承接 handler post-loop flush）——跨 codec 结构改动，超出 P2「Responses HTTP 块级」范围；无已知 fallback-under-buffered 的生产命中（fallback 本身是回退路径）。
+- **若做需改什么**：① CC→Responses translator 在见到 CC `finish_reason` 时在 `translate()` 内即产出 `output_item.done`（而非 `flush()`）；② 或 driver 增「handler-supplied 终结 flush」纳入 buffered 提交单元；③ 去 `handler-v4.ts` 的 `!viaFallback` 门控；④ fallback+buffered mid-stream drop 重试回归测试；⑤ 与 Gemini §7.4 排除条合并考虑。发现方：P2 Task 3（2026-07-12，读 `codec.ts:237` flushResponse + translator emit 点确证；行号已核对现状，非 brief 原始估值）。

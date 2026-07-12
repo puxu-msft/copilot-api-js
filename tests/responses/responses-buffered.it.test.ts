@@ -116,6 +116,31 @@ function firstBlockCommittedThenRstFrames(model: string): Array<string> {
   ]
 }
 
+/** A clean one-shot CC (`/chat/completions`) SSE stream — mirrors chat-completions-via-responses.http.test.ts. */
+function ccStreamFrames(model: string): Array<string> {
+  return [
+    `data: ${JSON.stringify({
+      id: "chatcmpl-fallback",
+      object: "chat.completion.chunk",
+      created: 1,
+      model,
+      choices: [{ index: 0, delta: { content: "FALLBACK_REPLY" }, finish_reason: null }],
+    })}\n\n`,
+    `data: ${JSON.stringify({
+      id: "chatcmpl-fallback",
+      object: "chat.completion.chunk",
+      created: 1,
+      model,
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    })}\n\n`,
+    "data: [DONE]\n\n",
+  ]
+}
+
+/** When true, the upstream mock is CC-shaped and answers `/chat/completions` instead of `/responses`. */
+let viaFallbackUpstream = false
+
 const RST_ERROR = new Error("Stream closed with error code NGHTTP2_CANCEL")
 
 /** Number of leading upstream attempts that RST before the upstream finally completes. */
@@ -142,6 +167,10 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
     : input.url
   const payload = typeof init?.body === "string" ? (JSON.parse(init.body) as { model?: string }) : {}
   const model = payload.model ?? MODEL
+  if (url.endsWith("/chat/completions")) {
+    upstreamCalls += 1
+    return Promise.resolve(createSseResponse(ccStreamFrames(model)))
+  }
   if (url.endsWith("/responses")) {
     upstreamCalls += 1
     if (terminalError) return Promise.resolve(createSseResponse(terminalErrorFrames(model))) // clean drain, terminal error frame
@@ -159,7 +188,15 @@ const app = createFullTestApp()
 
 async function streamRequest(): Promise<Response> {
   setDisabledModels([])
-  setModels({ object: "list", data: [mockModel(MODEL, { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
+  setModels({
+    object: "list",
+    data: [
+      mockModel(MODEL, {
+        vendor: "OpenAI",
+        supported_endpoints: viaFallbackUpstream ? ["/chat/completions"] : ["/responses"],
+      }),
+    ],
+  })
   return app.request("/responses", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -178,6 +215,7 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     terminalError = false
     twoItem = false
     firstBlockThenRst = false
+    viaFallbackUpstream = false
     setStateForTests({
       copilotToken: "test-token",
       accountType: "individual",
@@ -435,5 +473,38 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
       totalRetries: 0,
       retriesBeforeDegrade: 0,
     })
+  })
+
+  // ── via-chat-completions fallback sub-path (P2 Task 3) ──
+  // The fallback (model without /responses support → CC upstream + CC→Responses translator)
+  // synthesizes its terminal lifecycle (output_item.done → response.completed) in
+  // codec.flushResponse POST-loop, invisible to the driver's in-loop block-commit AND to
+  // sawMessageStop. Buffered must therefore stay LIVE for this sub-path — the gate is
+  // `buffered && !viaFallback` in pumpStreamingV4 (handler-v4.ts).
+
+  test("buffered ON does NOT engage for the via-chat-completions fallback (structural: flushResponse post-loop) — stays live, no spurious retry", async () => {
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
+    // Model routed via CC fallback (no /responses support) → the CC→Responses translator synthesizes
+    // output_item.done/response.completed POST-loop (codec.flushResponse), invisible to the in-loop
+    // block commit. Buffered must therefore stay LIVE for this sub-path (else every clean fallback
+    // drain is mis-retried as a truncation → exhausted).
+    viaFallbackUpstream = true
+
+    const sse = await (await streamRequest()).text()
+
+    expect(frameTypesInOrder(sse)).toContain("response.completed")
+    expect(sse).not.toContain("truncated")
+    expect(upstreamCalls).toBe(1) // NOT retried
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    // The fallback path never engages `runResponseBufferedSink` (live sink instead) — `onBufferedResolve`
+    // is never invoked, so no vendor bucket is ever created (not a zero-filled `{responses: {...}}`, the
+    // top-level map itself stays empty — verified empirically against the real getProtectStreamingStats()).
+    expect(getProtectStreamingStats()).toEqual({})
   })
 })

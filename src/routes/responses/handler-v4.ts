@@ -297,7 +297,14 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // buffered mode (commit withholds every real frame until the terminal → long silence would
   // otherwise trip Codex's idle deadline; buffered forces a ping even when the operator left
   // `streamKeepalivePingSec` at 0). See resolveResponsesBufferedAndHeartbeat.
-  const { buffered, heartbeatSec } = resolveResponsesBufferedAndHeartbeat()
+  const { buffered: bufferedConfigured, heartbeatSec } = resolveResponsesBufferedAndHeartbeat()
+  // Block-level buffered retry applies ONLY to the DIRECT (/responses) sub-path: the via-chat-completions
+  // fallback synthesizes its terminal lifecycle (output_item.done → response.completed) in
+  // codec.flushResponse POST-loop (handler-v4.ts closing drain below), invisible to the driver's in-loop
+  // commit-boundary flush AND to sawMessageStop — so a clean fallback drain would be mis-committed as a
+  // truncation and retried to exhaustion. Same structural root cause as Gemini (spec §7.4). Fallback stays
+  // live until flushResponse is refactored into the driver's buffered commit unit (docs/todo backlog).
+  const buffered = bufferedConfigured && !viaFallback
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
