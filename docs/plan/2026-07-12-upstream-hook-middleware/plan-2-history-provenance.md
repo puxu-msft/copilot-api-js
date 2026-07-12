@@ -1,4 +1,4 @@
-# Phase 2：history 可辨识性（synthetic 标记）
+# Phase 2：history 可辨识性（synthetic 标记）✅ 实施完成
 
 > 依赖：Phase 0（loader）+ Phase 1（driver 挂载点）。承重不变量（评审 BLOCK-1/H2 双确认）：hook mock/改写/回放帧进 history 上游轨**必打可辨识标记**，否则毒化诊断真相（违 richest-data-flow ADR）。
 

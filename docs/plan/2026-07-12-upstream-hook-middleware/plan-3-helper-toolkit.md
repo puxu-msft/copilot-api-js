@@ -1,4 +1,4 @@
-# Phase 3：helper 工具箱
+# Phase 3：helper 工具箱 ✅ 实施完成
 
 > 依赖：Phase 0（`UpstreamHook` 类型 + `origin.ts` 的 `tagStream`/`rawStream`⚠️见下）。**可与 Phase 1/2 真并行**（评审 HIGH-1：`origin.ts` 已上移 Phase 0 Task 0.7，Phase 3 不再依赖 Phase 2）。产出：hook 文件从 `~/lib/pipeline/hooks` 导入的 helper 集。
 

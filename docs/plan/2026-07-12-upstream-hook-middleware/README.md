@@ -2,7 +2,7 @@
 
 > **给执行者**：REQUIRED SUB-SKILL：用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实施。步骤用 `- [ ]` 复选框追踪。
 > **权威 spec**：[../../spec/2026-07-12-upstream-hook-middleware.md](../../spec/2026-07-12-upstream-hook-middleware.md)（已定稿 v2，2 轮对抗评审 + 实测核实）。
-> **实施状态**：未开始（2026-07-12 定稿，待执行）。
+> **实施状态**：**已实施** —— landed on `feat/upstream-hook-middleware`，Phase 0-5.3 全绿（24 commits），Task 5.4 收尾已完成 I-1 测试隔离修复（`resetUpstreamHook` 登记进全局 RESETTERS 表）+ doc-sync（本 README + 各 plan-N 头部 + [DESIGN.md](../../DESIGN.md) + spec §9 措辞澄清 + 新 [ADR](../../decisions/2026-07-12-driver-orchestrated-upstream-hooks.md)），待合并 master。Task 5.4 尚余：backlog 补记（上游 WS 腿 hook / attempt 级 source provenance）、[MEMORY.md](../../memory/MEMORY.md) 记忆维护、最终合并——见 [plan-5-integration-closeout.md](plan-5-integration-closeout.md) 未勾选项。
 
 **Goal**：在 proxy 上游边界引入 driver 编排的多挂载点 ad-hoc hook，让开发者用 config 声明的 TS 文件 mock/拦截/录制回放/注入故障上游响应，不真发 GHC。
 

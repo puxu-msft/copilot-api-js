@@ -1,4 +1,4 @@
-# Phase 0：loader 单例 + config section（地基）
+# Phase 0：loader 单例 + config section（地基）✅ 实施完成
 
 > 依赖：无。产出：`UpstreamHook` 类型 + `getUpstreamHook()`/`loadUpstreamHook()`/`resetUpstreamHook()` + `hooks` config section 全套接线。所有后续 Phase 依赖本阶段。
 

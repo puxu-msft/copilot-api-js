@@ -1,4 +1,4 @@
-# Phase 1：driver 三挂载点
+# Phase 1：driver 三挂载点 ✅ 实施完成
 
 > 依赖：Phase 0（`getUpstreamHook()` + `UpstreamHook` 类型）。产出：driver 在三个 phase 边界回调 hook。与 Phase 2（history 标记）耦合紧，建议同一执行者连做。
 > **红线**：`hooks` 未配置（`getUpstreamHook()` === undefined）时 driver 输出**逐字节等价**——每个 Task 都以此为回归底线。

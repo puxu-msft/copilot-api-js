@@ -1,4 +1,4 @@
-# Phase 4：API 路由 + 根路径重定向
+# Phase 4：API 路由 + 根路径重定向 ✅ 实施完成
 
 > 依赖：Phase 0（`loadUpstreamHookSafe`/`getUpstreamHookState`）。根路径重定向是正交独立微改动、单独 commit。
 
