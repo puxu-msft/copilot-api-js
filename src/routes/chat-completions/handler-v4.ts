@@ -15,6 +15,15 @@
  * built inline (raw upstream message) rather than via `codec.formatError` (P2.2-D4 — formatError
  * only gets the classified kind; the consumer has the raw error, so it matches legacy).
  * The non-streaming path still renders + settles directly (no sink).
+ *
+ * P3 (block-level buffered retry, terminal-only): `chatCompletionsBufferedRetry` selects
+ * `driver.runResponseBufferedSink` instead of `runResponseSink` — CC has no mid-stream block
+ * boundary (deltas carry no structural terminator), so the commit predicate
+ * (`ccCommitBoundaries`) is terminal-only: only an in-band upstream `error` frame is a
+ * frame-level boundary; the real terminal commit is `sawMessageStop = () => acc.finishReason
+ * !== ""`. The handler's post-loop `[DONE]` synthesis stays UNCHANGED and runs after the
+ * buffered outcome resolves (the driver drops every upstream `[DONE]`, so `[DONE]` is always
+ * handler-synthesized regardless of buffered/live routing).
  */
 
 import type { Context } from "hono"
@@ -42,6 +51,7 @@ import type {
 } from "~/types/api/openai-chat-completions"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
+import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { HTTPError } from "~/lib/error"
@@ -51,6 +61,7 @@ import {
   //
   createTruncationResponseMarkerOpenAI,
 } from "~/lib/openai/auto-truncate"
+import { ccCommitBoundaries } from "~/lib/openai/cc-commit-boundaries"
 import {
   //
   accumulateOpenAIStreamEvent,
@@ -70,9 +81,15 @@ import {
   buildOpenAIResponseData,
   usageFromTotalInput,
 } from "~/lib/request"
-import { state } from "~/lib/state"
+import {
+  //
+  resolveBufferedCaps,
+  state,
+} from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+
+import { resolveCcBufferedAndHeartbeat } from "./buffered-config"
 
 /** CC has no learning-budget strategy; the value is inert (passed for completeness). */
 const MAX_LEARNING_RETRIES = 32
@@ -304,15 +321,25 @@ interface PumpStreamingV4Options {
  *     through the NON-sampling `sink.writeSynthetic` (legacy CC never recorded it),
  *   - synthesizes the SINGLE trailing `[DONE]` itself (the driver drops every upstream
  *     `[DONE]`; passthrough AND via-responses both terminate with exactly one — P2.2-D2),
- *   - maps the outcome + its own accumulator to the terminal ctx state. CC has no terminal
- *     upstream `error` frame (no H2 — the OpenAI accumulator tracks no `streamError`), so the
- *     only failure path is H3 (`stream-error`) / client-abort (`settled-abort`).
+ *   - maps the outcome + its own accumulator to the terminal ctx state. An in-band upstream
+ *     `error` frame (H2, `acc.streamError`) is a clean drain WITHOUT `finishReason` — the
+ *     buffered path commits it via `sawUpstreamError` (see `ccCommitBoundaries`) instead of
+ *     retrying it as a truncation; on BOTH buffered/live it fails via `acc.streamError` below,
+ *     mirroring Anthropic/Responses' H2. The remaining failure paths are H3 (`stream-error`) /
+ *     client-abort (`settled-abort`).
  *
- * CC has no fake-SSE heartbeat (Anthropic-only), so the sink runs no forward-idle racer.
+ * P3 (block-level buffered retry, terminal-only): `resolveCcBufferedAndHeartbeat` selects
+ * `driver.runResponseBufferedSink` (terminal-only commit — `ccCommitBoundaries` treats only an
+ * in-band upstream `error` frame as a frame-level boundary; the real terminal commit is
+ * `sawMessageStop = () => acc.finishReason !== ""`) instead of `runResponseSink`. The forced
+ * first-block keepalive chunk (backlog CC leg) is Task 3's deliverable — this task only wires
+ * the driver selection + `[DONE]` synthesis ordering; `makeSseSink` carries no `heartbeat` yet
+ * on either branch (CC has no `pingFrame` shape today), so the buffered/live sink construction
+ * stays byte-identical.
  */
 async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env } = opts
-  const acc = createOpenAIStreamAccumulator()
+  let acc = createOpenAIStreamAccumulator()
   const mapper = env.ctx.toolNameMapper
   const model = (env.body as ChatCompletionsPayload).model
 
@@ -324,8 +351,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   let bytesIn = 0
   let eventsIn = 0
 
-  // The driver-owned client sink: SSE write-out + forwarded sampling. No heartbeat (CC has
-  // no stream_keepalive_ping_sec). The sink preserves SSE id/retry framing it is given.
+  // The driver-owned client sink: SSE write-out + forwarded sampling. No heartbeat yet on either
+  // branch (CC has no `stream_keepalive_ping_sec` / CC-shape keepalive chunk — Task 3). The sink
+  // preserves SSE id/retry framing it is given.
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
@@ -352,7 +380,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // Per rendered frame (post-S6, pre-write): progress + accumulate on the UPSTREAM-named frame
   // (the accumulated completion data keeps upstream names) + return the RESTORED frame for
   // forwarding (id/retry/event preserved by the spread; the sink writes them). The driver
-  // drops `[DONE]` before this fires.
+  // drops `[DONE]` before this fires. `let acc` (not `const`) so the buffered `onAttemptReset`
+  // can rebind a FRESH accumulator between retries (mirrors Anthropic/Responses' `let acc`) —
+  // this closure reads the CURRENT binding.
   const onRenderedFrame = (frame: ClientFrame): ClientFrame => {
     bytesIn += frame.data?.length ?? 0
     eventsIn++
@@ -367,7 +397,49 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     return { ...frame, data: restoreStreamToolNames(frame.data, mapper) }
   }
 
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onRenderedFrame })
+  // L2 buffered-retry routing (P3, terminal-only). `buffered` selects the driver's shared
+  // `runResponseBufferedSink` — the SAME primitive Anthropic/Responses use, CC being its third
+  // consumer (driver signatures unchanged, all via opts). `heartbeatSec` is resolved but unused
+  // here (Task 3 wires the forced keepalive into `sink`); wiring it now would silently no-op
+  // since `makeSseSink` has no `heartbeat` option applied on this branch yet.
+  const { buffered } = resolveCcBufferedAndHeartbeat()
+  const outcome =
+    buffered ?
+      await driver.runResponseBufferedSink(upstream, env, sink, {
+        onRenderedFrame,
+        // Block-commit boundary (terminal-only degenerate case, P3 §3.1): CC has no mid-stream
+        // block structure, so `ccCommitBoundaries` only recognizes an in-band upstream `error`
+        // frame as a frame-level boundary — every content delta returns false. The real terminal
+        // commit is `sawMessageStop` below (finish_reason on the last chunk).
+        commitBoundaries: ccCommitBoundaries,
+        sawMessageStop: () => acc.finishReason !== "",
+        // H2 — a terminal upstream `error` frame (clean drain, no finish_reason). Committing it
+        // (rather than retrying as a truncation) lets the handler fail via the REAL `acc.streamError`
+        // below, mirroring Anthropic/Responses.
+        sawUpstreamError: () => acc.streamError !== undefined,
+        telemetryVendor: "chat_completions",
+        retryCap: resolveBufferedCaps("chat_completions").maxRetries,
+        bufferCapBytes: resolveBufferedCaps("chat_completions").bufferCapBytes,
+        // Hit-rate telemetry (RFC §10), same short-circuit as Anthropic/Responses: a clean
+        // first-try commit (retries === 0, no RST) is the silent buffered happy path — tagging it
+        // would inflate the "success" rate. The driver-injected `meta` (vendor) is forwarded
+        // as-is (no vendor re-hardcoding).
+        onBufferedResolve: (o, retries, meta) => {
+          if (o === "success" && retries === 0) return
+          recordProtectStreamingOutcome(o, retries, meta)
+          env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries, vendor: meta.vendor })
+          consola.debug(`[protect-stream:chat_completions] ${o} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
+        },
+        // Per-attempt isolation: rebind a FRESH accumulator + zero the progress counters before
+        // each re-exchange so a discarded attempt's content/tool-calls/usage/bytes never fold
+        // into the committed generation's history record (mirrors Anthropic/Responses).
+        onAttemptReset: () => {
+          acc = createOpenAIStreamAccumulator()
+          bytesIn = 0
+          eventsIn = 0
+        },
+      })
+    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame })
 
   if (outcome.kind === "settled-abort") {
     // Client disconnected mid-stream — write ZERO further bytes (B0-d). Record what was
@@ -395,10 +467,28 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     return
   }
 
-  // outcome.kind === "complete" — the upstream drained cleanly. Synthesize the SINGLE trailing
-  // `[DONE]` (the driver dropped every upstream one; passthrough + via-responses both terminate
-  // with exactly one — P2.2-D2). `sink.write` samples it (type: "message") into the forwarded
-  // track before the snapshot.
+  // outcome.kind === "complete" — the upstream drained cleanly.
+  if (acc.streamError) {
+    // H2 — a TERMINAL upstream `error` frame reached the client as a real content frame:
+    // forwarded live, OR flushed by the buffered commit (`ccCommitBoundaries` / `sawUpstreamError`).
+    // It drains cleanly (never a thrown error → outcome is `complete`) but never carries a
+    // finish_reason — must be handled HERE, BEFORE the finish_reason truncation gate below (which
+    // would otherwise misfire: a SECOND synthetic error frame double-terminating the stream, and
+    // relabeling the REAL cause as "truncated"). Fail from the accumulator (the real code/message)
+    // with NO synthetic frame — the real error frame is already on the wire. Mirrors Anthropic's H2
+    // (messages/handler-v4.ts) and Responses' H2 (responses/handler-v4.ts).
+    const partial = buildOpenAIResponseData(acc, model)
+    consola.error(`[ChatCompletions:v4] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
+    recordForwarded()
+    env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`), { usage: partial.usage, content: partial.content })
+    return
+  }
+
+  // Synthesize the SINGLE trailing `[DONE]` (the driver dropped every upstream one; passthrough +
+  // via-responses both terminate with exactly one — P2.2-D2). `sink.write` samples it (type:
+  // "message") into the forwarded track before the snapshot. On the buffered path this append
+  // happens AFTER the buffered commit resolved (`outcome.kind === "complete"` above already
+  // settled the retry loop) — harmless post-commit tail, same client-visible shape as live.
   if (acc.finishReason === "") {
     // Truncation: the rendered stream never carried a finish_reason — a complete OpenAI stream
     // always terminates with one, so a clean drain without it means the upstream truncated
