@@ -80,6 +80,19 @@ export function registerTerminal(hooks: TerminalHooks): () => void {
 }
 
 /**
+ * Test-only reset for the module-level `registered` singleton (whole-branch
+ * review I3, test-isolation). Registered in the `RESETTERS` table
+ * (`tests/helpers/isolated-fixture.ts`) so a test that constructs a
+ * non-`silent` `TerminalUi` and forgets to call `destroy()` (which normally
+ * unregisters via the closure `registerTerminal` returned) can never leak its
+ * registration into the next test file — mirrors the fixture's other module-
+ * global resets (e.g. `resetUpstreamWsManagerForTests`).
+ */
+export function resetTerminalCoordinatorForTests(): void {
+  registered = undefined
+}
+
+/**
  * Emit an emergency line — a message that must reach the terminal without
  * being lost or corrupting in-flight rendering. Branches on the registered
  * terminal's current {@link TerminalRegionState}:
