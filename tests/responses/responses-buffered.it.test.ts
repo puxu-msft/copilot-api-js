@@ -116,6 +116,35 @@ function firstBlockCommittedThenRstFrames(model: string): Array<string> {
   ]
 }
 
+/**
+ * Truncates BEFORE the first output item ever commits (no `output_item.done` yet) — a pure
+ * pre-commit RST. Distinct delta text (`BLOCK_ZERO_ATTEMPT1`) from the retry attempt's
+ * {@link twoItemFrames} (`BLOCK_ZERO`) so a leaked attempt-1 partial is unambiguously detectable.
+ */
+function preFirstItemTruncateFrames(model: string): Array<string> {
+  return [
+    `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "resp_pre", object: "response", status: "in_progress", model, output: [] } })}\n\n`,
+    `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { id: "msg_0", type: "message", role: "assistant", content: [] } })}\n\n`,
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", sequence_number: 2, output_index: 0, content_index: 0, delta: "BLOCK_ZERO_ATTEMPT1" })}\n\n`,
+  ]
+}
+
+/**
+ * item0 commits (`output_item.done`), item1 starts and gets a partial delta (no `done` for item1),
+ * then the upstream RSTs — the committed first block must reach the client, the un-committed second
+ * block must NOT.
+ */
+function postFirstItemTruncateFrames(model: string): Array<string> {
+  return [
+    `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "resp_post", object: "response", status: "in_progress", model, output: [] } })}\n\n`,
+    `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { id: "msg_0", type: "message", role: "assistant", content: [] } })}\n\n`,
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", sequence_number: 2, output_index: 0, content_index: 0, delta: "BLOCK_ZERO" })}\n\n`,
+    `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", sequence_number: 3, output_index: 0, item: { id: "msg_0", type: "message", role: "assistant", content: [{ type: "output_text", text: "BLOCK_ZERO" }] } })}\n\n`,
+    `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", sequence_number: 4, output_index: 1, item: { id: "msg_1", type: "message", role: "assistant", content: [] } })}\n\n`,
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", sequence_number: 5, output_index: 1, content_index: 0, delta: "BLOCK_ONE" })}\n\n`,
+  ]
+}
+
 /** A clean one-shot CC (`/chat/completions`) SSE stream — mirrors chat-completions-via-responses.http.test.ts. */
 function ccStreamFrames(model: string): Array<string> {
   return [
@@ -158,6 +187,17 @@ let twoItem = false
  * instead of the correct un-retryable `partial-degrade` after exactly ONE upstream exchange.
  */
 let firstBlockThenRst = false
+/**
+ * When true: attempt 1 RSTs BEFORE the first `output_item.done` (no block committed) → the driver's
+ * `!committedAny` gate retries; attempt 2 (and beyond) delivers the full {@link twoItemFrames}.
+ */
+let preFirstItemTruncateThenComplete = false
+/**
+ * When true: the FIRST attempt commits item0 (`output_item.done`) live, then flushes item1's partial
+ * delta (no `output_item.done` for item1) before RSTing — the un-committed SECOND block must not
+ * reach the client, but the committed first block must.
+ */
+let postFirstItemTruncate = false
 let upstreamCalls = 0
 
 const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
@@ -177,6 +217,13 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
     if (truncateClean) return Promise.resolve(createSseResponse(partialFrames(model))) // clean EOF, no terminal
     if (twoItem) return Promise.resolve(createSseResponse(twoItemFrames(model))) // multi-item block-level fixture
     if (firstBlockThenRst) return Promise.resolve(createSseResponseThenError(firstBlockCommittedThenRstFrames(model), RST_ERROR)) // item0 committed, then RST
+    if (postFirstItemTruncate) return Promise.resolve(createSseResponseThenError(postFirstItemTruncateFrames(model), RST_ERROR)) // item0 committed, item1 partial, then RST
+    if (preFirstItemTruncateThenComplete) {
+      // attempt 1: pre-commit RST (no output_item.done yet); attempt 2+: full two-item generation.
+      return Promise.resolve(
+        upstreamCalls === 1 ? createSseResponseThenError(preFirstItemTruncateFrames(model), RST_ERROR) : createSseResponse(twoItemFrames(model)),
+      )
+    }
     const rst = upstreamCalls <= rstBeforeComplete
     return Promise.resolve(rst ? createSseResponseThenError(partialFrames(model), RST_ERROR) : createSseResponse(completeFrames(model)))
   }
@@ -215,6 +262,8 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     terminalError = false
     twoItem = false
     firstBlockThenRst = false
+    preFirstItemTruncateThenComplete = false
+    postFirstItemTruncate = false
     viaFallbackUpstream = false
     setStateForTests({
       copilotToken: "test-token",
@@ -506,5 +555,79 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     // is never invoked, so no vendor bucket is ever created (not a zero-filled `{responses: {...}}`, the
     // top-level map itself stays empty — verified empirically against the real getProtectStreamingStats()).
     expect(getProtectStreamingStats()).toEqual({})
+  })
+
+  // ── Golden fixtures: block-level truncation terminals (Task 4) ──
+  // Locks the two terminals implied by the block-level commit mechanism (P0 driver + P2 handler
+  // wiring): a truncation BEFORE the first block ever commits is a plain pre-commit RST (retried,
+  // like the whole-response path); a truncation AFTER the first block commits is un-retryable
+  // (partial-degrade) because the committed prefix is already on the wire.
+
+  test("golden: truncation BEFORE the first output_item.done retries and delivers one complete generation", async () => {
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
+    // attempt 1: created + item0 partial text, then RST *before* output_item.done (no block committed).
+    // attempt 2: full twoItemFrames.
+    preFirstItemTruncateThenComplete = true
+
+    const sse = await (await streamRequest()).text()
+
+    expect(sse).not.toContain("BLOCK_ZERO_ATTEMPT1") // attempt-1 partial never leaked (no block committed)
+    expect(sse).toContain("BLOCK_ZERO")
+    expect(sse).toContain("BLOCK_ONE")
+    expect(frameTypesInOrder(sse)).toContain("response.completed")
+    expect(sse).not.toContain("truncated")
+    expect(upstreamCalls).toBe(2) // retried once
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    // Saved after 1 retry (pre-commit truncation is retryable).
+    expect(getProtectStreamingStats().responses).toEqual({
+      success: 1,
+      exhausted: 0,
+      retreated: 0,
+      partialDegrade: 0,
+      totalRetries: 1,
+      retriesBeforeDegrade: 0,
+    })
+  })
+
+  test("golden: truncation AFTER the first output_item.done commits → partial-degrade, NOT retried, first block stays on the wire", async () => {
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
+    // attempt 1: created + item0(done) committed, then item1 partial + RST → first block already flushed.
+    postFirstItemTruncate = true
+
+    const sse = await (await streamRequest()).text()
+
+    // The committed first block IS on the wire (block-level flushed it at its output_item.done)…
+    expect(sse).toContain("BLOCK_ZERO")
+    // …the second (uncommitted) block is NOT delivered, and a Responses error frame terminates.
+    expect(sse).not.toContain("BLOCK_ONE")
+    expect(sse).toContain("event: error")
+    // No retry: a block was already committed to the client (can't unsend) → partial-degrade.
+    expect(upstreamCalls).toBe(1)
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("failed") // stream-error terminal (spec §9.3)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    // History clientResponse.sseEvents holds the committed block + the failure tail (richest-data-flow).
+    const forwarded = JSON.stringify(entry?.attempts?.at(-1))
+    expect(forwarded).toContain("BLOCK_ZERO")
+    // outcome = partial-degrade (a block committed then the tail truncated), recorded even at 0 pre-retries.
+    expect(getProtectStreamingStats().responses).toEqual({
+      success: 0,
+      exhausted: 0,
+      retreated: 0,
+      partialDegrade: 1,
+      totalRetries: 0,
+      retriesBeforeDegrade: 0,
+    })
   })
 })
