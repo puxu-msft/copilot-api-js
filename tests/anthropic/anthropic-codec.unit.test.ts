@@ -109,6 +109,48 @@ describe("anthropic codec — prepareWire tool-field stripping", () => {
     expect(tools[0].future_x).toBeUndefined()
     expect(tools[0].name).toBe("Read")
   })
+
+  // HIGH-1 (合并态审查)：passthrough 剥掉的 cache_control 子字段须经 getter 上抛，供 handler
+  // 塞 pipelineInfo 持久化 history（recordFeature 单通道只到 live TUI、被 history sink 丢弃）。
+  function envWithScopedSystem(prepareHints: Record<string, unknown> = {}): RequestEnvelope {
+    return {
+      model: undefined,
+      body: {
+        model: "claude-opus-4-8",
+        max_tokens: 16,
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        system: [{ type: "text", text: "s", cache_control: { type: "ephemeral", scope: "global" } }],
+      },
+      prepareHints,
+    } as unknown as RequestEnvelope
+  }
+
+  test("passthrough 剥 scope 并经 getLatestStrippedCacheControlSubfields 上抛（HIGH-1 持久化通道）", () => {
+    const codec = makeCodec()
+    const prepared = codec.prepareWire(envWithScopedSystem())
+    const system = (prepared.body as { system: Array<Record<string, unknown>> }).system
+    expect(system[0].cache_control).toEqual({ type: "ephemeral" }) // scope 已剥
+    expect(codec.getLatestStrippedCacheControlSubfields()).toEqual(["scope"]) // 上抛供 pipelineInfo 持久化
+  })
+
+  test("源④ excludeCacheControlSubfields hint 经 codec 桥接剥掉（reactive→prepare 通道）", () => {
+    const codec = makeCodec()
+    const prepared = codec.prepareWire(
+      // system 带一个非内置黑名单的假想子字段 foo，仅经 hint 才剥
+      {
+        model: undefined,
+        body: {
+          model: "claude-opus-4-8",
+          max_tokens: 16,
+          messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+          system: [{ type: "text", text: "s", cache_control: { type: "ephemeral", foo: "x" } }],
+        },
+        prepareHints: { excludeCacheControlSubfields: ["foo"] },
+      } as unknown as RequestEnvelope,
+    )
+    const system = (prepared.body as { system: Array<Record<string, unknown>> }).system
+    expect(system[0].cache_control).toEqual({ type: "ephemeral" }) // foo 经 hint 剥掉
+  })
 })
 
 describe("buildAnthropicStrategies", () => {

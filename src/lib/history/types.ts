@@ -187,6 +187,8 @@ export interface PipelineInfo {
   preprocessing?: PreprocessInfo
   sanitization?: Array<SanitizationInfo>
   messageMapping?: Array<number>
+  /** passthrough 剥掉的 GHC 未支持 cache_control 子字段（如 scope）。持久化到 history 供运维审计缓存语义降级（spec §8）。 */
+  cacheControlStripped?: Array<string>
 }
 
 export interface WarningMessage {

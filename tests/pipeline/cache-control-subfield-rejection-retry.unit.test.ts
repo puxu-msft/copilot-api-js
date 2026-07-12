@@ -11,6 +11,7 @@ import {
   createCacheControlSubfieldRejectionStrategy,
   parseRejectedCacheControlSubfields,
 } from "~/lib/request/strategies/cache-control-subfield-rejection-retry"
+import { parseExtraInputsError } from "~/lib/request/strategies/context-management-retry"
 import { parseRejectedToolFields } from "~/lib/request/strategies/tool-field-rejection-retry"
 
 afterEach(async () => {
@@ -39,6 +40,11 @@ describe("三路径遮蔽（红线4）", () => {
   })
   test("tool-field 腿绝不误认领 cache_control 路径（含 tools. 前缀那条）", () => {
     for (const p of paths) expect(parseRejectedToolFields(ccError(p))).toBeNull()
+  })
+  // MEDIUM-1（合并态审查）：body-field 腿注册在 cache-control 之前，是真正的 first-match 遮蔽风险来源，
+  // 必须守其 lookbehind 对点分路径不误认领（spec §6.3 要求双 matcher 断言）。
+  test("body-field 腿绝不误认领 cache_control 路径（lookbehind 排除点分路径）", () => {
+    for (const p of paths) expect(parseExtraInputsError(p)).toBeNull()
   })
 })
 

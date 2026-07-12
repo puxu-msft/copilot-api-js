@@ -59,3 +59,20 @@ describe("sanitize 收窄（新行为）", () => {
   })
 })
 
+// LOW-1（合并态审查）：三路径对称——proxied 全删客户端断点再注入干净 ephemeralFor，scope 必然消失。
+describe("proxied 也不泄漏 scope", () => {
+  test("proxied 删客户端断点后注入干净断点，scope 不进 wire", () => {
+    setStateForTests({ cacheControlMode: "proxied", copilotToken: "t", vsCodeVersion: "1.100.0", accountType: "individual" })
+    const prepared = prepareAnthropicRequest({
+      model: "claude-opus-4-8",
+      max_tokens: 1024,
+      system: [{ type: "text", text: "s", cache_control: { type: "ephemeral", scope: "global" } as never }],
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      tools: [{ name: "Read", input_schema: { type: "object" } }],
+    })
+    // 断言 wire 里任何 cache_control 都不含 scope（proxied 重建的断点是干净的）。
+    const json = JSON.stringify(prepared.wire)
+    expect(json).not.toContain("\"scope\"")
+  })
+})
+

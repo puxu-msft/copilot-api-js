@@ -684,6 +684,7 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
   const retryMessageMapping =
     baseline && effectiveMessages ? buildMessageMapping(baseline.messages, effectiveMessages as MessagesPayload["messages"]) : undefined
 
+  const strippedCacheControl = codec.getLatestStrippedCacheControlSubfields()
   ctx.setPipelineInfo({
     preprocessing: preprocessInfo,
     sanitization: allSanitization,
@@ -698,6 +699,7 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
         }
       : undefined,
     ...(retryMessageMapping && { messageMapping: retryMessageMapping }),
+    ...(strippedCacheControl?.length && { cacheControlStripped: [...strippedCacheControl] }),
   })
 
   // Sticky feature tag for the accepted retry. Beta-strip and truncation are

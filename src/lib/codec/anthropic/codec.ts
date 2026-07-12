@@ -149,6 +149,8 @@ export interface AnthropicCodec extends FormatCodec {
   getResanitize(): AnthropicSanitizeFn | undefined
   /** Latest attempt's effective `messages` (sampleRequest-captured; message-mapping rebuild). */
   getLatestEffectiveMessages(): Array<unknown> | undefined
+  /** Latest attempt 的 passthrough 剥掉的 cache_control 子字段（喂 pipelineInfo.cacheControlStripped 持久化，spec §8）。 */
+  getLatestStrippedCacheControlSubfields(): ReadonlyArray<string> | undefined
   /** The per-request request rewrites (driver S3): the sanitize chain + its side-channel recordings (RFC §4.A0). */
   getRequestRewrites(): ReadonlyArray<RequestRewrite>
 }
@@ -173,6 +175,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   let initialSanitizationInfo: SanitizationInfo | undefined
   let resanitize: AnthropicSanitizeFn | undefined
   let latestEffectiveMessages: Array<unknown> | undefined
+  let latestStrippedCacheControlSubfields: ReadonlyArray<string> | undefined
 
   // Internal openai-cc delegate for the FORWARD translation legs (anthropic → cc/responses). Built
   // lazily on the first translate-leg call (a direct `/v1/messages` request never touches it). Its
@@ -233,6 +236,9 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     getLatestEffectiveMessages() {
       return latestEffectiveMessages
     },
+    getLatestStrippedCacheControlSubfields() {
+      return latestStrippedCacheControlSubfields
+    },
     getRequestRewrites() {
       return requestRewrites
     },
@@ -273,7 +279,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       // FORWARD translate leg: the body is CC-shaped (translateOut delegated to the hub), so the cc
       // delegate's prepareWire does the CC / CC→Responses wire prep (openai-cc P2.2-D1).
       if (isForwardTranslateLeg(env.targetEndpoint)) return ccDelegate().prepareWire(env)
-      return prepareAnthropicWire(env, {
+      const prepared = prepareAnthropicWire(env, {
         betaProbe: args.betaProbe,
         clientAnthropicBeta,
         clientRequestHeaders,
@@ -283,6 +289,9 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
         // mutates enabled→adaptive on retry).
         requestedThinkingType: (truncateBaseline?.thinking as { type?: string } | undefined)?.type,
       })
+      // 记住本 attempt 剥掉的 cache_control 子字段（最后 accepted attempt wins），供 handler 塞 pipelineInfo 持久化。
+      latestStrippedCacheControlSubfields = prepared.strippedCacheControlSubfields
+      return prepared
     },
 
     preSend(env) {
@@ -463,7 +472,7 @@ interface PrepareWireDeps {
  * Idempotent (RFC §3): `prepareAnthropicRequest` deep-clones and does not write
  * back to `env.body`, so the same env → the same wire.
  */
-function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): PreparedRequest {
+function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): PreparedRequest & { strippedCacheControlSubfields?: ReadonlyArray<string> } {
   const model = env.model as Model | undefined
   const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
     ...(model && { resolvedModel: model }),
@@ -494,7 +503,8 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
     })
   }
 
-  // passthrough 剥掉 GHC 未支持的 cache_control 子字段（如 scope）——记 history 让运维可见缓存语义降级（spec §8）。
+  // passthrough 剥掉 GHC 未支持的 cache_control 子字段（如 scope）——记 live TUI/WS 看板（cc-strip:<fields>）。
+  // 持久化（pipelineInfo.cacheControlStripped）经返回值上抛给闭包 prepareWire → getLatestStrippedCacheControlSubfields（spec §8 双通道）。
   if (prepared.strippedCacheControlSubfields?.length) {
     deps.requestContext?.recordFeature("cache-control-stripped", { fields: prepared.strippedCacheControlSubfields })
   }
@@ -504,6 +514,7 @@ function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): Prep
     headers: new Headers(prepared.headers),
     body: prepared.wire,
     stream: (prepared.wire.stream as boolean | undefined) ?? false,
+    ...(prepared.strippedCacheControlSubfields?.length && { strippedCacheControlSubfields: prepared.strippedCacheControlSubfields }),
   }
 }
 
