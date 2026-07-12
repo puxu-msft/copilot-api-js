@@ -50,6 +50,7 @@ import type {
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
+import { isResponsesCommitBoundary } from "~/lib/codec/openai-responses/commit-boundaries"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
@@ -368,6 +369,12 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
       await driver.runResponseBufferedSink(upstream, env, sink, {
         onRenderedFrame, // restore + accumulate (the buffered drain invokes it per frame)
         anchor: undefined, // the empty-text keepalive anchor is Anthropic-only → every driver anchor branch is inert
+        // Block-level commit boundary (P2 Task 2, spec §3.1): flush at each output item's
+        // `response.output_item.done` (+ the three lifecycle terminals + the in-band upstream `error`
+        // frame, spec §5.3 M1) instead of once at the terminal drain. A boundary block committed live
+        // closes the retry window (driver `committedAny`) — a later truncation degrades to
+        // `partial-degrade` instead of retrying (the committed prefix is already on the wire).
+        commitBoundaries: isResponsesCommitBoundary,
         sawMessageStop: () => acc.status !== "", // terminal seen (completed/failed/incomplete) = the R5.2 gate, reused from live
         sawUpstreamError: () => acc.streamError !== undefined, // terminal upstream `error` frame → commit + fail (not retry); see above
         // Per-attempt isolation: rebind a FRESH accumulator + zero the progress counters before each
@@ -389,10 +396,12 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         // L2 engagement (a save after ≥1 retry, an exhaustion, a buffer-cap retreat, or a
         // `partial-degrade`). A clean first-try commit (retries === 0, no RST) is the silent happy path —
         // tagging it would put `protect-streaming-retry` on essentially every buffered 200 and inflate
-        // the "success" rate. `partial-degrade` is runtime-UNREACHABLE here today (this handler does not
-        // yet pass `commitBoundaries`, so `committedAny` never sets) — but the accounting is wired
-        // verbatim so P2 flipping on the Responses block-level predicate records it with zero further
-        // change; the driver-injected `meta` (vendor) is forwarded as-is (no vendor re-hardcoding).
+        // the "success" rate. `partial-degrade` IS reachable now that `commitBoundaries` is wired above
+        // (P2 Task 2): a boundary block committed live, then a later truncation, is ALWAYS an L2
+        // engagement, so it is recorded even at retries === 0 (spec §9.2 M-1) — only the clean
+        // first-try `success` short-circuits. The driver-injected `meta` (vendor) is forwarded as-is
+        // (no vendor re-hardcoding, no re-deriving `retriesBeforeDegrade` — the stats module folds it
+        // from the `retries` formal param).
         onBufferedResolve: (o, retries, meta) => {
           if (o === "success" && retries === 0) return
           recordProtectStreamingOutcome(o, retries, meta)

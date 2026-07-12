@@ -85,6 +85,37 @@ function terminalErrorFrames(model: string): Array<string> {
   ]
 }
 
+/** A two-output-item direct generation: created → item0(done) → item1(done) → completed. */
+function twoItemFrames(model: string): Array<string> {
+  return [
+    `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "resp_2i", object: "response", status: "in_progress", model, output: [] } })}\n\n`,
+    `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { id: "msg_0", type: "message", role: "assistant", content: [] } })}\n\n`,
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", sequence_number: 2, output_index: 0, content_index: 0, delta: "BLOCK_ZERO" })}\n\n`,
+    `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", sequence_number: 3, output_index: 0, item: { id: "msg_0", type: "message", role: "assistant", content: [{ type: "output_text", text: "BLOCK_ZERO" }] } })}\n\n`,
+    `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", sequence_number: 4, output_index: 1, item: { id: "msg_1", type: "message", role: "assistant", content: [] } })}\n\n`,
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", sequence_number: 5, output_index: 1, content_index: 0, delta: "BLOCK_ONE" })}\n\n`,
+    `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", sequence_number: 6, output_index: 1, item: { id: "msg_1", type: "message", role: "assistant", content: [{ type: "output_text", text: "BLOCK_ONE" }] } })}\n\n`,
+    `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 7, response: { id: "resp_2i", object: "response", status: "completed", model, output: [], usage: { input_tokens: 50, output_tokens: 8 } } })}\n\n`,
+  ]
+}
+
+/**
+ * The FIRST output item commits (`output_item.done`), then the upstream RSTs before the SECOND item
+ * ever starts — no `response.completed`, so `acc.status` never sets. Without `commitBoundaries`
+ * wired, the driver cannot see the item0 boundary: `committedAny` never flips, so this looks like an
+ * ordinary pre-commit truncation and gets RETRIED (up to cap → `exhausted`). WITH `commitBoundaries`
+ * wired, item0's `output_item.done` flushes it live and closes the retry window — the RST after it is
+ * un-retryable (the committed prefix is already on the wire) → `partial-degrade`, NOT retried.
+ */
+function firstBlockCommittedThenRstFrames(model: string): Array<string> {
+  return [
+    `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "resp_deg", object: "response", status: "in_progress", model, output: [] } })}\n\n`,
+    `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { id: "msg_0", type: "message", role: "assistant", content: [] } })}\n\n`,
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", sequence_number: 2, output_index: 0, content_index: 0, delta: "BLOCK_ZERO" })}\n\n`,
+    `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", sequence_number: 3, output_index: 0, item: { id: "msg_0", type: "message", role: "assistant", content: [{ type: "output_text", text: "BLOCK_ZERO" }] } })}\n\n`,
+  ]
+}
+
 const RST_ERROR = new Error("Stream closed with error code NGHTTP2_CANCEL")
 
 /** Number of leading upstream attempts that RST before the upstream finally completes. */
@@ -93,6 +124,15 @@ let rstBeforeComplete = 0
 let truncateClean = false
 /** When true, the upstream drains cleanly but ends with a terminal in-band `error` frame (H2). */
 let terminalError = false
+/** When true, the upstream returns the two-output-item fixture ({@link twoItemFrames}). */
+let twoItem = false
+/**
+ * When true, the FIRST attempt commits item0 (`output_item.done`) then RSTs before item1/completed;
+ * every subsequent attempt (if the driver wrongly retries) does the same, so a retry never reaches a
+ * terminal — a wrong "retry every truncation" implementation would exhaust to `failed`/`exhausted`
+ * instead of the correct un-retryable `partial-degrade` after exactly ONE upstream exchange.
+ */
+let firstBlockThenRst = false
 let upstreamCalls = 0
 
 const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
@@ -106,6 +146,8 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
     upstreamCalls += 1
     if (terminalError) return Promise.resolve(createSseResponse(terminalErrorFrames(model))) // clean drain, terminal error frame
     if (truncateClean) return Promise.resolve(createSseResponse(partialFrames(model))) // clean EOF, no terminal
+    if (twoItem) return Promise.resolve(createSseResponse(twoItemFrames(model))) // multi-item block-level fixture
+    if (firstBlockThenRst) return Promise.resolve(createSseResponseThenError(firstBlockCommittedThenRstFrames(model), RST_ERROR)) // item0 committed, then RST
     const rst = upstreamCalls <= rstBeforeComplete
     return Promise.resolve(rst ? createSseResponseThenError(partialFrames(model), RST_ERROR) : createSseResponse(completeFrames(model)))
   }
@@ -134,6 +176,8 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     rstBeforeComplete = 0
     truncateClean = false
     terminalError = false
+    twoItem = false
+    firstBlockThenRst = false
     setStateForTests({
       copilotToken: "test-token",
       accountType: "individual",
@@ -323,5 +367,73 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     expect(reason).toContain(UPSTREAM_ERROR_CODE)
     expect(reason).toContain(UPSTREAM_ERROR_MESSAGE)
     expect(reason).not.toContain("truncated")
+  })
+
+  // ── Block-level commit boundaries (P2 Task 2) ──
+  // The buffered branch wires `commitBoundaries: isResponsesCommitBoundary` — each
+  // `response.output_item.done` becomes an in-loop flush boundary instead of the terminal-only
+  // whole-response commit. See the file-header note (Task 2 brief) for why an it-level test cannot
+  // assert flush TIMING directly (the HTTP harness only observes the converged full stream) — this
+  // locks the multi-item ORDERING + clean-commit invariants as a regression guard.
+
+  test("buffered block-level: each output item flushes at its output_item.done boundary (incremental), telemetry carries the responses vendor", async () => {
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
+    twoItem = true
+
+    const sse = await (await streamRequest()).text()
+
+    // Both items reached the client, in order, and the terminal completed once.
+    expect(sse).toContain("BLOCK_ZERO")
+    expect(sse).toContain("BLOCK_ONE")
+    expect(sse.indexOf("BLOCK_ZERO")).toBeLessThan(sse.indexOf("BLOCK_ONE"))
+    expect(frameTypesInOrder(sse)).toContain("response.completed")
+    // Clean first-try commit → NOT counted (silent happy path); no error/truncation terminator.
+    expect(sse).not.toContain("event: error")
+    expect(sse).not.toContain("truncated")
+    expect(upstreamCalls).toBe(1)
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    // A clean first-try commit (retries === 0) is the silent happy path — no telemetry bucket, even
+    // though `commitBoundaries` fired twice in-loop (committedAny is per-generation bookkeeping, not
+    // per-block telemetry).
+    expect(getProtectStreamingStats()).toEqual({})
+  })
+
+  test("buffered block-level: a boundary block committed live, then RST → un-retryable partial-degrade (NOT retried, NOT exhausted)", async () => {
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
+    firstBlockThenRst = true
+
+    const sse = await (await streamRequest()).text()
+
+    // item0 committed live BEFORE the RST — its content reached the client (un-retryable prefix).
+    expect(sse).toContain("BLOCK_ZERO")
+    // No retry: the commit boundary closed the retry window on the FIRST exchange.
+    expect(upstreamCalls).toBe(1)
+    // A stream-error terminator surfaces the RST (partial-degrade is still a failed generation from
+    // the client's perspective — the tail never arrived).
+    expect(sse).toContain("event: error")
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("failed")
+    expect(entry?._index?.derived?.attemptCount).toBe(1)
+    // onBufferedResolve("partial-degrade", 0, { vendor: "responses" }): a graceful degrade, distinct
+    // from `exhausted` (which commits nothing) — recorded even at retries === 0 (M-1, spec §9.2).
+    expect(getProtectStreamingStats().responses).toEqual({
+      success: 0,
+      exhausted: 0,
+      retreated: 0,
+      partialDegrade: 1,
+      totalRetries: 0,
+      retriesBeforeDegrade: 0,
+    })
   })
 })
