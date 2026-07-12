@@ -381,6 +381,13 @@ function prepareOpenAiCcWire(env: RequestEnvelope): PreparedRequest {
     }
   }
 
+  if (env.targetEndpoint !== ENDPOINT.CHAT_COMPLETIONS) {
+    // A `translate` decision to any leg this codec cannot yet serve (e.g. the reverse
+    // `@messages` leg, wired in Phase 5) must fail LOUDLY, symmetric with the anthropic
+    // side's registry-throw 500 — never silently downgrade to /chat/completions and lie
+    // in observability (`setRouteInfo` already recorded outboundEndpoint/translated).
+    throw new Error(`openai-cc codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`)
+  }
   const prepared = prepareChatCompletionsRequest(ccPayload, { resolvedModel: model })
   return {
     url: ENDPOINT.CHAT_COMPLETIONS,

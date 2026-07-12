@@ -399,6 +399,11 @@ function prepareOpenAiResponsesWire(env: RequestEnvelope, fallback: FallbackExch
     }
   }
 
+  if (env.targetEndpoint !== ENDPOINT.RESPONSES) {
+    // Symmetric loud-fail: a `translate` decision to a leg this codec cannot serve
+    // (reverse `@messages`, Phase 5) throws instead of silently downgrading to /responses.
+    throw new Error(`openai-responses codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`)
+  }
   const prepared = prepareResponsesRequest(env.body as ResponsesPayload, { resolvedModel: model })
   return {
     url: ENDPOINT.RESPONSES,
