@@ -128,11 +128,26 @@ function toolUseToToolCall(block: Extract<ContentBlock, { type: "tool_use" }>): 
 // ============================================================================
 
 /**
+ * The minimal Anthropic usage fields {@link mapUsage} reads. The non-streaming response's
+ * `Message["usage"]` structurally satisfies it; the stream accumulator supplies the same four fields
+ * assembled from `message_start` (input + cache legs) + `message_delta` (final output).
+ */
+export interface AnthropicUsageLike {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens?: number | null
+  cache_creation_input_tokens?: number | null
+}
+
+/**
  * Anthropic `stop_reason` → CC `finish_reason`. `tool_use`→tool_calls, `max_tokens`→length,
  * `refusal`→content_filter; `end_turn`/`stop_sequence`/`pause_turn`/null → stop. A present tool_calls
  * array forces `tool_calls` even if the upstream stop_reason lagged (defensive — mirrors CC semantics).
+ *
+ * Exported (not file-local) so the reverse STREAMING translator (`anthropic-to-cc-stream.ts`) reuses
+ * the SAME mapping — one source of truth (fix-all-comparison-sites), never a copy-paste.
  */
-function mapStopReason(stopReason: AnthropicResponse["stop_reason"], hasToolCalls: boolean): FinishReason {
+export function mapStopReason(stopReason: AnthropicResponse["stop_reason"], hasToolCalls: boolean): FinishReason {
   if (hasToolCalls) return "tool_calls"
   switch (stopReason) {
     case "tool_use": {
@@ -156,8 +171,13 @@ function mapStopReason(stopReason: AnthropicResponse["stop_reason"], hasToolCall
  * total = sum; best-effort forwards BOTH cache legs symmetrically with the forward translator
  * (`cache_read_input_tokens`→`prompt_tokens_details.cached_tokens`, `cache_creation_input_tokens`→
  * `prompt_tokens_details.cache_write_tokens` — the GHC extension the forward leg reads back, richest-data-flow).
+ *
+ * Exported (not file-local) so the reverse STREAMING translator (`anthropic-to-cc-stream.ts`) reuses
+ * the SAME gross-up — one source of truth (fix-all-comparison-sites), never a copy-paste of the net→total
+ * arithmetic (W-rev under-count risk). Accepts the minimal usage shape both the non-streaming response and
+ * the stream accumulator can supply.
  */
-function mapUsage(usage: AnthropicResponse["usage"]): ChatCompletionUsage {
+export function mapUsage(usage: AnthropicUsageLike): ChatCompletionUsage {
   const inputTokens = usage.input_tokens
   const outputTokens = usage.output_tokens
   const cacheRead = usage.cache_read_input_tokens

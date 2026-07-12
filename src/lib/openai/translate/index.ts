@@ -1,6 +1,13 @@
 export { translateAnthropicToChatCompletions } from "./anthropic-to-cc-request"
 export type { AnthropicToCcOptions } from "./anthropic-to-cc-request"
-export { translateAnthropicResponseToCC } from "./anthropic-to-cc"
+export { mapStopReason, mapUsage, translateAnthropicResponseToCC } from "./anthropic-to-cc"
+export type { AnthropicUsageLike } from "./anthropic-to-cc"
+export {
+  //
+  createAnthropicToCcStreamTranslator,
+  translateAnthropicStreamToCCStream,
+} from "./anthropic-to-cc-stream"
+export type { AnthropicToCcStreamMeta, AnthropicToCcStreamStep, AnthropicToCcStreamTranslator } from "./anthropic-to-cc-stream"
 export { translateChatCompletionsToAnthropic } from "./cc-to-anthropic-request"
 export { translateCCResponseToAnthropic } from "./cc-to-anthropic"
 export type { CcToAnthropicResult, TranslatedAnthropicResponse, TranslatedAnthropicUsage } from "./cc-to-anthropic"
