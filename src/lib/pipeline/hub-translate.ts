@@ -205,9 +205,10 @@ export function createForwardStreamTranslator(targetEndpoint: UpstreamEndpoint, 
   }
 
   if (targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES) {
-    // responses leg: two hop — Responses→CC (per-frame) → CC→Anthropic. `includeUsage:true` so the CC
-    // chunks carry the terminal usage the CC→Anthropic accumulator nets (getStreamMeta signal chain).
-    const responsesToCc = createStreamTranslator({ includeUsage: true })
+    // responses leg: two hop — Responses→CC (per-frame) → CC→Anthropic. The Responses→CC translator
+    // captures the terminal usage unconditionally (so the CC chunks carry the usage the CC→Anthropic
+    // accumulator nets — getStreamMeta signal chain).
+    const responsesToCc = createStreamTranslator()
     return {
       renderFrame: (frame) => {
         if (!frame.data || frame.data === "[DONE]") return []
