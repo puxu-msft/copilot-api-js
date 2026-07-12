@@ -1,6 +1,6 @@
 ---
 name: claude-code-connection
-description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连接/流式行为时使用——CC 请求超时两层（60s byte-idle 任意字节/ping 重置 + 300s no-real-content 只有真实 content_block_delta 重置，长 pre-content thinking 静默撞第二层断连）、keepalive 发空 content-delta 而非裸 ping、合成帧必须打 synthetic 标记 + 必带 event: 行（否则 @anthropic-ai/sdk SSEDecoder 静默丢帧）、SDK 对 200+SSE-error 走裸 APIError 零重试。下游客户端行为，区别于上游传输（skill bun-upstream-transport）与上游 Anthropic wire（skill ghc-anthropic-upstream）。
+description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连接/流式行为时使用——CC 请求超时两层（60s byte-idle 任意字节/ping 重置 + 300s no-real-content 只有真实 content_block_delta 重置，长 pre-content thinking 静默撞第二层断连）、keepalive 发空 content-delta 而非裸 ping、合成帧必须打 synthetic 标记 + 必带 event: 行（否则 @anthropic-ai/sdk SSEDecoder 静默丢帧）、SDK 对 200+SSE-error 走裸 APIError 零重试；以及事后判别一条 `[FAIL] … The operation was aborted.`/断流 incident 是 client-abort vs reaper vs header-timeout（三类都抛同一字面量、靠 History `state`(failed≠aborted)/上游 0 帧 status null/durationMs≈300 vs 600 判，附 offsetMs commit-relative 时间基陷阱）。下游客户端行为，区别于上游传输（skill bun-upstream-transport）与上游 Anthropic wire（skill ghc-anthropic-upstream）。
 ---
 
 # Claude Code 客户端连接与流式行为
@@ -19,6 +19,25 @@ CC 对 `/v1/messages` 流式请求关掉 SDK 的 600s 总超时（`API_TIMEOUT_M
 - **第二层 no-real-content ≈ 300s**：一定时间内必须收到**真实 content chunk**（`content_block_delta`），否则断，报 `API Error: Stream idle timeout - no chunks received`（字面精确：no real content chunks）。**`event: ping` 与 SSE comment 都不算 chunk**——纯 ping 压住 60s 层却撞 300s 层断（复现用户 incident）。长 opus pre-content thinking 静默数百秒撞第二层。first-party 与 prod-faithful 一致（`duration_ms=300169/300187`），**不能从 60s 层跨层外推、须独立复测**。
 - **空 `content_block_delta` 算 chunk**：`thinking_delta{thinking:""}` / `text_delta{text:""}` / `input_json_delta{partial_json:""}` 三种空 delta 全部实测保活到 340s 完整收尾（SDK 累积它们无害，SDK oracle 验）。
 - 注：incident 报的 ~292s 单次断开**非**自动超时——是用户中断（孪生双请求同时断）或 headless 重试风暴（~5×60s）。
+
+## 事后判别 `[FAIL] … The operation was aborted.`：client-abort vs reaper vs timeout
+
+一条 `[FAIL] POST /v1/messages … 301.0s ↑1.7MB ↑0 ↓0: The operation was aborted.` 的中止方，**不能凭错误串猜**——三类中止（下游客户端断开 / stale-request reaper / 上游 header-wait 超时）在 h2 路径上**都**抛字面量 `"The operation was aborted."`（[http2-client.ts](../../../src/lib/transport/http2-client.ts) `raceAbort` 的 `abortError()`，`name:"AbortError"`），归类由**信号状态**决定、非 `error.name`（`classifyPostCommitAbort(clientAbort.signal.aborted, ctx.lifecycleSignal.aborted)`，优先级 client > reaper > timeout，见 `src/routes/messages/post-commit-error.ts`）。
+
+**唯一可信的裁决走 History**（4141 `GET /history/api/entries/:id`，独立 oracle；日志串本身信息不足）。逐字段判：
+
+| 字段 | client-abort | reaper-cancel | header-timeout |
+|---|---|---|---|
+| `state`（**首要判据**） | `aborted` | `failed` | `failed` |
+| `attempts[].upstreamResponse.status` + `.sseEvents` | 可能已有帧 | 视时机 | **`null` + `[]`（0 帧）= 上游从未回响应头** |
+| entry-relative `durationMs` | 任意（客户端何时走） | ≈ `staleRequestMaxAge`（默认 **600s**） | ≈ `responseHeaderTimeout`/`streamIdleTimeout`（默认 **300s**） |
+| 下游终端 error 帧文案 | 无（客户端已走，零字节） | `Request cancelled by the stale-request reaper` | `Upstream timed out before sending response headers` |
+
+- `state:"failed"`（非 `aborted`）**当场排除 client-abort**：客户端断开走 `StreamClientAbortError` → driver `settled-abort` → state `aborted`；reaper/timeout 走 `ctx.fail` → `failed`。机制佐证 [forward.ts:521-530](../../../src/lib/error/forward.ts)——client-abort 会 abort `c.req.raw.signal`，header-timeout 只 abort **fetch 信号**、留 `raw.signal` 未 abort。
+- header-timeout 由 [fetch-utils.ts](../../../src/lib/fetch-utils.ts) 的 `AbortSignal.timeout(responseHeaderTimeout*1000)` 折进上游 fetch 信号触发（GHC 走 h2、不吃 undici Agent 的 `headersTimeout`，靠这个信号兜底）。**上游 0 帧 + status null + 时长≈300s = 上游纯沉默、我方 header-wait 守卫开火**（既非客户端主动断、也非 GHC 主动报错/关流）。
+- 巨型对话（`messageCount` 数百、`requestBytes` MB 级）+ 全程 `clientResponse.sseEvents` 皆 `synthetic:"keepalive"/"synthetic-message-start"/"anchor"`（真实内容 0 帧）= delayed-commit pre-response 路径：窗口期上游沉默 → commit 200 + 合成空 delta 保活撑住 CC 的 300s 层，最终自身 header-wait 到点。注：此路径下终端 error 帧在 `ctx.fail`(snapshot forwarded) **之后**写，**不进 history 快照**——reaper/timeout 二选一别指望 history 里的文案，靠 `durationMs`（300 vs 600）或实时 wire 抓。
+
+**时间基陷阱（踩过，务必换算）**：`clientResponse.sseEvents[].offsetMs` 以 **`streamStartMs`=commit 时刻**为原点（≈ `entry.startedAt + streamCommitAfterSec`，默认 **+20s**），而 `durationMs`/`attempts[].durationMs` 以 **entry 起始**为原点。拿 commit-relative 的心跳 offset 直接减 entry-relative 的 duration，会**凭空多出约一个 `streamCommitAfterSec`（~20s）的"心跳空档"假象**。推理心跳节律（默认 `streamKeepalivePingSec=20`）前先统一到同一原点：末次心跳绝对时刻 = `entry.startedAt + streamCommitAfterSec + offsetMs`，与 abort 时刻同基再比。
 
 ## keepalive 修复 + 合成帧必须可辨识
 
