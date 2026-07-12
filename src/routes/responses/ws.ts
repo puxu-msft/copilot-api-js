@@ -30,7 +30,9 @@ import type {
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
+import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
+import { isResponsesCommitBoundary } from "~/lib/codec/openai-responses/commit-boundaries"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
@@ -57,9 +59,15 @@ import { makeWsSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
-import { state } from "~/lib/state"
+import {
+  //
+  resolveBufferedCaps,
+  state,
+} from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
+
+import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
 
 // ============================================================================
 // Constants
@@ -287,7 +295,10 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     }
   }
 
-  const acc = createResponsesStreamAccumulator()
+  // `let` (not `const`) so the buffered `onAttemptReset` can rebind a FRESH accumulator between
+  // retries — mirrors the HTTP handler's `let acc` (handler-v4.ts:277). A discarded attempt's
+  // text/tool-call/usage never leaks into the committed generation's history record.
+  let acc = createResponsesStreamAccumulator()
   const mapper = env.ctx.toolNameMapper
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
@@ -356,7 +367,60 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     }
   }
 
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, stopAfterFrame: isTerminal })
+  // P4 Task 1 — terminal-only buffered-retry selrouting (block-level-buffered-retry spec §7.3).
+  // Reuses the SAME `responses.buffered_retry` config key + the P2 Responses commit-boundary
+  // predicate (terminal usage only — WS has no mid-stream block/anchor needs; every `TERMINAL_EVENTS`
+  // member IS a P2 commit-boundary type, so gating on `stopAfterFrame:isTerminal` for the early-stop
+  // AND `commitBoundaries:isResponsesCommitBoundary` for the commit is consistent: WS never sees a
+  // `response.output_item.done` mid-generation boundary flush because it never reads past the
+  // terminal anyway — this degenerates to the whole-response buffered shape, byte-identical in
+  // spirit to the HTTP handler's non-block-level predecessor). `buffered && !viaFallback`: the
+  // via-chat-completions fallback synthesizes its terminal lifecycle (output_item.done →
+  // response.completed) POST-loop via `codec.flushResponse` (see the `viaFallback` branch below),
+  // invisible to the driver's in-loop commit/sawMessageStop gate — same structural root cause as the
+  // HTTP handler's fallback exclusion (P2 Task 3 / handler-v4.ts:301-307). Fallback stays LIVE.
+  const { buffered: bufferedConfigured } = resolveResponsesBufferedAndHeartbeat()
+  const buffered = bufferedConfigured && !viaFallback
+  const outcome =
+    buffered ?
+      await driver.runResponseBufferedSink(upstream, env, sink, {
+        onRenderedFrame: restoreAccumulateCount,
+        stopAfterFrame: isTerminal,
+        // P2 predicate (terminal usage): every member of TERMINAL_EVENTS above is ALSO a P2 commit
+        // boundary type (response.completed/.failed/.incomplete/error) — `response.output_item.done`
+        // never fires as a live in-generation boundary here because `stopAfterFrame:isTerminal` never
+        // lets the loop run past a terminal in the first place. Reused verbatim (not re-implemented)
+        // so WS and HTTP never drift on what counts as a Responses commit boundary.
+        commitBoundaries: isResponsesCommitBoundary,
+        sawMessageStop: () => acc.status !== "",
+        // H2 — a terminal upstream `error` frame (clean drain, no response.completed/.failed/.incomplete).
+        // Committing it (rather than retrying as a truncation) lets the handler fail via the REAL
+        // `acc.streamError` below, mirroring the HTTP handler.
+        sawUpstreamError: () => acc.streamError !== undefined,
+        // Distinct vendor dimension from "responses" (HTTP) so WS vs HTTP buffered-retry telemetry is
+        // separable in `/api/status.protect_streaming.by_vendor` (P0's counters bag is an open
+        // `Record<vendor, stats>` — no allowlist — confirmed by protect-streaming-stats.ts:57 and the
+        // pre-existing `responses_ws` vendor label already documented in state.ts:323 / types.ts:460 /
+        // buffered-retry-keys.test.ts:105, though this task is its FIRST live producer). Caps still
+        // resolve from the SHARED "responses" vendor key (below) — only the telemetry bucket differs.
+        telemetryVendor: "responses_ws",
+        retryCap: resolveBufferedCaps("responses").maxRetries,
+        bufferCapBytes: resolveBufferedCaps("responses").bufferCapBytes,
+        onBufferedResolve: (o, retries, meta) => {
+          if (o === "success" && retries === 0) return
+          recordProtectStreamingOutcome(o, retries, meta)
+          env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries, vendor: meta.vendor })
+          consola.debug(`[protect-stream:responses_ws] ${o} for ${acc.model || resolvedModel} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
+        },
+        // Per-attempt isolation: rebind a FRESH accumulator + zero the progress counter before each
+        // re-exchange so a discarded attempt's text/tool-calls/usage/eventsReceived never fold into
+        // the committed generation's history record (mirrors handler-v4.ts's onAttemptReset).
+        onAttemptReset: () => {
+          acc = createResponsesStreamAccumulator()
+          eventsReceived = 0
+        },
+      })
+    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, stopAfterFrame: isTerminal })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
