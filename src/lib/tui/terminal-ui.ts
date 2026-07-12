@@ -232,6 +232,23 @@ export class TerminalUi {
    */
   private detailActive = false
   /**
+   * Stable identity of the request currently shown in the alt-screen detail
+   * view (root-cause fix, whole-branch review I1 re-review): captured once at
+   * detail entry ({@link renderDetail}'s first-entry branch) and used for
+   * EVERY subsequent lookup — `this.active.get(this.detailReqId)` — instead of
+   * re-resolving `[...active.values()].at(selectedIndex)` against a `Map`
+   * that's being concurrently mutated by `onTerminal`'s `active.delete()`.
+   * Index-based re-lookup is unsound the moment any active entry ahead of the
+   * viewed one terminates: deleting it left-shifts `Map` iteration order, so
+   * `.at(selectedIndex)` silently resolves to whichever OTHER request shifted
+   * into that now-stale slot — a silent switch, not a degrade (this is what
+   * bit the prior fix: it only handled the viewed request's OWN termination,
+   * not a sibling's). Id-based lookup is immune: `Map.get` doesn't care where
+   * an entry sits, only whether it still exists. Cleared by {@link exitDetail}
+   * and {@link restoreTerminal} alongside {@link detailActive}/{@link detailRows}.
+   */
+  private detailReqId?: string
+  /**
    * Terminal row count as of the last {@link renderDetail} write, so a
    * `getRows()` change while detail is already open (a live SIGWINCH resize,
    * M7) is distinguishable from an ordinary content repaint — see
@@ -564,16 +581,16 @@ export class TerminalUi {
     info: { statusCode?: number; error?: string },
     historyEntry?: HistoryEntryData,
   ): void {
-    // Detail-view continuity (whole-branch review I1): capture the id of the
-    // request currently shown in the alt-screen detail view — BEFORE mutating
-    // `active` below. Deleting the terminated entry left-shifts Map iteration
-    // order, so an index-based re-lookup *after* the delete (what
-    // `renderDetail` does via `selectedIndex`) could resolve to a DIFFERENT
-    // request that shifted into the same slot — a silent switch, not a
-    // degrade. Capturing identity here (while the pre-delete order still
-    // holds) lets us tell "the viewed request itself terminated" apart from
-    // "some other request terminated while a different one is being viewed".
-    const viewingId = this.detailActive ? [...this.active.values()].at(this.uiState.selectedIndex)?.ctx.id : undefined
+    // Detail-view continuity (whole-branch review I1, root-cause re-fix):
+    // `this.detailReqId` is the stable identity {@link renderDetail} latches
+    // at detail entry and resolves by on every repaint — reading it here
+    // (rather than re-deriving `[...active.values()].at(selectedIndex)`, which
+    // is exactly the index-based resolution this fix replaces) tells apart
+    // "the viewed request itself just terminated" from "some OTHER request
+    // terminated while a different one is being viewed", with no dependency
+    // on `active`'s iteration order or the timing of the `active.delete()`
+    // below.
+    const viewingId = this.detailActive ? this.detailReqId : undefined
 
     const entry = this.active.get(ctx.id) ?? {
       ctx,
@@ -652,22 +669,23 @@ export class TerminalUi {
     } satisfies LogLineParts)
     this.printLog(message)
 
-    // I1 (whole-branch review): `printLog`'s `detailActive` guard queues this
-    // line into `replayQueue` and returns WITHOUT re-rendering — by design,
-    // detail must never be polluted by a log line. But that guard also means a
-    // terminated request whose detail is the one currently on screen never
-    // reaches `renderDetail`'s own "selection fell out of range → exitDetail"
-    // degrade path, because that path is only ever entered FROM `render()`
-    // (footer timer / keyboard input), and `printLog` never calls `render()`.
-    // Left alone, the alt screen freezes on stale content until the user
-    // manually presses esc (or, if other requests are still active, the next
-    // 100ms footer-timer tick silently re-resolves `selectedIndex` to whatever
-    // request shifted into that slot — a silent switch). This is the
-    // orthogonal fix: when the VIEWED entry is the one that just terminated,
-    // degrade directly via `exitDetail()` — NOT `render()`/`renderDetail()`,
-    // which re-resolves the viewed entry by `selectedIndex` against the
-    // POST-delete `active` map and would silently paint whichever request
-    // shifted into that now-vacant slot instead of degrading.
+    // I1 (whole-branch review, root-cause re-fix): `printLog`'s `detailActive`
+    // guard queues this line into `replayQueue` and returns WITHOUT
+    // re-rendering — by design, detail must never be polluted by a log line.
+    // That means a terminated request whose detail is the one currently on
+    // screen never reaches `renderDetail` on its own from THIS event — nothing
+    // here calls `render()`/`renderDetail()`. Two things now make that safe
+    // either way:
+    //   1. `renderDetail` resolves the viewed entry via `this.detailReqId`
+    //      (not `selectedIndex`), so even if this call were skipped, the next
+    //      driver of `render()` (the 100ms footer timer, if any OTHER active
+    //      request keeps it alive; a keypress; a bus event) would find
+    //      `active.get(detailReqId) === undefined` and degrade correctly — no
+    //      silent switch to a sibling that shifted into the old index slot.
+    //   2. This explicit call makes that degrade IMMEDIATE (no waiting for the
+    //      next timer tick, and it still fires even if `active.size` just hit
+    //      0 and the timer was stopped above) when the VIEWED entry itself is
+    //      the one that just terminated.
     if (viewingId === ctx.id) this.exitDetail()
   }
 
@@ -965,11 +983,22 @@ export class TerminalUi {
    */
   private renderDetail(): void {
     if (this.silent || !this.region || this.shuttingDown) return
-    const entry = [...this.active.values()].at(this.uiState.selectedIndex)
+    // Root-cause fix (whole-branch review I1 re-review): on the FIRST call for
+    // this detail visit, latch the viewed request's stable id from the
+    // then-current `selectedIndex` — this is the only point where
+    // index-based resolution is safe (nothing has been deleted from `active`
+    // between the `enter` keypress and this paint). Every subsequent call
+    // (bus-triggered repaint, resize, footer-timer tick) resolves by that
+    // latched id instead of re-deriving from `selectedIndex`, so a sibling
+    // entry's deletion (which left-shifts `Map` iteration order) can never
+    // cause this method to silently paint whichever OTHER request shifted
+    // into the stale index slot.
+    this.detailReqId ??= [...this.active.values()].at(this.uiState.selectedIndex)?.ctx.id
+    const entry = this.detailReqId === undefined ? undefined : this.active.get(this.detailReqId)
     if (!entry) {
-      // Selection fell out of range (the request completed while its detail
-      // was open) — degrade back to the panel/collapsed Region rather than
-      // render a stale or empty alternate screen.
+      // The viewed request is gone (terminated, or selection fell out of
+      // range before a first paint) — degrade back to the panel/collapsed
+      // Region rather than render a stale or empty alternate screen.
       this.exitDetail()
       return
     }
@@ -1019,11 +1048,32 @@ export class TerminalUi {
    *    method (M8), so no interleaving with a subsequent `renderRegion`.
    * 4. `renderRegion()` repaints the (now current) `panel`/`collapsed` view
    *    into the freshly re-established region.
+   *
+   * Root-cause fix (whole-branch review I1 re-review): also resets
+   * `uiState.view` to `"panel"` here — NOT just via the reducer's `escape`
+   * transition. `onInput`'s `escape` path already runs `reduce()` first (which
+   * sets `view: "panel"`) before calling this method, so the reset below is a
+   * no-op there; but the two OTHER call sites — `renderDetail`'s own
+   * out-of-range degrade, and `onTerminal`'s "viewed request terminated"
+   * branch — invoke `exitDetail()` directly, bypassing the reducer entirely.
+   * Without this reset, `uiState.view` stayed `"detail"` after either of those
+   * degrades: `detailActive` was correctly cleared, but the very next
+   * `render()` (the next 100ms footer-timer tick) reads `view === "detail"`
+   * and calls `renderDetail()` again — which unconditionally re-enters the alt
+   * screen (`\x1b[?1049h`) and repaints, because entry is looked up fresh
+   * against a `detailReqId` that has just been cleared below, immediately
+   * treated as "no id yet" and re-latched from the CURRENT (post-mutation)
+   * `selectedIndex` — a spurious bounce back into detail on stale/shifted
+   * content. Setting `view: "panel"` here makes the event-triggered and
+   * keyboard-triggered exits converge on the same terminal state, so the next
+   * `render()` dispatches to `renderRegion()` like an ordinary `esc`.
    */
   private exitDetail(): void {
     if (!this.detailActive) return
     this.detailActive = false
     this.detailRows = undefined
+    this.detailReqId = undefined
+    this.uiState = { ...this.uiState, view: "panel" }
     this.stdout.write("\x1b[?1049l")
     this.region?.forceReestablish()
     this.flushReplayQueue()
@@ -1068,6 +1118,7 @@ export class TerminalUi {
       this.stdout.write("\x1b[?1049l")
       this.detailActive = false
       this.detailRows = undefined
+      this.detailReqId = undefined
     }
     if (this.onData) this.stdin?.removeListener("data", this.onData)
     this.stdin?.pause()

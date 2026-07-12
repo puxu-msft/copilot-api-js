@@ -572,4 +572,105 @@ describe("TerminalUi — P1 interactive integration", () => {
     expect(out).toContain("\x1b[?1049l") // degrades (exits alt screen) instead
     ui.destroy()
   })
+
+  // Root-cause re-fix (whole-branch review I1 re-review): the prior fix's
+  // `onTerminal`-only `exitDetail()` call was a symptom patch that introduced
+  // a regression (residual A) and left a sibling-shaped variant uncovered
+  // (residual B). Both are exercised below by driving a SECOND render after
+  // the terminal event — via an inert-in-detail keypress, which mirrors
+  // exactly what the next 100ms footer-timer tick would do (both re-dispatch
+  // through the same `render()` method) without depending on real timers.
+
+  test("I1 residual A: onTerminal's direct exitDetail() resets uiState.view — a later render never bounces back into the alt screen", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    const req = bus.scope("request")
+    req.publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 2000) })
+    req.publish({ kind: "request.created", ctx: makeCtx("bbbbbbbb", "gpt-5", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel, selectedIndex 0 (aaaaaaaa)
+    stdin.emit("data", Buffer.from("\r")) // panel → detail, viewing aaaaaaaa
+
+    // The VIEWED request completes — `onTerminal`'s direct `exitDetail()`
+    // degrade fires (already covered by the "ONLY active request" test above:
+    // this same publish emits `\x1b[?1049l` immediately). What that test does
+    // NOT exercise is what happens on the NEXT render.
+    req.publish({
+      kind: "request.completed",
+      ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 2000),
+      entry: { id: "aaaaaaaa", endpoint: "anthropic-messages", state: "completed" },
+    } as never)
+    chunks.length = 0 // only inspect output from the render simulating the next footer-timer tick
+
+    // Before the root-cause fix, `exitDetail()` cleared `detailActive` but left
+    // `uiState.view === "detail"` (only the reducer's `escape` transition set
+    // it to `"panel"`, and this direct call bypasses the reducer entirely). So
+    // the very next `render()` dispatch (footer timer / any further input)
+    // still routed to `renderDetail()`, which unconditionally re-wrote
+    // `\x1b[?1049h` and repainted — bouncing back into the alt screen on
+    // stale/shifted content instead of staying on the panel it just degraded
+    // to. `up` is inert in the reducer's `detail` case (a no-op transition),
+    // isolating this assertion to "did the NEXT render dispatch correctly" —
+    // not "did this keypress do anything else".
+    stdin.emit("data", Buffer.from([0x1b, 0x5b, 0x41])) // \x1b[A (up arrow)
+    const out = chunks.join("")
+    expect(out).not.toContain("\x1b[?1049h") // must not bounce back into the alt screen
+    ui.destroy()
+  })
+
+  test("I1 residual B: viewing B while an earlier sibling (A) terminates — a later render still shows B, never the entry that shifted into its old index", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    const req = bus.scope("request")
+    req.publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 3000) })
+    req.publish({ kind: "request.created", ctx: makeCtx("bbbbbbbb", "gpt-5", 2000) })
+    req.publish({ kind: "request.created", ctx: makeCtx("cccccccc", "gpt-5", 1000) })
+
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel, selectedIndex 0 (aaaaaaaa)
+    stdin.emit("data", Buffer.from([0x1b, 0x5b, 0x42])) // down → selectedIndex 1 (bbbbbbbb)
+    stdin.emit("data", Buffer.from("\r")) // panel → detail, viewing bbbbbbbb (index 1)
+
+    // A sibling (aaaaaaaa, index 0 — NOT the viewed request) terminates.
+    // Removing it left-shifts `active`'s iteration order: bbbbbbbb moves from
+    // index 1 to index 0, cccccccc from index 2 to index 1 — so a naive
+    // re-lookup by the STILL-1 `selectedIndex` would now resolve to
+    // cccccccc, not bbbbbbbb.
+    req.publish({
+      kind: "request.completed",
+      ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 3000),
+      entry: { id: "aaaaaaaa", endpoint: "anthropic-messages", state: "completed" },
+    } as never)
+    chunks.length = 0 // only inspect the render simulating the next footer-timer tick
+
+    // `viewingId !== ctx.id` (bbbbbbbb is viewed, aaaaaaaa terminated) so
+    // `onTerminal` does NOT call `exitDetail()` — detail stays open on
+    // bbbbbbbb. `printLog`'s `detailActive` guard queues aaaaaaaa's log line
+    // and returns without rendering, so drive the next render the same way a
+    // footer-timer tick would: `up` is inert in the reducer's `detail` case,
+    // isolating this to "which entry does the NEXT repaint resolve" — not
+    // "did this keypress change the selection".
+    stdin.emit("data", Buffer.from([0x1b, 0x5b, 0x41])) // \x1b[A (up arrow), no-op in detail
+    const out = chunks.join("")
+    expect(out).toContain("req_id: bbbbbbbb") // still viewing the SAME request (id-based lookup)
+    expect(out).not.toContain("req_id: cccccccc") // never silently drifted to the entry that shifted into the old index
+    ui.destroy()
+  })
 })
