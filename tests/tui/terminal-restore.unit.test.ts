@@ -43,6 +43,11 @@ const NOW = 1_700_000_000_000
 const DECSTBM_SET = /\x1b\[1;\d+r/
 // DECSTBM reset — the scroll region is torn back down to the full screen.
 const SCROLL_RESET = "\x1b[r"
+// Alternate-screen leave sequence — the terminal must drop back to the
+// primary screen before any cooked-mode teardown runs (C2).
+const ALT_SCREEN_LEAVE = "\x1b[?1049l"
+// Cursor-show sequence written by `Region.clear()` at the tail of restore.
+const SHOW_CURSOR = "\x1b[?25h"
 
 /**
  * Fake raw-mode stdin: an EventEmitter with the ReadStream methods spied
@@ -177,6 +182,25 @@ describe("TerminalUi — terminal restore robustness (Task 6)", () => {
     sys.publish({ kind: "system.shutdown_phase_changed", phase: "draining", previousPhase: "draining", needsFlush: false })
     sys.publish({ kind: "system.shutdown_phase_changed", phase: "aborting", previousPhase: "draining", needsFlush: false })
     expect(stdin.setRawMode.mock.calls.length).toBe(rawModeCalls)
+  })
+
+  test("restore while in detail leaves the alt screen first (C2)", () => {
+    const { bus, stdin, chunks, sliceFrom, exitHook } = makeInteractiveUi()
+
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "gpt-5", 1000) })
+    stdin.emit("data", Buffer.from(" ")) // space → panel
+    stdin.emit("data", Buffer.from("\r")) // enter → detail (alt screen entered)
+
+    const hook = exitHook()
+    expect(hook).toBeDefined()
+
+    const mark = chunks.length
+    hook?.() // simulate a crash/exit path — restoreTerminal fires while still in detail
+    const out = sliceFrom(mark)
+
+    const altScreenLeaveAt = out.indexOf(ALT_SCREEN_LEAVE)
+    expect(altScreenLeaveAt).toBeGreaterThanOrEqual(0) // leaves the alt screen first
+    expect(altScreenLeaveAt).toBeLessThan(out.indexOf(SHOW_CURSOR)) // …before cursor/scroll-region teardown
   })
 
   test("non-interactive (no stdin) → shutdown-drain + restore are inert, no exit hook", () => {

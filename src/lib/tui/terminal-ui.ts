@@ -931,10 +931,25 @@ export class TerminalUi {
    * and the shutdown-drain phase all call it). Detaches the stdin listener,
    * pauses stdin, leaves raw mode, and tears down the Region (DECSTBM reset
    * `\x1b[r` + cursor shown). No-op when non-interactive or already restored.
+   *
+   * C2 (alt-screen-aware): a crash, exit-hook, or shutdown-drain can fire
+   * while a detail view is still on the alternate screen (`detailActive`) —
+   * unlike `exitDetail()`'s normal `escape`-driven path, none of those events
+   * runs the controller's `detail → panel` transition first. Left unhandled,
+   * the process would exit with the terminal stuck in the alt buffer. So
+   * `\x1b[?1049l` is written *before* `region.clear()`'s DECSTBM reset +
+   * cursor show, dropping back to the primary screen first — mirroring
+   * `exitDetail`'s ordering, but without its `forceReestablish` / replay /
+   * repaint (there is no more panel to repaint once the terminal is being
+   * torn down for good).
    */
   private restoreTerminal(): void {
     if (!this.interactive || this.restored) return
     this.restored = true
+    if (this.detailActive) {
+      this.stdout.write("\x1b[?1049l")
+      this.detailActive = false
+    }
     if (this.onData) this.stdin?.removeListener("data", this.onData)
     this.stdin?.pause()
     this.stdin?.setRawMode(false)
