@@ -23,6 +23,9 @@ import type { SSEStreamingApi } from "hono/streaming"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { SseEventRecord } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
 import type { OpenAIAutoTruncateResult } from "~/lib/openai/auto-truncate"
@@ -31,6 +34,7 @@ import type {
   //
   ClientFrame,
   DriverRequestResult,
+  UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
@@ -40,11 +44,25 @@ import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "~/types/api/openai-chat-completions"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
+import {
+  //
+  accumulateAnthropicStreamEvent,
+  createAnthropicStreamAccumulator,
+} from "~/lib/anthropic/stream-accumulator"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
+import {
+  //
+  buildReverseResanitize,
+  createReverseAnthropicMapperHolder,
+  createReverseAnthropicSanitizeRewrite,
+} from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
+import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
@@ -65,9 +83,10 @@ import {
 } from "~/lib/openai/tool-name-sanitize"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
+import { openaiNonStreamingTruncation, anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import {
   //
+  buildAnthropicResponseData,
   buildOpenAIResponseData,
   usageFromTotalInput,
 } from "~/lib/request"
@@ -116,7 +135,12 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
 
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
-  const codec = createOpenAiCcCodec()
+  // REVERSE `@messages` leg (Phase 5): the shared beta probe (codec prepareWire recordOutbound +
+  // strategies) + the shared Anthropic tool-name mapper holder (sanitize rewrite + resanitize, same
+  // source). Both are INERT on the forward/direct CC legs (the reverse rewrite/strategies gate MESSAGES).
+  const reverseBetaProbe = createBetaProbe(undefined)
+  const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, selectedModel?.vendor)
+  const codec = createOpenAiCcCodec({ reverseBetaProbe })
   const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: state.streamIdleTimeout * 1000 })
 
   // Truncation result for the response marker (captured from the strategy factory).
@@ -125,11 +149,30 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   const driver = createPipelineDriver({
     codec,
     transport,
-    // Full-format S5 union (RFC §7.1). Inert for the CC-inbound legs today (no rewrite's
-    // `appliesTo` matches targetEndpoint ∈ {/chat/completions, /responses} for clientFormat
-    // openai-cc); it carries the mechanism for the future reverse leg (cc→/v1/messages, Phase 5).
+    // S3 request rewrites. The reverse Anthropic sanitize rewrite gates `targetEndpoint===/v1/messages`
+    // (inert on the forward/direct CC legs, so the direct CC path is byte-unchanged); on a reverse
+    // `@messages` leg it strips orphan tool_result / system-reminders the CC→Anthropic translation left
+    // behind (else a GHC 400), using the Anthropic mapper — NOT the CC `ctx.toolNameMapper`.
+    requestRewrites: [createReverseAnthropicSanitizeRewrite(reverseMapperHolder)],
+    // Full-format S5 union (RFC §7.1). On a reverse `@messages` leg the ANTHROPIC册 fires (targetEndpoint
+    // ===/v1/messages) on the upstream Anthropic frames BEFORE the S6 Anthropic→CC render; on the
+    // forward/direct CC legs no rewrite's `appliesTo` matches (byte-unchanged).
     responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
+      // REVERSE `@messages` leg: the outbound wire is Anthropic → the ANTHROPIC strategy stack, supplied
+      // from the hub (env.body is the translated + sanitized Anthropic body), decoupled from any Anthropic
+      // codec (RFC §7.1 / W-strategies-builder). resanitize + the sanitize rewrite share ONE mapper holder.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) {
+        return assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, {
+          anthropic: {
+            originalPayload: env.body as MessagesPayload,
+            resanitize: buildReverseResanitize(reverseMapperHolder),
+            model: env.model as Model | undefined,
+            maxRetries: state.autoTruncateMaxRetries,
+            betaProbe: reverseBetaProbe,
+          },
+        })
+      }
       const viaResponses = env.targetEndpoint === ENDPOINT.RESPONSES
       if (viaResponses) env.ctx.recordFeature("via-responses") // P2.2-D6
       return buildOpenAiCcStrategies({
@@ -198,6 +241,9 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   if (!env.stream) {
     try {
       const ccResp = driver.runResponseNonStreaming(upstream, env) as ChatCompletionResponse
+      // REVERSE `@messages` leg (Phase 5): the client-facing body is the CC render, but the OUTBOUND leg
+      // recorded must be the HONEST Anthropic upstream (richest-data-flow) — a dedicated render path.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) return renderReverseNonStreamingV4(c, env, ccResp, upstream.nonStream as AnthropicMessageResponse)
       return renderNonStreamingV4(c, env, ccResp, truncateResult)
     } finally {
       detachClientAbort()
@@ -212,7 +258,11 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
     env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     env.ctx.setClientResponseStatus(c.res.status)
     try {
-      await pumpStreamingV4({ stream, driver, upstream, env, getTruncateResult: () => truncateResult })
+      // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic — accumulate the raw Anthropic frames
+      // for the honest outbound while forwarding the rendered CC frames (no heartbeat; a CC client is not
+      // Claude Code, so no anchor/300s deadline). The forward/direct CC legs keep the byte-critical pump.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) await pumpReverseAnthropicLegV4({ stream, driver, codec, upstream, env })
+      else await pumpStreamingV4({ stream, driver, upstream, env, getTruncateResult: () => truncateResult })
     } finally {
       detachClientAbort()
     }
@@ -433,4 +483,147 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   await sink.write({ data: "[DONE]" })
   recordForwarded()
   env.ctx.complete(buildOpenAIResponseData(acc, model))
+}
+
+// ============================================================================
+// REVERSE `@messages` leg (Phase 5) — non-streaming render + streaming pump
+// ============================================================================
+
+/**
+ * Non-streaming render for a REVERSE `@messages` leg (cc→messages). The client-facing body is the CC
+ * render (`ccResp`, translated Anthropic→CC by the codec), tool-name-restored; the OUTBOUND leg recorded
+ * is the HONEST Anthropic upstream (`anthropicUpstream`) — NOT the CC form (richest-data-flow "后端存储
+ * 必须完整"). Truncation is judged on the Anthropic `stop_reason` (the honest upstream verdict).
+ */
+function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, ccResp: ChatCompletionResponse, anthropicUpstream: AnthropicMessageResponse): Response {
+  // Restore client tool_call names on the CC body the client receives.
+  const clientResponse = restoreChatCompletionsToolNames(ccResp, env.ctx.toolNameMapper)
+  env.ctx.setForwardedResponse({ content: clientResponse.choices[0]?.message })
+
+  // RFC Phase 4: ④ build the client response first, capture its headers, THEN settle.
+  const httpResponse = c.json(clientResponse)
+  env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
+  env.ctx.setClientResponseStatus(httpResponse.status)
+
+  // The OUTBOUND-leg (honest Anthropic) response data. Truncation gate on the Anthropic stop_reason.
+  const truncationReason = anthropicNonStreamingTruncation(anthropicUpstream.stop_reason)
+  const responseData = {
+    success: !truncationReason,
+    model: anthropicUpstream.model,
+    usage: {
+      input_tokens: anthropicUpstream.usage.input_tokens,
+      output_tokens: anthropicUpstream.usage.output_tokens,
+      ...(anthropicUpstream.usage.cache_read_input_tokens != null && { cache_read_input_tokens: anthropicUpstream.usage.cache_read_input_tokens }),
+      ...(anthropicUpstream.usage.cache_creation_input_tokens != null && { cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens }),
+    },
+    stop_reason: anthropicUpstream.stop_reason ?? undefined,
+    content: { role: "assistant" as const, content: anthropicUpstream.content },
+    // G6 (richest-data-flow): persist the raw Anthropic upstream body so the outbound row keeps the honest
+    // upstream shape (never the CC render). Re-serialized from the parsed pristine response (lossless).
+    responseText: JSON.stringify(anthropicUpstream),
+  }
+  if (truncationReason) {
+    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
+  } else {
+    env.ctx.complete(responseData)
+  }
+  return httpResponse
+}
+
+interface PumpReverseAnthropicLegOptions {
+  stream: SSEStreamingApi
+  driver: ReturnType<typeof createPipelineDriver>
+  codec: ReturnType<typeof createOpenAiCcCodec>
+  upstream: UpstreamStream
+  env: RequestEnvelope
+}
+
+/**
+ * Stream pump for a REVERSE `@messages` leg (cc→messages) — the upstream is an Anthropic SSE stream, the
+ * codec's `renderResponse` translates each Anthropic frame to CC frame(s) (T5.1), and the client receives
+ * the CC stream. This handler:
+ *   - accumulates the RAW UPSTREAM Anthropic frame into the Anthropic accumulator via `onUpstreamFrame`, so
+ *     `outboundResponse` stays honest (the upstream's real Anthropic shape — RFC §4.1 / richest-data-flow),
+ *     distinct from the client track (`inboundResponse.sseEvents` = the forwarded CC frames the sink samples),
+ *   - forwards the rendered CC frames (tool-name restored) + synthesizes the SINGLE trailing `[DONE]`,
+ *   - has NO heartbeat / anchor (a CC client is not Claude Code — the 300s no-real-content deadline and the
+ *     anchor/reconcile three-way do NOT apply; cc/responses/gemini pumps have no heartbeat, WARN-C),
+ *   - settles from `codec.getStreamMeta()` (out-of-band CC finish_reason + net usage): a clean drain WITHOUT
+ *     a finish_reason is an upstream truncation (F2 — the Anthropic stream ended with no message_delta / a
+ *     missing message_stop), failed with a synthetic OpenAI error terminator.
+ *
+ * L2 buffered-retry is NOT applied on the reverse leg (RFC §7.3 / OQ6 — the CC client has no equivalent).
+ */
+async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): Promise<void> {
+  const { stream, driver, codec, upstream, env } = opts
+  const model = (env.body as MessagesPayload).model
+  const mapper = env.ctx.toolNameMapper
+
+  // OUTBOUND-leg (raw upstream Anthropic) accumulator — feeds `outboundResponse` the honest upstream shape.
+  const anthropicAcc = createAnthropicStreamAccumulator()
+  const onUpstreamFrame = (frame: UpstreamFrame): void => {
+    const raw = frame as ServerSentEventMessage
+    if (!raw.data || raw.data === "[DONE]") return
+    try {
+      accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, anthropicAcc)
+    } catch (error) {
+      // A malformed upstream frame is logged, not fatal (parity with the direct pump).
+      consola.error("[ChatCompletions:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
+    }
+  }
+
+  const forwardedSseEvents: Array<SseEventRecord> = []
+  const streamStartMs = Date.now()
+  let bytesIn = 0
+  let eventsIn = 0
+  const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs })
+  const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+
+  // Per rendered CC frame (post-S6): progress + tool-name restore for the forwarded client frame. The raw
+  // Anthropic-track accumulate is `onUpstreamFrame` (above); the ANTHROPIC server-tool-filter already
+  // restored client names on the upstream frames, so this restore is an idempotent safety net.
+  const onRenderedFrame = (frame: ClientFrame): ClientFrame => {
+    bytesIn += frame.data?.length ?? 0
+    eventsIn++
+    env.ctx.recordStreamProgress({ bytesIn, eventsIn })
+    return { ...frame, data: restoreStreamToolNames(frame.data, mapper) }
+  }
+
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, onRenderedFrame })
+
+  if (outcome.kind === "settled-abort") {
+    recordForwarded()
+    consola.debug("[ChatCompletions:v4:reverse] Client disconnected mid-stream — recording aborted")
+    env.ctx.abort(anthropicAcc.model || model, buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+
+  if (outcome.kind === "stream-error") {
+    // H3 — the upstream iterable (or a sink write) threw. Write the CC error frame + record it, THEN settle
+    // with the honest Anthropic outbound (order load-bearing: writeSynthetic samples → recordForwarded
+    // snapshots → fail freezes inboundResponse).
+    const error = outcome.error
+    consola.error("[ChatCompletions:v4:reverse] Stream error:", error)
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+
+  // outcome.kind === "complete" — the upstream drained. The CC finish_reason is the F2 signal: undefined ⇒
+  // the Anthropic stream ended without a message_delta stop_reason ⇒ truncation.
+  const meta = codec.getStreamMeta()
+  // Flush the reverse translator's terminal frames (empty for the CC leg — finish/usage are inline).
+  for (const frame of codec.flushResponse(env)) await sink.write(frame)
+  if (meta?.finishReason === undefined) {
+    const truncErr = new Error("Upstream Anthropic stream truncated before completion (no finish_reason)")
+    consola.error(`[ChatCompletions:v4:reverse] Upstream truncated for ${anthropicAcc.model || model}: drained without a finish_reason`)
+    await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+  await sink.write({ data: "[DONE]" })
+  recordForwarded()
+  env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
 }
