@@ -1,5 +1,7 @@
 # Spec：per-model 流超时（stream idle + response header timeout override）
 
+> **实施状态（2026-07-12）**：已落地 master。P1 d7883b05 / P2 b21b10ea / P3 c72e6f31 / P4a e8112c82 / P4b(ADR+守卫)。handler setStreamTimeouts 调用点随并发 commit 00f2a38a 落地（shared-worktree git-add sweep）。
+
 - 状态：草案 v2（并入一轮对抗审查 + coordinator 亲手核验：改正 undici backstop 假前提 BLOCKER、内置默认机制 H1、config schema 集成缺口 H3、读点行号漂移；用户定 D1/D2/D4）
 - 日期：2026-07-12
 - 归属：`docs/spec/`；配套 plan 落 `docs/plan/`。§7「为何不需要 transport backstop 耦合」升为拟 ADR（若采纳落 `docs/decisions/2026-07-12-per-model-idle-timeout-is-app-guard-only.md`）
