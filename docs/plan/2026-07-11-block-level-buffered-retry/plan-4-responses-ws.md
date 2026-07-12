@@ -28,44 +28,49 @@
 - Consumes：`resolveResponsesBufferedAndHeartbeat`（`responses/buffered-config.ts`，复用）；P2 Responses 谓词（terminal 用法）；P0 骨架 + `partial-degrade`。
 - **fallback 核实（H4，已确证非占位）**：`ws.ts:279` 已有 `const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS`，`ws.ts:386` 有 `if (viaFallback) codec.flushResponse` 循环外后置合成——与 P2 direct 子路径**同根因**。故 buffered 分支**直接**门控 `buffered && !viaFallback`（复用 ws.ts:279、fallback 保持 live），并加 fallback+buffered=live 回归测试（同 P2 Task 3）。
 
-- [ ] **Step 1: 写失败测试（terminal-only buffered + mid-stream drop 重试）**
+- [x] **Step 1: 写失败测试（terminal-only buffered + mid-stream drop 重试）**
 
 ```typescript
-// tests/responses/ws-buffered.integration.test.ts （Node ws/http2 server 夹具）
-test("WS buffered: mid-stream upstream drop before terminal → retried & recovered", async () => {
+// tests/responses/ws-buffered.integration.test.ts （Bun.serve + hono/bun 夹具，同 responses-ws.http.test.ts）
+test("buffered ON: mid-stream upstream drop before terminal → retried & recovered, client sees ONE complete generation", async () => {
   // buffered on：WS 上游流终止(response.completed)前掉线 → 透明重试 → 第二次收全 → 客户端拿完整。
   // 断言 stopAfterFrame:isTerminal 不在 buffered 累积期截断未提交 buffer。
 })
 ```
 
-- [ ] **Step 2: 跑证失败** — FAIL（现仅 runResponseSink）。
+- [x] **Step 2: 跑证失败** — FAIL（现仅 runResponseSink）。已用**反事实法**验证两处：① 强制 `buffered=false` → 断言 `PARTIAL_ATTEMPT_1` 泄漏到客户端，红；② 去掉 `!viaFallback` 门 → fallback 测试断言空 telemetry 失败，红。两处均已复原为正确实现并转绿。
 
-- [ ] **Step 3: ws.ts 选路**
+- [x] **Step 3: ws.ts 选路** — 已落地（见下方实测代码，vendor 采 `"responses_ws"`，理由见自审）。
 
 ```typescript
-// responses/ws.ts handleResponseCreateV4 替换 :359
-const { buffered, heartbeatSec } = resolveResponsesBufferedAndHeartbeat()
-const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS // 复用 ws.ts:279 已有实现（H4：WS 确有 via-cc-fallback，flushResponse 后置合成见 ws.ts:386，与 P2 同根因）
-const outcome = (buffered && !viaFallback)
-  ? await driver.runResponseBufferedSink(upstream, env, makeWsSink(ws, { heartbeatSec }), {
+// responses/ws.ts handleResponseCreateV4 替换 :359 —— 实际落地版本
+const { buffered: bufferedConfigured } = resolveResponsesBufferedAndHeartbeat()
+const buffered = bufferedConfigured && !viaFallback
+const outcome =
+  buffered ?
+    await driver.runResponseBufferedSink(upstream, env, sink, {
       onRenderedFrame: restoreAccumulateCount,
       stopAfterFrame: isTerminal,
-      commitBoundaries: responsesCommitBoundaries, // P2 谓词，terminal 用法
+      commitBoundaries: isResponsesCommitBoundary, // P2 谓词，terminal 用法（TERMINAL_EVENTS ⊆ commit boundary types）
       sawMessageStop: () => acc.status !== "",
       sawUpstreamError: () => acc.streamError !== undefined,
-      telemetryVendor: "responses_ws",            // 或复用 "responses"——见自审
+      telemetryVendor: "responses_ws",            // 独立 vendor 维度（见自审）
       retryCap: resolveBufferedCaps("responses").maxRetries,
       bufferCapBytes: resolveBufferedCaps("responses").bufferCapBytes,
-      onBufferedResolve: (o, retries, meta) => recordProtectStreamingOutcome(o, retries, meta),
-      onAttemptReset: () => { /* reset responses acc */ },
+      onBufferedResolve: (o, retries, meta) => {
+        if (o === "success" && retries === 0) return
+        recordProtectStreamingOutcome(o, retries, meta)
+        env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries, vendor: meta.vendor })
+      },
+      onAttemptReset: () => { acc = createResponsesStreamAccumulator(); eventsReceived = 0 },
     })
   : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, stopAfterFrame: isTerminal })
 ```
 
-- [ ] **Step 4: 跑证通过 + 提交**
+- [x] **Step 4: 跑证通过 + 提交**
 
 ```bash
-bun test tests/responses/ws-buffered.integration.test.ts
+bun test tests/responses/ws-buffered.integration.test.ts  # 2 pass, 10/10 重跑确定性
 git add src/routes/responses/ws.ts tests/responses/ws-buffered.integration.test.ts
 git commit -m "feat(responses-ws): terminal-only buffered retry (reuse responses.buffered_retry key)"
 ```
