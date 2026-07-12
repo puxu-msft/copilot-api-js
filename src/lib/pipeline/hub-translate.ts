@@ -18,9 +18,13 @@
  * cell resolves to the right translator, whether or not a codec consumes it yet (the forward
  * anthropic→cc/responses cells are wired by the anthropic codec in T2.4; the reverse `→ messages`
  * cells are wired in Phase 5). The NON-STREAMING RESPONSE-side dispatch (`renderResponseNonStreamingVia`)
- * is wired here in Phase 3 (both directions); the STREAMING response-side dispatch (`renderResponseVia`)
- * stays a Phase 4 skeleton that throws — streaming translation legs stay end-to-end fail-fast until then.
+ * is wired here in Phase 3 (both directions). The STREAMING response-side dispatch is wired here in
+ * Phase 4 for the FORWARD legs via {@link createForwardStreamTranslator} (a per-request stateful factory
+ * the anthropic codec drives per-frame): the cc leg is a single hop (CC→Anthropic), the responses leg a
+ * two-hop (Responses→CC→Anthropic, WARN-F). The REVERSE `→ messages` streaming cells stay Phase 5.
  */
+
+import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { Model } from "~/lib/models/client"
 import type {
@@ -28,13 +32,18 @@ import type {
   ClientFormat,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { ClientFrame } from "~/lib/pipeline/types"
 import type { Message as AnthropicResponse, MessagesPayload } from "~/types/api/anthropic"
 import type { ChatCompletionResponse, ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
-import type { ResponsesPayload, ResponsesResponse } from "~/types/api/openai-responses"
+import type { ResponsesPayload, ResponsesResponse, ResponsesStreamEvent } from "~/types/api/openai-responses"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
+  type CcToAnthropicStreamMeta,
+  type CcToAnthropicStreamTranslator,
+  createCcToAnthropicStreamTranslator,
+  createStreamTranslator,
   translateAnthropicResponseToCC,
   translateAnthropicToChatCompletions,
   translateCCResponseToAnthropic,
@@ -144,17 +153,72 @@ export function renderResponseNonStreamingVia(targetEndpoint: UpstreamEndpoint, 
 }
 
 /**
- * Response-side STREAMING translation dispatch — Phase 4 skeleton.
+ * Response-side STREAMING translation dispatch — Phase 4 (T4.1/T4.2/T4.3).
  *
- * Until STREAMING response translation lands, a streaming translation leg is INTENTIONALLY end-to-end
- * fail-fast (RFC §7 / the Phase-2 commit invariant): letting an anthropic→cc request reach the upstream
- * and return CC frames un-translated to the Anthropic client would forward corrupt data. Throwing here
- * (mirrored by the codec's per-frame `renderResponse` fail-fast) makes the leg fail loudly instead. The
- * NON-STREAMING path is wired (see {@link renderResponseNonStreamingVia}); Phase 4 replaces this with the
- * real CC↔Anthropic streaming translators.
+ * A per-request stateful factory the anthropic codec drives per-frame (`renderResponse` →
+ * {@link ForwardStreamTranslator.renderFrame}; stream-end → `flushResponse` → {@link
+ * ForwardStreamTranslator.flush}; out-of-band terminal meta → `getStreamMeta` → {@link
+ * ForwardStreamTranslator.getMeta}). Two FORWARD legs (dispatched purely on `targetEndpoint`):
+ *   - `/chat/completions` (cc leg) — SINGLE hop: the upstream CC SSE stream is fed straight into the
+ *     {@link createCcToAnthropicStreamTranslator} (T4.1).
+ *   - `/responses` | `ws:/responses` (responses leg) — TWO hop (WARN-F): the upstream Responses SSE
+ *     stream is first translated to CC frames (the existing {@link createStreamTranslator} Responses→CC
+ *     primitive), then those CC frames feed the CC→Anthropic translator. The getStreamMeta signal chain
+ *     is therefore "Responses翻译 → CC帧 → 累积" — the CC→Anthropic translator's accumulator (fed the
+ *     translated CC chunks) is the single source of the terminal usage/stop_reason.
+ *
+ * The REVERSE `→ /v1/messages` streaming leg (Anthropic upstream → CC/gemini/responses client) stays
+ * Phase 5 — {@link createForwardStreamTranslator} throws for it (never-swallow).
  */
-export function renderResponseVia(): never {
+export interface ForwardStreamTranslator {
+  /** Translate ONE raw upstream SSE frame → 0+ Anthropic SSE frames. */
+  renderFrame(frame: ClientFrame): Array<ClientFrame>
+  /** Stream-end drain: the terminal Anthropic frames (close open block + message_delta + message_stop). */
+  flush(): Array<ClientFrame>
+  /** The terminal meta (Anthropic stop_reason + net usage) the owns-sink handler reads out-of-band. */
+  getMeta(): CcToAnthropicStreamMeta
+}
+
+export function createForwardStreamTranslator(targetEndpoint: UpstreamEndpoint, modelId: string): ForwardStreamTranslator {
+  const ccToAnthropic: CcToAnthropicStreamTranslator = createCcToAnthropicStreamTranslator(modelId)
+
+  if (targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) {
+    // cc leg: single hop — feed the upstream CC frame straight into the CC→Anthropic translator.
+    return {
+      renderFrame: (frame) => ccToAnthropic.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
+      flush: () => ccToAnthropic.flush().map((s) => s.frame),
+      getMeta: () => ccToAnthropic.getMeta(),
+    }
+  }
+
+  if (targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES) {
+    // responses leg: two hop — Responses→CC (per-frame) → CC→Anthropic. `includeUsage:true` so the CC
+    // chunks carry the terminal usage the CC→Anthropic accumulator nets (getStreamMeta signal chain).
+    const responsesToCc = createStreamTranslator({ includeUsage: true })
+    return {
+      renderFrame: (frame) => {
+        if (!frame.data || frame.data === "[DONE]") return []
+        let event: ResponsesStreamEvent
+        try {
+          event = JSON.parse(frame.data) as ResponsesStreamEvent
+        } catch {
+          // Unparseable upstream Responses frame — skip (mirrors the Responses→CC whole-stream wrapper).
+          return []
+        }
+        const out: Array<ClientFrame> = []
+        for (const ccChunk of responsesToCc.translate(event)) {
+          for (const s of ccToAnthropic.renderFrame({ data: JSON.stringify(ccChunk), event: "message" })) out.push(s.frame)
+        }
+        return out
+      },
+      flush: () => ccToAnthropic.flush().map((s) => s.frame),
+      getMeta: () => ccToAnthropic.getMeta(),
+    }
+  }
+
+  // REVERSE `→ /v1/messages` streaming leg is Phase 5 — fail loudly (never-swallow) rather than return
+  // un-translated frames to a non-Anthropic client.
   throw new Error(
-    "[hub-translate] STREAMING response-side translation is not wired yet (Phase 4) — streaming translation legs are end-to-end fail-fast until then (non-streaming is wired via renderResponseNonStreamingVia)",
+    `[hub-translate] createForwardStreamTranslator: the REVERSE streaming leg (targetEndpoint=${targetEndpoint} → /v1/messages) is not wired yet (Phase 5); only the forward cc/responses legs stream-translate to Anthropic (Phase 4)`,
   )
 }

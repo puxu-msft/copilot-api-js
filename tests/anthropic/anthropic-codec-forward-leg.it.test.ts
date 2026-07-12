@@ -110,19 +110,23 @@ describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectR
   })
 })
 
-describe("T3.3 — non-streaming response side translates for a translate leg; streaming stays fail-fast", () => {
+describe("T3.3/T4.2 — non-streaming + streaming response side translate for a translate leg", () => {
   useIsolatedRuntime()
 
   function translateLegEnv(): RequestEnvelope {
-    return { targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, body: {}, model: {}, ctx: { recordFeature: () => {} } } as unknown as RequestEnvelope
+    return { targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, body: { model: "claude-x" }, model: { id: "claude-x" }, ctx: { recordFeature: () => {} } } as unknown as RequestEnvelope
   }
   function directEnv(): RequestEnvelope {
     return { targetEndpoint: ENDPOINT.MESSAGES, body: {}, model: {} } as unknown as RequestEnvelope
   }
   const codec = () => createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
 
-  test("renderResponse (STREAMING) THROWS for a translate leg (per-frame state machine is Phase 4)", () => {
-    expect(() => codec().renderResponse({ data: "{}", event: "message" }, translateLegEnv())).toThrow(/STREAMING response-side translation is not wired yet/)
+  test("renderResponse (STREAMING) TRANSLATES a CC frame to Anthropic frame(s) for a translate leg (T4.2)", () => {
+    const out = codec().renderResponse({ data: JSON.stringify({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }] }), event: "message" }, translateLegEnv())
+    const frames = Array.isArray(out) ? out : [out]
+    const types = frames.map((f) => JSON.parse((f as { data: string }).data).type)
+    expect(types).toContain("message_start")
+    expect(types).toContain("content_block_delta")
   })
 
   test("renderResponseNonStreaming TRANSLATES a CC completion back to an Anthropic response (T3.3)", () => {

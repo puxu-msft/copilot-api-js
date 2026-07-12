@@ -194,10 +194,11 @@ export function createOpenAiGeminiCodec(modelId: string): OpenAiGeminiCodec {
       return cc.renderResponseNonStreaming(upstream, env)
     },
 
-    createResponseAccumulator(): ResponseAccumulator {
+    createResponseAccumulator(env): ResponseAccumulator {
       // Upstream is CC (passthrough) or normalized-to-CC (via-responses), so the
-      // outbound-track accumulator is the CC one.
-      return cc.createResponseAccumulator()
+      // outbound-track accumulator is the CC one. (`env` threaded to the cc delegate for the interface;
+      // Gemini has no `→ messages` translate leg, so the leg never changes the accumulator.)
+      return cc.createResponseAccumulator(env)
     },
 
     sampleRequest(wire, env): RequestSample {

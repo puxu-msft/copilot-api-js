@@ -251,7 +251,10 @@ export function createOpenAiResponsesCodec(): OpenAiResponsesCodec {
       return formatOpenAiResponsesError(err)
     },
 
-    createResponseAccumulator(): ResponseAccumulator {
+    createResponseAccumulator(_env): ResponseAccumulator {
+      // The upstream is Responses-shaped for BOTH legs (direct /responses; the CC-fallback leg's per-frame
+      // translation to Responses happens in `renderResponse`, so the accumulated frames are Responses).
+      // Leg-independent; `_env` is accepted for the interface (RFC §4.1).
       return createResponsesStreamAccumulator()
     },
 

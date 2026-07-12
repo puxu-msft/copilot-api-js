@@ -67,6 +67,7 @@ import type {
   RequestSample,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
+import type { CcToAnthropicStreamMeta } from "~/lib/openai/translate"
 import type { PrepareHints } from "~/lib/request/pipeline"
 import type {
   //
@@ -111,8 +112,12 @@ import {
   resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
+import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
+import { createResponsesStreamAccumulator } from "~/lib/openai/responses-stream-accumulator"
 import {
   //
+  createForwardStreamTranslator,
+  type ForwardStreamTranslator,
   renderResponseNonStreamingVia,
   translateRequestVia,
 } from "~/lib/pipeline/hub-translate"
@@ -153,6 +158,21 @@ export interface AnthropicCodec extends FormatCodec {
   getLatestStrippedCacheControlSubfields(): ReadonlyArray<string> | undefined
   /** The per-request request rewrites (driver S3): the sanitize chain + its side-channel recordings (RFC §4.A0). */
   getRequestRewrites(): ReadonlyArray<RequestRewrite>
+  /**
+   * FORWARD translate-leg STREAMING drain (Phase 4, T4.2): the CC→Anthropic stream translator's
+   * terminal frames (close the open block + message_delta + message_stop). Returns `[]` for the direct
+   * leg (Anthropic upstream needs no synthesized terminator — it carries its own message_stop). The
+   * owns-sink handler calls it after the `driver.runResponseSink` loop (the per-frame `renderResponse`
+   * has no stream-end hook), mirroring the gemini / responses codecs.
+   */
+  flushResponse(env: RequestEnvelope): Array<ClientFrame>
+  /**
+   * FORWARD translate-leg terminal stream meta (Phase 4): the Anthropic `stop_reason` (undefined ⇒
+   * truncation, F2) + net usage the CC→Anthropic translator accumulated while rendering. `renderResponse`
+   * returns only frames, so this exposes the out-of-band meta the handler needs for `ctx.complete` / a
+   * partial settle. Undefined for the direct leg (the direct pump reads its own Anthropic accumulator).
+   */
+  getStreamMeta(): CcToAnthropicStreamMeta | undefined
 }
 
 /** Args for {@link createAnthropicCodec}. */
@@ -184,6 +204,16 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   // codec's own ctx / baseline / sanitize state stay ours; only cc's CC-wire prep + sampling are reused.
   let cc: OpenAiCcCodec | undefined
   const ccDelegate = (): OpenAiCcCodec => (cc ??= createOpenAiCcCodec())
+
+  // FORWARD translate-leg STREAMING translator (Phase 4), built lazily on the first streaming
+  // `renderResponse` for a translate leg. The cc leg drives it single-hop (CC→Anthropic); the responses
+  // leg drives it two-hop inside the hub (Responses→CC→Anthropic). A direct `/v1/messages` request never
+  // builds it (render is identity). `flushResponse` / `getStreamMeta` read the SAME instance.
+  let streamTranslator: ForwardStreamTranslator | undefined
+  const ensureStreamTranslator = (env: RequestEnvelope): ForwardStreamTranslator => {
+    const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
+    return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId))
+  }
 
   // The S3 request rewrite chain, built once per request. Execution order is by
   // the sorted `.order` key (NOT array position — assembleRequestRewrites sorts):
@@ -255,13 +285,14 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       return env.with({ body: ccBody })
     },
 
-    // S6 render (streaming): the direct path is identity. A FORWARD translate leg is STILL end-to-end
-    // fail-fast for STREAMING — the per-frame CC→Anthropic streaming state machine is Phase 4; until then,
-    // yielding un-translated CC frames to the Anthropic client would forward corrupt data, so render
-    // THROWS (never-swallow, WARN-1). Mirrors the hub's renderResponseVia streaming skeleton.
+    // S6 render (streaming): the direct path is identity. A FORWARD translate leg drives the per-request
+    // CC→Anthropic STREAMING translator (Phase 4, T4.1/T4.2) — cc leg single-hop, responses leg two-hop
+    // (composed inside the hub). Returns 0+ Anthropic frames per upstream frame; the terminal
+    // message_delta + message_stop are drained by `flushResponse` (the per-frame render has no stream-end
+    // hook, mirroring the gemini/responses codecs). The REVERSE `→ messages` streaming leg is Phase 5.
     renderResponse(frame, env) {
       if (!isForwardTranslateLeg(env.targetEndpoint)) return frame
-      throw new Error(failFastResponseMessage(env.targetEndpoint))
+      return ensureStreamTranslator(env).renderFrame(frame)
     },
     // S6 render (non-streaming): the direct path is identity. A FORWARD translate leg (Phase 3, T3.3)
     // delegates to the hub's CC→Anthropic response translator (`renderResponseNonStreamingVia`), turning
@@ -315,7 +346,30 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       return formatAnthropicError(err)
     },
 
-    createResponseAccumulator(): ResponseAccumulator {
+    // S6 streaming drain (Phase 4): a FORWARD translate leg drains the CC→Anthropic translator's terminal
+    // frames (message_delta + message_stop); the direct leg has none (Anthropic upstream carries its own
+    // message_stop → []). The handler writes these after the driver loop.
+    flushResponse(env) {
+      if (!isForwardTranslateLeg(env.targetEndpoint)) return []
+      return ensureStreamTranslator(env).flush()
+    },
+
+    // S6 streaming terminal meta (Phase 4): the translate leg's out-of-band stop_reason + net usage; the
+    // direct leg reads its own Anthropic accumulator → undefined here.
+    getStreamMeta() {
+      return streamTranslator?.getMeta()
+    },
+
+    // observability (S4 per-attempt): the OUTBOUND-leg accumulator (RFC §4.1 — accumulator is a
+    // targetEndpoint-axis concern, "上游腿形"). The direct leg's upstream is Anthropic → the Anthropic
+    // accumulator; a FORWARD cc leg's upstream is CC → the CC accumulator; a FORWARD responses leg's
+    // upstream is Responses → the Responses accumulator (feeding an accumulator the WRONG format's frames
+    // would produce a malformed/empty outboundResponse, violating richest-data-flow "后端存储必须完整").
+    // The `env` param was restored in Phase 4 (RFC §4.1); Phase 0/1 dropped it when the method had zero
+    // production consumers.
+    createResponseAccumulator(env): ResponseAccumulator {
+      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return createOpenAIStreamAccumulator()
+      if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return createResponsesStreamAccumulator()
       return createAnthropicStreamAccumulator()
     },
   }
@@ -328,11 +382,6 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
  */
 function isForwardTranslateLeg(targetEndpoint: UpstreamEndpoint | undefined): targetEndpoint is Exclude<UpstreamEndpoint, "/v1/messages"> {
   return targetEndpoint === ENDPOINT.CHAT_COMPLETIONS || targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES
-}
-
-/** The fail-fast error message for a translate leg's STREAMING response side (per-frame translation lands Phase 4). */
-function failFastResponseMessage(targetEndpoint: UpstreamEndpoint): string {
-  return `anthropic codec cannot render a STREAMING response for the ${targetEndpoint} translate leg — the per-frame CC→Anthropic STREAMING response-side translation is not wired yet (Phase 4); the streaming leg is intentionally end-to-end fail-fast so un-translated CC frames are never returned to the Anthropic client (non-streaming is wired via renderResponseNonStreaming, Phase 3)`
 }
 
 // ============================================================================
