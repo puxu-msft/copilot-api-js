@@ -82,8 +82,9 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 
 **非目标：**
 - N1 **不**为 Tier 2 模态/prediction 字段加 SQLite 列、不 backfill 它们（用户裁决：blob-only；无 SQL 聚合消费者前不加列——见 §7 未采纳记录）。
-- N2 不改 Anthropic 原生腿的 usage 构建（已正确，且 `usage-normalize.ts` 明确不经它）。
+- N2 不改 Anthropic 原生腿的 usage 构建（已正确，且 `usage-normalize.ts` 明确不经它）。显式排除的两个 usage 构建器（复审 L2，no-silently-cut）：`web-search/orchestrator.ts:246` `mergeUsage`（Anthropic 原生腿，已读 `cache_creation_input_tokens`）、`openai/embeddings.ts:53`（embeddings 无 cache 概念）。
 - N3 不改成本定价表/multiplier 逻辑（仅补齐喂给它的 token 数）。
+- N4 模态/prediction 新字段**不进** `EntrySummary.usage`（`history/types.ts:591` 的 4 字段窄内联，列派生）与 ui-v4 list 展示——blob-only 只在 detail/blob 可见（复审 L1）。ui-v4 收尾须跑 `typecheck:ui-v4`（根 typecheck 不覆盖子项目，见 [[feedback-verify-ui-with-build-not-just-typecheck]]）。
 
 ---
 
@@ -126,13 +127,19 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 
 这些新字段**只进压缩 usage blob**（`upstreamResponse.usage` / `OutboundResponseData.usage`），**不加 SQLite 列、不改 schema**。SQL 聚合仍只用现有 5 列。
 
-**类型接缝（SSOT）**：`UsageData` 是 usage 的唯一定义处，`ResponseData["usage"]` 与 `PartialResponseInfo.usage`（`src/lib/context/types.ts`）都引用它——扩 `UsageData` 一处即传导到 `complete()`/`fail()`/`abort()` 全链，无需多处改型。
+**类型接缝（两个拥有点须锁步 —— 复审 C1 纠正）**：usage 形状**并非单一定义**。实测 `src/lib/context/types.ts:59-65` 的 `ResponseData.usage` 是**内联对象字面量**（不 import `UsageData`，今天能编译只因两形状碰巧结构相同），而 `PartialResponseInfo.usage` / `HistoryUpstreamResponseData.usage` 都是 `ResponseData["usage"]`（即那个内联，**不随 `UsageData` 扩展**）。因此：
+1. 新字段（`input_tokens_details` + `output_tokens_details` 扩项）必须**同步加到两处**：`src/lib/history/types.ts` `UsageData` **与** `src/lib/context/types.ts` `ResponseData.usage` 内联，逐字对齐——否则 context→`complete()`/`fail()`/`abort()` 链上新字段类型不可见。
+2. **硬门**：`output_tokens_details.reasoning_tokens` 转可选时，`ResponseData.usage` 内联的同字段必须**同时转可选**，否则 `usageFromTotalInput(): UsageData`（reasoning 可选）赋给 `ResponseData.usage`（reasoning 必填）**直接 TS 报错**。
+两处内联对齐是本 spec 的类型不变量，plan 须列为同一 commit 的锁步改动。
 
 ### 5.2 提取 + 累积
 
 - `src/lib/request/usage-normalize.ts` `usageFromTotalInput`：新增 `cacheCreation`（来自 cache_write）入参 + 一个 details 直通包（把模态/prediction 明细原样挂上，非零/非空才挂）。净公式按 §3 PoC 结论。
-- 4 个非流式提取点：`src/routes/chat-completions/handler-v4.ts:256`、`src/routes/responses/handler-v4.ts:229`、`src/routes/gemini/handler-v4.ts:216`、`src/routes/responses/ws.ts:365`——读 cache_write + 模态/prediction 明细传入。
-- 2 个 stream accumulator：`src/lib/openai/stream-accumulator.ts`、`src/lib/openai/responses-stream-accumulator.ts`——新增字段累积（cache_write + 模态 + prediction），终帧 usage 到达时读取（现有 cachedTokens/reasoningTokens 同址）。
+- **穷举所有 `usageFromTotalInput` 调用点（复审 H1/H2 —— 实为约 11 处，非 4 处）**：grep `usageFromTotalInput` 逼出全站点（正对应 [[feedback-fix-all-comparison-sites]] 教训），逐处透传 `cacheCreation` + 明细：
+  - **流式主写路径（H1，最易漏）**：`src/lib/request/recording.ts:138`（`buildOpenAIResponseData`）+ `:180`（`buildResponsesResponseData`）——accumulator 只累积裸数字，真正构建 `UsageData` 的是这两行，不改则 accumulator 新加的 cache_write 到不了 UsageData。
+  - **非流式提取点**：`chat-completions/handler-v4.ts:256`、`responses/handler-v4.ts:229`、`gemini/handler-v4.ts:216`。
+  - **流式 abort/失败 partial 构建点（richest-data-flow：中断流也留 cache_write）**：`chat handler-v4.ts:378/393`、`responses handler-v4.ts:398/412`、`ws.ts:365/380`。
+- 2 个 stream accumulator：`src/lib/openai/stream-accumulator.ts`、`src/lib/openai/responses-stream-accumulator.ts`——新增字段累积（cache_write + 模态 + prediction），终帧 usage 到达时读取（现有 cachedTokens/reasoningTokens 同址）。**字段位置分歧（复审 M3）**：chat 帧读 `prompt_tokens_details.cache_write_tokens`；responses 帧读 `input_tokens_details.cache_write_tokens`（对称现有 `responses-stream-accumulator.ts:84` 读 `input_tokens_details.cached_tokens`）。
 - `src/types/api/openai-responses.ts:207` `ResponsesUsage.input_tokens_details` 对称加 cache_write（若 GHC Responses 也发；PoC 顺带确认）。
 - **非流式 rawBody 补存（G6）**：非流式 handler（`chat-completions`/`responses`/`gemini` 的 `renderNonStreamingV4` 等）把原始上游响应体文本串接到 `responseData.responseText`——`legFromUpstreamResponse`（`src/lib/context/request.ts:149`）已把 `responseText → rawBody`，故只需在 codec `renderResponseNonStreaming` / handler 层把 `upstream.nonStream` 的原始文本透传下来（现被解析后丢）。与 usage 提取正交、同属 fix-forward。
 
@@ -157,12 +164,17 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 
 新 leaf `src/lib/history/sqlite/cache-write-backfill.ts`：
 
-- **幂等标记列**：新增 `cache_write_backfilled INTEGER NOT NULL DEFAULT 0`（Umzug 迁移，hybrid forward-runner，只追 001+）。
-- **靶向**：只扫 OpenAI 家族**流式**行（endpoint ∈ `openai-chat-completions`/`openai-responses`/`gemini-generate-content` 且有 `sseEvents`）且标记=0；**精确解压**（非 `SELECT *`——4.2G 库 `SELECT *` 曾卡 3m53s），从 sseEvents 末帧的原始 `cache_write_tokens` 重导出。无源行（非流式 / 无 usage 帧）标记跳过。
-- **双写**：`cache_creation` 列 + usage blob 内 `cache_creation_input_tokens`（防 list/detail 分叉），并按 §3 PoC 结论重算净 `input_tokens`（列 + blob 双写）。
+- **幂等标记列**：新增 `cache_write_backfilled INTEGER NOT NULL DEFAULT 0`（Umzug 迁移，hybrid forward-runner，只追 001+）。先例可靠：`usage-normalize-backfill.ts` 确用 per-row 标记列 + `history_meta` version 守卫 + `(started_at,id)` keyset + 协作 stop + never-throw。
+- **靶向**：只扫 OpenAI 家族**流式**行（endpoint ∈ `openai-chat-completions`/`openai-responses`/`gemini-generate-content`）且标记=0。流式检测**复用** `usage-normalize-backfill.ts:91-123` 的 `hasSseEvents`/`isGeminiAlreadyNet`（stage + legacy 单 blob `inboundResponse.sseEvents` 双查，复审 M4），否则漏掉 pre-driver 布局的历史流式行。**精确解压**（非 `SELECT *`——4.2G 库 `SELECT *` 曾卡 3m53s）。无源行（非流式 / 无 usage 帧）标记跳过。
+- **从上游原始帧整份重算（复审 C2，承重不变量）**：**绝不**对已存的 `input_tokens` 做增量减法——`usage-normalize-backfill.ts:181-184` 已把历史流式行的 `input_tokens` 就地改成 net 值（`prompt − cached`），对已净化值再套 `netInputTokens` 会**二次扣减、静默不可逆损坏 token 计数**。正解：解析**上游原始** sseEvents（driver `sse_events` stage / legacy `inboundResponse.sseEvents`，**非** forwarded 轨——后者含 rewrite/合成 keepalive 帧），拿 raw `prompt`/`cached`/`cache_write` **整份重算**：`input = raw_prompt − raw_cached − cache_write`、`cache_read = raw_cached`、`cache_creation = cache_write`，覆盖列 + blob。整份重算天然幂等、与 usage-normalize 的先后无关（不读已存净值）。
+- **帧扫描语义（复审 M2）**：不是字面「末帧」——末帧常是 `[DONE]` 哨兵 / keepalive。须**扫全部帧、取最后一个 JSON body 含 `usage` 对象的帧**（对齐 `stream-accumulator.ts:43`「最后一个带 usage 的赢」），并 guard `JSON.parse`（`raw` 是逐字串，含非 JSON 帧）。**按 endpoint 分形**（复审 M3）：chat/gemini 帧读 `prompt_tokens_details`，responses 帧读 `input_tokens_details`。
+- **双写**：`cache_creation` 列 + usage blob 内 `cache_creation_input_tokens`（防 list/detail 分叉）+ 重算后的 `input_tokens`（列 + blob）。
 - **可恢复骨架**：`(started_at,id)` keyset 续跑、协作 stop 匹配 shutdown phase、非阻塞分批、never-throw、history_meta version 守卫。
-- **等价性 oracle**：backfill 后 `input + cache_read + cache_creation` 应等于原始 `prompt_tokens`（子集情形）；dedup-ratio tripwire 防异常。
-- 接线进 `src/lib/state.ts`，与既有 `usage-normalize-backfill` 并列（同类先例）。
+- **等价性 oracle（两分支，复审 M1）**：
+  - 子集情形（PoC 证 cache_write ⊂ prompt_tokens）：`input + cache_read + cache_creation == 原始 prompt_tokens`。
+  - additive 情形（非子集）：`input + cache_read == 原始 prompt_tokens`（cache_creation 为 disjoint 独立轴，不入此式）。
+  - PoC 结论门控选用哪条；dedup-ratio tripwire 防异常。
+- **串行链序（复审 C2 第二半）**：接线进 `src/lib/state.ts`，须**串行排在 `usage-normalize-backfill` 之后**（与既有 legacy-stage / search-index backfill 同为严格串行，因都碰同一批行 + mutate `input_tokens`），**不并列并发**。整份重算已使其对顺序鲁棒，串行是防御性双保险。
 
 ---
 
@@ -183,12 +195,18 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 
 ## 9. 影响面与执行
 
-**触及文件约 12 个**：3 类型（新 `ghc-usage.ts` + `types.ts` UsageData + `openai-responses.ts`）+ 1 normalize + 4 handler + 2 accumulator + 1 backfill leaf + 1 migration + `state.ts` 接线，加测试与出向翻译器。
+**触及文件（复审 H1/H2 修正后穷举，非「约 12 个」）**：
+- 类型（3）：新 `src/types/api/ghc-usage.ts` + `history/types.ts` `UsageData` + `context/types.ts` `ResponseData.usage` 内联（**两个拥有点锁步**，C1）+ `openai-responses.ts` `ResponsesUsage`。
+- 提取/累积（fix-forward）：`usage-normalize.ts` + **全部 ~11 个 `usageFromTotalInput` 站点**（`recording.ts:138/180` 流式主路径 + chat/responses/gemini handler-v4 各非流式与流式 partial 点 + `ws.ts`）+ 2 accumulator。
+- 非流式 rawBody（G6）：非流式 handler + codec `renderResponseNonStreaming` 透传。
+- backfill：新 `cache-write-backfill.ts` leaf + 1 Umzug 迁移 + `state.ts` 串行接线。
+- 出向转发：`responses-to-cc.ts` / `responses-to-cc-stream.ts`。
+- 加测试。**plan 阶段用 `grep usageFromTotalInput` 逼出全站点**，不凭本清单的记忆计数。
 
 **执行方式**：大特性走 spec→plan→执行三步；实现用隔离 worktree（`.worktrees/`）+ 独立分支，收尾 rebase+FF 回 master。分阶段：
 - **Phase 0**：门控 PoC（净公式）。
-- **Phase 1**：类型 + `UsageData` 扩形 + `usage-normalize` + 提取/累积（fix-forward）。
-- **Phase 2**：历史 backfill + 迁移。
+- **Phase 1**：类型双拥有点锁步 + `UsageData`/`ResponseData.usage` 扩形 + `usage-normalize` + 全站点提取/累积 + G6 非流式 rawBody（fix-forward）。
+- **Phase 2**：历史 backfill（整份重算）+ 迁移 + state.ts 串行接线。
 - **Phase 3**：出向转发 + 文档同步（`DESIGN.md`「类型架构」节 + 相关 topic 文档）。
 
 ---
@@ -199,7 +217,19 @@ OpenAI/Responses/Gemini 三腿经 `src/lib/request/usage-normalize.ts` 的 `usag
 - 致命假设已由**主会话独立取证**（§6.1 表，亲手读 `driver.ts:432` / `handler-v4.ts:251` / 存储路径）。
 - general-purpose 崩溃前的转录**独立佐证**了关键机制：`include_usage:true` 对流式被强制（→ 流式必有 usage 帧入 sseEvents），且验证了 `ResponseData["usage"]`/`PartialResponseInfo.usage` 类型接缝、stages `ON DELETE CASCADE`。
 - 据此已修订 §6（backfill 仅流式可行、非流式历史不可恢复、fix-forward 双覆盖）+ §5.1（类型接缝）。
-- **修订后 spec 将再派一个全新审查者复审**（no-self-review），结论回填此处。
+
+**第三轮：全新审查者复审修订版（2026-07-12，完整交付）**——2 CRITICAL / 2 HIGH / 4 MEDIUM / 2 LOW，全部**经主会话亲手对照代码复核后采纳**：
+- **C1（已证实并修订 §5.1）**：`ResponseData.usage`（`context/types.ts:59-65`）是内联字面量、不引用 `UsageData`，且 `reasoning_tokens` 在此必填 → 可选化会致赋值 TS 报错。修：类型有**两个拥有点须锁步**，非一处（推翻早期「单 seam」判断）。
+- **C2（已证实并修订 §6.2）**：`usage-normalize-backfill.ts:181-184` 已把历史 `input_tokens` 就地改 net；对已净值再套 `netInputTokens` 会二次扣减损坏。修：从上游原始帧**整份重算** + `state.ts` 串行排在 usage-normalize 之后。
+- **H1（修订 §5.2/§9）**：`recording.ts:138/180` 是流式主写路径，早期漏列。
+- **H2（修订 §5.2/§9）**：`usageFromTotalInput` 站点实为 ~11 处（含流式 abort/partial），非 4 处；grep 穷举。
+- **M1（修订 §6.2）**：additive 分支需独立 oracle `input+cache_read==prompt_tokens`。
+- **M2（修订 §6.2）**：扫全帧取最后含 usage 的帧 + guard JSON.parse，非字面末帧。
+- **M3（修订 §5.2/§6.2）**：chat/gemini 读 `prompt_tokens_details`、responses 读 `input_tokens_details`，解析器分 endpoint。
+- **M4（修订 §6.2）**：解析上游原始轨非 forwarded 轨；复用 `hasSseEvents` 检测。
+- **L1（修订 §2 N4）**：新字段不入 `EntrySummary.usage`/ui-v4 list，收尾跑 `typecheck:ui-v4`。
+- **L2（修订 §2 N2）**：显式排除 `mergeUsage`/embeddings。
+- 审查者核验为**安全无需改**的点（已复核认可）：reasoning 可选化的 `UsageData` 家族读取点全用 `?.`/`?? 0`（telemetry/serialize/stats/ui-v4）；telemetry model-key 无需额外处理（cache_creation 计数器+成本因子已在）；backfill 幂等标记列先例真实。
 
 **用户裁决（设计阶段）：**
 - Tier 2 存储深度 = **blob-only**（扩 UsageData JSON，不加 SQLite 列、不 backfill 模态/prediction）。未采纳「Full 去规范化加列」（当前无 SQL 聚合消费者、字段多为 null，加列 + 7.8G backfill 属过早去规范化）与「折中：仅 prediction 加列」。
