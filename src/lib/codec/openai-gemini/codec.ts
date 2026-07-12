@@ -122,13 +122,26 @@ export interface OpenAiGeminiCodec extends FormatCodec {
   getStreamMeta(): GeminiStreamMeta
 }
 
+/** Args for {@link createOpenAiGeminiCodec}. */
+export interface CreateOpenAiGeminiCodecArgs {
+  /**
+   * REVERSE `@messages` leg only: the shared per-request beta probe, threaded to the internal cc
+   * delegate so its `prepareWire` records the outbound Anthropic betas. Absent for the direct/via-responses
+   * Gemini legs.
+   */
+  reverseBetaProbe?: import("~/lib/anthropic/pipeline").BetaProbe
+}
+
 /** Build the gemini codec for one request (holds the internal cc codec + Gemini ctx). */
-export function createOpenAiGeminiCodec(modelId: string): OpenAiGeminiCodec {
+export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGeminiCodecArgs): OpenAiGeminiCodec {
   // Internal delegate: the openai-cc codec drives the CC-payload S2–S6 (route
   // decision incl. via-responses, wire prep, response normalization, sampling).
   // We call its methods WITHOUT its `parse` — they are pure over `env` (+ its own
-  // lazily-built via-responses translator closure), so they work standalone.
-  const cc: OpenAiCcCodec = createOpenAiCcCodec()
+  // lazily-built via-responses translator closure), so they work standalone. The
+  // REVERSE `@messages` leg (Phase 5) delegates translateOut/prepareWire/renderResponse
+  // to it too: the cc delegate's MESSAGES-leg wiring (T5.2) gives gemini Anthropic→CC
+  // for free (hub-and-spoke), and gemini adds the CC→Gemini second hop in renderResponse.
+  const cc: OpenAiCcCodec = createOpenAiCcCodec(opts?.reverseBetaProbe ? { reverseBetaProbe: opts.reverseBetaProbe } : undefined)
   // Per-request CC→Gemini stream translator (B5): renderResponse drives it per-frame, flushResponse
   // drains the stream-end frames, getStreamMeta exposes the terminal usage/finishReason. Eager (cheap;
   // holds the CC accumulator + tool-flush bookkeeping) — only the streaming path touches it.
