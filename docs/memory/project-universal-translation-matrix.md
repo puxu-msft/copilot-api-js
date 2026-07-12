@@ -1,6 +1,6 @@
 ---
 name: project-universal-translation-matrix
-description: 通用入站×出站翻译矩阵大特性——设计定稿(4轮review)+Phase 0-5 landed(4入站×3出站全矩阵前向+反向全通:非流式+流式),仅 Phase 6 doc-sync 待做,权威看 RFC/ADR/plan
+description: 通用入站×出站翻译矩阵大特性——已完成(Phase 0-6 全 landed master)。4入站×3出站全矩阵前向+反向端到端通(非流式+流式)，权威看 RFC/ADR/plan + DESIGN.md「活的架构现状」通用翻译矩阵行
 metadata:
   type: project
 ---
@@ -24,7 +24,7 @@ metadata:
 - **Phase 5 已 landed master（FF `b00d52e2`，反向格子全通——4入站×3出站全矩阵前向+反向端到端可用）**：新 `anthropic-to-cc-stream.ts` 反向流式 translator（逐帧穷举表：丢弃块 delta swallow / CC tool index 独立计数器逆折叠 / thinking·server_tool_use drop / message_delta→finish+usage gross-up / ping swallow / error→CC error chunk / F2 截断）+ cc/responses/gemini 三 codec MESSAGES 腿五方法接线（translateOut 经 hub 产 Anthropic body / prepareWire 产 Anthropic wire / renderResponse 驱动反向 translator / createResponseAccumulator 返 Anthropic acc / sampleRequest Anthropic 形）+ 三 handler **专属反向 pump**（无心跳，`onUpstreamFrame`→Anthropic 累加器记 honest outbound，非复用现状 pump）+ 反向专属 `reverse-anthropic-rewrite.ts`（Anthropic mapper，**非**复用读 CC mapper 的 `createAnthropicSanitizeRewrite`）+ responses reverse-exchange（`TranslateExchangeContext` 穿流式+非流式）。**W2 门控 CLEARED**（探针实测 GHC Anthropic 腿接受任意前缀入站 tool_use.id，`call_*` verbatim 透传成立）。
   - **kickoff 对抗审查（交付前）抓 4 BLOCK + 2 MEDIUM 全采纳**：① 反向 pump 非平凡复用（须专属 pump，`createResponseAccumulator` 实测无生产消费者、改它无用）② responses 二跳 translator 吃 `TranslateExchangeContext` 非 modelId ③ 反向 sanitize 不能复用闭包 CC mapper 的 rewrite ④ resanitize 内联 Anthropic mapper 同源 ⑤ 帧表 swallow（server_tool_use 的 input_json_delta）⑥ usage helper export + 流式组装。
   - **实现后独立 code review（主会话补，非自派）抓 HIGH-1 + MEDIUM-1，已修（`b00d52e2`）**：三反向 pump 缺 `anthropicAcc.streamError` 门（H2 终端上游 error 帧被误判截断→吞真实 code/message + 客户端双 error 终止帧，never-swallow 违规），直连 Anthropic pump 有此门反向没有。修=抽共享 `classifyReverseAnthropicTerminal`（upstream-error→truncated→complete 优先序，`fix-all-comparison-sites` 单一事实源防三 pump 漂移）+ 单测正样本对照（error 帧 sawMessageStop=false 须分类 upstream-error 非 truncated）；MEDIUM-1 统一截断信号为 `!sawMessageStop`（对齐直连 pump，cc/responses 原用 finishReason 会漏「message_delta 后 message_stop 前被切」）。**教训：现有反向 IT 只覆盖正常 message_delta+message_stop 流，无终端 error 帧用例——otherwise-green 掩盖 error 分支缺陷。**
-- **Phase 6 doc-sync 待做**：DESIGN.md 活的架构现状加反向格子行 + 矩阵表 + 二维门控轴 + @messages 后缀语法 + NIT-E「thinking signature 硬约束天然规避」点明；消化 M1/M2 待办（见 plan Phase 4 记录）。
+- **Phase 6 doc-sync 已 landed（`d6cb3c02`，特性完成）**：DESIGN.md「活的架构现状」加通用翻译矩阵行（路由自由函数 + 二维门控轴 + hub 共享层 + 前向/反向腿 + 承重约束）+ 路由节 @cc/@responses/@messages 后缀说明；spec §10 反向 YAGNI 注解为 RFC v5 超越 + NIT-E（thinking signature 硬约束天然规避）；记忆/MEMORY 索引同步。**至此整个通用翻译矩阵特性（Phase 0-6）全部 landed master——4入站×3出站全矩阵可用。**
 - **反向 L2 buffered-retry 截断重试暂缓（OQ6，RFC §7.3 记录的独立工作）**：反向上游 Anthropic 截断经 `classifyReverseAnthropicTerminal` → ctx.fail 无自动重试，记 `docs/todo/deferred-backlog.md`。
 - **执行教训**：subagent 自派的 review 独立性不足（P3 它漏了 B1；P5 反向 pump 缺 streamError 门也是自派测试盲区）——主会话必补独立 code review + 亲自复证 reviewer 断言（读 file:line、跑测试）；usage 净值是 spot-unneeded-homegrown 高发点（翻译层重演）。P4/P5 并发合并：peer 高频提交下 rebase→FF-only 陷无限竞态 → 隔离 worktree rebase（干净处理冲突）+ 主树 FF（peer WIP 不重叠时安全）或 `--no-ff` merge 脱离；文件显 ` M` 但 `git diff HEAD`=0 是 stat 噪声；**`master..HEAD` 在 peer 前进后显假象删除（peer 新增文件在我分支点后），真实净改动看 `mergeBase..HEAD`**。**PROBE-FINDINGS.md 是被跟踪的（记忆旧述"gitignored"过时，exp/ 匹配 gitignore 但该文件已被跟踪、修改照常提交）。**
 
