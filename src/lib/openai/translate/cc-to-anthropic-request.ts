@@ -19,9 +19,11 @@
  *      thinking synthesis is the bright-line boundary; a future config mapping would need its own
  *      poisoning audit). The red-line unit test asserts the output contains ZERO thinking blocks.
  *   ② tool_use.id: the CC `tool_call.id` is passed through verbatim as the Anthropic `tool_use.id`
- *      (PROBE OQ3: GHC's cc leg round-trips `toolu_*` unchanged; a `call_*` id from a genuine OpenAI
- *      leg is passed through too — GHC's Anthropic leg does not enforce a `toolu_` prefix on inbound
- *      request tool ids, only on ids IT generates).
+ *      (PROBE OQ3 confirmed the OUTBOUND direction only: GHC's cc leg RETURNS `toolu_*`, the responses
+ *      leg RETURNS `call_*`). Verbatim pass-through is the only sane choice regardless, but whether
+ *      GHC's Anthropic leg ACCEPTS a `call_*` id on an INBOUND request tool id is NOT yet probed —
+ *      the reverse leg does not reach the upstream until Phase 5, so this is a Phase-5 gate: probe
+ *      inbound acceptance before wiring, do NOT inherit this as verified fact (verifying-authoritative-claims).
  *   ③ cache_control is NEVER injected (a CC client cannot express Anthropic cache breakpoints).
  *   ④ native server tools are stripped (CC has only function tools; any non-function tool is dropped).
  */
