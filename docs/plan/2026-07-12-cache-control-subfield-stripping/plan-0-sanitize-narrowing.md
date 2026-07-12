@@ -1,6 +1,10 @@
 # Phase 0：sanitize 语义收窄 + resolveSanitizedTtls + 跨层单调化
 
-**Goal**：收窄 sanitize，使其保留客户端合法 `ttl`（不再无条件降 5m），并保证输出 wire 满足 Anthropic 跨层 TTL 递减约束（tools≥system≥messages）。抽 `resolveSanitizedTtls` 共享原语作 TTL 决策单一 owner。
+> **实施状态（2026-07-12 landed，commits 5a9ba6cf/2ce886df/63bdcbe4/e5e37515）**：全部完成。两处实现期偏离（TDD 揭示，已在下方标注）：
+> 1. **`resolveSanitizedTtls` 收窄为「仅规范化已有断点、缺层返回 undefined」**——原契约把 proxied 的「注入 floor」语义混入，TDD 发现「无断点 tools 层被当 5m 参与单调化、把 system 从 1h 误压 5m」。按 spec §4「sanitize NOT 注入」修正：缺层不产生、不作后层上界。
+> 2. **Task 0.5 的「proxied 收口到 resolveSanitizedTtls」否决**——sanitize（规范化已有）与 proxied（删后注入 floor）TTL 语义本质不同，强行共用是错误抽象。正确分层：`resolveExtendedTtls`（config 层，proxied 注入用）+ `resolveSanitizedTtls`（wire 层，sanitize 用）各司其职。proxied 保持不变。评审 MEDIUM-2「single owner」的正解是「三种语义各有 owner」，非「合成一个」。
+
+**Goal**：收窄 sanitize，使其保留客户端合法 `ttl`（不再无条件降 5m），并保证输出 wire 满足 Anthropic 跨层 TTL 递减约束（tools≥system≥messages）。抽 `resolveSanitizedTtls` 作 sanitize 的 wire 层 TTL 规范化 owner。
 
 **与 Phase 1 正交**：只改 `applyCacheControlMode` 的 `sanitize` 分支 + 新增原语 + proxied 复用原语。不碰 passthrough。
 

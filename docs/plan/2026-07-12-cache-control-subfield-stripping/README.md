@@ -170,6 +170,6 @@ export function createCacheControlSubfieldRejectionStrategy<
 
 ## 实施状态
 
-- [ ] Phase 0 — 未开始
+- [x] Phase 0 — landed (5a9ba6cf..e5e37515)
 - [ ] Phase 1 — 未开始
 - [ ] Phase 2 — 未开始
