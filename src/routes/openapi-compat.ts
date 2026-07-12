@@ -250,8 +250,8 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     method: "get",
     path: "/",
     tags: ["infra"],
-    summary: 'Liveness probe (returns "Server running")',
-    responses: { 200: { description: "Server running", content: { "text/plain": { schema: z.string() } } } },
+    summary: "Root path — redirects to /openapi.json",
+    responses: { 302: { description: "Redirect to /openapi.json" } },
   })
   registry.registerPath({
     method: "get",

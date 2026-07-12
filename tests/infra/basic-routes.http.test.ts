@@ -68,11 +68,11 @@ describe("basic HTTP routes", () => {
     })
   })
 
-  test("GET / returns 200 with server banner", async () => {
+  test("GET / redirects to /openapi.json", async () => {
     const res = await app.request("/")
 
-    expect(res.status).toBe(200)
-    expect(await res.text()).toBe("Server running")
+    expect(res.status).toBe(302)
+    expect(res.headers.get("Location")).toBe("/openapi.json")
   })
 
   test("GET /health returns 503 when tokens are missing", async () => {

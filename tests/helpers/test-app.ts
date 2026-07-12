@@ -30,7 +30,7 @@ export function createFullTestApp(options: UiRoutesOptions = {}) {
     return c.json({ error: "Not Found" }, 404)
   })
 
-  app.get("/", (c) => c.text("Server running"))
+  app.get("/", (c) => c.redirect("/openapi.json"))
 
   app.get("/health", (c) => {
     const healthy = Boolean(state.copilotToken && state.githubToken)
