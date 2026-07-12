@@ -133,6 +133,11 @@ Phase 0-4 严格串行（byte-critical）；Phase 5 各反向格子（cc/respons
 - T5.4 gemini→messages 接线（W-gemini-hub-composition）：hub 内串两段有状态 translator（Anthropic→CC + 现有 CC→Gemini geminiTranslator 闭包）。**依赖 hub 组合契约，非纯并行**。
 - 单测 + 反向 tool-name oracle（W-mapper-format）+ gemini→messages 最长链 oracle。
 
+**Phase 5 前置门控（Phase-2 code-review 记录，反向腿接线前必处理）**：
+- **W2 OQ3 inbound 接受性须探针**：`cc-to-anthropic-request.ts` 反向 tool_use.id verbatim 透传，但探针只测了 outbound（GHC 返回 toolu_/call_），**未测 GHC Anthropic 腿是否接受 `call_*` 入站 request tool id**。Phase 5 接线上游前须补探针实测（别继承 Phase 2 注释当已验证事实，`verifying-authoritative-claims`）。
+- **W3 反向 empty/占位守卫**：`toolMessageToResultBlock` 在 `tool_call_id` 缺失时产 `tool_use_id:""`（空串失配 assistant 的 tool_use）；`translateUserMessage` 空 content 数组产 `content:[]`（正向 `translateAssistantBlocks` 已用 undefined 守卫、反向未对称）。Phase 5 接线前加守卫（空串/空 content 撞 GHC 400 风险）。
+- **W4 @responses 正向腿端到端 IT + ws 目标对称**：Phase 2 IT 只覆盖 `@cc` 腿到 CC wire，`@responses` 腿产 Responses-shaped wire（input[] 非 messages[]）无端到端 IT；`isForwardTranslateLeg` 接受 `ws:/responses` 但 prepareWire 不备料（对 anthropic 入站不可达但潜在不对称）。Phase 3/4 前补 anthropic@responses IT。
+
 ---
 
 ## Phase 6：doc-sync
