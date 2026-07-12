@@ -30,7 +30,12 @@ import {
 } from "~/lib/models/endpoint"
 import { shouldForceChatCompletionsFallback } from "~/routes/responses/fallback"
 
-import type { ClientFormat, RequestEnvelope, UpstreamEndpoint } from "./envelope"
+import type {
+  //
+  ClientFormat,
+  RequestEnvelope,
+  UpstreamEndpoint,
+} from "./envelope"
 import type { RouteDecision } from "./types"
 
 /**
@@ -90,6 +95,10 @@ export function decideRouteFromInput(input: RouteInput): RouteDecision {
       // (RFC §4.3 W-priority "gemini: cc > responses"; the codec delegated to its internal
       // cc codec's decideRoute).
       return decideOpenAiCcRoute(input.model)
+    }
+    default: {
+      // Exhaustive over ClientFormat — unreachable; a new inbound format must add its case above.
+      throw new Error(`[router] unhandled clientFormat: ${String(input.clientFormat)}`)
     }
   }
 }

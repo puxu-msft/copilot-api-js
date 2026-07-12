@@ -757,9 +757,9 @@ export function createRequestContext(opts: {
       // response error else the last attempt's error. Only for non-success terminals.
       // Fed into `_index.derived.failureReason` (recompute-only projection) below.
       const failureReasonValue =
-        _state === "failed" || _state === "aborted" || _state === "interrupted"
-          ? (_failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message ?? undefined)
-          : undefined
+        _state === "failed" || _state === "aborted" || _state === "interrupted" ?
+          (_failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message ?? undefined)
+        : undefined
 
       // New `model` parent key (RFC §3, §2.5): `requested` = client alias (raw inbound
       // model, == deprecated `inboundRequest.model`); `resolved` = normalized resolved
@@ -857,8 +857,9 @@ export function createRequestContext(opts: {
           // `_sseEvents` (the successful stream); non-final buffered-retry attempts
           // carry their own committed `a.sseEvents`.
           const upstreamSse = isFinal ? (_sseEvents ?? a.sseEvents) : a.sseEvents
-          const upstreamResponse: HistoryUpstreamResponseData | undefined = attemptResponse
-            ? {
+          const upstreamResponse: HistoryUpstreamResponseData | undefined =
+            attemptResponse ?
+              {
                 ...legFromUpstreamResponse(attemptResponse),
                 ...(a.responseHeaders && { headers: a.responseHeaders }),
                 ...(isFinal && _httpHeaders?.outboundResponseTrailers && { trailers: _httpHeaders.outboundResponseTrailers }),

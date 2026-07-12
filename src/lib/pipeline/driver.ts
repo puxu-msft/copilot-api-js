@@ -20,7 +20,6 @@ import { classifyError } from "~/lib/error"
 import { classifyStreamError } from "~/lib/stream"
 
 import type { RequestEnvelope } from "./envelope"
-import { decideRoute } from "./router"
 import type {
   //
   ClientFrame,
@@ -53,6 +52,7 @@ import {
   type ResponseRewrite,
   type RewriteState,
 } from "./rewrite-registry"
+import { decideRoute } from "./router"
 
 /**
  * Everything the driver needs to orchestrate one format. The route layer (P2.3+)

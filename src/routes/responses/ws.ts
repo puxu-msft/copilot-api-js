@@ -32,8 +32,8 @@ import type {
 
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import {
   //
   registerResponseSession,

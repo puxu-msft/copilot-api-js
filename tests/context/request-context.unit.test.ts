@@ -372,7 +372,7 @@ describe("createRequestContext - toHistoryEntry", () => {
     ctx.setOriginalRequest({ model: "claude-opus-4.8", messages: [{ role: "user", content: "hi" }], stream: false, payload: {} })
     ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
     // Direct anthropic leg: no client suffix, outbound /v1/messages, not translated.
-    ctx.setRouteInfo({ outboundEndpoint: "/v1/messages", translated: false })
+    ctx.setRouteInfo?.({ outboundEndpoint: "/v1/messages", translated: false })
     ctx.beginAttempt({})
     ctx.complete({ success: true, model: "claude-opus-4.8", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
 
@@ -389,7 +389,7 @@ describe("createRequestContext - toHistoryEntry", () => {
     const { ctx } = makeContext({ endpoint: "anthropic-messages" })
     ctx.setOriginalRequest({ model: "claude-opus-4.8@messages", messages: [{ role: "user", content: "hi" }], stream: false, payload: {} })
     ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
-    ctx.setRouteInfo({ routeOverride: "messages", outboundEndpoint: "/v1/messages", translated: false })
+    ctx.setRouteInfo?.({ routeOverride: "messages", outboundEndpoint: "/v1/messages", translated: false })
     ctx.beginAttempt({})
     ctx.complete({ success: true, model: "claude-opus-4.8", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
 

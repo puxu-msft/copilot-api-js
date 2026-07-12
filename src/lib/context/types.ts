@@ -503,7 +503,7 @@ export interface RequestContext {
    * direct passthrough. Projected into the history `model{}`. Called by the driver right after
    * the route decision (non-reject); optional so mock/legacy ctxs that omit it are unaffected.
    */
-  setRouteInfo(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean }): void
+  setRouteInfo?(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean }): void
   /**
    * Record an applied feature (truncate / thinking / beta-strip / transport /
    * via-X-fallback / dropped-params). Replaces the legacy `tags: string[]`

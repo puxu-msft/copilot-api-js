@@ -91,7 +91,10 @@ describe("Phase 1 — explicit-leg routing (@cc / @responses / @messages)", () =
   })
 
   test("@responses from openai-responses (== default leg) → passthrough /responses", () => {
-    expect(decideRoute(envFor(openaiCcAndResp(), "openai-responses", "responses"))).toEqual<RouteDecision>({ kind: "passthrough", endpoint: ENDPOINT.RESPONSES })
+    expect(decideRoute(envFor(openaiCcAndResp(), "openai-responses", "responses"))).toEqual<RouteDecision>({
+      kind: "passthrough",
+      endpoint: ENDPOINT.RESPONSES,
+    })
   })
 
   test("@cc from openai-responses (!= default leg) → translate /chat/completions", () => {

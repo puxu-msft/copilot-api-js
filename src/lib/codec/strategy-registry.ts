@@ -22,7 +22,6 @@
  * produces it); registering them now would be a guess, tracked for that phase.
  */
 
-import type { Model } from "~/lib/models/client"
 import type { UpstreamEndpoint } from "~/lib/pipeline/envelope"
 import type { RetryStrategy as EnvRetryStrategy } from "~/lib/pipeline/types"
 
@@ -67,4 +66,5 @@ export function assembleStrategiesForEndpoint(targetEndpoint: UpstreamEndpoint, 
   }
 }
 
-export type { AnthropicStrategiesDeps, Model }
+export { type AnthropicStrategiesDeps } from "./anthropic/strategies"
+export { type Model } from "~/lib/models/client"

@@ -133,8 +133,8 @@ import {
 } from "~/lib/models/resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { decideRouteFromInput } from "~/lib/pipeline/router"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
+import { decideRouteFromInput } from "~/lib/pipeline/router"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //

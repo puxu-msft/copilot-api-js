@@ -29,12 +29,12 @@ import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
-import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
   destackActed,
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
+import { ENDPOINT } from "~/lib/models/endpoint"
 
 /** The history-facing sanitization-info envelope (subset of SanitizationStats). */
 type SanitizationInfo = ReturnType<typeof toSanitizationInfo>
