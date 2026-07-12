@@ -173,6 +173,14 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
     return { ok: false, rejection: { status: decision.status, reason: decision.reason, format: parsed.clientFormat } }
   }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
+  // T1.6 route observability (RFC §10 / W6): record the leg pin + actual outbound leg +
+  // translate-vs-direct label on the ctx (projected into history `model{}`). Optional-chained so a
+  // mock/legacy ctx without the method is unaffected; direct requests record `translated:false`.
+  parsed.ctx.setRouteInfo?.({
+    ...(parsed.routeOverride && { routeOverride: parsed.routeOverride }),
+    outboundEndpoint: targetEndpoint,
+    translated: decision.kind === "translate",
+  })
   const routed = deps.codec.translateOut(parsed.with({ targetEndpoint }))
 
   // S3 — Rewrite-in: assemble + run the request-rewrite chain.

@@ -250,6 +250,19 @@ export interface ModelInfo {
   resolved?: string
   /** Billing multiplier resolved for this request (e.g. 3 for opus, 0.33 for haiku). */
   multiplier?: number
+  /**
+   * Routing observability (translation-matrix RFC 2026-07-11 §10 / W6). Set by the driver
+   * after the S2 route decision:
+   *   - `routeOverride` — the client's explicit `@cc/@responses/@messages` leg pin (undefined = none).
+   *   - `outboundEndpoint` — the ACTUAL outbound leg chosen (`env.targetEndpoint`).
+   *   - `translated` — did the leg require a format translation (`kind==="translate"`) vs a direct
+   *     passthrough (`false`)? Mirrors the openai-gemini `ENDPOINT_TYPE` translation-vs-direct label,
+   *     so history/UI can distinguish a translated leg from a direct one. In Phase 1 there is no
+   *     translation leg yet, so every live request records `translated:false` (a direct leg).
+   */
+  routeOverride?: "cc" | "responses" | "messages"
+  outboundEndpoint?: string
+  translated?: boolean
 }
 
 /**

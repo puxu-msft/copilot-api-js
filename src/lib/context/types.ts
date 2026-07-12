@@ -146,6 +146,10 @@ export interface HistoryModelInfo {
   requested?: string
   resolved?: string
   multiplier?: number
+  /** Routing observability (translation-matrix RFC §10 / W6). Mirrors the owner `ModelInfo`. */
+  routeOverride?: "cc" | "responses" | "messages"
+  outboundEndpoint?: string
+  translated?: boolean
 }
 
 /**
@@ -492,6 +496,14 @@ export interface RequestContext {
    * tests that omit the publisher).
    */
   setResolvedModel(args: { resolved: string; client?: string }): void
+  /**
+   * Record the S2 routing decision for observability (translation-matrix RFC §10 / W6): the
+   * client's explicit leg pin (`routeOverride`), the actual outbound leg (`outboundEndpoint =
+   * env.targetEndpoint`), and whether that leg required a format translation (`translated`) vs a
+   * direct passthrough. Projected into the history `model{}`. Called by the driver right after
+   * the route decision (non-reject); optional so mock/legacy ctxs that omit it are unaffected.
+   */
+  setRouteInfo(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean }): void
   /**
    * Record an applied feature (truncate / thinking / beta-strip / transport /
    * via-X-fallback / dropped-params). Replaces the legacy `tags: string[]`

@@ -232,6 +232,8 @@ export function createRequestContext(opts: {
   let _agentId = opts.agentId
   let _resolvedModel: string | null = null
   let _clientModel: string | null = null
+  /** S2 routing observability (routeOverride + actual outbound leg + translate-vs-direct), RFC §10. */
+  let _routeInfo: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean } | null = null
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
   let _forwardedResponse: ForwardedResponse | null = null
@@ -768,11 +770,19 @@ export function createRequestContext(opts: {
       const requestedModel = _originalRequest?.model
       const resolvedModelName = _resolvedModel !== null ? normalizeModelId(_resolvedModel) : _response?.model
       const billing = _resolvedModel !== null ? appState.modelIndex.get(_resolvedModel)?.billing : undefined
-      if (requestedModel !== undefined || resolvedModelName !== undefined || billing?.multiplier !== undefined) {
+      if (requestedModel !== undefined || resolvedModelName !== undefined || billing?.multiplier !== undefined || _routeInfo !== null) {
         entry.model = {
           ...(requestedModel !== undefined && { requested: requestedModel }),
           ...(resolvedModelName !== undefined && { resolved: resolvedModelName }),
           ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+          // Routing observability (RFC §10 / W6): the client's leg pin + the actual outbound leg +
+          // translate-vs-direct label. Only present once the driver recorded the S2 decision (direct
+          // requests get `translated:false`; `routeOverride` omitted when the client typed no suffix).
+          ...(_routeInfo !== null && {
+            ...(_routeInfo.routeOverride !== undefined && { routeOverride: _routeInfo.routeOverride }),
+            outboundEndpoint: _routeInfo.outboundEndpoint,
+            translated: _routeInfo.translated,
+          }),
         }
       }
 
@@ -916,6 +926,10 @@ export function createRequestContext(opts: {
       _resolvedModel = args.resolved
       if (args.client !== undefined) _clientModel = args.client
       publisher?.publish({ kind: "request.model_resolved", ctx: snapshot() })
+    },
+
+    setRouteInfo(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean }) {
+      _routeInfo = info
     },
 
     recordFeature(feature: FeatureKind, detail?: Record<string, unknown>) {
