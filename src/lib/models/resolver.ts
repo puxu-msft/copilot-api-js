@@ -14,12 +14,14 @@ import { normalizeForMatching } from "./model-name"
 import {
   //
   extractModifierSuffix,
+  type RouteOverride,
+  stripRouteSuffix,
   VERSIONED_RE,
 } from "./normalize-id"
 
 // Re-exported so existing importers keep using `~/lib/models/resolver`.
 export { normalizeForMatching } from "./model-name"
-export { normalizeModelId } from "./normalize-id"
+export { normalizeModelId, type RouteOverride } from "./normalize-id"
 
 // ============================================================================
 // Types
@@ -154,21 +156,62 @@ function normalizeBracketNotation(model: string): string {
 /**
  * Resolve a model name to its canonical form, applying model_overrides.
  *
- * Order:
- * 1. Whole-name override (normalized): "opus", "opus-1m", "claude-opus-4.6" …
- * 2. Modifier suffix ("-1m" / "-fast"): if the BASE has an override but the
- *    whole name doesn't, redirect the base and re-attach the suffix.
- *    e.g. "opus[1m]" → "opus-1m"; with no "opus-1m" override but an "opus"
- *    override → "<opus-target>-1m" (falls back to the bare target if the
- *    suffixed variant isn't available).
- * 3. Alias / hyphen-dot / date normalization (resolveModelNameCore), then a
- *    final override check on the normalized name.
- *
- * No family-level propagation and no built-in defaults: short aliases resolve
- * only if model_overrides defines them, otherwise the name is returned as-is
- * and the upstream rejects it.
+ * Thin wrapper over {@link resolveModelTarget} that discards the route-override
+ * suffix — the 13 legacy callers that only need the canonical NAME keep calling
+ * this unchanged (byte-identical: a name with no `@<route>` suffix strips to itself
+ * with no override, so the whole override / modifier / normalization pipeline below
+ * runs exactly as before).
  */
 export function resolveModelName(model: string): string {
+  return resolveModelTarget(model).name
+}
+
+/**
+ * Resolve a model name to its canonical form PLUS any route-override suffix
+ * (`@cc` / `@responses` / `@messages`) the client (or an override target) pinned —
+ * the config-parse entry point for the translation matrix (RFC §5).
+ *
+ * Double-layer strip:
+ *   1. Peel the top-level client suffix ONCE at the entry (covers the direct-send path
+ *      `resolveModelNameCore`, where there is no override to strip through) — e.g. a
+ *      client sending `claude-opus-4.8@cc` with no override configured.
+ *   2. Each override-chain ring ({@link resolveOverrideTarget}) strips again BEFORE its
+ *      `state.modelIds` membership check, so an override TARGET carrying `@<route>`
+ *      (`"opus": "claude-opus-4.6@messages"`) does not punch the suffix through into the
+ *      resolved id (FAIL-1) — the discovered override rides back up with the value.
+ *
+ * Precedence: the client-typed top-level suffix is the primary intent and wins; an
+ * override-target suffix is the fallback when the client typed none. (Within the
+ * override chain, a deeper ring's suffix — closer to the final model — wins over a
+ * shallower one.)
+ */
+export function resolveModelTarget(model: string): { name: string; routeOverride?: RouteOverride } {
+  const { base: stripped, routeOverride: topOverride } = stripRouteSuffix(model)
+  const { name, routeOverride: chainOverride } = resolveNameWithOverride(stripped)
+  const routeOverride = topOverride ?? chainOverride
+  return routeOverride ? { name, routeOverride } : { name }
+}
+
+/**
+ * Resolve an already-suffix-stripped name to `{ name, routeOverride? }`, propagating
+ * any route-override discovered in the override chain. Mirrors the legacy
+ * `resolveModelName` body exactly (bracket → whole-name override → modifier-suffix
+ * redirect → core normalization + final override check); the only addition is
+ * threading the chain's `routeOverride` back out.
+ *
+ * Order:
+ * 1. Whole-name override (normalized): "opus", "opus-1m", "claude-opus-4.6" …
+ * 2. Modifier suffix ("-1m" / "-fast"): if the BASE has an override but the whole
+ *    name doesn't, redirect the base and re-attach the suffix. The redirected base is
+ *    already suffix-stripped (so `@cc` cannot get buried mid-name).
+ * 3. Alias / hyphen-dot / date normalization (resolveModelNameCore), then a final
+ *    override check on the normalized name.
+ *
+ * No family-level propagation and no built-in defaults: short aliases resolve only if
+ * model_overrides defines them, otherwise the name is returned as-is and the upstream
+ * rejects it.
+ */
+function resolveNameWithOverride(model: string): { name: string; routeOverride?: RouteOverride } {
   // 0. Normalize bracket notation: "opus[1m]" → "opus-1m"
   const normalized = normalizeBracketNotation(model)
 
@@ -184,12 +227,12 @@ export function resolveModelName(model: string): string {
   if (suffix) {
     const baseOverride = lookupModelOverride(base)
     if (baseOverride) {
-      const resolvedBase = resolveOverrideTarget(base, baseOverride)
+      const { name: resolvedBase, routeOverride } = resolveOverrideTarget(base, baseOverride)
       const withSuffix = resolvedBase + suffix
       if (state.modelIds.size === 0 || state.modelIds.has(withSuffix)) {
-        return withSuffix
+        return routeOverride ? { name: withSuffix, routeOverride } : { name: withSuffix }
       }
-      return resolvedBase
+      return routeOverride ? { name: resolvedBase, routeOverride } : { name: resolvedBase }
     }
   }
 
@@ -202,41 +245,51 @@ export function resolveModelName(model: string): string {
     }
   }
 
-  // No family-level propagation: a short alias / family override only affects
-  // the exact keys defined in model_overrides (spelling variants are unified by
+  // No family-level propagation: a short alias / family override only affects the
+  // exact keys defined in model_overrides (spelling variants are unified by
   // normalization). To redirect a whole family, list each canonical name.
-  return resolved
+  return { name: resolved }
 }
 
 /**
- * Resolve override target: if target is directly available, use it;
- * otherwise check for chained overrides, then treat as alias.
- * If still unavailable, fall back to the best available model in the same family.
+ * Resolve override target: if target is directly available, use it; otherwise check
+ * for chained overrides, then treat as alias. If still unavailable, use the target
+ * as-is (the upstream rejects it — there is no family preference fallback).
+ *
+ * Each ring strips a trailing `@<route>` off the (config-supplied) target BEFORE the
+ * `state.modelIds` membership check, so `"opus": "claude-opus-4.6@cc"` matches the
+ * available id `claude-opus-4.6` and returns `routeOverride: "cc"` alongside it,
+ * instead of leaking `@cc` into the resolved name (FAIL-1).
  *
  * Uses `seen` set to prevent circular override chains.
  */
-function resolveOverrideTarget(source: string, target: string, seen?: Set<string>): string {
-  if (state.modelIds.size === 0 || state.modelIds.has(target)) {
-    return target
+function resolveOverrideTarget(source: string, target: string, seen?: Set<string>): { name: string; routeOverride?: RouteOverride } {
+  const { base: strippedTarget, routeOverride } = stripRouteSuffix(target)
+  const withOv = (name: string): { name: string; routeOverride?: RouteOverride } => (routeOverride ? { name, routeOverride } : { name })
+
+  if (state.modelIds.size === 0 || state.modelIds.has(strippedTarget)) {
+    return withOv(strippedTarget)
   }
 
-  // Check if target itself has an override (chained overrides: sonnet → opus → claude-opus-4.6-1m)
+  // Check if the target itself has an override (chained: sonnet → opus → claude-opus-4.6-1m)
   const visited = seen ?? new Set([source])
-  const targetOverride = lookupModelOverride(target)
-  if (targetOverride && !visited.has(target)) {
-    visited.add(target)
-    return resolveOverrideTarget(target, targetOverride, visited)
+  const targetOverride = lookupModelOverride(strippedTarget)
+  if (targetOverride && !visited.has(strippedTarget)) {
+    visited.add(strippedTarget)
+    const deeper = resolveOverrideTarget(strippedTarget, targetOverride, visited)
+    // A deeper ring's suffix wins (closer to the final model); fall back to this ring's.
+    if (deeper.routeOverride) return deeper
+    return routeOverride ? { name: deeper.name, routeOverride } : deeper
   }
 
-  // Target not directly available — might be an alias, resolve it
-  const resolved = resolveModelNameCore(target)
-  if (resolved !== target) {
-    return resolved
+  // Target not directly available — might be an alias, resolve it.
+  const resolved = resolveModelNameCore(strippedTarget)
+  if (resolved !== strippedTarget) {
+    return withOv(resolved)
   }
 
-  // Can't resolve further — use target as-is. The upstream rejects it if
-  // unavailable; there is no built-in family preference fallback.
-  return target
+  // Can't resolve further — use the (stripped) target as-is.
+  return withOv(strippedTarget)
 }
 
 /**
