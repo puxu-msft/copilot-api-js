@@ -16,7 +16,6 @@
  * (stream guard + boundary sampling move in then).
  */
 
-import consola from "consola"
 import { events } from "fetch-event-stream"
 
 import type { HeadersCapture } from "~/lib/context/request"
@@ -50,8 +49,11 @@ export interface SendUpstreamHttpParams {
   /** Whether this is a streaming request (wire.stream) — truthy selects the SSE path. */
   stream: boolean | null | undefined
   /**
-   * Label reused for both the `consola.error` line and the thrown `HTTPError`
-   * message (e.g. "Failed to create chat completions").
+   * Label used as the thrown `HTTPError` message (e.g. "Failed to create chat
+   * completions"). Not logged here — the driver's retry loop owns per-attempt
+   * failure visibility (`[RETRY]` line via `recordAttemptFailure`) and the
+   * error-forwarding layer owns terminal-failure logging (`[FAIL]` + the raw
+   * upstream body), so a transport-level console line would only duplicate them.
    */
   errorLabel: string
   /** Model id attached to the thrown HTTPError (wire.model). */
@@ -146,7 +148,11 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
   }
 
   if (!response.ok) {
-    consola.error(errorLabel, response)
+    // No console line here: this transport layer cannot know whether the caller
+    // will retry (the driver decides that above, in runExchange's catch). Per-
+    // attempt failure visibility is the driver's `[RETRY]` line; terminal-failure
+    // logging is the error-forwarding layer's `[FAIL]` + raw-body line. Logging
+    // the bare `Response` object here only ever printed a useless `{}`.
     // On opaque 400s, scan the wire tools for schema keywords / names the
     // upstream commonly rejects, and attach hint-only diagnostics.
     const diagnostics = response.status === 400 ? summarizeToolsForDiagnostics(diagnosticsTools) : undefined
