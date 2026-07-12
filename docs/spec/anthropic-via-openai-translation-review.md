@@ -54,7 +54,7 @@ spec §5.2 声称「handler 不需要动、镜像 Gemini」，但 Anthropic 端�
 - N7/N8 「结尾匹配」误吞 + 不存在模型 routeOverride，实测风险极低（40 个 id 无 `@`），注明前提即可。
 
 ## 已独立核实为真、无需改（记录以免误删）
-- §1.2 supported_endpoints 数据属实（`refs/AVAILABLE_MODELS.json`：`claude-opus-4.8:["/v1/messages","/chat/completions"]`）。
+- §1.2 supported_endpoints 数据属实（`.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json`：`claude-opus-4.8:["/v1/messages","/chat/completions"]`）。
 - §4 腿存在性校验有真实基建（`endpoint.ts` `isEndpointSupported`/`getModelEndpoints`）。
 - §4.1/§5.1 委托 `cc.decideRoute` 成立（`decideOpenAiCcRoute` cc→via-responses→reject）。
 - §4 无后缀 auto「cc 优先」复用成立。
@@ -92,7 +92,7 @@ F1（handler 分离方向对）、F2（截断读 getStreamMeta.finishReason）�
 
 ### 新 FAIL（RFC 须修）
 
-**FAIL-心跳 ✅（翻译维度）**：翻译路径「镜像 gemini」遗漏整套 Anthropic keepalive 心跳。gemini handler [无心跳](../../src/routes/gemini/handler-v4.ts#L271)，但 Anthropic handler 有 `makeAnchoredSseSink`/`resolveBufferedAndHeartbeat`/`streamCommitAfterSec` 延迟提交窗口 + 合成 prelude（[handler-v4.ts:446-463](../../src/routes/messages/handler-v4.ts#L446)）——为 Claude Code 的 **300s no-real-content 断连**而生（skill `claude-code-connection`：`event: ping` 不算 chunk、须发空 content-delta）。本 RFC 核心用例是 reasoning 模型（pre-content 静默最长），镜像 gemini 会把 direct 路径修掉的长 thinking 断连事故重新引入。
+**FAIL-心跳 ✅（翻译维度）**：翻译路径「镜像 gemini」遗漏整套 Anthropic keepalive 心跳。gemini handler [无心跳](../../src/routes/gemini/handler-v4.ts#L271)，但 Anthropic handler 有 `makeAnchoredSseSink`/`resolveBufferedAndHeartbeat`/`streamCommitAfterSec` 延迟提交窗口 + 合成 prelude（[handler-v4.ts:446-463](../../src/routes/messages/handler-v4.ts#L446)）——为 Claude Code 的 **300s no-real-content 断连**而生（skill `debugging-claude-client-connection`：`event: ping` 不算 chunk、须发空 content-delta）。本 RFC 核心用例是 reasoning 模型（pre-content 静默最长），镜像 gemini 会把 direct 路径修掉的长 thinking 断连事故重新引入。
 
 **FAIL-codec键 ✅（路由维度）**：`ClientFormat`（[envelope.ts:18](../../src/lib/pipeline/envelope.ts#L18)）无 `"openai-anthropic"` 成员，RFC §4.2 `decision.codec: ClientFormat` 装不下决策（direct/translate 塌成同一 `"anthropic"`）；`DriverDeps.codec` 单数（[driver.ts:60](../../src/lib/pipeline/driver.ts#L60)），无 codec 注册表、控制反转无落地机制。
 
