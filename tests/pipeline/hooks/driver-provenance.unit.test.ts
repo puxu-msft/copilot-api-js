@@ -28,6 +28,7 @@ import type {
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 
+import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -50,6 +51,12 @@ async function collect(it: AsyncIterable<ClientFrame>): Promise<Array<ClientFram
   const out: Array<ClientFrame> = []
   for await (const f of it) out.push(f)
   return out
+}
+
+/** Minimal `SSEStreamingApi` stub — only `writeSSE` is exercised by `makeSseSink` (mirrors
+ * `tests/pipeline/client-sink.unit.test.ts`'s `mockStream` helper). */
+function mockStream(): Parameters<typeof makeSseSink>[0] {
+  return { writeSSE: (_msg: unknown) => Promise.resolve() } as unknown as Parameters<typeof makeSseSink>[0]
 }
 
 beforeEach(() => {
@@ -188,5 +195,95 @@ describe("hooks — HOOK_ORIGIN upstream-track provenance marking (Task 2.2)", (
     const sampled = calls.setSseEvents[0] as Array<{ synthetic?: string }>
     expect(sampled).toHaveLength(3)
     expect(sampled.every((e) => e.synthetic === "hook-mock")).toBe(true)
+  })
+})
+
+describe("hooks — rewriteUpstreamFrame forwarded-track hook-rewrite marking (Task 2.3)", () => {
+  test("PASSTHROUGH leg (identity codec.renderResponse, e.g. Anthropic/CC direct): a rewritten frame is marked synthetic:'hook-rewrite' in the forwarded track; the upstream-original track stays pre-hook pure", async () => {
+    const { ctx, calls } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env }) // default renderResponse is identity (returns `frame` verbatim)
+    setUpstreamHookForTests({
+      rewriteUpstreamFrame: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }),
+    })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+    const forwarded: Array<{ raw: string; synthetic?: string }> = []
+    const sink = makeSseSink(mockStream(), { onForwarded: (r) => forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }) })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "a" }, { data: "b" }]), env, sink)
+
+    expect(outcome.kind).toBe("complete")
+    expect(forwarded).toEqual([
+      { raw: "REWRITTEN(a)", synthetic: "hook-rewrite" },
+      { raw: "REWRITTEN(b)", synthetic: "hook-rewrite" },
+    ])
+    // Regression (Task 1.3/2.2 invariant): the upstream-original track is UNAFFECTED by this
+    // forwarded-side tagging — it still records the pre-hook real frames, unmarked.
+    const upstreamSampled = calls.setSseEvents[0] as Array<{ raw: string; synthetic?: string }>
+    expect(upstreamSampled.map((e) => ({ raw: e.raw, synthetic: e.synthetic }))).toEqual([
+      { raw: "a", synthetic: undefined },
+      { raw: "b", synthetic: undefined },
+    ])
+  })
+
+  test("a no-op rewrite hook (returns the SAME frame reference) is NOT marked hook-rewrite", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env })
+    setUpstreamHookForTests({ rewriteUpstreamFrame: (frame) => frame })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+    const forwarded: Array<{ synthetic?: string }> = []
+    const sink = makeSseSink(mockStream(), { onForwarded: (r) => forwarded.push({ ...(r.synthetic ? { synthetic: r.synthetic } : {}) }) })
+
+    await driver.runResponseSink(okStream([{ data: "a" }]), env, sink)
+
+    expect(forwarded).toEqual([{}])
+  })
+
+  test("a handler onRenderedFrame that SPREADS the input frame (`{...frame, data}`, e.g. chat-completions tool-name restore) preserves the hook-rewrite tag", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env })
+    setUpstreamHookForTests({ rewriteUpstreamFrame: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+    const forwarded: Array<{ raw: string; synthetic?: string }> = []
+    const sink = makeSseSink(mockStream(), { onForwarded: (r) => forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }) })
+    const onRenderedFrame = (frame: ClientFrame): ClientFrame => ({ ...frame, data: `RESTORED(${frame.data})` })
+
+    await driver.runResponseSink(okStream([{ data: "a" }]), env, sink, { onRenderedFrame })
+
+    expect(forwarded).toEqual([{ raw: "RESTORED(REWRITTEN(a))", synthetic: "hook-rewrite" }])
+  })
+
+  test("KNOWN GAP — a TRANSLATE-leg codec.renderResponse (constructs a brand-new frame, e.g. Gemini/CC-via-Responses stream translators) loses the hook-rewrite tag; content still comes through", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env, renderResponse: (frame) => ({ data: `TRANSLATED(${frame.data})` }) })
+    setUpstreamHookForTests({ rewriteUpstreamFrame: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+    const forwarded: Array<{ raw: string; synthetic?: string }> = []
+    const sink = makeSseSink(mockStream(), { onForwarded: (r) => forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }) })
+
+    await driver.runResponseSink(okStream([{ data: "a" }]), env, sink)
+
+    // Content is faithfully rewritten-then-translated; the tag is lost because the translate
+    // leg builds a NEW frame object it never spread `frame` into (docs/spec/2026-07-12-upstream-
+    // hook-middleware.md §3.4/§8 — genuinely ill-defined per-frame boundary, not a bug).
+    expect(forwarded).toEqual([{ raw: "TRANSLATED(REWRITTEN(a))" }])
+  })
+
+  test("KNOWN GAP — a handler onRenderedFrame that reconstructs a FRESH literal without spreading (mirrors Responses' restoreAndAccumulate) loses the hook-rewrite tag even on an identity-render leg", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const { codec } = makeCodec({ env }) // identity renderResponse (passthrough leg)
+    setUpstreamHookForTests({ rewriteUpstreamFrame: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+    const forwarded: Array<{ raw: string; synthetic?: string }> = []
+    const sink = makeSseSink(mockStream(), { onForwarded: (r) => forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }) })
+    const onRenderedFrame = (frame: ClientFrame): ClientFrame => ({ data: `RESTORED(${frame.data})` }) // fresh literal, no `...frame`
+
+    await driver.runResponseSink(okStream([{ data: "a" }]), env, sink, { onRenderedFrame })
+
+    expect(forwarded).toEqual([{ raw: "RESTORED(REWRITTEN(a))" }])
   })
 })

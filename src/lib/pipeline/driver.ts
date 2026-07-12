@@ -18,7 +18,11 @@ import type { SseEventRecord } from "~/lib/history"
 
 import { classifyError } from "~/lib/error"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
-import { readOrigin } from "~/lib/pipeline/hooks/origin"
+import {
+  //
+  readOrigin,
+  tagFrameRewritten,
+} from "~/lib/pipeline/hooks/origin"
 import { classifyStreamError } from "~/lib/stream"
 
 import type { RequestEnvelope } from "./envelope"
@@ -468,7 +472,18 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
       // so the upstream track keeps pre-hook real frames (spec §3.2/§3.4 H2). undefined → drop.
       const hook = getUpstreamHook()
       let effFrame: UpstreamFrame | undefined = frame
-      if (hook?.rewriteUpstreamFrame && frame.data !== "[DONE]") effFrame = hook.rewriteUpstreamFrame(frame, env)
+      if (hook?.rewriteUpstreamFrame && frame.data !== "[DONE]") {
+        const rewritten = hook.rewriteUpstreamFrame(frame, env)
+        // Task 2.3 (spec §3.4 decision 1/§9, plan-2 Task 2.3): a GENUINELY changed frame (a
+        // NEW object — `undefined` means dropped, the SAME reference means the hook chose not
+        // to rewrite this one) is tagged so the sink can mark its forwarded-track sample
+        // `synthetic:"hook-rewrite"` — see hooks/origin.ts (`tagFrameRewritten`) for exactly
+        // which downstream shapes preserve vs. lose the tag (passthrough-leg codecs + a
+        // spreading `onRenderedFrame` preserve it; a translate-leg codec or a
+        // fresh-literal-reconstructing `onRenderedFrame` — e.g. Responses' restoreAndAccumulate
+        // — does not; a documented, accepted gap, not a defect of this mechanism).
+        effFrame = rewritten !== undefined && rewritten !== frame ? tagFrameRewritten(rewritten) : rewritten
+      }
       // Guard the rewrite chain instead of `continue` — so `frameIndex++` below ALWAYS
       // runs (评审 LOW-1: `continue` would skip it, corrupting dry-run frame ordinals).
       // A dropped frame (undefined) just skips passThrough; frameIndex still advances.
