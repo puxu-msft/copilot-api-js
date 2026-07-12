@@ -1201,6 +1201,13 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
       }
       return "beta-stripped"
     }
+    case "cache-control-stripped": {
+      const fields = detail?.fields
+      if (Array.isArray(fields) && fields.length > 0) {
+        return `cc-strip:${fields.join(",")}`
+      }
+      return "cache-control-stripped"
+    }
     case "transport": {
       const kind = detail?.kind
       if (kind === "upstream-ws") return "ws"

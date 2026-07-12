@@ -136,6 +136,8 @@ export type FeatureKind =
   | "thinking"
   /** unsupported-beta strategy stripped headers — `detail: { betas: string[] }` */
   | "beta-stripped"
+  /** passthrough 剥掉 GHC 未支持的 cache_control 子字段（如 scope）— `detail: { fields: string[] }` */
+  | "cache-control-stripped"
   /** responses → chat-completions fallback */
   | "via-chat-completions-fallback"
   /** chat-completions → responses (reverse fallback) */
