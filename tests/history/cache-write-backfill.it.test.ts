@@ -36,10 +36,13 @@ function insertStageRow(id: string, stage: string, attemptIndex: number, payload
 }
 
 /**
- * Seed a streaming OpenAI-family row in the PRE-fix-forward state: column +
- * upstream_response stage carry `input = prompt − cached` (cache_write NOT yet
- * subtracted), cache_creation NULL, cache_write_backfilled=0; plus an sse_events
- * stage whose final usage frame carries the RAW prompt/cached/cache_write.
+ * Seed a streaming OpenAI-family row in the PRE-fix-forward state, in the REAL
+ * POST-MIGRATION layout (the only layout this backfill sees — it runs after
+ * legacy-stage-backfill): column carries `input = prompt − cached` (cache_write NOT
+ * yet subtracted), cache_creation NULL, cache_write_backfilled=0; the frames live
+ * NESTED in the `upstream_response` stage's `sseEvents` (attempt_index 0), NOT a
+ * separate `sse_events` stage (which extractStagePayloads never emits — verified via
+ * merge review). The final usage frame carries the RAW prompt/cached/cache_write.
  */
 function seedStreamingPreFixForward(
   id: string,
@@ -58,11 +61,17 @@ function seedStreamingPreFixForward(
     )
     .run(id, startedAt, endpoint, "http", "streaming-done", storedInput, cached, null, 3, compress(head))
   insertStageRow(id, "upstream_request", 0, { model, messages: [{ role: "user", content: "hi" }] })
-  insertStageRow(id, "upstream_response", 0, { success: true, model, usage: { input_tokens: storedInput, cache_read_input_tokens: cached, output_tokens: 3 }, content: null })
-  insertStageRow(id, "sse_events", -1, [
-    { offsetMs: 1, type: "message", raw: "{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}" },
-    { offsetMs: 2, type: "message", raw: frameRaw },
-  ])
+  // Post-migration layout: usage + sseEvents NESTED in the upstream_response stage.
+  insertStageRow(id, "upstream_response", 0, {
+    success: true,
+    model,
+    usage: { input_tokens: storedInput, cache_read_input_tokens: cached, output_tokens: 3 },
+    body: null,
+    sseEvents: [
+      { offsetMs: 1, type: "message", raw: "{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}" },
+      { offsetMs: 2, type: "message", raw: frameRaw },
+    ],
+  })
 }
 
 const CHAT_FRAME = JSON.stringify({ choices: [], usage: { prompt_tokens: 1000, completion_tokens: 50, prompt_tokens_details: { cached_tokens: 600, cache_write_tokens: 300 } } })

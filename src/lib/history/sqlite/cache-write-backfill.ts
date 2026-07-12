@@ -133,17 +133,31 @@ function splitFromFrames(frames: Array<FrameRecord>, endpoint: string): RawSplit
 }
 
 /**
- * Read the upstream-original SSE frames for a row: the `sse_events` stage
- * (attempt_index -1 = final attempt), or the legacy single-blob head's `sseEvents`.
- * Returns undefined when there is no streaming source.
+ * Read the upstream-original SSE frames for a row. PRIMARY source (post-migration
+ * layout, which is ALL rows this backfill sees — it runs after legacy-stage-backfill
+ * which DELETEs old stages and re-serializes): the `upstream_response` stage (max
+ * attempt_index = the final attempt, aligned with the column's derive source
+ * `attempts.at(-1).upstreamResponse`) whose payload carries `sseEvents` NESTED (see
+ * serialize.ts extractStagePayloads / buildUpstreamResponseLeg). Fallbacks for
+ * unmigrated rows: a standalone `sse_events` stage (attempt_index -1), then the
+ * legacy single-blob head's `sseEvents`. Returns undefined when there is no source.
  */
 function readUpstreamFrames(db: Database, id: string, headBlob: Uint8Array | undefined): Array<FrameRecord> | undefined {
+  // PRIMARY: the max-attempt_index upstream_response stage's nested sseEvents.
+  const ur = db.prepare("SELECT blob_gz FROM entry_stages WHERE entry_id = ? AND stage = 'upstream_response' ORDER BY attempt_index DESC LIMIT 1").get(id) as
+    | { blob_gz: Uint8Array }
+    | undefined
+  if (ur) {
+    const payload = decompress(ur.blob_gz) as { sseEvents?: unknown } | null
+    if (Array.isArray(payload?.sseEvents)) return payload.sseEvents as Array<FrameRecord>
+  }
+  // FALLBACK (unmigrated): a standalone sse_events stage (final-attempt frames).
   const stage = db.prepare("SELECT blob_gz FROM entry_stages WHERE entry_id = ? AND stage = 'sse_events' AND attempt_index = -1").get(id) as { blob_gz: Uint8Array } | undefined
   if (stage) {
     const payload = decompress(stage.blob_gz)
     if (Array.isArray(payload)) return payload as Array<FrameRecord>
   }
-  // Legacy single-blob fallback: sseEvents inside the head blob.
+  // FALLBACK (legacy single-blob): sseEvents inside the head blob.
   if (headBlob) {
     const full = decompress(headBlob) as { sseEvents?: unknown } | null
     if (Array.isArray(full?.sseEvents)) return full.sseEvents as Array<FrameRecord>
