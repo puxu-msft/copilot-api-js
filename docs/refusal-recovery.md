@@ -11,12 +11,32 @@
 | 值 | 行为 | 终态 |
 |---|---|---|
 | `refusal` | 透传上游原始 refusal，不改写（客户端拿到 dead/空轮） | complete（成功，与历史透传一致） |
-| `end_turn` | **追加**合成 `text` 块（`REFUSAL_RECOVERY_TEXT`：说明被拒、建议换表述/拆步/换模型）+ `stop_reason:"refusal"→"end_turn"`（清 `stop_details`） | complete（成功） |
-| `error` | 发 Anthropic `event: error` SSE 帧（替换上游终止帧）+ **`ctx.fail` 记请求失败** | failed（`[FAIL]`） |
+| `end_turn` | **追加**合成 `text` 块（默认 `DEFAULT_REFUSAL_END_TURN_TEXT`：说明被拒、建议换表述/拆步/换模型，**可配**见下）+ `stop_reason:"refusal"→"end_turn"`（清 `stop_details`） | complete（成功） |
+| `error` | 发 Anthropic `event: error` SSE 帧（替换上游终止帧，message/type **可配**见下）+ **`ctx.fail` 记请求失败** | failed（`[FAIL]`） |
 
 **默认 `error`**：refusal 是上游语义失败，应显式失败（对齐截断检测「上游语义失败必记 `ctx.fail`、不谎报成功」不变量），而非伪装成 end_turn 成功轮。`error` 帧对客户端：Anthropic SDK 读到流内 `event: error` 会 `throw APIError`、不自动重试（流已 commit）——与真实 Anthropic 流内错误等价（见 memory `reference-claude-code-timeout-and-sse-error-oracle`）。
 
 **门控（三模式共用）**：仅当 `stop_reason==="refusal"` **且**整条响应无 client-visible `text`/`tool_use` 块时触发（thinking-only/空，**排除 `server_tool_use`**）。带真内容或非 refusal 一律透传。判定 `isThinkingOnlyRefusal`（`recover-refusal.ts`）。
+
+## 可配置文本（零包装 + 占位符）
+
+`end_turn` 注入的 text 会被客户端（Claude Code）baked 进对话历史、**作为下一轮请求的一部分回灌上游**，故须完全用户可控、零代理包装。三处硬编码文本已开放为 `anthropic.*` 配置键（未配=内置默认，逐字节等价旧固定文案）：
+
+| 配置键 | 类型 | 默认 | 作用 |
+|---|---|---|---|
+| `refusal_end_turn_text` | string（模板） | `DEFAULT_REFUSAL_END_TURN_TEXT` | `end_turn` 注入的 text 块内容 |
+| `refusal_error_message` | string（模板） | `DEFAULT_REFUSAL_ERROR_MESSAGE` | `error` 帧 message（客户端 `APIError.message`） |
+| `refusal_error_type` | string（纯字面） | `api_error` | `error` 帧 `error.type`；空串回落 `api_error` |
+
+**占位符**（`end_turn_text` 与 `error_message` 共用，纯函数 `renderRefusalTemplate`）：`{model}`（已解析上游 GHC 规范名）、`{request_id}`、`{thinking_tokens}`（refusal 轮的 `usage.output_tokens`）。**未知占位符原样保留**（不报错、不清空——防手滑丢文本）；无占位符文本逐字节恒等。渲染时点：流式工厂在 refusal `message_delta` 自取 `{thinking_tokens}`（createState 时尚不可知）；非流式 whole-response 在手可预渲染。
+
+**空串 = 零包装的极致**：`refusal_end_turn_text=""` 时**不追加任何 text 块**，仅 `stop_reason: refusal→end_turn`（清 `stop_details`）。客户端拿到「thinking + 干净 end_turn、无可见文本」，绝无代理注入物混进下一轮。⚠️ **是否 stall 未定论**：原始 stall 事故根因是「客户端拿到无可用内容的轮」，空串把 turn 变回 thinking-only（仅 stop_reason 改成 end_turn）——是否重新引入 stall 取决于 Claude Code 对 thinking-only end_turn 的行为，需真实 live oracle 验证。
+
+**四个发射点**（勿漏）：流式 end_turn text（`buildSyntheticTextFrames`）/ 流式 error 帧（`buildRefusalErrorFrame`）/ 非流式 end_turn body（`recoverRefusalInResponse`）/ 非流式 error body（`handler-v4.ts` 内联）。
+
+## 合成帧记录层打标（richest-data-flow §3）
+
+refusal 注入/改写的 forwarded 帧（end_turn 合成 text 三帧 + 改写 delta、error 帧）在 forwarded 轨打 `SseEventRecord.synthetic:"refusal-recovery"`（`tagFrameSynthetic`，`src/lib/pipeline/frame-origin.ts` 的泛化 Symbol tag，与 hook-rewrite 同机制；client-sink `write()` 读 `readSyntheticKind`）。**只碰记录层元数据、不碰客户端可见字节**（零包装不冲突）——文本变任意/可空后凭内容启发式判断「是否合成」失效，故 record 层标记是必需的可辨识手段。上游轨 `sseEvents` 绝不含合成物（driver 在 S5 前采样）。非流式无 `sseEvents`，forwarded body 经 `setForwardedResponse` 与上游原始 body 分腿记录、已可辨。
 
 ## 为何 error 模式落在 rewrite 层（而非 handler drain 后）
 
