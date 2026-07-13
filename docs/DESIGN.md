@@ -199,6 +199,7 @@ ui/
    ├── anthropic/  openai/  responses/  gemini/  models/  history/
    ├── config/  pipeline/  streaming/  shutdown/  context/  infra/
    ├── e2e/         # 真实网络/需 token（getE2EMode 门控，不进 offline 全集）
+   ├── e2e-client/  # client↔proxy e2e：真实 SDK 打同进程 proxy（Bun.serve :0）、上游经 setUpstreamFetchForTests 注入点屏蔽（不碰 globalThis.fetch）；oracle=客户端可观测行为（.finalMessage() 深等/throws APIError/丢帧），非我方字节。骨架 harness/{serve-in-process,upstream-script}。CLI Tier2 待建。见 spec 2026-07-13-client-proxy-sdk-e2e-harness
    ├── e2e-ui/      # Playwright（浏览器）
    ├── helpers/     # 共享测试基建（mock-fetch、state-fixture、test-bootstrap、factories、sse〔含 frameTypesInOrder/dataFramesOfType 解析〕、anthropic-frames〔composable SSE 帧 atoms〕、fake-clock〔确定性时钟〕、history-fixtures、ws-mock…）
    └── fixtures/    # 磁盘样本 payload
