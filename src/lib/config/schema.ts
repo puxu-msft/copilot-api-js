@@ -508,6 +508,14 @@ export const AnthropicConfigSchema = z
     refusal_error_message: nullableString(),
     /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。未配=内置默认。 */
     refusal_error_type: nullableString(),
+    /** 上游错误 → 客户端可行动形态整形总开关。关闭时三个终点（forward.ts / 终点①② / S5 canonical rewrite）逐字节回退现状。默认 true。 */
+    error_shaping_enabled: nullableBoolean(),
+    /** B 类：content_filtered / 402 / 403(token-refresh 耗尽) 是否合成 AskUserQuestion 轮次而非拍平成错误帧。仅交互式部署应开启（无服务端探测信号，见 plan D-0）。默认 false。 */
+    error_ask_user_question: nullableBoolean(),
+    /** AUQ 问题文案模板，占位符 {model}/{request_id}/{error_type}/{status}，复用 renderRefusalTemplate。空=内置默认。 */
+    error_auq_template: nullableString(),
+    /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」。键=策略 .name（如 "adaptive-thinking-rejection-retry"），值 "proxy"|"delegate"。未列=proxy（默认更可控）。 */
+    error_selfheal_delegate: z.record(z.string(), z.enum(["proxy", "delegate"])).optional(),
     /**
      * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item with a header but no question).
      * Only items missing the `question` key are touched. Default true.
