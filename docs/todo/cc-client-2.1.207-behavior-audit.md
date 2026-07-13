@@ -411,7 +411,38 @@ context-hint 是 CC 2.1.207 又一个新 context-管理协议，本项目 reacti
 
 ---
 
-## 阶段综合（轮次 1-10，F1-F16）：三条跨轮主线 + 待办优先级
+---
+
+## 轮次 11（2026-07-13）：fine-grained tool streaming —— 确认无正确性 gap，仅 UX eagerness 降级
+
+> 次级面第一项。结论**确认性**（无缺陷），按 faithful 纪律如实记录。
+
+### 发现来源（CC 源码坐标）
+
+- **`eager_input_streaming` 是 per-backend 能力**（模型表 `app.pretty.js:9030`：`eager_input_streaming: {bedrock:true, vertex:true}` 或 `{vertex:true}`）——**无 first-party 标志**，主要为 bedrock/vertex 后端；`CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`（28304）可强开。beta `fine-grained-tool-streaming-2025-05-14`（422518，SDK 文档）。
+- **CC tool 输入累加器**（11100）：`input_json_delta` → `_emit("inputJson", partial_json, input)`，仅在 `P5a(n3) && n3.input`（块是 tool_use）时；**最终 JSON 解析在 content_block_stop**（累加器 concat partial_json，非逐帧解析）→ **分片粒度与正确性无关**。
+- **空 `partial_json` 安全**：mid-stream 消费者（281618）`if (T?.type!=="input_json_delta" || !T.partial_json) continue`——空串 falsy → 跳过；累加器 concat 空串无害。呼应轮次 1「空 delta 安全」。
+- **281618 的 mid-stream partial 解析是 web_search 专用**（regex 抽 `"query"` 喂 live search-progress UI）——本项目已**退役 web_search**（git log「删 web_search 双跳模块」）→ 与通用 tool 路径无关。
+
+### 本项目现状（读码）
+
+`stripToolFields` 内置默认**proactive 剥** `eager_input_streaming`（轮次 2，零往返）→ GHC 从不见该字段 → 产**非-eager（保守）分片**。tool 输入累加/修复由 `decode-tool-input.ts` / `tool-input-repair.ts` 兜底（robust，含 AskUserQuestion \uXXXX 修复）。keepalive 对 open tool_use 块发 `input_json_delta{partial_json:""}`（轮次 1）。
+
+### F17（LOW/信息，主线 C 家族）— 剥 `eager_input_streaming` 仅损 UX eagerness，零正确性
+
+**判断（读码）**：
+- **零正确性影响**：CC 只在 content_block_stop 解析 tool 输入，GHC 的分片粒度（eager vs 保守）不改变最终累加结果。空 keepalive input_json_delta 被 CC 安全跳过。**无 gap**。
+- **唯一代价（UX）**：剥 `eager_input_streaming` → GHC 不 eager 流式 tool 输入 → CC 对**正在流入的 tool 参数**的 live 显示更新更粗（成块而非逐字）。对多数工具**无感**，仅超大 tool input 的实时预览略钝。属主线 C（客户端能力经 GHC 静默降级）但**严重度最低**——非诊断/驱逐那种功能缺失，纯呈现细腻度。
+
+**理想方向（极低优先）**：并入主线 C 的 GHC 探针批次时**顺带**测 GHC 是否支持 `eager_input_streaming` / `fine-grained-tool-streaming-2025-05-14`——若 GHC 已支持，可停止 proactive 剥、恢复 eager UX；若不支持（现状假设），保持剥、文档标注「fine-grained tool streaming 经 GHC 不可用（仅 UX）」。
+
+### 本轮结论
+
+fine-grained tool streaming **无正确性 gap**（CC block-stop 解析 + 空 delta 安全 + web_search mid-parse 已退役）。唯一是剥 `eager_input_streaming` 的 UX eagerness 降级（F17，最低severity，归主线 C）。本项目 tool 输入子系统（proactive 剥 + decode/repair + 累加）**成熟**。
+
+---
+
+## 阶段综合（轮次 1-11，F1-F17）：三条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
 
@@ -466,7 +497,7 @@ CC 2.1.207 引入一批 2026 新 beta，本项目**无显式感知**、靠通用
 
 ### 原清单已全覆盖（10 轮，F1-F16）。后续轮次可深挖的**次级面**（未开工）
 
-- [ ] **fine-grained tool streaming 语义**：`CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`（28304）开启后 CC 对 tool_use `input_json_delta` 的分片期望 vs 本项目转发粒度（本项目已 proactive 剥 `eager_input_streaming`，但**流式分片语义**是否对齐未查）。
+- [ ] **fine-grained tool streaming 语义**（轮次 11 已查）：确认无正确性 gap（CC block-stop 解析、空 delta 安全、web_search mid-parse 已退役）；剥 `eager_input_streaming` 仅 UX eagerness 降级（F17,最低，主线 C）。
 - [ ] **anthropic-beta 全集对账**：CC 2.1.207 发的完整 beta 集（61831 的 `Q0(...)` 全表：`interleaved-thinking` / `context-1m` / `tool-search` / `structured-outputs` 等）逐条对本项目 negotiation 支持矩阵，找未覆盖项。
 - [ ] **usage wire 形状**：CC 消费的 `message_delta.usage` / `message_start.usage` 字段（cache_creation/cache_read/server_tool_use 细分）vs 本项目 usage 透传与 history 记录。
 - [ ] **metadata.user_id / 请求归属**：CC 的 `metadata`（`Wtt()`，297987）字段 vs 本项目是否透传/用于 GHC 归属。
