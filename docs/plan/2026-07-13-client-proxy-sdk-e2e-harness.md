@@ -1,5 +1,7 @@
 # client↔proxy SDK e2e 骨架 Implementation Plan
 
+> **实施状态（2026-07-13 完成）**：全 7 task inline 落地 master——harness `54117ce8`、9 场景 `b6b142dd`、重命名 `.e2e→.it` 入 CI offline 全集、docs+记忆收尾。9 场景全绿、typecheck+lint 净、与 golden 无交叉污染。**偏差**：① 测试文件用 `.it.test.ts` 非 `.e2e.test.ts`（离线确定性、须进 `test:backend`，`.e2e` 会被排除成死重量）；② 隔离 smoke 用非流式 JSON upstream（`jsonResponse`）而非 SSE（非流式 client call 匹配）；③ eventless oracle 改丢**内容 delta** 非 start（start 被后续 event-ful delta 遮蔽）；④ 实测坐实 SDK 不补 `citations`、proxy 原样转发 eventless 帧。CLI Tier 2 未做（按用户决定延后）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 建一个 client↔proxy e2e 骨架：真实 `@anthropic-ai/sdk` 打同进程真实 proxy（`Bun.serve` 临时端口），上游 GHC 经 `setUpstreamFetchForTests` 屏蔽，断言**客户端可观测行为**（`.finalMessage()` 深等值 / `throws APIError` / 缺块），覆盖 7 个 Anthropic 场景。
