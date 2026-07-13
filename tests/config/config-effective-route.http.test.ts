@@ -8,7 +8,8 @@
  *   1. Completeness — every CONFIG_MANAGED_DEFAULTS key is exposed (verbatim,
  *      renamed, or as a `<key>Set` boolean). A new field added there with no
  *      handling fails this test.
- *   2. Secrecy — secret values (anthropicApiKey) are never emitted verbatim.
+ *   2. Secrecy — any credential-named field is masked, never emitted verbatim
+ *      (structural guard, defends against a NEW secret bypassing SENSITIVE).
  *   3. Regression — the fields that were previously missing are now present.
  */
 
@@ -30,8 +31,6 @@ const app = createFullTestApp()
  * Keeping this explicit (rather than inferred) makes the contract auditable.
  */
 const RENAMED_KEYS: Record<string, string> = {
-  // Secret → boolean presence flag (value never emitted).
-  anthropicApiKey: "anthropicApiKeySet",
   // Compiled RegExp rules → count.
   systemPromptOverrides: "systemPromptOverridesCount",
 }
@@ -57,12 +56,6 @@ describe("GET /api/config — effective config snapshot", () => {
     // lands here — the auto-derive means it should appear verbatim, so this only
     // fails if someone breaks the derive loop or adds a field needing a rename.
     expect(missing).toEqual([])
-  })
-
-  test("secrecy: anthropicApiKey value is never emitted; exposed only as a boolean flag", async () => {
-    const body = await getConfig()
-    expect("anthropicApiKey" in body).toBe(false)
-    expect(typeof body.anthropicApiKeySet).toBe("boolean")
   })
 
   test("secret-named guard: no credential-looking field is emitted verbatim (defends against a NEW secret bypassing SENSITIVE)", async () => {

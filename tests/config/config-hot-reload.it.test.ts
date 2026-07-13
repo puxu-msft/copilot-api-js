@@ -644,13 +644,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.nonDeferredTools,
   },
   {
-    configKey: "anthropic.api_key",
-    stateKey: "anthropicApiKey",
-    sampleYamlValue: '"sk-test-123"',
-    expectedStateValue: "sk-test-123",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
-  },
-  {
     configKey: "anthropic.warmup",
     stateKey: "warmupPolicy",
     sampleYamlValue: "fake",
