@@ -2,6 +2,8 @@
 
 本文档描述 copilot-api 的 Google Gemini 兼容端点。客户端（Gemini CLI、`@google/genai` SDK、langchain-google-genai 等）可以把 baseUrl 指向本服务，调用 GitHub Copilot 提供的模型。
 
+> **body 契约以官方为准**：request/response body 的字段级 schema **镜像 [Google Gemini 官方 API](https://ai.google.dev/api) 既有契约**，本文只记我们特有的偏差 / 转换。完整端点目录见 [API.md](API.md)；活的全表面真相 = 运行实例 `GET /openapi.json`（+ `/docs`）。其他 vendor 偏差见 [openai-compat.md](openai-compat.md)、[anthropic-compat.md](anthropic-compat.md)。
+
 ## 端点
 
 | 路由 | 方法 | 说明 |
