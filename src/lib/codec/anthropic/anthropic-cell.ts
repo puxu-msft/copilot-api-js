@@ -90,6 +90,16 @@ export const anthropicMessagesLeg: OutboundLeg = {
 
   // S2: direct `/v1/messages` is identity (the upstream IS the Anthropic Messages API); a REVERSE leg
   // (cc/responses/gemini client) translates source→Anthropic via the hub → env.body becomes Anthropic-shaped.
+  //
+  // NOTE (openai-responses reverse, C2-review): the master responses codec's translateOut ALSO eagerly
+  // called `ensureReverseExchange(env)` here to pre-build the reverse responseId/itemId. This cell omits it
+  // — the codec's RESPONSE-side `renderResponse`/`renderResponseNonStreaming` (still driven by the codec,
+  // not this leg — S6 is InboundCodec's concern) builds it LAZILY (`??=`) on the first frame. Verified
+  // OBSERVABLY EQUIVALENT: `reverseExchange` has NO request-side reader (only render consumes it; the handler
+  // registers the session from the post-render `acc.responseId`, not the exchange), the ids are one-shot
+  // `genShortId()` memoized either way, and clientModel primarily uses the parse-time `resolvedModelName`.
+  // The `reverse-responses-messages` IT locks the reverse-exchange id preservation. Hoisting the exchange
+  // state to a ctx side-channel (RFC §11.2) is a C4 (/responses leg) concern, not C2.
   translateOut(env) {
     if (!isReverse(env)) return env
     const anthropicBody = translateRequestVia(env.clientFormat, env.targetEndpoint, env.body, { model: env.model as Model | undefined })

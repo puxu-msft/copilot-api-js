@@ -4,7 +4,15 @@
 
 隔离 worktree：`.worktrees/inbound-outbound-split`，分支 `feat/inbound-outbound-split`（从 master `e9f6ce8a` 切出）。
 
-> **会话收尾（C0-C2 完成，交接新会话做 C3-C6）**：C0-C2 全提交、字节等价、全量 base 5；剩余锚点见 [prompts/C3-C6.md](prompts/C3-C6.md)。收尾时派了一个独立 reviewer 对抗审 C0-C2 承重态（driver fork / pipelineInfo 经 ctx 重寄 / 字节等价 / 无双活 / R1 corner）——**新会话开工前先看该 review 的 findings**（若已完成，reviewer 报告在会话通知里；主会话已亲手复核过承重断言 + golden 5× + 全量 base 5，review 是额外独立核验层）。DESIGN.md 翻译矩阵行 doc-sync 正确推迟到 C6（重构未完，现状是 hybrid 中间态，本 PROGRESS 是准确活文档）。
+> **会话收尾（C0-C2 完成，交接新会话做 C3-C6）**：C0-C2 全提交、字节等价、全量 base 5；剩余锚点见 [prompts/C3-C6.md](prompts/C3-C6.md)。
+>
+> **C0-C2 whole-branch review 已完成（独立 reviewer + 主会话亲手复核 file:line）——0 blocker，1 major(已裁决非阻塞)，2 建议**：
+> - **[major→非阻塞，C4 跟进] responses 反向 @messages 的 `ensureReverseExchange` 未在 cell.translateOut eager 建**：master responses codec translateOut(MESSAGES) 会 eager `ensureReverseExchange`(建 responseId/itemId)，cell.translateOut 省略 → 改由 render 侧(仍走 codec.renderResponse，S6=InboundCodec 关切)首帧惰性 `??=` 建。**亲手核实=可观测等价**：reverseExchange **仅响应侧消费**、请求侧无读者（handler 会话注册走 render 后 `acc.responseId`），id 是 genShortId 一次性 memoized、clientModel 主用 parse-time resolvedModelName；`reverse-responses-messages.it.test:197 expect(r.id.startsWith("resp_"))` 驱动**真 assembly** 已锁 id 到达客户端。已在 `anthropic-cell.ts:translateOut` 加澄清注释。**exchange 态搬 ctx side-channel 是 RFC §11.2 的 C4(/responses 腿)事**，非 C2。
+> - **[建议，C5] `driver.ts:228` legacy strategies 无条件求值后丢弃**（migrated 路径每请求多构造一次 strategy 栈纯浪费无副作用）→ C5 收敛旧供料时短路 `migratedForStrategies ? [] : deps.strategies(...)`。
+> - **[建议，措辞修正] codec direct 分支非「完全 dead」**：经 driver 主循环 dead，但 `inspectRequest`(dry-run debug，仅 `debug/dry-run-pipeline.ts`)仍走 codec.*、走同一算法核无字节分歧。**C5 删 codec 出站方法前须先把 inspectRequest 切到 cell 或确认 dry-run 可降级。**
+> - 正向确认无缺陷（reviewer + 主会话双证）：driver fork 真互斥无双活/双 sanitize、pipelineInfo 经 ctx 重寄四源正确、R1 corner 2D 编码正确、betaProbe R3 惰性、migratedCell 回退判别器正确、prepareReverseAnthropicWire 逐字节等价、reverse 采样同结构。
+>
+> DESIGN.md 翻译矩阵行 doc-sync 正确推迟到 C6（重构未完，现状 hybrid 中间态，本 PROGRESS 是准确活文档）。
 
 ## 基线（改动前 master）
 - backend：**4661 pass / 1 skip / 5 fail**。5 fail = 4× `request-rewrite migration golden (codec.parse → driver S3)`（peer-D2 pipelineInfo）+ 1× `/api/negotiation > GET / returns grouped snapshot`。第 6 条 base 例外（UI shell 404）在前端 `test:ui`，不在 backend。
