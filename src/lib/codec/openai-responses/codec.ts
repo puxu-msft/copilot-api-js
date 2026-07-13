@@ -212,8 +212,12 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
   let requestContext: RequestContext | undefined
   // The resolved upstream model name (for the fallback / reverse translator's clientModel).
   let resolvedModelName = ""
-  // Fallback (Responses→CC) exchange state, initialized once in translateOut.
-  let fallback: FallbackExchange | undefined
+  // Fallback (Responses→CC) exchange SCRATCH (RFC §11.2c): a shared MUTABLE holder both this codec's render
+  // side (reads exchange ids/clientModel) and — once C4a routes the CHAT cell through the assembly — the
+  // OUTBOUND_LEGS[CHAT_COMPLETIONS] fallback leg (writes it in translateOut, reads rebuiltMessages in
+  // prepareWire) reference. parse threads it onto env.requestState so both sides see the SAME instance.
+  // `exchange` is built LAZILY on the fallback route (translateOut CHAT branch); undefined for direct.
+  const fallbackScratch: { exchange: FallbackExchange | undefined } = { exchange: undefined }
   // Lazily-built CC→Responses per-frame translator (fallback response side).
   let ccTranslator: CCToResponsesStreamTranslator | null = null
   // REVERSE `@messages` leg (Phase 5): the reverse-exchange (responseId/itemId/clientModel) the two-hop
@@ -222,6 +226,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
   let reverseTranslator: ReverseStreamTranslator | undefined
 
   const ensureCcTranslator = (): CCToResponsesStreamTranslator | null => {
+    const fallback = fallbackScratch.exchange
     if (!fallback) return null
     ccTranslator ??= createCCToResponsesStreamTranslator({ responseId: fallback.responseId, itemId: fallback.itemId, clientModel: fallback.clientModel })
     return ccTranslator
@@ -247,18 +252,18 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       const parsed = parseOpenAiResponses(raw)
       requestContext = parsed.env.ctx
       resolvedModelName = parsed.resolvedModelName
-      // REVERSE `@messages` leg supply (C2b): thread the shared beta probe + mapper holder onto
-      // env.requestState so the OUTBOUND_LEGS[/v1/messages] reverse branch reads them. Absent for the
-      // direct/fallback legs → requestState stays undefined → the legacy path.
-      if (args?.reverseBetaProbe || args?.reverseMapperHolder) {
-        return parsed.env.with({
-          requestState: {
-            ...(args.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
-            ...(args.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
-          },
-        })
-      }
-      return parsed.env
+      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
+      // it from env.requestState. The shared fallback-exchange scratch (§11.2c) is always threaded (the CHAT
+      // fallback leg reads/writes it in C4a; inert on direct/reverse). The REVERSE `@messages` leg supply
+      // (C2b — beta probe + mapper holder) is added when the handler injects them; all coexist. Populating
+      // requestState is also the driver's cell-keyed fork discriminator (an env without it stays legacy).
+      return parsed.env.with({
+        requestState: {
+          responsesFallbackScratch: fallbackScratch,
+          ...(args?.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
+          ...(args?.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
+        },
+      })
     },
 
     getContext() {
@@ -266,7 +271,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     },
 
     getFallbackResponseId() {
-      return fallback?.responseId
+      return fallbackScratch.exchange?.responseId
     },
 
     // S2 translateOut is identity for the direct/fallback legs (Responses-shaped body stays through
@@ -275,7 +280,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     // Responses→CC→Anthropic body) + builds the reverse-exchange the response two-hop needs.
     translateOut(env) {
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) {
-        fallback ??= {
+        fallbackScratch.exchange ??= {
           responseId: `resp_${genShortId()}`,
           itemId: `item_${genShortId()}`,
           clientModel: resolvedModelName || (env.body as ResponsesPayload).model,
@@ -296,7 +301,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       // build the Anthropic wire (a Responses client sends no anthropic-beta; the handler's probe records
       // the outbound betas). The direct/fallback legs stay Responses/CC.
       if (env.targetEndpoint === ENDPOINT.MESSAGES) return prepareReverseAnthropicWire(env, args?.reverseBetaProbe)
-      return prepareOpenAiResponsesWire(env, fallback)
+      return prepareOpenAiResponsesWire(env, fallbackScratch.exchange)
     },
 
     renderResponse(frame, env) {
@@ -332,11 +337,11 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
         const cc = renderResponseNonStreamingVia(ENDPOINT.MESSAGES, upstream).rendered as ChatCompletionResponse
         return translateCCToResponsesResponse(cc, ensureReverseExchange(env))
       }
-      if (!fallback) return upstream
+      if (!fallbackScratch.exchange) return upstream
       return translateCCToResponsesResponse(upstream as ChatCompletionResponse, {
-        responseId: fallback.responseId,
-        itemId: fallback.itemId,
-        clientModel: fallback.clientModel,
+        responseId: fallbackScratch.exchange.responseId,
+        itemId: fallbackScratch.exchange.itemId,
+        clientModel: fallbackScratch.exchange.clientModel,
       })
     },
 

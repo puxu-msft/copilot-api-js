@@ -62,4 +62,13 @@ export interface RequestState {
    * per-request instance. A source codec's parse creates it (`createReverseAnthropicMapperHolder`).
    */
   readonly reverseMapperHolder?: unknown
+  /**
+   * openai-responses FALLBACK (`/chat`) leg only: the per-request fallback-exchange SCRATCH (RFC §11.2c —
+   * responseId/itemId/clientModel/rebuiltMessages). Kept opaque here (openai-responses-shaped, and a
+   * pipeline module can't import the codec's type). A shared MUTABLE holder both the CHAT leg (writes it in
+   * `translateOut`, reads `rebuiltMessages` in `prepareWire`) and the openai-responses InboundCodec's render
+   * side (reads ids/clientModel) reference — the same per-request instance the codec's parse creates. Built
+   * LAZILY on the fallback route (never for a direct `/responses` request).
+   */
+  readonly responsesFallbackScratch?: unknown
 }
