@@ -159,12 +159,12 @@ describe("T7.2 — forward-leg strategy factory does NOT throw (production seam,
 describe("T7.2 — the anthropic forward @cc/@responses cell assembly returns a REAL non-empty stack per leg", () => {
   useIsolatedRuntime()
 
-  // The anthropic FORWARD leg reads env.body (the hub-translated CC body) as the auto-truncate baseline —
+  // The anthropic FORWARD leg reads env.body (the hub-translated CC body) as the retry baseline —
   // clientFormat "anthropic" selects that branch in buildCcFamilyLegStrategies (no requestState needed).
   const ccLegEnv = (leg: (typeof ENDPOINT)["CHAT_COMPLETIONS"] | (typeof ENDPOINT)["RESPONSES"]): RequestEnvelope =>
     ({ clientFormat: "anthropic", targetEndpoint: leg, body: { model: "claude-x", messages: [] }, model: { id: "claude-x" }, requestState: {} }) as unknown as RequestEnvelope
 
-  test("a CC-target env yields the CC stack (contains auto-truncate) — NOT a throw", () => {
+  test("a CC-target env yields the CC stack (network→server-error→token-refresh) — NOT a throw", () => {
     const stack = resolveCellAssembly("anthropic", ENDPOINT.CHAT_COMPLETIONS).buildStrategies(ccLegEnv(ENDPOINT.CHAT_COMPLETIONS))
     expect(stack.length).toBeGreaterThan(0)
     expect(stack.map((s) => s.name)).toContain("token-refresh")
