@@ -32,6 +32,8 @@ export function createFullTestApp(options: UiRoutesOptions = {}) {
 
   app.get("/", (c) => c.redirect("/openapi.json"))
 
+  app.get("/health/liveness", (c) => c.json({ status: "alive" }))
+
   app.get("/health", (c) => {
     const healthy = Boolean(state.copilotToken && state.githubToken)
     return c.json(

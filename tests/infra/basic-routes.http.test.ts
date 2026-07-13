@@ -107,6 +107,29 @@ describe("basic HTTP routes", () => {
     })
   })
 
+  test("GET /health/liveness returns 200 alive when tokens are present", async () => {
+    setStateForTests({ copilotToken: "copilot-test", githubToken: "ghp_test" })
+
+    const res = await app.request("/health/liveness")
+    const body = (await res.json()) as { status: string }
+
+    expect(res.status).toBe(200)
+    expect(body).toEqual({ status: "alive" })
+  })
+
+  test("GET /health/liveness stays 200 alive even when tokens are missing", async () => {
+    // Liveness reflects process responsiveness only — it must not depend on
+    // upstream readiness (token state), otherwise a down upstream would cause
+    // orchestrators to restart a perfectly alive process.
+    setStateForTests({ copilotToken: undefined, githubToken: undefined })
+
+    const res = await app.request("/health/liveness")
+    const body = (await res.json()) as { status: string }
+
+    expect(res.status).toBe(200)
+    expect(body).toEqual({ status: "alive" })
+  })
+
   test("GET /models returns OpenAI-compatible format", async () => {
     const res = await app.request("/models")
     const body = (await res.json()) as ModelsListResponseBody

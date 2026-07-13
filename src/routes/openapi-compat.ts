@@ -248,6 +248,15 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
   })
   registry.registerPath({
     method: "get",
+    path: "/health/liveness",
+    tags: ["infra"],
+    summary: "Liveness probe (process responsiveness only)",
+    description:
+      'Cheap, dependency-free liveness probe — always 200 `{status:"alive"}` while the process can respond. Independent of upstream token/readiness state and of graceful shutdown (use /health for readiness/draining).',
+    responses: { ...ok200("Alive") },
+  })
+  registry.registerPath({
+    method: "get",
     path: "/",
     tags: ["infra"],
     summary: "Root path — redirects to /openapi.json",

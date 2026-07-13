@@ -237,7 +237,8 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 
 | 路由 | 说明 |
 |------|------|
-| `/health` | 健康检查（容器编排用） |
+| `/health` | 健康检查（容器编排 readiness——token/models 未就绪返 503） |
+| `/health/liveness` | Liveness 探针——仅反映进程可响应，恒 200 `{status:"alive"}`；注册在 config/token 中间件**之前**，不触上游、不受 stale token / 优雅关机影响（drain 用 readiness `/health`，liveness 失败会触发重启） |
 | `/metrics` | **Prometheus 文本 exposition**（v0.0.4）——telemetry registry 的通用投影 `copilot_api_*_total{dimension,key}` counters + **标准 Prometheus histogram**（`copilot_api_<duration_ms\|queue_wait_ms\|input_tokens\|output_tokens>_bucket{le}`/`_sum`/`_count`，scraper 用 `histogram_quantile()` 自算分位）（与 `/api/stats` 同源、`sinceStart` 累积窗口；常开、零依赖、不引 OTel SDK）。`src/lib/metrics-exposition.ts` + `src/routes/metrics/route.ts`，设计见 [spec/operational-stats-and-lineage-removal.md](spec/operational-stats-and-lineage-removal.md) §6 + [archive/2606-landed-rfcs/telemetry-histograms.md](archive/2606-landed-rfcs/telemetry-histograms.md) |
 | `/openapi.json` | **全 API 表面**的 OpenAPI 3.1 文档。两档保真度：管理 API（`/api/*`）经各 router `.openapi()` 的**精确 zod schema**；其余（OpenAI/Anthropic/Gemini/Azure compat、History REST、dry-run-pipeline、event_logging、health）经 `openAPIRegistry.registerPath()` 的**简单 open-object schema**（纯文档、不绑 handler、不校验，故 plain-Hono 路由原封不动照常工作）。根 app 改 `OpenAPIHono<BlankEnv>`；装配见 `src/routes/openapi.ts`（doc31+Scalar+管理 router 聚合）与 `src/routes/openapi-compat.ts`（compat/history/诊断的 registerPath）。vendor compat body 字段级细节查各厂商自有 spec |
 | `/docs` | Scalar 交互式 API 文档页（消费 `/openapi.json`，与 Vue 前端 `/ui` 分离） |

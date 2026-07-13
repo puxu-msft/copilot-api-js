@@ -70,6 +70,14 @@ export function createServer(options: ServerOptions = {}) {
     return c.json({ error: "Not Found" }, 404)
   })
 
+  // Liveness probe — reports only that the process is responsive. Registered
+  // BEFORE the config/token middleware below so it never touches upstream: a
+  // liveness check must stay 200 even when the Copilot token is stale or the
+  // upstream is down (orchestrators use readiness `/health`, not liveness, to
+  // drain traffic; a failing liveness probe triggers a pod restart). Also stays
+  // 200 during graceful shutdown since it sits ahead of the shutdown gate.
+  server.get("/health/liveness", (c) => c.json({ status: "alive" }))
+
   // Config hot-reload: re-apply config.yaml settings before each request.
   // loadConfig() is mtime-cached — only costs one stat() syscall when config is unchanged.
   // Also proactively ensure the Copilot token is valid — if the last background
