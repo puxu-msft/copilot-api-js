@@ -4,6 +4,7 @@
 > **落地**：—
 > **现状锚点**：运行时选项 `systemMessagesSanitize`；`src/lib/anthropic/sanitize/system-messages.ts`
 > **备注**：核心纯函数 + 主路径 + count_tokens + web_search 全落地，与 plan 形状一致
+> **⚠️ 后续变更（2026-07-13）**：下文 §H2 的 `countTokensViaAnthropic`（count_tokens 直连 `api.anthropic.com`）**已退役**——count_tokens 现默认转发 GHC 上游 `/v1/messages/count_tokens`，并在 `prepareAnthropicRequest` 前跑补全同源的完整 sanitize 链（`runAnthropicPayloadRewrites`，已含此处的 inline-system 处理），故本 plan 描述的「count_tokens 独立处理 inline system」不再单独存在。权威见 [spec/2026-07-13-ghc-count-tokens-default.md](../spec/2026-07-13-ghc-count-tokens-default.md)。
 
 ## Context(背景与动机)
 
