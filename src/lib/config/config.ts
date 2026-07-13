@@ -716,6 +716,10 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.refusal_end_turn_text !== undefined) setAnthropicBehavior({ refusalEndTurnText: a.refusal_end_turn_text })
     if (a.refusal_error_message !== undefined) setAnthropicBehavior({ refusalErrorMessage: a.refusal_error_message })
     if (a.refusal_error_type !== undefined) setAnthropicBehavior({ refusalErrorType: a.refusal_error_type })
+    if (a.error_shaping_enabled !== undefined) setAnthropicBehavior({ errorShapingEnabled: a.error_shaping_enabled })
+    if (a.error_ask_user_question !== undefined) setAnthropicBehavior({ errorAskUserQuestion: a.error_ask_user_question })
+    if (a.error_auq_template !== undefined) setAnthropicBehavior({ errorAuqTemplate: a.error_auq_template })
+    if (a.error_selfheal_delegate !== undefined) setAnthropicBehavior({ errorSelfhealDelegate: a.error_selfheal_delegate })
     if (a.tool_backfill_question !== undefined) setAnthropicBehavior({ backfillQuestionFromHeader: a.tool_backfill_question })
     if (a.system_rewrite_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear

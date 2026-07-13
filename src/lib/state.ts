@@ -184,6 +184,15 @@ export interface State {
   /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。默认 `api_error`。 */
   readonly refusalErrorType: string
 
+  /** 上游错误 → 客户端可行动形态整形总开关（`anthropic.error_shaping_enabled`）。关闭时逐字节回退现状。默认 true。 */
+  readonly errorShapingEnabled: boolean
+  /** B 类：content_filtered / 402 / 403(token-refresh 耗尽) 是否合成 AskUserQuestion 轮次而非拍平成错误帧（`anthropic.error_ask_user_question`）。仅交互式部署应开启。默认 false。 */
+  readonly errorAskUserQuestion: boolean
+  /** AUQ 问题文案模板（`anthropic.error_auq_template`），占位符 `{model}`/`{request_id}`/`{error_type}`/`{status}`。空串=内置默认。默认 `""`。 */
+  readonly errorAuqTemplate: string
+  /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」（`anthropic.error_selfheal_delegate`）。键=策略 `.name`，值 `"proxy"|"delegate"`。未列=proxy。默认 `{}`。 */
+  readonly errorSelfhealDelegate: Readonly<Record<string, "proxy" | "delegate">>
+
   /**
    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
    * normalized model-name "family" prefixes; a model has the capability when its normalized id
@@ -958,6 +967,7 @@ function cloneState(source: MutableState): MutableState {
     modelIndex: new Map(source.modelIndex),
     modelOverrides: { ...source.modelOverrides },
     toolSearchOverrides: { ...source.toolSearchOverrides },
+    errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
     effortsOverrides: { ...source.effortsOverrides },
     streamIdleTimeoutOverrides: { ...source.streamIdleTimeoutOverrides },
     responseHeaderTimeoutOverrides: { ...source.responseHeaderTimeoutOverrides },
@@ -1005,6 +1015,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("toolSearchOverrides" in patch) {
     cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
+  }
+  if ("errorSelfhealDelegate" in patch) {
+    cloned.errorSelfhealDelegate = patch.errorSelfhealDelegate ? { ...patch.errorSelfhealDelegate } : undefined
   }
   if ("models" in patch) {
     cloned.models = cloneModels(patch.models)
@@ -1228,6 +1241,10 @@ export function setAnthropicBehavior(
       | "refusalEndTurnText"
       | "refusalErrorMessage"
       | "refusalErrorType"
+      | "errorShapingEnabled"
+      | "errorAskUserQuestion"
+      | "errorAuqTemplate"
+      | "errorSelfhealDelegate"
       | "contextEditingModels"
       | "toolSearchOverrides"
       | "memoryToolEnabled"
@@ -1540,6 +1557,10 @@ export const CONFIG_MANAGED_DEFAULTS = {
   refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
   refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
   refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,
+  errorShapingEnabled: true,
+  errorAskUserQuestion: false,
+  errorAuqTemplate: "",
+  errorSelfhealDelegate: {} as Readonly<Record<string, "proxy" | "delegate">>,
   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
   // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
@@ -1662,6 +1683,10 @@ export function resetConfigManagedState(): void {
     refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
     refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
     refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+    errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
+    errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
+    errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
+    errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
     toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
     memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
@@ -1745,6 +1770,10 @@ const mutableState: MutableState = {
   refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
   refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
   refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+  errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
+  errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
+  errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
+  errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
   toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
   memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
