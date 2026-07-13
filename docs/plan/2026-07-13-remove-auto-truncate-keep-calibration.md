@@ -1,5 +1,7 @@
 # 移除 auto-truncate 截断本体、保留 calibration —— 实施计划
 
+> **实施状态**：**已完成**（2026-07-13，隔离 worktree `feat/remove-auto-truncate`，Phase 0-8 全落地）。Inline 执行（`superpowers:executing-plans`）。全 typecheck（root + ui + ui-v4）绿、相关测试绿；全量 `bun test` 仅剩 5 个**并发会话遗留的 pre-existing 失败**（negotiation 类别数 + 4 个 request-rewrite golden 的 `streamIdleTimeoutMs`，均在 master 上先于本工作失败、非本次引入）。debug 端点 `/dry-run-truncate` 重写为 `/calibration-probe`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL：用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实施。步骤用 checkbox（`- [ ]`）跟踪。
 
 **Goal:** 从 copilot-api-js 移除「反应式截断/压缩请求 payload」的截断本体，保留 calibration 因子模型并重定位为本地 token 计数准确度增强。

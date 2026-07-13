@@ -80,7 +80,6 @@ Experimental options:
 |--------|---------|-------------|
 | `--external-ui-url` |  | Reverse-proxy `/ui` to an external Vite dev / build server |
 | `--verbose`, `-v` | `false` | Verbose logging (includes Copilot token refresh logs) |
-| `--auto-truncate` | disabled | Enable reactive auto-truncate on context-limit errors |
 | `--mock-rate-limiter-throttled` | `false` | Test-only: simulate upstream 429 after the limiter timeout |
 
 ---

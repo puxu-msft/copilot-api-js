@@ -1,5 +1,7 @@
 # Size-Aware Calibration Learning —— 实施计划
 
+> **2026-07-13 后续变更**：见对应 spec 头部注 + RFC `2026-07-13-remove-auto-truncate-keep-calibration`——auto-truncate 截断本体已移除，calibration 保留并重定位为本地计数增强；本计划 Task 里的 pre-flight/preSend、`calculateTokenLimit`、`onTokenLimitExceeded`、`computeSafetyMargin` 均已删除或改齐。当前架构以 DESIGN.md 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐 task 实施。步骤用 checkbox（`- [ ]`）跟踪。
 >
 > **实施状态**：**已实施完成**（Tasks 1-10，subagent-driven，各 task 经独立 subagent review 审干净；分支 `feat/size-aware-calibration`，commit 范围 `07fd968b..09eae78d`——Phase 1 = size-aware 模型/seed/迁移/CalibrationSink/backfill，Phase 2 = `d40f8e02` config flag + `7d9a3964` pre-flight hook + `09eae78d` 降级兜底；per-task 审查账本见 `.superpowers/sdd/handoff/`）。见 [docs/spec/2026-07-11-size-aware-calibration-learning.md](../spec/2026-07-11-size-aware-calibration-learning.md)。
