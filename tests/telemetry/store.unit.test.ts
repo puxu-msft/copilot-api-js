@@ -32,6 +32,8 @@ import {
   upsertAccepted,
   upsertSketchBlob,
   upsertCumulativeSketchBlob,
+  incrementCumulativeAccepted,
+  readCumulativeAccepted,
 } from "~/lib/telemetry/store"
 
 const tmpDirs: Array<string> = []
@@ -245,6 +247,46 @@ test("upsertCumulativeSketchBlob：多次累积（永久只增，exact-quantile 
   const exact = exactQuantile(all, 0.99)
   const relErr = Math.abs(quantile(merged, 0.99) - exact) / exact
   expect(relErr).toBeLessThanOrEqual(0.01)
+})
+
+test("incrementCumulativeAccepted 加性累积、readCumulativeAccepted 读回（tel_meta）", () => {
+  const db = freshDb()
+  expect(readCumulativeAccepted(db)).toBe(0) // 未写入 → 0
+  incrementCumulativeAccepted(db, 4)
+  incrementCumulativeAccepted(db, 6)
+  expect(readCumulativeAccepted(db)).toBe(10) // 4+6 加性累积
+})
+
+test("cumulative accepted 跨「重开同 db 文件」持久（永久累计，不随进程归零）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tel-store-"))
+  tmpDirs.push(dir)
+  const dbPath = join(dir, "telemetry.db")
+
+  const db1 = openTelemetryDb(dbPath)
+  incrementCumulativeAccepted(db1, 7)
+  db1.close()
+
+  const db2 = openTelemetryDb(dbPath)
+  expect(readCumulativeAccepted(db2)).toBe(7) // 上个「进程」写的值仍在
+  incrementCumulativeAccepted(db2, 3)
+  expect(readCumulativeAccepted(db2)).toBe(10) // 累加到旧值上
+  db2.close()
+})
+
+test("upsertSketchBlob：同名分布异 γ merge 抛异常（fail-loud，Task 1 Minor #2 回归）", () => {
+  const db = freshDb()
+  const dim = internDim(db, "model")
+  const key = internKey(db, dim, "opus")
+
+  // 先以 γ=0.01 写入一个已存分布图。
+  const first = createSketch(0.01)
+  for (const v of seeded(100, 100000, 51)) first.accept(v)
+  upsertSketchBlob(db, "tel_raw", 0, dim, key, new Map([["duration_ms", first]]))
+
+  // 再以异 γ（0.02）的同名 delta merge → read-merge-write 触发 mergeSketch 异 γ 抛。
+  const second = createSketch(0.02)
+  for (const v of seeded(100, 100000, 52)) second.accept(v)
+  expect(() => upsertSketchBlob(db, "tel_raw", 0, dim, key, new Map([["duration_ms", second]]))).toThrow()
 })
 
 test("标量 upsertSettledTier 与 sketch upsertSketchBlob 打同一行不互毁（两者列都在）", () => {

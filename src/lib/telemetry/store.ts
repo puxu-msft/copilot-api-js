@@ -125,6 +125,29 @@ export function upsertAccepted(db: TelemetryDatabase, bucketTs: number, count: n
   )
 }
 
+/** tel_meta 里存 accepted 永久累计（lifetime）的键名。 */
+const CUMULATIVE_ACCEPTED_META_KEY = "cumulative_accepted"
+
+/**
+ * 加性累积 accepted 的永久累计计数（lifetime，跨重启持久）。accepted 是无维度全局流，
+ * 其永久累计存 `tel_meta`（key/value 表，value 为 TEXT）。加性 UPSERT：冲突时
+ * `value = CAST(value AS INTEGER) + excluded.value`（把已存文本值当整数累加），
+ * 修复内存 `acceptedSinceStart` 不持久缺陷（进程内计数重启归零，此累计不归零）。
+ */
+export function incrementCumulativeAccepted(db: TelemetryDatabase, delta: number): void {
+  db.prepare(
+    "INSERT INTO tel_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + excluded.value",
+  ).run(CUMULATIVE_ACCEPTED_META_KEY, delta)
+}
+
+/** 读回 accepted 永久累计（行不存在 / 非法值 → 0）。 */
+export function readCumulativeAccepted(db: TelemetryDatabase): number {
+  const row = db.prepare("SELECT value FROM tel_meta WHERE key = ?").get(CUMULATIVE_ACCEPTED_META_KEY) as { value: string | number | null } | undefined
+  if (!row) return 0
+  const parsed = Number(row.value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
 /** 读回一行已存的打包分布图（行不存在 / `hist_blob` 为 NULL → 空图，首次写入的起点）。 */
 function readSketches(db: TelemetryDatabase, selectSql: string, params: Array<unknown>): Map<string, Sketch> {
   const row = db.prepare(selectSql).get(...params) as { hist_blob: Uint8Array | null } | undefined
