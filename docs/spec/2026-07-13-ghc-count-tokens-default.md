@@ -86,7 +86,7 @@ postAnthropicUpstream(args: {
 6. **本地兜底**：`countTotalInputTokens(payload, selectedModel)`（现有 tiktoken 估算，也用于目录外 / 非-messages 模型；此处 `selectedModel` 必非空，由 step 4 早退保证）。
 7. 顶层 `catch` → `{ input_tokens: 1 }`（现状）。
 
-**observability 立场不变**：count_tokens 仍在 observability 之外（无 RequestContext / bus / TUI / history），只保留 `consola` 计数行。
+**observability 立场（精化）**：count_tokens 仍**不建 RequestContext、不进 history / telemetry / calibration / WS**（污染立场不变——`SYNTHETIC_PATHS` 豁免照旧）。但终态**渲染为请求样式行**而非 `[INFO]` syslog 行：经 display-only 事件 `system.request_line`（携与真实 `request.completed` 同款 `LogLineParts`）只到显示 sink（TerminalUi stdout + FileSink），永不触达 history/telemetry。发布走 `setRequestLinePublisher` DI（同 `setShutdownPublisher` 模式）。样式：`[ OK ] HH:MM:SS 200 POST /v1/messages/count_tokens <model> <dur>ms ↑N ↓0 (<channel>)`，channel ∈ {GHC upstream, local est …, inflated …, unknown model}。
 
 **shutdown 期间**：step 5 的 `signal` 不折入 `getShutdownSignal()`（与现 `count-tokens.ts:68` 一致）——shutdown 时 count 调用跑到 timeout 后走本地兜底，对 out-of-observability 的 best-effort count 可接受。
 
