@@ -608,6 +608,36 @@ tool_choice 对 **CC 2.1.207 无 gap**（CC 客户端自降级）。真缺口是
 
 ---
 
+## 轮次 16（2026-07-13）：限流头 / 429 重试 —— 响应头转发完备，429 吞噬有 keepalive 覆盖
+
+> 新主题（原清单已尽）。结论**大体确认无 gap** + 一条 config 边缘 caveat + 一条 richest-data-flow 判断（此处**不该**伪造）。
+
+### 发现来源（CC 源码坐标）
+
+- CC 2.1.207 读丰富的限流头驱动配额 UI：`Fhu`（`app.pretty.js:169690`）读 `anthropic-ratelimit-unified-{5h,7d,7d_oi,overage}-{utilization,reset}`，外加 `-representative-claim` / `-overage-status` / `-fallback` / `-overage-in-use` / `-overage-period-{channel,monthly}-utilization` / `-overage-disabled-reason`（163849 / 169423 / 169746）。
+- SDK `shouldRetry`（12354）+ Retry-After 解析（73175）：429/529/overloaded 按头退避重试（`maxRetries`）。`is529Error` / `overloaded_error`（170244）。
+
+### 本项目现状（读码）—— 三层都已妥善
+
+1. **响应头转发完备**：[response-header-forward.ts](../../src/lib/anthropic/header-policy/response-header-forward.ts) 显式为**把 `request-id` / `anthropic-ratelimit-*` / `anthropic-organization-id` 等上游头转发给客户端**而存在，双模式（strict=false 黑名单转发全部除 blacklist / strict=true 白名单）。→ **若 GHC 发限流头，本项目会转发给 CC**。无 gap。
+2. **429/529 服务端吞噬**：adaptive rate-limiter 在队列里吸收 429（[http-transport.ts:10](../../src/lib/transport/http-transport.ts#L10)「429 absorbed in its queue」），`executeWithAdaptiveRateLimit` 包裹上游 send（在 `runRequest` 内）；退避计入 `queueWaitMs`。CC 通常**看不到 429**（代理自己退避）。
+3. **delayed-commit keepalive 覆盖队列等待**：handler 的 commit 计时器（`streamCommitAfterSec` 默认 20s，[handler-v4.ts:461-469](../../src/routes/messages/handler-v4.ts#L461)）与 `runRequest`（含 rate-limiter 队列 + 429 吞噬 + 退避）**赛跑**——20s 上游仍静默即 commit 200 + 起 keepalive → **覆盖限流队列等待** → CC 的 60s byte-idle 不撞（keepalive < 60s）、300s no-real-content 被空 delta 重置。
+
+### F22（LOW/主要确认）— 限流/重试链路已妥善；两点记档
+
+**结论：无实质 gap。** 三层（头转发 / 429 吞噬 / keepalive 覆盖）都到位。两点值得记档：
+
+**(a) config 边缘 caveat（与 F1 同源）**：若把 `streamCommitAfterSec` 设 **0**（禁用 delayed-commit）**且** rate-limiter 队列等待 > 60s（429 风暴），则 commit 前无 keepalive → CC 的 **60s byte-idle watchdog 可能开火** abort + 重试 → 代理收到新请求而旧请求还在队列 → 放大。默认 20s 下不成立。**记档**：依赖 rate-limiter 队列削峰时**别禁用 delayed-commit**（`streamCommitAfterSec>0` 是 429 风暴下 CC 保活的前提）。归主线 A 家族的 config 前提。
+
+**(b) CC 配额 UI 经 GHC 为空——且此处 richest-data-flow 判定为「不该伪造」**：GHC（Copilot）用自己的配额模型，**不发** Anthropic 的 `anthropic-ratelimit-unified-*` 头 → CC 的配额/overage UI 空。本项目头转发完备（GHC 若发就转），故这是**GHC 能力边界、非代理缺陷**。
+- **反直觉但重要**：本项目**有**自己的限流状态（adaptive-rate-limiter 的 429 计数 / 队列深度）——理论上可**合成** `anthropic-ratelimit-unified-*` 形状的头去**填充 CC 原生配额 UI**。但**不该这么做**：Copilot 配额（无 5h/7d 窗口概念）≠ Anthropic unified 窗口，合成这些头会让 CC 显示**不存在的 Anthropic 式配额**，违 `synthetic-data-must-be-distinguishable-from-real` ADR（合成物伪装成真实上游信号）。**留空（诚实）优于伪造（误导）**。这与主线 C/D 的「透传/捕获真实数据」不同——此处是「别造假数据」，是 richest-data-flow 的对称边界。
+
+### 本轮结论
+
+限流/重试链路**已妥善、无 gap**：响应头转发完备（`anthropic-ratelimit-*`/`request-id`/`retry-after` 都转）、429 服务端吞噬 + delayed-commit keepalive 覆盖队列等待。记档两点：(a) 依赖 rate-limiter 削峰时别禁 delayed-commit（config 前提，主线 A）；(b) CC 配额 UI 空是 GHC 边界，且此处**正确地不伪造** Anthropic 限流头（synthetic-distinguishable ADR 的对称边界）。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
