@@ -1,3 +1,5 @@
+> **⚠️ 已归档（2607 web_search 双跳退役）**：web_search 双跳整套已于 2026-07-13 退役删除。本文档是该已删特性的历史 plan/review 快照，其「现状锚点」（如 `web-search-handler.ts`、config 键 `server_tool_rewrite`）指向的产物**均已不存在**。仅作历史参考。退役决策见 ADR [../../decisions/2026-07-13-server-tool-positioning-and-web-search-retirement.md](../../decisions/2026-07-13-server-tool-positioning-and-web-search-retirement.md)。
+
 # 独立审查：imperative-hopping-twilight 修复方案
 
 > **类型**：对抗性审查报告 —— 非独立 plan，实施状态见父 plan [web-search-double-hop-thinking-cost-fix.md](web-search-double-hop-thinking-cost-fix.md)。

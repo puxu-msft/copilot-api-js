@@ -91,7 +91,7 @@ export interface SseSinkOptions {
    * Forwarded-track sampler: invoked per real frame (`write`) AND per injected ping
    * (the heartbeat timer), NEVER per `writeSynthetic`. The handler pushes the record
    * into `forwardedSseEvents` (→ history `inboundResponse.sseEvents`). The record
-   * shape (offsetMs / parsed-type / raw bytes) mirrors the legacy `forwardClientFrame`.
+   * shape (offsetMs / parsed-type / raw bytes) mirrors the legacy forwarded-record shape (streaming-pump.ts `forwardClientFrame`, removed with the web_search retirement).
    */
   onForwarded?: (record: SseEventRecord) => void
   /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
@@ -155,7 +155,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // Bare SSE write. Forwards the full SSE framing (event/data/id/retry) — `id`/`retry`
   // are part of the wire (the upstream may emit `id:`/`retry:` lines), so dropping them
   // would silently narrow the bypass-direct passthrough. Byte-equivalent to the legacy
-  // forwardClientFrame (streaming-pump.ts): `id` stringified, undefined keys omitted.
+  // (legacy forwardClientFrame semantics, retired): `id` stringified, undefined keys omitted.
   const writeSse = (frame: ClientFrame): Promise<void> =>
     enqueue(() =>
       stream.writeSSE({

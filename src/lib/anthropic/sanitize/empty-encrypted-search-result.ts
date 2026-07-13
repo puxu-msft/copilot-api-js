@@ -32,10 +32,11 @@
  * (e.g. `tool_search_tool_result`, whose content is an object, not a result
  * array), are left untouched — no over-reach beyond the proven-broken shape.
  *
- * This is orthogonal to the `server_tool_rewrite` config: when that is
- * enabled it downgrades ALL prior-turn server-tool blocks first, so this pass then finds
- * nothing to do (no-op); when it is disabled, this pass still catches the
- * poisoned web_search turns. Both reuse the same downgrade primitive.
+ * This is orthogonal to the learned-driven `resolveServerToolMode` downgrade: when a
+ * model is in the learned-downgrade set it downgrades ALL prior-turn server-tool blocks
+ * first, so this pass then finds nothing to do (no-op); otherwise this pass still catches
+ * the empty-encrypted web_search turns. Both reuse the same downgrade primitive. (The
+ * global `server_tool_rewrite` config source was removed with the web_search retirement.)
  */
 
 import type { MessageParam } from "~/types/api/anthropic"

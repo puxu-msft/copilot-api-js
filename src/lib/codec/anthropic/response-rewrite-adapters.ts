@@ -4,7 +4,7 @@
  * Wraps the four existing, battle-tested Anthropic streaming response factories as
  * `ResponseRewrite`s so the driver's S5 chain drives them (RFC §4.A1), replacing the
  * handwritten closure nesting in `streaming-pump.ts` (`recover → thinking-compat →
- * decode → filter`, via `forwardToClient`). **Algorithm cores are NOT rewritten** —
+ * decode → filter`, formerly via streaming-pump's now-removed `forwardToClient`). **Algorithm cores are NOT rewritten** —
  * each adapter only maps the factory's existing per-frame function to a `FrameAction`
  * + adapts its finalize to `flush`:
  *
