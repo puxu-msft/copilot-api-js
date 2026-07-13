@@ -933,6 +933,48 @@ CC 2.1.207 server / API-defined tool 类型（带日期后缀，`app.pretty.js`�
 
 ---
 
+## 轮次 27（2026-07-13）：CC 2.1.207 权威工具清单 ground-truth（合并 F28/F30/F32 的修复参照）
+
+> 不新增 spot-finding，而是从 `app.pretty.js` 系统提取 CC 2.1.207 的**权威工具 registry**，给三条名单 gap（F28 stub / F30 NON_DEFERRED / F32 API-defined type）一份 ground-truth，避免修复凭 spot-check。**修复前仍须以真实 CC 请求抓包复核**（源码常量证「CC 内部有此工具」，不证「每次都发进 tools 数组」）。
+
+### 客户端内置工具（源码 `X = "Name"` 常量证据）
+
+CC 2.1.207 built-in 客户端工具（`app.pretty.js` 常量：Bash@90227 / Edit@90244 / NotebookEdit@90253 / Write@90255 / Read@95024 / Glob@95035 / ExitPlanMode@95043 / Agent@147660 / Task@147660 / EnterPlanMode@147666 / AskUserQuestion@147667 / WebSearch@147746 / TodoWrite@147751 / Grep@147771 / WebFetch@147776 / Skill@185595；freq 证 TaskOutput/NotebookRead/BashOutput/KillShell/MultiEdit/ListMcpResources/ReadMcpResource）：
+
+| 工具 | 在项目 stub 集(F28)? | 备注 |
+|---|---|---|
+| Read Write Edit Bash Glob Grep Task TaskOutput WebFetch TodoWrite Skill KillShell AskUserQuestion EnterPlanMode ExitPlanMode NotebookEdit | ✓ | 已覆盖 |
+| **WebSearch** | ✗ | ≠WebFetch；客户端 web 搜索工具 |
+| **BashOutput** | ✗ | 后台 shell 输出 |
+| **NotebookRead** | ✗ | ≠NotebookEdit |
+| **Agent** | ✗ | `hi="Agent"`@147660，需核是否发进 tools（可能 fork/FleetView 特有） |
+| **MultiEdit** | ✗ | freq 1，可能已废弃 → 别贸然补 |
+| **ListMcpResources / ReadMcpResource** | ✗ | MCP 资源工具，仅 MCP server 在场时 |
+
+### server-tool 类型（dated type-slug，F32）
+
+| 前缀 | 在项目 `API_DEFINED_TOOL_TYPE_PREFIXES`? | CC 2.1.207 实例 |
+|---|---|---|
+| web_search_ web_fetch_ code_execution_ text_editor_ computer_ bash_ | ✓ | web_search_20260209 / web_fetch_20260209 / code_execution_20260521 / text_editor_20250728 / bash_20250124 |
+| **advisor_** | ✗ | advisor_20260301 |
+| **agent_toolset_** | ✗ | agent_toolset_20260401 |
+| **memory_** | ✗（memory 另有 rewrite 但 typed 工具经 isApiDefinedToolType 仍误判） | memory_20250818 |
+| **tool_search_** | ✗（项目自注入的 tool_search_tool_regex_20251119 走独立路径；客户端若发漏） | tool_search_tool_regex_20251119 |
+
+### 合并修复建议（F28+F30+F32 一次落地）
+
+1. **权威源**：以真实 CC 2.1.207 请求抓包（`claude -p ... --settings` + 记录 outbound tools + tool types）为准，本表作候选/交叉验证。
+2. **stub 集（F28）**：补 WebSearch/BashOutput/NotebookRead（+核 Agent/MCP 资源工具）；空 schema。
+3. **NON_DEFERRED（F30）**：加 CC 核心工具集（复用补全后的官方工具名），或让 `NON_DEFERRED` 按「客户端族」分组（Copilot snake_case + CC PascalCase 两套）。
+4. **API-defined type（F32）**：补 advisor_/agent_toolset_/memory_ 前缀，**或**改结构判据（`type` 含 `_20YYMMDD` = API-defined）彻底免疫新类别。
+5. **防再陈旧**：三处名单共享一个**单一 CC-工具清单来源**（一个 module 导出 built-in 工具名 + server type 前缀），三处消费——避免下次 CC 升级又三处各漏（[[feedback-fix-all-comparison-sites]] 的正向版：抽单一 primitive）。
+
+### 本轮结论
+
+产出 CC 2.1.207 工具 registry ground-truth 对照表，把 F28/F30/F32 从三条 spot-finding 收敛为**一个合并修复单元 + 单一清单来源**的落地方案。修复前以真实抓包复核（源码常量≠必发）。这是 meta 模式类别-1 findings 的收口。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
