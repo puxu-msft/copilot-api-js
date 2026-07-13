@@ -8,7 +8,8 @@
 
 - **活的全表面（最权威）**：运行中实例的 `GET /openapi.json`（OpenAPI 3.1，覆盖全部端点）+ `GET /docs`（Scalar 交互页）。端点漂移时以运行实例为准；本文提供人读的目录与字段级备注。
 - **路由/codec 分派的架构现状**：[DESIGN.md](DESIGN.md)「架构」「活的架构现状」「核心模块」节。
-- **vendor 兼容行为细节**：[anthropic-compat.md](anthropic-compat.md)、[gemini-compat.md](gemini-compat.md)；请求管线 [request-pipeline.md](request-pipeline.md)、流式 [streaming.md](streaming.md)、工具调用 [tool-use.md](tool-use.md)。
+- **body 契约的权威在外部官方 spec**：vendor 兼容端点**镜像三家上游既有契约**，故 request/response body 的字段级 schema **以各厂商官方 API 文档为准**（[OpenAI](https://platform.openai.com/docs/api-reference) / [Anthropic](https://docs.anthropic.com/en/api) / [Google Gemini](https://ai.google.dev/api)）——刻意不在项目内镜像这些庞大且厂商自维护的契约。
+- **我们相对官方的偏差（项目内活文档）**：[openai-compat.md](openai-compat.md)、[anthropic-compat.md](anthropic-compat.md)、[gemini-compat.md](gemini-compat.md)——只记我们特有的 shim / 转换 / 差异行为；请求管线 [request-pipeline.md](request-pipeline.md)、流式 [streaming.md](streaming.md)、工具调用 [tool-use.md](tool-use.md)。
 - **agent 快速定位**：skill `proxy-api-reference`。
 
 ## 调用基础
@@ -30,6 +31,8 @@
 | `/models/:model`、`/v1/models/:model`、`/openai/v1/models/:model` | GET | 单个模型详情（同上扩展字段） |
 | `/embeddings`、`/v1/embeddings`、`/openai/v1/embeddings` | POST | OpenAI Embeddings API |
 | `/responses`、`/v1/responses`、`/openai/v1/responses` | POST（+ WebSocket GET） | OpenAI Responses API（HTTP POST + WebSocket GET，见下「WebSocket」节） |
+
+兼容行为细节（内部规范格式、Responses 直连/回退、Codex tier-1、工具名还原等）见 [openai-compat.md](openai-compat.md)。
 
 ## Azure OpenAI 兼容端点
 
@@ -94,7 +97,7 @@
 | `/health/readiness` | GET | Readiness 探针（K8s 风格，与 `/health` 共享 handler）——token/models 就绪返 200、否则 503，编排器据此摘/放流量 |
 | `/health/liveness` | GET | Liveness 探针——仅反映进程可响应，恒 200 `{status:"alive"}`；注册在 config/token 中间件**之前**，不触上游、不受 stale token / 优雅关机影响（drain 用 readiness，liveness 失败会触发重启） |
 | `/metrics` | GET | **Prometheus 文本 exposition**（v0.0.4）——telemetry registry 的通用投影 `copilot_api_*_total{dimension,key}` counters + **标准 Prometheus histogram**（`copilot_api_<duration_ms\|queue_wait_ms\|input_tokens\|output_tokens>_bucket{le}`/`_sum`/`_count`，scraper 用 `histogram_quantile()` 自算分位）（与 `/api/stats` 同源、`sinceStart` 累积窗口；常开、零依赖、不引 OTel SDK）。`src/lib/metrics-exposition.ts` + `src/routes/metrics/route.ts`，设计见 [spec/operational-stats-and-lineage-removal.md](spec/operational-stats-and-lineage-removal.md) §6 + [archive/2606-landed-rfcs/telemetry-histograms.md](archive/2606-landed-rfcs/telemetry-histograms.md) |
-| `/openapi.json` | GET | **全 API 表面**的 OpenAPI 3.1 文档。两档保真度：管理 API（`/api/*`）经各 router `.openapi()` 的**精确 zod schema**；其余（OpenAI/Anthropic/Gemini/Azure compat、History REST、dry-run-pipeline、event_logging、health）经 `openAPIRegistry.registerPath()` 的**简单 open-object schema**（纯文档、不绑 handler、不校验，故 plain-Hono 路由原封不动照常工作）。根 app 改 `OpenAPIHono<BlankEnv>`；装配见 `src/routes/openapi.ts`（doc31+Scalar+管理 router 聚合）与 `src/routes/openapi-compat.ts`（compat/history/诊断的 registerPath）。vendor compat body 字段级细节查各厂商自有 spec |
+| `/openapi.json` | GET | **全 API 表面**的 OpenAPI 3.1 文档。两档保真度：管理 API（`/api/*`）经各 router `.openapi()` 的**精确 zod schema**；其余（OpenAI/Anthropic/Gemini/Azure compat、History REST、dry-run-pipeline、event_logging、health）经 `openAPIRegistry.registerPath()` 的**简单 open-object schema**（纯文档、不绑 handler、不校验，故 plain-Hono 路由原封不动照常工作）。根 app 改 `OpenAPIHono<BlankEnv>`；装配见 `src/routes/openapi.ts`（doc31+Scalar+管理 router 聚合）与 `src/routes/openapi-compat.ts`（compat/history/诊断的 registerPath）。vendor compat 端点的 request/response body 契约以**各厂商官方 API spec** 为准（外部权威，见本文头部「真相源与关联文档」），项目内只记相对官方的偏差 |
 | `/docs` | GET | Scalar 交互式 API 文档页（消费 `/openapi.json`，与 Vue 前端 `/ui` 分离） |
 | `/` | GET | 根路径——302 重定向到 `/openapi.json` |
 | `/ui/*` | GET | 旧 Vue History UI 静态文件（**legacy，正逐页退役到 `/ui-v4`**；`/models` 已退役 2026-07-10；退役路线图 [vue-ui-retirement.md](vue-ui-retirement.md)） |
