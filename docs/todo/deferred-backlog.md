@@ -468,3 +468,21 @@
 - **④ `countTotalTokens`（`src/lib/anthropic/token-counting.ts`）→ 保留+注释（校正复用理由）**：生产/测试零消费者（生产端统一 `countTotalInputTokens`）属实，但删它会级联孤立 `countFixedTokens`+`countMessagesTokens`；且 backlog「组成/tool-密度感知 calibration」条记录了它作二维分桶复用锚点的 roadmap 意图。已加保留注释（`token-counting.ts` 的 `countTotalTokens` doc），并**校正原理由不准**：该函数只返 whole-prompt 单一总数、**不**产出 tool-block 占比，真做二维分桶需 per-block 分解。
 - **遗留独立项（非本轮范围）**：`exp/token-calibration-size-aware/analyze.ts:15` 的 import 引用已删的 `auto-truncate/token-counting.ts` 目录、已断链。该文件是 **gitignored 未追踪本地脚本**（不进版本库），已在本地改指 `~/lib/anthropic/token-counting`（`countTotalTokens` 本轮保留、可运行），但此修复只对本地有意义、不随提交传播。
 
+
+## 上游错误→客户端整形（Phase 3 收尾发现，2026-07-13）
+
+来自 `docs/plan/2026-07-13-upstream-error-client-shaping/` Phase 3 合并态审查，裁定「刻意正确/非阻塞」但值得记录的两项。
+
+- **① accumulator H2 识别缺陷：缺顶层 `type:"error"` 的上游 error 帧不被识别 → 走 truncation 双帧**：
+  - **根因**：`src/lib/anthropic/stream-accumulator.ts` 的 `accumulateAnthropicStreamEvent` 按 parsed `event.type` 分派（`switch (event.type)` 的 `case "error"`），而**不是**按 SSE event 名（`frame.event === "error"`）。一个 `event: error` SSE 帧若其 `data` JSON 缺顶层 `type:"error"`（如 raw GHC 形状 `{error:{code,message}}`），parsed `type` 为 undefined → 命中 `default`（warn "Unknown event type"）→ `acc.streamError` 不被设置。
+  - **当前行为**：handler-v4 的 H2 分支（`if (acc.streamError)`）不触发 → 该 clean-drain-without-message_stop 被归类为 **truncation**，handler 额外补一个合成 truncation error 帧。于是客户端收到**两个** error 帧（Phase 3 的 S5 `errorFrameCanonicalRewrite` 整形了 forwarded 轨的第一帧，第二帧 truncation 仍来自 handler）。这是**既有行为**、非 Phase 3 引入（`errorShapingEnabled=false` 同样双帧），Phase 3 的 S5 rewrite 只改了第一帧的形状、未消除第二帧。
+  - **理想架构**：让 accumulator 也按 SSE event 名识别 H2（`frame.event === "error"` 时无条件当作 stream error，无论 parsed `type` 是否为 `"error"`），与 S5 `errorFrameCanonicalRewrite` 的判据（键 `frame.event`）对齐。进一步可把「从一个上游 error 帧抽取 `{type,message}`」抽成**共享 primitive**（当前 `parseRawUpstreamErrorFrame` 在 `error-shaping.ts`、accumulator 的 `err?.type ?? "unknown_error"` 各写一份），防两处判据漂移。
+  - **为何暂缓**：属正交轨道（accumulator = 上游轨 bookkeeping，Phase 3 明令 accumulator 零改动）；真实 GHC/Anthropic 上游的 `event:error` 帧几乎总带顶层 `type:"error"`（canonical 形状），双帧只在非 canonical 上游错误时冒头、客户端 SDK 仍能解析（两帧都是合法 `event:error`）。非阻塞。
+  - **若做需改什么**：`stream-accumulator.ts` 的 dispatch 改为「先看 SSE event 名、再 fallback parsed type」（需 accumulator 的入参携带 `frame.event`，当前签名只收 parsed `event`——要么改签名传 rawEvent、要么在 `recordUpstreamFrame` 层拦截 `rawEvent.event==="error"` 直接 set `acc.streamError`）；抽 `parseRawUpstreamErrorFrame` 为 accumulator + error-shaping 共享；加回归测试证「非 canonical 上游 error 帧 → 单帧、被识别为 H2 而非 truncation」；核对 handler-v4 H2 分支与 truncation 分支的互斥。
+
+- **② 403/404/529 的 canonical wire error.type 保真度差异（enabled 态刻意行为）**：
+  - **根因**：`error-shaping.ts` 的 `anthropicErrorTypeForApiError`（按 11 类 `ApiErrorType` 映射）比 legacy `post-commit-error.ts:anthropicErrorTypeForStatus`（按 HTTP status 映射）**粒度更粗**。`classifyError` 把 401/403 都归 `auth_expired`、把非特殊 4xx（含 404）归 `bad_request`、无 529 专类。故 enabled 态 post-commit 终点①：403→`authentication_error`（legacy `permission_error`）、404→`invalid_request_error`（legacy `not_found_error`）、529→`api_error`（legacy `overloaded_error`）。
+  - **当前行为（裁定为刻意正确）**：Phase 3 合并态审查 concern 2 已裁「刻意正确、无需改」。理由——post-commit 的 SSE HTTP status 已锁定 200、客户端观察到的 `status` 为 undefined，故 error.type 差异**无客户端行为后果**（CC 的 post-commit 重试判据是 status===529 或 message 含 `"type":"overloaded_error"` 子串，与 canonical error.type 无关，见 `exp/cc-error-retry-surface/FINDINGS.md`）；差异仅影响**终端渲染的文案标签**。disabled 态逐字节保留 legacy 精确 type（CF-2 golden lock）。
+  - **理想架构（若将来要 enabled 态也保精确 wire type）**：在 error-shaping 层引入 **status 维度**——`decide()`/`canonicalErrorDecision` 携带 `error.status`，`anthropicErrorTypeForApiError` 对 auth_expired 按 401/403 分派 authentication/permission、对 bad_request 按 404 分派 not_found、识别 529→overloaded；或扩充 `ApiErrorType` 增加 `permission_denied`/`not_found`/`overloaded` 细类（连带改 `classify.ts` 的 status 路由 + Phase 1 真值表 + 其单测）。
+  - **为何暂缓**：无客户端行为后果（仅文案）、属刻意设计（Phase 1 真值表基于 `ApiErrorType` 非 status）；改动面涉及 classify.ts + 真值表 + 多处单测，收益仅终端渲染文案精度。非阻塞。
+  - **若做需改什么**：见「理想架构」——`ApiError` 已带 `status` 字段可直接读；`decide()` 的 canonical 分支按 status 细化 error.type；同步 Phase 1 `error-shaping.unit.test.ts` 真值表断言 + Phase 3 `postcommit-error-shaping` 的 enabled 态断言（403/404/529 期望值）。

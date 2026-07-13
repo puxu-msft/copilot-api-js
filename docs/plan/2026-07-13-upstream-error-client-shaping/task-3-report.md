@@ -67,3 +67,35 @@
 - **偏差 5（error.type 保真度差异）**：见上，建议记入 backlog。
 - CF-3 依据源码 + 既有运行时实测分析、未本 session 复跑真 CC live oracle（见承重约束核对）。
 - 无阻塞项。四终点收编完成、S5 rewrite 落地、HIGH-2 门控有回归测试、CF-2 golden lock 有字节锁、stream-accumulator 零改动已确认。
+
+---
+
+## 追加：审查后修复（FIX-1/2/3，2026-07-13）
+
+Phase 3 过审后，reviewer 抓到 2 Important + 1 Minor，coordinator 裁定方向后落地。concern 2（403/404/529 保真度）裁为刻意正确、无需改代码，仅记 backlog。
+
+### FIX-1（Important）—— refusalRewrite 合成帧不被二次 reshape 的显式回归锁
+需求单完成检查 line 205-206 要求的显式回归锁此前缺失，已补两半：
+- `tests/pipeline/response-rewrite-contract.unit.test.ts`（新增 2 test）：**常量半** `errorFrameCanonical(50) < recoverRefusal(400)`；**机制半** 用 mock `reshaper(50)`（event:error 帧剥非-`{type,message}` 字段）+ `refusal-mimic(400)`（合成带 `extra` 字段的 event:error）经真实 `passThrough` 驱动——正确序下合成帧的 `extra` 存活（证 never 倒流），并附**正样本对照**（reshaper 挪到 order 500 > 400 时 `extra` 被剥，证 reshaper 确有剥离副作用、锁非虚过）。
+- `tests/codec/anthropic/error-frame-canonical-rewrite.unit.test.ts`（新增 1 test）：在真实 `ANTHROPIC_RESPONSE_REWRITES` 上经 `assembleResponseRewrites` 断言 `errorFrameCanonical` 排首、`recover-refusal` 在其后。
+- commit `92301bb8`。
+
+### FIX-2（Important）—— G-3 全仓兑现：translate 反向腿 H3/truncation 收编 + 四腿统一 CF-2 门控
+新增 `error-shaping-glue.ts:shapeRawStreamErrorFrame(errorType, message, legacyFrame)`（gated：`errorShapingEnabled` 关→逐字节回退 legacyFrame；开→`buildCanonicalErrorFrame`，字节等价）。四处非-`ApiError` 的 raw-stream 终点全部经它：
+- **直连 pump** ② H3（`handler-v4.ts` ~1210）+ ③ truncation（~1320）：原为无门控 `buildCanonicalErrorFrame`，改为经 gated helper（统一 CF-2「off = 精确 legacy 字节」契约）。
+- **translate 反向腿**（`pumpTranslateLegStreamingV4`）H3（~1461）+ truncation（~1487）：原为**手搓 Anthropic event:error JSON、绕过 builder**，收编到同一 builder。translate 腿 truncation 保留其特有的 "no finish_reason" 文案（区别于直连腿 "no message_stop"）。
+- **明确排除**：`1509`（translate 外层 catch）保持排除，与直连腿外层 catch `1342` 一致。理由：外层 catch 是防御性兜底、非受支持错误分类。
+- `buildCanonicalErrorFrame` 现仅在 `error-shaping-glue.ts` 内使用（handler-v4 的 import 已移除）。
+- 测试：`tests/routes/messages/postcommit-error-shaping.unit.test.ts`（新增 3 test，helper 字节锁：enabled 与 legacy 字面量逐字节相同 ×2 + disabled 引用相等）；`tests/routes/messages/translate-leg-error-shaping.it.test.ts`（新，4 test，`@cc` 反向腿经全 app 端到端：truncation + H3 各 enabled/disabled，证 wiring 真触达 + 字节锁）。
+- commit `a2df6649`。
+- **理由（G-3 全仓一致）**：translate 反向腿客户端就是 Anthropic `/v1/messages` 客户端，spec「仅 Anthropic 路径」本意排除的是 OpenAI/Gemini 客户端（它们走各自端点、非此腿）。收编字节等价、零风险，完成 G-3 全仓「post-commit 尾帧唯一来自 builder」。
+
+### FIX-3（Minor）—— backlog 归档
+`docs/todo/deferred-backlog.md` 新增「上游错误→客户端整形（Phase 3 收尾发现）」节，按模板（根因/当前行为/理想架构/为何暂缓/若做需改什么）记两项：① accumulator H2 识别缺陷（缺顶层 `type:"error"` 的上游 error 帧走 truncation 双帧；理想=accumulator 按 `frame.event==="error"` SSE 名对齐 S5 判据 + 抽 `parseRawUpstreamErrorFrame` 共享 primitive 防漂移）；② 403/404/529 wire error.type 保真度差异（post-commit status 已 undefined 故无客户端行为后果、仅终端文案，刻意行为）。
+
+### 修复收尾验证
+- `bun run typecheck` 全绿（e2e-ui 含）。
+- `bunx eslint`（无缓存，FIX-1/2 全部改动文件）全绿。
+- `git diff --stat` 确认 `stream-accumulator.ts` + `codec/openai-cc/` + `codec/openai-responses/` **仍零改动**。
+- FIX 相关测试：`response-rewrite-contract`(15) + `error-frame-canonical-rewrite`(9) + `postcommit-error-shaping.unit`(9) + `translate-leg-error-shaping.it`(4) + `postcommit-error-shaping.it`(8) 全绿。
+- 广域回归 `tests/anthropic/ tests/routes/ tests/pipeline/ tests/codec/` **1866 test 全绿、0 fail**。
