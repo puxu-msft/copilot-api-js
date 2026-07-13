@@ -120,10 +120,53 @@ let wr = { model, messages, system, tools, tool_choice,
 
 ---
 
+## 轮次 3（2026-07-13）：`count_tokens` —— 失败契约 + 调用突发
+
+### 发现来源（CC 源码坐标）
+
+- 主 count 路径 `lTt`（`app.pretty.js:299502`）：`l.beta.messages.countTokens({ model, messages: e.length>0?e:[{role:"user",content:"foo"}], tools, ...betas(经 Gmi 白名单 `Gmi=new Set([R_t,S5t,L_t,ZYe])` 过滤,61832), ...thinking(若 containsThinking) })`，`maxRetries:1`，`source:"count_tokens"`。**读 `u.input_tokens`，非 number → 返回 null**（299507）。
+- **失败回退 `HLs`**（299511）：`lTt` 抛错时 `catch` → 若 `o_()` 为真，调 `HLs`（**客户端本地 tokenizer 估算**，用默认模型 `dL()`/haiku，不需精确模型）。`car`=`countTokensWithFallback`（299048）：先 `lTt`(API) → null 则 `HLs`(本地)。
+- **调用者是突发的**：`q1y`（299078）算 system-prompt 分段 token（`/context` 面板）时 `Promise.all(o2.map(({content}) => car([{role:"user",content}], [])))`——**逐段一个 count 调用并行**；`_lt`=`countToolDefinitionTokens`（299060）算工具定义 token。
+- **CC 侧有磁盘缓存**：`ZRs`（297325）把 messages/tools 归一化（CWD→`[CWD_SLUG]`、UUID→`[UUID]`、ISO 时间戳→占位）成稳定 key，走 `zOy(key,"token-count",…)` 持久缓存（`crypto`/`fs`/`path`），**gated on `tvo()`**。命中缓存不打网络。
+
+### 本项目现状（读码，[count-tokens.ts](../../src/routes/messages/count-tokens.ts)）
+
+实现相当完善：同款 payload sanitize（`runAnthropicPayloadRewrites`，与 completion 路径 driver S3 一致）+ `isEndpointSupported` 门控省 doomed 400 + 默认走 GHC 上游 count_tokens + 本地 tiktoken 兜底 + auto-truncate 通胀。**但有两个与 CC 契约的错配。**
+
+### F7（MEDIUM）— 失败/未知模型返回 `{input_tokens:1}`（200）**抑制 CC 更优的本地兜底**
+
+**判断（读码）**：本项目在三条降级路径返回 **HTTP 200 + `{input_tokens:1}`**：
+- 未知模型（不在 catalog，[count-tokens.ts:188-191](../../src/routes/messages/count-tokens.ts#L188-L191)）。
+- 外层 catch（JSON parse 等意外，[count-tokens.ts:206-208](../../src/routes/messages/count-tokens.ts#L206-L208)）。
+
+CC 的 `lTt` 读到 `input_tokens===1`（**合法 number**）→ **当作真实计数接受，绝不触发 `HLs` 本地估算**（`HLs` 只在 SDK 抛错 / `input_tokens` 非 number 时才走）。后果：
+- `/context` 面板 / 工具定义 token（`_lt`）显示 **1 token**（CC 甚至打 `countToolDefinitionTokens returned 1` 警告，299064，但仍用错误预算继续）。
+- CC 的 **context 预算 / auto-compact 决策**基于「≈1 token」→ 误判有巨量余量。
+
+**关键洞见**：对「无法计数」的场景，返回**非 200 错误**（或 `input_tokens` 非 number）**优于**返回 `{input_tokens:1}`——因为 CC 的 `HLs` 用**默认模型 tokenizer**，**即便未知模型也能给出合理估算**（不需要代理认识该模型）。返回 `1` 反而把 CC 从「合理本地估算」拽到「离谱的 1」。这是 `deliver-something-when-blocked` 的反面：给了个**误导性的确定值**而非让下游用它自己的更优兜底。
+
+**注意区分**：auto-truncate **通胀**路径返回的大数（`contextWindow*0.95`）是**故意**的（诱导 compaction），正确、不在此列。只有退化的 `1` 有问题。
+
+**理想方向（不在本轮做，需确认 CC 行为）**：未知模型 / 意外错误路径改为返回**非 200**（如 400/500）让 CC 走 `HLs`；或至少实测「代理返回 4xx/5xx 时 CC 是优雅本地估算还是把错误抛给用户」——若后者，则保留 200 但换一个**基于本地 tokenizer 的真实估算**（即使模型未知，用默认 tokenizer 估，别给 1）。**待实测**：headless CC + mock 代理返回 `{input_tokens:1}` vs 400，观测 CC 的 `/context` 显示与是否落 `HLs`。
+
+### F8（LOW，已被 CC 缓存缓解）— `/context` 触发 N 个并行 count_tokens，本项目每个都打 GHC 往返
+
+**判断（读码）**：CC 的 `q1y` 逐 system-prompt 段并行 `car`，冷缓存时 = N 个并行 count_tokens 请求。本项目 `countTokensViaGhc` **无自己的服务端缓存**，每个都是完整 GHC 上游往返（burst 放大到 GHC 配额 + N× 网络延迟）。
+
+**缓解现状**：CC 侧 `ZRs` 磁盘缓存（归一化 key）吸收重复段——**稳态下同一 CC 安装很少真打**。残余仅在：冷缓存（新会话/新 system prompt）、`tvo()` 关闭缓存、或跨 CC 安装。**优先级低**（本项目 count_tokens 明确 out-of-observability、非热路径）。
+
+**可选（低优先）**：本项目给 `countTokensViaGhc` 加一层短 TTL 内容寻址缓存（归一化 messages/tools 为 key，仿 CC 的 `ZRs`），吸收 burst——但仅当实测证明 burst 确实造成配额/延迟痛点才值得（`long-term-wins` 但需先证债非虚）。
+
+### 本轮结论
+
+count_tokens 本项目实现是**成熟**的；唯一实质错配是 **F7 的失败契约**（返回 `1` 抑制 CC 本地兜底，中）。F8 是被 CC 缓存缓解的低优先性能项。F7 修复前需实测 CC 对代理非 200 的反应（避免把「优雅估算」换成「用户见错误」）。
+
+---
+
 ## 后续轮次待覆盖的 CC-facing 面（TODO 清单，逐轮消化）
 
 - [x] **请求形状漂移**（轮次 2）：`speed:"fast"`（F5）、`diagnostics.previous_message_id`（F6）已覆盖；`betas`/`metadata`/`tool_choice`/`output_config`/`context_management` 经查本项目已妥善处理（partner-feature-strip + request-preparation）。`eager_input_streaming`（fine-grained tool streaming）本项目已 proactive strip，无 gap。
-- [ ] **count_tokens**：CC 对 `/v1/messages/count_tokens` 的调用形状/频率 vs 本项目 `count-tokens.ts`。
+- [x] **count_tokens**（轮次 3）：失败契约 `{input_tokens:1}` 抑制 CC 本地兜底（F7,中）、`/context` burst 无服务端缓存（F8,低/已缓解）。CC 请求形状（tools/thinking/betas 白名单/空占位）与本项目 sanitize 一致，无形状 gap。
 - [ ] **SDK SSEDecoder**：2.1.207 的 `@anthropic-ai/sdk` 版本是否改了 `event:` 行处理（本项目「合成帧必带 event 行」不变量的前提）。
 - [ ] **refusal / fallback_request**：CC 的 `stop_reason:"refusal"` → `fallback_request` 控制流（298057–298060）vs 本项目 `recover-refusal.ts`。
 - [ ] **200+SSE-error 重试**：复核 2.1.207 是否仍对 200+流内 error 零重试（skill 基线来自旧版）。
