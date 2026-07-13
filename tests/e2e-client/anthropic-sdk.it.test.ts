@@ -823,6 +823,56 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     expect(tool?.name).toBe(CLIENT_NAME) // restored to the client-original name, not the wire name
     expect(tool?.name).not.toBe(WIRE_NAME)
   })
+
+  test("server-tool filter: upstream server_tool_use block is stripped + indices remapped → SDK sees only the real text block (no unvalidatable artifact)", async () => {
+    // The proxy unconditionally strips server-side artifacts (server_tool_use / *_tool_result) from the
+    // stream — clients don't expect them and most SDKs can't validate them — and REMAPS the surviving
+    // block indices so they stay dense (no gap the SDK's accumulator would choke on). Here the upstream
+    // emits a server_tool_use at index 0 then a real text block at index 1; the client must see exactly
+    // ONE text block (the server_tool_use gone, the text remapped 1→0). Positive control: the streaming
+    // baseline proves a plain text stream assembles; here the SAME text survives past a filtered artifact.
+    const frames = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_st",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      // index 0: a server_tool_use artifact the client can't validate → must be stripped
+      ev("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "server_tool_use", id: "stu_1", name: "web_search", input: {} },
+      }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"query":"x"}' } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      // index 1: the real text block → must survive, remapped to client index 0
+      ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "visible answer" } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(frames))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+
+    // client-observable: exactly the one real text block, no server-side artifact, correctly assembled
+    // (the index remap let the SDK build the text at index 0 rather than choke on a missing index 0).
+    expect(final.content.length).toBe(1)
+    expect(final.content.every((b) => b.type !== "server_tool_use")).toBe(true)
+    expect((final.content[0] as { type?: string; text?: string })?.type).toBe("text")
+    expect((final.content[0] as { text?: string })?.text).toBe("visible answer")
+  })
 })
 
 // ── vendor-neutral proof: a DIFFERENT real client SDK (OpenAI) against the same proxy ──
