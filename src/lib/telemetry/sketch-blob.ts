@@ -32,9 +32,7 @@ export function serializePackedSketches(sketches: ReadonlyMap<string, Sketch>): 
   })
   if (entries.length > 0xff) throw new Error(`serializePackedSketches: too many sketches (${entries.length}, max 255)`)
 
-  const totalBytes =
-    PACKED_HEADER_BYTES +
-    entries.reduce((sum, e) => sum + 1 + e.nameBytes.length + 4 + e.sketchBytes.length, 0)
+  const totalBytes = PACKED_HEADER_BYTES + entries.reduce((sum, e) => sum + 1 + e.nameBytes.length + 4 + e.sketchBytes.length, 0)
   const buf = new ArrayBuffer(totalBytes)
   const dv = new DataView(buf)
   const out = new Uint8Array(buf)
