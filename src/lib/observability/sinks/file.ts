@@ -119,11 +119,14 @@ export class FileSink {
   private handle(event: ObservabilityEvent): void {
     // Synthetic request-style line (count_tokens et al.) — keep a durable record
     // in the log file (these routes are out-of-history, so this is their only
-    // durable trace). Rendered plain (ANSI-stripped); the line already carries
-    // its own `[ OK ] HH:MM:SS` prefix, so no extra level badge.
+    // durable trace). Rendered plain (ANSI-stripped). formatLogLine embeds only
+    // HH:MM:SS, so prepend the date (like system.log's full-date stamp) for
+    // cross-midnight post-mortem correlation; the line keeps its own `[ OK ]` badge.
     if (event.kind === "system.request_line") {
-      const line = formatLogLine(event.parts).replaceAll(ANSI_SGR, "") + "\n"
-      this.append(Date.now(), Buffer.byteLength(line), line)
+      const now = Date.now()
+      const date = formatStamp(now).slice(0, 10)
+      const line = `${date} ${formatLogLine(event.parts).replaceAll(ANSI_SGR, "")}\n`
+      this.append(now, Buffer.byteLength(line), line)
       return
     }
     if (event.kind !== "system.log") return

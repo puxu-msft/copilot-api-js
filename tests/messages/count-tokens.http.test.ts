@@ -240,7 +240,12 @@ describe("POST /v1/messages/count_tokens", () => {
 
     // Capture display-only events + wire the publisher (start.ts does this in prod).
     const events: Array<{ kind: string; parts?: Record<string, unknown> }> = []
+    // Also count any request.* event — the load-bearing invariant is that
+    // count_tokens stays OUT of observability (no RequestContext / history /
+    // telemetry). If someone ever wires it into the pipeline, this goes non-zero.
+    let requestEventCount = 0
     const unsub = getBus().subscribe((e) => {
+      if (e.kind.startsWith("request.")) requestEventCount++
       if (e.kind === "system.request_line") events.push({ kind: e.kind, parts: e.parts as unknown as Record<string, unknown> })
     })
     setRequestLinePublisher(getBus().scope("system"))
@@ -263,6 +268,8 @@ describe("POST /v1/messages/count_tokens", () => {
       expect(parts.status).toBe(200)
       expect(parts.model).toBe("claude-sonnet-4.5")
       expect(parts.inputTokens).toBe(18884)
+      // Load-bearing: count_tokens emits ZERO request.* events (out-of-observability).
+      expect(requestEventCount).toBe(0)
     } finally {
       unsub()
       resetRequestLinePublisher()
