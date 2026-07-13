@@ -9,7 +9,7 @@
 实施计划已经写好，在 `docs/plan/2026-07-13-upstream-error-client-shaping/` 目录下：
 
 - `README.md` —— 总体架构、Phase DAG、类型草图、spec 验收标准覆盖映射表、自审记录。**先读这个文件，尤其第 0 节的待裁决项**。
-- `phase-0-config-scaffolding.md` 到 `phase-5-selfheal-delegation.md` —— 六个可独立/部分并行执行的实施阶段（Phase 0-5 全部不依赖外部 spec，可以在本次会话内全部完成）。
+- `phase-0-config-scaffolding.md` 到 `phase-5-selfheal-delegation.md` —— 六个实施阶段（Phase 0-5 全部不依赖外部 spec，可以在本次会话内全部完成；Phase 2 相对独立，Phase 3/4/5 共享 `error-shaping.ts`/`handler-v4.ts`、建议串行或隔离 worktree，详见执行要求第 3 条与 README 第 3 节）。
 - `phase-6-gated-postcommit-truncation.md` —— **GATED**，依赖另一个 spec（`docs/spec/2026-07-11-block-level-buffered-retry.md`）的 P1 落地 master 才能开工，**本轮不要做这个 Phase**，除非你确认 block-level P1 已经落地（可以先跑 `git log --oneline --all | grep -i "block-level\|buffered-retry"` 或询问确认）。
 
 ## 执行要求
@@ -18,7 +18,7 @@
 
 2. **严格按 TDD 执行每个任务**：每个 Phase 文档里的每个任务都是"写失败测试 → 跑测试确认红 → 最小实现 → 确认绿 → 提交"的完整循环，任务清单里的 checkbox 就是执行顺序，不要跳过"确认红"这一步（哪怕看起来测试"显然会失败"）。
 
-3. **Phase 0-5 的依赖顺序**：Phase 0 必须先做（其余 Phase 都需要读 `state.errorShapingEnabled` 等字段）。Phase 1 必须在 Phase 0 之后、Phase 2/3/4/5 之前（后四者都依赖 `error-shaping.ts` 的 `decide()`/`buildCanonicalErrorFrame`/`renderAuqQuestion` 等导出）。Phase 2/3/4/5 四者互相独立，改动的文件、调用点均不重叠（README 第 3 节 Phase DAG 已画出），**可以并行执行**——如果你是主会话在编排多个 subagent，可以把 Phase 2/3/4/5 分给四个独立的 subagent 或依次串行做，这是编排层面的判断，本 kickoff 不替你决定由谁在哪并行。
+3. **Phase 0-5 的依赖顺序**：Phase 0 必须先做（其余 Phase 都需要读 `state.errorShapingEnabled` 等字段）。Phase 1 必须在 Phase 0 之后、Phase 2/3/4/5 之前（后四者都依赖 `error-shaping.ts` 的 `decide()`/`buildCanonicalErrorFrame`/`renderAuqQuestion` 等导出）。**订正（评审 HIGH-3，原"Phase 2/3/4/5 四者互相独立、可以并行执行"的表述不成立）**：Phase 2 与其余三者相对独立，可以并行；但 Phase 3/4/5 **都会共同追加/编辑同一批共享文件**——`error-shaping.ts`（Phase 1/3/4/5 四方共同追加）、`handler-v4.ts`（Phase 3/4/5 三方共同编辑），因此 Phase 3/4/5 **建议串行执行（推荐顺序 3→4→5）**，如果确实要并行，必须放在**隔离 worktree**里各自开工、合并前人工核对 diff（同文件不相邻函数级新增可以安全并行，但不能假设"文件不重叠"）——如果你是主会话在编排多个 subagent，可以把 Phase 2 单独派给一个 subagent 并行，Phase 3/4/5 依次派给同一 subagent 串行做，或各自开隔离 worktree，这是编排层面的判断，本 kickoff 不替你决定由谁在哪并行，详见 README 第 3 节 Phase DAG。
 
 4. **判据轴（写代码/评审时必须坚持，不得用 ROI/YAGNI 静默削减）**：
    - 长远正确 + 完整性 > 最小可交付——spec 的每条验收标准（AC1-6 + 3 条非目标 + 配置面 + 遥测）都已经在 README 第 5 节映射到具体 Phase/任务，不要因为"看起来这条不重要"就跳过对应任务或简化测试覆盖。
@@ -31,7 +31,7 @@
 6. **完成 Phase 0-5 全部任务后**：
    - 重新过一遍 README 第 5 节的 spec 覆盖映射表，确认每一行都已经有对应的、真正落地的测试（不是"计划里写了"而是"跑过、绿了"）。
    - 跑一遍全量 `bun run typecheck` + `bunx eslint`（无缓存全量，参照项目 `tooling-eslint-cache-false-pass` 记忆教训，不要用带缓存的 `lint` 命令做最终确认）。
-   - 按项目 `session-closeout` skill 收尾：subagent audit（review-merged-state，尤其关注 Phase 2/3/4/5 四个并行分支合并后有没有互相踩线）、doc-sync（`docs/DESIGN.md`"活的架构现状"补一行、`docs/API.md` 如果 AUQ/canonical 帧改变了任何对客户端可见的响应形状需要补充说明）、把本计划目录标注实施状态、提炼教训进项目记忆库。
+   - 按项目 `session-closeout` skill 收尾：subagent audit（review-merged-state，尤其关注 Phase 3/4/5 三方共同编辑 `error-shaping.ts`/`handler-v4.ts` 后有没有互相踩线、覆盖彼此的追加内容）、doc-sync（`docs/DESIGN.md`"活的架构现状"补一行、`docs/API.md` 如果 AUQ/canonical 帧改变了任何对客户端可见的响应形状需要补充说明）、把本计划目录标注实施状态、提炼教训进项目记忆库。
    - 是否要开始 Phase 6，取决于 block-level P1 当时是否已落地——如果没有，Phase 0-5 就是本轮的完整交付，这是一个**可接受的、spec 明确认可的中间状态**（G-4），不要因为"整个 spec 还没 100% 做完"而焦虑或强行做 Phase 6 的占位实现。
 
 ## 参考资料

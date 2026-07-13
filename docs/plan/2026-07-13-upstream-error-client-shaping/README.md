@@ -61,15 +61,15 @@
                                     │ 被下列 4 处消费（均在 routes/ 或 codec/，不反向依赖 routes）
         ┌───────────────────────────┼───────────────────────────┬─────────────────────────┐
         ▼                           ▼                           ▼                         ▼
- src/lib/error/forward.ts   routes/messages/handler-v4.ts  codec/anthropic/          codec/anthropic/
- （pre-commit A 类重试信号）  （post-commit 终点①②，        response-rewrite-         strategies.ts
-                              AUQ pre-commit 整段合成）      adapters.ts（新 rewrite，  （D 类委派过滤，
-                                                             上游 event:error 帧        按策略名关 canHandle）
-                                                             canonical 化）
+ routes/messages/          routes/messages/handler-v4.ts  codec/anthropic/          codec/anthropic/
+ route.ts +                （post-commit 终点①②，        response-rewrite-         strategies.ts
+ error-shaping-glue.ts       AUQ pre-commit 整段合成）      adapters.ts（新 rewrite，  （D 类委派过滤，
+ （pre-commit A 类重试信号，                                 上游 event:error 帧        按策略名关 canHandle）
+  **不改 forward.ts**——见下）                               canonical 化）
 ```
 
 - `error-shaping.ts` 是 `lib` 层纯函数模块，**不得 import `routes/`**（与 `recover-refusal.ts`/`post-commit-error.ts` 同层同规则）；输入 `ApiError + config（4 新键的当前值）+ commitPhase + clientVisibleStopEmitted`，输出一个可辨识的 `ShapingDecision` 联合类型（下节定义），不做任何 I/O / SSE 写入——写入动作留给调用方。
-- 消费点固定为 4 处，接口方向不变：`forward.ts`（pre-commit 路径）、`handler-v4.ts`（post-commit 两终点 + AUQ 触发点）、`response-rewrite-adapters.ts`（新增一条 S5 rewrite，用于拦截 upstream 主动下发的流内 `event:error` 帧并 canonical 化——这是 G-3「终局尾帧唯一所有权」在**流式路径**的落地点，此前排除的分析遗漏了这一处，见下方「探索新发现」）、`strategies.ts`/`handler-v4.ts` 组装点（D 类委派过滤）。
+- **消费点固定为 4 处，接口方向不变**（**订正**：早期草图误把 `forward.ts` 列为消费者，已核实 `forward.ts` 是 anthropic/openai/gemini 三格式**共享**、被 6 条非-Anthropic 路由复用的纯 status→envelope 分派，本计划**绝不改动**它——见 Phase 2「探索确认的关键事实」。真正的 pre-commit 接入点是新增的 `routes/messages/error-shaping-glue.ts` + `route.ts` 两处调用改线，`forwardError` 本体原样调用、零改动）：`error-shaping-glue.ts`/`route.ts`（pre-commit 路径）、`handler-v4.ts`（post-commit 两终点 + AUQ 触发点）、`response-rewrite-adapters.ts`（新增一条 S5 rewrite，用于拦截 upstream 主动下发的流内 `event:error` 帧并 canonical 化——这是 G-3「终局尾帧所有权」（评审 MEDIUM-1 后已从"唯一"收窄为"已收编 4 个终点 + 明确排除 3 个终点"，见下方全局约束 3 与「探索新发现」）在**流式路径**的落地点，此前排除的分析遗漏了这一处，见下方「探索新发现」）、`strategies.ts`/`handler-v4.ts` 组装点（D 类委派过滤）。
 
 ### 技术栈
 
@@ -78,8 +78,8 @@
 ### 全局约束（贯穿所有 Phase）
 
 1. **TDD**：每个任务先写失败测试→确认红→最小实现→确认绿→提交。真实代码路径测试，`.unit` 用 `autoRestoreState()`，涉及 runtime/HTTP 的 `.it`/`.http` 用 `useIsolatedRuntime()`（`tests/helpers/isolated-fixture.ts`），禁止 `mock.module`。
-2. **Golden 字节锁**：`error_shaping_enabled=false` 时，pre-commit `forward.ts`、post-commit 终点①（pre-pump catch）、post-commit 终点②（pump 内 H2/H3/truncation）三处必须与当前行为逐字节等价——每个 Phase 落地后都要跑一遍既有相关测试文件确认零回归。
-3. **G-3 终局尾帧唯一所有权**：post-commit 失败尾帧（无论走 H2/H3/truncation 哪条分支）的 canonical 整形只能来自 `error-shaping.ts` 的 `buildCanonicalErrorFrame`，`streaming-pump.ts` 现有的 `anthropicStreamErrorType` 必须被收编（保留原函数签名/导出位置或改为 re-export，避免破坏其他调用方——当前仅 `codec.ts` + `handler-v4.ts` 两处引用，见 Phase 1 任务）。
+2. **Golden 字节锁**：`error_shaping_enabled=false` 时，pre-commit `error-shaping-glue.ts`/`route.ts`（**订正**：非 `forward.ts`，见上方架构节）、post-commit 终点①（pre-pump catch）、post-commit 终点②（pump 内 H2/H3/truncation）三处必须与当前行为逐字节等价——每个 Phase 落地后都要跑一遍既有相关测试文件确认零回归。
+3. **G-3 终局尾帧所有权（**订正——评审 MEDIUM-1**：收窄为「已收编 4 个 post-commit 终点 + 排除理由」，不再用「唯一」这种绝对措辞，见下方「探索新发现」的完整清单）**：post-commit 失败尾帧的 canonical 整形，凡是源自可分类为 `ApiError` 的失败（`handler-v4.ts:560-566` 终点①HTTPError、`:568-570` 终点①'unknown-non-HTTP（含 `network_error`，见下）、`:1172-1201` H3、`:1279-1305` truncation），一律经由 `error-shaping.ts` 的 `buildCanonicalErrorFrame` 构造，不再各自手搓 JSON；`:573-579`（`decideRoute` reject）、`:1262-1278`（unrepairable-tool 自愈失败）、`:1309-1322`（外层 catch-all，非分类失败）三处**明确排除**，理由见「探索新发现」。`streaming-pump.ts` 现有的 `anthropicStreamErrorType` 必须被收编（保留原函数签名/导出位置或改为 re-export，避免破坏其他调用方——真实调用点是 `handler-v4.ts:1193` + `handler-v4.ts:1452`（**核实订正**：coordinator 评审信息给的是 1181/1440，经本轮重新 grep 现行代码确认精确行号为 1193/1452，二者指向同一对，只是行号随后续编辑漂移，见下方「探索新发现」），**订正**：早期草图误将 `codec.ts:619` 列为调用点，该行只是注释提及非真实调用，见 Phase 1 任务）。
 4. **G-4 排序前提**：post-commit 截断类（首块前重放/首块后 partial-degrade）依赖 block-level P1 落地，本计划 Phase 0-5 均不依赖 P1，可独立交付；Phase 6 显式标注为 gated，仅记录契约与验收测试骨架，不实现。
 5. **仅 Anthropic Messages**：所有改动只发生在 `src/lib/anthropic/`、`src/routes/messages/`、`src/lib/codec/anthropic/`、`src/lib/config/`（键定义对所有格式可见但仅 Anthropic 消费）。`src/lib/codec/openai-cc/`、`openai-responses/` 不动。
 6. **richest-data-flow**：History 永远记真实上游错误（`attempts[].upstreamResponse`）；forwarded 轨的合成物（AUQ 整段合成、canonical 尾帧、委派透传）通过 `tagFrameSynthetic` 打标记；`writeSynthetic` 写入的帧本就不进任一轨（既有 B0-c 行为，AC#6 对这类帧靠「不进记录」而非「打标记」满足，Phase 3 任务里会显式记一条测试断言这一点，避免被误判成遗漏）。
@@ -89,7 +89,13 @@
 ### 探索阶段的新发现（写入本计划，供实现者知晓，不是待裁决项）
 
 - **G-3 在流式路径的真实落点比 spec 字面描述更精确**：post-commit「GHC 主动发流内 `event:error`」的帧，在当前实现里**已经原样转发给客户端**（`stream-accumulator.ts:186-192` 只是把它记进 `acc.streamError` 供 H2 判定用，`handler-v4.ts` 的 H2 分支——1213-1224 行——不再二次写帧，注释明确写着"a terminal upstream `error` SSE event was forwarded as a content frame"）。也就是说，**canonical 整形必须发生在帧被转发之前**，即 S5 rewrite 链（`response-rewrite-adapters.ts`）里新增一条拦截 `type==="error"` 帧的 rewrite，而不能只在 H2 分支里事后补救（那时帧已经上线）。这是 Phase 3 任务 3.3 的确切依据；spec 原文的"commit + fail, 不重放 → C" 描述的是结果状态，具体的接线点需要这次探索才能钉死，故记录于此供实现者不必重新反查。
+- **（评审 MEDIUM-1）G-3 收编范围的完整清单与排除理由**——早期草案用"唯一所有权"的绝对措辞，但实际只收编了①565/H3@1189/truncation@1295 三处，遗漏了 `handler-v4.ts` 里另外 4 个 post-commit 写帧点。逐一核实后的最终范围：
+  - **`:568-570`（"unknown non-HTTP, non-abort" 分支）——本轮新增收编（原计划遗漏，属正确性缺口，非措辞问题）**：`classifyError`（`~/lib/error/classify.ts:49-95`）对 `network_error` 类型的产出**只来自非 `HTTPError` 分支**（socket 关闭/连接重置/HTTP2 REFUSED_STREAM 等，均走 `error instanceof Error` 分支，从不是 `HTTPError` 实例），因此 post-commit 阶段的 `network_error` 错误**必然**命中 560 行 `if (error instanceof HTTPError)` 判断为假、落到 568-570 行，而非终点①(565)。Phase 1 真值表（任务 1.1）已经把 `network_error` post-commit 明确设计为 `canonical-error` 分支——若不收编 570，这个真值表承诺就是空头支票（`decide()` 永远不会被调用到这条路径）。这不是"要不要扩大范围"的取舍，而是**补齐一个已经被自己的真值表许诺、但接线遗漏的缺口**，故本计划采纳"收编"而非"排除+写理由"。收编方式与①/H3/truncation 同构：先 `classifyError(error)` → `decide({..., commitPhase:"post-commit", ...})` → `buildCanonicalErrorFrame(decision)`；`aborted`/`HTTPError` 已被更早的分支拦截，不会重复进入这里，故不需要在此再判 `aborted`。已并入 Phase 3 任务 3.2（见该文档）。
+  - **`:573-579`（`decideRoute` reject）——明确排除**：这不是从上游捕获的 `ApiError`，而是本地路由决策 `decideRoute()` 产出的 `result.rejection`（`.reason`/`.status` 是代理内部决策文本，不是上游响应体），代码里临时构造一个 `HTTPError`只是为了复用 `anthropicRejectErrorFrame` 的渲染形状，语义上属于"代理拒绝调度"而非"上游报错"，不在 spec 11 种 `ApiErrorType` 的设计意图内。强行套 `classifyError`+`decide()` 需要臆造一个不存在的分类语义，风险大于收益，保持现状手工构造。
+  - **`:1262-1278`（unrepairable-tool 自愈失败）——明确排除**：这里根本没有一个被 `catch` 的 `error` 对象可供 `classifyError` 分类——触发条件是 `env.ctx.unrepairableToolInput` 诊断标记（代理自己检测到「工具调用输入畸形且无法修复」），`anthropicErrorFrame("invalid_request_error", ...)` 是主动合成而非对上游错误的整形。这与 G-3"上游失败尾帧 canonical 化"的问题域不同（这里没有上游错误，是代理自身校验失败），排除。
+  - **`:1309-1322`（外层 catch-all，"Unexpected throw from the driver/sink"）——明确排除**：这是防御性兜底分支，捕获的是"驱动/sink 内部意外抛出"（编程缺陷类，非受支持的上游错误分类），硬编码 `"api_error"` 正是为了在未知故障下仍保证客户端拿到一个合法帧、不深究具体分类。把它路由进 `decide()` 需要先 `classifyError`，而 `classifyError` 对任意 `Error` 都有兜底（`bad_request`），技术上可行，但会让一个"防御性兜底"分支的行为跟着 4 个配置键联动，模糊了它"永远兜底成功"的设计初衷，且没有已知的真实回归诉求驱动这个改动。保持现状，留作 `docs/todo/deferred-backlog.md` 的低优先级候选项（非本计划范围）。
 - **AUQ 合成是 pre-commit 整段合成**（已在 spec 探索阶段确认），完全不需要与实时 pump/anchor 机制交互；但需要区分 `stream:true`（合成 SSE 帧序列）与 `stream:false`（合成整个 `AnthropicMessageResponse` JSON）两种客户端请求形态——这与 `recover-refusal.ts` 已经解决过的同款问题（`buildSyntheticTextFrames` vs 非流式对应函数）同构，Phase 4 直接复用该模式。
+- **（评审 MEDIUM-2）`anthropicStreamErrorType` 真实调用点订正**：早期草图写"仅 `codec.ts` + `handler-v4.ts` 两处引用"不准确——`codec.ts:619` 只是**注释**提及该函数名，非真实调用；实际调用点是 `handler-v4.ts:1193`（H3 分支，`pumpAnthropicStreamingV4` 内）与 `handler-v4.ts:1452`（`pumpTranslateLegStreamingV4` 内，translate-leg pump，即 CC/Responses→Anthropic wire 反向翻译腿的错误处理；**核实订正**：coordinator 原始评审给出的行号是 1181/1440，本轮重新 `grep -n anthropicStreamErrorType` 现行代码核实精确行号为 1193/1452——同一对调用点，只是行号随文件后续编辑漂移，指代对象一致）。`:1452` 是否落在本计划 G-3/Anthropic-only 约束（全局约束 5）范围内需要说明：`:1452` 所在的 `pumpTranslateLegStreamingV4` 服务的是**入站为 CC/Responses、出站翻译到 Anthropic wire 再回译**的反向路径（`codec/openai-cc/`、`codec/openai-responses/` 的 reverse leg），其"客户端可见"一侧不是 Anthropic Messages 协议，而是 OpenAI CC/Responses 协议——按全局约束 5"仅 Anthropic Messages"，本计划**不改动** `:1452` 的调用行为、也不让它经过 `decide()`/`buildCanonicalErrorFrame`。收编方式仅限于"保留 `anthropicStreamErrorType` 的导出签名，内部实现委托给 `error-shaping.ts` 的等价逻辑（或 re-export）"——`:1452` 处的调用方式不变、行为不变，只是它调用的函数内部实现换了地方，这不违反约束 5（因为没有新增任何 Anthropic-only 的整形逻辑作用到这条腿上，只是共享了一个纯字符串映射函数的实现）。Phase 1 任务需要显式测试锁定"收编后 `anthropicStreamErrorType` 对同样输入返回同样字符串"这一行为不变量，覆盖两个调用点各自的既有单测。
 
 ---
 
@@ -98,7 +104,8 @@
 ```
 src/lib/anthropic/error-shaping.ts        新增 — 纯决策引擎 + 帧/响应构造 + 委派过滤器（本计划核心产出）
 src/lib/anthropic/streaming-pump.ts       改动 — anthropicStreamErrorType 収编为对 error-shaping 的委托（保留导出签名）
-src/lib/error/forward.ts                  改动 — mapHttpErrorToEnvelope/forwardError 接入 pre-commit retry-signal（Retry-After 头）
+src/routes/messages/error-shaping-glue.ts 新增 — shapePrecommitError(c, error)：组合 classifyError + decide() + c.header() 写 retry-signal 头，原样调用既有 forwardError（不改 forward.ts 一行）
+src/routes/messages/route.ts              改动（小）— 两处 `catch (error) { return forwardError(c, error) }` 改为调用 shapePrecommitError
 src/routes/messages/handler-v4.ts         改动 — 终点①②调用 error-shaping 决策 + AUQ pre-commit 整段合成分支
 src/routes/messages/post-commit-error.ts  改动（小）— anthropicHttpErrorFrame 等收编进 error-shaping 的 canonical 构造（或改为委托调用，视 Phase 1/3 实现顺序）
 src/lib/codec/anthropic/response-rewrite-adapters.ts  改动 — 新增一条 ResponseRewrite（errorFrameCanonicalize），拦截上游主动 event:error 帧
@@ -113,7 +120,7 @@ tests/anthropic/error-shaping.unit.test.ts            新增 — 决策矩阵真
 tests/anthropic/error-shaping-canonical.unit.test.ts  新增（可与上一个文件合并，视体量而定）— canonical 尾帧构造 + S5 rewrite 单测
 tests/anthropic/post-commit-error.unit.test.ts        改动 — 补 error-shaping 收编后的等价性回归
 tests/config/error-shaping-config.unit.test.ts        新增 — 4 新键 schema/config/state 三触点 + 热重载
-tests/anthropic/error-shaping-golden.http.test.ts     新增 — error_shaping_enabled=false 三终点字节锁 e2e（用 exp/cc-error-retry-surface fake server 复用）
+tests/anthropic/error-shaping-golden.http.test.ts     新增 — error_shaping_enabled=false 四终点字节锁 e2e（终点①/①'/H3/truncation，见全局约束 3；用 exp/cc-error-retry-surface fake server 复用）
 tests/anthropic/error-shaping-auq.http.test.ts        新增 — AUQ 合成端到端（streaming + non-streaming 两种）
 tests/anthropic/error-shaping-selfheal-delegate.it.test.ts 新增 — D 类委派 canHandle 过滤 + 6 条自愈腿映射表测试
 ```
@@ -142,6 +149,12 @@ Phase 2/3/4/5 互相独立，可并行执行（不同文件、不同调用点，
 Phase 6 (GATED —— 依赖 block-level P1 Task 6 落地 master)
    仅在 Phase 0-5 全部落地 + P1 Task 6 落地后开工；仅记录契约与验收测试骨架，不在本计划落地日程内强制执行。
 ```
+
+**订正（评审 HIGH-3）**：上一条「互相独立可并行」的断言不成立，已重新核实实际编辑面：`error-shaping.ts` 被 Phase 1（创建）+ Phase 3（追加 `buildCanonicalErrorFrameFromRaw`/`parseRawUpstreamErrorFrame`）+ Phase 4（追加 `buildAskUserQuestionFrames`/`buildAskUserQuestionResponse`）+ Phase 5（追加 `filterDelegatedStrategies`）四方共同追加；`handler-v4.ts` 被 Phase 3（终点收编）+ Phase 4（AUQ 接线 + `clientRequestStream` 暴露）+ Phase 5（`buildMessagesDriverStrategies` 接线）三方共同编辑；`error-shaping-glue.ts` 被 Phase 2（创建）+ Phase 4（补 `ask-user-question` 分支）两方编辑。因此：
+
+- Phase 1 是真正独立的共享基座，必须先落地。
+- Phase 2 与 Phase 3/4/5 相对独立（`route.ts`/`error-shaping-glue.ts` 与 `response-rewrite-adapters.ts`/`handler-v4.ts` AUQ 分支/`strategies.ts` 基本不重叠），可并行或任意顺序，仅需在 Phase 4 收尾时留意其对 `error-shaping-glue.ts` 的追加。
+- **Phase 3/4/5 三者都追加 `error-shaping.ts` 且都编辑 `handler-v4.ts`，不是「不同文件不重叠」——建议串行执行（推荐顺序 3→4→5：3 先收编 post-commit 终点，4/5 在其基础上追加分支更不易冲突），或各自开隔离 worktree 后按文件段合并**。若确实要并行，安全区仅限于同一文件内互不相邻的函数级新增，合并前必须人工核对 diff 有无相邻行覆盖。
 
 **独立可交付集合**：Phase 0-5（config + 决策引擎 + pre-commit 信号 + post-commit canonical + AUQ + 委派）——这部分单独交付即可兑现 spec 目标 1/3/4/5 的绝大部分，以及目标 2 的 pre-commit 半部分。
 **gated 集合**：Phase 6——只兑现目标 2 的 post-commit 截断类半部分，且实际生效还要求 block-level P1 的 buffered 默认翻转（那由 block-level 计划自己的 G2 门控，不归本计划决定）。
@@ -183,7 +196,7 @@ export function renderAuqQuestion(tmpl: string, vars: Partial<{ model: string; r
 
 /** 决策引擎的输出——四类之一，调用方据此执行写入/委派动作。*/
 export type ShapingDecision =
-  | { kind: "retry-signal"; retryAfterSec?: number; shouldRetryHeader?: boolean }  // A类 pre-commit
+  | { kind: "retry-signal"; retryAfterSec?: number }  // A类 pre-commit；x-should-retry 头是否写入不由 decide() 决定——glue（Phase 2）对所有 retry-signal 分支无条件写 "true"，故不设 shouldRetryHeader 字段（评审 LOW-2：曾草拟过该字段但 decide() 从未填充、glue 也从未读取，属死字段，已删除以免误导实现者）
   | { kind: "ask-user-question"; questions: ReadonlyArray<AuqQuestion> }           // B类
   | { kind: "canonical-error"; errorType: string; message: string; retryAfterSec?: number }  // C类
   | { kind: "defer-to-block-level" }  // A类 post-commit 截断/RST（G-4 gated，Phase 6 消费）
@@ -210,9 +223,9 @@ export function filterDelegatedStrategies(strategies: ReadonlyArray<RetryStrateg
 
 | Spec 验收标准（原文摘录） | 覆盖 Phase / 任务 | 备注 |
 |---|---|---|
-| AC1：pre-commit 可重试错误（429/503-upstream/5xx/network_error）触发真实 `Retry-After` 头 + 可选 `x-should-retry` | Phase 2 全部 | forward.ts 目前只写 body，不写头（已核实 forward.ts:497-541 从无头写入）——本计划新增 |
+| AC1：pre-commit 可重试错误（429/503-upstream/5xx/network_error）触发真实 `Retry-After` 头 + 可选 `x-should-retry` | Phase 2 全部 | **订正（评审 HIGH-1）**：经新增的 `error-shaping-glue.ts`（`shapePrecommitError`）在 `route.ts` 两处调用点注入头，`forward.ts` 零改动——`forward.ts` 目前只写 body，不写头（已核实 `forward.ts:497-541` 从无头写入），本计划新增的头注入发生在 glue 层、`forwardError` 本体原样调用 |
 | AC2：402/content_filtered/403(耗尽 token-refresh) 在 `error_ask_user_question=true` 时合成 AUQ 成功轮次，401 先走既有 token-refresh 不弹问 | Phase 1 任务 1.1/1.4（`decide()` 真值表 + questions 内容构造）+ Phase 2（route.ts 唯一入口，401 未耗尽 token-refresh 时从不产生 `ApiError` 走到这里）+ Phase 4（AUQ 序列化/接线） | **订正（自审发现）**：401/403 的分流**不是**由 Phase 4 内的显式 `.status` 判断实现的——`decide()`（Phase 1）对到达它的 401/403 一视同仁（`auth_expired` 统一处理）；真正的"401 先走 token-refresh 不弹问"是**call-site 时机**保证的既有架构不变量（token-refresh `RetryStrategy` 在更早的重试层已经拦截并消化了"尚未耗尽"的 401，只有耗尽后才会以 `ApiError` 形式到达 route.ts 的 pre-commit catch），非本计划新实现的判断逻辑，只是被本计划的真值表测试（Phase 1 `test.each([401,403])`）显式锁定为回归不变量。早期草稿曾错误地把这个分流职责记在"Phase 4 任务 4.2"，已在本轮自审中订正。 |
-| AC3：post-commit 上游主动 `event:error` 帧被 canonical 化（吸收 anthropicStreamErrorType），不尝试推客户端重试 | Phase 1（构造函数）+ Phase 3（接线到 S5 rewrite） | 见「探索新发现」，接线点是 rewrite 链非 H2 分支事后 |
+| AC3：post-commit 上游主动 `event:error` 帧被 canonical 化（吸收 anthropicStreamErrorType），不尝试推客户端重试 | Phase 1（构造函数）+ Phase 3（接线到 S5 rewrite + 4 个 post-commit 终点收编，见全局约束 3） | 见「探索新发现」，S5 rewrite 接线点是 rewrite 链非 H2 分支事后；本地终点收编范围见全局约束 3 的完整清单（4 收编 + 3 明确排除） |
 | AC4：post-commit 截断类可重试错误重放，依赖 block-level P1 | Phase 6（GATED，已写契约+验收骨架，`describe.skip` 未开工） | G-4，本计划不实现，只记契约；开工前置条件 = block-level P1 Task 6 落地 master（见 `phase-6-gated-postcommit-truncation.md` 开工检查清单） |
 | AC5：D 类自愈委派按反应式策略名可配置，6 条腿映射表 | Phase 5 全部 | media-strip 无对应策略，delegate-only，测试须覆盖该边界 |
 | AC6：所有合成物（AUQ/canonical/委派透传）在 forwarded 轨打 `synthetic` 标记，History 永远记真实上游错误 | Phase 1（`SyntheticOriginKind` 扩展）+ Phase 3/4 各自的 `tagFrameSynthetic` 调用 + 每个 Phase 的 history 断言测试 | `writeSynthetic` 类帧不进任一轨——Phase 3 显式测试断言这一豁免不是遗漏 |
@@ -252,7 +265,7 @@ export function filterDelegatedStrategies(strategies: ReadonlyArray<RetryStrateg
 
 - [phase-0-config-scaffolding.md](./phase-0-config-scaffolding.md) — config 三触点新增 4 键
 - [phase-1-error-shaping-core.md](./phase-1-error-shaping-core.md) — 决策引擎 + canonical 构造 + 收编 anthropicStreamErrorType + 类型扩展
-- [phase-2-precommit-retry-signal.md](./phase-2-precommit-retry-signal.md) — pre-commit A 类 retry-signal 接线 forward.ts
+- [phase-2-precommit-retry-signal.md](./phase-2-precommit-retry-signal.md) — pre-commit A 类 retry-signal 接线 route.ts glue（不改 forward.ts）
 - [phase-3-postcommit-canonical-frame.md](./phase-3-postcommit-canonical-frame.md) — post-commit 终点①②接线 + S5 rewrite + golden 字节锁
 - [phase-4-askuserquestion.md](./phase-4-askuserquestion.md) — B 类 AskUserQuestion 合成
 - [phase-5-selfheal-delegation.md](./phase-5-selfheal-delegation.md) — D 类自愈委派

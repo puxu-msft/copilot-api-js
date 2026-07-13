@@ -1,6 +1,10 @@
 # Phase 5 —— D 类自愈委派（`filterDelegatedStrategies`）
 
-**依赖**：Phase 0（`state.errorSelfhealDelegate` / `state.errorShapingEnabled`）。与 Phase 1-4 相互独立（不共享运行时函数，只共享 `FeatureKind`/`SyntheticOriginKind` 已在 Phase 1 任务 1.3 扩过的类型面）。可与 Phase 3/4 并行实施。
+# Phase 5 —— D 类自愈委派（`filterDelegatedStrategies`）
+
+> **评审 HIGH-3 共享文件提示**：本 Phase 在 `error-shaping.ts` 追加 `filterDelegatedStrategies`（任务见下方"最小实现：`error-shaping.ts` 内新增"）+ 编辑 `handler-v4.ts` 的 `buildMessagesDriverStrategies`（258-288 行）。这两个文件同时被 Phase 3（post-commit 收编）+ Phase 4（AUQ 接线）追加/编辑，**不是"不共享运行时函数、可并行"的独立单元**——原草稿此处的独立性表述有误，已订正：建议按 3→4→5 顺序串行落地，或各自开隔离 worktree 后按文件段合并，合并前人工核对 diff 有无相邻行覆盖。详见 README §3 Phase DAG「订正」段。
+
+**依赖**：Phase 0（`state.errorSelfhealDelegate` / `state.errorShapingEnabled`）、Phase 1（`error-shaping.ts` 已建立的模块骨架 + `FeatureKind`/`SyntheticOriginKind` 类型面）。**订正**：本 Phase 与 Phase 3/4 共享 `error-shaping.ts`/`handler-v4.ts` 两个文件的追加/编辑面，不是相互独立、不建议直接并行（见上方提示）。
 
 **不依赖 block-level P1**：D 类委派纯粹作用于 pre-commit 反应式重试策略层（策略装配 `assembleStrategiesForEndpoint` 只在 pre-commit 阶段跑一次，产出的重试决策发生在 200 头尚未发出之前），与 post-commit 截断/G-4 排序前提无关。
 
@@ -35,7 +39,7 @@
    ```ts
    export function filterDelegatedStrategies(
      strategies: ReadonlyArray<RetryStrategy>,
-     delegate: Readonly<Record<string, "proxy" | "delegate">>,
+     delegateConfig: Readonly<Record<string, "proxy" | "delegate">>,
      onDelegated?: (strategyName: string) => void,
    ): ReadonlyArray<RetryStrategy>
    ```
@@ -136,11 +140,11 @@
   ```ts
   export function filterDelegatedStrategies(
     strategies: ReadonlyArray<RetryStrategy>,
-    delegate: Readonly<Record<string, "proxy" | "delegate">>,
+    delegateConfig: Readonly<Record<string, "proxy" | "delegate">>,
     onDelegated?: (strategyName: string) => void,
   ): ReadonlyArray<RetryStrategy> {
     return strategies.map((strategy) => {
-      if (delegate[strategy.name] !== "delegate") return strategy
+      if (delegateConfig[strategy.name] !== "delegate") return strategy
       return {
         ...strategy,
         canHandle(error) {

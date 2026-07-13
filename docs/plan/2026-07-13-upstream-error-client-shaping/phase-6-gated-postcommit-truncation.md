@@ -58,7 +58,8 @@ describe.skip("[GATED — requires block-level P1 Task 6 landed] post-commit tru
 
 - [ ] 重新 grep `docs/spec/2026-07-11-block-level-buffered-retry.md` 对应实现代码，确认截断重放/partial-degrade 分支的准确文件路径与行号（不复用本文档预先写死的猜测路径）
 - [ ] 确认 P1 落地后的 golden 字节锁测试（block-level 自己的验收测试）仍然全绿——本 Phase 的改动不应该破坏 P1 自己的验收
-- [ ] 确认 Phase 3 的三终点 golden 字节锁测试（`error_shaping_enabled=false`）在 P1 落地后重跑仍然全绿（README D-0.5 已提示这一点，此处再次确认执行）
+- [ ] 确认 Phase 3 的四终点 golden 字节锁测试（`error_shaping_enabled=false`，终点①/①'/H3/truncation）在 P1 落地后重跑仍然全绿（README D-0.5 已提示这一点，此处再次确认执行）
+- [ ] **（评审 LOW-1）oracle 覆盖 `empty_text` 与 `ping` 两种 `streamKeepaliveMode`**：spec 第 125 行明确要求 post-commit 可重试错误的 buffered 重放 oracle 须分别在两种 keepalive 模式下驱动一遍（避免只测默认模式导致假绿——两种模式下 anchor 的 open/close 时序不同，可能暴露不同的重放边界条件）。Phase 3 的四终点 golden 锁不涉及重放、无需覆盖双模式（已在 Phase 3 完成检查里注明）；**这条覆盖要求真正的落地点是本 Phase**，开工时须新增/复用 `exp/cc-error-retry-surface` 里两种模式的 fixture 各跑一遍完整 e2e。
 - [ ] 确认 spec 第 111 行"anchor close/open 分叉"改造已经由 block-level P1 自己完成（本 Phase 不做，只验证前置条件成立）
 - [ ] 完整走 TDD 循环：`describe.skip`→`describe`（改动后应先跑红）→最小实现（partial-degrade 尾帧改为调用 `buildCanonicalErrorFrame`）→绿→提交
 - [ ] 更新本计划 README 第 3 节 Phase DAG 图，把 Phase 6 从"GATED 未开工"标注为"已完成"，并在第 5 节 AC4 覆盖表行补充实际落地的 commit 引用

@@ -1,5 +1,12 @@
 # Phase 4：B 类 AskUserQuestion 合成（pre-commit 整段合成）
 
+> **评审 HIGH-3 共享文件提示**：本 Phase 在 `error-shaping.ts` 追加 `buildAskUserQuestionFrames`/`buildAskUserQuestionResponse` + 编辑 `error-shaping-glue.ts`（`ask-user-question` 分支接线）+ `handler-v4.ts`（一行 `stream` 标记暴露）。`error-shaping.ts`/`handler-v4.ts` 同时被 Phase 3（post-commit 收编）+ Phase 5（自愈委派接线）追加/编辑，**不是「不同文件不重叠」的独立并行单元**——建议按 3→4→5 顺序串行落地，或各自开隔离 worktree 后按文件段合并，合并前人工核对 diff 有无相邻行覆盖。详见 README §3 Phase DAG「订正」段。
+>
+> **评审 MEDIUM-3 风险标注（未实测，随 spec 继承的假设）**：本 Phase 的全部测试只验证"代理产出的合成 AUQ 帧/响应体在协议形状上与真实 Claude Code 主动发起的 AskUserQuestion 工具调用逐字节等价"，**没有**用真实 Claude Code 客户端（或忠实复刻其工具调用解析逻辑的 fake）去消费这些合成帧、确认它确实会被渲染成交互式问句 UI 而非被当作普通文本/未知工具调用丢弃或报错。这个"CC 会正确渲染"的假设来自 spec，本计划予以继承但不重新验证。若要关闭这个风险敞口，需要在 Phase 4 之前或之内插入一个 PoC 门（用真实 `claude` CLI 或其可复现的最小工具解析路径喂一段合成 SSE，肉眼/脚本确认交互式渲染），这属于**新增测试基础设施/可能需要额外工具依赖的范围扩张**，本计划不擅自决定是否做，留给 coordinator/用户裁决：
+> - 选项 A（推荐，成本最低）：本 Phase 照原计划只做协议形状测试，在 Phase 4 完成检查清单末尾加一条"人工用真实 Claude Code 手动触发一次 GHC 429/504 之类的可复现上游错误，肉眼确认弹出的是交互式问句而非报错文本"，作为**上线前人工验收步骤**而非自动化测试。
+> - 选项 B：投入一次性 PoC（`exp/cc-auq-render-probe/`），录制真实 CC 与 fake GHC 上游的一次交互，固化成可重复运行的 e2e fixture。成本高于 A，但能把假设变成回归可测的事实。
+> 本计划默认按选项 A 执行（见下方任务清单末尾新增项），除非 coordinator/用户明确要求做选项 B。
+
 **依赖**：Phase 0（`error_ask_user_question`/`error_auq_template`）、Phase 1（`decide()` 的 `ask-user-question` 分支 + 任务 1.4 的 `AuqQuestion`/`renderAuqQuestion`/`DEFAULT_AUQ_TEMPLATE`，本 Phase 直接消费其产出，不重新构造问句内容）、Phase 2（`shapePrecommitError` glue、`errorShapingConfigFromState`）
 **产出**：`error-shaping.ts` 内新增 `buildAskUserQuestionFrames`/`buildAskUserQuestionResponse` 两个纯序列化函数（**注**：不新建 `error-shaping-auq.ts` 独立文件——见下方「与早期草稿的差异」）+ `error-shaping-glue.ts` 接线 `ask-user-question` 分支 + handler-v4.ts 一行 `stream` 标记暴露
 
@@ -189,3 +196,4 @@
 - [ ] 确认 `error-shaping.ts` 顶部 import 依旧不含任何 `~/routes/*` 路径
 - [ ] 确认 `error_shaping_enabled=false` 时 `ask-user-question` 分支从不触发（`decide()` 的 `config.enabled` 门控在 Phase 1/2 已覆盖，本 Phase 补一条端到端回归确认 AUQ 场景同样受总开关约束）
 - [ ] 确认 AUQ 选项文案（quota_exceeded/content_filtered/auth_expired 三组 `options`）与 Phase 1 任务 1.4 里落地的版本一致（同一份文案只应该在 `error-shaping.ts` 定义一次，Phase 4 不重复定义、不重复决策）
+- [ ] **（评审 MEDIUM-3，人工验收步骤，非自动化测试，不阻塞本 Phase 的"确认绿"）**：用真实 Claude Code 客户端手动触发一次可复现的上游错误（例如临时调低配额触发 429，或直连一个会返回 5xx 的测试上游），肉眼确认代理合成的 AUQ 帧被 CC 渲染成交互式问句（可点选选项）而非报错文本、纯文本工具调用回显或静默失败。这一步验证的是"CC 会正确渲染合成 AskUserQuestion"这条继承自 spec、本计划从未实测过的假设——若肉眼确认失败，说明协议形状测试全绿但功能不成立，须回到 README 第 0 节记录为新发现的门控问题，不要就地扩大本 Phase 范围自行改协议形状。
