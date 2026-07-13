@@ -29,6 +29,24 @@ Phase 7 修了一个真实生产 bug:前向翻译腿(anthropic 客户端用 Open
 
 ## 剩余任务（按序）
 
+> **进度更新（前置会话续做）**：T1（RFC v2 §11 定稿）+ T2（第二轮 review → RFC v3 §11.9）+ T3（三层 plan）**已完成**。设计**收敛、可进实现**。新会话**从 T4（C0-C6 实现）开始**。
+
+### ✅ T1-T3 已完成（前置会话）
+- **RFC 定稿**（3 commit,`7fe6973a`/`820e5332`/`80eca340`）：§0.1 三轮首轮裁决 + §11 定稿设计（集中化 2D cell 装配,取代 v1 ⊥ 正交）+ §11.9 第二轮 v3 修订。核心设计经**两轮对抗 review 收敛**（首轮 3 视角证伪 ⊥ 正交 → v2 转向;次轮 1 深度核 12 cell 真实策略栈 → 判"核心 RESOLVED、可进 plan"）。**两条承重红线已钉死**:R1 auto-truncate 非 clientFormat 标量（RETRY_SEMANTICS 读 env.targetEndpoint,responses-reverse cell 是 corner）、R2 稳定态住 env.requestState 非 replace-semantics prepareHints。
+- **三层 plan**（[`docs/plan/inbound-outbound-split/`](../plan/inbound-outbound-split/)）：`plan.md`（C0-C6 factory 锚点表 + 12-cell 真实策略栈表 + R1-R5 红线 + commit 序）+ `prompts/README.md`（DAG + 通用红线导航）。
+
+### T4. C0 → C1-C6 实现（byte-critical,逐 commit subagent + 独立 review）—— **新会话从这里开始**
+照 [`plan.md`](../plan/inbound-outbound-split/plan.md) commit 序 + [`prompts/README.md`](../plan/inbound-outbound-split/prompts/README.md) DAG:
+- **C0（最关键,前置阻塞全部）**：改前 HEAD 跑通现有 79 golden + **补 3 条缺失 byte golden**（keepalive-ON anchored direct 流式 / reverse @messages 转发逐帧 / responses-ws+gemini 两跳终帧）——第二轮 review 实测 `direct-stream-golden-phase4` 关了心跳、reverse 无逐帧 byte golden,这 3 条是最高风险路径的唯一硬证,不补 C2 就是空头承诺。
+- **C1-C6**：逐 cell 原子迁移,每 commit hybrid dispatch 无双活 + golden 逐字节 + typecheck 绿。每 commit 隔离 worktree + subagent 实现 + **独立 review**（Phase 5/7 教训:主会话亲手复核承重断言、别信自证、别用 strategies:[] 绕过真装配器 R4）。
+- 逐 commit 写 self-contained prompt（`prompts/README.md` 骨架,增量产出避免上下文腐化）。
+
+### T5. 合并 + doc-sync + 记忆（收尾）
+- 合并回 master（rebase/FF 或 --no-ff 脱离 peer 竞态）。
+- DESIGN.md「活的架构现状」翻译矩阵行改 cell-assembly 架构。
+- 记忆 stub 记教训（"两轴在对象层纠缠、⊥ 正交是过度简化、集中化 2D 装配 + RETRY_SEMANTICS(cf)(env) 读两轴才对";"RFC-first 两轮对抗 review 挡下 v1 根本性过度简化 + auto-truncate 非标量 corner"）。
+
+### ~~T1-T3~~（已完成,存档下方原计划供对照）
 ### T1. 重写 RFC §2-§10（按 §0.1 裁决）
 v1 正文（§2-§10）仍描述"⊥ 正交",须重写为 v2"集中化 2D cell 装配":
 - §2 目标:措辞收敛（"cell 存在性由类型消灭、腿形约定由测试守卫",别过度承诺"类型消灭复发源"）。
