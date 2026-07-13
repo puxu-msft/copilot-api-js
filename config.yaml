@@ -480,15 +480,16 @@ anthropic:
   # 为 true 时对能力解析放行的每个模型启用（default-allow Claude ≥4.5，由上方 tool_search_overrides 细调）；false = 全部关闭。
   tool_search: true
 
-  # Anthropic memory tool (native memory_20250818 server tool). Default FALSE — CAPI acceptance of the
-  # server-tool type is UNVERIFIED (GHC only sends it on its direct-Anthropic BYOK path, not via CAPI).
+  # Anthropic memory tool (native memory_20250818 — a client-EXECUTED typed tool, NOT a server tool:
+  # the model drives it, the client runs /memories). Default FALSE — CAPI acceptance of the typed
+  # descriptor is UNVERIFIED (GHC only sends it on its direct-Anthropic BYOK path, not via CAPI).
   # When true AND the model supports memory (model_capabilities.memory above), a client tool named
   # `memory` is rewritten to {name:"memory", type:"memory_20250818"} and the context-management-2025-06-27
   # beta is forced (memory rides that beta upstream). The tool is executed client-side (Claude Code), so
   # there is no response-side handling. Off → the memory tool passes through as an ordinary custom tool.
-  # Anthropic memory 工具（原生 memory_20250818）。默认 FALSE——CAPI 是否接受该 server-tool 类型未实测（GHC 仅在直连 BYOK
-  # 路径发，不经 CAPI）。为 true 且模型支持时，把客户端 `memory` 工具改写为 {name,type} 并强制 context-management beta；
-  # 由客户端执行、无响应侧处理。关闭时按普通 custom tool 透传。
+  # Anthropic memory 工具（原生 memory_20250818——是客户端执行的 typed 工具，不是 server tool：模型驱动、客户端跑 /memories）。
+  # 默认 FALSE——CAPI 是否接受该 typed 描述符未实测（GHC 仅在直连 BYOK 路径发，不经 CAPI）。为 true 且模型支持时，把客户端
+  # `memory` 工具改写为 {name,type} 并强制 context-management beta；由客户端执行、无响应侧处理。关闭时按普通 custom tool 透传。
   server_tool_memory: false
 
   # Additional tool names that should never be deferred when tool_search is enabled.

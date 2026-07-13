@@ -431,8 +431,9 @@ export const AnthropicConfigSchema = z
     context_editing_keep_tools: nullableNonnegativeInt(),
     context_editing_keep_thinking: nullableNonnegativeInt(),
     tool_search: nullableBoolean(),
-    // Anthropic memory tool (native memory_20250818 server tool). Default off — rewrites a client tool
-    // named `memory` to the server-tool descriptor + forces the context-management beta. See features.ts.
+    // Anthropic memory tool (native memory_20250818 — a client-EXECUTED typed tool, NOT a
+    // server tool; the model drives it, the client runs /memories). Default off — rewrites a
+    // client tool named `memory` to the {name,type} descriptor + forces the context-management beta.
     server_tool_memory: nullableBoolean(),
     cache_control: nullableEnum(["disabled", "passthrough", "sanitize", "proxied"] as const),
     // Extended prompt-cache TTL (extended-cache-ttl-2025-04-11). Upgrades the cache_control breakpoints

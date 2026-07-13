@@ -6,7 +6,7 @@
  * - Applies tool_search / defer_loading based on model capabilities
  * - Ensures all custom tools have input_schema
  * - Injects stubs for tools referenced in message history
- * - Strips server-side tools (web_search, etc.) when configured
+ * - Strips API-defined typed tools reactively learned as upstream-unsupported
  *
  * Must be called BEFORE sanitize — processToolBlocks (in sanitize) uses
  * the tools array to validate tool_use references in messages.
@@ -180,8 +180,8 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
 
   // Process existing tools: ensure input_schema, apply defer_loading
   for (const tool of tools) {
-    // Tools with a `type` field are API-defined (tool_search, memory, web_search) —
-    // schema is managed server-side, don't touch input_schema
+    // Tools with a `type` field are API-defined (tool_search, memory, etc.) —
+    // schema is predefined, don't touch input_schema
     const normalized = tool.type ? tool : ensureInputSchema(tool)
 
     // Respect explicit defer_loading: false from retry strategies (deferred-tool-retry
@@ -313,15 +313,23 @@ export function preprocessTools(payload: MessagesPayload): MessagesPayload {
 // ============================================================================
 
 /**
- * Server tool type prefixes recognized by the Anthropic API.
+ * API-defined typed-tool prefixes recognized by the Anthropic API.
  *
- * Server tools use a `type` field with a dated suffix (e.g., "web_search_20250305")
- * instead of `input_schema`. These are executed by Anthropic's servers, not by the client.
+ * These tools declare a `type` field with a dated suffix (e.g. "web_search_20250305")
+ * instead of `input_schema` — the schema is predefined by Anthropic. This is a
+ * distinct category from custom function tools (which carry `input_schema`).
+ *
+ * NOTE — being API-defined does NOT mean server-executed. Two sub-kinds share this
+ * prefix set: server-executed tools (web_search / web_fetch / code_execution, which
+ * emit `server_tool_use` and are run on Anthropic's servers) AND client-executed
+ * builtin tools (text_editor / computer / bash, which emit a plain `tool_use` +
+ * `caller:{type:"direct"}` and are run by the client — like `memory`). See ADR
+ * docs/decisions/2026-07-13-server-tool-positioning-and-web-search-retirement.md.
  *
  * Source: @anthropic-ai/sdk ContentBlock / Tool union types.
  */
 // prettier-ignore
-const SERVER_TOOL_TYPE_PREFIXES = [
+const API_DEFINED_TOOL_TYPE_PREFIXES = [
   "web_search_",
   "web_fetch_",
   "code_execution_",
@@ -330,10 +338,10 @@ const SERVER_TOOL_TYPE_PREFIXES = [
   "bash_",
 ]
 
-/** Check if a tool's type field matches a known server tool prefix. */
-export function isServerToolType(type: string | undefined): boolean {
+/** Check whether a tool's `type` matches a known API-defined typed-tool prefix (NOT necessarily server-executed — see above). */
+export function isApiDefinedToolType(type: string | undefined): boolean {
   if (!type) return false
-  return SERVER_TOOL_TYPE_PREFIXES.some((prefix) => type.startsWith(prefix))
+  return API_DEFINED_TOOL_TYPE_PREFIXES.some((prefix) => type.startsWith(prefix))
 }
 
 /**
@@ -363,7 +371,7 @@ export function stripServerTools(tools: Array<Tool> | undefined, model: string, 
 
   for (const tool of tools) {
     const matchesLearned = [...learned].some((prefix) => (tool.type ?? "").startsWith(prefix))
-    if (isServerToolType(tool.type) && matchesLearned) {
+    if (isApiDefinedToolType(tool.type) && matchesLearned) {
       consola.warn(`[DirectAnthropic] Stripping server tool: ${tool.name} (type: ${tool.type})`)
       continue
     }

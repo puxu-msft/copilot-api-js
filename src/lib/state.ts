@@ -210,11 +210,12 @@ export interface State {
   readonly toolSearchOverrides: Record<string, boolean>
 
   /**
-   * Anthropic memory tool (native `memory_20250818` server tool). When `memoryToolEnabled` (master
-   * switch, default OFF — CAPI acceptance of the server-tool type is unverified) AND the model supports
-   * memory (`memoryModels`, mirrors GHC modelSupportsMemory), a client tool named `memory` is rewritten
-   * to `{name:"memory", type:"memory_20250818"}` and the `context-management-2025-06-27` beta is forced.
-   * Off → the tool passes through as an ordinary custom tool.
+   * Anthropic memory tool (native `memory_20250818` — a client-EXECUTED typed tool, NOT a server
+   * tool: the model drives view/create commands, the client runs `/memories` and feeds results back).
+   * When `memoryToolEnabled` (master switch, default OFF — CAPI acceptance of the typed descriptor is
+   * unverified) AND the model supports memory (`memoryModels`, mirrors GHC modelSupportsMemory), a
+   * client tool named `memory` is rewritten to `{name:"memory", type:"memory_20250818"}` and the
+   * `context-management-2025-06-27` beta is forced. Off → the tool passes through as an ordinary custom tool.
    */
   readonly memoryToolEnabled: boolean
   readonly memoryModels: ReadonlyArray<string>
