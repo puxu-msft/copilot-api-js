@@ -33,10 +33,11 @@
 
 ### 组件（vendor 无关核心 + Anthropic 场景）
 
-- **`serveInProcess()`**：把 `createFullTestApp()` 塞进 `Bun.serve({ port: 0 })` → 拿临时端口 + `baseURL`；返回 `{ baseURL, close() }`，teardown 关闭。同进程，无跨进程开销。
-- **上游屏蔽（host-scoped fetch-mock）**：复用 `setUpstreamFetchForTests`，但 mock 处理器**只拦上游 GHC host**、**放行 SDK→localhost proxy 的真实 HTTP**（否则同进程 fetch-mock 会误伤 SDK 自己的请求→自锁）。这是本轮**唯一真实未知**，作为骨架 smoke 第一步坐实。
-- **脚本化上游 SSE fixture（`upstream-script.ts`）**：复用 golden 测试既有 SSE 帧 builder（`ev()`/`messageStart()`/…），把一段上游响应脚本喂给 fetch-mock（Tier 2 时同一脚本喂 hook 模块——共用格式）。
-- **真实 SDK 客户端**：`new Anthropic({ baseURL, apiKey: "x" })` → `client.messages.stream(...)` / `.create(...)`；断言 SDK 侧可观测结果（拼装的 final message、流事件序列、抛出的 `APIError`、是否缺块）。
+- **`serveInProcess()`**：把 `createFullTestApp()` 塞进 `Bun.serve({ fetch: app.fetch, port: 0 })` → 内核分配临时端口，**从 `server.port` 动态读**构造 `baseURL`；返回 `{ baseURL, close() }`，teardown 关闭。同进程、无跨进程开销。注记：① `Bun.serve` 默认 `idleTimeout` 10s——Tier1 脚本化流够快无碍，慢流场景需显式抬高；② 该 app 注册了 History WebSocket 路由，裸 `Bun.serve`（无 `websocket` handler）不会 upgrade——**Tier1 SDK 场景不覆盖 WS 路由**，WS/Tier2 另行。
+- **上游屏蔽（上游专用注入点，非全局 fetch-mock）**：**直接 `setUpstreamFetchForTests(upstreamScriptHandler)`**——该 primitive 替换 `upstream-fetch.ts` 的模块级 `activeUpstreamFetch`，**只被 `upstreamFetch()`（proxy→GHC 唯一出口）调用**，**全程不碰 `globalThis.fetch`**。故真实 SDK 的 `globalThis.fetch`（`@anthropic-ai/sdk` 默认 fetch）打 localhost proxy 走真实 HTTP、proxy→GHC 走注入 handler，**两条路天然隔离、无需 host-scoping/passthrough**。**绝不复用 golden 的 `applyFetchMock`/`setFetchMock`**（那俩装 `globalThis.fetch = mock` 会误伤 SDK 自己的请求→自锁；golden 用它无害只因走 `app.request()` 无真实 SDK）。可选第三重保险 `new Anthropic({ fetch })`（本轮不必）。**（原「host-scoped 唯一未知」经代码核实为表述错位——见「待确认」节修订）**
+- **脚本化上游 SSE fixture（`upstream-script.ts`）**：复用 golden 既有 SSE 帧 builder（`ev()`/`messageStart()`/…），把一段上游响应脚本包成 `UpstreamFetchFn` handler（返回 SSE `Response`）喂给 `setUpstreamFetchForTests`。**Tier1/Tier2 共用同一脚本格式**（Tier2 改喂 hook 模块）——「接入点预留」的具体结构约束、非口号。
+- **config/state（camelCase state 键 + 状态卫生）**：场景所需 config 经 **`setStateForTests`（camelCase state 键，如 `refusalSseRewrite`/`refusalEndTurnText`，**非** YAML 键 `refusal_sse_rewrite`）** 设置。`setStateForTests` 是 **MERGE 不 reset**：进程全局 `~/lib/state` 下场景**串行**，每场景 `beforeEach` 复位 refusal 三键（`refusalSseRewrite`/`refusalEndTurnText`/`refusalErrorMessage`/`refusalErrorType`）+ 依赖 `useIsolatedRuntime` per-test 隔离，防前一场景 config 泄漏。
+- **真实 SDK 客户端**：`new Anthropic({ baseURL, apiKey: "x", maxRetries: 0 })` → `client.messages.stream(...)`（`.finalMessage()` / event handlers）/ `.create(...)`；断言 SDK 侧可观测结果（拼装 final message、流事件序列、抛 `APIError`、是否缺块）。`maxRetries:0` 固定 + 「upstream handler 调用次数」作重试的独立 oracle。
 
 ### 安全红线（承重，来自 CLAUDE.md `protect-user-main-server`）
 
@@ -47,8 +48,8 @@
 ```
 tests/e2e-client/
   harness/
-    serve-in-process.ts     # Bun.serve(app, port:0) + baseURL + close()
-    upstream-script.ts      # 脚本化上游 SSE fixture → host-scoped fetch-mock（Tier2 共用喂 hook）
+    serve-in-process.ts     # Bun.serve(app.fetch, port:0) + server.port→baseURL + close()
+    upstream-script.ts      # 脚本化上游 SSE fixture → setUpstreamFetchForTests handler（Tier2 共用喂 hook）
   anthropic-sdk.e2e.test.ts # Tier1 Anthropic 场景集
   # (Tier2 anthropic-cli.e2e.test.ts —— 延后，接入点预留)
 ```
@@ -57,37 +58,41 @@ tests/e2e-client/
 
 | 场景 | oracle 断言（客户端可观测，非我方字节） |
 |---|---|
-| eventless 帧被 SDK 丢弃 | 上游给一个缺 `event:` 行的 data 帧 → 断言 SDK 拼装**缺**该块（正向反证 `anthropicSseFrame` 契约存在必要性；守 [sse-frame.ts](../../src/lib/anthropic/sse-frame.ts)） |
-| refusal `end_turn` 模式 | 上游 thinking-only refusal + `refusal_sse_rewrite:end_turn` → SDK 拼出含 recovery text 的完整 turn、`stop_reason:"end_turn"`、无异常 |
-| refusal `error` 模式 | 同上游 + `error` 模式 → SDK **`throw APIError`**、不自动重试 |
-| refusal 空串 end_turn | `refusal_end_turn_text:""` + `end_turn` → SDK 无错拼出 thinking + **无 text 块** + `end_turn`（stall 终裁属 Tier 2） |
-| 200 + 流内 SSE error | 上游 200 后发 `event: error` → SDK `throw APIError` 而非静默截断成 complete |
-| tool_use 拼装 | 上游 tool_use 流 → SDK final message 正确含 `tool_use` block + input JSON |
-| thinking 拼装 | 上游 thinking + signature_delta → SDK 正确拼出 thinking block（signature 保真） |
+| eventless 帧被 SDK 丢弃 | **纯直通** stream（不激活 refusal/decode/recover，否则 `anthropicSseFrame` 会补 event 行）+ 上游 script **手写**一个无 `event:` 行、只 `data:` 的帧（共享 builder `anthropicSseFrame` 总写 event 行，须绕过手写）→ SDK final message **缺**该块（正控对照：同流带 event 行 → 块存在；守 [sse-frame.ts](../../src/lib/anthropic/sse-frame.ts) 契约必要性；注：该帧仍进 history accumulate，oracle 是 SDK 缺块非 history 缺） |
+| refusal `end_turn` 模式 | 上游 thinking-only refusal + `refusalSseRewrite:"end_turn"` → SDK 拼出含 recovery text 的完整 turn、`stop_reason:"end_turn"`、无异常 |
+| refusal `error` 模式 | 同上游 + `refusalSseRewrite:"error"` → SDK **`throw APIError`**；**不重试**的独立 oracle = upstream handler **调用次数 == 1**（`maxRetries:0`），非仅凭「未见重试」 |
+| refusal 空串 end_turn | `refusalEndTurnText:""` + `end_turn` → SDK 无错拼出 thinking + **无 text 块** + `end_turn`（stall 终裁属 Tier 2） |
+| 200 + 流内 SSE error | 上游 200 后发 `event: error` → SDK **同步 throw** `APIError`（**实测坐实，非凭文档**）而非静默截断成 complete |
+| tool_use 拼装 | 上游 tool_use 流（`input_json_delta` 分片）→ SDK final message 的 `tool_use.input` **深等于**期望对象（证 partial_json 拼接 + SDK JSON.parse 成功，超出字节层） |
+| thinking 拼装 | 上游 thinking + signature_delta → SDK 累积后 thinking block 的 **`signature` 字段保真**（证 signature_delta 被正确 accumulate，超出字节层） |
 
 ## 依赖与既有基建复用
 
 - `@anthropic-ai/sdk` 0.106.0 已装（本轮 Tier 1）；`openai`/`@google/genai` 已装（后续 vendor）。
-- `createFullTestApp`（全路由真实 proxy app）、`setUpstreamFetchForTests`/`applyFetchMock`（fetch-mock 基建）、golden 的 SSE builder——全复用，不重造。
+- `createFullTestApp`（全路由真实 proxy app）、`setUpstreamFetchForTests`（上游专用注入点）、golden 的 SSE builder——全复用，不重造。**`applyFetchMock`/`setFetchMock` 明确不用**（globalThis.fetch 桥、会误伤 SDK）。
 - `claude` 2.1.207 已在 PATH（Tier 2 用，本轮不触）。
 
 ## 测试策略（骨架自身如何被信任）
 
 - **正样本对照**：每个「SDK 丢帧/throw」的否定性断言，先用一个**正常帧**证 SDK 在该 harness 下能正确拼装/不 throw（证 harness 真的驱动了 SDK、断言触达目标），再断言坏 case——对齐 `verifying-authoritative-claims`「否定断言不自证」。
-- **fetch-mock 隔离验证**：smoke 第一步显式断言 SDK→proxy 的 localhost 请求真实发出（未被 mock 误吞）、且上游 GHC 请求确被拦（proxy 没真打 GHC）。
-- **确定性**：无真实网络、无 sleep；流式场景用脚本化帧序，必要时连跑多次证时序确定。
+- **隔离验证**（smoke 第一步）：断言 SDK→proxy 的 localhost 请求真实发出（`globalThis.fetch` 未被碰）+ **upstream handler 恰被调 N 次**（proxy 没真打 GHC、且重试计数可查）。
+- **确定性**：无真实网络、无 sleep；流式场景用脚本化帧序，200+SSE-error 的「同步 throw」等 SDK 行为**实测坐实**、必要时连跑多次证时序确定。
 
 ## 待确认/未知
 
-1. **host-scoped fetch-mock 隔离**（唯一真实未知）：同进程下 mock 只拦上游 GHC host、放行 localhost proxy。骨架 smoke 第一步坐实（若 `setUpstreamFetchForTests` 的 mock 无法按 host 分流，退路=在 mock 处理器内按 URL host 判断 `realFetch` passthrough）。
-2. **SDK 流式 API 形状**：`client.messages.stream()` 的事件/final-message 取法（`.finalMessage()` / event handlers）——实现时对齐 0.106.0 API。
+1. **上游屏蔽隔离**（原「唯一未知」，**经代码核实为无风险、已修订**）：`setUpstreamFetchForTests` 替换 `activeUpstreamFetch`（仅 `upstreamFetch()` 用），**不碰 `globalThis.fetch`**；SDK 默认走 `globalThis.fetch` → 两条路天然隔离，**无需 host-scoping/passthrough**。smoke 第一步坐实「SDK 真打 localhost + upstream handler 恰被调 N 次」即可，无隔离逻辑要建。
+2. **SDK 200+mid-stream `event: error` 是否同步 throw**（需实测）：`client.messages.stream()` 遇流内 error 帧是否 `throw APIError`（而非静默 finalMessage）——正样本对照 + 实测坐实，别凭文档（empirical-verification）。
+3. **SDK 流式 API 形状**：`.finalMessage()` / event handlers 取法——实现时对齐 0.106.0 `MessageStream` API。
 
 ## 验收标准
 
-1. `serveInProcess()` 起真实 proxy app 于临时端口，真实 `@anthropic-ai/sdk` 经 `baseURL` 打通，上游 GHC 被 mock 屏蔽（smoke 证 localhost 放行 + GHC 拦截）。
-2. 场景集全部以**客户端可观测行为**为 oracle（SDK 拼装结果 / 抛错 / 缺块），非断言我方字节。
+1. `serveInProcess()` 起真实 proxy app 于临时端口（`server.port` 动态 baseURL），真实 `@anthropic-ai/sdk` 经 `baseURL` 打通，上游 GHC 被 `setUpstreamFetchForTests` handler 屏蔽（smoke 证 SDK 真打 localhost + upstream handler 恰被调 N 次；`globalThis.fetch` 未被碰）。
+2. 场景集全部以**客户端可观测行为**为 oracle（SDK 拼装结果 / 抛错 / 缺块 / input 深等值 / signature 保真），非断言我方字节。
 3. 每个否定性断言有正样本对照证 harness 触达目标。
-4. refusal `error` 模式场景证 SDK `throw APIError`；`end_turn`/空串场景证 SDK 无错拼装。
+4. refusal `error` 模式证 SDK `throw APIError` **且 upstream handler 调用次数==1**（`maxRetries:0`）；`end_turn`/空串场景证 SDK 无错拼装。
 5. eventless-帧场景证 SDK 丢弃（守 `anthropicSseFrame` 必要性）。
-6. 骨架 vendor 无关：新增 openai/gemini 或 CLI Tier 2 无需重构核心（接入点预留、文件结构支持）。
-7. 全程不触 4141；同进程 `port:0`。
+6. 全程不触 4141；同进程 `port:0`。
+
+## 设计意图（非本轮验收标准，待第二 vendor / Tier 2 接入时验证）
+
+- **vendor 无关接缝**：`upstream-script.ts` 脚本格式与 `serveInProcess` 的 baseURL 契约设计成 Tier1/Tier2 + 多 vendor 共用；新增 openai/gemini SDK 或 CLI Tier 2 不应重构核心。本轮只落 Anthropic，故该断言**不可证伪**、列为设计意图而非验收——待第二 vendor 接入时以「加一条 OpenAI happy-path 无需改核心」实证。
