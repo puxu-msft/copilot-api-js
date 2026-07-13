@@ -683,6 +683,28 @@ const enableVision = messages.some((msg) => {
 
 ---
 
+## 轮次 18（2026-07-13）：image source 变体 + model 解析 —— 双确认无 gap（F23 是唯一 image 缺口）
+
+> 延续 F23 的内容块主题，查 image source 变体与 model 解析两个相邻面。结论**双确认**（无新缺陷），如实记录。
+
+### F24-a（确认）— image source：CC 只发 base64，url/file 仅翻译矩阵可达
+
+**判断（读码）**：CC 2.1.207 图像**只发 `source:{type:"base64", media_type, data}`**（顶层 22342 + tool_result 内嵌 281134，均 base64）；client 侧已解码/内联为 base64 再上线。`source==="url"` 的 CC 命中（179750 等）是 **marketplace/plugin 源、非图像**（红鲱鱼）。
+- **CC 侧**：本项目转发 base64 → 无 source-变体 gap；唯一 image 缺口是 **F23**（vision 检测漏 tool_result 内嵌）。
+- **url/file source 仅翻译矩阵可达**：OpenAI 客户端 http `image_url` → 本项目 [cc-to-anthropic-request.ts:225-230](../../src/lib/openai/translate/cc-to-anthropic-request.ts#L225) 译成 Anthropic `source:{type:"url"}`（data-uri 则 base64）。**残余风险（非 CC，记档）**：GHC 是否支持 url-source 图像（需服务端 fetch）未证——若不支持，翻译矩阵的 http-url 图像会失败。**待实测**（并入 GHC 探针批次）：GHC 对 `source:{type:"url"}` 的支持；不支持则翻译矩阵应先 fetch→base64 内联。
+
+### F24-b（确认）— model 解析完备，CC 客户端侧解析别名后才发真实 id
+
+**判断（读码）**：本项目 [resolveModelName](../../src/lib/models/resolver.ts#L163) **完备**——`[1m]`→`-1m`（213）、whole-name override、modifier 后缀（`-1m`/`-fast`，normalize-id.ts:59）、alias/hyphen-dot/date 归一、链式 override（sonnet→opus→claude-opus-4.6-1m）。`-1m`/`-fast` 按**独立 catalog 模型**处理（request-preparation.ts:903 per-`-1m` effort 白名单 = 已对 GHC 真 catalog 校准的证据）。
+- **CC 别名客户端侧解析**：CC 的 `default`/`sonnet`/`opus`/**`opusplan`**/`opusplan[1m]`（57263/62695）等别名在**发请求前**由 CC 解析成真实 model id（62698 `FG("opus[1m]")`）→ **代理见到的是真实 id、非别名** → 本项目无需认 `opusplan`（grep 零命中不是 gap）。
+- **新模型 catalog 驱动**：`claude-mythos-5` / `claude-fable-5`（Claude 5 家族，57263）本项目不硬编码 → 走 GHC 活 `/models` catalog 动态解析 → GHC 服务则通、不服务则正确报未知。无 gap。
+
+### 本轮结论
+
+image source（CC base64-only）与 model 解析（[1m]/别名/date/链式，catalog 校准，CC 客户端侧解析别名）**双双无 CC gap**。唯一记档是**翻译矩阵**的 url-source 图像 GHC 支持性待探针（F24-a，非 CC 路径）。F23 仍是唯一 image 缺口。本项目 model 解析与 image 转发子系统**成熟**。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
