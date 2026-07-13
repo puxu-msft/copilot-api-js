@@ -99,7 +99,7 @@ describe("RequestContext.recordFeature", () => {
 
   test("omits detail field when undefined", () => {
     const { ctx, events } = setup()
-    ctx.recordFeature("truncated")
+    ctx.recordFeature("via-responses")
     if (events[0].kind === "request.feature_applied") {
       // `detail` should be absent (not undefined) on the published object.
       expect("detail" in events[0]).toBe(false)

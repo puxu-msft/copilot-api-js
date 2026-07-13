@@ -5,16 +5,11 @@ import pc from "picocolors"
 
 import {
   //
-  checkNeedsCompactionAnthropic,
-  countTotalInputTokens,
-} from "~/lib/anthropic/auto-truncate"
-import {
-  //
   postAnthropicUpstream,
   prepareAnthropicRequest,
 } from "~/lib/anthropic/client"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
-import { hasKnownLimits } from "~/lib/auto-truncate"
+import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
 import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import {
   //
@@ -162,24 +157,6 @@ export async function handleCountTokens(c: Context) {
       payload = runAnthropicPayloadRewrites(rawPayload, { toolNameMapper: null }).payload
     } catch (error) {
       consola.warn("[count_tokens] payload sanitize failed — counting the raw payload:", error)
-    }
-
-    // Auto-truncate inflation check (moved to the front): if a prompt is over the
-    // limit and auto-truncate is on, return an inflated count to encourage
-    // Claude Code auto-compact. This is independent of the counting channel and
-    // saves a doomed-to-inflate upstream round-trip. Only for models with known
-    // limits.
-    if (state.autoTruncate && selectedModel && hasKnownLimits(selectedModel.id)) {
-      const truncateCheck = await checkNeedsCompactionAnthropic(payload, selectedModel, {
-        checkTokenLimit: true,
-      })
-
-      if (truncateCheck.needed) {
-        const contextWindow = selectedModel.capabilities?.limits?.max_context_window_tokens ?? 200000
-        const inflatedTokens = Math.floor(contextWindow * 0.95)
-        emitLine(payload.model, inflatedTokens, `inflated ${truncateCheck.currentTokens}>${truncateCheck.tokenLimit}, compact`)
-        return c.json({ input_tokens: inflatedTokens })
-      }
     }
 
     // Model not in the account catalog — nothing to count against locally

@@ -124,8 +124,6 @@ export interface AttemptSnapshot {
 
 /** Feature kinds — replaces the legacy `tags: string[]` escape hatch. */
 export type FeatureKind =
-  /** auto-truncate ran */
-  | "truncated"
   /**
    * Thinking mode as a per-request terminal dimension —
    * `detail: { requested?: string, effective: string }`. `effective` is the

@@ -21,7 +21,7 @@ import {
   filterAnthropicOrphanedToolUse,
   getAnthropicToolResultIds,
   getAnthropicToolUseIds,
-} from "~/lib/anthropic/auto-truncate"
+} from "~/lib/anthropic/message-tool-utils"
 import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
 import {
   //

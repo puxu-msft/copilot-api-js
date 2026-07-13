@@ -102,7 +102,7 @@ interface ActiveRequest {
   streamBytesIn?: number
   streamEventsIn?: number
   streamBlockType?: string
-  /** Features applied to this request (e.g. "truncated", "beta-strip:..."). */
+  /** Features applied to this request (e.g. "beta-stripped", "via-responses"). */
   tags: Array<string>
   /**
    * Thinking as a terminal dimension (NOT an accumulated tag): `requested` is
@@ -1220,7 +1220,6 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
     case "stream-upstream-resolved": {
       return undefined
     }
-    case "truncated":
     case "via-chat-completions-fallback":
     case "via-responses":
     case "dropped-params": {

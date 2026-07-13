@@ -30,7 +30,6 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import type { AnthropicAutoTruncateResult } from "~/lib/anthropic/auto-truncate"
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { SanitizationStats } from "~/lib/anthropic/sanitize"
 import type {
@@ -141,8 +140,6 @@ import {
   buildAnthropicResponseData,
   buildOpenAIResponseData,
   buildResponsesResponseData,
-  createTruncationMarker,
-  prependMarkerToResponse,
 } from "~/lib/request"
 import { state } from "~/lib/state"
 import { processAnthropicSystem } from "~/lib/system-prompt"
@@ -310,9 +307,6 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     rewriteShutdownAbort: true,
   })
 
-  // Truncation result for the response marker (captured from onMeta, post-gate).
-  let truncateResult: AnthropicAutoTruncateResult | undefined
-
   const driver = createPipelineDriver({
     codec,
     transport,
@@ -330,13 +324,10 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
     // Post-gate meta sink (C0-② / RFC §11.2 + §12.4): rebuild the retry pipeline-info
-    // from the accepted retry's meta (sanitization / strippedBetas / probedBetas /
-    // truncateResult) + the codec's sampleRequest-captured effective body. Only
-    // fires after the budget gate accepts the retry — a budget-rejected retry never
-    // emits phantom pipeline-info.
+    // from the accepted retry's meta (sanitization / strippedBetas / probedBetas) +
+    // the codec's sampleRequest-captured effective body. Only fires after the budget
+    // gate accepts the retry — a budget-rejected retry never emits phantom pipeline-info.
     onMeta: (meta, metaEnv) => {
-      const rtr = meta.truncateResult as AnthropicAutoTruncateResult | undefined
-      if (rtr) truncateResult = rtr
       recordRetryPipelineStateV4({ meta, env: metaEnv, codec, preprocessInfo })
     },
   })
@@ -410,7 +401,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // Non-streaming: render the real HTTP status with the upstream-decided body.
       try {
         const resp = driver.runResponseNonStreaming(upstream, env) as AnthropicMessageResponse
-        return renderNonStreamingV4(c, driver, env, resp, truncateResult, upstream.headers)
+        return renderNonStreamingV4(c, driver, env, resp, upstream.headers)
       } finally {
         detachClientAbort()
       }
@@ -623,8 +614,7 @@ interface RecordRetryPipelineStateV4Args {
  *     makes it the retry's body). (The `thinking` feature is NOT rebuilt here — it
  *     is emitted per-attempt by `prepareWire` as a terminal `{requested, effective}`
  *     dimension; see codec.ts / observability console sink.)
- *   - sanitization / strippedBetas / probedBetas / truncateResult ← `meta`
- *     (onMeta, post-gate).
+ *   - sanitization / strippedBetas / probedBetas ← `meta` (onMeta, post-gate).
  */
 function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void {
   const { meta, codec, preprocessInfo } = args
@@ -638,7 +628,6 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
   const retrySanitization = meta.sanitization as SanitizationStats | undefined
   const allSanitization = [...(initialSanitizationInfo ? [initialSanitizationInfo] : []), ...(retrySanitization ? [toSanitizationInfo(retrySanitization)] : [])]
 
-  const retryTruncateResult = meta.truncateResult as AnthropicAutoTruncateResult | undefined
   const retryMessageMapping =
     baseline && effectiveMessages ? buildMessageMapping(baseline.messages, effectiveMessages as MessagesPayload["messages"]) : undefined
 
@@ -646,25 +635,15 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
   ctx.setPipelineInfo({
     preprocessing: preprocessInfo,
     sanitization: allSanitization,
-    truncation:
-      retryTruncateResult ?
-        {
-          wasTruncated: true,
-          removedMessageCount: retryTruncateResult.removedMessageCount,
-          originalTokens: retryTruncateResult.originalTokens,
-          compactedTokens: retryTruncateResult.compactedTokens,
-          processingTimeMs: retryTruncateResult.processingTimeMs,
-        }
-      : undefined,
     ...(retryMessageMapping && { messageMapping: retryMessageMapping }),
     ...(strippedCacheControl?.length && { cacheControlStripped: [...strippedCacheControl] }),
   })
 
-  // Sticky feature tag for the accepted retry. Beta-strip and truncation are
-  // NOT exhaustive — many strategies (server-tool / structured-outputs /
-  // body-field / deferred-tool / legacy-thinking / network / token-refresh)
-  // emit meta with neither signal, and must NOT be branded `truncated`.
-  const retryFeature = retryMetaFeature(meta, retryTruncateResult !== undefined)
+  // Sticky feature tag for the accepted retry. Beta-strip is NOT exhaustive — many
+  // strategies (server-tool / structured-outputs / body-field / deferred-tool /
+  // legacy-thinking / network / token-refresh) emit meta with no signal, and must
+  // NOT be branded with a feature.
+  const retryFeature = retryMetaFeature(meta)
   if (retryFeature) ctx.recordFeature(retryFeature.feature, retryFeature.detail)
 }
 
@@ -717,16 +696,10 @@ function renderNonStreamingV4(
   driver: ReturnType<typeof createPipelineDriver>,
   env: RequestEnvelope,
   response: AnthropicMessageResponse,
-  truncateResult: AnthropicAutoTruncateResult | undefined,
   upstreamHeaders: Headers,
 ): Response {
   const reqCtx = env.ctx
   let finalResponse = response
-
-  if (state.verbose && truncateResult?.wasTruncated) {
-    const marker = createTruncationMarker(truncateResult)
-    finalResponse = prependMarkerToResponse(response, marker)
-  }
 
   finalResponse = driver.runResponseWhole(finalResponse, env) as AnthropicMessageResponse
 

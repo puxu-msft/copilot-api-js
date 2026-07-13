@@ -2,13 +2,14 @@
  * Debug API — offline diagnostics that replay real pipeline functions without
  * sending anything upstream.
  *
- * `POST /api/debug/dry-run-truncate` replays the auto-truncate path against a
- * payload (passed inline or pulled from a stored history entry), short-circuiting
- * the GHC call. It returns the three token calibers side-by-side — gpt-tokenizer
- * (what truncate compares against), char/4 (the legacy strategy estimate), and the
- * upstream-reported Anthropic/OpenAI count — plus the pre-check verdict and the
- * real truncation result. This makes the caliber mismatch (gpt ≈ ½ of the
- * upstream-reported count for Claude models) directly observable offline.
+ * `POST /api/debug/calibration-probe` reports the local token-count calibration for
+ * a payload (passed inline or pulled from a stored history entry), short-circuiting
+ * any GHC call. It returns the raw gpt-tokenizer estimate, the calibrated estimate
+ * (`calibrate()` — the learned size-aware factor applied), the factor at that size,
+ * and the model's learned-limits state (live sample count + per-bucket factor model).
+ * When replaying a failed history entry it also surfaces the upstream-reported real
+ * token count (parsed from the 400 error), making the local-vs-upstream caliber gap
+ * directly observable offline.
  */
 
 import {
@@ -22,21 +23,17 @@ import type { Model } from "~/lib/models/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
+import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
 import {
   //
-  autoTruncateAnthropic,
-  checkNeedsCompactionAnthropic,
-  countTotalTokens,
-} from "~/lib/anthropic/auto-truncate"
+  calibrate,
+  factorAt,
+  getLearnedLimits,
+} from "~/lib/auto-truncate"
 import { parseTokenLimitError } from "~/lib/error"
 import { getEntry } from "~/lib/history"
 import { resolveModelName } from "~/lib/models/resolver"
 import { getTokenCount } from "~/lib/models/tokenizer"
-import {
-  //
-  autoTruncateOpenAI,
-  checkNeedsCompactionOpenAI,
-} from "~/lib/openai/auto-truncate"
 import { state } from "~/lib/state"
 
 import { handleDryRunPipeline } from "./dry-run-pipeline"
@@ -49,7 +46,7 @@ export const debugRoutes = new OpenAPIHono()
 // but is intentionally absent from the OpenAPI document.
 debugRoutes.post("/dry-run-pipeline", handleDryRunPipeline)
 
-const DryRunSchema = z
+const CalibrationProbeSchema = z
   .object({
     /** Replay a stored history entry by id (uses its inboundRequest payload). */
     entryId: z.string().min(1).optional(),
@@ -57,8 +54,6 @@ const DryRunSchema = z
     payload: z.record(z.string(), z.unknown()).optional(),
     /** Format of the inline payload (ignored for entryId, derived from the entry). */
     format: z.enum(["anthropic", "openai"]).optional(),
-    /** Explicit gpt-caliber target token limit; when omitted it is derived from the reported limit. */
-    target: z.number().positive().nullable().optional(),
   })
   .strict()
 
@@ -67,7 +62,7 @@ interface ReportedTokens {
   limit: number
 }
 
-interface DryRunResolved {
+interface ProbeResolved {
   payload: Record<string, unknown>
   format: "anthropic" | "openai"
   model: Model
@@ -75,8 +70,8 @@ interface DryRunResolved {
   reported: ReportedTokens | null
 }
 
-/** Resolve the dry-run input into a concrete payload + model, or an error response. */
-function resolveInput(body: z.infer<typeof DryRunSchema>): DryRunResolved | { error: string; status: 400 | 404 } {
+/** Resolve the probe input into a concrete payload + model, or an error response. */
+function resolveInput(body: z.infer<typeof CalibrationProbeSchema>): ProbeResolved | { error: string; status: 400 | 404 } {
   let payload: Record<string, unknown>
   let format: "anthropic" | "openai"
   let reported: ReportedTokens | null = null
@@ -103,9 +98,9 @@ function resolveInput(body: z.infer<typeof DryRunSchema>): DryRunResolved | { er
   if (!clientModel) return { error: "Payload is missing a `model` field", status: 400 }
 
   // The payload is untrusted (inline) or only loosely typed (history entry). The
-  // tokenize/truncate functions iterate `messages`/`content`/`system`, so a minimal
-  // structural guard turns the common malformed-input case into a clean 400 instead
-  // of an uncaught TypeError → 500. Deeper block-shape errors are caught at replay time.
+  // tokenize functions iterate `messages`/`content`/`system`, so a minimal structural
+  // guard turns the common malformed-input case into a clean 400 instead of an uncaught
+  // TypeError → 500. Deeper block-shape errors are caught at replay time.
   if (!Array.isArray(payload.messages)) return { error: "Payload `messages` must be an array", status: 400 }
 
   const resolvedModel = resolveModelName(clientModel)
@@ -117,22 +112,22 @@ function resolveInput(body: z.infer<typeof DryRunSchema>): DryRunResolved | { er
 
 const ErrorSchema = z.record(z.string(), z.unknown())
 
-const dryRunTruncateRoute = createRoute({
+const calibrationProbeRoute = createRoute({
   method: "post",
-  path: "/dry-run-truncate",
+  path: "/calibration-probe",
   tags: ["debug"],
-  summary: "Offline auto-truncate replay (three token calibers + result)",
-  // Body validated by the handler (DryRunSchema), not the OpenAPI layer, so its
+  summary: "Offline token-count calibration probe (raw vs calibrated + learned state)",
+  // Body validated by the handler (CalibrationProbeSchema), not the OpenAPI layer, so its
   // bespoke 400/404 envelopes are preserved.
-  description: "Body: { entryId } or { payload, format? } (+ optional gpt-caliber `target`). Replays the real truncate path, short-circuiting the GHC call.",
+  description: "Body: { entryId } or { payload, format? }. Reports the raw gpt-tokenizer estimate, the calibrated estimate, the learned factor, and the model's learned-limits state.",
   responses: {
-    200: { description: "Caliber comparison + pre-check + truncation result", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    200: { description: "Raw vs calibrated estimate + learned factor model", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid input", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "History entry not found", content: { "application/json": { schema: ErrorSchema } } },
   },
 })
 
-debugRoutes.openapi(dryRunTruncateRoute, async (c) => {
+debugRoutes.openapi(calibrationProbeRoute, async (c) => {
   let raw: unknown
   try {
     raw = await c.req.json()
@@ -140,7 +135,7 @@ debugRoutes.openapi(dryRunTruncateRoute, async (c) => {
     return c.json({ error: "Invalid JSON body" }, 400)
   }
 
-  const parsed = DryRunSchema.safeParse(raw)
+  const parsed = CalibrationProbeSchema.safeParse(raw)
   if (!parsed.success) {
     return c.json({ error: "Invalid request", details: parsed.error.issues }, 400)
   }
@@ -153,55 +148,17 @@ debugRoutes.openapi(dryRunTruncateRoute, async (c) => {
   const { payload, format, model, resolvedModel, reported } = resolved
 
   try {
-    // Caliber 1: gpt-tokenizer (the caliber truncate compares against internally).
-    const gptTokenizer =
+    // Raw gpt-tokenizer estimate — the INPUT-ONLY caliber the calibration model is
+    // trained on (excludes prior-turn thinking, matching upstream `usage.input_tokens`).
+    const rawInputTokens =
       format === "anthropic" ?
-        await countTotalTokens(payload as unknown as MessagesPayload, model)
+        await countTotalInputTokens(payload as unknown as MessagesPayload, model)
       : (await getTokenCount(payload as unknown as ChatCompletionsPayload, model)).input
-    // Caliber 2: the legacy char/4 strategy estimate.
-    const charOver4 = Math.ceil(JSON.stringify(payload).length / 4)
 
-    // Derive the gpt-caliber target the strategy would apply (mirrors strategies/auto-truncate.ts).
-    let appliedGptTarget = parsed.data.target ?? undefined
-    if (appliedGptTarget === undefined && reported?.limit) {
-      const reportedTarget = reported.limit * state.autoTruncateTargetFactor
-      const ratio = reported.current && reported.current > 0 && gptTokenizer > 0 ? reported.current / gptTokenizer : undefined
-      appliedGptTarget = ratio !== undefined ? Math.floor(reportedTarget / ratio) : Math.floor(reportedTarget)
-    }
+    const factor = factorAt(model.id, rawInputTokens)
+    const calibrated = calibrate(model.id, rawInputTokens)
 
-    // Pre-check + real truncation, sharing the same format-specific functions the pipeline uses.
-    const truncateOpts = { checkTokenLimit: true, ...(appliedGptTarget !== undefined && { targetTokenLimit: appliedGptTarget }) }
-
-    let preCheck: { needed: boolean; currentTokens: number; tokenLimit: number; reason?: string }
-    let truncate: { wasTruncated: boolean; originalTokensGpt: number; compactedTokensGpt: number; removedMessageCount: number; processingTimeMs: number }
-
-    if (format === "anthropic") {
-      const p = payload as unknown as MessagesPayload
-      const pre = await checkNeedsCompactionAnthropic(p, model, {})
-      preCheck = { needed: pre.needed, currentTokens: pre.currentTokens, tokenLimit: pre.tokenLimit, reason: pre.reason }
-      const tr = await autoTruncateAnthropic(p, model, truncateOpts)
-      const compactedTokensGpt = tr.wasTruncated ? await countTotalTokens(tr.payload, model) : gptTokenizer
-      truncate = {
-        wasTruncated: tr.wasTruncated,
-        originalTokensGpt: gptTokenizer,
-        compactedTokensGpt,
-        removedMessageCount: tr.removedMessageCount,
-        processingTimeMs: tr.processingTimeMs,
-      }
-    } else {
-      const p = payload as unknown as ChatCompletionsPayload
-      const pre = await checkNeedsCompactionOpenAI(p, model, {})
-      preCheck = { needed: pre.needed, currentTokens: pre.currentTokens, tokenLimit: pre.tokenLimit, reason: pre.reason }
-      const tr = await autoTruncateOpenAI(p, model, truncateOpts)
-      const compactedTokensGpt = tr.wasTruncated ? (await getTokenCount(tr.payload, model)).input : gptTokenizer
-      truncate = {
-        wasTruncated: tr.wasTruncated,
-        originalTokensGpt: gptTokenizer,
-        compactedTokensGpt,
-        removedMessageCount: tr.removedMessageCount,
-        processingTimeMs: tr.processingTimeMs,
-      }
-    }
+    const learned = getLearnedLimits(model.id)
 
     return c.json(
       {
@@ -211,21 +168,32 @@ debugRoutes.openapi(dryRunTruncateRoute, async (c) => {
           format,
           resolvedModel,
         },
-        calibers: { gptTokenizer, charOver4, reported },
-        ratios: {
-          reportedOverGpt: reported && gptTokenizer > 0 ? Number((reported.current / gptTokenizer).toFixed(3)) : null,
-          charOver4OverGpt: gptTokenizer > 0 ? Number((charOver4 / gptTokenizer).toFixed(3)) : null,
+        estimate: {
+          rawInputTokens,
+          factor: Number(factor.toFixed(4)),
+          calibrated,
         },
-        limit: { effectiveLimit: preCheck.tokenLimit, appliedGptTarget: appliedGptTarget ?? null },
-        preCheck,
-        truncate,
+        // Upstream ground truth (entry mode, when the entry failed with a token-limit 400).
+        reported,
+        ratios: {
+          reportedOverRaw: reported && rawInputTokens > 0 ? Number((reported.current / rawInputTokens).toFixed(3)) : null,
+          calibratedOverRaw: rawInputTokens > 0 ? Number((calibrated / rawInputTokens).toFixed(3)) : null,
+        },
+        learned:
+          learned ?
+            {
+              liveSampleCount: learned.liveSampleCount,
+              updatedAt: learned.updatedAt,
+              buckets: learned.factorModel.buckets,
+            }
+          : null,
       },
       200,
     )
   } catch (error) {
     // Defense-in-depth: malformed block shapes inside an otherwise array-shaped
-    // payload (bad content/system/tool blocks) make the tokenizer/truncate iterate
-    // a non-iterable and throw. Surface as 400 (bad input) rather than a 500.
-    return c.json({ error: `Failed to replay truncation: ${error instanceof Error ? error.message : String(error)}` }, 400)
+    // payload (bad content/system/tool blocks) make the tokenizer iterate a
+    // non-iterable and throw. Surface as 400 (bad input) rather than a 500.
+    return c.json({ error: `Failed to probe calibration: ${error instanceof Error ? error.message : String(error)}` }, 400)
   }
 })

@@ -6,7 +6,7 @@
  * strategies keep their exact order + per-strategy logic (RFC §12.9):
  *
  *   network → token-refresh → effort-learning → body-field → legacy-thinking →
- *   adaptive-thinking-rejection → unsupported-beta → deferred-tool → auto-truncate
+ *   adaptive-thinking-rejection → unsupported-beta → deferred-tool
  *
  * **v4-only additions** — strategies absent from the legacy pipeline
  * (intentional divergence, 14 strategies total):
@@ -38,7 +38,7 @@
  * candidates for the laconic `invalid beta flag` path.
  *
  * Per-request factory: the handler builds these once per request, closing over the
- * truncation baseline (`originalPayload` = codec.getTruncateBaseline()) + the
+ * retry baseline (`originalPayload` = codec.getTruncateBaseline()) + the
  * resanitize chain (codec.getResanitize()).
  */
 
@@ -49,17 +49,10 @@ import type {
 } from "~/lib/anthropic/pipeline"
 import type { Model } from "~/lib/models/client"
 import type { RetryStrategy as EnvRetryStrategy } from "~/lib/pipeline/types"
-import type { TruncateResult } from "~/lib/request/strategies/auto-truncate"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-import {
-  //
-  autoTruncateAnthropic,
-  countTotalTokens,
-} from "~/lib/anthropic/auto-truncate"
 import { adaptLegacyStrategy } from "~/lib/pipeline/legacy-strategy-adapter"
 import { createAdaptiveThinkingRejectionRetryStrategy } from "~/lib/request/strategies/adaptive-thinking-rejection-retry"
-import { createAutoTruncateStrategy } from "~/lib/request/strategies/auto-truncate"
 import { createCacheControlSubfieldRejectionStrategy } from "~/lib/request/strategies/cache-control-subfield-rejection-retry"
 import { createBodyFieldRejectionStrategy } from "~/lib/request/strategies/context-management-retry"
 import { createDeferredToolRetryStrategy } from "~/lib/request/strategies/deferred-tool-retry"
@@ -74,18 +67,17 @@ import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refre
 import { createToolFieldRejectionStrategy } from "~/lib/request/strategies/tool-field-rejection-retry"
 import { createUnsupportedBetaRetryStrategy } from "~/lib/request/strategies/unsupported-beta-retry"
 import { createWebSearchNotFoundRetryStrategy } from "~/lib/request/strategies/web-search-not-found-retry"
-import { state } from "~/lib/state"
 
 import { createPoisonedThinkingRetryStrategy } from "./poisoned-thinking-retry"
 
 export interface AnthropicStrategiesDeps {
-  /** Truncation baseline: the preprocessed, pre-initial-sanitize payload (= codec.getTruncateBaseline()). */
+  /** Retry baseline: the preprocessed, pre-initial-sanitize payload (= codec.getTruncateBaseline()). */
   originalPayload: MessagesPayload
-  /** The direct sanitize chain reused as auto-truncate's resanitize (= codec.getResanitize()). */
+  /** The direct sanitize chain reused as the reactive-retry resanitize (= codec.getResanitize()). */
   resanitize: AnthropicSanitizeFn
-  /** Resolved model (auto-truncate needs it; the others ignore it). */
+  /** Resolved model (passed to the adapters; most strategies ignore it). */
   model: Model | undefined
-  /** Normal-retry budget (`state.maxReactiveRetries`). */
+  /** Shared reactive-retry budget (`state.maxReactiveRetries`). */
   maxRetries: number
   /** The shared per-request beta probe (also injected into the codec). */
   betaProbe: BetaProbe
@@ -129,14 +121,5 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
     adapt(createSystemRejectRetryStrategy<MessagesPayload>({ resanitize: deps.resanitize })),
     adapt(createWebSearchNotFoundRetryStrategy<MessagesPayload>({ resanitize: deps.resanitize })),
     adapt(createDeferredToolRetryStrategy<MessagesPayload>()),
-    adapt(
-      createAutoTruncateStrategy<MessagesPayload>({
-        truncate: (p, model, opts) => autoTruncateAnthropic(p, model, opts) as Promise<TruncateResult<MessagesPayload>>,
-        resanitize: deps.resanitize,
-        countTokens: (p, model) => countTotalTokens(p, model),
-        isEnabled: () => state.autoTruncate,
-        label: "Anthropic",
-      }),
-    ),
   ]
 }
