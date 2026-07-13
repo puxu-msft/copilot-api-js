@@ -51,7 +51,12 @@ const outcome =
     await driver.runResponseBufferedSink(upstream, env, sink, {
       onRenderedFrame: restoreAccumulateCount,
       stopAfterFrame: isTerminal,
-      commitBoundaries: isResponsesCommitBoundary, // P2 谓词，terminal 用法（TERMINAL_EVENTS ⊆ commit boundary types）
+      // ⚠️ commitBoundaries **省略**（terminal-only）。早稿曾写 `commitBoundaries: isResponsesCommitBoundary`，
+      // 但那是 P2 HTTP 的**块级**谓词，其边界集含非终止的 `response.output_item.done`
+      // → buffered 循环会 live-commit 该 block、committedAny=true、关闭重试窗口 → output_item.done 后
+      // 掉线降级 partial-degrade 不重试（削弱本特性）。省略即 terminal-only（RunBufferedOpts 契约：
+      // UNDEFINED = 只在 sawMessageStop/sawUpstreamError 提交一次）。修复于 commit 59d6e692（P4 T1 review 发现）。
+      // 注：stopAfterFrame 在 buffered 路径 inert（仅 runResponseSink 读），保留仅供 live 分支复用同 opts 形状。
       sawMessageStop: () => acc.status !== "",
       sawUpstreamError: () => acc.streamError !== undefined,
       telemetryVendor: "responses_ws",            // 独立 vendor 维度（见自审）
