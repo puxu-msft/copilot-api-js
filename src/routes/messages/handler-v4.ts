@@ -260,10 +260,20 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
       model: selectedModel,
     })
     if (decision.kind !== "passthrough") {
-      const reason =
-        decision.kind === "reject" ?
-          decision.reason
-        : `Model "${resolvedName}" pinned to @${routeOverride} cannot use web_search: the double-hop requires the direct /v1/messages leg (translation-path web_search is unsupported)`
+      // Three decision states surface a 400 here (web_search needs the DIRECT /v1/messages leg):
+      //   - reject           → the router's own reason (unsupported model).
+      //   - translate + suffix → an explicit `@cc`/`@responses` pin (translation-path web_search is a non-goal).
+      //   - translate, NO suffix → the Phase 7 no-suffix auto-route (a non-Anthropic model forward-translates
+      //     to an OpenAI leg). MUST NOT reference `@${routeOverride}` here — routeOverride is undefined, which
+      //     used to render "pinned to @undefined" garbage (Phase 7 introduced this third state).
+      let reason: string
+      if (decision.kind === "reject") {
+        reason = decision.reason
+      } else if (routeOverride) {
+        reason = `Model "${resolvedName}" pinned to @${routeOverride} cannot use web_search: the double-hop requires the direct /v1/messages leg (translation-path web_search is unsupported)`
+      } else {
+        reason = `Model "${resolvedName}" cannot use web_search: it forward-translates to the ${decision.to} leg, but the double-hop requires the direct /v1/messages leg (translation-path web_search is unsupported)`
+      }
       // Build + expose the ctx so the reject is recorded in history (not a ctx-less throw).
       createWebSearchContext(c, clientRaw, wireBody, resolvedName, clientModel, selectedModel)
       throw new HTTPError(reason, 400, reason)

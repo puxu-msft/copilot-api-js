@@ -171,15 +171,17 @@ describe("live POST-COMMIT terminal failure — anchor close-off before the erro
   test("decideRoute reject — inert close-off (injected=false) → error frame with NO stray content_block_stop@0 (equivalence)", async () => {
     // decideRoute reject is structurally fast (sync right after parse), so no anchor is ever injected;
     // the close-off must be a no-op. commit=0 routes the reject through the COMMIT-path branch (a 200 SSE
-    // error frame) instead of the pre-commit 400. A non-Anthropic vendor model → decideRoute rejects.
+    // error frame) instead of the pre-commit 400. Model must GENUINELY reject: Phase 7 auto-routes a
+    // cc/responses-capable non-Anthropic model to a translate leg, so use an OpenAI model with ONLY
+    // /v1/messages (no translatable leg → still decideRoute-reject).
     setStateForTests({ streamCommitAfterSec: 0 })
-    setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] })] })
+    setModels({ object: "list", data: [mockModel("msg-only-openai", { vendor: "OpenAI", supported_endpoints: ["/v1/messages"] })] })
     const { createFullTestApp } = await import("../helpers/test-app")
     const app = createFullTestApp()
     const res = await app.request("/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-session-id": "live-postcommit-reject" },
-      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], max_tokens: 256, stream: true }),
+      body: JSON.stringify({ model: "msg-only-openai", messages: [{ role: "user", content: "hi" }], max_tokens: 256, stream: true }),
     })
     expect(res.status).toBe(200) // committed immediately → the reject degrades to a 200 SSE error frame
     const text = await res.text()
