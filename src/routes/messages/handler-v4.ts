@@ -730,14 +730,21 @@ interface RecordRetryPipelineStateV4Args {
  *     (onMeta, post-gate).
  */
 function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void {
-  const { meta, codec, preprocessInfo } = args
+  const { meta, codec, preprocessInfo, env } = args
   const ctx = codec.getContext()
   if (!ctx) return
 
-  const baseline = codec.getTruncateBaseline()
-  const effectiveMessages = codec.getLatestEffectiveMessages()
+  // Data sources re-homed from the codec closure to env.requestState + ctx (RFC §11.2 / C2a): the
+  // direct `/v1/messages` cell is now dispatched through the CellAssembly (stateless), so the codec's
+  // prepareWire/sampleRequest closure is no longer written — the leg supply lives on env.requestState and
+  // the per-attempt side-channels on ctx.currentAttempt. The message-mapping / stripped-cache-control are
+  // DIRECT-leg concerns only (a forward @cc/@responses leg's ctx attempt is CC-shaped), so gate them on
+  // the direct target exactly as the codec's `!isForwardTranslateLeg` branch did.
+  const isDirect = env.targetEndpoint === ENDPOINT.MESSAGES
+  const baseline = env.requestState?.truncateBaseline as MessagesPayload | undefined
+  const effectiveMessages = isDirect ? ctx.currentAttempt?.effectiveRequest?.messages : undefined
 
-  const initialSanitizationInfo = codec.getInitialSanitizationInfo()
+  const initialSanitizationInfo = ctx.initialSanitizationInfo
   const retrySanitization = meta.sanitization as SanitizationStats | undefined
   const allSanitization = [...(initialSanitizationInfo ? [initialSanitizationInfo] : []), ...(retrySanitization ? [toSanitizationInfo(retrySanitization)] : [])]
 
@@ -745,7 +752,7 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
   const retryMessageMapping =
     baseline && effectiveMessages ? buildMessageMapping(baseline.messages, effectiveMessages as MessagesPayload["messages"]) : undefined
 
-  const strippedCacheControl = codec.getLatestStrippedCacheControlSubfields()
+  const strippedCacheControl = isDirect ? ctx.currentAttempt?.cacheControlStripped : undefined
   ctx.setPipelineInfo({
     preprocessing: preprocessInfo,
     sanitization: allSanitization,

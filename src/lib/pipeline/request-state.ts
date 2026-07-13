@@ -20,6 +20,7 @@
  */
 
 import type { BetaProbe } from "~/lib/anthropic/pipeline"
+import type { PreprocessInfo } from "~/lib/history/types"
 
 /**
  * The stable, per-request supply the outbound-leg strategy assembly + wire prep read (R2). Every field
@@ -52,4 +53,6 @@ export interface RequestState {
    * read back by the handler's pipelineInfo rebuild. Opaque here (Anthropic-shaped).
    */
   readonly initialSanitizationInfo?: unknown
+  /** Route-supplied message-level preprocess info (the Anthropic sanitize rewrite + pipelineInfo rebuild read it). */
+  readonly preprocessInfo?: PreprocessInfo
 }

@@ -411,6 +411,8 @@ export interface RequestContext {
 
   readonly attempts: ReadonlyArray<Attempt>
   readonly currentAttempt: Attempt | null
+  /** The initial (attempt-0) Anthropic sanitization-info envelope (re-homed from the codec closure — the retry pipeline-info rebuild reads it). */
+  readonly initialSanitizationInfo: SanitizationInfo | undefined
   readonly queueWaitMs: number
   readonly warningMessages: ReadonlyArray<WarningMessage>
 
@@ -444,6 +446,8 @@ export interface RequestContext {
   addWarningMessage(warning: WarningMessage): void
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: RequestTransport }): void
   setAttemptSanitization(info: SanitizationInfo): void
+  /** Record the initial (attempt-0) sanitization-info envelope (request-lifecycle-stable; retry rebuild reads it via {@link initialSanitizationInfo}). */
+  setInitialSanitizationInfo(info: SanitizationInfo): void
   /** 记录本 attempt passthrough 剥掉的 cache_control 子字段（→ pipelineFromAttempt → history）。 */
   setAttemptCacheControlStripped(fields: ReadonlyArray<string>): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void

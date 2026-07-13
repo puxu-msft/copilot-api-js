@@ -39,6 +39,11 @@
  * `MIGRATED_LEGS` covers every leg and retires the strategy-registry supply bag.
  */
 
+import {
+  //
+  anthropicMessagesLeg,
+  anthropicMessagesRetrySemantics,
+} from "~/lib/codec/anthropic/anthropic-cell"
 import { ENDPOINT } from "~/lib/models/endpoint"
 
 import type {
@@ -84,7 +89,10 @@ export interface RetrySemanticsSpec {
  * is a compile error until its semantics land. C1: every entry throws (no cell migrated yet).
  */
 export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => RetrySemanticsSpec> = {
-  anthropic: notMigratedSemantics("anthropic"),
+  // anthropic: the /v1/messages DIRECT cell is migrated (C2a) — auto-truncate + N retries. The forward
+  // `@cc`/`@responses` cells are NOT migrated for the anthropic client (they stay on the legacy path), so
+  // this is only ever invoked for the MESSAGES cell; a non-MESSAGES call is a wiring bug.
+  anthropic: (env) => (env.targetEndpoint === ENDPOINT.MESSAGES ? anthropicMessagesRetrySemantics() : notMigratedSemantics("anthropic")(env)),
   "openai-cc": notMigratedSemantics("openai-cc"),
   "openai-responses": notMigratedSemantics("openai-responses"),
   gemini: notMigratedSemantics("gemini"),
@@ -134,7 +142,7 @@ export interface OutboundLeg {
  * compile error until it lands. C1: every entry throws (no leg migrated yet).
  */
 export const OUTBOUND_LEGS: Record<UpstreamEndpoint, OutboundLeg> = {
-  [ENDPOINT.MESSAGES]: notMigratedLeg(ENDPOINT.MESSAGES),
+  [ENDPOINT.MESSAGES]: anthropicMessagesLeg,
   [ENDPOINT.CHAT_COMPLETIONS]: notMigratedLeg(ENDPOINT.CHAT_COMPLETIONS),
   [ENDPOINT.RESPONSES]: notMigratedLeg(ENDPOINT.RESPONSES),
   [ENDPOINT.WS_RESPONSES]: notMigratedLeg(ENDPOINT.WS_RESPONSES),
@@ -205,15 +213,22 @@ export function resolveCellAssembly(clientFormat: ClientFormat, targetEndpoint: 
 // ============================================================================
 
 /**
- * The set of outbound legs the driver dispatches through {@link resolveCellAssembly} instead of the legacy
- * `deps.*` single slots. GROWS one leg per commit: C2 adds `/v1/messages`, C3 `/chat/completions`, C4
- * `/responses`+`ws:/responses`. C5 asserts it equals the full leg set (the shim collapses). C1: EMPTY — no
- * leg migrated, so the driver's hybrid dispatch (added in C2) always takes the legacy path → byte-identical
+ * The set of (clientFormat × targetEndpoint) CELLS the driver dispatches through {@link resolveCellAssembly}
+ * instead of the legacy `deps.*` single slots. CELL-keyed (`${clientFormat}|${targetEndpoint}`) so a partially
+ * migrated leg (the `/v1/messages` leg is shared by anthropic-direct + 3 reverse cells) has NO double-active:
+ * only the migrated cell forks. GROWS one cell group per commit — C2a adds `anthropic|/v1/messages`, C2b the
+ * 3 reverse `@messages` cells, C3 the `/chat/completions` cells, C4 the `/responses`+ws cells. C5 asserts it
+ * equals the full cell space (the shim collapses). An unmigrated cell takes the legacy path → byte-identical
  * (an explicitly-harmless transition, `large-refactor` §3).
  */
-export const MIGRATED_LEGS: ReadonlySet<UpstreamEndpoint> = new Set<UpstreamEndpoint>()
+export const MIGRATED_CELLS: ReadonlySet<string> = new Set<string>([cellKey("anthropic", ENDPOINT.MESSAGES)])
 
-/** Is this leg dispatched through the CellAssembly (vs the legacy `deps.*` slots)? Reads {@link MIGRATED_LEGS}. */
-export function isLegMigrated(targetEndpoint: UpstreamEndpoint): boolean {
-  return MIGRATED_LEGS.has(targetEndpoint)
+/** The `MIGRATED_CELLS` key for a cell. */
+export function cellKey(clientFormat: ClientFormat, targetEndpoint: UpstreamEndpoint): string {
+  return `${clientFormat}|${targetEndpoint}`
+}
+
+/** Is this CELL dispatched through the CellAssembly (vs the legacy `deps.*` slots)? Reads {@link MIGRATED_CELLS}. */
+export function isCellMigrated(clientFormat: ClientFormat, targetEndpoint: UpstreamEndpoint): boolean {
+  return MIGRATED_CELLS.has(cellKey(clientFormat, targetEndpoint))
 }

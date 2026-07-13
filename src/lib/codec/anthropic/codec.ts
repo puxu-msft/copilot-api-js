@@ -244,6 +244,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
           truncateBaseline: parsed.baseline,
           resanitize: parsed.resanitize as (payload: unknown) => unknown,
           clientRequestHeaders: parsed.clientRequestHeaders,
+          preprocessInfo: args.preprocessInfo,
           ...(parsed.clientAnthropicBeta !== undefined && { clientAnthropicBeta: parsed.clientAnthropicBeta }),
         },
       })

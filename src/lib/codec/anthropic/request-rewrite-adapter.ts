@@ -76,6 +76,10 @@ function applyAnthropicSanitize(env: RequestEnvelope, deps: AnthropicRequestRewr
 
   const initialSanitizationInfo = toSanitizationInfo(stats)
   deps.onInitialSanitizationInfo(initialSanitizationInfo)
+  // Also record it as a ctx side-channel (RFC §11.2 re-homing) so the CellAssembly-routed direct leg's
+  // retry rebuild reads it from ctx (`ctx.initialSanitizationInfo`) instead of a codec accessor — the
+  // rewrite owns writing its own side-channel, regardless of who supplies it (codec or assembly).
+  ctx.setInitialSanitizationInfo(initialSanitizationInfo)
 
   // Same gate + mapping the parse path used (RFC §12.9), PLUS the terminal de-stack
   // (pure insertion — invisible to the block-removal counters, so OR'd in via

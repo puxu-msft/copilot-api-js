@@ -26,15 +26,18 @@ import type {
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
 
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
-  MIGRATED_LEGS,
+  MIGRATED_CELLS,
   OUTBOUND_LEGS,
   RETRY_SEMANTICS,
-  isLegMigrated,
+  isCellMigrated,
   resolveCellAssembly,
 } from "~/lib/pipeline/cell-assembly"
+
+import { mockModel } from "../helpers/factories"
 
 const ALL_CLIENT_FORMATS: ReadonlyArray<ClientFormat> = ["anthropic", "openai-cc", "openai-responses", "gemini"]
 const ALL_LEGS: ReadonlyArray<UpstreamEndpoint> = [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES]
@@ -62,17 +65,50 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     }
   })
 
-  test("C1: no leg migrated yet — the hybrid dispatch always takes the legacy path", () => {
-    expect(MIGRATED_LEGS.size).toBe(0)
-    for (const te of ALL_LEGS) expect(isLegMigrated(te)).toBe(false)
+  test("C2a: only the anthropic|/v1/messages cell is migrated (cell-keyed shim, no double-active)", () => {
+    expect(MIGRATED_CELLS.has("anthropic|/v1/messages")).toBe(true)
+    expect(isCellMigrated("anthropic", ENDPOINT.MESSAGES)).toBe(true)
+    // The 3 REVERSE @messages cells sharing the /v1/messages leg are NOT migrated yet (C2b) — the
+    // cell-keyed shim keeps them on the legacy path (no double-active on the shared leg).
+    for (const cf of ["openai-cc", "openai-responses", "gemini"] as const) expect(isCellMigrated(cf, ENDPOINT.MESSAGES)).toBe(false)
+    // No forward/direct cell on the other legs is migrated (C3/C4).
+    for (const te of [ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES]) expect(isCellMigrated("anthropic", te)).toBe(false)
   })
 
-  test("C1 placeholders throw a LOUD identifiable error (never a silent wrong-wire)", () => {
-    // The wire leg placeholder throws when a method is invoked.
-    expect(() => OUTBOUND_LEGS[ENDPOINT.MESSAGES].prepareWire(envStub("anthropic", ENDPOINT.MESSAGES))).toThrow(/has not migrated yet/)
-    // The retry-semantics placeholder throws when evaluated against env.
-    expect(() => RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.MESSAGES))).toThrow(/has not migrated yet/)
-    // buildStrategies composes both → also throws (the Phase-7 guard surface, non-empty asserted per cell in C2+).
-    expect(() => resolveCellAssembly("anthropic", ENDPOINT.MESSAGES).buildStrategies(envStub("anthropic", ENDPOINT.MESSAGES))).toThrow(/has not migrated yet/)
+  test("unmigrated cells throw a LOUD identifiable error (never a silent wrong-wire)", () => {
+    // A not-yet-migrated LEG (openai-cc /chat/completions cell) throws when a method is invoked.
+    expect(() => OUTBOUND_LEGS[ENDPOINT.CHAT_COMPLETIONS].prepareWire(envStub("openai-cc", ENDPOINT.CHAT_COMPLETIONS))).toThrow(/has not migrated yet/)
+    // The reverse @messages cell (openai-cc → /v1/messages) throws (C2b) even though the leg exists (C2a anthropic).
+    expect(() => OUTBOUND_LEGS[ENDPOINT.MESSAGES].translateOut(envStub("openai-cc", ENDPOINT.MESSAGES))).toThrow(/has not migrated yet \(C2b\)/)
+    // The retry-semantics for a not-yet-migrated client format throws.
+    expect(() => RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.CHAT_COMPLETIONS))).toThrow(/has not migrated yet/)
+  })
+
+  test("the migrated anthropic|/v1/messages cell resolves to a live semantics spec (auto-truncate on)", () => {
+    // RETRY_SEMANTICS for the MIGRATED cell returns a real spec (not a throw): auto-truncate in the stack.
+    const spec = RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.MESSAGES))
+    expect(spec.autoTruncate).toBe(true)
+    expect(spec.maxRetries).toBeGreaterThanOrEqual(0)
+    expect(spec.label).toBe("Anthropic")
+  })
+
+  test("L1 (Phase-7 guard): the migrated anthropic|/v1/messages cell's buildStrategies is NON-EMPTY + does not throw", () => {
+    // The exact Phase-7 bug class ("missing builder → silent 500"): a migrated cell MUST produce a
+    // non-empty strategy stack. Build a real env carrying the leg supply on requestState (what parse sets).
+    const env = {
+      clientFormat: "anthropic" as const,
+      targetEndpoint: ENDPOINT.MESSAGES,
+      model: mockModel("claude-opus-4.8", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES] }),
+      body: { model: "claude-opus-4.8", max_tokens: 100, messages: [] },
+      prepareHints: {},
+      requestState: {
+        betaProbe: createBetaProbe(undefined),
+        truncateBaseline: { model: "claude-opus-4.8", max_tokens: 100, messages: [] },
+        resanitize: ((p: unknown) => p) as unknown,
+      },
+    } as unknown as RequestEnvelope
+    const strategies = resolveCellAssembly("anthropic", ENDPOINT.MESSAGES).buildStrategies(env)
+    expect(strategies.length).toBeGreaterThan(0)
+    for (const s of strategies) expect(typeof s.name).toBe("string")
   })
 })
