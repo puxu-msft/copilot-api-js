@@ -1,0 +1,8 @@
+{
+  "name": "telemetry-storage-poc",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@datadog/sketches-js": "2.1.1"
+  }
+}
