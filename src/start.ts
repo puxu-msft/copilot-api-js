@@ -46,6 +46,7 @@ import { toActiveRequestWire } from "./lib/observability/active-request-wire"
 import { formatBillingLabel } from "./lib/observability/projections/format"
 import { installConsolaRepublish } from "./lib/observability/republish"
 import { attachCalibrationSink } from "./lib/observability/sinks/calibration"
+import { attachCalibrationFailureSink } from "./lib/observability/sinks/calibration-failure"
 import { attachFileSink } from "./lib/observability/sinks/file"
 import { attachHistorySink } from "./lib/observability/sinks/history"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
@@ -381,6 +382,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   attachHistorySink(bus, { publisher: historyPublisher })
   attachTelemetrySink(bus)
   attachCalibrationSink(bus)
+  attachCalibrationFailureSink(bus)
   attachWsSink(bus)
 
   // Rate limiter — config-driven, constructed after observability is live so
