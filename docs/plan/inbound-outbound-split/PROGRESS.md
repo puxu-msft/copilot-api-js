@@ -4,6 +4,8 @@
 
 隔离 worktree：`.worktrees/inbound-outbound-split`，分支 `feat/inbound-outbound-split`（从 master `e9f6ce8a` 切出）。
 
+> **会话收尾（C0-C2 完成，交接新会话做 C3-C6）**：C0-C2 全提交、字节等价、全量 base 5；剩余锚点见 [prompts/C3-C6.md](prompts/C3-C6.md)。收尾时派了一个独立 reviewer 对抗审 C0-C2 承重态（driver fork / pipelineInfo 经 ctx 重寄 / 字节等价 / 无双活 / R1 corner）——**新会话开工前先看该 review 的 findings**（若已完成，reviewer 报告在会话通知里；主会话已亲手复核过承重断言 + golden 5× + 全量 base 5，review 是额外独立核验层）。DESIGN.md 翻译矩阵行 doc-sync 正确推迟到 C6（重构未完，现状是 hybrid 中间态，本 PROGRESS 是准确活文档）。
+
 ## 基线（改动前 master）
 - backend：**4661 pass / 1 skip / 5 fail**。5 fail = 4× `request-rewrite migration golden (codec.parse → driver S3)`（peer-D2 pipelineInfo）+ 1× `/api/negotiation > GET / returns grouped snapshot`。第 6 条 base 例外（UI shell 404）在前端 `test:ui`，不在 backend。
 - 全局 invariant：每 commit 后 fail 数必须仍**恰为这 5 条**（不多不少），typecheck 0。
