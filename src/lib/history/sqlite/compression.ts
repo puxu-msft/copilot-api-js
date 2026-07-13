@@ -90,3 +90,27 @@ function isZstd(b: Uint8Array): boolean {
 export function gzipJsonLegacy(value: unknown): Uint8Array {
   return gzipSync(JSON.stringify(value))
 }
+
+/**
+ * Compress raw binary bytes into a zstd-framed blob — the non-JSON twin of
+ * {@link compress}. Used for storage blobs that are already a binary encoding
+ * (e.g. telemetry DDSketch packed frames): `JSON.stringify`-ing a `Uint8Array`
+ * would serialize it as a JSON array of numbers (mangled + massively inflated),
+ * so those callers must skip the JSON layer entirely.
+ */
+export function compressBytes(bytes: Uint8Array): Uint8Array {
+  return zstdCompressSync(bytes, ZSTD_OPTS)
+}
+
+/**
+ * Decompress a raw-bytes storage blob produced by {@link compressBytes} back
+ * into its original bytes — no `JSON.parse` step. Same magic-byte detection /
+ * too-short guard as {@link decompress}, since raw-bytes blobs share the same
+ * zstd framing.
+ */
+export function decompressBytes(blob: Uint8Array): Uint8Array {
+  if (blob.length < 4) {
+    throw new Error(`[history/sqlite] decompressBytes: blob too short (${blob.length} bytes) to identify format`)
+  }
+  return decompressRaw(blob)
+}
