@@ -876,6 +876,29 @@ CC 2.1.207 defer_loading 语义（`app.pretty.js:442315` 注释）：**默认无
 
 ---
 
+## 轮次 25（2026-07-13）：thinking budget_tokens ↔ max_tokens 约束 —— 确认正确、无 gap
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 **总是** clamp `budget_tokens = Math.max(1024, Math.min(max_tokens-1, fi))`（`app.pretty.js:297957`）/ `Math.min(f, max_tokens-1)`（201049）→ 保证 wire 上 `budget_tokens < max_tokens`（Anthropic 硬约束，421116「budget_tokens must be < max_tokens」）。
+
+### F31（确认，无 gap）— 本项目正确强制 budget < max_tokens，含 coercion 后处理
+
+**判断（读码，已核实）**：本项目 [adjustThinkingBudget](../../src/lib/anthropic/request-preparation.ts#L678)（678-717）：
+- 只处理 `enabled` thinking（`type==="adaptive"|"disabled" return`）——在 `adaptiveToEnabledThinking`（664）coerce 之后运行 → **cap 的是 coerced budget**（顺序正确）。
+- **强制 `budget < max_tokens`**（698-699：`adjusted >= maxTokens → adjusted = maxTokens-1`），与 CC 自身 clamp 一致。
+- 额外：min/max thinking budget clamp（690-696）+ **不可满足情形**（max_tokens 容不下 min budget）loud warn + 已 defer 到 [deferred-backlog.md](../../docs/todo/deferred-backlog.md)（诚实 surface 非静默出错）。
+
+**无 gap**：本项目对 thinking budget vs max_tokens 的处理**比 CC 更周全**（还管 model min/max budget + 不可满足告警），且顺序正确（coerce→cap）。
+
+### 本轮结论 + meta 模式（趋于清晰）
+
+thinking budget/max_tokens **确认正确无 gap**（F31）。
+
+**meta（25 轮后的模式结晶）**：真实 gap **高度聚集**在三类——① **列表完整性/时新性**（F28 stub 集、F30 NON_DEFERRED 都 Copilot-偏向/漏 CC 工具）；② **richest-data-flow 捕获**（F19 usage、F20 metadata、F29c billing 行——rich 数据在手边未捕获）；③ **新特性检测深度/对称性**（F1 keepalive 空档、F23 vision 漏 tool_result、F27 defer 非对称）。而**核心 transform 正确性**（thinking budget/signature、cache_control 深度、header 转发、model 解析、beta negotiation、budget↔max_tokens）**一律成熟无 gap**——本项目在"变换正确性"上极稳，弱点在"名单/捕获/新面覆盖"。后续 gap-hunting 应**优先扫这三类模式**，别再重复验核心 transform（已充分确认）。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
