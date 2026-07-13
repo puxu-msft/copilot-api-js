@@ -1,7 +1,7 @@
 # client↔proxy e2e 场景 backlog 实现指南（交接）
 
 > **交接目的**：把 spec `2026-07-13-client-proxy-sdk-e2e-harness.md`「e2e 场景覆盖 roadmap」的未覆盖 backlog，变成新会话可**逐条直接执行**的配方。每条给：层 / config / 上游帧 pattern / 客户端可观测 oracle / harness 需求（现有 or 新扩展）/ gotcha / 建议变异。**先读 skill `client-proxy-e2e-testing`**（承重机制 + oracle 纪律），再挑一条实现。
-> **现状**：26 场景已覆盖（Tier1 SDK 24 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
+> **现状**：29 场景已覆盖（Tier1 SDK 27 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
 
 ## Kick-off prompt（复制给新会话）
 

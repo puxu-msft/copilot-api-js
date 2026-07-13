@@ -646,6 +646,55 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     expect(final.stop_reason).toBe("end_turn")
   })
 
+  test("anchor wire shape: SDK tolerates an empty-text anchor block@0 coexisting with the real block@1 (known-benign)", async () => {
+    // The keepalive anchor path (spec 2026-07-08-buffered-keepalive-empty-text-anchor) can inject a
+    // SEPARATE empty-text anchor block@0 to reset CC's 300s watchdog, with the real content remapped to
+    // block@1, then closes the anchor with content_block_stop@0. The proxy relies on "empty-text block →
+    // known-benign" (§3.6). The idle-heartbeat INJECTION itself is timing-driven (Tier2/fake-clock), but
+    // the SDK-safety of the WIRE it produces is a deterministic client-observable question: feed that
+    // exact shape and confirm a real SDK assembles the real text and does NOT choke on the extra
+    // empty anchor block. (Distinct from B1: that was empty deltas within ONE block; here it's a
+    // standalone empty anchor block beside the real one.)
+    setStateForTests({ refusalSseRewrite: "refusal" }) // pure passthrough — forward the anchor wire as-is
+    const anchorWire = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_a",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }), // anchor@0
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }), // real@1 (remapped +1)
+      ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "real answer" } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }), // anchor closed at commit
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(anchorWire))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    // client-observable, empirically confirmed: the SDK TOLERATES the anchor wire (no throw) and
+    // assembles the real text intact at block@1 — but it DOES surface the empty anchor block@0 as a
+    // visible (empty) text block. "known-benign" (§3.6) means protocol-safe, NOT invisible: the client
+    // receives an extra empty text block, an accepted tradeoff (empty text is harmless to render).
+    expect(final.content.length).toBe(2)
+    expect(final.content.every((b) => b.type === "text")).toBe(true)
+    expect((final.content[0] as { text?: string })?.text).toBe("") // the empty anchor block, surfaced not folded
+    expect((final.content[1] as { text?: string })?.text).toBe("real answer") // real content intact past the anchor
+    expect(final.stop_reason).toBe("end_turn")
+  })
+
   // ── event-name tolerance: SDK dispatches on the event name ∈ accept-set, not name===data.type ──
 
   test("thinking-signature-compat: signature_delta under `event: content_block_start` is still accumulated by the SDK", async () => {
@@ -774,6 +823,104 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
       .finalMessage()
     const tool = final.content.find((b) => b.type === "tool_use") as { input?: unknown } | undefined
     expect(tool?.input).toEqual({ query: "weather" }) // repaired to valid JSON the SDK could parse
+  })
+
+  test("tool-name restore: proxy sanitizes an illegal client tool name outbound → restores it inbound → SDK sees the ORIGINAL name", async () => {
+    // With sanitize_tool_names on, a client tool name that violates the target model's charset (the
+    // claude class forbids dots, cap 64) is rewritten to a wire-legal name outbound (`my.search.tool`
+    // → `my_search_tool`); the upstream echoes the SANITIZED name in its tool_use, and the proxy
+    // restores it to the client-ORIGINAL name before forwarding. Oracle: the SDK's finalMessage
+    // tool_use.name is the original `my.search.tool`, NOT the wire `my_search_tool` — a client-
+    // observable round-trip the byte layer alone can't confirm.
+    setStateForTests({ sanitizeToolNames: true })
+    const CLIENT_NAME = "my.search.tool" // dots → illegal for the claude class → sanitized
+    const WIRE_NAME = "my_search_tool" // deterministic makeValidToolName(CLIENT_NAME): dots → "_"
+    const frames = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_tn",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      // upstream echoes the SANITIZED wire name (what it received after outbound sanitization)
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_tn", name: WIRE_NAME, input: {} } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"q":"x"}' } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(frames))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages
+      .stream({
+        model: MODEL,
+        max_tokens: 16,
+        messages: [{ role: "user", content: "x" }],
+        tools: [{ name: CLIENT_NAME, description: "search", input_schema: { type: "object", properties: { q: { type: "string" } } } }],
+      })
+      .finalMessage()
+    const tool = final.content.find((b) => b.type === "tool_use") as { name?: string } | undefined
+    expect(tool?.name).toBe(CLIENT_NAME) // restored to the client-original name, not the wire name
+    expect(tool?.name).not.toBe(WIRE_NAME)
+  })
+
+  test("server-tool filter: upstream server_tool_use block is stripped + indices remapped → SDK sees only the real text block (no unvalidatable artifact)", async () => {
+    // The proxy unconditionally strips server-side artifacts (server_tool_use / *_tool_result) from the
+    // stream — clients don't expect them and most SDKs can't validate them — and REMAPS the surviving
+    // block indices so they stay dense (no gap the SDK's accumulator would choke on). Here the upstream
+    // emits a server_tool_use at index 0 then a real text block at index 1; the client must see exactly
+    // ONE text block (the server_tool_use gone, the text remapped 1→0). Positive control: the streaming
+    // baseline proves a plain text stream assembles; here the SAME text survives past a filtered artifact.
+    const frames = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_st",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      // index 0: a server_tool_use artifact the client can't validate → must be stripped
+      ev("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "server_tool_use", id: "stu_1", name: "web_search", input: {} },
+      }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"query":"x"}' } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      // index 1: the real text block → must survive, remapped to client index 0
+      ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "visible answer" } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(frames))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+
+    // client-observable: exactly the one real text block, no server-side artifact, correctly assembled
+    // (the index remap let the SDK build the text at index 0 rather than choke on a missing index 0).
+    expect(final.content.length).toBe(1)
+    expect(final.content.every((b) => b.type !== "server_tool_use")).toBe(true)
+    expect((final.content[0] as { type?: string; text?: string })?.type).toBe("text")
+    expect((final.content[0] as { text?: string })?.text).toBe("visible answer")
   })
 })
 
