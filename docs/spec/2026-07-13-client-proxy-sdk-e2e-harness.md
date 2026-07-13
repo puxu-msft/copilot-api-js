@@ -96,4 +96,18 @@ tests/e2e-client/
 
 ## 设计意图（非本轮验收标准，待第二 vendor / Tier 2 接入时验证）
 
-- **vendor 无关接缝**：`upstream-script.ts` 脚本格式与 `serveInProcess` 的 baseURL 契约设计成 Tier1/Tier2 + 多 vendor 共用；新增 openai/gemini SDK 或 CLI Tier 2 不应重构核心。本轮只落 Anthropic，故该断言**不可证伪**、列为设计意图而非验收——待第二 vendor 接入时以「加一条 OpenAI happy-path 无需改核心」实证。
+- **vendor 无关接缝**：`upstream-script.ts` 脚本格式与 `serveInProcess` 的 baseURL 契约设计成 Tier1/Tier2 + 多 vendor 共用；新增 openai/gemini SDK 或 CLI Tier 2 不应重构核心。~~本轮只落 Anthropic，故该断言不可证伪~~ **已证**（2026-07-13：OpenAI SDK vendor smoke `anthropic-sdk.it.test.ts` 尾部 describe，真 OpenAI SDK 打同 proxy 拼出流式 completion，核心零重构）。
+
+## e2e 场景覆盖 roadmap（2026-07-13 考古后）
+
+现有 **18 场景**（Tier 1 SDK 16 = Anthropic 15 + OpenAI 1；Tier 2 CLI 2），均变异验证有牙（MUTANT-A/C/D 各精准逮住对应测试）。挖掘全清单见 Explore agent 考古（本会话），来源可信度分 `[DOC-REAL]`（文档实证、最高价值）/ `[CODE-INFER]`（需实测）。
+
+**已覆盖**：eventless 帧丢弃、tool_use input 深等、thinking signature 累积、refusal end_turn/空串/error、200+SSE-error throws、空串 stall（CLI）、**截断→throws、HTTP-4xx 类型化子类对照、reactive-retry 内部重试透明（callCount=2）、tool-call 文本恢复、畸形 input 修复、event 名宽容、OpenAI vendor smoke**。
+
+**未覆盖 backlog（按承重排序，供后续扩展；每条真实、多数 `[DOC-REAL]` 可直接实现或 TDD 先红）**：
+- **一梯队**（生产 incident 催生）：B1 CC 300s no-real-content keepalive 墙（Tier 2 计时/空 delta 保活）、B8 thinking 双相邻块毒化 reactive 恢复、B9 其余 retry 腿（server-tool/cache-control/unsupported-beta，逐腿一断言）。
+- **二梯队**：B2 synthetic-message-start anchor 保活、B3 block-aware 空 delta 类型匹配、B5 非流式语义截断、B10/B11 server_tool/empty-encrypted 降级、B13 HTTP-429 vs 200-error-429 CC 重试发散（Tier 2）、B16 buffered-retry 上游 RST 透明、B17 三类中止（client-abort/reaper/header-timeout）客户端侧区分（Tier 2）。
+- **三梯队（广度）**：B12 通用翻译矩阵反向腿逐 cell（Anthropic client × CC/Responses/Gemini upstream）、B18 Responses SSE/WS keepalive、B15 合成帧空 delta 不泄漏成可见内容、B20 repetition-detector 终止、B22 cache_control 剥离透明、B23 tool name 清洗后还原。
+- **需实测先坐实再固化断言**（`[CODE-INFER]`）：B3/B9/B20/B22/B23。
+
+纪律（扩展时守）：否定断言必配正样本对照；`[CODE-INFER]` 先跑真实客户端 oracle 坐实；新绿测试做变异验证有牙（关掉被测行为→测试变红）。详见 skill `client-proxy-e2e-testing`。
