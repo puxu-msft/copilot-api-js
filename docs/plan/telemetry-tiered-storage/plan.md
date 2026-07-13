@@ -1,6 +1,6 @@
 # Telemetry Tiered-Storage Implementation Plan
 
-> **实施状态（2026-07-13）**：worktree `.worktrees/telemetry-storage/` @ `feat/telemetry-tiered-storage`。**Phase 0 已 landed**（`f61dc77a`，sketch.ts + 测试全绿、typecheck/lint 干净）。**P1-P7 待做**——用 [prompts/kickoff.md](prompts/kickoff.md) 新会话续（clean context）。plan 已过 1 轮对抗 review 并修订（见「评审采纳修订」节）。
+> **实施状态（2026-07-13）**：worktree `.worktrees/telemetry-storage/` @ `feat/telemetry-tiered-storage`。**Phase 0 ✅ landed**（sketch.ts 自描述序列化 + 7 测试）、**Phase 1 ✅ landed**（T1.1 schema+openTelemetryDb `68eaa868`、T1.2 dictionary `09629bf0`、T1.3 paths）。全 telemetry 套件 15 pass。**P2-P7 待做**（T1 Umzug forward-runner 接线可后补——floor 幂等）——用 [prompts/kickoff.md](prompts/kickoff.md) 新会话续。plan 已过 1 轮对抗 review 并修订（见「评审采纳修订」节）。GPT 异模型 review 三底座 infra-blocked（model_not_supported / user 字段超长），已自扮其角色采纳自描述格式加固。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **每 task 的逐字节 bite-sized TDD 步骤在执行期由 per-task subagent 即时展开**——本 plan 给出每 task 的文件/接口/测试 oracle/不变量/验收，Phase 0 附全套 bite-sized 模板。
 
