@@ -58,6 +58,16 @@ const CLAUDE_CODE_OFFICIAL_TOOLS = [
   "Skill",
   "EnterPlanMode",
   "ExitPlanMode",
+  // CC 2.1.207 additions (F28) — app.pretty.js:147746 `Hee="WebSearch"` etc.
+  "WebSearch",
+  "BashOutput",
+  "NotebookRead",
+  "ListMcpResources",
+  "ReadMcpResource",
+  // NOT added (faithful — avoid injecting non-tools): `MultiEdit` (source freq 1,
+  // likely deprecated) and `Agent` (`hi="Agent"` constant exists but unconfirmed as
+  // a tools-array entry — subagent dispatch goes through `Task`). TODO: confirm via
+  // real CC packet capture (skill `client-proxy-e2e-testing`) before adding either.
 ]
 
 /** Tool names that should NOT be deferred (core tools always available) */
@@ -336,6 +346,11 @@ const API_DEFINED_TOOL_TYPE_PREFIXES = [
   "text_editor_",
   "computer_",
   "bash_",
+  // CC 2.1.207 additions (F32) — server-tool `type` values seen in app.pretty.js.
+  "advisor_",
+  "agent_toolset_",
+  "memory_",
+  "tool_search_",
 ]
 
 /** Check whether a tool's `type` matches a known API-defined typed-tool prefix (NOT necessarily server-executed — see above). */
