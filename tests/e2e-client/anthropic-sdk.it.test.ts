@@ -646,6 +646,55 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     expect(final.stop_reason).toBe("end_turn")
   })
 
+  test("anchor wire shape: SDK tolerates an empty-text anchor block@0 coexisting with the real block@1 (known-benign)", async () => {
+    // The keepalive anchor path (spec 2026-07-08-buffered-keepalive-empty-text-anchor) can inject a
+    // SEPARATE empty-text anchor block@0 to reset CC's 300s watchdog, with the real content remapped to
+    // block@1, then closes the anchor with content_block_stop@0. The proxy relies on "empty-text block →
+    // known-benign" (§3.6). The idle-heartbeat INJECTION itself is timing-driven (Tier2/fake-clock), but
+    // the SDK-safety of the WIRE it produces is a deterministic client-observable question: feed that
+    // exact shape and confirm a real SDK assembles the real text and does NOT choke on the extra
+    // empty anchor block. (Distinct from B1: that was empty deltas within ONE block; here it's a
+    // standalone empty anchor block beside the real one.)
+    setStateForTests({ refusalSseRewrite: "refusal" }) // pure passthrough — forward the anchor wire as-is
+    const anchorWire = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_a",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }), // anchor@0
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }), // real@1 (remapped +1)
+      ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "real answer" } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }), // anchor closed at commit
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(anchorWire))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    // client-observable, empirically confirmed: the SDK TOLERATES the anchor wire (no throw) and
+    // assembles the real text intact at block@1 — but it DOES surface the empty anchor block@0 as a
+    // visible (empty) text block. "known-benign" (§3.6) means protocol-safe, NOT invisible: the client
+    // receives an extra empty text block, an accepted tradeoff (empty text is harmless to render).
+    expect(final.content.length).toBe(2)
+    expect(final.content.every((b) => b.type === "text")).toBe(true)
+    expect((final.content[0] as { text?: string })?.text).toBe("") // the empty anchor block, surfaced not folded
+    expect((final.content[1] as { text?: string })?.text).toBe("real answer") // real content intact past the anchor
+    expect(final.stop_reason).toBe("end_turn")
+  })
+
   // ── event-name tolerance: SDK dispatches on the event name ∈ accept-set, not name===data.type ──
 
   test("thinking-signature-compat: signature_delta under `event: content_block_start` is still accumulated by the SDK", async () => {
