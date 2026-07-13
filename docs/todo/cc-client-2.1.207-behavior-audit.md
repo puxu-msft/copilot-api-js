@@ -278,6 +278,37 @@ thinking 是本项目**最成熟**的子系统之一，与 CC 2.1.207 原生 `H8
 
 ---
 
+## 轮次 7（2026-07-13）：stop_reason 家族 + auto-truncate ↔ CC context 管理交互
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 流式循环对非常规 stop_reason 的客户端处理（`app.pretty.js:298172-298173`）：
+- `ve==="max_tokens"` → `tengu_max_tokens_reached` + 提示「响应超 `${qe}` 输出上限，设 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`」。
+- `ve==="model_context_window_exceeded"`（**非标准 Anthropic stop_reason**）→ `tengu_context_window_exceeded` + 提示「模型已达 context window 上限」，`apiError:"max_output_tokens"`。
+- `pause_turn`：运行时（TS runner）**自动 resume**（server-tool agentic flow 续跑；SDK 文档 419784/420160 述 Python runner 不自动 resume，TS 会）。
+
+### 本项目现状（读码）
+
+- 直连 Anthropic 路径**透传 stop_reason**（`grep model_context_window_exceeded` 全仓零命中；`pause_turn` 仅在跨格翻译矩阵 [anthropic-to-cc.ts:163](../../src/lib/openai/translate/anthropic-to-cc.ts#L163) 映射 → stop）。对代理是**正确**行为：这些 stop_reason 由 CC 客户端消费，代理不该拦。
+- auto-truncate（[auto-truncate.ts:autoTruncateAnthropic](../../src/lib/anthropic/auto-truncate.ts)）是**真截断**：`payload.messages.slice(preserveIndex)` 丢老消息 + 注入 `createTruncationSystemContext` 摘要到 system。双触发：**proactive**（count_tokens 通胀诱导 CC 自己 compact，轮次 3）+ **reactive**（token-limit 400 后截断重试，[strategies/auto-truncate.ts](../../src/lib/request/strategies/auto-truncate.ts)）。
+
+### F13（LOW/信息）— stop_reason 透传无 gap；记录 auto-truncate ↔ CC context 的双主体交互
+
+**stop_reason 家族**：透传正确，CC 客户端处理，**无缺陷**。`pause_turn` 直连路径透传 → CC TS runner 自动 resume（发续跑请求，对代理是新请求）→ 正常。`model_context_window_exceeded` 若 GHC 以 stop_reason 发则透传给 CC（298173 处理）；若 GHC 以 HTTP-400 发则本项目 reactive auto-truncate 接住——两路都覆盖。
+
+**值得记录的交互（by-design，但需知晓）**：context 管理现在是**双主体**——CC 有自己的 auto-compact / `context_management` / `/context`，本项目也有 auto-truncate。本项目 proactive 通胀 count_tokens（返 `contextWindow*0.95`）是**刻意让 CC 先 compact**（优于代理盲截）。残余需知晓的三点：
+1. **CC 不感知代理的 server-side 截断**：reactive 腿 drop 老消息 + 注入摘要后，GHC 基于**截断后**上下文回答，而 CC 的会话态仍持完整消息 → **CC 认知的 context ≠ GHC 实际处理的**。下一轮 CC 又发完整历史 → 每轮重截（幂等但重复计算）。
+2. **CC auto-compact 关闭时的错配**：若用户关了 CC 自动 compact，proactive 通胀让 `/context` 显示 ~95%（代理信号，非真实 token）却不触发 compact → 真请求走 reactive 截断 → CC 全程不知情。`/context` 面板读数在此情形**误导**。
+3. **谁的截断更优**：CC 的 compact 是语义摘要（LLM 驱动），代理的截断是消息级 slice + 简摘要——CC 的通常更优，这正是 proactive 通胀「让位给 CC」的动机。reactive 腿是 CC 未 compact 时的安全网。
+
+**理想方向（不在本轮做，低优先）**：在 [docs/](../../docs/)（auto-truncate 相关文档或 DESIGN）补一节「双主体 context 管理：代理 proactive 通胀让位 CC compact + reactive 截断安全网 + CC 不感知代理截断」，让接手者理解这层交互；无需代码改动（当前设计是 considered tradeoff）。**待实测**（可选）：CC auto-compact 关闭时，proactive 通胀是否造成 `/context` 读数困惑或 compact 抖动。
+
+### 本轮结论
+
+stop_reason 家族**透传正确、无 gap**（对代理是应有行为）。唯一产出是把 **auto-truncate 与 CC 2.1.207 context 管理的双主体交互**显式记档（F13，低/信息）——当前是 considered design，仅需文档化那三点认知错配，不需改代码。
+
+---
+
 ## 后续轮次待覆盖的 CC-facing 面（TODO 清单，逐轮消化）
 
 - [x] **请求形状漂移**（轮次 2）：`speed:"fast"`（F5）、`diagnostics.previous_message_id`（F6）已覆盖；`betas`/`metadata`/`tool_choice`/`output_config`/`context_management` 经查本项目已妥善处理（partner-feature-strip + request-preparation）。`eager_input_streaming`（fine-grained tool streaming）本项目已 proactive strip，无 gap。
@@ -289,7 +320,7 @@ thinking 是本项目**最成熟**的子系统之一，与 CC 2.1.207 原生 `H8
 
 ### 新增待查面（供后续轮次继续）
 
-- [ ] **stop_reason 家族**：CC 对 `max_tokens`（298172 `tengu_max_tokens_reached`）/ `model_context_window_exceeded`（298173）/ `pause_turn` 的处理 vs 本项目，尤其后者是否与 auto-truncate 交互。
+- [x] **stop_reason 家族**（轮次 7）：`max_tokens`/`model_context_window_exceeded`/`pause_turn` 直连路径**透传正确、无 gap**；记录 auto-truncate ↔ CC 双主体 context 管理交互（F13,低/信息，仅需文档化）。
 - [ ] **prompt-caching beta 自愈**：CC 的 `cache-diagnosis-beta`（298146 `w8i`）、`prompt-caching-evict`（298147 `T8i`）beta 拒绝自愈 vs 本项目 cache_control 剥离/negotiation。
 - [ ] **mid-conv role:"system"**：CC 的 `_7n`（298169）`role:"system"` 被拒 → 回退 `<system-reminder>` body vs 本项目 system-reject-mode。
 - [ ] **context-hint SSE**：CC 的 `de.onRequestError`（298170 `retry:context-hint`）+ `classifyStreamError`（isContextHintSse）上游中途下发 context-hint 的重试机制。
