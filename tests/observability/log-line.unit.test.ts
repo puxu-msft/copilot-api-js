@@ -64,6 +64,16 @@ describe("formatLogLine — token column + cache-rate marker", () => {
     expect(line).toContain("↑1.2k ↓456")
   })
 
+  test("↓output is omitted when output is not applicable (undefined), but ↓0 shows for a measured zero", () => {
+    // count_tokens counts input only (no completion) → outputTokens undefined → no ↓ column.
+    const noOutput = stripAnsi(formatLogLine(okParts({ inputTokens: 21, outputTokens: undefined })))
+    expect(noOutput).toContain("↑21")
+    expect(noOutput).not.toContain("↓")
+    // A real request that genuinely produced 0 output still shows ↓0 (measured zero).
+    const zeroOutput = stripAnsi(formatLogLine(okParts({ inputTokens: 21, outputTokens: 0 })))
+    expect(zeroOutput).toContain("↑21 ↓0")
+  })
+
   test("neither token column nor marker render without a resolved model", () => {
     const line = stripAnsi(
       formatLogLine({
