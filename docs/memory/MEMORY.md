@@ -95,3 +95,5 @@
 已归档完成叙事（迁 `docs/archive/memory/`）：pre-response-abort RFC、audit-rfcs 数据模型裁剪。
 
 散落调试参考已收编为 on-demand skills（靠 skill 描述发现，无独立记忆条目）：`bun-node-runtime-gotchas` / `debugging-claude-client-connection` / `debugging-server-crashes` / `debugging-ghc-api-upstream-transport` / `ghc-anthropic-upstream` / `ghc-api-reference`；TS6 延期见 `docs/decisions/` ADR。
+- [无疑问改进当场做](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中就立即改，别以超范围/保守/独立项为名推迟或降级 backlog；反面边界同样守（有分叉的别硬当无分叉）；实例=死代码清理里过时日志前缀第一轮被我保守推迟
+- [遥测分层持久化（P0-P2 landed worktree、P3-P7 待做）](project-telemetry-tiered-storage.md) — 单 27MB JSON→独立 telemetry.db(三层 rollup+DDSketch 分布+终身累计+全可配 telemetry.*);纯聚合层、行级委托 History;承重红线 cost scaled-int micro(防 2^53)/SQLite 只存 sketch·/metrics 内存固定桶/P3 加性双写防半坏/手动 DenseStore 序列化保 min/max;两坑=GPT review roster infra 坏(三底座全挂)+sketch 依赖 DDSketch 私有字段升级须复验;权威看 spec+plan+PoC exp/

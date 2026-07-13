@@ -1,13 +1,13 @@
 ---
 name: project-remove-auto-truncate-keep-calibration
-description: auto-truncate 截断本体已移除、calibration 重定位为本地计数增强（已实施完成，未合并 master）
+description: auto-truncate 截断本体已移除、calibration 重定位为本地计数增强（已合并 master 06c56644）
 metadata: 
   node_type: memory
   type: project
   originSessionId: 68b74fa0-5d30-4697-b816-b37fa7063b7d
 ---
 
-移除 auto-truncate 截断本体（反应式截断/压缩请求 payload，破坏 KV cache、效果差、CC 自理），**保留 calibration 因子模型并重定位为「本地 token 计数准确度增强」**。隔离 worktree `feat/remove-auto-truncate`，Phase 0-8 全落地、inline 执行。
+移除 auto-truncate 截断本体（反应式截断/压缩请求 payload，破坏 KV cache、效果差、CC 自理），**保留 calibration 因子模型并重定位为「本地 token 计数准确度增强」**。**已 rebase + FF 合并入 master（06c56644，2026-07-13）**、worktree 已清理。Phase 0-8 全落地、inline 执行。
 
 **三承重决策**（用户裁定）：① 共享重试预算 `autoTruncateMaxRetries`→`maxReactiveRetries`/config `retry.max_reactive_retries`（实为 17→16 策略后仍全策略共享、非截断专属，经 `adapt` 闭包喂每策略，绝不能删只能改名）；② 400 学习腿从内嵌 `onTokenLimitExceeded`（随反应式截断策略删）解耦为独立 `CalibrationFailureSink`（订阅 `request.failed` statusCode 400，`extractTokenLimitFromResponseText(rawBody)` fallback `parseTokenLimitError`）；③ 新 config `anthropic.use_upstream_count_tokens`（默认 on）。
 
