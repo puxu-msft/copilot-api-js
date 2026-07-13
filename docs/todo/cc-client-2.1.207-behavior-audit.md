@@ -762,6 +762,32 @@ tool 名 sanitize **对 CC 无 gap**（CC 必发合法名、默认 OFF 的 sanit
 
 ---
 
+## 轮次 21（2026-07-13）：deferred tools（`defer_loading`）—— 项目不剥孤儿 defer 标志（非对称）
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 tool-search / 延迟加载流：tools 带 `defer_loading:true`（`app.pretty.js:69761`）+ tool-search stub（`yGt`）+ `advanced-tool-use-2025-11-20` / `tool-search-tool-2025-10-19` beta（61831）；模型引用未加载工具 → 「Tool reference 'X' not found in available tools」（368308/458651）。CC 按自己（对真 Anthropic 的）能力判断做延迟决策。
+
+### 本项目现状（读码）
+
+本项目**主动编排** deferred tools（[message-tools.ts:157 processToolPipeline](../../src/lib/anthropic/message-tools.ts#L157)）——**由项目 `state.toolSearchEnabled` + `modelSupportsToolSearch(GHC 模型)` 驱动**（非 CC 是否请求）。这**合理**：GHC 模型的 tool-search 能力项目比 CC 更懂（CC 以为在对真 Anthropic），故项目按**实际 GHC 模型**重决策是对的。`shouldDefer`（189-194）：`toolSearchEnabled && tool.defer_loading !== false && !NON_DEFERRED && !learned && !historyUsed` —— **尊重** CC 的 `defer_loading:false`（客户端 opt-out）+ 保护 history 已用工具 + deferred-tool-retry 反应式恢复「not found」。**整体设计稳。**
+
+### F27（LOW-MED）— tool-search 关时不剥 CC 的 `defer_loading:true`，孤儿标志入 GHC
+
+**判断（读码，已确认）**：`processToolPipeline` 的 else 分支（[message-tools.ts:198-199](../../src/lib/anthropic/message-tools.ts#L198)）`nonDeferred.push(normalized)`——`normalized`（=`ensureInputSchema(tool)`）**仍带 CC 原始 `defer_loading:true`**，未剥。且 `BUILTIN_STRIP_TOOL_FIELDS=["eager_input_streaming"]`（397）**不含** `defer_loading`。
+
+**后果**：当项目 tool-search **关**（`state.toolSearchEnabled` off **或** GHC 模型不支持 tool-search）**而 CC 发了 `defer_loading:true` 工具**时——项目**不加**搜索 stub/`advanced-tool-use` beta，却把 `defer_loading:true` **原样转发 GHC**：
+- GHC 无 tool-search 机制 + 收到 defer 标志 → (a) 拒 `defer_loading` 为未知 tool 字段 → tool-field-rejection-retry 剥（恢复，1 往返）；或 (b) 接受 defer 但无搜索 → 该工具**不可达** → 模型若调用 → 「not found」→ deferred-tool-retry 翻非延迟重试（恢复，1 往返）。
+- **均反应式恢复、无硬失败**，但**每次都浪费往返**；且是**非对称设计**：项目 tool-search **开**时主动**加** defer 标志，**关**时却不主动**去** CC 的 defer 标志。
+
+**理想方向（不在本轮做）**：`processToolPipeline` 在 tool-search **不生效**时（`!toolSearchEnabled`）**主动剥** tools 的 `defer_loading`（强制全 non-deferred），让 GHC 收到干净工具、省掉必然的 1 往返恢复。对称化「开则加 / 关则去」。这是明确的正确修复（不需 GHC 探针；GHC 无 tool-search 时 defer 标志本就无意义）。**待确认**：`state.toolSearchEnabled` 默认值 + GHC 哪些模型支持 tool-search（定这条 gap 的触发频率）。
+
+### 本轮结论
+
+本项目 deferred-tool 编排**整体稳**（GHC-能力驱动的重决策 + 尊重 client opt-out + history 保护 + 反应式恢复）。唯一 gap 是**非对称**：tool-search 关时不剥 CC 的孤儿 `defer_loading:true` → 每次必然 1 往返反应式恢复（F27，低-中）。修复明确（`!toolSearchEnabled` 时剥 defer_loading），不需探针。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
