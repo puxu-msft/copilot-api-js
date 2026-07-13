@@ -154,4 +154,3 @@ export function recordUpstreamFrame(args: RecordUpstreamFrameArgs): void {
     }
   }
 }
-
