@@ -45,4 +45,12 @@ config-hook（Tier 2 mock 上游）经 `Bun.Transpiler`+`data:` URL 加载（`ho
 - **空串 refusal recovery（thinking-only end_turn）让 Claude Code STALL**（`num_turns=2, result=""`，上游被调 2 次）；非空 recovery 文本防住（`num_turns=1`）——实证了 refusal-recovery 特性的存在价值。→ `docs/refusal-recovery.md` 空串节。
 
 ## 扩展新场景/新 vendor
-骨架 vendor 无关（已证：OpenAI SDK vendor smoke 与 Anthropic 共用核心）：`upstream-script`（脚本化上游 SSE，`createSseResponse`/`jsonResponse`/`httpErrorResponse`/`sequencedUpstream`——最后一个逐腿不同响应、驱动 proxy 内部 reactive retry）+ `spawn-proxy` 的 baseURL 契约 Tier1/Tier2 共用。加 OpenAI/Gemini SDK 场景改客户端库 + 上游帧构造即可，核心不重构。加新上游形状：Tier1 喂 `setUpstreamFetchForTests`，Tier2 改 `cli-refusal-hook.ts` 的 base64 帧元组（注意上面 data-URL 坑）。**待覆盖场景 backlog**（按承重排序、多数 `[DOC-REAL]`）见 spec `docs/spec/2026-07-13-client-proxy-sdk-e2e-harness.md`「e2e 场景覆盖 roadmap」节——挖自 docs/skills/memories 的客户端可观测行为考古，含 keepalive 300s 墙 / thinking 毒化恢复 / 其余 reactive retry 腿 / 翻译矩阵反向腿 / 三类中止区分等。**新绿测试务必变异验证有牙**（关掉被测行为→测试应变红、且只红对应那条）。
+骨架 vendor 无关（已证：OpenAI SDK vendor smoke 与 Anthropic 共用核心）：`upstream-script`（脚本化上游 SSE，`createSseResponse`/`jsonResponse`/`httpErrorResponse`/`sequencedUpstream`——最后一个逐腿不同响应、驱动 proxy 内部 reactive retry）+ `spawn-proxy` 的 baseURL 契约 Tier1/Tier2 共用。加 OpenAI/Gemini SDK 场景改客户端库 + 上游帧构造即可，核心不重构。加新上游形状：Tier1 喂 `setUpstreamFetchForTests`，Tier2 改 `cli-refusal-hook.ts` 的 base64 帧元组（注意上面 data-URL 坑）。
+
+**待覆盖 backlog 的逐条实现配方 + kickoff prompt** 见 **plan `docs/plan/2026-07-13-e2e-client-scenario-backlog.md`**（层/config/上游 400-pattern/oracle/harness 需求/gotcha/变异，逐条可直接执行）；roadmap（优先级）见 spec `docs/spec/2026-07-13-client-proxy-sdk-e2e-harness.md`。常用扩展模式：
+- **reactive retry 腿**：`sequencedUpstream([() => httpErrorResponse(400, {type,message: 命中该腿正则}), () => createSseResponse(happyTurn())])` → 断言 `callCount===2` + 客户端拿正常 turn；各腿正则在 `src/lib/request/strategies/<腿>.ts`（tool-field=`tools.N.X.field: Extra inputs are not permitted`、cache-control=`.cache_control.X.field: Extra inputs...`、unsupported-beta=`invalid beta flag`）。
+- **时序（keepalive/idle）**：`tests/helpers/fake-clock.ts`+`fake-stream.ts` 驱动确定性时间别真 sleep；真 CC 300s 墙只能 Tier2 真计时（重、gated，`exp/cc-idle-280s`），Tier1 只能验「空 content_block_delta 被 SDK 无害累积、不进可见内容」。
+- **client-abort**：Tier1 `stream(..., { signal })` + `AbortController.abort()` → SDK 抛 `APIUserAbortError`。
+- **buffered-retry 上游 RST**：`createSseResponseThenError(frames, new Error("RST"))` 造中途断流。
+
+**新绿测试务必变异验证有牙**（关掉被测行为→测试应变红、且只红对应那条；已示范 MUTANT-A 空串守卫 / MUTANT-C stall / MUTANT-D 截断 gate，各精准逮住单条）。
