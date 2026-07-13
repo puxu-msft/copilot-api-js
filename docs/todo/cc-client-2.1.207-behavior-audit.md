@@ -442,6 +442,63 @@ fine-grained tool streaming **无正确性 gap**（CC block-stop 解析 + 空 de
 
 ---
 
+## 轮次 12（2026-07-13）：anthropic-beta 全集对账（27 betas）
+
+### CC 2.1.207 完整 beta 常量表（`app.pretty.js:61831` 的 `Q0(name, token)`）
+
+逐条对本项目 negotiation 支持矩阵。**关键前提**：本项目 negotiation 是**数据驱动通用剥离**——`unsupported-beta-retry`（explicit + laconic 枚举）剥**任意**未识别 beta。故下表「reactive-only」≠ 坏，= GHC 拒时通用 strip 兜底、无硬失败。仅「改响应 wire」或「应主动 emit/映射」的才是真待办。
+
+| beta token | CC 特性 | 本项目状态 | 备注 |
+|---|---|---|---|
+| `claude-code-20250219` | 基础 claude_code | 透传 | CC 恒发、GHC 必受 |
+| `interleaved-thinking-2025-05-14` | 交错思考 | ✓ 显式 | |
+| `context-1m-2025-08-07` | 1M 上下文 | ✓ 显式 | |
+| `context-management-2025-06-27` | context 编辑 | ✓ 显式 | 主动 emit/映射 |
+| `extended-cache-ttl-2025-04-11` | 1h cache TTL | ✓ 显式主动 | 镜像 GHC 5m/1h |
+| `structured-outputs-2025-12-15` | 结构化输出 | ✓ 按名 | partner-strip + retry |
+| `effort-2025-11-24` | effort 档位 | ✓ 按名 | effort-learning-retry |
+| `advanced-tool-use-2025-11-20` | tool_search 新 | ✓ 显式 | |
+| `tool-search-tool-2025-10-19` | tool_search 旧 | reactive-only | CC 同发新旧两版；本项目认新版 |
+| `prompt-caching-scope-2026-01-05` | scope 子字段 | ✓ 按名（剥 scope） | 轮次 8 |
+| `prompt-caching-evict-2026-05-12` | evict_on_complete | reactive-only | **F14** |
+| `cache-diagnosis-2026-04-07` | cache_miss_reason | reactive-only | **F14** |
+| `context-hint-2026-04-09` | 双向 context hint | reactive-only | **F16** |
+| `mid-conversation-system-2026-04-07` | 中途 role:system | reactive-only | **F15** |
+| `fast-mode-2026-02-01` | speed:"fast" | reactive-only | **F5 增补**：fast 模式发 body `speed` **+ 此 beta**，两者都未识别、都 reactive 剥 |
+| `redact-thinking-2026-02-12` | 服务端 redact thinking | reactive-only | **新 F18-a**：改响应侧 thinking 形态 |
+| `thinking-token-count-2026-05-13` | usage 加 thinking token 数 | reactive-only | **新 F18-b**：改 usage wire |
+| `server-side-fallback-2026-06-01` | 服务端换模型 | reactive-only | 连 **F10**（GHC 无服务端 fallback） |
+| `fallback-credit-2026-06-01` | fallback 计费 | reactive-only | 连 F10（`creditCode`） |
+| `web-search-2025-03-05` | web_search | 退役 | 本项目已删 web_search 双跳 |
+| `task-budgets-2026-03-13` | 任务预算 | reactive-only | 客户端特性倾向；proxy 相关性低 |
+| `advisor-tool-2026-03-01` | advisor 工具 | reactive-only | `tengu_advisor_tool_interrupted`（轮次 5 见） |
+| `afk-mode-2026-01-31` | 离席模式 | reactive-only | 客户端特性 |
+| `mcp-servers-2025-12-04` | MCP servers | reactive-only | 可能异端点/客户端侧 |
+| `files-api-2025-04-14` | Files API | reactive-only | **异端点**（非 /v1/messages） |
+| `environments-2025-11-01` | 环境/沙箱 | reactive-only | 客户端特性 |
+| `ccr-byoc-2025-07-29` | BYOC | reactive-only | 客户端/路由特性 |
+
+### F18（LOW-MED）— 两个「改响应 wire」的新 beta 需专门核实（其余 reactive 覆盖足够）
+
+全 27 betas 里，**未识别但需超出「通用 reactive 剥」关注**的仅两个（改响应侧、不是纯请求装饰）：
+
+**F18-a — `thinking-token-count-2026-05-13`（改 usage wire）**：该 beta 令上游在 usage 里回**思考 token 计数**（独立字段）。若 GHC 支持 → 本项目 usage 转发 / history 记录**必须不吞该新字段**（`richest-data-flow`；参见排队中的「usage wire 形状」待查项，二者应合并核）。若 GHC 不支持 → 剥 → CC 拿不到、退回自算。**待实测**：GHC 是否支持 + 本项目 usage passthrough 是否 allowlist（会漏未知字段）还是全量透传。
+
+**F18-b — `redact-thinking-2026-02-12`（改 thinking 响应形态）**：客户端请求上游**服务端 redact thinking**（返 `redacted_thinking` 而非明文）。与本项目 thinking quarantine（F11）交互：若 CC 请求 redaction 而 GHC 不支持 → 上游返**明文** thinking（CC 期望 redacted）→ 本项目 quarantine 按明文处理，CC 侧显示/存储与预期不符。**待实测**：GHC 是否支持；不支持时明文 thinking 经本项目 quarantine 后对 CC 的影响。
+
+**其余 22 betas 结论**：
+- 已显式/按名处理 8 个（interleaved-thinking / context-1m / context-management / extended-cache-ttl / structured-outputs / effort / advanced-tool-use / prompt-caching-scope）——**无 gap**。
+- 已在前轮记为 F5/F14/F15/F16 的 5 个（fast-mode / prompt-caching-evict / cache-diagnosis / context-hint / mid-conversation-system）——归主线 C。
+- `server-side-fallback` / `fallback-credit` 连 F10：GHC 无服务端 fallback，剥之与 F10 结论一致（只 client-side `refusalFallbackModel` 有效）。
+- 客户端特性 / 异端点 7 个（task-budgets / advisor-tool / afk-mode / mcp-servers / files-api / environments / ccr-byoc）：proxy 相关性低，reactive 剥足够；`files-api` 是**独立端点**（若用户走 Files API 需另评，不在 /v1/messages 审计范围）。
+- `tool-search-tool-2025-10-19`（旧 tool-search）：CC 新旧两版都发，本项目认新版，旧版 reactive 剥——无实害。
+
+### 本轮结论
+
+27 betas 全对账完成：本项目**通用 reactive 剥离 + 8 个显式/按名处理**已覆盖绝大多数，无硬失败。真正需专项核实的仅 **F18-a（usage wire）/ F18-b（redact-thinking）** 两个改响应侧的 beta，均待 GHC 探针。矩阵本身可作为「CC↔GHC beta 支持矩阵」长期参照落进 skill `ghc-api-reference`。
+
+---
+
 ## 阶段综合（轮次 1-11，F1-F17）：三条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
@@ -498,7 +555,7 @@ CC 2.1.207 引入一批 2026 新 beta，本项目**无显式感知**、靠通用
 ### 原清单已全覆盖（10 轮，F1-F16）。后续轮次可深挖的**次级面**（未开工）
 
 - [ ] **fine-grained tool streaming 语义**（轮次 11 已查）：确认无正确性 gap（CC block-stop 解析、空 delta 安全、web_search mid-parse 已退役）；剥 `eager_input_streaming` 仅 UX eagerness 降级（F17,最低，主线 C）。
-- [ ] **anthropic-beta 全集对账**：CC 2.1.207 发的完整 beta 集（61831 的 `Q0(...)` 全表：`interleaved-thinking` / `context-1m` / `tool-search` / `structured-outputs` 等）逐条对本项目 negotiation 支持矩阵，找未覆盖项。
-- [ ] **usage wire 形状**：CC 消费的 `message_delta.usage` / `message_start.usage` 字段（cache_creation/cache_read/server_tool_use 细分）vs 本项目 usage 透传与 history 记录。
+- [x] **anthropic-beta 全集对账**（轮次 12）：27 betas 全对账（矩阵表）；通用 reactive 剥 + 8 显式/按名处理覆盖绝大多数，无硬失败。真待办仅 F18-a（`thinking-token-count` 改 usage wire）/ F18-b（`redact-thinking` 改 thinking 形态）两个改响应侧 beta。
+- [ ] **usage wire 形状**：CC 消费的 `message_delta.usage` / `message_start.usage` 字段（cache_creation/cache_read/server_tool_use 细分 + F18-a 的 thinking-token-count）vs 本项目 usage 透传与 history 记录——**与 F18-a 合并核**。
 - [ ] **metadata.user_id / 请求归属**：CC 的 `metadata`（`Wtt()`，297987）字段 vs 本项目是否透传/用于 GHC 归属。
 - [ ] **tool_choice 变体**：CC 发的 `tool_choice`（auto/any/tool/none）+ `disable_parallel_tool_use` vs 本项目转发。
