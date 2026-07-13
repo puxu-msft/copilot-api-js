@@ -788,6 +788,30 @@ CC 2.1.207 tool-search / 延迟加载流：tools 带 `defer_loading:true`（`app
 
 ---
 
+## 轮次 22（2026-07-13）：Claude Code 官方工具 stub 集陈旧（漏 WebSearch/BashOutput/NotebookRead）
+
+### 发现来源（CC 源码坐标 + 对账）
+
+CC 2.1.207 内置工具（源码确认为真工具、非字符串误配）：`WebSearch`（`var Hee="WebSearch"`，`app.pretty.js:147746`；36427 工具列表）、`BashOutput`（281364 tool 列表 + userFacingName）、`NotebookRead`（36427/161470，与 NotebookEdit 并列）、`ListMcpResources`/`ReadMcpResource`（MCP 资源工具）、`MultiEdit`（1 次，可能 legacy）。
+
+### 本项目现状（读码）
+
+本项目 [message-tools.ts:44 CLAUDE_CODE_OFFICIAL_TOOLS](../../src/lib/anthropic/message-tools.ts#L44)（16 个）：`Task TaskOutput Bash Glob Grep Read Edit Write NotebookEdit WebFetch TodoWrite KillShell AskUserQuestion Skill EnterPlanMode ExitPlanMode`。注释（41）：「必须始终存在的官方工具名」——即**意图为完整官方集**，作为「历史 tool_use 引用了当前 `tools` 数组缺失的工具」时的 stub 注入安全网（无声明的 tool_use 会被 GHC 拒）。`injectClaudeCodeOfficialTools` **默认 true**（[state.ts:1414](../../src/lib/state.ts#L1414)）→ 注入默认生效。
+
+### F28（MEDIUM，确认功能 gap，clear-fix）— stub 集漏 CC 2.1.207 的 WebSearch/BashOutput/NotebookRead 等
+
+**判断（读码+对账，已确认）**：项目 stub 集**漏**至少：**`WebSearch`**（项目只有 `WebFetch`——两者是不同工具：WebFetch 抓 URL、WebSearch 搜索）、**`BashOutput`**（后台 shell 输出）、**`NotebookRead`**（项目只有 `NotebookEdit`）；待定：`ListMcpResources`/`ReadMcpResource`/`MultiEdit`。
+
+**触发与后果**：stub 注入的安全网**仅**在「历史有某工具的 tool_use、但当前请求 `tools` 数组不含该工具」时起效（CC 常因 plan 模式限制工具集 / 用户 toggle web-search / 权限模式变更而**中途改变工具集**）。此时若被孤立的历史 tool_use 属于 `WebSearch`/`BashOutput`/`NotebookRead` → **stub 集里没有 → 注不出 stub → GHC 拒「tool_use 无匹配声明」→ 硬失败**（整条对话卡住，因历史无法修复）。默认 ON + tool-set 中途变更常见 → **活的 gap**。
+
+**理想方向（clear-fix，不需 GHC 探针）**：把 stub 集与 CC 2.1.207 实际内置工具**对齐**——补 `WebSearch`/`BashOutput`/`NotebookRead`，核 `ListMcpResources`/`ReadMcpResource`/`MultiEdit` 是否仍在（`MultiEdit` 若已废弃则不补）。**注意**：stub 的 `input_schema` 用空 schema（`{type:"object",properties:{}}`）即可（安全网只为让历史 tool_use 有声明、不为让模型新调用它——空 schema 反而降低模型误用倾向）。**待实测**：列一份 CC 2.1.207 完整客户端工具名清单（从 `36427`/tool 注册处系统提取）做权威对账，别只补这三个。
+
+### 本轮结论
+
+本项目 CC 官方工具 stub 注入机制**对**（安全网防孤立历史 tool_use），但**名单陈旧**——漏 CC 2.1.207 的 `WebSearch`/`BashOutput`/`NotebookRead` 等（F28，中，确认功能 gap）。默认 ON + CC 中途改工具集常见 → 用这些工具的对话在工具集收缩时会**硬失败卡死**。修复明确（对齐名单 + 空 schema），不需探针，但应系统提取 CC 完整工具清单而非只补三个。归 F23 同类「clear-fix 功能 gap」。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
@@ -819,6 +843,7 @@ CC 2.1.207 引入一批 2026 新 beta，本项目**无显式感知**、靠通用
 |---|---|---|---|
 | **P1** | F1 | thinking-only 块间空档裸 ping 不重置 300s → CC 静默重试整请求(重复上游调用) | headless-CC + mock 上游实测触发条件 |
 | **P1** | F23 | vision 检测漏 tool_result 内嵌 image → 工具返回图像丢视觉(确认功能 gap) | 无(明确修复:递归检测);document 部分需探针 |
+| **P1** | F28 | CC 官方工具 stub 集陈旧(漏 WebSearch/BashOutput/NotebookRead)→ 工具集收缩时孤立历史 tool_use 硬失败 | 无(对齐名单+空 schema);宜系统提取 CC 完整工具清单 |
 | **P2** | F7 | count_tokens 失败返 `{input_tokens:1}` 抑制 CC 本地兜底 | 实测 CC 对代理非 200 的反应 |
 | **P2** | F10/F15 | 服务端消化抢占 CC 原生自愈(主线 B) | 补「复刻 CC 回退」模式 + 文档化 |
 | **P2** | F19/F20 | richest-data-flow 捕获缺口(主线 D)：usage cost 因子 + metadata 会话关联 | 无(明确该做)；落地见 skill |
