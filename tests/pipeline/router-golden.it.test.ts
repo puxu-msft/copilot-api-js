@@ -106,6 +106,12 @@ const RJ = (reason: string): RouteDecision => ({ kind: "reject", status: 400, re
  * Captured verbatim from the pre-refactor HEAD (Phase 0 T0.0). Rows span every
  * (vendor × supported_endpoints) combination the 5 decideRoute impls branch on,
  * plus the Google force-fallback (google-*) and the index-miss unknown model.
+ *
+ * **Phase 7 (2026-07-13)**: the `anthropic` column is NO LONGER the frozen Phase-0 reject-only
+ * behavior — no-suffix anthropic now forward-translates a non-Anthropic model to the first reachable
+ * OpenAI leg (user-adjusted priority `messages > responses > cc`; see `decideAnthropicRoute`). The
+ * cc/responses/gemini columns stay byte-frozen (their no-suffix logic is unchanged). `isResponsesSupported`
+ * is legacy-TRUE (== isEndpointSupported), so legacy/unknown OpenAI models auto-route to /responses.
  */
 const MATRIX: Array<MatrixRow> = [
   {
@@ -121,7 +127,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "anthropic-no-msg",
     vendor: "Anthropic",
     endpoints: [ENDPOINT.CHAT_COMPLETIONS],
-    anthropic: RJ('Model "anthropic-no-msg" does not support /v1/messages: model does not support /v1/messages endpoint'),
+    anthropic: TR(ENDPOINT.CHAT_COMPLETIONS),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: TR(ENDPOINT.CHAT_COMPLETIONS),
     gemini: PT(ENDPOINT.CHAT_COMPLETIONS),
@@ -130,7 +136,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "cc-only",
     vendor: "OpenAI",
     endpoints: [ENDPOINT.CHAT_COMPLETIONS],
-    anthropic: RJ('Model "cc-only" does not support /v1/messages: vendor is "OpenAI", not Anthropic'),
+    anthropic: TR(ENDPOINT.CHAT_COMPLETIONS),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: TR(ENDPOINT.CHAT_COMPLETIONS),
     gemini: PT(ENDPOINT.CHAT_COMPLETIONS),
@@ -139,7 +145,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "resp-only",
     vendor: "OpenAI",
     endpoints: [ENDPOINT.RESPONSES],
-    anthropic: RJ('Model "resp-only" does not support /v1/messages: vendor is "OpenAI", not Anthropic'),
+    anthropic: TR(ENDPOINT.RESPONSES),
     cc: TR(ENDPOINT.RESPONSES),
     responses: PT(ENDPOINT.RESPONSES),
     gemini: TR(ENDPOINT.RESPONSES),
@@ -149,7 +155,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "ws-only",
     vendor: "OpenAI",
     endpoints: [ENDPOINT.WS_RESPONSES],
-    anthropic: RJ('Model "ws-only" does not support /v1/messages: vendor is "OpenAI", not Anthropic'),
+    anthropic: TR(ENDPOINT.RESPONSES),
     cc: TR(ENDPOINT.RESPONSES),
     responses: PT(ENDPOINT.RESPONSES),
     gemini: TR(ENDPOINT.RESPONSES),
@@ -158,7 +164,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "cc-and-resp",
     vendor: "OpenAI",
     endpoints: [ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES],
-    anthropic: RJ('Model "cc-and-resp" does not support /v1/messages: vendor is "OpenAI", not Anthropic'),
+    anthropic: TR(ENDPOINT.RESPONSES),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: PT(ENDPOINT.RESPONSES),
     gemini: PT(ENDPOINT.CHAT_COMPLETIONS),
@@ -168,7 +174,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "msg-only-openai",
     vendor: "OpenAI",
     endpoints: [ENDPOINT.MESSAGES],
-    anthropic: RJ('Model "msg-only-openai" does not support /v1/messages: vendor is "OpenAI", not Anthropic'),
+    anthropic: RJ('Model "msg-only-openai" cannot be served on /v1/messages (vendor is "OpenAI", not Anthropic) and supports no translatable /responses or /chat/completions leg'),
     cc: RJ('Model "msg-only-openai" does not support the /chat/completions endpoint'),
     responses: RJ('Model "msg-only-openai" does not support /responses or /chat/completions'),
     gemini: RJ('Model "msg-only-openai" does not support the /chat/completions endpoint'),
@@ -178,7 +184,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "legacy-none",
     vendor: "OpenAI",
     endpoints: undefined,
-    anthropic: RJ('Model "legacy-none" does not support /v1/messages: vendor is "OpenAI", not Anthropic'),
+    anthropic: TR(ENDPOINT.RESPONSES),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: PT(ENDPOINT.RESPONSES),
     gemini: PT(ENDPOINT.CHAT_COMPLETIONS),
@@ -189,7 +195,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "google-resp",
     vendor: "Google",
     endpoints: [ENDPOINT.RESPONSES],
-    anthropic: RJ('Model "google-resp" does not support /v1/messages: vendor is "Google", not Anthropic'),
+    anthropic: TR(ENDPOINT.CHAT_COMPLETIONS),
     cc: TR(ENDPOINT.RESPONSES),
     responses: TR(ENDPOINT.CHAT_COMPLETIONS),
     gemini: TR(ENDPOINT.RESPONSES),
@@ -198,7 +204,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "google-none",
     vendor: "Google",
     endpoints: undefined,
-    anthropic: RJ('Model "google-none" does not support /v1/messages: vendor is "Google", not Anthropic'),
+    anthropic: TR(ENDPOINT.CHAT_COMPLETIONS),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: TR(ENDPOINT.CHAT_COMPLETIONS),
     gemini: PT(ENDPOINT.CHAT_COMPLETIONS),
@@ -208,7 +214,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "google-cc",
     vendor: "Google",
     endpoints: [ENDPOINT.CHAT_COMPLETIONS],
-    anthropic: RJ('Model "google-cc" does not support /v1/messages: vendor is "Google", not Anthropic'),
+    anthropic: TR(ENDPOINT.CHAT_COMPLETIONS),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: TR(ENDPOINT.CHAT_COMPLETIONS),
     gemini: PT(ENDPOINT.CHAT_COMPLETIONS),
@@ -219,7 +225,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "google-msg",
     vendor: "Google",
     endpoints: [ENDPOINT.MESSAGES],
-    anthropic: RJ('Model "google-msg" does not support /v1/messages: vendor is "Google", not Anthropic'),
+    anthropic: RJ('Model "google-msg" cannot be served on /v1/messages (vendor is "Google", not Anthropic) and supports no translatable /responses or /chat/completions leg'),
     cc: RJ('Model "google-msg" does not support the /chat/completions endpoint'),
     responses: TR(ENDPOINT.CHAT_COMPLETIONS),
     gemini: RJ('Model "google-msg" does not support the /chat/completions endpoint'),
@@ -231,7 +237,7 @@ const MATRIX: Array<MatrixRow> = [
     vendor: "OpenAI",
     endpoints: undefined,
     modelUndefined: true,
-    anthropic: RJ('Model "unknown-unregistered-model" does not support /v1/messages: vendor is "unknown", not Anthropic'),
+    anthropic: TR(ENDPOINT.RESPONSES),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: PT(ENDPOINT.RESPONSES),
     gemini: PT(ENDPOINT.CHAT_COMPLETIONS),

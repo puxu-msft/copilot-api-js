@@ -79,10 +79,11 @@ export function decideRoute(env: RequestEnvelope): RouteDecision {
 export function decideRouteFromInput(input: RouteInput): RouteDecision {
   if (input.routeOverride) return decideExplicitLeg(input)
 
-  // ── NO-SUFFIX: reduce to Phase 0 per-inbound behavior (golden byte-identity) ──
+  // ── NO-SUFFIX: cc/responses/gemini reduce to Phase 0 per-inbound behavior (golden byte-identity);
+  //    anthropic now forward-translates non-Anthropic models (Phase 7 no-suffix auto-route). ──
   switch (input.clientFormat) {
     case "anthropic": {
-      return decideAnthropicRoute(input.modelName)
+      return decideAnthropicRoute(input)
     }
     case "openai-cc": {
       return decideOpenAiCcRoute(input.model)
@@ -205,20 +206,49 @@ function explicitRejectReason(modelName: string, routeOverride: RouteOverride, l
 // ============================================================================
 
 /**
- * anthropic /v1/messages is bypass-direct: passthrough `/v1/messages` or reject 400 — NO
- * translate/fallback in Phase 1 (RFC §2.2 / messages:167). `modelName` is the resolved id
- * (falls back to the request body's model when the index missed).
+ * anthropic NO-SUFFIX routing (RFC §4.3 W-priority, user-adjusted order `messages > responses > cc`).
  *
- * The RFC §4.3 anthropic priority `messages > cc > responses` is `[新增]` (the translation
- * legs land in Phase 2); until then no-suffix anthropic stays reject-if-unsupported, exactly
- * as Phase 0 froze it.
+ *   1. direct `/v1/messages` if the model is Anthropic-vendor + messages-capable (`supportsDirectAnthropicApi`).
+ *   2. else FORWARD-translate to the first reachable OpenAI leg — **RESPONSES before CHAT_COMPLETIONS**.
+ *      This is the user-decided order (2026-07-13), a DELIBERATE DEVIATION from the RFC §4.3 pseudocode's
+ *      `messages > cc > responses`: gpt-5.x SKUs are Responses-first, so the convenience auto-route should
+ *      prefer /responses. A /responses candidate on a force-fallback vendor (Google's broken Copilot
+ *      /responses) retargets to /chat/completions, mirroring {@link decideExplicitLeg}.
+ *   3. else reject 400 (no direct + no translatable OpenAI leg).
+ *
+ * `modelName` (resolved id, or the body's model on an index miss) keys the direct gate + reject reason;
+ * `model` (indexed capabilities) keys the forward-leg support checks. This is the no-suffix convenience the
+ * headline use case needs ("Claude Code uses a gpt model" → the proxy forward-translates it); the explicit
+ * `@cc`/`@responses` suffix still lets the client pin a leg. It was reject-only through Phase 0-6 (the
+ * translation machinery landed but the no-suffix auto-route was deferred and never wired) — Phase 7
+ * completes it (`isResponsesSupported` shares the explicit-leg gate at {@link isLegSupported}, so no-suffix
+ * and `@responses` agree on which models are responses-capable, incl. the legacy-true default).
  */
-function decideAnthropicRoute(modelName: string): RouteDecision {
-  const decision = supportsDirectAnthropicApi(modelName)
-  if (!decision.supported) {
-    return { kind: "reject", status: 400, reason: `Model "${modelName}" does not support /v1/messages: ${decision.reason}` }
+function decideAnthropicRoute(input: RouteInput): RouteDecision {
+  const direct = supportsDirectAnthropicApi(input.modelName)
+  if (direct.supported) return { kind: "passthrough", endpoint: ENDPOINT.MESSAGES }
+
+  // Forward-translate candidate leg — responses > cc (user-adjusted priority).
+  let leg: UpstreamEndpoint | undefined
+  if (isResponsesSupported(input.model)) leg = ENDPOINT.RESPONSES
+  else if (isEndpointSupported(input.model, ENDPOINT.CHAT_COMPLETIONS)) leg = ENDPOINT.CHAT_COMPLETIONS
+
+  if (leg === undefined) {
+    return {
+      kind: "reject",
+      status: 400,
+      reason: `Model "${input.modelName}" cannot be served on /v1/messages (${direct.reason}) and supports no translatable /responses or /chat/completions leg`,
+    }
   }
-  return { kind: "passthrough", endpoint: ENDPOINT.MESSAGES }
+
+  // Google force-fallback: a /responses candidate on a force-vendor model retargets to /chat/completions
+  // (Copilot's Google /responses is broken — mirrors the explicit-leg unified interception).
+  if (leg === ENDPOINT.RESPONSES && shouldForceChatCompletionsFallback(input.model)) {
+    leg = ENDPOINT.CHAT_COMPLETIONS
+  }
+
+  // A non-Anthropic model's forward leg is never the anthropic default (/v1/messages) → always translate.
+  return { kind: "translate", to: leg }
 }
 
 // ============================================================================
