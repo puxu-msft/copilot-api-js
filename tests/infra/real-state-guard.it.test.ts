@@ -37,7 +37,7 @@ import {
 } from "~/lib/anthropic/feature-negotiation"
 import {
   //
-  onTokenLimitExceeded,
+  learnCalibration,
   persistLimits,
   resetAllLimitsForTesting,
 } from "~/lib/auto-truncate/engine"
@@ -73,7 +73,7 @@ describe("persistence writers land inside the sandbox (end-to-end, not just PATH
   })
 
   test("auto-truncate learned-limits persist writes to the sandboxed LEARNED_LIMITS", async () => {
-    onTokenLimitExceeded("claude-guard-probe", 12_345)
+    learnCalibration("claude-guard-probe", 10_000, 13_000, { isLive: true })
     await persistLimits()
 
     assertSandboxed(PATHS.LEARNED_LIMITS)

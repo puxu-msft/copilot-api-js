@@ -1,6 +1,8 @@
 /**
- * Common types and configuration for auto-truncate modules.
- * Shared between OpenAI and Anthropic format handlers.
+ * Per-model token-count calibration: a size-aware factor model that maps a local
+ * gpt-tokenizer estimate to the upstream's real input-token count, learned from
+ * live traffic (success + 400 legs) and a factory seed. Consumed for honest local
+ * token counting (count-tokens fallback + debug probe).
  */
 
 import consola from "consola"
@@ -12,43 +14,6 @@ import {
   createSerializedAsyncFn,
 } from "~/lib/atomic-fs"
 import { PATHS } from "~/lib/config/paths"
-import { HTTPError } from "~/lib/error"
-import { parseTokenLimitError } from "~/lib/error"
-import {
-  //
-  CLOSE_TAG,
-  extractLeadingSystemReminderTags,
-  extractTrailingSystemReminderTags,
-  OPEN_TAG,
-} from "~/lib/system-prompt"
-
-// ============================================================================
-// Configuration
-// ============================================================================
-
-/** Configuration for auto-truncate behavior */
-export interface AutoTruncateConfig {
-  /** Safety margin percentage to account for token counting differences (default: 2) */
-  safetyMarginPercent: number
-  /** Percentage of context to preserve uncompressed from the end (default: 0.7 = 70%) */
-  preserveRecentPercent: number
-  /** Whether to enforce token limit (default: true) */
-  checkTokenLimit: boolean
-  /** Explicit token limit override (used in reactive retry — caller has already applied margin) */
-  targetTokenLimit?: number
-}
-
-/** Maximum number of reactive auto-truncate retries per request */
-export const MAX_AUTO_TRUNCATE_RETRIES = 5
-
-/** Factor to apply to error-reported limit when retrying (90% of limit) */
-export const AUTO_TRUNCATE_RETRY_FACTOR = 0.9
-
-export const DEFAULT_AUTO_TRUNCATE_CONFIG: AutoTruncateConfig = {
-  safetyMarginPercent: 2,
-  preserveRecentPercent: 0.7,
-  checkTokenLimit: true,
-}
 
 // ============================================================================
 // Learned Limits (per-model, with calibration)
@@ -74,12 +39,9 @@ export interface FactorModel {
 }
 /** Per-model learned limits with size-aware tokenizer calibration */
 export interface ModelLimits {
-  /** Only set once a 400 taught us the real cap; seed-only models leave it undefined
-   *  so calculateTokenLimit falls back to model capabilities. */
-  tokenLimit?: number
   factorModel: FactorModel
   /** LIVE learning events only (success + 400); seed/backfill do NOT bump it.
-   *  Drives computeSafetyMargin so synthetic priors never collapse the margin. */
+   *  A confidence signal surfaced by the debug calibration probe. */
   liveSampleCount: number
   updatedAt: number
 }
@@ -103,46 +65,6 @@ const learnedLimits = new Map<string, ModelLimits>()
 /** Get learned limits for a model (including calibration data) */
 export function getLearnedLimits(modelId: string): ModelLimits | undefined {
   return learnedLimits.get(modelId)
-}
-
-/**
- * Check whether a model has known limits from previous failures.
- * Used to decide whether to pre-check requests before sending.
- */
-export function hasKnownLimits(modelId: string): boolean {
-  return learnedLimits.has(modelId)
-}
-
-// ============================================================================
-// Token Limit Learning
-// ============================================================================
-
-/**
- * Called when a token limit error (400) occurs.
- * Records the learned limit and feeds calibration into the size bucket.
- */
-export function onTokenLimitExceeded(modelId: string, reportedLimit: number, reportedCurrent?: number, estimatedTokens?: number): void {
-  // Ensure a (seeded) entry exists, then update the learned cap.
-  const limits = ensureModelLimits(modelId)
-
-  // N1: seed-only models start with tokenLimit === undefined, so the first 400
-  // must write it; afterward only tighten (lower = more restrictive).
-  if (limits.tokenLimit === undefined || reportedLimit < limits.tokenLimit) {
-    limits.tokenLimit = reportedLimit
-    limits.updatedAt = Date.now()
-    consola.info(`[AutoTruncate] Learned token limit for ${modelId}: ${reportedLimit}`)
-  }
-
-  // Feed the 400's (estimate, real) pair into the size-aware calibration model.
-  if (reportedCurrent !== undefined && estimatedTokens !== undefined && estimatedTokens > 0) {
-    learnCalibration(modelId, estimatedTokens, reportedCurrent, { isLive: true })
-    consola.info(
-      `[AutoTruncate] Calibration for ${modelId}: actual=${reportedCurrent} vs estimated=${estimatedTokens}`
-        + ` → factor=${factorAt(modelId, estimatedTokens).toFixed(3)}`,
-    )
-  }
-
-  schedulePersist()
 }
 
 /** Reset all dynamic limits (for testing) */
@@ -280,7 +202,7 @@ export interface BackfillBucketAgg {
  * still has its prior. Weight is capped at WEIGHT_CAP (Σreal/Σest scaled down
  * proportionally) so a huge backfilled count can't freeze the sliding window
  * against later LIVE learning (P-B5). Backfill is NOT live: `liveSampleCount` is
- * untouched, so computeSafetyMargin keeps its conservative width until real
+ * untouched, so the liveSampleCount confidence signal stays honest until real
  * success/400 events arrive. Called once at the END of a run (never mid-scan). The
  * per-bucket overwrite DISCARDS any live samples the CalibrationSink learned into
  * these same buckets during the scan window — a bounded one-time cold-start artifact
@@ -303,27 +225,6 @@ export function applyBackfillBuckets(modelId: string, agg: Array<BackfillBucketA
   }
   limits.updatedAt = Date.now()
   schedulePersist()
-}
-
-// ============================================================================
-// Dynamic Safety Margin
-// ============================================================================
-
-const BASE_MARGIN = 0.03
-const BONUS_MARGIN_PER_SAMPLE = 0.07
-
-/**
- * Compute dynamic safety margin based on calibration confidence.
- * Fewer samples → wider margin (conservative). More samples → narrower margin.
- *
- * - 0 samples: 10% (0.03 + 0.07)
- * - 1 sample:  10%
- * - 10 samples: ~3.7%
- * - ∞ samples:  3%
- */
-export function computeSafetyMargin(sampleCount: number): number {
-  if (sampleCount <= 0) return BASE_MARGIN + BONUS_MARGIN_PER_SAMPLE
-  return BASE_MARGIN + BONUS_MARGIN_PER_SAMPLE / sampleCount
 }
 
 // ============================================================================
@@ -394,21 +295,20 @@ export async function loadPersistedLimits(): Promise<void> {
     const data = JSON.parse(raw) as { version: number; limits: Record<string, unknown> }
     if (data.version === 2) {
       for (const [modelId, lim] of Object.entries(data.limits as Record<string, Partial<ModelLimits>>)) {
-        // boundsVersion 不匹配（或缺 factorModel）→ 丢桶重 seed（保留 tokenLimit/liveSampleCount）
+        // boundsVersion 不匹配（或缺 factorModel）→ 丢桶重 seed（保留 liveSampleCount）。
+        // 旧 v2 的 tokenLimit 字段（截断遗留）读时忽略。
         const persisted = lim.factorModel
         const fm = persisted && persisted.boundsVersion === FACTOR_BOUNDS_VERSION ? persisted : seedFactorModel(modelId)
         learnedLimits.set(modelId, {
-          ...(lim.tokenLimit !== undefined && { tokenLimit: lim.tokenLimit }),
           factorModel: fm,
           liveSampleCount: lim.liveSampleCount ?? 0,
           updatedAt: lim.updatedAt ?? Date.now(),
         })
       }
     } else if (data.version === 1) {
-      for (const [modelId, lim] of Object.entries(data.limits as Record<string, { tokenLimit: number; calibrationFactor: number; sampleCount?: number }>)) {
+      for (const [modelId, lim] of Object.entries(data.limits as Record<string, { calibrationFactor: number; sampleCount?: number }>)) {
         const fm = Object.hasOwn(DEFAULT_FACTOR_SEED, modelId) ? seedFactorModel(modelId) : seedTopBucketOnly(lim.calibrationFactor)
         learnedLimits.set(modelId, {
-          ...(lim.tokenLimit > 0 && { tokenLimit: lim.tokenLimit }),
           factorModel: fm,
           liveSampleCount: lim.sampleCount ?? 0,
           updatedAt: Date.now(),
@@ -441,177 +341,4 @@ export async function loadPersistedLimits(): Promise<void> {
   for (const modelId of Object.keys(DEFAULT_FACTOR_SEED)) {
     ensureModelLimits(modelId)
   }
-}
-
-// ============================================================================
-// Reactive Auto-Truncate Helpers
-// ============================================================================
-
-/** Copilot error structure for JSON parsing */
-interface CopilotErrorBody {
-  error?: {
-    message?: string
-    code?: string
-    type?: string
-  }
-}
-
-/** Result from tryParseAndLearnLimit */
-export interface LimitErrorInfo {
-  type: "token_limit"
-  /** The reported limit (tokens) */
-  limit?: number
-  /** The current usage that exceeded the limit */
-  current?: number
-}
-
-/**
- * Parse an HTTPError to detect token limit errors,
- * and record the learned limit for future pre-checks.
- *
- * When `estimatedTokens` is provided (the GPT tokenizer estimate at the time
- * of the error), also updates the per-model calibration factor.
- *
- * Returns error info if the error is a retryable token limit error, null otherwise.
- */
-export function tryParseAndLearnLimit(error: HTTPError, modelId: string, learn = true, estimatedTokens?: number): LimitErrorInfo | null {
-  // 400 → try to parse token limit
-  if (error.status === 400) {
-    let errorJson: CopilotErrorBody | undefined
-    try {
-      errorJson = JSON.parse(error.responseText) as CopilotErrorBody
-    } catch {
-      return null
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- errorJson.error may be undefined at runtime
-    if (!errorJson?.error?.message) return null
-
-    // Check OpenAI format (code: "model_max_prompt_tokens_exceeded")
-    // or Anthropic format (type: "invalid_request_error")
-    const isTokenError = errorJson.error.code === "model_max_prompt_tokens_exceeded" || errorJson.error.type === "invalid_request_error"
-
-    if (!isTokenError) return null
-
-    const tokenInfo = parseTokenLimitError(errorJson.error.message)
-    if (!tokenInfo) return null
-
-    // Record the learned limit (only when auto-truncate is enabled)
-    if (learn) {
-      onTokenLimitExceeded(modelId, tokenInfo.limit, tokenInfo.current, estimatedTokens)
-    }
-
-    return {
-      type: "token_limit",
-      limit: tokenInfo.limit,
-      current: tokenInfo.current,
-    }
-  }
-
-  return null
-}
-
-// ============================================================================
-// Tool Result Compression
-// ============================================================================
-
-/** Threshold for large tool_result content (bytes) */
-export const LARGE_TOOL_RESULT_THRESHOLD = 10000 // 10KB
-
-/** Maximum length for compressed tool_result summary */
-const COMPRESSED_SUMMARY_LENGTH = 500
-
-/**
- * Compress a large tool_result content to a summary.
- * Keeps the first and last portions with a note about truncation.
- *
- * Preserves `<system-reminder>` tag wrappers (injected by Claude Code)
- * with a truncated summary of their content, instead of letting them
- * get sliced into broken XML fragments by character-level truncation.
- */
-export function compressToolResultContent(content: string, threshold: number = LARGE_TOOL_RESULT_THRESHOLD): string {
-  if (content.length <= threshold) {
-    return content
-  }
-
-  // Extract trailing <system-reminder> tags before compression.
-  // These are preserved as truncated summaries instead of being sliced
-  // into broken XML fragments by character-level truncation.
-  const { mainContentEnd, tags } = extractTrailingSystemReminderTags(content)
-  const reminders = tags.map((tag) => {
-    const summary = tag.content.trim().split("\n")[0].slice(0, 80)
-    return `${OPEN_TAG}\n[Truncated] ${summary}\n${CLOSE_TAG}`
-  })
-
-  const mainContent = content.slice(0, mainContentEnd)
-
-  // Compress the main content (without trailing system-reminder tags)
-  const halfLen = Math.floor(COMPRESSED_SUMMARY_LENGTH / 2)
-  const start = mainContent.slice(0, halfLen)
-  const end = mainContent.slice(-halfLen)
-  const removedChars = mainContent.length - COMPRESSED_SUMMARY_LENGTH
-
-  let result = `${start}\n\n[... ${removedChars.toLocaleString()} characters omitted for brevity ...]\n\n${end}`
-
-  // Re-append preserved system-reminder tags
-  if (reminders.length > 0) {
-    result += "\n" + reminders.join("\n")
-  }
-
-  return result
-}
-
-// ============================================================================
-// Compacted Text Block Compression
-// ============================================================================
-
-/** Prefix that identifies a compacted tool result in a system-reminder tag */
-const COMPACTED_RESULT_PREFIX = "Result of calling the "
-
-/**
- * Compress a compacted tool result text block.
- *
- * Claude Code compacts tool_result blocks into text blocks wrapped in
- * `<system-reminder>` tags during conversation summarization. Format:
- *
- *     <system-reminder>
- *     Result of calling the Read tool: "     1→...file content..."
- *     </system-reminder>
- *
- * These blocks can be very large (entire file contents) but are low-value
- * since the file can be re-read. This replaces the full content with a
- * compressed summary preserving the tool name and a short preview.
- *
- * Returns the compressed text, or `null` if the text doesn't match
- * the expected compacted format.
- */
-export function compressCompactedReadResult(text: string): string | null {
-  const { mainContentStart, tags } = extractLeadingSystemReminderTags(text)
-
-  // Must be exactly one system-reminder tag covering the entire text
-  if (tags.length !== 1) return null
-  // Allow trailing whitespace/newlines after the tag
-  if (mainContentStart < text.length && text.slice(mainContentStart).trim() !== "") return null
-
-  const content = tags[0].content
-  if (!content.startsWith(COMPACTED_RESULT_PREFIX)) return null
-
-  // Extract tool name: "Result of calling the Read tool: "..."
-  const colonPos = content.indexOf(": ", COMPACTED_RESULT_PREFIX.length)
-  if (colonPos === -1) return null
-
-  const toolName = content.slice(COMPACTED_RESULT_PREFIX.length, colonPos).replace(/ tool$/, "")
-
-  // Extract the quoted content after ": "
-  const afterColon = content.slice(colonPos + 2)
-  if (!afterColon.startsWith('"')) return null
-
-  // Get the inner content (between quotes) — may use \" escapes
-  const innerContent = afterColon.slice(1, afterColon.endsWith('"') ? -1 : undefined)
-
-  // Build a short preview from the first meaningful line
-  const firstLines = innerContent.split(String.raw`\n`).slice(0, 3)
-  const preview = firstLines.join(" | ").slice(0, 150)
-
-  return `${OPEN_TAG}\n` + `[Compressed] ${toolName} tool result (${innerContent.length.toLocaleString()} chars). ` + `Preview: ${preview}\n` + CLOSE_TAG
 }

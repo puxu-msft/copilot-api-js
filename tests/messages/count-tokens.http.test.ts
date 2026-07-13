@@ -10,7 +10,6 @@
  *   - in-catalog non-/v1/messages models (embeddings) skip the doomed upstream call
  *   - out-of-catalog models skip the upstream call
  *   - upstream non-200 / thrown error → warn + local fallback (never throws)
- *   - auto-truncate inflation early-return, before the upstream call
  *   - stream:true wire is still counted as JSON (no streaming branch)
  *   - the retired api.anthropic.com direct path is never hit
  */
@@ -23,7 +22,6 @@ import {
   test,
 } from "bun:test"
 
-import { onTokenLimitExceeded } from "~/lib/auto-truncate/engine"
 import { getBus } from "~/lib/observability/bus"
 import {
   //
@@ -65,7 +63,6 @@ describe("POST /v1/messages/count_tokens", () => {
       copilotToken: "copilot-test-token",
       vsCodeVersion: "1.100.0",
       responseHeaderTimeout: 0,
-      autoTruncate: false,
     })
     setModels({
       object: "list",
@@ -201,38 +198,6 @@ describe("POST /v1/messages/count_tokens", () => {
     expect(status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(json.input_tokens).toBe(77)
-  })
-
-  test("auto-truncate inflation early-return fires before any upstream call", async () => {
-    const fetchMock = setFetchMock(async () => new Response(JSON.stringify({ input_tokens: 5 }), { status: 200 }))
-    setStateForTests({ autoTruncate: true })
-    setModels({
-      object: "list",
-      data: [
-        mockModel("claude-sonnet-4.5", {
-          vendor: "Anthropic",
-          supported_endpoints: ["/v1/messages"],
-          capabilities: { type: "chat", tokenizer: "o200k_base", limits: { max_context_window_tokens: 1000, max_prompt_tokens: 500, max_output_tokens: 500 } },
-        }),
-      ],
-    })
-
-    // Seed a learned token limit so hasKnownLimits() is true and the inflation
-    // check has a limit to compare against (mirrors a prior upstream 400).
-    onTokenLimitExceeded("claude-sonnet-4.5", 500)
-
-    // A prompt far over the tiny 500-token limit triggers inflation.
-    const huge = "word ".repeat(5000)
-    const { status, json } = await countTokens({
-      model: "claude-sonnet-4.5",
-      max_tokens: 128,
-      messages: [{ role: "user", content: huge }],
-    })
-
-    expect(status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(0)
-    // Inflated to floor(contextWindow * 0.95) = floor(1000 * 0.95) = 950.
-    expect(json.input_tokens).toBe(950)
   })
 
   test("emits a request-shaped line (system.request_line), not an [INFO] syslog line", async () => {

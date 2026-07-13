@@ -8,28 +8,21 @@ import {
 
 import {
   //
-  ensureModelLimits,
   factorAt,
   getLearnedLimits,
-  onTokenLimitExceeded,
+  learnCalibration,
   resetAllLimitsForTesting,
 } from "./engine"
 
 afterEach(() => resetAllLimitsForTesting())
 
-test("seed-only model has undefined tokenLimit → calculateTokenLimit falls back to capabilities", () => {
-  ensureModelLimits("claude-opus-4.8") // seeded, no 400 yet
-  expect(getLearnedLimits("claude-opus-4.8")?.tokenLimit).toBeUndefined()
-})
-
-test("N1: first 400 on a seeded model writes tokenLimit despite undefined start", () => {
-  ensureModelLimits("claude-opus-4.8")
-  onTokenLimitExceeded("claude-opus-4.8", 900_000, 950_000, 500_000)
-  expect(getLearnedLimits("claude-opus-4.8")?.tokenLimit).toBe(900_000)
-})
-
-test("400 leg feeds learnCalibration into the size bucket (isLive)", () => {
-  onTokenLimitExceeded("m", 900_000, 950_000, 480_000) // real 950k / est 480k ≈ 1.979, bucket5
+test("learnCalibration feeds an (est, real) sample into the size bucket + bumps liveSampleCount", () => {
+  learnCalibration("m", 480_000, 950_000, { isLive: true }) // real 950k / est 480k ≈ 1.979, top bucket
   expect(factorAt("m", 480_000)).toBeCloseTo(1.979, 1)
   expect(getLearnedLimits("m")?.liveSampleCount).toBe(1)
+})
+
+test("non-live sample (seed/backfill) does NOT bump liveSampleCount", () => {
+  learnCalibration("m", 20_000, 26_000, { isLive: false })
+  expect(getLearnedLimits("m")?.liveSampleCount).toBe(0)
 })

@@ -22,7 +22,7 @@
  *     so it may briefly read slightly higher than the bucket sums reflect until the
  *     next live sample lands and re-syncs them — self-healing, not a leak.
  *   - Backfill is synthetic → `isLive:false` semantics: `liveSampleCount` stays 0,
- *     so `computeSafetyMargin` keeps its conservative width until real events land.
+ *     so the liveSampleCount confidence signal stays honest until real events land.
  *
  * Idempotency + recovery:
  *   - **Guard**: `history_meta(calibration_backfill_version)` short-circuits once
