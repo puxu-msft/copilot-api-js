@@ -10,10 +10,10 @@
 2. Bracket 归一化：`opus[1m]` → `opus-1m`。
 3. 整名 override 查找（按归一化拼写匹配）：如 `opus` → `claude-opus-4.8`、`claude-opus-4.6` → `claude-opus-4.8`。
 4. 修饰符后缀（`-1m`/`-fast`）：整名无 override 但 base 有时，重定向 base 再重挂后缀。
-5. 别名/规范化（`resolveModelNameCore`）：连字符版本 `claude-opus-4-6` → 点形式 `claude-opus-4.6`，随后对规范化后的名字再查一次 override。
+5. 别名/规范化（`resolveModelNameCore`）：**拼写规范化数据驱动**——按 `normalizeForMatching`（大小写、点/连字符不敏感）在活的 `/models` 目录里回查，命中则返回该模型的**真实 id**（如 `claude-opus-4-6` → 目录里的 `claude-opus-4.6`）。随后对规范化后的名字再查一次 override。
 6. Override 目标支持链式解析 + 循环检测。
 
-未命中任何 override 的名字**原样透传**，由上游（GHC）自行接受或拒绝。
+未命中任何 override、且在 `/models` 目录里无拼写等价项的名字**原样透传**，由上游（GHC）自行接受或拒绝。
 
 ## 日期后缀不再自动剥离
 
@@ -33,7 +33,11 @@ model_overrides:
   claude-opus-4-1-20250805: claude-opus-4.8
 ```
 
-保留的行为：连字符 → 点规范化（`claude-haiku-4-5` → `claude-haiku-4.5`，GHC 上游也不认连字符形式）仍自动进行——只移除了日期这一维。
+保留的行为：连字符 → 点的**拼写规范化**（`claude-haiku-4-5` → `claude-haiku-4.5`，GHC 上游也不认连字符形式）仍进行——但**不再靠硬编码的 `claude-{family}-{major}-{minor}` 正则**，而是按 `/models` 目录**数据驱动**（`canonicalizeFromCatalog`，拼写不敏感回查、返回真实 id）。这比正则更正确：对**任意**含点的模型 id 都成立（含非-Claude 的 `gemini-3.1-pro-preview`/`gpt-5.5`），绝不产出目录里不存在的名字，且新模型自动工作、零 config。它是同一模型的拼写等价（类似大小写不敏感），非策略决定，故留在 resolver 而非塞进 `model_overrides`。
+
+> 注：`normalizeModelId`（`normalize-id.ts`）是**独立的 state-free 纯函数**——前端经 `~backend` 在浏览器里用它把上游响应名归一化到 `/models` id 做遥测 join，无法依赖后端 catalog，故它仍用 `VERSIONED_RE` 正则。请求侧（resolver）与响应/前端侧（normalizeModelId）是不同消费者，只是历史上共用过该正则。
+
+**边界**：空 `/models` 目录下不再做连字符→点转换（数据驱动无源，返回原样）——这是本次唯一的可观测行为差异。生产中 `cacheModels()` 在服务开始前运行（失败即 `exit(1)`），运行期目录永不为空，故此边界不可达；单测需先 `setModels(...)` 才有规范化源。
 
 ## 修饰符后缀
 

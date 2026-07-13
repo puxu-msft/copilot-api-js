@@ -91,6 +91,20 @@ describe("Model Name Translation", () => {
     expect(resolveModelName("claude-haiku-3-5")).toBe("claude-haiku-3.5")
   })
 
+  test("canonicalization is data-driven off /models, not a claude-only regex", () => {
+    // Any catalog model with dots in its id canonicalizes from the hyphen spelling —
+    // including NON-Claude models the old regex never matched (gemini-3.1-pro-preview).
+    setModels({
+      object: "list",
+      data: [mockModel("gemini-3.1-pro-preview"), mockModel("gpt-5.5"), mockModel("claude-opus-4.6")],
+    })
+    expect(resolveModelName("gemini-3-1-pro-preview")).toBe("gemini-3.1-pro-preview")
+    expect(resolveModelName("gpt-5-5")).toBe("gpt-5.5")
+    expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4.6")
+    // A spelling with no catalog twin is returned verbatim (upstream then rejects).
+    expect(resolveModelName("gemini-9-9-nonexistent")).toBe("gemini-9-9-nonexistent")
+  })
+
   test("does NOT auto-strip date suffixes — dated names pass through unchanged", () => {
     // Date-suffix stripping was removed: mapping a dated snapshot name to a
     // canonical id is now an explicit model_overrides decision, not hidden logic.
