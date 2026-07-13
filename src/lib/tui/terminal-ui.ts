@@ -1230,6 +1230,9 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
     case "tool-call-recovered":
     case "refusal-recovered":
     case "refusal-errored":
+    case "error-shaping-decided":
+    case "error-shaping-auq-synthesized":
+    case "error-shaping-selfheal-delegated":
     case "tool-input-decode-failed":
     case "protect-streaming-retry":
     case "context-edits-applied":

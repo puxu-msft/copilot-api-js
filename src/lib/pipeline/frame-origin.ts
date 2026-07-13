@@ -26,7 +26,7 @@ const FRAME_SYNTHETIC_ORIGIN = Symbol("frameSyntheticOrigin")
 
 /** Provenance kinds a forwarded-track frame can carry (record-layer metadata only; never affects
  *  the wire bytes sent to the client). */
-export type SyntheticOriginKind = "hook-rewrite" | "refusal-recovery"
+export type SyntheticOriginKind = "hook-rewrite" | "refusal-recovery" | "error-shaping-auq" | "error-shaping-canonical"
 
 /** Tag a frame with its synthetic origin (mutates + returns the SAME object — see module doc). */
 export function tagFrameSynthetic<T extends ClientFrame>(frame: T, kind: SyntheticOriginKind): T {

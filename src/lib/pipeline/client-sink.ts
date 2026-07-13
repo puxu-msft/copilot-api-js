@@ -166,7 +166,10 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
       }),
     )
 
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery"): void => {
+  const sampleForwarded = (
+    frame: ClientFrame,
+    synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
+  ): void => {
     onForwarded?.({
       offsetMs: Date.now() - streamStartMs,
       type: (forwardedType ?? frameType)(frame),
@@ -490,7 +493,10 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
   // only `data` (no SSE event/id/retry line), matching legacy `ws.send`. `synthetic` marks a proxy-
   // injected keepalive OR a hook-rewritten frame so history/UI/logs never mistake either for real
   // unaltered upstream content.
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery"): void => {
+  const sampleForwarded = (
+    frame: ClientFrame,
+    synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
+  ): void => {
     onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) })
   }
   const sendRaw = (frame: ClientFrame): Promise<void> =>

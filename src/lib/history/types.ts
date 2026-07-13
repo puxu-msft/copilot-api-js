@@ -180,8 +180,23 @@ export interface SseEventRecord {
    *   - "refusal-recovery" — the FORWARDED track's frame was injected or rewritten by refusal recovery
    *     (the end_turn synthetic text block + rewritten end_turn delta, or the error-mode `event: error`
    *     frame). The upstream track never carries it (it keeps the genuine upstream `refusal`).
+   *   - "error-shaping-canonical" — the FORWARDED track's post-commit terminal `event: error` frame was
+   *     produced by error-shaping's `buildCanonicalErrorFrame` (G-3), REPLACING the upstream terminator;
+   *     the upstream track keeps the real upstream error. (Phase 3 wiring.)
+   *   - "error-shaping-auq" — the FORWARDED track's frames are the pre-commit AskUserQuestion synthesis
+   *     (a whole fabricated success turn injected in lieu of the upstream error); the upstream track
+   *     keeps the real error. (Phase 4 wiring.)
    */
-  synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-mock" | "hook-rewrite" | "hook-replay" | "refusal-recovery"
+  synthetic?:
+    | "keepalive"
+    | "anchor"
+    | "synthetic-message-start"
+    | "hook-mock"
+    | "hook-rewrite"
+    | "hook-replay"
+    | "refusal-recovery"
+    | "error-shaping-canonical"
+    | "error-shaping-auq"
 }
 
 /**

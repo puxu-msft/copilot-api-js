@@ -151,6 +151,12 @@ export type FeatureKind =
   | "refusal-recovered"
   /** error mode: surfaced a thinking-only upstream refusal as an `event: error` frame + ctx.fail */
   | "refusal-errored"
+  /** error-shaping 决策命中 — detail: { decision: "retry-signal"|"ask-user-question"|"canonical-error"|"defer-to-block-level", errorType: ApiErrorType, commitPhase: "pre-commit"|"post-commit" } */
+  | "error-shaping-decided"
+  /** error-shaping B类 AskUserQuestion 合成命中 — detail: { errorType: ApiErrorType } */
+  | "error-shaping-auq-synthesized"
+  /** error-shaping D类自愈委派命中（策略被强制 canHandle=false）— detail: { strategyName: string } */
+  | "error-shaping-selfheal-delegated"
   /** a tool_use input field selected for decode couldn't be decoded — `detail: { tool, field?, reason }` */
   | "tool-input-decode-failed"
   /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */
