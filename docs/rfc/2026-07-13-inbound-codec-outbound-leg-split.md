@@ -367,3 +367,23 @@ codec 不再 import codec（D3 delegate 全删）;gemini via-responses 的 Respo
 - router golden 52 + 现有翻译 IT + byte-critical SSE golden（含 C0 补的 3 条）——每 commit 逐字节/oracle 等价。
 - **新增守卫**：两 Record 穷尽性（编译）+ L1"每 cell resolveCellAssembly 成功且 buildStrategies 非空不 throw"（Phase 7 那类 bug 的直接守卫）+ reverse-sanitize 单次 + pipelineInfo 经 ctx 非空。
 - 活服务器实测（收尾,隔离 XDG_DATA_HOME）:各 direct + 前向 gpt 无后缀 + 反向 @messages 端到端。
+
+## 11.9 v3 修订（第二轮 review,7 项,主会话 file:line 复核属实,全采纳）
+
+第二轮 reviewer 核了全部 12 个活 cell 的真实策略栈,总判"需 v3 局部修订、核心 RESOLVED"。下列**进 plan 前必解**:
+
+**HIGH-A（§11.3 照字面即 BLOCK,已复核属实）**：auto-truncate 的有无**不是 clientFormat 标量**——`(openai-responses, /v1/messages)` 反向腿 auto-truncate **ON**（走 `buildAnthropicStrategies`-17,`responses/handler-v4.ts:157-165`）,而 `(openai-responses, /chat|/responses)` direct **OFF**（`buildOpenAiResponsesStrategiesForEnv`-3,`:168`,driver maxRetries=1）。**任一轴单独都拆不开**（对称:同 `/responses` 腿 cc/gemini/anthropic-forward 含 auto-truncate、唯 responses 客户端不含）。→ **v3 定稿**：`RETRY_SEMANTICS` 类型是 `Record<ClientFormat, (env) => RetrySemanticsSpec>`——语义半**显式读 `env.targetEndpoint`**（`RETRY_SEMANTICS[openai-responses](env)` 对 MESSAGES 腿返 auto-truncate:true+maxRetries:N、对 CC/Responses 腿返 false+maxRetries:1）。穷尽性内核不变（两 keyed Record 笛卡尔积覆盖全 cell 空间 → 漏=编译错）,但**撤回"干净语义×wire 二分"的修辞**——承认语义半是 2D 函数（读两轴）。**plan 必为 `(openai-responses,/v1/messages)` cell 补"auto-truncate 在栈内"回归/golden**（唯一同时击穿两轴标量的角落,最易漏）。**红线写进 plan：绝不把 autoTruncate 当 clientFormat 标量实现。**
+
+**HIGH-B（§11.2(a) 载体选型,已复核属实）**：`PrepareHints`（`pipeline.ts:244`）契约是 **Replace semantics + attempt 0 清空**（每次 retry 完整覆盖）。把请求生命周期**稳定**态（truncateBaseline / resanitize 闭包 / betaProbe **可变句柄** / clientAnthropicBeta 种子）塞进 prepareHints → 首次带 hint 的 retry（如 unsupported-beta 返 `{excludeBetas}`）**整体覆盖**清空稳定基线 → auto-truncate under-truncate / prepareWire wrong-wire;betaProbe 可变句柄放 replace-semantics 直接自相矛盾。→ **v3 定稿**：请求生命周期稳定态住 **`RequestEnvelope` 新 readonly 顶层字段 `requestState`**（与 `model` 同级,`envelope.ts:86`,`with()` 浅拷贝保留引用）,**与 per-attempt 的 prepareHints 分开**。§11.2 载体表 row1/row2 的"prepareHints"改为"`env.requestState`"。
+
+**MEDIUM（进 plan 前应解）**：
+- **§11.2(b) ctx read-back surface**：`recordRetryPipelineStateV4` 读的 4 值,ctx 现有 `setAttemptCacheControlStripped`/`setAttemptEffectiveRequest`（write-only,`context/types.ts:448-449`）但**无 getter**,且 `truncateBaseline`/`initialSanitizationInfo` 在 ctx 上**无家**。→ plan 显式列要新增的 **ctx read-back getter + state**（truncateBaseline/initialSanitizationInfo）;`truncateBaseline` 是 **parse 输出**（非 prepareWire 写）,归 `env.requestState`（同 HIGH-B）非 ctx。**不违"非目标不改数据模型"**（加 ctx API 面 ≠ 改 history 持久 schema）,但须显式列 surface。
+- **§11.2(c) exchange 载体补全 + 论证**：§11.2 漏了 `rebuiltMessages`（fallback 从 session history 重建的会话数组,prepareWire 必读,`openai-responses/codec.ts:488`）——载体必含。且 responseId/itemId/rebuiltMessages 是 **openai-responses 专属**态,plan 须论证 **ctx vs per-request `exchange scratch`（keyed off env）** 哪个更干净,别默认塞共享 ctx（4 格式共享的 lifecycle 对象挂格式专属 scratch 是泄漏）。**倾向 per-request exchange scratch**（InboundCodec 持,prepareWire 经 env 读）。
+- **§11.6 hybrid shim 具名化**：driver 的"已迁腿集合"做成**具名常量 + 断言 C5 收敛为空**（C2:{MESSAGES}→C3:+{CC}→C4:+{RESPONSES,ws}）,别把二选一派发藏散文;C0 的 3 条 byte golden 须覆盖 shim **两分支**（assembly 路径 + codec 路径）。这是 `large-refactor` 认可的短命显式过渡态,非新 BLOCK。
+- **§11 M2 补一句**：reverse 响应侧终端分类（`classifyReverseAnthropicTerminal`,**已是共享 leaf** `pipeline/reverse-terminal.ts`,非散布,不搬）+ reverse 非流式 render（`renderReverse*NonStreamingV4`）+ reverse honest-outbound 累加（pump `onUpstreamFrame`→Anthropic acc）**留 handler/pump 侧**——§11 显式写明,兑现 §0.1 对 M2 的承诺,免 plan 再争。
+
+**LOW（文档一致性）**：§11.2 CellAssembly 方法图删掉 `createAccumulator()`（与 §11.5"删不搬家"矛盾;实测唯一调用点 `openai-gemini/codec.ts:214` 是 codec 内部 delegate,无 pump 消费,§11.5 删的裁定正确）。
+
+**已 RESOLVED（第二轮确认 §11 真接住首轮）**：BLOCK-1 穷尽性内核、betaProbe 惰性生命周期、cutover 4-route 原子机制、gemini HIGH-1、render-两轴 HIGH-2、byte golden C0、createAccumulator 删裁定、**OQ1 心跳无耦合**（第二轮实测证伪"C2 迁 prepareWire 扰动 anchor 时序"——anchored sink 不读 betaProbe/recordFeature,prepareWire 在请求交换期跑、anchor 在响应 pump 跑,时间不重叠,零耦合）。
+
+**总门槛**：HIGH-A + HIGH-B 必须在 plan 里落死（尤其 HIGH-A 的"语义半读两轴 + responses-reverse auto-truncate golden"红线）。核心设计（集中化 2D cell 装配 + 双 Record 穷尽）**站得住,可进 plan**——v3 是措辞精修 + 载体选型,非推倒重来。
