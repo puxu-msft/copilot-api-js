@@ -168,17 +168,17 @@ describe("T7.2 — buildMessagesDriverStrategies returns a REAL non-empty stack 
   const ccLegEnv = (leg: (typeof ENDPOINT)["CHAT_COMPLETIONS"] | (typeof ENDPOINT)["RESPONSES"]): RequestEnvelope =>
     ({ targetEndpoint: leg, body: { model: "claude-x", messages: [] }, model: { id: "claude-x" } }) as unknown as RequestEnvelope
 
-  test("a CC-target env yields the CC stack (contains auto-truncate) — NOT a throw", () => {
+  test("a CC-target env yields the CC stack (real strategies) — NOT a throw", () => {
     const { codec, betaProbe } = codecAndProbe()
     const stack = buildMessagesDriverStrategies(ccLegEnv(ENDPOINT.CHAT_COMPLETIONS), { codec, betaProbe })
     expect(stack.length).toBeGreaterThan(0)
-    expect(stack.map((s) => s.name)).toContain("auto-truncate")
+    expect(stack.map((s) => s.name)).toContain("token-refresh")
   })
 
   test("a Responses-target env also yields the CC stack (deferred CC→Responses wire) — NOT a throw", () => {
     const { codec, betaProbe } = codecAndProbe()
     const stack = buildMessagesDriverStrategies(ccLegEnv(ENDPOINT.RESPONSES), { codec, betaProbe })
     expect(stack.length).toBeGreaterThan(0)
-    expect(stack.map((s) => s.name)).toContain("auto-truncate")
+    expect(stack.map((s) => s.name)).toContain("token-refresh")
   })
 })

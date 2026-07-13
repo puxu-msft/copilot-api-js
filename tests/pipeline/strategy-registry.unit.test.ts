@@ -52,9 +52,9 @@ describe("strategy-registry — assembleStrategiesForEndpoint (RFC §7.1)", () =
     const viaRegistry = assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, { anthropic: anthropicSupply() }).map((s) => s.name)
     const direct = buildAnthropicStrategies(anthropicSupply()).map((s) => s.name)
     expect(viaRegistry).toEqual(direct)
-    // Sanity: the stack is non-trivial (14 strategies) and includes the auto-truncate tail.
+    // Sanity: the stack is non-trivial and ends with the deferred-tool tail.
     expect(viaRegistry.length).toBeGreaterThan(10)
-    expect(viaRegistry).toContain("auto-truncate")
+    expect(viaRegistry).toContain("deferred-tool-retry")
   })
 
   test("/v1/messages leg WITHOUT the anthropic supply → throws (wiring bug, not silent)", () => {
@@ -66,8 +66,8 @@ describe("strategy-registry — assembleStrategiesForEndpoint (RFC §7.1)", () =
     for (const leg of [ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES]) {
       const viaRegistry = assembleStrategiesForEndpoint(leg, { cc: ccSupply() }).map((s) => s.name)
       expect(viaRegistry).toEqual(direct)
-      // Sanity: the CC stack is the 4-strategy chain (network → server-error → token-refresh → auto-truncate).
-      expect(viaRegistry).toContain("auto-truncate")
+      // Sanity: the CC stack is the 3-strategy chain (network → server-error → token-refresh).
+      expect(viaRegistry).toContain("token-refresh")
       expect(viaRegistry.length).toBeGreaterThan(0)
     }
   })

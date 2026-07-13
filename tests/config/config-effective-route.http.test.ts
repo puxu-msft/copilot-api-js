@@ -72,6 +72,7 @@ describe("GET /api/config — effective config snapshot", () => {
     const NON_SECRET_DESPITE_NAME = new Set<string>([
       "tokenBasedBilling", // billing mode flag, not a credential
       "showGitHubToken", // whether to log the token, not the token itself
+      "useUpstreamCountTokens", // count_tokens upstream toggle, not a credential
     ])
     const leaked = Object.keys(body).filter((k) => SECRET_NAME.test(k) && !k.endsWith("Set") && !NON_SECRET_DESPITE_NAME.has(k))
     expect(leaked).toEqual([])
