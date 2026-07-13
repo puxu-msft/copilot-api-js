@@ -185,6 +185,19 @@ function migratedCell(env: RequestEnvelope): CellAssembly | null {
   return isCellMigrated(env.clientFormat, env.targetEndpoint) ? resolveCellAssembly(env.clientFormat, env.targetEndpoint) : null
 }
 
+/**
+ * The exchange retry stack for this env: the MIGRATED cell's CellAssembly-composed stack, else the legacy
+ * `deps.strategies` (a per-route factory / fixed array). LAZY on purpose (RFC §11.6): the legacy factory is
+ * NEVER evaluated for a migrated cell, so its side effects — the handlers' `recordFeature("via-responses" /
+ * "via-chat-completions-fallback")` — do not double-fire alongside the leg's `translateOut` (which now owns
+ * that observability). Both the S4 exchange (runRequest) and the buffered-sink re-exchange resolve through here.
+ */
+function resolveExchangeStrategies(deps: DriverDeps, env: RequestEnvelope): ReadonlyArray<RetryStrategy> {
+  const cell = migratedCell(env)
+  if (cell) return cell.buildStrategies(env)
+  return typeof deps.strategies === "function" ? deps.strategies(env) : deps.strategies
+}
+
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */
 async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<DriverRequestResult> {
   // S1 — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model).
@@ -221,12 +234,11 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
   const afterHook = hook?.onRequest ? (hook.onRequest(rewritten) ?? rewritten) : rewritten
 
   // S4 — Exchange: error-driven retry loop (prepareWire → transport → strategy re-env).
-  // Resolve the strategy factory now that the envelope (model + codec state) exists. For a MIGRATED
-  // cell the CellAssembly composes the stack (RETRY_SEMANTICS × the leg's wire strategies); otherwise
-  // the legacy per-route factory / fixed array.
-  const migratedForStrategies = migratedCell(afterHook)
-  const legacyStrategies = typeof deps.strategies === "function" ? deps.strategies(afterHook) : deps.strategies
-  const strategies = migratedForStrategies ? migratedForStrategies.buildStrategies(afterHook) : legacyStrategies
+  // Resolve the strategy stack now that the envelope (model + codec state) exists. For a MIGRATED cell the
+  // CellAssembly composes it (RETRY_SEMANTICS × the leg's wire strategies); else the legacy per-route
+  // factory / fixed array. LAZY (resolveExchangeStrategies) — the legacy factory is not evaluated for a
+  // migrated cell, so its recordFeature side effects do not double-fire with the leg's translateOut.
+  const strategies = resolveExchangeStrategies(deps, afterHook)
   // C0-① (RFC §11.1): runExchange returns the POST-retry env (the final attempt's
   // env), not `rewritten` (pre-exchange). Consumers — e.g. the Anthropic pump
   // building the tool-call recoverer from env.body.tools, which deferred-tool-retry
@@ -651,7 +663,9 @@ async function runResponseBufferedSink(
 ): Promise<ResponseOutcome> {
   const cap = opts.retryCap ?? 0
   const bufferCapBytes = opts.bufferCapBytes ?? 0
-  const strategies = typeof deps.strategies === "function" ? deps.strategies(env) : deps.strategies
+  // Same lazy resolution as the S4 exchange: a migrated cell's buffered re-exchange uses the CellAssembly
+  // stack, never the legacy factory (so no double recordFeature vs the leg's translateOut).
+  const strategies = resolveExchangeStrategies(deps, env)
   let current = upstream
   let currentEnv = env
   let attempt = 0
