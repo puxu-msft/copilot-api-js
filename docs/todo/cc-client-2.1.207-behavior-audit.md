@@ -899,6 +899,40 @@ thinking budget/max_tokens **确认正确无 gap**（F31）。
 
 ---
 
+## 轮次 26（2026-07-13）：API_DEFINED_TOOL_TYPE_PREFIXES 陈旧 —— 漏 advisor_/agent_toolset_/memory_
+
+> meta 模式定向类别 1（名单完整性）——第四条 CC-工具名单陈旧 gap（前有 F28 stub、F30 NON_DEFERRED）。
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 server / API-defined tool 类型（带日期后缀，`app.pretty.js`）：`web_search_20250305`/`web_search_20260209`、`web_fetch_20260209`、`code_execution_20260120`/`20260521`、`memory_20250818`、`text_editor_20250728`/`20250124`、`bash_20250124`、**`advisor_20260301`**（417456/297914）、**`agent_toolset_20260401`**（417456）。
+
+### 本项目现状（读码）
+
+[isApiDefinedToolType](../../src/lib/anthropic/message-tools.ts#L342)（342-345）= **前缀 allowlist**：`API_DEFINED_TOOL_TYPE_PREFIXES.some(p => type.startsWith(p))`，列表 = `web_search_ web_fetch_ code_execution_ text_editor_ computer_ bash_`。用于**把 server 工具从 custom-tool sanitize / 延迟中排除**（[tool-name-sanitize.ts:48](../../src/lib/anthropic/sanitize/tool-name-sanitize.ts#L48) `!isApiDefinedToolType(t.type)`——注释「server 工具名是 upstream 协议契约、绝不 sanitize」）。前缀式比全值 allowlist 稳（日期后缀不破），但**新工具类别**前缀缺失则误判。
+
+### F32（LOW-MED，类别 1 陈旧名单，与 F28/F30 同族）— 漏 advisor_/agent_toolset_/memory_
+
+**判断（读码+对账，已确认）**：`API_DEFINED_TOOL_TYPE_PREFIXES` **漏**：
+- **`advisor_`**（`advisor_20260301`，CC advisor 工具，见轮次 5 `tengu_advisor_tool_interrupted`）——项目全仓零命中。
+- **`agent_toolset_`**（`agent_toolset_20260401`，NEW 2026）——零命中。
+- **`memory_`**——不在前缀列表（memory 由专门 rewrite 处理成 native `memory_20250818`，[features.ts:193](../../src/lib/anthropic/features.ts#L193)，但**rewrite 后的 `memory_20250818`-typed 工具经 `isApiDefinedToolType` 仍返 false** → 被当 custom）。
+
+**后果**：这些 typed server 工具被**误分类为 custom** → 失去 server-tool 保护：
+- **延迟**（tool-search 默认 ON）：当 custom → 进 `customNames` → 可被延迟（F30 同机制），而 server 工具**不该**被 tool-search 延迟（协议语义）。
+- **sanitize**（若 `sanitizeToolNames` ON，默认 OFF）：当 custom → 试图 rename 其 name → **破坏 `type` 协议契约**（server 工具名是固定契约，改了 GHC/上游不认）。
+- `memory` 尤其敏感——native memory 工具被延迟/改名会破坏记忆功能。
+
+触发取决于 CC 是否发 advisor/agent_toolset 工具（新/niche 特性）+ config；但**名单陈旧本身是确定的**（前缀式已很稳，仍漏新类别）。
+
+**理想方向（clear-fix，与 F28/F30 合并落地）**：补前缀 `advisor_`、`agent_toolset_`、`memory_`（+ 复核 `tool_search_`——项目自注入的 `tool_search_tool_regex_20251119` 走独立路径，但客户端若发 tool_search-typed 工具会漏）。这是纯名单同步，不需探针。**更根本**：考虑把 `isApiDefinedToolType` 从「前缀 allowlist」改为「**任何带 `type` 字段且 `type` 含 `_20YYMMDD` 日期后缀模式的工具 = API-defined**」的**结构判据**（server 工具的共性是 dated type-slug），彻底免疫未来新类别——但须确认无 custom 工具会碰巧带 dated type（低概率）。
+
+### 本轮结论
+
+`API_DEFINED_TOOL_TYPE_PREFIXES` 陈旧——漏 CC 2.1.207 的 `advisor_`/`agent_toolset_`/`memory_`（F32，低-中）→ 新 server 工具误当 custom、失去「不延迟/不改名」保护。**这是 meta 模式（类别 1）定向命中的第四条**（F28/F30/F32 共性=项目 CC-工具名单陈旧/不完整）——验证了用模式导航 gap-hunting 的有效性。修复=补前缀（或改结构判据），与 F28/F30 同一次「同步 CC 工具/类型清单」落地。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
