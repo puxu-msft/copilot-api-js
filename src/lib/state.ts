@@ -617,6 +617,30 @@ export interface State {
    */
   readonly historyDbPath: string
 
+  // ── 分层遥测（telemetry.*，独立 telemetry.db）。近期/远期分辨率与保留可配。 ──
+  /** 遥测总开关（默认 true）。 */
+  readonly telemetryEnabled: boolean
+  /** telemetry.db 路径；空串=用 PATHS.TELEMETRY_DB 默认。 */
+  readonly telemetryDbPath: string
+  /** raw 落盘/flush 间隔秒（默认 60）。 */
+  readonly telemetryPersistInterval: number
+  /** rollup 上卷间隔秒（默认 3600，独立于 persist）。 */
+  readonly telemetryRollupInterval: number
+  /** capped 维度（client/tool）key 上限（默认 200）。 */
+  readonly telemetryCardinalityCap: number
+  /** DDSketch 相对误差 γ（默认 0.01；下限 ~0.005，apply 层校验回落）。 */
+  readonly telemetrySketchGamma: number
+  /** 终身累计层开关（默认 true）。 */
+  readonly telemetryCumulative: boolean
+  /** raw 层桶分辨率（分钟，默认 5；须整除 60，apply 层校验回落）。 */
+  readonly telemetryRawResolutionMinutes: number
+  /** raw 层保留天数（默认 7）。 */
+  readonly telemetryRawRetentionDays: number
+  /** hourly 层保留天数（默认 90）。 */
+  readonly telemetryHourlyRetentionDays: number
+  /** daily 层保留天数（默认 0=永久）。 */
+  readonly telemetryDailyRetentionDays: number
+
   /**
    * Fetch timeout in seconds.
    * Time from request start to receiving HTTP response headers.
@@ -1303,6 +1327,47 @@ export function setHistoryConfig(
   }
 }
 
+/** 遥测 timer（persist/rollup 间隔）变更监听者——telemetry 模块用它热重载重调周期而不循环 import。 */
+const telemetryConfigListeners = new Set<() => void>()
+
+/**
+ * 应用 telemetry.* 配置补丁到 state。任何影响 persist/rollup timer 的键（间隔/enabled）
+ * 变更时通知监听者重调周期（对齐 setHistoryConfig 的 reaper retune 模式）。
+ */
+export function setTelemetryConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "telemetryEnabled"
+      | "telemetryDbPath"
+      | "telemetryPersistInterval"
+      | "telemetryRollupInterval"
+      | "telemetryCardinalityCap"
+      | "telemetrySketchGamma"
+      | "telemetryCumulative"
+      | "telemetryRawResolutionMinutes"
+      | "telemetryRawRetentionDays"
+      | "telemetryHourlyRetentionDays"
+      | "telemetryDailyRetentionDays"
+    >
+  >,
+): void {
+  const timerConfigChanged =
+    (patch.telemetryPersistInterval !== undefined && patch.telemetryPersistInterval !== mutableState.telemetryPersistInterval)
+    || (patch.telemetryRollupInterval !== undefined && patch.telemetryRollupInterval !== mutableState.telemetryRollupInterval)
+    || (patch.telemetryEnabled !== undefined && patch.telemetryEnabled !== mutableState.telemetryEnabled)
+  updateState(patch)
+  if (timerConfigChanged) {
+    for (const listener of telemetryConfigListeners) listener()
+  }
+}
+
+/** 订阅 telemetry timer 配置变更（persist/rollup 间隔或 enabled）。返回退订函数。 */
+export function onTelemetryConfigChange(listener: () => void): () => void {
+  telemetryConfigListeners.add(listener)
+  return () => telemetryConfigListeners.delete(listener)
+}
+
 /**
  * Listeners notified when any reaper config (success/failure limit or interval)
  * changes. Used by the history module to retune its reaper without a circular
@@ -1598,6 +1663,17 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyFailureLimit: 200,
   historyReaperInterval: 600,
   historyDbPath: "",
+  telemetryEnabled: true,
+  telemetryDbPath: "",
+  telemetryPersistInterval: 60,
+  telemetryRollupInterval: 3600,
+  telemetryCardinalityCap: 200,
+  telemetrySketchGamma: 0.01,
+  telemetryCumulative: true,
+  telemetryRawResolutionMinutes: 5,
+  telemetryRawRetentionDays: 7,
+  telemetryHourlyRetentionDays: 90,
+  telemetryDailyRetentionDays: 0,
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
   responsesBufferedRetry: false,
@@ -1735,6 +1811,19 @@ export function resetConfigManagedState(): void {
     historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
   })
+  setTelemetryConfig({
+    telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
+    telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
+    telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
+    telemetryRollupInterval: CONFIG_MANAGED_DEFAULTS.telemetryRollupInterval,
+    telemetryCardinalityCap: CONFIG_MANAGED_DEFAULTS.telemetryCardinalityCap,
+    telemetrySketchGamma: CONFIG_MANAGED_DEFAULTS.telemetrySketchGamma,
+    telemetryCumulative: CONFIG_MANAGED_DEFAULTS.telemetryCumulative,
+    telemetryRawResolutionMinutes: CONFIG_MANAGED_DEFAULTS.telemetryRawResolutionMinutes,
+    telemetryRawRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryRawRetentionDays,
+    telemetryHourlyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryHourlyRetentionDays,
+    telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
+  })
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
@@ -1825,6 +1914,17 @@ const mutableState: MutableState = {
   historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
   historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
+  telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
+  telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
+  telemetryRollupInterval: CONFIG_MANAGED_DEFAULTS.telemetryRollupInterval,
+  telemetryCardinalityCap: CONFIG_MANAGED_DEFAULTS.telemetryCardinalityCap,
+  telemetrySketchGamma: CONFIG_MANAGED_DEFAULTS.telemetrySketchGamma,
+  telemetryCumulative: CONFIG_MANAGED_DEFAULTS.telemetryCumulative,
+  telemetryRawResolutionMinutes: CONFIG_MANAGED_DEFAULTS.telemetryRawResolutionMinutes,
+  telemetryRawRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryRawRetentionDays,
+  telemetryHourlyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryHourlyRetentionDays,
+  telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
   modelIds: new Set(),
   modelIndex: new Map(),
   modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },

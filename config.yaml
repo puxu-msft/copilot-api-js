@@ -239,6 +239,43 @@ history:
   reaper_interval: 3600
 
 # ============================================================================
+# Telemetry (tiered persistence) / 遥测（分层持久化）
+# ============================================================================
+# 独立 telemetry.db（与 history.db 分家、生命周期另算）：三层 rollup（raw 5min /
+# hourly / daily）+ 终身累计。分布度量走 DDSketch、可加度量精确 SUM。近期/远期分辨率与保留可配。
+# Independent telemetry.db: three-tier rollup + lifetime cumulative. Distributions
+# use DDSketch; additive measures use exact SUM. Near/far resolution & retention configurable.
+telemetry:
+  # 总开关（默认 true = 一直采集）。 / Master switch (default true).
+  enabled: true
+  # telemetry.db 路径；留空=用默认 <APP_DIR>/telemetry.db。 / DB path; empty = default.
+  # db_path: ""
+  # raw 落盘/flush 间隔秒（默认 60）。 / raw persist/flush interval seconds (default 60).
+  persist_interval: 60
+  # rollup 上卷间隔秒（默认 3600，独立于 persist、应 ≫ persist）。 / rollup interval seconds (default 3600).
+  rollup_interval: 3600
+  # capped 维度（client/tool）key 上限，溢出并入 "other"（默认 200）。 / capped-dimension key cap (default 200).
+  cardinality_cap: 200
+  # DDSketch 相对误差 γ（默认 0.01=1%）。下限 ~0.005——配更紧会触发 bin 塌缩、警告回落 0.01。
+  # DDSketch relative accuracy (default 0.01). Lower bound ~0.005; tighter warns + falls back.
+  sketch_gamma: 0.01
+  # 终身累计层开关（永久有效，默认 true）。 / lifetime cumulative layer (default true).
+  cumulative: true
+  # 分层保留 / tiered retention
+  tiers:
+    raw:
+      # 近期桶分辨率（分钟，默认 5；须整除 60，否则警告回落 5）。 / near-term bucket resolution minutes.
+      resolution_minutes: 5
+      # 近期高分辨率保留天数（默认 7）。 / near-term retention days (default 7).
+      retention_days: 7
+    hourly:
+      # 中期 rollup 保留天数（默认 90）。 / mid-term retention days (default 90).
+      retention_days: 90
+    daily:
+      # 远期保留天数（0 = 永久，默认 0）。 / far-term retention days (0 = forever, default 0).
+      retention_days: 0
+
+# ============================================================================
 # Web Search (double-hop) / 网络搜索（双跳）
 # ============================================================================
 # Real web_search server-tool implementation for the Anthropic/Claude path.

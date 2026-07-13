@@ -31,6 +31,7 @@ import {
   setResponsesConfig,
   setShutdownConfig,
   setReactiveRetryConfig,
+  setTelemetryConfig,
   setTimeoutConfig,
   setTimeoutOverridesConfig,
   state,
@@ -794,6 +795,40 @@ export async function applyConfigToState(): Promise<Config> {
     if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
     if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
+  }
+
+  // Telemetry settings (telemetry.*, nested: override only when present). Business-layer
+  // validation (T2.3) does warn-continue fallbacks — never fail-fast on hot-reload.
+  if (config.telemetry) {
+    const t = config.telemetry
+    if (t.enabled !== undefined) setTelemetryConfig({ telemetryEnabled: t.enabled })
+    if (t.db_path !== undefined) setTelemetryConfig({ telemetryDbPath: t.db_path })
+    if (t.persist_interval !== undefined) setTelemetryConfig({ telemetryPersistInterval: t.persist_interval })
+    if (t.rollup_interval !== undefined) setTelemetryConfig({ telemetryRollupInterval: t.rollup_interval })
+    if (t.cardinality_cap !== undefined) setTelemetryConfig({ telemetryCardinalityCap: t.cardinality_cap })
+    if (t.cumulative !== undefined) setTelemetryConfig({ telemetryCumulative: t.cumulative })
+    // γ 下限 ~0.005：更紧会触发 DDSketch bin 塌缩（PoC：0.001→6909 bin>2048）→ 警告回落 0.01。
+    if (t.sketch_gamma !== undefined) {
+      if (t.sketch_gamma < 0.005) {
+        consola.warn(`[config] telemetry.sketch_gamma=${t.sketch_gamma} 低于下限 0.005（会触发 DDSketch bin 塌缩）——回落到默认 0.01`)
+        setTelemetryConfig({ telemetrySketchGamma: 0.01 })
+      } else {
+        setTelemetryConfig({ telemetrySketchGamma: t.sketch_gamma })
+      }
+    }
+    if (t.tiers?.raw?.resolution_minutes !== undefined) {
+      // raw 分辨率须整除 60（hourly rollup 上卷前提）→ 非整除警告回落 5。
+      const res = t.tiers.raw.resolution_minutes
+      if (res <= 0 || 60 % res !== 0) {
+        consola.warn(`[config] telemetry.tiers.raw.resolution_minutes=${res} 非 60 的整除因子（hourly rollup 要求）——回落到默认 5`)
+        setTelemetryConfig({ telemetryRawResolutionMinutes: 5 })
+      } else {
+        setTelemetryConfig({ telemetryRawResolutionMinutes: res })
+      }
+    }
+    if (t.tiers?.raw?.retention_days !== undefined) setTelemetryConfig({ telemetryRawRetentionDays: t.tiers.raw.retention_days })
+    if (t.tiers?.hourly?.retention_days !== undefined) setTelemetryConfig({ telemetryHourlyRetentionDays: t.tiers.hourly.retention_days })
+    if (t.tiers?.daily?.retention_days !== undefined) setTelemetryConfig({ telemetryDailyRetentionDays: t.tiers.daily.retention_days })
   }
 
   // Upstream hook module (nested: override only when present). Declarative only — writes

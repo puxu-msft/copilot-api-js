@@ -165,6 +165,18 @@ function yamlForField(f: FieldSpec): string {
 }
 
 const FIELDS: ReadonlyArray<FieldSpec> = [
+  // ── telemetry.* (分层遥测) — 样本值避开 apply 层回落分支（γ≥0.005、resolution 整除 60） ──
+  { configKey: "telemetry.enabled", stateKey: "telemetryEnabled", sampleYamlValue: "false", expectedStateValue: false, defaultStateValue: true },
+  { configKey: "telemetry.db_path", stateKey: "telemetryDbPath", sampleYamlValue: "/tmp/tel-test.db", expectedStateValue: "/tmp/tel-test.db", defaultStateValue: "" },
+  { configKey: "telemetry.persist_interval", stateKey: "telemetryPersistInterval", sampleYamlValue: "30", expectedStateValue: 30, defaultStateValue: 60 },
+  { configKey: "telemetry.rollup_interval", stateKey: "telemetryRollupInterval", sampleYamlValue: "1800", expectedStateValue: 1800, defaultStateValue: 3600 },
+  { configKey: "telemetry.cardinality_cap", stateKey: "telemetryCardinalityCap", sampleYamlValue: "100", expectedStateValue: 100, defaultStateValue: 200 },
+  { configKey: "telemetry.sketch_gamma", stateKey: "telemetrySketchGamma", sampleYamlValue: "0.02", expectedStateValue: 0.02, defaultStateValue: 0.01 },
+  { configKey: "telemetry.cumulative", stateKey: "telemetryCumulative", sampleYamlValue: "false", expectedStateValue: false, defaultStateValue: true },
+  { configKey: "telemetry.tiers.raw.resolution_minutes", stateKey: "telemetryRawResolutionMinutes", sampleYamlValue: "10", expectedStateValue: 10, defaultStateValue: 5 },
+  { configKey: "telemetry.tiers.raw.retention_days", stateKey: "telemetryRawRetentionDays", sampleYamlValue: "14", expectedStateValue: 14, defaultStateValue: 7 },
+  { configKey: "telemetry.tiers.hourly.retention_days", stateKey: "telemetryHourlyRetentionDays", sampleYamlValue: "30", expectedStateValue: 30, defaultStateValue: 90 },
+  { configKey: "telemetry.tiers.daily.retention_days", stateKey: "telemetryDailyRetentionDays", sampleYamlValue: "180", expectedStateValue: 180, defaultStateValue: 0 },
   // ── Top-level scalars ───────────────────────────────────────────────
   {
     configKey: "timeouts.response_header",
@@ -906,22 +918,6 @@ interface ExemptField {
 }
 
 const EXEMPT: ReadonlyArray<ExemptField> = [
-  // telemetry.* — schema landed (Phase 2 T2.1); config→state apply + hot-reload wiring
-  // is Phase 2 T2.2/T2.3 (keys not yet consumed until Phase 3+ write path / Phase 4 rollup).
-  // WHEN wiring apply: MOVE these from EXEMPT to FIELDS (add real hot-reload assertions).
-  ...[
-    "telemetry.enabled",
-    "telemetry.db_path",
-    "telemetry.persist_interval",
-    "telemetry.rollup_interval",
-    "telemetry.cardinality_cap",
-    "telemetry.sketch_gamma",
-    "telemetry.cumulative",
-    "telemetry.tiers.raw.resolution_minutes",
-    "telemetry.tiers.raw.retention_days",
-    "telemetry.tiers.hourly.retention_days",
-    "telemetry.tiers.daily.retention_days",
-  ].map((configKey) => ({ configKey, reason: "telemetry tiered-storage: schema landed, config→state apply wired in Phase 2 T2.2/T2.3 (not consumed until Phase 3+)" })),
   {
     configKey: "history.limit",
     reason:
