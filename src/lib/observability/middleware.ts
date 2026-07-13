@@ -73,9 +73,11 @@ export function observabilityMiddleware(): MiddlewareHandler {
 
     const path = c.req.path
 
-    // Synthetic routes: no observability, no finalize, no nothing.
-    // Handler runs unwrapped; the route's own `consola.info` lines are
-    // the sole operator signal.
+    // Synthetic routes: no RequestContext, no finalize, no `request.*` events,
+    // no history/telemetry. The handler runs unwrapped and renders its own
+    // outcome as a display-only request-shaped line (count_tokens →
+    // `publishRequestLine` / `system.request_line`, reaching only TerminalUi +
+    // FileSink — see synthetic-request-line.ts).
     if (SYNTHETIC_PATHS.has(path)) {
       await next()
       return

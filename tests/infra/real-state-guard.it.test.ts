@@ -35,13 +35,13 @@ import {
   markAnthropicFeatureUnsupported,
   persistFeatureNegotiation,
 } from "~/lib/anthropic/feature-negotiation"
+import { PATHS } from "~/lib/config/paths"
 import {
   //
-  onTokenLimitExceeded,
+  learnCalibration,
   persistLimits,
   resetAllLimitsForTesting,
-} from "~/lib/auto-truncate/engine"
-import { PATHS } from "~/lib/config/paths"
+} from "~/lib/models/calibration/engine"
 
 const SANDBOX_MARKER = "copilot-api-test-sandbox-"
 const REAL_HOME_APP_DIR = `${os.homedir()}/.local/share/copilot-api`
@@ -73,7 +73,7 @@ describe("persistence writers land inside the sandbox (end-to-end, not just PATH
   })
 
   test("auto-truncate learned-limits persist writes to the sandboxed LEARNED_LIMITS", async () => {
-    onTokenLimitExceeded("claude-guard-probe", 12_345)
+    learnCalibration("claude-guard-probe", 10_000, 13_000, { isLive: true })
     await persistLimits()
 
     assertSandboxed(PATHS.LEARNED_LIMITS)

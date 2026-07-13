@@ -20,7 +20,6 @@ import {
   DEFAULT_MODEL_OVERRIDES,
   resolveBufferedCaps,
   setAnthropicBehavior,
-  setAutoTruncateConfig,
   setBufferedRetryOverride,
   setBufferedRetryShared,
   setChatCompletionsConfig,
@@ -31,9 +30,9 @@ import {
   setNegotiationConfig,
   setResponsesConfig,
   setShutdownConfig,
+  setReactiveRetryConfig,
   setTimeoutConfig,
   setTimeoutOverridesConfig,
-  setWebSearchConfig,
   state,
 } from "~/lib/state"
 
@@ -43,7 +42,6 @@ import type {
   SystemPromptEntry,
 } from "./schema"
 
-import { loadPersistedLimits } from "../auto-truncate"
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
   //
@@ -591,7 +589,7 @@ export async function applyConfigToState(): Promise<Config> {
   // Anthropic settings (scalar: override only when present)
   if (config.anthropic) {
     const a = config.anthropic
-    if (a.server_tool_strip !== undefined) setAnthropicBehavior({ stripServerTools: a.server_tool_strip })
+    if (a.use_upstream_count_tokens !== undefined) setAnthropicBehavior({ useUpstreamCountTokens: a.use_upstream_count_tokens })
     if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
     if (a.response_header_blacklist !== undefined) setAnthropicBehavior({ responseHeaderBlacklist: a.response_header_blacklist })
     if (a.response_header_whitelist !== undefined) setAnthropicBehavior({ responseHeaderWhitelist: a.response_header_whitelist })
@@ -651,9 +649,6 @@ export async function applyConfigToState(): Promise<Config> {
     }
     if (a.system_reject_models !== undefined) setAnthropicBehavior({ systemRejectModels: a.system_reject_models })
     if (a.system_reject_mode !== undefined) setAnthropicBehavior({ systemRejectMode: a.system_reject_mode })
-    if (a.server_tool_rewrite !== undefined) {
-      setAnthropicBehavior({ rewriteServerTools: a.server_tool_rewrite })
-    }
     if (a.thinking_signature_compat !== undefined) {
       setAnthropicBehavior({ thinkingSignatureCompat: a.thinking_signature_compat })
     }
@@ -718,6 +713,9 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.tool_recover_call_text !== undefined) setAnthropicBehavior({ recoverToolCallText: a.tool_recover_call_text })
     if (a.tool_repair_malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: a.tool_repair_malformed_input })
     if (a.refusal_sse_rewrite !== undefined) setAnthropicBehavior({ refusalSseRewrite: a.refusal_sse_rewrite })
+    if (a.refusal_end_turn_text !== undefined) setAnthropicBehavior({ refusalEndTurnText: a.refusal_end_turn_text })
+    if (a.refusal_error_message !== undefined) setAnthropicBehavior({ refusalErrorMessage: a.refusal_error_message })
+    if (a.refusal_error_type !== undefined) setAnthropicBehavior({ refusalErrorType: a.refusal_error_type })
     if (a.tool_backfill_question !== undefined) setAnthropicBehavior({ backfillQuestionFromHeader: a.tool_backfill_question })
     if (a.system_rewrite_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
@@ -770,23 +768,9 @@ export async function applyConfigToState(): Promise<Config> {
     setDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
   }
 
-  // Auto-truncate (nested section: override only fields that are present).
-  // When `enabled` flips off→on at runtime (hot-reload), lazily load persisted
-  // learned limits so the calibration cache is available — the boot-time load in
-  // start.ts only runs when the CLI flag enabled it at startup. The map merge is
-  // idempotent, so a double load (CLI + config) is harmless.
-  if (config.auto_truncate) {
-    const a = config.auto_truncate
-    if (a.enabled !== undefined) {
-      const wasEnabled = state.autoTruncate
-      setAutoTruncateConfig({ autoTruncate: a.enabled })
-      if (!wasEnabled && a.enabled) void loadPersistedLimits()
-    }
-    if (a.target_factor !== undefined) setAutoTruncateConfig({ autoTruncateTargetFactor: a.target_factor })
-    if (a.max_retries !== undefined) setAutoTruncateConfig({ autoTruncateMaxRetries: a.max_retries })
-    if (a.compress_threshold !== undefined) setAutoTruncateConfig({ autoTruncateCompressThreshold: a.compress_threshold })
-    if (a.preflight !== undefined) setAutoTruncateConfig({ autoTruncatePreflight: a.preflight })
-    if (a.compress_tool_results !== undefined) setAnthropicBehavior({ compressToolResultsBeforeTruncate: a.compress_tool_results })
+  // Shared reactive-retry budget (was auto_truncate.max_retries).
+  if (config.retry?.max_reactive_retries !== undefined) {
+    setReactiveRetryConfig({ maxReactiveRetries: config.retry.max_reactive_retries })
   }
 
   // Tool-name sanitization (cross-protocol top-level toggle; scalar override)
@@ -806,13 +790,6 @@ export async function applyConfigToState(): Promise<Config> {
     if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
     if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
-  }
-
-  // Web search settings (nested: override only when present)
-  if (config.server_tool_web_search) {
-    const w = config.server_tool_web_search
-    if (w.enabled !== undefined) setWebSearchConfig({ webSearchEnabled: w.enabled })
-    if (w.backend !== undefined) setWebSearchConfig({ webSearchBackend: w.backend })
   }
 
   // Upstream hook module (nested: override only when present). Declarative only — writes

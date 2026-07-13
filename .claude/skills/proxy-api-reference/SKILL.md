@@ -11,7 +11,7 @@ description: 当需要查阅/调用 copilot-api-js（本代理）**对客户端�
 
 - **活的全表面**：运行中实例的 `GET /openapi.json`（OpenAPI 3.1，覆盖全部端点）+ `/docs`（Scalar 交互页）。
 - **挂载源码**：`src/routes/index.ts`（vendor/管理路由挂载点）+ `src/server.ts`（`/health`、`/`）+ `src/routes/openapi.ts`（`/openapi.json`、`/docs`）。
-- **逐项说明**：`docs/DESIGN.md`「路由」节（含字段级备注）。
+- **逐项说明（端点 SSOT）**：[docs/API.md](../../../docs/API.md)——全端点目录 + 字段级备注 + cross-ref。路由/codec 分派的架构现状见 `docs/DESIGN.md`「活的架构现状」。
 
 端点漂移时以上述为准；本表只作快速定位。
 
@@ -44,7 +44,7 @@ description: 当需要查阅/调用 copilot-api-js（本代理）**对客户端�
 | `/api/stats?dimension=&window=&limit=` | 泛型维度 breakdown |
 | `/history/api/*`、`/ws` | History REST + WebSocket（含 search、pin/unpin） |
 | `/metrics` | Prometheus exposition |
-| `/health`、`/`、`/docs`、`/ui/*`、`/ui-v4/*` | 健康检查/根/文档/前端 |
+| `/health`、`/health/readiness`、`/health/liveness`、`/`、`/docs`、`/ui/*`、`/ui-v4/*` | 健康检查（readiness，`/health`≡`/health/readiness`）/liveness 探针/根/文档/前端 |
 
 ### History REST 子端点
 

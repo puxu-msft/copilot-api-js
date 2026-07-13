@@ -1,5 +1,6 @@
 import { OpenAPIHono } from "@hono/zod-openapi"
 import consola from "consola"
+import { type Context } from "hono"
 import { cors } from "hono/cors"
 import { trimTrailingSlash } from "hono/trailing-slash"
 import { type BlankEnv } from "hono/types"
@@ -33,6 +34,28 @@ function detectErrorWireFormat(path: string): ErrorWireFormat {
 }
 
 export { detectErrorWireFormat }
+
+/**
+ * Readiness check — reports whether the proxy can serve traffic right now (the
+ * Copilot/GitHub tokens and the model catalogue are loaded). Returns 503 until
+ * ready so orchestrators withhold or drain traffic. Shared by `/health` (legacy
+ * name) and `/health/readiness` (Kubernetes-style name), and re-exported so the
+ * HTTP test app mirrors identical behavior from a single source.
+ */
+export function readinessCheck(c: Context): Response {
+  const healthy = Boolean(state.copilotToken && state.githubToken)
+  return c.json(
+    {
+      status: healthy ? "healthy" : "unhealthy",
+      checks: {
+        copilotToken: Boolean(state.copilotToken),
+        githubToken: Boolean(state.githubToken),
+        models: Boolean(state.models),
+      },
+    },
+    healthy ? 200 : 503,
+  )
+}
 
 export function createServer(options: ServerOptions = {}) {
   // OpenAPIHono is a drop-in superclass of Hono — same routing/middleware API,
@@ -70,6 +93,14 @@ export function createServer(options: ServerOptions = {}) {
     return c.json({ error: "Not Found" }, 404)
   })
 
+  // Liveness probe — reports only that the process is responsive. Registered
+  // BEFORE the config/token middleware below so it never touches upstream: a
+  // liveness check must stay 200 even when the Copilot token is stale or the
+  // upstream is down (orchestrators use readiness `/health`, not liveness, to
+  // drain traffic; a failing liveness probe triggers a pod restart). Also stays
+  // 200 during graceful shutdown since it sits ahead of the shutdown gate.
+  server.get("/health/liveness", (c) => c.json({ status: "alive" }))
+
   // Config hot-reload: re-apply config.yaml settings before each request.
   // loadConfig() is mtime-cached — only costs one stat() syscall when config is unchanged.
   // Also proactively ensure the Copilot token is valid — if the last background
@@ -87,21 +118,11 @@ export function createServer(options: ServerOptions = {}) {
 
   server.get("/", (c) => c.redirect("/openapi.json"))
 
-  // Health check endpoint for container orchestration (Docker, Kubernetes)
-  server.get("/health", (c) => {
-    const healthy = Boolean(state.copilotToken && state.githubToken)
-    return c.json(
-      {
-        status: healthy ? "healthy" : "unhealthy",
-        checks: {
-          copilotToken: Boolean(state.copilotToken),
-          githubToken: Boolean(state.githubToken),
-          models: Boolean(state.models),
-        },
-      },
-      healthy ? 200 : 503,
-    )
-  })
+  // Readiness check for container orchestration (Docker, Kubernetes). `/health`
+  // is the legacy name; `/health/readiness` is the Kubernetes-style companion to
+  // `/health/liveness` above. Both share readinessCheck.
+  server.get("/health", readinessCheck)
+  server.get("/health/readiness", readinessCheck)
 
   // Register HTTP routes. WebSocket routes are injected later in start.ts after
   // a shared adapter is created for the concrete runtime/server instance.

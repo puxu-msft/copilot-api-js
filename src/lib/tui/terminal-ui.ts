@@ -102,7 +102,7 @@ interface ActiveRequest {
   streamBytesIn?: number
   streamEventsIn?: number
   streamBlockType?: string
-  /** Features applied to this request (e.g. "truncated", "beta-strip:..."). */
+  /** Features applied to this request (e.g. "beta-stripped", "via-responses"). */
   tags: Array<string>
   /**
    * Thinking as a terminal dimension (NOT an accumulated tag): `requested` is
@@ -437,6 +437,14 @@ export class TerminalUi {
       // reporter used, so stdout bytes are unchanged.
       case "system.log": {
         this.onSystemLog(event)
+        return
+      }
+      // Synthetic request-style line (count_tokens et al.): render exactly like a
+      // real request-completion line (formatLogLine → footer-coordinated printLog),
+      // but WITHOUT a RequestContext — these routes are out-of-observability and
+      // this event never touches history/telemetry.
+      case "system.request_line": {
+        this.printLog(formatLogLine(event.parts))
         return
       }
       // Scheme A (RFC §7): the moment the server begins draining, restore the
@@ -1212,7 +1220,6 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
     case "stream-upstream-resolved": {
       return undefined
     }
-    case "truncated":
     case "via-chat-completions-fallback":
     case "via-responses":
     case "dropped-params": {

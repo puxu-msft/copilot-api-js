@@ -77,11 +77,11 @@ export function makeRealAnthropicDriver(transport: Transport): PipelineDriverWit
         originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
         resanitize,
         model: env.model as never,
-        maxRetries: state.autoTruncateMaxRetries,
+        maxRetries: state.maxReactiveRetries,
         betaProbe,
       })
     },
-    maxRetries: state.autoTruncateMaxRetries,
+    maxRetries: state.maxReactiveRetries,
     maxLearningRetries: 32,
   })
 }

@@ -58,11 +58,6 @@ export function normalizeConfigForEditor(input: ConfigYamlResponse | EditableCon
         rate_limiter: normalizeScalarSection(input.rate_limiter, ["retry_interval", "request_interval", "recovery_interval", "consecutive_successes"]),
       }
     : {}),
-    ...(input.auto_truncate !== undefined ?
-      {
-        auto_truncate: normalizeScalarSection(input.auto_truncate, ["compress_tool_results"]),
-      }
-    : {}),
     ...(input.system_prompt_overrides !== undefined ? { system_prompt_overrides: normalizePromptOverrideRules(input.system_prompt_overrides) } : {}),
     ...(input.system_prompt_prepend !== undefined ? { system_prompt_prepend: input.system_prompt_prepend } : {}),
     ...(input.system_prompt_append !== undefined ? { system_prompt_append: input.system_prompt_append } : {}),

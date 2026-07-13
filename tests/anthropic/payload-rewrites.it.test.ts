@@ -113,8 +113,7 @@ const scenarios: Array<Scenario> = [
     didWork: (s) => s.emptyThinkingBlocksRemoved > 0,
   },
   {
-    name: "prior-turn server-tool blocks downgraded then validated",
-    setup: () => setStateForTests({ rewriteServerTools: "downgrade" }),
+    name: "prior-turn server-tool blocks (empty encrypted_content) downgraded by the always-on fallback then validated",
     payload: payload([
       assistant([
         { type: "server_tool_use", id: "srv1", name: "web_search", input: { query: "x" } },

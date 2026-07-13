@@ -81,7 +81,7 @@ describe("P0.3 bus event stream — golden", () => {
     ctx.beginAttempt({})
     ctx.setAttemptEffectiveRequest({ model: "claude-opus-4.8", resolvedModel: undefined, messages: [], payload: {}, format: "anthropic-messages" })
     ctx.setAttemptWireRequest({ model: "claude-opus-4.8", messages: [], payload: {}, headers: {}, format: "anthropic-messages" })
-    ctx.recordFeature("truncated")
+    ctx.recordFeature("via-responses")
     ctx.addQueueWaitMs(100)
     ctx.transition("streaming")
     ctx.complete({ success: true, model: "claude-opus-4.8", usage: { input_tokens: 1, output_tokens: 2 }, content: null })
@@ -94,7 +94,7 @@ describe("P0.3 bus event stream — golden", () => {
       { kind: "request.context_updated", hasSummary: true, field: "attempts" },
       { kind: "request.context_updated", hasSummary: true, field: "attempts" },
       { kind: "request.context_updated", hasSummary: true, field: "attempts" },
-      { kind: "request.feature_applied", hasSummary: false, feature: "truncated" },
+      { kind: "request.feature_applied", hasSummary: false, feature: "via-responses" },
       { kind: "request.context_updated", hasSummary: true, field: "queueWaitMs" },
       { kind: "request.state_changed", hasSummary: true, previousState: "executing", state: "streaming" },
       { kind: "request.state_changed", hasSummary: true, previousState: "streaming", state: "completed" },

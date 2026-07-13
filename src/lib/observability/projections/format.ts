@@ -116,7 +116,10 @@ export function formatTokens(input?: number, output?: number, cacheRead?: number
   if (cacheCreation) result += pc.cyan(`+${formatNumber(cacheCreation)}`)
   const rate = formatCacheRate(input, cacheRead, cacheCreation)
   if (rate) result += ` ${rate}`
-  result += ` ↓${formatNumber(output ?? 0)}`
+  // ↓output is rendered only when measured: `↓0` means "0 output tokens", while
+  // OMITTING it means "output not applicable" — e.g. count_tokens, which counts
+  // input only and never produces a completion, so a constant `↓0` is noise.
+  if (output !== undefined) result += ` ↓${formatNumber(output)}`
   return result
 }
 

@@ -11,9 +11,8 @@
  *
  * Module boundaries follow the existing **cohesive functions**, not the §4
  * sub-step numbering, because:
- * - `sanitizeAnthropicMessages` (A3–A9) is a cohesive unit reused standalone by
- *   the web_search double-hop (it deliberately runs sanitize WITHOUT the tool
- *   preprocessing — see web-search/orchestrator.ts), and
+ * - `sanitizeAnthropicMessages` (A3–A9) is a cohesive unit (historically also reused
+ *   standalone by the web_search double-hop, retired 2026-07-13), and
  * - its `SanitizationStats` is a whole-pipeline-residual model
  *   (`emptyTextBlocksRemoved` is derived by subtraction in sanitize/result.ts),
  *   so the A6<A8 / A7<A8 step ordering must stay inside the function where the

@@ -52,9 +52,7 @@ export interface ParsedSystemReminderTag {
  * lines at the text boundary. Returns them outermost-first and the position
  * where main (non-tag) content ends.
  *
- * Used by both:
- * - `removeSystemReminderTags` (filter by content, then rebuild)
- * - `compressToolResultContent` (extract all, generate summaries)
+ * Used by `removeSystemReminderTags` (filter by content, then rebuild).
  */
 export function extractTrailingSystemReminderTags(text: string): {
   mainContentEnd: number

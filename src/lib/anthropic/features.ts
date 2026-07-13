@@ -225,7 +225,7 @@ export interface AnthropicBetaHeaderOptions {
    * Force the `context-management-2025-06-27` beta because a native memory tool is present. Memory and
    * context-management share this beta upstream (GHC: `hasMemoryTool || contextManagement`). UNLIKE
    * `forceContextManagementBeta`, this bypasses `disableContextManagement` — that flag disables the
-   * context_management BODY field (a separate negotiation-cache signal), but the memory server tool
+   * context_management BODY field (a separate negotiation-cache signal), but the memory typed tool
    * still needs the beta HEADER or it 400s. If the beta itself is genuinely unsupported, the downstream
    * `filterUnsupportedBetas` + unsupported-beta-retry self-heal strips it.
    */

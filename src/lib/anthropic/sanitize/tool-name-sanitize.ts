@@ -27,7 +27,7 @@ import {
   type ToolNameMapper,
 } from "~/lib/tool-name-mapper"
 
-import { isServerToolType } from "../message-tools"
+import { isApiDefinedToolType } from "../message-tools"
 
 /**
  * Build a tool-name mapper for an Anthropic request from its client-original
@@ -45,7 +45,7 @@ export function buildAnthropicToolNameMapper(tools: Array<Tool> | undefined, mod
   // Client-original custom tools only: exclude server tools (have a server
   // `type`). The tool_search stub and Claude Code stubs aren't present yet
   // (mapper is built before preprocessTools).
-  const customNames = tools.filter((t) => !isServerToolType(t.type)).map((t) => t.name)
+  const customNames = tools.filter((t) => !isApiDefinedToolType(t.type)).map((t) => t.name)
   if (customNames.length === 0) return null
 
   const rules = getToolNameRulesForModel(model, vendor)

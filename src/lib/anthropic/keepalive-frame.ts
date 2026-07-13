@@ -1,8 +1,7 @@
 /**
  * Block-aware Anthropic keepalive frame builder — the covering matrix proven in
- * exp/cc-idle-280s/REPORT.md. Shared by BOTH the v4 sink path (handler-v4) and the legacy
- * web_search bypass heartbeat (streaming-pump), so it lives here (not in handler-v4) to avoid
- * the handler-v4 → web-search-handler → web-search-direct import cycle.
+ * exp/cc-idle-280s/REPORT.md. Used by the v4 sink path (handler-v4); kept as a
+ * neutral leaf so it stays dependency-free.
  *
  * `empty_text` mode injects an EMPTY delta matching the current open block, which resets
  * Claude Code's 300s no-real-content idle deadline that a bare `event: ping` does NOT (a ping is

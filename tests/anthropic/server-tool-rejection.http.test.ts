@@ -110,8 +110,6 @@ describe("POST /v1/messages — server-tool-rejection self-healing", () => {
       accountType: "individual",
       vsCodeVersion: "1.100.0",
       responseHeaderTimeout: 0,
-      webSearchEnabled: false,
-      stripServerTools: false,
     })
     applyFetchMock(upstreamFetchMock)
     setModels({

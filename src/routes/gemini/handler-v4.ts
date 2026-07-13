@@ -129,7 +129,7 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
             originalPayload: env.body as MessagesPayload,
             resanitize: buildReverseResanitize(reverseMapperHolder),
             model: env.model as Model | undefined,
-            maxRetries: state.autoTruncateMaxRetries,
+            maxRetries: state.maxReactiveRetries,
             betaProbe: reverseBetaProbe,
           },
         })
@@ -138,11 +138,11 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
       return buildOpenAiCcStrategies({
         originalPayload: codec.getTruncateBaseline() ?? (env.body as ChatCompletionsPayload),
         model: env.model as Model | undefined,
-        maxRetries: state.autoTruncateMaxRetries,
+        maxRetries: state.maxReactiveRetries,
         label: env.targetEndpoint === ENDPOINT.RESPONSES ? "Gemini(→Responses)" : "Gemini",
       })
     },
-    maxRetries: state.autoTruncateMaxRetries,
+    maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })
 

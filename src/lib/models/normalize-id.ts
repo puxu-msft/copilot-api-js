@@ -7,8 +7,17 @@
  * re-exports `normalizeModelId` for backend consumers.
  */
 
-/** Matches `claude-{family}-{major}-{minor}` with an optional trailing date suffix. */
-export const VERSIONED_RE = /^(claude-(?:opus|sonnet|haiku))-(\d+)-(\d{1,2})(?:-\d{8,})?$/
+/**
+ * Matches `claude-{family}-{major}-{minor}` (hyphen version form only).
+ *
+ * Date suffixes (`-YYYYMMDD`) are intentionally NOT matched: automatic date-suffix
+ * stripping was removed so that mapping a dated snapshot name (e.g.
+ * `claude-haiku-4-5-20251001`) to a canonical GHC id is an explicit, config-driven
+ * `model_overrides` decision rather than hidden logic. A dated name that matches no
+ * override passes through untouched (and the upstream then rejects it — the failure
+ * is visible instead of being silently remapped).
+ */
+export const VERSIONED_RE = /^(claude-(?:opus|sonnet|haiku))-(\d+)-(\d{1,2})$/
 
 /**
  * A route-override suffix (`@cc` / `@responses` / `@messages`) parsed off a model
@@ -68,8 +77,9 @@ export function extractModifierSuffix(model: string): { base: string; suffix: st
  * Normalize a model ID to canonical dot-version form.
  * e.g. "claude-opus-4-6" → "claude-opus-4.6", "claude-opus-4-6-1m" → "claude-opus-4.6-1m"
  *
- * Handles modifier suffixes (-fast, -1m) and strips date suffixes (-YYYYMMDD).
- * Non-Claude models or unrecognized patterns are returned as-is.
+ * Handles modifier suffixes (-fast, -1m) and hyphen→dot version canonicalization.
+ * Date suffixes (-YYYYMMDD) are NOT stripped — a dated name is returned as-is (see
+ * {@link VERSIONED_RE}). Non-Claude models or unrecognized patterns are returned as-is.
  *
  * Used for normalizing API response model names to match `/models` endpoint IDs.
  */

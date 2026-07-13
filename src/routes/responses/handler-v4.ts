@@ -164,7 +164,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
             originalPayload: env.body as MessagesPayload,
             resanitize: buildReverseResanitize(reverseMapperHolder),
             model: env.model as Model | undefined,
-            maxRetries: state.autoTruncateMaxRetries,
+            maxRetries: state.maxReactiveRetries,
             betaProbe: reverseBetaProbe,
           },
         })

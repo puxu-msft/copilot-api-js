@@ -175,7 +175,7 @@ describe("Gemini v4 driver path", () => {
     errorMidStream = false
     toolFinishOmitted = false
     applyFetchMock(upstreamFetchMock)
-    setStateForTests({ copilotToken: "tok", autoTruncate: false })
+    setStateForTests({ copilotToken: "tok" })
   })
 
   afterEach(() => {

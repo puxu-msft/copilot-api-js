@@ -10,7 +10,6 @@
  *   - in-catalog non-/v1/messages models (embeddings) skip the doomed upstream call
  *   - out-of-catalog models skip the upstream call
  *   - upstream non-200 / thrown error → warn + local fallback (never throws)
- *   - auto-truncate inflation early-return, before the upstream call
  *   - stream:true wire is still counted as JSON (no streaming branch)
  *   - the retired api.anthropic.com direct path is never hit
  */
@@ -23,11 +22,24 @@ import {
   test,
 } from "bun:test"
 
-import { onTokenLimitExceeded } from "~/lib/auto-truncate/engine"
+import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
+import {
+  //
+  calibrate,
+  learnCalibration,
+  resetAllLimitsForTesting,
+} from "~/lib/models/calibration"
+import { getBus } from "~/lib/observability/bus"
+import {
+  //
+  resetRequestLinePublisher,
+  setRequestLinePublisher,
+} from "~/lib/observability/synthetic-request-line"
 import {
   //
   setModels,
   setStateForTests,
+  state,
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
@@ -59,7 +71,6 @@ describe("POST /v1/messages/count_tokens", () => {
       copilotToken: "copilot-test-token",
       vsCodeVersion: "1.100.0",
       responseHeaderTimeout: 0,
-      autoTruncate: false,
     })
     setModels({
       object: "list",
@@ -138,6 +149,44 @@ describe("POST /v1/messages/count_tokens", () => {
     expect(json.input_tokens).not.toBe(999)
   })
 
+  test("use_upstream_count_tokens=false skips upstream and returns the local calibrated estimate", async () => {
+    const fetchMock = setFetchMock(async () => new Response(JSON.stringify({ input_tokens: 999 }), { status: 200 }))
+    setStateForTests({ useUpstreamCountTokens: false })
+    // Train a factor so calibrate() diverges from the raw estimate (positive control).
+    learnCalibration("claude-sonnet-4.5", 5_000, 7_500, { isLive: true }) // ≈1.5 in low bucket
+
+    const { status, json } = await countTokens({
+      model: "claude-sonnet-4.5",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello world from the local calibrated path" }],
+    })
+
+    expect(status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(0) // upstream skipped
+    expect(json.input_tokens).toBeGreaterThan(0)
+    resetAllLimitsForTesting()
+  })
+
+  test("upstream failure → local calibrated fallback applies the learned factor", async () => {
+    const fetchMock = setFetchMock(async () => new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500 }))
+    // A large factor makes the calibrated value clearly exceed the raw estimate.
+    learnCalibration("claude-sonnet-4.5", 3_000, 9_000, { isLive: true }) // ≈3.0 in the low bucket
+
+    const payload = { model: "claude-sonnet-4.5", max_tokens: 128, messages: [{ role: "user", content: "hello world" }] }
+    const { status, json } = await countTokens(payload)
+
+    expect(status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // Independent oracle: the returned count == calibrate(rawEstimate). Recompute the
+    // raw estimate with the same primitive the route uses, then apply the same factor.
+    const model = state.modelIndex.get("claude-sonnet-4.5")!
+    const rawEstimate = await countTotalInputTokens(payload as never, model)
+    expect(json.input_tokens).toBe(calibrate("claude-sonnet-4.5", rawEstimate))
+    // Sanity: the factor genuinely inflated the count (calibrate is not identity here).
+    expect(json.input_tokens).toBeGreaterThan(rawEstimate)
+    resetAllLimitsForTesting()
+  })
+
   test("out-of-catalog model skips upstream, returns input_tokens=1", async () => {
     const fetchMock = setFetchMock(async () => new Response(JSON.stringify({ input_tokens: 999 }), { status: 200 }))
 
@@ -197,35 +246,44 @@ describe("POST /v1/messages/count_tokens", () => {
     expect(json.input_tokens).toBe(77)
   })
 
-  test("auto-truncate inflation early-return fires before any upstream call", async () => {
-    const fetchMock = setFetchMock(async () => new Response(JSON.stringify({ input_tokens: 5 }), { status: 200 }))
-    setStateForTests({ autoTruncate: true })
-    setModels({
-      object: "list",
-      data: [
-        mockModel("claude-sonnet-4.5", {
-          vendor: "Anthropic",
-          supported_endpoints: ["/v1/messages"],
-          capabilities: { type: "chat", tokenizer: "o200k_base", limits: { max_context_window_tokens: 1000, max_prompt_tokens: 500, max_output_tokens: 500 } },
-        }),
-      ],
+  test("emits a request-shaped line (system.request_line), not an [INFO] syslog line", async () => {
+    setFetchMock(async () => new Response(JSON.stringify({ input_tokens: 18884 }), { status: 200 }))
+
+    // Capture display-only events + wire the publisher (start.ts does this in prod).
+    const events: Array<{ kind: string; parts?: Record<string, unknown> }> = []
+    // Also count any request.* event — the load-bearing invariant is that
+    // count_tokens stays OUT of observability (no RequestContext / history /
+    // telemetry). If someone ever wires it into the pipeline, this goes non-zero.
+    let requestEventCount = 0
+    const unsub = getBus().subscribe((e) => {
+      if (e.kind.startsWith("request.")) requestEventCount++
+      if (e.kind === "system.request_line") events.push({ kind: e.kind, parts: e.parts as unknown as Record<string, unknown> })
     })
+    setRequestLinePublisher(getBus().scope("system"))
 
-    // Seed a learned token limit so hasKnownLimits() is true and the inflation
-    // check has a limit to compare against (mirrors a prior upstream 400).
-    onTokenLimitExceeded("claude-sonnet-4.5", 500)
+    try {
+      const { status, json } = await countTokens({
+        model: "claude-sonnet-4.5",
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+      })
 
-    // A prompt far over the tiny 500-token limit triggers inflation.
-    const huge = "word ".repeat(5000)
-    const { status, json } = await countTokens({
-      model: "claude-sonnet-4.5",
-      max_tokens: 128,
-      messages: [{ role: "user", content: huge }],
-    })
-
-    expect(status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(0)
-    // Inflated to floor(contextWindow * 0.95) = floor(1000 * 0.95) = 950.
-    expect(json.input_tokens).toBe(950)
+      expect(status).toBe(200)
+      expect(json.input_tokens).toBe(18884)
+      // Exactly one request-shaped line, carrying request-line parts (not a syslog line).
+      expect(events).toHaveLength(1)
+      const parts = events[0]?.parts ?? {}
+      expect(parts.prefix).toBe("[ OK ]")
+      expect(parts.method).toBe("POST")
+      expect(String(parts.path)).toContain("/v1/messages/count_tokens")
+      expect(parts.status).toBe(200)
+      expect(parts.model).toBe("claude-sonnet-4.5")
+      expect(parts.inputTokens).toBe(18884)
+      // Load-bearing: count_tokens emits ZERO request.* events (out-of-observability).
+      expect(requestEventCount).toBe(0)
+    } finally {
+      unsub()
+      resetRequestLinePublisher()
+    }
   })
 })

@@ -226,13 +226,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   },
   {
-    configKey: "auto_truncate.compress_tool_results",
-    stateKey: "compressToolResultsBeforeTruncate",
-    sampleYamlValue: "false",
-    expectedStateValue: false,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
-  },
-  {
     configKey: "sanitize_tool_names",
     stateKey: "sanitizeToolNames",
     sampleYamlValue: "true",
@@ -240,39 +233,18 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   },
   {
-    configKey: "auto_truncate.enabled",
-    stateKey: "autoTruncate",
-    sampleYamlValue: "true",
-    expectedStateValue: true,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncate,
+    configKey: "anthropic.use_upstream_count_tokens",
+    stateKey: "useUpstreamCountTokens",
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
   },
   {
-    configKey: "auto_truncate.target_factor",
-    stateKey: "autoTruncateTargetFactor",
-    sampleYamlValue: "0.5",
-    expectedStateValue: 0.5,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
-  },
-  {
-    configKey: "auto_truncate.max_retries",
-    stateKey: "autoTruncateMaxRetries",
+    configKey: "retry.max_reactive_retries",
+    stateKey: "maxReactiveRetries",
     sampleYamlValue: "7",
     expectedStateValue: 7,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
-  },
-  {
-    configKey: "auto_truncate.compress_threshold",
-    stateKey: "autoTruncateCompressThreshold",
-    sampleYamlValue: "5000",
-    expectedStateValue: 5000,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
-  },
-  {
-    configKey: "auto_truncate.preflight",
-    stateKey: "autoTruncatePreflight",
-    sampleYamlValue: "true",
-    expectedStateValue: true,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
   },
 
   // ── system_prompt_overrides (array; sample is a single rule) ────────
@@ -287,13 +259,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
   },
 
   // ── anthropic.* scalars ────────────────────────────────────────────
-  {
-    configKey: "anthropic.server_tool_strip",
-    stateKey: "stripServerTools",
-    sampleYamlValue: "true",
-    expectedStateValue: true,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripServerTools,
-  },
   {
     configKey: "anthropic.strict_response_headers",
     stateKey: "strictResponseHeaders",
@@ -544,13 +509,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
   },
   {
-    configKey: "anthropic.server_tool_rewrite",
-    stateKey: "rewriteServerTools",
-    sampleYamlValue: "downgrade",
-    expectedStateValue: "downgrade",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
-  },
-  {
     configKey: "anthropic.thinking_signature_compat",
     stateKey: "thinkingSignatureCompat",
     sampleYamlValue: "redacted_thinking",
@@ -722,6 +680,27 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
   },
   {
+    configKey: "anthropic.refusal_end_turn_text",
+    stateKey: "refusalEndTurnText",
+    sampleYamlValue: "custom {model}",
+    expectedStateValue: "custom {model}",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+  },
+  {
+    configKey: "anthropic.refusal_error_message",
+    stateKey: "refusalErrorMessage",
+    sampleYamlValue: "err {model}",
+    expectedStateValue: "err {model}",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+  },
+  {
+    configKey: "anthropic.refusal_error_type",
+    stateKey: "refusalErrorType",
+    sampleYamlValue: "custom_type",
+    expectedStateValue: "custom_type",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+  },
+  {
     configKey: "anthropic.tool_backfill_question",
     stateKey: "backfillQuestionFromHeader",
     sampleYamlValue: "false",
@@ -776,22 +755,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: '"/tmp/custom.db"',
     expectedStateValue: "/tmp/custom.db",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyDbPath,
-  },
-
-  // ── server_tool_web_search.* ───────────────────────────────────────────────────
-  {
-    configKey: "server_tool_web_search.enabled",
-    stateKey: "webSearchEnabled",
-    sampleYamlValue: "true",
-    expectedStateValue: true,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
-  },
-  {
-    configKey: "server_tool_web_search.backend",
-    stateKey: "webSearchBackend",
-    sampleYamlValue: '"searxng"',
-    expectedStateValue: "searxng",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
   },
 
   // ── shutdown.* ─────────────────────────────────────────────────────
@@ -1259,7 +1222,6 @@ system_prompt_overrides:
 
   test("CONFIG_MANAGED_DEFAULTS stays aligned with initial mutable state", () => {
     // Sanity guard against drift in state.ts initializer.
-    expect(state.stripServerTools).toBe(CONFIG_MANAGED_DEFAULTS.stripServerTools)
     expect(state.thinkingBlockMessagePolicy).toBe(CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy)
     expect(state.responseHeaderTimeout).toBe(CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout)
     expect(state.streamIdleTimeout).toBe(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout)

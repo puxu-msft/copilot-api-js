@@ -58,7 +58,7 @@ type AnthropicResponseBlock = TextBlockParam | ToolUseBlockParam
  * The Anthropic Messages response shape produced from a CC completion (spec §7.1). A structural subset
  * of the SDK `Message` — the strict SDK response types (`ToolUseBlock.caller`, `TextBlock.citations`,
  * `container`/`stop_details`, `Usage`'s many null fields) are wire-optional, so the codec casts this
- * to `AnthropicMessageResponse` at the boundary (the `web-search/synthesize.ts` precedent). Carries
+ * to `AnthropicMessageResponse` at the boundary. Carries
  * the well-formed essentials the client (Claude Code / Anthropic SDK) reads.
  */
 export interface TranslatedAnthropicResponse {

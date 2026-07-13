@@ -146,7 +146,7 @@ describe("adaptLegacyStrategy", () => {
 })
 
 describe("buildOpenAiCcStrategies", () => {
-  test("yields network → server-error → token-refresh → auto-truncate in order", async () => {
+  test("yields network → server-error → token-refresh in order", async () => {
     const { buildOpenAiCcStrategies } = await import("~/lib/codec/openai-cc/strategies")
     const strategies = buildOpenAiCcStrategies({
       originalPayload: { model: "gpt-4o", messages: [] },
@@ -154,6 +154,6 @@ describe("buildOpenAiCcStrategies", () => {
       maxRetries: 5,
       label: "Completions",
     })
-    expect(strategies.map((s) => s.name)).toEqual(["network-retry", "server-error-retry", "token-refresh", "auto-truncate"])
+    expect(strategies.map((s) => s.name)).toEqual(["network-retry", "server-error-retry", "token-refresh"])
   })
 })

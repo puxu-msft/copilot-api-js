@@ -1,5 +1,7 @@
 # Spec：auto-truncate calibration —— size-aware 学习 + 从成功请求学习 + history backfill
 
+> **2026-07-13 后续变更**（RFC `2026-07-13-remove-auto-truncate-keep-calibration`）：auto-truncate 截断本体已移除，本 spec 描述的 calibration 因子模型**保留但重定位**为「本地 token 计数准确度增强」。三处偏离本 spec 原文：① 400 腿从内嵌 `onTokenLimitExceeded`（随反应式截断策略删除）解耦为独立 `CalibrationFailureSink`（订阅 `request.failed`）；② est caliber 统一为 `countTotalInputTokens`（input-only），成功腿从 `countTotalTokens` 改齐；③ pre-flight `preSend` + `computeSafetyMargin` + `calculateTokenLimit` + `ModelLimits.tokenLimit` 字段随截断一并删除。当前架构以 `docs/DESIGN.md`「token-count calibration」行为准。
+
 **日期**：2026-07-11
 **状态**：**已实施**（Phase 1 + Phase 2 均落地，分支 `feat/size-aware-calibration`）。原草案 v2 已过两轮 subagent 对抗审查 + 全部 BLOCKER/I 级修订并经用户确认。
 **关联**：认知底稿 [docs/sync-ghc-api/token-counting.md](../sync-ghc-api/token-counting.md)；离线验证 [exp/token-calibration-size-aware/CONCLUSIONS.md](../../exp/token-calibration-size-aware/CONCLUSIONS.md)；交接底稿 [docs/todo/better-count-tokens.md](../todo/better-count-tokens.md)。

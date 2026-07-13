@@ -11,10 +11,8 @@
  * with parse+accumulate+break
  * inlined; the idle/shutdown/client-abort guard is owned by the transport).
  *
- * Two route pre-steps stay on the legacy path by design (RFC §1 / §12.7):
+ * One route pre-step stays on the legacy path by design (RFC §1 / §12.7):
  *   - warmup interception (`handleWarmupRequest`) — before any heavy processing.
- *   - web_search double-hop (`handleWebSearchCompletion`) — its own ctx, NOT the
- *     driver (the whole web_search feature is a deferred P2.6 item).
  *
  * P2-era division of labor (sampling sinks to the driver in P3.2): this handler
  * still owns the response-side sampling (sseEvents + forwarded SSE + accumulate +
@@ -32,13 +30,8 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import type { AnthropicAutoTruncateResult } from "~/lib/anthropic/auto-truncate"
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { SanitizationStats } from "~/lib/anthropic/sanitize"
-import type {
-  //
-  RequestContext,
-} from "~/lib/context/request"
 import type {
   //
   PreprocessInfo,
@@ -93,15 +86,15 @@ import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import {
   //
+  DEFAULT_REFUSAL_ERROR_TYPE,
   isThinkingOnlyRefusal,
-  REFUSAL_ERROR_MESSAGE,
+  renderRefusalTemplate,
 } from "~/lib/anthropic/recover-refusal"
 import {
   //
   preprocessAnthropicMessages,
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
-import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import {
   //
   accumulateAnthropicStreamEvent,
@@ -113,22 +106,14 @@ import {
   handleWarmupRequest,
   isWarmupRequest,
 } from "~/lib/anthropic/warmup"
-import { payloadHasWebSearch } from "~/lib/anthropic/web-search/detect"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
-import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   HTTPError,
   isAbortError,
 } from "~/lib/error"
-import { captureInboundHeaders } from "~/lib/fetch-utils"
-import {
-  //
-  getAgentIdFromHeaders,
-  getSessionIdFromHeaders,
-} from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
@@ -149,15 +134,12 @@ import {
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
-import { decideRouteFromInput } from "~/lib/pipeline/router"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
   buildAnthropicResponseData,
   buildOpenAIResponseData,
   buildResponsesResponseData,
-  createTruncationMarker,
-  prependMarkerToResponse,
 } from "~/lib/request"
 import {
   //
@@ -182,7 +164,6 @@ import {
   recordUpstreamFrame,
   type StreamPumpState,
 } from "./streaming-pump"
-import { handleWebSearchCompletion } from "./web-search-handler"
 
 /** Anthropic's effort-learning strategy is real (not inert); learning budget = 32 (legacy MAX_LEARNING_RETRIES). */
 const MAX_LEARNING_RETRIES = 32
@@ -244,94 +225,7 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
     dedupedToolCallCount: pre.dedupedToolCallCount,
   }
 
-  // Web search double-hop interception — stays on the legacy ctx + handler, NOT
-  // the driver (RFC §1 / §12.7). Re-creates the legacy lightweight ctx (the codec
-  // is bypassed entirely for this path).
-  if (state.webSearchEnabled && payloadHasWebSearch(wireBody)) {
-    // The web_search double-hop requires the DIRECT Anthropic /v1/messages leg, so it runs the
-    // SAME router decision the driver would (RFC §6 / FAIL-2) instead of a bare
-    // `supportsDirectAnthropicApi` check: ONLY a `passthrough` (/v1/messages) decision may enter
-    // the double-hop. A `reject` (unsupported model) OR a `translate` leg (@cc/@responses —
-    // translation-path web_search is a non-goal, RFC §2) is surfaced as a ctx-RECORDED 400
-    // (W-reject-obs): build the ctx first (createWebSearchContext c.set's it; the observability
-    // middleware finalizes the entry from the 4xx status), so the reject gets a history entry
-    // instead of a ctx-less bare throw. For the no-suffix unsupported case the router's reason is
-    // byte-identical to the prior `supportsDirectAnthropicApi` message (zero regression).
-    const decision = decideRouteFromInput({
-      clientFormat: "anthropic",
-      modelName: resolvedName,
-      ...(routeOverride && { routeOverride }),
-      model: selectedModel,
-    })
-    if (decision.kind !== "passthrough") {
-      // Three decision states surface a 400 here (web_search needs the DIRECT /v1/messages leg):
-      //   - reject           → the router's own reason (unsupported model).
-      //   - translate + suffix → an explicit `@cc`/`@responses` pin (translation-path web_search is a non-goal).
-      //   - translate, NO suffix → the Phase 7 no-suffix auto-route (a non-Anthropic model forward-translates
-      //     to an OpenAI leg). MUST NOT reference `@${routeOverride}` here — routeOverride is undefined, which
-      //     used to render "pinned to @undefined" garbage (Phase 7 introduced this third state).
-      let reason: string
-      if (decision.kind === "reject") {
-        reason = decision.reason
-      } else if (routeOverride) {
-        reason = `Model "${resolvedName}" pinned to @${routeOverride} cannot use web_search: the double-hop requires the direct /v1/messages leg (translation-path web_search is unsupported)`
-      } else {
-        reason = `Model "${resolvedName}" cannot use web_search: it forward-translates to the ${decision.to} leg, but the double-hop requires the direct /v1/messages leg (translation-path web_search is unsupported)`
-      }
-      // Build + expose the ctx so the reject is recorded in history (not a ctx-less throw).
-      createWebSearchContext(c, clientRaw, wireBody, resolvedName, clientModel, selectedModel)
-      throw new HTTPError(reason, 400, reason)
-    }
-    consola.debug("[WebSearch] Intercepting request with native web_search tool (v4 route → legacy handler)")
-    const reqCtx = createWebSearchContext(c, clientRaw, wireBody, resolvedName, clientModel, selectedModel)
-    return handleWebSearchCompletion(c, wireBody, reqCtx, selectedModel, preprocessInfo)
-  }
-
   return runMessagesDriver(c, { wireBody, clientRaw, resolvedName, selectedModel, preprocessInfo, ...(routeOverride && { routeOverride }) })
-}
-
-/**
- * Re-create the legacy lightweight RequestContext for the web_search double-hop
- * path (the codec is bypassed here). Mirrors `handleMessages`' ctx setup so the
- * web_search handler sees the same ctx shape it does on the legacy route.
- */
-function createWebSearchContext(
-  c: Context,
-  clientRaw: MessagesPayload,
-  wireBody: MessagesPayload,
-  resolvedName: string,
-  clientModel: string,
-  selectedModel: Model | undefined,
-): RequestContext {
-  const clientModelName = clientModel !== resolvedName ? clientModel : undefined
-  const manager = getRequestContextManager()
-  const contentLengthHeader = c.req.header("content-length")
-  const reqBodySize = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : undefined
-  const reqCtx = manager.create({
-    endpoint: "anthropic-messages",
-    sessionId: getSessionIdFromHeaders(c.req.raw.headers),
-    agentId: getAgentIdFromHeaders(c.req.raw.headers),
-    rawPath: c.req.path,
-    method: c.req.method,
-    path: c.req.path,
-    ...(reqBodySize !== undefined && Number.isFinite(reqBodySize) && { requestBodySize: reqBodySize }),
-  })
-  c.set("requestContext", reqCtx)
-  reqCtx.setOriginalRequest({
-    model: clientModelName ?? clientRaw.model,
-    messages: clientRaw.messages as unknown as Array<unknown>,
-    stream: clientRaw.stream ?? false,
-    tools: clientRaw.tools as unknown as Array<unknown> | undefined,
-    system: clientRaw.system,
-    payload: clientRaw,
-  })
-  reqCtx.setInboundRequestHeaders(captureInboundHeaders(c.req.raw.headers))
-  reqCtx.setToolNameMapper(buildAnthropicToolNameMapper(wireBody.tools, resolvedName, selectedModel?.vendor))
-  reqCtx.setResolvedModel({
-    resolved: resolvedName,
-    ...(clientModelName !== undefined && { client: clientModelName }),
-  })
-  return reqCtx
 }
 
 // ============================================================================
@@ -380,7 +274,7 @@ export function buildMessagesDriverStrategies(
         originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
         resanitize,
         model: env.model as Model | undefined,
-        maxRetries: state.autoTruncateMaxRetries,
+        maxRetries: state.maxReactiveRetries,
         betaProbe,
       },
     })
@@ -391,7 +285,7 @@ export function buildMessagesDriverStrategies(
     cc: {
       originalPayload: env.body as ChatCompletionsPayload,
       model: env.model as Model | undefined,
-      maxRetries: state.autoTruncateMaxRetries,
+      maxRetries: state.maxReactiveRetries,
       label: env.targetEndpoint === ENDPOINT.RESPONSES ? "Anthropic(→Responses)" : "Anthropic(→CC)",
     },
   })
@@ -417,9 +311,6 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     rewriteShutdownAbort: true,
   })
 
-  // Truncation result for the response marker (captured from onMeta, post-gate).
-  let truncateResult: AnthropicAutoTruncateResult | undefined
-
   const driver = createPipelineDriver({
     codec,
     transport,
@@ -434,16 +325,13 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // per-route array this replaced — so forwarded bytes are unchanged.
     responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => buildMessagesDriverStrategies(env, { codec, betaProbe }),
-    maxRetries: state.autoTruncateMaxRetries,
+    maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
     // Post-gate meta sink (C0-② / RFC §11.2 + §12.4): rebuild the retry pipeline-info
-    // from the accepted retry's meta (sanitization / strippedBetas / probedBetas /
-    // truncateResult) + the codec's sampleRequest-captured effective body. Only
-    // fires after the budget gate accepts the retry — a budget-rejected retry never
-    // emits phantom pipeline-info.
+    // from the accepted retry's meta (sanitization / strippedBetas / probedBetas) +
+    // the codec's sampleRequest-captured effective body. Only fires after the budget
+    // gate accepts the retry — a budget-rejected retry never emits phantom pipeline-info.
     onMeta: (meta, metaEnv) => {
-      const rtr = meta.truncateResult as AnthropicAutoTruncateResult | undefined
-      if (rtr) truncateResult = rtr
       recordRetryPipelineStateV4({ meta, env: metaEnv, codec, preprocessInfo })
     },
   })
@@ -517,7 +405,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // Non-streaming: render the real HTTP status with the upstream-decided body.
       try {
         const resp = driver.runResponseNonStreaming(upstream, env) as AnthropicMessageResponse
-        return renderNonStreamingV4(c, driver, env, resp, truncateResult, upstream.headers)
+        return renderNonStreamingV4(c, driver, env, resp, upstream.headers)
       } finally {
         detachClientAbort()
       }
@@ -730,8 +618,7 @@ interface RecordRetryPipelineStateV4Args {
  *     makes it the retry's body). (The `thinking` feature is NOT rebuilt here — it
  *     is emitted per-attempt by `prepareWire` as a terminal `{requested, effective}`
  *     dimension; see codec.ts / observability console sink.)
- *   - sanitization / strippedBetas / probedBetas / truncateResult ← `meta`
- *     (onMeta, post-gate).
+ *   - sanitization / strippedBetas / probedBetas ← `meta` (onMeta, post-gate).
  */
 function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void {
   const { meta, codec, preprocessInfo } = args
@@ -745,7 +632,6 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
   const retrySanitization = meta.sanitization as SanitizationStats | undefined
   const allSanitization = [...(initialSanitizationInfo ? [initialSanitizationInfo] : []), ...(retrySanitization ? [toSanitizationInfo(retrySanitization)] : [])]
 
-  const retryTruncateResult = meta.truncateResult as AnthropicAutoTruncateResult | undefined
   const retryMessageMapping =
     baseline && effectiveMessages ? buildMessageMapping(baseline.messages, effectiveMessages as MessagesPayload["messages"]) : undefined
 
@@ -753,25 +639,15 @@ function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void 
   ctx.setPipelineInfo({
     preprocessing: preprocessInfo,
     sanitization: allSanitization,
-    truncation:
-      retryTruncateResult ?
-        {
-          wasTruncated: true,
-          removedMessageCount: retryTruncateResult.removedMessageCount,
-          originalTokens: retryTruncateResult.originalTokens,
-          compactedTokens: retryTruncateResult.compactedTokens,
-          processingTimeMs: retryTruncateResult.processingTimeMs,
-        }
-      : undefined,
     ...(retryMessageMapping && { messageMapping: retryMessageMapping }),
     ...(strippedCacheControl?.length && { cacheControlStripped: [...strippedCacheControl] }),
   })
 
-  // Sticky feature tag for the accepted retry. Beta-strip and truncation are
-  // NOT exhaustive — many strategies (server-tool / structured-outputs /
-  // body-field / deferred-tool / legacy-thinking / network / token-refresh)
-  // emit meta with neither signal, and must NOT be branded `truncated`.
-  const retryFeature = retryMetaFeature(meta, retryTruncateResult !== undefined)
+  // Sticky feature tag for the accepted retry. Beta-strip is NOT exhaustive — many
+  // strategies (server-tool / structured-outputs / body-field / deferred-tool /
+  // legacy-thinking / network / token-refresh) emit meta with no signal, and must
+  // NOT be branded with a feature.
+  const retryFeature = retryMetaFeature(meta)
   if (retryFeature) ctx.recordFeature(retryFeature.feature, retryFeature.detail)
 }
 
@@ -824,16 +700,10 @@ function renderNonStreamingV4(
   driver: ReturnType<typeof createPipelineDriver>,
   env: RequestEnvelope,
   response: AnthropicMessageResponse,
-  truncateResult: AnthropicAutoTruncateResult | undefined,
   upstreamHeaders: Headers,
 ): Response {
   const reqCtx = env.ctx
   let finalResponse = response
-
-  if (state.verbose && truncateResult?.wasTruncated) {
-    const marker = createTruncationMarker(truncateResult)
-    finalResponse = prependMarkerToResponse(response, marker)
-  }
 
   finalResponse = driver.runResponseWhole(finalResponse, env) as AnthropicMessageResponse
 
@@ -851,7 +721,11 @@ function renderNonStreamingV4(
     && response.stop_reason === "refusal"
     && !(response.content as ReadonlyArray<{ type: string }>).some((b) => b.type === "text" || b.type === "tool_use")
   ) {
-    const errorBody = { type: "error", error: { type: "api_error", message: REFUSAL_ERROR_MESSAGE } }
+    // Emission point 4 (non-streaming error body): render message/type from config (whole response
+    // in hand → all vars incl. thinking_tokens available). Empty type falls back to api_error.
+    const errVars = { model: response.model, request_id: reqCtx.id, thinking_tokens: response.usage.output_tokens }
+    const errType = state.refusalErrorType === "" ? DEFAULT_REFUSAL_ERROR_TYPE : state.refusalErrorType
+    const errorBody = { type: "error", error: { type: errType, message: renderRefusalTemplate(state.refusalErrorMessage, errVars) } }
     // The client receives the 500 error BODY (not the upstream content) — record THAT as the
     // forwarded (proxy→client) response so inboundResponse faithfully mirrors what the client got
     // (the upstream-original thinking blocks are preserved on outboundResponse via fail's partial).

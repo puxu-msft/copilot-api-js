@@ -103,6 +103,16 @@ export interface ToolDefinition {
   [key: string]: unknown
 }
 
+/**
+ * Per-attempt truncation diagnostics.
+ *
+ * 有意保留（写侧不再 populate、读侧仍活）：auto-truncate 移除后（RFC
+ * `2026-07-13-remove-auto-truncate-keep-calibration`）生产不再产出 truncation
+ * （`beginAttempt` 不传、无构造点），但本类型 + `PipelineInfo.truncation` +
+ * 读侧适配 `pipelineFromLegacyAttempt`（`sqlite/serialize.ts`）必须保留：① richest-data-flow
+ * ADR——旧 history.db 存过真实发生的 truncation 诊断，读侧忠实读出、不丢；② Vue `ui/`
+ * 详情页（`usePipelineInfo.ts` / `AttemptsTimeline.vue` 等 10 处）仍渲染这些历史数据。
+ */
 export interface TruncationInfo {
   wasTruncated: boolean
   removedMessageCount: number
@@ -167,8 +177,11 @@ export interface SseEventRecord {
    *   - "hook-rewrite" — the FORWARDED track's frame was produced by a `rewriteUpstreamFrame` hook
    *     (differs from the pre-hook frame the upstream track kept); the upstream track itself never
    *     carries this variant (it always records the pre-hook original — spec §3.2/§3.4 H2).
+   *   - "refusal-recovery" — the FORWARDED track's frame was injected or rewritten by refusal recovery
+   *     (the end_turn synthetic text block + rewritten end_turn delta, or the error-mode `event: error`
+   *     frame). The upstream track never carries it (it keeps the genuine upstream `refusal`).
    */
-  synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-mock" | "hook-rewrite" | "hook-replay"
+  synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-mock" | "hook-rewrite" | "hook-replay" | "refusal-recovery"
 }
 
 /**

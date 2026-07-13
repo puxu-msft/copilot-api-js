@@ -21,20 +21,17 @@ import {
   //
   ensureAnthropicStartsWithUser,
   isLegalLeadingUserMessage,
-} from "~/lib/anthropic/auto-truncate/tool-utils"
-import { cleanupMessages } from "~/lib/anthropic/auto-truncate/truncation"
+} from "~/lib/anthropic/message-tool-utils"
 
 // Block builders
 const text = (t: string) => ({ type: "text" as const, text: t })
 const toolResult = (id: string) => ({ type: "tool_result" as const, tool_use_id: id, content: "result" })
-const toolUse = (id: string, name = "read") => ({ type: "tool_use" as const, id, name, input: {} })
 
 const userText = (t: string): MessageParam => ({ role: "user", content: [text(t)] })
 const userStr = (t: string): MessageParam => ({ role: "user", content: t })
 const userToolResult = (id: string): MessageParam => ({ role: "user", content: [toolResult(id)] })
 const userMixed = (id: string, t: string): MessageParam => ({ role: "user", content: [toolResult(id), text(t)] })
 const assistant = (t: string): MessageParam => ({ role: "assistant", content: [text(t)] })
-const assistantToolUse = (id: string): MessageParam => ({ role: "assistant", content: [toolUse(id)] })
 const systemMsg = (t: string): MessageParam => ({ role: "system", content: t }) as unknown as MessageParam
 
 describe("isLegalLeadingUserMessage", () => {
@@ -103,34 +100,5 @@ describe("ensureAnthropicStartsWithUser (strengthened)", () => {
   test("string-content user is a valid start", () => {
     const out = ensureAnthropicStartsWithUser([userStr("hi"), assistant("a")])
     expect(out).toHaveLength(2)
-  })
-})
-
-describe("cleanupMessages convergence", () => {
-  test("orphaned leading tool_result + cut pairing → converges to legal user[0]", () => {
-    // Truncation cut the assistant(tool_use toolu_1) away, leaving its user(tool_result)
-    // orphaned at the front. A mid system message AFTER the legal start must be preserved.
-    const messages: Array<MessageParam> = [
-      userToolResult("toolu_1"), // orphan (tool_use gone) — dropped
-      assistant("answer"), // leading non-user — dropped
-      userText("next question"), // first LEGAL user → start here
-      systemMsg("mid-system"), // after the start → must be preserved
-      assistantToolUse("toolu_2"),
-      userToolResult("toolu_2"), // paired — legal
-    ]
-    const out = cleanupMessages(messages)
-    expect(out.length).toBeGreaterThan(0)
-    expect(isLegalLeadingUserMessage(out[0])).toBe(true)
-    expect(out[0]).toEqual(userText("next question"))
-    // Mid system message (after the legal start) is preserved (Anthropic accepts non-leading system).
-    expect(out.some((m) => m.role === "system")).toBe(true)
-  })
-
-  test("terminates (length stabilizes) and yields legal start or empty", () => {
-    // All tool-result turns + assistant → nothing legal to start; converges to [].
-    const messages: Array<MessageParam> = [userToolResult("a"), assistant("x"), userToolResult("b")]
-    const out = cleanupMessages(messages)
-    // Either empty or a legal user start — never an illegal messages[0].
-    if (out.length > 0) expect(isLegalLeadingUserMessage(out[0])).toBe(true)
   })
 })

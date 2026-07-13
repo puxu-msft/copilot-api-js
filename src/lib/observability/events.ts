@@ -47,6 +47,7 @@ import type {
   HistoryStats,
 } from "~/lib/history/store"
 import type { EndpointType } from "~/lib/history/types"
+import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
 // Re-export the single source of truth so consumers of the observability
 // barrel get the type without reaching into context internals.
@@ -123,8 +124,6 @@ export interface AttemptSnapshot {
 
 /** Feature kinds — replaces the legacy `tags: string[]` escape hatch. */
 export type FeatureKind =
-  /** auto-truncate ran */
-  | "truncated"
   /**
    * Thinking mode as a per-request terminal dimension —
    * `detail: { requested?: string, effective: string }`. `effective` is the
@@ -247,6 +246,16 @@ export type ObservabilityEvent =
   | { kind: "system.rate_limit_state"; mode: RateLimitMode; queuedCount: number; detail?: Record<string, unknown> }
   | { kind: "system.shutdown_phase_changed"; phase: ShutdownPhase; previousPhase: ShutdownPhase | null; needsFlush: boolean }
   | { kind: "system.shutdown_completed" }
+
+  // ── Synthetic request-style log line (out-of-observability helpers) ──
+  //    A pre-built request-line projection for routes that are deliberately
+  //    exempt from the full request lifecycle (count_tokens — see
+  //    observability/middleware.ts SYNTHETIC_PATHS) but still want to render a
+  //    request-shaped line instead of a `[INFO]` syslog line. Carries the same
+  //    `LogLineParts` a real `request.completed` renders, but creates NO
+  //    RequestContext and reaches ONLY the display sinks (TerminalUi stdout +
+  //    FileSink) — never history / telemetry / calibration / WS. ──
+  | { kind: "system.request_line"; parts: LogLineParts }
 
   // ── Non-HTTP console logs (republished from consola — the single hijack
   //    point lives in `observability/republish.ts`, installed by start.ts).

@@ -37,7 +37,6 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { SseEventRecord } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
-import type { OpenAIAutoTruncateResult } from "~/lib/openai/auto-truncate"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -78,10 +77,6 @@ import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
-import {
-  //
-  createTruncationResponseMarkerOpenAI,
-} from "~/lib/openai/auto-truncate"
 import { ccCommitBoundaries } from "~/lib/openai/cc-commit-boundaries"
 import {
   //
@@ -163,9 +158,6 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   const codec = createOpenAiCcCodec({ reverseBetaProbe })
   const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
-  // Truncation result for the response marker (captured from the strategy factory).
-  let truncateResult: OpenAIAutoTruncateResult | undefined
-
   const driver = createPipelineDriver({
     codec,
     transport,
@@ -188,7 +180,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
             originalPayload: env.body as MessagesPayload,
             resanitize: buildReverseResanitize(reverseMapperHolder),
             model: env.model as Model | undefined,
-            maxRetries: state.autoTruncateMaxRetries,
+            maxRetries: state.maxReactiveRetries,
             betaProbe: reverseBetaProbe,
           },
         })
@@ -198,23 +190,12 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       return buildOpenAiCcStrategies({
         originalPayload: codec.getTruncateBaseline() ?? (env.body as ChatCompletionsPayload),
         model: env.model as Model | undefined,
-        maxRetries: state.autoTruncateMaxRetries,
+        maxRetries: state.maxReactiveRetries,
         label: viaResponses ? "Completions(→Responses)" : "Completions",
       })
     },
-    maxRetries: state.autoTruncateMaxRetries,
+    maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
-    // Post-gate meta sink (C0-② / RFC §11.2): the auto-truncate strategy's
-    // truncateResult, routed here only after the budget gate accepts the retry —
-    // so a budget-rejected truncate retry no longer sets a phantom `truncated`
-    // feature/marker (the pre-gate adapter onMeta used to).
-    onMeta: (meta, metaEnv) => {
-      const result = meta.truncateResult as OpenAIAutoTruncateResult | undefined
-      if (result) {
-        truncateResult = result
-        metaEnv.ctx.recordFeature("truncated")
-      }
-    },
   })
 
   let result: DriverRequestResult
@@ -269,7 +250,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       // REVERSE `@messages` leg (Phase 5): the client-facing body is the CC render, but the OUTBOUND leg
       // recorded must be the HONEST Anthropic upstream (richest-data-flow) — a dedicated render path.
       if (env.targetEndpoint === ENDPOINT.MESSAGES) return renderReverseNonStreamingV4(c, env, ccResp, upstream.nonStream as AnthropicMessageResponse)
-      return renderNonStreamingV4(c, env, ccResp, truncateResult)
+      return renderNonStreamingV4(c, env, ccResp)
     } finally {
       detachClientAbort()
     }
@@ -288,7 +269,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       // Claude Code, so no anchor/300s deadline). The forward/direct CC legs keep the byte-critical pump
       // (which owns the terminal-only buffered-retry selrouting + CC keepalive — hence `clientAbortSignal`).
       if (env.targetEndpoint === ENDPOINT.MESSAGES) await pumpReverseAnthropicLegV4({ stream, driver, codec, upstream, env })
-      else await pumpStreamingV4({ stream, driver, upstream, env, getTruncateResult: () => truncateResult, clientAbortSignal: clientAbort.signal })
+      else await pumpStreamingV4({ stream, driver, upstream, env, clientAbortSignal: clientAbort.signal })
     } finally {
       detachClientAbort()
     }
@@ -303,17 +284,8 @@ function renderNonStreamingV4(
   c: Context,
   env: RequestEnvelope,
   originalResponse: ChatCompletionResponse,
-  truncateResult: OpenAIAutoTruncateResult | undefined,
 ): Response {
-  let response = originalResponse
-  if (state.verbose && truncateResult?.wasTruncated && response.choices[0]?.message.content) {
-    const marker = createTruncationResponseMarkerOpenAI(truncateResult)
-    const firstChoice = response.choices[0]
-    response = {
-      ...response,
-      choices: [{ ...firstChoice, message: { ...firstChoice.message, content: `${marker}${firstChoice.message.content}` } }, ...response.choices.slice(1)],
-    }
-  }
+  const response = originalResponse
 
   const choice = response.choices.at(0)
   const usage = response.usage
@@ -377,7 +349,6 @@ interface PumpStreamingV4Options {
   driver: ReturnType<typeof createPipelineDriver>
   upstream: UpstreamStream
   env: RequestEnvelope
-  getTruncateResult: () => OpenAIAutoTruncateResult | undefined
   /**
    * The downstream client-disconnect signal (the route's `clientAbort`), threaded into the sink's
    * forward-idle heartbeat so keepalive chunks STOP once the client has left (mirrors Responses'
@@ -470,23 +441,6 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     }),
   })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
-
-  // Verbose truncation marker as the FIRST forwarded chunk (before the driver loop). The sink
-  // samples it (event: "message"); `acc.rawContent` records it so the accumulated completion
-  // data includes the marker (legacy parity).
-  const truncateResult = opts.getTruncateResult()
-  if (state.verbose && truncateResult?.wasTruncated) {
-    const marker = createTruncationResponseMarkerOpenAI(truncateResult)
-    const markerChunk: ChatCompletionChunk = {
-      id: `truncation-marker-${Date.now()}`,
-      object: "chat.completion.chunk",
-      created: Math.floor(Date.now() / 1000),
-      model,
-      choices: [{ index: 0, delta: { content: marker }, finish_reason: null, logprobs: null }],
-    }
-    await sink.write({ data: JSON.stringify(markerChunk), event: "message" })
-    acc.rawContent += marker
-  }
 
   // Per rendered frame (post-S6, pre-write): progress + accumulate on the UPSTREAM-named frame
   // (the accumulated completion data keeps upstream names) + return the RESTORED frame for

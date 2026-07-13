@@ -90,7 +90,7 @@ export interface PrepareContext {
   wroteExtendedTtl?: boolean
   /**
    * Set by the `rewrite-memory-tool` step: true iff a client tool named `memory` was rewritten to the
-   * native `{name:"memory", type:"memory_20250818"}` server tool. Read by `build-headers` to force the
+   * native `{name:"memory", type:"memory_20250818"}` typed CLIENT tool (client-executed). Read by `build-headers` to force the
    * shared `context-management-2025-06-27` beta (memory rides it, GHC-style).
    */
   hasMemoryTool?: boolean
@@ -959,9 +959,9 @@ function clampEffortLevel(wire: Record<string, unknown>, resolvedModel?: Model):
 
 /**
  * Rewrite a client tool named `memory` to Anthropic's native `{name:"memory", type:"memory_20250818"}`
- * server tool, mirroring GHC's BYOK path (anthropicProvider.ts). Gated by the `memoryToolEnabled` master
+ * typed descriptor (a client-EXECUTED tool, NOT a server tool), mirroring GHC's BYOK path (anthropicProvider.ts). Gated by the `memoryToolEnabled` master
  * switch (default off — CAPI acceptance unverified) AND model support. Drops the client tool's
- * input_schema / description / cache_control (server tools carry none). Sets `ctx.hasMemoryTool` so
+ * input_schema / description / cache_control (typed tools carry none). Sets `ctx.hasMemoryTool` so
  * build-headers forces the shared context-management beta. Matched by NAME because an earlier stage
  * (preprocessTools) may already have added an input_schema to the plain `{name:"memory"}` tool.
  *
@@ -1110,7 +1110,7 @@ function addToolCacheControl(
     return { tools, remaining, changed: false }
   }
 
-  // Anchor on the last non-deferred FUNCTION tool. Server tools (those carrying a `type`, e.g.
+  // Anchor on the last non-deferred FUNCTION tool. API-defined typed tools (those carrying a `type`, e.g.
   // `tool_search_tool_regex` or the rewritten `memory_20250818`) are excluded — they don't accept a
   // cache_control breakpoint and a 1h/5m marker on them would 400 upstream.
   const lastNonDeferredIndex = findLastIndex(tools, (tool) => tool.defer_loading !== true && (tool as { type?: unknown }).type === undefined)
