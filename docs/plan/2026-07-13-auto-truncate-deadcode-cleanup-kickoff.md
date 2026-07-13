@@ -1,5 +1,7 @@
 # Kick-off：auto-truncate 移除遗留死代码 review + cleanup
 
+> **✅ 已完成（2026-07-13，master `3ecda617`，分支 chore/auto-truncate-deadcode-cleanup rebase+FF 已并入并删除）。** 实际裁决**与本 kickoff 预期不同**：独立 reviewer 对抗裁决 + 主会话亲手复核后，4 项中**只 1 项该删、3 项保留**——① orphan-filter **删 4 函数**（非 kickoff 说的「五函数」，`isLegalLeadingUserMessage` 有间接生产消费者须留）；② preSend **保留**（在飞 cell-assembly 重构 RFC 明确保留为 OutboundLeg 方法槽）；③ PipelineInfo.truncation **保留**（richest-data-flow 旧库读侧 + Vue ui/ 10 处活消费，非「惰性 inert」）；④ countTotalTokens **保留+注释**（roadmap 复用锚点 + 级联孤儿）。权威裁决与订正见 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)「✅ 已裁决：auto-truncate 移除后遗留的死代码」条。副产：learn-by-analogy 确认 OpenAI 版 orphan-filter 是活 sanitize 代码、不动。
+
 > 复制本文件正文作为新会话的起始提示词。这是一个**小到中等的清理任务**（删除移除 auto-truncate 后无消费者的死代码），走「调研 → review 裁决 → 删除 → 复核 → 提交」的轻量流水线，不需要完整 SDD。
 
 ---
