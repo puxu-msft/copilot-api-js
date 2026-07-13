@@ -465,6 +465,23 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     expect(up.callCount()).toBe(2) // proxy retried internally after stripping the rejected server tool
   })
 
+  test("reactive retry (unsupported-beta explicit list): first leg 400 names the beta → proxy fixates + strips it + retries → client sees ONE clean turn, upstream hit twice", async () => {
+    // The unsupported-beta-retry strategy's EXPLICIT-list path fires on `unsupported beta header(s): X`
+    // (the upstream names the offending token) → it fixates X in the negotiation cache and strips it
+    // on a single deterministic retry (unlike the laconic `invalid beta flag` probe path, which needs
+    // real outbound betas + getProbeCandidates to iterate). Oracle: the SDK assembles a normal turn
+    // AND upstream was hit twice.
+    const up = sequencedUpstream([
+      () => httpErrorResponse(400, { type: "invalid_request_error", message: "unsupported beta header(s): e2e-only-beta" }),
+      () => createSseResponse(happyTurn("recovered after beta strip")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    expect((final.content[0] as { text?: string })?.text).toBe("recovered after beta strip")
+    expect(up.callCount()).toBe(2) // proxy retried internally after fixating + stripping the named beta
+  })
+
   // ── event-name tolerance: SDK dispatches on the event name ∈ accept-set, not name===data.type ──
 
   test("thinking-signature-compat: signature_delta under `event: content_block_start` is still accumulated by the SDK", async () => {
