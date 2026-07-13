@@ -1,0 +1,93 @@
+/**
+ * Pre-commit error-shaping glue for the Anthropic `/v1/messages` route (Phase 2,
+ * docs/plan/2026-07-13-upstream-error-client-shaping/phase-2-precommit-retry-signal.md).
+ *
+ * `route.ts`'s two `catch (error)` blocks (`/` and `/count_tokens`) are the ONLY pre-commit entry
+ * point — `handleMessagesV4`/`handleCountTokens` throw before any bytes are committed, so the HTTP
+ * status/headers are still free to shape here. This module is deliberately a `routes/` file (not
+ * `lib/`): it composes `lib/error` (`classifyError`/`forwardError`, format-agnostic, shared by 6
+ * non-Anthropic routes) with `lib/anthropic/error-shaping` (Phase 1's `decide()`, Anthropic-only) —
+ * a combination that must NOT live inside either `lib/` module (see error-shaping.ts's header: it
+ * must not depend on `routes/`, and `forward.ts` must stay untouched so the other 6 routes are
+ * unaffected, Global Constraint #3). Dependency direction is routes→lib, which is allowed.
+ *
+ * `forwardError` itself is called UNCHANGED in every branch — only the RESPONSE HEADERS are
+ * augmented via Hono's `c.header()` (which must run BEFORE `c.json()` builds the response, same
+ * convention as `handler-v4.ts:applyForwardedAnthropicResponseHeaders`). The response BODY is
+ * always whatever `forwardError` already produces; this Phase does not touch it.
+ *
+ * Scope: only the A-class (`retry-signal`) branch is acted on. `ask-user-question` (B-class) and
+ * `canonical-error` (C-class, and B-class with the AUQ toggle off) fall through to plain
+ * `forwardError` — AUQ body synthesis is Phase 4's job (see `decide()`'s doc comment for the class
+ * table). `defer-to-block-level` is a post-commit-only decision kind that `decide()` never returns
+ * for a pre-commit input, so it is unreachable here (exhaustive `switch` would need a `never` guard;
+ * a `if` chain is enough since the two acted-on/passthrough kinds cover the pre-commit range).
+ */
+import type { Context } from "hono"
+
+import {
+  //
+  decide,
+  type ErrorShapingConfig,
+} from "~/lib/anthropic/error-shaping"
+import {
+  //
+  classifyError,
+  forwardError,
+  isAbortError,
+} from "~/lib/error"
+import { state } from "~/lib/state"
+
+/** Snapshot the 4 error-shaping config keys off `state` (Phase 0) into the pure `decide()` input. */
+function errorShapingConfigFromState(): ErrorShapingConfig {
+  return {
+    enabled: state.errorShapingEnabled,
+    askUserQuestion: state.errorAskUserQuestion,
+    auqTemplate: state.errorAuqTemplate,
+    selfhealDelegate: state.errorSelfhealDelegate,
+  }
+}
+
+/**
+ * Pre-commit Anthropic error entry point for `route.ts`.
+ *
+ * Golden-locked (CF-2): when `error_shaping_enabled` is false, `decide()` is never called at all —
+ * this delegates straight to `forwardError`, byte-identical to the pre-error-shaping behaviour.
+ * `decide()` itself does NOT read `config.enabled` (Phase 1 leaves that gate to the caller), so this
+ * check must happen here, before `decide()` is invoked.
+ *
+ * Aborts are also routed straight to `forwardError` unchanged: `classifyError` maps them to the
+ * `aborted` type, which `decide()` explicitly refuses (throws) as a non-target — aborts are not an
+ * upstream failure to shape, they are the existing client-disconnect / header-timeout path.
+ *
+ * CF-1 (carry-forward from the Phase 1 review): a 401/403 that still has a token-refresh left is
+ * consumed transparently by the `token-refresh` `RetryStrategy` several layers below this — the
+ * pipeline retries and either succeeds (no error ever reaches here) or fails with a DIFFERENT error.
+ * Only an EXHAUSTED 401/403 (`token-refresh`'s `canHandle` returns false because it already spent its
+ * one refresh) bubbles out of the pipeline as an `HTTPError` and reaches this function as
+ * `auth_expired`. This function does not special-case that — it is a structural property of the
+ * pipeline's strategy ordering, verified from the caller's (black-box) side by the `.it` integration
+ * test (`error-shaping-precommit.it.test.ts`), not re-implemented here.
+ */
+export function shapePrecommitError(c: Context, error: unknown): Response {
+  if (!state.errorShapingEnabled) return forwardError(c, error)
+  if (error instanceof Error && isAbortError(error)) return forwardError(c, error)
+
+  const apiError = classifyError(error)
+  if (apiError.type === "aborted") return forwardError(c, error)
+
+  const decision = decide({
+    error: apiError,
+    commitPhase: "pre-commit",
+    clientVisibleStopEmitted: false,
+    config: errorShapingConfigFromState(),
+  })
+
+  if (decision.kind === "retry-signal") {
+    if (decision.retryAfterSec !== undefined) c.header("Retry-After", String(decision.retryAfterSec))
+    c.header("x-should-retry", "true")
+  }
+  // "ask-user-question": Phase 4 TODO — falls through to forwardError unchanged for now.
+  // "canonical-error": current forwardError behaviour is already correct, no header changes.
+  return forwardError(c, error)
+}
