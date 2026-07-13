@@ -17,13 +17,12 @@
  * The non-streaming path still renders + settles directly (no sink).
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 import type { SSEStreamingApi } from "hono/streaming"
 
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
-
-import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { SseEventRecord } from "~/lib/history"
@@ -38,13 +37,18 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
+import type { MessagesPayload } from "~/types/api/anthropic"
+import type {
+  //
+  GhcCompletionTokensDetails,
+  GhcPromptTokensDetails,
+} from "~/types/api/ghc-usage"
 import type {
   //
   ChatCompletionChunk,
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "~/types/api/openai-chat-completions"
-import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
@@ -84,8 +88,12 @@ import {
 } from "~/lib/openai/tool-name-sanitize"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import {
+  //
+  openaiNonStreamingTruncation,
+  anthropicNonStreamingTruncation,
+} from "~/lib/pipeline/non-streaming-completeness"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
-import { openaiNonStreamingTruncation, anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import {
   //
   buildAnthropicResponseData,
@@ -95,8 +103,12 @@ import {
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
-import { mapInputDetails, mapOutputDetails, nonNegOrUndef } from "~/types/api/ghc-usage"
-import type { GhcCompletionTokensDetails, GhcPromptTokensDetails } from "~/types/api/ghc-usage"
+import {
+  //
+  mapInputDetails,
+  mapOutputDetails,
+  nonNegOrUndef,
+} from "~/types/api/ghc-usage"
 
 /** CC has no learning-budget strategy; the value is inert (passed for completeness). */
 const MAX_LEARNING_RETRIES = 32
@@ -142,7 +154,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   // source). Both are INERT on the forward/direct CC legs (the reverse rewrite/strategies gate MESSAGES).
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, selectedModel?.vendor)
-  const codec = createOpenAiCcCodec({ reverseBetaProbe })
+  const codec = createOpenAiCcCodec({ reverseBetaProbe, reverseMapperHolder })
   const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
   // Truncation result for the response marker (captured from the strategy factory).
@@ -449,7 +461,15 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     recordForwarded()
     consola.debug("[ChatCompletions:v4] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(acc.model || model, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, cacheCreation: acc.cacheWriteTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
+      usage: usageFromTotalInput({
+        totalInput: acc.inputTokens,
+        output: acc.outputTokens,
+        cacheRead: acc.cachedTokens,
+        cacheCreation: acc.cacheWriteTokens,
+        reasoning: acc.reasoningTokens,
+        inputDetails: acc.inputDetails,
+        outputDetails: acc.outputDetails,
+      }),
     })
     return
   }
@@ -464,7 +484,15 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, cacheCreation: acc.cacheWriteTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
+      usage: usageFromTotalInput({
+        totalInput: acc.inputTokens,
+        output: acc.outputTokens,
+        cacheRead: acc.cachedTokens,
+        cacheCreation: acc.cacheWriteTokens,
+        reasoning: acc.reasoningTokens,
+        inputDetails: acc.inputDetails,
+        outputDetails: acc.outputDetails,
+      }),
     })
     return
   }
@@ -530,7 +558,11 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, ccResp: C
     responseText: JSON.stringify(anthropicUpstream),
   }
   if (truncationReason) {
-    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
+    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), {
+      usage: responseData.usage,
+      stop_reason: responseData.stop_reason,
+      content: responseData.content,
+    })
   } else {
     env.ctx.complete(responseData)
   }

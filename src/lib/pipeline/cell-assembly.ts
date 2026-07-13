@@ -43,6 +43,7 @@ import {
   //
   anthropicMessagesLeg,
   anthropicMessagesRetrySemantics,
+  anthropicReverseRetrySemantics,
 } from "~/lib/codec/anthropic/anthropic-cell"
 import { ENDPOINT } from "~/lib/models/endpoint"
 
@@ -93,9 +94,15 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
   // `@cc`/`@responses` cells are NOT migrated for the anthropic client (they stay on the legacy path), so
   // this is only ever invoked for the MESSAGES cell; a non-MESSAGES call is a wiring bug.
   anthropic: (env) => (env.targetEndpoint === ENDPOINT.MESSAGES ? anthropicMessagesRetrySemantics() : notMigratedSemantics("anthropic")(env)),
-  "openai-cc": notMigratedSemantics("openai-cc"),
-  "openai-responses": notMigratedSemantics("openai-responses"),
-  gemini: notMigratedSemantics("gemini"),
+  // openai-cc / gemini / openai-responses: the REVERSE `@messages` cell is migrated (C2b) — the Anthropic
+  // stack (auto-truncate on, the R1/HIGH-A corner for openai-responses). Their DIRECT `/chat`/`/responses`
+  // cells stay on the legacy path (C3/C4), so a non-MESSAGES call here is a not-yet-migrated wiring bug.
+  "openai-cc": (env) =>
+    env.targetEndpoint === ENDPOINT.MESSAGES ? anthropicReverseRetrySemantics("Anthropic(cc→messages)") : notMigratedSemantics("openai-cc")(env),
+  "openai-responses": (env) =>
+    env.targetEndpoint === ENDPOINT.MESSAGES ? anthropicReverseRetrySemantics("Anthropic(responses→messages)") : notMigratedSemantics("openai-responses")(env),
+  gemini: (env) =>
+    env.targetEndpoint === ENDPOINT.MESSAGES ? anthropicReverseRetrySemantics("Anthropic(gemini→messages)") : notMigratedSemantics("gemini")(env),
 }
 
 function notMigratedSemantics(cf: ClientFormat): (env: RequestEnvelope) => RetrySemanticsSpec {
@@ -221,7 +228,12 @@ export function resolveCellAssembly(clientFormat: ClientFormat, targetEndpoint: 
  * equals the full cell space (the shim collapses). An unmigrated cell takes the legacy path → byte-identical
  * (an explicitly-harmless transition, `large-refactor` §3).
  */
-export const MIGRATED_CELLS: ReadonlySet<string> = new Set<string>([cellKey("anthropic", ENDPOINT.MESSAGES)])
+export const MIGRATED_CELLS: ReadonlySet<string> = new Set<string>([
+  cellKey("anthropic", ENDPOINT.MESSAGES),
+  cellKey("openai-cc", ENDPOINT.MESSAGES),
+  cellKey("openai-responses", ENDPOINT.MESSAGES),
+  cellKey("gemini", ENDPOINT.MESSAGES),
+])
 
 /** The `MIGRATED_CELLS` key for a cell. */
 export function cellKey(clientFormat: ClientFormat, targetEndpoint: UpstreamEndpoint): string {

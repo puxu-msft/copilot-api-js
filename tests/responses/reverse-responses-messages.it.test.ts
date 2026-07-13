@@ -63,7 +63,7 @@ function sseStream(frames: Array<ServerSentEventMessage>, nonStream?: unknown): 
 function makeReverseDriver(upstream: UpstreamStream) {
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder("claude-x")
-  const codec = createOpenAiResponsesCodec({ reverseBetaProbe })
+  const codec = createOpenAiResponsesCodec({ reverseBetaProbe, reverseMapperHolder })
   const transport: Transport = { send: () => Promise.resolve(upstream) }
   const driver = createPipelineDriver({
     codec,

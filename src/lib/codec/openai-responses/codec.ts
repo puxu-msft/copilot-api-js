@@ -88,6 +88,7 @@ import type {
 
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { prepareReverseAnthropicWire } from "~/lib/codec/anthropic/anthropic-leg"
+import type { ReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -191,6 +192,12 @@ export interface CreateOpenAiResponsesCodecArgs {
    * direct/fallback legs.
    */
   reverseBetaProbe?: BetaProbe
+  /**
+   * REVERSE `@messages` leg only: the shared per-request mapper holder. `parse` threads it onto
+   * `env.requestState` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance
+   * for its sanitize rewrite + resanitize. Absent for the direct/fallback legs.
+   */
+  reverseMapperHolder?: ReverseAnthropicMapperHolder
 }
 
 /** Generate a short, collision-safe ID using crypto.randomUUID (matches the legacy fallback). */
@@ -241,6 +248,17 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       const parsed = parseOpenAiResponses(raw)
       requestContext = parsed.env.ctx
       resolvedModelName = parsed.resolvedModelName
+      // REVERSE `@messages` leg supply (C2b): thread the shared beta probe + mapper holder onto
+      // env.requestState so the OUTBOUND_LEGS[/v1/messages] reverse branch reads them. Absent for the
+      // direct/fallback legs → requestState stays undefined → the legacy path.
+      if (args?.reverseBetaProbe || args?.reverseMapperHolder) {
+        return parsed.env.with({
+          requestState: {
+            ...(args.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
+            ...(args.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
+          },
+        })
+      }
       return parsed.env
     },
 

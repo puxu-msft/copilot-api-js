@@ -141,6 +141,8 @@ import {
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
+import type { ReverseAnthropicMapperHolder } from "./reverse-anthropic-rewrite"
+
 const CLIENT_FORMAT: ClientFormat = "openai-cc"
 const ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
 /** History `format` label for the via-responses wire (the actual upstream endpoint). */
@@ -195,6 +197,12 @@ export interface CreateOpenAiCcCodecArgs {
    * unsupported-beta strategy can probe them. Absent for the forward/direct CC legs.
    */
   reverseBetaProbe?: BetaProbe
+  /**
+   * REVERSE `@messages` leg only: the shared per-request mapper holder. `parse` threads it onto
+   * `env.requestState` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance
+   * for both its sanitize rewrite and its resanitize (auto-truncate). Absent for the forward/direct CC legs.
+   */
+  reverseMapperHolder?: ReverseAnthropicMapperHolder
 }
 
 /**
@@ -225,6 +233,18 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
       const { env, baseline } = parseOpenAiCc(raw)
       truncateBaseline = baseline
       requestContext = env.ctx
+      // REVERSE `@messages` leg supply (C2b): thread the shared beta probe + mapper holder onto
+      // env.requestState so the OUTBOUND_LEGS[/v1/messages] reverse branch reads them (the driver's
+      // cell-keyed fork routes `(openai-cc, /v1/messages)` through the assembly). Absent for direct/forward
+      // CC legs (a plain CC request), so requestState stays undefined there → the legacy path.
+      if (args?.reverseBetaProbe || args?.reverseMapperHolder) {
+        return env.with({
+          requestState: {
+            ...(args.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
+            ...(args.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
+          },
+        })
+      }
       return env
     },
 

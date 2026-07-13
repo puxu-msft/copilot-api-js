@@ -65,22 +65,36 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     }
   })
 
-  test("C2a: only the anthropic|/v1/messages cell is migrated (cell-keyed shim, no double-active)", () => {
-    expect(MIGRATED_CELLS.has("anthropic|/v1/messages")).toBe(true)
-    expect(isCellMigrated("anthropic", ENDPOINT.MESSAGES)).toBe(true)
-    // The 3 REVERSE @messages cells sharing the /v1/messages leg are NOT migrated yet (C2b) — the
-    // cell-keyed shim keeps them on the legacy path (no double-active on the shared leg).
-    for (const cf of ["openai-cc", "openai-responses", "gemini"] as const) expect(isCellMigrated(cf, ENDPOINT.MESSAGES)).toBe(false)
-    // No forward/direct cell on the other legs is migrated (C3/C4).
-    for (const te of [ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES]) expect(isCellMigrated("anthropic", te)).toBe(false)
+  test("C2a/C2b: all 4 /v1/messages cells are migrated; the forward /chat|/responses cells are not (C3/C4)", () => {
+    // C2a (anthropic direct) + C2b (the 3 reverse @messages cells) — the whole /v1/messages leg is migrated.
+    for (const cf of ["anthropic", "openai-cc", "openai-responses", "gemini"] as const) {
+      expect(isCellMigrated(cf, ENDPOINT.MESSAGES)).toBe(true)
+      expect(MIGRATED_CELLS.has(`${cf}|/v1/messages`)).toBe(true)
+    }
+    // No forward/direct cell on the other legs is migrated yet (C3 /chat, C4 /responses+ws).
+    for (const te of [ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES]) {
+      for (const cf of ["anthropic", "openai-cc", "openai-responses", "gemini"] as const) expect(isCellMigrated(cf, te)).toBe(false)
+    }
+  })
+
+  test("R1/HIGH-A corner: (openai-responses, /v1/messages) has auto-truncate ON — not a clientFormat scalar", () => {
+    // The corner that breaks BOTH single-axis scalars: the openai-responses REVERSE @messages cell has
+    // auto-truncate ON (Anthropic stack), while its DIRECT /responses cell has it OFF (C4). RETRY_SEMANTICS
+    // reads env.targetEndpoint to pick — proving it is a 2D function, not a clientFormat scalar.
+    expect(RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.MESSAGES)).autoTruncate).toBe(true)
+    // Its DIRECT /responses cell is not migrated yet (C4) → still throws (the auto-truncate-OFF corner lands there).
+    expect(() => RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.RESPONSES))).toThrow(/has not migrated yet/)
+    // Symmetry: cc + gemini reverse @messages also have auto-truncate ON.
+    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.MESSAGES)).autoTruncate).toBe(true)
+    expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.MESSAGES)).autoTruncate).toBe(true)
   })
 
   test("unmigrated cells throw a LOUD identifiable error (never a silent wrong-wire)", () => {
     // A not-yet-migrated LEG (openai-cc /chat/completions cell) throws when a method is invoked.
     expect(() => OUTBOUND_LEGS[ENDPOINT.CHAT_COMPLETIONS].prepareWire(envStub("openai-cc", ENDPOINT.CHAT_COMPLETIONS))).toThrow(/has not migrated yet/)
     // The reverse @messages cell (openai-cc → /v1/messages) throws (C2b) even though the leg exists (C2a anthropic).
-    expect(() => OUTBOUND_LEGS[ENDPOINT.MESSAGES].translateOut(envStub("openai-cc", ENDPOINT.MESSAGES))).toThrow(/has not migrated yet \(C2b\)/)
-    // The retry-semantics for a not-yet-migrated client format throws.
+    expect(() => OUTBOUND_LEGS[ENDPOINT.CHAT_COMPLETIONS].prepareWire(envStub("openai-cc", ENDPOINT.CHAT_COMPLETIONS))).toThrow(/has not migrated yet/)
+    // The retry-semantics for a not-yet-migrated cell (openai-cc DIRECT /chat/completions) throws.
     expect(() => RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.CHAT_COMPLETIONS))).toThrow(/has not migrated yet/)
   })
 

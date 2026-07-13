@@ -25,13 +25,12 @@
  * synthesize a client error terminator; plus client-abort.
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 import type { SSEStreamingApi } from "hono/streaming"
 
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
-
-import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { OpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
@@ -45,13 +44,14 @@ import type {
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
+import type { MessagesPayload } from "~/types/api/anthropic"
+import type { GhcCompletionTokensDetails } from "~/types/api/ghc-usage"
 import type {
   //
   ResponsesPayload,
   ResponsesResponse,
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
-import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
@@ -61,14 +61,14 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
-import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
-import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import {
   //
   buildReverseResanitize,
   createReverseAnthropicMapperHolder,
   createReverseAnthropicSanitizeRewrite,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
+import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
+import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
 import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
@@ -95,15 +95,27 @@ import {
 } from "~/lib/openai/tool-name-sanitize"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import {
+  //
+  anthropicNonStreamingTruncation,
+  responsesNonStreamingTruncation,
+} from "~/lib/pipeline/non-streaming-completeness"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
-import { anthropicNonStreamingTruncation, responsesNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
-import { buildAnthropicResponseData, buildResponsesResponseData } from "~/lib/request/recording"
+import {
+  //
+  buildAnthropicResponseData,
+  buildResponsesResponseData,
+} from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
-import { mapInputDetails, mapOutputDetails, nonNegOrUndef } from "~/types/api/ghc-usage"
-import type { GhcCompletionTokensDetails } from "~/types/api/ghc-usage"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
+import {
+  //
+  mapInputDetails,
+  mapOutputDetails,
+  nonNegOrUndef,
+} from "~/types/api/ghc-usage"
 
 import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
 
@@ -130,7 +142,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   // direct/fallback legs — the reverse rewrite/strategies gate MESSAGES).
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, selectedModel?.vendor)
-  const codec = createOpenAiResponsesCodec({ reverseBetaProbe })
+  const codec = createOpenAiResponsesCodec({ reverseBetaProbe, reverseMapperHolder })
   const transport = createUpstreamResponsesTransport({
     clientAbortSignal: clientAbort.signal,
     idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName),
@@ -458,7 +470,15 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     recordForwarded()
     consola.debug("[Responses:v4] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(acc.model || model, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
+      usage: usageFromTotalInput({
+        totalInput: acc.inputTokens,
+        output: acc.outputTokens,
+        cacheRead: acc.cachedInputTokens,
+        cacheCreation: acc.cacheWriteInputTokens,
+        reasoning: acc.reasoningTokens,
+        inputDetails: acc.inputDetails,
+        outputDetails: acc.outputDetails,
+      }),
     })
     return
   }
@@ -472,7 +492,15 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
+      usage: usageFromTotalInput({
+        totalInput: acc.inputTokens,
+        output: acc.outputTokens,
+        cacheRead: acc.cachedInputTokens,
+        cacheCreation: acc.cacheWriteInputTokens,
+        reasoning: acc.reasoningTokens,
+        inputDetails: acc.inputDetails,
+        outputDetails: acc.outputDetails,
+      }),
     })
     return
   }
@@ -575,7 +603,11 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: Res
     responseText: JSON.stringify(anthropicUpstream),
   }
   if (truncationReason) {
-    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
+    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), {
+      usage: responseData.usage,
+      stop_reason: responseData.stop_reason,
+      content: responseData.content,
+    })
   } else {
     env.ctx.complete(responseData)
   }

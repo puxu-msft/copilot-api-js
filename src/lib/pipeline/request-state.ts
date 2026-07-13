@@ -55,4 +55,11 @@ export interface RequestState {
   readonly initialSanitizationInfo?: unknown
   /** Route-supplied message-level preprocess info (the Anthropic sanitize rewrite + pipelineInfo rebuild read it). */
   readonly preprocessInfo?: PreprocessInfo
+  /**
+   * REVERSE `@messages` leg only: the shared `ReverseAnthropicMapperHolder` (kept opaque here — a pipeline
+   * module can't import the openai-cc reverse-rewrite type without coupling). The leg's `requestRewrites`
+   * (reverse sanitize) and `buildLegStrategies` (reverse resanitize) both read it, so it must be the SAME
+   * per-request instance. A source codec's parse creates it (`createReverseAnthropicMapperHolder`).
+   */
+  readonly reverseMapperHolder?: unknown
 }

@@ -131,6 +131,12 @@ export interface CreateOpenAiGeminiCodecArgs {
    * Gemini legs.
    */
   reverseBetaProbe?: import("~/lib/anthropic/pipeline").BetaProbe
+  /**
+   * REVERSE `@messages` leg only: the shared per-request mapper holder. `parse` threads it onto
+   * `env.requestState` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance.
+   * Absent for the direct/via-responses Gemini legs.
+   */
+  reverseMapperHolder?: import("~/lib/codec/openai-cc/reverse-anthropic-rewrite").ReverseAnthropicMapperHolder
 }
 
 /** Build the gemini codec for one request (holds the internal cc codec + Gemini ctx). */
@@ -157,6 +163,17 @@ export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGemi
       const { env, baseline, ctx } = parseGemini(raw, modelId)
       requestContext = ctx
       truncateBaseline = baseline
+      // REVERSE `@messages` leg supply (C2b): thread the shared beta probe + mapper holder onto
+      // env.requestState so the OUTBOUND_LEGS[/v1/messages] reverse branch reads them. Absent for the
+      // direct/via-responses Gemini legs → requestState stays undefined → the legacy path.
+      if (opts?.reverseBetaProbe || opts?.reverseMapperHolder) {
+        return env.with({
+          requestState: {
+            ...(opts.reverseBetaProbe && { betaProbe: opts.reverseBetaProbe }),
+            ...(opts.reverseMapperHolder && { reverseMapperHolder: opts.reverseMapperHolder }),
+          },
+        })
+      }
       return env
     },
 
