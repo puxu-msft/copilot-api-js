@@ -1,6 +1,6 @@
 # Telemetry Tiered-Storage Implementation Plan
 
-> **实施状态（2026-07-13）**：worktree `.worktrees/telemetry-storage/` @ `feat/telemetry-tiered-storage`。**Phase 0 ✅**（sketch.ts 自描述序列化）、**Phase 1 ✅**（schema+dictionary+paths）、**Phase 2 ✅ 完整**（`telemetry.*` schema+mount+apply+state 11 键+校验+bundled yaml，5 触点全接线、11 键 hot-reload 真断言、638 config 测试绿 `73d4e1bf`）。全 telemetry+config 套件绿。**待做：P3（写路径 store.upsert + 加性双写）→ P4（rollup）→ P5（读路径逐字节兼容）→ P6（backfill）→ P7（SSOT 收敛）**。用 [prompts/kickoff.md](prompts/kickoff.md) 续。plan 已过 1 轮对抗 review。GPT 异模型 review 三底座 infra-blocked，已自扮补位。
+> **实施状态（2026-07-13）**：worktree `.worktrees/telemetry-storage/` @ `feat/telemetry-tiered-storage`。**P0 ✅**（sketch）、**P1 ✅**（schema+dictionary+paths）、**P2 ✅**（config 5 触点全接线）、**P3 T3.1 ✅**（store 写原语 `upsertSettledTier/upsertCumulative/upsertAccepted` 加性 UPSERT `7c10ce35`）。全 telemetry+config 套件绿（12 提交）。**P3 待做：sketch blob merge（cumulative read-merge-write）、T3.3 加性双写接线（request-telemetry.ts flush→SQLite，保内存路径不动、读 P5 才翻转——这是最需干净上下文的深集成，触 live persist）、T3.4 cap 重启重建**。然后 P4-P7。用 [prompts/kickoff.md](prompts/kickoff.md) 续。GPT 异模型 review infra-blocked（已自扮补位）。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **每 task 的逐字节 bite-sized TDD 步骤在执行期由 per-task subagent 即时展开**——本 plan 给出每 task 的文件/接口/测试 oracle/不变量/验收，Phase 0 附全套 bite-sized 模板。
 
