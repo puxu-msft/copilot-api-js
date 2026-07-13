@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 
 import type { UsageData } from "./history/store"
 import type { ThinkingBlockCounts } from "./observability/telemetry-dimensions"
+import type { TelemetryDatabase } from "./telemetry/db"
 
 import {
   //
@@ -10,10 +11,37 @@ import {
   createSerializedAsyncFn,
 } from "./atomic-fs"
 import { PATHS } from "./config/paths"
+import {
+  //
+  onTelemetryConfigChange,
+  state,
+} from "./state"
+import { openTelemetryDb } from "./telemetry/db"
+import {
+  //
+  internDim,
+  internKey,
+} from "./telemetry/dictionary"
+import {
+  //
+  createSketch,
+  mergeSketch,
+  type Sketch,
+} from "./telemetry/sketch"
+import {
+  //
+  incrementCumulativeAccepted,
+  SETTLED_MEASURE_COLUMN_NAMES,
+  type SettledMeasures,
+  upsertAccepted,
+  upsertCumulative,
+  upsertCumulativeSketchBlob,
+  upsertSettledTier,
+  upsertSketchBlob,
+} from "./telemetry/store"
 
 const BUCKET_MS = 5 * 60 * 1000
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000
-const PERSIST_INTERVAL_MS = 60 * 1000
 
 /**
  * The BASE per-settled-request measures — the original always-present nine.
@@ -335,6 +363,45 @@ let dimBuckets = new Map<number, Map<string, Map<string, StatAccumulator>>>()
 let persistTimer: ReturnType<typeof setInterval> | null = null
 let telemetryFilePath = PATHS.REQUEST_TELEMETRY
 
+// ── additive dual-write to telemetry.db (P3) ──
+// The in-memory paths above (dimBuckets/dimSinceStart) stay UNCHANGED — they remain the read
+// source (until P5) and the accumulation buffer. This section additionally forwards the DELTA
+// since the last flush into telemetry.db via the (already-landed) store primitives.
+//
+// Why a separate outbox (not "re-write the memory buckets each flush"): the store primitives are
+// ADDITIVE and DDSketch-merge / SUM are BOTH non-idempotent. On restart the memory buckets reload
+// from JSON, so additively writing the full memory totals every flush would double-count (and
+// double-count across restarts). The outbox accumulates ONLY the per-request delta between flushes;
+// the flush drains it and clears it (committed-flush point — "不丢≠不清").
+
+/** One outbox slot: the additive scalar measures (cost in micro) + the raw-observation sketches fed per request. */
+interface OutboxSettledEntry {
+  measures: SettledMeasures
+  /** distName → accumulating DDSketch fed the RAW observation values (memory only keeps lossy fixed buckets; sketches need the raw values). */
+  sketches: Map<string, Sketch>
+}
+
+/** A snapshotted outbox (the three legs) — swapped out atomically at drain start so record* never mutates a leg being consumed. */
+interface OutboxSnapshot {
+  /** bucketTs → dimName → key → entry (tel_raw leg; key mirrors dimBuckets' per-store cap resolution). */
+  raw: Map<number, Map<string, Map<string, OutboxSettledEntry>>>
+  /** dimName → key → entry (tel_cumulative leg; key mirrors dimSinceStart's per-store cap resolution). */
+  cumulative: Map<string, Map<string, OutboxSettledEntry>>
+  /** bucketTs → delta count (tel_accepted leg). */
+  accepted: Map<number, number>
+}
+
+let outboxRaw = new Map<number, Map<string, Map<string, OutboxSettledEntry>>>()
+let outboxCumulative = new Map<string, Map<string, OutboxSettledEntry>>()
+let outboxAccepted = new Map<number, number>()
+
+/** The open telemetry.db handle (null when telemetry is disabled or before init). */
+let telemetryDb: TelemetryDatabase | null = null
+/** Unsubscribe for the persist-timer hot-reload listener (null when not subscribed). */
+let telemetryConfigUnsub: (() => void) | null = null
+/** Warn-once debounce for SQLite dual-write drain failures (mirrors persistFailureLogged for JSON). */
+let telemetryDrainFailureLogged = false
+
 /**
  * Persistence is serialized via `createSerializedAsyncFn` (see ./atomic-fs):
  * concurrent callers (periodic timer + shutdown + ad-hoc flush) take turns so
@@ -346,6 +413,199 @@ let telemetryFilePath = PATHS.REQUEST_TELEMETRY
 
 function getBucketStart(timestamp: number): number {
   return Math.floor(timestamp / BUCKET_MS) * BUCKET_MS
+}
+
+// ── outbox helpers (feed + drain + snapshot-swap) ──
+
+/** Build the per-request additive scalar measures (cost rounded to micro PER REQUEST, never float-accumulated-then-rounded). */
+function buildSettledDelta(opts: SettledTelemetryInput): SettledMeasures {
+  const durationMs = Math.max(0, opts.endedAt - opts.startedAt)
+  const usage = opts.usage
+  const input = usage?.input_tokens ?? 0
+  const output = usage?.output_tokens ?? 0
+  const cacheRead = usage?.cache_read_input_tokens ?? 0
+  const cacheCreation = usage?.cache_creation_input_tokens ?? 0
+  const reasoning = usage?.output_tokens_details?.reasoning_tokens ?? 0
+  const multiplier = opts.multiplier
+  // Cost in micro (scaled-int): round(tokens × multiplier × 1e6) per request. Undefined multiplier
+  // (token-based accounts) → cost stays 0 (mirrors the memory path's `multiplier !== undefined` gate).
+  const microCost = (tokens: number): number => (multiplier === undefined ? 0 : Math.round(tokens * multiplier * 1e6))
+  return {
+    req_count: 1,
+    success_count: opts.success ? 1 : 0,
+    failure_count: opts.success ? 0 : 1,
+    total_duration_ms: durationMs,
+    // Scalar sum matches the memory path exactly (unclamped, unlike the histogram observation below).
+    queue_wait_ms: opts.queueWaitMs ?? 0,
+    input_tok: input,
+    output_tok: output,
+    cache_read_tok: cacheRead,
+    cache_creation_tok: cacheCreation,
+    reasoning_tok: reasoning,
+    cost_input_micro: microCost(input),
+    cost_output_micro: microCost(output),
+    cost_cache_read_micro: microCost(cacheRead),
+    cost_cache_creation_micro: microCost(cacheCreation),
+    cost_reasoning_micro: microCost(reasoning),
+    thinking_nonempty: opts.thinkingBlocks?.nonEmpty ?? 0,
+    thinking_empty_signed: opts.thinkingBlocks?.emptySigned ?? 0,
+    thinking_empty_unsigned: opts.thinkingBlocks?.emptyUnsigned ?? 0,
+  }
+}
+
+/** The per-request raw sketch observations — SAME source + SAME clamp (`Math.max(0,·)`) as the memory fixed-bucket histograms; undefined skipped. */
+function buildSketchObservations(opts: SettledTelemetryInput): Map<string, number> {
+  const durationMs = Math.max(0, opts.endedAt - opts.startedAt)
+  const observations = new Map<string, number>()
+  for (const histogram of HISTOGRAMS) {
+    const observed = histogram.extract(opts, durationMs)
+    if (observed === undefined) continue
+    observations.set(histogram.name, Math.max(0, observed))
+  }
+  return observations
+}
+
+/** Add a per-request delta + observations into one outbox slot (accumulate scalars; feed each sketch the raw values). */
+function addToOutboxEntry(entry: OutboxSettledEntry, delta: SettledMeasures, observations: Map<string, number>): void {
+  for (const col of SETTLED_MEASURE_COLUMN_NAMES) {
+    const value = delta[col]
+    if (value) entry.measures[col] = (entry.measures[col] ?? 0) + value
+  }
+  for (const [name, value] of observations) {
+    let sketch = entry.sketches.get(name)
+    if (!sketch) {
+      sketch = createSketch(state.telemetrySketchGamma)
+      entry.sketches.set(name, sketch)
+    }
+    sketch.accept(value)
+  }
+}
+
+function ensureRawOutboxEntry(raw: OutboxSnapshot["raw"], bucketTs: number, dimName: string, key: string): OutboxSettledEntry {
+  let dims = raw.get(bucketTs)
+  if (!dims) {
+    dims = new Map()
+    raw.set(bucketTs, dims)
+  }
+  let keys = dims.get(dimName)
+  if (!keys) {
+    keys = new Map()
+    dims.set(dimName, keys)
+  }
+  let entry = keys.get(key)
+  if (!entry) {
+    entry = { measures: {}, sketches: new Map() }
+    keys.set(key, entry)
+  }
+  return entry
+}
+
+function ensureCumulativeOutboxEntry(cumulative: OutboxSnapshot["cumulative"], dimName: string, key: string): OutboxSettledEntry {
+  let keys = cumulative.get(dimName)
+  if (!keys) {
+    keys = new Map()
+    cumulative.set(dimName, keys)
+  }
+  let entry = keys.get(key)
+  if (!entry) {
+    entry = { measures: {}, sketches: new Map() }
+    keys.set(key, entry)
+  }
+  return entry
+}
+
+/** Snapshot the three outbox legs and reset the live ones (atomic swap — the drain consumes the snapshot while new record* land in the fresh maps). */
+function swapOutbox(): OutboxSnapshot {
+  const snapshot: OutboxSnapshot = { raw: outboxRaw, cumulative: outboxCumulative, accepted: outboxAccepted }
+  outboxRaw = new Map()
+  outboxCumulative = new Map()
+  outboxAccepted = new Map()
+  return snapshot
+}
+
+/** Merge one entry's scalars + sketches into another (same γ, so `mergeSketch` never throws). Used on drain-failure retry to fold the snapshot back. */
+function mergeOutboxEntryInto(target: OutboxSettledEntry, source: OutboxSettledEntry): void {
+  for (const col of SETTLED_MEASURE_COLUMN_NAMES) {
+    const value = source.measures[col]
+    if (value) target.measures[col] = (target.measures[col] ?? 0) + value
+  }
+  for (const [name, sketch] of source.sketches) {
+    const existing = target.sketches.get(name)
+    if (existing) mergeSketch(existing, sketch)
+    else target.sketches.set(name, sketch)
+  }
+}
+
+/**
+ * Fold a snapshot back into the live outbox after a failed drain (retry semantics — deltas are NOT
+ * dropped). Because the drain is fully synchronous, the live outbox is empty here, so this is
+ * effectively a restore; written as a proper merge to stay correct if the drain ever becomes async.
+ */
+function mergeOutboxBack(snapshot: OutboxSnapshot): void {
+  for (const [bucketTs, dims] of snapshot.raw) {
+    for (const [dimName, keys] of dims) {
+      for (const [key, entry] of keys) mergeOutboxEntryInto(ensureRawOutboxEntry(outboxRaw, bucketTs, dimName, key), entry)
+    }
+  }
+  for (const [dimName, keys] of snapshot.cumulative) {
+    for (const [key, entry] of keys) mergeOutboxEntryInto(ensureCumulativeOutboxEntry(outboxCumulative, dimName, key), entry)
+  }
+  for (const [bucketTs, count] of snapshot.accepted) outboxAccepted.set(bucketTs, (outboxAccepted.get(bucketTs) ?? 0) + count)
+}
+
+/**
+ * Drain a snapshotted outbox into telemetry.db in ONE transaction.
+ *
+ * Single-flusher invariant (Task 1 Minor #1): `persistTelemetrySerialized` is serialized
+ * (`createSerializedAsyncFn`) and the record functions ONLY mutate the in-memory outbox (never
+ * SQLite), so the SELECT+UPSERT read-merge-write inside the store primitives has NO concurrent
+ * writer on the same key — `BEGIN IMMEDIATE` is unnecessary. The single transaction is here purely
+ * so a mid-drain fault rolls back atomically and the retained snapshot retries cleanly (no partial
+ * double-count).
+ */
+function drainOutboxToSqlite(db: TelemetryDatabase, snapshot: OutboxSnapshot): void {
+  db.transaction(() => {
+    // Intern dim names once per drain (id is stable within the db).
+    const dimIds = new Map<string, number>()
+    const dimId = (name: string): number => {
+      let id = dimIds.get(name)
+      if (id === undefined) {
+        id = internDim(db, name)
+        dimIds.set(name, id)
+      }
+      return id
+    }
+
+    // tel_raw leg (only raw here — hourly/daily are produced by P4 rollup).
+    for (const [bucketTs, dims] of snapshot.raw) {
+      for (const [dimName, keys] of dims) {
+        const dim = dimId(dimName)
+        for (const [key, entry] of keys) {
+          const keyId = internKey(db, dim, key)
+          upsertSettledTier(db, "tel_raw", bucketTs, dim, keyId, entry.measures)
+          if (entry.sketches.size > 0) upsertSketchBlob(db, "tel_raw", bucketTs, dim, keyId, entry.sketches)
+        }
+      }
+    }
+
+    // tel_cumulative leg (gated by state.telemetryCumulative at the feed point, so an empty map here when off).
+    for (const [dimName, keys] of snapshot.cumulative) {
+      const dim = dimId(dimName)
+      for (const [key, entry] of keys) {
+        const keyId = internKey(db, dim, key)
+        upsertCumulative(db, dim, keyId, entry.measures)
+        if (entry.sketches.size > 0) upsertCumulativeSketchBlob(db, dim, keyId, entry.sketches)
+      }
+    }
+
+    // tel_accepted leg + its lifetime cumulative (tel_meta).
+    let acceptedTotal = 0
+    for (const [bucketTs, count] of snapshot.accepted) {
+      upsertAccepted(db, bucketTs, count)
+      acceptedTotal += count
+    }
+    if (acceptedTotal > 0) incrementCumulativeAccepted(db, acceptedTotal)
+  })()
 }
 
 function createAccumulator(): StatAccumulator {
@@ -542,15 +802,24 @@ function buildLast7dModelSnapshots(now = Date.now()): Array<RequestTelemetryMode
 
 function startPeriodicPersistence(): void {
   if (persistTimer) return
+  // Persist interval is config-driven (state.telemetryPersistInterval seconds). Hot-reload retunes
+  // it via the onTelemetryConfigChange listener (restartPeriodicPersistence) armed in init.
+  const intervalMs = Math.max(1, state.telemetryPersistInterval) * 1000
   persistTimer = setInterval(() => {
     void persistRequestTelemetry()
-  }, PERSIST_INTERVAL_MS)
+  }, intervalMs)
 }
 
 function stopPeriodicPersistence(): void {
   if (!persistTimer) return
   clearInterval(persistTimer)
   persistTimer = null
+}
+
+/** Retune the persist timer to the current config interval (config hot-reload listener). */
+function restartPeriodicPersistence(): void {
+  stopPeriodicPersistence()
+  startPeriodicPersistence()
 }
 
 /** Build a StatAccumulator from a persisted per-key object — GENERIC copy of number counters + the `__histograms` arrays. */
@@ -625,12 +894,40 @@ function loadV2ModelBuckets(raw: Record<string, Record<string, PersistedModelTel
   }
 }
 
+/**
+ * Open telemetry.db (when enabled) + arm the persist-timer config hot-reload listener. Idempotent
+ * wrt an already-open handle / already-armed listener (closes/unsubscribes the prior one first).
+ * Skips opening the db when `state.telemetryEnabled` is false — the JSON path still runs, but no
+ * SQLite file is created and the flush drain is a no-op.
+ */
+function setupTelemetryDb(): void {
+  // Close any prior handle (re-init / test) and drop stale outbox — a fresh init starts clean.
+  telemetryDb?.close()
+  telemetryDb = null
+  outboxRaw = new Map()
+  outboxCumulative = new Map()
+  outboxAccepted = new Map()
+  telemetryDrainFailureLogged = false
+  if (state.telemetryEnabled) {
+    try {
+      telemetryDb = openTelemetryDb(state.telemetryDbPath || PATHS.TELEMETRY_DB)
+    } catch (err) {
+      // Never let a db-open failure break the JSON telemetry path — the dual-write is additive.
+      consola.warn(`[telemetry] failed to open telemetry.db (dual-write disabled this session):`, err)
+      telemetryDb = null
+    }
+  }
+  // Arm the persist-timer hot-reload listener exactly once across the module's lifetime.
+  if (!telemetryConfigUnsub) telemetryConfigUnsub = onTelemetryConfigChange(restartPeriodicPersistence)
+}
+
 export async function initRequestTelemetry(): Promise<void> {
   stopPeriodicPersistence()
   acceptedSinceStart = 0
   bucketCounts = new Map()
   dimSinceStart = new Map()
   dimBuckets = new Map()
+  setupTelemetryDb()
 
   let raw: string
   try {
@@ -694,6 +991,8 @@ export function recordAcceptedRequest(timestamp = Date.now()): void {
   acceptedSinceStart += 1
   const bucket = getBucketStart(timestamp)
   bucketCounts.set(bucket, (bucketCounts.get(bucket) ?? 0) + 1)
+  // Dual-write: accumulate the accepted delta for the next flush (gated — no cost when disabled).
+  if (state.telemetryEnabled) outboxAccepted.set(bucket, (outboxAccepted.get(bucket) ?? 0) + 1)
   pruneBuckets(timestamp)
 }
 
@@ -733,6 +1032,13 @@ export function recordSettledRequest(
 ): void {
   const bucketTimestamp = getBucketStart(opts.startedAt)
   const bucketDims = getOrCreateBucketDims(bucketTimestamp)
+  // Dual-write: build the per-request delta + raw sketch observations ONCE (gated — no cost when
+  // disabled), then feed each resolved (dim, key) slot below at the SAME resolution point as the
+  // memory path so the outbox keys mirror dimBuckets/dimSinceStart exactly.
+  const enabled = state.telemetryEnabled
+  const outboxDelta = enabled ? buildSettledDelta(opts) : null
+  const outboxObservations = enabled ? buildSketchObservations(opts) : null
+  const cumulativeEnabled = enabled && state.telemetryCumulative
   for (const [dimName, rawValue] of Object.entries(keys)) {
     if (rawValue === null) continue
     const capped = cappedDimensions?.has(dimName) ?? false
@@ -747,11 +1053,19 @@ export function recordSettledRequest(
       if (!seenSince.has(sinceKey)) {
         seenSince.add(sinceKey)
         applySettledMeasures(getOrCreateDimKey(dimSinceStart, dimName, sinceKey), opts)
+        // Cumulative leg mirrors dimSinceStart's resolved key (gated on telemetryCumulative).
+        if (cumulativeEnabled && outboxDelta && outboxObservations) {
+          addToOutboxEntry(ensureCumulativeOutboxEntry(outboxCumulative, dimName, sinceKey), outboxDelta, outboxObservations)
+        }
       }
       const bucketKey = capped ? resolveCappedKey(bucketDims, dimName, normalized) : normalized
       if (!seenBucket.has(bucketKey)) {
         seenBucket.add(bucketKey)
         applySettledMeasures(getOrCreateDimKey(bucketDims, dimName, bucketKey), opts)
+        // Raw leg mirrors dimBuckets' resolved key (same bucketTs, same normalizeKey, same per-store cap).
+        if (outboxDelta && outboxObservations) {
+          addToOutboxEntry(ensureRawOutboxEntry(outboxRaw, bucketTimestamp, dimName, bucketKey), outboxDelta, outboxObservations)
+        }
       }
     }
   }
@@ -1062,6 +1376,29 @@ const persistTelemetrySerialized = createSerializedAsyncFn(async () => {
       consola.warn(`[telemetry] persist failed (7-day usage history may be stale on restart):`, err)
     }
   }
+
+  // ── additive dual-write drain (telemetry.db) — AFTER the JSON write ──
+  // Runs inside the same serialized flush. Fire-and-forget wrt the JSON path: a SQLite fault must
+  // NEVER fail the JSON persist or throw into the timer (drain-before-close/never-throw invariant).
+  // On failure the snapshot is folded BACK into the live outbox (retry next flush — deltas are not
+  // dropped), with a warn-once debounce so a sustained fault doesn't spam once per persist interval.
+  const db = telemetryDb
+  if (db && state.telemetryEnabled) {
+    // Snapshot-and-swap the outbox up front so record* landing during the drain accumulate into the
+    // fresh maps, never the snapshot being consumed (re-entrancy guard).
+    const snapshot = swapOutbox()
+    try {
+      drainOutboxToSqlite(db, snapshot)
+      telemetryDrainFailureLogged = false
+    } catch (err) {
+      // Retain the delta: fold the snapshot back into the live outbox for the next flush.
+      mergeOutboxBack(snapshot)
+      if (!telemetryDrainFailureLogged) {
+        telemetryDrainFailureLogged = true
+        consola.warn(`[telemetry] telemetry.db dual-write failed (delta retained for next flush):`, err)
+      }
+    }
+  }
 })
 
 export function persistRequestTelemetry(): Promise<void> {
@@ -1073,7 +1410,13 @@ export async function shutdownRequestTelemetry(): Promise<void> {
   // The serialized chain inside persistTelemetrySerialized guarantees this
   // shutdown-fired persist runs AFTER any timer-fired persist already in
   // flight (or queued just before stopPeriodicPersistence cleared the timer).
+  // drain-before-close: await the flush (which drains the outbox to telemetry.db) BEFORE closing
+  // the db handle, so no accumulated delta is lost on shutdown.
   await persistRequestTelemetry()
+  telemetryDb?.close()
+  telemetryDb = null
+  telemetryConfigUnsub?.()
+  telemetryConfigUnsub = null
 }
 
 export function _resetRequestTelemetryForTests(): void {
@@ -1083,8 +1426,30 @@ export function _resetRequestTelemetryForTests(): void {
   dimSinceStart = new Map()
   dimBuckets = new Map()
   telemetryFilePath = PATHS.REQUEST_TELEMETRY
+  // Close + drop the db handle and outbox so a following test's fresh db never inherits a closed
+  // handle ("Cannot use a closed database") or leaked deltas. Unsubscribe the config listener too.
+  telemetryDb?.close()
+  telemetryDb = null
+  outboxRaw = new Map()
+  outboxCumulative = new Map()
+  outboxAccepted = new Map()
+  telemetryDrainFailureLogged = false
+  telemetryConfigUnsub?.()
+  telemetryConfigUnsub = null
 }
 
 export function _setRequestTelemetryFilePathForTests(path: string): void {
   telemetryFilePath = path
+}
+
+/** Inject a telemetry.db handle directly (test isolation) — replaces any open handle without going through init. */
+export function _setTelemetryDbForTests(db: TelemetryDatabase | null): void {
+  telemetryDb?.close()
+  telemetryDb = db
+  telemetryDrainFailureLogged = false
+}
+
+/** Read the current telemetry.db handle (null when disabled / unopened) — test assertion hook. */
+export function _getTelemetryDbForTests(): TelemetryDatabase | null {
+  return telemetryDb
 }
