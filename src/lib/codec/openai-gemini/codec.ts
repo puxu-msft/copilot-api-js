@@ -163,18 +163,18 @@ export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGemi
       const { env, baseline, ctx } = parseGemini(raw, modelId)
       requestContext = ctx
       truncateBaseline = baseline
-      // REVERSE `@messages` leg supply (C2b): thread the shared beta probe + mapper holder onto
-      // env.requestState so the OUTBOUND_LEGS[/v1/messages] reverse branch reads them. Absent for the
-      // direct/via-responses Gemini legs → requestState stays undefined → the legacy path.
-      if (opts?.reverseBetaProbe || opts?.reverseMapperHolder) {
-        return env.with({
-          requestState: {
-            ...(opts.reverseBetaProbe && { betaProbe: opts.reverseBetaProbe }),
-            ...(opts.reverseMapperHolder && { reverseMapperHolder: opts.reverseMapperHolder }),
-          },
-        })
-      }
-      return env
+      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
+      // the `truncateBaseline` (the CC auto-truncate baseline) from `env.requestState` — the forward `@cc`
+      // cell reads it via `OUTBOUND_LEGS[CHAT_COMPLETIONS]` (C3). The REVERSE `@messages` leg supply (C2b —
+      // the shared beta probe + mapper holder) is added when the handler injects them; both coexist.
+      // Populating requestState is also the driver's cell-keyed fork discriminator.
+      return env.with({
+        requestState: {
+          truncateBaseline: baseline,
+          ...(opts?.reverseBetaProbe && { betaProbe: opts.reverseBetaProbe }),
+          ...(opts?.reverseMapperHolder && { reverseMapperHolder: opts.reverseMapperHolder }),
+        },
+      })
     },
 
     getContext() {

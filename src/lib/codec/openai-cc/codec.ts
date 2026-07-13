@@ -238,19 +238,19 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
       const { env, baseline } = parseOpenAiCc(raw)
       truncateBaseline = baseline
       requestContext = env.ctx
-      // REVERSE `@messages` leg supply (C2b): thread the shared beta probe + mapper holder onto
-      // env.requestState so the OUTBOUND_LEGS[/v1/messages] reverse branch reads them (the driver's
-      // cell-keyed fork routes `(openai-cc, /v1/messages)` through the assembly). Absent for direct/forward
-      // CC legs (a plain CC request), so requestState stays undefined there → the legacy path.
-      if (args?.reverseBetaProbe || args?.reverseMapperHolder) {
-        return env.with({
-          requestState: {
-            ...(args.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
-            ...(args.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
-          },
-        })
-      }
-      return env
+      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
+      // it from `env.requestState` instead of this codec closure. The `truncateBaseline` (the auto-truncate
+      // baseline) is populated for EVERY CC request (C3 — the direct/forward `/chat/completions` cells read
+      // it via `OUTBOUND_LEGS[CHAT_COMPLETIONS]`). The REVERSE `@messages` leg supply (C2b — the shared beta
+      // probe + mapper holder) is added when the handler injects them; both coexist on requestState. Populating
+      // requestState is also the driver's cell-keyed fork discriminator (an env without it stays legacy).
+      return env.with({
+        requestState: {
+          truncateBaseline: baseline,
+          ...(args?.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
+          ...(args?.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
+        },
+      })
     },
 
     getTruncateBaseline() {
