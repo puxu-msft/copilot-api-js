@@ -13,9 +13,9 @@ import {
  *
  * Anthropic requires `messages[0]` to be a user message, and rejects a user
  * message whose content is only tool_result blocks at index 0 (a "tool result
- * turn" with no preceding tool_use — its tool_use was truncated away, so the
- * tool_result is orphaned). Truncation can land the preserve boundary on such a
- * turn, so callers skip leading messages until this returns true.
+ * turn" with no preceding tool_use — an orphaned tool_result). A client-supplied
+ * history that was truncated/edited upstream can begin on such a turn, so callers
+ * skip leading messages until this returns true.
  *
  * Legal: a user message with string content, or array content containing at
  * least one non-tool_result block (text / image / …). A mixed
@@ -32,8 +32,8 @@ export function isLegalLeadingUserMessage(msg: MessageParam): boolean {
 /**
  * Ensure Anthropic messages start with a LEGAL first user message.
  * Drops leading messages that can't be `messages[0]`: non-user messages
- * (e.g. orphaned assistant after truncation) AND pure-tool_result user turns
- * (orphaned tool results whose tool_use was truncated away).
+ * (e.g. a leading assistant turn) AND pure-tool_result user turns (orphaned tool
+ * results whose tool_use is absent from the supplied history).
  */
 export function ensureAnthropicStartsWithUser(messages: Array<MessageParam>): Array<MessageParam> {
   let startIndex = 0
@@ -42,7 +42,7 @@ export function ensureAnthropicStartsWithUser(messages: Array<MessageParam>): Ar
   }
 
   if (startIndex > 0) {
-    consola.debug(`[AutoTruncate:Anthropic] Skipped ${startIndex} leading non-startable messages`)
+    consola.debug(`[Sanitize:Anthropic] Skipped ${startIndex} leading non-startable messages`)
   }
 
   return messages.slice(startIndex)
