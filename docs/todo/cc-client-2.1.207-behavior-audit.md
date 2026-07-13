@@ -309,6 +309,42 @@ stop_reason 家族**透传正确、无 gap**（对代理是应有行为）。唯
 
 ---
 
+## 轮次 8（2026-07-13）：prompt-caching beta —— 较新 cache betas 的 proactive 感知缺口
+
+### 发现来源（CC 源码坐标）
+
+- CC 2.1.207 发送的 cache 相关 betas（常量 `app.pretty.js:61831`）：`extended-cache-ttl-2025-04-11`、`prompt-caching-scope-2026-01-05`、**`cache-diagnosis-2026-04-07`**、**`prompt-caching-evict-2026-05-12`**。
+- **`w8i`**（170036）= cache-diagnosis-beta 拒绝检测：`li && status===400 && msg.includes(F2e.header) && msg.includes("anthropic-beta")` → 恢复（298146）`ee=false, wSe($,F2e), "retry:cache-diagnosis-beta"`（丢该 beta latch、重试）。
+- **`T8i`**（170039）= prompt-caching-evict 拒绝检测：`status===400` 且 `msg.includes(B2e.header)` 或（`"evict_on_complete"`+`"beta"`）→ 恢复（298147）丢 evict beta、重试。
+- `cache-diagnosis` beta 令上游返 `diagnostics.cache_miss_reason`（CC 读 `fi.diagnostics?.cache_miss_reason`，298325）；`prompt-caching-evict` = `evict_on_complete` 缓存驱逐提示。
+- **结构**：`w8i`/`T8i` 都 `status===400`（beta 拒绝天然 pre-commit：GHC 在响应头就拒、流未 commit）→ CC 自愈与本项目 reactive strip **同为 HTTP-400 路径**、无 post-commit 风险（不同于 F9/F10/F11 的 caveat）。
+
+### 本项目现状（读码）
+
+cache-beta negotiation **极完备**：
+- 通用 [unsupported-beta-retry.ts](../../src/lib/request/strategies/unsupported-beta-retry.ts)：处理 explicit-list（`unsupported beta header(s): X`）与 laconic（`invalid beta flag` 无清单，升序子集枚举定位最小非法集）两形态，学习并 fixate **任意** unsupported beta → 覆盖 `cache-diagnosis`/`prompt-caching-evict`。
+- [cache-control-subfield-rejection-retry.ts](../../src/lib/request/strategies/cache-control-subfield-rejection-retry.ts) + [request-preparation.ts:298](../../src/lib/anthropic/request-preparation.ts#L298)：内置地雷列表**proactive 剥** `scope`（`prompt-caching-scope` beta 引入、GHC 未启用）。
+- `extended-cache-ttl-2025-04-11`：**主动镜像 GHC** 的 per-layer 5m/1h TTL（[features.ts:330](../../src/lib/anthropic/features.ts#L330)），header 精确随 body。
+- 未知 client beta 默认透传到 GHC → 被拒则 reactive strip + fixate。
+
+### F14（LOW-MED）— `cache-diagnosis` / `prompt-caching-evict` 无 proactive 感知：首轮浪费往返 + 诊断/驱逐特性静默不可用
+
+**判断（读码）**：全仓 `grep cache-diagnosis|prompt-caching-evict|cache_miss_reason|evict_on_complete` **零命中**——本项目对这两个较新 cache beta 及其响应产物**无显式感知**。功能上：
+- **无硬失败**：通用 `unsupported-beta-retry` 兜底——GHC 拒 → 学习 strip → 重试成功、fixate（此后免疫）。CC 的 `w8i`/`T8i` 也是兼容后备（同 HTTP-400 路径）。
+- **代价 1（首轮往返）**：每个新会话首次带这些 beta 打 GHC → 首请求 400 → reactive strip → 重试。fixate 后不再犯，但每冷启动一次浪费。对比：`scope` / `eager_input_streaming` 是 **proactive 剥**（零往返），这两个不是。
+- **代价 2（特性静默丢失）**：若 GHC 不支持 `cache-diagnosis`（大概率）→ beta 被剥 → GHC 不返 `diagnostics.cache_miss_reason` → CC 的缓存未命中诊断（`/context` 等）**空**。`prompt-caching-evict` 被剥 → `evict_on_complete` 驱逐意图丢失、GHC 用默认缓存。均非硬 bug，是 GHC 能力边界下的静默降级。
+
+**理想方向（不在本轮做，需 GHC 探针）**：
+1. **实测 GHC 是否支持** `cache-diagnosis-2026-04-07` / `prompt-caching-evict-2026-05-12`（skill `ghc-api-reference`，curl 带 beta 打 GHC 看 200 vs 400）。
+2. 若 GHC **不支持** → 加入 request-preparation 的内置地雷列表**proactive 剥**（仿 `scope`/`eager_input_streaming`），省首轮往返；同时在文档标注「这些 CC cache 诊断/驱逐特性经 GHC 不可用」。
+3. 若 GHC **支持** `cache-diagnosis` → 考虑把 `diagnostics.cache_miss_reason` 纳入本项目 history/telemetry（`richest-data-flow`：缓存命中诊断是高价值运维信号，别丢）。
+
+### 本轮结论
+
+cache-beta negotiation 是本项目**最完备**的子系统之一（通用枚举 strip + 子字段地雷 + extended-ttl 镜像），对新 betas reactive 全覆盖、无硬失败。唯一缺口是**两个 2026 新 cache beta 的 proactive 感知**（F14，低-中）：首轮往返浪费 + 诊断/驱逐特性静默降级。修复前需 GHC 能力探针裁定「proactive 剥 vs 接住诊断信号」。
+
+---
+
 ## 后续轮次待覆盖的 CC-facing 面（TODO 清单，逐轮消化）
 
 - [x] **请求形状漂移**（轮次 2）：`speed:"fast"`（F5）、`diagnostics.previous_message_id`（F6）已覆盖；`betas`/`metadata`/`tool_choice`/`output_config`/`context_management` 经查本项目已妥善处理（partner-feature-strip + request-preparation）。`eager_input_streaming`（fine-grained tool streaming）本项目已 proactive strip，无 gap。
@@ -321,6 +357,6 @@ stop_reason 家族**透传正确、无 gap**（对代理是应有行为）。唯
 ### 新增待查面（供后续轮次继续）
 
 - [x] **stop_reason 家族**（轮次 7）：`max_tokens`/`model_context_window_exceeded`/`pause_turn` 直连路径**透传正确、无 gap**；记录 auto-truncate ↔ CC 双主体 context 管理交互（F13,低/信息，仅需文档化）。
-- [ ] **prompt-caching beta 自愈**：CC 的 `cache-diagnosis-beta`（298146 `w8i`）、`prompt-caching-evict`（298147 `T8i`）beta 拒绝自愈 vs 本项目 cache_control 剥离/negotiation。
+- [x] **prompt-caching beta 自愈**（轮次 8）：CC `w8i`/`T8i`（HTTP-400 丢 beta 重试）与本项目通用 `unsupported-beta-retry` 兼容；本项目对 `cache-diagnosis`/`prompt-caching-evict` 无 proactive 感知（F14,低-中），reactive 兜底但首轮浪费往返 + 诊断/驱逐特性静默降级。
 - [ ] **mid-conv role:"system"**：CC 的 `_7n`（298169）`role:"system"` 被拒 → 回退 `<system-reminder>` body vs 本项目 system-reject-mode。
 - [ ] **context-hint SSE**：CC 的 `de.onRequestError`（298170 `retry:context-hint`）+ `classifyStreamError`（isContextHintSse）上游中途下发 context-hint 的重试机制。
