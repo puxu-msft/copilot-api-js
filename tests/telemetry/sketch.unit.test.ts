@@ -92,3 +92,20 @@ test("γ 下限：0.01 不塌缩(<2048 bin)、0.001 塌缩(>2048)", () => {
   expect(wide.store.maxKey - wide.store.minKey + 1).toBeGreaterThan(2048)
   expect(ok.store.maxKey - ok.store.minKey + 1).toBeLessThan(2048)
 })
+
+test("空 sketch（count=0/bins=[]）序列化往返边界", () => {
+  const empty = createSketch(0.01)
+  const round = deserializeSketch(serializeSketch(empty))
+  expect(round.count).toBe(0)
+  expect(quantile(round, 0.5)).toBe(quantile(empty, 0.5))
+})
+
+test("损坏字节：bad magic 抛，非静默返回垃圾 sketch", () => {
+  const sk = createSketch(0.01)
+  sk.accept(42)
+  const bytes = serializeSketch(sk)
+  const corrupt = new Uint8Array(bytes)
+  corrupt[0] = 0x00 // 破坏 magic 高字节
+  corrupt[1] = 0x00
+  expect(() => deserializeSketch(corrupt)).toThrow(/bad magic/)
+})
