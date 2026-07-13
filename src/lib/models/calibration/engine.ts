@@ -283,7 +283,7 @@ export const persistLimits = createSerializedAsyncFn(async () => {
     // on every subsequent learning event while the disk stays broken).
     if (!persistFailureLogged) {
       persistFailureLogged = true
-      consola.warn("[AutoTruncate] persist failed (learned limits will re-learn but won't survive restart):", err)
+      consola.warn("[Calibration] persist failed (learned limits will re-learn but won't survive restart):", err)
     }
   }
 })
@@ -318,14 +318,14 @@ export async function loadPersistedLimits(): Promise<void> {
     // version 0/unknown falls through — no persisted entries loaded, but seed
     // materialization below still runs (fresh-install parity).
     if (learnedLimits.size > 0) {
-      consola.info(`[AutoTruncate] Loaded learned limits for ${learnedLimits.size} model(s)`)
+      consola.info(`[Calibration] Loaded learned limits for ${learnedLimits.size} model(s)`)
     }
   } catch (err) {
     // A missing file is the normal first-run case — stay silent. A present-but-
     // corrupt file (JSON parse error / read error) is worth surfacing, mirroring
     // the telemetry loader, before we start fresh.
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      consola.warn("[AutoTruncate] learned-limits file unreadable/corrupted, starting fresh:", err)
+      consola.warn("[Calibration] learned-limits file unreadable/corrupted, starting fresh:", err)
     }
   }
 

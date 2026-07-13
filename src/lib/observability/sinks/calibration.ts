@@ -23,7 +23,7 @@ import consola from "consola"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
-import { learnCalibration } from "~/lib/auto-truncate"
+import { learnCalibration } from "~/lib/models/calibration"
 import { state } from "~/lib/state"
 
 import type {

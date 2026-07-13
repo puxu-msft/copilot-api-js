@@ -15,7 +15,6 @@ import {
   setRateLimitPublisher,
 } from "./lib/adaptive-rate-limiter"
 import { loadPersistedFeatureNegotiation } from "./lib/anthropic/feature-negotiation"
-import { loadPersistedLimits } from "./lib/auto-truncate"
 import {
   //
   applyConfigToState,
@@ -38,6 +37,7 @@ import {
 } from "./lib/history"
 import { getDatabase } from "./lib/history/sqlite/connection"
 import { applyForwardMigrations } from "./lib/history/sqlite/migrations/run"
+import { loadPersistedLimits } from "./lib/models/calibration"
 import { cacheModels } from "./lib/models/client"
 import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"

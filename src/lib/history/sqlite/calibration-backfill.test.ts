@@ -16,13 +16,6 @@ import type { Model } from "~/lib/models/client"
 import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
 import {
   //
-  bucketIndexFor,
-  getLearnedLimits,
-  resetAllLimitsForTesting,
-  setLearnedLimitsPathForTests,
-} from "~/lib/auto-truncate"
-import {
-  //
   resetCalibrationBackfillForTests,
   runCalibrationBackfill,
   stopCalibrationBackfill,
@@ -43,6 +36,13 @@ import {
   setMeta,
 } from "~/lib/history/sqlite/meta"
 import { insertCompletedEntry } from "~/lib/history/sqlite/write"
+import {
+  //
+  bucketIndexFor,
+  getLearnedLimits,
+  resetAllLimitsForTesting,
+  setLearnedLimitsPathForTests,
+} from "~/lib/models/calibration"
 import { setStateForTests } from "~/lib/state"
 
 // A minimal, UNSEEDED model (not in DEFAULT_FACTOR_SEED) — no `capabilities`, so

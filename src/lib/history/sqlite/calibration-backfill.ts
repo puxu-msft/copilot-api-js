@@ -1,6 +1,6 @@
 /**
  * Recoverable background backfill that SEED-CALIBRATES the size-aware factor model
- * (lib/auto-truncate/engine.ts) from existing history — the cold-start bootstrap
+ * (lib/models/calibration/engine.ts) from existing history — the cold-start bootstrap
  * (spec §6). For every completed anthropic-messages row it pairs the REAL prompt
  * token count (the `entries_v2` usage columns) with the LOCAL gpt-tokenizer
  * estimate (recomputed from the stored wire request body) and accumulates raw
@@ -57,7 +57,7 @@ import {
   type BackfillBucketAgg,
   BUCKET_BOUNDS,
   bucketIndexFor,
-} from "~/lib/auto-truncate"
+} from "~/lib/models/calibration"
 import { state } from "~/lib/state"
 
 import type { UpstreamRequestLeg } from "../types"

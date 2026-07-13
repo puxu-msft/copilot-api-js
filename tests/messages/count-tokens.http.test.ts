@@ -22,19 +22,19 @@ import {
   test,
 } from "bun:test"
 
-import { getBus } from "~/lib/observability/bus"
-import {
-  //
-  resetRequestLinePublisher,
-  setRequestLinePublisher,
-} from "~/lib/observability/synthetic-request-line"
 import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
 import {
   //
   calibrate,
   learnCalibration,
   resetAllLimitsForTesting,
-} from "~/lib/auto-truncate"
+} from "~/lib/models/calibration"
+import { getBus } from "~/lib/observability/bus"
+import {
+  //
+  resetRequestLinePublisher,
+  setRequestLinePublisher,
+} from "~/lib/observability/synthetic-request-line"
 import {
   //
   setModels,

@@ -24,14 +24,14 @@ import type { MessagesPayload } from "~/types/api/anthropic"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
+import { parseTokenLimitError } from "~/lib/error"
+import { getEntry } from "~/lib/history"
 import {
   //
   calibrate,
   factorAt,
   getLearnedLimits,
-} from "~/lib/auto-truncate"
-import { parseTokenLimitError } from "~/lib/error"
-import { getEntry } from "~/lib/history"
+} from "~/lib/models/calibration"
 import { resolveModelName } from "~/lib/models/resolver"
 import { getTokenCount } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
@@ -119,7 +119,8 @@ const calibrationProbeRoute = createRoute({
   summary: "Offline token-count calibration probe (raw vs calibrated + learned state)",
   // Body validated by the handler (CalibrationProbeSchema), not the OpenAPI layer, so its
   // bespoke 400/404 envelopes are preserved.
-  description: "Body: { entryId } or { payload, format? }. Reports the raw gpt-tokenizer estimate, the calibrated estimate, the learned factor, and the model's learned-limits state.",
+  description:
+    "Body: { entryId } or { payload, format? }. Reports the raw gpt-tokenizer estimate, the calibrated estimate, the learned factor, and the model's learned-limits state.",
   responses: {
     200: { description: "Raw vs calibrated estimate + learned factor model", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid input", content: { "application/json": { schema: ErrorSchema } } },

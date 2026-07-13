@@ -14,8 +14,8 @@ import {
   test,
 } from "bun:test"
 
-import { learnCalibration } from "~/lib/auto-truncate"
 import { insertEntry } from "~/lib/history"
+import { learnCalibration } from "~/lib/models/calibration"
 import {
   //
   setModels,
@@ -95,7 +95,13 @@ describe("POST /api/debug/calibration-probe", () => {
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
       state: "failed",
-      clientRequest: { format: "anthropic-messages", model: "claude-sonnet-4", messages: messages as any, stream: true, body: { model: "claude-sonnet-4", messages, stream: true } },
+      clientRequest: {
+        format: "anthropic-messages",
+        model: "claude-sonnet-4",
+        messages: messages as any,
+        stream: true,
+        body: { model: "claude-sonnet-4", messages, stream: true },
+      },
       attempts: [
         {
           index: 0,

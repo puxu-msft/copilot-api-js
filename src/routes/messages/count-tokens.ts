@@ -10,8 +10,8 @@ import {
 } from "~/lib/anthropic/client"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
-import { calibrate } from "~/lib/auto-truncate"
 import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
+import { calibrate } from "~/lib/models/calibration"
 import {
   //
   ENDPOINT,

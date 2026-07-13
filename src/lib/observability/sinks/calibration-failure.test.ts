@@ -22,7 +22,7 @@ import {
   getLearnedLimits,
   resetAllLimitsForTesting,
   setLearnedLimitsPathForTests,
-} from "~/lib/auto-truncate"
+} from "~/lib/models/calibration"
 import { createBus } from "~/lib/observability"
 import { setStateForTests } from "~/lib/state"
 

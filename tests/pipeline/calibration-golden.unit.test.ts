@@ -1,4 +1,10 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import {
+  //
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import {
   //
@@ -7,7 +13,7 @@ import {
   factorAt,
   learnCalibration,
   resetAllLimitsForTesting,
-} from "~/lib/auto-truncate"
+} from "~/lib/models/calibration"
 
 /**
  * Golden-fixture equivalence oracle captured BEFORE the auto-truncate removal.

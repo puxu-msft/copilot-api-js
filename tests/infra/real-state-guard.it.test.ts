@@ -35,13 +35,13 @@ import {
   markAnthropicFeatureUnsupported,
   persistFeatureNegotiation,
 } from "~/lib/anthropic/feature-negotiation"
+import { PATHS } from "~/lib/config/paths"
 import {
   //
   learnCalibration,
   persistLimits,
   resetAllLimitsForTesting,
-} from "~/lib/auto-truncate/engine"
-import { PATHS } from "~/lib/config/paths"
+} from "~/lib/models/calibration/engine"
 
 const SANDBOX_MARKER = "copilot-api-test-sandbox-"
 const REAL_HOME_APP_DIR = `${os.homedir()}/.local/share/copilot-api`
