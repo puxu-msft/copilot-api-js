@@ -638,6 +638,51 @@ tool_choice 对 **CC 2.1.207 无 gap**（CC 客户端自降级）。真缺口是
 
 ---
 
+## 轮次 17（2026-07-13）：image/document 内容块 —— vision 检测漏 tool_result 内嵌图像（确认 gap）
+
+### 发现来源（CC 源码坐标）
+
+- CC 2.1.207 顶层图像块：`{type:"image", source:{type:"base64", media_type:"image/png"|"image/jpeg", data}}`（`app.pretty.js:22342`）。
+- **关键**：CC 把工具返回的图像/文档**嵌进 `tool_result`**（281134，REPL / 截图 / 图像型 MCP 工具输出）：
+  ```
+  { tool_use_id, type:"tool_result", content:[
+    {type:"text", text},
+    ...images.map(i => ({type:"image", source:{type:"base64", media_type:i.mediaType, data:i.base64}})),
+    ...documents.map(i => ({type:"document", source:{type:"base64", media_type:"application/pdf", data}}))
+  ]}
+  ```
+  即 image **和** document 都可**嵌在 tool_result.content 里**，不只顶层 user 消息。
+
+### 本项目现状（读码）
+
+vision 处理**存在但检测过浅**（[request-preparation.ts:391-394](../../src/lib/anthropic/request-preparation.ts#L391)）：
+```ts
+const enableVision = messages.some((msg) => {
+  if (typeof msg.content === "string") return false
+  return msg.content.some((block) => block.type === "image")   // ← 只扫顶层 block
+})
+```
+`enableVision` 为真才设 `copilot-vision-request` 头（455-457，GHC vision 门；本项目还保留它为 core key 防客户端伪造）。
+
+### F23（MEDIUM，确认功能 gap）— vision 检测只扫顶层 image，漏 tool_result 内嵌 image + 全部 document
+
+**判断（读码，已确认）**：`enableVision` 的 `msg.content.some(block => block.type === "image")` **只看顶层块**——两处漏：
+1. **tool_result 内嵌 image（主）**：工具返回的图像在 `tool_result.content[]` 里（block.type 是 `"tool_result"`、非 `"image"`）→ `some` 返回 false → **`copilot-vision-request` 头不设** → GHC **不 vision 处理这些工具图像** → 模型**看不到**工具返回的截图/图像。CC 2.1.207 确有此模式（281134）——截图工具、图像型 MCP 工具、REPL 图像输出全中招。
+2. **document 块（次）**：`type:"document"`（PDF）**完全不在** `enableVision` 检测里（顶层和 tool_result 内都漏）。若 GHC 对 document 也需 vision-request（或独立信号）→ PDF 不被处理。
+
+**危害**：一个「工具返回截图 → 模型据图继续」的常见 agentic 流，经本项目会**丢失视觉**（GHC 收到 base64 但无 vision 门 → 忽略/降级）。纯文本请求不受影响。
+
+**理想方向（不在本轮做）**：
+1. **`enableVision` 递归进 tool_result.content**：`block.type==="tool_result"` 时再扫其 `content[]` 找 `image`（和按需 `document`）。这是**明确的正确修复**（检测该覆盖客户端真实发送的所有 image 位置），不需 GHC 探针。
+2. **document 块处理待实测**：GHC 是否 vision-gate document / 是否支持 PDF（skill `ghc-api-reference` 探针）——支持则纳入 `enableVision`（顶层 + 嵌套），不支持则文档标注「PDF 经 GHC 不可用」并考虑友好降级（剥 document 块 + 提示）。
+3. **回归测试**：造「tool_result 内含 image」的请求，断言 `copilot-vision-request` 头被设（正样本先证检查触达目标，[[feedback-pass-null-clean-not-self-validating]]）。
+
+### 本轮结论
+
+本项目有 vision 处理（检测 image → 设 GHC vision 头 + 防伪造），但**检测只扫顶层块、漏 tool_result 内嵌 image + 全部 document**（F23，中，确认功能 gap）。工具返回图像的 agentic 流会静默丢失视觉。修复明确（递归检测），是继 F19/F20 之后又一条**不依赖 GHC 探针的正确修复**（image 部分）；document 部分需探针。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
@@ -668,6 +713,7 @@ CC 2.1.207 引入一批 2026 新 beta，本项目**无显式感知**、靠通用
 | 优先 | 项 | 一句话 | 前置 |
 |---|---|---|---|
 | **P1** | F1 | thinking-only 块间空档裸 ping 不重置 300s → CC 静默重试整请求(重复上游调用) | headless-CC + mock 上游实测触发条件 |
+| **P1** | F23 | vision 检测漏 tool_result 内嵌 image → 工具返回图像丢视觉(确认功能 gap) | 无(明确修复:递归检测);document 部分需探针 |
 | **P2** | F7 | count_tokens 失败返 `{input_tokens:1}` 抑制 CC 本地兜底 | 实测 CC 对代理非 200 的反应 |
 | **P2** | F10/F15 | 服务端消化抢占 CC 原生自愈(主线 B) | 补「复刻 CC 回退」模式 + 文档化 |
 | **P2** | F19/F20 | richest-data-flow 捕获缺口(主线 D)：usage cost 因子 + metadata 会话关联 | 无(明确该做)；落地见 skill |
