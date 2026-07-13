@@ -34,6 +34,7 @@ import {
   upsertCumulativeSketchBlob,
   incrementCumulativeAccepted,
   readCumulativeAccepted,
+  readCumulativeKeysByDimension,
 } from "~/lib/telemetry/store"
 
 const tmpDirs: Array<string> = []
@@ -317,4 +318,31 @@ test("标量 upsertSettledTier 与 sketch upsertSketchBlob 打同一行不互毁
   expect(row2.req_count).toBe(5) // 3+2，标量加性累加照常
   const sketches2 = deserializePackedSketches(decompressBytes(row2.hist_blob))
   expect(sketches2.get("duration_ms")!.count).toBe(values.length) // sketch blob 未被标量 upsert 清空
+})
+
+test("readCumulativeKeysByDimension：只返回指定维度集的 (dim,key) 分组，未指定的维度不出现", () => {
+  const db = freshDb()
+  const client = internDim(db, "client")
+  const model = internDim(db, "model")
+  const agentKind = internDim(db, "agentKind")
+  const clientA = internKey(db, client, "claude-cli")
+  const clientB = internKey(db, client, "codex-cli")
+  const modelOpus = internKey(db, model, "opus")
+  const agentMain = internKey(db, agentKind, "main")
+
+  upsertCumulative(db, client, clientA, { req_count: 1 })
+  upsertCumulative(db, client, clientB, { req_count: 1 })
+  upsertCumulative(db, model, modelOpus, { req_count: 1 })
+  upsertCumulative(db, agentKind, agentMain, { req_count: 1 }) // 未在查询集里 — 不应出现
+
+  const result = readCumulativeKeysByDimension(db, new Set(["client", "model"]))
+  expect(result.get("client")).toEqual(new Set(["claude-cli", "codex-cli"]))
+  expect(result.get("model")).toEqual(new Set(["opus"]))
+  expect(result.has("agentKind")).toBe(false) // 未指定维度不出现（即使库里有行）
+})
+
+test("readCumulativeKeysByDimension：空维度集 / 无匹配行 → 空 Map（不抛）", () => {
+  const db = freshDb()
+  expect(readCumulativeKeysByDimension(db, new Set())).toEqual(new Map())
+  expect(readCumulativeKeysByDimension(db, new Set(["client"]))).toEqual(new Map()) // 库里无 client 行
 })

@@ -125,6 +125,38 @@ export function upsertAccepted(db: TelemetryDatabase, bucketTs: number, count: n
   )
 }
 
+/**
+ * 读回 tel_cumulative 里【调用方指定维度集】已存的 `(dim, key)` 对，按维度名分组成 key 集合
+ * ——供 request-telemetry.ts 重启后重建 cumulative 腿的 DB-seeded 基数 cap 权威（`cumulativeCapKeys`）：
+ * `tel_cumulative` 是永久跨重启层，若权威只从进程内状态重建（如 `dimSinceStart`，重启即空），
+ * 已满 cap 的维度会在重启后再吃进一批新键、破坏持久层的 cap 界。
+ *
+ * `dimNames` 由调用方限定（典型：只传 capped 维度，如 `client`/`tool`/`model`——bounded 维度如
+ * `agentKind`/`endpoint` 不 cap、不必查）；本函数不内置任何"哪些维度该 cap"的知识，纯粹按
+ * 给定维度名集查询，保持 store 层对维度语义无知（该知识属 `observability/telemetry-dimensions.ts`
+ * 的 `CAPPED_DIMENSION_NAMES`）。空集合或该维度在库里尚无 cumulative 行 → 对应 key 不出现在返回
+ * Map 里（调用方按 `.get(dim) ?? new Set()` 处理，不是空 Set）。
+ */
+export function readCumulativeKeysByDimension(db: TelemetryDatabase, dimNames: ReadonlySet<string>): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>()
+  if (dimNames.size === 0) return result
+  const placeholders = [...dimNames].map(() => "?").join(", ")
+  const rows = db
+    .prepare(
+      `SELECT d.name AS dim, k.key AS key FROM tel_cumulative c JOIN tel_key k ON k.id = c.key_id JOIN tel_dim d ON d.id = c.dim WHERE d.name IN (${placeholders})`,
+    )
+    .all(...dimNames) as Array<{ dim: string; key: string }>
+  for (const row of rows) {
+    let keys = result.get(row.dim)
+    if (!keys) {
+      keys = new Set()
+      result.set(row.dim, keys)
+    }
+    keys.add(row.key)
+  }
+  return result
+}
+
 /** tel_meta 里存 accepted 永久累计（lifetime）的键名。 */
 const CUMULATIVE_ACCEPTED_META_KEY = "cumulative_accepted"
 
