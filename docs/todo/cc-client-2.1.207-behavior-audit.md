@@ -242,11 +242,54 @@ CC 2.1.207 对 `stop_reason:"refusal"` 有**两处**（流式 + 非流式）对�
 
 ---
 
+## 轮次 6（2026-07-13）：thinking signature —— CC 原生自愈 + 新 `compaction` 块
+
+### 发现来源（CC 源码坐标）
+
+- **累加器**（`app.pretty.js:11104-11115` / 11187-11195）：`thinking_delta`→追加 `thinking`、`signature_delta`→**覆写** `signature`；新增 **`compaction_delta`/`compaction`** 块类型（context compaction）。
+- **`H8i`**（170082）= thinking-signature **HTTP-400** 检测器：`e2 instanceof li && e2.status===400` 且消息含 `"signature in thinking block"` / (`"thinking.signature"`+`"field required"`) / ((`"thinking block"`|`"redacted_thinking"`)+(`"cannot be modified"`|`"invalid signature"`))。
+- **`H8i` 恢复**（298155-298165）：命中即 `W$d(F)` = **剥掉 conversation 里所有 thinking 块并重试**（`tengu_thinking_signature_strip_retry`，记 signed/unsigned 计数）。
+- **`C8i`**（170088）= `thinking.type=enabled/adaptive not supported` 检测 → 恢复（298149）**切到另一种 type（enabled↔adaptive）重试**。
+- 两者都在 HTTP-error 重试分类器 `ii`（298027）里，**硬要求 `status===400`**。
+
+### 本项目现状（读码）
+
+thinking 处理**非常完备**：`thinking-quarantine/store.ts` + `thinking-immutability.ts`（L1/L2/L3）+ `poisoned-thinking-match.ts` + `thinking-coercion.ts` + `thinking-signature-compat.ts` + `thinking-protection.ts`；反应式 `adaptive-thinking-rejection-retry.ts`（`adaptive thinking is not supported` → `adaptiveToEnabledThinking` **主动 coerce**）。累加器（[stream-accumulator.ts](../../src/lib/anthropic/stream-accumulator.ts)）对块/delta/event 类型有显式 case + `default`（194/282）。
+
+### F11（LOW/CONFIRMED-compatible + 一条 caveat）— CC 原生 thinking-400 自愈是 HTTP-400 门，与本项目架构**兼容**
+
+**判断（读码 + 架构推理）**：CC 的 `H8i`（剥 thinking 重试）与 `C8i`（切 thinking.type 重试）都要求 `status===400`。本项目对 GHC thinking-400 的处理在**请求/重试侧**（driver 的 reactive strategies，pre-commit 尝试循环）：GHC 通常在**响应头**就返 400（流式还没 commit）→ 本项目要么 reactive 自愈（`adaptive-thinking-rejection-retry` 等 + quarantine），要么**以 HTTP-400 透出** → CC 的 `H8i`/`C8i` 作为**兼容后备**正常触发。二者**同向、不冲突**，是「代理主愈 + CC 后备」双保险。
+
+- 本项目 `adaptive→enabled` **主动 coerce** 甚至**优于** CC 的 `C8i` 双向 toggle（proactive 省往返，CC 从不需触发 C8i）。
+- **唯一 caveat（记档、别踩）**：**绝不**把 thinking-signature / adaptive-thinking 的 400 转成 **post-commit 200+SSE-error**（`li.status===undefined`）——那样 CC 的 `H8i`/`C8i` 都**匹配不上**（同轮次 4 F9 / 轮次 5 F10 的结构），既丢了 CC 后备、又可能 wedge 会话。本项目 refusal `error` 模式是 thinking-only refusal 专用、与 thinking-sig 400 正交，目前无此转换——**保持**即可。**待实测**：确认本项目任何路径都不会把 thinking-sig/adaptive 400 post-commit 化。
+
+### F12（LOW，前瞻）— 新 Anthropic `compaction` 块本项目累加器未识别
+
+**判断（读码）**：CC 2.1.207 累加器新增 `compaction`/`compaction_delta`（11113/11195）。本项目累加器无此 case → `compaction` 块落 `default`（282）→**本项目不累积它**（history/keepalive 视角）。影响：
+- **history 保真**：若 GHC 未来发 `compaction` 块，本项目 history 累积**丢该块内容**（违 `richest-data-flow`，但转发轨 `sseEvents` 原始帧仍在）。
+- **keepalive**：`compaction` 是未知 open-block 类型 → keepalive `default` 回退裸 ping（与 F1 同源盲区叠加）。
+- **客户端转发不受影响**：转发层默认透传（compaction 帧带原 `event:` 行）→ CC 自己的 compaction 累加器仍能消费。
+
+**现状风险低**：需 GHC 真的发 `compaction` 块才成立（当前 context_management/compaction 是否让 GHC emit 此块型未证）。**待实测**：查 GHC 在 context editing / 200K compaction 下是否 emit `compaction` content block（skill `ghc-api-reference`）；若会，则给本项目累加器补 `compaction` case（累积 + 认作 open-block 供 keepalive）。
+
+### 本轮结论
+
+thinking 是本项目**最成熟**的子系统之一，与 CC 2.1.207 原生 `H8i`/`C8i` 自愈**兼容且互补**（F11 是确认+caveat，非缺陷）。唯一前瞻 gap 是 `compaction` 新块型（F12，低，需 GHC 实测才升级）。
+
+---
+
 ## 后续轮次待覆盖的 CC-facing 面（TODO 清单，逐轮消化）
 
 - [x] **请求形状漂移**（轮次 2）：`speed:"fast"`（F5）、`diagnostics.previous_message_id`（F6）已覆盖；`betas`/`metadata`/`tool_choice`/`output_config`/`context_management` 经查本项目已妥善处理（partner-feature-strip + request-preparation）。`eager_input_streaming`（fine-grained tool streaming）本项目已 proactive strip，无 gap。
 - [x] **count_tokens**（轮次 3）：失败契约 `{input_tokens:1}` 抑制 CC 本地兜底（F7,中）、`/context` burst 无服务端缓存（F8,低/已缓解）。CC 请求形状（tools/thinking/betas 白名单/空占位）与本项目 sanitize 一致，无形状 gap。
 - [x] **SDK SSEDecoder**（轮次 4）：解码器 `v5a` + 消费循环 `Sjf` 均未变，「合成帧必带 event 行」不变量**确认无回归**（F9）。accept-set 扩容为 Sessions-V2 `user.*`/`agent.*`（互动 agent 协议，非 `/v1/messages`，与代理无关）。
 - [x] **refusal / fallback_request**（轮次 5）：CC 流式(298325)+非流式(298057) refusal→`fallback_request` 换模型重试；本项目默认 `error` 恢复抢占了配了 `refusalFallbackModel` 的用户的原生 fallback（F10,中）。只 `refusal` passthrough 模式保留之。
-- [ ] **200+SSE-error 重试**：复核 2.1.207 是否仍对 200+流内 error 零重试（轮次 4 F9 已顺带确认 error 帧→`li` 零重试；可结题）。
-- [ ] **thinking signature**：CC 侧对 `signature_delta` / thinking immutability 的消费 vs 本项目 `thinking-signature-compat.ts` / `thinking-immutability.ts`。
+- [x] **200+SSE-error 重试**：轮次 4 F9 已确认（error 帧→`li`、`.status` undefined、零重试），并在 F10/F11 反复印证其结构影响（HTTP-4xx 才触发 CC 各类原生自愈）。结题。
+- [x] **thinking signature**（轮次 6）：CC 原生 `H8i`（剥 thinking 重试）/`C8i`（切 thinking.type）自愈是 HTTP-400 门，与本项目 quarantine+coerce **兼容互补**（F11 确认+caveat）；新 `compaction` 块本项目累加器未识别（F12,低/前瞻）。
+
+### 新增待查面（供后续轮次继续）
+
+- [ ] **stop_reason 家族**：CC 对 `max_tokens`（298172 `tengu_max_tokens_reached`）/ `model_context_window_exceeded`（298173）/ `pause_turn` 的处理 vs 本项目，尤其后者是否与 auto-truncate 交互。
+- [ ] **prompt-caching beta 自愈**：CC 的 `cache-diagnosis-beta`（298146 `w8i`）、`prompt-caching-evict`（298147 `T8i`）beta 拒绝自愈 vs 本项目 cache_control 剥离/negotiation。
+- [ ] **mid-conv role:"system"**：CC 的 `_7n`（298169）`role:"system"` 被拒 → 回退 `<system-reminder>` body vs 本项目 system-reject-mode。
+- [ ] **context-hint SSE**：CC 的 `de.onRequestError`（298170 `retry:context-hint`）+ `classifyStreamError`（isContextHintSse）上游中途下发 context-hint 的重试机制。
