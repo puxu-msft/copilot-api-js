@@ -1,8 +1,8 @@
 /**
- * HTTP tests for POST /api/debug/dry-run-truncate.
+ * HTTP tests for POST /api/debug/calibration-probe.
  *
- * Verifies the offline dry-run endpoint replays the real tokenize+truncate
- * functions, surfaces the three token calibers side-by-side, and handles both
+ * Verifies the offline calibration probe replays the real token-count functions,
+ * surfaces the raw vs calibrated estimate + learned factor model, and handles both
  * inline-payload and stored-history-entry inputs plus the 404/400 error paths.
  */
 
@@ -14,6 +14,7 @@ import {
   test,
 } from "bun:test"
 
+import { learnCalibration } from "~/lib/auto-truncate"
 import { insertEntry } from "~/lib/history"
 import {
   //
@@ -49,40 +50,44 @@ function seedModel(): void {
   })
 }
 
-async function postDryRun(body: unknown) {
-  return app.request("/api/debug/dry-run-truncate", {
+async function postProbe(body: unknown) {
+  return app.request("/api/debug/calibration-probe", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   })
 }
 
-describe("POST /api/debug/dry-run-truncate", () => {
+describe("POST /api/debug/calibration-probe", () => {
   useIsolatedRuntime()
 
   beforeEach(() => {
     seedModel()
-    setStateForTests({ autoTruncate: true })
+    setStateForTests({})
   })
 
-  test("inline payload returns all three calibers side by side", async () => {
+  test("inline payload returns raw + calibrated estimate and learned state", async () => {
+    // Teach the model a factor so `calibrated` diverges from `rawInputTokens` — a
+    // positive control that the probe actually applies the learned factor.
+    learnCalibration("claude-sonnet-4", 60_000, 90_000, { isLive: true }) // factor ≈ 1.5
+
     const messages = Array.from({ length: 40 }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content: largeMessage(4000) }))
-    const res = await postDryRun({ format: "anthropic", payload: { model: "claude-sonnet-4", max_tokens: 1024, messages } })
+    const res = await postProbe({ format: "anthropic", payload: { model: "claude-sonnet-4", max_tokens: 1024, messages } })
 
     expect(res.status).toBe(200)
     const body = (await res.json()) as any
     expect(body.input.mode).toBe("payload")
     expect(body.input.format).toBe("anthropic")
-    // The caliber gap is the whole point — char/4 and gpt-tokenizer must differ.
-    expect(typeof body.calibers.gptTokenizer).toBe("number")
-    expect(typeof body.calibers.charOver4).toBe("number")
-    expect(body.calibers.charOver4).not.toBe(body.calibers.gptTokenizer)
-    expect(body.preCheck).toBeDefined()
-    expect(body.truncate).toBeDefined()
-    expect(typeof body.truncate.wasTruncated).toBe("boolean")
+    expect(typeof body.estimate.rawInputTokens).toBe("number")
+    expect(typeof body.estimate.factor).toBe("number")
+    expect(typeof body.estimate.calibrated).toBe("number")
+    // Factor is non-trivial here, so calibrated must differ from raw.
+    expect(body.estimate.calibrated).not.toBe(body.estimate.rawInputTokens)
+    expect(body.learned).not.toBeNull()
+    expect(body.learned.liveSampleCount).toBeGreaterThan(0)
   })
 
-  test("entry replay parses the upstream-reported caliber from the error text", async () => {
+  test("entry replay parses the upstream-reported real count from the error text", async () => {
     const messages = Array.from({ length: 40 }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content: largeMessage(4000) }))
     const id = generateId()
     insertEntry({
@@ -108,35 +113,33 @@ describe("POST /api/debug/dry-run-truncate", () => {
       _index: { derived: { failureReason: "prompt is too long: 1001332 tokens > 1000000 maximum" } },
     })
 
-    const res = await postDryRun({ entryId: id })
+    const res = await postProbe({ entryId: id })
     expect(res.status).toBe(200)
     const body = (await res.json()) as any
     expect(body.input.mode).toBe("entry")
     expect(body.input.entryId).toBe(id)
-    expect(body.calibers.reported).toEqual({ current: 1001332, limit: 1000000 })
-    // Anthropic real count is ~2x the gpt-tokenizer caliber — the core diagnostic.
-    expect(body.ratios.reportedOverGpt).toBeGreaterThan(1)
-    // The applied gpt-caliber target is derived from the reported numbers.
-    expect(typeof body.limit.appliedGptTarget).toBe("number")
+    expect(body.reported).toEqual({ current: 1001332, limit: 1000000 })
+    // The Anthropic real count is well above the gpt-tokenizer caliber — the core diagnostic.
+    expect(body.ratios.reportedOverRaw).toBeGreaterThan(1)
   })
 
   test("returns 404 for an unknown entry id", async () => {
-    const res = await postDryRun({ entryId: "req_does_not_exist" })
+    const res = await postProbe({ entryId: "req_does_not_exist" })
     expect(res.status).toBe(404)
   })
 
   test("returns 400 when neither entryId nor payload is provided", async () => {
-    const res = await postDryRun({})
+    const res = await postProbe({})
     expect(res.status).toBe(400)
   })
 
   test("returns 400 for an unknown model", async () => {
-    const res = await postDryRun({ payload: { model: "no-such-model", messages: [{ role: "user", content: "hi" }] } })
+    const res = await postProbe({ payload: { model: "no-such-model", messages: [{ role: "user", content: "hi" }] } })
     expect(res.status).toBe(400)
   })
 
   test("returns 400 for invalid JSON body", async () => {
-    const res = await app.request("/api/debug/dry-run-truncate", {
+    const res = await app.request("/api/debug/calibration-probe", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{not json",
@@ -145,19 +148,19 @@ describe("POST /api/debug/dry-run-truncate", () => {
   })
 
   test("returns 400 (not 500) for malformed payload — messages not an array", async () => {
-    const res = await postDryRun({ payload: { model: "claude-sonnet-4", messages: "oops" } })
+    const res = await postProbe({ payload: { model: "claude-sonnet-4", messages: "oops" } })
     expect(res.status).toBe(400)
   })
 
   test("returns 400 (not 500) for malformed payload — missing messages", async () => {
-    const res = await postDryRun({ payload: { model: "claude-sonnet-4" } })
+    const res = await postProbe({ payload: { model: "claude-sonnet-4" } })
     expect(res.status).toBe(400)
   })
 
   test("returns 400 (not 500) for malformed block content inside an array payload", async () => {
     // messages IS an array (passes the structural guard) but content is a non-iterable
     // number — the deeper try/catch must turn the tokenizer TypeError into a 400.
-    const res = await postDryRun({ payload: { model: "claude-sonnet-4", messages: [{ role: "user", content: 42 }] } })
+    const res = await postProbe({ payload: { model: "claude-sonnet-4", messages: [{ role: "user", content: 42 }] } })
     expect(res.status).toBe(400)
   })
 })
