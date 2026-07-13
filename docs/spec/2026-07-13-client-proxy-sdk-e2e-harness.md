@@ -1,6 +1,6 @@
 # Spec: client↔proxy SDK e2e 骨架（屏蔽上游）
 
-- **状态**：**已落地（Tier 1 SDK 层，9 场景，2026-07-13）**——commits `54117ce8`（harness）+ `b6b142dd`（场景）；Tier 2 CLI 层文档化延后。
+- **状态**：**已落地——Tier 1（SDK，9 场景）+ Tier 2（CLI，2 gated 场景）**（2026-07-13）。Tier 1 commits `54117ce8`+`b6b142dd`；Tier 2 commit `68538cc2`（`tests/e2e-client/anthropic-cli.e2e.test.ts` + `harness/{spawn-proxy,drive-claude-cli,cli-refusal-hook}`）。**Tier 2 实证了 refusal-text spec 里标记的空串 stall 终裁：会 stall**（真 claude → 真 proxy → hook-mock refusal → 空串 end_turn → `num_turns=2, result=""`）。
 - **日期**：2026-07-13
 - **实测坐实结论（harness 揭示的真实客户端/proxy 行为）**：① `setUpstreamFetchForTests` 是上游专用注入点、不碰 `globalThis.fetch`——隔离零风险（探针证 SDK 真打 localhost + upstream 恰调 1 次）；② SDK 0.106.0 在流式与非流式路径**均不给 text 块合成 `citations` 字段**；③ **proxy 原样转发 eventless 帧**（裸 fetch 探针证 content_block_start 无 `event:` 行透传），SDK 确实丢弃 eventless 帧——但一个 eventless content_block_**START** 会被后续带 event 的 delta 遮蔽（delta 宽容地重开块），须丢**内容 delta** 才可观测；④ refusal `error` 模式 SDK `throws APIError` + upstream 调用次数==1（`maxRetries:0` 证不重试）；⑤ 200+流内 `event: error` 下 SDK 同步 `throws APIError`（非静默 complete）。
 - **相关**：brainstorming 本会话、[docs/refusal-recovery.md](../refusal-recovery.md)（空串 stall 盲区来源）、skill `upstream-hook-mocking`、skill `debugging-claude-client-connection`（CC 客户端行为域）、[tests/helpers/test-app.ts](../../tests/helpers/test-app.ts)（`createFullTestApp`）、[src/lib/transport/upstream-fetch.ts](../../src/lib/transport/upstream-fetch.ts)（`setUpstreamFetchForTests` 注入点）、ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)（合成帧可辨识——本骨架用真实 SDK 反证 wire 契约）

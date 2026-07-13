@@ -30,7 +30,7 @@
 
 **占位符**（`end_turn_text` 与 `error_message` 共用，纯函数 `renderRefusalTemplate`）：`{model}`（已解析上游 GHC 规范名）、`{request_id}`、`{thinking_tokens}`（refusal 轮的 `usage.output_tokens`）。**未知占位符原样保留**（不报错、不清空——防手滑丢文本）；无占位符文本逐字节恒等。渲染时点：流式工厂在 refusal `message_delta` 自取 `{thinking_tokens}`（createState 时尚不可知）；非流式 whole-response 在手可预渲染。
 
-**空串 = 零包装的极致**：`refusal_end_turn_text=""` 时**不追加任何 text 块**，仅 `stop_reason: refusal→end_turn`（清 `stop_details`）。客户端拿到「thinking + 干净 end_turn、无可见文本」，绝无代理注入物混进下一轮。⚠️ **是否 stall 未定论**：原始 stall 事故根因是「客户端拿到无可用内容的轮」，空串把 turn 变回 thinking-only（仅 stop_reason 改成 end_turn）——是否重新引入 stall 取决于 Claude Code 对 thinking-only end_turn 的行为，需真实 live oracle 验证。
+**空串 = 零包装的极致**：`refusal_end_turn_text=""` 时**不追加任何 text 块**，仅 `stop_reason: refusal→end_turn`（清 `stop_details`）。客户端拿到「thinking + 干净 end_turn、无可见文本」，绝无代理注入物混进下一轮。⚠️ **实测：空串会让 Claude Code STALL**（2026-07-13 CLI e2e Tier 2 实证，`tests/e2e-client/anthropic-cli.e2e.test.ts` + `exp/cli-e2e-stall/FINDINGS.md`）：真 `claude -p` 收到 thinking-only end_turn 后 agent-loop **自动再请求一轮**（`num_turns=2`、上游被调 2 次），最终 `result=""`——交互式即「继续」循环。**非空 recovery 文本正是防这个 stall 的**（`num_turns=1`）。故 `refusal_end_turn_text=""` 是主动拿掉这层保护（zero-wrapping 的代价）：要真「一个字都不注入」就用它，但预期客户端会空转一轮。
 
 **四个发射点**（勿漏）：流式 end_turn text（`buildSyntheticTextFrames`）/ 流式 error 帧（`buildRefusalErrorFrame`）/ 非流式 end_turn body（`recoverRefusalInResponse`）/ 非流式 error body（`handler-v4.ts` 内联）。
 

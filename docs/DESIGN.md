@@ -199,7 +199,7 @@ ui/
    ├── anthropic/  openai/  responses/  gemini/  models/  history/
    ├── config/  pipeline/  streaming/  shutdown/  context/  infra/
    ├── e2e/         # 真实网络/需 token（getE2EMode 门控，不进 offline 全集）
-   ├── e2e-client/  # client↔proxy e2e：真实 SDK 打同进程 proxy（Bun.serve :0）、上游经 setUpstreamFetchForTests 注入点屏蔽（不碰 globalThis.fetch）；oracle=客户端可观测行为（.finalMessage() 深等/throws APIError/丢帧），非我方字节。骨架 harness/{serve-in-process,upstream-script}。CLI Tier2 待建。见 spec 2026-07-13-client-proxy-sdk-e2e-harness
+   ├── e2e-client/  # client↔proxy e2e：真实 SDK/CLI 打真 proxy、上游 mock。Tier1（`anthropic-sdk.it.test`，同进程 Bun.serve + setUpstreamFetchForTests 注入点屏蔽，offline，oracle=SDK 可观测行为 .finalMessage()深等/throws/丢帧）；Tier2（`anthropic-cli.e2e.test`，gated on claude+token，spawn 真 proxy〔非4141〕+ config hook mock 上游 + 真 `claude -p`，证 agent-loop stall——空串 refusal recovery 的 thinking-only end_turn 让 claude num_turns=2/result=""）。harness/{serve-in-process,upstream-script,spawn-proxy,drive-claude-cli,cli-refusal-hook}。见 spec 2026-07-13-client-proxy-sdk-e2e-harness
    ├── e2e-ui/      # Playwright（浏览器）
    ├── helpers/     # 共享测试基建（mock-fetch、state-fixture、test-bootstrap、factories、sse〔含 frameTypesInOrder/dataFramesOfType 解析〕、anthropic-frames〔composable SSE 帧 atoms〕、fake-clock〔确定性时钟〕、history-fixtures、ws-mock…）
    └── fixtures/    # 磁盘样本 payload
