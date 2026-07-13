@@ -246,6 +246,53 @@ server_tool_web_search:
   backend: ""
 
 # ============================================================================
+# System prompt (cross-endpoint) / 系统提示（跨端点）
+# ============================================================================
+# Rewrite / prepend / append the system prompt across ALL four inbound endpoints
+# (Anthropic system, OpenAI Chat Completions + Gemini messages, Responses instructions).
+# 改写 / 前置 / 后置 system prompt，作用于全部 4 个入站端点
+# （Anthropic system、OpenAI Chat Completions + Gemini 的 messages、Responses instructions）。
+#
+# Two-axis SCOPE (each rule/entry, optional): `model` + `endpoint`, AND semantics
+# (a present axis must match; an absent axis matches all).
+# 两轴作用域（每条 rule/entry 可选）：`model` + `endpoint`，AND 语义（present 轴须命中、absent 轴匹配全体）。
+#   model:    model-name regex (case-insensitive), e.g. "opus" / "^claude-sonnet"
+#             模型名正则（大小写不敏感），如 "opus" / "^claude-sonnet"
+#   endpoint: inbound client format — one of: anthropic | openai-cc | openai-responses | gemini
+#             (single value or a list). NOTE: it is the INBOUND client format — Gemini requests
+#             are internally translated to CC but the axis still matches on `gemini`.
+#             入站客户端格式，取值：anthropic | openai-cc | openai-responses | gemini（单值或列表）。
+#             注：是入站客户端格式——Gemini 请求内部会转成 CC，但轴仍按 `gemini` 匹配。
+
+# Rewrite rules applied to the system prompt (line / regex methods; first-to-last, all apply).
+# 改写 system prompt 的规则（line / regex 两法；自上而下、全部应用）。
+# system_prompt_overrides:
+#   - from: "COMPANY_INTERNAL"           # regex (default) or line
+#     to: "REDACTED"
+#   - from: "You are Claude"             # only rewrite Anthropic-endpoint Claude requests
+#     to: "You are an assistant"
+#     model: "claude"
+#     endpoint: anthropic
+
+# Prepend text to the system prompt. Accepts (backward-compatible union):
+#   - a plain string (legacy, unscoped), OR
+#   - a single entry { text, model?, endpoint? }, OR
+#   - a list of entries (top-down; matching entries joined with "\n\n").
+# 前置注入。接受三形态（向后兼容 union）：纯字符串（旧式无作用域）| 单条 { text, model?, endpoint? } | 条目列表（自上而下、命中者以 "\n\n" 拼接）。
+# system_prompt_prepend: "Always answer concisely."     # legacy string form (all endpoints)
+# system_prompt_prepend:
+#   - text: "Respond in English."                        # applies everywhere
+#   - text: "You may use extended thinking."             # only Claude via Anthropic/Responses
+#     model: "opus"
+#     endpoint: [anthropic, openai-responses]
+
+# Append text to the system prompt. Same forms/scope as system_prompt_prepend (appended at the end).
+# 后置注入。形态/作用域同 system_prompt_prepend（追加到末尾）。
+# system_prompt_append:
+#   - text: "Cite sources when possible."
+#     endpoint: openai-cc
+
+# ============================================================================
 # Anthropic
 # ============================================================================
 # Settings for Anthropic API tool handling and timeouts. / Anthropic API 的工具处理与超时设置。
