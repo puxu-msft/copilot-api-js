@@ -8,10 +8,12 @@
  * `driver.inspectRequest` (a dry-run that NEVER enters S4), so the real `deps.strategies(env)` factory —
  * the exact code that threw — was never exercised. This is the production接缝 that溜过 all tests.
  *
- * This test drives the REAL factory (`buildMessagesDriverStrategies`, the identical function the handler
- * hands the driver as `deps.strategies`) through the REAL anthropic codec + REAL driver + REAL router,
- * over a mock transport. `runRequest` invokes `deps.strategies(env)` UNCONDITIONALLY (driver.ts S4, before
- * the exchange), so a broken factory throws here — proving the root-cause fix, not a symptom.
+ * This test drives the REAL forward-leg strategy assembly (`resolveCellAssembly(clientFormat, targetEndpoint)
+ * .buildStrategies`, the exact seam the driver's S4 exchange uses for a migrated cell) through the REAL
+ * anthropic codec + REAL driver + REAL router, over a mock transport. `runRequest` resolves the strategy
+ * stack UNCONDITIONALLY (driver.ts S4, before the exchange), so a broken assembly throws here — proving the
+ * root-cause fix, not a symptom. (Pre-C5 this drove the handler's `buildMessagesDriverStrategies` factory;
+ * C5 collapsed that into `OUTBOUND_LEGS` — the assembly is now the single source, so the test drives it.)
  */
 
 import {
@@ -35,9 +37,9 @@ import { preprocessAnthropicMessages } from "~/lib/anthropic/sanitize"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { withCapturingManager } from "~/lib/context/manager"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { resolveCellAssembly } from "~/lib/pipeline/cell-assembly"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { setModels } from "~/lib/state"
-import { buildMessagesDriverStrategies } from "~/routes/messages/handler-v4"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -56,9 +58,9 @@ function mockTransport(nonStream: unknown, onWire?: (wire: PreparedRequest) => v
 }
 
 /**
- * Build the REAL anthropic codec + driver WHOSE `strategies` is the REAL production factory
- * (`buildMessagesDriverStrategies`) — NOT `strategies:[]`. This is the whole point: the factory that
- * threw in production is what the driver invokes.
+ * Build the REAL anthropic codec + driver. Since every anthropic cell is migrated (C2-C4), the driver's S4
+ * exchange resolves its strategy stack from the CellAssembly (NOT `deps.strategies`, which stays unset) —
+ * the assembly is the seam under test.
  */
 function makeDriver(transport: Transport) {
   const messages = [{ role: "user" as const, content: "what's the weather in SF?" }]
@@ -71,10 +73,8 @@ function makeDriver(transport: Transport) {
   const driver = createPipelineDriver({
     codec,
     transport,
-    strategies: (env) => buildMessagesDriverStrategies(env, { codec, betaProbe }),
     maxRetries: 0,
     maxLearningRetries: 0,
-    requestRewrites: codec.getRequestRewrites(),
   })
   const raw = {
     body: { model: "will-be-overridden", max_tokens: 128, messages: pre.messages, stream: false },
@@ -156,28 +156,22 @@ describe("T7.2 — forward-leg strategy factory does NOT throw (production seam,
   })
 })
 
-describe("T7.2 — buildMessagesDriverStrategies returns a REAL non-empty stack per leg (unit-level directness)", () => {
+describe("T7.2 — the anthropic forward @cc/@responses cell assembly returns a REAL non-empty stack per leg", () => {
   useIsolatedRuntime()
 
-  const codecAndProbe = () => {
-    const betaProbe = createBetaProbe(undefined)
-    const codec = createAnthropicCodec({ betaProbe, preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
-    return { codec, betaProbe }
-  }
-
+  // The anthropic FORWARD leg reads env.body (the hub-translated CC body) as the auto-truncate baseline —
+  // clientFormat "anthropic" selects that branch in buildCcFamilyLegStrategies (no requestState needed).
   const ccLegEnv = (leg: (typeof ENDPOINT)["CHAT_COMPLETIONS"] | (typeof ENDPOINT)["RESPONSES"]): RequestEnvelope =>
-    ({ targetEndpoint: leg, body: { model: "claude-x", messages: [] }, model: { id: "claude-x" } }) as unknown as RequestEnvelope
+    ({ clientFormat: "anthropic", targetEndpoint: leg, body: { model: "claude-x", messages: [] }, model: { id: "claude-x" }, requestState: {} }) as unknown as RequestEnvelope
 
   test("a CC-target env yields the CC stack (contains auto-truncate) — NOT a throw", () => {
-    const { codec, betaProbe } = codecAndProbe()
-    const stack = buildMessagesDriverStrategies(ccLegEnv(ENDPOINT.CHAT_COMPLETIONS), { codec, betaProbe })
+    const stack = resolveCellAssembly("anthropic", ENDPOINT.CHAT_COMPLETIONS).buildStrategies(ccLegEnv(ENDPOINT.CHAT_COMPLETIONS))
     expect(stack.length).toBeGreaterThan(0)
     expect(stack.map((s) => s.name)).toContain("auto-truncate")
   })
 
   test("a Responses-target env also yields the CC stack (deferred CC→Responses wire) — NOT a throw", () => {
-    const { codec, betaProbe } = codecAndProbe()
-    const stack = buildMessagesDriverStrategies(ccLegEnv(ENDPOINT.RESPONSES), { codec, betaProbe })
+    const stack = resolveCellAssembly("anthropic", ENDPOINT.RESPONSES).buildStrategies(ccLegEnv(ENDPOINT.RESPONSES))
     expect(stack.length).toBeGreaterThan(0)
     expect(stack.map((s) => s.name)).toContain("auto-truncate")
   })

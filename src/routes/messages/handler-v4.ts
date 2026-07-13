@@ -53,7 +53,6 @@ import type {
   ClientFrame,
   ClientSink,
   DriverRequestResult,
-  RetryStrategy,
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
@@ -62,7 +61,6 @@ import type {
   MessagesPayload,
   StreamEvent,
 } from "~/types/api/anthropic"
-import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import {
@@ -115,8 +113,6 @@ import {
 } from "~/lib/anthropic/warmup"
 import { payloadHasWebSearch } from "~/lib/anthropic/web-search/detect"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
-import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -344,55 +340,6 @@ interface RunMessagesDriverArgs {
   routeOverride?: RouteOverride
 }
 
-/**
- * Build the driver's per-request retry-strategy stack for the Anthropic /v1/messages route, keyed
- * by the OUTBOUND leg (`env.targetEndpoint`), resolved AFTER `translateOut` so `env.body` is already
- * the target-leg body. This is the SINGLE production factory (the driver invokes it as `deps.strategies`);
- * exported so tests can drive the REAL seam instead of injecting `strategies:[]`.
- *
- *   - DIRECT / reverse `/v1/messages`: the ANTHROPIC stack (RFC §7.1 / W-strategies-builder). The
- *     Anthropic supply is decoupled from the route codec (resanitize/betaProbe/baseline), so a reverse
- *     leg could fill the SAME supply from the hub. `env.body` is the Anthropic body → truncation baseline
- *     is the codec's captured baseline (falls back to `env.body`).
- *   - FORWARD translate `/chat/completions` | `/responses` | `ws:/responses` (Phase 7): the CC stack.
- *     `env.body` is post-`translateOut`, i.e. already the CC-shaped body the hub produced, so it is the
- *     correct auto-truncate baseline (the CC→Responses wire step is deferred to `prepareWire`, so the
- *     Responses legs still truncate on the CC shape — parity with the openai-cc/gemini via-responses legs).
- *     Before Phase 7 this path threw `no strategy builder registered`, 500ing every `@cc`/`@responses`
- *     forward request.
- */
-export function buildMessagesDriverStrategies(
-  env: RequestEnvelope,
-  deps: { codec: ReturnType<typeof createAnthropicCodec>; betaProbe: ReturnType<typeof createBetaProbe> },
-): ReadonlyArray<RetryStrategy> {
-  const { codec, betaProbe } = deps
-  if (env.targetEndpoint === ENDPOINT.MESSAGES) {
-    // parse resolves the factory AFTER parse populated resanitize, so it is present here; the guard is
-    // defensive (an unreachable parse failure would have thrown before the factory runs).
-    const resanitize = codec.getResanitize()
-    if (!resanitize) throw new Error("[Anthropic:v4] resanitize chain unavailable — codec.parse did not run")
-    return assembleStrategiesForEndpoint(env.targetEndpoint, {
-      anthropic: {
-        originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
-        resanitize,
-        model: env.model as Model | undefined,
-        maxRetries: state.autoTruncateMaxRetries,
-        betaProbe,
-      },
-    })
-  }
-
-  // FORWARD translate leg (anthropic→cc/responses): the CC strategy stack off the hub-translated CC body.
-  return assembleStrategiesForEndpoint(env.targetEndpoint, {
-    cc: {
-      originalPayload: env.body as ChatCompletionsPayload,
-      model: env.model as Model | undefined,
-      maxRetries: state.autoTruncateMaxRetries,
-      label: env.targetEndpoint === ENDPOINT.RESPONSES ? "Anthropic(→Responses)" : "Anthropic(→CC)",
-    },
-  })
-}
-
 async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promise<Response> {
   const { wireBody, clientRaw, resolvedName, preprocessInfo } = args
 
@@ -419,17 +366,10 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   const driver = createPipelineDriver({
     codec,
     transport,
-    // S3 — the Anthropic request sanitize chain + its recordings, lifted from
-    // codec.parse into a per-request RequestRewrite (RFC §4.A0). The codec owns them
-    // (they close over preprocessInfo + write initialSanitizationInfo back).
-    requestRewrites: codec.getRequestRewrites(),
-    // S5 — the FULL-FORMAT response-rewrite union (RFC §7.1); the driver's
-    // `assembleResponseRewrites` filters it to the outbound leg by each rewrite's
-    // `targetEndpoint`-keyed `appliesTo`. For anthropic-direct (targetEndpoint===/v1/messages)
-    // that subset is exactly the Anthropic chain (recover/thinking/decode/filter/refusal) — the
-    // per-route array this replaced — so forwarded bytes are unchanged.
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) => buildMessagesDriverStrategies(env, { codec, betaProbe }),
+    // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
+    // (C5 — every anthropic cell is migrated: the direct `/v1/messages` cell + the forward `@cc`/`@responses`
+    // cells). `OUTBOUND_LEGS[/v1/messages]` supplies the sanitize chain (from env.requestState.preprocessInfo)
+    // + the Anthropic strategy stack (from the codec-threaded truncateBaseline / resanitize / betaProbe).
     maxRetries: state.autoTruncateMaxRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
     // Post-gate meta sink (C0-② / RFC §11.2 + §12.4): rebuild the retry pipeline-info
