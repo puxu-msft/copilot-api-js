@@ -89,8 +89,9 @@ import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import {
   //
+  DEFAULT_REFUSAL_ERROR_TYPE,
   isThinkingOnlyRefusal,
-  REFUSAL_ERROR_MESSAGE,
+  renderRefusalTemplate,
 } from "~/lib/anthropic/recover-refusal"
 import {
   //
@@ -745,7 +746,11 @@ function renderNonStreamingV4(
     && response.stop_reason === "refusal"
     && !(response.content as ReadonlyArray<{ type: string }>).some((b) => b.type === "text" || b.type === "tool_use")
   ) {
-    const errorBody = { type: "error", error: { type: "api_error", message: REFUSAL_ERROR_MESSAGE } }
+    // Emission point 4 (non-streaming error body): render message/type from config (whole response
+    // in hand → all vars incl. thinking_tokens available). Empty type falls back to api_error.
+    const errVars = { model: response.model ?? "", request_id: reqCtx.id, thinking_tokens: response.usage?.output_tokens ?? 0 }
+    const errType = state.refusalErrorType === "" ? DEFAULT_REFUSAL_ERROR_TYPE : state.refusalErrorType
+    const errorBody = { type: "error", error: { type: errType, message: renderRefusalTemplate(state.refusalErrorMessage, errVars) } }
     // The client receives the 500 error BODY (not the upstream content) — record THAT as the
     // forwarded (proxy→client) response so inboundResponse faithfully mirrors what the client got
     // (the upstream-original thinking blocks are preserved on outboundResponse via fail's partial).
