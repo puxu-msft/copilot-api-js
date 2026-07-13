@@ -1,6 +1,6 @@
 # Spec: 上游错误 → 客户端可处理形态整形（error client-shaping）
 
-- **状态**：草案 v2.1（两轮对抗评审全闭合 + TCP-reset 补测 + B-1 定案；待用户审 → planning）
+- **状态**：草案 v2.3（三轮对抗评审全闭合 + TCP-reset 补测 + B-1 定案 + post-commit 三路归属精确化；待用户审 → planning）
 - **日期**：2026-07-13
 - **调研底座（先读）**：[exp/cc-error-retry-surface/FINDINGS.md](../../exp/cc-error-retry-surface/FINDINGS.md)（CC 客户端错误行为四层机制源码穷举）、[exp/cc-error-retry-surface/REPORT.md](../../exp/cc-error-retry-surface/REPORT.md)（真 CC 2.1.207 × fake server 实测，含 sig-conv 自愈委派 + TCP-reset 补测，supersede 冲突结论）。三 agent 源码穷举 + 真 CC 实测 + 对抗评审三方收敛。
 - **相关**：[forward.ts](../../src/lib/error/forward.ts)、[classify.ts](../../src/lib/error/classify.ts)、[post-commit-error.ts](../../src/routes/messages/post-commit-error.ts)、[handler-v4.ts](../../src/routes/messages/handler-v4.ts)、[streaming-pump.ts](../../src/routes/messages/streaming-pump.ts)、[keepalive-anchor.ts](../../src/lib/anthropic/keepalive-anchor.ts)、`src/lib/request/strategies/`（反应式 retry 策略，自愈委派的重叠面）、spec [2026-07-13-refusal-recovery-text-configurable.md](2026-07-13-refusal-recovery-text-configurable.md)（已实现，同源独立）、spec `2026-07-11-block-level-buffered-retry.md`（buffered-retry 基建）、ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)。
@@ -45,13 +45,17 @@
 | 阶段 | 手段 | 说明 |
 |---|---|---|
 | **pre-commit** | 返回对应真实 status（或 `x-should-retry:true` 头）+ `retry-after` 秒 | **主力**。CC 原生重试（`x6_`，≤10）。代理场景 `Bo()`=false，`x-should-retry` 门开。 |
-| **post-commit**（块完成前或后） | **proxy buffered-retry 缓冲重放**（[block-level-buffered-retry](2026-07-11-block-level-buffered-retry.md) 基建） | 客户端侧无可靠干净重试；**绝不**发 `overloaded_error`/`api_error` 去试图推客户端（会落 partial-text）。 |
+| **post-commit · runRequest 阶段**（终点①） | 由既有 **S4 请求侧策略**（`network-retry` / `server-error-retry`）在 runRequest 内重试 | 到达终点①（[handler-v4.ts:544](../../src/routes/messages/handler-v4.ts#L544) `await p` catch）的已是 **S4 耗尽后的终局失败** → 走 C（canonical 终局帧）。**不归 block-level**（此时 pump 未跑）。 |
+| **post-commit · 响应流阶段 · 截断/RST**（终点②） | **依赖 [block-level buffered retry](2026-07-11-block-level-buffered-retry.md) §5.1** | clean-drain 无终止符 / 连接断（RST）→ 首块 flush 前**重放**、首块后 `partial-degrade`（§5.2，与 PoC 一致：块完成即无干净重试）。块级增量下发、翻转后默认 `on`。 |
+| **post-commit · 响应流阶段 · 上游 error 帧**（终点②） | **commit + fail，不重放** → C（canonical 终局帧整形） | GHC 主动发流内 `event:error`（即便 overloaded/5xx）→ block-level §5.3 `sawUpstreamError` 令 buffered sink **提交已 buffer 块 + fail、不重跑**（[responses-stream-accumulator.ts:49](../../src/lib/openai/responses-stream-accumulator.ts#L49) / [driver.ts:729](../../src/lib/pipeline/driver.ts#L729)）。这是 **error-shaping 的职责**：把该终局尾帧整形成 canonical。**绝不**自己发 `overloaded_error`/`api_error` 试图推客户端（会落 partial-text）。 |
+
+> **依赖关系（修正 v2/v2.2 的过度归一，G-1/G-2）**：post-commit「可重试错误」按**到达形态**分三路，不可一概归 block-level：① runRequest 阶段失败 → 既有 S4 请求侧策略重试、耗尽落 C；② 响应流**截断/RST** → block-level §5.1 首块前重放（其职责、其默认 G2）；③ 响应流**上游 error 帧** → block-level §5.3 是 **commit+fail 不重放**、其终局尾帧的 canonical 整形是**本特性**职责（C）。v2.2 把「截断」与「上游 error 帧」等同、并把终点① 单指 block-level §5.2/§5.3，均为误——已按此拆开。
 
 > **402（quota_exceeded）不归 A**：CC `shouldRetry`（`app.pretty.js:12394`）与 `x6_`（`370703+`）均**不重试 402**；且语义上配额耗尽，即时重放（CC 原生或 proxy buffered）都不会恢复配额——归 B（见下，用户可动作：等待/换账号/换模型）。retry_after 仅供人读（且当前放在 body 而非 CC 会读的 `retry-after` 头，见 [forward.ts:103-113](../../src/lib/error/forward.ts#L103)——即便可重试也不驱动 CC 退避）。
 
-**延迟提交联动（主线）**：把「尽量在 pre-commit 解决可重试错误」作为一等目标。可重试错误到达时若尚在 `streamCommitAfterSec` 延迟提交窗口内，优先让 buffered-retry 在 pre-commit 段重放；仅延迟窗口耗尽被迫 commit 后才落 post-commit。
+**延迟提交联动（主线）**：把「尽量在 pre-commit 解决可重试错误」作为一等目标。可重试错误到达时若尚在 `streamCommitAfterSec` 延迟提交窗口内，优先让 block-level buffered retry 在 pre-commit 段重放；仅延迟窗口耗尽被迫 commit 后才落 post-commit（归 block-level 所有）。
 
-**buffered-retry 默认态（planning 需拍板的独立决策）**：`protectStreamingGeneration` 默认 `false`（buffered OFF）。**buffered OFF 时，post-commit 块完成后的可重试错误保持 canonical error 帧（现状行为）**——本 spec 不承诺「块完成后绝不 partial-text」在 buffered OFF 下成立。**净效果提醒（对齐「完整 > 最小可交付」）**：默认 buffered OFF 下，post-commit 可重试错误对用户诉求「别让 turn 停下报错」**零改善**——仅 pre-commit 段（延迟窗口内）受益。故 planning **应显式权衡「是否让本特性把 buffered 默认打开」**（换取 post-commit 可重试错误的无缝重放，代价是缓冲全响应的内存/延迟 + buffered-on-by-default 影响 PoC），而非默认沿用 OFF 让特性对最常见的 post-commit 场景开箱基本不生效。
+> **post-commit 默认态非本 spec 决策**：post-commit **截断类**可重试错误的重放与其默认启用（块级增量、`protect_streaming_generation` 默认 `on`）由 [block-level buffered retry](2026-07-11-block-level-buffered-retry.md) G2 拥有（目前 gated 于用户 keepalive 实证门）。本特性**不引入独立的「buffered 默认」决策**。**但 post-commit 目标的实际兑现以 block-level P1 落地为前置**（G-4）——planning 须把 block-level P1 排在本特性 post-commit 相关任务之前；否则本特性单独交付时 post-commit 截断类场景零改善（仅 pre-commit/AUQ/委派/canonical 生效）。
 
 ### B. 不可重试 + 用户可动作（content_filtered / quota_exceeded 402 / auth 403-permission）
 
@@ -93,19 +97,20 @@
 | `error_selfheal_delegate` | `{}`（全 proxy 自修） | D：**键 = 反应式策略名**（如 `"adaptive-thinking-rejection"`/`"tool-field-rejection"`），值 `"proxy"`/`"delegate"`；未列 = proxy |
 
 - **无 `error_post_commit_overloaded_relabel` 键**（v1 曾有，B-1 定案删除：post-commit 不做客户端重试 relabel）。
-- 延迟提交联动复用已有 `streamCommitAfterSec`，不新增窗口键。buffered 默认态见 §A（独立决策，planning 定）。
+- 延迟提交联动复用已有 `streamCommitAfterSec`，不新增窗口键。post-commit 重放的默认态**归 block-level G2**（§A，非本 spec 决策）。
 - 配置哲学：新增键、无迁移负担；加载遇类型不符默认警告并继续；运行时热重载。
 
 ## 实现塑形（改动点，how 细节留给 plan）
 
-- **新纯模块** [src/lib/anthropic/error-shaping.ts](../../src/lib/anthropic/error-shaping.ts)（`lib` 不依赖 `routes`）：输入 `classifyError()` 的 `ApiError` + config + `commitPhase`（pre-commit / post-commit）+ **`clientVisibleStopEmitted: boolean`**（CC 视角是否已见任一 `content_block_stop`，含合成 anchor——由调用点各自计算后喂入，纯模块不假设状态来源），输出 decision：`retry-signal{status,headers}`（pre-commit A）/ `buffered-retry`（post-commit A，路由到 buffered 基建）/ `ask-user{frames}`（B）/ `error-frame{frames}`（C）。**`delegate` 不是本模块输出**——它是请求预处理/策略装配期的过滤决策（见下）。
-- **接线（post-commit 有两个错误终点，H-1）**：
+- **新纯模块** [src/lib/anthropic/error-shaping.ts](../../src/lib/anthropic/error-shaping.ts)（`lib` 不依赖 `routes`）：输入 `classifyError()` 的 `ApiError` + config + `commitPhase`（pre-commit / post-commit）+ **`clientVisibleStopEmitted: boolean`**（CC 视角是否已见任一 `content_block_stop`，含合成 anchor——由调用点各自计算后喂入，纯模块不假设状态来源），输出 decision：`retry-signal{status,headers}`（pre-commit A）/ `ask-user{frames}`（B）/ `error-frame{frames}`（C，含 post-commit 上游 error 帧的 canonical 终局整形）。**post-commit 截断/RST 重放不经本模块**（归 block-level）；**`delegate` 也不是本模块输出**（是请求预处理/策略装配期的过滤决策）。
+- **接线（post-commit 有两个错误终点，H-1；归属分层，G-2）**：
   - pre-commit：[forward.ts](../../src/lib/error/forward.ts)（status/header 决策）。
-  - post-commit **终点①** pre-pump `await p` catch（[handler-v4.ts:544-580](../../src/routes/messages/handler-v4.ts#L544)）——此处 pump 未跑、真实块未完成，`clientVisibleStopEmitted` 由 handler 持有的 `anchorState`（anchor 是否已 close）计算。
-  - post-commit **终点②** pump 内终端分支（[streaming-pump.ts](../../src/routes/messages/streaming-pump.ts) H3/H2/truncation，现硬编码 `anthropicStreamErrorType`：shutdown→overloaded_error / idle→timeout_error / 其余→api_error）——此处块可能已完成，`clientVisibleStopEmitted` 由 `streamState`/`acc` 计算。error-shaping 须覆盖二者；buffered OFF 时二者保持现状 canonical 帧。
+  - post-commit **终点①** pre-pump `await p` catch（[handler-v4.ts:544-580](../../src/routes/messages/handler-v4.ts#L544)）——runRequest 阶段失败、pump 未跑；network/5xx 已由 **S4 请求侧策略**在 runRequest 内重试过，到达此处的是 **S4 耗尽终局** → error-shaping 做 C（canonical 帧）。**不路由 block-level**（此阶段无响应流可重放）。
+  - post-commit **终点②** pump 内终端分支（[streaming-pump.ts](../../src/routes/messages/streaming-pump.ts) H3/H2/truncation，现硬编码 `anthropicStreamErrorType`）——**截断/RST** 归 block-level（重放/partial-degrade）；**上游 error 帧**（`sawUpstreamError`）commit+fail、其终局尾帧由 error-shaping 做 C。
   - 仅 Anthropic 路径接线。
-- **buffered-retry 联动**：driver 层，post-commit 可重试错误路由到 buffered-retry（[resolveBufferedAndHeartbeat](../../src/routes/messages/handler-v4.ts)）而非 relabel（plan 定交接 + buffered 默认态）。
+- **终局尾帧唯一所有权（G-3 接缝，plan 须定死）**：post-commit 终点② 的失败尾帧字节**唯一所有者** = error-shaping 的 C 整形（把现硬编码 `anthropicStreamErrorType` 的 shutdown→overloaded_error / api_error 收编为 canonical 决策）。**block-level partial-degrade（§9.3）写的失败尾帧须流经**本模块 canonical 化、不得各写各的。**anchor close/open 分叉**（终点① 错误路径现主动 `closeAnchorIfOpen` 发 stop@0；block-level §4.3 重放要求 anchor@0 全程 open）——buffered ON 走 block-level 重放时终点① **不得 close anchor**；此改造**归 block-level P1**（本 spec 只声明该接缝、不实现）。
 - **自愈委派**：请求预处理/策略装配层，per-策略名若配 `delegate`，跳过该反应式策略的 `canHandle`（不影响 always-on quarantine）。
+- **前置里程碑（G-4）**：本特性 post-commit 目标（截断类可重试错误的无缝体验）**以 block-level P1 默认翻转落地为前置**（目前 gated 于用户 keepalive 实证门）。planning **须把 block-level P1 落地排在本特性 post-commit 相关任务之前**，否则本特性「完成」时 post-commit 场景仅 pre-commit/AUQ/委派/canonical 部分生效、截断类零改善。
 
 ## 历史 / 可观测性（ADR richest-data-flow）
 
@@ -123,7 +128,7 @@
 ## 验收标准
 
 1. pre-commit 可重试错误（network/5xx/503/429）→ 真 CC 原生重试（fake server 回真 status，观测 CC 重发）。**402 不在此列**（CC 不重试 402；归 B）。
-2. post-commit 可重试错误 + **buffered ON** → proxy 缓冲重放，客户端见无缝重试或干净结果、**不见 proxy 注入的 partial-text**；**buffered OFF** → 保持 canonical error 帧（现状，本 spec 明确不试图客户端重试）。
+2. post-commit 可重试错误 → 由 [block-level buffered retry](2026-07-11-block-level-buffered-retry.md) 处理（首块前重放 / 首块后降级）；error-shaping **不**自行注入 `overloaded_error`/`api_error` 试图推客户端。默认态随 block-level（不在本特性验收内，属其 spec）。
 3. `error_ask_user_question=true` + 交互式 → content_filtered / 403-permission 呈现为 AskUserQuestion；headless 下不合成（不挂起）；401-expiry 先走 token-refresh 而非 AUQ。
 4. `error_selfheal_delegate["<策略名>"]="delegate"` → 对应上游 400 透传、CC 自剥重发（sig-conv oracle，含 always-on quarantine 不受影响的核实）；默认 `proxy` → 走现状反应式策略。
 5. `error_shaping_enabled=false` → 三终点逐字节回退现状。
@@ -131,7 +136,7 @@
 
 ## 待实测 / 风险（依赖实现期 PoC，见 REPORT §未测项）
 
-- **buffered-on-by-default 的影响**（内存/延迟/正确性）——若 planning 决定本特性默认开 buffered，须补 PoC。
+- **buffered-on-by-default 的影响**：**非本 spec 决策**——post-commit 重放的默认态归 [block-level buffered retry](2026-07-11-block-level-buffered-retry.md) G2（块级增量、默认 `on`、gated 于用户 keepalive 实证门）。本特性依赖其落地，不重决。
 - **交互式（非 headless）模式**下 querySource 是否改变行为 / AUQ UI 呈现——本轮 PoC 是 headless。
 - **buffered-retry 与延迟提交的交接**细节（窗口时长、重放语义）——plan 阶段 PoC。
 - 自愈委派 per-腿在「请求含可剥内容」外的边界（剥完仍 400 的责任归属、always-on quarantine 对 thinking-signature 委派的实际 no-op 比例）——实现期逐腿 e2e。
@@ -140,4 +145,13 @@
 
 **第一轮**（1 BLOCK + 4 HIGH + 3 MEDIUM + 2 LOW + 2 建议）全部采纳，无「未采纳」项：B-1 采 option 1（纯 buffered-retry，删 overloaded relabel 键）；H-1 明确两终点；H-2 委派键改策略名 + 澄清是预处理决策非 error-shaping 输出；H-3 明确 buffered OFF 行为；H-4 补 402/aborted 归属；M-1 委派不碰 always-on quarantine；M-2 auth 先 token-refresh；M-3 验收 #2 重述；L-1 media 仅 delegate；L-2 术语含合成 anchor stop；建议采 `clientVisibleStopEmitted` 输入模型 + 三终点 golden。
 
-**第二轮**（复核 v2）：9 条确认闭合；**N-1 返修**——H-4 第一轮把 402 归 A（可重试）是三选一里唯一被底座证伪的（`shouldRetry`/`x6_` 均不重试 402、语义上配额即时重放无效），已改归 B（用户可动作，按 `ApiError.status` 分流）+ 删验收 #1「含 402」。两条 LOW（auth 401/403 须 key on `.status`、buffered-OFF-default 使 post-commit 零改善）已分别落进 §B/§分类覆盖 与 §A buffered 默认态提醒。
+**第二轮**（复核 v2）：9 条确认闭合；**N-1 返修**——H-4 第一轮把 402 归 A（可重试）是三选一里唯一被底座证伪的（`shouldRetry`/`x6_` 均不重试 402、语义上配额即时重放无效），已改归 B（用户可动作，按 `ApiError.status` 分流）+ 删验收 #1「含 402」。auth 401/403 须 key on `.status` 已落 §B/§分类覆盖。
+
+**第三轮修正（planning 前，用户反馈驱动）**：v2 把 post-commit 重放误当「整响应缓冲 + 默认需本 spec 拍板」。核实 [block-level buffered retry](2026-07-11-block-level-buffered-retry.md)（2026-07-11 已批准）后修正：post-commit 重放是**块级增量**（逐块 flush、非整响应缓冲）、默认 `on`（gated），归该 spec G2 所有。本特性**删除**独立的 buffered-默认决策，改为**依赖** block-level。此修正消除用户不接受的「整流缓冲不发」取舍。
+
+**第四轮复核（v2.2 → v2.3）**：抓出 v2.2 **过度归一到 block-level**，全部采纳修正：
+- **G-1**（HIGH）：v2.2 把「截断」与「上游 error 帧」等同为「block-level 重放」错误。铁证（[responses-stream-accumulator.ts:49](../../src/lib/openai/responses-stream-accumulator.ts#L49) / [driver.ts:729](../../src/lib/pipeline/driver.ts#L729)）：上游流内 `event:error` → `sawUpstreamError` → **commit+fail 不重放**。已拆开：截断/RST → block-level 重放；上游 error 帧 → commit+fail、终局尾帧 canonical 整形归**本特性**。
+- **G-2**（MED）：终点①（runRequest 阶段）的可重试重放归**既有 S4 请求侧策略**、非 block-level；到达 catch 的是 S4 耗尽终局 → C。已改正 §A 表 + 接线节。
+- **G-3**（MED）：定义 post-commit 终局尾帧**唯一所有权** = error-shaping C 整形；block-level partial-degrade 尾帧须流经本模块 canonical 化；anchor close/open 分叉改造归 block-level P1。
+- **G-4**（MED）：block-level P1 落地列为本特性 post-commit 目标的**前置里程碑**，planning 须排序。
+- **G-5**（LOW）：清理 §配置/接线 残留的「buffered 默认态归本 spec/planning」措辞，全文单一口径（归 block-level G2）。
