@@ -25,8 +25,10 @@ import { join } from "node:path"
 import { decompressBytes } from "~/lib/history/sqlite/compression"
 import {
   //
+  _getOutboxSizeForTests,
   _getTelemetryDbForTests,
   _resetRequestTelemetryForTests,
+  _setOutboxSoftCapForTests,
   _setRequestTelemetryFilePathForTests,
   _setTelemetryDbForTests,
   getRequestTelemetrySnapshot,
@@ -291,4 +293,121 @@ test("oracle 7 — never-throw 后 outbox 不丢：db 恢复后下次 flush 补�
   _setTelemetryDbForTests(openTelemetryDb(dbPath))
   await persistRequestTelemetry()
   expect(readTierScalar(dbPath, "model", "opus", base, "req_count")).toBe(3) // 未丢
+})
+
+test("oracle 8 — db-open 失败（telemetryDb=null，enabled=true）时喂养门关闭：outbox 不增长、内存+JSON 照常", async () => {
+  // 让 setupTelemetryDb 的 openTelemetryDb 抛（不可写目录）→ telemetryDb=null 而 telemetryEnabled=true。
+  const badPath = join(tmpDir, "nonexistent-subdir", "telemetry.db")
+  setStateForTests({ telemetryEnabled: true, telemetryDbPath: badPath })
+  await initRequestTelemetry()
+  // 门控前提：db 未开成功。
+  expect(_getTelemetryDbForTests()).toBeNull()
+  expect(existsSync(badPath)).toBe(false)
+
+  const base = bucketStart(Date.now())
+  for (let i = 0; i < 20; i++) {
+    recordOne(base + i, 100, 50)
+    recordAcceptedRequest(base)
+  }
+  // 承重断言：喂养门在 telemetryDb=null 时不 push → outbox 永远为空（否则整会话无界增长 → 静默 OOM）。
+  expect(_getOutboxSizeForTests()).toBe(0)
+
+  // 内存路径不变。
+  const snap = getRequestTelemetrySnapshot()
+  expect(snap.modelsSinceStart.length).toBeGreaterThan(0)
+  expect(snap.acceptedSinceStart).toBe(20)
+
+  // JSON 路径照常（flush 不抛、写成功）。
+  await expect(persistRequestTelemetry()).resolves.toBeUndefined()
+  expect(existsSync(jsonPath)).toBe(true)
+  // flush 也不会把 outbox 变脏。
+  expect(_getOutboxSizeForTests()).toBe(0)
+})
+
+test("oracle 9 — cost_*_micro 正样本：SQLite == Σ round(tokens×multiplier×1e6)（per-request round，非 float 累加后 round）", async () => {
+  await initRequestTelemetry()
+  const base = bucketStart(Date.now())
+  const multiplier = 1 / 3 // 分数 multiplier，使 token×mult×1e6 带非整数微分位，per-request round 才与 float-累加-round 分道。
+  const inputs = [12, 13, 4]
+  const outputs = [12, 13, 4]
+  for (const [i, inputTok] of inputs.entries()) {
+    recordSettledRequest(
+      { model: "opus" },
+      { startedAt: base + i, endedAt: base + i, success: true, usage: { input_tokens: inputTok, output_tokens: outputs[i] }, multiplier },
+    )
+  }
+  await persistRequestTelemetry()
+
+  // 独立重算 oracle：per-request round 后整数相加。
+  const micro = (t: number): number => Math.round(t * multiplier * 1e6)
+  const costInputOracle = inputs.reduce((a, t) => a + micro(t), 0)
+  const costOutputOracle = outputs.reduce((a, t) => a + micro(t), 0)
+  expect(readTierScalar(dbPath, "model", "opus", base, "cost_input_micro")).toBe(costInputOracle)
+  expect(readTierScalar(dbPath, "model", "opus", base, "cost_output_micro")).toBe(costOutputOracle)
+
+  // 承重红线证明：per-request round ≠ float 累加后再 round（本样本二者差 1 micro）。
+  const floatAccInput = Math.round(inputs.reduce((a, t) => a + t, 0) * multiplier * 1e6)
+  expect(costInputOracle).not.toBe(floatAccInput) // 12+13+4=29 → round(29/3·1e6)=9666667 ≠ per-req 9666666
+  expect(readTierScalar(dbPath, "model", "opus", base, "cost_input_micro")).not.toBe(floatAccInput)
+})
+
+test("oracle 10 — 软上界：持续 drain 失败时 outbox 被 cap 有界（drop-oldest），不无界增长", async () => {
+  await initRequestTelemetry()
+  _setOutboxSoftCapForTests(10) // 降 cap 以便无需 materialize 50k 条即触发 eviction。
+  const base = bucketStart(Date.now())
+
+  const throwingDb = {
+    exec() {},
+    prepare() {
+      throw new Error("boom")
+    },
+    close() {},
+    transaction() {
+      return () => {
+        throw new Error("boom-drain")
+      }
+    },
+  } as unknown as TelemetryDatabase
+  _setTelemetryDbForTests(throwingDb) // 非 null → 喂养门开，但每次 drain 抛。
+
+  // 第一批：跨 60 个不同 5min 桶记录（每桶 1 raw entry）→ outbox 涨到 ~61。
+  for (let i = 0; i < 60; i++) recordOne(base + i * BUCKET_MS, 100, 50)
+  expect(_getOutboxSizeForTests()).toBeGreaterThan(10)
+  await persistRequestTelemetry() // drain 抛 → foldback → enforceOutboxSoftCap 逐出最旧桶
+  expect(_getOutboxSizeForTests()).toBeLessThanOrEqual(10) // 有界
+
+  // 第二批：再跨 60 个新桶 → flush → 仍有界（证明跨多次 sustained 失败不无界增长）。
+  for (let i = 60; i < 120; i++) recordOne(base + i * BUCKET_MS, 100, 50)
+  expect(_getOutboxSizeForTests()).toBeGreaterThan(10)
+  await persistRequestTelemetry()
+  expect(_getOutboxSizeForTests()).toBeLessThanOrEqual(10) // 仍有界，不无界
+
+  // 恢复真实 db → flush 成功 → 保留的 delta 落盘、outbox 清空（重试语义在 cap 之内仍成立）。
+  _setTelemetryDbForTests(openTelemetryDb(dbPath))
+  await persistRequestTelemetry()
+  expect(_getOutboxSizeForTests()).toBe(0)
+})
+
+test("oracle 11 — raw 腿跨重启不双计：JSON 重载的桶不因重载被 re-flush", async () => {
+  const base = bucketStart(Date.now())
+  // 进程 1：record → flush（写 raw 桶 + cumulative）。
+  await initRequestTelemetry()
+  for (let i = 0; i < 3; i++) recordOne(base + i * 10, 100, 50)
+  await persistRequestTelemetry()
+  expect(readTierScalar(dbPath, "model", "opus", base, "req_count")).toBe(3)
+  expect(readCumulativeScalar(dbPath, "model", "opus", "req_count")).toBe(3)
+
+  // 重启：reset（关 db，保留同 db 文件 + 同 JSON 文件）→ 新 init（重载 JSON 到 dimBuckets、db 重开）。
+  _resetRequestTelemetryForTests()
+  _setRequestTelemetryFilePathForTests(jsonPath)
+  await initRequestTelemetry()
+  // 正样本对照：JSON 确实重载进内存（否则本测试会假通过）。
+  const reloaded = getRequestTelemetrySnapshot().modelsLast7d.find((m) => m.model === "opus")
+  expect(reloaded?.requestCount).toBe(3)
+
+  // 不 record，直接 flush → 重载的历史桶不因重载被重新 drain。
+  await persistRequestTelemetry()
+  expect(readTierScalar(dbPath, "model", "opus", base, "req_count")).toBe(3) // raw 桶不翻倍（≠6）
+  // cumulative 腿也不因重启双计（cumulative 不从 JSON 重载，纯 live 累积；此进程无 record → 不变）。
+  expect(readCumulativeScalar(dbPath, "model", "opus", "req_count")).toBe(3)
 })

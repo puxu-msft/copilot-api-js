@@ -401,6 +401,26 @@ let telemetryDb: TelemetryDatabase | null = null
 let telemetryConfigUnsub: (() => void) | null = null
 /** Warn-once debounce for SQLite dual-write drain failures (mirrors persistFailureLogged for JSON). */
 let telemetryDrainFailureLogged = false
+/** Warn-once debounce for the outbox soft-cap eviction (a SUSTAINED drain failure would otherwise grow the outbox unbounded). */
+let telemetryOutboxCapLogged = false
+
+/**
+ * Soft upper bound on the total pending outbox entries (raw key-slots + cumulative key-slots +
+ * accepted buckets). When the db opens fine but every drain keeps throwing, `mergeOutboxBack` folds
+ * the snapshot in and old buckets never roll out → unbounded memory over a long run. This bounds it:
+ * once exceeded we drop the OLDEST raw/accepted buckets (time-ordered) + warn-once. The delta is a
+ * lossy summary (row-level truth lives in history.db), so dropping it under a sustained telemetry.db
+ * outage is acceptable — memory safety wins.
+ *
+ * Sizing (loose): ~5 registered dimensions (model/endpoint/client/agentKind/tool) × the ~200 cap
+ * (CARDINALITY_CAP + `"other"`) ≈ ~1k key-slots per 5-minute bucket worst case; 50k covers ~50 such
+ * buckets (~4h of retained deltas) of headroom before eviction — far beyond any healthy persist
+ * interval's accumulation, so it only ever trips on a real sustained outage.
+ */
+const OUTBOX_SOFT_CAP = 50_000
+
+/** Effective soft cap (defaults to {@link OUTBOX_SOFT_CAP}; a test hook lowers it to exercise eviction without materializing 50k entries). */
+let outboxSoftCap = OUTBOX_SOFT_CAP
 
 /**
  * Persistence is serialized via `createSerializedAsyncFn` (see ./atomic-fs):
@@ -536,10 +556,43 @@ function mergeOutboxEntryInto(target: OutboxSettledEntry, source: OutboxSettledE
   }
 }
 
+/** Total pending outbox entries across the three legs (raw key-slots + cumulative key-slots + accepted buckets) — soft-cap accounting + test hook. */
+function outboxTotalEntries(): number {
+  let total = 0
+  for (const dims of outboxRaw.values()) for (const keys of dims.values()) total += keys.size
+  for (const keys of outboxCumulative.values()) total += keys.size
+  total += outboxAccepted.size
+  return total
+}
+
+/**
+ * Bound the live outbox after a fold-back: if a SUSTAINED drain failure has grown it past
+ * {@link OUTBOX_SOFT_CAP}, evict the OLDEST raw + accepted buckets (time-ordered) until back under the
+ * cap, warn-once. Cumulative is NOT time-bucketed and is naturally bounded by (dims × capped-keys), so
+ * it is left intact. Dropping delta under a persistent telemetry.db outage is acceptable (lossy summary;
+ * row-level truth lives in history.db) — memory safety takes priority.
+ */
+function enforceOutboxSoftCap(): void {
+  if (outboxTotalEntries() <= outboxSoftCap) return
+  if (!telemetryOutboxCapLogged) {
+    telemetryOutboxCapLogged = true
+    consola.warn(
+      `[telemetry] dual-write outbox exceeded ${outboxSoftCap} pending entries (sustained telemetry.db failure) — dropping oldest buckets to bound memory`,
+    )
+  }
+  const bucketTsAsc = [...new Set([...outboxRaw.keys(), ...outboxAccepted.keys()])].sort((left, right) => left - right)
+  for (const bucketTs of bucketTsAsc) {
+    if (outboxTotalEntries() <= outboxSoftCap) break
+    outboxRaw.delete(bucketTs)
+    outboxAccepted.delete(bucketTs)
+  }
+}
+
 /**
  * Fold a snapshot back into the live outbox after a failed drain (retry semantics — deltas are NOT
  * dropped). Because the drain is fully synchronous, the live outbox is empty here, so this is
  * effectively a restore; written as a proper merge to stay correct if the drain ever becomes async.
+ * A soft-cap eviction runs after the fold so a sustained drain failure can't grow the outbox unbounded.
  */
 function mergeOutboxBack(snapshot: OutboxSnapshot): void {
   for (const [bucketTs, dims] of snapshot.raw) {
@@ -551,6 +604,7 @@ function mergeOutboxBack(snapshot: OutboxSnapshot): void {
     for (const [key, entry] of keys) mergeOutboxEntryInto(ensureCumulativeOutboxEntry(outboxCumulative, dimName, key), entry)
   }
   for (const [bucketTs, count] of snapshot.accepted) outboxAccepted.set(bucketTs, (outboxAccepted.get(bucketTs) ?? 0) + count)
+  enforceOutboxSoftCap()
 }
 
 /**
@@ -908,6 +962,7 @@ function setupTelemetryDb(): void {
   outboxCumulative = new Map()
   outboxAccepted = new Map()
   telemetryDrainFailureLogged = false
+  telemetryOutboxCapLogged = false
   if (state.telemetryEnabled) {
     try {
       telemetryDb = openTelemetryDb(state.telemetryDbPath || PATHS.TELEMETRY_DB)
@@ -991,8 +1046,12 @@ export function recordAcceptedRequest(timestamp = Date.now()): void {
   acceptedSinceStart += 1
   const bucket = getBucketStart(timestamp)
   bucketCounts.set(bucket, (bucketCounts.get(bucket) ?? 0) + 1)
-  // Dual-write: accumulate the accepted delta for the next flush (gated — no cost when disabled).
-  if (state.telemetryEnabled) outboxAccepted.set(bucket, (outboxAccepted.get(bucket) ?? 0) + 1)
+  // Dual-write: accumulate the accepted delta for the next flush. Gated on "telemetry enabled AND
+  // the db is actually open" — if `setupTelemetryDb`'s `openTelemetryDb` threw (corrupt/read-only FS/
+  // migration failure) `telemetryDb` is null while `telemetryEnabled` stays true; feeding the outbox
+  // then would grow it unbounded forever (the flush drain is gated on `db && enabled`, so it never
+  // swaps/drains) → silent OOM. `telemetryDb === null` here is equivalent to "SQLite dual-write off".
+  if (state.telemetryEnabled && telemetryDb !== null) outboxAccepted.set(bucket, (outboxAccepted.get(bucket) ?? 0) + 1)
   pruneBuckets(timestamp)
 }
 
@@ -1034,8 +1093,11 @@ export function recordSettledRequest(
   const bucketDims = getOrCreateBucketDims(bucketTimestamp)
   // Dual-write: build the per-request delta + raw sketch observations ONCE (gated — no cost when
   // disabled), then feed each resolved (dim, key) slot below at the SAME resolution point as the
-  // memory path so the outbox keys mirror dimBuckets/dimSinceStart exactly.
-  const enabled = state.telemetryEnabled
+  // memory path so the outbox keys mirror dimBuckets/dimSinceStart exactly. Gate = "telemetry enabled
+  // AND db actually open": a db-open failure leaves telemetryDb null while telemetryEnabled stays true;
+  // feeding the outbox then would grow it unbounded (the flush drain is gated on `db && enabled` so it
+  // never swaps/drains) → silent OOM. telemetryDb null ≡ SQLite dual-write disabled (memory + JSON run on).
+  const enabled = state.telemetryEnabled && telemetryDb !== null
   const outboxDelta = enabled ? buildSettledDelta(opts) : null
   const outboxObservations = enabled ? buildSketchObservations(opts) : null
   const cumulativeEnabled = enabled && state.telemetryCumulative
@@ -1390,6 +1452,7 @@ const persistTelemetrySerialized = createSerializedAsyncFn(async () => {
     try {
       drainOutboxToSqlite(db, snapshot)
       telemetryDrainFailureLogged = false
+      telemetryOutboxCapLogged = false
     } catch (err) {
       // Retain the delta: fold the snapshot back into the live outbox for the next flush.
       mergeOutboxBack(snapshot)
@@ -1434,6 +1497,8 @@ export function _resetRequestTelemetryForTests(): void {
   outboxCumulative = new Map()
   outboxAccepted = new Map()
   telemetryDrainFailureLogged = false
+  telemetryOutboxCapLogged = false
+  outboxSoftCap = OUTBOX_SOFT_CAP
   telemetryConfigUnsub?.()
   telemetryConfigUnsub = null
 }
@@ -1452,4 +1517,14 @@ export function _setTelemetryDbForTests(db: TelemetryDatabase | null): void {
 /** Read the current telemetry.db handle (null when disabled / unopened) — test assertion hook. */
 export function _getTelemetryDbForTests(): TelemetryDatabase | null {
   return telemetryDb
+}
+
+/** Total pending outbox entries (raw + cumulative + accepted) — test assertion hook for the feeding gate + soft cap. */
+export function _getOutboxSizeForTests(): number {
+  return outboxTotalEntries()
+}
+
+/** Override the outbox soft cap (test hook) so eviction can be exercised without materializing 50k entries. Reset restores the default. */
+export function _setOutboxSoftCapForTests(cap: number): void {
+  outboxSoftCap = cap
 }
