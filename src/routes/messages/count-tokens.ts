@@ -12,6 +12,7 @@ import {
   postAnthropicUpstream,
   prepareAnthropicRequest,
 } from "~/lib/anthropic/client"
+import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { hasKnownLimits } from "~/lib/auto-truncate"
 import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import {
@@ -35,10 +36,12 @@ import { type MessagesPayload } from "~/types/api/anthropic"
  * This is the DEFAULT channel (empirically confirmed — see
  * `docs/spec/2026-07-13-ghc-count-tokens-default.md` / the probe conclusions):
  *   - Uses the existing Copilot token (no separate Anthropic API key).
- *   - Sends the SAME wire the real `/v1/messages` request would (via
- *     `prepareAnthropicRequest`), so the count reflects what GHC actually meters
- *     — more representative than the canonical api.anthropic.com count, since the
- *     real completion also flows through GHC.
+ *   - `payload` is ALREADY system-sanitized by the caller with the same rewrites
+ *     the completion path applies at driver S3 (attribution strip, inline
+ *     role:"system" handling, system-reminder removal), so `prepareAnthropicRequest`
+ *     here produces the SAME wire the real `/v1/messages` request sends — the count
+ *     reflects what GHC actually meters (more representative than the retired
+ *     api.anthropic.com count, since the real completion also flows through GHC).
  *   - Support boundary ≈ the account's live `/models` catalog. We gate on
  *     `isEndpointSupported(model, MESSAGES)` to skip a doomed 400 round-trip for
  *     catalog models that don't serve `/v1/messages` (e.g. embeddings).
@@ -54,8 +57,8 @@ async function countTokensViaGhc(
   if (!isEndpointSupported(selectedModel, ENDPOINT.MESSAGES)) return null
 
   // Source client beta + headers EXACTLY as the completion codec does
-  // (`codec.ts:491-492`) so the count wire's beta negotiation / header
-  // passthrough matches the real request byte-for-byte.
+  // (`codec.ts` parse) so the count wire's beta negotiation / header passthrough
+  // matches the real request.
   const clientAnthropicBeta = c.req.raw.headers.get("anthropic-beta") ?? undefined
   const clientRequestHeaders = Object.fromEntries(c.req.raw.headers.entries())
 
@@ -66,12 +69,15 @@ async function countTokensViaGhc(
   })
 
   try {
+    // Resolved outbound name (same key space the completion path uses for the
+    // per-model timeout + 529 tag), falling back to the client name.
+    const outboundModel = typeof wire.model === "string" ? wire.model : payload.model
     const response = await postAnthropicUpstream({
       path: "/v1/messages/count_tokens",
       wire,
       headers,
-      model: typeof wire.model === "string" ? wire.model : payload.model,
-      signal: createResponseHeaderTimeoutSignal(payload.model),
+      model: outboundModel,
+      signal: createResponseHeaderTimeoutSignal(outboundModel),
     })
 
     if (!response.ok) {
@@ -104,12 +110,27 @@ async function countTokensViaGhc(
  */
 export async function handleCountTokens(c: Context) {
   try {
-    const anthropicPayload = await c.req.json<MessagesPayload>()
+    const rawPayload = await c.req.json<MessagesPayload>()
 
     // Resolve model name aliases and date-suffixed versions
-    anthropicPayload.model = resolveModelName(anthropicPayload.model)
+    rawPayload.model = resolveModelName(rawPayload.model)
 
-    const selectedModel = state.modelIndex.get(anthropicPayload.model)
+    const selectedModel = state.modelIndex.get(rawPayload.model)
+
+    // Sanitize once with the SAME system-message rewrites the completion path
+    // applies at driver S3 (createAnthropicSanitizeRewrite → runAnthropicPayloadRewrites):
+    // attribution-billing-line strip, inline role:"system" handling, and
+    // system-reminder removal. Without this the counted body diverges from what a
+    // real /v1/messages request sends (e.g. the attribution line, stripped in the
+    // completion by default, would inflate the count). Tool-name mapping
+    // (toolNameMapper) is skipped as immaterial to token counts. Never-throw: an
+    // unexpected sanitize failure degrades to counting the raw payload.
+    let payload = rawPayload
+    try {
+      payload = runAnthropicPayloadRewrites(rawPayload, { toolNameMapper: null }).payload
+    } catch (error) {
+      consola.warn("[count_tokens] payload sanitize failed — counting the raw payload:", error)
+    }
 
     // Auto-truncate inflation check (moved to the front): if a prompt is over the
     // limit and auto-truncate is on, return an inflated count to encourage
@@ -117,7 +138,7 @@ export async function handleCountTokens(c: Context) {
     // saves a doomed-to-inflate upstream round-trip. Only for models with known
     // limits.
     if (state.autoTruncate && selectedModel && hasKnownLimits(selectedModel.id)) {
-      const truncateCheck = await checkNeedsCompactionAnthropic(anthropicPayload, selectedModel, {
+      const truncateCheck = await checkNeedsCompactionAnthropic(payload, selectedModel, {
         checkTokenLimit: true,
       })
 
@@ -139,12 +160,12 @@ export async function handleCountTokens(c: Context) {
     // (countTotalInputTokens requires a Model). Matches the previous guard's
     // position (must precede local estimation).
     if (!selectedModel) {
-      consola.warn(`[count_tokens] Model "${anthropicPayload.model}" not found, returning input_tokens=1`)
+      consola.warn(`[count_tokens] Model "${payload.model}" not found, returning input_tokens=1`)
       return c.json({ input_tokens: 1 })
     }
 
     // Default channel: GHC upstream count_tokens (exact counts, uses copilot token)
-    const ghcCount = await countTokensViaGhc(c, anthropicPayload, selectedModel)
+    const ghcCount = await countTokensViaGhc(c, payload, selectedModel)
     if (ghcCount !== null) {
       consola.info(`[count_tokens] ${ghcCount} tokens (GHC upstream)`)
       return c.json({ input_tokens: ghcCount })
@@ -152,7 +173,7 @@ export async function handleCountTokens(c: Context) {
 
     // Fallback: local estimation (unsupported models / upstream failure).
     // Excludes thinking blocks from assistant messages per Anthropic spec.
-    const inputTokens = await countTotalInputTokens(anthropicPayload, selectedModel)
+    const inputTokens = await countTotalInputTokens(payload, selectedModel)
 
     consola.debug(`[count_tokens] ${inputTokens} tokens (local estimation) ` + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`)
 

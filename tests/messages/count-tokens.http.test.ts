@@ -96,6 +96,32 @@ describe("POST /v1/messages/count_tokens", () => {
     expect(Array.isArray(capturedBody.system)).toBe(true)
   })
 
+  test("sanitize parity: the attribution billing line is stripped from the counted body", async () => {
+    // The completion path strips the Claude Code attribution billing line at
+    // driver S3; the counted body MUST match, else the count over-reports.
+    setStateForTests({ stripAttributionHeader: true })
+    let capturedBody: Record<string, unknown> = {}
+    const fetchMock = setFetchMock(async (_input, init) => {
+      capturedBody = JSON.parse((init as RequestInit).body as string) as Record<string, unknown>
+      return new Response(JSON.stringify({ input_tokens: 10 }), { status: 200 })
+    })
+
+    const { status } = await countTokens({
+      model: "claude-sonnet-4.5",
+      max_tokens: 128,
+      system: [{ type: "text", text: "x-anthropic-billing-header: acme-corp\nYou are a helpful assistant." }],
+      messages: [{ role: "user", content: "hi" }],
+    })
+
+    expect(status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // Independent oracle: the forwarded body must NOT carry the billing line
+    // (positive control — it IS present in the input), but keeps the real prompt.
+    const forwardedSystem = JSON.stringify(capturedBody.system)
+    expect(forwardedSystem).not.toContain("x-anthropic-billing-header")
+    expect(forwardedSystem).toContain("You are a helpful assistant")
+  })
+
   test("in-catalog non-/v1/messages model (embeddings) skips upstream, falls to local", async () => {
     const fetchMock = setFetchMock(async () => new Response(JSON.stringify({ input_tokens: 999 }), { status: 200 }))
 
