@@ -24,6 +24,12 @@ import {
 } from "bun:test"
 
 import { onTokenLimitExceeded } from "~/lib/auto-truncate/engine"
+import { getBus } from "~/lib/observability/bus"
+import {
+  //
+  resetRequestLinePublisher,
+  setRequestLinePublisher,
+} from "~/lib/observability/synthetic-request-line"
 import {
   //
   setModels,
@@ -227,5 +233,39 @@ describe("POST /v1/messages/count_tokens", () => {
     expect(fetchMock).toHaveBeenCalledTimes(0)
     // Inflated to floor(contextWindow * 0.95) = floor(1000 * 0.95) = 950.
     expect(json.input_tokens).toBe(950)
+  })
+
+  test("emits a request-shaped line (system.request_line), not an [INFO] syslog line", async () => {
+    setFetchMock(async () => new Response(JSON.stringify({ input_tokens: 18884 }), { status: 200 }))
+
+    // Capture display-only events + wire the publisher (start.ts does this in prod).
+    const events: Array<{ kind: string; parts?: Record<string, unknown> }> = []
+    const unsub = getBus().subscribe((e) => {
+      if (e.kind === "system.request_line") events.push({ kind: e.kind, parts: e.parts as unknown as Record<string, unknown> })
+    })
+    setRequestLinePublisher(getBus().scope("system"))
+
+    try {
+      const { status, json } = await countTokens({
+        model: "claude-sonnet-4.5",
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+      })
+
+      expect(status).toBe(200)
+      expect(json.input_tokens).toBe(18884)
+      // Exactly one request-shaped line, carrying request-line parts (not a syslog line).
+      expect(events).toHaveLength(1)
+      const parts = events[0]?.parts ?? {}
+      expect(parts.prefix).toBe("[ OK ]")
+      expect(parts.method).toBe("POST")
+      expect(String(parts.path)).toContain("/v1/messages/count_tokens")
+      expect(parts.status).toBe(200)
+      expect(parts.model).toBe("claude-sonnet-4.5")
+      expect(parts.inputTokens).toBe(18884)
+    } finally {
+      unsub()
+      resetRequestLinePublisher()
+    }
   })
 })

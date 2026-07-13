@@ -1,6 +1,7 @@
 import type { Context } from "hono"
 
 import consola from "consola"
+import pc from "picocolors"
 
 import {
   //
@@ -21,6 +22,12 @@ import {
   isEndpointSupported,
 } from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  formatDuration,
+  formatTime,
+} from "~/lib/observability/projections/format"
+import { publishRequestLine } from "~/lib/observability/synthetic-request-line"
 import { state } from "~/lib/state"
 import { type MessagesPayload } from "~/types/api/anthropic"
 
@@ -105,10 +112,35 @@ async function countTokensViaGhc(
  * - The count is an estimate
  *
  * Note: count-tokens is intentionally OUT of observability per RFC §6 Q1.
- * No RequestContext, no bus events, no TUI line, no history entry. The
- * route's own `consola` lines below are the sole operator signal.
+ * No RequestContext, no bus events, no history entry. The terminal outcome is
+ * rendered as a request-SHAPED line via `publishRequestLine` (display sinks
+ * only — stdout + log file, never history/telemetry), so it reads like a normal
+ * request line rather than an `[INFO]` syslog line.
  */
 export async function handleCountTokens(c: Context) {
+  const startTime = Date.now()
+  const method = c.req.method
+  const reqPath = c.req.path
+
+  // Render the terminal outcome as a request-shaped line (count_tokens is
+  // out-of-observability, so it can't flow through the normal request.completed
+  // path — see synthetic-request-line.ts). `channel` = which counting path served it.
+  const emitLine = (model: string, inputTokens: number, channel: string): void => {
+    const durationMs = Date.now() - startTime
+    publishRequestLine({
+      prefix: "[ OK ]",
+      time: formatTime(),
+      method,
+      path: reqPath,
+      model,
+      status: 200,
+      duration: formatDuration(durationMs),
+      durationMs,
+      inputTokens,
+      extra: pc.dim(` (${channel})`),
+    })
+  }
+
   try {
     const rawPayload = await c.req.json<MessagesPayload>()
 
@@ -145,13 +177,7 @@ export async function handleCountTokens(c: Context) {
       if (truncateCheck.needed) {
         const contextWindow = selectedModel.capabilities?.limits?.max_context_window_tokens ?? 200000
         const inflatedTokens = Math.floor(contextWindow * 0.95)
-
-        consola.info(
-          `[count_tokens] Prompt too long: `
-            + `${truncateCheck.currentTokens} tokens > ${truncateCheck.tokenLimit} limit, `
-            + `returning inflated count ${inflatedTokens} to trigger client-side compaction`,
-        )
-
+        emitLine(payload.model, inflatedTokens, `inflated ${truncateCheck.currentTokens}>${truncateCheck.tokenLimit}, compact`)
         return c.json({ input_tokens: inflatedTokens })
       }
     }
@@ -160,22 +186,21 @@ export async function handleCountTokens(c: Context) {
     // (countTotalInputTokens requires a Model). Matches the previous guard's
     // position (must precede local estimation).
     if (!selectedModel) {
-      consola.warn(`[count_tokens] Model "${payload.model}" not found, returning input_tokens=1`)
+      emitLine(payload.model, 1, "unknown model")
       return c.json({ input_tokens: 1 })
     }
 
     // Default channel: GHC upstream count_tokens (exact counts, uses copilot token)
     const ghcCount = await countTokensViaGhc(c, payload, selectedModel)
     if (ghcCount !== null) {
-      consola.info(`[count_tokens] ${ghcCount} tokens (GHC upstream)`)
+      emitLine(payload.model, ghcCount, "GHC upstream")
       return c.json({ input_tokens: ghcCount })
     }
 
     // Fallback: local estimation (unsupported models / upstream failure).
     // Excludes thinking blocks from assistant messages per Anthropic spec.
     const inputTokens = await countTotalInputTokens(payload, selectedModel)
-
-    consola.debug(`[count_tokens] ${inputTokens} tokens (local estimation) ` + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`)
+    emitLine(payload.model, inputTokens, `local est, ${selectedModel.capabilities?.tokenizer ?? "o200k_base"}`)
 
     return c.json({ input_tokens: inputTokens })
   } catch (error) {

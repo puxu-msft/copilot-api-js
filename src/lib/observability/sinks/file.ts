@@ -7,9 +7,12 @@
  * only ever reached stdout — when the process hung and was killed, that stream
  * was lost and the incident could not be diagnosed. This sink persists it.
  *
- * Scope: subscribes to `system.log` ONLY (the republished consola stream). It
- * deliberately does NOT write request lifecycle lines — those live in
- * history.db and would duplicate.
+ * Scope: subscribes to `system.log` (the republished consola stream) plus
+ * `system.request_line` (synthetic request-style lines from out-of-history
+ * routes like count_tokens — see synthetic-request-line.ts). It deliberately
+ * does NOT write real request lifecycle lines — those live in history.db and
+ * would duplicate; count_tokens is exempt because it is out-of-history, so this
+ * file is its only durable trace.
  *
  * Failure isolation: a write error (disk full, permission) must never affect
  * request handling, and must NOT go through consola (that would re-enter the
@@ -29,6 +32,8 @@ import type {
   ObservabilityBus,
   ObservabilityEvent,
 } from "../index"
+
+import { formatLogLine } from "../projections/log-line"
 
 /** Strip ANSI SGR color codes so the file holds plain text. */
 // eslint-disable-next-line no-control-regex -- matching the ESC control char is the point of an ANSI stripper
@@ -112,6 +117,15 @@ export class FileSink {
   }
 
   private handle(event: ObservabilityEvent): void {
+    // Synthetic request-style line (count_tokens et al.) — keep a durable record
+    // in the log file (these routes are out-of-history, so this is their only
+    // durable trace). Rendered plain (ANSI-stripped); the line already carries
+    // its own `[ OK ] HH:MM:SS` prefix, so no extra level badge.
+    if (event.kind === "system.request_line") {
+      const line = formatLogLine(event.parts).replaceAll(ANSI_SGR, "") + "\n"
+      this.append(Date.now(), Buffer.byteLength(line), line)
+      return
+    }
     if (event.kind !== "system.log") return
     const message = event.message.replaceAll(ANSI_SGR, "")
     const line = `${formatStamp(event.time)} [${levelLabel(event.logType)}] ${message}\n`

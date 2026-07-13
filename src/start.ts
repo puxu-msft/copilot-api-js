@@ -50,6 +50,7 @@ import { attachFileSink } from "./lib/observability/sinks/file"
 import { attachHistorySink } from "./lib/observability/sinks/history"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
 import { attachWsSink } from "./lib/observability/sinks/ws"
+import { setRequestLinePublisher } from "./lib/observability/synthetic-request-line"
 import { loadUpstreamHookSafe } from "./lib/pipeline/hooks/loader"
 import { initProcessIdentity } from "./lib/process-identity"
 import { initProxy } from "./lib/proxy"
@@ -251,6 +252,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const systemPublisher = bus.scope("system")
   setShutdownPublisher(systemPublisher)
   setRateLimitPublisher(systemPublisher)
+  setRequestLinePublisher(systemPublisher)
   // Explicitly pass process.stdin so the interactive raw-mode panel gates on
   // (evaluator §3): tests that omit stdin stay on the non-interactive P0 path.
   attachTerminalUi(bus, { stdin: process.stdin })

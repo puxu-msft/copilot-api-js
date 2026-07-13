@@ -439,6 +439,14 @@ export class TerminalUi {
         this.onSystemLog(event)
         return
       }
+      // Synthetic request-style line (count_tokens et al.): render exactly like a
+      // real request-completion line (formatLogLine → footer-coordinated printLog),
+      // but WITHOUT a RequestContext — these routes are out-of-observability and
+      // this event never touches history/telemetry.
+      case "system.request_line": {
+        this.printLog(formatLogLine(event.parts))
+        return
+      }
       // Scheme A (RFC §7): the moment the server begins draining, restore the
       // terminal from raw mode and stop owning the bottom region. The drain
       // period reverts to a plain log stream; a further Ctrl-C now lands on a
