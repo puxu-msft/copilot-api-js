@@ -148,7 +148,7 @@ configRoutes.openapi(putConfigYamlRoute, async (c) => {
  * verbatim. That makes the secrecy contract machine-checkable rather than
  * dependent on remembering to sync two lists.
  */
-const SENSITIVE_CONFIG_KEYS = new Set<string>(["anthropicApiKey"])
+const SENSITIVE_CONFIG_KEYS = new Set<string>()
 
 /**
  * Build the effective runtime configuration snapshot.

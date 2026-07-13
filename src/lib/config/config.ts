@@ -638,7 +638,6 @@ export async function applyConfigToState(): Promise<Config> {
       if (ect.messages_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlMessages: ect.messages_ttl })
     }
     if (a.tool_search_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_search_non_deferred })
-    if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })
     if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
     // Collection fields: retain-on-absence semantic — a missing key keeps the
     // current runtime value; an explicit `{}` overwrites with empty. To revert

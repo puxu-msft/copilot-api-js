@@ -303,6 +303,17 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const config = await applyConfigToState()
 
+  // Deprecation: ANTHROPIC_API_KEY previously routed count_tokens for Claude
+  // models to api.anthropic.com. That path is retired — count_tokens now
+  // forwards to GHC's upstream /v1/messages/count_tokens (no separate key). Warn
+  // users who still set the env var so the silent channel change is visible.
+  // (The config key anthropic.api_key is warned separately via CONFIG_MIGRATIONS.)
+  if (process.env.ANTHROPIC_API_KEY) {
+    consola.warn(
+      "ANTHROPIC_API_KEY is set but no longer used — count_tokens now forwards to GHC's upstream /v1/messages/count_tokens (no separate Anthropic API key needed).",
+    )
+  }
+
   // Upstream hook module (dev/test only) — declarative state was already set by
   // applyConfigToState above; load it here if enabled. warn-continue: a bad/missing hook
   // module must never block startup (see loadUpstreamHookSafe).

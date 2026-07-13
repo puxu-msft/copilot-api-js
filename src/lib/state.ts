@@ -574,14 +574,6 @@ export interface State {
   /** Additional tool names that should never be deferred (merged with built-in list) */
   readonly nonDeferredTools: ReadonlyArray<string>
 
-  /**
-   * Anthropic API key for accurate Claude token counting.
-   * When set, `/v1/messages/count_tokens` for Claude models is forwarded to
-   * Anthropic's free token counting endpoint instead of using GPT tokenizer estimation.
-   * Also reads ANTHROPIC_API_KEY env var as fallback.
-   */
-  readonly anthropicApiKey: string
-
   /** Pre-compiled system prompt override rules from config.yaml */
   readonly systemPromptOverrides: Array<CompiledRewriteRule>
 
@@ -1250,7 +1242,6 @@ export function setAnthropicBehavior(
       | "memoryModels"
       | "interleavedThinkingModels"
       | "adaptiveThinkingModels"
-      | "anthropicApiKey"
       | "warmupPolicy"
       | "effortsOverrides"
       | "streamIdleTimeoutOverrides"
@@ -1575,7 +1566,6 @@ export const CONFIG_MANAGED_DEFAULTS = {
   maxWsFrameBytes: 0,
   maxClientWsConnections: 256,
   maxUpstreamWsConnections: 32,
-  anthropicApiKey: "",
   warmupPolicy: "allow" as WarmupPolicy,
   effortsOverrides: {} as Record<string, Array<string>>,
   // Empty by design — the bundled `gpt-5.5: 600` product default lives in
@@ -1660,7 +1650,6 @@ export function resetConfigManagedState(): void {
     memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
     interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
     adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
-    anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
     streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },
@@ -1823,7 +1812,6 @@ const mutableState: MutableState = {
   maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
   maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
   maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
-  anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
   warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
   effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
   streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },

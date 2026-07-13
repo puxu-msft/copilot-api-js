@@ -187,6 +187,13 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
     message: 'anthropic.refusal_recover_text is removed; use refusal_sse_rewrite ("refusal" | "end_turn" | "error")',
   }),
   removeKey("history.min_entries", "history.min_entries is removed (was tied to the deleted in-memory history store); ignoring"),
+  // anthropic.api_key retired: count_tokens now forwards to GHC's upstream
+  // /v1/messages/count_tokens (uses the copilot token, no separate Anthropic key,
+  // and is more representative since the real completion also flows through GHC).
+  removeKey(
+    "anthropic.api_key",
+    "anthropic.api_key is no longer used — count_tokens now forwards to GHC's upstream /v1/messages/count_tokens (no separate Anthropic API key needed); remove it from config.yaml",
+  ),
   // Tool-search moved from a manual allowlist to a default-allow matcher (Claude ≥4.5; Haiku + pre-4.5
   // denied), so the old `model_capabilities.tool_search` list is gone. Per-model exceptions now live in
   // `model_capabilities.tool_search_overrides` ({ <model-substring>: true|false }).
