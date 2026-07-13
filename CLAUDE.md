@@ -20,6 +20,7 @@
 
 各类知识的固定归属（都在 `docs/`）：
 - 架构总览、模块划分、分层、**类型架构（SSOT-types）** → [docs/DESIGN.md](docs/DESIGN.md)。
+- **对客户端暴露的 HTTP 端点（端点 SSOT）** → [docs/API.md](docs/API.md)（vendor 兼容 / 管理 API / 基础设施 / History REST / WebSocket，含字段级备注）。DESIGN.md「路由」节只留指针、深层路由架构在「活的架构现状」；活的全表面真相 = 运行实例 `GET /openapi.json`。
 - 关键设计决策 + 理由 → [docs/decisions/](docs/decisions/) ADR（一决策一文件）。
 - 模块契约 / 兼容行为 / 管线 → `docs/spec/*.md` 与 `docs/<topic>.md`（`anthropic-compat` / `streaming` / `tool-use` / `request-pipeline` 等）。
 - 设计 / 实现计划 → `docs/plan/`，**放仓库内、不放 `~/.claude/plans/`**（便于多会话版本控制、共享、审查）。

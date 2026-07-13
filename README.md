@@ -152,44 +152,11 @@ gemini -p "hello"
 
 ### Using API Endpoints
 
-#### OpenAI compatible
+The proxy exposes OpenAI, Azure OpenAI, Anthropic, and Google Gemini compatible endpoints (each vendor family under its conventional prefixes — e.g. OpenAI routes are registered with no prefix, `/v1`, and `/openai/v1`), plus management, History, and health APIs.
 
-Each route is registered with no prefix, with `/v1`, and with `/openai/v1`.
+**See [`docs/API.md`](docs/API.md) for the complete endpoint reference** (all routes, prefix variants, and field-level notes). The live source of truth for a running instance is `GET /openapi.json` (with an interactive Scalar page at `/docs`).
 
-| Endpoint | Method |
-|----------|--------|
-| `/chat/completions` | POST |
-| `/responses` | POST (also WS GET) |
-| `/embeddings` | POST |
-| `/models` | GET |
-| `/models/:model` | GET |
-
-#### Azure OpenAI compatible
-
-| Endpoint | Method |
-|----------|--------|
-| `/openai/deployments/:deployment/chat/completions` | POST |
-| `/openai/deployments/:deployment/embeddings` | POST |
-| `/openai/deployments/:deployment/responses` | POST |
-
-#### Anthropic compatible
-
-| Endpoint | Method |
-|----------|--------|
-| `/v1/messages`, `/anthropic/v1/messages` | POST |
-| `/v1/messages/count_tokens`, `/anthropic/v1/messages/count_tokens` | POST |
-| `/anthropic/v1/models` | GET |
-| `/anthropic/v1/models/:id` | GET |
-
-`/v1/messages` requires an Anthropic-vendor model — it talks to Copilot's native Anthropic endpoint.
-
-#### Google Gemini compatible
-
-| Endpoint | Method |
-|----------|--------|
-| `/v1beta/models/:model:generateContent` | POST |
-| `/v1beta/models/:model:streamGenerateContent` | POST (SSE) |
-| `/v1beta/models/:model:countTokens` | POST |
+Any client SDK can drive any GHC model via an `@cc` / `@responses` / `@messages` model-name suffix (the universal translation matrix) — e.g. an OpenAI client can call `claude-opus-4.8@messages`. Details in [`docs/API.md`](docs/API.md#调用基础).
 
 ---
 
@@ -220,46 +187,7 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 
 ## Internal API Endpoints
 
-### Management & UI
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/status` | GET | Server status (uptime, account type, model count, in-flight, etc.) |
-| `/api/stats` | GET | Operational stats — per-dimension breakdown (`?dimension=model\|endpoint\|client\|agentKind\|tool&window=sinceStart\|7d&limit=N`) with token/cost counters + latency/queue/token percentiles |
-| `/api/tokens` | GET | GitHub + Copilot token info (masked unless `--show-github-token`) |
-| `/api/models` | GET | Internal model catalog (full Copilot data) |
-| `/api/models/:model` | GET | Single model (internal full shape) |
-| `/api/config` | GET | Effective runtime configuration |
-| `/api/config/yaml` | GET / PUT | Read / replace `config.yaml` (triggers full re-apply) |
-| `/api/negotiation` | GET / POST | Reactive-learning records (feature-negotiation cache) management. Backs the ui-v4 **Learned** page: view reactive learning records grouped by function, per-category TTL with auto-expiry, per-entry pin / renew / expire-now / delete, and full JSON export. `GET` grouped snapshot, `POST /renew`\|`/expire`\|`/pin`\|`/entry/delete`, `GET /export` full v2 JSON |
-| `/api/logs` | GET | Recent request logs (in-memory ring buffer) |
-| `/api/event_logging/batch` | POST | Silently consumes Anthropic event-logging beacons |
-| `/metrics` | GET | Prometheus text exposition (v0.0.4) — `copilot_api_*_total{dimension,key}` counters + per-dimension histograms (duration/queue/token) |
-| `/health` | GET | Readiness check — 200 when tokens/models are ready, 503 otherwise (equivalent to `/health/readiness`) |
-| `/health/readiness` | GET | Readiness probe (Kubernetes-style, shares `/health`'s handler) — 200 ready, 503 not ready |
-| `/health/liveness` | GET | Liveness probe — always 200 `{status:"alive"}` while the process responds (independent of upstream/readiness) |
-| `/ui/*` | GET | Vuetify-based History Web UI (static SPA) |
-
-### History API
-
-REST under `/history/api/`:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/history/api/entries` | GET | Paginated entry list (filter by model / endpoint / status / session / time) |
-| `/history/api/entries/:id` | GET | Single entry (decoded payload + response, headers, timing, billing) |
-| `/history/api/entries` | DELETE | Full clear of all history (destructive). Per-session delete is `DELETE /api/sessions/:id` |
-| `/history/api/stats` | GET | Aggregate counts, token totals, billing multipliers, model breakdown |
-| `/history/api/sessions` | GET | Session list (Claude Code / Codex sessions inferred from headers) |
-| `/history/api/sessions/:id` | DELETE | Delete all entries for a session |
-| `/history/api/export` | GET | Export history as JSON |
-
-WebSocket `/ws` is a topic-aware bus carrying:
-
-- `history` — new entries, updates, finalize, delete events
-- `status` — server status changes
-- `shutdown` — drain begin / phase transitions
-- (per-request) live SSE replay for in-flight requests
+Management (`/api/*`), History REST (`/history/api/*`), metrics (`/metrics`), health probes (`/health`, `/health/readiness`, `/health/liveness`), the History WebSocket (`/ws`), and the Web UIs (`/ui/*`, `/ui-v4/*`) are all documented in **[`docs/API.md`](docs/API.md)** alongside the vendor-compatible endpoints.
 
 ---
 
