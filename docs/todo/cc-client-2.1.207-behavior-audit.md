@@ -383,6 +383,71 @@ inline `role:"system"` 处理本项目**机制完整**（五模式 + 按模型�
 
 ---
 
+## 轮次 10（2026-07-13）：context-hint SSE 双向 context 管理协议
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 新 beta **`context-hint-2026-04-09`**（`$mi`，61831）——一个**双向** context 管理协议（`de` handler，297473-297490）：
+- **请求侧**：`tokensSaved >= DZi`（阈值）时，body 加 `context_hint: { enabled: true, ...target_tokens_saved: N }` + `context-hint` beta（客户端告诉服务端「我能省 N token，你可据此 compact」）。
+- **响应侧 SSE**：`classifyStreamError(i)` 用 `v$d(i)` 检测**上游中途下发的 context-hint SSE 信号**（`Ydu` 归类为 `"context_hint_sse"`，163852）→ `onStreamFallback` 触发 `tLs(...)` = clear/compact messages 后重试。
+- `onRequestError`：400（`A$d`）→ `{messages, clearedIds, clearedContent}`（清特定消息 id 重试）；409/529 也有分支。即 298168-298170 的 `retry:context-hint`。
+
+### 本项目现状（读码）
+
+全仓对 `context_hint` / `context-hint-2026-04-09` beta **零感知**（grep 零命中）。兜底：body-field-rejection 的 `EXTRA_INPUTS_PATTERN`（[context-management-retry.ts:42](../../src/lib/request/strategies/context-management-retry.ts#L42)）匹配顶层 `context_hint:` → GHC 拒则 reactive strip；`unsupported-beta-retry` 剥 beta。
+
+### F16（LOW，与 F14 同族）— `context_hint` 无 proactive 感知：reactive 兜底但特性经 GHC 静默不可用
+
+**判断（读码）**：
+- **无硬失败**：`context_hint` body 字段 + beta 若被 GHC 拒 → 通用 reactive strip 兜底、fixate。
+- **请求侧信号丢失**：GHC 大概率不支持 → `context_hint` 被剥 → 客户端「我能省 token」的提示传不到服务端。**危害极小**——这只是让服务端做 server-side compact 的**优化信号**，CC 仍有自己的 client-side auto-compact 兜底，非correctness需求。
+- **响应侧 SSE**：GHC 几乎certainly不发 context-hint SSE 信号 → 当前非问题。若未来发，本项目 passthrough 会转发该帧（带 event: 行）给 CC 的 `classifyStreamError` 消费——但需核实累加器 `default` 分支不吞（同 F12 compaction 块的前瞻性核实）。
+
+**理想方向（低优先）**：并入 F14 的 GHC 能力探针批次——一并测 `context-hint-2026-04-09` / `context_hint` body GHC 是否支持。支持则透传即可（甚至纳入本项目 context 决策）；不支持则 proactive 剥省往返。
+
+### 本轮结论
+
+context-hint 是 CC 2.1.207 又一个新 context-管理协议，本项目 reactive 兜底、无硬失败，请求侧信号经 GHC 静默丢失（危害极小，有 CC 自身 compact 兜底）。归入「2026 新 beta 无 proactive 感知」族（F14/F15/F16）。
+
+---
+
+## 阶段综合（轮次 1-10，F1-F16）：三条跨轮主线 + 待办优先级
+
+> 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
+
+### 主线 A（承重）— 「HTTP-4xx vs 200+SSE-error」决定 CC 原生自愈能否触发
+
+CC 2.1.207 的**所有**原生自愈（`H8i` thinking 剥块 / `C8i` thinking.type 切换 / `w8i`/`T8i` cache-beta 丢弃 / `_7n` role:system 回退 / `refusalFallbackModel` fallback / 各 `retry:*`）**硬要求 `error instanceof li && status===400`**。一旦某错误在本项目**post-commit** 化为 `200+SSE-error`（`li.status===undefined`），CC 这些自愈**全部匹配不上**、零重试（轮次 4 F9 根因）。
+- **合规现状**：本项目对 GHC 的 4xx 基本 pre-commit reactive 处理或以 HTTP-4xx 透出 → 与 CC 自愈**同向**。
+- **红线（记档防踩）**：**任何** thinking-sig / adaptive / beta / role 类 400 **绝不**转 post-commit SSE-error（否则双杀本项目 pre-commit retry + CC 后备）。涉及 F9/F11-caveat/F15。
+
+### 主线 B（行为分歧）— 本项目服务端「消化」抢占了 CC 语义更忠实的原生自愈
+
+本项目为把问题在服务端解决，reactive 消化了本会到达 CC 的 400，从而**抢占** CC 的原生恢复；而 CC 的恢复有时**语义更忠实**：
+- **F10**（refusal）：默认 `error` 模式抢占 CC 的 `refusalFallbackModel` 换模型重试。
+- **F15**（mid-conv system）：reactive convert 抢占 CC 的 `<system-reminder>` 原位回退，且本项目五模式无一复刻该包裹。
+- **权衡**：对没配 fallback / 无更好 CC 版本的多数用户，服务端消化是净收益；只对少数「CC 原生能做得更好」的用户是损失。**修复取向**：给这些场景补一个「逐字复刻 CC 回退」的模式（refusal 的 passthrough 已有；system 的 `as_user_system_reminder` 待补），让用户可选。
+
+### 主线 C（能力边界）— 2026 新 beta 无 proactive 感知：reactive 兜底但特性经 GHC 静默降级
+
+CC 2.1.207 引入一批 2026 新 beta，本项目**无显式感知**、靠通用 reactive strip 兜底（无硬失败），代价是**首轮往返浪费 + 特性经 GHC 静默不可用**：
+- F5（`speed`）、F14（`cache-diagnosis` / `prompt-caching-evict`）、F15（`mid-conversation-system`）、F16（`context-hint`）；F12（`compaction` 块）是响应侧对应物。
+- **统一修复入口**：一次 **GHC 能力探针批次**（skill `ghc-api-reference`，curl 逐 beta/字段打 GHC 看 200 vs 400），据结果二选一：GHC 支持 → 透传 + 考虑纳入 history（`richest-data-flow`）；不支持 → 加入 request-preparation 内置地雷列表 **proactive 剥**（仿 `scope`/`eager_input_streaming`）省往返。
+
+### 待办优先级（供用户排期）
+
+| 优先 | 项 | 一句话 | 前置 |
+|---|---|---|---|
+| **P1** | F1 | thinking-only 块间空档裸 ping 不重置 300s → CC 静默重试整请求(重复上游调用) | headless-CC + mock 上游实测触发条件 |
+| **P2** | F7 | count_tokens 失败返 `{input_tokens:1}` 抑制 CC 本地兜底 | 实测 CC 对代理非 200 的反应 |
+| **P2** | F10/F15 | 服务端消化抢占 CC 原生自愈(主线 B) | 补「复刻 CC 回退」模式 + 文档化 |
+| **P3** | F5/F14/F16 | 2026 新 beta 无 proactive 感知(主线 C) | 一次 GHC 能力探针批次 |
+| **P4** | F12 | `compaction` 新块累加器未识别(前瞻) | 待 GHC 实测是否 emit |
+| 记档 | F2/F3/F13/主线 A | 阈值可配 / 双主体 context / 红线 | 纯文档 |
+| 确认 | F9/F11 | 不变量/兼容性已确认无回归 | 无 |
+
+---
+
 ## 后续轮次待覆盖的 CC-facing 面（TODO 清单，逐轮消化）
 
 - [x] **请求形状漂移**（轮次 2）：`speed:"fast"`（F5）、`diagnostics.previous_message_id`（F6）已覆盖；`betas`/`metadata`/`tool_choice`/`output_config`/`context_management` 经查本项目已妥善处理（partner-feature-strip + request-preparation）。`eager_input_streaming`（fine-grained tool streaming）本项目已 proactive strip，无 gap。
@@ -397,4 +462,12 @@ inline `role:"system"` 处理本项目**机制完整**（五模式 + 按模型�
 - [x] **stop_reason 家族**（轮次 7）：`max_tokens`/`model_context_window_exceeded`/`pause_turn` 直连路径**透传正确、无 gap**；记录 auto-truncate ↔ CC 双主体 context 管理交互（F13,低/信息，仅需文档化）。
 - [x] **prompt-caching beta 自愈**（轮次 8）：CC `w8i`/`T8i`（HTTP-400 丢 beta 重试）与本项目通用 `unsupported-beta-retry` 兼容；本项目对 `cache-diagnosis`/`prompt-caching-evict` 无 proactive 感知（F14,低-中），reactive 兜底但首轮浪费往返 + 诊断/驱逐特性静默降级。
 - [x] **mid-conv role:"system"**（轮次 9）：CC 新 `mid-conversation-system-2026-04-07` beta + `_7n` 回退（原位 `<system-reminder>` 包裹）；本项目 convert 五模式无一复刻该包裹，GHC 拒时 reactive convert 抢占且语义劣于 CC（F15,中，与 F10 同构）。
-- [ ] **context-hint SSE**：CC 的 `de.onRequestError`（298170 `retry:context-hint`）+ `classifyStreamError`（isContextHintSse）上游中途下发 context-hint 的重试机制。
+- [x] **context-hint SSE**（轮次 10）：CC 新 `context-hint-2026-04-09` 双向 context 协议；本项目零感知、reactive 兜底，请求侧信号经 GHC 静默丢失（F16,低，归主线 C）。
+
+### 原清单已全覆盖（10 轮，F1-F16）。后续轮次可深挖的**次级面**（未开工）
+
+- [ ] **fine-grained tool streaming 语义**：`CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`（28304）开启后 CC 对 tool_use `input_json_delta` 的分片期望 vs 本项目转发粒度（本项目已 proactive 剥 `eager_input_streaming`，但**流式分片语义**是否对齐未查）。
+- [ ] **anthropic-beta 全集对账**：CC 2.1.207 发的完整 beta 集（61831 的 `Q0(...)` 全表：`interleaved-thinking` / `context-1m` / `tool-search` / `structured-outputs` 等）逐条对本项目 negotiation 支持矩阵，找未覆盖项。
+- [ ] **usage wire 形状**：CC 消费的 `message_delta.usage` / `message_start.usage` 字段（cache_creation/cache_read/server_tool_use 细分）vs 本项目 usage 透传与 history 记录。
+- [ ] **metadata.user_id / 请求归属**：CC 的 `metadata`（`Wtt()`，297987）字段 vs 本项目是否透传/用于 GHC 归属。
+- [ ] **tool_choice 变体**：CC 发的 `tool_choice`（auto/any/tool/none）+ `disable_parallel_tool_use` vs 本项目转发。
