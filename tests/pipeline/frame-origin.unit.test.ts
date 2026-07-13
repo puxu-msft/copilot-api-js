@@ -4,10 +4,23 @@
  * sink reads to mark `SseEventRecord.synthetic` on the forwarded track (richest-data-flow §3).
  */
 
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { readSyntheticKind, tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
-import { tagFrameRewritten, wasFrameRewritten } from "~/lib/pipeline/hooks/origin"
+import {
+  //
+  readSyntheticKind,
+  tagFrameSynthetic,
+} from "~/lib/pipeline/frame-origin"
+import {
+  //
+  tagFrameRewritten,
+  wasFrameRewritten,
+} from "~/lib/pipeline/hooks/origin"
 
 describe("frame synthetic-origin tag", () => {
   test("round-trips a kind", () => {

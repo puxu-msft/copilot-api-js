@@ -4,7 +4,11 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 
-import { readSyntheticKind, tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
+import {
+  //
+  readSyntheticKind,
+  tagFrameSynthetic,
+} from "~/lib/pipeline/frame-origin"
 
 export const HOOK_ORIGIN = Symbol("hookOrigin")
 export type HookOrigin = "hook-mock" | "hook-replay"

@@ -45,12 +45,13 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
-import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 import type {
   //
   RawMessageDeltaEvent,
   StreamEvent,
 } from "~/types/api/anthropic"
+
+import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 
 import { anthropicSseFrame } from "./sse-frame"
 
@@ -93,9 +94,7 @@ export interface RefusalTemplateVars {
  * defaults to the fixed constants above) reproduces the previous exact bytes.
  */
 export function renderRefusalTemplate(tmpl: string, vars: RefusalTemplateVars): string {
-  return tmpl.replace(/\{(\w+)\}/g, (whole, key: string) =>
-    key in vars ? String((vars as unknown as Record<string, unknown>)[key]) : whole,
-  )
+  return tmpl.replaceAll(/\{(\w+)\}/g, (whole, key: string) => (key in vars ? String((vars as unknown as Record<string, unknown>)[key]) : whole))
 }
 
 /** A thinking-only refusal = `stop_reason:"refusal"` with no real (text/tool_use) content seen. */
@@ -213,7 +212,10 @@ export function createRefusalRecoverer(deps: RefusalRecovererDeps): RefusalRecov
 function buildRefusalErrorFrame(errorType: string, message: string): ServerSentEventMessage {
   // Tagged `synthetic:"refusal-recovery"`: this frame REPLACES the upstream terminator on the
   // forwarded track (the upstream track keeps the real refusal). Record-layer only, wire unchanged.
-  return tagFrameSynthetic<ServerSentEventMessage>({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message } }) }, "refusal-recovery")
+  return tagFrameSynthetic<ServerSentEventMessage>(
+    { event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message } }) },
+    "refusal-recovery",
+  )
 }
 
 /** Options for {@link createRefusalErrorEmitter}: the config-driven message template + error type,

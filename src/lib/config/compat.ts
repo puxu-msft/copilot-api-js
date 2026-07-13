@@ -188,7 +188,8 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
       if (typeof v !== "boolean") return undefined
       return v ? "end_turn" : "refusal"
     },
-    message: 'anthropic.refusal_recover_text is removed; use refusal_sse_rewrite ("refusal" | "end_turn" | "error")',
+    message:
+      'anthropic.refusal_recover_text is removed; use refusal_sse_rewrite ("refusal" | "end_turn" | "error"). To customize the injected text, see refusal_end_turn_text / refusal_error_message / refusal_error_type.',
   }),
   removeKey("history.min_entries", "history.min_entries is removed (was tied to the deleted in-memory history store); ignoring"),
   // anthropic.api_key retired: count_tokens now forwards to GHC's upstream

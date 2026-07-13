@@ -302,7 +302,7 @@ const refusalRewrite: ResponseRewrite = {
   createState: (env): RefusalState => {
     // Static vars known at stream start (before any frame): resolved model + request id. The
     // streaming factories self-supply `thinking_tokens` from the refusal message_delta's usage.
-    const staticVars = { model: (env.body as MessagesPayload).model ?? "", request_id: env.ctx.id }
+    const staticVars = { model: (env.body as MessagesPayload).model, request_id: env.ctx.id }
     return {
       // `end_turn` synthesizes a text completion and records the feature HERE (the handler does
       // nothing special for a successful end_turn). `error` is a PURE stream reshape (emit error
@@ -338,7 +338,7 @@ const refusalRewrite: ResponseRewrite = {
     if (state.refusalSseRewrite !== "end_turn") return response
     const resp = response as AnthropicMessageResponse
     if (resp.stop_reason !== "refusal") return response
-    const vars = { model: resp.model ?? (env.body as MessagesPayload).model ?? "", request_id: env.ctx.id, thinking_tokens: resp.usage?.output_tokens ?? 0 }
+    const vars = { model: resp.model, request_id: env.ctx.id, thinking_tokens: resp.usage.output_tokens }
     return recoverRefusalInResponse(resp, renderRefusalTemplate(state.refusalEndTurnText, vars))
   },
 }
