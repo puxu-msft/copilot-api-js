@@ -103,6 +103,16 @@ export interface ToolDefinition {
   [key: string]: unknown
 }
 
+/**
+ * Per-attempt truncation diagnostics.
+ *
+ * 有意保留（写侧不再 populate、读侧仍活）：auto-truncate 移除后（RFC
+ * `2026-07-13-remove-auto-truncate-keep-calibration`）生产不再产出 truncation
+ * （`beginAttempt` 不传、无构造点），但本类型 + `PipelineInfo.truncation` +
+ * 读侧适配 `pipelineFromLegacyAttempt`（`sqlite/serialize.ts`）必须保留：① richest-data-flow
+ * ADR——旧 history.db 存过真实发生的 truncation 诊断，读侧忠实读出、不丢；② Vue `ui/`
+ * 详情页（`usePipelineInfo.ts` / `AttemptsTimeline.vue` 等 10 处）仍渲染这些历史数据。
+ */
 export interface TruncationInfo {
   wasTruncated: boolean
   removedMessageCount: number

@@ -140,8 +140,15 @@ export async function countFixedTokens(payload: MessagesPayload, model: Model): 
 }
 
 /**
- * Count total tokens for the payload using the model's tokenizer.
- * Includes thinking blocks — used by auto-truncate decisions.
+ * Count total tokens for the payload (whole-prompt, thinking-inclusive) using
+ * the model's tokenizer.
+ *
+ * 有意保留、当前无消费者：auto-truncate 移除后（RFC `2026-07-13-remove-auto-truncate-keep-calibration`）
+ * 所有生产端改用 thinking-exclusive 的 `countTotalInputTokens`。本函数作为
+ * size-aware calibration 二维分桶的复用锚点保留（见 `docs/todo/deferred-backlog.md`
+ * 「组成/tool-密度感知 calibration factor」条）。注：该 backlog 称本函数「已能算
+ * tool block 占比」不准确——它只返回 whole-prompt 单一总数；真做二维分桶需 per-block
+ * 分解（更可能复用 `countMessagesTokens`/`countMessageTokens` 加 block 过滤）。
  */
 export async function countTotalTokens(payload: MessagesPayload, model: Model): Promise<number> {
   const fixed = await countFixedTokens(payload, model)
