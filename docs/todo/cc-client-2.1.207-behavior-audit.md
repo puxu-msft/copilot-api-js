@@ -163,11 +163,40 @@ count_tokens 本项目实现是**成熟**的；唯一实质错配是 **F7 的失
 
 ---
 
+## 轮次 4（2026-07-13）：SDK SSEDecoder —— 承重不变量在 2.1.207 **确认无回归**
+
+> 本轮结论是**确认性**的（无新缺陷）——按 faithful 纪律如实记录，不制造假问题。价值在于**给「合成帧必带 event: 行」承重不变量钉一个版本锚**，让后续审计不必重查。
+
+### 发现来源（CC 源码坐标）
+
+- **SSE 解码器 `v5a`**（`app.pretty.js:9963`）：`constructor` 里 `this.event = null`；`decode` 只在遇到 `event` 字段行时 `this.event = n3`；空行结束一帧时若 `!this.event && !this.data.length` 返回 null，否则 emit `{event: this.event, data, raw}`。**无 `event:` 行的纯 `data:` 帧 → `event` 保持 `null`**（**不**回退到 SSE 规范默认的 `"message"`）。与 skill `debugging-claude-client-connection` 记录的旧版行为**逐字一致**。
+- **消费循环 `Sjf`**（10005–10030）：按 `a.event` 名分发——`message_start`/`message_delta`/`message_stop`/`content_block_*`/`message`/`user.*`/`agent.*` → `yield JSON.parse(a.data)`；`ping` → `continue`；`error` → `throw new li(void 0, l, …)`（APIError，`.status` undefined，`error.type` 从 `l.error.type` 保住）。**`event === null` 匹配不上任何分支 → 既不 yield、不 continue、不 throw → 静默丢弃**。
+
+### F9（CONFIRMED，无缺陷）— 「合成帧必带 `event:` 行」前提在 2.1.207 依旧成立
+
+本项目所有合成 Anthropic SSE 帧经 `anthropicSseFrame(payload)`（`event: = payload.type`）单一入口 + golden `assertEventLineInvariant` 守卫（skill 记录）。该不变量的**前提**——「event-less 帧被 SDK 静默丢弃」——在 2.1.207 的解码器 + 消费循环里**双双未变**：
+- 解码器仍给 event-less 帧 `event: null`（不是 `"message"`）。
+- 消费循环仍只按名分发、丢弃 `null`。
+
+**故无需任何代码改动**。这是一次去风险确认：本项目 tool_use/refusal 合成帧带 `event:` 行的做法在最新 CC 上仍是**必要且充分**的。
+
+### 观察（信息，非缺陷）
+
+1. **accept-set 大幅扩容**：10013 现含 `"message"` + Sessions-V2 / 互动 agent 协议事件 `user.message`/`user.interrupt`/`user.tool_confirmation`/`user.custom_tool_result`/`agent.message`/`agent.thinking`/`agent.tool_use`/…。这些 `user.*`/`agent.*` 属 CC 的**双向互动 agent 流协议**（另一处消费者 `SessionsV2Client`，391908 `event===null` 分支即其一），**不是** `/v1/messages` 的经典 SSE——本代理不服务该端点，**与代理无关**。
+2. **`"message"` 入 accept-set 不破坏不变量**：虽然 SSE 规范默认事件名是 `"message"`，但本 SDK 解码器对 event-less 帧仍给 `null` 而非 `"message"` → event-less 帧照样被丢。二者不冲突。
+3. **200+SSE-error 仍零重试**：`error` 帧 → `new li(void 0, …)`（`.status` undefined、非类型化子类），与 skill 的「200+SSE-error vs HTTP-4xx」结论一致，2.1.207 无变化。
+
+### 软建议（低优先，非阻塞）
+
+本不变量依赖一个**未来 CC 版本可能改**的 SDK 内部行为（解码器给 event-less 帧的 `event` 值 + 消费循环的丢弃语义）。本项目已有独立 SDK oracle 测试（`exp/refusal-sse-event-verify/`，喂合成帧进真 `_iterSSEMessages` 看幸存）——**建议把「对照 CC 版本」写进该测试的注释/README**，标注「本次确认锚定 CC 2.1.207 解码器 `v5a`」，作为版本回归锚。纯文档动作，不改逻辑。
+
+---
+
 ## 后续轮次待覆盖的 CC-facing 面（TODO 清单，逐轮消化）
 
 - [x] **请求形状漂移**（轮次 2）：`speed:"fast"`（F5）、`diagnostics.previous_message_id`（F6）已覆盖；`betas`/`metadata`/`tool_choice`/`output_config`/`context_management` 经查本项目已妥善处理（partner-feature-strip + request-preparation）。`eager_input_streaming`（fine-grained tool streaming）本项目已 proactive strip，无 gap。
 - [x] **count_tokens**（轮次 3）：失败契约 `{input_tokens:1}` 抑制 CC 本地兜底（F7,中）、`/context` burst 无服务端缓存（F8,低/已缓解）。CC 请求形状（tools/thinking/betas 白名单/空占位）与本项目 sanitize 一致，无形状 gap。
-- [ ] **SDK SSEDecoder**：2.1.207 的 `@anthropic-ai/sdk` 版本是否改了 `event:` 行处理（本项目「合成帧必带 event 行」不变量的前提）。
+- [x] **SDK SSEDecoder**（轮次 4）：解码器 `v5a` + 消费循环 `Sjf` 均未变，「合成帧必带 event 行」不变量**确认无回归**（F9）。accept-set 扩容为 Sessions-V2 `user.*`/`agent.*`（互动 agent 协议，非 `/v1/messages`，与代理无关）。
 - [ ] **refusal / fallback_request**：CC 的 `stop_reason:"refusal"` → `fallback_request` 控制流（298057–298060）vs 本项目 `recover-refusal.ts`。
 - [ ] **200+SSE-error 重试**：复核 2.1.207 是否仍对 200+流内 error 零重试（skill 基线来自旧版）。
 - [ ] **thinking signature**：CC 侧对 `signature_delta` / thinking immutability 的消费 vs 本项目 `thinking-signature-compat.ts` / `thinking-immutability.ts`。
