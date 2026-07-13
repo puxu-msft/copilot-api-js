@@ -287,14 +287,19 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   const decision = resolveRouteDecision(deps, parsed)
   if (decision.kind === "reject") return { stoppedAt: "reject", rejected: { status: decision.status, reason: decision.reason }, stages }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
-  const routed = deps.codec.translateOut(parsed.with({ targetEndpoint }))
+  // MIGRATED cell: the assembly owns S2 translateOut / S3 requestRewrites / S4-pre prepareWire (mirrors
+  // runRequest); a mock/legacy codec without requestState falls back to deps.codec / deps.requestRewrites.
+  const routedEnv = parsed.with({ targetEndpoint })
+  const routed = (migratedCell(routedEnv) ?? deps.codec).translateOut(routedEnv)
   stages.translate = { targetEndpoint: routed.targetEndpoint, body: snapshotBody(routed.body) }
   if (stopAfter === "translate") return { stoppedAt: "translate", stages }
 
   // S3 — rewrite-in (mirror runRewriteIn, capturing per-rewrite {name, changed}).
   const applied: Array<{ name: string; changed: boolean }> = []
   let current = routed
-  for (const rewrite of assembleRequestRewrites(current, deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)) {
+  const inspectCell = migratedCell(current)
+  const inspectRewrites = inspectCell ? inspectCell.requestRewrites(current) : (deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)
+  for (const rewrite of assembleRequestRewrites(current, inspectRewrites)) {
     const result = rewrite.apply(current)
     applied.push({ name: rewrite.name, changed: result.changed })
     current = result.env
@@ -307,7 +312,7 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   // (beta-strip / server-tool-strip — only triggered by an upstream error) are invisible;
   // `note` flags that. `prepareWire` is non-pure in real codecs (betaProbe.recordOutbound /
   // ctx.recordFeature) — the caller isolates those side effects (throwaway probe + capturing ctx).
-  const wire = deps.codec.prepareWire(current)
+  const wire = (migratedCell(current) ?? deps.codec).prepareWire(current)
   stages["prepare-wire"] = {
     url: wire.url,
     headers: Object.fromEntries(wire.headers.entries()),
