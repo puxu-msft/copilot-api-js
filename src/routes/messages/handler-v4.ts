@@ -63,7 +63,6 @@ import {
   extractAppliedEdits,
   summarizeAppliedEdits,
 } from "~/lib/anthropic/applied-context-edits"
-import { buildCanonicalErrorFrame } from "~/lib/anthropic/error-shaping"
 import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
 import {
   //
@@ -150,7 +149,11 @@ import {
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 
-import { shapePostcommitErrorFrame } from "./error-shaping-glue"
+import {
+  //
+  shapePostcommitErrorFrame,
+  shapeRawStreamErrorFrame,
+} from "./error-shaping-glue"
 import {
   //
   anthropicErrorFrame,
@@ -1206,7 +1209,14 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // the error frame or the client is left with a dangling block. Idempotent + inert (shared anchorClosed
       // guard): a no-op when reconcile already closed it, or when no anchor was injected.
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
-      await sink.writeSynthetic?.(buildCanonicalErrorFrame({ kind: "canonical-error", errorType, message: errorMessage })).catch(() => undefined)
+      await sink
+        .writeSynthetic?.(
+          shapeRawStreamErrorFrame(errorType, errorMessage, {
+            event: "error",
+            data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }),
+          }),
+        )
+        .catch(() => undefined)
       recordForwarded()
       // C1: preserve the partial content accumulated before the throw (mirrors the
       // truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
@@ -1315,10 +1325,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
       await sink
         .writeSynthetic?.(
-          buildCanonicalErrorFrame({
-            kind: "canonical-error",
-            errorType: "api_error",
-            message: "Upstream stream truncated before completion (no message_stop)",
+          shapeRawStreamErrorFrame("api_error", "Upstream stream truncated before completion (no message_stop)", {
+            event: "error",
+            data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
           }),
         )
         .catch(() => undefined)
@@ -1457,14 +1466,19 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         sseEvents: [],
       })
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+      // G-3 (FIX-2): the translate leg's client IS an Anthropic /v1/messages client, so its H3 error
+      // terminator is owned by the same canonical builder (byte-identical to the former hand-built JSON;
+      // CF-2 golden-locked off).
       await sink
-        .writeSynthetic?.({
-          event: "error",
-          data: JSON.stringify({
-            type: "error",
-            error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) },
+        .writeSynthetic?.(
+          shapeRawStreamErrorFrame(anthropicStreamErrorType(error), error instanceof Error ? error.message : String(error), {
+            event: "error",
+            data: JSON.stringify({
+              type: "error",
+              error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) },
+            }),
           }),
-        })
+        )
         .catch(() => undefined)
       recordForwarded()
       env.ctx.fail(model, error, outboundResponseData())
@@ -1483,11 +1497,16 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         if (!isMessageTerminatorFrame(frame)) await clientSink.write(frame)
       }
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+      // G-3 (FIX-2): translate-leg truncation terminator via the canonical builder (byte-identical to the
+      // former hand-built JSON — note the translate leg's message says "no finish_reason", the CC/Responses
+      // terminator, distinct from the direct pump's "no message_stop"; CF-2 golden-locked off).
       await sink
-        .writeSynthetic?.({
-          event: "error",
-          data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
-        })
+        .writeSynthetic?.(
+          shapeRawStreamErrorFrame("api_error", "Upstream stream truncated before completion (no finish_reason)", {
+            event: "error",
+            data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
+          }),
+        )
         .catch(() => undefined)
       recordForwarded()
       consola.error(`[Anthropic:v4:translate] Upstream truncated for ${model}: drained without a finish_reason`)

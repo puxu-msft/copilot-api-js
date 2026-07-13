@@ -130,3 +130,25 @@ export function shapePostcommitErrorFrame(error: unknown, legacyFrame: ClientFra
   if (decision.kind !== "canonical-error") return legacyFrame
   return buildCanonicalErrorFrame(decision)
 }
+
+/**
+ * POST-COMMIT terminal-frame shaping for the STREAM-lifecycle termini that have NO classifiable
+ * `ApiError` object (Phase 3 FIX-2, G-3 canonical ownership completion). These are the pumps' H3
+ * (`stream-error` — the upstream iterable/sink threw; the caller pre-classifies via
+ * `anthropicStreamErrorType`) and truncation (a clean drain WITHOUT the terminator) branches, on BOTH the
+ * direct Anthropic pump AND the reverse translate leg (whose client IS a `/v1/messages` client, so the
+ * "Anthropic path only" scope covers it — the excluded formats are OpenAI/Gemini clients on their OWN
+ * endpoints, not this leg).
+ *
+ * Unlike {@link shapePostcommitErrorFrame} there is no `ApiError` to run through `decide()`: the caller
+ * already resolved the wire `errorType` + `message`, so this just routes them through the single
+ * `buildCanonicalErrorFrame` constructor (G-3) instead of hand-built JSON. The output is BYTE-IDENTICAL to
+ * the former hand-built `{type:"error", error:{type, message}}` literal (same field order, no retry_after),
+ * so the enabled/disabled split is a formality here — but the CF-2 golden lock is kept for symmetry with
+ * ①/①' (and to make "off = the exact legacy bytes" a single, uniform contract across all six termini): the
+ * caller passes the legacy frame and gets it back verbatim when `error_shaping_enabled` is false.
+ */
+export function shapeRawStreamErrorFrame(errorType: string, message: string, legacyFrame: ClientFrame): ClientFrame {
+  if (!state.errorShapingEnabled) return legacyFrame
+  return buildCanonicalErrorFrame({ kind: "canonical-error", errorType, message })
+}

@@ -14,10 +14,16 @@ import {
   test,
 } from "bun:test"
 
+import type { ClientFrame } from "~/lib/pipeline/types"
+
 import { HTTPError } from "~/lib/error"
 import { setStateForTests } from "~/lib/state"
 
-import { shapePostcommitErrorFrame } from "../../../src/routes/messages/error-shaping-glue"
+import {
+  //
+  shapePostcommitErrorFrame,
+  shapeRawStreamErrorFrame,
+} from "../../../src/routes/messages/error-shaping-glue"
 import {
   //
   anthropicErrorFrame,
@@ -86,5 +92,31 @@ describe("shapePostcommitErrorFrame — enabled (canonical via decide)", () => {
     const out = shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error))
     const data = JSON.parse(out.data ?? "{}") as { error: { type: string } }
     expect(data.error.type).toBe("api_error") // anthropicErrorTypeForApiError("server_error")
+  })
+})
+
+describe("shapeRawStreamErrorFrame — FIX-2 (H3 / truncation termini, direct pump + translate leg)", () => {
+  autoRestoreState()
+
+  test("enabled → buildCanonicalErrorFrame({errorType, message}) is byte-identical to the legacy hand-built literal", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    // The former hand-built literal both pumps emitted for H3 / truncation.
+    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "boom" } }) }
+    const out = shapeRawStreamErrorFrame("overloaded_error", "boom", legacy)
+    expect(out).toEqual(legacy) // byte-identical field order {type, error:{type, message}}, no retry_after
+  })
+
+  test("enabled → truncation frame byte-identical to the legacy literal (both pumps' truncation message)", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const msg = "Upstream stream truncated before completion (no message_stop)"
+    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) }
+    expect(shapeRawStreamErrorFrame("api_error", msg, legacy)).toEqual(legacy)
+  })
+
+  test("DISABLED → returns the caller's legacy frame verbatim (CF-2 golden lock, uniform with ①/①')", () => {
+    setStateForTests({ errorShapingEnabled: false })
+    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "timeout_error", message: "idle" } }) }
+    const out = shapeRawStreamErrorFrame("timeout_error", "idle", legacy)
+    expect(out).toBe(legacy) // same object reference — no rebuild at all when disabled
   })
 })
