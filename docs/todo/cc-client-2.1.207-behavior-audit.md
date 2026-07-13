@@ -345,6 +345,44 @@ cache-beta negotiation 是本项目**最完备**的子系统之一（通用枚�
 
 ---
 
+## 轮次 9（2026-07-13）：mid-conversation `role:"system"` —— convert 模式不复刻 CC 的 `<system-reminder>` 回退
+
+### 发现来源（CC 源码坐标）
+
+- CC 2.1.207 新 beta **`mid-conversation-system-2026-04-07`**（`Ipe`，常量 61831）——允许在 `messages` 数组里发**会话中途**的 `role:"system"` 消息（旧版被 Anthropic 拒）。
+- **`_7n`**（170073）= mid-conv-system 拒绝检测：`li && status===400` 且——含 `Ipe.header`+`"anthropic-beta"` / 含 `"Unexpected role"`+`"input message role"` / `"cache_control"`+`$hg` / `"not supported"`+`/role .system/i`。
+- **`_7n` 恢复**（298169）：`wSe($, Ipe)` 丢 `mid-conversation-system` beta + 把 `role:"system"` 消息**改写成 `<system-reminder>` 包裹的 body 内容**、sticky 拒该 beta 直到 `/clear` 或 `/compact`。
+- **结构**：`_7n` 要求 `status===400`（role/beta 拒绝天然 pre-commit）→ 与本项目 reactive 同 HTTP-400 路径、无 post-commit 风险。
+
+### 本项目现状（读码）
+
+inline `role:"system"` 处理**完整**：[sanitize/system-messages.ts](../../src/lib/anthropic/sanitize/system-messages.ts) 五模式 `false`(passthrough) / `drop_invalid` / `merge`（折进顶层 system）/ `as_user` / `as_assistant`；[system-reject-mode.ts](../../src/lib/anthropic/system-reject-mode.ts) 按出站模型选 `system_reject_mode` vs `system_default_mode`（**默认 passthrough**）；[system-reject-retry.ts](../../src/lib/request/strategies/system-reject-retry.ts) reactive 学习哪些模型拒 inline system。**默认 passthrough = 把 inline system + beta 原样转发 GHC**（对 GHC 支持时正确）。
+
+### F15（MEDIUM）— GHC 拒绝时，本项目 convert 模式**抢占且劣于** CC 的 `<system-reminder>` 原位回退
+
+**判断（读码，与 F10 同构）**：本项目全仓对 `mid-conversation-system-2026-04-07` beta **无显式感知**（grep 零命中）。默认 passthrough 下：
+- **GHC 支持该 beta** → 转发即正确（最优，待实测确认）。
+- **GHC 不支持** → 两条 reactive 策略介入：`unsupported-beta-retry` 剥 beta + `system-reject-retry` 学习该模型拒 inline system → 应用 `system_reject_mode` **服务端 convert**。此 convert **抢占**了 CC 的 `_7n`（因为 400 被代理消化、CC 看不到）。
+
+**语义损失（关键）**：CC 的 `_7n` 回退是**原位 `<system-reminder>` 包裹**——保留「这是系统指令」的框定 + 会话中的**位置**。本项目五模式**无一复刻**（`<system-reminder>` 在本项目只被**剥**、convert 时从不添加）：
+- `merge`：折进**顶层** system → 丢失 mid-conv 的**位置语义**（中途指令变全局前言）。
+- `as_user`/`as_assistant`：保留位置，但**不包 `<system-reminder>`** → 模型看到的是普通 user/assistant 轮、非系统指令框定。
+- `drop_invalid`：**内容丢失**。
+
+即：当 GHC 拒 mid-conv system 时，本项目给出的降级比 CC 原生 `_7n` **语义更失真**，且 CC 更忠实的回退被抢占、无从触发。
+
+**理想方向（不在本轮做，需 GHC 探针）**：
+1. **实测 GHC 是否支持** `mid-conversation-system-2026-04-07`（curl 带 beta + inline `role:"system"` 打 GHC，skill `ghc-api-reference`）。支持则默认 passthrough 已最优、F15 不成立；不支持才继续。
+2. 若不支持 → 新增一个 `system_reject_mode` 值 **`as_user_system_reminder`**（as_user 位置 + `<system-reminder>` 包裹），**逐字复刻 CC 的 `_7n` 回退**作为语义最忠实降级，并设为该场景推荐模式。
+3. 或（更激进）识别该 beta 后**故意不 reactive 消化、透传 400** 让 CC 的 `_7n` 自己处理——但与本项目「服务端消化」哲学冲突，且多数用户可能没有更好的 CC 版本，需权衡。
+4. 两 reactive 策略（beta-strip + system-reject convert）的**协调/顺序**待核（会否 2 往返 / 抖动）——`system-reject-retry` 与 `unsupported-beta-retry` 是否在同一 400 上竞争认领。
+
+### 本轮结论
+
+inline `role:"system"` 处理本项目**机制完整**（五模式 + 按模型选择 + reactive 学习），默认 passthrough 恰当让位 GHC。缺口是 **2.1.207 新 `mid-conversation-system` beta 场景下**：GHC 拒绝时本项目 convert **抢占且语义劣于** CC 的 `<system-reminder>` 原位回退（F15，中，与 F10 refusal-fallback 同构）。修复前需 GHC 探针裁定该 beta 是否被支持。
+
+---
+
 ## 后续轮次待覆盖的 CC-facing 面（TODO 清单，逐轮消化）
 
 - [x] **请求形状漂移**（轮次 2）：`speed:"fast"`（F5）、`diagnostics.previous_message_id`（F6）已覆盖；`betas`/`metadata`/`tool_choice`/`output_config`/`context_management` 经查本项目已妥善处理（partner-feature-strip + request-preparation）。`eager_input_streaming`（fine-grained tool streaming）本项目已 proactive strip，无 gap。
@@ -358,5 +396,5 @@ cache-beta negotiation 是本项目**最完备**的子系统之一（通用枚�
 
 - [x] **stop_reason 家族**（轮次 7）：`max_tokens`/`model_context_window_exceeded`/`pause_turn` 直连路径**透传正确、无 gap**；记录 auto-truncate ↔ CC 双主体 context 管理交互（F13,低/信息，仅需文档化）。
 - [x] **prompt-caching beta 自愈**（轮次 8）：CC `w8i`/`T8i`（HTTP-400 丢 beta 重试）与本项目通用 `unsupported-beta-retry` 兼容；本项目对 `cache-diagnosis`/`prompt-caching-evict` 无 proactive 感知（F14,低-中），reactive 兜底但首轮浪费往返 + 诊断/驱逐特性静默降级。
-- [ ] **mid-conv role:"system"**：CC 的 `_7n`（298169）`role:"system"` 被拒 → 回退 `<system-reminder>` body vs 本项目 system-reject-mode。
+- [x] **mid-conv role:"system"**（轮次 9）：CC 新 `mid-conversation-system-2026-04-07` beta + `_7n` 回退（原位 `<system-reminder>` 包裹）；本项目 convert 五模式无一复刻该包裹，GHC 拒时 reactive convert 抢占且语义劣于 CC（F15,中，与 F10 同构）。
 - [ ] **context-hint SSE**：CC 的 `de.onRequestError`（298170 `retry:context-hint`）+ `classifyStreamError`（isContextHintSse）上游中途下发 context-hint 的重试机制。
