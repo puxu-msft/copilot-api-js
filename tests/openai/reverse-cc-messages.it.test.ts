@@ -24,7 +24,6 @@ import {
   test,
 } from "bun:test"
 
-import type { Model } from "~/lib/models/client"
 import type {
   //
   ClientFrame,
@@ -32,19 +31,14 @@ import type {
   Transport,
   UpstreamStream,
 } from "~/lib/pipeline/types"
-import type { MessagesPayload } from "~/types/api/anthropic"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import {
   //
-  buildReverseResanitize,
   createReverseAnthropicMapperHolder,
-  createReverseAnthropicSanitizeRewrite,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
-import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { withCapturingManager } from "~/lib/context/manager"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
@@ -71,29 +65,15 @@ function sseStream(frames: Array<ServerSentEventMessage>, nonStream?: unknown): 
 function makeReverseDriver(upstream: UpstreamStream) {
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder("claude-x")
-  // C2b: the reverse `(openai-cc, /v1/messages)` cell is now dispatched through the CellAssembly, which
-  // reads the beta probe + mapper holder off `env.requestState` (parse threads them from these args). The
-  // driver's cell-keyed fork therefore supersedes the `requestRewrites`/`strategies` injected below for the
-  // reverse leg — they stay for the DIRECT CC leg (the non-suffix wire test) which is not migrated.
+  // C2b/C3: the reverse `(openai-cc, /v1/messages)` cell AND the direct CC leg are both dispatched through
+  // the CellAssembly now, which reads the beta probe + mapper holder off `env.requestState` (parse threads
+  // them from these args). The driver's cell-keyed fork supersedes any `requestRewrites`/`strategies` deps
+  // for every real cell, so the driver takes none — this test drives the REAL assembly end-to-end.
   const codec = createOpenAiCcCodec({ reverseBetaProbe, reverseMapperHolder })
   const transport: Transport = { send: () => Promise.resolve(upstream) }
   const driver = createPipelineDriver({
     codec,
     transport,
-    requestRewrites: [createReverseAnthropicSanitizeRewrite(reverseMapperHolder)],
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) =>
-      env.targetEndpoint === ENDPOINT.MESSAGES ?
-        assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, {
-          anthropic: {
-            originalPayload: env.body as MessagesPayload,
-            resanitize: buildReverseResanitize(reverseMapperHolder),
-            model: env.model as Model | undefined,
-            maxRetries: 0,
-            betaProbe: reverseBetaProbe,
-          },
-        })
-      : [],
     maxRetries: 0,
     maxLearningRetries: 0,
   })

@@ -19,7 +19,6 @@ import {
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import type { Model } from "~/lib/models/client"
 import type {
   //
   ClientFrame,
@@ -28,18 +27,13 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type { GenerateContentResponse } from "~/types/api/gemini"
-import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
-  buildReverseResanitize,
   createReverseAnthropicMapperHolder,
-  createReverseAnthropicSanitizeRewrite,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
-import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { withCapturingManager } from "~/lib/context/manager"
 import { convertGeminiRequestToOpenAI } from "~/lib/gemini"
 import { ENDPOINT } from "~/lib/models/endpoint"
@@ -63,17 +57,12 @@ function makeReverseDriver(upstream: UpstreamStream) {
   const reverseMapperHolder = createReverseAnthropicMapperHolder("claude-x")
   const codec = createOpenAiGeminiCodec("claude-x@messages", { reverseBetaProbe, reverseMapperHolder })
   const transport: Transport = { send: () => Promise.resolve(upstream) }
+  // C2b: the reverse `(gemini, /v1/messages)` cell is dispatched through the CellAssembly (reads the beta
+  // probe + mapper holder off env.requestState). The driver takes no requestRewrites/strategies deps — this
+  // test drives the REAL assembly end-to-end.
   const driver = createPipelineDriver({
     codec,
     transport,
-    requestRewrites: [createReverseAnthropicSanitizeRewrite(reverseMapperHolder)],
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) =>
-      env.targetEndpoint === ENDPOINT.MESSAGES ?
-        assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, {
-          anthropic: { originalPayload: env.body as MessagesPayload, resanitize: buildReverseResanitize(reverseMapperHolder), model: env.model as Model | undefined, maxRetries: 0, betaProbe: reverseBetaProbe },
-        })
-      : [],
     maxRetries: 0,
     maxLearningRetries: 0,
   })
