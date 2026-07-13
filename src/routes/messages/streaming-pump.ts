@@ -20,20 +20,16 @@ import { formatErrorWithCause } from "~/lib/error"
 import { classifyStreamError } from "~/lib/stream"
 import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
 
-/** Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error. */
-export function anthropicStreamErrorType(error: unknown): string {
-  switch (classifyStreamError(error)) {
-    case "idle-timeout": {
-      return "timeout_error"
-    }
-    case "shutdown": {
-      return "overloaded_error"
-    }
-    default: {
-      return "api_error"
-    }
-  }
-}
+/**
+ * Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error.
+ *
+ * G-3: the mapping logic now lives in `error-shaping.ts` (`classifyStreamErrorType`, the single home
+ * for error→Anthropic-wire shaping). This re-export keeps the original name/signature so the two
+ * real call sites — `handler-v4.ts:1193` (H3 branch) and `handler-v4.ts:1452` (translate-leg pump) —
+ * stay byte-for-byte unchanged; only the implementation moved. `codec.ts:619` merely mentions the
+ * name in a comment (not a call site).
+ */
+export { classifyStreamErrorType as anthropicStreamErrorType } from "~/lib/anthropic/error-shaping"
 
 /**
  * Extract live-stream signals and emit a detailed upstream-disconnect log.
