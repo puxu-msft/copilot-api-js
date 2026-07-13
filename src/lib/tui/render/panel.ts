@@ -56,7 +56,7 @@ const REVERSE_OFF = "\x1b[27m"
  * accumulates these fields from `request.feature_applied` / `attempt_*` events.
  */
 export interface DetailView extends ActiveRequestView {
-  /** Applied feature tags (e.g. `truncated`, `thinking`, `beta-stripped`). */
+  /** Applied feature tags (e.g. `thinking`, `beta-stripped`, `via-responses`). */
   tags?: Array<string>
   /**
    * Thinking as a terminal dimension: `requested` is the client's original

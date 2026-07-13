@@ -589,8 +589,8 @@ describe("forwardError", () => {
 
     const { data, status } = getLastJson()
     expect(status).toBe(400)
-    // forwardError returns error info; exact format depends on whether
-    // tryParseAndLearnLimit detects the token limit pattern (requires state.autoTruncate)
+    // forwardError returns error info for a token-limit 400 (parsed via
+    // parseTokenLimitError / the forward error formatter).
     const body = data as Record<string, unknown>
     expect(body.error).toBeDefined()
   })

@@ -449,3 +449,5 @@
 - **理想架构**：按「无死代码」纪律，三者应删净：① orphan-filter 五函数 + 对应测试删除（保留 `ensureAnthropicStartsWithUser` + 其测试）；② 从 `FormatCodec` 接口删 `preSend?` + driver 删调用守卫（若确认永不再需要 pre-send 缝）；③ `PipelineInfo.truncation` 端到端删除（类型 + history serialize + 前端 `~backend/*` re-export + 任何 ui-v4 展示）。
 - **为何暂缓**：本轮聚焦「移除截断本体、保留 calibration」的正确性收敛，避免在已很大的重构里再叠一层「删可能有独立价值的 tested 原语」的判断——尤其 orphan-filter 是通用消息卫生工具、`preSend` 是合理的扩展缝，删除属可分离的独立清理，值得单独一次 merged-state review 裁决（防止误删将来 sanitizer 演进可能复用的原语）。`no-destructive-workspace-loss`：不以「无消费者」为名仓促删 tested 代码。
 - **若做需改什么**：① 派 reviewer 确认 orphan-filter 五函数确无未来 sanitizer 复用意图 → `git rm` 相关函数段 + 两测试的对应 describe 块；② 确认 `preSend` 缝无保留价值 → 删接口方法 + driver 守卫 + `types.ts` 注释；③ `PipelineInfo.truncation`：grep 全仓 + ui-v4 消费点，端到端删字段 + 更新 history serialize 往返测试。发现方：RFC remove-auto-truncate-keep-calibration 执行期（2026-07-13 Phase 4/5 收尾）。
+
+- **补充（2026-07-13 合并态审查发现）**：`src/lib/anthropic/token-counting.ts` 的 `countTotalTokens`（whole-prompt 计数，含 thinking）在 caliber 统一为 `countTotalInputTokens` 后**已无生产/测试消费者**（成功腿/backfill 均改用 input-only 版）。同上属可删死导出——或删除，或保留作通用 whole-prompt 计数工具并加注释说明；一并纳入本条 review 裁决。
