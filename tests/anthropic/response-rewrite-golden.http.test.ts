@@ -745,6 +745,30 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(text).not.toContain('"type":"api_error"')
   })
 
+  test("S8 end_turn: forwarded refusal frames tagged synthetic:refusal-recovery; upstream track has none", async () => {
+    scenario = "s8"
+    setStateForTests({ refusalSseRewrite: "end_turn" })
+    await postStream()
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    // Forwarded track: the injected synthetic text triplet (3) + the rewritten end_turn delta (1) are marked.
+    const forwarded = entry.clientResponse?.sseEvents ?? []
+    expect(forwarded.filter((e) => e.synthetic === "refusal-recovery").length).toBeGreaterThanOrEqual(4)
+    // Upstream-original track keeps the genuine refusal — never any refusal-recovery synthetic frame.
+    const upstream = entry.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? []
+    expect(upstream.every((e) => e.synthetic !== "refusal-recovery")).toBe(true)
+  })
+
+  test("S8 error: forwarded error frame tagged synthetic:refusal-recovery; upstream track has none", async () => {
+    scenario = "s8"
+    setStateForTests({ refusalSseRewrite: "error" })
+    await postStream()
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    const forwarded = entry.clientResponse?.sseEvents ?? []
+    expect(forwarded.some((e) => e.synthetic === "refusal-recovery")).toBe(true)
+    const upstream = entry.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? []
+    expect(upstream.every((e) => e.synthetic !== "refusal-recovery")).toBe(true)
+  })
+
   test("S6 error mode: non-streaming thinking-only refusal → 500 error body + ctx.fail", async () => {
     scenario = "s6Refusal"
     setStateForTests({ refusalSseRewrite: "error" })

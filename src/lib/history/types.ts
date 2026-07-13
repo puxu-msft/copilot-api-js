@@ -167,8 +167,11 @@ export interface SseEventRecord {
    *   - "hook-rewrite" — the FORWARDED track's frame was produced by a `rewriteUpstreamFrame` hook
    *     (differs from the pre-hook frame the upstream track kept); the upstream track itself never
    *     carries this variant (it always records the pre-hook original — spec §3.2/§3.4 H2).
+   *   - "refusal-recovery" — the FORWARDED track's frame was injected or rewritten by refusal recovery
+   *     (the end_turn synthetic text block + rewritten end_turn delta, or the error-mode `event: error`
+   *     frame). The upstream track never carries it (it keeps the genuine upstream `refusal`).
    */
-  synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-mock" | "hook-rewrite" | "hook-replay"
+  synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-mock" | "hook-rewrite" | "hook-replay" | "refusal-recovery"
 }
 
 /**

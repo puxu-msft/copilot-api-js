@@ -45,6 +45,7 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
+import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 import type {
   //
   RawMessageDeltaEvent,
@@ -110,10 +111,13 @@ export function isThinkingOnlyRefusal(stopReason: string | null | undefined, saw
  * and is handled by the caller (it never calls this).
  */
 export function buildSyntheticTextFrames(index: number, text: string): Array<ServerSentEventMessage> {
+  // Each frame is tagged `synthetic:"refusal-recovery"` so the sink marks it on the forwarded
+  // track (richest-data-flow §3 — an injected frame the client receives must stay distinguishable
+  // from genuine upstream traffic; the upstream track keeps the real refusal). Record-layer only.
   return [
-    anthropicSseFrame({ type: "content_block_start", index, content_block: { type: "text", text: "" } }),
-    anthropicSseFrame({ type: "content_block_delta", index, delta: { type: "text_delta", text } }),
-    anthropicSseFrame({ type: "content_block_stop", index }),
+    tagFrameSynthetic(anthropicSseFrame({ type: "content_block_start", index, content_block: { type: "text", text: "" } }), "refusal-recovery"),
+    tagFrameSynthetic(anthropicSseFrame({ type: "content_block_delta", index, delta: { type: "text_delta", text } }), "refusal-recovery"),
+    tagFrameSynthetic(anthropicSseFrame({ type: "content_block_stop", index }), "refusal-recovery"),
   ]
 }
 
@@ -187,7 +191,9 @@ export function createRefusalRecoverer(deps: RefusalRecovererDeps): RefusalRecov
         // captured at construction.
         const thinkingTokens = (parsed as { usage?: { output_tokens?: number } }).usage?.output_tokens ?? 0
         const text = renderRefusalTemplate(deps.template, { ...deps.staticVars, thinking_tokens: thinkingTokens })
-        const rewritten: ServerSentEventMessage = { ...raw, data: JSON.stringify(rewriteRefusalMessageDelta(parsed)) }
+        // The rewritten end_turn delta is a mutation of the upstream refusal delta — on the
+        // forwarded track it no longer reflects the upstream stop_reason, so tag it too.
+        const rewritten = tagFrameSynthetic<ServerSentEventMessage>({ ...raw, data: JSON.stringify(rewriteRefusalMessageDelta(parsed)) }, "refusal-recovery")
         // Empty text = zero-wrapping: append NO text block, only the rewritten end_turn delta.
         const synthFrames = text === "" ? [] : buildSyntheticTextFrames(maxIndex + 1, text)
         return [...synthFrames, rewritten]
@@ -205,7 +211,9 @@ export function createRefusalRecoverer(deps: RefusalRecovererDeps): RefusalRecov
  * cannot drift from that helper.
  */
 function buildRefusalErrorFrame(errorType: string, message: string): ServerSentEventMessage {
-  return { event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message } }) }
+  // Tagged `synthetic:"refusal-recovery"`: this frame REPLACES the upstream terminator on the
+  // forwarded track (the upstream track keeps the real refusal). Record-layer only, wire unchanged.
+  return tagFrameSynthetic<ServerSentEventMessage>({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message } }) }, "refusal-recovery")
 }
 
 /** Options for {@link createRefusalErrorEmitter}: the config-driven message template + error type,
