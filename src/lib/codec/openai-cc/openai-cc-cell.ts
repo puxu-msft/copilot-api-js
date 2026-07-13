@@ -2,19 +2,17 @@
  * The `/chat/completions` OUTBOUND leg (Chat Completions wire) for the CellAssembly refactor (RFC
  * 2026-07-13 §11). Fills `OUTBOUND_LEGS[ENDPOINT.CHAT_COMPLETIONS]`.
  *
- * Three cells share this leg (all reach it with a CC-shaped `env.body`):
+ * Four cells share this leg, dispatched by clientFormat:
  *   - `openai-cc` (DIRECT `/chat/completions`) — native CC, `translateOut` identity.
- *   - `anthropic` (FORWARD `@cc`) — the hub translates Anthropic→CC in `translateOut`.
- *   - `gemini` (FORWARD `@cc`) — the hub translates Gemini→CC in `translateOut`.
+ *   - `anthropic` / `gemini` (FORWARD `@cc`) — the hub translates source→CC in `translateOut`.
+ *   - `openai-responses` (FALLBACK `/chat`) — the Responses→CC fallback: `translateOut` builds the
+ *     per-request fallback exchange (via the shared `requestState.responsesFallbackScratch`), `prepareWire`
+ *     runs the Responses→CC translation + prior-conversation prepend. R1/HIGH-A corner: its retry stack is
+ *     the Responses stack (auto-truncate OFF, maxRetries 1) — the other three run the CC stack.
  *
- * All three reuse the SAME `openai-cc-leg` wire cores + `buildOpenAiCcStrategies` the codecs/handlers
- * call today, so the driver's cell-keyed fork is byte-for-byte identical (the CC http golden locks it).
- * Request-lifecycle-stable supply (the auto-truncate baseline) is read from `env.requestState`.
- *
- * The `(openai-responses, /chat)` FALLBACK cell is NOT served here — its wire is the openai-responses
- * codec's Responses→CC translation with prior-conversation prepend + a per-request fallback exchange
- * (responseId/itemId/rebuiltMessages), and its strategies are the Responses stack (no auto-truncate);
- * it lands in C4 alongside the Responses leg + the exchange-scratch carrier (RFC §11.2c).
+ * The CC cells reuse the `openai-cc-leg` cores; the fallback cell reuses the `openai-responses-leg` cores
+ * (+ the shared `openai-responses-cell` scratch). Byte-for-byte identical to the codecs/handlers (the CC
+ * http golden + the responses-fallback tests lock it).
  */
 
 import type { Model } from "~/lib/models/client"
@@ -35,44 +33,71 @@ import type {
   RequestSample,
   RetryStrategy,
 } from "~/lib/pipeline/types"
-import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { translateRequestVia } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
-import { buildOpenAiCcStrategies } from "./strategies"
+import { buildCcFamilyLegStrategies } from "../cc-family-strategies"
+import {
+  //
+  type ResponsesFallbackScratch,
+  prepareResponsesFallbackWire,
+  sampleResponsesFallbackWireTrack,
+} from "../openai-responses/openai-responses-leg"
 import {
   //
   prepareChatCompletionsWire,
   sampleChatCompletionsWireTrack,
 } from "./openai-cc-leg"
 
-/** Is this a FORWARD `@cc` cell (a non-CC client translated to the CC wire)? */
-function isForward(env: RequestEnvelope): boolean {
-  return env.clientFormat !== "openai-cc"
+/** Is this the openai-responses FALLBACK `/chat` cell (Responses→CC wire), vs a CC-shaped direct/forward cell? */
+function isResponsesFallback(env: RequestEnvelope): boolean {
+  return env.clientFormat === "openai-responses"
 }
 
-/** The `/chat/completions` outbound leg — openai-cc DIRECT + anthropic/gemini FORWARD `@cc` (C3). */
+/** Is this a FORWARD `@cc` cell (anthropic/gemini client translated to the CC wire)? */
+function isForward(env: RequestEnvelope): boolean {
+  return env.clientFormat === "anthropic" || env.clientFormat === "gemini"
+}
+
+/** The shared fallback-exchange scratch parse put on requestState (the CHAT fallback cell reads it). */
+function fallbackScratch(env: RequestEnvelope): ResponsesFallbackScratch {
+  const scratch = env.requestState?.responsesFallbackScratch as ResponsesFallbackScratch | undefined
+  if (!scratch) throw new Error("[openai-cc-cell] env.requestState.responsesFallbackScratch missing — openai-responses parse did not populate the fallback leg supply")
+  return scratch
+}
+
+/** The `/chat/completions` outbound leg — openai-cc DIRECT + anthropic/gemini FORWARD `@cc` + openai-responses FALLBACK. */
 export const chatCompletionsLeg: OutboundLeg = {
   targetEndpoint: ENDPOINT.CHAT_COMPLETIONS,
 
-  // S2: openai-cc DIRECT is identity (native CC). A FORWARD leg (anthropic/gemini client) translates
-  // source→CC via the hub → env.body becomes CC-shaped from here on.
+  // S2: openai-cc DIRECT is identity (native CC). openai-responses FALLBACK is identity (the Responses→CC
+  // translation is in prepareWire) but ALSO builds the per-request fallback exchange (ids + rebuilt prior
+  // conversation) into the shared scratch — the codec render side reads the SAME instance. anthropic/gemini
+  // FORWARD translate source→CC via the hub → env.body becomes CC-shaped.
   translateOut(env) {
+    if (isResponsesFallback(env)) {
+      // Observability: the Responses→CC fallback feature (parity with the responses/ws handlers' strategies
+      // factory). Recorded once per request (S2), before the exchange.
+      env.ctx.recordFeature("via-chat-completions-fallback")
+      fallbackScratch(env).ensure(env)
+      return env
+    }
     if (!isForward(env)) return env
     const ccBody = translateRequestVia(env.clientFormat, env.targetEndpoint, env.body, { model: env.model as Model | undefined })
     return env.with({ body: ccBody })
   },
 
-  // S3: no CC-leg request rewrite. The handlers pass a reverse Anthropic sanitize rewrite gated on
-  // `/v1/messages` (inert on `/chat`), so the legacy path already assembled an empty chain here.
+  // S3: no request rewrite (the reverse-sanitize dep is MESSAGES-gated, inert on /chat; BUILTIN empty).
   requestRewrites(): ReadonlyArray<RequestRewrite> {
     return []
   },
 
   prepareWire(env): PreparedRequest {
+    // FALLBACK: Responses→CC wire (prior-conversation prepend from the scratch's exchange). Others: CC wire.
+    if (isResponsesFallback(env)) return prepareResponsesFallbackWire(env, fallbackScratch(env).exchange?.rebuiltMessages)
     return prepareChatCompletionsWire(env)
   },
 
@@ -82,36 +107,35 @@ export const chatCompletionsLeg: OutboundLeg = {
     return ALL_RESPONSE_REWRITES
   },
 
-  // No preSend: CC has no pre-flight truncation (the pre-flight hook is Anthropic-only).
+  // No preSend: neither the CC nor the Responses-fallback stack has an Anthropic pre-flight truncation.
 
   sampleWireTrack(wire, env): RequestSample {
-    return sampleChatCompletionsWireTrack(wire, env)
+    // FALLBACK: Responses effective + CC wire. Others: CC effective + CC wire.
+    return isResponsesFallback(env) ? sampleResponsesFallbackWireTrack(wire, env) : sampleChatCompletionsWireTrack(wire, env)
   },
 
   buildLegStrategies(spec: RetrySemanticsSpec, env): ReadonlyArray<RetryStrategy> {
-    // anthropic FORWARD `@cc` uses env.body (the hub-translated CC body) as the auto-truncate baseline —
-    // matching the messages handler's `originalPayload: env.body`. openai-cc DIRECT + gemini FORWARD use
-    // the parse-captured `truncateBaseline` (the un-sanitized, post-tool-rename CC payload) — matching the
-    // cc/gemini handlers' `codec.getTruncateBaseline() ?? env.body`.
-    const originalPayload =
-      env.clientFormat === "anthropic" ?
-        (env.body as ChatCompletionsPayload)
-      : ((env.requestState?.truncateBaseline as ChatCompletionsPayload | undefined) ?? (env.body as ChatCompletionsPayload))
-    return buildOpenAiCcStrategies({
-      originalPayload,
-      model: env.model as Model | undefined,
-      maxRetries: spec.maxRetries,
-      label: spec.label,
-    })
+    // R1/HIGH-A: spec.autoTruncate (false for the openai-responses FALLBACK cell, true for the CC-family
+    // direct/forward cells) selects the Responses vs CC stack. anthropic FORWARD uses env.body as the CC
+    // baseline; openai-cc/gemini use requestState.truncateBaseline (both inside buildCcFamilyLegStrategies).
+    return buildCcFamilyLegStrategies(spec, env)
   },
 }
 
 /**
- * RETRY_SEMANTICS for a cell served by the `/chat/completions` leg: the CC strategy stack (auto-truncate
- * ON, N retries) for all three C3 cells (openai-cc DIRECT + anthropic/gemini FORWARD `@cc`). The only
- * per-cell difference is the console `label` — the wire + strategy shape are identical (all CC-shaped
- * bodies). `maxRetries` is `autoTruncateMaxRetries` (the CC handlers' value).
+ * RETRY_SEMANTICS for a CC-shaped cell served by the `/chat/completions` leg: the CC stack (auto-truncate
+ * ON, N retries) for openai-cc DIRECT + anthropic/gemini FORWARD `@cc`. The only per-cell difference is the
+ * console `label`. (The openai-responses FALLBACK cell's semantics come from `responsesFallbackRetrySemantics`.)
  */
 export function chatCompletionsRetrySemantics(label: string): RetrySemanticsSpec {
   return { autoTruncate: true, maxRetries: state.autoTruncateMaxRetries, label }
+}
+
+/**
+ * RETRY_SEMANTICS for the openai-responses FALLBACK `/chat` cell — the R1/HIGH-A corner: auto-truncate OFF,
+ * maxRetries 1 (the Responses stack against the pre-translation Responses body, matching the legacy handler's
+ * `buildOpenAiResponsesStrategiesForEnv`), unlike the CC-shaped cells on the same leg which are ON.
+ */
+export function responsesFallbackRetrySemantics(): RetrySemanticsSpec {
+  return { autoTruncate: false, maxRetries: 1, label: "Responses(→CC fallback)" }
 }

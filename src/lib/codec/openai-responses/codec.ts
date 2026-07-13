@@ -75,11 +75,7 @@ import type {
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
-import type {
-  //
-  ChatCompletionResponse,
-  Message,
-} from "~/types/api/openai-chat-completions"
+import type { ChatCompletionResponse } from "~/types/api/openai-chat-completions"
 import type {
   //
   ResponsesInputItem,
@@ -138,6 +134,8 @@ import { rebuildConversationMessages } from "~/routes/responses/conversation-reb
 
 import {
   //
+  type FallbackExchange,
+  type ResponsesFallbackScratch,
   prepareResponsesDirectWire,
   prepareResponsesFallbackWire,
   sampleResponsesDirectWireTrack,
@@ -148,16 +146,6 @@ const CLIENT_FORMAT: ClientFormat = "openai-responses"
 const ENDPOINT_TYPE: EndpointType = "openai-responses"
 /** History `format` label for the REVERSE `@messages`-leg wire (the actual upstream endpoint). */
 const ANTHROPIC_MESSAGES_ENDPOINT_TYPE: EndpointType = "anthropic-messages"
-
-/** Per-request fallback exchange state (stable IDs + rebuilt prior conversation). */
-interface FallbackExchange {
-  responseId: string
-  itemId: string
-  /** Model name for the CC→Responses translator's `response.created.model` (resolved name). */
-  clientModel: string
-  /** Prior conversation rebuilt from session history, prepended to the translated CC payload. */
-  rebuiltMessages: Array<Message>
-}
 
 /**
  * The openai-responses codec, widened beyond {@link FormatCodec} with the
@@ -214,10 +202,21 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
   let resolvedModelName = ""
   // Fallback (Responses→CC) exchange SCRATCH (RFC §11.2c): a shared MUTABLE holder both this codec's render
   // side (reads exchange ids/clientModel) and — once C4a routes the CHAT cell through the assembly — the
-  // OUTBOUND_LEGS[CHAT_COMPLETIONS] fallback leg (writes it in translateOut, reads rebuiltMessages in
+  // OUTBOUND_LEGS[CHAT_COMPLETIONS] fallback leg (calls `ensure` in translateOut, reads rebuiltMessages in
   // prepareWire) reference. parse threads it onto env.requestState so both sides see the SAME instance.
-  // `exchange` is built LAZILY on the fallback route (translateOut CHAT branch); undefined for direct.
-  const fallbackScratch: { exchange: FallbackExchange | undefined } = { exchange: undefined }
+  // `ensure` builds the exchange LAZILY + idempotently (the build closure lives here — it needs
+  // resolvedModelName / genShortId / rebuildConversationMessages); undefined for a direct request.
+  const fallbackScratch: ResponsesFallbackScratch = {
+    exchange: undefined,
+    ensure(env) {
+      return (fallbackScratch.exchange ??= {
+        responseId: `resp_${genShortId()}`,
+        itemId: `item_${genShortId()}`,
+        clientModel: resolvedModelName || (env.body as ResponsesPayload).model,
+        rebuiltMessages: rebuildConversationMessages(env.ctx.sessionId),
+      })
+    },
+  }
   // Lazily-built CC→Responses per-frame translator (fallback response side).
   let ccTranslator: CCToResponsesStreamTranslator | null = null
   // REVERSE `@messages` leg (Phase 5): the reverse-exchange (responseId/itemId/clientModel) the two-hop
@@ -280,12 +279,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     // Responses→CC→Anthropic body) + builds the reverse-exchange the response two-hop needs.
     translateOut(env) {
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) {
-        fallbackScratch.exchange ??= {
-          responseId: `resp_${genShortId()}`,
-          itemId: `item_${genShortId()}`,
-          clientModel: resolvedModelName || (env.body as ResponsesPayload).model,
-          rebuiltMessages: rebuildConversationMessages(env.ctx.sessionId),
-        }
+        fallbackScratch.ensure(env)
         return env
       }
       if (env.targetEndpoint === ENDPOINT.MESSAGES) {

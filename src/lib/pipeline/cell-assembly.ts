@@ -49,7 +49,15 @@ import {
   //
   chatCompletionsLeg,
   chatCompletionsRetrySemantics,
+  responsesFallbackRetrySemantics,
 } from "~/lib/codec/openai-cc/openai-cc-cell"
+import {
+  //
+  responsesDirectRetrySemantics,
+  responsesLeg,
+  viaResponsesRetrySemantics,
+  wsResponsesLeg,
+} from "~/lib/codec/openai-responses/openai-responses-cell"
 import { ENDPOINT } from "~/lib/models/endpoint"
 
 import type {
@@ -95,31 +103,38 @@ export interface RetrySemanticsSpec {
  * is a compile error until its semantics land. C1: every entry throws (no cell migrated yet).
  */
 export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => RetrySemanticsSpec> = {
-  // anthropic: the /v1/messages DIRECT cell (C2a — auto-truncate + N retries) + the `@cc` FORWARD cell
-  // (C3 — the CC stack, auto-truncate ON, label "Anthropic(→CC)"). The `@responses` forward cell stays
-  // legacy until C4, so a RESPONSES/ws call here is a not-yet-migrated wiring bug.
+  // anthropic: /v1/messages DIRECT (C2a) + `@cc`/`@responses` FORWARD (C3/C4 — the CC stack against the
+  // hub-translated CC body; the `@responses` leg's CC→Responses wire step is deferred to prepareWire, so
+  // its baseline stays CC-shaped → auto-truncate ON, same as `@cc`).
   anthropic: (env) => {
     if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicMessagesRetrySemantics()
     if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics("Anthropic(→CC)")
+    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics("Anthropic(→Responses)")
     return notMigratedSemantics("anthropic")(env)
   },
-  // openai-cc: the DIRECT `/chat/completions` cell (C3 — auto-truncate ON, label "Completions") + the
-  // REVERSE `@messages` cell (C2b — the Anthropic stack). The via-responses `/responses` cell stays legacy
-  // until C4.
+  // openai-cc: DIRECT `/chat` (C3) + via-responses `/responses` (C4 — the CC stack against the CC body,
+  // translation deferred to prepareWire) + REVERSE `@messages` (C2b — the Anthropic stack).
   "openai-cc": (env) => {
     if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics("Anthropic(cc→messages)")
     if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics("Completions")
+    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics("Completions(→Responses)")
     return notMigratedSemantics("openai-cc")(env)
   },
-  // openai-responses: the REVERSE `@messages` cell (C2b — the R1/HIGH-A corner, auto-truncate ON). Its
-  // DIRECT `/responses` + FALLBACK `/chat` cells (auto-truncate OFF, maxRetries 1) land in C4.
-  "openai-responses": (env) =>
-    env.targetEndpoint === ENDPOINT.MESSAGES ? anthropicReverseRetrySemantics("Anthropic(responses→messages)") : notMigratedSemantics("openai-responses")(env),
-  // gemini: the FORWARD `@cc` cell (C3 — the CC stack, label "Gemini") + the REVERSE `@messages` cell
-  // (C2b). The via-responses `/responses` cell stays legacy until C4.
+  // openai-responses: the R1/HIGH-A corner — DIRECT `/responses` + FALLBACK `/chat` are auto-truncate OFF
+  // (the Responses stack, maxRetries 1), while its REVERSE `@messages` cell (C2b) is auto-truncate ON (the
+  // Anthropic stack). RETRY_SEMANTICS reads env.targetEndpoint to pick → a 2D function, NOT a cf scalar.
+  "openai-responses": (env) => {
+    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics("Anthropic(responses→messages)")
+    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return responsesFallbackRetrySemantics()
+    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return responsesDirectRetrySemantics()
+    // Exhaustive over UpstreamEndpoint (all 4 handled) — the fallthrough is a defensive guard.
+    return notMigratedSemantics("openai-responses")(env)
+  },
+  // gemini: FORWARD `@cc` (C3) + via-responses `/responses` (C4) + REVERSE `@messages` (C2b).
   gemini: (env) => {
     if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics("Anthropic(gemini→messages)")
     if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics("Gemini")
+    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics("Gemini(→Responses)")
     return notMigratedSemantics("gemini")(env)
   },
 }
@@ -170,23 +185,8 @@ export interface OutboundLeg {
 export const OUTBOUND_LEGS: Record<UpstreamEndpoint, OutboundLeg> = {
   [ENDPOINT.MESSAGES]: anthropicMessagesLeg,
   [ENDPOINT.CHAT_COMPLETIONS]: chatCompletionsLeg,
-  [ENDPOINT.RESPONSES]: notMigratedLeg(ENDPOINT.RESPONSES),
-  [ENDPOINT.WS_RESPONSES]: notMigratedLeg(ENDPOINT.WS_RESPONSES),
-}
-
-function notMigratedLeg(te: UpstreamEndpoint): OutboundLeg {
-  const die = (): never => {
-    throw new Error(`[cell-assembly] OutboundLeg for targetEndpoint "${te}" has not migrated yet (C2-C4)`)
-  }
-  return {
-    targetEndpoint: te,
-    translateOut: die,
-    requestRewrites: die,
-    prepareWire: die,
-    responseRewrites: die,
-    sampleWireTrack: die,
-    buildLegStrategies: die,
-  }
+  [ENDPOINT.RESPONSES]: responsesLeg,
+  [ENDPOINT.WS_RESPONSES]: wsResponsesLeg,
 }
 
 // ============================================================================
@@ -253,10 +253,17 @@ export const MIGRATED_CELLS: ReadonlySet<string> = new Set<string>([
   cellKey("openai-responses", ENDPOINT.MESSAGES),
   cellKey("gemini", ENDPOINT.MESSAGES),
   // C3: the 3 CC-shaped `/chat/completions` cells (openai-cc DIRECT + anthropic/gemini FORWARD `@cc`).
-  // The `(openai-responses, /chat)` FALLBACK cell lands in C4 (its wire is the Responses→CC fallback).
   cellKey("openai-cc", ENDPOINT.CHAT_COMPLETIONS),
   cellKey("anthropic", ENDPOINT.CHAT_COMPLETIONS),
   cellKey("gemini", ENDPOINT.CHAT_COMPLETIONS),
+  // C4: the `/responses` leg (openai-responses DIRECT + openai-cc/gemini via-responses + anthropic FORWARD
+  // `@responses`) + the openai-responses `(/chat)` FALLBACK. This completes the 12 reachable cells (the
+  // `ws:/responses` transport is never a routed targetEndpoint — the router only returns `/responses`).
+  cellKey("openai-responses", ENDPOINT.RESPONSES),
+  cellKey("openai-cc", ENDPOINT.RESPONSES),
+  cellKey("gemini", ENDPOINT.RESPONSES),
+  cellKey("anthropic", ENDPOINT.RESPONSES),
+  cellKey("openai-responses", ENDPOINT.CHAT_COMPLETIONS),
 ])
 
 /** The `MIGRATED_CELLS` key for a cell. */

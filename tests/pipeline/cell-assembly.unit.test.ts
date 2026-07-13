@@ -65,51 +65,59 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     }
   })
 
-  test("C2/C3 migration set: all 4 /v1/messages cells + the 3 CC-shaped /chat cells; NOT the responses-fallback /chat, /responses, ws", () => {
-    // C2a (anthropic direct) + C2b (the 3 reverse @messages cells) — the whole /v1/messages leg.
-    for (const cf of ["anthropic", "openai-cc", "openai-responses", "gemini"] as const) {
-      expect(isCellMigrated(cf, ENDPOINT.MESSAGES)).toBe(true)
-      expect(MIGRATED_CELLS.has(`${cf}|/v1/messages`)).toBe(true)
-    }
-    // C3: the 3 CC-shaped /chat/completions cells (openai-cc DIRECT + anthropic/gemini FORWARD @cc).
-    for (const cf of ["openai-cc", "anthropic", "gemini"] as const) expect(isCellMigrated(cf, ENDPOINT.CHAT_COMPLETIONS)).toBe(true)
-    // The (openai-responses, /chat) FALLBACK cell is NOT migrated yet (C4 — its wire is the Responses→CC fallback).
-    expect(isCellMigrated("openai-responses", ENDPOINT.CHAT_COMPLETIONS)).toBe(false)
-    // No cell on the /responses + ws legs is migrated yet (C4).
-    for (const te of [ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES]) {
-      for (const cf of ["anthropic", "openai-cc", "openai-responses", "gemini"] as const) expect(isCellMigrated(cf, te)).toBe(false)
-    }
+  test("C2/C3/C4 migration set: all 12 reachable cells migrated (ws:/responses is never a routed target)", () => {
+    // C2 (the 4 /v1/messages cells) + C3 (the 3 CC-shaped /chat cells) + C4 (the /responses leg + the
+    // responses-fallback /chat) = the 12 reachable cells.
+    const reachable: ReadonlyArray<[ClientFormat, UpstreamEndpoint]> = [
+      ["anthropic", ENDPOINT.MESSAGES],
+      ["openai-cc", ENDPOINT.MESSAGES],
+      ["openai-responses", ENDPOINT.MESSAGES],
+      ["gemini", ENDPOINT.MESSAGES],
+      ["openai-cc", ENDPOINT.CHAT_COMPLETIONS],
+      ["anthropic", ENDPOINT.CHAT_COMPLETIONS],
+      ["gemini", ENDPOINT.CHAT_COMPLETIONS],
+      ["openai-responses", ENDPOINT.CHAT_COMPLETIONS], // fallback
+      ["openai-responses", ENDPOINT.RESPONSES], // direct
+      ["openai-cc", ENDPOINT.RESPONSES], // via-responses
+      ["gemini", ENDPOINT.RESPONSES], // via-responses
+      ["anthropic", ENDPOINT.RESPONSES], // forward @responses
+    ]
+    for (const [cf, te] of reachable) expect(isCellMigrated(cf, te)).toBe(true)
+    expect(MIGRATED_CELLS.size).toBe(reachable.length)
+    // ws:/responses is a capability marker, never a routed targetEndpoint (the router only returns /responses).
+    for (const cf of ["anthropic", "openai-cc", "openai-responses", "gemini"] as const) expect(isCellMigrated(cf, ENDPOINT.WS_RESPONSES)).toBe(false)
   })
 
-  test("R1/HIGH-A corner: (openai-responses, /v1/messages) has auto-truncate ON — not a clientFormat scalar", () => {
+  test("R1/HIGH-A corner: openai-responses auto-truncate is a 2D function of BOTH axes, not a clientFormat scalar", () => {
     // The corner that breaks BOTH single-axis scalars: the openai-responses REVERSE @messages cell has
-    // auto-truncate ON (Anthropic stack), while its DIRECT /responses cell has it OFF (C4). RETRY_SEMANTICS
-    // reads env.targetEndpoint to pick — proving it is a 2D function, not a clientFormat scalar.
+    // auto-truncate ON (the Anthropic stack), while its DIRECT /responses + FALLBACK /chat cells have it OFF
+    // (the Responses stack, maxRetries 1). RETRY_SEMANTICS reads env.targetEndpoint to pick.
     expect(RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.MESSAGES)).autoTruncate).toBe(true)
-    // Its DIRECT /responses cell is not migrated yet (C4) → still throws (the auto-truncate-OFF corner lands there).
-    expect(() => RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.RESPONSES))).toThrow(/has not migrated yet/)
-    // Symmetry: cc + gemini reverse @messages also have auto-truncate ON.
+    const direct = RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.RESPONSES))
+    expect(direct.autoTruncate).toBe(false)
+    expect(direct.maxRetries).toBe(1)
+    const fallback = RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.CHAT_COMPLETIONS))
+    expect(fallback.autoTruncate).toBe(false)
+    expect(fallback.maxRetries).toBe(1)
+    // Symmetry (the other axis-half): cc/gemini/anthropic on the SAME /responses leg are auto-truncate ON —
+    // so auto-truncate is neither a pure clientFormat scalar NOR a pure targetEndpoint scalar.
+    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.RESPONSES)).autoTruncate).toBe(true)
+    expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.RESPONSES)).autoTruncate).toBe(true)
+    expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.RESPONSES)).autoTruncate).toBe(true)
+    // cc + gemini reverse @messages also auto-truncate ON.
     expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.MESSAGES)).autoTruncate).toBe(true)
     expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.MESSAGES)).autoTruncate).toBe(true)
   })
 
-  test("C3 semantics: the 3 CC-shaped /chat cells have auto-truncate ON + distinct labels", () => {
+  test("C3/C4 semantics: the CC-shaped /chat + /responses cells have auto-truncate ON + distinct labels", () => {
     // openai-cc DIRECT + anthropic/gemini FORWARD @cc all run the CC stack (auto-truncate ON), differing
-    // only in the console label. The (openai-responses, /chat) fallback is NOT here (auto-truncate OFF, C4).
-    const cc = RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.CHAT_COMPLETIONS))
-    expect(cc.autoTruncate).toBe(true)
-    expect(cc.label).toBe("Completions")
+    // only in the console label. Via-responses cells carry the (→Responses) labels.
+    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.CHAT_COMPLETIONS)).label).toBe("Completions")
     expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.CHAT_COMPLETIONS)).label).toBe("Anthropic(→CC)")
     expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.CHAT_COMPLETIONS)).label).toBe("Gemini")
-    // The responses-fallback /chat cell stays legacy → still throws (auto-truncate-OFF corner lands in C4).
-    expect(() => RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.CHAT_COMPLETIONS))).toThrow(/has not migrated yet/)
-  })
-
-  test("unmigrated cells throw a LOUD identifiable error (never a silent wrong-wire)", () => {
-    // A not-yet-migrated LEG (the /responses leg) throws when a method is invoked.
-    expect(() => OUTBOUND_LEGS[ENDPOINT.RESPONSES].prepareWire(envStub("openai-responses", ENDPOINT.RESPONSES))).toThrow(/has not migrated yet/)
-    // The retry-semantics for a not-yet-migrated cell (openai-responses DIRECT /responses) throws.
-    expect(() => RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.RESPONSES))).toThrow(/has not migrated yet/)
+    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.RESPONSES)).label).toBe("Completions(→Responses)")
+    expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.RESPONSES)).label).toBe("Anthropic(→Responses)")
+    expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.RESPONSES)).label).toBe("Gemini(→Responses)")
   })
 
   test("the migrated anthropic|/v1/messages cell resolves to a live semantics spec (auto-truncate on)", () => {
@@ -159,5 +167,49 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
       expect(strategies.length).toBeGreaterThan(0)
       for (const s of strategies) expect(typeof s.name).toBe("string")
     }
+  })
+
+  test("R1/HIGH-A golden — auto-truncate IS in the stack for the CC-family cells but NOT the openai-responses direct/fallback cells", () => {
+    // The plan-mandated R1 corner golden: prove the STACK, not just the flag. buildStrategies for the
+    // openai-responses DIRECT /responses cell must NOT contain an "auto-truncate" strategy (the Responses
+    // stack), while its REVERSE @messages cell + the via-responses cc cell DO (the Anthropic/CC stacks).
+    const respBody = { model: "gpt-5.5", input: [] }
+    const responsesEnv = {
+      clientFormat: "openai-responses" as const,
+      targetEndpoint: ENDPOINT.RESPONSES,
+      model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.RESPONSES] }),
+      body: respBody,
+      prepareHints: {},
+      requestState: {},
+    } as unknown as RequestEnvelope
+    const directStrategies = resolveCellAssembly("openai-responses", ENDPOINT.RESPONSES).buildStrategies(responsesEnv)
+    expect(directStrategies.length).toBeGreaterThan(0)
+    expect(directStrategies.some((s) => s.name === "auto-truncate")).toBe(false)
+
+    // The openai-responses REVERSE @messages cell (SAME clientFormat, different leg) HAS auto-truncate.
+    const ccBody = { model: "gpt-5.5", max_tokens: 100, messages: [] }
+    const reverseEnv = {
+      clientFormat: "openai-responses" as const,
+      targetEndpoint: ENDPOINT.MESSAGES,
+      model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.MESSAGES] }),
+      body: ccBody,
+      prepareHints: {},
+      requestState: { betaProbe: createBetaProbe(undefined), reverseMapperHolder: { get: () => undefined, set: () => {} } },
+    } as unknown as RequestEnvelope
+    const reverseStrategies = resolveCellAssembly("openai-responses", ENDPOINT.MESSAGES).buildStrategies(reverseEnv)
+    expect(reverseStrategies.some((s) => s.name === "auto-truncate")).toBe(true)
+
+    // The via-responses cc cell (SAME /responses leg, different clientFormat) HAS auto-truncate — proving
+    // the flag is genuinely 2D (neither axis alone determines it).
+    const viaEnv = {
+      clientFormat: "openai-cc" as const,
+      targetEndpoint: ENDPOINT.RESPONSES,
+      model: mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.RESPONSES] }),
+      body: ccBody,
+      prepareHints: {},
+      requestState: { truncateBaseline: ccBody },
+    } as unknown as RequestEnvelope
+    const viaStrategies = resolveCellAssembly("openai-cc", ENDPOINT.RESPONSES).buildStrategies(viaEnv)
+    expect(viaStrategies.some((s) => s.name === "auto-truncate")).toBe(true)
   })
 })

@@ -66,6 +66,32 @@ const CC_ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
 const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
 // ============================================================================
+// Fallback exchange scratch (RFC §11.2c) — shared by the codec render side + the CHAT leg
+// ============================================================================
+
+/** The per-request fallback-exchange (stable IDs + rebuilt prior conversation). */
+export interface FallbackExchange {
+  responseId: string
+  itemId: string
+  /** Model name for the CC→Responses translator's `response.created.model` (resolved name). */
+  clientModel: string
+  /** Prior conversation rebuilt from session history, prepended to the translated CC payload. */
+  rebuiltMessages: Array<Message>
+}
+
+/**
+ * The shared MUTABLE fallback-exchange scratch (RFC §11.2c) both the openai-responses InboundCodec (render
+ * side — reads `exchange` ids) and the CHAT fallback leg (`translateOut` calls `ensure`, `prepareWire` reads
+ * `exchange.rebuiltMessages`) reference — the SAME per-request instance the codec's parse threads onto
+ * `env.requestState.responsesFallbackScratch`. `ensure` builds the exchange LAZILY + idempotently (the codec
+ * owns the build closure — resolvedModelName / genShortId / rebuildConversationMessages).
+ */
+export interface ResponsesFallbackScratch {
+  exchange: FallbackExchange | undefined
+  ensure(env: RequestEnvelope): FallbackExchange
+}
+
+// ============================================================================
 // prepareWire — the three RESPONSES-family wire shapes
 // ============================================================================
 
