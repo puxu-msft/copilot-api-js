@@ -50,7 +50,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { countTotalTokens } from "~/lib/anthropic/auto-truncate"
+import { countTotalInputTokens } from "~/lib/anthropic/auto-truncate"
 import {
   //
   applyBackfillBuckets,
@@ -244,7 +244,7 @@ async function processRow(scan: ScanRow, accum: Accum, stageSelect: ReturnType<D
     const model = state.modelIndex.get(modelName)
     if (!model) return "skipped"
 
-    const est = await countTotalTokens(body, model)
+    const est = await countTotalInputTokens(body, model)
     if (est < EST_FLOOR) return "skipped"
 
     accumulate(accum, model.id, bucketIndexFor(est), est, real)
