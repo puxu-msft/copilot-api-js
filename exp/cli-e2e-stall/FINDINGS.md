@@ -52,6 +52,17 @@ HOME=/tmp/iso-claude-home ANTHROPIC_BASE_URL=http://localhost:4199 \
   claude -p "say hello" --model claude-sonnet-4.6 --output-format json | jq '{result, num_turns}'
 ```
 
-## 待做（真 Tier 2）
+## 真 Tier 2 已落地（端到端通过真 proxy）
 
-本 PoC 用 fake server 隔离验证了 **claude 侧行为**。真 Tier 2 harness 应走**真 proxy**（spawn 非 4141 + upstream-hook mock 返回 thinking-only refusal + config `refusalSseRewrite:end_turn`/`refusalEndTurnText:""`），端到端证「proxy 配置 → 产出 thinking-only end_turn → claude stall」整链。剩余机制未知 = proxy boot 的 APP_DIR/token/hook-config 隔离（spawn 真进程，不能再用 Tier 1 的同进程 `setUpstreamFetchForTests`）。
+fake-server PoC 之后，真 Tier 2 harness 已建成并验证通过：真 `claude -p` → spawn 真 proxy（非 4141）→ config 声明的 upstream hook mock thinking-only refusal → proxy 的空串 refusal recovery 产出 thinking-only end_turn → **claude STALL**（`numTurns=2 result="" stopReason=end_turn`，确定性重跑同值）；对照 recovery 文本非空 → `numTurns=1 result 含标记`。落在 `tests/e2e-client/{harness/{spawn-proxy,drive-claude-cli,cli-refusal-hook},anthropic-cli.e2e.test}.ts`（gated：claude 在 PATH + github_token 存在，否则 skip）。
+
+落地时又踩两个硬机制（记录以免重蹈）：
+
+1. **hook data-URL 具名导出丢失的精确触发 = 源码里的 `JSON.stringify` 或字面 `{`/`}`/`"` payload**（比 skill 记的「yield 内联对象字面量」更细）。loader 用 `Bun.Transpiler`+`data:` URL 加载，触发时 `import()` 返回 `{__esModule, default}`、具名 `onExchange` 静默变 undefined（`exports none of: onExchange`）。**修法**：帧 `data` 存 **base64**（源码无 JSON 括号引号）、`atob()` 运行时解码；帧存 `[event, base64]` 字符串元组数组（非对象字面量数组）；hook **零 import**（`~` 别名在 data-URL 模块不解析）。bisect 全过程见本目录。
+2. **spawned proxy 清理：`proc.kill()` 不够**——`bun run ./src/main.ts` + volta 的 bun shim 把 server 包进父子进程树，`proc.kill()` 只杀 launcher、真 server 存活成 leftover。**修法**：close() 用**端口精确**的 `pkill -9 -f "main.ts start --port <唯一端口>"`（只匹配自己的 proxy、绝不碰 4141/peer），spawn 前也先清同端口 leftover。
+
+## 复现（真 Tier 2）
+
+```bash
+bun test tests/e2e-client/anthropic-cli.e2e.test.ts   # gated on claude + github_token
+```
