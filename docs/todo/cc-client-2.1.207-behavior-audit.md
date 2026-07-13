@@ -499,6 +499,37 @@ fine-grained tool streaming **无正确性 gap**（CC block-stop 解析 + 空 de
 
 ---
 
+## 轮次 13（2026-07-13）：usage wire —— 结构化 accumulator allowlist 漏 cost 相关因子（含 F18-a 结论）
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 从 `message_delta.usage` 累加（`app.pretty.js:11153-11157`）：`output_tokens` / `input_tokens` / `cache_creation_input_tokens` / `cache_read_input_tokens` / `server_tool_use` / **`iterations`（新）**，外加 `message_delta.context_management`。**成本计算**（`ehi` 62134 / `bYm` 62129）读**嵌套** `cache_creation.ephemeral_1h_input_tokens`（1h vs 5m cache write 拆分定价）与 `server_tool_use.web_search_requests`；`speed==="fast"` 走**独立定价表**（`thi` 62138，per-model fast 档更贵）。
+
+### 本项目现状（读码）——usage 处理**分裂**
+
+- **转发给 CC = passthrough 原始帧**：response-rewrite 默认 `[raw]`（[response-rewrite-adapters.ts:327-330](../../src/lib/codec/anthropic/response-rewrite-adapters.ts#L327)），非 refusal 的 `message_delta` **逐字转发** → **CC 拿到完整 usage wire（含 iterations / ephemeral_1h / web_search_requests / 任何新字段）**。**CC 侧无 gap**。
+- **raw 存 history sseEvents**：上游原始轨忠实（[driver.ts:426-432](../../src/lib/pipeline/driver.ts#L426)）→ 原始 usage 帧**在 history 里可回溯**。
+- **本项目结构化 accumulator = allowlist**（[stream-accumulator.ts:211-220](../../src/lib/anthropic/stream-accumulator.ts#L211) + 类型 385-387）：**只**取 `input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` / `server_tool_use.tool_search_requests`。
+
+### F19（MEDIUM，richest-data-flow）— 结构化 usage 漏 cost 相关因子（iterations / 1h-cache 拆分 / web_search_requests）
+
+**判断（读码）**：本项目喂 history entry usage 投影 + telemetry 的**结构化** accumulator **漏**以下 CC/Anthropic 现发的 usage 字段：
+- **`iterations`**（新，2.1.207）——完全未取。
+- **`cache_creation.ephemeral_1h_input_tokens`**——嵌套的 1h-vs-5m cache-write 拆分。本项目只取扁平 `cache_creation_input_tokens` 总数 → **无法区分 1h/5m 定价腿**（`bYm` 需要它做准确成本归因）。
+- **`server_tool_use.web_search_requests`**——本项目只捕 `tool_search_requests`（[220](../../src/lib/anthropic/stream-accumulator.ts#L220) 只 typed 这一个），漏 `web_search_requests`。
+
+违 `richest-data-flow` ADR（后端存储必须完整、永不为 DRY/YAGNI/无消费者裁剪）+ `telemetry-architecture`（**聚合后不可重算的因子拆最细**——1h/5m 拆分正是聚合后不可重算的 cost 因子）。**危害**：raw 虽在 sseEvents，但**结构化/可查询/可聚合**的 usage 投影缺这些 → telemetry 成本归因（`/metrics`、model 维度成本）**算不准 1h-cache 与 web_search 成本**，也拿不到 iterations；下游要用得回去重解析 sseEvents（违「聚合后不可重算拆最细」）。
+
+**F18-a（`thinking-token-count-2026-05-13`）在此结题**：该 beta 若令 GHC 在 usage 加思考 token 字段，会被**同一 allowlist 丢弃**（结构化层）——与 F19 同根同修。CC 侧仍 passthrough 拿得到（若 GHC 发）。注：本轮未在 CC 累加器直接见到 `usage.thinking_tokens` 读取点（206940 的 thinking_tokens 是 message-action 集、非 usage），故 F18-a 的「usage 新字段」仍**待 GHC 实测确认存在**再定。
+
+**理想方向（不在本轮做）**：把结构化 accumulator 从 allowlist 改为**保留完整 usage 对象**（或至少补 `iterations` + `cache_creation` 嵌套 + `server_tool_use.web_search_requests` 三项），并在 telemetry registry 按最细因子拆（skill `telemetry-architecture` 三支柱）。新增 usage 顶层字段的三处必改见 skill `persistence-async-invariants`（toHistoryEntry + onTerminal 投影 + updateEntry allowlist）。**这是一条明确的 richest-data-flow 正确改进，非可选**——按项目哲学不因「当前无消费者」降级。
+
+### 本轮结论
+
+usage **对 CC 无 gap**（passthrough 全字段 + raw 存 sseEvents）。真问题是本项目**自身结构化 usage 投影是 allowlist**、漏 3 个 cost 相关因子（+ 潜在 thinking-token-count），违 richest-data-flow / telemetry「不可重算因子拆最细」（F19，中）。这是明确该做的正确改进，落地见 telemetry-architecture / persistence-async-invariants skill。
+
+---
+
 ## 阶段综合（轮次 1-11，F1-F17）：三条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
@@ -556,6 +587,6 @@ CC 2.1.207 引入一批 2026 新 beta，本项目**无显式感知**、靠通用
 
 - [ ] **fine-grained tool streaming 语义**（轮次 11 已查）：确认无正确性 gap（CC block-stop 解析、空 delta 安全、web_search mid-parse 已退役）；剥 `eager_input_streaming` 仅 UX eagerness 降级（F17,最低，主线 C）。
 - [x] **anthropic-beta 全集对账**（轮次 12）：27 betas 全对账（矩阵表）；通用 reactive 剥 + 8 显式/按名处理覆盖绝大多数，无硬失败。真待办仅 F18-a（`thinking-token-count` 改 usage wire）/ F18-b（`redact-thinking` 改 thinking 形态）两个改响应侧 beta。
-- [ ] **usage wire 形状**：CC 消费的 `message_delta.usage` / `message_start.usage` 字段（cache_creation/cache_read/server_tool_use 细分 + F18-a 的 thinking-token-count）vs 本项目 usage 透传与 history 记录——**与 F18-a 合并核**。
+- [x] **usage wire 形状**（轮次 13）：CC 侧无 gap（passthrough 全字段 + raw 存 sseEvents）；本项目结构化 usage accumulator 是 allowlist、漏 `iterations`/`cache_creation.ephemeral_1h_input_tokens`/`server_tool_use.web_search_requests`（F19,中,richest-data-flow）；F18-a 同根结题。
 - [ ] **metadata.user_id / 请求归属**：CC 的 `metadata`（`Wtt()`，297987）字段 vs 本项目是否透传/用于 GHC 归属。
 - [ ] **tool_choice 变体**：CC 发的 `tool_choice`（auto/any/tool/none）+ `disable_parallel_tool_use` vs 本项目转发。
