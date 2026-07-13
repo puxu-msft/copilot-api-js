@@ -49,6 +49,7 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { RequestState } from "~/lib/pipeline/request-state"
 import type {
   //
   ClassifiedStreamError,
@@ -389,6 +390,7 @@ interface EnvelopeInit {
   body: unknown
   ctx: RequestContext
   prepareHints?: PrepareHints
+  requestState?: RequestState
 }
 
 /** Build a {@link RequestEnvelope} (clientFormat `gemini`, CC-shaped body). */
@@ -401,6 +403,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     stream: init.stream,
     body: init.body,
     prepareHints: init.prepareHints ?? {},
+    ...(init.requestState !== undefined && { requestState: init.requestState }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createGeminiLazyView(env.body)
@@ -414,6 +417,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         body: env.body,
         ctx: env.ctx,
         prepareHints: env.prepareHints,
+        requestState: env.requestState,
         ...patch,
       })
     },

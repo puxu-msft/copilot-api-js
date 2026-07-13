@@ -1,0 +1,219 @@
+/**
+ * CellAssembly — the centralized (clientFormat × targetEndpoint) 2D outbound-concern assembler.
+ *
+ * RFC 2026-07-13 §11 (definitive v2 design). Replaces the scattered outbound-concern supply
+ * (`{strategy-registry supply bag + 4 handler supply factories + codec cross-format delegate + codec
+ * internal isForwardTranslateLeg fork}`) with a SINGLE assembly resolver keyed by the cell's two axes.
+ *
+ * ## The two axes (why a 2D assembler, RFC §0.1 BLOCK-1)
+ * The outbound strategy STACK's SHAPE is a function of BOTH axes, not one:
+ *   - the WIRE (translateOut / requestRewrites / prepareWire / responseRewrites / sampleWireTrack) is keyed
+ *     by `targetEndpoint` — the {@link OutboundLeg} (Anthropic `/v1/messages` / CC `/chat/completions` /
+ *     Responses `/responses`+ws).
+ *   - the retry SEMANTICS (auto-truncate? maxRetries?) is keyed by `clientFormat` — {@link RETRY_SEMANTICS}
+ *     — but its semantic HALF reads `env.targetEndpoint` too (R1/HIGH-A: `(openai-responses, /v1/messages)`
+ *     reverse leg has auto-truncate ON while its `(openai-responses, /chat|/responses)` direct legs have it
+ *     OFF — a 2D function, NOT a clientFormat scalar).
+ *
+ * `resolveCellAssembly(cf, te)` composes the two: the leg supplies the wire methods + a wire strategy
+ * builder; the retry semantics supplies auto-truncate/maxRetries; {@link CellAssembly.buildStrategies}
+ * combines them. Both records are EXHAUSTIVE over their key type, so a missing cell is a COMPILE error —
+ * precisely eliminating the Phase-7 "switch missing case → default throw → silent 500" class (RFC §11.1).
+ * Honest boundary: the exhaustiveness covers cell EXISTENCE; that `env.body` is the cell's canonical shape
+ * stays unchecked (`env.body:unknown`), guarded by the assembly's translateOut↔buildStrategies↔prepareWire
+ * three-party convention + the L1 "every cell's buildStrategies is non-empty + does not throw" test.
+ *
+ * ## Cross-axis state carriers (RFC §11.2 / §11.9 HIGH-B)
+ * A CellAssembly is STATELESS per cell (one instance per `cf × te`) — every method reads what it needs
+ * from `env`. Request-lifecycle-STABLE supply (truncateBaseline / resanitize / the shared mutable betaProbe
+ * / anthropic-beta seed) lives on `env.requestState` (a `readonly` field the `with()` copy preserves by
+ * reference — NOT the replace-semantics `prepareHints`, R2). Per-attempt retry intent stays in
+ * `prepareHints`. Side-channel recordings (effectiveMessages / initialSanitizationInfo / strippedCacheControl)
+ * are written to `ctx`. The betaProbe is read LAZILY from `env.requestState.betaProbe` at each call (R3 —
+ * reference sharing + lazy read, never a construct-time snapshot).
+ *
+ * ## Migration state (C1-C5)
+ * C1 (this commit) lands the CONTRACTS only — the two records throw placeholders; {@link MIGRATED_LEGS} is
+ * empty so the driver's hybrid dispatch (added in C2 with the first real assembly) always takes the legacy
+ * path → byte-identical. C2 fills `/v1/messages`, C3 `/chat/completions`, C4 `/responses`+ws; C5 asserts
+ * `MIGRATED_LEGS` covers every leg and retires the strategy-registry supply bag.
+ */
+
+import { ENDPOINT } from "~/lib/models/endpoint"
+
+import type {
+  //
+  ClientFormat,
+  RequestEnvelope,
+  UpstreamEndpoint,
+} from "./envelope"
+import type {
+  //
+  RequestRewrite,
+  ResponseRewrite,
+} from "./rewrite-registry"
+import type {
+  //
+  PreparedRequest,
+  RequestSample,
+  RetryStrategy,
+} from "./types"
+
+// ============================================================================
+// Retry semantics (clientFormat-keyed, reads env.targetEndpoint — R1/HIGH-A)
+// ============================================================================
+
+/**
+ * The retry-strategy SEMANTIC spec the wire leg does NOT own: whether auto-truncate is in the stack, the
+ * normal-retry budget, and a label. Produced by {@link RETRY_SEMANTICS}[clientFormat](env) — the `env`
+ * argument is load-bearing (R1/HIGH-A): `autoTruncate` is a 2D function that reads `env.targetEndpoint`,
+ * NOT a clientFormat scalar.
+ */
+export interface RetrySemanticsSpec {
+  /** Is auto-truncate in the retry stack for THIS cell? (R1: reads env.targetEndpoint, not a cf scalar). */
+  readonly autoTruncate: boolean
+  /** Normal-budget retry cap for THIS cell (CC/Anthropic legs 5; the Responses DIRECT/fallback leg 1). */
+  readonly maxRetries: number
+  /** Diagnostic label (history/telemetry). */
+  readonly label: string
+}
+
+/**
+ * The retry SEMANTIC half, keyed by `clientFormat`, evaluated per-request against `env` (so a cell's
+ * `env.targetEndpoint` selects the R1 corner). EXHAUSTIVE over {@link ClientFormat} → a new client format
+ * is a compile error until its semantics land. C1: every entry throws (no cell migrated yet).
+ */
+export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => RetrySemanticsSpec> = {
+  anthropic: notMigratedSemantics("anthropic"),
+  "openai-cc": notMigratedSemantics("openai-cc"),
+  "openai-responses": notMigratedSemantics("openai-responses"),
+  gemini: notMigratedSemantics("gemini"),
+}
+
+function notMigratedSemantics(cf: ClientFormat): (env: RequestEnvelope) => RetrySemanticsSpec {
+  return () => {
+    throw new Error(`[cell-assembly] RETRY_SEMANTICS for clientFormat "${cf}" has not migrated yet (C2-C4)`)
+  }
+}
+
+// ============================================================================
+// Outbound leg (targetEndpoint-keyed wire concerns)
+// ============================================================================
+
+/**
+ * The WIRE half of a cell, keyed by `targetEndpoint` — the outbound-leg concerns that were scattered across
+ * the codec's per-leg `prepareWire`/`renderResponse` forks + the cross-format delegate. Every method reads
+ * `env` (incl. `env.requestState` for the stable supply, `env.clientFormat` where translateOut selects the
+ * source translator). Produces the wire strategy builder {@link CellAssembly.buildStrategies} composes with
+ * the {@link RetrySemanticsSpec}.
+ */
+export interface OutboundLeg {
+  readonly targetEndpoint: UpstreamEndpoint
+  /** S2: translate `env.body` from `env.clientFormat` to this leg's upstream format (identity for a direct leg). */
+  translateOut(env: RequestEnvelope): RequestEnvelope
+  /** This leg's S3 upstream-wire request-rewrite chain (e.g. reverse Anthropic sanitize on a `@messages` leg). */
+  requestRewrites(env: RequestEnvelope): ReadonlyArray<RequestRewrite>
+  /** S4 last-mile: derive the wire bytes for one attempt; writes `env.requestState.betaProbe.recordOutbound` + ctx side-channel. */
+  prepareWire(env: RequestEnvelope): PreparedRequest
+  /** This leg's S5 response-rewrite chain. */
+  responseRewrites(env: RequestEnvelope): ReadonlyArray<ResponseRewrite>
+  /** S4 first-attempt async pre-send hook (Anthropic pre-flight truncation); omitted = no-op. */
+  readonly preSend?: (env: RequestEnvelope) => Promise<RequestEnvelope>
+  /** observability: the upstream-wire request descriptors (outboundRequest track); writes ctx effectiveMessages side-channel. */
+  sampleWireTrack(wire: PreparedRequest, env: RequestEnvelope): RequestSample
+  /**
+   * The wire-side retry strategies for THIS leg, given the composed {@link RetrySemanticsSpec} (auto-truncate /
+   * maxRetries) + `env` (reads `env.requestState` for the stable supply — truncateBaseline / resanitize /
+   * betaProbe). The Phase-7 direct guard: this MUST be non-empty for every live cell (L1 test).
+   */
+  buildLegStrategies(spec: RetrySemanticsSpec, env: RequestEnvelope): ReadonlyArray<RetryStrategy>
+}
+
+/**
+ * The WIRE half, keyed by `targetEndpoint`. EXHAUSTIVE over {@link UpstreamEndpoint} → a new leg is a
+ * compile error until it lands. C1: every entry throws (no leg migrated yet).
+ */
+export const OUTBOUND_LEGS: Record<UpstreamEndpoint, OutboundLeg> = {
+  [ENDPOINT.MESSAGES]: notMigratedLeg(ENDPOINT.MESSAGES),
+  [ENDPOINT.CHAT_COMPLETIONS]: notMigratedLeg(ENDPOINT.CHAT_COMPLETIONS),
+  [ENDPOINT.RESPONSES]: notMigratedLeg(ENDPOINT.RESPONSES),
+  [ENDPOINT.WS_RESPONSES]: notMigratedLeg(ENDPOINT.WS_RESPONSES),
+}
+
+function notMigratedLeg(te: UpstreamEndpoint): OutboundLeg {
+  const die = (): never => {
+    throw new Error(`[cell-assembly] OutboundLeg for targetEndpoint "${te}" has not migrated yet (C2-C4)`)
+  }
+  return {
+    targetEndpoint: te,
+    translateOut: die,
+    requestRewrites: die,
+    prepareWire: die,
+    responseRewrites: die,
+    sampleWireTrack: die,
+    buildLegStrategies: die,
+  }
+}
+
+// ============================================================================
+// CellAssembly — the composed (cf × te) view the driver consumes
+// ============================================================================
+
+/**
+ * The composed per-cell assembly the driver consumes — the leg's wire methods plus a `buildStrategies` that
+ * combines the leg's wire strategies with the clientFormat's {@link RetrySemanticsSpec}. Stateless (one per
+ * `cf × te`); every method reads `env`. Produced by {@link resolveCellAssembly}.
+ */
+export interface CellAssembly {
+  readonly clientFormat: ClientFormat
+  readonly targetEndpoint: UpstreamEndpoint
+  translateOut(env: RequestEnvelope): RequestEnvelope
+  requestRewrites(env: RequestEnvelope): ReadonlyArray<RequestRewrite>
+  prepareWire(env: RequestEnvelope): PreparedRequest
+  responseRewrites(env: RequestEnvelope): ReadonlyArray<ResponseRewrite>
+  readonly preSend?: (env: RequestEnvelope) => Promise<RequestEnvelope>
+  sampleWireTrack(wire: PreparedRequest, env: RequestEnvelope): RequestSample
+  /** The full retry stack for THIS cell: `buildLegStrategies(RETRY_SEMANTICS[cf](env), env)`. */
+  buildStrategies(env: RequestEnvelope): ReadonlyArray<RetryStrategy>
+}
+
+/**
+ * Resolve the CellAssembly for `(clientFormat × targetEndpoint)` by composing the two exhaustive records:
+ * the {@link OutboundLeg} (wire) + {@link RETRY_SEMANTICS} (semantics). Both lookups are total (exhaustive
+ * records) — a missing cell cannot compile. `buildStrategies` evaluates the semantics against `env` (R1
+ * corner) then hands it to the leg's wire strategy builder.
+ */
+export function resolveCellAssembly(clientFormat: ClientFormat, targetEndpoint: UpstreamEndpoint): CellAssembly {
+  const leg = OUTBOUND_LEGS[targetEndpoint]
+  const semantics = RETRY_SEMANTICS[clientFormat]
+  const preSend = leg.preSend
+  return {
+    clientFormat,
+    targetEndpoint,
+    translateOut: (env) => leg.translateOut(env),
+    requestRewrites: (env) => leg.requestRewrites(env),
+    prepareWire: (env) => leg.prepareWire(env),
+    responseRewrites: (env) => leg.responseRewrites(env),
+    ...(preSend && { preSend: (env: RequestEnvelope) => preSend(env) }),
+    sampleWireTrack: (wire, env) => leg.sampleWireTrack(wire, env),
+    buildStrategies: (env) => leg.buildLegStrategies(semantics(env), env),
+  }
+}
+
+// ============================================================================
+// Hybrid dispatch shim (RFC §11.6 / §11.9 MEDIUM — named, asserted empty at C5)
+// ============================================================================
+
+/**
+ * The set of outbound legs the driver dispatches through {@link resolveCellAssembly} instead of the legacy
+ * `deps.*` single slots. GROWS one leg per commit: C2 adds `/v1/messages`, C3 `/chat/completions`, C4
+ * `/responses`+`ws:/responses`. C5 asserts it equals the full leg set (the shim collapses). C1: EMPTY — no
+ * leg migrated, so the driver's hybrid dispatch (added in C2) always takes the legacy path → byte-identical
+ * (an explicitly-harmless transition, `large-refactor` §3).
+ */
+export const MIGRATED_LEGS: ReadonlySet<UpstreamEndpoint> = new Set<UpstreamEndpoint>()
+
+/** Is this leg dispatched through the CellAssembly (vs the legacy `deps.*` slots)? Reads {@link MIGRATED_LEGS}. */
+export function isLegMigrated(targetEndpoint: UpstreamEndpoint): boolean {
+  return MIGRATED_LEGS.has(targetEndpoint)
+}

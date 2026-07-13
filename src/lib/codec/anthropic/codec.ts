@@ -57,6 +57,7 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { RequestState } from "~/lib/pipeline/request-state"
 import type { RequestRewrite } from "~/lib/pipeline/rewrite-registry"
 import type {
   //
@@ -714,6 +715,7 @@ interface EnvelopeInit {
   body: unknown
   ctx: RequestContext
   prepareHints?: PrepareHints
+  requestState?: RequestState
 }
 
 /** Build a {@link RequestEnvelope}; `with()` shallow-copies + patches, `view` is a lazy Anthropic projection. */
@@ -726,6 +728,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     stream: init.stream,
     body: init.body,
     prepareHints: init.prepareHints ?? {},
+    ...(init.requestState !== undefined && { requestState: init.requestState }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createAnthropicLazyView(env.body)
@@ -739,6 +742,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         body: env.body,
         ctx: env.ctx,
         prepareHints: env.prepareHints,
+        requestState: env.requestState,
         ...patch,
       })
     },
