@@ -110,7 +110,6 @@ import {
 import {
   //
   fillMaxCompletionTokens,
-  prepareChatCompletionsRequest,
   prepareResponsesRequest,
 } from "~/lib/openai/request-preparation"
 import {
@@ -142,6 +141,12 @@ import {
 import { state } from "~/lib/state"
 
 import type { ReverseAnthropicMapperHolder } from "./reverse-anthropic-rewrite"
+
+import {
+  //
+  prepareChatCompletionsWire,
+  sampleChatCompletionsWireTrack,
+} from "./openai-cc-leg"
 
 const CLIENT_FORMAT: ClientFormat = "openai-cc"
 const ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
@@ -482,13 +487,9 @@ function prepareOpenAiCcWire(env: RequestEnvelope): PreparedRequest {
       `openai-cc codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`,
     )
   }
-  const prepared = prepareChatCompletionsRequest(ccPayload, { resolvedModel: model })
-  return {
-    url: ENDPOINT.CHAT_COMPLETIONS,
-    headers: new Headers(prepared.headers),
-    body: prepared.wire,
-    stream: prepared.wire.stream ?? false,
-  }
+  // The `/chat/completions` wire prep is the shared leg core (C3) — same bytes the CellAssembly's
+  // OUTBOUND_LEGS[CHAT_COMPLETIONS] builds. `fillMaxCompletionTokens` is repeated inside it (idempotent).
+  return prepareChatCompletionsWire(env)
 }
 
 /**
@@ -546,6 +547,10 @@ function sampleOpenAiCcRequest(wire: PreparedRequest, env: RequestEnvelope): Req
     }
     return { effective, wire: wireRequest }
   }
+
+  // `/chat/completions` (direct + forward @cc): the shared leg sampler (C3) — same tracks the CellAssembly
+  // produces. The `/responses` (via-responses) branch below stays in the codec (extracted in C4).
+  if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return sampleChatCompletionsWireTrack(wire, env)
 
   const effBody = env.body as { model?: unknown; messages?: unknown }
   const effective: EffectiveRequest = {
