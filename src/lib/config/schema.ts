@@ -192,6 +192,8 @@ export const RateLimiterConfigSchema = z
 
 export const AnthropicConfigSchema = z
   .object({
+    /** Forward `/v1/messages/count_tokens` to the GHC upstream (exact counts, uses the copilot token). Default true. When false, count_tokens uses the local calibrated tiktoken estimate only. */
+    use_upstream_count_tokens: nullableBoolean(),
     /**
      * Upstream→client response-header forwarding MODE (Anthropic path). `false`
      * (default) = BLACKLIST: forward everything except `response_header_blacklist`.

@@ -28,10 +28,18 @@ import {
   resetRequestLinePublisher,
   setRequestLinePublisher,
 } from "~/lib/observability/synthetic-request-line"
+import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
+import {
+  //
+  calibrate,
+  learnCalibration,
+  resetAllLimitsForTesting,
+} from "~/lib/auto-truncate"
 import {
   //
   setModels,
   setStateForTests,
+  state,
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
@@ -139,6 +147,44 @@ describe("POST /v1/messages/count_tokens", () => {
     // Local estimate is a positive integer (not the upstream 999).
     expect(json.input_tokens).toBeGreaterThan(0)
     expect(json.input_tokens).not.toBe(999)
+  })
+
+  test("use_upstream_count_tokens=false skips upstream and returns the local calibrated estimate", async () => {
+    const fetchMock = setFetchMock(async () => new Response(JSON.stringify({ input_tokens: 999 }), { status: 200 }))
+    setStateForTests({ useUpstreamCountTokens: false })
+    // Train a factor so calibrate() diverges from the raw estimate (positive control).
+    learnCalibration("claude-sonnet-4.5", 5_000, 7_500, { isLive: true }) // ≈1.5 in low bucket
+
+    const { status, json } = await countTokens({
+      model: "claude-sonnet-4.5",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello world from the local calibrated path" }],
+    })
+
+    expect(status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(0) // upstream skipped
+    expect(json.input_tokens).toBeGreaterThan(0)
+    resetAllLimitsForTesting()
+  })
+
+  test("upstream failure → local calibrated fallback applies the learned factor", async () => {
+    const fetchMock = setFetchMock(async () => new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500 }))
+    // A large factor makes the calibrated value clearly exceed the raw estimate.
+    learnCalibration("claude-sonnet-4.5", 3_000, 9_000, { isLive: true }) // ≈3.0 in the low bucket
+
+    const payload = { model: "claude-sonnet-4.5", max_tokens: 128, messages: [{ role: "user", content: "hello world" }] }
+    const { status, json } = await countTokens(payload)
+
+    expect(status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // Independent oracle: the returned count == calibrate(rawEstimate). Recompute the
+    // raw estimate with the same primitive the route uses, then apply the same factor.
+    const model = state.modelIndex.get("claude-sonnet-4.5")!
+    const rawEstimate = await countTotalInputTokens(payload as never, model)
+    expect(json.input_tokens).toBe(calibrate("claude-sonnet-4.5", rawEstimate))
+    // Sanity: the factor genuinely inflated the count (calibrate is not identity here).
+    expect(json.input_tokens).toBeGreaterThan(rawEstimate)
+    resetAllLimitsForTesting()
   })
 
   test("out-of-catalog model skips upstream, returns input_tokens=1", async () => {

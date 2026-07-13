@@ -233,6 +233,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   },
   {
+    configKey: "anthropic.use_upstream_count_tokens",
+    stateKey: "useUpstreamCountTokens",
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
+  },
+  {
     configKey: "retry.max_reactive_retries",
     stateKey: "maxReactiveRetries",
     sampleYamlValue: "7",

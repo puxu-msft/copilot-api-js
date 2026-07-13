@@ -10,6 +10,7 @@ import {
 } from "~/lib/anthropic/client"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
+import { calibrate } from "~/lib/auto-truncate"
 import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import {
   //
@@ -167,17 +168,25 @@ export async function handleCountTokens(c: Context) {
       return c.json({ input_tokens: 1 })
     }
 
-    // Default channel: GHC upstream count_tokens (exact counts, uses copilot token)
-    const ghcCount = await countTokensViaGhc(c, payload, selectedModel)
-    if (ghcCount !== null) {
-      emitLine(payload.model, ghcCount, "GHC upstream")
-      return c.json({ input_tokens: ghcCount })
+    // Default channel: GHC upstream count_tokens (exact counts, uses copilot token).
+    // Gated by `anthropic.use_upstream_count_tokens` (default on) — when off, skip the
+    // upstream round-trip and use the local calibrated estimate only.
+    if (state.useUpstreamCountTokens) {
+      const ghcCount = await countTokensViaGhc(c, payload, selectedModel)
+      if (ghcCount !== null) {
+        emitLine(payload.model, ghcCount, "GHC upstream")
+        return c.json({ input_tokens: ghcCount })
+      }
     }
 
-    // Fallback: local estimation (unsupported models / upstream failure).
-    // Excludes thinking blocks from assistant messages per Anthropic spec.
-    const inputTokens = await countTotalInputTokens(payload, selectedModel)
-    emitLine(payload.model, inputTokens, `local est, ${selectedModel.capabilities?.tokenizer ?? "o200k_base"}`)
+    // Fallback: local estimation (upstream disabled / unsupported model / failure).
+    // Excludes thinking blocks from assistant messages per Anthropic spec, then applies
+    // the learned size-aware calibration factor so the local estimate tracks the upstream
+    // real count (`calibrate` is identity for an unlearned model). This is the calibration
+    // model's honest-counting consumer post-auto-truncate-removal.
+    const rawEstimate = await countTotalInputTokens(payload, selectedModel)
+    const inputTokens = calibrate(selectedModel.id, rawEstimate)
+    emitLine(payload.model, inputTokens, `local calibrated, ${selectedModel.capabilities?.tokenizer ?? "o200k_base"}`)
 
     return c.json({ input_tokens: inputTokens })
   } catch (error) {

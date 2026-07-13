@@ -203,6 +203,8 @@ export interface State {
   readonly memoryToolEnabled: boolean
   readonly memoryModels: ReadonlyArray<string>
 
+  /** Forward `/v1/messages/count_tokens` to the GHC upstream (exact). When false, use the local calibrated estimate only. Config `anthropic.use_upstream_count_tokens`. Default true. */
+  readonly useUpstreamCountTokens: boolean
   /**
    * Upstream→client response-header forwarding MODE (Anthropic path). `false`
    * (default) = BLACKLIST mode: forward everything except `responseHeaderBlacklist`.
@@ -1136,6 +1138,7 @@ export function setAnthropicBehavior(
   patch: Partial<
     Pick<
       MutableState,
+      | "useUpstreamCountTokens"
       | "strictResponseHeaders"
       | "strictRequestHeaders"
       | "requestHeaderBlacklist"
@@ -1392,6 +1395,7 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
  * Model overrides continue to use DEFAULT_MODEL_OVERRIDES.
  */
 export const CONFIG_MANAGED_DEFAULTS = {
+  useUpstreamCountTokens: true,
   strictResponseHeaders: false,
   strictRequestHeaders: false,
   requestHeaderBlacklist: ["x-anthropic-billing-header"] as ReadonlyArray<string>,
@@ -1529,6 +1533,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
 
 export function resetConfigManagedState(): void {
   setAnthropicBehavior({
+    useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
     strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
     requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
@@ -1672,6 +1677,7 @@ const mutableState: MutableState = {
   extendedCacheTtlMessages: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlMessages,
   extendedCacheTtlModels: [...CONFIG_MANAGED_DEFAULTS.extendedCacheTtlModels],
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
+  useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
   strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
   strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
   requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],

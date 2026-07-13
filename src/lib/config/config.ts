@@ -551,6 +551,7 @@ export async function applyConfigToState(): Promise<Config> {
   // Anthropic settings (scalar: override only when present)
   if (config.anthropic) {
     const a = config.anthropic
+    if (a.use_upstream_count_tokens !== undefined) setAnthropicBehavior({ useUpstreamCountTokens: a.use_upstream_count_tokens })
     if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
     if (a.response_header_blacklist !== undefined) setAnthropicBehavior({ responseHeaderBlacklist: a.response_header_blacklist })
     if (a.response_header_whitelist !== undefined) setAnthropicBehavior({ responseHeaderWhitelist: a.response_header_whitelist })
