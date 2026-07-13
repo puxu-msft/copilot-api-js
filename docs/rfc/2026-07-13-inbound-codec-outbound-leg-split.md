@@ -69,7 +69,9 @@
 
 ---
 
-## 2. 目标 / 非目标
+> ⚠️ **§2-§10 是 v1（"⊥ 正交对象族"）正文,已被三轮 review 证伪 → 由文末 [§11 定稿设计（v2）](#11-定稿设计v2集中化-2d-cell-装配) 取代。** 以下 v1 正文保留仅作演化脉络对照,**权威以 §0.1 + §11 为准**（`dont-lose-history`：不删 v1,标注取代）。
+
+## 2. 目标 / 非目标（v1，见 §11 修正）
 
 **目标**：
 1. 把 codec 对象模型沿两轴拆成 `InboundCodec`（by clientFormat）⊥ `OutboundLeg`（by targetEndpoint）两个正交对象族。
@@ -270,3 +272,98 @@ const INBOUND_CODECS: Record<ClientFormat, () => InboundCodec> = { ... }  // 4 �
 - **当前设计不烂**——有两轴洞察、hub、registry 机制。只是没把对象模型切到底。所以 Phase 7 能小改修好，不是打补丁。
 - **但轴错配是结构性复发源**：每加一个格子，D1 供料散布 + D4 per-leg if 都要在多处重演，且漏填=静默 500。全拆分把复发源一次性消除，符合 `long-term-wins` + `architecture-health-first`。
 - **风险**：driver 是 byte-critical 热路径，5 codec + 4 handler 全动。故 RFC-first + 逐腿原子 cutover + golden 逐字节锁 + ≥3 轮对抗 review。
+
+---
+
+# 11. 定稿设计（v2）：集中化 2D cell 装配
+
+> 取代 v1 的 §2-§10。综合 §0.1 三轮裁决。**核心转向**：不追求"两正交对象族"（被证伪），而是**把散布的"cell 需要什么"知识集中到单一 2D 装配器 + 用显式载体承载跨轴态**。
+
+## 11.1 目标（措辞按 P1 收敛）
+1. 把散布在 `{strategy-registry 供料袋 + 4 handler 供料工厂 + codec 跨格 delegate + codec 内 isForwardTranslateLeg 分叉}` 的"(clientFormat × targetEndpoint) cell 需要什么"知识,收敛为**单一 2D 装配解析器**——单一事实源。
+2. **腿/cell 存在性由类型消灭复发**（cell-keyed `Record` 穷尽 → 漏 = 编译错,精确命中 Phase 7 那类"缺 case → default throw"）。**诚实边界**：类型穷尽**只覆盖 cell 存在性**;"`env.body` 是该 cell 的 canonical 形"这一维仍 unchecked（`env.body:unknown`,`envelope.ts:103`）,靠 assembly 内 `translateOut↔buildStrategies↔prepareWire` 三方约定 + §11.6 的 L1"每 cell buildStrategies 非空 + 不 throw"测试守卫。
+3. handler 退回只管入站+写出:不填供料袋、不建 reverseBetaProbe/reverseMapperHolder、不持跨格 delegate。codec 不 import codec。
+4. **行为逐字节/oracle 等价**（纯结构重构,现状 6 格+前向+反向腿全不变）。
+
+**非目标**：路由决策、翻译语义、wire/history 数据模型、新格式/新腿、心跳策略完整收敛（§11.7 OQ1 留后续小 RFC）、web_search 旁路迁 driver。
+
+## 11.2 三个对象 + 显式跨轴载体
+
+```
+InboundCodec (主分派轴 clientFormat)      CellAssembly[cf][te] (2D 键,driver 解析)
+──────────────────────────────────       ──────────────────────────────────────
+parse(raw) → env (写 prepareHints:         translateOut(env)          ← 读 env.clientFormat 选翻译器
+  clientAnthropicBeta / clientHeaders /    requestRewrites()          (本腿上游 wire 改写链)
+  truncateBaseline / resanitize 种子)      prepareWire(env)           ← 写 betaProbe.recordOutbound
+renderStreamToClient(frame, env)                                        + 写 ctx side-channel(strippedCC…)
+  ← 读 env.targetEndpoint 定上游腿形        buildStrategies(env)       ← 读 prepareHints 供料 + env.clientFormat
+renderNonStreaming(resp, env)                                          选策略语义 + betaProbe 惰性引用
+flushResponse?/getStreamMeta?             responseRewrites()
+formatError / getContext / sampleClient   createAccumulator()        (§11.5 二选一)
+  (exchange 态 responseId/itemId 住 ctx)   preSend?(env)              (Anthropic 截断)
+        \                                  sampleWireTrack(wire, env) → 写 ctx.effectiveMessages…
+         \____ hub-translate (叶子原语) ____/
+```
+
+**关键洞察（回应 P3+P4/HIGH-2）**：**正交的是"方法的主分派轴",不是数据隔离。** InboundCodec 的方法主键 clientFormat（但 render 读 env.targetEndpoint 作次要输入定上游腿形）;CellAssembly 主键 cell 两轴（translateOut 读 env.clientFormat 选翻译器）。两者都从 env 读另一根轴——这**不是缺陷**（env 携两轴）,但 RFC 不再声称"数据隔离的正交对象族"。
+
+**跨轴态的三个显式载体（回应 BLOCK-2/BLOCK-3/HIGH-3/P2b,消灭闭包 accessor 群）**：
+| 态 | v1（闭包 accessor,被证伪）| v2 载体 |
+|---|---|---|
+| parse 捕获的策略供料（truncateBaseline / resanitize 种子）| `codec.getTruncateBaseline()/getResanitize()` | **`env.prepareHints`**（parse 写、CellAssembly.buildStrategies 读）|
+| betaProbe 种子（clientAnthropicBeta / clientRequestHeaders）| anthropic codec 闭包 | **`env.prepareHints`**（parse 写、prepareWire 读 seed betaProbe / 透传头）|
+| side-channel recordings（pipelineInfo 重建的 effectiveMessages / initialSanitizationInfo / strippedCacheControl）| `codec.getLatestEffectiveMessages()` 等 4 accessor | **`ctx`**（prepareWire/sampleWireTrack/requestRewrites **写 ctx**,handler 的 `recordRetryPipelineStateV4` 从 **ctx 读**）|
+| exchange 态（responseId / itemId / clientModel）| responses codec 闭包 | **`ctx`**（InboundCodec 建、prepareWire 与 render 两侧从 ctx 读）|
+
+**betaProbe 生命周期写死（回应 P2a,本轮最该挡下）**：CellAssembly[/v1/messages] **per-request 建一次并贯穿整个 retry loop**（driver `resolveAssembly` per-request 解析一次,同实例 prepareWire 逐 attempt 调）。betaProbe 是 assembly 持的实例:`prepareWire` 调 `betaProbe.recordOutbound`（逐 attempt 累积）,`buildStrategies` 把**同一引用**传进 unsupported-beta strategy,strategy 在 **retry-handle 时惰性** `getCandidates()`——**绝非构造期快照**（照字面 eager-snapshot 会重造 Phase-7 级隐蔽 bug）。driver 顺序:`buildStrategies` 先于第一次 `prepareWire`（`driver.ts:202` vs `:309`）→ 靠"引用共享 + 惰性读"而非"先写后读"。
+
+## 11.3 CellAssembly 的 2D 装配（回应 BLOCK-1）
+
+策略栈**形状由 clientFormat 决定、wire 由 targetEndpoint 决定**——是二维函数。故装配分两半、由装配器组合:
+
+```ts
+// 入站供"策略语义 spec"(要不要 auto-truncate / maxRetries / label)——由 InboundCodec 或其 spec 表提供
+interface RetrySemanticsSpec { autoTruncate: boolean; maxRetries: number; label: string; /* … */ }
+const RETRY_SEMANTICS: Record<ClientFormat, (env) => RetrySemanticsSpec>  // anthropic/cc/gemini=auto-truncate+N; responses=no-truncate+1
+
+// 腿供"wire 策略构造"——由 CellAssembly(by targetEndpoint)提供
+// CellAssembly.buildStrategies(env) = 组合(RETRY_SEMANTICS[env.clientFormat](env), 本腿的 wire strategy builder, prepareHints 供料)
+```
+- **Responses fallback → /chat/completions** 与 **CC direct → /chat/completions** 命中同一 CellAssembly[/chat/completions] 但 `RETRY_SEMANTICS[openai-responses]`≠`RETRY_SEMANTICS[openai-cc]` → 策略栈不同,**逐字节等价保住**（现状 `responses:168` vs `chat:180` 的差异被 spec 表显式编码）。
+- **装配解析器实现**：`resolveCellAssembly(clientFormat, targetEndpoint)` — 内部 `OUTBOUND_LEGS[targetEndpoint]`（wire 侧,Record 穷尽）× `RETRY_SEMANTICS[clientFormat]`（语义侧,Record 穷尽）。两个 `Record` 各自穷尽 → **cell 缺失 = 编译错**（BLOCK-1 的"漏的是 client×leg 组合"由两个正交 Record 的笛卡尔积覆盖,组合非法在 buildStrategies 内 fail-loud + L1 测试守卫）。
+
+## 11.4 依赖方向（回应 P5,无环,保留 v1 §3.3）
+```
+routes/*/handler → driver → { InboundCodec[cf], resolveCellAssembly(cf, te) → CellAssembly }
+                                        ↓ 都依赖 ↓          ↓ RETRY_SEMANTICS[cf] ↓
+                                   hub-translate（叶子原语,不 import codec——P5 核实无环）
+```
+codec 不再 import codec（D3 delegate 全删）;gemini via-responses 的 Responses→CC 逐帧原语（`renderResponsesFrameToCc`+`createStreamTranslator`）**提取进 hub**（回应 HIGH-1）,gemini InboundCodec 独立持中间 translator 态 → delegate 才删得掉。
+
+## 11.5 createAccumulator（回应 P7b,唯一"搬家非消除"实锤,二选一定死）
+**裁定：删,不搬家。** `createResponseAccumulator` 全仓无生产消费者（pump 内联建）。v2 **不**把它放进 CellAssembly——accumulator 归 pump（handler),pump 按 targetEndpoint 内联建上游腿形 acc（现状即如此,保留）。§4.1 v1 把它列进 OutboundLeg 是错的,v2 撤回。（若未来 driver 接管 accumulate 是独立行为变更,超本重构范围。）
+
+## 11.6 Cutover（回应 cutover reviewer 全部 HIGH）
+
+**driver 5 构造点 + 单槽派发 + hybrid dispatch（承重,v1 藏在"原子切"三字里）**：driver 的出站派发是单槽（`deps.codec.prepareWire`/`deps.strategies`/`deps.requestRewrites`…）,`/v1/messages` 腿被 **4 codec/4 handler** 触达。cutover 真机制 = driver 在 C2-C4 期间**按 targetEndpoint 在 `resolveCellAssembly(...)` 与旧 `codec.*/deps.*` 间二选一派发**（hybrid dispatch shim,互斥非叠加）,逐 cell 迁移、跨 3 commit。
+
+- **C0（进 C1 前必做）**：① 跑通现有 79 golden 锁行为;② **补 3 条缺失 byte golden**——(a) keepalive-ON anchored direct 流式（`direct-stream-golden-phase4` 关了心跳,anchored/reconcile 字节没锁）、(b) reverse @messages 转发逐帧字节（现 reverse-cc-messages 用 inspectRequest+accumulator,非转发 SSE 逐帧）、(c) responses-ws + gemini 两跳终帧。
+- **C1**：定义 `CellAssembly` 接口 + `OUTBOUND_LEGS`/`RETRY_SEMANTICS` 两 Record（占位 throw）+ driver `resolveCellAssembly` + hybrid dispatch shim（**未接线任何 cell,过渡态无害=没人走 leg 分支**）。
+- **C2**：实现 `AnthropicCellAssembly`(/v1/messages)——从 anthropic codec direct 分支 + strategy-registry anthropic supply + reverse-anthropic-rewrite **提取**;driver 对 /v1/messages 腿的 **4 route（messages direct + cc/responses/gemini 反向 @messages）全部**切到 assembly、**同 commit 删各 handler 的 reverse supply/betaProbe/mapperHolder + anthropic codec direct 分支**。**守卫（回应双 sanitize）**：C2 后 `grep createReverseAnthropicSanitizeRewrite / prepareReverseAnthropicWire / reverse assembleStrategiesForEndpoint(MESSAGES)` 归零 + 回归断言"reverse @messages 的 orphan-strip 计数不翻倍";**pipelineInfo 回归**（回应 HIGH pipelineInfo）:direct anthropic 重试后 `ctx` 的 messageMapping/cacheControlStripped 非空（正样本证 side-channel 经 ctx 触达,防静默变空污染 peer-D2 基线）。
+- **C3**：`OpenAiCcCellAssembly`(/chat/completions)——driver 切 cc direct + anthropic/gemini 前向 @cc;删 cc codec wire 分支 + handler cc 供料 + anthropic ccDelegate 前向分支。
+- **C4**：`OpenAiResponsesCellAssembly`(/responses+ws,含 CC→Responses wire)——driver 切 responses direct + 前向/反向 @responses;删 responses codec wire 分支。
+- **C5**：InboundCodec 收敛（FormatCodec 去掉已迁走的出站方法,补 renderNonStreaming/getContext）+ 删 strategy-registry 供料袋/`assembleStrategiesForEndpoint`/`createResponseAccumulator` 死方法 + hybrid dispatch shim（此时所有 cell 已切,shim 退化）。**C5 前置门（可机检）**：`grep assembleStrategiesForEndpoint / StrategySupply / ccDelegate / isForwardTranslateLeg` 调用点归零。
+- **C6**：清理 + gemini 命名剥前缀（`OpenAiGemini*`→`Gemini*`,`codec/openai-gemini/`→`codec/gemini/`,dry-run `openai-gemini`→`gemini`,零数据迁移——见 kickoff §命名）+ doc-sync。
+
+**每 commit invariant**：typecheck 0 + `bun test`（除 base 6 例外:UI shell/negotiation/4 peer-D2 pipelineInfo）+ 全 golden（含 C0 补的 3 条）逐字节 + **无双活**（hybrid dispatch 互斥,旧路径同 commit dead）。
+
+## 11.7 OQ 裁定（v1 §8 的 OQ 大多已被 review 解掉）
+- **OQ1 心跳/sink 策略归属**：留后续小 RFC。C2-C6 handler pump **保留现状 clientFormat 分派不动**（direct Anthropic anchored 心跳仍在 handler）——但 C0 已补 keepalive-ON byte golden 兜底（否则"不动"也无 oracle）。
+- **OQ2 web_search 旁路**：免疫（门在 driver 前用 decideRoute,不碰 codec 出站方法,§9 核实）。
+- **OQ3 gemini 两跳 / exchange 归属**：**已决**——exchange 态住 ctx（InboundCodec 建、两侧读）;gemini Responses→CC 逐帧原语提取进 hub（§11.4）。
+- **OQ4 sampleRequest 双轨**：effectiveRequest（客户端形）归 InboundCodec.sampleClientTrack、wireRequest（上游形）归 CellAssembly.sampleWireTrack;side-channel recordings 走 ctx（§11.2 载体表）。
+
+## 11.8 验证（消费者校准,`large-refactor` §7）
+- router golden 52 + 现有翻译 IT + byte-critical SSE golden（含 C0 补的 3 条）——每 commit 逐字节/oracle 等价。
+- **新增守卫**：两 Record 穷尽性（编译）+ L1"每 cell resolveCellAssembly 成功且 buildStrategies 非空不 throw"（Phase 7 那类 bug 的直接守卫）+ reverse-sanitize 单次 + pipelineInfo 经 ctx 非空。
+- 活服务器实测（收尾,隔离 XDG_DATA_HOME）:各 direct + 前向 gpt 无后缀 + 反向 @messages 端到端。
