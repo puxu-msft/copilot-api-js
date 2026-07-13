@@ -246,10 +246,19 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
   })
 
   test("audit C1: a DISCARDED buffered attempt's unrepairable signal must NOT fail the recovered commit", async () => {
-    // Attempt 1 emits an unrepairable tool block (sets a per-attempt repair outcome) then truncates
-    // (no message_stop) → buffer discarded + retried. Attempt 2 is clean + commits. The request MUST
+    // Attempt 1 emits an unrepairable tool block then truncates MID-BLOCK (no content_block_stop, no
+    // message_stop) → buffer discarded + retried. Attempt 2 is clean + commits. The request MUST
     // settle `completed`, with NO error frame and an UN-inflated counter — the per-attempt outcomes
     // are cleared in onAttemptReset, so the discarded attempt's signal can't poison the committed one.
+    //
+    // Block-level note (P1 Task 6): attempt 1's tool_use block MUST NOT reach its own
+    // `content_block_stop` — under the block-level commit predicate (`anthropicCommitBoundaries`), a
+    // block that DOES reach `content_block_stop` commits live and closes the retry window
+    // (`committedAny`), so a subsequent truncation would degrade to `partial-degrade` (an error frame,
+    // no retry) instead of being discarded and retried — which would defeat this test's whole premise
+    // (a genuinely DISCARDED, pre-commit attempt). Previously (terminal-only mode) this distinction
+    // didn't matter — everything stayed buffered until the terminal `message_stop` regardless of
+    // per-block boundaries — so the original fixture safely included `blockStopFrame(0)`.
     configure(["tags", "jsonrepair"])
     setStateForTests({ protectStreamingGeneration: "on", bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } })
     let attempt = 0
@@ -259,8 +268,8 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
           messageStartFrame({ id: "msg_a1", model, inputTokens: 10 }),
           toolBlockStartFrame(0, "toolu_a1", "TodoWrite"),
           jsonDeltaFrame(0, UNREPAIRABLE_INPUT),
-          blockStopFrame(0),
-          // EOF — no message_stop → truncation → buffered discard + retry.
+          // EOF mid-block — no content_block_stop, no message_stop → truncation BEFORE any commit
+          // boundary → buffered discard + retry (committedAny stays false).
         ]
       : [
           messageStartFrame({ id: "msg_a2", model, inputTokens: 10 }),
