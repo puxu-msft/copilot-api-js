@@ -61,6 +61,7 @@ v1 正文（§2-§10）仍描述"⊥ 正交",须重写为 v2"集中化 2D cell �
 - **别用 strategies:[]/dry-run 绕过真工厂**（Phase 7 教训:真驱动生产接缝 + 负样本对照）。
 - **no-auto-server**;绝不 kill 4141;活服务器实测用隔离 XDG_DATA_HOME 测试服务器。
 - 细粒度 pathspec 提交、无模型署名、并发 peer 行级共存。
+- **命名按纯 clientFormat、剥实现细节前缀**（用户 2026-07-13 决定,折进本重构一起做,不单独提交）:gemini 的 InboundCodec 命名 `GeminiInboundCodec` / `createGeminiInboundCodec`（clientFormat=`"gemini"`）,**不沿用** `OpenAiGemini*` 旧名——旧前缀是"委托 openai-cc"这个**出站实现细节**的化石,T1 §6 删 delegate 后前缀零依据。与 ADR [`2026-07-11-route-decision-separated-from-format-codec`](../decisions/2026-07-11-route-decision-separated-from-format-codec.md)「codec 是纯 format 翻译器」同向:codec 身份纯由入站格式定,内部委托谁不进名字。连带 `codec/openai-gemini/` 目录 → `codec/gemini/`、`OpenAiGeminiCodec` 类型 → `GeminiInboundCodec`、dry-run-pipeline 的 `openai-gemini` 参数别名 → `gemini`。**零数据迁移**:持久值 `EndpointType="gemini-generate-content"` 与 `ClientFormat="gemini"` 均不受影响,`openai-gemini` 仅存于符号/目录/注释/debug 参数（探证:`grep -rn '"openai-gemini"'` 无 history/wire 持久命中）。
 
 ## 必读
 - `docs/rfc/2026-07-13-inbound-codec-outbound-leg-split.md` §0/§0.1（权威 v2 蓝图）+ §1 债务清单。
