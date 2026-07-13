@@ -248,6 +248,15 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
   })
   registry.registerPath({
     method: "get",
+    path: "/health/readiness",
+    tags: ["infra"],
+    summary: "Readiness probe (can serve traffic — tokens/models loaded)",
+    description:
+      "Kubernetes-style readiness probe, equivalent to /health: 200 when the Copilot/GitHub tokens and model catalogue are loaded, 503 otherwise. Orchestrators use it to withhold or drain traffic (use /health/liveness for restart-on-hung).",
+    responses: { ...ok200("Ready"), 503: { description: "Not ready", ...jsonContent() } },
+  })
+  registry.registerPath({
+    method: "get",
     path: "/health/liveness",
     tags: ["infra"],
     summary: "Liveness probe (process responsiveness only)",

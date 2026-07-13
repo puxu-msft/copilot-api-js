@@ -44,7 +44,7 @@ description: 当需要查阅/调用 copilot-api-js（本代理）**对客户端�
 | `/api/stats?dimension=&window=&limit=` | 泛型维度 breakdown |
 | `/history/api/*`、`/ws` | History REST + WebSocket（含 search、pin/unpin） |
 | `/metrics` | Prometheus exposition |
-| `/health`、`/health/liveness`、`/`、`/docs`、`/ui/*`、`/ui-v4/*` | 健康检查（readiness）/liveness 探针/根/文档/前端 |
+| `/health`、`/health/readiness`、`/health/liveness`、`/`、`/docs`、`/ui/*`、`/ui-v4/*` | 健康检查（readiness，`/health`≡`/health/readiness`）/liveness 探针/根/文档/前端 |
 
 ### History REST 子端点
 

@@ -5,9 +5,9 @@ import { type BlankEnv } from "hono/types"
 import type { UiRoutesOptions } from "~/routes/ui/route"
 
 import { forwardError } from "~/lib/error"
-import { state } from "~/lib/state"
 import { registerHttpRoutes } from "~/routes"
 import { registerOpenApiDocs } from "~/routes/openapi"
+import { readinessCheck } from "~/server"
 
 const browserProbePaths = new Set(["/favicon.ico", "/.well-known/appspecific/com.chrome.devtools.json"])
 
@@ -34,20 +34,8 @@ export function createFullTestApp(options: UiRoutesOptions = {}) {
 
   app.get("/health/liveness", (c) => c.json({ status: "alive" }))
 
-  app.get("/health", (c) => {
-    const healthy = Boolean(state.copilotToken && state.githubToken)
-    return c.json(
-      {
-        status: healthy ? "healthy" : "unhealthy",
-        checks: {
-          copilotToken: Boolean(state.copilotToken),
-          githubToken: Boolean(state.githubToken),
-          models: Boolean(state.models),
-        },
-      },
-      healthy ? 200 : 503,
-    )
-  })
+  app.get("/health", readinessCheck)
+  app.get("/health/readiness", readinessCheck)
 
   registerHttpRoutes(app, options)
   registerOpenApiDocs(app)

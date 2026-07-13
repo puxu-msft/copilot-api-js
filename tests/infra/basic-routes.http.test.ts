@@ -107,6 +107,40 @@ describe("basic HTTP routes", () => {
     })
   })
 
+  test("GET /health/readiness mirrors /health when tokens are missing", async () => {
+    setStateForTests({ copilotToken: undefined, githubToken: undefined })
+
+    const res = await app.request("/health/readiness")
+    const body = (await res.json()) as HealthResponseBody
+
+    expect(res.status).toBe(503)
+    expect(body).toEqual({
+      status: "unhealthy",
+      checks: {
+        copilotToken: false,
+        githubToken: false,
+        models: true,
+      },
+    })
+  })
+
+  test("GET /health/readiness mirrors /health when tokens are present", async () => {
+    setStateForTests({ copilotToken: "copilot-test", githubToken: "ghp_test" })
+
+    const res = await app.request("/health/readiness")
+    const body = (await res.json()) as HealthResponseBody
+
+    expect(res.status).toBe(200)
+    expect(body).toEqual({
+      status: "healthy",
+      checks: {
+        copilotToken: true,
+        githubToken: true,
+        models: true,
+      },
+    })
+  })
+
   test("GET /health/liveness returns 200 alive when tokens are present", async () => {
     setStateForTests({ copilotToken: "copilot-test", githubToken: "ghp_test" })
 

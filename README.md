@@ -235,7 +235,8 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 | `/api/logs` | GET | Recent request logs (in-memory ring buffer) |
 | `/api/event_logging/batch` | POST | Silently consumes Anthropic event-logging beacons |
 | `/metrics` | GET | Prometheus text exposition (v0.0.4) — `copilot_api_*_total{dimension,key}` counters + per-dimension histograms (duration/queue/token) |
-| `/health` | GET | Readiness check — 200 when tokens/models are ready, 503 otherwise |
+| `/health` | GET | Readiness check — 200 when tokens/models are ready, 503 otherwise (equivalent to `/health/readiness`) |
+| `/health/readiness` | GET | Readiness probe (Kubernetes-style, shares `/health`'s handler) — 200 ready, 503 not ready |
 | `/health/liveness` | GET | Liveness probe — always 200 `{status:"alive"}` while the process responds (independent of upstream/readiness) |
 | `/ui/*` | GET | Vuetify-based History Web UI (static SPA) |
 
