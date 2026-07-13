@@ -45,6 +45,8 @@ export interface RequestState {
   readonly betaProbe?: BetaProbe
   /** The client's inbound `anthropic-beta` header value (seeds the betaProbe candidate ranking). */
   readonly clientAnthropicBeta?: string
+  /** The client's raw inbound headers (lowercased) for optional upstream passthrough (Anthropic wire prep reads it). */
+  readonly clientRequestHeaders?: Record<string, string>
   /**
    * The initial (attempt-0) sanitization diagnostic the reverse/direct Anthropic leg produced at parse,
    * read back by the handler's pipelineInfo rebuild. Opaque here (Anthropic-shaped).
