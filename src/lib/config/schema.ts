@@ -727,6 +727,47 @@ export const HistoryConfigSchema = z
   .strict()
 
 
+/**
+ * `telemetry.*` —— 分层遥测持久化（独立 telemetry.db）。近期/远期分辨率与保留均可配。
+ * 业务级校验（sketch_gamma 下限、resolution 整除 60）在 config apply 层做 warn-continue，非 zod。
+ */
+export const TelemetryTiersConfigSchema = z
+  .object({
+    raw: nullableSection(
+      z
+        .object({
+          resolution_minutes: nullableNonnegativeInt(),
+          retention_days: nullableNonnegativeInt(),
+        })
+        .strict(),
+    ),
+    hourly: nullableSection(z.object({ retention_days: nullableNonnegativeInt() }).strict()),
+    daily: nullableSection(z.object({ retention_days: nullableNonnegativeInt() }).strict()),
+  })
+  .strict()
+
+export const TelemetryConfigSchema = z
+  .object({
+    /** 总开关（默认 true = 旧行为一直开）。 */
+    enabled: nullableBoolean(),
+    /** 独立 DB 路径（默认 <APP_DIR>/telemetry.db）。 */
+    db_path: nullableString(),
+    /** raw 落盘/flush 间隔秒（默认 60）。 */
+    persist_interval: nullableNonnegativeInt(),
+    /** rollup 上卷间隔秒（默认 3600，独立于 persist，≫ persist）。 */
+    rollup_interval: nullableNonnegativeInt(),
+    /** capped 维度（client/tool）key 上限（默认 200）。 */
+    cardinality_cap: nullableNonnegativeInt(),
+    /** DDSketch 相对误差 γ（默认 0.01=1%；apply 层下限 ~0.005，配更紧警告回落）。上限/下限业务校验在 apply 层。 */
+    sketch_gamma: nullablePositiveNumber(),
+    /** 终身累计层开关（默认 true）。 */
+    cumulative: nullableBoolean(),
+    /** 分层保留（近期 raw / 中期 hourly / 远期 daily）。 */
+    tiers: nullableSection(TelemetryTiersConfigSchema),
+  })
+  .strict()
+
+
 export const RetryConfigSchema = z
   .object({
     /** Shared per-request cap on ALL reactive retry strategies (network / server-error / token-refresh / 400-class negotiation etc.). 0 = a single attempt, no retry. Default 5. Was `auto_truncate.max_retries`. */
@@ -919,6 +960,7 @@ export const ConfigSchema = z
     hooks: nullableSection(HooksConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
+    telemetry: nullableSection(TelemetryConfigSchema),
     model_refresh_interval: nullableNonnegativeInt(),
     /**
      * Reactive-learning (feature-negotiation) TTL lifecycle. `default_ttl_days`
@@ -994,6 +1036,7 @@ export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type ChatCompletionsConfig = z.infer<typeof ChatCompletionsConfigSchema>
 export type BufferedRetryOverride = z.infer<typeof BufferedRetryOverrideSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
+export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
 export type Config = z.infer<typeof ConfigSchema>

@@ -906,6 +906,22 @@ interface ExemptField {
 }
 
 const EXEMPT: ReadonlyArray<ExemptField> = [
+  // telemetry.* — schema landed (Phase 2 T2.1); config→state apply + hot-reload wiring
+  // is Phase 2 T2.2/T2.3 (keys not yet consumed until Phase 3+ write path / Phase 4 rollup).
+  // WHEN wiring apply: MOVE these from EXEMPT to FIELDS (add real hot-reload assertions).
+  ...[
+    "telemetry.enabled",
+    "telemetry.db_path",
+    "telemetry.persist_interval",
+    "telemetry.rollup_interval",
+    "telemetry.cardinality_cap",
+    "telemetry.sketch_gamma",
+    "telemetry.cumulative",
+    "telemetry.tiers.raw.resolution_minutes",
+    "telemetry.tiers.raw.retention_days",
+    "telemetry.tiers.hourly.retention_days",
+    "telemetry.tiers.daily.retention_days",
+  ].map((configKey) => ({ configKey, reason: "telemetry tiered-storage: schema landed, config→state apply wired in Phase 2 T2.2/T2.3 (not consumed until Phase 3+)" })),
   {
     configKey: "history.limit",
     reason:
