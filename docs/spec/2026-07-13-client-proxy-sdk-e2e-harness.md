@@ -100,12 +100,12 @@ tests/e2e-client/
 
 ## e2e 场景覆盖 roadmap（2026-07-13 考古后）
 
-现有 **21 场景**（Tier 1 SDK 19 = Anthropic 18 + OpenAI 1；Tier 2 CLI 2），均变异验证有牙（MUTANT-A/C/D 各精准逮住对应测试）。挖掘全清单见 Explore agent 考古（本会话），来源可信度分 `[DOC-REAL]`（文档实证、最高价值）/ `[CODE-INFER]`（需实测）。
+现有 **22 场景**（Tier 1 SDK 20 = Anthropic 19 + OpenAI 1；Tier 2 CLI 2），均变异验证有牙（MUTANT-A/C/D 各精准逮住对应测试）。挖掘全清单见 Explore agent 考古（本会话），来源可信度分 `[DOC-REAL]`（文档实证、最高价值）/ `[CODE-INFER]`（需实测）。
 
-**已覆盖**：eventless 帧丢弃、tool_use input 深等、thinking signature 累积、refusal end_turn/空串/error、200+SSE-error throws、空串 stall（CLI）、**截断→throws、HTTP-4xx 类型化子类对照、reactive-retry 内部重试透明（callCount=2）—— tool-field / cache_control-subfield / server-tool / unsupported-beta 四腿（各腿变异摘 canHandle 后精准红）、tool-call 文本恢复、畸形 input 修复、event 名宽容、OpenAI vendor smoke**。
+**已覆盖**：eventless 帧丢弃、tool_use input 深等、thinking signature 累积、refusal end_turn/空串/error、200+SSE-error throws、空串 stall（CLI）、**截断→throws、HTTP-4xx 类型化子类对照、reactive-retry 内部重试透明（callCount=2）—— tool-field / cache_control-subfield / server-tool / unsupported-beta / poisoned-thinking 五腿（各腿变异摘 canHandle 后精准红）、tool-call 文本恢复、畸形 input 修复、event 名宽容、OpenAI vendor smoke**。
 
 **未覆盖 backlog（按承重排序，供后续扩展；每条真实、多数 `[DOC-REAL]` 可直接实现或 TDD 先红）**：
-- **一梯队**（生产 incident 催生）：B1 CC 300s no-real-content keepalive 墙（Tier 2 计时/空 delta 保活）、B8 thinking 双相邻块毒化 reactive 恢复。~~B9 retry 腿~~ ✅ **全覆盖**（tool-field/cache_control-subfield/server-tool/unsupported-beta 四腿，逐腿一断言 + 变异有牙）。
+- **一梯队**（生产 incident 催生）：B1 CC 300s no-real-content keepalive 墙（Tier 2 计时/空 delta 保活）。~~B8 thinking 双相邻块毒化 reactive 恢复~~ ✅ **已覆盖**（400 `thinking cannot be modified` → L2 strip-all + 单重试 → callCount=2；实测坐实 outbound 保留 thinking 块可剥）。~~B9 retry 腿~~ ✅ **全覆盖**（tool-field/cache_control-subfield/server-tool/unsupported-beta 四腿，逐腿一断言 + 变异有牙）。
 - **二梯队**：B2 synthetic-message-start anchor 保活、B3 block-aware 空 delta 类型匹配、B5 非流式语义截断、B10/B11 server_tool/empty-encrypted 降级、B13 HTTP-429 vs 200-error-429 CC 重试发散（Tier 2）、B16 buffered-retry 上游 RST 透明、B17 三类中止（client-abort/reaper/header-timeout）客户端侧区分（Tier 2）。
 - **三梯队（广度）**：B12 通用翻译矩阵反向腿逐 cell（Anthropic client × CC/Responses/Gemini upstream）、B18 Responses SSE/WS keepalive、B15 合成帧空 delta 不泄漏成可见内容、B20 repetition-detector 终止、B22 cache_control 剥离透明、B23 tool name 清洗后还原。
 - **需实测先坐实再固化断言**（`[CODE-INFER]`）：B3/B9/B20/B22/B23。

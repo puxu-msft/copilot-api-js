@@ -482,6 +482,41 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     expect(up.callCount()).toBe(2) // proxy retried internally after fixating + stripping the named beta
   })
 
+  test("reactive retry (poisoned thinking): first leg 400 'thinking cannot be modified' → proxy strips all thinking + retries → client sees ONE clean turn, upstream hit twice", async () => {
+    // GHC rejects an echoed thinking block with `messages.N.content.M.thinking: ... cannot be modified`.
+    // The L2 poisoned-thinking-retry strategy (gated on state.stripThinkingOnReject, default true) strips
+    // ALL thinking blocks from the outbound payload and retries once. It only fires if the payload has a
+    // thinking block to strip (strippedCount===0 → abort) — so the request must carry a prior assistant
+    // turn with a thinking block. Oracle: the SDK assembles a normal turn AND upstream was hit twice.
+    setStateForTests({ stripThinkingOnReject: true })
+    const up = sequencedUpstream([
+      () => httpErrorResponse(400, { type: "invalid_request_error", message: "messages.1.content.0.thinking: cannot be modified" }),
+      () => createSseResponse(happyTurn("recovered after thinking strip")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages
+      .stream({
+        model: MODEL,
+        max_tokens: 16,
+        thinking: { type: "enabled", budget_tokens: 1024 },
+        messages: [
+          { role: "user", content: "solve x" },
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "prior reasoning", signature: "SIG-ECHO" },
+              { type: "text", text: "prior answer" },
+            ],
+          },
+          { role: "user", content: "continue" },
+        ],
+      })
+      .finalMessage()
+    expect((final.content[0] as { text?: string })?.text).toBe("recovered after thinking strip")
+    expect(up.callCount()).toBe(2) // proxy stripped all thinking + retried internally; client never saw the 400
+  })
+
   // ── event-name tolerance: SDK dispatches on the event name ∈ accept-set, not name===data.type ──
 
   test("thinking-signature-compat: signature_delta under `event: content_block_start` is still accumulated by the SDK", async () => {

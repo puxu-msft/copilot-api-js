@@ -1,7 +1,7 @@
 # client↔proxy e2e 场景 backlog 实现指南（交接）
 
 > **交接目的**：把 spec `2026-07-13-client-proxy-sdk-e2e-harness.md`「e2e 场景覆盖 roadmap」的未覆盖 backlog，变成新会话可**逐条直接执行**的配方。每条给：层 / config / 上游帧 pattern / 客户端可观测 oracle / harness 需求（现有 or 新扩展）/ gotcha / 建议变异。**先读 skill `client-proxy-e2e-testing`**（承重机制 + oracle 纪律），再挑一条实现。
-> **现状**：21 场景已覆盖（Tier1 SDK 19 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
+> **现状**：22 场景已覆盖（Tier1 SDK 20 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
 
 ## Kick-off prompt（复制给新会话）
 
@@ -43,6 +43,7 @@ Tier2 spawn 真 proxy 需 claude+github_token（gated），改 config 用不同 
 - **变异**：把该 strategy 从 driver 注册表摘掉（或 `canHandle` 返 false）→ 不重试 → `callCount===1` + 客户端拿 400 throw → 测试红。
 
 ### B8 thinking 双相邻块毒化 → reactive 恢复 — Tier1 SDK
+✅ **已覆盖（2026-07-13）**。实测坐实：首腿 400 `messages.N.content.M.thinking: cannot be modified` → L2 `poisoned-thinking-retry`（gated `state.stripThinkingOnReject`，默认 true）strip-all thinking + 单重试 → 二腿正常 → SDK 拿成功 turn、callCount=2。**CODE-INFER 关键坐实**：请求须带**含 thinking 块的前序 assistant 轮**（否则 `strippedCount===0 → abort` 不重试），且 outbound payload 确实保留了该 thinking 块（proxy sanitize 未提前剥掉）。变异摘 `canHandle` → 仅此测试红。原配方（供参考）：
 - **上游**：首腿返 HTTP-400 `messages.N.content.M.thinking: cannot be modified`（`ghc-anthropic-upstream` skill 症状表 / `thinking-quarantine/`），二腿返正常流。config 开 `strip_thinking_on_reject` 或默认 L1 de-stack。
 - **oracle**：客户端最终拿到成功 turn（而非每轮 400 硬失败），`callCount()>=2`。
 - **`[CODE-INFER]` 风险**：确切 400 body 串 + 哪条腿触发需实测坐实（先造 400 看 proxy 是否重试成功）。
