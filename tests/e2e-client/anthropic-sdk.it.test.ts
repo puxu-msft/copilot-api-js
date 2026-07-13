@@ -432,6 +432,39 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     expect(up.callCount()).toBe(2) // proxy retried internally; the client never saw the 400
   })
 
+  test("reactive retry (cache_control subfield rejection): first leg 400 → proxy strips subfield + retries → client sees ONE clean turn, upstream hit twice", async () => {
+    // The cache-control-subfield-rejection-retry strategy fires on a 400 whose body matches the
+    // four-segment `<section>.N.cache_control.<variant>.<field>: Extra inputs are not permitted` shape
+    // (disjoint from tool-field's three-segment `tools.N.<field>:` — see strategies.ts ordering). It
+    // marks the subfield endpoint-wide, strips it, and retries — invisibly to the client. Oracle: the
+    // SDK assembles a normal turn AND upstream was hit twice.
+    const up = sequencedUpstream([
+      () => httpErrorResponse(400, { type: "invalid_request_error", message: "system.1.cache_control.ephemeral.scope: Extra inputs are not permitted" }),
+      () => createSseResponse(happyTurn("recovered after cc-subfield strip")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    expect((final.content[0] as { text?: string })?.text).toBe("recovered after cc-subfield strip")
+    expect(up.callCount()).toBe(2) // proxy retried internally after stripping the rejected subfield
+  })
+
+  test("reactive retry (server-tool rejection): first leg 400 'web search not supported' → proxy strips server tool + retries → client sees ONE clean turn, upstream hit twice", async () => {
+    // The server-tool-rejection-retry strategy fires on the upstream's OBSERVED web_search rejection
+    // message (SERVER_TOOL_REJECTION_TABLE), fixates the `web_search_` type prefix in the negotiation
+    // cache, strips it, and retries — invisibly to the client. Oracle: the SDK assembles a normal turn
+    // AND upstream was hit twice.
+    const up = sequencedUpstream([
+      () => httpErrorResponse(400, { type: "invalid_request_error", message: "The use of the web search tool is not supported." }),
+      () => createSseResponse(happyTurn("recovered after server-tool strip")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    expect((final.content[0] as { text?: string })?.text).toBe("recovered after server-tool strip")
+    expect(up.callCount()).toBe(2) // proxy retried internally after stripping the rejected server tool
+  })
+
   // ── event-name tolerance: SDK dispatches on the event name ∈ accept-set, not name===data.type ──
 
   test("thinking-signature-compat: signature_delta under `event: content_block_start` is still accumulated by the SDK", async () => {

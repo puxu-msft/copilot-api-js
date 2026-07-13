@@ -1,7 +1,7 @@
 # client↔proxy e2e 场景 backlog 实现指南（交接）
 
 > **交接目的**：把 spec `2026-07-13-client-proxy-sdk-e2e-harness.md`「e2e 场景覆盖 roadmap」的未覆盖 backlog，变成新会话可**逐条直接执行**的配方。每条给：层 / config / 上游帧 pattern / 客户端可观测 oracle / harness 需求（现有 or 新扩展）/ gotcha / 建议变异。**先读 skill `client-proxy-e2e-testing`**（承重机制 + oracle 纪律），再挑一条实现。
-> **现状**：18 场景已覆盖（Tier1 SDK 16 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
+> **现状**：20 场景已覆盖（Tier1 SDK 18 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
 
 ## Kick-off prompt（复制给新会话）
 
@@ -32,7 +32,7 @@ Tier2 spawn 真 proxy 需 claude+github_token（gated），改 config 用不同 
 ## 一梯队（生产 incident 催生、`[DOC-REAL]`、优先）
 
 ### B9 其余 reactive retry 腿（server-tool / cache-control / unsupported-beta）— Tier1 SDK
-已做 tool-field；其余三腿同构，只换首腿 400 body 的 pattern（正则在各 strategy 文件，务必精确命中）：
+✅ **已做 tool-field + cache_control-subfield + server-tool（2026-07-13）**，剩 **unsupported-beta**（用 explicit-list 路径 `unsupported beta header(s): <flag>` 干净单重试，比 laconic `invalid beta flag` 探测路径更确定；laconic 需 outbound 真带 beta + `getProbeCandidates` 才 retry）。其余同构，只换首腿 400 body 的 pattern（正则在各 strategy 文件，务必精确命中）：
 | 腿 | 首腿 400 message pattern（造能被 `.test()` 命中的串） | strategy 文件 |
 |---|---|---|
 | cache-control-subfield | `...cache_control.ephemeral.<field>: Extra inputs are not permitted`（正则 `/\.cache_control\.\w+\.([a-z_]\w*): Extra inputs are not permitted/`） | `cache-control-subfield-rejection-retry.ts:40` |
