@@ -812,6 +812,39 @@ CC 2.1.207 内置工具（源码确认为真工具、非字符串误配）：`We
 
 ---
 
+## 轮次 23（2026-07-13）：system-reminder / attribution 剥离 —— 格式匹配无 gap + F20 增补（billing 行第二关联载体）
+
+### 发现来源（CC 源码坐标）
+
+- CC 2.1.207 **仍**注入 `x-anthropic-billing-header:` 作为**首个 system 块的一行**（`app.pretty.js:63319` 构造）：`x-anthropic-billing-header: cc_version=2.1.207.<e>; cc_entrypoint=<o>;[ cch=…;][ cc_workload=<a>;][ cc_is_subagent=true;][ cc_prev_req=<r>;]`。（版本锚：VERSION 2.1.207 / BUILD_TIME 2026-07-10 / GIT_SHA bc512d5。）
+- CC system-reminder 用 `<system-reminder>…</system-reminder>` 明文标签（94582/36115），无属性。
+
+### F29（确认无 gap + F20 增补）
+
+**(a) attribution 剥离：确认匹配、无 gap**。本项目 [system-prompt.ts:18](../../src/lib/anthropic/sanitize/system-prompt.ts#L18) `ATTRIBUTION_BILLING_LINE = /^x-anthropic-billing-header\s*:[^\n]*\n?/i` **精确匹配** CC 2.1.207 的 header 名与「首个 system 块前导行」形态 → 正确剥离、不入 GHC（省 token + 去噪）。CC 未改 header 名 → 无 gap。
+
+**(b) system-reminder 剥离：格式匹配**。CC 用 `<system-reminder>` 明文标签，本项目 [system-reminders.ts](../../src/lib/anthropic/sanitize/system-reminders.ts) 剥同名标签（含 assistant 非-thinking 文本块），格式一致 → 无 gap。
+
+**(c) ★ F20 增补（新关联载体）**：被剥的 `x-anthropic-billing-header` 行**携带关联信号** `cc_is_subagent=true`（显式 subagent 标志）+ `cc_prev_req=<上一请求 id>`（**请求链**）+ `cc_workload`。这是继 `metadata.user_id`（F20 的 session_id/parent_session_id）之后**第二个被整体丢弃的关联载体**，且 `cc_prev_req` 提供**请求级链路**（比会话级 parent_session_id 更细）。剥离本身正确（billing 元数据不该转发 GHC），但**剥前可提取**这些信号进 history 关联字段：
+- `cc_is_subagent` → history 标注该请求是否 subagent（无需解析 metadata JSON）。
+- `cc_prev_req` → 串起**同会话内请求链**（A→B→C 的 previous-request 指针），ui-v4 可重建请求时序链。
+- **归并进 F20 的落地**：入站提取步同时解析 `metadata.user_id`（session/parent_session）**和** `x-anthropic-billing-header` 行（cc_is_subagent/cc_prev_req/cc_workload），二者互补拼出完整关联图。
+
+### 待验证 findings 的 e2e oracle 路径（指向新 skill）
+
+本审计多条 findings 标了「待实测 headless-CC / SDK oracle」——现有专门 skill **`client-proxy-e2e-testing`**（client↔proxy 端到端、上游 GHC 全程 mock、离线不烧额度）作为这些验证的**权威骨架**：
+- **F1**（thinking-only 空档 → CC 静默重试）：mock 上游造「thinking block → content_block_stop → 长静默跨 idle 阈值」，用 `claude` CLI 或 `@anthropic-ai/sdk` 当 oracle 看是否发第二请求（mock 侧计上游命中数）。
+- **F7**（count_tokens `{input_tokens:1}` 抑制 CC 兜底）：mock 代理返 `{input_tokens:1}` vs 4xx，观测 CC `/context` 显示与是否落 `HLs` 本地估算。
+- **F23**（vision 检测漏 tool_result 图像）：造 tool_result 内嵌 image 请求，SDK oracle 断言 `copilot-vision-request` 头被设 + GHC mock 收到 vision 门。
+- **F28**（stub 集陈旧）：造「历史 WebSearch tool_use + 当前 tools 省略 WebSearch」，e2e 看是否 GHC 拒无声明 tool_use。
+- 通用方法论与 harness 见 skill `client-proxy-e2e-testing`（区别于 upstream-hook-mocking 的上游 mock 与 debugging-claude-client-connection 的症状排查）。
+
+### 本轮结论
+
+system-reminder / attribution 剥离**格式匹配 CC 2.1.207、无 gap**（F29a/b 确认）。实质产出是 **F20 增补**（F29c）：`x-anthropic-billing-header` 是第二个被丢弃的关联载体，`cc_prev_req` 提供请求级链路——归并进 F20 的入站提取落地。并把 F1/F7/F23/F28 的验证 oracle 显式指向 skill `client-proxy-e2e-testing`。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
