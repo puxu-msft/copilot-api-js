@@ -530,6 +530,47 @@ usage **对 CC 无 gap**（passthrough 全字段 + raw 存 sseEvents）。真问
 
 ---
 
+## 轮次 14（2026-07-13）：metadata / 请求归属 —— 丢弃 CC 的丰富会话关联负载
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 的 `metadata` builder `Wtt()`（`app.pretty.js:297580-297589`）：
+```
+metadata = { user_id: JSON.stringify({
+  ...CLAUDE_CODE_EXTRA_METADATA(env 注入的额外对象),
+  device_id, account_uuid, session_id,
+  ...parent_session_id (子会话/subagent 才有)
+}) }
+```
+即 CC 把**一整个 JSON 对象**（设备、账户、**会话 id、父会话 id**、用户额外注入）序列化成字符串塞进 Anthropic `metadata.user_id`（本是不透明 id 的字段，CC 超载它承载归属/telemetry）。`session_id`=CC 会话、`parent_session_id`=subagent 到其父会话的链接。
+
+### 本项目现状（读码）
+
+- 全仓对**请求 `metadata` 字段零处理**：grep 到的 `metadata` 全是**模型** metadata（capabilities）；`session_id`（thinking-quarantine/store.ts）是本项目**自有**的中毒会话追踪键、**非**来自 CC 的 metadata。
+- 请求体 mutate-in-place + 透传未知字段（轮次 2）→ `metadata` **原样转发 GHC**（Anthropic 标准字段，GHC 代理 Anthropic 大概率受；被拒则 body-field-rejection 剥 `metadata:`）。**无硬失败**。
+
+### F20（MEDIUM，richest-data-flow + 观测机会）— 丢弃 CC 的 session/parent_session 关联负载
+
+**判断（读码）**：本项目**不解析、不利用** `metadata.user_id` 里的 JSON——每条 CC 请求都自带的**高价值关联信号被整体丢弃**：
+- **`session_id`**：可把 history entries **按 CC 会话分组**（当前 history 只有 proxy 自己的 `ctx.id`，无 CC 会话维度）。
+- **`parent_session_id`**：subagent 请求到父会话的链接 → 可在 history **重建 subagent 父子树**（哪些请求是某主会话派生的子 agent）。
+- `account_uuid` / `device_id`：多账户 / 多设备归属。
+
+违 `richest-data-flow` ADR（丰富上下文应流动、末端决定呈现，后端**完整捕获**不 upstream 裁剪）。本项目有 **History Web UI（ui-v4）**——按 CC session 分组、重建 subagent 树是**实打实的观测增强**，而数据就在每条请求的 metadata 里、当前白白透传丢弃。属与 F19（usage allowlist）同族的「rich data 就在手边却没捕获」。
+
+**落地注意（faithful，别踩）**：
+- `metadata.user_id` 被 CC 打包成 **JSON 字符串**（超载不透明 id 字段）——解析须**防御式** `JSON.parse`（try/catch，非 CC 客户端会发普通字符串或不发 → 优雅降级为「无关联信息」，绝不因解析失败影响主流程）。
+- `device_id`/`account_uuid` 是准 PII，但按项目 `internal-tool-security-posture`（内部工具全量暴露、运维价值 > 假想泄露、且是用户自己的数据）→ 存 history **对齐项目哲学、无安全阻塞**；仍建议不写日志明文（`secure-by-default`）。
+- 新增 history 关联字段的三处必改见 skill `persistence-async-invariants`（toHistoryEntry + onTerminal 投影 + updateEntry allowlist）；ui-v4 侧加「按会话分组 / 父树」视图。
+
+**理想方向（不在本轮做，需 brainstorming）**：新建一个 request-preparation/history 的「入站 metadata 提取」步——防御解析 `metadata.user_id`，把 `session_id`/`parent_session_id`/`account_uuid` 存进 history entry 的新关联字段；ui-v4 加会话维度分组 + subagent 父树。这是明确的 richest-data-flow 正确增强。
+
+### 本轮结论
+
+metadata **对 GHC 转发无 gap**（passthrough / reactive 剥兜底）。真问题是本项目**丢弃了 CC 每请求自带的会话关联负载**（`session_id`/`parent_session_id` 等），错失 history 按会话分组 + 重建 subagent 树的观测能力（F20，中，richest-data-flow）。与 F19 同族、同为 on-philosophy 的正确增强。
+
+---
+
 ## 阶段综合（轮次 1-11，F1-F17）：三条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
@@ -588,5 +629,5 @@ CC 2.1.207 引入一批 2026 新 beta，本项目**无显式感知**、靠通用
 - [ ] **fine-grained tool streaming 语义**（轮次 11 已查）：确认无正确性 gap（CC block-stop 解析、空 delta 安全、web_search mid-parse 已退役）；剥 `eager_input_streaming` 仅 UX eagerness 降级（F17,最低，主线 C）。
 - [x] **anthropic-beta 全集对账**（轮次 12）：27 betas 全对账（矩阵表）；通用 reactive 剥 + 8 显式/按名处理覆盖绝大多数，无硬失败。真待办仅 F18-a（`thinking-token-count` 改 usage wire）/ F18-b（`redact-thinking` 改 thinking 形态）两个改响应侧 beta。
 - [x] **usage wire 形状**（轮次 13）：CC 侧无 gap（passthrough 全字段 + raw 存 sseEvents）；本项目结构化 usage accumulator 是 allowlist、漏 `iterations`/`cache_creation.ephemeral_1h_input_tokens`/`server_tool_use.web_search_requests`（F19,中,richest-data-flow）；F18-a 同根结题。
-- [ ] **metadata.user_id / 请求归属**：CC 的 `metadata`（`Wtt()`，297987）字段 vs 本项目是否透传/用于 GHC 归属。
+- [x] **metadata.user_id / 请求归属**（轮次 14）：CC 把 `{device_id,account_uuid,session_id,parent_session_id}` JSON 塞进 `metadata.user_id`；本项目透传但不解析/不利用（F20,中,richest-data-flow）——错失 history 按会话分组 + 重建 subagent 父树。
 - [ ] **tool_choice 变体**：CC 发的 `tool_choice`（auto/any/tool/none）+ `disable_parallel_tool_use` vs 本项目转发。
