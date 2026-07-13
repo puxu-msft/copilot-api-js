@@ -2,7 +2,7 @@
 
 > durable 进度账本（抗 compaction / 跨会话）。权威设计见 [RFC §0.1+§11+§11.9](../../rfc/2026-07-13-inbound-codec-outbound-leg-split.md)，锚点见 [plan.md](plan.md)，per-commit prompt 见 [prompts/](prompts/)。
 
-> ✅ **RECONCILED + 合并就绪（2026-07-13）**：曾发现 master landed「移除 auto-truncate」与本重构策略半不兼容（RECONCILE 文档记录了根因），已在本会话**完成 reconcile**——merge master（10 冲突解）+ 策略半重设计（`RetrySemanticsSpec` 删 `autoTruncate`、R1 corner 消解为 maxRetries corner、`buildCcFamilyLegStrategies` 改按 clientFormat 分派、删 `anthropicPreSend`、全局 `autoTruncateMaxRetries`→`maxReactiveRetries`）。**post-merge 全套件 4779 pass / 0 fail、typecheck 0**。详见 [RECONCILE-auto-truncate-removal.md](RECONCILE-auto-truncate-removal.md)。**仍延后**（inert 死码清理，非阻塞）：codec 出站方法删除 + HIGH-1 hub 提取（keep/delete 地图见下）+ gemini 剥前缀。
+> ✅ **LANDED master（2026-07-13，merge 5e3e916a，全套件 4782 pass / 0 fail）**：曾发现 master landed「移除 auto-truncate」与本重构策略半不兼容（RECONCILE 文档记录了根因），已在本会话**完成 reconcile**——merge master（10 冲突解）+ 策略半重设计（`RetrySemanticsSpec` 删 `autoTruncate`、R1 corner 消解为 maxRetries corner、`buildCcFamilyLegStrategies` 改按 clientFormat 分派、删 `anthropicPreSend`、全局 `autoTruncateMaxRetries`→`maxReactiveRetries`）。**post-merge 全套件 4779 pass / 0 fail、typecheck 0**。详见 [RECONCILE-auto-truncate-removal.md](RECONCILE-auto-truncate-removal.md)。**仍延后**（inert 死码清理，非阻塞）：codec 出站方法删除 + HIGH-1 hub 提取（keep/delete 地图见下）+ gemini 剥前缀。
 
 隔离 worktree：`.worktrees/inbound-outbound-split`，分支 `feat/inbound-outbound-split`（从 master `e9f6ce8a` 切出）。
 
