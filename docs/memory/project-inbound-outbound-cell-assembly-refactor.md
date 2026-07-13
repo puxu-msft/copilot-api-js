@@ -1,13 +1,22 @@
 ---
 name: project-inbound-outbound-cell-assembly-refactor
-description: 大重构（在飞,设计定稿→新会话实现）——codec 对象模型沿两轴拆:集中化 (clientFormat×targetEndpoint) cell 装配,消灭 Phase 7 暴露的出站关切散布。权威看 RFC 2026-07-13 §0.1/§11/§11.9 + plan
+description: 大重构（在飞,C0-C2 已实现——整条 /v1/messages 腿迁移;C3-C6 待做）——codec 对象模型沿两轴拆:集中化 (clientFormat×targetEndpoint) cell 装配,消灭 Phase 7 暴露的出站关切散布。权威看 PROGRESS + RFC 2026-07-13 §0.1/§11/§11.9
 metadata:
   type: project
 ---
 
 **codec 对象模型重构（cell-assembly）**——源起 Phase 7 前向腿生产 500 bug 暴露的**结构性轴错配**:通用翻译矩阵的两轴（clientFormat 入站 × targetEndpoint 出站）只活在数据层（env 两字段）,对象层只有一根轴（`FormatCodec` by clientFormat）,出站关切被打散进 `{strategy-registry 供料袋 + 4 handler 供料工厂 + codec 跨格 delegate + codec 内 isForwardTranslateLeg 分叉}`——漏填一腿供料 = 深埋 handler 静默 500,每加一格复发。用户授权全拆分、长远正确、评审委托 agents。
 
-**状态：设计定稿并 landed master（RFC + 三层 plan,3 commit `7fe6973a`/`820e5332`/`80eca340` + plan `273b1fb7`）;byte-critical 实现（C0-C6）交新会话从 kickoff T4 开始。**
+**状态：设计定稿 landed master + C0-C2 已实现（隔离 worktree `feat/inbound-outbound-split`，未合并）。整条 `/v1/messages` 腿（4 cell:anthropic direct + cc/responses/gemini 反向）迁移到 CellAssembly、driver cell-keyed fork 双向证成、字节等价、全量 base 5。C3-C6 待新会话（复用已证成 fork 模式）。权威进度 = [PROGRESS.md](../plan/inbound-outbound-split/PROGRESS.md)，剩余执行锚点 = [prompts/C3-C6.md](../plan/inbound-outbound-split/prompts/C3-C6.md)。**
+
+**已实现方法论（C0-C2，本会话，供 C3-C6 复用）**:
+- **C0 golden 预捕获先于一切**:补 3 条缺的 byte golden（live-anchored keepalive direct / reverse @messages 逐帧 / ws+gemini 两跳终帧），改前 HEAD 逐字节锁——纯结构重构的唯一硬 oracle。归一化易变字段（合成 message_start id 含 FakeClock-time + 全局 reqId 计数器、Date.now `created` epoch），连跑 25× 证确定性。
+- **driver cell-keyed hybrid fork**（RFC §11.6）:7 派发点 `migratedCell(env)` 判别（`MIGRATED_CELLS: Set<`${cf}|${te}`>` cell-keyed 非 leg-keyed → 共享腿只迁部分 cell 无双活）+ **requestState-缺失回退 legacy 判别器**（`if(!env.requestState) return null`,mock-codec 编排单测不走 assembly、真路径 parse 总填）。driver 一次接线、后续 commit 只加 cell + 实现 leg,**无需再改 driver**。
+- **pipelineInfo 经 ctx 重寄**（RFC §11.2,承重最易漏）:fork 后 codec 闭包不再被写 → recordRetryPipelineStateV4 改读 `env.requestState.truncateBaseline` + `ctx.currentAttempt.{effectiveRequest.messages,cacheControlStripped}` + 新 ctx slot `initialSanitizationInfo`(sanitize rewrite 自写),**gate 在 direct**（`targetEndpoint===MESSAGES`）防 forward 腿 CC 形 attempt 污染 mapping。漏这步 → pipelineInfo 静默变空。
+- **提取共享算法核保字节等价**(`large-refactor` §5 extract-not-rewrite):3 direct 核（prepareAnthropicWire/anthropicPreSend/sampleAnthropicRequest）+ reverse 去重（prepareReverseAnthropicWire 两 codec 重复）搬进 `codec/anthropic/anthropic-leg.ts`,codec 与 assembly 调**同一函数** → 零分歧。先做纯移动 commit（golden 把关）再接线。
+- **安全增量拆分**:大 commit（C2）拆 prep（提取,字节等价）→ .1（parse 填 requestState,additive 零 reader）→ direct fork → reverse——每步独立绿测可提交,以上一步为兜底绿点。
+- **dead code 推迟 C5 统一删**:fork 互斥（migrated 只走 assembly）,codec direct/reverse 分支 + handler MESSAGES 供料变 dead 但**非双活**,与 codec 出站方法一起 C5 删（无双活安全不变量已满足,删除是清理非安全）。
+- **踩坑**:①改 ctx 加 side-channel 写 → 测试 ctx double 须补该方法（Guard B/C 缺 setInitialSanitizationInfo 抛错）②driver-level reverse IT 注入 strategies 绕过真装配器（R4 反例）→ 改传 reverseMapperHolder 驱动真 assembly ③base 有第 6 条**间歇** payload timeout flake（全套件高负载偶发 5000ms,隔离过,与重构无关,别当回归）④gpt-souls agent 底座故障（proxy 把 gpt 路由 /v1/messages 被拒,正是本重构要修的 bug 类）→ 改主会话 inline / Claude agent。
 
 **权威文档**（同一事实只写一处,深层看这些）:
 - [RFC 2026-07-13](../rfc/2026-07-13-inbound-codec-outbound-leg-split.md)——**§0.1 三轮首轮裁决 + §11 定稿设计 + §11.9 v3 修订为权威**（§2-§10 是被证伪的 v1 ⊥ 正交,存档对照）。
