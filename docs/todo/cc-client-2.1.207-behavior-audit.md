@@ -705,6 +705,36 @@ image source（CC base64-only）与 model 解析（[1m]/别名/date/链式，cat
 
 ---
 
+## 轮次 19（2026-07-13）：cache_control 处理深度 —— 确认深度遍历、无平行-F23 gap
+
+> 平行 F23（检测深度）验 cache_control 处理是否覆盖 CC 放断点的全部位置。结论**确认无 gap**。
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 放 cache_control 断点的位置（`app.pretty.js`）：
+- **system 块**：`system:[{type:"text", text, cache_control:{type:"ephemeral"}}]`（244739 / 292816）。
+- **每条消息 content 的最后一块**（297608-297627）：user/assistant 消息末块加 `cache_control:Zhe({ttl})`（assistant 跳过 thinking/redacted/jV 块）。
+- **tools**（末工具）。
+- `cache_control:{...,ttl}`（201069 加 ttl）。**不**放进 tool_result 内嵌（与 F23 的 image 位置不同）。
+
+### F25（确认，无 gap）— cache_control 处理深度遍历全部 CC 放置位置
+
+**判断（读码，已核实）**：本项目 cache_control 处理**深度覆盖** CC 的全部放置位置：
+- `walkCacheControl`（[request-preparation.ts:1301](../../src/lib/anthropic/request-preparation.ts#L1301)）遍历 `["system","messages","tools"]` 三区 + `walkCacheControlArray` 递归进嵌套 content 块——**正是 CC 放断点的全部位置**。
+- 四模式全覆盖：`disabled`（walk 清空）/ `passthrough`（`filterCacheControlSubfields` deep-strip `scope` 地雷、保客户端断点）/ `sanitize`（walk 规范化 ttl + 剥非白名单子字段 + 跨层单调）/ `proxied`（walk 清空 + `addMessageCacheControl`+`addToolsAndSystemCacheControl` 注入）。
+- 尊重 **Anthropic 4-断点上限**（`CACHE_CONTROL_BREAKPOINT_LIMIT` + `countCacheControlOccurrences`，1188）——注入按剩余预算，不会撞 >4 的 400。
+- `scope` 子字段（prompt-caching-scope beta，GHC 未启用）在所有位置被剥（deep）。
+
+**无平行-F23 gap**：F23 的根因是 vision 检测**只扫顶层块**漏 tool_result 内嵌；cache_control 处理用 `walkCacheControl` **深度遍历**，且 CC 本就不在 tool_result 放 cache_control → 双重无虞。
+
+### 本轮结论 + meta 观察
+
+cache_control 处理**深度遍历 + 4 模式 + 断点上限 + scope 全剥**，覆盖 CC 全部放置位置，**无 gap**（F25 确认）。
+
+**meta（连续确认轮的信号）**：轮次 16/18/19 连续「确认无 gap」，轮次 17（F23）是近段唯一实缺陷。这表明**CC-facing 表面已审计充分**——剩余 CC-facing 子系统（限流/头转发、model 解析、image source、cache_control）经查均成熟。**继续盲目 gap-hunting 边际递减**；后续 loop 轮次的更高价值动作是**转向执行/实测已记录的 P1/P2 待办**（F1 静默重试复现、F23 vision 修复、F19/F20 richest-data-flow 捕获）而非再找新面。若继续审计，宜挑**尚未碰的正交面**（如 History/WS 端点对 CC 无关、或 Gemini/OpenAI 端点——但那些非 CC-facing，超出本 topic）。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
