@@ -125,5 +125,7 @@ export interface RequestEnvelope {
   readonly ctx: RequestContext
 
   // ── Immutable update ──
-  with(patch: Partial<Pick<RequestEnvelope, "body" | "targetEndpoint" | "prepareHints">>): RequestEnvelope
+  // `requestState` is request-lifecycle-STABLE, so a retry never patches it — but `parse` sets it via
+  // `with()` after building the base env (the codec assembles the leg supply after parseAnthropic runs).
+  with(patch: Partial<Pick<RequestEnvelope, "body" | "targetEndpoint" | "prepareHints" | "requestState">>): RequestEnvelope
 }

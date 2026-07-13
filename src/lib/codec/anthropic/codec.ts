@@ -233,7 +233,20 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       clientAnthropicBeta = parsed.clientAnthropicBeta
       clientRequestHeaders = parsed.clientRequestHeaders
       resanitize = parsed.resanitize
-      return parsed.env
+      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the direct
+      // `/v1/messages` CellAssembly reads it from `env.requestState` instead of this codec closure
+      // (C2a). Additive today: no reader until the driver's cell-keyed hybrid fork routes the direct
+      // cell through the assembly (C2a.2). `initialSanitizationInfo` is a side-channel written later by
+      // the sanitize rewrite → it lives on `ctx`, not here.
+      return parsed.env.with({
+        requestState: {
+          betaProbe: args.betaProbe,
+          truncateBaseline: parsed.baseline,
+          resanitize: parsed.resanitize as (payload: unknown) => unknown,
+          clientRequestHeaders: parsed.clientRequestHeaders,
+          ...(parsed.clientAnthropicBeta !== undefined && { clientAnthropicBeta: parsed.clientAnthropicBeta }),
+        },
+      })
     },
 
     getContext() {
