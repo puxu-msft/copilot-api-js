@@ -80,6 +80,8 @@ import { ENDPOINT } from "~/lib/models/endpoint"
 import { RESPONSE_REWRITE_ORDER } from "~/lib/pipeline/rewrite-registry"
 import { state } from "~/lib/state"
 
+import { errorFrameCanonicalRewrite } from "./error-frame-canonical-rewrite"
+
 /** Best-effort parse of an SSE data payload (undefined on failure / keepalive). */
 function parseFrame(data: string | undefined): StreamEvent | undefined {
   if (!data) return undefined
@@ -346,6 +348,15 @@ const refusalRewrite: ResponseRewrite = {
 /**
  * The Anthropic streaming response rewrites, in registry form. Ordered by `order`
  * at assembly (the array order here is cosmetic). Passed to the driver via
- * `deps.responseRewrites` by the Anthropic handler.
+ * `deps.responseRewrites` by the Anthropic handler. `errorFrameCanonical` (order 50)
+ * runs first — it reshapes a raw upstream `event:error` frame into a canonical envelope
+ * before any other rewrite (and before the refusal rewrite could synthesize its own).
  */
-export const ANTHROPIC_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = [recoverRewrite, thinkingRewrite, decodeRewrite, filterRewrite, refusalRewrite]
+export const ANTHROPIC_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = [
+  errorFrameCanonicalRewrite,
+  recoverRewrite,
+  thinkingRewrite,
+  decodeRewrite,
+  filterRewrite,
+  refusalRewrite,
+]

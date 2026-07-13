@@ -22,7 +22,11 @@
  */
 
 import type { ApiError } from "~/lib/error"
-import type { ClientFrame } from "~/lib/pipeline/types"
+import type {
+  //
+  ClientFrame,
+  UpstreamFrame,
+} from "~/lib/pipeline/types"
 
 import { classifyStreamError } from "~/lib/stream"
 
@@ -162,6 +166,36 @@ export function buildCanonicalErrorFrame(decision: Extract<ShapingDecision, { ki
   const error: Record<string, unknown> = { type: decision.errorType, message: decision.message }
   if (decision.retryAfterSec !== undefined) error.retry_after = decision.retryAfterSec
   return { event: "error", data: JSON.stringify({ type: "error", error }) }
+}
+
+/**
+ * Best-effort extraction of an upstream-sent `event:error` frame's `{type, message}` — tolerant of
+ * non-Anthropic-shaped bodies (raw GHC/Copilot error JSON). Mirrors `stream-accumulator.ts`'s
+ * `error` case parsing (`err.type` / `err.message`), plus a top-level `{type, message}` fallback,
+ * so both consumers agree on what "the upstream said" means. Never throws (returns `{}` on
+ * unparseable data).
+ */
+export function parseRawUpstreamErrorFrame(frame: UpstreamFrame): { type?: string; message?: string } {
+  try {
+    const parsed = JSON.parse(frame.data ?? "{}") as { type?: string; error?: { type?: string; message?: string }; message?: string }
+    return { type: parsed.error?.type ?? parsed.type, message: parsed.error?.message ?? parsed.message }
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * G-3 sole-ownership canonical builder for a RAW upstream `event:error` frame (the S5
+ * `errorFrameCanonical` rewrite's transform) — always resolves to a valid Anthropic `event:error`
+ * envelope, falling back to `"api_error"` / a generic message when the upstream shape is
+ * unrecognized (never throws, never drops the frame). Distinct from {@link buildCanonicalErrorFrame},
+ * which takes an already-classified `canonical-error` decision: this one has no `ApiError` to
+ * classify (an upstream-emitted frame is not a thrown error), so it preserves the upstream's own
+ * `error.type` verbatim rather than re-mapping through `decide()`.
+ */
+export function buildCanonicalErrorFrameFromRaw(frame: UpstreamFrame): ClientFrame {
+  const { type, message } = parseRawUpstreamErrorFrame(frame)
+  return buildCanonicalErrorFrame({ kind: "canonical-error", errorType: type ?? "api_error", message: message ?? "Upstream reported an error" })
 }
 
 /**
