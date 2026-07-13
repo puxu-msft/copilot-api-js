@@ -1,6 +1,6 @@
 # Telemetry Tiered-Storage Implementation Plan
 
-> **实施状态（2026-07-13）**：worktree `.worktrees/telemetry-storage/` @ `feat/telemetry-tiered-storage`。**Phase 0 ✅**（sketch.ts 自描述序列化 + 7 测试）、**Phase 1 ✅**（schema+dictionary+paths，15 测试）、**Phase 2 T2.1 ✅**（`telemetry.*` schema+mount `4c0898a0`；11 leaf 键暂入 config-hot-reload 的 EXEMPT——**T2.2 接线 apply 时须移到 FIELDS**）。**待做：T2.2 config→state apply + state 键（11 个×4 处）+ setTelemetryConfig、T2.3 业务校验（γ 下限/resolution 整除 warn-fallback）、T2.4 bundled config.yaml、P3-P7**。用 [prompts/kickoff.md](prompts/kickoff.md) 新会话续。plan 已过 1 轮对抗 review。GPT 异模型 review 三底座 infra-blocked，已自扮补位（序列化自描述加固）。
+> **实施状态（2026-07-13）**：worktree `.worktrees/telemetry-storage/` @ `feat/telemetry-tiered-storage`。**Phase 0 ✅**（sketch.ts 自描述序列化）、**Phase 1 ✅**（schema+dictionary+paths）、**Phase 2 ✅ 完整**（`telemetry.*` schema+mount+apply+state 11 键+校验+bundled yaml，5 触点全接线、11 键 hot-reload 真断言、638 config 测试绿 `73d4e1bf`）。全 telemetry+config 套件绿。**待做：P3（写路径 store.upsert + 加性双写）→ P4（rollup）→ P5（读路径逐字节兼容）→ P6（backfill）→ P7（SSOT 收敛）**。用 [prompts/kickoff.md](prompts/kickoff.md) 续。plan 已过 1 轮对抗 review。GPT 异模型 review 三底座 infra-blocked，已自扮补位。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **每 task 的逐字节 bite-sized TDD 步骤在执行期由 per-task subagent 即时展开**——本 plan 给出每 task 的文件/接口/测试 oracle/不变量/验收，Phase 0 附全套 bite-sized 模板。
 
