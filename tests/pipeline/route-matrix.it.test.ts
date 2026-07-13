@@ -104,7 +104,7 @@ const MATRIX: Array<MatrixRow> = [
     id: "anthropic-no-msg",
     vendor: "Anthropic",
     endpoints: [ENDPOINT.CHAT_COMPLETIONS],
-    anthropic: RJ,
+    anthropic: TR(ENDPOINT.CHAT_COMPLETIONS),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: TR(ENDPOINT.CHAT_COMPLETIONS),
   },
@@ -114,31 +114,32 @@ const MATRIX: Array<MatrixRow> = [
     id: "cc-only",
     vendor: "OpenAI",
     endpoints: [ENDPOINT.CHAT_COMPLETIONS],
-    anthropic: RJ,
+    anthropic: TR(ENDPOINT.CHAT_COMPLETIONS),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: TR(ENDPOINT.CHAT_COMPLETIONS),
   },
-  { id: "resp-only", vendor: "OpenAI", endpoints: [ENDPOINT.RESPONSES], anthropic: RJ, cc: TR(ENDPOINT.RESPONSES), responses: PT(ENDPOINT.RESPONSES) },
+  { id: "resp-only", vendor: "OpenAI", endpoints: [ENDPOINT.RESPONSES], anthropic: TR(ENDPOINT.RESPONSES), cc: TR(ENDPOINT.RESPONSES), responses: PT(ENDPOINT.RESPONSES) },
   // ws:/responses counts as Responses support for the cc translate-decision.
-  { id: "ws-only", vendor: "OpenAI", endpoints: [ENDPOINT.WS_RESPONSES], anthropic: RJ, cc: TR(ENDPOINT.RESPONSES), responses: PT(ENDPOINT.RESPONSES) },
+  { id: "ws-only", vendor: "OpenAI", endpoints: [ENDPOINT.WS_RESPONSES], anthropic: TR(ENDPOINT.RESPONSES), cc: TR(ENDPOINT.RESPONSES), responses: PT(ENDPOINT.RESPONSES) },
   {
     id: "cc-and-resp",
     vendor: "OpenAI",
     endpoints: [ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES],
-    anthropic: RJ,
+    anthropic: TR(ENDPOINT.RESPONSES),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: PT(ENDPOINT.RESPONSES),
   },
   // Supports only /v1/messages but OpenAI vendor → all three reject it.
   { id: "msg-only-openai", vendor: "OpenAI", endpoints: [ENDPOINT.MESSAGES], anthropic: RJ, cc: RJ, responses: RJ },
 
-  // Legacy model with no supported_endpoints → isEndpointSupported defaults true.
-  { id: "legacy-none", vendor: "OpenAI", endpoints: undefined, anthropic: RJ, cc: PT(ENDPOINT.CHAT_COMPLETIONS), responses: PT(ENDPOINT.RESPONSES) },
+  // Legacy model with no supported_endpoints → isEndpointSupported (and thus isResponsesSupported) defaults true.
+  { id: "legacy-none", vendor: "OpenAI", endpoints: undefined, anthropic: TR(ENDPOINT.RESPONSES), cc: PT(ENDPOINT.CHAT_COMPLETIONS), responses: PT(ENDPOINT.RESPONSES) },
 
   // Google force-list: Responses always translates to CC — even when the model
-  // does NOT advertise /chat/completions (google-resp), exercising the bypass.
-  { id: "google-resp", vendor: "Google", endpoints: [ENDPOINT.RESPONSES], anthropic: RJ, cc: TR(ENDPOINT.RESPONSES), responses: TR(ENDPOINT.CHAT_COMPLETIONS) },
-  { id: "google-none", vendor: "Google", endpoints: undefined, anthropic: RJ, cc: PT(ENDPOINT.CHAT_COMPLETIONS), responses: TR(ENDPOINT.CHAT_COMPLETIONS) },
+  // does NOT advertise /chat/completions (google-resp), exercising the bypass. Anthropic no-suffix
+  // routes these through /responses too → force-fallback → CC (Phase 7).
+  { id: "google-resp", vendor: "Google", endpoints: [ENDPOINT.RESPONSES], anthropic: TR(ENDPOINT.CHAT_COMPLETIONS), cc: TR(ENDPOINT.RESPONSES), responses: TR(ENDPOINT.CHAT_COMPLETIONS) },
+  { id: "google-none", vendor: "Google", endpoints: undefined, anthropic: TR(ENDPOINT.CHAT_COMPLETIONS), cc: PT(ENDPOINT.CHAT_COMPLETIONS), responses: TR(ENDPOINT.CHAT_COMPLETIONS) },
 
   // Unknown model (index miss → model undefined): legacy-true defaults apply.
   {
@@ -146,7 +147,7 @@ const MATRIX: Array<MatrixRow> = [
     vendor: "OpenAI",
     endpoints: undefined,
     modelUndefined: true,
-    anthropic: RJ,
+    anthropic: TR(ENDPOINT.RESPONSES),
     cc: PT(ENDPOINT.CHAT_COMPLETIONS),
     responses: PT(ENDPOINT.RESPONSES),
   },
