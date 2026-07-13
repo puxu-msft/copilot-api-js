@@ -192,11 +192,61 @@ count_tokens 本项目实现是**成熟**的；唯一实质错配是 **F7 的失
 
 ---
 
+## 轮次 5（2026-07-13）：refusal 恢复 vs CC 原生 `refusalFallbackModel` fallback
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 对 `stop_reason:"refusal"` 有**两处**（流式 + 非流式）对称的 fallback 编排：
+
+- **流式**（`app.pretty.js:298325-298345`，`ve` = message_delta 的 stop_reason）：`ve==="refusal"` 时——
+  1. `serverRefusalFallback`（上游 first-party 服务端换模型）→ `yield {type:"server_fallback"}`。
+  2. **client 配置 `refusalFallbackModel`**（`pd`，非 silent lane）→ 路由匹配后 `yield {type:"fallback_request", trigger:"refusal", fallbackModel:Ws}` + **`return`（弃当前流、用 fallback 模型整条重试）**。
+  3. 都无 → `BTt(...)` → `yield {type:"refusal_no_fallback"}` + refusal 消息（死轮）。
+- **非流式**（298057-298060）：同构，`yi.stop_reason==="refusal" && yl!==void 0` → `fallback_request`。
+- **关键**：CC 的 fallback 触发**只看 `stop_reason==="refusal"`，不检查有无 content**。`fallback_request` 会用 fallback 模型发**一条新的 `/v1/messages`** → 经本代理 → 若该模型在 GHC catalog 内，**能真的产出一个可用回复**。
+
+### 本项目现状（读码）
+
+本项目 [recover-refusal.ts](../../src/lib/anthropic/recover-refusal.ts) 只处理 **thinking-only refusal**（`stop_reason:refusal` 且无 text/tool_use），三模式（`state.refusalSseRewrite`，[response-rewrite-adapters.ts:296-343](../../src/lib/codec/anthropic/response-rewrite-adapters.ts#L296-L343)）：
+- `refusal` = **passthrough**（byte-identical 透传真 `stop_reason:refusal`）。
+- `end_turn` = 追加合成 text + 改写 `stop_reason→end_turn`。
+- `error` = 发 `event: error` 帧 + ctx.fail。
+- **默认 = `error`**（[state.ts:1496](../../src/lib/state.ts#L1496)、[config.yaml:755](../../config.yaml#L755)）。
+- refusals **带 content** 的一律透传不碰；history `sseEvents` 始终保留上游原始 refusal。
+
+### F10（MEDIUM）— 默认 `error`/`end_turn` 恢复**抢占**了 CC 原生 refusal-fallback
+
+**判断（读码，交互推理）**：本项目 `error`（默认）与 `end_turn` 两模式，都在**改写层**把 thinking-only refusal 的 `stop_reason:"refusal"` 变成 CC 看不出是 refusal 的东西（error 帧 / end_turn delta）。于是 CC 流式循环里 `ve` **永远不等于 `"refusal"`** → 上面整套 `refusalFallbackModel` / `fallback_request` 重试机制**永不触发**。
+
+对**配置了 `refusalFallbackModel`**（CC 的真实特性：refusal 时自动换模型重试）的用户：
+- 期望：thinking-only refusal → CC 自动用模型 B 重试 → 可能拿到真答案。
+- 经本代理默认 `error` 模式：拿到的是一个 **200+SSE-error**（`event: error`）→ CC 走 `new li(...)` APIError、**零重试**（轮次 4 F9 确认）→ **配置的 fallback 被静默击败**。
+- `end_turn` 模式同理：CC 看到一个正常 end_turn（带道歉文本）→ 也不触发 fallback。
+
+**唯一保留 CC fallback 的是 `refusal`（passthrough）模式，而它不是默认。**
+
+**范围与权衡（faithful，别夸大）**：
+- 只影响 **thinking-only** refusal（带 content 的透传、CC fallback 正常）。
+- 只影响**配置了 refusal fallback 的少数用户**；多数没配的用户，本项目 `error`/`end_turn` 恢复**优于** CC 的 `refusal_no_fallback` 死轮（proxy 的恢复是净收益）。
+- CC 的 fallback 若触发，也可能再次 refusal → 最终仍走到 error；proxy 只是**短路**到同一终态、跳过了那次 fallback 尝试。但那次尝试**有可能成功**（换模型），proxy 默认剥夺了它。
+- observability 不丢：history 保留真 refusal。
+
+**理想方向（不在本轮做，需产品判断）**：
+1. 至少在 [docs/refusal-recovery.md](../../docs/refusal-recovery.md) 补一节：三模式与 **CC 原生 `refusalFallbackModel` 的交互**——`error`/`end_turn` 会抢占它，`refusal` 保留它。让配了 fallback 的用户知道该选 `refusal`。
+2. 考虑默认值取舍：`refusal`（passthrough）保留 CC 机制但给没配 fallback 的用户死轮；当前 `error` 相反。**代理无法探知 CC 是否配了 fallback** → 无法自动二选一。可能的更优形状：新增一个「先 passthrough 让 CC 自己决定；仅当 CC 明确不会重试时才恢复」的模式——但 CC 是否重试对代理不可见，落地难。需 brainstorming + 明确这是否值得（多数用户不配 fallback）。
+3. **待实测**：headless CC 配 `refusalFallbackModel` 打本代理（各模式），确认 (a) 默认 `error` 下 fallback 确实不触发；(b) `refusal` 模式下 CC 的 `fallback_request` 是否真的发第二条请求到代理并被正常路由。
+
+### 本轮结论
+
+本项目 refusal 恢复设计**成熟**（三模式 + 配置化文案 + history 忠实 + 只碰 thinking-only）。唯一新洞见是**与 CC 2.1.207 原生 refusal-fallback 的交互**（F10，中）：默认 `error` 抢占了少数用户配置的 `refusalFallbackModel`。优先做**文档化交互 + 实测**，默认值是否改需产品判断（不自行拍板）。
+
+---
+
 ## 后续轮次待覆盖的 CC-facing 面（TODO 清单，逐轮消化）
 
 - [x] **请求形状漂移**（轮次 2）：`speed:"fast"`（F5）、`diagnostics.previous_message_id`（F6）已覆盖；`betas`/`metadata`/`tool_choice`/`output_config`/`context_management` 经查本项目已妥善处理（partner-feature-strip + request-preparation）。`eager_input_streaming`（fine-grained tool streaming）本项目已 proactive strip，无 gap。
 - [x] **count_tokens**（轮次 3）：失败契约 `{input_tokens:1}` 抑制 CC 本地兜底（F7,中）、`/context` burst 无服务端缓存（F8,低/已缓解）。CC 请求形状（tools/thinking/betas 白名单/空占位）与本项目 sanitize 一致，无形状 gap。
 - [x] **SDK SSEDecoder**（轮次 4）：解码器 `v5a` + 消费循环 `Sjf` 均未变，「合成帧必带 event 行」不变量**确认无回归**（F9）。accept-set 扩容为 Sessions-V2 `user.*`/`agent.*`（互动 agent 协议，非 `/v1/messages`，与代理无关）。
-- [ ] **refusal / fallback_request**：CC 的 `stop_reason:"refusal"` → `fallback_request` 控制流（298057–298060）vs 本项目 `recover-refusal.ts`。
-- [ ] **200+SSE-error 重试**：复核 2.1.207 是否仍对 200+流内 error 零重试（skill 基线来自旧版）。
+- [x] **refusal / fallback_request**（轮次 5）：CC 流式(298325)+非流式(298057) refusal→`fallback_request` 换模型重试；本项目默认 `error` 恢复抢占了配了 `refusalFallbackModel` 的用户的原生 fallback（F10,中）。只 `refusal` passthrough 模式保留之。
+- [ ] **200+SSE-error 重试**：复核 2.1.207 是否仍对 200+流内 error 零重试（轮次 4 F9 已顺带确认 error 帧→`li` 零重试；可结题）。
 - [ ] **thinking signature**：CC 侧对 `signature_delta` / thinking immutability 的消费 vs 本项目 `thinking-signature-compat.ts` / `thinking-immutability.ts`。
