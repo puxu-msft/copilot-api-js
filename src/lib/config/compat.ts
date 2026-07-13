@@ -149,6 +149,10 @@ export function migrateValue(oldPath: string, isLegacy: (value: unknown) => bool
 // Migration registry — evaluated top-down by extractAndTranslateDeprecated()
 // ============================================================================
 
+/** Shared deprecation message for the server-tool config keys removed with the web_search retirement (2026-07-13). */
+const SERVER_TOOL_RETIRED_MSG =
+  "removed with the web_search double-hop retirement (2026-07-13): native server-tool stripping/rewriting is now reactive-only, and web_search is no longer synthesized. See docs/decisions/2026-07-13-server-tool-positioning-and-web-search-retirement.md"
+
 export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // ── Historical migrations (carried over from schema.ts) ───────────────────
   renameLeaf("anthropic.immutable_thinking_messages", "anthropic.thinking_block_message_policy", {
@@ -241,21 +245,20 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // unchanged — only the user-facing yaml key spelling. Already-grouped keys (thinking_block_*,
   // context_editing*, tool_search, cache_control, …) keep their names.
   renameLeaf("anthropic.coerce_adaptive_thinking", "anthropic.thinking_coerce_adaptive"),
-  // server-tool sub-concern regrouping: the four keys dealing with Anthropic NATIVE
-  // server tools (web_search / memory / code_execution …) move under a `server_tool_*`
-  // sub-prefix, distinguishing them from the custom/client-tool keys that keep `tool_*`.
-  // `strip_server_tools` (strip declarations) and `rewrite_history_server_tools` (rewrite
-  // residual prior-turn blocks) previously carried a trailing `_server` suffix; the ancient
-  // legacy names below now point DIRECTLY at the final `server_tool_*` names (no chaining).
-  renameLeaf("anthropic.strip_server_tools", "anthropic.server_tool_strip"),
-  renameLeaf("anthropic.tool_strip_server", "anthropic.server_tool_strip"),
-  renameLeaf("anthropic.rewrite_history_server_tools", "anthropic.server_tool_rewrite"),
-  renameLeaf("anthropic.tool_rewrite_history_server", "anthropic.server_tool_rewrite"),
+  // memory stays (client-executed tool passthrough): rename legacy → server_tool_memory.
   renameLeaf("anthropic.memory_tool", "anthropic.server_tool_memory"),
-  // web_search is a TOP-LEVEL section (not under anthropic.*) — renamed to
-  // server_tool_web_search to disambiguate the native server tool from any custom
-  // client tool named "web_search". Inner fields (enabled/backend) keep their names.
-  renameSection("web_search", "server_tool_web_search"),
+  // server_tool_strip / server_tool_rewrite + the top-level web_search (→ server_tool_web_search)
+  // section were RETIRED (2026-07-13). Native server-tool stripping/rewriting is now reactive-only
+  // (learned cache), and the web_search double-hop is gone. Every current + ancient-legacy spelling
+  // is dropped with a warn-and-continue deprecation (config-philosophy: never fail-load).
+  removeKey("anthropic.server_tool_strip", SERVER_TOOL_RETIRED_MSG),
+  removeKey("anthropic.strip_server_tools", SERVER_TOOL_RETIRED_MSG),
+  removeKey("anthropic.tool_strip_server", SERVER_TOOL_RETIRED_MSG),
+  removeKey("anthropic.server_tool_rewrite", SERVER_TOOL_RETIRED_MSG),
+  removeKey("anthropic.rewrite_history_server_tools", SERVER_TOOL_RETIRED_MSG),
+  removeKey("anthropic.tool_rewrite_history_server", SERVER_TOOL_RETIRED_MSG),
+  removeKey("server_tool_web_search", SERVER_TOOL_RETIRED_MSG),
+  removeKey("web_search", SERVER_TOOL_RETIRED_MSG),
   renameLeaf("anthropic.inject_claude_code_tools", "anthropic.tool_inject_claude_code"),
   renameLeaf("anthropic.dedup_tool_calls", "anthropic.tool_dedup_calls"),
   renameLeaf("anthropic.strip_read_tool_result_tags", "anthropic.tool_strip_read_result_tags"),

@@ -138,12 +138,6 @@ describe("config compat — legacy key migration (file load)", () => {
   // migration exists — only this round-trip does).
   const CONCERN_PREFIX_RENAMES: ReadonlyArray<{ old: string; new: string; value: unknown }> = [
     { old: "coerce_adaptive_thinking", new: "thinking_coerce_adaptive", value: "best_effort" },
-    // server-tool sub-concern regrouping — both the ancient legacy names AND the
-    // interim tool_* names map directly to the final server_tool_* names.
-    { old: "strip_server_tools", new: "server_tool_strip", value: true },
-    { old: "tool_strip_server", new: "server_tool_strip", value: true },
-    { old: "rewrite_history_server_tools", new: "server_tool_rewrite", value: "downgrade" },
-    { old: "tool_rewrite_history_server", new: "server_tool_rewrite", value: "downgrade" },
     { old: "memory_tool", new: "server_tool_memory", value: true },
     { old: "inject_claude_code_tools", new: "tool_inject_claude_code", value: false },
     { old: "dedup_tool_calls", new: "tool_dedup_calls", value: "result" },
@@ -171,11 +165,25 @@ describe("config compat — legacy key migration (file load)", () => {
     })
   }
 
-  test("web_search → server_tool_web_search (top-level section rename)", () => {
-    const result = validateConfig({ web_search: { enabled: true, backend: "searxng" } })
+  // The web_search double-hop + server_tool_strip/rewrite config keys were RETIRED
+  // (2026-07-13) → dropped with a warn-and-continue deprecation, NOT migrated.
+  test("retired server-tool keys are dropped (warn-and-continue), not migrated", () => {
+    const result = validateConfig({
+      anthropic: { server_tool_strip: true, server_tool_rewrite: "downgrade", strip_server_tools: true },
+      web_search: { enabled: true, backend: "searxng" },
+      server_tool_web_search: { enabled: true, backend: "gpt-5.5" },
+    })
     const cfg = result as Record<string, unknown>
-    expect(cfg.server_tool_web_search).toEqual({ enabled: true, backend: "searxng" })
+    const anthropic = cfg.anthropic as Record<string, unknown> | undefined
+    // Dropped from the loaded config (deprecated → warned + stripped).
+    expect(anthropic?.server_tool_strip).toBeUndefined()
+    expect(anthropic?.server_tool_rewrite).toBeUndefined()
+    expect(anthropic?.strip_server_tools).toBeUndefined()
     expect(cfg.web_search).toBeUndefined()
+    expect(cfg.server_tool_web_search).toBeUndefined()
+    // memory_tool (client-tool passthrough) is UNAFFECTED — still migrated.
+    const memResult = validateConfig({ anthropic: { memory_tool: true } })
+    expect((memResult.anthropic as Record<string, unknown>)?.server_tool_memory).toBe(true)
   })
 
   test("user-set NEW key wins over migrated legacy key (missing-only merge)", () => {

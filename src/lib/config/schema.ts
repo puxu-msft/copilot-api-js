@@ -204,7 +204,6 @@ export const RateLimiterConfigSchema = z
 
 export const AnthropicConfigSchema = z
   .object({
-    server_tool_strip: nullableBoolean(),
     /**
      * Upstream→client response-header forwarding MODE (Anthropic path). `false`
      * (default) = BLACKLIST: forward everything except `response_header_blacklist`.
@@ -413,22 +412,6 @@ export const AnthropicConfigSchema = z
     thinking_signature_compat: z
       .union([z.literal(false), z.literal("signature_delta"), z.literal("redacted_thinking"), z.null()], {
         error: "Must be one of: false, signature_delta, redacted_thinking",
-      })
-      .optional()
-      .transform((v) => v ?? undefined),
-    /**
-     * Rewrite native server-tool blocks left in inbound message history before
-     * sending upstream. The web_search double-hop surfaces a synthesized
-     * `server_tool_use{web_search}` + `web_search_tool_result` pair to the client
-     * (so results are visible); the client echoes it back, but the downgraded
-     * `tools` array no longer declares `web_search` as a server tool → upstream 400.
-     *   "downgrade": rewrite the pair into plain tool_use + tool_result, splitting
-     *                the assistant turn so the tool_result lands in a user message.
-     *   false:       passthrough (default).
-     */
-    server_tool_rewrite: z
-      .union([z.literal(false), z.literal("downgrade"), z.null()], {
-        error: "Must be one of: false, downgrade",
       })
       .optional()
       .transform((v) => v ?? undefined),
@@ -691,20 +674,6 @@ export const HistoryConfigSchema = z
   })
   .strict()
 
-export const WebSearchConfigSchema = z
-  .object({
-    /** Enable the double-hop web_search server-tool implementation (Anthropic path only). Default false. */
-    enabled: nullableBoolean(),
-    /**
-     * Search backend selector:
-     *   ""        — not configured / disabled (default)
-     *   "searxng" — local SearXNG instance at http://localhost:8080
-     *   other     — treated as a Copilot Responses search model id (e.g. "gpt-5.5")
-     */
-    backend: nullableString(),
-  })
-  .strict()
-
 export const AutoTruncateConfigSchema = z
   .object({
     /** Enable reactive auto-truncate (retry with a truncated payload on upstream token-limit errors). Default false. Also settable via CLI --auto-truncate, which wins when explicitly passed. */
@@ -898,7 +867,6 @@ export const ConfigSchema = z
     sanitize_tool_names: nullableBoolean(),
     history: nullableSection(HistoryConfigSchema),
     hooks: nullableSection(HooksConfigSchema),
-    server_tool_web_search: nullableSection(WebSearchConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
     model_refresh_interval: nullableNonnegativeInt(),
@@ -974,7 +942,6 @@ export type AnthropicConfig = z.infer<typeof AnthropicConfigSchema>
 export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
-export type WebSearchConfig = z.infer<typeof WebSearchConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 /** Config-file shape of the `auto_truncate` section (distinct from the engine's runtime `AutoTruncateConfig`). */
 export type AutoTruncateConfigSection = z.infer<typeof AutoTruncateConfigSchema>

@@ -28,7 +28,6 @@ import {
   setShutdownConfig,
   setTimeoutConfig,
   setTimeoutOverridesConfig,
-  setWebSearchConfig,
   state,
 } from "~/lib/state"
 
@@ -553,7 +552,6 @@ export async function applyConfigToState(): Promise<Config> {
   // Anthropic settings (scalar: override only when present)
   if (config.anthropic) {
     const a = config.anthropic
-    if (a.server_tool_strip !== undefined) setAnthropicBehavior({ stripServerTools: a.server_tool_strip })
     if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
     if (a.response_header_blacklist !== undefined) setAnthropicBehavior({ responseHeaderBlacklist: a.response_header_blacklist })
     if (a.response_header_whitelist !== undefined) setAnthropicBehavior({ responseHeaderWhitelist: a.response_header_whitelist })
@@ -611,9 +609,6 @@ export async function applyConfigToState(): Promise<Config> {
     }
     if (a.system_reject_models !== undefined) setAnthropicBehavior({ systemRejectModels: a.system_reject_models })
     if (a.system_reject_mode !== undefined) setAnthropicBehavior({ systemRejectMode: a.system_reject_mode })
-    if (a.server_tool_rewrite !== undefined) {
-      setAnthropicBehavior({ rewriteServerTools: a.server_tool_rewrite })
-    }
     if (a.thinking_signature_compat !== undefined) {
       setAnthropicBehavior({ thinkingSignatureCompat: a.thinking_signature_compat })
     }
@@ -761,13 +756,6 @@ export async function applyConfigToState(): Promise<Config> {
     if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
     if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
-  }
-
-  // Web search settings (nested: override only when present)
-  if (config.server_tool_web_search) {
-    const w = config.server_tool_web_search
-    if (w.enabled !== undefined) setWebSearchConfig({ webSearchEnabled: w.enabled })
-    if (w.backend !== undefined) setWebSearchConfig({ webSearchBackend: w.backend })
   }
 
   // Upstream hook module (nested: override only when present). Declarative only — writes

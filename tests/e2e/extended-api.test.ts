@@ -85,7 +85,6 @@ describeWithToken("Extended Copilot API Integration", () => {
     setStateForTests({
       githubToken,
       accountType: "individual",
-      stripServerTools: true,
     })
 
     const { token } = await getCopilotToken()

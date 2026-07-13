@@ -219,9 +219,6 @@ export interface State {
   readonly memoryToolEnabled: boolean
   readonly memoryModels: ReadonlyArray<string>
 
-  /** Strip Anthropic server-side tools from requests when upstream doesn't support them */
-  readonly stripServerTools: boolean
-
   /**
    * Upstream→client response-header forwarding MODE (Anthropic path). `false`
    * (default) = BLACKLIST mode: forward everything except `responseHeaderBlacklist`.
@@ -452,18 +449,6 @@ export interface State {
   readonly systemRejectMode: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
 
   /**
-   * Rewrite native server-tool blocks left in inbound message history before
-   * sending upstream. The web_search double-hop surfaces a synthesized
-   * `server_tool_use{web_search}` + `web_search_tool_result` pair to the client
-   * (so results are visible); the client echoes it back next turn, but the
-   * downgraded `tools` array no longer declares `web_search` as a server tool,
-   * so upstream 400s. `"downgrade"` rewrites the pair into a plain
-   * `tool_use` + `tool_result` (splitting the assistant turn so the tool_result
-   * lands in a user message, per protocol). `false` passes through (default).
-   */
-  readonly rewriteServerTools: false | "downgrade"
-
-  /**
    * Client compatibility shim for the thinking frame some Copilot upstreams emit
    * — `content_block_start {type:"thinking", thinking:"", signature:S}` with NO
    * trailing signature_delta. The upstream is the protocol authority; standard
@@ -612,24 +597,6 @@ export interface State {
    * Default: "".
    */
   readonly historyDbPath: string
-
-  /**
-   * Enable the double-hop web_search server-tool implementation.
-   * When true and a request carries a native Anthropic web_search server tool
-   * (or Claude Code's `WebSearch` tool), the Anthropic path intercepts the
-   * request, runs a real search via `webSearchBackend`, and synthesizes a
-   * standard Anthropic response. Default false (fully short-circuited when off).
-   */
-  readonly webSearchEnabled: boolean
-
-  /**
-   * Web search backend selector:
-   *   ""        — not configured / disabled
-   *   "searxng" — local SearXNG instance at http://localhost:8080
-   *   other     — treated as a Copilot Responses search model id (e.g. "gpt-5.5")
-   * Default "".
-   */
-  readonly webSearchBackend: string
 
   /**
    * Fetch timeout in seconds.
@@ -1185,7 +1152,6 @@ export function setAnthropicBehavior(
   patch: Partial<
     Pick<
       MutableState,
-      | "stripServerTools"
       | "strictResponseHeaders"
       | "strictRequestHeaders"
       | "requestHeaderBlacklist"
@@ -1212,7 +1178,6 @@ export function setAnthropicBehavior(
       | "systemDefaultMode"
       | "systemRejectModels"
       | "systemRejectMode"
-      | "rewriteServerTools"
       | "thinkingSignatureCompat"
       | "dedupToolCalls"
       | "stripReadToolResultTags"
@@ -1336,10 +1301,6 @@ export function setNegotiationConfig(patch: Partial<Pick<MutableState, "negotiat
   updateState(patch)
 }
 
-export function setWebSearchConfig(patch: Partial<Pick<MutableState, "webSearchEnabled" | "webSearchBackend">>): void {
-  updateState(patch)
-}
-
 export function setAutoTruncateConfig(
   patch: Partial<
     Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateMaxRetries" | "autoTruncateCompressThreshold" | "autoTruncatePreflight">
@@ -1448,7 +1409,6 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
  * Model overrides continue to use DEFAULT_MODEL_OVERRIDES.
  */
 export const CONFIG_MANAGED_DEFAULTS = {
-  stripServerTools: false,
   strictResponseHeaders: false,
   strictRequestHeaders: false,
   requestHeaderBlacklist: ["x-anthropic-billing-header"] as ReadonlyArray<string>,
@@ -1475,7 +1435,6 @@ export const CONFIG_MANAGED_DEFAULTS = {
   systemDefaultMode: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectMode: "as_user" as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] as Array<string>,
-  rewriteServerTools: false as false | "downgrade",
   thinkingSignatureCompat: "signature_delta" as false | "signature_delta" | "redacted_thinking",
   dedupToolCalls: false as const,
   stripReadToolResultTags: false,
@@ -1555,8 +1514,6 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyFailureLimit: 200,
   historyReaperInterval: 600,
   historyDbPath: "",
-  webSearchEnabled: false,
-  webSearchBackend: "",
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
   responsesBufferedRetry: false,
@@ -1593,7 +1550,6 @@ export const CONFIG_MANAGED_DEFAULTS = {
 
 export function resetConfigManagedState(): void {
   setAnthropicBehavior({
-    stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
     strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
     requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
@@ -1620,7 +1576,6 @@ export function resetConfigManagedState(): void {
     systemDefaultMode: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
     systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
     systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
-    rewriteServerTools: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
     thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
     dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
     stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
@@ -1692,10 +1647,6 @@ export function resetConfigManagedState(): void {
     historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
   })
-  setWebSearchConfig({
-    webSearchEnabled: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
-    webSearchBackend: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
-  })
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
@@ -1750,7 +1701,6 @@ const mutableState: MutableState = {
   extendedCacheTtlMessages: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlMessages,
   extendedCacheTtlModels: [...CONFIG_MANAGED_DEFAULTS.extendedCacheTtlModels],
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
-  stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
   strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
   strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
   requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
@@ -1777,7 +1727,6 @@ const mutableState: MutableState = {
   systemDefaultMode: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
   systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
   systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
-  rewriteServerTools: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
   thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
@@ -1785,8 +1734,6 @@ const mutableState: MutableState = {
   historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
   historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
-  webSearchEnabled: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
-  webSearchBackend: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
   modelIds: new Set(),
   modelIndex: new Map(),
   modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },

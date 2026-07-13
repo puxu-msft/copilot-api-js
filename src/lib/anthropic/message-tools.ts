@@ -339,32 +339,31 @@ export function isServerToolType(type: string | undefined): boolean {
 /**
  * Strip server-side tools from the tools array, or pass them through unchanged.
  *
- * Three strip sources are unioned:
- *   1. `state.stripServerTools` — global config opt-in; removes EVERY server tool.
- *   2. learned cache (`getUnsupportedServerToolTypes(model)`) — per-(endpoint,
+ * Two reactive strip sources are unioned (the global `server_tool_strip` config
+ * opt-in was removed with the web_search retirement — 2026-07-13):
+ *   1. learned cache (`getUnsupportedServerToolTypes(model)`) — per-(endpoint,
  *      model) type prefixes the upstream reactively rejected (e.g. `web_search_`).
- *   3. `excludeTypes` — per-attempt hint from the server-tool-rejection retry
+ *   2. `excludeTypes` — per-attempt hint from the server-tool-rejection retry
  *      strategy (`PrepareHints.excludeServerToolTypes`), deterministic for THIS
  *      attempt independent of whether the cache was written yet.
  *
- * Sources 2 and 3 strip only the matching type prefixes; other server tools pass
- * through. When no source applies (default), all tools are forwarded unchanged
- * per the Anthropic protocol.
+ * Both strip only the matching type prefixes; other server tools pass through.
+ * When neither applies (default), all tools are forwarded unchanged per the
+ * Anthropic protocol.
  */
 export function stripServerTools(tools: Array<Tool> | undefined, model: string, excludeTypes?: ReadonlyArray<string>): Array<Tool> | undefined {
   if (!tools) return undefined
 
   const learned = new Set([...getUnsupportedServerToolTypes(model), ...(excludeTypes ?? [])])
-  const stripAll = state.stripServerTools
 
-  // No source strips anything — forward unchanged.
-  if (!stripAll && learned.size === 0) return tools
+  // No learned/hinted type strips anything — forward unchanged.
+  if (learned.size === 0) return tools
 
   const result: Array<Tool> = []
 
   for (const tool of tools) {
     const matchesLearned = [...learned].some((prefix) => (tool.type ?? "").startsWith(prefix))
-    if (isServerToolType(tool.type) && (stripAll || matchesLearned)) {
+    if (isServerToolType(tool.type) && matchesLearned) {
       consola.warn(`[DirectAnthropic] Stripping server tool: ${tool.name} (type: ${tool.type})`)
       continue
     }

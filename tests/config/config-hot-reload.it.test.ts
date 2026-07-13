@@ -288,13 +288,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── anthropic.* scalars ────────────────────────────────────────────
   {
-    configKey: "anthropic.server_tool_strip",
-    stateKey: "stripServerTools",
-    sampleYamlValue: "true",
-    expectedStateValue: true,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripServerTools,
-  },
-  {
     configKey: "anthropic.strict_response_headers",
     stateKey: "strictResponseHeaders",
     sampleYamlValue: "true",
@@ -559,13 +552,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
   },
   {
-    configKey: "anthropic.server_tool_rewrite",
-    stateKey: "rewriteServerTools",
-    sampleYamlValue: "downgrade",
-    expectedStateValue: "downgrade",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
-  },
-  {
     configKey: "anthropic.thinking_signature_compat",
     stateKey: "thinkingSignatureCompat",
     sampleYamlValue: "redacted_thinking",
@@ -791,22 +777,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: '"/tmp/custom.db"',
     expectedStateValue: "/tmp/custom.db",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyDbPath,
-  },
-
-  // ── server_tool_web_search.* ───────────────────────────────────────────────────
-  {
-    configKey: "server_tool_web_search.enabled",
-    stateKey: "webSearchEnabled",
-    sampleYamlValue: "true",
-    expectedStateValue: true,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
-  },
-  {
-    configKey: "server_tool_web_search.backend",
-    stateKey: "webSearchBackend",
-    sampleYamlValue: '"searxng"',
-    expectedStateValue: "searxng",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
   },
 
   // ── shutdown.* ─────────────────────────────────────────────────────
@@ -1249,7 +1219,6 @@ system_prompt_overrides:
 
   test("CONFIG_MANAGED_DEFAULTS stays aligned with initial mutable state", () => {
     // Sanity guard against drift in state.ts initializer.
-    expect(state.stripServerTools).toBe(CONFIG_MANAGED_DEFAULTS.stripServerTools)
     expect(state.thinkingBlockMessagePolicy).toBe(CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy)
     expect(state.responseHeaderTimeout).toBe(CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout)
     expect(state.streamIdleTimeout).toBe(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout)
