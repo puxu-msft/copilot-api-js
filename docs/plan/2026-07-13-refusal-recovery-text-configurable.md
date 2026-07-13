@@ -1,5 +1,7 @@
 # Refusal Recovery/Error 文本全可配 + 合成帧打标 Implementation Plan
 
+> **实施状态（2026-07-13 完成）**：全 8 task inline 落地并提交 master（commits `afdf977b` renderRefusalTemplate+常量 / `5adfed8e` config 三键 / `1992cc26` 四发射点接线 / `a34f2601` 合成帧打标 / `280845f3` lint / `25fdda10` docs）。验证：typecheck 绿、变更文件 lint 零 error、refusal 相关 375 pass + hook-rewrite 回归（driver-provenance）69 pass。**偏差记录**：① Task 5 的 `transformWhole` 签名**已是** `(response, env)`（rewrite-registry.ts:125），无需拓宽；② Task 7 期间并发 session 已提交 client-sink.ts 读 `readSyntheticKind`/`refusal-recovery` 但**未提交依赖的 frame-origin.ts + origin.ts 泛化**（HEAD 一度不连贯），本会话工作树正好补齐；③ 空串 end_turn 是否 stall 仍**待真实 Claude Code live oracle 验证**（验收标准 3，非自动化）。**已知无关失败**（并发 peer 的 model-canonicalization / negotiation 改动，非本特性）：`payload-rewrite-registry.it` 4×、`negotiation-route.http` 1×。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 refusal recovery/error 的三处硬编码文本开放为 `anthropic.*` 配置键 + 占位符模板（零包装、空串=不注入），并给 refusal 注入/改写的合成帧在 forwarded 轨补打 `synthetic:"refusal-recovery"` 标记。
