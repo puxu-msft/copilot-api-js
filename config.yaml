@@ -746,7 +746,7 @@ openai_responses:
   # 连接经 `previous_response_id` 或 session header 跨工具调用轮复用。
   # WS failures fall back to HTTP transparently; 3 consecutive fallbacks temporarily disable WS for 5 minutes (single half-open probe on expiry). Default: false.
   # WS 失败透明回退 HTTP；连续 3 次回退临时禁用 WS 5 分钟（到期单次半开探针）。默认 false。
-  upstream_ws: true
+  upstream_ws: false
 
   # Fix inconsistent item IDs across `output_item.added` / `output_item.done` events from Copilot's upstream stream. Required by `@ai-sdk/openai` which validates ID continuity. Default: true.
   # 修复 Copilot 上游流在 `output_item.added` / `output_item.done` 间不一致的 item ID。`@ai-sdk/openai` 校验 ID 连续性需要。默认 true。
