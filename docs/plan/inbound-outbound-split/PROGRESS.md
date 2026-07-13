@@ -13,7 +13,7 @@
 |---|---|---|
 | C0 golden 预捕获 | ✅ **已提交**（本会话 inline） | 4 条 byte golden，全量 4665 pass / 5 fail（base 不变）。见下 |
 | C1 骨架 | ✅ **已提交**（本会话 inline） | cell-assembly.ts + request-state.ts + env.requestState + 4 codec 穿线 + L1 守卫测试。全量 4669/5 fail。**未接线零行为变化**。见下 |
-| C2 AnthropicCellAssembly | 🔶 **进行中** | C2-prep（anthropic-leg 提取，字节等价）+ **C2a.1**（parse 填 env.requestState，additive 零 reader）**已提交**。**剩 C2a.2/.3**（driver cell-keyed fork + AnthropicCellAssembly direct 接线 + pipelineInfo 经 ctx 重寄 + messages handler 清理）——全重构最精细单点，精确设计+锚点见 [prompts/C2.md](prompts/C2.md) §C2a.2/.3。再 C2b（3 反向）|
+| C2 AnthropicCellAssembly | 🔶 **进行中（C2a 已完成）** | C2-prep + C2a.1 + **C2a**（driver cell-keyed fork + anthropicMessagesLeg 接线 + pipelineInfo 经 ctx 重寄 + L1 守卫）**全已提交**——**首个 wired cutover，driver fork 机制证成、字节等价、全量 base 5**。剩 **C2b**（3 反向 @messages cell：加 reverse translateOut+resanitize + 注册 MIGRATED_CELLS + 删 3 handler reverse 供料，golden(b) 把关）。dead code（codec direct 分支 + handler MESSAGES 分支）推迟 C5|
 | C3 OpenAiCcCellAssembly | ⬜ | /chat 腿切 |
 | C4 OpenAiResponsesCellAssembly | ⬜ | /responses+ws 腿切 + R1 corner |
 | C5 InboundCodec 收敛 | ⬜ | 删 registry 死方法 + shim 退化 |
