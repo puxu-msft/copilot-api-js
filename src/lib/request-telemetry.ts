@@ -30,14 +30,18 @@ import {
 } from "./telemetry/sketch"
 import {
   //
+  computeCumulativeSketchBlob,
+  computeTierSketchBlob,
   incrementCumulativeAccepted,
+  readSketchGamma,
   SETTLED_MEASURE_COLUMN_NAMES,
   type SettledMeasures,
   upsertAccepted,
   upsertCumulative,
-  upsertCumulativeSketchBlob,
   upsertSettledTier,
-  upsertSketchBlob,
+  writeCumulativeSketchBlob,
+  writeSketchGammaIfAbsent,
+  writeTierSketchBlob,
 } from "./telemetry/store"
 
 const BUCKET_MS = 5 * 60 * 1000
@@ -397,12 +401,32 @@ let outboxAccepted = new Map<number, number>()
 
 /** The open telemetry.db handle (null when telemetry is disabled or before init). */
 let telemetryDb: TelemetryDatabase | null = null
+/**
+ * The sketch relativeAccuracy frozen for the LIFETIME of the currently-open telemetry.db (read from
+ * `tel_meta['sketch_gamma']` at open, seeded from config on a brand-new db). All sketches built while
+ * this db is open use THIS value — NOT live `state.telemetrySketchGamma`. Rationale: stored sketch
+ * blobs carry their γ, and read-merge-write drain merges a new delta into the stored blob; a config
+ * `sketch_gamma` hot-reload would build deltas at a different γ, and `mergeSketch` fail-loud throws on
+ * a γ mismatch → a poisoned entry would wedge the whole drain (single-transaction rollback + foldback +
+ * warn-once) and — because `tel_cumulative` is a permanent single-row blob — never self-heal, not even
+ * across restart. Binding γ to the db (constant for the file's life) closes that at the root. `null`
+ * before any db is opened. NB the field name says "gamma" but numerically carries DDSketch's
+ * relativeAccuracy (see store `SKETCH_GAMMA_META_KEY` doc; rename tracked in backlog).
+ */
+let effectiveSketchGamma: number | null = null
 /** Unsubscribe for the persist-timer hot-reload listener (null when not subscribed). */
 let telemetryConfigUnsub: (() => void) | null = null
 /** Warn-once debounce for SQLite dual-write drain failures (mirrors persistFailureLogged for JSON). */
 let telemetryDrainFailureLogged = false
 /** Warn-once debounce for the outbox soft-cap eviction (a SUSTAINED drain failure would otherwise grow the outbox unbounded). */
 let telemetryOutboxCapLogged = false
+/**
+ * Warn-once debounce for a POISONED sketch entry dropped mid-drain (a stored blob whose γ mismatches
+ * the delta's, or a corrupt/undeserializable blob). Session-level (reset only on setup/reset, NOT on a
+ * successful drain) because a permanent foreign-γ stored blob re-poisons its key every drain — so a
+ * per-drain reset would spam once per persist interval.
+ */
+let telemetryPoisonLogged = false
 
 /**
  * Soft upper bound on the total pending outbox entries (raw key-slots + cumulative key-slots +
@@ -494,7 +518,10 @@ function addToOutboxEntry(entry: OutboxSettledEntry, delta: SettledMeasures, obs
   for (const [name, value] of observations) {
     let sketch = entry.sketches.get(name)
     if (!sketch) {
-      sketch = createSketch(state.telemetrySketchGamma)
+      // Bind to the db's frozen γ (see effectiveSketchGamma), NEVER live state.telemetrySketchGamma —
+      // a runtime config change must not build deltas at a γ that mismatches the stored blob (fail-loud
+      // wedge). Falls back to the config default only before any db is opened (no drain happens then).
+      sketch = createSketch(effectiveSketchGamma ?? state.telemetrySketchGamma)
       entry.sketches.set(name, sketch)
     }
     sketch.accept(value)
@@ -608,48 +635,106 @@ function mergeOutboxBack(snapshot: OutboxSnapshot): void {
 }
 
 /**
- * Drain a snapshotted outbox into telemetry.db in ONE transaction.
+ * Drain a snapshotted outbox into telemetry.db in TWO phases so a single POISONED sketch entry can
+ * never wedge the whole batch (MAJOR-2 defense-in-depth):
  *
- * Single-flusher invariant (Task 1 Minor #1): `persistTelemetrySerialized` is serialized
- * (`createSerializedAsyncFn`) and the record functions ONLY mutate the in-memory outbox (never
- * SQLite), so the SELECT+UPSERT read-merge-write inside the store primitives has NO concurrent
- * writer on the same key — `BEGIN IMMEDIATE` is unnecessary. The single transaction is here purely
- * so a mid-drain fault rolls back atomically and the retained snapshot retries cleanly (no partial
- * double-count).
+ * Phase 1 (OUTSIDE any transaction) — intern dims/keys, then read-merge-serialize each sketch blob.
+ * The read-merge (`computeTierSketchBlob`/`computeCumulativeSketchBlob`) is the ONLY poison-prone step
+ * (`mergeSketch` fail-loud throws on a stored-blob γ mismatch; a corrupt blob throws in deserialize).
+ * A per-entry try/catch drops JUST the poisoned sketch (warn-once, session-level) while KEEPING that
+ * entry's scalar measures — poison is contained to the one bad sketch and never touches the scalar or
+ * accepted legs. Poisoned entries are NOT folded back (they'd re-poison forever). Interning is a plain
+ * db write done here too, so a genuinely broken db throws BEFORE the per-entry catch → propagates as a
+ * transaction-level failure (whole batch folds back + retries), distinct from a single-entry poison.
+ *
+ * Phase 2 (ONE transaction) — pure writes only (additive scalar UPSERT + idempotent precomputed blob
+ * replace + accepted). None read-merge, so none throw on poison; any throw here is a real db fault that
+ * rolls back atomically and folds the retained snapshot back for a clean retry (no partial double-count).
  */
 function drainOutboxToSqlite(db: TelemetryDatabase, snapshot: OutboxSnapshot): void {
-  db.transaction(() => {
-    // Intern dim names once per drain (id is stable within the db).
-    const dimIds = new Map<string, number>()
-    const dimId = (name: string): number => {
-      let id = dimIds.get(name)
-      if (id === undefined) {
-        id = internDim(db, name)
-        dimIds.set(name, id)
-      }
-      return id
+  // Intern dim names once per drain (id is stable within the db). A broken db throws here (before any
+  // per-entry poison catch) → propagates as a transaction-level failure (whole-batch foldback).
+  const dimIds = new Map<string, number>()
+  const dimId = (name: string): number => {
+    let id = dimIds.get(name)
+    if (id === undefined) {
+      id = internDim(db, name)
+      dimIds.set(name, id)
     }
+    return id
+  }
 
-    // tel_raw leg (only raw here — hourly/daily are produced by P4 rollup).
-    for (const [bucketTs, dims] of snapshot.raw) {
-      for (const [dimName, keys] of dims) {
-        const dim = dimId(dimName)
-        for (const [key, entry] of keys) {
-          const keyId = internKey(db, dim, key)
-          upsertSettledTier(db, "tel_raw", bucketTs, dim, keyId, entry.measures)
-          if (entry.sketches.size > 0) upsertSketchBlob(db, "tel_raw", bucketTs, dim, keyId, entry.sketches)
-        }
-      }
-    }
+  /** Warn-once (session-level) when a poisoned sketch is dropped — a permanent foreign-γ blob re-poisons every drain. */
+  const dropPoisonedSketch = (label: string, err: unknown): void => {
+    if (telemetryPoisonLogged) return
+    telemetryPoisonLogged = true
+    consola.warn(`[telemetry] dropping poisoned sketch delta (${label}) — stored blob γ mismatch or corruption; scalars unaffected:`, err)
+  }
 
-    // tel_cumulative leg (gated by state.telemetryCumulative at the feed point, so an empty map here when off).
-    for (const [dimName, keys] of snapshot.cumulative) {
+  // ── Phase 1: intern + read-merge-serialize sketch blobs (poison isolated here, outside the txn) ──
+  interface PlannedTierWrite {
+    table: "tel_raw"
+    bucketTs: number
+    dim: number
+    keyId: number
+    measures: SettledMeasures
+    /** Precomputed sketch blob, or null when there were no sketches OR the sketch was poisoned (scalars still written). */
+    blob: Uint8Array | null
+  }
+  interface PlannedCumulativeWrite {
+    dim: number
+    keyId: number
+    measures: SettledMeasures
+    blob: Uint8Array | null
+  }
+  const rawPlan: Array<PlannedTierWrite> = []
+  const cumulativePlan: Array<PlannedCumulativeWrite> = []
+
+  // tel_raw leg (only raw here — hourly/daily are produced by P4 rollup).
+  for (const [bucketTs, dims] of snapshot.raw) {
+    for (const [dimName, keys] of dims) {
       const dim = dimId(dimName)
       for (const [key, entry] of keys) {
         const keyId = internKey(db, dim, key)
-        upsertCumulative(db, dim, keyId, entry.measures)
-        if (entry.sketches.size > 0) upsertCumulativeSketchBlob(db, dim, keyId, entry.sketches)
+        let blob: Uint8Array | null = null
+        if (entry.sketches.size > 0) {
+          try {
+            blob = computeTierSketchBlob(db, "tel_raw", bucketTs, dim, keyId, entry.sketches)
+          } catch (err) {
+            dropPoisonedSketch(`tel_raw dim=${dimName} key=${key}`, err)
+          }
+        }
+        rawPlan.push({ table: "tel_raw", bucketTs, dim, keyId, measures: entry.measures, blob })
       }
+    }
+  }
+
+  // tel_cumulative leg (gated by state.telemetryCumulative at the feed point, so an empty map here when off).
+  for (const [dimName, keys] of snapshot.cumulative) {
+    const dim = dimId(dimName)
+    for (const [key, entry] of keys) {
+      const keyId = internKey(db, dim, key)
+      let blob: Uint8Array | null = null
+      if (entry.sketches.size > 0) {
+        try {
+          blob = computeCumulativeSketchBlob(db, dim, keyId, entry.sketches)
+        } catch (err) {
+          dropPoisonedSketch(`tel_cumulative dim=${dimName} key=${key}`, err)
+        }
+      }
+      cumulativePlan.push({ dim, keyId, measures: entry.measures, blob })
+    }
+  }
+
+  // ── Phase 2: pure writes in one transaction (no read-merge → poison-free; any throw = real db fault) ──
+  db.transaction(() => {
+    for (const w of rawPlan) {
+      upsertSettledTier(db, w.table, w.bucketTs, w.dim, w.keyId, w.measures)
+      if (w.blob) writeTierSketchBlob(db, w.table, w.bucketTs, w.dim, w.keyId, w.blob)
+    }
+    for (const w of cumulativePlan) {
+      upsertCumulative(db, w.dim, w.keyId, w.measures)
+      if (w.blob) writeCumulativeSketchBlob(db, w.dim, w.keyId, w.blob)
     }
 
     // tel_accepted leg + its lifetime cumulative (tel_meta).
@@ -958,18 +1043,38 @@ function setupTelemetryDb(): void {
   // Close any prior handle (re-init / test) and drop stale outbox — a fresh init starts clean.
   telemetryDb?.close()
   telemetryDb = null
+  effectiveSketchGamma = null
   outboxRaw = new Map()
   outboxCumulative = new Map()
   outboxAccepted = new Map()
   telemetryDrainFailureLogged = false
   telemetryOutboxCapLogged = false
+  telemetryPoisonLogged = false
   if (state.telemetryEnabled) {
     try {
       telemetryDb = openTelemetryDb(state.telemetryDbPath || PATHS.TELEMETRY_DB)
+      // Freeze the sketch γ (relativeAccuracy) for this db's lifetime: read it from tel_meta, or seed
+      // it from config on a brand-new db. All sketches built while this handle is open use THIS value,
+      // constant across restart (the stored blobs persist their γ). A config sketch_gamma hot-reload is
+      // intentionally a no-op for an already-created db (would fail-loud on merge) — warn if they diverge.
+      const configGamma = state.telemetrySketchGamma
+      const dbGamma = readSketchGamma(telemetryDb)
+      if (dbGamma === null) {
+        writeSketchGammaIfAbsent(telemetryDb, configGamma)
+        effectiveSketchGamma = configGamma
+      } else {
+        effectiveSketchGamma = dbGamma
+        if (dbGamma !== configGamma) {
+          consola.warn(
+            `[telemetry] telemetry.db was created with sketch_gamma=${dbGamma}; config sketch_gamma=${configGamma} does NOT take effect this session (a stored-blob γ mismatch would wedge the sketch write). Delete telemetry.db and restart to change it.`,
+          )
+        }
+      }
     } catch (err) {
       // Never let a db-open failure break the JSON telemetry path — the dual-write is additive.
       consola.warn(`[telemetry] failed to open telemetry.db (dual-write disabled this session):`, err)
       telemetryDb = null
+      effectiveSketchGamma = null
     }
   }
   // Arm the persist-timer hot-reload listener exactly once across the module's lifetime.
@@ -1493,11 +1598,13 @@ export function _resetRequestTelemetryForTests(): void {
   // handle ("Cannot use a closed database") or leaked deltas. Unsubscribe the config listener too.
   telemetryDb?.close()
   telemetryDb = null
+  effectiveSketchGamma = null
   outboxRaw = new Map()
   outboxCumulative = new Map()
   outboxAccepted = new Map()
   telemetryDrainFailureLogged = false
   telemetryOutboxCapLogged = false
+  telemetryPoisonLogged = false
   outboxSoftCap = OUTBOX_SOFT_CAP
   telemetryConfigUnsub?.()
   telemetryConfigUnsub = null
@@ -1522,6 +1629,11 @@ export function _getTelemetryDbForTests(): TelemetryDatabase | null {
 /** Total pending outbox entries (raw + cumulative + accepted) — test assertion hook for the feeding gate + soft cap. */
 export function _getOutboxSizeForTests(): number {
   return outboxTotalEntries()
+}
+
+/** The γ (relativeAccuracy) frozen for the currently-open telemetry.db (null when no db open) — test assertion hook for the db-bound γ. */
+export function _getEffectiveSketchGammaForTests(): number | null {
+  return effectiveSketchGamma
 }
 
 /** Override the outbox soft cap (test hook) so eviction can be exercised without materializing 50k entries. Reset restores the default. */

@@ -522,3 +522,12 @@
 - **为何非硬失败（暂缓）**：真正孤立（无配对 tool_result）的 tool_use 会被 `processToolBlocks`（`sanitize/tool-blocks.ts`）作为 orphan **删除**（连同 tool_result），故不给 GHC 留悬空引用。有兜底、非硬失败——但兜底手段（**删历史块**）与有-tools 路径（**注 stub 保历史**）**不一致**：一个丢历史、一个保历史。
 - **理想架构**：无-tools 分支也解除门控使两路径对称（保历史优先，对齐 richest-data-flow），或至少在代码注释显式说明「无-tools 依赖 orphan 删除兜底」消除困惑。
 - **为何暂缓**：当前有兜底、无硬失败；两路径对称化是一致性改进非缺陷修复，可独立处理。发现方：whole-branch review（2026-07-14）。
+- **补充（2026-07-13 合并态审查发现）**：`src/lib/anthropic/token-counting.ts` 的 `countTotalTokens`（whole-prompt 计数，含 thinking）在 caliber 统一为 `countTotalInputTokens` 后**已无生产/测试消费者**（成功腿/backfill 均改用 input-only 版）。同上属可删死导出——或删除，或保留作通用 whole-prompt 计数工具并加注释说明；一并纳入本条 review 裁决。
+
+## telemetry `sketchGamma` 命名实为 `relativeAccuracy`（2026-07-13，Fix round 2 reviewer 指出）
+
+- **根因**：config 键 `telemetry.sketch_gamma` → state `telemetrySketchGamma` → `createSketch(relativeAccuracy)`（[sketch.ts:26](../../src/lib/telemetry/sketch.ts#L26)）。该数值**实际是 DDSketch 的 `relativeAccuracy`**（默认 0.01 = 1% 相对误差），而**非**数学意义上的 γ（`mapping.gamma = (1+ra)/(1-ra)`）——命名把两个不同量混为一谈。tel_meta 冻结键也沿用 `sketch_gamma`（[store.ts `SKETCH_GAMMA_META_KEY`](../../src/lib/telemetry/store.ts)）以对齐 config。
+- **当前行为（非缺陷，仅命名误导）**：数值语义正确、功能无误；只是标识符名字（`sketch_gamma`/`telemetrySketchGamma`/`effectiveSketchGamma`/`SKETCH_GAMMA_META_KEY`）叫「gamma」而承载 relativeAccuracy。Fix round 2 已在 `effectiveSketchGamma` 与 `SKETCH_GAMMA_META_KEY` 的文档注释里标注「此字段承载 relativeAccuracy 数值」，未做重命名。
+- **理想架构**：把 config 键 `sketch_gamma` → `sketch_relative_accuracy`（留旧键别名读时映射，遵配置「留兼容层」纪律）、state 字段 `telemetrySketchGamma` → `telemetrySketchRelativeAccuracy`、模块级 `effectiveSketchGamma`、tel_meta 键统一到 relativeAccuracy 语义（tel_meta 键改名需迁移已有库的 `sketch_gamma` 行）。
+- **为何暂缓**：本轮聚焦 MAJOR-2（γ 绑 db + poison 隔离）修复，reviewer 明确「加一行注释即可、别扩到 config 5 触点重命名」——重命名横跨 config schema/别名/state/store/tel_meta 迁移 5+ 触点，属独立可分离清理，值得单独一次改动 + review。
+- **若做需改什么**：① `config/schema.ts` + `config/config.ts` 键改名 + 旧 `sketch_gamma` 别名读时映射；② `state.ts` 字段改名（`telemetrySketchGamma` 全站点）；③ `request-telemetry.ts` `effectiveSketchGamma` 改名；④ `store.ts` `SKETCH_GAMMA_META_KEY` 值改名 + 迁移已有库的 tel_meta 行（`sketch_gamma` → 新键）；⑤ 相关测试/文档同步。发现方：Fix round 2 MAJOR-2 reviewer（2026-07-13）。

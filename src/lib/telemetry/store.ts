@@ -135,9 +135,10 @@ const CUMULATIVE_ACCEPTED_META_KEY = "cumulative_accepted"
  * 修复内存 `acceptedSinceStart` 不持久缺陷（进程内计数重启归零，此累计不归零）。
  */
 export function incrementCumulativeAccepted(db: TelemetryDatabase, delta: number): void {
-  db.prepare(
-    "INSERT INTO tel_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + excluded.value",
-  ).run(CUMULATIVE_ACCEPTED_META_KEY, delta)
+  db.prepare("INSERT INTO tel_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + excluded.value").run(
+    CUMULATIVE_ACCEPTED_META_KEY,
+    delta,
+  )
 }
 
 /** 读回 accepted 永久累计（行不存在 / 非法值 → 0）。 */
@@ -146,6 +147,30 @@ export function readCumulativeAccepted(db: TelemetryDatabase): number {
   if (!row) return 0
   const parsed = Number(row.value)
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+/**
+ * tel_meta 里冻结「本库创建时的 sketch relativeAccuracy」的键名。键名沿用 config 键 `sketch_gamma`
+ * 以便对齐，但**该字段实际承载的是 DDSketch 的 relativeAccuracy 数值**（`createSketch(relativeAccuracy)`），
+ * 而非数学意义上的 γ（mapping.gamma = (1+ra)/(1-ra)）。命名统一到 relativeAccuracy 见 backlog。
+ */
+const SKETCH_GAMMA_META_KEY = "sketch_gamma"
+
+/**
+ * 读回本库创建时冻结的 sketch relativeAccuracy（tel_meta['sketch_gamma']）。行不存在 / 非法值 → null
+ * （调用方据此判定「全新库」并写入当前 config 值）。γ 一经建库即冻结、跨重启恒定：stored blob 的 γ 持久，
+ * 用别的 γ 建 delta 再 merge 会触发 {@link mergeSketch} 的 fail-loud 抛异常。
+ */
+export function readSketchGamma(db: TelemetryDatabase): number | null {
+  const row = db.prepare("SELECT value FROM tel_meta WHERE key = ?").get(SKETCH_GAMMA_META_KEY) as { value: string | number | null } | undefined
+  if (!row) return null
+  const parsed = Number(row.value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+/** 首次写入 sketch relativeAccuracy（`ON CONFLICT DO NOTHING` 幂等：已存则绝不覆盖——γ 建库即冻结）。 */
+export function writeSketchGammaIfAbsent(db: TelemetryDatabase, relativeAccuracy: number): void {
+  db.prepare("INSERT INTO tel_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING").run(SKETCH_GAMMA_META_KEY, relativeAccuracy)
 }
 
 /** 读回一行已存的打包分布图（行不存在 / `hist_blob` 为 NULL → 空图，首次写入的起点）。 */
@@ -174,6 +199,10 @@ function mergeIncomingInto(existing: Map<string, Sketch>, incoming: ReadonlyMap<
  * DDSketch `merge` 与 SUM 不同，非幂等，重放会翻倍；本函数内部完成 merge，写回
  * （`hist_blob = excluded.hist_blob`）是幂等替换。行不存在时 INSERT，标量列走
  * DEFAULT 0，不干扰 {@link upsertSettledTier} 的标量加性 UPSERT（两者互不清零对方列）。
+ *
+ * 由 {@link computeTierSketchBlob}（read-merge-serialize，poison-prone、异 γ fail-loud 抛）
+ * + {@link writeTierSketchBlob}（纯写）组合而成——drain 层需把二者分到「事务外 poison 隔离」
+ * 与「事务内纯写」两阶段，故拆开导出；本便利函数一次调用保留原子 compute+write 语义。
  */
 export function upsertSketchBlob(
   db: TelemetryDatabase,
@@ -183,9 +212,37 @@ export function upsertSketchBlob(
   keyId: number,
   sketches: ReadonlyMap<string, Sketch>,
 ): void {
+  writeTierSketchBlob(db, table, bucketTs, dimId, keyId, computeTierSketchBlob(db, table, bucketTs, dimId, keyId, sketches))
+}
+
+/**
+ * read-merge-serialize 一个 tier 行的 sketch blob，返回压缩后的写入字节（**不写库**）。
+ * 内部 SELECT 已存图 + merge 本次 delta（同名异 γ → {@link mergeSketch} fail-loud 抛）+ 序列化 + 压缩。
+ * drain 层在**事务外**逐条调用它做 poison 隔离：抛（γ 失配 / 损坏 blob deserialize 失败）的条目单独丢弃，
+ * 幸存条目的返回字节再在单事务内经 {@link writeTierSketchBlob} 纯写。
+ */
+export function computeTierSketchBlob(
+  db: TelemetryDatabase,
+  table: "tel_raw" | "tel_hourly" | "tel_daily",
+  bucketTs: number,
+  dimId: number,
+  keyId: number,
+  sketches: ReadonlyMap<string, Sketch>,
+): Uint8Array {
   const existing = readSketches(db, `SELECT hist_blob FROM ${table} WHERE dim = ? AND bucket_ts = ? AND key_id = ?`, [dimId, bucketTs, keyId])
   mergeIncomingInto(existing, sketches)
-  const blob = compressBytes(serializePackedSketches(existing))
+  return compressBytes(serializePackedSketches(existing))
+}
+
+/** 纯写一个 tier 行的预算 sketch blob（无 read/merge，幂等替换）。配 {@link computeTierSketchBlob} 的两阶段 drain。 */
+export function writeTierSketchBlob(
+  db: TelemetryDatabase,
+  table: "tel_raw" | "tel_hourly" | "tel_daily",
+  bucketTs: number,
+  dimId: number,
+  keyId: number,
+  blob: Uint8Array,
+): void {
   db.prepare(
     `INSERT INTO ${table} (bucket_ts, dim, key_id, hist_blob) VALUES (?, ?, ?, ?) ON CONFLICT(dim, bucket_ts, key_id) DO UPDATE SET hist_blob = excluded.hist_blob`,
   ).run(bucketTs, dimId, keyId, blob)
@@ -194,11 +251,21 @@ export function upsertSketchBlob(
 /**
  * read-merge-write 累积 cumulative 行的 sketch blob（tel_cumulative，主键 `(dim,key_id)`，
  * 永久只增）。语义同 {@link upsertSketchBlob}（同为非幂等 merge 的 read-merge-write，非 SQL 加性）。
+ * 同样拆为 {@link computeCumulativeSketchBlob} + {@link writeCumulativeSketchBlob} 供 drain 两阶段隔离。
  */
 export function upsertCumulativeSketchBlob(db: TelemetryDatabase, dimId: number, keyId: number, sketches: ReadonlyMap<string, Sketch>): void {
+  writeCumulativeSketchBlob(db, dimId, keyId, computeCumulativeSketchBlob(db, dimId, keyId, sketches))
+}
+
+/** read-merge-serialize cumulative 行 sketch blob，返回压缩字节（**不写库**）。poison-prone、异 γ fail-loud 抛。配两阶段 drain。 */
+export function computeCumulativeSketchBlob(db: TelemetryDatabase, dimId: number, keyId: number, sketches: ReadonlyMap<string, Sketch>): Uint8Array {
   const existing = readSketches(db, "SELECT hist_blob FROM tel_cumulative WHERE dim = ? AND key_id = ?", [dimId, keyId])
   mergeIncomingInto(existing, sketches)
-  const blob = compressBytes(serializePackedSketches(existing))
+  return compressBytes(serializePackedSketches(existing))
+}
+
+/** 纯写 cumulative 行的预算 sketch blob（无 read/merge，幂等替换）。配 {@link computeCumulativeSketchBlob} 的两阶段 drain。 */
+export function writeCumulativeSketchBlob(db: TelemetryDatabase, dimId: number, keyId: number, blob: Uint8Array): void {
   db.prepare("INSERT INTO tel_cumulative (dim, key_id, hist_blob) VALUES (?, ?, ?) ON CONFLICT(dim, key_id) DO UPDATE SET hist_blob = excluded.hist_blob").run(
     dimId,
     keyId,

@@ -11,8 +11,10 @@ import {
   afterEach,
   beforeEach,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 import {
   //
   existsSync,
@@ -22,9 +24,14 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { decompressBytes } from "~/lib/history/sqlite/compression"
 import {
   //
+  compressBytes,
+  decompressBytes,
+} from "~/lib/history/sqlite/compression"
+import {
+  //
+  _getEffectiveSketchGammaForTests,
   _getOutboxSizeForTests,
   _getTelemetryDbForTests,
   _resetRequestTelemetryForTests,
@@ -41,6 +48,7 @@ import {
   //
   restoreStateForTests,
   setStateForTests,
+  setTelemetryConfig,
   snapshotStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
@@ -49,8 +57,22 @@ import {
   openTelemetryDb,
   type TelemetryDatabase,
 } from "~/lib/telemetry/db"
-import { quantile } from "~/lib/telemetry/sketch"
-import { deserializePackedSketches } from "~/lib/telemetry/sketch-blob"
+import {
+  //
+  internDim,
+  internKey,
+} from "~/lib/telemetry/dictionary"
+import {
+  //
+  createSketch,
+  quantile,
+} from "~/lib/telemetry/sketch"
+import {
+  //
+  deserializePackedSketches,
+  serializePackedSketches,
+} from "~/lib/telemetry/sketch-blob"
+import { writeTierSketchBlob } from "~/lib/telemetry/store"
 
 const BUCKET_MS = 5 * 60 * 1000
 function bucketStart(t: number): number {
@@ -410,4 +432,137 @@ test("oracle 11 — raw 腿跨重启不双计：JSON 重载的桶不因重载被
   expect(readTierScalar(dbPath, "model", "opus", base, "req_count")).toBe(3) // raw 桶不翻倍（≠6）
   // cumulative 腿也不因重启双计（cumulative 不从 JSON 重载，纯 live 累积；此进程无 record → 不变）。
   expect(readCumulativeScalar(dbPath, "model", "opus", "req_count")).toBe(3)
+})
+
+// ── MAJOR-2 修复 oracle（γ 绑 db + 逐条 poison 隔离，Fix round 2）──
+
+test("oracle 12 — γ 绑 db（根因）：运行时改 config sketch_gamma 不影响已开库，flush 不抛不 wedge", async () => {
+  const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+  try {
+    setStateForTests({ telemetrySketchGamma: 0.01 })
+    await initRequestTelemetry()
+    // 全新库：effectiveSketchGamma 从 config 播种 = 0.01，写进 tel_meta。
+    expect(_getEffectiveSketchGammaForTests()).toBe(0.01)
+
+    // 运行时热重载 config γ → 0.02（live state 变，但已开库的 effective γ 冻结在 0.01）。
+    setTelemetryConfig({ telemetrySketchGamma: 0.02 })
+    expect(_getEffectiveSketchGammaForTests()).toBe(0.01) // 不随 live config 漂移
+
+    const base = bucketStart(Date.now())
+    const durations = seeded(600, 300000, 23)
+    for (const [i, d] of durations.entries()) {
+      recordOne(base + i, d, (i % 50) + 1)
+      recordAcceptedRequest(base)
+    }
+    // 承重断言：改 γ 后 flush 不抛、不 wedge（若 delta 用 live 0.02 merge 进库 0.01 存图 → mergeSketch 抛 → 整批 rollback）。
+    await expect(persistRequestTelemetry()).resolves.toBeUndefined()
+
+    // 标量 / accepted 正常写入。
+    expect(readTierScalar(dbPath, "model", "opus", base, "req_count")).toBe(durations.length)
+    const db = openTelemetryDb(dbPath)
+    try {
+      const row = db.prepare("SELECT count FROM tel_accepted WHERE bucket_ts = ?").get(base) as { count: number } | undefined
+      expect(row?.count).toBe(durations.length)
+    } finally {
+      db.close()
+    }
+
+    // sketch 仍用库 γ=0.01：读回 quantile 在 1% 界内（无失配抛），证明 delta 建于 0.01 非 live 0.02。
+    const sqlP99 = readRawSketchQuantile(dbPath, "model", "opus", base, "duration_ms", 0.99)!
+    const exact = exactQuantile(durations, 0.99)
+    expect(Math.abs(sqlP99 - exact) / exact).toBeLessThanOrEqual(0.01)
+
+    // outbox 清空（drain 成功，无 foldback）。
+    expect(_getOutboxSizeForTests()).toBe(0)
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
+
+test("oracle 13 — 跨重启 γ 恒定：重开同库但 config 改 0.02 → effective γ 仍读库 0.01 + warn，flush 不失配抛", async () => {
+  // 进程 1：config 0.01 建库。
+  setStateForTests({ telemetrySketchGamma: 0.01 })
+  await initRequestTelemetry()
+  const base = bucketStart(Date.now())
+  const first = seeded(300, 300000, 31)
+  for (const [i, d] of first.entries()) recordOne(base + i, d, 50)
+  await persistRequestTelemetry()
+
+  // 重启：reset（关 db，保留同 db 文件）→ config 改 0.02 → 新 init（同库文件）。
+  const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+  try {
+    _resetRequestTelemetryForTests()
+    _setRequestTelemetryFilePathForTests(jsonPath)
+    setStateForTests({ telemetrySketchGamma: 0.02 })
+    await initRequestTelemetry()
+
+    // 承重断言：effective γ 读自库（0.01），不采纳 config 0.02；config≠db 有 warn。
+    expect(_getEffectiveSketchGammaForTests()).toBe(0.01)
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("sketch_gamma"))).toBe(true)
+
+    // 用库 γ 记录 + flush → delta 建于 0.01 与库存图同 γ → 不失配抛、累积成功（req_count 跨重启 6=3+3）。
+    const second = seeded(300, 300000, 32)
+    for (const [i, d] of second.entries()) recordOne(base + i, d, 50)
+    await expect(persistRequestTelemetry()).resolves.toBeUndefined()
+    expect(readTierScalar(dbPath, "model", "opus", base, "req_count")).toBe(600) // 300+300
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
+
+test("oracle 14 — 逐条 poison 隔离：一条异 γ 存图 blob 被丢+warn，干净条目（标量+其它 sketch+accepted）正常写，不无限抛", async () => {
+  const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+  try {
+    setStateForTests({ telemetrySketchGamma: 0.01 })
+    await initRequestTelemetry()
+    const base = bucketStart(Date.now())
+
+    // 干净条目：opus（将被 poison）+ sonnet（不受影响）。
+    const opusDur = seeded(300, 300000, 41)
+    for (const [i, d] of opusDur.entries()) recordOne(base + i, d, 50, "opus")
+    const sonnetDur = seeded(300, 300000, 42)
+    for (const [i, d] of sonnetDur.entries()) recordOne(base + i, d, 70, "sonnet")
+    recordAcceptedRequest(base)
+    recordAcceptedRequest(base)
+
+    // 手动往库塞一条异 γ（0.02）的 opus 存图 blob → drain read-merge 该条时 mergeSketch 抛（poison）。
+    const db = _getTelemetryDbForTests()!
+    const dim = internDim(db, "model")
+    const opusKeyId = internKey(db, dim, "opus")
+    const foreign = createSketch(0.02)
+    for (const v of seeded(100, 300000, 99)) foreign.accept(v)
+    writeTierSketchBlob(db, "tel_raw", base, dim, opusKeyId, compressBytes(serializePackedSketches(new Map([["duration_ms", foreign]]))))
+
+    // 承重断言：flush 不抛（poison 被逐条隔离、不毒化整批）。
+    await expect(persistRequestTelemetry()).resolves.toBeUndefined()
+    // poison warn 存在。
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("poisoned sketch"))).toBe(true)
+
+    // opus 标量照写（poison 只丢该条 sketch delta，不丢标量）。
+    expect(readTierScalar(dbPath, "model", "opus", base, "req_count")).toBe(300)
+    // sonnet（干净）标量 + sketch 正常写。
+    expect(readTierScalar(dbPath, "model", "sonnet", base, "req_count")).toBe(300)
+    const sonnetP99 = readRawSketchQuantile(dbPath, "model", "sonnet", base, "duration_ms", 0.99)!
+    expect(Math.abs(sonnetP99 - exactQuantile(sonnetDur, 0.99)) / exactQuantile(sonnetDur, 0.99)).toBeLessThanOrEqual(0.01)
+    // accepted 腿不受 sketch poison 影响。
+    const accRow = openTelemetryDb(dbPath)
+    try {
+      const row = accRow.prepare("SELECT count FROM tel_accepted WHERE bucket_ts = ?").get(base) as { count: number } | undefined
+      expect(row?.count).toBe(2)
+    } finally {
+      accRow.close()
+    }
+
+    // outbox 清空（poison 条目不 foldback → 不无限重试、不无界增长）。
+    expect(_getOutboxSizeForTests()).toBe(0)
+
+    // 再记一批 opus → 再 flush → 仍不抛（stored blob 仍异 γ、仍被隔离），outbox 仍清空。
+    for (let i = 0; i < 50; i++) recordOne(base + i, 100, 50, "opus")
+    await expect(persistRequestTelemetry()).resolves.toBeUndefined()
+    expect(_getOutboxSizeForTests()).toBe(0)
+    // opus 标量继续累积（300+50）。
+    expect(readTierScalar(dbPath, "model", "opus", base, "req_count")).toBe(350)
+  } finally {
+    warnSpy.mockRestore()
+  }
 })
