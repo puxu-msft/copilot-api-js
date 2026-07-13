@@ -17,7 +17,9 @@ import {
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 
 import { errorFrameCanonicalRewrite } from "~/lib/codec/anthropic/error-frame-canonical-rewrite"
+import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrite-adapters"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { assembleResponseRewrites } from "~/lib/pipeline/rewrite-registry"
 import { setStateForTests } from "~/lib/state"
 
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
@@ -83,5 +85,21 @@ describe("errorFrameCanonicalRewrite", () => {
     expect(data.type).toBe("error")
     expect(data.error.type).toBe("api_error")
     expect(typeof data.error.message).toBe("string")
+  })
+
+  // FIX-1 (plan完成检查 line 205-206): the REAL assembled chain must place errorFrameCanonical FIRST and
+  // recover-refusal LAST — so refusalRewrite's synthesized event:error frame (error mode) can never flow
+  // back to errorFrameCanonical for a wrongful second reshape (passThrough is forward-only). This asserts
+  // it on the ACTUAL ANTHROPIC_RESPONSE_REWRITES (not just the ORDER constants — the mechanism half is
+  // locked in tests/pipeline/response-rewrite-contract.unit.test.ts).
+  test("assembled ANTHROPIC_RESPONSE_REWRITES chain: errorFrameCanonical runs FIRST, before recover-refusal (no-double-reshape ordering lock)", () => {
+    setStateForTests({ errorShapingEnabled: true, refusalSseRewrite: "error", recoverToolCallText: true })
+    const chain = assembleResponseRewrites(env(ENDPOINT.MESSAGES), ANTHROPIC_RESPONSE_REWRITES)
+    const names = chain.map((r) => r.name)
+    expect(names[0]).toBe("errorFrameCanonical")
+    const idxCanonical = names.indexOf("errorFrameCanonical")
+    const idxRefusal = names.indexOf("recover-refusal")
+    expect(idxCanonical).toBeGreaterThanOrEqual(0)
+    expect(idxRefusal).toBeGreaterThan(idxCanonical)
   })
 })

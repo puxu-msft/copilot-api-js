@@ -337,4 +337,56 @@ describe("response-rewrite contract — RESPONSE_REWRITE_ORDER hard ordering inv
     // recover MUST precede the filter (the hardest contract — index/name remap depends on it).
     expect(RESPONSE_REWRITE_ORDER.recoverToolCall).toBeLessThan(RESPONSE_REWRITE_ORDER.serverToolFilter)
   })
+
+  // errorFrameCanonical(50) MUST run BEFORE recoverRefusal(400): the refusal rewrite SYNTHESIZES an
+  // `event:error` frame in `error` mode, and errorFrameCanonical reshapes `event:error` frames. Because
+  // `passThrough` is strictly forward-only (driver.ts), a rewrite at order 50 only ever sees UPSTREAM-
+  // ORIGINAL frames — a later rewrite's synthesized error frame can never flow BACK to it for a wrongful
+  // second reshape. These two tests lock BOTH halves (the order constant + the forward-only mechanism).
+  test("errorFrameCanonical(50) < recoverRefusal(400) — the ordering half of the no-double-reshape invariant", () => {
+    expect(RESPONSE_REWRITE_ORDER.errorFrameCanonical).toBeLessThan(RESPONSE_REWRITE_ORDER.recoverRefusal)
+  })
+
+  test("a LATER rewrite's synthesized event:error frame is NEVER re-fed to an EARLIER reshaper (forward-only passThrough — explicit regression lock, not just logic)", async () => {
+    // `reshaper` mimics errorFrameCanonical: on an event:error frame it STRIPS any non-{type,message}
+    // field (the observable side effect of a reshape). `refusalMimic` mimics recoverRefusal `error` mode:
+    // on the `trigger` frame it SYNTHESIZES an event:error frame carrying an EXTRA field (`extra`).
+    const reshaper: ResponseRewrite = {
+      name: "reshaper",
+      order: 50,
+      appliesTo: () => true,
+      transform: (frame): FrameAction => {
+        if (frame.event !== "error") return { kind: "emit", frames: [frame] }
+        const parsed = JSON.parse(frame.data ?? "{}") as { type?: string; error?: { type?: string; message?: string } }
+        // canonicalize: keep ONLY {type, message} — drops any `extra` a wrongly-ordered reshape would strip.
+        return {
+          kind: "emit",
+          frames: [{ event: "error", data: JSON.stringify({ type: "error", error: { type: parsed.error?.type, message: parsed.error?.message } }) }],
+        }
+      },
+    }
+    const refusalMimic = (order: number): ResponseRewrite => ({
+      name: "refusal-mimic",
+      order,
+      appliesTo: () => true,
+      transform: (frame): FrameAction => {
+        if (frame.data !== "trigger") return { kind: "emit", frames: [frame] }
+        return {
+          kind: "emit",
+          frames: [{ event: "error", data: JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "boom", extra: "SURVIVES" } }) }],
+        }
+      },
+    })
+
+    // Correct order (reshaper 50 < refusal 400): the synthesized frame appears at step 400 and is NEVER
+    // re-fed to step 50 → its `extra` field SURVIVES.
+    const correct = await collect(driverWith([reshaper, refusalMimic(400)]).runResponse(streamOf(gen([{ data: "trigger" }])), makeEnv()))
+    expect(correct).toHaveLength(1)
+    expect(JSON.parse(correct[0]).error.extra).toBe("SURVIVES")
+
+    // Positive-sample control (reshaper 500 > refusal 400): NOW the reshaper runs AFTER the synthesis and
+    // DOES strip `extra` — proving the reshaper genuinely has the stripping side effect the lock guards.
+    const wrong = await collect(driverWith([refusalMimic(400), { ...reshaper, order: 500 }]).runResponse(streamOf(gen([{ data: "trigger" }])), makeEnv()))
+    expect(JSON.parse(wrong[0]).error.extra).toBeUndefined()
+  })
 })
