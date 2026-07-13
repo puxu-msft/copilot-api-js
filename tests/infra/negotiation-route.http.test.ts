@@ -11,6 +11,7 @@ import {
   clearAnthropicFeatureNegotiationForTests,
   markAnthropicFeatureUnsupported,
 } from "~/lib/anthropic/feature-negotiation"
+import { NEGOTIATION_CATEGORIES } from "~/lib/anthropic/negotiation-lifecycle"
 import { negotiationRoutes } from "~/routes/negotiation/route"
 
 describe("/api/negotiation", () => {
@@ -21,7 +22,8 @@ describe("/api/negotiation", () => {
     const res = await negotiationRoutes.request("/")
     expect(res.status).toBe(200)
     const body = (await res.json()) as { categories: Array<unknown> }
-    expect(body.categories.length).toBe(10)
+    // One group per category — pin to the SSOT list so adding a category never drifts this oracle.
+    expect(body.categories.length).toBe(NEGOTIATION_CATEGORIES.length)
   })
 
   test("POST /renew revives an entry", async () => {

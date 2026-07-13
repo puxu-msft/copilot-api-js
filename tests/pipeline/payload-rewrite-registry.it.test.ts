@@ -99,12 +99,26 @@ function oracleEffective(input: MessagesPayload): MessagesPayload {
   return runAnthropicPayloadRewrites(input, { toolNameMapper: mapper }).payload
 }
 
+/**
+ * Strip the orthogonal, always-on stream/header timeout diagnostics that the handler records into
+ * `pipelineInfo` for every real request (e8112c82 `mergedPipelineInfo`) so this golden asserts ONLY
+ * the request-REWRITE side-channel it locks (preprocessing/sanitization/messageMapping). A pipelineInfo
+ * carrying nothing but timeout fields collapses back to `undefined` (= "no rewrite recorded"), keeping
+ * the oracle immune to the resolved `streamIdleTimeout` default (300s) — the timeout recording itself
+ * is locked separately by tests/context/request-context.unit.test.ts.
+ */
+function rewriteDiag(pipelineInfo: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!pipelineInfo) return undefined
+  const { streamIdleTimeoutMs, responseHeaderTimeoutMs, ...rest } = pipelineInfo
+  return Object.keys(rest).length > 0 ? rest : undefined
+}
+
 async function postAndEntry(body: MessagesPayload): Promise<{ effective: unknown; pipelineInfo: unknown }> {
   injectAnthropicModel()
   clearHistory()
   await app.request("/v1/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
   const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
-  return { effective: entry?.attempts?.at(-1)?.effectiveSource?.body, pipelineInfo: entry?.pipelineInfo }
+  return { effective: entry?.attempts?.at(-1)?.effectiveSource?.body, pipelineInfo: rewriteDiag(entry?.pipelineInfo as Record<string, unknown> | undefined) }
 }
 
 describe("request-rewrite migration golden (codec.parse → driver S3)", () => {
