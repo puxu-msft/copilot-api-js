@@ -13,6 +13,14 @@
  * (clearing `stop_details`), so the client renders a coherent message instead of
  * a dead turn.
  *
+ * The injected texts (end_turn recovery text / error-mode message / error type) are
+ * CONFIG-DRIVEN templates (`anthropic.refusal_end_turn_text` / `refusal_error_message` /
+ * `refusal_error_type`) — the end_turn recovery text is baked into the client conversation and
+ * echoed back upstream on the next turn, so it must be fully user-controllable with ZERO proxy
+ * wrapping. The hardcoded constants below are only DEFAULTS (unset config = byte-identical to the
+ * previous fixed behavior). See {@link renderRefusalTemplate} for placeholder semantics and the
+ * spec docs/spec/2026-07-13-refusal-recovery-text-configurable.md.
+ *
  * WHY we keep the thinking block (rather than strip it): the block carries a
  * VALID signature, and Anthropic thinking signatures are self-contained (they
  * encrypt the thinking content itself, not context/position) — replaying it
@@ -46,27 +54,48 @@ import type {
 import { anthropicSseFrame } from "./sse-frame"
 
 /**
- * The synthetic completion text shown to the client when a thinking-only refusal
- * is recovered. Fixed (not config-driven) — there is no real need for per-deployment
- * customization, and a config string would be speculative surface. Informative
- * (what happened), non-alarming (frames it as transient upstream policy), and
- * actionable (retry / rephrase / split / switch model) so both a human and a
- * Claude Code agent reading it can decide the next step.
+ * DEFAULT for `anthropic.refusal_end_turn_text` (the `end_turn`-mode synthetic completion text).
+ * Informative (what happened), non-alarming (frames it as transient upstream policy), and
+ * actionable (retry / rephrase / split / switch model) so both a human and a Claude Code agent
+ * reading it can decide the next step. Overridable via config; see {@link renderRefusalTemplate}.
  */
-export const REFUSAL_RECOVERY_TEXT =
+export const DEFAULT_REFUSAL_END_TURN_TEXT =
   "上游模型本轮以「拒绝（refusal）」结束，未产出可用回复（仅有思考块）。这通常是上游安全策略对当前请求的瞬时拦截，不代表任务本身有问题。请基于已有上下文换一种表述或拆分步骤后重试；若多次复现，考虑调整措辞、移除可能触发策略的内容，或改用其他模型。"
 
 /**
- * The message carried by the synthetic Anthropic `error` frame in the `error` mode (the client
- * SDK surfaces it as the thrown `APIError`'s message). Mirrors {@link REFUSAL_RECOVERY_TEXT}'s
- * intent (what happened + how to recover) but frames it as an error rather than a completion.
+ * DEFAULT for `anthropic.refusal_error_message` (the message carried by the synthetic Anthropic
+ * `error` frame in `error` mode; the client SDK surfaces it as the thrown `APIError`'s message).
+ * Mirrors {@link DEFAULT_REFUSAL_END_TURN_TEXT}'s intent (what happened + how to recover) but
+ * frames it as an error rather than a completion.
  */
-export const REFUSAL_ERROR_MESSAGE =
+export const DEFAULT_REFUSAL_ERROR_MESSAGE =
   "上游模型本轮以「拒绝（refusal）」结束、未产出可用回复（仅思考块）。已按 error 策略中断本次请求。可换表述/拆分步骤后重试，或改用其他模型。"
 
-/** The Anthropic error type carried by the synthetic refusal `error` frame (matches the truncation
- *  detection error frame — a generic upstream-failure bucket the client SDK can branch on). */
-const REFUSAL_ERROR_TYPE = "api_error"
+/** DEFAULT for `anthropic.refusal_error_type` — the Anthropic error `type` carried by the synthetic
+ *  refusal `error` frame (matches the truncation detection error frame — a generic upstream-failure
+ *  bucket the client SDK can branch on). An empty config value falls back to this. */
+export const DEFAULT_REFUSAL_ERROR_TYPE = "api_error"
+
+/** Template vars available when rendering a refusal recovery/error message. `model` is the resolved
+ *  upstream (GHC canonical) model name; `request_id` is the proxy request id; `thinking_tokens` is
+ *  the refusal turn's `usage.output_tokens` (all thinking under a thinking-only refusal). */
+export interface RefusalTemplateVars {
+  model: string
+  request_id: string
+  thinking_tokens: number
+}
+
+/**
+ * Render a refusal template: literal `{name}` substitution for known vars. UNKNOWN placeholders are
+ * left VERBATIM (never throw / never drop — a user typo must not silently erase their text). A
+ * no-placeholder string is returned byte-for-byte identical, so an unset config value (which
+ * defaults to the fixed constants above) reproduces the previous exact bytes.
+ */
+export function renderRefusalTemplate(tmpl: string, vars: RefusalTemplateVars): string {
+  return tmpl.replace(/\{(\w+)\}/g, (whole, key: string) =>
+    key in vars ? String((vars as unknown as Record<string, unknown>)[key]) : whole,
+  )
+}
 
 /** A thinking-only refusal = `stop_reason:"refusal"` with no real (text/tool_use) content seen. */
 export function isThinkingOnlyRefusal(stopReason: string | null | undefined, sawRealContent: boolean): boolean {
@@ -74,14 +103,16 @@ export function isThinkingOnlyRefusal(stopReason: string | null | undefined, saw
 }
 
 /**
- * Build the synthetic `text` content-block frames (start → delta → stop) at `index`.
- * Each frame carries an `event:` line (= its `type`) via {@link anthropicSseFrame} —
- * a `data:`-only frame is dropped by the Anthropic SDK decoder (see sse-frame.ts).
+ * Build the synthetic `text` content-block frames (start → delta → stop) at `index`, carrying the
+ * already-rendered `text`. Each frame carries an `event:` line (= its `type`) via
+ * {@link anthropicSseFrame} — a `data:`-only frame is dropped by the Anthropic SDK decoder (see
+ * sse-frame.ts). Callers pass a NON-empty `text`; an empty recovery text means "append no block"
+ * and is handled by the caller (it never calls this).
  */
-export function buildSyntheticTextFrames(index: number): Array<ServerSentEventMessage> {
+export function buildSyntheticTextFrames(index: number, text: string): Array<ServerSentEventMessage> {
   return [
     anthropicSseFrame({ type: "content_block_start", index, content_block: { type: "text", text: "" } }),
-    anthropicSseFrame({ type: "content_block_delta", index, delta: { type: "text_delta", text: REFUSAL_RECOVERY_TEXT } }),
+    anthropicSseFrame({ type: "content_block_delta", index, delta: { type: "text_delta", text } }),
     anthropicSseFrame({ type: "content_block_stop", index }),
   ]
 }
@@ -101,19 +132,27 @@ export interface RefusalRecoverer {
   processEvent: (parsed: StreamEvent | undefined, raw: ServerSentEventMessage) => Array<ServerSentEventMessage>
 }
 
-/** Options for {@link createRefusalRecoverer}. */
+/** Options for {@link createRefusalRecoverer}. The `template` + `staticVars` are the config-driven
+ *  end_turn recovery text and the vars known at stream start; `thinking_tokens` is filled in by the
+ *  recoverer itself from the refusal `message_delta`'s usage (see the render-timing invariant). */
 export interface RefusalRecovererDeps {
   /** Invoked once, when a refusal is first recovered (for feature telemetry / logging). */
   onRecover?: () => void
+  /** The `anthropic.refusal_end_turn_text` template (empty string = append no text block). */
+  template: string
+  /** Vars known at stream start (before any frame): the resolved model + request id. */
+  staticVars: { model: string; request_id: string }
 }
 
 /**
  * Create a streaming refusal recoverer. It forwards every frame unchanged while
  * tracking the max content-block index and whether any real (text/tool_use) block
- * appeared; at a thinking-only refusal `message_delta` it emits a synthetic text
- * block (at `maxIndex + 1`) followed by the rewritten `end_turn` delta. No buffering.
+ * appeared; at a thinking-only refusal `message_delta` it renders {@link RefusalRecovererDeps.template}
+ * (self-supplying `thinking_tokens` from the delta's `usage.output_tokens`) and, if non-empty, emits
+ * a synthetic text block (at `maxIndex + 1`) followed by the rewritten `end_turn` delta. An empty
+ * template appends NO text block (zero-wrapping) — only the rewritten delta. No buffering.
  */
-export function createRefusalRecoverer(deps: RefusalRecovererDeps = {}): RefusalRecoverer {
+export function createRefusalRecoverer(deps: RefusalRecovererDeps): RefusalRecoverer {
   let maxIndex = -1
   let sawRealContent = false
   let recovered = false
@@ -143,8 +182,14 @@ export function createRefusalRecoverer(deps: RefusalRecovererDeps = {}): Refusal
           recovered = true
           deps.onRecover?.()
         }
-        const synthFrames = buildSyntheticTextFrames(maxIndex + 1)
+        // Render timing: thinking_tokens is only knowable HERE (the refusal delta's usage), not at
+        // factory construction (createState, before any frame). Static vars (model/request_id) were
+        // captured at construction.
+        const thinkingTokens = (parsed as { usage?: { output_tokens?: number } }).usage?.output_tokens ?? 0
+        const text = renderRefusalTemplate(deps.template, { ...deps.staticVars, thinking_tokens: thinkingTokens })
         const rewritten: ServerSentEventMessage = { ...raw, data: JSON.stringify(rewriteRefusalMessageDelta(parsed)) }
+        // Empty text = zero-wrapping: append NO text block, only the rewritten end_turn delta.
+        const synthFrames = text === "" ? [] : buildSyntheticTextFrames(maxIndex + 1, text)
         return [...synthFrames, rewritten]
       }
 
@@ -154,21 +199,33 @@ export function createRefusalRecoverer(deps: RefusalRecovererDeps = {}): Refusal
 }
 
 /**
- * Build the synthetic Anthropic `event: error` frame that REPLACES the upstream refusal
- * terminator in `error` mode. Hand-built canonical (not via the `routes/` `anthropicErrorFrame`
- * helper — `lib/` must not depend on `routes/`); the shape is protocol-fixed
- * (`{ type:"error", error:{ type, message } }`) so it cannot drift from that helper.
+ * Build the synthetic Anthropic `event: error` frame (error mode) carrying `errorType` + `message`.
+ * Hand-built canonical (not via the `routes/` `anthropicErrorFrame` helper — `lib/` must not depend
+ * on `routes/`); the shape is protocol-fixed (`{ type:"error", error:{ type, message } }`) so it
+ * cannot drift from that helper.
  */
-function buildRefusalErrorFrame(): ServerSentEventMessage {
-  return { event: "error", data: JSON.stringify({ type: "error", error: { type: REFUSAL_ERROR_TYPE, message: REFUSAL_ERROR_MESSAGE } }) }
+function buildRefusalErrorFrame(errorType: string, message: string): ServerSentEventMessage {
+  return { event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message } }) }
+}
+
+/** Options for {@link createRefusalErrorEmitter}: the config-driven message template + error type,
+ *  plus the stream-start static vars (`thinking_tokens` self-supplied at the refusal delta). */
+export interface RefusalErrorEmitterDeps {
+  /** The `anthropic.refusal_error_message` template. */
+  messageTemplate: string
+  /** The `anthropic.refusal_error_type` value (empty falls back to {@link DEFAULT_REFUSAL_ERROR_TYPE}). */
+  errorType: string
+  /** Vars known at stream start: resolved model + request id. */
+  staticVars: { model: string; request_id: string }
 }
 
 /**
  * Create a streaming refusal-to-error emitter (the `error` mode). It forwards every frame
  * unchanged while tracking whether any real (text/tool_use) block appeared; at a thinking-only
  * refusal `message_delta` it SUPPRESSES the original delta and emits a single Anthropic
- * `event: error` frame in its place, then SUPPRESSES the trailing `message_stop` (otherwise the
- * client would receive a clean turn terminator after an error — a malformed sequence). No buffering.
+ * `event: error` frame in its place (message/type rendered from {@link RefusalErrorEmitterDeps}),
+ * then SUPPRESSES the trailing `message_stop` (otherwise the client would receive a clean turn
+ * terminator after an error — a malformed sequence). No buffering.
  *
  * Why suppress + replace at the rewrite layer (not append at the handler after drain): refusal is
  * a clean drain WITH `message_stop`, so by the time the handler sees `complete` the terminator is
@@ -178,7 +235,7 @@ function buildRefusalErrorFrame(): ServerSentEventMessage {
  * text/tool_use only — `server_tool_use` is excluded in BOTH), so they stay consistent without a
  * cross-layer signal.
  */
-export function createRefusalErrorEmitter(): RefusalRecoverer {
+export function createRefusalErrorEmitter(deps: RefusalErrorEmitterDeps): RefusalRecoverer {
   let sawRealContent = false
   let emitted = false
 
@@ -201,8 +258,11 @@ export function createRefusalErrorEmitter(): RefusalRecoverer {
         if (emitted) return []
         if (!isThinkingOnlyRefusal(parsed.delta.stop_reason, sawRealContent)) return [raw]
         emitted = true
+        const thinkingTokens = (parsed as { usage?: { output_tokens?: number } }).usage?.output_tokens ?? 0
+        const message = renderRefusalTemplate(deps.messageTemplate, { ...deps.staticVars, thinking_tokens: thinkingTokens })
+        const type = deps.errorType === "" ? DEFAULT_REFUSAL_ERROR_TYPE : deps.errorType
         // Suppress the original refusal delta (don't forward it) and emit the error frame instead.
-        return [buildRefusalErrorFrame()]
+        return [buildRefusalErrorFrame(type, message)]
       }
 
       if (parsed.type === "message_stop") {
@@ -220,16 +280,18 @@ export function createRefusalErrorEmitter(): RefusalRecoverer {
 
 /**
  * Non-streaming: recover a thinking-only refusal on the whole response. Whole JSON
- * in hand → no timing constraint. Appends the synthetic text block and flips
- * `stop_reason` to `end_turn` (clearing `stop_details`). Returns the response
- * unchanged when it is not a thinking-only refusal (real content present, or
- * stop_reason ≠ refusal).
+ * in hand → no timing constraint, so the caller pre-renders `renderedText` (all vars, including
+ * thinking_tokens from `response.usage`, are available). Appends the synthetic text block and flips
+ * `stop_reason` to `end_turn` (clearing `stop_details`). An empty `renderedText` appends NO block
+ * (zero-wrapping) — only the stop_reason flip. Returns the response unchanged when it is not a
+ * thinking-only refusal (real content present, or stop_reason ≠ refusal).
  */
-export function recoverRefusalInResponse(response: AnthropicMessageResponse): AnthropicMessageResponse {
+export function recoverRefusalInResponse(response: AnthropicMessageResponse, renderedText: string): AnthropicMessageResponse {
   if (response.stop_reason !== "refusal") return response
   const content = response.content as unknown as Array<Record<string, unknown> & { type: string }>
   if (content.some((b) => b.type === "text" || b.type === "tool_use")) return response
 
-  const recovered = [...content, { type: "text", text: REFUSAL_RECOVERY_TEXT }]
+  // Empty rendered text = zero-wrapping: don't append a block, only flip stop_reason.
+  const recovered = renderedText === "" ? content : [...content, { type: "text", text: renderedText }]
   return { ...response, stop_reason: "end_turn", stop_details: null, content: recovered as unknown as AnthropicMessageResponse["content"] }
 }
