@@ -23,8 +23,8 @@ copilot-api-js 的 auto-truncate 用本地 o200k(gpt-tokenizer)估算 Anthropic 
   "Claude Opus 4.7 and later use a newer tokenizer... approximately 30% more tokens than earlier models"。
   叠加 o200k vs Claude 本身的差异 → 复合成实测的 ~2.2x。
 - **不存在 Claude 3/4 的本地 tokenizer 库**（`@anthropic-ai/tokenizer` 只到 Claude 1/2）。
-- **GHC API 没有 count_tokens 端点**（查 microsoft/vscode 最新源码零结果；官方 Copilot 客户端也是本地 tiktoken 估算）。
-- Anthropic count_tokens API 是唯一权威源，但它自己声明"应视为估算"，需 anthropic key、限流、每次要发完整 payload——不适合截断热路径，仅可做可选 pre-flight 增强。
+- ~~**GHC API 没有 count_tokens 端点**（查 microsoft/vscode 最新源码零结果；官方 Copilot 客户端也是本地 tiktoken 估算）。~~ **⚠️ 此「事实」已被实测证伪（2026-07-13）**：源码 grep 只证明 vscode 扩展**内部**用本地 tokenizer，并不能证明 GHC **REST 上游**无此端点。实测 curl `POST https://api.githubcopilot.com/v1/messages/count_tokens`（复用 copilot token）**返回 `{"input_tokens":N}` HTTP 200**，支持边界=账号 live `/models` 目录、完全容忍真实 wire。**这是「实测 > 文档推断」的典型教训**——见 spec [docs/spec/2026-07-13-ghc-count-tokens-default.md](../spec/2026-07-13-ghc-count-tokens-default.md) + 探针 `exp/ghc-count-tokens-probe/`。**count_tokens 端点现已默认走 GHC 上游**（本地 o200k + factor 估算降级为「目录外模型 / 上游失败」的兜底）。本文档描述的 size-aware calibration 因此只服务于**兜底路径**的精度，不再是主路径。
+- Anthropic count_tokens API（api.anthropic.com）曾作为 Claude 模型的直连渠道，**已退役**（对本代理而言 GHC count 更贴近真实消耗，且无需独立 key）。
 
 ### 实测数据（40 条随机 opus-4.8 completed，可复现）
 - factor（= real_input / local_o200k_estimate）**不是常数**：
