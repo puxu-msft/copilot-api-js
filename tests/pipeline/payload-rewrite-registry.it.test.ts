@@ -168,14 +168,16 @@ describe("request-rewrite migration golden (codec.parse → driver S3)", () => {
     expect(pipelineInfo).toBeUndefined()
   })
 
-  test("reject (non-anthropic model): status 400, no effectiveRequest (reject precedes S4 sampling)", async () => {
+  test("reject (non-anthropic model, no translatable leg): status 400, no effectiveRequest (reject precedes S4 sampling)", async () => {
     injectAnthropicModel()
-    setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] })] })
+    // OpenAI vendor advertising ONLY /v1/messages → no direct-anthropic gate and no
+    // translatable /responses or /chat/completions leg, so the no-suffix anthropic route rejects.
+    setModels({ object: "list", data: [mockModel("msg-only-openai", { vendor: "OpenAI", supported_endpoints: ["/v1/messages"] })] })
     clearHistory()
     const res = await app.request("/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload([{ role: "user", content: "q" }], { model: "gpt-4o" })),
+      body: JSON.stringify(payload([{ role: "user", content: "q" }], { model: "msg-only-openai" })),
     })
     expect(res.status).toBe(400)
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
