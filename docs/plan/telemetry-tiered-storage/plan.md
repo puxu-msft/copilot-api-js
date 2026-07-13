@@ -92,12 +92,12 @@ P0 sketch 封装 (纯，PoC 已证)
 **Interfaces — Consumes:** none. **Produces:** `openTelemetryDb(path): Db` / `internDim(db,name):number` / `internKey(db,dim,key):number` / `resolveKey(db,id):{dim,key}`。
 
 **Tasks（right-sized）：**
-- **T1.1 schema 迁移**：Umzug hybrid forward-runner（复用 history-sqlite-schema 模式）建 `tel_dim`/`tel_key`/`tel_raw`/`tel_hourly`/`tel_daily`/`tel_cumulative`/`tel_accepted`/`tel_meta`（STRICT, WITHOUT ROWID，schema 见 spec §物理 schema，cost 列 nano scaled-int）。测试：迁移幂等（跑两次不报错）、跨-runtime（bun+node）建表一致。
+- **T1.1 schema 迁移**：Umzug hybrid forward-runner（复用 history-sqlite-schema 模式）建 `tel_dim`/`tel_key`/`tel_raw`/`tel_hourly`/`tel_daily`/`tel_cumulative`/`tel_accepted`/`tel_meta`（STRICT, WITHOUT ROWID，schema 见 spec §物理 schema，cost 列 **micro** scaled-int）。测试：迁移幂等（跑两次不报错）、跨-runtime（bun+node）建表一致。
 - **T1.2 字典编码**：`internDim`/`internKey`（UNIQUE 约束 + upsert-returning-id）；`resolveKey` 反查。测试：同 (dim,key) 返同 id；并发 intern 无重复（小并发即可）。
 - **T1.3 paths**：`TELEMETRY_DB = path.join(APP_DIR,"telemetry.db")`，保留 `REQUEST_TELEMETRY`（迁移读旧）。
 - **Commit**：`feat(telemetry): telemetry.db schema + dictionary encoding + Umzug migration`。
 
-**Invariant P1：** 迁移账本独立 `tel_meta`；STRICT 表拒类型漂移；cost 列 INTEGER(nano)。
+**Invariant P1：** 迁移账本独立 `tel_meta`；STRICT 表拒类型漂移；cost 列 INTEGER(micro)。
 
 ---
 
@@ -123,7 +123,7 @@ P0 sketch 封装 (纯，PoC 已证)
 **Interfaces — Produces:** `upsertSettled(db, bucketTs, dimKeys, measures, sketchInputs)` / `upsertAccepted(db, bucketTs)`。**Consumes:** P0 sketch, P1 dict.
 
 **Tasks：**
-- **T3.1 upsertSettled**：写 `tel_raw`（可加列累加 + 固定桶计数列累加 + sketch blob merge）+ `tel_cumulative`（同）。cost 用 nano scaled-int。测试：多次 upsert 同 (dim,bucket,key) 累加正确；sketch blob merge 后 quantile 正确；固定桶计数与可加 `_count` 一致（同批）。
+- **T3.1 upsertSettled**（✅ landed `7c10ce35`）：写 `tel_raw`（可加列加性累加）+ `tel_cumulative`（同）。cost 用 **micro** scaled-int（列名 `cost_*_micro`）。**SQLite 无固定桶列**（评审 HIGH-1：固定桶只活在 `/metrics` 内存路径，SQLite 只存 DDSketch）；sketch blob read-merge-write 拆为后续 slice（P3-a）。测试：多次 upsert 同 (dim,bucket,key) 加性累加正确。
 - **T3.2 upsertAccepted**：写 `tel_accepted` + cumulative accepted（tel_meta）。测试：accept 计数不与 settled 混。
 - **T3.3 加性双写**（评审 HIGH-3，非「切换」）：**完整保留现有内存路径**（`dimSinceStart`+`dimBuckets`+`bucketCounts`+JSON persist）作累加缓冲与读源不变；另在 `persist_interval` flush 时把脏桶 `upsertSettled`/`upsertAccepted` 到 SQLite（**store.upsert 由周期 flush 驱动、非 `recordSettledRequest` 每请求调**——兑现 persist_interval 批量语义）。读路径 P5 才翻转、JSON persist P7 才删。这消半坏中间态（P3→P5 间 7d/status 视图仍活）+ 让 P5 golden 有活内存快照可比。测试：flush 后 SQLite 桶与内存 `dimBuckets` 一致；进程内计数重启归零、DB cumulative 跨重启保留。
 - **T3.4 cap 重启重建**：启动时从 `tel_cumulative` 载入 capped 维度已存 key 集作 cap 权威。测试：重启后第 201 个 client key 归 `other`。
