@@ -7,6 +7,12 @@ import type {
   ModelsResponse,
 } from "~/lib/models/client"
 
+import {
+  //
+  DEFAULT_REFUSAL_END_TURN_TEXT,
+  DEFAULT_REFUSAL_ERROR_MESSAGE,
+  DEFAULT_REFUSAL_ERROR_TYPE,
+} from "~/lib/anthropic/recover-refusal"
 import { normalizeForMatching } from "~/lib/models/model-name"
 
 import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
@@ -188,6 +194,13 @@ export interface State {
 
   /** 上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块）的处理策略：`refusal`=透传不改写、`end_turn`=合成 text 块改 end_turn、`error`=发 error SSE 帧并记请求失败（ctx.fail）。默认 `error`。 */
   readonly refusalSseRewrite: "refusal" | "end_turn" | "error"
+
+  /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留；空串=不追加 text 块（仅改 end_turn）。默认见 `DEFAULT_REFUSAL_END_TURN_TEXT`。 */
+  readonly refusalEndTurnText: string
+  /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。默认见 `DEFAULT_REFUSAL_ERROR_MESSAGE`。 */
+  readonly refusalErrorMessage: string
+  /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。默认 `api_error`。 */
+  readonly refusalErrorType: string
 
   /**
    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
@@ -1202,6 +1215,9 @@ export function setAnthropicBehavior(
       | "recoverToolCallText"
       | "toolRepairMalformedInput"
       | "refusalSseRewrite"
+      | "refusalEndTurnText"
+      | "refusalErrorMessage"
+      | "refusalErrorType"
       | "contextEditingModels"
       | "toolSearchOverrides"
       | "memoryToolEnabled"
@@ -1478,6 +1494,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   recoverToolCallText: false,
   toolRepairMalformedInput: [] as ReadonlyArray<RepairItem>,
   refusalSseRewrite: "error" as "refusal" | "end_turn" | "error",
+  refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
+  refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
+  refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,
   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
   // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
@@ -1600,6 +1619,9 @@ export function resetConfigManagedState(): void {
     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
     toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
     refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+    refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+    refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+    refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
     toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
     memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
@@ -1685,6 +1707,9 @@ const mutableState: MutableState = {
   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
   toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
   refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+  refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+  refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+  refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
   toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
   memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,

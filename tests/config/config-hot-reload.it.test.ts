@@ -723,6 +723,27 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
   },
   {
+    configKey: "anthropic.refusal_end_turn_text",
+    stateKey: "refusalEndTurnText",
+    sampleYamlValue: "custom {model}",
+    expectedStateValue: "custom {model}",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+  },
+  {
+    configKey: "anthropic.refusal_error_message",
+    stateKey: "refusalErrorMessage",
+    sampleYamlValue: "err {model}",
+    expectedStateValue: "err {model}",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+  },
+  {
+    configKey: "anthropic.refusal_error_type",
+    stateKey: "refusalErrorType",
+    sampleYamlValue: "custom_type",
+    expectedStateValue: "custom_type",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+  },
+  {
     configKey: "anthropic.tool_backfill_question",
     stateKey: "backfillQuestionFromHeader",
     sampleYamlValue: "false",

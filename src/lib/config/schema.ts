@@ -471,6 +471,12 @@ export const AnthropicConfigSchema = z
     tool_decode_all_input_fields: nullableBoolean(),
     tool_recover_call_text: nullableBoolean(),
     refusal_sse_rewrite: nullableEnum(["refusal", "end_turn", "error"] as const),
+    /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。支持占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留。空串=不追加 text 块（仅改 end_turn）。未配=内置默认（逐字节等价旧固定文案）。 */
+    refusal_end_turn_text: nullableString(),
+    /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。未配=内置默认。 */
+    refusal_error_message: nullableString(),
+    /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。未配=内置默认。 */
+    refusal_error_type: nullableString(),
     /**
      * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item with a header but no question).
      * Only items missing the `question` key are touched. Default true.
