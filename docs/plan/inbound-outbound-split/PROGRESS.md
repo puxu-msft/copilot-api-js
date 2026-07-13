@@ -1,0 +1,31 @@
+# PROGRESS ledger：InboundCodec / CellAssembly 重构（C0-C6）
+
+> durable 进度账本（抗 compaction / 跨会话）。权威设计见 [RFC §0.1+§11+§11.9](../../rfc/2026-07-13-inbound-codec-outbound-leg-split.md)，锚点见 [plan.md](plan.md)，per-commit prompt 见 [prompts/](prompts/)。
+
+隔离 worktree：`.worktrees/inbound-outbound-split`，分支 `feat/inbound-outbound-split`（从 master `e9f6ce8a` 切出）。
+
+## 基线（改动前 master）
+- backend：**4661 pass / 1 skip / 5 fail**。5 fail = 4× `request-rewrite migration golden (codec.parse → driver S3)`（peer-D2 pipelineInfo）+ 1× `/api/negotiation > GET / returns grouped snapshot`。第 6 条 base 例外（UI shell 404）在前端 `test:ui`，不在 backend。
+- 全局 invariant：每 commit 后 fail 数必须仍**恰为这 5 条**（不多不少），typecheck 0。
+
+## Commit 进度
+| Commit | 状态 | 备注 |
+|---|---|---|
+| C0 golden 预捕获 | ✅ **已提交**（本会话 inline） | 4 条 byte golden，全量 4665 pass / 5 fail（base 不变）。见下 |
+| C1 骨架 | ⬜ 待做 | CellAssembly 接口 + 两穷尽 Record + resolveCellAssembly + hybrid shim（未接线）+ env.requestState |
+| C2 AnthropicCellAssembly | ⬜ | /v1/messages 腿 4 route 全切 |
+| C3 OpenAiCcCellAssembly | ⬜ | /chat 腿切 |
+| C4 OpenAiResponsesCellAssembly | ⬜ | /responses+ws 腿切 + R1 corner |
+| C5 InboundCodec 收敛 | ⬜ | 删 registry 死方法 + shim 退化 |
+| C6 清理 + 命名 + doc | ⬜ | gemini 剥前缀 + DESIGN.md + 记忆 |
+
+## C0 交付（4 条 byte golden，逐字节 `.toBe`/`.toEqual`，改前 HEAD 锁，确定性 5×）
+- (a) `tests/anthropic/c0-live-anchored-direct-stream-golden.http.test.ts` — live-anchored keepalive-ON direct /v1/messages 流：cold-start ping → 合成 message_start → anchor@0(start+empty delta) → commit close-off stop@0 → 真实块 remap +1 → 终帧。归一化合成 id（FakeClock-time + 全局 reqId 计数器）。
+- (b) `tests/openai/c0-reverse-cc-messages-forward-golden.http.test.ts` — cc `@messages` 反向腿经 HTTP app，上游 Anthropic SSE → 转发 CC 逐帧。归一化 `created` epoch。
+- (c-ws) `tests/responses/c0-ws-terminal-golden.http.test.ts` — Responses WS 转发消息对象逐帧（含终帧 response.completed）+ 1000/done 关闭。
+- (c-gemini) `tests/gemini/c0-via-responses-stream-terminal-golden.http.test.ts` — gemini `:streamGenerateContent` via Responses 两跳终帧（保护 C4/HIGH-1 hub 提取 renderResponsesFrameToCc+createStreamTranslator）。
+
+## 执行期实测发现（对后续 commit 重要）
+- **reverse @messages 经 HTTP app 从没被字节测过**（无 `.http.test.ts` 用 `@messages`）。经 cc 路由时，`processOpenAIMessages` **无条件** `applyConfigToState()` 重载磁盘 config 并重应用 disabled_models 过滤（`src/lib/system-prompt/override.ts:132`）；而 `processAnthropicSystem` 无 system 时提前 return、不重载。**后果**：cc `@messages` 反向腿要求 model 挺过这次重载（否则 router 的 `supportsDirectAnthropicApi` 在 index 被清后返 vendor unknown → 400）。golden (b) 用 `claude-opus-4.8`（未被 bundled config disabled）。C2 不改 router/model-resolution 时序，此项**out of scope**，但记录以防误判。
+- 实测环境 `loadConfig()` 的 disabled_models 含用户真实模型（`gpt-4o`/`claude-sonnet-4-5` 等长列表，疑测试隔离对 config 文件不完全沙箱化）——但对所有既有测试一致、不阻塞；用 disabled 列表外的 `claude-opus-4.8` 规避。
+- **gpt-souls agent 底座当前不可用**：派 `gpt-souls:implementer` 报 `400 Model "gpt" does not support /v1/messages: vendor is unknown, not Anthropic`（proxy 把 gpt 路由到 /v1/messages 被拒——正是本重构要修的 bug 类）。C0 改为主会话 inline。C2-C4 计划用 Claude general-purpose 实现 + 独立 Claude reviewer 对抗（gpt 底座故障期替代）。
