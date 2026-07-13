@@ -775,6 +775,54 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     const tool = final.content.find((b) => b.type === "tool_use") as { input?: unknown } | undefined
     expect(tool?.input).toEqual({ query: "weather" }) // repaired to valid JSON the SDK could parse
   })
+
+  test("tool-name restore: proxy sanitizes an illegal client tool name outbound → restores it inbound → SDK sees the ORIGINAL name", async () => {
+    // With sanitize_tool_names on, a client tool name that violates the target model's charset (the
+    // claude class forbids dots, cap 64) is rewritten to a wire-legal name outbound (`my.search.tool`
+    // → `my_search_tool`); the upstream echoes the SANITIZED name in its tool_use, and the proxy
+    // restores it to the client-ORIGINAL name before forwarding. Oracle: the SDK's finalMessage
+    // tool_use.name is the original `my.search.tool`, NOT the wire `my_search_tool` — a client-
+    // observable round-trip the byte layer alone can't confirm.
+    setStateForTests({ sanitizeToolNames: true })
+    const CLIENT_NAME = "my.search.tool" // dots → illegal for the claude class → sanitized
+    const WIRE_NAME = "my_search_tool" // deterministic makeValidToolName(CLIENT_NAME): dots → "_"
+    const frames = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_tn",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      // upstream echoes the SANITIZED wire name (what it received after outbound sanitization)
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_tn", name: WIRE_NAME, input: {} } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"q":"x"}' } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(frames))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages
+      .stream({
+        model: MODEL,
+        max_tokens: 16,
+        messages: [{ role: "user", content: "x" }],
+        tools: [{ name: CLIENT_NAME, description: "search", input_schema: { type: "object", properties: { q: { type: "string" } } } }],
+      })
+      .finalMessage()
+    const tool = final.content.find((b) => b.type === "tool_use") as { name?: string } | undefined
+    expect(tool?.name).toBe(CLIENT_NAME) // restored to the client-original name, not the wire name
+    expect(tool?.name).not.toBe(WIRE_NAME)
+  })
 })
 
 // ── vendor-neutral proof: a DIFFERENT real client SDK (OpenAI) against the same proxy ──

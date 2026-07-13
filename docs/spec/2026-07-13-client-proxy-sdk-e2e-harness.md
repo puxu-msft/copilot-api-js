@@ -100,14 +100,14 @@ tests/e2e-client/
 
 ## e2e 场景覆盖 roadmap（2026-07-13 考古后）
 
-现有 **26 场景**（Tier 1 SDK 24 = Anthropic 23 + OpenAI 1；Tier 2 CLI 2），均变异验证有牙（MUTANT-A/C/D 各精准逮住对应测试）。挖掘全清单见 Explore agent 考古（本会话），来源可信度分 `[DOC-REAL]`（文档实证、最高价值）/ `[CODE-INFER]`（需实测）。
+现有 **27 场景**（Tier 1 SDK 25 = Anthropic 24 + OpenAI 1；Tier 2 CLI 2），均变异验证有牙（MUTANT-A/C/D 各精准逮住对应测试）。挖掘全清单见 Explore agent 考古（本会话），来源可信度分 `[DOC-REAL]`（文档实证、最高价值）/ `[CODE-INFER]`（需实测）。
 
-**已覆盖**：eventless 帧丢弃、tool_use input 深等、thinking signature 累积、refusal end_turn/空串/error、200+SSE-error throws、空串 stall（CLI）、**截断→throws、HTTP-4xx 类型化子类对照（400 BadRequestError / 429 RateLimitError，对照 200+SSE-error 无类型）、client-abort→APIUserAbortError、buffered-retry 上游 RST 透明重试（半截不泄漏、callCount=2）、reactive-retry 内部重试透明（callCount=2）—— tool-field / cache_control-subfield / server-tool / unsupported-beta / poisoned-thinking 五腿（各腿变异摘 canHandle 后精准红）、空 delta 被 SDK 无害折叠（B1 Tier1 半）、tool-call 文本恢复、畸形 input 修复、event 名宽容、OpenAI vendor smoke**。
+**已覆盖**：eventless 帧丢弃、tool_use input 深等、thinking signature 累积、refusal end_turn/空串/error、200+SSE-error throws、空串 stall（CLI）、**截断→throws、HTTP-4xx 类型化子类对照（400 BadRequestError / 429 RateLimitError，对照 200+SSE-error 无类型）、client-abort→APIUserAbortError、buffered-retry 上游 RST 透明重试（半截不泄漏、callCount=2）、reactive-retry 内部重试透明（callCount=2）—— tool-field / cache_control-subfield / server-tool / unsupported-beta / poisoned-thinking 五腿（各腿变异摘 canHandle 后精准红）、空 delta 被 SDK 无害折叠（B1 Tier1 半）、tool-call 文本恢复、畸形 input 修复、tool name 清洗后还原（入站还原客户端原名）、event 名宽容、OpenAI vendor smoke**。
 
 **未覆盖 backlog（按承重排序，供后续扩展；每条真实、多数 `[DOC-REAL]` 可直接实现或 TDD 先红）**：
 - **一梯队**（生产 incident 催生）：B1 CC 300s no-real-content keepalive 墙 —— **Tier1 半已覆盖**（空 text/thinking delta 被 SDK 无害折叠、无幻块无崩），**真 300s 墙留 Tier2 计时**。~~B8 thinking 双相邻块毒化 reactive 恢复~~ ✅ **已覆盖**（400 `thinking cannot be modified` → L2 strip-all + 单重试 → callCount=2；实测坐实 outbound 保留 thinking 块可剥）。~~B9 retry 腿~~ ✅ **全覆盖**（tool-field/cache_control-subfield/server-tool/unsupported-beta 四腿，逐腿一断言 + 变异有牙）。
 - **二梯队**：B2 synthetic-message-start anchor 保活、B3 block-aware 空 delta 类型匹配、B5 非流式语义截断、B10/B11 server_tool/empty-encrypted 降级、B13 HTTP-429 vs 200-error-429 CC 重试发散（**Tier1 半已覆盖**：HTTP-429→RateLimitError vs 200+SSE-error 无类型；CC 重试次数发散仍属 Tier2）、~~B16 buffered-retry 上游 RST 透明~~ ✅ **已覆盖**（protect_streaming_generation on + 中途 RST → 透明重试 → 客户端拿完整 turn、半截不泄漏、callCount=2；变异关 gate → 精准红）、B17 三类中止（client-abort/reaper/header-timeout）客户端侧区分（**client-abort 半已覆盖**：Tier1 pre-aborted signal→APIUserAbortError；reaper/header-timeout 需真计时+history，仍 Tier2）。
-- **三梯队（广度）**：B12 通用翻译矩阵反向腿逐 cell（Anthropic client × CC/Responses/Gemini upstream）、B18 Responses SSE/WS keepalive、B15 合成帧空 delta 不泄漏成可见内容、B20 repetition-detector 终止、B22 cache_control 剥离透明、B23 tool name 清洗后还原。
+- **三梯队（广度）**：B12 通用翻译矩阵反向腿逐 cell（Anthropic client × CC/Responses/Gemini upstream）、B18 Responses SSE/WS keepalive、B15 合成帧空 delta 不泄漏成可见内容、B20 repetition-detector 终止、B22 cache_control 剥离透明、~~B23 tool name 清洗后还原~~ ✅ **已覆盖**（sanitize_tool_names on + 出站清洗 `my.search.tool`→`my_search_tool` + 入站 `toClient` 还原 → SDK 见原名；变异关 gate 精准红）。
 - **需实测先坐实再固化断言**（`[CODE-INFER]`）：B3/B9/B20/B22/B23。
 
 纪律（扩展时守）：否定断言必配正样本对照；`[CODE-INFER]` 先跑真实客户端 oracle 坐实；新绿测试做变异验证有牙（关掉被测行为→测试变红）。详见 skill `client-proxy-e2e-testing`。
