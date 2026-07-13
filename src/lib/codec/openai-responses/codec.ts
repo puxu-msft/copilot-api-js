@@ -111,12 +111,6 @@ import {
 } from "~/lib/models/resolver"
 import {
   //
-  prepareChatCompletionsRequest,
-  prepareResponsesRequest,
-} from "~/lib/openai/request-preparation"
-import {
-  //
-  extractInputItems,
   normalizeCallIds,
   responsesInputToMessages,
 } from "~/lib/openai/responses-conversion"
@@ -132,7 +126,6 @@ import {
   //
   createCCToResponsesStreamTranslator,
   translateCCToResponsesResponse,
-  translateResponsesToChatCompletions,
 } from "~/lib/openai/translate"
 import {
   //
@@ -143,10 +136,16 @@ import {
 import { state } from "~/lib/state"
 import { rebuildConversationMessages } from "~/routes/responses/conversation-rebuild"
 
+import {
+  //
+  prepareResponsesDirectWire,
+  prepareResponsesFallbackWire,
+  sampleResponsesDirectWireTrack,
+  sampleResponsesFallbackWireTrack,
+} from "./openai-responses-leg"
+
 const CLIENT_FORMAT: ClientFormat = "openai-responses"
 const ENDPOINT_TYPE: EndpointType = "openai-responses"
-/** History `format` label for the fallback wire (the actual upstream endpoint). */
-const CC_ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
 /** History `format` label for the REVERSE `@messages`-leg wire (the actual upstream endpoint). */
 const ANTHROPIC_MESSAGES_ENDPOINT_TYPE: EndpointType = "anthropic-messages"
 
@@ -475,26 +474,10 @@ function parseContentLength(header: string | null): number | undefined {
  * `fallback` exchange), so re-running per retry yields the same wire.
  */
 function prepareOpenAiResponsesWire(env: RequestEnvelope, fallback: FallbackExchange | undefined): PreparedRequest {
-  const model = env.model as Model | undefined
-
-  if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) {
-    const ccPayload = translateResponsesToChatCompletions(env.body as ResponsesPayload)
-    // Prepend rebuilt prior conversation (after system/developer prelude, before
-    // the current turn's input) — matches the legacy fallback.
-    const rebuilt = fallback?.rebuiltMessages ?? []
-    if (rebuilt.length > 0) {
-      const prelude = ccPayload.messages.filter((m) => m.role === "system" || m.role === "developer")
-      const current = ccPayload.messages.filter((m) => m.role !== "system" && m.role !== "developer")
-      ccPayload.messages = [...prelude, ...rebuilt, ...current]
-    }
-    const prepared = prepareChatCompletionsRequest(ccPayload, { resolvedModel: model })
-    return {
-      url: ENDPOINT.CHAT_COMPLETIONS,
-      headers: new Headers(prepared.headers),
-      body: prepared.wire,
-      stream: prepared.wire.stream ?? false,
-    }
-  }
+  // FALLBACK (/chat/completions): the shared Responses→CC fallback-wire leg core (C4) — prior-conversation
+  // prepend + prepareChatCompletionsRequest (no O10). DIRECT (/responses): the shared Responses-wire leg
+  // core. Same bytes the CellAssembly's OUTBOUND_LEGS[CHAT_COMPLETIONS]/[RESPONSES] build.
+  if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return prepareResponsesFallbackWire(env, fallback?.rebuiltMessages)
 
   if (env.targetEndpoint !== ENDPOINT.RESPONSES) {
     // Symmetric loud-fail: a `translate` decision to a leg this codec cannot serve
@@ -503,13 +486,7 @@ function prepareOpenAiResponsesWire(env: RequestEnvelope, fallback: FallbackExch
       `openai-responses codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`,
     )
   }
-  const prepared = prepareResponsesRequest(env.body as ResponsesPayload, { resolvedModel: model })
-  return {
-    url: ENDPOINT.RESPONSES,
-    headers: new Headers(prepared.headers),
-    body: prepared.wire,
-    stream: prepared.wire.stream ?? false,
-  }
+  return prepareResponsesDirectWire(env)
 }
 
 /**
@@ -546,29 +523,11 @@ function sampleOpenAiResponsesRequest(wire: PreparedRequest, env: RequestEnvelop
     return { effective, wire: wireRequest }
   }
 
-  const effBody = env.body as { model?: unknown; messages?: unknown }
-  const effective: EffectiveRequest = {
-    model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
-    messages: Array.isArray(effBody.messages) ? effBody.messages : [],
-    payload: env.body,
-    format: ENDPOINT_TYPE,
-  }
-
-  const wireBody = wire.body as { model?: unknown; messages?: unknown; input?: string | Array<ResponsesInputItem> }
-  const isFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
-  let wireMessages: Array<unknown>
-  if (isFallback) wireMessages = Array.isArray(wireBody.messages) ? wireBody.messages : []
-  else wireMessages = extractInputItems(wireBody.input ?? [])
-  const wireRequest: WireRequest = {
-    model: typeof wireBody.model === "string" ? wireBody.model : "",
-    messages: wireMessages,
-    payload: wire.body,
-    headers: Object.fromEntries(wire.headers.entries()),
-    format: isFallback ? CC_ENDPOINT_TYPE : ENDPOINT_TYPE,
-  }
-
-  return { effective, wire: wireRequest }
+  // FALLBACK (/chat): the shared Responses-fallback sampler (C4) — Responses effective + CC wire.
+  // DIRECT (/responses): the shared Responses-direct sampler — Responses effective + Responses wire.
+  // Same tracks the CellAssembly produces.
+  if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return sampleResponsesFallbackWireTrack(wire, env)
+  return sampleResponsesDirectWireTrack(wire, env)
 }
 
 // ============================================================================

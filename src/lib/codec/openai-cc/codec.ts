@@ -81,7 +81,6 @@ import type {
 } from "~/types/api/openai-chat-completions"
 import type {
   //
-  ResponsesInputItem,
   ResponsesResponse,
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
@@ -107,16 +106,6 @@ import {
   resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
-import {
-  //
-  fillMaxCompletionTokens,
-  prepareResponsesRequest,
-} from "~/lib/openai/request-preparation"
-import {
-  //
-  extractInputItems,
-  normalizeCallIds,
-} from "~/lib/openai/responses-conversion"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import { streamErrorKindToOpenAIErrorType } from "~/lib/openai/stream-error"
@@ -128,7 +117,6 @@ import {
 import {
   //
   createStreamTranslator,
-  translateChatCompletionsToResponses,
   translateResponsesResponseToCC,
 } from "~/lib/openai/translate"
 import {
@@ -148,13 +136,16 @@ import {
   sampleChatCompletionsWireTrack,
 } from "./openai-cc-leg"
 
+import {
+  //
+  prepareViaResponsesWire,
+  sampleViaResponsesWireTrack,
+} from "~/lib/codec/openai-responses/openai-responses-leg"
+
 const CLIENT_FORMAT: ClientFormat = "openai-cc"
 const ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
-/** History `format` label for the via-responses wire (the actual upstream endpoint). */
-const RESPONSES_ENDPOINT_TYPE: EndpointType = "openai-responses"
 /** History `format` label for the REVERSE `@messages`-leg wire (the actual upstream endpoint). */
 const ANTHROPIC_MESSAGES_ENDPOINT_TYPE: EndpointType = "anthropic-messages"
-const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
 /** A per-request Responses→CC stream translator (created lazily on first via-responses frame). */
 type StreamTranslator = ReturnType<typeof createStreamTranslator>
@@ -462,21 +453,10 @@ function parseContentLength(header: string | null): number | undefined {
  * rewrite + strategy holding CC-original) is registered in 05-progress.md.
  */
 function prepareOpenAiCcWire(env: RequestEnvelope): PreparedRequest {
-  const model = env.model as Model | undefined
-  const ccPayload = fillMaxCompletionTokens(env.body as ChatCompletionsPayload, model)
-
-  if (env.targetEndpoint === ENDPOINT.RESPONSES) {
-    const { payload: responsesPayload, droppedParams } = translateChatCompletionsToResponses(ccPayload)
-    if (droppedParams.length > 0) recordDroppedCcParamsWarning(env.ctx, ccPayload.model, droppedParams)
-    const finalResponses = state.normalizeResponsesCallIds ? normalizeCallIds(responsesPayload) : responsesPayload
-    const prepared = prepareResponsesRequest(finalResponses, { resolvedModel: model })
-    return {
-      url: ENDPOINT.RESPONSES,
-      headers: new Headers(prepared.headers),
-      body: prepared.wire,
-      stream: prepared.wire.stream ?? false,
-    }
-  }
+  // via-responses (/responses): the shared RESPONSES-leg core (C4) — CC→Responses translation + dropped-
+  // params warning + normalizeCallIds + prepareResponsesRequest. Same bytes the CellAssembly's
+  // OUTBOUND_LEGS[RESPONSES] builds for the via-responses/forward cells.
+  if (env.targetEndpoint === ENDPOINT.RESPONSES) return prepareViaResponsesWire(env)
 
   if (env.targetEndpoint !== ENDPOINT.CHAT_COMPLETIONS) {
     // A `translate` decision to any leg this codec cannot yet serve (e.g. the reverse
@@ -490,21 +470,6 @@ function prepareOpenAiCcWire(env: RequestEnvelope): PreparedRequest {
   // The `/chat/completions` wire prep is the shared leg core (C3) — same bytes the CellAssembly's
   // OUTBOUND_LEGS[CHAT_COMPLETIONS] builds. `fillMaxCompletionTokens` is repeated inside it (idempotent).
   return prepareChatCompletionsWire(env)
-}
-
-/**
- * Record the "CC→Responses dropped unsupported params" warning on the context,
- * deduped by code+message (prepareWire runs per-attempt; without the dedup each
- * retry would re-warn). Mirrors the legacy handler's `warningMessages.some(...)`.
- */
-function recordDroppedCcParamsWarning(ctx: RequestContext, model: string, droppedParams: Array<string>): void {
-  const message = `Chat Completions -> Responses translation dropped unsupported params: ${droppedParams.join(", ")}`
-  const alreadyRecorded = ctx.warningMessages.some((w) => w.code === DROPPED_CC_PARAMS_WARNING_CODE && w.message === message)
-  if (alreadyRecorded) return
-
-  consola.warn(`[CC→Responses] model=${model} ${message}`)
-  ctx.addWarningMessage({ code: DROPPED_CC_PARAMS_WARNING_CODE, message })
-  ctx.recordFeature("dropped-params")
 }
 
 /**
@@ -549,32 +514,9 @@ function sampleOpenAiCcRequest(wire: PreparedRequest, env: RequestEnvelope): Req
   }
 
   // `/chat/completions` (direct + forward @cc): the shared leg sampler (C3) — same tracks the CellAssembly
-  // produces. The `/responses` (via-responses) branch below stays in the codec (extracted in C4).
+  // produces. via-responses (/responses): the shared RESPONSES-leg sampler (C4) — CC effective + Responses wire.
   if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return sampleChatCompletionsWireTrack(wire, env)
-
-  const effBody = env.body as { model?: unknown; messages?: unknown }
-  const effective: EffectiveRequest = {
-    model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
-    messages: Array.isArray(effBody.messages) ? effBody.messages : [],
-    payload: env.body,
-    format: ENDPOINT_TYPE,
-  }
-
-  const wireBody = wire.body as { model?: unknown; messages?: unknown; input?: string | Array<ResponsesInputItem> }
-  const isResponses = env.targetEndpoint === ENDPOINT.RESPONSES
-  let wireMessages: Array<unknown>
-  if (isResponses) wireMessages = extractInputItems(wireBody.input ?? [])
-  else wireMessages = Array.isArray(wireBody.messages) ? wireBody.messages : []
-  const wireRequest: WireRequest = {
-    model: typeof wireBody.model === "string" ? wireBody.model : "",
-    messages: wireMessages,
-    payload: wire.body,
-    headers: Object.fromEntries(wire.headers.entries()),
-    format: isResponses ? RESPONSES_ENDPOINT_TYPE : ENDPOINT_TYPE,
-  }
-
-  return { effective, wire: wireRequest }
+  return sampleViaResponsesWireTrack(wire, env)
 }
 
 // ============================================================================
