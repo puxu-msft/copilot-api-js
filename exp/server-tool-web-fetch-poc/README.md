@@ -6,9 +6,15 @@ config `anthropic.server_tool_strip` + `anthropic.server_tool_rewrite` 现在对
 server tool 的处理是「**假装它不存在**」——strip 掉声明、事后 downgrade 回流块。本 PoC 问的是反面：
 **这些 server tool 能不能被 proxy 真的实现出来**，让客户端用上？
 
-结论先行：**能。而且项目里已经有活的存在性证明**——web_search 双跳
-（`src/lib/anthropic/web-search/orchestrator.ts`）就是「proxy 实现一个 server tool」的完整范式。
-本 PoC 用 **web_fetch** 证明这套范式**可推广到 web_search 之外**，且是其中最干净的一个。
+结论先行：**能，但要说清「能」的证据强度**——web_search 双跳
+（`src/lib/anthropic/web-search/orchestrator.ts`）是「proxy 实现一个 server tool」的**已实现范式**，
+其编排逻辑有 mock 集成测试覆盖（`tests/anthropic/web-search/`，48 pass）。
+
+⚠️ **诚实边界（勿夸大）**：web_search 双跳**从未真实端到端验证过**——`server_tool_web_search.enabled`
+默认 false，`docs/spec/request-lineage-v2.md:189` 明确「当前无真实 web_search 流量，实测确认」，
+二跳 thinking 重建标注「未实测 echo 稳定性」。所以它是「**逻辑经 mock 测过、live 未验**」的范式，
+不是「live 证明」。本 PoC 用 **web_fetch** 证明该范式**结构上可推广**（且 execute 最轻），
+但推广度的 live 可行性同样待验（见「若要生产化」）。
 
 ## 两个 config 键实际管的范围（不是单一工具）+ 一个常驻第三机制
 
