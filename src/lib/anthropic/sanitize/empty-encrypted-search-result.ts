@@ -2,12 +2,13 @@
  * Fallback: downgrade synthesized web_search history that upstream will reject.
  *
  * ── The bug this closes ───────────────────────────────────────────────────
- * The web_search double-hop synthesizes a `web_search_tool_result` block whose
- * `web_search_result` items carry `encrypted_content: ""` — see
- * `web-search/synthesize.ts`, which cannot produce Anthropic's native encrypted
- * payload from a SearXNG / Copilot backend. That block is deliberately sent to
- * the client (so search results are visible), stored in history, and echoed back
- * next turn. Upstream GHC then rejects it with:
+ * The web_search double-hop (RETIRED 2026-07-13) synthesized `web_search_tool_result`
+ * blocks whose `web_search_result` items carried `encrypted_content: ""` — it could
+ * not produce Anthropic's native encrypted payload from a SearXNG / Copilot backend.
+ * Such blocks were deliberately sent to the client (so search results were visible),
+ * stored in history, and echoed back next turn. This fallback is kept because those
+ * blocks may STILL echo from pre-retirement history sessions (or any client that
+ * sends an empty-encrypted `web_search_tool_result`). Upstream GHC rejects them with:
  *
  *   400 messages.N.content.0: Invalid `encrypted_content` in `search_result` block
  *
@@ -18,10 +19,9 @@
  * tool_result (exactly what `rewriteServerToolBlocks("downgrade")` does).
  *
  * ── Why this runs unconditionally (not gated on a config flag) ─────────────
- * A `web_search_tool_result` on our wire can ONLY be one we synthesized (GHC
- * Copilot has no native Anthropic web_search server tool — that is the entire
- * reason the double-hop exists). A synthesized one always carries empty
- * encrypted_content, so it is 100% guaranteed to 400. There is no legitimate
+ * A `web_search_tool_result` with empty encrypted_content on our wire can ONLY be a
+ * synthesized/echoed one (GHC Copilot has no native Anthropic web_search server tool),
+ * so it is 100% guaranteed to 400. There is no legitimate
  * reason to forward it, so this is a protocol-correctness floor like
  * `server-tool-filter` — always active, no opt-out.
  *
