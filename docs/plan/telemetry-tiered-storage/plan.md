@@ -6,7 +6,7 @@
 
 **Architecture:** 三层 rollup（raw 5min / hourly / daily）+ 终身累计层，纯聚合层（行级明细委托 History DB）。可加度量走 INTEGER/scaled-int 列精确 SUM，分布度量走 DDSketch 手动 DenseStore 序列化 BLOB（zstd 压缩）。双轨计数（进程内 process-lifetime 归零 + 持久 cumulative lifetime）。registry（维度/度量定义）零改动，仅替换存储读写层。
 
-**Tech Stack:** Bun 1.3.14（主）/ Node 24.16（compat），`bun:sqlite`/`node:sqlite`，`@datadog/sketches-js@2.1.1`（零依赖），Umzug hybrid forward-runner，`node:zlib` zstd（复用 `src/lib/history/sqlite/compression.ts`）。
+**Tech Stack:** Bun 1.3.14（主）/ Node 24.16（compat），`bun:sqlite`/`node:sqlite`，`@datadog/sketches-js@2.1.1`（零依赖），Umzug hybrid forward-runner，`node:zlib` zstd **raw-bytes**（评审 MEDIUM-1：`compression.ts` 的 `compress()` 是 `JSON.stringify` 帧、对二进制 sketch blob 不可用；用 `zstdCompressSync(bytes,ZSTD_OPTS)`/`zstdDecompressSync` 直压，或加 `compressBytes/decompressBytes` 变体。各层均压 ~3x，PoC 结论 5）。
 
 **权威依据：** spec [docs/spec/2026-07-13-telemetry-tiered-storage.md](../../spec/2026-07-13-telemetry-tiered-storage.md)（2 轮评审 + 用户 3 决策）、PoC [exp/telemetry-storage/CONCLUSIONS.md](../../../exp/telemetry-storage/CONCLUSIONS.md)（全绿）。
 
@@ -14,7 +14,8 @@
 
 - **runtime**：Bun 主 / Node compat；PoC 证 STRICT INTEGER 拒 REAL、BLOB 往返、sketch 序列化**两 runtime 一致**，无需 runtime-conditional 分支。
 - **DDSketch**：`relativeAccuracy` 默认 **0.01**；config `sketch_gamma` **下限 ~0.005**（PoC：0.001→6909 bin>2048 塌缩）。**手动序列化 DenseStore**（`{gamma,offset,minKey,maxKey,bins,zeroCount,count,min,max,sum}`），**绝不用 `toProto`/`fromProto`**（拉 protobufjs + 丢 min/max）。
-- **cost 列**：**scaled-int**（`round(cost*1e9)` nano，INTEGER），绝不用 STRICT INTEGER 直存 REAL（PoC 证抛异常）。计数/token/ms 用 INTEGER。
+- **cost 列**：**scaled-int micro**（`round(cost*1e6)`、列名 `cost_*_micro`、INTEGER），绝不 STRICT INTEGER 直存 REAL（PoC 证抛异常）。计数/token/ms 用 INTEGER。**micro 非 nano**（评审 HIGH-2）：cost=`整数 tokens×multiplier`、最小非零=`1×min_multiplier`（1e-4→micro 给 100，永不 round 到 0）故下限够；nano(1e9) 使**永久 cumulative**撞 `Number.MAX_SAFE_INTEGER`(9e15/1e9=仅 900 万 token-当量)→静默丢精度。回归 spec 的 1e6。
+- **分布存储归属**（评审 HIGH-1 架构澄清）：**SQLite 只存 DDSketch**（供 `/api/stats` 分位）；`/metrics` 用**进程内内存固定桶**（process-lifetime、重启归零、`buildMetricsExposition` 读 `getDimensionBreakdown(...,"sinceStart")` **不读 SQLite**）；`/api/stats` 持久窗口**返 sketch 分位（p50/p90/p99+count/sum/min/max），不再返原始固定桶数组**。SQLite **无固定桶列**。
 - **表**：`STRICT, WITHOUT ROWID`，字典编码 dim/key（整数替代重复字符串）。
 - **config 5 触点**（DESIGN.md:241）：`schema.ts` + `config.ts`(apply) + `state.ts` + bundled `config.yaml`（双语注释）+ 运行时选项表，缺一不可。warn-continue 复用 `nullableSection`+`.strict()`+`cleanInvalidPaths`。
 - **承重不变量**（spec §承重不变量 1-8）：两流分立 / model key 分裂 / 可加精确+分布误差界不混 / `/metrics` 精确固定桶且 `_sum`_`_count` 同批 / cumulative 永久且双轨 / cap 重启从 DB 重建 / agentKind 锚点三性质 / `/api/status.requestTelemetry` 逐字节兼容。
@@ -122,7 +123,7 @@ P0 sketch 封装 (纯，PoC 已证)
 **Tasks：**
 - **T3.1 upsertSettled**：写 `tel_raw`（可加列累加 + 固定桶计数列累加 + sketch blob merge）+ `tel_cumulative`（同）。cost 用 nano scaled-int。测试：多次 upsert 同 (dim,bucket,key) 累加正确；sketch blob merge 后 quantile 正确；固定桶计数与可加 `_count` 一致（同批）。
 - **T3.2 upsertAccepted**：写 `tel_accepted` + cumulative accepted（tel_meta）。测试：accept 计数不与 settled 混。
-- **T3.3 双轨接线**：`request-telemetry.ts` 的 `recordSettledRequest`/`recordAcceptedRequest` sink 改调 store.upsert；**同时保留进程内 process-lifetime 计数**（`dimSinceStart` 语义的内存镜像，供 /metrics + thinking_blocks 归零契约）。测试：进程内计数重启归零、DB cumulative 跨重启保留。
+- **T3.3 加性双写**（评审 HIGH-3，非「切换」）：**完整保留现有内存路径**（`dimSinceStart`+`dimBuckets`+`bucketCounts`+JSON persist）作累加缓冲与读源不变；另在 `persist_interval` flush 时把脏桶 `upsertSettled`/`upsertAccepted` 到 SQLite（**store.upsert 由周期 flush 驱动、非 `recordSettledRequest` 每请求调**——兑现 persist_interval 批量语义）。读路径 P5 才翻转、JSON persist P7 才删。这消半坏中间态（P3→P5 间 7d/status 视图仍活）+ 让 P5 golden 有活内存快照可比。测试：flush 后 SQLite 桶与内存 `dimBuckets` 一致；进程内计数重启归零、DB cumulative 跨重启保留。
 - **T3.4 cap 重启重建**：启动时从 `tel_cumulative` 载入 capped 维度已存 key 集作 cap 权威。测试：重启后第 201 个 client key 归 `other`。
 - **Commit**：`feat(telemetry): SQLite write path + dual-track counters`（隔离 worktree 起）。
 
@@ -198,6 +199,16 @@ P0 sketch 封装 (纯，PoC 已证)
 - ✅ 承重不变量 1-8 分布于各 phase invariant。
 - ✅ 4 PoC 项已在实现前验证（exp/）。
 - **Type consistency**：`upsertSettled`/`readDimensionBreakdown`/`readRequestTelemetrySnapshot`/`internKey`/`mergeSketch` 命名跨 phase 一致。
+
+## 评审采纳修订（plan review 第 1 轮，全部采纳）
+
+- **HIGH-1（分布存储归属）**：见 Global Constraints 新增行。连带修订：**T5.3** 实质=「保留 `/metrics` 现有内存渲染、**不**改成读 SQLite」（措辞从「SQLite read path」剥离）；**T6.2 固定桶无损映射作废**（`/metrics` 是 process-lifetime 内存、无历史区间，旧固定桶无 SQLite 落点；迁移前分布段 `/api/stats` 直接缺 sketch、留标注）；P1 schema **不加固定桶列**。
+- **HIGH-2（cost micro）**：见 Global Constraints；列名 `cost_*_micro`；spec §物理schema 的 `cost_input_micro` 命名正确、值改 1e6。
+- **HIGH-3（加性双写）**：见 T3.3 重写。
+- **MEDIUM-1（compression raw-bytes）**：见 Tech Stack。
+- **MEDIUM-3（agentKind 永不 capped 测试）**：**T3.4 追加**测试「cumulative cap-rebuild 后 agentKind 全 key 保留、绝不折 other」；不变量 2（model key 分裂）加一句回归断言。
+- **不变量 20 澄清**：`/metrics` 固定桶是**进程内内存**（非 SQLite）；`_sum`/`_count` 同批仍守。
+- **建议采纳**：① **P5 拆 ≥2 commit**（`/api/status`+snapshot 一提交、`/metrics`+`/api/stats` 一提交）；② worktree **从 P0 起**隔离（已建 `.worktrees/telemetry-storage/`）；③ **T4 追加** zstd 各层策略实测 + 字典表并发锁测 + Umzug 跨-runtime e2e 三 task（PoC §未覆盖承接）；④ 固定桶/写模型等结构决策已在 plan 层锁死（不留给 per-task 展开）。
 
 ## Kickoff
 
