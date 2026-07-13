@@ -1,5 +1,7 @@
 # Telemetry Tiered-Storage Implementation Plan
 
+> **实施状态（2026-07-13）**：worktree `.worktrees/telemetry-storage/` @ `feat/telemetry-tiered-storage`。**Phase 0 已 landed**（`f61dc77a`，sketch.ts + 测试全绿、typecheck/lint 干净）。**P1-P7 待做**——用 [prompts/kickoff.md](prompts/kickoff.md) 新会话续（clean context）。plan 已过 1 轮对抗 review 并修订（见「评审采纳修订」节）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **每 task 的逐字节 bite-sized TDD 步骤在执行期由 per-task subagent 即时展开**——本 plan 给出每 task 的文件/接口/测试 oracle/不变量/验收，Phase 0 附全套 bite-sized 模板。
 
 **Goal:** 把遥测从单 27MB JSON 文件迁到独立 `telemetry.db`（SQLite 分层保留 + DDSketch 分布 + 全可配 `telemetry.*`），保持 `/metrics` 与 `/api/status.requestTelemetry` 客户端契约逐字节不变。
