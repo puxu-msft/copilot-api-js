@@ -342,11 +342,14 @@ interface PumpStreamingV4Options {
  *
  * P3 Task 3 (backlog:316 CC leg): the buffered path withholds ALL real frames until the terminal
  * commit, so a long upstream silence would otherwise trip a CC consumer's idle deadline with zero
- * visible chunks. `resolveCcBufferedAndHeartbeat`'s `heartbeatSec` (forced > 0 whenever buffered)
- * is wired into `makeSseSink`'s `heartbeat` option with `ccKeepaliveFrame` as the fixed pingFrame —
- * mirrors Responses' `responsesKeepaliveFrame` wiring (`routes/responses/handler-v4.ts`). The live
- * (non-buffered) branch only heartbeats when the operator explicitly set `streamKeepalivePingSec`
- * (same `heartbeatSec > 0` gate `resolveCcBufferedAndHeartbeat` resolves either way).
+ * visible chunks. `resolveCcBufferedAndHeartbeat`'s `heartbeatSec` (FORCED > 0 whenever buffered,
+ * regardless of the operator's `streamKeepalivePingSec` setting) is wired into `makeSseSink`'s
+ * `heartbeat` option with `ccKeepaliveFrame` as the fixed pingFrame — mirrors Responses'
+ * `responsesKeepaliveFrame` wiring (`routes/responses/handler-v4.ts`). The LIVE (non-buffered)
+ * branch ALSO heartbeats whenever `streamKeepalivePingSec > 0` — the bundled default is 20
+ * (`state.ts`), so CC live streaming emits a keepalive BY DEFAULT, matching the Anthropic/
+ * Responses live paths (same `heartbeatSec > 0` gate `resolveCcBufferedAndHeartbeat` resolves
+ * either way — buffered forces it on, live just passes the configured value through).
  */
 async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const { stream, driver, upstream, env } = opts
@@ -369,8 +372,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // selects the driver's shared `runResponseBufferedSink` — CC being its third consumer (driver
   // signatures unchanged, all via opts). `heartbeatSec` is FORCED in buffered mode (the buffered
   // commit withholds every real frame until the terminal — long silence would otherwise trip a CC
-  // consumer's idle deadline); the live path heartbeats only when the operator set
-  // `streamKeepalivePingSec`. See resolveCcBufferedAndHeartbeat.
+  // consumer's idle deadline); the live path ALSO heartbeats whenever the operator's
+  // `streamKeepalivePingSec > 0` — the bundled default is 20, so CC live streaming heartbeats by
+  // default too, matching Anthropic/Responses. See resolveCcBufferedAndHeartbeat.
   const { buffered, heartbeatSec } = resolveCcBufferedAndHeartbeat()
 
   // The driver-owned client sink: SSE write-out + forwarded sampling. The sink preserves SSE
@@ -381,7 +385,11 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     ...(heartbeatSec > 0 && {
       heartbeat: {
         intervalSec: heartbeatSec,
-        pingFrame: ccKeepaliveFrame(),
+        // Fixed pingFrame (built once, before any upstream chunk sets `acc.model`) — the request's
+        // resolved model (`model`, from the client body) is the best available value at sink
+        // construction time; a real upstream chunk's `model` field would be identical for a
+        // passthrough exchange in the overwhelming majority of cases.
+        pingFrame: ccKeepaliveFrame(model),
         ...(opts.clientAbortSignal && { clientAbortSignal: opts.clientAbortSignal }),
       },
     }),

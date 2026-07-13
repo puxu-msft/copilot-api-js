@@ -18,7 +18,12 @@ import {
  *   so long upstream silence would otherwise trip GHC's idle deadline. It
  *   therefore FORCES a keepalive interval (`streamKeepalivePingSec` when the
  *   operator set it, else `resolveBufferedCaps("chat_completions").heartbeatSec`).
- *   The live path heartbeats only when the operator set `streamKeepalivePingSec`.
+ *   The live path ALSO heartbeats whenever `streamKeepalivePingSec > 0` — the
+ *   bundled default is 20 (`state.ts`), so CC live streaming emits a keepalive
+ *   BY DEFAULT too, matching the Anthropic/Responses live paths. Buffered mode
+ *   is distinguished only in that it FORCES the interval on even when the
+ *   operator set `streamKeepalivePingSec` to 0 (disabled); it never forwards a
+ *   0 to a buffered stream.
  */
 export function resolveCcBufferedAndHeartbeat(): { buffered: boolean; heartbeatSec: number } {
   const buffered = state.chatCompletionsBufferedRetry
