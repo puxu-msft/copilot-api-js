@@ -391,7 +391,7 @@ interface OutboxSettledEntry {
 interface OutboxSnapshot {
   /** bucketTs → dimName → key → entry (tel_raw leg; key mirrors dimBuckets' per-store cap resolution). */
   raw: Map<number, Map<string, Map<string, OutboxSettledEntry>>>
-  /** dimName → key → entry (tel_cumulative leg; key mirrors dimSinceStart's per-store cap resolution). */
+  /** dimName → key → entry (tel_cumulative leg; key resolved by resolveCumulativeCappedKey against the DB-seeded cumulativeCapKeys — its own persistent per-store cap authority, NOT dimSinceStart). */
   cumulative: Map<string, Map<string, OutboxSettledEntry>>
   /** bucketTs → delta count (tel_accepted leg). */
   accepted: Map<number, number>
