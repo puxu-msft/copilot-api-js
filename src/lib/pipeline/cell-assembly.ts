@@ -100,7 +100,8 @@ export interface RetrySemanticsSpec {
 /**
  * The retry SEMANTIC half, keyed by `clientFormat`, evaluated per-request against `env` (so a cell's
  * `env.targetEndpoint` selects the R1 corner). EXHAUSTIVE over {@link ClientFormat} → a new client format
- * is a compile error until its semantics land. C1: every entry throws (no cell migrated yet).
+ * is a compile error until its semantics land. C5: every cell is migrated, so every branch resolves (the
+ * per-cf functions are total over {@link UpstreamEndpoint} — a new leg trips `assertExhaustiveEndpoint`).
  */
 export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => RetrySemanticsSpec> = {
   // anthropic: /v1/messages DIRECT (C2a) + `@cc`/`@responses` FORWARD (C3/C4 — the CC stack against the
@@ -110,7 +111,7 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
     if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicMessagesRetrySemantics()
     if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics("Anthropic(→CC)")
     if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics("Anthropic(→Responses)")
-    return notMigratedSemantics("anthropic")(env)
+    return assertExhaustiveEndpoint(env.targetEndpoint)
   },
   // openai-cc: DIRECT `/chat` (C3) + via-responses `/responses` (C4 — the CC stack against the CC body,
   // translation deferred to prepareWire) + REVERSE `@messages` (C2b — the Anthropic stack).
@@ -118,7 +119,7 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
     if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics("Anthropic(cc→messages)")
     if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics("Completions")
     if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics("Completions(→Responses)")
-    return notMigratedSemantics("openai-cc")(env)
+    return assertExhaustiveEndpoint(env.targetEndpoint)
   },
   // openai-responses: the R1/HIGH-A corner — DIRECT `/responses` + FALLBACK `/chat` are auto-truncate OFF
   // (the Responses stack, maxRetries 1), while its REVERSE `@messages` cell (C2b) is auto-truncate ON (the
@@ -127,22 +128,20 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
     if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics("Anthropic(responses→messages)")
     if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return responsesFallbackRetrySemantics()
     if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return responsesDirectRetrySemantics()
-    // Exhaustive over UpstreamEndpoint (all 4 handled) — the fallthrough is a defensive guard.
-    return notMigratedSemantics("openai-responses")(env)
+    return assertExhaustiveEndpoint(env.targetEndpoint)
   },
   // gemini: FORWARD `@cc` (C3) + via-responses `/responses` (C4) + REVERSE `@messages` (C2b).
   gemini: (env) => {
     if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics("Anthropic(gemini→messages)")
     if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics("Gemini")
     if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics("Gemini(→Responses)")
-    return notMigratedSemantics("gemini")(env)
+    return assertExhaustiveEndpoint(env.targetEndpoint)
   },
 }
 
-function notMigratedSemantics(cf: ClientFormat): (env: RequestEnvelope) => RetrySemanticsSpec {
-  return () => {
-    throw new Error(`[cell-assembly] RETRY_SEMANTICS for clientFormat "${cf}" has not migrated yet (C2-C4)`)
-  }
+/** Compile-time exhaustiveness guard: `targetEndpoint` narrows to `never` once all 4 legs are handled. */
+function assertExhaustiveEndpoint(te: never): never {
+  throw new Error(`[cell-assembly] RETRY_SEMANTICS: unhandled targetEndpoint ${String(te)} (a new UpstreamEndpoint must add its semantics)`)
 }
 
 // ============================================================================
