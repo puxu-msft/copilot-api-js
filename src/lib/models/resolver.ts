@@ -1,9 +1,10 @@
 /**
  * Unified model name resolution and normalization.
  *
- * Handles short aliases (opus/sonnet/haiku), versioned names with date suffixes,
- * hyphenated versions (claude-opus-4-6 → claude-opus-4.6), model overrides,
- * and family-level fallbacks.
+ * Handles short aliases (opus/sonnet/haiku), hyphenated versions
+ * (claude-opus-4-6 → claude-opus-4.6), model overrides, and family-level
+ * fallbacks. Date suffixes are NOT auto-stripped — mapping a dated snapshot
+ * name to a canonical id is a config-driven `model_overrides` decision.
  */
 
 import consola from "consola"
@@ -47,9 +48,6 @@ export interface ToolNameRules {
 // ============================================================================
 // Normalization and Detection
 // ============================================================================
-
-/** Pre-compiled regex: claude-{family}-{major}-YYYYMMDD (date-only suffix) */
-const DATE_ONLY_RE = /^(claude-(?:opus|sonnet|haiku)-\d+)-\d{8,}$/
 
 /**
  * True when two model names refer to the SAME model written differently —
@@ -299,7 +297,9 @@ function resolveOverrideTarget(source: string, target: string, seen?: Set<string
  * 1. Modifier suffixes: "claude-opus-4-6-fast" → "claude-opus-4.6-fast"
  * 2. Short aliases: "opus" → best available opus
  * 3. Hyphenated versions: "claude-opus-4-6" → "claude-opus-4.6"
- * 4. Date suffixes: "claude-opus-4-20250514" → best opus
+ *
+ * Date suffixes are NOT stripped: "claude-opus-4-6-20250514" is returned as-is
+ * (only a matching `model_overrides` entry can remap it).
  */
 function resolveModelNameCore(model: string): string {
   // Extract modifier suffix (e.g., "-fast") before resolution
@@ -323,9 +323,10 @@ function resolveModelNameCore(model: string): string {
 
 /** Resolve a base model name (without modifier suffix) to its canonical form. */
 function resolveBase(model: string): string {
-  // 1. Hyphenated: claude-opus-4-6 or claude-opus-4-6-20250514 → claude-opus-4.6
-  // Pattern: claude-{family}-{major}-{minor}[-YYYYMMDD]
-  // Minor version is 1-2 digits; date suffix is 8+ digits
+  // Hyphenated version → canonical dot form: claude-opus-4-6 → claude-opus-4.6.
+  // Date suffixes are NOT stripped (VERSIONED_RE no longer matches them) — a dated
+  // snapshot name only remaps via an explicit model_overrides entry; otherwise it
+  // falls through unchanged below and the upstream rejects it (failure stays visible).
   const versionedMatch = model.match(VERSIONED_RE)
   if (versionedMatch) {
     const dotModel = `${versionedMatch[1]}-${versionedMatch[2]}.${versionedMatch[3]}`
@@ -334,18 +335,10 @@ function resolveBase(model: string): string {
     }
   }
 
-  // 2. Date-only suffix: claude-{family}-{major}-YYYYMMDD → base model (drop date).
-  // If the base isn't available, return it as-is and let the upstream reject —
-  // short aliases / families are resolved exclusively via model_overrides now.
-  const dateOnlyMatch = model.match(DATE_ONLY_RE)
-  if (dateOnlyMatch) {
-    return dateOnlyMatch[1]
-  }
-
-  // Short aliases (opus/sonnet/haiku) and anything else are returned verbatim;
-  // they only resolve if model_overrides defines them, otherwise the upstream
-  // rejects the unknown model (resolution intentionally fails — no built-in
-  // family preference fallback).
+  // Short aliases (opus/sonnet/haiku), dated snapshot names, and anything else are
+  // returned verbatim; they only resolve if model_overrides defines them, otherwise
+  // the upstream rejects the unknown model (resolution intentionally fails — no
+  // built-in family preference fallback and no date-suffix stripping).
   return model
 }
 
