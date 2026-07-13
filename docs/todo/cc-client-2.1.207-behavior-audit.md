@@ -845,6 +845,37 @@ system-reminder / attribution 剥离**格式匹配 CC 2.1.207、无 gap**（F29a
 
 ---
 
+## 轮次 24（2026-07-13）：NON_DEFERRED_TOOL_NAMES 是 Copilot-only —— CC 核心工具无静态延迟保护
+
+> 平行 F28（陈旧/不完整名单）。与 F27（deferred 非对称）同一子系统的第三条。
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 defer_loading 语义（`app.pretty.js:442315` 注释）：**默认无 `defer_loading` 字段 = 工具已加载**；`defer_loading:true` = 延迟；`defer_loading:false` = 显式加载。CC 用 tool-search 时**只对要延迟的工具打 `defer_loading:true`**，核心工具**省略该字段**（靠默认加载），而非显式 `defer_loading:false`。
+
+### 本项目现状（读码）
+
+[message-tools.ts:63-84 NON_DEFERRED_TOOL_NAMES](../../src/lib/anthropic/message-tools.ts#L63) 注释明写「VSCode Copilot Chat original tool names (snake_case)」：`read_file`/`run_in_terminal`/`grep_search`/… —— **全是 Copilot 工具名、无一个 CC 的 PascalCase**（Read/Bash/Grep/Edit/Write/Task…）。`toolSearchEnabled` **默认 true**（[state.ts:1432](../../src/lib/state.ts#L1432)，Claude ≥4.5 默认放行）。
+
+### F30（MEDIUM，条件性 + 与 F28 同根）— CC 核心工具无静态非延迟保护，tool-search 开时首用即延迟
+
+**判断（读码 + 推理）**：项目延迟判据（轮次 21）`shouldDefer = toolSearchEnabled && tool.defer_loading !== false && !NON_DEFERRED_TOOL_NAMES.has(name) && !learned && !historyUsed`。对 CC 核心工具（如 `Read`）：
+- `tool.defer_loading !== false`：CC **省略** defer_loading（默认加载语义）→ `undefined !== false` = **TRUE**（**不**被 CC 的 flag 保护）。
+- `!NON_DEFERRED_TOOL_NAMES.has("Read")`：`Read` 不在 Copilot snake_case 名单 → **TRUE**（**不**被静态名单保护）。
+- → 只剩 `historyUsed` 保护：**首次使用前，CC 核心工具全被项目延迟**。
+
+**后果（条件性）**：tool-search 默认 ON（≥4.5 模型）时，一个新 CC 会话里 CC 的**每个核心工具首次调用**都可能 → 「Tool reference not found」→ deferred-tool-retry 恢复（1 往返/工具）。CC 本意「Read/Bash 立即可用」，被项目延迟成「搜索后才可用」。稳态（history 已录）后不犯，但**会话早期批量往返**。Copilot 客户端的核心工具**有**静态保护（在名单里），CC 的**没有**——不对称遗漏，与 **F28**（stub 集漏 CC 工具）同根：**项目的 CC-工具名单不完整/偏向 Copilot**。
+
+**不确定性（faithful）**：是否在实践中显著取决于——CC 是否真省略 defer_loading（442315 语义强烈暗示是）、CC 自己是否已把大部分工具标 defer_loading:true（则项目 re-defer 部分对齐）、history 保护多快覆盖。**需 e2e 验证**（skill `client-proxy-e2e-testing`）：新会话 + ≥4.5 GHC 模型 + CC 核心工具，数「not found」恢复往返数。
+
+**理想方向（clear-fix，与 F28 合并落地）**：给非延迟保护补一个 **CC 核心工具集**（PascalCase：Read/Bash/Glob/Grep/Edit/Write/TodoWrite/Task 等常用），或复用 F28 修好的 `CLAUDE_CODE_OFFICIAL_TOOLS` 作 CC 侧非延迟名单。与 F28 同一次「同步 CC 工具清单」修复一起做最经济。
+
+### 本轮结论
+
+`NON_DEFERRED_TOOL_NAMES` 仅护 Copilot 客户端核心工具，**CC 核心工具无静态非延迟保护**（F30，中，条件性）——tool-search 默认 ON 时新 CC 会话早期批量「not found」恢复往返。与 F27（defer 非对称）、F28（stub 陈旧）构成 **deferred-tool 子系统的三条 CC 偏差**，共性=**项目的 CC 工具名单/对称性不完整**，宜一并修 + e2e 验证。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
