@@ -51,18 +51,6 @@ function nullableNonnegativeInt() {
     .optional()
 }
 
-const UNIT_FLOAT_MSG = "Must be a number in (0, 1] or null"
-
-/** A float in the half-open interval (0, 1] — e.g. auto_truncate.target_factor (0 would zero the limit). */
-function nullableUnitFloat() {
-  return z
-    .number({ error: UNIT_FLOAT_MSG })
-    .gt(0, UNIT_FLOAT_MSG)
-    .lte(1, UNIT_FLOAT_MSG)
-    .nullable()
-    .transform((v): number | undefined => v ?? undefined)
-    .optional()
-}
 
 function nullableBoolean() {
   return z
@@ -681,20 +669,6 @@ export const HistoryConfigSchema = z
   })
   .strict()
 
-export const AutoTruncateConfigSchema = z
-  .object({
-    /** Enable reactive auto-truncate (retry with a truncated payload on upstream token-limit errors). Default false. Also settable via CLI --auto-truncate, which wins when explicitly passed. */
-    enabled: nullableBoolean(),
-    /** Truncation target as a fraction of the upstream-reported limit (target = limit × factor). (0, 1]; smaller = safer/more removed, larger = leaner. Default 0.9. */
-    target_factor: nullableUnitFloat(),
-    /** Compress old tool_result content before truncating messages. Default true. (Was top-level `compress_tool_results_before_truncate`.) */
-    compress_tool_results: nullableBoolean(),
-    /** Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress everything. Default 10000. */
-    compress_threshold: nullableNonnegativeInt(),
-    /** Main-path pre-flight truncation: before sending, use the learned size-aware calibration factor to predict whether the request will exceed the model's token limit and pre-truncate it, saving a guaranteed-to-fail 400 round-trip. Reactive truncation (on upstream limit errors) remains the fallback. Opt-in; default false. */
-    preflight: nullableBoolean(),
-  })
-  .strict()
 
 export const RetryConfigSchema = z
   .object({
@@ -860,16 +834,6 @@ export const ConfigSchema = z
       .optional(),
     disabled_models: nullableNonemptyStringArray(),
     /**
-     * Reactive auto-truncate settings (nested section). When `enabled`, an upstream
-     * token-limit error (400/413) triggers a retry with a truncated payload instead
-     * of surfacing the error. Top-level (not under `anthropic.*`) because it spans
-     * both the Anthropic and Chat Completions retry pipelines. `enabled` is also
-     * settable via the CLI `--auto-truncate` flag, which takes precedence when
-     * explicitly passed. `target_factor` / `max_retries` / `compress_threshold` tune
-     * the truncation behavior (config-only).
-     */
-    auto_truncate: nullableSection(AutoTruncateConfigSchema),
-    /**
      * Reactive-retry budget shared by ALL retry strategies (400-class negotiation,
      * network, server-error, token-refresh, …). Was `auto_truncate.max_retries`,
      * hoisted out because it never was truncation-specific.
@@ -961,7 +925,5 @@ export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
-/** Config-file shape of the `auto_truncate` section (distinct from the engine's runtime `AutoTruncateConfig`). */
-export type AutoTruncateConfigSection = z.infer<typeof AutoTruncateConfigSchema>
 export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
 export type Config = z.infer<typeof ConfigSchema>

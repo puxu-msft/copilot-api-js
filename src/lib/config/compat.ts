@@ -290,8 +290,6 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("stream_idle_timeout", "timeouts.stream_idle"),
   renameLeaf("fetch_timeout", "timeouts.response_header"),
   renameLeaf("stale_request_max_age", "timeouts.stale_request_max_age"),
-  // compress toggle joins its threshold under auto_truncate
-  renameLeaf("compress_tool_results_before_truncate", "auto_truncate.compress_tool_results"),
   // max_retries was never truncation-specific — hoist to the shared retry budget section.
   renameLeaf("auto_truncate.max_retries", "retry.max_reactive_retries"),
   // stream_keepalive_mode "content_delta" → "empty_text": the keepalive reset is now

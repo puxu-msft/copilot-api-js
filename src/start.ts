@@ -178,8 +178,6 @@ interface RunServerOptions {
   /** Explicit proxy URL (CLI --proxy). Takes precedence over env vars and config.yaml. */
   proxy?: string
   httpProxyFromEnv: boolean
-  /** Reactive auto-truncate (CLI --auto-truncate / --no-auto-truncate). `undefined` when omitted → config.yaml `auto_truncate` stands. */
-  autoTruncate?: boolean
   externalUiUrl?: string
 }
 
@@ -274,7 +272,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Set global state from CLI options. accountType is only set here when
   // the user passed it explicitly — otherwise we leave the state default
   // ("individual") in place until inference runs after authentication,
-  // which may override it. ghcApiBaseUrl and autoTruncate are applied below
+  // which may override it. ghcApiBaseUrl is applied below
   // (after config load) so CLI takes precedence over config.yaml.
   setCliState({
     ...(options.accountType !== undefined && { accountType: options.accountType }),
@@ -329,15 +327,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const resolvedBaseUrl = options.ghcApiBaseUrl ?? config.ghc_api_base_url
   if (resolvedBaseUrl) {
     setCliState({ ghcApiBaseUrl: resolvedBaseUrl })
-  }
-
-  // Auto-truncate — CLI > config.yaml, but unlike ghcApiBaseUrl this IS
-  // hot-reloadable (applyConfigToState sets it from config; a later reload can
-  // flip it). The CLI flag only overrides when explicitly passed
-  // (--auto-truncate / --no-auto-truncate); when omitted, options.autoTruncate
-  // is undefined and the config value (already applied above) stands.
-  if (options.autoTruncate !== undefined) {
-    setCliState({ autoTruncate: options.autoTruncate })
   }
 
   // ===========================================================================
@@ -490,15 +479,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   consola.info(`Available models:\n${rawList.map((m) => formatModelInfo(m, disabledSet.has(normalizeForMatching(m.id)))).join("\n")}`)
   const stopModelRefreshLoop = startModelRefreshLoop()
 
-  // Load previously learned auto-truncate limits (calibration + token limits).
-  // Gated on the feature flag: every learnedLimits consumer is behind
-  // `state.autoTruncate`, so loading while disabled is pure dead weight. The flag
-  // can now be toggled at runtime via config.yaml hot-reload — applyConfigToState
-  // lazily calls loadPersistedLimits() on an off→on transition, so this boot-time
-  // load only covers the CLI-first path. Double load (CLI + config) is idempotent.
-  if (state.autoTruncate) {
-    await loadPersistedLimits()
-  }
+  // Load the persisted per-model token-count calibration (factor model + seed).
+  // Unconditional: calibration is always-on now (repurposed for honest local
+  // token counting — count-tokens fallback + debug probe), and this call also
+  // materializes the factory bake-in seed for fresh installs.
+  await loadPersistedLimits()
 
   // Load previously negotiated feature/beta-header support (states.json)
   await loadPersistedFeatureNegotiation()
@@ -644,11 +629,6 @@ export const start = defineCommand({
       default: true,
       description: "Use HTTP proxy from environment variables (disable with --no-http-proxy-from-env)",
     },
-    "auto-truncate": {
-      type: "boolean",
-      description:
-        "Reactive auto-truncate: retries with truncated payload on limit errors. Overrides config.yaml `auto_truncate` when passed; omit to use config (default off). Disable with --no-auto-truncate.",
-    },
     "external-ui-url": {
       type: "string",
       description: "Proxy /ui to an external frontend dev/build server (for example http://localhost:5173)",
@@ -693,9 +673,6 @@ export const start = defineCommand({
       // http-proxy-from-env (citty handles --no-http-proxy-from-env via built-in negation)
       "http-proxy-from-env",
       "httpProxyFromEnv",
-      // auto-truncate (citty handles --no-auto-truncate via built-in negation)
-      "auto-truncate",
-      "autoTruncate",
       // external-ui-url
       "external-ui-url",
       "externalUiUrl",
@@ -719,7 +696,6 @@ export const start = defineCommand({
       showGitHubToken: args["show-github-token"],
       proxy: args.proxy,
       httpProxyFromEnv: args["http-proxy-from-env"],
-      autoTruncate: args["auto-truncate"],
       externalUiUrl: args["external-ui-url"],
     })
   },

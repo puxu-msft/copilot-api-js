@@ -18,7 +18,6 @@ import {
   type CompiledSystemPromptEntry,
   DEFAULT_MODEL_OVERRIDES,
   setAnthropicBehavior,
-  setAutoTruncateConfig,
   setDisabledModels,
   setHistoryConfig,
   setHooksConfig,
@@ -38,7 +37,6 @@ import type {
   SystemPromptEntry,
 } from "./schema"
 
-import { loadPersistedLimits } from "../auto-truncate"
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
   //
@@ -722,24 +720,6 @@ export async function applyConfigToState(): Promise<Config> {
   // key keeps the prior runtime value. Re-filters `state.models` from cached raw.
   if (config.disabled_models !== undefined) {
     setDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
-  }
-
-  // Auto-truncate (nested section: override only fields that are present).
-  // When `enabled` flips off→on at runtime (hot-reload), lazily load persisted
-  // learned limits so the calibration cache is available — the boot-time load in
-  // start.ts only runs when the CLI flag enabled it at startup. The map merge is
-  // idempotent, so a double load (CLI + config) is harmless.
-  if (config.auto_truncate) {
-    const a = config.auto_truncate
-    if (a.enabled !== undefined) {
-      const wasEnabled = state.autoTruncate
-      setAutoTruncateConfig({ autoTruncate: a.enabled })
-      if (!wasEnabled && a.enabled) void loadPersistedLimits()
-    }
-    if (a.target_factor !== undefined) setAutoTruncateConfig({ autoTruncateTargetFactor: a.target_factor })
-    if (a.compress_threshold !== undefined) setAutoTruncateConfig({ autoTruncateCompressThreshold: a.compress_threshold })
-    if (a.preflight !== undefined) setAutoTruncateConfig({ autoTruncatePreflight: a.preflight })
-    if (a.compress_tool_results !== undefined) setAnthropicBehavior({ compressToolResultsBeforeTruncate: a.compress_tool_results })
   }
 
   // Shared reactive-retry budget (was auto_truncate.max_retries).

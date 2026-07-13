@@ -50,9 +50,6 @@ export interface ConfigYamlResponse {
     recovery_interval?: number
     consecutive_successes?: number
   }
-  auto_truncate?: {
-    compress_tool_results?: boolean
-  }
   system_prompt_overrides?: Array<PromptOverrideRule>
   system_prompt_prepend?: string
   system_prompt_append?: string
@@ -99,9 +96,6 @@ export interface EditableConfig {
     request_interval?: number | null
     recovery_interval?: number | null
     consecutive_successes?: number | null
-  } | null
-  auto_truncate?: {
-    compress_tool_results?: boolean | null
   } | null
   system_prompt_overrides?: Array<PromptOverrideRule> | null
   system_prompt_prepend?: string | null

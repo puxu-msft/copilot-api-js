@@ -226,13 +226,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   },
   {
-    configKey: "auto_truncate.compress_tool_results",
-    stateKey: "compressToolResultsBeforeTruncate",
-    sampleYamlValue: "false",
-    expectedStateValue: false,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
-  },
-  {
     configKey: "sanitize_tool_names",
     stateKey: "sanitizeToolNames",
     sampleYamlValue: "true",
@@ -240,39 +233,11 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   },
   {
-    configKey: "auto_truncate.enabled",
-    stateKey: "autoTruncate",
-    sampleYamlValue: "true",
-    expectedStateValue: true,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncate,
-  },
-  {
-    configKey: "auto_truncate.target_factor",
-    stateKey: "autoTruncateTargetFactor",
-    sampleYamlValue: "0.5",
-    expectedStateValue: 0.5,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
-  },
-  {
     configKey: "retry.max_reactive_retries",
     stateKey: "maxReactiveRetries",
     sampleYamlValue: "7",
     expectedStateValue: 7,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
-  },
-  {
-    configKey: "auto_truncate.compress_threshold",
-    stateKey: "autoTruncateCompressThreshold",
-    sampleYamlValue: "5000",
-    expectedStateValue: 5000,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
-  },
-  {
-    configKey: "auto_truncate.preflight",
-    stateKey: "autoTruncatePreflight",
-    sampleYamlValue: "true",
-    expectedStateValue: true,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
   },
 
   // ── system_prompt_overrides (array; sample is a single rule) ────────

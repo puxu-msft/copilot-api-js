@@ -258,7 +258,7 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "proxy")) setScalar(doc, ["proxy"], body.proxy)
   if (hasOwn(body, "timeouts")) setNestedScalarContainer(doc, ["timeouts"], body.timeouts)
   if (hasOwn(body, "model_refresh_interval")) setScalar(doc, ["model_refresh_interval"], body.model_refresh_interval)
-  if (hasOwn(body, "auto_truncate")) setNestedScalarContainer(doc, ["auto_truncate"], body.auto_truncate)
+  if (hasOwn(body, "retry")) setNestedScalarContainer(doc, ["retry"], body.retry)
   if (hasOwn(body, "system_prompt_prepend")) setScalar(doc, ["system_prompt_prepend"], body.system_prompt_prepend)
   if (hasOwn(body, "system_prompt_append")) setScalar(doc, ["system_prompt_append"], body.system_prompt_append)
   if (hasOwn(body, "model_overrides")) replaceCollection(doc, ["model_overrides"], body.model_overrides)

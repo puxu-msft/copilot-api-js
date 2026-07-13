@@ -139,8 +139,8 @@ rate_limiter:
   request_interval: 30
   recovery_interval: 60
   consecutive_successes: 3
-auto_truncate:
-  compress_tool_results: false
+retry:
+  max_reactive_retries: 3
 system_prompt_overrides:
   - from: danger
     to: safe
@@ -201,8 +201,8 @@ system_prompt_append: "append"
         recovery_interval: 60,
         consecutive_successes: 3,
       },
-      auto_truncate: {
-        compress_tool_results: false,
+      retry: {
+        max_reactive_retries: 3,
       },
       system_prompt_overrides: [
         {
@@ -472,8 +472,8 @@ model_refresh_interval: 600
         recovery_interval: 60,
         consecutive_successes: 3,
       },
-      auto_truncate: {
-        compress_tool_results: false,
+      retry: {
+        max_reactive_retries: 3,
       },
       system_prompt_overrides: [
         {

@@ -133,39 +133,11 @@ export interface State {
   readonly adaptiveRateLimitConfig?: Partial<AdaptiveRateLimiterConfig>
 
   /**
-   * Auto-truncate: reactively truncate on limit errors and pre-check for known limits.
-   * Disabled by default; enable with --auto-truncate or `auto_truncate.enabled`.
-   */
-  readonly autoTruncate: boolean
-
-  /**
-   * Truncation target as a fraction of the upstream-reported token limit
-   * (target = reportedLimit × factor). In (0, 1]; smaller removes more / safer,
-   * larger is leaner but closer to the limit. Config `auto_truncate.target_factor`.
-   */
-  readonly autoTruncateTargetFactor: number
-
-  /**
    * Shared reactive-retry budget: the per-request cap on ALL reactive retry
    * strategies (network / server-error / token-refresh / 400-class negotiation
    * etc.), not truncation-specific. Config `retry.max_reactive_retries`.
    */
   readonly maxReactiveRetries: number
-
-  /**
-   * Character-length threshold (NOT tokens) above which a tool_result block is
-   * compressed during truncation. Config `auto_truncate.compress_threshold`.
-   */
-  readonly autoTruncateCompressThreshold: number
-
-  /**
-   * Main-path pre-flight truncation: before sending, predict via the learned
-   * size-aware calibration factor whether the request will exceed the model's
-   * token limit and pre-truncate it, saving a guaranteed-to-fail 400 round-trip.
-   * Reactive truncation stays the fallback. Opt-in; default false. Config
-   * `auto_truncate.preflight`.
-   */
-  readonly autoTruncatePreflight: boolean
 
   /**
    * Account is on token-based (PAYG) billing rather than premium-request
@@ -174,12 +146,6 @@ export interface State {
    * (every model is pay-as-you-go, so the badge would be uniform noise).
    */
   readonly tokenBasedBilling: boolean
-
-  /**
-   * Compress old tool results before truncating messages.
-   * When enabled, large tool_result content is compressed to reduce context size.
-   */
-  readonly compressToolResultsBeforeTruncate: boolean
 
   /**
    * Sanitize tool names that violate the target model's constraints (illegal
@@ -1088,7 +1054,7 @@ export function setTokenState(patch: Partial<Pick<MutableState, "tokenInfo" | "c
   updateState(patch)
 }
 
-export function setCliState(patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "autoTruncate" | "verbose">>): void {
+export function setCliState(patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "verbose">>): void {
   updateState(patch)
 }
 
@@ -1214,7 +1180,6 @@ export function setAnthropicBehavior(
       | "systemPromptOverrides"
       | "systemPromptPrepend"
       | "systemPromptAppend"
-      | "compressToolResultsBeforeTruncate"
       | "sanitizeToolNames"
       | "recoverToolCallText"
       | "toolRepairMalformedInput"
@@ -1324,14 +1289,6 @@ export function setNegotiationConfig(patch: Partial<Pick<MutableState, "negotiat
 
 /** Set the shared reactive-retry budget (`retry.max_reactive_retries`). Hot-reloadable. */
 export function setReactiveRetryConfig(patch: Partial<Pick<MutableState, "maxReactiveRetries">>): void {
-  updateState(patch)
-}
-
-export function setAutoTruncateConfig(
-  patch: Partial<
-    Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateCompressThreshold" | "autoTruncatePreflight">
-  >,
-): void {
   updateState(patch)
 }
 
@@ -1490,15 +1447,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   systemPromptOverrides: [] as Array<CompiledRewriteRule>,
   systemPromptPrepend: [] as Array<CompiledSystemPromptEntry>,
   systemPromptAppend: [] as Array<CompiledSystemPromptEntry>,
-  autoTruncate: false,
-  // Defaults mirror the engine constants AUTO_TRUNCATE_RETRY_FACTOR / MAX_AUTO_TRUNCATE_RETRIES /
-  // LARGE_TOOL_RESULT_THRESHOLD. Inlined (not imported) to avoid a state ↔ auto-truncate ↔
-  // system-prompt import cycle; kept in sync by a guard in auto-truncate-common.unit.test.ts.
-  autoTruncateTargetFactor: 0.9,
+  // Shared reactive-retry budget (was auto_truncate.max_retries). Inlined default 5.
   maxReactiveRetries: 5,
-  autoTruncateCompressThreshold: 10000,
-  autoTruncatePreflight: false,
-  compressToolResultsBeforeTruncate: true,
   sanitizeToolNames: false,
   recoverToolCallText: false,
   toolRepairMalformedInput: [] as ReadonlyArray<RepairItem>,
@@ -1623,7 +1573,6 @@ export function resetConfigManagedState(): void {
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
     systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
     systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
-    compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
     toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
@@ -1690,15 +1639,6 @@ export function resetConfigManagedState(): void {
     maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
     maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
   })
-  // auto-truncate is a top-level toggle (CLI flag + config.yaml `auto_truncate.enabled`)
-  // plus tuning fields (target_factor / compress_threshold / preflight),
-  // all reset via setAutoTruncateConfig.
-  setAutoTruncateConfig({
-    autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
-    autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
-    autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
-    autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
-  })
   // Shared reactive-retry budget (was auto_truncate.max_retries).
   setReactiveRetryConfig({ maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries })
 }
@@ -1706,13 +1646,8 @@ export function resetConfigManagedState(): void {
 const mutableState: MutableState = {
   accountType: "individual",
   ghcApiBaseUrl: "",
-  autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
-  autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
   maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
-  autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
-  autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
   tokenBasedBilling: false,
-  compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
   toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
