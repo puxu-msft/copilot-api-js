@@ -13,7 +13,7 @@
 |---|---|---|
 | C0 golden 预捕获 | ✅ **已提交**（本会话 inline） | 4 条 byte golden，全量 4665 pass / 5 fail（base 不变）。见下 |
 | C1 骨架 | ✅ **已提交**（本会话 inline） | cell-assembly.ts + request-state.ts + env.requestState + 4 codec 穿线 + L1 守卫测试。全量 4669/5 fail。**未接线零行为变化**。见下 |
-| C2 AnthropicCellAssembly | ⬜ 待做（**最大 diff**） | /v1/messages 腿 4 route 全切 + 引入 driver hybrid fork + 删 reverse 供料/betaProbe/mapperHolder |
+| C2 AnthropicCellAssembly | ⬜ 待做（**最大 diff**） | /v1/messages 腿 4 route 全切 + 引入 driver hybrid fork + 删 reverse 供料/betaProbe/mapperHolder。**C2-prep 已提交**：3 direct 算法核（prepareAnthropicWire/anthropicPreSend/sampleAnthropicRequest）纯移动到 `codec/anthropic/anthropic-leg.ts`（字节等价，golden(a) 5/5，codec.ts -183/+6），供 codec 与未来 assembly 共用。剩 C2a（driver fork + assembly 接线）+ C2b（3 反向）|
 | C3 OpenAiCcCellAssembly | ⬜ | /chat 腿切 |
 | C4 OpenAiResponsesCellAssembly | ⬜ | /responses+ws 腿切 + R1 corner |
 | C5 InboundCodec 收敛 | ⬜ | 删 registry 死方法 + shim 退化 |
@@ -33,6 +33,7 @@
 - **review 分层决策**：C1 是未接线契约（typecheck 验证 + 测试绿 + 忠实转录已过两轮对抗 review 的 RFC §11.2/§11.3/§11.9），按 `tiered-review-by-risk` 把 C1 独立 review **并入 C2 后的批量 review**（契约 + 首个 live 消费者一起审，更能抓集成缺陷）。
 
 ## 执行期实测发现（对后续 commit 重要）
+- **base 有第 6 条间歇 flake（非确定性）**：`request payload logging > logs OpenAI payload diagnostics ...`（`tests/pipeline/request-payload.unit.test.ts:67`）在**全套件高负载**下偶发 `timed out after 5000ms`（该测试做重 token 估算 ~5-6s，贴近默认超时）；隔离 3/3 + heavy-context 3/3 + 部分全量跑均通过。**与本重构无关**（anthropic-leg 纯移动提取时首次撞见，多轮实测证伪归因）。后续全量跑见 fail=6 且第 6 条是它 → **忽略/重跑**，别当回归；理想 fix 是给该测试显式更大 timeout（未做，避免 scope creep）。
 - **reverse @messages 经 HTTP app 从没被字节测过**（无 `.http.test.ts` 用 `@messages`）。经 cc 路由时，`processOpenAIMessages` **无条件** `applyConfigToState()` 重载磁盘 config 并重应用 disabled_models 过滤（`src/lib/system-prompt/override.ts:132`）；而 `processAnthropicSystem` 无 system 时提前 return、不重载。**后果**：cc `@messages` 反向腿要求 model 挺过这次重载（否则 router 的 `supportsDirectAnthropicApi` 在 index 被清后返 vendor unknown → 400）。golden (b) 用 `claude-opus-4.8`（未被 bundled config disabled）。C2 不改 router/model-resolution 时序，此项**out of scope**，但记录以防误判。
 - 实测环境 `loadConfig()` 的 disabled_models 含用户真实模型（`gpt-4o`/`claude-sonnet-4-5` 等长列表，疑测试隔离对 config 文件不完全沙箱化）——但对所有既有测试一致、不阻塞；用 disabled 列表外的 `claude-opus-4.8` 规避。
 - **gpt-souls agent 底座当前不可用**：派 `gpt-souls:implementer` 报 `400 Model "gpt" does not support /v1/messages: vendor is unknown, not Anthropic`（proxy 把 gpt 路由到 /v1/messages 被拒——正是本重构要修的 bug 类）。C0 改为主会话 inline。C2-C4 计划用 Claude general-purpose 实现 + 独立 Claude reviewer 对抗（gpt 底座故障期替代）。

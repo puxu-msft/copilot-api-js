@@ -36,11 +36,6 @@ import type {
 import type { RequestContext } from "~/lib/context/request"
 import type {
   //
-  EffectiveRequest,
-  WireRequest,
-} from "~/lib/context/types"
-import type {
-  //
   EndpointType,
   PreprocessInfo,
 } from "~/lib/history/types"
@@ -64,7 +59,6 @@ import type {
   ClassifiedStreamError,
   ClientFrame,
   FormatCodec,
-  PreparedRequest,
   RawHttpRequest,
   RequestSample,
   ResponseAccumulator,
@@ -76,14 +70,7 @@ import type {
   MessagesPayload,
 } from "~/types/api/anthropic"
 
-import {
-  //
-  autoTruncateAnthropic,
-  countTotalTokens,
-} from "~/lib/anthropic/auto-truncate"
-import { calculateTokenLimit } from "~/lib/anthropic/auto-truncate/truncation"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
-import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
 import {
   //
   toSanitizationInfo,
@@ -91,16 +78,10 @@ import {
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
-import {
-  //
-  DEFAULT_AUTO_TRUNCATE_CONFIG,
-  factorAt,
-} from "~/lib/auto-truncate"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   captureInboundHeaders,
-  sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
 import {
   //
@@ -129,6 +110,12 @@ import {
   createOpenAiCcCodec,
   type OpenAiCcCodec,
 } from "../openai-cc/codec"
+import {
+  //
+  anthropicPreSend,
+  prepareAnthropicWire,
+  sampleAnthropicRequest,
+} from "./anthropic-leg"
 import { createAnthropicSanitizeRewrite } from "./request-rewrite-adapter"
 
 const CLIENT_FORMAT: ClientFormat = "anthropic"
@@ -498,170 +485,6 @@ function parseContentLength(header: string | null): number | undefined {
   if (header === null) return undefined
   const n = Number.parseInt(header, 10)
   return Number.isFinite(n) ? n : undefined
-}
-
-// ============================================================================
-// S4 — prepareWire
-// ============================================================================
-
-interface PrepareWireDeps {
-  betaProbe: BetaProbe
-  clientAnthropicBeta: string | undefined
-  /** Client's raw inbound headers (lowercased) for optional upstream passthrough. */
-  clientRequestHeaders: Record<string, string> | undefined
-  requestContext: RequestContext | undefined
-  /**
-   * Client's original `thinking.type` (fixed across retries — from the truncate
-   * baseline, NOT `env.body` which retries mutate). Recorded as the `requested`
-   * half of the merged `thinking` feature alongside the effective wire value.
-   */
-  requestedThinkingType: string | undefined
-}
-
-/**
- * S4 last-mile: env → wire via `prepareAnthropicRequest` (B1-B12 — wire payload +
- * reject/server-tool strip + coerce-thinking + clamp-effort + cache-control +
- * headers). Records the outbound betas on the probe (replacing the legacy adapter's
- * `onPrepared`) + surfaces the actual wire `thinking` shape as a feature.
- *
- * Idempotent (RFC §3): `prepareAnthropicRequest` deep-clones and does not write
- * back to `env.body`, so the same env → the same wire.
- */
-function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): PreparedRequest & { strippedCacheControlSubfields?: ReadonlyArray<string> } {
-  const model = env.model as Model | undefined
-  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
-    ...(model && { resolvedModel: model }),
-    ...(deps.clientAnthropicBeta !== undefined && { clientAnthropicBeta: deps.clientAnthropicBeta }),
-    ...(deps.clientRequestHeaders !== undefined && { clientRequestHeaders: deps.clientRequestHeaders }),
-    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
-    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
-    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
-    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
-    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
-    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
-  })
-
-  // Record the betas actually sent (sanitized headers — same value the legacy
-  // adapter's onPrepared received) so unsupported-beta can probe them.
-  deps.betaProbe.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
-
-  // Record `thinking` as a per-request terminal dimension: `effective` = the
-  // ACTUAL outbound wire shape (post coerceAdaptiveThinking), `requested` = the
-  // client's original type (fixed baseline, supplied by the codec). The console
-  // overwrites `effective` per attempt and renders requested→effective once, so
-  // a coercion stays visible even when a retry rewrites the body.
-  const wireThinking = prepared.wire.thinking as { type?: string } | undefined
-  if (wireThinking?.type && wireThinking.type !== "disabled") {
-    deps.requestContext?.recordFeature("thinking", {
-      ...(deps.requestedThinkingType !== undefined && { requested: deps.requestedThinkingType }),
-      effective: wireThinking.type,
-    })
-  }
-
-  // passthrough 剥掉 GHC 未支持的 cache_control 子字段（如 scope）——记 live TUI/WS 看板（cc-strip:<fields>）。
-  // 持久化（pipelineInfo.cacheControlStripped）经返回值上抛给闭包 prepareWire → getLatestStrippedCacheControlSubfields（spec §8 双通道）。
-  if (prepared.strippedCacheControlSubfields?.length) {
-    deps.requestContext?.recordFeature("cache-control-stripped", { fields: prepared.strippedCacheControlSubfields })
-  }
-
-  return {
-    url: ENDPOINT.MESSAGES,
-    headers: new Headers(prepared.headers),
-    body: prepared.wire,
-    stream: (prepared.wire.stream as boolean | undefined) ?? false,
-    ...(prepared.strippedCacheControlSubfields?.length && { strippedCacheControlSubfields: prepared.strippedCacheControlSubfields }),
-  }
-}
-
-// ============================================================================
-// S4 — preSend (main-path pre-flight truncation)
-// ============================================================================
-
-/**
- * First-attempt pre-send hook (size-aware calibration §7). When
- * `state.autoTruncatePreflight` is ON, predict the request's ANTHROPIC-caliber size
- * = `est * factorAt` (est is the gpt-tokenizer count) and, if it exceeds the model's
- * limit, pre-truncate BEFORE the initial send so the necessarily-doomed 400 →
- * reactive-retry round-trip is skipped. OFF (the default) → strict no-op.
- *
- * Caliber invariant: `countTotalTokens` / the truncation engine's internal counts are
- * gpt caliber, but `learned.tokenLimit` / the predicted size are anthropic caliber. So
- * the exceed test runs in anthropic caliber (`predicted` vs `limit`), while the target
- * handed to `autoTruncateAnthropic` MUST be converted back to gpt caliber
- * (`floor(limit / factor)`) — otherwise the (much larger) anthropic limit sits above
- * the gpt token count and the engine under-truncates ("everything fits").
- */
-async function anthropicPreSend(env: RequestEnvelope): Promise<RequestEnvelope> {
-  if (!state.autoTruncatePreflight) return env
-
-  // Pre-flight is an OPTIMIZATION (skip the necessarily-doomed 400 → reactive-retry
-  // round-trip), NOT a correctness gate: the reactive truncation strategy stays as
-  // the fallback (spec §7). So any error in the predict/truncate path must DEGRADE
-  // to "send unchanged" — never become a new hard-failure surface — while still
-  // being logged (not silently swallowed) so a systematic pre-flight fault is visible.
-  try {
-    const model = env.model
-    const body = env.body as MessagesPayload
-
-    const est = await countTotalTokens(body, model)
-    const factor = factorAt(model.id, est)
-    const predicted = Math.ceil(est * factor)
-    const limit = calculateTokenLimit(model, DEFAULT_AUTO_TRUNCATE_CONFIG)
-    // No resolvable limit (unlearned + no capability limit) or the prediction fits →
-    // let the request through unchanged; the reactive retry still catches a real 400.
-    if (limit === undefined || predicted <= limit) return env
-
-    const targetGpt = Math.floor(limit / factor)
-    const truncated = await autoTruncateAnthropic(body, model, { targetTokenLimit: targetGpt })
-    return truncated.wasTruncated ? env.with({ body: truncated.payload }) : env
-  } catch (err) {
-    consola.warn("[preflight] skipped due to error, falling back to reactive truncation:", err)
-    return env
-  }
-}
-
-// ============================================================================
-// S4 — sampleRequest (two-track observability)
-// ============================================================================
-
-interface SampleAnthropicResult {
-  requestSample: RequestSample
-  effectiveMessages: Array<unknown>
-}
-
-/**
- * S4 observability (P2.3-S): the two history tracks. Both are `anthropic-messages`
- * format (translateOut is identity, so env.body stays Anthropic-shaped):
- *   - `effective` = the post-rewrite logical request (`env.body`).
- *   - `wire` = the actual outbound bytes (`prepared.wire`, B1-B12 + sanitized headers).
- *
- * Captures the latest effective `messages` for the route to rebuild retry
- * message-mapping (RFC §12.4/§12.5). The §12.5 invariant
- * (`action.env.body === action.payload`) makes these the same objects the legacy
- * `recordRetryPipelineState` reads from `newPayload`.
- */
-function sampleAnthropicRequest(wire: PreparedRequest, env: RequestEnvelope): SampleAnthropicResult {
-  const effBody = env.body as MessagesPayload
-  const effectiveMessages: Array<unknown> = Array.isArray(effBody.messages) ? effBody.messages : []
-
-  const effective: EffectiveRequest = {
-    model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
-    messages: effectiveMessages,
-    payload: env.body,
-    format: ENDPOINT_TYPE,
-  }
-
-  const wireBody = wire.body as { model?: unknown; messages?: unknown }
-  const wireRequest: WireRequest = {
-    model: typeof wireBody.model === "string" ? wireBody.model : "",
-    messages: Array.isArray(wireBody.messages) ? wireBody.messages : [],
-    payload: wire.body,
-    headers: Object.fromEntries(wire.headers.entries()),
-    format: ENDPOINT_TYPE,
-  }
-
-  return { requestSample: { effective, wire: wireRequest }, effectiveMessages }
 }
 
 // ============================================================================
