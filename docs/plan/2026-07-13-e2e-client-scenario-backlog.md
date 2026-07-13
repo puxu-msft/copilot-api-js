@@ -1,7 +1,7 @@
 # client↔proxy e2e 场景 backlog 实现指南（交接）
 
 > **交接目的**：把 spec `2026-07-13-client-proxy-sdk-e2e-harness.md`「e2e 场景覆盖 roadmap」的未覆盖 backlog，变成新会话可**逐条直接执行**的配方。每条给：层 / config / 上游帧 pattern / 客户端可观测 oracle / harness 需求（现有 or 新扩展）/ gotcha / 建议变异。**先读 skill `client-proxy-e2e-testing`**（承重机制 + oracle 纪律），再挑一条实现。
-> **现状**：23 场景已覆盖（Tier1 SDK 21 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
+> **现状**：25 场景已覆盖（Tier1 SDK 23 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
 
 ## Kick-off prompt（复制给新会话）
 
@@ -62,10 +62,12 @@ Tier2 spawn 真 proxy 需 claude+github_token（gated），改 config 用不同 
 - 上游非流式 200 JSON **无 `stop_reason`** → proxy 记 fail 但**仍转发 partial body 200**（richest-data-flow）→ 客户端拿到残缺投影**非 500**。oracle 弱（有趣的 fail 在 history 侧、非客户端可观测）；若要测客户端侧，断言 `msg.stop_reason` 为 undefined + content 是 partial。**优先级低**（客户端行为不突出）。
 
 ### B13 HTTP-429 vs 200-error-429 CC 重试发散 — Tier1（SDK 类型）+ Tier2（CC 包装层）
+✅ **Tier1 半已覆盖（2026-07-13）**：HTTP-429 → SDK `RateLimitError`（`.status===429`，独立类，非裸 APIError）；对照已有 HTTP-400→BadRequestError 与 200+SSE-error 无类型（`.status===undefined`）。变异 429→400 → RateLimitError 断言精准红。**Tier2 CC 重试次数发散（HTTP-429 持续重试 ≥7× vs 200-error-429 一次即弃）仍待真 CC。**
 - **Tier1**：HTTP-429 → SDK 得 `RateLimitError`（`.status===429`）；200+流内 error-429 → 无类型 `APIError`（`.status===undefined`）。已做 HTTP-400 类型化那条，此为 429 变体 + 对照。
 - **Tier2**：HTTP-429 → CC 持续重试 ≥7×（`callCount` 大）；200-error-429 → 一次即弃（`callCount===1`）。需 Tier2 真 CC。来源 `debugging-claude-client-connection` skill「零重试」节。
 
 ### B17 三类中止（client-abort/reaper/header-timeout）区分 — Tier1（client-abort）+ history
+✅ **client-abort 半已覆盖（2026-07-13）**：Tier1 pre-aborted `AbortController.signal` 经 `stream(body, { signal })` → SDK 抛 `APIUserAbortError`（客户端侧 cancel，独立于任何 server APIError）；带正样本对照（无 abort 同上游正常拼装）。变异中和 `.abort()` → reject 断言精准红。**reaper/header-timeout 需真计时 + 查 history state（600 vs 300s）仍待 Tier2。**
 - **client-abort（Tier1 可做）**：`stream(..., {signal})` 中途 `controller.abort()` → SDK 抛 `APIUserAbortError`（`@anthropic-ai/sdk` 导出）。
 - reaper/header-timeout 需真计时 + 查 history state（600 vs 300s），heavy；来源 `debugging-claude-client-connection` skill「事后判别」表。
 

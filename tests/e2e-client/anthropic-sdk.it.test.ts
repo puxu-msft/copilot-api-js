@@ -11,7 +11,12 @@
  * no-retry oracle.
  */
 
-import Anthropic, { APIError } from "@anthropic-ai/sdk"
+import Anthropic, {
+  //
+  APIError,
+  APIUserAbortError,
+  RateLimitError,
+} from "@anthropic-ai/sdk"
 import {
   //
   afterAll,
@@ -247,6 +252,25 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     await expect(run).rejects.toBeInstanceOf(APIError)
   })
 
+  test("client abort: aborting the request signal → SDK throws APIUserAbortError (distinct from a server error)", async () => {
+    const up = scriptedUpstream(() => createSseResponse(happyTurn("would-be answer")))
+    setUpstreamFetchForTests(up.handler)
+
+    // Positive control: WITHOUT abort, the same upstream assembles a coherent turn (proves the harness
+    // drives the SDK + the abort — not a broken fixture — is what causes the throw below).
+    const ok = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    expect((ok.content[0] as { text?: string })?.text).toBe("would-be answer")
+
+    // Now: a pre-aborted signal makes the SDK reject with APIUserAbortError — a CLIENT-side cancel,
+    // a distinct class from any server APIError (the SDK never surfaces a server response at all).
+    const controller = new AbortController()
+    controller.abort()
+    const run = client.messages
+      .stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }, { signal: controller.signal })
+      .finalMessage()
+    await expect(run).rejects.toBeInstanceOf(APIUserAbortError)
+  })
+
   // ── eventless frame dropped by the SDK SSEDecoder ─────────────────────────
 
   test("eventless frame: SDK drops a data-only (no `event:` line) content_block_start → block missing", async () => {
@@ -412,6 +436,21 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     const err = await run.then(() => undefined).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(APIError)
     expect((err as { status?: number }).status).toBe(400) // typed HTTP path sets .status (unlike in-stream error)
+  })
+
+  test("HTTP-429 upstream → SDK throws a TYPED RateLimitError with .status===429 (contrast: 200+SSE-error is untyped)", async () => {
+    // The 429 variant of the typed-vs-untyped contrast. An HTTP-response 429 gives the SDK a TYPED
+    // subclass (RateLimitError, a distinct class from BadRequestError) with a real `.status===429` —
+    // whereas a 200 + in-stream `event: error` yields an untyped APIError with `.status===undefined`
+    // (asserted above). This is why CC's retry policy diverges on the two 429 forms (Tier2 territory):
+    // the typed HTTP-429 is a first-class rate-limit signal, the in-stream one isn't.
+    const up = scriptedUpstream(() => httpErrorResponse(429, { type: "rate_limit_error", message: "rate limited (e2e)" }))
+    setUpstreamFetchForTests(up.handler)
+
+    const run = client.messages.create({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] })
+    const err = await run.then(() => undefined).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RateLimitError) // typed subclass, NOT a bare APIError
+    expect((err as { status?: number }).status).toBe(429)
   })
 
   // ── reactive retry leg: proxy retries internally, transparent to the client ──
