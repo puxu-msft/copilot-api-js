@@ -18,7 +18,7 @@ import {
 } from "../../auto-truncate"
 import { processToolBlocks } from "../sanitize"
 import { shouldPreserveThinkingBlocks } from "../thinking-protection"
-import { ensureAnthropicStartsWithUser } from "./tool-utils"
+import { ensureAnthropicStartsWithUser } from "../message-tool-utils"
 
 /**
  * Strip thinking/redacted_thinking blocks from old assistant messages.

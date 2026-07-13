@@ -35,8 +35,8 @@ import {
   countPerMessageTokens,
   countSystemTokens,
   countTotalTokens,
-} from "./auto-truncate/token-counting"
-import { isLegalLeadingUserMessage } from "./auto-truncate/tool-utils"
+} from "./token-counting"
+import { isLegalLeadingUserMessage } from "./message-tool-utils"
 import {
   //
   addCompressionNotice,
@@ -460,11 +460,11 @@ export {
   countSystemTokens,
   countTotalInputTokens,
   countTotalTokens,
-} from "./auto-truncate/token-counting"
+} from "./token-counting"
 export {
   ensureAnthropicStartsWithUser,
   filterAnthropicOrphanedToolResults,
   filterAnthropicOrphanedToolUse,
   getAnthropicToolResultIds,
   getAnthropicToolUseIds,
-} from "./auto-truncate/tool-utils"
+} from "./message-tool-utils"

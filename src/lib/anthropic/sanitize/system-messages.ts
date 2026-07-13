@@ -20,7 +20,7 @@ import type {
   MessagesPayload,
 } from "~/types/api/anthropic"
 
-import { ensureAnthropicStartsWithUser } from "../auto-truncate/tool-utils"
+import { ensureAnthropicStartsWithUser } from "../message-tool-utils"
 import { shouldPreserveThinkingBlocks } from "../thinking-protection"
 
 export type SystemMessagesSanitizeMode = false | "drop_invalid" | "merge" | "as_user" | "as_assistant"

@@ -13,7 +13,7 @@ import { join } from "node:path"
 import type { HistoryEntry } from "~/lib/history/types"
 import type { Model } from "~/lib/models/client"
 
-import { countTotalTokens } from "~/lib/anthropic/auto-truncate"
+import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
 import {
   //
   bucketIndexFor,
@@ -46,7 +46,7 @@ import { insertCompletedEntry } from "~/lib/history/sqlite/write"
 import { setStateForTests } from "~/lib/state"
 
 // A minimal, UNSEEDED model (not in DEFAULT_FACTOR_SEED) — no `capabilities`, so
-// countTotalTokens uses the default o200k_base tokenizer. Unseeded keeps the
+// countTotalInputTokens uses the default o200k_base tokenizer. Unseeded keeps the
 // per-bucket oracle pure: backfill is the ONLY writer of these buckets.
 const MODEL_ID = "claude-cal-backfill-test"
 const TEST_MODEL: Model = {
@@ -117,7 +117,7 @@ describe("calibration backfill", () => {
     const db = getDatabase()
 
     // Three entries with distinct body sizes + factors. Compute each est via the
-    // SAME countTotalTokens the backfill uses, then set real = round(est*factor).
+    // SAME countTotalInputTokens the backfill uses, then set real = round(est*factor).
     const specs = [
       { id: "e1", chars: 240_000, factor: 1.4 },
       { id: "e2", chars: 240_000, factor: 1.6 },
@@ -128,7 +128,7 @@ describe("calibration backfill", () => {
     let startedAt = 1000
     for (const s of specs) {
       const body = bodyOfChars(s.chars)
-      const est = await countTotalTokens(body as never, TEST_MODEL)
+      const est = await countTotalInputTokens(body as never, TEST_MODEL)
       const real = Math.round(est * s.factor)
       const bucket = bucketIndexFor(est)
       const agg = expected.get(bucket) ?? { sumReal: 0, sumEst: 0, count: 0 }
@@ -160,7 +160,7 @@ describe("calibration backfill", () => {
   test("does NOT bump liveSampleCount (backfill is synthetic, not live)", async () => {
     const db = getDatabase()
     const body = bodyOfChars(240_000)
-    const est = await countTotalTokens(body as never, TEST_MODEL)
+    const est = await countTotalInputTokens(body as never, TEST_MODEL)
     await insertCompletedEntry(calEntry("live1", 1000, { body, usage: { input_tokens: Math.round(est * 1.5), output_tokens: 1 }, withUpstreamRequest: true }))
     await runCalibrationBackfill(db)
     expect(getLearnedLimits(MODEL_ID)?.liveSampleCount).toBe(0)
@@ -171,10 +171,10 @@ describe("calibration backfill", () => {
     // A valid (large) entry populates its bucket; a legacy (small) entry with NO
     // upstreamRequest leg must be skipped, leaving ITS bucket empty.
     const validBody = bodyOfChars(240_000)
-    const validEst = await countTotalTokens(validBody as never, TEST_MODEL)
+    const validEst = await countTotalInputTokens(validBody as never, TEST_MODEL)
     const validBucket = bucketIndexFor(validEst)
     const legacyBody = bodyOfChars(40_000)
-    const legacyEst = await countTotalTokens(legacyBody as never, TEST_MODEL)
+    const legacyEst = await countTotalInputTokens(legacyBody as never, TEST_MODEL)
     const legacyBucket = bucketIndexFor(legacyEst)
     expect(legacyBucket).not.toBe(validBucket) // distinct buckets so the assertion is meaningful
 
@@ -218,7 +218,7 @@ describe("calibration backfill", () => {
     // The first 100 rows carry factor F1, the tail 50 carry F2 (F1 ≠ F2) so a
     // double-count of the first batch skews Σreal/Σest, not just the sample count.
     const body = bodyOfChars(240_000)
-    const est = await countTotalTokens(body as never, TEST_MODEL)
+    const est = await countTotalInputTokens(body as never, TEST_MODEL)
     const bucket = bucketIndexFor(est)
     const F1 = 1.4
     const F2 = 1.9
@@ -284,7 +284,7 @@ describe("calibration backfill", () => {
     // of the restored accumulator → double count (C1). The fix funnels a legacy
     // cursor into the SAME clean full reset as a corrupt one: ts=0 + EMPTY accum.
     const body = bodyOfChars(240_000)
-    const est = await countTotalTokens(body as never, TEST_MODEL)
+    const est = await countTotalInputTokens(body as never, TEST_MODEL)
     const bucket = bucketIndexFor(est)
     const N = 30
     const SHARED_TS = 5000

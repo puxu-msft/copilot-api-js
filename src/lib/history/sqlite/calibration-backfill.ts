@@ -50,7 +50,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { countTotalInputTokens } from "~/lib/anthropic/auto-truncate"
+import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
 import {
   //
   applyBackfillBuckets,

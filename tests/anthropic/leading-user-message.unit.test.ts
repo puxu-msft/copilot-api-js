@@ -21,7 +21,7 @@ import {
   //
   ensureAnthropicStartsWithUser,
   isLegalLeadingUserMessage,
-} from "~/lib/anthropic/auto-truncate/tool-utils"
+} from "~/lib/anthropic/message-tool-utils"
 import { cleanupMessages } from "~/lib/anthropic/auto-truncate/truncation"
 
 // Block builders
