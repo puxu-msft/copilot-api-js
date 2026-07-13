@@ -26,6 +26,7 @@ import {
   setNegotiationConfig,
   setResponsesConfig,
   setShutdownConfig,
+  setReactiveRetryConfig,
   setTimeoutConfig,
   setTimeoutOverridesConfig,
   state,
@@ -736,10 +737,14 @@ export async function applyConfigToState(): Promise<Config> {
       if (!wasEnabled && a.enabled) void loadPersistedLimits()
     }
     if (a.target_factor !== undefined) setAutoTruncateConfig({ autoTruncateTargetFactor: a.target_factor })
-    if (a.max_retries !== undefined) setAutoTruncateConfig({ maxReactiveRetries: a.max_retries })
     if (a.compress_threshold !== undefined) setAutoTruncateConfig({ autoTruncateCompressThreshold: a.compress_threshold })
     if (a.preflight !== undefined) setAutoTruncateConfig({ autoTruncatePreflight: a.preflight })
     if (a.compress_tool_results !== undefined) setAnthropicBehavior({ compressToolResultsBeforeTruncate: a.compress_tool_results })
+  }
+
+  // Shared reactive-retry budget (was auto_truncate.max_retries).
+  if (config.retry?.max_reactive_retries !== undefined) {
+    setReactiveRetryConfig({ maxReactiveRetries: config.retry.max_reactive_retries })
   }
 
   // Tool-name sanitization (cross-protocol top-level toggle; scalar override)

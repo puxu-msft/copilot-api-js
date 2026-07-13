@@ -687,14 +687,19 @@ export const AutoTruncateConfigSchema = z
     enabled: nullableBoolean(),
     /** Truncation target as a fraction of the upstream-reported limit (target = limit × factor). (0, 1]; smaller = safer/more removed, larger = leaner. Default 0.9. */
     target_factor: nullableUnitFloat(),
-    /** Max reactive auto-truncate retries per request. 0 = a single attempt, no retry. Default 5. */
-    max_retries: nullableNonnegativeInt(),
     /** Compress old tool_result content before truncating messages. Default true. (Was top-level `compress_tool_results_before_truncate`.) */
     compress_tool_results: nullableBoolean(),
     /** Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress everything. Default 10000. */
     compress_threshold: nullableNonnegativeInt(),
     /** Main-path pre-flight truncation: before sending, use the learned size-aware calibration factor to predict whether the request will exceed the model's token limit and pre-truncate it, saving a guaranteed-to-fail 400 round-trip. Reactive truncation (on upstream limit errors) remains the fallback. Opt-in; default false. */
     preflight: nullableBoolean(),
+  })
+  .strict()
+
+export const RetryConfigSchema = z
+  .object({
+    /** Shared per-request cap on ALL reactive retry strategies (network / server-error / token-refresh / 400-class negotiation etc.). 0 = a single attempt, no retry. Default 5. Was `auto_truncate.max_retries`. */
+    max_reactive_retries: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -865,6 +870,12 @@ export const ConfigSchema = z
      */
     auto_truncate: nullableSection(AutoTruncateConfigSchema),
     /**
+     * Reactive-retry budget shared by ALL retry strategies (400-class negotiation,
+     * network, server-error, token-refresh, …). Was `auto_truncate.max_retries`,
+     * hoisted out because it never was truncation-specific.
+     */
+    retry: nullableSection(RetryConfigSchema),
+    /**
      * Sanitize tool names that violate the target model's constraints (illegal
      * characters like dots, over-length, collisions) into legal names before
      * sending upstream, restoring the client's original names in the response.
@@ -952,4 +963,5 @@ export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 /** Config-file shape of the `auto_truncate` section (distinct from the engine's runtime `AutoTruncateConfig`). */
 export type AutoTruncateConfigSection = z.infer<typeof AutoTruncateConfigSchema>
+export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
 export type Config = z.infer<typeof ConfigSchema>

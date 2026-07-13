@@ -1322,9 +1322,14 @@ export function setNegotiationConfig(patch: Partial<Pick<MutableState, "negotiat
   updateState(patch)
 }
 
+/** Set the shared reactive-retry budget (`retry.max_reactive_retries`). Hot-reloadable. */
+export function setReactiveRetryConfig(patch: Partial<Pick<MutableState, "maxReactiveRetries">>): void {
+  updateState(patch)
+}
+
 export function setAutoTruncateConfig(
   patch: Partial<
-    Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "maxReactiveRetries" | "autoTruncateCompressThreshold" | "autoTruncatePreflight">
+    Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateCompressThreshold" | "autoTruncatePreflight">
   >,
 ): void {
   updateState(patch)
@@ -1686,15 +1691,16 @@ export function resetConfigManagedState(): void {
     maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
   })
   // auto-truncate is a top-level toggle (CLI flag + config.yaml `auto_truncate.enabled`)
-  // plus tuning fields (target_factor / max_retries / compress_threshold / preflight),
+  // plus tuning fields (target_factor / compress_threshold / preflight),
   // all reset via setAutoTruncateConfig.
   setAutoTruncateConfig({
     autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
     autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
-    maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
     autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
     autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
   })
+  // Shared reactive-retry budget (was auto_truncate.max_retries).
+  setReactiveRetryConfig({ maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries })
 }
 
 const mutableState: MutableState = {

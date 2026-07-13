@@ -83,6 +83,12 @@ describe("config compat — legacy key migration (file load)", () => {
     expect((result as Record<string, unknown>).compress_tool_results_before_truncate).toBeUndefined()
   })
 
+  test("auto_truncate.max_retries → retry.max_reactive_retries", () => {
+    const result = validateConfig({ auto_truncate: { max_retries: 8 } })
+    expect(result.retry?.max_reactive_retries).toBe(8)
+    expect((result.auto_truncate as Record<string, unknown> | undefined)?.max_retries).toBeUndefined()
+  })
+
   test("compress migrates in while a sibling auto_truncate field is preserved", () => {
     const result = validateConfig({
       compress_tool_results_before_truncate: true,

@@ -254,7 +254,7 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
   },
   {
-    configKey: "auto_truncate.max_retries",
+    configKey: "retry.max_reactive_retries",
     stateKey: "maxReactiveRetries",
     sampleYamlValue: "7",
     expectedStateValue: 7,

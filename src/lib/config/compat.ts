@@ -292,6 +292,8 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("stale_request_max_age", "timeouts.stale_request_max_age"),
   // compress toggle joins its threshold under auto_truncate
   renameLeaf("compress_tool_results_before_truncate", "auto_truncate.compress_tool_results"),
+  // max_retries was never truncation-specific — hoist to the shared retry budget section.
+  renameLeaf("auto_truncate.max_retries", "retry.max_reactive_retries"),
   // stream_keepalive_mode "content_delta" → "empty_text": the keepalive reset is now
   // unconditional (no pre-response gating that once distinguished a content-delta emit
   // from an empty-text emit), so the two collapse into the timeout-safe empty_text frame.
