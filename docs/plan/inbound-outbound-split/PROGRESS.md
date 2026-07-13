@@ -2,6 +2,8 @@
 
 > durable 进度账本（抗 compaction / 跨会话）。权威设计见 [RFC §0.1+§11+§11.9](../../rfc/2026-07-13-inbound-codec-outbound-leg-split.md)，锚点见 [plan.md](plan.md)，per-commit prompt 见 [prompts/](prompts/)。
 
+> 🔴 **合并阻塞（2026-07-13，接手先读）**：C0-C6 主体已完成（分支 `feat/inbound-outbound-split` @ `9388ddb1`，全 12 出站 cell 走单一 CellAssembly、字节等价、reviewed、base 5），**但 master 已 landed 并发会话的「移除 auto-truncate」项目，与本重构的策略半根本不兼容**（R1 corner 字面就是 auto-truncate ON/OFF）。机械合并弥合不了，需在 post-auto-truncate master 上重设计策略半。**入口 = [RECONCILE-auto-truncate-removal.md](RECONCILE-auto-truncate-removal.md)**（不兼容根因 + 存活面 vs 重设计面 + master 新策略架构 + 逐区域 reconcile 步骤 + 已知机械冲突解法）。用户裁决：不合并、开新会话重设计。
+
 隔离 worktree：`.worktrees/inbound-outbound-split`，分支 `feat/inbound-outbound-split`（从 master `e9f6ce8a` 切出）。
 
 > **会话收尾（C0-C2 完成，交接新会话做 C3-C6）**：C0-C2 全提交、字节等价、全量 base 5；剩余锚点见 [prompts/C3-C6.md](prompts/C3-C6.md)。
