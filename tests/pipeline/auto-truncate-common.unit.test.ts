@@ -42,7 +42,7 @@ describe("auto-truncate constants", () => {
   // so they can't silently drift apart.
   test("CONFIG_MANAGED_DEFAULTS mirror the engine auto-truncate constants", () => {
     expect(CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor).toBe(AUTO_TRUNCATE_RETRY_FACTOR)
-    expect(CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries).toBe(MAX_AUTO_TRUNCATE_RETRIES)
+    expect(CONFIG_MANAGED_DEFAULTS.maxReactiveRetries).toBe(MAX_AUTO_TRUNCATE_RETRIES)
     expect(CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold).toBe(LARGE_TOOL_RESULT_THRESHOLD)
   })
 })

@@ -736,7 +736,7 @@ export async function applyConfigToState(): Promise<Config> {
       if (!wasEnabled && a.enabled) void loadPersistedLimits()
     }
     if (a.target_factor !== undefined) setAutoTruncateConfig({ autoTruncateTargetFactor: a.target_factor })
-    if (a.max_retries !== undefined) setAutoTruncateConfig({ autoTruncateMaxRetries: a.max_retries })
+    if (a.max_retries !== undefined) setAutoTruncateConfig({ maxReactiveRetries: a.max_retries })
     if (a.compress_threshold !== undefined) setAutoTruncateConfig({ autoTruncateCompressThreshold: a.compress_threshold })
     if (a.preflight !== undefined) setAutoTruncateConfig({ autoTruncatePreflight: a.preflight })
     if (a.compress_tool_results !== undefined) setAnthropicBehavior({ compressToolResultsBeforeTruncate: a.compress_tool_results })

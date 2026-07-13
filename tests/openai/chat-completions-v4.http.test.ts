@@ -313,7 +313,7 @@ describe("CC v4 driver path", () => {
         }),
       ],
     })
-    setStateForTests({ copilotToken: "tok", verbose: true, autoTruncate: true, autoTruncateMaxRetries: 5 })
+    setStateForTests({ copilotToken: "tok", verbose: true, autoTruncate: true, maxReactiveRetries: 5 })
     truncate413Once = true
     const messages = Array.from({ length: 30 }, (_, i) => ({
       role: "user",

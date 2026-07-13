@@ -85,7 +85,7 @@ export interface AnthropicStrategiesDeps {
   resanitize: AnthropicSanitizeFn
   /** Resolved model (auto-truncate needs it; the others ignore it). */
   model: Model | undefined
-  /** Normal-retry budget (`state.autoTruncateMaxRetries`). */
+  /** Normal-retry budget (`state.maxReactiveRetries`). */
   maxRetries: number
   /** The shared per-request beta probe (also injected into the codec). */
   betaProbe: BetaProbe

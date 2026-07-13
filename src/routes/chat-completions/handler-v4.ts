@@ -170,7 +170,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
             originalPayload: env.body as MessagesPayload,
             resanitize: buildReverseResanitize(reverseMapperHolder),
             model: env.model as Model | undefined,
-            maxRetries: state.autoTruncateMaxRetries,
+            maxRetries: state.maxReactiveRetries,
             betaProbe: reverseBetaProbe,
           },
         })
@@ -180,11 +180,11 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
       return buildOpenAiCcStrategies({
         originalPayload: codec.getTruncateBaseline() ?? (env.body as ChatCompletionsPayload),
         model: env.model as Model | undefined,
-        maxRetries: state.autoTruncateMaxRetries,
+        maxRetries: state.maxReactiveRetries,
         label: viaResponses ? "Completions(→Responses)" : "Completions",
       })
     },
-    maxRetries: state.autoTruncateMaxRetries,
+    maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
     // Post-gate meta sink (C0-② / RFC §11.2): the auto-truncate strategy's
     // truncateResult, routed here only after the budget gate accepts the retry —

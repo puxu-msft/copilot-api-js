@@ -273,7 +273,7 @@ export function buildMessagesDriverStrategies(
         originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
         resanitize,
         model: env.model as Model | undefined,
-        maxRetries: state.autoTruncateMaxRetries,
+        maxRetries: state.maxReactiveRetries,
         betaProbe,
       },
     })
@@ -284,7 +284,7 @@ export function buildMessagesDriverStrategies(
     cc: {
       originalPayload: env.body as ChatCompletionsPayload,
       model: env.model as Model | undefined,
-      maxRetries: state.autoTruncateMaxRetries,
+      maxRetries: state.maxReactiveRetries,
       label: env.targetEndpoint === ENDPOINT.RESPONSES ? "Anthropic(→Responses)" : "Anthropic(→CC)",
     },
   })
@@ -327,7 +327,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // per-route array this replaced — so forwarded bytes are unchanged.
     responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => buildMessagesDriverStrategies(env, { codec, betaProbe }),
-    maxRetries: state.autoTruncateMaxRetries,
+    maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
     // Post-gate meta sink (C0-② / RFC §11.2 + §12.4): rebuild the retry pipeline-info
     // from the accepted retry's meta (sanitization / strippedBetas / probedBetas /

@@ -38,7 +38,7 @@ export interface OpenAiCcStrategiesDeps {
   originalPayload: ChatCompletionsPayload
   /** Resolved model (auto-truncate needs it; network/token-refresh ignore it). */
   model: Model | undefined
-  /** Normal-retry budget (`state.autoTruncateMaxRetries`). */
+  /** Normal-retry budget (`state.maxReactiveRetries`). */
   maxRetries: number
   /** Console label for the retry log lines (e.g. "Completions" / "Completions(→Responses)"). */
   label: string

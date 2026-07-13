@@ -255,10 +255,10 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
   },
   {
     configKey: "auto_truncate.max_retries",
-    stateKey: "autoTruncateMaxRetries",
+    stateKey: "maxReactiveRetries",
     sampleYamlValue: "7",
     expectedStateValue: 7,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
   },
   {
     configKey: "auto_truncate.compress_threshold",

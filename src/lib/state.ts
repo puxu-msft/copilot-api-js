@@ -145,8 +145,12 @@ export interface State {
    */
   readonly autoTruncateTargetFactor: number
 
-  /** Max reactive auto-truncate retries per request. Config `auto_truncate.max_retries`. */
-  readonly autoTruncateMaxRetries: number
+  /**
+   * Shared reactive-retry budget: the per-request cap on ALL reactive retry
+   * strategies (network / server-error / token-refresh / 400-class negotiation
+   * etc.), not truncation-specific. Config `retry.max_reactive_retries`.
+   */
+  readonly maxReactiveRetries: number
 
   /**
    * Character-length threshold (NOT tokens) above which a tool_result block is
@@ -1320,7 +1324,7 @@ export function setNegotiationConfig(patch: Partial<Pick<MutableState, "negotiat
 
 export function setAutoTruncateConfig(
   patch: Partial<
-    Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateMaxRetries" | "autoTruncateCompressThreshold" | "autoTruncatePreflight">
+    Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "maxReactiveRetries" | "autoTruncateCompressThreshold" | "autoTruncatePreflight">
   >,
 ): void {
   updateState(patch)
@@ -1486,7 +1490,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   // LARGE_TOOL_RESULT_THRESHOLD. Inlined (not imported) to avoid a state ↔ auto-truncate ↔
   // system-prompt import cycle; kept in sync by a guard in auto-truncate-common.unit.test.ts.
   autoTruncateTargetFactor: 0.9,
-  autoTruncateMaxRetries: 5,
+  maxReactiveRetries: 5,
   autoTruncateCompressThreshold: 10000,
   autoTruncatePreflight: false,
   compressToolResultsBeforeTruncate: true,
@@ -1687,7 +1691,7 @@ export function resetConfigManagedState(): void {
   setAutoTruncateConfig({
     autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
     autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
-    autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
+    maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
     autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
     autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
   })
@@ -1698,7 +1702,7 @@ const mutableState: MutableState = {
   ghcApiBaseUrl: "",
   autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
   autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
-  autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
+  maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
   autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
   autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
   tokenBasedBilling: false,
