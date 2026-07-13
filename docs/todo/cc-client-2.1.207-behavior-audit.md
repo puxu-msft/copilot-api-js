@@ -735,6 +735,33 @@ cache_control 处理**深度遍历 + 4 模式 + 断点上限 + scope 全剥**，
 
 ---
 
+## 轮次 20（2026-07-13）：tool 定义 / tool 名 sanitize —— CC 侧安全，非-CC 有 off-by-default 兜底缺口
+
+### 发现来源（CC 源码坐标）
+
+- CC 2.1.207 tool 名约束 = Anthropic `^[a-zA-Z0-9_-]{1,64}$`（`app.pretty.js:3888` 模式 + 36522「name must match」）。CC 对真 Anthropic first-party 运行 → **必发合法 tool 名**（否则 first-party 直接拒），MCP 工具 `mcp__server__tool` 由 CC 客户端侧收敛到该约束。
+- tool 定义 `input_schema`（191464）、`defer_loading`（69761，延迟加载工具）。
+
+### 本项目现状（读码）
+
+tool-name sanitize **机制完整**（[tool-name-sanitize.ts](../../src/lib/anthropic/sanitize/tool-name-sanitize.ts) + [tool-name-mapper.ts](../../src/lib/tool-name-mapper.ts)）：双向 mapper、per-model 规则（`getToolNameRulesForModel`）、超长 **truncate + sha1 hash 后缀**（72-79）、字符清洗、响应侧经 `RequestContext.toolNameMapper` 恢复；只碰 client-original custom 工具、不碰 server/stub。**但**：
+- **默认 OFF**（`sanitizeToolNames: false`，[state.ts:1456](../../src/lib/state.ts#L1456)）——需 config 显式开。
+- **无 tool-name 拒绝的反应式兜底**：策略目录里 `deferred-tool-retry` 处理的是「Tool reference 'X' not found」（延迟工具未加载），**不是** invalid-name 400；无「tool 名非法 → 开 sanitize 重试」的反应式腿。
+
+### F26（LOW，CC 侧无 gap + 非-CC 兜底缺口 + 硬化机会）
+
+**判断（读码）**：
+- **CC-facing：无 gap**。CC 对真 Anthropic 必发合法 tool 名 → 代理收到的已合法 → 默认 OFF 的 sanitizer 无事可做（`buildAnthropicToolNameMapper` 对合法名 `hasChanges=false` 返 null、短路）。CC 的 MCP/built-in 工具名不撞 GHC。
+- **非-CC / 翻译矩阵：off-by-default 兜底缺口**。OpenAI/Gemini 客户端可发 Anthropic 非法的 tool 名（含 `.`、或 >64 字符）→ 翻译矩阵译成 Anthropic tools → **默认 sanitize 关 + 无反应式兜底** → GHC 400、**无恢复**。mapper 明明能修（truncate+hash+反向），却默认不启用、也不 reactive 触发。
+- **硬化机会**：`buildAnthropicToolNameMapper` 对**已合法名 no-op**（hasChanges→null 短路）→ **默认 ON 对 CC 近零成本**（CC 名已合法），只对非法名激活。建议二选一：(a) **默认 ON**（低风险，因合法名短路）；(b) 加**反应式 tool-name-rejection 策略**（catch invalid-name 400 → 开 sanitize + 重试 + fixate，仿其他 reactive 腿）。
+- **待实测/确认**：sanitize 默认 OFF 是否有历史原因（反向映射边缘、或曾出问题）——翻转默认前须查决策史 / ADR，别贸然改（配置默认属用户可决策项，[[feedback-config-philosophy-separate-compat-and-warn-continue]]）。
+
+### 本轮结论
+
+tool 名 sanitize **对 CC 无 gap**（CC 必发合法名、默认 OFF 的 sanitizer 正确 no-op）。缺口在**非-CC/翻译矩阵**：sanitize off-by-default + 无反应式兜底 → 非法 tool 名撞 GHC 400 无恢复，而 mapper 本能修（F26，低）。因合法名 no-op，**默认 ON 是低风险硬化**，但翻默认前须查决策史。归主线 B/D 之外的「能力已具备但未默认启用」类。
+
+---
+
 ## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
