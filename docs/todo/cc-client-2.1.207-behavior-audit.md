@@ -70,9 +70,59 @@ CC 2.1.207 的流式查询循环在 `app.pretty.js`（行号为该文件内坐�
 
 ---
 
+## 轮次 2（2026-07-13）：请求体新增顶层字段（`speed` / `diagnostics`）
+
+### 发现来源（CC 源码坐标）
+
+CC 2.1.207 发往 `/v1/messages` 的请求体构造（单行，`app.pretty.js:297987`）比旧版多了几个顶层字段：
+
+```
+let wr = { model, messages, system, tools, tool_choice,
+           ...Y && (!$r || Gr.length>0) && { betas },
+           metadata, max_tokens, thinking,
+           ...temperature, ...context_management,   // 已被本项目妥善处理
+           ...output_config,                         // 已被本项目 partner-feature-strip 处理
+           ...q !== void 0 && { speed: q },          // ★ 新：q="fast"（fast 模式）
+           ...ee && d && Y && !$r ? { diagnostics: { previous_message_id } } : {} }  // ★ 新
+```
+
+- `speed: "fast"`：`q = "fast"`（297967 附近），CC **fast 模式**开启时发；**不受 `Y`（first-party/betas 门）门控** → 只要 fast 模式开就普遍可达代理。CC 内部 `speed==="fast"` 语义见 62138 / 139115。
+- `diagnostics: { previous_message_id }`：门控 `ee && d && Y && !$r`（会话诊断链，多轮时带上一条消息 id）。
+
+### 本项目现状（读码）
+
+- 全仓 `grep -niE '"speed"|\bspeed\b|previous_message_id|diagnostics'`（排除测试/无关词）在 anthropic/messages/pipeline **零命中**——本项目**完全不读** `speed` 也不读 `diagnostics`。fast 语义本项目只有无关的 `X-Initiator: agent/user` 头（[request-preparation.ts:435](../../src/lib/anthropic/request-preparation.ts#L435)），与 Anthropic 的 `speed` priority-tier **不是一回事**。
+- 请求体是**原地增删已知字段 + 透传未知字段**（`wire` 就地 mutate，`structuredClone` 只对已知键，[request-preparation.ts:568](../../src/lib/anthropic/request-preparation.ts#L568)）→ `speed`/`diagnostics` **原样转发到 GHC**。
+- 兜底：**已注册**通用顶层 body-field 剥离策略 `createBodyFieldRejectionStrategy`（[codec/anthropic/strategies.ts:64](../../src/lib/codec/anthropic/strategies.ts#L64)，实现 `context-management-retry.ts`），正则 `EXTRA_INPUTS_PATTERN = /(?<![.\w])([a-z_]\w*):\s*Extra inputs are not permitted/i` 匹配**任意顶层字段**。
+
+### F5（MEDIUM）— CC fast-mode 意图（`speed:"fast"`）被代理静默丢弃
+
+**判断（读码，部分待实测）**：`speed:"fast"` 转发到 GHC 后三种结局，**都导致 CC 的 fast 模式对代理无实效**：
+1. GHC 静默接受+忽略 → 请求成功，但没有任何 fast-tier 路由，意图丢失、无错。
+2. GHC 报 `speed: Extra inputs are not permitted`（标准顶层格式）→ body-field-rejection 策略剥掉 `speed`、重试成功、fixate → 意图丢失，但多一次**上游往返**（首请求必 400）。
+3. GHC 报**非标准/嵌套**消息（见 F6）→ 两个正则都不匹配 → **每条 fast-mode 请求硬 400**。
+
+无论哪种，本项目都**不在 history/telemetry 记录客户端曾请求 fast**（违 `richest-data-flow`：客户端能力信号未被最丰富地留存）。用户在 CC 里开 fast 模式，经代理后**行为不可观测、不被荣誉**。
+
+**理想方向（不在本轮做）**：(a) 实测 GHC 对 `speed:"fast"` 的真实反应；(b) 若 GHC 拒，仿 `eager_input_streaming` **proactive strip**（省往返）；(c) 记录客户端 `speed` 到 history 供诊断；(d) 若 GHC 有可对接的 fast/优先 tier，考虑**映射**而非丢弃（真正荣誉客户端意图）。需 brainstorming + GHC 能力探针（skill `ghc-api-reference`）。
+
+### F6（LOW）— 嵌套未知字段拒绝（`diagnostics.previous_message_id`）落在两个策略正则的**缝隙**
+
+**判断（读码）**：body-field-rejection 正则**只匹配顶层**（`(?<![.\w])` 前瞻锁死点/词前缀），tool-field 正则只匹配 `tools\.\d+\.`。若 GHC 把 `diagnostics` 拒成**嵌套路径** `diagnostics.previous_message_id: Extra inputs are not permitted`，则：**顶层正则被点号排除、tool 正则不匹配 → 无策略认领 → 落到 loud 400**（`context-management-retry.ts:36-40` 注释明确「嵌套 leaf 当 body field 剥是 no-op」）。
+
+缓解现状：GHC pydantic 对**整体未建模的顶层键**通常报顶层名（`diagnostics: Extra inputs`）→ 被顶层正则覆盖。**残余风险**仅在 GHC 报嵌套路径时成立。`diagnostics` 门控较窄（多轮 + `Y` + `!$r`），触达频率低于 `speed`。
+
+**待实测**：造带 `diagnostics:{previous_message_id}` 的请求打 GHC，看 400 消息是顶层 `diagnostics:` 还是嵌套 `diagnostics.previous_message_id:`。前者=已覆盖；后者=需给 body-field 正则加「顶层键的任意子路径归并到顶层键剥除」的能力（一般化，非只为 diagnostics）。
+
+### 本轮结论（避免误导）
+
+`speed`/`diagnostics` **不是「请求会崩」的高危项**——通用 body-field-rejection 策略对标准顶层 "Extra inputs" 400 已兜底。真实问题是 **F5 的功能意图丢失 + 不可观测**（中）与 **F6 的嵌套拒绝缝隙**（低、条件性）。两者都需先做 **GHC 能力探针**再定修复形状。
+
+---
+
 ## 后续轮次待覆盖的 CC-facing 面（TODO 清单，逐轮消化）
 
-- [ ] **请求形状漂移**：2.1.207 CC 发往 `/v1/messages` 的 `betas`/`anthropic-beta` 值、`metadata`、`tool_choice`、fine-grained tool streaming（`CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`，28304）——本项目 `request-preparation.ts` / `payload-rewrites.ts` 是否有未识别的新字段被吞或误拒。
+- [x] **请求形状漂移**（轮次 2）：`speed:"fast"`（F5）、`diagnostics.previous_message_id`（F6）已覆盖；`betas`/`metadata`/`tool_choice`/`output_config`/`context_management` 经查本项目已妥善处理（partner-feature-strip + request-preparation）。`eager_input_streaming`（fine-grained tool streaming）本项目已 proactive strip，无 gap。
 - [ ] **count_tokens**：CC 对 `/v1/messages/count_tokens` 的调用形状/频率 vs 本项目 `count-tokens.ts`。
 - [ ] **SDK SSEDecoder**：2.1.207 的 `@anthropic-ai/sdk` 版本是否改了 `event:` 行处理（本项目「合成帧必带 event 行」不变量的前提）。
 - [ ] **refusal / fallback_request**：CC 的 `stop_reason:"refusal"` → `fallback_request` 控制流（298057–298060）vs 本项目 `recover-refusal.ts`。
