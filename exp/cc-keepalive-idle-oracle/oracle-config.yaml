@@ -1,0 +1,54 @@
+# Isolated proxy config for the Chat Completions keepalive M-2 idle oracle (P3 Task 3).
+# Consumed by an INDEPENDENT copilot-api instance (e.g. :4143, XDG_DATA_HOME isolated),
+# NOT the live :4141. Only lists overrides vs the bundled config.yaml defaults; every other key
+# deep-merges from bundled (mergeBySchema, ZodObject field-by-field).
+#
+# ghc_api_base_url is HTTPS so the proxy routes the upstream through its production node:http2
+# client (transport/upstream-fetch.ts: https → http2Fetch) — which works under Bun. A plaintext
+# http:// mock forces the undici HTTP/1.1 path, which was EMPIRICALLY CONFIRMED (sibling harness,
+# exp/responses-keepalive-idle-oracle) to abort the upstream fetch almost immediately under Bun
+# instead of surviving the silence window (see mock-upstream.ts header + REPORT.md §排障). Also
+# passed via `--ghc-api-base-url` on the CLI (CLI > config); the proxy trusts the mock's
+# self-signed cert via NODE_EXTRA_CA_CERTS (see below).
+ghc_api_base_url: "https://localhost:8798"
+
+chat_completions:
+  # THE gate under test: enters the buffered path (`resolveCcBufferedAndHeartbeat` in
+  # src/routes/chat-completions/buffered-config.ts), which FORCES a keepalive chunk during the
+  # ENTIRE terminal-only buffered window (CC has no mid-stream block boundary — every silence in
+  # the generation, not just a pre-first-block one, is fully withheld from the client until
+  # `finish_reason`/an in-band `error` frame arrives). Currently opt-in (default false) — Task 4
+  # flips this default AFTER this M-2 oracle passes (R4).
+  buffered_retry: true
+
+# Client-proxy keepalive cadence (seconds) for streaming — shared knob also read by
+# `resolveCcBufferedAndHeartbeat` as the FORCED buffered-path heartbeat interval when > 0 (falls
+# back to `buffered_retry.heartbeat_sec` only when this is 0). 15 matches the shared
+# `buffered_retry.heartbeat_sec` built-in default and is comfortably under the ~300s undici
+# default body-idle wall a bare openai-node client hits (see oracle-client.mjs header).
+#
+#   armPing   (gate)    : leave this at 15 (default) → proxy emits the ccKeepaliveFrame() empty-
+#                         delta chunk every ~15s during the silence window.
+#   armSilent (control) : set this to 0 AND set chat_completions.buffered_retry to a map that
+#                         zeroes heartbeat_sec too, so NO heartbeat is forced — see the two
+#                         override blocks below (uncomment the one matching your arm; do not
+#                         apply both at once).
+anthropic:
+  stream_keepalive_ping_sec: 15
+
+# ---- armPing (gate) — DEFAULT ABOVE ALREADY MATCHES THIS ARM, no further edits needed. ----
+#
+# ---- armSilent (control) — uncomment BOTH of the following overrides, run, then re-comment ----
+# anthropic:
+#   stream_keepalive_ping_sec: 0
+# chat_completions:
+#   buffered_retry:
+#     enabled: true
+#     heartbeat_sec: 0      # forces heartbeatSec to 0 too (no fallback) — see buffered-config.ts
+
+timeouts:
+  # MUST exceed SILENCE_SEC (default 330 in mock-upstream.ts / run-proxy-arm.sh) — otherwise the
+  # PROXY itself aborts the upstream fetch before the mock's silence window elapses, which would
+  # be a proxy-config false negative, not evidence against (or for) the keepalive mechanism.
+  response_header: 900
+  stream_idle: 900

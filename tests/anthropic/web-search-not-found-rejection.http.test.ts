@@ -128,10 +128,6 @@ describe("POST /v1/messages — reactive web_search-not-found self-healing", () 
       accountType: "individual",
       vsCodeVersion: "1.100.0",
       responseHeaderTimeout: 0,
-      // Keep the PROACTIVE (global config) downgrade OFF so the first hop ships
-      // the native server_tool_use block — the reactive strategy must learn the
-      // per-model downgrade from the 400.
-      rewriteServerTools: false,
     })
     applyFetchMock(upstreamFetchMock)
     setModels({

@@ -350,6 +350,21 @@ export interface AnchorState {
 }
 
 /**
+ * The terminal resolution label of a buffered-retry generation — the single source of truth
+ * for this union, PRODUCED by the driver's buffered sink (emitted through {@link
+ * RunBufferedOpts.onBufferedResolve}) and CONSUMED by the vendor-keyed telemetry counter
+ * (`~/lib/anthropic/protect-streaming-stats` re-exports THIS type rather than redeclaring it, so
+ * the two never drift). Defined here in the format-agnostic pipeline layer — the producer — so the
+ * pipeline never has to import the anthropic telemetry module (which would invert the dependency).
+ *   - `"success"`:         committed a complete generation (retries > 0 = a save).
+ *   - `"exhausted"`:       all retries failed → surfaced as a stream error.
+ *   - `"retreated"`:       buffer cap exceeded → retreated to live forwarding.
+ *   - `"partial-degrade"`: block-level path only — a boundary block was already committed live,
+ *     then the stream truncated (un-retryable). A graceful degrade distinct from `exhausted`.
+ */
+export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "partial-degrade"
+
+/**
  * Options for `runResponseBufferedSink` (L2 — streaming upstream-RST buffered retry,
  * docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md). Extends {@link RunResponseOpts}
  * (the buffered drain still feeds `onUpstreamFrame` / applies `onRenderedFrame` per
@@ -415,12 +430,41 @@ export interface RunBufferedOpts extends RunResponseOpts {
   /**
    * Called exactly once at the buffered path's terminal resolution (NOT on a client-abort, which
    * is the client leaving, not a generation outcome) with the outcome label + the number of
-   * re-exchanges consumed (`retries`). Drives the L2 hit-rate telemetry (RFC §10):
-   *   - `"success"`:   committed a complete generation (retries > 0 = a save).
-   *   - `"exhausted"`: all retries failed → surfaced as a stream error.
-   *   - `"retreated"`: buffer cap exceeded → retreated to live forwarding.
+   * re-exchanges consumed (`retries`) + a `meta.vendor` label (injected by the driver from
+   * {@link telemetryVendor}, so the handler forwards it into the vendor-keyed telemetry without
+   * re-hardcoding it). Drives the L2 hit-rate telemetry (RFC §10):
+   *   - `"success"`:         committed a complete generation (retries > 0 = a save).
+   *   - `"exhausted"`:       all retries failed → surfaced as a stream error.
+   *   - `"retreated"`:       buffer cap exceeded → retreated to live forwarding.
+   *   - `"partial-degrade"`: block-level path only — a boundary block was already committed live,
+   *     then the stream truncated (un-retryable, the committed prefix is on the wire). A graceful
+   *     degrade distinct from `exhausted` (which committed nothing). Never emitted on the
+   *     terminal-only path ({@link commitBoundaries} undefined) — `committedAny` stays false there.
    */
-  onBufferedResolve?: (outcome: "success" | "exhausted" | "retreated", retries: number) => void
+  onBufferedResolve?: (outcome: ProtectStreamingOutcome, retries: number, meta: { vendor: string }) => void
+  /**
+   * Block-commit boundary predicate (P0 mechanism floor). When PROVIDED, the buffered sink flushes
+   * (commits live) the buffered frames up to and including every frame this returns `true` for,
+   * inverting the commit point from "once at the terminal drain" to "at each block boundary". Once
+   * a boundary block is committed the retry window closes (`committedAny` → the retry gate tightens
+   * to `!committedAny && !retreated`), and a subsequent truncation degrades to `partial-degrade`
+   * instead of retrying (the committed prefix is un-retryable — already on the wire).
+   *
+   * UNDEFINED (default) = terminal-only = the legacy whole-response buffered behaviour, byte-for-byte:
+   * `committedAny` stays false, the block-commit branch is skipped, and the buffer commits exactly
+   * once at the terminal drain (`sawMessageStop` / `sawUpstreamError`). This is the R1 landing gate —
+   * an undefined predicate MUST reproduce the whole-response path verbatim (anchor/retreat/terminal
+   * commit paths all unchanged).
+   */
+  commitBoundaries?: (frame: ClientFrame) => boolean
+  /**
+   * Vendor label the driver injects into {@link onBufferedResolve}'s `meta.vendor` (e.g.
+   * `"anthropic"` / `"responses"` / `"chat_completions"` / `"responses_ws"`). Lets the handlers
+   * forward one vendor-keyed telemetry sink without each re-hardcoding its own vendor string
+   * (frozen contract — the driver owns the injection point). Omitted → `meta.vendor` falls back to
+   * `"unknown"`.
+   */
+  telemetryVendor?: string
   /**
    * Per-retry env transform applied BEFORE each re-exchange (L2 escalation, RFC §8). Returns a new
    * env (e.g. with `prepareHints.contextEscalation` set to progressively tighter context_management)
@@ -502,6 +546,22 @@ export interface ClientSink {
    * timer at all (WS/array).
    */
   freezeHeartbeat?(): void
+  /**
+   * Suspend the heartbeat's tick injection WITHOUT clearing the timer — the RECOVERABLE counterpart of
+   * {@link freezeHeartbeat} (spec 2026-07-11-block-level-buffered-retry §4.4). The block-level buffered
+   * commit brackets each boundary block's `for (frame of block) await sink.write(frame)` loop with
+   * `suspendHeartbeat()` … `resumeHeartbeat()`, so a timer firing mid-flush can't splice an empty keepalive
+   * delta into the middle of a real block's deltas — while the INTER-block idle still gets keepalives
+   * (freezeHeartbeat would kill them permanently after the first block). Idempotent; a no-op on sinks whose
+   * heartbeat is off. Omitted by sinks with no heartbeat timer at all (WS/array).
+   */
+  suspendHeartbeat?(): void
+  /**
+   * Resume a {@link suspendHeartbeat}-suspended heartbeat, re-arming a FRESH interval counted from the
+   * resume (§4.4). A no-op when not currently suspended (the single live timer is untouched) or on a closed
+   * sink (never resurrects a timer). Omitted by sinks with no heartbeat timer (WS/array).
+   */
+  resumeHeartbeat?(): void
   /**
    * Release sink-held resources (the heartbeat timer). The driver's
    * `runResponseSink` `finally` MUST call this on every exit (normal / throw /
@@ -637,13 +697,9 @@ export interface FormatCodec {
   /**
    * S4 first-attempt only: an async pre-send hook the driver awaits ONCE before the
    * first `prepareWire`, so a codec can rewrite env.body ahead of the initial send
-   * (returns the same env unchanged when it declines). The main-path pre-flight
-   * truncation lives here: the Anthropic codec predicts the request's calibrated
-   * size (est * learned factor) and, when it exceeds the model's limit, pre-truncates
-   * BEFORE sending — skipping the necessarily-doomed 400 round-trip that the reactive
-   * retry would otherwise take (size-aware calibration §7). Optional — codecs omit it
-   * (no-op). Gated per-implementation (`state.autoTruncatePreflight`, default OFF);
-   * the driver runs it unconditionally when present and lets the codec decide.
+   * (returns the same env unchanged when it declines). Optional — codecs omit it
+   * (no-op); the driver runs it unconditionally when present and lets the codec
+   * decide. A general extension seam (no codec currently implements it).
    */
   preSend?(env: RequestEnvelope): Promise<RequestEnvelope>
 

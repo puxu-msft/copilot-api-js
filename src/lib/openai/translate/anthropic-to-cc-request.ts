@@ -52,7 +52,7 @@ import type {
   ToolCall,
 } from "~/types/api/openai-chat-completions"
 
-import { isServerToolType } from "~/lib/anthropic/message-tools"
+import { isApiDefinedToolType } from "~/lib/anthropic/message-tools"
 import { budgetToEffort } from "~/lib/anthropic/thinking-coercion"
 
 /** Options for {@link translateAnthropicToChatCompletions}. */
@@ -301,7 +301,7 @@ function imageBlockToContentPart(block: ImageBlockParam): ContentPart {
 function translateTools(tools: Array<AnthropicTool>): Array<CCTool> {
   const out: Array<CCTool> = []
   for (const tool of tools) {
-    if (isServerToolType(tool.type)) {
+    if (isApiDefinedToolType(tool.type)) {
       consola.warn(`[Anthropic→CC] dropping native server tool "${tool.name}" (type: ${tool.type}) — unsupported on the CC leg`)
       continue
     }

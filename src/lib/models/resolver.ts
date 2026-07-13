@@ -1,9 +1,11 @@
 /**
  * Unified model name resolution and normalization.
  *
- * Handles short aliases (opus/sonnet/haiku), versioned names with date suffixes,
- * hyphenated versions (claude-opus-4-6 → claude-opus-4.6), model overrides,
- * and family-level fallbacks.
+ * Handles short aliases (opus/sonnet/haiku) — resolved ONLY via `model_overrides`,
+ * no built-in family fallback — plus catalog-driven spelling canonicalization
+ * (claude-opus-4-6 → claude-opus-4.6, data-driven off `/models`) and override
+ * chains. Date suffixes are NOT auto-stripped — mapping a dated snapshot name to a
+ * canonical id is a config-driven `model_overrides` decision.
  */
 
 import consola from "consola"
@@ -16,7 +18,6 @@ import {
   extractModifierSuffix,
   type RouteOverride,
   stripRouteSuffix,
-  VERSIONED_RE,
 } from "./normalize-id"
 
 // Re-exported so existing importers keep using `~/lib/models/resolver`.
@@ -47,9 +48,6 @@ export interface ToolNameRules {
 // ============================================================================
 // Normalization and Detection
 // ============================================================================
-
-/** Pre-compiled regex: claude-{family}-{major}-YYYYMMDD (date-only suffix) */
-const DATE_ONLY_RE = /^(claude-(?:opus|sonnet|haiku)-\d+)-\d{8,}$/
 
 /**
  * True when two model names refer to the SAME model written differently —
@@ -297,9 +295,13 @@ function resolveOverrideTarget(source: string, target: string, seen?: Set<string
  *
  * Handles:
  * 1. Modifier suffixes: "claude-opus-4-6-fast" → "claude-opus-4.6-fast"
- * 2. Short aliases: "opus" → best available opus
- * 3. Hyphenated versions: "claude-opus-4-6" → "claude-opus-4.6"
- * 4. Date suffixes: "claude-opus-4-20250514" → best opus
+ * 2. Short aliases ("opus"): resolved ONLY via model_overrides (this function has
+ *    no built-in family fallback — a bare alias with no override is returned as-is).
+ * 3. Spelling canonicalization via the live catalog: "claude-opus-4-6" →
+ *    "claude-opus-4.6" (data-driven off `/models`, not a hard-coded regex).
+ *
+ * Date suffixes are NOT stripped: "claude-opus-4-6-20250514" has no catalog twin
+ * and is returned as-is (only a matching `model_overrides` entry can remap it).
  */
 function resolveModelNameCore(model: string): string {
   // Extract modifier suffix (e.g., "-fast") before resolution
@@ -321,31 +323,49 @@ function resolveModelNameCore(model: string): string {
   return resolvedBase
 }
 
+/**
+ * Canonicalize a model name by spelling-insensitive lookup against the live
+ * `/models` catalog: if some available model's id matches `model` up to
+ * dot/hyphen/case normalization (`normalizeForMatching`), return that model's
+ * REAL id (the upstream's canonical spelling). Otherwise `undefined`.
+ *
+ * This replaces the old hard-coded `claude-{family}-{major}-{minor}` regex: the
+ * canonical form is now DATA-DRIVEN off `/models`, so it works for any model
+ * whose id contains dots (e.g. `gemini-3.1-pro-preview`), never invents a name
+ * absent from the catalog, and needs no per-model config. Spelling equivalence
+ * (hyphen↔dot) is a property of the same model, like case-insensitivity — not a
+ * policy decision, so it stays here rather than in `model_overrides`.
+ */
+function canonicalizeFromCatalog(model: string): string | undefined {
+  const target = normalizeForMatching(model)
+  for (const available of state.modelIndex.values()) {
+    if (normalizeForMatching(available.id) === target) return available.id
+  }
+  return undefined
+}
+
 /** Resolve a base model name (without modifier suffix) to its canonical form. */
 function resolveBase(model: string): string {
-  // 1. Hyphenated: claude-opus-4-6 or claude-opus-4-6-20250514 → claude-opus-4.6
-  // Pattern: claude-{family}-{major}-{minor}[-YYYYMMDD]
-  // Minor version is 1-2 digits; date suffix is 8+ digits
-  const versionedMatch = model.match(VERSIONED_RE)
-  if (versionedMatch) {
-    const dotModel = `${versionedMatch[1]}-${versionedMatch[2]}.${versionedMatch[3]}`
-    if (state.modelIds.size === 0 || state.modelIds.has(dotModel)) {
-      return dotModel
-    }
+  // Spelling normalization (hyphen→dot etc.) is data-driven off the live catalog:
+  // a client spelling like claude-opus-4-6 resolves to the upstream's real id
+  // claude-opus-4.6. Date suffixes are NOT stripped — a dated snapshot name has no
+  // catalog twin, so it falls through unchanged and only an explicit model_overrides
+  // entry can remap it (otherwise the upstream rejects it — failure stays visible).
+  //
+  // Unlike the modifier/override paths' `modelIds.size === 0` optimistic accept, base
+  // canonicalization is purely data-driven: an empty catalog means NO canonicalization
+  // (returns verbatim). This is production-unreachable — cacheModels() runs before the
+  // server serves — and the two paths never disagree because an empty catalog also
+  // leaves the base untransformed, so there is no "base dotted but suffix rejected" case.
+  const canonical = canonicalizeFromCatalog(model)
+  if (canonical !== undefined) {
+    return canonical
   }
 
-  // 2. Date-only suffix: claude-{family}-{major}-YYYYMMDD → base model (drop date).
-  // If the base isn't available, return it as-is and let the upstream reject —
-  // short aliases / families are resolved exclusively via model_overrides now.
-  const dateOnlyMatch = model.match(DATE_ONLY_RE)
-  if (dateOnlyMatch) {
-    return dateOnlyMatch[1]
-  }
-
-  // Short aliases (opus/sonnet/haiku) and anything else are returned verbatim;
-  // they only resolve if model_overrides defines them, otherwise the upstream
-  // rejects the unknown model (resolution intentionally fails — no built-in
-  // family preference fallback).
+  // Short aliases (opus/sonnet/haiku), dated snapshot names, and anything else are
+  // returned verbatim; they only resolve if model_overrides defines them, otherwise
+  // the upstream rejects the unknown model (resolution intentionally fails — no
+  // built-in family preference fallback and no date-suffix stripping).
   return model
 }
 

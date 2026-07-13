@@ -7,6 +7,12 @@ import type {
   ModelsResponse,
 } from "~/lib/models/client"
 
+import {
+  //
+  DEFAULT_REFUSAL_END_TURN_TEXT,
+  DEFAULT_REFUSAL_ERROR_MESSAGE,
+  DEFAULT_REFUSAL_ERROR_TYPE,
+} from "~/lib/anthropic/recover-refusal"
 import { normalizeForMatching } from "~/lib/models/model-name"
 
 import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
@@ -95,6 +101,18 @@ export interface CompiledSystemPromptEntry {
   endpointSet?: ReadonlySet<string>
 }
 
+/**
+ * Resolved buffered-retry caps for one vendor (`resolveBufferedCaps` return
+ * shape). `maxRetries` = transport-close/truncation retry cap (loop/cost guard);
+ * `bufferCapBytes` = OOM guard before retreating to live forwarding (0 =
+ * unlimited); `heartbeatSec` = forced keepalive interval during the buffer window.
+ */
+export interface BufferedRetryCaps {
+  maxRetries: number
+  bufferCapBytes: number
+  heartbeatSec: number
+}
+
 export interface State {
   readonly githubToken?: string
   readonly copilotToken?: string
@@ -127,35 +145,11 @@ export interface State {
   readonly adaptiveRateLimitConfig?: Partial<AdaptiveRateLimiterConfig>
 
   /**
-   * Auto-truncate: reactively truncate on limit errors and pre-check for known limits.
-   * Disabled by default; enable with --auto-truncate or `auto_truncate.enabled`.
+   * Shared reactive-retry budget: the per-request cap on ALL reactive retry
+   * strategies (network / server-error / token-refresh / 400-class negotiation
+   * etc.), not truncation-specific. Config `retry.max_reactive_retries`.
    */
-  readonly autoTruncate: boolean
-
-  /**
-   * Truncation target as a fraction of the upstream-reported token limit
-   * (target = reportedLimit × factor). In (0, 1]; smaller removes more / safer,
-   * larger is leaner but closer to the limit. Config `auto_truncate.target_factor`.
-   */
-  readonly autoTruncateTargetFactor: number
-
-  /** Max reactive auto-truncate retries per request. Config `auto_truncate.max_retries`. */
-  readonly autoTruncateMaxRetries: number
-
-  /**
-   * Character-length threshold (NOT tokens) above which a tool_result block is
-   * compressed during truncation. Config `auto_truncate.compress_threshold`.
-   */
-  readonly autoTruncateCompressThreshold: number
-
-  /**
-   * Main-path pre-flight truncation: before sending, predict via the learned
-   * size-aware calibration factor whether the request will exceed the model's
-   * token limit and pre-truncate it, saving a guaranteed-to-fail 400 round-trip.
-   * Reactive truncation stays the fallback. Opt-in; default false. Config
-   * `auto_truncate.preflight`.
-   */
-  readonly autoTruncatePreflight: boolean
+  readonly maxReactiveRetries: number
 
   /**
    * Account is on token-based (PAYG) billing rather than premium-request
@@ -164,12 +158,6 @@ export interface State {
    * (every model is pay-as-you-go, so the badge would be uniform noise).
    */
   readonly tokenBasedBilling: boolean
-
-  /**
-   * Compress old tool results before truncating messages.
-   * When enabled, large tool_result content is compressed to reduce context size.
-   */
-  readonly compressToolResultsBeforeTruncate: boolean
 
   /**
    * Sanitize tool names that violate the target model's constraints (illegal
@@ -188,6 +176,13 @@ export interface State {
 
   /** 上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块）的处理策略：`refusal`=透传不改写、`end_turn`=合成 text 块改 end_turn、`error`=发 error SSE 帧并记请求失败（ctx.fail）。默认 `error`。 */
   readonly refusalSseRewrite: "refusal" | "end_turn" | "error"
+
+  /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留；空串=不追加 text 块（仅改 end_turn）。默认见 `DEFAULT_REFUSAL_END_TURN_TEXT`。 */
+  readonly refusalEndTurnText: string
+  /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。默认见 `DEFAULT_REFUSAL_ERROR_MESSAGE`。 */
+  readonly refusalErrorMessage: string
+  /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。默认 `api_error`。 */
+  readonly refusalErrorType: string
 
   /**
    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
@@ -210,18 +205,18 @@ export interface State {
   readonly toolSearchOverrides: Record<string, boolean>
 
   /**
-   * Anthropic memory tool (native `memory_20250818` server tool). When `memoryToolEnabled` (master
-   * switch, default OFF — CAPI acceptance of the server-tool type is unverified) AND the model supports
-   * memory (`memoryModels`, mirrors GHC modelSupportsMemory), a client tool named `memory` is rewritten
-   * to `{name:"memory", type:"memory_20250818"}` and the `context-management-2025-06-27` beta is forced.
-   * Off → the tool passes through as an ordinary custom tool.
+   * Anthropic memory tool (native `memory_20250818` — a client-EXECUTED typed tool, NOT a server
+   * tool: the model drives view/create commands, the client runs `/memories` and feeds results back).
+   * When `memoryToolEnabled` (master switch, default OFF — CAPI acceptance of the typed descriptor is
+   * unverified) AND the model supports memory (`memoryModels`, mirrors GHC modelSupportsMemory), a
+   * client tool named `memory` is rewritten to `{name:"memory", type:"memory_20250818"}` and the
+   * `context-management-2025-06-27` beta is forced. Off → the tool passes through as an ordinary custom tool.
    */
   readonly memoryToolEnabled: boolean
   readonly memoryModels: ReadonlyArray<string>
 
-  /** Strip Anthropic server-side tools from requests when upstream doesn't support them */
-  readonly stripServerTools: boolean
-
+  /** Forward `/v1/messages/count_tokens` to the GHC upstream (exact). When false, use the local calibrated estimate only. Config `anthropic.use_upstream_count_tokens`. Default true. */
+  readonly useUpstreamCountTokens: boolean
   /**
    * Upstream→client response-header forwarding MODE (Anthropic path). `false`
    * (default) = BLACKLIST mode: forward everything except `responseHeaderBlacklist`.
@@ -326,12 +321,24 @@ export interface State {
    * `tools`. See docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md.
    */
   readonly protectStreamingGeneration: false | "on" | "tool_use_only"
-  /** Max transport-close / truncation retries for the buffered-retry path (loop/cost guard; 0 = no retry). */
-  readonly protectStreamingMaxRetries: number
-  /** Forced heartbeat interval (seconds) for the buffered-retry path; falls back here when `streamKeepalivePingSec` is 0. */
-  readonly protectStreamingHeartbeat: number
-  /** Max bytes to buffer before retreating to live forwarding (OOM guard; 0 = unlimited). */
-  readonly protectStreamingBufferCapBytes: number
+  /**
+   * Vendor-neutral SHARED buffered-retry caps. Overridden per-vendor by
+   * {@link bufferedRetryOverrides}; resolve via `resolveBufferedCaps(vendor)`.
+   * Built-in default: `{ maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 }`.
+   */
+  readonly bufferedRetryShared: BufferedRetryCaps
+  /**
+   * Per-vendor buffered-retry cap overrides (keyed by vendor: `anthropic` /
+   * `responses` / `chat_completions` / `responses_ws`). Each override sets only
+   * the fields it declares; unset fields fall through to {@link bufferedRetryShared}.
+   */
+  readonly bufferedRetryOverrides: Record<string, Partial<BufferedRetryCaps>>
+  /**
+   * Chat Completions buffered-retry mode switch (P3). `false` (default) keeps the
+   * live streaming path; `true` adopts the terminal-only buffered sink. Caps come
+   * from `resolveBufferedCaps("chat_completions")`.
+   */
+  readonly chatCompletionsBufferedRetry: boolean
   /** On each buffered retry, force progressively aggressive context_management compression (RFC §8). Default false. */
   readonly protectStreamingEscalateContext: boolean
 
@@ -450,18 +457,6 @@ export interface State {
    * (keeps position — most prompt-cache-friendly).
    */
   readonly systemRejectMode: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
-
-  /**
-   * Rewrite native server-tool blocks left in inbound message history before
-   * sending upstream. The web_search double-hop surfaces a synthesized
-   * `server_tool_use{web_search}` + `web_search_tool_result` pair to the client
-   * (so results are visible); the client echoes it back next turn, but the
-   * downgraded `tools` array no longer declares `web_search` as a server tool,
-   * so upstream 400s. `"downgrade"` rewrites the pair into a plain
-   * `tool_use` + `tool_result` (splitting the assistant turn so the tool_result
-   * lands in a user message, per protocol). `false` passes through (default).
-   */
-  readonly rewriteServerTools: false | "downgrade"
 
   /**
    * Client compatibility shim for the thinking frame some Copilot upstreams emit
@@ -612,24 +607,6 @@ export interface State {
    * Default: "".
    */
   readonly historyDbPath: string
-
-  /**
-   * Enable the double-hop web_search server-tool implementation.
-   * When true and a request carries a native Anthropic web_search server tool
-   * (or Claude Code's `WebSearch` tool), the Anthropic path intercepts the
-   * request, runs a real search via `webSearchBackend`, and synthesizes a
-   * standard Anthropic response. Default false (fully short-circuited when off).
-   */
-  readonly webSearchEnabled: boolean
-
-  /**
-   * Web search backend selector:
-   *   ""        — not configured / disabled
-   *   "searxng" — local SearXNG instance at http://localhost:8080
-   *   other     — treated as a Copilot Responses search model id (e.g. "gpt-5.5")
-   * Default "".
-   */
-  readonly webSearchBackend: string
 
   /**
    * Fetch timeout in seconds.
@@ -963,6 +940,15 @@ function cloneStripBetaHeaders(source: Record<string, Array<string>>): Record<st
   return out
 }
 
+/** Deep-clone the per-vendor buffered-retry override map (each vendor entry is its own object). */
+function cloneBufferedRetryOverrides(source: Record<string, Partial<BufferedRetryCaps>>): Record<string, Partial<BufferedRetryCaps>> {
+  const out: Record<string, Partial<BufferedRetryCaps>> = {}
+  for (const [vendor, caps] of Object.entries(source)) {
+    out[vendor] = { ...caps }
+  }
+  return out
+}
+
 function cloneState(source: MutableState): MutableState {
   return {
     ...source,
@@ -976,6 +962,8 @@ function cloneState(source: MutableState): MutableState {
     streamIdleTimeoutOverrides: { ...source.streamIdleTimeoutOverrides },
     responseHeaderTimeoutOverrides: { ...source.responseHeaderTimeoutOverrides },
     negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
+    bufferedRetryShared: { ...source.bufferedRetryShared },
+    bufferedRetryOverrides: cloneBufferedRetryOverrides(source.bufferedRetryOverrides),
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
     stripCacheControlSubfields: cloneStripBetaHeaders(source.stripCacheControlSubfields),
     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
@@ -1048,6 +1036,12 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("negotiationTtlOverridesMs" in patch) {
     cloned.negotiationTtlOverridesMs = patch.negotiationTtlOverridesMs ? { ...patch.negotiationTtlOverridesMs } : undefined
   }
+  if ("bufferedRetryShared" in patch) {
+    cloned.bufferedRetryShared = patch.bufferedRetryShared ? { ...patch.bufferedRetryShared } : undefined
+  }
+  if ("bufferedRetryOverrides" in patch) {
+    cloned.bufferedRetryOverrides = patch.bufferedRetryOverrides ? cloneBufferedRetryOverrides(patch.bufferedRetryOverrides) : undefined
+  }
   if ("stripBetaHeaders" in patch) {
     cloned.stripBetaHeaders = patch.stripBetaHeaders ? cloneStripBetaHeaders(patch.stripBetaHeaders) : undefined
   }
@@ -1103,7 +1097,7 @@ export function setTokenState(patch: Partial<Pick<MutableState, "tokenInfo" | "c
   updateState(patch)
 }
 
-export function setCliState(patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "autoTruncate" | "verbose">>): void {
+export function setCliState(patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "verbose">>): void {
   updateState(patch)
 }
 
@@ -1185,7 +1179,7 @@ export function setAnthropicBehavior(
   patch: Partial<
     Pick<
       MutableState,
-      | "stripServerTools"
+      | "useUpstreamCountTokens"
       | "strictResponseHeaders"
       | "strictRequestHeaders"
       | "requestHeaderBlacklist"
@@ -1197,9 +1191,6 @@ export function setAnthropicBehavior(
       | "streamKeepaliveMode"
       | "streamCommitAfterSec"
       | "protectStreamingGeneration"
-      | "protectStreamingMaxRetries"
-      | "protectStreamingHeartbeat"
-      | "protectStreamingBufferCapBytes"
       | "protectStreamingEscalateContext"
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
@@ -1212,7 +1203,6 @@ export function setAnthropicBehavior(
       | "systemDefaultMode"
       | "systemRejectModels"
       | "systemRejectMode"
-      | "rewriteServerTools"
       | "thinkingSignatureCompat"
       | "dedupToolCalls"
       | "stripReadToolResultTags"
@@ -1231,11 +1221,13 @@ export function setAnthropicBehavior(
       | "systemPromptOverrides"
       | "systemPromptPrepend"
       | "systemPromptAppend"
-      | "compressToolResultsBeforeTruncate"
       | "sanitizeToolNames"
       | "recoverToolCallText"
       | "toolRepairMalformedInput"
       | "refusalSseRewrite"
+      | "refusalEndTurnText"
+      | "refusalErrorMessage"
+      | "refusalErrorType"
       | "contextEditingModels"
       | "toolSearchOverrides"
       | "memoryToolEnabled"
@@ -1336,15 +1328,8 @@ export function setNegotiationConfig(patch: Partial<Pick<MutableState, "negotiat
   updateState(patch)
 }
 
-export function setWebSearchConfig(patch: Partial<Pick<MutableState, "webSearchEnabled" | "webSearchBackend">>): void {
-  updateState(patch)
-}
-
-export function setAutoTruncateConfig(
-  patch: Partial<
-    Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateMaxRetries" | "autoTruncateCompressThreshold" | "autoTruncatePreflight">
-  >,
-): void {
+/** Set the shared reactive-retry budget (`retry.max_reactive_retries`). Hot-reloadable. */
+export function setReactiveRetryConfig(patch: Partial<Pick<MutableState, "maxReactiveRetries">>): void {
   updateState(patch)
 }
 
@@ -1398,6 +1383,48 @@ export function setResponsesConfig(
   updateState(patch)
 }
 
+/** Chat Completions buffered-retry mode switch (P3). Hot-reloadable. */
+export function setChatCompletionsConfig(patch: Partial<Pick<MutableState, "chatCompletionsBufferedRetry">>): void {
+  updateState(patch)
+}
+
+/**
+ * Set the vendor-neutral SHARED buffered-retry caps (partial merge — only the
+ * declared fields are overwritten, the rest retain their prior value). Hot-reloadable.
+ */
+export function setBufferedRetryShared(patch: Partial<BufferedRetryCaps>): void {
+  updateState({ bufferedRetryShared: { ...state.bufferedRetryShared, ...patch } })
+}
+
+/**
+ * Set a per-vendor buffered-retry cap override (partial merge into that vendor's
+ * existing override). Fields NOT set here fall through to {@link setBufferedRetryShared}
+ * / the built-in default at resolve time. Hot-reloadable.
+ */
+export function setBufferedRetryOverride(vendor: string, patch: Partial<BufferedRetryCaps>): void {
+  const prev = state.bufferedRetryOverrides[vendor] ?? {}
+  updateState({
+    bufferedRetryOverrides: { ...state.bufferedRetryOverrides, [vendor]: { ...prev, ...patch } },
+  })
+}
+
+/**
+ * Resolve the effective buffered-retry caps for one vendor. Priority (highest
+ * first): per-vendor override ({@link State.bufferedRetryOverrides}) > shared
+ * caps ({@link State.bufferedRetryShared}) > built-in default. Every consumer of
+ * `maxRetries` / `bufferCapBytes` / `heartbeatSec` MUST route through this (no
+ * direct scalar-field reads — single resolution point).
+ */
+export function resolveBufferedCaps(vendor: string): BufferedRetryCaps {
+  const o = state.bufferedRetryOverrides[vendor] ?? {}
+  const s = state.bufferedRetryShared
+  return {
+    maxRetries: o.maxRetries ?? s.maxRetries,
+    bufferCapBytes: o.bufferCapBytes ?? s.bufferCapBytes,
+    heartbeatSec: o.heartbeatSec ?? s.heartbeatSec,
+  }
+}
+
 /**
  * Capture a deep-enough clone of state for test restoration.
  * Tests should prefer this over direct mutation snapshots so State can stay readonly.
@@ -1448,7 +1475,7 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
  * Model overrides continue to use DEFAULT_MODEL_OVERRIDES.
  */
 export const CONFIG_MANAGED_DEFAULTS = {
-  stripServerTools: false,
+  useUpstreamCountTokens: true,
   strictResponseHeaders: false,
   strictRequestHeaders: false,
   requestHeaderBlacklist: ["x-anthropic-billing-header"] as ReadonlyArray<string>,
@@ -1460,9 +1487,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   streamKeepaliveMode: "empty_text" as "ping" | "enveloped_ping" | "empty_text",
   streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
-  protectStreamingMaxRetries: 3,
-  protectStreamingHeartbeat: 15,
-  protectStreamingBufferCapBytes: 16_777_216,
+  bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } as BufferedRetryCaps,
+  bufferedRetryOverrides: {} as Record<string, Partial<BufferedRetryCaps>>,
+  chatCompletionsBufferedRetry: false,
   protectStreamingEscalateContext: false,
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
@@ -1475,7 +1502,6 @@ export const CONFIG_MANAGED_DEFAULTS = {
   systemDefaultMode: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectMode: "as_user" as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
   systemRejectModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] as Array<string>,
-  rewriteServerTools: false as false | "downgrade",
   thinkingSignatureCompat: "signature_delta" as false | "signature_delta" | "redacted_thinking",
   dedupToolCalls: false as const,
   stripReadToolResultTags: false,
@@ -1505,19 +1531,15 @@ export const CONFIG_MANAGED_DEFAULTS = {
   systemPromptOverrides: [] as Array<CompiledRewriteRule>,
   systemPromptPrepend: [] as Array<CompiledSystemPromptEntry>,
   systemPromptAppend: [] as Array<CompiledSystemPromptEntry>,
-  autoTruncate: false,
-  // Defaults mirror the engine constants AUTO_TRUNCATE_RETRY_FACTOR / MAX_AUTO_TRUNCATE_RETRIES /
-  // LARGE_TOOL_RESULT_THRESHOLD. Inlined (not imported) to avoid a state ↔ auto-truncate ↔
-  // system-prompt import cycle; kept in sync by a guard in auto-truncate-common.unit.test.ts.
-  autoTruncateTargetFactor: 0.9,
-  autoTruncateMaxRetries: 5,
-  autoTruncateCompressThreshold: 10000,
-  autoTruncatePreflight: false,
-  compressToolResultsBeforeTruncate: true,
+  // Shared reactive-retry budget (was auto_truncate.max_retries). Inlined default 5.
+  maxReactiveRetries: 5,
   sanitizeToolNames: false,
   recoverToolCallText: false,
   toolRepairMalformedInput: [] as ReadonlyArray<RepairItem>,
   refusalSseRewrite: "error" as "refusal" | "end_turn" | "error",
+  refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
+  refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
+  refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,
   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
   // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
@@ -1555,8 +1577,6 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyFailureLimit: 200,
   historyReaperInterval: 600,
   historyDbPath: "",
-  webSearchEnabled: false,
-  webSearchBackend: "",
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
   responsesBufferedRetry: false,
@@ -1593,7 +1613,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
 
 export function resetConfigManagedState(): void {
   setAnthropicBehavior({
-    stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
+    useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
     strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
     requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
@@ -1605,9 +1625,6 @@ export function resetConfigManagedState(): void {
     streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
-    protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
-    protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
-    protectStreamingBufferCapBytes: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
     protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
@@ -1620,7 +1637,6 @@ export function resetConfigManagedState(): void {
     systemDefaultMode: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
     systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
     systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
-    rewriteServerTools: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
     thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
     dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
     stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
@@ -1639,11 +1655,13 @@ export function resetConfigManagedState(): void {
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
     systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
     systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
-    compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
     toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
     refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+    refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+    refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+    refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
     toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
     memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
@@ -1692,10 +1710,6 @@ export function resetConfigManagedState(): void {
     historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
   })
-  setWebSearchConfig({
-    webSearchEnabled: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
-    webSearchBackend: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
-  })
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
@@ -1707,32 +1721,30 @@ export function resetConfigManagedState(): void {
     maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
     maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
   })
-  // auto-truncate is a top-level toggle (CLI flag + config.yaml `auto_truncate.enabled`)
-  // plus tuning fields (target_factor / max_retries / compress_threshold / preflight),
-  // all reset via setAutoTruncateConfig.
-  setAutoTruncateConfig({
-    autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
-    autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
-    autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
-    autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
-    autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
+  // Buffered-retry caps (vendor-neutral shared + per-vendor overrides) + the
+  // chat_completions mode switch. Reset via updateState (whole-object replace of
+  // the shared caps + overrides map, cloned off the frozen defaults).
+  updateState({
+    bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
+    bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
+    chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
   })
+  // Shared reactive-retry budget (was auto_truncate.max_retries).
+  setReactiveRetryConfig({ maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries })
 }
 
 const mutableState: MutableState = {
   accountType: "individual",
   ghcApiBaseUrl: "",
-  autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
-  autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
-  autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
-  autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
-  autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
+  maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
   tokenBasedBilling: false,
-  compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
   toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
   refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+  refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+  refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+  refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
   toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
   memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
@@ -1750,7 +1762,7 @@ const mutableState: MutableState = {
   extendedCacheTtlMessages: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlMessages,
   extendedCacheTtlModels: [...CONFIG_MANAGED_DEFAULTS.extendedCacheTtlModels],
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
-  stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
+  useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
   strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
   strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
   requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
@@ -1762,9 +1774,9 @@ const mutableState: MutableState = {
   streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
-  protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
-  protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
-  protectStreamingBufferCapBytes: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
+  bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
+  bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
+  chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
   protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
@@ -1777,7 +1789,6 @@ const mutableState: MutableState = {
   systemDefaultMode: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
   systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
   systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
-  rewriteServerTools: CONFIG_MANAGED_DEFAULTS.rewriteServerTools,
   thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
@@ -1785,8 +1796,6 @@ const mutableState: MutableState = {
   historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
   historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
-  webSearchEnabled: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
-  webSearchBackend: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
   modelIds: new Set(),
   modelIndex: new Map(),
   modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },

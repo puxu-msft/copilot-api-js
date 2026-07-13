@@ -77,7 +77,7 @@ describe("C0 golden (c-gemini) — via-responses streaming two-hop terminal byte
     upstreamFetchMock.mockClear()
     lastResponsesWire = undefined
     applyFetchMock(upstreamFetchMock)
-    setStateForTests({ copilotToken: "tok", autoTruncate: false })
+    setStateForTests({ copilotToken: "tok" })
   })
 
   afterEach(() => {})

@@ -152,8 +152,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
       staleRequestMaxAge: 0,
       streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
-      protectStreamingMaxRetries: 3,
-      protectStreamingHeartbeat: 15,
+      bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
     })
     applyFetchMock(upstreamFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
@@ -207,8 +206,15 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     expect(entry?.attempts?.[0]?.sseEvents?.length).toBeGreaterThan(0)
     expect(entry?.attempts?.[1]?.sseEvents?.length).toBeGreaterThan(0)
     expect(entry?.attempts?.[2]?.sseEvents).toBeUndefined()
-    // Hit-rate telemetry: one save after 2 retries (RFC §10).
-    expect(getProtectStreamingStats()).toEqual({ success: 1, exhausted: 0, retreated: 0, totalRetries: 2 })
+    // Hit-rate telemetry: one save after 2 retries (RFC §10), under the `anthropic` vendor.
+    expect(getProtectStreamingStats().anthropic).toEqual({
+      success: 1,
+      exhausted: 0,
+      retreated: 0,
+      partialDegrade: 0,
+      totalRetries: 2,
+      retriesBeforeDegrade: 0,
+    })
   })
 
   test("clean first-try buffered commit (no RST) is NOT counted or tagged as a retry", async () => {
@@ -221,8 +227,8 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-clean", limit: 5 }).entries[0]
     expect(entry?.state).toBe("completed")
     // L2 never ENGAGED (no RST) → no telemetry, no `protect-streaming-retry` feature tag (which would
-    // otherwise appear on essentially every buffered 200 and inflate the hit-rate).
-    expect(getProtectStreamingStats()).toEqual({ success: 0, exhausted: 0, retreated: 0, totalRetries: 0 })
+    // otherwise appear on essentially every buffered 200 and inflate the hit-rate). No vendor bucket.
+    expect(getProtectStreamingStats()).toEqual({})
   })
 
   test("acc reset regression — even 3 leading RSTs commit a single non-summed generation", async () => {
@@ -262,7 +268,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
 
   test("buffer cap (tiny) → retreat to live, client still gets the full generation, history completed", async () => {
     rstBeforeComplete = 0 // a clean complete stream; the cap forces a retreat, not a retry
-    setStateForTests({ protectStreamingBufferCapBytes: 10 }) // 10 bytes → exceeded almost immediately
+    setStateForTests({ bufferedRetryOverrides: { anthropic: { bufferCapBytes: 10 } } }) // 10 bytes → exceeded almost immediately
     const sse = await streamRequest("l2-buf-cap")
 
     // Retreat forwards the whole generation live (the cap only forfeits buffering, not delivery).
@@ -377,8 +383,7 @@ describe("L2 buffered retry — forced heartbeat during the buffer window (strea
       // keepalive-buffered-anchor-e2e.http.test.ts + live-pre-response-anchor.test.ts.
       streamKeepaliveMode: "ping",
       protectStreamingGeneration: "on",
-      protectStreamingMaxRetries: 3,
-      protectStreamingHeartbeat: 10,
+      bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 10 },
     })
     applyFetchMock(gatedFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })

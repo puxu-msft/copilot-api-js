@@ -4,6 +4,12 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 
+import {
+  //
+  readSyntheticKind,
+  tagFrameSynthetic,
+} from "~/lib/pipeline/frame-origin"
+
 export const HOOK_ORIGIN = Symbol("hookOrigin")
 export type HookOrigin = "hook-mock" | "hook-replay"
 
@@ -55,15 +61,18 @@ export function readOrigin(s: UpstreamStream): HookOrigin | undefined {
  * skips, matching the plan's own "≠ 原 frame" reference-inequality criterion) — hook authors
  * wanting provenance should return a fresh object, mirroring the codebase's other
  * immutable-rewrite conventions (`RequestEnvelope.with`, `ResponseRewrite.transform`).
+ *
+ * "hook-rewrite" is one {@link SyntheticOriginKind}; these two functions are thin, back-compat
+ * wrappers over the generalized {@link tagFrameSynthetic}/{@link readSyntheticKind} primitive
+ * (frame-origin.ts) — the driver + sink still call them by these names.
  */
-const FRAME_HOOK_REWRITE = Symbol("frameHookRewrite")
 
 /** Tag a ClientFrame/UpstreamFrame as hook-rewritten (mutates + returns the SAME object). */
 export function tagFrameRewritten<T extends ClientFrame>(frame: T): T {
-  return Object.assign(frame, { [FRAME_HOOK_REWRITE]: true })
+  return tagFrameSynthetic(frame, "hook-rewrite")
 }
 
 /** Read whether a frame carries the hook-rewrite tag (absence ≠ error — see module doc above). */
 export function wasFrameRewritten(frame: ClientFrame): boolean {
-  return (frame as unknown as Record<symbol, unknown>)[FRAME_HOOK_REWRITE] === true
+  return readSyntheticKind(frame) === "hook-rewrite"
 }

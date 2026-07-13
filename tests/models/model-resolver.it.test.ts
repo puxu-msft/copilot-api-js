@@ -91,14 +91,45 @@ describe("Model Name Translation", () => {
     expect(resolveModelName("claude-haiku-3-5")).toBe("claude-haiku-3.5")
   })
 
-  test("strips date suffix to the base version (no family fallback)", () => {
-    expect(resolveModelName("claude-sonnet-4-5-20250514")).toBe("claude-sonnet-4.5")
-    expect(resolveModelName("claude-sonnet-4-20250514")).toBe("claude-sonnet-4")
-    expect(resolveModelName("claude-opus-4-5-20250514")).toBe("claude-opus-4.5")
-    expect(resolveModelName("claude-opus-4-6-20250514")).toBe("claude-opus-4.6")
-    // Date-only on the major version → base name (claude-opus-4), NOT "best opus".
-    expect(resolveModelName("claude-opus-4-20250514")).toBe("claude-opus-4")
-    expect(resolveModelName("claude-haiku-4-5-20250514")).toBe("claude-haiku-4.5")
+  test("canonicalization is data-driven off /models, not a claude-only regex", () => {
+    // Any catalog model with dots in its id canonicalizes from the hyphen spelling —
+    // including NON-Claude models the old regex never matched (gemini-3.1-pro-preview).
+    setModels({
+      object: "list",
+      data: [mockModel("gemini-3.1-pro-preview"), mockModel("gpt-5.5"), mockModel("claude-opus-4.6")],
+    })
+    expect(resolveModelName("gemini-3-1-pro-preview")).toBe("gemini-3.1-pro-preview")
+    expect(resolveModelName("gpt-5-5")).toBe("gpt-5.5")
+    expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4.6")
+    // A spelling with no catalog twin is returned verbatim (upstream then rejects).
+    expect(resolveModelName("gemini-9-9-nonexistent")).toBe("gemini-9-9-nonexistent")
+  })
+
+  test("does NOT auto-strip date suffixes — dated names pass through unchanged", () => {
+    // Date-suffix stripping was removed: mapping a dated snapshot name to a
+    // canonical id is now an explicit model_overrides decision, not hidden logic.
+    // With no matching override, the dated name falls through verbatim (the
+    // upstream then rejects it — the failure stays visible instead of being
+    // silently remapped).
+    expect(resolveModelName("claude-sonnet-4-5-20250514")).toBe("claude-sonnet-4-5-20250514")
+    expect(resolveModelName("claude-sonnet-4-20250514")).toBe("claude-sonnet-4-20250514")
+    expect(resolveModelName("claude-opus-4-5-20250514")).toBe("claude-opus-4-5-20250514")
+    expect(resolveModelName("claude-opus-4-6-20250514")).toBe("claude-opus-4-6-20250514")
+    expect(resolveModelName("claude-opus-4-20250514")).toBe("claude-opus-4-20250514")
+    expect(resolveModelName("claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5-20251001")
+  })
+
+  test("a dated snapshot name resolves ONLY via an explicit model_overrides entry", () => {
+    // This is the config-driven replacement for the removed auto-stripping: an
+    // operator maps the dated name to a canonical GHC id (or a redirect target).
+    setModelOverrides({
+      "claude-haiku-4-5-20251001": "claude-haiku-4.5",
+      "claude-sonnet-4-5-20250929": "claude-opus-4.6", // may point anywhere, incl. a redirect
+    })
+    expect(resolveModelName("claude-haiku-4-5-20251001")).toBe("claude-haiku-4.5")
+    expect(resolveModelName("claude-sonnet-4-5-20250929")).toBe("claude-opus-4.6")
+    // Override keys are matched by normalized spelling, so the dot form works too.
+    expect(resolveModelName("claude-haiku-4.5-20251001")).toBe("claude-haiku-4.5")
   })
 
   test("passes through direct / unknown model names unchanged", () => {
@@ -312,8 +343,10 @@ describe("Modifier suffix handling (-fast)", () => {
     expect(resolveModelName("claude-sonnet-4-5-fast")).toBe("claude-sonnet-4.5")
   })
 
-  test("should handle date suffix with -fast modifier", () => {
-    expect(resolveModelName("claude-opus-4-6-20250514-fast")).toBe("claude-opus-4.6-fast")
+  test("dated name + -fast modifier: no date strip, unavailable variant falls back to dated base", () => {
+    // Date suffixes are no longer stripped, so the dated `-fast` variant isn't in
+    // the model index and resolution falls back to the (still dated) base name.
+    expect(resolveModelName("claude-opus-4-6-20250514-fast")).toBe("claude-opus-4-6-20250514")
   })
 
   test("should not strip -fast from non-Claude models", () => {
@@ -377,10 +410,10 @@ describe("Bracket notation handling [1m]", () => {
     expect(resolveModelName("opus[fast]")).toBe("claude-opus-4.6-fast")
   })
 
-  test("should handle date-suffixed model with bracket notation", () => {
-    // claude-opus-4-6-20250514[1m] → claude-opus-4-6-20250514-1m
-    // extractModifierSuffix strips -1m → resolveBase handles date suffix → re-attach -1m
-    expect(resolveModelName("claude-opus-4-6-20250514[1m]")).toBe("claude-opus-4.6-1m")
+  test("dated name + bracket notation: no date strip, falls back to dated base", () => {
+    // claude-opus-4-6-20250514[1m] → ...-1m; date is NOT stripped, the dated -1m
+    // variant is unavailable, so it falls back to the (still dated) base name.
+    expect(resolveModelName("claude-opus-4-6-20250514[1m]")).toBe("claude-opus-4-6-20250514")
   })
 })
 

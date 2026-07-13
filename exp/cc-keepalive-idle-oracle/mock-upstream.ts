@@ -1,0 +1,261 @@
+// Mock GHC (Copilot) UPSTREAM for the Chat Completions keepalive M-2 idle oracle
+// (P3 Task 3 / plan-3-chat-completions.md Task 3 / spec §7.1 & §11 M-2).
+//
+// TOPOLOGY:  real openai-node client (`OpenAI().chat.completions.create({stream:true})`)  ──▶
+//   copilot-api PROXY (chat_completions.buffered_retry: true)  ──ghc_api_base_url──▶  THIS mock.
+//   Mirrors exp/responses-keepalive-idle-oracle/mock-upstream.ts (§7.2 topology): the mock sits
+//   UPSTREAM of the proxy so what's under test is the PROXY's forced `ccKeepaliveFrame()`
+//   heartbeat during the pre-terminal buffered window, NOT whether the mock itself emits a
+//   friendly frame type.
+//
+// WHY THIS MATTERS: block-level buffered retry does NOT apply to Chat Completions the way it
+// does to Responses — CC has no mid-stream block boundary (deltas carry no structural
+// terminator), so the CC commit predicate (`ccCommitBoundaries`) is terminal-only: the ENTIRE
+// generation is withheld from the client until `finish_reason` (or an in-band `error` frame)
+// arrives. This makes the CC keepalive gate even more load-bearing than the Responses one — for
+// CC, buffered mode ALWAYS fully buffers (there is no partial-flush-at-boundary relief), so a
+// long upstream silence during ANY generation (not just before the first block) depends entirely
+// on the forced keepalive chunk to keep the client's connection alive.
+//
+// ── TRANSPORT: node:http2 secure server (HTTPS/h2), NOT Bun.serve HTTP/1.1 ────────────────────
+// REUSED FROM THE SIBLING HARNESS (empirically confirmed there, 2026-07-12): a plaintext `http://`
+// Bun.serve mock makes the proxy's own upstream fetch (`transport/upstream-fetch.ts`) route
+// through undici (real https GHC upstreams instead go through node:http2 — see
+// upstream-fetch.ts:66-69 + docs/DESIGN.md "运行时兼容" table + skill `bun-node-runtime-gotchas`).
+// The sibling ran the real proxy (Bun) against an earlier http:// mock with a silence window: the
+// proxy's upstream fetch ABORTED ~5ms after receiving headers instead of surviving the silence —
+// the exact Bun-undici defect `exp/buffered-anchor-oracle/README.md` "传输" section documents for
+// the Anthropic path. This mock is therefore HTTPS/h2 (self-signed localhost cert,
+// `node:http2.createSecureServer`) from the start — no need to re-discover the same defect.
+//
+// The mock server itself runs under NODE (not Bun), same rationale as the sibling: Node 22.6+/24
+// runs this `.ts` directly via type-stripping, no build step. This harness never needs a real h2
+// RST (it only tests keepalive, not retry) — Node vs Bun for the MOCK's own transport is not
+// load-bearing here, kept for consistency with the sibling's start-script conventions.
+//
+// MOCK_UPSTREAM_MODE=silent:<SILENCE_SEC>
+//   SILENCE_SEC  seconds of PURE post-first-chunk silence (no more delta/finish_reason chunks)
+//                before the mock sends the terminal chunk + [DONE]. Must exceed the consumer's
+//                idle watchdog to prove survival. Default 330 (>300s undici default bodyTimeout +
+//                margin — see REPORT.md §0 for why 300s is the load-bearing wall for a bare
+//                openai-node client). The proxy's own `timeouts.response_header` /
+//                `timeouts.stream_idle` MUST be raised ABOVE this (oracle-config.yaml sets 900) or
+//                the PROXY aborts the upstream fetch first — a proxy-config false negative, not
+//                evidence against the keepalive mechanism; see REPORT.md §排障.
+//
+// Response shape: sends response headers (200, text/event-stream) and ONE content delta chunk
+// immediately (real GHC upstreams start emitting fast; the silence models a long reasoning/
+// generation gap mid-stream — CC's terminal-only buffered commit means EVERY silence in the
+// stream, not just a pre-first-block one, is fully withheld from the client). Then holds for
+// SILENCE_SEC before flushing a terminal `finish_reason:"stop"` chunk + `[DONE]`.
+//
+// Also serves `/models` (from refs/AVAILABLE_MODELS.json, same convention as the sibling harness —
+// the proxy builds its model index from it; MOCK_MODEL_ID defaults to `gpt-5.4`, which carries
+// `/chat/completions` in its `supported_endpoints`, unlike gpt-5.5 which is Responses/WS-only) and
+// a best-effort `/count_tokens` (defensive only, mirrors the sibling).
+//
+// Logs (monotonic ts) every request, the silence start/end, and any proxy-initiated abort so a
+// failed arm can be diagnosed (proxy timeouts too low vs SILENCE_SEC, vs a genuine consumer
+// idle-out).
+
+import { readFileSync } from "node:fs"
+import http2 from "node:http2"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const PORT = Number(process.env.MOCK_UPSTREAM_PORT ?? 8798)
+const MODELS_PATH = new URL("../../refs/AVAILABLE_MODELS.json", import.meta.url).pathname
+/** TLS material (self-signed localhost). Generated by run-proxy-arm.sh if absent. */
+const CERT_PATH = process.env.MOCK_CERT ?? path.join(HERE, "mock-cert.pem")
+const KEY_PATH = process.env.MOCK_KEY ?? path.join(HERE, "mock-key.pem")
+
+const t0 = performance.now()
+const rel = () => `+${((performance.now() - t0) / 1000).toFixed(2)}s`
+const ts = () => `${((performance.now() - t0) / 1000).toFixed(3)}s ${new Date().toISOString()}`
+const log = (...a: Array<unknown>) => console.error(`[mock-upstream ${ts()}]`, ...a)
+
+const enc = new TextEncoder()
+const sseData = (data: unknown) => enc.encode(`data: ${JSON.stringify(data)}\n\n`)
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+const MODELS_BODY = readFileSync(MODELS_PATH, "utf8")
+
+const CHUNK_ID = "chatcmpl-keepalive-oracle"
+const MODEL_ID = process.env.MOCK_MODEL_ID ?? "gpt-5.4"
+
+/** True once the h2 stream can no longer accept writes (closed/destroyed/aborted). */
+function streamDead(stream: http2.ServerHttp2Stream): boolean {
+  return stream.destroyed || stream.closed || stream.aborted
+}
+
+/** Best-effort write of one SSE frame; returns false if the stream is already dead. */
+function writeFrame(stream: http2.ServerHttp2Stream, frame: Uint8Array): boolean {
+  if (streamDead(stream)) return false
+  try {
+    stream.write(Buffer.from(frame))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Best-effort clean end of the stream (flushes a final DATA + END_STREAM). */
+function endStream(stream: http2.ServerHttp2Stream): void {
+  if (streamDead(stream)) return
+  try {
+    stream.end()
+  } catch {
+    // already ended/closed — nothing to clean up.
+  }
+}
+
+/** The immediate first content-delta chunk — sent BEFORE the silence window. */
+function firstChunkFrame(): Uint8Array {
+  return sseData({
+    id: CHUNK_ID,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: MODEL_ID,
+    choices: [{ index: 0, delta: { role: "assistant", content: "Thinking" }, finish_reason: null }],
+  })
+}
+
+/** The terminal chunk + `[DONE]` sentinel sent AFTER the silence window. */
+function tailFrames(): Array<Uint8Array> {
+  return [
+    sseData({
+      id: CHUNK_ID,
+      object: "chat.completion.chunk",
+      created: Math.floor(Date.now() / 1000),
+      model: MODEL_ID,
+      choices: [{ index: 0, delta: { content: " done." }, finish_reason: null }],
+    }),
+    sseData({
+      id: CHUNK_ID,
+      object: "chat.completion.chunk",
+      created: Math.floor(Date.now() / 1000),
+      model: MODEL_ID,
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+    }),
+    enc.encode("data: [DONE]\n\n"),
+  ]
+}
+
+function resolveMode(headers: http2.IncomingHttpHeaders): string {
+  const headerMode = headers["x-mock-mode"]
+  return (typeof headerMode === "string" ? headerMode : undefined) ?? process.env.MOCK_UPSTREAM_MODE ?? "silent:330"
+}
+
+/** Read a full request body from an h2 stream (drained so the stream can respond cleanly). */
+function readBody(stream: http2.ServerHttp2Stream): Promise<string> {
+  return new Promise<string>((resolve) => {
+    const chunks: Array<Buffer> = []
+    stream.on("data", (c: Buffer) => chunks.push(c))
+    stream.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")))
+    stream.once("error", () => resolve(Buffer.concat(chunks).toString("utf8")))
+  })
+}
+
+async function silentThenTailBody(stream: http2.ServerHttp2Stream, silenceSec: number): Promise<void> {
+  writeFrame(stream, firstChunkFrame())
+  log(`-> sending first content-delta chunk, then PURE silence for ${silenceSec}s ${rel()}`)
+
+  const deadline = performance.now() + silenceSec * 1000
+  while (performance.now() < deadline) {
+    if (streamDead(stream)) {
+      log(
+        `<- proxy/upstream-fetch ABORTED at ${rel()} — the proxy's timeouts.response_header/stream_idle fired below ${silenceSec}s, or the consumer disconnected and the abort bridged through. Raise timeouts.response_header + timeouts.stream_idle ABOVE ${silenceSec}s in oracle-config.yaml.`,
+      )
+      return
+    }
+    await sleep(Math.min(1000, deadline - performance.now()))
+  }
+  if (streamDead(stream)) {
+    log(`<- proxy/upstream-fetch ABORTED at end of silence window ${rel()}`)
+    return
+  }
+
+  log(`-> silence window (${silenceSec}s) elapsed WITHOUT abort; sending terminal chunk + [DONE] ${rel()}`)
+  for (const f of tailFrames()) writeFrame(stream, f)
+  endStream(stream)
+  log(`-> tail sent, upstream stream closed ${rel()}`)
+}
+
+const SSE_HEADERS = { ":status": 200, "content-type": "text/event-stream" }
+
+const server = http2.createSecureServer({
+  key: readFileSync(KEY_PATH),
+  cert: readFileSync(CERT_PATH),
+  ALPNProtocols: ["h2"],
+})
+
+// A stray socket/stream 'error' (e.g. proxy RSTs its side, or a TLS reset) must never crash the
+// long-lived mock. Absorb them; per-stream handlers log the meaningful ones.
+server.on("sessionError", (err) => log(`(sessionError absorbed) ${String(err)}`))
+server.on("clientError", (err) => log(`(clientError absorbed) ${String(err)}`))
+
+server.on("stream", (stream, headers) => {
+  stream.on("error", (err) => log(`(stream error absorbed) ${String(err)}`))
+
+  const method = String(headers[":method"] ?? "GET")
+  const rawPath = String(headers[":path"] ?? "/")
+  const pathname = rawPath.split("?")[0]
+
+  void (async (): Promise<void> => {
+    // Model catalog — the proxy builds its model index from this (needs the model used by the
+    // arm script, default gpt-5.4, with `/chat/completions` support — gpt-5.5 is Responses/WS-only).
+    if (method === "GET" && pathname.endsWith("/models")) {
+      log(`GET ${pathname} → models catalogue`)
+      stream.respond({ ":status": 200, "content-type": "application/json", etag: `"mock-upstream-${PORT}"` })
+      stream.end(MODELS_BODY)
+      return
+    }
+    // Best-effort — served defensively only (mirrors the sibling harness's convention).
+    if (pathname.endsWith("/count_tokens")) {
+      await readBody(stream)
+      stream.respond({ ":status": 200, "content-type": "application/json" })
+      stream.end(JSON.stringify({ input_tokens: 12 }))
+      return
+    }
+    if (!pathname.endsWith("/chat/completions")) {
+      await readBody(stream)
+      stream.respond({ ":status": 200, "content-type": "application/json" })
+      stream.end(JSON.stringify({ ok: true, note: "mock GHC upstream" }))
+      return
+    }
+
+    // ── POST /chat/completions ──────────────────────────────────────────────────────────
+    const raw = await readBody(stream)
+    const mode = resolveMode(headers)
+    const [kind, silenceStr = "330"] = mode.split(":")
+    log(`${method} ${pathname} mode=${mode} bodyBytes=${raw.length}`)
+
+    if (kind !== "silent") {
+      log(`-> unknown mode ${mode}; replying with a clean baseline stream (no silence)`)
+      stream.respond(SSE_HEADERS)
+      writeFrame(stream, firstChunkFrame())
+      for (const f of tailFrames()) writeFrame(stream, f)
+      endStream(stream)
+      return
+    }
+
+    stream.respond(SSE_HEADERS)
+    await silentThenTailBody(stream, Number(silenceStr))
+  })().catch((e: unknown) => {
+    log(`-> handler error ${String(e)} ${rel()}`)
+    if (!streamDead(stream)) {
+      try {
+        stream.close(http2.constants.NGHTTP2_INTERNAL_ERROR)
+      } catch {
+        // already closing — best effort only.
+      }
+    }
+  })
+})
+
+server.on("error", (err) => log(`(server error) ${String(err)}`))
+
+server.listen(PORT, () => {
+  log(`listening on https://localhost:${PORT} (h2, node:http2 secure server)  (MOCK_UPSTREAM_MODE=${process.env.MOCK_UPSTREAM_MODE ?? "silent:330"})  model=${MODEL_ID}  models=${MODELS_PATH}`)
+})

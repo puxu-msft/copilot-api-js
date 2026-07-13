@@ -167,12 +167,12 @@ describe("T7.2 — the anthropic forward @cc/@responses cell assembly returns a 
   test("a CC-target env yields the CC stack (contains auto-truncate) — NOT a throw", () => {
     const stack = resolveCellAssembly("anthropic", ENDPOINT.CHAT_COMPLETIONS).buildStrategies(ccLegEnv(ENDPOINT.CHAT_COMPLETIONS))
     expect(stack.length).toBeGreaterThan(0)
-    expect(stack.map((s) => s.name)).toContain("auto-truncate")
+    expect(stack.map((s) => s.name)).toContain("token-refresh")
   })
 
   test("a Responses-target env also yields the CC stack (deferred CC→Responses wire) — NOT a throw", () => {
     const stack = resolveCellAssembly("anthropic", ENDPOINT.RESPONSES).buildStrategies(ccLegEnv(ENDPOINT.RESPONSES))
     expect(stack.length).toBeGreaterThan(0)
-    expect(stack.map((s) => s.name)).toContain("auto-truncate")
+    expect(stack.map((s) => s.name)).toContain("token-refresh")
   })
 })

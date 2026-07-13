@@ -65,6 +65,7 @@ import {
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
+import { isResponsesCommitBoundary } from "~/lib/codec/openai-responses/commit-boundaries"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { HTTPError } from "~/lib/error"
 import {
@@ -101,7 +102,11 @@ import {
   buildResponsesResponseData,
 } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
-import { state } from "~/lib/state"
+import {
+  //
+  resolveBufferedCaps,
+  state,
+} from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 import {
@@ -338,7 +343,14 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // buffered mode (commit withholds every real frame until the terminal → long silence would
   // otherwise trip Codex's idle deadline; buffered forces a ping even when the operator left
   // `streamKeepalivePingSec` at 0). See resolveResponsesBufferedAndHeartbeat.
-  const { buffered, heartbeatSec } = resolveResponsesBufferedAndHeartbeat()
+  const { buffered: bufferedConfigured, heartbeatSec } = resolveResponsesBufferedAndHeartbeat()
+  // Block-level buffered retry applies ONLY to the DIRECT (/responses) sub-path: the via-chat-completions
+  // fallback synthesizes its terminal lifecycle (output_item.done → response.completed) in
+  // codec.flushResponse POST-loop (handler-v4.ts closing drain below), invisible to the driver's in-loop
+  // commit-boundary flush AND to sawMessageStop — so a clean fallback drain would be mis-committed as a
+  // truncation and retried to exhaustion. Same structural root cause as Gemini (spec §7.4). Fallback stays
+  // live until flushResponse is refactored into the driver's buffered commit unit (docs/todo backlog).
+  const buffered = bufferedConfigured && !viaFallback
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
@@ -410,6 +422,12 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
       await driver.runResponseBufferedSink(upstream, env, sink, {
         onRenderedFrame, // restore + accumulate (the buffered drain invokes it per frame)
         anchor: undefined, // the empty-text keepalive anchor is Anthropic-only → every driver anchor branch is inert
+        // Block-level commit boundary (P2 Task 2, spec §3.1): flush at each output item's
+        // `response.output_item.done` (+ the three lifecycle terminals + the in-band upstream `error`
+        // frame, spec §5.3 M1) instead of once at the terminal drain. A boundary block committed live
+        // closes the retry window (driver `committedAny`) — a later truncation degrades to
+        // `partial-degrade` instead of retrying (the committed prefix is already on the wire).
+        commitBoundaries: isResponsesCommitBoundary,
         sawMessageStop: () => acc.status !== "", // terminal seen (completed/failed/incomplete) = the R5.2 gate, reused from live
         sawUpstreamError: () => acc.streamError !== undefined, // terminal upstream `error` frame → commit + fail (not retry); see above
         // Per-attempt isolation: rebind a FRESH accumulator + zero the progress counters before each
@@ -422,16 +440,25 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
           bytesIn = 0
           eventsIn = 0
         },
-        retryCap: state.protectStreamingMaxRetries,
-        bufferCapBytes: state.protectStreamingBufferCapBytes,
-        // Hit-rate telemetry parity with Anthropic (messages/handler-v4.ts:1088): counted ONLY for an
-        // actual L2 engagement (a save after ≥1 retry, an exhaustion, or a buffer-cap retreat). A clean
-        // first-try commit (retries === 0, no RST) is the silent happy path — tagging it would put
-        // `protect-streaming-retry` on essentially every buffered 200 and inflate the "success" rate.
-        onBufferedResolve: (o, retries) => {
+        retryCap: resolveBufferedCaps("responses").maxRetries,
+        bufferCapBytes: resolveBufferedCaps("responses").bufferCapBytes,
+        // Vendor label the driver injects into onBufferedResolve's `meta.vendor` → the vendor-keyed
+        // telemetry bucket. The handler forwards `meta` verbatim (no re-hardcoding the vendor string).
+        telemetryVendor: "responses",
+        // Hit-rate telemetry parity with Anthropic (messages/handler-v4.ts): counted ONLY for an actual
+        // L2 engagement (a save after ≥1 retry, an exhaustion, a buffer-cap retreat, or a
+        // `partial-degrade`). A clean first-try commit (retries === 0, no RST) is the silent happy path —
+        // tagging it would put `protect-streaming-retry` on essentially every buffered 200 and inflate
+        // the "success" rate. `partial-degrade` IS reachable now that `commitBoundaries` is wired above
+        // (P2 Task 2): a boundary block committed live, then a later truncation, is ALWAYS an L2
+        // engagement, so it is recorded even at retries === 0 (spec §9.2 M-1) — only the clean
+        // first-try `success` short-circuits. The driver-injected `meta` (vendor) is forwarded as-is
+        // (no vendor re-hardcoding, no re-deriving `retriesBeforeDegrade` — the stats module folds it
+        // from the `retries` formal param).
+        onBufferedResolve: (o, retries, meta) => {
           if (o === "success" && retries === 0) return
-          recordProtectStreamingOutcome(o, retries)
-          env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries })
+          recordProtectStreamingOutcome(o, retries, meta)
+          env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries, vendor: meta.vendor })
           consola.debug(`[protect-stream:responses] ${o} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
         },
       })

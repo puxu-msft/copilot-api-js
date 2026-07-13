@@ -51,18 +51,6 @@ function nullableNonnegativeInt() {
     .optional()
 }
 
-const UNIT_FLOAT_MSG = "Must be a number in (0, 1] or null"
-
-/** A float in the half-open interval (0, 1] — e.g. auto_truncate.target_factor (0 would zero the limit). */
-function nullableUnitFloat() {
-  return z
-    .number({ error: UNIT_FLOAT_MSG })
-    .gt(0, UNIT_FLOAT_MSG)
-    .lte(1, UNIT_FLOAT_MSG)
-    .nullable()
-    .transform((v): number | undefined => v ?? undefined)
-    .optional()
-}
 
 function nullableBoolean() {
   return z
@@ -202,9 +190,51 @@ export const RateLimiterConfigSchema = z
   })
   .strict()
 
+/**
+ * Vendor-neutral buffered-retry caps override. Shared shape for:
+ *   - top-level `buffered_retry` (shared caps, no `enabled` semantic),
+ *   - `anthropic.buffered_retry` (per-vendor cap override; Anthropic's mode
+ *     switch is the tri-state `protect_streaming_generation`, so `enabled` is
+ *     ignored here),
+ *   - `openai_responses.buffered_retry` / `chat_completions.buffered_retry`
+ *     (per-vendor override PLUS the `enabled` mode switch — see
+ *     {@link nullableBufferedRetry}, which also accepts a bare boolean as the
+ *     `enabled` shorthand).
+ *
+ * Resolution priority (see `resolveBufferedCaps` in state.ts): per-vendor
+ * override > shared `buffered_retry.*` > built-in default (max_retries 3 /
+ * buffer_cap_bytes 16777216 / heartbeat_sec 15).
+ */
+export const BufferedRetryOverrideSchema = z
+  .object({
+    /** Mode switch (responses / chat_completions only; ignored for shared + anthropic). */
+    enabled: nullableBoolean(),
+    /** Max transport-close / truncation retries (loop/cost guard; 0 = no retry). */
+    max_retries: nullableNonnegativeInt(),
+    /** Max bytes to buffer before retreating to live forwarding (OOM guard; 0 = unlimited). */
+    buffer_cap_bytes: nullableNonnegativeInt(),
+    /** Forced heartbeat interval (seconds) for the buffered path; clamped < client idle deadline. */
+    heartbeat_sec: nullableNonnegativeInt(),
+  })
+  .strict()
+
+/**
+ * `buffered_retry` value schema for vendors that carry an `enabled` mode switch
+ * (Responses / Chat Completions): either a bare boolean (`enabled` shorthand)
+ * or the full {@link BufferedRetryOverrideSchema} map.
+ */
+function nullableBufferedRetry() {
+  return z
+    .union([z.boolean(), BufferedRetryOverrideSchema])
+    .nullable()
+    .transform((v): boolean | z.infer<typeof BufferedRetryOverrideSchema> | undefined => v ?? undefined)
+    .optional()
+}
+
 export const AnthropicConfigSchema = z
   .object({
-    server_tool_strip: nullableBoolean(),
+    /** Forward `/v1/messages/count_tokens` to the GHC upstream (exact counts, uses the copilot token). Default true. When false, count_tokens uses the local calibrated tiktoken estimate only. */
+    use_upstream_count_tokens: nullableBoolean(),
     /**
      * Upstream→client response-header forwarding MODE (Anthropic path). `false`
      * (default) = BLACKLIST: forward everything except `response_header_blacklist`.
@@ -416,22 +446,6 @@ export const AnthropicConfigSchema = z
       })
       .optional()
       .transform((v) => v ?? undefined),
-    /**
-     * Rewrite native server-tool blocks left in inbound message history before
-     * sending upstream. The web_search double-hop surfaces a synthesized
-     * `server_tool_use{web_search}` + `web_search_tool_result` pair to the client
-     * (so results are visible); the client echoes it back, but the downgraded
-     * `tools` array no longer declares `web_search` as a server tool → upstream 400.
-     *   "downgrade": rewrite the pair into plain tool_use + tool_result, splitting
-     *                the assistant turn so the tool_result lands in a user message.
-     *   false:       passthrough (default).
-     */
-    server_tool_rewrite: z
-      .union([z.literal(false), z.literal("downgrade"), z.null()], {
-        error: "Must be one of: false, downgrade",
-      })
-      .optional()
-      .transform((v) => v ?? undefined),
     tool_dedup_calls: z
       .union([z.boolean(), z.literal("input"), z.literal("result"), z.null()], {
         error: "Must be one of: false, true, input, result",
@@ -448,8 +462,9 @@ export const AnthropicConfigSchema = z
     context_editing_keep_tools: nullableNonnegativeInt(),
     context_editing_keep_thinking: nullableNonnegativeInt(),
     tool_search: nullableBoolean(),
-    // Anthropic memory tool (native memory_20250818 server tool). Default off — rewrites a client tool
-    // named `memory` to the server-tool descriptor + forces the context-management beta. See features.ts.
+    // Anthropic memory tool (native memory_20250818 — a client-EXECUTED typed tool, NOT a
+    // server tool; the model drives it, the client runs /memories). Default off — rewrites a
+    // client tool named `memory` to the {name,type} descriptor + forces the context-management beta.
     server_tool_memory: nullableBoolean(),
     cache_control: nullableEnum(["disabled", "passthrough", "sanitize", "proxied"] as const),
     // Extended prompt-cache TTL (extended-cache-ttl-2025-04-11). Upgrades the cache_control breakpoints
@@ -487,6 +502,12 @@ export const AnthropicConfigSchema = z
     tool_decode_all_input_fields: nullableBoolean(),
     tool_recover_call_text: nullableBoolean(),
     refusal_sse_rewrite: nullableEnum(["refusal", "end_turn", "error"] as const),
+    /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。支持占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留。空串=不追加 text 块（仅改 end_turn）。未配=内置默认（逐字节等价旧固定文案）。 */
+    refusal_end_turn_text: nullableString(),
+    /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。未配=内置默认。 */
+    refusal_error_message: nullableString(),
+    /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。未配=内置默认。 */
+    refusal_error_type: nullableString(),
     /**
      * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item with a header but no question).
      * Only items missing the `question` key are touched. Default true.
@@ -580,18 +601,15 @@ export const AnthropicConfigSchema = z
       .optional()
       .transform((v) => v ?? undefined),
     /**
-     * Max transport-close / truncation retries for the buffered-retry path (a
-     * loop/cost guard, NOT a timeout guard — the client is kept alive by the
-     * forced heartbeat). `0` = no retry (buffer + commit only). Default 3.
+     * Per-vendor buffered-retry cap override for the Anthropic path (max_retries /
+     * buffer_cap_bytes / heartbeat_sec). Overrides the shared top-level
+     * `buffered_retry.*`, which overrides the built-in defaults (3 / 16777216 / 15).
+     * The `enabled` field is IGNORED here — Anthropic's buffered mode switch is the
+     * tri-state `protect_streaming_generation` above. (Legacy
+     * `protect_streaming_{max_retries,heartbeat,buffer_cap_bytes}` migrate here;
+     * see CONFIG_MIGRATIONS in compat.ts.)
      */
-    protect_streaming_max_retries: nullableNonnegativeInt(),
-    /**
-     * L2 buffered-path memory guard: max bytes to buffer before ABANDONING buffering and
-     * retreating to live forwarding for the rest of THIS response (the response then loses
-     * L2 protection — a live RST fails as today). Prevents a pathologically huge generation
-     * from buffering unbounded → OOM. `0` = unlimited. Default 16MiB.
-     */
-    protect_streaming_buffer_cap_bytes: nullableNonnegativeInt(),
+    buffered_retry: nullableSection(BufferedRetryOverrideSchema),
     /**
      * On each buffered RST/truncation retry, FORCE a progressively aggressive native
      * `clear_tool_uses` context_management edit (lower trigger + smaller keep) to compress the
@@ -622,14 +640,6 @@ export const AnthropicConfigSchema = z
       })
       .strict()
       .optional(),
-    /**
-     * Forced heartbeat interval (seconds) for the buffered-retry path. The buffered
-     * sink withholds all real frames until `message_stop`, so the client would idle
-     * out without a ping; the buffered path constructs a heartbeat UNCONDITIONALLY,
-     * using `stream_keepalive_ping_sec` when positive, otherwise this fallback.
-     * Default 15.
-     */
-    protect_streaming_heartbeat: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -644,8 +654,13 @@ export const ResponsesConfigSchema = z
   .object({
     normalize_call_ids: nullableBoolean(),
     upstream_ws: nullableBoolean(),
-    /** Opt-in mid-stream buffered retry for the Responses SSE/HTTP path (default false; Codex auto-retry is opt-in). */
-    buffered_retry: nullableBoolean(),
+    /**
+     * Opt-in mid-stream buffered retry for the Responses SSE/HTTP path (default false; Codex
+     * auto-retry is opt-in). Accepts a bare boolean (`enabled` shorthand) or a map
+     * `{ enabled, max_retries, buffer_cap_bytes, heartbeat_sec }` whose caps override the
+     * shared top-level `buffered_retry.*` for this vendor (see resolveBufferedCaps).
+     */
+    buffered_retry: nullableBufferedRetry(),
     fix_stream_ids: nullableBoolean(),
     client_ws_keep_open: nullableBoolean(),
     /**
@@ -660,6 +675,18 @@ export const ResponsesConfigSchema = z
     max_client_ws_connections: nullableNonnegativeInt(),
     /** Soft cap on upstream WS pool size (default 32; 0 = unlimited). */
     max_upstream_ws_connections: nullableNonnegativeInt(),
+  })
+  .strict()
+
+/**
+ * `chat_completions` top-level section. Currently holds only the buffered-retry
+ * mode switch + per-vendor cap override (P3 net-new terminal-only buffering for
+ * the Chat Completions path). Boolean shorthand = `enabled`; map form overrides
+ * the shared `buffered_retry.*` caps for the `chat_completions` vendor.
+ */
+export const ChatCompletionsConfigSchema = z
+  .object({
+    buffered_retry: nullableBufferedRetry(),
   })
   .strict()
 
@@ -691,34 +718,11 @@ export const HistoryConfigSchema = z
   })
   .strict()
 
-export const WebSearchConfigSchema = z
-  .object({
-    /** Enable the double-hop web_search server-tool implementation (Anthropic path only). Default false. */
-    enabled: nullableBoolean(),
-    /**
-     * Search backend selector:
-     *   ""        — not configured / disabled (default)
-     *   "searxng" — local SearXNG instance at http://localhost:8080
-     *   other     — treated as a Copilot Responses search model id (e.g. "gpt-5.5")
-     */
-    backend: nullableString(),
-  })
-  .strict()
 
-export const AutoTruncateConfigSchema = z
+export const RetryConfigSchema = z
   .object({
-    /** Enable reactive auto-truncate (retry with a truncated payload on upstream token-limit errors). Default false. Also settable via CLI --auto-truncate, which wins when explicitly passed. */
-    enabled: nullableBoolean(),
-    /** Truncation target as a fraction of the upstream-reported limit (target = limit × factor). (0, 1]; smaller = safer/more removed, larger = leaner. Default 0.9. */
-    target_factor: nullableUnitFloat(),
-    /** Max reactive auto-truncate retries per request. 0 = a single attempt, no retry. Default 5. */
-    max_retries: nullableNonnegativeInt(),
-    /** Compress old tool_result content before truncating messages. Default true. (Was top-level `compress_tool_results_before_truncate`.) */
-    compress_tool_results: nullableBoolean(),
-    /** Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress everything. Default 10000. */
-    compress_threshold: nullableNonnegativeInt(),
-    /** Main-path pre-flight truncation: before sending, use the learned size-aware calibration factor to predict whether the request will exceed the model's token limit and pre-truncate it, saving a guaranteed-to-fail 400 round-trip. Reactive truncation (on upstream limit errors) remains the fallback. Opt-in; default false. */
-    preflight: nullableBoolean(),
+    /** Shared per-request cap on ALL reactive retry strategies (network / server-error / token-refresh / 400-class negotiation etc.). 0 = a single attempt, no retry. Default 5. Was `auto_truncate.max_retries`. */
+    max_reactive_retries: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -874,20 +878,27 @@ export const ConfigSchema = z
     rate_limiter: nullableSection(RateLimiterConfigSchema),
     anthropic: nullableSection(AnthropicConfigSchema),
     openai_responses: nullableSection(ResponsesConfigSchema),
+    chat_completions: nullableSection(ChatCompletionsConfigSchema),
+    /**
+     * Vendor-neutral SHARED buffered-retry caps (`max_retries` / `buffer_cap_bytes`
+     * / `heartbeat_sec`). Overridden per-vendor by `anthropic.buffered_retry` /
+     * `openai_responses.buffered_retry` / `chat_completions.buffered_retry`, and in
+     * turn overrides the built-in defaults (3 / 16777216 / 15). Top-level (not under
+     * a vendor) because the caps are protocol-neutral; only the `enabled` mode switch
+     * is per-vendor. The `enabled` field here is ignored (there is no shared mode
+     * switch). See resolveBufferedCaps in state.ts.
+     */
+    buffered_retry: nullableSection(BufferedRetryOverrideSchema),
     model_overrides: ModelOverridesSchema.nullable()
       .transform((v): z.infer<typeof ModelOverridesSchema> | undefined => v ?? undefined)
       .optional(),
     disabled_models: nullableNonemptyStringArray(),
     /**
-     * Reactive auto-truncate settings (nested section). When `enabled`, an upstream
-     * token-limit error (400/413) triggers a retry with a truncated payload instead
-     * of surfacing the error. Top-level (not under `anthropic.*`) because it spans
-     * both the Anthropic and Chat Completions retry pipelines. `enabled` is also
-     * settable via the CLI `--auto-truncate` flag, which takes precedence when
-     * explicitly passed. `target_factor` / `max_retries` / `compress_threshold` tune
-     * the truncation behavior (config-only).
+     * Reactive-retry budget shared by ALL retry strategies (400-class negotiation,
+     * network, server-error, token-refresh, …). Was `auto_truncate.max_retries`,
+     * hoisted out because it never was truncation-specific.
      */
-    auto_truncate: nullableSection(AutoTruncateConfigSchema),
+    retry: nullableSection(RetryConfigSchema),
     /**
      * Sanitize tool names that violate the target model's constraints (illegal
      * characters like dots, over-length, collisions) into legal names before
@@ -898,7 +909,6 @@ export const ConfigSchema = z
     sanitize_tool_names: nullableBoolean(),
     history: nullableSection(HistoryConfigSchema),
     hooks: nullableSection(HooksConfigSchema),
-    server_tool_web_search: nullableSection(WebSearchConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
     model_refresh_interval: nullableNonnegativeInt(),
@@ -973,9 +983,9 @@ export type RateLimiterConfig = z.infer<typeof RateLimiterConfigSchema>
 export type AnthropicConfig = z.infer<typeof AnthropicConfigSchema>
 export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
+export type ChatCompletionsConfig = z.infer<typeof ChatCompletionsConfigSchema>
+export type BufferedRetryOverride = z.infer<typeof BufferedRetryOverrideSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
-export type WebSearchConfig = z.infer<typeof WebSearchConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
-/** Config-file shape of the `auto_truncate` section (distinct from the engine's runtime `AutoTruncateConfig`). */
-export type AutoTruncateConfigSection = z.infer<typeof AutoTruncateConfigSchema>
+export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
 export type Config = z.infer<typeof ConfigSchema>

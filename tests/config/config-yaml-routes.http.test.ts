@@ -85,7 +85,7 @@ timeouts:
 history:
   limit: 20
 anthropic:
-  server_tool_strip: true
+  tool_strip_read_result_tags: true
 `)
 
     const res = await app.request("/api/config/yaml")
@@ -94,7 +94,7 @@ anthropic:
     expect(await res.json()).toEqual({
       timeouts: { response_header: 600 },
       history: { limit: 20 },
-      anthropic: { server_tool_strip: true },
+      anthropic: { tool_strip_read_result_tags: true },
     })
   })
 
@@ -115,10 +115,9 @@ history:
   limit: 20
   reaper_interval: 120
 anthropic:
-  server_tool_strip: true
+  tool_strip_read_result_tags: true
   tool_dedup_calls: result
   thinking_block_message_policy: preserve
-  tool_strip_read_result_tags: true
   context_editing: clear-both
   context_editing_trigger: 200000
   context_editing_keep_tools: 4
@@ -140,8 +139,8 @@ rate_limiter:
   request_interval: 30
   recovery_interval: 60
   consecutive_successes: 3
-auto_truncate:
-  compress_tool_results: false
+retry:
+  max_reactive_retries: 3
 system_prompt_overrides:
   - from: danger
     to: safe
@@ -174,10 +173,9 @@ system_prompt_append: "append"
         reaper_interval: 120,
       },
       anthropic: {
-        server_tool_strip: true,
+        tool_strip_read_result_tags: true,
         tool_dedup_calls: "result",
         thinking_block_message_policy: "preserve",
-        tool_strip_read_result_tags: true,
         context_editing: "clear-both",
         context_editing_trigger: 200000,
         context_editing_keep_tools: 4,
@@ -203,8 +201,8 @@ system_prompt_append: "append"
         recovery_interval: 60,
         consecutive_successes: 3,
       },
-      auto_truncate: {
-        compress_tool_results: false,
+      retry: {
+        max_reactive_retries: 3,
       },
       system_prompt_overrides: [
         {
@@ -446,10 +444,9 @@ model_refresh_interval: 600
         reaper_interval: 120,
       },
       anthropic: {
-        server_tool_strip: true,
+        tool_strip_read_result_tags: true,
         tool_dedup_calls: "result",
         thinking_block_message_policy: "preserve",
-        tool_strip_read_result_tags: true,
         context_editing: "clear-both",
         context_editing_trigger: 200000,
         context_editing_keep_tools: 4,
@@ -475,8 +472,8 @@ model_refresh_interval: 600
         recovery_interval: 60,
         consecutive_successes: 3,
       },
-      auto_truncate: {
-        compress_tool_results: false,
+      retry: {
+        max_reactive_retries: 3,
       },
       system_prompt_overrides: [
         {
@@ -525,7 +522,7 @@ model_refresh_interval: 600
     expect(state.historySuccessLimit).toBe(20)
     expect(state.historyFailureLimit).toBe(20)
     expect(state.historyReaperInterval).toBe(120)
-    expect(state.stripServerTools).toBe(true)
+    expect(state.stripReadToolResultTags).toBe(true)
     expect(state.contextEditingMode).toBe("clear-both")
     expect(state.contextEditingTrigger).toBe(200000)
     expect(state.contextEditingKeepTools).toBe(4)
@@ -662,7 +659,7 @@ shutdown:
     await writeConfig(`
 anthropic:
   # keep this comment
-  server_tool_strip: false
+  tool_strip_read_result_tags: false
   context_editing: clear-thinking
 `)
 
@@ -671,7 +668,7 @@ anthropic:
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         anthropic: {
-          server_tool_strip: true,
+          tool_strip_read_result_tags: true,
         },
       }),
     })
@@ -679,14 +676,14 @@ anthropic:
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       anthropic: {
-        server_tool_strip: true,
+        tool_strip_read_result_tags: true,
         context_editing: "clear-thinking",
       },
     })
 
     const written = await readConfig()
     expect(written).toContain("# keep this comment")
-    expect(written).toContain("server_tool_strip: true")
+    expect(written).toContain("tool_strip_read_result_tags: true")
     expect(written).toContain("context_editing: clear-thinking")
   })
 
@@ -752,7 +749,7 @@ shutdown:
   test("PUT /api/config/yaml preserves untouched anthropic sibling keys during partial updates", async () => {
     await writeConfig(`
 anthropic:
-  server_tool_strip: true
+  tool_strip_read_result_tags: true
   context_editing: clear-thinking
 `)
 
@@ -774,7 +771,7 @@ anthropic:
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       anthropic: {
-        server_tool_strip: true,
+        tool_strip_read_result_tags: true,
         context_editing: "clear-thinking",
         system_rewrite_reminders: [
           {
@@ -786,7 +783,7 @@ anthropic:
     })
 
     const written = await readConfig()
-    expect(written).toContain("server_tool_strip: true")
+    expect(written).toContain("tool_strip_read_result_tags: true")
     expect(written).toContain("context_editing: clear-thinking")
     expect(written).toContain("system_rewrite_reminders:")
   })
@@ -979,21 +976,21 @@ history:
     })
   })
 
-  test("PUT /api/config/yaml deleting anthropic.server_tool_strip resets runtime state to default", async () => {
+  test("PUT /api/config/yaml deleting anthropic.tool_strip_read_result_tags resets runtime state to default", async () => {
     await writeConfig(`
 anthropic:
-  server_tool_strip: true
+  tool_strip_read_result_tags: true
   context_editing: clear-thinking
 `)
     await applyConfigToState()
-    expect(state.stripServerTools).toBe(true)
+    expect(state.stripReadToolResultTags).toBe(true)
 
     const res = await app.request("/api/config/yaml", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         anthropic: {
-          server_tool_strip: null,
+          tool_strip_read_result_tags: null,
         },
       }),
     })
@@ -1004,7 +1001,7 @@ anthropic:
         context_editing: "clear-thinking",
       },
     })
-    expect(state.stripServerTools).toBe(false)
+    expect(state.stripReadToolResultTags).toBe(false)
     expect(state.contextEditingMode).toBe("clear-thinking")
   })
 

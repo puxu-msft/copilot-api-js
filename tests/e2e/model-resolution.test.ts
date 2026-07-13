@@ -104,27 +104,26 @@ describeWithToken("Model Name Resolution", () => {
   })
 
   describe("Versioned model names", () => {
-    test("should strip date suffix from claude-sonnet-4-20250514", () => {
-      const resolved = resolveModelName("claude-sonnet-4-20250514")
-
-      // Should be claude-sonnet-4 (no date suffix)
-      expect(resolved).not.toMatch(/\d{8}$/)
-      expect(resolved).toContain("claude-sonnet")
-      console.log("[Versioned] claude-sonnet-4-20250514 ->", resolved)
-    })
-
-    test("should convert claude-sonnet-4-5-20250514 to claude-sonnet-4.5", () => {
-      const resolved = resolveModelName("claude-sonnet-4-5-20250514")
+    test("hyphenated version → canonical dot form (no date involved)", () => {
+      const resolved = resolveModelName("claude-sonnet-4-5")
 
       expect(resolved).toBe("claude-sonnet-4.5")
-      console.log("[Versioned] claude-sonnet-4-5-20250514 ->", resolved)
+      console.log("[Versioned] claude-sonnet-4-5 ->", resolved)
     })
 
-    test("should convert claude-opus-4-5-20250101 to claude-opus-4.5", () => {
-      const resolved = resolveModelName("claude-opus-4-5-20250101")
+    test("dated snapshot names are NOT auto-stripped — they pass through unchanged", () => {
+      // Date-suffix stripping was removed; a dated name only remaps via an explicit
+      // model_overrides entry, otherwise it falls through verbatim.
+      expect(resolveModelName("claude-sonnet-4-20250514")).toBe("claude-sonnet-4-20250514")
+      expect(resolveModelName("claude-sonnet-4-5-20250514")).toBe("claude-sonnet-4-5-20250514")
+      expect(resolveModelName("claude-opus-4-5-20250101")).toBe("claude-opus-4-5-20250101")
+    })
 
-      expect(resolved).toBe("claude-opus-4.5")
-      console.log("[Versioned] claude-opus-4-5-20250101 ->", resolved)
+    test("a dated name resolves when model_overrides maps it explicitly", () => {
+      setModelOverrides({ "claude-haiku-4-5-20251001": "claude-haiku-4.5" })
+      expect(resolveModelName("claude-haiku-4-5-20251001")).toBe("claude-haiku-4.5")
+      // Restore the alias overrides the rest of the block relies on.
+      setModelOverrides({ opus: "claude-opus-4.8", sonnet: "claude-sonnet-4.6", haiku: "claude-haiku-4.5" })
     })
 
     test("should pass through already-correct model names unchanged", () => {

@@ -36,7 +36,7 @@ describe("ConfigSchema → JSON Schema export", () => {
   test("known top-level keys are present in JSON Schema properties", () => {
     const json = toJsonSchema()
     const props = json.properties as Record<string, unknown>
-    for (const key of ["proxy", "anthropic", "history", "shutdown", "rate_limiter", "openai_responses", "model_overrides", "timeouts", "auto_truncate"]) {
+    for (const key of ["proxy", "anthropic", "history", "shutdown", "rate_limiter", "openai_responses", "model_overrides", "timeouts", "retry"]) {
       expect(props[key]).toBeDefined()
     }
   })

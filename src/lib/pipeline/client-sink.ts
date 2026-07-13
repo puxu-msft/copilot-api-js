@@ -34,7 +34,7 @@ import type { WSContext } from "hono/ws"
 
 import type { SseEventRecord } from "~/lib/history"
 
-import { wasFrameRewritten } from "~/lib/pipeline/hooks/origin"
+import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 
 import type { ClientFrame } from "./types"
 import type { ClientSink } from "./types"
@@ -56,8 +56,8 @@ export interface OpenBlock {
 /**
  * Forward-idle heartbeat config for {@link makeSseSink} (Stage B B2). The format supplies the
  * keepalive FRAME (or a provider) — the sink stays format-agnostic. `intervalSec <= 0` disables
- * it. Mirrors `startForwardedSseHeartbeat` (streaming-pump.ts) but lives in the sink so `write`
- * naturally notes the last-real-frame time. The injected frame is sampled into the forwarded track.
+ * it. Lives in the sink so `write` naturally notes the last-real-frame time. The injected frame
+ * is sampled into the forwarded track.
  */
 export interface SseSinkHeartbeat {
   /** Seconds of client-forward silence before a synthetic keepalive is injected (<=0 disables). */
@@ -91,7 +91,7 @@ export interface SseSinkOptions {
    * Forwarded-track sampler: invoked per real frame (`write`) AND per injected ping
    * (the heartbeat timer), NEVER per `writeSynthetic`. The handler pushes the record
    * into `forwardedSseEvents` (→ history `inboundResponse.sseEvents`). The record
-   * shape (offsetMs / parsed-type / raw bytes) mirrors the legacy `forwardClientFrame`.
+   * shape (offsetMs / parsed-type / raw bytes) mirrors the legacy forwarded-record shape (streaming-pump.ts `forwardClientFrame`, removed with the web_search retirement).
    */
   onForwarded?: (record: SseEventRecord) => void
   /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
@@ -155,7 +155,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // Bare SSE write. Forwards the full SSE framing (event/data/id/retry) — `id`/`retry`
   // are part of the wire (the upstream may emit `id:`/`retry:` lines), so dropping them
   // would silently narrow the bypass-direct passthrough. Byte-equivalent to the legacy
-  // forwardClientFrame (streaming-pump.ts): `id` stringified, undefined keys omitted.
+  // (legacy forwardClientFrame semantics, retired): `id` stringified, undefined keys omitted.
   const writeSse = (frame: ClientFrame): Promise<void> =>
     enqueue(() =>
       stream.writeSSE({
@@ -166,7 +166,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
       }),
     )
 
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite"): void => {
+  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery"): void => {
     onForwarded?.({
       offsetMs: Date.now() - streamStartMs,
       type: (forwardedType ?? frameType)(frame),
@@ -184,23 +184,42 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // (fixed-frame mode does zero parsing → byte-identical to before). Generic content-block state
   // machine reading JSON fields shared by content-block-structured SSE streams; no Anthropic import.
   const trackOpenBlock = heartbeatOn && typeof heartbeat.pingFrame === "function"
-  let openBlock: OpenBlock | undefined
+  // Open content blocks as a STACK, not a single slot (C1). An anchor@0 injected in buffered pre-commit
+  // stays OPEN at the BOTTOM of the stack for the whole stream; every real block flushes at index+1 ABOVE
+  // it (push on content_block_start, pop on content_block_stop). The keepalive rides the TOP (`at(-1)`):
+  // while a real block is open the tick continues THAT block; once the real block closes the stack falls
+  // back to the still-open anchor → the inter-block tick emits an empty `text_delta@0` (real content that
+  // resets Claude Code's 300s deadline) instead of a BARE ping (a single slot was overwritten by the real
+  // block's start@+1, then cleared by its stop@+1 → undefined → bare ping → 300s disconnect). For a single
+  // block (no anchor beneath) the stack depth is ≤1, so this is byte-for-byte the old single-slot behavior.
+  let openBlockStack: Array<OpenBlock> = []
+  const currentOpenBlock = (): OpenBlock | undefined => openBlockStack.at(-1)
   const noteBlockState = (frame: ClientFrame): void => {
     if (!trackOpenBlock || frame.data === undefined) return
     try {
       const p = JSON.parse(frame.data) as { type?: unknown; index?: unknown; content_block?: { type?: unknown } }
       if (p.type === "content_block_start" && typeof p.index === "number" && typeof p.content_block?.type === "string") {
-        openBlock = { index: p.index, type: p.content_block.type }
-      } else if (p.type === "content_block_stop" && typeof p.index === "number" && openBlock?.index === p.index) {
-        openBlock = undefined
+        openBlockStack.push({ index: p.index, type: p.content_block.type })
+      } else if (p.type === "content_block_stop" && typeof p.index === "number") {
+        openBlockStack = openBlockStack.filter((b) => b.index !== p.index) // pop the closed block (by index; may be below the top for out-of-order stops)
       }
     } catch {
-      // non-JSON frame → not a content-block boundary; leave openBlock unchanged
+      // non-JSON frame → not a content-block boundary; leave the stack unchanged
     }
   }
   let lastRealMs = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
+  // Recoverable per-block flush guard (spec 2026-07-11-block-level-buffered-retry §4.4). Distinct from
+  // freezeHeartbeat (PERMANENT — clears the timer, never resumes): `suspendHeartbeat` only STOPS the tick
+  // from INJECTING (the tick top-guards on this flag and early-returns WITHOUT rescheduling), so a timer
+  // firing mid-flush can't splice an empty delta into a real block's deltas; `resumeHeartbeat` re-arms a
+  // fresh interval so the INTER-block idle still gets keepalives. The block-level path suspends around each
+  // boundary flush loop; the whole-response path keeps using freezeHeartbeat (a one-shot terminal commit).
+  let heartbeatSuspended = false
+  // Re-arm hook set on the heartbeat-ON path (below, once `tick`/`intervalMs` exist). Stays a no-op on the
+  // heartbeat-OFF path so `resumeHeartbeat` is a defined-but-inert primitive there (parity with freezeHeartbeat).
+  let rearmHeartbeat = (): void => {}
   // One-shot guard so concurrent/re-entrant ticks can't fire a second anchor injection (which would
   // collide block indices). Reset to false when an injection reports `did===false` (pre-message_start),
   // so the NEXT idle tick retries once message_start has arrived (spec §3.3 lazy injection).
@@ -211,14 +230,15 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   const write = (frame: ClientFrame): Promise<void> => {
     lastRealMs = Date.now()
     noteBlockState(frame) // update open-block state from real forwarded frames (provider mode only)
-    // Task 2.3: a hook-rewritten frame (tagged via `tagFrameRewritten`, hooks/origin.ts) samples
-    // forwarded with `synthetic:"hook-rewrite"` — the same forwarded-only treatment as the other
-    // synthetic markers (keepalive/anchor), just driven by a per-frame TAG read off the frame
-    // itself rather than a distinct write method: a hook-rewritten frame is REGULAR content
-    // flowing through this SAME `write()` call as every other real frame, so the driver has no
-    // separate call site to route it through (unlike writeKeepalive/writeAnchor, which the
-    // driver/handler always calls deliberately for its OWN synthesized frames).
-    sampleForwarded(frame, wasFrameRewritten(frame) ? "hook-rewrite" : undefined)
+    // A synthetic-origin frame (tagged via `tagFrameSynthetic`, frame-origin.ts) samples forwarded
+    // with its `synthetic` kind — `"hook-rewrite"` (a `rewriteUpstreamFrame` hook changed the frame)
+    // or `"refusal-recovery"` (refusal recovery's injected end_turn text / rewritten delta / error
+    // frame). Same forwarded-only treatment as the other synthetic markers (keepalive/anchor), just
+    // driven by a per-frame TAG read off the frame itself rather than a distinct write method: such a
+    // frame is REGULAR content flowing through this SAME `write()` call as every other real frame, so
+    // the driver has no separate call site to route it through (unlike writeKeepalive/writeAnchor,
+    // which the driver/handler always calls deliberately for its OWN synthesized frames).
+    sampleForwarded(frame, readSyntheticKind(frame))
     return writeSse(frame)
   }
 
@@ -290,8 +310,26 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     }
   }
 
+  // suspendHeartbeat / resumeHeartbeat — the RECOVERABLE per-block-flush guard (spec §4.4). suspend flips
+  // the flag the tick top-guards on: a timer firing while suspended early-returns WITHOUT injecting AND
+  // WITHOUT rescheduling (so no empty delta lands mid-block). resume re-arms a FRESH interval (counted from
+  // resume, `lastRealMs` reset) so the inter-block idle keeps getting keepalives. `rearmHeartbeat` clears any
+  // still-live timer before arming so a suspend→resume WITHIN one interval (no tick fired) leaves EXACTLY one
+  // timer (never a double-ping). Idempotent: resume is a no-op when not suspended (the single live timer is
+  // untouched); both are inert no-ops on the heartbeat-OFF path (rearmHeartbeat stays the empty default).
+  const suspendHeartbeat = (): void => {
+    heartbeatSuspended = true
+  }
+  const resumeHeartbeat = (): void => {
+    if (!heartbeatSuspended) return
+    heartbeatSuspended = false
+    lastRealMs = Date.now()
+    if (stopped) return // closed sink — don't resurrect a timer
+    rearmHeartbeat()
+  }
+
   if (!heartbeatOn) {
-    return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat }
+    return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
   }
 
   const intervalMs = heartbeat.intervalSec * 1000
@@ -302,20 +340,20 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     // from the current open block. Sampled into the forwarded track (a keepalive IS a proxy→client
     // frame), shares the chain (no byte-interleave). Errors swallowed: the next real write hits the
     // same closed stream and routes through the driver's outcome path.
-    const frame = typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(openBlock) : heartbeat.pingFrame
+    const frame = typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(currentOpenBlock()) : heartbeat.pingFrame
     sampleForwarded(frame, "keepalive")
     void writeSse(frame).catch(() => undefined)
     lastRealMs = Date.now()
   }
   const tick = (): void => {
-    if (stopped || heartbeat.clientAbortSignal?.aborted) return
+    if (stopped || heartbeatSuspended || heartbeat.clientAbortSignal?.aborted) return
     const elapsed = Date.now() - lastRealMs
     if (elapsed >= intervalMs) {
       // Buffered empty_text anchor (§3.3): the forward stream has NO open block yet → light one by
       // asking the driver-supplied closure to forward message_start + the empty-text anchor block
-      // (through the PUBLIC write, so noteBlockState updates openBlock). Runs BEFORE the provider
-      // frame is chosen — a provider called with openBlock===undefined would only yield a bare ping.
-      if (heartbeat.injectAnchor && openBlock === undefined && !anchorAttempted) {
+      // (through the PUBLIC write, so noteBlockState pushes openBlock={0,text} onto the stack). Runs BEFORE
+      // the provider frame is chosen — a provider called with no open block would only yield a bare ping.
+      if (heartbeat.injectAnchor && openBlockStack.length === 0 && !anchorAttempted) {
         anchorAttempted = true
         void heartbeat
           .injectAnchor()
@@ -347,8 +385,17 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   timer = setTimeout(tick, intervalMs)
   // unref so a leaked timer can never hold the event loop / block graceful shutdown.
   ;(timer as unknown as { unref?: () => void }).unref?.()
+  // Wire the resume re-arm (now that `tick`/`intervalMs` exist): clear any still-live timer, then arm a
+  // fresh interval + unref. Clearing first makes a suspend→resume WITHIN one interval leave EXACTLY one
+  // timer (a suspended tick that already fired left a dead chain; one that didn't left a live timer we must
+  // not duplicate). Guarded by `stopped` inside `resumeHeartbeat`, so a post-close resume never resurrects.
+  rearmHeartbeat = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(tick, intervalMs)
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+  }
 
-  return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat }
+  return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
 }
 
 /** {@link makeWsSink} options — forwarded-track sampling (optional) + forward-idle heartbeat (optional). */
@@ -443,7 +490,7 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
   // only `data` (no SSE event/id/retry line), matching legacy `ws.send`. `synthetic` marks a proxy-
   // injected keepalive OR a hook-rewritten frame so history/UI/logs never mistake either for real
   // unaltered upstream content.
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "hook-rewrite"): void => {
+  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery"): void => {
     onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) })
   }
   const sendRaw = (frame: ClientFrame): Promise<void> =>
@@ -474,7 +521,7 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
   // `hook-rewrite` when tagged, Task 2.3 — see makeSseSink's `write` for the full rationale) + send.
   const write = (frame: ClientFrame): Promise<void> => {
     hb?.noteActivity()
-    sampleForwarded(frame, wasFrameRewritten(frame) ? "hook-rewrite" : undefined)
+    sampleForwarded(frame, readSyntheticKind(frame))
     return sendRaw(frame)
   }
   // A handler-synthesized terminal error frame IS a proxy→client frame (the WS analog of the HTTP

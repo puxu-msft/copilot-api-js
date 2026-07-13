@@ -79,7 +79,6 @@ BROWSER=wslview npm dist-tag add @hsupu/copilot-api@0.8.3 latest
 |------|--------|------|
 | `--external-ui-url` |  | 把 `/ui` 反代到外部 Vite dev/build server |
 | `--verbose`, `-v` | `false` | 详细日志（包含 Copilot token 刷新日志） |
-| `--auto-truncate` | 默认禁用 | 在 context 超限错误时启用响应式 auto-truncate |
 | `--mock-rate-limiter-throttled` | `false` | 仅供测试：限速器超时后模拟上游 429 |
 
 ---
@@ -231,7 +230,7 @@ gemini -p "hello"
 ├── copilot-token.json              # 缓存的 Copilot bearer（含过期时间）
 ├── history.db                      # SQLite history（payload 经 gzip 压缩）
 ├── negotiation-states.json         # 学习到的每模型禁用项（betas / body 字段 / efforts）
-├── auto-truncate-limits.json       # 学习到的每模型 context 上限
+├── auto-truncate-limits.json       # 学习到的每模型 token 计数 calibration 因子
 └── system-prompts/                 # 可选的 system prompt 转储（开启时）
 ```
 

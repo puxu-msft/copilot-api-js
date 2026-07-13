@@ -112,7 +112,6 @@ import {
 } from "../openai-cc/codec"
 import {
   //
-  anthropicPreSend,
   prepareAnthropicWire,
   sampleAnthropicRequest,
 } from "./anthropic-leg"
@@ -327,12 +326,6 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       return prepared
     },
 
-    preSend(env) {
-      // Pre-flight truncation is Anthropic-caliber (calibrated on the Anthropic body); on a translate
-      // leg the body is CC-shaped, so skip it (the cc leg's own truncation strategy handles size).
-      if (isForwardTranslateLeg(env.targetEndpoint)) return Promise.resolve(env)
-      return anthropicPreSend(env)
-    },
 
     sampleRequest(wire, env): RequestSample {
       // Translate leg: the effective + wire are CC-shaped — delegate to the cc sampler (correct format

@@ -32,6 +32,20 @@ export class FakeClock {
     globalThis.clearTimeout = this.origClear
   }
 
+  /**
+   * Number of timers that are still LIVE — armed, not yet fired, not cleared. A fired timer is
+   * `delete`d from the map by {@link advance}; a `clearTimeout`'d one is flagged `cleared`. So a
+   * "rearm WITHOUT clearTimeout-first" leak surfaces here as an EXTRA live entry. This is the
+   * load-bearing oracle for the §4.4 "suspend→resume leaves EXACTLY one timer" invariant — the ping
+   * count alone is blind to it, because a leaked timer that fires mid-interval reschedules without a
+   * ping (elapsed < interval) instead of emitting an observable extra ping.
+   */
+  get liveTimerCount(): number {
+    let n = 0
+    for (const t of this.timers.values()) if (!t.cleared) n++
+    return n
+  }
+
   async advance(ms: number): Promise<void> {
     const target = this.now + ms
     for (;;) {

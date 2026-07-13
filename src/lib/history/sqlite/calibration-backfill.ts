@@ -1,6 +1,6 @@
 /**
  * Recoverable background backfill that SEED-CALIBRATES the size-aware factor model
- * (lib/auto-truncate/engine.ts) from existing history — the cold-start bootstrap
+ * (lib/models/calibration/engine.ts) from existing history — the cold-start bootstrap
  * (spec §6). For every completed anthropic-messages row it pairs the REAL prompt
  * token count (the `entries_v2` usage columns) with the LOCAL gpt-tokenizer
  * estimate (recomputed from the stored wire request body) and accumulates raw
@@ -22,7 +22,7 @@
  *     so it may briefly read slightly higher than the bucket sums reflect until the
  *     next live sample lands and re-syncs them — self-healing, not a leak.
  *   - Backfill is synthetic → `isLive:false` semantics: `liveSampleCount` stays 0,
- *     so `computeSafetyMargin` keeps its conservative width until real events land.
+ *     so the liveSampleCount confidence signal stays honest until real events land.
  *
  * Idempotency + recovery:
  *   - **Guard**: `history_meta(calibration_backfill_version)` short-circuits once
@@ -50,14 +50,14 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { countTotalTokens } from "~/lib/anthropic/auto-truncate"
+import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
 import {
   //
   applyBackfillBuckets,
   type BackfillBucketAgg,
   BUCKET_BOUNDS,
   bucketIndexFor,
-} from "~/lib/auto-truncate"
+} from "~/lib/models/calibration"
 import { state } from "~/lib/state"
 
 import type { UpstreamRequestLeg } from "../types"
@@ -244,7 +244,7 @@ async function processRow(scan: ScanRow, accum: Accum, stageSelect: ReturnType<D
     const model = state.modelIndex.get(modelName)
     if (!model) return "skipped"
 
-    const est = await countTotalTokens(body, model)
+    const est = await countTotalInputTokens(body, model)
     if (est < EST_FLOOR) return "skipped"
 
     accumulate(accum, model.id, bucketIndexFor(est), est, real)

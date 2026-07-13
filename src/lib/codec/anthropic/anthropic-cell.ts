@@ -46,7 +46,6 @@ import { state } from "~/lib/state"
 
 import {
   //
-  anthropicPreSend,
   prepareAnthropicWire,
   prepareReverseAnthropicWire,
   sampleAnthropicRequest,
@@ -128,11 +127,8 @@ export const anthropicMessagesLeg: OutboundLeg = {
     return ALL_RESPONSE_REWRITES
   },
 
-  preSend(env): Promise<RequestEnvelope> {
-    // REVERSE: no pre-flight truncation (the source codecs had no preSend; the reverse resanitize handles size).
-    if (isReverse(env)) return Promise.resolve(env)
-    return anthropicPreSend(env)
-  },
+  // No preSend: the main-path pre-flight truncation was removed with auto-truncate (master 2026-07-13 —
+  // remove-auto-truncate-keep-calibration). The reactive retry stack is the only size/limit handling now.
 
   sampleWireTrack(wire, env): RequestSample {
     // The reverse sample is byte-identical to the direct one (both anthropic-messages-shaped effective+wire).
@@ -169,7 +165,7 @@ export const anthropicMessagesLeg: OutboundLeg = {
 
 /** RETRY_SEMANTICS for the anthropic client on the /v1/messages leg — auto-truncate in the stack, N retries. */
 export function anthropicMessagesRetrySemantics(): RetrySemanticsSpec {
-  return { autoTruncate: true, maxRetries: state.autoTruncateMaxRetries, label: "Anthropic" }
+  return { maxRetries: state.maxReactiveRetries, label: "Anthropic" }
 }
 
 /**
@@ -180,5 +176,5 @@ export function anthropicMessagesRetrySemantics(): RetrySemanticsSpec {
  * driver's top-level retry budget — 1 for responses — is a separate handler-level concern, not this spec).
  */
 export function anthropicReverseRetrySemantics(label: string): RetrySemanticsSpec {
-  return { autoTruncate: true, maxRetries: state.autoTruncateMaxRetries, label }
+  return { maxRetries: state.maxReactiveRetries, label }
 }

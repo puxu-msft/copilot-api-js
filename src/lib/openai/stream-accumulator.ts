@@ -33,6 +33,16 @@ export interface OpenAIStreamAccumulator extends BaseStreamAccumulator {
   finishReason: string
   toolCalls: Array<{ id: string; name: string; arguments: string }>
   toolCallMap: Map<number, ToolCallAccumulator>
+  /**
+   * A TERMINAL upstream `error` frame (`{"error":{"message":...,"type":...}}`), if one was
+   * seen. Symmetric with the Anthropic/Responses accumulators' `streamError`: an in-band
+   * `error` frame is an upstream DECISION to fail (overload / server error), delivered as a
+   * clean SSE frame that drains without ever setting `finishReason`. The block-level buffered
+   * path (P3 — `ccCommitBoundaries`) treats such a frame as a commit boundary; this field lets
+   * the handler's `sawUpstreamError` COMMIT + fail it (the real code/message) instead of
+   * wastefully retrying it as a transport truncation. Undefined = no terminal error frame seen.
+   */
+  streamError?: { message: string; type: string }
 }
 
 export function createOpenAIStreamAccumulator(): OpenAIStreamAccumulator {
@@ -53,6 +63,14 @@ export function createOpenAIStreamAccumulator(): OpenAIStreamAccumulator {
 /** Accumulate a single parsed OpenAI chunk into the accumulator */
 export function accumulateOpenAIStreamEvent(parsed: ChatCompletionChunk, acc: OpenAIStreamAccumulator) {
   if (parsed.model && !acc.model) acc.model = parsed.model
+
+  // A TERMINAL upstream `error` frame (not part of the SDK's `ChatCompletionChunk` shape — GHC
+  // emits it in-band instead of a lifecycle chunk) — see `ccCommitBoundaries` / `streamError` doc.
+  const errorField = (parsed as unknown as { error?: { message?: string; type?: string } }).error
+  if (errorField) {
+    acc.streamError = { message: errorField.message ?? "Unknown stream error", type: errorField.type ?? "server_error" }
+    return
+  }
 
   if (parsed.usage) {
     acc.inputTokens = parsed.usage.prompt_tokens

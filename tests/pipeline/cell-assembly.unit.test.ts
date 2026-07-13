@@ -28,6 +28,7 @@ import type {
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { state } from "~/lib/state"
 import {
   //
   MIGRATED_CELLS,
@@ -88,30 +89,25 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     for (const cf of ["anthropic", "openai-cc", "openai-responses", "gemini"] as const) expect(isCellMigrated(cf, ENDPOINT.WS_RESPONSES)).toBe(false)
   })
 
-  test("R1/HIGH-A corner: openai-responses auto-truncate is a 2D function of BOTH axes, not a clientFormat scalar", () => {
-    // The corner that breaks BOTH single-axis scalars: the openai-responses REVERSE @messages cell has
-    // auto-truncate ON (the Anthropic stack), while its DIRECT /responses + FALLBACK /chat cells have it OFF
-    // (the Responses stack, maxRetries 1). RETRY_SEMANTICS reads env.targetEndpoint to pick.
-    expect(RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.MESSAGES)).autoTruncate).toBe(true)
-    const direct = RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.RESPONSES))
-    expect(direct.autoTruncate).toBe(false)
-    expect(direct.maxRetries).toBe(1)
-    const fallback = RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.CHAT_COMPLETIONS))
-    expect(fallback.autoTruncate).toBe(false)
-    expect(fallback.maxRetries).toBe(1)
-    // Symmetry (the other axis-half): cc/gemini/anthropic on the SAME /responses leg are auto-truncate ON —
-    // so auto-truncate is neither a pure clientFormat scalar NOR a pure targetEndpoint scalar.
-    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.RESPONSES)).autoTruncate).toBe(true)
-    expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.RESPONSES)).autoTruncate).toBe(true)
-    expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.RESPONSES)).autoTruncate).toBe(true)
-    // cc + gemini reverse @messages also auto-truncate ON.
-    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.MESSAGES)).autoTruncate).toBe(true)
-    expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.MESSAGES)).autoTruncate).toBe(true)
+  test("maxRetries corner: openai-responses budget is a 2D function of BOTH axes, not a clientFormat scalar", () => {
+    // Post-remove-auto-truncate (master 2026-07-13), the strategy STACK is identical across cells; the
+    // residual per-cell difference is maxRetries. The corner that breaks BOTH single-axis scalars: the
+    // openai-responses DIRECT /responses + FALLBACK /chat cells cap at 1, while its REVERSE @messages cell —
+    // and every other cell — uses maxReactiveRetries. RETRY_SEMANTICS reads env.targetEndpoint to pick.
+    expect(RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.RESPONSES)).maxRetries).toBe(1)
+    expect(RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.CHAT_COMPLETIONS)).maxRetries).toBe(1)
+    // The SAME openai-responses client's REVERSE @messages cell uses the shared budget (not 1) — so the
+    // budget is neither a pure clientFormat scalar NOR a pure targetEndpoint scalar.
+    expect(RETRY_SEMANTICS["openai-responses"](envStub("openai-responses", ENDPOINT.MESSAGES)).maxRetries).toBe(state.maxReactiveRetries)
+    // Symmetry (the other axis-half): cc/gemini/anthropic on the SAME /responses leg use the shared budget.
+    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.RESPONSES)).maxRetries).toBe(state.maxReactiveRetries)
+    expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.RESPONSES)).maxRetries).toBe(state.maxReactiveRetries)
+    expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.RESPONSES)).maxRetries).toBe(state.maxReactiveRetries)
   })
 
-  test("C3/C4 semantics: the CC-shaped /chat + /responses cells have auto-truncate ON + distinct labels", () => {
-    // openai-cc DIRECT + anthropic/gemini FORWARD @cc all run the CC stack (auto-truncate ON), differing
-    // only in the console label. Via-responses cells carry the (→Responses) labels.
+  test("C3/C4 semantics: the CC-shaped /chat + /responses cells carry the shared budget + distinct labels", () => {
+    // openai-cc DIRECT + anthropic/gemini FORWARD @cc all run the CC-family stack (shared maxReactiveRetries),
+    // differing only in the console label. Via-responses cells carry the (→Responses) labels.
     expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.CHAT_COMPLETIONS)).label).toBe("Completions")
     expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.CHAT_COMPLETIONS)).label).toBe("Anthropic(→CC)")
     expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.CHAT_COMPLETIONS)).label).toBe("Gemini")
@@ -120,10 +116,9 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.RESPONSES)).label).toBe("Gemini(→Responses)")
   })
 
-  test("the migrated anthropic|/v1/messages cell resolves to a live semantics spec (auto-truncate on)", () => {
-    // RETRY_SEMANTICS for the MIGRATED cell returns a real spec (not a throw): auto-truncate in the stack.
+  test("the migrated anthropic|/v1/messages cell resolves to a live semantics spec", () => {
+    // RETRY_SEMANTICS for the MIGRATED cell returns a real spec (not a throw).
     const spec = RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.MESSAGES))
-    expect(spec.autoTruncate).toBe(true)
     expect(spec.maxRetries).toBeGreaterThanOrEqual(0)
     expect(spec.label).toBe("Anthropic")
   })
@@ -169,10 +164,10 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     }
   })
 
-  test("R1/HIGH-A golden — auto-truncate IS in the stack for the CC-family cells but NOT the openai-responses direct/fallback cells", () => {
-    // The plan-mandated R1 corner golden: prove the STACK, not just the flag. buildStrategies for the
-    // openai-responses DIRECT /responses cell must NOT contain an "auto-truncate" strategy (the Responses
-    // stack), while its REVERSE @messages cell + the via-responses cc cell DO (the Anthropic/CC stacks).
+  test("maxRetries corner golden — the openai-responses direct cell's stack caps at 1; the CC-family/reverse cells at maxReactiveRetries", () => {
+    // Post-remove-auto-truncate the strategy STACK is identical (network → server-error → token-refresh),
+    // so the corner golden proves the maxRetries BUDGET, not an auto-truncate flag. Each cell's stack is
+    // non-empty (Phase-7 guard) + carries no "auto-truncate" strategy (that engine is gone).
     const respBody = { model: "gpt-5.5", input: [] }
     const responsesEnv = {
       clientFormat: "openai-responses" as const,
@@ -185,8 +180,11 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     const directStrategies = resolveCellAssembly("openai-responses", ENDPOINT.RESPONSES).buildStrategies(responsesEnv)
     expect(directStrategies.length).toBeGreaterThan(0)
     expect(directStrategies.some((s) => s.name === "auto-truncate")).toBe(false)
+    // The DIRECT /responses cell caps its budget at 1 (RETRY_SEMANTICS corner).
+    expect(RETRY_SEMANTICS["openai-responses"](responsesEnv).maxRetries).toBe(1)
 
-    // The openai-responses REVERSE @messages cell (SAME clientFormat, different leg) HAS auto-truncate.
+    // The openai-responses REVERSE @messages cell (SAME clientFormat, different leg) runs the Anthropic
+    // stack with the shared budget — no auto-truncate strategy either (that engine is gone project-wide).
     const ccBody = { model: "gpt-5.5", max_tokens: 100, messages: [] }
     const reverseEnv = {
       clientFormat: "openai-responses" as const,
@@ -197,10 +195,12 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
       requestState: { betaProbe: createBetaProbe(undefined), reverseMapperHolder: { get: () => undefined, set: () => {} } },
     } as unknown as RequestEnvelope
     const reverseStrategies = resolveCellAssembly("openai-responses", ENDPOINT.MESSAGES).buildStrategies(reverseEnv)
-    expect(reverseStrategies.some((s) => s.name === "auto-truncate")).toBe(true)
+    expect(reverseStrategies.length).toBeGreaterThan(0)
+    expect(reverseStrategies.some((s) => s.name === "auto-truncate")).toBe(false)
+    expect(RETRY_SEMANTICS["openai-responses"](reverseEnv).maxRetries).toBe(state.maxReactiveRetries)
 
-    // The via-responses cc cell (SAME /responses leg, different clientFormat) HAS auto-truncate — proving
-    // the flag is genuinely 2D (neither axis alone determines it).
+    // The via-responses cc cell (SAME /responses leg, different clientFormat) uses the shared budget — proving
+    // maxRetries is genuinely 2D (neither axis alone determines it).
     const viaEnv = {
       clientFormat: "openai-cc" as const,
       targetEndpoint: ENDPOINT.RESPONSES,
@@ -210,6 +210,7 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
       requestState: { truncateBaseline: ccBody },
     } as unknown as RequestEnvelope
     const viaStrategies = resolveCellAssembly("openai-cc", ENDPOINT.RESPONSES).buildStrategies(viaEnv)
-    expect(viaStrategies.some((s) => s.name === "auto-truncate")).toBe(true)
+    expect(viaStrategies.length).toBeGreaterThan(0)
+    expect(RETRY_SEMANTICS["openai-cc"](viaEnv).maxRetries).toBe(state.maxReactiveRetries)
   })
 })

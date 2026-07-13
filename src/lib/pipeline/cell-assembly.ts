@@ -79,19 +79,23 @@ import type {
 } from "./types"
 
 // ============================================================================
-// Retry semantics (clientFormat-keyed, reads env.targetEndpoint — R1/HIGH-A)
+// Retry semantics (clientFormat-keyed, reads env.targetEndpoint — the maxRetries corner)
 // ============================================================================
 
 /**
- * The retry-strategy SEMANTIC spec the wire leg does NOT own: whether auto-truncate is in the stack, the
- * normal-retry budget, and a label. Produced by {@link RETRY_SEMANTICS}[clientFormat](env) — the `env`
- * argument is load-bearing (R1/HIGH-A): `autoTruncate` is a 2D function that reads `env.targetEndpoint`,
- * NOT a clientFormat scalar.
+ * The retry-strategy SEMANTIC spec the wire leg does NOT own: the reactive-retry budget + a label.
+ * Produced by {@link RETRY_SEMANTICS}[clientFormat](env) — the `env` argument is load-bearing: `maxRetries`
+ * is a 2D function that reads `env.targetEndpoint`, NOT a clientFormat scalar (the openai-responses DIRECT
+ * `/responses` + FALLBACK `/chat` cells cap at 1, while the SAME client's REVERSE `@messages` cell — and
+ * every other cell — uses `state.maxReactiveRetries`).
+ *
+ * (Historically this also carried an `autoTruncate` flag — the R1/HIGH-A corner. Master removed auto-truncate
+ * entirely 2026-07-13, so every cell's strategy STACK is now identical [network → server-error →
+ * token-refresh]; the only residual per-cell difference is `maxRetries` + the console label + which builder's
+ * body shape the baseline is [CC vs Responses], dispatched by clientFormat in `buildCcFamilyLegStrategies`.)
  */
 export interface RetrySemanticsSpec {
-  /** Is auto-truncate in the retry stack for THIS cell? (R1: reads env.targetEndpoint, not a cf scalar). */
-  readonly autoTruncate: boolean
-  /** Normal-budget retry cap for THIS cell (CC/Anthropic legs 5; the Responses DIRECT/fallback leg 1). */
+  /** Reactive-retry cap for THIS cell (the Responses DIRECT/fallback cells 1; every other cell `maxReactiveRetries`). */
   readonly maxRetries: number
   /** Diagnostic label (history/telemetry). */
   readonly label: string
@@ -99,14 +103,13 @@ export interface RetrySemanticsSpec {
 
 /**
  * The retry SEMANTIC half, keyed by `clientFormat`, evaluated per-request against `env` (so a cell's
- * `env.targetEndpoint` selects the R1 corner). EXHAUSTIVE over {@link ClientFormat} → a new client format
- * is a compile error until its semantics land. C5: every cell is migrated, so every branch resolves (the
- * per-cf functions are total over {@link UpstreamEndpoint} — a new leg trips `assertExhaustiveEndpoint`).
+ * `env.targetEndpoint` selects the maxRetries corner). EXHAUSTIVE over {@link ClientFormat} → a new client
+ * format is a compile error until its semantics land. C5: every cell is migrated, so every branch resolves
+ * (the per-cf functions are total over {@link UpstreamEndpoint} — a new leg trips `assertExhaustiveEndpoint`).
  */
 export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => RetrySemanticsSpec> = {
   // anthropic: /v1/messages DIRECT (C2a) + `@cc`/`@responses` FORWARD (C3/C4 — the CC stack against the
-  // hub-translated CC body; the `@responses` leg's CC→Responses wire step is deferred to prepareWire, so
-  // its baseline stays CC-shaped → auto-truncate ON, same as `@cc`).
+  // hub-translated CC body; the `@responses` leg's CC→Responses wire step is deferred to prepareWire).
   anthropic: (env) => {
     if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicMessagesRetrySemantics()
     if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics("Anthropic(→CC)")

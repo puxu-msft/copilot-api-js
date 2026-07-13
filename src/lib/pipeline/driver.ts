@@ -659,7 +659,7 @@ async function runResponseSink(
  * each attempt's upstream-original frames onto its attempt record (D1) before the next attempt's
  * `runResponse` resets the top-level slot via `ctx.resetSseEvents()`.
  */
-async function runResponseBufferedSink(
+export async function runResponseBufferedSink(
   deps: DriverDeps,
   upstream: UpstreamStream,
   env: RequestEnvelope,
@@ -668,12 +668,20 @@ async function runResponseBufferedSink(
 ): Promise<ResponseOutcome> {
   const cap = opts.retryCap ?? 0
   const bufferCapBytes = opts.bufferCapBytes ?? 0
+  const vendor = opts.telemetryVendor ?? "unknown"
   // Same lazy resolution as the S4 exchange: a migrated cell's buffered re-exchange uses the CellAssembly
   // stack, never the legacy factory (so no double recordFeature vs the leg's translateOut).
   const strategies = resolveExchangeStrategies(deps, env)
   let current = upstream
   let currentEnv = env
   let attempt = 0
+  // Block-level commit tracking (P0 mechanism floor). Declared OUTSIDE the retry loop so it
+  // persists across attempts: once a block is committed live (`commitBoundaries` flush), the
+  // retry window is closed forever (a committed prefix is on the wire, un-retryable) and a later
+  // truncation degrades to `partial-degrade` instead of retrying. Stays FALSE the whole time on
+  // the terminal-only path (`commitBoundaries === undefined`) → the retry gate + terminal commit
+  // are byte-identical to the whole-response behaviour (R1).
+  let committedAny = false
 
   // Buffered empty-text keepalive anchor (spec 2026-07-08-buffered-keepalive-empty-text-anchor §3.2 +
   // §10.1.5 H1). The anchor STATE is now HANDLER-OWNED and threaded in via `opts.anchorState` so the
@@ -718,6 +726,44 @@ async function runResponseBufferedSink(
     }
   }
 
+  // Shared buffered-frame flush (extracted so the terminal commit AND the block-level boundary
+  // commit apply IDENTICAL anchor-aware semantics: heartbeat freeze → one-time anchor close-off →
+  // H1 message_start dedup → +1 remap). Returns a discriminated result so the caller maps it to a
+  // ResponseOutcome (never throws out). `firstFlush` makes the anchor close-off (which reserves
+  // index 0 before the first REAL block) happen exactly once across all flushes — on the terminal-
+  // only path (`commitBoundaries===undefined`) this is called ONCE, byte-identical to the previous
+  // inline whole-response commit (R1). C1 (spec §3.3): freeze the heartbeat BEFORE snapshotting
+  // `injected` + flushing so a mid-flush timer tick can't inject a second anchor start(0).
+  let firstFlush = true
+  type FlushResult = { kind: "ok" } | { kind: "client-abort" } | { kind: "write-error"; error: unknown }
+  const flushBufferedFrames = async (frames: Array<ClientFrame>): Promise<FlushResult> => {
+    sink.freezeHeartbeat?.()
+    const injected = anchorState.injected
+    const anchorBlockOpen = anchorState.anchorBlockOpen
+    try {
+      // M4: the anchor reserved index 0 → close it off (empty-text content_block_stop@0) BEFORE the
+      // first real block flush, then shift every real content_block_* by +1. Sets the shared
+      // `anchorClosed` guard (spec §10.5) so a later error terminus never emits a second stop@0.
+      if (firstFlush && injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
+        anchorState.anchorClosed = true
+        await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
+      }
+      for (const frame of frames) {
+        // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
+        // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
+        if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
+        await sink.write(injected && anchor && anchorBlockOpen ? anchor.remap(frame, 1) : frame)
+      }
+      firstFlush = false
+      return { kind: "ok" }
+    } catch (error) {
+      // Client gone mid-flush (a `sink.write` reject) — map it so the buffered sink ALWAYS returns a
+      // ResponseOutcome, never a raw throw (mirrors runResponseSink's catch; the buffer is discarded).
+      if (classifyStreamError(error) === "client-abort") return { kind: "client-abort" }
+      return { kind: "write-error", error }
+    }
+  }
+
   try {
     for (;;) {
       const buffer: Array<ClientFrame> = []
@@ -731,8 +777,13 @@ async function runResponseBufferedSink(
           const toWrite = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
           if (!toWrite) continue
           if (retreated) {
-            // Buffer cap already exceeded → live write-through for the rest (no more buffering).
-            await sink.write(toWrite)
+            // Buffer cap already exceeded → live write-through for the rest (no more buffering). When an anchor
+            // was injected BEFORE the retreat, the live continuation must stay consistent with the retreat
+            // flush's +1 remap (spec §6.3): shift every real content_block_* by +1 (the anchor holds @0) and
+            // DROP a duplicate message_start (H1 — the injector already forwarded it). Inert (byte-identical to
+            // the raw forward) when no anchor was injected — `injected`/`anchorBlockOpen` stay false.
+            if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(toWrite)) continue // H1 dedup
+            await sink.write(anchorState.injected && anchor && anchorState.anchorBlockOpen ? anchor.remap(toWrite, 1) : toWrite)
             continue
           }
           // Capture the FIRST message_start (before buffering it) into the SHARED anchorState so the
@@ -747,8 +798,51 @@ async function runResponseBufferedSink(
             // forwarded). Documented tradeoff (RFC §7 / §12 Q4) — pathological huge responses are rare.
             retreated = true
             opts.onRetreat?.()
-            for (const f of buffer) await sink.write(f)
+            // §6.3: flush the buffered prefix through the SAME anchor-aware transform as the terminal commit
+            // (one-time anchor close-off `stop@0` → H1 message_start dedup → +1 remap), so an anchor injected
+            // before the retreat can't collide the real @0 block with the anchor's @0 or re-send message_start.
+            // On the no-anchor path this is byte-identical to the previous raw `for (f of buffer) write(f)`
+            // (every anchor branch inert). SUSPEND/RESUME (recoverable) around the flush — NOT the terminal
+            // path's permanent freeze — because retreat is followed by MORE (live) streaming: a subsequent
+            // live stall must still get keepalives (the anchor is now closed, so the tick emits a block-aware
+            // empty delta on the live-open block, or a ping). `flushBufferedFrames`' internal freeze clears the
+            // timer; resume re-arms a fresh interval so the heartbeat recovers for the live continuation.
+            sink.suspendHeartbeat?.()
+            const res = await flushBufferedFrames(buffer)
+            sink.resumeHeartbeat?.()
             buffer.length = 0
+            if (res.kind === "client-abort") return { kind: "settled-abort" }
+            if (res.kind === "write-error") {
+              // Client gone mid-retreat-flush — the forwarded prefix is on the wire (un-retryable). Surface as a
+              // retreated resolution (never-swallow the write error). The `finally` closes the sink.
+              opts.onBufferedResolve?.("retreated", attempt, { vendor })
+              return { kind: "stream-error", error: res.error }
+            }
+          } else if (opts.commitBoundaries?.(toWrite)) {
+            // Block-level commit (P0): this frame closes a block → flush the buffered frames up to and
+            // including it, COMMITTING the block live. Inverts the commit point from "once at terminal
+            // drain" to "at each boundary". `committedAny` closes the retry window (a committed prefix is
+            // on the wire, un-retryable) and routes a later truncation to `partial-degrade`. Skipped
+            // entirely when `commitBoundaries` is undefined → the terminal-only path is byte-identical (R1).
+            //
+            // §4.4 concurrency guard: SUSPEND the heartbeat around this per-block flush (recoverable), so a
+            // tick firing on one of the loop's `await sink.write` yields can't splice an empty keepalive
+            // delta into the middle of THIS real block's deltas. RESUME after — unlike the terminal path's
+            // permanent freeze, the block-level flush is followed by MORE streaming, so the inter-block idle
+            // must keep its keepalives. (`flushBufferedFrames`' internal freeze clears the timer; resume
+            // re-arms a fresh interval, so the heartbeat recovers for the next inter-block gap.)
+            sink.suspendHeartbeat?.()
+            const res = await flushBufferedFrames(buffer)
+            sink.resumeHeartbeat?.()
+            buffer.length = 0
+            committedAny = true
+            if (res.kind === "client-abort") return { kind: "settled-abort" }
+            if (res.kind === "write-error") {
+              // A block committed, then the client-side write failed mid-commit — the committed prefix is
+              // on the wire (un-retryable). Surface as a graceful degrade (never-swallow the write error).
+              opts.onBufferedResolve?.("partial-degrade", attempt, { vendor })
+              return { kind: "stream-error", error: res.error }
+            }
           }
         }
         drained = true
@@ -762,7 +856,7 @@ async function runResponseBufferedSink(
       // The outcome mirrors the live path: complete (handler decides success/fail via its acc) or
       // stream-error (the throw / truncation surfaces as today).
       if (retreated) {
-        opts.onBufferedResolve?.("retreated", attempt)
+        opts.onBufferedResolve?.("retreated", attempt, { vendor })
         if (drained) return { kind: "complete", headers: current.headers }
         // M1: a post-retreat truncation still leaves the anchor open (it was injected during an idle stall
         // before the retreat) → close it before surfacing the stream-error.
@@ -780,55 +874,32 @@ async function runResponseBufferedSink(
       // live at the top-level slot, so they are NOT snapshotted per-attempt here — only a FAILED
       // (retried) attempt gets a per-attempt `sseEvents` row (D1), set in the retry branch below.
       if (drained && (opts.sawMessageStop() || opts.sawUpstreamError?.())) {
-        // C1 (spec §3.3): stop the idle heartbeat timer BEFORE snapshotting `injected` and flushing.
-        // The flush is `for (frame of buffer) await write(frame)` — every `await` yields the event loop,
-        // so a heartbeat firing mid-flush would inject a SECOND anchor start(0) that collides with real
-        // blocks already flushed at their remapped index. freezeHeartbeat clears the timer (does NOT
-        // close the sink — writes stay usable); the snapshot then pins one `injected` value for the whole
-        // flush so a (now-impossible) late mutation of anchorState can't split the remap decision.
-        sink.freezeHeartbeat?.()
-        const injected = anchorState.injected
-        // anchorBlockOpen discriminates the two injected preludes (spec §10.4): `empty_text` reserved a
-        // content_block@0 → close it off + remap real blocks +1; `enveloped_ping` injected a message_start-only
-        // envelope → NO block, so NO close-off and NO remap (real blocks keep their original index). Snapshotted
-        // alongside `injected` (both sync-flipped by the injector before its first await) so one pinned value
-        // drives the whole flush.
-        const anchorBlockOpen = anchorState.anchorBlockOpen
-        try {
-          // M4: the anchor reserved index 0, so close it off (empty-text content_block_stop@0) BEFORE the
-          // real blocks flush, then shift every real content_block_* by +1 so nothing collides at index 0.
-          // Sets `anchorState.anchorClosed` (shared guard, spec §10.5) so a later error terminus — e.g. the
-          // pump's catch after an H2 commit — never emits a second stop@0.
-          if (injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
-            anchorState.anchorClosed = true
-            await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
-          }
-          for (const frame of buffer) {
-            // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
-            // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
-            // Dedup applies to BOTH preludes (empty_text + enveloped_ping both forward one message_start).
-            if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
-            await sink.write(injected && anchor && anchorBlockOpen ? anchor.remap(frame, 1) : frame)
-          }
-        } catch (error) {
-          // Client gone mid-flush (a `sink.write` reject) — map it like the drain path so the
-          // buffered sink ALWAYS returns a ResponseOutcome, never a raw throw (mirrors
-          // runResponseSink's catch; the buffer is discarded — the client got a partial flush).
-          if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
-          // L2 produced a COMPLETE generation (reached the terminal frame) — the flush failed at the
-          // transport, NOT the retry: count it as a `success` so the hit-rate denominator isn't a
-          // blind spot. The handler still settles the request as failed (delivery), independently.
-          opts.onBufferedResolve?.("success", attempt)
-          return { kind: "stream-error", error }
+        // Flush the buffered TAIL (everything after the last committed block boundary). On the
+        // terminal-only path (`commitBoundaries===undefined`) `buffer` still holds the WHOLE
+        // generation and this is the ONE flush — byte-identical to before (R1). On the block-level
+        // path each boundary already flushed + emptied `buffer` in-loop, so this flushes only the
+        // post-last-boundary tail — and when the terminal frame is ITSELF a boundary, `buffer` is
+        // empty here, so the terminal is NOT re-flushed (M1 dedup: it reached the client exactly once
+        // in-loop). `flushBufferedFrames` owns the freeze + one-time anchor close-off + H1 dedup + remap.
+        const res = await flushBufferedFrames(buffer)
+        if (res.kind === "client-abort") return { kind: "settled-abort" }
+        if (res.kind === "write-error") {
+          // Client gone mid-flush. L2 produced a COMPLETE generation (reached the terminal frame) — the
+          // flush failed at the transport, NOT the retry: count it as a `success` so the hit-rate
+          // denominator isn't a blind spot. The handler still settles the request as failed (delivery).
+          opts.onBufferedResolve?.("success", attempt, { vendor })
+          return { kind: "stream-error", error: res.error }
         }
-        opts.onBufferedResolve?.("success", attempt)
+        opts.onBufferedResolve?.("success", attempt, { vendor })
         return { kind: "complete", headers: current.headers }
       }
 
       // Failure: a transport-close throw, OR a clean drain WITHOUT a terminal frame (truncation).
       // Retry ONLY a transport-close throw (`"other"`) or a truncation (no throw) — never a
-      // shutdown / idle-timeout throw.
-      const retryable = thrown ? classifyStreamError(thrown) === "other" : true
+      // shutdown / idle-timeout throw. `!committedAny` closes the retry window once a block was
+      // committed live (P0): a committed prefix is on the wire, so re-exchanging would double-send
+      // it. On the terminal-only path `committedAny` is always false → the gate is unchanged (R1).
+      const retryable = (thrown ? classifyStreamError(thrown) === "other" : true) && !committedAny
       if (retryable && attempt < cap) {
         attempt++
         // D1: snapshot THIS failed attempt's upstream-original frames onto the attempt BEFORE the
@@ -859,7 +930,12 @@ async function runResponseBufferedSink(
       // 穷尽/非重试：最终失败 attempt 也 finalize duration，供终端汇总行 last（截断路径无 setter）。
       currentEnv.ctx.finalizeCurrentAttemptDuration()
       await closeAnchorIfOpen()
-      opts.onBufferedResolve?.("exhausted", attempt)
+      // Block-level degrade (P0): a boundary block was ALREADY committed live, then the stream
+      // truncated (the `!committedAny` gate above forced this branch, un-retryable). The committed
+      // prefix is on the wire, so this is a GRACEFUL degrade — `partial-degrade`, distinct from
+      // `exhausted` (which committed nothing). On the terminal-only path `committedAny` is always
+      // false → `exhausted`, unchanged (R1).
+      opts.onBufferedResolve?.(committedAny ? "partial-degrade" : "exhausted", attempt, { vendor })
       return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
     }
   } finally {

@@ -36,7 +36,6 @@ import {
 import { clearAnthropicFeatureNegotiationForTests } from "~/lib/anthropic/feature-negotiation"
 import { resetProtectStreamingStatsForTests } from "~/lib/anthropic/protect-streaming-stats"
 import { resetToolInputRepairStatsForTests } from "~/lib/anthropic/tool-input-repair-stats"
-import { resetAllLimitsForTesting } from "~/lib/auto-truncate/engine"
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
 import {
@@ -51,6 +50,7 @@ import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-st
 import { resetResponsePreviewBackfillForTests } from "~/lib/history/sqlite/response-preview-backfill"
 import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
 import { resetUsageNormalizeBackfillForTests } from "~/lib/history/sqlite/usage-normalize-backfill"
+import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
 import {
   //

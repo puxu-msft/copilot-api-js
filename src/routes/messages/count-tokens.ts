@@ -5,17 +5,13 @@ import pc from "picocolors"
 
 import {
   //
-  checkNeedsCompactionAnthropic,
-  countTotalInputTokens,
-} from "~/lib/anthropic/auto-truncate"
-import {
-  //
   postAnthropicUpstream,
   prepareAnthropicRequest,
 } from "~/lib/anthropic/client"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
-import { hasKnownLimits } from "~/lib/auto-truncate"
+import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
 import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
+import { calibrate } from "~/lib/models/calibration"
 import {
   //
   ENDPOINT,
@@ -164,24 +160,6 @@ export async function handleCountTokens(c: Context) {
       consola.warn("[count_tokens] payload sanitize failed — counting the raw payload:", error)
     }
 
-    // Auto-truncate inflation check (moved to the front): if a prompt is over the
-    // limit and auto-truncate is on, return an inflated count to encourage
-    // Claude Code auto-compact. This is independent of the counting channel and
-    // saves a doomed-to-inflate upstream round-trip. Only for models with known
-    // limits.
-    if (state.autoTruncate && selectedModel && hasKnownLimits(selectedModel.id)) {
-      const truncateCheck = await checkNeedsCompactionAnthropic(payload, selectedModel, {
-        checkTokenLimit: true,
-      })
-
-      if (truncateCheck.needed) {
-        const contextWindow = selectedModel.capabilities?.limits?.max_context_window_tokens ?? 200000
-        const inflatedTokens = Math.floor(contextWindow * 0.95)
-        emitLine(payload.model, inflatedTokens, `inflated ${truncateCheck.currentTokens}>${truncateCheck.tokenLimit}, compact`)
-        return c.json({ input_tokens: inflatedTokens })
-      }
-    }
-
     // Model not in the account catalog — nothing to count against locally
     // (countTotalInputTokens requires a Model). Matches the previous guard's
     // position (must precede local estimation).
@@ -190,17 +168,25 @@ export async function handleCountTokens(c: Context) {
       return c.json({ input_tokens: 1 })
     }
 
-    // Default channel: GHC upstream count_tokens (exact counts, uses copilot token)
-    const ghcCount = await countTokensViaGhc(c, payload, selectedModel)
-    if (ghcCount !== null) {
-      emitLine(payload.model, ghcCount, "GHC upstream")
-      return c.json({ input_tokens: ghcCount })
+    // Default channel: GHC upstream count_tokens (exact counts, uses copilot token).
+    // Gated by `anthropic.use_upstream_count_tokens` (default on) — when off, skip the
+    // upstream round-trip and use the local calibrated estimate only.
+    if (state.useUpstreamCountTokens) {
+      const ghcCount = await countTokensViaGhc(c, payload, selectedModel)
+      if (ghcCount !== null) {
+        emitLine(payload.model, ghcCount, "GHC upstream")
+        return c.json({ input_tokens: ghcCount })
+      }
     }
 
-    // Fallback: local estimation (unsupported models / upstream failure).
-    // Excludes thinking blocks from assistant messages per Anthropic spec.
-    const inputTokens = await countTotalInputTokens(payload, selectedModel)
-    emitLine(payload.model, inputTokens, `local est, ${selectedModel.capabilities?.tokenizer ?? "o200k_base"}`)
+    // Fallback: local estimation (upstream disabled / unsupported model / failure).
+    // Excludes thinking blocks from assistant messages per Anthropic spec, then applies
+    // the learned size-aware calibration factor so the local estimate tracks the upstream
+    // real count (`calibrate` is identity for an unlearned model). This is the calibration
+    // model's honest-counting consumer post-auto-truncate-removal.
+    const rawEstimate = await countTotalInputTokens(payload, selectedModel)
+    const inputTokens = calibrate(selectedModel.id, rawEstimate)
+    emitLine(payload.model, inputTokens, `local calibrated, ${selectedModel.capabilities?.tokenizer ?? "o200k_base"}`)
 
     return c.json({ input_tokens: inputTokens })
   } catch (error) {

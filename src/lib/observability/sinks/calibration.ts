@@ -1,13 +1,16 @@
 /**
  * Calibration sink — learns the anthropic-vs-gpt token ratio from SUCCESSFUL
- * `request.completed` events (the 400 leg learns via `onTokenLimitExceeded`).
+ * `request.completed` events (the 400 leg learns via `CalibrationFailureSink`).
  *
  * For every completed anthropic-messages request it recomputes the local
- * gpt-tokenizer estimate of the wire body and pairs it with the upstream's
+ * gpt-tokenizer estimate of the wire body with `countTotalInputTokens` — the
+ * INPUT-ONLY caliber (excludes prior-turn thinking blocks, matching Anthropic's
+ * `usage.input_tokens` semantics) — and pairs it with the upstream's
  * authoritative real input-token count (input + cache_read + cache_creation),
  * feeding the (estimate, real) sample into `learnCalibration` (isLive) so the
  * size-aware per-bucket factor model converges from live traffic — not only
- * from the occasional 400.
+ * from the occasional 400. The 400 leg and the count-tokens consumer use the
+ * SAME caliber so all three agree (RFC §3.4).
  *
  * Fire-and-forget observability: the handler NEVER throws (an escaped async
  * rejection would crash the process — skill `debugging-server-crashes`). It
@@ -19,8 +22,8 @@ import consola from "consola"
 
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { countTotalTokens } from "~/lib/anthropic/auto-truncate"
-import { learnCalibration } from "~/lib/auto-truncate"
+import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
+import { learnCalibration } from "~/lib/models/calibration"
 import { state } from "~/lib/state"
 
 import type {
@@ -75,7 +78,7 @@ export class CalibrationSink {
       const model = state.modelIndex.get(body.model)
       if (!model) return
 
-      const est = await countTotalTokens(body, model)
+      const est = await countTotalInputTokens(body, model)
       if (est < EST_FLOOR) return
       learnCalibration(model.id, est, real, { isLive: true })
     } catch (err) {

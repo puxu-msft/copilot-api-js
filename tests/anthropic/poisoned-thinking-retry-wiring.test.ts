@@ -1,21 +1,18 @@
 /**
  * L2 poisoned-thinking retry — WIRING test (Task 7). Proves the strategy is
- * actually registered on BOTH pipeline paths (Task 6 built it but wired it
- * nowhere), driving the real "thinking ... cannot be modified" 400 through the
- * assembled strategy list end-to-end:
+ * actually registered on the v4 pipeline (Task 6 built it but wired it nowhere),
+ * driving the real "thinking ... cannot be modified" 400 through the assembled
+ * strategy list end-to-end:
  *
- *   1. v4 active path — `buildAnthropicStrategies` (codec/anthropic/strategies).
- *      The entry MUST be present, `canHandle` the real 400, and `handle` return
- *      the NATIVE env-action shape (`{ kind: "retry", env, learning }`, reading
- *      `env.body` + stripping every thinking block) — i.e. UNWRAPPED, not the
- *      `adaptLegacyStrategy` payload-shape wrapper (which would drop the `env.ctx`
- *      L3 later needs).
- *   2. legacy path — `buildAnthropicStrategies` (anthropic/pipeline, the
- *      web_search double-hop). The twin MUST be present and return the LEGACY
- *      `{ action: "retry", payload, meta }` shape.
+ *   v4 active path — `buildAnthropicStrategies` (codec/anthropic/strategies).
+ *   The entry MUST be present, `canHandle` the real 400, and `handle` return
+ *   the NATIVE env-action shape (`{ kind: "retry", env, learning }`, reading
+ *   `env.body` + stripping every thinking block) — i.e. UNWRAPPED, not the
+ *   `adaptLegacyStrategy` payload-shape wrapper (which would drop the `env.ctx`
+ *   L3 later needs).
  *
- * Both assert the strip-all remediation ran (thinking removed, count in meta), so
- * a registration that wired the wrong instance (adapted vs native, or omitted the
+ * Asserts the strip-all remediation ran (thinking removed, count in meta), so a
+ * registration that wired the wrong instance (adapted vs native, or omitted the
  * matcher) fails loudly.
  */
 
@@ -34,11 +31,7 @@ import type {
   MessagesPayload,
 } from "~/types/api/anthropic"
 
-import {
-  //
-  buildAnthropicStrategies as buildLegacyStrategies,
-  createBetaProbe,
-} from "~/lib/anthropic/pipeline"
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { buildAnthropicStrategies as buildV4Strategies } from "~/lib/codec/anthropic/strategies"
 import {
   //
@@ -129,37 +122,3 @@ describe("poisoned-thinking-retry wiring — v4 active path", () => {
   })
 })
 
-describe("poisoned-thinking-retry wiring — legacy web_search path", () => {
-  autoRestoreState()
-
-  function buildLegacy() {
-    return buildLegacyStrategies({ betaProbe: createBetaProbe(undefined), resanitize: stubResanitize })
-  }
-
-  test("registered in the legacy list right after adaptive-thinking-rejection-retry", () => {
-    setStateForTests({ stripThinkingOnReject: true })
-    const names = buildLegacy().map((s) => s.name)
-    expect(names).toContain("poisoned-thinking-retry")
-    expect(names.indexOf("adaptive-thinking-rejection-retry")).toBe(names.indexOf("legacy-thinking-retry") + 1)
-    expect(names.indexOf("poisoned-thinking-retry")).toBe(names.indexOf("adaptive-thinking-rejection-retry") + 1)
-  })
-
-  test("canHandle fires on the real 400, handle returns the LEGACY {action,payload,meta} shape (strips thinking)", async () => {
-    setStateForTests({ stripThinkingOnReject: true })
-    const strat = buildLegacy().find((s) => s.name === "poisoned-thinking-retry")
-    expect(strat).toBeDefined()
-    if (!strat) return
-    expect(strat.canHandle(realRejection())).toBe(true)
-
-    const payload = { model: "claude-opus-4.8", messages: poisonedMessages() } as unknown as MessagesPayload
-    const action = await strat.handle(realRejection(), payload, { attempt: 0, originalPayload: baseline, model: undefined, maxRetries: 5 })
-    // Legacy shape: { action: "retry", payload, meta } — NOT the env { kind } shape.
-    expect(action.action).toBe("retry")
-    if (action.action !== "retry") return
-    expect(hasThinking(action.payload)).toBe(false)
-    expect(action.meta?.strippedThinkingOnReject).toBe(1)
-    // Reliability symmetry with the native path: the corrective strip-all retry
-    // draws from the learning budget so it can't be starved under a retry pileup.
-    expect(action.learning).toBe(true)
-  })
-})

@@ -104,7 +104,6 @@ describeWithToken("GitHub Copilot API Integration", () => {
     setStateForTests({
       githubToken,
       accountType: "individual",
-      stripServerTools: true,
     })
 
     // Get Copilot token

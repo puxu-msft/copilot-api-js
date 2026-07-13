@@ -128,7 +128,7 @@ export const chatCompletionsLeg: OutboundLeg = {
  * console `label`. (The openai-responses FALLBACK cell's semantics come from `responsesFallbackRetrySemantics`.)
  */
 export function chatCompletionsRetrySemantics(label: string): RetrySemanticsSpec {
-  return { autoTruncate: true, maxRetries: state.autoTruncateMaxRetries, label }
+  return { maxRetries: state.maxReactiveRetries, label }
 }
 
 /**
@@ -137,5 +137,5 @@ export function chatCompletionsRetrySemantics(label: string): RetrySemanticsSpec
  * `buildOpenAiResponsesStrategiesForEnv`), unlike the CC-shaped cells on the same leg which are ON.
  */
 export function responsesFallbackRetrySemantics(): RetrySemanticsSpec {
-  return { autoTruncate: false, maxRetries: 1, label: "Responses(→CC fallback)" }
+  return { maxRetries: 1, label: "Responses(→CC fallback)" }
 }

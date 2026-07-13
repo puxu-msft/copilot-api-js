@@ -90,7 +90,7 @@ describe("C0 golden (b) — reverse @messages forwarded CC bytes (Anthropic→CC
   beforeEach(() => {
     upstreamFetchMock.mockClear()
     applyFetchMock(upstreamFetchMock)
-    setStateForTests({ copilotToken: "tok", autoTruncate: false, streamKeepalivePingSec: 0, streamCommitAfterSec: 0 })
+    setStateForTests({ copilotToken: "tok", streamKeepalivePingSec: 0, streamCommitAfterSec: 0 })
   })
 
   test("cc client @messages streaming → forwarded CC frames are byte-locked", async () => {

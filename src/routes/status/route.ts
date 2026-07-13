@@ -12,7 +12,11 @@ import {
 } from "@hono/zod-openapi"
 
 import { getAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
-import { getProtectStreamingStats } from "~/lib/anthropic/protect-streaming-stats"
+import {
+  //
+  getProtectStreamingStats,
+  protectStreamingHitRate,
+} from "~/lib/anthropic/protect-streaming-stats"
 import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { queryEntryCount } from "~/lib/history/sqlite/read"
@@ -242,11 +246,15 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
         buffered_retry: state.responsesBufferedRetry,
       },
 
-      // L2 buffered-retry hit-rate counters (RFC §10): since-restart aggregate.
-      // hit rate ≈ success / (success + exhausted) when retries occurred.
+      // L2 buffered-retry hit-rate counters (RFC §10): since-restart aggregate, keyed PER VENDOR
+      // (anthropic / responses / chat_completions / responses_ws — the same driver primitive drives
+      // every endpoint). Each vendor bucket carries the raw counters plus a derived `hit_rate`
+      // (success / (success + exhausted + partialDegrade); null when no scoreable engagements yet).
       protect_streaming: {
         enabled: state.protectStreamingGeneration,
-        ...getProtectStreamingStats(),
+        by_vendor: Object.fromEntries(
+          Object.entries(getProtectStreamingStats()).map(([vendor, s]) => [vendor, { ...s, hit_rate: protectStreamingHitRate(s) }]),
+        ),
       },
 
       // Malformed tool-input repair outcome counters (P6): since-restart aggregate

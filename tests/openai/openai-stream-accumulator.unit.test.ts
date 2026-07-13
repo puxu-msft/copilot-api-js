@@ -247,4 +247,55 @@ describe("accumulateOpenAIStreamEvent", () => {
     expect(acc.toolCallMap.size).toBe(1)
     expect(acc.finishReason).toBe("tool_calls")
   })
+
+  // ── Terminal upstream `error` frame (H2) ──
+  // GHC can drain a stream CLEANLY (no transport RST, never throws) but its LAST frame is an
+  // in-band `{"error":{message,type}}` chunk instead of a `finish_reason` chunk — not part of
+  // the SDK's `ChatCompletionChunk` shape. This is the CC analog of Anthropic/Responses' H2:
+  // an upstream DECISION to fail, not a transport truncation. `ccCommitBoundaries` (the P3
+  // block-level commit predicate) already treats such a frame as a commit boundary; the
+  // accumulator's `streamError` field is what lets the handler's `sawUpstreamError` / H2
+  // fail-branch read the REAL code/message instead of misreporting it as "truncated".
+
+  test("sets streamError from an in-band terminal error frame", () => {
+    const acc = createOpenAIStreamAccumulator()
+    accumulateOpenAIStreamEvent(textDelta("partial content"), acc)
+    accumulateOpenAIStreamEvent(
+      makeChunk({ error: { message: "The model is overloaded. Please try again later.", type: "server_error" } } as unknown as Partial<ChatCompletionChunk>),
+      acc,
+    )
+
+    expect(acc.streamError).toEqual({ message: "The model is overloaded. Please try again later.", type: "server_error" })
+    // The error frame never carries a finish_reason — the fallback content from before the
+    // error frame arrived is preserved (the handler's H2 branch reads it as the partial).
+    expect(acc.rawContent).toBe("partial content")
+    expect(acc.finishReason).toBe("")
+  })
+
+  test("an error frame short-circuits accumulation — no other field is read from it", () => {
+    const acc = createOpenAIStreamAccumulator()
+    accumulateOpenAIStreamEvent(
+      makeChunk({
+        error: { message: "boom", type: "server_error" },
+        // A malformed/unexpected upstream frame could in principle carry both an error AND a
+        // choices/usage payload in the same chunk — the accumulator must short-circuit on the
+        // error and never process the rest of the frame.
+        choices: [{ index: 0, delta: { content: "SHOULD_NOT_ACCUMULATE" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 999, completion_tokens: 999, total_tokens: 1998 },
+      } as unknown as Partial<ChatCompletionChunk>),
+      acc,
+    )
+
+    expect(acc.streamError).toEqual({ message: "boom", type: "server_error" })
+    expect(acc.rawContent).toBe("")
+    expect(acc.finishReason).toBe("")
+    expect(acc.inputTokens).toBe(0)
+  })
+
+  test("defaults message/type when the error field omits them", () => {
+    const acc = createOpenAIStreamAccumulator()
+    accumulateOpenAIStreamEvent(makeChunk({ error: {} } as unknown as Partial<ChatCompletionChunk>), acc)
+
+    expect(acc.streamError).toEqual({ message: "Unknown stream error", type: "server_error" })
+  })
 })

@@ -2,7 +2,7 @@
 
 > durable 进度账本（抗 compaction / 跨会话）。权威设计见 [RFC §0.1+§11+§11.9](../../rfc/2026-07-13-inbound-codec-outbound-leg-split.md)，锚点见 [plan.md](plan.md)，per-commit prompt 见 [prompts/](prompts/)。
 
-> 🔴 **合并阻塞（2026-07-13，接手先读）**：C0-C6 主体已完成（分支 `feat/inbound-outbound-split` @ `9388ddb1`，全 12 出站 cell 走单一 CellAssembly、字节等价、reviewed、base 5），**但 master 已 landed 并发会话的「移除 auto-truncate」项目，与本重构的策略半根本不兼容**（R1 corner 字面就是 auto-truncate ON/OFF）。机械合并弥合不了，需在 post-auto-truncate master 上重设计策略半。**入口 = [RECONCILE-auto-truncate-removal.md](RECONCILE-auto-truncate-removal.md)**（不兼容根因 + 存活面 vs 重设计面 + master 新策略架构 + 逐区域 reconcile 步骤 + 已知机械冲突解法）。用户裁决：不合并、开新会话重设计。
+> ✅ **RECONCILED + 合并就绪（2026-07-13）**：曾发现 master landed「移除 auto-truncate」与本重构策略半不兼容（RECONCILE 文档记录了根因），已在本会话**完成 reconcile**——merge master（10 冲突解）+ 策略半重设计（`RetrySemanticsSpec` 删 `autoTruncate`、R1 corner 消解为 maxRetries corner、`buildCcFamilyLegStrategies` 改按 clientFormat 分派、删 `anthropicPreSend`、全局 `autoTruncateMaxRetries`→`maxReactiveRetries`）。**post-merge 全套件 4779 pass / 0 fail、typecheck 0**。详见 [RECONCILE-auto-truncate-removal.md](RECONCILE-auto-truncate-removal.md)。**仍延后**（inert 死码清理，非阻塞）：codec 出站方法删除 + HIGH-1 hub 提取（keep/delete 地图见下）+ gemini 剥前缀。
 
 隔离 worktree：`.worktrees/inbound-outbound-split`，分支 `feat/inbound-outbound-split`（从 master `e9f6ce8a` 切出）。
 
