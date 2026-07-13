@@ -11,10 +11,8 @@
  * with parse+accumulate+break
  * inlined; the idle/shutdown/client-abort guard is owned by the transport).
  *
- * Two route pre-steps stay on the legacy path by design (RFC §1 / §12.7):
+ * One route pre-step stays on the legacy path by design (RFC §1 / §12.7):
  *   - warmup interception (`handleWarmupRequest`) — before any heavy processing.
- *   - web_search double-hop (`handleWebSearchCompletion`) — its own ctx, NOT the
- *     driver (the whole web_search feature is a deferred P2.6 item).
  *
  * P2-era division of labor (sampling sinks to the driver in P3.2): this handler
  * still owns the response-side sampling (sseEvents + forwarded SSE + accumulate +
