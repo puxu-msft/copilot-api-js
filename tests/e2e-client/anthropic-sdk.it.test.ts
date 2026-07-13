@@ -22,6 +22,7 @@ import {
   expect,
   test,
 } from "bun:test"
+import OpenAI from "openai"
 
 import {
   //
@@ -46,8 +47,10 @@ import {
 import {
   //
   createSseResponse,
+  httpErrorResponse,
   jsonResponse,
   scriptedUpstream,
+  sequencedUpstream,
 } from "./harness/upstream-script"
 
 const MODEL = "claude-sonnet-4.6"
@@ -131,6 +134,9 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
       refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
       refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
       refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,
+      // reset the opt-in rewrite knobs so a scenario that enables one can't leak into another
+      recoverToolCallText: false,
+      toolRepairMalformedInput: [],
     })
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
   })
@@ -357,5 +363,244 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     const thinking = final.content.find((b) => b.type === "thinking") as { thinking?: string; signature?: string } | undefined
     expect(thinking?.thinking).toBe("let me think")
     expect(thinking?.signature).toBe("SIG-XYZ") // signature_delta accumulated intact
+  })
+
+  // ── stream truncation (missing terminator) → SDK throws, not a silent partial ──
+
+  test("truncation: upstream clean-EOF without message_stop → SDK throws (proxy synthesizes error frame)", async () => {
+    // Positive control lives in the streaming baseline (a complete stream assembles). Here the
+    // upstream forwards a partial then EOFs with NO content_block_stop / message_delta / message_stop.
+    // The proxy's truncation gate (acc.sawMessageStop === false) fails the request + writes a
+    // synthetic error frame, so the client throws instead of silently accepting a truncated turn
+    // (the original incident: CC reported "Stream ended without receiving any events").
+    const truncated = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_tr",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } }),
+      DONE, // ← clean EOF, no content_block_stop / message_delta / message_stop
+    ]
+    const up = scriptedUpstream(() => createSseResponse(truncated))
+    setUpstreamFetchForTests(up.handler)
+
+    const run = client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    await expect(run).rejects.toBeInstanceOf(APIError)
+  })
+
+  // ── HTTP-4xx vs 200+in-stream error: typed subclass + .status (CONTRAST with the 200 case) ──
+
+  test("HTTP-400 upstream → SDK throws a TYPED BadRequestError with .status===400 (contrast: 200+SSE-error is untyped)", async () => {
+    // A non-streaming client call that gets an HTTP 400 from upstream. Unlike a 200 + in-stream
+    // `event: error` (untyped APIError, .status===undefined — asserted above), an HTTP-response error
+    // gives the SDK a TYPED subclass (BadRequestError) with a real `.status`. The proxy forwards a
+    // generic 400 (not matching any reactive-retry pattern) as an HTTP error to the client.
+    const up = scriptedUpstream(() => httpErrorResponse(400, { type: "invalid_request_error", message: "generic bad request (e2e)" }))
+    setUpstreamFetchForTests(up.handler)
+
+    const run = client.messages.create({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] })
+    const err = await run.then(() => undefined).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(APIError)
+    expect((err as { status?: number }).status).toBe(400) // typed HTTP path sets .status (unlike in-stream error)
+  })
+
+  // ── reactive retry leg: proxy retries internally, transparent to the client ──
+
+  test("reactive retry (tool-field rejection): first leg 400 → proxy strips field + retries → client sees ONE clean turn, upstream hit twice", async () => {
+    // The proxy's tool-field-rejection-retry strategy fires on a 400 whose body matches
+    // `tools.N.custom.<field>: Extra inputs are not permitted`, strips the offending field, and
+    // retries — invisibly to the client. Oracle: the SDK assembles a normal turn (positive result)
+    // AND upstream was hit twice (the retry happened under the hood, client-transparent).
+    const up = sequencedUpstream([
+      () => httpErrorResponse(400, { type: "invalid_request_error", message: "tools.0.custom.eager_input_streaming: Extra inputs are not permitted" }),
+      () => createSseResponse(happyTurn("recovered after retry")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    expect((final.content[0] as { text?: string })?.text).toBe("recovered after retry")
+    expect(up.callCount()).toBe(2) // proxy retried internally; the client never saw the 400
+  })
+
+  // ── event-name tolerance: SDK dispatches on the event name ∈ accept-set, not name===data.type ──
+
+  test("thinking-signature-compat: signature_delta under `event: content_block_start` is still accumulated by the SDK", async () => {
+    // The SDK's SSEDecoder dispatches on the `event:` NAME (must be in its accept-set), then
+    // re-derives behavior from the parsed data.type — so `event` need NOT equal `type`. A
+    // signature_delta emitted under `event: content_block_start` (a benign shape the proxy's
+    // thinking-signature-compat can produce) is accepted + accumulated, proving the tolerant boundary
+    // of the event-line invariant.
+    const frames = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_sc",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
+      // signature_delta carried under the WRONG event name (content_block_start, not content_block_delta):
+      `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "SIG-COMPAT" } })}\n\n`,
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(frames))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    const thinking = final.content.find((b) => b.type === "thinking") as { signature?: string } | undefined
+    expect(thinking?.signature).toBe("SIG-COMPAT") // accepted despite event!==type (event ∈ accept-set)
+  })
+
+  // ── proxy rewrites (config-gated): the client sees the RECOVERED shape, not the broken upstream ──
+
+  test("tool-call text recovery: upstream downgrades tool call to `<invoke>` text → proxy rebuilds tool_use → SDK gets a tool_use block", async () => {
+    // GHC sometimes emits a tool call as plain `<function_calls><invoke name="search">...` TEXT
+    // (stop_reason still tool_use). With recover_tool_call_text on, the proxy rebuilds a real tool_use
+    // block. Oracle: the SDK's finalMessage carries a tool_use (input deep-equal) — NOT a text block
+    // the client would fail to parse. Positive control: the streaming baseline proves normal text
+    // assembles as text; here the SAME text shape becomes a tool_use because recovery is on.
+    setStateForTests({ recoverToolCallText: true })
+    const invokeText = '<function_calls><invoke name="search"><parameter name="query">weather</parameter></invoke>'
+    const frames = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_rc",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: invokeText } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(frames))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages
+      .stream({
+        model: MODEL,
+        max_tokens: 16,
+        messages: [{ role: "user", content: "search the weather" }],
+        tools: [{ name: "search", description: "search the web", input_schema: { type: "object", properties: { query: { type: "string" } } } }],
+      })
+      .finalMessage()
+    const tool = final.content.find((b) => b.type === "tool_use") as { name?: string; input?: unknown } | undefined
+    expect(tool?.name).toBe("search")
+    expect(tool?.input).toEqual({ query: "weather" })
+    // and the raw `<invoke>` text is NOT surfaced as a text block the client would choke on
+    expect(final.content.some((b) => b.type === "text" && (b as { text?: string }).text?.includes("<invoke"))).toBe(false)
+  })
+
+  test("malformed tool_use input repair: upstream tool_use JSON is broken → proxy repairs → SDK JSON.parses a valid input", async () => {
+    // With tool_repair_malformed_input on, the proxy buffers tool_use blocks and, when the accumulated
+    // partial_json is invalid, runs layered repair (antml-tag strip + jsonrepair) before forwarding.
+    // Oracle: the SDK's tool_use.input deep-equals the intended object — i.e. the client received
+    // JSON it could parse, not the broken bytes.
+    setStateForTests({ toolRepairMalformedInput: ["tags", "jsonrepair"] })
+    const frames = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_mr",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_mr", name: "search", input: {} } }),
+      // malformed: trailing comma + unclosed brace (jsonrepair territory)
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"query": "weather",' } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(frames))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages
+      .stream({
+        model: MODEL,
+        max_tokens: 16,
+        messages: [{ role: "user", content: "x" }],
+        tools: [{ name: "search", description: "search the web", input_schema: { type: "object", properties: { query: { type: "string" } } } }],
+      })
+      .finalMessage()
+    const tool = final.content.find((b) => b.type === "tool_use") as { input?: unknown } | undefined
+    expect(tool?.input).toEqual({ query: "weather" }) // repaired to valid JSON the SDK could parse
+  })
+})
+
+// ── vendor-neutral proof: a DIFFERENT real client SDK (OpenAI) against the same proxy ──
+
+describe("client↔proxy SDK e2e (OpenAI vendor, upstream shielded)", () => {
+  useIsolatedRuntime()
+
+  const CC_MODEL = "gpt-5.5"
+  let proxy: InProcessProxy
+  let client: OpenAI
+
+  beforeAll(() => {
+    proxy = serveInProcess()
+    client = new OpenAI({ baseURL: proxy.baseURL, apiKey: "test-key", maxRetries: 0 })
+  })
+  afterAll(() => proxy.close())
+
+  beforeEach(() => {
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
+    setModels({ object: "list", data: [mockModel(CC_MODEL, { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] })] })
+  })
+  afterEach(() => setUpstreamFetchForTests(undefined))
+
+  // A minimal CC (OpenAI chat.completion.chunk) streaming upstream — data-only frames, no event line.
+  function ccChunks(text: string): Array<string> {
+    const chunk = (delta: Record<string, unknown>, finish: string | null): string =>
+      `data: ${JSON.stringify({ id: "cc1", object: "chat.completion.chunk", created: 1, model: CC_MODEL, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
+    return [chunk({ role: "assistant", content: "" }, null), chunk({ content: text }, null), chunk({}, "stop"), DONE]
+  }
+
+  test("smoke: real OpenAI SDK assembles a streamed chat.completion from the same proxy (vendor-neutral core)", async () => {
+    const up = scriptedUpstream(() => createSseResponse(ccChunks("hello from openai")))
+    setUpstreamFetchForTests(up.handler)
+
+    const stream = await client.chat.completions.create({ model: CC_MODEL, messages: [{ role: "user", content: "hi" }], stream: true })
+    let content = ""
+    for await (const part of stream) content += part.choices[0]?.delta?.content ?? ""
+
+    // client-observable: the OpenAI SDK decoded + assembled OUR forwarded CC chunks
+    expect(content).toBe("hello from openai")
+    expect(up.callCount()).toBe(1)
   })
 })
