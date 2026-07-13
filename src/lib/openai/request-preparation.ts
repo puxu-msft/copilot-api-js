@@ -38,11 +38,33 @@ export function fillMaxCompletionTokens(payload: ChatCompletionsPayload, selecte
   return filled
 }
 
+/**
+ * OpenAI's `user` field wire limit — the Responses / Chat-Completions endpoints reject any `user`
+ * string longer than 64 chars (`HTTP 400 invalid_request_body: Invalid 'user': string too long`).
+ */
+const OPENAI_USER_MAX_LENGTH = 64
+
+/**
+ * Clamp the OpenAI `user` field to the upstream's 64-char wire limit.
+ *
+ * Claude Code sends a ~150-char `metadata.user_id` (`user_<hash>_account_<uuid>_session_<uuid>`)
+ * which the anthropic→cc translation maps onto `user`; the OpenAI-family endpoints then 400 on it.
+ * The Anthropic `/v1/messages` leg has NO such limit and does not funnel through here, so the clamp
+ * lives at this OpenAI-family wire boundary rather than at the source mapping — richest-data-flow:
+ * trim only at the terminal that actually constrains the value. Truncation (vs. dropping) keeps the
+ * value's identifying prefix stable per user for upstream affinity.
+ */
+function clampUserField<T extends { user?: string | null }>(payload: T): T {
+  const { user } = payload
+  if (typeof user !== "string" || user.length <= OPENAI_USER_MAX_LENGTH) return payload
+  return { ...payload, user: user.slice(0, OPENAI_USER_MAX_LENGTH) }
+}
+
 export function prepareChatCompletionsRequest(
   payload: ChatCompletionsPayload,
   opts?: PrepareOpenAIRequestOptions,
 ): PreparedOpenAIRequest<ChatCompletionsPayload> {
-  const wire = shouldRemapMaxTokens(opts?.resolvedModel, payload.model) ? normalizeMaxTokens(payload) : payload
+  const wire = clampUserField(shouldRemapMaxTokens(opts?.resolvedModel, payload.model) ? normalizeMaxTokens(payload) : payload)
 
   const enableVision = wire.messages.some((message) => typeof message.content !== "string" && message.content?.some((part) => part.type === "image_url"))
 
@@ -62,7 +84,7 @@ export function prepareChatCompletionsRequest(
 }
 
 export function prepareResponsesRequest(payload: ResponsesPayload, opts?: PrepareOpenAIRequestOptions): PreparedOpenAIRequest<ResponsesPayload> {
-  const wire = payload
+  const wire = clampUserField(payload)
   const enableVision = hasVisionContent(wire.input)
   const isAgentCall =
     Array.isArray(wire.input) && wire.input.some((item) => item.role === "assistant" || item.type === "function_call" || item.type === "function_call_output")
