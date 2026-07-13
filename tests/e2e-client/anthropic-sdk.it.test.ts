@@ -52,6 +52,7 @@ import {
 import {
   //
   createSseResponse,
+  createSseResponseThenError,
   httpErrorResponse,
   jsonResponse,
   scriptedUpstream,
@@ -554,6 +555,48 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
       .finalMessage()
     expect((final.content[0] as { text?: string })?.text).toBe("recovered after thinking strip")
     expect(up.callCount()).toBe(2) // proxy stripped all thinking + retried internally; client never saw the 400
+  })
+
+  // ── buffered-retry: mid-stream upstream RST is retried transparently (no half-turn leak) ──
+
+  test("buffered-retry (upstream RST mid-stream): first leg streams a partial then errors → proxy retries → client sees ONE complete turn, the half NOT leaked", async () => {
+    // With protect_streaming_generation on, the proxy buffers the generation; if the upstream stream
+    // ERRORS mid-turn (a transport RST before message_stop), it retries upstream instead of forwarding
+    // the truncated half. Oracle: the SDK assembles the SECOND leg's complete turn, the first leg's
+    // partial text is NOT present, and upstream was hit twice. (Deterministic mid-stream error via
+    // createSseResponseThenError — no timers, no real backoff sleep.)
+    setStateForTests({ protectStreamingGeneration: "on" })
+    const partialThenRst = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_rst",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "HALF-LEAK" } }),
+      // ← no content_block_stop / message_stop: createSseResponseThenError errors the body here (RST)
+    ]
+    const up = sequencedUpstream([
+      () => createSseResponseThenError(partialThenRst, new Error("RST")),
+      () => createSseResponse(happyTurn("complete after RST retry")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+
+    // client-observable: exactly the retried complete turn; the truncated first leg never surfaced.
+    expect((final.content[0] as { text?: string })?.text).toBe("complete after RST retry")
+    expect(final.stop_reason).toBe("end_turn")
+    expect(JSON.stringify(final.content)).not.toContain("HALF-LEAK") // the half was buffered away, not leaked
+    expect(up.callCount()).toBe(2) // proxy retried the RST internally; the client saw one clean turn
   })
 
   // ── keepalive/anchor empty deltas: SDK accumulates them harmlessly (B1 Tier1 half) ──
