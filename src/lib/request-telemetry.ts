@@ -11,6 +11,7 @@ import {
   createSerializedAsyncFn,
 } from "./atomic-fs"
 import { PATHS } from "./config/paths"
+import { CAPPED_DIMENSION_NAMES } from "./observability/telemetry-dimensions"
 import {
   //
   onTelemetryConfigChange,
@@ -33,6 +34,7 @@ import {
   computeCumulativeSketchBlob,
   computeTierSketchBlob,
   incrementCumulativeAccepted,
+  readCumulativeKeysByDimension,
   readSketchGamma,
   SETTLED_MEASURE_COLUMN_NAMES,
   type SettledMeasures,
@@ -398,6 +400,21 @@ interface OutboxSnapshot {
 let outboxRaw = new Map<number, Map<string, Map<string, OutboxSettledEntry>>>()
 let outboxCumulative = new Map<string, Map<string, OutboxSettledEntry>>()
 let outboxAccepted = new Map<number, number>()
+
+/**
+ * The PERSISTENT cardinality-cap authority for the cumulative leg only — dimName → the set of keys
+ * already counted in `tel_cumulative` for that (capped) dimension. Unlike `dimSinceStart` (the
+ * in-memory per-store cap authority for the process-lifetime leg, which resets to empty on every
+ * restart BY DESIGN — see {@link resolveCappedKey}), `tel_cumulative` is a PERMANENT cross-restart
+ * table, so its cap authority must survive a restart too: {@link seedCumulativeCapKeys} loads it
+ * from the durable rows at init, and {@link resolveCumulativeCappedKey} grows it monotonically as
+ * new keys settle in-session (mirroring what gets flushed to `tel_cumulative`, so the next restart's
+ * seed sees them). Only CAPPED dimensions are ever inserted here (seeded from
+ * `CAPPED_DIMENSION_NAMES`; see {@link resolveCumulativeCappedKey}) — a bounded dimension (agentKind/
+ * endpoint) never gets an entry and is therefore never capped in the cumulative leg either (spec
+ * invariant 7 — the agentKind global-sum anchor must never fold into `"other"`).
+ */
+let cumulativeCapKeys = new Map<string, Set<string>>()
 
 /** The open telemetry.db handle (null when telemetry is disabled or before init). */
 let telemetryDb: TelemetryDatabase | null = null
@@ -1034,6 +1051,25 @@ function loadV2ModelBuckets(raw: Record<string, Record<string, PersistedModelTel
 }
 
 /**
+ * Rebuild the PERSISTENT cumulative-leg cardinality-cap authority (`cumulativeCapKeys`) from the
+ * durable `tel_cumulative` rows — closes spec invariant 6: without this, a fresh empty in-memory
+ * authority would let a dimension already at `CARDINALITY_CAP` in `tel_cumulative` accumulate a
+ * second batch of "real" keys past the cap after every restart (`dimSinceStart`'s in-memory
+ * authority resets to empty by design; `tel_cumulative` must not). Only capped dimensions are
+ * seeded (bounded dimensions like `agentKind`/`endpoint` never cap — see `CAPPED_DIMENSION_NAMES`).
+ * never-throw: a seed-query failure (e.g. corrupt db) degrades to "this session's cumulative cap
+ * starts empty" (warn), not a crash — the next successful restart re-seeds.
+ */
+function seedCumulativeCapKeys(db: TelemetryDatabase): void {
+  try {
+    cumulativeCapKeys = readCumulativeKeysByDimension(db, CAPPED_DIMENSION_NAMES)
+  } catch (err) {
+    consola.warn(`[telemetry] failed to seed the cumulative cardinality-cap authority from telemetry.db (cap starts empty this session):`, err)
+    cumulativeCapKeys = new Map()
+  }
+}
+
+/**
  * Open telemetry.db (when enabled) + arm the persist-timer config hot-reload listener. Idempotent
  * wrt an already-open handle / already-armed listener (closes/unsubscribes the prior one first).
  * Skips opening the db when `state.telemetryEnabled` is false — the JSON path still runs, but no
@@ -1047,6 +1083,7 @@ function setupTelemetryDb(): void {
   outboxRaw = new Map()
   outboxCumulative = new Map()
   outboxAccepted = new Map()
+  cumulativeCapKeys = new Map()
   telemetryDrainFailureLogged = false
   telemetryOutboxCapLogged = false
   telemetryPoisonLogged = false
@@ -1070,6 +1107,7 @@ function setupTelemetryDb(): void {
           )
         }
       }
+      seedCumulativeCapKeys(telemetryDb)
     } catch (err) {
       // Never let a db-open failure break the JSON telemetry path — the dual-write is additive.
       consola.warn(`[telemetry] failed to open telemetry.db (dual-write disabled this session):`, err)
@@ -1181,6 +1219,37 @@ function resolveCappedKey(store: Map<string, Map<string, StatAccumulator>>, dimN
 }
 
 /**
+ * Resolve a capped dimension's effective key against the cumulative leg's PERSISTENT cap authority
+ * (`cumulativeCapKeys`, DB-seeded from `tel_cumulative` on init — see {@link seedCumulativeCapKeys}
+ * inline in `setupTelemetryDb`). This is a THIRD, independent cap authority alongside
+ * `resolveCappedKey`'s two (dimSinceStart / the target 5-minute bucket): each of the three stores
+ * (dimSinceStart, a bucket, tel_cumulative) bounds its OWN key count independently, so a key may
+ * legitimately be a real name in one store and `"other"` in another at the cap margin (by design —
+ * see `resolveCappedKey`'s doc). The cumulative leg's authority differs from the other two in ONE
+ * critical way: it must survive a restart (because `tel_cumulative` itself is permanent), so unlike
+ * `dimSinceStart` (intentionally reset to empty on load), this one is seeded from the durable rows
+ * BEFORE the first request of a new process — closing spec invariant 6 (a dimension already at
+ * CARDINALITY_CAP in `tel_cumulative` keeps folding new keys into `"other"` across a restart).
+ *
+ * Mutates `cumulativeCapKeys`: a genuinely new (under-cap) key is added to the dimension's set so
+ * both later calls IN THIS SESSION and the next restart's re-seed see it (the authority grows
+ * monotonically in lockstep with what actually lands in `tel_cumulative`). Only called for CAPPED
+ * dimensions — an uncapped dimension (e.g. `agentKind`) uses `normalized` directly and never
+ * touches this function or `cumulativeCapKeys` (spec invariant 7 — never-capped).
+ */
+function resolveCumulativeCappedKey(dimName: string, key: string): string {
+  let dim = cumulativeCapKeys.get(dimName)
+  if (!dim) {
+    dim = new Set()
+    cumulativeCapKeys.set(dimName, dim)
+  }
+  if (dim.has(key)) return key
+  if (dim.size >= CARDINALITY_CAP) return "other"
+  dim.add(key)
+  return key
+}
+
+/**
  * Record one settled request across every dimension. `keys` is the sink-resolved
  * `Record<dimName, key | key[] | null>` (see `observability/telemetry-dimensions.ts`):
  * a `null` value skips that dimension; an array (multi-key, e.g. one request that
@@ -1215,14 +1284,23 @@ export function recordSettledRequest(
     const distinct = new Set((Array.isArray(rawValue) ? rawValue : [rawValue]).map((rawKey) => normalizeKey(rawKey)))
     const seenSince = new Set<string>()
     const seenBucket = new Set<string>()
+    const seenCumulative = cumulativeEnabled ? new Set<string>() : null
     for (const normalized of distinct) {
       const sinceKey = capped ? resolveCappedKey(dimSinceStart, dimName, normalized) : normalized
       if (!seenSince.has(sinceKey)) {
         seenSince.add(sinceKey)
         applySettledMeasures(getOrCreateDimKey(dimSinceStart, dimName, sinceKey), opts)
-        // Cumulative leg mirrors dimSinceStart's resolved key (gated on telemetryCumulative).
-        if (cumulativeEnabled && outboxDelta && outboxObservations) {
-          addToOutboxEntry(ensureCumulativeOutboxEntry(outboxCumulative, dimName, sinceKey), outboxDelta, outboxObservations)
+      }
+      // Cumulative leg: independent, DB-seeded cap authority (`cumulativeCapKeys`/`resolveCumulativeCappedKey`)
+      // — NOT `sinceKey`, because dimSinceStart resets on restart while tel_cumulative is permanent (spec
+      // invariant 6). Own dedup set too: the cumulative-leg key may diverge from sinceKey/bucketKey right
+      // at the cap boundary (each store is its own cap authority — see resolveCappedKey's doc), so folding
+      // this into seenSince/seenBucket would silently miscount.
+      if (seenCumulative && outboxDelta && outboxObservations) {
+        const cumulativeKey = capped ? resolveCumulativeCappedKey(dimName, normalized) : normalized
+        if (!seenCumulative.has(cumulativeKey)) {
+          seenCumulative.add(cumulativeKey)
+          addToOutboxEntry(ensureCumulativeOutboxEntry(outboxCumulative, dimName, cumulativeKey), outboxDelta, outboxObservations)
         }
       }
       const bucketKey = capped ? resolveCappedKey(bucketDims, dimName, normalized) : normalized
@@ -1602,6 +1680,7 @@ export function _resetRequestTelemetryForTests(): void {
   outboxRaw = new Map()
   outboxCumulative = new Map()
   outboxAccepted = new Map()
+  cumulativeCapKeys = new Map()
   telemetryDrainFailureLogged = false
   telemetryOutboxCapLogged = false
   telemetryPoisonLogged = false
@@ -1634,6 +1713,16 @@ export function _getOutboxSizeForTests(): number {
 /** The γ (relativeAccuracy) frozen for the currently-open telemetry.db (null when no db open) — test assertion hook for the db-bound γ. */
 export function _getEffectiveSketchGammaForTests(): number | null {
   return effectiveSketchGamma
+}
+
+/**
+ * The cumulative leg's PERSISTENT cardinality-cap authority — test assertion hook for verifying the
+ * DB-seed actually loaded (positive-sample control) before asserting cap-boundary behavior (e.g.
+ * `_getCumulativeCapKeysForTests().get("client")?.size === 200` BEFORE asserting the 201st key folds
+ * into "other" — a seed that silently failed to load would look identical to "cap not yet reached").
+ */
+export function _getCumulativeCapKeysForTests(): ReadonlyMap<string, ReadonlySet<string>> {
+  return cumulativeCapKeys
 }
 
 /** Override the outbox soft cap (test hook) so eviction can be exercised without materializing 50k entries. Reset restores the default. */
