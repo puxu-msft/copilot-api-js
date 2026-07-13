@@ -178,7 +178,12 @@ export function buildCanonicalErrorFrame(decision: Extract<ShapingDecision, { ki
 export function parseRawUpstreamErrorFrame(frame: UpstreamFrame): { type?: string; message?: string } {
   try {
     const parsed = JSON.parse(frame.data ?? "{}") as { type?: string; error?: { type?: string; message?: string }; message?: string }
-    return { type: parsed.error?.type ?? parsed.type, message: parsed.error?.message ?? parsed.message }
+    // Prefer the nested `error` object (mirrors stream-accumulator.ts's `err?.type` / `err?.message`, so
+    // both consumers agree on "what the upstream said"). Fall back to a FLAT `{type, message}` shape — but
+    // never treat the `"error"` DISCRIMINATOR as the taxonomy: a `{type:"error", error:{message}}` frame's
+    // canonical error type is `api_error` (the builder's fallback), not the literal `"error"`.
+    const topType = parsed.type === "error" ? undefined : parsed.type
+    return { type: parsed.error?.type ?? topType, message: parsed.error?.message ?? parsed.message }
   } catch {
     return {}
   }

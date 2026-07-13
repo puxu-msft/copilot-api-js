@@ -25,8 +25,11 @@
  */
 import type { Context } from "hono"
 
+import type { ClientFrame } from "~/lib/pipeline/types"
+
 import {
   //
+  buildCanonicalErrorFrame,
   decide,
   type ErrorShapingConfig,
 } from "~/lib/anthropic/error-shaping"
@@ -39,7 +42,7 @@ import {
 import { state } from "~/lib/state"
 
 /** Snapshot the 4 error-shaping config keys off `state` (Phase 0) into the pure `decide()` input. */
-function errorShapingConfigFromState(): ErrorShapingConfig {
+export function errorShapingConfigFromState(): ErrorShapingConfig {
   return {
     enabled: state.errorShapingEnabled,
     askUserQuestion: state.errorAskUserQuestion,
@@ -90,4 +93,40 @@ export function shapePrecommitError(c: Context, error: unknown): Response {
   // "ask-user-question": Phase 4 TODO — falls through to forwardError unchanged for now.
   // "canonical-error": current forwardError behaviour is already correct, no header changes.
   return forwardError(c, error)
+}
+
+/**
+ * POST-COMMIT terminal-frame shaping for the handler's `writeSynthetic` termini (Phase 3, G-3
+ * canonical ownership). Once the proxy has committed a 200 SSE stream the HTTP status is locked, so an
+ * upstream failure can only be delivered as an Anthropic `event:error` FRAME. The two `ApiError`-bearing
+ * termini (① HTTPError, ①' unknown-non-HTTP e.g. `network_error`/socket reset) classify their error and
+ * delegate the frame construction here, replacing hand-built JSON with the single `error-shaping`
+ * builder.
+ *
+ * Golden lock (CF-2): when `error_shaping_enabled` is false, `decide()` is NEVER called — this returns
+ * the caller's `legacyFrame` verbatim (byte-identical to the pre-error-shaping behaviour). When enabled,
+ * `decide({commitPhase:"post-commit"})` always resolves to a `canonical-error` kind (post-commit has no
+ * retry-signal / AUQ option in the Phase 1 truth table — the status is locked), so
+ * `buildCanonicalErrorFrame` produces the frame. The `network_error` post-commit case (terminus ①',
+ * which `classifyError` only ever produces from the non-HTTPError branch) is thus routed through
+ * `decide()` for the first time — the truth table's `network_error → canonical-error` promise is finally
+ * exercised end-to-end.
+ *
+ * CF-3: the canonical `event:error` frame carries `error.type` = the Anthropic wire literal (e.g. 402 →
+ * `rate_limit_error`); with the SSE status locked at 200 (undefined at the client), CC's post-commit
+ * retry triggers (status 529 / a `"type":"overloaded_error"` message substring — exp/cc-error-retry-surface/FINDINGS.md)
+ * are not hit, so this frame never provokes an unintended client retry.
+ */
+export function shapePostcommitErrorFrame(error: unknown, legacyFrame: ClientFrame): ClientFrame {
+  if (!state.errorShapingEnabled) return legacyFrame
+  const decision = decide({
+    error: classifyError(error),
+    commitPhase: "post-commit",
+    clientVisibleStopEmitted: false,
+    config: errorShapingConfigFromState(),
+  })
+  // Post-commit `decide()` is total onto `canonical-error` (no retry-signal / AUQ / defer post-commit).
+  // The defensive fallback keeps the legacy frame if a future truth-table change ever yields otherwise.
+  if (decision.kind !== "canonical-error") return legacyFrame
+  return buildCanonicalErrorFrame(decision)
 }

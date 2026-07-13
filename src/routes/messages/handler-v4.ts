@@ -63,6 +63,7 @@ import {
   extractAppliedEdits,
   summarizeAppliedEdits,
 } from "~/lib/anthropic/applied-context-edits"
+import { buildCanonicalErrorFrame } from "~/lib/anthropic/error-shaping"
 import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
 import {
   //
@@ -149,6 +150,7 @@ import {
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 
+import { shapePostcommitErrorFrame } from "./error-shaping-glue"
 import {
   //
   anthropicErrorFrame,
@@ -564,14 +566,21 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         if (error instanceof HTTPError) {
           // (c) upstream 4xx/5xx — the dominant POST-COMMIT divergence. The rich frame preserves
           // error.type (+ retry_after) so the client SDK still branches correctly (Q2 §4.2.5).
+          // G-3: delegated to the error-shaping builder (canonical ownership); disabled = the legacy
+          // anthropicHttpErrorFrame verbatim (CF-2 golden lock).
           ctx?.fail(resolvedName, error)
           await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
-          await sink.writeSynthetic?.(anthropicHttpErrorFrame(error))
+          await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error)))
           return
         }
         ctx?.fail(resolvedName, error) // unknown non-HTTP, non-abort
         await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
-        await sink.writeSynthetic?.(anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error)))
+        // (①' G-3, MEDIUM-1) classifyError maps this branch's errors (socket reset / HTTP2
+        // REFUSED_STREAM / other non-HTTPError) to network_error / bad_request → decide() → canonical.
+        // This is the ONLY path that produces post-commit network_error, so the Phase 1 truth table's
+        // network_error→canonical-error promise is exercised here. Disabled = the legacy api_error frame
+        // verbatim (CF-2 golden lock).
+        await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error))))
         return
       }
       if (!result.ok) {
@@ -1197,9 +1206,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // the error frame or the client is left with a dangling block. Idempotent + inert (shared anchorClosed
       // guard): a no-op when reconcile already closed it, or when no anchor was injected.
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
-      await sink
-        .writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
-        .catch(() => undefined)
+      await sink.writeSynthetic?.(buildCanonicalErrorFrame({ kind: "canonical-error", errorType, message: errorMessage })).catch(() => undefined)
       recordForwarded()
       // C1: preserve the partial content accumulated before the throw (mirrors the
       // truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
@@ -1223,8 +1230,11 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
     if (acc.streamError) {
-      // H2 — a terminal upstream `error` SSE event was forwarded as a content frame (clean
-      // drain, never a thrown error → outcome is `complete`); settle as fail from the acc.
+      // H2 — a terminal upstream `error` SSE event (a clean drain, never a thrown error → outcome is
+      // `complete`). When error-shaping is on, the `errorFrameCanonical` S5 rewrite already RESHAPED the
+      // forwarded frame into a canonical Anthropic envelope before it reached the client (off = forwarded
+      // verbatim); either way the client got the frame. This branch only settles ctx.fail from the
+      // upstream-original `acc.streamError` (acc sees pre-rewrite frames) — it writes NO frame itself.
       consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
       // C1: preserve the partial content accumulated before the terminal error frame (mirrors
       // the truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
@@ -1304,10 +1314,13 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // real first block already closed it → no-op) + inert (no anchor injected → byte-equivalent).
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
       await sink
-        .writeSynthetic?.({
-          event: "error",
-          data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
-        })
+        .writeSynthetic?.(
+          buildCanonicalErrorFrame({
+            kind: "canonical-error",
+            errorType: "api_error",
+            message: "Upstream stream truncated before completion (no message_stop)",
+          }),
+        )
         .catch(() => undefined)
       recordForwarded()
       env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
