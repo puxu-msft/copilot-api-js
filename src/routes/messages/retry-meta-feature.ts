@@ -2,13 +2,11 @@
  * `retryMetaFeature` — decide the single sticky feature tag implied by an
  * accepted retry's `meta` (or `null` for none).
  *
- * Pure + neutral leaf so BOTH retry-record sites share one primitive: the v4
- * driver path (`handler-v4.ts`'s `recordRetryPipelineStateV4`) and the legacy
- * web_search-bypass path (`web-search-direct.ts`'s `recordRetryPipelineState`).
- * It lives here (not in either handler) to avoid the import cycle
- * handler-v4 → web-search-handler → web-search-direct.
+ * Pure + neutral leaf consumed by the v4 driver path (`handler-v4.ts`'s
+ * `recordRetryPipelineStateV4`). Lives here (not in the handler) so it stays a
+ * dependency-free primitive.
  *
- * The historical inline `else` in both sites unconditionally tagged `truncated`,
+ * The historical inline `else` unconditionally tagged `truncated`,
  * which is only correct for an auto-truncate retry. A beta-strip retry carries
  * `probedBetas`/`strippedBetas`; a truncate retry carries `truncateResult`
  * (passed in as `hasTruncateResult`); every other strategy's meta (server-tool /

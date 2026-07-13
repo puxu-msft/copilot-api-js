@@ -1,35 +1,28 @@
 /**
  * Rewrite native server-tool blocks in inbound message history (request side).
  *
- * Why this exists — the web_search double-hop self-poisoning loop:
- *   1. `web-search-handler` synthesizes a `server_tool_use{web_search}` +
- *      `web_search_tool_result` + `text` triple INTO A SINGLE assistant message
- *      and DELIBERATELY bypasses the server-tool-filter so the client sees the
- *      search results (the whole point of the feature — see web-search-handler.ts).
- *   2. The client stores that assistant message in its conversation history and
- *      echoes it back on the next turn.
- *   3. The orchestrator's hops downgrade the request's `tools` (native web_search
- *      → plain function tool), so on the wire there is NO server-tool definition
- *      named `web_search` — yet the historical `server_tool_use{web_search}` block
- *      survives sanitize (it is a complete use/result pair, not an orphan).
- *   4. Upstream rejects with 400: "`server_tool_use` block references `web_search`,
- *      but `web_search` is not defined in `tools` as a server tool."
+ * Why this exists — residual `server_tool_use{web_search}` + `web_search_tool_result`
+ * pairs in conversation history. GHC's Anthropic endpoint rejects a historical
+ * `server_tool_use` block when the request's `tools` array no longer declares that
+ * tool as a server tool (400: "`server_tool_use` block references `web_search`, but
+ * `web_search` is not defined in `tools` as a server tool"). Such pairs originated
+ * from the web_search double-hop (retired 2026-07-13); the rewriter is kept for two
+ * live consumers that route residual/echoed server-tool blocks through it:
+ *   - the reactive per-model learned downgrade (`resolveServerToolMode`), and
+ *   - the always-on empty-encrypted fallback (`empty-encrypted-search-result.ts`).
  *
- * This rewriter closes the loop on the request side. It runs inside
- * `sanitizeAnthropicMessages` (before `processToolBlocks`), so all Anthropic wire
- * paths (direct + both web_search hops) are covered by one hook. History's
- * `inboundRequest` keeps the unmodified client form — only the wire payload is
- * rewritten.
+ * It runs inside `sanitizeAnthropicMessages` (before `processToolBlocks`), so all
+ * Anthropic wire paths are covered by one hook. History's `inboundRequest` keeps
+ * the unmodified client form — only the wire payload is rewritten.
  *
  * ── Critical protocol constraint ──────────────────────────────────────────
  * `tool_result` MUST live in a `user` message (it is the standard user-side tool
- * result; see types/api/anthropic.ts and orchestrator.buildSecondHopMessages,
- * which splits web_search into an assistant `tool_use` + a separate user
- * `tool_result`). The synthesized blocks are all in ONE assistant message, so an
- * in-place downgrade would produce an assistant-role `tool_result` — swapping one
- * 400 for another. Therefore "downgrade" SPLITS the message: the `tool_use`
- * (and any text/thinking) stays on the assistant turn, and every paired
- * `*_tool_result` moves to a new `user` turn inserted immediately after.
+ * result; see types/api/anthropic.ts). A synthesized web_search turn carries all
+ * blocks in ONE assistant message, so an in-place downgrade would produce an
+ * assistant-role `tool_result` — swapping one 400 for another. Therefore
+ * "downgrade" SPLITS the message: the `tool_use` (and any text/thinking) stays on
+ * the assistant turn, and every paired `*_tool_result` moves to a new `user` turn
+ * inserted immediately after.
  *
  * Matching is by block TYPE (`server_tool_use` / `*_tool_result`), not by tool
  * name, so web_search, web_fetch, code_execution, etc. are all covered uniformly.

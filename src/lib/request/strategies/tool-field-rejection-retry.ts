@@ -34,18 +34,11 @@
  * a per-model one, so the learned cache is keyed by endpoint only
  * (`markAnthropicUnsupportedToolFields`) — one 400 immunizes every model.
  *
- * SCOPE — main v4 pipeline only: this reactive strategy is registered in the v4
- * codec pipeline (`codec/anthropic/strategies.ts`), NOT the legacy pipeline that
- * the web_search double-hop still uses (`web-search-direct.ts` /
- * `web-search/orchestrator.ts` → `runAnthropicPipeline`), which by design omits
- * every reactive-rejection strategy (server-tool / structured-outputs too). This
- * is fine in practice: the PROACTIVE strip (`stripToolFields`: built-in default +
- * endpoint-learned cache + config) runs on BOTH paths via `prepareAnthropicRequest`,
- * so `eager_input_streaming` and any already-learned field are stripped on the
- * hop too, and the cache is shared endpoint-wide. The only residual gap is a
- * brand-new unknown field that appears FIRST and ONLY on a web_search hop — it
- * would 400 there without being learned. Deferred as consistent with the legacy
- * hop's simplified pipeline (see docs/todo/deferred-backlog.md).
+ * Registered in the v4 codec pipeline (`codec/anthropic/strategies.ts`). The
+ * PROACTIVE strip (`stripToolFields`: built-in default + endpoint-learned cache +
+ * config) runs via `prepareAnthropicRequest`, so `eager_input_streaming` and any
+ * already-learned field are stripped up front; this reactive strategy learns any
+ * brand-new unknown field from its 400.
  *
  * ORDERING: registered BEFORE `body-field-rejection` (which also matches
  * `... : Extra inputs are not permitted`). The body-field regex was tightened to

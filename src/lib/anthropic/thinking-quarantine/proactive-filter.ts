@@ -17,16 +17,8 @@
  * and then strip the thinking, orphaning those markers — so `250` is load-bearing
  * (spec §3.4 / review C4).
  *
- * Coverage (two L3 access points): the driver assembles this via the codec's
- * `requestRewrites`; the web_search **direct real-send** (`web-search-direct.ts`
- * `runInitialSanitizationAndRecord` — the no-search re-dispatch) calls the shared
- * core ({@link stripAllThinkingIfQuarantined}) directly before its own sanitize.
- * OUT OF SCOPE: the web_search **probe + second hop** (`web-search/orchestrator.ts`
- * `callMainModel`) run plain `sanitizeAnthropicMessages` with no L3 (no `env.ctx`
- * session/agent on that path), so a poisoned web_search conversation still re-hits
- * the "cannot be modified" 400 there — recovered reactively by the L2 legacy
- * backstop (`createLegacyPoisonedThinkingRetryStrategy`, `pipeline.ts:188`). Tracked
- * in docs/todo/deferred-backlog.md.
+ * Coverage: the driver assembles this via the codec's `requestRewrites`. The
+ * shared core ({@link stripAllThinkingIfQuarantined}) is exposed for direct reuse.
  */
 
 import type {
@@ -64,8 +56,7 @@ export interface QuarantineStripResult {
 }
 
 /**
- * The shared L3 decision, format-agnostic and reused by BOTH access points (the
- * driver filter below + the web_search bypass in `web-search-direct.ts`): if
+ * The shared L3 decision, format-agnostic (reused by the driver filter below): if
  * `(sessionId, agentId)` is a known-poisoned conversation within TTL, strip ALL
  * thinking and slide the TTL.
  *
