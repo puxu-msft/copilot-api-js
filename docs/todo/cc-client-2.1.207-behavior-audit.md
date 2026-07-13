@@ -857,9 +857,15 @@ CC 2.1.207 defer_loading 语义（`app.pretty.js:442315` 注释）：**默认无
 
 [message-tools.ts:63-84 NON_DEFERRED_TOOL_NAMES](../../src/lib/anthropic/message-tools.ts#L63) 注释明写「VSCode Copilot Chat original tool names (snake_case)」：`read_file`/`run_in_terminal`/`grep_search`/… —— **全是 Copilot 工具名、无一个 CC 的 PascalCase**（Read/Bash/Grep/Edit/Write/Task…）。`toolSearchEnabled` **默认 true**（[state.ts:1432](../../src/lib/state.ts#L1432)，Claude ≥4.5 默认放行）。
 
-### F30（MEDIUM，条件性 + 与 F28 同根）— CC 核心工具无静态非延迟保护，tool-search 开时首用即延迟
+### F30（**已证伪 → 收敛进 F28**，2026-07-13 实现期纠正）— ~~CC 核心工具无静态非延迟保护~~
 
-**判断（读码 + 推理）**：项目延迟判据（轮次 21）`shouldDefer = toolSearchEnabled && tool.defer_loading !== false && !NON_DEFERRED_TOOL_NAMES.has(name) && !learned && !historyUsed`。对 CC 核心工具（如 `Read`）：
+> **纠正（empirical-verification）**：本条原判**错误**。实现期 deep-read [message-tools.ts:86](../../src/lib/anthropic/message-tools.ts#L86) 发现 `NON_DEFERRED_TOOL_NAMES` 末尾 **`...CLAUDE_CODE_OFFICIAL_TOOLS`**——即 CC 官方工具**已被 spread 进非延迟集**、有静态保护。轮次 24 的判断源于**只读到第 82 行就下结论**（漏了第 86 行的 spread），是「否定性结论不自证」的反例（[[feedback-pass-null-clean-not-self-validating]]）。
+>
+> **真实残余**：仅**不在 `CLAUDE_CODE_OFFICIAL_TOOLS` 里的工具**（WebSearch/BashOutput/NotebookRead，F28）在**两处都**缺保护（stub 注入 + 非延迟）。故 F30 的有效部分**完全收敛进 F28**——补全官方工具清单会**同时**修好非延迟保护（因 NON_DEFERRED spread 该清单）。无独立 F30 修复项。
+>
+> 教训：动大工程/信 finding 前 deep-read 引用的每处 `file:line`（读全定义，别在名单中途停）——正是 CLAUDE.md `subagent-explicit-rubric` / `verifying-authoritative-claims` 要求的。
+
+**原（错误）判断存档**：项目延迟判据 `shouldDefer = toolSearchEnabled && tool.defer_loading !== false && !NON_DEFERRED_TOOL_NAMES.has(name) && !learned && !historyUsed`。对 CC 核心工具（如 `Read`）：
 - `tool.defer_loading !== false`：CC **省略** defer_loading（默认加载语义）→ `undefined !== false` = **TRUE**（**不**被 CC 的 flag 保护）。
 - `!NON_DEFERRED_TOOL_NAMES.has("Read")`：`Read` 不在 Copilot snake_case 名单 → **TRUE**（**不**被静态名单保护）。
 - → 只剩 `historyUsed` 保护：**首次使用前，CC 核心工具全被项目延迟**。
