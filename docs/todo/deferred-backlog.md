@@ -321,7 +321,9 @@
 
 ## chat-completions + Gemini 下游 SSE 无 heartbeat（长静默 idle 风险，现仅 Anthropic/Responses 有保活）
 
-- **根因**：下游客户端保活（forward-idle heartbeat）目前只接在 Anthropic（`stream_keepalive_*` / delayed-commit）+ Responses（`responsesKeepaliveFrame`，本特性 Task 2.1）两条 SSE 路径。**chat-completions**（`routes/chat-completions/handler-v4.ts:327-329` 注释明写 "No heartbeat (CC has no stream_keepalive_ping_sec)"）+ **Gemini**（`routes/gemini/handler-v4.ts:271` "Gemini has no `[DONE]` / no heartbeat"）的 `makeSseSink` 都**不传 heartbeat**，故长上游静默期不注入保活帧。
+> **部分解决（2026-07-13）**：**CC 已落地默认心跳**（block-level-buffered-retry P3，commit `c9f0cbf5`+`3baf6095`：`ccKeepaliveFrame()` empty-delta chunk 经 `makeSseSink` heartbeat 注入、`synthetic:"keepalive"` 标记、buffered 强制 + live 路径 `streamKeepalivePingSec>0` 默认 20 也发）。**仅 Gemini 未做**——本条实际降为「Gemini 下游 SSE 无 heartbeat」。下方根因/架构的 CC 部分已作古，保留供 Gemini 参照同构解法。
+
+- **根因**：下游客户端保活（forward-idle heartbeat）目前只接在 Anthropic（`stream_keepalive_*` / delayed-commit）+ Responses（`responsesKeepaliveFrame`，本特性 Task 2.1）两条 SSE 路径。~~**chat-completions**（`routes/chat-completions/handler-v4.ts:327-329`）~~（**已解决**，见上）+ **Gemini**（`routes/gemini/handler-v4.ts:271` "Gemini has no `[DONE]` / no heartbeat"）的 `makeSseSink` 都**不传 heartbeat**，故长上游静默期不注入保活帧。
 - **当前行为（已核实无害）**：CC/Gemini 客户端若有 ~300s-idle 超时（如某些 SDK 默认），遇到长 reasoning 静默的上游会 idle 断连（与 Responses 修复前同类问题）。当前无已知 CC/Gemini 消费者命中此边界（多数 CC/Gemini 客户端 idle 容忍更宽或有自己的 keepalive），故实际零触发；但架构上是 Responses 已修、CC/Gemini 未修的**不对称缺口**。
 - **理想架构**：同 Responses——给 CC/Gemini 各定一个格式专属保活帧（CC：`data: {"choices":[{"delta":{}}]}` 或注释帧核定客户端容忍；Gemini：data-only 空 candidates 帧或核定容忍），经 `makeSseSink` 的 heartbeat hook 按 `streamKeepalivePingSec` 注入 + `synthetic:"keepalive"` 标记，帧型以各自 SDK 容忍契约为 oracle（比照 Responses 的 `refs/codex` + openai-node/python 三重容忍核验）。
 - **为何暂缓**：无已知命中此 idle 边界的 CC/Gemini 消费者（价值未证）；每格式的保活帧型需独立核定客户端容忍契约（不能盲抄 Responses 的 `response.ping`）——属独立工作单元，同类修复模式（`learn-by-analogy`）但需各自 oracle。若将来某 ~300s-idle 消费者命中 CC/Gemini 即优先做。发现方：Task 2.1 keepalive 落地（2026-07-08，spec §3 R3 边界）。

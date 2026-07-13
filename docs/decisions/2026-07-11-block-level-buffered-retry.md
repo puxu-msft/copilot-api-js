@@ -26,8 +26,10 @@
 |---|---|---|---|
 | Anthropic messages | **块级** | `content_block_stop` 是天然中途边界 | 可达（接线后） |
 | Responses HTTP | **块级** | `output_item.done` 是天然中途边界 | 可达 |
-| Chat Completions | **terminal-only** | CC 无中途块边界（delta 增量、终止靠末 chunk 的 `finish_reason`） | 不可达 |
-| Responses WS | **terminal-only** | 无中途块需求；且 close-code 时序与整响应恢复更契合 | 不可达 |
+| Chat Completions | **terminal-only** | CC 无中途块边界（delta 增量、终止靠末 chunk 的 `finish_reason`） | 常规不触及* |
+| Responses WS | **terminal-only** | 无中途块需求；且 close-code 时序与整响应恢复更契合 | 结构不可达 |
+
+*CC 传了 `ccCommitBoundaries`（只认 in-band error 帧），error 帧即终态、其后无帧，故常规流程不产 partial-degrade——是「实际不触及」而非 WS 那样省略 commitBoundaries 的「结构不可达」。
 
 这个非对称是**正确性要求**，不是妥协：给 terminal-only 端点强套块级谓词会把「非终止边界」（如 `output_item.done`）误当提交点，一旦提交就关闭重试窗口，使「临近结尾掉线」降级为不可重试的半代——本特性的执行期确实踩过这个坑（P4 WS 误用了 HTTP 的块级谓词，经独立评审逮到并修正为省略 commitBoundaries）。反向，给块级端点用 terminal-only 则白白放弃早交付能力。**粒度必须匹配协议，不能一刀切。**
 
@@ -50,7 +52,7 @@
 
 ### 决策 5：本轮显式排除 Gemini 与 web_search
 
-- **Gemini**：其 codec 的终止生命周期由 `flushResponse` 在 driver 循环外合成，块级 commit 循环内不可见——与 Responses via-CC-fallback 同根因（结构不兼容）。本轮排除，登记 backlog；理想解是把 `flushResponse` 产出重构进 driver 循环，与 fallback 一并解。
+- **Gemini**：其 codec 的终止生命周期由 `flushResponse` 在 driver 循环外合成，块级 commit 循环内不可见——与 Responses via-CC-fallback 同根因（结构不兼容）。本轮排除，登记 backlog（折叠在 backlog:359 via-CC-fallback 条的「同根因」提及 + spec §7.4）；理想解是把 `flushResponse` 产出重构进 driver 循环，与 fallback 一并解。
 - **web_search**：走 legacy `executeRequestPipeline` 双跳、不经 driver。是重要功能、需支持，但其管线陈旧、值得下决心重写——拉出为**未来独立 spec / 下一个大任务**，不塞进本轮。
 
 这两项排除是 `no-silently-cut-but-defer` 的显式记录，不是静默砍。
@@ -59,7 +61,7 @@
 
 - **正面**：四端点统一恢复防线（对抗 GHC mid-stream RST）；块级端点获早交付 + 首块前透明重试；遥测按 vendor 可分（`responses`/`responses_ws`/`chat_completions`）；配置经共享 `buffered_retry.*` + per-vendor 覆盖统一（旧 `protectStreaming*` 标量键经 compat 迁移）。
 - **代价 / 约束**：`partial-degrade` 是块级端点的固有终局（已作诚实 outcome 记账，非缺陷）；缓冲期强制 heartbeat，注入的 keepalive 帧必打 `synthetic:"keepalive"` 标记入 forwarded 轨、绝不入上游原始轨（richest-data-flow ADR）；默认开受实证门约束、非自动。
-- **可观测性**：CC-live 路径因 `streamKeepalivePingSec` 默认 20 也会心跳（追平 Anthropic/Responses live 行为，一致性改进）——已记 DESIGN.md，可 operator override。
+- **可观测性**：CC-live 路径因 `streamKeepalivePingSec` 默认 20 也会心跳（追平 Anthropic/Responses live 行为，一致性改进）——已同步 DESIGN.md tier-1 行 ③ + backlog:322，可 operator override。
 
 ## 备注
 

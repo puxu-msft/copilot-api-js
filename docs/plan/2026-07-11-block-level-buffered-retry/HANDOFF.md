@@ -20,7 +20,7 @@
 | **P4 T3** WS 默认 ON | 随 Responses 门（WS 复用 `responses.buffered_retry` 键、无独立键） | 随 P2 T6 自动继承；关 backlog:300-306 剩余项②（heartbeat parity 若门覆盖） |
 | **P1 T6** Anthropic 接线 + 默认 ON | PoC stage-2 `exp/block-level-anchor-coexist/`（真 Claude Code 接受两块并存 + 空 text_delta 重置 300s 死线） | 接线 `commitBoundaries=anthropicCommitBoundaries` + telemetryVendor `"anthropic"`（P0 已删临时 guard 改真记账，故只需传谓词）+ anchor 栈接线（R3 同 commit）+ req_484 golden + 改 config 默认 |
 
-**⚠️ 落地翻转的唯一正确方式（承重，实测过的坑）**：默认值改 **config.yaml / schema 默认**（`applyConfigToState()` 每请求从 config 重导，见 `system-prompt/override.ts:48,73` + `start.ts:287/473` 注释=热重载 by-design），**绝不**靠 `state` 字段突变（会被每请求重导覆写）。测试设非默认 caps 用 `setBufferedRetryOverride(vendor, ...)` 非 `setStateForTests`（旧标量键 `protectStreamingMaxRetries` post-P0 已删）。
+**⚠️ 落地翻转的正确杠杆（承重，核过代码）**：权威杠杆是 plan-2 Task 6 Step 6.3 指定的——改 `src/lib/state.ts` 的 `CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry: false→true`（CC 同理 `chatCompletionsBufferedRetry`）。因为 bundled `config.yaml` **不含** `openai_responses.buffered_retry.enabled`（仅注释样例），`applyConfigToState` 对该键是 override-only-when-present，故改 `CONFIG_MANAGED_DEFAULTS` 不会被每请求覆写。（等价替代：往 bundled `config.yaml` 加 `openai_responses.buffered_retry.enabled: true`。）**「每请求覆写」教训只对已在 bundled config.yaml 里设了值的键成立**——例如共享 `buffered_retry.*` caps（bundled 确有），测试设非默认 caps 会被每请求 `setBufferedRetryShared` 覆写，故测试须用 `setBufferedRetryOverride(vendor, ...)` 而非 `setStateForTests`（旧标量键 `protectStreamingMaxRetries` post-P0 已删）。翻转后顺手补 `config.example.yaml` 的 `buffered_retry` 示例（backlog 已记）。
 
 **PoC stage-2 三分支决策**（P1）：全 PASS→主形状（块级 + 空 text 锚点）；criterion ② FAIL→备选（每块 close@0 重开）；备选 FAIL→兜底（整响应缓冲仅 Responses/CC、Anthropic 保持 live 或 whole-response）。三分支的接线差异见 spec §4.5。
 
