@@ -85,16 +85,14 @@ import type {
   ResponsesInputItem,
   ResponsesPayload,
 } from "~/types/api/openai-responses"
-import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { prepareReverseAnthropicWire } from "~/lib/codec/anthropic/anthropic-leg"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   captureInboundHeaders,
 } from "~/lib/fetch-utils"
-import { sanitizeHeadersForHistory } from "~/lib/fetch-utils"
 import {
   //
   getAgentIdFromHeaders,
@@ -225,7 +223,11 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
 
   /** Build the reverse-exchange once (also used by the non-streaming translateCCToResponsesResponse). */
   const ensureReverseExchange = (env: RequestEnvelope): TranslateExchangeContext =>
-    (reverseExchange ??= { responseId: `resp_${genShortId()}`, itemId: `item_${genShortId()}`, clientModel: resolvedModelName || (env.body as { model?: string }).model || "" })
+    (reverseExchange ??= {
+      responseId: `resp_${genShortId()}`,
+      itemId: `item_${genShortId()}`,
+      clientModel: resolvedModelName || (env.body as { model?: string }).model || "",
+    })
 
   const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
     const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
@@ -442,31 +444,6 @@ function parseContentLength(header: string | null): number | undefined {
 // ============================================================================
 
 /**
- * S4 last-mile for the REVERSE `@messages` leg (Phase 5): the body is Anthropic-shaped (translateOut
- * delegated to the hub), so build the Anthropic `/v1/messages` wire via `prepareAnthropicRequest`. A
- * Responses client sends no `anthropic-beta`; the handler's shared probe records the outbound betas.
- */
-function prepareReverseAnthropicWire(env: RequestEnvelope, betaProbe: BetaProbe | undefined): PreparedRequest {
-  const model = env.model as Model | undefined
-  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
-    ...(model && { resolvedModel: model }),
-    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
-    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
-    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
-    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
-    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
-    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
-  })
-  betaProbe?.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
-  return {
-    url: ENDPOINT.MESSAGES,
-    headers: new Headers(prepared.headers),
-    body: prepared.wire,
-    stream: (prepared.wire.stream as boolean | undefined) ?? false,
-  }
-}
-
-/**
  * S4 last-mile: env → wire, dispatched by `targetEndpoint`.
  *   - `/responses` (direct): `prepareResponsesRequest`.
  *   - `/chat/completions` (fallback): Responses→CC translation + prior-conversation
@@ -504,7 +481,9 @@ function prepareOpenAiResponsesWire(env: RequestEnvelope, fallback: FallbackExch
   if (env.targetEndpoint !== ENDPOINT.RESPONSES) {
     // Symmetric loud-fail: a `translate` decision to a leg this codec cannot serve
     // (reverse `@messages`, Phase 5) throws instead of silently downgrading to /responses.
-    throw new Error(`openai-responses codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`)
+    throw new Error(
+      `openai-responses codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`,
+    )
   }
   const prepared = prepareResponsesRequest(env.body as ResponsesPayload, { resolvedModel: model })
   return {

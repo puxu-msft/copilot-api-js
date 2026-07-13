@@ -121,6 +121,39 @@ export function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps
   }
 }
 
+/**
+ * S4 last-mile for a REVERSE `@messages` leg (cc/responses/gemini client → Anthropic wire): the body is
+ * already Anthropic-shaped (the leg's translateOut delegated to the hub), so build the Anthropic wire via
+ * `prepareAnthropicRequest` (B1-B12). Distinct from {@link prepareAnthropicWire}: NO client anthropic-beta /
+ * client headers / thinking+cache-control ctx side-channels (a non-Anthropic client sends none, and the
+ * reverse leg does not record the direct-only pipeline diagnostics). The handler-injected `betaProbe`
+ * records the outbound betas so the reverse unsupported-beta strategy can probe them.
+ *
+ * Extracted VERBATIM (C2b) from the openai-cc + openai-responses codecs, where it was DUPLICATED — one
+ * shared definition both codecs and the `OUTBOUND_LEGS[/v1/messages]` reverse branch call (zero divergence).
+ */
+export function prepareReverseAnthropicWire(env: RequestEnvelope, betaProbe: BetaProbe | undefined): PreparedRequest {
+  const model = env.model as Model | undefined
+  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
+    ...(model && { resolvedModel: model }),
+    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
+    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
+    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
+    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
+    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
+    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
+  })
+  // Record the outbound betas so the reverse unsupported-beta strategy can probe them (mirrors the
+  // anthropic codec's prepareWire recordOutbound — the SAME probe instance the handler injects here).
+  betaProbe?.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
+  return {
+    url: ENDPOINT.MESSAGES,
+    headers: new Headers(prepared.headers),
+    body: prepared.wire,
+    stream: (prepared.wire.stream as boolean | undefined) ?? false,
+  }
+}
+
 // ============================================================================
 // S4 — preSend (main-path pre-flight truncation)
 // ============================================================================

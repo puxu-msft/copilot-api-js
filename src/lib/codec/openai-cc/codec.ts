@@ -48,6 +48,7 @@ import type {
 } from "~/lib/context/types"
 import type { EndpointType } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
+import type { AnthropicToCcStreamMeta } from "~/lib/openai/translate"
 import type {
   //
   ClientFormat,
@@ -72,7 +73,6 @@ import type {
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
-import type { AnthropicToCcStreamMeta } from "~/lib/openai/translate"
 import type {
   //
   ChatCompletionChunk,
@@ -85,8 +85,9 @@ import type {
   ResponsesResponse,
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
-import type { MessagesPayload } from "~/types/api/anthropic"
 
+import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { prepareReverseAnthropicWire } from "~/lib/codec/anthropic/anthropic-leg"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -131,9 +132,6 @@ import {
   translateChatCompletionsToResponses,
   translateResponsesResponseToCC,
 } from "~/lib/openai/translate"
-import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
-import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
-import { sanitizeHeadersForHistory } from "~/lib/fetch-utils"
 import {
   //
   createReverseStreamTranslator,
@@ -460,7 +458,9 @@ function prepareOpenAiCcWire(env: RequestEnvelope): PreparedRequest {
     // `@messages` leg, wired in Phase 5) must fail LOUDLY, symmetric with the anthropic
     // side's registry-throw 500 — never silently downgrade to /chat/completions and lie
     // in observability (`setRouteInfo` already recorded outboundEndpoint/translated).
-    throw new Error(`openai-cc codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`)
+    throw new Error(
+      `openai-cc codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`,
+    )
   }
   const prepared = prepareChatCompletionsRequest(ccPayload, { resolvedModel: model })
   return {
@@ -468,35 +468,6 @@ function prepareOpenAiCcWire(env: RequestEnvelope): PreparedRequest {
     headers: new Headers(prepared.headers),
     body: prepared.wire,
     stream: prepared.wire.stream ?? false,
-  }
-}
-
-/**
- * S4 last-mile for the REVERSE `@messages` leg (Phase 5): the body is Anthropic-shaped (translateOut
- * delegated to the hub), so build the Anthropic `/v1/messages` wire via `prepareAnthropicRequest` (B1-B12).
- * A CC client sends no `anthropic-beta`, so `clientAnthropicBeta` is undefined; the handler's shared beta
- * probe records the outbound betas (so the reverse unsupported-beta strategy can probe them). Idempotent
- * (deep-clones, no write-back to env.body — same env → same wire), so re-running per retry is safe.
- */
-function prepareReverseAnthropicWire(env: RequestEnvelope, betaProbe: BetaProbe | undefined): PreparedRequest {
-  const model = env.model as Model | undefined
-  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
-    ...(model && { resolvedModel: model }),
-    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
-    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
-    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
-    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
-    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
-    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
-  })
-  // Record the outbound betas so the reverse unsupported-beta strategy can probe them (mirrors the
-  // anthropic codec's prepareWire recordOutbound — the SAME probe instance the handler injects here).
-  betaProbe?.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
-  return {
-    url: ENDPOINT.MESSAGES,
-    headers: new Headers(prepared.headers),
-    body: prepared.wire,
-    stream: (prepared.wire.stream as boolean | undefined) ?? false,
   }
 }
 
