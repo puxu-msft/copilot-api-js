@@ -16,6 +16,7 @@ import {
   //
   type BufferedRetryCaps,
   type CompiledRewriteRule,
+  type CompiledSystemPromptEntry,
   DEFAULT_MODEL_OVERRIDES,
   resolveBufferedCaps,
   setAnthropicBehavior,
@@ -25,14 +26,22 @@ import {
   setChatCompletionsConfig,
   setDisabledModels,
   setHistoryConfig,
+  setHooksConfig,
   setModelOverrides,
   setNegotiationConfig,
   setResponsesConfig,
   setShutdownConfig,
   setTimeoutConfig,
+  setTimeoutOverridesConfig,
   setWebSearchConfig,
   state,
 } from "~/lib/state"
+
+import type {
+  //
+  EndpointScope,
+  SystemPromptEntry,
+} from "./schema"
 
 import { loadPersistedLimits } from "../auto-truncate"
 import { syncModelRefreshLoop } from "../models/refresh-loop"
@@ -49,7 +58,17 @@ import {
 } from "./validation"
 
 // Re-export Zod-inferred types so existing imports of these names keep working.
-export type { AnthropicConfig, Config, HistoryConfig, RateLimiterConfig, ResponsesConfig, RewriteRule, ShutdownConfig } from "./schema"
+export type {
+  AnthropicConfig,
+  Config,
+  EndpointScope,
+  HistoryConfig,
+  RateLimiterConfig,
+  ResponsesConfig,
+  RewriteRule,
+  ShutdownConfig,
+  SystemPromptEntry,
+} from "./schema"
 
 export {
   AnthropicConfigSchema,
@@ -88,22 +107,43 @@ import {
 // shape).
 // ============================================================================
 
-/** Compile a raw rewrite rule into a CompiledRewriteRule. Returns null for invalid regex. */
-export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null {
-  const method = raw.method ?? "regex"
-
-  // Compile model filter regex (shared by both line and regex methods)
+/**
+ * Compile the shared model/endpoint scope carried by rewrite rules and
+ * system-prompt entries. Returns `null` if the model regex is invalid (caller
+ * skips the whole rule/entry). undefined axes = apply to all.
+ */
+export function compileScope(raw: { model?: string; endpoint?: EndpointScope | Array<EndpointScope> }): {
+  modelPattern?: RegExp
+  endpointSet?: ReadonlySet<string>
+} | null {
   let modelPattern: RegExp | undefined
   if (raw.model) {
     try {
       modelPattern = new RegExp(raw.model, "i")
     } catch (err) {
-      consola.warn(`[config] Invalid model regex in rewrite rule: "${raw.model}"`, err)
+      consola.warn(`[config] Invalid model regex in system-prompt scope: "${raw.model}"`, err)
       return null
     }
   }
 
-  if (method === "line") return { from: raw.from, to: raw.to, method, modelPattern }
+  let endpointSet: ReadonlySet<string> | undefined
+  if (raw.endpoint) {
+    endpointSet = new Set(Array.isArray(raw.endpoint) ? raw.endpoint : [raw.endpoint])
+  }
+
+  return { modelPattern, endpointSet }
+}
+
+/** Compile a raw rewrite rule into a CompiledRewriteRule. Returns null for invalid regex. */
+export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null {
+  const method = raw.method ?? "regex"
+
+  // Compile the shared model/endpoint scope (invalid model regex skips the rule).
+  const scope = compileScope(raw)
+  if (scope === null) return null
+  const { modelPattern, endpointSet } = scope
+
+  if (method === "line") return { from: raw.from, to: raw.to, method, modelPattern, endpointSet }
   try {
     // Strip leading inline flags (?flags) — merge with base gms flags
     // e.g. "(?i)pattern" → pattern "pattern", flags "gmsi"
@@ -118,7 +158,7 @@ export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null
         if (!flags.includes(f)) flags += f
       }
     }
-    return { from: new RegExp(pattern, flags), to: raw.to, method, modelPattern }
+    return { from: new RegExp(pattern, flags), to: raw.to, method, modelPattern, endpointSet }
   } catch (err) {
     consola.warn(`[config] Invalid regex in rewrite rule: "${raw.from}"`, err)
     return null
@@ -128,6 +168,28 @@ export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null
 /** Compile an array of raw rewrite rules, skipping invalid ones */
 export function compileRewriteRules(raws: Array<RewriteRule>): Array<CompiledRewriteRule> {
   return raws.map((r) => compileRewriteRule(r)).filter((r): r is CompiledRewriteRule => r !== null)
+}
+
+/**
+ * Compile the config `system_prompt_prepend` / `system_prompt_append` value
+ * (`string | Entry | Entry[] | undefined`) into scoped {@link CompiledSystemPromptEntry}
+ * list. A plain string becomes a single unscoped entry. Entries whose model regex
+ * fails to compile are skipped (warned by {@link compileScope}).
+ */
+export function compileSystemPromptEntries(raw: string | SystemPromptEntry | Array<SystemPromptEntry> | undefined): Array<CompiledSystemPromptEntry> {
+  if (raw === undefined) return []
+  let entries: Array<SystemPromptEntry>
+  if (typeof raw === "string") entries = [{ text: raw }]
+  else if (Array.isArray(raw)) entries = raw
+  else entries = [raw]
+
+  const compiled: Array<CompiledSystemPromptEntry> = []
+  for (const entry of entries) {
+    const scope = compileScope(entry)
+    if (scope === null) continue
+    compiled.push({ text: entry.text, modelPattern: scope.modelPattern, endpointSet: scope.endpointSet })
+  }
+  return compiled
 }
 
 // ============================================================================
@@ -616,7 +678,6 @@ export async function applyConfigToState(): Promise<Config> {
       if (ect.messages_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlMessages: ect.messages_ttl })
     }
     if (a.tool_search_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_search_non_deferred })
-    if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })
     if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
     // Collection fields: retain-on-absence semantic — a missing key keeps the
     // current runtime value; an explicit `{}` overwrites with empty. To revert
@@ -628,6 +689,10 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.beta_strip_headers !== undefined)
       setAnthropicBehavior({
         stripBetaHeaders: normalizeModelKeyedRecord(a.beta_strip_headers, "anthropic.beta_strip_headers"),
+      })
+    if (a.cache_control_strip_subfields !== undefined)
+      setAnthropicBehavior({
+        stripCacheControlSubfields: normalizeModelKeyedRecord(a.cache_control_strip_subfields, "anthropic.cache_control_strip_subfields"),
       })
     if (a.partner_strip_features !== undefined)
       setAnthropicBehavior({
@@ -684,6 +749,14 @@ export async function applyConfigToState(): Promise<Config> {
     })
   }
 
+  // System prompt prepend/append (scoped entries: entire replacement per key).
+  if (config.system_prompt_prepend !== undefined) {
+    setAnthropicBehavior({ systemPromptPrepend: compileSystemPromptEntries(config.system_prompt_prepend) })
+  }
+  if (config.system_prompt_append !== undefined) {
+    setAnthropicBehavior({ systemPromptAppend: compileSystemPromptEntries(config.system_prompt_append) })
+  }
+
   // Model overrides: retain-on-absence. An explicit `model_overrides: {}` (or
   // any present map) replaces the live override map merged on top of defaults;
   // omitting the key keeps the prior runtime value.
@@ -712,6 +785,7 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.target_factor !== undefined) setAutoTruncateConfig({ autoTruncateTargetFactor: a.target_factor })
     if (a.max_retries !== undefined) setAutoTruncateConfig({ autoTruncateMaxRetries: a.max_retries })
     if (a.compress_threshold !== undefined) setAutoTruncateConfig({ autoTruncateCompressThreshold: a.compress_threshold })
+    if (a.preflight !== undefined) setAutoTruncateConfig({ autoTruncatePreflight: a.preflight })
     if (a.compress_tool_results !== undefined) setAnthropicBehavior({ compressToolResultsBeforeTruncate: a.compress_tool_results })
   }
 
@@ -741,6 +815,15 @@ export async function applyConfigToState(): Promise<Config> {
     if (w.backend !== undefined) setWebSearchConfig({ webSearchBackend: w.backend })
   }
 
+  // Upstream hook module (nested: override only when present). Declarative only — writes
+  // state so start.ts (and, in future phases, a reload API) can decide whether/what to load;
+  // never triggers the module load itself.
+  if (config.hooks) {
+    const hk = config.hooks
+    if (hk.upstream_module !== undefined) setHooksConfig({ hooksUpstreamModule: hk.upstream_module })
+    if (hk.enabled !== undefined) setHooksConfig({ hooksEnabled: hk.enabled })
+  }
+
   // Shutdown timing (scalar: override only when present)
   if (config.shutdown) {
     const s = config.shutdown
@@ -756,6 +839,16 @@ export async function applyConfigToState(): Promise<Config> {
     if (t.upstream_keepalive !== undefined) setTimeoutConfig({ upstreamKeepaliveDelay: t.upstream_keepalive })
     if (t.upstream_h2_ping !== undefined) setTimeoutConfig({ upstreamH2PingInterval: t.upstream_h2_ping })
     if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
+    // Per-model override maps (already bundled+user per-key merged upstream).
+    // Replace semantics per field; app-guard only (no dispatcher rebuild).
+    if (t.stream_idle_overrides !== undefined) {
+      setTimeoutOverridesConfig({ streamIdleTimeoutOverrides: normalizeModelKeyedRecord(t.stream_idle_overrides, "timeouts.stream_idle_overrides") })
+    }
+    if (t.response_header_overrides !== undefined) {
+      setTimeoutOverridesConfig({
+        responseHeaderTimeoutOverrides: normalizeModelKeyedRecord(t.response_header_overrides, "timeouts.response_header_overrides"),
+      })
+    }
   }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 
@@ -810,6 +903,28 @@ export async function applyConfigToState(): Promise<Config> {
   if (hasApplied && currentMtime !== lastAppliedMtimeMs) {
     consola.info("[config] Reloaded config.yaml")
   }
+
+  // Guardrail: an upstream silence-guard timeout explicitly set to 0 is DISABLED.
+  // With `response_header: 0` the TTFB abort signal is undefined, so a silently
+  // hung GHC upstream keeps a single streaming request pending for MINUTES until
+  // the upstream itself 502s (observed: a 691s pre-response hang; the timeout
+  // mechanism itself is sound — disabling it is the footgun, see
+  // exp/ttfb-timeout-queued/report.md). `stream_idle: 0` is the same class
+  // (mid-stream silence unbounded). Warn at first apply / on actual change only —
+  // gated like the reload log so the per-request hot-reload path never spams.
+  if (!hasApplied || currentMtime !== lastAppliedMtimeMs) {
+    const disabledGuards: Array<string> = []
+    if (config.timeouts?.response_header === 0) disabledGuards.push("response_header (TTFB / time-to-first-byte)")
+    if (config.timeouts?.stream_idle === 0) disabledGuards.push("stream_idle (mid-stream silence)")
+    if (disabledGuards.length > 0) {
+      consola.warn(
+        `[config] upstream silence guard(s) DISABLED: ${disabledGuards.join(", ")}. `
+          + `A hung upstream (e.g. GHC overload) will keep a request pending until the upstream itself responds/closes `
+          + `(observed hundreds of seconds). Set a positive timeout unless you are deliberately debugging long silences.`,
+      )
+    }
+  }
+
   hasApplied = true
   lastAppliedMtimeMs = currentMtime
 

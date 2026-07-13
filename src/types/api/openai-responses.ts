@@ -211,8 +211,15 @@ export interface ResponsesUsage {
   output_tokens_details?: {
     reasoning_tokens: number
   }
+  // GHC extension: cache_write + modality live here (Responses side), not in a
+  // prompt_tokens_details — see spec §5.2 M3. cached_tokens optional to align.
   input_tokens_details?: {
-    cached_tokens: number
+    cached_tokens?: number
+    cache_write_tokens?: number
+    text_tokens?: number
+    audio_tokens?: number
+    image_tokens?: number
+    video_tokens?: number
   }
 }
 

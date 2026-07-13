@@ -45,10 +45,12 @@ import { initBus } from "./lib/observability"
 import { toActiveRequestWire } from "./lib/observability/active-request-wire"
 import { formatBillingLabel } from "./lib/observability/projections/format"
 import { installConsolaRepublish } from "./lib/observability/republish"
+import { attachCalibrationSink } from "./lib/observability/sinks/calibration"
 import { attachFileSink } from "./lib/observability/sinks/file"
 import { attachHistorySink } from "./lib/observability/sinks/history"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
 import { attachWsSink } from "./lib/observability/sinks/ws"
+import { loadUpstreamHookSafe } from "./lib/pipeline/hooks/loader"
 import { initProcessIdentity } from "./lib/process-identity"
 import { initProxy } from "./lib/proxy"
 import { initRequestTelemetry } from "./lib/request-telemetry"
@@ -301,6 +303,24 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const config = await applyConfigToState()
 
+  // Deprecation: ANTHROPIC_API_KEY previously routed count_tokens for Claude
+  // models to api.anthropic.com. That path is retired — count_tokens now
+  // forwards to GHC's upstream /v1/messages/count_tokens (no separate key). Warn
+  // users who still set the env var so the silent channel change is visible.
+  // (The config key anthropic.api_key is warned separately via CONFIG_MIGRATIONS.)
+  if (process.env.ANTHROPIC_API_KEY) {
+    consola.warn(
+      "ANTHROPIC_API_KEY is set but no longer used — count_tokens now forwards to GHC's upstream /v1/messages/count_tokens (no separate Anthropic API key needed).",
+    )
+  }
+
+  // Upstream hook module (dev/test only) — declarative state was already set by
+  // applyConfigToState above; load it here if enabled. warn-continue: a bad/missing hook
+  // module must never block startup (see loadUpstreamHookSafe).
+  if (state.hooksEnabled && state.hooksUpstreamModule) {
+    await loadUpstreamHookSafe(state.hooksUpstreamModule)
+  }
+
   // GHC API base URL — CLI > config.yaml. Not hot-reloadable: changing
   // the upstream endpoint mid-flight would mis-route active requests.
   // Apply after applyConfigToState so the CLI value still wins.
@@ -369,6 +389,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setHistoryPublisher(historyPublisher)
   attachHistorySink(bus, { publisher: historyPublisher })
   attachTelemetrySink(bus)
+  attachCalibrationSink(bus)
   attachWsSink(bus)
 
   // Rate limiter — config-driven, constructed after observability is live so

@@ -73,12 +73,22 @@ describe("anthropic codec — formatError (Anthropic-shaped, double-typed)", () 
 })
 
 describe("anthropic codec — createResponseAccumulator", () => {
-  test("returns a fresh Anthropic stream accumulator (streamError control signal present in shape)", () => {
+  test("direct leg returns a fresh Anthropic stream accumulator (streamError control signal present in shape)", () => {
     const codec = makeCodec()
-    const acc = codec.createResponseAccumulator()
+    const acc = codec.createResponseAccumulator({ targetEndpoint: "/v1/messages" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
     expect(acc.model).toBe("")
     expect(acc.inputTokens).toBe(0)
     expect(acc.outputTokens).toBe(0)
+    // Anthropic accumulator has the Anthropic-specific `stopReason` field.
+    expect("stopReason" in acc).toBe(true)
+  })
+
+  test("FORWARD translate leg (@cc) returns a CC stream accumulator (RFC §4.1 per-leg dispatch)", () => {
+    const codec = makeCodec()
+    const acc = codec.createResponseAccumulator({ targetEndpoint: "/chat/completions" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
+    // CC accumulator has `toolCallMap`, the Anthropic one does not (proof it's the CC-leg accumulator).
+    expect("toolCallMap" in acc).toBe(true)
+    expect("stopReason" in acc).toBe(false)
   })
 })
 
@@ -109,13 +119,55 @@ describe("anthropic codec — prepareWire tool-field stripping", () => {
     expect(tools[0].future_x).toBeUndefined()
     expect(tools[0].name).toBe("Read")
   })
+
+  // HIGH-1 (合并态审查)：passthrough 剥掉的 cache_control 子字段须经 getter 上抛，供 handler
+  // 塞 pipelineInfo 持久化 history（recordFeature 单通道只到 live TUI、被 history sink 丢弃）。
+  function envWithScopedSystem(prepareHints: Record<string, unknown> = {}): RequestEnvelope {
+    return {
+      model: undefined,
+      body: {
+        model: "claude-opus-4-8",
+        max_tokens: 16,
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        system: [{ type: "text", text: "s", cache_control: { type: "ephemeral", scope: "global" } }],
+      },
+      prepareHints,
+    } as unknown as RequestEnvelope
+  }
+
+  test("passthrough 剥 scope 并经 getLatestStrippedCacheControlSubfields 上抛（HIGH-1 持久化通道）", () => {
+    const codec = makeCodec()
+    const prepared = codec.prepareWire(envWithScopedSystem())
+    const system = (prepared.body as { system: Array<Record<string, unknown>> }).system
+    expect(system[0].cache_control).toEqual({ type: "ephemeral" }) // scope 已剥
+    expect(codec.getLatestStrippedCacheControlSubfields()).toEqual(["scope"]) // 上抛供 pipelineInfo 持久化
+  })
+
+  test("源④ excludeCacheControlSubfields hint 经 codec 桥接剥掉（reactive→prepare 通道）", () => {
+    const codec = makeCodec()
+    const prepared = codec.prepareWire(
+      // system 带一个非内置黑名单的假想子字段 foo，仅经 hint 才剥
+      {
+        model: undefined,
+        body: {
+          model: "claude-opus-4-8",
+          max_tokens: 16,
+          messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+          system: [{ type: "text", text: "s", cache_control: { type: "ephemeral", foo: "x" } }],
+        },
+        prepareHints: { excludeCacheControlSubfields: ["foo"] },
+      } as unknown as RequestEnvelope,
+    )
+    const system = (prepared.body as { system: Array<Record<string, unknown>> }).system
+    expect(system[0].cache_control).toEqual({ type: "ephemeral" }) // foo 经 hint 剥掉
+  })
 })
 
 describe("buildAnthropicStrategies", () => {
   const stubResanitize = (p: MessagesPayload): SanitizeResult<MessagesPayload> => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 })
   const baseline = { model: "claude-sonnet-4", messages: [], max_tokens: 100 } as unknown as MessagesPayload
 
-  test("yields the 16 strategies in order (10 shared-with-legacy incl. adaptive-thinking-rejection-retry + poisoned-thinking-retry + v4-only server-error-retry + tool-field-rejection + server-tool-rejection + structured-outputs-rejection + system-reject-retry + web-search-not-found-retry, RFC §12.9)", () => {
+  test("yields the 17 strategies in order (incl. cache-control-subfield-rejection after body-field, RFC §12.9)", () => {
     const strategies = buildAnthropicStrategies({
       originalPayload: baseline,
       resanitize: stubResanitize,
@@ -130,6 +182,7 @@ describe("buildAnthropicStrategies", () => {
       "effort-learning",
       "tool-field-rejection-retry",
       "body-field-rejection-retry",
+      "cache-control-subfield-rejection-retry",
       "legacy-thinking-retry",
       "adaptive-thinking-rejection-retry",
       "poisoned-thinking-retry",

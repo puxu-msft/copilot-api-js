@@ -602,6 +602,39 @@ describe("POST /v1/messages — web_search double-hop", () => {
     expect(body.content[0]).toMatchObject({ type: "tool_use", name: "web_search" })
   })
 
+  test("web_search on a non-Anthropic model (no-suffix auto-route → translate leg) → 400, no upstream hop, no @undefined", async () => {
+    // Phase 7: a cc/responses-capable non-Anthropic model no-suffix FORWARD-TRANSLATES (it no longer
+    // rejects). But the web_search double-hop needs the DIRECT /v1/messages leg, so the gate still
+    // surfaces a ctx-recorded 400 — now via the translate branch (routeOverride undefined). This guards
+    // the regression where that branch rendered "pinned to @undefined" garbage (a no-suffix request must
+    // NOT reference an @-suffix).
+    setModels({
+      object: "list",
+      data: [mockModel("gpt-5.5", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] })],
+    })
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "latest TS?" }],
+        max_tokens: 256,
+        tools: [webSearchTool],
+        stream: false,
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    // Never entered the double-hop — no upstream calls made.
+    expect(messagesHits).toBe(0)
+    expect(responsesHits).toBe(0)
+    const body = (await res.json()) as { error?: { message?: string } }
+    expect(body.error?.message).toContain("/v1/messages")
+    expect(body.error?.message).toContain("web_search")
+    // Regression guard (ISSUE-A): a no-suffix request must NOT render "@undefined" in the reason.
+    expect(body.error?.message).not.toContain("@undefined")
+  })
+
   test("hard first-hop failure: non-streaming surfaces an error status (reqCtx.fail + rethrow path)", async () => {
     firstHopStatus = 500
     const res = await app.request("/v1/messages", {

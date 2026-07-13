@@ -83,7 +83,7 @@ async function selectAndSend(wire: PreparedRequest, env: RequestEnvelope, deps: 
   // mid-stream reap reaches a live client as reaper-cancel → stream-error → error frame).
   const reaperSignal = env.ctx.lifecycleSignal
 
-  if (wire.stream && canUseUpstreamWebSocket(model)) {
+  if (wire.stream && canUseUpstreamWebSocket(model, responsesPayload.model)) {
     const attempt = await attemptUpstreamResponsesWs(
       { wire: responsesPayload, headers },
       { conversationId: deps.conversationId, clientAbortSignal: deps.clientAbortSignal, reaperSignal },

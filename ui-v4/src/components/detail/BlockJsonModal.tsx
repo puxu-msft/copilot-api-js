@@ -1,5 +1,5 @@
 import { RawJsonView } from "@/components/common/RawJsonView"
-import { Modal } from "@/components/shared/Modal"
+import { AgnosticDialog } from "@/components/ui/AgnosticDialog"
 
 /** Best-effort label off an arbitrary JSON value for the modal title: `type` (content block)
  *  or `role` (a whole message object), falling back to a generic `"block"`. */
@@ -24,14 +24,18 @@ interface BlockJsonModalProps {
  * `normalizeToContentBlocks`): for Anthropic-format content that is the verbatim wire
  * object; for OpenAI-format content it is the canonicalized block. The true unmodified
  * request wire bytes remain available via ConvoSegment's "Raw body" toggle.
+ *
+ * Uses the design-version-agnostic `AgnosticDialog` seam (not `shared/Modal` directly)
+ * so this B content body serves both presentation trees — the dialog skin forks in C6,
+ * not here (RFC §2 B↔C boundary / round2-A3).
  */
 export function BlockJsonModal({ value, onClose }: BlockJsonModalProps) {
   return (
-    <Modal
+    <AgnosticDialog
       title={`${blockType(value)} JSON`}
       onClose={onClose}
     >
       <RawJsonView value={value} />
-    </Modal>
+    </AgnosticDialog>
   )
 }

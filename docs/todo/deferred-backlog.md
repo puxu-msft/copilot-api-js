@@ -2,6 +2,23 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## 交互式 TUI（P1）打磨项（真终端 + review 暴露，2026-07-11）
+
+- **help 切换时选中行瞬时脱窗（review F1，minor，自愈）**：`controller.ts` 的 `reduce` 处理 `help` 键（翻转 showHelp）时不重算 `scrollOffset`；而 showHelp 使可见内容行数 -1（capped 小窗放大此瞬态）。已复现：overflow 态 sel=4/off=3 按 `?` → 选中脱窗一帧，下次 nav 键 visibleRows 重算即拉回。**若做**：干净修需把 scroll-clamp 在 help 切换时用**新** showHelp 的 visibleRows 重算——但 `reduce` 纯函数只拿到单个 `ctx.visibleRows`（terminal-ui 用**旧** showHelp 算的），故要么 terminal-ui 在 `reduce` 后按新 showHelp 重算 visibleRows 再 `scrollToShow` 重夹（scroll-clamp 部分移到集成层），要么给 `UiContext` 传 `panelRows`+`activeCount` 让 reduce 自算 `panelContentRows(新showHelp)`。属架构小调整，自愈故非阻塞。
+- **~~面板高度 1↔2↔3 残留 churn（review F2）~~ 已解决（commit 069c2293）**：恒高修复（内容补空行、总高恒 min(rows,3)）彻底消除所有高度变化，不止大摆幅——F2 关闭。原文备查：：空行根因修（commit `cfc4f05e`）把大摆幅 churn 消除（在途 ≥3 恒 3 行），但在途在 0↔1↔2↔3 之间变时 `panelContentRows` 仍返 1/2/3，`Region` 仍走 geometryChanged 重锚 → 理论上 1-3 并发时仍可能冒 stray blank line。**若做（彻底消除）**：panel 恒 `MAX_PANEL_ROWS` 行、不足补 dim 空行（几何全常）——代价是 1 个在途也占 3 行、浪费屏幕。用户明确要「最高 3」（动态 ≤3），故先取当前取舍；若用户实测 1-3 区间仍频繁空行再切恒高。
+
+- **~~折叠态常驻 2 空行~~ 已过时（用户 2026-07-11 反转设计）**：原「恒定高度区、collapsed 补空行到 3 行」方案被用户否决——现 collapsed **默认 N=1**（commit e603fd91），不再有常驻空行。防吞行改由 `Region` scroll-before-grow 保证（允许切换出空行、严禁吃日志行）。此条关闭。
+- **scroll-before-grow 窄缝：resize 撞视图切换同帧可能吞行（review Minor，2026-07-11）**：`Region.render` 的 scroll-before-grow 用 `rows === prev.rows` 守卫（`oldBottom` 依 `prev.rows` 推导，真 resize 后坐标过时、放宽会打错行故守卫承重）。当 SIGWINCH 与 collapsed→panel 切换**严格同帧**时守卫跳过、退化为普通重锚，可能吃一个底部行。**为何暂缓**：真终端 resize 事件与 keypress 几乎不同帧，且 resize 时终端自身已 reflow；概率极低。**若做**：在 scroll-before-grow 前先按新旧 rows 差单独补一次滚动，或把两步几何变换（resize + grow）拆成两次 render。当前有代码注释标注此已知窄缝。
+- **终端 TUI 破坏性动作（P2，用户 2026-07-11 明确推迟）**：abort 在途请求（面板内选中→`x` 键→`manager.get(id).reapInFlight()`+终态 settle，`tui/actions.ts` 独有控制写权限，见 ADR 决策 1）+ OSC52 复制 req_id（PoC `exp/tui-rawmode/osc52-copy.ts`，失败退回显示 req_id 供鼠标选）。渲染模型分层 spec §6 明确排除、属独立后续特性。**注意**：这与 Web UI 的「LiveDock 面板内直接 abort」（本文件另一条）是**两个不同界面**的同类能力，别混。**若做需改什么**：controller 加 `x`/`c` 键消费（P1 现为 no-op）、`tui/actions.ts` 新增 + ESLint 放行其 `manager` import、abort 后 detail/panel 重绘。
+
+## per-model 上游过载背压（用户 2026-07-11 决策：spec 完成即止、作可选增强）
+
+- **背景/动机**：GHC 对 opus-4.8 等间歇过载——单次 attempt 挂数百秒后返 502 GitHub Unicorn 页 / `NGHTTP2_REFUSED_STREAM`，`server-error-retry` 重放**同 payload** 再烧几百秒（实测 `req_300` = 71s→502→再挂满 300s→abort = 371s 白烧）。502 横跨 07-04/05/08/11 反复、单日 6+ 次。根因应对 = GHC 过载时**按模型降速退避**（背压），非盲目逐请求重放。
+- **规格（已与用户敲定七项承重决策）**：见 `docs/spec/2026-07-11-per-model-overload-backpressure.md`。要点——D1 滞动窗口 N-in-M 检测；D2 事件集 = 5xx server_error + REFUSED + 上游 idle-timeout；D3 复用已存在的 TTFB/idle 超时（`response_header`/`stream_idle`）；D4 idle-timeout 熔断可重试且计入窗口；D5 复用现有 `AdaptiveRateLimiter` 状态机 + 原因 tag（429 vs upstream-overload）；D6 窗口 per-model；D7 节流 per-model（429 仍全局）。
+- **暂缓原因**：用户明确「推进到 spec 完成后结束、作可选后续增强」。急性症状（请求"卡住"）已由**配置修复**消除——事故时 `response_header=0` 禁用了 TTFB 超时，改回 300 后单请求不再无界挂起（根因排查见 `exp/ttfb-timeout-queued/report.md`，已加 `response_header=0`/`stream_idle=0` 防呆告警）。故本特性从"急性修复"降为"过载浪费优化"，价值在但不紧急。
+- **若做需改什么**：新增 `PerModelOverloadGovernor`（`Map<modelId, {滞动窗口 + 复用的 AdaptiveRateLimiter 实例}>`）；请求路径在全局 429 限流器后叠 per-model 层（`http-transport.ts` 的 `executeWithAdaptiveRateLimit` 包裹点）；transport 侧 attempt 失败经 `classify.ts` 的 error type 调 `reportOverloadSignal(modelId, kind)`；配置新增 `overload_backpressure.{enabled,window_sec,threshold}`；`/api/status` + WS `system.rate_limit_state` 扩 model 维度 + 原因 tag。实现分两 phase（governor+窗口纯单元 → 信号桥+接线+可观测）。开放问题：GovernorUnit 空闲回收、是否按 endpoint 再细分（默认否）。
+
+
 ## Console footer 宽度感知落地的跟进项（2026-07-10）
 
 - **背景**：footer 行宽感知 + 按模型分组已落地（`docs/plan/2026-07-10-tui-footer-width-aware-grouping.md`）。以下四项经计划评审明确推迟（footer-only 瞬时损失、完成态 log line 补回，可接受），非本次范围：
@@ -10,12 +27,11 @@
   - **外部直写 stdout 撞 footer**：任何绕过 `printLog` 的 `console.log` 会撞坏 footer 协调。当前 republish 已收编 consola，残余风险低。若做：需一个全局 stdout 写入拦截层。
   - **`(resolving)` 桶丢 path**：未解析模型的请求在分组里归 `(resolving) ×N`，丢了各自 path（现状逐条显示会带 path）。footer-only 瞬时损失，完成态 log line 补回。若做：`(resolving)` 桶特殊化为逐条显示 method+path。
 
-## 分组 footer 自适应显示最久的 N 个请求时间（用户 2026-07-10 要求，待 P0 后做）
+## ✅ 已解决：分组 footer 自适应显示最久的 N 个请求时间（用户 2026-07-10 要求 → 2026-07-11 落地 097404df/f1d0492a）
 
 - **背景/动机**：现状多请求分组 footer 每组只显**单个** `maxElapsed`（最老请求）。用户要求：根据组数自适应显示每组**最久的几个**请求时间。
 - **规格（已与用户敲定 + 默认补全）**：每组显示条数 = f(组数)——**1 组→最久 5 个 · 2 组→每组最久 3 个 · 3 组→每组最久 1 个 · 4+ 组→每组最久 1 个**（横向空间紧，默认，仍受 `columns-1` 宽度截断兜底）。组内「最久的 N 个」= 组内请求按 elapsed 降序取前 N 的 elapsed。段形如 `claude-opus-4-8 ×5 ↓12KB 9.1s 7.3s 5.0s 3.2s 1.1s`。
-- **为何待 P0 后**：这是**行为变更**，而 P0 是行为逐字等价的纯重组（golden-fixture 锁 footer 输出）；现在改会污染等价 oracle。P0 落地后作独立 feat，只碰 `tui/render/footer.ts`（重组后 footer 的家）+ 测试 + 一次**有意的** golden 更新。
-- **若做需改什么**：`buildActiveFooter`/`buildModelGroupSegments`（重组后在 `tui/render/footer.ts`）——组内保留 top-N elapsed（现只留 oldest）；段构建按 f(组数) 取 N 个 elapsed 拼接；宽度驱动纳入循环的 segment 宽度估算随之变长（`stringWidth` 仍兜底）；golden-fixture 场景须体现多组多时间；补单测覆盖 1/2/3/4 组各自的 N。
+- **落地实现**：`buildModelGroupSegments`（`src/lib/tui/render/footer.ts`）改 `oldestStart: number` → `startTimes: Array<number>` 累积组内全部起始时刻；新 `timesPerGroup(groupCount)`（1→5/2→3/3+→1）；段内 `startTimes` 升序取前 N（= elapsed 降序 = 最老 N 个）拼 `formatDuration`。宽度驱动纳入循环的 `stringWidth` 兜底不变。golden-fixture 场景（2 组：gpt-5 ×2 + claude-opus-4-8 ×1）已重生为 `gpt-5 ×2 1.0s 500ms`；`console-footer.unit.test.ts` 加 1/2/3 组各自 N 的直接单测（正样本：旧单时间码会红）。
 
 ## GHC server_tool_memory 默认关 — CAPI 接受性待探针
 
@@ -24,7 +40,17 @@
 - **端到端实测（2026-07-08，enterprise，探针参数化 `PROBE_PROMPT`/`PROBE_MAX_TOKENS`）**：**memory 工具端到端被真正调用 · 确认**——诱导 prompt 让上游产出真实 `{"name":"memory","type":"tool_use","input":{"command":"view","path":"/memories"}}` 块（`stop_reason:tool_use`），结构化 tool_use 非文本敷衍。**关键**：memory 是 **client-executed** 工具（`type:"tool_use"` + `caller:{type:"direct"}`，非 `server_tool_use`）——上游只**驱动**（发 view/create 命令），实际 `/memories` 存取由**最终 client**（Claude Code）执行、多轮 tool_result 喂回。故永不会有 memory 的 `server_tool_use`/`applied_edits`。**含义：本项目侧无需自建 memory 后端，只需透传该 tool_use 不拦截**。
 - **多轮透传实测（2026-07-08，enterprise，`probe-multiturn.ts`）**：**请求侧管线多轮 memory 往返透传 · 确认**——含 memory `tool_use`（assistant）+ `tool_result`（user）的续接会话经**完整生产请求侧三段**（`preprocessAnthropicMessages` → `runAnthropicPayloadRewrites` → `createAnthropicMessages`，忠实复刻 `handler-v4` 顺序）后，两块**原样保留、`tool_use_id` 配对未乱**（sanitize orphan 计数 0），上游 Hop2 **2xx 续跑到 `end_turn`** 并消费 tool_result；带签名 thinking 块亦逐字透传、未触发 thinking 400。**探针保真教训**：单跳 `probe.ts` 直调 `createAnthropicMessages` 只跑 prepare、**测不到 sanitizer**（生产里 sanitizer 在路由层更早跑），多轮探针复刻三段才真正验到 `processToolBlocks`。翻默认前的请求侧透传残留点消除。
 - **决策（用户 2026-07-08）**：**保持默认关**（`server_tool_memory` 不改）。enterprise 已 wire + e2e + 多轮透传**三绿**、可放心手动开；唯一未闭合缺口 individual/business 端点**凭据阻塞、不可测**（本账户是 enterprise），故不全局翻默认。若将来拿到 individual/business 凭据复测通过，可评估 account-type 门控或全局翻默认。
-- **权威现状**：skill `ghc-api-reference` + `docs/plan/ghc-feature-alignment-tool-search-cache-ttl-memory.md`。
+- **权威现状**：skill `ghc-api-reference` + `docs/plan/ghc-feature-alignment-tool-search-cache-ttl-memory.md`.
+
+## server_tool proxy 实现推广（web_fetch / code_execution）+ 自愈表 web_search-centric 缺口（PoC 2026-07-12）
+
+- **背景/动机**：config `anthropic.server_tool_strip` / `server_tool_rewrite` 现在对 web_search 之外的原生 server tool 只会「一律 strip / 事后 downgrade」，即「假装它不存在」。反面问题是**让它真的存在**——像 web_search 双跳（`web-search/orchestrator.ts`）那样由 proxy 自建实现。已做 PoC（`exp/server-tool-web-fetch-poc/`）以 **web_fetch** 为最小样本验证可行性与推广度。
+- **实测结论（PoC 探针，2026-07-12，individual，`api.githubcopilot.com`，claude-sonnet-4.5→sonnet-5）**：GHC/CAPI **不原生支持 web_fetch**——原生声明原样到达 wire（默认不 strip），上游 **HTTP 400 `{"error":{"message":"rejected tool(s): web_fetch","code":"invalid_request_body"}}`**。故 web_fetch 要被支持**必须走双跳**（同 web_search），`exp/server-tool-web-fetch-poc/fetch-backend.ts` 即 execute 步骤（本地跑通、无外部依赖、tsc 干净）。
+- **连带发现（已核实，独立价值）**：反应式自愈表 `src/lib/request/strategies/server-tool-rejection-retry.ts:52-53` 的 `SERVER_TOOL_REJECTION_TABLE` **只有 web_search 一条 pattern**（`/the use of the web search tool is not supported/i`）。实测 web_fetch 400 是**另一种措辞**（`rejected tool(s): web_fetch`）→ **不匹配**，故 web_fetch/code_execution 等被上游 400 时**不会被反应式预剥、会硬失败**（除非全局 `server_tool_strip:true`）。即当前 strip/自愈路径本身也是 **web_search-centric**。
+- **工具分类（谁执行决定要不要自建后端）**：真·server-executed（要自建）= web_search（已做）/ web_fetch（本 PoC，execute=fetch，轻）/ code_execution（要沙箱，重，未测但推断 400）；client-executed（**不**要后端，别 strip、透传）= memory（已实测，见本文件上一条）/ computer / text_editor / bash。
+- **暂缓原因**：PoC 只证可行性与 execute 的 triviality，未做生产化；此类特性默认 OFF、非阻塞；生产化是独立设计任务。
+- **若做需改什么**：① 抽 **server-tool provider registry**（按 `type` 注册 `{detect, downgradeToFunctionTool, execute, synthesizeResultBlock}`），web_search 收编为一条、web_fetch 作第二条，替代硬编码单工具旁路；② **响应过滤器旁路 + 专用 handler**——合成的 `server_tool_use{web_fetch}` + `web_fetch_tool_result` 必须像 `web-search-handler.ts` 那样绕过常驻 `server-tool-filter`（否则被无条件吞掉、客户端看不到），这是把 web_fetch 从「换个 execute」变成「一整套平行件」的真正承重项；③ synthesize / downgrade 的 **web_fetch 专用变体**（`synthesize.ts:88-116` 与 `rewrite-server-tool-blocks.ts:77-101` 均硬编码 web_search 措辞/形状）；④ 给 `SERVER_TOOL_REJECTION_TABLE` 补 web_fetch/code_execution 的 400 pattern；⑤ **web_fetch 独有 SSRF 面**——execute 抓模型可控任意 URL（可达内网/云元数据），生产 execute 应加目标校验（拒私网/元数据 IP）；⑥ 同 web_search 的遗留管线债（L3、tool-field 学习，见本文件另两条）。发现方：PoC + 对抗性 subagent 审查（2026-07-12）。
+
 
 ## stripToolFields 预剥的深层可观测性（history/telemetry 维度）
 
@@ -256,7 +282,7 @@
 - **根因**：`runResponseBufferedSink` 的 retreat 路径（buffer 超 `protectStreamingBufferCapBytes` 默认 16MiB → 放弃缓冲、转 live 写透，driver.ts:601-620）**不做 +1 index remap、不 dedup message_start**——这两个变换只在 commit 成功分支（Task 3.3）做。但 empty_text 锚点（Task 3.2/3.3）一旦经心跳注入，就占了客户端 index 0 且已转发一次 message_start。
 - **当前行为**：若「先 idle-stall >20s 触发锚点注入 → 之后上游爆发 >16MB 触发 retreat」这一罕见复合条件命中，retreat 的 flush + live write-through 会：① 真实 `content_block_start@0` 与锚点 @0 **index 碰撞**；② buffer 里已转发的 message_start **被重发**（双 message_start）。两者皆客户端可见协议违规。retreated-complete 与 retreated-stream-error 两子路径都有。Task 3.4 的 `closeAnchorIfOpen` 只补一个 stop@0、无法挽回已 live 发出的真实帧。
 - **理想架构**：retreat 路径在 `anchorState.injected` 时对 retreat-flush 帧与后续 live-write 帧统一施加 `anchor.remap(frame, 1)` + `messageStartForwarded && isMessageStart → skip`（镜像 commit 分支 driver.ts:662-668 的变换）。
-- **为何暂缓（2026-07-09：罕见残留、不修）**：retreat 触发需 `bufferedBytes > 16MiB`（driver.ts:622 计 `frame.data.length + frame.event.length`），上游对 Anthropic 路径硬上限 `max_output_tokens: 64000` + `max_thinking_budget: 32000`（refs/AVAILABLE_MODELS.json），典型响应帧字节远低于 16MiB。**但不可达估算不硬**（plan review N4）：细粒度小 delta 的逐帧 framing 开销 + thinking signature 可把帧字节推高，pathological 下逼近 16MiB 非绝无可能。故定位为**罕见残留协议违规**（非「证明不可达」），叠加「先注锚点」后更罕见——用户 2026-07-09 明确不做。keepalive-timeout-safety 特性的 live 对账 gate 在 `buffered===false`、结构上够不到 retreat（在 buffered 内），故不会误碰。若未来实测确证可达需修：改 driver retreat 分支复用 commit 分支 remap+dedup 读共享 anchorState。锚点特性主路径（commit + 终末失败）正确性已实证。
+- **为何暂缓（2026-07-09：罕见残留、不修）**：retreat 触发需 `bufferedBytes > 16MiB`（driver.ts:622 计 `frame.data.length + frame.event.length`），上游对 Anthropic 路径硬上限 `max_output_tokens: 64000` + `max_thinking_budget: 32000`（.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json），典型响应帧字节远低于 16MiB。**但不可达估算不硬**（plan review N4）：细粒度小 delta 的逐帧 framing 开销 + thinking signature 可把帧字节推高，pathological 下逼近 16MiB 非绝无可能。故定位为**罕见残留协议违规**（非「证明不可达」），叠加「先注锚点」后更罕见——用户 2026-07-09 明确不做。keepalive-timeout-safety 特性的 live 对账 gate 在 `buffered===false`、结构上够不到 retreat（在 buffered 内），故不会误碰。若未来实测确证可达需修：改 driver retreat 分支复用 commit 分支 remap+dedup 读共享 anchorState。锚点特性主路径（commit + 终末失败）正确性已实证。
 - **若做需改什么**：`src/lib/pipeline/driver.ts` 的 retreat 分支（:601-620 附近）——注入锚点时对 live 路径帧施加与 commit flush 同一的 remap+1 + message_start dedup；补一条 retreated+anchor 的单元测试（buffer 超 cap + 锚点已注入 → 断言真实块 @1 无碰撞、message_start 恰 1 次）。执行期发现（Task 3.4，2026-07-08）。
 
 ## 上游 h2 PING 保活的 unacked-ping 死连接快速 teardown（liveness 探测）
@@ -265,7 +291,7 @@
 - **现状**：连接真死时，靠 node:http2 session 的 `error`/`close`/`goaway` 事件落 `drop`（清 timer + 移出池）+ 让在途请求失败——但这依赖底层 socket/session 自己察觉死亡（可能拖到它自己的 idle timeout 才 emit）。PING 的 ack **没被用来主动判活**。
 - **理想架构**：记录每次 PING 的发出时刻，若连续 N 个 PING 在 `ackTimeoutMs`（如 2×interval）内无 ack，判定连接已死 → 主动 `session.destroy()`，把「静默挂死」转成**及时的可重试错误**（配合 L2 缓冲重试快速换新连接）。这是把 PING 从「保活」升级为「保活 + liveness 探测」。
 - **为何暂缓**：本次修复目标是**阻止**空闲回收（放真帧上 wire），已由纯保活达成；unacked-ping 的死连接快速 teardown 是**正交的另一个关注点**（加速失败恢复，非阻止截断），且引入「慢但活的连接被误判 teardown」的假阳性风险，需实测标定 `ackTimeoutMs`。against-yagni 的反面不适用——它不是本 bug 的必需件，是独立增强。
-- **若做需改什么**：`scheduleH2KeepalivePing` 的 ack 回调改为记 in-flight ping 计数/时刻 + 一个 `ackTimeoutMs` 守卫（连续无 ack → `session.destroy(new Error("h2 keepalive ping unacked — dead connection"))`）；加 config 旋钮 `timeouts.upstream_h2_ping_ack_timeout`；夹具用 Node http2 server（Bun server 的 ping ack 行为不忠实，见 skill `bun-upstream-transport`）跑一个「server 停 ack → 客户端在 timeout 内 destroy」的集成测试。发现方：本特性落地设计取舍（2026-07-09）。
+- **若做需改什么**：`scheduleH2KeepalivePing` 的 ack 回调改为记 in-flight ping 计数/时刻 + 一个 `ackTimeoutMs` 守卫（连续无 ack → `session.destroy(new Error("h2 keepalive ping unacked — dead connection"))`）；加 config 旋钮 `timeouts.upstream_h2_ping_ack_timeout`；夹具用 Node http2 server（Bun server 的 ping ack 行为不忠实，见 skill `debugging-ghc-api-upstream-transport`）跑一个「server 停 ack → 客户端在 timeout 内 destroy」的集成测试。发现方：本特性落地设计取舍（2026-07-09）。
 
 ## 上游主动发帧手段盘点（END_STREAM 后无流级保活杠杆）+ h2 PING 运行时可观测性
 
@@ -299,6 +325,14 @@
 - **根因**：WHATWG WebSocket 面不暴露底层 socket，无法 `socket.setKeepAlive()`；且 Bun 的 `undici` shim 用原生实现、忽略 `WebSocketInit.dispatcher`，故 Node undici 那条“自定义 dispatcher 里设 keepalive”的理论路径在 Bun 上也不通。
 - **为何暂缓（不落地 speculative code）**：即便 Bun 的 `.ping()` 可用，WS PING 是**控制帧**、不产生 `ResponsesStreamEvent`，**不重置** `state.streamIdleTimeout` 帧-idle guard（与 h2 PING 同构）——它至多是一层**预防**（防 middlebox/GHC edge 收割空闲连接），**不是恢复**、也不救 > 300s 合法静默。且（a）运行时不对称（Node CLI 无此能力，落地会造成两运行时行为分裂）、（b）真实 GHC 收益**未证**（不像 h2 PING 有过 112s 静默无 `message_stop` 的实测收割观测）。承重恢复防线是 **Phase 3 的 buffered 重试**（spec R5.1；对 WS ≥ 对 h2 关键，因 WS 无有效预防层）。
 - **若做需改什么**：① 若要 Bun-only app-level WS ping —— 在 `createUpstreamWsConnection` 加一个 `typeof socket.ping === "function"` 守卫下的周期 `socket.ping()`（类比 `scheduleH2KeepalivePing`，`unref` timer、busy/OPEN 门控），config 键复用或新增 `timeouts.upstream_ws_ping`；**前置门控**：先对真实 GHC 上游做长静默保活对照实验证明确有收益（当前无观测数据），否则是无收益的运行时分裂。② 若未来换 WS 库（如 `ws` 包，暴露 `_socket` 可 `setKeepAlive` + 有 `ping()`）或 Node undici 开放 dispatcher-level keepalive 且 Bun 跟进 —— 可统一两运行时的 TCP keepalive。③ 无论哪条，都**不代偿** > 300s 的帧-idle guard（那需调大 `streamIdleTimeout`，见 R5.3）。发现方：Task 4.1 PoC（2026-07-09）。权威结论见 `exp/ws-upstream-keepalive/REPORT.md`。
+- **前置门控实验已跑（2026-07-12，结论仍 NO）**：对真实 GHC 上游做了长静默有/无 ping 对照（`exp/ws-upstream-keepalive/probe-ghc-idle.mjs`，5 次真打 gpt-5.5 effort=high）。**gate 问题「GHC 服务端 WS idle 计时器是否被 client PING 重置」= INCONCLUSIVE**——正样本对照未成立：no-ping 臂（266/285/352s 静默）与 ping 臂（382/462s 静默）**全部正常完成**，GHC 在 ≤462s 内从未 idle-close（完成时 `1000 ""` 空 reason），故无法判断 PING 是否重置 GHC 计时器（探针 `response.created` 恒 0.4s 到达、全程 post-first-event、未进入生产那个 pre-first-event regime）。**但工程决策仍 NO（更强理由）**：ping 对 problem-B（我方帧-idle guard）确定无用（不产 `ResponsesStreamEvent`），对 problem-A（GHC pre-first-event idle-close）未证有用且有更确定修复（per-model 熔断 + 调大 timeout）。仅当未来复现 A 且实测证明 PING 能重置 GHC pre-first-event 计时器时才重评。权威原始日志 `exp/ws-upstream-keepalive/raw-poc-c-run-logs.txt` + REPORT.md「2026-07-12」小节。
+
+## ~~R5.3 实测承重化：`streamIdleTimeout` 默认 300s 对 gpt-5.5 太短~~ 已落地（2026-07-12，per-model idle timeout 特性）
+
+- **已实现**：per-model `stream_idle_overrides` / `response_header_overrides`（bundled `gpt-5.5:600`、per-key merge、`findMostSpecific`）+ 全读点/调用点 threading + history D2 诊断（`pipelineInfo.streamIdleTimeoutMs`）。权威看 spec `docs/spec/2026-07-12-per-model-idle-timeout.md`、ADR `docs/decisions/2026-07-12-per-model-idle-timeout-is-app-guard-only.md`、DESIGN.md `streamIdleTimeoutOverrides` 行。commit d7883b05/b21b10ea/c72e6f31/e8112c82（+ handler 调用点随并发 commit 00f2a38a 落地）。
+- **原设计的 undici 耦合前提被推翻**（BLOCKER）：GHC 走 node:http2（无传输 body-idle）、undici 只服务 SearXNG，故 per-model 是**纯 app-guard、不碰 undici**（详见 ADR）。
+- **正交遗留 problem-A（GHC pre-first-event idle-close）仍未修**：生产 `close(1000,"idle timeout")` + `failed before first event` 经代码事实裁决为 GHC-originated（非我方 guard），5 次实验未复现（阈值可能 >462s）。由 **A（per-model WS 熔断）** 治理，计划见 `docs/plan/2026-07-12-per-model-ws-circuit-breaker.md`（待实施），非本条范围。
+
 
 ## ~~下游 Responses WS（`ws.ts`）未采用 buffered 重试（现仅 SSE 采用）~~（已修复，block-level-buffered-retry P4 Task 1-2）
 
@@ -365,3 +399,76 @@
 - **理想架构**：把 `codec.flushResponse` 的终止生命周期产出重构进 driver 的 buffered 提交单元（`runResponse` 循环内产出 `output_item.done`/`response.completed`，或让 buffered sink 感知 handler 的 post-loop flush 作为最终 commit 边界）——则 fallback 与 direct 统一块级。Gemini 同一重构可一并解（两者都卡 flushResponse-post-loop）。
 - **为何暂缓（不落地 speculative code）**：需动 translator 的 emit 时序（把 `flush()` 的终止事件前移进 `translate()` 的 finish_reason 处理，或让 driver 承接 handler post-loop flush）——跨 codec 结构改动，超出 P2「Responses HTTP 块级」范围；无已知 fallback-under-buffered 的生产命中（fallback 本身是回退路径）。
 - **若做需改什么**：① CC→Responses translator 在见到 CC `finish_reason` 时在 `translate()` 内即产出 `output_item.done`（而非 `flush()`）；② 或 driver 增「handler-supplied 终结 flush」纳入 buffered 提交单元；③ 去 `handler-v4.ts` 的 `!viaFallback` 门控；④ fallback+buffered mid-stream drop 重试回归测试；⑤ 与 Gemini §7.4 排除条合并考虑。发现方：P2 Task 3（2026-07-12，读 `codec.ts:237` flushResponse + translator emit 点确证；行号已核对现状，非 brief 原始估值）。
+## 组成/tool-密度感知 calibration factor（size 无法解释的残差 ~7%，2026-07-11 暂缓）
+
+- **根因**：size-aware calibration（spec/plan `2026-07-11-size-aware-calibration-learning`，Phase 1 已落地）把 factor 从「单标量」升为「per-bucket（按 localEstimate 规模分 6 桶）tok-weighted 滑动加权均值」，离线实测把 count_tokens 误差从 ~50% 高估砍到 **MAPE 6.9%**（时间留出集 6.4%，非过拟合）。**残差 ~7% 是纯 size 维度无法解释的部分**——来自请求**组成 / tool 密度**（同规模但 tool_use/tool_result/code 占比不同的请求，o200k↔Claude tokenizer 失配率略有差异）。当前 factor 只按 `localEstimate` 分桶，对同桶内不同组成的请求用同一 factor。
+- **当前行为（已核实足够）**：两个消费者（`count_tokens` route 的客户端 compact 判定 + `debug` route）配安全边际后，~7% 残差**均可接受**——离线验证 p90 仅 17.6%，且 size-aware 已消除主要偏差（50%→7%）。size 分桶已把 400-regime（顶桶）与典型-regime（中桶）自动隔离。功能完整、仅精度还有第二维可挖。
+- **理想架构**：给 factor 模型加**第二维**（组成/tool 密度）——如按 `(sizeBucket, toolDensityBucket)` 二维分桶，或在 per-bucket factor 上叠加一个 tool-ratio 线性修正项；学习信号仍来自成功腿 usage + local estimate，只是落桶键多一维。`countTotalTokens` 已能从 payload 算出 tool block 占比作第二维特征。
+- **为何暂缓**：残差已在两消费者可接受范围内（against over-engineering——精度收益边际递减，第二维把 6.9%→可能 ~4-5%，价值未证）；二维分桶会稀释每桶样本量（需更多 live/backfill 数据才收敛）、增加 seed 表维度与迁移复杂度；spec §2/§11 已显式列为暂缓项、两轮 subagent 对抗审查均认可暂不加。属「独立精度增强工作单元」非「因范围大降级」。
+- **若做需改什么**：① `engine.ts` 的 `FactorBucket` 落桶键加 tool-density 维度（`bucketIndexFor` → 二维索引，或 factor 叠加 tool-ratio 项）；② `CalibrationSink` + `calibration-backfill.ts` 落桶时算 tool 密度特征（复用 `countTotalTokens` 的 tool block 统计）；③ `DEFAULT_FACTOR_SEED` 表升二维 + `boundsVersion` bump 触发重 seed；④ 离线 `exp/token-calibration-size-aware/` 重训二维模型验证残差实际降幅、时间留出集不过拟合；⑤ 迁移路径（一维 v2 → 二维 v3）。发现方：size-aware calibration spec §2/§11 暂缓裁决（2026-07-11）。
+
+## size-aware calibration 的廉价 follow-up（2026-07-11 全分支终审 triage）
+
+三条长远正确的低成本增强，`feat/size-aware-calibration` 终审判为非阻塞、记此暂缓：
+
+- **CalibrationSink model-miss 静默无日志**：`src/lib/observability/sinks/calibration.ts` 在 `state.modelIndex.get(body.model)` 未命中时裸 `return`，与 backfill `processRow` 打 skip 计数不对称。**若做**：补 `consola.debug`（never-swallow 观测性），使「某端点 wire 名 ≠ index id 导致全程不学」可见。发现方：Task 5 review + 全分支终审。
+- **backfill cursor+accum 两次 setMeta 非原子**：`src/lib/history/sqlite/calibration-backfill.ts` 相邻两条同步 sqlite 写之间无 await，仅 SIGKILL/断电撕裂窗可致 1 批（~100 行）cursor/accum 漂移；有界 + seed 自 CAP 封顶自愈。sibling backfills（usage-normalize / response-preview）同款 pattern。**若做**：统一用 `db.transaction` 包裹 cursor+accum 双写（系统性、非单点）。发现方：Task 6 review + 全分支终审。
+- **calibration 靶向测试缺口**：CalibrationSink 的 REAL_FLOOR/EST_FLOOR/model-miss/usage-缺-cache 分支、pre-flight driver 接缝「首轮只调一次」均无直接单测（经读码 + 505 回归间接覆盖，行为已核实正确）。**若做**：补靶向 golden 用例。发现方：Task 5/9 review + 全分支终审。
+
+**待实测验证项（spec 已 defer，§3.2-S2/§11）**：400 腿 `reportedCurrent` 是否含 cache token（whole-prompt 口径）。Task 1-4 实施时探针初判含 cache（opus 400 报 ~1M 只可能 cache-inclusive），但未在活服务器端到端复验。若某天发现 cache-heavy 请求两腿口径偏差，回查此处。400 几乎总落顶桶 + CAP 封顶，影响边际。
+
+## 翻译矩阵正向流式 OQ1（流式 reasoning 帧形态活服务器实测）+ L2 缓冲重试（2026-07-12，Phase 4 暂缓）
+
+翻译矩阵 Phase 4（正向 CC→Anthropic 流式 + handler 缝合）落地时，两项留待后续：
+
+- **OQ1 流式 reasoning 帧形态未活服务器实测**：非流式已实测（PROBE-FINDINGS：cc 腿无 `reasoning`/`reasoning_content` 字段、responses 腿 `reasoning.summary:null`——两腿均不回传 reasoning 内容）；**流式**帧形态本会话未实测——`no-auto-server` 禁止自启服务器，且运行中的 4141 实例仅有 anthropic-messages 流量（零 CC/Responses/Gemini 流式条目、零翻译腿条目，特性刚落地无真实流量），无法只读观测原始 CC/Responses 流式 reasoning 帧。
+  - **当前行为（已核实正确、与实测无关）**：`cc-to-anthropic-stream.ts` translator **识别** `delta.reasoning`/`reasoning_content`（经 CC accumulator 累积 `reasoning_tokens` 进 usage）但**从 content 丢弃**——绝不合成无 signature 的 thinking 块（反向红线 WARN-B，`ghc-anthropic-upstream` "cannot be modified" 400/毒化）。无论 GHC 是否流式回传 reasoning delta，此行为都安全：不回传→no-op；回传→丢弃出 content、reasoning_tokens 仍计入 usage。单元测试已锁 W2 thinking-drop。
+  - **为何暂缓**：best-effort 丢弃已实现且正确（不依赖流式帧形态实测）；活服务器流式帧形态验证需用户跑服务器 + 真实 `@cc`/`@responses` 流式请求（省配额 + no-auto-server）。属**用户可验证的实测项**，非阻塞正向流式解锁。
+  - **若做需改什么**：① 用户跑服务器 + 发真实 claude-via-cc / responses 流式请求，经 4141 History 只读观测某翻译腿条目的 `attempts[].upstreamResponse.sseEvents`（原始 CC/Responses 帧）确认 GHC 是否流式发 reasoning delta、形态如何；② 若发现 GHC 流式回传**带 signature 的**可复用 thinking（当前实测两腿都不回传），再评估是否透传（当前一律丢弃是安全上界）。发现方：Phase 4 golden 预捕获期（2026-07-12，OQ1 剩余）。
+
+- **翻译腿流式 L2 缓冲重试（`protect_streaming_generation`）未接**：`pumpTranslateLegStreamingV4` 走 LIVE 路径（`runResponseSink`），**不接** buffered-retry。原因：buffered commit 的 `sawMessageStop` gate 读 Anthropic `message_stop` 终止符，但翻译腿的 message_stop 由 `flushResponse` 在 render 循环**之后**合成（上游 CC/Responses 流携带的是 `finish_reason` 而非 Anthropic `message_stop`），buffered driver 在循环内提交前看不到它。
+  - **当前行为（已核实完整）**：LIVE 路径对正向流式解锁字节正确且完整——逐帧翻译 + 心跳复用 + reconcile + 截断检测（getStreamMeta F2）全在。仅缺「上游 RST 时缓冲重试整代」这一 opt-in 增强（默认 OFF，与直连腿默认一致）。
+  - **理想架构**：给 buffered driver 的 `sawMessageStop` 一个「翻译腿感知」信号——buffered 消费上游 CC/Responses 帧、在上游终止（CC `finish_reason` / Responses `response.completed`）时提交，flush 的 Anthropic 终止符在 commit 后附加；或让翻译腿的 outbound 累加器暴露「上游是否见终止」供 gate 读（对齐 Responses buffered 的 `acc.status !== ""` 模式，见 `routes/responses/handler-v4.ts` 的 `sawMessageStop: () => acc.status !== ""`）。
+  - **为何暂缓**：LIVE 路径完整解锁正向流式（核心目标达成）；buffered-retry 是正交 opt-in 增强（默认 OFF），翻译腿的终止符时序与直连腿不同需专门接线（独立工作单元，`learn-by-analogy` 同 Responses 作 buffered 第二消费者的模式但需翻译腿专属 gate）。属「决定形状后的后续增强」非「因范围大降级」。
+  - **若做需改什么**：① `pumpTranslateLegStreamingV4` 按 `resolveBufferedAndHeartbeat` 分 buffered/live；② buffered 分支 `runResponseBufferedSink` 的 `sawMessageStop` 读翻译腿 outbound 累加器的上游终止信号（cc: `ccAcc.finishReason !== ""`；responses: `respAcc.status !== ""`）；③ `onAttemptReset` 重建 CC/Responses 累加器 + 重置 translator（translator 需支持重置或每 attempt 重建）；④ commit 后 flush 附加 Anthropic 终止符；⑤ 缓冲重试回归测试（对齐 `streaming-l2-buffered.http.test.ts`）。发现方：Phase 4 T4.2 handler 缝合（2026-07-12）。
+
+## 上游 Transport middleware(ad-hoc hook 机制,2026-07-12 待做)
+
+- **根因/源起**:cache_control 实测暴露「验证代理行为不得不真发 GHC」(耗额度、依赖网络、无法构造 400 测 reactive 腿)。用户要 hook 机制:既用 proxy 完整管线又给 mock 上游交互。
+- **当前行为**:只有 config 层 rewrite rules(作用请求体),无上游 mock/拦截机制,请求总真发 GHC。
+- **理想架构**:`HookedTransport`(decorator 包裹 `Transport.send`,[types.ts:108](../../src/lib/pipeline/types.ts#L108)/[driver.ts:310](../../src/lib/pipeline/driver.ts#L310)),hook 签名 `(wire, env, next) => UpstreamStream`,统一四用途(mock/拦截改写/录制回放/注入故障)。config 声明 + ad-hoc JS/TS 文件动态 import,生产默认不加载。
+- **为何待做(非暂缓,是新特性)**:用户已确认范围(四用途全选 + config+ad-hoc 挂载),但会话超长,按 handover 原则移交新会话做完整 SDD。属独立新特性工作单元。
+- **若做需改什么**:见完整 kickoff [docs/plan/2026-07-12-upstream-hook-middleware-KICKOFF.md](../plan/2026-07-12-upstream-hook-middleware-KICKOFF.md)——含统一抽象、锚点、四个未决设计问题(尤其 #3:录制回放可能直接复用 history.db 的 sseEvents)。新会话从 brainstorming 起。发现方:cache_control 实测(2026-07-12)。
+
+## `hook-rewrite` forwarded 标记覆盖缺口：Responses(HTTP+WS) + 全部 translate 腿（2026-07-12，Task 2.3 实现后核实）
+
+- **背景**：Task 2.3（`docs/plan/2026-07-12-upstream-hook-middleware/plan-2-history-provenance.md`）给 `rewriteUpstreamFrame` 改写的帧接了 forwarded 轨 `synthetic:"hook-rewrite"` 标记——用一个 Symbol-keyed 属性打在改写后的帧对象上（`hooks/origin.ts` 的 `tagFrameRewritten`/`wasFrameRewritten`），靠对象引用/`{...frame}` 展开语义存活到 `client-sink.ts` 的 `write()`。
+- **实测覆盖矩阵**（读代码 + 单测锁定，非猜测）：
+  - **可靠**：Anthropic `/v1/messages` 直连（`codec.ts:293` `renderResponse` 对非-translate leg `return frame` 逐字返回）、CC `/chat/completions` 直连（`openai-cc/codec.ts:207-209` 同样逐字返回 + `chat-completions/handler-v4.ts:384` 的 `onRenderedFrame` 用 `{...frame, data: X}` 展开——对象展开会复制 Symbol 键，亲手用 `bun -e` 实测确认）。
+  - **丢失（已知、已用测试锁定预期行为，见 `driver-provenance.unit.test.ts` 两个"KNOWN GAP"用例）**：
+    1. **任何 translate 腿的 `codec.renderResponse`**（CC→Anthropic / CC→Responses / CC→Gemini 的 stream translator）——这些是**跨多个上游帧的有状态 N:1/1:N 累加器**，构造全新帧对象、不展开输入，"这个输出帧对应哪个输入帧"本身就 ill-defined（spec §3.4/§8 已预见）。
+    2. **`routes/responses/handler-v4.ts` 的 `restoreAndAccumulate`（Responses HTTP，direct 腿也中招）** 与 **`routes/responses/ws.ts` 的 `restoreAccumulateCount`（Responses WS）**——两者重建全新 `{event, data}`/`{data}` 字面量（不展开 `frame`），**连 direct 腿也丢**——这是一个与 hook 特性无关、独立存在的既有模式（顺带也丢了 `id`/`retry` 字段，只是历史上无人关心）。
+- **为何暂缓**：Task 2.3 的验收门槛是"passthrough 腿至少可靠"（已达成，覆盖最常用的 Anthropic/CC 直连），核心透传机制（driver.ts 打标 + client-sink.ts 读标，纯 `src/lib/pipeline/` 层，3 个小文件）本身干净、无需为了覆盖 Responses/Gemini 去动 handler 业务逻辑（那会把改动面扩到 `routes/responses/handler-v4.ts` + `routes/responses/ws.ts`，且需谨慎不能意外改变 Responses 帧重建后的 wire 形状）。这是 Task 2.3 执行时**新发现**、比 brief 预判更细的一层缺口（brief 只预期"translate 腿 ill-defined"，未预期 Responses 的 direct 腿也因**独立**的帧重建模式丢标）。
+- **若做需改什么**：① Responses 缺口——让 `restoreAndAccumulate`/`restoreAccumulateCount` 从 `{...frame, event: ..., data: ...}` 展开构造（而非全新字面量），顺带补上 `id`/`retry` 字段保真（需评估是否改变现有 wire 字节——这两个字段目前从未被写出，加上后需重新对齐 golden 等价测试）；② translate 腿缺口——本质上是"改写单帧 vs 累加器多帧"的语义冲突，除非重新设计 stream translator 让它逐帧携带 provenance 位（侵入式改造，不值当只为一个可观测性标记），否则建议保持现状、接受可辨识性缺口，靠上游轨/forwarded 轨的**内容 diff**（两轨都已如实记录）间接定位改写。发现方：Task 2.3 实现 + `bun -e` 实测对象展开语义（2026-07-12）。
+
+## `onRequest` hook 抛错无 warn（Task 5.4 收尾评审 M-3，2026-07-12，决定跳过）
+
+- **现状**：`driver.ts` 的 `onRequest` 挂载点调用（`runRequest` 内，[driver.ts:197-198](../../src/lib/pipeline/driver.ts#L197)）不带 try/catch，抛错直接向上传播到 `runRequest` 的调用方（各 handler 的常规错误路径）——不同于 loader 加载/重载失败有 `consola.warn`（warn-continue）。
+- **为何暂缓（决定不做，非"暂缓待做"）**：读代码确认这不是遗漏而是与既有设计一致的行为——`onExchange` 挂载点（[driver.ts:320-323](../../src/lib/pipeline/driver.ts#L320)）同样**不**warn-continue：它的调用点在 retry 循环的 `try`/`catch` 内，抛错被 `classifyError` 当作**真实上游错误**吃进反应式 retry 机制（这正是 spec §4.2 `mockUpstreamError` 契约的设计意图——hook 抛错 = 模拟上游失败，驱动 reactive 策略，而非被吞掉）。若给 `onRequest` 包一层 warn-continue（吞掉异常、退回 `rewritten` 直通），会与 `onExchange` 的"hook 抛错是真信号"模式不一致，且**改变单请求错误路径的语义**：当前"hook 抛错→该请求失败"是合理行为（hook 是开发者自己写的 ad-hoc 代码，抛错通常意味着 hook 本身有 bug 或故意模拟失败），改成"警告+静默继续"会让 hook 的 bug 被悄悄吞掉、给出"请求成功但 onRequest 改写其实没生效"的误导性假象——这正是本项目 `never-swallow-errors` 纪律要防的类别。**默认关闭功能**（`hooks.enabled:false`）意味着此路径对生产流量零风险，收益（更友好的开发调试体验）不足以抵消引入的不一致 + 潜在误导。
+- **若做需改什么**：若未来仍想加 warn，应同时决定是否要**对称地**给 `onExchange`/`rewriteUpstreamFrame` 也加同款 warn-continue（而非只改 `onRequest` 一处、制造新的不对称）——但这会让 `mockUpstreamError` 驱动 reactive retry 的核心用途失效（异常会被吞而非进入 `classifyError`），故基本不可行；更现实的路径是**只在 hook 文件加载/重载时**做形状/类型校验（loader 已做），把"运行时抛错"留给调用方错误路径处理，不新增一层吞错。发现方：Task 5.4 收尾（本轮 fix+closeout）读 `driver.ts` 全部三个挂载点调用点后核实。
+
+## 上游 hook 覆盖缺 Responses WebSocket 腿（2026-07-12，closeout 遗留）
+
+- **根因**：本特性的 `onExchange` 挂载点收口在 `createPipelineDriver`（[driver.ts:321-323](../../src/lib/pipeline/driver.ts#L321)）——`hook?.onExchange ? await hook.onExchange(wire, current, () => deps.transport.send(wire, current)) : await deps.transport.send(wire, current)`，即挂在 driver 调用 `Transport.send` 的那一层。凡是经这条 `Transport` 接口发起上游通信的路径（HTTP 直连的 `http-transport.ts` + Responses HTTP 的 `responses-transport.ts`）都天然被覆盖。但 **Responses 的 WebSocket 腿**（`src/routes/responses/ws.ts`）走的是一条独立通道：`ws.ts:227` 直接 `createUpstreamResponsesTransport({...})` 建立 WS 连接、自行驱动帧收发，**完全不经过 `createPipelineDriver`/`onExchange` 挂载点**（读 `ws.ts` 全文确认：无 `getUpstreamHook`/`onExchange` 任何引用）。
+- **当前行为**：对 Responses WS 请求（`stream:true` 且走 WS 传输的 Responses 调用）使用 mock/拦截改写/录制回放/注入故障四个 hook 用途中的任何一个都**不生效**——`onRequest`（作用于请求准备阶段，与传输方式无关，故仍生效）+ `rewriteUpstreamFrame`（挂载点也在 driver 内，逻辑上应该也覆盖不到 WS 腿的独立帧循环，需与 `onExchange` 一并核实）会被静默跳过，WS 请求总是真发上游，无法用 hook 拦截/mock。这是一个**功能缺口**（非"已知且接受"的边界）——用户若对 Responses WS 场景写 hook 期望它生效，会得到"看似生效（HTTP 路径下工作）但 WS 路径下静默不生效"的误导性体验。
+- **理想架构**：让 `ws.ts` 的 WS 收发也接入同一 `UpstreamHook` 挂载点——两种可行路径：① 把 WS 通道也包一层符合 `Transport` 接口的适配器、经 `createPipelineDriver` 统一调度（架构上最一致，但 WS 是长连接双工，`Transport.send` 目前是"发一次收一个 `UpstreamStream`"的单次语义，需评估是否天然适配）；② 直接在 `ws.ts` 内复刻 driver 那行 `hook?.onExchange ? ... : ...` 的调用形状（更快但制造第二处需要同步维护的 hook 挂载逻辑，长期有漂移风险）。`rewriteUpstreamFrame` 同理需要在 WS 帧收发循环里补一个等效调用点。
+- **为何暂缓**：本轮特性验收范围是"HTTP 腿"（spec 未把 Responses WS 列入 in-scope 端点矩阵），且 WS 传输的双工语义与现有 `Transport.send`（单次调用返回一个流）不完全对齐，接入方案需要先决定是否改造 `Transport` 接口本身（影响面超出本特性）——这是一个需要单独设计讨论的架构问题，非本特性单个 task 可完成的收尾项。
+- **若做需改什么**：① 评估 `Transport` 接口是否要扩展出双工语义（或专门给 WS 定义一个平行的 `DuplexTransport` 概念）；② `ws.ts` 接入 `getUpstreamHook()` 读取 `onExchange`/`rewriteUpstreamFrame`，语义与 driver 内的调用保持一致（尤其 mock 短路 `next`、reactive retry 对 `mockUpstreamError` 的响应）；③ 补 WS 腿的 hook 集成测试（对齐现有 HTTP 腿的 driver hook-mount-point 测试）；④ `docs/spec/2026-07-12-upstream-hook-middleware.md` 的端点覆盖矩阵补 Responses WS 行、`docs/DESIGN.md`「活的架构现状」同步。发现方：closeout fix-subagent 复核 hook 挂载点覆盖范围（2026-07-12）。
+
+## attempt 级 hook provenance（`source` 字段，2026-07-12，可选增强首版未做）
+
+- **根因/背景**：spec §3.4 决策 4（[docs/spec/2026-07-12-upstream-hook-middleware.md:86](../spec/2026-07-12-upstream-hook-middleware.md#L86)）在设计阶段就预见并列为"可选增强"：`UpstreamResponseData` 可增一个 `source?: "upstream" | "hook-mock" | "hook-replay"` 字段，`attempts[].effectiveSource`（[types.ts:339](../../src/lib/history/types.ts#L339)）是现成的近亲落点（同一个"这条 attempt 的数据从哪来"语义维度）。首版实现选择只用**帧级** `synthetic` 标记（`synthetic:"hook-mock"`/`"hook-replay"`/`"hook-rewrite"` 打在 `UpstreamFrame` 上，见 §3.4 承重不变量）来做可辨识性，未落地这个 attempt 级字段。
+- **当前行为（已核实完整、非缺陷）**：帧级标记已经能完整回答"这条 history 记录里的每一帧数据是真实上游、mock 生成、回放历史还是 hook 改写"——这是本特性 BLOCK-1/H2 承重不变量要求的最小充分粒度（防止 hook 产物毒化 history 又不可辨识）。attempt 级 `source` 是在此之上的**汇总视图**：不需要展开 `sseEvents` 逐帧查看 `synthetic` 标记，就能在 attempt 概览层一眼看出"这整个 attempt 是不是 hook 产物"。两者不冲突，帧级是唯一真值来源，attempt 级只是可选的派生汇总字段。
+- **理想架构**：给 `UpstreamResponseData`（[history/types.ts](../../src/lib/history/types.ts)）加 `source?: "upstream" | "hook-mock" | "hook-replay"` 字段，在 `legFromUpstreamResponse`（[context/request.ts:145](../../src/lib/context/request.ts#L145)）或对应的 attempt 落盘投影处，扫描该 attempt 的 `sseEvents` 是否**全部**帧带同一个 `synthetic:"hook-*"` 标记（mock/replay 场景下应当是"整个 attempt 全部帧同源"，不会出现半真半假的混合，因为 mock/replay 是"不调 `next`"的整流短路），据此派生出这个汇总值；`hook-rewrite` 场景（改写单帧、落 forwarded 轨而非上游轨）不适用此字段（因为它描述的是上游轨来源，改写发生在 forwarded 侧，语义不同，见另一条 backlog「`hook-rewrite` forwarded 标记覆盖缺口」）。
+- **为何暂缓**：帧级标记已满足本特性 BLOCK-1/H2 的验收门槛（可辨识性不缺）；attempt 级汇总字段是纯 UI/查询便利性增强，价值需等 History UI 或运维场景实际暴露出"逐帧翻 synthetic 标记太麻烦、想要一眼看 attempt 级摘要"的需求后再做，避免为了假设性便利性抢先扩 schema（新增 history 字段涉及类型/序列化/前端 `~backend/*` re-export 多触点，值得等真实需求）。spec 起草阶段已把它明确记为"可选增强"、非首版承诺范围。
+- **若做需改什么**：① `history/types.ts` 的 `UpstreamResponseData` 加 `source?: "upstream" | "hook-mock" | "hook-replay"`；② 落盘投影处（`legFromUpstreamResponse` 或等效 attempt 归档点）扫描 attempt 的 `sseEvents` synthetic 标记派生该字段；③ history serialize/deserialize（`sqlite/serialize.ts`）+ 前端 `~backend/*` re-export 同步类型；④ History UI 的 attempt 概览视图消费该字段做徽标展示（免逐帧翻找）；⑤ 补落盘/读取往返测试。发现方：spec §3.4 决策 4 设计阶段预留（2026-07-12），closeout fix-subagent 补记为正式 backlog 条目。

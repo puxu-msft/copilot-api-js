@@ -5,6 +5,9 @@
 
 import type { BaseStreamAccumulator } from "~/lib/stream"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
+import type { GhcCompletionTokensDetails, GhcPromptTokensDetails } from "~/types/api/ghc-usage"
+
+import { nonNegOrUndef } from "~/types/api/ghc-usage"
 
 /** Internal tool call accumulator using string array to avoid O(n²) concatenation */
 interface ToolCallAccumulator {
@@ -13,10 +16,20 @@ interface ToolCallAccumulator {
   argumentParts: Array<string>
 }
 
+/** GHC modality/prediction detail bags carried alongside the scalar token counts. */
+type InputDetails = { text?: number; audio?: number; image?: number; video?: number }
+type OutputDetails = { text?: number; audio?: number; image?: number; video?: number; accepted_prediction_tokens?: number; rejected_prediction_tokens?: number }
+
 /** Stream accumulator for OpenAI format */
 export interface OpenAIStreamAccumulator extends BaseStreamAccumulator {
   cachedTokens: number
+  /** GHC cache_write_tokens from prompt_tokens_details (subset of prompt_tokens). */
+  cacheWriteTokens: number
   reasoningTokens: number
+  /** GHC input-side modality breakdown (blob-only; last usage frame wins). */
+  inputDetails?: InputDetails
+  /** GHC output-side modality + prediction breakdown (blob-only). */
+  outputDetails?: OutputDetails
   finishReason: string
   toolCalls: Array<{ id: string; name: string; arguments: string }>
   toolCallMap: Map<number, ToolCallAccumulator>
@@ -38,6 +51,7 @@ export function createOpenAIStreamAccumulator(): OpenAIStreamAccumulator {
     inputTokens: 0,
     outputTokens: 0,
     cachedTokens: 0,
+    cacheWriteTokens: 0,
     reasoningTokens: 0,
     finishReason: "",
     rawContent: "",
@@ -61,11 +75,24 @@ export function accumulateOpenAIStreamEvent(parsed: ChatCompletionChunk, acc: Op
   if (parsed.usage) {
     acc.inputTokens = parsed.usage.prompt_tokens
     acc.outputTokens = parsed.usage.completion_tokens
-    if (parsed.usage.prompt_tokens_details?.cached_tokens !== undefined) {
-      acc.cachedTokens = parsed.usage.prompt_tokens_details.cached_tokens
+    const pd = parsed.usage.prompt_tokens_details as GhcPromptTokensDetails | undefined
+    if (pd?.cached_tokens !== undefined && pd.cached_tokens !== null) {
+      acc.cachedTokens = pd.cached_tokens
     }
-    if (parsed.usage.completion_tokens_details?.reasoning_tokens !== undefined) {
-      acc.reasoningTokens = parsed.usage.completion_tokens_details.reasoning_tokens
+    const cw = nonNegOrUndef(pd?.cache_write_tokens)
+    if (cw !== undefined) acc.cacheWriteTokens = cw
+    acc.inputDetails = { text: nonNegOrUndef(pd?.text_tokens), audio: nonNegOrUndef(pd?.audio_tokens), image: nonNegOrUndef(pd?.image_tokens), video: nonNegOrUndef(pd?.video_tokens) }
+    const cd = parsed.usage.completion_tokens_details as GhcCompletionTokensDetails | undefined
+    if (cd?.reasoning_tokens !== undefined && cd.reasoning_tokens !== null) {
+      acc.reasoningTokens = cd.reasoning_tokens
+    }
+    acc.outputDetails = {
+      text: nonNegOrUndef(cd?.text_tokens),
+      audio: nonNegOrUndef(cd?.audio_tokens),
+      image: nonNegOrUndef(cd?.image_tokens),
+      video: nonNegOrUndef(cd?.video_tokens),
+      accepted_prediction_tokens: nonNegOrUndef(cd?.accepted_prediction_tokens),
+      rejected_prediction_tokens: nonNegOrUndef(cd?.rejected_prediction_tokens),
     }
   }
 

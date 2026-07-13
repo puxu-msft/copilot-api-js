@@ -1,74 +1,18 @@
-import {
-  //
-  DndContext,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core"
-import { restrictToHorizontalAxis } from "@dnd-kit/modifiers"
+import { DesignFork } from "@/components/shell/DesignFork"
 
-import { HistoryList } from "@/components/requests/HistoryList"
-import { RequestFilterChips } from "@/components/requests/RequestFilterChips"
-import { RequestsColumnMenu } from "@/components/requests/RequestsColumnMenu"
-import { RequestsFilterBar } from "@/components/requests/RequestsFilterBar"
-import { useColumnState } from "@/hooks/useColumnState"
-import { useRequestFilters } from "@/hooks/useRequestFilters"
-import { reorderColumns } from "@/lib/request-columns"
+import { RequestsListLegacy } from "./RequestsListLegacy"
+import { RequestsListShadcn } from "./RequestsListShadcn"
 
-/** Requests 列表全屏页(Plan 08 §1):筛选工具条 + 活动 chips + History 列表。在途浮窗 LiveDock 已全局化到 AppShell。 */
+/**
+ * fork B · Requests 列表 RoutePage。经 `DesignFork` 原语按设计版本(design version)互斥挂载
+ * legacy(`RequestsListLegacy`,Terminal Amber,冻结)/ shadcn(`RequestsListShadcn`,重设计)页元素。
+ * 本文件不含 store 字段标识符(唯一读取者是 DesignFork)→ requests/ 域 grep 守卫零命中。
+ */
 export function RequestsListPage() {
-  // 在途订阅 + LiveDock 浮窗均已提升到 AppShell(常驻根、全局可见);此处只渲染请求列表本体。
-  const { filters, setFilter, setFilters, clearFilter, clearAll } = useRequestFilters()
-
-  // 列状态(visibility + sizing + order)提到 Page(单一持有者):版本化统一键持久化,菜单/HistoryList 受控消费。
-  // 三态皆已通到 table;dnd 重排(本 Task)经 DndContext.onDragEnd → reorderColumns → cs.setOrder(内部再过 mergeColumnOrder 幂等锁首)。
-  const cs = useColumnState()
-
-  // dnd 列序重排:PointerSensor + activationConstraint distance:4(HIGH-2)——微动/点击不误判拖拽,且与 resize 手柄
-  // (已 onPointerDown stopPropagation)分区。restrictToHorizontalAxis 锁水平位移(列表头只沿横轴重排)。
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
-  const onDragEnd = ({ active, over }: DragEndEvent) => {
-    if (over && active.id !== over.id) cs.setOrder((o) => reorderColumns(o, String(active.id), String(over.id)))
-  }
-
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <RequestsFilterBar
-        filters={filters}
-        setFilter={setFilter}
-        setFilters={setFilters}
-        columnMenuSlot={
-          <RequestsColumnMenu
-            columns={cs.visibility}
-            order={cs.order}
-            onToggle={cs.toggleColumn}
-            onReset={cs.reset}
-          />
-        }
-      />
-      <RequestFilterChips
-        filters={filters}
-        clearFilter={clearFilter}
-        clearAll={clearAll}
-        setFilters={setFilters}
-      />
-      <DndContext
-        sensors={sensors}
-        modifiers={[restrictToHorizontalAxis]}
-        onDragEnd={onDragEnd}
-      >
-        <HistoryList
-          filters={filters}
-          columnVisibility={cs.visibility}
-          onColumnVisibilityChange={cs.setVisibility}
-          columnSizing={cs.sizing}
-          onColumnSizingChange={cs.setSizing}
-          columnOrder={cs.order}
-          onColumnOrderChange={cs.setOrder}
-          onClearFilters={clearAll}
-        />
-      </DndContext>
-    </div>
+    <DesignFork
+      legacy={<RequestsListLegacy />}
+      shadcn={<RequestsListShadcn />}
+    />
   )
 }

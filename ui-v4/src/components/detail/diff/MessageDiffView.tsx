@@ -34,7 +34,7 @@ export function MessageDiffView({ left, right }: MessageDiffViewProps) {
 
   return (
     <div>
-      <div className="mono px-2 py-0.5 text-[11px] text-[var(--color-muted)]">
+      <div className="mono px-2 py-0.5 text-[11px] text-[var(--content-muted)]">
         {stats.modified}~ {stats.removed}− {stats.added}+ · {stats.same} unchanged
       </div>
       {visibleRows.map((row, i) => (
@@ -47,7 +47,7 @@ export function MessageDiffView({ left, right }: MessageDiffViewProps) {
         />
       ))}
       {hiddenCount > 0 ?
-        <div className="mono p-2 text-[13px] text-[var(--color-muted)]">+{hiddenCount} more messages.</div>
+        <div className="mono p-2 text-[13px] text-[var(--content-muted)]">+{hiddenCount} more messages.</div>
       : null}
     </div>
   )

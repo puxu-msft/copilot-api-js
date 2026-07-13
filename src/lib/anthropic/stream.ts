@@ -13,8 +13,8 @@ import consola from "consola"
 
 import type { StreamEvent } from "~/types/api/anthropic"
 
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { getShutdownSignal } from "~/lib/shutdown"
-import { state } from "~/lib/state"
 import {
   //
   raceIteratorNext,
@@ -60,8 +60,13 @@ export async function* processAnthropicStream(
   acc: AnthropicStreamAccumulator,
   clientAbortSignal?: AbortSignal,
   shutdownSignal: AbortSignal = getShutdownSignal(),
+  // Per-model frame-idle timeout (ms; 0 = disabled). INV-2: this deep fn takes a
+  // resolved number, never the model. Default reads the scalar (model-less) so
+  // existing callers behave unchanged; the production caller passes the
+  // per-model value. Appended last (not inserted before shutdownSignal) to keep
+  // the 4-arg `(…, shutdownSignal)` call sites intact.
+  idleTimeoutMs: number = resolveStreamIdleTimeoutMs(undefined),
 ): AsyncGenerator<ProcessedAnthropicEvent> {
-  const idleTimeoutMs = state.streamIdleTimeout * 1000
   const iterator = response[Symbol.asyncIterator]()
 
   // Forward shutdown + client signals into one local controller with explicit

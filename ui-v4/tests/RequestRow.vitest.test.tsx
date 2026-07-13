@@ -21,6 +21,7 @@ const base = (over: Partial<EntrySummary>): EntrySummary => ({
   messageCount: 0,
   previewText: "",
   ...over,
+  responsePreviewText: over.responsePreviewText ?? "",
 })
 
 describe("RequestRow", () => {

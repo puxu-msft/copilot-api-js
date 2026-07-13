@@ -100,16 +100,16 @@ function visibleEntries(entries: Array<[string, unknown]>, paged: boolean, page:
 
 /** Type-colored inline rendering of a primitive JSON value. */
 function Primitive({ value }: { value: JsonPrimitive }) {
-  if (value === null) return <span className="text-[var(--color-muted)]">null</span>
+  if (value === null) return <span className="text-[var(--content-muted)]">null</span>
   switch (typeof value) {
     case "string": {
-      return <span className="text-[var(--color-ok)]">"{value}"</span>
+      return <span className="text-[var(--content-add)]">"{value}"</span>
     }
     case "number": {
-      return <span className="text-[var(--color-primary)]">{String(value)}</span>
+      return <span className="text-[var(--content-accent)]">{String(value)}</span>
     }
     default: {
-      return <span className="text-[#7aa2d0]">{String(value)}</span>
+      return <span className="text-[var(--content-number)]">{String(value)}</span>
     }
   }
 }
@@ -126,7 +126,7 @@ function containerSummary(container: Container): string {
   return count === 0 ? "{}" : `{…} ${count} key${count === 1 ? "" : "s"}`
 }
 
-const ACTION_BTN = "mono border border-[var(--color-border)] px-1 text-[10px] leading-[1.4] text-[var(--color-muted)] hover:text-[var(--color-primary)]"
+const ACTION_BTN = "mono border border-[var(--surface-border)] px-1 text-[10px] leading-[1.4] text-[var(--content-muted)] hover:text-[var(--content-accent)]"
 
 /**
  * Hover-revealed per-node copy actions. Rendered as SIBLINGS of the collapsible
@@ -204,13 +204,13 @@ function TreeNode({ name, value, depth, path }: NodeProps) {
 
   const label =
     name === undefined ? null : (
-      <span className="text-[var(--color-text)]">
+      <span className="text-[var(--content-text)]">
         {name}
-        <span className="text-[var(--color-muted)]">: </span>
+        <span className="text-[var(--content-muted)]">: </span>
       </span>
     )
 
-  const highlight = selfMatch ? "rounded-[2px] bg-[#463a12]" : undefined
+  const highlight = selfMatch ? "rounded-[2px] bg-[var(--surface-match)]" : undefined
   const rowMatch = selfMatch ? "true" : undefined
   // Per-node copy actions are a toolbar-variant affordance; bare callers stay unchanged.
   const actions =
@@ -224,7 +224,7 @@ function TreeNode({ name, value, depth, path }: NodeProps) {
   if (!container) {
     return (
       <div
-        className="group flex items-center hover:bg-[#1c1a15]"
+        className="group flex items-center hover:bg-[var(--surface-tree-hover)]"
         style={{ paddingLeft: depth * INDENT_PX }}
         data-json-match={rowMatch}
       >
@@ -243,13 +243,13 @@ function TreeNode({ name, value, depth, path }: NodeProps) {
   if (empty) {
     return (
       <div
-        className="group flex items-center hover:bg-[#1c1a15]"
+        className="group flex items-center hover:bg-[var(--surface-tree-hover)]"
         style={{ paddingLeft: depth * INDENT_PX }}
         data-json-match={rowMatch}
       >
         <span className={highlight}>
           {label}
-          <span className="text-[var(--color-muted)]">{containerSummary(value)}</span>
+          <span className="text-[var(--content-muted)]">{containerSummary(value)}</span>
         </span>
         {actions}
       </div>
@@ -281,15 +281,15 @@ function TreeNode({ name, value, depth, path }: NodeProps) {
       }}
     >
       <div
-        className="group flex items-center hover:bg-[#1c1a15]"
+        className="group flex items-center hover:bg-[var(--surface-tree-hover)]"
         style={{ paddingLeft: depth * INDENT_PX }}
         data-json-match={rowMatch}
       >
         <Collapsible.Trigger className="flex min-w-0 flex-1 cursor-pointer select-none items-center text-left outline-none">
-          <span className="mr-1 inline-block w-3 shrink-0 text-[var(--color-muted)]">{effectiveOpen ? "▾" : "▸"}</span>
+          <span className="mr-1 inline-block w-3 shrink-0 text-[var(--content-muted)]">{effectiveOpen ? "▾" : "▸"}</span>
           <span className={highlight}>
             {label}
-            <span className="text-[var(--color-muted)]">{containerSummary(value)}</span>
+            <span className="text-[var(--content-muted)]">{containerSummary(value)}</span>
           </span>
         </Collapsible.Trigger>
         {actions}
@@ -308,7 +308,7 @@ function TreeNode({ name, value, depth, path }: NodeProps) {
           <button
             type="button"
             aria-label={`load more (${entries.length - page} remaining)`}
-            className="mono mt-0.5 border border-[var(--color-border)] px-2 py-0.5 text-[11px] text-[var(--color-muted)] hover:text-[var(--color-primary)]"
+            className="mono mt-0.5 border border-[var(--surface-border)] px-2 py-0.5 text-[11px] text-[var(--content-muted)] hover:text-[var(--content-accent)]"
             style={{ marginLeft: (depth + 1) * INDENT_PX }}
             onClick={() => setPage((p) => p + LAZY_PAGE_STEP)}
           >
@@ -320,7 +320,7 @@ function TreeNode({ name, value, depth, path }: NodeProps) {
   )
 }
 
-const TOOLBAR_BTN = "mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] text-[var(--color-muted)] hover:text-[var(--color-primary)]"
+const TOOLBAR_BTN = "mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px] text-[var(--content-muted)] hover:text-[var(--content-accent)]"
 
 /**
  * Toolbar variant control row: expand-all / collapse-all bump the bulk signal;
@@ -338,7 +338,7 @@ function Toolbar({
   onQuery: (q: string) => void
 }) {
   return (
-    <div className="mb-1 flex items-center gap-1 border-b border-[var(--color-border)] pb-1">
+    <div className="mb-1 flex items-center gap-1 border-b border-[var(--surface-border)] pb-1">
       <button
         type="button"
         aria-label="expand all"
@@ -361,7 +361,7 @@ function Toolbar({
         onChange={(e) => onQuery(e.target.value)}
         placeholder="Search keys/values…"
         aria-label="search tree"
-        className="mono ml-2 min-w-0 flex-1 border border-[var(--color-border)] bg-transparent px-1.5 py-0.5 text-[12px] text-[var(--color-text)] outline-none focus:border-[var(--color-primary)]"
+        className="mono ml-2 min-w-0 flex-1 border border-[var(--surface-border)] bg-transparent px-1.5 py-0.5 text-[12px] text-[var(--content-text)] outline-none focus:border-[var(--content-accent)]"
       />
     </div>
   )

@@ -1,6 +1,6 @@
 import type { HeadersCapture } from "~/lib/context/request"
 
-import { state } from "./state"
+import { resolveResponseHeaderTimeoutMs } from "~/lib/models/timeout-resolver"
 
 const SENSITIVE_HEADER_NAMES = new Set(["authorization", "proxy-authorization", "x-api-key", "api-key", "cookie", "set-cookie"])
 
@@ -16,12 +16,14 @@ export function captureInboundHeaders(headers: Headers): Record<string, string> 
 }
 
 /**
- * Create an AbortSignal for fetch timeout if configured.
- * Controls the time from request start to receiving response headers.
- * Returns undefined if responseHeaderTimeout is 0 (disabled).
+ * Create an AbortSignal for the response-header (first-byte) timeout if configured.
+ * Controls the time from request start to receiving response headers. Resolves the
+ * per-model override (`resolveResponseHeaderTimeoutMs`) when `model` is given,
+ * else the scalar. Returns undefined when the effective timeout is 0 (disabled).
  */
-export function createResponseHeaderTimeoutSignal(): AbortSignal | undefined {
-  return state.responseHeaderTimeout > 0 ? AbortSignal.timeout(state.responseHeaderTimeout * 1000) : undefined
+export function createResponseHeaderTimeoutSignal(model?: string): AbortSignal | undefined {
+  const ms = resolveResponseHeaderTimeoutMs(model)
+  return ms > 0 ? AbortSignal.timeout(ms) : undefined
 }
 
 /**

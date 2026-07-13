@@ -23,10 +23,10 @@ const ANCHOR_PREFIX = "system"
 
 type SystemView = "rendered" | "raw"
 
-const TOGGLE_BASE = "mono border border-[var(--color-border)] px-2 py-0.5 text-[12px]"
+const TOGGLE_BASE = "mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px]"
 
 function viewClass(active: boolean): string {
-  return `${TOGGLE_BASE} ${active ? "text-[var(--color-primary)]" : "text-[var(--color-muted)]"}`
+  return `${TOGGLE_BASE} ${active ? "text-[var(--content-accent)]" : "text-[var(--content-muted)]"}`
 }
 
 /**
@@ -64,7 +64,7 @@ export function SystemSegment({ entry }: { entry: HistoryEntry }) {
   // []) is a real client-sent payload and is rendered as-is, not hidden: an
   // explicit empty system is distinct from a missing one (richest-data-flow).
   if (inboundSystem === undefined && effectiveSystem === undefined) {
-    return <div className="mono p-2 text-[13px] text-[var(--color-muted)]">无 system prompt</div>
+    return <div className="mono p-2 text-[13px] text-[var(--content-muted)]">无 system prompt</div>
   }
 
   const showToc = view === "rendered" && systemMode === "original" && originalBlocks.length > 1
@@ -104,12 +104,12 @@ export function SystemSegment({ entry }: { entry: HistoryEntry }) {
         </div>
         {view === "raw" ?
           <>
-            <div className="mono mb-1.5 text-[11px] text-[var(--color-muted)]">
+            <div className="mono mb-1.5 text-[11px] text-[var(--content-muted)]">
               {rawFromEffective ? "effective system（inbound 无 system，此为 rewrite 注入）" : "inbound system"}。两腿完整对比见上方 Diff 视图或 Stages →
               Inbound/Effective → Raw。
             </div>
             {typeof rawSystem === "string" ?
-              <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[#aaa]">{rawSystem}</pre>
+              <pre className="mono whitespace-pre-wrap break-all text-[13px] text-[var(--content-secondary)]">{rawSystem}</pre>
             : <RawJsonView value={rawSystem} />}
           </>
         : <SystemMessage

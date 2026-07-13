@@ -168,10 +168,10 @@ describe("DetailTocTree", () => {
     const inactiveRow = screen.getByText("user: hello").closest("div")
 
     // Active row: left accent bar + amber text; inactive row has neither.
-    expect(activeRow?.className).toContain("text-[var(--color-primary)]")
-    expect(activeRow?.className).toContain("border-l-[var(--color-primary)]")
-    expect(inactiveRow?.className).not.toContain("text-[var(--color-primary)]")
-    expect(inactiveRow?.className).not.toContain("border-l-[var(--color-primary)]")
+    expect(activeRow?.className).toContain("text-[var(--content-accent)]")
+    expect(activeRow?.className).toContain("border-l-[var(--content-accent)]")
+    expect(inactiveRow?.className).not.toContain("text-[var(--content-accent)]")
+    expect(inactiveRow?.className).not.toContain("border-l-[var(--content-accent)]")
   })
 
   it("numbers rows hierarchically (top-level 1/2, children 1.1, 1.2)", () => {
@@ -201,13 +201,13 @@ describe("DetailTocTree", () => {
     )
 
     // The kind color now tints the label button itself (no separate dot).
-    // user role → amber primary; assistant role → soft blue (#9ad) — mirrors
-    // MessageBlock's ROLE_COLOR so the two views stay consistent.
+    // user role → accent (--content-accent); assistant role → --content-role-assistant
+    // — mirrors MessageBlock's ROLE_COLOR so the two views stay consistent.
     const userLabel = screen.getByText("user: hello")
     const assistantLabel = screen.getByText("assistant: hi")
 
-    expect(userLabel.style.color).toBe("var(--color-primary)")
-    expect(assistantLabel.style.color).toBe("rgb(153, 170, 221)")
+    expect(userLabel.style.color).toBe("var(--content-accent)")
+    expect(assistantLabel.style.color).toBe("var(--content-role-assistant)")
 
     // Truncated rows reveal their full text on hover via `title`.
     expect(userLabel.getAttribute("title")).toBe("user: hello")

@@ -1,3 +1,5 @@
+import type { RouteObject } from "react-router-dom"
+
 import {
   //
   createHashRouter,
@@ -17,7 +19,9 @@ import { NotBuiltYet } from "@/components/shell/NotBuiltYet"
 import { RouteError } from "@/components/shell/RouteError"
 import { JsonToolsPage } from "@/components/tools/JsonToolsPage"
 
-export const router = createHashRouter([
+// 路由表单独导出:供默认路由守卫测试用 `createMemoryRouter(routes, ...)` 确定性地
+// 断言 index → /overview(决策 6),而不必依赖 hash 历史。
+export const routes: Array<RouteObject> = [
   {
     path: "/",
     element: <AppShell />,
@@ -27,7 +31,7 @@ export const router = createHashRouter([
         index: true,
         element: (
           <Navigate
-            to="/requests"
+            to="/overview"
             replace
           />
         ),
@@ -44,4 +48,6 @@ export const router = createHashRouter([
       { path: "*", element: <NotBuiltYet /> },
     ],
   },
-])
+]
+
+export const router = createHashRouter(routes)

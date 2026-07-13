@@ -107,7 +107,7 @@ const forwarded = state.forwardClientQuery ? filterUpstreamQuery(raw, state.forw
 - DESIGN 运行时选项表加 `forward_client_query` / `forward_client_query_exclude` 行（Step 2 已要求）。
 - DESIGN「活的架构现状」/「HTTP header 捕获」附近补 query 转发机制（注入点 + 排除清单 + history 双记录）。
 - DESIGN「Azure 兼容端点」处「api-version 被忽略」→「被显式排除转发」。
-- 评估 `docs/anthropic-compat.md`/`gemini-compat.md`/`api-endpoints` skill 是否需补。
+- 评估 `docs/anthropic-compat.md`/`gemini-compat.md`/`proxy-api-reference` skill 是否需补。
 - 收尾跨文档 grep 扫描（旧「被丢弃/忽略」措辞清零 + 新 config 项逐个核对）。
 
 ## 7. 边界（明确不转发）

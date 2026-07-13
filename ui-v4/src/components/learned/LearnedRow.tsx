@@ -17,33 +17,33 @@ export function LearnedRow({ entry, actions }: { entry: LearnedEntryView; action
   const shown = displayValue(entry.category, entry.value)
   const busy = actions.renew.isPending || actions.expire.isPending || actions.setPin.isPending || actions.remove.isPending
   return (
-    <div className="mono flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] px-2 py-1 text-[12px]">
+    <div className="mono flex flex-wrap items-center gap-2 border-b border-[var(--surface-border)] px-2 py-1 text-[12px]">
       <span
-        className="text-[#cdb]"
+        className="text-[var(--content-value)]"
         title={entry.value}
       >
         {shown}
       </span>
       {entry.key ?
-        <span className="text-[var(--color-muted)]">[{entry.key}]</span>
+        <span className="text-[var(--content-muted)]">[{entry.key}]</span>
       : null}
       <StatusBadge status={entry.status} />
       {entry.migrated ?
         <span
-          className="text-[10px] text-[var(--color-muted)]"
+          className="text-[10px] text-[var(--content-muted)]"
           title="迁移记录，首次学到时间未知"
         >
           迁移
         </span>
       : null}
-      <span className="text-[10px] text-[var(--color-muted)]">
+      <span className="text-[10px] text-[var(--content-muted)]">
         学于 {relativeTime(entry.firstLearnedAt)} · 确认 {relativeTime(entry.lastConfirmedAt)}
         {entry.expiresAt !== null ? ` · 过期 ${new Date(entry.expiresAt).toLocaleString()}` : " · 永不过期"}
       </span>
       <span className="ml-auto flex gap-1">
         <button
           type="button"
-          className={`${BTN} border-[var(--color-ok)] text-[var(--color-ok)]`}
+          className={`${BTN} border-[var(--signal-ok)] text-[var(--signal-ok)]`}
           disabled={busy}
           onClick={() => actions.renew.mutate(ref)}
         >
@@ -51,7 +51,7 @@ export function LearnedRow({ entry, actions }: { entry: LearnedEntryView; action
         </button>
         <button
           type="button"
-          className={`${BTN} border-[var(--color-muted)] text-[var(--color-muted)]`}
+          className={`${BTN} border-[var(--signal-muted)] text-[var(--signal-muted)]`}
           disabled={busy}
           onClick={() => actions.expire.mutate(ref)}
         >
@@ -59,7 +59,7 @@ export function LearnedRow({ entry, actions }: { entry: LearnedEntryView; action
         </button>
         <button
           type="button"
-          className={`${BTN} border-[var(--color-primary)] text-[var(--color-primary)]`}
+          className={`${BTN} border-[var(--content-accent)] text-[var(--content-accent)]`}
           disabled={busy}
           onClick={() => actions.setPin.mutate({ ...ref, pinned: !entry.pinned })}
         >
@@ -67,7 +67,7 @@ export function LearnedRow({ entry, actions }: { entry: LearnedEntryView; action
         </button>
         <button
           type="button"
-          className={`${BTN} border-[var(--color-fail)] text-[var(--color-fail)]`}
+          className={`${BTN} border-[var(--signal-fail)] text-[var(--signal-fail)]`}
           disabled={busy}
           onClick={() => {
             if (confirm(`删除该记录？\n${entry.category} / ${shown}`)) actions.remove.mutate(ref)

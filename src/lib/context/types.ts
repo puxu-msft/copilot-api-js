@@ -56,19 +56,34 @@ export interface WireRequest {
 export interface ResponseData {
   success: boolean
   model: string
+  // usage: ONE of TWO lockstep owner points — the other is `UsageData` in
+  // `src/lib/history/types.ts`. NOT a shared reference (kept inline so context has
+  // no history-store type dependency), so this literal MUST stay field-for-field
+  // identical to UsageData. See docs/spec/2026-07-12-ghc-usage-details.md §5.1 (C1).
   usage: {
     input_tokens: number
     output_tokens: number
     cache_read_input_tokens?: number
     cache_creation_input_tokens?: number
-    output_tokens_details?: { reasoning_tokens: number }
+    input_tokens_details?: { text?: number; audio?: number; image?: number; video?: number }
+    output_tokens_details?: {
+      reasoning_tokens?: number
+      text?: number
+      audio?: number
+      image?: number
+      video?: number
+      accepted_prediction_tokens?: number
+      rejected_prediction_tokens?: number
+    }
   }
   content: unknown
   stop_reason?: string
   error?: string
   /** HTTP status code from upstream (only on error) */
   status?: number
-  /** Raw response body from upstream (only on error, for post-mortem debugging) */
+  /** Raw upstream response body. Set on error (post-mortem) AND, since G6, on the
+   * non-streaming success path (JSON.stringify of the pristine upstream response →
+   * rawBody), so non-streaming rows can re-derive usage fields. See spec §6.1. */
   responseText?: string
   /** Responses API: upstream response id (`resp_...`) from event.response.id */
   responseId?: string
@@ -110,6 +125,8 @@ export interface Attempt {
   strategy?: string
   sanitization?: SanitizationInfo
   truncation?: TruncationInfo
+  /** passthrough 剥掉的 GHC 未支持 cache_control 子字段（如 scope）——每 attempt 记，经 pipelineFromAttempt 落 history（spec §8）。 */
+  cacheControlStripped?: Array<string>
   /** Wait time before this retry (rate-limit) */
   waitMs?: number
   startTime: number
@@ -146,6 +163,10 @@ export interface HistoryModelInfo {
   requested?: string
   resolved?: string
   multiplier?: number
+  /** Routing observability (translation-matrix RFC §10 / W6). Mirrors the owner `ModelInfo`. */
+  routeOverride?: "cc" | "responses" | "messages"
+  outboundEndpoint?: string
+  translated?: boolean
 }
 
 /**
@@ -311,14 +332,16 @@ export interface HistoryEntryData {
 
 /** One malformed tool-input repair outcome for the current attempt (see `recordRepairOutcome`). */
 export interface RepairOutcomeRecord {
-  /** Repair-item layer that won (`strip`/`unicode`/`jsonrepair`), or `unrepairable` when no enabled item produced valid JSON. */
-  outcome: "strip" | "unicode" | "jsonrepair" | "unrepairable"
+  /** Repair-item layer that won (`strip`/`unicode`/`jsonrepair`/`unicode-lossy`), or `unrepairable` when no enabled item produced valid JSON. */
+  outcome: "strip" | "unicode" | "jsonrepair" | "unicode-lossy" | "unrepairable"
   /** The tool whose input was repaired / found unrepairable. */
   tool: string
   /** Raw malformed JSON length (repaired outcomes only; for the `[REWRITE]` log). */
   beforeLength?: number
   /** Repaired JSON length (repaired outcomes only). */
   afterLength?: number
+  /** Decode-target field whose stringified inner JSON was repaired (e.g. `questions`); absent for whole-input repair. */
+  field?: string
 }
 
 export interface RequestContext {
@@ -406,6 +429,8 @@ export interface RequestContext {
   setOriginalRequest(req: OriginalRequest): void
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
+  /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */
+  setStreamTimeouts(patch: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number }): void
   setSseEvents(events: Array<SseEventRecord>): void
   /** Record the response as forwarded to the client (proxy→client). Must be called before complete()/fail(). */
   setForwardedResponse(forwarded: ForwardedResponse): void
@@ -419,6 +444,8 @@ export interface RequestContext {
   addWarningMessage(warning: WarningMessage): void
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: RequestTransport }): void
   setAttemptSanitization(info: SanitizationInfo): void
+  /** 记录本 attempt passthrough 剥掉的 cache_control 子字段（→ pipelineFromAttempt → history）。 */
+  setAttemptCacheControlStripped(fields: ReadonlyArray<string>): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void
   setAttemptWireRequest(req: WireRequest): void
   setAttemptTransport(transport: RequestTransport): void
@@ -427,6 +454,8 @@ export interface RequestContext {
   setAttemptError(error: ApiError): void
   /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
   commitAttemptSseEvents(): void
+  /** 定稿当前 attempt 的 durationMs（截断路径无 error/response setter 时用）。见 request.ts。 */
+  finalizeCurrentAttemptDuration(): void
   /** L2 buffered retry: clear the top-level upstream sseEvents so the next attempt starts fresh. */
   resetSseEvents(): void
   addQueueWaitMs(ms: number): void
@@ -490,6 +519,14 @@ export interface RequestContext {
    * tests that omit the publisher).
    */
   setResolvedModel(args: { resolved: string; client?: string }): void
+  /**
+   * Record the S2 routing decision for observability (translation-matrix RFC §10 / W6): the
+   * client's explicit leg pin (`routeOverride`), the actual outbound leg (`outboundEndpoint =
+   * env.targetEndpoint`), and whether that leg required a format translation (`translated`) vs a
+   * direct passthrough. Projected into the history `model{}`. Called by the driver right after
+   * the route decision (non-reject); optional so mock/legacy ctxs that omit it are unaffected.
+   */
+  setRouteInfo?(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean }): void
   /**
    * Record an applied feature (truncate / thinking / beta-strip / transport /
    * via-X-fallback / dropped-params). Replaces the legacy `tags: string[]`

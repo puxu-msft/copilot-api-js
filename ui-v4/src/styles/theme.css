@@ -1,4 +1,8 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
 
 /* 工业风 Terminal Amber —— 全局 token(spec §8)。锐角/暖近黑/amber 主色/信号色。 */
 @theme {
@@ -15,23 +19,230 @@
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 
-:root { color-scheme: dark; }
+/*
+ * ── 中性语义 token 层(架子先行 C1) —— RFC §3 第 2 层 ──
+ *
+ * 三条设计约束:
+ * 1. **命名反映语义角色,不反映颜色**(--content-thinking 而非 --purple)。A′/B 中性化(C2/C3)
+ *    把裸 hex / var(--color-*) 换成这些 token,之后两版呈现树共用同一批 token 名。
+ * 2. **每 preset 各一组映射,token 名齐平**。amber preset 复现 Terminal Amber 等价值(能桥接的
+ *    引 var(--color-*) 作单一事实源,不能的用与源码逐字节相等的字面量 → C2/C3 像素等价 INV-3);
+ *    neutral preset(OQ-2)= 中性灰 zinc/slate + 蓝白强调,覆盖 shadcn init 的默认 oklch。
+ * 3. **可扩展**:新增第三 preset = 复制一组映射块、改值,零结构改动;新页/新树免改本层。
+ *
+ * 作用域(与 C0 落根的 data-design 属性 + 未来 colorPreset 属性配合):
+ * - amber 挂 :root(默认)+ [data-design=amber-legacy] + [data-color-preset=amber]
+ *   → 当前 DOM(data-design=amber-legacy)命中 amber,保证 C1 后视觉零变化。
+ * - neutral 挂 [data-design=shadcn] + [data-color-preset=neutral]。
+ *
+ * 桥接(PoC WARN-2):现有 amber `--color-*`(上方 @theme 拥有,全站 amber-legacy 组件消费)不改名、
+ * 仍解析回原值 → amber-legacy 消费者零改动。本层 amber leg 反过来引用 `var(--color-*)`,使 amber
+ * 色板保持单一事实源;C2/C3 迁移的消费者改引语义 token,两条命名空间经此层对齐。
+ *
+ * 落点说明:本应独立成 `tokens.css` 由 theme.css `@import`(plan 首选),但实测 Tailwind v4 +
+ * `@import "shadcn/tailwind.css"` 下,追加 `@import "./相对.css"` 会触发 Lightning CSS
+ * 「Invalid custom property, expected a value」构建失败(最小 `:root{--x:#123}` 探针复现);inline
+ * 进 theme.css 则 build 绿。故本层内联于此,PRESET 标记块供守卫测试解析。
+ */
+
+/* amber preset(Terminal Amber 等价;:root 默认使当前 amber-legacy DOM 零视觉变化)*/
+:root,
+[data-design="amber-legacy"],
+[data-color-preset="amber"] {
+  /*PRESET:amber*/
+  /* 内容语义 --content-*(含同角色多 shade 独立 token,round2-B5)*/
+  --content-text: var(--color-text); /* #d8cdbb 主文本 */
+  --content-value: #cdb; /* 值/单元格淡暖文本(context/ctx/out/billing/req、DiagnosticBar、LearnedRow…)*/
+  --content-text-block: #cdc; /* TextBlock 内文 */
+  --content-secondary: #aaa; /* 次级文本(headers 值、meta、sessionrow、sse)*/
+  --content-inactive: #999; /* 非激活(NavRail/SubRail 未选、filter chip 未选、RouteError)*/
+  --content-dim: #888; /* 弱文本(loading、diagnostic、statcard sub、MessageBlock 默认角色)*/
+  --content-faint: #777; /* 更弱(time 列、endpoint、RequestRow 次要)*/
+  --content-placeholder: #666; /* 占位(空 detail、no session)*/
+  --content-disabled: #555; /* 禁用/空(— dash、no traffic、off ·)*/
+  --content-muted: var(--color-muted); /* #8a7a55 muted 语义文本 */
+  --content-muted-cool: #9a9; /* 偏冷 muted(ToolResult string、cacheMiss 默认、request-columns)*/
+  --content-warm-faint: #a87; /* 暖弱(attempt ×n 计数)*/
+  --content-preview: #8a8a7a; /* 已完成请求 preview */
+  --content-preview-response: #8a9a8a; /* 响应 preview */
+  --content-selected: #f0d8a8; /* 选中行文本(NavRail/HistoryList/RequestRow active)*/
+  --content-accent: var(--color-primary); /* #d4a04a 主强调(桥接 amber primary)*/
+  --content-off: #3a3a42; /* 关闭态勾/点(model-table on/off)*/
+  --content-dot-dim: #6a5a3a; /* HistoryList 分隔点 */
+  --content-divider: #d8c088; /* HistoryList 分隔条文本 */
+  --content-info-text: #5a7a9a; /* Overview 信息文本 */
+  --content-error-inline: #c88; /* HistoryList 内联 error 文本 */
+  --content-error-soft: #e0a0a0; /* HistoryList 空态 error 文本 */
+  --content-number: #7aa2d0; /* JsonTreeView number 值(蓝)*/
+  --content-role-assistant: #9ad; /* assistant/image 角色(蓝)*/
+  --content-add: var(--color-ok); /* #7fd99a diff added */
+  --content-del: var(--color-fail); /* #e08a8a diff removed */
+  --content-thinking: #a89ac0; /* ThinkingBlock 文本(紫)*/
+  --content-thinking-dim: #6a5a8a; /* ThinkingBlock 边框/标签(暗紫)*/
+  --content-thinking-accent: #9a8ad0; /* thinking/redacted_thinking toc + keyword(亮紫)*/
+  --content-tool: #7fae7f; /* tool_use/tool_result toc(绿)*/
+  --content-tool-dim: #4a6a4a; /* tool 角色/边框(暗绿)*/
+
+  /* 信号语义 --signal-* */
+  --signal-ok: var(--color-ok); /* #7fd99a */
+  --signal-fail: var(--color-fail); /* #e08a8a */
+  --signal-warn: var(--color-warn); /* #d4a04a */
+  --signal-muted: var(--color-muted); /* #8a7a55 */
+  --signal-live: var(--color-primary); /* #d4a04a 在途/live(amber 用 primary)*/
+
+  /* 厂商语义 --vendor-* */
+  --vendor-anthropic: #b48ead;
+  --vendor-openai: #5aa2d0;
+  --vendor-google: #8fbf7f;
+  --vendor-other: #d08fb4;
+  --vendor-muted: var(--color-muted); /* #8a7a55 未知/空 vendor */
+
+  /* 表面/近黑语义 --surface-*(scale 族 + 每独立 shade 一 token,round2-B5)*/
+  --surface-base: var(--color-bg); /* #141210 页底 */
+  --surface-raised: var(--color-surface); /* #16161a 抬升面 */
+  --surface-raised-alt: #1a1a1f; /* segment label bg(HeadersSegment/LegShell)*/
+  --surface-hover: #1a1a20; /* 行 hover(ModelsTable)*/
+  --surface-border: var(--color-border); /* #2a2a32 主边框 */
+  --surface-border-subtle: #1e1e24; /* 细分隔边框(segment/table/message/agent)*/
+  --surface-border-row: #222; /* 列表行分隔边框(HistoryList/RequestRow/SessionRow)*/
+  --surface-code: #100e0b; /* 代码块近黑底 */
+  --surface-input: #0f0f12; /* 输入/文本域底(TopBar/Config/JsonTools)*/
+  --surface-panel: #111014; /* 面板 section 底(JsonToolsPage)*/
+  --surface-nav: #15151a; /* NavRail / LearnedPage 底 */
+  --surface-rail: #14141a; /* Detail/Model SubRail 底 */
+  --surface-block: #161616; /* SystemMessage/GenericBlock 底 */
+  --surface-block-border: #444; /* GenericBlock 边框 */
+  --surface-diagnostic: #1c1c22; /* DiagnosticBar 底 */
+  --surface-tree-hover: #1c1a15; /* JsonTreeView 行 hover */
+  --surface-toc-hover: #1c1a14; /* DetailTocTree hover */
+  --surface-toc-active: #221b0e; /* DetailTocTree active 底 */
+  --surface-active: #3a2f1a; /* 选中/激活/hover 强调底(rows/subrail/navrail/filter/columnmenu)*/
+  --surface-sticky: #111; /* HistoryList sticky header 底 */
+  --surface-match: #463a12; /* JsonTreeView 匹配高亮底 */
+  --surface-info: #10161f; /* Overview 信息卡底 */
+  --surface-info-border: #2f4a6f; /* Overview 信息卡虚线边框 */
+  --surface-history-divider: #2a2418; /* HistoryList 分隔条底 */
+  --surface-divider-border: #5a4a2a; /* HistoryList 分隔条边框 */
+  --surface-text-block: #12161c; /* TextBlock 底 */
+  --surface-text-block-border: #3a4656; /* TextBlock 边框 */
+  --surface-tool-use: #1f1a12; /* ToolUseBlock 底 */
+  --surface-tool-result: #141a14; /* ToolResultBlock 底 */
+  --surface-thinking: #1a1820; /* ThinkingBlock 底 */
+  --surface-agent: #1a160e; /* AgentLane 底 */
+  --surface-flash: #2a2212; /* toc-flash 瞬态高亮底(C4 作用域化会引用)*/
+}
+
+/* neutral preset(OQ-2:中性灰 zinc/slate + 蓝白强调;shadcn 树默认)*/
+[data-design="shadcn"],
+[data-color-preset="neutral"] {
+  /*PRESET:neutral*/
+  /* 内容语义 --content-* */
+  --content-text: #e4e4e7; /* zinc-200 */
+  --content-value: #cbd5e1; /* slate-300 */
+  --content-text-block: #d4d4d8; /* zinc-300 */
+  --content-secondary: #a1a1aa; /* zinc-400 */
+  --content-inactive: #8a8a94;
+  --content-dim: #71717a; /* zinc-500 */
+  --content-faint: #52525b; /* zinc-600 */
+  --content-placeholder: #4b4b52;
+  --content-disabled: #3f3f46; /* zinc-700 */
+  --content-muted: #6b6b73;
+  --content-muted-cool: #6b7280; /* gray-500 */
+  --content-warm-faint: #78716c; /* stone-500 */
+  --content-preview: #8b8b93;
+  --content-preview-response: #94a3b8; /* slate-400 */
+  --content-selected: #e2e8f0; /* slate-200 白强调 */
+  --content-accent: #93c5fd; /* blue-300 蓝强调 */
+  --content-off: #3f3f46;
+  --content-dot-dim: #52525b;
+  --content-divider: #cbd5e1;
+  --content-info-text: #64748b; /* slate-500 */
+  --content-error-inline: #f87171; /* red-400 */
+  --content-error-soft: #fca5a5; /* red-300 */
+  --content-number: #7dd3fc; /* sky-300 */
+  --content-role-assistant: #7dd3fc; /* sky-300 */
+  --content-add: #4ade80; /* green-400 */
+  --content-del: #f87171; /* red-400 */
+  --content-thinking: #c4b5fd; /* violet-300 */
+  --content-thinking-dim: #8b7fb8;
+  --content-thinking-accent: #a78bfa; /* violet-400 */
+  --content-tool: #86efac; /* green-300 */
+  --content-tool-dim: #4d7c5a;
+
+  /* 信号语义 --signal-* */
+  --signal-ok: #4ade80; /* green-400 */
+  --signal-fail: #f87171; /* red-400 */
+  --signal-warn: #fbbf24; /* amber-400 */
+  --signal-muted: #6b6b73;
+  --signal-live: #60a5fa; /* blue-400 在途/live */
+
+  /* 厂商语义 --vendor-*(品牌色相,neutral 下略调和以适配蓝白强调)*/
+  --vendor-anthropic: #c4a0d0;
+  --vendor-openai: #5aa2d0;
+  --vendor-google: #86efac;
+  --vendor-other: #d08fb4;
+  --vendor-muted: #6b6b73;
+
+  /* 表面/近黑语义 --surface-*(zinc 底 + slate 蓝调强调面)*/
+  --surface-base: #09090b; /* zinc-950 */
+  --surface-raised: #18181b; /* zinc-900 */
+  --surface-raised-alt: #1c1c20;
+  --surface-hover: #202027;
+  --surface-border: #27272a; /* zinc-800 */
+  --surface-border-subtle: #232329;
+  --surface-border-row: #26262b;
+  --surface-code: #0a0a0c;
+  --surface-input: #0c0c0e;
+  --surface-panel: #131316;
+  --surface-nav: #111113;
+  --surface-rail: #141416;
+  --surface-block: #161618;
+  --surface-block-border: #3f3f46;
+  --surface-diagnostic: #1a1a1e;
+  --surface-tree-hover: #202027;
+  --surface-toc-hover: #1e1e24;
+  --surface-toc-active: #1e293b; /* slate-800 蓝调 active */
+  --surface-active: #1e293b; /* slate-800 选中/激活蓝调底 */
+  --surface-sticky: #0e0e10;
+  --surface-match: #1e3a5f; /* 蓝调匹配高亮 */
+  --surface-info: #0f172a; /* slate-900 信息卡底 */
+  --surface-info-border: #334155; /* slate-700 */
+  --surface-history-divider: #1c1c20;
+  --surface-divider-border: #334155;
+  --surface-text-block: #12182a;
+  --surface-text-block-border: #334155;
+  --surface-tool-use: #14201a;
+  --surface-tool-result: #14201a;
+  --surface-thinking: #1c1830;
+  --surface-agent: #141416;
+  --surface-flash: #1e293b;
+}
+
+
+:root { color-scheme: dark; --background: oklch(1 0 0); --foreground: oklch(0.145 0 0); --card: oklch(1 0 0); --card-foreground: oklch(0.145 0 0); --popover: oklch(1 0 0); --popover-foreground: oklch(0.145 0 0); --primary: oklch(0.205 0 0); --primary-foreground: oklch(0.985 0 0); --secondary: oklch(0.97 0 0); --secondary-foreground: oklch(0.205 0 0); --muted: oklch(0.97 0 0); --muted-foreground: oklch(0.556 0 0); --accent: oklch(0.97 0 0); --accent-foreground: oklch(0.205 0 0); --destructive: oklch(0.577 0.245 27.325); --border: oklch(0.922 0 0); --input: oklch(0.922 0 0); --ring: oklch(0.708 0 0); --chart-1: oklch(0.87 0 0); --chart-2: oklch(0.556 0 0); --chart-3: oklch(0.439 0 0); --chart-4: oklch(0.371 0 0); --chart-5: oklch(0.269 0 0); --radius: 0.625rem; --sidebar: oklch(0.985 0 0); --sidebar-foreground: oklch(0.145 0 0); --sidebar-primary: oklch(0.205 0 0); --sidebar-primary-foreground: oklch(0.985 0 0); --sidebar-accent: oklch(0.97 0 0); --sidebar-accent-foreground: oklch(0.205 0 0); --sidebar-border: oklch(0.922 0 0); --sidebar-ring: oklch(0.708 0 0); }
 
 html, body, #root { height: 100%; margin: 0; }
 body {
-  background: var(--color-bg);
-  color: var(--color-text);
+  background: var(--surface-base);
+  color: var(--content-text);
   font-family: ui-sans-serif, system-ui, sans-serif;
   font-size: 15px;
 }
 
-/* 工业骨架：全局锐角、左对齐(不居中) */
-*, *::before, *::after { border-radius: 0 !important; box-sizing: border-box; }
+/* box-sizing 是布局基建(非 amber),两版树都需要 → 保持全局无作用域(C4)。 */
+*, *::before, *::after { box-sizing: border-box; }
+
+/* 工业骨架:全局锐角。C4 round2-B8 作用域化到 amber-legacy 树——shadcn 树自此按 `--radius` token
+ * 出圆角、不被 `border-radius:0!important` 压平。amber-legacy 树因根带 `data-design` 属性仍全局锐角。 */
+[data-design="amber-legacy"] *,
+[data-design="amber-legacy"] *::before,
+[data-design="amber-legacy"] *::after { border-radius: 0 !important; }
 .mono { font-family: var(--font-mono); }
 
-/* 浮岛(LiveDock)破例:全局 `*{border-radius:0!important}` 抹平圆角,唯浮岛用极小 2px 软化轮廓。
- * 与用户敲定的样式;类选择器(0,1,0)+ !important 压过全局通配符(0,0,0)+ !important。 */
-.livedock-island { border-radius: 2px !important; }
+/* 浮岛(LiveDock)破例:作用域化的 `[data-design] *{border-radius:0!important}` 抹平圆角,唯浮岛用极小
+ * 2px 软化轮廓。C4 一并作用域化(legacy 专属例外);`[data-design] .livedock-island`(0,2,0)+ !important
+ * 仍压过同作用域的通配符锐角 `[data-design] *`(0,1,0)+ !important。 */
+[data-design="amber-legacy"] .livedock-island { border-radius: 2px !important; }
 
 /* session 色带段帽破例:全局 `*{border-radius:0!important}` 抹平圆角,段首/段尾用极小 2px 软化。
  * 类选择器(0,1,0)+ !important 压过全局通配符,照 .livedock-island 先例。 */
@@ -41,10 +252,13 @@ body {
 /* 语法高亮 —— shiki(VS Code TextMate grammars/themes)把 token 颜色 baked 进每个 token span 的内联
  * style="color:#..."(无 token CSS class),调色板见 src/lib/highlight/amber-theme.ts 的 AMBER_THEME。 */
 
-/* TOC 跳转后的瞬态高亮(useAnchorScroll 加/移 .toc-flash);outline + 暖底,~1.2s 后由 hook 移除并淡出。 */
+/* TOC 跳转后的瞬态高亮(useAnchorScroll 加/移 .toc-flash);outline + 暖底,~1.2s 后由 hook 移除并淡出。
+ * C4 round2-B8:此规则由**共享** `useAnchorScroll` / HistoryList 施加于 B 段,双树共用 → 不作用域化,
+ * 改引 per-preset 中性 token(C1 已备,两 preset 各映射):amber-legacy 解析回 #2a2212 / amber primary
+ * (像素等价 INV-3),shadcn 解析到 slate/blue。两树各得正确 flash,免作用域化后 shadcn 树 flash 失样。 */
 .toc-flash {
-  outline: 1px solid var(--color-primary);
-  background: #2a2212;
+  outline: 1px solid var(--content-accent);
+  background: var(--surface-flash);
   transition: outline-color 1s ease-out, background-color 1s ease-out;
 }
 
@@ -54,8 +268,9 @@ body {
 }
 
 /* react-day-picker(DateRangePopover)Terminal Amber 皮肤:import 库基础 css 后,把 `--rdp-*`
- * 变量在 `.rdp-amber` 作用域重映射到项目 `--color-*` token(headless override,不引第三方圆角/阴影)。 */
-.rdp-amber {
+ * 变量在 `.rdp-amber` 作用域重映射到项目 `--color-*` token(headless override,不引第三方圆角/阴影)。
+ * C4 round2-B8:amber 专属皮肤 → 作用域化到 amber-legacy 树;shadcn 树的 day-picker 皮肤后续另立。 */
+[data-design="amber-legacy"] .rdp-amber {
   --rdp-accent-color: var(--color-primary);
   --rdp-accent-background-color: #3a2f1a;
   --rdp-today-color: var(--color-primary);
@@ -68,9 +283,29 @@ body {
   --rdp-selected-border: 1px solid var(--color-primary);
   --rdp-font-family: var(--font-mono);
 }
-.rdp-amber .rdp-day_button:hover {
+[data-design="amber-legacy"] .rdp-amber .rdp-day_button:hover {
   background: #3a2f1a;
   color: var(--color-primary);
+}
+
+/* react-day-picker(DateRangePopoverShadcn)shadcn/neutral 皮肤:把 `--rdp-*` 重映射到中性 shadcn
+ * token(oklch primary/accent/foreground/popover),作用域化到 shadcn 树。P2 落地(scaffold plan 预告
+ * 「shadcn 树的 day-picker 皮肤后续另立」)。不引第三方圆角/阴影,圆角随 `--radius`。 */
+[data-design="shadcn"] .rdp-neutral {
+  --rdp-accent-color: var(--primary);
+  --rdp-accent-background-color: var(--accent);
+  --rdp-today-color: var(--primary);
+  --rdp-range_start-color: var(--primary-foreground);
+  --rdp-range_end-color: var(--primary-foreground);
+  --rdp-range_start-background: var(--primary);
+  --rdp-range_end-background: var(--primary);
+  --rdp-range_middle-background-color: var(--accent);
+  --rdp-range_middle-color: var(--accent-foreground);
+  --rdp-selected-border: 1px solid var(--primary);
+}
+[data-design="shadcn"] .rdp-neutral .rdp-day_button:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
 }
 
 /* 模型详情模态抽屉入场:遮罩淡入 + 面板从右缘滑入(Radix data-state=open)。
@@ -90,5 +325,97 @@ body {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+  }
+}
+
+@theme inline {
+  /* C0: nova preset 默认 `--font-sans: 'Geist Variable'`(+ @import geist)已移除——ui-v4 用系统 sans/
+   * IBM Plex Mono,C1 preset 层再定字体。此处对齐 body 的系统 sans 栈,使全局 `html{@apply font-sans}` 零变化。 */
+  --font-heading: var(--font-sans);
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  /* C0: 删除 shadcn 对 `--color-border`/`--color-muted`/`--color-primary` 的重映射——这三名由上方
+   * amber `@theme` 拥有(全站 amber-legacy 组件经 `var(--color-*)` 消费)。nova 的 `@theme inline` 后声明
+   * 会以「后声明胜」翻译成中性 oklch,使 amber 主色/边框/次要色变灰(实测编译 CSS 证实)。preset 间的
+   * `--color-*` ↔ shadcn token 双向桥接是 C1 的职责,C0 只保证零视觉变化。 */
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
   }
 }

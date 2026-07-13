@@ -10,6 +10,7 @@ import { join } from "node:path"
 import {
   //
   fixBadUnicodeEscapes,
+  fixBadUnicodeEscapesLossy,
   repairToolInput,
   stripAntmlTagsOutsideStrings,
   tryJsonRepair,
@@ -37,6 +38,28 @@ const FIXTURE_UNICODE = (
   JSON.parse(
     readFileSync(
       join(import.meta.dir, "..", "fixtures", "anthropic-messages", "malformed-tool-input", "askuserquestion-unicode-escape-1782778207147-144.json"),
+      "utf8",
+    ),
+  ) as { raw: string }
+).raw
+
+// Two real opus-4.8 AskUserQuestion captures where a hex digit was DROPPED from a `\uXXXX` escape
+// (e.g. `\u9 44` — a space plus only THREE hex digits). Unlike the whitespace-split-but-recoverable
+// `\u9 ed8`, these can NOT be completed to four hex digits, so `fixBadUnicodeEscapes` (lossless) is a
+// no-op and the input stays malformed. Lossless repair is impossible (the missing nibble is unknowable).
+const FIXTURE_DROPPED_HEX_233 = (
+  JSON.parse(
+    readFileSync(
+      join(import.meta.dir, "..", "fixtures", "anthropic-messages", "malformed-tool-input", "askuserquestion-dropped-hex-digit-1783388427550-233.json"),
+      "utf8",
+    ),
+  ) as { raw: string }
+).raw
+
+const FIXTURE_DROPPED_HEX_204 = (
+  JSON.parse(
+    readFileSync(
+      join(import.meta.dir, "..", "fixtures", "anthropic-messages", "malformed-tool-input", "askuserquestion-dropped-hex-digit-1783431413629-204.json"),
       "utf8",
     ),
   ) as { raw: string }
@@ -246,5 +269,152 @@ describe("repairToolInput — unicode item", () => {
 
   test(String.raw`["tags"] alone does NOT fix a bad \u escape → unrepairable`, () => {
     expect(repairToolInput(FIXTURE_UNICODE, ["tags"])).toEqual({ unrepairable: true })
+  })
+})
+
+const FFFD = "�"
+
+describe(String.raw`fixBadUnicodeEscapesLossy — best-effort (lossy) \uXXXX repair for un-completable escapes`, () => {
+  test(String.raw`a legal \uXXXX escape is returned byte-identical (no false repair)`, () => {
+    const clean = String.raw`{"x":"默认"}` // 默认
+    expect(fixBadUnicodeEscapesLossy(clean)).toBe(clean)
+  })
+
+  test(String.raw`a whitespace-split-but-recoverable escape is completed losslessly (\u9 ed8 → 默), NOT replaced`, () => {
+    // Delegates to the strict path for anything recoverable to four hex digits — lossy replacement
+    // is the LAST resort, never applied when the four digits can be recovered. Escaped form preserved.
+    const out = fixBadUnicodeEscapesLossy(String.raw`{"x":"\u9 ed8"}`)
+    expect((JSON.parse(out) as { x: string }).x).toBe("默") // recovered losslessly to 默
+    expect(out).not.toContain(FFFD) // no garbling when the 4 hex digits are recoverable
+  })
+
+  test(String.raw`a dropped-hex-digit escape (only 2-3 hex, quote-terminated) is replaced with U+FFFD`, () => {
+    // `\u9 4` cannot be completed to 4 hex → the whole broken `\u…` run becomes one replacement char.
+    const out = fixBadUnicodeEscapesLossy(String.raw`{"x":"\u9 4"}`)
+    expect(out).toBe(`{"x":"${FFFD}"}`)
+    expect((JSON.parse(out) as { x: string }).x).toBe(FFFD)
+  })
+
+  test(String.raw`the dropped-hex run stops at the first non-hex terminator (real \u9 44\u… shape)`, () => {
+    // Mirrors the real capture: `\u9 44` (3 hex) followed by the next escape's backslash → un-completable.
+    const out = fixBadUnicodeEscapesLossy(String.raw`{"x":"a\u9 44认"}`)
+    expect((JSON.parse(out) as { x: string }).x).toBe(`a${FFFD}认`) // 认 = 认 survives
+  })
+
+  test(String.raw`RECOVERS more than the strict pass: leading-ws-but-4-hex (\u 9ed8) → 默 losslessly`, () => {
+    // The strict `fixBadUnicodeEscapes` conservatively skips a leading space, but the lossy pass
+    // collects the four hex digits (skipping any whitespace) and recovers the char — replacement is
+    // reserved for genuinely un-completable escapes (fewer than four hex digits).
+    const out = fixBadUnicodeEscapesLossy(String.raw`{"x":"\u 9ed8"}`)
+    expect((JSON.parse(out) as { x: string }).x).toBe("默") // 4 hex recovered despite leading space
+    expect(out).not.toContain(FFFD)
+  })
+
+  test(String.raw`\u immediately followed by a non-hex terminator (\u") → single U+FFFD, terminator kept`, () => {
+    const out = fixBadUnicodeEscapesLossy(String.raw`{"x":"a\ub"}`)
+    // `\ub` = 1 hex then quote → un-completable → FFFD; the trailing `b"` structure survives.
+    expect(() => JSON.parse(out)).not.toThrow()
+    expect(out).toContain(FFFD)
+  })
+
+  test(String.raw`a non-\u backslash escape is left alone (\n, \")`, () => {
+    const input = String.raw`{"x":"line\nbreak \"q\""}`
+    expect(fixBadUnicodeEscapesLossy(input)).toBe(input)
+  })
+
+  test("idempotent: a U+FFFD introduced by a prior pass is not re-processed", () => {
+    const once = fixBadUnicodeEscapesLossy(String.raw`{"x":"\u9 4"}`)
+    expect(fixBadUnicodeEscapesLossy(once)).toBe(once)
+  })
+
+  test("real req_1783388427550_233 dropped-hex capture → valid JSON, exactly 1 garbled char, structure intact", () => {
+    expect(() => JSON.parse(FIXTURE_DROPPED_HEX_233)).toThrow() // precondition: malformed
+    expect(() => JSON.parse(fixBadUnicodeEscapes(FIXTURE_DROPPED_HEX_233))).toThrow() // lossless can't fix it
+
+    const parsed = JSON.parse(fixBadUnicodeEscapesLossy(FIXTURE_DROPPED_HEX_233)) as {
+      questions: Array<{ header: string; options: Array<{ label: string }> }>
+    }
+    expect(parsed.questions).toHaveLength(1)
+    expect(parsed.questions[0].header).toBe("vertex 清洗模式")
+    expect(parsed.questions[0].options.map((o) => o.label)).toEqual(["可配旋钮，默认 as_user（推荐）", "固定 as_user"])
+    // Only the un-completable escape is lost — one replacement char, everything else preserved.
+    expect((JSON.stringify(parsed).match(/�/g) ?? []).length).toBe(1)
+  })
+
+  test("real req_1783431413629_204 dropped-hex capture → valid JSON, 2 garbled chars, structure intact", () => {
+    expect(() => JSON.parse(FIXTURE_DROPPED_HEX_204)).toThrow() // precondition: malformed
+
+    const parsed = JSON.parse(fixBadUnicodeEscapesLossy(FIXTURE_DROPPED_HEX_204)) as {
+      questions: Array<{ header: string; options: Array<{ label: string }> }>
+    }
+    expect(parsed.questions).toHaveLength(2)
+    expect(parsed.questions[0].header).toBe("命名定稿")
+    expect(parsed.questions[0].options.map((o) => o.label)).toEqual(["全采纳", "effectiveSource 改名", "peer 前缀再议"])
+    expect(parsed.questions[1].header).toBe("下一步")
+    expect((JSON.stringify(parsed).match(/�/g) ?? []).length).toBe(2)
+  })
+})
+
+describe("repairToolInput — unicode-lossy item (best-effort last resort)", () => {
+  test(String.raw`["unicode-lossy"] rescues a dropped-hex escape the lossless items can't → layer "unicode-lossy"`, () => {
+    const r = repairToolInput(FIXTURE_DROPPED_HEX_233, ["unicode-lossy"])
+    expect(r).toMatchObject({ layer: "unicode-lossy" })
+    expect("repaired" in r && (r.repaired as { questions: Array<unknown> }).questions).toHaveLength(1)
+  })
+
+  test("full set with unicode-lossy last: a truly-lossless-unrepairable input is rescued lossily", () => {
+    const r = repairToolInput(FIXTURE_DROPPED_HEX_204, ["tags", "unicode", "jsonrepair", "unicode-lossy"])
+    expect(r).toMatchObject({ layer: "unicode-lossy" })
+  })
+
+  test("unicode-lossy runs AFTER the lossless items — a recoverable escape wins via lossless unicode, not lossy", () => {
+    // FIXTURE_UNICODE is losslessly recoverable (\u9 ed8), so the `unicode` item must claim it first.
+    const r = repairToolInput(FIXTURE_UNICODE, ["unicode", "unicode-lossy"])
+    expect(r).toMatchObject({ layer: "unicode" })
+  })
+
+  test("without unicode-lossy, a dropped-hex escape stays unrepairable (current prod behavior)", () => {
+    expect(repairToolInput(FIXTURE_DROPPED_HEX_233, ["tags", "unicode", "jsonrepair"])).toEqual({ unrepairable: true })
+  })
+
+  test("unicode-lossy handles a dropped-hex escape AND a structural truncation together (lossy replace + jsonrepair close)", () => {
+    // `\u9 4` (un-completable) inside an input whose closing `]}` is also truncated → the lossy pass
+    // replaces the escape with U+FFFD, then the trailing jsonrepair closes the structure.
+    const combined = String.raw`{"questions":[{"header":"a\u9 4b","options":[{"label":"x"}`
+    expect(() => JSON.parse(combined)).toThrow()
+    const r = repairToolInput(combined, ["unicode-lossy"])
+    expect(r).toMatchObject({ layer: "unicode-lossy" })
+    const q = "repaired" in r ? (r.repaired as { questions: Array<{ header: string; options: Array<unknown> }> }).questions : []
+    expect(q).toHaveLength(1)
+    expect(q[0].header).toContain(FFFD)
+    expect(q[0].options).toHaveLength(1)
+  })
+})
+
+describe("repairToolInput — allowArrayResult (field-level repair of a stringified array like AskUserQuestion.questions)", () => {
+  test("default gate rejects a repaired ARRAY (a bare array is not a plausible top-level tool input)", () => {
+    // The inner `questions` value is a JSON array; without the opt-in it's treated as unrepairable.
+    const truncatedArray = String.raw`[{"header":"a","options":[{"label":"x"}`
+    expect(repairToolInput(truncatedArray, ["jsonrepair"])).toEqual({ unrepairable: true })
+  })
+
+  test("allowArrayResult accepts a repaired ARRAY via jsonrepair → layer jsonrepair", () => {
+    const truncatedArray = String.raw`[{"header":"a","options":[{"label":"x"}`
+    const r = repairToolInput(truncatedArray, ["jsonrepair"], { allowArrayResult: true })
+    expect(r).toMatchObject({ layer: "jsonrepair" })
+    const arr = "repaired" in r ? (r.repaired as Array<{ header: string }>) : []
+    expect(Array.isArray(arr)).toBe(true)
+    expect(arr[0].header).toBe("a")
+  })
+
+  test("allowArrayResult still rejects a bare scalar (jsonrepair fabrication guard holds)", () => {
+    // `not json` → jsonrepair makes the bare string "not json"; array-or-object gate still rejects it.
+    expect(repairToolInput("not json", ["jsonrepair"], { allowArrayResult: true })).toEqual({ unrepairable: true })
+  })
+
+  test("allowArrayResult also accepts an object result (superset of the default gate)", () => {
+    const r = repairToolInput(String.raw`{"a":1`, ["jsonrepair"], { allowArrayResult: true })
+    expect(r).toMatchObject({ layer: "jsonrepair" })
+    expect("repaired" in r && r.repaired).toEqual({ a: 1 })
   })
 })

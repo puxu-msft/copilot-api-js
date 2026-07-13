@@ -38,7 +38,12 @@ function makeEnv(body: unknown): RequestEnvelope {
   } as unknown as RequestEnvelope
 }
 
-function makeCodec(parsedBody: unknown, decide?: RouteDecision): FormatCodec {
+// The mock carries a `decideRoute` closure on a side-channel (via intersection) — route
+// decision is no longer a FormatCodec method (ADR 2026-07-11); `driverWith` wires it into the
+// driver through the `deps.decideRoute` DI seam (correctness lives in router-golden.it.test.ts).
+type MockCodec = FormatCodec & { decideRoute: (env: RequestEnvelope) => RouteDecision }
+
+function makeCodec(parsedBody: unknown, decide?: RouteDecision): MockCodec {
   return {
     format: "anthropic",
     parse: () => makeEnv(parsedBody),
@@ -46,7 +51,7 @@ function makeCodec(parsedBody: unknown, decide?: RouteDecision): FormatCodec {
     translateOut: (env: RequestEnvelope) => env,
     renderResponse: (frame: unknown) => frame,
     renderResponseNonStreaming: (upstream: unknown) => upstream,
-  } as unknown as FormatCodec
+  } as unknown as MockCodec
 }
 
 const transport = {
@@ -57,8 +62,11 @@ const transport = {
 
 const RAW = { body: {}, headers: new Headers(), path: "/v1/messages", method: "POST" } as unknown as RawHttpRequest
 
-function driverWith(codec: FormatCodec, requestRewrites: ReadonlyArray<RequestRewrite> = []) {
-  return createPipelineDriver({ codec, transport, strategies: [], maxRetries: 0, maxLearningRetries: 0, requestRewrites })
+function driverWith(codec: MockCodec, requestRewrites: ReadonlyArray<RequestRewrite> = []) {
+  // Route decision moved to the free-function `router.decideRoute` (ADR 2026-07-11); this
+  // orchestration test injects the mock codec's decision via the `deps.decideRoute` DI seam
+  // (route-decision correctness is covered by router-golden.it.test.ts, not here).
+  return createPipelineDriver({ codec, transport, strategies: [], maxRetries: 0, maxLearningRetries: 0, requestRewrites, decideRoute: (env) => codec.decideRoute(env) })
 }
 
 describe("driver.inspectRequest", () => {

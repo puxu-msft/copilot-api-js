@@ -313,6 +313,7 @@ async function searchViaSearxng(query: string, clientAbortSignal?: AbortSignal):
     // createResponseHeaderTimeoutSignal applies the configured timeouts.response_header (and proxy via global fetch);
     // fall back to a fixed cap so a hung SearXNG can't stall the request indefinitely.
     // A client disconnect (clientAbortSignal) terminates the search immediately.
+    // Intentionally scalar (no model arg): SearXNG is a local non-GHC upstream with no per-model timeout concept.
     signal: combineAbortSignals(clientAbortSignal, createResponseHeaderTimeoutSignal() ?? AbortSignal.timeout(SEARXNG_TIMEOUT_MS)),
   }).catch((error: unknown) => error)
 

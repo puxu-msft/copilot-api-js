@@ -366,6 +366,6 @@ describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () 
     configure([])
     frameBuilder = buildUnrepairableComplete
     await streamRequest("tele-off")
-    expect(getToolInputRepairStats()).toEqual({ strip: 0, unicode: 0, jsonrepair: 0, unrepairable: 0 })
+    expect(getToolInputRepairStats()).toEqual({ strip: 0, unicode: 0, jsonrepair: 0, "unicode-lossy": 0, unrepairable: 0 })
   })
 })

@@ -212,6 +212,43 @@ describe("ConsoleSink footer — model grouping", () => {
   })
 })
 
+describe("ConsoleSink footer — per-group elapsed times (top-N)", () => {
+  test("1 group shows up to 5 longest-running times, longest first; the 6th is dropped", () => {
+    // Single model, 6 in-flight; per-group budget is 5 when there's one group.
+    const contexts = [6000, 5000, 4000, 3000, 2000, 1000].map((elapsedMs, i) => makeCtx({ id: `r${i}`, model: "solo", elapsedMs }))
+    const { footer } = renderFooter({ contexts, columns: 200 })
+    // Top 5 elapsed, descending (oldest → newest of the shown set).
+    expect(footer).toContain("solo ×6 6.0s 5.0s 4.0s 3.0s 2.0s")
+    // The 6th (smallest elapsed) is beyond the budget and not shown.
+    expect(footer).not.toContain("1.0s")
+  })
+
+  test("2 groups show up to 3 times each; the 4th in a group is dropped", () => {
+    const contexts = [
+      ...[8000, 7000, 6000, 5000].map((elapsedMs, i) => makeCtx({ id: `a${i}`, model: "aaa", elapsedMs })),
+      ...[2000, 1000].map((elapsedMs, i) => makeCtx({ id: `b${i}`, model: "bbb", elapsedMs })),
+    ]
+    const { footer } = renderFooter({ contexts, columns: 200 })
+    expect(footer).toContain("aaa ×4 8.0s 7.0s 6.0s")
+    expect(footer).not.toContain("5.0s") // 4th of group aaa, beyond the 3-per-group budget
+    expect(footer).toContain("bbb ×2 2.0s 1.0s")
+  })
+
+  test("3+ groups show exactly 1 (oldest) time each", () => {
+    const contexts = [
+      ...[9000, 8000].map((elapsedMs, i) => makeCtx({ id: `a${i}`, model: "aaa", elapsedMs })),
+      ...[6000, 5000].map((elapsedMs, i) => makeCtx({ id: `b${i}`, model: "bbb", elapsedMs })),
+      ...[3000, 2000].map((elapsedMs, i) => makeCtx({ id: `c${i}`, model: "ccc", elapsedMs })),
+    ]
+    const { footer } = renderFooter({ contexts, columns: 200 })
+    // Each group shows only its oldest; the second-oldest of each is dropped.
+    expect(footer).toContain("aaa ×2 9.0s")
+    expect(footer).toContain("bbb ×2 6.0s")
+    expect(footer).toContain("ccc ×2 3.0s")
+    for (const dropped of ["8.0s", "5.0s", "2.0s"]) expect(footer).not.toContain(dropped)
+  })
+})
+
 describe("ConsoleSink footer — control-char / single-line invariant", () => {
   test("embedded newline in model/path never produces a second physical line", () => {
     const ctx = makeCtx({ id: "r1", model: "bad\nmodel", path: "/v1/mes\nsages", elapsedMs: 1000 })

@@ -83,6 +83,7 @@ import {
 } from "~/lib/anthropic/stream"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { stripAllThinkingIfQuarantined } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -289,7 +290,7 @@ function recordRetryPipelineState(args: RecordRetryPipelineStateArgs): void {
 
   // Publish features observed on this retry attempt. Replaces the legacy
   // `tuiLogger.updateRequest({ tags: [...] })` direct call. Per-attempt
-  // retry counter / diagnostics are emitted as [RETRY-n] lines by
+  // retry counter / diagnostics are emitted as [RETRY] lines by
   // `executeRequestPipeline` — kept out of feature events to avoid
   // duplicating the same information. `retryMetaFeature` gates `truncated`
   // on an actual truncate meta (an unconditional `else` here falsely branded
@@ -430,7 +431,13 @@ export async function handleDirectAnthropicStreamingResponse(opts: DirectAnthrop
   })
 
   try {
-    for await (const { raw: rawEvent, parsed } of processAnthropicStream(response, acc, clientAbortSignal)) {
+    for await (const { raw: rawEvent, parsed } of processAnthropicStream(
+      response,
+      acc,
+      clientAbortSignal,
+      undefined,
+      resolveStreamIdleTimeoutMs(anthropicPayload.model),
+    )) {
       await processOneStreamEvent({
         rawEvent,
         parsed,

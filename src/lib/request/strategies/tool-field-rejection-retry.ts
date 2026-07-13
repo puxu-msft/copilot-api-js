@@ -82,8 +82,10 @@ import type {
  * `tools.0.custom.input_schema.properties.foo` do NOT match.
  */
 const TOOL_FIELD_EXTRA_INPUTS = /tools\.\d+\.\w+\.([a-z_]\w*): Extra inputs are not permitted/gi
-/** Non-global twin for a cheap presence test (matchAll needs the global flag). */
-const TOOL_FIELD_PRESENT = /tools\.\d+\.\w+\.[a-z_]\w*: Extra inputs are not permitted/i
+/** Non-global twin for a cheap presence test (matchAll needs the global flag). Exported as the
+ *  single source of truth for `mockUpstreamError.toolFieldRejection`'s own oracle test
+ *  (~/lib/pipeline/hooks toolkit.unit.test.ts) — no duplicated regex literal to drift. */
+export const TOOL_FIELD_PRESENT = /tools\.\d+\.\w+\.[a-z_]\w*: Extra inputs are not permitted/i
 
 function extractErrorText(error: ApiError): string | null {
   if (TOOL_FIELD_PRESENT.test(error.message)) return error.message

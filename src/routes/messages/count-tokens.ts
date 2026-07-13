@@ -7,76 +7,88 @@ import {
   checkNeedsCompactionAnthropic,
   countTotalInputTokens,
 } from "~/lib/anthropic/auto-truncate"
-import { sanitizeInlineSystemMessages } from "~/lib/anthropic/sanitize/system-messages"
-import { stripSystemAttribution } from "~/lib/anthropic/sanitize/system-prompt"
+import {
+  //
+  postAnthropicUpstream,
+  prepareAnthropicRequest,
+} from "~/lib/anthropic/client"
+import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { hasKnownLimits } from "~/lib/auto-truncate"
 import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
+import {
+  //
+  ENDPOINT,
+  isEndpointSupported,
+} from "~/lib/models/endpoint"
 import { resolveModelName } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
-import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 import { type MessagesPayload } from "~/types/api/anthropic"
 
 // ============================================================================
-// Anthropic direct token counting
+// GHC upstream token counting
 // ============================================================================
 
-/** Resolve the effective Anthropic API key from config or env var */
-function getAnthropicApiKey(): string | undefined {
-  return state.anthropicApiKey || process.env.ANTHROPIC_API_KEY || undefined
-}
-
 /**
- * Forward token counting to Anthropic's real /v1/messages/count_tokens endpoint.
- * Returns the input_tokens count on success, or null to fall through to local estimation.
+ * Forward token counting to GHC's upstream `/v1/messages/count_tokens` endpoint.
+ * Returns the input_tokens count on success, or null to fall through to local
+ * estimation.
  *
- * The endpoint is free (no per-token cost, rate-limited to 100 RPM at Tier 1).
- * Only used for Claude models when an Anthropic API key is available.
+ * This is the DEFAULT channel (empirically confirmed — see
+ * `docs/spec/2026-07-13-ghc-count-tokens-default.md` / the probe conclusions):
+ *   - Uses the existing Copilot token (no separate Anthropic API key).
+ *   - `payload` is ALREADY system-sanitized by the caller with the same rewrites
+ *     the completion path applies at driver S3 (attribution strip, inline
+ *     role:"system" handling, system-reminder removal), so `prepareAnthropicRequest`
+ *     here produces the SAME wire the real `/v1/messages` request sends — the count
+ *     reflects what GHC actually meters (more representative than the retired
+ *     api.anthropic.com count, since the real completion also flows through GHC).
+ *   - Support boundary ≈ the account's live `/models` catalog. We gate on
+ *     `isEndpointSupported(model, MESSAGES)` to skip a doomed 400 round-trip for
+ *     catalog models that don't serve `/v1/messages` (e.g. embeddings).
  */
-async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number | null> {
-  if (!payload.model.startsWith("claude")) return null
+async function countTokensViaGhc(
+  c: Context,
+  payload: MessagesPayload,
+  selectedModel: NonNullable<ReturnType<typeof state.modelIndex.get>>,
+): Promise<number | null> {
+  // Skip the upstream round-trip for models that can't serve /v1/messages
+  // (in-catalog embeddings etc. would 400). `modelIndex` membership alone is a
+  // one-way signal (not-in-catalog ⟹ 400), NOT its converse.
+  if (!isEndpointSupported(selectedModel, ENDPOINT.MESSAGES)) return null
 
-  const apiKey = getAnthropicApiKey()
-  if (!apiKey) return null
+  // Source client beta + headers EXACTLY as the completion codec does
+  // (`codec.ts` parse) so the count wire's beta negotiation / header passthrough
+  // matches the real request.
+  const clientAnthropicBeta = c.req.raw.headers.get("anthropic-beta") ?? undefined
+  const clientRequestHeaders = Object.fromEntries(c.req.raw.headers.entries())
 
-  // Copilot uses dotted names (claude-opus-4.6) but Anthropic requires dashes (claude-opus-4-6)
-  const model = payload.model.replaceAll(".", "-")
-
-  // Strip inline role:"system" messages the same way the request path does —
-  // otherwise the real Anthropic endpoint rejects them with `Unexpected role
-  // "system"` and we waste a failed upstream request before falling back.
-  // Also strip the attribution billing line from system[0] so the count matches
-  // what the request path forwards upstream (parity with strip_attribution_header).
-  const attributionStrippedSystem = stripSystemAttribution(payload.system, state.stripAttributionHeader).system
-  // count_tokens forwards the CANONICAL first-party endpoint, which rejects role:"system"
-  // for EVERY model (not GHC's lenient first-party leg) — so ALWAYS sanitize, independent
-  // of the reject set. Use as_user (position-preserving); fall back to the global mode only
-  // when it is a non-false mode the operator explicitly chose otherwise.
-  const countMode = state.systemDefaultMode === false ? "as_user" : state.systemDefaultMode
-  const inlineSystem = sanitizeInlineSystemMessages(payload.messages, attributionStrippedSystem, countMode)
-  const countPayload = { ...payload, model, system: inlineSystem.system, messages: inlineSystem.messages }
+  const { wire, headers } = prepareAnthropicRequest(payload, {
+    resolvedModel: selectedModel,
+    clientAnthropicBeta,
+    clientRequestHeaders,
+  })
 
   try {
-    const response = await upstreamFetch("https://api.anthropic.com/v1/messages/count_tokens", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "token-counting-2024-11-01",
-      },
-      body: JSON.stringify(countPayload),
-      signal: createResponseHeaderTimeoutSignal(),
+    // Resolved outbound name (same key space the completion path uses for the
+    // per-model timeout + 529 tag), falling back to the client name.
+    const outboundModel = typeof wire.model === "string" ? wire.model : payload.model
+    const response = await postAnthropicUpstream({
+      path: "/v1/messages/count_tokens",
+      wire,
+      headers,
+      model: outboundModel,
+      signal: createResponseHeaderTimeoutSignal(outboundModel),
     })
 
     if (!response.ok) {
-      consola.warn(`[count_tokens] Anthropic API failed: ${response.status} ` + `${await response.text().catch(() => "")} — falling back to local estimation`)
+      consola.warn(`[count_tokens] GHC upstream failed: ${response.status} ` + `${await response.text().catch(() => "")} — falling back to local estimation`)
       return null
     }
 
     const result = (await response.json()) as { input_tokens: number }
     return result.input_tokens
   } catch (error) {
-    consola.warn("[count_tokens] Anthropic API error — falling back to local estimation:", error)
+    consola.warn("[count_tokens] GHC upstream error — falling back to local estimation:", error)
     return null
   }
 }
@@ -84,46 +96,49 @@ async function countTokensViaAnthropic(payload: MessagesPayload): Promise<number
 /**
  * Handles token counting for Anthropic /v1/messages/count_tokens endpoint.
  *
- * Counts tokens directly on the Anthropic payload using native counting functions.
+ * Default channel is GHC's upstream count_tokens (exact, no separate key); falls
+ * back to local tiktoken estimation for unsupported models or upstream failures.
  *
  * Per Anthropic docs:
  * - Returns { input_tokens: N } where N is the total input tokens
  * - Thinking blocks from previous assistant turns don't count as input tokens
  * - The count is an estimate
+ *
+ * Note: count-tokens is intentionally OUT of observability per RFC §6 Q1.
+ * No RequestContext, no bus events, no TUI line, no history entry. The
+ * route's own `consola` lines below are the sole operator signal.
  */
 export async function handleCountTokens(c: Context) {
   try {
-    const anthropicPayload = await c.req.json<MessagesPayload>()
+    const rawPayload = await c.req.json<MessagesPayload>()
 
     // Resolve model name aliases and date-suffixed versions
-    anthropicPayload.model = resolveModelName(anthropicPayload.model)
+    rawPayload.model = resolveModelName(rawPayload.model)
 
-    // Note: count-tokens is intentionally OUT of observability per RFC §6 Q1.
-    // No RequestContext, no bus events, no TUI line, no history entry. The
-    // route's own `consola.info("[count_tokens] N tokens")` lines below are
-    // the sole operator signal. The middleware will skip ctx creation for
-    // this path entirely in commit 3e (SYNTHETIC_PATHS).
+    const selectedModel = state.modelIndex.get(rawPayload.model)
 
-    const selectedModel = state.modelIndex.get(anthropicPayload.model)
-
-    // Try Anthropic's real endpoint first for Claude models (free, exact counts)
-    const anthropicCount = await countTokensViaAnthropic(anthropicPayload)
-    if (anthropicCount !== null) {
-      consola.info(`[count_tokens] ${anthropicCount} tokens (Anthropic API)`)
-      return c.json({ input_tokens: anthropicCount })
+    // Sanitize once with the SAME system-message rewrites the completion path
+    // applies at driver S3 (createAnthropicSanitizeRewrite → runAnthropicPayloadRewrites):
+    // attribution-billing-line strip, inline role:"system" handling, and
+    // system-reminder removal. Without this the counted body diverges from what a
+    // real /v1/messages request sends (e.g. the attribution line, stripped in the
+    // completion by default, would inflate the count). Tool-name mapping
+    // (toolNameMapper) is skipped as immaterial to token counts. Never-throw: an
+    // unexpected sanitize failure degrades to counting the raw payload.
+    let payload = rawPayload
+    try {
+      payload = runAnthropicPayloadRewrites(rawPayload, { toolNameMapper: null }).payload
+    } catch (error) {
+      consola.warn("[count_tokens] payload sanitize failed — counting the raw payload:", error)
     }
 
-    // Fallback: local estimation (also used for non-Claude models)
-
-    if (!selectedModel) {
-      consola.warn(`[count_tokens] Model "${anthropicPayload.model}" not found, returning input_tokens=1`)
-      return c.json({ input_tokens: 1 })
-    }
-
-    // Check if auto-truncate would be triggered (only for models with known limits)
-    // If so, return an inflated token count to encourage Claude Code auto-compact
-    if (state.autoTruncate && hasKnownLimits(selectedModel.id)) {
-      const truncateCheck = await checkNeedsCompactionAnthropic(anthropicPayload, selectedModel, {
+    // Auto-truncate inflation check (moved to the front): if a prompt is over the
+    // limit and auto-truncate is on, return an inflated count to encourage
+    // Claude Code auto-compact. This is independent of the counting channel and
+    // saves a doomed-to-inflate upstream round-trip. Only for models with known
+    // limits.
+    if (state.autoTruncate && selectedModel && hasKnownLimits(selectedModel.id)) {
+      const truncateCheck = await checkNeedsCompactionAnthropic(payload, selectedModel, {
         checkTokenLimit: true,
       })
 
@@ -141,11 +156,26 @@ export async function handleCountTokens(c: Context) {
       }
     }
 
-    // Count tokens directly on Anthropic payload
-    // Excludes thinking blocks from assistant messages per Anthropic spec
-    const inputTokens = await countTotalInputTokens(anthropicPayload, selectedModel)
+    // Model not in the account catalog — nothing to count against locally
+    // (countTotalInputTokens requires a Model). Matches the previous guard's
+    // position (must precede local estimation).
+    if (!selectedModel) {
+      consola.warn(`[count_tokens] Model "${payload.model}" not found, returning input_tokens=1`)
+      return c.json({ input_tokens: 1 })
+    }
 
-    consola.debug(`[count_tokens] ${inputTokens} tokens (native Anthropic) ` + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`)
+    // Default channel: GHC upstream count_tokens (exact counts, uses copilot token)
+    const ghcCount = await countTokensViaGhc(c, payload, selectedModel)
+    if (ghcCount !== null) {
+      consola.info(`[count_tokens] ${ghcCount} tokens (GHC upstream)`)
+      return c.json({ input_tokens: ghcCount })
+    }
+
+    // Fallback: local estimation (unsupported models / upstream failure).
+    // Excludes thinking blocks from assistant messages per Anthropic spec.
+    const inputTokens = await countTotalInputTokens(payload, selectedModel)
+
+    consola.debug(`[count_tokens] ${inputTokens} tokens (local estimation) ` + `(tokenizer: ${selectedModel.capabilities?.tokenizer ?? "o200k_base"})`)
 
     return c.json({ input_tokens: inputTokens })
   } catch (error) {

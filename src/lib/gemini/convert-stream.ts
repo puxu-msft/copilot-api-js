@@ -27,6 +27,9 @@ import type {
 } from "~/types/api/gemini"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 
+import type { UsageData } from "~/lib/history/types"
+import { usageFromTotalInput } from "~/lib/request/usage-normalize"
+
 import {
   //
   type OpenAIStreamAccumulator,
@@ -46,6 +49,14 @@ import { safeParseArgs } from "./internal"
 export interface GeminiStreamMeta {
   usageMetadata?: GeminiUsageMetadata
   finishReason?: string
+  /**
+   * Canonical UsageData built from the CC accumulator (carries cache_write →
+   * cache_creation + modality/prediction details that the Gemini-shaped
+   * `usageMetadata` cannot represent). History settle points read THIS, not
+   * `usageMetadata`, so the Gemini streaming leg matches the other three legs.
+   * See docs/spec/2026-07-12-ghc-usage-details.md §5.2.
+   */
+  usage?: UsageData
 }
 
 /** One step of the translator: an SSE frame, optionally with state metadata */
@@ -82,10 +93,19 @@ export function createGeminiStreamTranslator(modelId: string): GeminiStreamTrans
   let lastUsage: ChatCompletionChunk["usage"] | undefined
   let lastFinishReason: string | undefined
 
+  /**
+   * Canonical UsageData from the CC accumulator — same construction as the chat
+   * streaming path (recording.ts), so cache_write → cache_creation + modality/
+   * prediction details are preserved (the Gemini-shaped usageMetadata drops them).
+   */
+  const accUsage = (): UsageData =>
+    usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, cacheCreation: acc.cacheWriteTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails })
+
   const getMeta = (): GeminiStreamMeta => ({
     usageMetadata:
       lastUsage ? extractUsageMetadata(lastUsage) : ({ promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 } satisfies GeminiUsageMetadata),
     finishReason: openAIFinishToGemini((lastFinishReason || acc.finishReason || undefined) as Parameters<typeof openAIFinishToGemini>[0]),
+    usage: accUsage(),
   })
 
   return {
@@ -128,6 +148,7 @@ export function createGeminiStreamTranslator(modelId: string): GeminiStreamTrans
         lastUsage && (chunkHasNewUsage || choice?.finish_reason) ?
           {
             usageMetadata: extractUsageMetadata(lastUsage),
+            usage: accUsage(),
             ...(choice?.finish_reason && {
               finishReason: openAIFinishToGemini(choice.finish_reason as Parameters<typeof openAIFinishToGemini>[0]),
             }),

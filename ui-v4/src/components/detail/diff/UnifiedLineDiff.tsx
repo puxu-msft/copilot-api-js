@@ -20,17 +20,17 @@ function signFor(kind: DiffLineRow["kind"]): string {
 }
 
 function rowClass(kind: DiffLineRow["kind"]): string {
-  if (kind === "add") return "bg-[color-mix(in_srgb,var(--color-ok)_12%,transparent)]"
-  if (kind === "del") return "bg-[color-mix(in_srgb,var(--color-fail)_12%,transparent)]"
+  if (kind === "add") return "bg-[color-mix(in_srgb,var(--content-add)_12%,transparent)]"
+  if (kind === "del") return "bg-[color-mix(in_srgb,var(--content-del)_12%,transparent)]"
   return ""
 }
 
 function DiffRow({ row }: { row: DiffLineRow }) {
   return (
     <div className={`flex items-start gap-2 ${rowClass(row.kind)}`}>
-      <span className="w-8 flex-shrink-0 select-none text-right text-[var(--color-muted)] opacity-60">{gutterCell(row.oldNo)}</span>
-      <span className="w-8 flex-shrink-0 select-none text-right text-[var(--color-muted)] opacity-60">{gutterCell(row.newNo)}</span>
-      <span className="w-3 flex-shrink-0 select-none text-center text-[var(--color-muted)]">{signFor(row.kind)}</span>
+      <span className="w-8 flex-shrink-0 select-none text-right text-[var(--content-muted)] opacity-60">{gutterCell(row.oldNo)}</span>
+      <span className="w-8 flex-shrink-0 select-none text-right text-[var(--content-muted)] opacity-60">{gutterCell(row.newNo)}</span>
+      <span className="w-3 flex-shrink-0 select-none text-center text-[var(--content-muted)]">{signFor(row.kind)}</span>
       <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
         {row.words ?
           <InlineParts parts={row.words} />
@@ -52,7 +52,7 @@ export function UnifiedLineDiff({ rows }: UnifiedLineDiffProps) {
         />
       ))}
       {overflow > 0 ?
-        <div className="mt-1 text-[var(--color-muted)] opacity-70">+{overflow} more lines.</div>
+        <div className="mt-1 text-[var(--content-muted)] opacity-70">+{overflow} more lines.</div>
       : null}
     </div>
   )

@@ -43,7 +43,7 @@ function renderLine(tokens: Array<HighlightToken>, lineIndex: number): ReactNode
   ))
 }
 
-const CONTROL_BTN = "mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] text-[var(--color-muted)] hover:text-[var(--color-primary)]"
+const CONTROL_BTN = "mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px] text-[var(--content-muted)] hover:text-[var(--content-accent)]"
 
 /**
  * Syntax-highlighted code with line numbers, themed to industrial Terminal Amber.
@@ -144,7 +144,7 @@ export function CodeBlock({ code, lang = "json", toolbar = false }: CodeBlockPro
 
   if (!toolbar) {
     return (
-      <div className="border-l-2 border-[var(--color-border)] bg-[#100e0b] px-2 py-1">
+      <div className="border-l-2 border-[var(--surface-border)] bg-[var(--surface-code)] px-2 py-1">
         <LineGutter lines={lineNodes} />
       </div>
     )
@@ -152,14 +152,14 @@ export function CodeBlock({ code, lang = "json", toolbar = false }: CodeBlockPro
 
   return (
     <div
-      className="border-l-2 border-[var(--color-border)] bg-[#100e0b]"
+      className="border-l-2 border-[var(--surface-border)] bg-[var(--surface-code)]"
       data-soft-wrap={String(wrap)}
     >
-      <div className="flex items-center gap-1 border-b border-[var(--color-border)] px-2 py-1">
+      <div className="flex items-center gap-1 border-b border-[var(--surface-border)] px-2 py-1">
         <button
           type="button"
           onClick={onCopy}
-          className={`${CONTROL_BTN} ${copied ? "text-[var(--color-ok)]" : ""}`}
+          className={`${CONTROL_BTN} ${copied ? "text-[var(--signal-ok)]" : ""}`}
         >
           {copied ? "Copied" : "Copy"}
         </button>
@@ -167,7 +167,7 @@ export function CodeBlock({ code, lang = "json", toolbar = false }: CodeBlockPro
           type="button"
           aria-pressed={wrap}
           onClick={() => setWrap((w) => !w)}
-          className={`${CONTROL_BTN} ${wrap ? "text-[var(--color-primary)]" : ""}`}
+          className={`${CONTROL_BTN} ${wrap ? "text-[var(--content-accent)]" : ""}`}
         >
           Wrap: {wrap ? "on" : "off"}
         </button>
@@ -178,11 +178,11 @@ export function CodeBlock({ code, lang = "json", toolbar = false }: CodeBlockPro
           onKeyDown={onSearchKey}
           placeholder="Search lines…"
           aria-label="Search lines"
-          className="mono ml-2 min-w-0 flex-1 border border-[var(--color-border)] bg-transparent px-1.5 py-0.5 text-[12px] text-[var(--color-text)] outline-none focus:border-[var(--color-primary)]"
+          className="mono ml-2 min-w-0 flex-1 border border-[var(--surface-border)] bg-transparent px-1.5 py-0.5 text-[12px] text-[var(--content-text)] outline-none focus:border-[var(--content-accent)]"
         />
         {query.trim().length > 0 ?
           <>
-            <span className="mono w-[4.5em] flex-shrink-0 text-center text-[12px] text-[var(--color-muted)]">
+            <span className="mono w-[4.5em] flex-shrink-0 text-center text-[12px] text-[var(--content-muted)]">
               {matches.length > 0 ? `${activePos + 1}/${matches.length}` : "0/0"}
             </span>
             <button

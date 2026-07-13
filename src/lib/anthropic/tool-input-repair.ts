@@ -148,6 +148,74 @@ export function fixBadUnicodeEscapes(input: string): string {
 }
 
 /**
+ * Best-effort (LOSSY) `\uXXXX` escape repair — last resort for escapes a hex digit was DROPPED from.
+ *
+ * `fixBadUnicodeEscapes` (lossless) can only rescue whitespace-SPLIT escapes that still carry four
+ * hex digits (`\u9 ed8` → `默`). Real opus-4.8 captures also drop a digit outright — `\u9 44`
+ * (a space plus only THREE hex) — which is fundamentally unrecoverable (the missing nibble is
+ * unknowable). This pass converts each un-completable `\u…` run into a single U+FFFD replacement
+ * character so the surrounding JSON becomes valid, at the cost of one garbled glyph. It is strictly
+ * more aggressive than the lossless pass:
+ *   - four hex digits recoverable (skipping any whitespace, INCLUDING a leading space `\u 9ed8`)
+ *     → emit the clean `\uXXXX` escape (no loss).
+ *   - fewer than four hex digits before a non-hex terminator → emit U+FFFD, keep the terminator.
+ * A legal `\uXXXX` and a non-`\u` backslash escape (`\n`, `\"`, `\\`) pass through byte-identical.
+ * Idempotent: a U+FFFD it introduced is a plain char with no `\u`, never re-scanned.
+ */
+export function fixBadUnicodeEscapesLossy(input: string): string {
+  let out = ""
+  let i = 0
+  const n = input.length
+  while (i < n) {
+    if (input[i] === "\\" && input[i + 1] === "u") {
+      // Already-valid `\uXXXX` (four hex immediately after) → pass through untouched.
+      if (isHexChar(input[i + 2]) && isHexChar(input[i + 3]) && isHexChar(input[i + 4]) && isHexChar(input[i + 5])) {
+        out += input.slice(i, i + 6)
+        i += 6
+        continue
+      }
+      // Collect up to four hex digits from after `\u`, skipping ANY whitespace (including a leading
+      // space, unlike the conservative lossless pass which requires the first char to be hex).
+      const hexes: Array<string> = []
+      let j = i + 2
+      while (j < n && hexes.length < 4) {
+        const c = input[j]
+        if (isHexChar(c)) {
+          hexes.push(c)
+          j++
+        } else if (isEscapeBreakWhitespace(c)) {
+          j++
+        } else {
+          break
+        }
+      }
+      if (hexes.length === 4) {
+        // Four digits recovered → clean escape, no loss.
+        out += `\\u${hexes.join("")}`
+        i = j
+        continue
+      }
+      // Fewer than four hex digits available → un-completable. Replace the whole broken `\u…` run
+      // (the `\u` marker plus any hex/whitespace we consumed) with a single U+FFFD; keep the
+      // terminator at `j`. Advance past at least `\u` so the scan always makes progress.
+      out += "�"
+      i = Math.max(j, i + 2)
+      continue
+    }
+    if (input[i] === "\\") {
+      // A non-`\u` backslash escape (`\n`, `\"`, `\\`): copy both bytes so the escaped char is
+      // never re-interpreted as the start of a `\u` scan.
+      out += input.slice(i, i + 2)
+      i += 2
+      continue
+    }
+    out += input[i]
+    i++
+  }
+  return out
+}
+
+/**
  * Layer 2 — jsonrepair-backed structural repair.
  *
  * Runs `jsonrepair` (which completes missing brackets/quotes, fixes trailing
@@ -176,18 +244,20 @@ export function tryJsonRepair(input: string): string | undefined {
  * `anthropic.tool_repair_malformed_input` is a SUBSET of these; enabling an item applies its
  * transform, cascaded in THIS order regardless of config spelling (`"jsonrepair,tags"` and
  * `"tags,jsonrepair"` behave identically). Order is the dependency order: `tags` (antml-tag strip)
- * → `unicode` (whitespace-broken `\uXXXX` escape fix) → `jsonrepair` (structural repair); the
- * cheaper / more-targeted fixes run first so jsonrepair (the broad heuristic) is the last resort.
+ * → `unicode` (whitespace-broken `\uXXXX` escape fix) → `jsonrepair` (structural repair) →
+ * `unicode-lossy` (best-effort lossy `\uXXXX` fix); the cheaper / more-targeted / LOSSLESS fixes
+ * run first so the broad heuristic (jsonrepair) and finally the LOSSY last resort (`unicode-lossy`,
+ * which garbles ≥1 char) only run when everything non-destructive has failed.
  *
- * Item → layer/telemetry name: `tags`→`strip`, `unicode`→`unicode`, `jsonrepair`→`jsonrepair` (the
- * layer name is the repair MECHANISM name, which differs from the config ITEM name only for
- * `tags`/`strip`).
+ * Item → layer/telemetry name: `tags`→`strip`, `unicode`→`unicode`, `jsonrepair`→`jsonrepair`,
+ * `unicode-lossy`→`unicode-lossy` (the layer name is the repair MECHANISM name, which differs from
+ * the config ITEM name only for `tags`/`strip`).
  */
-export const REPAIR_ITEMS = ["tags", "unicode", "jsonrepair"] as const
+export const REPAIR_ITEMS = ["tags", "unicode", "jsonrepair", "unicode-lossy"] as const
 export type RepairItem = (typeof REPAIR_ITEMS)[number]
 
 /** Outcome of a layered repair attempt. `layer` names which layer produced the fix. */
-export type RepairResult = { repaired: unknown; layer: "strip" | "unicode" | "jsonrepair" } | { unrepairable: true }
+export type RepairResult = { repaired: unknown; layer: "strip" | "unicode" | "jsonrepair" | "unicode-lossy" } | { unrepairable: true }
 
 function parseJsonOrFail(s: string): { ok: true; value: unknown } | { ok: false } {
   try {
@@ -208,38 +278,75 @@ function isPlausibleToolInput(v: unknown): boolean {
 }
 
 /**
+ * Field-level gate: accepts a JSON object OR array. Used when repairing a stringified decode-target
+ * FIELD (e.g. AskUserQuestion `questions`, which is legitimately an array) rather than a whole tool
+ * input. Still rejects jsonrepair's scalar fabrications (bare string/number/null) — only object/array
+ * are structured JSON a field could plausibly hold.
+ */
+function isPlausibleObjectOrArray(v: unknown): boolean {
+  return typeof v === "object" && v !== null
+}
+
+/** Options for {@link repairToolInput}. */
+export interface RepairToolInputOptions {
+  /**
+   * Accept a repaired ARRAY as success, not just an object. Set when repairing a stringified
+   * decode-target field whose expected shape is an array (AskUserQuestion `questions`). The default
+   * (false) keeps the object-only gate for whole-input repair, where a bare array is not a valid tool
+   * argument map. In BOTH modes a bare scalar (string/number/null) is still rejected.
+   */
+  allowArrayResult?: boolean
+}
+
+/**
  * Cascade the enabled repair `items` (in canonical {@link REPAIR_ITEMS} order) over a malformed
  * tool_use input JSON string. Each enabled item applies its transform to the running `current`
  * string — so items **stack** (e.g. `tags`-strip THEN `jsonrepair` on the stripped form) — and
- * re-validates; the first item whose result parses AND is a plausible tool input (a JSON object)
- * wins, returning the parsed object with its layer name. `{ unrepairable: true }` when no enabled
- * item yields valid JSON. Idempotent on already-valid input (each layer is a no-op on well-formed
- * JSON). The caller decides forward-as-is vs fail on an unrepairable result.
+ * re-validates; the first item whose result parses AND is a plausible tool input (a JSON object,
+ * or object/array when `opts.allowArrayResult`) wins, returning the parsed value with its layer
+ * name. `{ unrepairable: true }` when no enabled item yields valid JSON. Idempotent on already-valid
+ * input (each layer is a no-op on well-formed JSON). The caller decides forward-as-is vs fail on an
+ * unrepairable result.
  *
  * `tags`-only ≡ the legacy `"tags"` tier; `["tags","jsonrepair"]` ≡ the legacy `"repair"` tier
  * (jsonrepair on the stripped form). Decoupled items also allow new combinations the tiers
  * couldn't express (e.g. `jsonrepair` without `tags`).
  */
-export function repairToolInput(raw: string, items: ReadonlyArray<RepairItem>): RepairResult {
+export function repairToolInput(raw: string, items: ReadonlyArray<RepairItem>, opts: RepairToolInputOptions = {}): RepairResult {
+  const plausible = opts.allowArrayResult ? isPlausibleObjectOrArray : isPlausibleToolInput
   let current = raw
 
   if (items.includes("tags")) {
     current = stripAntmlTagsOutsideStrings(current)
     const afterStrip = parseJsonOrFail(current)
-    if (afterStrip.ok && isPlausibleToolInput(afterStrip.value)) return { repaired: afterStrip.value, layer: "strip" }
+    if (afterStrip.ok && plausible(afterStrip.value)) return { repaired: afterStrip.value, layer: "strip" }
   }
 
   if (items.includes("unicode")) {
     current = fixBadUnicodeEscapes(current)
     const afterUnicode = parseJsonOrFail(current)
-    if (afterUnicode.ok && isPlausibleToolInput(afterUnicode.value)) return { repaired: afterUnicode.value, layer: "unicode" }
+    if (afterUnicode.ok && plausible(afterUnicode.value)) return { repaired: afterUnicode.value, layer: "unicode" }
   }
 
   if (items.includes("jsonrepair")) {
     const repaired = tryJsonRepair(current)
     if (repaired !== undefined) {
       const parsed = JSON.parse(repaired) as unknown
-      if (isPlausibleToolInput(parsed)) return { repaired: parsed, layer: "jsonrepair" }
+      if (plausible(parsed)) return { repaired: parsed, layer: "jsonrepair" }
+    }
+  }
+
+  if (items.includes("unicode-lossy")) {
+    // LAST resort — lossy. Replace un-completable `\uXXXX` escapes with U+FFFD, then re-run
+    // jsonrepair for any residual structural issue on the now-lossy string. Only reached when every
+    // non-destructive item above failed; costs ≥1 garbled glyph but rescues an otherwise-dead input.
+    current = fixBadUnicodeEscapesLossy(current)
+    const afterLossy = parseJsonOrFail(current)
+    if (afterLossy.ok && plausible(afterLossy.value)) return { repaired: afterLossy.value, layer: "unicode-lossy" }
+    const repaired = tryJsonRepair(current)
+    if (repaired !== undefined) {
+      const parsed = JSON.parse(repaired) as unknown
+      if (plausible(parsed)) return { repaired: parsed, layer: "unicode-lossy" }
     }
   }
 

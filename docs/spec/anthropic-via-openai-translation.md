@@ -13,7 +13,7 @@
 1. `opus: claude-opus-4.8@cc`——希望 Claude 模型改走 OpenAI chat/completions 协议腿（后缀语法当前不存在，`@cc` 会被当成模型名一部分、解析失败）。
 2. `claude-opus-4.8: gpt-5.5`——把一个模型映射到非 Anthropic vendor 模型，当前在 decideRoute 直接 400。
 
-### 1.2 关键上游事实（来自 `refs/AVAILABLE_MODELS.json`，权威能力信息）
+### 1.2 关键上游事实（来自 `.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json`，权威能力信息）
 
 GHC 上游对模型暴露 `supported_endpoints`。关键发现：**Anthropic vendor 模型本身同时支持两条协议腿**：
 
@@ -253,8 +253,10 @@ CC `choices[0].message` → Anthropic `content[]`：
 
 ## 10. 边界与 YAGNI
 
-- **范围**：本期只实现 **Anthropic 入站** endpoint（`/v1/messages` + `/v1/messages/count_tokens`）的 `@cc/@responses` 后缀 + 无后缀重映射翻译。
-- **不做**（YAGNI）：反向（OpenAI/Gemini 入站 endpoint 经 `@messages` 后缀走 direct Anthropic 腿）。后缀解析机制在 resolver 是通用的，但其他入站 endpoint 的后缀消费不在本期。
+> **⚠️ 已被 [RFC v5](../rfc/2026-07-11-anthropic-via-openai-translation.md) 超越（2026-07-12）**：本节的「反向 YAGNI」标注是本 spec（RFC 之前）的初始范围界定。RFC v5 把范围扩为**全 4×3 矩阵**（含反向），**反向已在 Phase 5 落地** master（cc/responses/gemini 入站经 `@messages` 走 direct Anthropic 腿，见 DESIGN.md「活的架构现状」通用翻译矩阵行）。下方划线项已不再是 YAGNI 边界。
+
+- **范围**：~~本期只实现 **Anthropic 入站** endpoint（`/v1/messages` + `/v1/messages/count_tokens`）的 `@cc/@responses` 后缀 + 无后缀重映射翻译。~~ → RFC v5：全 4 入站 × 3 出站矩阵，前向（anthropic→cc/responses，Phase 2-4）+ 反向（cc/responses/gemini→messages，Phase 5）全 landed。
+- ~~**不做**（YAGNI）：反向（OpenAI/Gemini 入站 endpoint 经 `@messages` 后缀走 direct Anthropic 腿）。~~ → **已实现**（Phase 5）：反向红线是「请求侧绝不合成 Anthropic thinking 块」（无 signature 撞 GHC 400/毒化）——**thinking signature 硬约束在翻译矩阵天然规避**（正向 thinking 翻译掉/降级为 reasoning_effort、反向绝不合成，故翻译路径不产无 signature 的 thinking 块，NIT-E）。
 - **web_search 双跳**：翻译路径下不支持（server tools 剥离）。
 - **count_tokens**：剥离后缀，保持本地 tokenizer 估算不变。
 

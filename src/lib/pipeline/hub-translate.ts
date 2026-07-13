@@ -1,0 +1,315 @@
+/**
+ * v4 pipeline — hub-and-spoke shared translation layer (RFC 2026-07-11-anthropic-via-openai-translation §4.2).
+ *
+ * The single home for REQUEST-side protocol translation between the client format and the outbound
+ * leg, so no FormatCodec re-implements the routing and — crucially — Gemini's `@messages` leg does
+ * NOT need a Gemini-held Anthropic sub-codec (消解 W-gemini 双委托): every `→ messages` leg flows
+ * through the hub's `cc → anthropic` translator, and the responses/gemini bodies reach it already
+ * normalized to CC.
+ *
+ * "Hub-canonical" logical body per leg (the shape `env.body` carries through S3/S4):
+ *   - `/v1/messages` leg → an Anthropic Messages body.
+ *   - `/chat/completions` / `/responses` legs → a CC (Chat Completions) body. The CC→Responses WIRE
+ *     translation for the `/responses` leg stays in the codec's `prepareWire` (openai-cc precedent
+ *     P2.2-D1: keeping `env.body` CC-shaped lets the CC request rewrites + auto-truncate operate on
+ *     a CC shape), so this layer stops at CC for both OpenAI legs.
+ *
+ * Phase 2 scope: the REQUEST dispatch (`translateRequestVia`) — every (sourceFormat × targetEndpoint)
+ * cell resolves to the right translator, whether or not a codec consumes it yet (the forward
+ * anthropic→cc/responses cells are wired by the anthropic codec in T2.4; the reverse `→ messages`
+ * cells are wired in Phase 5). The NON-STREAMING RESPONSE-side dispatch (`renderResponseNonStreamingVia`)
+ * is wired here in Phase 3 (both directions). The STREAMING response-side dispatch is wired here in
+ * Phase 4 for the FORWARD legs via {@link createForwardStreamTranslator} (a per-request stateful factory
+ * the anthropic codec drives per-frame): the cc leg is a single hop (CC→Anthropic), the responses leg a
+ * two-hop (Responses→CC→Anthropic, WARN-F). The REVERSE `→ messages` streaming cells stay Phase 5.
+ */
+
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import type { Model } from "~/lib/models/client"
+import type {
+  //
+  ClientFormat,
+  UpstreamEndpoint,
+} from "~/lib/pipeline/envelope"
+import type { ClientFrame } from "~/lib/pipeline/types"
+import type {
+  //
+  Message as AnthropicResponse,
+  MessagesPayload,
+} from "~/types/api/anthropic"
+import type {
+  //
+  ChatCompletionResponse,
+  ChatCompletionsPayload,
+} from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ResponsesPayload,
+  ResponsesResponse,
+  ResponsesStreamEvent,
+} from "~/types/api/openai-responses"
+
+import { ENDPOINT } from "~/lib/models/endpoint"
+import {
+  //
+  type AnthropicToCcStreamMeta,
+  type AnthropicToCcStreamTranslator,
+  type CcToAnthropicStreamMeta,
+  type CcToAnthropicStreamTranslator,
+  type CCToResponsesStreamTranslator,
+  createAnthropicToCcStreamTranslator,
+  createCcToAnthropicStreamTranslator,
+  createCCToResponsesStreamTranslator,
+  createStreamTranslator,
+  translateAnthropicResponseToCC,
+  translateAnthropicToChatCompletions,
+  translateCCResponseToAnthropic,
+  translateChatCompletionsToAnthropic,
+  translateResponsesResponseToCC,
+  translateResponsesToChatCompletions,
+  type TranslateExchangeContext,
+} from "~/lib/openai/translate"
+
+/** Per-request context the hub threads into the format translators. */
+export interface HubTranslateContext {
+  /** The resolved upstream model — gates the anthropic→cc `thinking`→`reasoning_effort` mapping (spec §6). */
+  model?: Model
+}
+
+/**
+ * Request-side translation dispatch: the `sourceFormat` logical body → the `targetEndpoint` leg's
+ * hub-canonical logical body (see the module docstring for the per-leg canonical shape).
+ *
+ * `translate`-only: the driver only calls the hub when the route decided `translate` (a passthrough
+ * leg's body is already in the right shape and never reaches here). A source==target-canonical pair
+ * (e.g. openai-cc → a CC leg) is nonetheless returned identity for completeness / defensiveness.
+ */
+export function translateRequestVia(sourceFormat: ClientFormat, targetEndpoint: UpstreamEndpoint, body: unknown, ctx?: HubTranslateContext): unknown {
+  if (targetEndpoint === ENDPOINT.MESSAGES) {
+    return toAnthropicBody(sourceFormat, body)
+  }
+  // /chat/completions, /responses, ws:/responses → CC-canonical (the codec's prepareWire does the
+  // CC→Responses wire step for the responses leg).
+  return toCcBody(sourceFormat, body, ctx)
+}
+
+/** Reverse legs (`→ /v1/messages`): produce an Anthropic Messages body from the source format. */
+function toAnthropicBody(sourceFormat: ClientFormat, body: unknown): unknown {
+  switch (sourceFormat) {
+    case "anthropic": {
+      // Already Anthropic (the direct/passthrough path never routes here — defensive identity).
+      return body
+    }
+    case "openai-cc":
+    case "gemini": {
+      // Gemini's body is normalized to CC by its parse, so both share the cc→anthropic translator.
+      return translateChatCompletionsToAnthropic(body as ChatCompletionsPayload)
+    }
+    case "openai-responses": {
+      // Two-hop (WARN-F): Responses → CC → Anthropic, reusing the existing Responses↔CC primitive.
+      return translateChatCompletionsToAnthropic(translateResponsesToChatCompletions(body as ResponsesPayload))
+    }
+    default: {
+      throw new Error(`[hub-translate] unhandled sourceFormat for the /v1/messages leg: ${String(sourceFormat)}`)
+    }
+  }
+}
+
+/** Forward legs (`→ /chat/completions` | `/responses`): produce a CC-canonical body from the source format. */
+function toCcBody(sourceFormat: ClientFormat, body: unknown, ctx?: HubTranslateContext): unknown {
+  switch (sourceFormat) {
+    case "anthropic": {
+      return translateAnthropicToChatCompletions(body as MessagesPayload, ctx?.model ? { model: ctx.model } : undefined)
+    }
+    case "openai-cc":
+    case "gemini": {
+      // Already CC (gemini's parse normalized it) — identity.
+      return body
+    }
+    case "openai-responses": {
+      // Responses → CC (the existing forward primitive); the responses-leg CC→Responses re-translation
+      // happens later in prepareWire, so stopping at CC here is correct.
+      return translateResponsesToChatCompletions(body as ResponsesPayload)
+    }
+    default: {
+      throw new Error(`[hub-translate] unhandled sourceFormat for the CC-canonical leg: ${String(sourceFormat)}`)
+    }
+  }
+}
+
+/**
+ * Response-side NON-STREAMING translation dispatch — Phase 3 (T3.3).
+ *
+ * The mirror of {@link translateRequestVia}, dispatched purely on `targetEndpoint` (which fully
+ * determines the upstream response shape + the render direction):
+ *   - `/v1/messages` leg → the upstream is an Anthropic response (a REVERSE `→ messages` leg); render
+ *     it to CC-canonical (the cc/responses/gemini client codec does any further CC→its-format hop — WARN-F).
+ *   - `/chat/completions` | `/responses` legs → the upstream is a CC / Responses response (a FORWARD
+ *     anthropic→cc/responses leg); normalize it to CC (identity for the cc leg; Responses→CC for the
+ *     responses leg — the WARN-F two-hop) then render CC→Anthropic.
+ *
+ * Returns a small envelope so the FORWARD path can surface the `contentFiltered` degradation (N3) to
+ * the codec's ctx observability WITHOUT the pure translators taking a ctx dependency. The STREAMING
+ * response side stays the {@link renderResponseVia} fail-fast skeleton (Phase 4).
+ */
+export interface RenderedNonStreamingResponse {
+  /** The rendered response body in the client-canonical shape (Anthropic for a forward leg, CC for a reverse leg). */
+  rendered: unknown
+  /** FORWARD leg only: a CC choice finished with `content_filter` (mapped to end_turn on the wire, N3). */
+  contentFiltered: boolean
+}
+
+export function renderResponseNonStreamingVia(targetEndpoint: UpstreamEndpoint, upstream: unknown): RenderedNonStreamingResponse {
+  if (targetEndpoint === ENDPOINT.MESSAGES) {
+    // REVERSE leg: Anthropic upstream → CC-canonical (the client codec renders any further hop).
+    return { rendered: translateAnthropicResponseToCC(upstream as AnthropicResponse), contentFiltered: false }
+  }
+  // FORWARD leg (anthropic client): normalize the upstream to CC, then CC → Anthropic.
+  const cc = targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? (upstream as ChatCompletionResponse) : translateResponsesResponseToCC(upstream as ResponsesResponse)
+  const { response, contentFiltered } = translateCCResponseToAnthropic(cc)
+  return { rendered: response, contentFiltered }
+}
+
+/**
+ * Response-side STREAMING translation dispatch — Phase 4 (T4.1/T4.2/T4.3).
+ *
+ * A per-request stateful factory the anthropic codec drives per-frame (`renderResponse` →
+ * {@link ForwardStreamTranslator.renderFrame}; stream-end → `flushResponse` → {@link
+ * ForwardStreamTranslator.flush}; out-of-band terminal meta → `getStreamMeta` → {@link
+ * ForwardStreamTranslator.getMeta}). Two FORWARD legs (dispatched purely on `targetEndpoint`):
+ *   - `/chat/completions` (cc leg) — SINGLE hop: the upstream CC SSE stream is fed straight into the
+ *     {@link createCcToAnthropicStreamTranslator} (T4.1).
+ *   - `/responses` | `ws:/responses` (responses leg) — TWO hop (WARN-F): the upstream Responses SSE
+ *     stream is first translated to CC frames (the existing {@link createStreamTranslator} Responses→CC
+ *     primitive), then those CC frames feed the CC→Anthropic translator. The getStreamMeta signal chain
+ *     is therefore "Responses翻译 → CC帧 → 累积" — the CC→Anthropic translator's accumulator (fed the
+ *     translated CC chunks) is the single source of the terminal usage/stop_reason.
+ *
+ * The REVERSE `→ /v1/messages` streaming leg (Anthropic upstream → CC/gemini/responses client) stays
+ * Phase 5 — {@link createForwardStreamTranslator} throws for it (never-swallow).
+ */
+export interface ForwardStreamTranslator {
+  /** Translate ONE raw upstream SSE frame → 0+ Anthropic SSE frames. */
+  renderFrame(frame: ClientFrame): Array<ClientFrame>
+  /** Stream-end drain: the terminal Anthropic frames (close open block + message_delta + message_stop). */
+  flush(): Array<ClientFrame>
+  /** The terminal meta (Anthropic stop_reason + net usage) the owns-sink handler reads out-of-band. */
+  getMeta(): CcToAnthropicStreamMeta
+}
+
+export function createForwardStreamTranslator(targetEndpoint: UpstreamEndpoint, modelId: string): ForwardStreamTranslator {
+  const ccToAnthropic: CcToAnthropicStreamTranslator = createCcToAnthropicStreamTranslator(modelId)
+
+  if (targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) {
+    // cc leg: single hop — feed the upstream CC frame straight into the CC→Anthropic translator.
+    return {
+      renderFrame: (frame) => ccToAnthropic.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
+      flush: () => ccToAnthropic.flush().map((s) => s.frame),
+      getMeta: () => ccToAnthropic.getMeta(),
+    }
+  }
+
+  if (targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES) {
+    // responses leg: two hop — Responses→CC (per-frame) → CC→Anthropic. The Responses→CC translator
+    // captures the terminal usage unconditionally (so the CC chunks carry the usage the CC→Anthropic
+    // accumulator nets — getStreamMeta signal chain).
+    const responsesToCc = createStreamTranslator()
+    return {
+      renderFrame: (frame) => {
+        if (!frame.data || frame.data === "[DONE]") return []
+        let event: ResponsesStreamEvent
+        try {
+          event = JSON.parse(frame.data) as ResponsesStreamEvent
+        } catch {
+          // Unparseable upstream Responses frame — skip (mirrors the Responses→CC whole-stream wrapper).
+          return []
+        }
+        const out: Array<ClientFrame> = []
+        for (const ccChunk of responsesToCc.translate(event)) {
+          for (const s of ccToAnthropic.renderFrame({ data: JSON.stringify(ccChunk), event: "message" })) out.push(s.frame)
+        }
+        return out
+      },
+      flush: () => ccToAnthropic.flush().map((s) => s.frame),
+      getMeta: () => ccToAnthropic.getMeta(),
+    }
+  }
+
+  // REVERSE `→ /v1/messages` streaming leg does not use the FORWARD translator — the reverse legs
+  // dispatch on `clientFormat` via `createReverseStreamTranslator` (the upstream is Anthropic, so the
+  // render direction is Anthropic→CC/Responses/Gemini). A forward call for the messages leg is a wiring
+  // bug — fail loudly (never-swallow).
+  throw new Error(
+    `[hub-translate] createForwardStreamTranslator: the /v1/messages leg is a REVERSE leg — use createReverseStreamTranslator (dispatched on clientFormat), not the forward translator (targetEndpoint=${targetEndpoint})`,
+  )
+}
+
+/**
+ * Response-side STREAMING translation dispatch — REVERSE legs (Phase 5, T5.2/T5.3/T5.4).
+ *
+ * The mirror of {@link createForwardStreamTranslator}: a cc/responses/gemini client pinned to `@messages`
+ * reaches a direct-Anthropic upstream leg, so the upstream is an Anthropic SSE stream and the render
+ * direction is Anthropic→client-format. A per-request stateful factory the client codec drives per-frame
+ * (`renderResponse` → {@link ReverseStreamTranslator.renderFrame}; stream-end → `flushResponse` →
+ * {@link ReverseStreamTranslator.flush}; out-of-band terminal meta → `getStreamMeta` → {@link
+ * ReverseStreamTranslator.getMeta}). Dispatched on `clientFormat` (the upstream is ALWAYS Anthropic for a
+ * reverse leg — `targetEndpoint===/v1/messages` — so it does not vary the direction):
+ *   - `openai-cc` / `gemini` — SINGLE hop: the upstream Anthropic SSE stream is fed straight into
+ *     {@link createAnthropicToCcStreamTranslator}, producing CC-canonical frames. The gemini codec does a
+ *     further CC→Gemini hop in its own render (T5.4); the hub stops at CC (parity with the non-streaming
+ *     `renderResponseNonStreamingVia` returning CC-canonical).
+ *   - `openai-responses` — TWO hop (WARN-F): Anthropic→CC frames feed the existing
+ *     {@link createCCToResponsesStreamTranslator} (the Responses second segment), which needs the
+ *     `exchangeCtx` (responseId / itemId / clientModel) the responses handler builds as a reverse-exchange.
+ *
+ * `getMeta` is ALWAYS the Anthropic→CC translator's meta (finishReason + grossed-up usage + sawMessageStop
+ * — the F2 truncation signal): the CC→Responses second segment carries no terminal stop/usage of its own.
+ */
+export interface ReverseStreamTranslator {
+  /** Translate ONE raw upstream Anthropic SSE frame → 0+ client-format SSE frames. */
+  renderFrame(frame: ClientFrame): Array<ClientFrame>
+  /** Stream-end drain: the client-format terminal frames (`[]` for cc; the Responses `response.completed` for responses). */
+  flush(): Array<ClientFrame>
+  /** The terminal meta (CC finish_reason + net usage + sawMessageStop) the owns-sink reverse pump reads out-of-band. */
+  getMeta(): AnthropicToCcStreamMeta
+}
+
+export function createReverseStreamTranslator(clientFormat: ClientFormat, modelId: string, exchangeCtx?: TranslateExchangeContext): ReverseStreamTranslator {
+  const anthropicToCc: AnthropicToCcStreamTranslator = createAnthropicToCcStreamTranslator(modelId)
+
+  if (clientFormat === "openai-cc" || clientFormat === "gemini") {
+    // Single hop: Anthropic→CC. (Gemini does the CC→Gemini second hop in its own codec render — T5.4.)
+    return {
+      renderFrame: (frame) => anthropicToCc.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
+      flush: () => anthropicToCc.flush().map((s) => s.frame),
+      getMeta: () => anthropicToCc.getMeta(),
+    }
+  }
+
+  if (clientFormat === "openai-responses") {
+    // Two hop (WARN-F): Anthropic→CC (per-frame) → CC→Responses. The second segment needs the reverse
+    // exchange the responses handler built (responseId / itemId / clientModel).
+    if (!exchangeCtx) {
+      throw new Error("[hub-translate] createReverseStreamTranslator: the openai-responses reverse leg requires an exchangeCtx (responseId/itemId/clientModel) — the responses handler must build a reverse-exchange")
+    }
+    const ccToResponses: CCToResponsesStreamTranslator = createCCToResponsesStreamTranslator(exchangeCtx)
+    return {
+      renderFrame: (frame) => {
+        const out: Array<ClientFrame> = []
+        // Anthropic frame → 0+ CC frames → feed each CC frame's `data` string into the Responses segment.
+        for (const ccStep of anthropicToCc.renderFrame(frame as ServerSentEventMessage)) {
+          for (const rf of ccToResponses.translate(ccStep.frame.data ?? "")) out.push({ event: rf.event, data: rf.data })
+        }
+        return out
+      },
+      // The CC segment's own flush is [] (finish/usage are inline on message_delta), so only the Responses
+      // segment's flush (`response.completed`) matters — MUST be called or the client never gets the terminal.
+      flush: () => ccToResponses.flush().map((rf): ClientFrame => ({ event: rf.event, data: rf.data })),
+      getMeta: () => anthropicToCc.getMeta(),
+    }
+  }
+
+  // `anthropic` is the direct/passthrough leg — it never reaches a reverse translator (render is identity).
+  throw new Error(`[hub-translate] createReverseStreamTranslator: unhandled clientFormat for a reverse /v1/messages leg: ${String(clientFormat)}`)
+}

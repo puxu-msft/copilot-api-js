@@ -75,9 +75,9 @@ describe("validateConfig — unknown keys", () => {
   })
 
   test("unknown anthropic sub-key warns once + is stripped", () => {
-    const result = validateConfig({ anthropic: { cache_contro: "proxied", api_key: "k" } })
+    const result = validateConfig({ anthropic: { cache_contro: "proxied", warmup: "allow" } })
     expect((result.anthropic as Record<string, unknown> | undefined)?.cache_contro).toBeUndefined()
-    expect(result.anthropic?.api_key).toBe("k")
+    expect(result.anthropic?.warmup).toBe("allow")
     const calls = warnedMessages().filter((m) => m.includes("cache_contro"))
     expect(calls.length).toBe(1)
   })
@@ -117,6 +117,12 @@ describe("validateConfig — type errors", () => {
     expect(validateConfig({ anthropic: { tool_repair_malformed_input: "jsonrepair,tags,tags" } }).anthropic?.tool_repair_malformed_input).toEqual([
       "tags",
       "jsonrepair",
+    ])
+    // hyphenated `unicode-lossy` token accepted and lands LAST in canonical order regardless of spelling
+    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "unicode-lossy,jsonrepair,unicode" } }).anthropic?.tool_repair_malformed_input).toEqual([
+      "unicode",
+      "jsonrepair",
+      "unicode-lossy",
     ])
     // empty string == off (empty set)
     expect(validateConfig({ anthropic: { tool_repair_malformed_input: "" } }).anthropic?.tool_repair_malformed_input).toEqual([])
@@ -227,6 +233,16 @@ describe("validateConfig — deprecated keys", () => {
     // A sibling capability list under the same section survives the removal.
     expect(mc?.context_editing).toEqual(["claude-opus-4.6"])
     expect(warnedMessages().some((m) => m.includes("anthropic.model_capabilities.tool_search"))).toBe(true)
+  })
+
+  test("anthropic.api_key (retired) → warn + drop, siblings preserved", () => {
+    const result = validateConfig({
+      anthropic: { api_key: "sk-test-123", warmup: "allow" },
+    })
+    expect((result.anthropic as Record<string, unknown> | undefined)?.api_key).toBeUndefined()
+    // A sibling anthropic key survives the removal.
+    expect(result.anthropic?.warmup).toBe("allow")
+    expect(warnedMessages().some((m) => m.includes("anthropic.api_key"))).toBe(true)
   })
 })
 

@@ -17,7 +17,8 @@ describe("learned lib", () => {
   it("has a label for every category", () => {
     expect(CATEGORY_LABELS.features).toBeTruthy()
     expect(CATEGORY_LABELS.toolFields).toBeTruthy()
-    expect(Object.keys(CATEGORY_LABELS).length).toBe(10)
+    expect(CATEGORY_LABELS.cacheControlSubfields).toBeTruthy()
+    expect(Object.keys(CATEGORY_LABELS).length).toBe(11)
   })
   it("merges manually_expired into expired badge", () => {
     expect(badgeKind("expired")).toBe("expired")

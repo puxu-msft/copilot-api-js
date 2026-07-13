@@ -38,7 +38,7 @@ Expected：确认 `has ping(): false`、无 socket 访问器（成员集是 send
 
 - [ ] **Step 2：PoC-B —— undici WS 是否对 upgrade socket 开 TCP keepalive（`ss` 实测）**
 
-对一个**本地** loopback WS 服务端建立 undici 客户端 WS 连接，用 `ss` 查该 socket 是否带 `timer:(keepalive,...)`（复刻 h2 的实测手法，skill `bun-upstream-transport`）：
+对一个**本地** loopback WS 服务端建立 undici 客户端 WS 连接，用 `ss` 查该 socket 是否带 `timer:(keepalive,...)`（复刻 h2 的实测手法，skill `debugging-ghc-api-upstream-transport`）：
 ```bash
 # exp/ws-upstream-keepalive/probe-tcp-keepalive.sh
 # 1) start a loopback WS server (Bun.serve websocket) on a port

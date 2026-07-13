@@ -2,7 +2,7 @@
 
 - **状态**：Accepted
 - **日期**：2026-07-05
-- **相关**：[DESIGN.md「运行时兼容（Bun-first / Node-compatible）」](../DESIGN.md)、[coding-conventions.md「依赖选型 bun-first」](../coding-conventions.md)、skill `bun-upstream-transport`、[spec/upstream-http2-transport.md](../spec/upstream-http2-transport.md)
+- **相关**：[DESIGN.md「运行时兼容（Bun-first / Node-compatible）」](../DESIGN.md)、[coding-conventions.md「依赖选型 bun-first」](../coding-conventions.md)、skill `debugging-ghc-api-upstream-transport`、[spec/upstream-http2-transport.md](../spec/upstream-http2-transport.md)
 
 ## 背景
 
@@ -31,4 +31,4 @@
 ## 后果
 
 - **正向**：用户无论用 Bun 还是 Node 安装都不被 node-gyp 绑定卡住；运行时差异收敛到单一判别点 `typeof globalThis.Bun !== "undefined"` 分流的少数子系统（HTTP server / WebSocket / SQLite / 上游 fetch / 代理），其余代码运行时无关；依赖合规可用一条 `find` 命令机械审计。
-- **代价**：Node 专属分支（如 `driver.ts` 的 `nodeFactory()`）在 `bun test` 下走不到，实测覆盖弱于 Bun，需要时靠 `bun build --target node` 打包后真 Node 跑或 e2e 兜底；上游传输为绕开 Bun 的 undici/h2 缺陷而手工分流 `node:http2` + undici 子路径，带来额外复杂度（详见 skill `bun-upstream-transport`）。
+- **代价**：Node 专属分支（如 `driver.ts` 的 `nodeFactory()`）在 `bun test` 下走不到，实测覆盖弱于 Bun，需要时靠 `bun build --target node` 打包后真 Node 跑或 e2e 兜底；上游传输为绕开 Bun 的 undici/h2 缺陷而手工分流 `node:http2` + undici 子路径，带来额外复杂度（详见 skill `debugging-ghc-api-upstream-transport`）。

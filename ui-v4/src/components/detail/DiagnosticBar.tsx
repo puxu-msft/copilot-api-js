@@ -17,11 +17,11 @@ import {
 } from "@/lib/format"
 
 const SIGNAL_COLOR: Record<Signal, string> = {
-  ok: "var(--color-ok)",
-  fail: "var(--color-fail)",
-  warn: "var(--color-warn)",
-  live: "var(--color-ok)",
-  muted: "var(--color-muted)",
+  ok: "var(--signal-ok)",
+  fail: "var(--signal-fail)",
+  warn: "var(--signal-warn)",
+  live: "var(--signal-ok)",
+  muted: "var(--signal-muted)",
 }
 
 export function DiagnosticBar({ entry }: { entry: HistoryEntry }) {
@@ -33,13 +33,13 @@ export function DiagnosticBar({ entry }: { entry: HistoryEntry }) {
   // surfaced here so it's visible on EVERY detail tab, not buried in the Response tab's leg sections.
   const verdict = entry._index?.derived?.failureReason ?? resolveResponseError(entry)
   return (
-    <div className="mono flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] bg-[#1c1c22] px-3 py-1.5 text-[13px] text-[#cdb]">
+    <div className="mono flex flex-wrap items-center gap-2 border-b border-[var(--surface-border)] bg-[var(--surface-diagnostic)] px-3 py-1.5 text-[13px] text-[var(--content-value)]">
       <span style={{ color: SIGNAL_COLOR[signal] }}>{entry.state ?? "—"}</span>
-      <span className="text-[var(--color-primary)]">{entry.endpoint}</span>
-      {entry.durationMs === undefined ? null : <span className="text-[#888]">{formatDuration(entry.durationMs)}</span>}
-      {attemptCount === undefined ? null : <span className="text-[#888]">{attemptCount} att</span>}
+      <span className="text-[var(--content-accent)]">{entry.endpoint}</span>
+      {entry.durationMs === undefined ? null : <span className="text-[var(--content-dim)]">{formatDuration(entry.durationMs)}</span>}
+      {attemptCount === undefined ? null : <span className="text-[var(--content-dim)]">{attemptCount} att</span>}
       {tokens ?
-        <span className="text-[#888]">{formatUsageTokens(tokens)} tok</span>
+        <span className="text-[var(--content-dim)]">{formatUsageTokens(tokens)} tok</span>
       : null}
       {signal === "fail" && verdict !== undefined ?
         <span

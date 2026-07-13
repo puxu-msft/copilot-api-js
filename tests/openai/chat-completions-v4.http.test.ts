@@ -379,10 +379,15 @@ describe("CC v4 driver path", () => {
 
     const chunk = (over: string): string =>
       `event: message\ndata: {"id":"resp_1","object":"chat.completion.chunk","created":0,"model":"gpt-5","choices":[{"index":0,${over},"logprobs":null}]}\n\n`
+    // The translator now ALWAYS emits the usage chunk (no include_usage needed), so
+    // history/telemetry capture usage for CC→Responses streaming — matching the
+    // direct-CC path. See docs/spec/2026-07-12-cc-responses-streaming-usage.md.
+    const usageChunk = `event: message\ndata: {"id":"resp_1","object":"chat.completion.chunk","created":0,"model":"gpt-5","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n\n`
     expect(v4Text).toBe(
       chunk('"delta":{"role":"assistant"},"finish_reason":null')
         + chunk('"delta":{"content":"Hi"},"finish_reason":null')
         + chunk('"delta":{},"finish_reason":"stop"')
+        + usageChunk
         + "data: [DONE]\n\n",
     )
   })

@@ -112,6 +112,7 @@ const summary = (over: Partial<EntrySummary>): EntrySummary => ({
   messageCount: 0,
   previewText: "",
   ...over,
+  responsePreviewText: over.responsePreviewText ?? "",
 })
 
 function Probe({ filters }: { filters: RequestFilters }) {

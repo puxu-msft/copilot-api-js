@@ -146,13 +146,26 @@ timeouts:
   # Max seconds from request start to receiving HTTP response headers (0 = no timeout).
   # 从请求开始到收到 HTTP 响应头的最大秒数（0 = 不超时）。
   # Applies to all upstream API clients. / 作用于所有上游 API 客户端。
-  response_header: 900
+  response_header: 600
 
   # Max seconds between SSE events (0 = no timeout).
   # SSE 事件之间的最大间隔秒数（0 = 不超时）。
   # Applies to all streaming paths (Anthropic, Chat Completions, Responses).
   # 作用于所有流式路径（Anthropic、Chat Completions、Responses）。
-  stream_idle: 900
+  stream_idle: 300
+
+  # Per-model stream_idle override (seconds), keyed by model-name substring; "*" = all models.
+  # 按模型覆盖 stream_idle（秒），键为模型名子串；"*" = 所有模型。
+  # A match wins over the scalar stream_idle above; 0 = disabled (no idle timeout). Longest-substring match wins.
+  # 命中项优先于上面的标量 stream_idle；0 = 禁用（无空闲超时）。最长子串匹配胜出。
+  # gpt-5.5 (effort=high) emits a single 266–462s zero-frame silent-reasoning gap before a terminal burst — the 300s scalar would kill it as a false idle timeout (measured 2026-07-12). App-guard only.
+  # gpt-5.5（effort=high）在末尾爆发前有单个 266–462s 的零帧静默推理段——300s 标量会把它误判为空闲超时掐断（2026-07-12 实测）。仅作用于应用层 guard。
+  stream_idle_overrides:
+    gpt-5.5: 600
+
+  # Per-model response_header override (seconds), same keying as stream_idle_overrides. No built-in value.
+  # 按模型覆盖 response_header（秒），键规则同 stream_idle_overrides。无内置值。
+  response_header_overrides: {}
 
   # Upstream TCP keepalive initial-probe delay in seconds (0 = use undici's 60s default).
   # 上游 TCP keepalive 首探针延迟秒数（0 = 用 undici 内置默认 60s）。
@@ -176,14 +189,14 @@ timeouts:
   # Max seconds an active request can live before the stale reaper forces it to fail (0 = disabled).
   # 活跃请求被 stale reaper 强制失败前的最大存活秒数（0 = 禁用）。
   # Safety net for requests that never complete/fail normally. / 兜底永不正常完成/失败的请求。
-  stale_request_max_age: 1800
+  stale_request_max_age: 1200
 
 # Seconds between background model list refreshes (0 = disabled).
 # 后台刷新模型列表的间隔秒数（0 = 禁用）。
 # Keeps /models cache fresh for long-running instances without requiring a restart.
 # 让长时间运行的实例无需重启即可保持 /models 缓存新鲜。
 # (Stays top-level — a refresh interval, not a timeout.) / （保留顶层——这是刷新周期，不是超时。）
-model_refresh_interval: 900
+model_refresh_interval: 3600
 
 # ============================================================================
 # Shutdown / 关闭
@@ -293,6 +306,7 @@ anthropic:
       - claude-opus-4-6
       - claude-opus-4-7
       - claude-opus-4-8
+
     # Native server-side tool_search is DEFAULT-ALLOW for Claude ≥4.5 (Haiku + pre-4.5 denied), mirroring
     # GHC — new Claude models are picked up automatically, no list to maintain. This map holds per-model
     # OVERRIDES only: keys are model-name substrings ("*" = wildcard), value true=force-on / false=force-off.
@@ -676,16 +690,18 @@ anthropic:
   #   tags        = structure-aware antml-tag stripping (fixes antml wrapper tags like `…]</parameter></invoke>` bleeding into the input).
   #   unicode     = whitespace-broken `\uXXXX` escape fix (e.g. `\u9 ed8` → 默, where a space split the 4 hex digits; jsonrepair THROWS on these so it needs its own item).
   #   jsonrepair  = jsonrepair structural fix (missing brackets / truncated structures; heuristic).
-  #   e.g. "tags" / "tags,jsonrepair" / "unicode" / "tags,unicode,jsonrepair".
+  #   unicode-lossy = LOSSY last resort — un-completable `\uXXXX` escapes (a hex digit dropped, e.g. `\u9 44`) → U+FFFD; rescues an otherwise-dead input at the cost of ≥1 garbled char. Runs AFTER all lossless items; only reached when they fail.
+  #   e.g. "tags" / "tags,jsonrepair" / "unicode" / "tags,unicode,jsonrepair" / "tags,unicode,jsonrepair,unicode-lossy".
   # If no enabled item yields valid JSON, the request is recorded failed + a synthetic error frame is emitted (never a silent broken tool call). See docs/spec/anthropic-malformed-tool-input-repair.md.
   # 修复上游偶发漏出的畸形 tool_use input JSON。逗号分隔的修复项目集（字符串里的顺序无关；项目按固定规范顺序级联、互相叠加）。仅作用于转发流——history 的 sseEvents 保留上游原始畸形字节。
   #   ""          = 关（默认）——原样转发畸形字节。
   #   tags        = 结构感知剥 antml 标签（修 antml 包裹标签如 `…]</parameter></invoke>` 溢入 input）。
   #   unicode     = 修空白打断的 `\uXXXX` 转义（如 `\u9 ed8` → 默，空格把 4 位 hex 打断；jsonrepair 对这类会抛异常故需独立项目）。
   #   jsonrepair  = jsonrepair 结构修复（缺括号/截断结构；启发式）。
-  #   例：'tags' / 'tags,jsonrepair' / 'unicode' / 'tags,unicode,jsonrepair'。
+  #   unicode-lossy = 有损兜底——无法凑齐 4 位的 `\uXXXX` 转义（丢了 hex 位，如 `\u9 44`）替换成 U+FFFD；以糊 ≥1 个字符为代价救活否则必死的输入。排在所有无损项之后，仅当它们全失败才触发。
+  #   例：'tags' / 'tags,jsonrepair' / 'unicode' / 'tags,unicode,jsonrepair' / 'tags,unicode,jsonrepair,unicode-lossy'。
   # 任一启用项都修不出合法 JSON 则请求记为失败 + 发合成 error 帧（绝不静默转发坏的工具调用）。详见 docs/spec/anthropic-malformed-tool-input-repair.md。
-  tool_repair_malformed_input: "tags,unicode"
+  tool_repair_malformed_input: "tags,unicode,unicode-lossy,jsonrepair"
 
   # How to handle the upstream thinking-only refusal (stop_reason:"refusal" with only a thinking block, no text/tool_use). Three modes:
   #   "refusal"  = pass the upstream refusal through unchanged (client gets a dead/empty turn).
@@ -806,6 +822,10 @@ rate_limiter:
 #   # Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress
 #   # everything. Default: 10000.
 #   compress_threshold: 10000
+#   # Main-path pre-flight truncation. Before sending, predict via the learned size-aware calibration factor
+#   # whether the request will exceed the model's token limit and pre-truncate it, saving a guaranteed-to-fail
+#   # 400 round-trip. Reactive truncation (above) stays the fallback. Opt-in. Default: false.
+#   preflight: false
 
 # Compress old tool_result content before truncating messages. When enabled, large tool_result content blocks
 # are compressed to reduce context size before resorting to message removal. Default: true.
@@ -818,3 +838,18 @@ rate_limiter:
 # Sanitize tool names that violate the target model's constraints (illegal characters like dots, over-length, or collisions) into legal names before sending upstream, then restore the client's original names in the response. Deterministic and stateless (rebuilt per request). Spans Anthropic + Chat Completions + Responses paths. Top-level (cross-protocol), not under anthropic.*. Default: false.
 # 发送上游前把违反目标模型约束的工具名（点号等非法字符、超长、冲突）清洗为合法名，再在响应里还原客户端原始名。确定性且无状态（每请求重建）。跨 Anthropic + Chat Completions + Responses 三条路径。顶层（跨协议），不在 anthropic.* 下。默认 false。
 sanitize_tool_names: true
+
+# ============================================================================
+# Upstream Hook (dev/test only) / 上游 Hook（仅开发/测试环境）
+# ============================================================================
+# Declarative only: setting these keys never loads anything by itself. The module is loaded
+# at startup when `enabled` is true (a future reload API will also honor this section).
+# 仅声明态：这些键本身不会加载任何东西。`enabled` 为 true 时在启动期加载该模块（未来的 reload API 也会遵循本段）。
+
+hooks:
+  # Path to an ad-hoc TS hook module for mocking/intercepting upstream. Dev/test only.
+  # 指向一个 ad-hoc TS hook 模块，用于 mock/拦截上游。仅开发/测试环境。
+  # upstream_module: "./exp/my-hook.ts"
+  # Load the hook module. Default false — the feature is fully off unless true.
+  # 是否加载 hook 模块。默认 false——除非 true 否则特性完全关闭。
+  enabled: false

@@ -20,6 +20,11 @@ import {
 import { clearInFlight } from "./in-flight"
 import {
   //
+  runCalibrationBackfill,
+  stopCalibrationBackfill,
+} from "./sqlite/calibration-backfill"
+import {
+  //
   closeDatabase,
   getDatabase,
   isDatabaseOpen,
@@ -30,6 +35,11 @@ import {
   runLegacyStageBackfill,
   stopLegacyStageBackfill,
 } from "./sqlite/legacy-stage-backfill"
+import {
+  //
+  runCacheWriteBackfill,
+  stopCacheWriteBackfill,
+} from "./sqlite/cache-write-backfill"
 import {
   //
   startReaper,
@@ -121,8 +131,10 @@ export function stopHistoryBackgroundWork(): void {
   // cursor per batch and resumes on next start — a post-close prepare would throw).
   stopUsageNormalizeBackfill()
   stopLegacyStageBackfill()
+  stopCacheWriteBackfill()
   stopSearchIndexBackfill()
   stopResponsePreviewBackfill()
+  stopCalibrationBackfill()
 }
 
 /**
@@ -165,15 +177,32 @@ export function startSearchIndexBackfill(): void {
 
 /**
  * Fire-and-forget the recoverable response-preview backfill in the BACKGROUND —
- * the LAST (heaviest) link of the chain, run AFTER the search-index backfill. Fills
+ * the heaviest link, run AFTER the search-index backfill, THEN chains the final
+ * calibration seed backfill. Fills
  * `response_preview_text` for pre-feature rows (NULL column) by reassembling each
  * entry and extracting its preview. No-op when history is disabled / the DB is not
- * open. `runResponsePreviewBackfill` catches internally; this `.catch` is a
- * belt-and-suspenders guard against an unhandledRejection crashing the process.
+ * open. `runResponsePreviewBackfill` catches internally; the `.catch`/`.finally`
+ * here are belt-and-suspenders against an unhandledRejection crashing the process.
  */
 export function startResponsePreviewBackfill(): void {
   if (!enabled || !isDatabaseOpen()) return
-  void runResponsePreviewBackfill(getDatabase()).catch((err: unknown) => consola.warn("[history] response-preview backfill failed", err))
+  void runResponsePreviewBackfill(getDatabase())
+    .catch((err: unknown) => consola.warn("[history] response-preview backfill failed", err))
+    .finally(() => startCalibrationBackfill())
+}
+
+/**
+ * Fire-and-forget the recoverable calibration seed backfill in the BACKGROUND —
+ * the FINAL link of the chain. Pairs each completed anthropic-messages row's real
+ * prompt tokens with its recomputed local estimate and seed-calibrates the
+ * size-aware factor model (cold-start bootstrap, spec §6). No-op when history is
+ * disabled / the DB is not open. `runCalibrationBackfill` catches internally; this
+ * `.catch` is a belt-and-suspenders guard against an unhandledRejection crashing
+ * the process.
+ */
+export function startCalibrationBackfill(): void {
+  if (!enabled || !isDatabaseOpen()) return
+  void runCalibrationBackfill(getDatabase()).catch((err: unknown) => consola.warn("[history] calibration backfill failed", err))
 }
 
 /**
@@ -188,6 +217,20 @@ export function startLegacyStageBackfill(): void {
   if (!enabled || !isDatabaseOpen()) return
   void runLegacyStageBackfill(getDatabase())
     .catch((err: unknown) => consola.warn("[history] legacy-stage backfill failed", err))
+    .finally(() => startCacheWriteBackfill())
+}
+
+/**
+ * Backfill `cache_creation` (from GHC cache_write) for historical STREAMING
+ * OpenAI-family rows. Chained AFTER legacy-stage (needs the new upstream_response
+ * stage layout) and BEFORE search-index. It recomputes the whole usage split from
+ * the raw sse_events frames (never re-subtracts the already-net column — C2). No-op
+ * when history is disabled / the DB is not open; catches internally.
+ */
+export function startCacheWriteBackfill(): void {
+  if (!enabled || !isDatabaseOpen()) return
+  void runCacheWriteBackfill(getDatabase())
+    .catch((err: unknown) => consola.warn("[history] cache-write backfill failed", err))
     .finally(() => startSearchIndexBackfill())
 }
 

@@ -25,8 +25,8 @@ const INITIAL_LINE_LIMIT = 500
 
 /** Amber row background for a search match — stronger for the active jump target, softer for other matches, none otherwise. */
 function rowHighlightClass(isActive: boolean, isMatch: boolean): string {
-  if (isActive) return "bg-[color-mix(in_srgb,var(--color-primary)_28%,transparent)]"
-  if (isMatch) return "bg-[color-mix(in_srgb,var(--color-primary)_12%,transparent)]"
+  if (isActive) return "bg-[color-mix(in_srgb,var(--content-accent)_28%,transparent)]"
+  if (isMatch) return "bg-[color-mix(in_srgb,var(--content-accent)_12%,transparent)]"
   return ""
 }
 
@@ -79,16 +79,16 @@ export function LineGutter({ lines, className, highlightLines, activeLine, wrap 
             data-line-active={isActive ? "" : undefined}
             className={rowBg.length > 0 ? `flex ${rowBg}` : "flex"}
           >
-            <span className="w-[3.5em] flex-shrink-0 select-none pr-2 text-right text-[var(--color-muted)] opacity-60">{i + 1}</span>
-            <span className={`min-w-0 flex-1 ${contentWrap} border-l border-[var(--color-border)] pl-2`}>{node}</span>
+            <span className="w-[3.5em] flex-shrink-0 select-none pr-2 text-right text-[var(--content-muted)] opacity-60">{i + 1}</span>
+            <span className={`min-w-0 flex-1 ${contentWrap} border-l border-[var(--surface-border)] pl-2`}>{node}</span>
           </div>
         )
       })}
       {isTruncated ?
-        <div className="mt-1 border-t border-dashed border-[var(--color-border)] py-1 text-center">
+        <div className="mt-1 border-t border-dashed border-[var(--surface-border)] py-1 text-center">
           <button
             type="button"
-            className="cursor-pointer text-[12px] text-[var(--color-primary)] hover:underline"
+            className="cursor-pointer text-[12px] text-[var(--content-accent)] hover:underline"
             onClick={() => setShowAll(true)}
           >
             显示全部 {total} 行（隐藏 {hiddenCount} 行）

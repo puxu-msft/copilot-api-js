@@ -48,8 +48,12 @@ import type { RetryStrategy } from "../pipeline"
  * verified against it. The web_search message has no quotes / JSON-escapable
  * chars, so it reads identically in the wrapped `error.message` and the raw
  * `{"error":{"message":"The use of the web search tool is not supported.",…}}`.
+ *
+ * Exported (not module-private) as the single source of truth for
+ * `mockUpstreamError.serverToolRejection`'s own oracle test
+ * (~/lib/pipeline/hooks toolkit.unit.test.ts) — no duplicated pattern literal to drift.
  */
-const SERVER_TOOL_REJECTION_TABLE: ReadonlyArray<{ pattern: RegExp; typePrefix: string }> = [
+export const SERVER_TOOL_REJECTION_TABLE: ReadonlyArray<{ pattern: RegExp; typePrefix: string }> = [
   { pattern: /the use of the web search tool is not supported/i, typePrefix: "web_search_" },
 ]
 

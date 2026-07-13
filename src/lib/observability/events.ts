@@ -85,6 +85,10 @@ export interface RequestContextSnapshot {
   requestBodySize?: number
   /** Pre-resolved billing multiplier (from state.modelIndex) for display. */
   multiplier?: number
+  /** 当前在途 attempt 的 startTime（footer/panel 用；轻量 snapshot() 每事件填充，故高频 stream_progress 也带）。 */
+  currentAttemptStartedAt?: number
+  /** 已发生的 attempt 数（_attempts.length）；footer/panel 算 retries=attemptCount-1。 */
+  attemptCount?: number
   /**
    * Activity summary (the `summarizeRequestContext(ctx)` shape used by the
    * front-end's WS activity view). Populated by the producer (manager.ts)
@@ -105,6 +109,8 @@ export interface RequestContextSnapshot {
  */
 export interface AttemptSnapshot {
   attemptIndex: number
+  /** 本次 attempt 自身的墙钟耗时（ms）——由 setAttemptError / setAttemptResponse 定稿。供 [RETRY] 行作 lastMs。 */
+  durationMs?: number
   strategy?: string
   transport?: TransportKind
   /** Exact payload sent upstream (post-sanitize/truncate). */
@@ -130,6 +136,8 @@ export type FeatureKind =
   | "thinking"
   /** unsupported-beta strategy stripped headers — `detail: { betas: string[] }` */
   | "beta-stripped"
+  /** passthrough 剥掉 GHC 未支持的 cache_control 子字段（如 scope）— `detail: { fields: string[] }` */
+  | "cache-control-stripped"
   /** responses → chat-completions fallback */
   | "via-chat-completions-fallback"
   /** chat-completions → responses (reverse fallback) */
@@ -164,6 +172,12 @@ export type FeatureKind =
   | "tool-input-repaired"
   /** a malformed tool_use input could not be repaired (strip + jsonrepair both failed) — `detail: { tool }` */
   | "tool-input-unrepairable"
+  /**
+   * translation matrix: a forward-leg (anthropic→cc/responses) upstream choice finished with
+   * `content_filter`, which has no Anthropic stop_reason and was mapped to `end_turn` on the client
+   * wire (N3) — this marker keeps the degradation observably distinguishable (richest-data-flow). `detail: {}`.
+   */
+  | "translated-content-filter"
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 

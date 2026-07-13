@@ -45,14 +45,14 @@ describe("SessionRow", () => {
     const { container } = renderRow(base({ completed: 34, failed: 0 }))
     const block = container.querySelector('span[title="34 ok / 0 fail"]')
     expect(block).not.toBeNull()
-    expect((block as HTMLElement).style.background).toContain("--color-ok")
+    expect((block as HTMLElement).style.background).toContain("--signal-ok")
   })
 
   it("renders a red (fail) status block when there are failures", () => {
     const { container } = renderRow(base({ completed: 32, failed: 2 }))
     const block = container.querySelector('span[title="32 ok / 2 fail"]')
     expect(block).not.toBeNull()
-    expect((block as HTMLElement).style.background).toContain("--color-fail")
+    expect((block as HTMLElement).style.background).toContain("--signal-fail")
   })
 
   it("shows main+N when subagents participated", () => {

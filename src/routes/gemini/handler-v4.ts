@@ -24,6 +24,7 @@ import { streamSSE } from "hono/streaming"
 
 import type { OpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import type { SseEventRecord } from "~/lib/history"
+import type { UsageData } from "~/lib/history/types"
 import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
@@ -44,8 +45,22 @@ import type {
 } from "~/types/api/openai-chat-completions"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
+import {
+  //
+  accumulateAnthropicStreamEvent,
+  createAnthropicStreamAccumulator,
+} from "~/lib/anthropic/stream-accumulator"
+import {
+  //
+  buildReverseResanitize,
+  createReverseAnthropicMapperHolder,
+  createReverseAnthropicSanitizeRewrite,
+} from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
+import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
+import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -53,15 +68,25 @@ import {
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import { resolveModelTarget } from "~/lib/models/resolver"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
+import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
+import { anthropicNonStreamingTruncation, openaiNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
+import { buildAnthropicResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
+import { mapInputDetails, mapOutputDetails, nonNegOrUndef } from "~/types/api/ghc-usage"
+import type { GhcCompletionTokensDetails, GhcPromptTokensDetails } from "~/types/api/ghc-usage"
 import { classifyStreamError } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+
+import type { ServerSentEventMessage } from "fetch-event-stream"
+import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
+import type { UpstreamFrame } from "~/lib/pipeline/types"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
 /** Gemini reuses the CC strategies (network → token-refresh → auto-truncate); no learning budget. */
 const MAX_LEARNING_RETRIES = 32
@@ -74,16 +99,41 @@ interface GeminiDriverBundle {
 }
 
 /** Shared driver setup for both Gemini generate paths. */
-function buildGeminiDriver(c: Context, modelId: string): GeminiDriverBundle {
+function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, vendor?: string): GeminiDriverBundle {
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
-  const codec = createOpenAiGeminiCodec(modelId)
-  const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: state.streamIdleTimeout * 1000 })
+  // REVERSE `@messages` leg (Phase 5): shared beta probe + Anthropic mapper holder (INERT on the
+  // direct/via-responses Gemini legs — the reverse rewrite/strategies gate MESSAGES). Threaded into the
+  // gemini codec's internal cc delegate so its reverse prepareWire records the outbound Anthropic betas.
+  const reverseBetaProbe = createBetaProbe(undefined)
+  const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, vendor)
+  const codec = createOpenAiGeminiCodec(modelId, { reverseBetaProbe })
+  const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
   const driver = createPipelineDriver({
     codec,
     transport,
+    // S3 request rewrites: the reverse Anthropic sanitize rewrite gates MESSAGES (inert on the
+    // direct/via-responses Gemini legs).
+    requestRewrites: [createReverseAnthropicSanitizeRewrite(reverseMapperHolder)],
+    // Full-format S5 union (RFC §7.1). On a reverse `@messages` leg the ANTHROPIC册 fires on the upstream
+    // Anthropic frames; on the direct/via-responses Gemini legs no rewrite's `appliesTo` matches.
+    responseRewrites: ALL_RESPONSE_REWRITES,
     strategies: (env) => {
+      // REVERSE `@messages` leg: the ANTHROPIC strategy stack (outbound wire is Anthropic), supplied from
+      // the hub (env.body is the translated + sanitized Anthropic body). resanitize + the sanitize rewrite
+      // share ONE mapper holder.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) {
+        return assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, {
+          anthropic: {
+            originalPayload: env.body as MessagesPayload,
+            resanitize: buildReverseResanitize(reverseMapperHolder),
+            model: env.model as Model | undefined,
+            maxRetries: state.autoTruncateMaxRetries,
+            betaProbe: reverseBetaProbe,
+          },
+        })
+      }
       if (env.targetEndpoint === ENDPOINT.RESPONSES) env.ctx.recordFeature("via-responses")
       return buildOpenAiCcStrategies({
         originalPayload: codec.getTruncateBaseline() ?? (env.body as ChatCompletionsPayload),
@@ -106,15 +156,15 @@ async function runGeminiRequest(
   modelId: string,
   stream: boolean,
 ): Promise<{ bundle: GeminiDriverBundle; result: Extract<DriverRequestResult, { ok: true }> }> {
-  const resolvedName = resolveModelName(modelId)
+  const { name: resolvedName, routeOverride } = resolveModelTarget(modelId)
   const selectedModel = state.modelIndex.get(resolvedName)
 
   // Translate Gemini → CC, then inject the system-prompt on the CC messages
   // (async, non-idempotent) BEFORE the sync codec.parse.
   const { payload: ccPayload } = convertGeminiRequestToOpenAI(geminiBody, { model: resolvedName, stream })
-  ccPayload.messages = await processOpenAIMessages(ccPayload.messages, resolvedName)
+  ccPayload.messages = await processOpenAIMessages(ccPayload.messages, resolvedName, "gemini")
 
-  const bundle = buildGeminiDriver(c, modelId)
+  const bundle = buildGeminiDriver(c, modelId, resolvedName, selectedModel?.vendor)
   const { driver, codec, clientAbort, detachClientAbort } = bundle
 
   let result: DriverRequestResult
@@ -125,7 +175,7 @@ async function runGeminiRequest(
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
-      preResolved: { name: resolvedName, model: selectedModel },
+      preResolved: { name: resolvedName, model: selectedModel, ...(routeOverride && { routeOverride }) },
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -147,6 +197,9 @@ async function runGeminiRequest(
     throw new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason)
   }
 
+  // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
+  result.env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
+
   return { bundle, result }
 }
 
@@ -157,6 +210,11 @@ export async function handleGenerateContentV4(c: Context, modelId: string): Prom
   const { driver, detachClientAbort } = bundle
   try {
     const ccResp = driver.runResponseNonStreaming(result.upstream, result.env) as ChatCompletionResponse
+    // REVERSE `@messages` leg (Phase 5): the client body is CC→Gemini, but the OUTBOUND leg recorded is
+    // the honest Anthropic upstream (richest-data-flow).
+    if (result.env.targetEndpoint === ENDPOINT.MESSAGES) {
+      return renderReverseGeminiNonStreamingV4(c, result.env, ccResp, result.upstream.nonStream as AnthropicMessageResponse, modelId)
+    }
     return renderGeminiNonStreamingV4(c, result.env, ccResp, modelId)
   } finally {
     detachClientAbort()
@@ -181,7 +239,10 @@ export async function handleStreamGenerateContentV4(c: Context, modelId: string)
     result.env.ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
     result.env.ctx.setClientResponseStatus(c.res.status)
     try {
-      await pumpGeminiStreamingV4({ stream, driver, codec, upstream: result.upstream, env: result.env })
+      // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic — accumulate the raw Anthropic frames
+      // for the honest outbound while forwarding the rendered Gemini frames (no heartbeat).
+      if (result.env.targetEndpoint === ENDPOINT.MESSAGES) await pumpReverseGeminiStreamingV4({ stream, driver, codec, upstream: result.upstream, env: result.env, modelId })
+      else await pumpGeminiStreamingV4({ stream, driver, codec, upstream: result.upstream, env: result.env })
     } finally {
       detachClientAbort()
     }
@@ -217,10 +278,17 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
       totalInput: usage?.prompt_tokens ?? 0,
       output: usage?.completion_tokens ?? 0,
       cacheRead: usage?.prompt_tokens_details?.cached_tokens,
+      cacheCreation: nonNegOrUndef((usage?.prompt_tokens_details as GhcPromptTokensDetails | undefined)?.cache_write_tokens),
       reasoning: usage?.completion_tokens_details?.reasoning_tokens,
+      inputDetails: mapInputDetails(usage?.prompt_tokens_details as GhcPromptTokensDetails | undefined),
+      outputDetails: mapOutputDetails(usage?.completion_tokens_details as GhcCompletionTokensDetails | undefined),
     }),
     stop_reason: choice?.finish_reason ?? undefined,
     content: choice?.message,
+    // G6 (richest-data-flow): persist upstream (CC-shaped) body into rawBody
+    // (responseText → rawBody) so non-streaming rows can re-derive cache_write
+    // later. Re-serialized from parsed pristine `chat` (data-lossless). Spec §6.1.
+    responseText: JSON.stringify(chat),
   }
   if (truncationReason) {
     env.ctx.fail(chat.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
@@ -244,11 +312,11 @@ interface PumpGeminiStreamingV4Options {
 }
 
 /** Map the Gemini stream meta (codec-accumulated) → the ctx usage shape (legacy parity). */
-function geminiUsageFromMeta(meta: ReturnType<OpenAiGeminiCodec["getStreamMeta"]>): {
-  input_tokens: number
-  output_tokens: number
-  cache_read_input_tokens?: number
-} {
+function geminiUsageFromMeta(meta: ReturnType<OpenAiGeminiCodec["getStreamMeta"]>): UsageData {
+  // Prefer the canonical UsageData built from the CC accumulator (carries cache_write
+  // → cache_creation + modality/prediction details). Fall back to the Gemini-shaped
+  // usageMetadata only if the translator produced no canonical usage (defensive).
+  if (meta.usage) return meta.usage
   const u = meta.usageMetadata
   return {
     input_tokens: u?.promptTokenCount ?? 0,
@@ -399,4 +467,154 @@ function geminiStreamErrorStatus(kind: ReturnType<typeof classifyStreamError>): 
       return "INTERNAL"
     }
   }
+}
+
+// ============================================================================
+// REVERSE `@messages` leg (Phase 5) — non-streaming render + streaming pump
+// ============================================================================
+
+/**
+ * Non-streaming render for a REVERSE gemini→messages leg. The client body is CC→Gemini (`convertOpenAIResponseToGemini`
+ * of the reverse CC render), but the OUTBOUND leg recorded is the HONEST Anthropic upstream
+ * (`anthropicUpstream`) — NOT the CC/Gemini form (richest-data-flow). Truncation on the Anthropic stop_reason.
+ */
+function renderReverseGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: ChatCompletionResponse, anthropicUpstream: AnthropicMessageResponse, modelId: string): Response {
+  const gemini: GenerateContentResponse = convertOpenAIResponseToGemini(chat, modelId)
+  env.ctx.setForwardedResponse({ content: gemini })
+
+  const httpResponse = c.json(gemini)
+  env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
+  env.ctx.setClientResponseStatus(httpResponse.status)
+
+  const truncationReason = anthropicNonStreamingTruncation(anthropicUpstream.stop_reason)
+  const responseData = {
+    success: !truncationReason,
+    model: anthropicUpstream.model,
+    usage: {
+      input_tokens: anthropicUpstream.usage.input_tokens,
+      output_tokens: anthropicUpstream.usage.output_tokens,
+      ...(anthropicUpstream.usage.cache_read_input_tokens != null && { cache_read_input_tokens: anthropicUpstream.usage.cache_read_input_tokens }),
+      ...(anthropicUpstream.usage.cache_creation_input_tokens != null && { cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens }),
+    },
+    stop_reason: anthropicUpstream.stop_reason ?? undefined,
+    content: { role: "assistant" as const, content: anthropicUpstream.content },
+    responseText: JSON.stringify(anthropicUpstream),
+  }
+  if (truncationReason) {
+    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
+  } else {
+    env.ctx.complete(responseData)
+  }
+  return httpResponse
+}
+
+interface PumpReverseGeminiStreamingV4Options {
+  stream: Parameters<Parameters<typeof streamSSE>[1]>[0]
+  driver: ReturnType<typeof createPipelineDriver>
+  codec: OpenAiGeminiCodec
+  upstream: UpstreamStream
+  env: RequestEnvelope
+  modelId: string
+}
+
+/**
+ * Stream pump for a REVERSE gemini→messages leg — the upstream is an Anthropic SSE stream, the codec's
+ * two-hop `renderResponse` translates each Anthropic frame Anthropic→CC (cc delegate) → Gemini
+ * (geminiTranslator), and the client receives the Gemini stream. This handler:
+ *   - accumulates the RAW UPSTREAM Anthropic frame into the Anthropic accumulator via `onUpstreamFrame`
+ *     for the honest `outboundResponse` (RFC §4.1 / richest-data-flow — the base pumpGeminiStreamingV4 has
+ *     NO opts, so the reverse Anthropic track would otherwise never be accumulated, BLOCK 疑点 7a),
+ *   - forwards the rendered Gemini frames + MUST call `codec.flushResponse` (the geminiTranslator's terminal
+ *     finishReason/usage frame — 疑点 7b),
+ *   - has NO heartbeat (a Gemini client is not Claude Code),
+ *   - detects truncation on the honest Anthropic accumulator's `sawMessageStop` (a clean drain without the
+ *     mandatory `message_stop` = upstream truncation, F2): drop the geminiTranslator's terminal frame
+ *     (carries the misleading UNSPECIFIED finishReason) + write a Gemini error terminator + fail.
+ */
+async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Options): Promise<void> {
+  const { stream, driver, codec, upstream, env } = opts
+  const model = (env.body as MessagesPayload).model
+  const forwardedSseEvents: Array<SseEventRecord> = []
+  const streamStartMs = Date.now()
+
+  const anthropicAcc = createAnthropicStreamAccumulator()
+  const onUpstreamFrame = (frame: UpstreamFrame): void => {
+    const raw = frame as ServerSentEventMessage
+    if (!raw.data || raw.data === "[DONE]") return
+    try {
+      accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, anthropicAcc)
+    } catch (error) {
+      consola.error("[gemini:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
+    }
+  }
+
+  const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs, forwardedType: () => "generateContent" })
+  const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
+
+  if (outcome.kind === "settled-abort") {
+    recordForwarded()
+    consola.debug("[gemini:v4:reverse] Client disconnected mid-stream — recording aborted")
+    env.ctx.abort(anthropicAcc.model || model, buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+
+  if (outcome.kind === "stream-error") {
+    const error = outcome.error
+    consola.error("[gemini:v4:reverse] Stream error:", error)
+    const message = error instanceof Error ? error.message : String(error)
+    const errorKind = classifyStreamError(error)
+    await sink
+      .writeSynthetic?.({
+        data: JSON.stringify({
+          candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
+          error: { code: errorKind === "shutdown" ? 503 : 500, message, status: geminiStreamErrorStatus(errorKind) },
+        }),
+      })
+      .catch(() => undefined)
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+
+  // outcome.kind === "complete" — classify the terminal state via the shared reverse classifier (no
+  // drift across the three reverse pumps): a terminal upstream Anthropic `error` frame (H2) wins, else
+  // a missing `message_stop` is truncation (F2), else complete.
+  const terminal = classifyReverseAnthropicTerminal(anthropicAcc)
+  if (terminal.kind === "upstream-error") {
+    // H2 — the reverse translator already forwarded a Gemini error frame; settle fail with the REAL
+    // cause + honest Anthropic outbound, no second synthetic terminator (mirrors the direct pump gate).
+    consola.error(`[gemini:v4:reverse] Upstream error for ${anthropicAcc.model || model}: ${terminal.error.type} — ${terminal.error.message}`)
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, new Error(`${terminal.error.type}: ${terminal.error.message}`), buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+  // Truncation (F2): a clean drain WITHOUT the mandatory `message_stop`. Drop the geminiTranslator's
+  // terminal frame (misleading UNSPECIFIED finishReason) but forward any buffered partial (a tool_call
+  // flushed before the cut).
+  if (terminal.kind === "truncated") {
+    for (const frame of codec.flushResponse(env)) {
+      if (!isGeminiTerminalFrame(frame)) await sink.write(frame)
+    }
+    const truncErr = new Error("Upstream Anthropic stream truncated before completion (no message_stop)")
+    consola.error(`[gemini:v4:reverse] Upstream truncated for ${anthropicAcc.model || model}: drained without message_stop`)
+    await sink
+      .writeSynthetic?.({
+        data: JSON.stringify({
+          candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
+          error: { code: 500, message: truncErr.message, status: geminiStreamErrorStatus(classifyStreamError(truncErr)) },
+        }),
+      })
+      .catch(() => undefined)
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
+    return
+  }
+
+  // Drain the geminiTranslator's stream-end frames (remaining tool calls + the terminal finishReason/usage
+  // frame — 疑点 7b), then settle from the HONEST Anthropic accumulator (outbound).
+  for (const frame of codec.flushResponse(env)) await sink.write(frame)
+  recordForwarded()
+  env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
 }

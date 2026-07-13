@@ -25,8 +25,6 @@ import {
   vi,
 } from "vitest"
 
-import type { ActiveRequestInfo } from "@/types/ws"
-
 import { useLiveStore } from "@/stores/live-store"
 
 vi.mock("@/hooks/useLiveRequests", () => ({
@@ -97,35 +95,13 @@ function renderDetail() {
 describe("RequestsListPage", () => {
   afterEach(() => useLiveStore.getState().reset())
 
-  it("renders the Live lane and History section, no detail placeholder", () => {
+  it("renders the filter bar + history list, no detail placeholder", () => {
+    // RequestsListPage 只渲染筛选条 + chips + HistoryList;在途 Live 泳道/LiveDock 已全局化到 AppShell
+    // (见 LiveDock.vitest / LiveGroup.vitest 覆盖 live 行点击导航)。此处只断列表页本体渲染,不含 detail 占位。
     renderList()
-    expect(screen.getByText(/● Live/)).toBeDefined()
-    expect(screen.getByText(/History/)).toBeDefined()
+    expect(screen.getByPlaceholderText("search text")).toBeDefined()
+    // "选一条请求看详情" 只属 DetailPanel,列表页绝不出现。
     expect(screen.queryByText(/选一条请求看详情/)).toBeNull()
-  })
-
-  it("navigates to /requests/:id when a live row is clicked", () => {
-    useLiveStore.getState().setSnapshot([{ id: "live1", model: "live-model" } as ActiveRequestInfo])
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter initialEntries={["/requests"]}>
-          <LocationProbe />
-          <Routes>
-            <Route
-              path="/requests"
-              element={<RequestsListPage />}
-            />
-            <Route
-              path="/requests/:id"
-              element={<div>detail landing</div>}
-            />
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    )
-    expect(screen.getByTestId("location").textContent).toBe("/requests")
-    fireEvent.click(screen.getByText(/live-model/))
-    expect(screen.getByTestId("location").textContent).toBe("/requests/live1")
   })
 })
 

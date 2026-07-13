@@ -41,10 +41,10 @@ export function RawJsonView({ value, defaultMode = "source", label, className }:
     <div className={`mono flex min-h-0 flex-1 flex-col ${className ?? ""}`}>
       <div
         role="tablist"
-        className="flex items-center gap-2 border-b border-[var(--color-border)]"
+        className="flex items-center gap-2 border-b border-[var(--surface-border)]"
       >
         {label ?
-          <span className="px-2 text-[11px] uppercase text-[var(--color-muted)]">{label}</span>
+          <span className="px-2 text-[11px] uppercase text-[var(--content-muted)]">{label}</span>
         : null}
         {MODES.map((m) => (
           <button
@@ -56,8 +56,8 @@ export function RawJsonView({ value, defaultMode = "source", label, className }:
             type="button"
             className={`-mb-px border-b-2 px-3 py-1 text-[11px] ${
               mode === m ?
-                "border-[var(--color-primary)] text-[var(--color-primary)]"
-              : "border-transparent text-[var(--color-muted)] hover:text-[var(--color-text)]"
+                "border-[var(--content-accent)] text-[var(--content-accent)]"
+              : "border-transparent text-[var(--content-muted)] hover:text-[var(--content-text)]"
             }`}
             onClick={() => setMode(m)}
           >

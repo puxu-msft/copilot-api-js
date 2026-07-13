@@ -181,7 +181,7 @@ export function buildAnthropicModelsList(models: ReadonlyArray<Model>, opts?: { 
 - **`tests/contract/models-capabilities.test.ts`**（新）—— 对每个 capability 衍生规则单独验证：构造 Copilot 形状 `Model` 输入，断言 OpenAI/Anthropic 输出形状字段值
 - **`tests/http/anthropic-models.test.ts`**（新）—— HTTP 端到端：mock `state.models.data` 含一个 Claude + 一个非 Claude，验证 `/anthropic/v1/models` 仅返回 Claude，字段完整
 - **`tests/http/openai-models-extended.test.ts`** 或扩展 [tests/component/models-endpoint.test.ts](tests/component/models-endpoint.test.ts) —— 验证 `/v1/models` 新字段存在且向后兼容（原有 4 字段未变）
-- **fixtures**：复用 [refs/AVAILABLE_MODELS.json](refs/AVAILABLE_MODELS.json) 的 1 个 Claude 模型 entry 做测试 fixture，保证真实 Copilot schema 推导正确
+- **fixtures**：复用 [.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json](.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json) 的 1 个 Claude 模型 entry 做测试 fixture，保证真实 Copilot schema 推导正确
 
 ### 文档
 
@@ -197,7 +197,7 @@ export function buildAnthropicModelsList(models: ReadonlyArray<Model>, opts?: { 
 | Agent | 任务 | 必读 |
 |---|---|---|
 | #A-impl | 任务 A 实现 | 本计划任务 A 段；[src/lib/stream.ts](src/lib/stream.ts)；3 个 handler 的 streaming 段 |
-| #B-impl | 任务 B 实现 | 本计划任务 B 段；[src/lib/models/client.ts](src/lib/models/client.ts)；[refs/AVAILABLE_MODELS.json](refs/AVAILABLE_MODELS.json) 头部样本；[refs/agent-maestro/src/server/utils/anthropicModels.ts](refs/agent-maestro/src/server/utils/anthropicModels.ts) |
+| #B-impl | 任务 B 实现 | 本计划任务 B 段；[src/lib/models/client.ts](src/lib/models/client.ts)；[.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json](.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json) 头部样本；[refs/agent-maestro/src/server/utils/anthropicModels.ts](refs/agent-maestro/src/server/utils/anthropicModels.ts) |
 
 **两个 reviewer 串行（每任务一次完整 review-fix 循环）**：
 

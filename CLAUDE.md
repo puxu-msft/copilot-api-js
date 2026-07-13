@@ -39,7 +39,7 @@
 
 ## 本项目的工程纪律
 
-- **no-auto-server-no-kill。** 不运行 `bun run dev`/`start` 或任何启动服务器的命令（需验证服务器行为让用户启动），不用 `kill`/`pkill`/`killall` 终止本项目实例；可跑 `bun run typecheck`/`lint:all`/`bun test` 等非服务器命令。
+- **protect-user-main-server。** **绝不**杀死用户已启动在 **4141 端口**的主服务器实例——不对它用 `kill`/`pkill`/`killall`，也不做任何会终止它的操作（它承载用户的实时使用、History、诊断，误杀不可接受）。**允许**在**其他端口**用默认或自定义配置启动新的测试服务器来验证行为（如 `bun run start --port <非4141>` 或配置 `--port`），用后自行清理**自己启动的**那个测试实例（按 PID 精确 kill，绝不 `pkill`/`killall` 泛杀以免误伤 4141 主服务器）。非服务器命令（`bun run typecheck`/`lint:all`/`bun test`）照常。→ 实测服务器行为见 skill `empirical-verification`（4141 History API 探针）。
 - **细粒度、每阶段提交。** 一律显式 pathspec（`git add -- <精确路径>`、`git commit -F <msgfile> -- <精确路径>`），每语义单元一提交、conventional commits、不加模型署名 → user-rule `50-git-workflow`。本项目 2026-06-29 起**无 pre-commit 门禁**（lint-staged/simple-git-hooks 已移除），lint 靠手动 + subagent review → [docs/memory/tooling-lint-staged-revert-blocks-edit.md](docs/memory/tooling-lint-staged-revert-blocks-edit.md)。
 - **concurrent-sessions 行级共存。** 本仓库常有并发 agent 会话同时改动，**核心立场：行级共存，绝不整文件退让**（功能不矛盾则两份改动都该落地）；优先 **isolated worktree + 独立分支**（放 `./.worktrees/`），共享树则同文件不重叠行 + 显式 pathspec commit（`git commit -- <路径>` 取工作区、免疫 peer 并发 `git add` 的 index race）。→ skill `git-preference:avoiding-shared-worktree-conflicts`、[docs/memory/git-commit-pathspec-commits-worktree-not-index.md](docs/memory/git-commit-pathspec-commits-worktree-not-index.md)。
 - **no-destructive-workspace-loss。** 唯一判据是**可恢复性**：会丢失 git 救不回的工作（未提交/未暂存改动、未追踪文件）的操作绝不做，后果可恢复（已提交、git 历史在）的被权限允许时正常做；撤销自己刚做的编辑用**重新编辑**而非回退；**绝不以"清理死代码/无消费者"为名擅自删**。→ 同上 skill。

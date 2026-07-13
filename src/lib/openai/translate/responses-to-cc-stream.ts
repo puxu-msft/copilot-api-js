@@ -23,10 +23,9 @@ export interface StreamTranslatorState {
   toolCallIndexMap: Map<number, number>
   nextToolCallIndex: number
   toolCallIds: Map<number, string>
-  includeUsage: boolean
 }
 
-export function createStreamTranslator(opts: { includeUsage: boolean }): {
+export function createStreamTranslator(): {
   translate(event: ResponsesStreamEvent): Array<ChatCompletionChunk>
   getState(): StreamTranslatorState
 } {
@@ -37,7 +36,6 @@ export function createStreamTranslator(opts: { includeUsage: boolean }): {
     toolCallIndexMap: new Map(),
     nextToolCallIndex: 0,
     toolCallIds: new Map(),
-    includeUsage: opts.includeUsage,
   }
 
   function translate(event: ResponsesStreamEvent): Array<ChatCompletionChunk> {
@@ -98,7 +96,12 @@ export function createStreamTranslator(opts: { includeUsage: boolean }): {
       case "response.completed": {
         syncStateFromResponse(state, event.response)
         const chunks = [buildChunk(state, {}, state.nextToolCallIndex > 0 ? "tool_calls" : "stop")]
-        if (state.includeUsage && event.response.usage) {
+        // Always emit the usage chunk when the upstream carries usage — consistent
+        // with the direct-CC path (which unconditionally forwards GHC's usage chunk)
+        // and required so history/telemetry capture usage even when the client did
+        // not set stream_options.include_usage. Previously gated on `includeUsage`,
+        // which silently zeroed usage for CC→Responses streaming. See spec.
+        if (event.response.usage) {
           chunks.push(buildUsageChunk(state, event.response))
         }
         return chunks
@@ -194,8 +197,12 @@ function buildUsageChunk(state: StreamTranslatorState, response: ResponsesRespon
         prompt_tokens: usage.input_tokens,
         completion_tokens: usage.output_tokens,
         total_tokens: usage.total_tokens,
-        ...(usage.input_tokens_details?.cached_tokens !== undefined && {
-          prompt_tokens_details: { cached_tokens: usage.input_tokens_details.cached_tokens },
+        ...((usage.input_tokens_details?.cached_tokens !== undefined || usage.input_tokens_details?.cache_write_tokens != null) && {
+          prompt_tokens_details: {
+            ...(usage.input_tokens_details?.cached_tokens !== undefined && { cached_tokens: usage.input_tokens_details.cached_tokens }),
+            // GHC extension: forward cache_write so the client sees it (spec §7).
+            ...(usage.input_tokens_details?.cache_write_tokens != null && { cache_write_tokens: usage.input_tokens_details.cache_write_tokens }),
+          },
         }),
         ...(usage.output_tokens_details?.reasoning_tokens !== undefined && {
           completion_tokens_details: { reasoning_tokens: usage.output_tokens_details.reasoning_tokens },

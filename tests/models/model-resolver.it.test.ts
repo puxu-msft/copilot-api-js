@@ -16,6 +16,7 @@ import {
   normalizeModelKeyedRecord,
   normalizeModelNameList,
   resolveModelName,
+  resolveModelTarget,
 } from "~/lib/models/resolver"
 import {
   //
@@ -380,6 +381,88 @@ describe("Bracket notation handling [1m]", () => {
     // claude-opus-4-6-20250514[1m] → claude-opus-4-6-20250514-1m
     // extractModifierSuffix strips -1m → resolveBase handles date suffix → re-attach -1m
     expect(resolveModelName("claude-opus-4-6-20250514[1m]")).toBe("claude-opus-4.6-1m")
+  })
+})
+
+describe("resolveModelTarget — route-override suffix parsing (@cc / @responses / @messages)", () => {
+  beforeEach(() => {
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-opus-4.6"),
+        mockModel("claude-opus-4.6-1m"),
+        mockModel("claude-opus-4.5"),
+        mockModel("claude-sonnet-4.5"),
+        mockModel("claude-haiku-4.5"),
+      ],
+    })
+    setModelOverrides({ opus: "claude-opus-4.6", sonnet: "claude-sonnet-4.5", haiku: "claude-haiku-4.5" })
+  })
+
+  test("no suffix → no routeOverride (byte-identical to resolveModelName)", () => {
+    expect(resolveModelTarget("claude-opus-4.6")).toEqual({ name: "claude-opus-4.6" })
+    expect(resolveModelTarget("opus")).toEqual({ name: "claude-opus-4.6" })
+  })
+
+  test("client direct-send suffix is peeled at the top level (W-c)", () => {
+    // A client that types the canonical name + suffix, with no override in play.
+    expect(resolveModelTarget("claude-opus-4.6@cc")).toEqual({ name: "claude-opus-4.6", routeOverride: "cc" })
+    expect(resolveModelTarget("claude-opus-4.6@responses")).toEqual({ name: "claude-opus-4.6", routeOverride: "responses" })
+    expect(resolveModelTarget("claude-opus-4.6@messages")).toEqual({ name: "claude-opus-4.6", routeOverride: "messages" })
+  })
+
+  test("suffix is case-insensitive", () => {
+    expect(resolveModelTarget("claude-opus-4.6@CC")).toEqual({ name: "claude-opus-4.6", routeOverride: "cc" })
+    expect(resolveModelTarget("claude-opus-4.6@Messages")).toEqual({ name: "claude-opus-4.6", routeOverride: "messages" })
+  })
+
+  test("suffix peels through the alias override (client typed alias + suffix)", () => {
+    // "opus@cc": strip @cc → "opus" → override → "claude-opus-4.6", suffix rides back.
+    expect(resolveModelTarget("opus@cc")).toEqual({ name: "claude-opus-4.6", routeOverride: "cc" })
+  })
+
+  test("suffix peels through a modifier suffix (bracket + @route)", () => {
+    // "opus[1m]@messages": strip @messages first → "opus[1m]" → bracket → opus-1m →
+    // base override "opus" + "-1m" → "claude-opus-4.6-1m", suffix rides back.
+    expect(resolveModelTarget("opus[1m]@messages")).toEqual({ name: "claude-opus-4.6-1m", routeOverride: "messages" })
+  })
+
+  test("override TARGET carrying @route strips the suffix off the resolved name (FAIL-1)", () => {
+    // The @cc must NOT punch through into the resolved id — it rides back as routeOverride.
+    setModelOverrides({ opus: "claude-opus-4.6@cc" })
+    expect(resolveModelTarget("opus")).toEqual({ name: "claude-opus-4.6", routeOverride: "cc" })
+  })
+
+  test("override-target suffix flows through a modifier redirect (FAIL-1, mid-chain)", () => {
+    // "opus-1m" has no own override; base "opus" → "claude-opus-4.6@messages": the ring
+    // strips @messages before the modelIds check, re-attaches -1m, and the override rides out.
+    setModelOverrides({ opus: "claude-opus-4.6@messages" })
+    expect(resolveModelTarget("opus[1m]")).toEqual({ name: "claude-opus-4.6-1m", routeOverride: "messages" })
+  })
+
+  test("client top-level suffix wins over an override-target suffix", () => {
+    setModelOverrides({ opus: "claude-opus-4.6@messages" })
+    // Client typed @cc explicitly → primary intent wins over the target's @messages.
+    expect(resolveModelTarget("opus@cc")).toEqual({ name: "claude-opus-4.6", routeOverride: "cc" })
+  })
+
+  test("deeper override-chain suffix wins over a shallower one", () => {
+    // sonnet → opus@cc → claude-opus-4.6@messages: the deepest ring (closest to the
+    // final model) pins @messages.
+    setModelOverrides({ sonnet: "opus@cc", opus: "claude-opus-4.6@messages" })
+    expect(resolveModelTarget("sonnet")).toEqual({ name: "claude-opus-4.6", routeOverride: "messages" })
+  })
+
+  test("unrecognized @xxx is preserved verbatim (no override, name unchanged)", () => {
+    // Not one of the three known routes → treated as part of the (unknown) model name.
+    expect(resolveModelTarget("claude-opus-4.6@turbo")).toEqual({ name: "claude-opus-4.6@turbo" })
+    expect(resolveModelTarget("gpt-4@foo")).toEqual({ name: "gpt-4@foo" })
+  })
+
+  test("resolveModelName is the .name projection of resolveModelTarget", () => {
+    expect(resolveModelName("opus@cc")).toBe("claude-opus-4.6")
+    expect(resolveModelName("claude-opus-4.6@messages")).toBe("claude-opus-4.6")
+    expect(resolveModelName("claude-opus-4.6@turbo")).toBe("claude-opus-4.6@turbo")
   })
 })
 

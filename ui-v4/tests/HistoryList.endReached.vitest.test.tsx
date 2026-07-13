@@ -71,19 +71,34 @@ function renderList() {
   )
 }
 
+// 自动加载(触底自动翻页)持久化键 —— 与 HistoryList.tsx 内 AUTOLOAD_STORAGE_KEY 同值。
+// master 把 endReached 触底翻页改为 autoLoad 门控(默认关),故正样本须先开 autoLoad 才触发 fetchNextPage。
+const AUTOLOAD_STORAGE_KEY = "ui-v4:requests:auto-load:v1"
+
 describe("HistoryList endReached wiring", () => {
   beforeEach(() => {
     useListStore.setState({ ...initialListState })
+    localStorage.removeItem(AUTOLOAD_STORAGE_KEY)
   })
 
-  it("loads the next (older) page when there is one", () => {
+  it("loads the next (older) page when autoLoad is on and there is one", () => {
+    localStorage.setItem(AUTOLOAD_STORAGE_KEY, "1") // 开 autoLoad → 触底自动翻页
     const fetchNextPage = vi.fn()
     mockHistory = { entries: [entry("a"), entry("b")], total: 99, isLoading: false, hasNextPage: true, fetchNextPage }
     renderList()
     expect(fetchNextPage).toHaveBeenCalled()
   })
 
+  it("does NOT auto-page when autoLoad is off (default), even with a next page", () => {
+    // master 引入的 autoLoad 门控:默认关 → 触底不自动拉,只靠列底「加载更多」手动翻页。
+    const fetchNextPage = vi.fn()
+    mockHistory = { entries: [entry("a"), entry("b")], total: 99, isLoading: false, hasNextPage: true, fetchNextPage }
+    renderList()
+    expect(fetchNextPage).not.toHaveBeenCalled()
+  })
+
   it("does NOT page when there is no next page (hasNextPage gate)", () => {
+    localStorage.setItem(AUTOLOAD_STORAGE_KEY, "1") // 即便开 autoLoad,hasNextPage=false 仍不翻页
     const fetchNextPage = vi.fn()
     mockHistory = { entries: [entry("a"), entry("b")], total: 2, isLoading: false, hasNextPage: false, fetchNextPage }
     renderList()

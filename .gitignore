@@ -23,3 +23,6 @@ node_modules/
 # not the raw probe dirs. Already-committed conclusion files stay tracked (git
 # keeps tracking them); to commit a NEW conclusion doc, use `git add -f exp/...`.
 exp/
+
+# scaffold task scratch reports (worktree-local)
+.c*-report.md

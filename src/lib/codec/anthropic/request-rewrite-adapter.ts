@@ -34,6 +34,7 @@ import {
   destackActed,
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
+import { ENDPOINT } from "~/lib/models/endpoint"
 
 /** The history-facing sanitization-info envelope (subset of SanitizationStats). */
 type SanitizationInfo = ReturnType<typeof toSanitizationInfo>
@@ -57,7 +58,11 @@ export function createAnthropicSanitizeRewrite(deps: AnthropicRequestRewriteDeps
   return {
     name: "anthropic-sanitize",
     order: ORDER_SANITIZE,
-    appliesTo: (env) => env.clientFormat === "anthropic",
+    // Two-axis gate (RFC §3.1 / §7.1): the sanitize chain produces the UPSTREAM Anthropic
+    // `/v1/messages` wire, so it gates on the OUTBOUND leg (`targetEndpoint`), not the inbound
+    // `clientFormat`. Byte-identical to the prior `clientFormat==="anthropic"` gate in Phase 1
+    // (anthropic-direct has both axes co-true; no translation leg exists yet).
+    appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES,
     apply: (env) => applyAnthropicSanitize(env, deps),
   }
 }

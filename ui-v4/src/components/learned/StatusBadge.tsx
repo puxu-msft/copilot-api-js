@@ -3,9 +3,9 @@ import type { EntryStatus } from "@/types"
 import { badgeKind } from "@/lib/learned"
 
 const STYLE: Record<"active" | "expired" | "pinned", { label: string; color: string }> = {
-  active: { label: "● 活跃", color: "var(--color-ok)" },
-  expired: { label: "● 已过期", color: "var(--color-muted)" },
-  pinned: { label: "◆ 已固定", color: "var(--color-primary)" },
+  active: { label: "● 活跃", color: "var(--signal-ok)" },
+  expired: { label: "● 已过期", color: "var(--signal-muted)" },
+  pinned: { label: "◆ 已固定", color: "var(--content-accent)" },
 }
 
 export function StatusBadge({ status }: { status: EntryStatus }) {

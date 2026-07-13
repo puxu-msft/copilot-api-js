@@ -19,10 +19,10 @@ const ANCHOR_PREFIX = "convo"
 
 type ConvoView = "rendered" | "raw"
 
-const TOGGLE_BASE = "mono border border-[var(--color-border)] px-2 py-0.5 text-[12px]"
+const TOGGLE_BASE = "mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px]"
 
 function viewClass(active: boolean): string {
-  return `${TOGGLE_BASE} ${active ? "text-[var(--color-primary)]" : "text-[var(--color-muted)]"}`
+  return `${TOGGLE_BASE} ${active ? "text-[var(--content-accent)]" : "text-[var(--content-muted)]"}`
 }
 
 export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
@@ -69,7 +69,7 @@ export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
         </div>
         {view === "raw" ?
           <>
-            <div className="mono mb-1.5 text-[11px] text-[var(--color-muted)]">
+            <div className="mono mb-1.5 text-[11px] text-[var(--content-muted)]">
               仅消息数组。完整请求 body（system · tools · 参数）见 Stages → Inbound → Raw。
             </div>
             <RawJsonView value={messages} />

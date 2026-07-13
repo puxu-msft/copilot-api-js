@@ -90,7 +90,7 @@ export function OverviewTab({ model }: { model: Model }) {
                 <Chip key={e}>{e}</Chip>
               ))}
               {inferred ?
-                <span className="ml-1 text-[10px] text-[var(--color-muted)]">inferred from capabilities.type</span>
+                <span className="ml-1 text-[10px] text-[var(--content-muted)]">inferred from capabilities.type</span>
               : null}
             </span>
           : renderValue(undefined)}

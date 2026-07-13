@@ -147,6 +147,20 @@ describe("createRequestContext - attempt lifecycle", () => {
     })
   })
 
+  test("setAttemptCacheControlStripped stores on currentAttempt (HIGH-1 per-attempt 持久化)", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    ctx.setAttemptCacheControlStripped(["scope"])
+    expect(ctx.currentAttempt!.cacheControlStripped).toEqual(["scope"])
+  })
+
+  test("setAttemptCacheControlStripped 空数组 no-op（不建空标记）", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({})
+    ctx.setAttemptCacheControlStripped([])
+    expect(ctx.currentAttempt!.cacheControlStripped).toBeUndefined()
+  })
+
   test("setAttemptEffectiveRequest stores on currentAttempt", () => {
     const { ctx } = makeContext()
     ctx.beginAttempt({})
@@ -365,6 +379,35 @@ describe("createRequestContext - toHistoryEntry", () => {
     expect(entry._index?.derived?.attemptCount).toBe(1)
     expect(entry.queueWaitMs).toBe(0)
     expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+  })
+
+  test("setRouteInfo projects routing observability into model{} (RFC §10 / T1.6)", () => {
+    const { ctx } = makeContext({ endpoint: "anthropic-messages" })
+    ctx.setOriginalRequest({ model: "claude-opus-4.8", messages: [{ role: "user", content: "hi" }], stream: false, payload: {} })
+    ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
+    // Direct anthropic leg: no client suffix, outbound /v1/messages, not translated.
+    ctx.setRouteInfo?.({ outboundEndpoint: "/v1/messages", translated: false })
+    ctx.beginAttempt({})
+    ctx.complete({ success: true, model: "claude-opus-4.8", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.model?.outboundEndpoint).toBe("/v1/messages")
+    expect(entry.model?.translated).toBe(false)
+    // routeOverride omitted when the client typed no suffix.
+    expect(entry.model?.routeOverride).toBeUndefined()
+    // Existing fields untouched (zero regression).
+    expect(entry.model?.resolved).toBe("claude-opus-4.8")
+  })
+
+  test("setRouteInfo records an explicit @messages pin + a translate leg label", () => {
+    const { ctx } = makeContext({ endpoint: "anthropic-messages" })
+    ctx.setOriginalRequest({ model: "claude-opus-4.8@messages", messages: [{ role: "user", content: "hi" }], stream: false, payload: {} })
+    ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
+    ctx.setRouteInfo?.({ routeOverride: "messages", outboundEndpoint: "/v1/messages", translated: false })
+    ctx.beginAttempt({})
+    ctx.complete({ success: true, model: "claude-opus-4.8", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
+
+    expect(ctx.toHistoryEntry().model?.routeOverride).toBe("messages")
   })
 
   test("synthesizes a failed non-final attempt's response carrying the upstream error rawBody (gap H)", () => {
@@ -928,5 +971,55 @@ describe("createRequestContext - P2.5 producer alignment (fail/abort → final a
     const last = ctx.toHistoryEntry().attempts?.at(-1)
     expect(last?.upstreamResponse?.status).toBe(400)
     expect(last?.upstreamResponse?.rawBody).toBe("body-1")
+  })
+})
+
+// ─── setStreamTimeouts / mergedPipelineInfo (D2 diagnostics, Phase 4a) ───
+
+describe("setStreamTimeouts merges into pipelineInfo without clobbering", () => {
+  test("stream timeouts survive when setPipelineInfo is never called", () => {
+    // The D2 core requirement: every request gets the diagnostic field, even
+    // when no sanitization/truncation ever triggers setPipelineInfo.
+    const { ctx } = makeContext()
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    expect(ctx.pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
+  })
+
+  test("setStreamTimeouts before setPipelineInfo: both survive", () => {
+    const { ctx } = makeContext()
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    ctx.setPipelineInfo({ sanitization: [] })
+    expect(ctx.pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
+    expect(ctx.pipelineInfo?.sanitization).toEqual([])
+  })
+
+  test("setStreamTimeouts after setPipelineInfo: full-replace does not clobber it", () => {
+    const { ctx } = makeContext()
+    ctx.setPipelineInfo({ sanitization: [] })
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    expect(ctx.pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
+    expect(ctx.pipelineInfo?.sanitization).toEqual([])
+  })
+
+  test("merge semantics: two setStreamTimeouts calls accumulate", () => {
+    const { ctx } = makeContext()
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    ctx.setStreamTimeouts({ responseHeaderTimeoutMs: 420_000 })
+    expect(ctx.pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
+    expect(ctx.pipelineInfo?.responseHeaderTimeoutMs).toBe(420_000)
+  })
+
+  test("toHistoryEntry (onTerminal projection) carries the merged stream timeouts", () => {
+    const { ctx } = makeContext()
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
+    expect(ctx.toHistoryEntry().pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
+  })
+
+  test("setStreamTimeouts publishes a pipelineInfo context_updated event", () => {
+    const { ctx, events } = makeContext()
+    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
+    const updated = events.filter((e) => e.kind === "request.context_updated" && e.field === "pipelineInfo")
+    expect(updated.length).toBeGreaterThanOrEqual(1)
   })
 })

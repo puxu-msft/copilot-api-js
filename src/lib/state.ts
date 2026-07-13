@@ -76,6 +76,23 @@ export interface CompiledRewriteRule {
   method?: "regex" | "line"
   /** Compiled regex for model name filtering. undefined = apply to all models. */
   modelPattern?: RegExp
+  /** Endpoint-scope set (ClientFormat values). undefined = apply to all endpoints. */
+  endpointSet?: ReadonlySet<string>
+}
+
+/**
+ * A compiled system-prompt prepend/append entry: the literal `text` plus the
+ * pre-compiled model/endpoint scope (same two-axis AND semantics as
+ * {@link CompiledRewriteRule}). A plain-string config entry compiles to
+ * `{ text, modelPattern: undefined, endpointSet: undefined }` (unscoped).
+ */
+export interface CompiledSystemPromptEntry {
+  /** The prepend/append text. */
+  text: string
+  /** Compiled regex for model name filtering. undefined = apply to all models. */
+  modelPattern?: RegExp
+  /** Endpoint-scope set (ClientFormat values). undefined = apply to all endpoints. */
+  endpointSet?: ReadonlySet<string>
 }
 
 /**
@@ -142,6 +159,15 @@ export interface State {
    * compressed during truncation. Config `auto_truncate.compress_threshold`.
    */
   readonly autoTruncateCompressThreshold: number
+
+  /**
+   * Main-path pre-flight truncation: before sending, predict via the learned
+   * size-aware calibration factor whether the request will exceed the model's
+   * token limit and pre-truncate it, saving a guaranteed-to-fail 400 round-trip.
+   * Reactive truncation stays the fallback. Opt-in; default false. Config
+   * `auto_truncate.preflight`.
+   */
+  readonly autoTruncatePreflight: boolean
 
   /**
    * Account is on token-based (PAYG) billing rather than premium-request
@@ -572,16 +598,14 @@ export interface State {
   /** Additional tool names that should never be deferred (merged with built-in list) */
   readonly nonDeferredTools: ReadonlyArray<string>
 
-  /**
-   * Anthropic API key for accurate Claude token counting.
-   * When set, `/v1/messages/count_tokens` for Claude models is forwarded to
-   * Anthropic's free token counting endpoint instead of using GPT tokenizer estimation.
-   * Also reads ANTHROPIC_API_KEY env var as fallback.
-   */
-  readonly anthropicApiKey: string
-
   /** Pre-compiled system prompt override rules from config.yaml */
   readonly systemPromptOverrides: Array<CompiledRewriteRule>
+
+  /** Pre-compiled scoped `system_prompt_prepend` entries (top-down; matching ones concatenated). */
+  readonly systemPromptPrepend: Array<CompiledSystemPromptEntry>
+
+  /** Pre-compiled scoped `system_prompt_append` entries (top-down; matching ones concatenated). */
+  readonly systemPromptAppend: Array<CompiledSystemPromptEntry>
 
   /**
    * Maximum number of successful (non-failed) history entries to keep in SQLite.
@@ -647,6 +671,26 @@ export interface State {
    * 0 = no idle timeout. Default: 300.
    */
   readonly streamIdleTimeout: number
+
+  /**
+   * Per-model stream-idle timeout override (seconds), keyed by model-name
+   * substring with `"*"` wildcard (same `findMostSpecific` semantics as
+   * `effortsOverrides`). A match wins over the `streamIdleTimeout` scalar; a
+   * value of 0 means disabled. Bundled default `{ "gpt-5.5": 600 }` (gpt-5.5's
+   * single 400s+ silent-reasoning gap exceeds the 300s scalar). App-guard only —
+   * does NOT touch the undici dispatcher. Hot-reloadable: per-key merged with
+   * bundled, entirely re-applied on config reload. Resolved via
+   * `resolveStreamIdleTimeout*` in `~/lib/models/timeout-resolver`.
+   */
+  readonly streamIdleTimeoutOverrides: Record<string, number>
+
+  /**
+   * Per-model response-header (first-byte) timeout override (seconds), same
+   * keying/merge semantics as `streamIdleTimeoutOverrides`. A match wins over
+   * the `responseHeaderTimeout` scalar; 0 = disabled. Bundled default `{}` (no
+   * built-in value). App-guard only. Resolved via `resolveResponseHeaderTimeout*`.
+   */
+  readonly responseHeaderTimeoutOverrides: Record<string, number>
 
   /**
    * Upstream TCP keepalive initial-probe delay in seconds.
@@ -814,6 +858,8 @@ export interface State {
    * Hot-reloadable: entirely replaced on config reload.
    */
   readonly stripBetaHeaders: Record<string, Array<string>>
+  /** GHC 未支持的 cache_control 子字段黑名单（per-model + 通配 "*"）。passthrough 模式下剥除。内置 {scope} 在读取端注入，此处仅 config 覆盖。 */
+  readonly stripCacheControlSubfields: Record<string, Array<string>>
 
   /**
    * Per-model partner-model feature names (e.g. `structured_outputs`) the upstream
@@ -891,6 +937,20 @@ export interface State {
    * `negotiationDefaultTtlMs`. Hot-reloadable: entirely replaced on config reload.
    */
   readonly negotiationTtlOverridesMs: Record<string, number>
+
+  /**
+   * Path to an ad-hoc TS hook module for mocking/intercepting the upstream transport
+   * (dev/test only). Declarative: this field alone does not load anything — the module is
+   * loaded at startup (`start.ts`, when `hooksEnabled`) or via a future reload API. Empty
+   * string = no module configured. Config-managed (`hooks.upstream_module`).
+   */
+  readonly hooksUpstreamModule: string
+
+  /**
+   * Whether to load the upstream hook module named by `hooksUpstreamModule`. Default false —
+   * the feature is fully off unless explicitly true. Declarative only; see `hooksUpstreamModule`.
+   */
+  readonly hooksEnabled: boolean
 }
 
 type MutableState = {
@@ -946,10 +1006,13 @@ function cloneState(source: MutableState): MutableState {
     modelOverrides: { ...source.modelOverrides },
     toolSearchOverrides: { ...source.toolSearchOverrides },
     effortsOverrides: { ...source.effortsOverrides },
+    streamIdleTimeoutOverrides: { ...source.streamIdleTimeoutOverrides },
+    responseHeaderTimeoutOverrides: { ...source.responseHeaderTimeoutOverrides },
     negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
     bufferedRetryShared: { ...source.bufferedRetryShared },
     bufferedRetryOverrides: cloneBufferedRetryOverrides(source.bufferedRetryOverrides),
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
+    stripCacheControlSubfields: cloneStripBetaHeaders(source.stripCacheControlSubfields),
     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
     stripToolFields: cloneStripBetaHeaders(source.stripToolFields),
     keepToolFields: cloneStripBetaHeaders(source.keepToolFields),
@@ -963,6 +1026,8 @@ function cloneState(source: MutableState): MutableState {
     models: cloneModels(source.models),
     rewriteSystemReminders: cloneRewriteRules(source.rewriteSystemReminders),
     systemPromptOverrides: [...source.systemPromptOverrides],
+    systemPromptPrepend: [...source.systemPromptPrepend],
+    systemPromptAppend: [...source.systemPromptAppend],
     tokenInfo: source.tokenInfo ? { ...source.tokenInfo } : undefined,
   }
 }
@@ -997,11 +1062,23 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("systemPromptOverrides" in patch) {
     cloned.systemPromptOverrides = patch.systemPromptOverrides ? [...patch.systemPromptOverrides] : undefined
   }
+  if ("systemPromptPrepend" in patch) {
+    cloned.systemPromptPrepend = patch.systemPromptPrepend ? [...patch.systemPromptPrepend] : undefined
+  }
+  if ("systemPromptAppend" in patch) {
+    cloned.systemPromptAppend = patch.systemPromptAppend ? [...patch.systemPromptAppend] : undefined
+  }
   if ("tokenInfo" in patch) {
     cloned.tokenInfo = patch.tokenInfo ? { ...patch.tokenInfo } : undefined
   }
   if ("effortsOverrides" in patch) {
     cloned.effortsOverrides = patch.effortsOverrides ? { ...patch.effortsOverrides } : undefined
+  }
+  if ("streamIdleTimeoutOverrides" in patch) {
+    cloned.streamIdleTimeoutOverrides = patch.streamIdleTimeoutOverrides ? { ...patch.streamIdleTimeoutOverrides } : undefined
+  }
+  if ("responseHeaderTimeoutOverrides" in patch) {
+    cloned.responseHeaderTimeoutOverrides = patch.responseHeaderTimeoutOverrides ? { ...patch.responseHeaderTimeoutOverrides } : undefined
   }
   if ("negotiationTtlOverridesMs" in patch) {
     cloned.negotiationTtlOverridesMs = patch.negotiationTtlOverridesMs ? { ...patch.negotiationTtlOverridesMs } : undefined
@@ -1014,6 +1091,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("stripBetaHeaders" in patch) {
     cloned.stripBetaHeaders = patch.stripBetaHeaders ? cloneStripBetaHeaders(patch.stripBetaHeaders) : undefined
+  }
+  if ("stripCacheControlSubfields" in patch) {
+    cloned.stripCacheControlSubfields = patch.stripCacheControlSubfields ? cloneStripBetaHeaders(patch.stripCacheControlSubfields) : undefined
   }
   if ("stripPartnerFeatures" in patch) {
     cloned.stripPartnerFeatures = patch.stripPartnerFeatures ? cloneStripBetaHeaders(patch.stripPartnerFeatures) : undefined
@@ -1187,6 +1267,8 @@ export function setAnthropicBehavior(
       | "nonDeferredTools"
       | "rewriteSystemReminders"
       | "systemPromptOverrides"
+      | "systemPromptPrepend"
+      | "systemPromptAppend"
       | "compressToolResultsBeforeTruncate"
       | "sanitizeToolNames"
       | "recoverToolCallText"
@@ -1198,10 +1280,12 @@ export function setAnthropicBehavior(
       | "memoryModels"
       | "interleavedThinkingModels"
       | "adaptiveThinkingModels"
-      | "anthropicApiKey"
       | "warmupPolicy"
       | "effortsOverrides"
+      | "streamIdleTimeoutOverrides"
+      | "responseHeaderTimeoutOverrides"
       | "stripBetaHeaders"
+      | "stripCacheControlSubfields"
       | "stripPartnerFeatures"
       | "stripToolFields"
       | "keepToolFields"
@@ -1217,6 +1301,19 @@ export function setAnthropicBehavior(
 
 export function setModelOverrides(modelOverrides: Record<string, string>): void {
   updateState({ modelOverrides })
+}
+
+/**
+ * Replace the per-model stream-idle / response-header timeout override maps.
+ * Replace semantics per field (the maps are already per-key merged with the
+ * bundled defaults upstream in `mergeConfigs`). Deliberately does NOT fire
+ * `transportTimeoutListeners` — these are app-guard-only knobs with no bearing
+ * on the undici dispatcher (which serves plaintext SearXNG on the scalar
+ * `streamIdleTimeout`; GHC rides node:http2 with no transport body-idle). See
+ * ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
+ */
+export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "streamIdleTimeoutOverrides" | "responseHeaderTimeoutOverrides">>): void {
+  updateState(patch)
 }
 
 export function setHistoryConfig(
@@ -1260,6 +1357,15 @@ export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGra
 }
 
 /**
+ * Set the upstream-hook declarative config (`hooksUpstreamModule` / `hooksEnabled`). Declarative
+ * only — never triggers a module (re)load itself; that happens at startup (`start.ts`) or via a
+ * future reload API.
+ */
+export function setHooksConfig(patch: Partial<Pick<MutableState, "hooksUpstreamModule" | "hooksEnabled">>): void {
+  updateState(patch)
+}
+
+/**
  * Set reactive-learning (feature-negotiation) TTL config. Hot-reloadable.
  * `negotiationTtlOverridesMs` is replaced wholesale (whole-map replace semantic,
  * like the other config-managed record fields).
@@ -1273,7 +1379,9 @@ export function setWebSearchConfig(patch: Partial<Pick<MutableState, "webSearchE
 }
 
 export function setAutoTruncateConfig(
-  patch: Partial<Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateMaxRetries" | "autoTruncateCompressThreshold">>,
+  patch: Partial<
+    Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateMaxRetries" | "autoTruncateCompressThreshold" | "autoTruncatePreflight">
+  >,
 ): void {
   updateState(patch)
 }
@@ -1475,6 +1583,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   nonDeferredTools: [] as ReadonlyArray<string>,
   rewriteSystemReminders: false as const,
   systemPromptOverrides: [] as Array<CompiledRewriteRule>,
+  systemPromptPrepend: [] as Array<CompiledSystemPromptEntry>,
+  systemPromptAppend: [] as Array<CompiledSystemPromptEntry>,
   autoTruncate: false,
   // Defaults mirror the engine constants AUTO_TRUNCATE_RETRY_FACTOR / MAX_AUTO_TRUNCATE_RETRIES /
   // LARGE_TOOL_RESULT_THRESHOLD. Inlined (not imported) to avoid a state ↔ auto-truncate ↔
@@ -1482,6 +1592,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   autoTruncateTargetFactor: 0.9,
   autoTruncateMaxRetries: 5,
   autoTruncateCompressThreshold: 10000,
+  autoTruncatePreflight: false,
   compressToolResultsBeforeTruncate: true,
   sanitizeToolNames: false,
   recoverToolCallText: false,
@@ -1535,10 +1646,17 @@ export const CONFIG_MANAGED_DEFAULTS = {
   maxWsFrameBytes: 0,
   maxClientWsConnections: 256,
   maxUpstreamWsConnections: 32,
-  anthropicApiKey: "",
   warmupPolicy: "allow" as WarmupPolicy,
   effortsOverrides: {} as Record<string, Array<string>>,
+  // Empty by design — the bundled `gpt-5.5: 600` product default lives in
+  // config.yaml (`timeouts.stream_idle_overrides`), NOT here, mirroring
+  // `model_overrides` (H1: BUILTIN code-constant + union would be wrong; this is
+  // per-key merge with the shippable config, degrading to scalar if config.yaml
+  // is absent). See docs/spec/2026-07-12-per-model-idle-timeout.md §4.2.
+  streamIdleTimeoutOverrides: {} as Record<string, number>,
+  responseHeaderTimeoutOverrides: {} as Record<string, number>,
   stripBetaHeaders: {} as Record<string, Array<string>>,
+  stripCacheControlSubfields: {} as Record<string, Array<string>>,
   stripPartnerFeatures: {} as Record<string, Array<string>>,
   stripToolFields: {} as Record<string, Array<string>>,
   keepToolFields: {} as Record<string, Array<string>>,
@@ -1549,6 +1667,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   negotiationDefaultTtlMs: 30 * 86_400_000,
   negotiationTtlOverridesMs: { toolFields: 90 * 86_400_000, partnerFeatures: Number.POSITIVE_INFINITY } as Record<string, number>,
   disabledModels: [] as ReadonlyArray<string>,
+  hooksUpstreamModule: "",
+  hooksEnabled: false,
 }
 
 export function resetConfigManagedState(): void {
@@ -1594,6 +1714,8 @@ export function resetConfigManagedState(): void {
     nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
     rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
+    systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
+    systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
     compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
@@ -1605,10 +1727,12 @@ export function resetConfigManagedState(): void {
     memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
     interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
     adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
-    anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+    streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },
+    responseHeaderTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
+    stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),
     stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
     stripToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripToolFields),
     keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
@@ -1630,6 +1754,10 @@ export function resetConfigManagedState(): void {
   setShutdownConfig({
     shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
     shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
+  })
+  setHooksConfig({
+    hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
+    hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
   })
   setNegotiationConfig({
     negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
@@ -1665,12 +1793,14 @@ export function resetConfigManagedState(): void {
     chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
   })
   // auto-truncate is a top-level toggle (CLI flag + config.yaml `auto_truncate.enabled`)
-  // plus three tuning fields, all reset via setAutoTruncateConfig.
+  // plus tuning fields (target_factor / max_retries / compress_threshold / preflight),
+  // all reset via setAutoTruncateConfig.
   setAutoTruncateConfig({
     autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
     autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
     autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
     autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
+    autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
   })
 }
 
@@ -1681,6 +1811,7 @@ const mutableState: MutableState = {
   autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
   autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
   autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
+  autoTruncatePreflight: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
   tokenBasedBilling: false,
   compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
@@ -1754,6 +1885,8 @@ const mutableState: MutableState = {
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
   upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
+  systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
+  systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
   stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
   normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
   upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
@@ -1764,10 +1897,12 @@ const mutableState: MutableState = {
   maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
   maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
   maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
-  anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
   warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
   effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+  streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },
+  responseHeaderTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides },
   stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
+  stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),
   stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
   stripToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripToolFields),
   keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
@@ -1778,6 +1913,8 @@ const mutableState: MutableState = {
   negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
   negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
   disabledModels: [...CONFIG_MANAGED_DEFAULTS.disabledModels],
+  hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
+  hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
   verbose: false,
 }
 

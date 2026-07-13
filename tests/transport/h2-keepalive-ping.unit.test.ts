@@ -3,7 +3,7 @@
  * (`scheduleH2KeepalivePing`). Pure scheduler logic — a fake session with a
  * `ping` spy + a real short interval, so it is deterministic without an h2
  * server or fake timers (Bun's h2 server does not surface received PINGs, and
- * fake-timer + setInterval is fragile under Bun — see skill bun-upstream-transport).
+ * fake-timer + setInterval is fragile under Bun — see skill debugging-ghc-api-upstream-transport).
  *
  * Why this exists: GHC's CAPI proxy does not forward Anthropic's SSE `ping`
  * frames, so a long thinking silence is a truly idle upstream stream that a

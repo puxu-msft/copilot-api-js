@@ -46,6 +46,7 @@ export const getModels = async (): Promise<ModelsResponse | undefined> => {
 
   const response = await upstreamFetch(`${copilotBaseUrl(state)}/models`, {
     headers,
+    // Model-catalog fetch has no per-model concept — intentionally scalar (no model arg).
     signal: createResponseHeaderTimeoutSignal(),
   })
 

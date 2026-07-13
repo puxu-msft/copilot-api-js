@@ -7,8 +7,10 @@
  * `recordFeature("tool-input-repaired" | "tool-input-unrepairable")` tags that
  * carry the same engagements into history. `strip` = fixed by the `tags` item
  * (antml tag strip), `unicode` = fixed by the `unicode` item (whitespace-broken
- * `\uXXXX` escape), `jsonrepair` = fixed by the `jsonrepair` item, `unrepairable`
- * = no enabled item produced valid JSON (the request was failed by the handler).
+ * `\uXXXX` escape), `jsonrepair` = fixed by the `jsonrepair` item, `unicode-lossy`
+ * = fixed by the LOSSY best-effort item (un-completable `\uXXXX` → U+FFFD; ≥1 char
+ * garbled), `unrepairable` = no enabled item produced valid JSON (the request was
+ * failed by the handler).
  */
 
 import consola from "consola"
@@ -23,13 +25,15 @@ export interface ToolInputRepairStats {
   unicode: number
   /** Repaired by the `jsonrepair` item (jsonrepair). */
   jsonrepair: number
+  /** Repaired by the LOSSY `unicode-lossy` item (un-completable `\uXXXX` → U+FFFD; ≥1 garbled char). */
+  "unicode-lossy": number
   /** No enabled repair item could produce valid JSON. */
   unrepairable: number
 }
 
 export type ToolInputRepairOutcome = keyof ToolInputRepairStats
 
-const stats: ToolInputRepairStats = { strip: 0, unicode: 0, jsonrepair: 0, unrepairable: 0 }
+const stats: ToolInputRepairStats = { strip: 0, unicode: 0, jsonrepair: 0, "unicode-lossy": 0, unrepairable: 0 }
 
 /** Record one repair outcome. */
 export function recordToolInputRepair(outcome: ToolInputRepairOutcome): void {
@@ -46,6 +50,7 @@ export function resetToolInputRepairStatsForTests(): void {
   stats.strip = 0
   stats.unicode = 0
   stats.jsonrepair = 0
+  stats["unicode-lossy"] = 0
   stats.unrepairable = 0
 }
 
@@ -63,8 +68,8 @@ export function flushToolInputRepairObservability(ctx: RequestContext): void {
     if (r.outcome === "unrepairable") {
       ctx.recordFeature("tool-input-unrepairable", { tool: r.tool })
     } else {
-      ctx.recordFeature("tool-input-repaired", { tool: r.tool, layer: r.outcome })
-      consola.info(`[REWRITE] tool-input-repair tool=${r.tool} layer=${r.outcome} ${r.beforeLength}→${r.afterLength}B`)
+      ctx.recordFeature("tool-input-repaired", { tool: r.tool, layer: r.outcome, field: r.field })
+      consola.info(`[REWRITE] tool-input-repair tool=${r.tool}${r.field ? ` field=${r.field}` : ""} layer=${r.outcome} ${r.beforeLength}→${r.afterLength}B`)
     }
   }
 }

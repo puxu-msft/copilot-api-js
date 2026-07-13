@@ -125,8 +125,10 @@ describe("translateChatCompletionsToResponses", () => {
           strict: true,
         },
       },
-      include: ["usage"],
     })
+    // GHC's usage upgrade rejects `include: ["usage"]`; usage now comes by default,
+    // so the translator must NOT emit an `include` field for it.
+    expect((result.payload as { include?: unknown }).include).toBeUndefined()
 
     expect(result.payload.tools).toEqual([
       {

@@ -47,7 +47,7 @@
 - session 建立/关闭时刻、pool 命中 vs 新建、per-origin 活跃 session 数、session 存活时长
 - **GOAWAY 收到（含 lastStreamID、errorCode、debugData）** ← 判别 A/B 的最强信号
 - **PING 往返（发出时刻、ack RTT、unack 计数）** ← 连接健康直接指标
-- TCP keepalive 是否真落内核（可选：启动时一次性 `ss` 自检，或记录 `setKeepAlive` 生效与否——注意 Bun delay 参数已知坏，见 skill `bun-upstream-transport`）
+- TCP keepalive 是否真落内核（可选：启动时一次性 `ss` 自检，或记录 `setKeepAlive` 生效与否——注意 Bun delay 参数已知坏，见 skill `debugging-ghc-api-upstream-transport`）
 
 **流生命周期（stream-级，per-request）**
 - stream 开启时刻、请求字节数、响应头到达耗时（TTFB）、`:status`
@@ -56,7 +56,7 @@
 - **truncation 归因**：结合上面派生「这次截断最可能是 A（连接级 drain/GOAWAY/中间设备）还是 B（单流 idle、无 GOAWAY、连接仍活）」——这是取证的终点产物
 
 **重试/管线关联（request-级）**
-- 每次 attempt 用了哪条 session、是否换新连接、REFUSED_STREAM 重试（已有分类，见 skill `bun-upstream-transport`）、L2 缓冲重试与传输事件的对应
+- 每次 attempt 用了哪条 session、是否换新连接、REFUSED_STREAM 重试（已有分类，见 skill `debugging-ghc-api-upstream-transport`）、L2 缓冲重试与传输事件的对应
 
 ## 5. 核心难题：多路复用池化 session 的关联（新会话重点解决）
 
@@ -95,11 +95,11 @@
 - 截断判定：[src/routes/messages/handler-v4.ts:1208-1229](../../src/routes/messages/handler-v4.ts#L1208)
 - 可观测底座：`src/lib/observability/{bus,events,telemetry-dimensions,active-request-wire}.ts` + `projections/` + `sinks/`；`src/lib/request-telemetry.ts`、`metrics-exposition.ts`、`routes/metrics/`
 - history：`src/lib/history/`（`types.ts`、`sqlite/`、`entries.ts`、`entry-view.ts`）
-- 相关 skill：`bun-upstream-transport`（传输坑 + 两层保活 + A/B 判别）、`telemetry-architecture`、`history-sqlite-schema`、`history-backfill`、`persistence-async-invariants`、`empirical-verification`
+- 相关 skill：`debugging-ghc-api-upstream-transport`（传输坑 + 两层保活 + A/B 判别）、`telemetry-architecture`、`history-sqlite-schema`、`history-backfill`、`persistence-async-invariants`、`empirical-verification`
 - 相关 ADR：`docs/decisions/2026-07-05-richest-data-flow.md`、`docs/decisions/2026-07-05-internal-tool-security-posture.md`
 
 ## 10. 新会话 kickoff prompt（可直接复制）
 
 ```
-在 copilot-api-js 做「上游传输可观测性子系统」特性。先读 docs/todo/upstream-transport-observability.md（信息交接 + 设计草案，范围/用途决策已锁定），再读 src/lib/observability/ 全貌与 skill telemetry-architecture / history-sqlite-schema / bun-upstream-transport。走 brainstorming → docs/spec/ → docs/plan/ → 执行；先定 §5 的多路复用关联模型与 §6 的 history 字段形状，subagent 对抗审查后再实现。裁判轴：长远正确 + 完整，别用 ROI/YAGNI 缩范围。最小可交付的第一刀建议：先补 GOAWAY 收到 + close-reason（clean-end/close-before-end/rstCode）+ truncation 归因的结构化日志与 history 字段，让复现机能直接读出 A/B。
+在 copilot-api-js 做「上游传输可观测性子系统」特性。先读 docs/todo/upstream-transport-observability.md（信息交接 + 设计草案，范围/用途决策已锁定），再读 src/lib/observability/ 全貌与 skill telemetry-architecture / history-sqlite-schema / debugging-ghc-api-upstream-transport。走 brainstorming → docs/spec/ → docs/plan/ → 执行；先定 §5 的多路复用关联模型与 §6 的 history 字段形状，subagent 对抗审查后再实现。裁判轴：长远正确 + 完整，别用 ROI/YAGNI 缩范围。最小可交付的第一刀建议：先补 GOAWAY 收到 + close-reason（clean-end/close-before-end/rstCode）+ truncation 归因的结构化日志与 history 字段，让复现机能直接读出 A/B。
 ```

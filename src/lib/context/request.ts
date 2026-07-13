@@ -85,10 +85,11 @@ function extractMaxTokens(p: { max_tokens?: unknown; max_completion_tokens?: unk
  * (keeps the eager/finalized stage byte-identical when there is nothing to record).
  */
 export function pipelineFromAttempt(a: Attempt): PipelineInfo | undefined {
-  if (!a.truncation && !a.sanitization) return undefined
+  if (!a.truncation && !a.sanitization && !a.cacheControlStripped) return undefined
   return {
     ...(a.truncation && { truncation: a.truncation }),
     ...(a.sanitization && { sanitization: [a.sanitization] }),
+    ...(a.cacheControlStripped && { cacheControlStripped: a.cacheControlStripped }),
   }
 }
 
@@ -232,6 +233,8 @@ export function createRequestContext(opts: {
   let _agentId = opts.agentId
   let _resolvedModel: string | null = null
   let _clientModel: string | null = null
+  /** S2 routing observability (routeOverride + actual outbound leg + translate-vs-direct), RFC §10. */
+  let _routeInfo: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean } | null = null
   let _originalRequest: OriginalRequest | null = null
   let _response: ResponseData | null = null
   let _forwardedResponse: ForwardedResponse | null = null
@@ -247,6 +250,16 @@ export function createRequestContext(opts: {
   // The failureReason projection reads this first, then falls back to `_response.error`.
   let _failureReason: string | null = null
   let _pipelineInfo: PipelineInfo | null = null
+  // Cross-request-lifecycle scalar diagnostics (per-model effective timeouts),
+  // kept PARALLEL to `_pipelineInfo` because the 4 existing `setPipelineInfo`
+  // call sites do a full-replace and are gated on sanitization/truncation changes
+  // (many requests never trigger any of them). Merging via `mergedPipelineInfo()`
+  // lets these fields survive regardless, without touching those 4 call sites.
+  let _streamTimeouts: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number } | null = null
+  const mergedPipelineInfo = (): PipelineInfo | null => {
+    if (!_pipelineInfo && !_streamTimeouts) return null
+    return { ..._pipelineInfo, ..._streamTimeouts }
+  }
   let _sseEvents: Array<SseEventRecord> | null = null
   let _httpHeaders: {
     inboundRequest?: Record<string, string>
@@ -281,6 +294,7 @@ export function createRequestContext(opts: {
   function snapshot(): RequestContextSnapshot {
     const resolvedForLookup = _resolvedModel ?? undefined
     const billing = resolvedForLookup ? appState.modelIndex.get(resolvedForLookup)?.billing : undefined
+    const currentAttempt = _attempts.at(-1)
     return {
       id,
       endpoint: opts.endpoint,
@@ -295,6 +309,8 @@ export function createRequestContext(opts: {
       queueWaitMs: _queueWaitMs,
       ...(requestBodySize !== undefined && { requestBodySize }),
       ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+      ...(currentAttempt?.startTime !== undefined && { currentAttemptStartedAt: currentAttempt.startTime }),
+      ...(_attempts.length > 0 && { attemptCount: _attempts.length }),
     }
   }
 
@@ -361,7 +377,7 @@ export function createRequestContext(opts: {
       return _forwardedResponse
     },
     get pipelineInfo() {
-      return _pipelineInfo
+      return mergedPipelineInfo()
     },
     get httpHeaders() {
       return _httpHeaders
@@ -405,6 +421,14 @@ export function createRequestContext(opts: {
     setPipelineInfo(info: PipelineInfo) {
       // Direct assignment — caller assembles the complete PipelineInfo
       _pipelineInfo = info
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
+    },
+
+    setStreamTimeouts(patch: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number }) {
+      // Merge (the two fields are independent). Kept separate from `_pipelineInfo`
+      // so the 4 gated `setPipelineInfo` full-replace call sites never clobber it.
+      // Reuses the `pipelineInfo` context_updated event kind (no new event type).
+      _streamTimeouts = { ..._streamTimeouts, ...patch }
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
 
@@ -496,6 +520,13 @@ export function createRequestContext(opts: {
       }
     },
 
+    setAttemptCacheControlStripped(fields: ReadonlyArray<string>) {
+      const attempt = ctx.currentAttempt
+      if (attempt && fields.length > 0) {
+        attempt.cacheControlStripped = [...fields]
+      }
+    },
+
     setAttemptEffectiveRequest(req: EffectiveRequest) {
       const attempt = ctx.currentAttempt
       if (attempt) {
@@ -555,6 +586,18 @@ export function createRequestContext(opts: {
     commitAttemptSseEvents() {
       const attempt = ctx.currentAttempt
       if (attempt) attempt.sseEvents = _sseEvents ? [..._sseEvents] : undefined
+    },
+
+    /**
+     * L2 截断重试路径既不走 setAttemptResponse 也不走 setAttemptError，
+     * durationMs 停在 beginAttempt 初值 0。发 attempt_failed 前调此定稿，
+     * 使 [RETRY] 行的 lastMs 有真值。已定稿（>0）则不覆盖。
+     */
+    finalizeCurrentAttemptDuration() {
+      const attempt = ctx.currentAttempt
+      if (attempt && attempt.durationMs === 0) {
+        attempt.durationMs = Date.now() - attempt.startTime
+      }
     },
 
     /**
@@ -740,9 +783,9 @@ export function createRequestContext(opts: {
       // response error else the last attempt's error. Only for non-success terminals.
       // Fed into `_index.derived.failureReason` (recompute-only projection) below.
       const failureReasonValue =
-        _state === "failed" || _state === "aborted" || _state === "interrupted"
-          ? (_failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message ?? undefined)
-          : undefined
+        _state === "failed" || _state === "aborted" || _state === "interrupted" ?
+          (_failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message ?? undefined)
+        : undefined
 
       // New `model` parent key (RFC §3, §2.5): `requested` = client alias (raw inbound
       // model, == deprecated `inboundRequest.model`); `resolved` = normalized resolved
@@ -753,11 +796,19 @@ export function createRequestContext(opts: {
       const requestedModel = _originalRequest?.model
       const resolvedModelName = _resolvedModel !== null ? normalizeModelId(_resolvedModel) : _response?.model
       const billing = _resolvedModel !== null ? appState.modelIndex.get(_resolvedModel)?.billing : undefined
-      if (requestedModel !== undefined || resolvedModelName !== undefined || billing?.multiplier !== undefined) {
+      if (requestedModel !== undefined || resolvedModelName !== undefined || billing?.multiplier !== undefined || _routeInfo !== null) {
         entry.model = {
           ...(requestedModel !== undefined && { requested: requestedModel }),
           ...(resolvedModelName !== undefined && { resolved: resolvedModelName }),
           ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+          // Routing observability (RFC §10 / W6): the client's leg pin + the actual outbound leg +
+          // translate-vs-direct label. Only present once the driver recorded the S2 decision (direct
+          // requests get `translated:false`; `routeOverride` omitted when the client typed no suffix).
+          ...(_routeInfo !== null && {
+            ...(_routeInfo.routeOverride !== undefined && { routeOverride: _routeInfo.routeOverride }),
+            outboundEndpoint: _routeInfo.outboundEndpoint,
+            translated: _routeInfo.translated,
+          }),
         }
       }
 
@@ -811,8 +862,13 @@ export function createRequestContext(opts: {
         }
       }
 
-      if (_pipelineInfo) {
-        entry.pipelineInfo = _pipelineInfo
+      // onTerminal projection reads the private var directly (NOT the getter), so
+      // it must merge in `_streamTimeouts` explicitly. The `preprocessing` hoist
+      // above (825) only reads `_pipelineInfo.preprocessing` — orthogonal to the
+      // stream-timeout fields, intentionally left as-is (not a missed read point).
+      const mergedInfo = mergedPipelineInfo()
+      if (mergedInfo) {
+        entry.pipelineInfo = mergedInfo
       }
 
       // Always include attempt details (even for single attempts). Each attempt
@@ -832,8 +888,9 @@ export function createRequestContext(opts: {
           // `_sseEvents` (the successful stream); non-final buffered-retry attempts
           // carry their own committed `a.sseEvents`.
           const upstreamSse = isFinal ? (_sseEvents ?? a.sseEvents) : a.sseEvents
-          const upstreamResponse: HistoryUpstreamResponseData | undefined = attemptResponse
-            ? {
+          const upstreamResponse: HistoryUpstreamResponseData | undefined =
+            attemptResponse ?
+              {
                 ...legFromUpstreamResponse(attemptResponse),
                 ...(a.responseHeaders && { headers: a.responseHeaders }),
                 ...(isFinal && _httpHeaders?.outboundResponseTrailers && { trailers: _httpHeaders.outboundResponseTrailers }),
@@ -903,6 +960,10 @@ export function createRequestContext(opts: {
       publisher?.publish({ kind: "request.model_resolved", ctx: snapshot() })
     },
 
+    setRouteInfo(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean }) {
+      _routeInfo = info
+    },
+
     recordFeature(feature: FeatureKind, detail?: Record<string, unknown>) {
       publisher?.publish({
         kind: "request.feature_applied",
@@ -935,6 +996,7 @@ export function createRequestContext(opts: {
       const a = ctx.currentAttempt
       const snap: AttemptSnapshot = {
         attemptIndex: a?.index ?? 0,
+        ...(a?.durationMs !== undefined && { durationMs: a.durationMs }),
         ...(a?.strategy !== undefined && { strategy: a.strategy }),
         ...(a?.transport !== undefined && { transport: a.transport }),
         // a?.wireRequest is `WireRequest | null | undefined` (null when not yet

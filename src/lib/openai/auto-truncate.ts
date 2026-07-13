@@ -92,8 +92,8 @@ function calculateTokenLimit(model: Model, config: AutoTruncateConfig): number |
 
   // Check for learned limits (adjusted based on previous errors)
   const learned = getLearnedLimits(model.id)
-  if (learned) {
-    const margin = computeSafetyMargin(learned.sampleCount)
+  if (learned?.tokenLimit !== undefined && learned.tokenLimit > 0) {
+    const margin = computeSafetyMargin(learned.liveSampleCount)
     return Math.floor(learned.tokenLimit * (1 - margin))
   }
 
@@ -146,8 +146,9 @@ export async function checkNeedsCompactionOpenAI(
   const tokenCount = await getTokenCount(payload, model)
   const rawTokens = tokenCount.input
 
-  // Apply calibration to adjust the GPT tokenizer estimate
-  const currentTokens = learned && learned.sampleCount > 0 ? calibrate(model.id, rawTokens) : rawTokens
+  // Apply size-aware calibration to adjust the GPT tokenizer estimate
+  // (empty/unlearned model → factorAt 1.0, so this is a no-op there).
+  const currentTokens = calibrate(model.id, rawTokens)
 
   const exceedsTokens = cfg.checkTokenLimit && currentTokens > tokenLimit
 

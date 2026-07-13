@@ -39,9 +39,9 @@ export interface ModelStatusMeta {
  *  Only `config-disabled` carries a signal color (red) — enabled/picker-disabled
  *  are muted so the genuine exception pops instead of a wall of green dots. */
 const STATUS_META: Record<ModelStatus, ModelStatusMeta> = {
-  "config-disabled": { glyph: "●", colorVar: "var(--color-fail)", title: "disabled via config.disabled_models", label: "disabled" },
-  "picker-disabled": { glyph: "○", colorVar: "var(--color-muted)", title: "not shown in model picker (model_picker_enabled: false)", label: "picker-off" },
-  enabled: { glyph: "●", colorVar: "var(--color-muted)", title: "enabled", label: null },
+  "config-disabled": { glyph: "●", colorVar: "var(--signal-fail)", title: "disabled via config.disabled_models", label: "disabled" },
+  "picker-disabled": { glyph: "○", colorVar: "var(--signal-muted)", title: "not shown in model picker (model_picker_enabled: false)", label: "picker-off" },
+  enabled: { glyph: "●", colorVar: "var(--signal-muted)", title: "enabled", label: null },
 }
 
 export function statusMeta(status: ModelStatus): ModelStatusMeta {

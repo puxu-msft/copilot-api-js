@@ -17,6 +17,12 @@ import consola from "consola"
 import type { SseEventRecord } from "~/lib/history"
 
 import { classifyError } from "~/lib/error"
+import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
+import {
+  //
+  readOrigin,
+  tagFrameRewritten,
+} from "~/lib/pipeline/hooks/origin"
 import { classifyStreamError } from "~/lib/stream"
 
 import type { RequestEnvelope } from "./envelope"
@@ -33,6 +39,7 @@ import type {
   ResponseOutcome,
   RetryAction,
   RetryStrategy,
+  RouteDecision,
   RunBufferedOpts,
   RunResponseOpts,
   Transport,
@@ -51,6 +58,7 @@ import {
   type ResponseRewrite,
   type RewriteState,
 } from "./rewrite-registry"
+import { decideRoute } from "./router"
 
 /**
  * Everything the driver needs to orchestrate one format. The route layer (P2.3+)
@@ -83,6 +91,16 @@ export interface DriverDeps {
    * observability sinks. `env` is the post-retry env carrying that meta.
    */
   onMeta?: (meta: Record<string, unknown>, env: RequestEnvelope) => void
+  /**
+   * S2 route decision override — a test seam (DI-consistent with `transport` / `strategies`).
+   * Production omits it: the driver calls the free-function `router.decideRoute` (ADR
+   * 2026-07-11), which reads real upstream model capabilities. Driver ORCHESTRATION unit
+   * tests (which drive a mock codec through a fake model with no `state.modelIndex`) inject a
+   * fixed decision here so they exercise stage sequencing without needing a live model index;
+   * route-decision CORRECTNESS is covered by `tests/pipeline/router-golden.it.test.ts`, not the
+   * orchestration tests. When omitted the driver uses the free-function `router.decideRoute`.
+   */
+  decideRoute?: (env: RequestEnvelope) => RouteDecision
 }
 
 /** The driver with its non-streaming response variant (envelope-driver.md §3). */
@@ -135,13 +153,25 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
 // Request side (S1→S4)
 // ============================================================================
 
+/**
+ * S2 route decision. Prefers the `deps.decideRoute` test override; otherwise the
+ * free-function `router.decideRoute` (ADR 2026-07-11), the single reader of upstream model
+ * capabilities. Both driver call sites (`runRequest` S2, `inspectRequest` S2) go through
+ * here so the routing seam is single-sourced.
+ */
+function resolveRouteDecision(deps: DriverDeps, parsed: RequestEnvelope): RouteDecision {
+  return (deps.decideRoute ?? decideRoute)(parsed)
+}
+
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */
 async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<DriverRequestResult> {
   // S1 — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model).
   const parsed = deps.codec.parse(raw)
 
   // S2 — Translate-in: decideRoute (passthrough / translate / reject) + translateOut.
-  const decision = deps.codec.decideRoute(parsed)
+  // The route decision moved to the free-function `router.decideRoute` (ADR 2026-07-11),
+  // resolved via `resolveRouteDecision` (test override → router).
+  const decision = resolveRouteDecision(deps, parsed)
   if (decision.kind === "reject") {
     // No dangling history entry — reject before committing the request (aligns
     // with current messages:165 rejecting before context creation). Carry the
@@ -149,19 +179,32 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
     return { ok: false, rejection: { status: decision.status, reason: decision.reason, format: parsed.clientFormat } }
   }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
+  // T1.6 route observability (RFC §10 / W6): record the leg pin + actual outbound leg +
+  // translate-vs-direct label on the ctx (projected into history `model{}`). Optional-chained so a
+  // mock/legacy ctx without the method is unaffected; direct requests record `translated:false`.
+  parsed.ctx.setRouteInfo?.({
+    ...(parsed.routeOverride && { routeOverride: parsed.routeOverride }),
+    outboundEndpoint: targetEndpoint,
+    translated: decision.kind === "translate",
+  })
   const routed = deps.codec.translateOut(parsed.with({ targetEndpoint }))
 
   // S3 — Rewrite-in: assemble + run the request-rewrite chain.
   const rewritten = runRewriteIn(deps, routed)
 
+  // Hook point: onRequest — one-shot logical-request rewrite, OUTSIDE the retry loop
+  // (a per-attempt replay would clobber reactive strategies' env fixes — spec §3.2 H1).
+  const hook = getUpstreamHook()
+  const afterHook = hook?.onRequest ? (hook.onRequest(rewritten) ?? rewritten) : rewritten
+
   // S4 — Exchange: error-driven retry loop (prepareWire → transport → strategy re-env).
   // Resolve the strategy factory now that the envelope (model + codec state) exists.
-  const strategies = typeof deps.strategies === "function" ? deps.strategies(rewritten) : deps.strategies
+  const strategies = typeof deps.strategies === "function" ? deps.strategies(afterHook) : deps.strategies
   // C0-① (RFC §11.1): runExchange returns the POST-retry env (the final attempt's
   // env), not `rewritten` (pre-exchange). Consumers — e.g. the Anthropic pump
   // building the tool-call recoverer from env.body.tools, which deferred-tool-retry
   // mutates — must see what was actually sent on the successful attempt.
-  const { upstream, env: settled } = await runExchange(deps, rewritten, strategies)
+  const { upstream, env: settled } = await runExchange(deps, afterHook, strategies)
   return { ok: true, upstream, env: settled }
 }
 
@@ -198,8 +241,8 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   stages.parse = { clientFormat: parsed.clientFormat, targetEndpoint: parsed.targetEndpoint, model: parsed.model, body: snapshotBody(parsed.body) }
   if (stopAfter === "parse") return { stoppedAt: "parse", stages }
 
-  // S2 — route / translate.
-  const decision = deps.codec.decideRoute(parsed)
+  // S2 — route / translate. Via `resolveRouteDecision` (test override → free-function router).
+  const decision = resolveRouteDecision(deps, parsed)
   if (decision.kind === "reject") return { stoppedAt: "reject", rejected: { status: decision.status, reason: decision.reason }, stages }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
   const routed = deps.codec.translateOut(parsed.with({ targetEndpoint }))
@@ -251,8 +294,18 @@ async function runExchange(
   let activeStrategy: RetryStrategy | undefined
   // The accepted retry's meta (post-gate), threaded to onMeta + onResolved (C0-②).
   let activeMeta: Record<string, unknown> | undefined
+  // First-attempt-only pre-send hook guard (Task 9): the codec may pre-truncate
+  // env.body ONCE before the initial send; reactive retry takes over afterward, so
+  // we never re-run it per attempt (which would re-truncate an already-trimmed body).
+  let preflightDone = false
 
   for (;;) {
+    if (!preflightDone) {
+      preflightDone = true
+      // MUST run before prepareWire below — otherwise the wire is built from the
+      // un-truncated body and the pre-flight trim would not take effect this attempt.
+      if (deps.codec.preSend) current = await deps.codec.preSend(current)
+    }
     const wire = deps.codec.prepareWire(current)
     current.ctx.beginAttempt({ ...(activeStrategy && { strategy: activeStrategy.name }) })
     // S4 per-attempt sampling (P2.3-S): the codec derives the history effective +
@@ -265,7 +318,9 @@ async function runExchange(
     }
     current.ctx.transition("executing")
     try {
-      const upstream = await deps.transport.send(wire, current)
+      const hook = getUpstreamHook()
+      const upstream =
+        hook?.onExchange ? await hook.onExchange(wire, current, () => deps.transport.send(wire, current)) : await deps.transport.send(wire, current)
       // RFC history-http-header-capture Phase 2: driver owns the outbound header
       // capture (no handler-side HeadersCapture bag). ② outboundRequest = the wire
       // headers in hand; ③ outboundResponse = the upstream response headers carried
@@ -386,6 +441,11 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
   const onRewriteAction = opts?.onRewriteAction
   const sampleAction = onRewriteAction ? (name: string, action: FrameAction) => onRewriteAction(name, frameIndex, action) : undefined
 
+  // Task 2.2: the hook-mock/hook-replay origin tag (if the upstream stream was tagged via
+  // `tagStream`) is constant for the WHOLE stream — read it ONCE outside the loop rather
+  // than per-frame (spec LOW-2).
+  const origin = readOrigin(upstream)
+
   try {
     for await (const frame of upstream.frames) {
       // Skip the `[DONE]` sentinel — it's a gateway-injected transport terminator
@@ -395,7 +455,12 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
       // real content frames (no mislabeled `type:"message"` sentinel) + matches the
       // pre-P3.2b Anthropic baseline. Forwarded never carried it either (pump breaks).
       if (frame.data !== "[DONE]") {
-        upstreamSse.push({ offsetMs: Date.now() - streamStartMs, type: frame.event ?? (frame.data ? "message" : "keepalive"), raw: frame.data ?? "" })
+        upstreamSse.push({
+          offsetMs: Date.now() - streamStartMs,
+          type: frame.event ?? (frame.data ? "message" : "keepalive"),
+          raw: frame.data ?? "",
+          ...(origin && { synthetic: origin }),
+        })
         if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
         // Hand the raw upstream frame to the handler's upstream-side work (accumulate
         // → outboundResponse, repetition, progress, diagnostics) BEFORE the rewrite
@@ -403,14 +468,36 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
         // frames the loop yields below). Same skip-[DONE] condition as upstreamSse.
         opts?.onUpstreamFrame?.(frame)
       }
-      // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
-      for (const rewritten of passThrough([frame], rewrites, states, 0, sampleAction)) {
-        // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.
-        // skipRender (dry-run T1) yields the S5 frame verbatim — the consumer wants the
-        // rewrite-chain output BEFORE the S6 render translation.
-        if (opts?.skipRender) yield rewritten
-        else yield* renderFrames(deps, rewritten, env)
+      // Hook point: rewriteUpstreamFrame — per-frame rewrite AFTER upstream-original sampling,
+      // so the upstream track keeps pre-hook real frames (spec §3.2/§3.4 H2). undefined → drop.
+      const hook = getUpstreamHook()
+      let effFrame: UpstreamFrame | undefined = frame
+      if (hook?.rewriteUpstreamFrame && frame.data !== "[DONE]") {
+        const rewritten = hook.rewriteUpstreamFrame(frame, env)
+        // Task 2.3 (spec §3.4 decision 1/§9, plan-2 Task 2.3): a GENUINELY changed frame (a
+        // NEW object — `undefined` means dropped, the SAME reference means the hook chose not
+        // to rewrite this one) is tagged so the sink can mark its forwarded-track sample
+        // `synthetic:"hook-rewrite"` — see hooks/origin.ts (`tagFrameRewritten`) for exactly
+        // which downstream shapes preserve vs. lose the tag (passthrough-leg codecs + a
+        // spreading `onRenderedFrame` preserve it; a translate-leg codec or a
+        // fresh-literal-reconstructing `onRenderedFrame` — e.g. Responses' restoreAndAccumulate
+        // — does not; a documented, accepted gap, not a defect of this mechanism).
+        effFrame = rewritten !== undefined && rewritten !== frame ? tagFrameRewritten(rewritten) : rewritten
       }
+      // Guard the rewrite chain instead of `continue` — so `frameIndex++` below ALWAYS
+      // runs (评审 LOW-1: `continue` would skip it, corrupting dry-run frame ordinals).
+      // A dropped frame (undefined) just skips passThrough; frameIndex still advances.
+      if (effFrame !== undefined) {
+        // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
+        for (const rewritten of passThrough([effFrame], rewrites, states, 0, sampleAction)) {
+          // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.
+          // skipRender (dry-run T1) yields the S5 frame verbatim — the consumer wants the
+          // rewrite-chain output BEFORE the S6 render translation.
+          if (opts?.skipRender) yield rewritten
+          else yield* renderFrames(deps, rewritten, env)
+        }
+      }
+
       frameIndex++
     }
   } finally {
@@ -767,6 +854,10 @@ export async function runResponseBufferedSink(
         // (The final attempt — success-commit above OR exhaustion-return below — keeps its frames
         // at the top-level slot only, matching `extractStagePayloads`' finalIdx skip: no dup.)
         currentEnv.ctx.commitAttemptSseEvents()
+        // BLOCK-1: L2 缓冲重试也发 attempt_failed → 打 [RETRY] 行，与 L1 一致可见。
+        // 先定稿本次（截断/transport-close）attempt 的 durationMs（截断路径无 error/response setter）。
+        currentEnv.ctx.finalizeCurrentAttemptDuration()
+        currentEnv.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "buffered-retry" })
         opts.onAttemptReset?.()
         currentEnv.ctx.resetSseEvents()
         // L2 escalation (RFC §8): let the caller tighten this retry's env (e.g. force aggressive
@@ -783,6 +874,8 @@ export async function runResponseBufferedSink(
       // final failed attempt's frames stay at the top-level slot (no per-attempt snapshot).
       // M1: close the still-open anchor (if injected) BEFORE the failure return so the client's block
       // structure is balanced when the handler appends its error frame.
+      // 穷尽/非重试：最终失败 attempt 也 finalize duration，供终端汇总行 last（截断路径无 setter）。
+      currentEnv.ctx.finalizeCurrentAttemptDuration()
       await closeAnchorIfOpen()
       // Block-level degrade (P0): a boundary block was ALREADY committed live, then the stream
       // truncated (the `!committedAny` gate above forced this branch, un-retryable). The committed

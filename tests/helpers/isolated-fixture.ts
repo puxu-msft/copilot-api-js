@@ -45,6 +45,8 @@ import {
   drainPendingFinalizations,
 } from "~/lib/history/entries"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import { resetCacheWriteBackfillForTests } from "~/lib/history/sqlite/cache-write-backfill"
+import { resetCalibrationBackfillForTests } from "~/lib/history/sqlite/calibration-backfill"
 import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-stage-backfill"
 import { resetResponsePreviewBackfillForTests } from "~/lib/history/sqlite/response-preview-backfill"
 import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
@@ -55,6 +57,11 @@ import {
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
+import {
+  //
+  resetUpstreamHook,
+  setUpstreamHookForTests,
+} from "~/lib/pipeline/hooks/loader"
 import { resetProcessIdentityForTests } from "~/lib/process-identity"
 import { _resetRequestTelemetryForTests } from "~/lib/request-telemetry"
 import {
@@ -70,6 +77,7 @@ import {
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
+import { resetTerminalCoordinatorForTests } from "~/lib/tui/terminal-coordinator"
 
 import { restoreFetch } from "./mock-fetch"
 import {
@@ -112,7 +120,26 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetSearchIndexBackfillForTests", reset: resetSearchIndexBackfillForTests },
   { name: "resetLegacyStageBackfillForTests", reset: resetLegacyStageBackfillForTests },
   { name: "resetUsageNormalizeBackfillForTests", reset: resetUsageNormalizeBackfillForTests },
+  { name: "resetCacheWriteBackfillForTests", reset: resetCacheWriteBackfillForTests },
   { name: "resetResponsePreviewBackfillForTests", reset: resetResponsePreviewBackfillForTests },
+  { name: "resetCalibrationBackfillForTests", reset: resetCalibrationBackfillForTests },
+  // TUI terminal-coordinator module-level singleton (whole-branch review I3):
+  // a test that constructs a non-`silent` TerminalUi and forgets `destroy()`
+  // would otherwise leak its registration into the next test file.
+  { name: "resetTerminalCoordinatorForTests", reset: resetTerminalCoordinatorForTests },
+  // Upstream-hook DI seam (module-global `hookState`, read at driver-suite level
+  // via `getUpstreamHook()`): a test file that loads/injects a hook and forgets
+  // its own afterEach would otherwise leak the mounted hook into any later test —
+  // including files that never import the hooks module at all (whole-branch
+  // review I-1). Not `*ForTests`-named (a production reset), like
+  // `resetHistoryPersistErrorStats` above.
+  { name: "resetUpstreamHook", reset: resetUpstreamHook },
+  // The DI-seam setter itself: reset to its default (undefined) so an injected
+  // test hook never leaks, mirroring the other injected-seam entries above.
+  // Functionally redundant with `resetUpstreamHook` (both clear the same
+  // `hookState`), kept as its own entry for parity with the other `set*ForTests`
+  // seams in this table and so the L1 guard sees it registered, not exempted.
+  { name: "setUpstreamHookForTests", reset: () => setUpstreamHookForTests(undefined) },
 ]
 
 /** Names registered in RESETTERS — consumed by the L1 completeness guard. */

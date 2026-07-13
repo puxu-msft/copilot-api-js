@@ -8,7 +8,7 @@
 
 **Architecture:** WS = terminal-only（无增量块需求，边界集只含终止符 = 已证整响应形状）。复用 P2 的 Responses codec 谓词（terminal 用法）+ `buffered-config.ts`。WS 无 anchor。makeWsSink 已有 writeSynthetic/close/heartbeat（`client-sink.ts:480`）。唯一真难点 = WS 终态早停 `stopAfterFrame:isTerminal` + `sendErrorAndClose`+1011 与 buffered commit/retreat 时序。
 
-**Tech Stack:** TypeScript / Bun / Hono WS。WS 测试夹具：Node http2/ws server（Bun WS server 行为不忠实，参照 skill `bun-upstream-transport`）。
+**Tech Stack:** TypeScript / Bun / Hono WS。WS 测试夹具：Node http2/ws server（Bun WS server 行为不忠实，参照 skill `debugging-ghc-api-upstream-transport`）。
 
 ## Global Constraints（逐字自 README）
 - **复用键**：WS 不新造键，走 `responses.buffered_retry`（spec §7.3 + backlog:304）。

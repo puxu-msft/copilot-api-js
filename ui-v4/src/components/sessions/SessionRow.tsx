@@ -20,42 +20,43 @@ export function SessionRow({ s }: { s: SessionSummary }) {
     <button
       type="button"
       onClick={() => navigate(`/sessions/${s.sessionId}`)}
-      className="mono flex w-full items-center gap-3 border-b border-[#222] px-2 py-1.5 text-left text-[13px] text-[#aaa] hover:bg-[#1a1a1f]"
+      className="mono flex w-full items-center gap-3 border-b border-[var(--surface-border-row)] px-2 py-1.5 text-left text-[13px] text-[var(--content-secondary)] hover:bg-[var(--surface-raised-alt)]"
     >
       <span
         className="h-2.5 w-2.5 shrink-0"
-        style={{ background: hasFailures ? "var(--color-fail)" : "var(--color-ok)" }}
+        style={{ background: hasFailures ? "var(--signal-fail)" : "var(--signal-ok)" }}
         title={`${s.completed} ok / ${s.failed} fail`}
       />
       <span
-        className="shrink-0 text-[#888]"
+        className="shrink-0 text-[var(--content-dim)]"
         title={`${formatTime(s.firstStartedAt)} → ${formatTime(s.lastStartedAt)}`}
       >
         {formatTime(s.firstStartedAt)}→{formatTime(s.lastStartedAt)}
       </span>
-      <span className="shrink-0 text-[#888]">{formatDuration(span)}</span>
+      <span className="shrink-0 text-[var(--content-dim)]">{formatDuration(span)}</span>
       <span
-        className="shrink-0 text-[var(--color-primary)]"
+        className="shrink-0 text-[var(--content-accent)]"
         title={s.sessionId}
       >
         {s.sessionId.slice(0, 12)}…
       </span>
-      <span className="shrink-0 text-[#888]">{agentLabel}</span>
+      <span className="shrink-0 text-[var(--content-dim)]">{agentLabel}</span>
       <span className="shrink-0">{s.requestCount} req</span>
-      <span className="shrink-0 text-[#888]">
+      <span className="shrink-0 text-[var(--content-dim)]">
         ↑{formatNumber(s.inputTokens)} ↓{formatNumber(s.outputTokens)}
       </span>
       <span className="shrink-0">
-        <span style={{ color: "var(--color-ok)" }}>✓{s.completed}</span> <span style={{ color: hasFailures ? "var(--color-fail)" : "#555" }}>✗{s.failed}</span>
+        <span style={{ color: "var(--signal-ok)" }}>✓{s.completed}</span>{" "}
+        <span style={{ color: hasFailures ? "var(--signal-fail)" : "var(--content-disabled)" }}>✗{s.failed}</span>
         {s.aborted > 0 ?
-          <span className="text-[var(--color-warn)]"> ⊘{s.aborted}</span>
+          <span className="text-[var(--signal-warn)]"> ⊘{s.aborted}</span>
         : null}
       </span>
       <span
-        className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[#8a8a7a]"
+        className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--content-preview)]"
         title={[s.firstPreview, s.preview].filter(Boolean).join(" ⟶ ") || undefined}
       >
-        {s.firstPreview || "—"} <span className="text-[#555]">⟶</span> {s.preview || "—"}
+        {s.firstPreview || "—"} <span className="text-[var(--content-disabled)]">⟶</span> {s.preview || "—"}
       </span>
     </button>
   )

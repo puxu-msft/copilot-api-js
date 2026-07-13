@@ -209,7 +209,10 @@ function injectModels(): void {
     data: [
       mockModel("claude-sonnet-4.6", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] }),
       mockModel("claude-opus-4.6", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] }),
-      mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] }),
+      // OpenAI vendor advertising ONLY /v1/messages: no direct-anthropic gate (wrong vendor)
+      // AND no translatable /responses or /chat/completions leg → the no-suffix anthropic route
+      // still rejects 400 (a cc/responses-capable non-Anthropic model now forward-translates).
+      mockModel("msg-only-openai", { vendor: "OpenAI", supported_endpoints: ["/v1/messages"] }),
     ],
   })
   setModelOverrides({ opus: "claude-opus-4.6" })
@@ -361,8 +364,8 @@ describe("Anthropic v4 driver path", () => {
     expect(entry?.clientResponse?.sseEvents?.length ?? 0).toBeGreaterThan(0)
   })
 
-  test("reject (non-Anthropic vendor) → 400, no upstream hit", async () => {
-    const body = { model: "gpt-4o", messages: [{ role: "user", content: "Hello" }], max_tokens: 32, stream: false }
+  test("reject (non-Anthropic vendor, no translatable leg) → 400, no upstream hit", async () => {
+    const body = { model: "msg-only-openai", messages: [{ role: "user", content: "Hello" }], max_tokens: 32, stream: false }
 
     messagesHits = 0
     expect((await post(body)).status).toBe(400)
@@ -370,7 +373,7 @@ describe("Anthropic v4 driver path", () => {
   })
 
   test("reject → history finalized as failed (production-faithful app with observabilityMiddleware)", async () => {
-    const body = { model: "gpt-4o", messages: [{ role: "user", content: "Hello" }], max_tokens: 32, stream: false }
+    const body = { model: "msg-only-openai", messages: [{ role: "user", content: "Hello" }], max_tokens: 32, stream: false }
 
     // The v4 codec.parse creates the ctx unconditionally, then decideRoute rejects
     // — under the middleware, that c.set ctx is finalized from the 400 status to

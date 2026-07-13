@@ -18,7 +18,7 @@
 
 ## 上游数据结构
 
-基于 `refs/AVAILABLE_MODELS.json`（41 个模型，实际抓取于 2026-03-31）观测到的公开字段集：
+基于 `.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json`（41 个模型，实际抓取于 2026-03-31）观测到的公开字段集：
 
 | 字段 | 出现率 | 类型 | 示例 |
 |------|--------|------|------|
@@ -420,7 +420,7 @@ async fetchModels(): Promise<{ data: Array<Record<string, unknown>> }> {
 
 ## request_headers 的处理
 
-`request_headers` 是 `Model` 接口中的可选字段（`client.ts:69`），**不出现在 `refs/AVAILABLE_MODELS.json` 快照中**——它属于运行时上游可能附加的额外字段。该字段用于后续上游请求时附加模型特定的 HTTP header（见 `copilot-api.ts:70-75`），属于内部敏感元数据，不应暴露给外部消费者。
+`request_headers` 是 `Model` 接口中的可选字段（`client.ts:69`），**不出现在 `.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json` 快照中**——它属于运行时上游可能附加的额外字段。该字段用于后续上游请求时附加模型特定的 HTTP header（见 `copilot-api.ts:70-75`），属于内部敏感元数据，不应暴露给外部消费者。
 
 在 route 层透传时，从每个 model 对象中显式解构剥离：
 

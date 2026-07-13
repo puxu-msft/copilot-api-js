@@ -19,17 +19,21 @@ import path from "node:path"
 import {
   //
   compileRewriteRules,
+  compileScope,
+  compileSystemPromptEntries,
   loadConfig,
   resetApplyState,
   resetConfigCache,
   setBundledConfigForTests,
   type RewriteRule,
 } from "~/lib/config/config"
+import { setAnthropicBehavior } from "~/lib/state"
 import {
   //
   applyOverrides,
   processAnthropicSystem,
   processOpenAIMessages,
+  processResponsesInstructions,
 } from "~/lib/system-prompt"
 
 // ============================================================================
@@ -49,6 +53,11 @@ beforeEach(async () => {
   ;(pathsMod.PATHS as { CONFIG_YAML: string }).CONFIG_YAML = path.join(tmpDir, "config.yaml")
   resetConfigCache()
   resetApplyState()
+  // Clear compiled system-prompt state. `applyConfigToState` is retain-on-absence
+  // (a config missing a key keeps the prior state — correct for hot-reload), and
+  // `resetApplyState` only clears the applied flag, so without this the compiled
+  // overrides/prepend/append leak across tests.
+  setAnthropicBehavior({ systemPromptOverrides: [], systemPromptPrepend: [], systemPromptAppend: [] })
   // Isolate from real bundled config — these tests assert raw load semantics.
   setBundledConfigForTests({})
 })
@@ -562,5 +571,249 @@ describe("compileRewriteRule — model regex", () => {
     expect(rules).toHaveLength(1)
     expect(rules[0].modelPattern).toBeInstanceOf(RegExp)
     expect(rules[0].method).toBe("line")
+  })
+})
+
+// ============================================================================
+// Endpoint scope — compileScope
+// ============================================================================
+
+describe("compileScope — endpoint axis", () => {
+  test("single endpoint compiles to a one-element set", () => {
+    const scope = compileScope({ endpoint: "anthropic" })
+    expect(scope).not.toBeNull()
+    expect([...scope!.endpointSet!]).toEqual(["anthropic"])
+  })
+
+  test("endpoint array compiles to a set of all", () => {
+    const scope = compileScope({ endpoint: ["anthropic", "gemini"] })
+    expect(scope).not.toBeNull()
+    expect(scope!.endpointSet!.has("anthropic")).toBe(true)
+    expect(scope!.endpointSet!.has("gemini")).toBe(true)
+    expect(scope!.endpointSet!.has("openai-cc")).toBe(false)
+  })
+
+  test("no endpoint leaves endpointSet undefined", () => {
+    const scope = compileScope({ model: "opus" })
+    expect(scope!.endpointSet).toBeUndefined()
+  })
+
+  test("invalid model regex returns null (skips rule/entry)", () => {
+    expect(compileScope({ model: "[invalid" })).toBeNull()
+  })
+
+  test("both axes compile together", () => {
+    const scope = compileScope({ model: "opus", endpoint: "anthropic" })
+    expect(scope!.modelPattern).toBeInstanceOf(RegExp)
+    expect(scope!.endpointSet!.has("anthropic")).toBe(true)
+  })
+})
+
+// ============================================================================
+// applyOverrides — endpoint filtering + two-axis AND
+// ============================================================================
+
+describe("applyOverrides — endpoint filtering", () => {
+  test("rule with matching endpoint is applied", () => {
+    const rules = compileRewriteRules([{ from: "foo", to: "bar", endpoint: "anthropic" }])
+    expect(applyOverrides("foo", rules, undefined, "anthropic")).toBe("bar")
+  })
+
+  test("rule with non-matching endpoint is skipped", () => {
+    const rules = compileRewriteRules([{ from: "foo", to: "bar", endpoint: "anthropic" }])
+    expect(applyOverrides("foo", rules, undefined, "openai-cc")).toBe("foo")
+  })
+
+  test("rule with endpoint scope is skipped when no endpoint is passed", () => {
+    const rules = compileRewriteRules([{ from: "foo", to: "bar", endpoint: "anthropic" }])
+    expect(applyOverrides("foo", rules)).toBe("foo")
+  })
+
+  test("rule without endpoint applies to all endpoints", () => {
+    const rules = compileRewriteRules([{ from: "foo", to: "bar" }])
+    expect(applyOverrides("foo", rules, undefined, "anthropic")).toBe("bar")
+    expect(applyOverrides("foo", rules, undefined, "gemini")).toBe("bar")
+  })
+
+  test("endpoint array matches any member", () => {
+    const rules = compileRewriteRules([{ from: "foo", to: "bar", endpoint: ["anthropic", "gemini"] }])
+    expect(applyOverrides("foo", rules, undefined, "gemini")).toBe("bar")
+    expect(applyOverrides("foo", rules, undefined, "openai-cc")).toBe("foo")
+  })
+
+  test("two-axis AND: both model and endpoint must match", () => {
+    const rules = compileRewriteRules([{ from: "foo", to: "bar", model: "opus", endpoint: "anthropic" }])
+    // both match
+    expect(applyOverrides("foo", rules, "claude-opus-4.6", "anthropic")).toBe("bar")
+    // model matches, endpoint doesn't
+    expect(applyOverrides("foo", rules, "claude-opus-4.6", "openai-cc")).toBe("foo")
+    // endpoint matches, model doesn't
+    expect(applyOverrides("foo", rules, "claude-sonnet-4.5", "anthropic")).toBe("foo")
+  })
+})
+
+// ============================================================================
+// compileSystemPromptEntries
+// ============================================================================
+
+describe("compileSystemPromptEntries", () => {
+  test("undefined → empty list", () => {
+    expect(compileSystemPromptEntries(undefined)).toEqual([])
+  })
+
+  test("plain string → single unscoped entry", () => {
+    const entries = compileSystemPromptEntries("PREFIX")
+    expect(entries).toHaveLength(1)
+    expect(entries[0].text).toBe("PREFIX")
+    expect(entries[0].modelPattern).toBeUndefined()
+    expect(entries[0].endpointSet).toBeUndefined()
+  })
+
+  test("single entry object → one scoped entry", () => {
+    const entries = compileSystemPromptEntries({ text: "T", model: "opus", endpoint: "anthropic" })
+    expect(entries).toHaveLength(1)
+    expect(entries[0].modelPattern).toBeInstanceOf(RegExp)
+    expect(entries[0].endpointSet!.has("anthropic")).toBe(true)
+  })
+
+  test("entry array → multiple entries preserving order", () => {
+    const entries = compileSystemPromptEntries([{ text: "A" }, { text: "B", endpoint: "gemini" }])
+    expect(entries.map((e) => e.text)).toEqual(["A", "B"])
+    expect(entries[1].endpointSet!.has("gemini")).toBe(true)
+  })
+
+  test("entry with invalid model regex is skipped", () => {
+    const entries = compileSystemPromptEntries([{ text: "A" }, { text: "bad", model: "[invalid" }])
+    expect(entries.map((e) => e.text)).toEqual(["A"])
+  })
+})
+
+// ============================================================================
+// Endpoint differentiation through the processors (end-to-end via config)
+// ============================================================================
+
+describe("endpoint-scoped prepend/append through processors", () => {
+  test("prepend entry with endpoint scope only fires on the matching endpoint", async () => {
+    const { PATHS } = await import("~/lib/config/paths")
+    await fs.writeFile(
+      PATHS.CONFIG_YAML,
+      `system_prompt_prepend:
+  - text: "ANTHROPIC-ONLY"
+    endpoint: anthropic
+`,
+    )
+    // Anthropic endpoint → prepend applied
+    expect(await processAnthropicSystem("orig", undefined, "anthropic")).toBe("ANTHROPIC-ONLY\n\norig")
+    // Responses endpoint → prepend NOT applied
+    expect(await processResponsesInstructions("orig", undefined, "openai-responses")).toBe("orig")
+  })
+
+  test("multiple scoped prepend entries concatenate top-down for a matching endpoint", async () => {
+    const { PATHS } = await import("~/lib/config/paths")
+    await fs.writeFile(
+      PATHS.CONFIG_YAML,
+      `system_prompt_prepend:
+  - text: "ALL"
+  - text: "CC-ONLY"
+    endpoint: openai-cc
+`,
+    )
+    const messages = [{ role: "user" as const, content: "hi" }]
+    const result = await processOpenAIMessages(messages, undefined, "openai-cc")
+    // Both entries match on openai-cc → joined with "\n\n"
+    expect(result[0]).toEqual({ role: "system", content: "ALL\n\nCC-ONLY" })
+  })
+
+  test("append entry scoped to an endpoint array fires for any member", async () => {
+    const { PATHS } = await import("~/lib/config/paths")
+    await fs.writeFile(
+      PATHS.CONFIG_YAML,
+      `system_prompt_append:
+  - text: "MULTI"
+    endpoint: [anthropic, gemini]
+`,
+    )
+    expect(await processAnthropicSystem("orig", undefined, "anthropic")).toBe("orig\n\nMULTI")
+    // gemini goes through processOpenAIMessages
+    const result = await processOpenAIMessages([{ role: "system" as const, content: "sys" }], undefined, "gemini")
+    expect(result.at(-1)).toEqual({ role: "system", content: "MULTI" })
+    // openai-cc is NOT in the set → no append
+    const ccResult = await processOpenAIMessages([{ role: "system" as const, content: "sys" }], undefined, "openai-cc")
+    expect(ccResult).toHaveLength(1)
+  })
+
+  test("model + endpoint AND scope on prepend", async () => {
+    const { PATHS } = await import("~/lib/config/paths")
+    await fs.writeFile(
+      PATHS.CONFIG_YAML,
+      `system_prompt_prepend:
+  - text: "OPUS-ANTHROPIC"
+    model: opus
+    endpoint: anthropic
+`,
+    )
+    expect(await processAnthropicSystem("orig", "claude-opus-4.6", "anthropic")).toBe("OPUS-ANTHROPIC\n\norig")
+    // wrong model → skip
+    expect(await processAnthropicSystem("orig", "claude-sonnet-4.5", "anthropic")).toBe("orig")
+    // wrong endpoint → skip
+    expect(await processResponsesInstructions("orig", "claude-opus-4.6", "openai-responses")).toBe("orig")
+  })
+})
+
+// ============================================================================
+// Schema parsing — endpoint + entry-list forms
+// ============================================================================
+
+describe("loadConfig — endpoint scope + prepend/append forms", () => {
+  test("parses rewrite rule with endpoint field", async () => {
+    const { PATHS } = await import("~/lib/config/paths")
+    await fs.writeFile(
+      PATHS.CONFIG_YAML,
+      `system_prompt_overrides:
+  - from: "a"
+    to: "b"
+    endpoint: anthropic
+`,
+    )
+    const config = await loadConfig()
+    expect(config.system_prompt_overrides![0].endpoint).toBe("anthropic")
+  })
+
+  test("parses prepend as a plain string (backward compat)", async () => {
+    const { PATHS } = await import("~/lib/config/paths")
+    await fs.writeFile(PATHS.CONFIG_YAML, 'system_prompt_prepend: "LEGACY"\n')
+    const config = await loadConfig()
+    expect(config.system_prompt_prepend).toBe("LEGACY")
+  })
+
+  test("parses prepend as an entry list", async () => {
+    const { PATHS } = await import("~/lib/config/paths")
+    await fs.writeFile(
+      PATHS.CONFIG_YAML,
+      `system_prompt_prepend:
+  - text: "X"
+    endpoint: [openai-cc, openai-responses]
+`,
+    )
+    const config = await loadConfig()
+    expect(Array.isArray(config.system_prompt_prepend)).toBe(true)
+    const entries = config.system_prompt_prepend as Array<{ text: string; endpoint: Array<string> }>
+    expect(entries[0].text).toBe("X")
+    expect(entries[0].endpoint).toEqual(["openai-cc", "openai-responses"])
+  })
+
+  test("invalid endpoint value is stripped (warns, does not throw)", async () => {
+    const { PATHS } = await import("~/lib/config/paths")
+    await fs.writeFile(
+      PATHS.CONFIG_YAML,
+      `system_prompt_overrides:
+  - from: "a"
+    to: "b"
+    endpoint: not-a-real-endpoint
+`,
+    )
+    const config = await loadConfig()
+    // Loader strips the invalid field/rule and continues (warn-and-continue).
+    expect(config).toBeDefined()
   })
 })

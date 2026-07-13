@@ -3,6 +3,7 @@ import {
   afterEach,
   describe,
   expect,
+  mock,
   test,
 } from "bun:test"
 import consola from "consola"
@@ -71,8 +72,8 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
 
   test("republish reporter does not recurse when a consola call fires during fan-out", () => {
     // A sink that logs via consola during its own handling would loop without
-    // the reentrancy guard. Assert the guard routes the reentrant call away
-    // (to stderr) instead of re-publishing into an infinite fan-out.
+    // the reentrancy guard. Assert the guard routes the reentrant call through
+    // `emergencyWrite` (P2.2) instead of re-publishing into an infinite fan-out.
     const cap = makeCapture()
     const bus = createBus()
     const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
@@ -95,7 +96,41 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     consola.level = 5
     expect(() => consola.info("trigger")).not.toThrow()
     // The reentrant consola.warn must NOT have produced a second bus fan-out
-    // (it went to stderr), so only the original "trigger" line is on stdout.
-    expect(cap.text()).toBe("[INFO] TT:TT:TT trigger\n")
+    // (no second system.log event was published), but IS written out via
+    // `emergencyWrite` — this instance is non-interactive with no footer
+    // visible ("none" state), so it write-throughs straight to this sink's own
+    // stdout (P2.2 registration; not a bare untracked `process.stderr.write`
+    // anymore).
+    expect(cap.text()).toBe("[INFO] TT:TT:TT trigger\n[LOG ] reentrant warning\n")
+  })
+
+  test("republish's reentrant fallback routes through emergencyWrite (falls back to stderr with no TerminalUi registered)", () => {
+    const stderrWrite = mock((_s: string | Uint8Array) => true)
+    const original = process.stderr.write
+    process.stderr.write = stderrWrite as unknown as typeof process.stderr.write
+
+    const bus = createBus()
+    const uninstall = installConsolaRepublish(bus.scope("system"))
+    let handledCount = 0
+    const unsub = bus.subscribe((e) => {
+      if (e.kind === "system.log" && handledCount === 0) {
+        handledCount++
+        consola.warn("reentrant warning")
+      }
+    })
+
+    try {
+      consola.level = 5
+      expect(() => consola.info("trigger")).not.toThrow()
+    } finally {
+      process.stderr.write = original
+      unsub()
+      uninstall()
+    }
+
+    // No TerminalUi is registered in this test — emergencyWrite's unregistered
+    // fallback writes straight to stderr, matching the pre-P2.2 behavior.
+    expect(stderrWrite).toHaveBeenCalledTimes(1)
+    expect(stderrWrite.mock.calls[0][0]).toBe("[LOG ] reentrant warning\n")
   })
 })

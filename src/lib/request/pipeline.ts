@@ -119,6 +119,12 @@ export interface PrepareHints {
    */
   excludeToolFields?: ReadonlyArray<string>
   /**
+   * 源④ per-attempt：cache_control 子字段 rejection retry 腿注入。上游以
+   * `<section>.N...cache_control.<variant>.<field>: Extra inputs are not permitted` 拒绝时，
+   * 剥掉该子字段重试。桥接到 `PrepareAnthropicRequestOptions.excludeCacheControlSubfields`。
+   */
+  excludeCacheControlSubfields?: ReadonlyArray<string>
+  /**
    * L2 buffered-retry escalation (RFC §8): FORCE an aggressive native `clear_tool_uses`
    * context_management edit on this attempt's wire (independent of `context_editing` mode) to
    * compress the context so the generation finishes faster. Set by the buffered driver's
@@ -365,7 +371,7 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
         normalRetries++
       }
 
-      // Surface the failed attempt in the TUI as a [RETRY-n] line. Runs AFTER
+      // Surface the failed attempt in the TUI as a [RETRY] line. Runs AFTER
       // the budget gate so retries about to be discarded don't produce noise.
       // Web-search internal hops naturally skip — they pass `requestContext: undefined`.
       // Note: setAttemptError was already called above with apiError, so the

@@ -85,7 +85,7 @@ export function createServer(options: ServerOptions = {}) {
   server.use(cors())
   server.use(trimTrailingSlash())
 
-  server.get("/", (c) => c.text("Server running"))
+  server.get("/", (c) => c.redirect("/openapi.json"))
 
   // Health check endpoint for container orchestration (Docker, Kubernetes)
   server.get("/health", (c) => {

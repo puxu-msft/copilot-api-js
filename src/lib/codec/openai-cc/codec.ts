@@ -39,6 +39,7 @@
 
 import consola from "consola"
 
+import type { BetaProbe } from "~/lib/anthropic/pipeline"
 import type { RequestContext } from "~/lib/context/request"
 import type {
   //
@@ -67,10 +68,10 @@ import type {
   RawHttpRequest,
   RequestSample,
   ResponseAccumulator,
-  RouteDecision,
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
+import type { AnthropicToCcStreamMeta } from "~/lib/openai/translate"
 import type {
   //
   ChatCompletionChunk,
@@ -83,6 +84,7 @@ import type {
   ResponsesResponse,
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
+import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
@@ -97,10 +99,12 @@ import {
 import {
   //
   ENDPOINT,
-  isEndpointSupported,
-  isResponsesSupported,
 } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  resolveModelTarget,
+  type RouteOverride,
+} from "~/lib/models/resolver"
 import {
   //
   fillMaxCompletionTokens,
@@ -126,12 +130,24 @@ import {
   translateChatCompletionsToResponses,
   translateResponsesResponseToCC,
 } from "~/lib/openai/translate"
+import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
+import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { sanitizeHeadersForHistory } from "~/lib/fetch-utils"
+import {
+  //
+  createReverseStreamTranslator,
+  renderResponseNonStreamingVia,
+  type ReverseStreamTranslator,
+  translateRequestVia,
+} from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
 const CLIENT_FORMAT: ClientFormat = "openai-cc"
 const ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
 /** History `format` label for the via-responses wire (the actual upstream endpoint). */
 const RESPONSES_ENDPOINT_TYPE: EndpointType = "openai-responses"
+/** History `format` label for the REVERSE `@messages`-leg wire (the actual upstream endpoint). */
+const ANTHROPIC_MESSAGES_ENDPOINT_TYPE: EndpointType = "anthropic-messages"
 const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
 /** A per-request Responses→CC stream translator (created lazily on first via-responses frame). */
@@ -157,6 +173,29 @@ export interface OpenAiCcCodec extends FormatCodec {
    * before `parse` runs.
    */
   getContext(): RequestContext | undefined
+  /**
+   * REVERSE `@messages`-leg STREAMING drain (Phase 5, T5.2): the Anthropic→CC stream translator's
+   * terminal frames (`[]` for the CC leg — finish + usage are inline on message_delta). Returns `[]`
+   * for the direct/forward legs. The reverse pump calls it after the driver loop for interface
+   * uniformity (mirrors the anthropic codec's forward `flushResponse`).
+   */
+  flushResponse(env: RequestEnvelope): Array<ClientFrame>
+  /**
+   * REVERSE `@messages`-leg terminal stream meta (Phase 5): the CC `finish_reason` (undefined ⇒
+   * truncation, F2) + grossed-up usage the Anthropic→CC translator accumulated. `undefined` for the
+   * direct/forward legs (their pumps read their own accumulator).
+   */
+  getStreamMeta(): AnthropicToCcStreamMeta | undefined
+}
+
+/** Args for {@link createOpenAiCcCodec}. */
+export interface CreateOpenAiCcCodecArgs {
+  /**
+   * REVERSE `@messages` leg only: the shared per-request beta probe (also injected into the reverse
+   * Anthropic strategies). `prepareWire` records the outbound Anthropic betas into it so the
+   * unsupported-beta strategy can probe them. Absent for the forward/direct CC legs.
+   */
+  reverseBetaProbe?: BetaProbe
 }
 
 /**
@@ -164,7 +203,7 @@ export interface OpenAiCcCodec extends FormatCodec {
  * per-request Responses→CC translator + truncation baseline in its closure (see
  * module docstring).
  */
-export function createOpenAiCcCodec(): OpenAiCcCodec {
+export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCodec {
   // Lazily created on the first via-responses frame; persists across frames so
   // its cross-frame state (tool-call index map, response id) survives.
   let streamTranslator: StreamTranslator | null = null
@@ -172,6 +211,13 @@ export function createOpenAiCcCodec(): OpenAiCcCodec {
   let truncateBaseline: ChatCompletionsPayload | undefined
   // The RequestContext created by parse (for route-side c.set + failure settle).
   let requestContext: RequestContext | undefined
+  // REVERSE `@messages` leg (Phase 5): the per-request Anthropic→CC stream translator, built lazily on
+  // the first reverse streaming `renderResponse`. `flushResponse` / `getStreamMeta` read the SAME instance.
+  let reverseTranslator: ReverseStreamTranslator | undefined
+  const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
+    const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
+    return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId))
+  }
 
   return {
     format: CLIENT_FORMAT,
@@ -191,40 +237,64 @@ export function createOpenAiCcCodec(): OpenAiCcCodec {
       return requestContext
     },
 
-    decideRoute(env) {
-      return decideOpenAiCcRoute(env.model)
-    },
-
-    // S2 translateOut is identity: the CC→Responses translation is NOT done here
-    // (it lives in prepareWire — see P2.2-D1 / `prepareWire`). Keeping it identity
-    // means `env.body` stays CC-shaped through S3, which the CC-format request
-    // rewrites and the auto-truncate strategy both rely on.
+    // S2 translateOut: identity for the forward/direct CC legs (the CC→Responses translation lives in
+    // prepareWire — P2.2-D1). A REVERSE `@messages` leg (Phase 5) delegates to the hub, producing an
+    // Anthropic-canonical body (`env.body` becomes Anthropic-shaped from here on, so prepareWire below
+    // builds the Anthropic wire).
     translateOut(env) {
-      return env
+      if (env.targetEndpoint !== ENDPOINT.MESSAGES) return env
+      const anthropicBody = translateRequestVia(CLIENT_FORMAT, env.targetEndpoint, env.body, { model: env.model as Model | undefined })
+      return env.with({ body: anthropicBody })
     },
 
     prepareWire(env) {
+      // REVERSE `@messages` leg: the body is Anthropic-shaped (translateOut delegated to the hub) → build
+      // the Anthropic wire via `prepareAnthropicRequest` (B1-B12). No client anthropic-beta (a CC client
+      // sends none); the handler's beta probe records the outbound betas so unsupported-beta can probe them.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) return prepareReverseAnthropicWire(env, args?.reverseBetaProbe)
       return prepareOpenAiCcWire(env)
     },
 
     renderResponse(frame, env) {
       // Passthrough (/chat/completions): forward the upstream CC frame verbatim.
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return frame
+      // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic → translate each frame to CC via the
+      // per-request Anthropic→CC translator (getStreamMeta/flushResponse read the SAME instance).
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).renderFrame(frame)
       // via-responses (/responses): translate each Responses SSE frame → CC chunk(s).
-      streamTranslator ??= createStreamTranslator({ includeUsage: includeUsageOf(env.body) })
+      streamTranslator ??= createStreamTranslator()
       return renderResponsesFrameToCc(frame, streamTranslator)
     },
 
     renderResponseNonStreaming(upstream, env) {
+      // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic → CC-canonical (the hub reverse render).
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) return renderResponseNonStreamingVia(ENDPOINT.MESSAGES, upstream).rendered
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return upstream
       return translateResponsesResponseToCC(upstream as ResponsesResponse)
+    },
+
+    // REVERSE `@messages` leg streaming drain (Phase 5): the Anthropic→CC translator's terminal frames
+    // (`[]` for the CC leg — finish/usage are inline). `[]` for the forward/direct legs.
+    flushResponse(env) {
+      if (env.targetEndpoint !== ENDPOINT.MESSAGES) return []
+      return ensureReverseTranslator(env).flush()
+    },
+
+    // REVERSE `@messages` leg terminal meta (Phase 5): the CC finish_reason + net usage the translator
+    // accumulated (undefined finish ⇒ truncation, F2). Undefined until a reverse renderResponse has run.
+    getStreamMeta() {
+      return reverseTranslator?.getMeta()
     },
 
     formatError(err, _env) {
       return formatOpenAiCcError(err)
     },
 
-    createResponseAccumulator(): ResponseAccumulator {
+    createResponseAccumulator(env): ResponseAccumulator {
+      // The OUTBOUND-leg accumulator (RFC §4.1): the forward/via-responses legs' upstream is CC-shaped;
+      // a REVERSE `@messages` leg's upstream is Anthropic → the Anthropic accumulator (feeding the wrong
+      // format's frames would produce a malformed outboundResponse, violating richest-data-flow).
+      if (env.targetEndpoint === ENDPOINT.MESSAGES) return createAnthropicStreamAccumulator()
       return createOpenAIStreamAccumulator()
     },
 
@@ -276,7 +346,9 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
   const clientModel = raw.modelOverride ?? incoming.model
   // Prefer the route's pre-reload resolution (legacy timing — before the
   // system-prompt config reload, P2.2-D3); else resolve + look up here.
-  const resolvedName = raw.preResolved?.name ?? resolveModelName(clientModel)
+  const resolvedTarget = raw.preResolved ?? resolveModelTarget(clientModel)
+  const resolvedName = resolvedTarget.name
+  const routeOverride = resolvedTarget.routeOverride
   if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
 
@@ -319,7 +391,8 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
   const { payload: sanitizedPayload } = sanitizeOpenAIMessages(renamedPayload)
 
   const env = makeEnvelope({
-    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites via decideRoute
+    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
+    ...(routeOverride && { routeOverride }),
     model: selectedModel as ResolvedModel,
     stream: sanitizedPayload.stream ?? false,
     body: sanitizedPayload,
@@ -335,31 +408,6 @@ function parseContentLength(header: string | null): number | undefined {
   if (header === null) return undefined
   const n = Number.parseInt(header, 10)
   return Number.isFinite(n) ? n : undefined
-}
-
-// ============================================================================
-// S2 — decideRoute
-// ============================================================================
-
-/**
- * S2: passthrough / translate / reject (docs/v4/03-spec/codec.md §2).
- *   - `isEndpointSupported(/chat/completions)` → passthrough
- *   - elif `isResponsesSupported`             → translate `/responses`
- *   - else                                    → reject 400
- *
- * Non-uniform default (preserved): `isEndpointSupported` treats a model with no
- * `supported_endpoints` as supporting everything (legacy fallback) — so unknown
- * gpt-* models passthrough to /chat/completions.
- */
-function decideOpenAiCcRoute(model: Model | undefined): RouteDecision {
-  if (isEndpointSupported(model, ENDPOINT.CHAT_COMPLETIONS)) {
-    return { kind: "passthrough", endpoint: ENDPOINT.CHAT_COMPLETIONS }
-  }
-  if (isResponsesSupported(model)) {
-    return { kind: "translate", to: ENDPOINT.RESPONSES }
-  }
-  const id = model?.id ?? "unknown"
-  return { kind: "reject", status: 400, reason: `Model "${id}" does not support the ${ENDPOINT.CHAT_COMPLETIONS} endpoint` }
 }
 
 // ============================================================================
@@ -406,12 +454,48 @@ function prepareOpenAiCcWire(env: RequestEnvelope): PreparedRequest {
     }
   }
 
+  if (env.targetEndpoint !== ENDPOINT.CHAT_COMPLETIONS) {
+    // A `translate` decision to any leg this codec cannot yet serve (e.g. the reverse
+    // `@messages` leg, wired in Phase 5) must fail LOUDLY, symmetric with the anthropic
+    // side's registry-throw 500 — never silently downgrade to /chat/completions and lie
+    // in observability (`setRouteInfo` already recorded outboundEndpoint/translated).
+    throw new Error(`openai-cc codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`)
+  }
   const prepared = prepareChatCompletionsRequest(ccPayload, { resolvedModel: model })
   return {
     url: ENDPOINT.CHAT_COMPLETIONS,
     headers: new Headers(prepared.headers),
     body: prepared.wire,
     stream: prepared.wire.stream ?? false,
+  }
+}
+
+/**
+ * S4 last-mile for the REVERSE `@messages` leg (Phase 5): the body is Anthropic-shaped (translateOut
+ * delegated to the hub), so build the Anthropic `/v1/messages` wire via `prepareAnthropicRequest` (B1-B12).
+ * A CC client sends no `anthropic-beta`, so `clientAnthropicBeta` is undefined; the handler's shared beta
+ * probe records the outbound betas (so the reverse unsupported-beta strategy can probe them). Idempotent
+ * (deep-clones, no write-back to env.body — same env → same wire), so re-running per retry is safe.
+ */
+function prepareReverseAnthropicWire(env: RequestEnvelope, betaProbe: BetaProbe | undefined): PreparedRequest {
+  const model = env.model as Model | undefined
+  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
+    ...(model && { resolvedModel: model }),
+    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
+    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
+    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
+    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
+    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
+    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
+  })
+  // Record the outbound betas so the reverse unsupported-beta strategy can probe them (mirrors the
+  // anthropic codec's prepareWire recordOutbound — the SAME probe instance the handler injects here).
+  betaProbe?.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
+  return {
+    url: ENDPOINT.MESSAGES,
+    headers: new Headers(prepared.headers),
+    body: prepared.wire,
+    stream: (prepared.wire.stream as boolean | undefined) ?? false,
   }
 }
 
@@ -449,6 +533,28 @@ function recordDroppedCcParamsWarning(ctx: RequestContext, model: string, droppe
  * NOT "fix" `effective` to include O10 — that would re-introduce the legacy leak.
  */
 function sampleOpenAiCcRequest(wire: PreparedRequest, env: RequestEnvelope): RequestSample {
+  // REVERSE `@messages` leg (Phase 5): env.body + wire are both Anthropic-shaped (translateOut delegated
+  // to the hub), so sample the Anthropic wire (`messages`; format label `anthropic-messages`).
+  if (env.targetEndpoint === ENDPOINT.MESSAGES) {
+    const effBody = env.body as { model?: unknown; messages?: unknown }
+    const effective: EffectiveRequest = {
+      model: typeof effBody.model === "string" ? effBody.model : "",
+      resolvedModel: env.model as Model | undefined,
+      messages: Array.isArray(effBody.messages) ? effBody.messages : [],
+      payload: env.body,
+      format: ANTHROPIC_MESSAGES_ENDPOINT_TYPE,
+    }
+    const wireBody = wire.body as { model?: unknown; messages?: unknown }
+    const wireRequest: WireRequest = {
+      model: typeof wireBody.model === "string" ? wireBody.model : "",
+      messages: Array.isArray(wireBody.messages) ? wireBody.messages : [],
+      payload: wire.body,
+      headers: Object.fromEntries(wire.headers.entries()),
+      format: ANTHROPIC_MESSAGES_ENDPOINT_TYPE,
+    }
+    return { effective, wire: wireRequest }
+  }
+
   const effBody = env.body as { model?: unknown; messages?: unknown }
   const effective: EffectiveRequest = {
     model: typeof effBody.model === "string" ? effBody.model : "",
@@ -512,10 +618,6 @@ function renderResponsesFrameToCc(frame: UpstreamFrame, translator: StreamTransl
   return translator.translate(event).map((chunk: ChatCompletionChunk): ClientFrame => ({ data: JSON.stringify(chunk), event: "message" }))
 }
 
-function includeUsageOf(body: unknown): boolean {
-  return (body as ChatCompletionsPayload).stream_options?.include_usage ?? false
-}
-
 // ============================================================================
 // S7 — formatError
 // ============================================================================
@@ -549,6 +651,7 @@ function formatOpenAiCcError(err: ClassifiedStreamError): ClientFrame {
 
 interface EnvelopeInit {
   targetEndpoint: UpstreamEndpoint
+  routeOverride?: RouteOverride
   model: ResolvedModel
   stream: boolean
   body: unknown
@@ -566,6 +669,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
   const env: RequestEnvelope = {
     clientFormat: CLIENT_FORMAT,
     targetEndpoint: init.targetEndpoint,
+    ...(init.routeOverride && { routeOverride: init.routeOverride }),
     model: init.model,
     stream: init.stream,
     body: init.body,
@@ -577,6 +681,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     with(patch) {
       return makeEnvelope({
         targetEndpoint: env.targetEndpoint,
+        routeOverride: env.routeOverride,
         model: env.model,
         stream: env.stream,
         body: env.body,

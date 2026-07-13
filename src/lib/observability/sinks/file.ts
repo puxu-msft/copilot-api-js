@@ -13,12 +13,16 @@
  *
  * Failure isolation: a write error (disk full, permission) must never affect
  * request handling, and must NOT go through consola (that would re-enter the
- * republish reporter → this sink → loop). Errors are written straight to
- * stderr and the sink keeps running.
+ * republish reporter → this sink → loop). Errors are routed through
+ * `terminal-coordinator`'s `emergencyWrite` (P2.2) — region-aware when an
+ * interactive `TerminalUi` is registered, a bare `process.stderr.write`
+ * otherwise (unchanged fallback) — and the sink keeps running.
  */
 
 import fs from "node:fs"
 import path from "node:path"
+
+import { emergencyWrite } from "~/lib/tui/terminal-coordinator"
 
 import type {
   //
@@ -129,7 +133,7 @@ export class FileSink {
       this.currentDay = dayKey(time)
     } catch (err: unknown) {
       // NEVER route through consola — that re-enters the republish reporter.
-      process.stderr.write(`[FileSink] write failed: ${err instanceof Error ? err.message : String(err)}\n`)
+      emergencyWrite(`[FileSink] write failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 

@@ -22,14 +22,14 @@ describe("diff primitives", () => {
     const removed = screen.getByText("oldword")
     const plain = screen.getByText(/kept/)
     // added span carries the ok-tinted background.
-    expect(added.className).toMatch(/var\(--color-ok\)/)
+    expect(added.className).toMatch(/var\(--content-add\)/)
     expect(added.className).not.toMatch(/line-through/)
     // removed span carries the fail-tinted background + line-through.
-    expect(removed.className).toMatch(/var\(--color-fail\)/)
+    expect(removed.className).toMatch(/var\(--content-del\)/)
     expect(removed.className).toMatch(/line-through/)
     // plain part has no highlight class.
-    expect(plain.className).not.toMatch(/var\(--color-ok\)/)
-    expect(plain.className).not.toMatch(/var\(--color-fail\)/)
+    expect(plain.className).not.toMatch(/var\(--content-add\)/)
+    expect(plain.className).not.toMatch(/var\(--content-del\)/)
     expect(plain.className).not.toMatch(/line-through/)
     // Three distinct spans plus the wrapper.
     expect(container.querySelectorAll("span").length).toBeGreaterThanOrEqual(4)
@@ -79,7 +79,7 @@ describe("diff primitives", () => {
     // Inline parts render; the bodyText fallback is NOT used on the modified path.
     expect(screen.getByText(/before/)).toBeDefined()
     const added = screen.getByText("after")
-    expect(added.className).toMatch(/var\(--color-ok\)/)
+    expect(added.className).toMatch(/var\(--content-add\)/)
     expect(screen.queryByText("ignored fallback")).toBeNull()
   })
 })

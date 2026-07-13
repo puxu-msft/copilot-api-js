@@ -6,7 +6,7 @@
 - **日期：** 2026-07-08
 - **Owner：** 排查会话（起于两条 320s `client disconnected` incident）
 - **前身：** [anthropic-keepalive-content-delta.md](anthropic-keepalive-content-delta.md)（`content_delta` keepalive 本体）。本 spec **兑现该 spec §6「已知边界/暂缓」第 3 条**（L2 buffered pre-commit：commit 前不转发任何帧 → openBlock 恒空 → 心跳 fallback ping → 若 >300s 仍断），并扩展 `stream_keepalive_mode` enum。
-- **相关 skill：** `claude-code-connection`（CC 两层 watchdog + 合成帧标记）、`ghc-anthropic-upstream`（thinking-signature 毒化）、`empirical-verification`（客户端 SDK oracle）、`persistence-async-invariants`（buffered-retry 信号）、`large-refactor`（commit invariants）。
+- **相关 skill：** `debugging-claude-client-connection`（CC 两层 watchdog + 合成帧标记）、`ghc-anthropic-upstream`（thinking-signature 毒化）、`empirical-verification`（客户端 SDK oracle）、`persistence-async-invariants`（buffered-retry 信号）、`large-refactor`（commit invariants）。
 - **相关 ADR：** [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)（合成帧必打可辨识标记）。
 
 ---
@@ -52,7 +52,7 @@ req_78 恰在 req_77 断连时刻起 = CC 断连后的**顺序重试**（非孪�
 3. `p`（driver.runRequest）在上游返回 200 headers 后 resolve，[handler-v4.ts:571](../../src/routes/messages/handler-v4.ts#L571) 用同一 sink 跑 `pumpAnthropicStreamingV4(buffered=true)`。
 4. buffered pump（[driver.ts:521 `runResponseBufferedSink`](../../src/lib/pipeline/driver.ts#L521)）把所有 rendered client frame `buffer.push()`，**只在 commit（`drained && (sawMessageStop || sawUpstreamError)`）时一次性 `sink.write()` flush**。上游 stall 在 `content_block_start` 后（heavy thinking 合法静默），从未到达 message_stop → 一帧真实帧都没 `sink.write` → sink openBlock 恒空。
 5. sink 心跳（[client-sink.ts:243](../../src/lib/pipeline/client-sink.ts#L243)）`typeof pingFrame === "function"` 但 `openBlock === undefined` → provider 回退 `ANTHROPIC_PING`。配 [handler-v4.ts:517](../../src/routes/messages/handler-v4.ts#L517) 冷启动首帧硬编码 `ANTHROPIC_PING` → 整条流 16 个 ping。
-6. CC 两层 watchdog（skill `claude-code-connection` 实测）：ping 压住第一层 60s byte-idle，但第二层 **300s no-real-content 只认真实 `content_block_delta`、不认 ping** → ~300s 断，报 `Stream idle timeout - no chunks received`。
+6. CC 两层 watchdog（skill `debugging-claude-client-connection` 实测）：ping 压住第一层 60s byte-idle，但第二层 **300s no-real-content 只认真实 `content_block_delta`、不认 ping** → ~300s 断，报 `Stream idle timeout - no chunks received`。
 7. 我方上游 idle HARD 守卫 `streamIdleTimeout=900s` 远松于客户端 300s → 等它时客户端早死；buffered-retry（`protectStreamingMaxRetries=3`）依赖上游 attempt 被判失败才触发，900s 内没触发 → 重试从未启动。CC 顺序重试（req_78）同样 320s 再断。
 
 **关键定性（用户确认）：** 上游不是「死」而是「合法地慢」——heavy thinking 下 GHC 在 `content_block_start(thinking)` 后静默数百秒（thinking 在上游侧算完才回吐），**已知有 >600s 先例**。故这是纯粹的**客户端保活问题**，不是上游故障。
@@ -179,7 +179,7 @@ commit（或终末失败）时：
 - 前身：[anthropic-keepalive-content-delta.md](anthropic-keepalive-content-delta.md)（本 spec 兑现其 §6#3、扩展其 `stream_keepalive_mode` enum）。
 - buffered-retry 机制：[upstream-stream-truncation-detection.md](upstream-stream-truncation-detection.md)（L2 truncation → 缓冲重试）。
 - thinking 毒化：[2026-07-07-thinking-signature-quarantine.md](2026-07-07-thinking-signature-quarantine.md) + skill `ghc-anthropic-upstream`。
-- 合成帧须带 `event:` 行（否则 SDK 静默丢帧）：[sse-frame.ts](../../src/lib/anthropic/sse-frame.ts) `anthropicSseFrame` + skill `claude-code-connection`。
+- 合成帧须带 `event:` 行（否则 SDK 静默丢帧）：[sse-frame.ts](../../src/lib/anthropic/sse-frame.ts) `anthropicSseFrame` + skill `debugging-claude-client-connection`。
 - 活的架构现状 + 运行时选项：[../DESIGN.md](../DESIGN.md)（`streamKeepaliveMode` / `protectStreamingGeneration` 行 + 流式写出行）。
 
 ## 9. 评审记录（三轮对抗性 subagent review + 用户设计定夺，2026-07-08）
@@ -271,7 +271,7 @@ buffered 路径在 commit flush 时一次性 remap（§3.3）；**live 路径帧
 - 所有真实 `content_block_*` 帧 `index` **+1**（复用 [`remapAnthropicBlockIndex`](../../src/lib/anthropic/keepalive-anchor.ts)）。
 - `message_delta` / `message_stop`（无 index）原样——真实 `stop_reason` + `output_tokens` 由此送达，补齐 CC 最终消息。
 
-**retreat（OOM cap）路径——明确排除本特性 scope（罕见残留、不修）**：deferred-backlog「retreated + empty_text 锚点 → index 碰撞 + 双 message_start」条记录了 retreat 路径（buffer 超 16MiB 转 live 写透，[driver.ts:604-631](../../src/lib/pipeline/driver.ts#L604)）不做 remap/去重的缺口。**决定（用户 2026-07-09）：不修，保留 deferred。** 理由——retreat 触发需 `bufferedBytes > 16MiB`（[driver.ts:622](../../src/lib/pipeline/driver.ts#L622) 计 `frame.data.length + frame.event.length`），而上游对 Anthropic 路径（retreat 唯一存在处）硬上限 `max_output_tokens: 64000` + `max_thinking_budget: 32000`（[refs/AVAILABLE_MODELS.json](../../refs/AVAILABLE_MODELS.json)），典型响应 SSE 帧字节远低于 16MiB。**但此估算不硬（plan review N4）**：`bufferedBytes` 计 SSE 帧字节，细粒度小 delta 的逐帧 framing 开销 + thinking signature 可把帧字节推高，pathological 下逼近 16MiB 非绝无可能。故定位为 **罕见残留协议违规、本特性不修**（而非「证明不可达」）。落地时 live 对账变换 gate 在 `buffered===false`（C2），**结构上够不到** retreat（在 buffered 内）；若未来实测确证 retreat 可达且需修，只能改 driver 的 retreat 分支本身（[driver.ts:604-631](../../src/lib/pipeline/driver.ts#L604)：复用 commit 分支 remap+dedup 读共享 anchorState）。（附带观察：retreat cap 本身是否精简属独立议题，本 spec 不动。）
+**retreat（OOM cap）路径——明确排除本特性 scope（罕见残留、不修）**：deferred-backlog「retreated + empty_text 锚点 → index 碰撞 + 双 message_start」条记录了 retreat 路径（buffer 超 16MiB 转 live 写透，[driver.ts:604-631](../../src/lib/pipeline/driver.ts#L604)）不做 remap/去重的缺口。**决定（用户 2026-07-09）：不修，保留 deferred。** 理由——retreat 触发需 `bufferedBytes > 16MiB`（[driver.ts:622](../../src/lib/pipeline/driver.ts#L622) 计 `frame.data.length + frame.event.length`），而上游对 Anthropic 路径（retreat 唯一存在处）硬上限 `max_output_tokens: 64000` + `max_thinking_budget: 32000`（[.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json](../../.claude/skills/ghc-api-reference/references/AVAILABLE_MODELS.json)），典型响应 SSE 帧字节远低于 16MiB。**但此估算不硬（plan review N4）**：`bufferedBytes` 计 SSE 帧字节，细粒度小 delta 的逐帧 framing 开销 + thinking signature 可把帧字节推高，pathological 下逼近 16MiB 非绝无可能。故定位为 **罕见残留协议违规、本特性不修**（而非「证明不可达」）。落地时 live 对账变换 gate 在 `buffered===false`（C2），**结构上够不到** retreat（在 buffered 内）；若未来实测确证 retreat 可达且需修，只能改 driver 的 retreat 分支本身（[driver.ts:604-631](../../src/lib/pipeline/driver.ts#L604)：复用 commit 分支 remap+dedup 读共享 anchorState）。（附带观察：retreat cap 本身是否精简属独立议题，本 spec 不动。）
 
 ### 10.4 mode taxonomy：`["ping", "enveloped_ping", "empty_text"]`
 

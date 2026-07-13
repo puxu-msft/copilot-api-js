@@ -181,6 +181,23 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   },
   {
+    configKey: "timeouts.stream_idle_overrides",
+    stateKey: "streamIdleTimeoutOverrides",
+    // normalizeModelKeyedRecord folds the "." in "gpt-5.5" to "gpt-5-5" (state
+    // stores the normalized key; findMostSpecific normalizes the query too, so
+    // resolveStreamIdleTimeout("gpt-5.5") still matches).
+    sampleYamlValue: `\n  "gpt-5.5":\n    600`,
+    expectedStateValue: { "gpt-5-5": 600 },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides,
+  },
+  {
+    configKey: "timeouts.response_header_overrides",
+    stateKey: "responseHeaderTimeoutOverrides",
+    sampleYamlValue: `\n  "gpt-5.5":\n    500`,
+    expectedStateValue: { "gpt-5-5": 500 },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides,
+  },
+  {
     configKey: "timeouts.upstream_keepalive",
     stateKey: "upstreamKeepaliveDelay",
     sampleYamlValue: "20",
@@ -249,6 +266,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: "5000",
     expectedStateValue: 5000,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
+  },
+  {
+    configKey: "auto_truncate.preflight",
+    stateKey: "autoTruncatePreflight",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.autoTruncatePreflight,
   },
 
   // ── system_prompt_overrides (array; sample is a single rule) ────────
@@ -605,13 +629,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.nonDeferredTools,
   },
   {
-    configKey: "anthropic.api_key",
-    stateKey: "anthropicApiKey",
-    sampleYamlValue: '"sk-test-123"',
-    expectedStateValue: "sk-test-123",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
-  },
-  {
     configKey: "anthropic.warmup",
     stateKey: "warmupPolicy",
     sampleYamlValue: "fake",
@@ -633,6 +650,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: `\n  "*":\n    - context-management-2025-06-27`,
     expectedStateValue: { "*": ["context-management-2025-06-27"] },
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripBetaHeaders,
+  },
+  {
+    configKey: "anthropic.cache_control_strip_subfields",
+    stateKey: "stripCacheControlSubfields",
+    sampleYamlValue: `\n  "*":\n    - scope`,
+    expectedStateValue: { "*": ["scope"] },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields,
   },
   {
     configKey: "anthropic.partner_strip_features",
@@ -784,6 +808,22 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: "66",
     expectedStateValue: 66,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
+  },
+
+  // ── hooks.* (declarative only — see applyConfigToState) ─────────────
+  {
+    configKey: "hooks.upstream_module",
+    stateKey: "hooksUpstreamModule",
+    sampleYamlValue: '"./exp/my-hook.ts"',
+    expectedStateValue: "./exp/my-hook.ts",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
+  },
+  {
+    configKey: "hooks.enabled",
+    stateKey: "hooksEnabled",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
   },
 
   // ── openai_responses.* ─────────────────────────────────────────────

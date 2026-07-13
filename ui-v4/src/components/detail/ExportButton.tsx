@@ -6,10 +6,10 @@ import { downloadEntryAsZst } from "@/lib/export-entry"
 
 type ExportState = "idle" | "busy" | "error"
 
-const BTN_BASE = "mono border border-[var(--color-border)] px-2 py-0.5 text-[12px]"
+const BTN_BASE = "mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px]"
 
 const LABEL: Record<ExportState, string> = { idle: "Export .zst", busy: "Exporting…", error: "Export failed" }
-const COLOR: Record<ExportState, string> = { idle: "text-[var(--color-primary)]", busy: "text-[var(--color-primary)]", error: "text-[var(--color-fail)]" }
+const COLOR: Record<ExportState, string> = { idle: "text-[var(--content-accent)]", busy: "text-[var(--content-accent)]", error: "text-[var(--signal-fail)]" }
 
 /**
  * Download the full entry as a zstd-compressed `.json.zst`. Errors surface inline on

@@ -160,8 +160,15 @@ export interface SseEventRecord {
    *     "anchor": it carries a fake `id` + zeroed `usage`, an accepted wire/billing divergence, so it is
    *     marked distinctly rather than folded into "anchor" (richest-data-flow: real vs synthetic must
    *     stay distinguishable).
+   *   - "hook-mock" / "hook-replay" — the UPSTREAM-original track's frames came from an `onExchange`
+   *     upstream-hook mock/replay stream (`tagStream`/`readOrigin`, ~/lib/pipeline/hooks/origin), NOT a
+   *     real GHC upstream response — richest-data-flow requires this be distinguishable from genuine
+   *     upstream traffic.
+   *   - "hook-rewrite" — the FORWARDED track's frame was produced by a `rewriteUpstreamFrame` hook
+   *     (differs from the pre-hook frame the upstream track kept); the upstream track itself never
+   *     carries this variant (it always records the pre-hook original — spec §3.2/§3.4 H2).
    */
-  synthetic?: "keepalive" | "anchor" | "synthetic-message-start"
+  synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-mock" | "hook-rewrite" | "hook-replay"
 }
 
 /**
@@ -187,6 +194,12 @@ export interface PipelineInfo {
   preprocessing?: PreprocessInfo
   sanitization?: Array<SanitizationInfo>
   messageMapping?: Array<number>
+  /** passthrough 剥掉的 GHC 未支持 cache_control 子字段（如 scope）。持久化到 history 供运维审计缓存语义降级（spec §8）。 */
+  cacheControlStripped?: Array<string>
+  /** 本请求的 per-model 有效帧-idle 超时（ms；`resolveStreamIdleTimeoutMs`）。诊断：直接解释「为何 462s 才完成 / 为何被掐」（spec 2026-07-12-per-model-idle-timeout §8）。 */
+  streamIdleTimeoutMs?: number
+  /** 本请求的 per-model 有效首字节超时（ms；`resolveResponseHeaderTimeoutMs`）。 */
+  responseHeaderTimeoutMs?: number
 }
 
 export interface WarningMessage {
@@ -194,12 +207,34 @@ export interface WarningMessage {
   message: string
 }
 
+/**
+ * Canonical usage shape. ONE of TWO lockstep owner points — the other is the
+ * inline `ResponseData.usage` literal in `src/lib/context/types.ts`. The two are
+ * NOT linked by a shared reference (context/types.ts does not import this), so any
+ * field change here MUST be mirrored there in the same commit, or the context→
+ * complete/fail/abort chain silently loses the new fields (and reasoning-optional
+ * would break assignment). See docs/spec/2026-07-12-ghc-usage-details.md §5.1 (C1).
+ *
+ * The modality (`text`/`audio`/`image`/`video`) and prediction fields are GHC
+ * extensions stored blob-only (no SQLite column); mostly null for text models.
+ */
 export interface UsageData {
   input_tokens: number
   output_tokens: number
   cache_read_input_tokens?: number
   cache_creation_input_tokens?: number
-  output_tokens_details?: { reasoning_tokens: number }
+  /** Input-side modality breakdown (GHC extension, blob-only; non-empty only). */
+  input_tokens_details?: { text?: number; audio?: number; image?: number; video?: number }
+  /** Output-side: reasoning (now optional, matching the non-zero-only convention) + modality + prediction (GHC extension, blob-only). */
+  output_tokens_details?: {
+    reasoning_tokens?: number
+    text?: number
+    audio?: number
+    image?: number
+    video?: number
+    accepted_prediction_tokens?: number
+    rejected_prediction_tokens?: number
+  }
 }
 
 export interface SystemBlock {
@@ -250,6 +285,19 @@ export interface ModelInfo {
   resolved?: string
   /** Billing multiplier resolved for this request (e.g. 3 for opus, 0.33 for haiku). */
   multiplier?: number
+  /**
+   * Routing observability (translation-matrix RFC 2026-07-11 §10 / W6). Set by the driver
+   * after the S2 route decision:
+   *   - `routeOverride` — the client's explicit `@cc/@responses/@messages` leg pin (undefined = none).
+   *   - `outboundEndpoint` — the ACTUAL outbound leg chosen (`env.targetEndpoint`).
+   *   - `translated` — did the leg require a format translation (`kind==="translate"`) vs a direct
+   *     passthrough (`false`)? Mirrors the openai-gemini `ENDPOINT_TYPE` translation-vs-direct label,
+   *     so history/UI can distinguish a translated leg from a direct one. In Phase 1 there is no
+   *     translation leg yet, so every live request records `translated:false` (a direct leg).
+   */
+  routeOverride?: "cc" | "responses" | "messages"
+  outboundEndpoint?: string
+  translated?: boolean
 }
 
 /**

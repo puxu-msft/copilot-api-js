@@ -33,6 +33,7 @@ import {
   getHeaderCaseInsensitive,
 } from "~/lib/fetch-utils"
 import { isWsResponsesSupported } from "~/lib/models/endpoint"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import {
@@ -54,10 +55,12 @@ import { getUpstreamWsManager } from "./upstream-ws"
  */
 const HEADER_REUSE_INVARIANTS = ["openai-intent", "X-Interaction-Type", "X-Initiator", "copilot-vision-request"] as const
 
-/** Whether the upstream WS path is currently usable for `model`. */
-export function canUseUpstreamWebSocket(model: Model | undefined): boolean {
+/** Whether the upstream WS path is currently usable for `model`. `modelKey` is
+ * the bare outbound model string (same key space as the connection pool + the
+ * breaker) — the per-model circuit breaker is queried on it. */
+export function canUseUpstreamWebSocket(model: Model | undefined, modelKey: string): boolean {
   const manager = getUpstreamWsManager()
-  return state.upstreamWebSocket && !manager.temporarilyDisabled && !manager.stopped && isWsResponsesSupported(model)
+  return state.upstreamWebSocket && !manager.temporarilyDisabled(modelKey) && !manager.stopped && isWsResponsesSupported(model)
 }
 
 export type UpstreamWsAttempt = { kind: "ok"; generator: AsyncGenerator<ServerSentEventMessage> } | { kind: "fallback" }
@@ -111,10 +114,10 @@ export async function attemptUpstreamResponsesWs(
   try {
     connection = reusable ?? (await manager.create({ headers: prepared.headers, model: wire.model, conversationId: opts?.conversationId }))
   } catch (error) {
-    manager.recordFallback()
+    manager.recordFallback(wire.model)
     consola.warn(
       `[responses] Upstream WS acquire failed, falling back to HTTP `
-        + `(${manager.consecutiveFallbacks}/3): ${error instanceof Error ? error.message : String(error)}`,
+        + `(${manager.consecutiveFallbacks(wire.model)}/3): ${error instanceof Error ? error.message : String(error)}`,
     )
     return { kind: "fallback" }
   }
@@ -135,7 +138,7 @@ export async function attemptUpstreamResponsesWs(
   clientAbortSignal?.addEventListener("abort", onExternalAbort, { once: true })
   reaperSignal?.addEventListener("abort", onExternalAbort, { once: true })
 
-  const fetchSignal = createResponseHeaderTimeoutSignal()
+  const fetchSignal = createResponseHeaderTimeoutSignal(wire.model)
   const onFetchTimeout = () => {
     requestAbort.abort(new Error("Upstream WebSocket first-event timeout"))
   }
@@ -163,7 +166,7 @@ export async function attemptUpstreamResponsesWs(
     // First event received — fetch-timeout no longer applies; stream idle timeout
     // takes over for the remaining frames.
     fetchSignal?.removeEventListener("abort", onFetchTimeout)
-    manager.recordSuccessfulStart()
+    manager.recordSuccessfulStart(wire.model)
 
     return {
       kind: "ok",
@@ -174,6 +177,7 @@ export async function attemptUpstreamResponsesWs(
         shutdownSignal,
         clientAbortSignal,
         reaperSignal,
+        idleTimeoutMs: resolveStreamIdleTimeoutMs(wire.model),
         onComplete: () => {
           shutdownSignal.removeEventListener("abort", onExternalAbort)
           clientAbortSignal?.removeEventListener("abort", onExternalAbort)
@@ -186,11 +190,11 @@ export async function attemptUpstreamResponsesWs(
     // Abort the WS request so the connection's busy state is cleared even when
     // the failure originated outside sendRequest (e.g. handshake error).
     requestAbort.abort()
-    manager.recordFallback()
+    manager.recordFallback(wire.model)
     connection.close()
     consola.warn(
       `[responses] Upstream WS failed before first event, falling back to HTTP `
-        + `(${manager.consecutiveFallbacks}/3): ${error instanceof Error ? error.message : String(error)}`,
+        + `(${manager.consecutiveFallbacks(wire.model)}/3): ${error instanceof Error ? error.message : String(error)}`,
     )
     return { kind: "fallback" }
   }
@@ -203,12 +207,13 @@ interface StreamWsEventsOptions {
   shutdownSignal: AbortSignal | undefined
   clientAbortSignal: AbortSignal | undefined
   reaperSignal: AbortSignal | undefined
+  /** Per-model frame-idle timeout (ms; 0 = disabled), resolved by the caller (INV-2 — this deep fn never sees the model). */
+  idleTimeoutMs: number
   onComplete: () => void
 }
 
 async function* streamWsEvents(opts: StreamWsEventsOptions): AsyncGenerator<ServerSentEventMessage> {
-  const { firstEvent, iterator, requestAbort, shutdownSignal, clientAbortSignal, reaperSignal, onComplete } = opts
-  const idleTimeoutMs = state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0
+  const { firstEvent, iterator, requestAbort, shutdownSignal, clientAbortSignal, reaperSignal, idleTimeoutMs, onComplete } = opts
   const idleAbortSignal = combineAbortSignals(shutdownSignal, clientAbortSignal, reaperSignal)
 
   try {

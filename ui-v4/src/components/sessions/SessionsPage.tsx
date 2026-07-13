@@ -1,20 +1,17 @@
-import { SessionRow } from "@/components/sessions/SessionRow"
-import { useSessions } from "@/hooks/useSessions"
+import { SessionsLegacy } from "@/components/sessions/SessionsLegacy"
+import { SessionsShadcn } from "@/components/sessions/SessionsShadcn"
+import { DesignFork } from "@/components/shell/DesignFork"
 
+/**
+ * fork B · Sessions 列表 RoutePage。经 `DesignFork` 原语按设计版本(design version)互斥挂载
+ * legacy(`SessionsLegacy`,Terminal Amber,冻结)/ shadcn(`SessionsShadcn`,重设计)页元素。
+ * 本文件不含 store 字段标识符(唯一读取者是 DesignFork)→ sessions/ 域 grep 守卫零命中。
+ */
 export function SessionsPage() {
-  const { data, isLoading } = useSessions()
-  if (isLoading) return <div className="mono p-4 text-[#888]">loading…</div>
-  const sessions = data?.sessions ?? []
-  if (sessions.length === 0) return <div className="mono p-4 text-[var(--color-muted)]">无 session</div>
   return (
-    <div className="mono p-2">
-      <div className="mb-2 text-[11px] uppercase tracking-wider text-[var(--color-muted)]">Sessions · {sessions.length}</div>
-      {sessions.map((s) => (
-        <SessionRow
-          key={s.sessionId}
-          s={s}
-        />
-      ))}
-    </div>
+    <DesignFork
+      legacy={<SessionsLegacy />}
+      shadcn={<SessionsShadcn />}
+    />
   )
 }

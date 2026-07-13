@@ -18,6 +18,7 @@ import {
 import {
   //
   getSupportedEfforts,
+  getUnsupportedCacheControlSubfields,
   getUnsupportedFeatures,
   isAnthropicBetaUnsupported,
   isAnthropicFeatureUnsupported,
@@ -68,6 +69,8 @@ import {
 export interface PreparedAnthropicRequest {
   wire: Record<string, unknown>
   headers: Record<string, string>
+  /** passthrough 剥掉的 cache_control 子字段列表（供 codec recordFeature 记 history，spec §8）。 */
+  strippedCacheControlSubfields?: ReadonlyArray<string>
 }
 
 /**
@@ -91,6 +94,8 @@ export interface PrepareContext {
    * shared `context-management-2025-06-27` beta (memory rides it, GHC-style).
    */
   hasMemoryTool?: boolean
+  /** Set by the `cache-control` step (passthrough): cache_control 子字段被剥的列表；透出到 PreparedAnthropicRequest 供 history。 */
+  strippedCacheControlSubfields?: ReadonlyArray<string>
 }
 
 /** One named prepare step. Mutates `ctx.wire` and/or `ctx.headers` in place. */
@@ -137,6 +142,11 @@ interface PrepareAnthropicRequestOptions {
    * `PrepareHints.excludeToolFields`.
    */
   excludeToolFields?: ReadonlyArray<string>
+  /**
+   * 源④ per-attempt：cache_control 子字段 rejection retry 腿注入，剥掉刚被上游拒的子字段。
+   * 供 `PrepareHints.excludeCacheControlSubfields` → codec 桥接 → 此入参 → passthrough 消费。
+   */
+  excludeCacheControlSubfields?: ReadonlyArray<string>
   /**
    * L2 buffered-retry escalation (RFC §8) from `PrepareHints.contextEscalation`: when set, FORCE
    * an aggressive native `clear_tool_uses` context_management edit on this attempt (independent of
@@ -188,6 +198,71 @@ function resolveExtendedTtls(): { toolsSystem: CacheTtl; messages: CacheTtl } {
   return { toolsSystem, messages }
 }
 
+export interface PerLayerClientTtls {
+  tools?: CacheTtl
+  system?: CacheTtl
+  messages?: CacheTtl
+}
+export interface SanitizedLayerTtls {
+  tools?: CacheTtl
+  system?: CacheTtl
+  messages?: CacheTtl
+}
+
+/** ttl 大小比较：5m < 1h。 */
+function maxTtl(a: CacheTtl, b: CacheTtl): CacheTtl {
+  return a === "1h" || b === "1h" ? "1h" : "5m"
+}
+function minTtl(a: CacheTtl, b: CacheTtl): CacheTtl {
+  return a === "5m" || b === "5m" ? "5m" : "1h"
+}
+
+/**
+ * sanitize 的 TTL 决策（规范化已有断点，NOT 注入）。对每个**有客户端断点**的层取
+ * max(客户端最大 ttl, extended floor)，再沿 tools→system→messages 单调化——后层 ≤ 最近的
+ * 前面有断点层（满足 Anthropic 前缀递减约束，spec §4.3）。**无断点层返回 undefined**：它不产生
+ * 断点，也不作为后层的上界约束（约束只对实际存在的断点成立）。
+ * extended 未激活时所有 floor = 5m。proxied 不用此函数（它自注入固定 floor，见 applyCacheControlMode）。
+ */
+export function resolveSanitizedTtls(
+  clientMax: PerLayerClientTtls,
+  extendedActive: boolean,
+  extendedTtls: { toolsSystem: CacheTtl; messages: CacheTtl },
+): SanitizedLayerTtls {
+  const floorTS: CacheTtl = extendedActive ? extendedTtls.toolsSystem : "5m"
+  const floorM: CacheTtl = extendedActive ? extendedTtls.messages : "5m"
+  const tools = clientMax.tools !== undefined ? maxTtl(clientMax.tools, floorTS) : undefined
+  const systemRaw = clientMax.system !== undefined ? maxTtl(clientMax.system, floorTS) : undefined
+  const system = systemRaw !== undefined && tools !== undefined ? minTtl(systemRaw, tools) : systemRaw
+  const msgCeil = system ?? tools // 最近的前面有断点层
+  const messagesRaw = clientMax.messages !== undefined ? maxTtl(clientMax.messages, floorM) : undefined
+  const messages = messagesRaw !== undefined && msgCeil !== undefined ? minTtl(messagesRaw, msgCeil) : messagesRaw
+  return { tools, system, messages }
+}
+
+/** 扫 wire 每层（system/messages/tools + 嵌套 content），返回该层出现的最大 cache_control ttl（缺则 undefined）。 */
+export function collectPerLayerClientTtls(wire: Record<string, unknown>): PerLayerClientTtls {
+  const result: PerLayerClientTtls = {}
+  for (const section of ["tools", "system", "messages"] as const) {
+    if (!Array.isArray(wire[section])) continue
+    let layerMax: CacheTtl | undefined
+    const visit = (items: Array<Record<string, unknown> | null | undefined>): void => {
+      for (const item of items) {
+        if (!item || typeof item !== "object") continue
+        const cc = item.cache_control as { ttl?: unknown } | undefined
+        if (cc) {
+          const ttl: CacheTtl = cc.ttl === "1h" ? "1h" : "5m"
+          layerMax = layerMax === undefined ? ttl : maxTtl(layerMax, ttl)
+        }
+        if (Array.isArray(item.content)) visit(item.content as Array<Record<string, unknown>>)
+      }
+    }
+    visit(wire[section] as Array<Record<string, unknown>>)
+    result[section] = layerMax
+  }
+  return result
+}
+
 /** True when any cache_control in the wire (system / messages / tools) carries `ttl:"1h"` — read-only. */
 function wireHasOneHourTtl(wire: Record<string, unknown>): boolean {
   return ["system", "messages", "tools"].some((key) => hasOneHourTtlDeep(wire[key]))
@@ -218,6 +293,25 @@ function collectRejectedFields(modelName: string): Set<string> {
   }
   for (const field of getUnsupportedFeatures(modelName)) reject.add(field)
   return reject
+}
+
+/** GHC 上游不支持的 cache_control 子字段（内置地雷）。scope 由 prompt-caching-scope beta 引入，GHC 未启用。 */
+const BUILTIN_UNSUPPORTED_CACHE_CONTROL_SUBFIELDS: ReadonlyArray<string> = ["scope"]
+
+/**
+ * 收集应从 passthrough cache_control 剥除的子字段。四源 union（对齐 collectStripBetas）：
+ * ① 内置地雷 ② config anthropic.cache_control_strip_subfields（per-model + "*"）
+ * ③ negotiation 学习集（Phase 2 接入，本阶段缺席）④ per-attempt hint（Phase 2 注入）
+ */
+export function collectUnsupportedCacheControlSubfields(model: string, hints?: ReadonlyArray<string>): Set<string> {
+  const strip = new Set<string>(BUILTIN_UNSUPPORTED_CACHE_CONTROL_SUBFIELDS)
+  for (const fields of collectAllMatching(model, state.stripCacheControlSubfields)) {
+    for (const field of fields) strip.add(field)
+  }
+  // 源③ negotiation：reactive 腿学到的字段进入后续请求 proactive 预剥（对齐 tool-field 双层）。
+  for (const field of getUnsupportedCacheControlSubfields()) strip.add(field)
+  for (const field of hints ?? []) strip.add(field)
+  return strip
 }
 
 /**
@@ -434,7 +528,11 @@ export function prepareAnthropicRequest(
     opts: opts ?? {},
   }
   for (const step of steps) step.apply(ctx)
-  return { wire: ctx.wire, headers: ctx.headers }
+  return {
+    wire: ctx.wire,
+    headers: ctx.headers,
+    ...(ctx.strippedCacheControlSubfields && { strippedCacheControlSubfields: ctx.strippedCacheControlSubfields }),
+  }
 }
 
 function buildWirePayload(
@@ -919,12 +1017,20 @@ function applyCacheControlMode(ctx: PrepareContext): void {
       break
     }
     case "passthrough": {
+      // 只挖已知地雷（GHC 未支持的 cache_control 子字段，如 scope），保留客户端精调断点。
+      const blacklist = collectUnsupportedCacheControlSubfields(model, ctx.opts.excludeCacheControlSubfields)
+      const stripped = filterCacheControlSubfields(wire, blacklist)
+      if (stripped.length > 0) ctx.strippedCacheControlSubfields = stripped
       break
     }
     case "sanitize": {
-      // Normalize every existing (client) breakpoint to ephemeral, per layer: message breakpoints get
-      // the messages TTL, tool/system breakpoints the tools/system TTL. Does NOT inject new breakpoints.
-      walkCacheControl(wire, (_current, section) => (section === "messages" ? messagesEphemeral : toolsSystemEphemeral))
+      // 收窄语义（spec §4）：保留客户端合法 ttl（不再无条件降 5m），剥非白名单子字段（scope 等），
+      // 跨层单调化满足 Anthropic tools→system→messages 递减约束。TTL 决策归 resolveSanitizedTtls。
+      const clientMax = collectPerLayerClientTtls(wire)
+      const ttls = resolveSanitizedTtls(clientMax, extendedTtlActive, { toolsSystem, messages: messagesTtl })
+      // 同层统一为 effective ttl（规范化）；ephemeralFor 只产 {type,ttl?} → scope 等子字段自动剥除。
+      // handler 仅对有断点的 item 调用 → ttls[section] 必非 undefined（?? "5m" 仅防御性兜底）。
+      walkCacheControl(wire, (_current, section) => ephemeralFor(ttls[section] ?? "5m"))
       break
     }
     case "proxied": {
@@ -1169,6 +1275,28 @@ function placeCacheControlOnLastBlock(message: MessageParam, ephemeral: Ephemera
  * - an object: replace the cache_control field with this value
  */
 type CacheControlSection = "system" | "messages" | "tools"
+
+/**
+ * 就地删除 wire 中所有 cache_control 的黑名单子字段，保留其余（红线1：正常态绝不返回 undefined，
+ * 那会删掉整个 cache_control 退化成 disabled）。返回实际剥掉的字段去重列表（供 history 标记）。
+ * L2 兜底：剥后 cc 若失去 type（畸形输入只含被剥字段），空/无 type 的 cache_control 会 400，
+ * 此时删掉整个 cc 更安全（回退 disabled）；真实 scope 场景 cc 恒含 type，此分支只为畸形兜底。
+ */
+export function filterCacheControlSubfields(wire: Record<string, unknown>, blacklist: Set<string>): Array<string> {
+  if (blacklist.size === 0) return []
+  const stripped = new Set<string>()
+  walkCacheControl(wire, (current) => {
+    const cc = current as Record<string, unknown>
+    for (const field of blacklist) {
+      if (field in cc) {
+        Reflect.deleteProperty(cc, field)
+        stripped.add(field)
+      }
+    }
+    return typeof cc.type === "string" ? (cc as { type: string }) : undefined
+  })
+  return [...stripped]
+}
 
 function walkCacheControl(wire: Record<string, unknown>, handler: (current: unknown, section: CacheControlSection) => { type: string } | undefined): void {
   for (const key of ["system", "messages", "tools"] as const) {

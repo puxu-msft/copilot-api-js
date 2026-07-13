@@ -21,6 +21,7 @@ import type {
   WireRequest,
 } from "~/lib/context/types"
 import type { ApiError } from "~/lib/error"
+import type { RouteOverride } from "~/lib/models/normalize-id"
 import type {
   //
   BaseStreamAccumulator,
@@ -159,13 +160,14 @@ export type RetryAction =
 // ============================================================================
 
 /**
- * S2 routing outcome (codec.decideRoute). Unifies the 4 scattered passthrough
- * checks + Gemini's no-gate translate (docs/v4/03-spec/codec.md §2).
+ * S2 routing outcome (`router.decideRoute` — ADR 2026-07-11, extracted from the codecs).
+ * Unifies the 4 scattered passthrough checks + Gemini's no-gate translate
+ * (docs/v4/03-spec/codec.md §2).
  *
  * The `translate` variant omits a `from` field: the source format is always
  * available as `env.clientFormat`, so carrying it here would duplicate state.
- * (docs/v4/01-architecture.md §6 shows a `from`-bearing variant; codec.md — the
- * authoritative decideRoute spec — omits it, and that is the version used here.)
+ * (docs/v4/01-architecture.md §6 shows a `from`-bearing variant; the router — the
+ * authoritative decideRoute site — omits it, and that is the version used here.)
  */
 export type RouteDecision =
   | { kind: "passthrough"; endpoint: UpstreamEndpoint }
@@ -222,7 +224,7 @@ export interface RawHttpRequest {
    * happens during system-prompt cannot shift the model lookup relative to the
    * legacy handler. `model: undefined` is a valid value (unknown gpt-* fallback).
    */
-  readonly preResolved?: { name: string; model: ResolvedModel | undefined }
+  readonly preResolved?: { name: string; model: ResolvedModel | undefined; routeOverride?: RouteOverride }
   /** Downstream client-disconnect signal, folded into the upstream fetch signal. */
   readonly clientAbortSignal?: AbortSignal
 }
@@ -682,9 +684,6 @@ export interface FormatCodec {
   /** S1: parse inbound HTTP → envelope (model resolution, body extraction, ctx). */
   parse(raw: RawHttpRequest): RequestEnvelope
 
-  /** S2: passthrough / translate / reject decision (unifies the 4 scattered checks). */
-  decideRoute(env: RequestEnvelope): RouteDecision
-
   /** S2: translate body to the target-endpoint format (passthrough = identity). */
   translateOut(env: RequestEnvelope): RequestEnvelope
 
@@ -695,6 +694,19 @@ export interface FormatCodec {
    */
   prepareWire(env: RequestEnvelope): PreparedRequest
 
+  /**
+   * S4 first-attempt only: an async pre-send hook the driver awaits ONCE before the
+   * first `prepareWire`, so a codec can rewrite env.body ahead of the initial send
+   * (returns the same env unchanged when it declines). The main-path pre-flight
+   * truncation lives here: the Anthropic codec predicts the request's calibrated
+   * size (est * learned factor) and, when it exceeds the model's limit, pre-truncates
+   * BEFORE sending — skipping the necessarily-doomed 400 round-trip that the reactive
+   * retry would otherwise take (size-aware calibration §7). Optional — codecs omit it
+   * (no-op). Gated per-implementation (`state.autoTruncatePreflight`, default OFF);
+   * the driver runs it unconditionally when present and lets the codec decide.
+   */
+  preSend?(env: RequestEnvelope): Promise<RequestEnvelope>
+
   /** S6: translate one upstream frame back to the client protocol (passthrough = identity). */
   renderResponse(frame: UpstreamFrame, env: RequestEnvelope): ClientFrame | Array<ClientFrame>
 
@@ -704,8 +716,14 @@ export interface FormatCodec {
   /** S7: shape a mid-stream lifecycle error into this protocol's error frame. */
   formatError(err: ClassifiedStreamError, env: RequestEnvelope): ClientFrame
 
-  /** observability: the format's response accumulator factory (HistorySink rebuild). */
-  createResponseAccumulator(): ResponseAccumulator
+  /**
+   * observability: the format's response accumulator factory (HistorySink rebuild). Takes the
+   * post-route `env` so the accumulator matches the OUTBOUND-leg shape (RFC §4.1, targetEndpoint axis):
+   * a translate leg's upstream is a DIFFERENT format than the client (anthropic→cc → a CC accumulator),
+   * so a leg-blind factory would produce a malformed outboundResponse. The direct/passthrough legs return
+   * their native accumulator regardless of `env` (byte-identical to before the `env` param was restored).
+   */
+  createResponseAccumulator(env: RequestEnvelope): ResponseAccumulator
 
   /**
    * observability (S4 per-attempt): derive the history-side effective + wire

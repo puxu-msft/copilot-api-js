@@ -1310,7 +1310,7 @@ const SERVER_TOOL_REJECTION_TABLE: ReadonlyArray<{ pattern: RegExp; typePrefix: 
 - Modify: `src/lib/error/parsing.ts`（`parseTokenLimitError` 加变体正则）
 - Test: `tests/error/*` + fixture（真实 body）
 
-- [ ] **Step 0（门槛）:** 从 History 语料 / 上游探针捕获**真实**的 `max_tokens`-inclusive 或 Vertex 措辞的 context-length 400 body。查 History（[api-endpoints skill] 4141 API 或直接 SQLite 查 `bad_request` + token/context 关键字）。**若捕不到真实 body → 停，把 F 记入 [docs/todo/deferred-backlog.md](../../todo/deferred-backlog.md)（根因/当前行为/理想架构/为何暂缓/若做需改什么），本 Task 不产出正则。** 不猜措辞。
+- [ ] **Step 0（门槛）:** 从 History 语料 / 上游探针捕获**真实**的 `max_tokens`-inclusive 或 Vertex 措辞的 context-length 400 body。查 History（[proxy-api-reference skill] 4141 API 或直接 SQLite 查 `bad_request` + token/context 关键字）。**若捕不到真实 body → 停，把 F 记入 [docs/todo/deferred-backlog.md](../../todo/deferred-backlog.md)（根因/当前行为/理想架构/为何暂缓/若做需改什么），本 Task 不产出正则。** 不猜措辞。
 - [ ] **Step 1:** 用捕获的真实 body 建 golden fixture；写测试：该 body 经 `parseTokenLimitError` 应返 `{current, limit}`（当前返 null）。
 - [ ] **Step 2:** Run → FAIL（现 2 条正则匹配不上）。
 - [ ] **Step 3:** 加**精确匹配真实 body 措辞**的正则变体（不宽泛猜测；只覆盖 golden 里的真实措辞）。

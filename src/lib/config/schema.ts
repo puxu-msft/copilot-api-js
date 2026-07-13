@@ -112,14 +112,55 @@ function nullableNonemptyStringArray() {
 // Shared primitives
 // ============================================================================
 
+/**
+ * Endpoint-scope values for system-prompt rules/entries. MUST stay in sync with
+ * `ClientFormat` in `~/lib/pipeline/envelope.ts` — inlined here (not imported) to
+ * keep the config schema layer free of a pipeline import. A rule/entry is applied
+ * only when the request's inbound client format is in this set (undefined = all).
+ */
+export const ENDPOINT_SCOPE_VALUES = ["anthropic", "openai-cc", "openai-responses", "gemini"] as const
+
+/** `endpoint?: <one> | [<many>]` — a single endpoint value or an array of them. */
+const endpointScope = () =>
+  z.union([z.enum(ENDPOINT_SCOPE_VALUES), z.array(z.enum(ENDPOINT_SCOPE_VALUES)).nonempty("Must be a non-empty array of endpoints")]).optional()
+
 export const RewriteRuleSchema = z
   .object({
     from: z.string().nonempty("Must be a non-empty string"),
     to: z.string({ error: "Must be a string" }),
     method: z.enum(["line", "regex"], { error: "Must be 'line' or 'regex'" }).optional(),
+    /** Model-name regex filter (case-insensitive). undefined = all models. */
     model: z.string().optional(),
+    /** Endpoint scope. undefined = all endpoints. */
+    endpoint: endpointScope(),
   })
   .strict()
+
+/**
+ * A single scoped system-prompt prepend/append entry: the `text` plus optional
+ * `model` / `endpoint` scope (same two-axis AND semantics as {@link RewriteRuleSchema}).
+ */
+export const SystemPromptEntrySchema = z
+  .object({
+    text: z.string({ error: "Must be a string" }),
+    /** Model-name regex filter (case-insensitive). undefined = all models. */
+    model: z.string().optional(),
+    /** Endpoint scope. undefined = all endpoints. */
+    endpoint: endpointScope(),
+  })
+  .strict()
+
+/**
+ * `system_prompt_prepend` / `system_prompt_append` accept, for backward compat:
+ *   - a plain string (legacy; unscoped single entry), or
+ *   - a single {@link SystemPromptEntrySchema}, or
+ *   - an array of entries (evaluated top-down, matching entries concatenated).
+ */
+const SystemPromptTextListSchema = z
+  .union([z.string(), SystemPromptEntrySchema, z.array(SystemPromptEntrySchema)])
+  .nullable()
+  .transform((v): string | z.infer<typeof SystemPromptEntrySchema> | Array<z.infer<typeof SystemPromptEntrySchema>> | undefined => v ?? undefined)
+  .optional()
 
 const RewriteRuleListSchema = z
   .array(RewriteRuleSchema)
@@ -465,11 +506,13 @@ export const AnthropicConfigSchema = z
       .strict()
       .optional(),
     tool_search_non_deferred: nullableNonemptyStringArray(),
-    api_key: nullableString(),
     warmup: nullableEnum(["allow", "reject", "drop", "fake"] as const),
     // Free-form Records — key = model-name pattern, value = list
     effort_overrides: z.record(z.string(), z.array(z.string())).optional(),
     beta_strip_headers: z.record(z.string(), z.array(z.string())).optional(),
+    // GHC 未支持的 cache_control 子字段黑名单（model-name pattern → 子字段列表；"*" = 所有模型）。
+    // passthrough 模式下剥除。ADDS to 内置 {scope} + reactive learned cache。
+    cache_control_strip_subfields: z.record(z.string(), z.array(z.string())).optional(),
     partner_strip_features: z.record(z.string(), z.array(z.string())).optional(),
     // Custom-tool top-level field names to strip / keep (model-name pattern → field list;
     // `"*"` = all models). tool_strip_fields ADDS to the built-in default
@@ -494,10 +537,13 @@ export const AnthropicConfigSchema = z
      * Repair malformed `tool_use` input that upstream emitted as invalid JSON on
      * the Anthropic response wire. A **comma-separated set of repair items** — a
      * subset of `tags` (structure-aware antml-tag stripping), `unicode`
-     * (whitespace-broken `\uXXXX` escape fix), and `jsonrepair` (jsonrepair
-     * structural fix). Items cascade in a fixed canonical order (spelling order is
-     * ignored) and stack on each other. Empty string (default) = off. History keeps
-     * the upstream-original bytes — only the forwarded stream/response is repaired.
+     * (whitespace-broken `\uXXXX` escape fix), `jsonrepair` (jsonrepair structural
+     * fix), and `unicode-lossy` (LOSSY best-effort: un-completable `\uXXXX` escapes
+     * → U+FFFD, garbling ≥1 char to rescue an otherwise-dead input). Items cascade in
+     * a fixed canonical order (spelling order is ignored) and stack on each other;
+     * the lossy `unicode-lossy` runs LAST, only when every lossless item failed.
+     * Empty string (default) = off. History keeps the upstream-original bytes — only
+     * the forwarded stream/response is repaired.
      */
     tool_repair_malformed_input: z
       .string({ error: REPAIR_ITEMS_MSG })
@@ -664,6 +710,21 @@ export const ChatCompletionsConfigSchema = z
   })
   .strict()
 
+/**
+ * Ad-hoc TS hook module for mocking/intercepting the upstream transport (dev/test only).
+ * `upstream_module` is the path loaded by `loadUpstreamHookSafe` at startup (and, in future
+ * phases, a reload API); `enabled` gates whether it is loaded at all — the feature is fully
+ * off unless explicitly true. Declarative only: this schema/state wiring never triggers the
+ * module load itself (see `applyConfigToState` / `start.ts`).
+ */
+export const HooksConfigSchema = z
+  .object({
+    upstream_module: nullableString(),
+    enabled: nullableBoolean(),
+  })
+  .strict()
+export type HooksConfig = z.infer<typeof HooksConfigSchema>
+
 export const HistoryConfigSchema = z
   .object({
     /** @deprecated 兼容旧配置;缺省的 success_limit/failure_limit 回退到它 */
@@ -703,8 +764,19 @@ export const AutoTruncateConfigSchema = z
     compress_tool_results: nullableBoolean(),
     /** Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress everything. Default 10000. */
     compress_threshold: nullableNonnegativeInt(),
+    /** Main-path pre-flight truncation: before sending, use the learned size-aware calibration factor to predict whether the request will exceed the model's token limit and pre-truncate it, saving a guaranteed-to-fail 400 round-trip. Reactive truncation (on upstream limit errors) remains the fallback. Opt-in; default false. */
+    preflight: nullableBoolean(),
   })
   .strict()
+
+/**
+ * Per-model timeout override maps (seconds). Named const so the base `ZodRecord`
+ * reference is stable for `RECORD_MERGE_STRATEGIES` (WeakMap key) — an inline
+ * `z.record(...)` inside the parent shape would get a fresh object each access
+ * and the per-key merge would silently degrade to `replace`.
+ */
+const StreamIdleOverridesSchema = z.record(z.string(), z.number({ error: POSITIVE_INT_MSG }).int(POSITIVE_INT_MSG).nonnegative(POSITIVE_INT_MSG))
+const ResponseHeaderOverridesSchema = z.record(z.string(), z.number({ error: POSITIVE_INT_MSG }).int(POSITIVE_INT_MSG).nonnegative(POSITIVE_INT_MSG))
 
 export const TimeoutsConfigSchema = z
   .object({
@@ -712,6 +784,24 @@ export const TimeoutsConfigSchema = z
     stream_idle: nullableNonnegativeInt(),
     /** Max seconds from request start to receiving HTTP response headers (0 = no timeout). Was top-level `fetch_timeout`. */
     response_header: nullableNonnegativeInt(),
+    /**
+     * Per-model stream-idle timeout override (seconds), keyed by model-name
+     * substring with `"*"` wildcard. A match wins over `stream_idle`; 0 = disabled.
+     * Bundled default `{ gpt-5.5: 600 }`. Per-key merged with the user table
+     * (a user `{}` does NOT wipe the bundled entry). App-guard only — does not
+     * touch the undici dispatcher. See ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
+     */
+    stream_idle_overrides: StreamIdleOverridesSchema.nullable()
+      .transform((v): z.infer<typeof StreamIdleOverridesSchema> | undefined => v ?? undefined)
+      .optional(),
+    /**
+     * Per-model response-header (first-byte) timeout override (seconds), same
+     * keying/merge semantics as `stream_idle_overrides`. A match wins over
+     * `response_header`; 0 = disabled. Bundled default `{}` (no built-in value).
+     */
+    response_header_overrides: ResponseHeaderOverridesSchema.nullable()
+      .transform((v): z.infer<typeof ResponseHeaderOverridesSchema> | undefined => v ?? undefined)
+      .optional(),
     /** Upstream TCP keepalive initial-probe delay in seconds (0 = use undici default 60s). Keeps GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it. Node-only. */
     upstream_keepalive: nullableNonnegativeInt(),
     /** Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled). Application-layer complement to `upstream_keepalive`: GHC does NOT forward Anthropic's SSE `ping` frames, so a long thinking silence is a truly idle stream a connection-idle reaper (middlebox/GHC edge) severs WITHOUT `message_stop` (a real cut fired at ~112s) — a periodic PING puts a real frame on the wire. Default 15. Node-only (node:http2 transport). */
@@ -826,8 +916,8 @@ export const ConfigSchema = z
     proxy: ProxySchema,
     ghc_api_base_url: GhcApiBaseUrlSchema,
     system_prompt_overrides: RewriteRuleListSchema,
-    system_prompt_prepend: nullableString(),
-    system_prompt_append: nullableString(),
+    system_prompt_prepend: SystemPromptTextListSchema,
+    system_prompt_append: SystemPromptTextListSchema,
     rate_limiter: nullableSection(RateLimiterConfigSchema),
     anthropic: nullableSection(AnthropicConfigSchema),
     openai_responses: nullableSection(ResponsesConfigSchema),
@@ -865,6 +955,7 @@ export const ConfigSchema = z
      */
     sanitize_tool_names: nullableBoolean(),
     history: nullableSection(HistoryConfigSchema),
+    hooks: nullableSection(HooksConfigSchema),
     server_tool_web_search: nullableSection(WebSearchConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
@@ -923,6 +1014,8 @@ export type RecordMergeStrategy = "per-key" | "replace"
 export const RECORD_MERGE_STRATEGIES = new WeakMap<z.ZodType, RecordMergeStrategy>()
 
 RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
+RECORD_MERGE_STRATEGIES.set(StreamIdleOverridesSchema, "per-key")
+RECORD_MERGE_STRATEGIES.set(ResponseHeaderOverridesSchema, "per-key")
 // effort_overrides / beta_strip_headers / partner_strip_features / tool_strip_fields /
 // tool_keep_fields / retry_reject_body_fields intentionally
 // omitted — they default to "replace": when the user sets one of these
@@ -931,6 +1024,9 @@ RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
 // ============================================================================
 
 export type RewriteRule = z.infer<typeof RewriteRuleSchema>
+export type SystemPromptEntry = z.infer<typeof SystemPromptEntrySchema>
+/** Endpoint-scope value — one of {@link ENDPOINT_SCOPE_VALUES}; mirrors `ClientFormat`. */
+export type EndpointScope = (typeof ENDPOINT_SCOPE_VALUES)[number]
 export type RateLimiterConfig = z.infer<typeof RateLimiterConfigSchema>
 export type AnthropicConfig = z.infer<typeof AnthropicConfigSchema>
 export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>

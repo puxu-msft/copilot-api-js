@@ -27,4 +27,4 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 - tool_use.id 上游不校验格式（`toolu_recovered_0` 也 200），只引用一致性要紧；仍合成 `toolu_`+24base62 防客户端 SDK。
 - 上游兼容矩阵/特性协商属 docs（anthropic-compat.md / refusal-recovery.md），本 skill 只管调试。
 
-> Claude Code **客户端**的连接/流式行为（CC 请求超时两层、keepalive 空 content-delta、合成帧 event: 行 + synthetic 标记、SDK 对 200+SSE-error 零重试）是**下游客户端**域，不在本 skill——见 skill `claude-code-connection`。上游**传输**（fetch/http2/proxy/keepalive）见 skill `bun-upstream-transport`。
+> Claude Code **客户端**的连接/流式行为（CC 请求超时两层、keepalive 空 content-delta、合成帧 event: 行 + synthetic 标记、SDK 对 200+SSE-error 零重试）是**下游客户端**域，不在本 skill——见 skill `debugging-claude-client-connection`。上游**传输**（fetch/http2/proxy/keepalive）见 skill `debugging-ghc-api-upstream-transport`。

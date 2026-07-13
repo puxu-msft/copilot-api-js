@@ -85,7 +85,11 @@ import {
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  resolveModelTarget,
+  type RouteOverride,
+} from "~/lib/models/resolver"
 import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { state } from "~/lib/state"
@@ -118,13 +122,26 @@ export interface OpenAiGeminiCodec extends FormatCodec {
   getStreamMeta(): GeminiStreamMeta
 }
 
+/** Args for {@link createOpenAiGeminiCodec}. */
+export interface CreateOpenAiGeminiCodecArgs {
+  /**
+   * REVERSE `@messages` leg only: the shared per-request beta probe, threaded to the internal cc
+   * delegate so its `prepareWire` records the outbound Anthropic betas. Absent for the direct/via-responses
+   * Gemini legs.
+   */
+  reverseBetaProbe?: import("~/lib/anthropic/pipeline").BetaProbe
+}
+
 /** Build the gemini codec for one request (holds the internal cc codec + Gemini ctx). */
-export function createOpenAiGeminiCodec(modelId: string): OpenAiGeminiCodec {
+export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGeminiCodecArgs): OpenAiGeminiCodec {
   // Internal delegate: the openai-cc codec drives the CC-payload S2–S6 (route
   // decision incl. via-responses, wire prep, response normalization, sampling).
   // We call its methods WITHOUT its `parse` — they are pure over `env` (+ its own
-  // lazily-built via-responses translator closure), so they work standalone.
-  const cc: OpenAiCcCodec = createOpenAiCcCodec()
+  // lazily-built via-responses translator closure), so they work standalone. The
+  // REVERSE `@messages` leg (Phase 5) delegates translateOut/prepareWire/renderResponse
+  // to it too: the cc delegate's MESSAGES-leg wiring (T5.2) gives gemini Anthropic→CC
+  // for free (hub-and-spoke), and gemini adds the CC→Gemini second hop in renderResponse.
+  const cc: OpenAiCcCodec = createOpenAiCcCodec(opts?.reverseBetaProbe ? { reverseBetaProbe: opts.reverseBetaProbe } : undefined)
   // Per-request CC→Gemini stream translator (B5): renderResponse drives it per-frame, flushResponse
   // drains the stream-end frames, getStreamMeta exposes the terminal usage/finishReason. Eager (cheap;
   // holds the CC accumulator + tool-flush bookkeeping) — only the streaming path touches it.
@@ -154,10 +171,6 @@ export function createOpenAiGeminiCodec(modelId: string): OpenAiGeminiCodec {
     // touch cc's parse-created closure state (requestContext/truncateBaseline are
     // ours); the only cc closure state used is its via-responses stream translator,
     // lazily built inside cc.renderResponse.
-    decideRoute(env) {
-      return cc.decideRoute(env)
-    },
-
     translateOut(env) {
       return cc.translateOut(env)
     },
@@ -194,10 +207,11 @@ export function createOpenAiGeminiCodec(modelId: string): OpenAiGeminiCodec {
       return cc.renderResponseNonStreaming(upstream, env)
     },
 
-    createResponseAccumulator(): ResponseAccumulator {
+    createResponseAccumulator(env): ResponseAccumulator {
       // Upstream is CC (passthrough) or normalized-to-CC (via-responses), so the
-      // outbound-track accumulator is the CC one.
-      return cc.createResponseAccumulator()
+      // outbound-track accumulator is the CC one. (`env` threaded to the cc delegate for the interface;
+      // Gemini has no `→ messages` translate leg, so the leg never changes the accumulator.)
+      return cc.createResponseAccumulator(env)
     },
 
     sampleRequest(wire, env): RequestSample {
@@ -238,7 +252,9 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
   const ccBody = raw.body as ChatCompletionsPayload
   const geminiSnapshot = structuredClone(raw.originalBodyForHistory as GenerateContentRequest)
 
-  const resolvedName = raw.preResolved?.name ?? resolveModelName(modelId)
+  const resolvedTarget = raw.preResolved ?? resolveModelTarget(modelId)
+  const resolvedName = resolvedTarget.name
+  const routeOverride = resolvedTarget.routeOverride
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
 
   // Re-derive the lossy-translation dropped params from the raw Gemini body. The
@@ -288,7 +304,8 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
   const filledPayload = fillMaxCompletionTokens(sanitizedPayload, selectedModel)
 
   const env = makeEnvelope({
-    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites via decideRoute
+    targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
+    ...(routeOverride && { routeOverride }),
     model: selectedModel as ResolvedModel,
     stream: filledPayload.stream ?? false,
     body: filledPayload,
@@ -366,6 +383,7 @@ function formatGeminiError(err: ClassifiedStreamError): ClientFrame {
 
 interface EnvelopeInit {
   targetEndpoint: UpstreamEndpoint
+  routeOverride?: RouteOverride
   model: ResolvedModel
   stream: boolean
   body: unknown
@@ -378,6 +396,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
   const env: RequestEnvelope = {
     clientFormat: CLIENT_FORMAT,
     targetEndpoint: init.targetEndpoint,
+    ...(init.routeOverride && { routeOverride: init.routeOverride }),
     model: init.model,
     stream: init.stream,
     body: init.body,
@@ -389,6 +408,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     with(patch) {
       return makeEnvelope({
         targetEndpoint: env.targetEndpoint,
+        routeOverride: env.routeOverride,
         model: env.model,
         stream: env.stream,
         body: env.body,

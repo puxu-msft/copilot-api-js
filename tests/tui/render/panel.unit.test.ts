@@ -40,6 +40,8 @@ import {
   buildCollapsedLines,
   buildDetailLines,
   buildPanelLines,
+  MAX_PANEL_ROWS,
+  panelContentRows,
 } from "~/lib/tui/render/panel"
 
 /** Frozen wall-clock for deterministic `elapsed` rendering. */
@@ -175,42 +177,57 @@ function panelViews(n: number): Array<DetailView> {
 }
 
 describe("buildPanelLines", () => {
-  test("every row is ≤ columns-1 wide", () => {
+  test("caps the panel at MAX_PANEL_ROWS with a bidirectional overflow indicator", () => {
     const columns = 80
+    // 5 active, generous rows: still capped — 2 content rows + 1 `↑0 ↓3 more`.
     const lines = buildPanelLines({ active: panelViews(5), now: NOW, columns, selectedIndex: 0, scrollOffset: 0, rows: 10, showHelp: false })
-    expect(lines.length).toBe(5)
+    expect(lines.length).toBeLessThanOrEqual(MAX_PANEL_ROWS)
+    expect(lines.at(-1)).toContain("more") // overflow indicator (list longer than the window)
+    expect(lines.at(-1)).toContain("↓3")
     expectAllFit(lines, columns)
   })
 
-  test("the selected row is wrapped in literal reverse-video; others are not", () => {
+  test("shows every row (no indicator) when the list fits the cap", () => {
     const columns = 80
-    const lines = buildPanelLines({ active: panelViews(4), now: NOW, columns, selectedIndex: 2, scrollOffset: 0, rows: 10, showHelp: false })
-    expect(lines[2]).toContain(REVERSE_ON)
-    expect(lines[2]).toContain(REVERSE_OFF)
+    const lines = buildPanelLines({ active: panelViews(3), now: NOW, columns, selectedIndex: 1, scrollOffset: 0, rows: 10, showHelp: false })
+    expect(lines.length).toBe(3)
+    expect(lines.some((l) => l.includes("more"))).toBe(false)
+    expect(lines[1]).toContain(REVERSE_ON)
+    expect(lines[1]).toContain(REVERSE_OFF)
     expect(lines[0]).not.toContain(REVERSE_ON)
-    expect(lines[1]).not.toContain(REVERSE_ON)
-    // Reverse codes are zero-width — the selected row still fits.
     expectAllFit(lines, columns)
   })
 
-  test("rows a short id form is rendered (not the full id)", () => {
-    const columns = 80
-    const [line] = buildPanelLines({ active: [makeDetail({ id: "abcdefgh-1234-5678-9012", model: "m", elapsedMs: 1000 })], now: NOW, columns, selectedIndex: -1, scrollOffset: 0, rows: 10, showHelp: false })
-    expect(line).toContain("abcdefgh")
-    expect(line).not.toContain("abcdefgh-1234-5678-9012")
+  test("rows render the full request id (not a leading prefix slice)", () => {
+    // Real ids look like `req_<ts>_<seq>` where the DISTINGUISHING part is the
+    // trailing `_<seq>` — a leading slice would show only the shared prefix.
+    // The id sits at the row head so truncateToWidth (tail-trim) never eats it.
+    const columns = 120
+    const [line] = buildPanelLines({
+      active: [makeDetail({ id: "req_1783706112773_1180", model: "m", elapsedMs: 1000 })],
+      now: NOW,
+      columns,
+      selectedIndex: -1,
+      scrollOffset: 0,
+      rows: 10,
+      showHelp: false,
+    })
+    expect(line).toContain("req_1783706112773_1180")
   })
 
-  test("scrollOffset selects the visible window; selected row is reversed at its window position", () => {
+  test("scrollOffset selects the visible window; indicator counts both sides; selected row reversed", () => {
     const columns = 80
     const active = panelViews(10)
-    const lines = buildPanelLines({ active, now: NOW, columns, selectedIndex: 4, scrollOffset: 3, rows: 4, showHelp: false })
-    // Window is active[3..7); 4 rows.
-    expect(lines.length).toBe(4)
+    // 10 active, rows 10 → capped to 3, overflow → 2 content rows + 1 indicator.
+    // Scrolled to offset 3: window is active[3..5), selected index 4 = window row 1.
+    const lines = buildPanelLines({ active, now: NOW, columns, selectedIndex: 4, scrollOffset: 3, rows: 10, showHelp: false })
+    expect(lines.length).toBe(3)
     expect(lines[0]).toContain("req-0003")
-    expect(lines[3]).toContain("req-0006")
-    // Selected index 4 is window-relative row 1.
-    expect(lines[1]).toContain(REVERSE_ON)
+    expect(lines[1]).toContain("req-0004")
+    expect(lines[1]).toContain(REVERSE_ON) // selected (global 4 = window row 1)
     expect(lines[0]).not.toContain(REVERSE_ON)
+    // Indicator: 3 hidden above (0,1,2), 5 hidden below (5..9).
+    expect(lines[2]).toContain("↑3 ↓5 more")
     expectAllFit(lines, columns)
   })
 
@@ -232,17 +249,87 @@ describe("buildPanelLines", () => {
     expectAllFit(lines, columns)
   })
 
-  test("showHelp appends a dim keybar as the last line, within the row budget", () => {
+  test("showHelp keeps the keybar as the last line, whole panel within MAX_PANEL_ROWS", () => {
     const columns = 80
     const active = panelViews(6)
-    const lines = buildPanelLines({ active, now: NOW, columns, selectedIndex: 0, scrollOffset: 0, rows: 4, showHelp: true })
-    // rows=4 → 3 entry rows + 1 keybar row.
-    expect(lines.length).toBe(4)
-    const keybar = lines[lines.length - 1]
+    const lines = buildPanelLines({ active, now: NOW, columns, selectedIndex: 0, scrollOffset: 0, rows: 10, showHelp: true })
+    // Capped: content + overflow indicator + keybar all within MAX_PANEL_ROWS.
+    expect(lines.length).toBeLessThanOrEqual(MAX_PANEL_ROWS)
+    const keybar = lines.at(-1)
     expect(keybar).toContain("nav")
     expect(keybar).toContain("detail")
     expect(keybar).toContain("quit")
     expectAllFit(lines, columns)
+  })
+})
+
+describe("panelContentRows (fixed-height contract — kills geometry-churn blank lines)", () => {
+  test("never exceeds MAX_PANEL_ROWS and is always ≥ 1", () => {
+    for (const total of [1, 3, 10, 40]) {
+      for (const active of [0, 1, 3, 5, 50]) {
+        for (const showHelp of [false, true]) {
+          const n = panelContentRows(total, active, showHelp)
+          expect(n).toBeGreaterThanOrEqual(1)
+          expect(n).toBeLessThanOrEqual(MAX_PANEL_ROWS)
+          expect(n).toBeLessThanOrEqual(total)
+        }
+      }
+    }
+  })
+
+  test("is STABLE across active-count changes once the list overflows (the churn fix)", () => {
+    // The blank-line root cause: panel height changing with the in-flight count.
+    // Once the list is longer than the window, the content row count is constant
+    // regardless of how many more requests arrive → the Region never re-anchors.
+    const a = panelContentRows(24, 5, false)
+    const b = panelContentRows(24, 20, false)
+    const c = panelContentRows(24, 200, false)
+    expect(a).toBe(b)
+    expect(b).toBe(c)
+  })
+
+  test("reserves a row for the overflow indicator only when the list overflows", () => {
+    // 3 active, generous rows, no help → all 3 fit, no indicator reservation.
+    expect(panelContentRows(10, 3, false)).toBe(3)
+    // 4 active → overflows the cap of 3 → one row yields to the indicator.
+    expect(panelContentRows(10, 4, false)).toBe(2)
+  })
+
+  test("buildPanelLines TOTAL height is CONSTANT across active counts (the eat-history fix)", () => {
+    // Root cause of "the panel eats already-printed history lines": the panel's
+    // TOTAL line count changed with the in-flight count, so the DECSTBM region
+    // resized and reclaimed a log row. Padding short lists to a fixed height
+    // holds the total at min(rows, MAX_PANEL_ROWS) for EVERY active count, so the
+    // region geometry never changes on request arrival/departure.
+    const columns = 100
+    for (const rows of [10, 24]) {
+      for (const showHelp of [false, true]) {
+        const heights = [1, 2, 3, 4, 5, 20, 100].map(
+          (active) =>
+            buildPanelLines({
+              active: panelViews(active),
+              now: NOW,
+              columns,
+              selectedIndex: 0,
+              scrollOffset: 0,
+              rows,
+              showHelp,
+            }).length,
+        )
+        // Every active count yields the same total height.
+        expect(new Set(heights).size).toBe(1)
+        expect(heights[0]).toBe(Math.min(rows, MAX_PANEL_ROWS))
+      }
+    }
+  })
+
+  test("short lists are padded with blank rows to hold the height", () => {
+    // 1 active, budget 3, no help → 1 content row + 2 blank pad rows = 3 total.
+    const lines = buildPanelLines({ active: panelViews(1), now: NOW, columns: 100, selectedIndex: 0, scrollOffset: 0, rows: 10, showHelp: false })
+    expect(lines.length).toBe(3)
+    expect(lines[0]).toContain("req-0000") // the one real row
+    expect(lines[1]).toBe("") // blank pad
+    expect(lines[2]).toBe("") // blank pad
   })
 })
 

@@ -110,7 +110,6 @@ function makeCodec(): FormatCodec {
     parse: () => {
       throw new Error("parse not used")
     },
-    decideRoute: () => ({ kind: "passthrough", endpoint: "/v1/messages" }),
     translateOut: (env) => env,
     prepareWire: () => ({ url: "u", headers: new Headers(), body: {}, stream: true }) as PreparedRequest,
     renderResponse: (frame) => frame,

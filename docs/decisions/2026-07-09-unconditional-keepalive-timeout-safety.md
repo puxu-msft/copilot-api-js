@@ -6,13 +6,13 @@
   - 目标陈述（用户）：**「客户端永不因为超时报错」**。
   - 机制细节（WHAT/HOW）：spec [2026-07-08-buffered-keepalive-empty-text-anchor.md](../spec/2026-07-08-buffered-keepalive-empty-text-anchor.md) §10（本 ADR 落地的合成 message_start 锚点 + live 路径对账 + mode taxonomy）。
   - 前身机制：spec [anthropic-keepalive-content-delta.md](../spec/anthropic-keepalive-content-delta.md)（`content_delta` keepalive 本体）。
-  - 客户端两层 watchdog 实测：skill `claude-code-connection`。
+  - 客户端两层 watchdog 实测：skill `debugging-claude-client-connection`。
   - 合成帧须打可辨识标记：ADR [richest-data-flow](2026-07-05-richest-data-flow.md)（对称面）。
   - 活的架构现状：[../DESIGN.md](../DESIGN.md)「活的架构现状」keepalive 行。
 
 ## 背景
 
-copilot-api 把 GitHub Copilot 的模型能力代理给 Claude Code（CC）等客户端。CC 对流式 `/v1/messages` 关掉 SDK 的 600s 总超时，改由**两层 idle watchdog** 管（skill `claude-code-connection` 实测）：
+copilot-api 把 GitHub Copilot 的模型能力代理给 Claude Code（CC）等客户端。CC 对流式 `/v1/messages` 关掉 SDK 的 600s 总超时，改由**两层 idle watchdog** 管（skill `debugging-claude-client-connection` 实测）：
 
 1. **60s byte-idle**：每收任意字节/帧重置。裸 `event: ping` 能压住它。
 2. **300s no-real-content**：一定时间内必须收到**真实 content chunk**（`content_block_delta`，空 delta 也算），否则断，报 `Stream idle timeout - no chunks received`。**裸 ping 与 SSE comment 都不算 chunk、压不住这一层。**
@@ -92,5 +92,5 @@ History 库只读探针取 `req_1783609043247_663`（claude-opus-4.8，↑435.7K
 ## 参考实证
 
 - incident 记录：History `req_1783609043247_663`（+ 同签名 19 条,320.1s±0.2s 紧簇）。
-- 根因链与两层 watchdog：skill `claude-code-connection` / `empirical-verification`。
+- 根因链与两层 watchdog：skill `debugging-claude-client-connection` / `empirical-verification`。
 - 机制与测试矩阵：spec [2026-07-08-buffered-keepalive-empty-text-anchor.md](../spec/2026-07-08-buffered-keepalive-empty-text-anchor.md) §10。

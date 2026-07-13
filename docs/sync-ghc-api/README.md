@@ -21,6 +21,7 @@
 | [responses-api.md](responses-api.md) | OpenAI Responses API：context management、reasoning effort guard、stateful marker |
 | [network-resilience.md](network-resilience.md) | 网络弹性：重试、WebSocket transport（per-conversation）、middleware |
 | [thinking-system.md](thinking-system.md) | Thinking 系统：adaptive、budget 校验、reasoning effort、context editing |
+| [token-counting.md](token-counting.md) | Token 计数：o200k vs Claude tokenizer mismatch(~2x)、无本地 Claude tokenizer / 无 GHC count_tokens 端点、calibration 架构为何正确、从成功请求学习的改进方向 |
 | [实施状况.md](实施状况.md) | 本轮对齐进度与差距清单 |
 
 ## 设计立场

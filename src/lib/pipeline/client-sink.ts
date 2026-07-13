@@ -34,6 +34,8 @@ import type { WSContext } from "hono/ws"
 
 import type { SseEventRecord } from "~/lib/history"
 
+import { wasFrameRewritten } from "~/lib/pipeline/hooks/origin"
+
 import type { ClientFrame } from "./types"
 import type { ClientSink } from "./types"
 
@@ -164,7 +166,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
       }),
     )
 
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start"): void => {
+  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite"): void => {
     onForwarded?.({
       offsetMs: Date.now() - streamStartMs,
       type: (forwardedType ?? frameType)(frame),
@@ -228,7 +230,14 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   const write = (frame: ClientFrame): Promise<void> => {
     lastRealMs = Date.now()
     noteBlockState(frame) // update open-block state from real forwarded frames (provider mode only)
-    sampleForwarded(frame)
+    // Task 2.3: a hook-rewritten frame (tagged via `tagFrameRewritten`, hooks/origin.ts) samples
+    // forwarded with `synthetic:"hook-rewrite"` — the same forwarded-only treatment as the other
+    // synthetic markers (keepalive/anchor), just driven by a per-frame TAG read off the frame
+    // itself rather than a distinct write method: a hook-rewritten frame is REGULAR content
+    // flowing through this SAME `write()` call as every other real frame, so the driver has no
+    // separate call site to route it through (unlike writeKeepalive/writeAnchor, which the
+    // driver/handler always calls deliberately for its OWN synthesized frames).
+    sampleForwarded(frame, wasFrameRewritten(frame) ? "hook-rewrite" : undefined)
     return writeSse(frame)
   }
 
@@ -478,8 +487,9 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
 
   // Sample the forwarded track synchronously at call time (before the enqueued send). WS frames carry
   // only `data` (no SSE event/id/retry line), matching legacy `ws.send`. `synthetic` marks a proxy-
-  // injected keepalive so history/UI/logs never mistake a heartbeat for real upstream content.
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive"): void => {
+  // injected keepalive OR a hook-rewritten frame so history/UI/logs never mistake either for real
+  // unaltered upstream content.
+  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "hook-rewrite"): void => {
     onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) })
   }
   const sendRaw = (frame: ClientFrame): Promise<void> =>
@@ -506,10 +516,11 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
       )
     : undefined
 
-  // Real frame → note activity (resets the idle countdown) + sample forwarded UNMARKED + send.
+  // Real frame → note activity (resets the idle countdown) + sample forwarded (marked
+  // `hook-rewrite` when tagged, Task 2.3 — see makeSseSink's `write` for the full rationale) + send.
   const write = (frame: ClientFrame): Promise<void> => {
     hb?.noteActivity()
-    sampleForwarded(frame)
+    sampleForwarded(frame, wasFrameRewritten(frame) ? "hook-rewrite" : undefined)
     return sendRaw(frame)
   }
   // A handler-synthesized terminal error frame IS a proxy→client frame (the WS analog of the HTTP

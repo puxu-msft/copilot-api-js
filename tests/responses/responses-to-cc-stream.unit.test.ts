@@ -14,8 +14,47 @@ import {
 } from "~/lib/openai/translate/responses-to-cc-stream"
 
 describe("createStreamTranslator", () => {
+  test("ALWAYS emits the usage chunk on completion (no include_usage needed) + carries cache_write", () => {
+    // Regression for the CC→Responses streaming usage loss: history/telemetry read
+    // the accumulated CC chunks, so usage MUST be emitted regardless of a client
+    // stream_options.include_usage signal (the translator no longer gates on it).
+    const translator = createStreamTranslator()
+    translator.translate({
+      type: "response.created",
+      sequence_number: 0,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      response: { id: "r1", object: "response", created_at: 1, status: "in_progress", model: "gpt-5", output: [], usage: null, tools: [], tool_choice: "auto", parallel_tool_calls: false, store: false } as any,
+    })
+    const completed = translator.translate({
+      type: "response.completed",
+      sequence_number: 1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      response: {
+        id: "r1",
+        object: "response",
+        created_at: 1,
+        status: "completed",
+        model: "gpt-5",
+        output: [],
+        usage: { input_tokens: 1000, output_tokens: 50, total_tokens: 1050, input_tokens_details: { cached_tokens: 600, cache_write_tokens: 300 } },
+        tools: [],
+        tool_choice: "auto",
+        parallel_tool_calls: false,
+        store: false,
+      } as any,
+    })
+    // 2 chunks: the finish-reason chunk + the always-emitted usage chunk.
+    expect(completed).toHaveLength(2)
+    expect(completed[1]?.usage).toMatchObject({
+      prompt_tokens: 1000,
+      completion_tokens: 50,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      prompt_tokens_details: { cached_tokens: 600, cache_write_tokens: 300 } as any,
+    })
+  })
+
   test("translates text deltas and emits a usage chunk on completion", () => {
-    const translator = createStreamTranslator({ includeUsage: true })
+    const translator = createStreamTranslator()
 
     const created = translator.translate({
       type: "response.created",
@@ -83,7 +122,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("tracks tool call indexes and emits tool_calls finish_reason", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -159,7 +198,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("emits refusal delta as a content delta chunk", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -193,7 +232,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("tracks indexes for multiple parallel function_call items", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -278,7 +317,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("ignores output_item.added when item type is not function_call", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -311,7 +350,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("maps streaming incomplete with max_output_tokens reason to length finish_reason", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -354,7 +393,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("returns empty for unhandled event types (default case)", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -383,7 +422,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("maps incomplete content_filter and throws on failed or error events", async () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -470,7 +509,7 @@ describe("createStreamTranslator", () => {
       }
     }
 
-    const translated = translateResponsesStream(failingUpstream(), createStreamTranslator({ includeUsage: false }))
+    const translated = translateResponsesStream(failingUpstream(), createStreamTranslator())
     await expect(async () => {
       for await (const _event of translated) {
         // exhaust
@@ -516,7 +555,7 @@ describe("createStreamTranslator", () => {
       }
     }
 
-    const translated = translateResponsesStream(mixedUpstream(), createStreamTranslator({ includeUsage: false }))
+    const translated = translateResponsesStream(mixedUpstream(), createStreamTranslator())
     const collected: Array<ServerSentEventMessage> = []
     for await (const event of translated) {
       collected.push(event)
