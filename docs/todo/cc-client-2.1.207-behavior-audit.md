@@ -571,7 +571,44 @@ metadata **对 GHC 转发无 gap**（passthrough / reactive 剥兜底）。真�
 
 ---
 
-## 阶段综合（轮次 1-11，F1-F17）：三条跨轮主线 + 待办优先级
+## 轮次 15（2026-07-13）：tool_choice —— 缺 CC 的「forced tool + thinking → auto」降级（翻译矩阵可撞 GHC 400）
+
+> 次级面最后一项。原清单 + 5 个次级面全覆盖。
+
+### 发现来源（CC 源码坐标）
+
+- CC 2.1.207 请求体 `tool_choice: ai`（`ai = i.toolChoice`，297964）——透传调用方的 tool_choice。
+- **NEW 客户端降级规则**（297965）：`_o = thinking 激活（enabled/adaptive）`；`if (ai?.type==="tool" && _o) ai = {type:"auto"}`，warn「tool_choice {type:'tool'} demoted to auto: extended thinking is active」。即 **Anthropic 不允许 forced tool_choice（`tool`/`any`）与 extended thinking 并存**，CC **客户端侧主动降级**避 400。
+- `disable_parallel_tool_use` 仅 SDK 文档（420944/424372）、**非运行时**构造 → 低相关。
+
+### 本项目现状（读码）
+
+- **直连 Anthropic 路径不碰 tool_choice**（透传，grep 无处理点）。
+- **翻译矩阵翻译 tool_choice**：`cc-to-anthropic-request.ts:286 translateToolChoice`（OpenAI `required`/`{type:function}` → Anthropic `any`/`tool`）等三向。
+- **全仓无 tool_choice+thinking 降级**（grep 零命中）；反应式策略目录**无**对应项（17 个策略里没有 tool-choice/thinking-incompat）。
+- 本项目**会 transform thinking**（request-preparation.ts:613-680，enabled↔adaptive）——但**不检查/不降级 tool_choice**。
+
+### F21（MEDIUM）— 无 forced-tool+thinking 降级，非-CC 客户端 / 翻译矩阵撞 GHC 400 且无恢复
+
+**判断（读码）**：本项目**既不 proactive 降级**（像 CC 那样）**也无 reactive 策略**兜底 forced-tool+thinking 的 400。
+- **CC 2.1.207 请求安全**：CC 客户端已自降级 → 代理收到的是 `tool_choice:auto`，永不撞。
+- **真实风险路径**：
+  1. **翻译矩阵**（本项目核心特性：任意客户端 × 任意 GHC 模型）——OpenAI/Gemini 客户端发 forced function（`tool_choice:{type:"function",name}`）打到 thinking 模型，`translateToolChoice` 译成 Anthropic `tool_choice:{type:"tool"}`，若该 GHC 模型注入/带 thinking → **forced tool + thinking → GHC 400、无恢复**。
+  2. **非-CC 直连 Anthropic 客户端**发 `tool_choice:{type:"tool"}` + `thinking` → 同样 400（此情形客户端自身有责，但代理可更友好）。
+- **潜在自造**：本项目把 thinking `enabled→adaptive`（629）——若原请求带 forced tool_choice，transform 后仍是 forced+thinking 不兼容（transform 不解不兼容、也不降级 tool_choice）。虽 enabled→adaptive 只在原本就有 thinking 时触发（非凭空注入），但代理经手后仍把不兼容组合送出。
+
+**理想方向（不在本轮做）**：
+1. **proactive 降级（推荐，镜像 CC）**：在 request-preparation / 翻译矩阵出站，检测 `tool_choice.type ∈ {tool, any}` 且 thinking 激活 → 降 `{type:"auto"}` + `ctx.recordFeature("tool-choice-demoted-thinking")` + 日志。**逐字复刻 CC 的 297965**，对所有客户端统一兜底（覆盖 CC 不经手的翻译矩阵路径）。
+2. **或 reactive 策略**：新增 catch 该特定 400（消息约含 `tool_choice` + `thinking`）→ 降级重试 + fixate。proactive 更优（省往返、翻译矩阵路径尤其）。
+3. **待实测**：确认 GHC/Anthropic 对 forced-tool+thinking 的确切 400 文案（proactive 不需要、reactive 需要）；确认翻译矩阵是否真会对 thinking 模型注入 thinking 同时保留 forced tool（复现路径）。
+
+### 本轮结论
+
+tool_choice 对 **CC 2.1.207 无 gap**（CC 客户端自降级）。真缺口是本项目**未复刻该降级**、对**翻译矩阵 / 非-CC 客户端**的 forced-tool+thinking 组合无 proactive 降级也无 reactive 兜底 → 硬 400（F21，中）。推荐 proactive 降级（镜像 CC 297965），统一覆盖 CC 不经手的路径。`disable_parallel_tool_use` 非运行时、无关。
+
+---
+
+## 阶段综合（轮次 1-15，F1-F21）：四条跨轮主线 + 待办优先级
 
 > 10 轮审计已覆盖原清单全部 CC-facing 面。以下把 16 条发现提炼成**三条可复用主线**（供修复排期 + 未来审计参照），并给优先级。**均待 GHC 探针/headless-CC 实测裁定后再动手**，本文件不含实现。
 
@@ -594,14 +631,18 @@ CC 2.1.207 引入一批 2026 新 beta，本项目**无显式感知**、靠通用
 - F5（`speed`）、F14（`cache-diagnosis` / `prompt-caching-evict`）、F15（`mid-conversation-system`）、F16（`context-hint`）；F12（`compaction` 块）是响应侧对应物。
 - **统一修复入口**：一次 **GHC 能力探针批次**（skill `ghc-api-reference`，curl 逐 beta/字段打 GHC 看 200 vs 400），据结果二选一：GHC 支持 → 透传 + 考虑纳入 history（`richest-data-flow`）；不支持 → 加入 request-preparation 内置地雷列表 **proactive 剥**（仿 `scope`/`eager_input_streaming`）省往返。
 
-### 待办优先级（供用户排期）
+### 待办优先级（供用户排期，含 F1-F21）
+
+新增**主线 D（richest-data-flow 捕获缺口）**：本项目丰富数据就在手边却未捕获进结构化/可查询层——F19（usage allowlist 漏 cost 因子）、F20（丢弃 metadata 会话关联负载）。均 on-philosophy 的明确正确增强，**不需 GHC 探针**、落地清晰（telemetry-architecture / persistence-async-invariants skill）。
 
 | 优先 | 项 | 一句话 | 前置 |
 |---|---|---|---|
 | **P1** | F1 | thinking-only 块间空档裸 ping 不重置 300s → CC 静默重试整请求(重复上游调用) | headless-CC + mock 上游实测触发条件 |
 | **P2** | F7 | count_tokens 失败返 `{input_tokens:1}` 抑制 CC 本地兜底 | 实测 CC 对代理非 200 的反应 |
 | **P2** | F10/F15 | 服务端消化抢占 CC 原生自愈(主线 B) | 补「复刻 CC 回退」模式 + 文档化 |
-| **P3** | F5/F14/F16 | 2026 新 beta 无 proactive 感知(主线 C) | 一次 GHC 能力探针批次 |
+| **P2** | F19/F20 | richest-data-flow 捕获缺口(主线 D)：usage cost 因子 + metadata 会话关联 | 无(明确该做)；落地见 skill |
+| **P2** | F21 | 无 forced-tool+thinking 降级 → 翻译矩阵/非-CC 撞 GHC 400 | 复现路径 + 镜像 CC proactive 降级 |
+| **P3** | F5/F14/F16/F18/F17 | 2026 新 beta 无 proactive 感知(主线 C) | 一次 GHC 能力探针批次 |
 | **P4** | F12 | `compaction` 新块累加器未识别(前瞻) | 待 GHC 实测是否 emit |
 | 记档 | F2/F3/F13/主线 A | 阈值可配 / 双主体 context / 红线 | 纯文档 |
 | 确认 | F9/F11 | 不变量/兼容性已确认无回归 | 无 |
@@ -630,4 +671,6 @@ CC 2.1.207 引入一批 2026 新 beta，本项目**无显式感知**、靠通用
 - [x] **anthropic-beta 全集对账**（轮次 12）：27 betas 全对账（矩阵表）；通用 reactive 剥 + 8 显式/按名处理覆盖绝大多数，无硬失败。真待办仅 F18-a（`thinking-token-count` 改 usage wire）/ F18-b（`redact-thinking` 改 thinking 形态）两个改响应侧 beta。
 - [x] **usage wire 形状**（轮次 13）：CC 侧无 gap（passthrough 全字段 + raw 存 sseEvents）；本项目结构化 usage accumulator 是 allowlist、漏 `iterations`/`cache_creation.ephemeral_1h_input_tokens`/`server_tool_use.web_search_requests`（F19,中,richest-data-flow）；F18-a 同根结题。
 - [x] **metadata.user_id / 请求归属**（轮次 14）：CC 把 `{device_id,account_uuid,session_id,parent_session_id}` JSON 塞进 `metadata.user_id`；本项目透传但不解析/不利用（F20,中,richest-data-flow）——错失 history 按会话分组 + 重建 subagent 父树。
-- [ ] **tool_choice 变体**：CC 发的 `tool_choice`（auto/any/tool/none）+ `disable_parallel_tool_use` vs 本项目转发。
+- [x] **tool_choice 变体**（轮次 15）：CC 客户端在 thinking 激活时把 forced tool_choice 降级为 auto（297965）；本项目未复刻，翻译矩阵/非-CC 客户端的 forced-tool+thinking 撞 GHC 400 无恢复（F21,中）。`disable_parallel_tool_use` 非运行时、无关。
+
+**★ 原清单 10 项 + 次级面 5 项全部覆盖（15 轮，F1-F21）。后续 cron 轮次可开新主题或深化 P1/P2 待办的实测。**
