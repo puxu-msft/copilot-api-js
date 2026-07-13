@@ -1,38 +1,50 @@
-# 交接：block 级缓冲重试执行（新会话 kick-off）
+# 交接：block 级缓冲重试 —— 收尾阶段（仅剩用户实证门 + 门后落地）
 
-**给下一个会话的开场指令。** 复制下方「新会话开场」段落即可接续。
+**给用户 / 下一个会话的收尾指令。** 机制已全部落地并通过评审；剩余全部 gated 在用户执行的实证门。
 
-## 现状快照（2026-07-11）
+## 现状快照（2026-07-13）
 
-- **spec 已获批**（三轮对抗审查定稿）：`docs/spec/2026-07-11-block-level-buffered-retry.md`。
-- **plan 集就绪**（plan-review 收敛、契约已对齐）：`docs/plan/2026-07-11-block-level-buffered-retry/`——README（**冻结契约节 = 单一事实源**）+ P0-P4 + kickoff。
-- **执行已启动**（subagent-driven，隔离 worktree）：
-  - worktree `.worktrees/block-level-buffered-retry`（分支 `feat/block-level-buffered-retry`，从 master `88a11516`）。
-  - **durable ledger** `.superpowers/sdd/progress.md`（**权威进度**——每 Task 状态 + commit 哈希 + 承重 concern + MINOR 待办）。
-  - **P0 Task 1 DONE + 独立 review 通过**（commit `91f5e0f9`，spec✅/quality Approved；R1 字节中性双证）。
-- **下一步 = P0 Task 2**（telemetry partial-degrade 终局 + vendor 维度 per-vendor Record + /api/status 聚合）。
+- **P0-P4 机制全部 landed + 独立评审通过**；**whole-branch capstone review 通过**（0 blocker / 0 major，ready-to-merge-pending-gates）。
+- **收尾 doc 已做**：ADR `docs/decisions/2026-07-11-block-level-buffered-retry.md`、DESIGN.md「活的架构现状」block 级缓冲重试行 + tier-1 行 WS clause 修正、plan-4 Task 1 代码块订正、记忆库更新。
+- **durable ledger** `.superpowers/sdd/progress.md` = 权威逐 Task 进度（每 Task commit + concern）。
+- worktree `.worktrees/block-level-buffered-retry`（分支 `feat/block-level-buffered-retry`，从 master `88a11516`）。**默认全 OFF（opt-in），无向后兼容破坏——可安全合并**，默认翻转是门后独立步骤。
 
-## 为何交接
+## 剩余工作（全部 gated 在用户跑实证门）
 
-单会话从 req_484 分析 → spec(3 轮) → plan(plan-review) → 执行启动 + P0 Task 1，上下文已满。剩余 20+ Task（P0×2 + P1×7 含 2 处须用户跑的 PoC 门 + P2×7 + P3×4 + P4×3）跨多会话。基础设施（worktree + ledger + brief 脚本）已让接续零成本、避免执行中途丢上下文（技能警告的最贵失败）。
+**四个默认翻转/接线，一律等对应实证门通过后落地：**
 
-## 承重提醒（新会话必知）
+| 待办 | 门（用户跑） | 门后落地 |
+|---|---|---|
+| **P2 T6** Responses 默认 ON | keepalive M-2 oracle `exp/responses-keepalive-idle-oracle/`（armPing `is_error=false && duration_ms>300000` && armSilent 复现 idle-out） | 改 config 默认 `openai_responses.buffered_retry.enabled=true` |
+| **P3 T4** CC 默认 ON | keepalive M-2 oracle `exp/cc-keepalive-idle-oracle/`（同判据，openai-node SDK oracle） | 改 config 默认 `chat_completions.buffered_retry.enabled=true` |
+| **P4 T3** WS 默认 ON | 随 Responses 门（WS 复用 `responses.buffered_retry` 键、无独立键） | 随 P2 T6 自动继承；关 backlog:300-306 剩余项②（heartbeat parity 若门覆盖） |
+| **P1 T6** Anthropic 接线 + 默认 ON | PoC stage-2 `exp/block-level-anchor-coexist/`（真 Claude Code 接受两块并存 + 空 text_delta 重置 300s 死线） | 接线 `commitBoundaries=anthropicCommitBoundaries` + telemetryVendor `"anthropic"`（P0 已删临时 guard 改真记账，故只需传谓词）+ anchor 栈接线（R3 同 commit）+ req_484 golden + 改 config 默认 |
 
-1. **读 ledger 起步**：`cat .worktrees/block-level-buffered-retry/.superpowers/sdd/progress.md`——标 complete 的 Task 别重派，从第一个未完成的（Task 2）起。
-2. **冻结契约是单一事实源**：P1-P4 消费的签名逐字见 README「冻结契约」节，任何 plan 局部代码样例与之冲突以契约为准。
-3. **跨任务承重**：P1/P2 接线 `commitBoundaries` 时，必须把两 handler（messages/responses）的 `if(outcome==='partial-degrade')return` 临时 guard 换成真记账，否则静默丢 partial-degrade 遥测（ledger MINOR 待办已记）。
-4. **红线 R1-R5**（README）：P0 行为中性（R1，landing 门）；默认翻转在 PoC/实证门后（R4）；每 phase 关对应 backlog 条（R5）。
-5. **P1 有 2 处 PoC/实证门须用户手动执行**（no-auto-server）：Task 5 两段 anchor PoC（第二段跑真实 Claude Code）、各端点 keepalive idle oracle。到那些 Task 停下给用户命令 + 判据 + 三分支后续。
-6. **subagent API 近期不稳**（多次 mid-response 失败）：implementer/reviewer 失败按技能 BLOCKED 处理（补上下文/换模型/或内联接管），别空转。
-7. **纪律**：隔离 worktree 内正常提交；显式 pathspec；conventional commits 无模型署名；`bun test`/`typecheck`/`lint:all` 非服务器命令可跑。
+**⚠️ 落地翻转的唯一正确方式（承重，实测过的坑）**：默认值改 **config.yaml / schema 默认**（`applyConfigToState()` 每请求从 config 重导，见 `system-prompt/override.ts:48,73` + `start.ts:287/473` 注释=热重载 by-design），**绝不**靠 `state` 字段突变（会被每请求重导覆写）。测试设非默认 caps 用 `setBufferedRetryOverride(vendor, ...)` 非 `setStateForTests`（旧标量键 `protectStreamingMaxRetries` post-P0 已删）。
 
-## 新会话开场（复制这段）
+**PoC stage-2 三分支决策**（P1）：全 PASS→主形状（块级 + 空 text 锚点）；criterion ② FAIL→备选（每块 close@0 重开）；备选 FAIL→兜底（整响应缓冲仅 Responses/CC、Anthropic 保持 live 或 whole-response）。三分支的接线差异见 spec §4.5。
+
+## 门未过怎么办
+
+对应端点默认保持 `false`（opt-in），不牺牲安全换默认开（spec §4.5 三级 fallback 精神）。该 Task 降级为「保持 opt-in、文档记门未过」，不阻塞合并。
+
+## 承重提醒（收尾会话必知）
+
+1. **读 ledger 起步**：`cat .worktrees/block-level-buffered-retry/.superpowers/sdd/progress.md`——机制 Task 全 complete，别重派；只做上表四项 + 各自门。
+2. **CC-live 默认心跳=保留**（已裁：parity Anthropic/Responses live，已向用户 FYI 可 override）。
+3. **exp/ 是 gitignored**（`.gitignore:25`），提交 harness 用 `git add -f`。keepalive mock 必须 `node:http2`（明文 http 让 Bun-undici 上游假性 abort，false-negative）。
+4. **subagent API 近期不稳**：失败按 BLOCKED（补上下文/换模型/内联接管）。
+5. **合并前可选**：P2/P3/P4 的几个 per-task review 曾按 tiered-review-by-risk 批入「合并态评审」——whole-branch review 已覆盖集成缝（0 blocker），可视作已了；若要极致严格可对 T3/T4/close-timing 再补 per-task 眼。
+
+## 新会话开场（门通过后复制这段）
 
 ```
-接续「block 级缓冲重试」的 subagent-driven 执行。先读 worktree 内 ledger 定位进度：
+接续「block 级缓冲重试」收尾。机制全 landed+reviewed、whole-branch review 通过、doc 收尾已做。先读 ledger：
 cat /home/xp/src/copilot-api-js/.worktrees/block-level-buffered-retry/.superpowers/sdd/progress.md
++ 交接表 docs/plan/2026-07-11-block-level-buffered-retry/HANDOFF.md「剩余工作」。
 
-用 superpowers:subagent-driven-development 技能。在 worktree .worktrees/block-level-buffered-retry（分支 feat/block-level-buffered-retry）继续。P0 Task 1 已 complete+review 通过（commit 91f5e0f9），从 P0 Task 2 起。
-
-冻结契约 = docs/plan/2026-07-11-block-level-buffered-retry/README.md「冻结契约」节（单一事实源）。DAG：P0(剩 Task2/3) → P1(7,含 2 处须用户跑的 PoC/实证门) → P2/P3/P4(并行)。每 Task：task-brief 抽 brief → fresh implementer(指定模型) → review-package → 独立 task-reviewer(spec+质量) → 必要时 fix → 记 ledger → 下一 Task。红线 R1-R5 见 README。承重 concern 见 ledger 末尾 MINOR 待办。到 PoC 门停下给用户命令+判据。
+用户已跑完的实证门结果在各 exp/*/REPORT.md。据结果落地默认翻转/P1 接线（见 HANDOFF 表 + 三分支决策）。
+关键：翻转改 config.yaml/schema 默认（经 applyConfigToState 传播），绝不靠 state 突变。
+每项落地后跑 typecheck + 相关测试 + 更新 ledger + DESIGN.md 该行状态（[wip]→[done]、默认 OFF→ON）。
+在 worktree .worktrees/block-level-buffered-retry（分支 feat/block-level-buffered-retry）。用 subagent-driven，接线类改动派 reviewer。
 ```
