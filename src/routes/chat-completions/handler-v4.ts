@@ -26,7 +26,6 @@ import { streamSSE } from "hono/streaming"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { SseEventRecord } from "~/lib/history"
-import type { Model } from "~/lib/models/client"
 import type { OpenAIAutoTruncateResult } from "~/lib/openai/auto-truncate"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
@@ -58,15 +57,7 @@ import {
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
-import {
-  //
-  buildReverseResanitize,
-  createReverseAnthropicMapperHolder,
-  createReverseAnthropicSanitizeRewrite,
-} from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
-import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
-import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
+import { createReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
@@ -163,39 +154,11 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   const driver = createPipelineDriver({
     codec,
     transport,
-    // S3 request rewrites. The reverse Anthropic sanitize rewrite gates `targetEndpoint===/v1/messages`
-    // (inert on the forward/direct CC legs, so the direct CC path is byte-unchanged); on a reverse
-    // `@messages` leg it strips orphan tool_result / system-reminders the CC→Anthropic translation left
-    // behind (else a GHC 400), using the Anthropic mapper — NOT the CC `ctx.toolNameMapper`.
-    requestRewrites: [createReverseAnthropicSanitizeRewrite(reverseMapperHolder)],
-    // Full-format S5 union (RFC §7.1). On a reverse `@messages` leg the ANTHROPIC册 fires (targetEndpoint
-    // ===/v1/messages) on the upstream Anthropic frames BEFORE the S6 Anthropic→CC render; on the
-    // forward/direct CC legs no rewrite's `appliesTo` matches (byte-unchanged).
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) => {
-      // REVERSE `@messages` leg: the outbound wire is Anthropic → the ANTHROPIC strategy stack, supplied
-      // from the hub (env.body is the translated + sanitized Anthropic body), decoupled from any Anthropic
-      // codec (RFC §7.1 / W-strategies-builder). resanitize + the sanitize rewrite share ONE mapper holder.
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) {
-        return assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, {
-          anthropic: {
-            originalPayload: env.body as MessagesPayload,
-            resanitize: buildReverseResanitize(reverseMapperHolder),
-            model: env.model as Model | undefined,
-            maxRetries: state.autoTruncateMaxRetries,
-            betaProbe: reverseBetaProbe,
-          },
-        })
-      }
-      const viaResponses = env.targetEndpoint === ENDPOINT.RESPONSES
-      if (viaResponses) env.ctx.recordFeature("via-responses") // P2.2-D6
-      return buildOpenAiCcStrategies({
-        originalPayload: codec.getTruncateBaseline() ?? (env.body as ChatCompletionsPayload),
-        model: env.model as Model | undefined,
-        maxRetries: state.autoTruncateMaxRetries,
-        label: viaResponses ? "Completions(→Responses)" : "Completions",
-      })
-    },
+    // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
+    // (C5 — every CC-client cell is migrated: openai-cc direct/via-responses + the reverse `@messages` cell).
+    // The handler no longer supplies them; the reverse leg's sanitize rewrite + Anthropic strategy stack are
+    // assembled by `OUTBOUND_LEGS[/v1/messages]` from the shared beta probe + mapper holder the codec threads
+    // onto `env.requestState` (constructed above).
     maxRetries: state.autoTruncateMaxRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
     // Post-gate meta sink (C0-② / RFC §11.2): the auto-truncate strategy's

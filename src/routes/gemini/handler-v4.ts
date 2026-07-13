@@ -27,7 +27,6 @@ import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { OpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import type { SseEventRecord } from "~/lib/history"
 import type { UsageData } from "~/lib/history/types"
-import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -62,14 +61,9 @@ import {
 } from "~/lib/anthropic/stream-accumulator"
 import {
   //
-  buildReverseResanitize,
   createReverseAnthropicMapperHolder,
-  createReverseAnthropicSanitizeRewrite,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
-import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
-import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -125,35 +119,10 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
   const driver = createPipelineDriver({
     codec,
     transport,
-    // S3 request rewrites: the reverse Anthropic sanitize rewrite gates MESSAGES (inert on the
-    // direct/via-responses Gemini legs).
-    requestRewrites: [createReverseAnthropicSanitizeRewrite(reverseMapperHolder)],
-    // Full-format S5 union (RFC §7.1). On a reverse `@messages` leg the ANTHROPIC册 fires on the upstream
-    // Anthropic frames; on the direct/via-responses Gemini legs no rewrite's `appliesTo` matches.
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) => {
-      // REVERSE `@messages` leg: the ANTHROPIC strategy stack (outbound wire is Anthropic), supplied from
-      // the hub (env.body is the translated + sanitized Anthropic body). resanitize + the sanitize rewrite
-      // share ONE mapper holder.
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) {
-        return assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, {
-          anthropic: {
-            originalPayload: env.body as MessagesPayload,
-            resanitize: buildReverseResanitize(reverseMapperHolder),
-            model: env.model as Model | undefined,
-            maxRetries: state.autoTruncateMaxRetries,
-            betaProbe: reverseBetaProbe,
-          },
-        })
-      }
-      if (env.targetEndpoint === ENDPOINT.RESPONSES) env.ctx.recordFeature("via-responses")
-      return buildOpenAiCcStrategies({
-        originalPayload: codec.getTruncateBaseline() ?? (env.body as ChatCompletionsPayload),
-        model: env.model as Model | undefined,
-        maxRetries: state.autoTruncateMaxRetries,
-        label: env.targetEndpoint === ENDPOINT.RESPONSES ? "Gemini(→Responses)" : "Gemini",
-      })
-    },
+    // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
+    // (C5 — every Gemini cell is migrated: gemini forward `@cc`/via-responses + the reverse `@messages`
+    // cell). The reverse leg's sanitize rewrite + Anthropic stack are assembled by OUTBOUND_LEGS from the
+    // shared beta probe + mapper holder the codec threads onto env.requestState.
     maxRetries: state.autoTruncateMaxRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })

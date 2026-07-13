@@ -74,12 +74,12 @@ export interface DriverDeps {
   codec: FormatCodec
   transport: Transport
   /**
-   * Ordered retry strategies (first `canHandle` wins — 02 §1.2 order semantics).
-   * Either a fixed array, or a per-request factory resolved with the parsed
-   * envelope (S4 input) — strategies that need parse outputs (e.g. the model,
-   * or the codec's truncation baseline) use the factory form.
+   * Ordered retry strategies for the LEGACY (non-migrated) path — a fixed array or a per-request factory.
+   * OPTIONAL since C5: every real handler's cell is migrated, so its exchange stack comes from the
+   * CellAssembly ({@link resolveExchangeStrategies}); this slot is only read for a mock/legacy codec that
+   * does not populate `env.requestState` (driver orchestration unit tests).
    */
-  strategies: ReadonlyArray<RetryStrategy> | ((env: RequestEnvelope) => ReadonlyArray<RetryStrategy>)
+  strategies?: ReadonlyArray<RetryStrategy> | ((env: RequestEnvelope) => ReadonlyArray<RetryStrategy>)
   /** Normal-budget retry cap (pipeline.ts default 3). */
   maxRetries: number
   /** Learning-budget retry cap (pipeline.ts MAX_LEARNING_RETRIES=32). */
@@ -195,7 +195,7 @@ function migratedCell(env: RequestEnvelope): CellAssembly | null {
 function resolveExchangeStrategies(deps: DriverDeps, env: RequestEnvelope): ReadonlyArray<RetryStrategy> {
   const cell = migratedCell(env)
   if (cell) return cell.buildStrategies(env)
-  return typeof deps.strategies === "function" ? deps.strategies(env) : deps.strategies
+  return typeof deps.strategies === "function" ? deps.strategies(env) : (deps.strategies ?? [])
 }
 
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */

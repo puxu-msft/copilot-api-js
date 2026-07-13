@@ -32,8 +32,6 @@ import type {
 
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import {
   //
   registerResponseSession,
@@ -232,13 +230,8 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const driver = createPipelineDriver({
     codec,
     transport,
-    // S5 — the full-format response-rewrite union (RFC §7.1); `appliesTo` filters it to
-    // fix-stream-ids for the /responses leg (DIRECT only), identical to the prior per-route array.
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) => {
-      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
-      return buildOpenAiResponsesStrategiesForEnv(env)
-    },
+    // S5 response-rewrites + the S4 retry stack come from the CellAssembly now (C5 — the openai-responses
+    // direct/fallback cells are migrated; RETRY_SEMANTICS encodes the R1 corner auto-truncate OFF / maxRetries 1).
     maxRetries: 1,
     maxLearningRetries: 32,
   })

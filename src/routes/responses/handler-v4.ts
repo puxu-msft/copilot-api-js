@@ -35,7 +35,6 @@ import { streamSSE } from "hono/streaming"
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { OpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import type { SseEventRecord } from "~/lib/history/store"
-import type { Model } from "~/lib/models/client"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -63,15 +62,10 @@ import {
 } from "~/lib/anthropic/stream-accumulator"
 import {
   //
-  buildReverseResanitize,
   createReverseAnthropicMapperHolder,
-  createReverseAnthropicSanitizeRewrite,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
-import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -152,33 +146,10 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   const driver = createPipelineDriver({
     codec,
     transport,
-    // S3 request rewrites: the reverse Anthropic sanitize rewrite gates MESSAGES (inert on the
-    // direct/fallback Responses legs).
-    requestRewrites: [createReverseAnthropicSanitizeRewrite(reverseMapperHolder)],
-    // S5 — the Responses response-rewrite chain (fix-stream-ids, DIRECT only). The driver
-    // applies it before render (A.C); the handler forwards the yielded (fixed) frames. Tool-name
-    // restore stays handler-side (forwarded-only, post-accumulate, must run on rendered frames).
-    // Full-format union (RFC §7.1); on a reverse `@messages` leg the ANTHROPIC册 fires on the upstream
-    // Anthropic frames; on the direct/fallback legs it stays fixStreamIds-only / empty.
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) => {
-      // REVERSE `@messages` leg: the ANTHROPIC strategy stack (outbound wire is Anthropic), supplied from
-      // the hub (env.body is the translated + sanitized Anthropic body). resanitize + the sanitize rewrite
-      // share ONE mapper holder.
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) {
-        return assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, {
-          anthropic: {
-            originalPayload: env.body as MessagesPayload,
-            resanitize: buildReverseResanitize(reverseMapperHolder),
-            model: env.model as Model | undefined,
-            maxRetries: state.autoTruncateMaxRetries,
-            betaProbe: reverseBetaProbe,
-          },
-        })
-      }
-      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
-      return buildOpenAiResponsesStrategiesForEnv(env)
-    },
+    // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
+    // (C5 — every openai-responses cell is migrated: direct `/responses` + `/chat` fallback + reverse
+    // `@messages`). The reverse leg's sanitize rewrite + Anthropic stack + the R1 corner (direct/fallback
+    // auto-truncate OFF, maxRetries 1) are assembled by OUTBOUND_LEGS + RETRY_SEMANTICS from env.requestState.
     maxRetries: 1,
     maxLearningRetries: MAX_LEARNING_RETRIES,
   })
