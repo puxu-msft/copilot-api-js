@@ -17,16 +17,31 @@
 1. 把三处硬编码文本开放为 `anthropic.*` 配置键，硬编码常量降级为默认值（空配置逐字节不变、零回归）。
 2. 支持占位符模板（`end_turn_text` 与 `error_message`），让注入文本可携上游上下文。
 3. 「零包装」：配置值 = 最终注入字节，代理不加任何框架；空串 = 一个字都不注入。
+4. **合成帧记录层打标（本轮并入，补齐 ADR §3 缺口）**：refusal 注入/改写的合成帧在 forwarded 轨打 `synthetic:"refusal-recovery"` 标记——本轮放大了合成物的可定制性（任意字节/可空使内容启发式失效），这是我们引入的问题、不留缺口。**只碰记录层元数据，不碰客户端可见字节**（与目标 3 不冲突）。
 
 ## 非目标
 
 - 不改三模式门控逻辑（`isThinkingOnlyRefusal`、server_tool_use 排除、handler `ctx.fail` 归属）——见 docs/refusal-recovery.md，均不变。
 - 不改 web_search 双跳旁路对 refusal 三模式无效的既有缺口（docs/refusal-recovery.md「已知缺口」）。
 - 不动 history 保真（上游原始 `refusal` + `sseEvents` 始终记录真实上游，本 spec 只碰 forwarded/rendered 轨）。
+- 不在客户端可见文本里加任何内联标记（打标只在记录层元数据，见目标 4）。
 
-## 与 ADR「合成物必打标记」的关系（无冲突）
+## 合成帧记录层打标（本轮并入）
 
-ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md) §3 要求「往真实数据流注入的合成帧须可辨识」——约束的是**记录/元数据层**（`SseEventRecord.synthetic` 字段，history/UI 据此区分合成 vs 真实），**不要求**把标记塞进客户端可见文本。当前实现的 recovery 文本本就无内联标记。故「零包装」（客户端拿到的就是配置字节）与 ADR 不冲突。本 spec 不改动合成帧在记录层的 `synthetic` 标记（若已有则保留、缺失则属既有独立事项、不在本 spec 范围）。
+**问题（reviewer MEDIUM-2，核实属实）**：ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md) §3 要求「合成物只进 forwarded 轨且打显式标记，所有注入点全打」。但核对 [client-sink.ts](../../src/lib/pipeline/client-sink.ts) 的 `write()`（`sampleForwarded(frame, wasFrameRewritten(frame) ? "hook-rewrite" : undefined)`）：refusal 合成帧经 rewrite `emit` → `next.push` → `sink.write()`（driver.ts:573/682 等，与 hook-rewrite 同路径），但 refusal 帧无 hook tag → **forwarded 轨 `SseEventRecord` 当前未打任何 `synthetic` 标记**。这是既有 ADR §3 违反，且本轮「零包装」加剧（凭内容判断「是否合成」彻底失效）。既然是我们放大的合成物，本轮补齐。
+
+**打标范围（流式，refusal 的 rewrite `emit` 帧）**：
+- **end_turn 模式**：合成 text 三元帧（start/delta/stop）——纯注入物，`synthetic:"refusal-recovery"`；被改写的 `message_delta`（refusal→end_turn 的 stop_reason 变更）——mutated 真帧、forwarded 轨已不反映上游 stop_reason，同样标 `refusal-recovery`（诚实标注「此终止帧被 refusal recovery 改写」）。
+- **error 模式**：替换上游终止帧的 `event: error` 帧——纯注入物，标 `refusal-recovery`（被抑制的原 delta/message_stop 不进 forwarded 轨、无需标）。
+- **空串 end_turn**：仅被改写的 `message_delta`（无 text 块），标之。
+
+**机制（推荐泛化，避免两套并行 tag）**：hook-rewrite 现用单一布尔 Symbol `FRAME_HOOK_REWRITE`（[hooks/origin.ts](../../src/lib/pipeline/hooks/origin.ts) `tagFrameRewritten`/`wasFrameRewritten`）。推荐**泛化为携 kind 的 synthetic-origin tag**（一个 Symbol 存标记种类 `"hook-rewrite" | "refusal-recovery" | …`），hook-rewrite 迁到同机制，`write()` 读单一 tag → `sampleForwarded(frame, readSyntheticKind(frame))`。refusal 帧在 [recover-refusal.ts](../../src/lib/anthropic/recover-refusal.ts) 构造/改写处打 `tagFrameSynthetic(frame, "refusal-recovery")`。轻量替代（并行第二 Symbol）留 plan 定，但泛化更干净、单一读取点。
+
+**类型**：`SseEventRecord.synthetic` 联合（[history/types.ts:171](../../src/lib/history/types.ts#L171)）+ 两个 sink 的 `sampleForwarded` 局部联合（[client-sink.ts:169](../../src/lib/pipeline/client-sink.ts#L169) 与 [client-sink.ts:446](../../src/lib/pipeline/client-sink.ts#L446)）加 `"refusal-recovery"`。
+
+**非流式无此问题**：非流式无 `sseEvents`；forwarded body 经 `setForwardedResponse`（handler-v4）与上游原始 `outboundResponse` 分腿记录，合成 vs 真实已可辨。本节仅约束流式帧轨。
+
+**下游展示（可选，本轮不强制）**：ui-v4 History 可据 `synthetic:"refusal-recovery"` 给这些帧加 badge/dim（对齐 keepalive「13 events · 11 keepalive」既有呈现），plan 视工作量决定是否捎带；后端标记是本轮硬目标、前端呈现可后续。
 
 ## 配置面（新增三键，`anthropic.*`）
 
@@ -85,27 +100,33 @@ ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md) §3 要求
   - 非流式 `transformWhole`：**签名须从 `(response)` 拓宽为 `(response, env)`**（reviewer LOW-1：request_id 不在 response 内、须从 `env.ctx` 取），组装全 vars 后预渲染 end_turn 文本再传 `recoverRefusalInResponse`。
 - **handler-v4.ts（发射点 ④，reviewer HIGH-1）**：[handler-v4.ts:748](../../src/routes/messages/handler-v4.ts#L748) 非流式 error body 的 `message`/`type` 须经同一 `renderRefusalTemplate`（vars 从 `response.model`/`env.ctx` requestId/`response.usage.output_tokens` 组装）+ type 空串回落 `api_error`；此处 whole-response 在手，预渲染即可。
 
-## 关联 ADR 缺口（reviewer MEDIUM-2：登记而非无冲突带过）
+## 合成帧打标接线（实现塑形补充）
 
-「零包装」（客户端可见文本不打内联标记）与 ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md) §3 **确实不冲突**——ADR 约束的是**记录层** `SseEventRecord.synthetic` 元数据，不是客户端可见字节。**但**核对 [client-sink.ts](../../src/lib/*/client-sink.ts) 的 `write()`（`sampleForwarded(frame, wasFrameRewritten(frame) ? "hook-rewrite" : undefined)`）发现：refusal 合成帧（end_turn text 块 / error 帧）经普通 `write()` 走 forwarded 轨、**当前未打任何 `synthetic` 标记**（只有 hook-rewrite / keepalive / anchor 打）——这是一个**既有 ADR §3 违反**（「合成物只进 forwarded 轨且打显式标记，所有注入点全打」）。本 spec **不修此缺口**（属记录层、与客户端可配文本正交），但**本改动加剧它**：文本变任意字节/可空后，凭内容启发式判断「这帧是否合成」彻底失效，record 层标记变得更必要。**处置**：登记进 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)（根因/当前行为/理想架构/为何暂缓/若做需改什么），本 spec 交叉引用，交用户决定是否并入本轮或后续单独做。
+见上「合成帧记录层打标」节的机制/范围/类型。改动点：
+- **tag 机制**：[hooks/origin.ts](../../src/lib/pipeline/hooks/origin.ts) 泛化 Symbol tag（或并行第二 Symbol，plan 定）；导出 `tagFrameSynthetic(frame, kind)` / `readSyntheticKind(frame)`。
+- **打标点**：[recover-refusal.ts](../../src/lib/anthropic/recover-refusal.ts) 的 `buildSyntheticTextFrames` 各帧、`rewriteRefusalMessageDelta` 输出、`buildRefusalErrorFrame` 输出，构造后 `tagFrameSynthetic(_, "refusal-recovery")`。
+- **读取点**：[client-sink.ts](../../src/lib/pipeline/client-sink.ts) 两个 `write()`（169/446 两 sink 变体）改读泛化 tag。
+- **类型联合**：`SseEventRecord.synthetic` + 两 sink 局部联合加 `"refusal-recovery"`。
 
 ## 测试
 
 - **单元**：`renderRefusalTemplate` 真值表（已知占位符替换 / 未知占位符原样保留 / 空串 / 无占位符恒等）；`buildSyntheticTextFrames` 带自定义文本；空串路径「不追加块」；流式工厂在 refusal `message_delta` 自取 `output_tokens` 渲染 `{thinking_tokens}`（证时点正确、非 createState 时的 0）。
 - **golden 字节锁**（[response-rewrite-golden.http.test.ts](../../tests/anthropic/response-rewrite-golden.http.test.ts)）：现有 S6/S8 保持——**默认配置下与现状逐字节相同**（回归护栏）；新增 S8-custom（自定义模板渲染流式）+ S8-empty（空串不追加块）+ 非流式对应档（含 handler-v4 error body ④ 的 message/type 渲染）。
 - **热重载**（[config-hot-reload.it.test.ts](../../tests/config/config-hot-reload.it.test.ts)）：加三键条目，验证运行时改配置即时生效。
+- **合成帧打标**：单元证 `tagFrameSynthetic`/`readSyntheticKind` 往返 + hook-rewrite 迁移后仍读 `"hook-rewrite"`；集成/golden 证 refusal end_turn 的合成 text 帧 + 改写 delta、error 帧在 forwarded `sseEvents` 记录携 `synthetic:"refusal-recovery"`，而**上游轨 `sseEvents` 不含合成物**（沿用 ADR「上游轨绝不含合成物」可核对性）。
 - **import 环校验（reviewer LOW-3）**：plan 落地时 typecheck 确认 `state.ts → lib/anthropic/recover-refusal`（取 `DEFAULT_*`）不成环；若成环则把 `DEFAULT_*` 抽到中立位置。
 
 ## 验收标准
 
-1. 空配置下，四发射点（流式/非流式 × end_turn/error）输出与现状逐字节相同（golden S6/S8 + 非流式档不变）。
-2. 配自定义 `refusal_end_turn_text`（含 `{model}`/`{request_id}`/`{thinking_tokens}`）后，`end_turn` 注入的 text 块 = 渲染后的字节，无代理附加前后缀/标记；`{thinking_tokens}` 取到真实 output_tokens（非 0）。
+1. 空配置下，四发射点（流式/非流式 × end_turn/error）输出与现状**客户端可见字节**逐字节相同（golden S6/S8 + 非流式档不变）；打标只加记录层元数据、不改 wire。
+2. 配自定义 `refusal_end_turn_text`（含 `{model}`/`{request_id}`/`{thinking_tokens}`）后，`end_turn` 注入的 text 块 = 渲染后的字节，无代理附加前后缀/内联标记；`{thinking_tokens}` 取到真实 output_tokens（非 0）。
 3. 配 `refusal_end_turn_text: ""` 时，`end_turn` 模式不追加任何 text 块（流式+非流式），仅 stop_reason → end_turn。**是否 stall 须以真实 Claude Code live oracle 验证**（reviewer MEDIUM-1：无法只靠 golden 字节测断言，见空串语义节的 ⚠️）。
 4. 配自定义 `refusal_error_message` / `refusal_error_type` 后，**流式 error 帧②与非流式 error body④** 的 message/type 均 = 配置值（type 空串回落 `api_error`）——两条路径都须覆盖，勿只测流式。
 5. 未知占位符原样保留、不致文本丢失或报错。
 6. 三键支持运行时热重载。
+7. **refusal 合成帧在 forwarded `sseEvents` 携 `synthetic:"refusal-recovery"`（end_turn text 三帧 + 改写 delta、error 帧全覆盖）；上游轨 `sseEvents` 不含任何合成物；hook-rewrite 打标迁移后行为不变。**
 
 ## 收尾附带项（非阻塞，plan 可捎带）
 
 - **compat 指引（reviewer 建议）**：[compat.ts](../../src/lib/config/compat.ts) 旧键 `refusal_recover_text` 的弃用 message 或 bundled config.yaml 注释补一句「如需自定义 end_turn 文本见 `refusal_end_turn_text`」，降低老用户查找成本。
-- **backlog 登记**：上「关联 ADR 缺口」节的 refusal 合成帧未打 `synthetic` 标记，写入 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)。
+- **ui-v4 badge（可选）**：History 前端据 `synthetic:"refusal-recovery"` 加标注（对齐 keepalive 呈现），后端标记是硬目标、前端呈现可后续。
