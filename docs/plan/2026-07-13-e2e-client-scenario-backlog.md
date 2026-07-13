@@ -1,7 +1,7 @@
 # client↔proxy e2e 场景 backlog 实现指南（交接）
 
 > **交接目的**：把 spec `2026-07-13-client-proxy-sdk-e2e-harness.md`「e2e 场景覆盖 roadmap」的未覆盖 backlog，变成新会话可**逐条直接执行**的配方。每条给：层 / config / 上游帧 pattern / 客户端可观测 oracle / harness 需求（现有 or 新扩展）/ gotcha / 建议变异。**先读 skill `client-proxy-e2e-testing`**（承重机制 + oracle 纪律），再挑一条实现。
-> **现状**：22 场景已覆盖（Tier1 SDK 20 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
+> **现状**：23 场景已覆盖（Tier1 SDK 21 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
 
 ## Kick-off prompt（复制给新会话）
 
@@ -50,6 +50,7 @@ Tier2 spawn 真 proxy 需 claude+github_token（gated），改 config 用不同 
 - **变异**：关 thinking reactive 恢复 → 客户端拿 400 throw。
 
 ### B1 CC 300s no-real-content keepalive 墙 — Tier2 计时（Tier1 只验空 delta 无害）
+✅ **Tier1 半已覆盖（2026-07-13）**：上游发一串空 `text_delta{text:""}` 交错真实内容 delta → SDK finalMessage 把空 delta 折叠成 no-op（唯一 text 块 = 真实内容、无幻块、无 throw）。实测坐实（CODE-INFER）；牙口用 fixture 变异证（把某个空 delta 翻成非空 → 断言红）。**真 300s 墙仍留 Tier2 计时**（下方保留原配方）。
 - **Tier1 可做的**：上游发一串**空 content_block_delta**（`thinking_delta{thinking:""}`/`text_delta{text:""}`）后正常收尾 → SDK finalMessage 拼出正常内容、**不把空 delta 当可见文本**（`docs/refusal-recovery.md:37`、`debugging-claude-client-connection` skill「空 delta 算 chunk」）。这是 B15 的一半，Tier1 确定性可测。
 - **Tier2 真墙**：spawn proxy + config `stream_keepalive_mode: ping`（撞 300s 墙）vs `empty_text`（保活到 340s），hook 上游长静默 → 真 claude 是否报 `Stream idle timeout - no chunks received`。**需真计时（数百秒）**，重、gated；参考 `exp/cc-idle-280s/REPORT.md` 四臂对照。**建议先只做 Tier1 空-delta-无害那半**，真墙留 Tier2 后续。
 

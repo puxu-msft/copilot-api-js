@@ -517,6 +517,53 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     expect(up.callCount()).toBe(2) // proxy stripped all thinking + retried internally; client never saw the 400
   })
 
+  // ── keepalive/anchor empty deltas: SDK accumulates them harmlessly (B1 Tier1 half) ──
+
+  test("empty content deltas: SDK folds empty text/thinking deltas into the turn without phantom content or crash", async () => {
+    // The proxy's keepalive path emits empty content_block_deltas (`text_delta{text:""}` /
+    // `thinking_delta{thinking:""}`) to hold the CC 300s no-real-content wall open. This Tier1 half
+    // asserts the client-side invariant that makes that safe: a REAL SDK folds those empty deltas into
+    // the same block as no-ops — the assembled turn carries ONLY the real visible text, no phantom
+    // empty block, no throw. (The 300s wall itself is a Tier2 timing question — see B1 upper half.)
+    setStateForTests({ refusalSseRewrite: "refusal" }) // pure passthrough — no rewrite injects frames
+    const framesWithEmptyDeltas = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_ka",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "real " } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "answer" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(framesWithEmptyDeltas))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+
+    // client-observable: exactly one text block carrying only the REAL text; empty deltas contributed
+    // nothing visible and did not spawn a phantom block or throw.
+    expect(final.content.length).toBe(1)
+    expect((final.content[0] as { type?: string; text?: string })?.type).toBe("text")
+    expect((final.content[0] as { text?: string })?.text).toBe("real answer")
+    expect(final.stop_reason).toBe("end_turn")
+  })
+
   // ── event-name tolerance: SDK dispatches on the event name ∈ accept-set, not name===data.type ──
 
   test("thinking-signature-compat: signature_delta under `event: content_block_start` is still accumulated by the SDK", async () => {
