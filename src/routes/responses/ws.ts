@@ -85,12 +85,12 @@ const TERMINAL_EVENTS = new Set(["response.completed", "response.failed", "respo
 
 /**
  * Default client-side WebSocket frame cap (1 MiB) is enforced via
- * `state.maxWsFrameBytes` (config `openai_responses.max_ws_frame_bytes`).
+ * `state.maxWsFrameBytes` (config `server.responses_ws.max_frame_bytes`).
  * 0 means unlimited. See onMessage for enforcement.
  */
 
 /**
- * Client-side idle timeout when `client_ws_keep_open` is true (5 min).
+ * Client-side idle timeout when `server.responses_ws.keep_open` is true (5 min).
  * Without this, a client that opens the socket, sends one `response.create`,
  * and then walks away would pin a WSContext and file descriptor indefinitely.
  * Mirrors the 5-min idle close on the upstream side.

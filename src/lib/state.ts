@@ -796,7 +796,7 @@ export interface State {
    * terminates, allowing the client to send a follow-up `response.create` on the
    * same socket (Phase 2 long-lived client WS). When false (default), the
    * socket is closed with code 1000 after each request, mirroring HTTP semantics.
-   * Enable with config openai_responses.client_ws_keep_open: true.
+   * Enable with config server.responses_ws.keep_open: true.
    */
   readonly clientWebsocketKeepOpen: boolean
 
@@ -827,7 +827,7 @@ export interface State {
   /**
    * Max concurrent client WebSocket connections to the proxy. Default 256;
    * set to 0 to disable. Bounds file-descriptor usage when
-   * `client_ws_keep_open` is true.
+   * `server.responses_ws.keep_open` is true.
    */
   readonly maxClientWsConnections: number
 

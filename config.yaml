@@ -849,6 +849,10 @@ server:
     # 在 `response.completed` 后保持客户端侧 WebSocket 打开，让客户端在同一 socket 上发后续 `response.create`。false（默认）时每次请求后以 code 1000 关闭（HTTP 式一次性语义）。
     # Concurrent `response.create` on the same socket is rejected with an error frame. / 同 socket 上并发 `response.create` 会被 error 帧拒绝。
     keep_open: false
+    # Max inbound client WS frame bytes (0 = unlimited). / 客户端入站 WS 帧字节上限（0 = 无限）。
+    # max_frame_bytes: 0
+    # Max concurrent client WS connections (0 = unlimited). / 客户端并发 WS 连接数上限（0 = 无限）。
+    # max_connections: 256
 
 # ============================================================================
 # Buffered-retry caps (vendor-neutral SHARED) + per-vendor overrides
