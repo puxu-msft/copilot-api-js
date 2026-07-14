@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript / Bun / bun:sqlite（+ node:sqlite 双驱动）/ Hono streamSSE / DDSketch（telemetry.db）/ Vitest（后端 bun test，ui-v4 vitest）。
 
-**权威 spec:** [docs/spec/2026-07-14-request-timing-instrumentation.md](../spec/2026-07-14-request-timing-instrumentation.md)（§编号在下引用）。
+**权威 spec:** [docs/spec/2026-07-14-request-timing-instrumentation.md](../spec/2026-07-14-request-timing-instrumentation.md)（§编号在下引用）。**本 plan 已过 1 轮 subagent 审查**，折叠 4 个 major（两段投影链 M-A / onTerminal+updateEntry M-B / HistoryEntryData.timing M-D / 谓词收完整帧 M-E）+ 锚点修正。
 
 ## Global Constraints
 
@@ -128,43 +128,51 @@ git add -- src/lib/pipeline/request-timing.ts src/lib/pipeline/request-timing.te
 git commit -m "feat(timing): add RequestTiming types + recordOnce/recordLatest primitives"
 ```
 
-### Task 0.2: 首包谓词 `isFirstUpstreamContent` / `isClientContentFrame`
+### Task 0.2: 首包谓词 `isFirstUpstreamContent` / `isUpstreamContentFrame` / `isClientContentFrame`
 
 **Files:**
 - Modify: `src/lib/pipeline/request-timing.ts`
 - Test: `src/lib/pipeline/request-timing.test.ts`
 
 **Interfaces:**
-- Consumes: `EndpointFormat`（既有 `env.targetEndpoint` / `clientFormat` 的类型，从 `~/lib/pipeline/types` import 确认确切名）。
-- Produces: `isFirstUpstreamContent(parsedType: string, targetEndpoint: EndpointFormat): boolean`；`isClientContentFrame(parsedType: string, clientFormat: EndpointFormat): boolean`。
+- Produces: `isFirstUpstreamContent(frame, targetEndpoint): boolean`、`isUpstreamContentFrame(frame, targetEndpoint): boolean`（last_token 用「任意内容帧」）、`isClientContentFrame(frame, clientFormat): boolean`。
 
-> **实现期核实**：先 grep `targetEndpoint` / `clientFormat` 的确切联合类型定义（`src/lib/pipeline/types.ts` 或 `env` 类型），谓词入参用该类型；下面用占位 `EndpointFormat`。谓词入参用**已解析的帧类型字符串**（各 pump 已有 `frameType(frame)`），避免在谓词内重复解析。
+> **承重（plan reviewer M-E）**：谓词入参必须是**完整 raw 帧**（`{ event?: string; data?: string }` 结构，即 driver loop-top 的 `frame`），**不是**预解析的 type-string。原因：driver loop-top（`driver.ts:532-534`）只有 `frame.event`，type 派生是 `frame.event ?? (frame.data ? "message" : "keepalive")`、**不做 JSON.parse**；而 **openai/gemini 上游是 data-only（无 event 行）**，其 JSON 里是 `"object":"chat.completion.chunk"` / gemini part 结构，**`frame.event` 恒空**、type-string 相等谓词永不命中。故 anthropic/responses 分支读 `frame.event`，openai/gemini 分支自行 `JSON.parse(frame.data)` 检视内容字段（spec §3.5 本就把它们定义为内容检视谓词）。
 
 - [ ] **Step 1: 写失败测试**
 
 ```ts
 import { isFirstUpstreamContent, isClientContentFrame } from "./request-timing"
 
-describe("isFirstUpstreamContent (targetEndpoint 谓词)", () => {
-  it("anthropic: content_block_start 是首个承诺产出信号（含 tool_use/thinking）", () => {
-    expect(isFirstUpstreamContent("content_block_start", "anthropic")).toBe(true)
-    expect(isFirstUpstreamContent("message_start", "anthropic")).toBe(false)
-    expect(isFirstUpstreamContent("ping", "anthropic")).toBe(false)
+const evt = (event: string, data = "{}") => ({ event, data })
+const dataOnly = (data: string) => ({ data })
+
+describe("isFirstUpstreamContent (targetEndpoint 谓词，收完整帧)", () => {
+  it("anthropic: content_block_start（读 event 行）", () => {
+    expect(isFirstUpstreamContent(evt("content_block_start"), "anthropic")).toBe(true)
+    expect(isFirstUpstreamContent(evt("message_start"), "anthropic")).toBe(false)
+    expect(isFirstUpstreamContent(evt("ping"), "anthropic")).toBe(false)
   })
-  it("openai chat: content delta 或 tool_calls", () => {
-    expect(isFirstUpstreamContent("chat.completion.chunk", "openai")).toBe(true)
+  it("responses: output_item.added / output_text.delta（event 行）", () => {
+    expect(isFirstUpstreamContent(evt("response.output_item.added"), "responses")).toBe(true)
+    expect(isFirstUpstreamContent(evt("response.created"), "responses")).toBe(false)
   })
-  it("responses: output_item.added / output_text.delta", () => {
-    expect(isFirstUpstreamContent("response.output_item.added", "responses")).toBe(true)
-    expect(isFirstUpstreamContent("response.created", "responses")).toBe(false)
+  it("openai: data-only chunk，parse choices[].delta.content 非空或 tool_calls", () => {
+    expect(isFirstUpstreamContent(dataOnly('{"choices":[{"delta":{"content":"hi"}}]}'), "openai")).toBe(true)
+    expect(isFirstUpstreamContent(dataOnly('{"choices":[{"delta":{"tool_calls":[{}]}}]}'), "openai")).toBe(true)
+    expect(isFirstUpstreamContent(dataOnly('{"choices":[{"delta":{"role":"assistant"}}]}'), "openai")).toBe(false)
+  })
+  it("gemini: data-only，parse candidates[].content.parts 含 text 或 functionCall", () => {
+    expect(isFirstUpstreamContent(dataOnly('{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}'), "gemini")).toBe(true)
+    expect(isFirstUpstreamContent(dataOnly('{"candidates":[{"content":{"parts":[{"functionCall":{}}]}}]}'), "gemini")).toBe(true)
   })
 })
 
 describe("isClientContentFrame (clientFormat 谓词)", () => {
-  it("anthropic: message_start / content_block_start 不算内容，content_block_delta 算", () => {
-    expect(isClientContentFrame("content_block_delta", "anthropic")).toBe(true)
-    expect(isClientContentFrame("message_start", "anthropic")).toBe(false)
-    expect(isClientContentFrame("content_block_start", "anthropic")).toBe(false)
+  it("anthropic: content_block_delta 算，message_start/content_block_start 不算", () => {
+    expect(isClientContentFrame(evt("content_block_delta"), "anthropic")).toBe(true)
+    expect(isClientContentFrame(evt("message_start"), "anthropic")).toBe(false)
+    expect(isClientContentFrame(evt("content_block_start"), "anthropic")).toBe(false)
   })
 })
 ```
@@ -172,39 +180,63 @@ describe("isClientContentFrame (clientFormat 谓词)", () => {
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `bun test src/lib/pipeline/request-timing.test.ts`
-Expected: FAIL（`isFirstUpstreamContent` 未导出）
+Expected: FAIL（谓词未导出）
 
-- [ ] **Step 3: 写实现**（`EndpointFormat` 替换为实际类型；OpenAI chat「首帧即内容」因 delta 首帧就承载 content/tool_calls，故 chunk 类型即真；若 pump 提供更细类型则用之）
+- [ ] **Step 3: 写实现**（`EndpointFormat` 替换为实际类型；openai/gemini 分支 `JSON.parse(frame.data)` 包 try/catch 返 false）
 
 ```ts
-// 追加到 request-timing.ts
 export type EndpointFormat = "anthropic" | "openai" | "responses" | "gemini"
+export interface RawUpstreamFrame { event?: string; data?: string }
 
-/** 上游首个「承诺产出内容」信号（spec §3.5）——最早无歧义、含 tool-first/reasoning-first。 */
-export function isFirstUpstreamContent(parsedType: string, fmt: EndpointFormat): boolean {
+function parseData(frame: RawUpstreamFrame): any {
+  if (!frame.data) return undefined
+  try { return JSON.parse(frame.data) } catch { return undefined }
+}
+
+/** 上游首个「承诺产出内容」信号（spec §3.5）——含 tool-first/reasoning-first。 */
+export function isFirstUpstreamContent(frame: RawUpstreamFrame, fmt: EndpointFormat): boolean {
   switch (fmt) {
     case "anthropic":
-      return parsedType === "content_block_start"
+      return frame.event === "content_block_start"
     case "responses":
-      return parsedType === "response.output_item.added" || parsedType === "response.output_text.delta"
-    case "gemini":
-      return parsedType === "content" || parsedType === "candidate" // 实现期按 gemini pump frameType 校准
+      return frame.event === "response.output_item.added" || frame.event === "response.output_text.delta"
+    case "openai": {
+      const d = parseData(frame)?.choices?.[0]?.delta
+      return !!d && ((typeof d.content === "string" && d.content.length > 0) || Array.isArray(d.tool_calls))
+    }
+    case "gemini": {
+      const parts = parseData(frame)?.candidates?.[0]?.content?.parts
+      return Array.isArray(parts) && parts.some((p: any) => (typeof p?.text === "string" && p.text.length > 0) || p?.functionCall)
+    }
+  }
+}
+
+/** 上游「任意内容帧」（last_token 用；比 first 宽，含后续 delta）。 */
+export function isUpstreamContentFrame(frame: RawUpstreamFrame, fmt: EndpointFormat): boolean {
+  switch (fmt) {
+    case "anthropic":
+      return frame.event === "content_block_delta" || frame.event === "content_block_start"
+    case "responses":
+      return typeof frame.event === "string" && frame.event.startsWith("response.output")
     case "openai":
-      return parsedType === "chat.completion.chunk"
+    case "gemini":
+      return isFirstUpstreamContent(frame, fmt)
   }
 }
 
 /** 客户端可见的首个真实内容帧（非 message_start/前奏/synthetic）。 */
-export function isClientContentFrame(parsedType: string, fmt: EndpointFormat): boolean {
+export function isClientContentFrame(frame: RawUpstreamFrame, fmt: EndpointFormat): boolean {
   switch (fmt) {
     case "anthropic":
-      return parsedType === "content_block_delta"
+      return frame.event === "content_block_delta"
     case "responses":
-      return parsedType === "response.output_text.delta" || parsedType === "response.output_item.added"
+      return frame.event === "response.output_text.delta"
+    case "openai": {
+      const d = parseData(frame)?.choices?.[0]?.delta
+      return !!d && ((typeof d.content === "string" && d.content.length > 0) || Array.isArray(d.tool_calls))
+    }
     case "gemini":
-      return parsedType === "content" || parsedType === "candidate"
-    case "openai":
-      return parsedType === "chat.completion.chunk"
+      return isFirstUpstreamContent(frame, fmt)
   }
 }
 ```
@@ -218,17 +250,17 @@ Expected: PASS
 
 ```bash
 git add -- src/lib/pipeline/request-timing.ts src/lib/pipeline/request-timing.test.ts
-git commit -m "feat(timing): add upstream/client first-content predicates (per-format)"
+git commit -m "feat(timing): add upstream/client first-content predicates (full-frame, per-format parse)"
 ```
 
-### Task 0.3: 类型层——`Attempt` 加 4 upstream 刻，`HistoryEntry.timing` 加 client 刻
+### Task 0.3: 类型层——`Attempt` 加 4 upstream 刻，`HistoryEntry.timing` + `HistoryEntryData.timing` 加 client 刻
 
 **Files:**
-- Modify: `src/lib/context/types.ts`（`Attempt` ~117-146 + `HistoryEntryData.attempts[]` ~307-328）
+- Modify: `src/lib/context/types.ts`（`Attempt` ~117-146 + `HistoryEntryData.attempts[]` ~307-328 + `HistoryEntryData` 顶层）
 - Modify: `src/lib/history/types.ts`（`HistoryEntry.attempts[]` ~497-526 + 新增 `HistoryEntry.timing`）
 
 **Interfaces:**
-- Produces: 三份 Attempt 类型各含 `upstreamHeadersAt?: number; upstreamMessageStartAt?: number; upstreamFirstTokenAt?: number; upstreamLastTokenAt?: number`；`HistoryEntry.timing?: { client?: ClientTiming }`。
+- Produces: 三份 Attempt 类型各含 `upstreamHeadersAt?/upstreamMessageStartAt?/upstreamFirstTokenAt?/upstreamLastTokenAt?: number`；`HistoryEntryData.timing?` 与 `HistoryEntry.timing?` 均 `{ client?: ClientTiming }`。
 
 - [ ] **Step 1: 改 `Attempt`（producer）**——在 `context/types.ts` 的 `interface Attempt` 末尾（`responseHeaders?` 后）加：
 
@@ -240,9 +272,9 @@ git commit -m "feat(timing): add upstream/client first-content predicates (per-f
   upstreamLastTokenAt?: number
 ```
 
-- [ ] **Step 2: 改 `HistoryEntryData.attempts[]`**——同文件 attempts[] 内联类型末尾（`responseHeaders?` 后）加同样 4 行 + 注释「producer 写、toHistoryAttempts 透传」。
+- [ ] **Step 2: 改 `HistoryEntryData.attempts[]` + `HistoryEntryData` 顶层**——同文件 attempts[] 内联类型末尾（`responseHeaders?` 后）加同样 4 行 + 注释「producer 写、两段投影透传」；并在 `HistoryEntryData` 顶层（`pipelineInfo?` 附近）加 `timing?: { client?: { streamOpenMs?: number; firstRealMs?: number; bufferHoldStartMs?: number } }`（**plan reviewer M-D**：`toHistoryEntry` 返回 `HistoryEntryData`，Task 2.3 要往它写 `entry.timing`，此类型必须先有该字段否则 typecheck 报错）。
 
-- [ ] **Step 3: 改 `HistoryEntry.attempts[]`（owner）+ 新增 `timing`**——在 `history/types.ts` 的 `HistoryEntry.attempts[]` 加同 4 行；并在 `HistoryEntry` 顶层加：
+- [ ] **Step 3: 改 `HistoryEntry.attempts[]`（owner）+ 新增 `HistoryEntry.timing`**——在 `history/types.ts` 的 `HistoryEntry.attempts[]` 加同 4 行；并在 `HistoryEntry` 顶层加：
 
 ```ts
   /** 首包埋点（spec §3.2）：客户端 3 刻，offset ms 相对 started_at。落 entry 列。 */
@@ -264,31 +296,54 @@ Expected: PASS（无消费者被迫改）
 
 ```bash
 git add -- src/lib/context/types.ts src/lib/history/types.ts
-git commit -m "feat(timing): add per-attempt upstream + entry client timing type fields"
+git commit -m "feat(timing): add per-attempt upstream + entry client timing type fields (producer+owner)"
 ```
+
+### Task 0.4: `RequestContext` 加 client-timing 载体 + once-语义 setter（横切中心接口，Phase 0 定死）
+
+**Files:**
+- Modify: `src/lib/context/types.ts`（`RequestContext` 接口 ~347-574）
+- Modify: `src/lib/context/request.ts`（实现）
+- Test: `src/lib/context/request.test.ts`（或既有 ctx 测试）
+
+**Interfaces:**
+- Produces: `ctx.setClientTimingEpoch(kind: "streamOpen" | "firstReal" | "bufferHoldStart", epoch: number): void`（**once 语义**——首写为准）；内部私有 `_clientTiming: { streamOpenEpoch?, firstRealEpoch?, bufferHoldStartEpoch? }`；`toHistoryEntry` 换算时读它（Task 2.3）。
+
+> **理由（plan reviewer minor）**：client 3 刻要「sink 记 epoch 到 ctx、finalize 减 startedAt」，但通读 `RequestContext` 确认**无 timing 载体、无 setter**。留「实现期定」会让各 handler 就地塞闭包 ctx、散落多处语义不一——故在 Phase 0 定死这个横切接口。
+
+- [ ] **Step 1: 写失败测试**——`ctx.setClientTimingEpoch("streamOpen", 100)` 后再 `("streamOpen", 200)`，内部保留 100（once）；三 kind 独立。
+- [ ] **Step 2: 确认失败**
+- [ ] **Step 3: 实现**——私有态 + setter（复用 `recordOnce` 语义：`if (this._clientTiming.streamOpenEpoch === undefined) ...`）。
+- [ ] **Step 4: 确认通过 + typecheck**
+- [ ] **Step 5: 提交** `feat(timing): add client-timing epoch carrier + once setter on RequestContext`
 
 ---
 
 ## Phase 1 — 上游 4 刻 per-attempt 捕获 + attempts[] 落盘
 
-### Task 1.1: driver 捕获上游 headers/message_start/first_token/last_token
+### Task 1.1: driver 捕获上游 headers/message_start/first_token/last_token（写 `ctx.currentAttempt`）
 
 **Files:**
-- Modify: `src/lib/pipeline/driver.ts`（transport.send resolve ~322；runResponse loop-top raw 帧采样 ~457-469）
+- Modify: `src/lib/pipeline/driver.ts`（`runExchange` transport.send resolve ~397 + header 捕获 ~410；`runResponse` loop-top raw 帧采样 ~524-544）
 
 **Interfaces:**
-- Consumes: `recordOnce`/`recordLatest`（Task 0.1）、`isFirstUpstreamContent`（Task 0.2）、当前 attempt 对象、`env.targetEndpoint`。
+- Consumes: `recordOnce`/`recordLatest`（Task 0.1）、`isFirstUpstreamContent`/`isUpstreamContentFrame`（Task 0.2）、`ctx.currentAttempt`、`env.targetEndpoint`。
 - Produces: 每 attempt 的 `upstream*At` 被填。
 
-> **实现期核实**：确认 `driver.ts:322` 处能拿到「当前 attempt 对象」引用（写 `attempt.upstreamHeadersAt = Date.now()`）；确认 loop-top（:457-469）采样处已有 raw 帧的 `frameType`/parsedType 与当前 attempt 引用。若 attempt 引用不在 scope，先小重构把 attempt 传入（不改行为）。
+> **承重（plan reviewer 修正）**：
+> - **attempt 引用 = `ctx.currentAttempt`**（`_attempts.at(-1)`，同一可变对象，与 `setAttemptSanitization` 同款）。**无需「小重构传入 attempt」**。runExchange 里 `beginAttempt` 已建好当前 attempt；runResponse 里 `env.ctx.currentAttempt` 即 committed（buffered 下即当前）。
+> - **锚点**：`upstreamHeadersAt` 在 `runExchange` transport.send resolve 后（`driver.ts:~397`，紧邻 `:410` 的 `setAttemptResponseHeaders`）；`message_start`/`first_token`/`last_token` 在 `runResponse` loop-top raw 采样（`driver.ts:~532`，`upstreamSse.push` 处）。该处 type 派生为 `frame.event ?? (frame.data?"message":"keepalive")`、**无 JSON.parse**——故传**完整 `frame`** 给谓词（Task 0.2 已按完整帧设计）。
+> - **`upstreamMessageStartAt` 为 Anthropic-format 专有信号**（读 `frame.event === "message_start"`）；openai/responses/gemini 上游无此帧、该刻恒 NULL，符合预期（spec §3.2 注明）。
 
-- [ ] **Step 1: 写失败测试**（用既有 driver 测试 harness 或 mock 上游 SSE——参考 skill `upstream-hook-mocking`）。断言：喂 `message_start → content_block_start → content_block_delta×N` 的上游流后，committed attempt 的 `upstreamMessageStartAt < upstreamFirstTokenAt <= upstreamLastTokenAt`，且 `upstreamHeadersAt` 已设。
+- [ ] **Step 1: 写失败测试**（集成，mock 上游 SSE——skill `upstream-hook-mocking`）。断言：喂 `message_start → content_block_start → content_block_delta×N` 后，committed attempt 的 `upstreamMessageStartAt <= upstreamFirstTokenAt <= upstreamLastTokenAt`，`upstreamHeadersAt` 已设。另一臂：openai data-only chunk 流后 `upstreamFirstTokenAt` 被设（证 M-E 修复）、`upstreamMessageStartAt` 为 undefined。
 
 ```ts
 // tests/pipeline/upstream-timing.it.test.ts（集成，mock 上游）
-it("records upstream 4 instants in order on the committed attempt", async () => {
-  // 用既有 driver 测试骨架驱动一个 mock 上游流；断言 attempt.upstream*At
-  // headers <= message_start <= first_token <= last_token
+it("records upstream 4 instants on committed attempt (anthropic)", async () => {
+  // 驱动 mock 上游流；断言 attempt.upstream*At 单调 + headers 已设
+})
+it("captures upstreamFirstTokenAt for openai data-only chunks (M-E)", async () => {
+  // openai targetEndpoint，data-only chunk 带 choices[].delta.content
 })
 ```
 
@@ -297,16 +352,17 @@ it("records upstream 4 instants in order on the committed attempt", async () => 
 Run: `bun test tests/pipeline/upstream-timing.it.test.ts`
 Expected: FAIL（字段 undefined）
 
-- [ ] **Step 3: 实现**——在 transport.send resolve 处：`recordOnce(attempt, "upstreamHeadersAt", Date.now())`；在 loop-top raw 帧采样处（对每帧 `pt = frameType(frame)`）：
+- [ ] **Step 3: 实现**——runExchange transport.send resolve 后：`{ const a = current.ctx.currentAttempt; if (a) recordOnce(a, "upstreamHeadersAt", Date.now()) }`；runResponse loop-top raw 采样处（对每 `frame`）：
 
 ```ts
-const now = Date.now()
-if (pt === "message_start") recordOnce(attempt, "upstreamMessageStartAt", now)
-if (isFirstUpstreamContent(pt, env.targetEndpoint)) recordOnce(attempt, "upstreamFirstTokenAt", now)
-if (isUpstreamContentDelta(pt, env.targetEndpoint)) recordLatest(attempt, "upstreamLastTokenAt", now)
+const a = env.ctx.currentAttempt
+if (a) {
+  const now = Date.now()
+  if (frame.event === "message_start") recordOnce(a, "upstreamMessageStartAt", now)
+  if (isFirstUpstreamContent(frame, env.targetEndpoint)) recordOnce(a, "upstreamFirstTokenAt", now)
+  if (isUpstreamContentFrame(frame, env.targetEndpoint)) recordLatest(a, "upstreamLastTokenAt", now)
+}
 ```
-
-（`isUpstreamContentDelta` = 「任意内容帧」谓词，last_token 用；可在 request-timing.ts 补一个，或复用 `isClientContentFrame` 的 upstream 对偶。keepalive/ping 帧不进这些分支。）
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -321,33 +377,49 @@ git add -- src/lib/pipeline/driver.ts src/lib/pipeline/request-timing.ts tests/p
 git commit -m "feat(timing): capture upstream 4 timing instants per attempt in driver"
 ```
 
-### Task 1.2: `toHistoryAttempts` allowlist 透传 upstream 4 刻（防静默 drop）
+### Task 1.2: 两段投影透传 upstream 4 刻（`toHistoryEntry` map + `toHistoryAttempts` allowlist）
 
 **Files:**
+- Modify: `src/lib/context/request.ts`（`toHistoryEntry` 的 `_attempts.map` ~893-935）
 - Modify: `src/lib/observability/sinks/history.ts`（`toHistoryAttempts` ~336-357）
-- Test: `src/lib/observability/sinks/history.test.ts`（或新建）
+- Test: `src/lib/observability/sinks/history.test.ts` + 端到端 round-trip
 
 **Interfaces:**
 - Consumes: producer attempt 的 `upstream*At`（Task 0.3）。
-- Produces: `HistoryEntry.attempts[].upstream*At` 落地（否则被 allowlist 静默丢——spec §5.2 B）。
+- Produces: `HistoryEntry.attempts[].upstream*At` 落地。
 
-- [ ] **Step 1: 写失败测试**——构造带 `upstreamFirstTokenAt` 的 HistoryEntryData attempt，过 `toHistoryAttempts`，断言输出 attempt 保留该字段。
+> **承重（plan reviewer M-A）**：时序从 live `Attempt` 到 `HistoryEntry` 走**两段显式投影**，任一段漏 copy 即静默丢：① `Attempt → HistoryEntryData.attempts[]`（`request.ts:893` 的 `_attempts.map`，显式字段清单、无 `...a` 展开）；② `HistoryEntryData → HistoryEntry.attempts[]`（`toHistoryAttempts` allowlist）。原 plan 只识别了 ②，**必须补 ①**。
+
+- [ ] **Step 1: 写失败测试**——构造带 `upstreamFirstTokenAt` 的**真实 ctx**（beginAttempt→写 attempt.upstreamFirstTokenAt），调 `ctx.toHistoryEntry()`，断言 `entry.attempts[0].upstreamFirstTokenAt` 保留；再过 `toHistoryAttempts` 断言仍在。**不手构 DTO 直喂 toHistoryAttempts**（那只测第二段、给假信心）。
 
 ```ts
-it("toHistoryAttempts passes through upstream timing instants (not dropped by allowlist)", () => {
-  const out = toHistoryAttempts([{ index: 0, durationMs: 1, upstreamFirstTokenAt: 123, upstreamHeadersAt: 100, upstreamMessageStartAt: 110, upstreamLastTokenAt: 200 }])
-  expect(out?.[0]).toMatchObject({ upstreamHeadersAt: 100, upstreamMessageStartAt: 110, upstreamFirstTokenAt: 123, upstreamLastTokenAt: 200 })
+it("upstream timing survives BOTH projection stages end-to-end", () => {
+  const ctx = makeTestCtx()            // 真实 RequestContext
+  ctx.beginAttempt()
+  ctx.currentAttempt!.upstreamFirstTokenAt = 123
+  ctx.currentAttempt!.upstreamHeadersAt = 100
+  const data = ctx.toHistoryEntry()    // 第一段
+  expect(data.attempts?.[0]).toMatchObject({ upstreamFirstTokenAt: 123, upstreamHeadersAt: 100 })
+  const owned = toHistoryAttempts(data.attempts)  // 第二段
+  expect(owned?.[0]).toMatchObject({ upstreamFirstTokenAt: 123, upstreamHeadersAt: 100 })
 })
 ```
 
-> `toHistoryAttempts` 若非导出，先加 `export`（或经公开路径测）。
-
-- [ ] **Step 2: 跑测试确认失败**（allowlist 未含新字段 → undefined）
+- [ ] **Step 2: 跑测试确认失败**（第一段 map drop → data.attempts[0].upstreamFirstTokenAt undefined）
 
 Run: `bun test src/lib/observability/sinks/history.test.ts`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**——在 `toHistoryAttempts` 的 map 返回对象加：
+- [ ] **Step 3: 实现**——① `request.ts:893` 的 map 返回对象加 4 行：
+
+```ts
+            ...(a.upstreamHeadersAt !== undefined && { upstreamHeadersAt: a.upstreamHeadersAt }),
+            ...(a.upstreamMessageStartAt !== undefined && { upstreamMessageStartAt: a.upstreamMessageStartAt }),
+            ...(a.upstreamFirstTokenAt !== undefined && { upstreamFirstTokenAt: a.upstreamFirstTokenAt }),
+            ...(a.upstreamLastTokenAt !== undefined && { upstreamLastTokenAt: a.upstreamLastTokenAt }),
+```
+
+② `toHistoryAttempts` 的 map 返回对象加：
 
 ```ts
     upstreamHeadersAt: a.upstreamHeadersAt,
@@ -361,90 +433,96 @@ Expected: FAIL
 Run: `bun test src/lib/observability/sinks/history.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: 端到端 round-trip 测试 + 提交**——补一个测试：失败 attempt（L1 retry）的 upstream 时刻经完整 persist→read round-trip 不丢（用隔离 DB）。
+- [ ] **Step 5: 端到端 persist→read round-trip（失败 attempt 不丢）+ 提交**——补测试：L1 retry 后失败 attempt 的 upstream 时刻经真实 `ctx.toHistoryEntry()` → persist（隔离 DB）→ read 不丢。
 
 ```bash
-git add -- src/lib/observability/sinks/history.ts src/lib/observability/sinks/history.test.ts
-git commit -m "feat(timing): pass upstream timing through toHistoryAttempts allowlist"
+git add -- src/lib/context/request.ts src/lib/observability/sinks/history.ts src/lib/observability/sinks/history.test.ts
+git commit -m "feat(timing): pass upstream timing through BOTH projection stages (toHistoryEntry map + toHistoryAttempts)"
 ```
 
 ---
 
 ## Phase 2 — 客户端 3 刻 entry 列捕获 + 列式落盘
 
-### Task 2.1: client-sink `onForwarded` 捕获 `clientFirstRealMs`
+### Task 2.1: client-sink `onForwarded` 捕获 `clientFirstRealMs`（写 ctx 载体）
 
 **Files:**
 - Modify: `src/lib/pipeline/client-sink.ts`（`sampleForwarded` ~169-176）
 
-> `onForwarded` 记录已含 `offsetMs = Date.now() - streamStartMs`（即相对 streamStartMs，非 started_at）。**client 3 刻要相对 `started_at`**——须在能拿到 `entry.startedAt` 的层换算，或在 sink 记 epoch、投影时减 started_at。**实现期定**：最简是 sink 记 `Date.now()` epoch 到 ctx.timing，finalize 时统一减 `entry.startedAt`。下面按「sink 写 epoch 到 ctx，finalize 换算 offset」。
+> `onForwarded` 记录已含 `offsetMs = Date.now() - streamStartMs`（相对 streamStartMs，非 started_at）。**client 3 刻要相对 `started_at`**——采「sink 记 `Date.now()` epoch 到 `ctx.setClientTimingEpoch`（Task 0.4 已定义载体），finalize 时统一减 `entry.startedAt`」。`sampleForwarded` 闭包能拿到 `ctx`（handler 构造 sink 时在 scope）；若某端点 sink 构造处无 ctx，经 sink opts 传入 setter 回调。
 
-- [ ] **Step 1: 写失败测试**——mock forwarded 流，首个非 synthetic 内容帧后，ctx 的 client first-real epoch 被设、且只设一次（synthetic keepalive 不触发）。
+- [ ] **Step 1: 写失败测试**——mock forwarded 流，首个非 synthetic 内容帧后，`ctx` 的 firstReal epoch 被设一次（synthetic keepalive/message_start 不触发）。
 - [ ] **Step 2: 确认失败**
-- [ ] **Step 3: 实现**——在 `sampleForwarded` 内，当 `!synthetic && isClientContentFrame(type, clientFormat)`：`recordOnce(ctxTiming, "firstRealEpoch", Date.now())`。（`ctxTiming` 经 sink opts 传入，或 onForwarded 回调侧记。）
+- [ ] **Step 3: 实现**——在 `sampleForwarded` 内，当 `!synthetic && isClientContentFrame(frame, clientFormat)`：`ctx.setClientTimingEpoch("firstReal", Date.now())`。（`clientFormat` 从 sink opts / env 取；`frame` 是完整帧，谓词按 Task 0.2 收完整帧。）
 - [ ] **Step 4: 确认通过**
 - [ ] **Step 5: 提交** `feat(timing): capture client first-real-content instant in client-sink`
 
-### Task 2.2: 逐端点 streamSSE 入口捕获 `clientStreamOpenMs` + buffered enqueue 捕获 `bufferHoldStartMs`
+### Task 2.2: 逐端点 streamSSE 入口捕获 `clientStreamOpen` + buffered enqueue 捕获 `bufferHoldStart`
 
 **Files:**
 - Modify: `src/routes/messages/handler-v4.ts`（streamSSE callback 入口 ~424/493）、`src/routes/responses/handler-v4.ts`、`src/routes/chat-completions/handler-v4.ts`、`src/routes/gemini/handler-v4.ts`、`src/routes/responses/ws.ts`
-- Modify: `src/lib/pipeline/driver.ts`（`runResponseBufferedSink` 首次 `buffer.push` 前 ~790-817）
+- Modify: `src/lib/pipeline/driver.ts`（`runResponseBufferedSink` 首次 `buffer.push` 前 ~816）
 
-**模式（对每个 streamSSE 入口应用同一行，站点见上）：** 在 callback 入口拿到 `Date.now()` 记 `clientStreamOpenEpoch`（recordOnce 到 ctx.timing）。
+**模式（对每个 streamSSE 入口应用同一行，站点见上）：** callback 入口首行 `ctx.setClientTimingEpoch("streamOpen", Date.now())`（once 语义）。
 
-**buffered enqueue（单点，driver）：** 首次 `buffer.push(toWrite)` 前：`recordOnce(ctxTiming, "bufferHoldStartEpoch", Date.now())`（protect_streaming_generation 与 L2 共用此函数，单点即覆盖两路径 spec §4）。
+**buffered enqueue（单点，driver）：** 首次 `buffer.push(toWrite)`（`driver.ts:~816`）前：`env.ctx.setClientTimingEpoch("bufferHoldStart", Date.now())`（protect_streaming_generation 与 L2 共用 `runResponseBufferedSink`，单点即覆盖两路径 spec §4）。
 
-- [ ] **Step 1: 写失败测试**——① Anthropic 端点 streamSSE 开流后 ctx 有 stream-open epoch；② 缓冲路径首帧入队后 ctx 有 buffer-hold epoch，透传路径无。
+- [ ] **Step 1: 写失败测试**——① Anthropic 端点 streamSSE 开流后 ctx 有 streamOpen epoch；② 缓冲路径首帧入队后 ctx 有 bufferHoldStart epoch，透传路径无。
 - [ ] **Step 2: 确认失败**
 - [ ] **Step 3: 实现**——Anthropic 站点先做（含测试），跑通后**按同一模式**应用到 responses/chat-completions/gemini/ws 四个 streamSSE 入口（逐站点 grep `streamSSE(` 定位 callback 入口首行）+ driver buffer.push 单点。
-- [ ] **Step 4: 确认通过**（每端点各一个 open-instant 测试）
-- [ ] **Step 5: 提交**（可拆两提交：一 client-sink/stream-open、一 buffer-hold）
+- [ ] **Step 4: 确认通过**（每端点各一个 streamOpen 测试）
+- [ ] **Step 5: 提交**（可拆两提交：一 stream-open、一 buffer-hold）
 
-### Task 2.3: finalize 换算 epoch→offset + 写入 `HistoryEntry.timing.client`
+### Task 2.3: finalize 换算 epoch→offset + 写入 `HistoryEntryData.timing.client`
 
 **Files:**
-- Modify: `src/lib/context/request.ts`（`toHistoryEntry` — 找 client leg 组装处）
+- Modify: `src/lib/context/request.ts`（`toHistoryEntry` ~773-935，client leg 组装处）
 
 **Interfaces:**
-- Consumes: ctx.timing 的 3 个 client epoch + `entry.startedAt`。
-- Produces: `HistoryEntry.timing.client = { streamOpenMs, firstRealMs, bufferHoldStartMs }`（各 = epoch − startedAt，未设→undefined）。
+- Consumes: `ctx` 的 `_clientTiming` 3 个 epoch（Task 0.4）+ `startTime`（entry 起始）。
+- Produces: `HistoryEntryData.timing.client = { streamOpenMs?, firstRealMs?, bufferHoldStartMs? }`（各 = epoch − startTime，未设→undefined）。
 
-- [ ] **Step 1: 写失败测试**——ctx 有 client epochs + startedAt，`toHistoryEntry` 产出 `timing.client.streamOpenMs === epoch - startedAt`，∈ [0, durationMs]。
+- [ ] **Step 1: 写失败测试**——真实 ctx 设 3 个 client epoch + startTime，`ctx.toHistoryEntry()` 产出 `timing.client.streamOpenMs === epoch - startTime`，∈ [0, durationMs]；缺项 undefined。
 - [ ] **Step 2: 确认失败**
-- [ ] **Step 3: 实现**——组装 `timing.client`，each `= epoch != null ? epoch - startedAt : undefined`。
+- [ ] **Step 3: 实现**——`toHistoryEntry` 组装 `timing.client`：`each = epoch != null ? epoch - startTime : undefined`；三项全 undefined 时 `timing` 整体不写（省 blob）。
 - [ ] **Step 4: 确认通过**
 - [ ] **Step 5: 提交** `feat(timing): project client timing epochs to started_at-relative offsets on entry`
 
-### Task 2.4: client 3 列——列式完整接线（8 处）
+### Task 2.4: client timing 抵达列——投影链（onTerminal + updateEntry）+ 列式接线（共 10 处）
 
 **Files:**
+- Modify: `src/lib/observability/sinks/history.ts`（`onTerminal` ~262-286）
+- Modify: `src/lib/history/entries.ts`（`updateEntry` 的 `Pick<>` allowlist）
 - Modify: `src/lib/history/sqlite/schema.ts`（`SCHEMA_SQL` entries_v2）
 - Modify: `src/lib/history/sqlite/connection.ts`（`migrateEntriesColumns.wanted`）
 - Modify: `src/lib/history/sqlite/serialize.ts`（`EntryRow`、`buildHeadRow`、`META_KEYS`、`deserializeEntry`）
 - Modify: `src/lib/history/sqlite/write.ts`（`INSERT_ENTRY_SQL` + `runHeadInsert` bind）
-- Test: 隔离 DB round-trip 测试
+- Test: 隔离 DB **经真实终态链** round-trip 测试
 
 **列名：** `client_stream_open_ms` / `client_first_real_ms` / `buffer_hold_start_ms`（均 `INTEGER`，nullable）。
 
-- [ ] **Step 1: 写失败测试**——隔离 DB：写一个带 `timing.client` 的 entry，读回，3 列值一致；且 blob 内**不含** timing.client（META_KEYS 排除）；fresh DB `PRAGMA table_info(entries_v2)` 含 3 列。
-- [ ] **Step 2: 确认失败**
-- [ ] **Step 3: 实现**（8 处，参考 `raw_path` 既有范式逐处对齐）：
-  1. `SCHEMA_SQL`：entries_v2 加 3 列。
-  2. `wanted`：push `{ name: "client_stream_open_ms", type: "INTEGER" }` ×3。
-  3. `EntryRow`：加 3 个 `number | null`。
-  4. `buildHeadRow`：从 `entry.timing?.client?.streamOpenMs ?? null` 映射。
-  5. `META_KEYS`：加 `timing`（排除出 blob——避免列/blob 双写）。
-  6. `INSERT_ENTRY_SQL`：列清单 + 占位符 + `ON CONFLICT DO UPDATE SET` 各加 3；`runHeadInsert` bind 顺序同步加 3。
-  7. `deserializeEntry`：3 列 → 重组 `timing.client`。
-  8. `read.ts` 行→entry 投影随 deserializeEntry 走（确认无独立映射遗漏）。
-- [ ] **Step 4: 确认通过**（round-trip + fresh DB + 迁移幂等：二次 open 不重复 ALTER）
+> **承重（plan reviewer M-B）**：client `timing` 要进列，`entry` 对象必须先经 `onTerminal`（显式复制）→ `updateEntry`（`Pick<>` allowlist）抵达 finalize→`buildHeadRow`。`toHistoryEntry` 建了 `timing`，但 `onTerminal`（history.ts:262-286）与 `updateEntry` Pick 都是**显式 allowlist**，不加 `timing` 则 entry 到 `buildHeadRow` 时 `timing` 恒 undefined、3 列恒 NULL。原 plan 的「8 处」漏了这两处投影关（spec §5.2(A) 把 onTerminal/updateEntry 框成「只是 blob 路径」是误导——列值同样必须搭 entry 过这两关）。
+
+- [ ] **Step 1: 写失败测试**——隔离 DB：经**真实终态链**（`ctx.toHistoryEntry()` → onTerminal → updateEntry → finalize → persist）写一个带 client epoch 的 entry，读回 3 列值 = epoch−startTime；blob 内**不含** timing（META_KEYS 排除）；fresh DB `PRAGMA table_info` 含 3 列。**不直喂 buildHeadRow**（那跳过 onTerminal/updateEntry、给假信心）。
+- [ ] **Step 2: 确认失败**（onTerminal/updateEntry drop → 列 NULL）
+- [ ] **Step 3: 实现**（10 处，参考 `raw_path` + `pinned` 既有范式）：
+  1. `onTerminal`（history.ts:262-286）：加 `...(entryData.timing && { timing: entryData.timing })`。
+  2. `updateEntry` 的 `Pick<HistoryEntry, ...>`（entries.ts）：allowlist 加 `| "timing"`。
+  3. `SCHEMA_SQL`：entries_v2 加 3 列。
+  4. `wanted`：push `{ name: "client_stream_open_ms", type: "INTEGER" }` ×3。
+  5. `EntryRow`：加 3 个 `number | null`。
+  6. `buildHeadRow`：从 `entry.timing?.client?.streamOpenMs ?? null` 映射。
+  7. `META_KEYS`：加 `timing`（排除出 blob）。
+  8. `INSERT_ENTRY_SQL`：列清单 + 占位符 + `ON CONFLICT DO UPDATE SET` 各加 3；`runHeadInsert` bind 顺序同步加 3。
+  9. `deserializeEntry`：3 列 → 重组 `timing.client`。
+  10. `read.ts` 行→entry 投影随 deserializeEntry 走（确认无独立映射遗漏）。
+- [ ] **Step 4: 确认通过**（经真实终态链 round-trip + fresh DB + 迁移幂等：二次 open 不重复 ALTER）
 - [ ] **Step 5: 全 history sqlite 套件回归 + 提交**
 
 ```bash
 bun test src/lib/history/
-git add -- src/lib/history/sqlite/schema.ts src/lib/history/sqlite/connection.ts src/lib/history/sqlite/serialize.ts src/lib/history/sqlite/write.ts <test>
-git commit -m "feat(timing): persist client timing as 3 entries_v2 columns (8-point wiring)"
+git add -- src/lib/observability/sinks/history.ts src/lib/history/entries.ts src/lib/history/sqlite/schema.ts src/lib/history/sqlite/connection.ts src/lib/history/sqlite/serialize.ts src/lib/history/sqlite/write.ts <test>
+git commit -m "feat(timing): persist client timing via projection chain + 3 entries_v2 columns (10-point wiring)"
 ```
 
 ---
@@ -486,9 +564,11 @@ bufferHoldMs: entry.timing?.client?.firstRealMs != null && entry.timing?.client?
 
 ```ts
 { name: "upstream_first_token_ms", boundaries: [10, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 120_000, 300_000, 400_000], extract: (opts) => opts.upstreamFirstTokenMs },
-{ name: "client_first_real_ms", boundaries: [100, 500, 1000, 5000, 10_000, 30_000, 60_000, 120_000, 300_000, 400_000], extract: (opts) => opts.clientFirstRealMs },
+{ name: "client_first_real_ms", boundaries: [100, 500, 1000, 5000, 10_000, 30_000, 60_000, 90_000, 120_000, 180_000, 300_000, 400_000], extract: (opts) => opts.clientFirstRealMs },
 { name: "buffer_hold_ms", boundaries: [100, 500, 1000, 5000, 10_000, 30_000, 60_000, 120_000, 300_000, 400_000], extract: (opts) => opts.bufferHoldMs },
 ```
+
+> `client_first_real_ms` 在 60k–300k 间加 `90_000/180_000` 两档（plan reviewer 建议）——实测 client 可见首包 p50≈79s / p90≈229s 恰落此区间，粗桶会糊掉分位可读性。
 
 - [ ] **Step 4: 确认通过**——含 DDSketch 独立 oracle（从原始数组算 exact quantile 验相对误差）+ API-level `/api/stats` 测试。
 - [ ] **Step 5: 全遥测套件回归 + 提交**
@@ -533,7 +613,7 @@ git commit -m "feat(timing): register 3 timing distributions in telemetry HISTOG
 - Create: `docs/decisions/2026-07-14-request-timing-instrumentation.md`（D1-D6）
 - Modify: `docs/todo/deferred-backlog.md`（缓冲 UX 问题：所有长请求缓冲、客户端可见首包≈全程；§9 三个待定项：aborted distribution sink / 7d sketch / live 进行中面板）
 
-- [ ] **Step 1: 写 ADR**（D1-D6，理由 + 备选未采纳）
+- [ ] **Step 1: 写 ADR**（D1-D6，理由 + 备选未采纳）——并记录**「三型两投影链」教训**（plan reviewer 建议）：新增 per-attempt 字段须过 `Attempt → HistoryEntryData.attempts[]`（request.ts map）+ `HistoryEntryData → HistoryEntry`（toHistoryAttempts）两段显式 allowlist；新增 entry 字段须过 `toHistoryEntry` + `onTerminal` + `updateEntry` Pick 三关 + 列式 buildHeadRow/META_KEYS/deserialize；任一段漏 copy 即 typecheck-绿但静默丢——**证伪只能靠端到端 round-trip 经真实终态链**，与 [[settle-freezes-history-entry-record]]/[[fix-all-comparison-sites]] 同族。
 - [ ] **Step 2: DESIGN.md / API.md 同步 + 跨文档 grep 验证一致**
 - [ ] **Step 3: backlog 记 4 个 deferred 项（根因/当前行为/理想架构/为何暂缓/若做需改什么）**
 - [ ] **Step 4: 提交** `docs(timing): sync DESIGN/API + ADR + deferred backlog`
@@ -545,11 +625,12 @@ git commit -m "feat(timing): register 3 timing distributions in telemetry HISTOG
 
 ---
 
-## Self-Review（写完对照 spec）
+## Self-Review（写完对照 spec + plan review 折叠后）
 
-- **Spec coverage**：§3.1 捕获架构→Task 0.3/1.1/2.x；§3.2 七刻→Task 1.1/2.1/2.2；§3.5 谓词→Task 0.2；§5.1/5.2 A 列式→Task 2.4；§5.2 B per-attempt→Task 1.2；§5.4 不回填→无 backfill task（默认 NULL，✓）；§6.1 遥测→Task 3.1/3.2；§6.3 live→Task 4.2；§6.4 ui-v4→Task 4.1；§7 测试→各 task 内 TDD；§8 决策→Task 5.1 ADR；§9 待定→Task 5.1 backlog。**无遗漏**。
-- **Placeholder scan**：谓词 gemini/openai 分支标「实现期按 pump frameType 校准」——非 placeholder，是明确的实现期核实点（谓词骨架已给、仅需对齐确切 frameType 字符串）。driver attempt 引用、EndpointFormat 确切类型标「实现期核实」——同理。
-- **Type consistency**：`upstreamFirstTokenAt`（attempt/epoch）vs `upstreamFirstTokenMs`（telemetry opts/offset）命名有意区分（epoch vs offset）；`clientStreamOpenMs` 贯穿一致；`timing.client.{streamOpenMs,firstRealMs,bufferHoldStartMs}` 三处（类型/finalize/列）一致。
+- **Spec coverage**：§3.1 捕获架构→Task 0.3/0.4/1.1/2.x；§3.2 七刻→Task 1.1/2.1/2.2；§3.5 谓词→Task 0.2；§5.1/5.2 A 列式（10 处含 onTerminal/updateEntry）→Task 2.4；§5.2 B per-attempt（两段投影）→Task 1.2；§5.4 不回填→无 backfill task（默认 NULL，✓）；§6.1 遥测→Task 3.1/3.2；§6.3 live→Task 4.2；§6.4 ui-v4→Task 4.1；§7 测试→各 task 内 TDD；§8 决策→Task 5.1 ADR；§9 待定→Task 5.1 backlog。**无遗漏**。
+- **Placeholder scan**：谓词各端点分支已给**完整实现**（openai/gemini 收完整帧 + JSON.parse，非 type-string 占位）；`EndpointFormat`/ctx 载体名标「实现期核实确切类型/名」——是核实点非空缺（骨架完整、仅对齐既有类型名）。
+- **Type consistency**：`upstreamFirstTokenAt`（attempt/epoch）vs `upstreamFirstTokenMs`（telemetry opts/offset）有意区分；`setClientTimingEpoch` kind（`streamOpen/firstReal/bufferHoldStart`）与 `timing.client.{streamOpenMs,firstRealMs,bufferHoldStartMs}` 对应一致；投影链四型（`Attempt`/`HistoryEntryData`/`HistoryEntry` + `SettledTelemetryInput`）字段名核对一致。
+- **plan review 折叠**：M-A（两段投影，Task 1.2 补第一段 request.ts:893 map）、M-B（onTerminal+updateEntry，Task 2.4 10 处）、M-D（HistoryEntryData.timing，Task 0.3）、M-E（谓词收完整帧 + 逐格式 parse，Task 0.2/1.1）、ctx 载体（Task 0.4）、锚点修正（:397/:410/:524-544/:816）、message_start Anthropic-only、client_first_real 中段桶——**全部已折叠**。
 
 ---
 
