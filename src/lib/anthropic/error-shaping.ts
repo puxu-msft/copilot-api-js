@@ -21,6 +21,9 @@
  *    decision, which does NOT flow through this truth table.
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
+import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -28,7 +31,10 @@ import type {
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 
+import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 import { classifyStreamError } from "~/lib/stream"
+
+import { anthropicSseFrame } from "./sse-frame"
 
 // ============================================================================
 // Config + input/output types (README §4 contract — consumed verbatim by Phase 2/3/4/5)
@@ -282,4 +288,106 @@ function buildAuqQuestion(error: ApiError, config: ErrorShapingConfig): AuqQuest
     multiSelect: false,
     options: optionsForErrorType(error.type),
   }
+}
+
+// ============================================================================
+// AskUserQuestion synthesis (Phase 4: pre-commit whole-turn synthesis, streaming + non-streaming)
+// ============================================================================
+
+/** The AUQ tool's wire input shape (`decode-tool-input-core.ts`'s existing `AskUserQuestion`
+ *  consumer convention: `questions[]`, each `{question, header, multiSelect, options}`). Rendered
+ *  (second-pass `{model}`/`{request_id}` substituted) — never carries an unrendered placeholder. */
+interface RenderedAuqInput {
+  questions: Array<{ question: string; header: string; multiSelect: boolean; options: ReadonlyArray<string> }>
+}
+
+/** Second-pass render every question's `{model}`/`{request_id}` (first pass — `{error_type}`/
+ *  `{status}` — already done by `decide()`/`buildAuqQuestion`), producing the tool's wire input. */
+function renderAuqInput(questions: ReadonlyArray<AuqQuestion>, ctx: { model: string; reqId: string }): RenderedAuqInput {
+  return {
+    questions: questions.map((q) => ({
+      question: renderAuqQuestion(q.question, { model: ctx.model, request_id: ctx.reqId }),
+      header: q.header,
+      multiSelect: q.multiSelect,
+      options: q.options,
+    })),
+  }
+}
+
+/** Deterministic-free synthetic Anthropic tool_use id — `toolu_` prefix matches the wire convention
+ *  clients defensively validate against (see `recover-tool-call/core.ts`'s `synthesizeToolUseId` for
+ *  the deterministic streaming-replay sibling; this one-shot AUQ synthesis needs no determinism). */
+function syntheticToolUseId(): string {
+  return `toolu_${crypto.randomUUID().replaceAll("-", "")}`
+}
+
+/**
+ * B-class pre-commit whole-turn synthesis — non-streaming (`stream:false`) variant. Builds a
+ * complete `AnthropicMessageResponse` carrying a single `AskUserQuestion` `tool_use` block
+ * (`stop_reason:"tool_use"`), so the client's existing native AskUserQuestion handling renders an
+ * interactive question instead of a flattened error body.
+ *
+ * Constructed as a minimal object cast through `unknown` (same established convention as
+ * `debug/dry-run-pipeline.ts`'s `rebuildNonStreamingResponse`) rather than satisfying every strict
+ * SDK `Message` field (`container`/`stop_details`/the full `Usage` breakdown) — this is a synthetic
+ * turn with no real upstream response to source those from. `usage:{0,0}` is an accepted wire/billing
+ * divergence (richest-data-flow ADR §2, same acceptance as `keepalive-anchor.ts`'s synthetic
+ * `message_start`) — a synthetic turn has no real token cost to report.
+ */
+export function buildAskUserQuestionResponse(
+  decision: Extract<ShapingDecision, { kind: "ask-user-question" }>,
+  ctx: { model: string; reqId: string },
+): AnthropicMessageResponse {
+  const input = renderAuqInput(decision.questions, ctx)
+  return {
+    id: `msg_${crypto.randomUUID().replaceAll("-", "")}`,
+    type: "message",
+    role: "assistant",
+    model: ctx.model,
+    content: [{ type: "tool_use", id: syntheticToolUseId(), name: "AskUserQuestion", input }],
+    stop_reason: "tool_use",
+    stop_sequence: null,
+    usage: { input_tokens: 0, output_tokens: 0 },
+  } as unknown as AnthropicMessageResponse
+}
+
+/**
+ * B-class pre-commit whole-turn synthesis — streaming (`stream:true`) variant. Mirrors
+ * `recover-refusal.ts`'s `buildSyntheticTextFrames` pattern: a self-contained frame sequence
+ * (`message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` →
+ * `message_delta` → `message_stop`) carrying the same `AskUserQuestion` `tool_use` block as
+ * {@link buildAskUserQuestionResponse}, serialized as a single `input_json_delta` (the whole JSON
+ * string in one delta — no incremental construction needed for a synthetic, already-complete turn).
+ *
+ * Every frame is tagged `tagFrameSynthetic(frame, "error-shaping-auq")` (richest-data-flow §3): this
+ * whole turn is injected, not upstream traffic, and must stay distinguishable on the forwarded track.
+ */
+export function buildAskUserQuestionFrames(
+  decision: Extract<ShapingDecision, { kind: "ask-user-question" }>,
+  ctx: { model: string; reqId: string },
+): Array<ClientFrame> {
+  const input = renderAuqInput(decision.questions, ctx)
+  const messageId = `msg_${crypto.randomUUID().replaceAll("-", "")}`
+  const toolUseId = syntheticToolUseId()
+  const frames: Array<ServerSentEventMessage> = [
+    anthropicSseFrame({
+      type: "message_start",
+      message: {
+        id: messageId,
+        type: "message",
+        role: "assistant",
+        model: ctx.model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    }),
+    anthropicSseFrame({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: {} } }),
+    anthropicSseFrame({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } }),
+    anthropicSseFrame({ type: "content_block_stop", index: 0 }),
+    anthropicSseFrame({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 0 } }),
+    anthropicSseFrame({ type: "message_stop" }),
+  ]
+  return frames.map((frame) => tagFrameSynthetic(frame, "error-shaping-auq"))
 }
