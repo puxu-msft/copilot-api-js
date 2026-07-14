@@ -122,20 +122,62 @@ export function queryEntries(opts?: QueryOptions): Array<HistoryEntry> {
 
 type SummaryRow = Omit<EntryRow, "blob_gz">
 
+/** The summary projection column list (shared by the HOT arm and the archive tier-1 arm). */
+const SUMMARY_COLS = `id, session_id, agent_id, started_at, ended_at, duration_ms,
+        model, endpoint, raw_path, transport, status,
+        input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
+        stop_reason, error_message,
+        message_count, preview_text, response_preview_text, pid, pinned,
+        request_bytes, response_bytes, multiplier`
+
+/**
+ * tier2_manifest projected to the SAME summary shape/order as SUMMARY_COLS, so it
+ * UNION ALLs cleanly with the tier-1 arm. The manifest keys the entry by
+ * `entry_id` (→ `id`) and has no `pid`/`pinned` (sealed cold rows are never
+ * pinned and carry no live pid) → NULL / 0.
+ */
+const MANIFEST_SUMMARY_COLS = `entry_id AS id, session_id, agent_id, started_at, ended_at, duration_ms,
+        model, endpoint, raw_path, transport, status,
+        input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
+        stop_reason, error_message,
+        message_count, preview_text, response_preview_text, NULL AS pid, 0 AS pinned,
+        request_bytes, response_bytes, multiplier`
+
+/**
+ * WHERE for the tier2_manifest arm. Reuses applyWhere for the shared columns but
+ * DROPS the `pid` predicate (manifest has no pid column). A pid filter therefore
+ * excludes ALL sealed rows (`AND 1 = 0`) — correct, since sealed cold entries have
+ * no live pid to match.
+ */
+function applyWhereManifest(opts: QueryOptions | undefined): WhereClause {
+  const base = applyWhere({ ...opts, pid: undefined })
+  if (opts?.pid === undefined) return base
+  return base.sql ? { sql: `${base.sql} AND 1 = 0`, params: base.params } : { sql: "WHERE 1 = 0", params: [] }
+}
+
 export function querySummaries(opts?: QueryOptions): Array<EntrySummary> {
   const db = resolveReadDb(opts?.tier)
   const { sql, params } = applyWhere(opts)
   const limit = opts?.limit ?? 100
+
+  // Archive view = tier-1 (archive.entries_v2) UNION ALL tier-2 (tier2_manifest,
+  // meta-only). Both live in the archive connection; the two tiers never overlap
+  // (a row is in exactly one), so UNION ALL needs no de-dup (spec §2/§4).
+  if (opts?.tier === "archive") {
+    const m = applyWhereManifest(opts)
+    const rows = db
+      .prepare(
+        `SELECT ${SUMMARY_COLS} FROM entries_v2 ${sql}
+         UNION ALL
+         SELECT ${MANIFEST_SUMMARY_COLS} FROM tier2_manifest ${m.sql}
+         ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+      )
+      .all(...params, ...m.params, limit, 0) as Array<SummaryRow>
+    return rows.map((r) => rowToSummary(r))
+  }
+
   const rows = db
-    .prepare(
-      `SELECT id, session_id, agent_id, started_at, ended_at, duration_ms,
-              model, endpoint, raw_path, transport, status,
-              input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
-              stop_reason, error_message,
-              message_count, preview_text, response_preview_text, pid, pinned,
-              request_bytes, response_bytes, multiplier
-         FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
-    )
+    .prepare(`SELECT ${SUMMARY_COLS} FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`)
     .all(...params, limit, 0) as Array<SummaryRow>
   return rows.map((r) => rowToSummary(r))
 }

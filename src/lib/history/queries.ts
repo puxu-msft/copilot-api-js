@@ -23,6 +23,7 @@ import {
   querySummaries,
 } from "./sqlite/read"
 import { formatFromEndpoint } from "./sqlite/search-index-write"
+import { readTier2Entry } from "./sqlite/tier2-seal"
 
 function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   if (opts.sessionId && entry.sessionId !== opts.sessionId) return false
@@ -88,16 +89,16 @@ function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined):
 }
 
 export function getEntry(id: string, tier?: QueryOptions["tier"]): HistoryEntry | undefined {
-  // Archive detail: skip the in-flight map (in-flight is HOT-only) and read the
-  // archive.db copy. Tier-2 sealed lookup (manifest → readSealedEntry) is wired
-  // in Phase 6 — for now an archive-tier miss on archive.entries_v2 returns undefined.
-  if (tier === "archive") return getEntryById(id, "archive")
+  // Archive detail: skip the in-flight map (in-flight is HOT-only). Try tier-1
+  // (archive.entries_v2) first, then fall back to a tier-2 sealed unit via the
+  // manifest locator (spec §3.2). Returns undefined when in neither.
+  if (tier === "archive") return getEntryById(id, "archive") ?? readTier2Entry(id)
   return getInFlight(id) ?? getEntryById(id)
 }
 
 export function getSummary(id: string, tier?: QueryOptions["tier"]): EntrySummary | undefined {
   if (tier === "archive") {
-    const persisted = getEntryById(id, "archive")
+    const persisted = getEntryById(id, "archive") ?? readTier2Entry(id)
     return persisted ? toEntrySummary(persisted) : undefined
   }
   const inflight = getInFlight(id)
