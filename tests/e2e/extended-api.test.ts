@@ -40,7 +40,7 @@ import { createEmbeddings } from "~/lib/openai/embeddings"
 import {
   //
   restoreStateForTests,
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
   snapshotStateForTests,
@@ -97,10 +97,10 @@ describeWithToken("Extended Copilot API Integration", () => {
     }
     setModels(models)
 
-    // Short aliases resolve ONLY via model_overrides now. Map each family to an
+    // Short aliases resolve ONLY via model_mappings now. Map each family to an
     // actually-available model so alias-translation assertions stay meaningful.
     const firstOf = (fam: string): string | undefined => models.data.find((m) => m.id.includes("claude") && m.id.includes(fam))?.id
-    setModelOverrides(
+    setModelMappings(
       Object.fromEntries(
         (["opus", "sonnet", "haiku"] as const)
           .map((fam) => [fam, firstOf(fam)] as const)

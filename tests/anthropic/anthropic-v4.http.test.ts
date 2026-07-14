@@ -37,7 +37,7 @@ import {
 import { observabilityMiddleware } from "~/lib/observability/middleware"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -215,7 +215,7 @@ function injectModels(): void {
       mockModel("msg-only-openai", { vendor: "OpenAI", supported_endpoints: ["/v1/messages"] }),
     ],
   })
-  setModelOverrides({ opus: "claude-opus-4.6" })
+  setModelMappings({ opus: "claude-opus-4.6" })
 }
 
 async function post(body: unknown, target: Hono = app): Promise<Response> {

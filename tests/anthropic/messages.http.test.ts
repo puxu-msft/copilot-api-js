@@ -9,7 +9,7 @@ import {
 
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -228,8 +228,8 @@ describe("POST /v1/messages", () => {
         }),
       ],
     })
-    // Short alias "opus" resolves only via model_overrides now.
-    setModelOverrides({ opus: "claude-opus-4.6" })
+    // Short alias "opus" resolves only via model_mappings now.
+    setModelMappings({ opus: "claude-opus-4.6" })
 
     const res = await app.request("/v1/messages", {
       method: "POST",

@@ -31,7 +31,7 @@ Phase 0（P0 探针，最先）
    │             └─→ Phase 4（反向直接桥，对称）
    │                    └─→ Phase 5（reasoning round-trip 两向）★ 细节 gated on Phase 0
    │                           └─→ Phase 6（server-tool 请求侧透传 + 结果降级）
-   └─→ Phase 7（配置：model_mapping 重命名 + model_translation 两场景）★ 可早做、Phase 5 消费其 features
+   └─→ Phase 7（配置：model_mappings 重命名 + model_translation 两场景）★ 可早做、Phase 5 消费其 features
 ```
 
 **★ gated 说明（诚实排序、非 placeholder）**：Phase 5/6 的 bite-sized TDD 步骤在 **Phase 0 探针落定后、该阶段开工时敲定**——探针 (a) 决定 reasoning `encrypted_content` 取 `added` 还是 `done`、探针 (b) 决定反向是否物理可行。为未验证前提现在写死步骤违背 empirical-verification。本文件对 Phase 5/6 给 deliverable/acceptance/file-map/commit-invariant + 待敲定标记。
@@ -241,31 +241,31 @@ Commit invariant: 提取纯移动、客户端 wire 等价、①类 helper 有独
 
 ---
 
-## Phase 7：配置（model_mapping 重命名 + model_translation 两场景）
+## Phase 7：配置（model_mappings 重命名 + model_translation 两场景）✅ **已完成 2026-07-14**
 
-**Goal:** `model_overrides`（顶层键）→ `model_mapping` 重命名（留旧键 compat 别名）；新增顶层 `model_translation` 段（key=ingress format、value=match `model@format` 规则列表、`features:['strip-thinking-signature']`）驱动两场景。
+**Goal:** `model_overrides`（顶层键）→ `model_mappings` 重命名（留旧键 compat 别名，用户裁决目标拼写为**复数**）；新增顶层 `model_translation` 段（key=ingress format、value=match `model@format` 规则列表、`features:['strip-thinking-signature']`）驱动两场景。
 
 **Files:**
 - Modify: `src/lib/config/schema.ts:982`（字段名）+ `:1059`（`RECORD_MERGE_STRATEGIES` 重绑 per-key）+ 新 `model_translation` 段 schema
-- Modify: `src/lib/config/compat.ts:159`（`CONFIG_MIGRATIONS` 加 `renameLeaf("model_overrides","model_mapping")`）
-- Modify: `src/lib/state.ts`（`modelOverrides`→`modelMapping` 内部字段 + DEFAULT）+ `config.ts` + `src/lib/models/resolver.ts:114` + `normalize-id.ts:16`（注释）+ `src/routes/config/route.ts:191,264`
+- Modify: `src/lib/config/compat.ts:159`（`CONFIG_MIGRATIONS` 加 `renameLeaf("model_overrides","model_mappings")`）
+- Modify: `src/lib/state.ts`（`modelOverrides`→`modelMappings` 内部字段 + DEFAULT）+ `config.ts` + `src/lib/models/resolver.ts:114` + `normalize-id.ts:16`（注释）+ `src/routes/config/route.ts:191,264`
 - Regenerate: `config.schema.json`（`scripts/generate-config-json-schema.ts`）+ `config.example.yaml`
 - doc-sync: `docs/` 下 `model_overrides` 引用（`model-resolution.md` / `anthropic-compat.md` / `DESIGN.md` / `spec/anthropic-via-openai-translation.md`）grep 全仓同步
 - Test: config 加载 + compat 迁移（旧键读时映射）+ model_translation match（路由裁决后 model@format）+ 热重载不杀进程
 
 **Interfaces:**
-- Produces: `state.modelMapping`；`model_translation` 解析后的 per-pair features 查询（挂格式无关的桥选择函数内部、非 per-cell translateOut，避免两路径状态不一致——RFC §6.1）。
+- Produces: `state.modelMappings`；`model_translation` 解析后的 per-pair features 查询（挂格式无关的桥选择函数内部、非 per-cell translateOut，避免两路径状态不一致——RFC §6.1）。
 
-- [ ] **Step 1：写 compat renameLeaf 迁移测试（旧 `model_overrides` → 新 `model_mapping`）**
-- [ ] **Step 2：改 schema 字段名 + RECORD_MERGE_STRATEGIES 重绑 + compat renameLeaf**
-- [ ] **Step 3：改内部字段 modelOverrides→modelMapping（state/config/resolver/route）+ typecheck 绿**
-- [ ] **Step 4：新增 model_translation 段 schema + 解析 + match 语义（精确 model@format）**
-- [ ] **Step 5：重生成 config.schema.json + config.example.yaml + doc-sync grep**
-- [ ] **Step 6：全套件 + 热重载测试 + commit（分：重命名 / model_translation 两 commit）**
+- [x] **Step 1：写 compat renameLeaf 迁移测试（旧 `model_overrides` → 新 `model_mappings`）**
+- [x] **Step 2：改 schema 字段名 + RECORD_MERGE_STRATEGIES 重绑 + compat renameLeaf**
+- [x] **Step 3：改内部字段 modelOverrides→modelMappings（state/config/resolver/route）+ typecheck 绿**
+- [x] **Step 4：新增 model_translation 段 schema + 解析 + match 语义（精确 model@format）**
+- [x] **Step 5：重生成 config.schema.json + config.example.yaml + doc-sync grep**
+- [x] **Step 6：全套件 + 热重载测试 + commit（分：重命名 / model_translation 两 commit）**
 
 Commit invariant: 旧键 compat 别名读时映射（warn-continue、热重载不杀进程）；`model_translation` 默认无 features = 场景 A 完整互填；features 挂格式无关桥选择函数。
 
-（Step 2-4 的 bite-sized 代码在开工时按 schema.ts 实际结构展开——机械可全知，非 gated。）
+**实施笔记（拼写订正）**：实施中发现同伴并发会话已把 bundled `config.yaml` 的字段手动改成**复数 `model_mappings`**（304 行未提交改动）；用户随后明确裁决目标拼写以复数为准，本 Phase 全部代码/测试/doc 引用统一改为 `model_mappings`/`modelMappings`/`DEFAULT_MODEL_MAPPINGS`/`setModelMappings`（RFC §6.2 原文用单数 `model_mapping`，已在 RFC 正文同步订正为复数，见该节标注）。
 
 ---
 

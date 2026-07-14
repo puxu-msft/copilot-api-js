@@ -33,7 +33,7 @@ describe("bundled config.yaml", () => {
 
   test("bundled defaults declare alias model overrides (opus/sonnet/haiku)", async () => {
     const config = await loadBundledDefaultConfig()
-    const overrides = config.model_overrides ?? {}
+    const overrides = config.model_mappings ?? {}
     expect(overrides.opus).toBeDefined()
     expect(overrides.sonnet).toBeDefined()
     expect(overrides.haiku).toBeDefined()

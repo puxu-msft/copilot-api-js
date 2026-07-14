@@ -19,7 +19,7 @@
  *
  * Strictness: top-level and section objects use `.strict()` so any
  * unknown key triggers a validation issue. Free-form `Record<string, T>`
- * fields (model_overrides, effort_overrides, …) are NOT strict —
+ * fields (model_mappings, effort_overrides, …) are NOT strict —
  * their keys are user-defined.
  */
 
@@ -871,7 +871,7 @@ export const TimeoutsConfigSchema = z
  * declare overrides for the keys they want to change. Bundled keys without
  * a user counterpart remain in effect.
  */
-const ModelOverridesSchema = z.record(z.string(), z.string()).superRefine((value, ctx) => {
+const ModelMappingsSchema = z.record(z.string(), z.string()).superRefine((value, ctx) => {
   for (const [k, v] of Object.entries(value)) {
     if (k.trim().length === 0) {
       ctx.addIssue({
@@ -995,8 +995,8 @@ export const ConfigSchema = z
      * switch). See resolveBufferedCaps in state.ts.
      */
     buffered_retry: nullableSection(BufferedRetryOverrideSchema),
-    model_overrides: ModelOverridesSchema.nullable()
-      .transform((v): z.infer<typeof ModelOverridesSchema> | undefined => v ?? undefined)
+    model_mappings: ModelMappingsSchema.nullable()
+      .transform((v): z.infer<typeof ModelMappingsSchema> | undefined => v ?? undefined)
       .optional(),
     disabled_models: nullableNonemptyStringArray(),
     /**
@@ -1054,7 +1054,7 @@ export const ConfigSchema = z
 //
 // All overrides are **business-driven**: the schema alone (record vs object,
 // array vs scalar) cannot distinguish, for example, "user adds one alias on
-// top of bundled" (`model_overrides`) from "user takes full ownership of
+// top of bundled" (`model_mappings`) from "user takes full ownership of
 // this strategy table" (`anthropic.effort_overrides`). We make those
 // choices here as deliberate product decisions, not as type inferences.
 
@@ -1073,7 +1073,7 @@ export type RecordMergeStrategy = "per-key" | "replace"
  */
 export const RECORD_MERGE_STRATEGIES = new WeakMap<z.ZodType, RecordMergeStrategy>()
 
-RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
+RECORD_MERGE_STRATEGIES.set(ModelMappingsSchema, "per-key")
 RECORD_MERGE_STRATEGIES.set(StreamIdleOverridesSchema, "per-key")
 RECORD_MERGE_STRATEGIES.set(ResponseHeaderOverridesSchema, "per-key")
 // effort_overrides / beta_strip_headers / partner_strip_features / tool_strip_fields /

@@ -13,7 +13,7 @@
  * Date suffixes (`-YYYYMMDD`) are intentionally NOT matched: automatic date-suffix
  * stripping was removed so that mapping a dated snapshot name (e.g.
  * `claude-haiku-4-5-20251001`) to a canonical GHC id is an explicit, config-driven
- * `model_overrides` decision rather than hidden logic. A dated name that matches no
+ * `model_mappings` decision rather than hidden logic. A dated name that matches no
  * override passes through untouched (and the upstream then rejects it — the failure
  * is visible instead of being silently remapped).
  */
