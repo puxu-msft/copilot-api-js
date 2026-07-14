@@ -9,7 +9,7 @@
  *   adaptive-thinking-rejection → unsupported-beta → deferred-tool
  *
  * **v4-only additions** — strategies absent from the legacy pipeline
- * (intentional divergence, 14 strategies total):
+ * (intentional divergence, 16 strategies total):
  *   - `server-error-retry` — bounded backoff for upstream 5xx, inserted right
  *     after `network-retry` (before `token-refresh`).
  *   - `tool-field-rejection` — learns unknown custom-tool top-level fields the

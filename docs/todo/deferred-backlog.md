@@ -486,3 +486,17 @@
   - **理想架构（若将来要 enabled 态也保精确 wire type）**：在 error-shaping 层引入 **status 维度**——`decide()`/`canonicalErrorDecision` 携带 `error.status`，`anthropicErrorTypeForApiError` 对 auth_expired 按 401/403 分派 authentication/permission、对 bad_request 按 404 分派 not_found、识别 529→overloaded；或扩充 `ApiErrorType` 增加 `permission_denied`/`not_found`/`overloaded` 细类（连带改 `classify.ts` 的 status 路由 + Phase 1 真值表 + 其单测）。
   - **为何暂缓**：无客户端行为后果（仅文案）、属刻意设计（Phase 1 真值表基于 `ApiErrorType` 非 status）；改动面涉及 classify.ts + 真值表 + 多处单测，收益仅终端渲染文案精度。非阻塞。
   - **若做需改什么**：见「理想架构」——`ApiError` 已带 `status` 字段可直接读；`decide()` 的 canonical 分支按 status 细化 error.type；同步 Phase 1 `error-shaping.unit.test.ts` 真值表断言 + Phase 3 `postcommit-error-shaping` 的 enabled 态断言（403/404/529 期望值）。
+
+## forward.ts↔classify.ts 分类分歧：503 + `code:"rate_limited"` 被 forward.ts 强改 429 wire
+
+- **根因**：`src/lib/error/forward.ts:424` 对「HTTP 503 且 body `error.code==="rate_limited"`」的响应，在 wire envelope 上强制标成 429（rate_limit 语义），而 `src/lib/error/classify.ts` 对同一响应分类为 `upstream_rate_limited`（status 保 503）。两个模块对「503-upstream-ratelimit」的 wire 呈现视角不一致。
+- **当前行为**：`forward.ts` 是 anthropic/openai/gemini 三格式共享的纯 status→envelope 分派、被 6 条非-Anthropic 路由复用，其 503→429 改写是既有行为、非本特性引入。error-shaping 的 pre-commit glue 不改 forward.ts（HIGH-1 铁律），故该分歧原样保留。
+- **为何暂缓**：属既有分歧、`forward.ts` 禁改（改会波及 6 条非-Anthropic 路由的错误形态）；本特性范围内不修。发现于 error-shaping Phase 2 执行 + reviewer 提醒（否则只存 commit body 会丢）。
+- **若做需改什么**：统一 forward.ts 与 classify.ts 对 503-upstream-ratelimit 的 wire 视角——要么 forward.ts 保 503 status（与 classify 对齐），要么 classify 也视作 429；须跨 6 条路由回归（`forward.ts` 三格式 envelope + 各路由 golden）。
+
+## error-shaping 观测：raw-stream 终点（H3/截断）无 `error-shaping-decided` 维度
+
+- **根因**：`shapeRawStreamErrorFrame`（handler-v4 的 H3 + truncation 两个 raw-stream 终点 + translate 反向腿两点）从不调 `decide()`——调用方直传 wire 级 `errorType` 字符串（非 `ApiErrorType`），无类型正确的 `error-shaping-decided` payload 可报（该 FeatureKind 的 payload 含 `decision.kind`/`ApiErrorType`）。
+- **当前行为**：`error-shaping-decided` recordFeature 只在 glue 的 pre/post-commit `decide()` 路径产出（有 ApiError 分类）；raw-stream 透传路径的 canonical 化仍打 `synthetic:"error-shaping-canonical"`（帧级可辨识不丢），只是缺 feature 维度的「走了哪条整形分支」诊断。
+- **为何暂缓**：非数据丢失（synthetic 标记 + upstream/forwarded 双轨 diff 仍可还原）；raw-stream 路径本无 ApiError 分类语义，硬塞 decided 维度需为「纯 wire 透传路径」设计专属 FeatureKind，属观测面扩展独立工作项。发现于 error-shaping 终局 whole-branch review 的观测面接线 fix。
+- **若做需改什么**：为 raw-stream 终点设计专属 FeatureKind 维度（如 `error-shaping-raw-canonical{errorType:wire-string}`）+ 在 `shapeRawStreamErrorFrame` 接线；或让 raw-stream 路径也经一次轻量 classify 复原 ApiErrorType（成本/收益需评估）。
