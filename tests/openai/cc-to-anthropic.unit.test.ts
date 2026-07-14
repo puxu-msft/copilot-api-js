@@ -185,3 +185,27 @@ describe("translateCCResponseToAnthropic — usage", () => {
     expect(response.usage).toEqual({ input_tokens: 0, output_tokens: 0 })
   })
 })
+
+describe("translateCCResponseToAnthropic — synthetic reasoning (thinking) passthrough", () => {
+  const SENTINEL = "copilot-api:synthetic-reasoning:v1"
+
+  test("message.reasoning is prepended as a sentinel-signed thinking block (thinking-first)", () => {
+    const msg = { role: "assistant", content: "the answer", reasoning: "my reasoning" } as unknown as Partial<ResponseMessage>
+    const { response } = translateCCResponseToAnthropic(ccResponse([choice(msg)]))
+    expect(response.content.map((b) => b.type)).toEqual(["thinking", "text"])
+    const thinking = response.content[0] as { type: "thinking"; thinking: string; signature: string }
+    expect(thinking).toMatchObject({ type: "thinking", thinking: "my reasoning", signature: SENTINEL })
+    expect((response.content[1] as { type: "text"; text: string }).text).toBe("the answer")
+  })
+
+  test("reasoning_content (alt spelling) is also forwarded", () => {
+    const msg = { role: "assistant", content: "x", reasoning_content: "alt" } as unknown as Partial<ResponseMessage>
+    const { response } = translateCCResponseToAnthropic(ccResponse([choice(msg)]))
+    expect(response.content[0]).toMatchObject({ type: "thinking", thinking: "alt", signature: SENTINEL })
+  })
+
+  test("no reasoning → no thinking block (typical non-streaming cc leg)", () => {
+    const { response } = translateCCResponseToAnthropic(ccResponse([choice({ content: "plain" })]))
+    expect(response.content.every((b) => b.type !== "thinking")).toBe(true)
+  })
+})
