@@ -107,6 +107,11 @@ import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
+  createUpstreamFrameDiagnostics,
+  logUpstreamStreamError,
+} from "~/lib/upstream-stream-diagnostics"
+import {
+  //
   mapInputDetails,
   mapOutputDetails,
   nonNegOrUndef,
@@ -389,6 +394,12 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   let bytesIn = 0
   let eventsIn = 0
 
+  // Upstream-frame diagnostics (disconnect-log blind-spot fix): observe the RAW upstream frames so a
+  // stream-error emits real frames/bytes/last-frame to `[upstream-diagnostics]` (this leg previously emitted
+  // none). `let` so `onAttemptReset` rebinds a fresh collector per buffered attempt (last-failing-attempt frames).
+  let diag = createUpstreamFrameDiagnostics(streamStartMs)
+  const onUpstreamFrame = (frame: UpstreamFrame): void => diag.observe(frame as ServerSentEventMessage)
+
   // L2 buffered-retry routing + the forced client keepalive cadence (P3 Task 3). `buffered`
   // selects the driver's shared `runResponseBufferedSink` — CC being its third consumer (driver
   // signatures unchanged, all via opts). `heartbeatSec` is FORCED in buffered mode (the buffered
@@ -444,6 +455,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
         onRenderedFrame,
+        onUpstreamFrame,
         // Block-commit boundary (terminal-only degenerate case, P3 §3.1): CC has no mid-stream
         // block structure, so `ccCommitBoundaries` only recognizes an in-band upstream `error`
         // frame as a frame-level boundary — every content delta returns false. The real terminal
@@ -474,9 +486,10 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
           acc = createOpenAIStreamAccumulator()
           bytesIn = 0
           eventsIn = 0
+          diag = createUpstreamFrameDiagnostics(streamStartMs)
         },
       })
-    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame })
+    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame, onUpstreamFrame })
 
   if (outcome.kind === "settled-abort") {
     // Client disconnected mid-stream — write ZERO further bytes (B0-d). Record what was
@@ -504,6 +517,12 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     // ctx.fail() freeze inboundResponse — a post-fail snapshot would miss the client-received frame.
     const error = outcome.error
     consola.error("[ChatCompletions:v4] Stream error:", error)
+    logUpstreamStreamError(error, {
+      model: acc.model || model,
+      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {
@@ -641,8 +660,12 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
 
   // OUTBOUND-leg (raw upstream Anthropic) accumulator — feeds `outboundResponse` the honest upstream shape.
   const anthropicAcc = createAnthropicStreamAccumulator()
+  const streamStartMs = Date.now()
+  // Raw-frame diagnostics: this reverse leg also emits the disconnect diagnostic on a stream-error.
+  const diag = createUpstreamFrameDiagnostics(streamStartMs)
   const onUpstreamFrame = (frame: UpstreamFrame): void => {
     const raw = frame as ServerSentEventMessage
+    diag.observe(raw)
     if (!raw.data || raw.data === "[DONE]") return
     try {
       accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, anthropicAcc)
@@ -653,7 +676,6 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   }
 
   const forwardedSseEvents: Array<SseEventRecord> = []
-  const streamStartMs = Date.now()
   let bytesIn = 0
   let eventsIn = 0
   const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs })
@@ -684,6 +706,12 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     // snapshots → fail freezes inboundResponse).
     const error = outcome.error
     consola.error("[ChatCompletions:v4:reverse] Stream error:", error)
+    logUpstreamStreamError(error, {
+      model: anthropicAcc.model || model,
+      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: anthropicAcc.inputTokens, outputTokens: anthropicAcc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))

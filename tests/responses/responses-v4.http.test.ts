@@ -20,8 +20,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import type {
   //
@@ -238,13 +240,27 @@ describe("Responses v4 driver path", () => {
     )
     applyFetchMock(errMock)
 
-    const text = await (
-      await app.request("/responses", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "gpt-resp", input: "hi", stream: true }),
-      })
-    ).text()
+    // The disconnect diagnostic must fire on the Responses DIRECT leg too (previously only messages
+    // emitted it) and carry REAL signals — one `response.created` frame arrived before the throw.
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let text: string
+    try {
+      text = await (
+        await app.request("/responses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "gpt-resp", input: "hi", stream: true }),
+        })
+      ).text()
+    } finally {
+      const line = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(line).toBeDefined()
+      expect(line).toContain("model=gpt-resp")
+      expect(line).not.toContain("frames=0")
+      expect(line).not.toContain("last-frame=none@0ms")
+      expect(line).toContain("last-frame=response.created@")
+    }
 
     expect(text).toContain("response.created")
     expect(text).toContain("event: error")

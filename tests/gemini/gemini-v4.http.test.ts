@@ -17,8 +17,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
@@ -265,7 +267,20 @@ describe("Gemini v4 driver path", () => {
     const body = { contents: [{ role: "user", parts: [{ text: "hi" }] }] }
 
     errorMidStream = true
-    const v4Text = await (await post("gpt-4o:streamGenerateContent", body)).text()
+    // The Gemini direct leg must ALSO emit the disconnect diagnostic with REAL signals (it previously
+    // emitted none — the blind spot this systematization closes across every non-native-Anthropic pump).
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let v4Text: string
+    try {
+      v4Text = await (await post("gpt-4o:streamGenerateContent", body)).text()
+    } finally {
+      const line = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(line).toBeDefined()
+      expect(line).toContain("model=gpt-4o")
+      expect(line).not.toContain("frames=0")
+      expect(line).toContain("last-frame=chat.completion.chunk@")
+    }
 
     expect(v4Text).toContain("upstream blew up")
     expect(v4Text).toContain("INTERNAL")

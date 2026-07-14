@@ -89,6 +89,11 @@ import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
+  createUpstreamFrameDiagnostics,
+  logUpstreamStreamError,
+} from "~/lib/upstream-stream-diagnostics"
+import {
+  //
   mapInputDetails,
   mapOutputDetails,
   nonNegOrUndef,
@@ -330,6 +335,12 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
 
+  // Upstream-frame diagnostics (disconnect-log blind-spot fix): observe the RAW upstream frames so a
+  // stream-error emits real frames/bytes/last-frame to `[upstream-diagnostics]` (this leg previously
+  // emitted none — the same blind spot as the messages/responses/cc pumps).
+  const diag = createUpstreamFrameDiagnostics(streamStartMs)
+  const onUpstreamFrame = (frame: UpstreamFrame): void => diag.observe(frame as ServerSentEventMessage)
+
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
@@ -338,7 +349,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
   // The driver drives codec.renderResponse (CC→Gemini per-frame) + writes the Gemini frames to the sink.
-  const outcome = await driver.runResponseSink(upstream, env, sink)
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -352,6 +363,12 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     const error = outcome.error
     const meta = codec.getStreamMeta()
     consola.error("[gemini:v4] Stream error:", error)
+    logUpstreamStreamError(error, {
+      model,
+      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: geminiUsageFromMeta(meta).input_tokens, outputTokens: geminiUsageFromMeta(meta).output_tokens },
+      sseEvents: diag.sseEvents,
+    })
     // Gemini-shape data-only error frame (SDK clients parse every data: frame). Recorded into the
     // forwarded track (the client receives it) via writeSynthetic → recordForwarded → fail (ordering
     // is load-bearing: ctx.fail freezes inboundResponse, so a post-fail snapshot would miss the frame).
@@ -530,8 +547,11 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
   const streamStartMs = Date.now()
 
   const anthropicAcc = createAnthropicStreamAccumulator()
+  // Raw-frame diagnostics: this reverse leg also emits the disconnect diagnostic on a stream-error.
+  const diag = createUpstreamFrameDiagnostics(streamStartMs)
   const onUpstreamFrame = (frame: UpstreamFrame): void => {
     const raw = frame as ServerSentEventMessage
+    diag.observe(raw)
     if (!raw.data || raw.data === "[DONE]") return
     try {
       accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, anthropicAcc)
@@ -555,6 +575,12 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
   if (outcome.kind === "stream-error") {
     const error = outcome.error
     consola.error("[gemini:v4:reverse] Stream error:", error)
+    logUpstreamStreamError(error, {
+      model: anthropicAcc.model || model,
+      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: anthropicAcc.inputTokens, outputTokens: anthropicAcc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     const message = error instanceof Error ? error.message : String(error)
     const errorKind = classifyStreamError(error)
     await sink

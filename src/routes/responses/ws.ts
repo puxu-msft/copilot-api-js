@@ -9,6 +9,7 @@
  * WebSocket message → extract payload → pipeline → SSE events → WS JSON frames.
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Hono } from "hono"
 import type {
   //
@@ -23,6 +24,7 @@ import type {
   //
   ClientFrame,
   DriverRequestResult,
+  UpstreamFrame,
 } from "~/lib/pipeline/types"
 import type {
   //
@@ -64,6 +66,11 @@ import {
 } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
+import {
+  //
+  createUpstreamFrameDiagnostics,
+  logUpstreamStreamError,
+} from "~/lib/upstream-stream-diagnostics"
 
 import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
 
@@ -299,6 +306,12 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const streamStartMs = Date.now()
   let eventsReceived = 0
 
+  // Upstream-frame diagnostics (disconnect-log blind-spot fix): the WS leg also emits the disconnect
+  // diagnostic on a stream-error now, so observe the RAW upstream frames for real frames/bytes/last-frame.
+  // `let` so `onAttemptReset` rebinds a fresh collector per buffered attempt (last-failing-attempt frames).
+  let diag = createUpstreamFrameDiagnostics(streamStartMs)
+  const onUpstreamFrame = (frame: UpstreamFrame): void => diag.observe(frame as ServerSentEventMessage)
+
   // The driver-owned WS sink: ws.send write-out + forwarded sampling + a forward-idle keepalive
   // (Phase 2 Task 2.2 / R3.5). EMPIRICAL DECISION — app-layer frame, NOT protocol ping:
   //   - Bun.serve DOES auto-send protocol pings (`websocket.sendPings` defaults true) and keeps its
@@ -388,6 +401,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
         onRenderedFrame: restoreAccumulateCount,
+        onUpstreamFrame,
         stopAfterFrame: isTerminal,
         // commitBoundaries intentionally OMITTED — see the comment above. Terminal-only: the driver's
         // own `sawMessageStop` gate below is the ONLY commit trigger.
@@ -417,9 +431,10 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
         onAttemptReset: () => {
           acc = createResponsesStreamAccumulator()
           eventsReceived = 0
+          diag = createUpstreamFrameDiagnostics(streamStartMs)
         },
       })
-    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, stopAfterFrame: isTerminal })
+    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, onUpstreamFrame, stopAfterFrame: isTerminal })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -437,6 +452,12 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     const error = outcome.error
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
+    logUpstreamStreamError(error, {
+      model: acc.model || resolvedModel,
+      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), { events: forwardedSseEvents, streamStartMs })
     recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, error, {

@@ -111,6 +111,11 @@ import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 import {
   //
+  createUpstreamFrameDiagnostics,
+  logUpstreamStreamError,
+} from "~/lib/upstream-stream-diagnostics"
+import {
+  //
   mapInputDetails,
   mapOutputDetails,
   nonNegOrUndef,
@@ -336,6 +341,13 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   let bytesIn = 0
   let eventsIn = 0
 
+  // Upstream-frame diagnostics (the disconnect-log blind-spot fix): observe the RAW upstream frames so a
+  // stream-error surfaces real frames/bytes/last-frame to `[upstream-diagnostics]` instead of nothing (this
+  // leg previously emitted no disconnect diagnostic at all). `let` so `onAttemptReset` rebinds a fresh
+  // collector per buffered attempt — the final error log then reflects the LAST (failing) attempt's frames.
+  let diag = createUpstreamFrameDiagnostics(streamStartMs)
+  const onUpstreamFrame = (frame: UpstreamFrame): void => diag.observe(frame as ServerSentEventMessage)
+
   // L2 buffered-retry routing + the forced client keepalive cadence (Task 3.2). `buffered`
   // (opt-in `responsesBufferedRetry`) selects the driver's `runResponseBufferedSink` — the SAME
   // shared primitive the Anthropic pump uses (messages/handler-v4.ts:1050), Responses being its
@@ -421,6 +433,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
         onRenderedFrame, // restore + accumulate (the buffered drain invokes it per frame)
+        onUpstreamFrame, // raw-frame diagnostics (disconnect-log signals)
         anchor: undefined, // the empty-text keepalive anchor is Anthropic-only → every driver anchor branch is inert
         // Block-level commit boundary (P2 Task 2, spec §3.1): flush at each output item's
         // `response.output_item.done` (+ the three lifecycle terminals + the in-band upstream `error`
@@ -439,6 +452,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
           acc = createResponsesStreamAccumulator()
           bytesIn = 0
           eventsIn = 0
+          diag = createUpstreamFrameDiagnostics(streamStartMs)
         },
         retryCap: resolveBufferedCaps("responses").maxRetries,
         bufferCapBytes: resolveBufferedCaps("responses").bufferCapBytes,
@@ -462,7 +476,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
           consola.debug(`[protect-stream:responses] ${o} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
         },
       })
-    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame })
+    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame, onUpstreamFrame })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -487,6 +501,12 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     // snapshots it, and only then does ctx.fail() freeze inboundResponse (a post-fail snapshot misses it).
     const error = outcome.error
     consola.error("[Responses:v4] Stream error:", error)
+    logUpstreamStreamError(error, {
+      model: acc.model || model,
+      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {
@@ -640,8 +660,13 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   const mapper = env.ctx.toolNameMapper
 
   const anthropicAcc = createAnthropicStreamAccumulator()
+  const streamStartMs = Date.now()
+  // Raw-frame diagnostics: this reverse leg (Anthropic upstream → Responses client) also emits the
+  // disconnect diagnostic on a stream-error, so observe every raw upstream frame for real signals.
+  const diag = createUpstreamFrameDiagnostics(streamStartMs)
   const onUpstreamFrame = (frame: UpstreamFrame): void => {
     const raw = frame as ServerSentEventMessage
+    diag.observe(raw)
     if (!raw.data || raw.data === "[DONE]") return
     try {
       accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, anthropicAcc)
@@ -651,7 +676,6 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   }
 
   const forwardedSseEvents: Array<SseEventRecord> = []
-  const streamStartMs = Date.now()
   let bytesIn = 0
   let eventsIn = 0
   const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs })
@@ -689,6 +713,12 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   if (outcome.kind === "stream-error") {
     const error = outcome.error
     consola.error("[Responses:v4:reverse] Stream error:", error)
+    logUpstreamStreamError(error, {
+      model: anthropicAcc.model || model,
+      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: anthropicAcc.inputTokens, outputTokens: anthropicAcc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
