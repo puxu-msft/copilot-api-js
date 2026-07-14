@@ -1,5 +1,11 @@
 # Kick-off — 上游传输 config 三轴重组（transport-config-reorg）
 
+> **⚠️ config.yaml 合并契约（2026-07-14，P1 暂不合入期间用户并发重构了主树 config.yaml）**：P1 的 config.yaml 改动（Task 8）基于**旧版散文**重写，而用户在主树对 config.yaml 做了**正交的散文/布局重构**（未提交 live 编辑）：加「配置生效优先级」前言、"Proxy / 代理"节改名"Upstream (GHC API) / 上游"、给每个旋钮加实验标记 + 优先级列表、并留下 `# TODO: rename upstream_keepalive as upstream_tcp_keepalive`。二者是**正交两层**（用户改散文、P1 改键结构），合并 P1 时**绝不能用 P1 的旧散文覆盖用户的新布局**。正确做法 = 把 P1 的**键结构语义增量**叠加到用户的新散文上：
+> - `timeouts.upstream_keepalive`（用户 TODO 想改名的键）→ 迁为 `upstream_transport.tcp_keepalive_probe_delay`（P1 已实现该 TODO，命名比用户设想的 `upstream_tcp_keepalive` 更精确、区分了「首探针延迟」而非布尔）——**命名待用户最终确认**（P1 默认 `tcp_keepalive_probe_delay`；若用户坚持 `upstream_tcp_keepalive` 则改 schema+compat 三处）。
+> - `timeouts.upstream_h2_ping` → `upstream_transport.http2.ping_interval`；`openai_responses.{client_ws_keep_open,max_ws_frame_bytes,max_upstream_ws_connections}` → `server.responses_ws.{keep_open,max_frame_bytes,soft_max_connections}` + `upstream_transport.websocket.*`；新增 `upstream_transport.http2.session_connect_timeout` / `websocket.pooled_connection_idle_timeout`。
+> - 用户主树里 `stale_request_max_age` 旁的 `# TODO: rename stale_request_max_age as upstream_request_deadline` **不在本特性范围**（P1 未动该键）——记录供未来另立任务，别顺手改。
+> - 合并操作建议：P1 rebase 到含用户 config.yaml 提交的 master 后，config.yaml 大概率冲突，**手动 resolve = 保留用户全部新散文 + 按上表把旧键行替换为新键行**，而非 `-X ours/theirs` 机械取一边。
+
 > **本轮执行范围（D，2026-07-14 主会话裁决）**：本轮只执行 **P1**（config schema 三轴重组），**P2/P3/P4/P5 暂缓**，不在本轮派发执行 kick-off。原因：P1 是全部下游阶段的唯一前置依赖（见下方 DAG），本轮的重点是先把 P1 的 config schema/state/兼容迁移这一层落地并跑通全量回归，P2 起的连接层真实接线、PUT 迁移、热重载 reconcile、status/diagnostics 接入待 P1 落地并复核后再排期，避免多阶段并行执行时互相踩踏同一批"跨阶段共享接口清单"里尚未定案的签名（本文档「待主会话裁决」小节列出的分叉，多数已在 P1 尚未开工前通过 review+用户裁决收敛，但收敛结果需要先在 P1 真实代码上验证一遍再放行下游）。P2-P5 的 kick-off 提示词仍然完整保留在下方，供 P1 完成并经复核后按序派发，不需要届时重写。
 
 本文档是 `docs/plan/2026-07-14-transport-config-reorg/` 计划集的执行入口：汇总各阶段的**可直接复制的开启提示词**，以及全部 5 份 plan 文档在撰写过程中沉淀下来的、**需要主会话裁决**的分叉与待办清单（不含各 plan 正文里已经自行判定、无需上呈的普通设计取舍——那些留在各自的 Self-Review 小节，这里只收敛真正需要主会话拍板的条目）。
