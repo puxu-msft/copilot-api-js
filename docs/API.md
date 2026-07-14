@@ -85,7 +85,7 @@
 | `/api/event_logging/batch` | POST | Anthropic 事件日志 beacon（静默消费） |
 | `/api/hooks` | GET / POST | 上游 hook 中间件管理：`GET` 返回常驻生效态（`declaredModule`/`loadedModule`/`loadedAt`/`version`/`exports`/`lastReloadError?`，与 `/api/config` 的声明态脱钩对账）；`POST /reload` 用 data-URL 机制重新加载 `hooksUpstreamModule`（`hooks.enabled`/`hooks.upstream_module` config），失败保留旧 hook + warn-continue + 记 `lastReloadError`，绝不杀进程。见 [spec/2026-07-12-upstream-hook-middleware.md](spec/2026-07-12-upstream-hook-middleware.md) §6 |
 | `/api/debug/dry-run-truncate` | POST | 离线 dry-run：复用真实 tokenize+truncate 函数（短路发 GHC），并排返回三套 token 口径（gpt-tokenizer / char÷4 / 上游报告值）+ pre-check + 截断结果。输入为内联 payload 或已存 history entry（`entryId`） |
-| `/api/debug/dry-run-pipeline` | POST | 离线 pipeline dry-run（**全格式 anthropic/openai-cc/openai-responses/openai-gemini，请求侧 + 响应侧**）：把合成/回放的请求或上游响应喂进真实 v4 driver，短路 GHC，按 `stopAfter` 输出选定阶段中间态。详见 [archive/2606-landed-rfcs/pipeline-dry-run-inspector.md](archive/2606-landed-rfcs/pipeline-dry-run-inspector.md) |
+| `/api/debug/dry-run-pipeline` | POST | 离线 pipeline dry-run（**全格式 anthropic/openai-cc/openai-responses/gemini，请求侧 + 响应侧**）：把合成/回放的请求或上游响应喂进真实 v4 driver，短路 GHC，按 `stopAfter` 输出选定阶段中间态。详见 [archive/2606-landed-rfcs/pipeline-dry-run-inspector.md](archive/2606-landed-rfcs/pipeline-dry-run-inspector.md) |
 
 ---
 

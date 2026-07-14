@@ -94,7 +94,8 @@ export function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps
   }
 
   // passthrough 剥掉 GHC 未支持的 cache_control 子字段（如 scope）——记 live TUI/WS 看板（cc-strip:<fields>）。
-  // 持久化（pipelineInfo.cacheControlStripped）经返回值上抛给闭包 prepareWire → getLatestStrippedCacheControlSubfields（spec §8 双通道）。
+  // 持久化（pipelineInfo.cacheControlStripped）经返回值 `strippedCacheControlSubfields` 上抛 → anthropic-cell
+  // 的 sampleWireTrack 写 `ctx.setAttemptCacheControlStripped` → handler 读 `ctx.currentAttempt.cacheControlStripped`（spec §8 双通道）。
   if (prepared.strippedCacheControlSubfields?.length) {
     deps.requestContext?.recordFeature("cache-control-stripped", { fields: prepared.strippedCacheControlSubfields })
   }
