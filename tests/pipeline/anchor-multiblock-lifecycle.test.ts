@@ -51,9 +51,11 @@ import {
   anchorStartFrame,
   anchorStopFrame,
   makeSyntheticAnchorInjector,
+  makeSyntheticEnvelopeInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
 } from "~/lib/anthropic/keepalive-anchor"
+import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { anthropicCommitBoundaries } from "~/lib/codec/anthropic/commit-boundaries"
 import { createRequestContext } from "~/lib/context/request"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
@@ -219,6 +221,55 @@ function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
     return did
   }
   const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor } })
+  sinkHolder.current = sink
+  return { sink, anchor, anchorState, lastInjectResult: () => lastInjectResult }
+}
+
+/**
+ * `enveloped_ping` sibling of {@link buildAnchoredSink}: the ENVELOPE-ONLY injector
+ * ({@link makeSyntheticEnvelopeInjector}) + the fixed bare-ping keepalive frame
+ * (`resolveAnthropicKeepalive("enveloped_ping")`) instead of the block-aware provider. This mode's
+ * injector never opens a synthetic anchor block (`anchorBlockOpen` stays false — see
+ * keepalive-anchor.ts docstring), so the `everOpenedRealBlock` guard is exercised for its OTHER
+ * purpose here: preventing a duplicate `message_start` / colliding `content_block_start@0` re-fire
+ * once a real block has already opened+closed, independent of which injector is wired.
+ */
+function buildEnvelopedPingSink(stream: Parameters<typeof makeSseSink>[0]): {
+  sink: ClientSink
+  anchor: AnchorHooks
+  anchorState: AnchorState
+  lastInjectResult: () => boolean | undefined
+} {
+  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const anchor: AnchorHooks = {
+    isMessageStart: (fr) => {
+      try {
+        return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
+      } catch {
+        return false
+      }
+    },
+    startFrame: anchorStartFrame(),
+    stopFrame: anchorStopFrame(),
+    deltaFrame: anchorDeltaFrame(),
+    syntheticMessageStart: syntheticMessageStartFrame,
+    remap: remapAnthropicBlockIndex,
+  }
+  const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
+  let lastInjectResult: boolean | undefined
+  const realInjector = makeSyntheticEnvelopeInjector({
+    anchor,
+    state: anchorState,
+    getSink: () => sinkHolder.current,
+    resolvedName: "claude-test",
+    reqId: "test",
+  })
+  const injectAnchor = async (): Promise<boolean> => {
+    const did = await realInjector()
+    lastInjectResult = did
+    return did
+  }
+  const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: resolveAnthropicKeepalive("enveloped_ping"), injectAnchor } })
   sinkHolder.current = sink
   return { sink, anchor, anchorState, lastInjectResult: () => lastInjectResult }
 }
@@ -459,6 +510,96 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     expect(start0s).toHaveLength(1) // the ONE real text block — never a colliding synthetic anchor@0
     expect((JSON.parse(start0s[0].data) as { content_block: { type: string } }).content_block.type).toBe("text")
     void anchorState
+    sink.close?.()
+  })
+
+  // NOTE (found while writing this golden, 2026-07-14): this is `test.failing`, NOT a passing assertion.
+  // The capstone review that requested this coverage assumed the `everOpenedRealBlock` guard (added for
+  // defect (a)) ALSO protects `enveloped_ping` against a duplicate `message_start` re-injection — reasoning
+  // it's "safe but untested" because `enveloped_ping` never opens an anchor block (no index collision is
+  // possible). Writing the golden falsified that assumption: `everOpenedRealBlock` is only ever set inside
+  // `noteBlockState` (client-sink.ts), which is gated on `trackOpenBlock = heartbeatOn && typeof
+  // heartbeat.pingFrame === "function"`. `enveloped_ping`'s keepalive frame (`resolveAnthropicKeepalive
+  // ("enveloped_ping")`, keepalive-frame.ts) is a FIXED object, not a function/provider — so `trackOpenBlock`
+  // is FALSE for this mode, `noteBlockState` never runs, and `everOpenedRealBlock` never flips true no matter
+  // how many real blocks stream through. The guard's `!everOpenedRealBlock` term is therefore permanently
+  // vacuous (always true) for `enveloped_ping`, so the SAME re-injection bug defect (a) fixed for `empty_text`
+  // is UNFIXED here: a fast first block (real message_start forwarded, block opens+closes before any idle
+  // tick) followed by an inter-block idle DOES re-fire `injectAnchor()`, which re-forwards the real captured
+  // `message_start` a second time onto the wire — a genuine protocol-incomplete duplicate, not merely a
+  // theoretical risk. This is a REAL, previously-undocumented production defect (corrects the deferred-backlog
+  // claim at "keepalive anchor 注入器可在真实块之间二次触发" ④, which asserted `enveloped_ping` was already
+  // covered by the same guard — see docs/todo/deferred-backlog.md, corrected alongside this test). Recorded
+  // as `test.failing` so the suite stays green while the gap stays visible: this test PASSES today because the
+  // body throws (the bug reproduces), and will start FAILING (alerting whoever fixes the guard) once
+  // `enveloped_ping` is made to participate in `trackOpenBlock`/`everOpenedRealBlock` — at which point this
+  // should be flipped back to a normal `test(...)`.
+  test.failing("(a′) enveloped_ping — fast first block then inter-block idle: NO duplicate message_start, NO second content_block_start@0 (re-injection guarded)", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+
+    // No pre-content stall → the envelope is NEVER injected. A real block opens/closes FAST (at its own index
+    // 0), then a LATER inter-block idle must NOT re-trigger injectAnchor (which would forward a 2nd
+    // message_start). segment boundaries: block@0 fast, then STALL, then terminal.
+    const { stream: up, releases } = makeGatedUpstream([
+      [
+        f("message_start", { message: { id: "msg_fast_ep" } }),
+        f("content_block_start", { index: 0, content_block: { type: "text" } }),
+        f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hi" } }),
+        f("content_block_stop", { index: 0 }),
+      ],
+      [f("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }), f("message_stop")],
+    ])
+
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const { sink, anchor, anchorState, lastInjectResult } = buildEnvelopedPingSink(sseStream)
+    const tracker = makeStopTracker()
+
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, {
+      ...tracker,
+      anchor,
+      anchorState,
+      commitBoundaries: anthropicCommitBoundaries,
+      retryCap: 0,
+    } as RunBufferedOpts)
+
+    // Drain segment 0 → message_start captured, block@0 commits FAST at its content_block_stop (no stall → no
+    // injection). Park on the inter-block gate.
+    await drain(40)
+    await flush()
+    expect(lastInjectResult()).toBeUndefined() // the envelope never fired (no pre-content stall)
+    expect(anchorState.anchorBlockOpen).toBe(false) // enveloped_ping never opens a block — no index to collide on
+
+    // INTER-BLOCK IDLE: fire an interval. The re-injection guard must hold — a bare ping, no synthetic prelude
+    // (mirrors test (a)'s deliberate scenario-B assertion: enveloped_ping's honest fallback is a bare ping,
+    // NEVER a text_delta — this mode's own keepalive frame is the fixed ANTHROPIC_PING, not the block-aware
+    // provider, so there is no text_delta to assert even when a block IS open elsewhere).
+    const beforeGap = written.length
+    await clock.advance(15_000)
+    await flush()
+    const gap = written.slice(beforeGap)
+    expect(gap).toHaveLength(1) // exactly one keepalive frame from the idle tick
+    expect(gap[0].event).toBe("ping")
+    // CRITICALLY: the idle tick did NOT re-inject — no synthetic message_start, no second content_block_start@0.
+    expect(gap.some((w) => parse(w).type === "message_start")).toBe(false)
+    expect(gap.some((w) => parse(w).type === "content_block_start")).toBe(false)
+
+    releases[0]()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("complete")
+
+    // Whole-wire structural oracle: exactly one message_start (the real one), exactly one content_block_start@0
+    // (the real block — enveloped_ping never remaps, so it stays at its ORIGINAL index 0, unlike empty_text's
+    // +1 shift in test (a)).
+    expect(written.filter((w) => parse(w).type === "message_start")).toHaveLength(1)
+    const start0s = written.filter((w) => {
+      const p = parse(w)
+      return p.type === "content_block_start" && p.index === 0
+    })
+    expect(start0s).toHaveLength(1) // the ONE real text block — never a colliding synthetic re-injection
+    expect((JSON.parse(start0s[0].data) as { content_block: { type: string } }).content_block.type).toBe("text")
+    expect(anchorState.anchorClosed).toBe(false) // no anchor block was ever opened — nothing to close off
     sink.close?.()
   })
 })
