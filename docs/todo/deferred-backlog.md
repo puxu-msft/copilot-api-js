@@ -680,6 +680,8 @@
 
 ## reasoning 透传：low-effort 无 summary 时 encrypted reasoning 跨轮丢失（LOW，2026-07-14 记）
 
+> ⚠️ **架构注记（2026-07-14）**：本条描述的 reasoning 透传实现走 **CC 中转 side-channel accommodation**，被 (anthropic↔responses) **直连映射**取代中（见 [anthropic-responses-direct-mapping-handoff.md](anthropic-responses-direct-mapping-handoff.md)）。直连落地后本条应在直连路径重新评估（`encrypted_content` 的承载与回传由直连 A 响应侧处理，见 handoff §13 单向展示定性）——不要在 CC 旁路上继续填坑。
+
 - **根因 / 现状**：reasoning 透传（landed 2026-07-14）在 GHC 返回**空 summary**时（实测：low effort 即使请求 `summary:"auto"` 也可能无 summary，见 exp/synthetic-reasoning-summary-shape）不产 thinking 块——graceful 缺席正确。但此时 reasoning item 的 `encrypted_content` 非空却**无处承载**（没有 thinking 块可挂 signature），故该轮的 encrypted reasoning 不进跨轮 round-trip。
 - **当前行为**：无 summary → 客户端不显示 reasoning（合理）、encrypted_content 被丢（次优）。有 summary → 全链路正常（thinking 块 + encrypted 封进 signature 往返）。
 - **理想架构 / 若做需改什么**：若要「即使无 summary 也保 encrypted 跨轮」，可在无 summary 但有 encrypted 时产一个**空文本 thinking 块**只承载 signature 载荷——但需先探针确认 @anthropic-ai/sdk 接受空 thinking 文本 + 非空 signature 的块（probe ① 只证了非空文本），且 Anthropic 协议是否允许空 thinking。或改用独立 sidecar 存 encrypted（不走 thinking 块）。

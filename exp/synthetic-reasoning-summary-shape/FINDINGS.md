@@ -1,5 +1,7 @@
 # FINDINGS — GHC reasoning summary event shape (with reasoning.summary:"auto")
 
+> ⚠️ **架构注记（2026-07-14）**：下述**探针事实（GHC 事件形状）仍有效**，但「Bridge contract」节描述的实现走 **CC 中转 side-channel accommodation**，被 (anthropic↔responses) **直连映射**取代中（见 `docs/todo/anthropic-responses-direct-mapping-handoff.md`）。直连落地后事件→客户端的桥接改由直连 translator 承担；此处 CC 桥接契约仅记过渡态。探针的 GHC 上游事件形状是与架构无关的实测事实，直连实现同样以它为契约。
+
 **Probe question**: after requesting `reasoning: { effort, summary: "auto" }` on the Responses hop, what
 reasoning-summary SSE events does real GHC gpt-5.x emit, and where is `encrypted_content`? (Authoritative
 contract for the `responses-to-cc-stream.ts` bridge — the type defs already misled once.)
