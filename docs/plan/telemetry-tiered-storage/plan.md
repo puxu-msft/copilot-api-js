@@ -1,6 +1,7 @@
 # Telemetry Tiered-Storage Implementation Plan
 
-> **实施状态（2026-07-13）**：worktree `.worktrees/telemetry-storage/` @ `feat/telemetry-tiered-storage`。**P0 ✅**（sketch）、**P1 ✅**（schema+dictionary+paths）、**P2 ✅**（config 5 触点全接线）、**P3 T3.1 ✅**（store 写原语 `upsertSettledTier/upsertCumulative/upsertAccepted` 加性 UPSERT `7c10ce35`）。全 telemetry+config 套件绿（12 提交）。**P3 待做：sketch blob merge（cumulative read-merge-write）、T3.3 加性双写接线（request-telemetry.ts flush→SQLite，保内存路径不动、读 P5 才翻转——这是最需干净上下文的深集成，触 live persist）、T3.4 cap 重启重建**。然后 P4-P7。用 [prompts/kickoff.md](prompts/kickoff.md) 续。GPT 异模型 review infra-blocked（已自扮补位）。
+> **实施状态（2026-07-14，全部完成）**：worktree `.worktrees/telemetry-storage/` @ `feat/telemetry-tiered-storage`。**P0-P7 全 landed + 全 per-task review Approved + 全分支合并态评审通过（fix 后）**。P0 sketch ✅ / P1 schema+dict+paths ✅ / P2 config 5 触点 ✅ / P3 写路径（Task 1 sketch blob 原语 + Task 3 加性双写 2 轮 fix + Task 4 cap 重建）✅ / P4 rollup ✅ / P5 SQLite 读路径纯附加 ✅ / P6 backfill（2 轮 fix）✅ / P7 单轨收敛 ✅。**两用户决策重构了 P5-P7 形状**：① 读源方案 2「dimBuckets 存活作 live cache」（现有端点读内存、byte-compat 平凡、P5 纯附加）② P7 单轨 + 不保护旧 UI（7d histograms 退役、翻转重建源、删 JSON 写）。全 telemetry 套件 130+ tests 绿、ui-v4 双绿。**待收尾**：rebase master（消 5 条 stale-base 失败）+ merge。承重教训与决策见记忆 `project-telemetry-tiered-storage` + DESIGN.md「活的架构现状」telemetry.db 行。
+
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **每 task 的逐字节 bite-sized TDD 步骤在执行期由 per-task subagent 即时展开**——本 plan 给出每 task 的文件/接口/测试 oracle/不变量/验收，Phase 0 附全套 bite-sized 模板。
 
