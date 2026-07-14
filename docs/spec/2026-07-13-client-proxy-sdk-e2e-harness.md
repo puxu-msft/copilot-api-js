@@ -100,7 +100,7 @@ tests/e2e-client/
 
 ## e2e 场景覆盖 roadmap（2026-07-13 考古后）
 
-现有 **29 场景**（Tier 1 SDK 27 = Anthropic 26 + OpenAI 1；Tier 2 CLI 2），均变异验证有牙（MUTANT-A/C/D 各精准逮住对应测试）。挖掘全清单见 Explore agent 考古（本会话），来源可信度分 `[DOC-REAL]`（文档实证、最高价值）/ `[CODE-INFER]`（需实测）。
+**现状（2026-07-14 错配审计后）**：Tier 1 SDK **17**（Anthropic 16 + OpenAI 1）+ Tier 2 CLI 2 = **19 测试**，收敛为纯 SDK-behavior 集；审计前为 29 场景，清 10 条测试类型错配 + 迁移到 golden/.http（详见下方 ⚠️ 框）。均变异验证有牙。挖掘全清单见 Explore agent 考古（本会话），来源可信度分 `[DOC-REAL]`（文档实证、最高价值）/ `[CODE-INFER]`（需实测）。
 
 > **⚠️ 2026-07-14 错配审计更正（本节以下「已覆盖」列表是审计前的历史快照，现状以本框为准）**：跨模型对抗审计（Claude + GPT reviewer）按「e2e 独特价值唯一判据」清出 **10 条测试类型错配**（真相是 wire 字节而非 SDK 反应，golden∘baseline 已等价覆盖）。**修复（零覆盖损失，commit `e543ba7e`）**：① 删 10 条冗余 e2e（server-tool filter / tool-call recovery / tool-name restore→迁 golden / malformed repair→迁 golden / 5 条 reactive+buffered retry）；② 3 条仅 unit 覆盖的 retry 腿（cache_control-subfield / unsupported-beta / poisoned-thinking）**迁到** `tests/anthropic/reactive-retry-legs-wiring.http.test.ts`（端到端 driver-wiring + callCount）；③ 补 `tool-name-sanitize.http` 流式 restore golden + `tool-input-repair-fail.http` repaired-bytes 断言；④ 修 HTTP-400 oracle 缺陷（原只断言 APIError，现断言 `BadRequestError`）。**e2e 套件 27→17**，收敛为**纯 SDK-behavior 集**（throws-类型 / 静默丢帧 / fold-vs-surface / 累积 / accept-set / abort / vendor-neutral——golden 证不了的客户端反应）。方法论固化于 skill `choosing-test-type`（真相域归位 + 试金石 + 错配四型 + 删/迁移/先补再删）。
 
