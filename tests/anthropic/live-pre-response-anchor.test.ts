@@ -192,4 +192,37 @@ describe("live pre-response silence — handler-owned unique injector synthesize
 
     sink.close?.()
   })
+
+  // REGRESSION (double message_start on translated /responses long-reasoning): the LIVE pump can forward a
+  // REAL upstream message_start EARLY (e.g. /responses `response.created` at t≈0) and then fall silent for
+  // the whole reasoning phase (reasoning frames are not client content). `reconcileLiveFrame` records that
+  // passthrough as `messageStartForwarded=true` (no `capturedMessageStart` — that field is buffered-path
+  // only). When the idle tick then fires, the injector must NOT fabricate a SECOND message_start (the wire
+  // forbids two) — it opens ONLY the anchor block + keepalive delta. Before the fix it emitted a synthetic
+  // message_start here, producing the observed [real message_start, synthetic message_start, anchor…]
+  // double-envelope (History req_1784035548020_524 et al.).
+  test("a real message_start already forwarded by the live pump (messageStartForwarded, no captured) → idle injector opens ONLY the anchor, NO second message_start", async () => {
+    const forwarded: Array<SseEventRecord> = []
+    const stub = stubSseStream()
+    const { sink, anchorState } = buildOnStream(stub.stream, (r) => forwarded.push(r), "gpt-5.6-sol", "req_early_ms")
+    // The live pump already forwarded a real upstream message_start (an early /responses response.created)
+    // and the reconciling sink recorded it — but nothing was CAPTURED (capturedMessageStart is buffered-only).
+    anchorState.messageStartForwarded = true
+    expect(anchorState.capturedMessageStart).toBeUndefined()
+
+    await clock.advance(15_000)
+    await flush()
+
+    // NO message_start on the wire — only the anchor block + its first empty keepalive delta.
+    expect(forwardedSeq(forwarded)).toEqual(["content_block_start@0#anchor", "content_block_delta@0#keepalive"])
+    expect(stub.written.some((w) => w.event === "message_start")).toBe(false)
+    expect(stub.written.map((w) => w.event)).toEqual(["content_block_start", "content_block_delta"])
+
+    // Injection happened (anchor open) and the flag stays true (exactly one message_start reached the client).
+    expect(anchorState.injected).toBe(true)
+    expect(anchorState.messageStartForwarded).toBe(true)
+    expect(anchorState.anchorBlockOpen).toBe(true)
+
+    sink.close?.()
+  })
 })

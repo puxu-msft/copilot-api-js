@@ -79,6 +79,20 @@ function makeSilentThenResume(tail: Array<UpstreamFrame>): { stream: UpstreamStr
   return { stream: { frames: gen(), headers: new Headers() }, release }
 }
 
+/** An upstream that yields `head`, then parks until `release()`, then yields `tail`. */
+function makeHeadThenSilentThenResume(head: Array<UpstreamFrame>, tail: Array<UpstreamFrame>): { stream: UpstreamStream; release: () => void } {
+  let release!: () => void
+  const gate = new Promise<void>((r) => {
+    release = r
+  })
+  async function* gen(): AsyncIterable<UpstreamFrame> {
+    for (const fr of head) yield fr
+    await gate
+    for (const fr of tail) yield fr
+  }
+  return { stream: { frames: gen(), headers: new Headers() }, release }
+}
+
 function makeCodec(): FormatCodec {
   return {
     format: "anthropic",
@@ -301,6 +315,69 @@ describe("live-reconcile collision elimination — injected prelude + live resum
     // (4) real usage/stop_reason delivered verbatim on the terminal message_delta.
     const md = written.find((w) => JSON.parse(w.data).type === "message_delta")!
     expect(JSON.parse(md.data)).toMatchObject({ delta: { stop_reason: "end_turn" }, usage: { output_tokens: 7 } })
+
+    pumpSink.close?.()
+  })
+
+  // REGRESSION (double message_start on translated /responses long-reasoning, History
+  // req_1784035548020_524 et al.): the upstream emits a real message_start EARLY (e.g. /responses
+  // `response.created` at t≈0), then falls silent for the whole reasoning phase, THEN resumes with content.
+  // The early message_start streams through the reconciling sink BEFORE any idle tick (injected=false →
+  // passthrough), which now records `messageStartForwarded`. When the idle tick fires, the injector must
+  // open ONLY the anchor (NOT a second message_start). Before the fix the client saw TWO message_starts.
+  test("early real message_start + reasoning silence + resume → exactly ONE message_start (no double envelope)", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+
+    const { stream: up, release } = makeHeadThenSilentThenResume(
+      [f("message_start", { message: { id: "msg_real_early" } })], // early upstream message_start (response.created)
+      [
+        f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+        f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hello" } }),
+        f("content_block_stop", { index: 0 }),
+        f("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+        f("message_stop"),
+      ],
+    )
+
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const forwarded: Array<SseEventRecord> = []
+    const { pumpSink, anchorState } = buildLiveStack(sseStream, (r) => forwarded.push(r), "gpt-5.6-sol", "req_early")
+
+    const outcomeP = driver.runResponseSink(up, env, pumpSink, { onUpstreamFrame: () => {} })
+
+    // Live drain pulls the early message_start (forwarded via the reconciling sink → records the flag),
+    // then blocks on the silent gate.
+    await drain(30)
+    expect(anchorState.messageStartForwarded).toBe(true)
+    expect(anchorState.injected).toBe(false)
+
+    // Idle tick during the reasoning silence → injector opens the anchor ONLY (no second message_start).
+    await clock.advance(15_000)
+    await flush()
+    expect(anchorState.injected).toBe(true)
+
+    release()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("complete")
+
+    // Exactly ONE message_start on the wire — the real early one; the injector added NONE.
+    expect(written.filter((w) => JSON.parse(w.data).type === "message_start")).toHaveLength(1)
+    expect(JSON.parse(written[0].data).message.id).toBe("msg_real_early")
+
+    // Full forwarded sequence: real MS (unmarked) → anchor prelude → close-off → real content remapped +1.
+    expect(forwardedSeq(forwarded)).toEqual([
+      "message_start", //                  real early upstream message_start — NO synthetic marker
+      "content_block_start@0#anchor", //   synthetic anchor block (opened after the idle tick)
+      "content_block_delta@0#keepalive", //anchor's empty text_delta
+      "content_block_stop@0#anchor", //    reconcile close-off before the first real block
+      "content_block_start@1", //          real text block remapped +1
+      "content_block_delta@1", //          real text_delta remapped +1
+      "content_block_stop@1", //           real stop remapped +1
+      "message_delta", //                  real terminal
+      "message_stop",
+    ])
 
     pumpSink.close?.()
   })

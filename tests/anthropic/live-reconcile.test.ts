@@ -82,9 +82,23 @@ describe("reconcileLiveFrame", () => {
     ]
     for (const fr of frames) {
       const out = reconcileLiveFrame(fr, state, h)
-      expect(out).toEqual([fr]) // same object, untouched
+      expect(out).toEqual([fr]) // same object, untouched (WIRE byte-identical)
     }
-    // Passthrough must NOT mutate state.
+    // Passthrough leaves the WIRE byte-identical and touches NO structural flag — except it records that a
+    // real message_start already went out (`messageStartForwarded`), so a later idle-tick injector won't
+    // fabricate a second one. `injected`/`anchorBlockOpen`/`anchorClosed` stay false (no anchor was injected).
+    expect(state).toEqual({ injected: false, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false })
+  })
+
+  test("NOT injected + no message_start (pure content) → state stays fully pure", () => {
+    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+    const h = hooks()
+    for (const fr of [
+      f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+      f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hi" } }),
+    ]) {
+      expect(reconcileLiveFrame(fr, state, h)).toEqual([fr])
+    }
     expect(state).toEqual({ injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false })
   })
 
