@@ -54,10 +54,47 @@
 
 ## Concerns（须主会话/用户知悉）
 
-1. **AUQ options schema 差异（承接 Phase 1 契约，本 Phase 未改）**：Phase 1 已提交的 `AuqQuestion.options` 是 `ReadonlyArray<string>`（纯字符串），但**真实 GHC/CC 的 AskUserQuestion `options` 是 `{label, description}` 对象**（实测证据：`tests/infra/debug-dry-run-pipeline.http.test.ts:108` 的真实降级 fixture `options: [{ label: "只做 #1 (rename)", description: "..." }]`）。本 Phase 按指示**复用 Phase 1 的 `AuqQuestion` 原样、不重设计**。若真实 CC 对纯字符串 options 渲染异常，需回 Phase 1 修改 `AuqQuestion.options` 类型 + `optionsForErrorType` 文案（跨 Phase 契约改动，不在 Phase 4 范围）。**建议主会话评估是否补一个 Phase 1 契约修订项。**
+1. **AUQ options schema 差异（原 Concern，已被裁定为 Critical wire bug、已修）**：Phase 1 的 `AuqQuestion.options` 是 `ReadonlyArray<string>`（纯字符串），但真实 GHC/CC 是 `[{label, description}]` 对象数组（铁证：`tests/infra/debug-dry-run-pipeline.http.test.ts:108` 真实降级 fixture + CC 2.1.207 `app.pretty.js:318507` schema 校验）。主会话 + reviewer 独立确认为 **Critical**（合成纯字符串会让 CC schema 校验失败、整个 AUQ 特性失效），**裁定=改契约**。**已修**——见下方 §FIX-A/B/C 报告。原「建议主会话评估」已由主会话裁定并执行。
 
 2. **MED-3：CC 交互式渲染假设未实测（履行选项 A，未做选项 B）**：本 Phase 全部测试只验证协议形状，**没有**用真实 Claude Code 消费合成帧确认它渲染成交互式问句 UI。「CC 会把合成 AskUserQuestion 渲染为交互式问句」是继承自 spec 的**未实测假设**，且 AUQ 仅在**交互式**会话有意义（headless/子 agent 无用户可问）。已履行选项 A：① 补独立 wire-shape oracle（`error-shaping-auq.unit.test.ts` 用 `backfillAskUserQuestionHeaders` 这个为真实 CC 流量写的消费方函数，验证合成 `questions[]` 满足 CC「每项必须有 question」契约、返回 identity 即无需 repair）；② 在 `phase-4-askuserquestion.md` 顶部 + 本报告显式标注风险。**未做**选项 B（真 CC 交互式渲染 PoC，需额外测试基础设施）。**未声称验证了 CC 渲染行为。**
 
 3. **D-1：AUQ 的 200 客户端响应无法落 history `clientResponse`**（详见 Task 4.3 + README §0 D-1）：功能与真实错误保留均不受影响，纯 client-facing 响应元数据的可观测性缺口。已记录 + 哨兵测试锁定，留给主会话/用户裁决是否走 D-1 选项 2/3（改 settle 生命周期）。
 
 4. **偏离计划的 `handler-v4.ts` 零改动**（详见 Task 4.2）：计划建议的 `c.set("clientRequestStream", ...)` side-channel 未加，改从既有 `c.get("requestContext").originalRequest` 读取——更少改动、避开 Phase 3/5 并发热点，功能等价。
+
+---
+
+## 后续修复：FIX-A/B/C（options schema Critical wire bug，主会话裁定=改契约）
+
+**背景**：上方 Concern 1 被主会话（查 CC 2.1.207 `app.pretty.js:318507`）+ reviewer（定位本仓库既有真实流量 fixture `debug-dry-run-pipeline.http.test.ts:108`）独立确认为 **Critical wire bug**：Phase 1 的纯字符串 `options` 假设错误，合成纯字符串 options 会让 CC schema 校验失败、整个 AUQ 特性对真实 CC 失效。裁定=改契约。
+
+### FIX-A（Critical，options schema，已修）
+
+- `error-shaping.ts`：新增 `export interface AuqOption { label: string; description: string }`（含 CC schema 溯源注释 + 两遍渲染占位符说明）；`AuqQuestion.options` 与 `RenderedAuqInput.options` 类型 `ReadonlyArray<string>` → `ReadonlyArray<AuqOption>`。
+- `optionsForErrorType` 三组错误类型（quota_exceeded / content_filtered / auth_expired）+ default 文案全部改为 `{label, description}` 对象（label=按钮短文本、description=解释）。
+- 两 builder（`buildAskUserQuestionResponse` / `buildAskUserQuestionFrames`）**无需改序列化框架**——它们经 `renderAuqInput` 透传，options 新形状自动流入合成的 `input.questions[].options`。
+- **两遍渲染扩展到 options**：`renderAuqInput` 现对每个 option 的 `label`/`description` 也跑 `renderAuqQuestion`（第二遍 `{model}`/`{request_id}`）。当前默认文案无 option 级占位符，但对对象字段渲染正确、future-proof（FIX-A #3 确认点）。
+
+### FIX-B（补 options oracle，Critical 根因防线，已修）
+
+MED-3 的原 wire-shape oracle（`backfillAskUserQuestionHeaders`）只验 question/header、**没验 options**，正是本 bug 漏过的原因。补两条 options-shape oracle，以真实流量 fixture 为独立 ground truth（非自造断言）：
+- `error-shaping-auq.unit.test.ts`：`FIX-B oracle` 测试——从 `debug-dry-run-pipeline.http.test.ts:108` 的真实 option `{label, description}` 取 `Object.keys().sort()` 作 schema 源，断言合成的每个 option key 集 exactly `["description","label"]` + 两字段均 `string`（纯字符串回归无 key、立即变红；缺 description / 多字段也红）。
+- `error-shaping-auq.it.test.ts`：402→200 端到端断言真实路径（`decide()` → `optionsForErrorType` → builder → wire）产出的 `content[0].input.questions[0].options` 每项 key 集 exactly `{label, description}`——覆盖单测 hand-built fixture 不经过的 `optionsForErrorType` 真实源。
+- `error-shaping.unit.test.ts`（Phase 1 决策测试）：B 类分支补 `typeof opt.label/description === "string"` 断言，锁 `optionsForErrorType` 产出对象形状。
+
+### FIX-C（doc，已修）
+
+- README §0 新增 **D-2**（发现 / 根因 / 影响 / 裁定=改契约已修，比照 D-1 格式）。
+- `phase-4-askuserquestion.md`「与早期草稿差异」的 `clientRequestStream` 条目补「实现偏离（未加 side-channel、改读 `requestContext.originalRequest`、`handler-v4.ts` 零改动）」订正说明。
+
+### 收尾验证
+
+- `bun run typecheck` 全绿（契约改后全站消费点：全仓 `AuqQuestion`/`optionsForErrorType` 消费点仅 `error-shaping.ts` + 3 个测试文件，typecheck 逼出无漏改）。
+- `bunx eslint --no-cache`（4 个改动源/测试文件）全绿。
+- 禁改文件仍零改动：`stream-accumulator`（openai/anthropic/responses 三处）+ `codec/openai-cc` + `codec/openai-responses`。
+- 全量相关测试 57/57 绿（含 Phase 1/2 回归）。
+
+### 遗留 concern
+
+- **options 文案是「计划拟合理最小集」，非 spec 强约束**：若 spec 附录后续规定具体 options 文案，以 spec 为准（当前 label/description 为占位合理值）。
+- **MED-3 仍未实测 CC 交互式渲染**：FIX-B 只加强了 options **wire 形状**对齐真实流量的自动化保证，仍**未**用真实 CC 消费确认交互式渲染——MED-3 风险敞口不变（仍需选项 B 或上线前人工验收）。

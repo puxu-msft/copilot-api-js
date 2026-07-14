@@ -58,6 +58,21 @@
 
 **推荐**：选项 1（本 Phase 已按此落地哨兵测试）。选项 2/3 留给主会话/用户裁决，属 `RequestContext` 生命周期改动，不阻塞 Phase 4 交付。
 
+### D-2：AUQ options schema——Phase 1 纯字符串假设错误，真实 CC 是 `{label, description}` 对象（裁定=改契约，已修）
+
+**发现**（Phase 4 交付时 flag、经主会话 + reviewer 独立确认为 **Critical wire bug**）：Phase 1 定稿的 `AuqQuestion.options` 是 `ReadonlyArray<string>`（纯字符串），但**真实 Claude Code 的 AskUserQuestion `options` 是 `[{label, description}]` 对象数组**。铁证有二：① 本仓库既有 fixture `tests/infra/debug-dry-run-pipeline.http.test.ts:108` 捕获的真实 GHC-降级流量里 `options: [{ label: "只做 #1 (rename)", description: "..." }]`；② CC 2.1.207 源码 `app.pretty.js:318507` 对该 schema 做校验。
+
+**根因**：Phase 1 拟 `AuqQuestion` 契约时凭直觉假设 options 是字符串列表，未对照真实 CC 流量 fixture。Phase 4 的 MED-3 wire-shape oracle（`backfillAskUserQuestionHeaders`）只覆盖 question/header、**没覆盖 options 形状**，所以漏过——这也是 FIX-B 要补 options oracle 的原因。
+
+**影响**：合成纯字符串 options 会让 CC schema 校验失败、整个 AUQ 特性对真实 CC 客户端**完全失效**（协议形状测试全绿但功能不成立，正是 MED-3 警示的风险类别）。
+
+**裁定=改契约（已修，跨-Phase 契约修正，主会话裁定）**：
+- Phase 1 `error-shaping.ts`：新增 `AuqOption {label, description}` 接口，`AuqQuestion.options` + `RenderedAuqInput.options` 类型 `ReadonlyArray<string>` → `ReadonlyArray<AuqOption>`；`optionsForErrorType` 三组错误类型（quota_exceeded/content_filtered/auth_expired）+ default 文案改为 `{label, description}` 对象。
+- Phase 4 两 builder 经 `renderAuqInput` 透传新 options 形状；两遍渲染扩展到 `label`/`description` 字段（future-proof，当前默认文案无 option 级占位符）。
+- FIX-B：unit + it 测试各补一条 options-shape oracle，以 fixture `debug-dry-run-pipeline.http.test.ts:108` 的真实流量形状为独立 oracle，断言合成 options 每项 exactly `{label:string, description:string}`（key 集完全相等 + 均 string），纯字符串回归会立即变红。
+
+**若 spec 附录另有 options 文案规定**：以 spec 为准（当前是「计划拟合理最小集」，非 spec 强约束）。
+
 ---
 
 ## 1. 目标 / 架构 / 技术栈 / 全局约束
