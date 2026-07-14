@@ -25,6 +25,11 @@ import {
 } from "./telemetry/dictionary"
 import {
   //
+  cleanupOrphanTelemetryTmpFiles,
+  migrateJsonToTelemetryDb,
+} from "./telemetry/migrate-json"
+import {
+  //
   type RollupConfig,
   resetRollupFailureLogged,
   runRollupTick,
@@ -447,6 +452,13 @@ let effectiveSketchGamma: number | null = null
 let telemetryConfigUnsub: (() => void) | null = null
 /** Warn-once debounce for SQLite dual-write drain failures (mirrors persistFailureLogged for JSON). */
 let telemetryDrainFailureLogged = false
+/**
+ * Cooperative-stop flag for the one-shot legacy-JSON absorption backfill (P6). Set true by
+ * {@link shutdownRequestTelemetry} BEFORE the db handle closes, so a backfill still in flight bails
+ * out gracefully instead of writing against a closing handle (mirrors the history backfills'
+ * `stopHistoryBackgroundWork`-before-`closeDatabase` ordering). Reset to false on each fresh init.
+ */
+let telemetryBackfillStopRequested = false
 /** Warn-once debounce for the outbox soft-cap eviction (a SUSTAINED drain failure would otherwise grow the outbox unbounded). */
 let telemetryOutboxCapLogged = false
 /**
@@ -1200,7 +1212,15 @@ export async function initRequestTelemetry(): Promise<void> {
   bucketCounts = new Map()
   dimSinceStart = new Map()
   dimBuckets = new Map()
+  // A fresh session can run the one-shot legacy-JSON backfill again (until its version guard trips);
+  // clear any stop flag left set by a prior shutdown (test re-init reuses the module singletons).
+  telemetryBackfillStopRequested = false
   setupTelemetryDb()
+
+  // Clean up orphan atomic-write temp files (`request-telemetry.json.tmp.*`) — failed atomic writes
+  // that never got renamed into place. Pure garbage, safe to delete; fire-and-forget + never-throw so
+  // it never blocks or breaks init. Runs regardless of telemetry.db (the JSON path is always active).
+  void cleanupOrphanTelemetryTmpFiles(telemetryFilePath)
 
   let raw: string
   try {
@@ -1730,6 +1750,10 @@ export function persistRequestTelemetry(): Promise<void> {
 export async function shutdownRequestTelemetry(): Promise<void> {
   stopPeriodicPersistence()
   stopRollupTimer()
+  // Signal the one-shot JSON backfill to bail BEFORE the db closes below (cooperative-stop: a backfill
+  // still in flight must not write against a closing handle). migrate-json checks this getter before its
+  // parse + write phases and its top-level try/catch swallows any close-race throw regardless.
+  telemetryBackfillStopRequested = true
   // The serialized chain inside persistTelemetrySerialized guarantees this
   // shutdown-fired persist runs AFTER any timer-fired persist already in
   // flight (or queued just before stopPeriodicPersistence cleared the timer).
@@ -1740,6 +1764,24 @@ export async function shutdownRequestTelemetry(): Promise<void> {
   telemetryDb = null
   telemetryConfigUnsub?.()
   telemetryConfigUnsub = null
+}
+
+/**
+ * Run the one-shot legacy-JSON absorption backfill (P6) against the LIVE telemetry.db handle. Fire-and-
+ * forget from `start.ts` AFTER the server listens (mirrors `startHistoryBackfills`) — it never blocks
+ * startup or request serving, and is a no-op once its `json_backfill_version` guard has tripped (so a
+ * restart re-runs it harmlessly). No-op when telemetry is disabled or the db failed to open (the JSON
+ * path still serves the in-memory 7d window until P7 flips the rebuild source). NEVER throws
+ * (migrate-json is itself never-throw + cooperatively stoppable; this is a thin live-wiring shim
+ * supplying the db handle + file path + live rollup-config projection the timer callback also uses).
+ *
+ * `now` is injectable for deterministic tests (production passes `Date.now()`): it is BOTH the migration
+ * boundary timestamp (tel_meta['json_backfill_boundary_ts']) and the `now` handed to the rollup seed.
+ */
+export async function runTelemetryJsonBackfill(now = Date.now()): Promise<void> {
+  const db = telemetryDb
+  if (!db || !state.telemetryEnabled) return
+  await migrateJsonToTelemetryDb(db, telemetryFilePath, now, currentRollupConfig(), () => telemetryBackfillStopRequested)
 }
 
 export function _resetRequestTelemetryForTests(): void {
@@ -1763,6 +1805,7 @@ export function _resetRequestTelemetryForTests(): void {
   telemetryDrainFailureLogged = false
   telemetryOutboxCapLogged = false
   telemetryPoisonLogged = false
+  telemetryBackfillStopRequested = false
   outboxSoftCap = OUTBOX_SOFT_CAP
   telemetryConfigUnsub?.()
   telemetryConfigUnsub = null
