@@ -617,6 +617,20 @@ export interface State {
    */
   readonly historyDbPath: string
 
+  // ── 三层降温冷归档（history.archive.*，HOT→tier-1→tier-2）。spec 2026-07-14-history-tiered-archive。──
+  /** 归档总开关（默认 true）。false = 退回现状（数量 reaper 硬删、无归档）。 */
+  readonly historyArchiveEnabled: boolean
+  /** 热库保留天数；此前的终态非 pinned 行降温到 tier-1（默认 3）。 */
+  readonly historyArchiveHotDays: number
+  /** archive.db 大小上限（字节，apply 层从 "2GB" 解析）；超限触发 T1→T2 封存。默认 2GB。 */
+  readonly historyArchiveTier1SizeCap: number
+  /** tier-2 seal 单元数告警阈值（默认 200）。 */
+  readonly historyArchiveTier2WarnCount: number
+  /** tier-2 总量告警阈值（字节，apply 层从 "500MB" 解析）。默认 500MB。 */
+  readonly historyArchiveTier2WarnBytes: number
+  /** archive.db + 封存文件落盘目录（空=同 history.db 同级 <APP_DIR>）。默认 ""。 */
+  readonly historyArchiveDir: string
+
   // ── 分层遥测（telemetry.*，独立 telemetry.db）。近期/远期分辨率与保留可配。 ──
   /** 遥测总开关（默认 true）。 */
   readonly telemetryEnabled: boolean
@@ -1323,15 +1337,33 @@ export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "str
 }
 
 export function setHistoryConfig(
-  patch: Partial<Pick<MutableState, "historySuccessLimit" | "historyFailureLimit" | "historyReaperInterval" | "historyDbPath">>,
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "historySuccessLimit"
+      | "historyFailureLimit"
+      | "historyReaperInterval"
+      | "historyDbPath"
+      | "historyArchiveEnabled"
+      | "historyArchiveHotDays"
+      | "historyArchiveTier1SizeCap"
+      | "historyArchiveTier2WarnCount"
+      | "historyArchiveTier2WarnBytes"
+      | "historyArchiveDir"
+    >
+  >,
 ): void {
-  // Any of the three reaper inputs (both limits + interval) must retune the
-  // running timer, else changing only reaper_interval on hot-reload would
-  // update state but leave the timer firing at the old cadence.
+  // Any of the three reaper inputs (both limits + interval) OR an archive knob
+  // that retunes the migration/seal cadence (enabled / hot_days / size_cap) must
+  // notify listeners, else changing only that key on hot-reload would update
+  // state but leave the running timers firing on the old config.
   const reaperConfigChanged =
     (patch.historySuccessLimit !== undefined && patch.historySuccessLimit !== mutableState.historySuccessLimit)
     || (patch.historyFailureLimit !== undefined && patch.historyFailureLimit !== mutableState.historyFailureLimit)
     || (patch.historyReaperInterval !== undefined && patch.historyReaperInterval !== mutableState.historyReaperInterval)
+    || (patch.historyArchiveEnabled !== undefined && patch.historyArchiveEnabled !== mutableState.historyArchiveEnabled)
+    || (patch.historyArchiveHotDays !== undefined && patch.historyArchiveHotDays !== mutableState.historyArchiveHotDays)
+    || (patch.historyArchiveTier1SizeCap !== undefined && patch.historyArchiveTier1SizeCap !== mutableState.historyArchiveTier1SizeCap)
   updateState(patch)
   if (reaperConfigChanged) {
     for (const listener of historyLimitListeners) listener()
@@ -1675,6 +1707,12 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyFailureLimit: 200,
   historyReaperInterval: 600,
   historyDbPath: "",
+  historyArchiveEnabled: true,
+  historyArchiveHotDays: 3,
+  historyArchiveTier1SizeCap: 2 * 1024 * 1024 * 1024,
+  historyArchiveTier2WarnCount: 200,
+  historyArchiveTier2WarnBytes: 500 * 1024 * 1024,
+  historyArchiveDir: "",
   telemetryEnabled: true,
   telemetryDbPath: "",
   telemetryPersistInterval: 60,
@@ -1823,6 +1861,12 @@ export function resetConfigManagedState(): void {
     historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
     historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+    historyArchiveEnabled: CONFIG_MANAGED_DEFAULTS.historyArchiveEnabled,
+    historyArchiveHotDays: CONFIG_MANAGED_DEFAULTS.historyArchiveHotDays,
+    historyArchiveTier1SizeCap: CONFIG_MANAGED_DEFAULTS.historyArchiveTier1SizeCap,
+    historyArchiveTier2WarnCount: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnCount,
+    historyArchiveTier2WarnBytes: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnBytes,
+    historyArchiveDir: CONFIG_MANAGED_DEFAULTS.historyArchiveDir,
   })
   setTelemetryConfig({
     telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
@@ -1927,6 +1971,12 @@ const mutableState: MutableState = {
   historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
   historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  historyArchiveEnabled: CONFIG_MANAGED_DEFAULTS.historyArchiveEnabled,
+  historyArchiveHotDays: CONFIG_MANAGED_DEFAULTS.historyArchiveHotDays,
+  historyArchiveTier1SizeCap: CONFIG_MANAGED_DEFAULTS.historyArchiveTier1SizeCap,
+  historyArchiveTier2WarnCount: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnCount,
+  historyArchiveTier2WarnBytes: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnBytes,
+  historyArchiveDir: CONFIG_MANAGED_DEFAULTS.historyArchiveDir,
   telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
   telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
   telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
