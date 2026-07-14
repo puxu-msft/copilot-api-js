@@ -37,7 +37,7 @@
 - `tests/tui/pty/footer-pinned.pty.test.ts`（建）— ② footer 钉底（握手快照）。
 - `tests/tui/pty/clean-restore.pty.test.ts`（建）— ③ 退出还原（末态字节 + sentinel 落点）。
 - `tests/tui/pty/detail-no-clobber.pty.test.ts`（建）— ④ 切 detail 不覆盖（detail 窗口 marker）。
-- `tests/tui/pty/resize-reanchor.pty.test.ts`（建）— ⑤ resize 重锚（中间快照 + test.failing 哨兵）。
+- `tests/tui/pty/resize-reanchor.pty.test.ts`（建）— ⑤ resize 重锚（driver 内注入 mutable rows 驱动重锚 + 中间快照孤儿行断言；实现见 Task 5 顶部注解，下方步骤为初版含 test.failing 哨兵、已弃）。
 
 **依赖顺序**：Task 0（脚手架+harness）→ 其余各自独立。
 
