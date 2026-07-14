@@ -28,6 +28,7 @@ import type { ApiError } from "~/lib/error"
 import type {
   //
   ClientFrame,
+  RetryStrategy,
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 
@@ -426,4 +427,51 @@ export function buildAskUserQuestionFrames(
     anthropicSseFrame({ type: "message_stop" }),
   ]
   return frames.map((frame) => tagFrameSynthetic(frame, "error-shaping-auq"))
+}
+
+// ============================================================================
+// D-class self-heal delegation (Phase 5, README §4 contract)
+// ============================================================================
+
+/**
+ * Wrap a reactive `RetryStrategy[]` (the `assembleStrategiesForEndpoint` output) so a strategy
+ * flagged `"delegate"` in `delegateConfig` (keyed by the strategy's own `.name`, matching
+ * `state.errorSelfhealDelegate` / `error_selfheal_delegate`) never actually fires — the 400 it would
+ * have retried is instead let through to the client, where Claude Code's own self-heal logic handles
+ * it (thinking-signature strip, mid-conv-system, etc.).
+ *
+ * Only `canHandle` is wrapped; `handle`/`onResolved` pass through unchanged (a `"delegate"`-flagged
+ * strategy's `canHandle` never returns `true`, so its `handle`/`onResolved` are never invoked by the
+ * driver — wrapping them would be dead code). Entries whose `.name` is absent from `delegateConfig`,
+ * or mapped to `"proxy"`, pass through BY REFERENCE (same strategy object) — cheap and lets identity
+ * checks in other tests keep working.
+ *
+ * `onDelegated` fires ONLY when the wrapped `canHandle` would otherwise have returned `true` (i.e. a
+ * real delegation happened, not an irrelevant probe) — the caller wires it to
+ * `env.ctx.recordFeature("error-shaping-selfheal-delegated", { strategyName })` (`~/lib/context/*` is
+ * NOT imported here — this module stays `lib`-layer, callback-injected, per the file-header
+ * dependency-direction rule).
+ *
+ * `filterDelegatedStrategies` only ever sees the REACTIVE `RetryStrategy[]` array
+ * (`assembleStrategiesForEndpoint`'s return value) — the always-on L1 thinking-signature quarantine
+ * (pre-flight sanitize in the codec's `resanitize`/`requestRewrites` chain, not a `RetryStrategy`)
+ * structurally never appears in that array, so it is untouched by delegation with no extra guard
+ * needed (see `tests/anthropic/error-shaping-selfheal.unit.test.ts`'s quarantine-isolation test).
+ */
+export function filterDelegatedStrategies(
+  strategies: ReadonlyArray<RetryStrategy>,
+  delegateConfig: Readonly<Record<string, "proxy" | "delegate">>,
+  onDelegated?: (strategyName: string) => void,
+): ReadonlyArray<RetryStrategy> {
+  return strategies.map((strategy) => {
+    if (delegateConfig[strategy.name] !== "delegate") return strategy
+    return {
+      ...strategy,
+      canHandle(error: ApiError): boolean {
+        const wouldHandle = strategy.canHandle(error)
+        if (wouldHandle) onDelegated?.(strategy.name)
+        return false
+      },
+    }
+  })
 }
