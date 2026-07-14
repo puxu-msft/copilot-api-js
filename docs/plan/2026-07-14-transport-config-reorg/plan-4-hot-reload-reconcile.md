@@ -85,7 +85,7 @@ reconcileH2SessionsForConfigChange()
 
 | 文件 | 改动 |
 |---|---|
-| `src/lib/transport/http2-client.ts` | `sessions` 从 `Map<string, http2.ClientHttp2Session>` 升级为 `Map<string, H2SessionEntry>`（新增内部接口，不导出）；新增 `retiringSessions`/`sessionEntryByHttp2Session`/`currentGeneration`/reconcile 状态三变量；`getSession()` 内部改造为 entry 结构 + `for (;;)` generation 捕获-比较-丢弃-重试循环（HIGH-3），goaway 处理器改为 `retire()`；`runHttp2Fetch` 新增 activeStreamCount 追踪（`req.once("close", ...)`）；新增导出 `reconcileH2SessionsForConfigChange()`（catch 块不重新 throw，只记录 `reconcileState="failed"`/`lastReconcileError` + `consola.error`，HIGH-3 后半句）/`getH2SessionStatusSnapshot()`/`getH2ReconcileStatus()`/`H2SessionStatusRow`；新增私有 `maybeReclaimRetiringSession()`/`ensureH2ReconcileSubscription()`；`closeHttp2Sessions()` 同步清理 `retiringSessions` + 重置 generation/reconcile 状态；新增 import `onUpstreamTransportChange`、`consola` |
+| `src/lib/transport/http2-client.ts` | `sessions` 从 `Map<string, http2.ClientHttp2Session>` 升级为 `Map<string, H2SessionEntry>`（新增内部接口，不导出）；新增 `retiringSessions`/`sessionEntryByHttp2Session`/`currentGeneration`/reconcile 状态三变量；`getSession()` 内部改造为 entry 结构 + `for (;;)` generation 捕获-比较-丢弃-重试循环（HIGH-3），goaway 处理器改为 `retire()`；`runHttp2Fetch` 新增 activeStreamCount 追踪（`req.once("close", ...)`）；新增导出 `reconcileH2SessionsForConfigChange()`（catch 块不重新 throw，只记录 `reconcileState="failed"`/`lastReconcileError` + `consola.error`，HIGH-3 后半句；同时对所有 retiring entry 调 `reschedulePingTimer()` 应用新 ping interval，A3）/`getH2SessionStatusSnapshot()`/`getH2ReconcileStatus()`/`H2SessionStatusRow`；新增私有 `maybeReclaimRetiringSession()`/`reschedulePingTimer()`/`ensureH2ReconcileSubscription()`；`closeHttp2Sessions()` 同步清理 `retiringSessions` + 重置 generation/reconcile 状态；新增 import `onUpstreamTransportChange`、`consola` |
 | `src/lib/openai/upstream-ws-connection.ts` | `idleTimeoutMs` 常量改为可变 `effectiveIdleTimeoutMs`；新增闭包变量 `idleSince: number \| undefined`（HIGH-6）；`scheduleIdleClose()` 改为按 `(idleSince ?? Date.now()) + effectiveIdleTimeoutMs` 绝对 deadline 调度；新增统一的"标记为 idle"包装（写 `idleSince` + 调 `opts.onIdle?.()` + 调 `scheduleIdleClose()`），替换 `onOpen` 成功回调与 `finishRequest()` 里对 `scheduleIdleClose()` 的直接调用；`sendRequest()` 标记 busy 时清空 `idleSince`；`CreateUpstreamWsConnectionOptions` 新增 `onIdle?: () => void`（HIGH-5）；`UpstreamWsConnection` 接口新增 `rescheduleIdleTimeout(newIdleTimeoutMs: number): void`；返回对象新增该方法实现 |
 | `src/lib/openai/upstream-ws.ts` | `UpstreamWsManager` 接口新增 `reconcileForConfigChange(newIdleTimeoutMs: number): void`/`statusSnapshot(): ReadonlyArray<UpstreamWsStatusRow>`；`createUpstreamWsManager()` 新增闭包内 `connectionGeneration: Map<string, number>` + `currentGeneration` 计数器 + 两个方法实现；`reconcileForConfigChange()` 的驱逐改为按"需要驱逐的数量"计数循环（`evictExcessIdleConnections`），不依赖 `connections.size` 同步缩小；`create()` 新增 `onIdle: () => evictOneIdleIfNeeded()` 接线（busy→idle 转换即时触发既有 eviction 检查，HIGH-5）；`create()`/`onClose`/`closeAll()` 同步维护 `connectionGeneration`；新增导出 `UpstreamWsStatusRow`/`getUpstreamWsStatusSnapshot(manager)`；`getUpstreamWsManager()` 新增懒加载订阅 `onUpstreamTransportChange`；新增 import `onUpstreamTransportChange` |
 | 新增 `tests/transport/http2-generation-reconcile.it.test.ts` | h2 侧 generation-based retire-and-replace 的完整独立 oracle：新请求拿新会话、在飞流不受影响、状态快照/reconcile 状态正确、keepalive 定时器存活到 drain 完成、config-reload race 期间的 connect 被丢弃重试（HIGH-3）、reconcile 内部异常不向上抛（HIGH-3） |
@@ -126,6 +126,7 @@ interface H2SessionEntry {
   effectivePingIntervalMs: number
   effectiveKeepAliveMs: number | undefined
 }
+function reschedulePingTimer(entry: H2SessionEntry, intervalMs: number): void
 ```
 
 ### Step 1 — 写失败测试：reconcile 后新请求拿到新会话，旧会话上的在飞流不受影响
@@ -152,6 +153,7 @@ import {
   beforeEach,
   describe,
   expect,
+  mock,
   test,
 } from "bun:test"
 import http2 from "node:http2"
@@ -165,6 +167,9 @@ import {
   reconcileH2SessionsForConfigChange,
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
+import { setUpstreamTransportConfig } from "~/lib/state"
+
+import { autoRestoreState } from "../helpers/state-fixture"
 
 let server: http2.Http2Server
 let url: string
@@ -203,6 +208,8 @@ afterEach(async () => {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 describe("h2 generation-based retire-and-replace", () => {
+  autoRestoreState()
+
   test("reconcile moves the active session to retiring; the NEXT request opens a fresh session", async () => {
     handler = (stream) => {
       stream.respond({ ":status": 200 })
@@ -314,10 +321,114 @@ describe("h2 generation-based retire-and-replace", () => {
     expect(rows[0].lifecycle).toBe("active")
     expect(rows[0].generation).toBe(generationAfterReconcile)
   })
+
+  test("reconcile reschedules a RETIRING session's PING timer to the freshly configured interval — positive -> 0 stops further pings without closing the session or disturbing the in-flight stream (spec §7 HIGH addition, A3)", async () => {
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 15 })
+    const pingSpy = mock((cb: () => void) => cb())
+    setHttp2SessionFactoryForTests(() => {
+      const s = http2.connect(url)
+      // Real session, spied `.ping` — scheduleH2KeepalivePing calls session.ping()
+      // on its interval, so this observes REAL scheduled invocations, not an
+      // internal flag. Mirrors h2-keepalive-ping.unit.test.ts's fake-session
+      // pattern, but on a real connected session (this test needs the session
+      // to also carry a real in-flight stream).
+      s.ping = pingSpy as unknown as typeof s.ping
+      return s
+    })
+
+    let releaseServerStream: (() => void) | undefined
+    const serverStreamReleased = new Promise<void>((resolve) => {
+      releaseServerStream = resolve
+    })
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("first-chunk")
+      void serverStreamReleased.then(() => stream.end("last-chunk"))
+    }
+
+    const responsePromise = http2Fetch(`${url}/reschedule-to-zero`, {})
+    await sleep(30) // request reaches server; session+entry created at the 15ms cadence
+
+    await sleep(40) // ~2-3 ticks at the OLD 15ms cadence before reconcile
+    const callsBeforeReconcile = pingSpy.mock.calls.length
+    expect(callsBeforeReconcile).toBeGreaterThanOrEqual(2)
+
+    // Config change: ping interval 15 -> 0 (disable). The production wiring
+    // would fire this via the onUpstreamTransportChange subscription; call
+    // reconcile directly (as the other tests in this file do) so the
+    // assertion is decoupled from that subscription wiring.
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 0 })
+    reconcileH2SessionsForConfigChange()
+
+    const retiring = getH2SessionStatusSnapshot()
+    expect(retiring).toHaveLength(1)
+    expect(retiring[0].lifecycle).toBe("retiring")
+    expect(retiring[0].effectivePingIntervalMs).toBe(0)
+    // The reschedule must NOT close the session or disturb its in-flight
+    // stream's accounting — only the ping cadence changes.
+    expect(retiring[0].activeStreamCount).toBe(1)
+
+    const callsAtReconcile = pingSpy.mock.calls.length
+    await sleep(45) // long enough for several old-cadence ticks if NOT actually cancelled
+    expect(pingSpy.mock.calls.length).toBe(callsAtReconcile) // no further pings
+
+    // The in-flight stream must still complete intact through the retiring
+    // session — proves reschedule-to-zero didn't close() the session.
+    releaseServerStream?.()
+    const res = await responsePromise
+    expect(res.ok).toBe(true)
+    expect(await res.text()).toBe("first-chunklast-chunk")
+  })
+
+  test("reconcile reschedules a RETIRING session's PING timer to a NEW positive interval — old cadence stops, new cadence starts, in-flight stream still drains intact (spec §7 HIGH addition, A3)", async () => {
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 500 }) // slow enough it will not have fired yet at the assertion point below
+    const pingSpy = mock((cb: () => void) => cb())
+    setHttp2SessionFactoryForTests(() => {
+      const s = http2.connect(url)
+      s.ping = pingSpy as unknown as typeof s.ping
+      return s
+    })
+
+    let releaseServerStream: (() => void) | undefined
+    const serverStreamReleased = new Promise<void>((resolve) => {
+      releaseServerStream = resolve
+    })
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("first-chunk")
+      void serverStreamReleased.then(() => stream.end("last-chunk"))
+    }
+
+    const responsePromise = http2Fetch(`${url}/reschedule-to-new-positive`, {})
+    await sleep(30)
+    expect(pingSpy.mock.calls.length).toBe(0) // the 500ms cadence has not ticked yet
+
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 15 }) // much faster new cadence
+    reconcileH2SessionsForConfigChange()
+
+    const retiring = getH2SessionStatusSnapshot()
+    expect(retiring).toHaveLength(1)
+    expect(retiring[0].lifecycle).toBe("retiring")
+    expect(retiring[0].effectivePingIntervalMs).toBe(15)
+    expect(retiring[0].activeStreamCount).toBe(1)
+
+    // ~3 ticks at the NEW 15ms cadence within this window proves the OLD
+    // 500ms timer was actually replaced (not merely left running alongside
+    // a second one, which this assertion would also fail to distinguish
+    // from — but a stale 500ms timer contributes 0 calls in this window
+    // regardless, so >=2 calls here is solely attributable to the new timer).
+    await sleep(55)
+    expect(pingSpy.mock.calls.length).toBeGreaterThanOrEqual(2)
+
+    releaseServerStream?.()
+    const res = await responsePromise
+    expect(res.ok).toBe(true)
+    expect(await res.text()).toBe("first-chunklast-chunk")
+  })
 })
 ```
 
-跑 `bun test tests/transport/http2-generation-reconcile.it.test.ts` 确认失败（`getH2ReconcileStatus`/`getH2SessionStatusSnapshot`/`reconcileH2SessionsForConfigChange` 尚未导出，导入报错）。
+跑 `bun test tests/transport/http2-generation-reconcile.it.test.ts` 确认失败（`getH2ReconcileStatus`/`getH2SessionStatusSnapshot`/`reconcileH2SessionsForConfigChange` 尚未导出，导入报错；新增的两个 reschedule 测试同样因 `reschedulePingTimer` 尚不存在、reconcile 尚未调用它而失败——退休后 `effectivePingIntervalMs` 仍是创建时的旧值，且旧定时器继续按旧 cadence 触发，导致这两个新断言不成立）。
 
 ### Step 2 — 实现：`H2SessionEntry` + 池结构升级
 
@@ -506,13 +617,38 @@ function maybeReclaimRetiringSession(entry: H2SessionEntry): void {
 }
 
 /**
+ * Replace an entry's keepalive PING timer with one at `intervalMs`, clearing
+ * whatever was running before (spec §7 addition, reviewer + user decision:
+ * a config-driven `ping_interval` change must reach RETIRING sessions too, not
+ * just sessions created after the reconcile). `intervalMs <= 0` cancels the
+ * timer (via {@link scheduleH2KeepalivePing}'s own `<= 0` guard) WITHOUT
+ * closing the session or touching `activeStreamCount` — an in-flight stream on
+ * a retiring session keeps draining exactly as before, it just stops being
+ * pinged. This is the one exception to "retire never clears pingTimer" (see
+ * the goaway/retiring invariant note above `getSession()`): that invariant is
+ * about NOT losing keepalive coverage silently on retire; this function is an
+ * explicit, observable, config-driven replacement of the cadence itself, not a
+ * silent loss of coverage — the new cadence (possibly 0, honestly reported)
+ * is what `effectivePingIntervalMs` on the status row reflects afterward.
+ */
+function reschedulePingTimer(entry: H2SessionEntry, intervalMs: number): void {
+  if (entry.pingTimer) clearInterval(entry.pingTimer)
+  entry.pingTimer = scheduleH2KeepalivePing(entry.session, intervalMs)
+  entry.effectivePingIntervalMs = intervalMs
+}
+
+/**
  * Hot-reload reconcile (P4): move every currently-routable session to
  * "retiring" and bump the generation counter, so the VERY NEXT request to each
  * origin opens a brand-new session that reads fresh config (keepalive delay,
  * h2 ping interval). Already-in-flight streams on the retired sessions are
  * completely unaffected — they keep running on their original session until
  * they finish naturally (drain), per global constraint #2 (retire-and-replace,
- * never drain-then-replace).
+ * never drain-then-replace). The one exception is the PING cadence itself:
+ * {@link reschedulePingTimer} applies the freshly configured
+ * `getUpstreamH2PingIntervalMs()` to every entry being retired here, so a
+ * `ping_interval` change is honored immediately even by sessions still
+ * draining — not deferred until their eventual replacement takes over.
  *
  * Must NEVER throw (HIGH-3): this function runs as one of possibly several
  * synchronous listeners inside state.ts's `setTimeoutConfig()` listener loop
@@ -529,14 +665,21 @@ export function reconcileH2SessionsForConfigChange(): void {
   reconcileState = "running"
   try {
     currentGeneration += 1
+    const freshPingIntervalMs = getUpstreamH2PingIntervalMs()
     for (const [origin, entry] of sessions) {
       sessions.delete(origin)
       if (entry.lifecycle === "active") {
         entry.lifecycle = "retiring"
         retiringSessions.add(entry)
       }
+      reschedulePingTimer(entry, freshPingIntervalMs)
       maybeReclaimRetiringSession(entry)
     }
+    // Entries already retiring from an EARLIER event (a prior reconcile, or an
+    // upstream-initiated GOAWAY) are a config change's concern too — the fresh
+    // ping cadence must reach every draining session, not just the ones this
+    // particular reconcile call is newly retiring.
+    for (const entry of retiringSessions) reschedulePingTimer(entry, freshPingIntervalMs)
     lastCompletedGeneration = currentGeneration
     lastReconcileError = null
     reconcileState = "idle"
