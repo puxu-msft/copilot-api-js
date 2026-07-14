@@ -4,6 +4,7 @@ import path from "node:path"
 
 import { getProcessIdentity } from "~/lib/process-identity"
 
+import { getExcludedPredecessor } from "../../restart/predecessor-registry"
 import {
   //
   createDatabase,
@@ -232,13 +233,26 @@ export function runOptimize(database: Database): void {
  * `interrupted` so the request is discoverable (and reaper-eligible) rather than
  * stuck "active" forever. Matched by (pid, boot_time) — a restart that reuses a
  * pid is distinguished by boot_time.
+ *
+ * During a graceful-restart handover overlap, a *live* predecessor process may
+ * still be draining in-flight requests when the new process opens the DB — its
+ * rows are legitimately active, not orphaned. `getExcludedPredecessor()` (set by
+ * the takeover path before `initHistory`, lifecycle.md「overlap 共享状态安全 ①」)
+ * carries that predecessor's (pid, boot_time) so this scan skips its rows too.
+ * Exported for isolated testing (tests/restart/reclaim-excludes-predecessor.it.test.ts).
  */
-function reclaimOrphanedActiveRows(database: Database): void {
+export function reclaimOrphanedActiveRows(database: Database): void {
   const { pid, bootTime } = getProcessIdentity()
-  const where = "status IN ('pending','executing','streaming') AND NOT (pid = ? AND boot_time = ?)"
+  const predecessor = getExcludedPredecessor()
+  let where = "status IN ('pending','executing','streaming') AND NOT (pid = ? AND boot_time = ?)"
+  const params: Array<number> = [pid, bootTime]
+  if (predecessor) {
+    where += " AND NOT (pid = ? AND boot_time = ?)"
+    params.push(predecessor.pid, predecessor.bootTime)
+  }
   // Count directly rather than via `.run().changes` (kept defensive: any future
   // AFTER-write trigger on entries_v2 would otherwise fold its writes into `changes`).
-  const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(pid, bootTime) as { n: number }
+  const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(...params) as { n: number }
   if (n === 0) return
   // Backfill a failure reason (richest-data-flow) so the orphaned row surfaces WHY in the
   // list view; COALESCE preserves any real reason already persisted before the crash.
@@ -246,7 +260,7 @@ function reclaimOrphanedActiveRows(database: Database): void {
     .prepare(
       `UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, started_at), error_message = COALESCE(error_message, 'orphaned by a prior process — recovered on restart') WHERE ${where}`,
     )
-    .run(pid, bootTime)
+    .run(...params)
   consola.info(`[history/sqlite] reclaimed ${n} orphaned active row(s) from a prior process → interrupted`)
 }
 
