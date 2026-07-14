@@ -1,6 +1,6 @@
 ---
 name: ghc-anthropic-upstream
-description: 当排查 copilot-api-js Anthropic 路径上游异常时使用——thinking signature "cannot be modified" 400、空明文 thinking 毒化、thinking-only refusal(stop_reason:refusal)、tool_use 降级成 antml 文本、server_tool_use 400、tool_use.id 格式。含经 history sseEvents 诊断与本地探针手法（通用实测见 empirical-verification）。
+description: 当排查 copilot-api-js Anthropic 路径上游异常时使用——thinking signature "cannot be modified" 400、thinking 块真伪/毒化校准（空明文不等于毒化，须逐块结合 signature）、thinking-only refusal(stop_reason:refusal)、tool_use 降级成 antml 文本、server_tool_use 400、tool_use.id 格式。含经 history sseEvents 诊断与本地探针手法（通用实测见 empirical-verification）。
 ---
 
 # Anthropic 上游调试
@@ -23,6 +23,9 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 
 ## 实测关键事实
 
+- **opus thinking 明文被 GHC 加密剥离**：wire 上正常形态是 `{type:"thinking", thinking:"", signature:"ErIE…"}`——**明文空 + signature 在 = 合法加密思考**（4141 实测：当前观测的带 thinking 真实 opus 请求 40/40 皆此形，`chars=0 sig=True`）。故判「是否真 thinking / 是否毒化」**绝不能只看明文空**——naive「明文空⇒毒化」会把当前观测的正常 opus 请求全部误判为毒。
+- **「空明文 thinking 毒化」的 canonical 判据**（对齐 `sanitize/content-blocks.ts` 的 `textEmpty && sigEmpty`）：**逐块**判、块类型**非** `redacted_thinking`（redacted 是合法不透明块、永不算毒）、明文 `trim` 空 **且** signature `trim` 空（whitespace-only 非真 seal，两字段都须 `.trim()`）。**逐块**是承重点——一个签名块只证自身合法、**不赦免**旁边真中毒的块；聚合语义「所有块都坏才算」会让健康块掩盖中毒块。注：此「毒化」是**观测/sanitizer 分类**概念，**不是**上表 `cannot be modified` 400 的根因（那是相邻块，见第 16 行）；它正解释了「旧说个别块签名对不上=毒化」为何不精确。
+- **消费方**：TUI 完成行 `think:enc(N)`（灰，加密合法）/ `think:poison(N)`（黄，毒化）token，派生器 entry-view `responseThinkingFromBody`（读**正常完成**请求最终累积的 `finalUpstreamResponse.body`）。附注：usage **无**独立 thinking/reasoning token 计数（`output_tokens` 含 thinking 但不可分离）。
 - thinking signature **自包含**（加密 thinking 内容本身、非上下文/位置）：跨对话/非首块/重写后均 200；约束=原样不改 + thinking 块**相对序**不变。**相邻性非约束**（PoC 订正）：把相邻 thinking 用非 thinking 块交错分隔（打破连续）反而 200，正是上游要求的——见 `cannot be modified` 行。
 - tool_use.id 上游不校验格式（`toolu_recovered_0` 也 200），只引用一致性要紧；仍合成 `toolu_`+24base62 防客户端 SDK。
 - 上游兼容矩阵/特性协商属 docs（anthropic-compat.md / refusal-recovery.md），本 skill 只管调试。
