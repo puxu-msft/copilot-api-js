@@ -37,8 +37,6 @@ export interface RunDriverOptions {
   env?: Record<string, string>
   /** 定时键：at 毫秒后向伪终端写 bytes（如 { at: 250, bytes: " " }）。 */
   keys?: Array<{ at: number; bytes: string }>
-  /** 跑中 resize：at 毫秒后同时 resize 伪终端 + xterm，串行插入 write 链（GPT HIGH）。 */
-  resizes?: Array<{ at: number; cols: number; rows: number }>
   /**
    * 握手快照：driver 发出的 marker 一旦解释进网格，抓当时的 collectGrid() 存进
    * result.snapshots[label]。marker 用不与编号载荷冲突的独特串（如 "__SNAP__panel"）。
@@ -125,16 +123,6 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
 
   const timers: Array<ReturnType<typeof setTimeout>> = []
   for (const k of opts.keys ?? []) timers.push(setTimeout(() => terminal.write(k.bytes), k.at))
-  // resize 串行插入 write 链：resize 边界排在「此刻已排队的输出解释之后」（GPT HIGH）。
-  for (const r of opts.resizes ?? [])
-    timers.push(
-      setTimeout(() => {
-        writes = writes.then(() => {
-          terminal.resize(r.cols, r.rows)
-          xterm.resize(r.cols, r.rows)
-        })
-      }, r.at),
-    )
 
   const timeoutMs = opts.timeoutMs ?? 15_000
   let timedOut = false
