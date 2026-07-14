@@ -31,6 +31,8 @@ import {
 } from "~/lib/telemetry/dictionary"
 import {
   //
+  readAcceptedBucketsInWindow,
+  readAllRawRowsInWindow,
   readCumulativeBreakdown,
   readCumulativeSketchQuantiles,
   readTierBreakdown,
@@ -39,6 +41,7 @@ import {
 import { createSketch } from "~/lib/telemetry/sketch"
 import {
   //
+  upsertAccepted,
   upsertCumulative,
   upsertCumulativeSketchBlob,
   upsertSettledTier,
@@ -252,4 +255,62 @@ test("readTierBreakdown / readCumulativeBreakdown：未知维度 / 空库 → �
   expect(tierResult).toEqual({ totalKeys: 0, truncated: false, keys: [] })
   const cumulativeResult = readCumulativeBreakdown(db, "nonexistent", 20)
   expect(cumulativeResult).toEqual({ totalKeys: 0, truncated: false, keys: [] })
+})
+
+test("readAllRawRowsInWindow：逐 (bucket_ts,dim,key) 物理行原样返回、counters 命名对齐内存路径、窗外行排除", () => {
+  const db = freshDb()
+  const modelDim = internDim(db, "model")
+  const opus = internKey(db, modelDim, "opus")
+  const endpointDim = internDim(db, "endpoint")
+  const anthropic = internKey(db, endpointDim, "anthropic-messages")
+
+  const now = 10 * DAY
+  const bucket = 5 * 60 * 1000
+  const b1 = Math.floor((now - 2 * bucket) / bucket) * bucket
+  const b2 = Math.floor((now - bucket) / bucket) * bucket
+  upsertSettledTier(db, "tel_raw", b1, modelDim, opus, { req_count: 3, input_tok: 100, cost_input_micro: 6_000_000 })
+  upsertSettledTier(db, "tel_raw", b2, modelDim, opus, { req_count: 2, input_tok: 50 })
+  upsertSettledTier(db, "tel_raw", b2, endpointDim, anthropic, { req_count: 5, output_tok: 20 })
+  // 窗外（8 天前）的 raw 行不应被重建（超出 7d 窗）。
+  upsertSettledTier(db, "tel_raw", Math.floor((now - 8 * DAY) / bucket) * bucket, modelDim, opus, { req_count: 999 })
+
+  const rows = readAllRawRowsInWindow(db, now - 7 * DAY, now)
+  // 3 物理行在窗内（b1 model/opus + b2 model/opus + b2 endpoint/anthropic）——不聚合、不折 other。
+  expect(rows).toHaveLength(3)
+
+  const b1Opus = rows.find((r) => r.bucketTs === b1 && r.dimName === "model" && r.key === "opus")!
+  expect(b1Opus.counters.requestCount).toBe(3)
+  expect(b1Opus.counters.inputTokens).toBe(100)
+  expect(b1Opus.counters.costInputTokens).toBeCloseTo(6, 6) // 6_000_000/1e6
+
+  const b2Opus = rows.find((r) => r.bucketTs === b2 && r.dimName === "model" && r.key === "opus")!
+  expect(b2Opus.counters.requestCount).toBe(2) // NOT summed with b1 — separate physical row
+
+  const b2Endpoint = rows.find((r) => r.dimName === "endpoint" && r.key === "anthropic-messages")!
+  expect(b2Endpoint.counters.requestCount).toBe(5)
+  expect(b2Endpoint.counters.outputTokens).toBe(20)
+})
+
+test("readAllRawRowsInWindow：空库 → 空数组（不抛）", () => {
+  const db = freshDb()
+  expect(readAllRawRowsInWindow(db, 0, Date.now())).toEqual([])
+})
+
+test("readAcceptedBucketsInWindow：逐桶 accept 计数、窗外桶排除、空库空数组", () => {
+  const db = freshDb()
+  const now = 10 * DAY
+  const bucket = 5 * 60 * 1000
+  const b1 = Math.floor((now - 2 * bucket) / bucket) * bucket
+  const b2 = Math.floor((now - bucket) / bucket) * bucket
+  upsertAccepted(db, b1, 3)
+  upsertAccepted(db, b2, 7)
+  upsertAccepted(db, Math.floor((now - 8 * DAY) / bucket) * bucket, 999) // 窗外
+
+  const buckets = readAcceptedBucketsInWindow(db, now - 7 * DAY, now)
+  expect(buckets).toHaveLength(2)
+  expect(buckets.find((b) => b.bucketTs === b1)?.count).toBe(3)
+  expect(buckets.find((b) => b.bucketTs === b2)?.count).toBe(7)
+
+  const empty = freshDb()
+  expect(readAcceptedBucketsInWindow(empty, 0, now)).toEqual([])
 })

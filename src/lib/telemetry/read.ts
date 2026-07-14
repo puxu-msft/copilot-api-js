@@ -86,6 +86,19 @@ export interface TierKeyCounters {
   constituentKeys: ReadonlyArray<string>
 }
 
+/**
+ * 一个 tel_raw 物理行的重建投影（bucket_ts + dim 名 + key + camelCase counters）——供 P7 的
+ * `initRequestTelemetry` 从 SQLite **重建**内存 7d `dimBuckets`（单轨：JSON 不再是重建源）。
+ * 与 {@link readTierBreakdown} 不同：**不折 top-N、不跨桶聚合**——逐 `(bucket_ts, dim, key_id)` 一行
+ * 原样返回，因为内存 dimBuckets 本就是逐桶逐 key 的稀疏结构，重建须逐行还原。
+ */
+export interface RawWindowRow {
+  bucketTs: number
+  dimName: string
+  key: string
+  counters: Record<string, number>
+}
+
 /** {@link readTierBreakdown} / {@link readCumulativeBreakdown} 的返回形状（对齐 `DimensionBreakdownSnapshot` 的 keys 结构，不含 window/series——这些由 route 层按窗名组装）。 */
 export interface TierBreakdownResult {
   /** 折叠前的 distinct key 数（供调用方判断折了多少进 "other"）。 */
@@ -305,4 +318,34 @@ export function readCumulativeSketchQuantiles(
     rows.map((row) => row.hist_blob),
   )
   return summarizeSketches(merged)
+}
+
+/**
+ * 重建源（P7 单轨）：读回 `[sinceTs, now]` 窗内 tel_raw 的**每一物理行**（逐 `(bucket_ts, dim, key_id)`），
+ * JOIN tel_dim/tel_key 反查名字，投影出 camelCase counters。供 `initRequestTelemetry` 从 SQLite 重建内存
+ * 7d `dimBuckets`（替代旧的 JSON→dimBuckets 载入）。**不折 top-N、不跨桶 SUM**——内存 dimBuckets 是逐桶逐 key
+ * 稀疏结构，须逐行还原。counters 从 18 个可加列精确恢复（cost micro→float 除 1e6，与 {@link projectCounters}
+ * 同源）；**histograms 不重建**（tel_raw 只存 DDSketch hist_blob、无固定桶列，且 7d 腿 histograms 已退役——
+ * 见 request-telemetry.ts 的 dimBuckets accumulator 不再填 histograms）。空库 / 无行 → 空数组（never-throw）。
+ */
+export function readAllRawRowsInWindow(db: TelemetryDatabase, sinceTs: number, now: number): Array<RawWindowRow> {
+  const sumCols = SETTLED_MEASURE_COLUMN_NAMES.join(", ")
+  const rows = db
+    .prepare(
+      `SELECT t.bucket_ts AS bucket_ts, d.name AS dim_name, k.key AS key, ${sumCols} FROM tel_raw t JOIN tel_dim d ON d.id = t.dim JOIN tel_key k ON k.id = t.key_id WHERE t.bucket_ts >= ? AND t.bucket_ts <= ?`,
+    )
+    .all(sinceTs, now) as Array<Record<string, number> & { bucket_ts: number; dim_name: string; key: string }>
+  return rows.map((row) => ({ bucketTs: row.bucket_ts, dimName: row.dim_name, key: row.key, counters: projectCounters(row) }))
+}
+
+/**
+ * 重建源（P7 单轨）：读回 `[sinceTs, now]` 窗内 tel_accepted 的逐桶 accept 计数（bucketTs → count）。供
+ * `initRequestTelemetry` 重建内存 `bucketCounts`（accepted sparkline），替代旧的 JSON `buckets` 载入。空库 /
+ * 无行 → 空数组（never-throw）。`acceptedSinceStart` 进程生命周期计数仍从 0 起（重启归零，本就不持久）。
+ */
+export function readAcceptedBucketsInWindow(db: TelemetryDatabase, sinceTs: number, now: number): Array<{ bucketTs: number; count: number }> {
+  const rows = db
+    .prepare("SELECT bucket_ts AS bucket_ts, count AS count FROM tel_accepted WHERE bucket_ts >= ? AND bucket_ts <= ?")
+    .all(sinceTs, now) as Array<{ bucket_ts: number; count: number }>
+  return rows.map((row) => ({ bucketTs: row.bucket_ts, count: row.count }))
 }
