@@ -139,6 +139,7 @@ WAL 模式**无跨文件事务原子性**（SQLite 官方：跨库 COMMIT 崩溃
 | `src/routes/history/handler.ts`（改，**H2**） | **移除** DELETE 路由（clear-all + scoped，`handler.ts:177-193`）；新增「立即归档」触发端点 + `tier` 查询参数路由 list/detail/search |
 | `src/lib/history/entries.ts`（改） | `clearHistory()` 保留 test-only；新增「立即归档」编排 |
 | `ui-v4/src/components/requests/HistoryListShadcn.tsx` + `HistoryList.tsx`（改，**复审 HIGH**） | 「清空历史」对话框改「立即归档」文案（去 `variant="destructive"`、"已删除 N 条"→"已归档 N 条"）；新增归档视图 URL/入口（复用列表 UI、`tier=archive`）；HOT 视图与归档视图**互斥、绝不同列** |
+| `ui/src/api/http.ts` + `ui/src/composables/history-store/useHistoryData.ts`（清理，**复审 LOW**） | legacy Vue `ui/`（根 `build` 仍 `build:ui` 打包）里 `deleteEntries`/`deleteSession`/`clearAll`（`http.ts:101-107`、`useHistoryData.ts:197`）指向待删 HTTP 端点、且无 `.vue` 接线（死代码）——清理这些死引用避免指向已删端点 |
 | `src/lib/history/sqlite/schema.ts`（改） | 加 `tier2_manifest` DDL（archive.db 用） |
 | `src/lib/config/schema.ts` / `config.ts` / `state.ts`（改） | `history.archive.*` 配置节 + state 字段 + 接线 + 热重载 listener |
 | `src/start.ts`（改） | 启动接线：两库 floor + `applyForwardMigrations`（H1）、archive 连接、启动搬迁、启动封存（`startHistoryBackfills` 一带） |
@@ -178,7 +179,7 @@ PoC 若证伪某假设，据实回炉调整格式/参数。
 - **永不真删**：生产代码路径无 `DELETE FROM entries_v2`（除 §3.4 move 语义「校验通过后删 HOT 副本」，且副本已在 archive）；grep 确认 HTTP delete 路由已移除、test-only 原语仍在。
 - **搬迁保真**：move 后 archive 侧 `assembleFullEntry` 与原 HOT entry 深等（含全 stages / 全消息 / 引用完整）；崩溃注入在步骤 1-3 各点，重跑后无丢失、无重复。
 - **搜索不丢**：一条 entry 降温后，**归档视图** `/api/search?tier=archive` 五 facet 仍命中（正样本：先证搜索触达 HOT 再证降温后归档命中）。
-- **视图互斥**：HOT 视图（`tier=hot`）绝不列出已降温行；归档视图（`tier=archive`）绝不列出 HOT 行；move 窗口内也不跨视图重复。
+- **视图互斥**：HOT 视图（`tier=hot`）绝不列出已降温行；归档视图（`tier=archive`）绝不列出 HOT 行；**单次查询内绝不重复**（每次查询只打一个库）。**已知窗口（非缺陷、显式承认）**：§3.4 的「先写 archive → 校验 → 删 HOT」顺序（防丢失所必需，绝不能反过来）意味着 move 完成前有一段非零窗口，该行在 HOT 与归档两视图**各自查询都会命中**——用户切视图会短暂看到同一 entry 各一份（观感问题，非同列重复）。**下游告警**：未来任何**跨 tier 聚合**（全部历史总数 / 跨 tier 会话汇总）须在此窗口防重复计数（按 id 去重），不可简单相加。
 - **pinned 豁免**：pinned 行经任意次搬迁 tick + 手动「立即归档」后仍在 HOT。
 - **格式裁决**：Phase 0 FINDINGS 给出候选 A/B 的真实字节 + 延迟数字。
 - **测试基础设施**：移除 HTTP delete 后 `bun test` 全绿（`resetTestRuntime`/`clearHistory`/`scoped-delete.unit.test.ts` 仍可用）。
@@ -203,6 +204,8 @@ reviewer 实读源码 + `npm pack` 核对 hyparquet 源码 + grep 核实消费�
 | M2 | hot_days=3 缺真实容量锚点 | **采纳** → §6.4 Phase 0 统计真实 3 天量 |
 | MEDIUM（复审） | 「立即归档」对 pinned/hot_days 边界未讲清 | **采纳（按 invariant 自解）** → §3.6 排除 pinned、不受 hot_days 门槛 |
 | MINOR（复审） | archive 侧 msg_blob GC 挂载点未点名 | **采纳** → §3.5/§5 挂 tier1-migrate 每批收尾 |
+| LOW（三轮） | legacy Vue `ui/`（根 build 仍打包）有指向待删 DELETE 端点的死引用 | **采纳** → §5 加 `ui/` 死代码清理项 |
+| LOW（三轮） | §9「move 窗口内不跨视图重复」是实现上做不到的假承诺（先写后删必有窗口） | **采纳** → §9 改「单次查询内不重复」+ 显式承认切视图短暂双现窗口 + 跨 tier 聚合防重复计数告警 |
 
-reviewer 两轮整体判断「方向对；原 3 BLOCKER 已真解；两类系统性缺口（读路径覆盖面 + 崩溃校验粒度）+ H2 删除的测试/前端消费方」——均已修入本 v3。
+reviewer 三轮整体判断「方向对；原 3 BLOCKER 已真解；H2 删除的测试/前端消费方 + 视图分域收口」——**第三轮判定无残留阻断、可进 plan**。均已修入本 v3。
 </content>
