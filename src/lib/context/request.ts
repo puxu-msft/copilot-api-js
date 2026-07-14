@@ -265,9 +265,15 @@ export function createRequestContext(opts: {
   // lets these fields survive regardless, without touching those 4 call sites.
   let _streamTimeouts: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number } | null = null
   let _askNormalization: PipelineInfo["askUserQuestionNormalization"] | null = null
+  let _sendMessageNormalization: PipelineInfo["sendMessageNormalization"] | null = null
   const mergedPipelineInfo = (): PipelineInfo | null => {
-    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization) return null
-    return { ..._pipelineInfo, ..._streamTimeouts, ...(_askNormalization && { askUserQuestionNormalization: _askNormalization }) }
+    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization) return null
+    return {
+      ..._pipelineInfo,
+      ..._streamTimeouts,
+      ...(_askNormalization && { askUserQuestionNormalization: _askNormalization }),
+      ...(_sendMessageNormalization && { sendMessageNormalization: _sendMessageNormalization }),
+    }
   }
   let _sseEvents: Array<SseEventRecord> | null = null
   let _httpHeaders: {
@@ -387,6 +393,13 @@ export function createRequestContext(opts: {
       // MUST publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler
       // (history sink); onTerminal's projection allowlist does NOT include pipelineInfo. Mirrors
       // setStreamTimeouts exactly.
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
+    },
+    recordSendMessageNormalization(diag) {
+      // Same shape/lifecycle as recordAskUserQuestionNormalization: request-level, NOT per-attempt-reset
+      // (under buffered-retry may reflect a discarded attempt; forwarded-wire correctness unaffected). MUST
+      // publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler.
+      _sendMessageNormalization = { ..._sendMessageNormalization, ...diag }
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
     get repairOutcomes() {

@@ -71,6 +71,7 @@ import {
   //
   createUpstreamFrameDiagnostics,
   logUpstreamStreamError,
+  logUpstreamStreamTruncation,
 } from "~/lib/upstream-stream-diagnostics"
 
 import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
@@ -497,6 +498,12 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     const partial = buildResponsesResponseData(acc, resolvedModel)
     const truncErr = new Error("Upstream stream truncated before completion (no response.completed)")
     consola.error(`[WS] Upstream truncated for ${acc.model || resolvedModel}: drained without a terminal response event`)
+    logUpstreamStreamTruncation(truncErr.message, {
+      model: acc.model || resolvedModel,
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     // Emit the error frame (recorded into forwarded) + close, THEN snapshot + settle (sample →
     // recordForwarded → ctx.fail; fail freezes inboundResponse).
     sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr), { events: forwardedSseEvents, streamStartMs })

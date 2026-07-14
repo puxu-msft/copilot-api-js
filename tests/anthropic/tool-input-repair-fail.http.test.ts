@@ -1,7 +1,7 @@
 /**
  * P4 — end-to-end fail channel for an UNREPAIRABLE malformed tool_use input.
  *
- * When `anthropic.tool_repair_malformed_input` is on and a `tool_use` input
+ * When `anthropic.response_tool_use_fix.malformed_input` is on and a `tool_use` input
  * survives both repair layers still malformed, the proxy must NOT forward a
  * silently-broken tool call as a success: the decoder reports `input-unrepairable`
  * → the S5 closure flags the ctx → the handler's complete-branch settles the

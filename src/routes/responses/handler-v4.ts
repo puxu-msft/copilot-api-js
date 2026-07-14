@@ -114,6 +114,7 @@ import {
   //
   createUpstreamFrameDiagnostics,
   logUpstreamStreamError,
+  logUpstreamStreamTruncation,
 } from "~/lib/upstream-stream-diagnostics"
 import {
   //
@@ -580,6 +581,12 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     const partial = buildResponsesResponseData(acc, model)
     const truncErr = new Error("Upstream stream truncated before completion (no response.completed)")
     consola.error(`[Responses:v4] Upstream truncated for ${acc.model || model}: drained without a terminal response event`)
+    logUpstreamStreamTruncation(truncErr.message, {
+      model: acc.model || model,
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
@@ -745,6 +752,12 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   if (terminal.kind === "truncated") {
     const truncErr = new Error("Upstream Anthropic stream truncated before completion (no message_stop)")
     consola.error(`[Responses:v4:reverse] Upstream truncated for ${anthropicAcc.model || model}: drained without message_stop`)
+    logUpstreamStreamTruncation(truncErr.message, {
+      model: anthropicAcc.model || model,
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: anthropicAcc.inputTokens, outputTokens: anthropicAcc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))

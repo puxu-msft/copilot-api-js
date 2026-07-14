@@ -241,7 +241,7 @@ export function tryJsonRepair(input: string): string | undefined {
 
 /**
  * Canonical repair-item set — also the fixed cascade order. The comma-separated config
- * `anthropic.tool_repair_malformed_input` is a SUBSET of these; enabling an item applies its
+ * `anthropic.response_tool_use_fix.malformed_input` is a SUBSET of these; enabling an item applies its
  * transform, cascaded in THIS order regardless of config spelling (`"jsonrepair,tags"` and
  * `"tags,jsonrepair"` behave identically). Order is the dependency order: `tags` (antml-tag strip)
  * → `unicode` (whitespace-broken `\uXXXX` escape fix) → `jsonrepair` (structural repair) →

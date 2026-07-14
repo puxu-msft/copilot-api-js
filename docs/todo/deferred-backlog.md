@@ -578,6 +578,14 @@
 - **为何暂缓**：实测唯一受累工具是 AskUserQuestion（已治），无第二例证据；通用腿要把 tool schema 从请求穿到 response-rewrite 层（新接线面），additive 不阻塞、不制造错数据。
 - **若做需改什么**：① 把请求 `tools[].input_schema` 经 env/state 传到 decode/rewrite 层（现只有 recover-tool-call 用了 tool schema，可复用同通道）；② 加通用剥离步（`additionalProperties:false` gate + 非 `properties` 顶层键剥离），排在 AskUserQuestion 专属抢救**之后**；③ 诊断复用 `pipelineInfo` 落盘通道；④ 测试覆盖非 AskUserQuestion 工具的幻觉顶层参数。发现方：AskUserQuestion salvage 特性 brainstorm（2026-07-14，方案 C 的通用腿）。
 
+## 语义抢救类现有 2 例——第 3 例出现再泛化为配置驱动别名映射（2026-07-14）
+
+- **背景**：「语义抢救」（治**必填字段错位/错名**、非剥幻觉键）现有两个专属实现，均定向、硬编码单工具：`normalizeAskUserQuestionInput`（顶层 `question` → item）与 `normalizeSendMessageInput`（`agentId` → 必填 `to`，本次新增）。二者都在 `decode-tool-input-core.ts`、经 `response_tool_use_fix.*` config 门控、诊断落 `pipelineInfo`。
+- **当前行为**：每新增一个「必填字段以别名/错位到达」的工具都要手写一个 `normalizeXxxInput` + 一个 config leaf + 一条 pipelineInfo 诊断字段 + 接线。AskUserQuestion 的抢救过于 bespoke（salvage + header 回填 + strip 三步）无法折进通用别名映射；但 SendMessage 是干净的「别名重命名」子形（`to` 缺失且别名在 → 搬值删别名）。
+- **理想架构**：当出现第 3 例干净「别名重命名」时，抽配置驱动的 `tool → { canonicalField: [aliasNames...] }` 映射（canonical 缺失且某 alias 在则重命名），SendMessage 作首个数据项；与上面「通用剥离腿」并列（一个治错名必填、一个剥幻觉键）。AskUserQuestion 的复杂抢救仍保留专属。
+- **为何暂缓**：用户本轮明确选「一次性专属修复」而非通用机制（2 例证据尚不足以压过通用化的配置面成本；SendMessage 硬编码与配置映射代码量相当，但只有 1 个 alias 数据点）。
+- **若做需改什么**：① 加 config `anthropic.response_tool_use_fix.field_aliases: Record<tool, Record<canonical, string[]>>`；② 抽 `renameFieldFromAlias` 通用原语替换 `normalizeSendMessageInput`；③ 诊断沿用 `pipelineInfo.sendMessageNormalization` 的形状泛化为 per-tool；④ 保留 AskUserQuestion 专属抢救不动。发现方：SendMessage `agentId→to` 抢救实现（2026-07-14）。
+
 ## AskUserQuestion 规范化诊断在 buffered-retry 下过报（2026-07-14，合并态 review MED，gated on buffered-retry 启用）
 
 - **根因**：`ctx.recordAskUserQuestionNormalization` 把诊断写进 **request-level** `_askNormalization`（[context/request.ts](../../src/lib/context/request.ts) `recordAskUserQuestionNormalization`），**不做 per-attempt-reset**。buffered-retry（block-level / responses）下，某 attempt 的 tool_use 块跑完 `content_block_stop` 触发 salvage/strip（记 diag）后、在 `message_stop` 前 RST → 该 attempt 被丢弃、帧从不转发；但 diag 已 publish 进 `_askNormalization` 并落 in-flight entry。若 committed 重试 attempt 输入干净（不再 normalize），history 的 `pipelineInfo.askUserQuestionNormalization` 就展示了一个「转发 wire 从未发生」的 salvage。
@@ -655,3 +663,40 @@
 - **当前行为**：grep 全仓 `resolveResponseToolNames` 仅定义处、无生产消费者，故**当前无活跃 bug**。本次（2026-07-14）已修复完成行 TUI 侧：经 `recordFeature("tool-call-recovered", { tools })` feature detail 旁路传名 + `resolveCompletionToolNames` fallback。
 - **理想架构 / 若做需改什么**：若未来 History Web UI（ui-v4）要展示 `tool_use(<names>)` token，会复现同一症状。**关键前置**：TUI 侧的名字来自 bus 实时 feature detail，而 `recordFeature` 不落 history（持久化诊断走 `pipelineInfo`，见 [[methodology-plan-verify-interface-location-and-wiring-channel]]）——故 History 侧要 fallback，须先把 recovered names 落到某个持久化通道（如 pipelineInfo 或专用列），再让 `resolveResponseToolNames` 消费。不是简单加 fallback 分支。
 - **为何暂缓**：无活跃消费者、纯前瞻；且真做需先建持久化通道（独立于本次 TUI 修复）。发现方：本次修复的 reviewer 建议（Claude reviewer，2026-07-14）。
+
+## HTTP 级真两跳 e2e：翻译型 /responses 早 message_start + 长静默（2026-07-14 记，reviewer 建议）
+
+- **根因 / 现状**：[live-reconcile-collision-e2e.test.ts](../../tests/pipeline/live-reconcile-collision-e2e.test.ts) 的「早 message_start + reasoning 静默 → 恰一个 message_start」回归用 **identity codec** 且直接注入 Anthropic `message_start` 作 upstream head，隔离了被修的 reconcile/injector 协调逻辑,但**未走真实 Responses→CC→Anthropic 两跳 translator**。
+- **当前行为**：修复正确、覆盖充分——reconcile 逻辑由 unit + 该 e2e（含 fix-stash 正样本对照）完整覆盖;承重假设「真两跳会早转发 message_start」**双证**:①代码接线确证 [cc-to-anthropic-stream.ts:142](../../src/lib/openai/translate/cc-to-anthropic-stream.ts#L142)（首个上游 chunk 惰性发 message_start）+ translate-leg sink 经 `liveReconcilingSink`（[handler-v4.ts:1421](../../src/routes/messages/handler-v4.ts#L1421)）;②生产 History 实证（req_1784035548020_524 / _564 / _719）。故非活跃缺陷。
+- **理想架构 / 若做需改什么**：加一个 HTTP 级 e2e——真实 Responses 帧 `response.created → 静默 → output frames → response.completed` 走实际 `@responses` 翻译路由,从客户端 SSE wire 经 Anthropic SDK decoder + 完整 frame-order oracle 断言「早 envelope + 长静默 + resumed block」完整序列且恰一个 `message_start`。
+- **为何暂缓**：属冗余守护（承重假设已代码+生产双证、非轶事）;价值在防未来 translator 事件顺序/flush 变更绕过 identity-codec e2e,非修当前缺陷。发现方：本次修复 reviewer 建议（GPT + Claude reviewer,2026-07-14）。
+
+## 流式交错并行 tool-call 产出非法 Anthropic block 序列（MEDIUM，评审 #1，2026-07-14 记）
+
+- **根因**：[cc-to-anthropic-stream.ts:244-256](../../src/lib/openai/translate/cc-to-anthropic-stream.ts#L244) 的 LIVE 流式翻译器按上游到达顺序逐帧发 `input_json_delta`。当两个 tool 的 argument delta **交错**到达（tool0-start, tool1-start, tool0-args, tool1-args…），代码对**已 `content_block_stop` 的块**再发 `content_block_delta` 且无法重开 → 违反 Anthropic「一块 start→delta*→stop 后不可重开」协议，@anthropic-ai/sdk 可能拒收或错误累积。代码作者注释（`:247-249`）已自认此路径坏、赌「well-formed OpenAI stream 永不交错」。
+- **当前行为（实测确认）**：用 producer wire-oracle 复现（[cc-to-anthropic-stream.unit.test.ts](../../tests/openai/cc-to-anthropic-stream.unit.test.ts) 的 `test.todo` "interleaved tool args…"，交错输入下 illegal deltas 非空）。**是否真触发未证**——赌注（GHC 是否真交错吐 tool 参数）无实测背书；CC/Responses wire 用 `index`/`item_id` 恰是为**允许**交错。
+- **理想架构 / 若做需改什么**：在 commit 边界**从累加器重渲染** tool_use 块（累加器已按 index 聚齐完整 arguments），每块原子 `start→delta→stop` 连续发出，绕开上游到达顺序。这正是「缓冲提交点从累加器渲染」大改的一部分（与 reasoning 透传同源的「翻译腿从累加器渲染」方向）——一次建成、三档 commit 粒度共用。live 模式的小修是逐 index 缓冲 args 到块完成再发。
+- **为何暂缓**：属独立于 reasoning 特性的既有 bug；正确修法是结构性大改（≥RFC 量级）；且触发条件待真 GHC 探针确认。发现方：GPT reviewer（2026-07-14，异模型独有发现，Claude reviewer 漏），主线核码 + producer wire-oracle 复现确认。
+
+## reasoning 透传：low-effort 无 summary 时 encrypted reasoning 跨轮丢失（LOW，2026-07-14 记）
+
+> ⚠️ **架构注记（2026-07-14）**：本条描述的 reasoning 透传实现走 **CC 中转 side-channel accommodation**，被 (anthropic↔responses) **直连映射**取代中（见 [anthropic-responses-direct-mapping-handoff.md](anthropic-responses-direct-mapping-handoff.md)）。直连落地后本条应在直连路径重新评估（`encrypted_content` 的承载与回传由直连 A 响应侧处理，见 handoff §13 单向展示定性）——不要在 CC 旁路上继续填坑。
+
+- **根因 / 现状**：reasoning 透传（landed 2026-07-14）在 GHC 返回**空 summary**时（实测：low effort 即使请求 `summary:"auto"` 也可能无 summary，见 exp/synthetic-reasoning-summary-shape）不产 thinking 块——graceful 缺席正确。但此时 reasoning item 的 `encrypted_content` 非空却**无处承载**（没有 thinking 块可挂 signature），故该轮的 encrypted reasoning 不进跨轮 round-trip。
+- **当前行为**：无 summary → 客户端不显示 reasoning（合理）、encrypted_content 被丢（次优）。有 summary → 全链路正常（thinking 块 + encrypted 封进 signature 往返）。
+- **理想架构 / 若做需改什么**：若要「即使无 summary 也保 encrypted 跨轮」，可在无 summary 但有 encrypted 时产一个**空文本 thinking 块**只承载 signature 载荷——但需先探针确认 @anthropic-ai/sdk 接受空 thinking 文本 + 非空 signature 的块（probe ① 只证了非空文本），且 Anthropic 协议是否允许空 thinking。或改用独立 sidecar 存 encrypted（不走 thinking 块）。
+- **为何暂缓**：仅 low-effort 边角、且 encrypted 本不可显示（丢的是 round-trip 能力非可见内容）；真做需额外探针。发现方：reasoning 透传探针 ②③（2026-07-14）。
+
+## history/telemetry 拆独立持久化服务（架构选项，2026-07-14 优雅重启设计时评估）
+
+- **根因 / 现状**：优雅重启（`docs/shutdown.md`「优雅重启」节）的 overlap 窗口里新旧两进程同时写 history.db / telemetry.db。当前方案靠**靶向修**消除隐患——① reclaim-orphan 排除 live 前任 ② 旧进程 drain 期停遥测 persist timer ③ WAL + busy_timeout 串行化两写者。持久化仍是**进程内嵌入式**（同进程 await 保证 never-lose-settle）。
+- **当前行为**：单进程代际交替下，overlap 写竞争有界（旧进程降级后只剩个位数在途 finalize + 新进程新写）、罕见、可被 SQLite WAL 正确串行化。读侧（`/history/api/*`、`/api/status`、`/metrics`、WS 实时推送）全是进程内同步读。
+- **理想架构 / 若做需改什么**：把 history/telemetry 抽成常驻独立服务 → 单写者、跨重启常驻、reclaim-orphan 逻辑作废。但需：给富且演进的 payload（zstd blob / 内容寻址 search_index / 异步两相 finalize / DDSketch）定义 IPC wire 协议；把「同进程 await 的 never-lose-settle 不变量」重做成分布式投递协议（背压 / 缓冲 / at-least-once）；读侧端点全部跨界或端进服务。真走到这步，正确的问法是「是否直接换 client-server DB（Postgres）」。
+- **为何暂缓**：本项目是单用户内部工具、并发仅「运维偶尔重启一次」，为有界罕见问题引常驻 sidecar + IPC 是过度工程；靶向修已治根因。**触发条件（满足才值得重做）**：① 转向多进程 / 多 worker 常驻并发 serving（不再是单进程代际交替）；② 持久化延迟 / 背压开始阻塞请求 serving（in-process 写变热路径瓶颈）；③ history/telemetry 体量长出 SQLite、本就要迁 client-server DB——那时顺势做 persistence-as-a-service 才自然。
+
+## SOCKS `session_connect_timeout=0` 跨字段校验只在单次 parse 内生效，跨 YAML 层可漏检（LOW，2026-07-14 记，B8 附带发现）
+
+- **根因 / 现状**：`docs/plan/2026-07-14-transport-config-reorg/plan-1-config-reorg.md` Task 3 附加范围新增 `ConfigSchema` 顶层 `.superRefine()`，在同一次 `ConfigSchema.safeParse()` 里检测「`proxy` 是 SOCKS + `session_connect_timeout === 0`」并拒绝。但 `loadBundledDefaultConfig()` 与 `loadRawConfigFile()`（[config.ts:418](../../src/lib/config/config.ts#L418)）各自独立调用 `validateConfig()`，之后才用 `mergeBySchema()` 合并两个已经分别验证过的 `Config` 对象——跨字段校验看不到合并后的 effective config。
+- **当前行为**：现实路径（用户在同一个 `config.yaml` 里同时写 `proxy` 和 `upstream_transport.http2.session_connect_timeout`，或经 PUT `/api/config` 一次性提交两者）完全被覆盖，因为两个字段确实在同一次 `safeParse()` 内。只有把 `proxy` 放进一层、把 `session_connect_timeout: 0` 放进另一层（bundled vs user 分裂）才会漏检——且 bundled `config.yaml` 从不出货显式 `0`（默认是正数 10）、`proxy` 又几乎总是用户覆盖层独有，这个组合在实践中概率极低。
+- **理想架构 / 若做需改什么**：在 `mergeBySchema()` 产出 effective config 之后，对合并结果**再跑一次** `ConfigSchema` 级别的跨字段校验（或至少重跑本条 superRefine），需要新增一个「合并后二次校验」的调用点，并想清楚二次校验失败时的降级策略（此时已经没有「stripped 用默认值重来」的简单退路，因为两层都已经算"验证通过"）。
+- **为何暂缓**：本条是 B8 实现过程中顺带发现的架构缝隙，不是 B8 本身要求的验收范围（B8 只要求"配 SOCKS 时 validation 拒绝 0"，同层内已完整满足）；触发条件是「bundled 与用户配置分裂持有这两个字段」这一现实中基本不出现的组合，为此新增合并后二次校验层是过度工程。**触发条件（满足才值得做）**：项目引入多层配置来源（例如按环境分层的多个 YAML 文件，而不仅是 bundled+单一用户覆盖）、或 schema 上出现更多类似的高价值跨字段约束，值得一次性建「合并后校验」机制而非逐条特殊处理。发现方：本 planner 在 B8（transport-config-reorg plan 修正）落 SOCKS 校验时的架构核实。

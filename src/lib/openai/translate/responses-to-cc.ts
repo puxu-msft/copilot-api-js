@@ -41,6 +41,12 @@ export function translateResponsesResponseToCC(response: ResponsesResponse): Cha
 function extractMessageFromOutput(output: Array<ResponsesOutputItem>): ResponseMessage {
   const textParts: Array<string> = []
   const toolCalls: Array<ToolCall> = []
+  // Reasoning passthrough: collect the DISPLAYABLE summary text + GHC's opaque encrypted_content from
+  // reasoning items, carried on the proxy CC-intermediate extension fields (reasoning /
+  // reasoning_encrypted_content) so the Anthropic renderer can build the synthetic thinking block. May be
+  // entirely absent (low effort emits no summary — verified probe exp/synthetic-reasoning-summary-shape).
+  const reasoningParts: Array<string> = []
+  let reasoningEncrypted: string | undefined
 
   for (const item of output) {
     if (item.type === "message") {
@@ -48,6 +54,11 @@ function extractMessageFromOutput(output: Array<ResponsesOutputItem>): ResponseM
         if (part.type === "output_text") textParts.push(part.text)
         if (part.type === "refusal") textParts.push(part.refusal)
       }
+    }
+
+    if (item.type === "reasoning") {
+      for (const s of item.summary) if (s.type === "summary_text" && s.text) reasoningParts.push(s.text)
+      if (typeof item.encrypted_content === "string" && item.encrypted_content.length > 0) reasoningEncrypted = item.encrypted_content
     }
 
     if (item.type === "function_call") {
@@ -59,11 +70,15 @@ function extractMessageFromOutput(output: Array<ResponsesOutputItem>): ResponseM
     }
   }
 
+  const reasoning = reasoningParts.join("")
   return {
     role: "assistant",
     content: textParts.join("") || null,
     ...(toolCalls.length > 0 && { tool_calls: toolCalls }),
-  }
+    // Proxy extension fields (absent from the SDK type — cast at construction).
+    ...(reasoning.length > 0 && { reasoning }),
+    ...(reasoningEncrypted !== undefined && { reasoning_encrypted_content: reasoningEncrypted }),
+  } as ResponseMessage
 }
 
 function mapFinishReason(status: ResponsesResponse["status"], output: Array<ResponsesOutputItem>, incompleteDetails?: { reason: string } | null): FinishReason {

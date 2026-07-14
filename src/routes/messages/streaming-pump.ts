@@ -15,6 +15,7 @@ import type { SseEventRecord } from "~/lib/history/store"
 import type { StreamEvent } from "~/types/api/anthropic"
 
 import { logServerToolBlock } from "~/lib/anthropic/server-tool-filter"
+import { upstreamFrameDiagType } from "~/lib/upstream-stream-diagnostics"
 
 /**
  * Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error.
@@ -71,11 +72,13 @@ export function recordUpstreamFrame(args: RecordUpstreamFrameArgs): void {
 
   // Faithfully record every raw upstream event, including `ping` keepalives —
   // their timing reveals upstream idle gaps. `raw` stores the verbatim upstream
-  // `data:` bytes (no parse round-trip); `type` is derived for indexing. Required by
-  // 原则3 (后端存储必须完整,不主动丢弃任何可观测原始数据).
+  // `data:` bytes (no parse round-trip); `type` is derived via the SHARED
+  // `upstreamFrameDiagType` (single source of truth for honest last-frame labels) so this
+  // native pump never drifts from the shared collector — e.g. a malformed data-bearing frame
+  // is labelled `malformed`, NOT `keepalive` (LOW-1). Required by 原则3 (后端存储必须完整).
   sseEvents.push({
     offsetMs: Date.now() - streamState.streamStartMs,
-    type: parsed?.type ?? rawEvent.event ?? "keepalive",
+    type: upstreamFrameDiagType(rawEvent),
     raw: rawEvent.data ?? "",
   })
 

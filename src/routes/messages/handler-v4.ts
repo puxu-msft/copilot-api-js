@@ -145,7 +145,11 @@ import {
 } from "~/lib/state"
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
-import { createUpstreamFrameDiagnostics } from "~/lib/upstream-stream-diagnostics"
+import {
+  //
+  createUpstreamFrameDiagnostics,
+  logUpstreamStreamTruncation,
+} from "~/lib/upstream-stream-diagnostics"
 
 import {
   //
@@ -1284,6 +1288,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // Order: writeSynthetic (samples the error frame) → recordForwarded → fail (see H3 branch).
       const partial = buildAnthropicResponseData(acc, model)
       consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
+      logUpstreamStreamTruncation("Upstream stream truncated before completion (no message_stop)", { model: acc.model || model, streamState, acc, sseEvents })
       // §10.5 gap (I-1): the live pump can truncate (clean EOF, no message_stop) BEFORE the first real
       // content_block_start — a delayed-commit stall injected the anchor, then the upstream closed silently.
       // reconcile never closed the anchor, so close it off (stop@0) before the error frame. Idempotent (a
@@ -1380,16 +1385,18 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
 
   // Live-stream diagnostic signals for `logUpstreamStreamError` (the blind-spot fix): the translate leg's
   // upstream is a CC/Responses SSE stream, so it can't reuse the direct pump's Anthropic `recordUpstreamFrame`.
-  // The shared collector observes EVERY raw frame (incl. `[DONE]`/keepalives) with an honest format-agnostic
-  // last-frame label — feeding real frames/bytes to the disconnect log so a healthy long stream capped by the
-  // upstream is never misread as `frames=0 / silence=<whole duration>` (the gpt-5.6-sol incident). The
-  // PERSISTED upstream-original track is the driver's (this is diagnostics-only).
+  // The shared collector observes every raw frame the driver hands this hook (empty keepalives included — the
+  // driver filters the `[DONE]` sentinel BEFORE onUpstreamFrame, so it never reaches here) with an honest
+  // format-agnostic last-frame label — feeding real frames/bytes to the disconnect log so a healthy long stream
+  // capped by the upstream is never misread as `frames=0 / silence=<whole duration>` (the gpt-5.6-sol incident).
+  // The PERSISTED upstream-original track is the driver's (this is diagnostics-only).
   const diag = createUpstreamFrameDiagnostics(streamStartMs)
 
   const onUpstreamFrame = (frame: UpstreamFrame): void => {
     const rawEvent = frame as ServerSentEventMessage
     diag.observe(rawEvent)
-    // Accumulation skips `[DONE]`/empty (they carry no outbound-leg content); the diagnostic counts them.
+    // Accumulation additionally skips empty frames (they carry no outbound-leg content); the diagnostic
+    // counts them as wire activity. (`[DONE]` is already filtered by the driver upstream of this hook.)
     if (!rawEvent.data || rawEvent.data === "[DONE]") return
     try {
       const parsed = JSON.parse(rawEvent.data) as Record<string, unknown>
@@ -1487,6 +1494,13 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         .catch(() => undefined)
       recordForwarded()
       consola.error(`[Anthropic:v4:translate] Upstream truncated for ${model}: drained without a finish_reason`)
+      const truncUsage = codec.getStreamMeta()?.usage
+      logUpstreamStreamTruncation("Upstream stream truncated before completion (no finish_reason)", {
+        model,
+        streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+        acc: { inputTokens: truncUsage?.input_tokens ?? 0, outputTokens: truncUsage?.output_tokens ?? 0 },
+        sseEvents: diag.sseEvents,
+      })
       env.ctx.fail(model, new Error("upstream stream truncated: closed without finish_reason"), outboundResponseData())
       return
     }

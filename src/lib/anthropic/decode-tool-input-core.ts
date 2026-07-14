@@ -19,15 +19,10 @@
 export interface DecodeToolInputConfig {
   /**
    * Tool name → list of top-level field names to decode. A tool absent from
-   * this map (and not covered by `all`) is left untouched. Keys are matched
-   * against the raw tool name verbatim — no normalization.
+   * this map is left untouched. Keys are matched against the raw tool name
+   * verbatim — no normalization.
    */
   fields: Record<string, Array<string>>
-  /**
-   * When true, attempt to decode ALL top-level string fields of every
-   * tool_use input, ignoring `fields`. Default behavior is opt-in per tool.
-   */
-  all: boolean
 }
 
 /**
@@ -56,7 +51,6 @@ export function tryDecodeJsonString(value: string): Record<string, unknown> | Ar
 
 /** Whether a tool's input is eligible for field decoding under `cfg`. */
 export function shouldDecodeToolInput(name: string, cfg: DecodeToolInputConfig): boolean {
-  if (cfg.all) return true
   return Object.hasOwn(cfg.fields, name) && cfg.fields[name].length > 0
 }
 
@@ -120,8 +114,7 @@ export function backfillAskUserQuestionHeaders(name: string, input: unknown): un
  * Decode stringified-JSON fields in a tool_use input object.
  *
  * - Non-plain-object input (string, array, null, primitive) is returned unchanged.
- * - Target fields are every top-level key when `cfg.all`, otherwise the
- *   field names listed for `name` in `cfg.fields`.
+ * - Target fields are the field names listed for `name` in `cfg.fields`.
  * - For each target field whose value is a string that decodes to an
  *   object/array, the field is replaced; every other value is preserved as-is.
  * - Returns a NEW object when at least one field changed, otherwise the
@@ -134,14 +127,8 @@ export function decodeToolUseInput(name: string, input: unknown, cfg: DecodeTool
   const obj = input as Record<string, unknown>
   // `Object.hasOwn` guards the Record index (typed as non-undefined, but a
   // missing tool name would be undefined at runtime).
-  let targetFields: Array<string>
-  if (cfg.all) {
-    targetFields = Object.keys(obj)
-  } else if (Object.hasOwn(cfg.fields, name)) {
-    targetFields = cfg.fields[name]
-  } else {
-    return input
-  }
+  if (!Object.hasOwn(cfg.fields, name)) return input
+  const targetFields = cfg.fields[name]
   if (targetFields.length === 0) return input
 
   let result: Record<string, unknown> | undefined
@@ -243,5 +230,76 @@ export function normalizeAskUserQuestionInput(name: string, input: unknown, onDi
     if (ASK_ALLOWED_TOP_KEYS.has(k)) result[k] = backfilled[k]
   }
   if (diag.salvaged || diag.strippedKeys || diag.droppedQuestionValue || diag.multiItemAmbiguous) onDiag?.(diag)
+  return result
+}
+
+/** Tool name whose missing required `to` recipient may be recovered from a misnamed alias. */
+export const SEND_MESSAGE_TOOL = "SendMessage"
+
+/**
+ * Recipient aliases the upstream model hallucinates for SendMessage's required `to`, in precedence
+ * order (first non-empty match wins). `agentId` is the empirically observed form: a finished
+ * subagent's `tool_result` text literally reads `agentId: <id> (use SendMessage with to: '<id>')`,
+ * so the model copies the camelCase LABEL `agentId` as the param name while getting the value right.
+ * (History scan: `agentId` appears as a JSON key; `agent_id` never does.) `agent_id` / `agent` are
+ * added defensively — the exact spelling is a hallucination, so a small alias set is cheap insurance.
+ */
+export const SEND_MESSAGE_RECIPIENT_ALIASES = ["agentId", "agent_id", "agent"] as const
+
+/** Set form of {@link SEND_MESSAGE_RECIPIENT_ALIASES} for key membership tests (avoids dynamic `delete`). */
+const SEND_MESSAGE_ALIAS_SET: ReadonlySet<string> = new Set(SEND_MESSAGE_RECIPIENT_ALIASES)
+
+/** What {@link normalizeSendMessageInput} did — persisted for diagnostics (parallel to {@link AskNormalizationDiag}). */
+export interface SendMessageNormalizationDiag {
+  /** The required `to` recipient was recovered by renaming a misnamed alias. */
+  renamedRecipient?: boolean
+  /** Which alias key the recipient value was recovered from (e.g. `"agentId"`) — audits spelling drift. */
+  fromAlias?: string
+}
+
+/**
+ * Recover a missing SendMessage `to` recipient from a misnamed alias on the forwarded wire.
+ *
+ * FleetView's SendMessage requires `to` (the recipient agent). opus-4.8 occasionally emits the
+ * recipient under a misnamed alias ({@link SEND_MESSAGE_RECIPIENT_ALIASES}) instead, leaving `to`
+ * absent → the client rejects the tool call ("required parameter `to` is missing"). When `to` is
+ * ABSENT and the first alias (in precedence order) carrying a non-empty string is found, this moves
+ * that value into `to` and drops EVERY alias key present (all are stray keys the client would reject).
+ *
+ * SendMessage-specific: a no-op for any other tool name. Every other case is returned unchanged (same
+ * reference, enabling zero-perturbation pass-through via `===`): `to` already present (present-but-empty
+ * is the client's own valid-shape choice, not overwritten), no alias carrying a non-empty string, or
+ * non-plain-object input. Deliberately narrow — it only touches the observed `to`-missing shape; a call
+ * that carries a valid `to` alongside a stray alias is left to the (separate, deferred) tool-agnostic
+ * invalid-key strip. `onDiag` fires once when the rename happens, naming the alias used.
+ */
+export function normalizeSendMessageInput(name: string, input: unknown, onDiag?: (d: SendMessageNormalizationDiag) => void): unknown {
+  if (name !== SEND_MESSAGE_TOOL) return input
+  if (!isPlainObject(input)) return input
+  // Only recover when the required `to` is ABSENT — a present-but-empty `to` is the client's own
+  // (valid-shape) choice and must not be overwritten.
+  if (Object.hasOwn(input, "to")) return input
+
+  // First alias (in precedence order) carrying a non-empty string recipient wins.
+  let fromAlias: string | undefined
+  let recipient: string | undefined
+  for (const alias of SEND_MESSAGE_RECIPIENT_ALIASES) {
+    const v = input[alias]
+    if (typeof v === "string" && v.length > 0) {
+      fromAlias = alias
+      recipient = v
+      break
+    }
+  }
+  if (fromAlias === undefined || recipient === undefined) return input
+
+  // Copy every non-alias key, then set `to` — drops ALL alias keys present (each is a stray key the
+  // client rejects) without a dynamic `delete`. `to` was already confirmed absent above.
+  const result: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(input)) {
+    if (!SEND_MESSAGE_ALIAS_SET.has(k)) result[k] = v
+  }
+  result.to = recipient
+  onDiag?.({ renamedRecipient: true, fromAlias })
   return result
 }

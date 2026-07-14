@@ -11,13 +11,15 @@ import {
   backfillAskUserQuestionHeaders,
   decodeToolUseInput,
   normalizeAskUserQuestionInput,
+  normalizeSendMessageInput,
+  SEND_MESSAGE_TOOL,
   shouldDecodeToolInput,
   tryDecodeJsonString,
   unescapeJsonUnicode,
   type DecodeToolInputConfig,
 } from "~/lib/anthropic/decode-tool-input-core"
 
-const cfg = (fields: Record<string, Array<string>>, all = false): DecodeToolInputConfig => ({ fields, all })
+const cfg = (fields: Record<string, Array<string>>): DecodeToolInputConfig => ({ fields })
 
 describe("tryDecodeJsonString", () => {
   test("decodes a JSON array string to an array", () => {
@@ -63,10 +65,6 @@ describe("shouldDecodeToolInput", () => {
   test("false when tool maps to an empty field list", () => {
     expect(shouldDecodeToolInput("Empty", cfg({ Empty: [] }))).toBe(false)
   })
-
-  test("true for any tool when all=true", () => {
-    expect(shouldDecodeToolInput("Anything", cfg({}, true))).toBe(true)
-  })
 })
 
 describe("decodeToolUseInput", () => {
@@ -80,12 +78,6 @@ describe("decodeToolUseInput", () => {
     const input = { questions: '[{"header":"h"}]' }
     const out = decodeToolUseInput("OtherTool", input, cfg({ AskUserQuestion: ["questions"] }))
     expect(out).toBe(input)
-  })
-
-  test("all=true decodes every top-level stringified field", () => {
-    const input = { a: '{"x":1}', b: "[1,2]", c: "plain" }
-    const out = decodeToolUseInput("Any", input, cfg({}, true))
-    expect(out).toEqual({ a: { x: 1 }, b: [1, 2], c: "plain" })
   })
 
   test("preserves non-JSON string fields verbatim", () => {
@@ -122,18 +114,18 @@ describe("decodeToolUseInput", () => {
   })
 
   test("returns string input unchanged", () => {
-    const out = decodeToolUseInput("T", "a string", cfg({ T: ["x"] }, true))
+    const out = decodeToolUseInput("T", "a string", cfg({ T: ["x"] }))
     expect(out).toBe("a string")
   })
 
   test("returns null input unchanged", () => {
-    const out = decodeToolUseInput("T", null, cfg({}, true))
+    const out = decodeToolUseInput("T", null, cfg({}))
     expect(out).toBeNull()
   })
 
   test("returns array input unchanged", () => {
     const arr = [1, 2, 3]
-    const out = decodeToolUseInput("T", arr, cfg({}, true))
+    const out = decodeToolUseInput("T", arr, cfg({}))
     expect(out).toBe(arr)
   })
 
@@ -359,5 +351,97 @@ describe("normalizeAskUserQuestionInput", () => {
     const input = { questions: [{ header: "h", multiSelect: false, options: [] }], question: String.raw`use \u4e2d?` }
     const out = normalizeAskUserQuestionInput(AUQ, input) as any
     expect(out.questions[0].question).toBe("use 中?")
+  })
+})
+
+describe("normalizeSendMessageInput", () => {
+  test("SEND_MESSAGE_TOOL is the SendMessage tool name", () => {
+    expect(SEND_MESSAGE_TOOL).toBe("SendMessage")
+  })
+
+  test("recovers a missing `to` from a misnamed `agentId` and drops the alias", () => {
+    const input = { agentId: "planner", content: "hi" }
+    const out = normalizeSendMessageInput("SendMessage", input) as Record<string, unknown>
+    expect(out).toEqual({ to: "planner", content: "hi" })
+    expect(Object.hasOwn(out, "agentId")).toBe(false)
+  })
+
+  test("fires the diag exactly once, naming the alias used", () => {
+    const diags: Array<unknown> = []
+    normalizeSendMessageInput("SendMessage", { agentId: "planner" }, (d) => diags.push(d))
+    expect(diags).toEqual([{ renamedRecipient: true, fromAlias: "agentId" }])
+  })
+
+  test("recovers from the `agent_id` alias too", () => {
+    const out = normalizeSendMessageInput("SendMessage", { agent_id: "planner", content: "hi" }) as Record<string, unknown>
+    expect(out).toEqual({ to: "planner", content: "hi" })
+  })
+
+  test("recovers from the `agent` alias too", () => {
+    const out = normalizeSendMessageInput("SendMessage", { agent: "planner" }) as Record<string, unknown>
+    expect(out).toEqual({ to: "planner" })
+  })
+
+  test("alias precedence: agentId wins over agent_id/agent, and ALL alias keys are dropped", () => {
+    const diags: Array<unknown> = []
+    const out = normalizeSendMessageInput("SendMessage", { agent: "z", agent_id: "y", agentId: "x", content: "hi" }, (d) => diags.push(d)) as Record<
+      string,
+      unknown
+    >
+    expect(out).toEqual({ to: "x", content: "hi" })
+    expect(Object.hasOwn(out, "agentId")).toBe(false)
+    expect(Object.hasOwn(out, "agent_id")).toBe(false)
+    expect(Object.hasOwn(out, "agent")).toBe(false)
+    expect(diags).toEqual([{ renamedRecipient: true, fromAlias: "agentId" }])
+  })
+
+  test("falls through to a later alias when an earlier one is empty/non-string", () => {
+    const out = normalizeSendMessageInput("SendMessage", { agentId: "", agent_id: 42, agent: "planner" }) as Record<string, unknown>
+    expect(out).toEqual({ to: "planner" })
+  })
+
+  test("no-op (same reference) when `to` is already present — even alongside a stray agentId", () => {
+    const input = { to: "planner", agentId: "other" }
+    expect(normalizeSendMessageInput("SendMessage", input)).toBe(input)
+  })
+
+  test("no-op when `to` is present-but-empty (the client's own valid-shape choice)", () => {
+    const input = { to: "", agentId: "planner" }
+    const out = normalizeSendMessageInput("SendMessage", input)
+    expect(out).toBe(input)
+  })
+
+  test("no-op when agentId is absent", () => {
+    const input = { content: "hi" }
+    expect(normalizeSendMessageInput("SendMessage", input)).toBe(input)
+  })
+
+  test("no-op when agentId is an empty string (can't produce a valid recipient)", () => {
+    const input = { agentId: "" }
+    expect(normalizeSendMessageInput("SendMessage", input)).toBe(input)
+  })
+
+  test("no-op when agentId is non-string", () => {
+    const input = { agentId: 42 }
+    expect(normalizeSendMessageInput("SendMessage", input)).toBe(input)
+  })
+
+  test("no-op for a non-SendMessage tool (returns same reference)", () => {
+    const input = { agentId: "planner" }
+    expect(normalizeSendMessageInput("OtherTool", input)).toBe(input)
+  })
+
+  test("no-op for non-plain-object input", () => {
+    expect(normalizeSendMessageInput("SendMessage", null)).toBeNull()
+    const arr = [{ agentId: "x" }]
+    expect(normalizeSendMessageInput("SendMessage", arr)).toBe(arr)
+    expect(normalizeSendMessageInput("SendMessage", "str")).toBe("str")
+  })
+
+  test("does not mutate the original input on change", () => {
+    const input = { agentId: "planner" }
+    const out = normalizeSendMessageInput("SendMessage", input)
+    expect(out).not.toBe(input)
+    expect(input).toEqual({ agentId: "planner" })
   })
 })

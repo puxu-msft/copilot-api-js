@@ -18,8 +18,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import { getHistory } from "~/lib/history/store"
 import {
@@ -124,7 +126,20 @@ describe("POST /v1/messages — upstream stream truncation detection", () => {
 
   test("truncated stream → client receives the partial frames AND a synthetic error event", async () => {
     frameBuilder = buildTruncatedFrames
-    const sse = await streamRequest("trunc-client-error")
+    // HIGH-1: the native Anthropic pump's clean-EOF truncation also emits the rich diagnostic (kind=truncated).
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let sse: string
+    try {
+      sse = await streamRequest("trunc-client-error")
+    } finally {
+      const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(diagLine).toBeDefined()
+      expect(diagLine).toContain("kind=truncated")
+      expect(diagLine).toContain(`model=${MODEL}`)
+      expect(diagLine).not.toContain("frames=0")
+      expect(diagLine).not.toContain("last-frame=none@0ms")
+    }
 
     // The partial content the upstream did send is still forwarded (streaming can't unsend).
     expect(dataFramesOfType(sse, "message_start")).toHaveLength(1)

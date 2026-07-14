@@ -905,18 +905,19 @@ export interface State {
   readonly decodeToolInputFields: Record<string, Array<string>>
 
   /**
-   * When true, decode ALL top-level string fields of every tool_use input
-   * (ignores `decodeToolInputFields`). Default false. server_tool_use is
-   * never affected.
-   */
-  readonly decodeAllToolInputFields: boolean
-
-  /**
    * When true, backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item that has a header but no question).
    * Only items missing the `question` key are touched; present-but-empty is left alone. History keeps the upstream-original form.
    * Default true. Runs after `decodeToolInputFields` (so a stringified `questions` array is structured first).
    */
   readonly backfillQuestionFromHeader: boolean
+
+  /**
+   * When true, recover a missing SendMessage `to` recipient from a misnamed `agentId` alias on the
+   * response wire (the client rejects a SendMessage call whose required `to` is absent). Only touched
+   * when `to` is absent and `agentId` is a non-empty string; History keeps the upstream-original form.
+   * Default true.
+   */
+  readonly fixSendMessageRecipient: boolean
 
   /**
    * Default TTL (ms) for reactive learning records (feature-negotiation cache).
@@ -1296,8 +1297,8 @@ export function setAnthropicBehavior(
       | "keepToolFields"
       | "rejectBodyFields"
       | "decodeToolInputFields"
-      | "decodeAllToolInputFields"
       | "backfillQuestionFromHeader"
+      | "fixSendMessageRecipient"
     >
   >,
 ): void {
@@ -1710,8 +1711,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   keepToolFields: {} as Record<string, Array<string>>,
   rejectBodyFields: {} as Record<string, Array<string>>,
   decodeToolInputFields: { AskUserQuestion: ["questions"] } as Record<string, Array<string>>,
-  decodeAllToolInputFields: false,
   backfillQuestionFromHeader: true,
+  fixSendMessageRecipient: true,
   negotiationDefaultTtlMs: 30 * 86_400_000,
   negotiationTtlOverridesMs: { toolFields: 90 * 86_400_000, partnerFeatures: Number.POSITIVE_INFINITY } as Record<string, number>,
   disabledModels: [] as ReadonlyArray<string>,
@@ -1791,8 +1792,8 @@ export function resetConfigManagedState(): void {
     keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
     rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
-    decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
     backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+    fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
   })
   setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
   setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
@@ -1974,8 +1975,8 @@ const mutableState: MutableState = {
   keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
   rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
   decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
-  decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
   backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+  fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
   negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
   negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
   disabledModels: [...CONFIG_MANAGED_DEFAULTS.disabledModels],

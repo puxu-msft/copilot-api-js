@@ -103,19 +103,19 @@ export const ServerConfigSchema = z.object({
 
 **`src/lib/state.ts` 新增/改名**：
 - `setUpstreamTransportConfig(patch: Partial<Pick<MutableState, "upstreamKeepaliveDelay" | "upstreamH2PingInterval" | "sessionConnectTimeout" | "pooledConnectionIdleTimeout" | "softMaxUpstreamWsConnections">>): void` —— 触发新监听器集合。
-- `onUpstreamTransportChange(listener: () => void): () => void` —— 新监听器订阅函数（返回取消订阅函数，镜像现有 `onTransportTimeoutChange` 签名）。
+- `onUpstreamTransportChange(listener: () => void): () => void` —— 新监听器订阅函数（返回取消订阅函数，镜像 `onRequestWatchdogChange` 的既有签名形状）。
 - `setResponsesWsIngressConfig(patch: Partial<Pick<MutableState, "clientWebsocketKeepOpen" | "maxWsFrameBytes" | "maxClientWsConnections">>): void` —— 纯 `updateState`，无监听器。
 - `setTimeoutConfig` 收窄为 `Partial<Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval">>`，`transportChanged` 门控只保留 `responseHeaderTimeout`/`streamIdleTimeout`。
-- `onTransportTimeoutChange` 保留原名不变（它现在只代表"应用层看门狗时长变化"，语义仍然自洽——不需要按 spec §6.2 强制改名，因为拆分后它已经不再管 TCP keepalive；`upstreamKeepaliveDelay`/`upstreamH2PingInterval` 两个 MutableState 字段本身不改名，只是换了 setter owner）。
+- **`onTransportTimeoutChange` 改名为 `onRequestWatchdogChange`（`transportTimeoutListeners` 同步改名为 `requestWatchdogListeners`）**——spec §6 相邻正确化第 2 条 + §7 验收「旧符号 `onTransportTimeoutChange` 零残留」均已明确要求改名，不因"拆分后它已经不再管 TCP keepalive、语义自洽"而豁免（P1 起草阶段一度以此为由保留原名，经 gpt reviewer 对抗审查 + 用户裁决判定不成立：spec 白纸黑字要求改名，不是"名字凑巧还说得通就不用改"）。新名 `onRequestWatchdogChange` 对齐 D1 轴名"请求生命周期看门狗"（`timeouts.*`）。P1 必须做到**旧符号零残留**：函数体、`transportTimeoutListeners` 集合、所有 import/调用点（`proxy.ts` 订阅处、测试文件）全部同步改名，`grep -rn "onTransportTimeoutChange\|transportTimeoutListeners" src/ tests/` 在 P1 提交后必须零命中。
 - `MutableState` 新增字段：`sessionConnectTimeout: number`（秒，0=禁用）、`pooledConnectionIdleTimeout: number`（秒，0=禁用）、`softMaxUpstreamWsConnections: number`（0=无上限，替代 `maxUpstreamWsConnections` 的角色，字段直接改名）。
 - `CONFIG_MANAGED_DEFAULTS` 新增：`sessionConnectTimeout: 10`、`pooledConnectionIdleTimeout: 300`、`softMaxUpstreamWsConnections: 32`（值等于旧 `maxUpstreamWsConnections` 默认）。
 
-**`proxy.ts` 订阅点**：`ensureTimeoutSubscription()` 必须同时订阅 `onTransportTimeoutChange`（app 看门狗变化）与 `onUpstreamTransportChange`（TCP keepalive 变化），二者任一触发都要 `rebuildUpstreamDispatcher()`——这是 P1 必须改到位的接线，否则 P2 的 undici keepalive 0-语义修复在热更新时不会生效。
+**`proxy.ts` 订阅点**：`ensureTimeoutSubscription()` 必须同时订阅 `onRequestWatchdogChange`（app 看门狗变化，改名后的新符号）与 `onUpstreamTransportChange`（TCP keepalive 变化），二者任一触发都要 `rebuildUpstreamDispatcher()`——这是 P1 必须改到位的接线，否则 P2 的 undici keepalive 0-语义修复在热更新时不会生效。
 
 ### P2 产出，P4 消费
 
 - `src/lib/transport/http2-client.ts` 导出 `getSessionConnectTimeoutMs(): number`（0=禁用，不设超时）。
-- `src/lib/openai/upstream-ws.ts`：`createUpstreamWsManager` 的 `create()` 调用 `connectionFactory` 时新增 `idleTimeoutMs: getPooledConnectionIdleTimeoutMs()` 入参。
+- `src/lib/openai/upstream-ws.ts` 导出 `getPooledConnectionIdleTimeoutMs(): number`（0=禁用，永不 idle-timeout）；`createUpstreamWsManager` 的 `create()` 调用 `connectionFactory` 时新增 `idleTimeoutMs: getPooledConnectionIdleTimeoutMs()` 入参。**导出（非私有函数）是用户裁决锁定的结论**：P4 的 `rescheduleIdleTimeout`/reconcile 复用同一个函数计算新 idle deadline，避免重复实现 `state.pooledConnectionIdleTimeout * 1000` 换算逻辑（DRY）；plan-2 早前把这一点记录为"若主会话有不同偏好可能收窄为私有函数"的开放项，现已裁决为定案，不再是待定项。
 - `src/lib/openai/upstream-ws-connection.ts`：`UpstreamWsConnection` 接口新增 `rescheduleIdleTimeout(newIdleTimeoutMs: number): void` 方法（P4 专用；P2 只需保证 `idleTimeoutMs` 从 state 读取，P4 才真正调用重调度）。
 
 ### P3 产出（不影响 P2/P4，独立分支）
@@ -151,13 +151,15 @@ export const ServerConfigSchema = z.object({
   export interface UpstreamWsStatusRow {
     key: string
     model: string
-    state: "active" | "busy" | "idle"
+    state: "connecting" | "busy" | "idle"
     generation: number
   }
   export function getUpstreamWsStatusSnapshot(manager: UpstreamWsManager): ReadonlyArray<UpstreamWsStatusRow>
   ```
 
 以上签名在各阶段计划文档中保持逐字一致；如某阶段执行中发现必须偏离，须先回来更新本节，不得在单阶段文档里私自改名。
+
+**`UpstreamWsStatusRow.state` 的 `"connecting"`（非 `"active"`）是 reviewer + 用户裁决的强制改名**：`H2SessionStatusRow.lifecycle` 的 `"active"` 语义是"已建立、可路由"，而 WS 侧原计划的 `"active"` 却表示"尚未建立"——两个同名字面量在同一状态面板里含义互反，是明显的 footgun。裁决=WS 侧改用 `"connecting"` 消除反义；映射规则不变：`!isOpen → "connecting"`，`isOpen && isBusy → "busy"`，`isOpen && !isBusy → "idle"`。P4（实现+测试）、P5（mock/Badge 渲染/过滤/API 测试）须逐字同步这个改名，不得残留 `"active"` 作为 WS 状态字面量。
 
 ## 自审记录（本计划落笔前的 spec 覆盖检查）
 

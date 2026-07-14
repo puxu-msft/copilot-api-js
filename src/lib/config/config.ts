@@ -711,10 +711,15 @@ export async function applyConfigToState(): Promise<Config> {
     // Tool-name-keyed: keys are tool names, matched verbatim. Do NOT normalize
     // (normalizeModelKeyedRecord folds case/separators and is model-specific).
     // cloneStatePatch deep-clones the record, so passing the parsed value is safe.
-    if (a.tool_decode_input_fields !== undefined) setAnthropicBehavior({ decodeToolInputFields: a.tool_decode_input_fields })
-    if (a.tool_decode_all_input_fields !== undefined) setAnthropicBehavior({ decodeAllToolInputFields: a.tool_decode_all_input_fields })
-    if (a.tool_recover_call_text !== undefined) setAnthropicBehavior({ recoverToolCallText: a.tool_recover_call_text })
-    if (a.tool_repair_malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: a.tool_repair_malformed_input })
+    // Response-wire fixes live under the `response_text_fix` / `response_tool_use_fix` sections.
+    const textFix = a.response_text_fix
+    const toolUseFix = a.response_tool_use_fix
+    if (textFix?.invoke_in_text !== undefined) setAnthropicBehavior({ recoverToolCallText: textFix.invoke_in_text })
+    if (toolUseFix?.decode_top_level_field !== undefined) setAnthropicBehavior({ decodeToolInputFields: toolUseFix.decode_top_level_field })
+    if (toolUseFix?.malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: toolUseFix.malformed_input })
+    if (toolUseFix?.send_message_to_missing !== undefined) setAnthropicBehavior({ fixSendMessageRecipient: toolUseFix.send_message_to_missing })
+    if (toolUseFix?.ask_user_question_question_missing !== undefined)
+      setAnthropicBehavior({ backfillQuestionFromHeader: toolUseFix.ask_user_question_question_missing })
     if (a.refusal_sse_rewrite !== undefined) setAnthropicBehavior({ refusalSseRewrite: a.refusal_sse_rewrite })
     if (a.refusal_end_turn_text !== undefined) setAnthropicBehavior({ refusalEndTurnText: a.refusal_end_turn_text })
     if (a.refusal_error_message !== undefined) setAnthropicBehavior({ refusalErrorMessage: a.refusal_error_message })
@@ -723,7 +728,6 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.error_ask_user_question !== undefined) setAnthropicBehavior({ errorAskUserQuestion: a.error_ask_user_question })
     if (a.error_auq_template !== undefined) setAnthropicBehavior({ errorAuqTemplate: a.error_auq_template })
     if (a.error_selfheal_delegate !== undefined) setAnthropicBehavior({ errorSelfhealDelegate: a.error_selfheal_delegate })
-    if (a.tool_backfill_question !== undefined) setAnthropicBehavior({ backfillQuestionFromHeader: a.tool_backfill_question })
     if (a.system_rewrite_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.system_rewrite_reminders === "boolean") {

@@ -354,6 +354,8 @@ describe("Responses WebSocket transport", () => {
     })
     emitTruncated = true
 
+    // HIGH-1: the WS clean-EOF truncation also emits the rich diagnostic (kind=truncated).
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
     server = startWsServer()
     const ws = new WebSocket(`${server.url}/responses`)
     const closePromise = waitForSocketClose(ws)
@@ -361,6 +363,13 @@ describe("Responses WebSocket transport", () => {
     ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "hi" } }))
 
     const result = await closePromise
+
+    const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+    diagSpy.mockRestore()
+    expect(diagLine).toBeDefined()
+    expect(diagLine).toContain("kind=truncated")
+    expect(diagLine).not.toContain("frames=0")
+    expect(diagLine).toContain("last-frame=response.output_text.delta@")
 
     // A clean terminator: an error frame + the WS H3 close code (1011), not a silent 1000.
     const errorFrame = result.messages.find((m) => m.type === "error") as { error?: { message?: string } } | undefined

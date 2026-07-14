@@ -258,43 +258,57 @@ function normalizationObserver(ctx: RequestContext): Pick<Parameters<typeof crea
   }
 }
 
+/**
+ * `onSendMessageNormalize` sink: persist the SendMessage recipient-recovery diagnostic to `pipelineInfo`
+ * (history-auditable — the setter publishes context_updated). Parallel to `normalizationObserver`.
+ */
+function sendMessageNormalizationObserver(ctx: RequestContext): Pick<Parameters<typeof createToolInputStreamDecoder>[1] & object, "onSendMessageNormalize"> {
+  return {
+    onSendMessageNormalize: (diag) => ctx.recordSendMessageNormalization(diag),
+  }
+}
+
 const decodeRewrite: ResponseRewrite = {
   name: "tool-input-decode",
   order: RESPONSE_REWRITE_ORDER.toolInputDecode,
-  // Active when any decode rule could fire (field decode / decode-all / AskUserQuestion
-  // header backfill / malformed-input repair). When all are off the decoder is a pure
-  // passthrough, so skipping it is byte-identical.
+  // Active when any decode rule could fire (field decode / AskUserQuestion header backfill /
+  // SendMessage recipient recovery / malformed-input repair). When all are off the decoder is a
+  // pure passthrough, so skipping it is byte-identical.
   appliesTo: (env) =>
     ANTHROPIC(env)
     && (Object.keys(state.decodeToolInputFields).length > 0
-      || state.decodeAllToolInputFields
       || state.backfillQuestionFromHeader
+      || state.fixSendMessageRecipient
       || state.toolRepairMalformedInput.length > 0),
   createState: (env): DecodeState => ({
     decoder: createToolInputStreamDecoder(
-      { fields: state.decodeToolInputFields, all: state.decodeAllToolInputFields },
+      { fields: state.decodeToolInputFields },
       {
         backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
+        normalizeSendMessageRecipient: state.fixSendMessageRecipient,
         repairMalformedInput: state.toolRepairMalformedInput,
         ...repairObservers(env.ctx),
         ...normalizationObserver(env.ctx),
+        ...sendMessageNormalizationObserver(env.ctx),
       },
     ),
   }),
   transform: (frame, st): FrameAction => bufferOrEmit((st as DecodeState).decoder.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage)),
   flush: (st): Array<UpstreamFrame> => (st as DecodeState).decoder.flush() as Array<UpstreamFrame>,
-  // Non-streaming: decode stringified-JSON input fields + AskUserQuestion header backfill on
-  // the whole response (same config the streaming decoder reads). `appliesTo` gated that at
-  // least one decode rule could fire, so this never runs as a pure passthrough.
+  // Non-streaming: decode stringified-JSON input fields + AskUserQuestion header backfill + SendMessage
+  // recipient recovery on the whole response (same config the streaming decoder reads). `appliesTo` gated
+  // that at least one decode rule could fire, so this never runs as a pure passthrough.
   transformWhole: (response, env): unknown =>
     decodeToolInputBlocksInResponse(
       response as AnthropicMessageResponse,
-      { fields: state.decodeToolInputFields, all: state.decodeAllToolInputFields },
+      { fields: state.decodeToolInputFields },
       {
         backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
+        normalizeSendMessageRecipient: state.fixSendMessageRecipient,
         repairMalformedInput: state.toolRepairMalformedInput,
         ...repairObservers(env.ctx),
         ...normalizationObserver(env.ctx),
+        ...sendMessageNormalizationObserver(env.ctx),
       },
     ),
 }

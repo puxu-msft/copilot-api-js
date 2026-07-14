@@ -48,7 +48,7 @@ import type {
 } from "~/types/api/openai-chat-completions"
 
 import { repairToolInput } from "~/lib/anthropic/tool-input-repair"
-import { SYNTHETIC_REASONING_SIGNATURE } from "~/lib/anthropic/synthetic-reasoning"
+import { buildSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
 import { netInputTokens } from "~/lib/request/usage-normalize"
 
 /** The default repair cascade for a malformed tool-call `arguments` JSON string (full battle-tested stack). */
@@ -107,16 +107,19 @@ export function translateCCResponseToAnthropic(response: ChatCompletionResponse)
   let sawLength = false
   let contentFiltered = false
   // Collect plaintext reasoning across choices — forwarded as a leading synthetic thinking block
-  // (richest-data-flow; stripped on echo-back via the sentinel signature). GHC's non-streaming cc leg
-  // usually returns none (PROBE OQ1), so this is typically a no-op — but never drop it when present.
+  // (richest-data-flow; stripped on echo-back via the labeled-envelope signature). GHC's non-streaming
+  // cc leg usually returns none (PROBE OQ1), so this is typically a no-op — but never drop it when present.
   let reasoningText = ""
+  let reasoningEncrypted: string | undefined
 
   // Multi-choices FOLD: walk EVERY choice in order (GHC splits text/tool across choices) and append
   // its text block (if any) then its tool_use blocks — preserving block order across the fold.
   for (const choice of response.choices) {
     const message = choice.message
-    const reasoningRaw = (message as { reasoning?: unknown; reasoning_content?: unknown }).reasoning ?? (message as { reasoning_content?: unknown }).reasoning_content
+    const msgExt = message as { reasoning?: unknown; reasoning_content?: unknown; reasoning_encrypted_content?: unknown }
+    const reasoningRaw = msgExt.reasoning ?? msgExt.reasoning_content
     if (typeof reasoningRaw === "string") reasoningText += reasoningRaw
+    if (typeof msgExt.reasoning_encrypted_content === "string" && msgExt.reasoning_encrypted_content.length > 0) reasoningEncrypted = msgExt.reasoning_encrypted_content
     if (typeof message.content === "string" && message.content.length > 0) {
       content.push({ type: "text", text: message.content } satisfies TextBlockParam)
     }
@@ -146,7 +149,7 @@ export function translateCCResponseToAnthropic(response: ChatCompletionResponse)
 
   // Prepend the synthetic reasoning (thinking) block, if any — Anthropic requires thinking FIRST.
   if (reasoningText.length > 0) {
-    content.unshift({ type: "thinking", thinking: reasoningText, signature: SYNTHETIC_REASONING_SIGNATURE } satisfies ThinkingBlockParam)
+    content.unshift({ type: "thinking", thinking: reasoningText, signature: buildSyntheticReasoningSignature(reasoningEncrypted) } satisfies ThinkingBlockParam)
   }
 
   return {

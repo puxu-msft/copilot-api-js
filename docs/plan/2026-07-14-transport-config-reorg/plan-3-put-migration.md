@@ -62,9 +62,9 @@ compat.ts: extractAndTranslateDeprecatedWithOps(raw)
 |---|---|
 | `src/lib/config/compat.ts` | 新增 `ConfigMigrationApplyResult` 接口 + `extractAndTranslateDeprecatedWithOps()` 导出函数（迁移应用逻辑，从 `validation.ts` 搬入并增强）；新增导出 `navigate()`；新增私有 `deepMergeMissingOnly`/`deepCloneJsonSafe`；新增私有 `warnedDeprecatedKeys` + `warnDeprecatedKeyOnce` + 导出 `_resetDeprecatedKeyWarnTrackingForTests()`；`ConfigMigration` 接口新增可选字段 `isInPlaceValueMigration?: boolean`；`migrateValue()` builder 设置该字段为 `true`；模块头 JSDoc 更新（不再说"consumed by validation.ts's extractAndTranslateDeprecated()"，改为"owns the migration application logic itself"） |
 | `src/lib/config/validation.ts` | 删除私有 `extractAndTranslateDeprecated`/`deepMergeMissingOnly`/`navigate`/`deepCloneJsonSafe`（迁移到 compat.ts，`navigate` 改为从 `./compat` 导入）；`ConfigValidationResult` 的 `valid:true` 分支新增 `legacyPathsRemoved: ReadonlyArray<string>`；`validateConfig`/`validateConfigInput` 改用 `extractAndTranslateDeprecatedWithOps`；`_resetConfigValidationWarnTrackingForTests` 内部新增调用 `_resetDeprecatedKeyWarnTrackingForTests()` |
-| `src/routes/config/route.ts` | `mergeConfigIntoDocument` 新增 `upstream_transport`/`server` 两行（复用既有 `setNestedScalarContainer`）；新增私有 `deleteLegacyPathsAndPruneEmptyParents(doc, legacyPaths)`；PUT handler 在 `mergeConfigIntoDocument` 调用前插入这一步；新增 import `isMap` |
+| `src/routes/config/route.ts` | `mergeConfigIntoDocument` 新增 `upstream_transport`/`server` 两行（复用既有 `setNestedScalarContainer`）；新增私有 `deleteLegacyPathsAndPruneEmptyParents(doc, legacyPaths)`；PUT handler 在 `mergeConfigIntoDocument` 调用前插入这一步；新增 import `isMap`；`setNestedScalarContainer`（既有函数）升级为对嵌套子对象递归深合并 + 任意深度 `null` 删除，签名不变（B9，Task 3 附加范围） |
 | `tests/config/config-compat.unit.test.ts` | 新增对 `extractAndTranslateDeprecatedWithOps` 的直接单测（legacyPathsRemoved 内容 + in-place 值迁移不进入该列表） |
-| `tests/config/config-yaml-routes.http.test.ts` | 新增 PUT 场景：legacy 路径写回后从磁盘消失 + 父节点剪除 + 兄弟字段保留 + in-place 值迁移不触发误删 |
+| `tests/config/config-yaml-routes.http.test.ts` | 新增 PUT 场景：legacy 路径写回后从磁盘消失 + 父节点剪除 + 兄弟字段保留 + in-place 值迁移不触发误删；新增 `upstream_transport.http2`/`anthropic.buffered_retry` 递归深合并 + 任意深度 `null` 删除场景（B9） |
 
 ---
 
@@ -723,6 +723,193 @@ compat.ts: extractAndTranslateDeprecatedWithOps(raw)
 
 ---
 
+### Task 3 附加范围 — 嵌套 section 部分 PUT 升级为递归深合并 + `null` 删除（用户裁决，B9）
+
+**背景**：`setNestedScalarContainer`（`route.ts:315`）目前只对`value`自己的**直接子键**做逐键处理——子键若是标量/数组，`setScalar` 正确地"只改这一个键、其余兄弟不动"；但子键若本身还是一个嵌套对象（如 `upstream_transport.http2`、`anthropic.buffered_retry`），当前实现把整个子对象原样交给 `setScalar`，后者调用 `doc.setIn(childPath, wholeObject)`——`yaml` 库据此把该路径下的整个节点**整体替换**，抹掉该子对象里当前 PUT body 没提到的其他字段（只 PUT `session_connect_timeout` 会抹掉磁盘上已有的 `ping_interval`）。用户已裁决升级为**逐字段递归深合并**（部分 PUT 只改给出的字段、任意深度的同段兄弟字段保留）+ **`null` 在任意深度都显式删除该字段**，`anthropic.buffered_retry`（现存唯一命中该 bug 的既有字段）一并切到新语义——本项目 PUT 行为无向后兼容负担，不为它单独保留旧的整体替换分支。此前 `plan-kickoff.md` 把"是否要做这个升级"记为待主会话裁决的开放项（见文末条目更新），现已裁决为**做**，故并入本 Task（而非单开新 Task），因为改的是同一个 `setNestedScalarContainer` 函数，且它已经被 Task 3 上方 Step 2 用于挂载 `upstream_transport`/`server`。
+
+- **Files**：
+  - Modify：`/home/xp/src/copilot-api-js/src/routes/config/route.ts:315-326`（`setNestedScalarContainer`，无签名变化，纯内部逻辑升级）
+  - Test：`/home/xp/src/copilot-api-js/tests/config/config-yaml-routes.http.test.ts`
+
+#### Steps
+
+1. **写失败测试**——在 `config-yaml-routes.http.test.ts` 末尾（`describe("config yaml routes"` 块内收尾 `})` 之前）追加：
+
+   ```ts
+   test("PUT /api/config/yaml deep-merges upstream_transport.http2 instead of whole-replacing the section (B9)", async () => {
+     await writeConfig(`
+   upstream_transport:
+     http2:
+       ping_interval: 30
+       session_connect_timeout: 5
+   `)
+
+     const res = await app.request("/api/config/yaml", {
+       method: "PUT",
+       headers: { "content-type": "application/json" },
+       body: JSON.stringify({
+         upstream_transport: { http2: { session_connect_timeout: 8 } },
+       }),
+     })
+
+     expect(res.status).toBe(200)
+     const written = await readConfig()
+     expect(written).toContain("ping_interval: 30")
+     expect(written).toContain("session_connect_timeout: 8")
+   })
+
+   test("PUT /api/config/yaml null-deletes a single leaf inside upstream_transport.http2 while preserving its sibling (B9)", async () => {
+     await writeConfig(`
+   upstream_transport:
+     http2:
+       ping_interval: 30
+       session_connect_timeout: 5
+   `)
+
+     const res = await app.request("/api/config/yaml", {
+       method: "PUT",
+       headers: { "content-type": "application/json" },
+       body: JSON.stringify({
+         upstream_transport: { http2: { ping_interval: null } },
+       }),
+     })
+
+     expect(res.status).toBe(200)
+     const written = await readConfig()
+     expect(written).not.toContain("ping_interval")
+     expect(written).toContain("session_connect_timeout: 5")
+   })
+
+   test("PUT /api/config/yaml anthropic.buffered_retry deep-merges instead of whole-replacing (B9, existing field switched to new semantics)", async () => {
+     await writeConfig(`
+   anthropic:
+     buffered_retry:
+       max_retries: 5
+       heartbeat_sec: 20
+   `)
+
+     const res = await app.request("/api/config/yaml", {
+       method: "PUT",
+       headers: { "content-type": "application/json" },
+       body: JSON.stringify({
+         anthropic: { buffered_retry: { max_retries: 9 } },
+       }),
+     })
+
+     expect(res.status).toBe(200)
+     const written = await readConfig()
+     expect(written).toContain("heartbeat_sec: 20")
+     expect(written).toContain("max_retries: 9")
+   })
+
+   test("PUT /api/config/yaml sending null for a whole nested sub-object still deletes it entirely (regression, any depth)", async () => {
+     await writeConfig(`
+   anthropic:
+     buffered_retry:
+       max_retries: 5
+       heartbeat_sec: 20
+     tool_strip_read_result_tags: true
+   `)
+
+     const res = await app.request("/api/config/yaml", {
+       method: "PUT",
+       headers: { "content-type": "application/json" },
+       body: JSON.stringify({
+         anthropic: { buffered_retry: null },
+       }),
+     })
+
+     expect(res.status).toBe(200)
+     const written = await readConfig()
+     expect(written).not.toContain("buffered_retry")
+     expect(written).not.toContain("max_retries")
+     expect(written).not.toContain("heartbeat_sec")
+     expect(written).toContain("tool_strip_read_result_tags: true")
+   })
+   ```
+
+   跑：
+   ```
+   bun test tests/config/config-yaml-routes.http.test.ts
+   ```
+   确认前 3 个用例失败（当前实现把 `http2`/`buffered_retry` 整体替换，磁盘上原有的兄弟字段消失，断言 `toContain` 落空）；第 4 个用例（整体 `null` 删除）在当前实现下已经通过——保留作为显式回归锚点，证明"升级为深合并"不会连带破坏"整体删除"这个既有能力。
+
+2. **最小实现**——编辑 `route.ts:315-326`，把：
+   ```ts
+   function setNestedScalarContainer(doc: ConfigDocument, path: Array<string>, value: unknown, options?: { excludeKeys?: Set<string> }): void {
+     if (value === null || value === undefined) {
+       doc.deleteIn(path)
+       return
+     }
+     if (!isPlainObject(value)) return
+
+     for (const [key, child] of Object.entries(value)) {
+       if (options?.excludeKeys?.has(key)) continue
+       setScalar(doc, [...path, key], child)
+     }
+   }
+   ```
+   改为：
+   ```ts
+   /**
+    * Recursively merge `value`'s keys into `doc` at `path`. A nested plain-object
+    * child recurses into a fresh merge at the child path (so untouched sibling
+    * keys survive at EVERY nesting depth, not just the top one); `null`/
+    * `undefined` deletes that exact key at any depth (`setScalar` already
+    * handles this); any other value (scalar, array) is written wholesale.
+    *
+    * Used to stop recursing after the first level: a nested-object CHILD value
+    * (e.g. `anthropic.buffered_retry`, `upstream_transport.http2`) was handed to
+    * `setScalar`, which does `doc.setIn(childPath, wholeObject)` — silently
+    * replacing the entire child node and erasing sibling fields the PUT body
+    * didn't mention (`ping_interval` disappearing when a PUT only sent
+    * `session_connect_timeout`). Recursing keeps every already-existing sibling
+    * untouched at any depth, matching this API's "sparse override" PUT
+    * semantics (`docs/spec/2026-07-14-upstream-transport-config-reorg.md` §5 —
+    * user decision; `anthropic.buffered_retry`, the one existing field that hit
+    * this bug, switches to the same semantics too — no back-compat burden for a
+    * config PUT behavior change).
+    */
+   function setNestedScalarContainer(doc: ConfigDocument, path: Array<string>, value: unknown, options?: { excludeKeys?: Set<string> }): void {
+     if (value === null || value === undefined) {
+       doc.deleteIn(path)
+       return
+     }
+     if (!isPlainObject(value)) return
+
+     for (const [key, child] of Object.entries(value)) {
+       if (options?.excludeKeys?.has(key)) continue
+       const childPath = [...path, key]
+       if (isPlainObject(child)) setNestedScalarContainer(doc, childPath, child)
+       else setScalar(doc, childPath, child)
+     }
+   }
+   ```
+   （`excludeKeys` 只在调用方显式传入时生效，且只作用于**当次调用**自己遍历的那一层键——递归调用不传 `options`，这与现状一致：`excludeKeys` 目前唯一的调用点是 `anthropic` 顶层的 `system_rewrite_reminders`/`tool_search_non_deferred`，它们是 `anthropic` 的直接子键而非更深层嵌套对象的子键，不需要穿透进递归。）
+
+3. 跑：
+   ```
+   bun test tests/config/config-yaml-routes.http.test.ts
+   ```
+   确认新增 4 个用例全部通过；且本文件既有的"preserves untouched anthropic sibling keys during partial updates"、"deletes nested scalar child keys while preserving the container"等既有用例（均只涉及一层嵌套的标量子键，不受本次递归升级影响）保持通过。
+
+4. 跑 `bun test`（全量）确认没有其它测试文件依赖 `anthropic.buffered_retry`/其他嵌套 section 的旧整体替换语义（已检索 `tests/config/buffered-retry-keys.test.ts`/`tests/config/config-hot-reload.it.test.ts`，两者都走文件直写 + `applyConfigToState` 的 file-load 路径而非本函数覆盖的 PUT-body-merge 路径，不受影响）。
+
+5. 跑 `bun run typecheck` 确认无类型错误（`setNestedScalarContainer` 签名未变，`isPlainObject`/`setScalar` 均为既有函数，新增的是一处递归调用，不引入新类型）。
+
+6. 跑 `bunx eslint src/routes/config/route.ts tests/config/config-yaml-routes.http.test.ts`（无缓存单文件检查）确认无新增 lint 违规。
+
+7. 提交：
+   ```
+   git add -- src/routes/config/route.ts tests/config/config-yaml-routes.http.test.ts
+   git commit -F <msgfile> -- src/routes/config/route.ts tests/config/config-yaml-routes.http.test.ts
+   ```
+   msgfile 内容：`feat(config): recursive deep-merge for nested section PUT, anthropic.buffered_retry included (B9)`
+
+   （本提交与上一个 Task 3 提交都改 `route.ts`/`config-yaml-routes.http.test.ts` 同一对文件，但改的是不重叠的函数/用例——`deleteLegacyPathsAndPruneEmptyParents` 全新增，`setNestedScalarContainer` 是既有函数的独立升级，两次提交各自的 diff 互不相交，可安全分开提交。）
+
+---
+
 ## Task 4 — 跨 Task 回归 + 自审 + README 交接核对
 
 ### Steps
@@ -743,6 +930,7 @@ compat.ts: extractAndTranslateDeprecatedWithOps(raw)
    - [ ] `renameLeaf`/`renameSection`/`removeKey` 的每一类 builder 至少各有一条 `legacyPathsRemoved` 覆盖用例（Task 1 已覆盖 `renameLeaf`=fetch_timeout、`removeKey`=history.min_entries、`renameSection`=openai-responses）。
    - [ ] PUT 场景下，legacy 路径删除**先于** `mergeConfigIntoDocument` 执行（代码顺序即保证，Task 3 Step 2 已固定）。
    - [ ] 已知继承限制（非本阶段新增缺陷，见下方"待主会话裁决"第 3 条）已记录，不在本阶段静默"顺手修复"从而扩大改动面。
+   - [ ] `setNestedScalarContainer` 的递归深合并（B9）在**三个**新嵌套子段（`upstream_transport.http2`/`upstream_transport.websocket`/`server.responses_ws`）与既有 `anthropic.buffered_retry` 上行为一致——本阶段测试显式覆盖了 `upstream_transport.http2` + `anthropic.buffered_retry` 两例作为代表（机制通用，逐一验证 `websocket`/`responses_ws` 属重复劳动，非必须，见 Task 3 附加范围）。
 
 4. 若发现任何自审未通过项，回到对应 Task 修复并重新走一遍该 Task 的测试→提交流程，不在 Task 4 里堆积未经测试驱动的修补。
 
@@ -753,7 +941,8 @@ compat.ts: extractAndTranslateDeprecatedWithOps(raw)
 - **yaml 库行为不靠猜测**：`isMap`/`getIn(path,true)`/`items.length` 的组合行为已用 `bun -e` 实测两遍（通用场景 + 本 Task 实际迁移场景），非查文档推断，符合项目 `empirical-verification` 纪律。
 - **`legacyPathsRemoved` 排除 in-place 值迁移是本阶段最容易踩的坑**：若不排除，`anthropic.thinking_block_sanitize` 这类同路径值迁移会在 PUT 时被"先删后加"，丢失原 YAML 位置和注释——已通过 `isInPlaceValueMigration` 标记 + 显式回归测试（Task 1 test 4、Task 3 最后一个用例）锁定。
 - **未采纳方案**：spec §5 提到的更完整 `{oldPath, newPath, migratedValue, deleteOnly}` 序列设计——未采纳，因为 PUT handler 已经拥有迁移后的完整新值（`validation.value`），只需要"删哪些旧路径"这一窄信息；序列设计会引入这条信息流的第二份真相来源（新路径该怎么写，`mergeConfigIntoDocument` 已经独立决定），徒增复杂度且有unsync风险。此设计已在 README 落定，本阶段严格遵循，不重新引入。
+- **`setNestedScalarContainer` 递归深合并（B9）是最小diff修法**：新旧实现的唯一区别是子键为嵌套对象时递归而非整体替换——`setScalar` 本身早就正确处理了 `null`/标量/数组，不需要为"任意深度 `null` 删除"单独写分支，递归调用天然复用了它。这一处升级独立于 Task 3 本身的"legacy 路径删除"改动，函数不重叠，故分开提交（见 Task 3 附加范围收尾说明）。
 
 ## 待本阶段自身记录、汇总进 `plan-kickoff.md`「待主会话裁决」的条目
 
-1. **嵌套 section 的 PUT 部分更新是"整体替换"而非"深度合并"**（非本阶段新引入，`anthropic.buffered_retry` 早已是这个语义）：`upstream_transport.http2`/`upstream_transport.websocket`/`server.responses_ws` 这三个新嵌套子段沿用同一行为——PUT body 若只给 `{upstream_transport:{http2:{session_connect_timeout:5}}}`，磁盘上该 `http2` 节点会被整个替换（若之前还设置了 `ping_interval`，会被这次 PUT 的"整体替换"抹掉，除非调用方把两个字段都带上）。这是既有代码库的一致行为模式，非本阶段回归，但本阶段把它扩展到了三个新旋钮所在的 section，用户可感知的影响面变大了（此前只有 `anthropic.buffered_retry` 一处）。是否需要在 P3 或未来阶段把 `setNestedScalarContainer` 升级为对嵌套子对象也做逐字段合并（而不是整体替换），建议主会话与用户确认，spec/ADR 均未讨论这一点。
+1. ~~嵌套 section 的 PUT 部分更新是"整体替换"而非"深度合并"~~——**已裁决（B9）：升级为递归深合并 + 任意深度 `null` 删除**，`anthropic.buffered_retry` 一并切换，实现见上方"Task 3 附加范围"。此条目原为开放问题，现已被用户裁决关闭，不再是待主会话决定的分叉；保留删除线记录决策沿革，供 `plan-kickoff.md` 的 C10 收尾步骤引用核对。

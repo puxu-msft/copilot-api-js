@@ -195,7 +195,11 @@ describe("cc-to-anthropic-stream — W1 block-index allocator", () => {
 })
 
 describe("cc-to-anthropic-stream — reasoning → synthetic thinking block (forward, sentinel-signed)", () => {
-  const SENTINEL = "copilot-api:synthetic-reasoning:v1"
+  const PREFIX = "copilot-api:synthetic-reasoning:v1:"
+  /** A reasoning delta carrying GHC's opaque encrypted_content (our CC intermediate carrier). */
+  function reasoningEncrypted(encrypted: string): ServerSentEventMessage {
+    return ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { reasoning_encrypted_content: encrypted }, finish_reason: null }] })
+  }
 
   test("reasoning deltas render a thinking block at index 0 (thinking-first), text follows at index 1", () => {
     const frames = renderAll([reasoningDelta("internal "), reasoningDelta("thoughts"), textDelta("visible"), finish("stop", { prompt_tokens: 5, completion_tokens: 2 })])
@@ -223,7 +227,18 @@ describe("cc-to-anthropic-stream — reasoning → synthetic thinking block (for
     expect(seq.indexOf("sig@0")).toBeLessThan(seq.indexOf("stop@0"))
 
     const sig = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "signature_delta")!
-    expect((data(sig).delta as { signature: string }).signature).toBe(SENTINEL)
+    expect((data(sig).delta as { signature: string }).signature).toBe(PREFIX)
+  })
+
+  test("reasoning_encrypted_content is embedded in the signature (base64url) for cross-turn round-trip", async () => {
+    const encrypted = "OPAQUE-encrypted-blob-xyz=="
+    const frames = renderAll([reasoningEncrypted(encrypted), reasoningDelta("summary text"), textDelta("answer"), finish("stop", { prompt_tokens: 5, completion_tokens: 2 })])
+    const sig = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "signature_delta")!
+    const signature = (data(sig).delta as { signature: string }).signature
+    expect(signature.startsWith(PREFIX)).toBe(true)
+    // The embedded payload decodes back to the original encrypted_content (round-trip).
+    const { extractEncryptedReasoning } = await import("~/lib/anthropic/synthetic-reasoning")
+    expect(extractEncryptedReasoning(signature)).toBe(encrypted)
   })
 
   test("reasoning_content field (alt GHC spelling) is also forwarded", () => {
@@ -246,7 +261,7 @@ describe("cc-to-anthropic-stream — reasoning → synthetic thinking block (for
     expect(msg.content.map((b) => b.type)).toEqual(["thinking", "text"])
     const thinking = msg.content[0] as { type: "thinking"; thinking: string; signature: string }
     expect(thinking.thinking).toBe("Let me reason. Done.")
-    expect(thinking.signature).toBe(SENTINEL)
+    expect(thinking.signature).toBe(PREFIX)
     expect((msg.content[1] as { type: "text"; text: string }).text).toBe("The answer is 42.")
   })
 })
