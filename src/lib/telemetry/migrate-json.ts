@@ -125,41 +125,44 @@ interface LegacyTelemetryJson {
 const MODEL_DIMENSION = "model"
 
 /**
- * 把旧 `request-telemetry.json` 全量吸收进 telemetry.db。version 守卫 + never-throw + 可选
- * cooperative-stop。缺失/损坏 JSON → warn + skip（**不设 version 守卫**，下次可重试）；空但可解析
- * → 设 version 守卫（已处理、不再重扫）。成功后调 {@link runRollupTick} 把 backfilled raw 种子
- * 上卷进 hourly/daily，使长窗 `/api/stats` 立即可见历史。
+ * 把旧 `request-telemetry.json` 的 **init 时刻快照** 全量吸收进 telemetry.db。version 守卫 +
+ * never-throw + 可选 cooperative-stop。
  *
+ * **结构性 disjointness（根因）**：本函数吸收的是调用方在 init 时刻读入并冻结的 JSON 字符串
+ * `snapshotJson`，**绝不在 backfill 时刻重读可变文件**。这把「legacy JSON（启动前）与 dual-write
+ * tel_raw（启动后 outbox 增量）不相交」从**时序保证升为结构保证**：若 backfill 时重读文件，某个
+ * post-listen persist tick 可能已把 dual-write 已写进 tel_raw 的 post-startup 请求并回同一 JSON 文件，
+ * 于是 backfill 会把它们再导一次、当前桶双计。消费 init 快照后，backfill 见到的**恰是 pre-startup
+ * 那一刻的内容**、永不含任何 post-startup persist 写入 → disjointness 结构成立。快照的读取 / 缺失 /
+ * 损坏判定与「读一次、消费后清空」的生命周期由调用方（`request-telemetry.ts`）负责。
+ *
+ * 解析失败（理论上不该发生——init 已验证可解析后才 stash）→ warn + skip（不设守卫、可重试）。
+ * 空但可解析（零 settled 行）→ 设 version 守卫（已处理、不再重扫）但**不设 boundary_ts**（无迁移前
+ * settled 数据、避免 lifetime `preMigrationSketchGap` 假阳性）。成功吸收 ≥1 settled 行后调
+ * {@link runRollupTick} 把 backfilled raw 种子上卷进 hourly/daily，使长窗 `/api/stats` 立即可见历史。
+ *
+ * @param snapshotJson init 时刻冻结的 JSON 文件内容（调用方保证非 null——缺失/损坏时不调用本函数）。
  * @param now 迁移边界时间戳（生产传 `Date.now()`、测试传固定值）：写入 boundary_ts + 传给 rollup。
  * @param shouldStop 可选 cooperative-stop getter（匹配 shutdown phase）：置位则在写入前优雅放弃（不设守卫、下次重试）。
  */
-export async function migrateJsonToTelemetryDb(
+export function migrateJsonToTelemetryDb(
   db: TelemetryDatabase,
-  jsonPath: string,
+  snapshotJson: string,
   now: number,
   rollupConfig: RollupConfig,
   shouldStop?: () => boolean,
-): Promise<void> {
+): void {
   try {
     // ── version 守卫：完成过则短路 no-op（防重跑双计）。 ──
     if (readMetaInt(db, JSON_BACKFILL_VERSION_KEY) === TELEMETRY_JSON_BACKFILL_VERSION) return
     if (shouldStop?.()) return
 
-    // ── 读 + parse（缺失/损坏 → warn+skip，不设守卫、可重试；backfill 是可选增强，绝不崩启动）。 ──
-    let raw: string
-    try {
-      raw = await fs.readFile(jsonPath, "utf8")
-    } catch {
-      // 缺失文件：无启动前历史可吸收，no-op（不设守卫——JSON 若日后出现仍可吸收）。
-      return
-    }
-
     let parsed: LegacyTelemetryJson
     try {
-      parsed = JSON.parse(raw) as LegacyTelemetryJson
+      parsed = JSON.parse(snapshotJson) as LegacyTelemetryJson
     } catch (err) {
-      // 损坏 JSON：surface 但不崩（内存 init 路径会另行 quarantine 该文件）。不设守卫、下次可重试。
-      consola.warn(`[telemetry] json backfill skipped — legacy telemetry file is corrupt (${err instanceof Error ? err.message : String(err)})`)
+      // 理论上不可达（调用方 init 已成功 parse 后才 stash）；防御性 never-throw、不设守卫、下次可重试。
+      consola.warn(`[telemetry] json backfill skipped — snapshot is not parseable (${err instanceof Error ? err.message : String(err)})`)
       return
     }
 
@@ -182,15 +185,20 @@ export async function migrateJsonToTelemetryDb(
 
       // settled 可加维度：V3 generic `dimensions`（结构优先），否则 V2 `modelBuckets` → model 维度。
       // 结构判定（非仅靠 version tag）与内存 loader 的防御式检查同构，对任何版本鲁棒、全量吸收不丢。
+      // 返回实际写入的 settled 行数——boundary_ts 只在真吸收过 pre-migration settled 数据时才记（见下）。
+      let settledRows = 0
       if (parsed.dimensions && typeof parsed.dimensions === "object") {
-        absorbDimensions(db, parsed.dimensions)
+        settledRows = absorbDimensions(db, parsed.dimensions)
       } else if (parsed.modelBuckets && typeof parsed.modelBuckets === "object") {
-        absorbModelBuckets(db, parsed.modelBuckets)
+        settledRows = absorbModelBuckets(db, parsed.modelBuckets)
       }
 
-      // 完成守卫 + 迁移边界（同事务原子）：re-run 短路；boundary 让迁移前 sketch 缺失可辨识。
+      // 完成守卫（同事务原子）：re-run 短路——**无条件**置位（空 JSON 也算「已处理」、不再重扫）。
       writeMetaInt(db, JSON_BACKFILL_VERSION_KEY, TELEMETRY_JSON_BACKFILL_VERSION)
-      writeMetaInt(db, JSON_BACKFILL_BOUNDARY_TS_KEY, now)
+      // 迁移边界：**仅当**真吸收过 ≥1 settled 行才记（让迁移前 sketch 缺失可辨识）。零 settled 行的空
+      // backfill 不记 boundary，否则 lifetime 的 `preMigrationSketchGap = boundary!==null` 会在「实际吸收
+      // 零条 pre-migration settled 数据」时假报 true。
+      if (settledRows > 0) writeMetaInt(db, JSON_BACKFILL_BOUNDARY_TS_KEY, now)
     })()
 
     // ── rollup 种子（事务已提交，raw 对 rollup 的独立事务可见）：把 backfilled raw 卷进 hourly/daily，
@@ -203,8 +211,12 @@ export async function migrateJsonToTelemetryDb(
   }
 }
 
-/** 吸收 V3 generic `dimensions[dim].buckets[ts][key] = countersBag` 进 tel_raw + tel_cumulative（逐 dim intern、逐桶可加）。 */
-function absorbDimensions(db: TelemetryDatabase, dimensions: Record<string, unknown>): void {
+/**
+ * 吸收 V3 generic `dimensions[dim].buckets[ts][key] = countersBag` 进 tel_raw + tel_cumulative
+ * （逐 dim intern、逐桶可加）。返回实际写入的 settled 行数（供 boundary_ts 门控）。
+ */
+function absorbDimensions(db: TelemetryDatabase, dimensions: Record<string, unknown>): number {
+  let settledRows = 0
   for (const [dimName, dimValue] of Object.entries(dimensions)) {
     if (!dimValue || typeof dimValue !== "object") continue
     const buckets = (dimValue as { buckets?: unknown }).buckets
@@ -215,38 +227,45 @@ function absorbDimensions(db: TelemetryDatabase, dimensions: Record<string, unkn
       if (!Number.isFinite(bucketTs) || !keysValue || typeof keysValue !== "object") continue
       for (const [key, counters] of Object.entries(keysValue as Record<string, unknown>)) {
         if (!counters || typeof counters !== "object") continue
-        upsertKeyMeasures(db, dimId, key, bucketTs, counters as Record<string, unknown>)
+        if (upsertKeyMeasures(db, dimId, key, bucketTs, counters as Record<string, unknown>)) settledRows += 1
       }
     }
   }
+  return settledRows
 }
 
-/** 吸收 V2 legacy `modelBuckets[ts][model] = PersistedModelTelemetry` → model 维度（对齐内存 loadV2ModelBuckets）。 */
-function absorbModelBuckets(db: TelemetryDatabase, modelBuckets: Record<string, unknown>): void {
+/**
+ * 吸收 V2 legacy `modelBuckets[ts][model] = PersistedModelTelemetry` → model 维度（对齐内存
+ * loadV2ModelBuckets）。返回实际写入的 settled 行数（供 boundary_ts 门控）。
+ */
+function absorbModelBuckets(db: TelemetryDatabase, modelBuckets: Record<string, unknown>): number {
   const dimId = internDim(db, MODEL_DIMENSION)
+  let settledRows = 0
   for (const [tsStr, modelsValue] of Object.entries(modelBuckets)) {
     const bucketTs = Number(tsStr)
     if (!Number.isFinite(bucketTs) || !modelsValue || typeof modelsValue !== "object") continue
     for (const [model, counters] of Object.entries(modelsValue as Record<string, unknown>)) {
       if (!counters || typeof counters !== "object") continue
-      upsertKeyMeasures(db, dimId, model, bucketTs, counters as Record<string, unknown>)
+      if (upsertKeyMeasures(db, dimId, model, bucketTs, counters as Record<string, unknown>)) settledRows += 1
     }
   }
+  return settledRows
 }
 
 /**
  * 把一个 (dim,key,bucket) 的 legacy counters 映射成 measures，写 tel_raw（分桶可加）+ tel_cumulative
  * （Σ 7d 窗，是我们唯一有的 lifetime 种子——JSON 不含进程生命周期 dimSinceStart，故这是**诚实的部分累计**，
- * 无法恢复 pre-7d lifetime；见模块头 richest-data-flow）。全 0 的 key 跳过（不建空行）。sketch 不写
- * （HIGH-1：迁移前时段无 hist_blob）。
+ * 无法恢复 pre-7d lifetime；见模块头 richest-data-flow）。全 0 的 key 跳过（不建空行）、返回 false。sketch
+ * 不写（HIGH-1：迁移前时段无 hist_blob）。返回 true 当且仅当实际写入了一行（供 boundary_ts 门控计数）。
  */
-function upsertKeyMeasures(db: TelemetryDatabase, dimId: number, key: string, bucketTs: number, counters: Record<string, unknown>): void {
+function upsertKeyMeasures(db: TelemetryDatabase, dimId: number, key: string, bucketTs: number, counters: Record<string, unknown>): boolean {
   const measures = countersToMeasures(counters)
   // 空 measures（全 0 或只有 __histograms）→ 不建行（加性 UPSERT 会 INSERT 一个全 0 行，无意义且污染 key 集）。
-  if (Object.keys(measures).length === 0) return
+  if (Object.keys(measures).length === 0) return false
   const keyId = internKey(db, dimId, key)
   upsertSettledTier(db, "tel_raw", bucketTs, dimId, keyId, measures)
   upsertCumulative(db, dimId, keyId, measures)
+  return true
 }
 
 /**

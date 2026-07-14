@@ -459,6 +459,17 @@ let telemetryDrainFailureLogged = false
  * `stopHistoryBackgroundWork`-before-`closeDatabase` ordering). Reset to false on each fresh init.
  */
 let telemetryBackfillStopRequested = false
+/**
+ * The frozen PRE-STARTUP legacy-JSON snapshot the one-shot P6 backfill will absorb (null when there is
+ * no absorbable snapshot — missing/corrupt file, or already consumed). Captured in `initRequestTelemetry`
+ * at the SAME moment the in-memory dimBuckets load from it, i.e. BEFORE any post-startup request or
+ * persist tick can mutate the on-disk file. `runTelemetryJsonBackfill` consumes THIS snapshot (not a
+ * fresh read of the mutable file), which makes the "legacy JSON ⟂ dual-write tel_raw" disjointness a
+ * STRUCTURAL guarantee rather than a timing one: a post-listen persist that folds post-startup requests
+ * (already in tel_raw via dual-write) back into the JSON file can never be re-absorbed and double-counted
+ * — the backfill only ever sees the init-time content. Cleared after consumption + on reset.
+ */
+let pendingBackfillJson: string | null = null
 /** Warn-once debounce for the outbox soft-cap eviction (a SUSTAINED drain failure would otherwise grow the outbox unbounded). */
 let telemetryOutboxCapLogged = false
 /**
@@ -1213,8 +1224,10 @@ export async function initRequestTelemetry(): Promise<void> {
   dimSinceStart = new Map()
   dimBuckets = new Map()
   // A fresh session can run the one-shot legacy-JSON backfill again (until its version guard trips);
-  // clear any stop flag left set by a prior shutdown (test re-init reuses the module singletons).
+  // clear any stop flag left set by a prior shutdown (test re-init reuses the module singletons). Also
+  // clear any stale pending snapshot up front — it is re-stashed below only if the file reads + parses.
   telemetryBackfillStopRequested = false
+  pendingBackfillJson = null
   setupTelemetryDb()
 
   // Clean up orphan atomic-write temp files (`request-telemetry.json.tmp.*`) — failed atomic writes
@@ -1252,10 +1265,17 @@ export async function initRequestTelemetry(): Promise<void> {
     } catch {
       // Rename may fail (permissions, file already gone) — non-fatal.
     }
+    // No absorbable snapshot on corrupt input — leave pendingBackfillJson null so the backfill no-ops
+    // (guard NOT set → the retry-next-startup semantics are preserved once a valid file exists).
     pruneBuckets()
     startPeriodicPersistence()
     return
   }
+
+  // Stash the frozen pre-startup snapshot for the P6 backfill — captured HERE, the same content that
+  // seeds the in-memory dimBuckets below, BEFORE any post-startup request/persist can mutate the file.
+  // `runTelemetryJsonBackfill` absorbs THIS string, never a fresh read (structural disjointness).
+  pendingBackfillJson = raw
 
   if (parsed.buckets && typeof parsed.buckets === "object") {
     bucketCounts = new Map(
@@ -1770,18 +1790,27 @@ export async function shutdownRequestTelemetry(): Promise<void> {
  * Run the one-shot legacy-JSON absorption backfill (P6) against the LIVE telemetry.db handle. Fire-and-
  * forget from `start.ts` AFTER the server listens (mirrors `startHistoryBackfills`) — it never blocks
  * startup or request serving, and is a no-op once its `json_backfill_version` guard has tripped (so a
- * restart re-runs it harmlessly). No-op when telemetry is disabled or the db failed to open (the JSON
- * path still serves the in-memory 7d window until P7 flips the rebuild source). NEVER throws
- * (migrate-json is itself never-throw + cooperatively stoppable; this is a thin live-wiring shim
- * supplying the db handle + file path + live rollup-config projection the timer callback also uses).
+ * restart re-runs it harmlessly). No-op when telemetry is disabled, the db failed to open (the JSON path
+ * still serves the in-memory 7d window until P7 flips the rebuild source), or there is no absorbable
+ * snapshot (missing/corrupt legacy file at init). NEVER throws (migrate-json is itself never-throw +
+ * cooperatively stoppable; this is a thin live-wiring shim supplying the db handle + the FROZEN init-time
+ * snapshot + live rollup-config projection the timer callback also uses).
+ *
+ * Consumes {@link pendingBackfillJson} — the pre-startup snapshot captured at init — NOT a fresh read of
+ * the mutable file, so a post-listen persist folding post-startup requests back into the JSON can never be
+ * re-absorbed (structural disjointness — the sole double-count root cause is closed by construction). The
+ * snapshot is cleared here so a second call (e.g. a re-fire) is a clean no-op regardless of the db guard.
  *
  * `now` is injectable for deterministic tests (production passes `Date.now()`): it is BOTH the migration
  * boundary timestamp (tel_meta['json_backfill_boundary_ts']) and the `now` handed to the rollup seed.
  */
-export async function runTelemetryJsonBackfill(now = Date.now()): Promise<void> {
+export function runTelemetryJsonBackfill(now = Date.now()): void {
   const db = telemetryDb
-  if (!db || !state.telemetryEnabled) return
-  await migrateJsonToTelemetryDb(db, telemetryFilePath, now, currentRollupConfig(), () => telemetryBackfillStopRequested)
+  const snapshot = pendingBackfillJson
+  // Consume the snapshot up front (single-shot): even if a guard below no-ops, a re-fire won't re-absorb.
+  pendingBackfillJson = null
+  if (!db || !state.telemetryEnabled || snapshot === null) return
+  migrateJsonToTelemetryDb(db, snapshot, now, currentRollupConfig(), () => telemetryBackfillStopRequested)
 }
 
 export function _resetRequestTelemetryForTests(): void {
@@ -1806,6 +1835,7 @@ export function _resetRequestTelemetryForTests(): void {
   telemetryOutboxCapLogged = false
   telemetryPoisonLogged = false
   telemetryBackfillStopRequested = false
+  pendingBackfillJson = null
   outboxSoftCap = OUTBOX_SOFT_CAP
   telemetryConfigUnsub?.()
   telemetryConfigUnsub = null

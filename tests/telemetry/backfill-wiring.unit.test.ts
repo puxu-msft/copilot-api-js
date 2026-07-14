@@ -185,5 +185,50 @@ test("接线 5 — telemetry 关闭时 backfill no-op（db 未开）", async () 
   writeV3(jsonPath, { model: { buckets: { [String(B1)]: { opus: { requestCount: 4 } } } } }, {})
   await initRequestTelemetry()
   expect(_getTelemetryDbForTests()).toBeNull() // 未开 db
-  await expect(runTelemetryJsonBackfill(NOW)).resolves.toBeUndefined() // no-op、不抛
+  expect(runTelemetryJsonBackfill(NOW)).toBeUndefined() // no-op、不抛
+})
+
+test("接线 6 — 结构性 disjointness：backfill 吸收 init 快照、非 backfill 时重读可变文件（防当前桶双计）", async () => {
+  // 承重根因：两流不相交须是**结构**保证而非时序。init 把 pre-startup JSON 快照载入内存；此后某个
+  // post-listen persist tick 可能把 dual-write 已写进 tel_raw 的 post-startup 请求并回同一 JSON 文件。
+  // 若 backfill 在 backfill 时刻重读该文件 → 把 post-startup 请求再导一次 → 当前桶双计。
+  // 结构修：backfill 消费 init 时刻的快照，故对「backfill 之后文件被改大」免疫。
+  writeV3(jsonPath, { model: { buckets: { [String(B1)]: { opus: { requestCount: 4, inputTokens: 200 } } } } }, { [String(B1)]: 4 })
+  await initRequestTelemetry() // 载入 init 快照（opus req_count=4）
+
+  // 模拟一次 post-startup persist：把 merged map（含 post-startup 新请求）写回同一 JSON 文件，当前桶被抬高到 10。
+  writeV3(jsonPath, { model: { buckets: { [String(B1)]: { opus: { requestCount: 10, inputTokens: 500 } } } } }, { [String(B1)]: 10 })
+
+  await runTelemetryJsonBackfill(NOW)
+
+  // backfill 必须只吸收 init 快照（4），绝不吸收被 persist 抬高后的文件值（10）——否则那 6 条 post-startup
+  // 请求（dual-write 已写进 tel_raw）会被 backfill 再导一次、当前桶双计。
+  expect(sumRaw(dbPath, "model", "opus", "req_count")).toBe(4)
+  expect(sumRaw(dbPath, "model", "opus", "input_tok")).toBe(200)
+  // accepted 同理：init 快照 4，非文件抬高后的 10。
+  const db = _getTelemetryDbForTests()
+  expect(readCumulativeAccepted(db!)).toBe(4)
+})
+
+test("接线 7 — 空 JSON 不设 boundary_ts（防 lifetime preMigrationSketchGap 假阳性）", async () => {
+  // 空但可解析的 V3（零 settled 行）：version 守卫应置位（已处理、不重扫），但 boundary_ts 不该设——
+  // 否则 lifetime 的 preMigrationSketchGap=boundary!==null 在「实际吸收零条 pre-migration settled 数据」时假报 true。
+  writeV3(jsonPath, { model: { buckets: {} } }, {})
+  await initRequestTelemetry()
+  await runTelemetryJsonBackfill(NOW)
+
+  const db = _getTelemetryDbForTests()
+  expect(readMetaInt(db!, "json_backfill_version")).toBe(TELEMETRY_JSON_BACKFILL_VERSION) // 已处理
+  expect(readMetaInt(db!, "json_backfill_boundary_ts")).toBeNull() // 无 settled 行 → 不标注
+})
+
+test("接线 8 — 损坏 JSON：init quarantine、backfill no-op 不崩（不设守卫、可重试语义）", async () => {
+  writeFileSync(jsonPath, "{ not valid json ", "utf8")
+  await initRequestTelemetry() // init 自身 quarantine 损坏文件、不 stash 快照
+  expect(runTelemetryJsonBackfill(NOW)).toBeUndefined() // 无快照 → no-op、不抛
+
+  const db = _getTelemetryDbForTests()
+  expect(readMetaInt(db!, "json_backfill_version")).toBeNull() // 不设守卫（下次可重试语义保持）
+  const n = (db!.prepare("SELECT COUNT(*) AS n FROM tel_raw").get() as { n: number }).n
+  expect(n).toBe(0)
 })

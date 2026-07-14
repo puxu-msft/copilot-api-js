@@ -1,12 +1,16 @@
 /**
- * P6 —— 旧 JSON 全量吸收 backfill + .tmp 清理 验收 oracle。
+ * P6 —— 旧 JSON 全量吸收 backfill（纯快照吸收函数）+ .tmp 清理 验收 oracle。
  *
  * 承重不变量：可加列/accepted 精确吸收（独立重算 oracle，非读代码自证）；version 守卫使
  * 续跑幂等（真实重放：连调两次，第二次 no-op、SUM 不翻倍）；cost float→micro；cumulative
- * 部分 lifetime 种子（Σ 7d 窗）；损坏/缺失 JSON never-throw；`__histograms` 不污染可加列；
- * rollup 种子后长窗可见历史；迁移前 sketch 缺失可辨识标注；.tmp 精确清理 + JSON 本体不删。
+ * 部分 lifetime 种子（Σ 7d 窗）；损坏快照 never-throw；`__histograms` 不污染可加列；rollup
+ * 种子后长窗可见历史；迁移前 sketch 缺失可辨识标注（仅当真吸收 settled 行）；.tmp 精确清理 + JSON 本体不删。
  *
- * 隔离：per-test 临时 db + 临时 JSON（DI 路径，不碰真实 $HOME）。别起服务器——直接调 migrate。
+ * `migrateJsonToTelemetryDb` 是**纯快照吸收**：接受 init 时刻冻结的 JSON 字符串（不重读可变文件——
+ * 结构性 disjointness），同步执行。缺失文件 / 「无快照」的 no-op 属调用方（init 决定是否 stash），
+ * 端到端桥接见 `backfill-wiring.unit.test.ts`（接线 6 结构性 disjointness、接线 8 损坏无快照）。
+ *
+ * 隔离：per-test 临时 db + 临时目录（DI 路径，不碰真实 $HOME）。别起服务器——直接调 migrate。
  */
 import {
   //
@@ -70,8 +74,9 @@ interface V3Fixture {
   dimensions: Record<string, { buckets: Record<string, Record<string, Record<string, unknown>>> }>
 }
 
-function writeV3(path: string, fixture: V3Fixture): void {
-  writeFileSync(path, JSON.stringify({ version: 3, ...fixture }), "utf8")
+/** 把 fixture 序列化成 init 时刻会 stash 的**快照字符串**（migrate 直接吸收它，不重读文件）。 */
+function v3(fixture: V3Fixture): string {
+  return JSON.stringify({ version: 3, ...fixture })
 }
 
 /** 直接读 tel_raw 某 (dim,key,bucket) 标量列（同 handle，事务提交后可见）。 */
@@ -141,8 +146,8 @@ const NOW = alignBucket(Date.UTC(2026, 6, 10, 12, 0, 0), HOUR_MS)
 const B1 = alignBucket(NOW - 2 * DAY_MS, BUCKET_MS)
 const B2 = alignBucket(NOW - 2 * DAY_MS + 30 * BUCKET_MS, BUCKET_MS)
 
-test("oracle 1 — 可加列 + accepted 精确吸收（独立重算 Σ）", async () => {
-  const fixture: V3Fixture = {
+test("oracle 1 — 可加列 + accepted 精确吸收（独立重算 Σ）", () => {
+  const snapshot = v3({
     buckets: { [String(B1)]: 3, [String(B2)]: 5 },
     dimensions: {
       model: {
@@ -157,10 +162,9 @@ test("oracle 1 — 可加列 + accepted 精确吸收（独立重算 Σ）", asyn
         },
       },
     },
-  }
-  writeV3(jsonPath, fixture)
+  })
 
-  await migrateJsonToTelemetryDb(db, jsonPath, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
 
   // accepted：逐桶精确 + 终身累计 Σ。
   expect(readAccepted(db, B1)).toBe(3)
@@ -185,8 +189,8 @@ test("oracle 1 — 可加列 + accepted 精确吸收（独立重算 Σ）", asyn
   expect(readCumulative(db, "model", "sonnet", "req_count")).toBe(1)
 })
 
-test("oracle 2 — cost float→micro（round(cost*1e6)）", async () => {
-  const fixture: V3Fixture = {
+test("oracle 2 — cost float→micro（round(cost*1e6)）", () => {
+  const snapshot = v3({
     buckets: {},
     dimensions: {
       model: {
@@ -197,10 +201,9 @@ test("oracle 2 — cost float→micro（round(cost*1e6)）", async () => {
         },
       },
     },
-  }
-  writeV3(jsonPath, fixture)
+  })
 
-  await migrateJsonToTelemetryDb(db, jsonPath, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
 
   expect(readRaw(db, "model", "opus", B1, "cost_input_micro")).toBe(Math.round(0.0123 * 1e6)) // 12300
   expect(readRaw(db, "model", "opus", B1, "cost_output_micro")).toBe(Math.round(1.5 * 1e6)) // 1500000
@@ -208,23 +211,22 @@ test("oracle 2 — cost float→micro（round(cost*1e6)）", async () => {
   expect(readCumulative(db, "model", "opus", "cost_input_micro")).toBe(12_300)
 })
 
-test("oracle 3 — 续跑幂等（真实重放：version 守卫 → 第二次 no-op、SUM 不翻倍）", async () => {
-  const fixture: V3Fixture = {
+test("oracle 3 — 续跑幂等（真实重放：version 守卫 → 第二次 no-op、SUM 不翻倍）", () => {
+  const snapshot = v3({
     buckets: { [String(B1)]: 7 },
     dimensions: {
       model: { buckets: { [String(B1)]: { opus: { requestCount: 4, inputTokens: 200 } } } },
     },
-  }
-  writeV3(jsonPath, fixture)
+  })
 
-  await migrateJsonToTelemetryDb(db, jsonPath, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
   expect(readMetaInt(db, "json_backfill_version")).toBe(TELEMETRY_JSON_BACKFILL_VERSION)
   expect(sumRaw(db, "model", "opus", "req_count")).toBe(4)
   expect(readAccepted(db, B1)).toBe(7)
   expect(readCumulativeAccepted(db)).toBe(7)
 
   // 真实重放：第二次调用应 no-op（version 守卫短路），SUM 绝不翻倍。
-  await migrateJsonToTelemetryDb(db, jsonPath, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
   expect(sumRaw(db, "model", "opus", "req_count")).toBe(4)
   expect(readRaw(db, "model", "opus", B1, "input_tok")).toBe(200)
   expect(readAccepted(db, B1)).toBe(7)
@@ -232,11 +234,11 @@ test("oracle 3 — 续跑幂等（真实重放：version 守卫 → 第二次 no
   expect(readCumulative(db, "model", "opus", "req_count")).toBe(4)
 })
 
-test("oracle 4 — 损坏 JSON never-throw（不写、不设 version 守卫）", async () => {
-  writeFileSync(jsonPath, "{ this is not valid json ", "utf8")
+test("oracle 4 — 损坏快照 never-throw（不写、不设 version 守卫）", () => {
   const warn = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
 
-  await expect(migrateJsonToTelemetryDb(db, jsonPath, NOW, ROLLUP_CONFIG)).resolves.toBeUndefined()
+  // 理论上 init 已验证可解析后才 stash；此处直接喂损坏字符串，验防御性 never-throw 分支。
+  expect(migrateJsonToTelemetryDb(db, "{ this is not valid json ", NOW, ROLLUP_CONFIG)).toBeUndefined()
 
   // 未写任何数据、未设 version 守卫（下次可重试）。
   expect(readMetaInt(db, "json_backfill_version")).toBeNull()
@@ -245,14 +247,8 @@ test("oracle 4 — 损坏 JSON never-throw（不写、不设 version 守卫）",
   warn.mockRestore()
 })
 
-test("oracle 5 — 缺失 JSON never-throw（no-op、不设 version 守卫）", async () => {
-  // jsonPath 不存在。
-  await expect(migrateJsonToTelemetryDb(db, jsonPath, NOW, ROLLUP_CONFIG)).resolves.toBeUndefined()
-  expect(readMetaInt(db, "json_backfill_version")).toBeNull()
-})
-
-test("oracle 6 — __histograms 不污染可加列", async () => {
-  const fixture: V3Fixture = {
+test("oracle 5 — __histograms 不污染可加列", () => {
+  const snapshot = v3({
     buckets: {},
     dimensions: {
       model: {
@@ -267,10 +263,9 @@ test("oracle 6 — __histograms 不污染可加列", async () => {
         },
       },
     },
-  }
-  writeV3(jsonPath, fixture)
+  })
 
-  await migrateJsonToTelemetryDb(db, jsonPath, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
 
   // 可加列精确、未被 __histograms 的 buckets/sum 污染。
   expect(readRaw(db, "model", "opus", B1, "req_count")).toBe(1)
@@ -284,8 +279,8 @@ test("oracle 6 — __histograms 不污染可加列", async () => {
   expect(row.hist_blob).toBeNull()
 })
 
-test("oracle 7 — rollup 种子：backfilled raw 上卷进 hourly（长窗可见历史）", async () => {
-  const fixture: V3Fixture = {
+test("oracle 6 — rollup 种子：backfilled raw 上卷进 hourly（长窗可见历史）", () => {
+  const snapshot = v3({
     buckets: {},
     dimensions: {
       model: {
@@ -295,29 +290,27 @@ test("oracle 7 — rollup 种子：backfilled raw 上卷进 hourly（长窗可�
         },
       },
     },
-  }
-  writeV3(jsonPath, fixture)
+  })
 
-  await migrateJsonToTelemetryDb(db, jsonPath, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
 
-  // B1/B2 同属一个 5min 粒度但落在不同 hour？B2 = B1+30*5min = B1+2.5h → 不同 hour 桶。
-  // hourly 层跨桶 SUM 应等于 raw 全量（链式上卷等价）。
+  // B2 = B1+30*5min = B1+2.5h → 不同 hour 桶。hourly 层跨桶 SUM 应等于 raw 全量（链式上卷等价）。
   expect(sumHourly(db, "model", "opus", "req_count")).toBe(5)
   expect(sumHourly(db, "model", "opus", "input_tok")).toBe(250)
 })
 
-test("oracle 8 — 迁移前 sketch 缺失可辨识标注（boundary_ts）", async () => {
-  writeV3(jsonPath, { buckets: {}, dimensions: { model: { buckets: { [String(B1)]: { opus: { requestCount: 1 } } } } } })
+test("oracle 7 — 迁移前 sketch 缺失可辨识标注（boundary_ts，真吸收 settled 行时）", () => {
+  const snapshot = v3({ buckets: {}, dimensions: { model: { buckets: { [String(B1)]: { opus: { requestCount: 1 } } } } } })
 
   expect(readJsonBackfillBoundaryTs(db)).toBeNull() // 迁移前无标注
 
-  await migrateJsonToTelemetryDb(db, jsonPath, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
 
-  expect(readJsonBackfillBoundaryTs(db)).toBe(NOW) // 迁移边界 = now
+  expect(readJsonBackfillBoundaryTs(db)).toBe(NOW) // 吸收了 1 settled 行 → 迁移边界 = now
 })
 
-test("oracle 9 — .tmp 精确清理 + JSON 本体不删（no-destructive）", async () => {
-  writeV3(jsonPath, { buckets: {}, dimensions: {} })
+test("oracle 8 — .tmp 精确清理 + JSON 本体不删（no-destructive）", async () => {
+  writeFileSync(jsonPath, v3({ buckets: {}, dimensions: {} }), "utf8")
   // 造孤儿 .tmp.* 残余（原子写失败残留）+ 一个无关文件 + .corrupted 归档（不该删）。
   writeFileSync(`${jsonPath}.tmp.1234.5678.0.abcdef`, "orphan", "utf8")
   writeFileSync(`${jsonPath}.tmp.9999.1111.2.zzzzzz`, "orphan", "utf8")
@@ -334,8 +327,18 @@ test("oracle 9 — .tmp 精确清理 + JSON 本体不删（no-destructive）", a
   expect(remaining.some((f) => f.includes(".tmp."))).toBe(false)
 })
 
-test("oracle 10 — 空 V3（可解析但无数据）也设 version 守卫（已处理、不再重扫）", async () => {
-  writeV3(jsonPath, { buckets: {}, dimensions: {} })
-  await migrateJsonToTelemetryDb(db, jsonPath, NOW, ROLLUP_CONFIG)
+test("oracle 9 — 空 V3（可解析但零 settled 行）设 version 守卫、但不设 boundary_ts（防 gap 假阳性）", () => {
+  migrateJsonToTelemetryDb(db, v3({ buckets: {}, dimensions: {} }), NOW, ROLLUP_CONFIG)
+  // 已处理（不再重扫）。
   expect(readMetaInt(db, "json_backfill_version")).toBe(TELEMETRY_JSON_BACKFILL_VERSION)
+  // 零 settled 行 → 不标注 boundary（否则 lifetime preMigrationSketchGap 假报 true）。
+  expect(readJsonBackfillBoundaryTs(db)).toBeNull()
+})
+
+test("oracle 10 — 只有 accepted 无 settled 行：设守卫、不设 boundary（accepted 非 settled 分布）", () => {
+  // 只有 accepted buckets、无 dimensions settled 行：boundary 只由 settled 行门控（sketch 缺失是 settled 分布的属性）。
+  migrateJsonToTelemetryDb(db, v3({ buckets: { [String(B1)]: 5 }, dimensions: {} }), NOW, ROLLUP_CONFIG)
+  expect(readMetaInt(db, "json_backfill_version")).toBe(TELEMETRY_JSON_BACKFILL_VERSION)
+  expect(readCumulativeAccepted(db)).toBe(5)
+  expect(readJsonBackfillBoundaryTs(db)).toBeNull()
 })

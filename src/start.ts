@@ -550,12 +550,17 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Returns immediately (the work trickles in the background) and never throws.
   startHistoryBackfills()
 
-  // Fire-and-forget the one-shot legacy-JSON telemetry absorption backfill (P6): absorb the pre-startup
-  // `request-telemetry.json` history into telemetry.db (tel_raw/tel_accepted/tel_cumulative + rollup seed)
-  // so the SQLite tiers carry the migration-era history. Guarded by `json_backfill_version` (a restart
-  // re-runs it as a no-op), cooperatively stopped on shutdown, and never-throws — safe to fire-and-forget
-  // after listen, exactly like the history backfills above.
-  void runTelemetryJsonBackfill().catch((err: unknown) => consola.warn("[telemetry] json backfill failed", err))
+  // Run the one-shot legacy-JSON telemetry absorption backfill (P6) now the server is listening: absorb
+  // the FROZEN pre-startup `request-telemetry.json` snapshot (captured at init) into telemetry.db
+  // (tel_raw/tel_accepted/tel_cumulative + rollup seed) so the SQLite tiers carry the migration-era
+  // history. Guarded by `json_backfill_version` (a restart re-runs it as a no-op), consumes the init-time
+  // snapshot (never a fresh read — structural disjointness), and is itself never-throw. Synchronous DB
+  // work, wrapped defensively so nothing here can bubble into the startup path.
+  try {
+    runTelemetryJsonBackfill()
+  } catch (err: unknown) {
+    consola.warn("[telemetry] json backfill failed", err)
+  }
 
   // Inject the single shared WebSocket upgrade handler into each Node.js HTTP server (no-op under Bun)
   if (wsAdapter.injectWebSocket && serverInstance.nodeServers) {
