@@ -16,6 +16,7 @@ import {
 } from "bun:test"
 import consola from "consola"
 
+import { extractAndTranslateDeprecatedWithOps } from "~/lib/config/compat"
 import {
   //
   _resetConfigValidationWarnTrackingForTests,
@@ -327,5 +328,51 @@ describe("validateConfigInput (PUT) — SOCKS session_connect_timeout=0 hard-rej
       upstream_transport: { http2: { session_connect_timeout: 5 } },
     })
     expect(r.valid).toBe(true)
+  })
+})
+
+describe("config compat — extractAndTranslateDeprecatedWithOps (legacyPathsRemoved tracking)", () => {
+  test("renameLeaf migration reports the legacy dot-path in legacyPathsRemoved", () => {
+    const { value, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ fetch_timeout: 200 })
+    expect((value.timeouts as Record<string, unknown> | undefined)?.response_header).toBe(200)
+    expect(legacyPathsRemoved).toContain("fetch_timeout")
+  })
+
+  test("removeKey migration (pure removal, no replacement) reports the legacy path too", () => {
+    const { legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ history: { min_entries: 5 } })
+    expect(legacyPathsRemoved).toContain("history.min_entries")
+  })
+
+  test("renameSection migration reports the legacy section path", () => {
+    const { value, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ "openai-responses": { upstream_websocket: true } })
+    expect((value.openai_responses as Record<string, unknown> | undefined)?.upstream_ws).toBe(true)
+    expect(legacyPathsRemoved).toContain("openai-responses")
+  })
+
+  test("migrateValue (in-place value consolidation, SAME key) does NOT report a legacy path", () => {
+    const { value, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ anthropic: { thinking_block_sanitize: "empty_thinking" } })
+    expect((value.anthropic as Record<string, unknown> | undefined)?.thinking_block_sanitize).toBe("all_empty")
+    // The key never relocates — deleting it from the on-disk YAML would only
+    // drop the user's comment/position for no reason (see plan-3 §Architecture).
+    expect(legacyPathsRemoved).not.toContain("anthropic.thinking_block_sanitize")
+  })
+
+  test("already-valid migrateValue-gated value passes through with no legacyPathsRemoved entry", () => {
+    const { legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ anthropic: { thinking_block_sanitize: "all_empty" } })
+    expect(legacyPathsRemoved).toEqual([])
+  })
+
+  test("legacy value of 0 on a transform-gated renameLeaf (0→absence) still reports the legacy path, even though no new value is written", () => {
+    const { value, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ timeouts: { upstream_keepalive: 0 } })
+    expect((value.upstream_transport as Record<string, unknown> | undefined)?.tcp_keepalive_probe_delay).toBeUndefined()
+    expect(legacyPathsRemoved).toContain("timeouts.upstream_keepalive")
+  })
+
+  test("no legacy keys present → empty legacyPathsRemoved, value unchanged (deep-cloned)", () => {
+    const input = { proxy: "http://x" }
+    const { value, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps(input)
+    expect(legacyPathsRemoved).toEqual([])
+    expect(value).toEqual(input)
+    expect(value).not.toBe(input)
   })
 })

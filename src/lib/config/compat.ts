@@ -6,14 +6,19 @@
  * changes, and removed keys. `schema.ts` owns the *current* valid shape; this
  * module owns *old→new* redirection.
  *
- * Consumed by `validation.ts`' `extractAndTranslateDeprecated()` on BOTH paths:
+ * Owns the migration-application logic itself (`extractAndTranslateDeprecatedWithOps`),
+ * consumed on BOTH validation paths:
  *   - file load (`validateConfig`)        — graceful migrate + warn
- *   - HTTP PUT (`validateConfigInput`)    — normalize old-key bodies before parse
+ *   - HTTP PUT (`validateConfigInput`)    — normalize old-key bodies before parse,
+ *                                            also threads `legacyPathsRemoved` through
+ *                                            to routes/config/route.ts for on-disk cleanup
  *
  * Each migration locates the legacy key via `parentPath`+`key`, deletes it,
  * warns once, then deep-merges `translate()`'s patch in *missing-only* (so a
  * user-set new key always wins over the migrated legacy value).
  */
+
+import consola from "consola"
 
 /** A single legacy→current config migration rule. */
 export interface ConfigMigration {
@@ -38,6 +43,17 @@ export interface ConfigMigration {
    * are not deleted/warned by the locator's otherwise-unconditional delete+warn.
    */
   isLegacyValue?: (value: unknown) => boolean
+  /**
+   * When true, this migration's `translate()` writes the new value back to
+   * the SAME dot-path as `path` (in-place value consolidation — see
+   * `migrateValue`). Such migrations must NOT be reported in
+   * `extractAndTranslateDeprecatedWithOps`'s `legacyPathsRemoved`: deleting
+   * then recreating the SAME YAML key would drop its position/comment for
+   * no reason, since `mergeConfigIntoDocument` already overwrites it in
+   * place. Relocations (`renameLeaf`/`renameSection`) and pure removals
+   * (`removeKey`) leave this undefined and ARE reported.
+   */
+  isInPlaceValueMigration?: boolean
 }
 
 // ============================================================================
@@ -141,6 +157,7 @@ export function migrateValue(oldPath: string, isLegacy: (value: unknown) => bool
     ...located,
     message,
     isLegacyValue: isLegacy,
+    isInPlaceValueMigration: true,
     translate: () => buildNested(parts, newValue),
   }
 }
@@ -360,3 +377,109 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
       "openai_responses.max_upstream_ws_connections is renamed to upstream_transport.websocket.soft_max_connections (upstream-facing pool cap moved under upstream_transport.*)",
   }),
 ]
+
+// ============================================================================
+// Migration applier — walks CONFIG_MIGRATIONS top-down against a raw
+// payload, deleting/translating/warning as each rule's locator matches, and
+// tracking which legacy dot-paths were actually removed (so PUT-time YAML
+// rewrite can delete them from the on-disk document too — see
+// routes/config/route.ts's deleteLegacyPathsAndPruneEmptyParents).
+// ============================================================================
+
+const warnedDeprecatedKeys = new Set<string>()
+
+function warnDeprecatedKeyOnce(key: string, message: string): void {
+  if (warnedDeprecatedKeys.has(key)) return
+  warnedDeprecatedKeys.add(key)
+  consola.warn(`[Config] ${message}`)
+}
+
+/** Test-only reset for the warn-once tracking above (registered in tests/helpers/isolated-fixture.ts via validation.ts's _resetConfigValidationWarnTrackingForTests). */
+export function _resetDeprecatedKeyWarnTrackingForTests(): void {
+  warnedDeprecatedKeys.clear()
+}
+
+/**
+ * Walk a dot-path through nested plain objects. Returns `undefined` if any
+ * segment is missing or the value along the way is not an object.
+ *
+ * Shared by the migration applier below AND validation.ts's Zod-issue path
+ * lookups (`cleanInvalidPaths`/`zodIssueToDetails`) — those two call sites
+ * are unrelated to migration, just reuse the same "walk a dot-path" primitive.
+ */
+export function navigate(obj: unknown, path: ReadonlyArray<PropertyKey>): unknown {
+  let current: unknown = obj
+  for (const segment of path) {
+    if (!current || typeof current !== "object") return undefined
+    current = (current as Record<PropertyKey, unknown>)[segment]
+  }
+  return current
+}
+
+function deepCloneJsonSafe<T>(value: T): T {
+  return structuredClone(value)
+}
+
+/** Deep-merge `patch` into `target` ONLY for keys not already present (user-set value wins) */
+function deepMergeMissingOnly(target: Record<string, unknown>, patch: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(patch)) {
+    const existing = target[key]
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+        deepMergeMissingOnly(existing as Record<string, unknown>, value as Record<string, unknown>)
+      } else if (existing === undefined) {
+        target[key] = deepCloneJsonSafe(value)
+      }
+      // else: user already provided a primitive at this path; do not override.
+    } else if (existing === undefined) {
+      target[key] = value
+    }
+  }
+}
+
+export interface ConfigMigrationApplyResult {
+  value: Record<string, unknown>
+  legacyPathsRemoved: ReadonlyArray<string>
+}
+
+/**
+ * Apply every CONFIG_MIGRATIONS rule to `raw`, returning the migrated
+ * payload plus the list of legacy dot-paths that were actually present and
+ * removed (declaration order; a path appears at most once). `renameLeaf`/
+ * `renameSection`/`removeKey` migrations are reported; `migrateValue`
+ * in-place value consolidations (`isInPlaceValueMigration: true`) are not
+ * (see the field's doc comment on `ConfigMigration`).
+ *
+ * Consumed by BOTH validation paths: file load's `validateConfig` (only
+ * uses `.value`, unchanged behavior) and HTTP PUT's `validateConfigInput`
+ * (also threads `.legacyPathsRemoved` through `ConfigValidationResult` to
+ * `routes/config/route.ts`, which deletes those paths from the on-disk
+ * YAML document before writing the migrated value back).
+ */
+export function extractAndTranslateDeprecatedWithOps(raw: Record<string, unknown>): ConfigMigrationApplyResult {
+  const out: Record<string, unknown> = deepCloneJsonSafe(raw)
+  const legacyPathsRemoved: Array<string> = []
+
+  for (const dep of CONFIG_MIGRATIONS) {
+    const parent = dep.parentPath === "" ? out : navigate(out, dep.parentPath.split("."))
+    if (!parent || typeof parent !== "object") continue
+    const parentObj = parent as Record<string, unknown>
+    if (!(dep.key in parentObj)) continue
+
+    const legacyValue = parentObj[dep.key]
+    // Value-gated migrations (migrateValue) fire only for legacy values; an
+    // already-valid value must pass through WITHOUT delete or warn.
+    if (dep.isLegacyValue && !dep.isLegacyValue(legacyValue)) continue
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- key comes from CONFIG_MIGRATIONS
+    delete parentObj[dep.key]
+    warnDeprecatedKeyOnce(dep.path, dep.message)
+    if (!dep.isInPlaceValueMigration) legacyPathsRemoved.push(dep.path)
+
+    if (!dep.translate) continue
+    const patch = dep.translate(legacyValue)
+    if (!patch) continue
+    deepMergeMissingOnly(out, patch)
+  }
+
+  return { value: out, legacyPathsRemoved }
+}
