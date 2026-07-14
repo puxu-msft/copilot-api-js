@@ -768,7 +768,7 @@ git commit -m "feat(restart): live-predecessor registry for reclaim-orphan exclu
 - Consumes: `getExcludedPredecessor()`（Task 6）。
 - Produces: 当寄存器有 live 前任时，reclaim 的 SELECT/UPDATE WHERE 额外 `AND NOT (pid=? AND boot_time=?)`，不动前任在途行。
 
-- [ ] **Step 1: 写失败测试（内存 DB，插前任 active 行，set 寄存器，验 reclaim 不动它）**
+- [x] **Step 1: 写失败测试（内存 DB，插前任 active 行，set 寄存器，验 reclaim 不动它）**
 
 ```ts
 // tests/restart/reclaim-excludes-predecessor.it.test.ts
@@ -793,12 +793,12 @@ test("set live 前任后，reclaim 不把前任的 active 行刷 interrupted", (
 
 > 实现者注：本测试需要 `reclaimOrphanedActiveRows` 可被隔离调用 + 一个可插入 entries_v2 的临时库。落地时把 `reclaimOrphanedActiveRows` 从 connection.ts **导出**（当前是 module-private），并复用 `schema.ts` 的 SCHEMA_SQL 建临时库。断言两行对照：前任行留 active、非前任非自己行转 interrupted。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `bun test tests/restart/reclaim-excludes-predecessor.it.test.ts`
 Expected: FAIL（当前 reclaim 会把前任行也刷成 interrupted）。
 
-- [ ] **Step 3: 改 reclaimOrphanedActiveRows 排除 live 前任**
+- [x] **Step 3: 改 reclaimOrphanedActiveRows 排除 live 前任**
 
 `src/lib/history/sqlite/connection.ts`：
 
@@ -828,22 +828,24 @@ function reclaimOrphanedActiveRows(database: Database): void {
 
 同时把该函数 `export`（供隔离测）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `bun test tests/restart/reclaim-excludes-predecessor.it.test.ts`
 Expected: PASS。
 
-- [ ] **Step 5: 跑既有 history 连接测试防回归**
+- [x] **Step 5: 跑既有 history 连接测试防回归**
 
 Run: `bun test tests/history/ 2>/dev/null || bun test --rerun-each 1 tests/ -t reclaim`
 Expected: 既有 reclaim / connection 测试仍 PASS（无寄存器时行为不变）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -- src/lib/history/sqlite/connection.ts tests/restart/reclaim-excludes-predecessor.it.test.ts
 git commit -m "fix(history): reclaim-orphan excludes live predecessor during handover overlap"
 ```
+
+> **实施记录（2026-07-14）**：commit `c9555ae9`。测试全绿（2 pass）。`bun test tests/history/` 504 pass / 1 skip / 1 pre-existing fail（`history-ui-route.unit.test.ts` GET /ui 404，与本改动无关，属计划已知基线失败之一）。`bun run typecheck` 仍是基线的 2 个既有错误（`item_id` on `OutputTextDeltaEvent`），无新增。
 
 ### Task 7b: 接管时跳过启动 VACUUM（B4，overlap 数据丢失防护）
 
@@ -857,7 +859,7 @@ git commit -m "fix(history): reclaim-orphan excludes live predecessor during han
 
 > R1 评审 BLOCKER-4：`maybeVacuumOnStartup` 在 `openDatabase` 同步路径（Phase 3、早于 listen/发信号）跑；VACUUM 需独占整库写锁、时长随库大小线性增长（可远超 `busy_timeout=5000`）。此刻旧进程完全不知接管、正常流量写 history.db → 命中阈值时旧进程写 `SQLITE_BUSY`→never-throw 静默降级 = **history 记录丢失**。接管场景（predecessor 非空）必须跳过 VACUUM；它本是有阈值的一次性维护，延后到下次真正独占启动即可（reaper incremental vacuum 仍安全）。
 
-- [ ] **Step 1: 写失败测试（set predecessor 后 openDatabase 不跑 full VACUUM）**
+- [x] **Step 1: 写失败测试（set predecessor 后 openDatabase 不跑 full VACUUM）**
 
 ```ts
 // tests/restart/vacuum-skip-on-takeover.it.test.ts
@@ -876,12 +878,12 @@ test("predecessor 非空时 openDatabase 跳过 maybeVacuumOnStartup", () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `bun test tests/restart/vacuum-skip-on-takeover.it.test.ts`
 Expected: FAIL（当前无条件跑 VACUUM）。
 
-- [ ] **Step 3: gate maybeVacuumOnStartup**
+- [x] **Step 3: gate maybeVacuumOnStartup**
 
 `src/lib/history/sqlite/connection.ts` `openDatabase`（:84 附近）：
 
@@ -898,17 +900,19 @@ import { getExcludedPredecessor } from "../../restart/predecessor-registry"
   }
 ```
 
-- [ ] **Step 4: 跑测试确认通过 + 既有 connection 测试防回归**
+- [x] **Step 4: 跑测试确认通过 + 既有 connection 测试防回归**
 
 Run: `bun test tests/restart/vacuum-skip-on-takeover.it.test.ts && bun test tests/history/`
 Expected: PASS，既有开库/VACUUM 测试无回归（无 predecessor 时行为不变）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -- src/lib/history/sqlite/connection.ts tests/restart/vacuum-skip-on-takeover.it.test.ts
 git commit -m "fix(history): skip startup VACUUM during handover overlap (SQLITE_BUSY data loss)"
 ```
+
+> **实施记录（2026-07-14）**：commit `330e7f68`。测试全绿（2 pass，覆盖「接管跳过」+「非接管行为不变」两支）。`bun test tests/restart/ tests/history/` 合跑 504 pass / 1 skip / 1 pre-existing fail（同上 history-ui-route，与本改动无关）。`bun run typecheck` 无新增错误。
 
 ### Task 8: 接管决策 + 交接信号
 
