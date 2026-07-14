@@ -23,12 +23,19 @@ import {
 } from "bun:test"
 import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
+
 import {
   //
   createUpstreamFrameDiagnostics,
   logUpstreamStreamError,
   upstreamFrameDiagType,
 } from "~/lib/upstream-stream-diagnostics"
+import {
+  //
+  recordUpstreamFrame,
+  type StreamPumpState,
+} from "~/routes/messages/streaming-pump"
 
 describe("upstreamFrameDiagType", () => {
   test("Responses frame → its `type`", () => {
@@ -131,5 +138,36 @@ describe("logUpstreamStreamError time base (MEDIUM-2 regression)", () => {
       spy.mockRestore()
       setSystemTime() // restore real clock
     }
+  })
+})
+
+describe("recordUpstreamFrame native label (LOW-1 parity — no shared/native drift)", () => {
+  function freshState(): StreamPumpState {
+    return { streamStartMs: Date.now(), bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false }
+  }
+  const noopCtx = { recordStreamProgress: () => {} } as unknown as RequestContext
+
+  test("the native Anthropic pump labels a malformed DATA-bearing frame `malformed`, NOT `keepalive` (delegates to upstreamFrameDiagType)", () => {
+    const sseEvents: Array<{ type: string; raw: string; offsetMs: number }> = []
+    // parsed=undefined mirrors the native onUpstreamFrame after a JSON.parse throw on a garbled frame.
+    recordUpstreamFrame({
+      rawEvent: { data: "{ not json" },
+      parsed: undefined,
+      streamState: freshState(),
+      sseEvents,
+      reqCtx: noopCtx,
+      checkRepetition: () => {},
+    })
+    expect(sseEvents).toHaveLength(1)
+    // Pre-fix this was `keepalive` (the empty-frame label) — the native pump and the shared collector
+    // must agree, and both now route through `upstreamFrameDiagType`.
+    expect(sseEvents[0]?.type).toBe("malformed")
+    expect(sseEvents[0]?.type).toBe(upstreamFrameDiagType({ data: "{ not json" }))
+  })
+
+  test("empty keepalive frame → `keepalive` (parity with the shared collector)", () => {
+    const sseEvents: Array<{ type: string; raw: string; offsetMs: number }> = []
+    recordUpstreamFrame({ rawEvent: { data: "" }, parsed: undefined, streamState: freshState(), sseEvents, reqCtx: noopCtx, checkRepetition: () => {} })
+    expect(sseEvents[0]?.type).toBe("keepalive")
   })
 })

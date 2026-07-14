@@ -1380,16 +1380,18 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
 
   // Live-stream diagnostic signals for `logUpstreamStreamError` (the blind-spot fix): the translate leg's
   // upstream is a CC/Responses SSE stream, so it can't reuse the direct pump's Anthropic `recordUpstreamFrame`.
-  // The shared collector observes EVERY raw frame (incl. `[DONE]`/keepalives) with an honest format-agnostic
-  // last-frame label — feeding real frames/bytes to the disconnect log so a healthy long stream capped by the
-  // upstream is never misread as `frames=0 / silence=<whole duration>` (the gpt-5.6-sol incident). The
-  // PERSISTED upstream-original track is the driver's (this is diagnostics-only).
+  // The shared collector observes every raw frame the driver hands this hook (empty keepalives included — the
+  // driver filters the `[DONE]` sentinel BEFORE onUpstreamFrame, so it never reaches here) with an honest
+  // format-agnostic last-frame label — feeding real frames/bytes to the disconnect log so a healthy long stream
+  // capped by the upstream is never misread as `frames=0 / silence=<whole duration>` (the gpt-5.6-sol incident).
+  // The PERSISTED upstream-original track is the driver's (this is diagnostics-only).
   const diag = createUpstreamFrameDiagnostics(streamStartMs)
 
   const onUpstreamFrame = (frame: UpstreamFrame): void => {
     const rawEvent = frame as ServerSentEventMessage
     diag.observe(rawEvent)
-    // Accumulation skips `[DONE]`/empty (they carry no outbound-leg content); the diagnostic counts them.
+    // Accumulation additionally skips empty frames (they carry no outbound-leg content); the diagnostic
+    // counts them as wire activity. (`[DONE]` is already filtered by the driver upstream of this hook.)
     if (!rawEvent.data || rawEvent.data === "[DONE]") return
     try {
       const parsed = JSON.parse(rawEvent.data) as Record<string, unknown>
