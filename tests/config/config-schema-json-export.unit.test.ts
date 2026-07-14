@@ -72,4 +72,21 @@ describe("ConfigSchema → JSON Schema export", () => {
     // user-defined keys allowed
     expect(modelOverrides.additionalProperties).not.toBe(false)
   })
+
+  test("upstream_transport section: http2 + websocket sub-sections with expected leaf keys", () => {
+    const json = toJsonSchema()
+    const upstreamTransport = pickObjectSchema((json.properties as Record<string, unknown>).upstream_transport)
+    const utProps = upstreamTransport.properties as Record<string, unknown>
+    expect(utProps.tcp_keepalive_probe_delay).toBeDefined()
+
+    const http2 = pickObjectSchema(utProps.http2)
+    const http2Props = http2.properties as Record<string, unknown>
+    expect(http2Props.ping_interval).toBeDefined()
+    expect(http2Props.session_connect_timeout).toBeDefined()
+
+    const websocket = pickObjectSchema(utProps.websocket)
+    const wsProps = websocket.properties as Record<string, unknown>
+    expect(wsProps.pooled_connection_idle_timeout).toBeDefined()
+    expect(wsProps.soft_max_connections).toBeDefined()
+  })
 })

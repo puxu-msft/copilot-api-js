@@ -858,6 +858,65 @@ export const TimeoutsConfigSchema = z
   })
   .strict()
 
+export const UpstreamTransportHttp2ConfigSchema = z
+  .object({
+    /** Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled). Same semantics as the migrated `timeouts.upstream_h2_ping`. Default 15. Works on both Bun and Node (node:http2 transport is runtime-neutral). */
+    ping_interval: nullableNonnegativeInt(),
+    /**
+     * TCP connect + TLS handshake deadline in seconds for a single h2 session
+     * establishment attempt (0 = no timeout). This is a per-attempt connect
+     * ceiling, NOT a total request deadline — a proxied connection tunnels a
+     * pre-TLS socket then layers TLS, so the worst case is up to 2x this value
+     * (connect-to-proxy + TLS-through-tunnel). See
+     * docs/decisions/2026-07-14-transport-config-three-axis-organization.md D3.
+     * Default 10 (mirrors the previous hardcoded CONNECT_TIMEOUT_MS).
+     *
+     * `0` genuinely disables the deadline for direct connections and HTTP
+     * CONNECT proxies (see plan-2 Step 3). It CANNOT be honestly disabled
+     * when the configured proxy is SOCKS — the `socks` package floors its
+     * own connect timeout at 30s regardless (`this.options.timeout ||
+     * DEFAULT_TIMEOUT`, `DEFAULT_TIMEOUT = 30_000`; verified by reading
+     * `node_modules/socks` source). `ConfigSchema`'s top-level
+     * `.superRefine()` (see Task 3 Step 6+ below) rejects `0` here whenever
+     * `proxy` resolves to a `socks5:`/`socks5h:` URL, rather than silently
+     * accepting `0` and getting the library's 30s default instead of the
+     * disabled behavior the user asked for (D3/D5 "诚实表达能力边界").
+     */
+    session_connect_timeout: nullableNonnegativeInt(),
+  })
+  .strict()
+export type UpstreamTransportHttp2Config = z.infer<typeof UpstreamTransportHttp2ConfigSchema>
+
+export const UpstreamTransportWebsocketConfigSchema = z
+  .object({
+    /**
+     * Idle timeout in seconds for a pooled (not-in-use) upstream Responses WS
+     * connection before it is proactively closed (0 = never idle-close).
+     * Default 300 (mirrors the previous hardcoded DEFAULT_IDLE_TIMEOUT_MS = 5min).
+     */
+    pooled_connection_idle_timeout: nullableNonnegativeInt(),
+    /** Soft cap on upstream WS pool size (default 32; 0 = unlimited). Was `openai_responses.max_upstream_ws_connections`. */
+    soft_max_connections: nullableNonnegativeInt(),
+  })
+  .strict()
+export type UpstreamTransportWebsocketConfig = z.infer<typeof UpstreamTransportWebsocketConfigSchema>
+
+/**
+ * `upstream_transport.*` — outbound connection behavior toward the GHC upstream,
+ * organized by protocol (D1 three-axis reorg). Distinct from `timeouts.*`
+ * (protocol-agnostic request-lifecycle watchdogs) and `server.responses_ws.*`
+ * (inbound client-facing WS ingress limits).
+ */
+export const UpstreamTransportConfigSchema = z
+  .object({
+    /** Upstream TCP keepalive initial-probe delay in seconds (0 = use undici/Node default, NOT "disabled" — see compat.ts migration for the legacy 0→absence special case). Was `timeouts.upstream_keepalive`. Default 15. Works on both Bun and Node. */
+    tcp_keepalive_probe_delay: nullableNonnegativeInt(),
+    http2: nullableSection(UpstreamTransportHttp2ConfigSchema),
+    websocket: nullableSection(UpstreamTransportWebsocketConfigSchema),
+  })
+  .strict()
+export type UpstreamTransportConfig = z.infer<typeof UpstreamTransportConfigSchema>
+
 // ============================================================================
 // Top-level Config schema
 // ============================================================================
