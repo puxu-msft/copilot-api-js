@@ -45,7 +45,7 @@ P1 (config reorg + read-path + state split)
  └──> P3 (PUT 文档级迁移写回)
 ```
 
-- P2、P3 都只依赖 P1（可并行执行，无共享文件交集：P2 动 `http2-client.ts`/`upstream-ws-connection.ts`/`upstream-ws.ts`/`proxy.ts`；P3 动 `compat.ts`（新增函数，非改已有签名）/`validation.ts`/`routes/config/route.ts`）。
+- P2、P3 都只依赖 P1（可并行执行，无共享文件交集：P2 动 `http2-client.ts`/`upstream-ws-connection.ts`/`upstream-ws.ts`/`proxy.ts`/`transport/proxy-connect.ts`（仅 `connectViaHttpConnect`——D5 的 `0`=禁用语义要在 HTTP CONNECT 代理隧道路径下真正成立，见 plan-2 Task 1 Step 3；`connectViaSocks` 不在此列，其 `0` 处理走 P1 Task 3 附加范围 B8 的配置校验层拒绝）；P3 动 `compat.ts`（新增函数，非改已有签名）/`validation.ts`/`routes/config/route.ts`）。
 - P4 依赖 P2（要 reconcile 的旋钮必须先真实接线），不依赖 P3。
 - P5 依赖 P4（状态面板要展示 reconcile 观测量）。
 - 是否让 P2/P3 由同一 executor 顺序做、还是拆两个并行 worktree，由主会话按当前编排资源决定；本计划不代为指派执行主体。
