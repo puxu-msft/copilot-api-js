@@ -63,6 +63,7 @@ import {
   extractAppliedEdits,
   summarizeAppliedEdits,
 } from "~/lib/anthropic/applied-context-edits"
+import { filterDelegatedStrategies } from "~/lib/anthropic/error-shaping"
 import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
 import {
   //
@@ -274,7 +275,7 @@ export function buildMessagesDriverStrategies(
     // defensive (an unreachable parse failure would have thrown before the factory runs).
     const resanitize = codec.getResanitize()
     if (!resanitize) throw new Error("[Anthropic:v4] resanitize chain unavailable — codec.parse did not run")
-    return assembleStrategiesForEndpoint(env.targetEndpoint, {
+    const strategies = assembleStrategiesForEndpoint(env.targetEndpoint, {
       anthropic: {
         originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
         resanitize,
@@ -283,6 +284,16 @@ export function buildMessagesDriverStrategies(
         betaProbe,
       },
     })
+    // D-class self-heal delegation (Phase 5, docs/plan/2026-07-13-upstream-error-client-shaping/
+    // phase-5-selfheal-delegation.md): ONLY the direct /v1/messages leg — a "delegate"-flagged
+    // reactive strategy never fires, letting its 400 pass through untouched to Claude Code's own
+    // self-heal logic. Gated on error_shaping_enabled (disabled = today's full, undelegated stack).
+    // The always-on L1 thinking-signature quarantine pre-flight sanitize is NOT a RetryStrategy —
+    // it runs in the S3 request-rewrite chain, never in this array, so it is structurally untouched.
+    if (!state.errorShapingEnabled) return strategies
+    return filterDelegatedStrategies(strategies, state.errorSelfhealDelegate, (strategyName) =>
+      env.ctx.recordFeature("error-shaping-selfheal-delegated", { strategyName }),
+    )
   }
 
   // FORWARD translate leg (anthropic→cc/responses): the CC strategy stack off the hub-translated CC body.
