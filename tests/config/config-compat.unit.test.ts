@@ -306,6 +306,27 @@ describe("config compat — validateConfigInput (PUT) also migrates (C3)", () =>
     expect(r.valid).toBe(false)
     if (!r.valid) expect(r.details[0].field).toBe("timeouts.response_header")
   })
+
+  test("PUT legacyPathsRemoved reports the migrated legacy path", () => {
+    const r = validateConfigInput({ fetch_timeout: 30 })
+    expect(r.valid).toBe(true)
+    if (r.valid) expect(r.legacyPathsRemoved).toContain("fetch_timeout")
+  })
+
+  test("PUT legacyPathsRemoved is empty when no legacy keys are present", () => {
+    const r = validateConfigInput({ model_refresh_interval: 300 })
+    expect(r.valid).toBe(true)
+    if (r.valid) expect(r.legacyPathsRemoved).toEqual([])
+  })
+
+  test("PUT legacyPathsRemoved excludes in-place value migrations (anthropic.thinking_block_sanitize)", () => {
+    const r = validateConfigInput({ anthropic: { thinking_block_sanitize: "empty_thinking" } })
+    expect(r.valid).toBe(true)
+    if (r.valid) {
+      expect(r.value.anthropic?.thinking_block_sanitize).toBe("all_empty")
+      expect(r.legacyPathsRemoved).not.toContain("anthropic.thinking_block_sanitize")
+    }
+  })
 })
 
 describe("validateConfigInput (PUT) — SOCKS session_connect_timeout=0 hard-rejects (D3 exception)", () => {
