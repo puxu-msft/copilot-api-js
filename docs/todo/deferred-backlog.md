@@ -670,3 +670,17 @@
 - **当前行为**：修复正确、覆盖充分——reconcile 逻辑由 unit + 该 e2e（含 fix-stash 正样本对照）完整覆盖;承重假设「真两跳会早转发 message_start」**双证**:①代码接线确证 [cc-to-anthropic-stream.ts:142](../../src/lib/openai/translate/cc-to-anthropic-stream.ts#L142)（首个上游 chunk 惰性发 message_start）+ translate-leg sink 经 `liveReconcilingSink`（[handler-v4.ts:1421](../../src/routes/messages/handler-v4.ts#L1421)）;②生产 History 实证（req_1784035548020_524 / _564 / _719）。故非活跃缺陷。
 - **理想架构 / 若做需改什么**：加一个 HTTP 级 e2e——真实 Responses 帧 `response.created → 静默 → output frames → response.completed` 走实际 `@responses` 翻译路由,从客户端 SSE wire 经 Anthropic SDK decoder + 完整 frame-order oracle 断言「早 envelope + 长静默 + resumed block」完整序列且恰一个 `message_start`。
 - **为何暂缓**：属冗余守护（承重假设已代码+生产双证、非轶事）;价值在防未来 translator 事件顺序/flush 变更绕过 identity-codec e2e,非修当前缺陷。发现方：本次修复 reviewer 建议（GPT + Claude reviewer,2026-07-14）。
+
+## 流式交错并行 tool-call 产出非法 Anthropic block 序列（MEDIUM，评审 #1，2026-07-14 记）
+
+- **根因**：[cc-to-anthropic-stream.ts:244-256](../../src/lib/openai/translate/cc-to-anthropic-stream.ts#L244) 的 LIVE 流式翻译器按上游到达顺序逐帧发 `input_json_delta`。当两个 tool 的 argument delta **交错**到达（tool0-start, tool1-start, tool0-args, tool1-args…），代码对**已 `content_block_stop` 的块**再发 `content_block_delta` 且无法重开 → 违反 Anthropic「一块 start→delta*→stop 后不可重开」协议，@anthropic-ai/sdk 可能拒收或错误累积。代码作者注释（`:247-249`）已自认此路径坏、赌「well-formed OpenAI stream 永不交错」。
+- **当前行为（实测确认）**：用 producer wire-oracle 复现（[cc-to-anthropic-stream.unit.test.ts](../../tests/openai/cc-to-anthropic-stream.unit.test.ts) 的 `test.todo` "interleaved tool args…"，交错输入下 illegal deltas 非空）。**是否真触发未证**——赌注（GHC 是否真交错吐 tool 参数）无实测背书；CC/Responses wire 用 `index`/`item_id` 恰是为**允许**交错。
+- **理想架构 / 若做需改什么**：在 commit 边界**从累加器重渲染** tool_use 块（累加器已按 index 聚齐完整 arguments），每块原子 `start→delta→stop` 连续发出，绕开上游到达顺序。这正是「缓冲提交点从累加器渲染」大改的一部分（与 reasoning 透传同源的「翻译腿从累加器渲染」方向）——一次建成、三档 commit 粒度共用。live 模式的小修是逐 index 缓冲 args 到块完成再发。
+- **为何暂缓**：属独立于 reasoning 特性的既有 bug；正确修法是结构性大改（≥RFC 量级）；且触发条件待真 GHC 探针确认。发现方：GPT reviewer（2026-07-14，异模型独有发现，Claude reviewer 漏），主线核码 + producer wire-oracle 复现确认。
+
+## reasoning 透传：low-effort 无 summary 时 encrypted reasoning 跨轮丢失（LOW，2026-07-14 记）
+
+- **根因 / 现状**：reasoning 透传（landed 2026-07-14）在 GHC 返回**空 summary**时（实测：low effort 即使请求 `summary:"auto"` 也可能无 summary，见 exp/synthetic-reasoning-summary-shape）不产 thinking 块——graceful 缺席正确。但此时 reasoning item 的 `encrypted_content` 非空却**无处承载**（没有 thinking 块可挂 signature），故该轮的 encrypted reasoning 不进跨轮 round-trip。
+- **当前行为**：无 summary → 客户端不显示 reasoning（合理）、encrypted_content 被丢（次优）。有 summary → 全链路正常（thinking 块 + encrypted 封进 signature 往返）。
+- **理想架构 / 若做需改什么**：若要「即使无 summary 也保 encrypted 跨轮」，可在无 summary 但有 encrypted 时产一个**空文本 thinking 块**只承载 signature 载荷——但需先探针确认 @anthropic-ai/sdk 接受空 thinking 文本 + 非空 signature 的块（probe ① 只证了非空文本），且 Anthropic 协议是否允许空 thinking。或改用独立 sidecar 存 encrypted（不走 thinking 块）。
+- **为何暂缓**：仅 low-effort 边角、且 encrypted 本不可显示（丢的是 round-trip 能力非可见内容）；真做需额外探针。发现方：reasoning 透传探针 ②③（2026-07-14）。
