@@ -2,6 +2,16 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## 首包/时序埋点的观测→治理跟进项（2026-07-14 落地首包埋点后）
+
+首包埋点（ADR `docs/decisions/2026-07-14-request-timing-instrumentation.md`）只**观测**、不治理。以下四项经 spec §9 明确推迟:
+
+- **缓冲扣留 UX（承重,真问题）**:实证**所有 >=60s 长请求走缓冲**——客户端全程收 keepalive 空 delta,真实内容末尾一次性刷出,故客户端可见首包 ≈ 全程时长(p50≈79s / max≈356s),而上游其实几秒就吐字(TTFT p50≈6s)。**现状**:埋点已让此差异可量化(`buffer_hold_ms` 分布 + 详情面板「buffer hold」)。**暂缓原因**:改缓冲/透传行为是另一个大 spec(触及 protect_streaming_generation + L2 buffered-retry 的取舍)。**若做需改什么**:评估 protect_streaming_generation 是否可改为「透传直到需重试才回缓冲」,或对已确认无重试风险的请求走真透传;需重新审视 buffered-retry 的正确性依赖。
+- **fleet TTFT 分位排除 aborted(盲区)**:遥测 sink(`sinks/telemetry.ts`)只订阅 `request.completed`/`failed`、显式排除 aborted。故 `/api/stats` 的 DDSketch TTFT 分位**不含 client-abort 尾部**——而超时/断连的最坏尾部恰是 aborted。**现状**:per-request 层完整(`state=aborted` 行仍有 timing 列),只是 fleet 聚合盲。**暂缓原因**:埋点本轮只做观测;分位偏乐观可接受。**若做需改什么**:为 timing 单开一个**纳入 aborted** 的 distribution sink(与 verdict counter 分离,避免把 aborted 误计入 success/failure),或 `/api/stats` 暴露 distribution `count` 让消费端对账。
+- **近期窗口(sinceStart/7d)无 sketch 分位**:`/api/stats` 的 DDSketch `distributions` 只在 SQLite-tiered 窗口(30d/90d/lifetime)返回;sinceStart/7d 走内存 fixed-bucket、无 sketch。**现状**:排查「今天这批」的近期分位走 fixed-bucket 直方图(`/metrics` 或 7d)。**暂缓原因**:sketch 服务 30d+ 趋势足够,近期有 fixed-bucket。**若做需改什么**:扩展 `/api/stats` 让 7d 也从 `tel_raw` 读 DDSketch,并定义时钟窗口与 series 的对账。
+- **live 进行中时序面板**:当前详情面板 timing 在请求 settle 后经 REST 重取才显示。**暂缓原因**:进行中显示 TTFT/keepalive 空窗需 `active_request_changed`(active-request-wire.ts)加时序字段——额外接线,价值待验。**若做需改什么**:`ActiveRequestWire` 加 timing 字段 + 前端 LiveDock 消费。
+
+
 ## 交互式 TUI（P1）打磨项（真终端 + review 暴露，2026-07-11）
 
 - **help 切换时选中行瞬时脱窗（review F1，minor，自愈）**：`controller.ts` 的 `reduce` 处理 `help` 键（翻转 showHelp）时不重算 `scrollOffset`；而 showHelp 使可见内容行数 -1（capped 小窗放大此瞬态）。已复现：overflow 态 sel=4/off=3 按 `?` → 选中脱窗一帧，下次 nav 键 visibleRows 重算即拉回。**若做**：干净修需把 scroll-clamp 在 help 切换时用**新** showHelp 的 visibleRows 重算——但 `reduce` 纯函数只拿到单个 `ctx.visibleRows`（terminal-ui 用**旧** showHelp 算的），故要么 terminal-ui 在 `reduce` 后按新 showHelp 重算 visibleRows 再 `scrollToShow` 重夹（scroll-clamp 部分移到集成层），要么给 `UiContext` 传 `panelRows`+`activeCount` 让 reduce 自算 `panelContentRows(新showHelp)`。属架构小调整，自愈故非阻塞。
