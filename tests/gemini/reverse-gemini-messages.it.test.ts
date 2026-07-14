@@ -34,7 +34,7 @@ import {
   //
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
-import { withCapturingManager } from "~/lib/context/manager"
+import { withCapturingManager, withCapturingManagerAsync } from "~/lib/context/manager"
 import { convertGeminiRequestToOpenAI } from "~/lib/gemini"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
@@ -105,11 +105,11 @@ describe("T5.4 — REVERSE gemini→messages request wire (dry-run inspectReques
   useIsolatedRuntime()
   const seed = () => setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
 
-  test("@messages leg → prepare-wire yields an Anthropic-shaped wire at /v1/messages (Gemini→CC→Anthropic reached the wire)", () => {
+  test("@messages leg → prepare-wire yields an Anthropic-shaped wire at /v1/messages (Gemini→CC→Anthropic reached the wire)", async () => {
     seed()
     const { driver } = makeReverseDriver(sseStream([]))
     const raw = rawFor({ contents: [{ role: "user", parts: [{ text: "hi" }] }], systemInstruction: { parts: [{ text: "be terse" }] } }, false)
-    const insp = withCapturingManager(() => driver.inspectRequest(raw, "prepare-wire")).result
+    const insp = (await withCapturingManagerAsync(() => driver.inspectRequest(raw, "prepare-wire"))).result
     expect(insp.stoppedAt).toBe("prepare-wire")
 
     const translated = insp.stages.translate

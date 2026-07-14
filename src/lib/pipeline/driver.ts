@@ -231,29 +231,35 @@ function outboundPrepareWire(deps: DriverDeps, env: RequestEnvelope): PreparedRe
 
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */
 async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<DriverRequestResult> {
-  // S1 — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model).
+  // S1a — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model). SYNC.
   const parsed = deps.codec.parse(raw)
 
-  // S2 — Translate-in: decideRoute (passthrough / translate / reject) + translateOut.
+  // S1b — Translate-in (async, RFC 2026-07-14 §3): per-format async inbound processing —
+  // gemini `Gemini→CC` + each format's async system-prompt injection (awaits applyConfigToState).
+  // Runs ONCE, outside the retry loop, after parse (so `client.inbound` in Phase 4 still sees the
+  // native body) and before S2. No-op unless the codec implements `translateInbound`.
+  const ingested = (await deps.codec.translateInbound?.(parsed)) ?? parsed
+
+  // S2 — Translate-out (route): decideRoute (passthrough / translate / reject) + translateOut.
   // The route decision moved to the free-function `router.decideRoute` (ADR 2026-07-11),
   // resolved via `resolveRouteDecision` (test override → router).
-  const decision = resolveRouteDecision(deps, parsed)
+  const decision = resolveRouteDecision(deps, ingested)
   if (decision.kind === "reject") {
     // No dangling history entry — reject before committing the request (aligns
     // with current messages:165 rejecting before context creation). Carry the
     // raw reason; the route/codec shapes the per-format error envelope.
-    return { ok: false, rejection: { status: decision.status, reason: decision.reason, format: parsed.clientFormat } }
+    return { ok: false, rejection: { status: decision.status, reason: decision.reason, format: ingested.clientFormat } }
   }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
   // T1.6 route observability (RFC §10 / W6): record the leg pin + actual outbound leg +
   // translate-vs-direct label on the ctx (projected into history `model{}`). Optional-chained so a
   // mock/legacy ctx without the method is unaffected; direct requests record `translated:false`.
-  parsed.ctx.setRouteInfo?.({
-    ...(parsed.routeOverride && { routeOverride: parsed.routeOverride }),
+  ingested.ctx.setRouteInfo?.({
+    ...(ingested.routeOverride && { routeOverride: ingested.routeOverride }),
     outboundEndpoint: targetEndpoint,
     translated: decision.kind === "translate",
   })
-  const routedEnv = parsed.with({ targetEndpoint })
+  const routedEnv = ingested.with({ targetEndpoint })
   const routed = outboundTranslateOut(deps, routedEnv)
 
   // S3 — Rewrite-in: assemble + run the request-rewrite chain.
@@ -315,21 +321,27 @@ function snapshotBody(body: unknown): unknown {
  * (same codec calls + `runRewriteIn` logic) but snapshots each stage and stops early — the
  * driver stays the single authority on stage ordering (no duplicated chain in the endpoint).
  */
-function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: RequestInspectStage): RequestInspection {
+async function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: RequestInspectStage): Promise<RequestInspection> {
   const stages: RequestInspection["stages"] = {}
 
-  // S1 — parse.
+  // S1a — parse (sync).
   const parsed = deps.codec.parse(raw)
   stages.parse = { clientFormat: parsed.clientFormat, targetEndpoint: parsed.targetEndpoint, model: parsed.model, body: snapshotBody(parsed.body) }
   if (stopAfter === "parse") return { stoppedAt: "parse", stages }
 
+  // S1b — translate-inbound (async, RFC 2026-07-14 §3): per-format async inbound processing.
+  // No-op unless the codec implements `translateInbound` (then this stage's body == parse's).
+  const ingested = (await deps.codec.translateInbound?.(parsed)) ?? parsed
+  stages["translate-inbound"] = { body: snapshotBody(ingested.body) }
+  if (stopAfter === "translate-inbound") return { stoppedAt: "translate-inbound", stages }
+
   // S2 — route / translate. Via `resolveRouteDecision` (test override → free-function router).
-  const decision = resolveRouteDecision(deps, parsed)
+  const decision = resolveRouteDecision(deps, ingested)
   if (decision.kind === "reject") return { stoppedAt: "reject", rejected: { status: decision.status, reason: decision.reason }, stages }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
   // MIGRATED cell: the assembly owns S2 translateOut / S3 requestRewrites / S4-pre prepareWire (mirrors
   // runRequest); a mock/legacy codec without requestState falls back to deps.codec / deps.requestRewrites.
-  const routedEnv = parsed.with({ targetEndpoint })
+  const routedEnv = ingested.with({ targetEndpoint })
   const routed = outboundTranslateOut(deps, routedEnv)
   stages.translate = { targetEndpoint: routed.targetEndpoint, body: snapshotBody(routed.body) }
   if (stopAfter === "translate") return { stoppedAt: "translate", stages }

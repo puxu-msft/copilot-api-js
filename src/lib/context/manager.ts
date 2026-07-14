@@ -162,6 +162,33 @@ export function withCapturingManager<T>(fn: () => T): { result: T; events: Array
   }
 }
 
+/**
+ * Async counterpart of {@link withCapturingManager}: `fn` is `await`ed **inside** the capture
+ * window, so a caller whose work is asynchronous (e.g. the driver's `inspectRequest`, which now
+ * runs an async S1b `translateInbound` stage — RFC 2026-07-14 §3 / review MEDIUM-1) keeps its
+ * `request.*` events captured for the whole duration. The sync {@link withCapturingManager}
+ * restores the manager the moment `fn()` returns a Promise — closing the window before the async
+ * body runs — which would let the async side effects escape to the real bus. Use THIS whenever
+ * `fn` returns a Promise; keep the sync one for sync `fn`s (e.g. `codec.parse`).
+ */
+export async function withCapturingManagerAsync<T>(fn: () => Promise<T>): Promise<{ result: T; events: Array<CapturedRequestEvent> }> {
+  const saved = _manager
+  const events: Array<CapturedRequestEvent> = []
+  const publisher = {
+    publish: (event: CapturedRequestEvent) => void events.push(event),
+    publishAndFlush: (event: CapturedRequestEvent) => {
+      events.push(event)
+      return Promise.resolve({ delivered: true } as never)
+    },
+  } as unknown as ScopedPublisher<"request">
+  _manager = createRequestContextManager({ publisher, armDeadlineTimers: false })
+  try {
+    return { result: await fn(), events }
+  } finally {
+    _manager = saved
+  }
+}
+
 // ─── Factory ───
 
 export function createRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {

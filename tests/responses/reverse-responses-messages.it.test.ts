@@ -36,7 +36,7 @@ import {
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
-import { withCapturingManager } from "~/lib/context/manager"
+import { withCapturingManager, withCapturingManagerAsync } from "~/lib/context/manager"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { accumulateResponsesStreamEvent, createResponsesStreamAccumulator, finalizeResponsesContent } from "~/lib/openai/responses-stream-accumulator"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
@@ -91,11 +91,11 @@ describe("T5.3 — REVERSE responses→messages request wire (dry-run inspectReq
   useIsolatedRuntime()
   const seed = () => setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.RESPONSES] })] })
 
-  test("@messages leg → prepare-wire yields an Anthropic-shaped wire at /v1/messages (two-hop Responses→CC→Anthropic reached the wire)", () => {
+  test("@messages leg → prepare-wire yields an Anthropic-shaped wire at /v1/messages (two-hop Responses→CC→Anthropic reached the wire)", async () => {
     seed()
     const { driver } = makeReverseDriver(sseStream([]))
     const raw = { body: { model: "claude-x@messages", instructions: "be terse", input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }] }, headers: new Headers(), path: "/responses", method: "POST" } as unknown as RawHttpRequest
-    const insp = withCapturingManager(() => driver.inspectRequest(raw, "prepare-wire")).result
+    const insp = (await withCapturingManagerAsync(() => driver.inspectRequest(raw, "prepare-wire"))).result
     expect(insp.stoppedAt).toBe("prepare-wire")
 
     const translated = insp.stages.translate

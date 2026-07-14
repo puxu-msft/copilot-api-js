@@ -68,7 +68,7 @@ import { createGeminiCodec } from "~/lib/codec/gemini/codec"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
-import { withCapturingManager } from "~/lib/context/manager"
+import { withCapturingManagerAsync } from "~/lib/context/manager"
 import { createRequestContext } from "~/lib/context/request"
 import { convertGeminiRequestToOpenAI } from "~/lib/gemini"
 import { getEntry } from "~/lib/history"
@@ -255,12 +255,12 @@ function inspectFormatRequest(format: DryRunFormat, payload: Record<string, unkn
       requestRewrites: codec.getRequestRewrites(),
     })
     const raw = { body: { ...payload, messages: pre.messages }, headers: new Headers(), path: "/v1/messages", method: "POST" } as unknown as RawHttpRequest
-    return withCapturingManager(() => driver.inspectRequest(raw, stopAfter))
+    return withCapturingManagerAsync(() => driver.inspectRequest(raw, stopAfter))
   }
 
   const { codec, raw } = buildNonAnthropicRequest(format, payload)
   const driver = createPipelineDriver({ codec, transport: dryRunTransport, strategies: [], maxRetries: 0, maxLearningRetries: 0 })
-  return withCapturingManager(() => driver.inspectRequest(raw, stopAfter))
+  return withCapturingManagerAsync(() => driver.inspectRequest(raw, stopAfter))
 }
 
 /**
@@ -323,7 +323,7 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
     if (!payload) return c.json({ error: "Request-side stages need `request` (inline payload) or `entryId`" }, 400)
     const format = resolveFormat(body, entryEndpoint)
     try {
-      const { result: inspection, events } = inspectFormatRequest(format, payload, body.stopAfter as RequestInspectStage)
+      const { result: inspection, events } = await inspectFormatRequest(format, payload, body.stopAfter as RequestInspectStage)
       return c.json({
         stopAfter: body.stopAfter,
         format,

@@ -615,11 +615,11 @@ export interface PipelineDriver {
    * S1-S3 have no `await`. Isolation (the global manager touched by `codec.parse`) is the
    * caller's concern, NOT this method's.
    */
-  inspectRequest(raw: RawHttpRequest, stopAfter: RequestInspectStage): RequestInspection
+  inspectRequest(raw: RawHttpRequest, stopAfter: RequestInspectStage): Promise<RequestInspection>
 }
 
 /** Request-side stage to stop {@link PipelineDriver.inspectRequest} after. */
-export type RequestInspectStage = "parse" | "translate" | "rewrite-in" | "prepare-wire"
+export type RequestInspectStage = "parse" | "translate-inbound" | "translate" | "rewrite-in" | "prepare-wire"
 
 /** Result of {@link PipelineDriver.inspectRequest} — per-stage snapshots up to the stop point. */
 export interface RequestInspection {
@@ -629,6 +629,13 @@ export interface RequestInspection {
   rejected?: { status: number; reason: string }
   stages: {
     parse?: { clientFormat: string; targetEndpoint?: string; model: unknown; body: unknown }
+    /**
+     * S1b `codec.translateInbound` output — the client-native body after async inbound processing
+     * (gemini `Gemini→CC` + per-format async system-prompt injection). For gemini this is where the
+     * `parse` stage's native `contents[]` becomes CC `messages[]` (RFC §3/§4). Absent for a format
+     * that omits `translateInbound` (no-op).
+     */
+    "translate-inbound"?: { body: unknown }
     translate?: { targetEndpoint?: string; body: unknown }
     "rewrite-in"?: { body: unknown; applied: Array<{ name: string; changed: boolean }> }
     /**
@@ -681,8 +688,21 @@ export type ClassifiedStreamError = StreamErrorKind
 export interface FormatCodec {
   readonly format: ClientFormat
 
-  /** S1: parse inbound HTTP → envelope (model resolution, body extraction, ctx). */
+  /** S1: parse inbound HTTP → envelope (model resolution, body extraction, ctx). SYNC by contract. */
   parse(raw: RawHttpRequest): RequestEnvelope
+
+  /**
+   * S1b: async inbound processing that turns the client-NATIVE envelope (post-`parse`, post-
+   * `client.inbound` hook) into the driver's outbound-canonical shape — the seam that absorbs
+   * per-format async work the route layer used to own (RFC 2026-07-14-symmetric-four-point-hooks
+   * §3/§4): gemini's `Gemini→CC` translation, and each format's async system-prompt injection
+   * (`processOpenAIMessages`/`processResponsesInstructions`/`processAnthropicSystem`, which await
+   * `applyConfigToState`). Runs ONCE per logical request, OUTSIDE the retry loop, AFTER `parse` (so
+   * `client.inbound` can still see the native body) and BEFORE S2 route/translate. Optional — a
+   * format with no async inbound work omits it (no-op). Distinct from S2 `translateOut` (that is the
+   * per-target-endpoint outbound leg, run later). Returns the transformed env.
+   */
+  translateInbound?(env: RequestEnvelope): Promise<RequestEnvelope>
 
   /**
    * S2: translate body to the target-endpoint format (passthrough = identity). OPTIONAL since the
