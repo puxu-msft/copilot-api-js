@@ -389,43 +389,72 @@ export interface ReverseStreamTranslator {
   getMeta(): AnthropicToCcStreamMeta
 }
 
-export function createReverseStreamTranslator(clientFormat: ClientFormat, modelId: string, exchangeCtx?: TranslateExchangeContext): ReverseStreamTranslator {
+/**
+ * Per-`clientFormat` STATEFUL factory table (RFC 2026-07-14 §2, R-EXPLICIT) — was a chained
+ * `if (clientFormat==="openai-cc"||"gemini") ... if ("openai-responses") ... throw` (a runtime-throw
+ * fallback for the `anthropic` direct/passthrough clientFormat, which never reaches a reverse
+ * translator). Now an EXHAUSTIVE `Record<ClientFormat, ReverseStreamTranslatorFactory>` — a missing
+ * clientFormat is a COMPILE error via `satisfies`. Each entry constructs a FRESH per-request stateful
+ * translator (a factory, not a plain value); `openai-responses`'s factory additionally threads the
+ * `exchangeCtx` param (the second hop's responseId/itemId/clientModel).
+ */
+type ReverseStreamTranslatorFactory = (modelId: string, exchangeCtx?: TranslateExchangeContext) => ReverseStreamTranslator
+
+/** `openai-cc` / `gemini` — SINGLE hop: the upstream Anthropic SSE stream feeds the Anthropic→CC translator directly. */
+const ccFamilyReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId) => {
   const anthropicToCc: AnthropicToCcStreamTranslator = createAnthropicToCcStreamTranslator(modelId)
-
-  if (clientFormat === "openai-cc" || clientFormat === "gemini") {
-    // Single hop: Anthropic→CC. (Gemini does the CC→Gemini second hop in its own codec render — T5.4.)
-    return {
-      renderFrame: (frame) => anthropicToCc.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
-      flush: () => anthropicToCc.flush().map((s) => s.frame),
-      getMeta: () => anthropicToCc.getMeta(),
-    }
+  return {
+    renderFrame: (frame) => anthropicToCc.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
+    flush: () => anthropicToCc.flush().map((s) => s.frame),
+    getMeta: () => anthropicToCc.getMeta(),
   }
+}
 
-  if (clientFormat === "openai-responses") {
-    // Two hop (WARN-F): Anthropic→CC (per-frame) → CC→Responses. The second segment needs the reverse
-    // exchange the responses handler built (responseId / itemId / clientModel).
-    if (!exchangeCtx) {
-      throw new Error(
-        "[hub-translate] createReverseStreamTranslator: the openai-responses reverse leg requires an exchangeCtx (responseId/itemId/clientModel) — the responses handler must build a reverse-exchange",
-      )
-    }
-    const ccToResponses: CCToResponsesStreamTranslator = createCCToResponsesStreamTranslator(exchangeCtx)
-    return {
-      renderFrame: (frame) => {
-        const out: Array<ClientFrame> = []
-        // Anthropic frame → 0+ CC frames → feed each CC frame's `data` string into the Responses segment.
-        for (const ccStep of anthropicToCc.renderFrame(frame as ServerSentEventMessage)) {
-          for (const rf of ccToResponses.translate(ccStep.frame.data ?? "")) out.push({ event: rf.event, data: rf.data })
-        }
-        return out
-      },
-      // The CC segment's own flush is [] (finish/usage are inline on message_delta), so only the Responses
-      // segment's flush (`response.completed`) matters — MUST be called or the client never gets the terminal.
-      flush: () => ccToResponses.flush().map((rf): ClientFrame => ({ event: rf.event, data: rf.data })),
-      getMeta: () => anthropicToCc.getMeta(),
-    }
+/**
+ * `openai-responses` — TWO hop (WARN-F): Anthropic→CC frames feed the existing
+ * {@link createCCToResponsesStreamTranslator} (the Responses second segment), which needs the
+ * `exchangeCtx` (responseId / itemId / clientModel) the responses handler builds as a reverse-exchange.
+ */
+const responsesReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId, exchangeCtx) => {
+  const anthropicToCc: AnthropicToCcStreamTranslator = createAnthropicToCcStreamTranslator(modelId)
+  if (!exchangeCtx) {
+    throw new Error(
+      "[hub-translate] createReverseStreamTranslator: the openai-responses reverse leg requires an exchangeCtx (responseId/itemId/clientModel) — the responses handler must build a reverse-exchange",
+    )
   }
+  const ccToResponses: CCToResponsesStreamTranslator = createCCToResponsesStreamTranslator(exchangeCtx)
+  return {
+    renderFrame: (frame) => {
+      const out: Array<ClientFrame> = []
+      // Anthropic frame → 0+ CC frames → feed each CC frame's `data` string into the Responses segment.
+      for (const ccStep of anthropicToCc.renderFrame(frame as ServerSentEventMessage)) {
+        for (const rf of ccToResponses.translate(ccStep.frame.data ?? "")) out.push({ event: rf.event, data: rf.data })
+      }
+      return out
+    },
+    // The CC segment's own flush is [] (finish/usage are inline on message_delta), so only the Responses
+    // segment's flush (`response.completed`) matters — MUST be called or the client never gets the terminal.
+    flush: () => ccToResponses.flush().map((rf): ClientFrame => ({ event: rf.event, data: rf.data })),
+    getMeta: () => anthropicToCc.getMeta(),
+  }
+}
 
-  // `anthropic` is the direct/passthrough leg — it never reaches a reverse translator (render is identity).
-  throw new Error(`[hub-translate] createReverseStreamTranslator: unhandled clientFormat for a reverse /v1/messages leg: ${String(clientFormat)}`)
+/**
+ * `anthropic` — the direct/passthrough leg never reaches a reverse translator (render is identity).
+ * Named + tabled explicitly (R-EXPLICIT: not a `default` catch-all) so the throw is a documented,
+ * addressable table entry rather than a fallthrough branch.
+ */
+const anthropicReverseStreamFactoryUnreachable: ReverseStreamTranslatorFactory = (): ReverseStreamTranslator => {
+  throw new Error("[hub-translate] createReverseStreamTranslator: unhandled clientFormat for a reverse /v1/messages leg: anthropic")
+}
+
+const REVERSE_STREAM_FACTORIES = {
+  anthropic: anthropicReverseStreamFactoryUnreachable,
+  "openai-cc": ccFamilyReverseStreamFactory,
+  gemini: ccFamilyReverseStreamFactory,
+  "openai-responses": responsesReverseStreamFactory,
+} satisfies Record<ClientFormat, ReverseStreamTranslatorFactory>
+
+export function createReverseStreamTranslator(clientFormat: ClientFormat, modelId: string, exchangeCtx?: TranslateExchangeContext): ReverseStreamTranslator {
+  return REVERSE_STREAM_FACTORIES[clientFormat](modelId, exchangeCtx)
 }
