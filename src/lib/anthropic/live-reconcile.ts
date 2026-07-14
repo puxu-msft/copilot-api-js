@@ -105,7 +105,16 @@ export type ReconcileHooks = Pick<AnchorHooks, "isMessageStart" | "stopFrame" | 
  * the synthetic-marker routing of the close-off frame).
  */
 export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks: ReconcileHooks): Array<ClientFrame> {
-  if (!state.injected) return [frame] // no prelude was injected → passthrough (byte-equivalent)
+  if (!state.injected) {
+    // No prelude was injected → passthrough (WIRE byte-equivalent). But RECORD a real message_start that
+    // streams through here: the live pump can forward an upstream message_start EARLY (e.g. /responses
+    // `response.created` at t≈0) and then fall silent for the whole reasoning phase. If a later idle tick
+    // then fires the injector, it must know a message_start already reached the client so it does NOT
+    // fabricate a SECOND one (the wire forbids two message_start). `capturedMessageStart` is buffered-path
+    // only, so this live-path flag is the sole signal for the injector's dedup.
+    if (hooks.isMessageStart(frame)) state.messageStartForwarded = true
+    return [frame]
+  }
 
   if (hooks.isMessageStart(frame)) {
     state.messageStartForwarded = true
