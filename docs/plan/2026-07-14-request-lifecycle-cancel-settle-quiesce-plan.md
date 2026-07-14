@@ -2,6 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## 实施状态(2026-07-14,worktree `feat/request-lifecycle-cancel-settle-quiesce`)
+
+- ✅ **Pre-Task golden 基线**:锚点测试 71 pass 锁定(改动前基线)。
+- ✅ **C0-observe**(commit `153c8121`):`reaper-diagnostics.ts`(drift + suspectSuspend 区分 WSL suspend vs 事件循环阻塞 + config-reload timeout diff + 常驻 event-loop histogram)+ manager/config 接线。行为保持,坐实 RC2 机制。
+- ✅ **C0-lifecycle Task 1 operation-scope**(commit `4b8d62e4`):结构化并发 primitive,防过早 quiesce + root 不自 join,12x 确定。
+- ✅ **C0-lifecycle Task 3 finalization-coordinator**(commit `0be3aad8`):keyed per-request join,注册顺序 invariant,12x 确定。
+- ⏳ **C0-lifecycle 剩余**:Task 2 lifecycle record 状态机 + `canDeleteLifecycleRecord`;Task 4 `RequestContext` 加 `cancel/operationSignal/trackOperationBody/sealOperationScope/whenOperationQuiesced`;Task 5 manager 双 registry。
+- ⬜ **C1+C2 → C6**:未开始。锚点表 + invariants 见下,per-phase kickoff 到各阶段展开。
+
+**续跑入口**:worktree 已建(node_modules symlink),下一步 C0-lifecycle Task 2(lifecycle-record 状态机)。全部 primitive 尚未接生产路径(行为零变化,commit invariant 保持)。
+
+---
+
 **Goal:** 消除请求超时/优雅退出的多根因缺陷(2800.9s 请求越过所有配置超时),把 settle(记终态)/cancel(停工作)/quiesce(异步退出)三态显式分离,统一取消信号覆盖,drain 等 operation 而非等 context。
 
 **Architecture:** 见定稿 RFC [docs/rfc/2026-07-14-request-lifecycle-cancel-settle-quiesce.md](../rfc/2026-07-14-request-lifecycle-cancel-settle-quiesce.md)(6 轮独立 GPT 对抗复核收敛)。四段生命周期 `cancel → race(whenOperationQuiesced, cancellationGrace) → settle → finalization drain`;统一 `operationSignal`;双 registry(visibleContexts/operationScopes);keyed finalization coordinator;request_deadline + 泄漏 reaper 双旋钮。
