@@ -24,6 +24,7 @@ import { decompressBytes } from "~/lib/history/sqlite/compression"
 
 import type { TelemetryDatabase } from "./db"
 
+import { JSON_BACKFILL_BOUNDARY_TS_KEY } from "./migrate-json"
 import {
   //
   mergeSketch,
@@ -31,7 +32,22 @@ import {
   type Sketch,
 } from "./sketch"
 import { deserializePackedSketches } from "./sketch-blob"
-import { SETTLED_MEASURE_COLUMN_NAMES } from "./store"
+import {
+  //
+  readMetaInt,
+  SETTLED_MEASURE_COLUMN_NAMES,
+} from "./store"
+
+/**
+ * 读回 JSON 全量吸收 backfill 的迁移边界时间戳（`tel_meta['json_backfill_boundary_ts']`，行不存在 → null）。
+ * 迁移前时段（bucket_ts < boundary）的 tel_raw 桶由旧 JSON 吸收而来、**无 hist_blob**（sketch 层对迁移前
+ * 时段从空开始，HIGH-1：旧固定桶无原始逐值、无法无损重建 sketch）。`/api/stats` 据此让「迁移前无 sketch
+ * 精度」与「真无观测」可辨识、不冒充真数据（richest-data-flow 对称面）：窗口起点 < boundary（30d/90d）或
+ * cumulative（lifetime，种子含迁移前无 sketch 的历史）时标注 preMigrationSketchGap。null = 从未迁移（无缺口）。
+ */
+export function readJsonBackfillBoundaryTs(db: TelemetryDatabase): number | null {
+  return readMetaInt(db, JSON_BACKFILL_BOUNDARY_TS_KEY)
+}
 
 /**
  * SQL 列名 → camelCase counters 字段名的投影表（+ 缩放因子）。逐条对齐
