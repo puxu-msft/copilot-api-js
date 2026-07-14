@@ -50,6 +50,17 @@ const EXEMPT: Record<string, string> = {
   setLearnedLimitsPathForTests: "path setter — per-test opt-in",
   _setRequestTelemetryFilePathForTests: "path setter — per-test opt-in",
   setBundledConfigForTests: "config injector — reset via resetBundledConfigCacheForTests",
+  // telemetry.db assertion/inspection hooks (read-only getters) — no module-global state to reset.
+  _getTelemetryDbForTests: "read-only assertion hook — no state to reset",
+  _getOutboxSizeForTests: "read-only assertion hook — no state to reset",
+  _getEffectiveSketchGammaForTests: "read-only assertion hook — no state to reset",
+  _getCumulativeCapKeysForTests: "read-only assertion hook — no state to reset",
+  _isRollupTimerArmedForTests: "read-only assertion hook — no state to reset",
+  _runRollupTickForTests: "action hook (drives one rollup tick) — no state to reset",
+  // telemetry injectors: per-test opt-in; their effect is undone by _resetRequestTelemetryForTests
+  // (registered), which closes the injected db handle + restores OUTBOX_SOFT_CAP.
+  _setTelemetryDbForTests: "db injector — reset via _resetRequestTelemetryForTests",
+  _setOutboxSoftCapForTests: "soft-cap injector — reset via _resetRequestTelemetryForTests",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {

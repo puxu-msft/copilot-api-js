@@ -25,6 +25,12 @@ import {
 } from "./telemetry/dictionary"
 import {
   //
+  type RollupConfig,
+  resetRollupFailureLogged,
+  runRollupTick,
+} from "./telemetry/rollup"
+import {
+  //
   createSketch,
   mergeSketch,
   type Sketch,
@@ -367,6 +373,12 @@ let dimSinceStart = new Map<string, Map<string, StatAccumulator>>()
 /** bucketTimestamp → dimName → key → accumulator. 5min × 7d rolling window; persisted. */
 let dimBuckets = new Map<number, Map<string, Map<string, StatAccumulator>>>()
 let persistTimer: ReturnType<typeof setInterval> | null = null
+/**
+ * Separate rollup timer (interval `state.telemetryRollupInterval` seconds, default 3600 ≫ persist).
+ * Distinct from `persistTimer` — different cadence + responsibility (downsample raw→hourly→daily +
+ * retention pruning, NOT flushing the outbox). Armed only when telemetry is enabled AND the db is open.
+ */
+let rollupTimer: ReturnType<typeof setInterval> | null = null
 let telemetryFilePath = PATHS.REQUEST_TELEMETRY
 
 // ── additive dual-write to telemetry.db (P3) ──
@@ -978,6 +990,61 @@ function restartPeriodicPersistence(): void {
   startPeriodicPersistence()
 }
 
+/** Project the live telemetry retention config into the rollup input (single read point for the tick). */
+function currentRollupConfig(): RollupConfig {
+  return {
+    rawResolutionMinutes: state.telemetryRawResolutionMinutes,
+    rawRetentionDays: state.telemetryRawRetentionDays,
+    hourlyRetentionDays: state.telemetryHourlyRetentionDays,
+    dailyRetentionDays: state.telemetryDailyRetentionDays,
+  }
+}
+
+/**
+ * Arm the rollup timer (raw→hourly→daily downsample + retention pruning). Gated on "telemetry enabled
+ * AND the db is open" — no db means nothing to roll up. Interval is config-driven
+ * (state.telemetryRollupInterval seconds, default 3600 ≫ persist); hot-reload retunes it via the
+ * onTelemetryConfigChange listener (restartRollupTimer) armed in setupTelemetryDb. The tick is
+ * fire-and-forget + never-throw (runRollupTick swallows DB faults warn-once), so a rollup fault can
+ * never crash the timer or the process.
+ */
+function startRollupTimer(): void {
+  if (rollupTimer) return
+  if (!state.telemetryEnabled || telemetryDb === null) return
+  const intervalMs = Math.max(1, state.telemetryRollupInterval) * 1000
+  rollupTimer = setInterval(() => {
+    const db = telemetryDb
+    if (!db || !state.telemetryEnabled) return
+    // never-throw: runRollupTick already contains its own try/catch per stage (warn-once), but wrap
+    // defensively so a timer callback can never bubble into an unhandledRejection either.
+    try {
+      runRollupTick(db, Date.now(), currentRollupConfig())
+    } catch (err) {
+      consola.warn(`[telemetry] rollup timer tick threw unexpectedly (ignored — timer survives):`, err)
+    }
+  }, intervalMs)
+  // Unref so the rollup timer never keeps the process alive on its own (mirrors reaper-style timers).
+  rollupTimer.unref()
+}
+
+function stopRollupTimer(): void {
+  if (!rollupTimer) return
+  clearInterval(rollupTimer)
+  rollupTimer = null
+}
+
+/** Retune the rollup timer to the current config interval / enabled-state (config hot-reload listener). */
+function restartRollupTimer(): void {
+  stopRollupTimer()
+  startRollupTimer()
+}
+
+/** Retune BOTH telemetry timers on a config hot-reload (persist interval + rollup interval / enabled). */
+function restartTelemetryTimers(): void {
+  restartPeriodicPersistence()
+  restartRollupTimer()
+}
+
 /** Build a StatAccumulator from a persisted per-key object — GENERIC copy of number counters + the `__histograms` arrays. */
 function loadAccumulator(raw: Record<string, unknown>): StatAccumulator {
   const acc = createAccumulator()
@@ -1087,6 +1154,10 @@ function setupTelemetryDb(): void {
   telemetryDrainFailureLogged = false
   telemetryOutboxCapLogged = false
   telemetryPoisonLogged = false
+  // Stop + reset the rollup timer/warn-once: it is re-armed below once the fresh db opens (gated on
+  // db-open). A stale timer would otherwise keep firing against the just-closed handle.
+  stopRollupTimer()
+  resetRollupFailureLogged()
   if (state.telemetryEnabled) {
     try {
       telemetryDb = openTelemetryDb(state.telemetryDbPath || PATHS.TELEMETRY_DB)
@@ -1115,8 +1186,12 @@ function setupTelemetryDb(): void {
       effectiveSketchGamma = null
     }
   }
-  // Arm the persist-timer hot-reload listener exactly once across the module's lifetime.
-  if (!telemetryConfigUnsub) telemetryConfigUnsub = onTelemetryConfigChange(restartPeriodicPersistence)
+  // Arm the rollup timer now the db is (or isn't) open — startRollupTimer is gated on enabled && db-open,
+  // so it no-ops when the db failed to open (the JSON path still runs). Separate cadence from persist.
+  startRollupTimer()
+  // Arm the timer hot-reload listener exactly once across the module's lifetime — retunes BOTH the
+  // persist timer (interval) and the rollup timer (interval / enabled) when the telemetry config changes.
+  if (!telemetryConfigUnsub) telemetryConfigUnsub = onTelemetryConfigChange(restartTelemetryTimers)
 }
 
 export async function initRequestTelemetry(): Promise<void> {
@@ -1653,6 +1728,7 @@ export function persistRequestTelemetry(): Promise<void> {
 
 export async function shutdownRequestTelemetry(): Promise<void> {
   stopPeriodicPersistence()
+  stopRollupTimer()
   // The serialized chain inside persistTelemetrySerialized guarantees this
   // shutdown-fired persist runs AFTER any timer-fired persist already in
   // flight (or queued just before stopPeriodicPersistence cleared the timer).
@@ -1667,6 +1743,8 @@ export async function shutdownRequestTelemetry(): Promise<void> {
 
 export function _resetRequestTelemetryForTests(): void {
   stopPeriodicPersistence()
+  stopRollupTimer()
+  resetRollupFailureLogged()
   acceptedSinceStart = 0
   bucketCounts = new Map()
   dimSinceStart = new Map()
@@ -1703,6 +1781,22 @@ export function _setTelemetryDbForTests(db: TelemetryDatabase | null): void {
 /** Read the current telemetry.db handle (null when disabled / unopened) — test assertion hook. */
 export function _getTelemetryDbForTests(): TelemetryDatabase | null {
   return telemetryDb
+}
+
+/** Whether the rollup timer is currently armed — test assertion hook for the timer wiring (init arm / shutdown clear / config restart). */
+export function _isRollupTimerArmedForTests(): boolean {
+  return rollupTimer !== null
+}
+
+/**
+ * Run one rollup tick against the LIVE db handle + the LIVE config projection (`currentRollupConfig`) —
+ * test hook that exercises the exact wiring the timer callback uses (db handle + config projection),
+ * deterministically at an injected `now`, without waiting on the real interval. No-op when the db is closed.
+ */
+export function _runRollupTickForTests(now: number): void {
+  const db = telemetryDb
+  if (!db || !state.telemetryEnabled) return
+  runRollupTick(db, now, currentRollupConfig())
 }
 
 /** Total pending outbox entries (raw + cumulative + accepted) — test assertion hook for the feeding gate + soft cap. */
