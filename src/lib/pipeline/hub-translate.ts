@@ -186,15 +186,42 @@ export interface RenderedNonStreamingResponse {
   contentFiltered: boolean
 }
 
-export function renderResponseNonStreamingVia(targetEndpoint: UpstreamEndpoint, upstream: unknown): RenderedNonStreamingResponse {
-  if (targetEndpoint === ENDPOINT.MESSAGES) {
-    // REVERSE leg: Anthropic upstream → CC-canonical (the client codec renders any further hop).
-    return { rendered: translateAnthropicResponseToCC(upstream as AnthropicResponse), contentFiltered: false }
-  }
-  // FORWARD leg (anthropic client): normalize the upstream to CC, then CC → Anthropic.
-  const cc = targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? (upstream as ChatCompletionResponse) : translateResponsesResponseToCC(upstream as ResponsesResponse)
+/**
+ * Non-streaming response bridge for one `targetEndpoint` — RFC 2026-07-14 §2 per-pair bridge table
+ * (R-EXPLICIT). Was a single-axis `if (targetEndpoint===MESSAGES) ... else ...` (the `else` branch
+ * further branching on CC vs RESPONSES inline); now an EXHAUSTIVE `Record<UpstreamEndpoint, ...>` —
+ * a missing leg is a COMPILE error via `satisfies`, not a silently-wrong fallthrough.
+ */
+type ResponseBridge = (upstream: unknown) => RenderedNonStreamingResponse
+
+/** REVERSE `/v1/messages` leg: Anthropic upstream → CC-canonical (the client codec renders any further hop). */
+const anthropicUpstreamToCcResponseBridge: ResponseBridge = (upstream) => ({
+  rendered: translateAnthropicResponseToCC(upstream as AnthropicResponse),
+  contentFiltered: false,
+})
+
+/** FORWARD `/chat/completions` leg (anthropic client): the upstream IS already CC — single-hop CC → Anthropic. */
+const ccUpstreamToAnthropicResponseBridge: ResponseBridge = (upstream) => {
+  const { response, contentFiltered } = translateCCResponseToAnthropic(upstream as ChatCompletionResponse)
+  return { rendered: response, contentFiltered }
+}
+
+/** FORWARD `/responses` | `ws:/responses` leg (anthropic client): two-hop (WARN-F) Responses → CC → Anthropic. */
+const responsesUpstreamToAnthropicResponseBridge: ResponseBridge = (upstream) => {
+  const cc = translateResponsesResponseToCC(upstream as ResponsesResponse)
   const { response, contentFiltered } = translateCCResponseToAnthropic(cc)
   return { rendered: response, contentFiltered }
+}
+
+const RESPONSE_BRIDGES = {
+  [ENDPOINT.MESSAGES]: anthropicUpstreamToCcResponseBridge,
+  [ENDPOINT.CHAT_COMPLETIONS]: ccUpstreamToAnthropicResponseBridge,
+  [ENDPOINT.RESPONSES]: responsesUpstreamToAnthropicResponseBridge,
+  [ENDPOINT.WS_RESPONSES]: responsesUpstreamToAnthropicResponseBridge,
+} satisfies Record<UpstreamEndpoint, ResponseBridge>
+
+export function renderResponseNonStreamingVia(targetEndpoint: UpstreamEndpoint, upstream: unknown): RenderedNonStreamingResponse {
+  return RESPONSE_BRIDGES[targetEndpoint](upstream)
 }
 
 /**
