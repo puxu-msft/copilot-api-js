@@ -560,3 +560,11 @@
 - **与 AskUserQuestion 特性不重叠、须并存**：通用腿是工具无关的**剥离**（只剥不救、无 tool-specific 语义）；AskUserQuestion 的「顶层 `question` → item」是专属**语义抢救**启发式。通用腿落地后专属抢救仍须保留——一个防幻觉参数（剥）、一个治语义错位（救）。
 - **为何暂缓**：实测唯一受累工具是 AskUserQuestion（已治），无第二例证据；通用腿要把 tool schema 从请求穿到 response-rewrite 层（新接线面），additive 不阻塞、不制造错数据。
 - **若做需改什么**：① 把请求 `tools[].input_schema` 经 env/state 传到 decode/rewrite 层（现只有 recover-tool-call 用了 tool schema，可复用同通道）；② 加通用剥离步（`additionalProperties:false` gate + 非 `properties` 顶层键剥离），排在 AskUserQuestion 专属抢救**之后**；③ 诊断复用 `pipelineInfo` 落盘通道；④ 测试覆盖非 AskUserQuestion 工具的幻觉顶层参数。发现方：AskUserQuestion salvage 特性 brainstorm（2026-07-14，方案 C 的通用腿）。
+
+## AskUserQuestion 规范化诊断在 buffered-retry 下过报（2026-07-14，合并态 review MED，gated on buffered-retry 启用）
+
+- **根因**：`ctx.recordAskUserQuestionNormalization` 把诊断写进 **request-level** `_askNormalization`（[context/request.ts](../../src/lib/context/request.ts) `recordAskUserQuestionNormalization`），**不做 per-attempt-reset**。buffered-retry（block-level / responses）下，某 attempt 的 tool_use 块跑完 `content_block_stop` 触发 salvage/strip（记 diag）后、在 `message_stop` 前 RST → 该 attempt 被丢弃、帧从不转发；但 diag 已 publish 进 `_askNormalization` 并落 in-flight entry。若 committed 重试 attempt 输入干净（不再 normalize），history 的 `pipelineInfo.askUserQuestionNormalization` 就展示了一个「转发 wire 从未发生」的 salvage。
+- **当前行为（已裁 acceptable、非缺陷）**：**转发 wire 正确性不受影响、不丢数据**——只影响 buffered 路径（默认关、opt-in）下的诊断保真度。相邻的 `recordRepairOutcome` 为「discarded 尝试信号绝不污染 committed」显式做了 per-attempt-reset（`resetRepairOutcomesForAttempt` + `onAttemptReset` + committed flush），本诊断取了相反的 request-level 策略。已在 setter/types 注释改诚实措辞（「任一 attempt 流上执行的规范化，未必 committed」）。
+- **理想架构**：与姊妹 `recordRepairOutcome` 对齐——改 per-attempt 累积 + `onAttemptReset` 清空 `_askNormalization` + 在 committed settle 点 flush 进 pipelineInfo（而非每次 record 即 publish）。
+- **为何暂缓**：转发正确、无数据丢失；buffered-retry 默认关，触发窗口窄；per-attempt-reset + committed-flush 与当前「每次 record 即 in-flight publish」模型不兼容、是诊断落盘时序的架构级重构，值得单独一次改动 + review。
+- **若做需改什么**：① `_askNormalization` 改 per-attempt 语义 + `onAttemptReset`（`context/request.ts`，仿 `resetRepairOutcomesForAttempt`）清空；② 把 in-flight publish 改为 committed settle 点 flush（handler，仿 `flushToolInputRepairObservability`）；③ 测试证「discarded attempt 的 salvage 不进 committed history」。发现方：合并态 review（2026-07-14，`docs/spec/2026-07-13-askuserquestion-toplevel-key-salvage.md` 特性）。
