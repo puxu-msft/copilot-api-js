@@ -64,8 +64,8 @@ import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { preprocessAnthropicMessages } from "~/lib/anthropic/sanitize"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrite-adapters"
+import { createGeminiCodec } from "~/lib/codec/gemini/codec"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
-import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
 import { withCapturingManager } from "~/lib/context/manager"
@@ -77,7 +77,7 @@ import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { assembleResponseRewrites } from "~/lib/pipeline/rewrite-registry"
 
 /** RFC-facing format names (the `format` param + the `entryId`→format mapping). */
-type DryRunFormat = "anthropic" | "openai-cc" | "openai-responses" | "openai-gemini"
+type DryRunFormat = "anthropic" | "openai-cc" | "openai-responses" | "gemini"
 
 const REQUEST_STAGES = new Set<string>(["parse", "translate", "rewrite-in", "prepare-wire"])
 
@@ -86,12 +86,12 @@ const ENDPOINT_TO_FORMAT: Record<EndpointType, DryRunFormat> = {
   "anthropic-messages": "anthropic",
   "openai-chat-completions": "openai-cc",
   "openai-responses": "openai-responses",
-  "gemini-generate-content": "openai-gemini",
+  "gemini-generate-content": "gemini",
 }
 
 /** Per-format response-side wiring: the env discriminants, the real S5 rewrites, and the handler-side fidelity gaps. */
 interface ResponseFormatConfig {
-  /** Internal `env.clientFormat` (note: the `openai-gemini` param maps to `"gemini"`). */
+  /** Internal `env.clientFormat` (now identical to the dry-run `format` key — the labels are aligned on `"gemini"`). */
   clientFormat: ClientFormat
   /** Direct/passthrough target so the real rewrites' `appliesTo` + the identity render path match. */
   targetEndpoint: UpstreamEndpoint
@@ -120,7 +120,7 @@ const RESPONSE_FORMAT_CONFIG: Record<DryRunFormat, ResponseFormatConfig> = {
     responseRewrites: [],
     caveats: ["CC 响应侧无 driver 改写（rewritesAvailable:false）"],
   },
-  "openai-gemini": {
+  gemini: {
     clientFormat: "gemini",
     // Gemini's upstream is CC (the request is translated Gemini→CC); the driver's render
     // normalizes upstream→CC then translates CC→Gemini per-frame inside the codec (B5 owns-sink).
@@ -147,7 +147,7 @@ const DryRunPipelineSchema = z
     /** Inline synthetic upstream (streaming sseEvents or non-streaming response) — response side only. */
     upstream: InlineUpstreamSchema.optional(),
     /** Format. Derived from the entry's `endpoint` when `entryId` is given; defaults to `anthropic` for inline. */
-    format: z.enum(["anthropic", "openai-cc", "openai-responses", "openai-gemini"]).optional(),
+    format: z.enum(["anthropic", "openai-cc", "openai-responses", "gemini"]).optional(),
     /** Streaming vs non-streaming. Derived from entry/upstream when omitted. */
     stream: z.boolean().optional(),
     /** Stop stage. parse/translate/rewrite-in/prepare-wire = request side; rewrite-out/render = response side. */
@@ -294,14 +294,14 @@ function buildNonAnthropicRequest(format: Exclude<DryRunFormat, "anthropic">, pa
     path: `/v1beta/models/${modelId || "gemini"}:generateContent`,
     method: "POST",
   } as unknown as RawHttpRequest
-  return { codec: createOpenAiGeminiCodec(modelId), raw }
+  return { codec: createGeminiCodec(modelId), raw }
 }
 
 function requestSideCaveats(format: DryRunFormat): Array<string> {
   const base =
     format === "anthropic" ?
       "请求侧 = 用当前代码 + live 配置重跑 inboundRequest，非复现当时（preprocess 会重算；betaProbe 为 throwaway；prepare-wire 仅首个 attempt、反应式 retry 改写不可见）"
-    : `请求侧 = 用当前代码 + live 配置重跑 inboundRequest（非复现当时）；handler 的 system-prompt 预注入未镜像；model 重新解析（未用 route 的 preResolved）；${format} 无 S3 请求改写（rewrite-in 恒空）；反应式 retry 改写不可见${format === "openai-gemini" ? "；Gemini→CC 翻译按 stream=false" : ""}`
+    : `请求侧 = 用当前代码 + live 配置重跑 inboundRequest（非复现当时）；handler 的 system-prompt 预注入未镜像；model 重新解析（未用 route 的 preResolved）；${format} 无 S3 请求改写（rewrite-in 恒空）；反应式 retry 改写不可见${format === "gemini" ? "；Gemini→CC 翻译按 stream=false" : ""}`
   return [base]
 }
 

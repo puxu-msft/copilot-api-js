@@ -7,7 +7,7 @@
  * sibling `handler.ts`.
  *
  * Gemini is a thin translation layer: the route translates Gemini→CC + injects
- * the system-prompt, the {@link createOpenAiGeminiCodec} delegates the CC-payload
+ * the system-prompt, the {@link createGeminiCodec} delegates the CC-payload
  * S2–S6 to an internal openai-cc codec (incl. the via-responses bridge), and — since
  * Stage B B5 — the codec's `renderResponse` ALSO does the per-frame CC→Gemini render
  * (`createGeminiStreamTranslator`, formerly the handler's whole-stream wrapper), so the
@@ -24,7 +24,7 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
-import type { OpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
+import type { GeminiCodec } from "~/lib/codec/gemini/codec"
 import type { SseEventRecord } from "~/lib/history"
 import type { UsageData } from "~/lib/history/types"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
@@ -59,11 +59,11 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
+import { createGeminiCodec } from "~/lib/codec/gemini/codec"
 import {
   //
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
-import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -99,7 +99,7 @@ const MAX_LEARNING_RETRIES = 32
 
 interface GeminiDriverBundle {
   driver: ReturnType<typeof createPipelineDriver>
-  codec: ReturnType<typeof createOpenAiGeminiCodec>
+  codec: ReturnType<typeof createGeminiCodec>
   clientAbort: AbortController
   detachClientAbort: () => void
 }
@@ -113,7 +113,7 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
   // gemini codec's internal cc delegate so its reverse prepareWire records the outbound Anthropic betas.
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder(resolvedName, vendor)
-  const codec = createOpenAiGeminiCodec(modelId, { reverseBetaProbe, reverseMapperHolder })
+  const codec = createGeminiCodec(modelId, { reverseBetaProbe, reverseMapperHolder })
   const transport = createUpstreamHttpTransport({ clientAbortSignal: clientAbort.signal, idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedName) })
 
   const driver = createPipelineDriver({
@@ -288,13 +288,13 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
 interface PumpGeminiStreamingV4Options {
   stream: Parameters<Parameters<typeof streamSSE>[1]>[0]
   driver: ReturnType<typeof createPipelineDriver>
-  codec: OpenAiGeminiCodec
+  codec: GeminiCodec
   upstream: UpstreamStream
   env: RequestEnvelope
 }
 
 /** Map the Gemini stream meta (codec-accumulated) → the ctx usage shape (legacy parity). */
-function geminiUsageFromMeta(meta: ReturnType<OpenAiGeminiCodec["getStreamMeta"]>): UsageData {
+function geminiUsageFromMeta(meta: ReturnType<GeminiCodec["getStreamMeta"]>): UsageData {
   // Prefer the canonical UsageData built from the CC accumulator (carries cache_write
   // → cache_creation + modality/prediction details). Fall back to the Gemini-shaped
   // usageMetadata only if the translator produced no canonical usage (defensive).
@@ -503,7 +503,7 @@ function renderReverseGeminiNonStreamingV4(
 interface PumpReverseGeminiStreamingV4Options {
   stream: Parameters<Parameters<typeof streamSSE>[1]>[0]
   driver: ReturnType<typeof createPipelineDriver>
-  codec: OpenAiGeminiCodec
+  codec: GeminiCodec
   upstream: UpstreamStream
   env: RequestEnvelope
   modelId: string

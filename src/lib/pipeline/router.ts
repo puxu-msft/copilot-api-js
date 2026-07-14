@@ -6,7 +6,7 @@
  * (`supported_endpoints` / vendor) to choose a protocol leg or reject — the concern
  * ADR pulls out of the codecs so a codec becomes a pure format translator. It unifies
  * the 5 previously-per-codec decisions (anthropic / openai-cc / openai-responses /
- * openai-gemini) behind one `clientFormat`-dispatched function.
+ * gemini) behind one `clientFormat`-dispatched function.
  *
  * Phase 1 (translation-matrix) turns this into the full-matrix decision tree
  * (RFC 2026-07-11-anthropic-via-openai-translation §4.3) via {@link RouteInput}: a

@@ -29,11 +29,11 @@ import type {
 import type { GenerateContentResponse } from "~/types/api/gemini"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
+import { createGeminiCodec } from "~/lib/codec/gemini/codec"
 import {
   //
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
-import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import { withCapturingManager } from "~/lib/context/manager"
 import { convertGeminiRequestToOpenAI } from "~/lib/gemini"
 import { ENDPOINT } from "~/lib/models/endpoint"
@@ -55,7 +55,7 @@ function sseStream(frames: Array<ServerSentEventMessage>, nonStream?: unknown): 
 function makeReverseDriver(upstream: UpstreamStream) {
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder("claude-x")
-  const codec = createOpenAiGeminiCodec("claude-x@messages", { reverseBetaProbe, reverseMapperHolder })
+  const codec = createGeminiCodec("claude-x@messages", { reverseBetaProbe, reverseMapperHolder })
   const transport: Transport = { send: () => Promise.resolve(upstream) }
   // C2b: the reverse `(gemini, /v1/messages)` cell is dispatched through the CellAssembly (reads the beta
   // probe + mapper holder off env.requestState). The driver takes no requestRewrites/strategies deps — this

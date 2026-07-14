@@ -25,7 +25,7 @@
  * This realizes codec.md §3's "Gemini codec 委托 openai-cc 处理 CC payload" with the render shell
  * now IN the codec (B5) rather than the handler.
  *
- * **Per-request stateful factory.** `createOpenAiGeminiCodec()` holds the internal
+ * **Per-request stateful factory.** `createGeminiCodec()` holds the internal
  * cc codec instance (whose closure carries the via-responses Responses→CC stream
  * translator) + the Gemini ctx + the auto-truncate baseline.
  */
@@ -56,7 +56,6 @@ import type {
   ClientFrame,
   FormatCodec,
   RawHttpRequest,
-  RequestSample,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
@@ -104,7 +103,7 @@ const DROPPED_GEMINI_PARAMS_WARNING_CODE = "gemini_dropped_params"
  * context + truncation baseline accessors (the driver consumes it as a plain
  * `FormatCodec`; the handler reads the extras + the captured Gemini model id).
  */
-export interface OpenAiGeminiCodec extends FormatCodec {
+export interface GeminiCodec extends FormatCodec {
   /** The RequestContext created by `parse` (route `c.set` + failure settle). `undefined` before parse. */
   getContext(): RequestContext | undefined
   /** The auto-truncate baseline: the post-system-prompt, pre-sanitize CC payload. `undefined` before parse. */
@@ -123,8 +122,8 @@ export interface OpenAiGeminiCodec extends FormatCodec {
   getStreamMeta(): GeminiStreamMeta
 }
 
-/** Args for {@link createOpenAiGeminiCodec}. */
-export interface CreateOpenAiGeminiCodecArgs {
+/** Args for {@link createGeminiCodec}. */
+export interface CreateGeminiCodecArgs {
   /**
    * REVERSE `@messages` leg only: the shared per-request beta probe, threaded to the internal cc
    * delegate so its `prepareWire` records the outbound Anthropic betas. Absent for the direct/via-responses
@@ -140,7 +139,7 @@ export interface CreateOpenAiGeminiCodecArgs {
 }
 
 /** Build the gemini codec for one request (holds the internal cc codec + Gemini ctx). */
-export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGeminiCodecArgs): OpenAiGeminiCodec {
+export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs): GeminiCodec {
   // Internal delegate: the openai-cc codec drives the CC-payload S2–S6 (route
   // decision incl. via-responses, wire prep, response normalization, sampling).
   // We call its methods WITHOUT its `parse` — they are pure over `env` (+ its own
@@ -185,17 +184,9 @@ export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGemi
       return truncateBaseline
     },
 
-    // S2–S6 over the CC payload: delegate to the internal cc codec. These never
-    // touch cc's parse-created closure state (requestContext/truncateBaseline are
-    // ours); the only cc closure state used is its via-responses stream translator,
-    // lazily built inside cc.renderResponse.
-    translateOut(env) {
-      return cc.translateOut(env)
-    },
-
-    prepareWire(env) {
-      return cc.prepareWire(env)
-    },
+    // S2 translateOut / S4 prepareWire / S4-sample: the CellAssembly's `OUTBOUND_LEGS` own the outbound
+    // wire for every real Gemini request (via the shared cc/responses leg cores); the codec no longer
+    // implements them. renderResponse below is the RESPONSE side (InboundCodec) — Gemini's CC→Gemini hop.
 
     // renderResponse normalizes the upstream to CC (cc handles the via-responses Responses→CC
     // leg), then drives the per-request CC→Gemini translator per-frame (B5) so the owns-sink driver
@@ -230,12 +221,6 @@ export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGemi
       // outbound-track accumulator is the CC one. (`env` threaded to the cc delegate for the interface;
       // Gemini has no `→ messages` translate leg, so the leg never changes the accumulator.)
       return cc.createResponseAccumulator(env)
-    },
-
-    sampleRequest(wire, env): RequestSample {
-      // Effective + wire are both CC-shaped for Gemini (the Gemini original lives
-      // in setOriginalRequest), matching the legacy CC pipeline's bookkeeping.
-      return cc.sampleRequest?.(wire, env) as RequestSample
     },
 
     formatError(err, _env) {
