@@ -4,6 +4,8 @@ import type {
   MessagesPayload,
 } from "~/types/api/anthropic"
 
+import { isSyntheticReasoningSignature } from "../synthetic-reasoning"
+
 /**
  * Final pass: remove any empty/whitespace-only text content blocks from Anthropic messages.
  * This is a safety net that catches empty blocks regardless of how they were produced.
@@ -125,6 +127,23 @@ export function filterEmptyThinkingBlocks(messages: Array<MessageParam>, mode: T
       return !drop
     })
 
+    if (filtered.length === msg.content.length) return msg
+    return { ...msg, content: filtered } as MessageParam
+  })
+}
+
+/**
+ * Strip our SYNTHETIC-reasoning thinking blocks (sentinel-signed forwards of GPT plaintext reasoning)
+ * UNCONDITIONALLY — regardless of `thinkingBlockSanitizeCheck`. A client echoes a thinking block back
+ * on the next turn; if that turn hits the DIRECT Claude leg, our unforgeable sentinel signature would
+ * 400 the upstream ("cannot be modified"). These blocks carry a NON-empty sentinel signature + non-empty
+ * text, so `filterEmptyThinkingBlocks` (which drops on EMPTY fields) never catches them — hence a
+ * dedicated, always-on strip keyed on the sentinel. See `~/lib/anthropic/synthetic-reasoning`.
+ */
+export function stripSyntheticReasoningBlocks(messages: Array<MessageParam>): Array<MessageParam> {
+  return messages.map((msg) => {
+    if (typeof msg.content === "string") return msg
+    const filtered = msg.content.filter((block) => !(block.type === "thinking" && isSyntheticReasoningSignature((block as { signature?: unknown }).signature)))
     if (filtered.length === msg.content.length) return msg
     return { ...msg, content: filtered } as MessageParam
   })
