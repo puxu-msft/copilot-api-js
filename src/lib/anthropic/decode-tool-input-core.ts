@@ -60,6 +60,26 @@ export function shouldDecodeToolInput(name: string, cfg: DecodeToolInputConfig):
   return Object.hasOwn(cfg.fields, name) && cfg.fields[name].length > 0
 }
 
+/**
+ * Decode literal `\uXXXX` escape sequences in a bare string value back to their characters.
+ *
+ * Upstream (opus-4.8) sometimes DOUBLE-escapes a hoisted `AskUserQuestion` top-level `question`: after
+ * the outer `JSON.parse` the value still literally contains `这…` instead of the decoded text. This
+ * replaces ONLY `\uXXXX` runs (leaving every other byte — real backslashes, quotes — verbatim), so it
+ * is inherently never-throw and does not risk JSON re-quoting hazards. No-op (returns the same content)
+ * when no `\uXXXX` is present, so clean question text passes through unchanged.
+ *
+ * KNOWN LIMITATION (spec 2026-07-13 §2.3): a question that LEGITIMATELY contains a literal `\uXXXX`
+ * 4-hex substring (e.g. the model asking "use `中` or 中?") is a semantic false-positive — it will
+ * be mis-decoded. The real population has no such form; the `unescaped` diag flag audits the misfire.
+ */
+export function unescapeJsonUnicode(s: string): string {
+  if (!/\\u[0-9a-fA-F]{4}/.test(s)) return s
+  // fromCodePoint(n) == fromCharCode(n) for n ≤ 0xFFFF (every `\uXXXX` is 4 hex); a surrogate pair
+  // `😀` decodes to two adjacent lone surrogates that concatenate into the astral char.
+  return s.replaceAll(/\\u([0-9a-fA-F]{4})/g, (_m, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+}
+
 /** Tool name whose `questions[].question` may be backfilled from `header`. */
 export const ASK_USER_QUESTION_TOOL = "AskUserQuestion"
 
@@ -135,4 +155,87 @@ export function decodeToolUseInput(name: string, input: unknown, cfg: DecodeTool
   }
 
   return result ?? input
+}
+
+/** Top-level keys the AskUserQuestion tool schema allows (`additionalProperties:false`). */
+const ASK_ALLOWED_TOP_KEYS = new Set(["questions", "answers", "annotations", "metadata"])
+
+/** Narrow to a plain (non-array, non-null) object. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v)
+}
+
+/** What {@link normalizeAskUserQuestionInput} did — persisted for diagnostics (spec 2026-07-13 §3). */
+export interface AskNormalizationDiag {
+  /** Top-level `question` hoisted into the single item. */
+  salvaged?: boolean
+  /** The salvaged value carried `\uXXXX` escapes that were un-escaped. */
+  unescaped?: boolean
+  /** Schema-invalid top-level keys removed. */
+  strippedKeys?: Array<string>
+  /** no-data-loss trace: a non-empty top-level `question` string was stripped WITHOUT salvage. */
+  droppedQuestionValue?: string
+  /** >1 question item + a top-level `question` → ambiguous, not hoisted. */
+  multiItemAmbiguous?: boolean
+}
+
+/**
+ * Normalize an AskUserQuestion tool_use input into a schema-valid shape on the forwarded wire.
+ *
+ * opus-4.8 occasionally hoists the question text to a top-level `question` key (schema
+ * `additionalProperties:false` → client rejects "unexpected parameter `question`") while leaving
+ * `questions[0]` without a `question`. Three ordered steps (spec 2026-07-13 §2.1):
+ *   1. SALVAGE — top-level NON-EMPTY `question` string + exactly one item missing `question` → move it
+ *      into `item[0].question` (un-escaping `\uXXXX`). >1 item → ambiguous, no hoist (WARN via diag).
+ *   2. FALLBACK — items still missing `question` get `header` (reuses `backfillAskUserQuestionHeaders`).
+ *   3. STRIP — remove every top-level key outside {questions, answers, annotations, metadata}.
+ * Non-AskUserQuestion / non-object input is a no-op (same reference), as is a clean valid input
+ * (zero-perturbation pass-through). `onDiag` fires once with what happened when anything changed.
+ */
+export function normalizeAskUserQuestionInput(name: string, input: unknown, onDiag?: (d: AskNormalizationDiag) => void): unknown {
+  if (name !== ASK_USER_QUESTION_TOOL) return input
+  if (!isPlainObject(input)) return input
+
+  const diag: AskNormalizationDiag = {}
+  const topQuestion = input.question
+  let questions = input.questions
+  let salvaged = false
+
+  // Step 1: salvage top-level `question` into the single item.
+  if (typeof topQuestion === "string" && topQuestion !== "" && Array.isArray(questions)) {
+    if (questions.length === 1) {
+      const item = questions[0]
+      if (isPlainObject(item) && !Object.hasOwn(item, "question")) {
+        const unescaped = unescapeJsonUnicode(topQuestion)
+        questions = [{ ...item, question: unescaped }]
+        salvaged = true
+        diag.salvaged = true
+        if (unescaped !== topQuestion) diag.unescaped = true
+      }
+    } else if (questions.length > 1) {
+      diag.multiItemAmbiguous = true
+    }
+  }
+
+  // Step 2: fallback header backfill (reuse existing helper) on the possibly-salvaged questions.
+  const withSalvage = salvaged ? { ...input, questions } : input
+  const backfilled = backfillAskUserQuestionHeaders(name, withSalvage) as Record<string, unknown>
+
+  // Step 3: strip schema-invalid top-level keys.
+  const strippedKeys = Object.keys(backfilled).filter((k) => !ASK_ALLOWED_TOP_KEYS.has(k))
+  if (strippedKeys.length > 0) diag.strippedKeys = strippedKeys
+  // no-data-loss trace: a real (non-empty string) top-level question dropped without a salvage home.
+  if (strippedKeys.includes("question") && !salvaged && typeof topQuestion === "string" && topQuestion !== "") {
+    diag.droppedQuestionValue = topQuestion
+  }
+
+  const changed = salvaged || backfilled !== input || strippedKeys.length > 0
+  if (!changed) return input
+
+  const result: Record<string, unknown> = {}
+  for (const k of Object.keys(backfilled)) {
+    if (ASK_ALLOWED_TOP_KEYS.has(k)) result[k] = backfilled[k]
+  }
+  if (diag.salvaged || diag.strippedKeys || diag.droppedQuestionValue || diag.multiItemAmbiguous) onDiag?.(diag)
+  return result
 }

@@ -10,8 +10,10 @@ import {
   ASK_USER_QUESTION_TOOL,
   backfillAskUserQuestionHeaders,
   decodeToolUseInput,
+  normalizeAskUserQuestionInput,
   shouldDecodeToolInput,
   tryDecodeJsonString,
+  unescapeJsonUnicode,
   type DecodeToolInputConfig,
 } from "~/lib/anthropic/decode-tool-input-core"
 
@@ -227,5 +229,135 @@ describe("backfillAskUserQuestionHeaders", () => {
     expect(out).not.toBe(input)
     expect(item).toEqual({ header: "H" }) // original item untouched
     expect(Object.hasOwn(item, "question")).toBe(false)
+  })
+})
+
+describe("unescapeJsonUnicode", () => {
+  test(String.raw`decodes literal \uXXXX escapes to characters`, () => {
+    expect(unescapeJsonUnicode(String.raw`\u8fd9\u6b21`)).toBe("这次")
+  })
+  test(String.raw`leaves clean text with no \u escapes unchanged`, () => {
+    expect(unescapeJsonUnicode("这次重构的范围")).toBe("这次重构的范围")
+  })
+  test(String.raw`leaves a real backslash (not \u) untouched`, () => {
+    expect(unescapeJsonUnicode(String.raw`a\path\to`)).toBe(String.raw`a\path\to`)
+  })
+  test(String.raw`decodes surrogate-pair \uXXXX\uXXXX`, () => {
+    expect(unescapeJsonUnicode(String.raw`\ud83d\ude00`)).toBe("😀")
+  })
+  test(String.raw`only touches \uXXXX, leaves surrounding literals verbatim`, () => {
+    expect(unescapeJsonUnicode(String.raw`x=\u4e2d?`)).toBe("x=中?")
+  })
+})
+
+describe("normalizeAskUserQuestionInput", () => {
+  const AUQ = "AskUserQuestion"
+
+  test("salvages a clean top-level question into the single item; strips top-level key", () => {
+    const input = { questions: [{ header: "范围", multiSelect: false, options: [] }], question: "这次范围？" }
+    let diag: any
+    const out = normalizeAskUserQuestionInput(AUQ, input, (d) => (diag = d)) as any
+    expect(out.questions[0].question).toBe("这次范围？")
+    expect("question" in out).toBe(false)
+    expect(diag).toEqual({ salvaged: true, strippedKeys: ["question"] })
+  })
+
+  test("salvages + un-escapes a double-escaped top-level question", () => {
+    const input = { questions: [{ header: "范围", multiSelect: false, options: [] }], question: String.raw`\u8fd9\u6b21` }
+    let diag: any
+    const out = normalizeAskUserQuestionInput(AUQ, input, (d) => (diag = d)) as any
+    expect(out.questions[0].question).toBe("这次")
+    expect(diag.salvaged).toBe(true)
+    expect(diag.unescaped).toBe(true)
+  })
+
+  test("multi-item + top-level question: WARN-only, no hoist, still strips, fallback fills from header", () => {
+    const input = {
+      questions: [
+        { header: "H1", multiSelect: false, options: [] },
+        { header: "H2", multiSelect: false, options: [] },
+      ],
+      question: "ambiguous?",
+    }
+    let diag: any
+    const out = normalizeAskUserQuestionInput(AUQ, input, (d) => (diag = d)) as any
+    expect("question" in out).toBe(false)
+    expect(out.questions[0].question).toBe("H1")
+    expect(out.questions[1].question).toBe("H2")
+    expect(diag.multiItemAmbiguous).toBe(true)
+    expect(diag.salvaged).toBeUndefined()
+    expect(diag.strippedKeys).toContain("question")
+    expect(diag.droppedQuestionValue).toBe("ambiguous?")
+  })
+
+  test("strips redundant hoisted header/multiSelect (item already has them)", () => {
+    const input = {
+      questions: [{ header: "推进方式", multiSelect: false, options: [] }],
+      question: "怎么推进？",
+      header: "推进方式",
+      multiSelect: false,
+    }
+    const out = normalizeAskUserQuestionInput(AUQ, input) as any
+    expect(Object.keys(out).sort()).toEqual(["questions"])
+    expect(out.questions[0].question).toBe("怎么推进？")
+  })
+
+  test("zero-perturbation: clean valid input returns same reference", () => {
+    const input = { questions: [{ header: "范围", multiSelect: false, options: [], question: "范围？" }] }
+    expect(normalizeAskUserQuestionInput(AUQ, input)).toBe(input)
+  })
+
+  test("empty-string top-level question yields to header fallback", () => {
+    const input = { questions: [{ header: "范围", multiSelect: false, options: [] }], question: "" }
+    const out = normalizeAskUserQuestionInput(AUQ, input) as any
+    expect(out.questions[0].question).toBe("范围")
+    expect("question" in out).toBe(false)
+  })
+
+  test("trace rule: non-empty top-level question stripped without salvage records dropped value", () => {
+    const input = { questions: "[{...}]", question: "real question text" }
+    let diag: any
+    const out = normalizeAskUserQuestionInput(AUQ, input, (d) => (diag = d)) as any
+    expect("question" in out).toBe(false)
+    expect(diag.droppedQuestionValue).toBe("real question text")
+    expect(diag.salvaged).toBeUndefined()
+  })
+
+  test("non-AskUserQuestion tool is a no-op (same reference)", () => {
+    const input = { question: "x", foo: 1 }
+    expect(normalizeAskUserQuestionInput("Bash", input)).toBe(input)
+  })
+
+  test("degenerate: 0-item questions + top-level question traces dropped value, no salvage", () => {
+    const input = { questions: [], question: "real q" }
+    let diag: any
+    const out = normalizeAskUserQuestionInput(AUQ, input, (d) => (diag = d)) as any
+    expect("question" in out).toBe(false)
+    expect(diag.salvaged).toBeUndefined()
+    expect(diag.droppedQuestionValue).toBe("real q")
+  })
+
+  test("degenerate: item non-object skips salvage, strips + traces", () => {
+    const input = { questions: [42], question: "real q" }
+    let diag: any
+    const out = normalizeAskUserQuestionInput(AUQ, input, (d) => (diag = d)) as any
+    expect("question" in out).toBe(false)
+    expect(diag.salvaged).toBeUndefined()
+    expect(diag.droppedQuestionValue).toBe("real q")
+  })
+
+  test("non-string top-level question stripped but NOT traced", () => {
+    const input = { questions: [{ header: "h", multiSelect: false, options: [], question: "q" }], question: 42 }
+    let diag: any
+    const out = normalizeAskUserQuestionInput(AUQ, input, (d) => (diag = d)) as any
+    expect("question" in out).toBe(false)
+    expect(diag.strippedKeys).toContain("question")
+    expect(diag.droppedQuestionValue).toBeUndefined()
+  })
+
+  test("un-escape semantic misfire is a fixed known-limitation assertion", () => {
+    const input = { questions: [{ header: "h", multiSelect: false, options: [] }], question: String.raw`use \u4e2d?` }
+    const out = normalizeAskUserQuestionInput(AUQ, input) as any
+    expect(out.questions[0].question).toBe("use 中?")
   })
 })
