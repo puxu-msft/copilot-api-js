@@ -49,7 +49,14 @@ description: 当在 copilot-api-js 写或改 History 层的后台 backfill 时�
 
 同一字段常存两处：列（list / sessions-agg / stats 读）与 blob 的 `upstreamResponse.usage`（detail 页经 `assembleFullEntry` 读，finalized 新行落 `upstream_response` stage 行；旧行落 `outbound_response` stage/head blob，经读适配器 `adaptLegacyLegsInPlace` 呈现为 `attempts[final].upstreamResponse.usage`）。只改列不改 blob → 同行两视图分叉。两腿各自**独立读 + 独立减**，绝不共享一个 usage 对象对两源各减一次（内存别名会双减）。
 
-## 测试纪律
+## 与 live 写路径共存的一次性迁移 backfill（telemetry JSON→SQLite 迁移实例，两条正交铁律）
+
+当 backfill 是**把旧存储一次性吸收进一个 live 写路径也在并发写的新聚合 store**（本项目：旧 `request-telemetry.json` 吸收进 `telemetry.db`，而 dual-write 同时在写 `tel_raw`/`tel_cumulative`），除上述三条铁律外还有两条：
+
+- **① disjointness 靠结构不靠时序——消费冻结快照，不重读可变源**：backfill 与 live 若对同一 store 写「不相交请求集」（旧数据=启动前 / dual-write=启动后），别让 backfill **重读那个 live 也在写的可变文件**——旧 JSON 会被 post-listen persist tick 折回 post-startup 数据，backfill 若在 persist 之后 `readFile` 就把 dual-write 已写的 post-startup 请求**再导一次**（当前桶双计）。默认配置几乎不可达、跨重启双计由 version 守卫结构性关闭，但**项目对双计持最高优先级**：改为 init 时刻把 JSON 内容 **stash 进模块变量冻结快照**（与载入 live cache 同一读），backfill 消费冻结快照而非重读 → disjointness 从时序保证升为**结构保证**。（合并态评审抓，root-cause-over-patch。footgun：若为消迁移 transient 而「backfill 后再 rebuild live cache」，注意 rebuild 若是覆盖非 merge 会丢未 drain 的 live 增量，须先 flush。）
+- **② backfill 必须应用与 live 同一有损变换（cap 折叠）**：live 路径对 capped 维度做 `≥cap→"other"` 折叠、写有界的持久 store（`tel_cumulative` cap 权威由 `seedCumulativeCapKeys` 从它重建）。backfill 若**不折**、逐 legacy key 无条件写（legacy 跨桶 union 可 >cap），则持久 store 基数越界 → 下次重启 seed 继承 **over-cap 集** → live 的 `size>=cap` 恒真 → **停止跟踪新 key（活路径永久降级）**。故 backfill 对 capped 维度**必须复用 live 的同一 cap 折叠**（同 cap 值来自 config、同 `CAPPED_DIMENSION_NAMES`），结果与「live 遇同样 >cap 键」一致、忠实。这是 §②「排除姊妹路径」的镜像——不是排除已变换子集，而是**让 backfill 的变换与 live 一致**。有 bucket 维的 raw 腿不需额外折（legacy 已 per-bucket cap、逐桶导入即保留）。
+
+
 
 - 用**真实写路径** `insertCompletedEntry`（→ stage-split 布局）造夹具，别手造 blob（自洽夹具测不到真实布局，见 [[feedback-pass-null-clean-not-self-validating]]）。
 - 断言列**与** `getEntryById().attempts.at(-1)?.upstreamResponse?.usage`（detail 路径，经读适配器）**同时**为终态值（防分叉）。

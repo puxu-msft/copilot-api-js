@@ -1,11 +1,13 @@
 ---
 name: telemetry-architecture
-description: 当在 copilot-api-js 扩展/重构可扩展持久遥测（request-telemetry registry、维度/度量、histogram、成本拆分）或消费 /api/status /api/stats model 维度时使用——registry 框架三支柱（提取下沉 sink 层、开放 counters bag + 泛型复制器零版本 bump、聚合后不可重算的因子拆最细）、histogram count/sum 须同批观测、基数 cap per-store 独立解析、model 维度 key 成功/失败分裂（成功=规范名/失败=客户端别名）须双侧 normalizeModelId + unmatched 可见。是 richest-data-flow 在遥测域的实例。
+description: 当在 copilot-api-js 扩展/重构可扩展持久遥测（request-telemetry registry、维度/度量、histogram、成本拆分、分层 SQLite 存储 telemetry.db）或消费 /api/status /api/stats model 维度时使用——registry 框架三支柱（提取下沉 sink 层、开放 counters bag + 泛型复制器零版本 bump、聚合后不可重算的因子拆最细）、histogram count/sum 须同批观测、基数 cap per-store 独立解析、model 维度 key 成功/失败分裂（成功=规范名/失败=客户端别名）须双侧 normalizeModelId + unmatched 可见；2026-07-14 存储层从单 JSON 迁独立 telemetry.db（三层 rollup + DDSketch + 全可配 + 双轨 + 单轨收敛），registry 定义零改动只换存储层。是 richest-data-flow 在遥测域的实例。
 ---
 
 # 遥测架构：可扩展 registry + model 维度归一
 
-本项目遥测层两组架构教训：**registry 框架三支柱**（把硬编码维度重构成可扩展 registry，2026-06-23 落地，权威设计 `docs/spec/operational-stats-and-lineage-removal.md`）、**/api/status model 维度 key 成功/失败分裂**（消费遥测 join 目录时的坑）。
+本项目遥测层的架构教训：**registry 框架三支柱**（把硬编码维度重构成可扩展 registry，2026-06-23 落地，权威设计 `docs/spec/operational-stats-and-lineage-removal.md`）、**/api/status model 维度 key 成功/失败分裂**（消费遥测 join 目录时的坑）、**分层 SQLite 存储**（2026-07-14 存储层从单 JSON 迁 telemetry.db，§三）。
+
+> **存储层已换（2026-07-14）**：registry 定义（维度/度量/histogram extractor）**零改动**、三支柱仍是设计；但**存储层从单 JSON 迁到分层 SQLite `telemetry.db`**（§三）。故下方 §一 里凡涉「持久 envelope V3」「`__histograms` sibling round-trip」「JSON persist」「`≥200` 硬编码 cap」的**存储实现**描述已被 §三 取代（三支柱的架构原则不变、落地介质变了）。
 
 ## 一、可扩展持久遥测 registry 框架的三支柱
 
@@ -43,7 +45,26 @@ REFERENCE（实测确证）：`/api/status` 的 `requestTelemetry` model 维度 
 
 设计与失配形态清单见 `docs/spec/2026-07-05-ui-v4-models-enhancement.md` §4.2。任何消费 `/api/status` 或 `/api/stats?dimension=model` 遥测并要 join 目录的工作都会踩此坑。
 
-## 相关
-- richest-data-flow（后端完整存、unmatched 可见）：ADR `docs/decisions/2026-07-05-richest-data-flow.md`。
+## 三、分层 SQLite 存储（telemetry.db，2026-07-14 存储层替换）
+
+单 27MB JSON（整文件重写、无索引、硬顶 7d）→ 独立 `telemetry.db`（`src/lib/telemetry/`）。**纯聚合层**、行级明细委托 History DB。权威 spec `docs/spec/2026-07-13-telemetry-tiered-storage.md` + DESIGN.md「活的架构现状」telemetry.db 行。
+
+**形态**：三层 rollup（`tel_raw` 5min / `tel_hourly` / `tel_daily`，链式 raw→hourly→daily）+ 终身 `tel_cumulative` + 无维 `tel_accepted` + 字典 `tel_dim`/`tel_key` + 账本 `tel_meta`（Umzug hybrid）。可加度量 INTEGER 精确 SUM、分布 DDSketch BLOB（`hist_blob`）。
+
+**承重不变量（漏一条→静默数据丢失/崩溃/降级，全是对抗审查逼出的）**：
+- **cost scaled-int micro**（`round(cost*1e6)` **per-request round-then-sum**，绝不 REAL/STRICT INTEGER 存浮点）。micro 非 nano：nano(1e9) 使永久 cumulative 撞 `Number.MAX_SAFE_INTEGER`（9e15/1e9=仅 900 万 token-当量）静默丢精度。
+- **SQLite 只存 DDSketch、无固定桶列**（HIGH-1）：固定桶只活 `/metrics` 进程内内存路径。DDSketch 手动 DenseStore 序列化保 min/max，绝不 `toProto`/`fromProto`（拉 protobufjs + 丢 min/max）。
+- **γ 建库冻结**（`tel_meta['sketch_gamma']`，非 live config）：DDSketch merge 要求同 γ；若 addToOutboxEntry 读 live config γ，热重载改 γ → 新 delta merge 进旧 γ permanent cumulative blob → fail-loud 抛 → 若 drain 是单事务 all-or-nothing + 无限 foldback 则**永久 wedge 静默丢全部写入**（MAJOR-2）。→ **值绑 artifact 生命周期非 live config**，drain 两阶段 poison 隔离（见 skill `persistence-async-invariants` §4）。
+- **双轨计数**：进程内 `dimSinceStart`/`acceptedSinceStart`/thinking（重启归零、`/metrics` + `thinking_blocks` 契约）+ 持久 cumulative（`tel_cumulative`/`tel_meta` 跨重启）。**别混**：`/metrics` 只读 dimSinceStart（Prometheus counter 单调性靠重启归零）。
+- **cap 可配 + DB-seeded**：`state.telemetryCardinalityCap`（别硬编码常量——死钮违「全可配」）；cumulative 腿 cap 权威**从 tel_cumulative 重建**（`seedCumulativeCapKeys`）抗重启。**集成缝**：backfill 写 cumulative **必须应用与 live 同一 cap 折叠**，否则 legacy >cap 键全写入 → seed 继承 over-cap 集 → 重启后 live `size>=cap` 恒真 → **停止跟踪新 key（活路径降级）**（合并态评审抓，per-task 看不到）。
+- **rollup watermark 幂等**：`tel_meta` 存每层 watermark、只卷 `> watermark 且已封口` 源桶、watermark 推进与写目标**同事务**（DDSketch merge + SUM 非幂等、重放必翻倍）。封桶边界 + 时钟回跳守卫 + TTL 裁剪不领先上卷。
+
+**两个用户决策（塑造读/写路径形状）**：
+1. **读源方案 2「dimBuckets 存活作 live cache」**：现有端点读**内存**（dual-write 下 SQLite 落后 outbox ≤persist_interval、纯读 SQLite 违 byte-compat）→ byte-compat 平凡、零改动；新能力（`/api/stats` lifetime/30d/90d + sketch 分位）才读 SQLite。
+2. **P7 单轨收敛 + 不保护旧 UI**：翻转 dimBuckets 重建源 JSON→SQLite（`rebuildDimBucketsFromRaw`，counters+series 精确、histograms 空）+ 删 JSON 写（JSON 本体 no-destructive 保留、仅首启读一次 stash 给 backfill）。**两腿 histograms 命运分裂**：sinceStart 腿 histograms 保留（喂 `/metrics` 活功能）、7d 腿（dimBuckets）histograms 退役出空 stub（old `ui/` 专用、当前 ui-v4 不用——删除按消费者契约裁决）。
+
+**写路径 = 加性双写 pending-delta outbox**（sink→内存 dimBuckets/dimSinceStart 不变 + outbox 累积增量 → persist_interval flush 两阶段 drain）；sketch 从**原始观测值**喂（内存只存有损固定桶、重建不出精确 sketch）。详见 skill `persistence-async-invariants` §4（防双计 snapshot-swap + never-throw + 两阶段 poison 隔离）+ `history-backfill`（backfill disjointness 结构化 + cap 一致）。
+
+
 - 重构 golden 等价、sed/grep 工具箱：skill `large-refactor`。
 - 全套件才现形的隐藏消费者、探针实测：skill `empirical-verification`。
