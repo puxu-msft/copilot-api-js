@@ -120,3 +120,59 @@ describe("shapeRawStreamErrorFrame — FIX-2 (H3 / truncation termini, direct pu
     expect(out).toBe(legacy) // same object reference — no rebuild at all when disabled
   })
 })
+
+// ============================================================================
+// FIX-OBS-2 (whole-branch review cross-phase gap): `error-shaping-decided` was declared in
+// FeatureKind but had ZERO production call sites for the post-commit `decide()` invocation
+// (`shapePostcommitErrorFrame`). `ctx` is an OPTIONAL 3rd param (both existing call sites in
+// `handler-v4.ts` already hold `codec.getContext()` in scope — see task report) so every existing
+// call site + test keeps compiling; recording is a no-op when omitted (`ctx?.recordFeature`).
+//
+// `shapeRawStreamErrorFrame` deliberately does NOT gain this wiring: it never calls `decide()` (no
+// `ApiError` classification — the caller already resolved a wire-level `errorType` string that is
+// NOT an `ApiErrorType`), so there is no `decide()` decision to report — see task report for the
+// full reasoning.
+// ============================================================================
+describe("shapePostcommitErrorFrame — recordFeature('error-shaping-decided') wiring (FIX-OBS-2)", () => {
+  autoRestoreState()
+
+  function fakeCtx() {
+    const features: Array<{ feature: string; detail?: Record<string, unknown> }> = []
+    const ctx = { recordFeature: (feature: string, detail?: Record<string, unknown>) => features.push({ feature, detail }) }
+    return { ctx: ctx as never, features }
+  }
+
+  test("enabled + terminus ① HTTPError → records error-shaping-decided(decision=canonical-error, commitPhase=post-commit)", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const { ctx, features } = fakeCtx()
+    const error = new HTTPError("Server error", 500, "")
+    shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error), ctx)
+    expect(features).toEqual([
+      { feature: "error-shaping-decided", detail: { decision: "canonical-error", errorType: "server_error", commitPhase: "post-commit" } },
+    ])
+  })
+
+  test("enabled + terminus ①' network_error (socket reset) → records error-shaping-decided with errorType=network_error", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const { ctx, features } = fakeCtx()
+    const error = new Error("socket hang up ECONNRESET")
+    shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", "x"), ctx)
+    expect(features).toEqual([
+      { feature: "error-shaping-decided", detail: { decision: "canonical-error", errorType: "network_error", commitPhase: "post-commit" } },
+    ])
+  })
+
+  test("CF-2 disabled → decide() never runs → error-shaping-decided NOT recorded even when ctx is passed", () => {
+    setStateForTests({ errorShapingEnabled: false })
+    const { ctx, features } = fakeCtx()
+    const error = new HTTPError("Server error", 500, "")
+    shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error), ctx)
+    expect(features).toEqual([])
+  })
+
+  test("ctx omitted (backward-compat) → does not throw, ctx?.recordFeature is a safe no-op", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const error = new HTTPError("Server error", 500, "")
+    expect(() => shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error))).not.toThrow()
+  })
+})

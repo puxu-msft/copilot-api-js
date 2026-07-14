@@ -584,7 +584,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           // anthropicHttpErrorFrame verbatim (CF-2 golden lock).
           ctx?.fail(resolvedName, error)
           await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
-          await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error)))
+          await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error), ctx))
           return
         }
         ctx?.fail(resolvedName, error) // unknown non-HTTP, non-abort
@@ -594,7 +594,9 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         // This is the ONLY path that produces post-commit network_error, so the Phase 1 truth table's
         // network_error→canonical-error promise is exercised here. Disabled = the legacy api_error frame
         // verbatim (CF-2 golden lock).
-        await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error))))
+        await sink.writeSynthetic?.(
+          shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error)), ctx),
+        )
         return
       }
       if (!result.ok) {

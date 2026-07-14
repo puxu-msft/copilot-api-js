@@ -38,6 +38,9 @@ interface CapturedContext {
   c: any
   headers: Map<string, string>
   getLastJson: () => { data: unknown; status: number } | null
+  /** `requestContext.recordFeature` calls captured by the fake `c.get("requestContext")`
+   *  (FIX-OBS-2 cross-phase wiring — decode-tool-input.unit.test.ts's `{ id, recordFeature }` convention). */
+  features: Array<{ feature: string; detail?: Record<string, unknown> }>
 }
 
 /**
@@ -46,13 +49,26 @@ interface CapturedContext {
  * caller must read the captured value AFTER invoking, not snapshot it via destructuring before.
  * `req.raw.signal` is required by `forwardError`'s non-HTTPError abort branch (client-disconnect
  * vs. response-header-timeout discrimination); default to a fresh, non-aborted signal.
+ *
+ * `c.get("requestContext")` returns a fake `RequestContext` carrying only `id`/`originalRequest`/
+ * `recordFeature` — the three members `shapePrecommitError` actually touches (mirrors the real
+ * Hono `Context.get()` shape, matching production's pre-commit `ctx` extraction).
  */
-function fakeContext(): CapturedContext {
+function fakeContext(opts?: { originalRequest?: { stream?: boolean; model?: string }; reqId?: string }): CapturedContext {
   const headers = new Map<string, string>()
   let lastJson: { data: unknown; status: number } | null = null
+  const features: Array<{ feature: string; detail?: Record<string, unknown> }> = []
+  const requestContext = {
+    id: opts?.reqId ?? "req_test",
+    originalRequest: opts?.originalRequest,
+    recordFeature: (feature: string, detail?: Record<string, unknown>) => {
+      features.push({ feature, detail })
+    },
+  }
   return {
     headers,
     getLastJson: () => lastJson,
+    features,
     c: {
       header: (name: string, value: string) => {
         headers.set(name.toLowerCase(), value)
@@ -61,6 +77,7 @@ function fakeContext(): CapturedContext {
         lastJson = { data, status: status ?? 200 }
         return new Response(JSON.stringify(data), { status: status ?? 200 })
       },
+      get: (key: string) => (key === "requestContext" ? requestContext : undefined),
       req: { method: "POST", path: "/v1/messages", raw: { signal: new AbortController().signal } },
     } as any,
   }
@@ -161,5 +178,83 @@ describe("shapePrecommitError — exhaustive branch coverage (Task 2.3)", () => 
     shapePrecommitError(c, fixtures.rate_limited())
     expect(headers.has("retry-after")).toBe(false)
     expect(headers.get("x-should-retry")).toBe("true")
+  })
+})
+
+// ============================================================================
+// FIX-OBS-2 (whole-branch review cross-phase gap): `error-shaping-decided` was declared in
+// FeatureKind (~/lib/observability/events.ts) but had ZERO production call sites. `decide()`'s
+// output must be observable — recorded via the pre-commit ctx (`c.get("requestContext")`, already
+// exposed for the AUQ branch) right after every `decide()` call, for ALL FOUR decision kinds
+// reachable pre-commit (retry-signal / ask-user-question / canonical-error — defer-to-block-level
+// is post-commit-only, unreachable here).
+// ============================================================================
+describe("shapePrecommitError — recordFeature('error-shaping-decided') wiring (FIX-OBS-2)", () => {
+  autoRestoreState()
+
+  beforeEach(() => {
+    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: false })
+  })
+
+  test.each([
+    ["rate_limited", "retry-signal"],
+    ["upstream_rate_limited", "retry-signal"],
+    ["server_error", "retry-signal"],
+    ["network_error", "retry-signal"],
+    ["token_limit", "canonical-error"],
+    ["payload_too_large", "canonical-error"],
+    ["bad_request", "canonical-error"],
+    ["content_filtered", "canonical-error"], // B类, askUserQuestion=false → falls to canonical
+    ["quota_exceeded", "canonical-error"],
+    ["auth_expired", "canonical-error"],
+  ] as const)("%s → decide() 命中记录 error-shaping-decided(decision=%s, commitPhase=pre-commit)", (key, expectedDecision) => {
+    const { c, features } = fakeContext()
+    shapePrecommitError(c, fixtures[key]())
+    expect(features).toContainEqual({
+      feature: "error-shaping-decided",
+      detail: { decision: expectedDecision, errorType: key, commitPhase: "pre-commit" },
+    })
+  })
+
+  test("aborted → decide() never called (non-target, isAbortError short-circuit) → error-shaping-decided NOT recorded", () => {
+    const { c, features } = fakeContext()
+    shapePrecommitError(c, fixtures.aborted())
+    expect(features).toEqual([])
+  })
+
+  test("CF-2 disabled → decide() never called → error-shaping-decided NOT recorded (golden lock symmetry)", () => {
+    setStateForTests({ errorShapingEnabled: false })
+    const { c, features } = fakeContext()
+    shapePrecommitError(c, fixtures.rate_limited())
+    expect(features).toEqual([])
+  })
+})
+
+describe("shapePrecommitError — recordFeature('error-shaping-auq-synthesized') wiring (FIX-OBS-2)", () => {
+  autoRestoreState()
+
+  test("B类 + askUserQuestion=true → records BOTH error-shaping-decided(ask-user-question) AND error-shaping-auq-synthesized", () => {
+    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
+    const { c, features } = fakeContext()
+    shapePrecommitError(c, fixtures.content_filtered())
+    expect(features).toContainEqual({
+      feature: "error-shaping-decided",
+      detail: { decision: "ask-user-question", errorType: "content_filtered", commitPhase: "pre-commit" },
+    })
+    expect(features).toContainEqual({ feature: "error-shaping-auq-synthesized", detail: { errorType: "content_filtered" } })
+  })
+
+  test("B类 + askUserQuestion=false → falls to canonical-error, does NOT record error-shaping-auq-synthesized", () => {
+    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: false })
+    const { c, features } = fakeContext()
+    shapePrecommitError(c, fixtures.content_filtered())
+    expect(features.some((f) => f.feature === "error-shaping-auq-synthesized")).toBe(false)
+  })
+
+  test("A类/C类 → never records error-shaping-auq-synthesized (only the ask-user-question decision kind does)", () => {
+    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
+    const { c, features } = fakeContext()
+    shapePrecommitError(c, fixtures.token_limit())
+    expect(features.some((f) => f.feature === "error-shaping-auq-synthesized")).toBe(false)
   })
 })

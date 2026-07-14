@@ -84,12 +84,22 @@ export function shapePrecommitError(c: Context, error: unknown): Response {
   const apiError = classifyError(error)
   if (apiError.type === "aborted") return forwardError(c, error)
 
+  // Extracted BEFORE decide() (not lazily inside the ask-user-question branch) so the
+  // `error-shaping-decided` telemetry below can record for every decision kind, not just AUQ — see
+  // `c.get("requestContext")` doc on the ask-user-question branch for why this is the right handle.
+  const ctx = c.get("requestContext") as RequestContext | undefined
+
   const decision = decide({
     error: apiError,
     commitPhase: "pre-commit",
     clientVisibleStopEmitted: false,
     config: errorShapingConfigFromState(),
   })
+
+  // FIX-OBS-2 (whole-branch review cross-phase gap): `error-shaping-decided` was declared in
+  // FeatureKind (~/lib/observability/events.ts) but never recorded anywhere — this is the sole
+  // `decide()` call site pre-commit, so it is the correct production point.
+  ctx?.recordFeature("error-shaping-decided", { decision: decision.kind, errorType: apiError.type, commitPhase: "pre-commit" })
 
   if (decision.kind === "retry-signal") {
     if (decision.retryAfterSec !== undefined) c.header("Retry-After", String(decision.retryAfterSec))
@@ -105,9 +115,13 @@ export function shapePrecommitError(c: Context, error: unknown): Response {
     // side-channel would have duplicated), and `ctx.id` is the request id. Falls back to safe
     // defaults for the (currently unreachable in practice) `/count_tokens` leg, whose own
     // internal try/catch never lets an error reach this function — see `count-tokens.ts`.
-    const ctx = c.get("requestContext") as RequestContext | undefined
     const streamRequested = ctx?.originalRequest?.stream ?? false
     const auqCtx = { model: ctx?.originalRequest?.model ?? "unknown", reqId: ctx?.id ?? "unknown" }
+
+    // FIX-OBS-2: `error-shaping-auq-synthesized` was declared in FeatureKind but never recorded —
+    // this is the sole B-class AUQ whole-turn synthesis site (both streaming and non-streaming
+    // variants below consume the SAME `decision`), so one recordFeature covers both.
+    ctx?.recordFeature("error-shaping-auq-synthesized", { errorType: apiError.type })
 
     if (streamRequested) {
       return streamSSE(c, async (stream) => {
@@ -144,15 +158,22 @@ export function shapePrecommitError(c: Context, error: unknown): Response {
  * `rate_limit_error`); with the SSE status locked at 200 (undefined at the client), CC's post-commit
  * retry triggers (status 529 / a `"type":"overloaded_error"` message substring — exp/cc-error-retry-surface/FINDINGS.md)
  * are not hit, so this frame never provokes an unintended client retry.
+ *
+ * `ctx` is OPTIONAL (both `handler-v4.ts` call sites already hold `codec.getContext()` in scope, but
+ * this stays backward-compatible for any caller without one) — when present, records the
+ * `error-shaping-decided` feature (FIX-OBS-2, whole-branch review cross-phase gap) right after
+ * `decide()` resolves, mirroring `shapePrecommitError`'s recording of the same `decide()` call site.
  */
-export function shapePostcommitErrorFrame(error: unknown, legacyFrame: ClientFrame): ClientFrame {
+export function shapePostcommitErrorFrame(error: unknown, legacyFrame: ClientFrame, ctx?: RequestContext): ClientFrame {
   if (!state.errorShapingEnabled) return legacyFrame
+  const apiError = classifyError(error)
   const decision = decide({
-    error: classifyError(error),
+    error: apiError,
     commitPhase: "post-commit",
     clientVisibleStopEmitted: false,
     config: errorShapingConfigFromState(),
   })
+  ctx?.recordFeature("error-shaping-decided", { decision: decision.kind, errorType: apiError.type, commitPhase: "post-commit" })
   // Post-commit `decide()` is total onto `canonical-error` (no retry-signal / AUQ / defer post-commit).
   // The defensive fallback keeps the legacy frame if a future truth-table change ever yields otherwise.
   if (decision.kind !== "canonical-error") return legacyFrame
