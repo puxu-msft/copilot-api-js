@@ -217,6 +217,25 @@ function repairObservers(ctx: RequestContext): Pick<Parameters<typeof createTool
   }
 }
 
+/**
+ * `onNormalize` sink for AskUserQuestion top-level-key salvage/strip (spec 2026-07-13 §3): persist the
+ * diagnostic to `pipelineInfo` (history-auditable — the setter publishes context_updated) and WARN when
+ * a non-empty top-level `question` was dropped (no-data-loss trace; multi-item drop surfaces its reason).
+ */
+function normalizationObserver(ctx: RequestContext): Pick<Parameters<typeof createToolInputStreamDecoder>[1] & object, "onNormalize"> {
+  return {
+    onNormalize: (diag) => {
+      ctx.recordAskUserQuestionNormalization(diag)
+      if (diag.droppedQuestionValue !== undefined) {
+        const why = diag.multiItemAmbiguous ? "ambiguous (>1 item), not hoisted" : "no salvage target"
+        consola.warn(
+          `[REWRITE] AskUserQuestion top-level question dropped — reason=${why} value=${JSON.stringify(diag.droppedQuestionValue)} requestId=${ctx.id}`,
+        )
+      }
+    },
+  }
+}
+
 const decodeRewrite: ResponseRewrite = {
   name: "tool-input-decode",
   order: RESPONSE_REWRITE_ORDER.toolInputDecode,
@@ -236,6 +255,7 @@ const decodeRewrite: ResponseRewrite = {
         backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
         repairMalformedInput: state.toolRepairMalformedInput,
         ...repairObservers(env.ctx),
+        ...normalizationObserver(env.ctx),
       },
     ),
   }),
@@ -252,6 +272,7 @@ const decodeRewrite: ResponseRewrite = {
         backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
         repairMalformedInput: state.toolRepairMalformedInput,
         ...repairObservers(env.ctx),
+        ...normalizationObserver(env.ctx),
       },
     ),
 }

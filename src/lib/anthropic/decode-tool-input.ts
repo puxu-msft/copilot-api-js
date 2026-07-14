@@ -26,9 +26,10 @@ import type { AnthropicMessageResponse } from "./client"
 import {
   //
   ASK_USER_QUESTION_TOOL,
-  backfillAskUserQuestionHeaders,
   decodeToolUseInput,
+  normalizeAskUserQuestionInput,
   shouldDecodeToolInput,
+  type AskNormalizationDiag,
   type DecodeToolInputConfig,
 } from "./decode-tool-input-core"
 import {
@@ -55,6 +56,12 @@ export interface ToolInputRewriteOptions {
    * Runs after field decoding, so a stringified `questions` array is decoded first and then backfilled. Default false.
    */
   backfillAskUserQuestionHeader?: boolean
+  /**
+   * Called with normalization diagnostics when `normalizeAskUserQuestionInput` salvaged a hoisted
+   * top-level `question` and/or stripped schema-invalid top-level keys from an AskUserQuestion input.
+   * Fires once per changed block. Runs only when `backfillAskUserQuestionHeader` is set (same gate).
+   */
+  onNormalize?: (diag: AskNormalizationDiag) => void
   /**
    * Repair a malformed tool_use input that fails to `JSON.parse` at the block's
    * `content_block_stop`, before forwarding. A set of repair items (`tags` strips
@@ -282,7 +289,7 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
       }
     }
     const decoded = decodeToolUseInput(buf.name, repairedInput, cfg)
-    const normalized = backfill ? backfillAskUserQuestionHeaders(buf.name, decoded) : decoded
+    const normalized = backfill ? normalizeAskUserQuestionInput(buf.name, decoded, opts.onNormalize) : decoded
     reportUndecodedFields(buf.name, normalized, cfg, report)
     if (!wasRepaired && normalized === inputObj) {
       // Input was valid and nothing changed — zero-perturbation pass-through of the original bytes.
@@ -391,7 +398,7 @@ export function decodeToolInputBlocksInResponse(
     // valid object (e.g. `questions: "[{…truncated}"`). Mirrors the streaming finalize field-repair.
     if (repairEnabled) input = repairStringifiedDecodeFields(b.name, input, cfg, repairItems, opts.onRepair)
     const decoded = decodeToolUseInput(b.name, input, cfg)
-    const normalized = backfill ? backfillAskUserQuestionHeaders(b.name, decoded) : decoded
+    const normalized = backfill ? normalizeAskUserQuestionInput(b.name, decoded, opts.onNormalize) : decoded
     reportUndecodedFields(b.name, normalized, cfg, report)
     return normalized === b.input ? block : ({ ...b, input: normalized } as typeof block)
   })

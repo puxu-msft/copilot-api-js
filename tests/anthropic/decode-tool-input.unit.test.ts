@@ -354,3 +354,52 @@ describe("reportDecodeFailure", () => {
     expect(features).toEqual([{ feature: "tool-input-decode-failed", detail: { tool: "AskUserQuestion", field: "questions", reason: "field-undecodable" } }])
   })
 })
+
+// ============================================================================
+// AskUserQuestion top-level-key salvage/strip wiring (spec 2026-07-13)
+// ============================================================================
+
+/** Extract the (single) rebuilt tool_use input from a forwarded frame list. */
+function forwardedInput(frames: Array<Record<string, unknown>>): Record<string, unknown> {
+  const d = frames.find((f) => f.type === "content_block_delta") as { delta: { partial_json: string } } | undefined
+  if (!d) throw new Error("no content_block_delta in forwarded frames")
+  return JSON.parse(d.delta.partial_json) as Record<string, unknown>
+}
+
+describe("normalizeAskUserQuestionInput wiring", () => {
+  const AUQ_CFG = cfg({ AskUserQuestion: ["questions"] })
+  const OPTS = { backfillAskUserQuestionHeader: true }
+
+  test("streaming finalize salvages a double-escaped top-level question and strips it (req_439 shape)", () => {
+    const d = createToolInputStreamDecoder(AUQ_CFG, OPTS)
+    // question is the 12-char literal `这次` (double-escaped); questions is a real array.
+    const input = { questions: [{ header: "范围", multiSelect: false, options: [] }], question: String.raw`\u8fd9\u6b21` }
+    const out = run(d, [start(0, "AskUserQuestion"), delta(0, JSON.stringify(input)), stop(0)])
+    const fwd = forwardedInput(out) as { questions: Array<Record<string, unknown>>; question?: unknown }
+    expect(fwd.questions[0].question).toBe("这次")
+    expect("question" in fwd).toBe(false)
+  })
+
+  test("non-streaming decodeToolInputBlocksInResponse salvages + strips illegal top-level key", () => {
+    const response = {
+      content: [
+        { type: "tool_use", name: "AskUserQuestion", input: { questions: [{ header: "范围", multiSelect: false, options: [] }], question: "怎么办？" } },
+      ],
+    }
+    const out = decodeToolInputBlocksInResponse(response as never, AUQ_CFG, OPTS) as { content: Array<{ input: Record<string, unknown> }> }
+    const blk = out.content[0].input as { questions: Array<Record<string, unknown>>; question?: unknown }
+    expect("question" in blk).toBe(false)
+    expect(blk.questions[0].question).toBe("怎么办？")
+  })
+
+  test("onNormalize callback fires with diag on salvage/strip", () => {
+    const seen: Array<Record<string, unknown>> = []
+    const response = {
+      content: [
+        { type: "tool_use", name: "AskUserQuestion", input: { questions: [{ header: "范围", multiSelect: false, options: [] }], question: "怎么办？" } },
+      ],
+    }
+    decodeToolInputBlocksInResponse(response as never, AUQ_CFG, { ...OPTS, onNormalize: (dg) => seen.push(dg as Record<string, unknown>) })
+    expect(seen[0]).toMatchObject({ salvaged: true, strippedKeys: ["question"] })
+  })
+})
