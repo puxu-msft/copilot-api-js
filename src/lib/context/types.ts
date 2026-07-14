@@ -511,7 +511,8 @@ export interface RequestContext {
    * Record AskUserQuestion top-level-key normalization diagnostics (salvage / strip / dropped-value
    * trace). Merged into `pipelineInfo` and MUST publish `context_updated`(field:`pipelineInfo`) so it
    * reaches SQLite via the in-flight handler — `onTerminal`'s projection allowlist does NOT include
-   * pipelineInfo. See spec 2026-07-13 §3. Request-level (intentionally NOT per-attempt-reset).
+   * pipelineInfo. See spec 2026-07-13 §3. Request-level: reflects normalization on ANY attempt's stream
+   * (under buffered-retry, possibly a discarded one — a diagnostic-fidelity limitation, not a wire bug).
    */
   recordAskUserQuestionNormalization(diag: AskNormalizationDiag): void
   /** The repair outcomes accumulated for the current (committed) attempt. */

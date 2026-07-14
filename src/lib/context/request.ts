@@ -335,7 +335,10 @@ export function createRequestContext(opts: {
     },
     recordAskUserQuestionNormalization(diag) {
       // Merge (last-write-wins per field) so multiple AskUserQuestion blocks in one response accumulate.
-      // Request-level, intentionally NOT per-attempt-reset (salvage is "what the forwarded wire did").
+      // Request-level, intentionally NOT per-attempt-reset: this records normalization performed on ANY
+      // attempt's stream — under buffered-retry it may reflect a discarded attempt, not the committed
+      // one (a known diagnostic-fidelity limitation, tracked in docs/todo/deferred-backlog.md; gated on
+      // buffered-retry being enabled). Forwarded-wire correctness is unaffected either way.
       _askNormalization = { ..._askNormalization, ...diag }
       // MUST publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler
       // (history sink); onTerminal's projection allowlist does NOT include pipelineInfo. Mirrors

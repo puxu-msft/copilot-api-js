@@ -157,7 +157,13 @@ export function decodeToolUseInput(name: string, input: unknown, cfg: DecodeTool
   return result ?? input
 }
 
-/** Top-level keys the AskUserQuestion tool schema allows (`additionalProperties:false`). */
+/**
+ * Top-level keys the AskUserQuestion tool schema allows (`additionalProperties:false`). Verified
+ * against a real Claude Code request's `input_schema.properties` (req_1783955598578_439:
+ * `["questions","answers","annotations","metadata"]`), not a guessed superset. Keys outside this set
+ * are hallucinated by the model and rejected by the client. A general schema-driven strip (deriving
+ * this set from the request's `input_schema` per tool) is tracked in docs/todo/deferred-backlog.md.
+ */
 const ASK_ALLOWED_TOP_KEYS = new Set(["questions", "answers", "annotations", "metadata"])
 
 /** Narrow to a plain (non-array, non-null) object. */
