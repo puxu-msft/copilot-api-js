@@ -262,9 +262,10 @@ export function createRequestContext(opts: {
   // (many requests never trigger any of them). Merging via `mergedPipelineInfo()`
   // lets these fields survive regardless, without touching those 4 call sites.
   let _streamTimeouts: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number } | null = null
+  let _askNormalization: PipelineInfo["askUserQuestionNormalization"] | null = null
   const mergedPipelineInfo = (): PipelineInfo | null => {
-    if (!_pipelineInfo && !_streamTimeouts) return null
-    return { ..._pipelineInfo, ..._streamTimeouts }
+    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization) return null
+    return { ..._pipelineInfo, ..._streamTimeouts, ...(_askNormalization && { askUserQuestionNormalization: _askNormalization }) }
   }
   let _sseEvents: Array<SseEventRecord> | null = null
   let _httpHeaders: {
@@ -331,6 +332,15 @@ export function createRequestContext(opts: {
     },
     recordRepairOutcome(record) {
       _repairOutcomes.push(record)
+    },
+    recordAskUserQuestionNormalization(diag) {
+      // Merge (last-write-wins per field) so multiple AskUserQuestion blocks in one response accumulate.
+      // Request-level, intentionally NOT per-attempt-reset (salvage is "what the forwarded wire did").
+      _askNormalization = { ..._askNormalization, ...diag }
+      // MUST publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler
+      // (history sink); onTerminal's projection allowlist does NOT include pipelineInfo. Mirrors
+      // setStreamTimeouts exactly.
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
     get repairOutcomes() {
       return _repairOutcomes

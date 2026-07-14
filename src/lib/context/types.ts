@@ -1,3 +1,4 @@
+import type { AskNormalizationDiag } from "~/lib/anthropic/decode-tool-input-core"
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -506,6 +507,13 @@ export interface RequestContext {
    * reflect per-request outcomes — NOT the buffered retry count.
    */
   recordRepairOutcome(record: RepairOutcomeRecord): void
+  /**
+   * Record AskUserQuestion top-level-key normalization diagnostics (salvage / strip / dropped-value
+   * trace). Merged into `pipelineInfo` and MUST publish `context_updated`(field:`pipelineInfo`) so it
+   * reaches SQLite via the in-flight handler — `onTerminal`'s projection allowlist does NOT include
+   * pipelineInfo. See spec 2026-07-13 §3. Request-level (intentionally NOT per-attempt-reset).
+   */
+  recordAskUserQuestionNormalization(diag: AskNormalizationDiag): void
   /** The repair outcomes accumulated for the current (committed) attempt. */
   readonly repairOutcomes: ReadonlyArray<RepairOutcomeRecord>
   /** Derived: the first UNREPAIRABLE tool of the current attempt, or null (drives the handler fail-gate). */

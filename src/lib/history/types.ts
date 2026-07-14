@@ -12,6 +12,7 @@ import type {
   WebSearchToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages"
 
+import type { AskNormalizationDiag } from "~/lib/anthropic/decode-tool-input-core"
 import type { DestackStats } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { ProcessIdentity } from "~/lib/process-identity"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
@@ -228,6 +229,8 @@ export interface PipelineInfo {
   streamIdleTimeoutMs?: number
   /** 本请求的 per-model 有效首字节超时（ms；`resolveResponseHeaderTimeoutMs`）。 */
   responseHeaderTimeoutMs?: number
+  /** AskUserQuestion 顶层键规范化诊断（spec 2026-07-13）：salvage 抢救顶层 question / 剥离 schema 非法顶层键 / 留痕被丢弃的真问题文本。落 history 供全人群审计。 */
+  askUserQuestionNormalization?: AskNormalizationDiag
 }
 
 export interface WarningMessage {
