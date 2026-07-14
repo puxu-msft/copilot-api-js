@@ -22,6 +22,41 @@ export function resetUpstreamHook(): void {
 }
 
 /**
+ * Leaf mount-point paths (dot-separated), mirroring the nested {@link UpstreamHook} shape
+ * (RFC 2026-07-14-symmetric-four-point-hooks §3). A hook module exports `export const hooks =
+ * { upstream: { inbound, outbound }, exchange, ... }`; the loader navigates each leaf path and
+ * collects the ones that are functions. `client.inbound` lands in RFC Phase 4.
+ */
+const HOOK_POINTS = ["upstream.inbound", "upstream.outbound", "exchange"] as const
+
+/** Read a dot-path leaf off a nested object (returns undefined if any segment is missing/non-object). */
+function getLeaf(root: unknown, path: string): unknown {
+  let cur: unknown = root
+  for (const seg of path.split(".")) {
+    if (cur === null || typeof cur !== "object") return undefined
+    cur = (cur as Record<string, unknown>)[seg]
+  }
+  return cur
+}
+
+/** Set a dot-path leaf on a nested object, creating intermediate objects as needed. */
+function setLeaf(root: Record<string, unknown>, path: string, value: unknown): void {
+  const segs = path.split(".")
+  let cur = root
+  for (let i = 0; i < segs.length - 1; i++) {
+    const seg = segs[i]
+    if (typeof cur[seg] !== "object" || cur[seg] === null) cur[seg] = {}
+    cur = cur[seg] as Record<string, unknown>
+  }
+  cur[segs.at(-1) as string] = value
+}
+
+/** Enumerate the leaf paths of a hook object that carry a function (for `exports`). */
+function presentLeaves(hook: UpstreamHook): Array<string> {
+  return HOOK_POINTS.filter((p) => typeof getLeaf(hook, p) === "function")
+}
+
+/**
  * Test-only DI seam: install an arbitrary {@link UpstreamHook} directly (bypassing the
  * file-loading path) so driver hook-mount-point tests can mount closures that count
  * calls / mutate captured test state, which a real on-disk module (loaded via a
@@ -29,10 +64,8 @@ export function resetUpstreamHook(): void {
  * `loadUpstreamHook`/`loadUpstreamHookSafe` populate `hookState` at runtime.
  */
 export function setUpstreamHookForTests(hook: UpstreamHook | undefined): void {
-  hookState = hook && { hook, module: "<test>", loadedAt: 0, version: "test", exports: Object.keys(hook) }
+  hookState = hook && { hook, module: "<test>", loadedAt: 0, version: "test", exports: presentLeaves(hook) }
 }
-
-const HOOK_POINTS = ["onRequest", "onExchange", "rewriteUpstreamFrame"] as const
 
 // Monotonic counter backing `version` below. `Date.now()` alone is NOT sufficient to satisfy the
 // "changes on every successful reload" contract (see the `version` field's openapi description in
@@ -42,20 +75,25 @@ const HOOK_POINTS = ["onRequest", "onExchange", "rewriteUpstreamFrame"] as const
 // of wall-clock resolution, so `version` is always unique and strictly increasing.
 let loadSeq = 0
 
-/** Load (or reload) the hook module via data-URL (bypasses Bun's path-keyed ESM cache). */
+/**
+ * Load (or reload) the hook module via data-URL (bypasses Bun's path-keyed ESM cache).
+ * The module exports `export const hooks = { ... }` (nested, RFC §3/§4.1); the loader navigates
+ * each {@link HOOK_POINTS} leaf path off `mod.hooks` and assembles the nested {@link UpstreamHook}.
+ */
 export async function loadUpstreamHook(modulePath: string): Promise<UpstreamHookState> {
   const src = readFileSync(modulePath, "utf8")
   const js = new Bun.Transpiler({ loader: "ts" }).transformSync(src)
   const mod = (await import("data:text/javascript," + encodeURIComponent(js))) as Record<string, unknown>
-  const exports = HOOK_POINTS.filter((k) => typeof mod[k] === "function")
+  const hooksRoot = mod.hooks
+  const exports = HOOK_POINTS.filter((p) => typeof getLeaf(hooksRoot, p) === "function")
   if (exports.length === 0) {
-    throw new Error(`hook module ${modulePath} exports none of: ${HOOK_POINTS.join(", ")}`)
+    throw new Error(`hook module ${modulePath} exports none of: ${HOOK_POINTS.join(", ")} (via \`export const hooks = { ... }\`)`)
   }
-  const hook: UpstreamHook = {}
-  for (const k of exports) (hook as Record<string, unknown>)[k] = mod[k]
+  const hook: Record<string, unknown> = {}
+  for (const p of exports) setLeaf(hook, p, getLeaf(hooksRoot, p))
   const loadedAt = Date.now()
   hookState = {
-    hook,
+    hook: hook as UpstreamHook,
     module: modulePath,
     loadedAt,
     version: `${loadedAt}-${++loadSeq}`,

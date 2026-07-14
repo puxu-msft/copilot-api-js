@@ -11,8 +11,8 @@
  * `data:` URL; see reload-and-l2.it.test.ts:106 + the exp/cli-e2e-stall PoC bisect):
  *   1. NO imports — the `~/lib/pipeline/hooks` alias does NOT resolve in a data-URL module.
  *   2/3. NO `JSON.stringify`, and NO literal `{`/`}`/`"` payloads in the source — either makes
- *      Bun.Transpiler's data-URL load return `{__esModule, default}` and the named `onExchange`
- *      export silently vanish ("exports none of: onExchange"). So each frame's SSE `data` is stored
+ *      Bun.Transpiler's data-URL load return `{__esModule, default}` and the named `exchange`
+ *      export silently vanish ("exports none of: exchange"). So each frame's SSE `data` is stored
  *      BASE64-encoded (source has no JSON braces/quotes) and decoded via `atob()` at runtime. Frames
  *      are [event, base64(dataJson)] string tuples, un-marked (no `hook-mock` synthetic tag) — fine
  *      for a CLI-behavior test.
@@ -45,9 +45,11 @@ const RAW: Array<[string, string]> = [
   ["message_stop", "eyJ0eXBlIjoibWVzc2FnZV9zdG9wIn0="],
 ]
 
-export const onExchange = async () => {
-  async function* gen() {
-    for (const r of RAW) yield { event: r[0], data: atob(r[1]) }
-  }
-  return { frames: gen(), headers: new Headers() }
+export const hooks = {
+  exchange: async () => {
+    async function* gen() {
+      for (const r of RAW) yield { event: r[0], data: atob(r[1]) }
+    }
+    return { frames: gen(), headers: new Headers() }
+  },
 }

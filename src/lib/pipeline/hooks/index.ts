@@ -11,7 +11,7 @@
  *   - the `UpstreamHook`/`UpstreamHookState` types a hook module's exports are checked against.
  *
  * See README.md (this directory) for the two load-bearing warnings every hook author must know
- * before writing `onExchange`/`rewriteUpstreamFrame`.
+ * before writing `exchange`/`upstream.inbound`.
  */
 
 export {

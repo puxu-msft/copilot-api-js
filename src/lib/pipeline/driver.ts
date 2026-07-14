@@ -259,10 +259,11 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
   // S3 — Rewrite-in: assemble + run the request-rewrite chain.
   const rewritten = runRewriteIn(deps, routed)
 
-  // Hook point: onRequest — one-shot logical-request rewrite, OUTSIDE the retry loop
-  // (a per-attempt replay would clobber reactive strategies' env fixes — spec §3.2 H1).
+  // Hook point: upstream.outbound (was onRequest) — one-shot upstream-bound request rewrite,
+  // OUTSIDE the retry loop (a per-attempt replay would clobber reactive strategies' env fixes
+  // — spec §3.2 H1 / RFC §3).
   const hook = getUpstreamHook()
-  const afterHook = hook?.onRequest ? (hook.onRequest(rewritten) ?? rewritten) : rewritten
+  const afterHook = hook?.upstream?.outbound ? (hook.upstream.outbound(rewritten) ?? rewritten) : rewritten
 
   // S4 — Exchange: error-driven retry loop (prepareWire → transport → strategy re-env).
   // Resolve the strategy stack now that the envelope (model + codec state) exists. For a MIGRATED cell the
@@ -410,7 +411,7 @@ async function runExchange(
     try {
       const hook = getUpstreamHook()
       const upstream =
-        hook?.onExchange ? await hook.onExchange(wire, current, () => deps.transport.send(wire, current)) : await deps.transport.send(wire, current)
+        hook?.exchange ? await hook.exchange(wire, current, () => deps.transport.send(wire, current)) : await deps.transport.send(wire, current)
       // 首包埋点（spec 2026-07-14 §3.2）：上游响应头到达（每 attempt 各记自己的，绝对 epoch）。
       {
         const timingAttempt = current.ctx.currentAttempt
@@ -589,12 +590,13 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
         // frames the loop yields below). Same skip-[DONE] condition as upstreamSse.
         opts?.onUpstreamFrame?.(frame)
       }
-      // Hook point: rewriteUpstreamFrame — per-frame rewrite AFTER upstream-original sampling,
-      // so the upstream track keeps pre-hook real frames (spec §3.2/§3.4 H2). undefined → drop.
+      // Hook point: upstream.inbound (was rewriteUpstreamFrame) — per-frame rewrite AFTER
+      // upstream-original sampling, so the upstream track keeps pre-hook real frames
+      // (spec §3.2/§3.4 H2 / RFC §3). undefined → drop.
       const hook = getUpstreamHook()
       let effFrame: UpstreamFrame | undefined = frame
-      if (hook?.rewriteUpstreamFrame && frame.data !== "[DONE]") {
-        const rewritten = hook.rewriteUpstreamFrame(frame, env)
+      if (hook?.upstream?.inbound && frame.data !== "[DONE]") {
+        const rewritten = hook.upstream.inbound(frame, env)
         // Task 2.3 (spec §3.4 decision 1/§9, plan-2 Task 2.3): a GENUINELY changed frame (a
         // NEW object — `undefined` means dropped, the SAME reference means the hook chose not
         // to rewrite this one) is tagged so the sink can mark its forwarded-track sample
