@@ -5,6 +5,7 @@ import { state } from "~/lib/state"
 
 import type { Database } from "./connection"
 
+import { ACTIVE_STATES } from "../lifecycle-state"
 import {
   //
   checkpointWal,
@@ -46,8 +47,10 @@ export function setReaperTickHook(fn: (() => void) | null): void {
 const FAILURE_WHERE = "status IN ('failed','aborted','interrupted') AND pinned = 0"
 const SUCCESS_WHERE = "status = 'completed' AND pinned = 0"
 
-/** Active (non-terminal) statuses — reaper-exempt; reclaimed only via interrupted. */
-const ACTIVE_STATUSES = ["pending", "executing", "streaming"]
+/** Active (non-terminal) statuses — reaper-exempt; reclaimed only via interrupted. Sourced from the
+ *  single lifecycle-state primitive (`ACTIVE_STATES`) so this SQL binding can't drift from the JS
+ *  partition used by history/queries.ts + the TUI. */
+const ACTIVE_STATUSES = ACTIVE_STATES
 
 /** Evict the oldest rows in one status bucket beyond `limit`. Returns the head-row count evicted. */
 function evictBucket(db: Database, where: string, limit: number): number {
