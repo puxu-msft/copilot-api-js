@@ -56,6 +56,14 @@ export function createStreamTranslator(): {
       }
 
       case "response.output_item.added": {
+        // Reasoning item — carries GHC's opaque `encrypted_content` (present before the summary deltas).
+        // Emit it on the proxy CC-intermediate `delta.reasoning_encrypted_content` so the downstream
+        // Anthropic renderer can embed it in the synthetic thinking block's labeled-envelope signature
+        // (cross-turn round-trip). No summary TEXT here — that streams via reasoning_summary_text.delta.
+        if (event.item.type === "reasoning") {
+          const enc = event.item.encrypted_content
+          return typeof enc === "string" && enc.length > 0 ? [buildReasoningChunk(state, { encrypted: enc })] : []
+        }
         if (event.item.type !== "function_call") return []
 
         const toolCallIndex = state.nextToolCallIndex++
@@ -75,6 +83,15 @@ export function createStreamTranslator(): {
             ],
           }),
         ]
+      }
+
+      // Reasoning summary (thinking) text — GHC's DISPLAYABLE reasoning, streamed as plaintext deltas
+      // when the request asked for `reasoning.summary` AND the effort produced one (low effort emits
+      // none — verified probe exp/synthetic-reasoning-summary-shape). Forward each delta on the proxy
+      // CC-intermediate `delta.reasoning`; the downstream Anthropic renderer opens a synthetic thinking
+      // block. Absence is graceful (no reasoning chunk → no thinking block).
+      case "response.reasoning_summary_text.delta": {
+        return event.delta ? [buildReasoningChunk(state, { reasoning: event.delta })] : []
       }
 
       case "response.function_call_arguments.delta": {
@@ -182,6 +199,19 @@ function buildChunk(state: StreamTranslatorState, delta: StreamingDelta, finishR
       },
     ],
   }
+}
+
+/**
+ * Build a CC chunk carrying the proxy reasoning-passthrough extension fields (`delta.reasoning` /
+ * `delta.reasoning_encrypted_content`). These are GHC/proxy extensions absent from the SDK `Delta` type,
+ * so the object is cast — mirrors how the accumulator + the Anthropic renderer read them via cast.
+ */
+function buildReasoningChunk(state: StreamTranslatorState, fields: { reasoning?: string; encrypted?: string }): ChatCompletionChunk {
+  const delta = {
+    ...(fields.reasoning !== undefined && { reasoning: fields.reasoning }),
+    ...(fields.encrypted !== undefined && { reasoning_encrypted_content: fields.encrypted }),
+  } as StreamingDelta
+  return buildChunk(state, delta)
 }
 
 function buildUsageChunk(state: StreamTranslatorState, response: ResponsesResponse): ChatCompletionChunk {
