@@ -50,7 +50,7 @@ function parse(msg: ServerSentEventMessage): Record<string, unknown> {
 // ============================================================================
 
 describe("tool-input-decode block-internal release", () => {
-  const cfg: DecodeToolInputConfig = { fields: { AskUserQuestion: ["questions"] }, all: false }
+  const cfg: DecodeToolInputConfig = { fields: { AskUserQuestion: ["questions"] } }
 
   const start0 = make(
     { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t0", name: "AskUserQuestion", input: {} } },

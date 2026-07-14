@@ -107,31 +107,22 @@ describe("validateConfig — type errors", () => {
     expect(warnedMessages().some((m) => m.includes("anthropic.cache_control"))).toBe(true)
   })
 
-  test("tool_repair_malformed_input: comma-separated item set parsed (dedup + canonical order); invalid stripped", () => {
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "tags" } }).anthropic?.tool_repair_malformed_input).toEqual(["tags"])
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "tags,jsonrepair" } }).anthropic?.tool_repair_malformed_input).toEqual([
-      "tags",
-      "jsonrepair",
-    ])
+  test("response_tool_use_fix.malformed_input: comma-separated item set parsed (dedup + canonical order); invalid stripped", () => {
+    const parse = (v: unknown) =>
+      validateConfig({ anthropic: { response_tool_use_fix: { malformed_input: v } } }).anthropic?.response_tool_use_fix?.malformed_input
+    expect(parse("tags")).toEqual(["tags"])
+    expect(parse("tags,jsonrepair")).toEqual(["tags", "jsonrepair"])
     // spelling order ignored → canonical order; duplicates collapsed
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "jsonrepair,tags,tags" } }).anthropic?.tool_repair_malformed_input).toEqual([
-      "tags",
-      "jsonrepair",
-    ])
+    expect(parse("jsonrepair,tags,tags")).toEqual(["tags", "jsonrepair"])
     // hyphenated `unicode-lossy` token accepted and lands LAST in canonical order regardless of spelling
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "unicode-lossy,jsonrepair,unicode" } }).anthropic?.tool_repair_malformed_input).toEqual([
-      "unicode",
-      "jsonrepair",
-      "unicode-lossy",
-    ])
+    expect(parse("unicode-lossy,jsonrepair,unicode")).toEqual(["unicode", "jsonrepair", "unicode-lossy"])
     // empty string == off (empty set)
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "" } }).anthropic?.tool_repair_malformed_input).toEqual([])
+    expect(parse("")).toEqual([])
     // clean break (project unreleased): the legacy "repair" tier and boolean `false` are no longer valid → stripped + warn
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "repair" } }).anthropic?.tool_repair_malformed_input).toBeUndefined()
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: false } }).anthropic?.tool_repair_malformed_input).toBeUndefined()
-    const bad = validateConfig({ anthropic: { tool_repair_malformed_input: "tags,bogus" } })
-    expect(bad.anthropic?.tool_repair_malformed_input).toBeUndefined()
-    expect(warnedMessages().some((m) => m.includes("anthropic.tool_repair_malformed_input"))).toBe(true)
+    expect(parse("repair")).toBeUndefined()
+    expect(parse(false)).toBeUndefined()
+    expect(parse("tags,bogus")).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("malformed_input"))).toBe(true)
   })
 
   test("negative number rejected", () => {

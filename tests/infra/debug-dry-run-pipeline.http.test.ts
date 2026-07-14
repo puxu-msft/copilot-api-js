@@ -85,7 +85,7 @@ describe("POST /api/debug/dry-run-pipeline", () => {
   useIsolatedRuntime()
 
   beforeEach(() => {
-    setStateForTests({ decodeToolInputFields: { AskUserQuestion: ["questions"] }, decodeAllToolInputFields: false, backfillQuestionFromHeader: true })
+    setStateForTests({ decodeToolInputFields: { AskUserQuestion: ["questions"] }, backfillQuestionFromHeader: true })
     seedModel()
   })
 
@@ -156,7 +156,7 @@ describe("POST /api/debug/dry-run-pipeline", () => {
     // Test gap A (deferred-items §2 Step1 item3): the decode rewrite's `appliesTo` OFF-side was never
     // locked. With every gate off the rewrite must NOT be assembled → byte-verbatim passthrough. This
     // is the class the live symptom would fall into if decode silently stopped via state/gating.
-    setStateForTests({ decodeToolInputFields: {}, decodeAllToolInputFields: false, backfillQuestionFromHeader: false })
+    setStateForTests({ decodeToolInputFields: {}, backfillQuestionFromHeader: false })
     const stringified = JSON.stringify([{ header: "H", question: "Q" }])
     const res = await post({ upstream: { sseEvents: askUserQuestionUpstream(stringified) } })
     const body = (await res.json()) as { result: Array<{ data?: string }> }

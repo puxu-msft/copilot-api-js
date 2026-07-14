@@ -61,7 +61,7 @@ const RAW_1304 = loadRaw("todowrite-antml-bleed-1304.json")
 const RAW_JSONREPAIR = loadRaw("task-truncated-jsonrepair-1782641593660-64.json")
 const RAW_UNICODE = loadRaw("askuserquestion-unicode-escape-1782778207147-144.json")
 
-const noCfg = { fields: {}, all: false }
+const noCfg = { fields: {} }
 
 describe("createToolInputStreamDecoder — malformed tool-input repair (P3)", () => {
   test("items=[tags]: real antml-bleed TodoWrite is repaired to valid JSON on the wire", () => {
@@ -205,7 +205,7 @@ function makeResponse(input: unknown): { content: Array<ToolUseBlock> } & Record
 const decodeNS = (input: unknown, items: ReadonlyArray<RepairItem>, failures: Array<DecodeFailureInfo>) =>
   decodeToolInputBlocksInResponse(
     makeResponse(input) as unknown as AnthropicMessageResponse,
-    { fields: {}, all: false },
+    { fields: {} },
     { repairMalformedInput: items, onDecodeFailure: (i) => failures.push(i) },
   ) as unknown as {
     content: Array<ToolUseBlock>
@@ -272,7 +272,7 @@ describe("decodeToolInputBlocksInResponse — non-streaming malformed-string rep
 // fires, and `tryDecodeJsonString` leaves the broken string in place → forwarded unrepaired → client
 // decode error. Real capture req_1783844271353_1895 (inner `questions` array truncated).
 const RAW_INNER_QUESTIONS = loadRaw("askuserquestion-inner-questions-truncated-1783844271353-1895.json")
-const askCfg = { fields: { AskUserQuestion: ["questions"] }, all: false }
+const askCfg = { fields: { AskUserQuestion: ["questions"] } }
 
 describe("stringified decode-target FIELD repair (inner questions malformed, outer valid)", () => {
   test("streaming: a malformed inner `questions` string is repaired to a valid array on the wire", () => {
