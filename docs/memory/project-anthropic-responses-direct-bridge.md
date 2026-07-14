@@ -34,3 +34,8 @@ metadata:
 - **GPT MAJOR**：①reasoning encrypted_content `added`≠`.done`（1632→1744，同族 [[reference-ghc-responses-item-id-reencrypted-per-event]]）现只捕 added→P0 须验权威版 ②extract **三分类**（可提取 tool-id/text｜须重设计 CC-特有 multi-choices+tool_call index｜须重推导 usage 三方 cache token 不同构）。
 
 方向核心两 reviewer 一致成立。下一步：round-2 复审确认 → 用户审 RFC → writing-plans。
+
+**实施进度（plan `docs/plan/2026-07-14-anthropic-responses-direct-bridge/`）**：
+- **Phase 0 ✅ landed**（探针，commit 6dbc8418）：reasoning round-trip 物理可行（added 1600≠done 1684；回喂 done/added/空全 200 → Responses reasoning 端点**不 gate** encrypted_content、非 400 墙）；server-tool 请求侧透传可行但 web_search_call 无 enc 字段→anthropic-facing 渲染须降级；反向路由工作、端到端留 Phase 4/5 复验。权威 [FINDINGS](../../exp/anthropic-responses-direct/FINDINGS.md)。分水岭精化：端点差异（Anthropic search_result gate / Responses reasoning 不 gate）非真伪差异。
+- **Phase 1 ✅ landed**（hub-translate 四分发器重塑穷尽 `satisfies Record` 桥表，commit 1fc15bb8/001e1c96/ce426190/45c264e3）：`(anthropic,chat)` 与 `(anthropic,responses)` 拆独立表项（都仍产 CC、字节等价、无新桥——Phase 3 只换 responses 一格）；golden 60 pass/0 fail 独立核验；只碰 hub-translate.ts、未碰 cell-assembly/driver/cells。
+- **Phase 2-7 待做**：Phase 2 extract 三分类 helper → Phase 3/4 前向/反向直接桥 → Phase 5 reasoning round-trip（前向捕 done 版）→ Phase 6 server-tool → Phase 7 配置 model_mapping+model_translation。
