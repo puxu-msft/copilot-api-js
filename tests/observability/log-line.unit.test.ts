@@ -129,11 +129,11 @@ describe("formatLogLine — stop_reason token", () => {
     expect(stripAnsi(formatLogLine(okParts()))).not.toContain("⇥")
   })
 
-  test("sits after the feature tags and before the request id", () => {
-    const line = stripAnsi(formatLogLine(okParts({ extra: " (thinking)", stopReason: "tool_use", reqId: "req_abc" })))
-    // Order: tags → ⇥stopReason → reqId.
-    expect(line.indexOf("(thinking)")).toBeLessThan(line.indexOf("⇥tool_use"))
-    expect(line.indexOf("⇥tool_use")).toBeLessThan(line.indexOf("req_abc"))
+  test("sits after the token counts and before the feature tags (grey parens stay last)", () => {
+    const line = stripAnsi(formatLogLine(okParts({ inputTokens: 1200, outputTokens: 200, extra: " (thinking)", stopReason: "tool_use" })))
+    // Order: ↓output → ⇥stopReason → grey tags.
+    expect(line.indexOf("↓200")).toBeLessThan(line.indexOf("⇥tool_use"))
+    expect(line.indexOf("⇥tool_use")).toBeLessThan(line.indexOf("(thinking)"))
   })
 
   test("dim (start/history) lines never carry the stop_reason token", () => {

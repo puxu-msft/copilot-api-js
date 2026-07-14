@@ -1,6 +1,6 @@
 /**
  * Pure formatter for the canonical log line shape:
- *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> <extra> ⇥<stopReason> <retryableMeta>
+ *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> ⇥<stopReason> <extra> <retryableMeta>
  *
  * Shared source of truth for the log-line shape, consumed by
  * `~/lib/tui/terminal-ui.ts` (the TerminalUi renderer) and its `render/`
@@ -50,9 +50,11 @@ export interface LogLineParts {
   retryableMeta?: string
   /**
    * Response terminal stop_reason (e.g. "end_turn", "tool_use", "max_tokens").
-   * Rendered as a category-colored `⇥<reason>` token after {@link extra}; the
-   * caller supplies it only on successful completion lines (a failed/aborted
-   * request has no upstream stop_reason). Color is by {@link stopReasonColor}.
+   * Rendered as a category-colored `⇥<reason>` token right after the token
+   * counts (`↓<out>`) and before {@link extra}, so the grey feature-tag parens
+   * stay the trailing element. The caller supplies it only on successful
+   * completion lines (a failed/aborted request has no upstream stop_reason).
+   * Color is by {@link stopReasonColor}.
    */
   stopReason?: string
   /** Request id (e.g. "req_178..."), appended dim on error lines for history lookup */
@@ -163,8 +165,9 @@ export function formatLogLine(parts: LogLineParts): string {
 
   // Terminal stop_reason token (`⇥<reason>`), the whole token category-colored by
   // stopReasonColor (dim for normal end_turn, cyan for tool_use, yellow for
-  // truncation, red for refusal/error). Present only when the caller supplies it
-  // — i.e. on successful completion lines.
+  // truncation, red for refusal/error). Placed right after the token counts and
+  // before extraPart so the grey feature-tag parens stay last. Present only when
+  // the caller supplies it — i.e. on successful completion lines.
   const stopReasonPart = stopReason ? ` ${stopReasonColor(stopReason)(`⇥${stopReason}`)}` : ""
 
   // Request id appended dim at the very end (only when provided, e.g. error lines) for history lookup.
@@ -172,5 +175,5 @@ export function formatLogLine(parts: LogLineParts): string {
 
   const statusAndMethod = coloredStatus ? `${coloredStatus} ${coloredMethod}` : coloredMethod
 
-  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}${stopReasonPart}${retryableMetaPart}${reqIdPart}`
+  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${stopReasonPart}${extraPart}${retryableMetaPart}${reqIdPart}`
 }
