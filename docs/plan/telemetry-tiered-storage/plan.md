@@ -148,19 +148,19 @@ P0 sketch 封装 (纯，PoC 已证)
 
 ---
 
-## Phase 5 — 读路径迁移（逐字节兼容）
+## Phase 5 — 读路径迁移（纯附加新能力，现有端点零改动）
 
-**Files:** Modify `store.ts`（读半）`request-telemetry.ts`（getRequestTelemetrySnapshot/getDimensionBreakdown 改 DB 源）`metrics-exposition.ts`（固定桶+accepted）`routes/stats/route.ts`（window 层路由）`routes/status/route.ts`。
+> **用户决策（2026-07-14）**：7d 窗口读源采用**方案 2「dimBuckets 存活作 live cache」**——现有端点（`/metrics` 读 dimSinceStart+固定桶、`/api/status.requestTelemetry` 读 dimBuckets、breakdown 7d/sinceStart 读内存、thinking_blocks 读内存）**读路径全不变**，byte-compat 平凡成立、零回归。纯读 SQLite 因 dual-write ≤60s outbox 滞后违反 byte-compat 不变量 8，已排除；SQLite+outbox overlay（方案 1）复杂度高，未采纳。**故 P5 只加 SQLite 支撑的新能力，现有端点不碰**；「dimBuckets 重建源翻转 JSON→SQLite + 停 JSON 写」移到 **P7**（须在 P6 backfill 之后，否则重建丢迁移前历史）。
+
+**Files:** Create `store.ts`（读半新能力）+ test；Modify `routes/stats/route.ts`（window enum 扩 lifetime + >7d 层路由 + sketch 分位）。**不碰** `request-telemetry.ts` 现有 snapshot/breakdown 读、`metrics-exposition.ts`、`routes/status/route.ts`（读路径 P7 才翻转）。
 
 **Tasks：**
-- **T5.1 snapshot 重建**：`readRequestTelemetrySnapshot` 从 SQLite 重建 `getRequestTelemetrySnapshot` 形状（`buildFilledBuckets` 0 填充 + `buildLast7dModelSnapshots` per-bucket series + `models{SinceStart,Last7d}`）。**Golden 等价 oracle**：与旧内存快照逐字段字节兼容。
-- **T5.2 dimension breakdown**：`readDimensionBreakdown(dim,window,limit)` 层路由（≤raw→raw、≤hourly→hourly、更长→daily、lifetime→cumulative）。cap `other` 折叠保持。测试：各 window 选层正确 + other 折叠。
-- **T5.3 /metrics 双存储**：读**精确固定桶**（非 sketch）+ accepted_total；`_sum`/`_count` 同批固定桶来源。**逐字节 golden**：exposition 与旧格式兼容（Prometheus 严格解析）。
-- **T5.4 /api/stats window enum 扩展**：加 `lifetime` + 层选择。测试：query 路由 + 未知 window 400。
-- **T5.5 thinking_blocks 双轨**：`getThinkingBlockTotals` 读进程内（since restart 契约不变）。测试：重启归零。
-- **Commit**：`feat(telemetry): SQLite read path — byte-compat /metrics + /api/status + tier routing`。
+- **T5.1 store 读原语**：`readTierBreakdown(db, dim, tier, sinceTs, limit)`（tel_raw/hourly/daily 聚合 + cap `other` 折叠）+ `readCumulativeBreakdown(db, dim, limit)`（tel_cumulative）+ `readSketchQuantiles(db, tier, dim, key, bucketRange)`（hist_blob → p50/p90/p99/count/sum/min/max）。测试：聚合正确、other 折叠、exact-quantile 独立 oracle。
+- **T5.2 /api/stats window 层路由扩展**：window enum 加 `lifetime` + `30d`/`90d` 等（≤raw.retention→raw、≤hourly→hourly、更长→daily、lifetime→cumulative）；返 sketch 分位（p50/p90/p99+count/sum/min/max），不再只返固定桶。**新能力，非破坏**：`sinceStart`/`7d` 现有行为不变（仍走内存 getDimensionBreakdown）。测试：各 window 选层正确 + 未知 window 400 + lifetime 走 cumulative。
+- **T5.3 sketch 分位读**：`/api/stats` 持久窗口返 DDSketch 分位（读 hist_blob，effectiveSketchGamma 界内）。**逐字节 golden 不适用**（新字段，非改旧 payload）；用 exact-quantile 独立 oracle。
+- **Commit**：`feat(telemetry): SQLite read path — new /api/stats tier routing + lifetime + sketch quantiles`。
 
-**Invariant P5：** `/api/status.requestTelemetry` + `/metrics` 逐字节兼容；window 层路由正确；thinking_blocks 双轨归零。
+**Invariant P5：** 现有端点（/metrics + /api/status + stats sinceStart/7d）读路径**零改动**、byte-compat 平凡保持；新增 lifetime/>7d 层路由 + sketch 分位为纯附加能力。
 
 ---
 
@@ -170,23 +170,24 @@ P0 sketch 封装 (纯，PoC 已证)
 
 **Tasks：**
 - **T6.1 可加+accepted backfill**：旧 JSON `dimensions`/`buckets` 精确导入 `tel_raw`/`tel_accepted` + 上卷种子（可恢复骨架：keyset + meta-flag 守卫 + cooperative-stop + never-throw）。测试：backfill 后可加 SUM 与旧 JSON 相等；续跑幂等。
-- **T6.2 固定桶无损映射**：旧固定桶直方图 → 新固定桶列（一一对应）。测试：历史 `_bucket{le}` 计数字节精确。
-- **T6.3 sketch 层标记**：迁移前时段 sketch 层新建、`/api/stats` 该段分位标注「pre-migration 固定桶近似」（合成可辨识）。测试：标注存在。
+- **T6.2 固定桶无损性说明**（HIGH-1 修正：**SQLite 无固定桶列**）：旧 JSON 固定桶直方图的历史无损性由**旧 JSON 归档保留**承担（P6 不删 JSON），**不映射进 SQLite**（SQLite 只存 sketch）。backfill 只导可加列 + accepted；sketch 层对迁移前时段新建（旧固定桶无原始逐值、无法无损重建 sketch）。测试：可加列字节精确、JSON 归档留存。
+- **T6.3 sketch 层标记**：迁移前时段 sketch 层新建、`/api/stats` 该段分位标注「pre-migration 无 sketch 精度」（合成可辨识，richest-data-flow 对称面）。测试：标注存在。
 - **T6.4 .tmp 清理**：启动清理 `request-telemetry.json.tmp.*` 孤儿（安全）；旧 JSON **不自动删**（归档保留 + 显式开关）。测试：.tmp 删、JSON 留。
 - **Commit**：`feat(telemetry): full-absorption backfill from legacy JSON + tmp cleanup`。
 
-**Invariant P6：** 旧数据全量吸收不丢弃；可加精确、固定桶无损、sketch 段标记；旧 JSON 不自动删（no-destructive）。
+**Invariant P6：** 旧数据全量吸收不丢弃；可加精确、固定桶历史由 JSON 归档承担、sketch 段标记；旧 JSON 不自动删（no-destructive）。
 
 ---
 
-## Phase 7 — SSOT 类型收敛 + 切换删旧路径
+## Phase 7 — dimBuckets 重建源翻转 + SSOT 类型收敛 + 删旧 JSON 写路径
 
-**Files:** Create/Modify `ui-v4/src/types/telemetry.ts`（→ `~backend/*` re-export）。Modify `request-telemetry.ts`（删旧 JSON persist 路径）。
+**Files:** Modify `request-telemetry.ts`（init 时 dimBuckets 重建源 JSON→SQLite tel_raw + 删 JSON persist 写路径）。Create/Modify `ui-v4/src/types/telemetry.ts`（→ `~backend/*` re-export）。
 
 **Tasks：**
-- **T7.1 SSOT 类型**：新遥测查询类型（sketch summary / tier config / snapshot）后端定义一次，ui-v4 经 `~backend/*` re-export（收敛 frontend-loose）。**必跑 `typecheck:ui-v4`**（根 typecheck 不覆盖 ui-v4）+ `build:ui-v4`（`~backend` 须纯，不 import `~/lib/state`）。
-- **T7.2 切换**：确认 SQLite 路径生产可用后，删旧 JSON persist 写路径（读旧仅 migrate 用）。measure/dimension registry 仍不动。
-- **T7.3 DESIGN.md 同步**：「活的架构现状」加 telemetry-storage 行 + 「类型架构」节更新；DESIGN.md config 5 触点清单加 telemetry 键。
+- **T7.1 dimBuckets 重建源翻转**（用户决策方案 2 的收尾，须在 P6 backfill 之后）：`initRequestTelemetry` 的 dimBuckets 7d 窗从 **SQLite tel_raw 重建**（非读 JSON）；SQLite 成唯一持久源。**Golden 等价 oracle**：rebuilt-from-SQLite 的 dimBuckets/snapshot == rebuilt-from-JSON（无损，byte-compat）。thinking_blocks/dimSinceStart 仍进程内双轨归零。
+- **T7.2 删旧 JSON 写路径**：确认 SQLite 重建生产可用后，删 `persistTelemetrySerialized` 的 JSON 写（读旧仅 P6 migrate 用）。measure/dimension registry 不动。**单轨 SQLite**（dual-write 临时双轨退役）。
+- **T7.3 SSOT 类型**：新遥测查询类型（sketch summary / tier config / stats snapshot）后端定义一次，ui-v4 经 `~backend/*` re-export（收敛 frontend-loose）。**必跑 `typecheck:ui-v4`**（根 typecheck 不覆盖 ui-v4）+ `build:ui-v4`（`~backend` 须纯，不 import `~/lib/state`）。
+- **T7.4 DESIGN.md 同步**：「活的架构现状」加 telemetry-storage 行 + 「类型架构」节更新；DESIGN.md config 5 触点清单加 telemetry 键。
 - **Commit**：`refactor(telemetry): converge SSOT types + retire legacy JSON write path`。
 
 **Invariant P7：** ui-v4 typecheck+build 绿；旧 JSON 写路径退役、单轨 SQLite；DESIGN.md 同步。
