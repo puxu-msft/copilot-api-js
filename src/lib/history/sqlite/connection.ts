@@ -82,7 +82,17 @@ export function openDatabase(dbPath: string): Database {
   dropLegacyFtsAndSearchText(db)
   migrateEntriesColumns(db)
   reclaimOrphanedActiveRows(db)
-  maybeVacuumOnStartup(db, dbPath)
+  if (getExcludedPredecessor()) {
+    // Handover overlap: a live predecessor process may still be serving normal
+    // traffic against this same DB file. VACUUM needs an exclusive write lock and
+    // its duration scales with file size — easily exceeding busy_timeout — so the
+    // predecessor's concurrent writes would hit SQLITE_BUSY and silently drop
+    // history records (never-throw persist guard). Defer to the next exclusive
+    // startup; the reaper's incremental_vacuum stays safe to run meanwhile.
+    consola.info("[history/sqlite] 检测到接管中的前任，跳过启动 VACUUM（延后到下次独占启动）")
+  } else {
+    maybeVacuumOnStartup(db, dbPath)
+  }
   // Seed planner statistics once so the (now several) candidate indexes per
   // query get chosen on selectivity, not heuristics.
   seedAnalyzeIfNeeded(db)
