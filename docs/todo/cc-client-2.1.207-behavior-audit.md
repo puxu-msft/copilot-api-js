@@ -933,6 +933,8 @@ CC 2.1.207 server / API-defined tool 类型（带日期后缀，`app.pretty.js`�
 - `memory` 尤其敏感——native memory 工具被 sanitize 改名会破坏记忆功能。
 
 > **实现期校正（2026-07-14，task-reviewer 探针实测）**：原文「延迟（tool-search 默认 ON）：当 custom → 进 `customNames` → 可被延迟（F30 同机制）」表述**错误**——`shouldDefer`（`message-tools.ts` 199-204）**只按 `tool.name`** 匹配 `NON_DEFERRED_TOOL_NAMES`，**从不查 `tool.type`/`isApiDefinedToolType`**，故本前缀补全**只修 sanitize 保护**（`buildAnthropicToolNameMapper` 经 `isApiDefinedToolType` 排除 typed 工具，不进 custom-name 集），**不修延迟保护**。**延迟保护是独立未修 gap**：typed server 工具（含原有 6 前缀 `web_search_`/`text_editor_` 等，非仅本轮新增 4 前缀）在 tool-search 下仍可能被 `defer_loading:true`，因为 `shouldDefer` 从未排除 `isApiDefinedToolType(tool.type)` 为真的工具。已记入 `docs/todo/deferred-backlog.md`（理想方向：`shouldDefer` 增加 `!isApiDefinedToolType(tool.type)` 条件），本任务范围不含此修复。
+>
+> **完备性补正（2026-07-14，whole-branch review 抓）**：`isApiDefinedToolType` 实为**四个**消费点，非上文暗示的两个（sanitize + shouldDefer）——另两个是 `stripServerTools`（[message-tools.ts:384](../../src/lib/anthropic/message-tools.ts#L384)，剥 server 工具）与 **`translateTools`**（[anthropic-to-cc-request.ts:304](../../src/lib/openai/translate/anthropic-to-cc-request.ts#L304)，通用翻译矩阵的 CC 腿）。故 F32 补 4 前缀的**真实影响面**：(a) sanitize 排除（不改名，✓正确）；(b) `stripServerTools` 多剥这 4 类；(c) **`translateTools` 现在 drop 这 4 类 typed 工具**（此前不识别 → 推成 `parameters:undefined` 的畸形 function tool；drop 是**改进**，与该腿对 web_search_/code_execution_ 的既有处理一致）；(d) **不**改 `shouldDefer`（延迟保护仍未修，见上）。已补对称 characterization 测试钉住 translateTools 腿行为。
 
 触发取决于 CC 是否发 advisor/agent_toolset 工具（新/niche 特性）+ config；但**名单陈旧本身是确定的**（前缀式已很稳，仍漏新类别）。
 
@@ -973,6 +975,8 @@ CC 2.1.207 built-in 客户端工具（`app.pretty.js` 常量：Bash@90227 / Edit
 | **tool_search_** | ✗（项目自注入的 tool_search_tool_regex_20251119 走独立路径；客户端若发漏） | tool_search_tool_regex_20251119 |
 
 ### 合并修复建议（F28+F30+F32 一次落地）
+
+> **⚠️ SUPERSEDED（2026-07-14 实施）**：下方原设想的落地方案（补 stub 清单 F28 / 加 NON_DEFERRED 核心工具集 F30）**已被推翻**——实施期 deep-read + 探针揭示机制更窄：**F28 改走根因修复**（解除 Path 2 history-stub 安全网的 tool-search 门控，非补清单，清单一度补全又回退）；**F30 已证伪**（NON_DEFERRED 已 spread 官方清单）+ 其非延迟残余**接受为 tool-search 预期权衡不修**；**F32 前缀保留**（修 sanitize + translateTools drop，不修 defer）。实际落地见各 finding 的「实现期校正/纠正」blockquote + `deferred-backlog.md`。下文保留仅作**当时设想的存档**。
 
 1. **权威源**：以真实 CC 2.1.207 请求抓包（`claude -p ... --settings` + 记录 outbound tools + tool types）为准，本表作候选/交叉验证。
 2. **stub 集（F28）**：补 WebSearch/BashOutput/NotebookRead（+核 Agent/MCP 资源工具）；空 schema。

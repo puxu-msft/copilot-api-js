@@ -515,3 +515,10 @@
 - **裁决（用户 2026-07-14）：接受、不修**。延迟**罕用**工具正是 tool-search 省 context 的**设计目的**；**热路径工具**（Read/Bash/Grep/Edit/Write/Task 等 16 项）已受静态保护；罕用工具首次调用触发一次 `deferred-tool-retry` 自愈往返（非硬失败）。此为**既有基线行为**（Task 1 补清单一度改善、Task 2 因 F28 改用根因修复而回退恢复基线）。
 - **若日后要改（理想方向）**：把 `NON_DEFERRED_TOOL_NAMES` 的 spread 源与 stub 注入列表 `CLAUDE_CODE_OFFICIAL_TOOLS` **解耦为两份**——stub 列表保持精简 16 项（Path 2 已根因兜底），另建独立「非延迟保护」列表纳入全部已知 CC 内置工具名（含 WebSearch 等），并先经真实 CC 抓包（skill `client-proxy-e2e-testing`）确认哪些工具值得非延迟（全部 vs 仅高频子集）。**为何暂缓**：当前自愈成本低（首用一次往返）、无硬失败；且「哪些罕用工具值得占 context 换免首用往返」是需实测数据支撑的权衡，非拍脑袋补全。
 - **注意勿混淆**：本条（非延迟维度、按 `tool.name`）与上一条「typed server 工具可被延迟」（按 `tool.type`/`isApiDefinedToolType`）是 `shouldDefer` 的**两个不同判据**——前者关客户端工具名单、后者关 server-tool 类型识别。
+
+## no-tools 分支的孤立历史 tool_use 兜底不对称（whole-branch review 抓，2026-07-14）
+
+- **现象**：F28 根因修复解除了 `processToolPipeline`（有 tools 路径）Path 2 的 tool-search 门控，但 `preprocessTools` 的**无-tools 分支**（`message-tools.ts:292` `else if (state.toolSearchEnabled && …)`）仍门控在 `toolSearchEnabled`。tool-search OFF + 无 tools + 配对历史 tool_use 时探针实测返回 `tools:[]`，不注 stub。
+- **为何非硬失败（暂缓）**：真正孤立（无配对 tool_result）的 tool_use 会被 `processToolBlocks`（`sanitize/tool-blocks.ts`）作为 orphan **删除**（连同 tool_result），故不给 GHC 留悬空引用。有兜底、非硬失败——但兜底手段（**删历史块**）与有-tools 路径（**注 stub 保历史**）**不一致**：一个丢历史、一个保历史。
+- **理想架构**：无-tools 分支也解除门控使两路径对称（保历史优先，对齐 richest-data-flow），或至少在代码注释显式说明「无-tools 依赖 orphan 删除兜底」消除困惑。
+- **为何暂缓**：当前有兜底、无硬失败；两路径对称化是一致性改进非缺陷修复，可独立处理。发现方：whole-branch review（2026-07-14）。

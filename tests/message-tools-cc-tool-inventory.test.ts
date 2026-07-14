@@ -166,7 +166,8 @@ describe("F32 — buildAnthropicToolNameMapper excludes newly recognized API-def
  * BashOutput, …) ARE deferred under tool_search — the tool_search feature working as
  * designed (context savings; first use self-heals via deferred-tool-retry). Pins the
  * current boundary so a future change to non-defer coverage is visible in review.
- * Rationale + "if we ever change it" → docs/todo/deferred-backlog.md.
+ * Rationale + "if we ever change it" → docs/todo/deferred-backlog.md. Implicitly depends on claude-sonnet-4.6 triggering tool_search; if the model
+ * capability table changes, the anyDeferred guard goes red first — update the anchor model then.
  */
 describe("accepted tradeoff — non-official CC tools are deferred under tool_search", () => {
   let originalToolSearchEnabled: typeof state.toolSearchEnabled
@@ -195,5 +196,24 @@ describe("accepted tradeoff — non-official CC tools are deferred under tool_se
     expect(anyDeferred).toBe(true)
     expect(byName.get("Read")?.defer_loading).not.toBe(true) // hot-path: protected
     expect(byName.get("WebSearch")?.defer_loading).toBe(true) // rarely-used: deferred (accepted)
+  })
+})
+
+/**
+ * F32 completeness (whole-branch review, 2026-07-14): `isApiDefinedToolType` has a
+ * THIRD consumer beyond sanitize + shouldDefer — the universal-translation-matrix CC
+ * leg (`anthropic-to-cc-request.ts` translateTools). Adding the 4 prefixes means those
+ * typed server tools are now DROPPED on that leg (matching web_search_/code_execution_)
+ * rather than translated into a malformed `{function:{parameters:undefined}}`. Pinned
+ * here via the shared predicate so the third consumer's behavior stays characterized.
+ */
+describe("F32 — typed server tools recognized by isApiDefinedToolType (translateTools consumer)", () => {
+  test("new prefixes are API-defined → dropped on the CC translation leg; custom tools kept", () => {
+    // translateTools drops any tool whose type isApiDefinedToolType(type)===true.
+    for (const type of ["advisor_20260301", "agent_toolset_20260401", "memory_20250818", "tool_search_tool_regex_20251119"]) {
+      expect(isApiDefinedToolType(type)).toBe(true) // → dropped on CC leg (improvement over malformed)
+    }
+    // A genuine custom tool is NOT API-defined → translateTools keeps translating it.
+    expect(isApiDefinedToolType("get_weather")).toBe(false)
   })
 })
