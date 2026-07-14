@@ -91,6 +91,7 @@ import {
   openaiNonStreamingTruncation,
   anthropicNonStreamingTruncation,
 } from "~/lib/pipeline/non-streaming-completeness"
+import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
 import {
   //
@@ -400,9 +401,11 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
 
   // The driver-owned client sink: SSE write-out + forwarded sampling. The sink preserves SSE
   // id/retry framing it is given.
+  env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
+    ...clientFirstRealSinkOpts(env),
     ...(heartbeatSec > 0 && {
       heartbeat: {
         intervalSec: heartbeatSec,
@@ -654,9 +657,10 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
 
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
+  env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
   let bytesIn = 0
   let eventsIn = 0
-  const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs })
+  const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs, ...clientFirstRealSinkOpts(env) })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
   // Per rendered CC frame (post-S6): progress + tool-name restore for the forwarded client frame. The raw

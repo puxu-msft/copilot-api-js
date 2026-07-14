@@ -834,6 +834,9 @@ export async function runResponseBufferedSink(
           // handler's unique idle injector can forward it AHEAD of the anchor block. It is STILL buffered
           // as normal — the commit flush skips the already-forwarded copy (H1 dedup below).
           if (anchor && anchorState.capturedMessageStart === undefined && anchor.isMessageStart(toWrite)) anchorState.capturedMessageStart = toWrite
+          // 首包埋点（spec 2026-07-14 §3.2）：首帧被扣留进 buffer 的时刻（entry-level first hold，
+          // 跨失败 retry；once 语义保留全局最早）。protect_streaming_generation 与 L2 共用此函数。
+          if (buffer.length === 0) currentEnv.ctx.setClientTimingEpoch("bufferHoldStart", Date.now())
           buffer.push(toWrite)
           bufferedBytes += (toWrite.data?.length ?? 0) + (toWrite.event?.length ?? 0)
           if (bufferCapBytes > 0 && bufferedBytes > bufferCapBytes) {

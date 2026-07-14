@@ -7,7 +7,11 @@
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 
-import type { ClientFormat, UpstreamEndpoint } from "./envelope"
+import type {
+  //
+  ClientFormat,
+  UpstreamEndpoint,
+} from "./envelope"
 
 /** 上游侧 4 刻：绝对 epoch instant（Date.now()），存 per-attempt（`Attempt` 记录）。 */
 export interface AttemptTiming {
@@ -47,7 +51,12 @@ export interface RawFrame {
   data?: string
 }
 
-function parseData(frame: RawFrame): { choices?: Array<{ delta?: { content?: unknown; tool_calls?: unknown } }>; candidates?: Array<{ content?: { parts?: Array<{ text?: unknown; functionCall?: unknown }> } }> } | undefined {
+function parseData(frame: RawFrame):
+  | {
+      choices?: Array<{ delta?: { content?: unknown; tool_calls?: unknown } }>
+      candidates?: Array<{ content?: { parts?: Array<{ text?: unknown; functionCall?: unknown }> } }>
+    }
+  | undefined {
   if (!frame.data) return undefined
   try {
     return JSON.parse(frame.data) as ReturnType<typeof parseData>
@@ -73,45 +82,76 @@ function geminiPartHasContent(frame: RawFrame): boolean {
 /** 上游首个「承诺产出内容」信号（含 tool-first / reasoning-first）——按 targetEndpoint。 */
 export function isFirstUpstreamContent(frame: RawFrame, targetEndpoint: UpstreamEndpoint): boolean {
   switch (targetEndpoint) {
-    case ENDPOINT.MESSAGES:
+    case ENDPOINT.MESSAGES: {
       return frame.event === "content_block_start"
+    }
     case ENDPOINT.RESPONSES:
-    case ENDPOINT.WS_RESPONSES:
+    case ENDPOINT.WS_RESPONSES: {
       return frame.event === "response.output_item.added" || frame.event === "response.output_text.delta"
-    case ENDPOINT.CHAT_COMPLETIONS:
+    }
+    case ENDPOINT.CHAT_COMPLETIONS: {
       return openaiChunkHasContent(frame)
-    default:
+    }
+    default: {
       return false
+    }
   }
 }
 
 /** 上游「任意内容帧」（last_token 用；比 first 宽）——按 targetEndpoint。 */
 export function isUpstreamContentFrame(frame: RawFrame, targetEndpoint: UpstreamEndpoint): boolean {
   switch (targetEndpoint) {
-    case ENDPOINT.MESSAGES:
+    case ENDPOINT.MESSAGES: {
       return frame.event === "content_block_delta" || frame.event === "content_block_start"
+    }
     case ENDPOINT.RESPONSES:
-    case ENDPOINT.WS_RESPONSES:
+    case ENDPOINT.WS_RESPONSES: {
       return typeof frame.event === "string" && frame.event.startsWith("response.output")
-    case ENDPOINT.CHAT_COMPLETIONS:
+    }
+    case ENDPOINT.CHAT_COMPLETIONS: {
       return openaiChunkHasContent(frame)
-    default:
+    }
+    default: {
       return false
+    }
   }
 }
 
 /** 客户端可见的首个真实内容帧（非 message_start / 前奏 / synthetic）——按 clientFormat。 */
 export function isClientContentFrame(frame: RawFrame, clientFormat: ClientFormat): boolean {
   switch (clientFormat) {
-    case "anthropic":
+    case "anthropic": {
       return frame.event === "content_block_delta"
-    case "openai-responses":
+    }
+    case "openai-responses": {
       return frame.event === "response.output_text.delta"
-    case "openai-cc":
+    }
+    case "openai-cc": {
       return openaiChunkHasContent(frame)
-    case "gemini":
+    }
+    case "gemini": {
       return geminiPartHasContent(frame)
-    default:
+    }
+    default: {
       return false
+    }
+  }
+}
+
+/**
+ * 首包埋点（spec 2026-07-14 §3.2）：绑定「客户端首个真实内容帧」捕获到 sink opts。
+ * 每个 handler 把返回值 spread 进 makeSseSink/makeWsSink/makeAnchoredSseSink 的 opts，
+ * sink 保持格式无关，绑定在此单点（clientFormat 谓词 + ctx once setter）。
+ */
+export function clientFirstRealSinkOpts(env: {
+  clientFormat: ClientFormat
+  ctx: { setClientTimingEpoch: (kind: "streamOpen" | "firstReal" | "bufferHoldStart", epoch: number) => void }
+}): {
+  isRealContentFrame: (frame: RawFrame) => boolean
+  onFirstRealContent: () => void
+} {
+  return {
+    isRealContentFrame: (frame) => isClientContentFrame(frame, env.clientFormat),
+    onFirstRealContent: () => env.ctx.setClientTimingEpoch("firstReal", Date.now()),
   }
 }
