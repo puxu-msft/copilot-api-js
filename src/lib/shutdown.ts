@@ -342,7 +342,13 @@ export async function drainActiveRequests(
  */
 export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Promise<void> {
   const tracker: ShutdownDrainSource = deps?.tracker ?? {
-    getActive: () => getRequestContextManager().getAll(),
+    // C5: drain waits on the OPERATION registry (quiesce), not just the visible registry (settle).
+    // A settled-but-not-quiesced request keeps orphan settle-before work (fetch/backoff) that must
+    // be drained. For an unwired ctx this equals getAll() (empties at settle), so current behavior
+    // is preserved; it becomes meaningful once C4a wires `trackOperationBody` at the work sites.
+    // Bounded by the existing Phase 2/3/4 timeouts (never waits forever); reaper/deadline still
+    // settle immediately (cancel is decoupled from quiesce), so this never blocks settle.
+    getActive: () => getRequestContextManager().getTrackedOperations(),
   }
   const server = deps?.server ?? serverInstance
   const rateLimiter = deps?.rateLimiter !== undefined ? deps.rateLimiter : getAdaptiveRateLimiter()
