@@ -115,7 +115,7 @@ export const ServerConfigSchema = z.object({
 ### P2 产出，P4 消费
 
 - `src/lib/transport/http2-client.ts` 导出 `getSessionConnectTimeoutMs(): number`（0=禁用，不设超时）。
-- `src/lib/openai/upstream-ws.ts`：`createUpstreamWsManager` 的 `create()` 调用 `connectionFactory` 时新增 `idleTimeoutMs: getPooledConnectionIdleTimeoutMs()` 入参。
+- `src/lib/openai/upstream-ws.ts` 导出 `getPooledConnectionIdleTimeoutMs(): number`（0=禁用，永不 idle-timeout）；`createUpstreamWsManager` 的 `create()` 调用 `connectionFactory` 时新增 `idleTimeoutMs: getPooledConnectionIdleTimeoutMs()` 入参。**导出（非私有函数）是用户裁决锁定的结论**：P4 的 `rescheduleIdleTimeout`/reconcile 复用同一个函数计算新 idle deadline，避免重复实现 `state.pooledConnectionIdleTimeout * 1000` 换算逻辑（DRY）；plan-2 早前把这一点记录为"若主会话有不同偏好可能收窄为私有函数"的开放项，现已裁决为定案，不再是待定项。
 - `src/lib/openai/upstream-ws-connection.ts`：`UpstreamWsConnection` 接口新增 `rescheduleIdleTimeout(newIdleTimeoutMs: number): void` 方法（P4 专用；P2 只需保证 `idleTimeoutMs` 从 state 读取，P4 才真正调用重调度）。
 
 ### P3 产出（不影响 P2/P4，独立分支）

@@ -734,3 +734,17 @@
 - **当前行为**：无 summary → 客户端不显示 reasoning（合理）、encrypted_content 被丢（次优）。有 summary → 全链路正常（thinking 块 + encrypted 封进 signature 往返）。
 - **理想架构 / 若做需改什么**：若要「即使无 summary 也保 encrypted 跨轮」，可在无 summary 但有 encrypted 时产一个**空文本 thinking 块**只承载 signature 载荷——但需先探针确认 @anthropic-ai/sdk 接受空 thinking 文本 + 非空 signature 的块（probe ① 只证了非空文本），且 Anthropic 协议是否允许空 thinking。或改用独立 sidecar 存 encrypted（不走 thinking 块）。
 - **为何暂缓**：仅 low-effort 边角、且 encrypted 本不可显示（丢的是 round-trip 能力非可见内容）；真做需额外探针。发现方：reasoning 透传探针 ②③（2026-07-14）。
+
+## history/telemetry 拆独立持久化服务（架构选项，2026-07-14 优雅重启设计时评估）
+
+- **根因 / 现状**：优雅重启（`docs/shutdown.md`「优雅重启」节）的 overlap 窗口里新旧两进程同时写 history.db / telemetry.db。当前方案靠**靶向修**消除隐患——① reclaim-orphan 排除 live 前任 ② 旧进程 drain 期停遥测 persist timer ③ WAL + busy_timeout 串行化两写者。持久化仍是**进程内嵌入式**（同进程 await 保证 never-lose-settle）。
+- **当前行为**：单进程代际交替下，overlap 写竞争有界（旧进程降级后只剩个位数在途 finalize + 新进程新写）、罕见、可被 SQLite WAL 正确串行化。读侧（`/history/api/*`、`/api/status`、`/metrics`、WS 实时推送）全是进程内同步读。
+- **理想架构 / 若做需改什么**：把 history/telemetry 抽成常驻独立服务 → 单写者、跨重启常驻、reclaim-orphan 逻辑作废。但需：给富且演进的 payload（zstd blob / 内容寻址 search_index / 异步两相 finalize / DDSketch）定义 IPC wire 协议；把「同进程 await 的 never-lose-settle 不变量」重做成分布式投递协议（背压 / 缓冲 / at-least-once）；读侧端点全部跨界或端进服务。真走到这步，正确的问法是「是否直接换 client-server DB（Postgres）」。
+- **为何暂缓**：本项目是单用户内部工具、并发仅「运维偶尔重启一次」，为有界罕见问题引常驻 sidecar + IPC 是过度工程；靶向修已治根因。**触发条件（满足才值得重做）**：① 转向多进程 / 多 worker 常驻并发 serving（不再是单进程代际交替）；② 持久化延迟 / 背压开始阻塞请求 serving（in-process 写变热路径瓶颈）；③ history/telemetry 体量长出 SQLite、本就要迁 client-server DB——那时顺势做 persistence-as-a-service 才自然。
+
+## SOCKS `session_connect_timeout=0` 跨字段校验只在单次 parse 内生效，跨 YAML 层可漏检（LOW，2026-07-14 记，B8 附带发现）
+
+- **根因 / 现状**：`docs/plan/2026-07-14-transport-config-reorg/plan-1-config-reorg.md` Task 3 附加范围新增 `ConfigSchema` 顶层 `.superRefine()`，在同一次 `ConfigSchema.safeParse()` 里检测「`proxy` 是 SOCKS + `session_connect_timeout === 0`」并拒绝。但 `loadBundledDefaultConfig()` 与 `loadRawConfigFile()`（[config.ts:418](../../src/lib/config/config.ts#L418)）各自独立调用 `validateConfig()`，之后才用 `mergeBySchema()` 合并两个已经分别验证过的 `Config` 对象——跨字段校验看不到合并后的 effective config。
+- **当前行为**：现实路径（用户在同一个 `config.yaml` 里同时写 `proxy` 和 `upstream_transport.http2.session_connect_timeout`，或经 PUT `/api/config` 一次性提交两者）完全被覆盖，因为两个字段确实在同一次 `safeParse()` 内。只有把 `proxy` 放进一层、把 `session_connect_timeout: 0` 放进另一层（bundled vs user 分裂）才会漏检——且 bundled `config.yaml` 从不出货显式 `0`（默认是正数 10）、`proxy` 又几乎总是用户覆盖层独有，这个组合在实践中概率极低。
+- **理想架构 / 若做需改什么**：在 `mergeBySchema()` 产出 effective config 之后，对合并结果**再跑一次** `ConfigSchema` 级别的跨字段校验（或至少重跑本条 superRefine），需要新增一个「合并后二次校验」的调用点，并想清楚二次校验失败时的降级策略（此时已经没有「stripped 用默认值重来」的简单退路，因为两层都已经算"验证通过"）。
+- **为何暂缓**：本条是 B8 实现过程中顺带发现的架构缝隙，不是 B8 本身要求的验收范围（B8 只要求"配 SOCKS 时 validation 拒绝 0"，同层内已完整满足）；触发条件是「bundled 与用户配置分裂持有这两个字段」这一现实中基本不出现的组合，为此新增合并后二次校验层是过度工程。**触发条件（满足才值得做）**：项目引入多层配置来源（例如按环境分层的多个 YAML 文件，而不仅是 bundled+单一用户覆盖）、或 schema 上出现更多类似的高价值跨字段约束，值得一次性建「合并后校验」机制而非逐条特殊处理。发现方：本 planner 在 B8（transport-config-reorg plan 修正）落 SOCKS 校验时的架构核实。

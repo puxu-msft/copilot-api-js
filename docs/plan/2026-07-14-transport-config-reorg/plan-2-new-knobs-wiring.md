@@ -35,8 +35,8 @@
 | 文件 | 改动 |
 |---|---|
 | `src/lib/transport/http2-client.ts` | 新增导出 `getSessionConnectTimeoutMs()`；`setConnectTimeoutForTests` 语义改为纯覆盖开关；`awaitH2Handshake` 签名新增 `timeoutMs` 参数；`createSession` 改为本地快照读取；移除 `CONNECT_TIMEOUT_MS`/`DEFAULT_KEEPALIVE_MS` 两个常量；`createSession` 的 keepalive 分支改为"未定义则不启用"而非硬编码回退 |
-| `src/lib/transport/proxy-connect.ts` | `connectViaHttpConnect`/`connectViaSocks` 补上 `timeoutMs<=0` 时"不设期限"的正确语义（原先把 `0` 直接喂给 `setTimeout`/`SocksClient` 的计时参数，会被当成"几乎立即触发"而非"禁用"——JS 计时器的 0 语义与本项目的 D5 语义相反，这是一个新发现的、超出 README 文件清单枚举的必要连带修正） |
-| `src/lib/openai/upstream-ws.ts` | 新增（非导出契约以外的）辅助函数 `getPooledConnectionIdleTimeoutMs()`；`create()` 调用 `connectionFactory` 时新增 `idleTimeoutMs: getPooledConnectionIdleTimeoutMs()` |
+| `src/lib/transport/proxy-connect.ts` | `connectViaHttpConnect` 补上 `timeoutMs<=0` 时"不设期限"的正确语义（原先把 `0` 直接喂给 `setTimeout` 的延迟参数，会被当成"几乎立即触发"而非"禁用"——JS 计时器的 0 语义与本项目的 D5 语义相反，这是一个新发现的、超出 README 文件清单枚举的必要连带修正）。`connectViaSocks` **不改**——`socks` 库自身把 `0`/省略都地板到 30 秒默认值，无法在这一层诚实地"禁用"，该组合改由 `session_connect_timeout=0` + SOCKS 代理的配置校验层拒绝（B8，见 `plan-1-config-reorg.md` Task 3 附加范围），不在 `proxy-connect.ts` 里假装修好 |
+| `src/lib/openai/upstream-ws.ts` | 新增导出 `getPooledConnectionIdleTimeoutMs(): number`（README「跨阶段共享接口清单」已锁定为定案导出，见 Task 2）；`create()` 调用 `connectionFactory` 时新增 `idleTimeoutMs: getPooledConnectionIdleTimeoutMs()` |
 | `src/lib/proxy.ts` | `getUndiciAgentOptions()` 始终显式提供 `connect` 选项（`{keepAlive:false}` 而非省略）；`createSocksAgent()` 里的 keepalive 分支同步改为显式 `else` 分支 |
 | 新增 `tests/transport/http2-session-connect-timeout.unit.test.ts` | `session_connect_timeout` 状态驱动的真实 timing oracle |
 | `tests/responses/upstream-ws.unit.test.ts` | 追加 `idleTimeoutMs` 接线断言 + 单例 wiring 断言 |
@@ -51,7 +51,7 @@
 
 **Files**
 - Modify: `src/lib/transport/http2-client.ts:25-49`（import 区块 + 常量区）、`:86-119`（`createSession`）、`:138-166`（`awaitH2Handshake`）、`:283-297`（`setHttp2SessionFactoryForTests`/`setConnectTimeoutForTests` 邻近区）
-- Modify: `src/lib/transport/proxy-connect.ts:34-43`（`ProxiedSocketOptions` JSDoc）、`:121-155`（`connectViaHttpConnect`）、`:92-104`（`connectViaSocks`）
+- Modify: `src/lib/transport/proxy-connect.ts:34-43`（`ProxiedSocketOptions` JSDoc）、`:121-155`（`connectViaHttpConnect`）——`connectViaSocks`（`:92-104`）**不改**，见下方 Step 3 的说明
 - New: `tests/transport/http2-session-connect-timeout.unit.test.ts`
 - Modify: `tests/transport/proxy-connect.unit.test.ts`（先读一遍确认现有 `describe`/辅助函数命名，再追加用例——本 Task 不重写该文件已有内容）
 
@@ -300,7 +300,7 @@ export function setConnectTimeoutForTests(ms: number | undefined): void {
 
 ### Step 3 — `proxy-connect.ts`：修正 `timeoutMs<=0` 的假禁用
 
-先读一遍 `tests/transport/proxy-connect.unit.test.ts` 现有内容确认辅助函数/`describe` 命名（沿用其既有 helper，不重复造轮子），然后追加两个失败测试：
+先读一遍 `tests/transport/proxy-connect.unit.test.ts` 现有内容确认辅助函数/`describe` 命名（沿用其既有 helper，不重复造轮子），然后追加一个失败测试（仅 HTTP CONNECT 路径——`connectViaSocks` 不改，见下方说明，故不在这里为它写测试）：
 
 ```ts
 test("connectViaHttpConnect: timeoutMs<=0 never times out (does not fire almost-instantly)", async () => {
@@ -377,7 +377,7 @@ test("connectViaHttpConnect: timeoutMs<=0 never times out (does not fire almost-
 
 （`clearTimeout(timer)` 出现的另外两处调用点——`fail` 内部与第 171 行的成功路径——无需修改：`clearTimeout(undefined)` 在 Node 里是安全的 no-op。）
 
-`connectViaSocks`（原第 92-104 行）里，把：
+`connectViaSocks`（原第 92-104 行）**保持不变，不加 `<=0` 特判**（B8 修正——早前一版草稿曾计划在这里加 `...(opts.timeoutMs > 0 && {timeout: opts.timeoutMs})` 的条件展开，用户 + reviewer 读了 `node_modules/socks` 源码后否决了这个方向，理由见下）：
 
 ```ts
 async function connectViaSocks(url: URL, opts: ProxiedSocketOptions): Promise<net.Socket> {
@@ -389,24 +389,11 @@ async function connectViaSocks(url: URL, opts: ProxiedSocketOptions): Promise<ne
   })
 ```
 
-改为：
+**为什么不修**：`socks` 包内部用 `this.options.timeout || DEFAULT_TIMEOUT`（`DEFAULT_TIMEOUT = 30_000`）算连接超时——不管 `opts.timeoutMs` 传 `0` 还是干脆省略这个键，最终都会静默落到库自带的 30 秒默认值，**从来不是真正的禁用**。早前草稿"只在 `opts.timeoutMs > 0` 时才传 `timeout` 键"的写法表面上"避免把 `0` 传给库"，但实际效果和现在完全一样——两种写法下 `timeoutMs<=0` 都会变成 30 秒，只是绕了不同的代码路径殊途同归到同一句谎言："配置里写的 `0` = 禁用，实际生效的是 30 秒"，且没有任何地方告诉用户这个落差。诚实的修法不是在这里想办法让 `0` 看起来生效，而是**从不让 `0` 走到这一行**：见 `docs/plan/2026-07-14-transport-config-reorg/plan-1-config-reorg.md` Task 3 附加范围（B8）——`ConfigSchema` 顶层新增跨字段 `.superRefine()`，配置了 SOCKS 代理（`proxy` 是 `socks5:`/`socks5h:`）时直接拒绝 `session_connect_timeout: 0`（YAML 加载路径警告+剥离回默认值 10；PUT `/api/config` 路径结构化 400 拒绝）。等这行代码真的执行时，`opts.timeoutMs` 要么来自非 SOCKS 代理（`0` 在 `connectViaHttpConnect` 已经真正生效），要么来自已被校验层保证过是正数的 SOCKS 场景——两种情况都不需要在这里特判，原样透传 `opts.timeoutMs` 和现状完全一样。
 
-```ts
-async function connectViaSocks(url: URL, opts: ProxiedSocketOptions): Promise<net.Socket> {
-  const { socket } = await SocksClient.createConnection({
-    proxy: buildSocksProxy(url),
-    command: "connect",
-    destination: { host: opts.targetHost, port: opts.targetPort },
-    // Only pass a timeout when positive — `socks`'s own 0/absent-timeout
-    // behavior is its documented default, which is safer than guessing its
-    // exact 0-semantics (battle-tested-over-hand-rolled: don't second-guess a
-    // third-party option we haven't verified against, when omission already
-    // gives the conservative "disabled" outcome we want).
-    ...(opts.timeoutMs > 0 && { timeout: opts.timeoutMs }),
-  })
-```
+`proxy-connect.ts` 本身不需要为 B8 新增任何 `connectViaSocks` 侧的测试——SOCKS `0` 的拒绝是 `ConfigSchema` 校验层的职责（plan-1 Task 3 附加范围已有完整的 TDD 步骤 + 独立提交），不是 `connectViaSocks` 运行时行为的职责，两者的独立 oracle 不同（一个断言"校验拒绝"、一个断言"连接行为"），混在一起测会模糊两层各自的失败信号。
 
-跑 `bun test tests/transport/proxy-connect.unit.test.ts`，确认新增用例转绿，其余既有用例仍通过。
+跑 `bun test tests/transport/proxy-connect.unit.test.ts`，确认 Step 3 新增的 `connectViaHttpConnect` 用例转绿，其余既有用例（含 `connectViaSocks` 相关的）都保持原样通过——本节修正后 `proxy-connect.ts` 的实际 diff 只涉及 `connectViaHttpConnect` + 上方的 `ProxiedSocketOptions` JSDoc，不涉及 `connectViaSocks`。
 
 ### Step 4 — 转绿 Step 1 的三个测试 + 回归
 
@@ -439,13 +426,13 @@ git commit -F <msgfile> -- src/lib/transport/http2-client.ts src/lib/transport/p
 - Modify: `tests/responses/upstream-ws.unit.test.ts`（追加用例，不改写既有用例）
 
 **Interfaces**
-- Produces（README「P2 产出，P4 消费」逐字对应的调用形状；函数本身是本计划新增的、供 P4 复用的便利导出，超出 README 枚举的最小契约，见下方"超出 README 列举范围的说明"）：
+- Produces（README「P2 产出，P4 消费」逐字对应；`getPooledConnectionIdleTimeoutMs` 的导出已被主会话裁决锁定为定案，见下方说明）：
   ```ts
   export function getPooledConnectionIdleTimeoutMs(): number
   ```
 - Modifies：`create()` 传给 `connectionFactory` 的入参对象新增 `idleTimeoutMs` 字段（`CreateUpstreamWsConnectionOptions.idleTimeoutMs` 早已存在，本 Task 不改该接口，只是首次真正传值）。
 
-> **超出 README 列举范围的说明**：README 只承诺 `create()` 调用 `connectionFactory` 时新增 `idleTimeoutMs: getPooledConnectionIdleTimeoutMs()` 入参，未显式规定 `getPooledConnectionIdleTimeoutMs` 是否导出。本计划选择导出它（而非设为模块内私有函数），理由：P4 的 reconcile 逻辑（`rescheduleIdleTimeout`）大概率需要读同一个值来计算"新的 idle deadline"，导出可避免 P4 重复实现一遍 `state.pooledConnectionIdleTimeout * 1000` 的换算逻辑（DRY）。这不违反 README"以上签名保持逐字一致"的约束——那条约束管的是**已列出的**签名不能改名，未列出的新增导出是本计划在既定接口之外的合理延伸，若主会话认为应该收窄为私有函数，只需在 P4 执行前把这一行改为 `function`（非 `export function`）并让 P4 自己重复三行换算代码，不影响其他任何 Task。
+> **`getPooledConnectionIdleTimeoutMs` 导出已定案（不再是开放项）**：本计划最初把"是否导出"记为一处相对 README 原文的合理延伸、留待主会话裁决；用户已裁决为定案——理由是 P4 的 reconcile 逻辑（`rescheduleIdleTimeout`）需要读同一个值来计算"新的 idle deadline"，导出可避免 P4 重复实现一遍 `state.pooledConnectionIdleTimeout * 1000` 的换算逻辑（DRY）。README「跨阶段共享接口清单」已同步补上这条签名，本节不再保留"若主会话不同意可收窄为私有函数"的分支路径。
 
 ### Step 1 — 写失败测试：`create()` 把 `idleTimeoutMs` 传给 connectionFactory，且随 state 热更新
 
@@ -895,27 +882,28 @@ bun run lint:all
 - 确认 `getSessionConnectTimeoutMs`/`getPooledConnectionIdleTimeoutMs` 两个新导出与 README「P2 产出，P4 消费」小节列出的签名逐字一致（`grep -n "getSessionConnectTimeoutMs\|getPooledConnectionIdleTimeoutMs" docs/plan/2026-07-14-transport-config-reorg/README.md src/lib/transport/http2-client.ts src/lib/openai/upstream-ws.ts`）。
 - 确认本计划新增的 `proxy-connect.ts` 改动没有遗漏更新它的 JSDoc 模块头（该文件顶部注释目前不涉及 timeout 语义，无需改动模块级文档，只改了函数内部逻辑与 `ProxiedSocketOptions.timeoutMs` 字段的 JSDoc，已在 Task 1 Step 3 完成）。
 
-### Step 3 — README 补注（若需要）
+### Step 3 — README 补注：`proxy-connect.ts`（HTTP CONNECT 路）纳入 P2 文件范围
 
-若主会话/审查认可"`getPooledConnectionIdleTimeoutMs` 导出" + "`proxy-connect.ts` 纳入 P2 文件范围"这两处相对 README 原文的合理延伸，回到 `README.md` 的"跨阶段共享接口清单"与"文件总览"补一行注记（不改变任何已列出的签名，只新增两条记录，保持 README 作为唯一事实源的完整性）。这一步产生的 diff 只涉及 README，单独提交：
+`getPooledConnectionIdleTimeoutMs` 的导出已经是定案（用户裁决锁定，见 Task 2「`getPooledConnectionIdleTimeoutMs` 导出已定案」一节 + README「跨阶段共享接口清单」已在本轮直接补上这条签名，不再是本 Step 需要处理的事项）。
+
+本 Step 只处理剩下那一半——若主会话/审查认可"`proxy-connect.ts`（仅 `connectViaHttpConnect` 一个函数，不含 `connectViaSocks`——SOCKS 侧的 `0` 处理已改走 `plan-1-config-reorg.md` 的配置校验层，见 Task 1 Step 3 说明与下方「发现的缺口」第 1 条）纳入 P2 文件范围"这一处相对 README 原文的合理延伸，回到 `README.md` 的"文件总览"补一行注记（不改变任何已列出的签名，只新增一条记录，保持 README 作为唯一事实源的完整性）。这一步产生的 diff 只涉及 README，单独提交：
 
 ```
 git add -- docs/plan/2026-07-14-transport-config-reorg/README.md
 git commit -F <msgfile> -- docs/plan/2026-07-14-transport-config-reorg/README.md
 ```
-提交信息：`docs(plan): note P2's getPooledConnectionIdleTimeoutMs export + proxy-connect.ts scope in README`
+提交信息：`docs(plan): note P2's proxy-connect.ts (HTTP CONNECT leg) scope in README`
 
 ---
 
 ## 自审记录（本计划落笔前的 spec/README 覆盖检查）
 
 - README「P2 产出，P4 消费」三条签名（`getSessionConnectTimeoutMs`、`create()` 的 `idleTimeoutMs` 入参、`rescheduleIdleTimeout`）：前两条本计划完整落地（Task 1/Task 2）；第三条明确标注"P4 专用，本阶段不实现"，未误吃 P4 的活。
-- spec §7 验收里点名的"`0` 语义全面一致"：Task 3 是这条验收的主要落地点，覆盖三个独立消费点（h2 直连、undici、SOCKS）而非只修一处；README 原本的文件枚举没提到 `proxy-connect.ts`，本计划在 Task 1 里发现并修正了一个更隐蔽的"JS 计时器 0 语义与项目 D5 语义相反"的连带缺陷——这不属于 keepalive 范畴，而是 `session_connect_timeout` 的 `0`=禁用语义在代理隧道路径上原本就没被正确处理，本计划判断为"必须在本阶段修，否则 D5 在代理场景下不成立"，不是范围蔓延。
+- spec §7 验收里点名的"`0` 语义全面一致"：Task 3 是这条验收的主要落地点，覆盖三个独立消费点（h2 直连、undici、SOCKS）而非只修一处；README 原本的文件枚举没提到 `proxy-connect.ts`，本计划在 Task 1 里发现并修正了一个更隐蔽的"JS 计时器 0 语义与项目 D5 语义相反"的连带缺陷（仅 HTTP CONNECT 路径——SOCKS 路径的对应问题不在这里修，见下方「发现的缺口」第 1 条与 B8 裁决）——这不属于 keepalive 范畴，而是 `session_connect_timeout` 的 `0`=禁用语义在代理隧道路径上原本就没被正确处理，本计划判断为"必须在本阶段修，否则 D5 在代理场景下不成立"，不是范围蔓延。
 - spec §7"独立 oracle"：三个 Task 各自都有真实连接/真实第三方 API 层面的 oracle（blackhole timing、Node socket API spy、undici Options 合同），无一处仅靠"检查内部状态是否被赋值"收尾。
 - 全局约束 #2（新旋钮只影响新建连接）：本计划三个 Task 均未引入任何遍历"已存在连接/池"的逻辑，`getSessionConnectTimeoutMs`/`getPooledConnectionIdleTimeoutMs` 都只在各自的"新建"路径（`createSession`/`create()`）被调用。
 
 ## 发现的缺口 / 需主会话裁决的分叉
 
-1. **`proxy-connect.ts` 纳入 P2 文件范围**——README 第 48 行的 P2 文件枚举（`http2-client.ts`/`upstream-ws-connection.ts`/`upstream-ws.ts`/`proxy.ts`）没有列出 `proxy-connect.ts`，但 D5 的 `0`=禁用语义要在代理隧道路径下真正成立，必须改这个文件（HTTP CONNECT 隧道的 `setTimeout(fn, opts.timeoutMs)` 在 `timeoutMs=0` 时是"几乎立即触发"而非"禁用"，与 D5 直接矛盾）。本计划判断这是"完整实现已批准的 D5"所必须，不是新范围，已在 Task 1 里处理并在 Task 4 Step 3 提供了回填 README 的收尾步骤。若主会话认为这应该单独走一次 spec 层面的确认而非由 plan 直接吸收，请在执行 Task 1 前叫停。
+1. **`proxy-connect.ts`（仅 `connectViaHttpConnect`）纳入 P2 文件范围**——README 第 48 行的 P2 文件枚举（`http2-client.ts`/`upstream-ws-connection.ts`/`upstream-ws.ts`/`proxy.ts`）没有列出 `proxy-connect.ts`，但 D5 的 `0`=禁用语义要在 HTTP CONNECT 代理隧道路径下真正成立，必须改这个文件（HTTP CONNECT 隧道的 `setTimeout(fn, opts.timeoutMs)` 在 `timeoutMs=0` 时是"几乎立即触发"而非"禁用"，与 D5 直接矛盾）。本计划判断这是"完整实现已批准的 D5"所必须，不是新范围，已在 Task 1 里处理并在 Task 4 Step 3 提供了回填 README 的收尾步骤。若主会话认为这应该单独走一次 spec 层面的确认而非由 plan 直接吸收，请在执行 Task 1 前叫停。**`connectViaSocks` 不在此范围内**——SOCKS 路径的 `0` 处理是配置校验层的职责（`plan-1-config-reorg.md` Task 3 附加范围，用户已裁决为"配 SOCKS 时拒绝 `0`"而非在 `proxy-connect.ts` 里修，B8，非开放项）。
 2. **`upstream-ws-connection.ts` 在 README P2 文件枚举中出现，但本计划判定它不需要任何改动**——该文件的 `createUpstreamWsConnection` 早已支持 `opts.idleTimeoutMs`（`??  DEFAULT_IDLE_TIMEOUT_MS` 回退），本计划的 Task 2 只需要在**调用方**（`upstream-ws.ts` 的 `create()`）补上这个入参即可，`upstream-ws-connection.ts` 本身零改动。这不是遗漏，而是"该文件已经是对的，缺口只在上游调用点"——记录于此以便审查者不误以为本计划漏做了这个文件。
-3. **`getPooledConnectionIdleTimeoutMs` 是否应该导出**——见 Task 2 的"超出 README 列举范围的说明"，本计划默认导出（便于 P4 复用），若主会话有不同偏好（例如坚持"P2 严格只做 README 列出的最小契约"），只需在 P4 执行前把这一行改回私有 `function`，波及面为零。

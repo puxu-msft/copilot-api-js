@@ -30,7 +30,7 @@
 
 | 文件 | 改动 |
 |---|---|
-| `src/lib/config/schema.ts` | 新增 `UpstreamTransportHttp2ConfigSchema`/`UpstreamTransportWebsocketConfigSchema`/`UpstreamTransportConfigSchema`/`ResponsesWsIngressConfigSchema`/`ServerConfigSchema`；`TimeoutsConfigSchema` 移除 `upstream_keepalive`/`upstream_h2_ping`；`ResponsesConfigSchema` 移除 `client_ws_keep_open`/`max_ws_frame_bytes`/`max_client_ws_connections`/`max_upstream_ws_connections`；顶层 `ConfigSchema` 新增 `upstream_transport`/`server` |
+| `src/lib/config/schema.ts` | 新增 `UpstreamTransportHttp2ConfigSchema`/`UpstreamTransportWebsocketConfigSchema`/`UpstreamTransportConfigSchema`/`ResponsesWsIngressConfigSchema`/`ServerConfigSchema`；`TimeoutsConfigSchema` 移除 `upstream_keepalive`/`upstream_h2_ping`；`ResponsesConfigSchema` 移除 `client_ws_keep_open`/`max_ws_frame_bytes`/`max_client_ws_connections`/`max_upstream_ws_connections`；顶层 `ConfigSchema` 新增 `upstream_transport`/`server`；`ConfigSchema` 追加顶层 `.superRefine()`——配 SOCKS 代理时拒绝 `session_connect_timeout: 0`（B8，Task 3 附加范围） |
 | `src/lib/config/compat.ts` | `CONFIG_MIGRATIONS` 末尾追加 6 条迁移规则 |
 | `src/lib/state.ts` | `MutableState` 新增 3 字段；拆分 `setTimeoutConfig`（收窄）+ 新增 `setUpstreamTransportConfig`/`onUpstreamTransportChange`；拆分 `setResponsesConfig`（收窄）+ 新增 `setResponsesWsIngressConfig`；`CONFIG_MANAGED_DEFAULTS` 补 3 个新默认值；`resetConfigManagedState()` 同步改写调用点 |
 | `src/lib/config/config.ts` | `applyConfigToState()` 里 `config.timeouts`/`responsesConfig` 分支拆分改写，新增 `config.upstream_transport`/`config.server` 分支 |
@@ -92,6 +92,17 @@ export const UpstreamTransportHttp2ConfigSchema = z
      * (connect-to-proxy + TLS-through-tunnel). See
      * docs/decisions/2026-07-14-transport-config-three-axis-organization.md D3.
      * Default 10 (mirrors the previous hardcoded CONNECT_TIMEOUT_MS).
+     *
+     * `0` genuinely disables the deadline for direct connections and HTTP
+     * CONNECT proxies (see plan-2 Step 3). It CANNOT be honestly disabled
+     * when the configured proxy is SOCKS — the `socks` package floors its
+     * own connect timeout at 30s regardless (`this.options.timeout ||
+     * DEFAULT_TIMEOUT`, `DEFAULT_TIMEOUT = 30_000`; verified by reading
+     * `node_modules/socks` source). `ConfigSchema`'s top-level
+     * `.superRefine()` (see Task 3 Step 6+ below) rejects `0` here whenever
+     * `proxy` resolves to a `socks5:`/`socks5h:` URL, rather than silently
+     * accepting `0` and getting the library's 30s default instead of the
+     * disabled behavior the user asked for (D3/D5 "诚实表达能力边界").
      */
     session_connect_timeout: nullableNonnegativeInt(),
   })
@@ -304,6 +315,121 @@ export type ServerConfig = z.infer<typeof ServerConfigSchema>
 4. 跑 `bun test tests/config/` 全量确认没有其他既有测试因为 schema 形状变化而回归（预期：`config-strict-parse.unit.test.ts`/`bundled-config.unit.test.ts` 等如果硬编码列举了 `timeouts`/`openai_responses` 的字段列表可能需要关注，但不修改，仅观察输出；若有意外失败记录到本 Task 的执行笔记里，留给下一 Task 排查而非跳过）。
 
 5. `git commit -F <msgfile> -- src/lib/config/schema.ts`，提交信息：`feat(config): mount upstream_transport + server sections onto top-level ConfigSchema`。
+
+### Task 3 附加范围 — SOCKS 代理下 `session_connect_timeout: 0` 校验拒绝（D3/D5 SOCKS 例外，用户裁决）
+
+这是独立于上面「挂载 upstream_transport/server」的第二个改动，单独提交（一类改动一提交）。`proxy`（顶层字段，`ProxySchema`）与 `upstream_transport.http2.session_connect_timeout`（本 Task 上面 5 步刚挂载）只有在都是 `ConfigSchema` 的字段之后才能写跨字段校验，所以放在 Task 3 而非更早的 Task 1。
+
+**背景（勿重新论证，用户+reviewer 已核实 socks 库源码）**：`session_connect_timeout: 0` 在 direct 连接与 HTTP CONNECT 代理路径下可以真正禁用 connect 期限（HTTP CONNECT 路的修复见 plan-2 Step 3）。但当代理是 SOCKS（`socks5:`/`socks5h:`）时，底层 `socks` 包的 `SocksClient` 用 `this.options.timeout || DEFAULT_TIMEOUT`（`DEFAULT_TIMEOUT = 30_000`）算连接超时——传 `0` 或不传，都会静默落到 30 秒，而不是禁用。诚实的做法不是假装 `0` 生效，而是在配置校验层直接拒绝这个组合。
+
+**Files**
+- Modify: `src/lib/config/schema.ts`（`ConfigSchema` 定义追加 `.superRefine()`）
+- Modify: `tests/config/config-validation.unit.test.ts`（`validateConfig` 文件加载路径：警告 + 剥离）
+- Modify: `tests/config/config-compat.unit.test.ts`（`validateConfigInput` PUT 路径：结构化 400 拒绝——沿用该文件已有的 `describe("config compat — validateConfigInput (PUT) ...")` 块旁新增一个独立 `describe`，不要塞进 compat 专属的 describe 里，因为这条校验与 legacy key 迁移无关）
+
+**Steps**
+
+6. 先写失败测试。在 `tests/config/config-validation.unit.test.ts` 新增一个 `describe("validateConfig — SOCKS session_connect_timeout=0 rejection (D3 exception)", () => {...})`：
+
+```ts
+test("SOCKS proxy + session_connect_timeout: 0 is stripped (falls back to default 10) + warns", () => {
+  const result = validateConfig({
+    proxy: "socks5://proxy.example:1080",
+    upstream_transport: { http2: { session_connect_timeout: 0 } },
+  })
+  expect(result.upstream_transport?.http2?.session_connect_timeout).toBeUndefined() // stripped → schema default (10) applies downstream
+  expect(warnedMessages().some((m) => m.includes("upstream_transport.http2.session_connect_timeout") && m.includes("SOCKS"))).toBe(true)
+})
+
+test("SOCKS proxy + session_connect_timeout: 5 (positive) passes through unchanged", () => {
+  const result = validateConfig({
+    proxy: "socks5://proxy.example:1080",
+    upstream_transport: { http2: { session_connect_timeout: 5 } },
+  })
+  expect(result.upstream_transport?.http2?.session_connect_timeout).toBe(5)
+  expect(warnedMessages().some((m) => m.includes("session_connect_timeout"))).toBe(false)
+})
+
+test("HTTP CONNECT proxy (non-SOCKS) + session_connect_timeout: 0 passes through unchanged (real disable)", () => {
+  const result = validateConfig({
+    proxy: "http://proxy.example:8080",
+    upstream_transport: { http2: { session_connect_timeout: 0 } },
+  })
+  expect(result.upstream_transport?.http2?.session_connect_timeout).toBe(0)
+})
+
+test("no proxy configured + session_connect_timeout: 0 passes through unchanged (direct connection, real disable)", () => {
+  const result = validateConfig({ upstream_transport: { http2: { session_connect_timeout: 0 } } })
+  expect(result.upstream_transport?.http2?.session_connect_timeout).toBe(0)
+})
+```
+
+跑 `bun test tests/config/config-validation.unit.test.ts`，确认新增 4 个用例中第一个失败（`ConfigSchema` 还没有跨字段校验，`0` 会原样通过），其余 3 个当前碰巧也通过（因为目前没有任何拒绝逻辑）——这是预期的，不代表已经做对了，第 8 步实现后要重新跑确认全部 4 个仍然通过（不能引入新的误报）。
+
+7. 再写 PUT 路径的失败测试。在 `tests/config/config-compat.unit.test.ts` 里，紧挨着现有 `describe("config compat — validateConfigInput (PUT) also migrates (C3)", ...)` 块之后（不要塞进它内部——这条校验和 legacy-key 迁移是两回事，理由见 Files 小节）新增：
+
+```ts
+describe("validateConfigInput (PUT) — SOCKS session_connect_timeout=0 hard-rejects (D3 exception)", () => {
+  test("rejects with structured detail naming the SOCKS caveat", () => {
+    const r = validateConfigInput({
+      proxy: "socks5://proxy.example:1080",
+      upstream_transport: { http2: { session_connect_timeout: 0 } },
+    })
+    expect(r.valid).toBe(false)
+    if (r.valid) return
+    const detail = r.details.find((d) => d.field === "upstream_transport.http2.session_connect_timeout")
+    expect(detail).toBeDefined()
+    expect(detail?.message).toContain("SOCKS")
+    expect(detail?.value).toBe(0)
+  })
+
+  test("accepts a positive session_connect_timeout with the same SOCKS proxy", () => {
+    const r = validateConfigInput({
+      proxy: "socks5://proxy.example:1080",
+      upstream_transport: { http2: { session_connect_timeout: 5 } },
+    })
+    expect(r.valid).toBe(true)
+  })
+})
+```
+
+跑 `bun test tests/config/config-compat.unit.test.ts`，确认第一个新用例失败（`r.valid` 目前是 `true`，因为校验还不存在）。
+
+8. 实现。在 `src/lib/config/schema.ts` 里，把 `ConfigSchema` 定义末尾的 `.strict()` 之后追加 `.superRefine()`（`.strict()` 保持在 `.superRefine()` 之前，和文件里其余 schema 的既有写法一致，例如 `ModelOverridesSchema`/`GhcApiBaseUrlSchema`）：
+
+```ts
+export const ConfigSchema = z
+  .object({
+    // …既有字段，Task 3 Step 1 挂载的 upstream_transport/server 已在其中……
+  })
+  .strict()
+  .superRefine((cfg, ctx) => {
+    const sessionConnectTimeout = cfg.upstream_transport?.http2?.session_connect_timeout
+    if (sessionConnectTimeout !== 0 || !cfg.proxy) return
+    let scheme: string
+    try {
+      scheme = new URL(cfg.proxy).protocol
+    } catch {
+      return // malformed proxy URL is already flagged by ProxySchema's own superRefine; don't double-report
+    }
+    if (scheme !== "socks5:" && scheme !== "socks5h:") return
+    ctx.addIssue({
+      code: "custom",
+      path: ["upstream_transport", "http2", "session_connect_timeout"],
+      message:
+        "session_connect_timeout: 0 (disable connect deadline) cannot be honored with a SOCKS proxy — the socks library floors the connect timeout at its own 30s default regardless (node_modules/socks source verified). Set an explicit positive value, or use a direct connection / HTTP CONNECT proxy where 0 genuinely disables the deadline.",
+      params: { rejectedValue: sessionConnectTimeout },
+    })
+  })
+```
+
+（`params: { rejectedValue: sessionConnectTimeout }` 复用既有约定——`zodIssueToDetails()`/`validation.ts` 优先读 `params.rejectedValue` 来填充 `ConfigValidationDetail.value`，和 `ProxySchema`/`GhcApiBaseUrlSchema` 的既有写法一致，见第 916/941 行。）
+
+9. 跑 `bun test tests/config/config-validation.unit.test.ts tests/config/config-compat.unit.test.ts`，确认第 6/7 步新增的全部 6 个用例都转绿。再跑 `bun test tests/config/` 全量 + `bun run typecheck`，确认无回归（尤其是 `config-yaml-routes.http.test.ts` 里既有的 proxy scheme 测试不受影响——那条校验和这条是同一 schema 上的两个独立 superRefine，互不覆盖）。
+
+10. **已知窄缺口（记录，不在本轮修）**：`loadBundledDefaultConfig()`/`loadRawConfigFile()` 各自独立调用 `validateConfig()`（bundled 一次、user override 一次），之后才用 `mergeBySchema()` 合并两个已验证过的 `Config` 对象（`config.ts:418`）——本步骤新增的跨字段 `superRefine` 只在**同一次** `ConfigSchema.safeParse()` 调用内看得到两个字段，如果用户把 `proxy: socks5://...` 放进一个 YAML 层、把 `session_connect_timeout: 0` 放进另一层（现实中几乎不会发生：bundled `config.yaml` 从不出货显式 `0`，`proxy` 又几乎总是用户覆盖层独有），合并后的 effective config 会漏检。这与本 schema 里所有其他既有跨字段校验（目前没有）面对的架构约束相同，不是本次新引入的缺陷；若要堵上，需要在 `mergeBySchema()` 产出的 effective config 上再跑一次校验，这是比 B8 本身更大的架构改动，超出本类改动范围。记入 `docs/todo/deferred-backlog.md`（Task 3 完成后统一记，见下方 Step 11 提交说明）。
+
+11. `git add -- src/lib/config/schema.ts tests/config/config-validation.unit.test.ts tests/config/config-compat.unit.test.ts` + `git commit -F <msgfile> -- src/lib/config/schema.ts tests/config/config-validation.unit.test.ts tests/config/config-compat.unit.test.ts`，提交信息：`feat(config): reject session_connect_timeout=0 when proxy is SOCKS (D3 honesty exception)`。
 
 ---
 
@@ -1088,7 +1214,7 @@ test("setUpstreamTransportConfig change triggers dispatcher rebuild via onUpstre
 |---|---|
 | D1 三轴归位 | Task 1/2/3 |
 | D2 单向依赖（timeouts ×1.5 派生但不传播）| 本阶段不涉及派生逻辑改动，`stream_idle_overrides`/`response_header_overrides` 保持原样在 `timeouts.*`，未受三轴重组影响——确认无需新增 Task |
-| D3 `session_connect_timeout` 留在 h2 段 | Task 1（schema 位置）+ Task 5（state 字段）+ Task 7（apply 接线）|
+| D3 `session_connect_timeout` 留在 h2 段 + SOCKS `0` 拒绝例外 | Task 1（schema 位置）+ Task 3 附加范围（SOCKS 校验拒绝，B8）+ Task 5（state 字段）+ Task 7（apply 接线）|
 | D4 WS 无 keepalive 键 | 本阶段 `UpstreamTransportWebsocketConfigSchema` 里没有任何 WS keepalive 字段——设计已满足，无需额外 Task，仅在此记录确认 |
 | D5 统一 0 语义 | Task 1（字段注释显式说明）+ Task 4（0→absence 迁移特例）|
 | D6 入向整组迁移 | Task 2（`ResponsesWsIngressConfigSchema`/`ServerConfigSchema`）+ Task 4（三条迁移规则）|
