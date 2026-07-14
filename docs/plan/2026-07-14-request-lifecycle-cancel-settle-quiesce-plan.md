@@ -16,9 +16,11 @@
 - ✅ **C0-lifecycle Task 4**(commit `ecdbb0bc`):RequestContext 加 `operationSignal`/`cancel(reason)`/`cancelled`/`trackOperationBody`/`sealOperationScope`/`whenOperationQuiesced`(新 API 无生产调用方=行为保持)。85 pass。
 - ⏳ **剩余(C5 drain 重排——行为变更核心,强烈建议清上下文新会话按 kickoff)**:
   - **C0-lifecycle Task 5**:manager 双 registry(visibleContexts 服务 UI/getAll/activeCount〔=现 activeContexts,settle 即删,行为保持〕+ operationScopes 服务 drain,删除条件 `operationQuiesced && finalized`)。
-  - **C5**:shutdown drain 从 `getAll()` 切到 operation-body quiesce(有界 grace)+ keyed finalization drain + global scope drain + Phase4 abandoned。**先 golden 预捕获当前 drain 序列**(`tests/shutdown/shutdown.unit.test.ts` 等)再逐增量证等价。**须严守 `persistence-async-invariants` skill**:drain-before-close 结构性前置、自有 pending set 不靠 bus.flush(§1 警告其零生产调用方)、fire-and-forget never-throw、test teardown 先 drain——这类失效**静默**(编译过、测试偶尔过却丢数据),**不可在疲劳上下文仓促做**。
+  - **C5**:shutdown drain 从 `getAll()` 切到 operation-body quiesce(有界 grace)+ keyed finalization drain + global scope drain + Phase4 abandoned。**先 golden 预捕获当前 drain 序列**(`tests/shutdown/shutdown.unit.test.ts` 等)再逐增量证等价。**须严守 `persistence-async-invariants` skill**:drain-before-close 结构性前置、自有 pending set 不靠 bus.flush(§1 警告其零生产调用方)、fire-and-forget never-throw、test teardown 先 drain——这类失效**静默**(编译过、测试偶尔过却丢数据)。
   - **C4a**:token-refresh/hook/heartbeat 接 operationSignal + global scope。
   - **C6 余下**:DESIGN.md 活的架构现状。
+
+  > **C5 的真正 gate(只此两条,并发 peer 不在其中)**:① **golden 预捕获当前 drain 行为已就位**(large-refactor §4——behavior-preserving 重排须有等价 oracle);② **足够上下文预算做逐增量 TDD**(drain/settle 是 `persistence-async-invariants` 警告的静默失效域,须每步 red-green + 连跑证确定,疲劳上下文抬高出错率)。并发 peer 是本仓库常态,靠 isolated worktree + 非重叠 hunk 3-way 自动合 + 行级共存消化,**不作为 gate、计划当 worktree 内单干**;唯一硬约束是合并回 master 时不覆盖 peer 未提交工作(等其提交即自动合,与是否推进 C5 无关)。
 
 **当前结论**:**四个已证实根因(RC1/RC2/RC3/RC4)全部治根修复 + 已合 master 上线**;C5 地基(3 primitive + ctx API)全部 committed+tested。剩 C5 drain 重排(行为变更、静默失效风险高)+ C4a + C6,handover 就绪。
 
