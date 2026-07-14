@@ -102,6 +102,84 @@ export function resolveResponseToolNames(entry: Pick<HistoryEntry, "attempts">):
 }
 
 /**
+ * Response-side "did the model actually think" dimension, derived from the
+ * stored `thinking` / `redacted_thinking` blocks of a response body. The
+ * client-side request `thinking.type` only says what we ASKED for; this says
+ * what the upstream actually PRODUCED.
+ */
+export interface ResponseThinking {
+  /** Count of `thinking` + `redacted_thinking` blocks. */
+  blockCount: number
+  /** Total plaintext chars across non-redacted `thinking` blocks (GHC encrypts opus thinking → often 0). */
+  chars: number
+  /** Any block carries a `signature` — proof of a legitimate (encrypted) thought. */
+  hasSignature: boolean
+  /**
+   * Empty-plaintext poisoning: ANY single non-redacted `thinking` block that is
+   * plaintext-empty AND signature-less (per-block, matching the canonical
+   * sanitizer). A signed or nonempty sibling proves only itself legitimate — it
+   * never absolves a poisoned block. Redacted blocks never count toward poisoning
+   * (they are legitimately opaque). Calibrated against real 4141 data: GHC strips
+   * opus plaintext but keeps the signature, so `thinking: ""` + signature is
+   * NORMAL, not poisoned — a naive "empty ⇒ poisoned" rule would misreport 100%
+   * of opus requests (see skill ghc-anthropic-upstream).
+   */
+  poisoned: boolean
+}
+
+/**
+ * Derive {@link ResponseThinking} from a response `body`, or `undefined` when the
+ * body carries no thinking blocks at all (dimension omitted). Accepts `unknown`
+ * (the body is typed loosely) and narrows at runtime, mirroring
+ * {@link toolNamesFromResponseBody}.
+ */
+export function responseThinkingFromBody(body: unknown): ResponseThinking | undefined {
+  if (typeof body !== "object" || body === null) return undefined
+  const content = (body as { content?: unknown }).content
+  if (!Array.isArray(content)) return undefined
+
+  let blockCount = 0
+  let chars = 0
+  let hasSignature = false
+  // Poison verdict is PER-BLOCK, matching the canonical sanitizer's own
+  // `textEmpty && sigEmpty` test (anthropic/sanitize/content-blocks.ts): ANY
+  // single non-redacted thinking block that is plaintext-empty AND
+  // signature-less is poison. A signed/nonempty sibling proves only ITSELF
+  // legitimate — it never absolves another block. Aggregating ("all blocks bad")
+  // would let one healthy block hide a genuinely poisoned one.
+  let sawPoisoned = false
+
+  for (const raw of content) {
+    if (typeof raw !== "object" || raw === null) continue
+    const b = raw as { type?: unknown; thinking?: unknown; signature?: unknown }
+    if (b.type === "redacted_thinking") {
+      blockCount += 1
+      continue
+    }
+    if (b.type !== "thinking") continue
+    blockCount += 1
+    const text = typeof b.thinking === "string" ? b.thinking : ""
+    chars += text.length
+    // Trim, mirroring the sanitizer's empty-field primitive: a whitespace-only
+    // signature is not a real seal (and whitespace-only plaintext is not a thought).
+    const signed = typeof b.signature === "string" && b.signature.trim().length > 0
+    if (signed) hasSignature = true
+    if (text.trim().length === 0 && !signed) sawPoisoned = true
+  }
+
+  if (blockCount === 0) return undefined
+  return { blockCount, chars, hasSignature, poisoned: sawPoisoned }
+}
+
+/**
+ * {@link ResponseThinking} for the final attempt's upstream response body, or
+ * `undefined` when the response produced no thinking.
+ */
+export function resolveResponseThinking(entry: Pick<HistoryEntry, "attempts">): ResponseThinking | undefined {
+  return responseThinkingFromBody(finalUpstreamResponse(entry)?.body)
+}
+
+/**
  * Response-side error message: the final attempt's `error` (the per-attempt error
  * home — `upstreamResponse` carries no error field). Callers that also want the
  * entry-level verdict append `?? entry._index?.derived?.failureReason` at the call site.

@@ -1,6 +1,6 @@
 /**
  * Pure formatter for the canonical log line shape:
- *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> <sessionBlock> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> <stopReason>(<tools>) <extra> <retryableMeta>
+ *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> <sessionBlock> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> <stopReason>(<tools>) <thinking> <extra> <retryableMeta>
  *
  * Successful completion lines with a known inbound format collapse the
  * `<method> <path> <model>` columns to a single `<inputFormat>/<model>` token
@@ -18,6 +18,7 @@
 
 import pc from "picocolors"
 
+import type { ResponseThinking } from "~/lib/history/entry-view"
 import type { EndpointType } from "~/lib/history/types"
 
 import { isSameModelName } from "~/lib/models/resolver"
@@ -27,6 +28,7 @@ import {
   durationColor,
   formatBillingLabel,
   formatBytes,
+  formatNumber,
   formatTokens,
   stopReasonColor,
 } from "./format"
@@ -101,6 +103,16 @@ export interface LogLineParts {
    * AND {@link stopReason} is present; call order is preserved (not deduped).
    */
   toolNames?: Array<string>
+  /**
+   * Response-side thinking dimension (derived via
+   * `history/entry-view.ts#resolveResponseThinking`). Rendered as a
+   * `think:<…>(<blocks>)` token next to the stop_reason token: `think:<chars>`
+   * gray when plaintext is present, `think:enc` gray for encrypted/redacted
+   * (empty-plaintext-but-legitimate) thoughts, `think:poison` yellow for the
+   * empty-plaintext poisoning case. Absent → no token (the response produced no
+   * thinking blocks). See {@link formatThinkingToken}.
+   */
+  responseThinking?: ResponseThinking
   /** Request id (e.g. "req_178..."), appended dim on error lines for history lookup */
   reqId?: string
   isError?: boolean
@@ -143,6 +155,7 @@ export function formatLogLine(parts: LogLineParts): string {
     retryableMeta,
     stopReason,
     toolNames,
+    responseThinking,
     reqId,
     isError,
     isRetry,
@@ -235,6 +248,10 @@ export function formatLogLine(parts: LogLineParts): string {
   const toolSuffix = toolNames && toolNames.length > 0 ? `(${toolNames.join(",")})` : ""
   const stopReasonPart = stopReason ? ` ${stopReasonColor(stopReason, toolNames)(`${stopReason}${toolSuffix}`)}` : ""
 
+  // Response-side thinking token (`think:…(<blocks>)`), placed right after the
+  // stop_reason token. Absent when the response produced no thinking blocks.
+  const thinkingPart = responseThinking ? ` ${formatThinkingToken(responseThinking)}` : ""
+
   // Request id appended dim at the very end (only when provided, e.g. error lines) for history lookup.
   const reqIdPart = reqId ? ` ${pc.dim(reqId)}` : ""
 
@@ -244,5 +261,23 @@ export function formatLogLine(parts: LogLineParts): string {
   const locationSegment = compact ? `${pc.dim(`${INPUT_FORMAT_LABEL[inputFormat]}/`)}${modelToken}` : `${coloredMethod} ${coloredPath}${coloredModel}`
   const statusAndLocation = coloredStatus ? `${coloredStatus} ${locationSegment}` : locationSegment
 
-  return `${coloredPrefix} ${coloredTime} ${statusAndLocation}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${blockPart}${sizeInfo}${tokenInfo}${stopReasonPart}${extraPart}${retryableMetaPart}${reqIdPart}`
+  return `${coloredPrefix} ${coloredTime} ${statusAndLocation}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${blockPart}${sizeInfo}${tokenInfo}${stopReasonPart}${thinkingPart}${extraPart}${retryableMetaPart}${reqIdPart}`
+}
+
+/**
+ * Render the response-side {@link ResponseThinking} dimension as a compact
+ * completion-line token. Three visual states:
+ *   - plaintext present → `think:<abbrev chars>(<blocks>)` gray
+ *   - encrypted / redacted (empty plaintext, not poisoned) → `think:enc(<blocks>)` gray
+ *   - poisoned (empty plaintext, no signature) → `think:poison(<blocks>)` yellow
+ * The `poisoned` verdict takes precedence over any char count (defensive — the
+ * derivation makes them mutually exclusive, but a poison verdict must never show
+ * a friendly count). Gray tokens use `pc.gray` (the encrypted/normal case is
+ * low-key); the poison case is `pc.yellow` to surface the anomaly.
+ */
+export function formatThinkingToken(rt: ResponseThinking): string {
+  const suffix = `(${rt.blockCount})`
+  if (rt.poisoned) return pc.yellow(`think:poison${suffix}`)
+  const body = rt.chars > 0 ? formatNumber(rt.chars) : "enc"
+  return pc.gray(`think:${body}${suffix}`)
 }

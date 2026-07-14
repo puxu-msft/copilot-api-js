@@ -34,6 +34,7 @@ const YELLOW = "\x1b[33m"
 const RED = "\x1b[31m"
 const CYAN = "\x1b[36m"
 const GREEN = "\x1b[32m"
+const GRAY = "\x1b[90m"
 
 // The exact bytes picocolors emits for each severity band (probed under FORCE_COLOR).
 // Both scales share the yellow → red → bold-red escalation; they differ only at
@@ -45,6 +46,7 @@ const band = {
   red: (s: string) => `${RED}${s}${RESET_FG}`,
   cyan: (s: string) => `${CYAN}${s}${RESET_FG}`,
   green: (s: string) => `${GREEN}${s}${RESET_FG}`,
+  gray: (s: string) => `${GRAY}${s}${RESET_FG}`,
   boldRed: (s: string) => `${BOLD}${RED}${s}${RESET_FG}${OFF}`,
 }
 
@@ -101,6 +103,34 @@ const stopReasonCases: Array<{ label: string; reason: string; toolNames?: Array<
 ]
 
 /**
+ * response-thinking token cases: the `think:…(<blocks>)` token is gray for a
+ * legitimate thought (plaintext present OR empty-but-signed/redacted encrypted)
+ * and yellow for the empty-plaintext poisoning case. Calibrated against real GHC
+ * data where opus thinking arrives plaintext-stripped-but-signed (→ `enc`, gray).
+ */
+const thinkingCases: Array<{
+  label: string
+  responseThinking: { blockCount: number; chars: number; hasSignature: boolean; poisoned: boolean }
+  expect: string
+}> = [
+  {
+    label: "plaintext thinking → gray think:<chars>(<blocks>)",
+    responseThinking: { blockCount: 3, chars: 1200, hasSignature: true, poisoned: false },
+    expect: band.gray("think:1.2k(3)"),
+  },
+  {
+    label: "encrypted (empty+signed) → gray think:enc",
+    responseThinking: { blockCount: 3, chars: 0, hasSignature: true, poisoned: false },
+    expect: band.gray("think:enc(3)"),
+  },
+  {
+    label: "poisoned (empty+unsigned) → yellow think:poison",
+    responseThinking: { blockCount: 2, chars: 0, hasSignature: false, poisoned: true },
+    expect: band.yellow("think:poison(2)"),
+  },
+]
+
+/**
  * session-identity block cases: the `sessionId`-hashed 256-color glyph (`■` main /
  * `❶❷…` subagent). Expected bytes computed via the real `sessionAnsi256` so the
  * test tracks the palette; a plain `■`/`❶` fallback would prove nothing. Same
@@ -137,6 +167,8 @@ function renderAllUnderForcedColor(): Record<string, string> {
     for (const c of durationCases) out[c.label] = formatLogLine({ ...base, duration: durText[c.ms], durationMs: c.ms })
     const stopReasonCases = ${JSON.stringify(stopReasonCases.map((c) => ({ label: c.label, reason: c.reason, toolNames: c.toolNames })))}
     for (const c of stopReasonCases) out[c.label] = formatLogLine({ ...base, stopReason: c.reason, toolNames: c.toolNames })
+    const thinkingCases = ${JSON.stringify(thinkingCases.map((c) => ({ label: c.label, responseThinking: c.responseThinking })))}
+    for (const c of thinkingCases) out[c.label] = formatLogLine({ ...base, responseThinking: c.responseThinking })
     const blockCases = ${JSON.stringify(blockCases.map((c) => ({ label: c.label, sessionId: c.sessionId, agentId: c.agentId, agentOrdinal: c.agentOrdinal })))}
     for (const c of blockCases) out[c.label] = formatLogLine({ ...base, sessionId: c.sessionId, agentId: c.agentId, agentOrdinal: c.agentOrdinal })
     process.stdout.write(JSON.stringify(out))
@@ -168,6 +200,12 @@ describe("formatLogLine severity coloring (FORCE_COLOR integration — authorita
 
   for (const c of stopReasonCases) {
     test(`stop_reason ${c.label}`, () => {
+      expect(out[c.label]).toContain(c.expect)
+    })
+  }
+
+  for (const c of thinkingCases) {
+    test(`response-thinking ${c.label}`, () => {
       expect(out[c.label]).toContain(c.expect)
     })
   }

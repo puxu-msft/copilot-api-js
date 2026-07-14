@@ -35,7 +35,11 @@ import type {
 } from "~/lib/observability"
 import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
-import { toolNamesFromResponseBody } from "~/lib/history/entry-view"
+import {
+  //
+  responseThinkingFromBody,
+  toolNamesFromResponseBody,
+} from "~/lib/history/entry-view"
 import { assertNever } from "~/lib/observability"
 import {
   //
@@ -683,6 +687,9 @@ export class TerminalUi {
       // stop_reason. Tool names are extracted from the response body.
       stopReason: isError ? undefined : finalUpstreamResponse?.stopReason,
       toolNames: isError ? undefined : toolNamesFromResponseBody(finalUpstreamResponse?.body),
+      // Response-side thinking token (`think:…(<blocks>)`) — success lines only,
+      // derived from the same final-attempt response body as toolNames.
+      responseThinking: isError ? undefined : responseThinkingFromBody(finalUpstreamResponse?.body),
       extra,
       reqId: isError ? ctx.id : undefined,
       isError,
