@@ -1,6 +1,6 @@
 ---
 name: live-ghc-e2e-verification
-description: 当要用「真实请求走本项目 + 真实 GHC 计费后端」端到端验证 mock 够不到的**少数关键点**时使用——真 GHC 帧结构/顺序、真实 usage 计费落库、真 catalog 路由解析。**mock 是覆盖面主力（`client-proxy-e2e-testing`/`upstream-hook-mocking`/golden·http，离线免费更多样），本 skill 是靶向补充、不取代 mock、缺一不可**：只在 mock 结构上证不了真上游行为/真计费时补一发（烧真实额度、故靶向 + 便宜模型 + 小 max_tokens）。做法：起隔离测试服务器（跑新码、真 GHC auth、独立 history.db 不污染真库）→ 发真请求覆盖被改路径 → History API 当核验 oracle（路由/双轨/真实 usage/转发帧）。触发：功能开发/补全后想在真 GHC 上确认「不只测试绿、真帧真计费也对」。共享的服务器 spawn 机制（`start` 子命令坑 / `XDG_DATA_HOME` 隔离 / PID 清理）见 `client-proxy-e2e-testing`。裁决可信度实测 > 文档 > 声称，见 `empirical-verification`。
+description: 当要用「真实请求走本项目 + 真实 GHC 计费后端」端到端验证 mock 够不到的**少数关键点**时使用——真 GHC 帧结构/顺序、真实 usage 计费落库、真 catalog 路由解析。**mock 是覆盖面主力（`client-proxy-e2e-testing`/`upstream-hook-mocking`/golden·http，离线免费更多样），本 skill 是靶向补充、不取代 mock、缺一不可**：只在 mock 结构上证不了真上游行为/真计费时补一发（烧真实额度、故靶向 + 便宜模型 + 小 max_tokens）。做法：起隔离测试服务器（跑新码、真 GHC auth、独立 history.db 不污染真库）→ 发真请求覆盖被改路径 → History API 当核验 oracle（路由/双轨/真实 usage/转发帧）。触发：功能开发/补全后想在真 GHC 上确认「不只测试绿、真帧真计费也对」。本 skill 对 billed 领域**自足**（spawn/隔离/清理/字段地图全内含）；`client-proxy-e2e-testing` 是 mock 对偶（互补两层缺一不可）。裁决可信度实测 > 文档 > 声称，见 `empirical-verification`。
 ---
 
 # Live GHC 端到端验证（真实计费后端、生产形态）
@@ -21,7 +21,11 @@ mock 的「上游帧是你捏的」**不是缺陷、是它换来广度+免费+�
 
 隔离靠 `XDG_DATA_HOME` 覆盖 `APP_DIR`（`src/lib/config/paths.ts`：token/config.yaml/history.db 全在此下）。给隔离 dir 复制**真** github_token（保 GHC 认证）+ config.yaml（保用户真实路由/模型覆盖），这样行为「符合预期」= 跟生产一致，但 history 写进独立库、不污染真库（25GB+，别碰）。
 
-> **警告（防静默变 mock）**：复制真 config.yaml 后确认它**没启用** upstream hook（`hooks.enabled: true` + `upstream_module`）——否则隔离服务器 boot 期经 `loadUpstreamHookSafe` 加载该 hook、在 `onExchange` 拦截上游，你的「真实 GHC 计费」验证会**静默变成 mock**（curl 仍 200、但打的不是真 GHC）。核验时顺手查 History 上游轨**无** `synthetic:"hook-mock"` 标记（`upstream-hook-mocking` skill），确认打的是真 GHC。当前 hook 特性尚在 spec 阶段、生产 config 大概率 `enabled:false`，但手册防未来。
+> **警告（防静默变 mock）**：复制真 config.yaml 后确认它**没启用** upstream hook（`hooks.enabled: true` + `upstream_module`）——否则隔离服务器 boot 期经 `loadUpstreamHookSafe` 加载该 hook、在 `onExchange` 拦截上游，你的「真实 GHC 计费」验证会**静默变成 mock**（curl 仍 200、但打的不是真 GHC）。可复制检测：
+> ```bash
+> grep -nE 'hooks:|enabled:|upstream_module' "$TESTDATA/copilot-api/config.yaml"   # 期望无 enabled:true 的 hooks 块
+> ```
+> 核验时再顺手 dump 一条 History、确认上游轨**无** `synthetic:"hook-mock"` 标记（`upstream-hook-mocking` skill），坐实打的是真 GHC。当前 hook 特性尚在 spec 阶段、生产 config 大概率 `enabled:false`，但手册防未来。
 
 ```bash
 # 实测可用配方（4142 为例，任意非 4141 高位端口）
@@ -36,7 +40,10 @@ sleep 8   # boot 做 github→copilot token 交换 + model catalog fetch，需�
 curl -s http://localhost:4142/health   # 期望 {"status":"healthy","checks":{"copilotToken":true,"githubToken":true,"models":true}}
 ```
 
-boot 细节与 CLI spawn 的更多坑（token 真实路径用 `homedir()` 基非沙箱重定向、`bun run` 父子进程树）见 skill `client-proxy-e2e-testing` §spawn 真 proxy。
+**关键坑（本 skill 自含，别绕）**：
+- **`start` 子命令**：`bun run start` 的 npm 脚本（`package.json`）只是 `bun run ./src/main.ts` 无子命令，`--port` 会被 `main.ts`（多子命令 CLI）当未知命令报错。必须 `bun run ./src/main.ts start --port <N>`。
+- **源 token 用真实 homedir 路径**：复制 github_token 的**源**是 `~/.local/share/copilot-api/github_token`（`homedir()` 基的真实 APP_DIR），**不是**你刚设的 `XDG_DATA_HOME`（那是空的隔离 dir）。boot 靠这份 token 做 github→copilot 交换 + model catalog fetch。
+- **boot 需真 auth + 网络**，`sleep 8` 等它完成；失败看 `$TESTDATA/server.log`。
 
 **先列可用模型 + 挑便宜的**（省额度）：
 ```bash
@@ -122,17 +129,17 @@ kill "$(cat /tmp/copilot-test-4142/server.pid)"          # 杀父 launcher
 ss -tlnp | grep ':4142'                                   # bun run 父子进程树：找真正监听端口的子进程 PID
 # 确认该 PID != 4141 主服务器 PID 后精确 kill 子进程（父 launcher 杀了不够、子进程仍占端口）
 kill <子进程PID>
-rm -rf /tmp/copilot-test-4142                             # 隔离临时数据，可恢复
-curl -s http://localhost:4141/health                      # 复核 4141 主服务器毫发无损
+[ -n "$TESTDATA" ] && rm -rf -- "$TESTDATA"    # 隔离临时数据，可恢复；防脚滑：TESTDATA 必是自建 /tmp/copilot-test-<port>、确认非空
+curl -s http://localhost:4141/health           # 复核 4141 主服务器毫发无损
 ```
 
 **自动化 harness（`tests/e2e-client/`）** —— **端口精确** pkill：`pkill -9 -f "main.ts start --port <唯一高位端口>"`（`spawn-proxy.ts:100`）。这**不是泛杀**——pattern 含唯一高位端口号，只匹配自己那个 server，4141 的 argv 是 `--port 4141`、peer 是别的端口，**结构上碰不到**。teardown 里 `proc.kill()` 只杀 `bun run` launcher、子 server leftover（`bun`+volta shim 进程树），故 harness 用端口精确 pkill 补杀。
 
 两者都合规（都精确认自己的、都碰不到 4141）；`ss`→PID 更贴 CLAUDE.md「按 PID 精确」字面、手动场景首选，端口精确 pkill 是 harness 里批量 teardown 的等价手段。**注**：`kill`/`rm -rf` 可能被本机权限护栏拦（拆成单命令或让用户执行）。
 
-> 清理法**因语境而异**（交互 vs harness），故非单一源；真正单一源的是**服务器 spawn/隔离机制**——见 `client-proxy-e2e-testing` §spawn 真 proxy（token 真实路径、进程树、config hook 加载的权威说明）。
+## 交叉引用（发现指针，非核心内容外链——本 skill 已自足）
+- **mock 对偶** `client-proxy-e2e-testing`（上游全程 mock、客户端 SDK/CLI 当 oracle、离线免费）——互补两层、缺一不可，选哪层见 §开头分工表。**若验证对象是真实 Claude Code/SDK 客户端拿到 wire 后怎么反应**（agent-loop stall / SSE 累积 / 环境变量优先级）而非 curl+History oracle → 切到它；Claude Code 客户端内部机制的权威源（`~/.claude/refs/claude-code-<ver>/app.pretty.js`）由它承载，billed 不重复。
+- **4141 只读探针**（不自启、不改动，看真实历史流量当参考）+ pass-null 探针纪律 → `empirical-verification`。
+- **各端点/字段语义权威** → `docs/API.md`（端点 SSOT）、运行实例 `GET /openapi.json`；GHC 上游行为 → `ghc-api-reference` / `ghc-anthropic-upstream`。
 
-## 交叉引用
-- 服务器 spawn/隔离/清理的更多坑（token 路径、进程树、config hook 加载）→ skill `client-proxy-e2e-testing`（那个 mock 上游，本 skill 打真 GHC，机制共享）。
-- 4141 只读探针（不自启、不改动，看真实历史流量当参考）+ pass-null 探针纪律 → skill `empirical-verification`。
-- 各端点/字段语义权威 → `docs/API.md`（端点 SSOT）、运行实例 `GET /openapi.json`；GHC 上游行为 → skill `ghc-api-reference` / `ghc-anthropic-upstream`。
+**权威源码落地规则**（各归各、别把所有源塞进每个 skill）：客户端行为读客户端源（Claude Code `app.pretty.js` / `node_modules/@anthropic-ai/sdk` / OpenAI·Gemini SDK）；代理自身行为读本项目 `src/`；公开端点读 `docs/API.md`+`/openapi.json`；GHC 真实上游读 `ghc-api-reference`/`ghc-anthropic-upstream` + 少量 billed 探针。

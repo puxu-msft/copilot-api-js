@@ -7,7 +7,9 @@ description: 当需要在 copilot-api-js 里验证「真实客户端（@anthropi
 
 golden/http 测试断言的是**代理转发的字节**；本骨架断言**真实客户端拿到那些字节后的可观测行为**——SDK 是否拼出连贯 message、是否 throws、是否静默丢帧；CLI agent-loop 是否 stall。字节对 ≠ 客户端接受。落地在 `tests/e2e-client/`，权威实证结论见 `exp/cli-e2e-stall/FINDINGS.md`。
 
-**本 skill 上游全程 mock、离线不烧额度**（客户端侧当 oracle）。若要反过来打**真实 GHC 计费后端**、用 History API 当 oracle 端到端验证一个改动在生产形态下正确（烧真实额度）→ skill `live-ghc-e2e-verification`。两者共享服务器 spawn 机制（本 skill §spawn 真 proxy 是单一源）。
+**本 skill 上游全程 mock、离线不烧额度**（客户端侧当 oracle）。若要反过来打**真实 GHC 计费后端**、用 History API 当 oracle 端到端验证一个改动在生产形态下正确（烧真实额度）→ skill `live-ghc-e2e-verification`。两 skill 各自内联本领域的 spawn/隔离操作摘要（各自自足）；共享的 spawn 机制**实现权威是代码** `tests/e2e-client/harness/spawn-proxy.ts`（`realGithubTokenPath()`/隔离 XDG/端口精确 pkill），有疑问看它、别让两份自然语言漂移。
+
+**运行入口**：Tier 1（离线确定性）`bun run test:backend`（含 `tests/e2e-client/*.it.test.ts`）或单跑 `bun test tests/e2e-client/anthropic-sdk.it.test.ts`；Tier 2（gated）`bun test tests/e2e-client/anthropic-cli.e2e.test.ts`——须 `claude` 在 PATH + 真 github_token + 网络（否则 skip）。
 
 ## 两层 oracle（按能测什么选）
 
@@ -25,6 +27,8 @@ Tier 1 offline 确定性（`.it.test.ts` 进 `test:backend`）；Tier 2 需真 a
 
 ### CLI 让 claude 认自定义端点
 必须 **`ANTHROPIC_AUTH_TOKEN`（非 `ANTHROPIC_API_KEY`——订阅 OAuth 会覆盖 API_KEY、直连真 Anthropic）+ `ANTHROPIC_BASE_URL` + 隔离 HOME**（`.claude.json` 含 `hasCompletedOnboarding:true`、`.claude/settings.json` 写 env），对齐 `src/setup-claude-code.ts` `buildEssentialEnv`。隔离 HOME 既防订阅覆盖、又不污染用户真实 `~/.claude`。stall oracle = `claude -p --output-format json` 的 `{num_turns, result}`：**stall = `num_turns>1 && result===""`**（agent 空转一轮），对照非空 recovery → `num_turns===1`。
+
+> **想深挖 claude 客户端**「为何这样反应」（stall 判据 / agent-loop 何时续轮 / SSE 如何解析累积 / 环境变量优先级）—— 读 **Claude Code 反混淆源码** `~/.claude/refs/claude-code-<ver>/app.pretty.js`（当前 `claude-code-2.1.207`，用 glob 取最新版目录）。它是客户端**内部机制**的权威源（比实测更能看清「为何」，实测负责坐实「是否」——`empirical-verification` 可信度阶梯：源码看 how/why、实测定 that）。同理 `@anthropic-ai/sdk` 的累积/throw 逻辑读其 `node_modules` 源。
 
 ### spawn 真 proxy 的两个坑
 - **boot 需真 auth+网络**：`bun run ./src/main.ts start --port <非4141>`（**带 `start` 子命令**，`bun run start` 的 npm 脚本无子命令会把端口当未知命令），隔离 `XDG_DATA_HOME`（→ 自有 config.yaml + history.db），把真 github_token 复制进隔离 APP_DIR（boot 做 github→copilot 交换 + model fetch）。token 真实路径用 `homedir()` 基（`~/.local/share/copilot-api/github_token`），**非** 被测试沙箱重定向的 `XDG_DATA_HOME`。
