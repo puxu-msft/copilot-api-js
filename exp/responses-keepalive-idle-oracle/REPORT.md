@@ -67,35 +67,44 @@ real codex exec (0.144.1+)  ──OpenAI Responses (/v1/responses)──▶  cop
 
 ### 5.1 armPing（门控臂）
 
+> **⚠️ 顺序（2026-07-14 修正）**：代理 boot 会去 `ghc_api_base_url`（=本 mock 端口）拉 `/models`，**拉不到就 `process.exit(1)` 硬退出**（`start.ts:468-474`）。所以 mock 必须**先于**代理起。原步骤（先代理后 mock）有鸡生蛋死锁 → 现改为：**先常驻起 mock（步骤 0）→ 起代理（步骤 2）→ 跑臂（步骤 3，用 `MOCK_UPSTREAM_EXTERNAL=1` 复用常驻 mock，不自起、不 kill）**。证书须先于常驻 mock 生成（步骤 -1）。
+
 ```bash
 cd exp/responses-keepalive-idle-oracle
 
-# 1) 准备一个隔离的 XDG_DATA_HOME（不要用真实 ~/.local/share/copilot-api，避免污染 live :4141 的 history/config）：
+# 0) 生成自签证书（一次性；常驻 mock 起来就要用它）：
+openssl req -x509 -newkey rsa:2048 -nodes -keyout mock-key.pem -out mock-cert.pem \
+  -days 3650 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost"
+
+# 1) 隔离 XDG_DATA_HOME（不污染 live :4141 的 history/config）：
 export ORACLE_XDG=/tmp/oracle-responses-xdg
 mkdir -p "$ORACLE_XDG/copilot-api"
 cp ~/.local/share/copilot-api/github_token "$ORACLE_XDG/copilot-api/github_token"
 chmod 600 "$ORACLE_XDG/copilot-api/github_token"
 cp oracle-config.yaml "$ORACLE_XDG/copilot-api/config.yaml"   # armPing 用默认值（不改任何注释块）
 
-# 2) 起代理（终端 A，非 :4141，指向 mock，信任其自签证书）：
+# 2a) 常驻起 mock（终端 A — 先于代理！/models 立即响应、只有 /responses 静默；两臂通用）：
+MOCK_UPSTREAM_MODE="silent:330" MOCK_UPSTREAM_PORT=8799 MOCK_MODEL_ID=gpt-5.5 node mock-upstream.ts
+
+# 2b) 起代理（终端 B，非 :4141，指向常驻 mock，信任其自签证书）：
 cd <repo-root>
 XDG_DATA_HOME="$ORACLE_XDG" NODE_EXTRA_CA_CERTS=exp/responses-keepalive-idle-oracle/mock-cert.pem \
   bun run src/main.ts start --port 4142 --ghc-api-base-url https://localhost:8799 --no-rate-limit
 
-# 3) 跑臂（终端 B — 脚本起 mock + 驱动一次 headless codex exec）：
+# 3) 跑臂（终端 C — 复用终端 A 的常驻 mock，只驱动一次 headless codex exec）：
 cd exp/responses-keepalive-idle-oracle
-PROXY_URL=http://localhost:4142 bash run-proxy-arm.sh armPing 330
+PROXY_URL=http://localhost:4142 MOCK_UPSTREAM_EXTERNAL=1 bash run-proxy-arm.sh armPing 330
 ```
 
-`run-proxy-arm.sh` 会：生成/复用自签证书 → 起 mock（`silent:330`，静默 330s > 300s 墙 + 余量）→ 驱动一次 `codex exec --json` 经代理 → 解析 codex 的 `--json` 事件流拿 `turn.completed`（成功）/`turn.failed`（失败）→ 落 `armPing.codex.jsonl`（原始事件）+ `armPing.mock-upstream.log`（mock 逐帧时间戳/静默/尾/abort）+ `armPing.oracle.log`（裁决摘要）。
+`run-proxy-arm.sh`（`MOCK_UPSTREAM_EXTERNAL=1`）会：复用常驻 mock（不自起/不 kill）→ 驱动一次 `codex exec --json` 经代理 → 解析 codex 的 `--json` 事件流拿 `turn.completed`（成功）/`turn.failed`（失败）→ 落 `armPing.codex.jsonl`（原始事件）+ `armPing.oracle.log`（裁决摘要）。mock 逐帧时间戳看终端 A 的 stdout。
 
 ### 5.2 armSilent（对照臂）
 
-改 `$ORACLE_XDG/copilot-api/config.yaml`：取消注释「armSilent（control）」那两个覆盖块（`anthropic.stream_keepalive_ping_sec: 0` + `openai_responses.buffered_retry: {enabled: true, heartbeat_sec: 0}`），保存（热重载生效，无需重启代理）：
+改 `$ORACLE_XDG/copilot-api/config.yaml`：取消注释「armSilent（control）」那两个覆盖块（`anthropic.stream_keepalive_ping_sec: 0` + `openai_responses.buffered_retry: {enabled: true, heartbeat_sec: 0}`），保存（热重载生效，无需重启代理/mock）：
 
 ```bash
 cd exp/responses-keepalive-idle-oracle
-PROXY_URL=http://localhost:4142 bash run-proxy-arm.sh armSilent 330
+PROXY_URL=http://localhost:4142 MOCK_UPSTREAM_EXTERNAL=1 bash run-proxy-arm.sh armSilent 330
 ```
 
 跑完把 `config.yaml` 的两个覆盖块重新注释掉（恢复 armPing 默认状态），供后续复跑或交叉核对。
