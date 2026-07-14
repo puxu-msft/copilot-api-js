@@ -1,5 +1,13 @@
 # Plan 2 — 新旋钮真实接线（仅影响新连接）
 
+> **实施状态（2026-07-14）：已全部落地。** Task 1-4 均完成并提交（`feat/transport-config-reorg` 分支）：
+> - Task 1 `5d4f299d` — `session_connect_timeout` 接线（`http2-client.ts` + `proxy-connect.ts` HTTP CONNECT 腿）
+> - Task 2 `2355dd41` — `pooled_connection_idle_timeout` 接线（`upstream-ws.ts`）
+> - Task 3 `0b0e61a6` — TCP keepalive 真 `0`-语义（`proxy.ts` + `http2-client.ts` 三消费点）
+> - Task 4 `971afa71` — README 补注 `proxy-connect.ts` 范围延伸
+>
+> 全部独立 oracle 测试通过（真实 blackhole socket timing / undici Agent.Options 断言 / Node socket API monkeypatch spy）；`bun run typecheck` 除既有基线错误（`responses-to-cc-stream.unit.test.ts` 的 2 处 `item_id` TS2353，源自并发会话，与本阶段无关）外全绿；P2 归属文件的 `bunx eslint` 零报告。详见交付报告。
+
 > 归属：`docs/plan/2026-07-14-transport-config-reorg/README.md` 阶段 P2。上游：[spec](../../spec/2026-07-14-upstream-transport-config-reorg.md) §4 D3/D5、§7 验收（独立 oracle / `0` 语义一致）；[ADR](../../decisions/2026-07-14-transport-config-three-axis-organization.md)。
 >
 > **前置条件（执行前必须先核实，不属于本计划的 Task）**：P1（`plan-1-config-reorg.md`）必须已完整落地到代码库，尤其：
