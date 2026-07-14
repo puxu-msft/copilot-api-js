@@ -103,14 +103,14 @@ export const ServerConfigSchema = z.object({
 
 **`src/lib/state.ts` 新增/改名**：
 - `setUpstreamTransportConfig(patch: Partial<Pick<MutableState, "upstreamKeepaliveDelay" | "upstreamH2PingInterval" | "sessionConnectTimeout" | "pooledConnectionIdleTimeout" | "softMaxUpstreamWsConnections">>): void` —— 触发新监听器集合。
-- `onUpstreamTransportChange(listener: () => void): () => void` —— 新监听器订阅函数（返回取消订阅函数，镜像现有 `onTransportTimeoutChange` 签名）。
+- `onUpstreamTransportChange(listener: () => void): () => void` —— 新监听器订阅函数（返回取消订阅函数，镜像 `onRequestWatchdogChange` 的既有签名形状）。
 - `setResponsesWsIngressConfig(patch: Partial<Pick<MutableState, "clientWebsocketKeepOpen" | "maxWsFrameBytes" | "maxClientWsConnections">>): void` —— 纯 `updateState`，无监听器。
 - `setTimeoutConfig` 收窄为 `Partial<Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval">>`，`transportChanged` 门控只保留 `responseHeaderTimeout`/`streamIdleTimeout`。
-- `onTransportTimeoutChange` 保留原名不变（它现在只代表"应用层看门狗时长变化"，语义仍然自洽——不需要按 spec §6.2 强制改名，因为拆分后它已经不再管 TCP keepalive；`upstreamKeepaliveDelay`/`upstreamH2PingInterval` 两个 MutableState 字段本身不改名，只是换了 setter owner）。
+- **`onTransportTimeoutChange` 改名为 `onRequestWatchdogChange`（`transportTimeoutListeners` 同步改名为 `requestWatchdogListeners`）**——spec §6 相邻正确化第 2 条 + §7 验收「旧符号 `onTransportTimeoutChange` 零残留」均已明确要求改名，不因"拆分后它已经不再管 TCP keepalive、语义自洽"而豁免（P1 起草阶段一度以此为由保留原名，经 gpt reviewer 对抗审查 + 用户裁决判定不成立：spec 白纸黑字要求改名，不是"名字凑巧还说得通就不用改"）。新名 `onRequestWatchdogChange` 对齐 D1 轴名"请求生命周期看门狗"（`timeouts.*`）。P1 必须做到**旧符号零残留**：函数体、`transportTimeoutListeners` 集合、所有 import/调用点（`proxy.ts` 订阅处、测试文件）全部同步改名，`grep -rn "onTransportTimeoutChange\|transportTimeoutListeners" src/ tests/` 在 P1 提交后必须零命中。
 - `MutableState` 新增字段：`sessionConnectTimeout: number`（秒，0=禁用）、`pooledConnectionIdleTimeout: number`（秒，0=禁用）、`softMaxUpstreamWsConnections: number`（0=无上限，替代 `maxUpstreamWsConnections` 的角色，字段直接改名）。
 - `CONFIG_MANAGED_DEFAULTS` 新增：`sessionConnectTimeout: 10`、`pooledConnectionIdleTimeout: 300`、`softMaxUpstreamWsConnections: 32`（值等于旧 `maxUpstreamWsConnections` 默认）。
 
-**`proxy.ts` 订阅点**：`ensureTimeoutSubscription()` 必须同时订阅 `onTransportTimeoutChange`（app 看门狗变化）与 `onUpstreamTransportChange`（TCP keepalive 变化），二者任一触发都要 `rebuildUpstreamDispatcher()`——这是 P1 必须改到位的接线，否则 P2 的 undici keepalive 0-语义修复在热更新时不会生效。
+**`proxy.ts` 订阅点**：`ensureTimeoutSubscription()` 必须同时订阅 `onRequestWatchdogChange`（app 看门狗变化，改名后的新符号）与 `onUpstreamTransportChange`（TCP keepalive 变化），二者任一触发都要 `rebuildUpstreamDispatcher()`——这是 P1 必须改到位的接线，否则 P2 的 undici keepalive 0-语义修复在热更新时不会生效。
 
 ### P2 产出，P4 消费
 
