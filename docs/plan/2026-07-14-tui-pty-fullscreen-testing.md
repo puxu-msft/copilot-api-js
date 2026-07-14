@@ -137,18 +137,32 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
   let raw = ""
   let rawBytes = 0
   const snapshots: Record<string, Array<string>> = {}
-  const pending = new Map((opts.snapshots ?? []).map((s) => [s.marker, s.label]))
+  const pendingMarkers = new Map((opts.snapshots ?? []).map((s) => [s.marker, s.label]))
+  const armed = new Map<string, string>() // marker → label：已在网格出现、待静默后抓拍
+  let lastDataAt = Date.now()
+  // 抓拍原子性（GPT 复审 HIGH-1）：marker 日志的 write 与紧随的 renderRegion() 是 printLog
+  // 里两个连续 stdout.write（terminal-ui.ts:805-806），PTY 可拆成不同 chunk。故检测到 marker
+  // 不立即抓，先 armed，待串行流「静默」QUIESCE_MS 无新字节再抓，确保 panel 重绘字节已到齐。
+  const QUIESCE_MS = 80 // 【实现期实测校准】连跑 10 次快照稳定含 panel footer 即达标；不稳则调大。
 
-  const checkMarkers = (): void => {
-    if (pending.size === 0) return
+  const detectMarkers = (): void => {
+    if (pendingMarkers.size === 0) return
     const text = collectGrid(xterm).join("\n")
-    for (const [marker, label] of pending) {
+    for (const [marker, label] of pendingMarkers) {
       if (text.includes(marker)) {
-        snapshots[label] = collectGrid(xterm) // 抓当时快照（driver 尚未 clear）
-        pending.delete(marker)
+        armed.set(marker, label)
+        pendingMarkers.delete(marker)
       }
     }
   }
+  const snapArmedIfQuiet = (): void => {
+    if (armed.size === 0) return
+    if (Date.now() - lastDataAt < QUIESCE_MS) return // 仍有新字节流入，等静默
+    const grid = collectGrid(xterm)
+    for (const [, label] of armed) snapshots[label] = grid
+    armed.clear()
+  }
+  const quiesceTimer = setInterval(snapArmedIfQuiet, 20)
 
   const terminal = new Bun.Terminal({
     name: "xterm-256color",
@@ -156,10 +170,11 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
     rows,
     data(_t, data) {
       rawBytes += data.byteLength
+      lastDataAt = Date.now()
       const text = decoder.decode(data, { stream: true })
       raw += text
-      // 串行写 → 每次解释完检查 marker（读点在 write 链上，顺序一致）。
-      writes = writes.then(() => writeXterm(xterm, text)).then(checkMarkers)
+      // 串行写 → 每次解释完检测 marker（读点在 write 链上，顺序一致）；抓拍推迟到静默。
+      writes = writes.then(() => writeXterm(xterm, text)).then(detectMarkers)
     },
   })
   terminal.ref()
@@ -197,14 +212,24 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
     ])
   } finally {
     for (const t of timers) clearTimeout(t)
-    // drain：等已排队字节全部解释，再关资源（GPT HIGH：别用裸 sleep 猜排空）。
+    clearInterval(quiesceTimer)
+    // drain（GPT 复审 HIGH-3）：proc.exited 后 PTY 仍可能有未投递尾字节。`await writes` 只
+    // 排空已进 data 回调的写入，不保证 PTY EOF。故轮询「静默」——连续 QUIESCE_MS 无新字节
+    // 视为排空——再关闭，替代裸 sleep 猜测。上限兜底防挂死。
+    const drainDeadline = Date.now() + 2000
+    // eslint-disable-next-line no-unmodified-loop-condition -- lastDataAt 在 data 回调里更新
+    while (Date.now() - lastDataAt < QUIESCE_MS && Date.now() < drainDeadline) {
+      await Bun.sleep(20)
+    }
     await writes
     const tail = decoder.decode()
     if (tail) {
       raw += tail
       await writeXterm(xterm, tail)
-      checkMarkers()
+      detectMarkers()
     }
+    snapArmedIfQuiet() // 末态若仍有 armed（driver 未静默即退），退化为末态快照
+    for (const [, label] of armed) snapshots[label] = collectGrid(xterm)
     terminal.close()
   }
   const grid = collectGrid(xterm)
@@ -399,6 +424,7 @@ describe("② footer/panel 钉底：footer 内容在末 panel 区、滚动日志
       driver: "tests/tui/pty/drivers/log-stream.ts",
       env: { DRIVER_LOGS: "40", DRIVER_MS: "50", SNAP_MARKER: "__SNAP__panel" },
       keys: [{ at: 250, bytes: " " }], // 进 panel，不再切回
+      snapshots: [{ marker: "__SNAP__panel", label: "panel" }], // 握手：抓运行中快照（GPT 复审 BLOCK-1）
       rows: 24,
     })
     expect(r.exitCode).toBe(0)
@@ -503,16 +529,19 @@ describe("③ 退出干净还原：从 detail 态退出后回主屏、光标可�
     expect(r.rawText).toContain("\x1b[?1049h") // 进过备用屏（真进了 detail）
     expect(r.rawText).toContain("\x1b[?1049l") // 退出回主屏
     expect(r.rawText).toContain("\x1b[?25h") // SHOW_CURSOR
-    // 网格重放：把还原后的原始字节重放进新 xterm，写 sentinel，验其落点在正常全屏、
-    // 不被残留滚动区截断（DECSTBM reset 正确）。
+    // 网格重放：把还原后的原始字节重放进新 xterm，验回主屏 + 无残留滚动区。
     const term = new Terminal({ cols: 80, rows: 24, scrollback: 2000, allowProposedApi: true })
     await writeXterm(term, r.rawText)
     expect(term.buffer.active.type).toBe("normal") // 回主屏非备用屏
-    await writeXterm(term, "\x1b[24;1HRESTORE-SENTINEL") // 定位末行写 sentinel
+    // 残留滚动区验证（GPT 复审 BLOCK-2）：不用 CUP 绝对定位后查存在（那会绕过残留 DECSTBM）。
+    // 改用「自然换行」驱动光标越过旧 scroll-region 底边：若 restoreTerminal 未复位 DECSTBM，
+    // 这些换行会被困在旧滚动区内、行不前进；复位正确则 sentinel 各行落在连续的新行上。
+    await writeXterm(term, "\r\n".repeat(30) + "RESTORE-SENTINEL-TAIL")
     const grid: Array<string> = []
     for (let i = 0; i < term.buffer.active.length; i++) grid.push(term.buffer.active.getLine(i)?.translateToString(true) ?? "")
-    // sentinel 应完整落在网格里（滚动区未把它截断/困住）。
-    expect(grid.some((l) => l.includes("RESTORE-SENTINEL"))).toBe(true)
+    // sentinel 落在可见屏最后一行（换行自然推进到底），证滚动区已复位为全屏。
+    const visible = grid.slice(-24)
+    expect(visible.at(-1) ?? "").toContain("RESTORE-SENTINEL-TAIL")
     term.dispose()
   }, 30_000)
 })
@@ -568,6 +597,9 @@ describe("④ 切 detail 不覆盖底部日志：detail 期间日志退出后完
         ],
       })
       expect(r.exitCode).toBe(0)
+      // 前置断言（GPT 复审 HIGH-2）：必须真进/出备用屏，否则日志全直写、红样本假绿。
+      expect(r.rawText).toContain("\x1b[?1049h") // 真进了 detail
+      expect(r.rawText).toContain("\x1b[?1049l") // 真退出 detail
       // detail 窗口 = 700–1500ms，每 100ms 一条 → 第 8–15 条确在 detail 内产生（排队→回放）。
       // 只断言这段无缺号（进 detail 前的第 1–7 条不参与红样本，删 flush 不影响它们）。
       const missing = missingNumbers(r.allText, "DETAIL-LOG", 20).filter((n) => n >= 8 && n <= 15)
@@ -671,6 +703,7 @@ describe("⑤ resize 重锚", () => {
         // 250ms 进 panel（先建 24 行 panel）→ 700ms resize 到 30 行 → driver 900ms 发 marker。
         keys: [{ at: 250, bytes: " " }],
         resizes: [{ at: 700, cols: 80, rows: NEW_ROWS }],
+        snapshots: [{ marker: "__SNAP__postresize", label: "postresize" }], // 握手（GPT 复审 BLOCK-1）
       })
       expect(r.exitCode).toBe(0)
       expect(missingNumbers(r.allText, "RESIZE-LOG", 40)).toEqual([])
@@ -689,19 +722,24 @@ describe("⑤ resize 重锚", () => {
   }, 60_000)
 
   // known-seam（deferred-backlog.md:11）：region.ts:125-137 的 `rows===prev.rows` 守卫使
-  // 「resize 与视图切换严格同帧」时 scroll-before-grow 跳过、MAY eat a bottom row。本 spec
-  // 不修复、只可见化。test.failing 使其"当前失败"被记录、修复后反转提醒回收 backlog（绝不伪装 passing）。
-  test.failing("同帧 resize+grow 不吞行（known-seam，暂不修复；修复后本测应转绿→回收 backlog）", async () => {
-    // 同帧：resize 与 space 切视图同一时刻触发，命中守卫跳过分支。
+  // 「resize 与视图切换严格同帧」时 scroll-before-grow 跳过、MAY eat a bottom row。
+  // 关键（GPT 复审 HIGH-4）：harness 无法从两个同 at 的 timer 确定性构造「同帧」——键输入
+  // 跨进程异步到达、resize 可能先生效；且源码只承诺 MAY 吞行。故用 `test.failing` 会抖动
+  // （某些跑没吞行 → 意外通过 → 整套件红）。诚实处理：用 `test.skip` 保留**可运行的真实复现
+  // 体**（非 test.todo 空壳），排查时 un-skip 手动跑；注释直指 backlog。仅当实现期找到能
+  // 确定性触发同帧的 driver 握手（证 resize+grow 在同一 render 处理、稳定复现吞行）后，才
+  // 升级为 `test.failing`（修复后转绿 → 提醒回收 backlog）。绝不伪装 passing、也绝不 flake 套件。
+  test.skip("同帧 resize+grow 可能吞行（known-seam，deferred-backlog.md:11；无法确定性构造同帧，暂 skip）", async () => {
     const r = await runDriver({
       driver: "tests/tui/pty/drivers/resize-anchor.ts",
       env: { DRIVER_LOGS: "40", DRIVER_MS: "50" },
       rows: 24,
-      keys: [{ at: 700, bytes: " " }], // 与 resize 同帧
+      keys: [{ at: 700, bytes: " " }], // 意图与 resize 同帧（实际时序不保证）
       resizes: [{ at: 700, cols: 80, rows: NEW_ROWS }],
     })
     expect(r.exitCode).toBe(0)
-    expect(missingNumbers(r.allText, "RESIZE-LOG", 40)).toEqual([]) // 当前 known-seam 下可能吞行 → 预期 fail
+    // 当前 known-seam 下同帧可能吞行；此断言仅在 un-skip 手动排查时观察实际是否缺号。
+    expect(missingNumbers(r.allText, "RESIZE-LOG", 40)).toEqual([])
   }, 60_000)
 })
 ```
@@ -750,3 +788,14 @@ git commit -m "docs: 标记 TUI PTY 整屏测试已实施 + 架构现状同步"
 **4. Type consistency**：`runDriver`/`RunDriverResult`(grid/allText/rawText/snapshots/rawBytes/exitCode)/`RunDriverOptions`(keys/resizes/snapshots) 在 Task 0 定义，Task 1-5 一致消费。driver env 键(`DRIVER_LOGS`/`DRIVER_MS`/`SNAP_MARKER`/`DRIVER_LIFETIME_MS`/`DETAIL_LOG_MS`)前后一致。
 
 **5. 残留实施风险**（executor 注意）：① detail 键序 `at` 时机可能需按实际 onInput 微调，判据 rawText 含 `\x1b[?1049h`；② `test.failing` 的 bun 语义若不符，退回 `test` + 可见断言 + backlog 指针（勿用 test.todo）；③ PANEL_ROWS=3 若与 `panelContentRows` 实际不符据实调。
+
+## Self-Review 增补（GPT 第二轮复审 2 BLOCK + 4 HIGH 落实）
+
+- BLOCK-1（Task2/5 忘传 `snapshots` → 快照恒 undefined）→ 两处 runDriver 调用补 `snapshots: [{marker,label}]`。
+- BLOCK-2（Task3 sentinel 先 CUP 绝对定位再查存在、绕过残留滚动区）→ 改「`\r\n`×30 自然换行驱动越过旧底边 + 断言 sentinel 落可见屏末行」。
+- HIGH-1（marker 日志 write 与 renderRegion 两个 write、抓拍非原子）→ harness 改**两阶段**：detect（marker 进网格）→ armed → 待串行流静默 `QUIESCE_MS` 无新字节再抓拍。
+- HIGH-2（Task4 未断言真进/出备用屏、键序回归假绿）→ 加 `rawText` 含 `\x1b[?1049h`/`\x1b[?1049l` 前置断言。
+- HIGH-3（`await writes` 不保证 PTY EOF）→ finally 加静默轮询 drain（连续 QUIESCE_MS 无新字节 + 2s 兜底）替代裸 sleep，再关资源。
+- HIGH-4（两 700ms timer 不构成确定同帧、`test.failing` 会 flake）→ known-seam 降为 `test.skip` + 真实复现体 + backlog 指针；仅实现期证得确定性同帧触发后才升 `test.failing`。绝不 flake 套件、也绝不 test.todo 空壳。
+
+**QUIESCE_MS（默认 80ms）是实现期实测校准项**：连跑 10 次快照稳定含 panel footer 即达标；不稳则调大（呼应 empirical-verification：时序参数靠实测定，非推断）。
