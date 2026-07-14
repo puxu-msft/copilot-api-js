@@ -1,5 +1,7 @@
 # Spec：Anthropic endpoint 经路由后缀翻译到 OpenAI 协议腿（openai-anthropic codec）
 
+> ⚠️ **历史设计快照（2026-07-14 注）**：本 spec 是**设计期产物**，描述特性落地**前**的目标态，正文的 `file:line`、对象模型与部分措辞已随实现漂移，作历史设计记录读。**当前架构现状以 [docs/DESIGN.md](../DESIGN.md)「活的架构现状」为准**。关键漂移：① 特性**已全部 landed**（通用翻译矩阵 Phase 0-7，非「待 RFC review」）；② `decideRoute` 已于 ADR [2026-07-11-route-decision-separated-from-format-codec](../decisions/2026-07-11-route-decision-separated-from-format-codec.md) **从 FormatCodec 拆出到 `pipeline/router.ts` 自由函数**（故下文「codec 内 decideRoute」等叙述已不成立）；③ 出站关切 2026-07-13 收敛入 `resolveCellAssembly`（见 DESIGN 活现状「出站关切装配」行）；④ `codec/openai-gemini/` 已剥前缀为 `codec/gemini/`（`GeminiCodec`）。
+
 状态：设计已批准，待 RFC 对抗 review + 分 phase 计划｜触发：用户配置 `model_overrides` 把 Anthropic 入站模型导向 OpenAI 协议腿（`opus: claude-opus-4.8@cc` / `claude-opus-4.8: gpt-5.5`）时当前一律 400 reject｜关联：`docs/DESIGN.md`「活的架构现状」、`src/lib/codec/openai-gemini/codec.ts`（精确镜像先例）、[[feedback-pass-null-clean-not-self-validating]]、[[reference-anthropic-sdk-drops-eventless-sse-frames]]
 
 ## 1. 背景与动机
