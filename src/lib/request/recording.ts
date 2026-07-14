@@ -151,10 +151,12 @@ export function buildOpenAIResponseData(acc: OpenAIStreamAccumulator, fallbackMo
  * Converts tool calls from Responses format (callId) to OpenAI Chat Completions format (id).
  */
 export function buildResponsesResponseData(acc: ResponsesStreamAccumulator, fallbackModel: string): ResponseData {
-  // Finalize tool calls from the accumulator map
-  for (const tcAcc of acc.toolCallMap.values()) {
-    const existing = acc.toolCalls.find((tc) => tc.id === tcAcc.id)
-    if (!existing && tcAcc.id && tcAcc.name) {
+  // Finalize any tool call that was `output_item.added` but never terminated by a `done` event
+  // (e.g. a stream truncated mid-flight). Dedup by `output_index` (the toolCallMap key) via the
+  // shared `finalizedOutputIndexes` set — NOT by `item.id`, which GHC re-encrypts per event.
+  for (const [outputIndex, tcAcc] of acc.toolCallMap.entries()) {
+    if (!acc.finalizedOutputIndexes.has(outputIndex) && tcAcc.id && tcAcc.name) {
+      acc.finalizedOutputIndexes.add(outputIndex)
       acc.toolCalls.push({
         id: tcAcc.id,
         callId: tcAcc.callId,

@@ -1,6 +1,6 @@
 # Spec：TUI raw-mode 编排层的 PTY 终端网格测试
 
-状态：**已实施 ①②③④（landed 2026-07-14，commit fcfc91ea..a8e9e543）**；⑤ resize 重锚经实测判定**无法用 PTY 端到端测**、降 backlog（见 §3⑤ + `docs/todo/deferred-backlog.md`）。PoC 已实证、GPT 对抗审查已吸收（3 轮：设计 4 HIGH + plan 6→2→0 BLOCK）。
+状态：**已实施 ①②③④⑤（landed 2026-07-14，commit fcfc91ea..6b870214）**——5 个不变量全部落地、各配红绿对照实测。⑤ resize 曾一度误判「无法测」降 backlog，收尾审计（GPT HIGH-2）推翻并复活（driver 内注入 mutable rows source 绕开 Bun 限制，见 §3⑤）；仅「生产尺寸来源链路」这一薄环节留 backlog。PoC 已实证、GPT 对抗审查已吸收（4 轮：设计 4 HIGH + plan 6→2→0 BLOCK + 收尾审计 2 HIGH）。
 归属：本项目 TUI 测试策略。相关代码 `src/lib/tui/`、`tests/tui/pty/`，相关 PoC `exp/tui-rawmode/`、`exp/poc-js-pty-grid/`。
 
 ## 1. 问题与动机（why）
@@ -48,7 +48,7 @@ PoC 亲验（`bun exp/poc-js-pty-grid/index.ts driver`，主会话复跑一次�
 | ② | **footer/panel 钉底**：footer 内容在末 N 行、滚动日志在其上 | 改 `region.ts:151`(`bottom`) 或 `:142`(`oldPanelTop`) → footer 漂移/被压 | 新增 |
 | ③ | **退出干净还原**（混合 oracle，见下）| 删 `terminal-ui.ts:1141-1150` 的 alt-leave / `region.clear()` → 残留 | 新增 |
 | ④ | **切 detail 不覆盖底部日志**：真进备用屏后底部日志不被吃 | 破坏 `terminal-ui.ts:1032-1051/1095-1104` 的 alt-screen entry/exit/replay | ✅ landed a8e9e543 |
-| ⑤ | ~~**resize 重锚**~~ **降 backlog：无法 PTY 测（见下）** | ~~绕过 `region.ts:138-145`~~ | ❌ Bun 硬限制，`deferred-backlog.md` |
+| ⑤ | **resize 重锚**：rows 变化时重锚、旧 panel 无孤儿行 | 注释 `region.ts:138-145` 重锚清除 → 孤儿 footer | ✅ landed 6b870214 |
 
 ### ③ 退出还原是混合 oracle（GPT HIGH，采纳）
 
@@ -57,11 +57,11 @@ PoC 亲验（`bun exp/poc-js-pty-grid/index.ts driver`，主会话复跑一次�
 - 还原后写一个 sentinel、断言其**落点正确**（无残留滚动区把它截断）；
 - **原始字节流**里含 `\x1b[?25h`（SHOW_CURSOR）——光标可见性只能验字节，网格验不了。
 
-### ⑤ resize 重锚 —— 实测判定无法 PTY 端到端测，降 backlog（2026-07-14）
+### ⑤ resize 重锚 —— landed（driver 内注入 mutable rows source 绕开 Bun 限制，2026-07-14 收尾审计复活）
 
-原计划：正测非同帧 resize（panel 锚新底、无孤儿行）+ 同帧 known-seam 哨兵。**实施期实测逼出 Bun 硬限制**：`Bun.Terminal.resize()` 改了伪终端尺寸，但**不给子进程投递 SIGWINCH**（探针 got=0）、且子进程 `process.stdout.rows` **不刷新**（PTY 24→30，子进程始终读 24）。故 driver 里真 `TerminalUi.getRows()` 恒返回旧值 → `region.render` 的 `geometryChanged` resize 分支**从不执行** → 重锚代码从不运行、红样本删它也不 FAIL = **恒绿假测**（曾被「稳定 6/6 绿」误导，实为 resize 从没生效——呼应 `verifying-authoritative-claims`「通过不自证」）。
+初判「无法 PTY 测」曾降 backlog，收尾审计（GPT HIGH-2）推翻并经主会话亲验：**实测发现的 Bun 硬限制只堵死「生产尺寸来源」一环**——`Bun.Terminal.resize()` 不给子进程投递 SIGWINCH、子进程 `process.stdout.rows` 不刷新（探针 got=0 / rows 恒 24），故生产里靠 `process.stdout.rows` 感知真实 resize 的那一环 Bun 下无法自动化验。**但 `Region` 的重锚逻辑可测**：`TerminalUiOptions.rows` 支持函数式 `() => number`（`terminal-ui.ts:171`，`Region.getRows` 经它读值），driver 内部持 mutable `curRows`、发满日志后改值 → 下个 100ms 重绘 `Region` 读到新 rows → `geometryChanged` → 走重锚清除分支。红绿对照实测：绿态 footerCount===1、注释 `region.ts:138-145` 重锚清除 → footerCount===2（孤儿 footer 可见）。
 
-按 `empirical-verification`（不留恒绿假测）+ 用户裁决（2026-07-14），⑤ 整体降 `docs/todo/deferred-backlog.md`，含根因 + 三条「若做需改什么」。resize 重锚的正确性当前靠 `region.ts` 代码注释 + 字节级单测间接保障。known-seam（`region.ts:125-137` 同帧吞行）本就在 backlog:11，不受影响。
+**教训**（呼应 `verifying-authoritative-claims`「通过不自证」）：初判「无法测」是被 `process.stdout.rows` 一条生产路径堵死、漏了注入口的盲区；曾被「稳定 6/6 绿」误导（实为 resize 从没生效）——是收尾审计的独立探针 + 对 `rows: () => number` 注入路径的核实才纠回。**仍无法端到端测的「生产尺寸来源链路」**收窄进 `docs/todo/deferred-backlog.md`。known-seam（`region.ts:125-137` 同帧吞行）本就在 backlog:11，不受影响。
 
 ### 覆盖面其余项（GPT 挑「漏没漏」的回应）
 

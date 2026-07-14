@@ -122,13 +122,16 @@ describe("buildResponsesResponseData", () => {
       name: "search",
       arguments: '{"q":"test"}',
     })
-    // Same tool call also in toolCallMap
+    // Same tool call also in toolCallMap. In a real stream, whatever finalized this into
+    // `toolCalls` also recorded its output_index in `finalizedOutputIndexes` (the dedup key) —
+    // the trailing sweep skips indexes already there, so it must NOT re-append.
     acc.toolCallMap.set(0, {
       id: "fc_1",
       callId: "call_1",
       name: "search",
       argumentParts: ['{"q":"test"}'],
     })
+    acc.finalizedOutputIndexes.add(0)
 
     const result = buildResponsesResponseData(acc, "model")
     expect((result.content as any)?.tool_calls).toHaveLength(1)

@@ -15,9 +15,6 @@ import type { SseEventRecord } from "~/lib/history/store"
 import type { StreamEvent } from "~/types/api/anthropic"
 
 import { logServerToolBlock } from "~/lib/anthropic/server-tool-filter"
-import { formatErrorWithCause } from "~/lib/error"
-import { classifyStreamError } from "~/lib/stream"
-import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
 
 /**
  * Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error.
@@ -31,44 +28,11 @@ import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
 export { classifyStreamErrorType as anthropicStreamErrorType } from "~/lib/anthropic/error-shaping"
 
 /**
- * Extract live-stream signals and emit a detailed upstream-disconnect log.
- *
- * Pulls the diagnostic signals out of the handler-internal stream state and
- * delegates formatting/emission to `logUpstreamStreamDisconnect`. The `silence`
- * it surfaces (gap between the last upstream frame and the disconnect) is the
- * smoking gun for "died during a silent thinking stall".
+ * The upstream-disconnect diagnostic emitter now lives in the shared leaf `~/lib/upstream-stream-diagnostics`
+ * (used by ALL non-native-Anthropic pumps too — Responses direct/reverse/WS). Re-exported here so the
+ * existing `handler-v4.ts` import path stays unchanged.
  */
-export function logUpstreamStreamError(
-  error: unknown,
-  ctx: {
-    model: string
-    // Minimal structural subset (NOT the full `StreamPumpState` / Anthropic accumulator): only the
-    // fields the diagnostic actually reads. Requiring the full Anthropic-specific shapes is what let the
-    // translate leg pass hardcoded empty shells (bytesIn:0 / empty acc / []) → a healthy long stream
-    // capped by the upstream logged as a total-silence stall (the gpt-5.6-sol incident). Both call sites
-    // now pass REAL signals: the direct pump's full StreamPumpState/accumulator are structural supersets.
-    streamState: { streamStartMs: number; bytesIn: number; currentBlockType: string }
-    acc: { inputTokens: number; outputTokens: number }
-    sseEvents: Array<SseEventRecord>
-  },
-): void {
-  const { model, streamState, acc, sseEvents } = ctx
-  const last = sseEvents.at(-1)
-  const kind = classifyStreamError(error)
-  logUpstreamStreamDisconnect({
-    model,
-    kindLabel: kind === "other" ? "transport-close" : kind,
-    detail: error instanceof Error ? formatErrorWithCause(error) : String(error),
-    elapsedMs: Date.now() - streamState.streamStartMs,
-    frames: sseEvents.length,
-    bytes: streamState.bytesIn,
-    lastFrameType: last?.type,
-    lastFrameOffsetMs: last?.offsetMs ?? 0,
-    stuckBlockType: streamState.currentBlockType,
-    inputTokens: acc.inputTokens,
-    outputTokens: acc.outputTokens,
-  })
-}
+export { logUpstreamStreamError } from "~/lib/upstream-stream-diagnostics"
 
 /** Mutable counters/state threaded through the streaming pump. */
 export interface StreamPumpState {
