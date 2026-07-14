@@ -221,6 +221,7 @@ model_translation:
 - [state.ts](../../src/lib/state.ts)（`DEFAULT_MODEL_OVERRIDES`/`modelOverrides` 内部字段）+ [config.ts](../../src/lib/config/config.ts) + resolver.ts + [route.ts:264](../../src/routes/config/route.ts)（`replaceCollection` 路径 + `:191 out.modelOverrides` HTTP API 字段）。
 - **`config.schema.json`（生成物，须 `scripts/generate-config-json-schema.ts` 重生成）** + `config.example.yaml` + 用户 `config.yaml`（靠 compat 迁移）。
 - [normalize-id.ts:16](../../src/lib/models/normalize-id.ts)（仅注释提及，改注释）。
+- **doc-sync**：`docs/` 下多份仍引用 `model_overrides`（`model-resolution.md` / `anthropic-compat.md` / `DESIGN.md` / `spec/anthropic-via-openai-translation.md`），落地时 grep 全仓一并同步。
 
 **界定（plan 澄清）**：内部 camelCase 字段 `state.modelOverrides` + HTTP config API 字段 `out.modelOverrides` 是否同改？倾向只改 YAML 键 + 内部字段一并改（`ui-v4` grep 无 `modelOverrides` 消费，无前端涟漪），但 `route.ts:191` 是 config API 契约字段——plan 界定改内部字段是否动 API。
 
