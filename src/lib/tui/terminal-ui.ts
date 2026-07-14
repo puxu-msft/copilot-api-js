@@ -35,6 +35,7 @@ import type {
 } from "~/lib/observability"
 import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
+import { toolNamesFromResponseBody } from "~/lib/history/entry-view"
 import { assertNever } from "~/lib/observability"
 import {
   //
@@ -660,9 +661,11 @@ export class TerminalUi {
       outputTokens: usage?.output_tokens,
       cacheReadInputTokens: usage?.cache_read_input_tokens,
       cacheCreationInputTokens: usage?.cache_creation_input_tokens,
-      // Terminal stop_reason token (`⇥end_turn` / `⇥tool_use` / …) — success
-      // lines only; a failure carries its error in `extra` and no stop_reason.
+      // Terminal stop_reason token (`⇥end_turn` / `⇥tool_use(Bash,Edit)` / …) —
+      // success lines only; a failure carries its error in `extra` and no
+      // stop_reason. Tool names are extracted from the response body.
       stopReason: isError ? undefined : finalUpstreamResponse?.stopReason,
+      toolNames: isError ? undefined : toolNamesFromResponseBody(finalUpstreamResponse?.body),
       extra,
       reqId: isError ? ctx.id : undefined,
       isError,

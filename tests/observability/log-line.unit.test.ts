@@ -139,4 +139,23 @@ describe("formatLogLine — stop_reason token", () => {
   test("dim (start/history) lines never carry the stop_reason token", () => {
     expect(stripAnsi(formatLogLine(okParts({ isDim: true, stopReason: "end_turn" })))).not.toContain("⇥")
   })
+
+  test("tool names are appended to the token as `⇥tool_use(Bash,Edit)`", () => {
+    const line = stripAnsi(formatLogLine(okParts({ stopReason: "tool_use", toolNames: ["Bash", "Edit"] })))
+    expect(line).toContain("⇥tool_use(Bash,Edit)")
+  })
+
+  test("repeated tool names are preserved (not deduped — call count is meaningful)", () => {
+    const line = stripAnsi(formatLogLine(okParts({ stopReason: "tool_use", toolNames: ["Bash", "Bash", "Edit"] })))
+    expect(line).toContain("⇥tool_use(Bash,Bash,Edit)")
+  })
+
+  test("an empty toolNames array adds no parens", () => {
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "tool_use", toolNames: [] })))).toContain("⇥tool_use")
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "tool_use", toolNames: [] })))).not.toContain("⇥tool_use(")
+  })
+
+  test("toolNames without a stop_reason render nothing (the token is gated on stopReason)", () => {
+    expect(stripAnsi(formatLogLine(okParts({ toolNames: ["Bash"] })))).not.toContain("Bash")
+  })
 })

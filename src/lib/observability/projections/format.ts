@@ -132,8 +132,8 @@ export function formatTokens(input?: number, output?: number, cacheRead?: number
  * and the Responses `status` (completed / incomplete / failed) — so
  * categorization is a normalized lowercase match with a dim fallback that still
  * shows any unknown value verbatim:
- *   normal completion (end_turn / stop / stop_sequence / completed) → dim
- *   agentic continuation (tool_use / tool_calls / function_call / pause_turn) → cyan
+ *   normal completion (end_turn / stop / stop_sequence / completed) → cyan
+ *   agentic continuation (tool_use / tool_calls / function_call / pause_turn) → white
  *   truncation (max_tokens / length / incomplete) → yellow
  *   problematic (refusal / content_filter / failed / error) → red
  *   unknown → dim
@@ -144,7 +144,7 @@ export function stopReasonColor(reason: string): (s: string) => string {
     case "tool_calls":
     case "function_call":
     case "pause_turn": {
-      return pc.cyan
+      return pc.white
     }
     case "max_tokens":
     case "length":
@@ -157,8 +157,14 @@ export function stopReasonColor(reason: string): (s: string) => string {
     case "error": {
       return pc.red
     }
+    case "end_turn":
+    case "stop":
+    case "stop_sequence":
+    case "completed": {
+      return pc.cyan
+    }
     default: {
-      // end_turn / stop / stop_sequence / completed + any unknown value.
+      // Any unknown / unmapped value — still shown raw.
       return pc.dim
     }
   }

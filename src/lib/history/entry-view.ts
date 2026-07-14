@@ -63,6 +63,45 @@ export function resolveStopReason(entry: Pick<HistoryEntry, "attempts">): string
 }
 
 /**
+ * Tool names invoked in a response `body`, in call order (NOT deduped — repeated
+ * names reflect repeated calls, richest-data-flow). Handles both stored shapes:
+ * OpenAI / Responses carry `tool_calls[].function.name`; Anthropic carries a
+ * content-block array with `{ type: "tool_use" | "server_tool_use", name }`
+ * members. Accepts `unknown` (the body is typed `unknown` on the context-side
+ * `HistoryUpstreamResponseData`) and narrows at runtime; returns `[]` for any
+ * body that invoked no tools.
+ */
+export function toolNamesFromResponseBody(body: unknown): Array<string> {
+  if (typeof body !== "object" || body === null) return []
+  const msg = body as { content?: unknown; tool_calls?: unknown }
+  // OpenAI Chat Completions / Responses shape: explicit tool_calls array.
+  if (Array.isArray(msg.tool_calls)) {
+    return msg.tool_calls
+      .map((tc) => (tc as { function?: { name?: unknown } }).function?.name)
+      .filter((name): name is string => typeof name === "string" && name.length > 0)
+  }
+  // Anthropic shape: tool_use / server_tool_use blocks inside the content array.
+  if (Array.isArray(msg.content)) {
+    return msg.content
+      .filter((block): block is { type: string; name: string } => {
+        if (typeof block !== "object" || block === null) return false
+        const b = block as { type?: unknown; name?: unknown }
+        return (b.type === "tool_use" || b.type === "server_tool_use") && typeof b.name === "string"
+      })
+      .map((block) => block.name)
+  }
+  return []
+}
+
+/**
+ * Tool names invoked in the final upstream response (via {@link toolNamesFromResponseBody}
+ * over `upstreamResponse.body`). Returns `[]` when the response invoked no tools.
+ */
+export function resolveResponseToolNames(entry: Pick<HistoryEntry, "attempts">): Array<string> {
+  return toolNamesFromResponseBody(finalUpstreamResponse(entry)?.body)
+}
+
+/**
  * Response-side error message: the final attempt's `error` (the per-attempt error
  * home — `upstreamResponse` carries no error field). Callers that also want the
  * entry-level verdict append `?? entry._index?.derived?.failureReason` at the call site.

@@ -1,6 +1,6 @@
 /**
  * Pure formatter for the canonical log line shape:
- *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> ⇥<stopReason> <extra> <retryableMeta>
+ *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> ⇥<stopReason>(<tools>) <extra> <retryableMeta>
  *
  * Shared source of truth for the log-line shape, consumed by
  * `~/lib/tui/terminal-ui.ts` (the TerminalUi renderer) and its `render/`
@@ -57,6 +57,12 @@ export interface LogLineParts {
    * Color is by {@link stopReasonColor}.
    */
   stopReason?: string
+  /**
+   * Tool names invoked in the response, appended to the stop_reason token as
+   * `⇥tool_use(Bash,Edit)` (same category color). Rendered only when non-empty
+   * AND {@link stopReason} is present; call order is preserved (not deduped).
+   */
+  toolNames?: Array<string>
   /** Request id (e.g. "req_178..."), appended dim on error lines for history lookup */
   reqId?: string
   isError?: boolean
@@ -94,6 +100,7 @@ export function formatLogLine(parts: LogLineParts): string {
     extra,
     retryableMeta,
     stopReason,
+    toolNames,
     reqId,
     isError,
     isRetry,
@@ -164,11 +171,14 @@ export function formatLogLine(parts: LogLineParts): string {
   const retryableMetaPart = retryableMeta ? ` ${pc.dim(retryableMeta)}` : ""
 
   // Terminal stop_reason token (`⇥<reason>`), the whole token category-colored by
-  // stopReasonColor (dim for normal end_turn, cyan for tool_use, yellow for
-  // truncation, red for refusal/error). Placed right after the token counts and
-  // before extraPart so the grey feature-tag parens stay last. Present only when
-  // the caller supplies it — i.e. on successful completion lines.
-  const stopReasonPart = stopReason ? ` ${stopReasonColor(stopReason)(`⇥${stopReason}`)}` : ""
+  // stopReasonColor (cyan for normal end_turn, white for tool_use, yellow for
+  // truncation, red for refusal/error). When the response invoked tools, their
+  // names are appended as `⇥tool_use(Bash,Edit)` inside the same colored token.
+  // Placed right after the token counts and before extraPart so the grey
+  // feature-tag parens stay last. Present only when the caller supplies a reason
+  // — i.e. on successful completion lines.
+  const toolSuffix = toolNames && toolNames.length > 0 ? `(${toolNames.join(",")})` : ""
+  const stopReasonPart = stopReason ? ` ${stopReasonColor(stopReason)(`⇥${stopReason}${toolSuffix}`)}` : ""
 
   // Request id appended dim at the very end (only when provided, e.g. error lines) for history lookup.
   const reqIdPart = reqId ? ` ${pc.dim(reqId)}` : ""
