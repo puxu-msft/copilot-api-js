@@ -16,6 +16,7 @@ import {
   test,
 } from "bun:test"
 
+import type { EndpointType } from "~/lib/history/types"
 import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
 import { formatLogLine } from "~/lib/observability/projections/log-line"
@@ -36,6 +37,56 @@ function okParts(over: Partial<LogLineParts> = {}): LogLineParts {
     ...over,
   }
 }
+
+describe("formatLogLine — compact <inputFormat>/<model> on success", () => {
+  test("a successful line with inputFormat collapses <method> <path> <model> to <label>/<model>", () => {
+    const line = stripAnsi(formatLogLine(okParts({ inputFormat: "anthropic-messages" })))
+    expect(line).toContain("200 anthropic/claude-opus-4-8")
+    // The old <method> <path> columns are gone.
+    expect(line).not.toContain("POST")
+    expect(line).not.toContain("/v1/messages")
+  })
+
+  test("each inbound endpoint maps to its display label", () => {
+    const cases: Array<[EndpointType, string]> = [
+      ["anthropic-messages", "anthropic/"],
+      ["openai-chat-completions", "openai-cc/"],
+      ["openai-responses", "openai-re/"],
+      ["gemini-generate-content", "gemini/"],
+    ]
+    for (const [inputFormat, label] of cases) {
+      expect(stripAnsi(formatLogLine(okParts({ inputFormat })))).toContain(`${label}claude-opus-4-8`)
+    }
+  })
+
+  test("failure lines keep the full <method> <path> form even with inputFormat (debugging value)", () => {
+    const line = stripAnsi(formatLogLine(okParts({ prefix: "[FAIL]", status: 429, inputFormat: "anthropic-messages", isError: true })))
+    expect(line).toContain("429 POST /v1/messages claude-opus-4-8")
+    expect(line).not.toContain("anthropic/")
+  })
+
+  test("retry lines keep the full <method> <path> form even with inputFormat", () => {
+    const line = stripAnsi(formatLogLine(okParts({ prefix: "[RETRY]", status: 500, inputFormat: "anthropic-messages", isRetry: true })))
+    expect(line).toContain("POST /v1/messages")
+    expect(line).not.toContain("anthropic/")
+  })
+
+  test("a client→resolved remap is preserved inside the compact token", () => {
+    const line = stripAnsi(formatLogLine(okParts({ inputFormat: "openai-chat-completions", clientModel: "gpt-4o", model: "claude-opus-4-8" })))
+    expect(line).toContain("openai-cc/gpt-4o → claude-opus-4-8")
+  })
+
+  test("without inputFormat the full <method> <path> <model> form is retained (e.g. count_tokens lines)", () => {
+    const line = stripAnsi(formatLogLine(okParts()))
+    expect(line).toContain("200 POST /v1/messages claude-opus-4-8")
+  })
+
+  test("dim (start) lines never use the compact form", () => {
+    const line = stripAnsi(formatLogLine(okParts({ isDim: true, inputFormat: "anthropic-messages" })))
+    expect(line).toContain("POST /v1/messages")
+    expect(line).not.toContain("anthropic/")
+  })
+})
 
 describe("formatLogLine — token column + cache-rate marker", () => {
   test("token counts render with a lowercase 'k' unit", () => {

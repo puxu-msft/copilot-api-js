@@ -658,6 +658,10 @@ export class TerminalUi {
       time: formatTime(),
       method: ctx.method,
       path: ctx.path,
+      // Successful lines render `<inputFormat>/<model>` from the inbound endpoint
+      // instead of `<method> <path> <model>`; failure lines keep the full form
+      // (formatLogLine gates the compact form on !isError). See INPUT_FORMAT_LABEL.
+      inputFormat: ctx.endpoint,
       sessionId: ctx.sessionId,
       agentId: ctx.agentId,
       agentOrdinal: this.agentOrdinals.ordinalFor(ctx.sessionId, ctx.agentId),

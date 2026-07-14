@@ -2,6 +2,10 @@
  * Pure formatter for the canonical log line shape:
  *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> <sessionBlock> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> <stopReason>(<tools>) <extra> <retryableMeta>
  *
+ * Successful completion lines with a known inbound format collapse the
+ * `<method> <path> <model>` columns to a single `<inputFormat>/<model>` token
+ * (e.g. `anthropic/claude-opus-4.8`); failure/retry lines keep the full form.
+ *
  * Shared source of truth for the log-line shape, consumed by
  * `~/lib/tui/terminal-ui.ts` (the TerminalUi renderer) and its `render/`
  * helpers. Lives under `observability/projections/` because it is a pure
@@ -13,6 +17,8 @@
  */
 
 import pc from "picocolors"
+
+import type { EndpointType } from "~/lib/history/types"
 
 import { isSameModelName } from "~/lib/models/resolver"
 
@@ -26,11 +32,32 @@ import {
 } from "./format"
 import { formatSessionBlock } from "./session-block"
 
+/**
+ * Compact inbound-format label shown on successful completion lines in place of
+ * the `<method> <path>` columns — `<inputFormat>/<model>` (e.g.
+ * `anthropic/claude-opus-4.8`). Derived from the client's inbound endpoint
+ * (`ctx.endpoint`, an {@link EndpointType}); failure/retry lines keep the full
+ * `<method> <path>` for debugging.
+ */
+export const INPUT_FORMAT_LABEL: Record<EndpointType, string> = {
+  "anthropic-messages": "anthropic",
+  "openai-chat-completions": "openai-cc",
+  "openai-responses": "openai-re",
+  "gemini-generate-content": "gemini",
+}
+
 export interface LogLineParts {
   prefix: string
   time: string
   method: string
   path: string
+  /**
+   * Inbound client format (`ctx.endpoint`). When present on a successful line
+   * (not error/retry/dim), the `<method> <path> <model>` columns collapse to a
+   * single `<inputFormat>/<model>` token via {@link INPUT_FORMAT_LABEL}. Absent
+   * (e.g. synthetic count_tokens lines) → the full `<method> <path>` form.
+   */
+  inputFormat?: EndpointType
   /**
    * Session-identity block fields (rendered between the duration and the upload
    * bytes via {@link formatSessionBlock}): a `sessionId`-hashed colored glyph —
@@ -95,6 +122,7 @@ export function formatLogLine(parts: LogLineParts): string {
     time,
     method,
     path,
+    inputFormat,
     sessionId,
     agentId,
     agentOrdinal,
@@ -144,13 +172,21 @@ export function formatLogLine(parts: LogLineParts): string {
   const coloredMethod = pc.white(method)
   const coloredPath = pc.white(path)
 
-  // Show "clientModel → model" only on a genuine remap. Suppress the arrow
-  // when the client name and resolved name are the same model spelled
-  // differently (e.g. "claude-opus-4-8" vs "claude-opus-4.8").
-  let coloredModel = ""
-  if (model) {
-    coloredModel = clientModel && !isSameModelName(clientModel, model) ? ` ${pc.dim(clientModel)} → ${pc.magenta(model)}` : pc.magenta(` ${model}`)
+  // Successful lines with a known inbound format collapse the `<method> <path> <model>`
+  // columns to a single `<inputFormat>/<model>` token (e.g. `anthropic/claude-opus-4.8`);
+  // failure/retry lines keep the full `<method> <path>` for debugging.
+  const compact = !isError && !isRetry && inputFormat !== undefined && model !== undefined
+
+  // Model token WITHOUT a leading space, so both the full form (which adds its
+  // own space) and the compact `<inputFormat>/<model>` form can reuse it. Shows
+  // "clientModel → model" only on a genuine remap — suppressed when the client
+  // and resolved names are the same model spelled differently (e.g.
+  // "claude-opus-4-8" vs "claude-opus-4.8").
+  let modelToken = ""
+  if (model !== undefined) {
+    modelToken = clientModel && !isSameModelName(clientModel, model) ? `${pc.dim(clientModel)} → ${pc.magenta(model)}` : pc.magenta(model)
   }
+  const coloredModel = model === undefined ? "" : ` ${modelToken}`
   const coloredMultiplier = pc.dim(formatBillingLabel(multiplier))
   // Duration is severity-colored by raw ms (durationColor) at every production
   // call site (retry + terminal both pass durationMs); the plain-yellow branch
@@ -202,7 +238,11 @@ export function formatLogLine(parts: LogLineParts): string {
   // Request id appended dim at the very end (only when provided, e.g. error lines) for history lookup.
   const reqIdPart = reqId ? ` ${pc.dim(reqId)}` : ""
 
-  const statusAndMethod = coloredStatus ? `${coloredStatus} ${coloredMethod}` : coloredMethod
+  // Location segment between the status and the multiplier badge:
+  //   compact form → `<inputFormat>/<model>` (dim label + magenta model token)
+  //   full form    → `<method> <path> <model>`
+  const locationSegment = compact ? `${pc.dim(`${INPUT_FORMAT_LABEL[inputFormat]}/`)}${modelToken}` : `${coloredMethod} ${coloredPath}${coloredModel}`
+  const statusAndLocation = coloredStatus ? `${coloredStatus} ${locationSegment}` : locationSegment
 
-  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${blockPart}${sizeInfo}${tokenInfo}${stopReasonPart}${extraPart}${retryableMetaPart}${reqIdPart}`
+  return `${coloredPrefix} ${coloredTime} ${statusAndLocation}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${blockPart}${sizeInfo}${tokenInfo}${stopReasonPart}${extraPart}${retryableMetaPart}${reqIdPart}`
 }
