@@ -1075,6 +1075,8 @@ export const ConfigSchema = z
     hooks: nullableSection(HooksConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
+    upstream_transport: nullableSection(UpstreamTransportConfigSchema),
+    server: nullableSection(ServerConfigSchema),
     telemetry: nullableSection(TelemetryConfigSchema),
     model_refresh_interval: nullableNonnegativeInt(),
     /**
