@@ -10,6 +10,14 @@
  * ~backend/*; for now frontend-loose is acceptable.
  */
 
+// SSOT: the request-telemetry snapshot is OWNED by the backend (single-source-of-truth-types). The FE
+// re-exports the backend definition via `~backend/*` rather than re-declaring it. `import type` +
+// `export type` keep this a pure type reference — the build (esbuild/rollup) elides it entirely, so it
+// never pulls the backend module's value imports (`~/lib/state`, sqlite, consola) into the FE bundle.
+import type { RequestTelemetrySnapshot } from "~backend/lib/request-telemetry"
+
+export type { RequestTelemetrySnapshot } from "~backend/lib/request-telemetry"
+
 /** GET /api/status — aggregated server status. Top-level keys mirror the handler. */
 export interface ServerStatus {
   status?: string
@@ -18,7 +26,7 @@ export interface ServerStatus {
   activeRequests?: { count?: number }
   quota?: Record<string, unknown>
   rateLimiter?: Record<string, unknown>
-  requestTelemetry?: Record<string, unknown>
+  requestTelemetry?: RequestTelemetrySnapshot
   memory?: Record<string, unknown>
   shutdown?: Record<string, unknown>
   models?: Record<string, unknown>
