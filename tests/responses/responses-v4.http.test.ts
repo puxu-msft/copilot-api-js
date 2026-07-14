@@ -233,6 +233,12 @@ describe("Responses v4 driver path", () => {
   // owns-sink-two-racer.unit.test.ts; these lock the HANDLER's mapping).
   test("owns-sink streaming H3: mid-stream upstream error → entry failed + OpenAI error frame", async () => {
     setModels({ object: "list", data: [mockModel("gpt-resp", { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
+    // Explicit-false: this test is a LIVE-path baseline (it asserts `response.created` reaches the
+    // client BEFORE the mid-stream error). Default is now `true` (2026-07-14 P2 flip) — under
+    // buffered mode this ECONNRESET is a retryable transport-close, which the driver retries to
+    // exhaustion and then surfaces ONLY the synthesized error frame (no `response.created`, buffered
+    // and discarded). Force live so this test still exercises what it means to.
+    setStateForTests({ responsesBufferedRetry: false })
     const errMock = mock(() =>
       Promise.resolve(createSseResponseThenError([responsesStreamFrames("gpt-resp")[0]], new Error("ECONNRESET: mid-stream upstream blowup"))),
     )

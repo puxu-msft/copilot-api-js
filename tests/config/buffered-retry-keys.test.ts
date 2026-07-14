@@ -136,8 +136,15 @@ describe("resolveBufferedCaps priority", () => {
 // ============================================================================
 
 describe("buffered_retry.enabled mode switches", () => {
-  test("chat_completions default off", async () => {
+  // 2026-07-14 P3 default flip: chat_completions.buffered_retry now defaults to
+  // true (buffering/generation-preservation over the downstream streaming UX).
+  test("chat_completions default on", async () => {
     await applyYaml(``)
+    expect(state.chatCompletionsBufferedRetry).toBe(true)
+  })
+
+  test("chat_completions can opt back into live (unbuffered) forwarding via explicit false", async () => {
+    await applyYaml(`chat_completions:\n  buffered_retry: false\n`)
     expect(state.chatCompletionsBufferedRetry).toBe(false)
   })
 
@@ -238,13 +245,16 @@ describe("retain-on-absence + reset", () => {
   })
 
   test("resetConfigManagedState() restores built-in defaults", async () => {
-    await applyYaml(`buffered_retry:\n  max_retries: 8\nchat_completions:\n  buffered_retry: true\n`)
+    // chat_completions.buffered_retry built-in default is now `true` (2026-07-14 flip); explicitly
+    // set `false` first so this test can prove reset restores the built-in default (true), not just
+    // hold a value steady.
+    await applyYaml(`buffered_retry:\n  max_retries: 8\nchat_completions:\n  buffered_retry: false\n`)
     expect(resolveBufferedCaps("anthropic").maxRetries).toBe(8)
-    expect(state.chatCompletionsBufferedRetry).toBe(true)
+    expect(state.chatCompletionsBufferedRetry).toBe(false)
 
     resetConfigManagedState()
     expect(resolveBufferedCaps("anthropic")).toEqual({ maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 })
     expect(state.bufferedRetryOverrides).toEqual({})
-    expect(state.chatCompletionsBufferedRetry).toBe(false)
+    expect(state.chatCompletionsBufferedRetry).toBe(true)
   })
 })

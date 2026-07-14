@@ -330,6 +330,13 @@ describe("Responses WebSocket transport", () => {
       data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions", "/responses"] })],
     })
     emitTrailingAfterCompleted = true
+    // Explicit-false: this test exercises the LIVE path's `stopAfterFrame` terminal early-stop —
+    // `runResponseBufferedSink` never reads `stopAfterFrame` (driver.ts:577 is the only reference,
+    // in `runResponseSink`; see docs/todo/deferred-backlog.md's "structurally MOOT" note), so under
+    // the new default-true buffered WS path (2026-07-14 P4 flip) this trailing frame would simply
+    // never get committed rather than being read-then-dropped. Force live so this test still
+    // exercises the early-stop mechanism it means to test.
+    setStateForTests({ responsesBufferedRetry: false })
 
     server = startWsServer()
     const ws = new WebSocket(`${server.url}/responses`)
