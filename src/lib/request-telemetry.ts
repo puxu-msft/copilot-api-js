@@ -1438,7 +1438,8 @@ export function getThinkingBlockTotals(): ThinkingBlockCounts {
 }
 
 /** Default top-N for a dimension breakdown (the rest folds into `"other"`). */
-const DEFAULT_BREAKDOWN_LIMIT = 20
+/** Default top-N limit for `/api/stats` breakdowns. Exported so the P5 SQLite-tier route path (`src/lib/telemetry/read.ts` consumers) shares the same default as the in-memory `getDimensionBreakdown` — one knob, not two independently-drifting constants. */
+export const DEFAULT_BREAKDOWN_LIMIT = 20
 
 /** Add a counters bag into a `Map<string, number>` accumulator (Map.get → `| undefined`, so `?? 0` is honest). */
 function sumCountersInto(target: Map<string, number>, counters: Record<string, number>): void {
@@ -1769,6 +1770,17 @@ export function _resetRequestTelemetryForTests(): void {
 
 export function _setRequestTelemetryFilePathForTests(path: string): void {
   telemetryFilePath = path
+}
+
+/**
+ * The current telemetry.db handle (null when telemetry is disabled or the db failed to open) —
+ * production getter for the P5 SQLite-tier read path (`src/lib/telemetry/read.ts` primitives,
+ * consumed by the `/api/stats` route for `lifetime`/`30d`/`90d` windows). Distinct from
+ * `_getTelemetryDbForTests` (test-only assertion hook, same underlying variable): this one is the
+ * real production accessor other modules are meant to import, not a test-prefixed escape hatch.
+ */
+export function getTelemetryDb(): TelemetryDatabase | null {
+  return telemetryDb
 }
 
 /** Inject a telemetry.db handle directly (test isolation) — replaces any open handle without going through init. */
