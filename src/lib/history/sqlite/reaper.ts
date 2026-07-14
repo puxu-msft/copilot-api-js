@@ -14,7 +14,7 @@ import {
   runOptimize,
 } from "./connection"
 import { GC_ORPHAN_MSG_BLOB_SQL } from "./write"
-import { migrateOverflowToTier1 } from "./tier1-migrate"
+import { migrateOverflowToTier1, runTier1MigrationOnce } from "./tier1-migrate"
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -179,6 +179,14 @@ export function runReaperTick(successLimit: number, failureLimit: number): void 
   // finalize always wins; no loss/corruption, only a transient blip).
   reclaimStaleActiveRows()
   runReaperOnce(successLimit, failureLimit)
+  // Periodic time-based HOT→tier-1 migration (spec §3.3: startup + periodic). One
+  // bounded batch per tick (resumable — a large backlog drains over several ticks),
+  // gated on archiving enabled + attached. Independent of the count safety-valve in
+  // runReaperOnce (which handles overflow within the hot window); this cools rows
+  // that have simply aged past hot_days.
+  if (state.historyArchiveEnabled && isArchiveAttached(db)) {
+    runTier1MigrationOnce(db, { hotDays: state.historyArchiveHotDays, batchSize: 200 })
+  }
   // Return the pages just freed by eviction to the OS (no-op unless
   // auto_vacuum=INCREMENTAL is in effect — see incrementalVacuum).
   incrementalVacuum(db)

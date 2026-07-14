@@ -29,7 +29,7 @@ import {
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
 import { queryEntryCount } from "~/lib/history/sqlite/read"
-import { runReaperOnce } from "~/lib/history/sqlite/reaper"
+import { runReaperOnce, runReaperTick } from "~/lib/history/sqlite/reaper"
 import { insertCompletedEntry } from "~/lib/history/sqlite/write"
 import { setHistoryConfig } from "~/lib/state"
 
@@ -105,5 +105,33 @@ describe("reaper move-to-tier1 dispatch", () => {
     const deleted = runReaperOnce(1, 0)
     expect(deleted).toBe(3)
     expect(queryEntryCount()).toBe(1)
+  })
+
+  test("runReaperTick performs periodic time-based HOT→tier-1 migration for aged rows", async () => {
+    setHistoryConfig({ historyArchiveEnabled: true, historyArchiveHotDays: 3 })
+    attachFileArchive()
+    const now = Date.now()
+    const mk = async (id: string, startedAt: number) =>
+      insertCompletedEntry({
+        id,
+        endpoint: "anthropic-messages",
+        startedAt,
+        endedAt: startedAt,
+        durationMs: 0,
+        state: "completed",
+        active: false,
+        lastUpdatedAt: startedAt,
+        transport: "http",
+        inboundRequest: { model: "m" },
+        outboundResponse: { success: true, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, content: null },
+      } as HistoryEntry)
+    await mk("aged", now - 5 * 86400_000)
+    await mk("recent", now - 1 * 86400_000)
+
+    runReaperTick(10_000, 10_000) // limits high → no overflow eviction; only time-migration acts
+    // the aged row cooled to archive; the recent one stays HOT
+    expect(archiveCount()).toBe(1)
+    expect((getDatabase().prepare("SELECT COUNT(*) n FROM archive.entries_v2 WHERE id = 'aged'").get() as { n: number }).n).toBe(1)
+    expect(queryEntryCount()).toBe(1) // only "recent" left in HOT
   })
 })
