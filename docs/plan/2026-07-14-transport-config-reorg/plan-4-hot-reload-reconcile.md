@@ -49,7 +49,7 @@ reconcileH2SessionsForConfigChange()
 
 **generation 捕获-比较-丢弃竞态（spec §4 HIGH-3，硬性要求，非可选简化）**：`createSession()`（`sessionFactory(origin)`）在 socket/TLS 建连**完成前**就已经固化了连接级参数（`getUpstreamKeepAliveDelayMs()`/`getSessionConnectTimeoutMs()` 在 `await connectProxiedSocket`/`tls.connect` **之前**读取，P2 已定）——这意味着一次 `getSession()` 调用如果与一次 `reconcileH2SessionsForConfigChange()` 并发竞速，其正在建立的底层 TCP/TLS 连接本身，可能已经用了**旧**配置值，即使建连完成的那一刻 `currentGeneration` 已经是新值。仅仅"建连完成后重读配置值再打个新 generation 标签"不能挽救已经用旧参数建立的连接本身——那会让 `H2SessionStatusRow.generation` 撒谎（声称是新 generation，实际连接参数是旧的）。唯一正确的修复是**捕获-比较-丢弃-重试**：`getSession()` 在发起 `sessionFactory(origin)` 之前记下 `generationAtStart = currentGeneration`；建连完成后若 `currentGeneration !== generationAtStart`（说明建连期间发生了一次 reconcile），就丢弃这个刚建好的连接（`session.close()`）并**重新**读取最新配置值、重新建连，而不是把这个用旧参数建的连接硬套上新 generation 标签蒙混过关。这个重试循环收纳在同一个 creation 帧内的 `for (;;)` 结构里（而非递归调用 `getSession()`——递归会产生两层独立的 `pending.set/delete` 括号，在两帧之间的微任务窗口期，若有第三方调用者在外层 `pending` 已被内层 `finally` 误删后插入新的 `pending` 条目，会导致该条目被外层过期的 `finally` 意外删除；用同一帧内的循环从根本上消除这层竞态）。见 Task 1 Step 3 的完整实现。
 
-**reconcile 绝不能把异常向上抛（spec §4 HIGH-3 后半句，硬性要求）**：`state.ts` 的 `setTimeoutConfig()`（第 1418-1434 行）遍历 `transportTimeoutListeners` 时是 `for (const listener of transportTimeoutListeners) listener()`——**没有** try/catch。这意味着如果 `reconcileH2SessionsForConfigChange()` 作为其中一个 listener 抛出异常，会中断这个循环、跳过它之后注册的所有其他 listener（包括 WS 侧的 reconcile listener、`proxy.ts` 的 dispatcher 重建 listener），造成"配置本身已经应用成功，但部分订阅者完全没收到通知"的隐蔽不一致状态——这比"reconcile 失败但被记录、其他订阅者正常收到通知"糟糕得多。因此 `reconcileH2SessionsForConfigChange()` 内部必须自己吞掉所有异常，只把结果记录到 `reconcileState`/`lastReconcileError`（可观测，供 P5 的 `getH2ReconcileStatus()` 暴露），绝不重新 `throw`；同时也不能静默吞掉不打日志——用 `consola.error` 打印，确保"failed"状态不是唯一的痕迹。见 Task 1 Step 3 的完整实现。
+**reconcile 绝不能把异常向上抛（spec §4 HIGH-3 后半句，硬性要求）**：`state.ts` 的 `setTimeoutConfig()`（第 1418-1434 行）遍历 `requestWatchdogListeners`（原名 `transportTimeoutListeners`，plan-1 Task 5 Step 4b 已改名为 `onRequestWatchdogChange`/`requestWatchdogListeners`，spec §6 item 2 + §7 要求零残留）时是 `for (const listener of requestWatchdogListeners) listener()`——**没有** try/catch。这意味着如果 `reconcileH2SessionsForConfigChange()` 作为其中一个 listener 抛出异常，会中断这个循环、跳过它之后注册的所有其他 listener（包括 WS 侧的 reconcile listener、`proxy.ts` 的 dispatcher 重建 listener），造成"配置本身已经应用成功，但部分订阅者完全没收到通知"的隐蔽不一致状态——这比"reconcile 失败但被记录、其他订阅者正常收到通知"糟糕得多。因此 `reconcileH2SessionsForConfigChange()` 内部必须自己吞掉所有异常，只把结果记录到 `reconcileState`/`lastReconcileError`（可观测，供 P5 的 `getH2ReconcileStatus()` 暴露），绝不重新 `throw`；同时也不能静默吞掉不打日志——用 `consola.error` 打印，确保"failed"状态不是唯一的痕迹。见 Task 1 Step 3 的完整实现。
 
 ### WS（`upstream-ws-connection.ts` + `upstream-ws.ts`）
 
@@ -516,7 +516,7 @@ function maybeReclaimRetiringSession(entry: H2SessionEntry): void {
  *
  * Must NEVER throw (HIGH-3): this function runs as one of possibly several
  * synchronous listeners inside state.ts's `setTimeoutConfig()` listener loop
- * (`for (const listener of transportTimeoutListeners) listener()` — no
+ * (`for (const listener of requestWatchdogListeners) listener()` — no
  * try/catch there). A thrown error here would abort that loop and silently
  * skip every listener registered after this one (including the WS-side
  * reconcile listener and proxy.ts's dispatcher-rebuild listener), even though
