@@ -182,6 +182,24 @@ export function readCumulativeAccepted(db: TelemetryDatabase): number {
 }
 
 /**
+ * 通用 tel_meta 整数读原语（value 为 TEXT，存整数字符串——对齐 accepted/gamma 模式）。
+ * 行不存在 / 非法值 → `null`（区别于 {@link readCumulativeAccepted} 的 0 默认：调用方据 null 判「从未写过」，
+ * 如 rollup watermark 首次上卷需 null 语义，不能与「已上卷到 bucket 0」混淆）。用 `Math.trunc` 归整
+ * （watermark 是 bucket_ts 毫秒整数，防止历史非整值残留）。
+ */
+export function readMetaInt(db: TelemetryDatabase, key: string): number | null {
+  const row = db.prepare("SELECT value FROM tel_meta WHERE key = ?").get(key) as { value: string | number | null } | undefined
+  if (!row) return null
+  const parsed = Number(row.value)
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null
+}
+
+/** 通用 tel_meta 整数写原语（幂等替换，非加性——watermark 单调推进由调用方保证，此处纯覆写）。 */
+export function writeMetaInt(db: TelemetryDatabase, key: string, value: number): void {
+  db.prepare("INSERT INTO tel_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, String(Math.trunc(value)))
+}
+
+/**
  * tel_meta 里冻结「本库创建时的 sketch relativeAccuracy」的键名。键名沿用 config 键 `sketch_gamma`
  * 以便对齐，但**该字段实际承载的是 DDSketch 的 relativeAccuracy 数值**（`createSketch(relativeAccuracy)`），
  * 而非数学意义上的 γ（mapping.gamma = (1+ra)/(1-ra)）。命名统一到 relativeAccuracy 见 backlog。
