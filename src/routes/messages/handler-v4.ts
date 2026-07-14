@@ -1069,7 +1069,12 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     // unrepairable/repair signal never leaks into the committed one (audit C1/H1).
     env.ctx.resetRepairOutcomesForAttempt()
     streamState = {
-      streamStartMs: streamState.streamStartMs,
+      // MEDIUM-2: reset the diagnostic time base to THIS attempt's start (paired with the `sseEvents = []`
+      // reset above) so a zero-frame final buffered attempt reports `silence` relative to the attempt, not
+      // the whole request — otherwise a healthy attempt-1 + instant-fail attempt-2 re-reads as whole-request
+      // silence (the gpt-5.6-sol misread, in a sub-case). `streamStartMs` here feeds ONLY recordUpstreamFrame's
+      // offsetMs + the disconnect elapsed (both per-attempt); the client timing epoch uses the outer const.
+      streamStartMs: Date.now(),
       bytesIn: 0,
       eventsIn: 0,
       currentBlockType: "",
@@ -1433,7 +1438,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       const errUsage = codec.getStreamMeta()?.usage
       logUpstreamStreamError(error, {
         model,
-        streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+        streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
         acc: { inputTokens: errUsage?.input_tokens ?? 0, outputTokens: errUsage?.output_tokens ?? 0 },
         sseEvents: diag.sseEvents,
       })

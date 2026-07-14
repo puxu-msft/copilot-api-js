@@ -42,38 +42,55 @@ export function upstreamFrameDiagType(rawEvent: ServerSentEventMessage): string 
     const parsed = JSON.parse(data) as Record<string, unknown>
     return (typeof parsed.type === "string" && parsed.type) || (typeof parsed.object === "string" && parsed.object) || rawEvent.event || "keepalive"
   } catch {
-    // A malformed frame is still wire activity — label by its SSE `event:` line, else a neutral fallback.
-    return rawEvent.event ?? "keepalive"
+    // A malformed DATA-bearing frame is wire activity carrying UNPARSEABLE content — label by its SSE
+    // `event:` line, else `malformed` (NOT `keepalive`: this file exists to stop real frames being mislabelled
+    // as silence, and an empty-data keepalive vs a garbled-data frame are different diagnostic facts).
+    return rawEvent.event ?? "malformed"
   }
 }
 
 /** Live upstream-frame signal collector for the disconnect diagnostic. */
 export interface UpstreamFrameDiagnostics {
   /**
-   * Observe ONE raw upstream frame (verbatim, pre-render). Counts EVERY frame — including empty
-   * keepalives and the `[DONE]` terminator — so the diagnostic faithfully reflects wire activity: an
-   * empty ping frame is still a byte on the wire, and under-counting it would re-mislead a live stream as
-   * silent. Mirrors the direct Anthropic pump's `recordUpstreamFrame` (which also counts unconditionally).
+   * Observe ONE raw upstream frame (verbatim, pre-render). Counts EVERY frame handed to it — including
+   * empty keepalive comments — so the diagnostic faithfully reflects wire activity (an empty ping frame is
+   * still a byte on the wire, and under-counting it would re-mislead a live stream as silent). Mirrors the
+   * direct Anthropic pump's `recordUpstreamFrame` (which also counts unconditionally).
+   *
+   * NOTE on `[DONE]`: in PRODUCTION the driver's `onUpstreamFrame` hook is gated behind `data !== "[DONE]"`
+   * (driver.ts — the `[DONE]` sentinel is a gateway-injected transport terminator, excluded from the persisted
+   * upstream-original track too), so a wired collector never observes `[DONE]`. `observe` still labels it
+   * honestly if called directly (a pure-function property), but do NOT read the interface as "production counts
+   * the terminator". The real gap-B case this closes is the EMPTY keepalive (which DOES pass the driver gate).
    */
   observe: (rawEvent: ServerSentEventMessage) => void
   /** The verbatim raw-frame track (diagnostics-only; the PERSISTED upstream-original track is the driver's). */
   readonly sseEvents: Array<SseEventRecord>
-  /** Total upstream bytes observed (sum of every frame's `data` length, including terminators/keepalives). */
+  /** Total upstream bytes observed (sum of every observed frame's `data` length, incl. empty keepalives). */
   readonly bytesIn: number
+  /**
+   * The epoch this collector was anchored at — the SAME base every `sseEvents[i].offsetMs` is relative to.
+   * The disconnect emit MUST derive `elapsedMs` from THIS (not a separately-threaded request-start), or a
+   * buffered retry that rebinds a fresh per-attempt collector would mix a whole-request elapsed with the
+   * last-attempt's frames → a zero-frame final attempt re-reported as `frames=0 / silence=<whole request>`
+   * (the exact gpt-5.6-sol misread, in a sub-case). Pair `startedAtMs` with `sseEvents` at the emit site.
+   */
+  readonly startedAtMs: number
 }
 
-/** Create a per-request upstream-frame diagnostics collector anchored at the stream's start time. */
-export function createUpstreamFrameDiagnostics(streamStartMs: number): UpstreamFrameDiagnostics {
+/** Create a per-request (or per-buffered-attempt) upstream-frame diagnostics collector anchored at `startedAtMs`. */
+export function createUpstreamFrameDiagnostics(startedAtMs: number): UpstreamFrameDiagnostics {
   const sseEvents: Array<SseEventRecord> = []
   let bytesIn = 0
   return {
     sseEvents,
+    startedAtMs,
     get bytesIn() {
       return bytesIn
     },
     observe(rawEvent: ServerSentEventMessage): void {
       bytesIn += rawEvent.data?.length ?? 0
-      sseEvents.push({ offsetMs: Date.now() - streamStartMs, type: upstreamFrameDiagType(rawEvent), raw: rawEvent.data ?? "" })
+      sseEvents.push({ offsetMs: Date.now() - startedAtMs, type: upstreamFrameDiagType(rawEvent), raw: rawEvent.data ?? "" })
     },
   }
 }

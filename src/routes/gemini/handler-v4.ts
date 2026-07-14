@@ -368,7 +368,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     consola.error("[gemini:v4] Stream error:", error)
     logUpstreamStreamError(error, {
       model,
-      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
       acc: { inputTokens: geminiUsageFromMeta(meta).input_tokens, outputTokens: geminiUsageFromMeta(meta).output_tokens },
       sseEvents: diag.sseEvents,
     })
@@ -586,7 +586,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     consola.error("[gemini:v4:reverse] Stream error:", error)
     logUpstreamStreamError(error, {
       model: anthropicAcc.model || model,
-      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
       acc: { inputTokens: anthropicAcc.inputTokens, outputTokens: anthropicAcc.outputTokens },
       sseEvents: diag.sseEvents,
     })

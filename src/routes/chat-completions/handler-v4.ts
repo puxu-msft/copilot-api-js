@@ -489,7 +489,9 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
           acc = createOpenAIStreamAccumulator()
           bytesIn = 0
           eventsIn = 0
-          diag = createUpstreamFrameDiagnostics(streamStartMs)
+          // MEDIUM-2: anchor the fresh collector at THIS attempt's start (not the original request time) so
+          // a zero-frame final attempt reports `silence` relative to the attempt, not the whole request.
+          diag = createUpstreamFrameDiagnostics(Date.now())
         },
       })
     : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame, onUpstreamFrame })
@@ -522,7 +524,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     consola.error("[ChatCompletions:v4] Stream error:", error)
     logUpstreamStreamError(error, {
       model: acc.model || model,
-      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
       acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
       sseEvents: diag.sseEvents,
     })
@@ -712,7 +714,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     consola.error("[ChatCompletions:v4:reverse] Stream error:", error)
     logUpstreamStreamError(error, {
       model: anthropicAcc.model || model,
-      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
       acc: { inputTokens: anthropicAcc.inputTokens, outputTokens: anthropicAcc.outputTokens },
       sseEvents: diag.sseEvents,
     })

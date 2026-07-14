@@ -434,7 +434,9 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
         onAttemptReset: () => {
           acc = createResponsesStreamAccumulator()
           eventsReceived = 0
-          diag = createUpstreamFrameDiagnostics(streamStartMs)
+          // MEDIUM-2: anchor the fresh collector at THIS attempt's start (not the original request time) so
+          // a zero-frame final attempt reports `silence` relative to the attempt, not the whole request.
+          diag = createUpstreamFrameDiagnostics(Date.now())
         },
       })
     : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, onUpstreamFrame, stopAfterFrame: isTerminal })
@@ -457,7 +459,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     consola.error(`[WS] Responses API error: ${message}`)
     logUpstreamStreamError(error, {
       model: acc.model || resolvedModel,
-      streamState: { streamStartMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
       acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
       sseEvents: diag.sseEvents,
     })
