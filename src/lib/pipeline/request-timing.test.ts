@@ -1,8 +1,14 @@
-import { describe, expect, it } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  it,
+} from "bun:test"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 
 import {
+  //
   isClientContentFrame,
   isFirstUpstreamContent,
   isUpstreamContentFrame,
@@ -74,5 +80,13 @@ describe("isClientContentFrame (keyed by clientFormat/ClientFormat)", () => {
     expect(isClientContentFrame(dataOnly('{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}'), "gemini")).toBe(true)
     expect(isClientContentFrame(dataOnly('{"candidates":[{"content":{"parts":[{"functionCall":{}}]}}]}'), "gemini")).toBe(true)
     expect(isClientContentFrame(dataOnly('{"candidates":[{"content":{"parts":[{}]}}]}'), "gemini")).toBe(false)
+  })
+  it("openai-responses: HTTP (has event) AND WS (data-only, no event) both trigger — review HIGH-1", () => {
+    // HTTP responses: event line present.
+    expect(isClientContentFrame(evt("response.output_text.delta"), "openai-responses")).toBe(true)
+    // WS responses: restoreAccumulateCount strips the event line → data-only. Must parse data.type.
+    expect(isClientContentFrame(dataOnly('{"type":"response.output_text.delta","delta":"hi"}'), "openai-responses")).toBe(true)
+    // Non-content responses events (no event line, WS shape) → not content.
+    expect(isClientContentFrame(dataOnly('{"type":"response.created"}'), "openai-responses")).toBe(false)
   })
 })

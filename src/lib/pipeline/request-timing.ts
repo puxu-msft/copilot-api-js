@@ -76,7 +76,21 @@ function openaiChunkHasContent(frame: RawFrame): boolean {
 function geminiPartHasContent(frame: RawFrame): boolean {
   const parts = parseData(frame)?.candidates?.[0]?.content?.parts
   if (!Array.isArray(parts)) return false
-  return parts.some((p) => (typeof p?.text === "string" && p.text.length > 0) || p?.functionCall != null)
+  return parts.some((p) => (typeof p.text === "string" && p.text.length > 0) || p.functionCall !== undefined)
+}
+
+/**
+ * responses 帧（HTTP 带 event 行、WS 剥掉 event 只留 data）的「首个真实内容」判据——parse `data.type`。
+ * 与 openai-cc/gemini 一致走 data-only parse（spec D5），故对 HTTP + WS 两传输都健壮：WS 的
+ * `restoreAccumulateCount` 返回 `{ data }` 无 event（responses/ws.ts），若读 frame.event 会全漏。
+ */
+function responsesFrameIsOutputTextDelta(frame: RawFrame): boolean {
+  if (frame.event === "response.output_text.delta") return true // HTTP 快路径（有 event 行）
+  try {
+    return frame.data !== undefined && (JSON.parse(frame.data) as { type?: unknown }).type === "response.output_text.delta"
+  } catch {
+    return false
+  }
 }
 
 /** 上游首个「承诺产出内容」信号（含 tool-first / reasoning-first）——按 targetEndpoint。 */
@@ -124,7 +138,7 @@ export function isClientContentFrame(frame: RawFrame, clientFormat: ClientFormat
       return frame.event === "content_block_delta"
     }
     case "openai-responses": {
-      return frame.event === "response.output_text.delta"
+      return responsesFrameIsOutputTextDelta(frame)
     }
     case "openai-cc": {
       return openaiChunkHasContent(frame)
