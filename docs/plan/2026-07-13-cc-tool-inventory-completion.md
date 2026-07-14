@@ -1,6 +1,6 @@
 # Plan: 补全 CC 2.1.207 工具清单（F28 + F32，F30 已收敛进 F28）
 
-> 状态：Task 2 已落地（2026-07-14，隔离 worktree `feat/cc-tool-inventory-ssot`，BASE 1828a71d）——commit A `233adada`（根因修复：解除 Path 2 tool-search 门控）+ commit B（回退 F28 清单追加 + 校正 F32 延迟断言 + 补 deferred-backlog）。详见 `.superpowers/sdd/task-2-report.md`。
+> 状态：**已完成、过 whole-branch review（opus）、可合并**（2026-07-14）。净效果=F28 根因修复（解 Path 2 门控）+ F32 前缀 + 文档校正；F30 证伪、非延迟维度接受为权衡。Task 2 已落地（2026-07-14，隔离 worktree `feat/cc-tool-inventory-ssot`，BASE 1828a71d）——commit A `233adada`（根因修复：解除 Path 2 tool-search 门控）+ commit B（回退 F28 清单追加 + 校正 F32 延迟断言 + 补 deferred-backlog）。详见 `.superpowers/sdd/task-2-report.md`。
 > 源：`docs/todo/cc-client-2.1.207-behavior-audit.md` 的 F28/F32（F30 实现期证伪、收敛进 F28）。
 
 ## 背景 / 根因
