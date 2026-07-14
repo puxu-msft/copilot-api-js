@@ -1,11 +1,19 @@
 ---
 name: live-ghc-e2e-verification
-description: 当要用「真实请求走本项目 + 真实 GHC 计费后端」端到端验证一个功能/改动在**生产形态**下正确时使用——起隔离测试服务器（跑新码、真 GHC auth、独立 history.db 不污染真库）→ 发真请求覆盖被改路径 → History API 当核验 oracle（路由/双轨/真实 usage 计费/转发帧）。触发：功能开发/补全后想在真 GHC 上确认「不只测试绿，实际也对」、想验某改动没回归真实管线、想看真实 usage/计费/路由怎么记。**区别于 `client-proxy-e2e-testing`**（那个上游全程 mock、离线不烧额度、客户端 SDK/CLI 当 oracle 测客户端行为；本 skill 打真实 GHC、烧真实额度、History API 当 oracle 验端到端 + 计费）。共享的服务器 spawn 机制（`start` 子命令坑 / `XDG_DATA_HOME` 隔离 / PID 清理）见那个 skill，本 skill 不重复。裁决可信度实测 > 文档 > 声称，见 `empirical-verification`。
+description: 当要用「真实请求走本项目 + 真实 GHC 计费后端」端到端验证 mock 够不到的**少数关键点**时使用——真 GHC 帧结构/顺序、真实 usage 计费落库、真 catalog 路由解析。**mock 是覆盖面主力（`client-proxy-e2e-testing`/`upstream-hook-mocking`/golden·http，离线免费更多样），本 skill 是靶向补充、不取代 mock、缺一不可**：只在 mock 结构上证不了真上游行为/真计费时补一发（烧真实额度、故靶向 + 便宜模型 + 小 max_tokens）。做法：起隔离测试服务器（跑新码、真 GHC auth、独立 history.db 不污染真库）→ 发真请求覆盖被改路径 → History API 当核验 oracle（路由/双轨/真实 usage/转发帧）。触发：功能开发/补全后想在真 GHC 上确认「不只测试绿、真帧真计费也对」。共享的服务器 spawn 机制（`start` 子命令坑 / `XDG_DATA_HOME` 隔离 / PID 清理）见 `client-proxy-e2e-testing`。裁决可信度实测 > 文档 > 声称，见 `empirical-verification`。
 ---
 
 # Live GHC 端到端验证（真实计费后端、生产形态）
 
-自洽单测绿 + 上游 mock e2e 绿 **两个盲点**：① 测试与实现同源出错一起绿；② mock 上游帧是你捏的、真 GHC 帧结构/顺序/usage 可能不同。**唯一能同时排掉两者的 = 真请求打真 GHC**。代价是烧真实额度、触真实计费——所以靶向（只发被改路径）+ 省额度（便宜模型 + 小 `max_tokens`）。
+**mock 与 billed 是互补两层、缺一不可，不是谁取代谁。** 分工：
+
+| | mock（上游屏蔽） | billed（真实 GHC，本 skill） |
+|---|---|---|
+| 覆盖面 | **主力、更多样**——离线/免费/快/确定性可复现，能构造**任意**边界、错误注入、时序、多轮、畸形帧、retry 触发 | **少数特定几种**——真帧结构/顺序、真 usage 计费、真 catalog 路由 |
+| 归属 skill | `client-proxy-e2e-testing`（客户端 oracle）/ `upstream-hook-mocking`（mock 上游一段）/ golden·http 测试 | 本 skill |
+| 何时用 | **默认主力**：绝大多数场景、CI、回归、边界穷举都走 mock | **只在 mock 证不了的少数关键点补一发**：真 GHC 帧到底长啥样、真实 usage/计费怎么记、路由对真 catalog 是否解析对 |
+
+mock 的「上游帧是你捏的」**不是缺陷、是它换来广度+免费+可复现的取舍**——绝大多数逻辑/边界/客户端行为 mock 就够且更适合。billed 只补 mock 结构上够不到的两件事：① **真 GHC 的真实 wire 行为**（帧序/字段/usage 你没法凭 mock 100% 复现真上游）；② **端到端 + 计费落库真相**（真 token 计量、真路由决策记进 history）。**因为烧真实额度、触真实计费**，billed 永远靶向（只发被改的关键路径）+ 省额度（便宜模型 + 小 `max_tokens`），绝不用它做 mock 该做的广覆盖。
 
 **最大盲点先记死：`live=旧码`。** 4141 主服务器跑的几乎总是你**改动前**的代码（用户没为你重启）。验你的改动**必须让新码在跑**——绝不 kill/重启 4141（`protect-user-main-server`），而是在**其他端口起隔离测试服务器**跑当前 worktree 代码。
 
