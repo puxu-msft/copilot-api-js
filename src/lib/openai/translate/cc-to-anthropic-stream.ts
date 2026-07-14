@@ -24,13 +24,14 @@
  *   - **tool_calls** (CC `delta.tool_calls[].index`, 0-based, independent) → one `tool_use` block each,
  *     allocated a MONOTONE Anthropic index the first time that CC tool index appears (W1). A leading
  *     text block takes index 0, so the first tool lands at index 1 (the off-by-one source golden).
- *   - **reasoning** deltas (`delta.reasoning` / `reasoning_content`, a GHC extension) are RECOGNIZED and
- *     DROPPED — NOT rendered as a thinking block (W2 thinking-aware allocator). Fabricating an UNSIGNED
- *     thinking block would poison a client round-trip (GHC "cannot be modified" 400, skill
- *     `ghc-anthropic-upstream`); mirrors the non-streaming `cc-to-anthropic.ts`, which also drops
- *     reasoning. If a future OQ1 conclusion transmits a SIGNED thinking block, it slots in at the FRONT
- *     (thinking-first) because reasoning naturally precedes content, so lazy in-arrival-order allocation
- *     already yields index 0. See docs/plan/…/plan.md T4.4 (OQ1) + PROBE-FINDINGS.md.
+ *   - **reasoning** deltas (`delta.reasoning` / `reasoning_content`, a GHC extension) are FORWARDED as a
+ *     synthetic `thinking` block under a SENTINEL signature (`~/lib/anthropic/synthetic-reasoning`):
+ *     GPT's visible reasoning has real value (richest-data-flow), so it is no longer dropped. We cannot
+ *     forge a real Anthropic signature, so the block is stamped with an identifiable sentinel that the
+ *     request-side sanitizer strips UNCONDITIONALLY on echo-back — this keeps an unforgeable signature
+ *     from ever reaching a signature-checking upstream (the direct Claude leg's "cannot be modified" 400,
+ *     skill `ghc-anthropic-upstream`). Reasoning arrives before content, so lazy in-arrival-order
+ *     allocation already yields index 0 (thinking-first, the Anthropic ordering).
  *   - **finish_reason** → the Anthropic `stop_reason` (deferred to `flush`'s `message_delta`).
  *
  * Multi-choices FOLD (N1 / PROBE-FINDINGS): GHC's cc leg splits one logical turn's text + tool_use into
@@ -48,6 +49,7 @@ import type { UsageData } from "~/lib/history/types"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 
 import { anthropicSseFrame } from "~/lib/anthropic/sse-frame"
+import { SYNTHETIC_REASONING_SIGNATURE } from "~/lib/anthropic/synthetic-reasoning"
 import {
   //
   accumulateOpenAIStreamEvent,
@@ -88,8 +90,8 @@ export interface CcToAnthropicStreamTranslator {
 interface OpenBlock {
   /** The Anthropic block index. */
   index: number
-  /** `text` or `tool_use` (thinking is never opened — reasoning is dropped, see module doc). */
-  kind: "text" | "tool_use"
+  /** `thinking` (synthetic reasoning), `text`, or `tool_use`. */
+  kind: "thinking" | "text" | "tool_use"
 }
 
 /** Map a CC `finish_reason` to an Anthropic `stop_reason` (mirrors the non-streaming aggregate). */
@@ -110,6 +112,8 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
   // W1 block-index allocator: a SINGLE monotone counter across text + tool blocks.
   let nextIndex = 0
   let textBlockIndex: number | undefined
+  /** The synthetic-reasoning (thinking) block index, allocated on the first reasoning delta. */
+  let thinkingBlockIndex: number | undefined
   /** CC tool index → allocated Anthropic block index (allocated on first appearance). */
   const toolIndexMap = new Map<number, number>()
   /** The block currently open on the wire (Anthropic forbids two open blocks). */
@@ -159,6 +163,12 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
   /** Close the currently-open block (if any) with a `content_block_stop`. */
   const closeOpenBlock = (out: Array<CcToAnthropicStreamStep>): void => {
     if (openBlock === undefined) return
+    // A thinking block must carry a `signature` before it closes (Anthropic streams the seal as a
+    // trailing `signature_delta`). We forward GPT's UNFORGEABLE plaintext reasoning under a SENTINEL
+    // signature — distinguishable as ours + stripped on echo-back (see synthetic-reasoning.ts).
+    if (openBlock.kind === "thinking") {
+      out.push({ frame: anthropicSseFrame({ type: "content_block_delta", index: openBlock.index, delta: { type: "signature_delta", signature: SYNTHETIC_REASONING_SIGNATURE } }) })
+    }
     out.push({ frame: anthropicSseFrame({ type: "content_block_stop", index: openBlock.index }) })
     openBlock = undefined
   }
@@ -191,9 +201,22 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
       for (const choice of chunk.choices) {
         const delta = choice.delta as ChatCompletionChunk["choices"][number]["delta"] & { reasoning?: unknown; reasoning_content?: unknown }
 
-        // Reasoning delta (GHC extension) — RECOGNIZED and DROPPED (W2 thinking-aware): never render an
-        // unsigned thinking block (would poison a client round-trip). See the module doc + OQ1/T4.4.
-        // (No frame emitted; the reasoning_tokens count is still captured by the accumulator above.)
+        // Reasoning delta (GHC extension) — FORWARD it as a synthetic `thinking` block under a sentinel
+        // signature (richest-data-flow: GPT's visible reasoning has real value). It is stamped
+        // distinguishable + stripped on echo-back so it never poisons a direct-Claude round-trip (see
+        // synthetic-reasoning.ts). Reasoning arrives before content, so lazy allocation yields index 0
+        // (thinking-first, the Anthropic ordering). The accumulator still captures reasoning_tokens.
+        const reasoningRaw = (delta as { reasoning?: unknown; reasoning_content?: unknown }).reasoning ?? (delta as { reasoning_content?: unknown }).reasoning_content
+        const reasoningDelta = typeof reasoningRaw === "string" ? reasoningRaw : ""
+        if (reasoningDelta.length > 0) {
+          if (openBlock?.kind !== "thinking") {
+            closeOpenBlock(out)
+            thinkingBlockIndex = nextIndex++
+            openBlock = { index: thinkingBlockIndex, kind: "thinking" }
+            out.push({ frame: anthropicSseFrame({ type: "content_block_start", index: thinkingBlockIndex, content_block: { type: "thinking", thinking: "", signature: "" } }) })
+          }
+          out.push({ frame: anthropicSseFrame({ type: "content_block_delta", index: openBlock.index, delta: { type: "thinking_delta", thinking: reasoningDelta } }) })
+        }
 
         // Text delta → open/continue the text block, stream a text_delta.
         const textDelta = typeof delta.content === "string" ? delta.content : ""

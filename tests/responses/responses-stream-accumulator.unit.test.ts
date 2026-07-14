@@ -345,6 +345,73 @@ describe("accumulateResponsesStreamEvent", () => {
     expect(acc.toolCalls[0].callId).toBe("call_ghi")
   })
 
+  // REGRESSION (no-delta merge shape): a function_call can arrive with NO `arguments.delta` frames —
+  // only lifecycle + a terminal `.done` carrying the COMPLETE `arguments` (real GHC compat shape, see
+  // tests/e2e-client/responses-nodelta.probe.it.test.ts). `.done.arguments` is the authoritative final
+  // value, so it must be used (not the empty joined deltas). Before this, `.done` ignored `event.arguments`
+  // and the only reason args survived was the DUPLICATE `output_item.done` copy — once output_index dedup
+  // removed that duplicate, the sole tool_call had `arguments: ""`.
+  test("no-delta shape: arguments.done carries the full arguments verbatim (not the empty delta join)", () => {
+    const acc = createResponsesStreamAccumulator()
+    accumulateResponsesStreamEvent(
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "function_call", id: "added_a", call_id: "call_1", name: "search", arguments: "", status: "in_progress" },
+      } as any,
+      acc,
+    )
+    // NO function_call_arguments.delta frames — the full arguments arrive ONLY on `.done`.
+    accumulateResponsesStreamEvent(
+      { type: "response.function_call_arguments.done", output_index: 0, item_id: "argsdone_b", arguments: '{"city":"Paris"}' } as any,
+      acc,
+    )
+    accumulateResponsesStreamEvent(
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "function_call", id: "itemdone_c", call_id: "call_1", name: "search", arguments: '{"city":"Paris"}', status: "completed" },
+      } as any,
+      acc,
+    )
+    expect(acc.toolCalls).toHaveLength(1)
+    expect(acc.toolCalls[0].arguments).toBe('{"city":"Paris"}')
+    expect(acc.toolCalls[0].name).toBe("search")
+  })
+
+  test("arguments.done: authoritative `.done.arguments` wins over the concatenated deltas", () => {
+    const acc = createResponsesStreamAccumulator()
+    accumulateResponsesStreamEvent(
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "function_call", id: "a", call_id: "call_x", name: "run", arguments: "", status: "in_progress" },
+      } as any,
+      acc,
+    )
+    accumulateResponsesStreamEvent({ type: "response.function_call_arguments.delta", output_index: 0, item_id: "a", delta: '{"partial":' } as any, acc)
+    // `.done` carries the COMPLETE arguments — it is authoritative over a (here, truncated) delta stream.
+    accumulateResponsesStreamEvent({ type: "response.function_call_arguments.done", output_index: 0, item_id: "a", arguments: '{"partial":true}' } as any, acc)
+    expect(acc.toolCalls).toHaveLength(1)
+    expect(acc.toolCalls[0].arguments).toBe('{"partial":true}')
+  })
+
+  test("arguments.done with empty `.done.arguments` falls back to the concatenated deltas", () => {
+    const acc = createResponsesStreamAccumulator()
+    accumulateResponsesStreamEvent(
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "function_call", id: "a", call_id: "call_y", name: "run", arguments: "", status: "in_progress" },
+      } as any,
+      acc,
+    )
+    accumulateResponsesStreamEvent({ type: "response.function_call_arguments.delta", output_index: 0, item_id: "a", delta: '{"k":1}' } as any, acc)
+    accumulateResponsesStreamEvent({ type: "response.function_call_arguments.done", output_index: 0, item_id: "a", arguments: "" } as any, acc)
+    expect(acc.toolCalls).toHaveLength(1)
+    expect(acc.toolCalls[0].arguments).toBe('{"k":1}')
+  })
+
   test("finalizes function call on output_item.done if not already finalized", () => {
     const acc = createResponsesStreamAccumulator()
     accumulateResponsesStreamEvent(

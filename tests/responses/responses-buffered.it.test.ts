@@ -23,8 +23,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import { getProtectStreamingStats } from "~/lib/anthropic/protect-streaming-stats"
 import { getHistory } from "~/lib/history/store"
@@ -328,7 +330,22 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
     })
     rstBeforeComplete = 99 // EVERY attempt RSTs mid-stream — the upstream never reaches a terminal
 
-    const sse = await (await streamRequest()).text()
+    // The buffered pump must ALSO emit the [upstream-diagnostics] disconnect line on the exhausted
+    // stream-error, carrying the LAST attempt's REAL signals via the rebound collector (LOW-2 wiring
+    // guard): frames>0 (partialFrames has 2), never `frames=0`, honest last-frame — NOT the pre-fix
+    // silence. Locks that the buffered `onAttemptReset` rebind actually feeds `logUpstreamStreamError`.
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let sse: string
+    try {
+      sse = await (await streamRequest()).text()
+    } finally {
+      const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(diagLine).toBeDefined()
+      expect(diagLine).toContain("model=gpt-5")
+      expect(diagLine).not.toContain("frames=0")
+      expect(diagLine).not.toContain("last-frame=none@0ms")
+    }
 
     // All-or-nothing: nothing committed → the client gets ZERO content frames, only the synthetic
     // error terminator (the buffered path never live-forwards a discarded attempt's partial).

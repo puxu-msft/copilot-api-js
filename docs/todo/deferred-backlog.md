@@ -585,3 +585,73 @@
 - **理想架构**：与姊妹 `recordRepairOutcome` 对齐——改 per-attempt 累积 + `onAttemptReset` 清空 `_askNormalization` + 在 committed settle 点 flush 进 pipelineInfo（而非每次 record 即 publish）。
 - **为何暂缓**：转发正确、无数据丢失；buffered-retry 默认关，触发窗口窄；per-attempt-reset + committed-flush 与当前「每次 record 即 in-flight publish」模型不兼容、是诊断落盘时序的架构级重构，值得单独一次改动 + review。
 - **若做需改什么**：① `_askNormalization` 改 per-attempt 语义 + `onAttemptReset`（`context/request.ts`，仿 `resetRepairOutcomesForAttempt`）清空；② 把 in-flight publish 改为 committed settle 点 flush（handler，仿 `flushToolInputRepairObservability`）；③ 测试证「discarded attempt 的 salvage 不进 committed history」。发现方：合并态 review（2026-07-14，`docs/spec/2026-07-13-askuserquestion-toplevel-key-salvage.md` 特性）。
+
+# 热路径并发 / 性能审计（2026-07-14，双异模型 reviewer 并行 + 主线亲自复核）
+
+审计范围 = 每请求热路径（driver 七阶段 / client-sink / http2 session 池 / adaptive-rate-limiter / state / feature-negotiation / stream-accumulator / 异步 finalize 落盘）。方法 = 派 Claude reviewer 查并发 + GPT reviewer 查性能，两份报告主线逐条复核绝对断言（含推翻/修正 reviewer 机制描述，见各条「复核」）。**总评**：并发面基本健康（防护设计成熟，只 1 MED + 2 LOW）；性能面真痛点集中在 **history 持久化路径的同步 CPU/I-O 阻塞全并发事件循环**（4 条 HIGH 同根）+ **长流无界内存**（1 HIGH）。
+
+## 【承重·根因性】history 全阶段持久化的同步 CPU/I-O 阻塞事件循环（4 条 HIGH 同根，宜一并重构）
+
+- **根因**：history 写路径只把 finalize 的 **zstd** 移出了主线程（`compressAsync` 走 libuv 线程池，`compression.ts:52-54`），但**同阶段的 `JSON.stringify` + jsdiff 仍同步、eager/attempt/status 写全程同步、SQLite 写自身同步 + `busy_timeout=5000`**——四条同步阻塞子路径共享一个根因：**没有一个统一的有界异步 writer 队列/worker 把 history 的全部 CPU+I-O 阶段移出请求生命周期**。因 `bun:sqlite`/`node:sqlite` 是同步 API，任何一段同步块都冻结**所有并发在途流**的转发、heartbeat、新请求接收，而非只慢本请求。
+- **当前行为（四子路径，实证/微基准）**：
+  - **① finalize 残留 ~63ms 连续同步块**——`compressAsync` 前的 `JSON.stringify(10.4MB request_group)≈40ms`（`compression.ts:53`）+ `search-index-write.ts:276` 的同步 `buildAux` jsdiff≈23ms（`search-index-write.ts:272-276`）。`compression.ts:49-50` 注释「JSON.stringify still runs on the main thread (cheap relative to the compress)」**自证只 offload 了 zstd**，对 10MB payload 绝对值并不 cheap；8 并发真实 finalize 事件循环 max-gap≈614ms（仓库 profiling `docs/spec/history-finalize-async-offload.md`）。**复核确认**：注释自证成立。
+  - **② eager/attempt/status 写在请求生命周期内同步压缩+序列化+写 SQLite**——`persistEntryEager`（`sinks/history.ts:216-223`）、每次 attempts context update 同步重写 head + 压缩 attempt request stage（`sinks/history.ts:123-143`）、每次 lifecycle transition 同步重建压缩 head、`buildHeadRow` 经 `payloadBytes()` 对大请求**再次** `JSON.stringify` 只为算字节数（`serialize.ts:312-315`/`372-374`，即使只是 status update）。微基准（2MB payload，隔离 in-memory SQLite）：eager 14.9–22.9ms / attempt stage 15.6–23.3ms / status 3.6–29.2ms，全连续主线程停顿。
+  - **③ `busy_timeout=5000` 把 SQLite 锁等待变成最长 5 秒同步冻结**——`connection.ts:32,67`。**复核修正语境**：同步 API 属实，但 `connection.ts:25-30` 注释说明单进程单连接稳态自身事务不重叠，真实触发**仅限**外部连接持锁（重启进程重叠 / 误开第二实例 / 外部工具查库）——**非稳态每请求命中**，实际严重度低于 ①②（列为同簇但触发条件性最弱）。
+  - **④ 未决 finalize 无并发上限/背压**——`entries.ts:143-151` 每个终态请求立即启动自己的 search build + 一组并发 `compressAsync`，Promise 入 `pendingFinalizations`（`entries.ts:204-227`）无 semaphore/队列上限/背压。每个 pending 闭包持有完整多 MB `HistoryEntry`（重复 request legs + SSE 数组 + 待压缩 payload + 输出 buffer）；到达率超四线程 libuv 压缩吞吐时队列+驻留内存**按请求数线性增长**、潜在 OOM，且并发 stringify 仍串行制造停顿。**复核**：无界集合 + 每项持有数据由代码确认（强推断）。
+- **理想架构**：**单一有界异步 writer 队列/worker**统一处理 eager / stage / status / finalize 的全部 CPU（stringify + search normalization/diff + zstd）+ SQLite 写；请求侧只保留不可变 snapshot / append-only delta，writer 负责合并、压缩、串行写库。`requestBytes` 应在首次实际 wire serialization 时直接计数并随 entry 携带，避免每次 head upsert 对整个 payload 再 stringify。队列应有固定并发度 + 公开 queue depth / resident bytes / wait time / high-water 遥测；容量满时对 history producer 施加**异步背压**或落可恢复磁盘 journal，**绝不退回主线程同步压缩**。SQLite 写宜由专用 writer worker/线程串行执行、主循环只提交有界任务 await 异步结果（仅调低 busy_timeout 会重引丢写，不解决同步 I/O 架构）。
+- **为何暂缓**：属跨 history 全层的结构性重构（producer↔sink↔serialize↔connection 的 settle/写时序职责重划），牵动 `persistence-async-invariants`（drain-before-close / self-owned pending / never-throw / 全 test await 等不变量须整体保持），远超单点补丁；且需真多并发 metronome oracle 验证（不能再用预 stringify 的探针代替端到端）。属独立大工作单元，非「因范围大降级」。
+- **若做需改什么**：① 设计 `HistoryWriteQueue`（有界 + 固定并发 + 背压/journal + 遥测），把 `sinks/history.ts` 的 eager/stage/status/finalize 全改为「入队不可变 snapshot」；② stringify+jsdiff+zstd 全移入 worker（结构化 clone/transferable 输入，避免主线程先生成同量级 JSON）；③ `requestBytes`/`responseBytes` 首次 wire serialize 时计数携带、删除 `payloadBytes` 的重复 stringify；④ SQLite 写串行化到 writer；⑤ 遵 `persistence-async-invariants` 复核全不变量 + 真多并发 metronome oracle。发现方：热路径性能审计（GPT reviewer，2026-07-14）+ 主线复核。遥测/落盘架构见 skill `telemetry-architecture` / `persistence-async-invariants` / `history-sqlite-schema`。
+
+## 【承重】长流同时无界保存 upstream frames + forwarded frames + accumulator + retry 副本（HIGH）
+
+- **根因**：每请求的诊断/history 采样对**每帧**保存完整 `raw` 字符串，多条轨并存且**无帧数/字节上限**：`driver.ts:521-549` 的 `upstreamSse` 逐帧存完整 `raw`；各 handler 的 `forwardedSseEvents` 再存客户端帧完整 `raw`（`handler-v4.ts:1011-1020`/`1046`/`1052`）；Anthropic direct pump 另有 diagnostics 本地 `sseEvents` 副本；accumulator 同时重建完整 text/thinking/tool-args/结构化 content（`context/request.ts:622-625`）；buffered retry 对失败 attempt `[..._sseEvents]` 为每次失败 generation 再留一整份；`recordForwarded()` 又 `[...forwardedSseEvents]` 做全数组 O(n) 快照，正常分支 + `finally` 可**重复**执行。内存 ≈ `O(upstream bytes + forwarded bytes + accumulated content) × retry attempt 数`。
+- **当前行为**：主要消耗当前超长请求内存，但 GC pause / OOM 影响整个进程。大 tool arguments / 长 reasoning / 未及时终止的流增长无结构性边界。**已挡住的对偶**：driver 的 buffered-retry buffer 本身有 `bufferCapBytes` 阀门（`driver.ts:813-860`）超限 retreat——无界的是**独立的 history/diagnostics frame tracks**，两者别混。
+- **理想架构**：richest-data-flow 不要求全部常驻 RAM——raw frame tracks 增量写入临时 append-only spool / 分块压缩 stage，内存只留固定窗口 + 索引 + accumulator 必需状态，终态原子挂接 spool；history sampling 与 diagnostics 各需独立、可观测的 resident-byte 上限。
+- **为何暂缓**：与上一条 history 重构强相关（spool 化同属持久化路径重构），宜一并设计；additive-observability 不阻塞现有正确性。
+- **若做需改什么**：① 给 upstream/forwarded 两轨加 resident-byte cap + spool 溢出；② `recordForwarded` 消除重复全数组快照（增量 append 或幂等守卫防 `finally` 二次拷贝）；③ 长流回归测试断言 resident bytes 有界。发现方：热路径性能审计（GPT reviewer，2026-07-14）。
+
+## 【每帧冗余簇】高频流放大的每帧开销（4 条 MEDIUM，可攒批一次改动）
+
+- **① 同一 SSE 帧被重复 `JSON.parse`**（实测 ~4ms/流、~63% 冗余）——一帧可能先被 timing predicate parse（`request-timing.ts:54-64`/`97-127`，OpenAI first/latest 谓词各一次）、再被 handler accumulator parse、随后每个启用的 rewrite 各自 `parseFrame`（`response-rewrite-adapters.ts:85-92`/`141-159`/`183-190`/`262-263`/`295-299`）、最后 sink 的 `frameType()` + block-state tracker 再 parse（`client-sink.ts:145-154`/`214-224`）。**若做**：upstream frame 首次 parse 时挂非枚举/sidecar parsed representation 供各层复用，rewrite 改 `data` 时只失效/替换该帧 parsed cache（**不可**全局按字符串缓存，会无界增长）。
+- **② accumulator 逐 delta `+=` 拼接**（O(n²) 拷贝风险 + 重复存两份正文）——Anthropic `b.text += delta.text` 与 `acc.rawContent += delta.text` 对同一文本累两次，thinking/tool-input 亦 `+=`（`stream-accumulator.ts:319-340`）；OpenAI `rawContent += choice.delta.content`（`openai/stream-accumulator.ts:99-102`）。**Responses accumulator 已用 `contentParts.push()` + 终态 `join("")`（`responses-stream-accumulator.ts:154-176`）是现成正确样板**。**若做**：Anthropic/OpenAI 对齐——按 block 存 `Array<string>` 终态 join 一次；`rawContent` 若可由 content blocks 派生则不再每 delta 维护第二份。
+- **③ 每内容帧同步 publish 完整 `stream_progress` + 扫全 subscribers**——每帧构造 progress 参数 + `snapshot()` 分配新 `RequestContextSnapshot`（查 modelIndex、读 current attempt）+ 分配 event + 线性扫全 bus registrations 执行 filter + TUI 更新（`chat-completions/handler-v4.ts:440-446`、`responses/handler-v4.ts:410-415`、`context/request.ts:1026-1033`/`304-325`、`observability/bus.ts:95-117`、`tui/terminal-ui.ts:400-405`）。成本 O(frames × subscribers) + nursery GC 压力；UI 只需人类可见频率。**若做**：producer 或专用 coalescer 按时间/字节阈值节流（如每 50–100ms 发最新累计值，terminal 前强制 flush），原始 byte/event counter 仍逐帧更新不丢终值。
+- **④ S5 链每帧每 rewrite 重分配中间数组**——driver 为单帧建 `[effFrame]`；`passThrough()` 每 rewrite 建新 `next=[]`；多数 passthrough rewrite 又返回 `{kind:"emit",frames:[frame]}` 再 spread 复制（`driver.ts:585-593`/`1032-1050`、`response-rewrite-adapters.ts:183-190`/`295-299`）。Anthropic 默认链最多六 rewrite，普通未改写帧也产一串短命对象。**注**：registry **非**每帧重 filter/sort（`driver.ts:500-503` 每 stream/attempt 只 assemble 一次，已确认），问题是高频分配+GC。**若做**：最常见单帧 passthrough 加零分配 fast path（独立 `pass` action / scalar frame 通道），只有真产 0/多帧才升数组，保 buffer/flush 语义不变。
+- **为何暂缓（整簇）**：均为每帧微优化，单条量小、但高频/长流累积放大且共享主线程；宜攒批一次改动 + 一次 review，避免散点 churn。发现方：热路径性能审计（GPT reviewer，2026-07-14）。
+
+## Anthropic 请求准备每 attempt 深拷贝大字段（MEDIUM）
+
+- **根因**：`buildWirePayload`（`request-preparation.ts:538-572`）对 `DEEP_CLONE_FIELDS`（messages/system/tools/output_config/thinking）逐个 `structuredClone`，且该 `Set` 在函数内每次重建（`:562`）。Claude Code 常见请求 ~2MB，retry 重跑 preparation 按 attempt 数重复；仓库 profiling 记录该 clone ~4.5ms/请求。
+- **当前行为**：同步阻塞事件循环、增加当前请求 dispatch 前延迟。**复核确认**：`:551-561` 注释解释深拷贝**必要性**——防 prepare-time mutate-in-place transform（applyCacheControlMode/stripServerTools/clampEffortLevel/adjustThinkingBudget 等）泄漏回 caller payload、跨 retry 累积损失，**故不能简单删**。
+- **理想架构**：prepare pipeline 改 copy-on-write / persistent update——顶层浅拷贝，仅当某 transform 确实修改对应分支时才克隆该分支，同一 attempt 内多 transform 共享已 owned 分支。至少把 `DEEP_CLONE_FIELDS` hoist 到模块级（主要收益仍来自消除未修改大字段的深拷贝）。
+- **为何暂缓**：copy-on-write 重排触及所有 mutate-in-place transform 的所有权契约，需逐个核实哪些真改写、哪些只读，属独立正确性敏感重构；Set hoist 可顺手先做。发现方：热路径性能审计（GPT reviewer，2026-07-14）+ 主线复核。
+
+## keepalive 锚点注入器与 block-level flush 的帧序错乱（MEDIUM，gated on 两特性同开）
+
+- **根因**：`empty_text` 锚点注入器 `makeSyntheticAnchorInjector`（`keepalive-anchor.ts:159-194`）是 async，内部先 sync-flip `injected`+`anchorBlockOpen`、再 `await sink.writeAnchor(startFrame)`（`:170`）、再 `await sink.writeKeepalive(deltaFrame)`（`:171`）——**两个 await 之间非原子**。buffered-retry 的 commit-boundary flush（`driver.ts` block-level flush）能在该 await 间隙推进、按 `anchorBlockOpen=true` 快照同步 enqueue flush 帧。`suspendHeartbeat` 只 flip flag 拦「新 tick」，**拦不住一个已从上一 tick 派发、await 仍 pending 的 injector 调用**。
+- **当前行为（已裁 MED、gated）**：**复核修正 reviewer 机制描述**——reviewer 原称「stop@0 早于 start@0、关闭未打开的块」**不准确**：读 `makeSerializer`（`client-sink.ts:121-130`）`enqueue(fn)` 在**调用瞬间同步**排入串行链，而 `await sink.writeAnchor(startFrame)` 的**函数调用先于 await 求值**，故 startFrame 必先于 flush 的 stopFrame 排定链上位置。真实错乱形态是 injector 的**尾帧 `deltaFrame@0` 迟到落到 flush 帧之后**（非「stop 早于 start」），块结构破坏形态更轻。触发前提 = 两 gated 特性（`empty_text` 锚点 + block-level buffered-retry）同开 + 慢 sink.write 放大 await 窗口；据 MEMORY 两者默认 OFF，故 blast radius 受限，定 MED 非 HIGH。
+- **理想架构**：给 injector 与 commit flush 加真正互斥——让「message_start + startFrame + deltaFrame」三帧作为**单个不可分割的 serializer fn**（单个 enqueue 内顺序 send、中途不 await 让出），确保 `anchorBlockOpen` 置真的同一刻整个 anchor prelude 已在链上排定于任何后续 flush 帧之前；或让 commit-boundary flush 在写帧前 await 一个「anchor 结构写入完成」的 barrier promise。
+- **为何暂缓**：两特性默认关、触发窗口窄；修复触及 injector↔driver flush 两条独立 promise 链的协调协议，宜单独一次改动 + 按 `empirical-verification` 纪律写最小复现探针（慢 sink.write + 缓冲期 tick + 紧接 commit boundary，断言 wire 序 anchor prelude 三帧连续、先于 flush 帧）。发现方：热路径并发审计（Claude reviewer，2026-07-14）+ 主线复核修正。
+
+## http2 abort listener 跨 retry 累积（LOW，噪声告警）
+
+- **根因**：`http2-client.ts:478` 的 `signal.addEventListener("abort", () => req.close(...), { once: true })` 在每次 response handler 内注册但**永不 removeEventListener**（对比 `:485` 的 `onPreResponseAbort` 在 `req.once("error")` 时被清理）。同一请求的 ctx abort signal 跨 retry attempt 复用，每个「收到响应头后失败被重试」的 attempt（400/429 走 reactive retry）都在共享 signal 上累加一个 listener。
+- **当前行为（已核实）**：learning-retry 上限 32（`driver.ts:468`），单请求最多累积 ~32 个 abort listener → 超 Node/Bun 默认 maxListeners=10 → 触发 `MaxListenersExceededWarning`（噪声，掩盖真实 listener 泄漏排查）；abort 真触发时 N 个 listener 各对已多为 closed 的 req 调 close()，**无害但冗余**（`{once:true}` 未触发时不自动移除）。
+- **理想架构 / 若做需改什么**：把 `:478` 的 listener 纳入 response 完成/错误时的清理（类似 `:404` 对 `onPreResponseAbort` 的 removeEventListener），或改用绑定到本次 `req` 生命周期的派生 AbortSignal 而非直接挂长命 ctx signal。**易修**。发现方：热路径并发审计（Claude reviewer，2026-07-14）+ 主线复核确认。
+
+## rate-limiter `lastRequestTime` 跨 loop 竞写（LOW，仅 pacing 近似、非 bug）
+
+- **根因**：`adaptive-rate-limiter.ts:265`（`executeInRecoveringMode` 写 `lastRequestTime=slotStart`）与 `:475`（`processQueue` 写 `lastRequestTime=Date.now()`）在「429 队列 drain 未完 + mode 已翻 recovering（driver `:452-457` 自承 drain 与 recovering 并存）+ 新请求进 recovering」三者并发时**互相覆盖同一 `lastRequestTime`**。
+- **当前行为（已核实无害）**：仅 pacing 计算被扰动（recovering 预约的未来 slotStart 被 processQueue 的 now 覆盖或反之）；真正的漏桶闸门 `recoveringNextAvailableAt` 不被 processQueue 触碰，故**无双发/丢更新、无正确性或数据损坏**。
+- **理想架构 / 若做需改什么**：processQueue 与 recovering 预约各用独立 last-fire 时间戳；或在注释显式记为「已知 pacing 近似、非 bug」（当前注释只解释 `lastRequestTime` 语义、未点明跨 loop 竞写）。发现方：热路径并发审计（Claude reviewer，2026-07-14）。
+
+## 【建议·非缺陷】response hook 逐帧读取导致帧级版本偏斜（backlog，需用户权衡）
+
+- **现状**：`driver.ts:568` `getUpstreamHook()` 响应流每帧重新读 module-global hook；若 hook 流中途热重载，同一响应相邻帧用不同 hook 版本。hook 是 dev/test 特性（mock/拦截/录制回放），生产默认无 hook（返回 undefined），帧级重读本为让热重载生效而设计。仅「流进行中恰好热重载 hook」的开发调试场景产生跨帧不一致，**无生产正确性影响**。
+- **若做需改什么**：如需严格性，可在 `runResponse` 入口对 hook 取一次快照供整个流使用（与 `:532` 对 origin tag 的「读一次」对称），代价是牺牲流中途热重载生效能力。需用户权衡（严格一致 vs 热重载即时生效），先记 backlog。发现方：热路径并发审计（Claude reviewer 主观建议，2026-07-14）。
+
+## History 侧 resolveResponseToolNames 对恢复的 tool_use 同样漏名（LOW，当前无消费者）
+
+- **根因**：`entry-view.ts:100` 的 `resolveResponseToolNames` 与完成行同源，读 `finalUpstreamResponse().body`（upstream-original 轨）。tool-call 恢复场景该轨按 Option A 只存降级文本、无 tool_use 块，故返回 `[]`——与本次修复前完成行的「裸 tool_use」同因。
+- **当前行为**：grep 全仓 `resolveResponseToolNames` 仅定义处、无生产消费者，故**当前无活跃 bug**。本次（2026-07-14）已修复完成行 TUI 侧：经 `recordFeature("tool-call-recovered", { tools })` feature detail 旁路传名 + `resolveCompletionToolNames` fallback。
+- **理想架构 / 若做需改什么**：若未来 History Web UI（ui-v4）要展示 `tool_use(<names>)` token，会复现同一症状。**关键前置**：TUI 侧的名字来自 bus 实时 feature detail，而 `recordFeature` 不落 history（持久化诊断走 `pipelineInfo`，见 [[methodology-plan-verify-interface-location-and-wiring-channel]]）——故 History 侧要 fallback，须先把 recovered names 落到某个持久化通道（如 pipelineInfo 或专用列），再让 `resolveResponseToolNames` 消费。不是简单加 fallback 分支。
+- **为何暂缓**：无活跃消费者、纯前瞻；且真做需先建持久化通道（独立于本次 TUI 修复）。发现方：本次修复的 reviewer 建议（Claude reviewer，2026-07-14）。

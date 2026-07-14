@@ -26,6 +26,12 @@ export interface OpenAIStreamAccumulator extends BaseStreamAccumulator {
   /** GHC cache_write_tokens from prompt_tokens_details (subset of prompt_tokens). */
   cacheWriteTokens: number
   reasoningTokens: number
+  /**
+   * Accumulated PLAINTEXT reasoning (GHC `delta.reasoning` / `reasoning_content`). Forwarded as a
+   * synthetic `thinking` block on the Anthropic translation leg (richest-data-flow) — see
+   * `~/lib/anthropic/synthetic-reasoning`. Empty when the upstream emits no plaintext reasoning.
+   */
+  reasoningText: string
   /** GHC input-side modality breakdown (blob-only; last usage frame wins). */
   inputDetails?: InputDetails
   /** GHC output-side modality + prediction breakdown (blob-only). */
@@ -53,6 +59,7 @@ export function createOpenAIStreamAccumulator(): OpenAIStreamAccumulator {
     cachedTokens: 0,
     cacheWriteTokens: 0,
     reasoningTokens: 0,
+    reasoningText: "",
     finishReason: "",
     rawContent: "",
     toolCalls: [],
@@ -99,6 +106,11 @@ export function accumulateOpenAIStreamEvent(parsed: ChatCompletionChunk, acc: Op
   const choice = parsed.choices[0] as (typeof parsed.choices)[0] | undefined
   if (choice) {
     if (choice.delta.content) acc.rawContent += choice.delta.content
+    // Plaintext reasoning (GHC extension `delta.reasoning` / `reasoning_content`) — capture it so the
+    // Anthropic translation leg can forward it as a synthetic thinking block (richest-data-flow).
+    const rd = choice.delta as { reasoning?: unknown; reasoning_content?: unknown }
+    if (typeof rd.reasoning === "string") acc.reasoningText += rd.reasoning
+    else if (typeof rd.reasoning_content === "string") acc.reasoningText += rd.reasoning_content
     if (choice.delta.tool_calls) {
       for (const tc of choice.delta.tool_calls) {
         const idx = tc.index
