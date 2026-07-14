@@ -19,6 +19,7 @@ import type { ResponsesPayload } from "~/types/api/openai-responses"
 import {
   //
   createUpstreamWsManager,
+  getUpstreamWsManager,
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
@@ -523,6 +524,68 @@ describe("upstream websocket manager", () => {
       expect(middle.conversationId).toBe("conv-1")
     } finally {
       Date.now = realNow
+    }
+  })
+
+  test("create() passes idleTimeoutMs derived from state.pooledConnectionIdleTimeout to the connection factory", async () => {
+    const snapshot = snapshotStateForTests()
+    try {
+      setStateForTests({ pooledConnectionIdleTimeout: 42 })
+      const received: Array<number | undefined> = []
+      setUpstreamWsConnectionFactoryForTests((opts) => {
+        received.push(opts.idleTimeoutMs)
+        return createConnection({ model: opts.model, conversationId: opts.conversationId })
+      })
+
+      const manager = createUpstreamWsManager()
+      await manager.create({ headers: {}, model: "gpt-5.2" })
+      expect(received).toEqual([42_000])
+
+      // Hot-reload semantics: the value is re-read on every create() call, not
+      // cached at manager-construction time.
+      setStateForTests({ pooledConnectionIdleTimeout: 7 })
+      await manager.create({ headers: {}, model: "gpt-5.4" })
+      expect(received).toEqual([42_000, 7_000])
+    } finally {
+      restoreStateForTests(snapshot)
+    }
+  })
+
+  test("create() passes idleTimeoutMs of 0 when pooledConnectionIdleTimeout is disabled", async () => {
+    const snapshot = snapshotStateForTests()
+    try {
+      setStateForTests({ pooledConnectionIdleTimeout: 0 })
+      const received: Array<number | undefined> = []
+      setUpstreamWsConnectionFactoryForTests((opts) => {
+        received.push(opts.idleTimeoutMs)
+        return createConnection({ model: opts.model, conversationId: opts.conversationId })
+      })
+
+      const manager = createUpstreamWsManager()
+      await manager.create({ headers: {}, model: "gpt-5.2" })
+      expect(received).toEqual([0])
+    } finally {
+      restoreStateForTests(snapshot)
+    }
+  })
+
+  test("getUpstreamWsManager() singleton wires idleTimeoutMs from state.pooledConnectionIdleTimeout", async () => {
+    const snapshot = snapshotStateForTests()
+    try {
+      setStateForTests({ pooledConnectionIdleTimeout: 55 })
+      const received: Array<number | undefined> = []
+      setUpstreamWsConnectionFactoryForTests((opts) => {
+        received.push(opts.idleTimeoutMs)
+        return createConnection({ model: opts.model, conversationId: opts.conversationId })
+      })
+      resetUpstreamWsManagerForTests()
+
+      const manager = getUpstreamWsManager()
+      await manager.create({ headers: {}, model: "gpt-5.2" })
+      expect(received).toEqual([55_000])
+    } finally {
+      resetUpstreamWsManagerForTests()
+      restoreStateForTests(snapshot)
     }
   })
 })

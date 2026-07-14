@@ -33,6 +33,19 @@ const DISABLE_RECOVERY_WINDOW_MS = 5 * 60_000
  */
 const DEFAULT_MAX_CONNECTIONS = 32
 
+/**
+ * Idle-close deadline in milliseconds for a pooled (not-in-use) upstream WS
+ * connection, read fresh from `state.pooledConnectionIdleTimeout` (seconds) on
+ * every {@link createUpstreamWsManager}'s `create()` call — so a hot-reloaded
+ * value applies to the NEXT connection immediately. P4 additionally reconciles
+ * ALREADY-pooled connections via `rescheduleIdleTimeout` (out of P2's scope —
+ * this function only affects newly created connections, per the global "new
+ * knobs only affect new connections" constraint).
+ */
+export function getPooledConnectionIdleTimeoutMs(): number {
+  return state.pooledConnectionIdleTimeout * 1000
+}
+
 let connectionFactory: (opts: CreateUpstreamWsConnectionOptions) => UpstreamWsConnection = createUpstreamWsConnection
 
 interface WsBreakerEntry {
@@ -203,6 +216,7 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
         headers,
         model,
         conversationId,
+        idleTimeoutMs: getPooledConnectionIdleTimeoutMs(),
         onClose: () => {
           connections.delete(key)
           lastUsedAt.delete(key)
