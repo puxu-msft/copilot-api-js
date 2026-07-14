@@ -531,3 +531,23 @@
 - **理想架构**：把 config 键 `sketch_gamma` → `sketch_relative_accuracy`（留旧键别名读时映射，遵配置「留兼容层」纪律）、state 字段 `telemetrySketchGamma` → `telemetrySketchRelativeAccuracy`、模块级 `effectiveSketchGamma`、tel_meta 键统一到 relativeAccuracy 语义（tel_meta 键改名需迁移已有库的 `sketch_gamma` 行）。
 - **为何暂缓**：本轮聚焦 MAJOR-2（γ 绑 db + poison 隔离）修复，reviewer 明确「加一行注释即可、别扩到 config 5 触点重命名」——重命名横跨 config schema/别名/state/store/tel_meta 迁移 5+ 触点，属独立可分离清理，值得单独一次改动 + review。
 - **若做需改什么**：① `config/schema.ts` + `config/config.ts` 键改名 + 旧 `sketch_gamma` 别名读时映射；② `state.ts` 字段改名（`telemetrySketchGamma` 全站点）；③ `request-telemetry.ts` `effectiveSketchGamma` 改名；④ `store.ts` `SKETCH_GAMMA_META_KEY` 值改名 + 迁移已有库的 tel_meta 行（`sketch_gamma` → 新键）；⑤ 相关测试/文档同步。发现方：Fix round 2 MAJOR-2 reviewer（2026-07-13）。
+
+## telemetry 迁移 transient：首个 post-migration 会话 7d 窗欠报 legacy 历史（2026-07-14，全分支合并态评审裁 acceptable）
+
+- **根因**：单轨收敛（P7）后 `initRequestTelemetry` 从 `tel_raw` 重建 dimBuckets（7d live cache）、发生在 `start.ts` 的 P6 一次性 backfill（listen 之后）**之前**——首个 post-migration 会话 init 时 tel_raw 只含本会话 dual-write 行、缺被 backfill 吸收的 legacy 历史。legacy 历史进 tel_raw 后要**下次重启**才现于 7d 窗。
+- **当前行为（已裁 acceptable、非缺陷）**：影响 ui-v4 主路径 `/api/status.requestTelemetry.modelsLast7d`——首会话欠报 pre-migration 历史。评审裁符合项目「无向后兼容负担 + 强制迁移允许短期降级」：**无数据丢失**（tel_raw 拿到 backfill）、**自愈**（下次重启）、仅一次性。cumulative（lifetime 窗）不受影响（backfill 直接写 tel_cumulative）。
+- **理想架构（seamless-fix）**：P6 backfill **完成后触发一次 dimBuckets rebuild**，使 legacy 历史当会话即现。
+- **⚠️ footgun（评审强调）**：naive「backfill 后直接再调 `rebuildDimBucketsFromRaw`」**有坑**——该函数用 `dim.set()` **覆盖**而非 merge，二次 rebuild 会用 tel_raw 值覆盖 live accumulator、**丢弃本会话已累积但尚未 drain 到 tel_raw 的 outbox 增量**。正确 seamless-fix 须**先 flush outbox（`await persistRequestTelemetry()`）再 rebuild**，或改 rebuild 为 merge-not-overwrite 语义。
+- **为何暂缓**：一次性、自愈、无数据丢失，seamless-fix 增复杂度（须处理 flush 时序 + footgun）；评审裁本轮接受、记 backlog。
+- **若做需改什么**：① `start.ts` backfill 调用点后：`await persistRequestTelemetry()`（drain outbox）→ 再 `rebuildDimBucketsFromRaw`/`rebuildAcceptedBucketsFromDb`（或给 rebuild 加 merge 语义避免覆盖 live）；② 加测试证「backfill→flush→rebuild 后 7d 窗含 legacy + 不丢本会话未 drain 增量」。发现方：全分支合并态评审（2026-07-14）。
+
+## telemetry tiered-storage 收尾 Minor 清理（2026-07-14，各轮评审 triage 为 backlog）
+
+一组低风险、可分离的清理项，攒批单独一次改动 + review：
+- **重建等价 oracle cost 字段诚实化**（Task 8 review）：`dual-write`/rebuild 等价测试用整数 `multiplier:3` 掩盖 cost 的 float-accum（内存腿 `tokens*mult` 浮点累加）vs micro-sum（重建腿逐请求 `round(cost*1e6)` 求和）分歧。重建值实为**更 canonical**（per-request-micro 是 `buildSettledDelta` 明示正确形）、非真回归；但「counters byte-equal」措辞是普适假象。修：oracle 加分数-multiplier 例、cost 用 `toBeCloseTo` + 注明已知 canonical 分歧。
+- **FE 同名类型碰撞**（Task 8 review）：`ui-v4/src/lib/model-telemetry.ts` 的 FE 自有窄形 `RequestTelemetrySnapshot` 与 `status.ts` 新 `~backend` re-export 同名并存；`parseRequestTelemetry` 取 `raw:unknown` 在消费边界 widen，故 P7 SSOT 收敛偏 cosmetic（仅防 field 声明漂移）。FE 解析型宜改名（如 `ParsedModelTelemetry`）真正收敛。
+- **`rollup.ts` 空源桶返回类型整洁**（Task 5 review）：`rollupTier` 空源桶且 watermark=null 返回 `-Infinity`（number），下游 `===null` 判断落空走 `-Infinity+1`（行为等价、`pruneTier` !isFinite 跳过）。修：返回类型改 `number|null`、空桶 `return watermark`、两处 caller 同步。
+- **rollup 增量多-tick 测试**（Task 5 review）：现有幂等/链式测试用同一 `now` 一次卷完；补一条「两次不同 now 增量上卷不重不漏」证单调水位路径。
+- **Task 3 真-db mid-drain fault 用例**（Task 3 review）：drainOutboxToSqlite 的「事务中途故障原子回滚、无 partial double-count」靠 bun:sqlite `transaction()` 语义、无真-db 覆盖（现有用 sync-throwing db 绕过真 BEGIN/ROLLBACK）；MAJOR-2 逐条 try/catch 已部分覆盖。低风险高成本。
+
+发现方：telemetry-tiered-storage 各 task per-task review + 全分支评审（2026-07-13~14）。遥测架构见 skill `telemetry-architecture`。
