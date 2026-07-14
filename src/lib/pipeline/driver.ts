@@ -23,7 +23,9 @@ import {
   readOrigin,
   tagFrameRewritten,
 } from "~/lib/pipeline/hooks/origin"
-import { classifyStreamError } from "~/lib/stream"
+import { classifyStreamError, combineAbortSignals } from "~/lib/stream"
+import { getShutdownSignal } from "~/lib/shutdown"
+import { abortableDelay, OperationCancelledError } from "~/lib/util/abortable-delay"
 
 import type { RequestEnvelope } from "./envelope"
 import type {
@@ -471,11 +473,27 @@ async function runExchange(
         ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
         ...(action.learning && { learning: action.learning }),
       })
+      // RC1/RC3 cancel coverage: a retry backoff must be interruptible by the same signals
+      // that terminate an in-flight request — the stale reaper (`lifecycleSignal`, which the
+      // reaper fires at deadline before force-settling), graceful shutdown, and client abort.
+      // The legacy bare `delay()` ignored all three, so a request settled by the reaper kept
+      // sleeping through an exponential backoff (631s observed) and then STARTED A NEW ATTEMPT —
+      // one link in the 2800s overrun. `abortableDelay` rejects with an abort-classified error;
+      // the attempt-boundary gate below also covers the waitMs===0 path. (C4b will fold the
+      // per-request deadline signal into the same combine.)
+      // The two signals that terminate a request are folded here: the stale reaper
+      // (`lifecycleSignal`, fired at deadline before force-settling) and graceful shutdown.
+      // (Client-abort is detected at the stream layer, not during backoff; C1 will thread it
+      // + the deadline signal through the unified operationSignal.)
+      const backoffSignal = combineAbortSignals(current.ctx.lifecycleSignal, getShutdownSignal())
+      // Gate BEFORE the next attempt (covers waitMs===0): if the request is already being
+      // cancelled, do not start another upstream attempt.
+      if (backoffSignal?.aborted) throw new OperationCancelledError()
       // Count the retry backoff in queueWaitMs (legacy parity — pipeline.ts adds
       // action.waitMs to queueWaitMs in addition to the rate-limiter wait).
       if (action.waitMs) {
         current.ctx.addQueueWaitMs(action.waitMs)
-        await delay(action.waitMs)
+        await abortableDelay(action.waitMs, backoffSignal)
       }
     }
   }
@@ -1048,8 +1066,4 @@ function flushChain(rewrites: ReadonlyArray<ResponseRewrite>, states: Array<Rewr
     if (flushed.length > 0) out.push(...passThrough(flushed, rewrites, states, i + 1))
   }
   return out
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
