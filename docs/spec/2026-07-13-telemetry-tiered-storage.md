@@ -148,10 +148,10 @@ telemetry:
 ## 迁移
 
 - **schema**：复用 History 的 Umzug hybrid forward-runner，`telemetry.db` 独立账本 `tel_meta`。
-- **旧 JSON 全量吸收，绝不丢弃（用户决策）**。利用双存储（固定桶本就保留）达成无损吸收：
-  - **可加计数 + accepted buckets**：精确 backfill 进 `tel_raw`/`tel_accepted` + 上卷种子（走 skill `history-backfill` 可恢复骨架）。
-  - **旧固定桶直方图**：**无损映射进新的固定桶列**（`_bucket{le}` 计数一一对应）——因 BLOCKER-2 已决定保留固定桶，历史直方图完整保住，`/metrics` 历史区间字节精确。
-  - **DDSketch 分位层**：旧固定桶无原始逐值，无法无损重建 sketch → **仅 sketch 分位层对迁移前时段从新建开始**；该时段 `/api/stats` 分位**回落到固定桶分辨率并标注「pre-migration 固定桶近似」**（合成物可辨识，richest-data-flow 对称面）。**这不是丢弃**——历史直方图在固定桶列完整保留，只是迁移前那段缺 sketch 级精度。
+- **旧 JSON 全量吸收，绝不丢弃（用户决策）**。**注（2026-07-14 实施修订，评审 HIGH-1 覆盖本节 pre-HIGH-1 叙事）**：BLOCKER-2「固定桶与 sketch 并存」被后续评审 HIGH-1 收窄为「**SQLite 只存 DDSketch、无固定桶列**；固定桶只活在 `/metrics` 进程内内存路径」。故下方「无损映射进固定桶列」的旧叙事已作废，实际吸收如下：
+  - **可加计数 + accepted buckets**：精确 backfill 进 `tel_raw`/`tel_accepted` + 上卷种子（走 skill `history-backfill` 可恢复骨架）；cumulative 腿对 capped 维度同样 cap 折叠（与 live 一致、tel_cumulative ≤cap+1）。
+  - **旧固定桶直方图**：~~无损映射进新的固定桶列~~ → **不导入 SQLite**（HIGH-1：无固定桶列）。历史固定桶的无损性由**旧 `request-telemetry.json` 归档保留**承担（P6 不删 JSON 本体）；backfill 只导可加列 + accepted，`__histograms` 不入库。
+  - **DDSketch 分位层**：旧固定桶无原始逐值，无法无损重建 sketch → **仅 sketch 分位层对迁移前时段从新建开始**；该时段 `/api/stats` 分位缺失、以 `preMigrationSketchGap` 标注（合成物可辨识，richest-data-flow 对称面）。**这不是丢弃**——可加计数完整吸收、历史固定桶在旧 JSON 归档完整保留，只是迁移前那段缺 sketch 级分位精度。
 - **`.tmp` vs 旧 JSON 删除（评审 LOW：区分）**：`.tmp` 孤儿启动即清理（明确垃圾、安全）；**旧 JSON 是用户数据，默认不自动删**（归档保留 + 手动/超长阈值 + 显式开关），避免 no-destructive-workspace-loss 冲突。
 
 ## 测试（TDD）
