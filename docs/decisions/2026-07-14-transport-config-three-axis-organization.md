@@ -29,7 +29,7 @@ section 名本身表达方向与职责，不靠注释解释「transport 只管 u
 
 - **非完全正交、单向依赖须写准**：`timeouts.{response_header,stream_idle}` ×1.5 派生 undici safety ceiling，但 per-model overrides 不传播到 dispatcher（承 ADR 2026-07-12）。文档写明这条**单向**依赖，不宣称二层实现完全独立。
 - **`connect_timeout` 留 h2 段（`http2.session_connect_timeout`）、不进 common**：它是 **per-stage** 上限非总 deadline（proxy 路 CONNECT + TLS 各吃一次、最坏 wall-clock ≈ 2×）。叫 common 会承诺三协议统一 wall-clock 而实际没有——假旋钮。待三路都接上统一 budget 再提升。
-- **`0` 语义统一**：全 transport 键 **absence = 项目默认 / `0` = 明确禁用 / 正数 = 值**。消除现状隐藏分叉（`0` 在 undici 路→60s、h2 路→15s，且 `0` 从不是禁用）。`tcp_keepalive_probe_delay` 默认取 15（h2 现值，对抗 ~30s reaper 调优过）。**旧 `upstream_keepalive: 0` 迁成 absence**，其 undici 路 effective 从 60s 统一为 15s，是本决策批准的有意变更。
+- **`0` 语义统一**：全 transport 键 **absence = 项目默认 / `0` = 明确禁用 / 正数 = 值**。消除现状隐藏分叉（`0` 在 undici 路→60s、h2 路→15s，且 `0` 从不是禁用）。`tcp_keepalive_probe_delay` 默认取 15（h2 现值，对抗 ~30s reaper 调优过）。**旧 `upstream_keepalive: 0` 迁成 absence**，其 undici 路 effective 从 60s 统一为 15s，是本决策批准的有意变更。**诚实例外**：`session_connect_timeout: 0` 在 SOCKS 代理下无法真禁用（`socks` 库 `timeout || 30_000` 地板），故配 SOCKS 时 validation 拒绝该键为 0（fail-fast），宁可报错也不静默套 30s 冒充禁用——诚实表达能力边界优先于语义整齐。
 - **ingress 整组迁 `server.*`**：`client_ws_keep_open` / `max_client_ws_connections` / `max_ws_frame_bytes` 三键整组迁入，不留半吊子。`openai_responses.upstream_ws` 作 endpoint 路由开关留 Responses 域。
 - **热重载对活连接主动 reconcile**（非「仅新连接生效」）：generation-based **retire-and-replace**、per-session active-stream exactly-once 计数、retiring session PING 存活至 drain、upstream soft-cap 与 client hard-cap 分治、WS idle 基于 `idleSince` 重调。与 persistence-async-invariants 的 drain 纪律同源。
 
