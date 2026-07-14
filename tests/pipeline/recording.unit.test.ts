@@ -51,6 +51,7 @@ function makeOpenAIAcc(overrides: Partial<OpenAIStreamAccumulator> = {}): OpenAI
     cachedTokens: 0,
     cacheWriteTokens: 0,
     reasoningTokens: 0,
+    reasoningText: "",
     toolCalls: [],
     toolCallMap: new Map(),
     ...overrides,

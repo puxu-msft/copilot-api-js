@@ -71,6 +71,13 @@ export function translateChatCompletionsToResponses(payload: ChatCompletionsPayl
     ...(payload.top_logprobs !== undefined && payload.top_logprobs !== null && { top_logprobs: payload.top_logprobs }),
     ...(payload.tools && { tools: translateTools(payload.tools) }),
     ...(payload.tool_choice && { tool_choice: translateToolChoice(payload.tool_choice) }),
+    // Reasoning config: forward the CC `reasoning_effort` (previously DROPPED on this hop — the F-1
+    // gap) into the Responses `reasoning.effort`, AND request a displayable reasoning `summary` so the
+    // model's reasoning can be forwarded to the client (GHC returns ONLY encrypted_content unless a
+    // summary is requested — verified probe exp/synthetic-reasoning-upstream-shape). Gated on
+    // reasoning_effort presence (the Anthropic `thinking`→effort signal), so non-reasoning requests
+    // stay clean.
+    ...(payload.reasoning_effort && { reasoning: { effort: payload.reasoning_effort, summary: "auto" } }),
     ...(payload.response_format && {
       text: {
         format: translateResponseFormat(payload.response_format),

@@ -49,7 +49,7 @@ import type { UsageData } from "~/lib/history/types"
 import type { ChatCompletionChunk } from "~/types/api/openai-chat-completions"
 
 import { anthropicSseFrame } from "~/lib/anthropic/sse-frame"
-import { SYNTHETIC_REASONING_SIGNATURE } from "~/lib/anthropic/synthetic-reasoning"
+import { buildSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
 import {
   //
   accumulateOpenAIStreamEvent,
@@ -114,6 +114,8 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
   let textBlockIndex: number | undefined
   /** The synthetic-reasoning (thinking) block index, allocated on the first reasoning delta. */
   let thinkingBlockIndex: number | undefined
+  /** GHC's opaque `encrypted_content` for the reasoning, carried through the CC intermediate (bridge). */
+  let reasoningEncrypted: string | undefined
   /** CC tool index → allocated Anthropic block index (allocated on first appearance). */
   const toolIndexMap = new Map<number, number>()
   /** The block currently open on the wire (Anthropic forbids two open blocks). */
@@ -164,10 +166,11 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
   const closeOpenBlock = (out: Array<CcToAnthropicStreamStep>): void => {
     if (openBlock === undefined) return
     // A thinking block must carry a `signature` before it closes (Anthropic streams the seal as a
-    // trailing `signature_delta`). We forward GPT's UNFORGEABLE plaintext reasoning under a SENTINEL
-    // signature — distinguishable as ours + stripped on echo-back (see synthetic-reasoning.ts).
+    // trailing `signature_delta`). We forward GPT's UNFORGEABLE reasoning under a LABELED-ENVELOPE
+    // signature (sentinel prefix + optional base64url encrypted_content) — distinguishable as ours +
+    // stripped on echo-back + carries encrypted_content for cross-turn round-trip (synthetic-reasoning.ts).
     if (openBlock.kind === "thinking") {
-      out.push({ frame: anthropicSseFrame({ type: "content_block_delta", index: openBlock.index, delta: { type: "signature_delta", signature: SYNTHETIC_REASONING_SIGNATURE } }) })
+      out.push({ frame: anthropicSseFrame({ type: "content_block_delta", index: openBlock.index, delta: { type: "signature_delta", signature: buildSyntheticReasoningSignature(reasoningEncrypted) } }) })
     }
     out.push({ frame: anthropicSseFrame({ type: "content_block_stop", index: openBlock.index }) })
     openBlock = undefined
@@ -201,12 +204,15 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
       for (const choice of chunk.choices) {
         const delta = choice.delta as ChatCompletionChunk["choices"][number]["delta"] & { reasoning?: unknown; reasoning_content?: unknown }
 
-        // Reasoning delta (GHC extension) — FORWARD it as a synthetic `thinking` block under a sentinel
-        // signature (richest-data-flow: GPT's visible reasoning has real value). It is stamped
-        // distinguishable + stripped on echo-back so it never poisons a direct-Claude round-trip (see
-        // synthetic-reasoning.ts). Reasoning arrives before content, so lazy allocation yields index 0
-        // (thinking-first, the Anthropic ordering). The accumulator still captures reasoning_tokens.
-        const reasoningRaw = (delta as { reasoning?: unknown; reasoning_content?: unknown }).reasoning ?? (delta as { reasoning_content?: unknown }).reasoning_content
+        // Reasoning delta (GHC extension) — FORWARD it as a synthetic `thinking` block under a labeled-
+        // envelope signature (richest-data-flow: GPT's visible reasoning has real value). The reasoning
+        // TEXT is the displayable summary; `reasoning_encrypted_content` (our CC-intermediate carrier for
+        // GHC's opaque blob) rides in the signature for cross-turn round-trip. Stamped distinguishable +
+        // stripped on echo-back (synthetic-reasoning.ts). Reasoning arrives before content, so lazy
+        // allocation yields index 0 (thinking-first). The accumulator still captures reasoning_tokens.
+        const deltaExt = delta as { reasoning?: unknown; reasoning_content?: unknown; reasoning_encrypted_content?: unknown }
+        if (typeof deltaExt.reasoning_encrypted_content === "string" && deltaExt.reasoning_encrypted_content.length > 0) reasoningEncrypted = deltaExt.reasoning_encrypted_content
+        const reasoningRaw = deltaExt.reasoning ?? deltaExt.reasoning_content
         const reasoningDelta = typeof reasoningRaw === "string" ? reasoningRaw : ""
         if (reasoningDelta.length > 0) {
           if (openBlock?.kind !== "thinking") {
