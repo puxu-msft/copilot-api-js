@@ -31,6 +31,7 @@ const WHITE = "\x1b[37m"
 const YELLOW = "\x1b[33m"
 const RED = "\x1b[31m"
 const CYAN = "\x1b[36m"
+const GREEN = "\x1b[32m"
 
 // The exact bytes picocolors emits for each severity band (probed under FORCE_COLOR).
 // Both scales share the yellow → red → bold-red escalation; they differ only at
@@ -41,6 +42,7 @@ const band = {
   yellow: (s: string) => `${YELLOW}${s}${RESET_FG}`,
   red: (s: string) => `${RED}${s}${RESET_FG}`,
   cyan: (s: string) => `${CYAN}${s}${RESET_FG}`,
+  green: (s: string) => `${GREEN}${s}${RESET_FG}`,
   boldRed: (s: string) => `${BOLD}${RED}${s}${RESET_FG}${OFF}`,
 }
 
@@ -72,14 +74,22 @@ const durationCases: Array<{ label: string; ms: number; expect: string }> = [
 /**
  * stop_reason cases: reason → expected category-colored `⇥<reason>` token.
  * The whole token (marker + word + optional tool suffix) carries the category
- * color. Covers one value per band plus an unknown value that must fall back to
- * dim (still shown raw), and a tool_use case with its invoked tool names.
+ * color. Covers one value per band, an unknown value that falls back to dim
+ * (still shown raw), a tool_use case with its invoked tool names (white), and an
+ * agentic case whose tools include AskUserQuestion (cyan, the interactive-pause
+ * highlight).
  */
 const stopReasonCases: Array<{ label: string; reason: string; toolNames?: Array<string>; expect: string }> = [
-  { label: "end_turn → cyan (normal completion)", reason: "end_turn", expect: band.cyan("⇥end_turn") },
-  { label: "stop → cyan (openai normal)", reason: "stop", expect: band.cyan("⇥stop") },
+  { label: "end_turn → green (normal completion)", reason: "end_turn", expect: band.green("⇥end_turn") },
+  { label: "stop → green (openai normal)", reason: "stop", expect: band.green("⇥stop") },
   { label: "tool_use → white (agentic)", reason: "tool_use", expect: band.white("⇥tool_use") },
   { label: "tool_use with names → white token incl (Bash,Edit)", reason: "tool_use", toolNames: ["Bash", "Edit"], expect: band.white("⇥tool_use(Bash,Edit)") },
+  {
+    label: "tool_use with AskUserQuestion → cyan (interactive pause)",
+    reason: "tool_use",
+    toolNames: ["AskUserQuestion"],
+    expect: band.cyan("⇥tool_use(AskUserQuestion)"),
+  },
   { label: "tool_calls → white (openai agentic)", reason: "tool_calls", expect: band.white("⇥tool_calls") },
   { label: "max_tokens → yellow (truncation)", reason: "max_tokens", expect: band.yellow("⇥max_tokens") },
   { label: "length → yellow (openai truncation)", reason: "length", expect: band.yellow("⇥length") },
@@ -150,9 +160,12 @@ describe("formatLogLine severity coloring (FORCE_COLOR integration — authorita
     // regression drops the leading \e[1m and fails that toContain.)
     expect(out["hit 80% → dim (≥80 boundary)"]).not.toContain(RED + "↻80%")
     expect(out["3s → white"]).not.toContain(RED + "3s")
-    // A normal end_turn is cyan, never colored like the agentic (white) or
+    // A normal end_turn is green, never colored like the agentic (white) or
     // problematic (red) bands — guards against an "always white/red" mutation.
-    expect(out["end_turn → cyan (normal completion)"]).not.toContain(WHITE + "⇥end_turn")
-    expect(out["end_turn → cyan (normal completion)"]).not.toContain(RED + "⇥end_turn")
+    expect(out["end_turn → green (normal completion)"]).not.toContain(WHITE + "⇥end_turn")
+    expect(out["end_turn → green (normal completion)"]).not.toContain(RED + "⇥end_turn")
+    // A plain tool_use is white, not the AskUserQuestion cyan highlight — guards
+    // against the AskUserQuestion detection collapsing to "always cyan".
+    expect(out["tool_use → white (agentic)"]).not.toContain(CYAN + "⇥tool_use")
   })
 })

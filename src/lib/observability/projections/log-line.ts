@@ -171,14 +171,14 @@ export function formatLogLine(parts: LogLineParts): string {
   const retryableMetaPart = retryableMeta ? ` ${pc.dim(retryableMeta)}` : ""
 
   // Terminal stop_reason token (`⇥<reason>`), the whole token category-colored by
-  // stopReasonColor (cyan for normal end_turn, white for tool_use, yellow for
-  // truncation, red for refusal/error). When the response invoked tools, their
-  // names are appended as `⇥tool_use(Bash,Edit)` inside the same colored token.
-  // Placed right after the token counts and before extraPart so the grey
-  // feature-tag parens stay last. Present only when the caller supplies a reason
-  // — i.e. on successful completion lines.
+  // stopReasonColor (green for normal end_turn, white for tool_use — cyan when the
+  // response asked the user via AskUserQuestion, yellow for truncation, red for
+  // refusal/error). When the response invoked tools, their names are appended as
+  // `⇥tool_use(Bash,Edit)` inside the same colored token. Placed right after the
+  // token counts and before extraPart so the grey feature-tag parens stay last.
+  // Present only when the caller supplies a reason — i.e. on successful completion lines.
   const toolSuffix = toolNames && toolNames.length > 0 ? `(${toolNames.join(",")})` : ""
-  const stopReasonPart = stopReason ? ` ${stopReasonColor(stopReason)(`⇥${stopReason}${toolSuffix}`)}` : ""
+  const stopReasonPart = stopReason ? ` ${stopReasonColor(stopReason, toolNames)(`⇥${stopReason}${toolSuffix}`)}` : ""
 
   // Request id appended dim at the very end (only when provided, e.g. error lines) for history lookup.
   const reqIdPart = reqId ? ` ${pc.dim(reqId)}` : ""
