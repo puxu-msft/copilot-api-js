@@ -64,11 +64,26 @@ export interface AnthropicToCcOptions {
    * models anyway, so an over-eager map is harmless.
    */
   model?: Model
+  /**
+   * The originating request id (`ctx.id`), threaded purely to TAG the `[Anthropic→CC]` lossy-drop
+   * warnings (native server tools / server_tool_use / tool_result images that have no CC equivalent)
+   * so a warning in the logs can be correlated to its request. Omitted in pure unit tests — the drop
+   * warnings then carry no `requestId=` suffix.
+   */
+  reqId?: string
 }
 
 // ============================================================================
 // Top-level request translation (Anthropic → CC)
 // ============================================================================
+
+/**
+ * Emit an `[Anthropic→CC]` lossy-drop warning, tagged with `requestId=<reqId>` when the originating
+ * request id is known (threaded from `opts.reqId`) so a drop in the logs is traceable to its request.
+ */
+function ccDropWarn(message: string, reqId: string | undefined): void {
+  consola.warn(`[Anthropic→CC] ${message}${reqId ? ` requestId=${reqId}` : ""}`)
+}
 
 /**
  * Translate an Anthropic Messages payload into a Chat Completions payload.
@@ -78,6 +93,7 @@ export interface AnthropicToCcOptions {
  * CC body only (the effectiveRequest track).
  */
 export function translateAnthropicToChatCompletions(payload: MessagesPayload, opts?: AnthropicToCcOptions): ChatCompletionsPayload {
+  const reqId = opts?.reqId
   const messages: Array<Message> = []
 
   // 1. Top-level `system` (string OR TextBlockParam[]) → leading CC system message.
@@ -85,9 +101,9 @@ export function translateAnthropicToChatCompletions(payload: MessagesPayload, op
   if (systemText.length > 0) messages.push({ role: "system", content: systemText })
 
   // 2. Conversation turns → CC messages (tool_result blocks split into their own role:tool messages).
-  for (const message of payload.messages) messages.push(...translateMessage(message))
+  for (const message of payload.messages) messages.push(...translateMessage(message, reqId))
 
-  const tools = payload.tools ? translateTools(payload.tools) : undefined
+  const tools = payload.tools ? translateTools(payload.tools, reqId) : undefined
   const toolChoice = payload.tool_choice ? translateToolChoice(payload.tool_choice) : undefined
   const reasoningEffort = translateThinkingToEffort(payload, opts?.model)
   const stop = normalizeStopSequences(payload.stop_sequences)
@@ -137,7 +153,7 @@ function anthropicSystemToText(system: MessagesPayload["system"]): string {
  * blocks fold into one `role:"user"` message. An assistant turn's text + tool_use blocks fold into
  * one `role:"assistant"` message (`content` + `tool_calls` — the multi-choices request-side fold).
  */
-function translateMessage(message: MessageParam): Array<Message> {
+function translateMessage(message: MessageParam, reqId: string | undefined): Array<Message> {
   const role = message.role
 
   // String content → passthrough (no blocks to walk).
@@ -148,15 +164,15 @@ function translateMessage(message: MessageParam): Array<Message> {
   const blocks = message.content
 
   if (role === "assistant") {
-    return translateAssistantBlocks(blocks)
+    return translateAssistantBlocks(blocks, reqId)
   }
 
   // user (also the container for tool_result responses to a prior assistant turn).
-  return translateUserBlocks(blocks)
+  return translateUserBlocks(blocks, reqId)
 }
 
 /** Assistant turn: fold text + tool_use into one CC assistant message; drop thinking / server_tool_use. */
-function translateAssistantBlocks(blocks: Array<ContentBlockParam>): Array<Message> {
+function translateAssistantBlocks(blocks: Array<ContentBlockParam>, reqId: string | undefined): Array<Message> {
   const textParts: Array<string> = []
   const toolCalls: Array<ToolCall> = []
 
@@ -177,7 +193,7 @@ function translateAssistantBlocks(blocks: Array<ContentBlockParam>): Array<Messa
         break
       }
       case "server_tool_use": {
-        consola.warn(`[Anthropic→CC] dropping server_tool_use block "${(block as { name?: string }).name ?? "unknown"}" (no CC equivalent)`)
+        ccDropWarn(`dropping server_tool_use block "${(block as { name?: string }).name ?? "unknown"}" (no CC equivalent)`, reqId)
         break
       }
       default: {
@@ -201,7 +217,7 @@ function translateAssistantBlocks(blocks: Array<ContentBlockParam>): Array<Messa
  * User turn: emit each `tool_result` as its own `role:"tool"` message (in block order), then fold
  * remaining text/image blocks into one `role:"user"` message. Server-tool result blocks are dropped.
  */
-function translateUserBlocks(blocks: Array<ContentBlockParam>): Array<Message> {
+function translateUserBlocks(blocks: Array<ContentBlockParam>, reqId: string | undefined): Array<Message> {
   const out: Array<Message> = []
   const userParts: Array<ContentPart> = []
 
@@ -216,7 +232,7 @@ function translateUserBlocks(blocks: Array<ContentBlockParam>): Array<Message> {
         break
       }
       case "tool_result": {
-        out.push(toolResultToMessage(block))
+        out.push(toolResultToMessage(block, reqId))
         break
       }
       default: {
@@ -256,7 +272,7 @@ function toolUseToToolCall(block: ToolUseBlockParam): ToolCall {
  * so text blocks are concatenated; images inside a tool_result have no clean CC tool-message slot
  * and are dropped (rare — warned). An `is_error` result is prefixed so the model still sees it failed.
  */
-function toolResultToMessage(block: ToolResultBlockParam): Message {
+function toolResultToMessage(block: ToolResultBlockParam, reqId: string | undefined): Message {
   let text: string
   if (typeof block.content === "string") {
     text = block.content
@@ -267,7 +283,7 @@ function toolResultToMessage(block: ToolResultBlockParam): Message {
       if (part.type === "text") textPieces.push(part.text)
       else if (part.type === "image") droppedImages++
     }
-    if (droppedImages > 0) consola.warn(`[Anthropic→CC] tool_result ${block.tool_use_id}: dropped ${droppedImages} image block(s) (no CC tool-message slot)`)
+    if (droppedImages > 0) ccDropWarn(`tool_result ${block.tool_use_id}: dropped ${droppedImages} image block(s) (no CC tool-message slot)`, reqId)
     text = textPieces.join("")
   } else {
     text = ""
@@ -298,11 +314,11 @@ function imageBlockToContentPart(block: ImageBlockParam): ContentPart {
  * Anthropic `tools[]` → CC function tools. Native server tools (`web_search`, `code_execution`, …,
  * identified by their `type` prefix) are STRIPPED (warned); `cache_control` is not copied.
  */
-function translateTools(tools: Array<AnthropicTool>): Array<CCTool> {
+function translateTools(tools: Array<AnthropicTool>, reqId: string | undefined): Array<CCTool> {
   const out: Array<CCTool> = []
   for (const tool of tools) {
     if (isApiDefinedToolType(tool.type)) {
-      consola.warn(`[Anthropic→CC] dropping native server tool "${tool.name}" (type: ${tool.type}) — unsupported on the CC leg`)
+      ccDropWarn(`dropping native server tool "${tool.name}" (type: ${tool.type}) — unsupported on the CC leg`, reqId)
       continue
     }
     out.push({

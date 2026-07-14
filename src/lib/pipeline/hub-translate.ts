@@ -82,6 +82,8 @@ import {
 export interface HubTranslateContext {
   /** The resolved upstream model — gates the anthropic→cc `thinking`→`reasoning_effort` mapping (spec §6). */
   model?: Model
+  /** The originating request id (`ctx.id`) — threaded to TAG the anthropic→cc lossy-drop warnings so they are traceable to their request. */
+  reqId?: string
 }
 
 /**
@@ -127,7 +129,7 @@ function toAnthropicBody(sourceFormat: ClientFormat, body: unknown): unknown {
 function toCcBody(sourceFormat: ClientFormat, body: unknown, ctx?: HubTranslateContext): unknown {
   switch (sourceFormat) {
     case "anthropic": {
-      return translateAnthropicToChatCompletions(body as MessagesPayload, ctx?.model ? { model: ctx.model } : undefined)
+      return translateAnthropicToChatCompletions(body as MessagesPayload, { model: ctx?.model, reqId: ctx?.reqId })
     }
     case "openai-cc":
     case "gemini": {

@@ -86,7 +86,7 @@ export const chatCompletionsLeg: OutboundLeg = {
       return env
     }
     if (!isForward(env)) return env
-    const ccBody = translateRequestVia(env.clientFormat, env.targetEndpoint, env.body, { model: env.model as Model | undefined })
+    const ccBody = translateRequestVia(env.clientFormat, env.targetEndpoint, env.body, { model: env.model as Model | undefined, reqId: env.ctx.id })
     return env.with({ body: ccBody })
   },
 

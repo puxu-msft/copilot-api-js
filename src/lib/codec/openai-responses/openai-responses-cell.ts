@@ -65,7 +65,7 @@ function makeResponsesLeg(targetEndpoint: typeof ENDPOINT.RESPONSES | typeof END
     translateOut(env) {
       if (env.clientFormat === "openai-cc" || env.clientFormat === "gemini") env.ctx.recordFeature("via-responses")
       if (isDirect(env) || env.clientFormat === "openai-cc") return env
-      const ccBody = translateRequestVia(env.clientFormat, ENDPOINT.RESPONSES, env.body, { model: env.model as Model | undefined })
+      const ccBody = translateRequestVia(env.clientFormat, ENDPOINT.RESPONSES, env.body, { model: env.model as Model | undefined, reqId: env.ctx.id })
       return env.with({ body: ccBody })
     },
 
