@@ -1,6 +1,6 @@
 ---
 name: bun-node-runtime-gotchas
-description: 当 copilot-api-js 在 Bun/Node 双运行时下遇到「stdlib/Web 标准行为诡异」时使用——undici.Response≠globalThis.Response（instanceof 跨 realm 假失败、Bun 下恰好相等掩盖 Node bug）、new Headers 对异大小写同名键逗号拼接非覆盖（头合并畸形双 Bearer）、bun:sqlite `.get()` 返 null 而 node:sqlite 返 undefined、触发器写入被计入 `.run().changes`。凡「Bun 能跑 Node 挂」或「两 runtime 行为分歧」的排查。
+description: 当 copilot-api-js 在 Bun/Node 双运行时下遇到「stdlib/Web 标准行为诡异」或 Bun 独有 API 能力边界时使用——undici.Response≠globalThis.Response（instanceof 跨 realm 假失败、Bun 下恰好相等掩盖 Node bug）、new Headers 对异大小写同名键逗号拼接非覆盖（头合并畸形双 Bearer）、bun:sqlite `.get()` 返 null 而 node:sqlite 返 undefined、触发器写入被计入 `.run().changes`、Bun.Terminal 伪终端不给子进程投递 SIGWINCH+stdout.rows 不刷新（PTY 测 resize 恒绿假测）、node-pty 在 bun 下 spawn 语义损坏。凡「Bun 能跑 Node 挂」「两 runtime 行为分歧」或「Bun 独有 API 悄悄不工作」的排查。
 ---
 
 # Bun / Node 跨运行时 stdlib 陷阱
@@ -37,6 +37,18 @@ new Headers({ authorization: "Bearer A", Authorization: "Bearer B" })
 2. **触发器写入被 bun:sqlite 计入 `.run().changes`**：一条 UPDATE/DELETE 若触发 AFTER 触发器写别的表，bun 的 `.run().changes` 把触发器侧写入也算进去（实测 1 行真实 UPDATE + FTS 触发器 → changes=9/19；node:sqlite 只算 1）。**凡带触发器/级联的表，行数用 `SELECT COUNT(*)` 单独数，别读 `.changes`**（`reclaimStaleActiveRows`/`reclaimOrphanedActiveRows` 已改 COUNT+UPDATE 同事务；`evictBucket` 早因 `ON DELETE CASCADE` 同理避开）。
 
 > history 的 external-content **FTS5 三陷阱**（COUNT 穿透、`'delete'` 腐败、VACUUM renumber rowid）是 history 专有，见 skill `history-sqlite-schema`。
+
+## Bun.Terminal 伪终端：node-pty 损坏 + 子进程感知不到 resize（PTY 测试）
+
+`tests/tui/pty/` 用 `Bun.Terminal`（Bun 1.3.14 内置伪终端）spawn 真 `TerminalUi` driver、输出喂 `@xterm/headless` 解释成网格，测 raw-mode TUI 的整屏效果（不吞行/footer 钉底/退出还原/切 detail）。三条实测踩出的坑（PoC `exp/poc-js-pty-grid/`、spec/plan `2026-07-14-tui-pty-terminal-grid-testing`）：
+
+1. **node-pty@1.1.0 在 bun 下 spawn 语义损坏**：能装、能加载 N-API addon，但 `spawn` 的子进程提前退出、stdout 非 TTY、`resize` 抛 `ioctl EBADF`（同 addon 在 Node v24 正常）。**别在 bun 用 node-pty**——用 Bun 内置 `Bun.Terminal`（`new Bun.Terminal({cols,rows,data(t,bytes){}})` + `Bun.spawn([...],{terminal})`）。
+
+2. **`Bun.Terminal.resize()` 不给子进程投递 SIGWINCH、子进程 `process.stdout.rows` 不刷新**（亲手实测）：resize 伪终端 24→30 后，子进程 `process.on("SIGWINCH")` **got=0**、`process.stdout.rows` **始终读 24**（INIT/AFTER/FINAL 全 24）。故 driver 里的真 `TerminalUi.getRows()` 恒返回旧值 → `region.render` 的 `geometryChanged` resize 分支**从不执行** → 任何「resize 重锚」测试都是**恒绿假测**（红样本删源码也不 FAIL）。曾被「稳定 6/6 绿」误导——实为 resize 从没生效（呼应 `verifying-authoritative-claims`「通过不自证」）。**后果**：PTY 测能覆盖滚动/备用屏/退出还原/切视图，但**测不了 resize 重锚**（降 backlog，见 `docs/todo/deferred-backlog.md`）。
+
+3. **`@xterm/headless` 的 `terminal.resize()` reflow 丢 scrollback 行**（时好时坏）：作观察器时**别 resize xterm**，用一个**固定的大观察窗口**（rows 传足够大值）让子进程前后输出都落同一稳定网格。读 buffer 三前提固定：`allowProposedApi:true`、等 `write(data,cb)` 的 cb、遍历 `0..buffer.active.length-1`（含 scrollback）。
+
+> PTY 整屏测试的通用方法论（正样本红绿对照、连跑证时序确定性、pyte/xterm 网格解释）见 user-level skill `pty-terminal-ui-testing`；本节是它在 Bun.Terminal 上的落地限制。
 
 ## 通用手法
 
