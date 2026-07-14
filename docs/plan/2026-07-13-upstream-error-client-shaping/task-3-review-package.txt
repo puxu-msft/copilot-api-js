@@ -1,0 +1,950 @@
+### COMMITS (bb89b9ab..HEAD)
+bdebda73 docs(plan): phase-3 execution report — post-commit canonical frame shaping
+140d1957 refactor: delegate post-commit terminal error frames to error-shaping builders (G-3 canonical ownership, 4 termini)
+04c88acd feat: add errorFrameCanonical S5 rewrite for upstream event:error frames (G-3)
+
+### DIFFSTAT
+ .../task-3-report.md                               |  69 ++++++
+ src/lib/anthropic/error-shaping.ts                 |  41 +++-
+ .../anthropic/error-frame-canonical-rewrite.ts     |  51 +++++
+ .../codec/anthropic/response-rewrite-adapters.ts   |  15 +-
+ src/lib/pipeline/rewrite-registry.ts               |   8 +
+ src/routes/messages/error-shaping-glue.ts          |  41 +++-
+ src/routes/messages/handler-v4.ts                  |  35 ++-
+ .../error-frame-canonical-rewrite.unit.test.ts     |  87 ++++++++
+ .../messages/postcommit-error-shaping.it.test.ts   | 243 +++++++++++++++++++++
+ .../messages/postcommit-error-shaping.unit.test.ts |  90 ++++++++
+ 10 files changed, 665 insertions(+), 15 deletions(-)
+
+### FULL DIFF (-U10)
+diff --git a/src/lib/anthropic/error-shaping.ts b/src/lib/anthropic/error-shaping.ts
+index 5981e38c..9c13c6dc 100644
+--- a/src/lib/anthropic/error-shaping.ts
++++ b/src/lib/anthropic/error-shaping.ts
+@@ -15,21 +15,25 @@
+  *      B (AUQ candidates): content_filtered / quota_exceeded(402) / auth_expired(401/403 leg)
+  *      C (terminal canonical): token_limit / payload_too_large / bad_request
+  *    `aborted` is a NON-target (handled by the existing abort path) — passing it to `decide()`
+  *    is a caller misuse and throws.
+  *  - `clientVisibleStopEmitted` is currently a no-op for the two `ApiError` call sites (both pass
+  *    `false`); it is a forward-compat slot for Phase 6's block-level `defer-to-block-level` sub-
+  *    decision, which does NOT flow through this truth table.
+  */
+ 
+ import type { ApiError } from "~/lib/error"
+-import type { ClientFrame } from "~/lib/pipeline/types"
++import type {
++  //
++  ClientFrame,
++  UpstreamFrame,
++} from "~/lib/pipeline/types"
+ 
+ import { classifyStreamError } from "~/lib/stream"
+ 
+ // ============================================================================
+ // Config + input/output types (README §4 contract — consumed verbatim by Phase 2/3/4/5)
+ // ============================================================================
+ 
+ /** The 4 error-shaping config keys, read from `state` by the caller and passed in as a snapshot. */
+ export interface ErrorShapingConfig {
+   enabled: boolean // error_shaping_enabled
+@@ -157,20 +161,55 @@ function anthropicErrorTypeForApiError(type: ApiError["type"]): string {
+  *
+  * `retry_after` is OMITTED entirely (not `null`/`undefined` literal) when the decision has no
+  * `retryAfterSec`, matching `post-commit-error.ts` behaviour.
+  */
+ export function buildCanonicalErrorFrame(decision: Extract<ShapingDecision, { kind: "canonical-error" }>): ClientFrame {
+   const error: Record<string, unknown> = { type: decision.errorType, message: decision.message }
+   if (decision.retryAfterSec !== undefined) error.retry_after = decision.retryAfterSec
+   return { event: "error", data: JSON.stringify({ type: "error", error }) }
+ }
+ 
++/**
++ * Best-effort extraction of an upstream-sent `event:error` frame's `{type, message}` — tolerant of
++ * non-Anthropic-shaped bodies (raw GHC/Copilot error JSON). Mirrors `stream-accumulator.ts`'s
++ * `error` case parsing (`err.type` / `err.message`), plus a top-level `{type, message}` fallback,
++ * so both consumers agree on what "the upstream said" means. Never throws (returns `{}` on
++ * unparseable data).
++ */
++export function parseRawUpstreamErrorFrame(frame: UpstreamFrame): { type?: string; message?: string } {
++  try {
++    const parsed = JSON.parse(frame.data ?? "{}") as { type?: string; error?: { type?: string; message?: string }; message?: string }
++    // Prefer the nested `error` object (mirrors stream-accumulator.ts's `err?.type` / `err?.message`, so
++    // both consumers agree on "what the upstream said"). Fall back to a FLAT `{type, message}` shape — but
++    // never treat the `"error"` DISCRIMINATOR as the taxonomy: a `{type:"error", error:{message}}` frame's
++    // canonical error type is `api_error` (the builder's fallback), not the literal `"error"`.
++    const topType = parsed.type === "error" ? undefined : parsed.type
++    return { type: parsed.error?.type ?? topType, message: parsed.error?.message ?? parsed.message }
++  } catch {
++    return {}
++  }
++}
++
++/**
++ * G-3 sole-ownership canonical builder for a RAW upstream `event:error` frame (the S5
++ * `errorFrameCanonical` rewrite's transform) — always resolves to a valid Anthropic `event:error`
++ * envelope, falling back to `"api_error"` / a generic message when the upstream shape is
++ * unrecognized (never throws, never drops the frame). Distinct from {@link buildCanonicalErrorFrame},
++ * which takes an already-classified `canonical-error` decision: this one has no `ApiError` to
++ * classify (an upstream-emitted frame is not a thrown error), so it preserves the upstream's own
++ * `error.type` verbatim rather than re-mapping through `decide()`.
++ */
++export function buildCanonicalErrorFrameFromRaw(frame: UpstreamFrame): ClientFrame {
++  const { type, message } = parseRawUpstreamErrorFrame(frame)
++  return buildCanonicalErrorFrame({ kind: "canonical-error", errorType: type ?? "api_error", message: message ?? "Upstream reported an error" })
++}
++
+ /**
+  * Map a streaming error to its Anthropic SSE `error.type` (absorbed from
+  * `streaming-pump.ts:anthropicStreamErrorType`, G-3): shutdown → retryable `overloaded_error`,
+  * idle-timeout → `timeout_error`, everything else → `api_error`. Pure function — same input yields
+  * same output regardless of call site, so `streaming-pump.ts` re-exports this under the old name.
+  */
+ export function classifyStreamErrorType(error: unknown): string {
+   switch (classifyStreamError(error)) {
+     case "idle-timeout": {
+       return "timeout_error"
+diff --git a/src/lib/codec/anthropic/error-frame-canonical-rewrite.ts b/src/lib/codec/anthropic/error-frame-canonical-rewrite.ts
+new file mode 100644
+index 00000000..224c6b36
+--- /dev/null
++++ b/src/lib/codec/anthropic/error-frame-canonical-rewrite.ts
+@@ -0,0 +1,51 @@
++/**
++ * v4 pipeline — the `errorFrameCanonical` Anthropic response rewrite (S5, order 50 = runs FIRST).
++ *
++ * A raw upstream `event:error` frame (H2 — a terminal upstream decision delivered mid-stream) is,
++ * absent this rewrite, forwarded VERBATIM to the client (`stream-accumulator.ts` only RECORDS it into
++ * `acc.streamError` for the handler's H2 bookkeeping; nothing reshapes it). Non-Anthropic upstreams
++ * emit non-canonical error bodies, so the client SDK cannot reliably branch on `error.type`. This
++ * rewrite reshapes such a frame — BEFORE forwarding — into a canonical Anthropic `event:error`
++ * envelope (G-3: the single canonical constructor is `error-shaping.ts`'s `buildCanonicalErrorFrameFromRaw`).
++ *
++ * Two-axis endpoint gate (HIGH-2): `ANTHROPIC_RESPONSE_REWRITES` is folded into the union
++ * `ALL_RESPONSE_REWRITES`, which the gemini / chat-completions / responses drivers ALSO receive. Only
++ * the `targetEndpoint === /v1/messages` legs process the Anthropic upstream wire, so this rewrite gates
++ * on `targetEndpoint` (NOT `clientFormat`) exactly like the five sibling adapters' `ANTHROPIC(env)`
++ * predicate (`response-rewrite-adapters.ts`). The inline predicate mirrors that private helper rather
++ * than exporting a shared const — same "hand-built small predicate, no cross-file export" convention the
++ * sibling files (`thinking-quarantine`, `reverse-anthropic-rewrite`, `request-rewrite-adapter`) already
++ * follow.
++ *
++ * Ordering (order 50, ahead of `recoverRefusal`'s 400): `recoverRefusal` in `error` mode SYNTHESIZES a
++ * canonical `event:error` frame. `passThrough` (driver.ts) runs strictly forward, so a rewrite at order
++ * 50 only ever sees UPSTREAM-ORIGINAL frames — the refusal-synthesized canonical frame flows to LATER
++ * rewrites only and can never reach this one for a wrongful second reshape.
++ */
++
++import type { RequestEnvelope } from "~/lib/pipeline/envelope"
++import type {
++  //
++  FrameAction,
++  ResponseRewrite,
++  RewriteState,
++} from "~/lib/pipeline/rewrite-registry"
++import type { UpstreamFrame } from "~/lib/pipeline/types"
++
++import { buildCanonicalErrorFrameFromRaw } from "~/lib/anthropic/error-shaping"
++import { ENDPOINT } from "~/lib/models/endpoint"
++import { RESPONSE_REWRITE_ORDER } from "~/lib/pipeline/rewrite-registry"
++import { state } from "~/lib/state"
++
++export const errorFrameCanonicalRewrite: ResponseRewrite = {
++  name: "errorFrameCanonical",
++  order: RESPONSE_REWRITE_ORDER.errorFrameCanonical,
++  // HIGH-2 two-axis gate: MESSAGES leg only (never the gemini/cc/responses legs sharing
++  // ALL_RESPONSE_REWRITES) AND the master error-shaping toggle on (off = byte-identical passthrough,
++  // the golden lock — the frame is forwarded verbatim as today).
++  appliesTo: (env: RequestEnvelope): boolean => env.targetEndpoint === ENDPOINT.MESSAGES && state.errorShapingEnabled,
++  transform: (frame: UpstreamFrame, _state: RewriteState): FrameAction => {
++    if (frame.event !== "error") return { kind: "emit", frames: [frame] }
++    return { kind: "emit", frames: [buildCanonicalErrorFrameFromRaw(frame)] }
++  },
++}
+diff --git a/src/lib/codec/anthropic/response-rewrite-adapters.ts b/src/lib/codec/anthropic/response-rewrite-adapters.ts
+index e1c27e86..258bed3c 100644
+--- a/src/lib/codec/anthropic/response-rewrite-adapters.ts
++++ b/src/lib/codec/anthropic/response-rewrite-adapters.ts
+@@ -73,20 +73,22 @@ import {
+   createServerToolBlockFilter,
+   filterServerToolBlocksFromResponse,
+   logServerToolBlocks,
+   restoreToolNamesInResponse,
+ } from "~/lib/anthropic/server-tool-filter"
+ import { applyThinkingSignatureCompat } from "~/lib/anthropic/thinking-signature-compat"
+ import { ENDPOINT } from "~/lib/models/endpoint"
+ import { RESPONSE_REWRITE_ORDER } from "~/lib/pipeline/rewrite-registry"
+ import { state } from "~/lib/state"
+ 
++import { errorFrameCanonicalRewrite } from "./error-frame-canonical-rewrite"
++
+ /** Best-effort parse of an SSE data payload (undefined on failure / keepalive). */
+ function parseFrame(data: string | undefined): StreamEvent | undefined {
+   if (!data) return undefined
+   try {
+     return JSON.parse(data) as StreamEvent
+   } catch {
+     return undefined
+   }
+ }
+ 
+@@ -339,13 +341,22 @@ const refusalRewrite: ResponseRewrite = {
+     const resp = response as AnthropicMessageResponse
+     if (resp.stop_reason !== "refusal") return response
+     const vars = { model: resp.model, request_id: env.ctx.id, thinking_tokens: resp.usage.output_tokens }
+     return recoverRefusalInResponse(resp, renderRefusalTemplate(state.refusalEndTurnText, vars))
+   },
+ }
+ 
+ /**
+  * The Anthropic streaming response rewrites, in registry form. Ordered by `order`
+  * at assembly (the array order here is cosmetic). Passed to the driver via
+- * `deps.responseRewrites` by the Anthropic handler.
++ * `deps.responseRewrites` by the Anthropic handler. `errorFrameCanonical` (order 50)
++ * runs first — it reshapes a raw upstream `event:error` frame into a canonical envelope
++ * before any other rewrite (and before the refusal rewrite could synthesize its own).
+  */
+-export const ANTHROPIC_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = [recoverRewrite, thinkingRewrite, decodeRewrite, filterRewrite, refusalRewrite]
++export const ANTHROPIC_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = [
++  errorFrameCanonicalRewrite,
++  recoverRewrite,
++  thinkingRewrite,
++  decodeRewrite,
++  filterRewrite,
++  refusalRewrite,
++]
+diff --git a/src/lib/pipeline/rewrite-registry.ts b/src/lib/pipeline/rewrite-registry.ts
+index f186b2aa..8f87a45f 100644
+--- a/src/lib/pipeline/rewrite-registry.ts
++++ b/src/lib/pipeline/rewrite-registry.ts
+@@ -161,22 +161,30 @@ export const BUILTIN_REQUEST_REWRITES: ReadonlyArray<RequestRewrite> = []
+  *     (after recover added synthesized blocks + decode finalized buffered input).
+  *   - `recoverRefusal` (400) runs AFTER all of the above (it appends a fresh `text`
+  *     block at `maxIndex + 1`, so observing the final densified index space guarantees
+  *     a non-colliding index). It is independent of the tool/thinking rewrites: a
+  *     thinking-only refusal carries no tools/downgraded-text, so recover/decode/filter
+  *     are no-ops on it, and thinking-signature-compat only reshapes the thinking start
+  *     frame (which refusal-recovery passes through untouched).
+  *
+  * The buffer/flush + multi-buffer cascade + index-densify invariants these orders
+  * depend on are locked by tests/pipeline/response-rewrite-contract.unit.test.ts.
++ *
++ *   - `errorFrameCanonical` (50) runs FIRST (smallest order): it intercepts a raw upstream
++ *     `event:error` frame and reshapes it into a canonical Anthropic envelope. It MUST precede
++ *     `recoverRefusal` (400), which itself SYNTHESIZES an `event:error` frame in `error` mode — a
++ *     synthesized canonical frame must never be re-shaped. `passThrough` runs strictly forward
++ *     (driver.ts), so a rewrite at order 50 only ever sees UPSTREAM-ORIGINAL error frames; the
++ *     refusal-synthesized one flows to LATER rewrites only and can never reach this one.
+  */
+ export const RESPONSE_REWRITE_ORDER = {
++  errorFrameCanonical: 50,
+   recoverToolCall: 100,
+   thinkingSignatureCompat: 150,
+   toolInputDecode: 200,
+   serverToolFilter: 300,
+   recoverRefusal: 400,
+ } as const
+ 
+ /**
+  * Built-in (module-global) response rewrites — **intentionally empty by design**
+  * (same rationale as {@link BUILTIN_REQUEST_REWRITES}). Per-format response
+diff --git a/src/routes/messages/error-shaping-glue.ts b/src/routes/messages/error-shaping-glue.ts
+index 0de30fe5..1bb57c84 100644
+--- a/src/routes/messages/error-shaping-glue.ts
++++ b/src/routes/messages/error-shaping-glue.ts
+@@ -18,35 +18,38 @@
+  *
+  * Scope: only the A-class (`retry-signal`) branch is acted on. `ask-user-question` (B-class) and
+  * `canonical-error` (C-class, and B-class with the AUQ toggle off) fall through to plain
+  * `forwardError` — AUQ body synthesis is Phase 4's job (see `decide()`'s doc comment for the class
+  * table). `defer-to-block-level` is a post-commit-only decision kind that `decide()` never returns
+  * for a pre-commit input, so it is unreachable here (exhaustive `switch` would need a `never` guard;
+  * a `if` chain is enough since the two acted-on/passthrough kinds cover the pre-commit range).
+  */
+ import type { Context } from "hono"
+ 
++import type { ClientFrame } from "~/lib/pipeline/types"
++
+ import {
+   //
++  buildCanonicalErrorFrame,
+   decide,
+   type ErrorShapingConfig,
+ } from "~/lib/anthropic/error-shaping"
+ import {
+   //
+   classifyError,
+   forwardError,
+   isAbortError,
+ } from "~/lib/error"
+ import { state } from "~/lib/state"
+ 
+ /** Snapshot the 4 error-shaping config keys off `state` (Phase 0) into the pure `decide()` input. */
+-function errorShapingConfigFromState(): ErrorShapingConfig {
++export function errorShapingConfigFromState(): ErrorShapingConfig {
+   return {
+     enabled: state.errorShapingEnabled,
+     askUserQuestion: state.errorAskUserQuestion,
+     auqTemplate: state.errorAuqTemplate,
+     selfhealDelegate: state.errorSelfhealDelegate,
+   }
+ }
+ 
+ /**
+  * Pre-commit Anthropic error entry point for `route.ts`.
+@@ -84,10 +87,46 @@ export function shapePrecommitError(c: Context, error: unknown): Response {
+   })
+ 
+   if (decision.kind === "retry-signal") {
+     if (decision.retryAfterSec !== undefined) c.header("Retry-After", String(decision.retryAfterSec))
+     c.header("x-should-retry", "true")
+   }
+   // "ask-user-question": Phase 4 TODO — falls through to forwardError unchanged for now.
+   // "canonical-error": current forwardError behaviour is already correct, no header changes.
+   return forwardError(c, error)
+ }
++
++/**
++ * POST-COMMIT terminal-frame shaping for the handler's `writeSynthetic` termini (Phase 3, G-3
++ * canonical ownership). Once the proxy has committed a 200 SSE stream the HTTP status is locked, so an
++ * upstream failure can only be delivered as an Anthropic `event:error` FRAME. The two `ApiError`-bearing
++ * termini (① HTTPError, ①' unknown-non-HTTP e.g. `network_error`/socket reset) classify their error and
++ * delegate the frame construction here, replacing hand-built JSON with the single `error-shaping`
++ * builder.
++ *
++ * Golden lock (CF-2): when `error_shaping_enabled` is false, `decide()` is NEVER called — this returns
++ * the caller's `legacyFrame` verbatim (byte-identical to the pre-error-shaping behaviour). When enabled,
++ * `decide({commitPhase:"post-commit"})` always resolves to a `canonical-error` kind (post-commit has no
++ * retry-signal / AUQ option in the Phase 1 truth table — the status is locked), so
++ * `buildCanonicalErrorFrame` produces the frame. The `network_error` post-commit case (terminus ①',
++ * which `classifyError` only ever produces from the non-HTTPError branch) is thus routed through
++ * `decide()` for the first time — the truth table's `network_error → canonical-error` promise is finally
++ * exercised end-to-end.
++ *
++ * CF-3: the canonical `event:error` frame carries `error.type` = the Anthropic wire literal (e.g. 402 →
++ * `rate_limit_error`); with the SSE status locked at 200 (undefined at the client), CC's post-commit
++ * retry triggers (status 529 / a `"type":"overloaded_error"` message substring — exp/cc-error-retry-surface/FINDINGS.md)
++ * are not hit, so this frame never provokes an unintended client retry.
++ */
++export function shapePostcommitErrorFrame(error: unknown, legacyFrame: ClientFrame): ClientFrame {
++  if (!state.errorShapingEnabled) return legacyFrame
++  const decision = decide({
++    error: classifyError(error),
++    commitPhase: "post-commit",
++    clientVisibleStopEmitted: false,
++    config: errorShapingConfigFromState(),
++  })
++  // Post-commit `decide()` is total onto `canonical-error` (no retry-signal / AUQ / defer post-commit).
++  // The defensive fallback keeps the legacy frame if a future truth-table change ever yields otherwise.
++  if (decision.kind !== "canonical-error") return legacyFrame
++  return buildCanonicalErrorFrame(decision)
++}
+diff --git a/src/routes/messages/handler-v4.ts b/src/routes/messages/handler-v4.ts
+index 0a39888b..e9b6148b 100644
+--- a/src/routes/messages/handler-v4.ts
++++ b/src/routes/messages/handler-v4.ts
+@@ -56,20 +56,21 @@ import type {
+   StreamEvent,
+ } from "~/types/api/anthropic"
+ import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+ 
+ import { bridgeClientAbort } from "~/lib/abort-bridge"
+ import {
+   //
+   extractAppliedEdits,
+   summarizeAppliedEdits,
+ } from "~/lib/anthropic/applied-context-edits"
++import { buildCanonicalErrorFrame } from "~/lib/anthropic/error-shaping"
+ import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
+ import {
+   //
+   anchorDeltaFrame,
+   anchorStartFrame,
+   anchorStopFrame,
+   closeAnchorIfOpen,
+   makeSyntheticAnchorInjector,
+   makeSyntheticEnvelopeInjector,
+   remapAnthropicBlockIndex,
+@@ -142,20 +143,21 @@ import {
+   buildResponsesResponseData,
+ } from "~/lib/request"
+ import {
+   //
+   resolveBufferedCaps,
+   state,
+ } from "~/lib/state"
+ import { processAnthropicSystem } from "~/lib/system-prompt"
+ import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+ 
++import { shapePostcommitErrorFrame } from "./error-shaping-glue"
+ import {
+   //
+   anthropicErrorFrame,
+   anthropicHttpErrorFrame,
+   anthropicRejectErrorFrame,
+   classifyPostCommitAbort,
+ } from "./post-commit-error"
+ import { retryMetaFeature } from "./retry-meta-feature"
+ import {
+   //
+@@ -557,28 +559,35 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
+           await sink.writeSynthetic?.(
+             kind === "reaper-cancel" ?
+               anthropicErrorFrame("api_error", "Request cancelled by the stale-request reaper")
+             : anthropicErrorFrame("api_error", "Upstream timed out before sending response headers"),
+           )
+           return
+         }
+         if (error instanceof HTTPError) {
+           // (c) upstream 4xx/5xx — the dominant POST-COMMIT divergence. The rich frame preserves
+           // error.type (+ retry_after) so the client SDK still branches correctly (Q2 §4.2.5).
++          // G-3: delegated to the error-shaping builder (canonical ownership); disabled = the legacy
++          // anthropicHttpErrorFrame verbatim (CF-2 golden lock).
+           ctx?.fail(resolvedName, error)
+           await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
+-          await sink.writeSynthetic?.(anthropicHttpErrorFrame(error))
++          await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error)))
+           return
+         }
+         ctx?.fail(resolvedName, error) // unknown non-HTTP, non-abort
+         await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
+-        await sink.writeSynthetic?.(anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error)))
++        // (①' G-3, MEDIUM-1) classifyError maps this branch's errors (socket reset / HTTP2
++        // REFUSED_STREAM / other non-HTTPError) to network_error / bad_request → decide() → canonical.
++        // This is the ONLY path that produces post-commit network_error, so the Phase 1 truth table's
++        // network_error→canonical-error promise is exercised here. Disabled = the legacy api_error frame
++        // verbatim (CF-2 golden lock).
++        await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error))))
+         return
+       }
+       if (!result.ok) {
+         // (b) decideRoute reject — RESOLVE not throw (C2), the try/catch above can't catch it.
+         const ctx = codec.getContext()
+         ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }) // forwarded pings before settling (richest-data-flow)
+         ctx?.fail(resolvedName, new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason))
+         await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5, M1 — was missing in the first plan)
+         await sink.writeSynthetic?.(anthropicRejectErrorFrame(result.rejection.status, result.rejection.reason))
+         return
+@@ -1190,23 +1199,21 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options):
+       const error = outcome.error
+       logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
+       const errorMessage = error instanceof Error ? error.message : String(error)
+       const errorType = anthropicStreamErrorType(error)
+       // §10.5 gap (whole-branch review I-1): the live pump can stream-error BEFORE the first real
+       // content_block_start (a delayed-commit stall injected the anchor, then the upstream body threw) —
+       // reconcileLiveFrame never got to close the anchor, so it is still OPEN. Close it off (stop@0) BEFORE
+       // the error frame or the client is left with a dangling block. Idempotent + inert (shared anchorClosed
+       // guard): a no-op when reconcile already closed it, or when no anchor was injected.
+       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+-      await sink
+-        .writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
+-        .catch(() => undefined)
++      await sink.writeSynthetic?.(buildCanonicalErrorFrame({ kind: "canonical-error", errorType, message: errorMessage })).catch(() => undefined)
+       recordForwarded()
+       // C1: preserve the partial content accumulated before the throw (mirrors the
+       // truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
+       const partial = buildAnthropicResponseData(acc, model)
+       env.ctx.fail(acc.model || model, error, {
+         usage: partial.usage,
+         stop_reason: partial.stop_reason,
+         content: partial.content,
+       })
+       return
+@@ -1216,22 +1223,25 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options):
+     const summaryParts = [`↓${streamState.bytesIn}B ${streamState.eventsIn}ev in ${Date.now() - streamState.streamStartMs}ms`]
+     if (acc.toolSearchRequests > 0) summaryParts.push(`tool_search:${acc.toolSearchRequests}`)
+     const ctxEdits = summarizeAppliedEdits(acc.appliedContextEdits)
+     if (ctxEdits.count > 0) {
+       summaryParts.push(`ctx_cleared:${ctxEdits.clearedInputTokens}tok×${ctxEdits.count}`)
+       env.ctx.recordFeature("context-edits-applied", { count: ctxEdits.count, clearedInputTokens: ctxEdits.clearedInputTokens, types: ctxEdits.types })
+     }
+     consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
+ 
+     if (acc.streamError) {
+-      // H2 — a terminal upstream `error` SSE event was forwarded as a content frame (clean
+-      // drain, never a thrown error → outcome is `complete`); settle as fail from the acc.
++      // H2 — a terminal upstream `error` SSE event (a clean drain, never a thrown error → outcome is
++      // `complete`). When error-shaping is on, the `errorFrameCanonical` S5 rewrite already RESHAPED the
++      // forwarded frame into a canonical Anthropic envelope before it reached the client (off = forwarded
++      // verbatim); either way the client got the frame. This branch only settles ctx.fail from the
++      // upstream-original `acc.streamError` (acc sees pre-rewrite frames) — it writes NO frame itself.
+       consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
+       // C1: preserve the partial content accumulated before the terminal error frame (mirrors
+       // the truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
+       const partial = buildAnthropicResponseData(acc, model)
+       env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`), {
+         usage: partial.usage,
+         stop_reason: partial.stop_reason,
+         content: partial.content,
+       })
+     } else if (
+@@ -1297,24 +1307,27 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options):
+       // is a genuine UPSTREAM failure (partial stream), so outboundResponse stays success:false.
+       // Order: writeSynthetic (samples the error frame) → recordForwarded → fail (see H3 branch).
+       const partial = buildAnthropicResponseData(acc, model)
+       consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
+       // §10.5 gap (I-1): the live pump can truncate (clean EOF, no message_stop) BEFORE the first real
+       // content_block_start — a delayed-commit stall injected the anchor, then the upstream closed silently.
+       // reconcile never closed the anchor, so close it off (stop@0) before the error frame. Idempotent (a
+       // real first block already closed it → no-op) + inert (no anchor injected → byte-equivalent).
+       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+       await sink
+-        .writeSynthetic?.({
+-          event: "error",
+-          data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
+-        })
++        .writeSynthetic?.(
++          buildCanonicalErrorFrame({
++            kind: "canonical-error",
++            errorType: "api_error",
++            message: "Upstream stream truncated before completion (no message_stop)",
++          }),
++        )
+         .catch(() => undefined)
+       recordForwarded()
+       env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
+         usage: partial.usage,
+         stop_reason: partial.stop_reason,
+         content: partial.content,
+       })
+     } else {
+       env.ctx.complete(buildAnthropicResponseData(acc, model))
+     }
+diff --git a/tests/codec/anthropic/error-frame-canonical-rewrite.unit.test.ts b/tests/codec/anthropic/error-frame-canonical-rewrite.unit.test.ts
+new file mode 100644
+index 00000000..423daf82
+--- /dev/null
++++ b/tests/codec/anthropic/error-frame-canonical-rewrite.unit.test.ts
+@@ -0,0 +1,87 @@
++/**
++ * Phase 3 task 3.1 — the `errorFrameCanonical` S5 response rewrite (order 50, runs FIRST).
++ *
++ * It intercepts a raw upstream `event:error` frame BEFORE any other rewrite and reshapes it into a
++ * canonical Anthropic `event:error` envelope; every non-error frame passes through verbatim. The gate
++ * is two-axis (HIGH-2): `targetEndpoint === /v1/messages` AND `state.errorShapingEnabled` — so the
++ * rewrite NEVER fires on the gemini / chat-completions / responses legs that share `ALL_RESPONSE_REWRITES`.
++ */
++
++import {
++  //
++  describe,
++  expect,
++  test,
++} from "bun:test"
++
++import type { RequestEnvelope } from "~/lib/pipeline/envelope"
++
++import { errorFrameCanonicalRewrite } from "~/lib/codec/anthropic/error-frame-canonical-rewrite"
++import { ENDPOINT } from "~/lib/models/endpoint"
++import { setStateForTests } from "~/lib/state"
++
++import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
++
++/** Minimal RequestEnvelope stub — `appliesTo` only reads `targetEndpoint`; `transform` reads nothing off env. */
++function env(targetEndpoint: string): RequestEnvelope {
++  return { targetEndpoint } as RequestEnvelope
++}
++
++describe("errorFrameCanonicalRewrite", () => {
++  useIsolatedRuntime()
++
++  test("appliesTo false when errorShapingEnabled=false — golden lock, chain skips this rewrite entirely", () => {
++    setStateForTests({ errorShapingEnabled: false })
++    expect(errorFrameCanonicalRewrite.appliesTo(env(ENDPOINT.MESSAGES))).toBe(false)
++  })
++
++  test("appliesTo true when MESSAGES leg && errorShapingEnabled=true", () => {
++    setStateForTests({ errorShapingEnabled: true })
++    expect(errorFrameCanonicalRewrite.appliesTo(env(ENDPOINT.MESSAGES))).toBe(true)
++  })
++
++  test("appliesTo false for non-MESSAGES targetEndpoint even when errorShapingEnabled=true — HIGH-2 endpoint gate regression (must never fire on gemini/chat-completions/responses legs sharing ALL_RESPONSE_REWRITES)", () => {
++    setStateForTests({ errorShapingEnabled: true })
++    expect(errorFrameCanonicalRewrite.appliesTo(env(ENDPOINT.CHAT_COMPLETIONS))).toBe(false)
++    expect(errorFrameCanonicalRewrite.appliesTo(env(ENDPOINT.RESPONSES))).toBe(false)
++    expect(errorFrameCanonicalRewrite.appliesTo(env("/v1beta/models/gemini-2.5-pro:streamGenerateContent"))).toBe(false)
++  })
++
++  test("non-error frame → emit unchanged (passthrough)", () => {
++    const state = errorFrameCanonicalRewrite.createState?.(env(ENDPOINT.MESSAGES)) ?? {}
++    const action = errorFrameCanonicalRewrite.transform({ event: "content_block_delta", data: "{}" }, state)
++    expect(action).toEqual({ kind: "emit", frames: [{ event: "content_block_delta", data: "{}" }] })
++  })
++
++  test("raw upstream event:error frame (non-Anthropic shape) → reshaped into canonical Anthropic envelope, original message preserved", () => {
++    const state = errorFrameCanonicalRewrite.createState?.(env(ENDPOINT.MESSAGES)) ?? {}
++    const raw = { event: "error", data: JSON.stringify({ error: { code: "rate_limited", message: "slow down" } }) }
++    const action = errorFrameCanonicalRewrite.transform(raw, state)
++    expect(action.kind).toBe("emit")
++    if (action.kind !== "emit") throw new Error("unreachable")
++    const data = JSON.parse(action.frames[0].data ?? "{}") as { type: string; error: { type: string; message: string } }
++    expect(data.type).toBe("error")
++    expect(typeof data.error.type).toBe("string")
++    expect(data.error.message).toBe("slow down")
++  })
++
++  test("upstream event:error carrying an inner error.type is preserved on the canonical frame", () => {
++    const state = errorFrameCanonicalRewrite.createState?.(env(ENDPOINT.MESSAGES)) ?? {}
++    const raw = { event: "error", data: JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }) }
++    const action = errorFrameCanonicalRewrite.transform(raw, state)
++    if (action.kind !== "emit") throw new Error("unreachable")
++    const data = JSON.parse(action.frames[0].data ?? "{}") as { type: string; error: { type: string; message: string } }
++    expect(data.error.type).toBe("overloaded_error")
++    expect(data.error.message).toBe("Overloaded")
++  })
++
++  test("unparseable / shapeless upstream error → canonical api_error fallback, never throws / never drops", () => {
++    const state = errorFrameCanonicalRewrite.createState?.(env(ENDPOINT.MESSAGES)) ?? {}
++    const action = errorFrameCanonicalRewrite.transform({ event: "error", data: "not json" }, state)
++    if (action.kind !== "emit") throw new Error("unreachable")
++    const data = JSON.parse(action.frames[0].data ?? "{}") as { type: string; error: { type: string; message: string } }
++    expect(data.type).toBe("error")
++    expect(data.error.type).toBe("api_error")
++    expect(typeof data.error.message).toBe("string")
++  })
++})
+diff --git a/tests/routes/messages/postcommit-error-shaping.it.test.ts b/tests/routes/messages/postcommit-error-shaping.it.test.ts
+new file mode 100644
+index 00000000..71923e39
+--- /dev/null
++++ b/tests/routes/messages/postcommit-error-shaping.it.test.ts
+@@ -0,0 +1,243 @@
++/**
++ * Phase 3 Task 3.2 — POST-COMMIT canonical error-frame shaping END-TO-END (docs/plan/2026-07-13-upstream-error-client-shaping/phase-3-postcommit-canonical-frame.md).
++ *
++ * Proves the handler-v4 delayed-commit termini ACTUALLY reach the error-shaping delegation (positive-
++ * sample "does the wire touch the target" — the helper's own unit test is byte-precise; this file proves
++ * the wiring is live). Four termini + the H2 S5-reshape path, each in disabled (golden verbatim) and
++ * enabled (canonical) mode where they diverge:
++ *
++ *   - ① HTTPError post-commit  — gated fake upstream returns a 401 AFTER the commit window fires
++ *       (FakeClock-driven pre-response stall).
++ *   - ①' network_error post-commit — immediate-commit (commit=0), then the upstream fetch REJECTS with a
++ *       socket-reset Error; the network-retry strategy retries once (real 1s backoff) then propagates to ①'.
++ *   - H2 mid-stream event:error — an H2-detected frame (top-level {type:"error"}) with a NON-canonical
++ *       inner shape (no inner error.type); enabled = reshaped by the S5 `errorFrameCanonical` rewrite
++ *       (adds the canonical api_error type), disabled = forwarded verbatim (no inner type).
++ *   - truncation (no message_stop) — always the same canonical frame (byte-identical whether on/off).
++ *
++ * LOW-1: one-shot tail shaping is independent of the keepalive-mode matrix (that's Phase 6's buffered-
++ * replay concern), so the default mode suffices.
++ */
++
++import {
++  //
++  afterEach,
++  beforeEach,
++  describe,
++  expect,
++  mock,
++  test,
++} from "bun:test"
++
++import {
++  //
++  setModels,
++  setStateForTests,
++} from "~/lib/state"
++
++import { mockModel } from "../../helpers/factories"
++import { FakeClock } from "../../helpers/fake-clock"
++import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
++import { applyFetchMock } from "../../helpers/mock-fetch"
++import { createSseResponse } from "../../helpers/sse"
++import {
++  //
++  dataFramesOfType,
++  frameTypesInOrder,
++} from "../../helpers/sse"
++
++const MODEL = "claude-opus-4.8"
++
++async function drain(n = 120): Promise<void> {
++  for (let i = 0; i < n; i++) await Promise.resolve()
++}
++
++/** message_start prelude for a streaming fixture. */
++function startFrame(model: string, id: string): string {
++  return `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id, type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } })}\n\n`
++}
++const OPEN_TEXT = `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`
++const TEXT_DELTA = `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } })}\n\n`
++
++/**
++ * An H2-DETECTED upstream error frame (top-level `type:"error"` so the accumulator recognizes it) with a
++ * NON-canonical inner shape: no inner `error.type`. Enabled → the S5 rewrite adds the canonical
++ * `api_error` type; disabled → forwarded verbatim (still no inner type).
++ */
++function nonCanonicalH2Frames(model: string): Array<string> {
++  return [
++    startFrame(model, "msg-h2"),
++    OPEN_TEXT,
++    TEXT_DELTA,
++    `event: error\ndata: ${JSON.stringify({ type: "error", error: { message: "raw upstream boom" } })}\n\n`,
++  ]
++}
++
++/** A stream that begins then CLEANLY ends WITHOUT message_stop (truncation → terminus ③). */
++function truncatedFrames(model: string): Array<string> {
++  return [startFrame(model, "msg-trunc"), OPEN_TEXT, TEXT_DELTA]
++}
++
++function errorFrame(text: string): { type?: string; message?: string } | undefined {
++  return dataFramesOfType(text, "error")[0]?.error as { type?: string; message?: string } | undefined
++}
++
++async function streamRequest(sessionId: string): Promise<Response> {
++  const { createFullTestApp } = await import("../../helpers/test-app")
++  const app = createFullTestApp()
++  return app.request("/v1/messages", {
++    method: "POST",
++    headers: { "Content-Type": "application/json", "x-session-id": sessionId },
++    body: JSON.stringify({ model: MODEL, messages: [{ role: "user", content: "hi" }], max_tokens: 256, stream: true }),
++  })
++}
++
++// ============================================================================
++// ① HTTPError post-commit — gated pre-response stall (FakeClock)
++// ============================================================================
++
++describe("post-commit shaping ① HTTPError — gated stall (FakeClock)", () => {
++  useIsolatedRuntime()
++  const clock = new FakeClock()
++
++  let gateReached: () => void
++  let gateReachedP: Promise<void>
++  let openGate: () => void
++  let gateOpenP: Promise<void>
++
++  const gatedFetchMock = mock((input: string | URL | Request) => {
++    const url =
++      typeof input === "string" ? input
++      : input instanceof URL ? input.href
++      : input.url
++    if (!url.endsWith("/v1/messages")) throw new Error(`unexpected upstream URL in mock: ${url}`)
++    gateReached()
++    return gateOpenP.then(
++      () =>
++        new Response(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "mock 401" } }), {
++          status: 401,
++          headers: { "content-type": "application/json" },
++        }),
++    )
++  })
++
++  beforeEach(() => {
++    clock.install()
++    gatedFetchMock.mockClear()
++    gateReachedP = new Promise<void>((r) => (gateReached = r))
++    gateOpenP = new Promise<void>((r) => (openGate = r))
++    setStateForTests({
++      copilotToken: "test-token",
++      accountType: "individual",
++      vsCodeVersion: "1.100.0",
++      responseHeaderTimeout: 0,
++      streamIdleTimeout: 0,
++      streamKeepalivePingSec: 2,
++      streamCommitAfterSec: 2,
++      streamKeepaliveMode: "ping",
++      protectStreamingGeneration: false,
++      errorShapingEnabled: true,
++    })
++    applyFetchMock(gatedFetchMock)
++    setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
++  })
++
++  afterEach(() => clock.restore())
++
++  async function commitThenFail(sessionId: string): Promise<string> {
++    const resP = streamRequest(sessionId)
++    await gateReachedP
++    await clock.advance(2_000) // commit window fires → 200 SSE opens
++    await drain()
++    const res = await resP
++    expect(res.status).toBe(200)
++    openGate() // upstream now 401s POST-COMMIT
++    return res.text()
++  }
++
++  test("enabled → canonical event:error frame (authentication_error, reached via decide())", async () => {
++    setStateForTests({ errorShapingEnabled: true })
++    const text = await commitThenFail("postcommit-http-enabled")
++    expect(frameTypesInOrder(text)).toContain("error")
++    expect(errorFrame(text)?.type).toBe("authentication_error")
++  })
++
++  test("DISABLED → golden verbatim legacy frame (byte-identical to anthropicHttpErrorFrame)", async () => {
++    setStateForTests({ errorShapingEnabled: false })
++    const { anthropicHttpErrorFrame } = await import("../../../src/routes/messages/post-commit-error")
++    const { HTTPError } = await import("~/lib/error")
++    const expected = anthropicHttpErrorFrame(
++      new HTTPError("mock", 401, JSON.stringify({ type: "error", error: { type: "authentication_error", message: "mock 401" } })),
++    )
++    const text = await commitThenFail("postcommit-http-disabled")
++    // The disabled path returns the legacy frame verbatim; its data matches the legacy builder byte-for-byte.
++    expect(JSON.stringify(dataFramesOfType(text, "error")[0])).toBe(expected.data ?? "")
++  })
++})
++
++// ============================================================================
++// ①' network_error + H2 reshape + truncation — immediate commit (real timers)
++// ============================================================================
++
++describe("post-commit shaping ①'/H2/truncation — immediate commit (real timers)", () => {
++  useIsolatedRuntime()
++
++  beforeEach(() => {
++    setStateForTests({
++      copilotToken: "test-token",
++      accountType: "individual",
++      vsCodeVersion: "1.100.0",
++      responseHeaderTimeout: 0,
++      streamIdleTimeout: 0,
++      streamKeepalivePingSec: 0,
++      streamCommitAfterSec: 0, // immediate commit (200 SSE opens before the upstream resolves)
++      protectStreamingGeneration: false,
++      errorShapingEnabled: true,
++    })
++    setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
++  })
++
++  test("①' network_error post-commit, enabled → canonical api_error frame (decide() reached — the ONLY post-commit network_error path)", async () => {
++    setStateForTests({ errorShapingEnabled: true })
++    applyFetchMock(mock(() => Promise.reject(new Error("socket hang up ECONNRESET"))))
++    const text = await (await streamRequest("postcommit-net-enabled")).text()
++    expect(errorFrame(text)?.type).toBe("api_error")
++    expect(errorFrame(text)?.message).toContain("socket hang up")
++  }, 15_000)
++
++  test("①' network_error post-commit, DISABLED → golden verbatim api_error frame", async () => {
++    setStateForTests({ errorShapingEnabled: false })
++    applyFetchMock(mock(() => Promise.reject(new Error("socket hang up ECONNRESET"))))
++    const text = await (await streamRequest("postcommit-net-disabled")).text()
++    expect(errorFrame(text)?.type).toBe("api_error")
++    expect(errorFrame(text)?.message).toContain("socket hang up")
++  }, 15_000)
++
++  test("H2 non-canonical event:error (H2-detected, no inner type), enabled → S5 reshapes into a canonical envelope (adds api_error type), single error frame", async () => {
++    setStateForTests({ errorShapingEnabled: true })
++    applyFetchMock(mock(() => Promise.resolve(createSseResponse(nonCanonicalH2Frames(MODEL)))))
++    const text = await (await streamRequest("h2-enabled")).text()
++    // Exactly one error frame (H2-detected → no truncation double-emit), reshaped to carry api_error.
++    expect(text.match(/"type":"error"/g)?.length).toBe(1)
++    expect(errorFrame(text)?.type).toBe("api_error")
++    expect(errorFrame(text)?.message).toBe("raw upstream boom")
++  })
++
++  test("H2 non-canonical event:error, DISABLED → forwarded VERBATIM (no S5 reshape, no inner type)", async () => {
++    setStateForTests({ errorShapingEnabled: false })
++    applyFetchMock(mock(() => Promise.resolve(createSseResponse(nonCanonicalH2Frames(MODEL)))))
++    const text = await (await streamRequest("h2-disabled")).text()
++    expect(text.match(/"type":"error"/g)?.length).toBe(1)
++    // Verbatim: the frame reached the client with NO inner error.type (unshaped).
++    expect(errorFrame(text)?.type).toBeUndefined()
++    expect(errorFrame(text)?.message).toBe("raw upstream boom")
++  })
++
++  test.each([true, false])("truncation (no message_stop), errorShapingEnabled=%p → canonical api_error truncation frame", async (enabled) => {
++    setStateForTests({ errorShapingEnabled: enabled })
++    applyFetchMock(mock(() => Promise.resolve(createSseResponse(truncatedFrames(MODEL)))))
++    const text = await (await streamRequest(`trunc-${enabled}`)).text()
++    expect(errorFrame(text)?.type).toBe("api_error")
++    expect(errorFrame(text)?.message).toBe("Upstream stream truncated before completion (no message_stop)")
++  })
++})
+diff --git a/tests/routes/messages/postcommit-error-shaping.unit.test.ts b/tests/routes/messages/postcommit-error-shaping.unit.test.ts
+new file mode 100644
+index 00000000..ca72ac15
+--- /dev/null
++++ b/tests/routes/messages/postcommit-error-shaping.unit.test.ts
+@@ -0,0 +1,90 @@
++/**
++ * Unit tests for `shapePostcommitErrorFrame` (Phase 3 Task 3.2, G-3 canonical ownership of the
++ * post-commit terminal error frame — docs/plan/2026-07-13-upstream-error-client-shaping/phase-3-postcommit-canonical-frame.md).
++ *
++ * Pure helper: classify → decide(post-commit) → buildCanonicalErrorFrame, with a CF-2 golden lock
++ * (disabled = return the caller's legacy frame verbatim). No Hono app / no runtime bootstrap;
++ * `autoRestoreState()` is the isolation tool (mirrors `error-shaping-glue.unit.test.ts`).
++ */
++
++import {
++  //
++  describe,
++  expect,
++  test,
++} from "bun:test"
++
++import { HTTPError } from "~/lib/error"
++import { setStateForTests } from "~/lib/state"
++
++import { shapePostcommitErrorFrame } from "../../../src/routes/messages/error-shaping-glue"
++import {
++  //
++  anthropicErrorFrame,
++  anthropicHttpErrorFrame,
++} from "../../../src/routes/messages/post-commit-error"
++import { autoRestoreState } from "../../helpers/state-fixture"
++
++describe("shapePostcommitErrorFrame — CF-2 golden lock (disabled)", () => {
++  autoRestoreState()
++
++  test("errorShapingEnabled=false → returns the caller's legacy HTTPError frame verbatim (byte-identical)", () => {
++    setStateForTests({ errorShapingEnabled: false })
++    const error = new HTTPError("Unauthorized", 401, JSON.stringify({ type: "error", error: { type: "authentication_error", message: "mock 401" } }))
++    const legacy = anthropicHttpErrorFrame(error)
++    const out = shapePostcommitErrorFrame(error, legacy)
++    expect(out).toEqual(legacy)
++    expect(out.data).toBe(legacy.data) // exact same string bytes
++  })
++
++  test("errorShapingEnabled=false → returns the caller's legacy unknown-non-HTTP frame verbatim (terminus ①')", () => {
++    setStateForTests({ errorShapingEnabled: false })
++    const error = new Error("socket hang up ECONNRESET")
++    const legacy = anthropicErrorFrame("api_error", error.message)
++    const out = shapePostcommitErrorFrame(error, legacy)
++    expect(out).toEqual(legacy)
++  })
++})
++
++describe("shapePostcommitErrorFrame — enabled (canonical via decide)", () => {
++  autoRestoreState()
++
++  test("terminus ①' network_error (socket reset) → decide() reached → canonical api_error frame (proves the truth-table network_error→canonical-error leg is exercised, not the old hand-built branch)", () => {
++    setStateForTests({ errorShapingEnabled: true })
++    const error = new Error("socket hang up ECONNRESET")
++    // legacy would have been api_error too, so byte-equivalence here isn't the point — the point is
++    // this frame is produced by decide()/buildCanonicalErrorFrame, not the hand-built literal.
++    const out = shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", "SENTINEL-legacy-untouched"))
++    const data = JSON.parse(out.data ?? "{}") as { type: string; error: { type: string; message: string } }
++    expect(data.type).toBe("error")
++    expect(data.error.type).toBe("api_error") // anthropicErrorTypeForApiError("network_error")
++    expect(data.error.message).toContain("socket hang up")
++    expect(data.error.message).not.toBe("SENTINEL-legacy-untouched") // legacy frame NOT returned
++  })
++
++  test("terminus ①' HTTP2 REFUSED_STREAM → network_error → canonical api_error frame", () => {
++    setStateForTests({ errorShapingEnabled: true })
++    const error = new Error("Stream closed with error code NGHTTP2_REFUSED_STREAM")
++    const out = shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", "x"))
++    const data = JSON.parse(out.data ?? "{}") as { error: { type: string } }
++    expect(data.error.type).toBe("api_error")
++  })
++
++  test("terminus ① 402 quota_exceeded HTTPError → canonical rate_limit_error (CF-3 wire literal), retry_after carried when present", () => {
++    setStateForTests({ errorShapingEnabled: true })
++    const error = new HTTPError("Quota exceeded", 402, JSON.stringify({ error: { message: "quota", retry_after: 30 } }))
++    const out = shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error))
++    const data = JSON.parse(out.data ?? "{}") as { type: string; error: { type: string; message: string; retry_after?: number } }
++    expect(data.type).toBe("error")
++    expect(data.error.type).toBe("rate_limit_error") // anthropicErrorTypeForApiError("quota_exceeded") — CF-3
++    expect(data.error.retry_after).toBe(30)
++  })
++
++  test("terminus ① 500 server_error HTTPError → canonical api_error frame", () => {
++    setStateForTests({ errorShapingEnabled: true })
++    const error = new HTTPError("Server error", 500, "")
++    const out = shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error))
++    const data = JSON.parse(out.data ?? "{}") as { error: { type: string } }
++    expect(data.error.type).toBe("api_error") // anthropicErrorTypeForApiError("server_error")
++  })
++})

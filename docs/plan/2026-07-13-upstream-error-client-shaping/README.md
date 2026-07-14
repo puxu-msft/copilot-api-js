@@ -1,5 +1,7 @@
 # 实施计划：上游错误 → 客户端可行动形态整形（upstream-error-client-shaping）
 
+> **实施状态（2026-07-14 收尾）**：Phase 0-5 **全部实现并逐 task 过审 + 终局 whole-branch review 通过**（隔离 worktree `feat/upstream-error-client-shaping`，~35 commit）；Phase 6 **GATED 骨架已落地**（7 describe.skip，依赖 block-level P1 落 master 才接线）。执行期修复：Phase 3 fix 循环（refusal 回归锁 + translate 腿 G-3 收编）、Phase 4 **Critical wire bug**（AUQ options 应为 CC schema `{label,description}` 对象非字符串）、终局观测面接线（3 死枚举→真产出）。**已知敞口**：MED-3（AUQ 交互式渲染未实测，上线前人工验收）。**未合 master**——待用户定合并时机（与并发 block-level P1 在 handler-v4.ts 有冲突面，已用 buildCanonicalErrorFrame 单函数收窄）。进度 ledger：`.superpowers/sdd/progress.md`。
+
 - **对应 Spec**：[docs/spec/2026-07-13-upstream-error-client-shaping.md](../../spec/2026-07-13-upstream-error-client-shaping.md)（v2.3，三轮对抗评审全闭合，2026-07-13）
 - **依赖 Spec（前置里程碑，G-4）**：[docs/spec/2026-07-11-block-level-buffered-retry.md](../../spec/2026-07-11-block-level-buffered-retry.md)（P1 default 翻转，当前 gated）——见下文「Phase DAG」
 - **证据基础**：`exp/cc-error-retry-surface/FINDINGS.md` + `REPORT.md`

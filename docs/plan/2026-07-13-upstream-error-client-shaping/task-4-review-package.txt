@@ -1,0 +1,543 @@
+### COMMITS (c727d151..HEAD)
+cf196ba3 docs: record D-1 clientResponse-after-fail gap + MED-3 risk + task-4 report
+02b0c5a9 test: add MED-3 wire-shape oracle to AUQ unit tests
+8cc1ba4b feat: wire AUQ synthesis into pre-commit error shaping glue
+5b64050e feat: add AUQ synthesis builders (streaming + non-streaming variants, two-pass template render)
+
+### DIFFSTAT
+ .../README.md                                      |  22 +++
+ .../phase-4-askuserquestion.md                     |  42 ++---
+ .../task-4-report.md                               |  63 ++++++++
+ src/lib/anthropic/error-shaping.ts                 | 108 +++++++++++++
+ src/routes/messages/error-shaping-glue.ts          |  30 +++-
+ tests/anthropic/error-shaping-auq.unit.test.ts     | 105 ++++++++++++
+ tests/routes/messages/error-shaping-auq.it.test.ts | 176 +++++++++++++++++++++
+ 7 files changed, 525 insertions(+), 21 deletions(-)
+
+### FULL DIFF (-U10)
+diff --git a/src/lib/anthropic/error-shaping.ts b/src/lib/anthropic/error-shaping.ts
+index 9c13c6dc..e98ccc9c 100644
+--- a/src/lib/anthropic/error-shaping.ts
++++ b/src/lib/anthropic/error-shaping.ts
+@@ -14,29 +14,35 @@
+  *      A (retryable): network_error / server_error / upstream_rate_limited / rate_limited
+  *      B (AUQ candidates): content_filtered / quota_exceeded(402) / auth_expired(401/403 leg)
+  *      C (terminal canonical): token_limit / payload_too_large / bad_request
+  *    `aborted` is a NON-target (handled by the existing abort path) — passing it to `decide()`
+  *    is a caller misuse and throws.
+  *  - `clientVisibleStopEmitted` is currently a no-op for the two `ApiError` call sites (both pass
+  *    `false`); it is a forward-compat slot for Phase 6's block-level `defer-to-block-level` sub-
+  *    decision, which does NOT flow through this truth table.
+  */
+ 
++import type { ServerSentEventMessage } from "fetch-event-stream"
++
++import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
+ import type { ApiError } from "~/lib/error"
+ import type {
+   //
+   ClientFrame,
+   UpstreamFrame,
+ } from "~/lib/pipeline/types"
+ 
++import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
+ import { classifyStreamError } from "~/lib/stream"
+ 
++import { anthropicSseFrame } from "./sse-frame"
++
+ // ============================================================================
+ // Config + input/output types (README §4 contract — consumed verbatim by Phase 2/3/4/5)
+ // ============================================================================
+ 
+ /** The 4 error-shaping config keys, read from `state` by the caller and passed in as a snapshot. */
+ export interface ErrorShapingConfig {
+   enabled: boolean // error_shaping_enabled
+   askUserQuestion: boolean // error_ask_user_question
+   auqTemplate: string // error_auq_template（空 = 内置默认）
+   selfhealDelegate: Readonly<Record<string, "proxy" | "delegate">> // error_selfheal_delegate
+@@ -276,10 +282,112 @@ function optionsForErrorType(type: ApiError["type"]): ReadonlyArray<string> {
+ /** Build the single B-class question: first-pass render of `{error_type}`/`{status}` (the only
+  *  fields available at classification), `{model}`/`{request_id}` left for Phase 4's second pass. */
+ function buildAuqQuestion(error: ApiError, config: ErrorShapingConfig): AuqQuestion {
+   return {
+     question: renderAuqQuestion(config.auqTemplate || DEFAULT_AUQ_TEMPLATE, { error_type: error.type, status: String(error.status) }),
+     header: "如何继续？",
+     multiSelect: false,
+     options: optionsForErrorType(error.type),
+   }
+ }
++
++// ============================================================================
++// AskUserQuestion synthesis (Phase 4: pre-commit whole-turn synthesis, streaming + non-streaming)
++// ============================================================================
++
++/** The AUQ tool's wire input shape (`decode-tool-input-core.ts`'s existing `AskUserQuestion`
++ *  consumer convention: `questions[]`, each `{question, header, multiSelect, options}`). Rendered
++ *  (second-pass `{model}`/`{request_id}` substituted) — never carries an unrendered placeholder. */
++interface RenderedAuqInput {
++  questions: Array<{ question: string; header: string; multiSelect: boolean; options: ReadonlyArray<string> }>
++}
++
++/** Second-pass render every question's `{model}`/`{request_id}` (first pass — `{error_type}`/
++ *  `{status}` — already done by `decide()`/`buildAuqQuestion`), producing the tool's wire input. */
++function renderAuqInput(questions: ReadonlyArray<AuqQuestion>, ctx: { model: string; reqId: string }): RenderedAuqInput {
++  return {
++    questions: questions.map((q) => ({
++      question: renderAuqQuestion(q.question, { model: ctx.model, request_id: ctx.reqId }),
++      header: q.header,
++      multiSelect: q.multiSelect,
++      options: q.options,
++    })),
++  }
++}
++
++/** Deterministic-free synthetic Anthropic tool_use id — `toolu_` prefix matches the wire convention
++ *  clients defensively validate against (see `recover-tool-call/core.ts`'s `synthesizeToolUseId` for
++ *  the deterministic streaming-replay sibling; this one-shot AUQ synthesis needs no determinism). */
++function syntheticToolUseId(): string {
++  return `toolu_${crypto.randomUUID().replaceAll("-", "")}`
++}
++
++/**
++ * B-class pre-commit whole-turn synthesis — non-streaming (`stream:false`) variant. Builds a
++ * complete `AnthropicMessageResponse` carrying a single `AskUserQuestion` `tool_use` block
++ * (`stop_reason:"tool_use"`), so the client's existing native AskUserQuestion handling renders an
++ * interactive question instead of a flattened error body.
++ *
++ * Constructed as a minimal object cast through `unknown` (same established convention as
++ * `debug/dry-run-pipeline.ts`'s `rebuildNonStreamingResponse`) rather than satisfying every strict
++ * SDK `Message` field (`container`/`stop_details`/the full `Usage` breakdown) — this is a synthetic
++ * turn with no real upstream response to source those from. `usage:{0,0}` is an accepted wire/billing
++ * divergence (richest-data-flow ADR §2, same acceptance as `keepalive-anchor.ts`'s synthetic
++ * `message_start`) — a synthetic turn has no real token cost to report.
++ */
++export function buildAskUserQuestionResponse(
++  decision: Extract<ShapingDecision, { kind: "ask-user-question" }>,
++  ctx: { model: string; reqId: string },
++): AnthropicMessageResponse {
++  const input = renderAuqInput(decision.questions, ctx)
++  return {
++    id: `msg_${crypto.randomUUID().replaceAll("-", "")}`,
++    type: "message",
++    role: "assistant",
++    model: ctx.model,
++    content: [{ type: "tool_use", id: syntheticToolUseId(), name: "AskUserQuestion", input }],
++    stop_reason: "tool_use",
++    stop_sequence: null,
++    usage: { input_tokens: 0, output_tokens: 0 },
++  } as unknown as AnthropicMessageResponse
++}
++
++/**
++ * B-class pre-commit whole-turn synthesis — streaming (`stream:true`) variant. Mirrors
++ * `recover-refusal.ts`'s `buildSyntheticTextFrames` pattern: a self-contained frame sequence
++ * (`message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` →
++ * `message_delta` → `message_stop`) carrying the same `AskUserQuestion` `tool_use` block as
++ * {@link buildAskUserQuestionResponse}, serialized as a single `input_json_delta` (the whole JSON
++ * string in one delta — no incremental construction needed for a synthetic, already-complete turn).
++ *
++ * Every frame is tagged `tagFrameSynthetic(frame, "error-shaping-auq")` (richest-data-flow §3): this
++ * whole turn is injected, not upstream traffic, and must stay distinguishable on the forwarded track.
++ */
++export function buildAskUserQuestionFrames(
++  decision: Extract<ShapingDecision, { kind: "ask-user-question" }>,
++  ctx: { model: string; reqId: string },
++): Array<ClientFrame> {
++  const input = renderAuqInput(decision.questions, ctx)
++  const messageId = `msg_${crypto.randomUUID().replaceAll("-", "")}`
++  const toolUseId = syntheticToolUseId()
++  const frames: Array<ServerSentEventMessage> = [
++    anthropicSseFrame({
++      type: "message_start",
++      message: {
++        id: messageId,
++        type: "message",
++        role: "assistant",
++        model: ctx.model,
++        content: [],
++        stop_reason: null,
++        stop_sequence: null,
++        usage: { input_tokens: 0, output_tokens: 0 },
++      },
++    }),
++    anthropicSseFrame({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: {} } }),
++    anthropicSseFrame({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } }),
++    anthropicSseFrame({ type: "content_block_stop", index: 0 }),
++    anthropicSseFrame({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 0 } }),
++    anthropicSseFrame({ type: "message_stop" }),
++  ]
++  return frames.map((frame) => tagFrameSynthetic(frame, "error-shaping-auq"))
++}
+diff --git a/src/routes/messages/error-shaping-glue.ts b/src/routes/messages/error-shaping-glue.ts
+index c583a468..1c3d6991 100644
+--- a/src/routes/messages/error-shaping-glue.ts
++++ b/src/routes/messages/error-shaping-glue.ts
+@@ -18,24 +18,29 @@
+  *
+  * Scope: only the A-class (`retry-signal`) branch is acted on. `ask-user-question` (B-class) and
+  * `canonical-error` (C-class, and B-class with the AUQ toggle off) fall through to plain
+  * `forwardError` — AUQ body synthesis is Phase 4's job (see `decide()`'s doc comment for the class
+  * table). `defer-to-block-level` is a post-commit-only decision kind that `decide()` never returns
+  * for a pre-commit input, so it is unreachable here (exhaustive `switch` would need a `never` guard;
+  * a `if` chain is enough since the two acted-on/passthrough kinds cover the pre-commit range).
+  */
+ import type { Context } from "hono"
+ 
++import { streamSSE } from "hono/streaming"
++
++import type { RequestContext } from "~/lib/context/request"
+ import type { ClientFrame } from "~/lib/pipeline/types"
+ 
+ import {
+   //
++  buildAskUserQuestionFrames,
++  buildAskUserQuestionResponse,
+   buildCanonicalErrorFrame,
+   decide,
+   type ErrorShapingConfig,
+ } from "~/lib/anthropic/error-shaping"
+ import {
+   //
+   classifyError,
+   forwardError,
+   isAbortError,
+ } from "~/lib/error"
+@@ -83,21 +88,44 @@ export function shapePrecommitError(c: Context, error: unknown): Response {
+     error: apiError,
+     commitPhase: "pre-commit",
+     clientVisibleStopEmitted: false,
+     config: errorShapingConfigFromState(),
+   })
+ 
+   if (decision.kind === "retry-signal") {
+     if (decision.retryAfterSec !== undefined) c.header("Retry-After", String(decision.retryAfterSec))
+     c.header("x-should-retry", "true")
+   }
+-  // "ask-user-question": Phase 4 TODO — falls through to forwardError unchanged for now.
++
++  if (decision.kind === "ask-user-question") {
++    // The pre-commit ctx (built by `handler-v4.ts`'s `runMessagesDriver` before the throw that
++    // landed us here) is ALREADY exposed via `c.set("requestContext", ctx)` — reading it here
++    // avoids adding a redundant `c.set("clientRequestStream", ...)` side-channel (a planned
++    // deviation from this Phase's plan doc, recorded in task-4-report.md): `originalRequest`
++    // already carries both `stream` and `model` (the exact two fields the plan's proposed new
++    // side-channel would have duplicated), and `ctx.id` is the request id. Falls back to safe
++    // defaults for the (currently unreachable in practice) `/count_tokens` leg, whose own
++    // internal try/catch never lets an error reach this function — see `count-tokens.ts`.
++    const ctx = c.get("requestContext") as RequestContext | undefined
++    const streamRequested = ctx?.originalRequest?.stream ?? false
++    const auqCtx = { model: ctx?.originalRequest?.model ?? "unknown", reqId: ctx?.id ?? "unknown" }
++
++    if (streamRequested) {
++      return streamSSE(c, async (stream) => {
++        for (const frame of buildAskUserQuestionFrames(decision, auqCtx)) {
++          await stream.writeSSE({ data: frame.data ?? "", ...(frame.event !== undefined && { event: frame.event }) })
++        }
++      })
++    }
++    return c.json(buildAskUserQuestionResponse(decision, auqCtx))
++  }
++
+   // "canonical-error": current forwardError behaviour is already correct, no header changes.
+   return forwardError(c, error)
+ }
+ 
+ /**
+  * POST-COMMIT terminal-frame shaping for the handler's `writeSynthetic` termini (Phase 3, G-3
+  * canonical ownership). Once the proxy has committed a 200 SSE stream the HTTP status is locked, so an
+  * upstream failure can only be delivered as an Anthropic `event:error` FRAME. The two `ApiError`-bearing
+  * termini (① HTTPError, ①' unknown-non-HTTP e.g. `network_error`/socket reset) classify their error and
+  * delegate the frame construction here, replacing hand-built JSON with the single `error-shaping`
+diff --git a/tests/anthropic/error-shaping-auq.unit.test.ts b/tests/anthropic/error-shaping-auq.unit.test.ts
+new file mode 100644
+index 00000000..fd99dbbe
+--- /dev/null
++++ b/tests/anthropic/error-shaping-auq.unit.test.ts
+@@ -0,0 +1,105 @@
++/**
++ * Unit tests for Phase 4's AUQ (AskUserQuestion) synthesis builders
++ * (`src/lib/anthropic/error-shaping.ts`): `buildAskUserQuestionResponse` (stream:false, whole
++ * `AnthropicMessageResponse`) and `buildAskUserQuestionFrames` (stream:true, self-contained SSE
++ * frame sequence). Both consume a `{kind:"ask-user-question"}` `ShapingDecision` (Phase 1) and
++ * complete the SECOND render pass (`{model}`/`{request_id}`) via `renderAuqQuestion` — Phase 1's
++ * `decide()` already completed the first pass (`{error_type}`/`{status}`).
++ *
++ * Pure functions — no runtime, no I/O.
++ */
++
++import {
++  //
++  describe,
++  expect,
++  test,
++} from "bun:test"
++
++import { backfillAskUserQuestionHeaders } from "~/lib/anthropic/decode-tool-input-core"
++import {
++  //
++  buildAskUserQuestionFrames,
++  buildAskUserQuestionResponse,
++  type ShapingDecision,
++} from "~/lib/anthropic/error-shaping"
++import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
++
++type AuqQuestions = Extract<ShapingDecision, { kind: "ask-user-question" }>["questions"]
++
++const decision = (questions: AuqQuestions): Extract<ShapingDecision, { kind: "ask-user-question" }> => ({ kind: "ask-user-question", questions })
++
++const oneQuestion: AuqQuestions = [
++  {
++    question: "上游返回 quota_exceeded（模型 {model}，请求 {request_id}），如何继续？",
++    header: "如何继续？",
++    multiSelect: false,
++    options: ["等待配额重置", "更换模型", "更换账号"],
++  },
++]
++
++describe("buildAskUserQuestionResponse — stream:false variant", () => {
++  test("produces a valid AnthropicMessageResponse with a single AskUserQuestion tool_use block, stop_reason:tool_use", () => {
++    const res = buildAskUserQuestionResponse(decision(oneQuestion), { model: "claude-3-5-sonnet-latest", reqId: "req_test" })
++    expect(res.stop_reason).toBe("tool_use")
++    expect(res.content).toHaveLength(1)
++    const block = res.content[0] as unknown as { type: string; name?: string; input?: { questions?: Array<unknown> } }
++    expect(block.type).toBe("tool_use")
++    expect(block.name).toBe("AskUserQuestion")
++    expect(block.input?.questions).toHaveLength(1)
++  })
++
++  test("第二遍渲染：{model}/{request_id} 被替换为 ctx 里的真实值", () => {
++    const res = buildAskUserQuestionResponse(decision(oneQuestion), { model: "claude-3-5-sonnet-latest", reqId: "req_test" })
++    const block = res.content[0] as unknown as { input: { questions: Array<{ question: string }> } }
++    expect(block.input.questions[0]?.question).toBe("上游返回 quota_exceeded（模型 claude-3-5-sonnet-latest，请求 req_test），如何继续？")
++    expect(block.input.questions[0]?.question).not.toContain("{model}")
++    expect(block.input.questions[0]?.question).not.toContain("{request_id}")
++  })
++
++  test("tool_use id starts with toolu_", () => {
++    const res = buildAskUserQuestionResponse(decision(oneQuestion), { model: "m", reqId: "r" })
++    const block = res.content[0] as unknown as { id: string }
++    expect(block.id).toMatch(/^toolu_/)
++  })
++
++  // MED-3 independent wire-shape oracle. We have NO real-Claude-Code consumption test (the
++  // "CC renders a synthetic AskUserQuestion as an interactive prompt" assumption is inherited
++  // from spec, UNVERIFIED — see task-4-report.md §MED-3). What we CAN pin independently is that
++  // the synthesized `input.questions` satisfies the SAME structural contract real CC-facing
++  // traffic must satisfy: `backfillAskUserQuestionHeaders` (written for real upstream AUQ traffic,
++  // NOT for this test) rejects a `questions[]` item that has a `header` but no `question` ("must
++  // have a question"). It backfills only when `question` is ABSENT — so if our synthesis already
++  // provides `question` on every item, this consumer returns the input by REFERENCE (===),
++  // proving the wire shape is already CC-valid without needing repair. An independent function
++  // as oracle, not a self-referential re-assertion of our own builder output.
++  test("MED-3 oracle: synthesized questions[] already satisfy CC's 'must have a question' contract (backfill is a reference no-op)", () => {
++    const res = buildAskUserQuestionResponse(decision(oneQuestion), { model: "m", reqId: "r" })
++    const block = res.content[0] as unknown as { input: { questions: Array<unknown> } }
++    const input = block.input
++    // Identity return ⟹ zero items needed a question backfilled ⟹ every item already CC-valid.
++    expect(backfillAskUserQuestionHeaders("AskUserQuestion", input)).toBe(input)
++  })
++})
++
++describe("buildAskUserQuestionFrames — stream:true variant", () => {
++  test("produces a complete, self-contained SSE frame sequence: message_start → content_block_start(tool_use) → input_json_delta → content_block_stop → message_delta(stop_reason:tool_use) → message_stop", () => {
++    const frames = buildAskUserQuestionFrames(decision(oneQuestion), { model: "m", reqId: "r" })
++    const events = frames.map((f) => f.event)
++    expect(events).toEqual(["message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"])
++  })
++
++  test("every frame is tagged synthetic:error-shaping-auq (richest-data-flow — must be distinguishable from real upstream traffic)", () => {
++    const frames = buildAskUserQuestionFrames(decision(oneQuestion), { model: "m", reqId: "r" })
++    for (const f of frames) expect(readSyntheticKind(f)).toBe("error-shaping-auq")
++  })
++
++  test("第二遍渲染也在 streaming 变体里生效", () => {
++    const frames = buildAskUserQuestionFrames(decision(oneQuestion), { model: "claude-3-5-sonnet-latest", reqId: "req_test" })
++    const deltaFrame = frames.find((f) => f.event === "content_block_delta")
++    const data = JSON.parse(deltaFrame?.data ?? "{}") as { delta: { partial_json: string } }
++    expect(data.delta.partial_json).toContain("claude-3-5-sonnet-latest")
++    expect(data.delta.partial_json).toContain("req_test")
++    expect(data.delta.partial_json).not.toContain("{model}")
++  })
++})
+diff --git a/tests/routes/messages/error-shaping-auq.it.test.ts b/tests/routes/messages/error-shaping-auq.it.test.ts
+new file mode 100644
+index 00000000..6c1e0793
+--- /dev/null
++++ b/tests/routes/messages/error-shaping-auq.it.test.ts
+@@ -0,0 +1,176 @@
++/**
++ * AUQ (AskUserQuestion) synthesis wiring — end-to-end (Phase 4 Task 4.2,
++ * docs/plan/2026-07-13-upstream-error-client-shaping/phase-4-askuserquestion.md).
++ *
++ * Real Hono app + mocked upstream `globalThis.fetch`, asserting the ACTUAL HTTP
++ * response `/v1/messages` returns when a B-class (AUQ candidate) error reaches
++ * `shapePrecommitError` with `error_ask_user_question=true`: a synthesized 200
++ * response (whole `AnthropicMessageResponse` for stream:false, a self-contained
++ * SSE frame sequence for stream:true) carrying an `AskUserQuestion` tool_use —
++ * instead of the flattened canonical error body.
++ *
++ * CF-2 (mandatory gate): synthesis requires BOTH `errorShapingEnabled` AND
++ * `errorAskUserQuestion`; either false falls back to the plain canonical error
++ * (unchanged from Phase 2's behavior).
++ */
++
++import {
++  //
++  describe,
++  expect,
++  mock,
++  test,
++} from "bun:test"
++
++import { getHistory } from "~/lib/history"
++import { drainPendingFinalizations } from "~/lib/history/entries"
++import {
++  //
++  setModels,
++  setStateForTests,
++} from "~/lib/state"
++
++import { mockModel } from "../../helpers/factories"
++import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
++import { applyFetchMock } from "../../helpers/mock-fetch"
++import { createFullTestApp } from "../../helpers/test-app"
++
++const MODEL = "claude-3-5-sonnet-latest"
++const app = createFullTestApp()
++
++function setupCommonState(): void {
++  setStateForTests({
++    copilotToken: "test-token",
++    accountType: "individual",
++    vsCodeVersion: "1.100.0",
++    responseHeaderTimeout: 0,
++  })
++  setModels({
++    object: "list",
++    data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })],
++  })
++}
++
++async function postMessages(body: Record<string, unknown>): Promise<Response> {
++  return app.request("/v1/messages", {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify({ model: MODEL, max_tokens: 10, messages: [{ role: "user", content: "hi" }], ...body }),
++  })
++}
++
++function mockUpstreamStatus(status: number, message: string): void {
++  applyFetchMock(mock(async () => new Response(JSON.stringify({ error: { message } }), { status, headers: { "content-type": "application/json" } })))
++}
++
++describe("AUQ synthesis — end to end", () => {
++  useIsolatedRuntime()
++
++  test("stream:false request, upstream 402 quota_exceeded, error_ask_user_question=true → 200 whole AnthropicMessageResponse with AskUserQuestion tool_use (not a 402 error body)", async () => {
++    setupCommonState()
++    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
++    mockUpstreamStatus(402, "You have exceeded your usage quota")
++
++    const res = await postMessages({ stream: false })
++
++    expect(res.status).toBe(200)
++    const body = (await res.json()) as { stop_reason: string; content: Array<{ type: string; name?: string }> }
++    expect(body.stop_reason).toBe("tool_use")
++    expect(body.content[0]?.name).toBe("AskUserQuestion")
++  })
++
++  test("stream:true request, upstream 403 auth_expired, error_ask_user_question=true → 200 SSE with self-contained AUQ frame sequence", async () => {
++    setupCommonState()
++    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
++    mockUpstreamStatus(403, "token expired")
++
++    const res = await postMessages({ stream: true })
++
++    expect(res.status).toBe(200)
++    expect(res.headers.get("content-type")).toContain("text/event-stream")
++    const text = await res.text()
++    expect(text).toContain("AskUserQuestion")
++    expect(text).toContain("message_stop")
++  })
++
++  test("error_ask_user_question=false → falls back to plain canonical error (no behavior change from Phase 2)", async () => {
++    setupCommonState()
++    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: false })
++    mockUpstreamStatus(402, "You have exceeded your usage quota")
++
++    const res = await postMessages({ stream: false })
++
++    expect(res.status).toBe(402)
++  })
++
++  test("errorShapingEnabled=false → falls back to plain canonical error even with errorAskUserQuestion=true (CF-2: both gates required)", async () => {
++    setupCommonState()
++    setStateForTests({ errorShapingEnabled: false, errorAskUserQuestion: true })
++    mockUpstreamStatus(402, "You have exceeded your usage quota")
++
++    const res = await postMessages({ stream: false })
++
++    expect(res.status).toBe(402)
++  })
++
++  test("401 auth_expired reaching decide() (post token-refresh exhaustion) with error_ask_user_question=true → also synthesizes AUQ (no 401 special-casing here)", async () => {
++    setupCommonState()
++    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
++    mockUpstreamStatus(401, "token expired")
++
++    const res = await postMessages({ stream: false })
++
++    expect(res.status).toBe(200)
++    const body = (await res.json()) as { content: Array<{ name?: string }> }
++    expect(body.content[0]?.name).toBe("AskUserQuestion")
++  })
++})
++
++// ============================================================================
++// Task 4.3 — history recording invariant (SENTINEL for the D-1 gap)
++// ============================================================================
++//
++// Task 4.3 asked whether the existing RequestContext/history API can express the
++// AUQ split (real upstream error in attempts[].upstreamResponse, synthesized 200
++// in clientResponse). Empirically probed (see README §0 D-1): it CANNOT, because
++// AUQ synthesis happens AFTER handler-v4.ts's generic `ctx.fail()` already froze
++// the entry snapshot, and the observability middleware's `setClientResponseStatus`
++// safety net is a documented no-op on a settled entry (and returns early on the
++// SSE path). Fixing that is a RequestContext settle-lifecycle change OUT of Phase
++// 4's authorized scope — so instead of a "locks the ideal invariant" test, this is
++// a SENTINEL locking the CURRENT (known-suboptimal) behavior:
++//   - POSITIVE invariant that DOES hold: the real upstream 402 is preserved in
++//     attempts[].upstreamResponse (richest-data-flow — the real error is never
++//     masked by the AUQ synthesis).
++//   - DOCUMENTED gap: clientResponse does NOT reflect the synthesized 200 (it is
++//     absent). If someone later fixes the settle timing (D-1 option 2/3), this
++//     assertion flips red and forces them to update it + revisit D-1.
++describe("AUQ synthesis — history recording (Task 4.3 sentinel / D-1)", () => {
++  useIsolatedRuntime()
++
++  test("real upstream 402 preserved in attempts[].upstreamResponse; clientResponse gap documented (D-1)", async () => {
++    setupCommonState()
++    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
++    mockUpstreamStatus(402, "You have exceeded your usage quota")
++
++    const res = await postMessages({ stream: false })
++    expect(res.status).toBe(200)
++    await res.json()
++    await drainPendingFinalizations()
++
++    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
++    expect(entry).toBeDefined()
++
++    // POSITIVE: the real upstream error is not lost — the richest-data-flow guarantee.
++    const attempt = entry?.attempts?.[0]
++    expect(attempt?.upstreamResponse?.status).toBe(402)
++    expect(attempt?.upstreamResponse?.success).toBe(false)
++
++    // DOCUMENTED GAP (D-1): the client actually received a synthesized 200 AUQ, but
++    // clientResponse does not reflect it — it is absent (never captured), because
++    // ctx.fail() froze the entry before shapePrecommitError built the 200. This is a
++    // KNOWN limitation pending the D-1 settle-lifecycle decision, locked here as a
++    // sentinel so a future fix cannot land silently.
++    expect(entry?.clientResponse?.status).toBeUndefined()
++  })
++})

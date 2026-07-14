@@ -1,0 +1,499 @@
+### COMMITS
+f03e3fbb docs: record Phase 5 selfheal-delegation task report + discrepancies
+2a3d868d test: lock D-class boundary invariants (media-strip no-mapping, quarantine isolation)
+060e6ebc feat: wire D-class self-heal delegation into ENDPOINT.MESSAGES strategy assembly
+d89741e3 feat: add filterDelegatedStrategies for D-class self-heal delegation
+
+### FULL DIFF
+diff --git a/src/lib/anthropic/error-shaping.ts b/src/lib/anthropic/error-shaping.ts
+index 43167cb2..149ec334 100644
+--- a/src/lib/anthropic/error-shaping.ts
++++ b/src/lib/anthropic/error-shaping.ts
+@@ -21,20 +21,21 @@
+  *    decision, which does NOT flow through this truth table.
+  */
+ 
+ import type { ServerSentEventMessage } from "fetch-event-stream"
+ 
+ import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
+ import type { ApiError } from "~/lib/error"
+ import type {
+   //
+   ClientFrame,
++  RetryStrategy,
+   UpstreamFrame,
+ } from "~/lib/pipeline/types"
+ 
+ import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
+ import { classifyStreamError } from "~/lib/stream"
+ 
+ import { anthropicSseFrame } from "./sse-frame"
+ 
+ // ============================================================================
+ // Config + input/output types (README §4 contract — consumed verbatim by Phase 2/3/4/5)
+@@ -420,10 +421,57 @@ export function buildAskUserQuestionFrames(
+       },
+     }),
+     anthropicSseFrame({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: {} } }),
+     anthropicSseFrame({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } }),
+     anthropicSseFrame({ type: "content_block_stop", index: 0 }),
+     anthropicSseFrame({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 0 } }),
+     anthropicSseFrame({ type: "message_stop" }),
+   ]
+   return frames.map((frame) => tagFrameSynthetic(frame, "error-shaping-auq"))
+ }
++
++// ============================================================================
++// D-class self-heal delegation (Phase 5, README §4 contract)
++// ============================================================================
++
++/**
++ * Wrap a reactive `RetryStrategy[]` (the `assembleStrategiesForEndpoint` output) so a strategy
++ * flagged `"delegate"` in `delegateConfig` (keyed by the strategy's own `.name`, matching
++ * `state.errorSelfhealDelegate` / `error_selfheal_delegate`) never actually fires — the 400 it would
++ * have retried is instead let through to the client, where Claude Code's own self-heal logic handles
++ * it (thinking-signature strip, mid-conv-system, etc.).
++ *
++ * Only `canHandle` is wrapped; `handle`/`onResolved` pass through unchanged (a `"delegate"`-flagged
++ * strategy's `canHandle` never returns `true`, so its `handle`/`onResolved` are never invoked by the
++ * driver — wrapping them would be dead code). Entries whose `.name` is absent from `delegateConfig`,
++ * or mapped to `"proxy"`, pass through BY REFERENCE (same strategy object) — cheap and lets identity
++ * checks in other tests keep working.
++ *
++ * `onDelegated` fires ONLY when the wrapped `canHandle` would otherwise have returned `true` (i.e. a
++ * real delegation happened, not an irrelevant probe) — the caller wires it to
++ * `env.ctx.recordFeature("error-shaping-selfheal-delegated", { strategyName })` (`~/lib/context/*` is
++ * NOT imported here — this module stays `lib`-layer, callback-injected, per the file-header
++ * dependency-direction rule).
++ *
++ * `filterDelegatedStrategies` only ever sees the REACTIVE `RetryStrategy[]` array
++ * (`assembleStrategiesForEndpoint`'s return value) — the always-on L1 thinking-signature quarantine
++ * (pre-flight sanitize in the codec's `resanitize`/`requestRewrites` chain, not a `RetryStrategy`)
++ * structurally never appears in that array, so it is untouched by delegation with no extra guard
++ * needed (see `tests/anthropic/error-shaping-selfheal.unit.test.ts`'s quarantine-isolation test).
++ */
++export function filterDelegatedStrategies(
++  strategies: ReadonlyArray<RetryStrategy>,
++  delegateConfig: Readonly<Record<string, "proxy" | "delegate">>,
++  onDelegated?: (strategyName: string) => void,
++): ReadonlyArray<RetryStrategy> {
++  return strategies.map((strategy) => {
++    if (delegateConfig[strategy.name] !== "delegate") return strategy
++    return {
++      ...strategy,
++      canHandle(error: ApiError): boolean {
++        const wouldHandle = strategy.canHandle(error)
++        if (wouldHandle) onDelegated?.(strategy.name)
++        return false
++      },
++    }
++  })
++}
+diff --git a/src/routes/messages/handler-v4.ts b/src/routes/messages/handler-v4.ts
+index f8b7c910..448a67a0 100644
+--- a/src/routes/messages/handler-v4.ts
++++ b/src/routes/messages/handler-v4.ts
+@@ -56,20 +56,21 @@ import type {
+   StreamEvent,
+ } from "~/types/api/anthropic"
+ import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+ 
+ import { bridgeClientAbort } from "~/lib/abort-bridge"
+ import {
+   //
+   extractAppliedEdits,
+   summarizeAppliedEdits,
+ } from "~/lib/anthropic/applied-context-edits"
++import { filterDelegatedStrategies } from "~/lib/anthropic/error-shaping"
+ import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
+ import {
+   //
+   anchorDeltaFrame,
+   anchorStartFrame,
+   anchorStopFrame,
+   closeAnchorIfOpen,
+   makeSyntheticAnchorInjector,
+   makeSyntheticEnvelopeInjector,
+   remapAnthropicBlockIndex,
+@@ -267,29 +268,39 @@ interface RunMessagesDriverArgs {
+ export function buildMessagesDriverStrategies(
+   env: RequestEnvelope,
+   deps: { codec: ReturnType<typeof createAnthropicCodec>; betaProbe: ReturnType<typeof createBetaProbe> },
+ ): ReadonlyArray<RetryStrategy> {
+   const { codec, betaProbe } = deps
+   if (env.targetEndpoint === ENDPOINT.MESSAGES) {
+     // parse resolves the factory AFTER parse populated resanitize, so it is present here; the guard is
+     // defensive (an unreachable parse failure would have thrown before the factory runs).
+     const resanitize = codec.getResanitize()
+     if (!resanitize) throw new Error("[Anthropic:v4] resanitize chain unavailable — codec.parse did not run")
+-    return assembleStrategiesForEndpoint(env.targetEndpoint, {
++    const strategies = assembleStrategiesForEndpoint(env.targetEndpoint, {
+       anthropic: {
+         originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
+         resanitize,
+         model: env.model as Model | undefined,
+         maxRetries: state.maxReactiveRetries,
+         betaProbe,
+       },
+     })
++    // D-class self-heal delegation (Phase 5, docs/plan/2026-07-13-upstream-error-client-shaping/
++    // phase-5-selfheal-delegation.md): ONLY the direct /v1/messages leg — a "delegate"-flagged
++    // reactive strategy never fires, letting its 400 pass through untouched to Claude Code's own
++    // self-heal logic. Gated on error_shaping_enabled (disabled = today's full, undelegated stack).
++    // The always-on L1 thinking-signature quarantine pre-flight sanitize is NOT a RetryStrategy —
++    // it runs in the S3 request-rewrite chain, never in this array, so it is structurally untouched.
++    if (!state.errorShapingEnabled) return strategies
++    return filterDelegatedStrategies(strategies, state.errorSelfhealDelegate, (strategyName) =>
++      env.ctx.recordFeature("error-shaping-selfheal-delegated", { strategyName }),
++    )
+   }
+ 
+   // FORWARD translate leg (anthropic→cc/responses): the CC strategy stack off the hub-translated CC body.
+   return assembleStrategiesForEndpoint(env.targetEndpoint, {
+     cc: {
+       originalPayload: env.body as ChatCompletionsPayload,
+       model: env.model as Model | undefined,
+       maxRetries: state.maxReactiveRetries,
+       label: env.targetEndpoint === ENDPOINT.RESPONSES ? "Anthropic(→Responses)" : "Anthropic(→CC)",
+     },
+diff --git a/tests/anthropic/error-shaping-selfheal.unit.test.ts b/tests/anthropic/error-shaping-selfheal.unit.test.ts
+new file mode 100644
+index 00000000..76f4bbd8
+--- /dev/null
++++ b/tests/anthropic/error-shaping-selfheal.unit.test.ts
+@@ -0,0 +1,173 @@
++/**
++ * Unit tests for Phase 5's D-class self-heal delegation (`filterDelegatedStrategies`,
++ * `src/lib/anthropic/error-shaping.ts`).
++ *
++ * `filterDelegatedStrategies` wraps a reactive `RetryStrategy[]` (the `assembleStrategiesForEndpoint`
++ * output) so that a strategy configured `"delegate"` in `state.errorSelfhealDelegate` never fires —
++ * the 400 it would otherwise have retried is instead let through to the client, where Claude Code's
++ * own self-heal logic (thinking-signature strip / mid-conv-system / etc.) handles it. Only `canHandle`
++ * is wrapped; `handle`/`onResolved` pass through unchanged. The wrapper never mutates the strategy
++ * array's SHAPE (same length, same order) — only `"delegate"`-flagged entries get a wrapped
++ * `canHandle`.
++ *
++ * Pure functions — no runtime, no I/O, no `~/lib/context/*` import (the `onDelegated` callback is
++ * injected by the caller, which has `env.ctx.recordFeature`; see task 5.2's integration test for the
++ * real wiring).
++ *
++ * Task 5.3 adds a second describe block — "D-class boundary invariants" — proving the delegation
++ * mechanism's SCOPE against the real `buildAnthropicStrategies()` output (not `fakeStrategy` doubles):
++ * (a) CC's client-side `retry:media-strip` self-heal leg has NO proxy-side reactive-strategy
++ * counterpart, so a delegate config entry naming it is a structural no-op (delegate-only by design,
++ * not a missing knob); (b) the always-on L1 thinking-signature quarantine pre-flight sanitize
++ * (`createQuarantineProactiveFilter`, a `RequestRewrite` at `order: 250` registered in
++ * `codec.ts`'s SEPARATE `requestRewrites` array) is structurally absent from the `RetryStrategy[]`
++ * `filterDelegatedStrategies` operates on — delegation cannot reach it no matter what
++ * `errorSelfhealDelegate` contains, in contrast with its reactive L2 fallback
++ * (`poisoned-thinking-retry`), which IS a real, delegable `RetryStrategy`.
++ */
++
++import {
++  //
++  describe,
++  expect,
++  test,
++} from "bun:test"
++
++import type { ApiError } from "~/lib/error"
++import type { RetryStrategy } from "~/lib/pipeline/types"
++import type { MessagesPayload } from "~/types/api/anthropic"
++
++import { filterDelegatedStrategies } from "~/lib/anthropic/error-shaping"
++import { createBetaProbe } from "~/lib/anthropic/pipeline"
++import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
++import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
++import { setStateForTests } from "~/lib/state"
++
++import { useIsolatedRuntime } from "../helpers/isolated-fixture"
++
++function mk(type: string, status: number): ApiError {
++  return { type: type as ApiError["type"], status, message: "boom", raw: null }
++}
++
++function fakeStrategy(name: string, matches: boolean): RetryStrategy {
++  return {
++    name,
++    canHandle: () => matches,
++    handle: async () => ({ kind: "abort" }) as never,
++  }
++}
++
++describe("filterDelegatedStrategies", () => {
++  test("delegate=proxy (default/omitted key) → canHandle behaviour unchanged", () => {
++    const strategies = [fakeStrategy("system-reject-retry", true)]
++    const filtered = filterDelegatedStrategies(strategies, {})
++    expect(filtered[0]?.canHandle(mk("bad_request", 400))).toBe(true)
++  })
++
++  test('delegate="delegate" and the original canHandle would have matched → forced false', () => {
++    const strategies = [fakeStrategy("system-reject-retry", true)]
++    const filtered = filterDelegatedStrategies(strategies, { "system-reject-retry": "delegate" })
++    expect(filtered[0]?.canHandle(mk("bad_request", 400))).toBe(false)
++  })
++
++  test('delegate="delegate" but the original canHandle would NOT have matched → still false, and onDelegated is NOT invoked', () => {
++    const strategies = [fakeStrategy("system-reject-retry", false)]
++    const hits: Array<string> = []
++    const filtered = filterDelegatedStrategies(strategies, { "system-reject-retry": "delegate" }, (name) => hits.push(name))
++    expect(filtered[0]?.canHandle(mk("bad_request", 400))).toBe(false)
++    expect(hits).toEqual([])
++  })
++
++  test('delegate="delegate" and matched → onDelegated receives the strategy name, exactly once per canHandle call', () => {
++    const strategies = [fakeStrategy("system-reject-retry", true)]
++    const hits: Array<string> = []
++    const filtered = filterDelegatedStrategies(strategies, { "system-reject-retry": "delegate" }, (name) => hits.push(name))
++    filtered[0]?.canHandle(mk("bad_request", 400))
++    expect(hits).toEqual(["system-reject-retry"])
++  })
++
++  test("delegate config has a key that matches no strategy .name → silently ignored, no throw, other strategies unaffected", () => {
++    const strategies = [fakeStrategy("system-reject-retry", true)]
++    expect(() => filterDelegatedStrategies(strategies, { "not-a-real-strategy": "delegate" })).not.toThrow()
++    const filtered = filterDelegatedStrategies(strategies, { "not-a-real-strategy": "delegate" })
++    expect(filtered[0]?.canHandle(mk("bad_request", 400))).toBe(true)
++  })
++
++  test("handle/onResolved pass through unchanged (only canHandle is wrapped)", () => {
++    const strategies = [fakeStrategy("system-reject-retry", true)]
++    const filtered = filterDelegatedStrategies(strategies, { "system-reject-retry": "delegate" })
++    expect(filtered[0]?.handle).toBe(strategies[0]?.handle)
++  })
++
++  test("empty delegate map + empty strategy array → returns empty array", () => {
++    expect(filterDelegatedStrategies([], {})).toEqual([])
++  })
++
++  test("mixed array: only the delegated entry is wrapped, others pass through by reference", () => {
++    const kept = fakeStrategy("network-retry", true)
++    const delegated = fakeStrategy("system-reject-retry", true)
++    const filtered = filterDelegatedStrategies([kept, delegated], { "system-reject-retry": "delegate" })
++    expect(filtered[0]).toBe(kept)
++    expect(filtered[1]).not.toBe(delegated)
++    expect(filtered[0]?.canHandle(mk("bad_request", 400))).toBe(true)
++    expect(filtered[1]?.canHandle(mk("bad_request", 400))).toBe(false)
++  })
++})
++
++describe("D-class boundary invariants (Task 5.3) — real buildAnthropicStrategies() output", () => {
++  useIsolatedRuntime()
++
++  const baselinePayload: MessagesPayload = { model: "claude-x", max_tokens: 128, messages: [] }
++  /** Identity resanitize stub — a no-op `AnthropicSanitizeFn` (adapters need one, but never exercise it here). */
++  const stubResanitize = (payload: MessagesPayload) => ({ payload, blocksRemoved: 0, systemReminderRemovals: 0 })
++
++  const realStrategies = () =>
++    buildAnthropicStrategies({
++      originalPayload: baselinePayload,
++      resanitize: stubResanitize,
++      model: undefined,
++      maxRetries: 3,
++      betaProbe: createBetaProbe(undefined),
++    })
++
++  test("CC's client-side media-strip self-heal leg has no proxy-side reactive-strategy counterpart (delegate-only boundary)", () => {
++    const strategies = realStrategies()
++    // No strategy .name is media-strip-flavoured — CC's `retry:media-strip` self-heal leg has nothing
++    // on the proxy side to delegate FROM. A delegate config entry naming it is therefore a structural
++    // no-op (nothing to suppress), not a missing/broken config knob.
++    const mediaRelated = strategies.filter((s) => /media/i.test(s.name))
++    expect(mediaRelated).toEqual([])
++
++    // filterDelegatedStrategies with a made-up media-strip key changes nothing: same length, same
++    // names, in order — proving there is genuinely nothing to accidentally suppress.
++    const filtered = filterDelegatedStrategies(strategies, { "media-strip-retry": "delegate" })
++    expect(filtered.map((s) => s.name)).toEqual(strategies.map((s) => s.name))
++  })
++
++  test("the always-on L1 thinking-quarantine pre-flight sanitize is NOT a member of the RetryStrategy[] filterDelegatedStrategies operates on", () => {
++    const strategies = realStrategies()
++    // `thinking-quarantine-proactive` (src/lib/anthropic/thinking-quarantine/proactive-filter.ts:100-103)
++    // is a `RequestRewrite` (order: 250), registered in codec.ts's SEPARATE `requestRewrites` array
++    // (codec.ts:218) — a completely different pipeline stage from this `RetryStrategy[]`. It cannot
++    // appear here by construction, so `filterDelegatedStrategies` (which only wraps THIS array's
++    // entries) structurally cannot reach it no matter what `errorSelfhealDelegate` contains.
++    expect(strategies.some((s) => s.name === "thinking-quarantine-proactive")).toBe(false)
++    // Sanity: the L1 filter factory really does produce that RequestRewrite name/shape (not a
++    // RetryStrategy) — confirming what "structurally cannot appear" is being asserted against.
++    const l1 = createQuarantineProactiveFilter()
++    expect(l1.name).toBe("thinking-quarantine-proactive")
++    expect(l1.order).toBe(250)
++    expect((l1 as unknown as Partial<RetryStrategy>).canHandle).toBeUndefined()
++
++    // Contrast: L1's reactive L2 fallback (`poisoned-thinking-retry`) IS a real RetryStrategy in this
++    // array — it's legitimately delegable. Delegating it forces canHandle false regardless of a real
++    // "cannot be modified" match, proving delegation's REACH is exactly "the RetryStrategy[] array",
++    // no more (can't touch L1) and no less (can reach every real reactive strategy, including this one).
++    expect(strategies.some((s) => s.name === "poisoned-thinking-retry")).toBe(true)
++    setStateForTests({ stripThinkingOnReject: true })
++    const filtered = filterDelegatedStrategies(strategies, { "poisoned-thinking-retry": "delegate" })
++    const l2 = filtered.find((s) => s.name === "poisoned-thinking-retry")
++    const poisonedThinkingError: ApiError = { type: "bad_request", status: 400, message: "thinking blocks cannot be modified", raw: null }
++    expect(l2?.canHandle(poisonedThinkingError)).toBe(false)
++  })
++})
+diff --git a/tests/routes/messages/handler-v4-selfheal-delegation.it.test.ts b/tests/routes/messages/handler-v4-selfheal-delegation.it.test.ts
+new file mode 100644
+index 00000000..cb0e5627
+--- /dev/null
++++ b/tests/routes/messages/handler-v4-selfheal-delegation.it.test.ts
+@@ -0,0 +1,156 @@
++/**
++ * Task 5.2 — `filterDelegatedStrategies` wiring into `buildMessagesDriverStrategies`
++ * (docs/plan/2026-07-13-upstream-error-client-shaping/phase-5-selfheal-delegation.md).
++ *
++ * Drives the REAL production factory (`buildMessagesDriverStrategies`, mirroring
++ * `tests/anthropic/forward-leg-strategies.it.test.ts`'s "unit-level directness" pattern) directly:
++ * for the ENDPOINT.MESSAGES branch, `codec.parse(raw)` alone (synchronous, no driver/HTTP round-trip)
++ * populates `codec.getResanitize()` + a REAL `env.ctx` (built via `withCapturingManager`, so
++ * `env.ctx.recordFeature` publishes into a local array instead of the real bus) — exactly what
++ * `buildMessagesDriverStrategies`'s ENDPOINT.MESSAGES branch requires. This lets the delegation wiring
++ * be exercised (`.canHandle()` + the `recordFeature` side-channel) without the multi-second `waitMs`
++ * delays a full retry-loop drive through `network-retry`/`server-error-retry` would incur.
++ *
++ * Constraint 3 (forward-translate leg untouched): the CC/Responses branch is proven UNAFFECTED by
++ * `state.errorSelfhealDelegate` even for a strategy name (`token-refresh`) that exists in BOTH stacks —
++ * reusing the hand-built fake env from `forward-leg-strategies.it.test.ts` (no real `.ctx`), which
++ * doubles as proof the CC branch never touches `env.ctx.recordFeature` (a real call would throw on the
++ * fake env's missing `.ctx`).
++ */
++
++import {
++  //
++  describe,
++  expect,
++  test,
++} from "bun:test"
++
++import type { ApiError } from "~/lib/error"
++import type { RequestEnvelope } from "~/lib/pipeline/envelope"
++import type { RawHttpRequest } from "~/lib/pipeline/types"
++
++import { createBetaProbe } from "~/lib/anthropic/pipeline"
++import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
++import { withCapturingManager } from "~/lib/context/manager"
++import { ENDPOINT } from "~/lib/models/endpoint"
++import {
++  //
++  setModels,
++  setStateForTests,
++} from "~/lib/state"
++import { buildMessagesDriverStrategies } from "~/routes/messages/handler-v4"
++
++import { mockModel } from "../../helpers/factories"
++import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
++
++const MODEL = "claude-x"
++
++const SYSTEM_REJECT_ERROR: ApiError = { type: "bad_request", status: 400, message: 'Unexpected role "system"', raw: null }
++const AUTH_EXPIRED_ERROR: ApiError = { type: "auth_expired", status: 401, message: "token expired", raw: null }
++
++/**
++ * Build a REAL post-`codec.parse()` `RequestEnvelope` for the ENDPOINT.MESSAGES branch, with a real
++ * (capturing, not-bus-published) `env.ctx` — so `codec.getResanitize()` is populated (required by
++ * `buildMessagesDriverStrategies`'s MESSAGES branch) and `env.ctx.recordFeature` is exercisable.
++ */
++function makeParsedMessagesEnv(): {
++  env: RequestEnvelope
++  codec: ReturnType<typeof createAnthropicCodec>
++  betaProbe: ReturnType<typeof createBetaProbe>
++  events: ReturnType<typeof withCapturingManager<RequestEnvelope>>["events"]
++} {
++  const betaProbe = createBetaProbe(undefined)
++  const codec = createAnthropicCodec({ betaProbe, preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
++  const raw = {
++    body: { model: MODEL, max_tokens: 128, messages: [{ role: "user", content: "hi" }], stream: false },
++    headers: new Headers(),
++    path: "/v1/messages",
++    method: "POST",
++  } as unknown as RawHttpRequest
++  const { result: env, events } = withCapturingManager(() => codec.parse(raw))
++  return { env, codec, betaProbe, events }
++}
++
++/** A hand-built fake env for the CC forward-translate leg (no real `.ctx`) — mirrors T7.2's pattern. */
++function ccLegEnv(leg: (typeof ENDPOINT)["CHAT_COMPLETIONS"] | (typeof ENDPOINT)["RESPONSES"]): RequestEnvelope {
++  return { targetEndpoint: leg, body: { model: MODEL, messages: [] }, model: { id: MODEL } } as unknown as RequestEnvelope
++}
++
++describe("buildMessagesDriverStrategies — D-class self-heal delegation wiring (ENDPOINT.MESSAGES only)", () => {
++  useIsolatedRuntime()
++
++  const seed = () =>
++    setModels({
++      object: "list",
++      data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES] })],
++    })
++
++  test("errorSelfhealDelegate={} (default/omitted) → system-reject-retry.canHandle unaffected (regression lock)", () => {
++    seed()
++    setStateForTests({ errorShapingEnabled: true, errorSelfhealDelegate: {} })
++    const { env, codec, betaProbe } = makeParsedMessagesEnv()
++    const stack = buildMessagesDriverStrategies(env, { codec, betaProbe })
++    const strat = stack.find((s) => s.name === "system-reject-retry")
++    expect(strat?.canHandle(SYSTEM_REJECT_ERROR)).toBe(true)
++  })
++
++  test('errorSelfhealDelegate={"system-reject-retry":"delegate"} → canHandle forced false + recordFeature fires exactly once', () => {
++    seed()
++    setStateForTests({ errorShapingEnabled: true, errorSelfhealDelegate: { "system-reject-retry": "delegate" } })
++    const { env, codec, betaProbe, events } = makeParsedMessagesEnv()
++    const stack = buildMessagesDriverStrategies(env, { codec, betaProbe })
++    const strat = stack.find((s) => s.name === "system-reject-retry")
++    expect(strat?.canHandle(SYSTEM_REJECT_ERROR)).toBe(false)
++
++    const featureEvents = events.filter(
++      (e) => e.kind === "request.feature_applied" && (e as { feature?: string }).feature === "error-shaping-selfheal-delegated",
++    )
++    expect(featureEvents).toHaveLength(1)
++    expect((featureEvents[0] as { detail?: unknown }).detail).toEqual({ strategyName: "system-reject-retry" })
++  })
++
++  test("errorShapingEnabled=false → delegation entirely disabled (falls back to the full undelegated stack, current behavior)", () => {
++    seed()
++    setStateForTests({ errorShapingEnabled: false, errorSelfhealDelegate: { "system-reject-retry": "delegate" } })
++    const { env, codec, betaProbe } = makeParsedMessagesEnv()
++    const stack = buildMessagesDriverStrategies(env, { codec, betaProbe })
++    const strat = stack.find((s) => s.name === "system-reject-retry")
++    expect(strat?.canHandle(SYSTEM_REJECT_ERROR)).toBe(true)
++  })
++
++  test("a delegate key matching no real strategy .name → silently ignored, other strategies unaffected, no throw", () => {
++    seed()
++    setStateForTests({ errorShapingEnabled: true, errorSelfhealDelegate: { "not-a-real-strategy": "delegate" } })
++    const { env, codec, betaProbe } = makeParsedMessagesEnv()
++    let stack: ReturnType<typeof buildMessagesDriverStrategies> = []
++    expect(() => {
++      stack = buildMessagesDriverStrategies(env, { codec, betaProbe })
++    }).not.toThrow()
++    const strat = stack.find((s) => s.name === "system-reject-retry")
++    expect(strat?.canHandle(SYSTEM_REJECT_ERROR)).toBe(true)
++  })
++})
++
++describe("buildMessagesDriverStrategies — constraint 3: the forward-translate leg is completely unaffected", () => {
++  useIsolatedRuntime()
++
++  test("@cc leg: token-refresh.canHandle is unaffected by errorSelfhealDelegate (shared strategy name, different branch)", () => {
++    setStateForTests({ errorShapingEnabled: true, errorSelfhealDelegate: { "token-refresh": "delegate" } })
++    const betaProbe = createBetaProbe(undefined)
++    const codec = createAnthropicCodec({ betaProbe, preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
++    // No real `.ctx` on this hand-built env — if the CC branch touched `env.ctx.recordFeature`, this
++    // would throw, so a clean pass also proves the CC branch is untouched by the D-class wiring.
++    const stack = buildMessagesDriverStrategies(ccLegEnv(ENDPOINT.CHAT_COMPLETIONS), { codec, betaProbe })
++    const strat = stack.find((s) => s.name === "token-refresh")
++    expect(strat?.canHandle(AUTH_EXPIRED_ERROR)).toBe(true)
++  })
++
++  test("@responses leg: token-refresh.canHandle is unaffected by errorSelfhealDelegate", () => {
++    setStateForTests({ errorShapingEnabled: true, errorSelfhealDelegate: { "token-refresh": "delegate" } })
++    const betaProbe = createBetaProbe(undefined)
++    const codec = createAnthropicCodec({ betaProbe, preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
++    const stack = buildMessagesDriverStrategies(ccLegEnv(ENDPOINT.RESPONSES), { codec, betaProbe })
++    const strat = stack.find((s) => s.name === "token-refresh")
++    expect(strat?.canHandle(AUTH_EXPIRED_ERROR)).toBe(true)
++  })
++})

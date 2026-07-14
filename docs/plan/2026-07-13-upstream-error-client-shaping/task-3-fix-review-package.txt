@@ -1,0 +1,555 @@
+### FIX COMMITS (bdebda73..HEAD)
+c727d151 docs: backlog 2 Phase-3 error-shaping findings + append FIX-1/2/3 report (FIX-3)
+a2df6649 refactor: complete G-3 canonical ownership on the translate leg + unify raw-stream termini (FIX-2)
+92301bb8 test: lock errorFrameCanonical-before-recoverRefusal no-double-reshape invariant (FIX-1)
+
+### DIFFSTAT
+ .../task-3-report.md                               |  32 ++++++
+ docs/todo/deferred-backlog.md                      |  18 ++++
+ src/routes/messages/error-shaping-glue.ts          |  22 ++++
+ src/routes/messages/handler-v4.ts                  |  53 +++++++---
+ .../error-frame-canonical-rewrite.unit.test.ts     |  18 ++++
+ .../response-rewrite-contract.unit.test.ts         |  52 ++++++++++
+ .../messages/postcommit-error-shaping.unit.test.ts |  34 +++++-
+ .../translate-leg-error-shaping.it.test.ts         | 115 +++++++++++++++++++++
+ 8 files changed, 326 insertions(+), 18 deletions(-)
+
+### FULL DIFF (-U10)
+diff --git a/src/routes/messages/error-shaping-glue.ts b/src/routes/messages/error-shaping-glue.ts
+index 1bb57c84..c583a468 100644
+--- a/src/routes/messages/error-shaping-glue.ts
++++ b/src/routes/messages/error-shaping-glue.ts
+@@ -123,10 +123,32 @@ export function shapePostcommitErrorFrame(error: unknown, legacyFrame: ClientFra
+     error: classifyError(error),
+     commitPhase: "post-commit",
+     clientVisibleStopEmitted: false,
+     config: errorShapingConfigFromState(),
+   })
+   // Post-commit `decide()` is total onto `canonical-error` (no retry-signal / AUQ / defer post-commit).
+   // The defensive fallback keeps the legacy frame if a future truth-table change ever yields otherwise.
+   if (decision.kind !== "canonical-error") return legacyFrame
+   return buildCanonicalErrorFrame(decision)
+ }
++
++/**
++ * POST-COMMIT terminal-frame shaping for the STREAM-lifecycle termini that have NO classifiable
++ * `ApiError` object (Phase 3 FIX-2, G-3 canonical ownership completion). These are the pumps' H3
++ * (`stream-error` — the upstream iterable/sink threw; the caller pre-classifies via
++ * `anthropicStreamErrorType`) and truncation (a clean drain WITHOUT the terminator) branches, on BOTH the
++ * direct Anthropic pump AND the reverse translate leg (whose client IS a `/v1/messages` client, so the
++ * "Anthropic path only" scope covers it — the excluded formats are OpenAI/Gemini clients on their OWN
++ * endpoints, not this leg).
++ *
++ * Unlike {@link shapePostcommitErrorFrame} there is no `ApiError` to run through `decide()`: the caller
++ * already resolved the wire `errorType` + `message`, so this just routes them through the single
++ * `buildCanonicalErrorFrame` constructor (G-3) instead of hand-built JSON. The output is BYTE-IDENTICAL to
++ * the former hand-built `{type:"error", error:{type, message}}` literal (same field order, no retry_after),
++ * so the enabled/disabled split is a formality here — but the CF-2 golden lock is kept for symmetry with
++ * ①/①' (and to make "off = the exact legacy bytes" a single, uniform contract across all six termini): the
++ * caller passes the legacy frame and gets it back verbatim when `error_shaping_enabled` is false.
++ */
++export function shapeRawStreamErrorFrame(errorType: string, message: string, legacyFrame: ClientFrame): ClientFrame {
++  if (!state.errorShapingEnabled) return legacyFrame
++  return buildCanonicalErrorFrame({ kind: "canonical-error", errorType, message })
++}
+diff --git a/src/routes/messages/handler-v4.ts b/src/routes/messages/handler-v4.ts
+index e9b6148b..f8b7c910 100644
+--- a/src/routes/messages/handler-v4.ts
++++ b/src/routes/messages/handler-v4.ts
+@@ -56,21 +56,20 @@ import type {
+   StreamEvent,
+ } from "~/types/api/anthropic"
+ import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+ 
+ import { bridgeClientAbort } from "~/lib/abort-bridge"
+ import {
+   //
+   extractAppliedEdits,
+   summarizeAppliedEdits,
+ } from "~/lib/anthropic/applied-context-edits"
+-import { buildCanonicalErrorFrame } from "~/lib/anthropic/error-shaping"
+ import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
+ import {
+   //
+   anchorDeltaFrame,
+   anchorStartFrame,
+   anchorStopFrame,
+   closeAnchorIfOpen,
+   makeSyntheticAnchorInjector,
+   makeSyntheticEnvelopeInjector,
+   remapAnthropicBlockIndex,
+@@ -143,21 +142,25 @@ import {
+   buildResponsesResponseData,
+ } from "~/lib/request"
+ import {
+   //
+   resolveBufferedCaps,
+   state,
+ } from "~/lib/state"
+ import { processAnthropicSystem } from "~/lib/system-prompt"
+ import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+ 
+-import { shapePostcommitErrorFrame } from "./error-shaping-glue"
++import {
++  //
++  shapePostcommitErrorFrame,
++  shapeRawStreamErrorFrame,
++} from "./error-shaping-glue"
+ import {
+   //
+   anthropicErrorFrame,
+   anthropicHttpErrorFrame,
+   anthropicRejectErrorFrame,
+   classifyPostCommitAbort,
+ } from "./post-commit-error"
+ import { retryMetaFeature } from "./retry-meta-feature"
+ import {
+   //
+@@ -1199,21 +1202,28 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options):
+       const error = outcome.error
+       logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
+       const errorMessage = error instanceof Error ? error.message : String(error)
+       const errorType = anthropicStreamErrorType(error)
+       // §10.5 gap (whole-branch review I-1): the live pump can stream-error BEFORE the first real
+       // content_block_start (a delayed-commit stall injected the anchor, then the upstream body threw) —
+       // reconcileLiveFrame never got to close the anchor, so it is still OPEN. Close it off (stop@0) BEFORE
+       // the error frame or the client is left with a dangling block. Idempotent + inert (shared anchorClosed
+       // guard): a no-op when reconcile already closed it, or when no anchor was injected.
+       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+-      await sink.writeSynthetic?.(buildCanonicalErrorFrame({ kind: "canonical-error", errorType, message: errorMessage })).catch(() => undefined)
++      await sink
++        .writeSynthetic?.(
++          shapeRawStreamErrorFrame(errorType, errorMessage, {
++            event: "error",
++            data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }),
++          }),
++        )
++        .catch(() => undefined)
+       recordForwarded()
+       // C1: preserve the partial content accumulated before the throw (mirrors the
+       // truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
+       const partial = buildAnthropicResponseData(acc, model)
+       env.ctx.fail(acc.model || model, error, {
+         usage: partial.usage,
+         stop_reason: partial.stop_reason,
+         content: partial.content,
+       })
+       return
+@@ -1308,24 +1318,23 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options):
+       // Order: writeSynthetic (samples the error frame) → recordForwarded → fail (see H3 branch).
+       const partial = buildAnthropicResponseData(acc, model)
+       consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
+       // §10.5 gap (I-1): the live pump can truncate (clean EOF, no message_stop) BEFORE the first real
+       // content_block_start — a delayed-commit stall injected the anchor, then the upstream closed silently.
+       // reconcile never closed the anchor, so close it off (stop@0) before the error frame. Idempotent (a
+       // real first block already closed it → no-op) + inert (no anchor injected → byte-equivalent).
+       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+       await sink
+         .writeSynthetic?.(
+-          buildCanonicalErrorFrame({
+-            kind: "canonical-error",
+-            errorType: "api_error",
+-            message: "Upstream stream truncated before completion (no message_stop)",
++          shapeRawStreamErrorFrame("api_error", "Upstream stream truncated before completion (no message_stop)", {
++            event: "error",
++            data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
+           }),
+         )
+         .catch(() => undefined)
+       recordForwarded()
+       env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
+         usage: partial.usage,
+         stop_reason: partial.stop_reason,
+         content: partial.content,
+       })
+     } else {
+@@ -1450,51 +1459,61 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
+       // Anthropic error terminator, snapshot the forwarded track, THEN fail (order load-bearing — ctx.fail
+       // freezes inboundResponse; a post-fail snapshot misses the error frame).
+       const error = outcome.error
+       logUpstreamStreamError(error, {
+         model,
+         streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
+         acc: createAnthropicStreamAccumulator(),
+         sseEvents: [],
+       })
+       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
++      // G-3 (FIX-2): the translate leg's client IS an Anthropic /v1/messages client, so its H3 error
++      // terminator is owned by the same canonical builder (byte-identical to the former hand-built JSON;
++      // CF-2 golden-locked off).
+       await sink
+-        .writeSynthetic?.({
+-          event: "error",
+-          data: JSON.stringify({
+-            type: "error",
+-            error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) },
++        .writeSynthetic?.(
++          shapeRawStreamErrorFrame(anthropicStreamErrorType(error), error instanceof Error ? error.message : String(error), {
++            event: "error",
++            data: JSON.stringify({
++              type: "error",
++              error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) },
++            }),
+           }),
+-        })
++        )
+         .catch(() => undefined)
+       recordForwarded()
+       env.ctx.fail(model, error, outboundResponseData())
+       return
+     }
+ 
+     // outcome.kind === "complete" — the upstream drained cleanly. The terminal stop_reason is the F2
+     // signal: undefined ⇒ the CC/Responses stream ended with NO finish_reason ⇒ truncation.
+     const meta = codec.getStreamMeta()
+     if (meta?.stopReason === undefined) {
+       // Truncation: forward the translator's block-close frames (partial content stays balanced) but DROP
+       // its terminal message_delta/message_stop (they'd signal a clean completion), then write a synthetic
+       // Anthropic error terminator + fail (mirrors the gemini truncation gate + the direct pump's). The
+       // block-close frame goes through `clientSink` so its index is +1-remapped under an injected anchor.
+       for (const frame of codec.flushResponse(env)) {
+         if (!isMessageTerminatorFrame(frame)) await clientSink.write(frame)
+       }
+       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
++      // G-3 (FIX-2): translate-leg truncation terminator via the canonical builder (byte-identical to the
++      // former hand-built JSON — note the translate leg's message says "no finish_reason", the CC/Responses
++      // terminator, distinct from the direct pump's "no message_stop"; CF-2 golden-locked off).
+       await sink
+-        .writeSynthetic?.({
+-          event: "error",
+-          data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
+-        })
++        .writeSynthetic?.(
++          shapeRawStreamErrorFrame("api_error", "Upstream stream truncated before completion (no finish_reason)", {
++            event: "error",
++            data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
++          }),
++        )
+         .catch(() => undefined)
+       recordForwarded()
+       consola.error(`[Anthropic:v4:translate] Upstream truncated for ${model}: drained without a finish_reason`)
+       env.ctx.fail(model, new Error("upstream stream truncated: closed without finish_reason"), outboundResponseData())
+       return
+     }
+ 
+     // Clean completion: drain the translator's terminal frames (the last block's content_block_stop +
+     // message_delta + message_stop) through `clientSink` so the block-close is +1-remapped under an injected
+     // anchor (message_delta / message_stop are index-less → passthrough), snapshot the forwarded track, then
+diff --git a/tests/codec/anthropic/error-frame-canonical-rewrite.unit.test.ts b/tests/codec/anthropic/error-frame-canonical-rewrite.unit.test.ts
+index 423daf82..bf548c0e 100644
+--- a/tests/codec/anthropic/error-frame-canonical-rewrite.unit.test.ts
++++ b/tests/codec/anthropic/error-frame-canonical-rewrite.unit.test.ts
+@@ -10,21 +10,23 @@
+ import {
+   //
+   describe,
+   expect,
+   test,
+ } from "bun:test"
+ 
+ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
+ 
+ import { errorFrameCanonicalRewrite } from "~/lib/codec/anthropic/error-frame-canonical-rewrite"
++import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrite-adapters"
+ import { ENDPOINT } from "~/lib/models/endpoint"
++import { assembleResponseRewrites } from "~/lib/pipeline/rewrite-registry"
+ import { setStateForTests } from "~/lib/state"
+ 
+ import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
+ 
+ /** Minimal RequestEnvelope stub — `appliesTo` only reads `targetEndpoint`; `transform` reads nothing off env. */
+ function env(targetEndpoint: string): RequestEnvelope {
+   return { targetEndpoint } as RequestEnvelope
+ }
+ 
+ describe("errorFrameCanonicalRewrite", () => {
+@@ -77,11 +79,27 @@ describe("errorFrameCanonicalRewrite", () => {
+ 
+   test("unparseable / shapeless upstream error → canonical api_error fallback, never throws / never drops", () => {
+     const state = errorFrameCanonicalRewrite.createState?.(env(ENDPOINT.MESSAGES)) ?? {}
+     const action = errorFrameCanonicalRewrite.transform({ event: "error", data: "not json" }, state)
+     if (action.kind !== "emit") throw new Error("unreachable")
+     const data = JSON.parse(action.frames[0].data ?? "{}") as { type: string; error: { type: string; message: string } }
+     expect(data.type).toBe("error")
+     expect(data.error.type).toBe("api_error")
+     expect(typeof data.error.message).toBe("string")
+   })
++
++  // FIX-1 (plan完成检查 line 205-206): the REAL assembled chain must place errorFrameCanonical FIRST and
++  // recover-refusal LAST — so refusalRewrite's synthesized event:error frame (error mode) can never flow
++  // back to errorFrameCanonical for a wrongful second reshape (passThrough is forward-only). This asserts
++  // it on the ACTUAL ANTHROPIC_RESPONSE_REWRITES (not just the ORDER constants — the mechanism half is
++  // locked in tests/pipeline/response-rewrite-contract.unit.test.ts).
++  test("assembled ANTHROPIC_RESPONSE_REWRITES chain: errorFrameCanonical runs FIRST, before recover-refusal (no-double-reshape ordering lock)", () => {
++    setStateForTests({ errorShapingEnabled: true, refusalSseRewrite: "error", recoverToolCallText: true })
++    const chain = assembleResponseRewrites(env(ENDPOINT.MESSAGES), ANTHROPIC_RESPONSE_REWRITES)
++    const names = chain.map((r) => r.name)
++    expect(names[0]).toBe("errorFrameCanonical")
++    const idxCanonical = names.indexOf("errorFrameCanonical")
++    const idxRefusal = names.indexOf("recover-refusal")
++    expect(idxCanonical).toBeGreaterThanOrEqual(0)
++    expect(idxRefusal).toBeGreaterThan(idxCanonical)
++  })
+ })
+diff --git a/tests/pipeline/response-rewrite-contract.unit.test.ts b/tests/pipeline/response-rewrite-contract.unit.test.ts
+index db7fb249..faa85463 100644
+--- a/tests/pipeline/response-rewrite-contract.unit.test.ts
++++ b/tests/pipeline/response-rewrite-contract.unit.test.ts
+@@ -330,11 +330,63 @@ describe("response-rewrite contract — break-path flush is NOT delivered (Phase
+ describe("response-rewrite contract — RESPONSE_REWRITE_ORDER hard ordering invariant", () => {
+   // Guards the constants themselves (recover < decode < filter — recover-tool-call/
+   // stream.ts:40 + the densify-sees-final-blocks contract). Phase 4 additionally must
+   // assert the four REAL rewrites register at exactly these orders (they don't exist yet).
+   test("recover-tool-call < tool-input-decode < server-tool-filter", () => {
+     expect(RESPONSE_REWRITE_ORDER.recoverToolCall).toBeLessThan(RESPONSE_REWRITE_ORDER.toolInputDecode)
+     expect(RESPONSE_REWRITE_ORDER.toolInputDecode).toBeLessThan(RESPONSE_REWRITE_ORDER.serverToolFilter)
+     // recover MUST precede the filter (the hardest contract — index/name remap depends on it).
+     expect(RESPONSE_REWRITE_ORDER.recoverToolCall).toBeLessThan(RESPONSE_REWRITE_ORDER.serverToolFilter)
+   })
++
++  // errorFrameCanonical(50) MUST run BEFORE recoverRefusal(400): the refusal rewrite SYNTHESIZES an
++  // `event:error` frame in `error` mode, and errorFrameCanonical reshapes `event:error` frames. Because
++  // `passThrough` is strictly forward-only (driver.ts), a rewrite at order 50 only ever sees UPSTREAM-
++  // ORIGINAL frames — a later rewrite's synthesized error frame can never flow BACK to it for a wrongful
++  // second reshape. These two tests lock BOTH halves (the order constant + the forward-only mechanism).
++  test("errorFrameCanonical(50) < recoverRefusal(400) — the ordering half of the no-double-reshape invariant", () => {
++    expect(RESPONSE_REWRITE_ORDER.errorFrameCanonical).toBeLessThan(RESPONSE_REWRITE_ORDER.recoverRefusal)
++  })
++
++  test("a LATER rewrite's synthesized event:error frame is NEVER re-fed to an EARLIER reshaper (forward-only passThrough — explicit regression lock, not just logic)", async () => {
++    // `reshaper` mimics errorFrameCanonical: on an event:error frame it STRIPS any non-{type,message}
++    // field (the observable side effect of a reshape). `refusalMimic` mimics recoverRefusal `error` mode:
++    // on the `trigger` frame it SYNTHESIZES an event:error frame carrying an EXTRA field (`extra`).
++    const reshaper: ResponseRewrite = {
++      name: "reshaper",
++      order: 50,
++      appliesTo: () => true,
++      transform: (frame): FrameAction => {
++        if (frame.event !== "error") return { kind: "emit", frames: [frame] }
++        const parsed = JSON.parse(frame.data ?? "{}") as { type?: string; error?: { type?: string; message?: string } }
++        // canonicalize: keep ONLY {type, message} — drops any `extra` a wrongly-ordered reshape would strip.
++        return {
++          kind: "emit",
++          frames: [{ event: "error", data: JSON.stringify({ type: "error", error: { type: parsed.error?.type, message: parsed.error?.message } }) }],
++        }
++      },
++    }
++    const refusalMimic = (order: number): ResponseRewrite => ({
++      name: "refusal-mimic",
++      order,
++      appliesTo: () => true,
++      transform: (frame): FrameAction => {
++        if (frame.data !== "trigger") return { kind: "emit", frames: [frame] }
++        return {
++          kind: "emit",
++          frames: [{ event: "error", data: JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "boom", extra: "SURVIVES" } }) }],
++        }
++      },
++    })
++
++    // Correct order (reshaper 50 < refusal 400): the synthesized frame appears at step 400 and is NEVER
++    // re-fed to step 50 → its `extra` field SURVIVES.
++    const correct = await collect(driverWith([reshaper, refusalMimic(400)]).runResponse(streamOf(gen([{ data: "trigger" }])), makeEnv()))
++    expect(correct).toHaveLength(1)
++    expect(JSON.parse(correct[0]).error.extra).toBe("SURVIVES")
++
++    // Positive-sample control (reshaper 500 > refusal 400): NOW the reshaper runs AFTER the synthesis and
++    // DOES strip `extra` — proving the reshaper genuinely has the stripping side effect the lock guards.
++    const wrong = await collect(driverWith([refusalMimic(400), { ...reshaper, order: 500 }]).runResponse(streamOf(gen([{ data: "trigger" }])), makeEnv()))
++    expect(JSON.parse(wrong[0]).error.extra).toBeUndefined()
++  })
+ })
+diff --git a/tests/routes/messages/postcommit-error-shaping.unit.test.ts b/tests/routes/messages/postcommit-error-shaping.unit.test.ts
+index ca72ac15..5d84797d 100644
+--- a/tests/routes/messages/postcommit-error-shaping.unit.test.ts
++++ b/tests/routes/messages/postcommit-error-shaping.unit.test.ts
+@@ -7,24 +7,30 @@
+  * `autoRestoreState()` is the isolation tool (mirrors `error-shaping-glue.unit.test.ts`).
+  */
+ 
+ import {
+   //
+   describe,
+   expect,
+   test,
+ } from "bun:test"
+ 
++import type { ClientFrame } from "~/lib/pipeline/types"
++
+ import { HTTPError } from "~/lib/error"
+ import { setStateForTests } from "~/lib/state"
+ 
+-import { shapePostcommitErrorFrame } from "../../../src/routes/messages/error-shaping-glue"
++import {
++  //
++  shapePostcommitErrorFrame,
++  shapeRawStreamErrorFrame,
++} from "../../../src/routes/messages/error-shaping-glue"
+ import {
+   //
+   anthropicErrorFrame,
+   anthropicHttpErrorFrame,
+ } from "../../../src/routes/messages/post-commit-error"
+ import { autoRestoreState } from "../../helpers/state-fixture"
+ 
+ describe("shapePostcommitErrorFrame — CF-2 golden lock (disabled)", () => {
+   autoRestoreState()
+ 
+@@ -81,10 +87,36 @@ describe("shapePostcommitErrorFrame — enabled (canonical via decide)", () => {
+   })
+ 
+   test("terminus ① 500 server_error HTTPError → canonical api_error frame", () => {
+     setStateForTests({ errorShapingEnabled: true })
+     const error = new HTTPError("Server error", 500, "")
+     const out = shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error))
+     const data = JSON.parse(out.data ?? "{}") as { error: { type: string } }
+     expect(data.error.type).toBe("api_error") // anthropicErrorTypeForApiError("server_error")
+   })
+ })
++
++describe("shapeRawStreamErrorFrame — FIX-2 (H3 / truncation termini, direct pump + translate leg)", () => {
++  autoRestoreState()
++
++  test("enabled → buildCanonicalErrorFrame({errorType, message}) is byte-identical to the legacy hand-built literal", () => {
++    setStateForTests({ errorShapingEnabled: true })
++    // The former hand-built literal both pumps emitted for H3 / truncation.
++    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "boom" } }) }
++    const out = shapeRawStreamErrorFrame("overloaded_error", "boom", legacy)
++    expect(out).toEqual(legacy) // byte-identical field order {type, error:{type, message}}, no retry_after
++  })
++
++  test("enabled → truncation frame byte-identical to the legacy literal (both pumps' truncation message)", () => {
++    setStateForTests({ errorShapingEnabled: true })
++    const msg = "Upstream stream truncated before completion (no message_stop)"
++    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) }
++    expect(shapeRawStreamErrorFrame("api_error", msg, legacy)).toEqual(legacy)
++  })
++
++  test("DISABLED → returns the caller's legacy frame verbatim (CF-2 golden lock, uniform with ①/①')", () => {
++    setStateForTests({ errorShapingEnabled: false })
++    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "timeout_error", message: "idle" } }) }
++    const out = shapeRawStreamErrorFrame("timeout_error", "idle", legacy)
++    expect(out).toBe(legacy) // same object reference — no rebuild at all when disabled
++  })
++})
+diff --git a/tests/routes/messages/translate-leg-error-shaping.it.test.ts b/tests/routes/messages/translate-leg-error-shaping.it.test.ts
+new file mode 100644
+index 00000000..aba0b339
+--- /dev/null
++++ b/tests/routes/messages/translate-leg-error-shaping.it.test.ts
+@@ -0,0 +1,115 @@
++/**
++ * Phase 3 FIX-2 — POST-COMMIT canonical error-frame shaping on the REVERSE TRANSLATE LEG
++ * (`pumpTranslateLegStreamingV4`, docs/plan/2026-07-13-upstream-error-client-shaping/task-3-report.md FIX-2).
++ *
++ * The translate leg serves an Anthropic `/v1/messages` client backed by a NON-Anthropic upstream
++ * (`claude-x@cc` → GHC /chat/completions). Its H3 (stream-error) and truncation terminators are now routed
++ * through the SAME `shapeRawStreamErrorFrame` G-3 builder as the direct pump (byte-identical to the former
++ * hand-built JSON), with the CF-2 golden lock (disabled = verbatim legacy bytes). This proves both the
++ * wiring is live AND the enabled/disabled outputs are correct on the reverse leg.
++ *
++ * The `@cc` suffix + a model advertising BOTH /v1/messages and /chat/completions routes the request to the
++ * translate leg (Phase 7 auto-route); the mock upstream returns a CC SSE stream that either throws mid-flight
++ * (H3) or drains without a finish_reason (truncation).
++ */
++
++import {
++  //
++  beforeEach,
++  describe,
++  expect,
++  mock,
++  test,
++} from "bun:test"
++
++import { ENDPOINT } from "~/lib/models/endpoint"
++import {
++  //
++  setModels,
++  setStateForTests,
++} from "~/lib/state"
++
++import { mockModel } from "../../helpers/factories"
++import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
++import { applyFetchMock } from "../../helpers/mock-fetch"
++import {
++  //
++  createSseResponse,
++  createSseResponseThenError,
++  dataFramesOfType,
++} from "../../helpers/sse"
++
++const MODEL = "claude-x"
++
++/** A CC SSE data chunk (the translate leg's upstream wire). */
++function ccChunk(obj: unknown): string {
++  return `data: ${JSON.stringify(obj)}\n\n`
++}
++
++/** A CC stream that streams some content then either throws (H3) or cleanly ends without finish_reason. */
++const ccContentChunks = [ccChunk({ id: "m", model: MODEL, choices: [{ index: 0, delta: { content: "partial" }, finish_reason: null }] })]
++
++function errorOf(text: string): { type?: string; message?: string } | undefined {
++  return dataFramesOfType(text, "error")[0]?.error as { type?: string; message?: string } | undefined
++}
++
++async function translateRequest(sessionId: string): Promise<string> {
++  const { createFullTestApp } = await import("../../helpers/test-app")
++  const app = createFullTestApp()
++  const res = await app.request("/v1/messages", {
++    method: "POST",
++    headers: { "Content-Type": "application/json", "x-session-id": sessionId },
++    body: JSON.stringify({ model: `${MODEL}@cc`, messages: [{ role: "user", content: "hi" }], max_tokens: 128, stream: true }),
++  })
++  expect(res.status).toBe(200)
++  return res.text()
++}
++
++describe("translate-leg post-commit error shaping (FIX-2, @cc reverse leg)", () => {
++  useIsolatedRuntime()
++
++  beforeEach(() => {
++    setStateForTests({
++      copilotToken: "test-token",
++      accountType: "individual",
++      vsCodeVersion: "1.100.0",
++      responseHeaderTimeout: 0,
++      streamIdleTimeout: 0,
++      streamKeepalivePingSec: 0,
++      streamCommitAfterSec: 0,
++      protectStreamingGeneration: false,
++      errorShapingEnabled: true,
++    })
++    setModels({
++      object: "list",
++      data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })],
++    })
++  })
++
++  // ── truncation (terminus ③ on the translate leg) ──────────────────────────
++  test.each([true, false])(
++    "truncation (CC drains without finish_reason), errorShapingEnabled=%p → canonical api_error frame ('no finish_reason')",
++    async (enabled) => {
++      setStateForTests({ errorShapingEnabled: enabled })
++      applyFetchMock(mock(() => Promise.resolve(createSseResponse(ccContentChunks))))
++      const text = await translateRequest(`translate-trunc-${enabled}`)
++      expect(errorOf(text)?.type).toBe("api_error")
++      expect(errorOf(text)?.message).toBe("Upstream stream truncated before completion (no finish_reason)")
++      // Golden lock: the wire shape is byte-identical whether on/off (builder == former hand-built literal).
++      const raw = dataFramesOfType(text, "error")[0]
++      expect(JSON.stringify(raw)).toBe(
++        JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
++      )
++    },
++  )
++
++  // ── H3 stream-error (terminus ② on the translate leg) ─────────────────────
++  test.each([true, false])("H3 mid-stream throw, errorShapingEnabled=%p → canonical error frame via anthropicStreamErrorType", async (enabled) => {
++    setStateForTests({ errorShapingEnabled: enabled })
++    applyFetchMock(mock(() => Promise.resolve(createSseResponseThenError(ccContentChunks, new Error("upstream cc stream blew up")))))
++    const text = await translateRequest(`translate-h3-${enabled}`)
++    // classifyStreamError(non-shutdown/non-idle) → api_error; message carries the thrown error text.
++    expect(errorOf(text)?.type).toBe("api_error")
++    expect(errorOf(text)?.message).toBe("upstream cc stream blew up")
++  })
++})
