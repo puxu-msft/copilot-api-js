@@ -54,6 +54,8 @@ CC 是三格式里表达力最弱的（无 `encrypted_content` reasoning、无 s
 
 **这是 round-trip 物理可行性的分水岭**（只对 reasoning 成立），也是本 RFC 对 reasoning 不复活退役死坑的根本原因：reasoning 机制完全不同（原生透传真密文 vs 合成双跳伪造密文）。server-tool 请求侧透传合法（让上游原生搜），但结果回显与退役双跳撞同一堵墙——诚实降级。
 
+> **Phase 0 实测精化（[FINDINGS.md](../../exp/anthropic-responses-direct/FINDINGS.md)）**：reasoning round-trip 可行的真实机制**不是「过了 400 gate」，而是 Responses reasoning 端点根本不 gate `encrypted_content`**（实测回喂空/中间态/权威版全 200）。故「分水岭」更准确的表述：Anthropic `/v1/messages` 的 `search_result` 块 **gate** encrypted_content（退役死墙）、Responses reasoning 端点**不 gate**——是端点差异而非真伪差异在决定可行性。server-tool 的 `web_search_call` 无 encrypted_content 字段，responses↔responses 靠 opaque `id` 原生 round-trip，但渲染给 anthropic 客户端仍撞 Anthropic 侧 gate → 降级成立。
+
 ### 1.3 对 handoff 两处推断表述的校正（基于实测）
 
 handoff 的两轮对抗审查是在**尚未通读 cell-assembly 重构后代码**时做的，有两处基于推断、与代码地面存在张力：
@@ -239,14 +241,14 @@ model_translation:
 
 **⚠️ 旧 CC-via 输出在改进区是有损基线、批判性参考，拿它当目标 = 焊死损失进新实现，是最阴险的怪味。** RFC 显式划线，避免 reviewer/实现者反射式拿旧 golden 锁死改进区。
 
-### 7.2 P0 去风险验证（plan 第一 task）
+### 7.2 P0 去风险验证（Phase 0 已跑，权威 [exp/anthropic-responses-direct/FINDINGS.md](../../exp/anthropic-responses-direct/FINDINGS.md)）
 
-起非-4141 隔离服务器、独立 history.db、烧少量真实额度，坐实：
-- **(a) 前向 reasoning round-trip**：① 前置澄清 reasoning `encrypted_content` 取自 `output_item.added` 还是 `.done`（§4.1 步骤 2，两版不同）；② responses 上游接受回喂**权威版真密文**续接（场景 A）。
-- **(b) 反向 reasoning round-trip**：responses 客户端（如 Codex）是否原样回传外来 `encrypted_content`（§4.2）+ Claude 上游接受回喂重建的 thinking 块。与前向对等，先前漏。
-- **(c) server-tool 请求侧透传**：anthropic web_search 声明 → responses `web_search_preview` → 上游原生返结果（**只验请求侧透传**；结果回显已静态证伪不可 round-trip，§5，不探）。
+起非-4141 隔离服务器（4157）、独立 history.db、真 GHC 实测（2026-07-14）：
+- **(a) 前向 reasoning round-trip ✅ 可行**：实测 `added`(enc 1600) ≠ `done`(enc 1684) 两版不同 blob（GPT MAJOR 属实）；回喂 `done`/`added`/**空** encrypted_content **全 200**。→ **Responses reasoning 端点根本不 gate encrypted_content**（非 400 墙）。保真续接用 **`done` 权威版**（修现有 CC 桥 `responses-to-cc-stream.ts:66` 的 added 捕获）。
+- **(c) server-tool 请求侧透传 ✅ 可行 + nuance**：`/responses` 原生返 `web_search_call`（keys=`action/id/status/type`，**无 encrypted_content**，GPT BLOCKER 核心属实）；responses↔responses passthrough 靠 opaque `id` round-trip 200；但 **anthropic-facing 渲染须降级**（转 Anthropic `web_search_tool_result` 需 encrypted_content、web_search_call 没有 → 合成撞 Anthropic 400 墙）。
+- **(b) 反向 reasoning round-trip ⏳ 部分**：反向路由工作（200）但当前 CC-via 丢 Claude thinking；端到端 round-trip **留 Phase 4/5 桥就位后复验**（两半旁证：responses 侧宽松接受任意 reasoning item + Claude 侧真签名不篡改过 quarantine）。
 
-为成功而设计、实测坐实（`empirical-verification`：实测 > 推断），非事前 fallback。若探针证伪 → 是真发现须升级 escalate，非预设降级。
+为成功而设计、实测坐实（`empirical-verification`：实测 > 推断）。**探针未证伪方向**，反而发现 Responses reasoning 端点比设想更宽松（§1.2 分水岭对 reasoning 路径不成立——它不 gate；只对 anthropic-facing 的 web_search 渲染成立）。
 
 ---
 
