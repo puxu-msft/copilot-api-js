@@ -613,6 +613,9 @@ export function setupShutdownHandlers(): void {
   }
   process.on("SIGINT", () => handler("SIGINT"))
   process.on("SIGTERM", () => handler("SIGTERM"))
+  // 优雅重启交接信号：与 SIGTERM 同款 drain，仅日志标签区分（lifecycle.md「优雅重启」）。
+  // 三环境共用（裸手动=新进程自发、systemd/pm2=脚本/supervisor 发）。
+  process.on("SIGUSR2", () => handler("SIGUSR2"))
 }
 
 // ============================================================================
