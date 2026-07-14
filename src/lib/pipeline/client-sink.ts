@@ -180,10 +180,14 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // deliberately SEPARATE racers (design §3.3 / B2 two-racer) so a heartbeat can't keep a
   // silent-upstream stream alive forever.
   const heartbeatOn = heartbeat !== undefined && heartbeat.intervalSec > 0
-  // Block-aware keepalive: track the open content block ONLY when a provider pingFrame is set
-  // (fixed-frame mode does zero parsing → byte-identical to before). Generic content-block state
+  // Block-aware keepalive: track the open content block when a provider pingFrame is set (block-aware
+  // mode itself needs the stack), OR when an `injectAnchor` is configured (any anchor mode needs
+  // `everOpenedRealBlock` below, even fixed-frame `enveloped_ping` which never touches the stack itself —
+  // see docs/todo/deferred-backlog.md "enveloped_ping 模式的 everOpenedRealBlock 守卫零防护"). Purely
+  // additive: the `typeof === "function"` branch (empty_text) is unchanged, so its behavior stays
+  // byte-identical; this only newly enables tracking for enveloped_ping. Generic content-block state
   // machine reading JSON fields shared by content-block-structured SSE streams; no Anthropic import.
-  const trackOpenBlock = heartbeatOn && typeof heartbeat.pingFrame === "function"
+  const trackOpenBlock = heartbeatOn && (typeof heartbeat.pingFrame === "function" || heartbeat.injectAnchor !== undefined)
   // Open content blocks as a STACK, not a single slot (C1). An anchor@0 injected in buffered pre-commit
   // stays OPEN at the BOTTOM of the stack for the whole stream; every real block flushes at index+1 ABOVE
   // it (push on content_block_start, pop on content_block_stop). The keepalive rides the TOP (`at(-1)`):

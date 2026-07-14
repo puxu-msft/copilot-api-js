@@ -513,28 +513,20 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     sink.close?.()
   })
 
-  // NOTE (found while writing this golden, 2026-07-14): this is `test.failing`, NOT a passing assertion.
-  // The capstone review that requested this coverage assumed the `everOpenedRealBlock` guard (added for
-  // defect (a)) ALSO protects `enveloped_ping` against a duplicate `message_start` re-injection — reasoning
-  // it's "safe but untested" because `enveloped_ping` never opens an anchor block (no index collision is
-  // possible). Writing the golden falsified that assumption: `everOpenedRealBlock` is only ever set inside
-  // `noteBlockState` (client-sink.ts), which is gated on `trackOpenBlock = heartbeatOn && typeof
-  // heartbeat.pingFrame === "function"`. `enveloped_ping`'s keepalive frame (`resolveAnthropicKeepalive
-  // ("enveloped_ping")`, keepalive-frame.ts) is a FIXED object, not a function/provider — so `trackOpenBlock`
-  // is FALSE for this mode, `noteBlockState` never runs, and `everOpenedRealBlock` never flips true no matter
-  // how many real blocks stream through. The guard's `!everOpenedRealBlock` term is therefore permanently
-  // vacuous (always true) for `enveloped_ping`, so the SAME re-injection bug defect (a) fixed for `empty_text`
-  // is UNFIXED here: a fast first block (real message_start forwarded, block opens+closes before any idle
-  // tick) followed by an inter-block idle DOES re-fire `injectAnchor()`, which re-forwards the real captured
-  // `message_start` a second time onto the wire — a genuine protocol-incomplete duplicate, not merely a
-  // theoretical risk. This is a REAL, previously-undocumented production defect (corrects the deferred-backlog
-  // claim at "keepalive anchor 注入器可在真实块之间二次触发" ④, which asserted `enveloped_ping` was already
-  // covered by the same guard — see docs/todo/deferred-backlog.md, corrected alongside this test). Recorded
-  // as `test.failing` so the suite stays green while the gap stays visible: this test PASSES today because the
-  // body throws (the bug reproduces), and will start FAILING (alerting whoever fixes the guard) once
-  // `enveloped_ping` is made to participate in `trackOpenBlock`/`everOpenedRealBlock` — at which point this
-  // should be flipped back to a normal `test(...)`.
-  test.failing("(a′) enveloped_ping — fast first block then inter-block idle: NO duplicate message_start, NO second content_block_start@0 (re-injection guarded)", async () => {
+  // Regression lock for the `enveloped_ping` re-injection guard (found while writing this golden,
+  // 2026-07-14 — see docs/todo/deferred-backlog.md "enveloped_ping 模式的 everOpenedRealBlock 守卫零防护"
+  // for the root-cause writeup). `everOpenedRealBlock` is only ever set inside `noteBlockState`
+  // (client-sink.ts), which used to be gated on `trackOpenBlock = heartbeatOn && typeof
+  // heartbeat.pingFrame === "function"` — TRUE only for the block-aware `empty_text` provider mode.
+  // `enveloped_ping`'s keepalive frame is a FIXED object, not a function, so `trackOpenBlock` was FALSE
+  // for this mode and `everOpenedRealBlock` never flipped true no matter how many real blocks streamed
+  // through — the guard's `!everOpenedRealBlock` term was permanently vacuous for `enveloped_ping`, so a
+  // fast first block followed by an inter-block idle re-fired `injectAnchor()`, re-forwarding the real
+  // captured `message_start` a second time onto the wire. Fixed by widening `trackOpenBlock` to also
+  // fire whenever `heartbeat.injectAnchor` is configured (any anchor mode), not just when `pingFrame` is
+  // a provider function — purely additive, `empty_text` behavior is unaffected. This test guards the
+  // enveloped_ping re-injection path specifically; keep it a normal (non-`.failing`) test going forward.
+  test("(a′) enveloped_ping — fast first block then inter-block idle: NO duplicate message_start, NO second content_block_start@0 (re-injection guarded)", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})
 
