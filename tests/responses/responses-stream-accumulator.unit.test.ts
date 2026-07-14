@@ -391,7 +391,16 @@ describe("accumulateResponsesStreamEvent", () => {
     expect(acc.toolCalls[0].name).toBe("write")
   })
 
-  test("does not duplicate function calls finalized via arguments.done", () => {
+  // REGRESSION (gpt-5.6-sol tool_call doubling): GHC's Responses stream RE-ENCRYPTS the opaque
+  // `item.id` on EVERY event for the SAME logical output item — `output_item.added`,
+  // `function_call_arguments.done`, and `output_item.done` each carry a DIFFERENT `item.id`; only
+  // `output_index` and `call_id` are stable across them. The dedup guard must key on `output_index`,
+  // NOT on `item.id` — an id-keyed guard never matches, so `output_item.done` re-appends an item
+  // already finalized by `arguments.done`, doubling every tool_call (History showed 22/22 entries
+  // doubled). The original test used a STABLE `fc_5` id in both events (a fixture that did NOT
+  // reflect GHC reality), so it passed while production doubled — the classic test/impl same-source
+  // blind spot. This fixture now uses distinct per-event ids to codify the real invariant.
+  test("does not duplicate a function call finalized via arguments.done when output_item.done carries a DIFFERENT item.id (GHC per-event re-encryption)", () => {
     const acc = createResponsesStreamAccumulator()
     accumulateResponsesStreamEvent(
       {
@@ -399,7 +408,7 @@ describe("accumulateResponsesStreamEvent", () => {
         output_index: 0,
         item: {
           type: "function_call",
-          id: "fc_5",
+          id: "fc_added_AAA",
           call_id: "call_mno",
           name: "list",
           arguments: "",
@@ -413,19 +422,19 @@ describe("accumulateResponsesStreamEvent", () => {
       {
         type: "response.function_call_arguments.done",
         output_index: 0,
-        item_id: "fc_5",
+        item_id: "fc_argsdone_BBB",
         arguments: "{}",
       } as any,
       acc,
     )
-    // Then output_item.done comes
+    // Then output_item.done arrives with a THIRD, different item.id (GHC re-encrypts per event)
     accumulateResponsesStreamEvent(
       {
         type: "response.output_item.done",
         output_index: 0,
         item: {
           type: "function_call",
-          id: "fc_5",
+          id: "fc_itemdone_CCC",
           call_id: "call_mno",
           name: "list",
           arguments: "{}",
@@ -434,8 +443,44 @@ describe("accumulateResponsesStreamEvent", () => {
       } as any,
       acc,
     )
-    // Should not duplicate
+    // Same logical item (output_index 0) → exactly one tool_call, no duplicate.
     expect(acc.toolCalls).toHaveLength(1)
+    expect(acc.toolCalls[0].name).toBe("list")
+    expect(acc.toolCalls[0].callId).toBe("call_mno")
+  })
+
+  test("does not duplicate multiple distinct function calls each emitting args.done + output_item.done with per-event ids", () => {
+    const acc = createResponsesStreamAccumulator()
+    // Two distinct output items (indexes 0 and 1), each with the full added → args.done →
+    // output_item.done lifecycle and a DIFFERENT item.id at every step.
+    for (const [idx, callId, name] of [
+      [0, "call_a", "Read"],
+      [1, "call_b", "Bash"],
+    ] as const) {
+      accumulateResponsesStreamEvent(
+        {
+          type: "response.output_item.added",
+          output_index: idx,
+          item: { type: "function_call", id: `added_${idx}`, call_id: callId, name, arguments: "", status: "in_progress" },
+        } as any,
+        acc,
+      )
+      accumulateResponsesStreamEvent(
+        { type: "response.function_call_arguments.done", output_index: idx, item_id: `argsdone_${idx}`, arguments: "{}" } as any,
+        acc,
+      )
+      accumulateResponsesStreamEvent(
+        {
+          type: "response.output_item.done",
+          output_index: idx,
+          item: { type: "function_call", id: `itemdone_${idx}`, call_id: callId, name, arguments: "{}", status: "completed" },
+        } as any,
+        acc,
+      )
+    }
+    expect(acc.toolCalls).toHaveLength(2)
+    expect(acc.toolCalls.map((tc) => tc.name)).toEqual(["Read", "Bash"])
+    expect(acc.toolCalls.map((tc) => tc.callId)).toEqual(["call_a", "call_b"])
   })
 
   // ── Reasoning / unknown events (pass-through) ──
