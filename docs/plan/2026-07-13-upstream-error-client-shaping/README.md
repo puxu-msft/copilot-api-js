@@ -36,6 +36,28 @@
 
 本计划按「Phase 3 可独立先行」的假设编排任务（因为它不依赖 P1 的 `partial-degrade` 类型），但在 Phase 3 文档顶部重复此风险提示。
 
+### D-1：AUQ 合成的 200 客户端响应无法落入 history 的 `clientResponse`——settle 时点 gap（Phase 4 Task 4.3 实测新发现）
+
+**发现**（Phase 4 Task 4.3 实测确认，非推断）：AUQ 合成走的是 pre-commit 整段合成——`handler-v4.ts` 的 catch 块先 `ctx.fail(resolvedName, error)` 冻结 history 快照，之后 `shapePrecommitError` 才构造并返回全新的 200 AUQ 响应。用隔离 runtime 探针实测一条 `402 quota_exceeded → 200 AUQ`（`error_ask_user_question=true`，非流式）后读 history entry：
+
+- `res.status` = 200（客户端确实收到 AUQ）✓
+- `entry.attempts[0].upstreamResponse` = `{ status: 402, success: false }`——**真实上游 402 被正确保留**，未被 AUQ 合成掩盖 ✓（richest-data-flow 第一轴成立）
+- `entry.state` = `failed`
+- `entry.clientResponse` = **`undefined`**——客户端真实收到的 200 **完全没有**落入 `clientResponse`（既不是 200 也不是 402）✗
+
+**根因**：三处接线的 settle 时点错配——① `handler-v4.ts` 的**泛型错误分支**（约 386 行 `ctx.fail(resolvedName, error)`）与 499-abort 分支不同，**没有**在 fail 之前调 `setClientResponseStatus`（499 分支有，见 381 行）；② `shapePrecommitError` 构造 200 时 ctx 已 settle 冻结；③ observability 中间件安全网的 `setClientResponseStatus(c.res.status)` 对已 settle 的 entry 是**文档明确的 no-op on frozen entry**（`middleware.ts:103-110` 自注释），且 SSE 路径中间件在 `text/event-stream` 处**提前 return**（`middleware.ts:95`）连尝试都不尝试。
+
+**影响面**：所有被 AUQ 整形的请求，其 history `clientResponse` 会缺失（或若未来补了 setClientResponseStatus 却仍在 fail 之后，则记成真实上游错误码而非合成的 200）——History UI / 诊断层看不到「客户端实际收到的是 200 AUQ」这一事实，只能从 `attempts[].upstreamResponse` 反推真实错误 + 从 frame-origin 的 `error-shaping-auq` synthetic 标记间接判断。**不影响**功能正确性（客户端照常收到 AUQ），也**不丢失**真实上游错误（在 attempts 里）——纯粹是 client-facing 响应元数据的可观测性缺口。
+
+**为何记为待裁决而非就地修**：修复需要改 `handler-v4.ts` 泛型 `ctx.fail()` 调用点的 settle 时点（要么在 fail 前先 `setClientResponseStatus`——但此时还不知道最终是 canonical 502 还是合成 200；要么把 AUQ 判定前移到 fail 之前、让 AUQ-eligible 错误**不走 fail 而是延后 settle**）。这属于 `RequestContext`/settle 生命周期的架构改动，**超出 Phase 4「细化局部签名」的授权范围**（Task 4.3 明确指示：发现不支持则停止深挖 history 内部、记入本节，不自行改契约）。
+
+**选项**：
+1. **（推荐，本 Phase 采纳）** 记录 gap + 在 `error-shaping-auq.it.test.ts` 补一条**哨兵测试**锁定当前实测行为（真实 402 保留在 attempts ✓ + clientResponse 缺失 ✗ 是已知限制），使 gap 成为回归可测的事实而非静默；未来谁修 settle 时点，该测试变红即强制其一并更新 + 回看本 D-1。功能与真实错误保留均不受影响，仅可观测性降级。
+2. 在 `handler-v4.ts` 泛型错误分支的 `ctx.fail()` 前，先探测「本错误是否 AUQ-eligible」，若是则**不 fail、延后到 shapePrecommitError 里以合成 200 complete**——能让 clientResponse 正确记 200，但要把 error-shaping 的分类逻辑前移进 handler（跨越 route/handler 边界，且与 Phase 2 「shapePrecommitError 是唯一 pre-commit 整形点」的架构合同冲突）。
+3. 更深的 settle/response-write 时序重构（让所有 defer-settle 路径统一在 response 写出后再 snapshot）——最干净但改动面最大，属独立 RFC。
+
+**推荐**：选项 1（本 Phase 已按此落地哨兵测试）。选项 2/3 留给主会话/用户裁决，属 `RequestContext` 生命周期改动，不阻塞 Phase 4 交付。
+
 ---
 
 ## 1. 目标 / 架构 / 技术栈 / 全局约束

@@ -1,5 +1,7 @@
 # Phase 4：B 类 AskUserQuestion 合成（pre-commit 整段合成）
 
+> **⚠️ MED-3 未实测风险（实现收尾时按选项 A 履行，显式标注在此）**：本 Phase 全部测试只验证「合成 AUQ 帧 / 响应体在**协议形状**上对齐真实 Claude Code 主动发起的 AskUserQuestion 工具调用」，**没有**用真实 CC 客户端消费这些合成帧、确认它会被渲染成**交互式问句 UI**。「CC 会把合成 AskUserQuestion 渲染为交互式问句」这一假设**继承自 spec、本 Phase 从未实测**。而且 AUQ 只在**交互式** CC 会话里有意义——headless / 非交互部署没有用户可问，此时合成 AUQ 反而不如原始错误有用（这正是 D-0「纯 config gate、由运维决定是否开」的由来）。收尾已履行选项 A：① 在 `tests/anthropic/error-shaping-auq.unit.test.ts` 补了一条**独立 wire-shape oracle**（用 `backfillAskUserQuestionHeaders` 这个为真实 CC 流量写的消费方函数，验证合成 `questions[]` 已满足 CC「每项必须有 question」契约、无需 repair）；② 本风险显式记入 `task-4-report.md` §MED-3。**未做**选项 B（真 CC 交互式渲染 PoC）。
+
 > **评审 HIGH-3 共享文件提示**：本 Phase 在 `error-shaping.ts` 追加 `buildAskUserQuestionFrames`/`buildAskUserQuestionResponse` + 编辑 `error-shaping-glue.ts`（`ask-user-question` 分支接线）+ `handler-v4.ts`（一行 `stream` 标记暴露）。`error-shaping.ts`/`handler-v4.ts` 同时被 Phase 3（post-commit 收编）+ Phase 5（自愈委派接线）追加/编辑，**不是「不同文件不重叠」的独立并行单元**——建议按 3→4→5 顺序串行落地，或各自开隔离 worktree 后按文件段合并，合并前人工核对 diff 有无相邻行覆盖。详见 README §3 Phase DAG「订正」段。
 >
 > **评审 MEDIUM-3 风险标注（未实测，随 spec 继承的假设）**：本 Phase 的全部测试只验证"代理产出的合成 AUQ 帧/响应体在协议形状上与真实 Claude Code 主动发起的 AskUserQuestion 工具调用逐字节等价"，**没有**用真实 Claude Code 客户端（或忠实复刻其工具调用解析逻辑的 fake）去消费这些合成帧、确认它确实会被渲染成交互式问句 UI 而非被当作普通文本/未知工具调用丢弃或报错。这个"CC 会正确渲染"的假设来自 spec，本计划予以继承但不重新验证。若要关闭这个风险敞口，需要在 Phase 4 之前或之内插入一个 PoC 门（用真实 `claude` CLI 或其可复现的最小工具解析路径喂一段合成 SSE，肉眼/脚本确认交互式渲染），这属于**新增测试基础设施/可能需要额外工具依赖的范围扩张**，本计划不擅自决定是否做，留给 coordinator/用户裁决：
@@ -33,7 +35,7 @@
 
 ## 任务 4.1：AUQ 帧/响应纯序列化函数（streaming + non-streaming 两变体）
 
-- [ ] 写失败测试 `tests/anthropic/error-shaping-auq.unit.test.ts`：
+- [x] 写失败测试 `tests/anthropic/error-shaping-auq.unit.test.ts`：
   ```ts
   import { describe, expect, test } from "bun:test"
 
@@ -94,16 +96,16 @@
     })
   })
   ```
-- [ ] 跑测试确认红
-- [ ] 最小实现：`error-shaping.ts` 内追加：
+- [x] 跑测试确认红
+- [x] 最小实现：`error-shaping.ts` 内追加：
   - `buildAskUserQuestionResponse(decision, ctx): AnthropicMessageResponse`：对 `decision.questions` 每一项调用 `renderAuqQuestion(q.question, { model: ctx.model, request_id: ctx.reqId })` 完成第二遍渲染，手搓 `{ id: "msg_"+crypto.randomUUID(), type:"message", role:"assistant", model: ctx.model, content:[{type:"tool_use", id:"toolu_"+crypto.randomUUID().replaceAll("-",""), name:"AskUserQuestion", input:{questions: renderedQuestions}}], stop_reason:"tool_use", stop_sequence:null, usage:{input_tokens:0, output_tokens:0} }`（`usage` 字段填 0 是本 Phase 起点的最小值——AUQ 是合成响应，没有真实 token 消耗可报告；若 history/计费层对 `usage:{0,0}` 有特殊断言依赖需要非零占位，属任务 4.3 history 一致性检查范围，非本任务阻塞）
   - `buildAskUserQuestionFrames(decision, ctx): Array<ClientFrame>`：仿照 `buildSyntheticTextFrames` 的模式，对渲染后的 `questions` 序列化成完整独立帧序列（`message_start`/`content_block_start(tool_use, 空 input)`/`content_block_delta(input_json_delta, 完整 JSON 字符串一次性下发)`/`content_block_stop`/`message_delta(stop_reason:"tool_use")`/`message_stop`），每帧 `tagFrameSynthetic(frame, "error-shaping-auq")`（Phase 1 已扩展该 `SyntheticOriginKind` 成员）
-- [ ] 确认绿
-- [ ] 提交（`feat: add AUQ synthesis builders (streaming + non-streaming variants, two-pass template render)`）
+- [x] 确认绿
+- [x] 提交（`feat: add AUQ synthesis builders (streaming + non-streaming variants, two-pass template render)`）
 
 ## 任务 4.2：handler-v4.ts 暴露 `clientRequestStream` + glue 接线 `ask-user-question` 分支
 
-- [ ] 写失败测试（`tests/routes/messages/error-shaping-auq.it.test.ts`）：
+- [x] 写失败测试（`tests/routes/messages/error-shaping-auq.it.test.ts`）：
   ```ts
   import { describe, expect, test } from "bun:test"
 
@@ -151,8 +153,8 @@
     })
   })
   ```
-- [ ] 跑测试确认红
-- [ ] 最小实现：
+- [x] 跑测试确认红
+- [x] 最小实现：
   - `handler-v4.ts:183` 后追加一行：`c.set("clientRequestStream", payload.stream ?? false)`
   - `error-shaping-glue.ts` 的 `shapePrecommitError` 补全 `ask-user-question` 分支：
     ```ts
@@ -170,12 +172,12 @@
     }
     ```
     （`streamSSE` 的具体 import 来源、`resolvedName`/`requestId` 的精确获取方式需要实现者对照 `handler-v4.ts` 顶部 import 列表核实，不得凭空假设——这是本任务里唯一需要实现者在动手前二次确认签名的点，已在此处显式标注，不静默假设）
-- [ ] 确认绿
-- [ ] 提交（`feat: wire AUQ synthesis into pre-commit error shaping glue`）
+- [x] 确认绿
+- [x] 提交（`feat: wire AUQ synthesis into pre-commit error shaping glue`）
 
 ## 任务 4.3：history/richest-data-flow 一致性——AUQ 合成响应必须完整落库
 
-- [ ] 写失败测试（追加 `tests/routes/messages/error-shaping-auq.it.test.ts` 或 history 专属测试文件，具体归属以既有 history 断言测试的既定位置为准）：
+- [x] 写失败测试（追加 `tests/routes/messages/error-shaping-auq.it.test.ts` 或 history 专属测试文件，具体归属以既有 history 断言测试的既定位置为准）：
   ```ts
   test("AUQ 合成响应（200 + AskUserQuestion tool_use）落入 history，attempts[].upstreamResponse 记录真实上游 402/403，clientResponse 记录合成的 200", async () => {
     // 断言 history entry 的两个正交轴：
@@ -184,16 +186,16 @@
     // 3. AUQ 合成的 tool_use 内容里没有裸露"synthetic"标记泄漏到用户可见文本（标记只在 frame-origin 元数据层，不在渲染文本里）
   })
   ```
-- [ ] 跑测试确认红
-- [ ] 最小实现：核对既有 history 落库路径（`RequestContext`/`recordFeature`/既有 `attempts[]`/`clientResponse` 写入点）是否已经天然支持"合成 200 + `upstreamResponse.success:false`"这一组合——**若既有 API 已支持**（大概率成立，因为 Phase 1-3 的 canonical-error 整形也产生类似的"合成响应 vs 真实上游错误"分裂，若那边已有先例可直接复用同一写入路径），本任务只需补一条断言测试锁定该不变量，无需新增产品代码；**若不支持**（既有 `RequestContext` API 假设 client 响应状态与 upstream 响应状态强绑定，无法表达这种分裂），则这是一个**需要记入 README 待裁决节的新发现**（不是本计划可以自行决定的架构变更——`RequestContext`/history 落库契约的改动超出"细化局部签名"的授权范围），实现者应停止在此任务继续深挖 history 内部机制，转而在 README 第 0 节补充一条待裁决项，说明发现的具体 gap 与影响面。
-- [ ] 确认绿（或在发现门控问题时，改为记录待裁决项并跳过绿）
-- [ ] 提交（`test: lock AUQ history recording invariant (real upstream error preserved, synthetic client response distinguishable)`）
+- [x] 跑测试确认红
+- [x] 最小实现：核对既有 history 落库路径（`RequestContext`/`recordFeature`/既有 `attempts[]`/`clientResponse` 写入点）是否已经天然支持"合成 200 + `upstreamResponse.success:false`"这一组合——**若既有 API 已支持**（大概率成立，因为 Phase 1-3 的 canonical-error 整形也产生类似的"合成响应 vs 真实上游错误"分裂，若那边已有先例可直接复用同一写入路径），本任务只需补一条断言测试锁定该不变量，无需新增产品代码；**若不支持**（既有 `RequestContext` API 假设 client 响应状态与 upstream 响应状态强绑定，无法表达这种分裂），则这是一个**需要记入 README 待裁决节的新发现**（不是本计划可以自行决定的架构变更——`RequestContext`/history 落库契约的改动超出"细化局部签名"的授权范围），实现者应停止在此任务继续深挖 history 内部机制，转而在 README 第 0 节补充一条待裁决项，说明发现的具体 gap 与影响面。
+- [x] 确认绿（或在发现门控问题时，改为记录待裁决项并跳过绿）
+- [x] 提交（`test: lock AUQ history recording invariant (real upstream error preserved, synthetic client response distinguishable)`）
 
 ## Phase 4 完成检查
 
-- [ ] `bun run typecheck` 全绿
-- [ ] `bunx eslint src/lib/anthropic/error-shaping.ts src/routes/messages/error-shaping-glue.ts src/routes/messages/handler-v4.ts tests/anthropic/error-shaping-auq.unit.test.ts tests/routes/messages/error-shaping-auq.it.test.ts`
-- [ ] 确认 `error-shaping.ts` 顶部 import 依旧不含任何 `~/routes/*` 路径
-- [ ] 确认 `error_shaping_enabled=false` 时 `ask-user-question` 分支从不触发（`decide()` 的 `config.enabled` 门控在 Phase 1/2 已覆盖，本 Phase 补一条端到端回归确认 AUQ 场景同样受总开关约束）
-- [ ] 确认 AUQ 选项文案（quota_exceeded/content_filtered/auth_expired 三组 `options`）与 Phase 1 任务 1.4 里落地的版本一致（同一份文案只应该在 `error-shaping.ts` 定义一次，Phase 4 不重复定义、不重复决策）
+- [x] `bun run typecheck` 全绿
+- [x] `bunx eslint src/lib/anthropic/error-shaping.ts src/routes/messages/error-shaping-glue.ts src/routes/messages/handler-v4.ts tests/anthropic/error-shaping-auq.unit.test.ts tests/routes/messages/error-shaping-auq.it.test.ts`
+- [x] 确认 `error-shaping.ts` 顶部 import 依旧不含任何 `~/routes/*` 路径
+- [x] 确认 `error_shaping_enabled=false` 时 `ask-user-question` 分支从不触发（`decide()` 的 `config.enabled` 门控在 Phase 1/2 已覆盖，本 Phase 补一条端到端回归确认 AUQ 场景同样受总开关约束）
+- [x] 确认 AUQ 选项文案（quota_exceeded/content_filtered/auth_expired 三组 `options`）与 Phase 1 任务 1.4 里落地的版本一致（同一份文案只应该在 `error-shaping.ts` 定义一次，Phase 4 不重复定义、不重复决策）
 - [ ] **（评审 MEDIUM-3，人工验收步骤，非自动化测试，不阻塞本 Phase 的"确认绿"）**：用真实 Claude Code 客户端手动触发一次可复现的上游错误（例如临时调低配额触发 429，或直连一个会返回 5xx 的测试上游），肉眼确认代理合成的 AUQ 帧被 CC 渲染成交互式问句（可点选选项）而非报错文本、纯文本工具调用回显或静默失败。这一步验证的是"CC 会正确渲染合成 AskUserQuestion"这条继承自 spec、本计划从未实测过的假设——若肉眼确认失败，说明协议形状测试全绿但功能不成立，须回到 README 第 0 节记录为新发现的门控问题，不要就地扩大本 Phase 范围自行改协议形状。
