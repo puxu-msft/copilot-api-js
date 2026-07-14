@@ -9,8 +9,10 @@
 - ✅ **C0-lifecycle Task 1 operation-scope**(commit `4b8d62e4`):结构化并发 primitive,防过早 quiesce + root 不自 join,12x 确定。
 - ✅ **C0-lifecycle Task 3 finalization-coordinator**(commit `0be3aad8`):keyed per-request join,注册顺序 invariant,12x 确定。
 - ✅ **C1+C2 原子**(commit `2c295dd5`):**修 RC1+RC3(两个已证实根因)**——send.ts 一律折入 shutdown(streaming pre-header 不再挂 Phase4)+ `abortableDelay` + driver 退避 gate(reaper/shutdown 中断退避、settle 后不起新 attempt、关 529 重试窗口)。918 pass 全绿,RC3 gate 10x 确定。RC1 全 server 集成验证(delayed-commit+Ctrl+C)列后续。
-- ⏳ **C0-lifecycle 剩余**:Task 2 lifecycle record 状态机;Task 4 `RequestContext` 全 `cancel/operationSignal`;Task 5 双 registry(这些主要服务 C5-drain)。
-- ⬜ **C3(RC4 限流)→ C4a(逃逸点)→ C4b(request_deadline 治根/RC2 总时长上限)→ C5(drain)→ C6**:未开始。
+- ✅ **C4b request_deadline**(commit `9563883a`):**RC2 治根**——`timeouts.request_deadline`(默认 0=禁用字节等价;bundled config.yaml=900s 有意默认、<stale 1200 让 deadline 主控 reaper 兜底)+ manager.create per-request 精确 setTimeout 到点调 reapInFlight+fail(**按 T 精确、绕过会迟到的 60s scan**)+ unref + onSettled 清除 + inspection 豁免。920+721 pass,deadline 10x 确定。
+- ⏳ **剩余(完整架构)**:C3(RC4 限流 reject/execute 竞争,证实但低频)、C4a(逃逸点 token-refresh/hook + global scope)、C5(drain 等 operation 全面重排 + 有界 grace + 双 registry + finalization coordinator 接线)、C6(doc-sync + 长期 observability)。C0-lifecycle 的 operation-scope/finalization-coordinator primitive 已备(4b8d62e4/0be3aad8),供 C5 接线。
+
+**当前结论**:**三个已证实根因(RC1/RC2/RC3)已全部治根修复 + 测试**,直接解决观测到的 2800s 越超时 + 07-12 Phase3 挂起。RC4 + 完整 drain-等-operation 架构(C5)未做。
 
 **续跑入口**:worktree 已建(node_modules symlink),下一步 C0-lifecycle Task 2(lifecycle-record 状态机)。全部 primitive 尚未接生产路径(行为零变化,commit invariant 保持)。
 
