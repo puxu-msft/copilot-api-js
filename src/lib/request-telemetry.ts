@@ -7,7 +7,6 @@ import type { TelemetryDatabase } from "./telemetry/db"
 
 import {
   //
-  atomicWriteJson,
   createSerializedAsyncFn,
 } from "./atomic-fs"
 import { PATHS } from "./config/paths"
@@ -28,6 +27,11 @@ import {
   cleanupOrphanTelemetryTmpFiles,
   migrateJsonToTelemetryDb,
 } from "./telemetry/migrate-json"
+import {
+  //
+  readAcceptedBucketsInWindow,
+  readAllRawRowsInWindow,
+} from "./telemetry/read"
 import {
   //
   type RollupConfig,
@@ -172,9 +176,6 @@ interface HistogramAccumulator {
   sum: number
 }
 
-/** Reserved per-key persistence sibling holding the histogram bucket-count arrays (kept out of the flat counters bag). */
-const HISTOGRAMS_KEY = "__histograms"
-
 /** Registered histogram metadata (name + boundaries) — exported for the `/metrics` Prometheus histogram projection (decoupled from the extract closures). */
 export const TELEMETRY_HISTOGRAMS: ReadonlyArray<{ name: string; boundaries: ReadonlyArray<number> }> = HISTOGRAMS.map((histogram) => ({
   name: histogram.name,
@@ -189,55 +190,8 @@ function histogramBucketIndex(boundaries: ReadonlyArray<number>, value: number):
   return boundaries.length
 }
 
-/** Project an accumulator's histograms for persistence — only the ones with at least one observation (lean file + hist-less back-compat shape). */
-function serializeHistograms(histograms: Record<string, HistogramAccumulator>): Record<string, HistogramAccumulator> | null {
-  const out: Record<string, HistogramAccumulator> = {}
-  let any = false
-  for (const histogram of HISTOGRAMS) {
-    const acc = histograms[histogram.name]
-    if (acc.buckets.some((count) => count > 0)) {
-      out[histogram.name] = { buckets: [...acc.buckets], sum: acc.sum }
-      any = true
-    }
-  }
-  return any ? out : null
-}
-
 /** The back-compat dimension projected to `modelsSinceStart` / `modelsLast7d`. */
 const MODEL_DIMENSION = "model"
-
-interface RequestTelemetryFileV1 {
-  version: 1
-  buckets: Record<string, number>
-}
-
-interface PersistedModelTelemetry {
-  requestCount: number
-  successCount: number
-  failureCount: number
-  totalDurationMs: number
-  inputTokens: number
-  outputTokens: number
-  cacheReadInputTokens: number
-  cacheCreationInputTokens: number
-  reasoningTokens: number
-}
-
-interface RequestTelemetryFileV2 {
-  version: 2
-  buckets: Record<string, number>
-  modelBuckets: Record<string, Record<string, PersistedModelTelemetry>>
-}
-
-/** Generic envelope: dimensions are data, not schema. A new dimension/measure does NOT bump the version. */
-interface RequestTelemetryFileV3 {
-  version: 3
-  buckets: Record<string, number>
-  // Per-key value is the flat counters bag + an optional `__histograms` sibling (object of bucket-count arrays).
-  dimensions: Record<string, { buckets: Record<string, Record<string, Record<string, unknown>>> }>
-}
-
-type RequestTelemetryFile = RequestTelemetryFileV1 | RequestTelemetryFileV2 | RequestTelemetryFileV3
 
 export interface RequestTelemetryBucket {
   timestamp: number
@@ -499,12 +453,11 @@ const OUTBOX_SOFT_CAP = 50_000
 let outboxSoftCap = OUTBOX_SOFT_CAP
 
 /**
- * Persistence is serialized via `createSerializedAsyncFn` (see ./atomic-fs):
- * concurrent callers (periodic timer + shutdown + ad-hoc flush) take turns so
- * a younger snapshot can never lose to an older one's late rename. Combined
- * with `atomicWriteJson`, this closes both partial-write and racing-snapshot
- * failure modes that would otherwise wipe the 7-day telemetry history (the
- * loader's `catch{}` silently zeroes on corrupt JSON).
+ * The persist flush is serialized via `createSerializedAsyncFn` (see ./atomic-fs):
+ * concurrent callers (periodic timer + shutdown + ad-hoc flush) take turns so the
+ * outbox snapshot-and-swap stays re-entrancy-safe (a drain never races another). The
+ * flush drains the dual-write outbox into telemetry.db — SQLite is the sole persistent
+ * store (P7 single-track; the legacy JSON write path is removed).
  */
 
 function getBucketStart(timestamp: number): number {
@@ -812,7 +765,7 @@ function normalizeKey(key: string): string {
   return key.trim() || "unknown"
 }
 
-function applySettledMeasures(acc: StatAccumulator, opts: SettledTelemetryInput): void {
+function applySettledMeasures(acc: StatAccumulator, opts: SettledTelemetryInput, withHistograms = true): void {
   const durationMs = Math.max(0, opts.endedAt - opts.startedAt)
   const usage = opts.usage
   const c = acc.counters
@@ -845,11 +798,18 @@ function applySettledMeasures(acc: StatAccumulator, opts: SettledTelemetryInput)
   c.thinkingBlocksEmptySigned += opts.thinkingBlocks?.emptySigned ?? 0
   c.thinkingBlocksEmptyUnsigned += opts.thinkingBlocks?.emptyUnsigned ?? 0
 
-  // Distribution histograms: each registered histogram observes at most one value
-  // per request (undefined = skip), incrementing exactly one bucket AND adding the
-  // value to its OWN sum (not a shared counter) so count + sum derive from the same
-  // observations (survives a 7d window straddling a pre-histogram upgrade). Negatives
-  // (e.g. clock-skewed queueWaitMs) clamp to 0.
+  // Distribution histograms: only the process-lifetime `dimSinceStart` leg fills them (`withHistograms`),
+  // because it is the SOLE consumer that survives P7's single-track convergence — it feeds `/metrics`
+  // (Prometheus histogram) via `getDimensionBreakdown(_, "sinceStart", …)`. The 7d `dimBuckets` leg
+  // (old `ui/`'s `/api/stats?7d` histograms, unused by ui-v4) is retired: its accumulators stay
+  // histogram-empty (`withHistograms=false`), so the 7d branch of `getDimensionBreakdown` naturally
+  // projects `histograms: {}` (summarizeHistograms skips count-0 accumulators) — an empty stub, NOT a
+  // regression of the sinceStart/`/metrics` leg. tel_raw carries no fixed-bucket columns anyway, so the
+  // SQLite rebuild source has nothing to repopulate the 7d histograms from — this is the honest form.
+  if (!withHistograms) return
+  // Each registered histogram observes at most one value per request (undefined = skip), incrementing
+  // exactly one bucket AND adding the value to its OWN sum (not a shared counter) so count + sum derive
+  // from the same observations. Negatives (e.g. clock-skewed queueWaitMs) clamp to 0.
   for (const histogram of HISTOGRAMS) {
     const observed = histogram.extract(opts, durationMs)
     if (observed === undefined) continue
@@ -1068,75 +1028,65 @@ function restartTelemetryTimers(): void {
   restartRollupTimer()
 }
 
-/** Build a StatAccumulator from a persisted per-key object — GENERIC copy of number counters + the `__histograms` arrays. */
-function loadAccumulator(raw: Record<string, unknown>): StatAccumulator {
+/**
+ * Build a histogram-free StatAccumulator from a rebuilt counters bag (SQLite tel_raw row → camelCase
+ * counters via `read.ts` COUNTER_PROJECTIONS). GENERIC copy of the number counters onto a fresh
+ * accumulator (which pre-inits every registered measure to 0, so an absent counter stays honest).
+ * Histograms are intentionally NOT rebuilt — tel_raw has no fixed-bucket columns and the 7d histograms
+ * are retired (P7 single-track); the empty histograms project to `{}` in `getDimensionBreakdown`'s 7d branch.
+ */
+function accumulatorFromCounters(counters: Record<string, number>): StatAccumulator {
   const acc = createAccumulator()
-  for (const [name, value] of Object.entries(raw)) {
-    if (name === HISTOGRAMS_KEY) continue
+  for (const [name, value] of Object.entries(counters)) {
     if (typeof value === "number" && Number.isFinite(value)) acc.counters[name] = value
-  }
-  // Histograms: load each `{ buckets, sum }` whose bucket length matches the current
-  // boundaries (a boundary change across versions invalidates old counts — drop, start
-  // from 0). `sum` is the histogram's self-tracked observation sum.
-  const rawHistograms = raw[HISTOGRAMS_KEY]
-  if (rawHistograms && typeof rawHistograms === "object") {
-    for (const histogram of HISTOGRAMS) {
-      const entry = (rawHistograms as Record<string, unknown>)[histogram.name]
-      if (!entry || typeof entry !== "object") continue
-      const counts = (entry as { buckets?: unknown }).buckets
-      if (!Array.isArray(counts) || counts.length !== histogram.boundaries.length + 1) continue
-      const rawSum = (entry as { sum?: unknown }).sum
-      acc.histograms[histogram.name] = {
-        buckets: counts.map((count) => (typeof count === "number" && Number.isFinite(count) ? count : 0)),
-        sum: typeof rawSum === "number" && Number.isFinite(rawSum) ? rawSum : 0,
-      }
-    }
   }
   return acc
 }
 
-/** V3 generic loader: iterates ALL dimension names (no allow-list) so an unknown future dimension round-trips. */
-function loadV3Dimensions(raw: Record<string, unknown>): void {
-  for (const [dimName, dimValue] of Object.entries(raw)) {
-    if (!dimValue || typeof dimValue !== "object") continue
-    const buckets = (dimValue as { buckets?: unknown }).buckets
-    if (!buckets || typeof buckets !== "object") continue
-    for (const [bucketKey, keysValue] of Object.entries(buckets as Record<string, unknown>)) {
-      const bucketTimestamp = Number(bucketKey)
-      if (!Number.isFinite(bucketTimestamp) || !keysValue || typeof keysValue !== "object") continue
-      const bucketDims = getOrCreateBucketDims(bucketTimestamp)
-      let dim = bucketDims.get(dimName)
+/**
+ * Rebuild the in-memory 7d `dimBuckets` from the DURABLE SQLite tel_raw rows in `[now-7d, now]` — the
+ * P7 single-track rebuild source (replaces the old JSON→dimBuckets load). Each physical
+ * `(bucket_ts, dim, key)` row restores one accumulator's counters exactly (18 additive columns; cost
+ * micro→float). Histograms are NOT rebuilt (see `accumulatorFromCounters`). No-op when the db is closed
+ * (telemetry disabled / open failed) — the 7d window then starts empty (process-lifetime `/metrics`
+ * still serves from the fresh in-memory `dimSinceStart`). never-throw: a rebuild-query failure degrades
+ * to "7d window starts empty this session" (warn), not a crash.
+ */
+function rebuildDimBucketsFromRaw(now = Date.now()): void {
+  const db = telemetryDb
+  if (!db) return
+  try {
+    const sinceTs = getBucketStart(now - WINDOW_MS)
+    for (const row of readAllRawRowsInWindow(db, sinceTs, now)) {
+      const bucketDims = getOrCreateBucketDims(row.bucketTs)
+      let dim = bucketDims.get(row.dimName)
       if (!dim) {
         dim = new Map()
-        bucketDims.set(dimName, dim)
+        bucketDims.set(row.dimName, dim)
       }
-      for (const [key, counters] of Object.entries(keysValue as Record<string, unknown>)) {
-        if (counters && typeof counters === "object") dim.set(key, loadAccumulator(counters as Record<string, unknown>))
-      }
+      dim.set(row.key, accumulatorFromCounters(row.counters))
     }
+  } catch (err) {
+    consola.warn(`[telemetry] failed to rebuild the 7d window from telemetry.db (7d stats start empty this session):`, err)
   }
 }
 
-function isValidPersistedModelTelemetry(value: unknown): value is PersistedModelTelemetry {
-  if (!value || typeof value !== "object") return false
-  const stats = value as Record<string, unknown>
-  return BASE_MEASURE_NAMES.every((name) => typeof stats[name] === "number")
-}
-
-/** V2 → V3 migration: the legacy `modelBuckets[ts][model]` becomes the `model` dimension's buckets. */
-function loadV2ModelBuckets(raw: Record<string, Record<string, PersistedModelTelemetry> | null | undefined>): void {
-  for (const [bucketKey, models] of Object.entries(raw)) {
-    const bucketTimestamp = Number(bucketKey)
-    if (!Number.isFinite(bucketTimestamp) || !models || typeof models !== "object") continue
-    const bucketDims = getOrCreateBucketDims(bucketTimestamp)
-    let dim = bucketDims.get(MODEL_DIMENSION)
-    if (!dim) {
-      dim = new Map()
-      bucketDims.set(MODEL_DIMENSION, dim)
+/**
+ * Rebuild the in-memory accepted-sparkline `bucketCounts` from the DURABLE SQLite tel_accepted rows in
+ * `[now-7d, now]` — the P7 single-track rebuild source (replaces the old JSON `buckets` load). The
+ * process-lifetime `acceptedSinceStart` counter stays 0 (never persisted — resets each process, as
+ * before). No-op when the db is closed. never-throw (mirrors {@link rebuildDimBucketsFromRaw}).
+ */
+function rebuildAcceptedBucketsFromDb(now = Date.now()): void {
+  const db = telemetryDb
+  if (!db) return
+  try {
+    const sinceTs = getBucketStart(now - WINDOW_MS)
+    for (const { bucketTs, count } of readAcceptedBucketsInWindow(db, sinceTs, now)) {
+      if (Number.isFinite(bucketTs) && count > 0) bucketCounts.set(bucketTs, count)
     }
-    for (const [model, stats] of Object.entries(models)) {
-      if (isValidPersistedModelTelemetry(stats)) dim.set(model, loadAccumulator(stats as unknown as Record<string, unknown>))
-    }
+  } catch (err) {
+    consola.warn(`[telemetry] failed to rebuild the accepted sparkline from telemetry.db (starts empty this session):`, err)
   }
 }
 
@@ -1230,34 +1180,46 @@ export async function initRequestTelemetry(): Promise<void> {
   pendingBackfillJson = null
   setupTelemetryDb()
 
+  // ── P7 single-track: the 7d window rebuilds from SQLite (tel_raw / tel_accepted), NOT JSON. ──
+  // Runs UNCONDITIONALLY (before the JSON read below), so the window is restored even when the legacy
+  // JSON is missing/corrupt. No-op when the db is closed (telemetry disabled / open failed) — the 7d
+  // window then starts empty this session (process-lifetime `dimSinceStart` still serves `/metrics`).
+  // NB the pre-migration history lands in tel_raw via the one-shot P6 backfill that runs AFTER the
+  // server listens (start.ts) — so the FIRST post-migration session rebuilds only the dual-write
+  // (post-startup) rows; the absorbed legacy history appears in the 7d window from the NEXT restart on
+  // (a one-time migration transient, acceptable under "no back-compat burden / short-term degradation OK").
+  rebuildAcceptedBucketsFromDb()
+  rebuildDimBucketsFromRaw()
+
   // Clean up orphan atomic-write temp files (`request-telemetry.json.tmp.*`) — failed atomic writes
   // that never got renamed into place. Pure garbage, safe to delete; fire-and-forget + never-throw so
-  // it never blocks or breaks init. Runs regardless of telemetry.db (the JSON path is always active).
+  // it never blocks or breaks init. The JSON body itself is NEVER deleted (no-destructive) — it stays
+  // on disk as a historical archive + the one-shot P6 backfill source.
   void cleanupOrphanTelemetryTmpFiles(telemetryFilePath)
 
+  // ── Read the legacy JSON ONLY to stash the pre-startup snapshot for the one-shot P6 backfill. ──
+  // It no longer seeds dimBuckets/bucketCounts (SQLite rebuild above owns that). Once the backfill's
+  // version guard trips the JSON is fully vestigial (still read + stashed here, but the backfill no-ops).
   let raw: string
   try {
     raw = await fs.readFile(telemetryFilePath, "utf8")
   } catch {
-    // Missing file is non-critical; start fresh.
+    // Missing file is non-critical; the SQLite rebuild already restored the window.
     pruneBuckets()
     startPeriodicPersistence()
     return
   }
 
-  // Cast to Partial<> because JSON.parse output is unknown shape; the
-  // defensive `truthy && typeof === "object"` guards below validate runtime
-  // structure rather than rely on the asserted type.
-  let parsed: Partial<RequestTelemetryFile>
+  // Validate the snapshot is parseable before stashing it (the backfill re-parses defensively, but a
+  // corrupt file can't be absorbed — quarantine it for postmortem, as before). JSON.parse output is an
+  // unknown shape; we only need parseability here, not the structure (the backfill owns field validation).
   try {
-    parsed = JSON.parse(raw) as Partial<RequestTelemetryFile>
+    JSON.parse(raw)
   } catch (err) {
-    // Corrupted JSON: surface the loss and quarantine the file for postmortem
-    // instead of silently restarting from zero. Most common historical cause:
-    // two concurrent writers interleaving O_TRUNC writes (now prevented by the
-    // serialized atomic-write path below — but old corrupted files can still
-    // exist from prior versions).
-    consola.warn(`[telemetry] resetting 7-day usage history: telemetry file is corrupted (${err instanceof Error ? err.message : String(err)})`)
+    // Corrupted JSON: surface the loss and quarantine the file for postmortem. Most common historical
+    // cause: two concurrent writers interleaving O_TRUNC writes (the JSON write path is now removed, so
+    // this can only be an old corrupted file from a prior version).
+    consola.warn(`[telemetry] legacy telemetry JSON is corrupted, cannot be absorbed (${err instanceof Error ? err.message : String(err)})`)
     const quarantine = `${telemetryFilePath}.corrupted.${Date.now()}`
     try {
       await fs.rename(telemetryFilePath, quarantine)
@@ -1272,29 +1234,10 @@ export async function initRequestTelemetry(): Promise<void> {
     return
   }
 
-  // Stash the frozen pre-startup snapshot for the P6 backfill — captured HERE, the same content that
-  // seeds the in-memory dimBuckets below, BEFORE any post-startup request/persist can mutate the file.
-  // `runTelemetryJsonBackfill` absorbs THIS string, never a fresh read (structural disjointness).
+  // Stash the frozen pre-startup snapshot for the P6 backfill — captured HERE, BEFORE any post-startup
+  // request can land in tel_raw via dual-write. `runTelemetryJsonBackfill` absorbs THIS string, never a
+  // fresh read (structural disjointness — the sole double-count root cause is closed by construction).
   pendingBackfillJson = raw
-
-  if (parsed.buckets && typeof parsed.buckets === "object") {
-    bucketCounts = new Map(
-      Object.entries(parsed.buckets)
-        .map(([key, value]) => [Number(key), value] as const)
-        .filter(([key, value]) => Number.isFinite(key) && typeof value === "number" && value >= 0),
-    )
-  }
-
-  // Dimension buckets: V3 generic, else migrate legacy V2 modelBuckets → the model
-  // dimension. `dimSinceStart` is intentionally left EMPTY on load (it is process-
-  // lifetime, never persisted — exactly as the legacy modelStatsSinceStart was).
-  const dimensionsRaw = (parsed as { dimensions?: unknown }).dimensions
-  const modelBucketsRaw = (parsed as { modelBuckets?: unknown }).modelBuckets
-  if (parsed.version === 3 && dimensionsRaw && typeof dimensionsRaw === "object") {
-    loadV3Dimensions(dimensionsRaw as Record<string, unknown>)
-  } else if (parsed.version === 2 && modelBucketsRaw && typeof modelBucketsRaw === "object") {
-    loadV2ModelBuckets(modelBucketsRaw as Record<string, Record<string, PersistedModelTelemetry> | null | undefined>)
-  }
 
   pruneBuckets()
   startPeriodicPersistence()
@@ -1421,7 +1364,9 @@ export function recordSettledRequest(
       const bucketKey = capped ? resolveCappedKey(bucketDims, dimName, normalized) : normalized
       if (!seenBucket.has(bucketKey)) {
         seenBucket.add(bucketKey)
-        applySettledMeasures(getOrCreateDimKey(bucketDims, dimName, bucketKey), opts)
+        // 7d bucket leg: histogram-free (withHistograms=false). Its histograms are retired (P7 single-track
+        // — see applySettledMeasures); only the sinceStart leg above still fills them (for `/metrics`).
+        applySettledMeasures(getOrCreateDimKey(bucketDims, dimName, bucketKey), opts, false)
         // Raw leg mirrors dimBuckets' resolved key (same bucketTs, same normalizeKey, same per-store cap).
         if (outboxDelta && outboxObservations) {
           addToOutboxEntry(ensureRawOutboxEntry(outboxRaw, bucketTimestamp, dimName, bucketKey), outboxDelta, outboxObservations)
@@ -1687,62 +1632,22 @@ export function getDimensionBreakdown(
 }
 
 /**
- * Debounce for persist-failure logging: warn once, then stay quiet until a
- * successful write recovers. Periodic persistence runs every ~60s, so a
- * sustained failure (ENOSPC / permissions) would otherwise spam one warn per
- * minute. The asymmetry with the loader (which warns on corrupt files) is the
- * gap this closes — a write failure silently drops the 7-day history on restart.
+ * The periodic flush (P7 single-track): drains the dual-write outbox into telemetry.db. The legacy JSON
+ * write path is GONE — SQLite is the sole persistent store. Serialized via `createSerializedAsyncFn` so
+ * concurrent callers (periodic timer + shutdown + ad-hoc flush) take turns; combined with the outbox
+ * snapshot-and-swap it stays re-entrancy-safe. Still named "persist" because it IS the persistence tick;
+ * `pruneBuckets` runs first to keep the in-memory 7d window bounded (the SQLite retention is the rollup's job).
  */
-let persistFailureLogged = false
-
 const persistTelemetrySerialized = createSerializedAsyncFn(async () => {
   pruneBuckets()
-  // Build per-dimension bucket maps first (Map.get returns `| undefined`, so the
-  // lookup-then-create is type-honest), then project to the plain-object envelope.
-  const byDimension = new Map<string, Record<string, Record<string, Record<string, unknown>>>>()
-  for (const [bucketTimestamp, dims] of dimBuckets.entries()) {
-    for (const [dimName, keys] of dims.entries()) {
-      let byTimestamp = byDimension.get(dimName)
-      if (!byTimestamp) {
-        byTimestamp = {}
-        byDimension.set(dimName, byTimestamp)
-      }
-      const bucketEntry: Record<string, Record<string, unknown>> = {}
-      for (const [key, acc] of keys.entries()) {
-        // Generic copy of `counters` — preserves any future sibling counter without a version bump.
-        const entry: Record<string, unknown> = { ...acc.counters }
-        // Histograms only when there's a non-zero observation (keeps the file lean + back-compat shape for hist-less keys).
-        const histograms = serializeHistograms(acc.histograms)
-        if (histograms) entry[HISTOGRAMS_KEY] = histograms
-        bucketEntry[key] = entry
-      }
-      byTimestamp[String(bucketTimestamp)] = bucketEntry
-    }
-  }
-  const dimensions: RequestTelemetryFileV3["dimensions"] = {}
-  for (const [dimName, buckets] of byDimension.entries()) dimensions[dimName] = { buckets }
 
-  const file: RequestTelemetryFileV3 = {
-    version: 3,
-    buckets: Object.fromEntries([...bucketCounts.entries()].map(([key, value]) => [String(key), value])),
-    dimensions,
-  }
-
-  try {
-    await atomicWriteJson(telemetryFilePath, file)
-    persistFailureLogged = false
-  } catch (err) {
-    if (!persistFailureLogged) {
-      persistFailureLogged = true
-      consola.warn(`[telemetry] persist failed (7-day usage history may be stale on restart):`, err)
-    }
-  }
-
-  // ── additive dual-write drain (telemetry.db) — AFTER the JSON write ──
-  // Runs inside the same serialized flush. Fire-and-forget wrt the JSON path: a SQLite fault must
-  // NEVER fail the JSON persist or throw into the timer (drain-before-close/never-throw invariant).
-  // On failure the snapshot is folded BACK into the live outbox (retry next flush — deltas are not
-  // dropped), with a warn-once debounce so a sustained fault doesn't spam once per persist interval.
+  // ── additive dual-write drain (telemetry.db) — the ONLY persistence now ──
+  // Fire-and-forget + never-throw: a SQLite fault must NEVER throw into the timer (drain-before-close /
+  // never-throw invariant). On failure the snapshot is folded BACK into the live outbox (retry next
+  // flush — deltas are not dropped), with a warn-once debounce so a sustained fault doesn't spam once
+  // per persist interval. `await Promise.resolve()` keeps this callback async (the serialized wrapper
+  // requires an async fn) now that the awaited JSON write is gone; the drain itself is synchronous.
+  await Promise.resolve()
   const db = telemetryDb
   if (db && state.telemetryEnabled) {
     // Snapshot-and-swap the outbox up front so record* landing during the drain accumulate into the
@@ -1907,4 +1812,24 @@ export function _getCumulativeCapKeysForTests(): ReadonlyMap<string, ReadonlySet
 /** Override the outbox soft cap (test hook) so eviction can be exercised without materializing 50k entries. Reset restores the default. */
 export function _setOutboxSoftCapForTests(cap: number): void {
   outboxSoftCap = cap
+}
+
+/**
+ * Project the in-memory 7d `dimBuckets` into the plain nested shape
+ * `Record<dimName, { buckets: Record<bucketTs, Record<key, Record<counter, number>>> }>` — a TEST hook
+ * for inspecting per-dimension per-bucket counters directly (replaces the old "persist to JSON then
+ * re-read the file" indirection, now that the JSON write path is removed in the P7 single-track
+ * convergence). Counters only — the 7d histograms are retired (dimBuckets accumulators are histogram-empty).
+ */
+export function _projectDimBucketsForTests(): Record<string, { buckets: Record<string, Record<string, Record<string, number>>> }> {
+  const out: Record<string, { buckets: Record<string, Record<string, Record<string, number>>> }> = {}
+  for (const [bucketTimestamp, dims] of dimBuckets.entries()) {
+    for (const [dimName, keys] of dims.entries()) {
+      const dim = (out[dimName] ??= { buckets: {} })
+      const bucketEntry: Record<string, Record<string, number>> = {}
+      for (const [key, acc] of keys.entries()) bucketEntry[key] = { ...acc.counters }
+      dim.buckets[String(bucketTimestamp)] = bucketEntry
+    }
+  }
+  return out
 }

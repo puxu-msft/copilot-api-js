@@ -253,7 +253,7 @@ test("oracle 4 — cumulative 跨重启：tel_cumulative = 两进程之和；进
   }
 })
 
-test("oracle 5 — gated：telemetryEnabled=false 时不写 SQLite（db 不开），JSON 照常", async () => {
+test("oracle 5 — gated：telemetryEnabled=false 时不写 SQLite（db 不开）；单轨下 JSON 也不再写、内存路径照常", async () => {
   setStateForTests({ telemetryEnabled: false })
   await initRequestTelemetry()
   const base = bucketStart(Date.now())
@@ -261,11 +261,11 @@ test("oracle 5 — gated：telemetryEnabled=false 时不写 SQLite（db 不开�
   await persistRequestTelemetry()
   expect(_getTelemetryDbForTests()).toBeNull() // db 未开
   expect(existsSync(dbPath)).toBe(false) // 没建 db 文件
-  expect(existsSync(jsonPath)).toBe(true) // JSON 路径照常
+  expect(existsSync(jsonPath)).toBe(false) // P7 单轨：JSON 写路径已删，绝不新建
   expect(getRequestTelemetrySnapshot().modelsSinceStart.length).toBeGreaterThan(0) // 内存路径不变
 })
 
-test("oracle 6 — never-throw：SQLite drain 出错时 persist 不抛、JSON 仍写、warn-once", async () => {
+test("oracle 6 — never-throw：SQLite drain 出错时 persist 不抛（单轨，无 JSON 兜底）、warn-once", async () => {
   await initRequestTelemetry()
   const base = bucketStart(Date.now())
   for (let i = 0; i < 3; i++) recordOne(base + i * 10, 100, 50)
@@ -285,10 +285,10 @@ test("oracle 6 — never-throw：SQLite drain 出错时 persist 不抛、JSON �
   } as unknown as TelemetryDatabase
   _setTelemetryDbForTests(throwingDb)
 
-  // 不抛。
+  // 不抛（drain 失败 fold-back + warn-once，绝不冒泡进 timer）。
   await expect(persistRequestTelemetry()).resolves.toBeUndefined()
-  // JSON 仍写成功。
-  expect(existsSync(jsonPath)).toBe(true)
+  // P7 单轨：JSON 写路径已删，drain 失败也不会（也不能）落 JSON 兜底。
+  expect(existsSync(jsonPath)).toBe(false)
 })
 
 test("oracle 7 — never-throw 后 outbox 不丢：db 恢复后下次 flush 补写（重试语义）", async () => {
@@ -317,7 +317,7 @@ test("oracle 7 — never-throw 后 outbox 不丢：db 恢复后下次 flush 补�
   expect(readTierScalar(dbPath, "model", "opus", base, "req_count")).toBe(3) // 未丢
 })
 
-test("oracle 8 — db-open 失败（telemetryDb=null，enabled=true）时喂养门关闭：outbox 不增长、内存+JSON 照常", async () => {
+test("oracle 8 — db-open 失败（telemetryDb=null，enabled=true）时喂养门关闭：outbox 不增长、内存路径照常", async () => {
   // 让 setupTelemetryDb 的 openTelemetryDb 抛（不可写目录）→ telemetryDb=null 而 telemetryEnabled=true。
   const badPath = join(tmpDir, "nonexistent-subdir", "telemetry.db")
   setStateForTests({ telemetryEnabled: true, telemetryDbPath: badPath })
@@ -339,9 +339,9 @@ test("oracle 8 — db-open 失败（telemetryDb=null，enabled=true）时喂养�
   expect(snap.modelsSinceStart.length).toBeGreaterThan(0)
   expect(snap.acceptedSinceStart).toBe(20)
 
-  // JSON 路径照常（flush 不抛、写成功）。
+  // flush 不抛（P7 单轨：无 JSON 写；db 未开时 drain 也是 no-op）。
   await expect(persistRequestTelemetry()).resolves.toBeUndefined()
-  expect(existsSync(jsonPath)).toBe(true)
+  expect(existsSync(jsonPath)).toBe(false) // 单轨：JSON 绝不新建
   // flush 也不会把 outbox 变脏。
   expect(_getOutboxSizeForTests()).toBe(0)
 })

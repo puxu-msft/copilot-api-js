@@ -55,6 +55,7 @@ const EXEMPT: Record<string, string> = {
   _getOutboxSizeForTests: "read-only assertion hook — no state to reset",
   _getEffectiveSketchGammaForTests: "read-only assertion hook — no state to reset",
   _getCumulativeCapKeysForTests: "read-only assertion hook — no state to reset",
+  _projectDimBucketsForTests: "read-only projection hook — no state to reset",
   _isRollupTimerArmedForTests: "read-only assertion hook — no state to reset",
   _runRollupTickForTests: "action hook (drives one rollup tick) — no state to reset",
   // telemetry injectors: per-test opt-in; their effect is undone by _resetRequestTelemetryForTests
