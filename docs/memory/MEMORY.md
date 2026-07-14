@@ -31,6 +31,7 @@
 
 ## 精炼保留（verification 簇 / 独有教学价值）
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根;通用手法 user skill `verifying-authoritative-claims`；三陷阱钩子
+- [下「最好/只治一半/漏症状X」完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — 尤其 absence/negative 断言(features 不进 history/telemetry 会丢/无消费者)最易凭结构推断而错;本会话两次验前下错结论(盯客户端、贬 TUI 防御「只治一半」实为最优),用户评「非常深刻的教训」
 - [诊断日志本身是会撒谎的权威声音](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能只接部分代码路径、对其它路径恒打全零;别信自报探 history 上游轨;实例=gpt-5.6-sol「frames=0/silence=全程」误导、真相是被上游 CANCEL 的健康长流;宽松信号收集 API 诱发静默误报、收紧入参最小子集用类型逼全站点
 - [reasoned-safe≠tested / producer wire-oracle 必断全序](methodology-reasoned-safe-not-tested-producer-wire-oracle.md) — 能干 reviewer「推理上安全无需测」也会错(opus 误判 enveloped_ping,golden 证伪);client-facing wire 缺陷须 producer oracle 断**完整帧序**+驱动 driver **真实产出**(非回放 ideal fixture);门改语义先问旧前提是否失效
 - [client 源码 grep ≠ REST 上游能力](methodology-client-source-grep-not-rest-capability-probe-endpoint.md) — 源码 grep 只证 client 行为,代理型上游 REST 表面 > client 子集;须 curl 实测打端点;实例=「GHC 无 count_tokens」被证伪
@@ -44,6 +45,7 @@
 - [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — `--cache` 对缓存过期文件假绿;`lint:all` 已去 cache、核单文件用 `bunx eslint <path>`
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 `bun install` 会 prune 的 orphan;选依赖前 `grep '"<pkg>@' bun.lock`;提升传递依赖用 `bun add <name>@^<锁里版本>`
 - [worktree bun add 后主树须补 install](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — 隔离 worktree `bun add` 只进该树;FF 合并后主树 node_modules 陈旧→Vite 解析失败;收尾动过 deps 须主树 `bun install`
+- [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败但 health 仍绿(peer 实例应答);`live=旧码`变体=`live=peer mock`;spawn 后必验 server.log 无 port-in-use + ss 真监听 PID 是我的 + 上游轨非 localhost mock;实例=4142 被 peer `--ghc-api-base-url localhost:8799` 占,前几轮 probe 数据全废
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约 + 独立 oracle 裁决,别反射式"让它编译"
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发;grep 全仓逐处修+抽共享 primitive;盲区=grep 漏分叉源腿,靠合并态审逮
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 多站点加变体:路由既有 outcome 复用全 handler + 类型系统逼出全站点
@@ -52,6 +54,7 @@
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴=上下文经济+可信度非可推导性;目录级关系图+现状小节+L1 存在性守卫测试
 - [交用户前先 subagent review（含 in-chat 提案）](feedback-subagent-review-before-any-user-facing-proposal.md) — 审查门适用任何交付物含对话里直接呈现的设计;present-design 前插对抗审查
 - [用户对齐只证方向对、非细节最优](feedback-user-alignment-confirms-direction-not-detail-optimality.md) — brainstorming 逐节点头≠细节最优;落盘 spec 前仍须过 GPT 异模型对抗审查细节
+- [后端抖动挂的 Agent 必须只 SendMessage resume](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — API error/NGHTTP2_CANCEL/server error 失败→强制单一路径 resume 原 agent,不派替代/不换模型/不找方案,反复挂也继续 resume;踩坑=GPT reviewer 挂我额外派 Claude 兜底=违规浪费
 - [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec,免疫 peer 并发 `git add` 的 index race
 - [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix;手排自己 import;显式 pathspec 只提交自己文件;[[sed-touched-files-bundle-inflight-work]] eslint 版
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁;rollback 见 skill `git-preference:disarming-lint-staged-rollback`
@@ -64,8 +67,11 @@
 - [picocolors 在 bun test 塌缩成恒等](reference-picocolors-collapses-to-identity-in-bun-test.md) — `isColorSupported===false` 使 color-fn 返原串测退化文本;改测**引用相等**+FORCE_COLOR 子进程 SGR
 - [迁移副作用旧路径仍被 eager 求值→双触发](methodology-migrate-side-effect-old-path-still-eager-evaluated.md) — recordFeature 迁 leg 但 driver eager 求值 `deps.strategies` 仍触发→双记;live-only golden 抓不到;根因修=抽 lazy resolver
 - [无疑问改进当场做](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中就立即改,别以超范围推迟;有分叉别硬当无分叉
+- [绝不推荐短期止血方案](feedback-never-propose-short-term-mitigation.md) — 有根因可修就只提根因;「打开默认关闭的 gated feature 绕过」也算短期将就、禁列为选项;实例=否决打开 buffered-retry 绕 CANCEL 事故
 
 ## project 现状 stub（权威看正式归属）
+- [请求生命周期 cancel/settle/quiesce（四根因治根 landed worktree,C5 完整架构待续）](project-request-lifecycle-cancel-settle-quiesce.md) — 2800s 越超时多根因;RFC 6 轮对抗复核逼出 3 个致死锁/orphan 缺陷;RC1 streaming 排除 shutdown/RC2 reaper 迟到(WSL suspend 候选)/RC3 退避不可中断/RC4 限流竞争 全治根(worktree `feat/request-lifecycle` 11 commit 1079 pass);承重=有界 grace(无限等 quiesce 打败目标)+per-request 精确 timer>周期 scan;待续 C4a/C5(primitive 已备待接线);合并前须 merge master(分支落后)
+- [请求首包/时序埋点（7 刻，全 landed 未合并 master，spec+plan+3 轮 review+合并态 review）](project-request-timing-instrumentation-landed.md) — 隔离 worktree `feat/timing-instrumentation`;上游 4 刻 epoch 存 per-attempt attempts[] blob、客户端 3 刻 offset 存 entries_v2 三列、fleet 分位走遥测 DDSketch(3 分布+3 /metrics family);权威看 ADR/spec/DESIGN 行/API.md/deferred-backlog(缓冲扣留 UX+fleet 排除 aborted 盲区);承重教训=两段显式投影(漏段 typecheck 绿但静默丢,证伪靠真实终态链 round-trip)+ **WS restoreAccumulateCount 剥 event 行**(client 侧读 frame.event 对 Responses-WS 全漏→openai 家族客户端谓词一律 parse data.type)+ 谓词收完整帧非预解析 type;merged-state review 专抓单端点静默丢集成缝
 - [AskUserQuestion 顶层 question 键抢救与剥离（全 landed master，spec+plan+3 轮 review）](methodology-plan-verify-interface-location-and-wiring-channel.md) — opus-4.8 把问题文本提到顶层 `question` 键(客户端 schema additionalProperties:false→报`unexpected parameter 'question'`)、`questions[0]`缺 question;修=salvage 抢救真文本进 item(含`\uXXXX`un-escape)→兜底 header 回填→strip 非法顶层键,骑既有`tool_backfill_question`gate 不加 config 键;**诊断落盘唯一通道=pipelineInfo(经 context_updated)——recordFeature+recordRepairOutcome 都不落 history**([[methodology-plan-verify-interface-location-and-wiring-channel]]§3);全人群实测 9 例全 completed(静默转发被拒);权威 docs/spec+plan/2026-07-13-askuserquestion-toplevel-key-salvage + DESIGN.md `backfillQuestionFromHeader`行;buffered-retry 诊断过报记 backlog
 - [block 级缓冲重试（P0-P4 全 landed+reviewed，剩 gated 翻转+收尾）](project-block-level-buffered-retry-execution.md) — 4 端点非对称粒度(P2块级/P3CC+P4WS terminal-only/P1 已接线);**已 merge master c2012555(默认全 OFF)**;durable ledger .superpowers/sdd/progress.md;P1 四连 wire 缺陷全被绿测放过→3轮修+capstone([[methodology-reasoned-safe-not-tested-producer-wire-oracle]]);翻默认前门=真 CLI+scenario-B(记 backlog)
 - [上游错误→客户端可行动形态整形（spec+plan，评审中，未实现）](project-upstream-error-client-shaping.md) — 按 commit 阶段分治,无单一万能手段;Phase 6 依赖 P1;权威 docs/spec+plan/2026-07-13-upstream-error-client-shaping;[[methodology-exhaust-then-choose-over-single-solution]]
