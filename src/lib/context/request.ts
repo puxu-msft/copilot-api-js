@@ -31,6 +31,8 @@ import { HTTPError } from "~/lib/error"
 import { normalizeModelId } from "~/lib/models/resolver"
 import { state as appState } from "~/lib/state"
 
+import { createOperationScope } from "./operation-scope"
+
 import type {
   //
   Attempt,
@@ -289,6 +291,14 @@ export function createRequestContext(opts: {
   let settled = false
   /** Lifecycle abort — fired by the reaper (reapInFlight) to cancel in-flight upstream work (缺陷④). */
   const lifecycleAbort = new AbortController()
+  /**
+   * C5 operation tracking (RFC §3.3). Tracks the request's settle-BEFORE async work so shutdown
+   * drain / bounded-grace can wait for it to quiesce. NEW API — no production callers yet
+   * (behavior-preserving until C5 wires the handlers/manager/shutdown). See operation-scope.ts.
+   */
+  const operationScope = createOperationScope()
+  let _cancelled = false
+  let _cancelReason: string | undefined
 
   /**
    * Build an ObservabilityEvent-compatible snapshot of the current ctx state
@@ -332,6 +342,37 @@ export function createRequestContext(opts: {
     },
     reapInFlight() {
       lifecycleAbort.abort()
+    },
+    // ─── C5 operation lifecycle (RFC §3.3) — NEW API, no production callers yet ───
+    // `operationSignal` is the per-request cancel signal (reaper/deadline/cancel all abort
+    // lifecycleAbort). Consumers that also need client-abort/shutdown combine them at the call
+    // site (as the driver already does) — this stays consistent with the C1–C4 wiring.
+    get operationSignal() {
+      return lifecycleAbort.signal
+    },
+    get cancelled() {
+      return _cancelled
+    },
+    get cancelReason() {
+      return _cancelReason
+    },
+    cancel(reason: string) {
+      // Idempotent: first cancel wins the reason. Gives teeth via the existing lifecycleAbort
+      // wiring (folded into the fetch + backoff by C1/C2). Does NOT settle — cancel and settle are
+      // decoupled (RFC): the forced-termination path is cancel → race(quiesce, grace) → settle.
+      if (_cancelled) return
+      _cancelled = true
+      _cancelReason = reason
+      lifecycleAbort.abort()
+    },
+    trackOperationBody(p) {
+      operationScope.trackOperationBody(p)
+    },
+    sealOperationScope() {
+      operationScope.seal()
+    },
+    whenOperationQuiesced() {
+      return operationScope.whenOperationQuiesced()
     },
     recordRepairOutcome(record) {
       _repairOutcomes.push(record)

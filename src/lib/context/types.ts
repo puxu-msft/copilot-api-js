@@ -523,6 +523,30 @@ export interface RequestContext {
    */
   reapInFlight(): void
   /**
+   * C5 operation lifecycle (RFC §3.3) — NEW API, no production callers until C5 wires
+   * handlers/manager/shutdown (behavior-preserving additions).
+   *
+   * `operationSignal` is the per-request cancel signal (reaper/deadline/`cancel` all abort it).
+   * Consumers that also need client-abort/shutdown combine those at the call site.
+   */
+  readonly operationSignal: AbortSignal
+  /** Whether `cancel()` (or the reaper via lifecycle) has requested cancellation. */
+  readonly cancelled: boolean
+  /** Reason recorded by the first `cancel(reason)` call, if any. */
+  readonly cancelReason: string | undefined
+  /**
+   * Request cancellation, decoupled from settle (RFC): abort `operationSignal` + record reason +
+   * forbid new attempts. Idempotent (first reason wins). Does NOT write a terminal state — the
+   * forced-termination path is `cancel → race(whenOperationQuiesced, grace) → settle`.
+   */
+  cancel(reason: string): void
+  /** Register a settle-BEFORE operation-body child (fetch/stream/backoff/hook/…) for quiescence tracking. */
+  trackOperationBody(p: Promise<unknown>): void
+  /** Seal the operation scope (root owner, in its single `finally`): no further children may register. */
+  sealOperationScope(): void
+  /** Resolves once the operation scope is sealed AND all tracked children have settled. */
+  whenOperationQuiesced(): Promise<void>
+  /**
    * Record one tool-input repair outcome for the CURRENT attempt (S5 decode). Accumulated on the
    * ctx and RESET per L2 buffered-retry attempt (`resetRepairOutcomesForAttempt`) so a discarded
    * attempt's outcomes never leak into the committed one. The handler flushes these at the committed
