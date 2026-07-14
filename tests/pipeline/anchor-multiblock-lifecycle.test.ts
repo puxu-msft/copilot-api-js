@@ -138,21 +138,26 @@ function makeDriver() {
   return createPipelineDriver(deps)
 }
 
-/** sawMessageStop tracker fed by onUpstreamFrame — REAL (only flips on message_stop, never a constant). */
+/** Terminal-signal tracker fed by onUpstreamFrame — REAL (only flips on the real frame, never a constant). */
 function makeStopTracker() {
   let saw = false
+  let sawErr = false
   return {
     onUpstreamFrame: (frame: UpstreamFrame) => {
       try {
-        if ((JSON.parse(frame.data ?? "{}") as { type?: string }).type === "message_stop") saw = true
+        const t = (JSON.parse(frame.data ?? "{}") as { type?: string }).type
+        if (t === "message_stop") saw = true
+        if (t === "error") sawErr = true
       } catch {
         /* ignore */
       }
     },
     onAttemptReset: () => {
       saw = false
+      sawErr = false
     },
     sawMessageStop: () => saw,
+    sawUpstreamError: () => sawErr,
   }
 }
 
@@ -295,6 +300,22 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     const outcome = await outcomeP
     expect(outcome.kind).toBe("complete")
 
+    // ── TERMINAL ORDER ORACLE (§4.3): the anchor close-off `content_block_stop@0` MUST precede the response
+    // tail (`message_delta` + `message_stop`), never trail it. The count-only invariants below never pinned
+    // the POSITION of stop@0, which is exactly how the malformed order (`… message_stop, content_block_stop@0`)
+    // slipped through. Assert the exact ordered suffix of the whole wire. Pre-fix (message_stop treated as a
+    // commit boundary) the tail flushes IN-LOOP and stop@0 trails at the terminal drain → RED.
+    const seq = written.map((w) => {
+      const p = parse(w)
+      return p.index === undefined ? p.type : `${p.type}@${p.index}`
+    })
+    expect(seq.slice(-4)).toEqual([
+      "content_block_stop@2", // last real block (block@1 remapped +1)
+      "content_block_stop@0", // anchor close-off — BEFORE the tail (defect (b′): it must not trail message_stop)
+      "message_delta",
+      "message_stop",
+    ])
+
     // Structural invariants over the whole wire:
     // exactly ONE content_block_stop@0 (the anchor close-off at the TERMINAL, not at block@0's boundary).
     const stop0s = written.filter((w) => {
@@ -308,6 +329,71 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     // real blocks live at @1 and @2 (anchor holds @0); anchor stop@0 is the LAST content_block_stop before terminal.
     expect(written.some((w) => parse(w).type === "content_block_start" && parse(w).index === 1)).toBe(true)
     expect(written.some((w) => parse(w).type === "content_block_start" && parse(w).index === 2)).toBe(true)
+    void anchorState
+    sink.close?.()
+  })
+
+  test("(c) H2 error terminus with an open anchor: close-off content_block_stop@0 precedes the forwarded error frame (§5.3/§10.5)", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+
+    // segment 0: real message_start → STALL (pre-content) → the idle tick injects the anchor.
+    // segment 1: a real text block (commits at its content_block_stop, remapped +1) → then a terminal upstream
+    //   `error` frame (H2 — e.g. overloaded), then a CLEAN drain (NO message_stop). `error` is BOTH a commit
+    //   boundary AND the response terminus, so its in-loop flush must be TERMINAL: the anchor close-off
+    //   content_block_stop@0 must precede the forwarded error frame (symmetry with the live-pump reconcile H2
+    //   branch + the buffered success terminus). Pre-fix the error flushed non-terminal → stop@0 trailed it.
+    const { stream: up, releases } = makeGatedUpstream([
+      [f("message_start", { message: { id: "msg_h2" } })],
+      [
+        f("content_block_start", { index: 0, content_block: { type: "text" } }),
+        f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hi" } }),
+        f("content_block_stop", { index: 0 }),
+        f("error", { error: { type: "overloaded_error", message: "overloaded" } }),
+      ],
+    ])
+
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream)
+    const tracker = makeStopTracker()
+
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, {
+      ...tracker,
+      anchor,
+      anchorState,
+      commitBoundaries: anthropicCommitBoundaries,
+      retryCap: 0,
+    } as RunBufferedOpts)
+
+    // STALL: pull message_start (CAPTURE), park; the idle tick injects the anchor.
+    await drain(40)
+    await clock.advance(15_000)
+    await flush()
+    expect(lastInjectResult()).toBe(true)
+
+    // Release the terminal segment → block@0 commits (remapped +1), then the error terminus flushes.
+    releases[0]()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("complete") // H2 commits + the handler fails via acc.streamError (mirrors live)
+
+    // ── TERMINAL ORDER ORACLE (§5.3/§10.5): the anchor close-off precedes the error terminus. ──
+    const seq = written.map((w) => {
+      const p = parse(w)
+      return p.index === undefined ? p.type : `${p.type}@${p.index}`
+    })
+    expect(seq.slice(-3)).toEqual([
+      "content_block_stop@1", // the real text block (remapped +1)
+      "content_block_stop@0", // anchor close-off — BEFORE the error terminus, not after it
+      "error",
+    ])
+    // Exactly ONE anchor close-off — the later terminal drain's empty-buffer re-flush is short-circuited by
+    // the `anchorClosed` guard (no second stop@0).
+    const stop0s = written.filter((w) => {
+      const p = parse(w)
+      return p.type === "content_block_stop" && p.index === 0
+    })
+    expect(stop0s).toHaveLength(1)
     void anchorState
     sink.close?.()
   })

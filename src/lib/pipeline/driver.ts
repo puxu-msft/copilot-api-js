@@ -790,7 +790,17 @@ export async function runResponseBufferedSink(
             // must keep its keepalives. (`flushBufferedFrames`' internal freeze clears the timer; resume
             // re-arms a fresh interval, so the heartbeat recovers for the next inter-block gap.)
             sink.suspendHeartbeat?.()
-            const res = await flushBufferedFrames(buffer, false)
+            // §5.3/§10.5 H2 ordering: `error` is BOTH a commit boundary AND the response terminus. When it
+            // commits in-loop it must flush as a TERMINAL flush so the anchor close-off `content_block_stop@0`
+            // is emitted BEFORE the buffered error frame (symmetry with the live-pump reconcile path,
+            // tests/anthropic/live-pump-terminal-anchor-closeoff.http.test.ts H2 branch, and the buffered
+            // success terminus). `sawUpstreamError()` is already true here — `onUpstreamFrame` (runResponse)
+            // ran before this frame reached the loop. A `content_block_stop` boundary is mid-stream (more
+            // blocks may follow) → NOT terminal → close-off stays deferred to the real terminus. The later
+            // terminal drain (`drained && sawUpstreamError()`) re-enters `flushBufferedFrames(_, true)` with an
+            // EMPTY buffer and the `anchorClosed` guard short-circuits the second stop@0 (idempotent).
+            const errorIsTerminal = opts.sawUpstreamError?.() ?? false
+            const res = await flushBufferedFrames(buffer, errorIsTerminal)
             sink.resumeHeartbeat?.()
             buffer.length = 0
             committedAny = true
