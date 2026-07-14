@@ -72,6 +72,8 @@ export const PATHS = {
   COPILOT_LOG: path.join(APP_DIR, "copilot-api.log"),
   /** Codex CLI config file (`$CODEX_HOME/config.toml`, default `~/.codex/config.toml`). */
   CODEX_CONFIG_TOML: path.join(computeCodexHome(), "config.toml"),
+  /** 裸手动路径优雅重启的 pidfile（pid+bootTime+port）。仅无 supervisor 时写入。 */
+  PIDFILE: path.join(APP_DIR, "copilot-api.pid"),
 }
 
 export async function ensurePaths(): Promise<void> {
