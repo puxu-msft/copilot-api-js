@@ -14,13 +14,14 @@
 - ✅ **C6 doc-sync(部分)**:`docs/shutdown.md` 已同步 RC1/RC3/request_deadline + 修 doc-vs-code。
 - ✅ **合并回 master**(`1a1856a0`):四根因修复 + peer 埋点 3-way 干净合并,已 FF master,peer 未提交工作完好。
 - ✅ **C0-lifecycle Task 4**(commit `ecdbb0bc`):RequestContext 加 `operationSignal`/`cancel(reason)`/`cancelled`/`trackOperationBody`/`sealOperationScope`/`whenOperationQuiesced`(新 API 无生产调用方=行为保持)。85 pass。
-- ⏳ **剩余(C5 drain 重排——行为变更核心,强烈建议清上下文新会话按 kickoff)**:
-  - **C0-lifecycle Task 5**:manager 双 registry(visibleContexts 服务 UI/getAll/activeCount〔=现 activeContexts,settle 即删,行为保持〕+ operationScopes 服务 drain,删除条件 `operationQuiesced && finalized`)。
-  - **C5**:shutdown drain 从 `getAll()` 切到 operation-body quiesce(有界 grace)+ keyed finalization drain + global scope drain + Phase4 abandoned。**先 golden 预捕获当前 drain 序列**(`tests/shutdown/shutdown.unit.test.ts` 等)再逐增量证等价。**须严守 `persistence-async-invariants` skill**:drain-before-close 结构性前置、自有 pending set 不靠 bus.flush(§1 警告其零生产调用方)、fire-and-forget never-throw、test teardown 先 drain——这类失效**静默**(编译过、测试偶尔过却丢数据)。
-  - **C4a**:token-refresh/hook/heartbeat 接 operationSignal + global scope。
-  - **C6 余下**:DESIGN.md 活的架构现状。
+- ✅ **C0-lifecycle Task 5**(commit `25b34eac`):manager 双 registry——visibleContexts(getAll/activeCount,settle 即删,UI/status 不变)+ operationScopes(getTrackedOperations/trackedOperationCount,settle 时 seal→未接线 ctx quiesce 即删=行为保持,有 tracked 工作则保留)。20 pass、10x。
+- ✅ **C5 drain-switch**(commit `13fc36f6`):shutdown drain 源切 getTrackedOperations——settled-but-not-quiesced 请求的 orphan 工作现被 drain 等待(**用户原始问题的架构正解**)。Phase 超时=有界 grace;reaper/deadline 仍立即 settle(不阻塞)。81→83 shutdown golden 保持 + 新能力 12x 确定。
+- ⏳ **剩余(让 C5 结构对生产生效 + 收尾)**:
+  - **C4a(让 operationScopes 真正被喂)**:在实际 settle-前工作站点调 `ctx.trackOperationBody`(driver fetch/stream/backoff、token-refresh、hook、heartbeat serializer)。当前无接线 = operationScopes settle 即空(行为保持);C4a 后 drain 才真正等到 orphan 工作。触碰 driver/transport 热路径,须逐站点 TDD。
+  - **finalization coordinator 接线 shutdown**:History/Calibration finalize 走 keyed drain(RFC §3.1.1),Phase 4 前 drainAllFinalizations。
+  - **C6**:DESIGN.md 活的架构现状 + 记忆库。
 
-  > **C5 的真正 gate(只此两条,并发 peer 不在其中)**:① **golden 预捕获当前 drain 行为已就位**(large-refactor §4——behavior-preserving 重排须有等价 oracle);② **足够上下文预算做逐增量 TDD**(drain/settle 是 `persistence-async-invariants` 警告的静默失效域,须每步 red-green + 连跑证确定,疲劳上下文抬高出错率)。并发 peer 是本仓库常态,靠 isolated worktree + 非重叠 hunk 3-way 自动合 + 行级共存消化,**不作为 gate、计划当 worktree 内单干**;唯一硬约束是合并回 master 时不覆盖 peer 未提交工作(等其提交即自动合,与是否推进 C5 无关)。
+**当前结论**:**四根因已治根上线(LIVE)+ C5 结构核心完成**(ctx API + 双 registry + drain-等-operation,全行为保持、golden 保持)。剩 C4a 接线(让结构对生产生效)+ finalization 接线 + C6。
 
 **当前结论**:**四个已证实根因(RC1/RC2/RC3/RC4)全部治根修复 + 已合 master 上线**;C5 地基(3 primitive + ctx API)全部 committed+tested。剩 C5 drain 重排(行为变更、静默失效风险高)+ C4a + C6,handover 就绪。
 
