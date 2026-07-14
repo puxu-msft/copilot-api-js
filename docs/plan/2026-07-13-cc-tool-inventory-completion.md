@@ -63,3 +63,31 @@ CC 客户端相关审计发现两处名单陈旧（`src/lib/anthropic/message-to
 - **F27**（tool-search 关时不剥孤儿 defer_loading）：行为改动，需 e2e 验证，独立任务。
 - **F19/F20**（richest-data-flow 捕获）：较大设计，独立。
 - Agent/MultiEdit 是否补：需真实 CC 抓包（skill `client-proxy-e2e-testing`）确认后再定。
+
+---
+
+## Task 2（修订，取代 Task 1 的 F28 落地）—— 根因修复 + 回退清单
+
+> 缘起：Task 1 实现后，主会话 deep-read + task-reviewer 探针揭示 F28/F32 的真实机制比原 plan 窄。用户裁决：**F28 走根因修复 + 回退清单**；F32 前缀保留但校正审计文案。
+
+### 已核实的真实机制（读码 + reviewer 探针）
+
+三条 stub 注入路径（`message-tools.ts`）：
+- **Path 1**（226）：`injectClaudeCodeOfficialTools` 门控，无条件为**每个缺失的官方工具**注入 stub（不看 history）。**非** tool-search 门控。
+- **Path 2**（243）：为**任意** history 引用但当前缺失的工具注入 stub（name-agnostic 安全网）——**但被 tool-search 门控**（176 `historyToolNames = toolSearchEnabled ? … : undefined`）。**这是 bug**：孤立历史 tool_use 无论 tool-search 开关都会被 GHC 拒，安全网不该门控。
+- **Path 3**（300）：请求**完全无 tools** 时按 history 注入（无 tool-search 门控）。
+
+F28 真实 gap（比原判窄）：**tool-search OFF + 有 tools + 孤立的非官方工具在 history**（如禁用的 MCP 工具 / WebSearch）→ Path 1 只覆盖官方、Path 2 被门控关、Path 3 只在无 tools → 无人兜底 → GHC 硬拒。
+
+F32 校正（reviewer 探针实测）：`shouldDefer`（199-204）**只按 `tool.name`** 匹配 `NON_DEFERRED_TOOL_NAMES`，**从不查 `tool.type`/`isApiDefinedToolType`** → typed server 工具（含原有 6 前缀 web_search_/text_editor_ 等）在 tool-search 下**仍可能被 `defer_loading:true`**。故 F32 前缀补全**只修 sanitize 保护**（`buildAnthropicToolNameMapper` 的 customNames 过滤经 isApiDefinedToolType 排除 server 工具），**不修延迟保护**。原 plan 1b「以免被延迟」+ 审计 F32「可被延迟(F30同机制)」表述**错误**。
+
+### Task 2 改动（精确）
+
+1. **回退** Task 1 对 `CLAUDE_CODE_OFFICIAL_TOOLS` 的 5 项追加（WebSearch/BashOutput/NotebookRead/ListMcpResources/ReadMcpResource）——根因修好后 Path 1 不再需要它们，且避免无条件注入这些条件性工具（空 schema stub 进不用它们的请求）。保留原 16 项 + 那段 MultiEdit/Agent TODO 注释可删（连同回退）。
+2. **根因修复**：`message-tools.ts:176` 解除 Path 2 的 tool-search 门控 —— `const historyToolNames = collectHistoryToolNames(messages)`（总是计算）。核实副作用：`shouldDefer`（204 `!historyToolNames?.has`）仍受其自身 `toolSearchEnabled &&` 首条件门控 → tool-search off 时 shouldDefer 恒 false、无行为变化；仅 Path 2（243）现在总运行 → 安全网 name-agnostic 覆盖任意孤立历史工具。
+3. **F32 前缀保留**（advisor_/agent_toolset_/memory_/tool_search_ 已加，正确——修 sanitize 保护）。
+4. **测试改**：F28 测试从「测 CLAUDE_CODE_OFFICIAL_TOOLS 追加」改为「测 Path 2 解除门控」——正样本对照：构造「history 有 assistant tool_use 引用某非官方工具（如 `some_mcp_tool`）+ 当前 tools 不含它 + tool-search OFF（用一个不支持 tool-search 的模型或显式关）」，断言输出 tools 含该工具的 stub；负样本：tool-search OFF 且 history 无孤立引用时不乱注入。F32 测试保留（isApiDefinedToolType 4 前缀 + 负样本），但**删/改**那条「typed 工具不被延迟」的错误期望（若有）——改为只断言 sanitize 排除（hasOriginal 不命中），并注释说明延迟保护是独立未修 gap。
+5. **文档校正**：
+   - `docs/todo/cc-client-2.1.207-behavior-audit.md` F32 节（~928/934 行）：删「可被延迟(F30同机制)」错误断言，改为「前缀补全修 sanitize 保护；**延迟保护是独立 gap**——`shouldDefer` 只按 name、typed server 工具（含原 6 前缀）在 tool-search 下仍可能被 defer，记入 deferred-backlog」。
+   - `docs/todo/deferred-backlog.md`：新增条目「typed server 工具可被 tool-search 延迟」（根因 `shouldDefer` name-only、当前行为 advisor_/web_search_ 等 type 工具 defer_loading:true、理想 shouldDefer 排除 isApiDefinedToolType、为何暂缓=需确认 GHC 对 deferred server 工具的实际反应 + 独立于本任务范围）。
+6. 验收：typecheck 绿 + eslint（改动文件，无缓存）净 + 新测试绿 + 既有 message-tools 相关测试不回归。
