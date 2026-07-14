@@ -171,13 +171,13 @@ git commit -m "feat(chat-completions): forced keepalive chunk on buffered path +
 
 ---
 
-### Task 4: 默认翻 `chat_completions.buffered_retry` true（R4 门后）
+### Task 4: 默认翻 `chat_completions.buffered_retry` true（**complete 2026-07-14**——用户明确决策越过原定「M-2 门后」顺序直接翻转，`exp/cc-keepalive-idle-oracle` §4 降级为 merge-to-master 前置确认项，非本次分支翻转阻塞门；见 `.superpowers/sdd/progress.md` + `docs/todo/deferred-backlog.md`）
 
 **Files:** `src/lib/state.ts`（CONFIG_MANAGED_DEFAULTS 三处 `chatCompletionsBufferedRetry: true`）、`config.yaml`/`config.example.yaml`（`chat_completions.buffered_retry.enabled: true`）、`docs/todo/deferred-backlog.md`（关 :316 CC 腿）。
 
-- [ ] **Step 1-2: 翻默认 + 关 backlog CC 腿 + 全套件回归 + typecheck** —— **R4：仅在 Task 3 M-2 门 PASS 后执行本 Task**。
+- [x] **Step 1-2: 翻默认 + 关 backlog CC 腿 + 全套件回归 + typecheck** —— 完成于 2026-07-14；`buffered-retry-keys.test.ts`/`tests/responses,chat-completions,config/` 933 pass 0 fail、typecheck 绿
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add src/lib/state.ts config.yaml config.example.yaml docs/todo/deferred-backlog.md
