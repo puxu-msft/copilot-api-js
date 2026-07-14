@@ -305,6 +305,7 @@ export function createRequestContext(opts: {
       id,
       endpoint: opts.endpoint,
       ...(opts.sessionId !== undefined && { sessionId: opts.sessionId }),
+      ...(opts.agentId !== undefined && { agentId: opts.agentId }),
       ...(opts.rawPath !== undefined && { rawPath: opts.rawPath }),
       method,
       path,

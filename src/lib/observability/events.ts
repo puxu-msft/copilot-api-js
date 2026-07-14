@@ -74,6 +74,8 @@ export interface RequestContextSnapshot {
   id: string
   endpoint: EndpointType
   sessionId?: string
+  /** Subagent id (`x-claude-code-agent-id`); absent for the main agent. Carried so display sinks can render the session-identity block. */
+  agentId?: string
   rawPath?: string
   /** HTTP method, or "WS" / "STDIO" for non-HTTP entry points. */
   method: string

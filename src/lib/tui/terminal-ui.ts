@@ -50,6 +50,7 @@ import { handleShutdownSignal } from "~/lib/shutdown"
 import type { UiState } from "./controller"
 import type { TerminalRegionState } from "./terminal-coordinator"
 
+import { AgentOrdinalRegistry } from "./agent-ordinal-registry"
 import {
   //
   INITIAL_UI_STATE,
@@ -183,6 +184,8 @@ export class TerminalUi {
   private readonly showActive: boolean
   private readonly silent: boolean
   private readonly active = new Map<string, ActiveRequest>()
+  /** First-seen subagent numbering (per session) for the session-identity block. */
+  private readonly agentOrdinals = new AgentOrdinalRegistry()
   private footerVisible = false
   private footerTimer: ReturnType<typeof setInterval> | null = null
   private readonly unsubscribe: () => void
@@ -490,6 +493,10 @@ export class TerminalUi {
   // ============================================================================
 
   private onCreated(ctx: RequestContextSnapshot): void {
+    // Lock the subagent's first-seen ordinal at arrival (idempotent) so the
+    // session-identity block numbers agents by when they FIRST appear, not when
+    // they terminate.
+    this.agentOrdinals.ordinalFor(ctx.sessionId, ctx.agentId)
     const entry: ActiveRequest = {
       ctx,
       tags: [],
@@ -557,6 +564,9 @@ export class TerminalUi {
       time: formatTime(),
       method: event.ctx.method,
       path: event.ctx.path,
+      sessionId: event.ctx.sessionId,
+      agentId: event.ctx.agentId,
+      agentOrdinal: this.agentOrdinals.ordinalFor(event.ctx.sessionId, event.ctx.agentId),
       model: event.ctx.resolvedModel,
       clientModel: event.ctx.clientModel,
       multiplier: event.ctx.multiplier,
@@ -648,6 +658,9 @@ export class TerminalUi {
       time: formatTime(),
       method: ctx.method,
       path: ctx.path,
+      sessionId: ctx.sessionId,
+      agentId: ctx.agentId,
+      agentOrdinal: this.agentOrdinals.ordinalFor(ctx.sessionId, ctx.agentId),
       model: ctx.resolvedModel,
       clientModel: ctx.clientModel,
       multiplier: ctx.multiplier,
@@ -661,7 +674,7 @@ export class TerminalUi {
       outputTokens: usage?.output_tokens,
       cacheReadInputTokens: usage?.cache_read_input_tokens,
       cacheCreationInputTokens: usage?.cache_creation_input_tokens,
-      // Terminal stop_reason token (`⇥end_turn` / `⇥tool_use(Bash,Edit)` / …) —
+      // Terminal stop_reason token (`end_turn` / `tool_use(Bash,Edit)` / …) —
       // success lines only; a failure carries its error in `extra` and no
       // stop_reason. Tool names are extracted from the response body.
       stopReason: isError ? undefined : finalUpstreamResponse?.stopReason,

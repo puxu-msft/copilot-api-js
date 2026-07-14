@@ -119,40 +119,41 @@ describe("formatLogLine — duration rendering", () => {
 })
 
 describe("formatLogLine — stop_reason token", () => {
-  test("renders as a `⇥<reason>` token when supplied", () => {
-    expect(stripAnsi(formatLogLine(okParts({ stopReason: "end_turn" })))).toContain("⇥end_turn")
-    expect(stripAnsi(formatLogLine(okParts({ stopReason: "tool_use" })))).toContain("⇥tool_use")
-    expect(stripAnsi(formatLogLine(okParts({ stopReason: "max_tokens" })))).toContain("⇥max_tokens")
+  test("renders as a `<reason>` token when supplied", () => {
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "end_turn" })))).toContain("end_turn")
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "tool_use" })))).toContain("tool_use")
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "max_tokens" })))).toContain("max_tokens")
   })
 
   test("is omitted entirely when no stop_reason is supplied", () => {
-    expect(stripAnsi(formatLogLine(okParts()))).not.toContain("⇥")
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "end_turn" })))).toContain("end_turn")
+    expect(stripAnsi(formatLogLine(okParts()))).not.toContain("end_turn")
   })
 
   test("sits after the token counts and before the feature tags (grey parens stay last)", () => {
     const line = stripAnsi(formatLogLine(okParts({ inputTokens: 1200, outputTokens: 200, extra: " (thinking)", stopReason: "tool_use" })))
-    // Order: ↓output → ⇥stopReason → grey tags.
-    expect(line.indexOf("↓200")).toBeLessThan(line.indexOf("⇥tool_use"))
-    expect(line.indexOf("⇥tool_use")).toBeLessThan(line.indexOf("(thinking)"))
+    // Order: ↓output → stopReason → grey tags.
+    expect(line.indexOf("↓200")).toBeLessThan(line.indexOf("tool_use"))
+    expect(line.indexOf("tool_use")).toBeLessThan(line.indexOf("(thinking)"))
   })
 
   test("dim (start/history) lines never carry the stop_reason token", () => {
-    expect(stripAnsi(formatLogLine(okParts({ isDim: true, stopReason: "end_turn" })))).not.toContain("⇥")
+    expect(stripAnsi(formatLogLine(okParts({ isDim: true, stopReason: "end_turn" })))).not.toContain("end_turn")
   })
 
-  test("tool names are appended to the token as `⇥tool_use(Bash,Edit)`", () => {
+  test("tool names are appended to the token as `tool_use(Bash,Edit)`", () => {
     const line = stripAnsi(formatLogLine(okParts({ stopReason: "tool_use", toolNames: ["Bash", "Edit"] })))
-    expect(line).toContain("⇥tool_use(Bash,Edit)")
+    expect(line).toContain("tool_use(Bash,Edit)")
   })
 
   test("repeated tool names are preserved (not deduped — call count is meaningful)", () => {
     const line = stripAnsi(formatLogLine(okParts({ stopReason: "tool_use", toolNames: ["Bash", "Bash", "Edit"] })))
-    expect(line).toContain("⇥tool_use(Bash,Bash,Edit)")
+    expect(line).toContain("tool_use(Bash,Bash,Edit)")
   })
 
   test("an empty toolNames array adds no parens", () => {
-    expect(stripAnsi(formatLogLine(okParts({ stopReason: "tool_use", toolNames: [] })))).toContain("⇥tool_use")
-    expect(stripAnsi(formatLogLine(okParts({ stopReason: "tool_use", toolNames: [] })))).not.toContain("⇥tool_use(")
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "tool_use", toolNames: [] })))).toContain("tool_use")
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "tool_use", toolNames: [] })))).not.toContain("tool_use(")
   })
 
   test("toolNames without a stop_reason render nothing (the token is gated on stopReason)", () => {

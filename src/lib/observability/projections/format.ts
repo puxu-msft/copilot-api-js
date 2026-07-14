@@ -125,7 +125,7 @@ export function formatTokens(input?: number, output?: number, cacheRead?: number
 
 /**
  * Category color for a response's terminal stop_reason, rendered as the
- * `⇥<reason>` token on completion lines. The stored value is heterogeneous
+ * `<reason>` token on completion lines. The stored value is heterogeneous
  * across upstream formats — Anthropic `stop_reason` (end_turn / tool_use /
  * max_tokens / stop_sequence / refusal / pause_turn), OpenAI chat
  * `finish_reason` (stop / length / tool_calls / function_call / content_filter),

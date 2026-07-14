@@ -1,6 +1,6 @@
 /**
  * Pure formatter for the canonical log line shape:
- *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> ⇥<stopReason>(<tools>) <extra> <retryableMeta>
+ *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> <sessionBlock> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> <stopReason>(<tools>) <extra> <retryableMeta>
  *
  * Shared source of truth for the log-line shape, consumed by
  * `~/lib/tui/terminal-ui.ts` (the TerminalUi renderer) and its `render/`
@@ -24,12 +24,23 @@ import {
   formatTokens,
   stopReasonColor,
 } from "./format"
+import { formatSessionBlock } from "./session-block"
 
 export interface LogLineParts {
   prefix: string
   time: string
   method: string
   path: string
+  /**
+   * Session-identity block fields (rendered between the duration and the upload
+   * bytes via {@link formatSessionBlock}): a `sessionId`-hashed colored glyph —
+   * `■` for the main agent, `❶❷…` for subagents. `agentId` absent → main; present
+   * → subagent numbered by `agentOrdinal` (first-seen order within the session,
+   * supplied by the caller's AgentOrdinalRegistry). No `sessionId` → no block.
+   */
+  sessionId?: string
+  agentId?: string
+  agentOrdinal?: number
   model?: string
   /** Original model name from client (shown when different from resolved model) */
   clientModel?: string
@@ -50,7 +61,7 @@ export interface LogLineParts {
   retryableMeta?: string
   /**
    * Response terminal stop_reason (e.g. "end_turn", "tool_use", "max_tokens").
-   * Rendered as a category-colored `⇥<reason>` token right after the token
+   * Rendered as a category-colored `<reason>` token right after the token
    * counts (`↓<out>`) and before {@link extra}, so the grey feature-tag parens
    * stay the trailing element. The caller supplies it only on successful
    * completion lines (a failed/aborted request has no upstream stop_reason).
@@ -59,7 +70,7 @@ export interface LogLineParts {
   stopReason?: string
   /**
    * Tool names invoked in the response, appended to the stop_reason token as
-   * `⇥tool_use(Bash,Edit)` (same category color). Rendered only when non-empty
+   * `tool_use(Bash,Edit)` (same category color). Rendered only when non-empty
    * AND {@link stopReason} is present; call order is preserved (not deduped).
    */
   toolNames?: Array<string>
@@ -84,6 +95,9 @@ export function formatLogLine(parts: LogLineParts): string {
     time,
     method,
     path,
+    sessionId,
+    agentId,
+    agentOrdinal,
     model,
     clientModel,
     multiplier,
@@ -145,6 +159,11 @@ export function formatLogLine(parts: LogLineParts): string {
   const coloredDuration = duration ? ` ${durationColorFn(duration)}` : ""
   const coloredQueueWait = queueWait ? ` ${pc.dim(`(queued ${queueWait})`)}` : ""
 
+  // Session-identity block (`■` main / `❶❷…` subagent, sessionId-hashed color),
+  // placed between the duration and the upload bytes. Empty when no sessionId.
+  const block = formatSessionBlock({ sessionId, agentId, agentOrdinal })
+  const blockPart = block ? ` ${block}` : ""
+
   // req/resp body sizes with ↑↓ arrows
   let sizeInfo = ""
   if (model) {
@@ -170,20 +189,20 @@ export function formatLogLine(parts: LogLineParts): string {
   // Dim metadata (e.g. retry strategy info) appended after the error message.
   const retryableMetaPart = retryableMeta ? ` ${pc.dim(retryableMeta)}` : ""
 
-  // Terminal stop_reason token (`⇥<reason>`), the whole token category-colored by
+  // Terminal stop_reason token (`<reason>`), the whole token category-colored by
   // stopReasonColor (green for normal end_turn, white for tool_use — cyan when the
   // response asked the user via AskUserQuestion, yellow for truncation, red for
   // refusal/error). When the response invoked tools, their names are appended as
-  // `⇥tool_use(Bash,Edit)` inside the same colored token. Placed right after the
+  // `tool_use(Bash,Edit)` inside the same colored token. Placed right after the
   // token counts and before extraPart so the grey feature-tag parens stay last.
   // Present only when the caller supplies a reason — i.e. on successful completion lines.
   const toolSuffix = toolNames && toolNames.length > 0 ? `(${toolNames.join(",")})` : ""
-  const stopReasonPart = stopReason ? ` ${stopReasonColor(stopReason, toolNames)(`⇥${stopReason}${toolSuffix}`)}` : ""
+  const stopReasonPart = stopReason ? ` ${stopReasonColor(stopReason, toolNames)(`${stopReason}${toolSuffix}`)}` : ""
 
   // Request id appended dim at the very end (only when provided, e.g. error lines) for history lookup.
   const reqIdPart = reqId ? ` ${pc.dim(reqId)}` : ""
 
   const statusAndMethod = coloredStatus ? `${coloredStatus} ${coloredMethod}` : coloredMethod
 
-  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${stopReasonPart}${extraPart}${retryableMetaPart}${reqIdPart}`
+  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${blockPart}${sizeInfo}${tokenInfo}${stopReasonPart}${extraPart}${retryableMetaPart}${reqIdPart}`
 }
