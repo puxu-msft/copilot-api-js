@@ -82,7 +82,7 @@ describe("isTerminalState / ACTIVE_STATES partition primitive", () => {
   const TERMINAL: Array<RequestLifecycleState> = ["completed", "failed", "aborted", "interrupted"]
 
   test("ACTIVE_STATES is exactly the three active states", () => {
-    expect([...ACTIVE_STATES].sort()).toEqual([...ACTIVE].sort())
+    expect(([...ACTIVE_STATES] as Array<string>).sort()).toEqual(([...ACTIVE] as Array<string>).sort())
   })
   for (const s of ACTIVE) {
     test(`${s} → active (not terminal)`, () => {
