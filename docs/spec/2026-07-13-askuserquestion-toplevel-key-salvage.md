@@ -69,13 +69,14 @@ InputValidationError: AskUserQuestion failed due to the following issue: An unex
 
 ## 3. 可观测性
 
-**落盘要求（承重）**：salvage/strip 的诊断必须走**落 history 的 per-attempt outcome 通道**（对齐既有畸形修复的 `ctx.recordRepairOutcome` → committed settle flush → 落 history `attempts`），**不用** live-only 的 `recordFeature`。理由：本 spec 立项依据正是「这类畸形在 history 里被静默转发、需事后全人群取证」（§1.1）；既有教训（recordFeature 只到 live TUI/WS、history sink 显式丢 `feature_applied`）说明 recordFeature 不落盘，若 salvage 遥测走它，未来同样无法从 history 审计「救了多少、误伤多少」，与动机自相削弱。落地时扩展 `recordRepairOutcome` 的 outcome 取值（或等价的落盘 per-attempt 通道）承载 salvage/strip 结果——具体机制交 plan，但**必须可从 history 审计**。
+**落盘要求（承重）**：salvage/strip 的诊断必须**落 history**，供事后全人群取证（§1.1 立项依据）。**实测确证的持久化通道 = `PipelineInfo`**（经 `ctx` 的 pipelineInfo merge → `request.context_updated`(field:`pipelineInfo`) 事件 → history sink 的 in-flight `updateEntry({pipelineInfo})` 落 SQLite，就是 req_439 里那个带 `preprocessing`/`sanitization` 的字段）。
 
-- salvage 命中：记 outcome（附 `unescaped:boolean`，供审计 un-escape 误伤率 / 命中率）。
-- 多 item WARN-only strip：`consola.warn` 明确「顶层 question 归属歧义、只剥离未 hoist、requestId=…」。
-- **strip 丢弃非空顶层 question（未 salvage）**：§2.1 第 3 点留痕规则——WARN + 落盘记被剥的 **question 值**（internal-tool 全量暴露、不脱敏）。
-- 兜底 header 回填：沿用现有可观测（若有）。
-- 剥离非法顶层键：记被剥键名（诊断价值）。
+**不用**以下两个通道，二者实测都**不落 history**：① `recordFeature`（history sink 对 `request.feature_applied` 显式 `return` 丢弃，[history.ts:157](../../src/lib/observability/sinks/history.ts)）；② 既有畸形修复的 `recordRepairOutcome` → `flushToolInputRepairObservability`——实测它**只**做内存 counter（`/api/status`）+ `recordFeature` + consola log，**从不写 history `attempts`**（[tool-input-repair-stats.ts:65](../../src/lib/anthropic/tool-input-repair-stats.ts)）。故「对齐既有 repair 通道就能落盘」的直觉是**错的**——既有 repair 诊断本身就不落 history；本 spec 的 salvage 诊断改走真正落盘的 `PipelineInfo` merge。落地细节（新 `PipelineInfo` 字段 + `ctx` setter 须 publish `context_updated`，仿 `setStreamTimeouts`）交 plan，但**必须可从 history 审计**。
+
+- salvage 命中：记 `pipelineInfo.askUserQuestionNormalization`（含 `salvaged`/`unescaped`，供审计 un-escape 误伤率 / 命中率）。
+- 多 item WARN-only strip：记 `multiItemAmbiguous` + `consola.warn` 明确「顶层 question 归属歧义、只剥离未 hoist、requestId=…」；被剥的非空 question 值仍记 `droppedQuestionValue`（no-data-loss，多 item 也是丢真文本）。
+- **strip 丢弃非空顶层 question（未 salvage）**：§2.1 第 3 点留痕规则——WARN + 落盘记 `droppedQuestionValue`（internal-tool 全量暴露、不脱敏）。
+- 剥离非法顶层键：记 `strippedKeys`（诊断价值）。
 
 ## 4. 测试（TDD）
 
