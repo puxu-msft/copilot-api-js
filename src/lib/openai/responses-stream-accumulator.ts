@@ -176,6 +176,11 @@ export function accumulateResponsesStreamEvent(event: ResponsesStreamEvent, acc:
           // over the concatenated deltas — the no-delta merge shape (only lifecycle + `.done`, e.g.
           // responses-nodelta.probe) carries the full arguments HERE and nowhere else, so ignoring it
           // dropped them to "". Fall back to the joined deltas only when `.done` omits them (defensive).
+          // The `.length > 0` (not just `typeof === "string"`) is DELIBERATE, not a presence-vs-empty
+          // confusion: a review flagged that a legal empty `.done.arguments` "should" win, but real GHC
+          // never sends "" with content (no-arg calls are "{}"), and treating an empty `.done` as
+          // authoritative would DROP already-captured delta content in the (delta + empty-done) shape —
+          // a richest-data-flow regression. Empty `.done` ⇒ keep the deltas. (record-not-adopted, 2026-07-14)
           arguments: typeof event.arguments === "string" && event.arguments.length > 0 ? event.arguments : tcAcc.argumentParts.join(""),
         })
       }
