@@ -1,6 +1,6 @@
 # RFC: 请求生命周期 cancel / settle / quiesce 三态分离与统一取消信号
 
-- 状态: **草案 v4(5 轮独立 GPT 对抗复核;v4 据轮 5 blocker 修:lifecycle record 删除条件 = `operationQuiesced && finalized`(非仅 finalized,否则泄漏 operation 从 drain 消失)+ 集中状态机 + sealFinalizations 顺序 invariant + §3.4/§8.3 同步有界 grace —— 待第 6 轮确认收敛 → 计划)**
+- 状态: **定稿 v4(6 轮独立 GPT 对抗复核收敛:第 6 轮 0 blocker / 0 major、verdict「可进入计划阶段」;2 处 minor 文字残留已修)→ 进入实施计划**
 - 日期: 2026-07-14
 - 关联: [docs/shutdown.md](../shutdown.md)、[docs/streaming.md](../streaming.md)、[docs/timeout-attribution-audit.md](../timeout-attribution-audit.md)、[docs/request-pipeline.md](../request-pipeline.md)
 - 取代/影响: `docs/shutdown.md` §Stale Request Reaper 与 §Shutdown 信号、`docs/DESIGN.md` 活的架构现状(超时相关行)
@@ -66,7 +66,7 @@
 1. **`cancel(reason)`** —— 请 settle-前工作停止:abort `operationSignal` + 置 `cancelled` 禁止新 attempt。幂等,不写终态。
 2. **operation-body quiesce**(`whenOperationQuiesced()`)—— 该请求拥有的 **settle-前** 工作全退出:fetch、stream、retry loop、退避 sleep、限流 sleep、token-refresh 等待、hook/preSend/onResolved 扩展点、response-side heartbeat serializer。
 3. **`settle(outcome)`** —— 冻结并发布终态(现有 complete/fail/abort,不变 wire)。发布 terminal event(触发 finalization)。
-4. **finalization drain**(`whenFinalized()`)—— settle-**后** 由 terminal event 触发的异步工作:History `finalizeEntry`、Calibration token-count、WS terminal broadcast。**复用现有 History `pendingFinalizations` drain 语义**,扩展到 Calibration/`bus.flush()`。
+4. **finalization drain**(`whenFinalized(requestId)`)—— settle-**后** 由 terminal event 触发的异步工作:History `finalizeEntry`、Calibration token-count、WS terminal broadcast **统一注册到 keyed finalization coordinator**(§3.1.1,**不**用 global `bus.flush()` 冒充 per-request join);global shutdown 另走 `drainAllFinalizations()`。
 
 **顺序不变量(强制终止 = reaper/deadline/shutdown)——有界 grace,非无限等待(修第 4 轮复核 blocker)**:
 
@@ -141,7 +141,7 @@
 
 - `RequestContext`:新增 `cancel(reason: CancelReason): void`(abort operationSignal + 置 `cancelled` 禁新 attempt)、`operationSignal: AbortSignal`(union: client/reaper/shutdown/deadline)、`trackOperationBody(p): void`(注册 settle-前 child)、`sealOperationScope(): void`(root 唯一 finally 调,此后不再登记)、`whenOperationQuiesced(): Promise<void>`(`sealed && childCount===0`,**root 不计入 childCount**)。现有 `complete/fail/abort` 保持 settle 语义、不变 wire。**`cancel` 与 settle 解耦**:强制终止路径 `cancel → race(whenOperationQuiesced, grace) → settle`。
 - finalization coordinator(keyed,§3.1.1):`registerFinalization(requestId, p)` / `sealFinalizations(requestId)` / `whenFinalized(requestId)`;global `drainAllFinalizations()`。History/Calibration/WS terminal handler 注册到同 request id。
-- `RequestContextManager`:**双 registry**——`visibleContexts`(terminal settle 即删,服务 `getAll()`/`activeCount`/UI/status,语义不变)+ `operationScopes`(finalize 后删,服务 drain);新增 `getTrackedOperations()`/`trackedOperationCount`。`getAll()`/`activeCount` **来源仍是 visibleContexts**(UI 无可观测变化)。
+- `RequestContextManager`:**双 registry**——`visibleContexts`(terminal settle 即删,服务 `getAll()`/`activeCount`/UI/status,语义不变)+ `operationScopes`(**`operationQuiesced && finalized` 后删**;Phase 4 `abandoned` 视为 operation 终局,服务 drain);新增 `getTrackedOperations()`/`trackedOperationCount`。`getAll()`/`activeCount` **来源仍是 visibleContexts**(UI 无可观测变化)。
 - `globalOperationScope`(§3.2):feature-negotiation debounce persist + 共享 token refresh 归此;shutdown `drainGlobalOperations()`(cancel debounce + flush snapshot + await chain + drain 共享 refresh)。
 - ClientSink:新增 `closeAndDrain(): Promise<void>`——暴露 serializer tail promise,quiescence 等**实际 tail**、非只清 timer(修第 3 轮 minor #8 接口未同步)。
 - `sendUpstreamHttp`:`fetchSignal` 一律含稳定 shutdown signal(删 `stream ? undefined` 分支);新增 deadline 分量(经 operationSignal)。
