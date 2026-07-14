@@ -173,6 +173,69 @@ describe("tier1 move — crash-injection idempotency", () => {
   })
 })
 
+describe("tier1 move — BLOCKER regressions (reviewer-found)", () => {
+  test("BLOCKER-1: legacy-shape main (ALTER-ordered columns) ≠ fresh archive order → explicit-column move still works", () => {
+    // Build a legacy-shape history.db: OLD core CREATE TABLE, then migrateEntriesColumns
+    // ALTER-appends the rest — reproducing the real 32 GB DB's physical column order,
+    // which differs from the fresh archive.db (SCHEMA_SQL CREATE order). A `SELECT *`
+    // cross-db copy would misalign here (FK violation); explicit column names must not.
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "tier1-legacy-"))
+    openArchiveDb(path.join(legacyDir, "archive.db"))
+    closeArchiveDb()
+    const legacy = createDatabase(path.join(legacyDir, "history.db"))
+    legacy.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+    // Pre-ALTER core shape (the columns entries_v2 had before the 15+ ADD COLUMNs).
+    legacy.exec(`CREATE TABLE entries_v2 (
+      id TEXT PRIMARY KEY, session_id TEXT, started_at INTEGER NOT NULL, ended_at INTEGER,
+      duration_ms INTEGER, model TEXT, endpoint TEXT, transport TEXT, status TEXT NOT NULL,
+      input_tokens INTEGER, output_tokens INTEGER, cache_read INTEGER, cache_creation INTEGER,
+      reasoning_tokens INTEGER, stop_reason TEXT, error_message TEXT, blob_gz BLOB NOT NULL)`)
+    legacy.exec(`CREATE TABLE entry_stages (entry_id TEXT NOT NULL, stage TEXT NOT NULL, attempt_index INTEGER NOT NULL DEFAULT -1, created_at INTEGER NOT NULL, blob_gz BLOB NOT NULL, PRIMARY KEY (entry_id, stage, attempt_index), FOREIGN KEY (entry_id) REFERENCES entries_v2(id) ON DELETE CASCADE)`)
+    legacy.exec(`CREATE TABLE msg_blob (hash TEXT PRIMARY KEY, text TEXT NOT NULL)`)
+    legacy.exec(`CREATE TABLE req_msg (req_id TEXT NOT NULL, pos INTEGER NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (req_id, pos), FOREIGN KEY (req_id) REFERENCES entries_v2(id) ON DELETE CASCADE)`)
+    legacy.exec(`CREATE TABLE req_aux (req_id TEXT NOT NULL, source TEXT NOT NULL, text TEXT NOT NULL, PRIMARY KEY (req_id, source), FOREIGN KEY (req_id) REFERENCES entries_v2(id) ON DELETE CASCADE)`)
+    migrateEntriesColumns(legacy) // ALTER-appends agent_id/pid/message_count/... at the end
+    attachArchive(legacy, path.join(legacyDir, "archive.db"))
+
+    // sanity: the two DBs really DO have different physical column order
+    const legacyCols = (legacy.prepare("PRAGMA table_info(entries_v2)").all() as Array<{ name: string }>).map((c) => c.name)
+    const archiveCols = (legacy.prepare("PRAGMA archive.table_info(entries_v2)").all() as Array<{ name: string }>).map((c) => c.name)
+    expect(legacyCols).not.toEqual(archiveCols) // order differs…
+    expect([...legacyCols].sort()).toEqual([...archiveCols].sort()) // …but same set
+
+    // seed an entry with a recognizable agent_id (a column at a DIFFERENT position in the two DBs)
+    seedEntry(legacy, "leg-1")
+    legacy.prepare("UPDATE entries_v2 SET agent_id = 'agent-xyz', message_count = 7 WHERE id = 'leg-1'").run()
+
+    expect(moveEntryToTier1(legacy, "leg-1")).toBe(true)
+    // the move must not misalign: agent_id/message_count land in the RIGHT archive columns
+    const archived = legacy.prepare("SELECT agent_id, message_count, status FROM archive.entries_v2 WHERE id = 'leg-1'").get() as {
+      agent_id: string
+      message_count: number
+      status: string
+    }
+    expect(archived.agent_id).toBe("agent-xyz")
+    expect(archived.message_count).toBe(7)
+    expect(archived.status).toBe("completed")
+
+    legacy.close()
+    fs.rmSync(legacyDir, { recursive: true, force: true })
+  })
+
+  test("BLOCKER-2: a stale archive row is OVERWRITTEN with HOT's current content (no silent loss)", () => {
+    seedEntry(main, "e1")
+    // simulate a crash-recovery window where archive has a STALE copy (old blob) but HOT
+    // was since corrected by a backfill (new blob). Overwrite semantics must win with HOT's.
+    main.prepare("INSERT INTO archive.entries_v2 (id, session_id, started_at, status, blob_gz) VALUES ('e1','sess-1',1,'completed',?)").run(new Uint8Array([9, 9, 9]))
+    main.prepare("UPDATE main.entries_v2 SET blob_gz = ? WHERE id = 'e1'").run(new Uint8Array([4, 2]))
+
+    expect(moveEntryToTier1(main, "e1")).toBe(true)
+    const archivedBlob = (main.prepare("SELECT blob_gz FROM archive.entries_v2 WHERE id = 'e1'").get() as { blob_gz: Uint8Array }).blob_gz
+    expect(Array.from(archivedBlob)).toEqual([4, 2]) // HOT's current content, NOT the stale [9,9,9]
+    expect(countMain("entries_v2", "WHERE id = 'e1'")).toBe(0)
+  })
+})
+
 describe("tier1 move — drivers + exemptions", () => {
   test("count overflow safety-valve moves oldest beyond limit, not delete", () => {
     for (let i = 0; i < 5; i++) seedEntry(main, `ok-${i}`, { status: "completed", startedAt: 1000 + i })

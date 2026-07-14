@@ -43,21 +43,49 @@ const GC_ARCHIVE_ORPHAN_MSG_BLOB_SQL =
   "DELETE FROM archive.msg_blob WHERE NOT EXISTS (SELECT 1 FROM archive.req_msg WHERE archive.req_msg.hash = archive.msg_blob.hash)"
 
 /**
- * Copy ALL of one entry's rows into archive.* in a single archive-only transaction.
- * `SELECT *` is safe here: archive.db is built from the SAME SCHEMA_SQL +
- * migrateEntriesColumns as history.db, so columns are position-identical by
- * construction (asserted by the round-trip test). INSERT OR IGNORE makes the
- * whole copy idempotent for crash re-runs.
+ * Ordered column-name list of a table. Used to build EXPLICIT-column cross-db
+ * `INSERT ... SELECT` — a bare `SELECT *` binds by POSITION, and entries_v2's
+ * physical column order differs between a fresh archive.db (SCHEMA_SQL CREATE
+ * order) and any real ALTER-upgraded history.db (ALTER appends to the end), so
+ * `SELECT *` misaligns values into the wrong columns (reviewer BLOCKER-1,
+ * reproduced on the real 32 GB DB → FK violation / corruption). Column NAMES are
+ * identical across both DBs (same schema source), so an explicit name list aligns
+ * by name regardless of physical order. Not cached — the PRAGMA is cheap and a
+ * process-global cache would risk cross-test schema poisoning.
+ */
+function columnList(main: Database, table: string): string {
+  return (main.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name).join(", ")
+}
+
+/**
+ * Copy ALL of one entry's rows into archive.* in a single archive-only transaction,
+ * OVERWRITING any pre-existing archive rows for this id so archive always reflects
+ * HOT's CURRENT content (reviewer BLOCKER-2: a crash-recovery re-run must not keep
+ * a stale archive row that a background backfill has since corrected in HOT — verify
+ * only checks counts, not content, so we make the invariant "archive == HOT now"
+ * hold by construction). EXPLICIT column names (not `SELECT *`) align by name across
+ * the two DBs' differing physical column orders (BLOCKER-1).
+ *
+ * msg_blob stays `INSERT OR IGNORE`: it is content-addressed (hash → immutable
+ * content), so a shared hash never needs overwriting and must NOT be moved (§3.5).
  */
 function copyEntryToArchive(main: Database, entryId: string): void {
+  const entriesCols = columnList(main, "entries_v2")
+  const stagesCols = columnList(main, "entry_stages")
+  const reqMsgCols = columnList(main, "req_msg")
+  const reqAuxCols = columnList(main, "req_aux")
+  const msgBlobCols = columnList(main, "msg_blob")
   const tx = main.transaction(() => {
-    main.prepare("INSERT OR IGNORE INTO archive.entries_v2 SELECT * FROM main.entries_v2 WHERE id = ?").run(entryId)
-    main.prepare("INSERT OR IGNORE INTO archive.entry_stages SELECT * FROM main.entry_stages WHERE entry_id = ?").run(entryId)
-    main.prepare("INSERT OR IGNORE INTO archive.req_msg SELECT * FROM main.req_msg WHERE req_id = ?").run(entryId)
-    main.prepare("INSERT OR IGNORE INTO archive.req_aux SELECT * FROM main.req_aux WHERE req_id = ?").run(entryId)
+    // Overwrite: drop any stale archive rows for this id first (entry_stages /
+    // req_msg / req_aux cascade from the head delete), then re-copy from HOT.
+    main.prepare("DELETE FROM archive.entries_v2 WHERE id = ?").run(entryId)
+    main.prepare(`INSERT INTO archive.entries_v2 (${entriesCols}) SELECT ${entriesCols} FROM main.entries_v2 WHERE id = ?`).run(entryId)
+    main.prepare(`INSERT INTO archive.entry_stages (${stagesCols}) SELECT ${stagesCols} FROM main.entry_stages WHERE entry_id = ?`).run(entryId)
+    main.prepare(`INSERT INTO archive.req_msg (${reqMsgCols}) SELECT ${reqMsgCols} FROM main.req_msg WHERE req_id = ?`).run(entryId)
+    main.prepare(`INSERT INTO archive.req_aux (${reqAuxCols}) SELECT ${reqAuxCols} FROM main.req_aux WHERE req_id = ?`).run(entryId)
     // COPY (not move) the content-addressed message blobs this request references.
     main
-      .prepare("INSERT OR IGNORE INTO archive.msg_blob SELECT * FROM main.msg_blob WHERE hash IN (SELECT hash FROM main.req_msg WHERE req_id = ?)")
+      .prepare(`INSERT OR IGNORE INTO archive.msg_blob (${msgBlobCols}) SELECT ${msgBlobCols} FROM main.msg_blob WHERE hash IN (SELECT hash FROM main.req_msg WHERE req_id = ?)`)
       .run(entryId)
   })
   tx()
@@ -134,7 +162,14 @@ export function gcArchiveOrphanMsgBlobs(main: Database): void {
 export function migrateEntriesToTier1(main: Database, ids: ReadonlyArray<string>): number {
   let moved = 0
   for (const id of ids) {
-    if (moveEntryToTier1(main, id)) moved++
+    // Per-entry fault isolation (reviewer MEDIUM): one entry that throws (e.g. a
+    // corrupt legacy row) must NOT abort the whole batch and wedge the pipeline —
+    // log it and continue; it stays in HOT for a later retry (fail-closed, no loss).
+    try {
+      if (moveEntryToTier1(main, id)) moved++
+    } catch (err: unknown) {
+      consola.warn(`[history/tier1] move failed for ${id} (left in HOT for retry)`, err)
+    }
   }
   if (moved > 0) gcArchiveOrphanMsgBlobs(main)
   return moved

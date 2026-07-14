@@ -114,7 +114,11 @@ function isArchiveAttached(db: Database): boolean {
   try {
     const rows = db.prepare("PRAGMA database_list").all() as Array<{ name: string }>
     return rows.some((r) => r.name === "archive")
-  } catch {
+  } catch (err: unknown) {
+    // A genuine connection fault here (vs "archive simply not attached") would
+    // silently route to the legacy DELETE path — surface it so it's diagnosable
+    // rather than masquerading as "archiving disabled".
+    consola.debug("[history/sqlite] archive-attached probe failed; falling back to legacy delete path", err)
     return false
   }
 }
