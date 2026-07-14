@@ -16,6 +16,7 @@ import {
   test,
 } from "bun:test"
 
+import { backfillAskUserQuestionHeaders } from "~/lib/anthropic/decode-tool-input-core"
 import {
   //
   buildAskUserQuestionFrames,
@@ -60,6 +61,24 @@ describe("buildAskUserQuestionResponse — stream:false variant", () => {
     const res = buildAskUserQuestionResponse(decision(oneQuestion), { model: "m", reqId: "r" })
     const block = res.content[0] as unknown as { id: string }
     expect(block.id).toMatch(/^toolu_/)
+  })
+
+  // MED-3 independent wire-shape oracle. We have NO real-Claude-Code consumption test (the
+  // "CC renders a synthetic AskUserQuestion as an interactive prompt" assumption is inherited
+  // from spec, UNVERIFIED — see task-4-report.md §MED-3). What we CAN pin independently is that
+  // the synthesized `input.questions` satisfies the SAME structural contract real CC-facing
+  // traffic must satisfy: `backfillAskUserQuestionHeaders` (written for real upstream AUQ traffic,
+  // NOT for this test) rejects a `questions[]` item that has a `header` but no `question` ("must
+  // have a question"). It backfills only when `question` is ABSENT — so if our synthesis already
+  // provides `question` on every item, this consumer returns the input by REFERENCE (===),
+  // proving the wire shape is already CC-valid without needing repair. An independent function
+  // as oracle, not a self-referential re-assertion of our own builder output.
+  test("MED-3 oracle: synthesized questions[] already satisfy CC's 'must have a question' contract (backfill is a reference no-op)", () => {
+    const res = buildAskUserQuestionResponse(decision(oneQuestion), { model: "m", reqId: "r" })
+    const block = res.content[0] as unknown as { input: { questions: Array<unknown> } }
+    const input = block.input
+    // Identity return ⟹ zero items needed a question backfilled ⟹ every item already CC-valid.
+    expect(backfillAskUserQuestionHeaders("AskUserQuestion", input)).toBe(input)
   })
 })
 
