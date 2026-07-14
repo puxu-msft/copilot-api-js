@@ -21,10 +21,12 @@ Anthropic 客户端请求 Responses-native 模型(如 gpt-5.6-sol)时,请求经 
 - **(a)** Responses reasoning 流式到底能否拿到可回传的 signed item(还是只有明文 summary)。现有探针大概率已答「只有明文」,接手者先复核 `PROBE-FINDINGS.md` Probe 2 再决定是否补测。
 - **(b)** Anthropic web_search → Responses 结果回显的 encrypted_content 闭环,客户端多轮回传是否 400(大概率是,则须坦承「单轮搜索可用、结果不可无损回显 / 降级为普通 text 块」)。
 
-## 架构表述纠正 + 需新 ADR
+## 架构:质疑 CC-as-canonical 前提本身,别把直接映射当「遗憾特例」
 
-- **不是「废除 CC hub」,而是 canonical bridge 按 cell 选**:CC 对涉及 `/chat/completions` 的腿仍是正确 canonical;只对 `(anthropic,/responses)` 和 `(openai-responses,/v1/messages)` 两个 cell 改直接。这是 CC-hub ADR(`decisions/2026-07-11-universal-codec-translation-matrix.md`)「加一格式=加一对↔CC」泛化决策的**第一个 N² 点对点特例**,须**新 ADR** 记录偏离边界(定性为针对性优化、非普适方向,否则滑向 N²)。
-- **cell 契约要显式类型化**:现 Responses outbound leg 以 `clientFormat === "openai-responses"` 判 direct,其余一律当 CC-shaped 调 `prepareViaResponsesWire`([openai-responses-cell.ts](../../src/lib/codec/openai-responses/openai-responses-cell.ts))。direct 产真 `ResponsesPayload` 会被当 CC payload 处理 → 须给 cell 引入 `wireCanonical: "responses" | "cc"` 之类显式契约,在 `resolveCellAssembly` 穷尽 Record 里显式建 direct cell,别做成 dispatch 里的隐式 if。
+> **⚠️ 反锚点警告(用户 2026-07-14 明确纠正):不要把「保住 CC hub、直接映射是要被最小化的 N² 特例」当默认框架——那是把现有代码当权威、为将就它而降格最佳方案。** 有损两跳这个诡异症状,是 CC-as-canonical 这个前提**本身错了**的证据,不是需要绕着走的约束。举证责任在那个产生诡异行为的设计一侧。
+
+- **设计轴纠正**:CC-hub 用「少写 translator(DRY)」换「数据保真」。对一个价值全在于忠实翻译的代理,这个取舍从根上是反的。「N² 爆炸」被夸大——messages↔messages/cc↔cc/responses↔responses 都是恒等,真正的点对点对没几个。正确的设计轴是「**每对用最富、无损的桥**」:**直接映射是默认理想,CC-hub 只在某条腿真的就是 `/chat/completions`(openai-cc 入站、或上游腿本身是 CC)时才合法**。接手者应认真评估「以 lossless-per-pair 为默认」重写整个 hub 抽象,而不是预设「保住 hub、只挖一个洞」。是否新写 ADR **推翻/收窄** CC-hub ADR(`decisions/2026-07-11-universal-codec-translation-matrix.md`)的适用边界,由这个第一性评估决定——不要反过来先假设 hub 该留。
+- **cell 契约要显式类型化**(不论 hub 去留都要):现 Responses outbound leg 以 `clientFormat === "openai-responses"` 判 direct,其余一律当 CC-shaped 调 `prepareViaResponsesWire`([openai-responses-cell.ts](../../src/lib/codec/openai-responses/openai-responses-cell.ts))。direct 产真 `ResponsesPayload` 会被当 CC payload 处理 → 须给 cell 引入 `wireCanonical: "responses" | "cc"` 之类显式契约,在 `resolveCellAssembly` 穷尽 Record 里显式建 direct cell,别做成 dispatch 里的隐式 if。
 
 ## 最大实现成本项(接手者须显式权衡)
 
