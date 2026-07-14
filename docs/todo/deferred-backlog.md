@@ -663,3 +663,10 @@
 - **当前行为**：grep 全仓 `resolveResponseToolNames` 仅定义处、无生产消费者，故**当前无活跃 bug**。本次（2026-07-14）已修复完成行 TUI 侧：经 `recordFeature("tool-call-recovered", { tools })` feature detail 旁路传名 + `resolveCompletionToolNames` fallback。
 - **理想架构 / 若做需改什么**：若未来 History Web UI（ui-v4）要展示 `tool_use(<names>)` token，会复现同一症状。**关键前置**：TUI 侧的名字来自 bus 实时 feature detail，而 `recordFeature` 不落 history（持久化诊断走 `pipelineInfo`，见 [[methodology-plan-verify-interface-location-and-wiring-channel]]）——故 History 侧要 fallback，须先把 recovered names 落到某个持久化通道（如 pipelineInfo 或专用列），再让 `resolveResponseToolNames` 消费。不是简单加 fallback 分支。
 - **为何暂缓**：无活跃消费者、纯前瞻；且真做需先建持久化通道（独立于本次 TUI 修复）。发现方：本次修复的 reviewer 建议（Claude reviewer，2026-07-14）。
+
+## HTTP 级真两跳 e2e：翻译型 /responses 早 message_start + 长静默（2026-07-14 记，reviewer 建议）
+
+- **根因 / 现状**：[live-reconcile-collision-e2e.test.ts](../../tests/pipeline/live-reconcile-collision-e2e.test.ts) 的「早 message_start + reasoning 静默 → 恰一个 message_start」回归用 **identity codec** 且直接注入 Anthropic `message_start` 作 upstream head，隔离了被修的 reconcile/injector 协调逻辑,但**未走真实 Responses→CC→Anthropic 两跳 translator**。
+- **当前行为**：修复正确、覆盖充分——reconcile 逻辑由 unit + 该 e2e（含 fix-stash 正样本对照）完整覆盖;承重假设「真两跳会早转发 message_start」**双证**:①代码接线确证 [cc-to-anthropic-stream.ts:142](../../src/lib/openai/translate/cc-to-anthropic-stream.ts#L142)（首个上游 chunk 惰性发 message_start）+ translate-leg sink 经 `liveReconcilingSink`（[handler-v4.ts:1421](../../src/routes/messages/handler-v4.ts#L1421)）;②生产 History 实证（req_1784035548020_524 / _564 / _719）。故非活跃缺陷。
+- **理想架构 / 若做需改什么**：加一个 HTTP 级 e2e——真实 Responses 帧 `response.created → 静默 → output frames → response.completed` 走实际 `@responses` 翻译路由,从客户端 SSE wire 经 Anthropic SDK decoder + 完整 frame-order oracle 断言「早 envelope + 长静默 + resumed block」完整序列且恰一个 `message_start`。
+- **为何暂缓**：属冗余守护（承重假设已代码+生产双证、非轶事）;价值在防未来 translator 事件顺序/flush 变更绕过 identity-codec e2e,非修当前缺陷。发现方：本次修复 reviewer 建议（GPT + Claude reviewer,2026-07-14）。
