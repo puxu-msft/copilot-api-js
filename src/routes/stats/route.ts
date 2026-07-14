@@ -44,6 +44,7 @@ import {
   type DistributionSummary,
   readCumulativeBreakdown,
   readCumulativeSketchQuantiles,
+  readJsonBackfillBoundaryTs,
   readTierBreakdown,
   readTierSketchQuantiles,
   type TierKeyCounters,
@@ -83,6 +84,10 @@ const DimensionBreakdownSchema = z
     windowDays: z.number(),
     totalKeys: z.number().int().openapi({ description: "Distinct key count before top-N truncation" }),
     truncated: z.boolean(),
+    preMigrationSketchGap: z.boolean().optional().openapi({
+      description:
+        "SQLite-tiered windows only (30d/90d/lifetime). True when the window spans the pre-migration era: legacy request-telemetry.json history was absorbed into telemetry.db WITHOUT sketch data (the old fixed buckets can't losslessly rebuild DDSketch), so per-key `distributions` for that era are absent — this flag distinguishes 'no sketch precision before migration' from 'genuinely no observations'. Scalar counters are fully absorbed and exact regardless.",
+    }),
     keys: z.array(
       z.object({
         key: z.string(),
@@ -165,14 +170,28 @@ statsRoutes.openapi(getStatsRoute, (c) => {
 
   try {
     const now = Date.now()
+    // Migration boundary (tel_meta['json_backfill_boundary_ts']): timestamp the legacy JSON was absorbed.
+    // Buckets before it carry fully-absorbed scalar counters but NO sketch data (see readJsonBackfillBoundaryTs).
+    const migrationBoundary = readJsonBackfillBoundaryTs(db)
 
     if (effectiveWindow === "lifetime") {
       const breakdown = readCumulativeBreakdown(db, dimension, effectiveLimit)
       const keys = breakdown.keys.map((entry) => toResponseKey(entry, readCumulativeSketchQuantiles(db, dimension, entry.constituentKeys)))
       // lifetime has no time-bucket concept (tel_cumulative carries no bucket dimension) — 0/0 are
       // documented sentinels, not "no data" (contrast with sinceStart/7d, where these are real values).
+      // The cumulative seed includes pre-migration history with no sketch precision → gap whenever a
+      // migration ran at all.
       return c.json(
-        { dimension, window: effectiveWindow, bucketSizeMinutes: 0, windowDays: 0, totalKeys: breakdown.totalKeys, truncated: breakdown.truncated, keys },
+        {
+          dimension,
+          window: effectiveWindow,
+          bucketSizeMinutes: 0,
+          windowDays: 0,
+          totalKeys: breakdown.totalKeys,
+          truncated: breakdown.truncated,
+          preMigrationSketchGap: migrationBoundary !== null,
+          keys,
+        },
         200,
       )
     }
@@ -190,6 +209,9 @@ statsRoutes.openapi(getStatsRoute, (c) => {
         windowDays,
         totalKeys: breakdown.totalKeys,
         truncated: breakdown.truncated,
+        // Gap only when the window's start reaches back before the migration boundary (its early buckets
+        // lack sketch data). A window entirely after migration has full sketch coverage → no gap.
+        preMigrationSketchGap: migrationBoundary !== null && sinceTs < migrationBoundary,
         keys,
       },
       200,
