@@ -26,6 +26,7 @@ import {
   createAnthropicCodec,
 } from "~/lib/codec/anthropic/codec"
 import { getRequestContextManager } from "~/lib/context/manager"
+import { resolveCellAssembly } from "~/lib/pipeline/cell-assembly"
 import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
@@ -107,7 +108,9 @@ describe("anthropic codec — parse / prepareWire / sampleRequest", () => {
     const betaProbe = createBetaProbe("beta-from-client")
     const codec = createAnthropicCodec({ betaProbe, preprocessInfo: NO_PREPROCESS })
     const env = codec.parse(rawReq(anthropicBody(), { headers: new Headers({ "content-length": "42", "anthropic-beta": "beta-from-client" }) }))
-    const wire = codec.prepareWire(env)
+    // Outbound wire preparation moved off the codec onto the (anthropic × /v1/messages) CELL
+    // (RFC 2026-07-13 inbound/outbound split); it reads the shared betaProbe from env.requestState.
+    const wire = resolveCellAssembly("anthropic", env.targetEndpoint).prepareWire(env)
 
     expect(wire.url).toBe("/v1/messages")
     expect(wire.headers).toBeInstanceOf(Headers)
@@ -116,18 +119,20 @@ describe("anthropic codec — parse / prepareWire / sampleRequest", () => {
     expect(Array.isArray(betaProbe.getCandidates())).toBe(true)
   })
 
-  test("sampleRequest yields both tracks as anthropic-messages + captures latest effective messages", () => {
+  test("sampleWireTrack yields both tracks as anthropic-messages + captures effective messages", () => {
     const codec = makeCodec()
     const env = codec.parse(rawReq(anthropicBody()))
-    const wire = codec.prepareWire(env)
-    const sample = codec.sampleRequest!(wire, env)
+    const cell = resolveCellAssembly("anthropic", env.targetEndpoint)
+    const wire = cell.prepareWire(env)
+    const sample = cell.sampleWireTrack(wire, env)
 
     expect(sample.effective.format).toBe("anthropic-messages")
     expect(sample.wire.format).toBe("anthropic-messages")
     expect(sample.effective.model).toBe("claude-sonnet-4")
     expect(Array.isArray(sample.wire.messages)).toBe(true)
-    // §12.5: latest effective messages captured for retry message-mapping rebuild.
-    expect(codec.getLatestEffectiveMessages()).toBe((env.body as MessagesPayload).messages as unknown as Array<unknown>)
+    // §12.5: the effective track carries the latest effective messages for retry message-mapping rebuild
+    // (the codec's dead getLatestEffectiveMessages accessor is gone — the sample carries it directly).
+    expect(sample.effective.messages).toBe((env.body as MessagesPayload).messages as unknown as Array<unknown>)
   })
 
   test("envelope.with() patches the given key and preserves the rest (incl. ctx + stream)", () => {

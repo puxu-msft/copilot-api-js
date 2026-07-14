@@ -33,6 +33,7 @@ import type {
   DriverRequestResult,
   FormatCodec,
   PipelineDriver,
+  PreparedRequest,
   RawHttpRequest,
   RequestInspectStage,
   RequestInspection,
@@ -198,6 +199,28 @@ function resolveExchangeStrategies(deps: DriverDeps, env: RequestEnvelope): Read
   return typeof deps.strategies === "function" ? deps.strategies(env) : (deps.strategies ?? [])
 }
 
+/**
+ * S2 translateOut: the MIGRATED cell's leg owns it for every real request; a non-migrated env (a mock/legacy
+ * driver-orchestration test codec) falls back to `deps.codec.translateOut`, or identity if the codec omits it.
+ */
+function outboundTranslateOut(deps: DriverDeps, env: RequestEnvelope): RequestEnvelope {
+  const cell = migratedCell(env)
+  if (cell) return cell.translateOut(env)
+  return deps.codec.translateOut?.(env) ?? env
+}
+
+/**
+ * S4-pre prepareWire: the MIGRATED cell's leg owns it for every real request; a non-migrated env falls back
+ * to `deps.codec.prepareWire`. A non-migrated codec that omits it is a wiring bug (a mock must provide one).
+ */
+function outboundPrepareWire(deps: DriverDeps, env: RequestEnvelope): PreparedRequest {
+  const cell = migratedCell(env)
+  if (cell) return cell.prepareWire(env)
+  const wire = deps.codec.prepareWire?.(env)
+  if (!wire) throw new Error("[driver] prepareWire unavailable — a non-migrated codec must implement it (mock/legacy fallback)")
+  return wire
+}
+
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */
 async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<DriverRequestResult> {
   // S1 — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model).
@@ -223,7 +246,7 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
     translated: decision.kind === "translate",
   })
   const routedEnv = parsed.with({ targetEndpoint })
-  const routed = (migratedCell(routedEnv) ?? deps.codec).translateOut(routedEnv)
+  const routed = outboundTranslateOut(deps, routedEnv)
 
   // S3 — Rewrite-in: assemble + run the request-rewrite chain.
   const rewritten = runRewriteIn(deps, routed)
@@ -290,7 +313,7 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   // MIGRATED cell: the assembly owns S2 translateOut / S3 requestRewrites / S4-pre prepareWire (mirrors
   // runRequest); a mock/legacy codec without requestState falls back to deps.codec / deps.requestRewrites.
   const routedEnv = parsed.with({ targetEndpoint })
-  const routed = (migratedCell(routedEnv) ?? deps.codec).translateOut(routedEnv)
+  const routed = outboundTranslateOut(deps, routedEnv)
   stages.translate = { targetEndpoint: routed.targetEndpoint, body: snapshotBody(routed.body) }
   if (stopAfter === "translate") return { stoppedAt: "translate", stages }
 
@@ -312,7 +335,7 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   // (beta-strip / server-tool-strip — only triggered by an upstream error) are invisible;
   // `note` flags that. `prepareWire` is non-pure in real codecs (betaProbe.recordOutbound /
   // ctx.recordFeature) — the caller isolates those side effects (throwaway probe + capturing ctx).
-  const wire = (migratedCell(current) ?? deps.codec).prepareWire(current)
+  const wire = outboundPrepareWire(deps, current)
   stages["prepare-wire"] = {
     url: wire.url,
     headers: Object.fromEntries(wire.headers.entries()),
@@ -357,7 +380,7 @@ async function runExchange(
       if (cell?.preSend) current = await cell.preSend(current)
       else if (deps.codec.preSend) current = await deps.codec.preSend(current)
     }
-    const wire = (cell ?? deps.codec).prepareWire(current)
+    const wire = outboundPrepareWire(deps, current)
     current.ctx.beginAttempt({ ...(activeStrategy && { strategy: activeStrategy.name }) })
     // S4 per-attempt sampling (P2.3-S): the codec / assembly derives the history effective +
     // wire request descriptors from the prepared wire + env (format-specific). The

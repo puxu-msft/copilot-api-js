@@ -567,11 +567,11 @@ interface RecordRetryPipelineStateV4Args {
  * Rebuild `setPipelineInfo` + features for an accepted retry. Mirrors the legacy
  * `recordRetryPipelineState`, but the data comes from two channels (RFC §12.4):
  *   - message-mapping baseline ← `codec.getTruncateBaseline()` (preprocessed,
- *     pre-initial-sanitize); mapping effective ← `codec.getLatestEffectiveMessages()`
- *     (sampleRequest-captured, the `action.env.body === action.payload` invariant
- *     makes it the retry's body). (The `thinking` feature is NOT rebuilt here — it
- *     is emitted per-attempt by `prepareWire` as a terminal `{requested, effective}`
- *     dimension; see codec.ts / observability console sink.)
+ *     pre-initial-sanitize); mapping effective ← `ctx.currentAttempt?.effectiveRequest?.messages`
+ *     (the per-attempt sample the anthropic-cell captured; the `action.env.body === action.payload`
+ *     invariant makes it the retry's body). (The `thinking` feature is NOT rebuilt here — it
+ *     is emitted per-attempt by the leg's wire prep as a terminal `{requested, effective}`
+ *     dimension; see anthropic-leg.ts / observability console sink.)
  *   - sanitization / strippedBetas / probedBetas ← `meta` (onMeta, post-gate).
  */
 function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void {

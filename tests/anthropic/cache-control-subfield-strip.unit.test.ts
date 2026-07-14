@@ -79,4 +79,22 @@ describe("passthrough 子字段过滤（集成）", () => {
     })
     expect(prepared.strippedCacheControlSubfields).toEqual(["scope"])
   })
+
+  test("源④ excludeCacheControlSubfields hint 经 opts 桥接剥掉非内置子字段（reactive→prepare 通道 end-to-end）", () => {
+    // A non-builtin subfield `foo` is stripped ONLY when the per-attempt hint carries it —
+    // the reactive cache-control-subfield-rejection strategy feeds it via PrepareHints →
+    // (anthropic-leg bridge) → PrepareAnthropicRequestOptions.excludeCacheControlSubfields.
+    setStateForTests({ cacheControlMode: "passthrough", copilotToken: "t", vsCodeVersion: "1.100.0", accountType: "individual" })
+    const prepared = prepareAnthropicRequest(
+      {
+        model: "claude-opus-4-8",
+        max_tokens: 1024,
+        system: [{ type: "text", text: "s", cache_control: { type: "ephemeral", foo: "x" } as never }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      },
+      { excludeCacheControlSubfields: ["foo"] },
+    )
+    const sys = prepared.wire.system as Array<{ cache_control?: unknown }>
+    expect(sys[0].cache_control).toEqual({ type: "ephemeral" }) // foo 经 hint 剥掉
+  })
 })

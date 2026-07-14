@@ -37,12 +37,8 @@
 import consola from "consola"
 
 import type { BetaProbe } from "~/lib/anthropic/pipeline"
+import type { ReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import type { RequestContext } from "~/lib/context/request"
-import type {
-  //
-  EffectiveRequest,
-  WireRequest,
-} from "~/lib/context/types"
 import type { EndpointType } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 import type {
@@ -69,9 +65,7 @@ import type {
   ClassifiedStreamError,
   ClientFrame,
   FormatCodec,
-  PreparedRequest,
   RawHttpRequest,
-  RequestSample,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
@@ -83,8 +77,6 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
-import { prepareReverseAnthropicWire } from "~/lib/codec/anthropic/anthropic-leg"
-import type { ReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -127,25 +119,14 @@ import {
   //
   createReverseStreamTranslator,
   renderResponseNonStreamingVia,
-  translateRequestVia,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 import { rebuildConversationMessages } from "~/routes/responses/conversation-rebuild"
 
-import {
-  //
-  type FallbackExchange,
-  type ResponsesFallbackScratch,
-  prepareResponsesDirectWire,
-  prepareResponsesFallbackWire,
-  sampleResponsesDirectWireTrack,
-  sampleResponsesFallbackWireTrack,
-} from "./openai-responses-leg"
+import { type ResponsesFallbackScratch } from "./openai-responses-leg"
 
 const CLIENT_FORMAT: ClientFormat = "openai-responses"
 const ENDPOINT_TYPE: EndpointType = "openai-responses"
-/** History `format` label for the REVERSE `@messages`-leg wire (the actual upstream endpoint). */
-const ANTHROPIC_MESSAGES_ENDPOINT_TYPE: EndpointType = "anthropic-messages"
 
 /**
  * The openai-responses codec, widened beyond {@link FormatCodec} with the
@@ -273,30 +254,11 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       return fallbackScratch.exchange?.responseId
     },
 
-    // S2 translateOut is identity for the direct/fallback legs (Responses-shaped body stays through
-    // S3/S4 — module docstring P2.2-D1 parity). For the fallback it ALSO sets up the per-request
-    // fallback exchange. For a REVERSE `@messages` leg (Phase 5) it delegates to the hub (two-hop
-    // Responses→CC→Anthropic body) + builds the reverse-exchange the response two-hop needs.
-    translateOut(env) {
-      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) {
-        fallbackScratch.ensure(env)
-        return env
-      }
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) {
-        ensureReverseExchange(env)
-        const anthropicBody = translateRequestVia(CLIENT_FORMAT, env.targetEndpoint, env.body, { model: env.model as Model | undefined })
-        return env.with({ body: anthropicBody })
-      }
-      return env
-    },
-
-    prepareWire(env) {
-      // REVERSE `@messages` leg: the body is Anthropic-shaped (translateOut delegated to the hub) →
-      // build the Anthropic wire (a Responses client sends no anthropic-beta; the handler's probe records
-      // the outbound betas). The direct/fallback legs stay Responses/CC.
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) return prepareReverseAnthropicWire(env, args?.reverseBetaProbe)
-      return prepareOpenAiResponsesWire(env, fallbackScratch.exchange)
-    },
+    // S2 translateOut / S4 prepareWire / S4-sample are owned by the CellAssembly's `OUTBOUND_LEGS` for every
+    // real request (direct `/responses` + fallback `/chat/completions` via the responses/cc cells, reverse
+    // `@messages` via the anthropic cell); the codec no longer implements them. The RESPONSE-side render below
+    // stays here (InboundCodec): it reads the SAME per-request fallback scratch (`env.requestState`, populated
+    // by the cell) + lazily builds the reverse-exchange (`??=`, observably equivalent to the old eager build).
 
     renderResponse(frame, env) {
       // Direct (/responses): forward the upstream Responses frame verbatim.
@@ -348,10 +310,6 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       // RFC §4.1). The direct/fallback legs' upstream is Responses-shaped.
       if (env.targetEndpoint === ENDPOINT.MESSAGES) return createAnthropicStreamAccumulator()
       return createResponsesStreamAccumulator()
-    },
-
-    sampleRequest(wire, env): RequestSample {
-      return sampleOpenAiResponsesRequest(wire, env)
     },
   }
 }
@@ -453,80 +411,6 @@ function parseContentLength(header: string | null): number | undefined {
   if (header === null) return undefined
   const n = Number.parseInt(header, 10)
   return Number.isFinite(n) ? n : undefined
-}
-
-// ============================================================================
-// S4 — prepareWire
-// ============================================================================
-
-/**
- * S4 last-mile: env → wire, dispatched by `targetEndpoint`.
- *   - `/responses` (direct): `prepareResponsesRequest`.
- *   - `/chat/completions` (fallback): Responses→CC translation + prior-conversation
- *     prepend → `prepareChatCompletionsRequest` (NO O10 fill — matches the legacy
- *     fallback's `createChatCompletions`, which does not auto-fill
- *     max_completion_tokens).
- *
- * The fallback translation lives here (not translateOut) so `env.body` stays
- * Responses-shaped for the effective history track (module docstring P2.2-D1
- * parity). It is idempotent (pure function of env.body + the once-initialized
- * `fallback` exchange), so re-running per retry yields the same wire.
- */
-function prepareOpenAiResponsesWire(env: RequestEnvelope, fallback: FallbackExchange | undefined): PreparedRequest {
-  // FALLBACK (/chat/completions): the shared Responses→CC fallback-wire leg core (C4) — prior-conversation
-  // prepend + prepareChatCompletionsRequest (no O10). DIRECT (/responses): the shared Responses-wire leg
-  // core. Same bytes the CellAssembly's OUTBOUND_LEGS[CHAT_COMPLETIONS]/[RESPONSES] build.
-  if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return prepareResponsesFallbackWire(env, fallback?.rebuiltMessages)
-
-  if (env.targetEndpoint !== ENDPOINT.RESPONSES) {
-    // Symmetric loud-fail: a `translate` decision to a leg this codec cannot serve
-    // (reverse `@messages`, Phase 5) throws instead of silently downgrading to /responses.
-    throw new Error(
-      `openai-responses codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`,
-    )
-  }
-  return prepareResponsesDirectWire(env)
-}
-
-/**
- * S4 observability (P2.3-S): derive the history-side effective + wire request
- * descriptors for one attempt.
- *
- * `effective` is the Responses-shaped logical request (`env.body` — always
- * Responses, translateOut identity), labeled `openai-responses`. Its `messages`
- * field is `[]` (a Responses payload has `input`, not `messages`) — matching the
- * legacy pipeline's `Array.isArray(p.messages) ? … : []`. `wire` is the actual
- * outbound bytes: direct = Responses (`input` items, `openai-responses`), fallback
- * = CC (`messages`, `openai-chat-completions`).
- */
-function sampleOpenAiResponsesRequest(wire: PreparedRequest, env: RequestEnvelope): RequestSample {
-  // REVERSE `@messages` leg (Phase 5): env.body + wire are Anthropic-shaped (translateOut delegated to
-  // the hub) → sample the Anthropic wire (`messages`; format label `anthropic-messages`).
-  if (env.targetEndpoint === ENDPOINT.MESSAGES) {
-    const effBody = env.body as { model?: unknown; messages?: unknown }
-    const effective: EffectiveRequest = {
-      model: typeof effBody.model === "string" ? effBody.model : "",
-      resolvedModel: env.model as Model | undefined,
-      messages: Array.isArray(effBody.messages) ? effBody.messages : [],
-      payload: env.body,
-      format: ANTHROPIC_MESSAGES_ENDPOINT_TYPE,
-    }
-    const wireBody = wire.body as { model?: unknown; messages?: unknown }
-    const wireRequest: WireRequest = {
-      model: typeof wireBody.model === "string" ? wireBody.model : "",
-      messages: Array.isArray(wireBody.messages) ? wireBody.messages : [],
-      payload: wire.body,
-      headers: Object.fromEntries(wire.headers.entries()),
-      format: ANTHROPIC_MESSAGES_ENDPOINT_TYPE,
-    }
-    return { effective, wire: wireRequest }
-  }
-
-  // FALLBACK (/chat): the shared Responses-fallback sampler (C4) — Responses effective + CC wire.
-  // DIRECT (/responses): the shared Responses-direct sampler — Responses effective + Responses wire.
-  // Same tracks the CellAssembly produces.
-  if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return sampleResponsesFallbackWireTrack(wire, env)
-  return sampleResponsesDirectWireTrack(wire, env)
 }
 
 // ============================================================================

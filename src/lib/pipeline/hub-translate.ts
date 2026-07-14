@@ -26,13 +26,19 @@
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
+import consola from "consola"
+
 import type { Model } from "~/lib/models/client"
 import type {
   //
   ClientFormat,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
-import type { ClientFrame } from "~/lib/pipeline/types"
+import type {
+  //
+  ClientFrame,
+  UpstreamFrame,
+} from "~/lib/pipeline/types"
 import type {
   //
   Message as AnthropicResponse,
@@ -40,6 +46,7 @@ import type {
 } from "~/types/api/anthropic"
 import type {
   //
+  ChatCompletionChunk,
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "~/types/api/openai-chat-completions"
@@ -243,6 +250,39 @@ export function createForwardStreamTranslator(targetEndpoint: UpstreamEndpoint, 
   throw new Error(
     `[hub-translate] createForwardStreamTranslator: the /v1/messages leg is a REVERSE leg — use createReverseStreamTranslator (dispatched on clientFormat), not the forward translator (targetEndpoint=${targetEndpoint})`,
   )
+}
+
+/**
+ * Per-request Responses→CC per-frame renderer — the FORWARD via-responses render primitive (an openai-cc /
+ * gemini client whose leg is `/responses`: the upstream is a Responses SSE stream that must be forwarded to
+ * the client as CC chunks). Bundles the stateful {@link createStreamTranslator} so callers don't manage the
+ * translator handle. `renderFrame` parses one upstream Responses frame and maps the resulting CC chunks to
+ * `message`-event ClientFrames; unparseable / `[DONE]` frames yield `[]` (the sentinel is swallowed — a
+ * per-frame translator never sees "stream end"). Extracted from the openai-cc codec so this Responses→CC
+ * rendering lives with the other hub translation primitives (RFC 2026-07-13 §11 HIGH-1).
+ */
+export interface ResponsesToCcFrameRenderer {
+  /** Translate ONE raw upstream Responses SSE frame → 0+ CC `message` ClientFrames. */
+  renderFrame(frame: UpstreamFrame): Array<ClientFrame>
+}
+
+export function createResponsesToCcFrameRenderer(): ResponsesToCcFrameRenderer {
+  const translator = createStreamTranslator()
+  return {
+    renderFrame(frame) {
+      if (!frame.data || frame.data === "[DONE]") return []
+
+      let event: ResponsesStreamEvent
+      try {
+        event = JSON.parse(frame.data) as ResponsesStreamEvent
+      } catch (err) {
+        consola.debug(`[cc←responses] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`, frame.data.slice(0, 200))
+        return []
+      }
+
+      return translator.translate(event).map((chunk: ChatCompletionChunk): ClientFrame => ({ data: JSON.stringify(chunk), event: "message" }))
+    },
+  }
 }
 
 /**
