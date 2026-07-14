@@ -832,7 +832,7 @@ export interface State {
    * When reached and an idle connection exists, the oldest idle is evicted.
    * When all connections are busy, an overflow connection is allocated with a warn log.
    */
-  readonly maxUpstreamWsConnections: number
+  readonly softMaxUpstreamWsConnections: number
 
   /**
    * Policy for handling Claude Code "Warmup" requests.
@@ -1502,19 +1502,20 @@ export function onUpstreamTransportChange(listener: () => void): () => void {
 
 export function setResponsesConfig(
   patch: Partial<
-    Pick<
-      MutableState,
-      | "normalizeResponsesCallIds"
-      | "upstreamWebSocket"
-      | "responsesBufferedRetry"
-      | "fixResponsesStreamIds"
-      | "stripImageGenerationTool"
-      | "clientWebsocketKeepOpen"
-      | "maxWsFrameBytes"
-      | "maxClientWsConnections"
-      | "maxUpstreamWsConnections"
-    >
+    Pick<MutableState, "normalizeResponsesCallIds" | "upstreamWebSocket" | "responsesBufferedRetry" | "fixResponsesStreamIds" | "stripImageGenerationTool">
   >,
+): void {
+  updateState(patch)
+}
+
+/**
+ * Client-facing Responses WS ingress config — split out of `setResponsesConfig`
+ * (server.responses_ws.* three-axis reorg). Distinct from `setUpstreamTransportConfig`'s
+ * `softMaxUpstreamWsConnections` (that governs the OUTBOUND upstream WS pool cap;
+ * this governs INBOUND client connection limits).
+ */
+export function setResponsesWsIngressConfig(
+  patch: Partial<Pick<MutableState, "clientWebsocketKeepOpen" | "maxWsFrameBytes" | "maxClientWsConnections">>,
 ): void {
   updateState(patch)
 }
@@ -1739,7 +1740,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   clientWebsocketKeepOpen: false,
   maxWsFrameBytes: 0,
   maxClientWsConnections: 256,
-  maxUpstreamWsConnections: 32,
+  softMaxUpstreamWsConnections: 32,
   warmupPolicy: "allow" as WarmupPolicy,
   effortsOverrides: {} as Record<string, Array<string>>,
   // Empty by design — the bundled `gpt-5.5: 600` product default lives in
@@ -1893,10 +1894,11 @@ export function resetConfigManagedState(): void {
     responsesBufferedRetry: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
     fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
     stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
+  })
+  setResponsesWsIngressConfig({
     clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
     maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
     maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
-    maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
   })
   // Buffered-retry caps (vendor-neutral shared + per-vendor overrides) + the
   // chat_completions mode switch. Reset via updateState (whole-object replace of
@@ -2015,7 +2017,7 @@ const mutableState: MutableState = {
   clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
   maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
   maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
-  maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
+  softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
   warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
   effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
   streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },

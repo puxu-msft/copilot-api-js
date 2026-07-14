@@ -15,6 +15,8 @@ import {
 import {
   //
   onUpstreamTransportChange,
+  setResponsesConfig,
+  setResponsesWsIngressConfig,
   setUpstreamTransportConfig,
   state,
 } from "~/lib/state"
@@ -79,5 +81,26 @@ describe("setUpstreamTransportConfig / onUpstreamTransportChange", () => {
     setUpstreamTransportConfig({ sessionConnectTimeout: 30 })
     expect(notified).toBe(0)
     unsubscribe = undefined
+  })
+})
+
+describe("setResponsesWsIngressConfig", () => {
+  afterEach(() => {
+    setResponsesWsIngressConfig({ clientWebsocketKeepOpen: false, maxWsFrameBytes: 0, maxClientWsConnections: 256 })
+  })
+
+  test("updates state fields", () => {
+    setResponsesWsIngressConfig({ clientWebsocketKeepOpen: true })
+    expect(state.clientWebsocketKeepOpen).toBe(true)
+  })
+
+  test("setResponsesConfig no longer accepts clientWebsocketKeepOpen/maxWsFrameBytes/maxClientWsConnections (compile-time narrowing, smoke-tested via runtime shape)", () => {
+    // Runtime smoke test standing in for the compile-time guarantee: passing only
+    // the fields still owned by setResponsesConfig must not throw and must not
+    // touch the WS-ingress fields.
+    const before = state.clientWebsocketKeepOpen
+    setResponsesConfig({ normalizeResponsesCallIds: true })
+    expect(state.clientWebsocketKeepOpen).toBe(before)
+    setResponsesConfig({ normalizeResponsesCallIds: false })
   })
 })

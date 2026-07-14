@@ -328,7 +328,7 @@ export function getUpstreamWsManager(): UpstreamWsManager {
     // Read the cap from runtime state on every eviction so config hot-reload
     // takes effect without recreating the manager (which would drop all
     // pooled connections).
-    maxConnections: () => state.maxUpstreamWsConnections,
+    maxConnections: () => state.softMaxUpstreamWsConnections,
   })
   return manager
 }
