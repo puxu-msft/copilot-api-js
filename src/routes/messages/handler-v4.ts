@@ -149,6 +149,7 @@ import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
   createUpstreamFrameDiagnostics,
+  logUpstreamStreamOutcomeError,
   logUpstreamStreamTruncation,
 } from "~/lib/upstream-stream-diagnostics"
 
@@ -168,7 +169,6 @@ import { retryMetaFeature } from "./retry-meta-feature"
 import {
   //
   anthropicStreamErrorType,
-  logUpstreamStreamError,
   recordUpstreamFrame,
   type StreamPumpState,
 } from "./streaming-pump"
@@ -1179,7 +1179,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // writeSynthetic samples the frame into `forwardedSseEvents`, recordForwarded snapshots it,
       // and only then does ctx.fail() freeze `inboundResponse` — a post-fail snapshot would miss it.
       const error = outcome.error
-      logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
+      logUpstreamStreamOutcomeError(outcome, { model: acc.model || model, streamState, acc, sseEvents })
       const errorMessage = error instanceof Error ? error.message : String(error)
       const errorType = anthropicStreamErrorType(error)
       // §10.5 gap (whole-branch review I-1): the live pump can stream-error BEFORE the first real
@@ -1452,7 +1452,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       // freezes inboundResponse; a post-fail snapshot misses the error frame).
       const error = outcome.error
       const errUsage = codec.getStreamMeta()?.usage
-      logUpstreamStreamError(error, {
+      logUpstreamStreamOutcomeError(outcome, {
         model,
         streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
         acc: { inputTokens: errUsage?.input_tokens ?? 0, outputTokens: errUsage?.output_tokens ?? 0 },

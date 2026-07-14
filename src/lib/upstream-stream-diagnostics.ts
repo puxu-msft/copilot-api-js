@@ -155,3 +155,23 @@ export function logUpstreamStreamError(error: unknown, ctx: UpstreamStreamSignal
 export function logUpstreamStreamTruncation(reason: string, ctx: UpstreamStreamSignals): void {
   emitDisconnect("truncated", reason, ctx)
 }
+
+/**
+ * Route a buffered-path `stream-error` {@link ResponseOutcome} to the correct disconnect diagnostic.
+ *
+ * The buffered driver (`runResponseBufferedSink`) folds BOTH a real thrown transport error AND a
+ * clean-EOF truncation (retries exhausted on an upstream that keeps draining without a terminal) into a
+ * single `stream-error` outcome, distinguishing them with `truncated`. A truncation's error is a
+ * synthetic placeholder with no meaningful cause chain, so running it through `classifyStreamError`
+ * (→ `other` → `transport-close`) would MISLABEL it. This routes `truncated:true` to the fixed
+ * `truncated` label — keeping HIGH-1's `kind=truncated` uniform across the plain owns-sink leg (which
+ * detects truncation structurally via `finishReason`/`message_stop`) AND the buffered leg. Callers pass
+ * the narrowed stream-error outcome inside their `outcome.kind === "stream-error"` branch.
+ */
+export function logUpstreamStreamOutcomeError(outcome: { error: unknown; truncated?: boolean }, ctx: UpstreamStreamSignals): void {
+  if (outcome.truncated) {
+    logUpstreamStreamTruncation(outcome.error instanceof Error ? outcome.error.message : String(outcome.error), ctx)
+  } else {
+    logUpstreamStreamError(outcome.error, ctx)
+  }
+}

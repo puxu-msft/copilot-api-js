@@ -70,7 +70,7 @@ import { createUpstreamResponsesTransport } from "~/lib/transport/responses-tran
 import {
   //
   createUpstreamFrameDiagnostics,
-  logUpstreamStreamError,
+  logUpstreamStreamOutcomeError,
   logUpstreamStreamTruncation,
 } from "~/lib/upstream-stream-diagnostics"
 
@@ -458,7 +458,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     const error = outcome.error
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
-    logUpstreamStreamError(error, {
+    logUpstreamStreamOutcomeError(outcome, {
       model: acc.model || resolvedModel,
       streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
       acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },

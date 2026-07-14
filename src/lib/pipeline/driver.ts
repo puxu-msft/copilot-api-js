@@ -947,7 +947,7 @@ export async function runResponseBufferedSink(
         // M1: a post-retreat truncation still leaves the anchor open (it was injected during an idle stall
         // before the retreat) → close it before surfacing the stream-error.
         await closeAnchorIfOpen()
-        return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
+        return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop"), truncated: thrown == null }
       }
 
       // COMMIT on a clean drain that reached a TERMINAL upstream state: `message_stop` (success)
@@ -1026,7 +1026,7 @@ export async function runResponseBufferedSink(
       // `exhausted` (which committed nothing). On the terminal-only path `committedAny` is always
       // false → `exhausted`, unchanged (R1).
       opts.onBufferedResolve?.(committedAny ? "partial-degrade" : "exhausted", attempt, { vendor })
-      return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
+      return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop"), truncated: thrown == null }
     }
   } finally {
     sink.close?.()

@@ -591,11 +591,17 @@ export interface ClientSink {
  *     frame, logs the disconnect diagnostic, and settles `ctx.fail` — none of which the
  *     format-agnostic driver can do without losing fidelity (a lossy `{type,message}`
  *     summary would drop the error's cause chain + force a re-classification).
+ *     `truncated:true` marks the buffered-path variant where the failure is a CLEAN drain
+ *     WITHOUT a terminal (a truncation, not a thrown transport error — the synthetic error
+ *     carries no meaningful cause chain). The handler routes it to the `truncated`
+ *     disconnect label instead of `classifyStreamError` (which would relabel it
+ *     `transport-close`), keeping HIGH-1's `kind=truncated` uniform across the plain AND
+ *     buffered legs. Absent/false → a real thrown error (`transport-close`).
  *   - `settled-abort` — the throw was a client disconnect (`classifyStreamError ===
  *     "client-abort"`). The downstream stream is dead, so the handler writes ZERO further
  *     bytes and settles `ctx.abort` (B0-d "abort → zero bytes").
  */
-export type ResponseOutcome = { kind: "complete"; headers: Headers } | { kind: "stream-error"; error: unknown } | { kind: "settled-abort" }
+export type ResponseOutcome = { kind: "complete"; headers: Headers } | { kind: "stream-error"; error: unknown; truncated?: boolean } | { kind: "settled-abort" }
 
 /**
  * Orchestrates the stage sequence, publishing events + sampling raw data at
