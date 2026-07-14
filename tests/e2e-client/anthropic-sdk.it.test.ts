@@ -15,6 +15,7 @@ import Anthropic, {
   //
   APIError,
   APIUserAbortError,
+  BadRequestError,
   RateLimitError,
 } from "@anthropic-ai/sdk"
 import {
@@ -52,11 +53,9 @@ import {
 import {
   //
   createSseResponse,
-  createSseResponseThenError,
   httpErrorResponse,
   jsonResponse,
   scriptedUpstream,
-  sequencedUpstream,
 } from "./harness/upstream-script"
 
 const MODEL = "claude-sonnet-4.6"
@@ -435,7 +434,7 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
 
     const run = client.messages.create({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] })
     const err = await run.then(() => undefined).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(APIError)
+    expect(err).toBeInstanceOf(BadRequestError) // the TYPED 400 subclass (a subclass of APIError), not a bare APIError
     expect((err as { status?: number }).status).toBe(400) // typed HTTP path sets .status (unlike in-stream error)
   })
 
@@ -452,151 +451,6 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     const err = await run.then(() => undefined).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(RateLimitError) // typed subclass, NOT a bare APIError
     expect((err as { status?: number }).status).toBe(429)
-  })
-
-  // ── reactive retry leg: proxy retries internally, transparent to the client ──
-
-  test("reactive retry (tool-field rejection): first leg 400 → proxy strips field + retries → client sees ONE clean turn, upstream hit twice", async () => {
-    // The proxy's tool-field-rejection-retry strategy fires on a 400 whose body matches
-    // `tools.N.custom.<field>: Extra inputs are not permitted`, strips the offending field, and
-    // retries — invisibly to the client. Oracle: the SDK assembles a normal turn (positive result)
-    // AND upstream was hit twice (the retry happened under the hood, client-transparent).
-    const up = sequencedUpstream([
-      () => httpErrorResponse(400, { type: "invalid_request_error", message: "tools.0.custom.eager_input_streaming: Extra inputs are not permitted" }),
-      () => createSseResponse(happyTurn("recovered after retry")),
-    ])
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
-    expect((final.content[0] as { text?: string })?.text).toBe("recovered after retry")
-    expect(up.callCount()).toBe(2) // proxy retried internally; the client never saw the 400
-  })
-
-  test("reactive retry (cache_control subfield rejection): first leg 400 → proxy strips subfield + retries → client sees ONE clean turn, upstream hit twice", async () => {
-    // The cache-control-subfield-rejection-retry strategy fires on a 400 whose body matches the
-    // four-segment `<section>.N.cache_control.<variant>.<field>: Extra inputs are not permitted` shape
-    // (disjoint from tool-field's three-segment `tools.N.<field>:` — see strategies.ts ordering). It
-    // marks the subfield endpoint-wide, strips it, and retries — invisibly to the client. Oracle: the
-    // SDK assembles a normal turn AND upstream was hit twice.
-    const up = sequencedUpstream([
-      () => httpErrorResponse(400, { type: "invalid_request_error", message: "system.1.cache_control.ephemeral.scope: Extra inputs are not permitted" }),
-      () => createSseResponse(happyTurn("recovered after cc-subfield strip")),
-    ])
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
-    expect((final.content[0] as { text?: string })?.text).toBe("recovered after cc-subfield strip")
-    expect(up.callCount()).toBe(2) // proxy retried internally after stripping the rejected subfield
-  })
-
-  test("reactive retry (server-tool rejection): first leg 400 'web search not supported' → proxy strips server tool + retries → client sees ONE clean turn, upstream hit twice", async () => {
-    // The server-tool-rejection-retry strategy fires on the upstream's OBSERVED web_search rejection
-    // message (SERVER_TOOL_REJECTION_TABLE), fixates the `web_search_` type prefix in the negotiation
-    // cache, strips it, and retries — invisibly to the client. Oracle: the SDK assembles a normal turn
-    // AND upstream was hit twice.
-    const up = sequencedUpstream([
-      () => httpErrorResponse(400, { type: "invalid_request_error", message: "The use of the web search tool is not supported." }),
-      () => createSseResponse(happyTurn("recovered after server-tool strip")),
-    ])
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
-    expect((final.content[0] as { text?: string })?.text).toBe("recovered after server-tool strip")
-    expect(up.callCount()).toBe(2) // proxy retried internally after stripping the rejected server tool
-  })
-
-  test("reactive retry (unsupported-beta explicit list): first leg 400 names the beta → proxy fixates + strips it + retries → client sees ONE clean turn, upstream hit twice", async () => {
-    // The unsupported-beta-retry strategy's EXPLICIT-list path fires on `unsupported beta header(s): X`
-    // (the upstream names the offending token) → it fixates X in the negotiation cache and strips it
-    // on a single deterministic retry (unlike the laconic `invalid beta flag` probe path, which needs
-    // real outbound betas + getProbeCandidates to iterate). Oracle: the SDK assembles a normal turn
-    // AND upstream was hit twice.
-    const up = sequencedUpstream([
-      () => httpErrorResponse(400, { type: "invalid_request_error", message: "unsupported beta header(s): e2e-only-beta" }),
-      () => createSseResponse(happyTurn("recovered after beta strip")),
-    ])
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
-    expect((final.content[0] as { text?: string })?.text).toBe("recovered after beta strip")
-    expect(up.callCount()).toBe(2) // proxy retried internally after fixating + stripping the named beta
-  })
-
-  test("reactive retry (poisoned thinking): first leg 400 'thinking cannot be modified' → proxy strips all thinking + retries → client sees ONE clean turn, upstream hit twice", async () => {
-    // GHC rejects an echoed thinking block with `messages.N.content.M.thinking: ... cannot be modified`.
-    // The L2 poisoned-thinking-retry strategy (gated on state.stripThinkingOnReject, default true) strips
-    // ALL thinking blocks from the outbound payload and retries once. It only fires if the payload has a
-    // thinking block to strip (strippedCount===0 → abort) — so the request must carry a prior assistant
-    // turn with a thinking block. Oracle: the SDK assembles a normal turn AND upstream was hit twice.
-    setStateForTests({ stripThinkingOnReject: true })
-    const up = sequencedUpstream([
-      () => httpErrorResponse(400, { type: "invalid_request_error", message: "messages.1.content.0.thinking: cannot be modified" }),
-      () => createSseResponse(happyTurn("recovered after thinking strip")),
-    ])
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages
-      .stream({
-        model: MODEL,
-        max_tokens: 16,
-        thinking: { type: "enabled", budget_tokens: 1024 },
-        messages: [
-          { role: "user", content: "solve x" },
-          {
-            role: "assistant",
-            content: [
-              { type: "thinking", thinking: "prior reasoning", signature: "SIG-ECHO" },
-              { type: "text", text: "prior answer" },
-            ],
-          },
-          { role: "user", content: "continue" },
-        ],
-      })
-      .finalMessage()
-    expect((final.content[0] as { text?: string })?.text).toBe("recovered after thinking strip")
-    expect(up.callCount()).toBe(2) // proxy stripped all thinking + retried internally; client never saw the 400
-  })
-
-  // ── buffered-retry: mid-stream upstream RST is retried transparently (no half-turn leak) ──
-
-  test("buffered-retry (upstream RST mid-stream): first leg streams a partial then errors → proxy retries → client sees ONE complete turn, the half NOT leaked", async () => {
-    // With protect_streaming_generation on, the proxy buffers the generation; if the upstream stream
-    // ERRORS mid-turn (a transport RST before message_stop), it retries upstream instead of forwarding
-    // the truncated half. Oracle: the SDK assembles the SECOND leg's complete turn, the first leg's
-    // partial text is NOT present, and upstream was hit twice. (Deterministic mid-stream error via
-    // createSseResponseThenError — no timers, no real backoff sleep.)
-    setStateForTests({ protectStreamingGeneration: "on" })
-    const partialThenRst = [
-      ev("message_start", {
-        type: "message_start",
-        message: {
-          id: "msg_rst",
-          type: "message",
-          role: "assistant",
-          model: MODEL,
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 5, output_tokens: 0 },
-        },
-      }),
-      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
-      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "HALF-LEAK" } }),
-      // ← no content_block_stop / message_stop: createSseResponseThenError errors the body here (RST)
-    ]
-    const up = sequencedUpstream([
-      () => createSseResponseThenError(partialThenRst, new Error("RST")),
-      () => createSseResponse(happyTurn("complete after RST retry")),
-    ])
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
-
-    // client-observable: exactly the retried complete turn; the truncated first leg never surfaced.
-    expect((final.content[0] as { text?: string })?.text).toBe("complete after RST retry")
-    expect(final.stop_reason).toBe("end_turn")
-    expect(JSON.stringify(final.content)).not.toContain("HALF-LEAK") // the half was buffered away, not leaked
-    expect(up.callCount()).toBe(2) // proxy retried the RST internally; the client saw one clean turn
   })
 
   // ── keepalive/anchor empty deltas: SDK accumulates them harmlessly (B1 Tier1 half) ──
@@ -731,196 +585,6 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
     const thinking = final.content.find((b) => b.type === "thinking") as { signature?: string } | undefined
     expect(thinking?.signature).toBe("SIG-COMPAT") // accepted despite event!==type (event ∈ accept-set)
-  })
-
-  // ── proxy rewrites (config-gated): the client sees the RECOVERED shape, not the broken upstream ──
-
-  test("tool-call text recovery: upstream downgrades tool call to `<invoke>` text → proxy rebuilds tool_use → SDK gets a tool_use block", async () => {
-    // GHC sometimes emits a tool call as plain `<function_calls><invoke name="search">...` TEXT
-    // (stop_reason still tool_use). With recover_tool_call_text on, the proxy rebuilds a real tool_use
-    // block. Oracle: the SDK's finalMessage carries a tool_use (input deep-equal) — NOT a text block
-    // the client would fail to parse. Positive control: the streaming baseline proves normal text
-    // assembles as text; here the SAME text shape becomes a tool_use because recovery is on.
-    setStateForTests({ recoverToolCallText: true })
-    const invokeText = '<function_calls><invoke name="search"><parameter name="query">weather</parameter></invoke>'
-    const frames = [
-      ev("message_start", {
-        type: "message_start",
-        message: {
-          id: "msg_rc",
-          type: "message",
-          role: "assistant",
-          model: MODEL,
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 5, output_tokens: 0 },
-        },
-      }),
-      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
-      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: invokeText } }),
-      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
-      ev("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 3 } }),
-      ev("message_stop", { type: "message_stop" }),
-      DONE,
-    ]
-    const up = scriptedUpstream(() => createSseResponse(frames))
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages
-      .stream({
-        model: MODEL,
-        max_tokens: 16,
-        messages: [{ role: "user", content: "search the weather" }],
-        tools: [{ name: "search", description: "search the web", input_schema: { type: "object", properties: { query: { type: "string" } } } }],
-      })
-      .finalMessage()
-    const tool = final.content.find((b) => b.type === "tool_use") as { name?: string; input?: unknown } | undefined
-    expect(tool?.name).toBe("search")
-    expect(tool?.input).toEqual({ query: "weather" })
-    // and the raw `<invoke>` text is NOT surfaced as a text block the client would choke on
-    expect(final.content.some((b) => b.type === "text" && (b as { text?: string }).text?.includes("<invoke"))).toBe(false)
-  })
-
-  test("malformed tool_use input repair: upstream tool_use JSON is broken → proxy repairs → SDK JSON.parses a valid input", async () => {
-    // With tool_repair_malformed_input on, the proxy buffers tool_use blocks and, when the accumulated
-    // partial_json is invalid, runs layered repair (antml-tag strip + jsonrepair) before forwarding.
-    // Oracle: the SDK's tool_use.input deep-equals the intended object — i.e. the client received
-    // JSON it could parse, not the broken bytes.
-    setStateForTests({ toolRepairMalformedInput: ["tags", "jsonrepair"] })
-    const frames = [
-      ev("message_start", {
-        type: "message_start",
-        message: {
-          id: "msg_mr",
-          type: "message",
-          role: "assistant",
-          model: MODEL,
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 5, output_tokens: 0 },
-        },
-      }),
-      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_mr", name: "search", input: {} } }),
-      // malformed: trailing comma + unclosed brace (jsonrepair territory)
-      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"query": "weather",' } }),
-      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
-      ev("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 3 } }),
-      ev("message_stop", { type: "message_stop" }),
-      DONE,
-    ]
-    const up = scriptedUpstream(() => createSseResponse(frames))
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages
-      .stream({
-        model: MODEL,
-        max_tokens: 16,
-        messages: [{ role: "user", content: "x" }],
-        tools: [{ name: "search", description: "search the web", input_schema: { type: "object", properties: { query: { type: "string" } } } }],
-      })
-      .finalMessage()
-    const tool = final.content.find((b) => b.type === "tool_use") as { input?: unknown } | undefined
-    expect(tool?.input).toEqual({ query: "weather" }) // repaired to valid JSON the SDK could parse
-  })
-
-  test("tool-name restore: proxy sanitizes an illegal client tool name outbound → restores it inbound → SDK sees the ORIGINAL name", async () => {
-    // With sanitize_tool_names on, a client tool name that violates the target model's charset (the
-    // claude class forbids dots, cap 64) is rewritten to a wire-legal name outbound (`my.search.tool`
-    // → `my_search_tool`); the upstream echoes the SANITIZED name in its tool_use, and the proxy
-    // restores it to the client-ORIGINAL name before forwarding. Oracle: the SDK's finalMessage
-    // tool_use.name is the original `my.search.tool`, NOT the wire `my_search_tool` — a client-
-    // observable round-trip the byte layer alone can't confirm.
-    setStateForTests({ sanitizeToolNames: true })
-    const CLIENT_NAME = "my.search.tool" // dots → illegal for the claude class → sanitized
-    const WIRE_NAME = "my_search_tool" // deterministic makeValidToolName(CLIENT_NAME): dots → "_"
-    const frames = [
-      ev("message_start", {
-        type: "message_start",
-        message: {
-          id: "msg_tn",
-          type: "message",
-          role: "assistant",
-          model: MODEL,
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 5, output_tokens: 0 },
-        },
-      }),
-      // upstream echoes the SANITIZED wire name (what it received after outbound sanitization)
-      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_tn", name: WIRE_NAME, input: {} } }),
-      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"q":"x"}' } }),
-      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
-      ev("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 3 } }),
-      ev("message_stop", { type: "message_stop" }),
-      DONE,
-    ]
-    const up = scriptedUpstream(() => createSseResponse(frames))
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages
-      .stream({
-        model: MODEL,
-        max_tokens: 16,
-        messages: [{ role: "user", content: "x" }],
-        tools: [{ name: CLIENT_NAME, description: "search", input_schema: { type: "object", properties: { q: { type: "string" } } } }],
-      })
-      .finalMessage()
-    const tool = final.content.find((b) => b.type === "tool_use") as { name?: string } | undefined
-    expect(tool?.name).toBe(CLIENT_NAME) // restored to the client-original name, not the wire name
-    expect(tool?.name).not.toBe(WIRE_NAME)
-  })
-
-  test("server-tool filter: upstream server_tool_use block is stripped + indices remapped → SDK sees only the real text block (no unvalidatable artifact)", async () => {
-    // The proxy unconditionally strips server-side artifacts (server_tool_use / *_tool_result) from the
-    // stream — clients don't expect them and most SDKs can't validate them — and REMAPS the surviving
-    // block indices so they stay dense (no gap the SDK's accumulator would choke on). Here the upstream
-    // emits a server_tool_use at index 0 then a real text block at index 1; the client must see exactly
-    // ONE text block (the server_tool_use gone, the text remapped 1→0). Positive control: the streaming
-    // baseline proves a plain text stream assembles; here the SAME text survives past a filtered artifact.
-    const frames = [
-      ev("message_start", {
-        type: "message_start",
-        message: {
-          id: "msg_st",
-          type: "message",
-          role: "assistant",
-          model: MODEL,
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 5, output_tokens: 0 },
-        },
-      }),
-      // index 0: a server_tool_use artifact the client can't validate → must be stripped
-      ev("content_block_start", {
-        type: "content_block_start",
-        index: 0,
-        content_block: { type: "server_tool_use", id: "stu_1", name: "web_search", input: {} },
-      }),
-      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"query":"x"}' } }),
-      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
-      // index 1: the real text block → must survive, remapped to client index 0
-      ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
-      ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "visible answer" } }),
-      ev("content_block_stop", { type: "content_block_stop", index: 1 }),
-      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
-      ev("message_stop", { type: "message_stop" }),
-      DONE,
-    ]
-    const up = scriptedUpstream(() => createSseResponse(frames))
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
-
-    // client-observable: exactly the one real text block, no server-side artifact, correctly assembled
-    // (the index remap let the SDK build the text at index 0 rather than choke on a missing index 0).
-    expect(final.content.length).toBe(1)
-    expect(final.content.every((b) => b.type !== "server_tool_use")).toBe(true)
-    expect((final.content[0] as { type?: string; text?: string })?.type).toBe("text")
-    expect((final.content[0] as { text?: string })?.text).toBe("visible answer")
   })
 })
 

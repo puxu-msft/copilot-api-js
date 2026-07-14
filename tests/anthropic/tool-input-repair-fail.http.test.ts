@@ -211,6 +211,16 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
 
     expect(dataFramesOfType(sse, "error")).toHaveLength(0)
     expect(dataFramesOfType(sse, "message_stop")).toHaveLength(1)
+    // Byte-lock the FORWARDED repaired partial_json: the antml-bleed (`</parameter></invoke>`) is stripped so
+    // the client receives VALID JSON that parses to the intended object (not the broken upstream bytes).
+    // This is the success-forward oracle a client-e2e used to cover via the SDK's JSON.parse — asserted
+    // directly on the wire here (the SDK parsing valid JSON is baseline-trivial, so no e2e needed).
+    const forwardedJson = dataFramesOfType(sse, "content_block_delta")
+      .map((f) => (f.delta as { partial_json?: string } | undefined)?.partial_json)
+      .filter((s): s is string => typeof s === "string")
+      .join("")
+    expect(forwardedJson).not.toContain("</parameter>") // the antml-bleed never reaches the client
+    expect(JSON.parse(forwardedJson) as { todos: Array<unknown> }).toEqual({ todos: [{ content: "x", status: "pending", activeForm: "y" }] })
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId, limit: 5 }).entries[0]
     expect(entry.state).toBe("completed")
     expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
