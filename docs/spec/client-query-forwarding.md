@@ -40,7 +40,7 @@ Step 2 剩余（schema.ts + config.ts + hot-reload 矩阵）+ Step 3–10。详�
 ### 注入链（关键：主路径 ctx 在 codec.parse 内，不在 handler 入口）
 1. handler 入口从 `c.req.url` 取 raw query → 经 state 开关 + `filterUpstreamQuery` 算 forwarded → 塞进构造的 `RawHttpRequest.query`。
 2. `driver.runRequest(raw)` 已把 raw 整体透传给 `codec.parse(raw)`（见 `src/lib/pipeline/driver.ts` 的 `runRequest`），**driver 本体无需改**。
-3. 4 个 `codec.parse` 内的 `manager.create(...)` 透传 query 给 ctx（codec 文件：`src/lib/codec/anthropic/codec.ts`、`openai-cc/codec.ts`、`openai-responses/codec.ts`、`openai-gemini/codec.ts`）。
+3. 4 个 `codec.parse` 内的 `manager.create(...)` 透传 query 给 ctx（codec 文件：`src/lib/codec/anthropic/codec.ts`、`openai-cc/codec.ts`、`openai-responses/codec.ts`、`gemini/codec.ts`）。
 4. web_search 旁路第 5 处 `manager.create`（`createWebSearchContext`，在 `src/routes/messages/handler-v4.ts`）同样传 query。
 5. transport adapter 拼 `endpointPath: wire.url + ctx.query.forwarded`。
 6. web_search 第二跳上游（独立 `src/lib/anthropic/client.ts` 的 `createAnthropicMessages`，不走 adapter）从 `reqCtx.query.forwarded` 单独拼接。

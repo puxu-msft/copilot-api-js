@@ -9,8 +9,8 @@
  * WHY this is missing (RFC §0.1 / C0-c): the existing gemini via-responses byte golden (gemini-v4:242) is
  * NON-streaming. There is NO streaming two-hop TERMINAL byte golden. C4/HIGH-1 EXTRACTED the Responses→CC
  * per-frame primitive (formerly the openai-cc codec's private `renderResponsesFrameToCc`, now the hub factory
- * `createResponsesToCcFrameRenderer` wrapping `createStreamTranslator`) into the hub so the gemini InboundCodec
- * can hold the intermediate translator state independently — this golden
+ * `createResponsesToCcFrameRenderer` wrapping `createStreamTranslator`) into the hub as a shared primitive the
+ * openai-cc codec — and gemini via its internal cc delegate — reuse — this golden
  * locks the exact forwarded Gemini SSE (esp. the terminal usageMetadata frame) so that extraction stays
  * byte-identical.
  */
