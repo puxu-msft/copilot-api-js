@@ -56,7 +56,7 @@ upstream_transport:
                                  # 注：proxy 场景只保护「本机↔proxy」那段 TCP，不保证远端 GHC session 不被应用层 idle reaper 回收（那靠 h2 ping）。
   http2:
     ping_interval: 15            # L7 h2 PING（秒）。0=禁用。best-effort（ack 忽略）。两 runtime 都生效（非 Node-only）。
-    session_connect_timeout: 10  # h2 建连 deadline（秒）。暂留 h2 段——见决策 D3。
+    session_connect_timeout: 10  # h2 **每建连阶段** 上限（秒），非总 deadline：proxy 路 CONNECT 与 upstream TLS 各吃一次，最坏 wall-clock ≈ 2×。暂留 h2 段——见 D3。
   websocket:
     pooled_connection_idle_timeout: 300  # 池中空闲 WS 连接回收（秒）。与 timeouts.stream_idle 是两码事（后者是在途请求静默）。
     soft_max_connections: 32     # 上游 WS 池软上限：全忙时允许溢出，非硬拒绝。0=无限。
@@ -79,16 +79,24 @@ openai_responses:
 
 - **D1 三轴归位**：配置主轴是「请求生命周期看门狗 / upstream egress / client-facing ingress」，而非「timeout vs transport」的二元。section 名（`timeouts` / `upstream_transport` / `server`）本身表达方向与职责，不靠注释解释「transport 严格只管 upstream」。
 - **D2 非完全正交、单向依赖须写准**：`timeouts.response_header` / `stream_idle` 会 ×1.5 派生 undici 的 `headersTimeout` / `bodyTimeout`（safety ceiling），dispatcher 随其变化重建（[src/lib/state.ts](../../src/lib/state.ts)、[src/lib/proxy.ts:94](../../src/lib/proxy.ts#L94)）；但 per-model overrides **不**传播到 dispatcher（ADR 2026-07-12）。文档写明这条**单向**依赖，不宣称二层实现完全独立（防再次 doc-code 漂移）。
-- **D3 `connect_timeout` 留 h2 段、不进 common**：当前只有 h2 接线，且 proxy 路 CONNECT 与 upstream TLS handshake **各吃一次** 同值 timeout（[proxy-connect.ts:41](../../src/lib/transport/proxy-connect.ts#L41) + [http2-client.ts:97,153](../../src/lib/transport/http2-client.ts#L97)），wall-clock 近 2 倍。叫 `common.connect_timeout` 会承诺三协议统一 wall-clock deadline 而实际没有——是假旋钮。故命名 `http2.session_connect_timeout`。**未来**当 HTTP/1.1 + WS 也接上「从拨号到连接可用的单一 wall-clock budget（各阶段共享 remaining budget、不每阶段重置）」后，再提升进 common。
+- **D3 `connect_timeout` 留 h2 段、命名 `session_connect_timeout`、不进 common**：当前只有 h2 接线，且 proxy 路 CONNECT 与 upstream TLS handshake **各吃一次** 同值 timeout（[proxy-connect.ts:41](../../src/lib/transport/proxy-connect.ts#L41) + [http2-client.ts:97,153](../../src/lib/transport/http2-client.ts#L97)），是**每阶段（per-stage）上限**、非总 deadline，proxy 路最坏 wall-clock ≈ 2×。叫 `common.connect_timeout` 会承诺三协议统一 wall-clock deadline 而实际没有——是假旋钮。schema/config 行内注释**必须写明 per-stage + proxy 最坏 2×**（防被读成总 deadline）。**未来**当 HTTP/1.1 + WS 也接上「从拨号到连接可用的单一 wall-clock budget（各阶段共享 remaining budget、不每阶段重置）」后，再提升进 common（届时或重命名为总-deadline 语义）。
 - **D4 WS 无 keepalive 键**：schema 注释写「没有配置键，因为当前没有跨 runtime、经实证有效的 upstream WS keepalive primitive」；capability 经 status/诊断暴露（如 `wsApplicationKeepalive: "unavailable"`），但**不把 capability 伪装成 config**。将来若两 runtime 都有实现，须先 PoC 证「控制帧确实延长 GHC 连接寿命」再加键，不能仅凭 `.ping()` 存在。
 - **D5 `0` 语义统一（用户裁决）**：全 transport 键统一 **absence = 项目默认 / `0` = 明确禁用 / 正数 = 值**。消除现状隐藏分叉——现状 `0` 在 undici 路→undici 内建 60s、在 h2 路→`DEFAULT_KEEPALIVE_MS` 15s（[proxy.ts:71](../../src/lib/proxy.ts#L71) vs [http2-client.ts:87](../../src/lib/transport/http2-client.ts#L87)），且 `0` **从不是禁用**。统一后 `tcp_keepalive_probe_delay` 的项目默认取 15（h2 现值，为对抗 ~30s reaper 调优过），undici 路也须改为遵循同默认 + 支持 `0=keepAlive:false` 真禁用。
 - **D6 ingress 整组迁（用户裁决）**：新建窄 `server.responses_ws` 段，`client_ws_keep_open` + `max_client_ws_connections` + `max_ws_frame_bytes` **三键整组**迁入，不留半吊子。`openai_responses.upstream_ws` 作为 endpoint 路由开关留在 Responses 域。
-- **D7 热重载主动 reconcile（用户裁决）**：不满足于「仅新连接生效」。逐键定生效策略：
-  - capacity（`soft_max_connections` / `server.responses_ws.max_connections`）：立即应用，必要时主动回收超额 idle 连接。
-  - `pooled_connection_idle_timeout`：重新调度当前 idle 连接的回收计时。
-  - `http2.ping_interval` / `tcp_keepalive_probe_delay`：关闭并重建 idle h2 session；busy session drain 后替换。
-  - `session_connect_timeout`：只影响新连接（无法追溯已建连），文档写明。
-  - status API 暴露 configured vs effective-on-existing-connections 差异 + hot-reload generation。
+- **D7 热重载主动 reconcile（用户裁决）**：不满足于「仅新连接生效」。承重纪律：**generation-based retire-and-replace**，且与 `persistence-async-invariants` 的 drain 纪律一致（pending/active 所有权独立于 event bus 或调用方 promise，close 前等真实 active set 清零）。
+  - **h2 session（`ping_interval` / `tcp_keepalive_probe_delay` 变更）——retire-and-replace，非 drain-then-replace**（HIGH-2）：
+    1. 旧 session **先原子移出可路由池 + 标记 `retiring`**，不再接新 stream。
+    2. 新 generation session 可**立即/按下一请求**建立，**不等**旧 session drain（否则新请求继续进旧配置 session 或被旧长流阻塞、graceful drain 退化成服务停顿）。
+    3. 旧 session 上已有 stream 独立 drain；**per-session active-stream 计数**归零后才 `session.close()`。
+    4. active-stream 计数须自维护、**exactly-once decrement** 覆盖全路径：正常 body `end` / body `error` / body cancel / headers 前 request error / pre-response abort / session close·reset——**fetch promise settled ≠ drain done**（`Response` 在 headers 到达即 resolve，body 仍在消费，[http2-client.ts:393-490](../../src/lib/transport/http2-client.ts#L393)）。
+    5. **retiring session 的旧 PING/keepalive timer 必须存活到 drain 完**（HIGH-4）——否则长思考在途流失去保护，违反既有不变量（[http2-client.ts:243-261](../../src/lib/transport/http2-client.ts#L243)：GOAWAY/移池后 PING 续跑至真正 close）。若用户 `ping_interval: 0` 要求立即停 PING，采「重调旧 timer 但仍 drain」而非直接清 timer。
+    6. shutdown 须等所有 retiring session drain，或进既有 abort phase 后明确取消。
+  - **generation race（在飞建连）**（HIGH-3）：每次 transport config change 递增 generation；session creation 捕获 generation；完成时若 generation 已过期则**不入当前池**、关闭旧 session、等待者重试取新 generation；多次快速 reload **coalesce 到最新 generation**（不启多轮互覆盖 reconcile）；reconcile 错误须记录可观测，**同步 listener 不得 throw 破坏 config apply、也不得 silently swallow**。可借鉴既有 `poolEpoch`（[http2-client.ts:217-273](../../src/lib/transport/http2-client.ts#L217)），但 `pending.clear()` ≠ drain（清 map 不取消/不观测在飞建连）。
+  - **upstream WS soft cap（`soft_max_connections`）**（HIGH-5）：reload 时全 busy 允许暂超 cap（soft 语义）；但**每个 connection 从 busy→idle 时再触发 eviction 直到回落**（否则 reload 当下无 idle victim → 永久超额）；淘汰序 = idle LRU；`0` = 无限、不 evict。
+  - **client ingress hard cap（`server.responses_ws.max_connections`，与 upstream soft cap 不同 policy）**（HIGH-5）：明确 reload 降 cap 时——是否关现有 idle keep-open client socket、active socket 是否允许 drain、超 cap 期间是否拒新连接、idle victim 是否 LRU、`keep_open: false` reload 时已有 idle keep-open socket 是否立即 normal-close。
+  - **WS `pooled_connection_idle_timeout` 重调基于原 idle 起点**（HIGH-6）：connection 记 `idleSince`，新 deadline = `idleSince + newTimeout`（**非** `now + newTimeout`，否则每次 reload 无意延长老连接寿命）；新 deadline 已过→立即 close；增大→延到新绝对 deadline；改 0→取消 timer；busy 连接下次转 idle 时读最新配置起算。当前实现只持 timer、无 `idleSince`（[upstream-ws-connection.ts:102-137](../../src/lib/openai/upstream-ws-connection.ts#L102)），须补。
+  - **`session_connect_timeout`**：只影响新连接（无法追溯已建连），文档写明。
+  - **status API（可判定字段，HIGH-7）**：configured generation + values；h2 sessions（origin / generation / `active|retiring` / active-stream count / effective ping·TCP keepalive）；upstream WS（active/busy/idle 数 / generation / effective idle·cap）；reconcile 状态（`idle|running|failed` / last completed generation / last error）；runtime capability（Bun/Node + `wsApplicationKeepalive: "unavailable"`）。**禁止只返回一个 generation 数字就形式满足**。
 
 ## 5. 迁移（compat.ts，`renameLeaf`）
 
@@ -103,12 +111,12 @@ openai_responses:
 | （新增，无旧键） | `upstream_transport.http2.session_connect_timeout` | h2 硬编码 10s 提升为可配 |
 | （新增，无旧键） | `upstream_transport.websocket.pooled_connection_idle_timeout` | WS 硬编码 5min 提升为可配 |
 
-迁移契约（补 GPT 抓出的易漏项）：
+迁移契约（补两轮 GPT 抓出的易漏项）：
 - 新旧键并存 → 新键胜出、只发一次 deprecation warning。
-- 多条旧键迁入同一新对象（`upstream_transport` / `server.responses_ws`）→ **missing-only 深合并**，后迁字段不得覆盖先迁字段。
-- PUT `/api/config` 路径回写**规范化后的新 key**。
+- 多条旧键迁入同一新对象（`upstream_transport` / `server.responses_ws`）→ **missing-only 深合并**，后迁字段不得覆盖先迁字段。深合并边界须固定（HIGH-1）：新 parent 已存在且为 object → 逐叶新键优先；新 parent 已存在但为 scalar/array → **不得静默吞旧迁移值**、须在新 parent 路径报结构校验错；新叶为 `null`（PUT delete 语义）→ 视为用户显式新值仍优先、不让 legacy 值复活；两条 legacy rule 意外指向同一新叶 → registry 加守卫测试或明确 top-down 优先级。
+- **PUT `/api/config` 的文档级迁移机制（BLOCK-2）**：现有 PUT 是把验证后的值**增量合并进原 YAML document**（[route.ts:113-135,257-305](../../src/routes/config/route.ts#L113)），验证后已丢旧键 provenance，`mergeConfigIntoDocument()` 既不知删哪个 legacy path、也不处理 `upstream_transport`/`server`，对 `0→absence` 更无新叶可写——**`renameLeaf` 单独做不到「回写规范化新 key」**。plan 须指定显式机制：① compat 层除 normalized value 外**返回 migration operations**（`{oldPath, newPath, migratedValue, deleteOnly}`）；② PUT writer 先删所有命中 legacy path、再写 normalized new path；③ 旧 keepalive `0` → **delete old path、不写 new path**；④ 清理迁空后的旧 section（不留空 `timeouts:` / `openai_responses:`）；⑤ 保留未触节点的 YAML 注释与格式。
 - reset / hot-reload 后不因旧 state setter 归属残留而恢复错误默认。
-- 五处必须同步：schema.ts、bundled `config.yaml`、runtime state defaults、JSON Schema 生成物（`/openapi.json`）、配置 API 文档——否则只是 YAML 表面迁移。
+- 同步面须区分两个表面（HIGH-8）：schema.ts、bundled `config.yaml`、runtime state defaults、**`config.schema.json`（`generate:config-schema` 生成物）**、API/config 文档。注意 `/openapi.json` 的 config route 当前是 free-form `z.record(z.string(), z.unknown())`（[route.ts:30-31](../../src/routes/config/route.ts#L30)）、**非**字段级 config schema 生成物；若本轮顺带把管理 API 收紧为精确 Config schema，再额外验收 `/openapi.json`。
 
 ## 6. 相邻正确化（本轮一并纳入）
 
@@ -121,12 +129,13 @@ openai_responses:
 
 ## 7. 验收标准（Acceptance）
 
-- **运行语义等价**：相同旧配置输入 ⇒ 迁移后相同 effective runtime state；新旧键并存以新键为准 + 单次 deprecation warning。（非字节等价——key path 变、规范化输出变。）
+- **运行语义等价（除 D5 明确批准的有意变更外，BLOCK-1）**：相同旧配置输入 ⇒ 迁移后相同 effective runtime state；新旧键并存以新键为准 + 单次 deprecation warning。**唯一有意例外**：旧 `timeouts.upstream_keepalive: 0` 迁成 absence，其在 undici 路的 effective default 从库默认 **60s → 统一为项目默认 15s**，是本次经用户批准的有意行为变更（非等价违背）。（整体非字节等价——key path 变、规范化输出变。）
+- **迁移 golden-fixture 分别断言**：旧 positive 值→严格等价；旧 `0`→迁成 absence 并产生新默认 15、**不得**误迁成 disabled；新显式 `0`→两路真禁用。
 - **新旋钮真接线**：`session_connect_timeout` / `pooled_connection_idle_timeout` 改配置后经独立 oracle 观测到实际连接行为变化（非仅 state 变），去掉对应硬编码常量。
-- **`0` 语义一致**：`tcp_keepalive_probe_delay: 0` 在 undici 路与 h2 路都真·禁用 keepalive；absence 两路都取默认 15；正数两路都为该延迟。
-- **热重载 reconcile 可观测**：改 `ping_interval` / capacity / `pooled_connection_idle_timeout` 后，活连接按 D7 策略被 reconcile；status API 反映 configured vs effective + generation。
+- **`0` 语义一致（覆盖全数值键，NIT-2）**：`tcp_keepalive_probe_delay: 0` 两路真禁用（undici `keepAlive:false`）、absence 两路取默认 15、正数两路为该延迟；`ping_interval: 0`→无 timer；`session_connect_timeout: 0`→无 connect deadline；`pooled_connection_idle_timeout: 0`→不 evict；`soft_max_connections: 0` / ingress `max_connections: 0` / `max_frame_bytes: 0`→无限。容量键的 `0` 是**禁用该限制**、非禁用 transport。
+- **热重载 reconcile 可观测**：改 `ping_interval` / capacity / `pooled_connection_idle_timeout` 后活连接按 D7 策略被 reconcile（含 retire-and-replace、generation race coalesce、idle-since 重调）；status API 返回 D7 规定的可判定字段（sessions/generation/reconcile 状态），非仅一个 generation 数字。
 - **runtime-split 不引入假 schema 分叉**：保留的 WS 键（idle timeout / max connections）Bun+Node 都实现、schema 不按 runtime 分叉；真 runtime-split 的能力经 capability diagnostics 暴露、不进 config。
-- **注释/文档无遗留误导**：全仓 grep `Node-only` / `onTransportTimeoutChange` 无失真残留。
+- **注释/文档无遗留误导**：scoped grep `upstream_keepalive` / `upstream_h2_ping` / `node:http2` 保活相关注释无错误 Node-only 描述（允许其他经核实真实的 Node-only 文本）；旧符号 `onTransportTimeoutChange` 零残留。
 
 ## 8. 影响面（files）
 
@@ -140,6 +149,7 @@ openai_responses:
 
 ## 9. 待写 plan 时细化
 
-- reconcile 活连接的具体机制（h2 session drain-then-replace 的 re-entrancy 与 in-flight 保护，复用 persistence-async-invariants 的 drain 纪律）。
-- 独立 oracle 设计：connect_timeout 用可控慢 accept 的探针、idle_timeout 用池状态 introspection、keepalive 用 `ss` 看内核 timer（empirical-verification skill）。
-- 迁移的 golden-fixture：一批旧配置 → 断言 effective state 等价。
+- **h2 reconcile 机制**：per-session active-stream counter（exactly-once decrement 全路径）+ generation-捕获的 retire-and-replace + retiring session PING 存活至 drain；复用/借鉴既有 `poolEpoch`，但不以 `pending.clear()` 当 drain。re-entrancy 与 in-flight 保护对齐 persistence-async-invariants。
+- **compat migration-operations**：compat 层返回 `{oldPath, newPath, migratedValue, deleteOnly}` 序列；文件 load 走 warn-continue 深合并、PUT writer 走「删旧 path + 写新 path（deleteOnly 只删）+ 清空 section + 保注释」。
+- **独立 oracle 设计**：connect_timeout 用可控慢 accept 的探针、idle_timeout 用池状态 introspection、keepalive 用 `ss` 看内核 timer（empirical-verification skill）；迁移 golden-fixture 覆盖 §7 三类断言（positive 等价 / `0`→absence→15 / 新 `0`→禁用）。
+- **status schema 定型**：按 D7 HIGH-7 的字段清单落成具体类型（SSOT-types：后端定义、ui-v4 经 `~backend/*` re-export）。
