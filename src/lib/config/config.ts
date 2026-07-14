@@ -43,6 +43,8 @@ import type {
   SystemPromptEntry,
 } from "./schema"
 
+import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
+
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
   //
@@ -849,6 +851,10 @@ export async function applyConfigToState(): Promise<Config> {
 
   // Timeouts section (scalar: override only when present)
   if (config.timeouts) {
+    // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
+    // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
+    // than inferred. Pure observation — reads state, records a diff, no behavior change.
+    const timeoutBefore = { staleRequestMaxAge: state.staleRequestMaxAge, responseHeaderTimeout: state.responseHeaderTimeout, streamIdleTimeout: state.streamIdleTimeout }
     const t = config.timeouts
     if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
     if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
@@ -865,6 +871,7 @@ export async function applyConfigToState(): Promise<Config> {
         responseHeaderTimeoutOverrides: normalizeModelKeyedRecord(t.response_header_overrides, "timeouts.response_header_overrides"),
       })
     }
+    recordConfigReloadTimeoutDiff(timeoutBefore, { staleRequestMaxAge: state.staleRequestMaxAge, responseHeaderTimeout: state.responseHeaderTimeout, streamIdleTimeout: state.streamIdleTimeout })
   }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 

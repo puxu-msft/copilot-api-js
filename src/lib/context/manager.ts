@@ -26,6 +26,7 @@ import type {
   ScopedPublisher,
 } from "~/lib/observability"
 
+import { recordReaperTick } from "~/lib/observability/reaper-diagnostics"
 import { recordAcceptedRequest } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
 
@@ -181,11 +182,31 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
   }
 
   let reaperTimer: ReturnType<typeof setInterval> | null = null
+  // Reaper tick timing (RC2 diagnostics — see reaper-diagnostics.ts). Frozen interval is
+  // captured at startReaper; last-tick wall + monotonic clocks let us distinguish a
+  // config-reload cadence mismatch / process-or-WSL suspend from event-loop blocking.
+  let reaperFrozenIntervalMs = 0
+  let lastTickWallMs: number | undefined
+  let lastTickMonoMs: number | undefined
 
   /** Single reaper scan — force-fail contexts exceeding maxAge */
   function runReaperOnce() {
+    // Tick diagnostics FIRST (records every scan, incl. disabled/empty ones, so drift is
+    // observable regardless of whether anything was reaped). Pure observation — no behavior change.
+    const actualAt = Date.now()
+    const nowMono = performance.now()
+    const scheduledAt = lastTickWallMs !== undefined ? lastTickWallMs + reaperFrozenIntervalMs : actualAt
+    const monotonicGapMs = lastTickMonoMs !== undefined ? nowMono - lastTickMonoMs : reaperFrozenIntervalMs
+    const wallGapMs = lastTickWallMs !== undefined ? actualAt - lastTickWallMs : reaperFrozenIntervalMs
+    lastTickWallMs = actualAt
+    lastTickMonoMs = nowMono
+    const scanStartMono = nowMono
+
     const maxAgeMs = state.staleRequestMaxAge * 1000
-    if (maxAgeMs <= 0) return // disabled
+    if (maxAgeMs <= 0) {
+      recordReaperTick({ scheduledAt, actualAt, scanDurationMs: performance.now() - scanStartMono, activeCount: activeContexts.size, liveMaxAgeSec: state.staleRequestMaxAge, frozenIntervalMs: reaperFrozenIntervalMs, monotonicGapMs, wallGapMs })
+      return // disabled
+    }
 
     for (const [id, ctx] of activeContexts) {
       if (ctx.durationMs > maxAgeMs) {
@@ -208,12 +229,16 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         ctx.fail(ctx.originalRequest?.model ?? "unknown", new Error(`Request exceeded maximum age of ${state.staleRequestMaxAge}s (stale context reaper)`))
       }
     }
+    recordReaperTick({ scheduledAt, actualAt, scanDurationMs: performance.now() - scanStartMono, activeCount: activeContexts.size, liveMaxAgeSec: state.staleRequestMaxAge, frozenIntervalMs: reaperFrozenIntervalMs, monotonicGapMs, wallGapMs })
   }
 
   function startReaper() {
     if (reaperTimer) return // idempotent
     if (state.staleRequestMaxAge <= 0) return // explicitly disabled — no timer at all
-    reaperTimer = setInterval(runReaperOnce, computeReaperIntervalMs())
+    reaperFrozenIntervalMs = computeReaperIntervalMs()
+    lastTickWallMs = undefined
+    lastTickMonoMs = undefined
+    reaperTimer = setInterval(runReaperOnce, reaperFrozenIntervalMs)
   }
 
   function stopReaper() {
