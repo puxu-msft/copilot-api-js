@@ -56,7 +56,11 @@ describe("config compat — legacy key migration (file load)", () => {
       },
     })
     expect(result.openai_responses?.upstream_ws).toBe(true)
-    expect(result.openai_responses?.client_ws_keep_open).toBe(true)
+    // client_websocket_keep_open → (renameSection) openai_responses.client_ws_keep_open →
+    // (three-axis reorg renameLeaf, same migration pass) server.responses_ws.keep_open —
+    // migrations chain within a single extractAndTranslateDeprecated() pass because
+    // CONFIG_MIGRATIONS is evaluated top-down and this renameLeaf sits after renameSection.
+    expect(result.server?.responses_ws?.keep_open).toBe(true)
     // un-renamed inner field preserved verbatim
     expect(result.openai_responses?.normalize_call_ids).toBe(false)
     expect((result as Record<string, unknown>)["openai-responses"]).toBeUndefined()

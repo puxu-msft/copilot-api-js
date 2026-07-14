@@ -12,6 +12,7 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import { z } from "zod"
 
+import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 import {
   //
   type BufferedRetryCaps,
@@ -29,11 +30,13 @@ import {
   setModelOverrides,
   setNegotiationConfig,
   setResponsesConfig,
+  setResponsesWsIngressConfig,
   setShutdownConfig,
   setReactiveRetryConfig,
   setTelemetryConfig,
   setTimeoutConfig,
   setTimeoutOverridesConfig,
+  setUpstreamTransportConfig,
   state,
 } from "~/lib/state"
 
@@ -42,8 +45,6 @@ import type {
   EndpointScope,
   SystemPromptEntry,
 } from "./schema"
-
-import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
@@ -858,12 +859,14 @@ export async function applyConfigToState(): Promise<Config> {
     // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
     // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
     // than inferred. Pure observation — reads state, records a diff, no behavior change.
-    const timeoutBefore = { staleRequestMaxAge: state.staleRequestMaxAge, responseHeaderTimeout: state.responseHeaderTimeout, streamIdleTimeout: state.streamIdleTimeout }
+    const timeoutBefore = {
+      staleRequestMaxAge: state.staleRequestMaxAge,
+      responseHeaderTimeout: state.responseHeaderTimeout,
+      streamIdleTimeout: state.streamIdleTimeout,
+    }
     const t = config.timeouts
     if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
     if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
-    if (t.upstream_keepalive !== undefined) setTimeoutConfig({ upstreamKeepaliveDelay: t.upstream_keepalive })
-    if (t.upstream_h2_ping !== undefined) setTimeoutConfig({ upstreamH2PingInterval: t.upstream_h2_ping })
     if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
     if (t.request_deadline !== undefined) setTimeoutConfig({ requestDeadline: t.request_deadline })
     // Per-model override maps (already bundled+user per-key merged upstream).
@@ -876,9 +879,28 @@ export async function applyConfigToState(): Promise<Config> {
         responseHeaderTimeoutOverrides: normalizeModelKeyedRecord(t.response_header_overrides, "timeouts.response_header_overrides"),
       })
     }
-    recordConfigReloadTimeoutDiff(timeoutBefore, { staleRequestMaxAge: state.staleRequestMaxAge, responseHeaderTimeout: state.responseHeaderTimeout, streamIdleTimeout: state.streamIdleTimeout })
+    recordConfigReloadTimeoutDiff(timeoutBefore, {
+      staleRequestMaxAge: state.staleRequestMaxAge,
+      responseHeaderTimeout: state.responseHeaderTimeout,
+      streamIdleTimeout: state.streamIdleTimeout,
+    })
   }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
+
+  // Upstream transport (outbound to GHC): TCP keepalive / h2 ping+connect-timeout /
+  // WS pool idle-timeout+soft-cap (scalar: override only when present).
+  const upstreamTransport = config.upstream_transport
+  if (upstreamTransport) {
+    if (upstreamTransport.tcp_keepalive_probe_delay !== undefined)
+      setUpstreamTransportConfig({ upstreamKeepaliveDelay: upstreamTransport.tcp_keepalive_probe_delay })
+    if (upstreamTransport.http2?.ping_interval !== undefined) setUpstreamTransportConfig({ upstreamH2PingInterval: upstreamTransport.http2.ping_interval })
+    if (upstreamTransport.http2?.session_connect_timeout !== undefined)
+      setUpstreamTransportConfig({ sessionConnectTimeout: upstreamTransport.http2.session_connect_timeout })
+    if (upstreamTransport.websocket?.pooled_connection_idle_timeout !== undefined)
+      setUpstreamTransportConfig({ pooledConnectionIdleTimeout: upstreamTransport.websocket.pooled_connection_idle_timeout })
+    if (upstreamTransport.websocket?.soft_max_connections !== undefined)
+      setUpstreamTransportConfig({ softMaxUpstreamWsConnections: upstreamTransport.websocket.soft_max_connections })
+  }
 
   // Reactive-learning TTL lifecycle (top-level section). Days → ms; 0/≤0 → never
   // (Infinity). ttl_days is keyed by internal category id (camelCase). The whole
@@ -907,12 +929,14 @@ export async function applyConfigToState(): Promise<Config> {
   if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
   if (responsesConfig && responsesConfig.strip_image_generation_tool !== undefined)
     setResponsesConfig({ stripImageGenerationTool: responsesConfig.strip_image_generation_tool })
-  if (responsesConfig && responsesConfig.client_ws_keep_open !== undefined) setResponsesConfig({ clientWebsocketKeepOpen: responsesConfig.client_ws_keep_open })
-  if (responsesConfig && responsesConfig.max_ws_frame_bytes !== undefined) setResponsesConfig({ maxWsFrameBytes: responsesConfig.max_ws_frame_bytes })
-  if (responsesConfig && responsesConfig.max_client_ws_connections !== undefined)
-    setResponsesConfig({ maxClientWsConnections: responsesConfig.max_client_ws_connections })
-  if (responsesConfig && responsesConfig.max_upstream_ws_connections !== undefined)
-    setResponsesConfig({ maxUpstreamWsConnections: responsesConfig.max_upstream_ws_connections })
+
+  // Client-facing Responses WS ingress limits (scalar: override only when present).
+  const responsesWsIngress = config.server?.responses_ws
+  if (responsesWsIngress) {
+    if (responsesWsIngress.keep_open !== undefined) setResponsesWsIngressConfig({ clientWebsocketKeepOpen: responsesWsIngress.keep_open })
+    if (responsesWsIngress.max_frame_bytes !== undefined) setResponsesWsIngressConfig({ maxWsFrameBytes: responsesWsIngress.max_frame_bytes })
+    if (responsesWsIngress.max_connections !== undefined) setResponsesWsIngressConfig({ maxClientWsConnections: responsesWsIngress.max_connections })
+  }
 
   // Chat Completions settings. buffered_retry: boolean shorthand = `enabled`; map =
   // `{ enabled, caps }` where caps override the shared buffered_retry.* for the
