@@ -233,13 +233,24 @@ export function classifyStreamErrorType(error: unknown): string {
 // AskUserQuestion content construction (B class)
 // ============================================================================
 
+/** A single selectable option in a B-class AUQ question. Matches Claude Code's real AskUserQuestion
+ *  wire schema — `{ label, description }` OBJECTS, NOT plain strings (verified against captured real
+ *  GHC-downgrade traffic in `tests/infra/debug-dry-run-pipeline.http.test.ts:108`, and CC 2.1.207
+ *  `app.pretty.js:318507` which validates this schema and rejects a bare-string option). `label` is
+ *  the short button text; `description` is the longer explanation. Both may carry `{model}`/
+ *  `{request_id}` placeholders left for Phase 4's second render pass. */
+export interface AuqOption {
+  label: string // may still contain unrendered {model}/{request_id}
+  description: string // may still contain unrendered {model}/{request_id}
+}
+
 /** B-class question content. `decide()` completes the `{error_type}`/`{status}` first-pass render;
  *  `{model}`/`{request_id}` are left verbatim for Phase 4's builder second pass. */
 export interface AuqQuestion {
   question: string // may still contain unrendered {model}/{request_id}
   header: string
   multiSelect: boolean
-  options: ReadonlyArray<string>
+  options: ReadonlyArray<AuqOption>
 }
 
 /**
@@ -261,20 +272,36 @@ export function renderAuqQuestion(tmpl: string, vars: Partial<{ model: string; r
 }
 
 /** Per-errorType option sets for the B-class AUQ. User-facing wording (not protocol behaviour);
- *  minimal starter set per the plan — if it conflicts with the spec appendix, the spec wins. */
-function optionsForErrorType(type: ApiError["type"]): ReadonlyArray<string> {
+ *  minimal starter set per the plan — if it conflicts with the spec appendix, the spec wins. Each
+ *  option is a CC-schema `{ label, description }` object (see {@link AuqOption}). */
+function optionsForErrorType(type: ApiError["type"]): ReadonlyArray<AuqOption> {
   switch (type) {
     case "quota_exceeded": {
-      return ["等待配额恢复后重试", "切换到未超额的其他模型", "放弃本次请求"]
+      return [
+        { label: "等待后重试", description: "配额恢复后再次发送本次请求" },
+        { label: "切换模型", description: "改用未超额的其他模型继续" },
+        { label: "放弃", description: "取消本次请求，不再重试" },
+      ]
     }
     case "content_filtered": {
-      return ["改写提示词后重试", "切换到过滤策略不同的其他模型", "放弃本次请求"]
+      return [
+        { label: "改写重试", description: "修改提示词以绕过内容过滤后重试" },
+        { label: "切换模型", description: "改用过滤策略不同的其他模型" },
+        { label: "放弃", description: "取消本次请求，不再重试" },
+      ]
     }
     case "auth_expired": {
-      return ["重新登录 / 刷新凭据后重试", "检查账户授权状态", "放弃本次请求"]
+      return [
+        { label: "刷新凭据", description: "重新登录或刷新令牌后重试" },
+        { label: "检查授权", description: "检查账户授权与订阅状态" },
+        { label: "放弃", description: "取消本次请求，不再重试" },
+      ]
     }
     default: {
-      return ["重试", "放弃本次请求"]
+      return [
+        { label: "重试", description: "重新发送本次请求" },
+        { label: "放弃", description: "取消本次请求，不再重试" },
+      ]
     }
   }
 }
@@ -295,21 +322,30 @@ function buildAuqQuestion(error: ApiError, config: ErrorShapingConfig): AuqQuest
 // ============================================================================
 
 /** The AUQ tool's wire input shape (`decode-tool-input-core.ts`'s existing `AskUserQuestion`
- *  consumer convention: `questions[]`, each `{question, header, multiSelect, options}`). Rendered
- *  (second-pass `{model}`/`{request_id}` substituted) — never carries an unrendered placeholder. */
+ *  consumer convention: `questions[]`, each `{question, header, multiSelect, options}`, `options`
+ *  being CC-schema `{label, description}` objects — see {@link AuqOption}). Rendered (second-pass
+ *  `{model}`/`{request_id}` substituted throughout, options included) — never carries an unrendered
+ *  placeholder. */
 interface RenderedAuqInput {
-  questions: Array<{ question: string; header: string; multiSelect: boolean; options: ReadonlyArray<string> }>
+  questions: Array<{ question: string; header: string; multiSelect: boolean; options: ReadonlyArray<AuqOption> }>
 }
 
 /** Second-pass render every question's `{model}`/`{request_id}` (first pass — `{error_type}`/
- *  `{status}` — already done by `decide()`/`buildAuqQuestion`), producing the tool's wire input. */
+ *  `{status}` — already done by `decide()`/`buildAuqQuestion`), producing the tool's wire input. The
+ *  render reaches into each option's `label`/`description` too, so an option template carrying
+ *  `{model}`/`{request_id}` is substituted the same as the question text (today's default copy has no
+ *  option-level placeholders, but the render is correct for object fields and future-proofed). */
 function renderAuqInput(questions: ReadonlyArray<AuqQuestion>, ctx: { model: string; reqId: string }): RenderedAuqInput {
+  const renderVars = { model: ctx.model, request_id: ctx.reqId }
   return {
     questions: questions.map((q) => ({
-      question: renderAuqQuestion(q.question, { model: ctx.model, request_id: ctx.reqId }),
+      question: renderAuqQuestion(q.question, renderVars),
       header: q.header,
       multiSelect: q.multiSelect,
-      options: q.options,
+      options: q.options.map((o) => ({
+        label: renderAuqQuestion(o.label, renderVars),
+        description: renderAuqQuestion(o.description, renderVars),
+      })),
     })),
   }
 }

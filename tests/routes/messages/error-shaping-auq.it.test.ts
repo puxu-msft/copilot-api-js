@@ -74,9 +74,20 @@ describe("AUQ synthesis — end to end", () => {
     const res = await postMessages({ stream: false })
 
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { stop_reason: string; content: Array<{ type: string; name?: string }> }
+    const body = (await res.json()) as {
+      stop_reason: string
+      content: Array<{ type: string; name?: string; input?: { questions?: Array<{ options?: Array<unknown> }> } }>
+    }
     expect(body.stop_reason).toBe("tool_use")
     expect(body.content[0]?.name).toBe("AskUserQuestion")
+    // FIX-B end-to-end: the REAL path (decide() → optionsForErrorType → builder → wire) must emit
+    // CC-schema {label, description} object options — not plain strings (see unit test's FIX-B oracle
+    // + tests/infra/debug-dry-run-pipeline.http.test.ts:108 real traffic).
+    const opts = body.content[0]?.input?.questions?.[0]?.options
+    expect(opts?.length).toBeGreaterThan(0)
+    for (const opt of opts ?? []) {
+      expect(Object.keys(opt as Record<string, unknown>).sort()).toEqual(["description", "label"])
+    }
   })
 
   test("stream:true request, upstream 403 auth_expired, error_ask_user_question=true → 200 SSE with self-contained AUQ frame sequence", async () => {

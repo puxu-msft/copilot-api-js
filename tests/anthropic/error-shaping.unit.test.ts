@@ -217,6 +217,12 @@ describe("decide() B 类分支 — questions 内容构造", () => {
     expect(q.question).not.toContain("{status}")
     expect(q.multiSelect).toBe(false)
     expect(q.options.length).toBeGreaterThan(0)
+    // FIX-A: options are CC-schema {label, description} objects (NOT plain strings) — the shape real
+    // Claude Code validates (see tests/infra/debug-dry-run-pipeline.http.test.ts:108 real traffic).
+    for (const opt of q.options) {
+      expect(typeof opt.label).toBe("string")
+      expect(typeof opt.description).toBe("string")
+    }
   })
 
   test("content_filtered(422) 与 auth_expired(401/403) 的 options 各自不同（errorType 分派，非同一份文案）", () => {

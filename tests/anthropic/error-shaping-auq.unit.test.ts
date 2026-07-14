@@ -34,7 +34,11 @@ const oneQuestion: AuqQuestions = [
     question: "上游返回 quota_exceeded（模型 {model}，请求 {request_id}），如何继续？",
     header: "如何继续？",
     multiSelect: false,
-    options: ["等待配额重置", "更换模型", "更换账号"],
+    options: [
+      { label: "等待后重试", description: "配额恢复后再次发送本次请求" },
+      { label: "切换模型", description: "改用未超额的其他模型继续" },
+      { label: "放弃", description: "取消本次请求，不再重试" },
+    ],
   },
 ]
 
@@ -79,6 +83,37 @@ describe("buildAskUserQuestionResponse — stream:false variant", () => {
     const input = block.input
     // Identity return ⟹ zero items needed a question backfilled ⟹ every item already CC-valid.
     expect(backfillAskUserQuestionHeaders("AskUserQuestion", input)).toBe(input)
+  })
+
+  // FIX-B (Critical root-cause defense): the MED-3 oracle above only validates question/header —
+  // it does NOT touch `options`, which is exactly how the Phase-1 plain-string `options` bug slipped
+  // through. This oracle pins the `options` wire shape against REAL Claude Code traffic. The
+  // independent ground truth is `tests/infra/debug-dry-run-pipeline.http.test.ts:108` — a captured
+  // real GHC-downgrade AskUserQuestion whose `options` are `[{ label, description }]` objects (NOT
+  // plain strings). CC 2.1.207 (app.pretty.js:318507) validates this schema and rejects a
+  // plain-string option, so a synthesized string `options` would silently fail CC-side. We assert
+  // every synthesized option is EXACTLY `{ label: string, description: string }` — exact key set
+  // (no extra/missing keys) + both string-typed. A plain-string regression has no keys and fails
+  // loudly; a missing `description` fails; an extra field fails.
+  test("FIX-B oracle: synthesized options[] match CC's real-traffic {label,description} object schema (debug-dry-run-pipeline.http.test.ts:108)", () => {
+    // The canonical real-traffic option shape, copied verbatim from the fixture cited above — the
+    // schema source of truth, not a self-fabricated expectation.
+    const realTrafficOption = { label: "只做 #1 (rename)", description: "仅 messages/handler.ts → web-search-direct.ts" }
+    const ccOptionKeys = Object.keys(realTrafficOption).sort() // ["description", "label"]
+
+    const res = buildAskUserQuestionResponse(decision(oneQuestion), { model: "m", reqId: "r" })
+    const block = res.content[0] as unknown as { input: { questions: Array<{ options: Array<unknown> }> } }
+    const options = block.input.questions[0]?.options
+    expect(options).toBeDefined()
+    expect(options?.length).toBeGreaterThan(0)
+    for (const opt of options ?? []) {
+      expect(typeof opt).toBe("object")
+      expect(opt).not.toBeNull()
+      const o = opt as Record<string, unknown>
+      expect(Object.keys(o).sort()).toEqual(ccOptionKeys) // exactly {label, description}, no more/less
+      expect(typeof o.label).toBe("string")
+      expect(typeof o.description).toBe("string")
+    }
   })
 })
 
