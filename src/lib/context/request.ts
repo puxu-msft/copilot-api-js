@@ -279,6 +279,9 @@ export function createRequestContext(opts: {
   const _warningMessages: Array<WarningMessage> = []
   let _toolNameMapper: ToolNameMapper | null = null
   const _attempts: Array<Attempt> = []
+  // 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻的绝对 epoch（once 语义）。
+  // toHistoryEntry 减 startTime 得相对 offset（timing.client）。
+  const _clientTimingEpochs: { streamOpen?: number; firstReal?: number; bufferHoldStart?: number } = {}
   let _endTime: number | null = null
   /** Per-attempt tool-input repair outcomes (reset by resetRepairOutcomesForAttempt on L2 retry). */
   const _repairOutcomes: Array<RepairOutcomeRecord> = []
@@ -595,6 +598,12 @@ export function createRequestContext(opts: {
       if (attempt) attempt.responseHeaders = headers
     },
 
+    setClientTimingEpoch(kind, epoch) {
+      // 首包埋点（spec 2026-07-14 §3.2）：once 语义——首写为准。toHistoryEntry 换算成
+      // 相对 started_at 的 offset。driver（bufferHoldStart）/ handler（streamOpen）/ client-sink（firstReal）调用。
+      if (_clientTimingEpochs[kind] === undefined) _clientTimingEpochs[kind] = epoch
+    },
+
     setAttemptError(error: ApiError) {
       const attempt = ctx.currentAttempt
       if (attempt) {
@@ -787,6 +796,13 @@ export function createRequestContext(opts: {
       // Extract request metadata from the original payload
       const p = _originalRequest?.payload as Record<string, unknown> | undefined
       const endedAt = _endTime ?? Date.now()
+      // 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻 epoch → 相对 started_at 的 offset ms。
+      const off = (epoch: number | undefined): number | undefined => (epoch === undefined ? undefined : epoch - startTime)
+      const clientTiming = {
+        ...(off(_clientTimingEpochs.streamOpen) !== undefined && { streamOpenMs: off(_clientTimingEpochs.streamOpen) }),
+        ...(off(_clientTimingEpochs.firstReal) !== undefined && { firstRealMs: off(_clientTimingEpochs.firstReal) }),
+        ...(off(_clientTimingEpochs.bufferHoldStart) !== undefined && { bufferHoldStartMs: off(_clientTimingEpochs.bufferHoldStart) }),
+      }
       const entry: HistoryEntryData = {
         id,
         endpoint: opts.endpoint,
@@ -800,6 +816,7 @@ export function createRequestContext(opts: {
         lastUpdatedAt: endedAt,
         queueWaitMs: _queueWaitMs,
         durationMs: endedAt - startTime,
+        ...(Object.keys(clientTiming).length > 0 && { timing: { client: clientTiming } }),
         ...(ctx.transport ? { transport: ctx.transport } : {}),
         ...(_warningMessages.length > 0 && { warningMessages: [..._warningMessages] }),
       }
@@ -937,6 +954,12 @@ export function createRequestContext(opts: {
             // Non-final buffered-retry attempts keep their own committed upstream frames.
             sseEvents: a.sseEvents,
             responseHeaders: a.responseHeaders,
+            // 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻（第一段投影 Attempt → HistoryEntryData.attempts[]）。
+            // 显式清单——漏此则字段在此静默丢，toHistoryAttempts 拿到已空（plan review M-A）。
+            ...(a.upstreamHeadersAt !== undefined && { upstreamHeadersAt: a.upstreamHeadersAt }),
+            ...(a.upstreamMessageStartAt !== undefined && { upstreamMessageStartAt: a.upstreamMessageStartAt }),
+            ...(a.upstreamFirstTokenAt !== undefined && { upstreamFirstTokenAt: a.upstreamFirstTokenAt }),
+            ...(a.upstreamLastTokenAt !== undefined && { upstreamLastTokenAt: a.upstreamLastTokenAt }),
             // ─── New per-attempt legs (RFC §3). effectiveSource carries this attempt's
             //     aggregated `pipeline` (RFC §4); upstreamResponse carries success/
             //     trailers/rawBody + unified frames. ───

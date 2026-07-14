@@ -86,8 +86,8 @@ PoC 亲验（`bun exp/poc-js-pty-grid/index.ts driver`，主会话复跑一次�
 GPT reviewer（异模型第二双眼睛）verdict：**0 BLOCK / 4 HIGH，修 HIGH 后放行**。四条 HIGH **全部经主会话亲验 file:line 属实、全部采纳**：
 
 1. **detail 恒绿**（`controller.ts:15` enter 才进 detail、driver 只发 space）→ §3 ④ harness 改 `space→enter→日志→escape`。
-2. **退出还原弱 oracle**（xterm 不暴露光标可见性）→ §3 ③ 改混合 oracle（buffer.type + sentinel + 字节 SHOW_CURSOR）。
-3. **漏 resize 重锚**（`region.ts:125-137` known-seam）→ §3 ⑤ 新增不变量 + known-seam 哨兵。
+2. **退出还原弱 oracle**（xterm 不暴露光标可见性）→ §3 ③ 改混合 oracle（buffer.type + 字节层完整还原序正则含 SHOW_CURSOR；初版的 sentinel 落点断言经收尾审计证伪、已删）。
+3. **漏 resize 重锚**（`region.ts:125-137` known-seam）→ §3 ⑤ 新增不变量（测重锚正逻辑，driver 内注入 mutable rows）。**同帧 known-seam 哨兵未加**——无法确定性构造「同帧」，仍仅留 backlog（见 §7）。
 4. **test:pty 仍静默失效**（`package.json:58` test:ci 只跑 backend）→ §4 接进 test:ci。
 
 未采纳项：无（四条全采纳）。设计从 4 个不变量增至 5 个，两个假测陷阱堵上，编排纠正。
@@ -95,5 +95,6 @@ GPT reviewer（异模型第二双眼睛）verdict：**0 BLOCK / 4 HIGH，修 HIG
 ## 7. 非目标 / 已知边界
 
 - 不覆盖 macOS/Windows、非 Bun-1.3.14 版本、`node-pty` beta/fork（PoC 未验，不影响当前选型）。
-- ⑤ 的同帧 resize known-seam **不在本 spec 修复范围**（只加哨兵可见化），修复仍留 `deferred-backlog.md:11`。
+- ⑤ 的**同帧 resize known-seam 未加哨兵**（`region.ts:125-137`）——harness 无法从两个同 at 的 timer 确定性构造「同帧」（键输入跨进程异步、源码只承诺 MAY 吞行，`test.failing` 会 flake），故不加自动化哨兵、仍仅留 `deferred-backlog.md:11`。⑤ 的正测覆盖的是 resize 重锚**主逻辑**（rows 变→重锚清除→无孤儿行），不含同帧窄缝。
+- ⑤ 的**生产尺寸来源链路**（`process.stdout.rows` 感知真实终端 resize）在 Bun.Terminal 下无法端到端测——见 `deferred-backlog.md`。重锚逻辑本身已由注入 mutable rows source 覆盖。
 - OSC52 剪贴板、视觉闪烁观感等 `exp/tui-rawmode/README.md` 标注「需真人真终端」的项，pty 验不了，不在本 spec。

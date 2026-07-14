@@ -80,6 +80,7 @@ import {
   anthropicNonStreamingTruncation,
   openaiNonStreamingTruncation,
 } from "~/lib/pipeline/non-streaming-completeness"
+import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
 import { buildAnthropicResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
@@ -334,6 +335,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   const model = (env.body as ChatCompletionsPayload).model
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
+  env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
 
   // Upstream-frame diagnostics (disconnect-log blind-spot fix): observe the RAW upstream frames so a
   // stream-error emits real frames/bytes/last-frame to `[upstream-diagnostics]` (this leg previously
@@ -344,6 +346,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
+    ...clientFirstRealSinkOpts(env),
     forwardedType: () => "generateContent",
   })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
@@ -545,6 +548,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
   const model = (env.body as MessagesPayload).model
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
+  env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
 
   const anthropicAcc = createAnthropicStreamAccumulator()
   // Raw-frame diagnostics: this reverse leg also emits the disconnect diagnostic on a stream-error.
@@ -560,7 +564,12 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     }
   }
 
-  const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs, forwardedType: () => "generateContent" })
+  const sink = makeSseSink(stream, {
+    onForwarded: (record) => forwardedSseEvents.push(record),
+    streamStartMs,
+    forwardedType: () => "generateContent",
+    ...clientFirstRealSinkOpts(env),
+  })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
   const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })

@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS entries_v2 (
   request_bytes    INTEGER,
   response_bytes   INTEGER,
   multiplier       REAL,
+  client_stream_open_ms INTEGER,
+  client_first_real_ms  INTEGER,
+  buffer_hold_start_ms  INTEGER,
   blob_gz          BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_entries_v2_started_at ON entries_v2(started_at DESC);

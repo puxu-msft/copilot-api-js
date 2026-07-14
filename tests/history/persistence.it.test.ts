@@ -128,4 +128,28 @@ describe("history persistence boundary", () => {
     expect(queryEntryCount()).toBe(1)
     expect(getEntryById("e3")).toBeDefined()
   })
+
+  test("client timing survives updateEntry allowlist → finalize → 3 columns round-trip (spec 2026-07-14)", async () => {
+    insertEntry(baseEntry("e-timing"))
+    // updateEntry with `timing` proves the Pick<> allowlist accepts it (plan review M-B).
+    updateEntry("e-timing", {
+      state: "completed",
+      active: false,
+      lastUpdatedAt: Date.now(),
+      endedAt: Date.now(),
+      timing: { client: { streamOpenMs: 20, firstRealMs: 79000, bufferHoldStartMs: 20 } },
+    })
+    await finalizeEntry("e-timing")
+
+    // Read back through the full SELECT * → deserializeEntry → column reconstruction.
+    const restored = getEntryById("e-timing")
+    expect(restored?.timing?.client).toEqual({ streamOpenMs: 20, firstRealMs: 79000, bufferHoldStartMs: 20 })
+  })
+
+  test("timing absent → columns NULL → timing undefined on read", async () => {
+    insertEntry(baseEntry("e-no-timing"))
+    updateEntry("e-no-timing", { state: "completed", active: false, lastUpdatedAt: Date.now(), endedAt: Date.now() })
+    await finalizeEntry("e-no-timing")
+    expect(getEntryById("e-no-timing")?.timing).toBeUndefined()
+  })
 })

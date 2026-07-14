@@ -324,6 +324,11 @@ function migrateEntriesColumns(database: Database): void {
     // captured → 1; pre-fix-forward rows keep 0 until cache-write-backfill re-derives
     // cache_creation from their upstream sseEvents frames. Also in SCHEMA_SQL for fresh DBs.
     { name: "cache_write_backfilled", type: "INTEGER NOT NULL DEFAULT 0" },
+    // 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻，offset ms 相对 started_at。Nullable
+    // additive 列（table_info 幂等 ALTER，覆盖 fresh+既有）。老行 NULL（不回填）。Also in SCHEMA_SQL.
+    { name: "client_stream_open_ms", type: "INTEGER" },
+    { name: "client_first_real_ms", type: "INTEGER" },
+    { name: "buffer_hold_start_ms", type: "INTEGER" },
   ]
 
   for (const col of wanted) {

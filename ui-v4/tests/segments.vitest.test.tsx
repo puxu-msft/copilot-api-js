@@ -181,4 +181,27 @@ describe("detail segments", () => {
     expect(screen.getByText(/network-retry/)).toBeDefined()
     expect(screen.getByText(/careful/)).toBeDefined()
   })
+  it("MetaSegment shows derived timing (spec 2026-07-14 §6.4): TTFT / first pkt / keepalive gap / buffer hold", () => {
+    const e = {
+      ...base,
+      startedAt: 0,
+      attempts: [{ index: 0, durationMs: 0, upstreamFirstTokenAt: 6000 }],
+      timing: { client: { streamOpenMs: 20, firstRealMs: 79_000, bufferHoldStartMs: 100 } },
+    } as unknown as HistoryEntry
+    render(<MetaSegment entry={e} />)
+    expect(screen.getByText("upstream TTFT")).toBeDefined()
+    expect(screen.getByText("6000ms")).toBeDefined() // 6000 epoch - 0 startedAt
+    expect(screen.getByText("79000ms")).toBeDefined() // client first pkt
+    expect(screen.getByText("78980ms")).toBeDefined() // keepalive gap = 79000 - 20
+    expect(screen.getByText("78900ms")).toBeDefined() // buffer hold = 79000 - 100
+  })
+  it("MetaSegment marks passthrough (no buffer hold) when bufferHoldStartMs absent", () => {
+    const e = {
+      ...base,
+      startedAt: 0,
+      timing: { client: { streamOpenMs: 20, firstRealMs: 500 } },
+    } as unknown as HistoryEntry
+    render(<MetaSegment entry={e} />)
+    expect(screen.getByText("passthrough")).toBeDefined()
+  })
 })

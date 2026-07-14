@@ -1,5 +1,7 @@
 # 请求首包/时序埋点 Implementation Plan
 
+> **实施状态（2026-07-14）：`[全部 landed]` 隔离 worktree `feat/timing-instrumentation`（未合并 master）。** Phase 0-5 全部实现 + 每 task TDD 绿 + typecheck 绿 + lint clean（仅不碰存量债）+ 细粒度提交。ADR + DESIGN/API + deferred-backlog 均已同步。实现中偏差已回折：Task 0.2 谓词按真实类型（`ClientFormat`/`UpstreamEndpoint` via `ENDPOINT`）校准；Task 2.3 并入 0.4（ctx 载体与投影同测避免 test-only getter）；Task 4.2 无代码（REST 重取 option a）。待办：合并态 subagent review + merge master。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 为每个请求捕获 7 个首包/时序权威时刻（4 上游 per-attempt + 3 客户端 entry），使上游 TTFT、keepalive 空窗、缓冲扣留时长可被 per-request 明细 + fleet DDSketch 分位回答。

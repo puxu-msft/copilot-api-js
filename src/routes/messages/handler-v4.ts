@@ -130,6 +130,7 @@ import {
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
+import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -372,6 +373,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       const { buffered, heartbeatSec } = resolveBufferedAndHeartbeat(env)
       const forwardedSseEvents: Array<SseEventRecord> = []
       const streamStartMs = Date.now()
+      env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
       // Synthetic-prelude keepalive: the sink's heartbeat carries the handler-owned UNIQUE injector (spec
       // §10.1.5 C1) + a shared AnchorState threaded to the pump → driver's buffered commit/close-off/remap.
       // `empty_text` → full anchor injector; `enveloped_ping` → envelope-only injector (message_start + bare
@@ -384,6 +386,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         clientAbortSignal: clientAbort.signal,
         resolvedName,
         reqId: codec.getContext()?.id ?? "unknown",
+        ...clientFirstRealSinkOpts(env),
       })
       try {
         await pumpAnthropicStreamingDispatch({ sink, buffered, forwardedSseEvents, streamStartMs, driver, codec, upstream, env, anchorHooks, anchorState })
@@ -441,6 +444,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     const pingSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : resolveBufferedCaps("anthropic").heartbeatSec
     const forwardedSseEvents: Array<SseEventRecord> = []
     const streamStartMs = Date.now()
+    commitCtx?.setClientTimingEpoch("streamOpen", commitInstant) // 首包埋点：延迟提交路径的 200 决定时刻
     // Synthetic-prelude keepalive (delayed-commit path). Built BEFORE the upstream settles — this is the
     // PURE pre-response window the incident hit: the sink's heartbeat carries the handler-owned UNIQUE
     // injector (spec §10.1.5 C1) which fires INDEPENDENTLY of the driver/pump (they don't run until
@@ -454,6 +458,8 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       clientAbortSignal: clientAbort.signal,
       resolvedName,
       reqId: codec.getContext()?.id ?? "unknown",
+      // 首包埋点：/v1/messages 客户端格式恒 "anthropic"（延迟提交路径无 env 变量在 scope）。
+      ...(commitCtx && clientFirstRealSinkOpts({ clientFormat: "anthropic", ctx: commitCtx })),
     })
     stream.onAbort(() => clientAbort.abort()) // register BEFORE the first ping (round-B L1)
     // ④ capture proxy→client headers (set synchronously by streamSSE before this callback).
@@ -838,9 +844,12 @@ function makeAnchoredSseSink(
     clientAbortSignal: AbortSignal
     resolvedName: string
     reqId: string
+    // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧 → ctx firstReal（透传给 makeSseSink）。
+    isRealContentFrame?: (frame: ClientFrame) => boolean
+    onFirstRealContent?: () => void
   },
 ): { sink: ClientSink; anchorState: AnchorState; anchorHooks: AnchorHooks | undefined } {
-  const { onForwarded, streamStartMs, heartbeatSec, clientAbortSignal, resolvedName, reqId } = args
+  const { onForwarded, streamStartMs, heartbeatSec, clientAbortSignal, resolvedName, reqId, isRealContentFrame, onFirstRealContent } = args
   // Hooks are built for BOTH synthetic-prelude modes (empty_text + enveloped_ping); only `ping` opts out.
   // The mode then selects WHICH injector runs (full anchor vs envelope-only) and whether `anchorBlockOpen`
   // is set — the hooks themselves are the same format primitives.
@@ -858,6 +867,8 @@ function makeAnchoredSseSink(
   const sink = makeSseSink(stream, {
     onForwarded,
     streamStartMs,
+    ...(isRealContentFrame && { isRealContentFrame }),
+    ...(onFirstRealContent && { onFirstRealContent }),
     ...(heartbeatSec > 0 && {
       heartbeat: {
         intervalSec: heartbeatSec,

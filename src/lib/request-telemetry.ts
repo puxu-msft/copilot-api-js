@@ -172,6 +172,24 @@ const HISTOGRAMS: ReadonlyArray<StatHistogram> = [
     boundaries: [50, 100, 250, 500, 1000, 2500, 5000, 10_000, 25_000, 50_000, 100_000],
     extract: (opts) => opts.usage?.output_tokens,
   },
+  // 首包埋点（spec 2026-07-14 §6.1）：时序分布（ms）。boundaries 顶到 400_000（实测 client
+  // 可见首包 max≈356s）；client_first_real 在 60k–300k 加 90k/180k 档（p50≈79s / p90≈229s 落此区）。
+  // 注：注册进 HISTOGRAMS 同时新增一个 /metrics fixed-bucket Prometheus histogram family（spec 接受）。
+  {
+    name: "upstream_first_token_ms",
+    boundaries: [10, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 120_000, 300_000, 400_000],
+    extract: (opts) => opts.upstreamFirstTokenMs,
+  },
+  {
+    name: "client_first_real_ms",
+    boundaries: [100, 500, 1000, 5000, 10_000, 30_000, 60_000, 90_000, 120_000, 180_000, 300_000, 400_000],
+    extract: (opts) => opts.clientFirstRealMs,
+  },
+  {
+    name: "buffer_hold_ms",
+    boundaries: [100, 500, 1000, 5000, 10_000, 30_000, 60_000, 120_000, 300_000, 400_000],
+    extract: (opts) => opts.bufferHoldMs,
+  },
 ]
 
 /** A histogram's per-key accumulation: bucket counts (length = boundaries.length + 1) + the self-tracked observation sum. */
@@ -315,6 +333,14 @@ interface SettledTelemetryInput {
    * Undefined for non-Anthropic / no-thinking responses → the three feature measures stay 0.
    */
   thinkingBlocks?: ThinkingBlockCounts
+  /**
+   * 首包埋点（spec 2026-07-14 §6.1）：时序度量（ms，相对 started_at）——喂 DDSketch 分布。
+   * `upstreamFirstTokenMs` = committed attempt 的 `upstreamFirstTokenAt - startedAt`（真 TTFT）；
+   * `clientFirstRealMs` = 客户端可见首包；`bufferHoldMs` = 缓冲扣留时长。undefined → 该分布不观测。
+   */
+  upstreamFirstTokenMs?: number
+  clientFirstRealMs?: number
+  bufferHoldMs?: number
 }
 
 /**

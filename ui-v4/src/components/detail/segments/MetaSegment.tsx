@@ -20,9 +20,38 @@ function Row({ label, value }: { label: string; value?: string | number }) {
   )
 }
 
+/** 首包/时序派生值（spec 2026-07-14 §6.4）：上游 4 刻是绝对 epoch，client 3 刻是相对 started_at 的 offset。 */
+function deriveTiming(entry: HistoryEntry): {
+  upstreamTtftMs?: number
+  clientFirstRealMs?: number
+  keepaliveGapMs?: number
+  bufferHoldMs?: number
+  buffered: boolean
+} {
+  const committed = entry.attempts?.at(-1)
+  const upstreamTtftMs = committed?.upstreamFirstTokenAt === undefined ? undefined : committed.upstreamFirstTokenAt - entry.startedAt
+  const client = entry.timing?.client
+  const firstRealMs = client?.firstRealMs
+  const streamOpenMs = client?.streamOpenMs
+  const bufferHoldStartMs = client?.bufferHoldStartMs
+  const keepaliveGapMs = firstRealMs === undefined || streamOpenMs === undefined ? undefined : firstRealMs - streamOpenMs
+  const bufferHoldMs = firstRealMs === undefined || bufferHoldStartMs === undefined ? undefined : firstRealMs - bufferHoldStartMs
+  return { upstreamTtftMs, clientFirstRealMs: firstRealMs, keepaliveGapMs, bufferHoldMs, buffered: bufferHoldStartMs !== undefined }
+}
+
+const fmtMs = (ms?: number): string | undefined => (ms === undefined ? undefined : `${ms}ms`)
+
+/** buffer hold 显示：缓冲态显时长；透传态（有客户端首包但无扣留）显 "passthrough"；无数据不显。 */
+function bufferHoldDisplay(t: ReturnType<typeof deriveTiming>): string | undefined {
+  if (t.bufferHoldMs !== undefined) return fmtMs(t.bufferHoldMs)
+  if (!t.buffered && t.clientFirstRealMs !== undefined) return "passthrough"
+  return undefined
+}
+
 export function MetaSegment({ entry }: { entry: HistoryEntry }) {
   // New legs (`_index.derived` / final attempt `upstreamResponse`); legacy top-level legs removed in P4c.
   const usage = resolveResponseUsage(entry)
+  const t = deriveTiming(entry)
   return (
     <div className="mono flex flex-col gap-2 text-[13px] text-[var(--content-secondary)]">
       <Row
@@ -44,6 +73,23 @@ export function MetaSegment({ entry }: { entry: HistoryEntry }) {
       <Row
         label="stop reason"
         value={resolveStopReason(entry)}
+      />
+      {/* 首包/时序（spec 2026-07-14 §6.4）：上游 TTFT / 客户端可见首包 / keepalive 空窗 / 缓冲扣留 */}
+      <Row
+        label="upstream TTFT"
+        value={fmtMs(t.upstreamTtftMs)}
+      />
+      <Row
+        label="client 1st pkt"
+        value={fmtMs(t.clientFirstRealMs)}
+      />
+      <Row
+        label="keepalive gap"
+        value={fmtMs(t.keepaliveGapMs)}
+      />
+      <Row
+        label="buffer hold"
+        value={bufferHoldDisplay(t)}
       />
       {usage ?
         <Row
