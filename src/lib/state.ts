@@ -727,6 +727,16 @@ export interface State {
   readonly staleRequestMaxAge: number
 
   /**
+   * Hard total-duration deadline (seconds) for a single request — the user-facing SLA that a
+   * request will be cancelled + settled by, enforced by a per-request monotonic timer (NOT the
+   * periodic stale reaper, which fires late — see reaper-diagnostics / RFC RC2). 0 = disabled,
+   * in which case behavior is byte-identical to the old stale-reaper-only path. Bundled config
+   * ships an explicit value (an intentional product default; the stale reaper stays as the
+   * leak safety-net for anomalies that outlive the deadline).
+   */
+  readonly requestDeadline: number
+
+  /**
    * Interval in seconds for refreshing the cached model list from Copilot.
    * 0 = disabled. Default: 600 (10 minutes).
    */
@@ -1419,7 +1429,7 @@ export function setTimeoutConfig(
   patch: Partial<
     Pick<
       MutableState,
-      "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval" | "upstreamKeepaliveDelay" | "upstreamH2PingInterval"
+      "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval" | "upstreamKeepaliveDelay" | "upstreamH2PingInterval"
     >
   >,
 ): void {
@@ -1656,6 +1666,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   upstreamKeepaliveDelay: 15,
   upstreamH2PingInterval: 15,
   staleRequestMaxAge: 600,
+  requestDeadline: 0,
   modelRefreshInterval: 600,
   shutdownGracefulWait: 60,
   shutdownAbortWait: 120,
@@ -1791,6 +1802,7 @@ export function resetConfigManagedState(): void {
     upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
     upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
     staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+    requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
     modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   })
   setShutdownConfig({
@@ -1933,6 +1945,7 @@ const mutableState: MutableState = {
   shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
   staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+  requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
   modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,

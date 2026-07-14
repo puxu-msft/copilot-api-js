@@ -231,6 +231,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
   },
   {
+    configKey: "timeouts.request_deadline",
+    stateKey: "requestDeadline",
+    sampleYamlValue: "1800",
+    expectedStateValue: 1800,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.requestDeadline,
+  },
+  {
     configKey: "model_refresh_interval",
     stateKey: "modelRefreshInterval",
     sampleYamlValue: "120",

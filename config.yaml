@@ -202,6 +202,19 @@ timeouts:
   # Safety net for requests that never complete/fail normally. / 兜底永不正常完成/失败的请求。
   stale_request_max_age: 1200
 
+  # Hard total-duration deadline (seconds) for a single request — a user-facing SLA enforced by a
+  # PRECISE per-request timer, NOT the periodic stale reaper (which can fire late after a config
+  # reload or a process/WSL suspend — RFC RC2). On expiry the request is cancelled + settled with a
+  # deadline error. 0 = disabled (behavior then identical to the stale-reaper-only path).
+  # 单请求硬总时长上限（秒）——用户可依赖的 SLA，由 PRECISE 的 per-request 定时器强制，而非会迟到的
+  # 周期 stale reaper（RFC RC2）。到点即取消 + 结算请求并记 deadline 错误。0 = 禁用（等同仅 stale-reaper 路径）。
+  # NOTE: this is an intentional product default (900s = 15min), kept BELOW stale_request_max_age
+  # (1200s) so the precise deadline is the primary cap and the reaper only mops up anomalies that
+  # outlive it (a leaked / non-quiescing op).
+  # 注意：这是有意的产品默认（900s = 15 分钟），刻意小于 stale_request_max_age（1200s），让精确 deadline
+  # 作主上限、reaper 只兜底越过它仍未静止的异常（泄漏 / 不退出的工作）。
+  request_deadline: 900
+
 # Seconds between background model list refreshes (0 = disabled).
 # 后台刷新模型列表的间隔秒数（0 = 禁用）。
 # Keeps /models cache fresh for long-running instances without requiring a restart.

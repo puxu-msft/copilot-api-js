@@ -7,11 +7,12 @@ import { describe, test, expect } from "bun:test"
 
 import type { ApiError } from "~/lib/error"
 import type { RequestContext } from "~/lib/context/request"
-import type { RetryStrategy } from "~/lib/pipeline/driver"
+import type { RequestEnvelope } from "~/lib/pipeline/envelope"
+import type { RetryStrategy } from "~/lib/pipeline/types"
 
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 
-import { BASE, makeCodec, makeEnv, makeTransport, okStream } from "./hooks/driver-test-helpers"
+import { BASE, makeCodec, makeEnv, makeTransport } from "./hooks/driver-test-helpers"
 
 // A ctx whose lifecycleSignal is driven by a real AbortController (reapInFlight aborts it),
 // plus the no-op methods the driver touches on the retry path.
@@ -42,7 +43,7 @@ function makeReapableCtx(): { ctx: RequestContext; reap: () => void } {
 const alwaysRetryLongBackoff: RetryStrategy = {
   name: "test-always-retry",
   canHandle: (_e: ApiError) => true,
-  handle: (_e, env) => ({ kind: "retry", env, waitMs: 60_000 }),
+  handle: (_e: ApiError, env: RequestEnvelope) => Promise.resolve({ kind: "retry" as const, env, waitMs: 60_000 }),
 }
 
 describe("driver backoff — reaper cancel gate (RC3)", () => {

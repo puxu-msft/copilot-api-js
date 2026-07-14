@@ -814,6 +814,14 @@ export const TimeoutsConfigSchema = z
     upstream_h2_ping: nullableNonnegativeInt(),
     /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled). Was top-level `stale_request_max_age`. */
     stale_request_max_age: nullableNonnegativeInt(),
+    /**
+     * Hard total-duration deadline (seconds) for a single request — a user-facing SLA enforced by a
+     * per-request timer (NOT the periodic stale reaper, which fires late — RFC RC2). 0 = disabled,
+     * behavior then byte-identical to the stale-reaper-only path. Bundled default is an explicit value
+     * (intentional product default); the stale reaper stays as the leak safety-net (`stale_request_max_age`
+     * should be > `request_deadline`).
+     */
+    request_deadline: nullableNonnegativeInt(),
   })
   .strict()
 

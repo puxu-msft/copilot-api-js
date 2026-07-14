@@ -93,6 +93,13 @@ export interface RequestContextManagerOptions {
    * start.ts for the real runtime.
    */
   publisher?: ScopedPublisher<"request">
+  /**
+   * Whether to arm a per-request hard-deadline timer (`state.requestDeadline`) on `create()`.
+   * Default true. The capturing manager (dry-run inspection) passes false so an inspected ctx
+   * never leaves a dangling deadline timer / force-fails a throwaway context (RFC C4b inspection
+   * exemption).
+   */
+  armDeadlineTimers?: boolean
 }
 
 export function initRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
@@ -138,7 +145,7 @@ export function withCapturingManager<T>(fn: () => T): { result: T; events: Array
       return Promise.resolve({ delivered: true } as never)
     },
   } as unknown as ScopedPublisher<"request">
-  _manager = createRequestContextManager({ publisher })
+  _manager = createRequestContextManager({ publisher, armDeadlineTimers: false })
   try {
     return { result: fn(), events }
   } finally {
@@ -151,6 +158,21 @@ export function withCapturingManager<T>(fn: () => T): { result: T; events: Array
 export function createRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
   const activeContexts = new Map<string, RequestContext>()
   const publisher = options?.publisher
+  const armDeadlineTimers = options?.armDeadlineTimers ?? true
+  // Per-request hard-deadline timers (RFC C4b). Unlike the periodic reaper scan (which fires
+  // LATE — RC2), each request gets a precise monotonic timer armed at create() for
+  // `state.requestDeadline` seconds. On fire it applies the SAME cancel+settle as the reaper
+  // (reapInFlight → fail), but ON TIME regardless of scan cadence / config reload / suspend
+  // recovery jitter. Cleared on settle. 0 = disabled (byte-identical to the reaper-only path).
+  const deadlineTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  function clearDeadlineTimer(id: string): void {
+    const t = deadlineTimers.get(id)
+    if (t) {
+      clearTimeout(t)
+      deadlineTimers.delete(id)
+    }
+  }
 
   // ─── Stale Request Reaper ───
 
@@ -263,12 +285,28 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         // own `publisher` (the single event channel since P0.3), not via a
         // manager bridge.
         onSettled: (id) => {
+          clearDeadlineTimer(id)
           activeContexts.delete(id)
         },
         publisher,
       })
       recordAcceptedRequest(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
+      // Arm the hard-deadline timer (C4b). Uses the same cancel+settle as the reaper but fires
+      // ON TIME via a per-request timer (bypasses RC2's late scan). `unref` so it never keeps the
+      // process alive on its own. reapInFlight gives the cancel teeth (C1+C2 folded the reaper
+      // signal into the fetch + backoff); fail records the terminal outcome (settled-guard dedups).
+      if (armDeadlineTimers && state.requestDeadline > 0) {
+        const timer = setTimeout(() => {
+          deadlineTimers.delete(ctx.id)
+          if (ctx.settled) return
+          consola.warn(`[context] Request ${ctx.id} exceeded hard deadline ${state.requestDeadline}s (model: ${ctx.originalRequest?.model ?? "unknown"}, state: ${ctx.state}) — cancelling`)
+          ctx.reapInFlight()
+          ctx.fail(ctx.originalRequest?.model ?? "unknown", new Error(`Request exceeded hard deadline of ${state.requestDeadline}s (request_deadline)`))
+        }, state.requestDeadline * 1000)
+        ;(timer as unknown as { unref?: () => void }).unref?.()
+        deadlineTimers.set(ctx.id, timer)
+      }
       publisher?.publish({ kind: "request.created", ctx: snapshotWithSummary(ctx) })
       return ctx
     },
