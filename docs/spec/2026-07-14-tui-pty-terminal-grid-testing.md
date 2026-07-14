@@ -1,21 +1,21 @@
-# Spec：TUI raw-mode 编排层的 PTY 整屏测试
+# Spec：TUI raw-mode 编排层的 PTY 终端网格测试
 
 状态：设计定稿待实施（2026-07-14）。PoC 已实证、GPT 对抗审查已吸收（0 BLOCK / 4 HIGH 全采纳）。
 归属：本项目 TUI 测试策略。相关代码 `src/lib/tui/`，相关 PoC `exp/tui-rawmode/`、`exp/poc-js-pty-grid/`。
 
 ## 1. 问题与动机（why）
 
-本项目的终端 TUI（`src/lib/tui/`，真 `TerminalUi` 类）用 DECSTBM 滚动区把 footer/panel 钉在屏底、日志在上方滚动、备用屏（`\x1b[?1049h`）切 detail 视图、raw-mode stdin 切视图。
+本项目的终端 TUI（`src/lib/tui/`，真 `TerminalUi` 类）**不是全屏应用**——它是「**底部活跃区 + 上方滚动历史**」：用 DECSTBM 滚动区（`\x1b[<top>;<bottom>r`）把 footer/panel 钉在屏底固定几行，日志在上方走终端**正常滚动、进 scrollback**（保留终端历史，不接管全屏）。唯一的全屏片段是按 enter 钻进的 detail 视图（`\x1b[?1049h` 备用屏），escape 即退回活跃区模式。
 
 现状：TUI 测试几乎全是**字节流断言**——注入 fake stdout 捕获字符串，断言「发了 `\x1b[1;23r`」。典型文件 `tests/tui/terminal-coordinator.unit.test.ts`、`terminal-restore.unit.test.ts`、`panel-scroll-alignment.unit.test.ts`。
 
-这些**证不了整屏效果**。「面板长高会不会覆盖吞掉底部日志行」「切 detail 视图会不会污染底部日志」「退出后终端有没有干净还原」这类真相，只存在于「字节被真终端按 VT100 语义摆进 rows×cols 网格 + scrollback 后的**空间关系**」里。字节断言对这类真相是 **oracle-blind**——字节里根本没有「覆盖」「吞行」这个概念，必须网格解释才浮现。
+这些**证不了屏级空间关系**。「面板长高会不会覆盖吞掉底部日志行」「切 detail 视图会不会污染底部日志」「退出后终端有没有干净还原」这类真相，只存在于「字节被真终端按 VT100 语义摆进 rows×cols 网格 + scrollback 后的**空间关系**」里。字节断言对这类真相是 **oracle-blind**——字节里根本没有「覆盖」「吞行」这个概念，必须网格解释才浮现。
 
 按「真相域」判据（一条测试只有当它断言的真相恰好落在该类型的真相域才配用该类型）：
 - **字节流断言**的真相域 = 「**我方产出的确切字节/字符串**」：列内容、颜色、门控、映射表。（现有 `formatLogLine` 单测、`golden-fixture`、FORCE_COLOR 集，归位正确。）
-- **PTY 整屏 oracle**的真相域 = 「**网格 + scrollback 的空间关系**」：不吞行、面板钉底、退出还原、切视图不覆盖、resize 重锚。**唯一**合格的真相域，字节测在此 oracle-blind。
+- **PTY 屏级 oracle**的真相域 = 「**网格 + scrollback 的空间关系**」：不吞行、面板钉底、退出还原、切视图不覆盖、resize 重锚。**唯一**合格的真相域，字节测在此 oracle-blind。
 
-本 spec 补齐第二类真相域的自动化 oracle，把「整屏效果」从「只能人肉重启真终端复验」升级为可复现的自动化测试。
+本 spec 补齐第二类真相域的自动化 oracle，把「屏级空间关系」从「只能人肉重启真终端复验」升级为可复现的自动化测试。
 
 ## 2. 选型（PoC 已实证，见 `exp/poc-js-pty-grid/`）
 
@@ -38,11 +38,11 @@ PoC 亲验（`bun exp/poc-js-pty-grid/index.ts driver`，主会话复跑一次�
 6. 超时只按 harness 持有的 `proc.pid` 精确 kill，绝不 `pkill`/`killall`（护 4141 主服务器）。
 7. 时序场景连跑 ≥10 次证确定性。
 
-## 3. 测什么整屏不变量（每个配红绿对照）
+## 3. 测什么屏级不变量（每个配红绿对照）
 
 **两条铁律**：① **红绿对照**——临时破坏源码指定行 → 测试必须变红并报出具体症状 → 恢复变绿（证 oracle 有牙、非恒绿假测）；② 时序相关的连跑 ≥10 次。
 
-| # | 整屏不变量 | 红样本（破坏点 file:line） | 成熟度 |
+| # | 屏级不变量 | 红样本（破坏点 file:line） | 成熟度 |
 |---|---|---|---|
 | ① | **不吞行**：编号日志含 scrollback 连续无缺号 | 删 `region.ts:133-137` 的 scroll-before-grow → 报出缺号 | 原型已跑通 |
 | ② | **footer/panel 钉底**：footer 内容在末 N 行、滚动日志在其上 | 改 `region.ts:151`(`bottom`) 或 `:142`(`oldPanelTop`) → footer 漂移/被压 | 新增 |
@@ -81,7 +81,7 @@ PoC 亲验（`bun exp/poc-js-pty-grid/index.ts driver`，主会话复跑一次�
 
 - 正式化到 **`tests/tui/pty/`**：`harness.ts`（Bun.Terminal + xterm 复用件：spawn driver、喂键、读网格、查缺号）+ `drivers/`（各场景的真 TerminalUi driver）+ 各 `*.pty.test.ts`。`exp/tui-rawmode/`、`exp/poc-js-pty-grid/` 保留作 PoC 存档。
 - 现有字节测（`terminal-coordinator` 等）**保留不删**——两类真相域并存：字节测 = 「我方产出的确切字节」，pty 测 = 「网格空间关系」。它们不冗余（字节测能定位「发了哪个 escape」，pty 测能定位「摆到网格上对不对」，互补）。
-  - 注：GPT reviewer 未点名任何一条现有字节测为「整屏效果的错配近似应迁移」。若实施期发现某条字节测实为 oracle-blind 的整屏近似，按 `choosing-test-type` 的迁移取向（先补 pty 覆盖再删/迁，零覆盖缺口）处理，不预先砍。
+  - 注：GPT reviewer 未点名任何一条现有字节测为「屏级空间关系的错配近似应迁移」。若实施期发现某条字节测实为 oracle-blind 的屏级空间关系的错配近似，按 `choosing-test-type` 的迁移取向（先补 pty 覆盖再删/迁，零覆盖缺口）处理，不预先砍。
 
 ## 6. GPT 对抗审查吸收记录（record-not-adopted / adopted）
 

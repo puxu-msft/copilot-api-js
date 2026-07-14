@@ -1,8 +1,8 @@
-# TUI PTY 整屏测试 Implementation Plan
+# TUI PTY 终端网格测试 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为 `src/lib/tui/` 的 raw-mode 编排层建立 PTY 整屏测试 oracle——用 `Bun.Terminal` + `@xterm/headless` 把真 `TerminalUi` 的输出字节解释成 rows×cols 网格 + scrollback，断言字节测证不了的整屏不变量（不吞行、footer 钉底、退出还原、切 detail 不覆盖、resize 重锚）。
+**Goal:** 为 `src/lib/tui/` 的 raw-mode 编排层建立 PTY 终端网格测试 oracle——用 `Bun.Terminal` + `@xterm/headless` 把真 `TerminalUi` 的输出字节解释成 rows×cols 网格 + scrollback，断言字节测证不了的屏级不变量（不吞行、footer 钉底、退出还原、切 detail 不覆盖、resize 重锚）。
 
 **Architecture:** 复用 harness（`tests/tui/pty/harness.ts`）封装「spawn 真 driver → Bun.Terminal 伪终端 → 喂键序列 → 输出串行喂 @xterm/headless → 读网格+scrollback」。**关键**：driver 会在退出时 `ui.destroy()→region.clear()` 擦掉 panel/footer（`region.ts:229` 的 `ERASE_TO_END`），所以「运行中空间关系」（footer 钉底、resize 重锚、切 detail）**不能读末态网格**——harness 提供 **sentinel 握手快照**：driver 在关键状态发唯一 marker 日志，harness 检测到 marker 出现在网格里就抓**当时**的快照（driver 未 clear 前）。「退出还原」则读末态原始字节 + 重放。每个不变量一个真 `TerminalUi` driver + 一个 `.pty.test.ts`，内建红绿对照。
 
@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-（每个 task 隐含包含本节，值逐字来自 spec `docs/spec/2026-07-14-tui-pty-fullscreen-testing.md`）
+（每个 task 隐含包含本节，值逐字来自 spec `docs/spec/2026-07-14-tui-pty-terminal-grid-testing.md`）
 
 - **Bun 版本固定 1.3.14**：`Bun.Terminal` 是相对新 API，PoC 只在此版本 + Linux 验过。
 - **`@xterm/headless` 读 buffer 三前提**：构造传 `allowProposedApi: true`；等 `terminal.write(data, cb)` 的 cb 再读 buffer；遍历 `0..buffer.active.length-1`（含 scrollback）。
@@ -66,9 +66,9 @@ Create `tests/tui/pty/harness.ts`：
 
 ```typescript
 /**
- * PTY 整屏测试复用件 — Bun.Terminal 伪终端跑真 TerminalUi driver，输出串行喂
+ * PTY 终端网格测试复用件 — Bun.Terminal 伪终端跑真 TerminalUi driver，输出串行喂
  * @xterm/headless 解释成网格+scrollback。见 spec
- * docs/spec/2026-07-14-tui-pty-fullscreen-testing.md。
+ * docs/spec/2026-07-14-tui-pty-terminal-grid-testing.md。
  *
  * 握手快照：driver 退出时 region.clear() 擦掉 panel/footer，故「运行中空间关系」
  * 不能读末态。driver 在关键状态发唯一 marker 日志（如 "__SNAP__panel"），harness
@@ -293,7 +293,7 @@ Run: `bun run test:pty`
 Expected: harness.pty.test.ts 全 PASS。
 ```bash
 git add -- package.json bun.lock tests/tui/pty/harness.ts tests/tui/pty/harness.pty.test.ts
-git commit -m "test(tui): PTY 整屏测试脚手架 — harness(握手快照+串行resize) + @xterm/headless + test:pty"
+git commit -m "test(tui): PTY 终端网格测试脚手架 — harness(握手快照+串行resize) + @xterm/headless + test:pty"
 ```
 
 ---
@@ -539,7 +539,7 @@ describe("③ 退出干净还原：从 detail 态退出后回主屏、光标可�
     await writeXterm(term, "\r\n".repeat(30) + "RESTORE-SENTINEL-TAIL")
     const grid: Array<string> = []
     for (let i = 0; i < term.buffer.active.length; i++) grid.push(term.buffer.active.getLine(i)?.translateToString(true) ?? "")
-    // sentinel 落在可见屏最后一行（换行自然推进到底），证滚动区已复位为全屏。
+    // sentinel 落在可见屏最后一行（换行自然推进到底），证滚动区已复位为整屏无限制（DECSTBM reset）。
     const visible = grid.slice(-24)
     expect(visible.at(-1) ?? "").toContain("RESTORE-SENTINEL-TAIL")
     term.dispose()
@@ -763,8 +763,8 @@ git commit -m "test(tui): PTY 不变量⑤ resize 重锚 — 中间快照验孤�
 - [ ] **Step 3: spec 头部标实施状态 + DESIGN.md** — spec 状态改「已实施（landed）」+ commit 范围；`docs/DESIGN.md` 若有测试布局表，加 `tests/tui/pty/` 一行（改动过存在性守卫则同步 L1 测试）。
 - [ ] **Step 4: 提交文档**
 ```bash
-git add -- docs/spec/2026-07-14-tui-pty-fullscreen-testing.md docs/DESIGN.md
-git commit -m "docs: 标记 TUI PTY 整屏测试已实施 + 架构现状同步"
+git add -- docs/spec/2026-07-14-tui-pty-terminal-grid-testing.md docs/DESIGN.md
+git commit -m "docs: 标记 TUI PTY 终端网格测试已实施 + 架构现状同步"
 ```
 
 ---
