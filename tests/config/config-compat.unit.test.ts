@@ -227,6 +227,54 @@ describe("config compat — legacy key migration (file load)", () => {
     // null → undefined via schema transform; no NaN from null*60
     expect(result.rate_limiter?.recovery_interval).toBeUndefined()
   })
+
+  test("timeouts.upstream_keepalive → upstream_transport.tcp_keepalive_probe_delay", () => {
+    const result = validateConfig({ timeouts: { upstream_keepalive: 20 } })
+    expect(result.upstream_transport?.tcp_keepalive_probe_delay).toBe(20)
+    expect((result.timeouts as Record<string, unknown> | undefined)?.upstream_keepalive).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("upstream_keepalive"))).toBe(true)
+  })
+
+  test("timeouts.upstream_keepalive: 0 migrates to absence (not tcp_keepalive_probe_delay: 0) so the new default (15) applies", () => {
+    const result = validateConfig({ timeouts: { upstream_keepalive: 0 } })
+    expect(result.upstream_transport?.tcp_keepalive_probe_delay).toBeUndefined()
+    expect((result.timeouts as Record<string, unknown> | undefined)?.upstream_keepalive).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("upstream_keepalive"))).toBe(true)
+  })
+
+  test("timeouts.upstream_h2_ping → upstream_transport.http2.ping_interval", () => {
+    const result = validateConfig({ timeouts: { upstream_h2_ping: 30 } })
+    expect(result.upstream_transport?.http2?.ping_interval).toBe(30)
+    expect((result.timeouts as Record<string, unknown> | undefined)?.upstream_h2_ping).toBeUndefined()
+  })
+
+  test("openai_responses.client_ws_keep_open → server.responses_ws.keep_open", () => {
+    const result = validateConfig({ openai_responses: { client_ws_keep_open: true } })
+    expect(result.server?.responses_ws?.keep_open).toBe(true)
+    expect((result.openai_responses as Record<string, unknown> | undefined)?.client_ws_keep_open).toBeUndefined()
+  })
+
+  test("openai_responses.max_ws_frame_bytes → server.responses_ws.max_frame_bytes", () => {
+    const result = validateConfig({ openai_responses: { max_ws_frame_bytes: 65536 } })
+    expect(result.server?.responses_ws?.max_frame_bytes).toBe(65536)
+  })
+
+  test("openai_responses.max_client_ws_connections → server.responses_ws.max_connections", () => {
+    const result = validateConfig({ openai_responses: { max_client_ws_connections: 128 } })
+    expect(result.server?.responses_ws?.max_connections).toBe(128)
+  })
+
+  test("openai_responses.max_upstream_ws_connections → upstream_transport.websocket.soft_max_connections", () => {
+    const result = validateConfig({ openai_responses: { max_upstream_ws_connections: 64 } })
+    expect(result.upstream_transport?.websocket?.soft_max_connections).toBe(64)
+    expect((result.openai_responses as Record<string, unknown> | undefined)?.max_upstream_ws_connections).toBeUndefined()
+  })
+
+  test("multiple upstream_transport.http2 legacy leaves accumulate into one sub-section", () => {
+    const result = validateConfig({ timeouts: { upstream_keepalive: 12, upstream_h2_ping: 8 } })
+    expect(result.upstream_transport?.tcp_keepalive_probe_delay).toBe(12)
+    expect(result.upstream_transport?.http2?.ping_interval).toBe(8)
+  })
 })
 
 describe("config compat — validateConfigInput (PUT) also migrates (C3)", () => {

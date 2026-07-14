@@ -329,4 +329,34 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
     "empty_text",
     "anthropic.stream_keepalive_mode: content_delta 在无条件重置下已并入 empty_text（无 pre-response 门控差异），自动迁移",
   ),
+
+  // ── Transport config three-axis reorg (2026-07-14) ────────────────────────
+  // timeouts.upstream_keepalive → upstream_transport.tcp_keepalive_probe_delay.
+  // Special-cased 0→absence: the legacy field's 0 meant "let undici/Node pick
+  // its own default" (NOT "disable keepalive"), which is exactly what an absent
+  // new key means post-migration (schema default 15 applies only via absence;
+  // migrating literal 0 forward would collide with the NEW field's disable
+  // semantics established by D5). `transform` returning `undefined` skips the
+  // merge entirely while the locator still deletes+warns the legacy key.
+  renameLeaf("timeouts.upstream_keepalive", "upstream_transport.tcp_keepalive_probe_delay", {
+    transform: (v) => (typeof v === "number" && v > 0 ? v : undefined),
+    message:
+      'timeouts.upstream_keepalive is renamed to upstream_transport.tcp_keepalive_probe_delay; a legacy value of 0 is migrated to absence (falls back to the new default) since 0 previously meant "use the runtime default", not "disable"',
+  }),
+  renameLeaf("timeouts.upstream_h2_ping", "upstream_transport.http2.ping_interval", {
+    message: "timeouts.upstream_h2_ping is renamed to upstream_transport.http2.ping_interval",
+  }),
+  renameLeaf("openai_responses.client_ws_keep_open", "server.responses_ws.keep_open", {
+    message: "openai_responses.client_ws_keep_open is renamed to server.responses_ws.keep_open (client-facing WS ingress config moved under server.*)",
+  }),
+  renameLeaf("openai_responses.max_ws_frame_bytes", "server.responses_ws.max_frame_bytes", {
+    message: "openai_responses.max_ws_frame_bytes is renamed to server.responses_ws.max_frame_bytes",
+  }),
+  renameLeaf("openai_responses.max_client_ws_connections", "server.responses_ws.max_connections", {
+    message: "openai_responses.max_client_ws_connections is renamed to server.responses_ws.max_connections",
+  }),
+  renameLeaf("openai_responses.max_upstream_ws_connections", "upstream_transport.websocket.soft_max_connections", {
+    message:
+      "openai_responses.max_upstream_ws_connections is renamed to upstream_transport.websocket.soft_max_connections (upstream-facing pool cap moved under upstream_transport.*)",
+  }),
 ]
