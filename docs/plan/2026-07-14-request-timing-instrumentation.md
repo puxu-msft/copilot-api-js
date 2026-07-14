@@ -1,6 +1,6 @@
 # 请求首包/时序埋点 Implementation Plan
 
-> **实施状态（2026-07-14）：`[全部 landed]` 隔离 worktree `feat/timing-instrumentation`（未合并 master）。** Phase 0-5 全部实现 + 每 task TDD 绿 + typecheck 绿 + lint clean（仅不碰存量债）+ 细粒度提交。ADR + DESIGN/API + deferred-backlog 均已同步。实现中偏差已回折：Task 0.2 谓词按真实类型（`ClientFormat`/`UpstreamEndpoint` via `ENDPOINT`）校准；Task 2.3 并入 0.4（ctx 载体与投影同测避免 test-only getter）；Task 4.2 无代码（REST 重取 option a）。待办：合并态 subagent review + merge master。
+> **实施状态（2026-07-14）：`[全部 landed，已合并 master `f982e0e3`]`。** Phase 0-5 全部实现 + 每 task TDD 绿 + typecheck 绿 + lint clean（仅不碰存量债）+ 细粒度提交，经隔离 worktree `feat/timing-instrumentation`（13 commits）rebase 后以 `--no-ff` merge commit 合入 master（冲突消解=去除 chat-completions/responses handler 里 merge 重复的 `const streamStartMs`）。ADR + DESIGN/API + deferred-backlog 均已同步。实现中偏差已回折：Task 0.2 谓词按真实类型（`ClientFormat`/`UpstreamEndpoint` via `ENDPOINT`）校准；Task 2.3 并入 0.4（ctx 载体与投影同测避免 test-only getter）；Task 4.2 无代码（REST 重取 option a）。合并态 review 修 HIGH-1（Responses-WS 客户端谓词读 event 行→改 parse data.type）。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
