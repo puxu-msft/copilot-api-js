@@ -29,6 +29,7 @@ import {
   //
   createUpstreamFrameDiagnostics,
   logUpstreamStreamError,
+  logUpstreamStreamTruncation,
   upstreamFrameDiagType,
 } from "~/lib/upstream-stream-diagnostics"
 import {
@@ -169,5 +170,37 @@ describe("recordUpstreamFrame native label (LOW-1 parity — no shared/native dr
     const sseEvents: Array<{ type: string; raw: string; offsetMs: number }> = []
     recordUpstreamFrame({ rawEvent: { data: "" }, parsed: undefined, streamState: freshState(), sseEvents, reqCtx: noopCtx, checkRepetition: () => {} })
     expect(sseEvents[0]?.type).toBe("keepalive")
+  })
+})
+
+describe("logUpstreamStreamTruncation (HIGH-1 — clean-EOF truncation label)", () => {
+  test("emits kind=truncated with real signals, NOT run through classifyStreamError, NEVER the middlebox hint", () => {
+    const start = Date.now()
+    const diag = createUpstreamFrameDiagnostics(start)
+    // A short thinking-stall-shaped stream: last real frame is a content_block_start (the very signal
+    // that WOULD trip the middlebox-idle-reclaim hint IF this were mislabelled transport-close).
+    diag.observe({ data: JSON.stringify({ type: "content_block_start" }) })
+
+    const spy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    try {
+      logUpstreamStreamTruncation("Upstream stream truncated before completion (no message_stop)", {
+        model: "claude-x",
+        streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "thinking" },
+        acc: { inputTokens: 5, outputTokens: 0 },
+        sseEvents: diag.sseEvents,
+      })
+      const line = spy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("STREAM DISCONNECT"))
+      expect(line).toBeDefined()
+      // Fixed `truncated` label (NOT `transport-close` — the reason string is never classified).
+      expect(line).toContain("kind=truncated")
+      expect(line).not.toContain("kind=transport-close")
+      expect(line).toContain("frames=1")
+      expect(line).toContain("last-frame=content_block_start@")
+      // The middlebox-idle-reclaim hint is keyed on `kind=transport-close`, so a truncation NEVER carries
+      // it even with a thinking-stall-shaped last frame — a clean EOF is not an idle-reclaimed connection.
+      expect(line).not.toContain("likely=middlebox-idle-reclaim")
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

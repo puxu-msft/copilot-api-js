@@ -148,4 +148,21 @@ describe("translate-leg post-commit error shaping (FIX-2, @cc reverse leg)", () 
       spy.mockRestore()
     }
   })
+
+  test("clean-EOF truncation (no finish_reason) ALSO emits the rich diagnostic, kind=truncated (HIGH-1)", async () => {
+    // The CC upstream drains cleanly (no thrown error) but never sends a finish_reason → the translate leg's
+    // truncation gate. It must emit the SAME rich signals as the H3 branch, labelled `truncated`.
+    applyFetchMock(mock(() => Promise.resolve(createSseResponse(ccContentChunks))))
+    const spy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    try {
+      await translateRequest("translate-trunc-diag")
+      const line = spy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      expect(line).toBeDefined()
+      expect(line).toContain("kind=truncated")
+      expect(line).not.toContain("frames=0")
+      expect(line).toContain("last-frame=chat.completion.chunk@")
+    } finally {
+      spy.mockRestore()
+    }
+  })
 })
