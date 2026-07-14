@@ -251,51 +251,79 @@ export interface ForwardStreamTranslator {
   getMeta(): CcToAnthropicStreamMeta
 }
 
-export function createForwardStreamTranslator(targetEndpoint: UpstreamEndpoint, modelId: string): ForwardStreamTranslator {
+/**
+ * Per-`targetEndpoint` STATEFUL factory table (RFC 2026-07-14 §2, R-EXPLICIT) — was a chained
+ * `if (targetEndpoint===CHAT_COMPLETIONS) ... if (RESPONSES||WS_RESPONSES) ... throw` (a runtime-throw
+ * fallback for the `/v1/messages` leg). Now an EXHAUSTIVE `Record<UpstreamEndpoint, ForwardStreamTranslatorFactory>`
+ * — a missing leg is a COMPILE error via `satisfies`. Each entry constructs a FRESH per-request stateful
+ * translator (not a plain value — a factory), preserving the existing per-request-instance semantics.
+ * `/v1/messages` is an explicit, named "unreachable — reverse leg" factory (still an EXPLICIT bridge
+ * table entry, not a `default` fallthrough — R-EXPLICIT requires every leg named, even the unreachable one).
+ */
+type ForwardStreamTranslatorFactory = (modelId: string) => ForwardStreamTranslator
+
+/** `/chat/completions` (cc leg) — SINGLE hop: the upstream CC SSE stream feeds the CC→Anthropic translator directly. */
+const chatCompletionsForwardStreamFactory: ForwardStreamTranslatorFactory = (modelId) => {
   const ccToAnthropic: CcToAnthropicStreamTranslator = createCcToAnthropicStreamTranslator(modelId)
-
-  if (targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) {
-    // cc leg: single hop — feed the upstream CC frame straight into the CC→Anthropic translator.
-    return {
-      renderFrame: (frame) => ccToAnthropic.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
-      flush: () => ccToAnthropic.flush().map((s) => s.frame),
-      getMeta: () => ccToAnthropic.getMeta(),
-    }
+  return {
+    renderFrame: (frame) => ccToAnthropic.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
+    flush: () => ccToAnthropic.flush().map((s) => s.frame),
+    getMeta: () => ccToAnthropic.getMeta(),
   }
+}
 
-  if (targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES) {
-    // responses leg: two hop — Responses→CC (per-frame) → CC→Anthropic. The Responses→CC translator
-    // captures the terminal usage unconditionally (so the CC chunks carry the usage the CC→Anthropic
-    // accumulator nets — getStreamMeta signal chain).
-    const responsesToCc = createStreamTranslator()
-    return {
-      renderFrame: (frame) => {
-        if (!frame.data || frame.data === "[DONE]") return []
-        let event: ResponsesStreamEvent
-        try {
-          event = JSON.parse(frame.data) as ResponsesStreamEvent
-        } catch {
-          // Unparseable upstream Responses frame — skip (mirrors the Responses→CC whole-stream wrapper).
-          return []
-        }
-        const out: Array<ClientFrame> = []
-        for (const ccChunk of responsesToCc.translate(event)) {
-          for (const s of ccToAnthropic.renderFrame({ data: JSON.stringify(ccChunk), event: "message" })) out.push(s.frame)
-        }
-        return out
-      },
-      flush: () => ccToAnthropic.flush().map((s) => s.frame),
-      getMeta: () => ccToAnthropic.getMeta(),
-    }
+/**
+ * `/responses` | `ws:/responses` (responses leg) — TWO hop (WARN-F): the upstream Responses SSE stream is
+ * first translated to CC frames (the existing {@link createStreamTranslator} Responses→CC primitive), then
+ * those CC frames feed the CC→Anthropic translator. The getStreamMeta signal chain is therefore
+ * "Responses翻译 → CC帧 → 累积" — the CC→Anthropic translator's accumulator (fed the translated CC chunks)
+ * is the single source of the terminal usage/stop_reason.
+ */
+const responsesForwardStreamFactory: ForwardStreamTranslatorFactory = (modelId) => {
+  const ccToAnthropic: CcToAnthropicStreamTranslator = createCcToAnthropicStreamTranslator(modelId)
+  const responsesToCc = createStreamTranslator()
+  return {
+    renderFrame: (frame) => {
+      if (!frame.data || frame.data === "[DONE]") return []
+      let event: ResponsesStreamEvent
+      try {
+        event = JSON.parse(frame.data) as ResponsesStreamEvent
+      } catch {
+        // Unparseable upstream Responses frame — skip (mirrors the Responses→CC whole-stream wrapper).
+        return []
+      }
+      const out: Array<ClientFrame> = []
+      for (const ccChunk of responsesToCc.translate(event)) {
+        for (const s of ccToAnthropic.renderFrame({ data: JSON.stringify(ccChunk), event: "message" })) out.push(s.frame)
+      }
+      return out
+    },
+    flush: () => ccToAnthropic.flush().map((s) => s.frame),
+    getMeta: () => ccToAnthropic.getMeta(),
   }
+}
 
-  // REVERSE `→ /v1/messages` streaming leg does not use the FORWARD translator — the reverse legs
-  // dispatch on `clientFormat` via `createReverseStreamTranslator` (the upstream is Anthropic, so the
-  // render direction is Anthropic→CC/Responses/Gemini). A forward call for the messages leg is a wiring
-  // bug — fail loudly (never-swallow).
+/**
+ * `/v1/messages` — the REVERSE leg does not use the FORWARD translator: the reverse legs dispatch on
+ * `clientFormat` via `createReverseStreamTranslator` (the upstream is Anthropic, so the render direction
+ * is Anthropic→CC/Responses/Gemini). A forward call for the messages leg is a wiring bug — fail loudly
+ * (never-swallow). Named + tabled explicitly (R-EXPLICIT: not a `default` catch-all).
+ */
+const messagesForwardStreamFactoryUnreachable: ForwardStreamTranslatorFactory = (): ForwardStreamTranslator => {
   throw new Error(
-    `[hub-translate] createForwardStreamTranslator: the /v1/messages leg is a REVERSE leg — use createReverseStreamTranslator (dispatched on clientFormat), not the forward translator (targetEndpoint=${targetEndpoint})`,
+    `[hub-translate] createForwardStreamTranslator: the /v1/messages leg is a REVERSE leg — use createReverseStreamTranslator (dispatched on clientFormat), not the forward translator (targetEndpoint=${ENDPOINT.MESSAGES})`,
   )
+}
+
+const FORWARD_STREAM_FACTORIES = {
+  [ENDPOINT.MESSAGES]: messagesForwardStreamFactoryUnreachable,
+  [ENDPOINT.CHAT_COMPLETIONS]: chatCompletionsForwardStreamFactory,
+  [ENDPOINT.RESPONSES]: responsesForwardStreamFactory,
+  [ENDPOINT.WS_RESPONSES]: responsesForwardStreamFactory,
+} satisfies Record<UpstreamEndpoint, ForwardStreamTranslatorFactory>
+
+export function createForwardStreamTranslator(targetEndpoint: UpstreamEndpoint, modelId: string): ForwardStreamTranslator {
+  return FORWARD_STREAM_FACTORIES[targetEndpoint](modelId)
 }
 
 /**
