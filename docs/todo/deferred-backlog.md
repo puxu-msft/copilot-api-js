@@ -578,6 +578,14 @@
 - **为何暂缓**：实测唯一受累工具是 AskUserQuestion（已治），无第二例证据；通用腿要把 tool schema 从请求穿到 response-rewrite 层（新接线面），additive 不阻塞、不制造错数据。
 - **若做需改什么**：① 把请求 `tools[].input_schema` 经 env/state 传到 decode/rewrite 层（现只有 recover-tool-call 用了 tool schema，可复用同通道）；② 加通用剥离步（`additionalProperties:false` gate + 非 `properties` 顶层键剥离），排在 AskUserQuestion 专属抢救**之后**；③ 诊断复用 `pipelineInfo` 落盘通道；④ 测试覆盖非 AskUserQuestion 工具的幻觉顶层参数。发现方：AskUserQuestion salvage 特性 brainstorm（2026-07-14，方案 C 的通用腿）。
 
+## 语义抢救类现有 2 例——第 3 例出现再泛化为配置驱动别名映射（2026-07-14）
+
+- **背景**：「语义抢救」（治**必填字段错位/错名**、非剥幻觉键）现有两个专属实现，均定向、硬编码单工具：`normalizeAskUserQuestionInput`（顶层 `question` → item）与 `normalizeSendMessageInput`（`agentId` → 必填 `to`，本次新增）。二者都在 `decode-tool-input-core.ts`、经 `response_tool_use_fix.*` config 门控、诊断落 `pipelineInfo`。
+- **当前行为**：每新增一个「必填字段以别名/错位到达」的工具都要手写一个 `normalizeXxxInput` + 一个 config leaf + 一条 pipelineInfo 诊断字段 + 接线。AskUserQuestion 的抢救过于 bespoke（salvage + header 回填 + strip 三步）无法折进通用别名映射；但 SendMessage 是干净的「别名重命名」子形（`to` 缺失且别名在 → 搬值删别名）。
+- **理想架构**：当出现第 3 例干净「别名重命名」时，抽配置驱动的 `tool → { canonicalField: [aliasNames...] }` 映射（canonical 缺失且某 alias 在则重命名），SendMessage 作首个数据项；与上面「通用剥离腿」并列（一个治错名必填、一个剥幻觉键）。AskUserQuestion 的复杂抢救仍保留专属。
+- **为何暂缓**：用户本轮明确选「一次性专属修复」而非通用机制（2 例证据尚不足以压过通用化的配置面成本；SendMessage 硬编码与配置映射代码量相当，但只有 1 个 alias 数据点）。
+- **若做需改什么**：① 加 config `anthropic.response_tool_use_fix.field_aliases: Record<tool, Record<canonical, string[]>>`；② 抽 `renameFieldFromAlias` 通用原语替换 `normalizeSendMessageInput`；③ 诊断沿用 `pipelineInfo.sendMessageNormalization` 的形状泛化为 per-tool；④ 保留 AskUserQuestion 专属抢救不动。发现方：SendMessage `agentId→to` 抢救实现（2026-07-14）。
+
 ## AskUserQuestion 规范化诊断在 buffered-retry 下过报（2026-07-14，合并态 review MED，gated on buffered-retry 启用）
 
 - **根因**：`ctx.recordAskUserQuestionNormalization` 把诊断写进 **request-level** `_askNormalization`（[context/request.ts](../../src/lib/context/request.ts) `recordAskUserQuestionNormalization`），**不做 per-attempt-reset**。buffered-retry（block-level / responses）下，某 attempt 的 tool_use 块跑完 `content_block_stop` 触发 salvage/strip（记 diag）后、在 `message_stop` 前 RST → 该 attempt 被丢弃、帧从不转发；但 diag 已 publish 进 `_askNormalization` 并落 in-flight entry。若 committed 重试 attempt 输入干净（不再 normalize），history 的 `pipelineInfo.askUserQuestionNormalization` 就展示了一个「转发 wire 从未发生」的 salvage。
