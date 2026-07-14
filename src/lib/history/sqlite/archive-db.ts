@@ -6,6 +6,7 @@ import { state } from "~/lib/state"
 
 import type { Database } from "./connection"
 
+import { migrateEntriesColumns } from "./connection"
 import { createDatabase } from "./driver"
 import { applyForwardMigrations } from "./migrations/run"
 import { SCHEMA_SQL, TIER2_MANIFEST_DDL } from "./schema"
@@ -61,6 +62,13 @@ export function openArchiveDb(dbPath: string): Database {
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
   db.exec("PRAGMA foreign_keys = ON;")
   db.exec(SCHEMA_SQL)
+  // archive.db MUST carry the SAME entries_v2 shape as history.db, including the
+  // ALTER-added columns (pid / pinned / agent_id / raw_path / *_bytes / …) that
+  // live in migrateEntriesColumns, NOT in SCHEMA_SQL's CREATE TABLE. Otherwise a
+  // HOT→TIER-1 `INSERT INTO archive.entries_v2 SELECT * FROM main.entries_v2`
+  // would fail on a column-count mismatch. Reuse the exact same migration so the
+  // two files stay column-identical (single source of truth).
+  migrateEntriesColumns(db)
   db.exec(TIER2_MANIFEST_DDL)
   if (dbPath !== ":memory:") consola.info(`[history/archive] opened ${dbPath}`)
   return db

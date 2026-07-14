@@ -270,7 +270,7 @@ function reclaimOrphanedActiveRows(database: Database): void {
  * (and unconditionally, guarded by IF NOT EXISTS) covers both fresh databases
  * — where the column came from SCHEMA_SQL's CREATE TABLE — and migrated ones.
  */
-function migrateEntriesColumns(database: Database): void {
+export function migrateEntriesColumns(database: Database): void {
   const columns = database.prepare("PRAGMA table_info(entries_v2)").all() as Array<{ name: string }>
   const existing = new Set(columns.map((c) => c.name))
 

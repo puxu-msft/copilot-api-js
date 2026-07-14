@@ -14,6 +14,7 @@ import {
   runOptimize,
 } from "./connection"
 import { GC_ORPHAN_MSG_BLOB_SQL } from "./write"
+import { migrateOverflowToTier1 } from "./tier1-migrate"
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -71,6 +72,23 @@ function evictBucket(db: Database, where: string, limit: number): number {
 
 export function runReaperOnce(successLimit: number, failureLimit: number): number {
   const db = getDatabase()
+
+  // Tiered-archive mode: when enabled AND the archive is attached, overflow rows
+  // are MOVED to tier-1 instead of DELETEd (never-truly-delete red line, spec §3.1).
+  // The count limits become a safety valve (bound HOT growth within the hot window)
+  // rather than a lossy eviction. Falls back to the legacy DELETE path when archiving
+  // is off or the archive isn't attached yet (e.g. before startup wiring runs).
+  if (state.historyArchiveEnabled && isArchiveAttached(db)) {
+    const moved = migrateOverflowToTier1(db, successLimit, failureLimit)
+    if (moved > 0) {
+      consola.info(`[history/sqlite] reaper moved ${moved} overflow entries HOT→tier-1 (successLimit=${successLimit}, failureLimit=${failureLimit})`)
+      // HOT-side msg_blob orphan sweep (req_msg/req_aux cascade-removed with the moved
+      // head rows; archive-side GC ran inside migrateOverflowToTier1's batch).
+      db.prepare(GC_ORPHAN_MSG_BLOB_SQL).run()
+    }
+    return moved
+  }
+
   const deletedSuccess = evictBucket(db, SUCCESS_WHERE, successLimit)
   const deletedFailure = evictBucket(db, FAILURE_WHERE, failureLimit)
   const deleted = deletedSuccess + deletedFailure
@@ -84,6 +102,21 @@ export function runReaperOnce(successLimit: number, failureLimit: number): numbe
     db.prepare(GC_ORPHAN_MSG_BLOB_SQL).run()
   }
   return deleted
+}
+
+/**
+ * Whether archive.db is ATTACHed as `archive` on this connection — a precondition
+ * for the reaper's move-to-tier1 path. Probed via `pragma database_list` rather
+ * than assumed, so a tick that fires before startup wiring attaches the archive
+ * safely falls back to the legacy DELETE path instead of throwing.
+ */
+function isArchiveAttached(db: Database): boolean {
+  try {
+    const rows = db.prepare("PRAGMA database_list").all() as Array<{ name: string }>
+    return rows.some((r) => r.name === "archive")
+  } catch {
+    return false
+  }
 }
 
 /**
