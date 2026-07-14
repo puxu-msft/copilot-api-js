@@ -954,6 +954,12 @@ export function createRequestContext(opts: {
             // Non-final buffered-retry attempts keep their own committed upstream frames.
             sseEvents: a.sseEvents,
             responseHeaders: a.responseHeaders,
+            // 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻（第一段投影 Attempt → HistoryEntryData.attempts[]）。
+            // 显式清单——漏此则字段在此静默丢，toHistoryAttempts 拿到已空（plan review M-A）。
+            ...(a.upstreamHeadersAt !== undefined && { upstreamHeadersAt: a.upstreamHeadersAt }),
+            ...(a.upstreamMessageStartAt !== undefined && { upstreamMessageStartAt: a.upstreamMessageStartAt }),
+            ...(a.upstreamFirstTokenAt !== undefined && { upstreamFirstTokenAt: a.upstreamFirstTokenAt }),
+            ...(a.upstreamLastTokenAt !== undefined && { upstreamLastTokenAt: a.upstreamLastTokenAt }),
             // ─── New per-attempt legs (RFC §3). effectiveSource carries this attempt's
             //     aggregated `pipeline` (RFC §4); upstreamResponse carries success/
             //     trailers/rawBody + unified frames. ───

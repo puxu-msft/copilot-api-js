@@ -333,7 +333,7 @@ export function collectAttemptStages(ctx: RequestContext): Array<StagePayload> {
   return stages
 }
 
-function toHistoryAttempts(attempts: HistoryEntryData["attempts"]): HistoryEntry["attempts"] {
+export function toHistoryAttempts(attempts: HistoryEntryData["attempts"]): HistoryEntry["attempts"] {
   return attempts?.map((a) => ({
     index: a.index,
     strategy: a.strategy,
@@ -346,6 +346,12 @@ function toHistoryAttempts(attempts: HistoryEntryData["attempts"]): HistoryEntry
     waitMs: a.waitMs,
     sseEvents: a.sseEvents,
     responseHeaders: a.responseHeaders,
+    // 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻（第二段投影 HistoryEntryData → HistoryEntry.attempts[]）。
+    // allowlist 显式透传——漏此则被静默 drop（plan review M-A / [[settle-freezes-history-entry-record]]）。
+    upstreamHeadersAt: a.upstreamHeadersAt,
+    upstreamMessageStartAt: a.upstreamMessageStartAt,
+    upstreamFirstTokenAt: a.upstreamFirstTokenAt,
+    upstreamLastTokenAt: a.upstreamLastTokenAt,
     // ─── New per-attempt legs (RFC §3) — copied through from the producer
     //     (toHistoryEntry already built them via the P1 leg builders). Cast bridges
     //     the producer-side `unknown`-based DTOs to the owner-side MessageContent
