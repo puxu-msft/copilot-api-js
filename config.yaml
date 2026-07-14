@@ -959,3 +959,16 @@ hooks:
   # Load the hook module. Default false — the feature is fully off unless true.
   # 是否加载 hook 模块。默认 false——除非 true 否则特性完全关闭。
   enabled: false
+
+# ============================================================================
+# Unknown HTTP Endpoint Logging / 未知 HTTP 端点日志
+# ============================================================================
+# 打到代理但没匹配任何业务路由的请求（客户端打错 path / base URL / method）按归类状态码
+# 分别控制日志级别。日志经 consola → TUI + copilot-api.log。
+# Requests that reach the proxy but match no business route, logged per classified status.
+#   not_found          → 404: real routing miss / 真正未匹配的路径
+#   method_not_allowed → 405: path exists, wrong method (returns 405 + Allow header)
+# Levels: silent (off) | debug | info | warn | error. Default warn/warn.
+unknown_endpoint_logging:
+  not_found: warn
+  method_not_allowed: warn
