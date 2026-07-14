@@ -676,22 +676,34 @@ export async function runResponseBufferedSink(
   // Shared buffered-frame flush (extracted so the terminal commit AND the block-level boundary
   // commit apply IDENTICAL anchor-aware semantics: heartbeat freeze → one-time anchor close-off →
   // H1 message_start dedup → +1 remap). Returns a discriminated result so the caller maps it to a
-  // ResponseOutcome (never throws out). `firstFlush` makes the anchor close-off (which reserves
-  // index 0 before the first REAL block) happen exactly once across all flushes — on the terminal-
-  // only path (`commitBoundaries===undefined`) this is called ONCE, byte-identical to the previous
-  // inline whole-response commit (R1). C1 (spec §3.3): freeze the heartbeat BEFORE snapshotting
-  // `injected` + flushing so a mid-flush timer tick can't inject a second anchor start(0).
-  let firstFlush = true
+  // ResponseOutcome (never throws out). `isTerminalFlush` gates the anchor close-off
+  // (`content_block_stop@0`): the anchor reserved index 0 and must stay OPEN across ALL block-level
+  // BOUNDARY flushes (defect (b) fix, spec §4.3) so an inter-block idle rides the still-open anchor
+  // with an empty `text_delta@0` (resets CC's 300s watchdog) instead of degrading to a bare ping. It
+  // closes ONLY on (i) the TERMINAL flush (success commit) or (ii) the one-shot RETREAT flush (which
+  // forfeits buffering and hands off to live write-through — the anchor is closed there so the live
+  // continuation's +1-remapped real blocks don't sit under a dangling anchor; locked by
+  // retreat-anchor-collision.test.ts). The OLD `firstFlush` gate closed it at the FIRST flush, which
+  // on the block-level path is block 0's boundary — WRONG (only the first inter-block gap kept the
+  // anchor; every later gap fell back to a bare ping → 300s disconnect). On the whole-response path
+  // (`commitBoundaries===undefined`) the SINGLE flush IS the terminal → `isTerminalFlush:true`,
+  // byte-identical to the previous inline whole-response commit (R1). C1 (spec §3.3): freeze the
+  // heartbeat BEFORE snapshotting `injected` + flushing so a mid-flush timer tick can't inject a
+  // second anchor start(0).
   type FlushResult = { kind: "ok" } | { kind: "client-abort" } | { kind: "write-error"; error: unknown }
-  const flushBufferedFrames = async (frames: Array<ClientFrame>): Promise<FlushResult> => {
+  const flushBufferedFrames = async (frames: Array<ClientFrame>, isTerminalFlush: boolean): Promise<FlushResult> => {
     sink.freezeHeartbeat?.()
     const injected = anchorState.injected
     const anchorBlockOpen = anchorState.anchorBlockOpen
     try {
-      // M4: the anchor reserved index 0 → close it off (empty-text content_block_stop@0) BEFORE the
-      // first real block flush, then shift every real content_block_* by +1. Sets the shared
-      // `anchorClosed` guard (spec §10.5) so a later error terminus never emits a second stop@0.
-      if (firstFlush && injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
+      // M4: the anchor reserved index 0 → close it off (empty-text content_block_stop@0) at the TERMINAL
+      // (or retreat) flush, then shift every real content_block_* by +1. Sets the shared `anchorClosed`
+      // guard (spec §10.5) so a later error terminus never emits a second stop@0. Emitted BEFORE the frame
+      // loop and INDEPENDENT of `frames` being non-empty — on the block-level path the terminal frame is
+      // itself a commit boundary (flushed in-loop), so the terminal flush's `frames` is EMPTY, yet the
+      // anchor MUST still be closed here (defect (b): the close-off must never be dropped just because the
+      // post-last-boundary tail is empty).
+      if (isTerminalFlush && injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
         anchorState.anchorClosed = true
         await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
       }
@@ -701,7 +713,6 @@ export async function runResponseBufferedSink(
         if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
         await sink.write(injected && anchor && anchorBlockOpen ? anchor.remap(frame, 1) : frame)
       }
-      firstFlush = false
       return { kind: "ok" }
     } catch (error) {
       // Client gone mid-flush (a `sink.write` reject) — map it so the buffered sink ALWAYS returns a
@@ -755,7 +766,7 @@ export async function runResponseBufferedSink(
             // empty delta on the live-open block, or a ping). `flushBufferedFrames`' internal freeze clears the
             // timer; resume re-arms a fresh interval so the heartbeat recovers for the live continuation.
             sink.suspendHeartbeat?.()
-            const res = await flushBufferedFrames(buffer)
+            const res = await flushBufferedFrames(buffer, true)
             sink.resumeHeartbeat?.()
             buffer.length = 0
             if (res.kind === "client-abort") return { kind: "settled-abort" }
@@ -779,7 +790,7 @@ export async function runResponseBufferedSink(
             // must keep its keepalives. (`flushBufferedFrames`' internal freeze clears the timer; resume
             // re-arms a fresh interval, so the heartbeat recovers for the next inter-block gap.)
             sink.suspendHeartbeat?.()
-            const res = await flushBufferedFrames(buffer)
+            const res = await flushBufferedFrames(buffer, false)
             sink.resumeHeartbeat?.()
             buffer.length = 0
             committedAny = true
@@ -828,7 +839,11 @@ export async function runResponseBufferedSink(
         // post-last-boundary tail — and when the terminal frame is ITSELF a boundary, `buffer` is
         // empty here, so the terminal is NOT re-flushed (M1 dedup: it reached the client exactly once
         // in-loop). `flushBufferedFrames` owns the freeze + one-time anchor close-off + H1 dedup + remap.
-        const res = await flushBufferedFrames(buffer)
+        // `isTerminalFlush:true` — this is the response terminus, so the anchor's reserved @0 is closed off
+        // here (defect (b): it stayed OPEN across every earlier block boundary; now it closes at the end —
+        // and unconditionally, even when this tail buffer is EMPTY because the terminal frame was itself a
+        // boundary). On the whole-response path this is the single flush → still terminal (R1 byte-identical).
+        const res = await flushBufferedFrames(buffer, true)
         if (res.kind === "client-abort") return { kind: "settled-abort" }
         if (res.kind === "write-error") {
           // Client gone mid-flush. L2 produced a COMPLETE generation (reached the terminal frame) — the

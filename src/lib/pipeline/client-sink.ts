@@ -194,12 +194,24 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // block (no anchor beneath) the stack depth is ≤1, so this is byte-for-byte the old single-slot behavior.
   let openBlockStack: Array<OpenBlock> = []
   const currentOpenBlock = (): OpenBlock | undefined => openBlockStack.at(-1)
+  // Defect (a) guard (spec §4.3, backlog "anchor 注入器可在真实块之间二次触发"): latches true the first time a
+  // content block is opened on the forwarded stream. The anchor injector fires ONLY before the FIRST real block
+  // (`openBlockStack.length === 0 && !anchorAttempted && !everOpenedRealBlock`). Without it, a FAST first block
+  // (opened+closed before any idle tick → the anchor was NEVER injected, `anchorAttempted` still false) leaves
+  // an EMPTY stack, so a LATER inter-block idle re-triggered `injectAnchor` — forwarding a DUPLICATE message_start
+  // and a colliding synthetic `content_block_start@0` over the already-used real index 0. This flag makes the
+  // gate "no real block has EVER opened", not merely "no block open right now". After a SUCCESSFUL anchor
+  // injection `anchorAttempted` stays latched (only reset when an injection reports `did===false`, which opens no
+  // block), so this flag only ever gates the FIRST injection attempt — where only a real block could have set it;
+  // the anchor's own `start@0` (written after this gate passes) setting it too is therefore harmless.
+  let everOpenedRealBlock = false
   const noteBlockState = (frame: ClientFrame): void => {
     if (!trackOpenBlock || frame.data === undefined) return
     try {
       const p = JSON.parse(frame.data) as { type?: unknown; index?: unknown; content_block?: { type?: unknown } }
       if (p.type === "content_block_start" && typeof p.index === "number" && typeof p.content_block?.type === "string") {
         openBlockStack.push({ index: p.index, type: p.content_block.type })
+        everOpenedRealBlock = true
       } else if (p.type === "content_block_stop" && typeof p.index === "number") {
         openBlockStack = openBlockStack.filter((b) => b.index !== p.index) // pop the closed block (by index; may be below the top for out-of-order stops)
       }
@@ -353,7 +365,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
       // asking the driver-supplied closure to forward message_start + the empty-text anchor block
       // (through the PUBLIC write, so noteBlockState pushes openBlock={0,text} onto the stack). Runs BEFORE
       // the provider frame is chosen — a provider called with no open block would only yield a bare ping.
-      if (heartbeat.injectAnchor && openBlockStack.length === 0 && !anchorAttempted) {
+      if (heartbeat.injectAnchor && openBlockStack.length === 0 && !anchorAttempted && !everOpenedRealBlock) {
         anchorAttempted = true
         void heartbeat
           .injectAnchor()
