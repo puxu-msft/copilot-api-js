@@ -19,8 +19,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
@@ -47,7 +49,9 @@ function ccChunk(obj: unknown): string {
 }
 
 /** A CC stream that streams some content then either throws (H3) or cleanly ends without finish_reason. */
-const ccContentChunks = [ccChunk({ id: "m", model: MODEL, choices: [{ index: 0, delta: { content: "partial" }, finish_reason: null }] })]
+const ccContentChunks = [
+  ccChunk({ id: "m", object: "chat.completion.chunk", model: MODEL, choices: [{ index: 0, delta: { content: "partial" }, finish_reason: null }] }),
+]
 
 function errorOf(text: string): { type?: string; message?: string } | undefined {
   return dataFramesOfType(text, "error")[0]?.error as { type?: string; message?: string } | undefined
@@ -111,5 +115,37 @@ describe("translate-leg post-commit error shaping (FIX-2, @cc reverse leg)", () 
     // classifyStreamError(non-shutdown/non-idle) → api_error; message carries the thrown error text.
     expect(errorOf(text)?.type).toBe("api_error")
     expect(errorOf(text)?.message).toBe("upstream cc stream blew up")
+  })
+
+  // ── diagnostics wiring (the blind spot): the translate leg must feed the REAL
+  //    live-stream signals to [upstream-diagnostics], not hardcoded zeros. A leg
+  //    that streamed a content frame before the throw MUST log frames>0 / bytes>0
+  //    / a non-`none` last-frame — otherwise a healthy long stream capped by the
+  //    upstream reads as a total-silence stall in the log (the gpt-5.6-sol incident). ──
+  test("H3 throw surfaces the leg's real upstream frame signals (not frames=0/none)", async () => {
+    applyFetchMock(mock(() => Promise.resolve(createSseResponseThenError(ccContentChunks, new Error("boom")))))
+    const spy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    try {
+      await translateRequest("translate-diag")
+      const line = spy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      expect(line).toBeDefined()
+      // One CC content chunk arrived before the throw → the diagnostic must reflect it.
+      expect(line).not.toContain("frames=0")
+      expect(line).not.toContain("bytes=0")
+      expect(line).not.toContain("last-frame=none@0ms")
+      // The last-frame label is honest: a CC content chunk is `chat.completion.chunk`, NOT the
+      // Anthropic-pump "keepalive" fallback (which would re-mislead as if no real frame arrived).
+      expect(line).toContain("last-frame=chat.completion.chunk@")
+      // The head symptom of the gpt-5.6-sol incident was `silence=313462ms` — a whole 5-min stream
+      // read as total silence. Pin it directly: a frame arrived, so silence (elapsed − lastFrameOffset)
+      // must be a SMALL value (the test runs in ms), never the whole elapsed. Guards the emit-side
+      // `silence` formula independently of the frames/last-frame assertions above.
+      const silence = Number(/silence=(\d+)ms/.exec(line ?? "")?.[1])
+      const elapsed = Number(/elapsed=(\d+)ms/.exec(line ?? "")?.[1])
+      expect(silence).toBeLessThan(1000)
+      expect(silence).toBeLessThanOrEqual(elapsed)
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
