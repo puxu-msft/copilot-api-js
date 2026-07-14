@@ -551,3 +551,12 @@
 - **Task 3 真-db mid-drain fault 用例**（Task 3 review）：drainOutboxToSqlite 的「事务中途故障原子回滚、无 partial double-count」靠 bun:sqlite `transaction()` 语义、无真-db 覆盖（现有用 sync-throwing db 绕过真 BEGIN/ROLLBACK）；MAJOR-2 逐条 try/catch 已部分覆盖。低风险高成本。
 
 发现方：telemetry-tiered-storage 各 task per-task review + 全分支评审（2026-07-13~14）。遥测架构见 skill `telemetry-architecture`。
+
+## 通用 schema 驱动的 tool_use 顶层键剥离（2026-07-14，AskUserQuestion salvage 特性的通用化延伸）
+
+- **根因**：opus-4.8 偶发在 tool_use input 里 hallucinate **schema 非法的顶层键**（实测唯一受累工具是 AskUserQuestion 的顶层 `question`，见 [spec/2026-07-13-askuserquestion-toplevel-key-salvage.md](../spec/2026-07-13-askuserquestion-toplevel-key-salvage.md)）。客户端工具 schema 若 `additionalProperties:false` 则拒收，报 `InputValidationError: unexpected parameter`。
+- **当前行为（已治 AskUserQuestion、其余工具未覆盖）**：`normalizeAskUserQuestionInput` 只对 AskUserQuestion 做定向抢救 + 剥离。别的工具将来若 hallucinate 顶层非法键，代理仍原样转发、客户端拒收。
+- **理想架构**：把每个工具的 `input_schema`（请求里带）穿进 response-rewrite；当 `additionalProperties:false` 时，剥掉所有不在 `properties` 里的顶层键——**工具无关**、防未来任意工具的幻觉参数。
+- **与 AskUserQuestion 特性不重叠、须并存**：通用腿是工具无关的**剥离**（只剥不救、无 tool-specific 语义）；AskUserQuestion 的「顶层 `question` → item」是专属**语义抢救**启发式。通用腿落地后专属抢救仍须保留——一个防幻觉参数（剥）、一个治语义错位（救）。
+- **为何暂缓**：实测唯一受累工具是 AskUserQuestion（已治），无第二例证据；通用腿要把 tool schema 从请求穿到 response-rewrite 层（新接线面），additive 不阻塞、不制造错数据。
+- **若做需改什么**：① 把请求 `tools[].input_schema` 经 env/state 传到 decode/rewrite 层（现只有 recover-tool-call 用了 tool schema，可复用同通道）；② 加通用剥离步（`additionalProperties:false` gate + 非 `properties` 顶层键剥离），排在 AskUserQuestion 专属抢救**之后**；③ 诊断复用 `pipelineInfo` 落盘通道；④ 测试覆盖非 AskUserQuestion 工具的幻觉顶层参数。发现方：AskUserQuestion salvage 特性 brainstorm（2026-07-14，方案 C 的通用腿）。

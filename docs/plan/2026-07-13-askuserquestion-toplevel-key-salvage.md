@@ -1,5 +1,7 @@
 # AskUserQuestion 顶层键抢救与剥离 Implementation Plan
 
+> **实施状态：landed（2026-07-14）。** 5 task 全部落地（commits `986461c2` core / `0517de85` pipelineInfo 落盘 / `c31c6742` wire 接线 / Task 5 doc-sync）。plan review 的 1 BLOCKER（诊断落盘）+ 2 HIGH + 4 MED 全采纳。现状见 [DESIGN.md](../DESIGN.md)「活的架构现状」+ [spec](../spec/2026-07-13-askuserquestion-toplevel-key-salvage.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让代理把 opus-4.8 误发的「问题文本提到顶层 `question`、`questions[0]` 缺 question」的 AskUserQuestion tool_use input，抢救真问题文本进 item 并剥掉 schema 非法顶层键，消除客户端 `InputValidationError: unexpected parameter 'question'`。

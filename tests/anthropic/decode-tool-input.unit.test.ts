@@ -403,3 +403,21 @@ describe("normalizeAskUserQuestionInput wiring", () => {
     expect(seen[0]).toMatchObject({ salvaged: true, strippedKeys: ["question"] })
   })
 })
+
+describe("normalizeAskUserQuestionInput wiring — degraded config", () => {
+  test("questions not decoded (config excludes AskUserQuestion): strip still traces dropped value, no salvage", () => {
+    const seen: Array<Record<string, unknown>> = []
+    // cfg has NO AskUserQuestion decode field → `questions` stays a stringified string (not array),
+    // so salvage cannot fire; but strip still removes the illegal top-level `question` and traces it.
+    const response = {
+      content: [{ type: "tool_use", name: "AskUserQuestion", input: { questions: '[{"header":"h"}]', question: "real text" } }],
+    }
+    const out = decodeToolInputBlocksInResponse(response as never, cfg({}), {
+      backfillAskUserQuestionHeader: true,
+      onNormalize: (dg) => seen.push(dg as Record<string, unknown>),
+    }) as { content: Array<{ input: Record<string, unknown> }> }
+    expect("question" in out.content[0].input).toBe(false)
+    expect(seen[0]).toMatchObject({ droppedQuestionValue: "real text" })
+    expect(seen[0].salvaged).toBeUndefined()
+  })
+})

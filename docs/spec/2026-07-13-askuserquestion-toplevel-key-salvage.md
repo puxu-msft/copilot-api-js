@@ -1,6 +1,6 @@
 # AskUserQuestion 顶层多余键抢救与剥离
 
-> 状态：spec（待用户过目 → plan/impl；已过一轮对抗 subagent 审查，0 BLOCK，HIGH-1 + 4 MED + 3 建议全采纳，见 §2.1 留痕规则 / §2.3 已知局限 / §3 落盘要求）。骑既有 config 键 `anthropic.tool_backfill_question`（默认 true），**不新增 config 键**。落地为既有 AskUserQuestion 规范化腿（`src/lib/anthropic/decode-tool-input-core.ts`）的能力扩展。姊妹 spec：[anthropic-malformed-tool-input-repair.md](anthropic-malformed-tool-input-repair.md)（字节级畸形修复）——本 spec 治**schema-shape 畸形**，机制与人群与它互补、不重叠。
+> 状态：**landed**（2026-07-14；5-task TDD 实现 + spec/plan 各一轮对抗 subagent 审查，plan review 的 1 BLOCKER + 2 HIGH + 4 MED 全采纳）。骑既有 config 键 `anthropic.tool_backfill_question`（默认 true），**不新增 config 键**。落地为既有 AskUserQuestion 规范化腿（`src/lib/anthropic/decode-tool-input-core.ts` 的 `normalizeAskUserQuestionInput`）的能力扩展。姊妹 spec：[anthropic-malformed-tool-input-repair.md](anthropic-malformed-tool-input-repair.md)（字节级畸形修复）——本 spec 治**schema-shape 畸形**，机制与人群与它互补、不重叠。现状见 [DESIGN.md](../DESIGN.md)「活的架构现状」`backfillQuestionFromHeader` 行。
 
 ## 1. 问题（实测取证）
 
