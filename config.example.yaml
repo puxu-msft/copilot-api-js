@@ -179,3 +179,37 @@
 #   - from: "\\n\\s*\\n\\s*\\n"
 #     to: "\\n\\n"
 #     method: regex
+
+# ============================================================================
+# Buffered-retry caps + per-vendor switches
+# ============================================================================
+# Shared caps (max_retries / buffer_cap_bytes / heartbeat_sec) applied across
+# anthropic / responses / chat_completions, overridable per vendor. See
+# config.yaml's `buffered_retry:` section for the full field docs.
+
+# buffered_retry:
+#   max_retries: 5              # override the shared cap (built-in default: 3)
+#   buffer_cap_bytes: 33554432  # 32MiB (built-in default: 16MiB)
+#   heartbeat_sec: 10           # built-in default: 15
+
+# Responses (HTTP + WS — WS has no independent switch, it inherits this) and
+# Chat Completions default their `buffered_retry` switch to TRUE (2026-07-14
+# flip: buffering/generation-preservation was chosen over the downstream
+# streaming UX). Set to `false` to opt back into live (unbuffered) forwarding
+# for that vendor, or use the map form to also override caps.
+
+# openai_responses:
+#   buffered_retry: false                              # opt back into live forwarding (default: true)
+# chat_completions:
+#   buffered_retry: { enabled: true, max_retries: 5 }   # keep buffered, override just the cap for this vendor
+
+# Anthropic's buffered-retry switch is a DIFFERENT key (`protect_streaming_generation`,
+# under `anthropic:` — see config.yaml) and defaults to `false`: the block-level
+# anchor-coexist wire shape was found to silently drop content in the real Claude
+# Code CLI (tests/e2e-client/anthropic-coexist-cli.e2e.test.ts), so it stays gated
+# pending a shape fix. `anthropic.buffered_retry` here only overrides caps.
+
+# anthropic:
+#   buffered_retry:
+#     max_retries: 5
+

@@ -803,17 +803,17 @@ buffered_retry:
 
 # Per-vendor overrides + enabled mode switch (examples, commented out by default):
 # 各 vendor 覆盖 + enabled 开关（示例，默认注释）：
-#   anthropic.buffered_retry — caps override only; Anthropic's switch is anthropic.protect_streaming_generation (enabled ignored here).
-#   anthropic.buffered_retry — 仅覆盖 caps；Anthropic 的开关是 protect_streaming_generation（此处 enabled 被忽略）。
-#   openai_responses.buffered_retry / chat_completions.buffered_retry — boolean shorthand = enabled, or map { enabled, max_retries, buffer_cap_bytes, heartbeat_sec }.
-#   openai_responses.buffered_retry / chat_completions.buffered_retry — bool 简写 = enabled，或 map { enabled, ...caps }。
+#   anthropic.buffered_retry — caps override only; Anthropic's switch is anthropic.protect_streaming_generation (default false — block-level anchor-coexist shape is CLI-unsafe, see tests/e2e-client/anthropic-coexist-cli.e2e.test.ts; enabled ignored here).
+#   anthropic.buffered_retry — 仅覆盖 caps；Anthropic 的开关是 protect_streaming_generation（默认 false——block-level anchor-coexist 形状对 CLI 不安全，见 tests/e2e-client/anthropic-coexist-cli.e2e.test.ts；此处 enabled 被忽略）。
+#   openai_responses.buffered_retry / chat_completions.buffered_retry — boolean shorthand = enabled, or map { enabled, max_retries, buffer_cap_bytes, heartbeat_sec }. Both DEFAULT TRUE (2026-07-14 flip; covers Responses-HTTP + Responses-WS, which has no independent switch and inherits openai_responses.buffered_retry) — buffering/generation-preservation was chosen over the downstream streaming UX. Set to `false` explicitly to opt back into live (unbuffered) forwarding.
+#   openai_responses.buffered_retry / chat_completions.buffered_retry — bool 简写 = enabled，或 map { enabled, ...caps }。两者默认皆为 true（2026-07-14 翻转；覆盖 Responses-HTTP + Responses-WS——WS 无独立开关，继承 openai_responses.buffered_retry）——缓冲/生成保全被选中优先于下游流式体验。显式设 `false` 可退回实时（非缓冲）转发。
 # anthropic:
 #   buffered_retry:
 #     max_retries: 5
 # openai_responses:
-#   buffered_retry: true            # or: { enabled: true, max_retries: 4 }
+#   buffered_retry: false           # opt back into live (unbuffered) forwarding; default is true. or: { enabled: false }
 # chat_completions:
-#   buffered_retry: false           # default off; P3 flips the default to true
+#   buffered_retry: false           # opt back into live (unbuffered) forwarding; default is true. or: { enabled: true, max_retries: 4 }
 
 # ============================================================================
 # Rate Limiter / 速率限制
