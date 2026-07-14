@@ -226,11 +226,11 @@ import {
  * diagnostics consumer never has to remember five different spellings of "off".
  */
 export interface TransportConfiguredValues {
-  /** `null` = TCP keepalive probe disabled (undici falls back to its own 60s default). */
+  /** `null` = TCP keepalive disabled. */
   tcpKeepaliveProbeDelayMs: number | null
   /** `null` = application-layer h2 PING keepalive disabled. */
   h2PingIntervalMs: number | null
-  /** `null` = no explicit h2 session-connect timeout (Node's own default applies). */
+  /** `null` = no application-configured h2 connect deadline. */
   sessionConnectTimeoutMs: number | null
   /** `null` = pooled upstream WS connections never idle-timeout. */
   pooledConnectionIdleTimeoutMs: number | null
