@@ -8,6 +8,52 @@ export const HISTORY_META_DDL = `CREATE TABLE IF NOT EXISTS history_meta (
   value TEXT
 )`
 
+/**
+ * `tier2_manifest` DDL — lives ONLY in archive.db (not history.db). One row per
+ * entry that has been sealed into a tier-2 cold unit. Mirrors the searchable
+ * meta columns of entries_v2 (so the archive VIEW's list / search-preview hit
+ * this SQLite table with full indexes) PLUS the seal-unit locator
+ * `(seal_file, session_id, index_in_session)` used to fetch + decompress the
+ * one entry from its session-grouped zstd blob on detail. The heavy payload is
+ * NOT here — it is in the numbered sealed unit file (spec §3.2, Phase 0 verdict:
+ * SQLite sealed + session-group). See exp/tiered-archive-format/FINDINGS.md.
+ */
+export const TIER2_MANIFEST_DDL = `
+CREATE TABLE IF NOT EXISTS tier2_manifest (
+  entry_id         TEXT PRIMARY KEY,
+  session_id       TEXT,
+  agent_id         TEXT,
+  started_at       INTEGER NOT NULL,
+  ended_at         INTEGER,
+  duration_ms      INTEGER,
+  model            TEXT,
+  endpoint         TEXT,
+  transport        TEXT,
+  status           TEXT NOT NULL,
+  input_tokens     INTEGER,
+  output_tokens    INTEGER,
+  cache_read       INTEGER,
+  cache_creation   INTEGER,
+  reasoning_tokens INTEGER,
+  stop_reason      TEXT,
+  error_message    TEXT,
+  message_count    INTEGER,
+  preview_text     TEXT,
+  response_preview_text TEXT,
+  request_bytes    INTEGER,
+  response_bytes   INTEGER,
+  multiplier       REAL,
+  raw_path         TEXT,
+  seal_file        TEXT NOT NULL,
+  index_in_session INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tier2_manifest_started  ON tier2_manifest(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tier2_manifest_session  ON tier2_manifest(session_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tier2_manifest_model    ON tier2_manifest(model, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tier2_manifest_status   ON tier2_manifest(status, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tier2_manifest_sealfile ON tier2_manifest(seal_file);
+`
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entries_v2 (
   id               TEXT PRIMARY KEY,
