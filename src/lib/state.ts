@@ -1489,7 +1489,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } as BufferedRetryCaps,
   bufferedRetryOverrides: {} as Record<string, Partial<BufferedRetryCaps>>,
-  chatCompletionsBufferedRetry: false,
+  // Default ON (P3 flip, 2026-07-14): buffering/generation-preservation beats the
+  // downstream streaming UX for CC. See docs/decisions/ + plan README frozen contract.
+  chatCompletionsBufferedRetry: true,
   protectStreamingEscalateContext: false,
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
@@ -1579,7 +1581,12 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyDbPath: "",
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
-  responsesBufferedRetry: false,
+  // Default ON (P2/P4 flip, 2026-07-14): covers BOTH Responses-HTTP (P2) and
+  // Responses-WS (P4, no independent key — ws.ts's resolveResponsesBufferedAndHeartbeat
+  // reads this same field). Buffering/generation-preservation beats the downstream
+  // streaming UX. P1 Anthropic stays default OFF (see protectStreamingGeneration above)
+  // — block-level anchor-coexist shape is CLI-unsafe (tests/e2e-client/anthropic-coexist-cli.e2e.test.ts).
+  responsesBufferedRetry: true,
   fixResponsesStreamIds: true,
   stripImageGenerationTool: false,
   clientWebsocketKeepOpen: false,
