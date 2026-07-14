@@ -283,6 +283,9 @@ export class HistorySink {
       ...(entryData.preprocessing && { preprocessing: entryData.preprocessing }),
       ...(entryData._index && { _index: entryData._index as HistoryEntry["_index"] }),
       ...(entryData.attempts && { attempts: toHistoryAttempts(entryData.attempts) }),
+      // 首包埋点（spec 2026-07-14 §3.2）：client 3 刻 nested timing 必须过此显式投影才能抵达
+      // buildHeadRow → 列（漏此则列恒 NULL，plan review M-B）。
+      ...(entryData.timing && { timing: entryData.timing }),
     })
     // Fire-and-forget: finalize is now async (libuv-offloaded compression). It
     // tracks itself in `pendingFinalizations` for the shutdown drain and never
