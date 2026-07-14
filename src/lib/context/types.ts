@@ -360,6 +360,9 @@ export interface RepairOutcomeRecord {
   field?: string
 }
 
+/** 首包埋点（spec 2026-07-14 §3.2）：客户端侧 3 个时刻的键。 */
+export type ClientTimingKind = "streamOpen" | "firstReal" | "bufferHoldStart"
+
 export interface RequestContext {
   readonly id: string
   readonly sessionId: string | undefined
@@ -471,6 +474,11 @@ export interface RequestContext {
   setAttemptTransport(transport: RequestTransport): void
   setAttemptResponse(response: ResponseData): void
   setAttemptResponseHeaders(headers: Record<string, string>): void
+  /**
+   * 首包埋点（spec 2026-07-14 §3.2）：记录客户端侧一个时刻的绝对 epoch（once 语义，首写为准）。
+   * `toHistoryEntry` 换算成相对 started_at 的 offset ms（`timing.client`）。驱动/handler/sink 调用。
+   */
+  setClientTimingEpoch(kind: ClientTimingKind, epoch: number): void
   setAttemptError(error: ApiError): void
   /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
   commitAttemptSseEvents(): void
