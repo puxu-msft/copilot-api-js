@@ -810,7 +810,7 @@ CC 2.1.207 内置工具（源码确认为真工具、非字符串误配）：`We
 
 本项目 CC 官方工具 stub 注入机制**对**（安全网防孤立历史 tool_use），但**名单陈旧**——漏 CC 2.1.207 的 `WebSearch`/`BashOutput`/`NotebookRead` 等（F28，中，确认功能 gap）。默认 ON + CC 中途改工具集常见 → 用这些工具的对话在工具集收缩时会**硬失败卡死**。修复明确（对齐名单 + 空 schema），不需探针，但应系统提取 CC 完整工具清单而非只补三个。归 F23 同类「clear-fix 功能 gap」。
 
-> **实现期纠正（2026-07-14，根因修复，取代补清单）**：deep-read + task-reviewer 探针揭示 stub 注入实为**三条独立路径**（`message-tools.ts` Path 1「`injectClaudeCodeOfficialTools` 无条件注每个缺失官方工具」/ Path 2「**为任意** history 引用但缺失的工具注 stub、name-agnostic」/ Path 3「请求全无 tools 时按 history 注」），而 Path 2 被**错误地**加了 `toolSearchEnabled` 门控（`historyToolNames = toolSearchEnabled ? … : undefined`）——这才是本 finding 的**真根因**：Path 2 本该对任意孤立历史工具生效（无论工具是否「官方」），却因门控在 tool-search OFF 时整体失效。真实 gap 因此比原判**窄**：仅「tool-search OFF + 有 tools + 孤立的非官方工具在 history」（Path 1 只覆盖官方、Path 2 门控关、Path 3 只在无 tools）→ 无人兜底。**已解除 Path 2 门控**（`historyToolNames` 总是计算）根因修复此 gap——对**任意**孤立历史工具生效，不需要把 `CLAUDE_CODE_OFFICIAL_TOOLS` 补全到 CC 2.1.207 全集（该补全一度落地又因此根因修复而回退为冗余）。补充：`NON_DEFERRED_TOOL_NAMES` 的 `CLAUDE_CODE_OFFICIAL_TOOLS` spread 覆盖面不变（未回退新增 4 前缀，见 F32），此列表本身与 F28 根因无关（那是 F30 已证伪收敛的部分）。
+> **实现期纠正（2026-07-14，根因修复，取代补清单）**：deep-read + task-reviewer 探针揭示 stub 注入实为**三条独立路径**（`message-tools.ts` Path 1「`injectClaudeCodeOfficialTools` 无条件注每个缺失官方工具」/ Path 2「**为任意** history 引用但缺失的工具注 stub、name-agnostic」/ Path 3「请求全无 tools 时按 history 注」），而 Path 2 被**错误地**加了 `toolSearchEnabled` 门控（`historyToolNames = toolSearchEnabled ? … : undefined`）——这才是本 finding 的**真根因**：Path 2 本该对任意孤立历史工具生效（无论工具是否「官方」），却因门控在 tool-search OFF 时整体失效。真实 gap 因此比原判**窄**：仅「tool-search OFF + 有 tools + 孤立的非官方工具在 history」（Path 1 只覆盖官方、Path 2 门控关、Path 3 只在无 tools）→ 无人兜底。**已解除 Path 2 门控**（`historyToolNames` 总是计算）根因修复此 gap——对**任意**孤立历史工具生效，不需要把 `CLAUDE_CODE_OFFICIAL_TOOLS` 补全到 CC 2.1.207 全集（该补全一度落地又因此根因修复而回退为冗余）。**注意（回退副作用）**：`CLAUDE_CODE_OFFICIAL_TOOLS` 双消费——回退清单后，第 86 行 `NON_DEFERRED_TOOL_NAMES` spread 的**非延迟覆盖面也随之缩回原 16 项**（WebSearch/BashOutput/NotebookRead 等不再受非延迟保护，tool-search ON 时被 defer）——此维度**接受为 tool-search 预期权衡、不修**，见 F30 节裁决 + [deferred-backlog.md](../../docs/todo/deferred-backlog.md)。`API_DEFINED_TOOL_TYPE_PREFIXES` 新增 4 前缀未回退（见 F32）。
 
 ---
 
@@ -863,7 +863,9 @@ CC 2.1.207 defer_loading 语义（`app.pretty.js:442315` 注释）：**默认无
 
 > **纠正（empirical-verification）**：本条原判**错误**。实现期 deep-read [message-tools.ts:86](../../src/lib/anthropic/message-tools.ts#L86) 发现 `NON_DEFERRED_TOOL_NAMES` 末尾 **`...CLAUDE_CODE_OFFICIAL_TOOLS`**——即 CC 官方工具**已被 spread 进非延迟集**、有静态保护。轮次 24 的判断源于**只读到第 82 行就下结论**（漏了第 86 行的 spread），是「否定性结论不自证」的反例（[[feedback-pass-null-clean-not-self-validating]]）。
 >
-> **真实残余**：仅**不在 `CLAUDE_CODE_OFFICIAL_TOOLS` 里的工具**（WebSearch/BashOutput/NotebookRead，F28）在**两处都**缺保护（stub 注入 + 非延迟）。故 F30 的有效部分**完全收敛进 F28**——补全官方工具清单会**同时**修好非延迟保护（因 NON_DEFERRED spread 该清单）。无独立 F30 修复项。
+> **真实残余（2026-07-14 再校正，取代 F28 补清单方案后）**：F28 的 **stub 维度**已由根因修复（解除 Path 2 门控）覆盖任意孤立历史工具，**不需要补官方清单**（清单一度补全又回退）。但 `CLAUDE_CODE_OFFICIAL_TOOLS` 是**双消费点**（stub 注入 + 第 86 行 `NON_DEFERRED_TOOL_NAMES` spread）——**非延迟维度没有等价的根因修复**：回退清单后，不在 16 项官方清单里的 CC 内置工具（WebSearch/BashOutput/NotebookRead 等）在 tool-search ON 时会被 `defer_loading:true`（task-reviewer + 主会话双探针实测：真实 WebSearch 工具 `defer_loading===true`，Read 为 `undefined`）。
+>
+> **裁决（用户 2026-07-14）：接受为 tool-search 的预期权衡，不修**。理由：延迟**罕用**工具正是 tool-search 省 context 的设计目的；**热路径工具**（Read/Bash/Grep/Edit/Write/Task 等 16 项官方清单）已受静态保护；罕用工具首次使用触发一次 `deferred-tool-retry` 自愈往返（非硬失败）。此为**既有基线行为**（非本次改动新引入——Task 1 一度改善、Task 2 回退恢复基线）。→ 已记 [deferred-backlog.md](../../docs/todo/deferred-backlog.md)。**无独立 F30 代码修复项**（stub 维度根因已修、非延迟维度接受现状）。
 >
 > 教训：动大工程/信 finding 前 deep-read 引用的每处 `file:line`（读全定义，别在名单中途停）——正是 CLAUDE.md `subagent-explicit-rubric` / `verifying-authoritative-claims` 要求的。
 

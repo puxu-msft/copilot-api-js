@@ -158,3 +158,42 @@ describe("F32 — buildAnthropicToolNameMapper excludes newly recognized API-def
     expect(mapper?.hasOriginal("advisor_thing")).toBe(false)
   })
 })
+
+/**
+ * Characterization (accepted tradeoff, 2026-07-14): non-defer coverage of the
+ * `NON_DEFERRED_TOOL_NAMES` spread source is the 16-item `CLAUDE_CODE_OFFICIAL_TOOLS`
+ * list. Hot-path tools stay loaded; rarely-used CC tools NOT in that list (WebSearch,
+ * BashOutput, …) ARE deferred under tool_search — the tool_search feature working as
+ * designed (context savings; first use self-heals via deferred-tool-retry). Pins the
+ * current boundary so a future change to non-defer coverage is visible in review.
+ * Rationale + "if we ever change it" → docs/todo/deferred-backlog.md.
+ */
+describe("accepted tradeoff — non-official CC tools are deferred under tool_search", () => {
+  let originalToolSearchEnabled: typeof state.toolSearchEnabled
+
+  beforeEach(() => {
+    originalToolSearchEnabled = state.toolSearchEnabled
+    setStateForTests({ toolSearchEnabled: true })
+  })
+  afterEach(() => {
+    setStateForTests({ toolSearchEnabled: originalToolSearchEnabled })
+  })
+
+  test("hot-path official tool (Read) stays loaded; rarely-used WebSearch is deferred", () => {
+    const payload = makePayload({
+      model: "claude-sonnet-4.6",
+      tools: [
+        { name: "Read", input_schema: { type: "object", properties: {} } },
+        { name: "WebSearch", input_schema: { type: "object", properties: {} } },
+      ] as Array<Tool>,
+    })
+    const out = preprocessTools(payload)
+    const byName = new Map((out.tools ?? []).map((t) => [t.name, t as Tool & { defer_loading?: boolean }]))
+    // Only meaningful if tool_search actually engaged for this model (positive control):
+    // at least one tool must be deferred, else the assertion below is vacuous.
+    const anyDeferred = (out.tools ?? []).some((t) => (t as { defer_loading?: boolean }).defer_loading === true)
+    expect(anyDeferred).toBe(true)
+    expect(byName.get("Read")?.defer_loading).not.toBe(true) // hot-path: protected
+    expect(byName.get("WebSearch")?.defer_loading).toBe(true) // rarely-used: deferred (accepted)
+  })
+})

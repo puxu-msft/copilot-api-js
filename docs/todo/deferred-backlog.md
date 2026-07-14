@@ -508,3 +508,10 @@
 - **为何暂缓**：① 需先确认 GHC 对「携带 `defer_loading:true` 的 server-tool-typed 工具」的实际反应（可能是良性的——GHC 也许直接忽略 defer_loading 语义处理已知 server 工具；也可能是真实拒绝，需要 e2e 探针，见 skill `client-proxy-e2e-testing`）；② 与本任务（F28 根因修复 + F32 清单回退）范围独立，属于 F32 揭示但未纳入本次改动范围的第四类判据修复，需要单独的实现 + 测试周期。
 - **若做需改什么**：① `message-tools.ts` 的 `shouldDefer` 加 `!isApiDefinedToolType(tool.type)` 条件；② 补回归测试：一个 `type:"web_search_20260209"`（或新前缀）的工具在 tool-search ON 时不应被 `defer_loading:true`；③ 若探针证实 GHC 对 defer 的 server 工具确有拒绝行为，标注为「确认功能 gap」并提升优先级；若证实良性，仍建议修（协议语义正确性 > 观测到的表面无害）。发现方：F32 task-reviewer 探针实测（2026-07-14，`docs/plan/2026-07-13-cc-tool-inventory-completion.md` Task 2）。
 
+
+## 罕用 CC 内置工具在 tool-search 下被延迟（接受为预期权衡，2026-07-14）
+
+- **现象**：`CLAUDE_CODE_OFFICIAL_TOOLS`（16 项）经 `message-tools.ts:86` `...CLAUDE_CODE_OFFICIAL_TOOLS` spread 进 `NON_DEFERRED_TOOL_NAMES`，故这 16 项在 tool-search ON 时不被延迟；**不在此清单**的 CC 内置工具（`WebSearch`/`BashOutput`/`NotebookRead`/`ListMcpResources`/`ReadMcpResource` 等）会被 `defer_loading:true`（探针实测：真实 `WebSearch` 工具 `defer_loading===true`，`Read` 为 `undefined`）。
+- **裁决（用户 2026-07-14）：接受、不修**。延迟**罕用**工具正是 tool-search 省 context 的**设计目的**；**热路径工具**（Read/Bash/Grep/Edit/Write/Task 等 16 项）已受静态保护；罕用工具首次调用触发一次 `deferred-tool-retry` 自愈往返（非硬失败）。此为**既有基线行为**（Task 1 补清单一度改善、Task 2 因 F28 改用根因修复而回退恢复基线）。
+- **若日后要改（理想方向）**：把 `NON_DEFERRED_TOOL_NAMES` 的 spread 源与 stub 注入列表 `CLAUDE_CODE_OFFICIAL_TOOLS` **解耦为两份**——stub 列表保持精简 16 项（Path 2 已根因兜底），另建独立「非延迟保护」列表纳入全部已知 CC 内置工具名（含 WebSearch 等），并先经真实 CC 抓包（skill `client-proxy-e2e-testing`）确认哪些工具值得非延迟（全部 vs 仅高频子集）。**为何暂缓**：当前自愈成本低（首用一次往返）、无硬失败；且「哪些罕用工具值得占 context 换免首用往返」是需实测数据支撑的权衡，非拍脑袋补全。
+- **注意勿混淆**：本条（非延迟维度、按 `tool.name`）与上一条「typed server 工具可被延迟」（按 `tool.type`/`isApiDefinedToolType`）是 `shouldDefer` 的**两个不同判据**——前者关客户端工具名单、后者关 server-tool 类型识别。
