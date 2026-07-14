@@ -92,6 +92,7 @@ import {
   //
   createUpstreamFrameDiagnostics,
   logUpstreamStreamError,
+  logUpstreamStreamTruncation,
 } from "~/lib/upstream-stream-diagnostics"
 import {
   //
@@ -410,6 +411,12 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     }
     const truncErr = new Error("Upstream stream truncated before completion (no finishReason)")
     consola.error(`[gemini:v4] Upstream truncated for ${model}: drained without a real finishReason`)
+    logUpstreamStreamTruncation(truncErr.message, {
+      model,
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: geminiUsageFromMeta(meta).input_tokens, outputTokens: geminiUsageFromMeta(meta).output_tokens },
+      sseEvents: diag.sseEvents,
+    })
     // Gemini-shape error frame (clean terminator) recorded into the forwarded track via
     // writeSynthetic → recordForwarded → fail (ctx.fail freezes inboundResponse; a post-fail snapshot misses it).
     await sink
@@ -626,6 +633,12 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     }
     const truncErr = new Error("Upstream Anthropic stream truncated before completion (no message_stop)")
     consola.error(`[gemini:v4:reverse] Upstream truncated for ${anthropicAcc.model || model}: drained without message_stop`)
+    logUpstreamStreamTruncation(truncErr.message, {
+      model: anthropicAcc.model || model,
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: anthropicAcc.inputTokens, outputTokens: anthropicAcc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     await sink
       .writeSynthetic?.({
         data: JSON.stringify({

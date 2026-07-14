@@ -95,8 +95,36 @@ export function createUpstreamFrameDiagnostics(startedAtMs: number): UpstreamFra
   }
 }
 
+/** The minimal live-stream signal subset every disconnect/truncation emit reads (see the type note above). */
+interface UpstreamStreamSignals {
+  model: string
+  streamState: { streamStartMs: number; bytesIn: number; currentBlockType: string }
+  acc: { inputTokens: number; outputTokens: number }
+  sseEvents: Array<SseEventRecord>
+}
+
+/** Shared emit — both the transport stream-error and the clean-EOF truncation surface the SAME signals. */
+function emitDisconnect(kindLabel: string, detail: string, ctx: UpstreamStreamSignals): void {
+  const { model, streamState, acc, sseEvents } = ctx
+  const last = sseEvents.at(-1)
+  logUpstreamStreamDisconnect({
+    model,
+    kindLabel,
+    detail,
+    elapsedMs: Date.now() - streamState.streamStartMs,
+    frames: sseEvents.length,
+    bytes: streamState.bytesIn,
+    lastFrameType: last?.type,
+    lastFrameOffsetMs: last?.offsetMs ?? 0,
+    stuckBlockType: streamState.currentBlockType,
+    inputTokens: acc.inputTokens,
+    outputTokens: acc.outputTokens,
+  })
+}
+
 /**
- * Emit the `[upstream-diagnostics] STREAM DISCONNECT` line for a failed upstream stream.
+ * Emit the `[upstream-diagnostics] STREAM DISCONNECT` line for a failed upstream stream (H3 — a THROWN
+ * transport error: RST / socket close / `NGHTTP2_CANCEL`).
  *
  * The bare error (`terminated (cause: other side closed)`) says nothing about WHY; this surfaces the
  * live-stream signals (frames / bytes / last-frame offset → `silence`, tokens) so a drop is diagnosable
@@ -108,29 +136,22 @@ export function createUpstreamFrameDiagnostics(startedAtMs: number): UpstreamFra
  * signals (the direct pump's full structs are structural supersets). Pair with
  * {@link createUpstreamFrameDiagnostics} for `bytesIn`/`sseEvents`.
  */
-export function logUpstreamStreamError(
-  error: unknown,
-  ctx: {
-    model: string
-    streamState: { streamStartMs: number; bytesIn: number; currentBlockType: string }
-    acc: { inputTokens: number; outputTokens: number }
-    sseEvents: Array<SseEventRecord>
-  },
-): void {
-  const { model, streamState, acc, sseEvents } = ctx
-  const last = sseEvents.at(-1)
+export function logUpstreamStreamError(error: unknown, ctx: UpstreamStreamSignals): void {
   const kind = classifyStreamError(error)
-  logUpstreamStreamDisconnect({
-    model,
-    kindLabel: kind === "other" ? "transport-close" : kind,
-    detail: error instanceof Error ? formatErrorWithCause(error) : String(error),
-    elapsedMs: Date.now() - streamState.streamStartMs,
-    frames: sseEvents.length,
-    bytes: streamState.bytesIn,
-    lastFrameType: last?.type,
-    lastFrameOffsetMs: last?.offsetMs ?? 0,
-    stuckBlockType: streamState.currentBlockType,
-    inputTokens: acc.inputTokens,
-    outputTokens: acc.outputTokens,
-  })
+  emitDisconnect(kind === "other" ? "transport-close" : kind, error instanceof Error ? formatErrorWithCause(error) : String(error), ctx)
+}
+
+/**
+ * Emit the disconnect line for a CLEAN-EOF truncation — the upstream stream DRAINED (no thrown transport
+ * error) but never reached its terminal (no `message_stop` / `finish_reason` / `response.completed`).
+ *
+ * Distinct from {@link logUpstreamStreamError}: the socket closed cleanly, so `kindLabel` is a fixed
+ * `truncated` — deliberately NOT run through `classifyStreamError` (which returns `other` → the
+ * `transport-close` label, and could trip the middlebox-idle-reclaim hint keyed on `transport-close`).
+ * Same live-stream signals so a truncation is as diagnosable as a transport drop. Closes the gap where a
+ * Bun clean-RST surfaces as a driver `complete`→truncation and previously emitted NO rich diagnostic —
+ * only a format-private `Upstream truncated` line (HIGH, docs/todo/upstream-transport-observability.md §11).
+ */
+export function logUpstreamStreamTruncation(reason: string, ctx: UpstreamStreamSignals): void {
+  emitDisconnect("truncated", reason, ctx)
 }
