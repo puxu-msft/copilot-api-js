@@ -1,5 +1,6 @@
 export {
   __setTerminalWriterForTests,
+  archiveNow,
   clearHistory,
   drainPendingFinalizations,
   finalizeEntry,

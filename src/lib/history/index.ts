@@ -6,6 +6,7 @@
 
 // Store (persistence and query)
 export {
+  archiveNow,
   clearHistory,
   deleteEntries,
   deleteSession,

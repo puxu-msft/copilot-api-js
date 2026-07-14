@@ -125,3 +125,18 @@ export function openConfiguredArchiveDb(): Database {
 export function openInMemoryArchiveDb(): Database {
   return openArchiveDb(":memory:")
 }
+
+/**
+ * Idempotently ensure archive.db is opened AND ATTACHed as `archive` onto the
+ * main history.db connection — the precondition for a HOT→TIER-1 move (reaper or
+ * manual "archive now") to run cross-db `INSERT INTO archive.* SELECT FROM main.*`.
+ * Safe to call repeatedly (a no-op once attached). Shared by the startup wiring
+ * and the archive-now HTTP path so neither has to assume the other ran first.
+ */
+export function ensureArchiveAttachedToMain(main: Database): void {
+  const attached = (main.prepare("PRAGMA database_list").all() as Array<{ name: string }>).some((r) => r.name === "archive")
+  if (attached) return
+  const dbPath = resolveArchiveDbPath(state.historyArchiveDir, state.historyDbPath)
+  if (!isArchiveOpen()) openArchiveDb(dbPath)
+  attachArchive(main, dbPath)
+}

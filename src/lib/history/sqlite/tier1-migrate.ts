@@ -3,6 +3,10 @@ import consola from "consola"
 import { state } from "~/lib/state"
 
 import type { Database } from "./connection"
+import type { QueryOptions } from "~/lib/history/types"
+
+import { ensureArchiveAttachedToMain } from "./archive-db"
+import { applyWhere } from "./read"
 
 /**
  * HOT→TIER-1 migration (spec 2026-07-14-history-tiered-archive §3.1/§3.4/§3.5).
@@ -176,4 +180,24 @@ export function runTier1MigrationOnce(main: Database, opts: { hotDays: number; b
 /** Whether HOT→TIER-1 migration should run (config gate). */
 export function isArchiveEnabled(): boolean {
   return state.historyArchiveEnabled
+}
+
+/**
+ * Manual "archive now" trigger (spec §3.6): the product-facing replacement for the
+ * removed delete API. Moves the terminal, non-pinned HOT rows matching `filters`
+ * (or ALL of them when no filter is given) into tier-1 — NOT a delete. Ignores the
+ * `hot_days` threshold (the user's intent is "move these out of my hot view now")
+ * and always excludes pinned rows (pin = keep raw data forever in HOT). Ensures
+ * archive.db is attached first. Returns the number archived.
+ */
+export function archiveNow(main: Database, filters?: QueryOptions): number {
+  if (!state.historyArchiveEnabled) return 0
+  ensureArchiveAttachedToMain(main)
+  const { sql: filterSql, params } = applyWhere(filters)
+  // Intersect the caller's list filter with "terminal + non-pinned" (never move an
+  // active or pinned row). applyWhere emits a leading `WHERE ...`; splice our
+  // predicate in with AND, or start a fresh WHERE when there was no filter.
+  const where = filterSql ? `${filterSql} AND ${MIGRATABLE_WHERE}` : `WHERE ${MIGRATABLE_WHERE}`
+  const ids = (main.prepare(`SELECT id FROM main.entries_v2 ${where} ORDER BY started_at ASC, id ASC`).all(...params) as Array<{ id: string }>).map((r) => r.id)
+  return migrateEntriesToTier1(main, ids)
 }
