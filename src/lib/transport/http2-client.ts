@@ -48,8 +48,6 @@ import { connectProxiedSocket } from "./proxy-connect"
  * {@link getSessionConnectTimeoutMs}. Set via {@link setConnectTimeoutForTests}.
  */
 let connectTimeoutOverrideMs: number | undefined
-/** Fallback keepalive delay when `upstreamKeepaliveDelay` is 0/unset. */
-const DEFAULT_KEEPALIVE_MS = 15_000
 
 /**
  * Effective TCP-connect + TLS-handshake deadline in milliseconds for the NEXT
@@ -99,7 +97,7 @@ let poolEpoch = 0
  * hangs until the app idle-timeout — true for BOTH the direct and proxy paths.
  */
 async function createSession(origin: string): Promise<http2.ClientHttp2Session> {
-  const keepAliveMs = getUpstreamKeepAliveDelayMs() ?? DEFAULT_KEEPALIVE_MS
+  const keepAliveMs = getUpstreamKeepAliveDelayMs()
   const connectTimeoutMs = getSessionConnectTimeoutMs()
   const u = new URL(origin)
   const port = u.port ? Number(u.port) : 443
@@ -111,7 +109,7 @@ async function createSession(origin: string): Promise<http2.ClientHttp2Session> 
     // ALPN h2 MUST be set here — http2 needs the negotiated protocol, and the undici
     // SOCKS connector (proxy.ts) omits it for its HTTP/1.x use.
     const rawSocket = await connectProxiedSocket({ targetHost: u.hostname, targetPort: port, proxyUrl, timeoutMs: connectTimeoutMs })
-    rawSocket.setKeepAlive(true, keepAliveMs)
+    if (keepAliveMs !== undefined) rawSocket.setKeepAlive(true, keepAliveMs)
     // withErrorSink at creation: guards the WHOLE socket lifetime (handshake
     // teardown, the handshake→http2.connect handoff gap) against an orphaned
     // 'error' → uncaughtException → server crash. See crash-safety.ts.
@@ -120,8 +118,10 @@ async function createSession(origin: string): Promise<http2.ClientHttp2Session> 
     tlsSocket = withErrorSink(tls.connect({ host: u.hostname, port, servername: u.hostname, ALPNProtocols: ["h2"] }))
     // TCP keepalive — keeps the idle connection alive through middleboxes during long
     // upstream silences (opus adaptive thinking). Set on the socket, not via
-    // client.socket (which throws ERR_HTTP2_NO_SOCKET_MANIPULATION).
-    tlsSocket.setKeepAlive(true, keepAliveMs)
+    // client.socket (which throws ERR_HTTP2_NO_SOCKET_MANIPULATION). `undefined`
+    // (keepalive disabled, D5) intentionally skips this call rather than falling
+    // back to any hardcoded delay.
+    if (keepAliveMs !== undefined) tlsSocket.setKeepAlive(true, keepAliveMs)
   }
 
   await awaitH2Handshake(tlsSocket, connectTimeoutMs)
