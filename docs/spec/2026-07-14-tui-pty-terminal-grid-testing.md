@@ -1,7 +1,7 @@
 # Spec：TUI raw-mode 编排层的 PTY 终端网格测试
 
-状态：设计定稿待实施（2026-07-14）。PoC 已实证、GPT 对抗审查已吸收（0 BLOCK / 4 HIGH 全采纳）。
-归属：本项目 TUI 测试策略。相关代码 `src/lib/tui/`，相关 PoC `exp/tui-rawmode/`、`exp/poc-js-pty-grid/`。
+状态：**已实施 ①②③④（landed 2026-07-14，commit fcfc91ea..a8e9e543）**；⑤ resize 重锚经实测判定**无法用 PTY 端到端测**、降 backlog（见 §3⑤ + `docs/todo/deferred-backlog.md`）。PoC 已实证、GPT 对抗审查已吸收（3 轮：设计 4 HIGH + plan 6→2→0 BLOCK）。
+归属：本项目 TUI 测试策略。相关代码 `src/lib/tui/`、`tests/tui/pty/`，相关 PoC `exp/tui-rawmode/`、`exp/poc-js-pty-grid/`。
 
 ## 1. 问题与动机（why）
 
@@ -47,8 +47,8 @@ PoC 亲验（`bun exp/poc-js-pty-grid/index.ts driver`，主会话复跑一次�
 | ① | **不吞行**：编号日志含 scrollback 连续无缺号 | 删 `region.ts:133-137` 的 scroll-before-grow → 报出缺号 | 原型已跑通 |
 | ② | **footer/panel 钉底**：footer 内容在末 N 行、滚动日志在其上 | 改 `region.ts:151`(`bottom`) 或 `:142`(`oldPanelTop`) → footer 漂移/被压 | 新增 |
 | ③ | **退出干净还原**（混合 oracle，见下）| 删 `terminal-ui.ts:1141-1150` 的 alt-leave / `region.clear()` → 残留 | 新增 |
-| ④ | **切 detail 不覆盖底部日志**：真进备用屏后底部日志不被吃 | 破坏 `terminal-ui.ts:1032-1051/1095-1104` 的 alt-screen entry/exit/replay | 新增 |
-| ⑤ | **resize 重锚**（known-seam 哨兵，见下）| 绕过 `region.ts:138-145` 的重锚清除 → 旧 panel 孤儿行 | 新增 |
+| ④ | **切 detail 不覆盖底部日志**：真进备用屏后底部日志不被吃 | 破坏 `terminal-ui.ts:1032-1051/1095-1104` 的 alt-screen entry/exit/replay | ✅ landed a8e9e543 |
+| ⑤ | ~~**resize 重锚**~~ **降 backlog：无法 PTY 测（见下）** | ~~绕过 `region.ts:138-145`~~ | ❌ Bun 硬限制，`deferred-backlog.md` |
 
 ### ③ 退出还原是混合 oracle（GPT HIGH，采纳）
 
@@ -57,13 +57,11 @@ PoC 亲验（`bun exp/poc-js-pty-grid/index.ts driver`，主会话复跑一次�
 - 还原后写一个 sentinel、断言其**落点正确**（无残留滚动区把它截断）；
 - **原始字节流**里含 `\x1b[?25h`（SHOW_CURSOR）——光标可见性只能验字节，网格验不了。
 
-### ⑤ resize 重锚是 known-seam 哨兵（GPT HIGH，采纳；哲学化处理）
+### ⑤ resize 重锚 —— 实测判定无法 PTY 端到端测，降 backlog（2026-07-14）
 
-`region.ts:125-137` 白纸黑字：`rows === prev.rows` guard 承重（`oldBottom` 依 `prev.rows` 推导，真 resize 后坐标过时），故「SIGWINCH 与视图切换**严格同帧**」时 scroll-before-grow 被跳过、**MAY eat a bottom row**。这是**已文档化的 known-seam**（`docs/todo/deferred-backlog.md:11`）。
+原计划：正测非同帧 resize（panel 锚新底、无孤儿行）+ 同帧 known-seam 哨兵。**实施期实测逼出 Bun 硬限制**：`Bun.Terminal.resize()` 改了伪终端尺寸，但**不给子进程投递 SIGWINCH**（探针 got=0）、且子进程 `process.stdout.rows` **不刷新**（PTY 24→30，子进程始终读 24）。故 driver 里真 `TerminalUi.getRows()` 恒返回旧值 → `region.render` 的 `geometryChanged` resize 分支**从不执行** → 重锚代码从不运行、红样本删它也不 FAIL = **恒绿假测**（曾被「稳定 6/6 绿」误导，实为 resize 从没生效——呼应 `verifying-authoritative-claims`「通过不自证」）。
 
-按项目可观测性哲学（合成/缺陷显式标记、绝不掩盖）：
-- **正测（绿）**：**非同帧** resize——先 resize（`Bun.Terminal.resize` + `xterm.resize`）、下一帧再切 panel——断言编号连续 + panel 锚定新底 + 旧 panel 无孤儿行。这是 resize 重锚的主路径，必须绿。
-- **哨兵（标注指向 backlog）**：对「同帧 resize+grow」这个 known-seam，加一条**显式标注为已知缺陷**的哨兵测试（`test.todo` 或 `test.failing` 语义 + 注释直指 `deferred-backlog.md:11`），既不假装它绿、也不让它悄悄消失——若哪天有人修了这个缝，哨兵会「意外变绿」提醒回收 backlog。**绝不**把它伪装成 passing。
+按 `empirical-verification`（不留恒绿假测）+ 用户裁决（2026-07-14），⑤ 整体降 `docs/todo/deferred-backlog.md`，含根因 + 三条「若做需改什么」。resize 重锚的正确性当前靠 `region.ts` 代码注释 + 字节级单测间接保障。known-seam（`region.ts:125-137` 同帧吞行）本就在 backlog:11，不受影响。
 
 ### 覆盖面其余项（GPT 挑「漏没漏」的回应）
 
