@@ -1,0 +1,176 @@
+/**
+ * AUQ (AskUserQuestion) synthesis wiring — end-to-end (Phase 4 Task 4.2,
+ * docs/plan/2026-07-13-upstream-error-client-shaping/phase-4-askuserquestion.md).
+ *
+ * Real Hono app + mocked upstream `globalThis.fetch`, asserting the ACTUAL HTTP
+ * response `/v1/messages` returns when a B-class (AUQ candidate) error reaches
+ * `shapePrecommitError` with `error_ask_user_question=true`: a synthesized 200
+ * response (whole `AnthropicMessageResponse` for stream:false, a self-contained
+ * SSE frame sequence for stream:true) carrying an `AskUserQuestion` tool_use —
+ * instead of the flattened canonical error body.
+ *
+ * CF-2 (mandatory gate): synthesis requires BOTH `errorShapingEnabled` AND
+ * `errorAskUserQuestion`; either false falls back to the plain canonical error
+ * (unchanged from Phase 2's behavior).
+ */
+
+import {
+  //
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test"
+
+import { getHistory } from "~/lib/history"
+import { drainPendingFinalizations } from "~/lib/history/entries"
+import {
+  //
+  setModels,
+  setStateForTests,
+} from "~/lib/state"
+
+import { mockModel } from "../../helpers/factories"
+import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
+import { applyFetchMock } from "../../helpers/mock-fetch"
+import { createFullTestApp } from "../../helpers/test-app"
+
+const MODEL = "claude-3-5-sonnet-latest"
+const app = createFullTestApp()
+
+function setupCommonState(): void {
+  setStateForTests({
+    copilotToken: "test-token",
+    accountType: "individual",
+    vsCodeVersion: "1.100.0",
+    responseHeaderTimeout: 0,
+  })
+  setModels({
+    object: "list",
+    data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })],
+  })
+}
+
+async function postMessages(body: Record<string, unknown>): Promise<Response> {
+  return app.request("/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: MODEL, max_tokens: 10, messages: [{ role: "user", content: "hi" }], ...body }),
+  })
+}
+
+function mockUpstreamStatus(status: number, message: string): void {
+  applyFetchMock(mock(async () => new Response(JSON.stringify({ error: { message } }), { status, headers: { "content-type": "application/json" } })))
+}
+
+describe("AUQ synthesis — end to end", () => {
+  useIsolatedRuntime()
+
+  test("stream:false request, upstream 402 quota_exceeded, error_ask_user_question=true → 200 whole AnthropicMessageResponse with AskUserQuestion tool_use (not a 402 error body)", async () => {
+    setupCommonState()
+    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
+    mockUpstreamStatus(402, "You have exceeded your usage quota")
+
+    const res = await postMessages({ stream: false })
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { stop_reason: string; content: Array<{ type: string; name?: string }> }
+    expect(body.stop_reason).toBe("tool_use")
+    expect(body.content[0]?.name).toBe("AskUserQuestion")
+  })
+
+  test("stream:true request, upstream 403 auth_expired, error_ask_user_question=true → 200 SSE with self-contained AUQ frame sequence", async () => {
+    setupCommonState()
+    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
+    mockUpstreamStatus(403, "token expired")
+
+    const res = await postMessages({ stream: true })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-type")).toContain("text/event-stream")
+    const text = await res.text()
+    expect(text).toContain("AskUserQuestion")
+    expect(text).toContain("message_stop")
+  })
+
+  test("error_ask_user_question=false → falls back to plain canonical error (no behavior change from Phase 2)", async () => {
+    setupCommonState()
+    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: false })
+    mockUpstreamStatus(402, "You have exceeded your usage quota")
+
+    const res = await postMessages({ stream: false })
+
+    expect(res.status).toBe(402)
+  })
+
+  test("errorShapingEnabled=false → falls back to plain canonical error even with errorAskUserQuestion=true (CF-2: both gates required)", async () => {
+    setupCommonState()
+    setStateForTests({ errorShapingEnabled: false, errorAskUserQuestion: true })
+    mockUpstreamStatus(402, "You have exceeded your usage quota")
+
+    const res = await postMessages({ stream: false })
+
+    expect(res.status).toBe(402)
+  })
+
+  test("401 auth_expired reaching decide() (post token-refresh exhaustion) with error_ask_user_question=true → also synthesizes AUQ (no 401 special-casing here)", async () => {
+    setupCommonState()
+    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
+    mockUpstreamStatus(401, "token expired")
+
+    const res = await postMessages({ stream: false })
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { content: Array<{ name?: string }> }
+    expect(body.content[0]?.name).toBe("AskUserQuestion")
+  })
+})
+
+// ============================================================================
+// Task 4.3 — history recording invariant (SENTINEL for the D-1 gap)
+// ============================================================================
+//
+// Task 4.3 asked whether the existing RequestContext/history API can express the
+// AUQ split (real upstream error in attempts[].upstreamResponse, synthesized 200
+// in clientResponse). Empirically probed (see README §0 D-1): it CANNOT, because
+// AUQ synthesis happens AFTER handler-v4.ts's generic `ctx.fail()` already froze
+// the entry snapshot, and the observability middleware's `setClientResponseStatus`
+// safety net is a documented no-op on a settled entry (and returns early on the
+// SSE path). Fixing that is a RequestContext settle-lifecycle change OUT of Phase
+// 4's authorized scope — so instead of a "locks the ideal invariant" test, this is
+// a SENTINEL locking the CURRENT (known-suboptimal) behavior:
+//   - POSITIVE invariant that DOES hold: the real upstream 402 is preserved in
+//     attempts[].upstreamResponse (richest-data-flow — the real error is never
+//     masked by the AUQ synthesis).
+//   - DOCUMENTED gap: clientResponse does NOT reflect the synthesized 200 (it is
+//     absent). If someone later fixes the settle timing (D-1 option 2/3), this
+//     assertion flips red and forces them to update it + revisit D-1.
+describe("AUQ synthesis — history recording (Task 4.3 sentinel / D-1)", () => {
+  useIsolatedRuntime()
+
+  test("real upstream 402 preserved in attempts[].upstreamResponse; clientResponse gap documented (D-1)", async () => {
+    setupCommonState()
+    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
+    mockUpstreamStatus(402, "You have exceeded your usage quota")
+
+    const res = await postMessages({ stream: false })
+    expect(res.status).toBe(200)
+    await res.json()
+    await drainPendingFinalizations()
+
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    expect(entry).toBeDefined()
+
+    // POSITIVE: the real upstream error is not lost — the richest-data-flow guarantee.
+    const attempt = entry?.attempts?.[0]
+    expect(attempt?.upstreamResponse?.status).toBe(402)
+    expect(attempt?.upstreamResponse?.success).toBe(false)
+
+    // DOCUMENTED GAP (D-1): the client actually received a synthesized 200 AUQ, but
+    // clientResponse does not reflect it — it is absent (never captured), because
+    // ctx.fail() froze the entry before shapePrecommitError built the 200. This is a
+    // KNOWN limitation pending the D-1 settle-lifecycle decision, locked here as a
+    // sentinel so a future fix cannot land silently.
+    expect(entry?.clientResponse?.status).toBeUndefined()
+  })
+})

@@ -25,10 +25,15 @@
  */
 import type { Context } from "hono"
 
+import { streamSSE } from "hono/streaming"
+
+import type { RequestContext } from "~/lib/context/request"
 import type { ClientFrame } from "~/lib/pipeline/types"
 
 import {
   //
+  buildAskUserQuestionFrames,
+  buildAskUserQuestionResponse,
   buildCanonicalErrorFrame,
   decide,
   type ErrorShapingConfig,
@@ -90,7 +95,30 @@ export function shapePrecommitError(c: Context, error: unknown): Response {
     if (decision.retryAfterSec !== undefined) c.header("Retry-After", String(decision.retryAfterSec))
     c.header("x-should-retry", "true")
   }
-  // "ask-user-question": Phase 4 TODO — falls through to forwardError unchanged for now.
+
+  if (decision.kind === "ask-user-question") {
+    // The pre-commit ctx (built by `handler-v4.ts`'s `runMessagesDriver` before the throw that
+    // landed us here) is ALREADY exposed via `c.set("requestContext", ctx)` — reading it here
+    // avoids adding a redundant `c.set("clientRequestStream", ...)` side-channel (a planned
+    // deviation from this Phase's plan doc, recorded in task-4-report.md): `originalRequest`
+    // already carries both `stream` and `model` (the exact two fields the plan's proposed new
+    // side-channel would have duplicated), and `ctx.id` is the request id. Falls back to safe
+    // defaults for the (currently unreachable in practice) `/count_tokens` leg, whose own
+    // internal try/catch never lets an error reach this function — see `count-tokens.ts`.
+    const ctx = c.get("requestContext") as RequestContext | undefined
+    const streamRequested = ctx?.originalRequest?.stream ?? false
+    const auqCtx = { model: ctx?.originalRequest?.model ?? "unknown", reqId: ctx?.id ?? "unknown" }
+
+    if (streamRequested) {
+      return streamSSE(c, async (stream) => {
+        for (const frame of buildAskUserQuestionFrames(decision, auqCtx)) {
+          await stream.writeSSE({ data: frame.data ?? "", ...(frame.event !== undefined && { event: frame.event }) })
+        }
+      })
+    }
+    return c.json(buildAskUserQuestionResponse(decision, auqCtx))
+  }
+
   // "canonical-error": current forwardError behaviour is already correct, no header changes.
   return forwardError(c, error)
 }
