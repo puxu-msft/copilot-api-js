@@ -34,6 +34,7 @@ import {
   setTelemetryConfig,
   setTimeoutConfig,
   setTimeoutOverridesConfig,
+  setUnknownEndpointLogging,
   state,
 } from "~/lib/state"
 
@@ -893,6 +894,15 @@ export async function applyConfigToState(): Promise<Config> {
       for (const [cat, days] of Object.entries(nl.ttl_days)) overrides[cat] = toMs(days)
       setNegotiationConfig({ negotiationTtlOverridesMs: overrides })
     }
+  }
+
+  // unknown HTTP endpoint 日志级别（scalar: override only when present; retain-on-absence）。
+  if (config.unknown_endpoint_logging) {
+    const u = config.unknown_endpoint_logging
+    setUnknownEndpointLogging({
+      notFound: u.not_found ?? state.unknownEndpointLogging.notFound,
+      methodNotAllowed: u.method_not_allowed ?? state.unknownEndpointLogging.methodNotAllowed,
+    })
   }
 
   // Responses API settings (scalar: override only when present)

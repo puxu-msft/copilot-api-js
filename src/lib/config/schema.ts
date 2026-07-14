@@ -925,6 +925,22 @@ const GhcApiBaseUrlSchema = z
     }
   })
 
+/** unknown HTTP endpoint 日志级别（silent = 不打）。见 UnknownEndpointLoggingSchema。 */
+export const LOG_LEVELS = ["silent", "debug", "info", "warn", "error"] as const
+
+/**
+ * unknown HTTP endpoint（打到代理但没匹配任何业务路由）的按状态码分类日志级别。
+ * not_found = 404（真正未匹配路径）；method_not_allowed = 405（路径存在但 method 不对）。
+ * 用 nullableEnum → 每字段接受 null（PUT `/api/config/yaml` 用 null 删除单键）。默认 warn/warn
+ * 由 bundled config.yaml + CONFIG_MANAGED_DEFAULTS 提供（非 leaf schema default）。
+ */
+const UnknownEndpointLoggingSchema = z
+  .object({
+    not_found: nullableEnum(LOG_LEVELS),
+    method_not_allowed: nullableEnum(LOG_LEVELS),
+  })
+  .strict()
+
 const ProxySchema = z
   .string({ error: STRING_MSG })
   .nullable()
@@ -1019,6 +1035,7 @@ export const ConfigSchema = z
       .strict()
       .nullable()
       .optional(),
+    unknown_endpoint_logging: nullableSection(UnknownEndpointLoggingSchema),
   })
   .strict()
 

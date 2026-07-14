@@ -113,7 +113,18 @@ export interface BufferedRetryCaps {
   heartbeatSec: number
 }
 
+/** unknown HTTP endpoint 日志级别（silent = 不打）。值须与 config/schema.ts 的 LOG_LEVELS 一致。 */
+export type LogLevel = "silent" | "debug" | "info" | "warn" | "error"
+
+/** unknown HTTP endpoint 按状态码分类的日志级别（404 = notFound / 405 = methodNotAllowed）。 */
+export interface UnknownEndpointLogging {
+  notFound: LogLevel
+  methodNotAllowed: LogLevel
+}
+
 export interface State {
+  /** unknown HTTP endpoint（未匹配任何业务路由）按状态码分类的日志级别。默认 warn/warn。 */
+  readonly unknownEndpointLogging: UnknownEndpointLogging
   readonly githubToken?: string
   readonly copilotToken?: string
 
@@ -1223,6 +1234,10 @@ export function setDisabledModels(disabledModels: ReadonlyArray<string>): void {
   rebuildModelIndex()
 }
 
+export function setUnknownEndpointLogging(value: UnknownEndpointLogging): void {
+  mutableState.unknownEndpointLogging = value
+}
+
 export function setAnthropicBehavior(
   patch: Partial<
     Pick<
@@ -1568,6 +1583,7 @@ export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
  * Model overrides continue to use DEFAULT_MODEL_OVERRIDES.
  */
 export const CONFIG_MANAGED_DEFAULTS = {
+  unknownEndpointLogging: { notFound: "warn", methodNotAllowed: "warn" } as UnknownEndpointLogging,
   useUpstreamCountTokens: true,
   strictResponseHeaders: false,
   strictRequestHeaders: false,
@@ -1721,6 +1737,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
 }
 
 export function resetConfigManagedState(): void {
+  setUnknownEndpointLogging({ ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging })
   setAnthropicBehavior({
     useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
@@ -1861,6 +1878,7 @@ export function resetConfigManagedState(): void {
 }
 
 const mutableState: MutableState = {
+  unknownEndpointLogging: { ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging },
   accountType: "individual",
   ghcApiBaseUrl: "",
   maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
