@@ -58,6 +58,15 @@
 - **暂缓原因**：`buildWirePayload`（B1/B2 ctx 初始化，非 prepare step）当前无事件发射通道，sibling `stripServerTools` 亦仅 warn；就地新建 telemetry 通道属跨切面改动，超出与 sibling 对齐的范围。对抗审查 M2 提出、判为「决定数据模型的后续项」。
 - **若做**：给 prepare 阶段（或 `stripToolFields` 返回值）接一个能到达 history/request-telemetry 的结构化回执（剥除字段集 + 受影响 tool 数 + 来源 builtin/config/cache/hint），前端可选呈现（richest-data-flow）；同时可顺带给 `stripServerTools` 补同款可观测性。遥测架构见 skill `telemetry-architecture`。
 
+## unknown HTTP endpoint 可配置日志 — 四项范围外后续（spec 2026-07-14，三轮评审识别）
+
+来源：`docs/spec/2026-07-14-unknown-endpoint-logging.md` 的非目标 + 三轮对抗评审识别出的边界项。本轮 spec 做「404/405 按状态码分类的可配置日志」，以下四项明确排除、记此备忘。
+
+- **`browser_probe` 第三类日志级别**：现状浏览器自动探针（favicon / devtools）静默返回 204、不进日志管线，本轮不纳入（用户选择）。**若做**：`unknown_endpoint_logging` 加第三个 key `browser_probe`（silent|debug|info|warn|error），把 `server.ts` 的 `browserProbePaths` 短路也接入分类/finalizer 管线。需求触发时启用。
+- **已注册路由 handler error 的分类日志**：现状 `onError`（`src/server.ts`）已对已注册路由抛出的异常 `consola.error`，非当前缺陷。**若做（且仅当有真实需求）**：若要按 route family / status 分级别配置，应**独立设计**、独立 config section，**不复用** `unknown_endpoint_logging`（两者关注点不同：一个是「端点不存在」、一个是「已存在端点内部出错」）。
+- **O2(b) 收窄 CORS 使普通 OPTIONS 可诊断**：现状全局 `cors()` 对所有 OPTIONS 返 204（不要求 preflight header），unknown OPTIONS 不到 notFound、永远伪成功（诊断盲区）。用户裁决本轮**保留现状**。**若做**：收窄 `cors()` 只豁免 preflight-shaped 请求（带 `Origin` + 非空 `Access-Control-Request-Method` token——注意这只判「结构像 preflight」，不代表 CORS 策略允许该 method），普通 OPTIONS 落入 404/405 分类。**需改什么**：改 `cors()` 接线 + 回归验证既有 CORS 客户端。reviewer 与主会话原倾向做，用户选最小改动。
+- **ALL route-owned `c.notFound()` 精确识别**：现状三态分类器的 route-owned 识别只覆盖 method-specific route；若 `.all()` 业务 handler 主动调 `c.notFound()`，会因 shadow 排除 ALL route 而误判成 unknown-404/405。**当前无实际漏判**（项目现有 `.all()` handler 均不调 `c.notFound()`，有守卫测试锁死此前提）。**若做**：用执行时 provenance（`c.req.matchedRoutes` / `c.req.routeIndex`）区分「当前 handler 是 `.all()` 业务 handler」vs「middleware」vs「真 routing miss」——需先做小 PoC 实测 routing-miss 时的 `routeIndex` 值。守卫测试变红（新增 `.all()` fallback 调 `c.notFound()`）是启动此项的触发信号。
+
 ## context-edits 回执 telemetry（7d 分布）
 - **现状**：`applied_edits` 诊断回执已落地（commit f55fd93，`src/lib/anthropic/applied-context-edits.ts`，流式经 accumulator `message_delta` / 非流式经 handler 顶层，两路发 `recordFeature("context-edits-applied", {count, clearedInputTokens, types})`），进 observability feature 维度计数。
 - **暂缓**（用户 2026-06-29"暂时不做"）：接进 `request-telemetry` 做 7d 持久分布（现只 feature 维度计数，无 cleared token 量直方图）；实证开启 `protectStreamingEscalateContext` / `contextEditingMode` 后真有非空 `applied_edits`（当前样本 req_1782713407242_1 全空回执）。
