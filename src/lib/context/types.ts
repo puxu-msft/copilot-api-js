@@ -143,6 +143,11 @@ export interface Attempt {
   sseEvents?: Array<SseEventRecord>
   /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
   responseHeaders?: Record<string, string>
+  /** 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻，绝对 epoch instant，每 attempt 各记自己的。once 除 last。 */
+  upstreamHeadersAt?: number
+  upstreamMessageStartAt?: number
+  upstreamFirstTokenAt?: number
+  upstreamLastTokenAt?: number
 }
 
 // ─── History Entry Data ───
@@ -326,7 +331,17 @@ export interface HistoryEntryData {
     sseEvents?: Array<SseEventRecord>
     /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
     responseHeaders?: Record<string, string>
+    /** 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻，绝对 epoch。producer 写、两段投影透传到 HistoryEntry。 */
+    upstreamHeadersAt?: number
+    upstreamMessageStartAt?: number
+    upstreamFirstTokenAt?: number
+    upstreamLastTokenAt?: number
   }>
+  /**
+   * 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻，offset ms 相对 started_at。
+   * `toHistoryEntry` 由 ctx 的 client-timing epoch 减 started_at 得出（Task 2.3）。
+   */
+  timing?: { client?: { streamOpenMs?: number; firstRealMs?: number; bufferHoldStartMs?: number } }
 }
 
 // ─── RequestContext Interface ───
