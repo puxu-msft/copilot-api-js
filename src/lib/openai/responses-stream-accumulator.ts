@@ -172,7 +172,11 @@ export function accumulateResponsesStreamEvent(event: ResponsesStreamEvent, acc:
           id: tcAcc.id,
           callId: tcAcc.callId,
           name: tcAcc.name,
-          arguments: tcAcc.argumentParts.join(""),
+          // `.done.arguments` is the AUTHORITATIVE complete final value (OpenAI/GHC contract). Prefer it
+          // over the concatenated deltas — the no-delta merge shape (only lifecycle + `.done`, e.g.
+          // responses-nodelta.probe) carries the full arguments HERE and nowhere else, so ignoring it
+          // dropped them to "". Fall back to the joined deltas only when `.done` omits them (defensive).
+          arguments: typeof event.arguments === "string" && event.arguments.length > 0 ? event.arguments : tcAcc.argumentParts.join(""),
         })
       }
       break
