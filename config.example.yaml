@@ -179,3 +179,17 @@
 #   - from: "\\n\\s*\\n\\s*\\n"
 #     to: "\\n\\n"
 #     method: regex
+
+# ============================================================================
+# Unknown HTTP Endpoint Logging
+# ============================================================================
+# 打到代理但没匹配任何业务路由的请求（客户端打错 path / 用错 base URL / 用错 method）
+# 按归类状态码分别控制日志级别。日志经 consola → TUI + copilot-api.log。
+#   - not_found          → 404：真正未匹配的路径
+#   - method_not_allowed → 405：路径存在但 HTTP method 不对（返回 405 + Allow 头）
+# 级别：silent（不打） | debug | info | warn | error。默认 warn/warn。
+# 注意：debug/info 受 consola 全局 level gate 节制（默认 level 下可能不显示）。
+#
+# unknown_endpoint_logging:
+#   not_found: warn
+#   method_not_allowed: warn

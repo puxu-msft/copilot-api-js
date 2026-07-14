@@ -6,6 +6,7 @@ import {
   test,
 } from "bun:test"
 import consola from "consola"
+import { readFileSync } from "node:fs"
 
 import {
   //
@@ -84,5 +85,25 @@ describe("logUnknownEndpoint level dispatch", () => {
     logUnknownEndpoint("warn", { classification: { kind: "unknown-not-found", status: 404 }, method: "GET", path: "/x", ua: "-" })
     consola.warn = orig
     expect(spy).toHaveBeenCalledWith("[404] GET /x  ua=-")
+  })
+})
+
+describe(".all() route-owned boundary guard (spec §4 known boundary)", () => {
+  test("no .all() route handler directly calls c.notFound()", () => {
+    // 三态 route-owned 识别只覆盖 method-specific route。`.all()` 业务 handler 调
+    // c.notFound() 会被误判成 unknown-404/405（shadow 排除 ALL route → ① 不命中）。
+    // 现有 `.all()` 均不调 c.notFound()——此守卫锁死该前提；将来新增违反者变红，
+    // 逼迫先扩展 provenance（c.req.matchedRoutes/routeIndex，记 deferred-backlog）。
+    // 单行精确检测（项目 .all() 均为单行 arrow）：某行同时含 `.all(` 与 `c.notFound(`。
+    // 正样本：把某 .all() 改成 `.all("/", (c) => c.notFound())` → 同行命中 → 变红。
+    const glob = new Bun.Glob("src/routes/**/*.ts")
+    const offenders: Array<string> = []
+    for (const file of glob.scanSync(".")) {
+      const src = readFileSync(file, "utf8")
+      for (const [i, line] of src.split("\n").entries()) {
+        if (line.includes(".all(") && line.includes("c.notFound(")) offenders.push(`${file}:${i + 1}`)
+      }
+    }
+    expect(offenders).toEqual([])
   })
 })
