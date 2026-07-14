@@ -32,6 +32,7 @@ import {
 } from "~/lib/anthropic/recover-refusal"
 import {
   //
+  setBufferedRetryOverride,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -47,6 +48,7 @@ import {
 import {
   //
   createSseResponse,
+  createSseResponseThenError,
   httpErrorResponse,
   jsonResponse,
   scriptedUpstream,
@@ -601,6 +603,170 @@ describe("client↔proxy SDK e2e (OpenAI vendor, upstream shielded)", () => {
 
     // client-observable: the OpenAI SDK decoded + assembled OUR forwarded CC chunks
     expect(content).toBe("hello from openai")
+    expect(up.callCount()).toBe(1)
+  })
+
+  // ── P3 buffered-retry: mid-stream upstream RST is retried transparently (no half-turn leak) ──
+  //
+  // Mirrors the Anthropic B16 scenario above (anthropic-sdk.it.test.ts "buffered-retry (upstream
+  // RST mid-stream)") but through the REAL `openai` SDK's Chat Completions streaming path, against
+  // the P3 chat_completions buffered-retry sink (`driver.runResponseBufferedSink`, commit predicate
+  // = terminal-only `ccCommitBoundaries` — CC has no mid-stream block boundary, so ANY truncation
+  // before `finish_reason` is pre-commit and fully retryable).
+  test("P3 buffered-retry (CC upstream RST mid-stream): first attempt streams a partial delta then RSTs → proxy retries → real OpenAI SDK sees ONE complete turn, the half NOT leaked", async () => {
+    setStateForTests({ chatCompletionsBufferedRetry: true, streamKeepalivePingSec: 20 })
+    // `setStateForTests` MERGES caps but `processOpenAIMessages` calls `applyConfigToState()`
+    // unconditionally on every request, which reloads the bundled config.yaml's top-level
+    // `buffered_retry.max_retries` and clobbers `state.bufferedRetryShared` — the per-vendor
+    // `chat_completions` override map is untouched by that reload, so THIS is the reliable path
+    // (see tests/chat-completions/cc-buffered.integration.test.ts:135-141 for the same lesson).
+    setBufferedRetryOverride("chat_completions", { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 })
+
+    const chunk = (delta: Record<string, unknown>, finish: string | null): string =>
+      `data: ${JSON.stringify({ id: "cc-rst", object: "chat.completion.chunk", created: 1, model: CC_MODEL, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
+    // Attempt 1: a partial delta, then the body ERRORS (RST) — no finish_reason, no [DONE].
+    const partialThenRst = [chunk({ role: "assistant", content: "" }, null), chunk({ content: "CC-HALF-LEAK" }, null)]
+    // Attempt 2 (retry): a full clean turn.
+    const cleanTurn = [chunk({ role: "assistant", content: "" }, null), chunk({ content: "recovered after CC retry" }, null), chunk({}, "stop"), DONE]
+    const up = sequencedUpstream([() => createSseResponseThenError(partialThenRst, new Error("RST")), () => createSseResponse(cleanTurn)])
+    setUpstreamFetchForTests(up.handler)
+
+    const stream = await client.chat.completions.create({ model: CC_MODEL, messages: [{ role: "user", content: "hi" }], stream: true })
+    let content = ""
+    let finishReason: string | null | undefined
+    for await (const part of stream) {
+      content += part.choices[0]?.delta?.content ?? ""
+      if (part.choices[0]?.finish_reason) finishReason = part.choices[0].finish_reason
+    }
+
+    // client-observable: exactly the retried complete turn; the truncated first attempt never surfaced.
+    expect(content).toBe("recovered after CC retry")
+    expect(finishReason).toBe("stop")
+    expect(content).not.toContain("CC-HALF-LEAK") // the half was buffered away, not leaked
+    expect(up.callCount()).toBe(2) // proxy retried the RST internally; the client saw one clean turn
+  })
+})
+
+// ── P2: Responses-HTTP buffered-retry, via the real `openai` SDK Responses streaming API ──
+
+describe("client↔proxy SDK e2e (OpenAI Responses vendor, upstream shielded, P2 buffered-retry)", () => {
+  useIsolatedRuntime()
+
+  const RESP_MODEL = "gpt-5"
+  let proxy: InProcessProxy
+  let client: OpenAI
+
+  beforeAll(() => {
+    proxy = serveInProcess()
+    client = new OpenAI({ baseURL: proxy.baseURL, apiKey: "test-key", maxRetries: 0 })
+  })
+  afterAll(() => proxy.close())
+
+  beforeEach(() => {
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
+    setModels({ object: "list", data: [mockModel(RESP_MODEL, { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
+  })
+  afterEach(() => setUpstreamFetchForTests(undefined))
+
+  const respEvent = (type: string, seq: number, payload: Record<string, unknown>): string =>
+    `event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: seq, ...payload })}\n\n`
+
+  /** A complete direct-Responses generation: created → a text delta → response.completed. */
+  function completeFrames(text: string): Array<string> {
+    return [
+      respEvent("response.created", 0, { response: { id: "resp_up_2", object: "response", status: "in_progress", model: RESP_MODEL, output: [] } }),
+      respEvent("response.output_item.added", 1, { output_index: 0, item: { id: "msg_0", type: "message", role: "assistant", content: [] } }),
+      respEvent("response.output_text.delta", 2, { item_id: "msg_0", output_index: 0, content_index: 0, delta: text }),
+      respEvent("response.output_item.done", 3, {
+        output_index: 0,
+        item: { id: "msg_0", type: "message", role: "assistant", content: [{ type: "output_text", text }] },
+      }),
+      respEvent("response.completed", 4, {
+        response: { id: "resp_up_2", object: "response", status: "completed", model: RESP_MODEL, output: [], usage: { input_tokens: 100, output_tokens: 20 } },
+      }),
+    ]
+  }
+
+  // ── P2a: pre-commit RST — nothing committed yet on the first attempt, so it's fully retryable ──
+
+  test("P2 buffered-retry (pre-commit RST): first attempt RSTs BEFORE any output_item.done → proxy retries → real OpenAI SDK sees ONE complete Response, the half NOT leaked", async () => {
+    // With responsesBufferedRetry ON, the block-level commit predicate flushes at each
+    // output_item.done boundary. Making the first attempt's RST land BEFORE any output_item.done
+    // means nothing has been committed to the client yet — the whole attempt is discarded and
+    // retried in full (mirrors the Anthropic B16 / CC P3 scenarios: fully retryable pre-commit).
+    setStateForTests({ responsesBufferedRetry: true, streamKeepalivePingSec: 20 })
+    setBufferedRetryOverride("responses", { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 })
+
+    const partialThenRst = [
+      respEvent("response.created", 0, { response: { id: "resp_up_1", object: "response", status: "in_progress", model: RESP_MODEL, output: [] } }),
+      respEvent("response.output_item.added", 1, { output_index: 0, item: { id: "msg_pre", type: "message", role: "assistant", content: [] } }),
+      respEvent("response.output_text.delta", 2, { item_id: "msg_pre", output_index: 0, content_index: 0, delta: "RESP-HALF-LEAK" }),
+      // ← no output_item.done / response.completed: createSseResponseThenError errors the body here (RST)
+    ]
+    const up = sequencedUpstream([
+      () => createSseResponseThenError(partialThenRst, new Error("RST")),
+      () => createSseResponse(completeFrames("complete after RST retry")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.responses.create({ model: RESP_MODEL, input: "hi", stream: true }).then(async (stream) => {
+      let assembled = ""
+      for await (const event of stream) {
+        if (event.type === "response.output_text.delta") assembled += event.delta
+      }
+      return assembled
+    })
+
+    // client-observable: exactly the retried complete Response; the truncated first attempt never surfaced.
+    expect(final).toBe("complete after RST retry")
+    expect(final).not.toContain("RESP-HALF-LEAK") // the half was buffered away, not leaked
+    expect(up.callCount()).toBe(2) // proxy retried the RST internally; the client saw one clean Response
+  })
+
+  // ── P2b: post-commit RST — the honest block-level partial-degrade behavior (empirically observed) ──
+
+  test("P2 buffered-retry (post-commit RST): first output_item.done commits, THEN RST → NOT retried (partial-degrade) — real OpenAI SDK observes the committed block + a stream error, empirically confirmed", async () => {
+    // Block-level buffered retry commits at each output_item.done boundary. Once a block has been
+    // flushed to the client it can't be un-sent, so a RST AFTER that boundary is NOT retryable —
+    // the proxy settles the generation as `partial-degrade`: the committed block stays on the wire
+    // and a Responses `error` event terminates the stream (mirrors
+    // tests/responses/responses-buffered.it.test.ts "golden: truncation AFTER the first
+    // output_item.done commits"). This test empirically confirms what the REAL `openai` SDK does
+    // with that wire shape — a committed item + a trailing `event: error` mid-stream.
+    setStateForTests({ responsesBufferedRetry: true, streamKeepalivePingSec: 20 })
+    setBufferedRetryOverride("responses", { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 })
+
+    const firstItemCommittedThenRst = [
+      respEvent("response.created", 0, { response: { id: "resp_deg", object: "response", status: "in_progress", model: RESP_MODEL, output: [] } }),
+      respEvent("response.output_item.added", 1, { output_index: 0, item: { id: "msg_committed", type: "message", role: "assistant", content: [] } }),
+      respEvent("response.output_text.delta", 2, { item_id: "msg_committed", output_index: 0, content_index: 0, delta: "COMMITTED-BLOCK" }),
+      respEvent("response.output_item.done", 3, {
+        output_index: 0,
+        item: { id: "msg_committed", type: "message", role: "assistant", content: [{ type: "output_text", text: "COMMITTED-BLOCK" }] },
+      }),
+      // ← item0 IS committed here; the RST happens after — un-retryable, partial-degrade.
+    ]
+    const up = sequencedUpstream([() => createSseResponseThenError(firstItemCommittedThenRst, new Error("RST"))])
+    setUpstreamFetchForTests(up.handler)
+
+    let assembled = ""
+    let thrown: unknown
+    try {
+      const stream = await client.responses.create({ model: RESP_MODEL, input: "hi", stream: true })
+      for await (const event of stream) {
+        if (event.type === "response.output_text.delta") assembled += event.delta
+      }
+    } catch (e) {
+      thrown = e
+    }
+
+    // The committed block DID reach the client (block-level flushed it live before the RST)…
+    expect(assembled).toBe("COMMITTED-BLOCK")
+    // …and the SDK's iterator throws on the terminating error frame — the SAME untyped-APIError
+    // path already proven for the 200+in-stream error case above (no silent "clean completion").
+    expect(thrown).toBeInstanceOf(Error)
+    // No retry: a block was already committed to the client (can't unsend) → partial-degrade,
+    // exactly one upstream exchange.
     expect(up.callCount()).toBe(1)
   })
 })
