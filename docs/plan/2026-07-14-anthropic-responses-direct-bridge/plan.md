@@ -96,9 +96,15 @@ Commit invariant: FINDINGS.md 每条裁决附原始证据文件路径（probe*.j
 
 ---
 
-## Phase 1：hub-translate 重塑为 per-pair 显式桥表（纯结构，等价区 golden 把关）
+## Phase 1：hub-translate 重塑为 per-pair 显式桥表（纯结构，等价区 golden 把关）✅ **已完成 2026-07-14**
 
 **Goal:** 把四个翻译分发器从「CC-canonical 单轴 + 串联 if」改成穷尽 `(source,target)` 桥表，全部对现有对保持**客户端 wire 逐字节等价**（此阶段不加任何新桥，纯结构重构）。
+
+**完成状态**：四分发器全部重塑为 `satisfies Record<...>` 穷尽桥表，四个语义单元分别提交，逐提交 golden 全绿（36 pass / 0 fail）+ typecheck 无新增错误 + 全套件（`test:backend`）2529 pass 无回归（既有 4 fail 经 baseline 版 hub-translate.ts 复现同样失败，证实与本 Phase 无关，属其他并发会话触及 `src/lib/observability/events.ts` / `src/lib/tui/terminal-ui.ts` 的未提交改动）。commit：
+- `1fc15bb8` `translateRequestVia`（含 `(anthropic,/chat/completions)` 与 `(anthropic,/responses|ws:/responses)` 拆分为独立表项，为 Phase 3 只换 responses 一格铺路）
+- `001e1c96` `renderResponseNonStreamingVia`
+- `ce426190` `createForwardStreamTranslator`（pair→factory，保有状态语义）
+- `45c264e3` `createReverseStreamTranslator`（pair→factory，保有状态语义；`anthropic` 不可达分支仍显式命名表项，非 default）
 
 **Files:**
 - Modify: `src/lib/pipeline/hub-translate.ts`（`translateRequestVia` / `renderResponseNonStreamingVia` / `createForwardStreamTranslator` / `createReverseStreamTranslator` 四分发器）
