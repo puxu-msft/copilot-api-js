@@ -2,7 +2,7 @@
  * setUpstreamTransportConfig / onUpstreamTransportChange — the split-out
  * upstream-transport-axis state setter (three-axis config reorg, plan-1 Task 5).
  * Mirrors the existing pattern for setTimeoutConfig / onRequestWatchdogChange
- * (renamed from onTransportTimeoutChange in this same Task, Step 4b).
+ * (the latter renamed away from its pre-reorg symbol in this same Task, Step 4b).
  */
 import {
   //
