@@ -141,19 +141,27 @@ const recoverRewrite: ResponseRewrite = {
   transform: (frame, st): FrameAction => {
     const s = st as RecoverState
     const out = s.recoverer.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage)
-    // Record the recovered feature once, when a SYNTHESIZED tool_use start appears
-    // (a frame the recoverer produced, not the pass-through original) — mirrors
-    // streaming-pump.ts:200-209.
+    // Record the recovered feature once, when SYNTHESIZED tool_use start(s) appear
+    // (frames the recoverer produced, not the pass-through original) — mirrors
+    // streaming-pump.ts:200-209. All synthesized tool_use blocks for one downgraded
+    // turn are emitted in a SINGLE `out` (the COMMIT frame, stream.ts:145-154), so a
+    // single scan collects every recovered name. The names ride the feature detail so
+    // both the `[RECOVER]` line AND the completion line's `tool_use(<names>)` token can
+    // show them — the upstream-original track (what the completion line otherwise reads)
+    // keeps the raw downgraded TEXT with no tool_use block (Option A), so the names are
+    // ONLY knowable here at the recovery point.
     if (!s.featureLogged) {
-      for (const f of out) {
-        if (f === frame) continue
+      const recoveredNames = out.flatMap((f) => {
+        if (f === frame) return []
         const p = parseFrame(f.data)
-        if (p?.type === "content_block_start" && (p.content_block as { type?: string }).type === "tool_use") {
-          s.featureLogged = true
-          s.ctx.recordFeature("tool-call-recovered")
-          consola.info("[RECOVER] rebuilt tool_use from downgraded upstream text")
-          break
-        }
+        if (p?.type !== "content_block_start") return []
+        const cb = p.content_block as { type?: string; name?: string }
+        return cb.type === "tool_use" && typeof cb.name === "string" ? [cb.name] : []
+      })
+      if (recoveredNames.length > 0) {
+        s.featureLogged = true
+        s.ctx.recordFeature("tool-call-recovered", { tools: recoveredNames })
+        consola.info(`[RECOVER] rebuilt tool_use from downgraded upstream text: ${recoveredNames.join(", ")}`)
       }
     }
     return bufferOrEmit(out)
@@ -164,11 +172,25 @@ const recoverRewrite: ResponseRewrite = {
   // this rewrite entirely = byte-identical to the helper's `enabled:false` early-return).
   transformWhole: (response, env): unknown => {
     const tools = (env.body as MessagesPayload).tools
-    return recoverToolCallTextInResponse(response as AnthropicMessageResponse, {
+    const original = response as AnthropicMessageResponse
+    const recovered = recoverToolCallTextInResponse(original, {
       enabled: true,
       toolNames: new Set((tools ?? []).map((t) => t.name)),
       toolSchemas: extractToolParamTypes(tools),
     })
+    // Surface the recovery the SAME way the streaming leg does (feature detail + `[RECOVER]`
+    // log) — non-streaming was previously silent. The helper returns a NEW object only when it
+    // rebuilt something (else the same reference); a Tier-A rebuild requires NO pre-existing
+    // tool_use block (recover-tool-call/response.ts:24), so every tool_use in the recovered
+    // content is synthesized → its names are the recovered set.
+    if (recovered !== original) {
+      const recoveredNames = (recovered.content as ReadonlyArray<{ type: string; name?: string }>).flatMap((b) =>
+        b.type === "tool_use" && typeof b.name === "string" ? [b.name] : [],
+      )
+      env.ctx.recordFeature("tool-call-recovered", { tools: recoveredNames })
+      consola.info(`[RECOVER] rebuilt tool_use from downgraded upstream text: ${recoveredNames.join(", ")}`)
+    }
+    return recovered
   },
 }
 

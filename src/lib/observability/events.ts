@@ -147,7 +147,7 @@ export type FeatureKind =
   | "dropped-params"
   /** request used a non-default transport — `detail: { kind: TransportKind }` */
   | "transport"
-  /** streaming recoverer rebuilt a tool_use from downgraded upstream text */
+  /** recoverer rebuilt tool_use(s) from downgraded upstream text — `detail: { tools: string[] }` (the recovered tool names, in call order) */
   | "tool-call-recovered"
   /** recovered a thinking-only upstream refusal by synthesizing a text completion */
   | "refusal-recovered"
