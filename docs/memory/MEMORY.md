@@ -4,6 +4,9 @@
 
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub 指向）
 
+- [审自己写的测试类型错配必派异模型 reviewer](methodology-audit-own-test-type-fit-via-cross-model-reviewer.md) → skill `choosing-test-type` — 真相域归位 + 试金石（换 golden 损失啥客户端信息）+ 错配四型 + stream≠non-stream 独立路径陷阱；本次两 reviewer 逮到我误把 non-streaming golden 当 streaming 覆盖险误删唯一覆盖 + GPT 逮 oracle 缺陷（声称 BadRequestError 只断言 APIError）
+
+
 - [sync→async 持久化不变量](methodology-sync-to-async-persistence-refactor-invariants.md) → skill `persistence-async-invariants` §1 — drain-before-close / pending Set 不靠 bus / re-entrancy 守卫 / never-throw / 全调用方 await
 - [信号在 committed settle 点记录](methodology-record-signals-at-committed-outcome-not-per-attempt.md) → skill `persistence-async-invariants` §3 — per-attempt 累积 + onAttemptReset 清空 + committed flush；不丢 ≠ 不清
 - [settle 冻结 history entry 快照](reference-settle-freezes-history-entry-record-before-fail.md) → skill `persistence-async-invariants` §2 — client-facing 数据须 settle 前 record；新顶层字段三处必改
