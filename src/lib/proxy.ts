@@ -31,6 +31,7 @@ import {
 import {
   //
   onRequestWatchdogChange,
+  onUpstreamTransportChange,
   state,
 } from "./state"
 import { buildSocksProxy } from "./transport/proxy-connect"
@@ -83,8 +84,9 @@ export function getUpstreamKeepAliveDelayMs(): number | undefined {
  * stream was closed WITHOUT `message_stop`). TCP keepalive keeps L4 alive
  * through NAT but does not defeat a connection-idle reaper (middlebox or GHC
  * edge) counting application-layer silence — periodic h2 PING puts real frames
- * on the wire. Consumed by http2-client.ts:scheduleH2KeepalivePing. Node-only
- * (the node:http2 transport); the plaintext undici path has no long silences.
+ * on the wire. Consumed by http2-client.ts:scheduleH2KeepalivePing. Works on
+ * both Bun and Node (node:http2 transport is runtime-neutral); the plaintext
+ * undici path has no long silences.
  */
 export function getUpstreamH2PingIntervalMs(): number {
   const sec = state.upstreamH2PingInterval
@@ -228,6 +230,7 @@ function logDispatcherInstalled(options: ProxyOptions): void {
 function ensureTimeoutSubscription(): void {
   if (timeoutSubscriptionInstalled) return
   onRequestWatchdogChange(rebuildUpstreamDispatcher)
+  onUpstreamTransportChange(rebuildUpstreamDispatcher)
   timeoutSubscriptionInstalled = true
 }
 

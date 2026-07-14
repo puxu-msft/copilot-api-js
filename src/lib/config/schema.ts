@@ -51,7 +51,6 @@ function nullableNonnegativeInt() {
     .optional()
 }
 
-
 function nullableBoolean() {
   return z
     .boolean({ error: BOOLEAN_MSG })
@@ -778,7 +777,6 @@ export const HistoryConfigSchema = z
   })
   .strict()
 
-
 /**
  * `telemetry.*` —— 分层遥测持久化（独立 telemetry.db）。近期/远期分辨率与保留均可配。
  * 业务级校验（sketch_gamma 下限、resolution 整除 60）在 config apply 层做 warn-continue，非 zod。
@@ -818,7 +816,6 @@ export const TelemetryConfigSchema = z
     tiers: nullableSection(TelemetryTiersConfigSchema),
   })
   .strict()
-
 
 export const RetryConfigSchema = z
   .object({

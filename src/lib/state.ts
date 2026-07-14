@@ -688,7 +688,10 @@ export interface State {
    * `content_block_start`). undici's default is 60s — too long for ~30s idle
    * reapers, so the first probe never fires before the connection is culled.
    * 0 = use undici's default (do not override). Default: 15.
-   * Node-only (undici dispatcher); Bun's fetch is unaffected.
+   * Also drives `node:tls`' `setKeepAlive` on the h2 socket (http2-client.ts) —
+   * the primary GHC connection path — which works on both Bun and Node (the
+   * undici Agent path above is Node-only, since Bun's global fetch does not
+   * consume the undici dispatcher; see proxy.ts module docstring).
    */
   readonly upstreamKeepaliveDelay: number
 
@@ -701,7 +704,8 @@ export interface State {
    * alive through NAT but does not defeat a connection-idle reaper (middlebox or
    * GHC edge) counting application-layer silence; a periodic h2 PING puts a real
    * frame on the wire. Kept WELL below observed idle-reaper windows (a real cut
-   * fired at ~112s). Default: 15. Node-only (the node:http2 transport).
+   * fired at ~112s). Default: 15. Works on both Bun and Node (the node:http2
+   * transport is runtime-neutral).
    */
   readonly upstreamH2PingInterval: number
 

@@ -178,25 +178,6 @@ timeouts:
   # 按模型覆盖 response_header（秒），键规则同 stream_idle_overrides。无内置值。
   response_header_overrides: {}
 
-  # Upstream TCP keepalive initial-probe delay in seconds (0 = use undici's 60s default).
-  # 上游 TCP keepalive 首探针延迟秒数（0 = 用 undici 内置默认 60s）。
-  # Keeps the GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it ("terminated (cause: other side closed)").
-  # 在 opus 长思考的静默期保持 GHC 连接存活，避免 NAT/防火墙的空闲回收把它砍断（"terminated (cause: other side closed)"）。
-  # Effective on BOTH Bun and Node — all upstream requests go through one undici dispatcher (Bun's global fetch ignores it, so we load real undici via a file subpath).
-  # Bun 与 Node 均生效——所有上游请求统一经一个 undici dispatcher（Bun 的全局 fetch 会忽略它，故经文件子路径加载真 undici）。
-  upstream_keepalive: 15
-
-  # Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled).
-  # 上游 HTTP/2 PING 保活间隔秒数（0 = 禁用）。
-  # Application-layer complement to upstream_keepalive: GHC's CAPI proxy does NOT forward Anthropic's SSE `event: ping` frames, so a long thinking silence is a truly idle stream.
-  # upstream_keepalive 的应用层补充：GHC 的 CAPI 代理不透传 Anthropic 的 SSE `event: ping` 帧，故长思考静默期是一条真正空闲的流。
-  # TCP keepalive keeps L4 alive through NAT but does not defeat a connection-idle reaper (middlebox/GHC edge) counting application-layer silence (a real cut fired at ~112s) — a PING puts a real frame on the wire.
-  # TCP keepalive 只维持 L4 不被 NAT 回收，挡不住按应用层静默计时的空闲回收方（中间设备/GHC 边缘，实测 ~112s 掐断）——PING 在 wire 上放一个真帧。
-  # With a network proxy this is the ONLY keepalive covering the full path to the real upstream: https stays h2 end-to-end through the CONNECT/SOCKS tunnel, so TCP keepalive only protects the local↔proxy leg (loopback if the proxy is local) while these PING frames traverse the tunnel to GHC.
-  # 经网络 proxy 时这是唯一覆盖到真上游全程的保活：https 经 CONNECT/SOCKS 隧道仍是 h2 端到端，TCP keepalive 只护「我方↔proxy」腿（本地 proxy 则为 loopback），而这些 PING 帧穿隧道直达 GHC。
-  # Node-only (the node:http2 transport). / 仅 Node（node:http2 传输）。
-  upstream_h2_ping: 15
-
   # Max seconds an active request can live before the stale reaper forces it to fail (0 = disabled).
   # 活跃请求被 stale reaper 强制失败前的最大存活秒数（0 = 禁用）。
   # Safety net for requests that never complete/fail normally. / 兜底永不正常完成/失败的请求。
@@ -221,6 +202,43 @@ timeouts:
 # 让长时间运行的实例无需重启即可保持 /models 缓存新鲜。
 # (Stays top-level — a refresh interval, not a timeout.) / （保留顶层——这是刷新周期，不是超时。）
 model_refresh_interval: 3600
+
+# ============================================================================
+# Upstream transport / 上游传输
+# ============================================================================
+# Outbound connection behavior toward the GHC upstream, organized by protocol.
+# Distinct from `timeouts.*` (protocol-agnostic request-lifecycle watchdogs).
+# 面向 GHC 上游的出站连接行为，按协议组织；区别于 timeouts.*（协议无关的请求生命周期看门狗）。
+
+# upstream_transport:
+#   # Upstream TCP keepalive initial-probe delay in seconds (0 = use undici/Node default).
+#   # 上游 TCP keepalive 首探针延迟秒数（0 = 用 undici/Node 内置默认）。
+#   # Keeps the GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it ("terminated (cause: other side closed)").
+#   # 在 opus 长思考的静默期保持 GHC 连接存活，避免 NAT/防火墙的空闲回收把它砍断（"terminated (cause: other side closed)"）。
+#   # Effective on BOTH Bun and Node — the h2 socket path (node:tls) is runtime-neutral.
+#   # Bun 与 Node 均生效——h2 socket 路径（node:tls）与运行时无关。
+#   tcp_keepalive_probe_delay: 15
+#   http2:
+#     # Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled).
+#     # 上游 HTTP/2 PING 保活间隔秒数（0 = 禁用）。
+#     # Application-layer complement to tcp_keepalive_probe_delay: GHC's CAPI proxy does NOT forward Anthropic's SSE `event: ping` frames, so a long thinking silence is a truly idle stream.
+#     # tcp_keepalive_probe_delay 的应用层补充：GHC 的 CAPI 代理不透传 Anthropic 的 SSE `event: ping` 帧，故长思考静默期是一条真正空闲的流。
+#     # Works on both Bun and Node (node:http2 transport is runtime-neutral).
+#     # Bun 与 Node 均生效（node:http2 传输与运行时无关）。
+#     ping_interval: 15
+#     # TCP connect + TLS handshake deadline (seconds) for a single h2 session establishment attempt (0 = no timeout).
+#     # 单次 h2 会话建立尝试的 TCP 连接 + TLS 握手期限（秒，0 = 无超时）。
+#     # Per-attempt connect ceiling, NOT a total request deadline — see docs/decisions/2026-07-14-transport-config-three-axis-organization.md D3.
+#     # 单次尝试的连接上限，非总请求期限——见上述 ADR D3。
+#     session_connect_timeout: 10
+#   websocket:
+#     # Idle timeout in seconds for a pooled (not-in-use) upstream Responses WS connection before it is proactively closed (0 = never idle-close).
+#     # 池中空闲（未使用）上游 Responses WS 连接的空闲超时秒数（0 = 永不空闲关闭）。
+#     pooled_connection_idle_timeout: 300
+#     # Soft cap on upstream WS pool size (0 = unlimited).
+#     # 上游 WS 池大小软上限（0 = 无限）。
+#     soft_max_connections: 32
+
 
 # ============================================================================
 # Shutdown / 关闭
@@ -819,10 +837,18 @@ openai_responses:
   # 修复 Copilot 上游流在 `output_item.added` / `output_item.done` 间不一致的 item ID。`@ai-sdk/openai` 校验 ID 连续性需要。默认 true。
   fix_stream_ids: true
 
-  # Keep the client-side WebSocket open after `response.completed` so the client can issue follow-up `response.create` frames on the same socket. When false (default), the socket closes with code 1000 after each request (HTTP-like one-shot semantics).
-  # 在 `response.completed` 后保持客户端侧 WebSocket 打开，让客户端在同一 socket 上发后续 `response.create`。false（默认）时每次请求后以 code 1000 关闭（HTTP 式一次性语义）。
-  # Concurrent `response.create` on the same socket is rejected with an error frame. / 同 socket 上并发 `response.create` 会被 error 帧拒绝。
-  client_ws_keep_open: false
+# ============================================================================
+# Server / inbound ingress / 服务端·入站
+# ============================================================================
+# Client-facing inbound limits — distinct from upstream_transport.* (outbound to GHC).
+# 面向客户端的入站限制——区别于 upstream_transport.*（出站到 GHC）。
+
+server:
+  responses_ws:
+    # Keep the client-side WebSocket open after `response.completed` so the client can issue follow-up `response.create` frames on the same socket. When false (default), the socket closes with code 1000 after each request (HTTP-like one-shot semantics).
+    # 在 `response.completed` 后保持客户端侧 WebSocket 打开，让客户端在同一 socket 上发后续 `response.create`。false（默认）时每次请求后以 code 1000 关闭（HTTP 式一次性语义）。
+    # Concurrent `response.create` on the same socket is rejected with an error frame. / 同 socket 上并发 `response.create` 会被 error 帧拒绝。
+    keep_open: false
 
 # ============================================================================
 # Buffered-retry caps (vendor-neutral SHARED) + per-vendor overrides
