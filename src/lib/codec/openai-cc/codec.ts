@@ -48,6 +48,7 @@ import type {
 } from "~/lib/context/types"
 import type { EndpointType } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
+import type { AnthropicToCcStreamMeta } from "~/lib/openai/translate"
 import type {
   //
   ClientFormat,
@@ -59,6 +60,7 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { RequestState } from "~/lib/pipeline/request-state"
 import type {
   //
   ClassifiedStreamError,
@@ -71,7 +73,6 @@ import type {
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
-import type { AnthropicToCcStreamMeta } from "~/lib/openai/translate"
 import type {
   //
   ChatCompletionChunk,
@@ -80,12 +81,12 @@ import type {
 } from "~/types/api/openai-chat-completions"
 import type {
   //
-  ResponsesInputItem,
   ResponsesResponse,
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
-import type { MessagesPayload } from "~/types/api/anthropic"
 
+import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { prepareReverseAnthropicWire } from "~/lib/codec/anthropic/anthropic-leg"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -105,17 +106,6 @@ import {
   resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
-import {
-  //
-  fillMaxCompletionTokens,
-  prepareChatCompletionsRequest,
-  prepareResponsesRequest,
-} from "~/lib/openai/request-preparation"
-import {
-  //
-  extractInputItems,
-  normalizeCallIds,
-} from "~/lib/openai/responses-conversion"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import { streamErrorKindToOpenAIErrorType } from "~/lib/openai/stream-error"
@@ -127,12 +117,8 @@ import {
 import {
   //
   createStreamTranslator,
-  translateChatCompletionsToResponses,
   translateResponsesResponseToCC,
 } from "~/lib/openai/translate"
-import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
-import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
-import { sanitizeHeadersForHistory } from "~/lib/fetch-utils"
 import {
   //
   createReverseStreamTranslator,
@@ -142,13 +128,24 @@ import {
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
+import type { ReverseAnthropicMapperHolder } from "./reverse-anthropic-rewrite"
+
+import {
+  //
+  prepareChatCompletionsWire,
+  sampleChatCompletionsWireTrack,
+} from "./openai-cc-leg"
+
+import {
+  //
+  prepareViaResponsesWire,
+  sampleViaResponsesWireTrack,
+} from "~/lib/codec/openai-responses/openai-responses-leg"
+
 const CLIENT_FORMAT: ClientFormat = "openai-cc"
 const ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
-/** History `format` label for the via-responses wire (the actual upstream endpoint). */
-const RESPONSES_ENDPOINT_TYPE: EndpointType = "openai-responses"
 /** History `format` label for the REVERSE `@messages`-leg wire (the actual upstream endpoint). */
 const ANTHROPIC_MESSAGES_ENDPOINT_TYPE: EndpointType = "anthropic-messages"
-const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 
 /** A per-request Responses→CC stream translator (created lazily on first via-responses frame). */
 type StreamTranslator = ReturnType<typeof createStreamTranslator>
@@ -196,6 +193,12 @@ export interface CreateOpenAiCcCodecArgs {
    * unsupported-beta strategy can probe them. Absent for the forward/direct CC legs.
    */
   reverseBetaProbe?: BetaProbe
+  /**
+   * REVERSE `@messages` leg only: the shared per-request mapper holder. `parse` threads it onto
+   * `env.requestState` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance
+   * for both its sanitize rewrite and its resanitize (auto-truncate). Absent for the forward/direct CC legs.
+   */
+  reverseMapperHolder?: ReverseAnthropicMapperHolder
 }
 
 /**
@@ -226,7 +229,19 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
       const { env, baseline } = parseOpenAiCc(raw)
       truncateBaseline = baseline
       requestContext = env.ctx
-      return env
+      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
+      // it from `env.requestState` instead of this codec closure. The `truncateBaseline` (the auto-truncate
+      // baseline) is populated for EVERY CC request (C3 — the direct/forward `/chat/completions` cells read
+      // it via `OUTBOUND_LEGS[CHAT_COMPLETIONS]`). The REVERSE `@messages` leg supply (C2b — the shared beta
+      // probe + mapper holder) is added when the handler injects them; both coexist on requestState. Populating
+      // requestState is also the driver's cell-keyed fork discriminator (an env without it stays legacy).
+      return env.with({
+        requestState: {
+          truncateBaseline: baseline,
+          ...(args?.reverseBetaProbe && { betaProbe: args.reverseBetaProbe }),
+          ...(args?.reverseMapperHolder && { reverseMapperHolder: args.reverseMapperHolder }),
+        },
+      })
     },
 
     getTruncateBaseline() {
@@ -438,80 +453,23 @@ function parseContentLength(header: string | null): number | undefined {
  * rewrite + strategy holding CC-original) is registered in 05-progress.md.
  */
 function prepareOpenAiCcWire(env: RequestEnvelope): PreparedRequest {
-  const model = env.model as Model | undefined
-  const ccPayload = fillMaxCompletionTokens(env.body as ChatCompletionsPayload, model)
-
-  if (env.targetEndpoint === ENDPOINT.RESPONSES) {
-    const { payload: responsesPayload, droppedParams } = translateChatCompletionsToResponses(ccPayload)
-    if (droppedParams.length > 0) recordDroppedCcParamsWarning(env.ctx, ccPayload.model, droppedParams)
-    const finalResponses = state.normalizeResponsesCallIds ? normalizeCallIds(responsesPayload) : responsesPayload
-    const prepared = prepareResponsesRequest(finalResponses, { resolvedModel: model })
-    return {
-      url: ENDPOINT.RESPONSES,
-      headers: new Headers(prepared.headers),
-      body: prepared.wire,
-      stream: prepared.wire.stream ?? false,
-    }
-  }
+  // via-responses (/responses): the shared RESPONSES-leg core (C4) — CC→Responses translation + dropped-
+  // params warning + normalizeCallIds + prepareResponsesRequest. Same bytes the CellAssembly's
+  // OUTBOUND_LEGS[RESPONSES] builds for the via-responses/forward cells.
+  if (env.targetEndpoint === ENDPOINT.RESPONSES) return prepareViaResponsesWire(env)
 
   if (env.targetEndpoint !== ENDPOINT.CHAT_COMPLETIONS) {
     // A `translate` decision to any leg this codec cannot yet serve (e.g. the reverse
     // `@messages` leg, wired in Phase 5) must fail LOUDLY, symmetric with the anthropic
     // side's registry-throw 500 — never silently downgrade to /chat/completions and lie
     // in observability (`setRouteInfo` already recorded outboundEndpoint/translated).
-    throw new Error(`openai-cc codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`)
+    throw new Error(
+      `openai-cc codec cannot prepare wire for targetEndpoint=${env.targetEndpoint} — translation to this leg is not wired in this codec (reverse legs land in Phase 5)`,
+    )
   }
-  const prepared = prepareChatCompletionsRequest(ccPayload, { resolvedModel: model })
-  return {
-    url: ENDPOINT.CHAT_COMPLETIONS,
-    headers: new Headers(prepared.headers),
-    body: prepared.wire,
-    stream: prepared.wire.stream ?? false,
-  }
-}
-
-/**
- * S4 last-mile for the REVERSE `@messages` leg (Phase 5): the body is Anthropic-shaped (translateOut
- * delegated to the hub), so build the Anthropic `/v1/messages` wire via `prepareAnthropicRequest` (B1-B12).
- * A CC client sends no `anthropic-beta`, so `clientAnthropicBeta` is undefined; the handler's shared beta
- * probe records the outbound betas (so the reverse unsupported-beta strategy can probe them). Idempotent
- * (deep-clones, no write-back to env.body — same env → same wire), so re-running per retry is safe.
- */
-function prepareReverseAnthropicWire(env: RequestEnvelope, betaProbe: BetaProbe | undefined): PreparedRequest {
-  const model = env.model as Model | undefined
-  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
-    ...(model && { resolvedModel: model }),
-    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
-    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
-    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
-    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
-    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
-    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
-  })
-  // Record the outbound betas so the reverse unsupported-beta strategy can probe them (mirrors the
-  // anthropic codec's prepareWire recordOutbound — the SAME probe instance the handler injects here).
-  betaProbe?.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
-  return {
-    url: ENDPOINT.MESSAGES,
-    headers: new Headers(prepared.headers),
-    body: prepared.wire,
-    stream: (prepared.wire.stream as boolean | undefined) ?? false,
-  }
-}
-
-/**
- * Record the "CC→Responses dropped unsupported params" warning on the context,
- * deduped by code+message (prepareWire runs per-attempt; without the dedup each
- * retry would re-warn). Mirrors the legacy handler's `warningMessages.some(...)`.
- */
-function recordDroppedCcParamsWarning(ctx: RequestContext, model: string, droppedParams: Array<string>): void {
-  const message = `Chat Completions -> Responses translation dropped unsupported params: ${droppedParams.join(", ")}`
-  const alreadyRecorded = ctx.warningMessages.some((w) => w.code === DROPPED_CC_PARAMS_WARNING_CODE && w.message === message)
-  if (alreadyRecorded) return
-
-  consola.warn(`[CC→Responses] model=${model} ${message}`)
-  ctx.addWarningMessage({ code: DROPPED_CC_PARAMS_WARNING_CODE, message })
-  ctx.recordFeature("dropped-params")
+  // The `/chat/completions` wire prep is the shared leg core (C3) — same bytes the CellAssembly's
+  // OUTBOUND_LEGS[CHAT_COMPLETIONS] builds. `fillMaxCompletionTokens` is repeated inside it (idempotent).
+  return prepareChatCompletionsWire(env)
 }
 
 /**
@@ -555,29 +513,10 @@ function sampleOpenAiCcRequest(wire: PreparedRequest, env: RequestEnvelope): Req
     return { effective, wire: wireRequest }
   }
 
-  const effBody = env.body as { model?: unknown; messages?: unknown }
-  const effective: EffectiveRequest = {
-    model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
-    messages: Array.isArray(effBody.messages) ? effBody.messages : [],
-    payload: env.body,
-    format: ENDPOINT_TYPE,
-  }
-
-  const wireBody = wire.body as { model?: unknown; messages?: unknown; input?: string | Array<ResponsesInputItem> }
-  const isResponses = env.targetEndpoint === ENDPOINT.RESPONSES
-  let wireMessages: Array<unknown>
-  if (isResponses) wireMessages = extractInputItems(wireBody.input ?? [])
-  else wireMessages = Array.isArray(wireBody.messages) ? wireBody.messages : []
-  const wireRequest: WireRequest = {
-    model: typeof wireBody.model === "string" ? wireBody.model : "",
-    messages: wireMessages,
-    payload: wire.body,
-    headers: Object.fromEntries(wire.headers.entries()),
-    format: isResponses ? RESPONSES_ENDPOINT_TYPE : ENDPOINT_TYPE,
-  }
-
-  return { effective, wire: wireRequest }
+  // `/chat/completions` (direct + forward @cc): the shared leg sampler (C3) — same tracks the CellAssembly
+  // produces. via-responses (/responses): the shared RESPONSES-leg sampler (C4) — CC effective + Responses wire.
+  if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return sampleChatCompletionsWireTrack(wire, env)
+  return sampleViaResponsesWireTrack(wire, env)
 }
 
 // ============================================================================
@@ -657,6 +596,7 @@ interface EnvelopeInit {
   body: unknown
   ctx: RequestContext
   prepareHints?: PrepareHints
+  requestState?: RequestState
 }
 
 /**
@@ -674,6 +614,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     stream: init.stream,
     body: init.body,
     prepareHints: init.prepareHints ?? {},
+    ...(init.requestState !== undefined && { requestState: init.requestState }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createCcLazyView(env.body)
@@ -687,6 +628,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         body: env.body,
         ctx: env.ctx,
         prepareHints: env.prepareHints,
+        requestState: env.requestState,
         ...patch,
       })
     },

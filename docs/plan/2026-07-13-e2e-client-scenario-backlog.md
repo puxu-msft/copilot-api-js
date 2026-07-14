@@ -1,7 +1,7 @@
 # client↔proxy e2e 场景 backlog 实现指南（交接）
 
 > **交接目的**：把 spec `2026-07-13-client-proxy-sdk-e2e-harness.md`「e2e 场景覆盖 roadmap」的未覆盖 backlog，变成新会话可**逐条直接执行**的配方。每条给：层 / config / 上游帧 pattern / 客户端可观测 oracle / harness 需求（现有 or 新扩展）/ gotcha / 建议变异。**先读 skill `client-proxy-e2e-testing`**（承重机制 + oracle 纪律），再挑一条实现。
-> **现状**：18 场景已覆盖（Tier1 SDK 16 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
+> **现状**：29 场景已覆盖（Tier1 SDK 27 + Tier2 CLI 2），全变异验证有牙。骨架 `tests/e2e-client/`。
 
 ## Kick-off prompt（复制给新会话）
 
@@ -32,7 +32,7 @@ Tier2 spawn 真 proxy 需 claude+github_token（gated），改 config 用不同 
 ## 一梯队（生产 incident 催生、`[DOC-REAL]`、优先）
 
 ### B9 其余 reactive retry 腿（server-tool / cache-control / unsupported-beta）— Tier1 SDK
-已做 tool-field；其余三腿同构，只换首腿 400 body 的 pattern（正则在各 strategy 文件，务必精确命中）：
+✅ **全覆盖（2026-07-13）**：tool-field + cache_control-subfield + server-tool + unsupported-beta 四腿全落地。unsupported-beta 用 explicit-list 路径 `unsupported beta header(s): <flag>` 干净单重试（laconic `invalid beta flag` 探测路径需 outbound 真带 beta + `getProbeCandidates` 才 retry，故用 explicit 更确定）。四腿同构，只换首腿 400 body 的 pattern（正则在各 strategy 文件，务必精确命中）：
 | 腿 | 首腿 400 message pattern（造能被 `.test()` 命中的串） | strategy 文件 |
 |---|---|---|
 | cache-control-subfield | `...cache_control.ephemeral.<field>: Extra inputs are not permitted`（正则 `/\.cache_control\.\w+\.([a-z_]\w*): Extra inputs are not permitted/`） | `cache-control-subfield-rejection-retry.ts:40` |
@@ -43,12 +43,14 @@ Tier2 spawn 真 proxy 需 claude+github_token（gated），改 config 用不同 
 - **变异**：把该 strategy 从 driver 注册表摘掉（或 `canHandle` 返 false）→ 不重试 → `callCount===1` + 客户端拿 400 throw → 测试红。
 
 ### B8 thinking 双相邻块毒化 → reactive 恢复 — Tier1 SDK
+✅ **已覆盖（2026-07-13）**。实测坐实：首腿 400 `messages.N.content.M.thinking: cannot be modified` → L2 `poisoned-thinking-retry`（gated `state.stripThinkingOnReject`，默认 true）strip-all thinking + 单重试 → 二腿正常 → SDK 拿成功 turn、callCount=2。**CODE-INFER 关键坐实**：请求须带**含 thinking 块的前序 assistant 轮**（否则 `strippedCount===0 → abort` 不重试），且 outbound payload 确实保留了该 thinking 块（proxy sanitize 未提前剥掉）。变异摘 `canHandle` → 仅此测试红。原配方（供参考）：
 - **上游**：首腿返 HTTP-400 `messages.N.content.M.thinking: cannot be modified`（`ghc-anthropic-upstream` skill 症状表 / `thinking-quarantine/`），二腿返正常流。config 开 `strip_thinking_on_reject` 或默认 L1 de-stack。
 - **oracle**：客户端最终拿到成功 turn（而非每轮 400 硬失败），`callCount()>=2`。
 - **`[CODE-INFER]` 风险**：确切 400 body 串 + 哪条腿触发需实测坐实（先造 400 看 proxy 是否重试成功）。
 - **变异**：关 thinking reactive 恢复 → 客户端拿 400 throw。
 
 ### B1 CC 300s no-real-content keepalive 墙 — Tier2 计时（Tier1 只验空 delta 无害）
+✅ **Tier1 半已覆盖（2026-07-13）**：上游发一串空 `text_delta{text:""}` 交错真实内容 delta → SDK finalMessage 把空 delta 折叠成 no-op（唯一 text 块 = 真实内容、无幻块、无 throw）。实测坐实（CODE-INFER）；牙口用 fixture 变异证（把某个空 delta 翻成非空 → 断言红）。**真 300s 墙仍留 Tier2 计时**（下方保留原配方）。
 - **Tier1 可做的**：上游发一串**空 content_block_delta**（`thinking_delta{thinking:""}`/`text_delta{text:""}`）后正常收尾 → SDK finalMessage 拼出正常内容、**不把空 delta 当可见文本**（`docs/refusal-recovery.md:37`、`debugging-claude-client-connection` skill「空 delta 算 chunk」）。这是 B15 的一半，Tier1 确定性可测。
 - **Tier2 真墙**：spawn proxy + config `stream_keepalive_mode: ping`（撞 300s 墙）vs `empty_text`（保活到 340s），hook 上游长静默 → 真 claude 是否报 `Stream idle timeout - no chunks received`。**需真计时（数百秒）**，重、gated；参考 `exp/cc-idle-280s/REPORT.md` 四臂对照。**建议先只做 Tier1 空-delta-无害那半**，真墙留 Tier2 后续。
 
@@ -60,14 +62,17 @@ Tier2 spawn 真 proxy 需 claude+github_token（gated），改 config 用不同 
 - 上游非流式 200 JSON **无 `stop_reason`** → proxy 记 fail 但**仍转发 partial body 200**（richest-data-flow）→ 客户端拿到残缺投影**非 500**。oracle 弱（有趣的 fail 在 history 侧、非客户端可观测）；若要测客户端侧，断言 `msg.stop_reason` 为 undefined + content 是 partial。**优先级低**（客户端行为不突出）。
 
 ### B13 HTTP-429 vs 200-error-429 CC 重试发散 — Tier1（SDK 类型）+ Tier2（CC 包装层）
+✅ **Tier1 半已覆盖（2026-07-13）**：HTTP-429 → SDK `RateLimitError`（`.status===429`，独立类，非裸 APIError）；对照已有 HTTP-400→BadRequestError 与 200+SSE-error 无类型（`.status===undefined`）。变异 429→400 → RateLimitError 断言精准红。**Tier2 CC 重试次数发散（HTTP-429 持续重试 ≥7× vs 200-error-429 一次即弃）仍待真 CC。**
 - **Tier1**：HTTP-429 → SDK 得 `RateLimitError`（`.status===429`）；200+流内 error-429 → 无类型 `APIError`（`.status===undefined`）。已做 HTTP-400 类型化那条，此为 429 变体 + 对照。
 - **Tier2**：HTTP-429 → CC 持续重试 ≥7×（`callCount` 大）；200-error-429 → 一次即弃（`callCount===1`）。需 Tier2 真 CC。来源 `debugging-claude-client-connection` skill「零重试」节。
 
 ### B17 三类中止（client-abort/reaper/header-timeout）区分 — Tier1（client-abort）+ history
+✅ **client-abort 半已覆盖（2026-07-13）**：Tier1 pre-aborted `AbortController.signal` 经 `stream(body, { signal })` → SDK 抛 `APIUserAbortError`（客户端侧 cancel，独立于任何 server APIError）；带正样本对照（无 abort 同上游正常拼装）。变异中和 `.abort()` → reject 断言精准红。**reaper/header-timeout 需真计时 + 查 history state（600 vs 300s）仍待 Tier2。**
 - **client-abort（Tier1 可做）**：`stream(..., {signal})` 中途 `controller.abort()` → SDK 抛 `APIUserAbortError`（`@anthropic-ai/sdk` 导出）。
 - reaper/header-timeout 需真计时 + 查 history state（600 vs 300s），heavy；来源 `debugging-claude-client-connection` skill「事后判别」表。
 
 ### B16 buffered-retry 上游 RST 透明 — Tier1（最终完整）+ Tier2（保活）
+✅ **Tier1 已覆盖（2026-07-13）**：`protectStreamingGeneration: "on"`（默认 caps `maxRetries:3`），首腿活跃流中途 `createSseResponseThenError(partial, new Error("RST"))` 断流 → 二腿正常 → SDK 拿完整 turn、首腿半截 `HALF-LEAK` 不泄漏、callCount=2。**实测坐实无真 backoff sleep**（全测 0.7s、确定性 body-error 非 timer）。变异关 gate（`protectStreamingGeneration: false`）→ 走真 off-path、客户端拿半截/无重试、精准红。
 - config `protect_streaming_generation: true`，上游首腿活跃流中途 **body error/RST**（`createSseResponseThenError(frames, new Error("RST"))`）→ 二腿正常 → 客户端拿完整 turn（半截不泄漏）、`callCount===2`。
 - **变异**：关 buffered-retry → 客户端拿半截 + throw。
 

@@ -69,6 +69,12 @@ function makeCtx(): { ctx: RequestContext; calls: CtxCalls } {
     // failure). The mock just no-ops; the header capture itself is covered by the
     // http-headers-capture golden + history integration tests.
     setHttpHeaders: () => {},
+    // Per-attempt sampling sinks the driver calls after a cell's sampleWireTrack (write-only no-ops here;
+    // the two-track history sampling is covered by the codec/http integration tests).
+    setAttemptEffectiveRequest: () => {},
+    setAttemptWireRequest: () => {},
+    setAttemptCacheControlStripped: () => {},
+    recordFeature: () => {},
   } as unknown as RequestContext
   return { ctx, calls }
 }
@@ -252,6 +258,49 @@ describe("driver.runExchange — error-driven retry", () => {
     expect(calls.setAttemptError).toHaveLength(1)
     expect(calls.recordAttemptFailure).toHaveLength(1)
     expect(onResolved).toBe(1)
+  })
+
+  test("migrated cell resolves its stack via CellAssembly, NEVER the legacy deps.strategies factory (no double recordFeature)", async () => {
+    // Regression for the C4 review HIGH: the S4 exchange (and the buffered re-exchange) must NOT eager-eval
+    // deps.strategies for a MIGRATED cell — the legacy per-route factory carries recordFeature side effects
+    // (via-responses / via-chat-completions-fallback) that the leg's translateOut now owns, so an eager call
+    // would double-fire them on the live observability bus. A migrated env (openai-cc|/chat/completions, a
+    // real MIGRATED_CELLS entry, with the leg supply on requestState) drives the REAL chatCompletionsLeg.
+    const { ctx } = makeCtx()
+    const ccBody = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }
+    const migratedEnv = {
+      clientFormat: "openai-cc",
+      targetEndpoint: "/chat/completions",
+      model: undefined,
+      stream: true,
+      body: ccBody,
+      view: {},
+      prepareHints: {},
+      requestState: { truncateBaseline: ccBody },
+      ctx,
+      with(patch: Partial<RequestEnvelope>): RequestEnvelope {
+        return { ...this, ...patch } as unknown as RequestEnvelope
+      },
+    } as unknown as RequestEnvelope
+    const { codec } = makeCodec({ env: migratedEnv })
+    let strategyFactoryCalls = 0
+    const strategiesFactory = (_e: RequestEnvelope): ReadonlyArray<RetryStrategy> => {
+      strategyFactoryCalls++
+      return []
+    }
+    const transport = makeTransport(async () => okStream())
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: () => ({ kind: "passthrough", endpoint: "/chat/completions" }) as RouteDecision,
+      transport,
+      strategies: strategiesFactory,
+    })
+
+    const result = await driver.runRequest({ body: {}, headers: new Headers() })
+    expect(result.ok).toBe(true)
+    // The migrated cell composed its stack via the CellAssembly → the legacy factory was NEVER evaluated.
+    expect(strategyFactoryCalls).toBe(0)
   })
 
   test("no matching strategy → throws", async () => {

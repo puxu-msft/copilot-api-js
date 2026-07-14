@@ -15,6 +15,8 @@ import type { Model } from "~/lib/models/client"
 import type { RouteOverride } from "~/lib/models/normalize-id"
 import type { PrepareHints } from "~/lib/request/pipeline"
 
+import type { RequestState } from "./request-state"
+
 /** Client-facing inbound format (route prefix determines it). */
 export type ClientFormat = "anthropic" | "openai-cc" | "openai-responses" | "gemini"
 
@@ -108,10 +110,22 @@ export interface RequestEnvelope {
   // ── Retry intent (accumulated inside S4, replace semantics) ──
   prepareHints: PrepareHints
 
+  /**
+   * Request-lifecycle-STABLE outbound-leg supply (RFC 2026-07-13 §11.9 HIGH-B / R2): the truncation
+   * baseline / reverse-resanitize / shared mutable betaProbe / anthropic-beta seed the CellAssembly's
+   * `buildStrategies` + `prepareWire` read. Captured ONCE by the InboundCodec's `parse` and preserved by
+   * reference through `with()` — deliberately SEPARATE from the replace-semantics per-attempt
+   * {@link prepareHints} (a hint-bearing retry must not wipe the stable baseline). `undefined` for a leg
+   * that carries none (and until its cell migrates in C2+).
+   */
+  readonly requestState?: RequestState
+
   // ── Cross-cutting handle (lifecycle + recording) ──
   /** Already exists; the driver publishes events through it. */
   readonly ctx: RequestContext
 
   // ── Immutable update ──
-  with(patch: Partial<Pick<RequestEnvelope, "body" | "targetEndpoint" | "prepareHints">>): RequestEnvelope
+  // `requestState` is request-lifecycle-STABLE, so a retry never patches it — but `parse` sets it via
+  // `with()` after building the base env (the codec assembles the leg supply after parseAnthropic runs).
+  with(patch: Partial<Pick<RequestEnvelope, "body" | "targetEndpoint" | "prepareHints" | "requestState">>): RequestEnvelope
 }

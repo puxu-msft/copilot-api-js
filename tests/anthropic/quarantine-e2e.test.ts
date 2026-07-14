@@ -123,6 +123,7 @@ function makeEnv(opts: { sessionId?: string; agentId?: string; messages: Array<u
       agentId: opts.agentId,
       toolNameMapper: null,
       setPipelineInfo: () => {},
+      setInitialSanitizationInfo: () => {},
     },
     body,
     with(this: RequestEnvelope, patch: { body?: unknown }) {

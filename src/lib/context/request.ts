@@ -250,6 +250,12 @@ export function createRequestContext(opts: {
   // The failureReason projection reads this first, then falls back to `_response.error`.
   let _failureReason: string | null = null
   let _pipelineInfo: PipelineInfo | null = null
+  // The initial (attempt-0) Anthropic sanitization-info envelope — the first element of the retry
+  // `sanitization` list. Request-lifecycle-STABLE (written once by the sanitize rewrite's
+  // onInitialSanitizationInfo), read by the retry pipeline-info rebuild. Re-homed here from the
+  // anthropic codec closure (RFC 2026-07-13 §11.2 / §11.9 MEDIUM) so the CellAssembly-routed direct
+  // leg's rebuild reads it from ctx instead of a codec accessor.
+  let _initialSanitizationInfo: SanitizationInfo | undefined
   // Cross-request-lifecycle scalar diagnostics (per-model effective timeouts),
   // kept PARALLEL to `_pipelineInfo` because the 4 existing `setPipelineInfo`
   // call sites do a full-replace and are gated on sanitization/truncation changes
@@ -391,6 +397,9 @@ export function createRequestContext(opts: {
     get currentAttempt() {
       return _attempts.at(-1) ?? null
     },
+    get initialSanitizationInfo() {
+      return _initialSanitizationInfo
+    },
     get queueWaitMs() {
       return _queueWaitMs
     },
@@ -518,6 +527,10 @@ export function createRequestContext(opts: {
       if (attempt) {
         attempt.sanitization = info
       }
+    },
+
+    setInitialSanitizationInfo(info: SanitizationInfo) {
+      _initialSanitizationInfo = info
     },
 
     setAttemptCacheControlStripped(fields: ReadonlyArray<string>) {

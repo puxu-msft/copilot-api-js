@@ -11,7 +11,12 @@
  * no-retry oracle.
  */
 
-import Anthropic, { APIError } from "@anthropic-ai/sdk"
+import Anthropic, {
+  //
+  APIError,
+  APIUserAbortError,
+  RateLimitError,
+} from "@anthropic-ai/sdk"
 import {
   //
   afterAll,
@@ -47,6 +52,7 @@ import {
 import {
   //
   createSseResponse,
+  createSseResponseThenError,
   httpErrorResponse,
   jsonResponse,
   scriptedUpstream,
@@ -247,6 +253,25 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     await expect(run).rejects.toBeInstanceOf(APIError)
   })
 
+  test("client abort: aborting the request signal → SDK throws APIUserAbortError (distinct from a server error)", async () => {
+    const up = scriptedUpstream(() => createSseResponse(happyTurn("would-be answer")))
+    setUpstreamFetchForTests(up.handler)
+
+    // Positive control: WITHOUT abort, the same upstream assembles a coherent turn (proves the harness
+    // drives the SDK + the abort — not a broken fixture — is what causes the throw below).
+    const ok = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    expect((ok.content[0] as { text?: string })?.text).toBe("would-be answer")
+
+    // Now: a pre-aborted signal makes the SDK reject with APIUserAbortError — a CLIENT-side cancel,
+    // a distinct class from any server APIError (the SDK never surfaces a server response at all).
+    const controller = new AbortController()
+    controller.abort()
+    const run = client.messages
+      .stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }, { signal: controller.signal })
+      .finalMessage()
+    await expect(run).rejects.toBeInstanceOf(APIUserAbortError)
+  })
+
   // ── eventless frame dropped by the SDK SSEDecoder ─────────────────────────
 
   test("eventless frame: SDK drops a data-only (no `event:` line) content_block_start → block missing", async () => {
@@ -414,6 +439,21 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     expect((err as { status?: number }).status).toBe(400) // typed HTTP path sets .status (unlike in-stream error)
   })
 
+  test("HTTP-429 upstream → SDK throws a TYPED RateLimitError with .status===429 (contrast: 200+SSE-error is untyped)", async () => {
+    // The 429 variant of the typed-vs-untyped contrast. An HTTP-response 429 gives the SDK a TYPED
+    // subclass (RateLimitError, a distinct class from BadRequestError) with a real `.status===429` —
+    // whereas a 200 + in-stream `event: error` yields an untyped APIError with `.status===undefined`
+    // (asserted above). This is why CC's retry policy diverges on the two 429 forms (Tier2 territory):
+    // the typed HTTP-429 is a first-class rate-limit signal, the in-stream one isn't.
+    const up = scriptedUpstream(() => httpErrorResponse(429, { type: "rate_limit_error", message: "rate limited (e2e)" }))
+    setUpstreamFetchForTests(up.handler)
+
+    const run = client.messages.create({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] })
+    const err = await run.then(() => undefined).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RateLimitError) // typed subclass, NOT a bare APIError
+    expect((err as { status?: number }).status).toBe(429)
+  })
+
   // ── reactive retry leg: proxy retries internally, transparent to the client ──
 
   test("reactive retry (tool-field rejection): first leg 400 → proxy strips field + retries → client sees ONE clean turn, upstream hit twice", async () => {
@@ -430,6 +470,229 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
     expect((final.content[0] as { text?: string })?.text).toBe("recovered after retry")
     expect(up.callCount()).toBe(2) // proxy retried internally; the client never saw the 400
+  })
+
+  test("reactive retry (cache_control subfield rejection): first leg 400 → proxy strips subfield + retries → client sees ONE clean turn, upstream hit twice", async () => {
+    // The cache-control-subfield-rejection-retry strategy fires on a 400 whose body matches the
+    // four-segment `<section>.N.cache_control.<variant>.<field>: Extra inputs are not permitted` shape
+    // (disjoint from tool-field's three-segment `tools.N.<field>:` — see strategies.ts ordering). It
+    // marks the subfield endpoint-wide, strips it, and retries — invisibly to the client. Oracle: the
+    // SDK assembles a normal turn AND upstream was hit twice.
+    const up = sequencedUpstream([
+      () => httpErrorResponse(400, { type: "invalid_request_error", message: "system.1.cache_control.ephemeral.scope: Extra inputs are not permitted" }),
+      () => createSseResponse(happyTurn("recovered after cc-subfield strip")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    expect((final.content[0] as { text?: string })?.text).toBe("recovered after cc-subfield strip")
+    expect(up.callCount()).toBe(2) // proxy retried internally after stripping the rejected subfield
+  })
+
+  test("reactive retry (server-tool rejection): first leg 400 'web search not supported' → proxy strips server tool + retries → client sees ONE clean turn, upstream hit twice", async () => {
+    // The server-tool-rejection-retry strategy fires on the upstream's OBSERVED web_search rejection
+    // message (SERVER_TOOL_REJECTION_TABLE), fixates the `web_search_` type prefix in the negotiation
+    // cache, strips it, and retries — invisibly to the client. Oracle: the SDK assembles a normal turn
+    // AND upstream was hit twice.
+    const up = sequencedUpstream([
+      () => httpErrorResponse(400, { type: "invalid_request_error", message: "The use of the web search tool is not supported." }),
+      () => createSseResponse(happyTurn("recovered after server-tool strip")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    expect((final.content[0] as { text?: string })?.text).toBe("recovered after server-tool strip")
+    expect(up.callCount()).toBe(2) // proxy retried internally after stripping the rejected server tool
+  })
+
+  test("reactive retry (unsupported-beta explicit list): first leg 400 names the beta → proxy fixates + strips it + retries → client sees ONE clean turn, upstream hit twice", async () => {
+    // The unsupported-beta-retry strategy's EXPLICIT-list path fires on `unsupported beta header(s): X`
+    // (the upstream names the offending token) → it fixates X in the negotiation cache and strips it
+    // on a single deterministic retry (unlike the laconic `invalid beta flag` probe path, which needs
+    // real outbound betas + getProbeCandidates to iterate). Oracle: the SDK assembles a normal turn
+    // AND upstream was hit twice.
+    const up = sequencedUpstream([
+      () => httpErrorResponse(400, { type: "invalid_request_error", message: "unsupported beta header(s): e2e-only-beta" }),
+      () => createSseResponse(happyTurn("recovered after beta strip")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    expect((final.content[0] as { text?: string })?.text).toBe("recovered after beta strip")
+    expect(up.callCount()).toBe(2) // proxy retried internally after fixating + stripping the named beta
+  })
+
+  test("reactive retry (poisoned thinking): first leg 400 'thinking cannot be modified' → proxy strips all thinking + retries → client sees ONE clean turn, upstream hit twice", async () => {
+    // GHC rejects an echoed thinking block with `messages.N.content.M.thinking: ... cannot be modified`.
+    // The L2 poisoned-thinking-retry strategy (gated on state.stripThinkingOnReject, default true) strips
+    // ALL thinking blocks from the outbound payload and retries once. It only fires if the payload has a
+    // thinking block to strip (strippedCount===0 → abort) — so the request must carry a prior assistant
+    // turn with a thinking block. Oracle: the SDK assembles a normal turn AND upstream was hit twice.
+    setStateForTests({ stripThinkingOnReject: true })
+    const up = sequencedUpstream([
+      () => httpErrorResponse(400, { type: "invalid_request_error", message: "messages.1.content.0.thinking: cannot be modified" }),
+      () => createSseResponse(happyTurn("recovered after thinking strip")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages
+      .stream({
+        model: MODEL,
+        max_tokens: 16,
+        thinking: { type: "enabled", budget_tokens: 1024 },
+        messages: [
+          { role: "user", content: "solve x" },
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "prior reasoning", signature: "SIG-ECHO" },
+              { type: "text", text: "prior answer" },
+            ],
+          },
+          { role: "user", content: "continue" },
+        ],
+      })
+      .finalMessage()
+    expect((final.content[0] as { text?: string })?.text).toBe("recovered after thinking strip")
+    expect(up.callCount()).toBe(2) // proxy stripped all thinking + retried internally; client never saw the 400
+  })
+
+  // ── buffered-retry: mid-stream upstream RST is retried transparently (no half-turn leak) ──
+
+  test("buffered-retry (upstream RST mid-stream): first leg streams a partial then errors → proxy retries → client sees ONE complete turn, the half NOT leaked", async () => {
+    // With protect_streaming_generation on, the proxy buffers the generation; if the upstream stream
+    // ERRORS mid-turn (a transport RST before message_stop), it retries upstream instead of forwarding
+    // the truncated half. Oracle: the SDK assembles the SECOND leg's complete turn, the first leg's
+    // partial text is NOT present, and upstream was hit twice. (Deterministic mid-stream error via
+    // createSseResponseThenError — no timers, no real backoff sleep.)
+    setStateForTests({ protectStreamingGeneration: "on" })
+    const partialThenRst = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_rst",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "HALF-LEAK" } }),
+      // ← no content_block_stop / message_stop: createSseResponseThenError errors the body here (RST)
+    ]
+    const up = sequencedUpstream([
+      () => createSseResponseThenError(partialThenRst, new Error("RST")),
+      () => createSseResponse(happyTurn("complete after RST retry")),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+
+    // client-observable: exactly the retried complete turn; the truncated first leg never surfaced.
+    expect((final.content[0] as { text?: string })?.text).toBe("complete after RST retry")
+    expect(final.stop_reason).toBe("end_turn")
+    expect(JSON.stringify(final.content)).not.toContain("HALF-LEAK") // the half was buffered away, not leaked
+    expect(up.callCount()).toBe(2) // proxy retried the RST internally; the client saw one clean turn
+  })
+
+  // ── keepalive/anchor empty deltas: SDK accumulates them harmlessly (B1 Tier1 half) ──
+
+  test("empty content deltas: SDK folds empty text/thinking deltas into the turn without phantom content or crash", async () => {
+    // The proxy's keepalive path emits empty content_block_deltas (`text_delta{text:""}` /
+    // `thinking_delta{thinking:""}`) to hold the CC 300s no-real-content wall open. This Tier1 half
+    // asserts the client-side invariant that makes that safe: a REAL SDK folds those empty deltas into
+    // the same block as no-ops — the assembled turn carries ONLY the real visible text, no phantom
+    // empty block, no throw. (The 300s wall itself is a Tier2 timing question — see B1 upper half.)
+    setStateForTests({ refusalSseRewrite: "refusal" }) // pure passthrough — no rewrite injects frames
+    const framesWithEmptyDeltas = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_ka",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "real " } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "answer" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(framesWithEmptyDeltas))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+
+    // client-observable: exactly one text block carrying only the REAL text; empty deltas contributed
+    // nothing visible and did not spawn a phantom block or throw.
+    expect(final.content.length).toBe(1)
+    expect((final.content[0] as { type?: string; text?: string })?.type).toBe("text")
+    expect((final.content[0] as { text?: string })?.text).toBe("real answer")
+    expect(final.stop_reason).toBe("end_turn")
+  })
+
+  test("anchor wire shape: SDK tolerates an empty-text anchor block@0 coexisting with the real block@1 (known-benign)", async () => {
+    // The keepalive anchor path (spec 2026-07-08-buffered-keepalive-empty-text-anchor) can inject a
+    // SEPARATE empty-text anchor block@0 to reset CC's 300s watchdog, with the real content remapped to
+    // block@1, then closes the anchor with content_block_stop@0. The proxy relies on "empty-text block →
+    // known-benign" (§3.6). The idle-heartbeat INJECTION itself is timing-driven (Tier2/fake-clock), but
+    // the SDK-safety of the WIRE it produces is a deterministic client-observable question: feed that
+    // exact shape and confirm a real SDK assembles the real text and does NOT choke on the extra
+    // empty anchor block. (Distinct from B1: that was empty deltas within ONE block; here it's a
+    // standalone empty anchor block beside the real one.)
+    setStateForTests({ refusalSseRewrite: "refusal" }) // pure passthrough — forward the anchor wire as-is
+    const anchorWire = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_a",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }), // anchor@0
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }), // real@1 (remapped +1)
+      ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "real answer" } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }), // anchor closed at commit
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(anchorWire))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    // client-observable, empirically confirmed: the SDK TOLERATES the anchor wire (no throw) and
+    // assembles the real text intact at block@1 — but it DOES surface the empty anchor block@0 as a
+    // visible (empty) text block. "known-benign" (§3.6) means protocol-safe, NOT invisible: the client
+    // receives an extra empty text block, an accepted tradeoff (empty text is harmless to render).
+    expect(final.content.length).toBe(2)
+    expect(final.content.every((b) => b.type === "text")).toBe(true)
+    expect((final.content[0] as { text?: string })?.text).toBe("") // the empty anchor block, surfaced not folded
+    expect((final.content[1] as { text?: string })?.text).toBe("real answer") // real content intact past the anchor
+    expect(final.stop_reason).toBe("end_turn")
   })
 
   // ── event-name tolerance: SDK dispatches on the event name ∈ accept-set, not name===data.type ──
@@ -560,6 +823,104 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
       .finalMessage()
     const tool = final.content.find((b) => b.type === "tool_use") as { input?: unknown } | undefined
     expect(tool?.input).toEqual({ query: "weather" }) // repaired to valid JSON the SDK could parse
+  })
+
+  test("tool-name restore: proxy sanitizes an illegal client tool name outbound → restores it inbound → SDK sees the ORIGINAL name", async () => {
+    // With sanitize_tool_names on, a client tool name that violates the target model's charset (the
+    // claude class forbids dots, cap 64) is rewritten to a wire-legal name outbound (`my.search.tool`
+    // → `my_search_tool`); the upstream echoes the SANITIZED name in its tool_use, and the proxy
+    // restores it to the client-ORIGINAL name before forwarding. Oracle: the SDK's finalMessage
+    // tool_use.name is the original `my.search.tool`, NOT the wire `my_search_tool` — a client-
+    // observable round-trip the byte layer alone can't confirm.
+    setStateForTests({ sanitizeToolNames: true })
+    const CLIENT_NAME = "my.search.tool" // dots → illegal for the claude class → sanitized
+    const WIRE_NAME = "my_search_tool" // deterministic makeValidToolName(CLIENT_NAME): dots → "_"
+    const frames = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_tn",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      // upstream echoes the SANITIZED wire name (what it received after outbound sanitization)
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_tn", name: WIRE_NAME, input: {} } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"q":"x"}' } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(frames))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages
+      .stream({
+        model: MODEL,
+        max_tokens: 16,
+        messages: [{ role: "user", content: "x" }],
+        tools: [{ name: CLIENT_NAME, description: "search", input_schema: { type: "object", properties: { q: { type: "string" } } } }],
+      })
+      .finalMessage()
+    const tool = final.content.find((b) => b.type === "tool_use") as { name?: string } | undefined
+    expect(tool?.name).toBe(CLIENT_NAME) // restored to the client-original name, not the wire name
+    expect(tool?.name).not.toBe(WIRE_NAME)
+  })
+
+  test("server-tool filter: upstream server_tool_use block is stripped + indices remapped → SDK sees only the real text block (no unvalidatable artifact)", async () => {
+    // The proxy unconditionally strips server-side artifacts (server_tool_use / *_tool_result) from the
+    // stream — clients don't expect them and most SDKs can't validate them — and REMAPS the surviving
+    // block indices so they stay dense (no gap the SDK's accumulator would choke on). Here the upstream
+    // emits a server_tool_use at index 0 then a real text block at index 1; the client must see exactly
+    // ONE text block (the server_tool_use gone, the text remapped 1→0). Positive control: the streaming
+    // baseline proves a plain text stream assembles; here the SAME text survives past a filtered artifact.
+    const frames = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_st",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      // index 0: a server_tool_use artifact the client can't validate → must be stripped
+      ev("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "server_tool_use", id: "stu_1", name: "web_search", input: {} },
+      }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"query":"x"}' } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      // index 1: the real text block → must survive, remapped to client index 0
+      ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "visible answer" } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(frames))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+
+    // client-observable: exactly the one real text block, no server-side artifact, correctly assembled
+    // (the index remap let the SDK build the text at index 0 rather than choke on a missing index 0).
+    expect(final.content.length).toBe(1)
+    expect(final.content.every((b) => b.type !== "server_tool_use")).toBe(true)
+    expect((final.content[0] as { type?: string; text?: string })?.type).toBe("text")
+    expect((final.content[0] as { text?: string })?.text).toBe("visible answer")
   })
 })
 

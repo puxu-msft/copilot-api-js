@@ -49,6 +49,12 @@ import type {
 
 import {
   //
+  type CellAssembly,
+  isCellMigrated,
+  resolveCellAssembly,
+} from "./cell-assembly"
+import {
+  //
   assembleRequestRewrites,
   assembleResponseRewrites,
   BUILTIN_REQUEST_REWRITES,
@@ -68,12 +74,12 @@ export interface DriverDeps {
   codec: FormatCodec
   transport: Transport
   /**
-   * Ordered retry strategies (first `canHandle` wins — 02 §1.2 order semantics).
-   * Either a fixed array, or a per-request factory resolved with the parsed
-   * envelope (S4 input) — strategies that need parse outputs (e.g. the model,
-   * or the codec's truncation baseline) use the factory form.
+   * Ordered retry strategies for the LEGACY (non-migrated) path — a fixed array or a per-request factory.
+   * OPTIONAL since C5: every real handler's cell is migrated, so its exchange stack comes from the
+   * CellAssembly ({@link resolveExchangeStrategies}); this slot is only read for a mock/legacy codec that
+   * does not populate `env.requestState` (driver orchestration unit tests).
    */
-  strategies: ReadonlyArray<RetryStrategy> | ((env: RequestEnvelope) => ReadonlyArray<RetryStrategy>)
+  strategies?: ReadonlyArray<RetryStrategy> | ((env: RequestEnvelope) => ReadonlyArray<RetryStrategy>)
   /** Normal-budget retry cap (pipeline.ts default 3). */
   maxRetries: number
   /** Learning-budget retry cap (pipeline.ts MAX_LEARNING_RETRIES=32). */
@@ -163,6 +169,35 @@ function resolveRouteDecision(deps: DriverDeps, parsed: RequestEnvelope): RouteD
   return (deps.decideRoute ?? decideRoute)(parsed)
 }
 
+/**
+ * The CellAssembly this env's cell is dispatched through, or `null` for the legacy `deps.*` path
+ * (RFC 2026-07-13 §11.6 hybrid dispatch). CELL-keyed (clientFormat × targetEndpoint) so a partially
+ * migrated leg — e.g. `/v1/messages`, shared by anthropic-direct (migrated, C2a) + 3 reverse cells
+ * (legacy until C2b) — routes only the migrated cell through the assembly (no double-active). Resolved
+ * from the CURRENT env at each dispatch point (a retry strategy may re-target).
+ */
+function migratedCell(env: RequestEnvelope): CellAssembly | null {
+  // The assembly's methods REQUIRE the leg supply on `env.requestState` (the real InboundCodec's parse
+  // populates it — C2a.1). An env without it is not set up for the cell (a driver orchestration unit test
+  // with a mock codec, or a format whose parse hasn't populated it), so it stays on the legacy `deps.*`
+  // path — the codec's own direct branch is still byte-equivalent, so this is a safe fallback.
+  if (!env.requestState) return null
+  return isCellMigrated(env.clientFormat, env.targetEndpoint) ? resolveCellAssembly(env.clientFormat, env.targetEndpoint) : null
+}
+
+/**
+ * The exchange retry stack for this env: the MIGRATED cell's CellAssembly-composed stack, else the legacy
+ * `deps.strategies` (a per-route factory / fixed array). LAZY on purpose (RFC §11.6): the legacy factory is
+ * NEVER evaluated for a migrated cell, so its side effects — the handlers' `recordFeature("via-responses" /
+ * "via-chat-completions-fallback")` — do not double-fire alongside the leg's `translateOut` (which now owns
+ * that observability). Both the S4 exchange (runRequest) and the buffered-sink re-exchange resolve through here.
+ */
+function resolveExchangeStrategies(deps: DriverDeps, env: RequestEnvelope): ReadonlyArray<RetryStrategy> {
+  const cell = migratedCell(env)
+  if (cell) return cell.buildStrategies(env)
+  return typeof deps.strategies === "function" ? deps.strategies(env) : (deps.strategies ?? [])
+}
+
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */
 async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<DriverRequestResult> {
   // S1 — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model).
@@ -187,7 +222,8 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
     outboundEndpoint: targetEndpoint,
     translated: decision.kind === "translate",
   })
-  const routed = deps.codec.translateOut(parsed.with({ targetEndpoint }))
+  const routedEnv = parsed.with({ targetEndpoint })
+  const routed = (migratedCell(routedEnv) ?? deps.codec).translateOut(routedEnv)
 
   // S3 — Rewrite-in: assemble + run the request-rewrite chain.
   const rewritten = runRewriteIn(deps, routed)
@@ -198,8 +234,11 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
   const afterHook = hook?.onRequest ? (hook.onRequest(rewritten) ?? rewritten) : rewritten
 
   // S4 — Exchange: error-driven retry loop (prepareWire → transport → strategy re-env).
-  // Resolve the strategy factory now that the envelope (model + codec state) exists.
-  const strategies = typeof deps.strategies === "function" ? deps.strategies(afterHook) : deps.strategies
+  // Resolve the strategy stack now that the envelope (model + codec state) exists. For a MIGRATED cell the
+  // CellAssembly composes it (RETRY_SEMANTICS × the leg's wire strategies); else the legacy per-route
+  // factory / fixed array. LAZY (resolveExchangeStrategies) — the legacy factory is not evaluated for a
+  // migrated cell, so its recordFeature side effects do not double-fire with the leg's translateOut.
+  const strategies = resolveExchangeStrategies(deps, afterHook)
   // C0-① (RFC §11.1): runExchange returns the POST-retry env (the final attempt's
   // env), not `rewritten` (pre-exchange). Consumers — e.g. the Anthropic pump
   // building the tool-call recoverer from env.body.tools, which deferred-tool-retry
@@ -211,7 +250,10 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
 /** S3: assemble the request-rewrite chain and apply each in declared order. */
 function runRewriteIn(deps: DriverDeps, env: RequestEnvelope): RequestEnvelope {
   let current = env
-  for (const rewrite of assembleRequestRewrites(current, deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)) {
+  // MIGRATED cell: the CellAssembly supplies the leg's request-rewrite chain; else the legacy deps array.
+  const cell = migratedCell(env)
+  const rewrites = cell ? cell.requestRewrites(env) : (deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)
+  for (const rewrite of assembleRequestRewrites(current, rewrites)) {
     const result = rewrite.apply(current)
     current = result.env
     // P3.2 wires `request.rewrite_applied`{name, changed, stats} here.
@@ -245,14 +287,19 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   const decision = resolveRouteDecision(deps, parsed)
   if (decision.kind === "reject") return { stoppedAt: "reject", rejected: { status: decision.status, reason: decision.reason }, stages }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
-  const routed = deps.codec.translateOut(parsed.with({ targetEndpoint }))
+  // MIGRATED cell: the assembly owns S2 translateOut / S3 requestRewrites / S4-pre prepareWire (mirrors
+  // runRequest); a mock/legacy codec without requestState falls back to deps.codec / deps.requestRewrites.
+  const routedEnv = parsed.with({ targetEndpoint })
+  const routed = (migratedCell(routedEnv) ?? deps.codec).translateOut(routedEnv)
   stages.translate = { targetEndpoint: routed.targetEndpoint, body: snapshotBody(routed.body) }
   if (stopAfter === "translate") return { stoppedAt: "translate", stages }
 
   // S3 — rewrite-in (mirror runRewriteIn, capturing per-rewrite {name, changed}).
   const applied: Array<{ name: string; changed: boolean }> = []
   let current = routed
-  for (const rewrite of assembleRequestRewrites(current, deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)) {
+  const inspectCell = migratedCell(current)
+  const inspectRewrites = inspectCell ? inspectCell.requestRewrites(current) : (deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)
+  for (const rewrite of assembleRequestRewrites(current, inspectRewrites)) {
     const result = rewrite.apply(current)
     applied.push({ name: rewrite.name, changed: result.changed })
     current = result.env
@@ -265,7 +312,7 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   // (beta-strip / server-tool-strip — only triggered by an upstream error) are invisible;
   // `note` flags that. `prepareWire` is non-pure in real codecs (betaProbe.recordOutbound /
   // ctx.recordFeature) — the caller isolates those side effects (throwaway probe + capturing ctx).
-  const wire = deps.codec.prepareWire(current)
+  const wire = (migratedCell(current) ?? deps.codec).prepareWire(current)
   stages["prepare-wire"] = {
     url: wire.url,
     headers: Object.fromEntries(wire.headers.entries()),
@@ -300,18 +347,22 @@ async function runExchange(
   let preflightDone = false
 
   for (;;) {
+    // MIGRATED cell: preSend / prepareWire / sampleWireTrack come from the CellAssembly; else the codec.
+    // Resolved per-iteration from `current` (a retry strategy may re-target the leg).
+    const cell = migratedCell(current)
     if (!preflightDone) {
       preflightDone = true
       // MUST run before prepareWire below — otherwise the wire is built from the
       // un-truncated body and the pre-flight trim would not take effect this attempt.
-      if (deps.codec.preSend) current = await deps.codec.preSend(current)
+      if (cell?.preSend) current = await cell.preSend(current)
+      else if (deps.codec.preSend) current = await deps.codec.preSend(current)
     }
-    const wire = deps.codec.prepareWire(current)
+    const wire = (cell ?? deps.codec).prepareWire(current)
     current.ctx.beginAttempt({ ...(activeStrategy && { strategy: activeStrategy.name }) })
-    // S4 per-attempt sampling (P2.3-S): the codec derives the history effective +
+    // S4 per-attempt sampling (P2.3-S): the codec / assembly derives the history effective +
     // wire request descriptors from the prepared wire + env (format-specific). The
     // attempt record exists (beginAttempt above); record both tracks on it.
-    const sample = deps.codec.sampleRequest?.(wire, current)
+    const sample = cell ? cell.sampleWireTrack(wire, current) : deps.codec.sampleRequest?.(wire, current)
     if (sample) {
       current.ctx.setAttemptEffectiveRequest(sample.effective)
       current.ctx.setAttemptWireRequest(sample.wire)
@@ -414,7 +465,7 @@ async function runExchange(
 /** S5→S7: rewrite-out (per-frame chain + flush) → renderResponse → yield. */
 async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: RequestEnvelope, opts?: RunResponseOpts): AsyncIterable<ClientFrame> {
   // S5 — Rewrite-out: assemble the response-rewrite chain (per-request state, seeded from env).
-  const rewrites = assembleResponseRewrites(env, deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES)
+  const rewrites = assembleResponseRewrites(env, migratedCell(env)?.responseRewrites(env) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES)
   const states: Array<RewriteState> = rewrites.map((r) => r.createState?.(env) ?? {})
 
   // S4-exit sampling (P3.2b, envelope-driver.md §4): record each upstream-ORIGINAL
@@ -618,7 +669,9 @@ export async function runResponseBufferedSink(
   const cap = opts.retryCap ?? 0
   const bufferCapBytes = opts.bufferCapBytes ?? 0
   const vendor = opts.telemetryVendor ?? "unknown"
-  const strategies = typeof deps.strategies === "function" ? deps.strategies(env) : deps.strategies
+  // Same lazy resolution as the S4 exchange: a migrated cell's buffered re-exchange uses the CellAssembly
+  // stack, never the legacy factory (so no double recordFeature vs the leg's translateOut).
+  const strategies = resolveExchangeStrategies(deps, env)
   let current = upstream
   let currentEnv = env
   let attempt = 0
@@ -900,7 +953,7 @@ export async function runResponseBufferedSink(
  */
 function runResponseWhole(deps: DriverDeps, response: unknown, env: RequestEnvelope): unknown {
   let current = response
-  for (const rewrite of assembleResponseRewrites(env, deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES)) {
+  for (const rewrite of assembleResponseRewrites(env, migratedCell(env)?.responseRewrites(env) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES)) {
     if (rewrite.transformWhole) current = rewrite.transformWhole(current, env)
   }
   return current

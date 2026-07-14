@@ -49,6 +49,7 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { RequestState } from "~/lib/pipeline/request-state"
 import type {
   //
   ClassifiedStreamError,
@@ -130,6 +131,12 @@ export interface CreateOpenAiGeminiCodecArgs {
    * Gemini legs.
    */
   reverseBetaProbe?: import("~/lib/anthropic/pipeline").BetaProbe
+  /**
+   * REVERSE `@messages` leg only: the shared per-request mapper holder. `parse` threads it onto
+   * `env.requestState` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance.
+   * Absent for the direct/via-responses Gemini legs.
+   */
+  reverseMapperHolder?: import("~/lib/codec/openai-cc/reverse-anthropic-rewrite").ReverseAnthropicMapperHolder
 }
 
 /** Build the gemini codec for one request (holds the internal cc codec + Gemini ctx). */
@@ -156,7 +163,18 @@ export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGemi
       const { env, baseline, ctx } = parseGemini(raw, modelId)
       requestContext = ctx
       truncateBaseline = baseline
-      return env
+      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
+      // the `truncateBaseline` (the CC auto-truncate baseline) from `env.requestState` — the forward `@cc`
+      // cell reads it via `OUTBOUND_LEGS[CHAT_COMPLETIONS]` (C3). The REVERSE `@messages` leg supply (C2b —
+      // the shared beta probe + mapper holder) is added when the handler injects them; both coexist.
+      // Populating requestState is also the driver's cell-keyed fork discriminator.
+      return env.with({
+        requestState: {
+          truncateBaseline: baseline,
+          ...(opts?.reverseBetaProbe && { betaProbe: opts.reverseBetaProbe }),
+          ...(opts?.reverseMapperHolder && { reverseMapperHolder: opts.reverseMapperHolder }),
+        },
+      })
     },
 
     getContext() {
@@ -389,6 +407,7 @@ interface EnvelopeInit {
   body: unknown
   ctx: RequestContext
   prepareHints?: PrepareHints
+  requestState?: RequestState
 }
 
 /** Build a {@link RequestEnvelope} (clientFormat `gemini`, CC-shaped body). */
@@ -401,6 +420,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     stream: init.stream,
     body: init.body,
     prepareHints: init.prepareHints ?? {},
+    ...(init.requestState !== undefined && { requestState: init.requestState }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createGeminiLazyView(env.body)
@@ -414,6 +434,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         body: env.body,
         ctx: env.ctx,
         prepareHints: env.prepareHints,
+        requestState: env.requestState,
         ...patch,
       })
     },
