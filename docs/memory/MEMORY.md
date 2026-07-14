@@ -28,11 +28,13 @@
 
 - [richest-data-flow 后端完整存](feedback-richest-data-flow-store-complete-no-pruning.md) → ADR `2026-07-05-richest-data-flow` — 后端永不为 DRY/YAGNI 裁剪；"无数据源"常是没接线该建非删
 - [合成帧必打可辨识标记](feedback-synthetic-data-must-be-distinguishable-from-real.md) → ADR `2026-07-05-richest-data-flow`（对称面）— 上游轨绝不含合成物、合成物只进 forwarded 轨打标记
+- [读上游轨的投影看不到 forwarded-only rewrite 产物](methodology-upstream-original-projection-misses-forwarded-only-rewrite.md) — recover/filter 只进 forwarded 轨,完成行/`toolNamesFromResponseBody` 读上游轨→漏;修=feature/side channel 旁路传名勿污上游轨;同类站点 grep(逮到第二处 resolveResponseToolNames);commit 617d3340
 
 ## 精炼保留（verification 簇 / 独有教学价值）
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根;通用手法 user skill `verifying-authoritative-claims`；三陷阱钩子
 - [下「最好/只治一半/漏症状X」完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — 尤其 absence/negative 断言(features 不进 history/telemetry 会丢/无消费者)最易凭结构推断而错;本会话两次验前下错结论(盯客户端、贬 TUI 防御「只治一半」实为最优),用户评「非常深刻的教训」
 - [诊断日志本身是会撒谎的权威声音](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能只接部分代码路径、对其它路径恒打全零;别信自报探 history 上游轨;实例=gpt-5.6-sol「frames=0/silence=全程」误导、真相是被上游 CANCEL 的健康长流;宽松信号收集 API 诱发静默误报、收紧入参最小子集用类型逼全站点
+- [从日志断代码有缺陷前先核实运行进程含修复](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md) — 生产日志可能是陈旧服务器进程(启动早于修复、无 --hot)打的;ps lstart vs git 提交时刻(校时区)+ merge-base 核祖先;实例=gpt-5.6-sol frames=0 那条 translate leg 已被 41aeeba2 修好、4141 启动早 43min,真正待修是其它零诊断腿
 - [reasoned-safe≠tested / producer wire-oracle 必断全序](methodology-reasoned-safe-not-tested-producer-wire-oracle.md) — 能干 reviewer「推理上安全无需测」也会错(opus 误判 enveloped_ping,golden 证伪);client-facing wire 缺陷须 producer oracle 断**完整帧序**+驱动 driver **真实产出**(非回放 ideal fixture);门改语义先问旧前提是否失效
 - [client 源码 grep ≠ REST 上游能力](methodology-client-source-grep-not-rest-capability-probe-endpoint.md) — 源码 grep 只证 client 行为,代理型上游 REST 表面 > client 子集;须 curl 实测打端点;实例=「GHC 无 count_tokens」被证伪
 - [从 primitive 推理别从流行 wrapper 泛化](methodology-reason-from-primitive-not-dominant-wrapper.md) — 干净 primitive(`setUpstreamFetchForTests`) vs 耦合全局 wrapper(`applyFetchMock`)并存,判风险从 primitive 实现推理
@@ -44,6 +46,7 @@
 - [exactly-one-message_start 须覆盖两条转发腿](reference-exactly-one-message-start-both-forward-legs.md) → spec §10.10 — keepalive 注入器只认 buffered 捕获腿、漏 live 早转发腿;/responses response.created 早转发真 message_start + reasoning 静默 → idle 注入器合成第二个;修=reconcileLiveFrame passthrough 置 messageStartForwarded、注入器先查该 flag(c 0d55d229);producer-oracle 断完整帧序 + fix-stash 正样本对照;同批 gpt-5.6-sol 长 reasoning turn 暴露(姊妹 [[reference-ghc-responses-item-id-reencrypted-per-event]])
 - [配置哲学独立：留兼容层 + 警告并继续](feedback-config-philosophy-separate-compat-and-warn-continue.md) — 配置**不**享代码「无向后兼容负担」;键重命名留旧键别名读时映射;运行时热重载绝不因配置问题杀进程
 - [微改动别反射式派 subagent 评审](feedback-tier-subagent-review-skip-for-mechanical-micro-changes.md) — `subagent-explicit-rubric` 须与 user-rule 41 `tiered-review-by-risk` 合读;机械低风险走 TDD,微改攒批合并态审
+- [agent 后台连挂也绝不自作主张换模型](feedback-never-unilaterally-switch-agent-model-on-flakiness.md) — API 错误(NGHTTP2_CANCEL)连挂多次也永远 resume 原 agent、绝不擅自 switch 模型家族(破坏异模型对抗多样性、是用户决策);已误换则两边都跑别浪费;本会话 GPT 连挂3次擅换 Claude 被用户明确纠正
 - [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — `--cache` 对缓存过期文件假绿;`lint:all` 已去 cache、核单文件用 `bunx eslint <path>`
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 `bun install` 会 prune 的 orphan;选依赖前 `grep '"<pkg>@' bun.lock`;提升传递依赖用 `bun add <name>@^<锁里版本>`
 - [worktree bun add 后主树须补 install](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — 隔离 worktree `bun add` 只进该树;FF 合并后主树 node_modules 陈旧→Vite 解析失败;收尾动过 deps 须主树 `bun install`
@@ -70,6 +73,7 @@
 - [迁移副作用旧路径仍被 eager 求值→双触发](methodology-migrate-side-effect-old-path-still-eager-evaluated.md) — recordFeature 迁 leg 但 driver eager 求值 `deps.strategies` 仍触发→双记;live-only golden 抓不到;根因修=抽 lazy resolver
 - [无疑问改进当场做](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中就立即改,别以超范围推迟;有分叉别硬当无分叉
 - [绝不推荐短期止血方案](feedback-never-propose-short-term-mitigation.md) — 有根因可修就只提根因;「打开默认关闭的 gated feature 绕过」也算短期将就、禁列为选项;实例=否决打开 buffered-retry 绕 CANCEL 事故
+- [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止(API 错误挂)/已完成的 subagent 接续上下文永远用 `SendMessage(to:名字或 agentId)`、绝不 `Agent` tool 重派(那是开新 fresh-context agent、丢原上下文、白烧 re-read);用户 2026-07-14 强纠正「永远不要用错」;唯一 Agent 新派场景=真全新独立任务 → user-rule 40/41 `resume-agent-via-SendMessage`
 
 ## project 现状 stub（权威看正式归属）
 - [请求生命周期 cancel/settle/quiesce（四根因治根 landed worktree,C5 完整架构待续）](project-request-lifecycle-cancel-settle-quiesce.md) — 2800s 越超时多根因;RFC 6 轮对抗复核逼出 3 个致死锁/orphan 缺陷;RC1 streaming 排除 shutdown/RC2 reaper 迟到(WSL suspend 候选)/RC3 退避不可中断/RC4 限流竞争 全治根(worktree `feat/request-lifecycle` 11 commit 1079 pass);承重=有界 grace(无限等 quiesce 打败目标)+per-request 精确 timer>周期 scan;待续 C4a/C5(primitive 已备待接线);合并前须 merge master(分支落后)
