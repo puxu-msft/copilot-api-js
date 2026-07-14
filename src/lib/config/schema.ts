@@ -703,21 +703,40 @@ export const ResponsesConfigSchema = z
      */
     buffered_retry: nullableBufferedRetry(),
     fix_stream_ids: nullableBoolean(),
-    client_ws_keep_open: nullableBoolean(),
     /**
      * Strip the `image_generation` builtin tool from inbound Responses
      * requests. The Copilot upstream rejects it (failing the whole request),
      * and some clients (e.g. Codex CLI) auto-inject it. Default false.
      */
     strip_image_generation_tool: nullableBoolean(),
-    /** Optional cap on inbound WS frame bytes (default 0 = unlimited; set positive to opt into a hard cap). */
-    max_ws_frame_bytes: nullableNonnegativeInt(),
-    /** Max concurrent client WS connections (default 256; 0 = unlimited). */
-    max_client_ws_connections: nullableNonnegativeInt(),
-    /** Soft cap on upstream WS pool size (default 32; 0 = unlimited). */
-    max_upstream_ws_connections: nullableNonnegativeInt(),
   })
   .strict()
+
+/**
+ * `server.responses_ws.*` — inbound client-facing Responses WebSocket ingress
+ * limits (D6: moved out of `openai_responses.*` as a whole group, since these
+ * govern the DOWNSTREAM client connection, not the upstream GHC connection —
+ * distinct axis from `upstream_transport.websocket.*`).
+ */
+export const ResponsesWsIngressConfigSchema = z
+  .object({
+    /** Keep the client WS connection open across turns instead of closing after each response. Was `openai_responses.client_ws_keep_open`. Default false. */
+    keep_open: nullableBoolean(),
+    /** Optional cap on inbound WS frame bytes (default 0 = unlimited; set positive to opt into a hard cap). Was `openai_responses.max_ws_frame_bytes`. */
+    max_frame_bytes: nullableNonnegativeInt(),
+    /** Max concurrent client WS connections (default 256; 0 = unlimited). Was `openai_responses.max_client_ws_connections`. */
+    max_connections: nullableNonnegativeInt(),
+  })
+  .strict()
+export type ResponsesWsIngressConfig = z.infer<typeof ResponsesWsIngressConfigSchema>
+
+/** `server.*` — inbound/ingress-facing server configuration (currently just `responses_ws`). */
+export const ServerConfigSchema = z
+  .object({
+    responses_ws: nullableSection(ResponsesWsIngressConfigSchema),
+  })
+  .strict()
+export type ServerConfig = z.infer<typeof ServerConfigSchema>
 
 /**
  * `chat_completions` top-level section. Currently holds only the buffered-retry
@@ -841,10 +860,6 @@ export const TimeoutsConfigSchema = z
     response_header_overrides: ResponseHeaderOverridesSchema.nullable()
       .transform((v): z.infer<typeof ResponseHeaderOverridesSchema> | undefined => v ?? undefined)
       .optional(),
-    /** Upstream TCP keepalive initial-probe delay in seconds (0 = use undici default 60s). Keeps GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it. Node-only. */
-    upstream_keepalive: nullableNonnegativeInt(),
-    /** Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled). Application-layer complement to `upstream_keepalive`: GHC does NOT forward Anthropic's SSE `ping` frames, so a long thinking silence is a truly idle stream a connection-idle reaper (middlebox/GHC edge) severs WITHOUT `message_stop` (a real cut fired at ~112s) — a periodic PING puts a real frame on the wire. Default 15. Node-only (node:http2 transport). */
-    upstream_h2_ping: nullableNonnegativeInt(),
     /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled). Was top-level `stale_request_max_age`. */
     stale_request_max_age: nullableNonnegativeInt(),
     /**
