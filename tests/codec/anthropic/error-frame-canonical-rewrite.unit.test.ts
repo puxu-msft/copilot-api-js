@@ -19,6 +19,7 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import { errorFrameCanonicalRewrite } from "~/lib/codec/anthropic/error-frame-canonical-rewrite"
 import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrite-adapters"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { assembleResponseRewrites } from "~/lib/pipeline/rewrite-registry"
 import { setStateForTests } from "~/lib/state"
 
@@ -85,6 +86,26 @@ describe("errorFrameCanonicalRewrite", () => {
     expect(data.type).toBe("error")
     expect(data.error.type).toBe("api_error")
     expect(typeof data.error.message).toBe("string")
+  })
+
+  // Cross-phase integration gap (whole-branch review, MEDIUM): history/types.ts:183's SyntheticOriginKind
+  // doc promises the canonical post-commit `event:error` frame is tagged `"error-shaping-canonical"`,
+  // REPLACING the upstream terminator — but the transform never called `tagFrameSynthetic`. Positive-sample
+  // assertion (not merely "doesn't throw"): after the reshape, `readSyntheticKind` must actually read back
+  // the tag — proving the tag reaches the emitted frame, not just that some code path exists.
+  test('reshaped canonical frame is tagged synthetic:"error-shaping-canonical" (richest-data-flow — Phase 3 wiring promised by history/types.ts SyntheticOriginKind doc)', () => {
+    const state = errorFrameCanonicalRewrite.createState?.(env(ENDPOINT.MESSAGES)) ?? {}
+    const raw = { event: "error", data: JSON.stringify({ error: { type: "overloaded_error", message: "slow down" } }) }
+    const action = errorFrameCanonicalRewrite.transform(raw, state)
+    if (action.kind !== "emit") throw new Error("unreachable")
+    expect(readSyntheticKind(action.frames[0])).toBe("error-shaping-canonical")
+  })
+
+  test("non-error frame passthrough is NOT tagged synthetic (only the reshaped error frame carries the tag)", () => {
+    const state = errorFrameCanonicalRewrite.createState?.(env(ENDPOINT.MESSAGES)) ?? {}
+    const action = errorFrameCanonicalRewrite.transform({ event: "content_block_delta", data: "{}" }, state)
+    if (action.kind !== "emit") throw new Error("unreachable")
+    expect(readSyntheticKind(action.frames[0])).toBeUndefined()
   })
 
   // FIX-1 (plan完成检查 line 205-206): the REAL assembled chain must place errorFrameCanonical FIRST and
