@@ -40,6 +40,7 @@ import {
   responseThinkingFromBody,
   toolNamesFromResponseBody,
 } from "~/lib/history/entry-view"
+import { isTerminalState } from "~/lib/history/lifecycle-state"
 import { assertNever } from "~/lib/observability"
 import {
   //
@@ -536,6 +537,18 @@ export class TerminalUi {
         attemptCount: 0,
         attempts: [],
       }
+      // Terminal guard: a request that has already reached a terminal state
+      // (completed/failed/aborted/interrupted) must NEVER be re-materialized into
+      // `active` — its `onTerminal` has already run (`active.delete`) and no further
+      // terminal event is coming, so re-inserting it would spin it in the footer
+      // forever. This happens when a producer records a late feature AFTER `ctx.fail()`
+      // (e.g. error-shaping's `error-shaping-decided`, whose `feature_applied` carries
+      // `state:"failed"`). Return a throwaway entry (callers still mutate it — tag push
+      // etc.) WITHOUT inserting it, mirroring `onTerminal`'s already-gone branch. The
+      // sibling active-map consumers already hold this invariant (WsSink counter is
+      // immune; ui-v4's live-store no-ops `feature_applied` for an absent id) — this
+      // aligns the TUI with them.
+      if (isTerminalState(ctx.state)) return entry
       this.active.set(ctx.id, entry)
       this.startFooterTimer()
     } else {

@@ -1361,17 +1361,33 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
   const ccAcc = targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? createOpenAIStreamAccumulator() : undefined
   const respAcc = ccAcc ? undefined : createResponsesStreamAccumulator()
 
+  // Live-stream diagnostic signals for `logUpstreamStreamError` (the blind-spot fix): the translate leg's
+  // upstream is a CC/Responses SSE stream, so it can't reuse the direct pump's Anthropic `recordUpstreamFrame`.
+  // We still MUST feed the real signals — frame count / bytes / last raw upstream frame — or a healthy long
+  // stream capped by the upstream logs as `frames=0 / silence=<whole duration>` (the gpt-5.6-sol incident).
+  // `sseEvents` here records the RAW UPSTREAM (CC/Responses) frame types verbatim, mirroring the direct pump's
+  // local copy; the PERSISTED upstream-original track is the driver's (this is diagnostics-only).
+  const diagSseEvents: Array<SseEventRecord> = []
+  let diagBytesIn = 0
+
   const onUpstreamFrame = (frame: UpstreamFrame): void => {
     const rawEvent = frame as ServerSentEventMessage
     if (!rawEvent.data || rawEvent.data === "[DONE]") return
+    diagBytesIn += rawEvent.data.length
+    let diagType: string | undefined
     try {
       const parsed = JSON.parse(rawEvent.data) as Record<string, unknown>
+      // Honest last-frame label: Responses frames carry `type` (response.output_text.delta …); CC chunks
+      // carry `object` (chat.completion.chunk) with no `type` — labelling a CC content frame "keepalive"
+      // (the direct pump's Anthropic fallback) would re-mislead, so prefer `object` before that fallback.
+      diagType = (typeof parsed.type === "string" && parsed.type) || (typeof parsed.object === "string" && parsed.object) || undefined
       if (ccAcc) accumulateOpenAIStreamEvent(parsed as never, ccAcc)
       else if (respAcc) accumulateResponsesStreamEvent(parsed as never, respAcc)
     } catch (error) {
       // A malformed upstream frame is logged, not fatal (parity with the direct pump / RFC §12.6).
       consola.error("[Anthropic:v4:translate] Failed to parse upstream stream event:", error, rawEvent.data)
     }
+    diagSseEvents.push({ offsetMs: Date.now() - streamStartMs, type: diagType ?? rawEvent.event ?? "keepalive", raw: rawEvent.data })
   }
 
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
@@ -1408,11 +1424,12 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       // Anthropic error terminator, snapshot the forwarded track, THEN fail (order load-bearing — ctx.fail
       // freezes inboundResponse; a post-fail snapshot misses the error frame).
       const error = outcome.error
+      const errUsage = codec.getStreamMeta()?.usage
       logUpstreamStreamError(error, {
         model,
-        streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
-        acc: createAnthropicStreamAccumulator(),
-        sseEvents: [],
+        streamState: { streamStartMs, bytesIn: diagBytesIn, currentBlockType: "" },
+        acc: { inputTokens: errUsage?.input_tokens ?? 0, outputTokens: errUsage?.output_tokens ?? 0 },
+        sseEvents: diagSseEvents,
       })
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
       // G-3 (FIX-2): the translate leg's client IS an Anthropic /v1/messages client, so its H3 error

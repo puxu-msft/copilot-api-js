@@ -14,6 +14,7 @@ import {
   listInFlight,
   toEntrySummary,
 } from "./in-flight"
+import { isActiveState } from "./lifecycle-state"
 import { extractInboundSearchText } from "./normalize-message"
 import {
   //
@@ -39,17 +40,15 @@ function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   return true
 }
 
-/** Non-terminal lifecycle states — these are the entries the Live lane owns. */
-const NON_TERMINAL_STATES = new Set<EntrySummary["state"]>(["pending", "executing", "streaming"])
-
 /**
  * Whether a summary represents an active in-flight request (vs a terminal one).
  * `active` is the canonical flag the request lifecycle sets while streaming;
  * `state` is the belt-and-suspenders check for an eager-persisted `streaming`
  * SQLite head row (which reads back `active: false`). Used by `terminalOnly`.
+ * The active/terminal partition is sourced from the single `lifecycle-state` primitive.
  */
 function isInFlightSummary(summary: EntrySummary): boolean {
-  return summary.active === true || NON_TERMINAL_STATES.has(summary.state)
+  return summary.active === true || (summary.state !== undefined && isActiveState(summary.state))
 }
 
 function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boolean {

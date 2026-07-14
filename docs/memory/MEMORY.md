@@ -31,6 +31,7 @@
 
 ## 精炼保留（verification 簇 / 独有教学价值）
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根;通用手法 user skill `verifying-authoritative-claims`；三陷阱钩子
+- [诊断日志本身是会撒谎的权威声音](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能只接部分代码路径、对其它路径恒打全零;别信自报探 history 上游轨;实例=gpt-5.6-sol「frames=0/silence=全程」误导、真相是被上游 CANCEL 的健康长流;宽松信号收集 API 诱发静默误报、收紧入参最小子集用类型逼全站点
 - [reasoned-safe≠tested / producer wire-oracle 必断全序](methodology-reasoned-safe-not-tested-producer-wire-oracle.md) — 能干 reviewer「推理上安全无需测」也会错(opus 误判 enveloped_ping,golden 证伪);client-facing wire 缺陷须 producer oracle 断**完整帧序**+驱动 driver **真实产出**(非回放 ideal fixture);门改语义先问旧前提是否失效
 - [client 源码 grep ≠ REST 上游能力](methodology-client-source-grep-not-rest-capability-probe-endpoint.md) — 源码 grep 只证 client 行为,代理型上游 REST 表面 > client 子集;须 curl 实测打端点;实例=「GHC 无 count_tokens」被证伪
 - [从 primitive 推理别从流行 wrapper 泛化](methodology-reason-from-primitive-not-dominant-wrapper.md) — 干净 primitive(`setUpstreamFetchForTests`) vs 耦合全局 wrapper(`applyFetchMock`)并存,判风险从 primitive 实现推理
@@ -50,6 +51,7 @@
 - [全套件红先分类再套污染 playbook](methodology-full-suite-red-classify-before-pollution-playbook.md) — 全套件红≠污染;单跑挂=oracle 漂移/flake,单跑过+全套件挂才真污染;`git log -S` 定 peer commit
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴=上下文经济+可信度非可推导性;目录级关系图+现状小节+L1 存在性守卫测试
 - [交用户前先 subagent review（含 in-chat 提案）](feedback-subagent-review-before-any-user-facing-proposal.md) — 审查门适用任何交付物含对话里直接呈现的设计;present-design 前插对抗审查
+- [用户对齐只证方向对、非细节最优](feedback-user-alignment-confirms-direction-not-detail-optimality.md) — brainstorming 逐节点头≠细节最优;落盘 spec 前仍须过 GPT 异模型对抗审查细节
 - [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec,免疫 peer 并发 `git add` 的 index race
 - [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix;手排自己 import;显式 pathspec 只提交自己文件;[[sed-touched-files-bundle-inflight-work]] eslint 版
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁;rollback 见 skill `git-preference:disarming-lint-staged-rollback`

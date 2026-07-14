@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为 `src/lib/tui/` 的 raw-mode 编排层建立 PTY 终端网格测试 oracle——用 `Bun.Terminal` + `@xterm/headless` 把真 `TerminalUi` 的输出字节解释成 rows×cols 网格 + scrollback，断言字节测证不了的屏级不变量（不吞行、footer 钉底、退出还原、切 detail 不覆盖、resize 重锚）。
+> **实施状态（2026-07-14）**：Task 0-4（脚手架 + 不变量①②③④）**已 landed**（commit fcfc91ea..a8e9e543，各配红绿对照实测）。**Task 5（⑤ resize 重锚）未实施、降 backlog**——实施期实测逼出 Bun 硬限制：`Bun.Terminal` 不给子进程投递 SIGWINCH、子进程 `stdout.rows` 不刷新，故 `TerminalUi` 感知不到 PTY resize、resize 重锚分支从不执行，任何 PTY resize 测试都是恒绿假测。根因与「若做需改什么」见 `docs/todo/deferred-backlog.md` + spec §3⑤。Task 5 内容保留作历史（若将来 Bun 支持 resize 通知可复用）。
+
+**Goal:** 为 `src/lib/tui/` 的 raw-mode 编排层建立 PTY 终端网格测试 oracle——用 `Bun.Terminal` + `@xterm/headless` 把真 `TerminalUi` 的输出字节解释成 rows×cols 网格 + scrollback，断言字节测证不了的屏级不变量（不吞行、footer 钉底、退出还原、切 detail 不覆盖，~~resize 重锚~~降 backlog）。
 
 **Architecture:** 复用 harness（`tests/tui/pty/harness.ts`）封装「spawn 真 driver → Bun.Terminal 伪终端 → 喂键序列 → 输出串行喂 @xterm/headless → 读网格+scrollback」。**关键**：driver 会在退出时 `ui.destroy()→region.clear()` 擦掉 panel/footer（`region.ts:229` 的 `ERASE_TO_END`），所以「运行中空间关系」（footer 钉底、resize 重锚、切 detail）**不能读末态网格**——harness 提供 **sentinel 握手快照**：driver 在关键状态发唯一 marker 日志，harness 检测到 marker 出现在网格里就抓**当时**的快照（driver 未 clear 前）。「退出还原」则读末态原始字节 + 重放。每个不变量一个真 `TerminalUi` driver + 一个 `.pty.test.ts`，内建红绿对照。
 
@@ -622,6 +624,8 @@ git commit -m "test(tui): PTY 不变量④ 切 detail 不覆盖 — detail 窗�
 ---
 
 ## Task 5: 不变量⑤ resize 重锚（中间快照断言孤儿行 + known-seam test.failing）
+
+> **⚠️ 未实施 · 降 backlog（2026-07-14）**：实施期实测发现 `Bun.Terminal` 不给子进程投递 SIGWINCH、子进程 `process.stdout.rows` 不刷新 → 真 `TerminalUi.getRows()` 恒返回旧值 → resize 重锚分支从不执行 → 本 Task 的任何红样本删源码也不 FAIL（恒绿假测）。根因 + 三条「若做需改什么」见 `docs/todo/deferred-backlog.md`、spec §3⑤。以下步骤保留作历史。
 
 **Files:**
 - Create: `tests/tui/pty/drivers/resize-anchor.ts`

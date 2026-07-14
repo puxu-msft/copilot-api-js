@@ -15,7 +15,6 @@ import type { SseEventRecord } from "~/lib/history/store"
 import type { StreamEvent } from "~/types/api/anthropic"
 
 import { logServerToolBlock } from "~/lib/anthropic/server-tool-filter"
-import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { formatErrorWithCause } from "~/lib/error"
 import { classifyStreamError } from "~/lib/stream"
 import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
@@ -43,8 +42,13 @@ export function logUpstreamStreamError(
   error: unknown,
   ctx: {
     model: string
-    streamState: StreamPumpState
-    acc: ReturnType<typeof createAnthropicStreamAccumulator>
+    // Minimal structural subset (NOT the full `StreamPumpState` / Anthropic accumulator): only the
+    // fields the diagnostic actually reads. Requiring the full Anthropic-specific shapes is what let the
+    // translate leg pass hardcoded empty shells (bytesIn:0 / empty acc / []) → a healthy long stream
+    // capped by the upstream logged as a total-silence stall (the gpt-5.6-sol incident). Both call sites
+    // now pass REAL signals: the direct pump's full StreamPumpState/accumulator are structural supersets.
+    streamState: { streamStartMs: number; bytesIn: number; currentBlockType: string }
+    acc: { inputTokens: number; outputTokens: number }
     sseEvents: Array<SseEventRecord>
   },
 ): void {
