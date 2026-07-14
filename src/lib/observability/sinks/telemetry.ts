@@ -52,7 +52,8 @@ export class TelemetrySink {
     const entry = event.entry
     // The settled verdict/usage live on the final attempt's `upstreamResponse` leg
     // (`_index.derived.responseSuccess` when the producer wires it).
-    const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
+    const committedAttempt = entry.attempts?.at(-1)
+    const finalUpstream = committedAttempt?.upstreamResponse
     recordSettledRequest(
       extractTelemetryKeys(entry, event.ctx),
       {
@@ -68,6 +69,12 @@ export class TelemetrySink {
         // Per-request thinking-block emptiness tally (single-point extraction from the recorded
         // upstream leg; feeds the thinkingBlocks* feature measures across every dimension).
         thinkingBlocks: extractThinkingBlockCounts(entry),
+        // 首包埋点（spec 2026-07-14 §6.1）：时序度量（ms，相对 started_at）喂 DDSketch 分布。
+        // committed attempt 的上游 epoch 减 started_at 得真 TTFT；client 3 刻已是 offset。
+        ...(committedAttempt?.upstreamFirstTokenAt !== undefined && { upstreamFirstTokenMs: committedAttempt.upstreamFirstTokenAt - entry.startedAt }),
+        ...(entry.timing?.client?.firstRealMs !== undefined && { clientFirstRealMs: entry.timing.client.firstRealMs }),
+        ...(entry.timing?.client?.firstRealMs !== undefined
+          && entry.timing.client.bufferHoldStartMs !== undefined && { bufferHoldMs: entry.timing.client.firstRealMs - entry.timing.client.bufferHoldStartMs }),
       },
       CAPPED_DIMENSION_NAMES,
     )

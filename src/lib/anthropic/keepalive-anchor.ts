@@ -159,6 +159,18 @@ export function makeSyntheticAnchorInjector(args: {
   return async (): Promise<boolean> => {
     const sink = getSink()
     if (!sink || state.injected) return false
+    if (state.messageStartForwarded) {
+      // A real message_start ALREADY reached the client via the live pump (an early upstream message_start
+      // forwarded before this first idle tick — e.g. /responses `response.created` then a long reasoning
+      // silence, recorded by `reconcileLiveFrame`). The wire forbids a second message_start, so do NOT emit
+      // one: open ONLY the anchor block@0 + first empty text_delta to reset CC's 300s watchdog. Sync-flip
+      // `injected`+`anchorBlockOpen` before the first await (race-free vs the commit snapshot, as below).
+      state.injected = true
+      state.anchorBlockOpen = true
+      await (sink.writeAnchor ?? sink.write)(anchor.startFrame) // "anchor"; noteBlockState → openBlock={0,text}
+      await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame) // "keepalive": empty text_delta resets CC's 300s watchdog
+      return true
+    }
     const real = state.capturedMessageStart
     if (real) {
       // C1/B1 sync-flip (before the first await — race-free vs the commit snapshot; see docstring).
@@ -222,6 +234,13 @@ export function makeSyntheticEnvelopeInjector(args: {
   return async (): Promise<boolean> => {
     const sink = getSink()
     if (!sink || state.injected) return false
+    if (state.messageStartForwarded) {
+      // A real message_start already reached the client via the live pump (recorded by
+      // `reconcileLiveFrame`). This mode injects ONLY an envelope, so with the envelope already on the wire
+      // there is nothing left to inject — mark `injected` (no second message_start) and fall to bare pings.
+      state.injected = true
+      return true
+    }
     const real = state.capturedMessageStart
     if (real) {
       // Sync-flip before the await (race-free vs the commit snapshot). `anchorBlockOpen` stays FALSE — this

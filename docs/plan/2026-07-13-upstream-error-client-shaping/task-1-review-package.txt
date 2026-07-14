@@ -1,0 +1,750 @@
+### COMMITS (fa5ebefe..HEAD)
+c6a03ba1 docs(plan): phase-1 execution report — error-shaping core engine
+ecaced8e refactor: absorb anthropicStreamErrorType into error-shaping (G-3)
+5202f110 feat: add error-shaping decision engine (decide truth table + canonical/AUQ builders)
+26e51e23 feat: extend SyntheticOriginKind + FeatureKind for error-shaping
+
+### DIFFSTAT
+ .../task-1-report.md                               |  41 ++++
+ src/lib/anthropic/error-shaping.ts                 | 246 +++++++++++++++++++++
+ src/lib/history/types.ts                           |  17 +-
+ src/lib/observability/events.ts                    |   6 +
+ src/lib/pipeline/client-sink.ts                    |  10 +-
+ src/lib/pipeline/frame-origin.ts                   |   2 +-
+ src/lib/tui/terminal-ui.ts                         |   3 +
+ src/routes/messages/streaming-pump.ts              |  24 +-
+ tests/anthropic/error-shaping.unit.test.ts         | 239 ++++++++++++++++++++
+ 9 files changed, 570 insertions(+), 18 deletions(-)
+
+### FULL DIFF (-U10)
+diff --git a/src/lib/anthropic/error-shaping.ts b/src/lib/anthropic/error-shaping.ts
+new file mode 100644
+index 00000000..5981e38c
+--- /dev/null
++++ b/src/lib/anthropic/error-shaping.ts
+@@ -0,0 +1,246 @@
++/**
++ * Error-shaping decision engine — the pure-logic base for turning a classified upstream failure
++ * into a client-facing shaping decision (retry signal / AskUserQuestion / canonical error frame /
++ * block-level deferral).
++ *
++ * This module is `lib`-layer and MUST NOT import from `routes/` (dependency direction is
++ * routes→lib; same rule as `recover-refusal.ts` / `post-commit-error.ts`). `decide()` and every
++ * builder here are pure functions with no I/O and no `state` access — the caller reads the config
++ * snapshot from `state` and passes it in, and performs any header write / SSE emission / delegation
++ * itself. That keeps the whole decision surface unit-testable.
++ *
++ * Design notes (see docs/plan/2026-07-13-upstream-error-client-shaping/):
++ *  - The 11 `ApiErrorType`s bucket into three shaping classes (spec §核心设计 A/B/C):
++ *      A (retryable): network_error / server_error / upstream_rate_limited / rate_limited
++ *      B (AUQ candidates): content_filtered / quota_exceeded(402) / auth_expired(401/403 leg)
++ *      C (terminal canonical): token_limit / payload_too_large / bad_request
++ *    `aborted` is a NON-target (handled by the existing abort path) — passing it to `decide()`
++ *    is a caller misuse and throws.
++ *  - `clientVisibleStopEmitted` is currently a no-op for the two `ApiError` call sites (both pass
++ *    `false`); it is a forward-compat slot for Phase 6's block-level `defer-to-block-level` sub-
++ *    decision, which does NOT flow through this truth table.
++ */
++
++import type { ApiError } from "~/lib/error"
++import type { ClientFrame } from "~/lib/pipeline/types"
++
++import { classifyStreamError } from "~/lib/stream"
++
++// ============================================================================
++// Config + input/output types (README §4 contract — consumed verbatim by Phase 2/3/4/5)
++// ============================================================================
++
++/** The 4 error-shaping config keys, read from `state` by the caller and passed in as a snapshot. */
++export interface ErrorShapingConfig {
++  enabled: boolean // error_shaping_enabled
++  askUserQuestion: boolean // error_ask_user_question
++  auqTemplate: string // error_auq_template（空 = 内置默认）
++  selfhealDelegate: Readonly<Record<string, "proxy" | "delegate">> // error_selfheal_delegate
++}
++
++/** The three-dimensional input to the decision engine (pure, no I/O). */
++export interface ShapingInput {
++  error: ApiError // ~/lib/error, one of 11 ApiErrorType
++  commitPhase: "pre-commit" | "post-commit"
++  clientVisibleStopEmitted: boolean // includes a synthetic anchor stop; only meaningful post-commit
++  config: ErrorShapingConfig // snapshot of the 4 new keys
++}
++
++/** The decision engine output — one of four kinds; the caller executes the write/delegation. */
++export type ShapingDecision =
++  | { kind: "retry-signal"; retryAfterSec?: number } // A类 pre-commit
++  | { kind: "ask-user-question"; questions: ReadonlyArray<AuqQuestion> } // B类
++  | { kind: "canonical-error"; errorType: string; message: string; retryAfterSec?: number } // C类
++  | { kind: "defer-to-block-level" } // A类 post-commit 截断/RST（G-4 gated，Phase 6 消费）
++
++// ============================================================================
++// Error-class buckets (spec §核心设计 A/B/C)
++// ============================================================================
++
++/** A class — retryable failures. pre-commit → retry-signal; post-commit → canonical-error. */
++const RETRYABLE_TYPES = new Set<ApiError["type"]>(["rate_limited", "server_error", "upstream_rate_limited", "network_error"])
++
++/** B class — AskUserQuestion candidates (only when `askUserQuestion=true` && pre-commit). */
++const AUQ_CANDIDATE_TYPES = new Set<ApiError["type"]>(["content_filtered", "quota_exceeded", "auth_expired"])
++
++// ============================================================================
++// decide()
++// ============================================================================
++
++/**
++ * Map a classified `ApiError` (+ config + commitPhase) to a `ShapingDecision`.
++ *
++ * `aborted` is a non-target and throws (caller misuse guard). Otherwise:
++ *  - A class: pre-commit → `retry-signal` (retryAfterSec = error.retryAfter); post-commit →
++ *    `canonical-error` (status is locked once bytes are committed — no client-side retry possible).
++ *  - B class: pre-commit && config.askUserQuestion → `ask-user-question` (with rendered questions);
++ *    otherwise → `canonical-error`.
++ *  - C class (everything else): always `canonical-error`.
++ */
++export function decide(input: ShapingInput): ShapingDecision {
++  const { error, commitPhase, config } = input
++
++  if (error.type === "aborted") {
++    throw new Error("error-shaping.decide() must not be called for `aborted` errors (non-target; handled by the abort path)")
++  }
++
++  if (RETRYABLE_TYPES.has(error.type)) {
++    if (commitPhase === "pre-commit") {
++      return { kind: "retry-signal", retryAfterSec: error.retryAfter }
++    }
++    return canonicalErrorDecision(error)
++  }
++
++  if (AUQ_CANDIDATE_TYPES.has(error.type) && commitPhase === "pre-commit" && config.askUserQuestion) {
++    return {
++      kind: "ask-user-question",
++      questions: [buildAuqQuestion(error, config)],
++    }
++  }
++
++  // B class without AUQ (disabled / post-commit) and all C class → canonical.
++  return canonicalErrorDecision(error)
++}
++
++/** Build the `canonical-error` decision for an `ApiError`, mapping its `type` to the Anthropic wire
++ *  `error.type` literal and carrying through any `retryAfter`. */
++function canonicalErrorDecision(error: ApiError): Extract<ShapingDecision, { kind: "canonical-error" }> {
++  return {
++    kind: "canonical-error",
++    errorType: anthropicErrorTypeForApiError(error.type),
++    message: error.message,
++    ...(error.retryAfter === undefined ? {} : { retryAfterSec: error.retryAfter }),
++  }
++}
++
++/** Map an `ApiErrorType` to the Anthropic wire `error.type` literal the client SDK branches on. */
++function anthropicErrorTypeForApiError(type: ApiError["type"]): string {
++  switch (type) {
++    case "rate_limited":
++    case "quota_exceeded":
++    case "upstream_rate_limited": {
++      return "rate_limit_error"
++    }
++    case "server_error":
++    case "network_error": {
++      return "api_error"
++    }
++    case "content_filtered": {
++      return "invalid_request_error"
++    }
++    case "payload_too_large": {
++      return "request_too_large"
++    }
++    case "token_limit":
++    case "bad_request": {
++      return "invalid_request_error"
++    }
++    case "auth_expired": {
++      return "authentication_error"
++    }
++    // `aborted` is guarded out in `decide()`; default keeps the switch total.
++    default: {
++      return "api_error"
++    }
++  }
++}
++
++// ============================================================================
++// canonical error frame (G-3: the single constructor for post-commit terminal error frames)
++// ============================================================================
++
++/**
++ * Build the Anthropic `event: error` frame from a `canonical-error` decision. Hand-built canonical
++ * JSON (not via the `routes/` `anthropicErrorFrame` helper — `lib/` must not depend on `routes/`;
++ * same convention as `recover-refusal.ts:212-219`); the shape is protocol-fixed
++ * (`{ type:"error", error:{ type, message, retry_after? } }`) so it cannot drift.
++ *
++ * `retry_after` is OMITTED entirely (not `null`/`undefined` literal) when the decision has no
++ * `retryAfterSec`, matching `post-commit-error.ts` behaviour.
++ */
++export function buildCanonicalErrorFrame(decision: Extract<ShapingDecision, { kind: "canonical-error" }>): ClientFrame {
++  const error: Record<string, unknown> = { type: decision.errorType, message: decision.message }
++  if (decision.retryAfterSec !== undefined) error.retry_after = decision.retryAfterSec
++  return { event: "error", data: JSON.stringify({ type: "error", error }) }
++}
++
++/**
++ * Map a streaming error to its Anthropic SSE `error.type` (absorbed from
++ * `streaming-pump.ts:anthropicStreamErrorType`, G-3): shutdown → retryable `overloaded_error`,
++ * idle-timeout → `timeout_error`, everything else → `api_error`. Pure function — same input yields
++ * same output regardless of call site, so `streaming-pump.ts` re-exports this under the old name.
++ */
++export function classifyStreamErrorType(error: unknown): string {
++  switch (classifyStreamError(error)) {
++    case "idle-timeout": {
++      return "timeout_error"
++    }
++    case "shutdown": {
++      return "overloaded_error"
++    }
++    default: {
++      return "api_error"
++    }
++  }
++}
++
++// ============================================================================
++// AskUserQuestion content construction (B class)
++// ============================================================================
++
++/** B-class question content. `decide()` completes the `{error_type}`/`{status}` first-pass render;
++ *  `{model}`/`{request_id}` are left verbatim for Phase 4's builder second pass. */
++export interface AuqQuestion {
++  question: string // may still contain unrendered {model}/{request_id}
++  header: string
++  multiSelect: boolean
++  options: ReadonlyArray<string>
++}
++
++/**
++ * Default AUQ question template. Uses exactly the 4 spec-given placeholders
++ * (`{error_type}`/`{status}`/`{model}`/`{request_id}`, single-brace) — no `{message}`.
++ */
++export const DEFAULT_AUQ_TEMPLATE = "上游返回错误 {error_type}（HTTP {status}），模型 {model}、请求 {request_id}。请选择如何继续？"
++
++/**
++ * Render an AUQ template: literal `{name}` substitution for keys present in `vars`; UNKNOWN
++ * placeholders are left VERBATIM (never throw / never drop). Same regex semantics as
++ * `recover-refusal.ts:96` `renderRefusalTemplate` — this enables the two-pass render (complementary
++ * `vars` subsets across two calls). Reimplemented locally (not imported) to avoid a needless cross-
++ * file coupling; both are the same tiny hand-built helper per the `recover-refusal.ts:212-219`
++ * "hand-built small function, no cross-layer reuse" convention.
++ */
++export function renderAuqQuestion(tmpl: string, vars: Partial<{ model: string; request_id: string; error_type: string; status: string }>): string {
++  return tmpl.replaceAll(/\{(\w+)\}/g, (whole, key: string) => (key in vars ? String((vars as Record<string, unknown>)[key]) : whole))
++}
++
++/** Per-errorType option sets for the B-class AUQ. User-facing wording (not protocol behaviour);
++ *  minimal starter set per the plan — if it conflicts with the spec appendix, the spec wins. */
++function optionsForErrorType(type: ApiError["type"]): ReadonlyArray<string> {
++  switch (type) {
++    case "quota_exceeded": {
++      return ["等待配额恢复后重试", "切换到未超额的其他模型", "放弃本次请求"]
++    }
++    case "content_filtered": {
++      return ["改写提示词后重试", "切换到过滤策略不同的其他模型", "放弃本次请求"]
++    }
++    case "auth_expired": {
++      return ["重新登录 / 刷新凭据后重试", "检查账户授权状态", "放弃本次请求"]
++    }
++    default: {
++      return ["重试", "放弃本次请求"]
++    }
++  }
++}
++
++/** Build the single B-class question: first-pass render of `{error_type}`/`{status}` (the only
++ *  fields available at classification), `{model}`/`{request_id}` left for Phase 4's second pass. */
++function buildAuqQuestion(error: ApiError, config: ErrorShapingConfig): AuqQuestion {
++  return {
++    question: renderAuqQuestion(config.auqTemplate || DEFAULT_AUQ_TEMPLATE, { error_type: error.type, status: String(error.status) }),
++    header: "如何继续？",
++    multiSelect: false,
++    options: optionsForErrorType(error.type),
++  }
++}
+diff --git a/src/lib/history/types.ts b/src/lib/history/types.ts
+index 1cf59aa9..bf5c166a 100644
+--- a/src/lib/history/types.ts
++++ b/src/lib/history/types.ts
+@@ -173,22 +173,37 @@ export interface SseEventRecord {
+    *   - "hook-mock" / "hook-replay" — the UPSTREAM-original track's frames came from an `onExchange`
+    *     upstream-hook mock/replay stream (`tagStream`/`readOrigin`, ~/lib/pipeline/hooks/origin), NOT a
+    *     real GHC upstream response — richest-data-flow requires this be distinguishable from genuine
+    *     upstream traffic.
+    *   - "hook-rewrite" — the FORWARDED track's frame was produced by a `rewriteUpstreamFrame` hook
+    *     (differs from the pre-hook frame the upstream track kept); the upstream track itself never
+    *     carries this variant (it always records the pre-hook original — spec §3.2/§3.4 H2).
+    *   - "refusal-recovery" — the FORWARDED track's frame was injected or rewritten by refusal recovery
+    *     (the end_turn synthetic text block + rewritten end_turn delta, or the error-mode `event: error`
+    *     frame). The upstream track never carries it (it keeps the genuine upstream `refusal`).
++   *   - "error-shaping-canonical" — the FORWARDED track's post-commit terminal `event: error` frame was
++   *     produced by error-shaping's `buildCanonicalErrorFrame` (G-3), REPLACING the upstream terminator;
++   *     the upstream track keeps the real upstream error. (Phase 3 wiring.)
++   *   - "error-shaping-auq" — the FORWARDED track's frames are the pre-commit AskUserQuestion synthesis
++   *     (a whole fabricated success turn injected in lieu of the upstream error); the upstream track
++   *     keeps the real error. (Phase 4 wiring.)
+    */
+-  synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-mock" | "hook-rewrite" | "hook-replay" | "refusal-recovery"
++  synthetic?:
++    | "keepalive"
++    | "anchor"
++    | "synthetic-message-start"
++    | "hook-mock"
++    | "hook-rewrite"
++    | "hook-replay"
++    | "refusal-recovery"
++    | "error-shaping-canonical"
++    | "error-shaping-auq"
+ }
+ 
+ /**
+  * The response as actually forwarded to the client (proxy→client), AFTER
+  * server-tool filtering, tool-name restoration, and tool-input decoding. The
+  * upstream-original response lives in `HistoryEntry.response` / `sseEvents`;
+  * this is the client-visible variant. Recording both gives the "what upstream
+  * sent vs what the client received" diff that diagnoses forwarding bugs.
+  */
+ export interface ForwardedResponse {
+diff --git a/src/lib/observability/events.ts b/src/lib/observability/events.ts
+index 3c7f838b..db2ad7f0 100644
+--- a/src/lib/observability/events.ts
++++ b/src/lib/observability/events.ts
+@@ -144,20 +144,26 @@ export type FeatureKind =
+   /** sanitize dropped unsupported params — `detail: { params: string[] }` */
+   | "dropped-params"
+   /** request used a non-default transport — `detail: { kind: TransportKind }` */
+   | "transport"
+   /** streaming recoverer rebuilt a tool_use from downgraded upstream text */
+   | "tool-call-recovered"
+   /** recovered a thinking-only upstream refusal by synthesizing a text completion */
+   | "refusal-recovered"
+   /** error mode: surfaced a thinking-only upstream refusal as an `event: error` frame + ctx.fail */
+   | "refusal-errored"
++  /** error-shaping 决策命中 — detail: { decision: "retry-signal"|"ask-user-question"|"canonical-error"|"defer-to-block-level", errorType: ApiErrorType, commitPhase: "pre-commit"|"post-commit" } */
++  | "error-shaping-decided"
++  /** error-shaping B类 AskUserQuestion 合成命中 — detail: { errorType: ApiErrorType } */
++  | "error-shaping-auq-synthesized"
++  /** error-shaping D类自愈委派命中（策略被强制 canHandle=false）— detail: { strategyName: string } */
++  | "error-shaping-selfheal-delegated"
+   /** a tool_use input field selected for decode couldn't be decoded — `detail: { tool, field?, reason }` */
+   | "tool-input-decode-failed"
+   /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */
+   | "protect-streaming-retry"
+   /** Streaming keepalive: proxy opened a 200 SSE stream on request receipt and started the connection-
+    *  level heartbeat immediately, decoupled from the upstream. `detail: {}`. */
+   | "stream-immediate-keepalive"
+   /** Upstream resolved after the immediate keepalive commit — `detail: { totalStalledMs: number }`. */
+   | "stream-upstream-resolved"
+   /**
+diff --git a/src/lib/pipeline/client-sink.ts b/src/lib/pipeline/client-sink.ts
+index 13757ab8..4e1ae046 100644
+--- a/src/lib/pipeline/client-sink.ts
++++ b/src/lib/pipeline/client-sink.ts
+@@ -159,21 +159,24 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
+   const writeSse = (frame: ClientFrame): Promise<void> =>
+     enqueue(() =>
+       stream.writeSSE({
+         data: frame.data ?? "",
+         ...(frame.event !== undefined && { event: frame.event }),
+         ...(frame.id !== undefined && { id: String(frame.id) }),
+         ...(frame.retry !== undefined && { retry: frame.retry }),
+       }),
+     )
+ 
+-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery"): void => {
++  const sampleForwarded = (
++    frame: ClientFrame,
++    synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
++  ): void => {
+     onForwarded?.({
+       offsetMs: Date.now() - streamStartMs,
+       type: (forwardedType ?? frameType)(frame),
+       raw: frame.data ?? "",
+       ...(synthetic ? { synthetic } : {}),
+     })
+   }
+ 
+   // Forward-idle (SOFT) racer state — only armed when a heartbeat is configured. It does
+   // NOT touch the upstream-idle guard (transport-resident, HARD kill): the two are
+@@ -483,21 +486,24 @@ function startFixedForwardIdleHeartbeat(
+ 
+ /** WS sink — writes JSON frame strings through a Hono `WSContext` (the Responses WS path). */
+ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
+   const { onForwarded, streamStartMs = Date.now(), heartbeat } = opts
+   const enqueue = makeSerializer()
+ 
+   // Sample the forwarded track synchronously at call time (before the enqueued send). WS frames carry
+   // only `data` (no SSE event/id/retry line), matching legacy `ws.send`. `synthetic` marks a proxy-
+   // injected keepalive OR a hook-rewritten frame so history/UI/logs never mistake either for real
+   // unaltered upstream content.
+-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery"): void => {
++  const sampleForwarded = (
++    frame: ClientFrame,
++    synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
++  ): void => {
+     onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) })
+   }
+   const sendRaw = (frame: ClientFrame): Promise<void> =>
+     enqueue(() => {
+       ws.send(frame.data ?? "")
+     })
+ 
+   // Forward-idle heartbeat — armed only when configured. Built BEFORE `write` so `write` can push the
+   // idle countdown out on every real frame. `hb` is undefined on the no-heartbeat path, so `write`'s
+   // `hb?.noteActivity()` no-ops and the returned sink omits `close` — byte-identical to before Task 2.2.
+diff --git a/src/lib/pipeline/frame-origin.ts b/src/lib/pipeline/frame-origin.ts
+index 36d47077..4e4bd847 100644
+--- a/src/lib/pipeline/frame-origin.ts
++++ b/src/lib/pipeline/frame-origin.ts
+@@ -19,21 +19,21 @@ import type { ClientFrame } from "~/lib/pipeline/types"
+  * Implemented as a Symbol-keyed own property so it survives object spreads (`{...frame, data: x}`
+  * copies own Symbol keys — empirically confirmed) but is naturally ABSENT (a genuine real frame)
+  * wherever a later stage builds a brand-new object without spreading the input. A hook that mutates
+  * a frame in place and returns the SAME reference is unmarked by design (no cheap way to observe
+  * "it changed") — synthesizers wanting provenance return a fresh (or Object.assign-tagged) object.
+  */
+ const FRAME_SYNTHETIC_ORIGIN = Symbol("frameSyntheticOrigin")
+ 
+ /** Provenance kinds a forwarded-track frame can carry (record-layer metadata only; never affects
+  *  the wire bytes sent to the client). */
+-export type SyntheticOriginKind = "hook-rewrite" | "refusal-recovery"
++export type SyntheticOriginKind = "hook-rewrite" | "refusal-recovery" | "error-shaping-auq" | "error-shaping-canonical"
+ 
+ /** Tag a frame with its synthetic origin (mutates + returns the SAME object — see module doc). */
+ export function tagFrameSynthetic<T extends ClientFrame>(frame: T, kind: SyntheticOriginKind): T {
+   return Object.assign(frame, { [FRAME_SYNTHETIC_ORIGIN]: kind })
+ }
+ 
+ /** Read a frame's synthetic-origin kind (undefined = a genuine real frame, not synthetic). */
+ export function readSyntheticKind(frame: ClientFrame): SyntheticOriginKind | undefined {
+   return (frame as unknown as Record<symbol, unknown>)[FRAME_SYNTHETIC_ORIGIN] as SyntheticOriginKind | undefined
+ }
+diff --git a/src/lib/tui/terminal-ui.ts b/src/lib/tui/terminal-ui.ts
+index 32d7ba40..d7f03a01 100644
+--- a/src/lib/tui/terminal-ui.ts
++++ b/src/lib/tui/terminal-ui.ts
+@@ -1223,20 +1223,23 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
+     case "via-chat-completions-fallback":
+     case "via-responses":
+     case "dropped-params": {
+       return feature
+     }
+     // Recovery / repair outcomes — surfaced as bare-name tags (detail
+     // enrichment deferred to backlog; keeping the pre-exhaustiveness behavior).
+     case "tool-call-recovered":
+     case "refusal-recovered":
+     case "refusal-errored":
++    case "error-shaping-decided":
++    case "error-shaping-auq-synthesized":
++    case "error-shaping-selfheal-delegated":
+     case "tool-input-decode-failed":
+     case "protect-streaming-retry":
+     case "context-edits-applied":
+     case "tool-input-repaired":
+     case "tool-input-unrepairable":
+     case "translated-content-filter": {
+       return feature
+     }
+     case "beta-stripped": {
+       const betas = detail?.betas
+diff --git a/src/routes/messages/streaming-pump.ts b/src/routes/messages/streaming-pump.ts
+index 5227706b..d701b2da 100644
+--- a/src/routes/messages/streaming-pump.ts
++++ b/src/routes/messages/streaming-pump.ts
+@@ -13,34 +13,30 @@ import consola from "consola"
+ import type { RequestContext } from "~/lib/context/request"
+ import type { SseEventRecord } from "~/lib/history/store"
+ import type { StreamEvent } from "~/types/api/anthropic"
+ 
+ import { logServerToolBlock } from "~/lib/anthropic/server-tool-filter"
+ import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+ import { formatErrorWithCause } from "~/lib/error"
+ import { classifyStreamError } from "~/lib/stream"
+ import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
+ 
+-/** Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error. */
+-export function anthropicStreamErrorType(error: unknown): string {
+-  switch (classifyStreamError(error)) {
+-    case "idle-timeout": {
+-      return "timeout_error"
+-    }
+-    case "shutdown": {
+-      return "overloaded_error"
+-    }
+-    default: {
+-      return "api_error"
+-    }
+-  }
+-}
++/**
++ * Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error.
++ *
++ * G-3: the mapping logic now lives in `error-shaping.ts` (`classifyStreamErrorType`, the single home
++ * for error→Anthropic-wire shaping). This re-export keeps the original name/signature so the two
++ * real call sites — `handler-v4.ts:1193` (H3 branch) and `handler-v4.ts:1452` (translate-leg pump) —
++ * stay byte-for-byte unchanged; only the implementation moved. `codec.ts:619` merely mentions the
++ * name in a comment (not a call site).
++ */
++export { classifyStreamErrorType as anthropicStreamErrorType } from "~/lib/anthropic/error-shaping"
+ 
+ /**
+  * Extract live-stream signals and emit a detailed upstream-disconnect log.
+  *
+  * Pulls the diagnostic signals out of the handler-internal stream state and
+  * delegates formatting/emission to `logUpstreamStreamDisconnect`. The `silence`
+  * it surfaces (gap between the last upstream frame and the disconnect) is the
+  * smoking gun for "died during a silent thinking stall".
+  */
+ export function logUpstreamStreamError(
+diff --git a/tests/anthropic/error-shaping.unit.test.ts b/tests/anthropic/error-shaping.unit.test.ts
+new file mode 100644
+index 00000000..47fef2c8
+--- /dev/null
++++ b/tests/anthropic/error-shaping.unit.test.ts
+@@ -0,0 +1,239 @@
++/**
++ * Unit tests for the error-shaping decision engine (`src/lib/anthropic/error-shaping.ts`).
++ *
++ * Pure functions — no runtime, no I/O. Locks:
++ *  - the 11-type × commitPhase × config decision truth table (task 1.1)
++ *  - `buildCanonicalErrorFrame` + the absorbed `anthropicStreamErrorType` mapping (task 1.2, G-3)
++ *  - the `SyntheticOriginKind` extension (task 1.3)
++ *  - `renderAuqQuestion` two-pass semantics + B-class `questions` content (task 1.4)
++ */
++
++import {
++  //
++  describe,
++  expect,
++  test,
++} from "bun:test"
++
++import type {
++  //
++  ApiError,
++  ApiErrorType,
++} from "~/lib/error"
++
++import {
++  //
++  buildCanonicalErrorFrame,
++  classifyStreamErrorType,
++  decide,
++  DEFAULT_AUQ_TEMPLATE,
++  renderAuqQuestion,
++  type ErrorShapingConfig,
++} from "~/lib/anthropic/error-shaping"
++import {
++  //
++  readSyntheticKind,
++  tagFrameSynthetic,
++} from "~/lib/pipeline/frame-origin"
++import {
++  //
++  StreamIdleTimeoutError,
++  StreamReaperCancelError,
++  StreamShutdownError,
++} from "~/lib/stream"
++
++const baseConfig: ErrorShapingConfig = { enabled: true, askUserQuestion: false, auqTemplate: "", selfhealDelegate: {} }
++const mk = (type: ApiErrorType, status: number, extra: Partial<ApiError> = {}): ApiError => ({ type, status, message: "boom", raw: null, ...extra })
++
++describe("decide() — pre-commit truth table", () => {
++  test.each([
++    ["rate_limited", 429],
++    ["server_error", 500],
++    ["upstream_rate_limited", 503],
++    ["network_error", 0],
++  ] as const)("A类可重试(%s) pre-commit → retry-signal", (type, status) => {
++    const d = decide({ error: mk(type, status, { retryAfter: 30 }), commitPhase: "pre-commit", clientVisibleStopEmitted: false, config: baseConfig })
++    expect(d.kind).toBe("retry-signal")
++    if (d.kind === "retry-signal") expect(d.retryAfterSec).toBe(30)
++  })
++
++  test("quota_exceeded(402) pre-commit, askUserQuestion=false → canonical-error（非目标：402 从不算 A 类）", () => {
++    const d = decide({ error: mk("quota_exceeded", 402, { retryAfter: 3600 }), commitPhase: "pre-commit", clientVisibleStopEmitted: false, config: baseConfig })
++    expect(d.kind).toBe("canonical-error")
++  })
++
++  test("quota_exceeded(402) pre-commit, askUserQuestion=true → ask-user-question", () => {
++    const d = decide({
++      error: mk("quota_exceeded", 402),
++      commitPhase: "pre-commit",
++      clientVisibleStopEmitted: false,
++      config: { ...baseConfig, askUserQuestion: true },
++    })
++    expect(d.kind).toBe("ask-user-question")
++  })
++
++  test("content_filtered(422) pre-commit, askUserQuestion=true → ask-user-question", () => {
++    const d = decide({
++      error: mk("content_filtered", 422),
++      commitPhase: "pre-commit",
++      clientVisibleStopEmitted: false,
++      config: { ...baseConfig, askUserQuestion: true },
++    })
++    expect(d.kind).toBe("ask-user-question")
++  })
++
++  test.each([401, 403])(
++    "auth_expired(%i) pre-commit, askUserQuestion=true → ask-user-question（token-refresh 已在更早的 RetryStrategy 层耗尽才会走到这里，decide() 不区分 401/403）",
++    (status) => {
++      const d = decide({
++        error: mk("auth_expired", status),
++        commitPhase: "pre-commit",
++        clientVisibleStopEmitted: false,
++        config: { ...baseConfig, askUserQuestion: true },
++      })
++      expect(d.kind).toBe("ask-user-question")
++    },
++  )
++
++  test.each(["token_limit", "payload_too_large", "bad_request"] as const)("C类(%s) pre-commit → canonical-error 且 askUserQuestion 开关不影响结果", (type) => {
++    const d1 = decide({ error: mk(type, 400), commitPhase: "pre-commit", clientVisibleStopEmitted: false, config: baseConfig })
++    const d2 = decide({ error: mk(type, 400), commitPhase: "pre-commit", clientVisibleStopEmitted: false, config: { ...baseConfig, askUserQuestion: true } })
++    expect(d1.kind).toBe("canonical-error")
++    expect(d2.kind).toBe("canonical-error")
++  })
++
++  test("aborted 从不应调用 decide()（非目标）— 传入抛出，作为误用护栏", () => {
++    expect(() => decide({ error: mk("aborted", 0), commitPhase: "pre-commit", clientVisibleStopEmitted: false, config: baseConfig })).toThrow(/aborted/i)
++  })
++})
++
++describe("decide() — post-commit：status 已锁定，A类不再有 retry-signal 选项", () => {
++  test.each(["rate_limited", "server_error", "upstream_rate_limited", "network_error"] as const)(
++    "A类(%s) post-commit → canonical-error（不是 retry-signal，也不是 defer-to-block-level——这两者只属于非 ApiError 的截断/RST 分支，见 Phase 3 说明）",
++    (type) => {
++      const d = decide({ error: mk(type, 500), commitPhase: "post-commit", clientVisibleStopEmitted: false, config: baseConfig })
++      expect(d.kind).toBe("canonical-error")
++    },
++  )
++
++  test("quota_exceeded(402) post-commit — 无论 askUserQuestion 开关，恒 canonical-error（AUQ 是 pre-commit 整段合成，post-commit 状态已锁定无法整段替换）", () => {
++    const d = decide({
++      error: mk("quota_exceeded", 402),
++      commitPhase: "post-commit",
++      clientVisibleStopEmitted: false,
++      config: { ...baseConfig, askUserQuestion: true },
++    })
++    expect(d.kind).toBe("canonical-error")
++  })
++
++  test.each([true, false])(
++    "clientVisibleStopEmitted=%s 对 post-commit ApiError 真值表结果无影响（当前不变量；Phase 6 的 defer-to-block-level 子决策不经过这张真值表，见本文档说明）",
++    (stop) => {
++      const d = decide({ error: mk("server_error", 500), commitPhase: "post-commit", clientVisibleStopEmitted: stop, config: baseConfig })
++      expect(d.kind).toBe("canonical-error")
++    },
++  )
++})
++
++// ============================================================================
++// Task 1.2 — buildCanonicalErrorFrame + classifyStreamErrorType (G-3)
++// ============================================================================
++
++describe("buildCanonicalErrorFrame", () => {
++  test("canonical-error decision → Anthropic event:error frame, retry_after preserved", () => {
++    const frame = buildCanonicalErrorFrame({ kind: "canonical-error", errorType: "rate_limit_error", message: "slow down", retryAfterSec: 30 })
++    expect(frame.event).toBe("error")
++    const data = JSON.parse(frame.data ?? "{}") as unknown
++    expect(data).toEqual({ type: "error", error: { type: "rate_limit_error", message: "slow down", retry_after: 30 } })
++  })
++
++  test("no retryAfterSec → retry_after field omitted (not null/undefined literal)", () => {
++    const frame = buildCanonicalErrorFrame({ kind: "canonical-error", errorType: "api_error", message: "boom" })
++    const data = JSON.parse(frame.data ?? "{}") as { error: Record<string, unknown> }
++    expect(data.error).toEqual({ type: "api_error", message: "boom" })
++    expect(data.error).not.toHaveProperty("retry_after")
++  })
++})
++
++describe("classifyStreamErrorType — 收编 streaming-pump.ts:anthropicStreamErrorType 的逻辑", () => {
++  test("idle-timeout → timeout_error", () => {
++    expect(classifyStreamErrorType(new StreamIdleTimeoutError(300_000))).toBe("timeout_error")
++  })
++
++  test("shutdown → overloaded_error", () => {
++    expect(classifyStreamErrorType(new StreamShutdownError())).toBe("overloaded_error")
++  })
++
++  test.each([new StreamReaperCancelError(), new Error("transport reset"), "not an error", null])("other/non-classified → api_error (%p)", (err) => {
++    expect(classifyStreamErrorType(err)).toBe("api_error")
++  })
++})
++
++// ============================================================================
++// Task 1.3 — SyntheticOriginKind extension
++// ============================================================================
++
++describe("SyntheticOriginKind — error-shaping members", () => {
++  test.each(["error-shaping-auq", "error-shaping-canonical"] as const)("accepts %s", (kind) => {
++    const f = tagFrameSynthetic({ event: "error", data: "{}" }, kind)
++    expect(readSyntheticKind(f)).toBe(kind)
++  })
++})
++
++// ============================================================================
++// Task 1.4 — renderAuqQuestion two-pass render + B-class questions content
++// ============================================================================
++
++describe("renderAuqQuestion — 两遍渲染语义", () => {
++  test("只传 error_type/status → {model}/{request_id} 原样保留未渲染", () => {
++    const text = renderAuqQuestion("model={model} req={request_id} type={error_type} status={status}", { error_type: "quota_exceeded", status: "402" })
++    expect(text).toBe("model={model} req={request_id} type=quota_exceeded status=402")
++  })
++
++  test("第二遍只传 model/request_id → 补全剩余占位符，得到完全渲染结果", () => {
++    const pass1 = renderAuqQuestion("model={model} req={request_id} type={error_type} status={status}", { error_type: "quota_exceeded", status: "402" })
++    const pass2 = renderAuqQuestion(pass1, { model: "claude-3-5-sonnet-latest", request_id: "req_test" })
++    expect(pass2).toBe("model=claude-3-5-sonnet-latest req=req_test type=quota_exceeded status=402")
++  })
++
++  test("不存在 {message} 占位符——DEFAULT_AUQ_TEMPLATE 只使用 spec 给定的 4 个占位符", () => {
++    expect(DEFAULT_AUQ_TEMPLATE).not.toContain("{message}")
++    expect(DEFAULT_AUQ_TEMPLATE).not.toContain("{{message}}")
++  })
++})
++
++describe("decide() B 类分支 — questions 内容构造", () => {
++  const auqConfig: ErrorShapingConfig = { enabled: true, askUserQuestion: true, auqTemplate: "", selfhealDelegate: {} }
++  const mkErr = (type: ApiErrorType, status: number): ApiError => ({ type, status, message: "boom", raw: null })
++
++  test("quota_exceeded(402) → questions 长度 1，header/options 按 errorType 分派，question 文本含未渲染的 {model}/{request_id}", () => {
++    const d = decide({ error: mkErr("quota_exceeded", 402), commitPhase: "pre-commit", clientVisibleStopEmitted: false, config: auqConfig })
++    if (d.kind !== "ask-user-question") throw new Error("expected ask-user-question")
++    expect(d.questions).toHaveLength(1)
++    const q = d.questions[0]
++    expect(q.question).toContain("{model}")
++    expect(q.question).toContain("{request_id}")
++    expect(q.question).not.toContain("{error_type}") // 已被第一遍渲染替换
++    expect(q.question).not.toContain("{status}")
++    expect(q.multiSelect).toBe(false)
++    expect(q.options.length).toBeGreaterThan(0)
++  })
++
++  test("content_filtered(422) 与 auth_expired(401/403) 的 options 各自不同（errorType 分派，非同一份文案）", () => {
++    const d1 = decide({ error: mkErr("content_filtered", 422), commitPhase: "pre-commit", clientVisibleStopEmitted: false, config: auqConfig })
++    const d2 = decide({ error: mkErr("auth_expired", 401), commitPhase: "pre-commit", clientVisibleStopEmitted: false, config: auqConfig })
++    if (d1.kind !== "ask-user-question" || d2.kind !== "ask-user-question") throw new Error("expected ask-user-question")
++    expect(d1.questions[0]?.options).not.toEqual(d2.questions[0]?.options)
++  })
++
++  test("config.auqTemplate 非空时覆盖 DEFAULT_AUQ_TEMPLATE", () => {
++    const d = decide({
++      error: mkErr("quota_exceeded", 402),
++      commitPhase: "pre-commit",
++      clientVisibleStopEmitted: false,
++      config: { ...auqConfig, auqTemplate: "自定义：{error_type}/{status}，{model}/{request_id}" },
++    })
++    if (d.kind !== "ask-user-question") throw new Error("expected ask-user-question")
++    expect(d.questions[0]?.question).toBe("自定义：quota_exceeded/402，{model}/{request_id}")
++  })
++})

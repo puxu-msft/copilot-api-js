@@ -2,6 +2,6 @@
 [2K[<-->] POST /v1/messages claude-opus-4-8 3.0s[2K[....] TT:TT:TT POST /v1/messages gpt-5
 [2K[<-->] claude-opus-4-8 ×1 3.0s | gpt-5 ×1 1.0s[2K[....] TT:TT:TT POST /v1/messages gpt-5
 [2K[<-->] gpt-5 ×2 1.0s 500ms | claude-opus-4-8 ×1 3.0s[2K[INFO] TT:TT:TT golden line
-[2K[<-->] gpt-5 ×2 1.0s 500ms | claude-opus-4-8 ×1 ↓12.1KB 3.0s[2K[ OK ] TT:TT:TT 200 POST /v1/messages claude-opus-4-8 3.0s ↓12.1KB
+[2K[<-->] gpt-5 ×2 1.0s 500ms | claude-opus-4-8 ×1 ↓12.1KB 3.0s[2K[ OK ] TT:TT:TT 200 anthropic/claude-opus-4-8 3.0s ↓12.1KB
 [2K[<-->] gpt-5 ×2 1.0s 500ms[2K[FAIL] TT:TT:TT 429 POST /v1/messages gpt-5 1.0s: rate_limited b
 [2K[<-->] POST /v1/messages gpt-5 500ms[2K

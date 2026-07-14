@@ -810,6 +810,8 @@ CC 2.1.207 内置工具（源码确认为真工具、非字符串误配）：`We
 
 本项目 CC 官方工具 stub 注入机制**对**（安全网防孤立历史 tool_use），但**名单陈旧**——漏 CC 2.1.207 的 `WebSearch`/`BashOutput`/`NotebookRead` 等（F28，中，确认功能 gap）。默认 ON + CC 中途改工具集常见 → 用这些工具的对话在工具集收缩时会**硬失败卡死**。修复明确（对齐名单 + 空 schema），不需探针，但应系统提取 CC 完整工具清单而非只补三个。归 F23 同类「clear-fix 功能 gap」。
 
+> **实现期纠正（2026-07-14，根因修复，取代补清单）**：deep-read + task-reviewer 探针揭示 stub 注入实为**三条独立路径**（`message-tools.ts` Path 1「`injectClaudeCodeOfficialTools` 无条件注每个缺失官方工具」/ Path 2「**为任意** history 引用但缺失的工具注 stub、name-agnostic」/ Path 3「请求全无 tools 时按 history 注」），而 Path 2 被**错误地**加了 `toolSearchEnabled` 门控（`historyToolNames = toolSearchEnabled ? … : undefined`）——这才是本 finding 的**真根因**：Path 2 本该对任意孤立历史工具生效（无论工具是否「官方」），却因门控在 tool-search OFF 时整体失效。真实 gap 因此比原判**窄**：仅「tool-search OFF + 有 tools + 孤立的非官方工具在 history」（Path 1 只覆盖官方、Path 2 门控关、Path 3 只在无 tools）→ 无人兜底。**已解除 Path 2 门控**（`historyToolNames` 总是计算）根因修复此 gap——对**任意**孤立历史工具生效，不需要把 `CLAUDE_CODE_OFFICIAL_TOOLS` 补全到 CC 2.1.207 全集（该补全一度落地又因此根因修复而回退为冗余）。**注意（回退副作用）**：`CLAUDE_CODE_OFFICIAL_TOOLS` 双消费——回退清单后，第 86 行 `NON_DEFERRED_TOOL_NAMES` spread 的**非延迟覆盖面也随之缩回原 16 项**（WebSearch/BashOutput/NotebookRead 等不再受非延迟保护，tool-search ON 时被 defer）——此维度**接受为 tool-search 预期权衡、不修**，见 F30 节裁决 + [deferred-backlog.md](../../docs/todo/deferred-backlog.md)。`API_DEFINED_TOOL_TYPE_PREFIXES` 新增 4 前缀未回退（见 F32）。
+
 ---
 
 ## 轮次 23（2026-07-13）：system-reminder / attribution 剥离 —— 格式匹配无 gap + F20 增补（billing 行第二关联载体）
@@ -857,9 +859,17 @@ CC 2.1.207 defer_loading 语义（`app.pretty.js:442315` 注释）：**默认无
 
 [message-tools.ts:63-84 NON_DEFERRED_TOOL_NAMES](../../src/lib/anthropic/message-tools.ts#L63) 注释明写「VSCode Copilot Chat original tool names (snake_case)」：`read_file`/`run_in_terminal`/`grep_search`/… —— **全是 Copilot 工具名、无一个 CC 的 PascalCase**（Read/Bash/Grep/Edit/Write/Task…）。`toolSearchEnabled` **默认 true**（[state.ts:1432](../../src/lib/state.ts#L1432)，Claude ≥4.5 默认放行）。
 
-### F30（MEDIUM，条件性 + 与 F28 同根）— CC 核心工具无静态非延迟保护，tool-search 开时首用即延迟
+### F30（**已证伪 → 收敛进 F28**，2026-07-13 实现期纠正）— ~~CC 核心工具无静态非延迟保护~~
 
-**判断（读码 + 推理）**：项目延迟判据（轮次 21）`shouldDefer = toolSearchEnabled && tool.defer_loading !== false && !NON_DEFERRED_TOOL_NAMES.has(name) && !learned && !historyUsed`。对 CC 核心工具（如 `Read`）：
+> **纠正（empirical-verification）**：本条原判**错误**。实现期 deep-read [message-tools.ts:86](../../src/lib/anthropic/message-tools.ts#L86) 发现 `NON_DEFERRED_TOOL_NAMES` 末尾 **`...CLAUDE_CODE_OFFICIAL_TOOLS`**——即 CC 官方工具**已被 spread 进非延迟集**、有静态保护。轮次 24 的判断源于**只读到第 82 行就下结论**（漏了第 86 行的 spread），是「否定性结论不自证」的反例（[[feedback-pass-null-clean-not-self-validating]]）。
+>
+> **真实残余（2026-07-14 再校正，取代 F28 补清单方案后）**：F28 的 **stub 维度**已由根因修复（解除 Path 2 门控）覆盖任意孤立历史工具，**不需要补官方清单**（清单一度补全又回退）。但 `CLAUDE_CODE_OFFICIAL_TOOLS` 是**双消费点**（stub 注入 + 第 86 行 `NON_DEFERRED_TOOL_NAMES` spread）——**非延迟维度没有等价的根因修复**：回退清单后，不在 16 项官方清单里的 CC 内置工具（WebSearch/BashOutput/NotebookRead 等）在 tool-search ON 时会被 `defer_loading:true`（task-reviewer + 主会话双探针实测：真实 WebSearch 工具 `defer_loading===true`，Read 为 `undefined`）。
+>
+> **裁决（用户 2026-07-14）：接受为 tool-search 的预期权衡，不修**。理由：延迟**罕用**工具正是 tool-search 省 context 的设计目的；**热路径工具**（Read/Bash/Grep/Edit/Write/Task 等 16 项官方清单）已受静态保护；罕用工具首次使用触发一次 `deferred-tool-retry` 自愈往返（非硬失败）。此为**既有基线行为**（非本次改动新引入——Task 1 一度改善、Task 2 回退恢复基线）。→ 已记 [deferred-backlog.md](../../docs/todo/deferred-backlog.md)。**无独立 F30 代码修复项**（stub 维度根因已修、非延迟维度接受现状）。
+>
+> 教训：动大工程/信 finding 前 deep-read 引用的每处 `file:line`（读全定义，别在名单中途停）——正是 CLAUDE.md `subagent-explicit-rubric` / `verifying-authoritative-claims` 要求的。
+
+**原（错误）判断存档**：项目延迟判据 `shouldDefer = toolSearchEnabled && tool.defer_loading !== false && !NON_DEFERRED_TOOL_NAMES.has(name) && !learned && !historyUsed`。对 CC 核心工具（如 `Read`）：
 - `tool.defer_loading !== false`：CC **省略** defer_loading（默认加载语义）→ `undefined !== false` = **TRUE**（**不**被 CC 的 flag 保护）。
 - `!NON_DEFERRED_TOOL_NAMES.has("Read")`：`Read` 不在 Copilot snake_case 名单 → **TRUE**（**不**被静态名单保护）。
 - → 只剩 `historyUsed` 保护：**首次使用前，CC 核心工具全被项目延迟**。
@@ -919,9 +929,12 @@ CC 2.1.207 server / API-defined tool 类型（带日期后缀，`app.pretty.js`�
 - **`memory_`**——不在前缀列表（memory 由专门 rewrite 处理成 native `memory_20250818`，[features.ts:193](../../src/lib/anthropic/features.ts#L193)，但**rewrite 后的 `memory_20250818`-typed 工具经 `isApiDefinedToolType` 仍返 false** → 被当 custom）。
 
 **后果**：这些 typed server 工具被**误分类为 custom** → 失去 server-tool 保护：
-- **延迟**（tool-search 默认 ON）：当 custom → 进 `customNames` → 可被延迟（F30 同机制），而 server 工具**不该**被 tool-search 延迟（协议语义）。
 - **sanitize**（若 `sanitizeToolNames` ON，默认 OFF）：当 custom → 试图 rename 其 name → **破坏 `type` 协议契约**（server 工具名是固定契约，改了 GHC/上游不认）。
-- `memory` 尤其敏感——native memory 工具被延迟/改名会破坏记忆功能。
+- `memory` 尤其敏感——native memory 工具被 sanitize 改名会破坏记忆功能。
+
+> **实现期校正（2026-07-14，task-reviewer 探针实测）**：原文「延迟（tool-search 默认 ON）：当 custom → 进 `customNames` → 可被延迟（F30 同机制）」表述**错误**——`shouldDefer`（`message-tools.ts` 199-204）**只按 `tool.name`** 匹配 `NON_DEFERRED_TOOL_NAMES`，**从不查 `tool.type`/`isApiDefinedToolType`**，故本前缀补全**只修 sanitize 保护**（`buildAnthropicToolNameMapper` 经 `isApiDefinedToolType` 排除 typed 工具，不进 custom-name 集），**不修延迟保护**。**延迟保护是独立未修 gap**：typed server 工具（含原有 6 前缀 `web_search_`/`text_editor_` 等，非仅本轮新增 4 前缀）在 tool-search 下仍可能被 `defer_loading:true`，因为 `shouldDefer` 从未排除 `isApiDefinedToolType(tool.type)` 为真的工具。已记入 `docs/todo/deferred-backlog.md`（理想方向：`shouldDefer` 增加 `!isApiDefinedToolType(tool.type)` 条件），本任务范围不含此修复。
+>
+> **完备性补正（2026-07-14，whole-branch review 抓）**：`isApiDefinedToolType` 实为**四个**消费点，非上文暗示的两个（sanitize + shouldDefer）——另两个是 `stripServerTools`（[message-tools.ts:384](../../src/lib/anthropic/message-tools.ts#L384)，剥 server 工具）与 **`translateTools`**（[anthropic-to-cc-request.ts:304](../../src/lib/openai/translate/anthropic-to-cc-request.ts#L304)，通用翻译矩阵的 CC 腿）。故 F32 补 4 前缀的**真实影响面**：(a) sanitize 排除（不改名，✓正确）；(b) `stripServerTools` 多剥这 4 类；(c) **`translateTools` 现在 drop 这 4 类 typed 工具**（此前不识别 → 推成 `parameters:undefined` 的畸形 function tool；drop 是**改进**，与该腿对 web_search_/code_execution_ 的既有处理一致）；(d) **不**改 `shouldDefer`（延迟保护仍未修，见上）。已补对称 characterization 测试钉住 translateTools 腿行为。
 
 触发取决于 CC 是否发 advisor/agent_toolset 工具（新/niche 特性）+ config；但**名单陈旧本身是确定的**（前缀式已很稳，仍漏新类别）。
 
@@ -962,6 +975,8 @@ CC 2.1.207 built-in 客户端工具（`app.pretty.js` 常量：Bash@90227 / Edit
 | **tool_search_** | ✗（项目自注入的 tool_search_tool_regex_20251119 走独立路径；客户端若发漏） | tool_search_tool_regex_20251119 |
 
 ### 合并修复建议（F28+F30+F32 一次落地）
+
+> **⚠️ SUPERSEDED（2026-07-14 实施）**：下方原设想的落地方案（补 stub 清单 F28 / 加 NON_DEFERRED 核心工具集 F30）**已被推翻**——实施期 deep-read + 探针揭示机制更窄：**F28 改走根因修复**（解除 Path 2 history-stub 安全网的 tool-search 门控，非补清单，清单一度补全又回退）；**F30 已证伪**（NON_DEFERRED 已 spread 官方清单）+ 其非延迟残余**接受为 tool-search 预期权衡不修**；**F32 前缀保留**（修 sanitize + translateTools drop，不修 defer）。实际落地见各 finding 的「实现期校正/纠正」blockquote + `deferred-backlog.md`。下文保留仅作**当时设想的存档**。
 
 1. **权威源**：以真实 CC 2.1.207 请求抓包（`claude -p ... --settings` + 记录 outbound tools + tool types）为准，本表作候选/交叉验证。
 2. **stub 集（F28）**：补 WebSearch/BashOutput/NotebookRead（+核 Agent/MCP 资源工具）；空 schema。
@@ -1006,7 +1021,7 @@ CC 2.1.207 引入一批 2026 新 beta，本项目**无显式感知**、靠通用
 |---|---|---|---|
 | **P1** | F1 | thinking-only 块间空档裸 ping 不重置 300s → CC 静默重试整请求(重复上游调用) | headless-CC + mock 上游实测触发条件 |
 | **P1** | F23 | vision 检测漏 tool_result 内嵌 image → 工具返回图像丢视觉(确认功能 gap) | 无(明确修复:递归检测);document 部分需探针 |
-| **P1** | F28 | CC 官方工具 stub 集陈旧(漏 WebSearch/BashOutput/NotebookRead)→ 工具集收缩时孤立历史 tool_use 硬失败 | 无(对齐名单+空 schema);宜系统提取 CC 完整工具清单 |
+| ~~P1~~ 已修复 | F28 | ~~CC 官方工具 stub 集陈旧~~→ 根因是 Path 2 history-stub 安全网被误加 tool-search 门控，已解除门控(2026-07-14，`message-tools.ts`)；`CLAUDE_CODE_OFFICIAL_TOOLS` 补清单已回退为冗余 | 已落地 |
 | **P2** | F7 | count_tokens 失败返 `{input_tokens:1}` 抑制 CC 本地兜底 | 实测 CC 对代理非 200 的反应 |
 | **P2** | F10/F15 | 服务端消化抢占 CC 原生自愈(主线 B) | 补「复刻 CC 回退」模式 + 文档化 |
 | **P2** | F19/F20 | richest-data-flow 捕获缺口(主线 D)：usage cost 因子 + metadata 会话关联 | 无(明确该做)；落地见 skill |

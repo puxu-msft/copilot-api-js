@@ -10,8 +10,10 @@ import {
   //
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
 import type { MessagesPayload } from "~/types/api/anthropic"
@@ -248,6 +250,30 @@ describe("translateAnthropicToChatCompletions — tools / tool_choice", () => {
       }),
     )
     expect(cc.tools).toEqual([{ type: "function", function: { name: "my_fn", parameters: { type: "object" } } }])
+  })
+
+  test("native server tool drop warning is tagged with requestId when opts.reqId is set", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      translateAnthropicToChatCompletions(payload({ tools: [{ name: "web_search", type: "web_search_20250305" }] }), { reqId: "req_test_42" })
+      const dropLine = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes("dropping native server tool"))
+      expect(dropLine).toBeDefined()
+      expect(dropLine).toContain("requestId=req_test_42")
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("drop warning omits requestId when opts.reqId is absent", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      translateAnthropicToChatCompletions(payload({ tools: [{ name: "web_search", type: "web_search_20250305" }] }))
+      const dropLine = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes("dropping native server tool"))
+      expect(dropLine).toBeDefined()
+      expect(dropLine).not.toContain("requestId=")
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 
   test("tool_choice mapping: auto/any→required/none/tool→function", () => {

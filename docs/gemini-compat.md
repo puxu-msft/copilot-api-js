@@ -22,7 +22,7 @@
 Gemini Request
     ↓ convertGeminiRequestToOpenAI()
 ChatCompletionsPayload (内部 OpenAI 格式)
-    ↓ openai-gemini codec 委托内部 openai-cc codec
+    ↓ gemini codec 委托内部 openai-cc codec
     ↓ createPipelineDriver 七阶段 (S1–S7：sanitize/retry/history/rate-limit/model 解析)
 GitHub Copilot API
     ↓

@@ -345,6 +345,73 @@ describe("accumulateResponsesStreamEvent", () => {
     expect(acc.toolCalls[0].callId).toBe("call_ghi")
   })
 
+  // REGRESSION (no-delta merge shape): a function_call can arrive with NO `arguments.delta` frames —
+  // only lifecycle + a terminal `.done` carrying the COMPLETE `arguments` (real GHC compat shape, see
+  // tests/e2e-client/responses-nodelta.probe.it.test.ts). `.done.arguments` is the authoritative final
+  // value, so it must be used (not the empty joined deltas). Before this, `.done` ignored `event.arguments`
+  // and the only reason args survived was the DUPLICATE `output_item.done` copy — once output_index dedup
+  // removed that duplicate, the sole tool_call had `arguments: ""`.
+  test("no-delta shape: arguments.done carries the full arguments verbatim (not the empty delta join)", () => {
+    const acc = createResponsesStreamAccumulator()
+    accumulateResponsesStreamEvent(
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "function_call", id: "added_a", call_id: "call_1", name: "search", arguments: "", status: "in_progress" },
+      } as any,
+      acc,
+    )
+    // NO function_call_arguments.delta frames — the full arguments arrive ONLY on `.done`.
+    accumulateResponsesStreamEvent(
+      { type: "response.function_call_arguments.done", output_index: 0, item_id: "argsdone_b", arguments: '{"city":"Paris"}' } as any,
+      acc,
+    )
+    accumulateResponsesStreamEvent(
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "function_call", id: "itemdone_c", call_id: "call_1", name: "search", arguments: '{"city":"Paris"}', status: "completed" },
+      } as any,
+      acc,
+    )
+    expect(acc.toolCalls).toHaveLength(1)
+    expect(acc.toolCalls[0].arguments).toBe('{"city":"Paris"}')
+    expect(acc.toolCalls[0].name).toBe("search")
+  })
+
+  test("arguments.done: authoritative `.done.arguments` wins over the concatenated deltas", () => {
+    const acc = createResponsesStreamAccumulator()
+    accumulateResponsesStreamEvent(
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "function_call", id: "a", call_id: "call_x", name: "run", arguments: "", status: "in_progress" },
+      } as any,
+      acc,
+    )
+    accumulateResponsesStreamEvent({ type: "response.function_call_arguments.delta", output_index: 0, item_id: "a", delta: '{"partial":' } as any, acc)
+    // `.done` carries the COMPLETE arguments — it is authoritative over a (here, truncated) delta stream.
+    accumulateResponsesStreamEvent({ type: "response.function_call_arguments.done", output_index: 0, item_id: "a", arguments: '{"partial":true}' } as any, acc)
+    expect(acc.toolCalls).toHaveLength(1)
+    expect(acc.toolCalls[0].arguments).toBe('{"partial":true}')
+  })
+
+  test("arguments.done with empty `.done.arguments` falls back to the concatenated deltas", () => {
+    const acc = createResponsesStreamAccumulator()
+    accumulateResponsesStreamEvent(
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "function_call", id: "a", call_id: "call_y", name: "run", arguments: "", status: "in_progress" },
+      } as any,
+      acc,
+    )
+    accumulateResponsesStreamEvent({ type: "response.function_call_arguments.delta", output_index: 0, item_id: "a", delta: '{"k":1}' } as any, acc)
+    accumulateResponsesStreamEvent({ type: "response.function_call_arguments.done", output_index: 0, item_id: "a", arguments: "" } as any, acc)
+    expect(acc.toolCalls).toHaveLength(1)
+    expect(acc.toolCalls[0].arguments).toBe('{"k":1}')
+  })
+
   test("finalizes function call on output_item.done if not already finalized", () => {
     const acc = createResponsesStreamAccumulator()
     accumulateResponsesStreamEvent(
@@ -391,7 +458,16 @@ describe("accumulateResponsesStreamEvent", () => {
     expect(acc.toolCalls[0].name).toBe("write")
   })
 
-  test("does not duplicate function calls finalized via arguments.done", () => {
+  // REGRESSION (gpt-5.6-sol tool_call doubling): GHC's Responses stream RE-ENCRYPTS the opaque
+  // `item.id` on EVERY event for the SAME logical output item — `output_item.added`,
+  // `function_call_arguments.done`, and `output_item.done` each carry a DIFFERENT `item.id`; only
+  // `output_index` and `call_id` are stable across them. The dedup guard must key on `output_index`,
+  // NOT on `item.id` — an id-keyed guard never matches, so `output_item.done` re-appends an item
+  // already finalized by `arguments.done`, doubling every tool_call (History showed 22/22 entries
+  // doubled). The original test used a STABLE `fc_5` id in both events (a fixture that did NOT
+  // reflect GHC reality), so it passed while production doubled — the classic test/impl same-source
+  // blind spot. This fixture now uses distinct per-event ids to codify the real invariant.
+  test("does not duplicate a function call finalized via arguments.done when output_item.done carries a DIFFERENT item.id (GHC per-event re-encryption)", () => {
     const acc = createResponsesStreamAccumulator()
     accumulateResponsesStreamEvent(
       {
@@ -399,7 +475,7 @@ describe("accumulateResponsesStreamEvent", () => {
         output_index: 0,
         item: {
           type: "function_call",
-          id: "fc_5",
+          id: "fc_added_AAA",
           call_id: "call_mno",
           name: "list",
           arguments: "",
@@ -413,19 +489,19 @@ describe("accumulateResponsesStreamEvent", () => {
       {
         type: "response.function_call_arguments.done",
         output_index: 0,
-        item_id: "fc_5",
+        item_id: "fc_argsdone_BBB",
         arguments: "{}",
       } as any,
       acc,
     )
-    // Then output_item.done comes
+    // Then output_item.done arrives with a THIRD, different item.id (GHC re-encrypts per event)
     accumulateResponsesStreamEvent(
       {
         type: "response.output_item.done",
         output_index: 0,
         item: {
           type: "function_call",
-          id: "fc_5",
+          id: "fc_itemdone_CCC",
           call_id: "call_mno",
           name: "list",
           arguments: "{}",
@@ -434,8 +510,44 @@ describe("accumulateResponsesStreamEvent", () => {
       } as any,
       acc,
     )
-    // Should not duplicate
+    // Same logical item (output_index 0) → exactly one tool_call, no duplicate.
     expect(acc.toolCalls).toHaveLength(1)
+    expect(acc.toolCalls[0].name).toBe("list")
+    expect(acc.toolCalls[0].callId).toBe("call_mno")
+  })
+
+  test("does not duplicate multiple distinct function calls each emitting args.done + output_item.done with per-event ids", () => {
+    const acc = createResponsesStreamAccumulator()
+    // Two distinct output items (indexes 0 and 1), each with the full added → args.done →
+    // output_item.done lifecycle and a DIFFERENT item.id at every step.
+    for (const [idx, callId, name] of [
+      [0, "call_a", "Read"],
+      [1, "call_b", "Bash"],
+    ] as const) {
+      accumulateResponsesStreamEvent(
+        {
+          type: "response.output_item.added",
+          output_index: idx,
+          item: { type: "function_call", id: `added_${idx}`, call_id: callId, name, arguments: "", status: "in_progress" },
+        } as any,
+        acc,
+      )
+      accumulateResponsesStreamEvent(
+        { type: "response.function_call_arguments.done", output_index: idx, item_id: `argsdone_${idx}`, arguments: "{}" } as any,
+        acc,
+      )
+      accumulateResponsesStreamEvent(
+        {
+          type: "response.output_item.done",
+          output_index: idx,
+          item: { type: "function_call", id: `itemdone_${idx}`, call_id: callId, name, arguments: "{}", status: "completed" },
+        } as any,
+        acc,
+      )
+    }
+    expect(acc.toolCalls).toHaveLength(2)
+    expect(acc.toolCalls.map((tc) => tc.name)).toEqual(["Read", "Bash"])
+    expect(acc.toolCalls.map((tc) => tc.callId)).toEqual(["call_a", "call_b"])
   })
 
   // ── Reasoning / unknown events (pass-through) ──

@@ -1,6 +1,6 @@
 ---
 name: persistence-async-invariants
-description: 当在 copilot-api-js 改动 history 持久化/异步落盘/settle 时点/buffered-retry 信号记录时使用——把同步持久化路径改异步的不变量清单（drain-before-close/自有 drain 集非 bus/fixture teardown 先 drain/re-entrancy 守卫/fire-and-forget never-throw/全 test await）、ctx.fail/complete 同步冻结 history entry 快照（client-facing 数据须 settle 前 record、新顶层字段三处必改）、buffered-retry 的 per-attempt 信号须在 committed settle 点记录（onAttemptReset 清空、不丢≠不清）。是 skill empirical-verification 在持久化域的落地；漏任一条→静默数据丢失或进程崩。
+description: 当在 copilot-api-js 改动 history/telemetry 持久化/异步落盘/settle 时点/buffered-retry 信号记录/加性双写 flush 时使用——把同步持久化路径改异步的不变量清单（drain-before-close/自有 drain 集非 bus/fixture teardown 先 drain/re-entrancy 守卫/fire-and-forget never-throw/全 test await）、ctx.fail/complete 同步冻结 history entry 快照（client-facing 数据须 settle 前 record、新顶层字段三处必改）、buffered-retry 的 per-attempt 信号须在 committed settle 点记录（onAttemptReset 清空、不丢≠不清）、加性双写 pending-delta outbox 防双计（snapshot-swap + committed-flush 清空 + 喂养门须判存储可用）+ 两阶段 poison 隔离 drain（单事务 all-or-nothing + 无限 foldback = 永久 wedge 放大器）+ config 值绑 artifact 生命周期非 live config。是 skill empirical-verification 在持久化域的落地；漏任一条→静默数据丢失或进程崩。
 ---
 
 # 持久化异步化 / settle 时点不变量
@@ -50,8 +50,25 @@ L2 buffered-retry（`protect_streaming_generation`）会让 **S5 响应处理（
 
 **判据**：信号产生在"会逐 attempt 重跑的处理层"、消费在"committed 之后"→ 必须 per-attempt 累积 + commit-flush。注意 spec 把"挂 ctx 非 acc 故 buffered-retry 不丢"当目标本身是不完整的——**不丢 ≠ 不清**，discarded 尝试的信号必须清。
 
-## 相关
-- 崩溃防御（fire-and-forget reject → unhandledRejection → exit）：skill `debugging-server-crashes`。
+## 4. 加性双写 pending-delta outbox + 两阶段 poison 隔离 drain（telemetry 迁 SQLite 时踩，对抗审查逼出）
+
+把一个**同步内存 store 加一条异步持久化腿**（本项目 telemetry dual-write：内存 dimBuckets/dimSinceStart 不变 + 增量落 SQLite），且持久化由**周期 flush** 而非每次 record 驱动时的不变量。三个缺陷全是 per-task 绿测掩盖、对抗/合并态审查才抓出的**静默数据丢失/无界增长/永久 wedge**。
+
+**Why**：加性 store（`col=col+excluded.col`）+ 周期 flush，天真实现「每 flush 把内存桶全量加性写」会**双计**（内存桶累积、flush 全量写 = 每 60s 重复计），且重启后内存从旧源重载会跨重启双计。DDSketch merge 与 SUM 均**非幂等**、重放必翻倍。
+
+**逐条核**：
+
+- **pending-delta outbox，非全量写**：record 时**除**更新主内存 store，**另**把该请求的增量 accumulate 进独立 outbox（per-key `measures` delta + per-distribution sketch 观测**原始值**——内存只存有损固定桶、重建不出精确 sketch）。flush drain outbox → 加性写 SQLite → **清空 outbox**（committed-flush 点清空，`onAttemptReset` 同理，「不丢≠不清」§3 的同构）。**唯一双计源**变成「flush 重跑」，由 snapshot-swap 关闭。
+- **snapshot-and-swap 防 drain 期间丢更新**：drain 先 `const pending = outbox; outbox = new()` 原子置换、再消费 snapshot 写 SQLite；drain 期间 record 落**新** outbox，不丢、不被正消费的 outbox 吞。
+- **喂养门须判「存储可用」非只判「enabled」**（MAJOR-1，无界 OOM）：record 喂 outbox 若只 gate `enabled` 不 gate `db!=null`，则 db-open 失败（损坏/只读 FS/迁移失败——你已 catch 的真实分支）时 `db=null` 而 `enabled=true` → record 持续喂、flush 因 db null 跳过 swap+drain → outbox **每请求增长、整会话不清 → 静默 OOM**。喂养门 = `enabled && store!=null`。
+- **持续 drain 失败须软上界**：db 开成功但每次 drain 抛（持续故障）时 fold-back 重试会让 outbox 无界增长；warn-once 只防日志刷屏、内存维度须设 drop-oldest 软上界（delta 是有损 summary、行级真相在别处、可丢）。
+- **两阶段 poison 隔离 drain**（MAJOR-2，永久 wedge 放大器——最阴险）：若 drain 是**单事务 all-or-nothing** + catch 把**整快照** fold-back 重试，则**一条** poison 条目（如 sketch merge 因 γ 失配 fail-loud 抛、或 blob 损坏）→ 整事务 ROLLBACK（同批干净 scalar/其它腿一起回滚）→ 整快照 fold-back → 下次 flush 再抛 → **无限重试永久 wedge、warn-once 掩盖可见性、须重启**。若 poison 源是**永久 artifact**（如 cumulative 单行 blob 的旧 γ）则跨重启也不自愈。**修 = 两阶段**：Phase 1（**事务外**）逐条 try/catch 做 poison-prone 的 read-merge-serialize（compute），poison 条目单独 warn+丢弃（不 fold-back）、幸存条目收集最终 blob；Phase 2（**单事务**）只做纯写幸存条目（原子性对幸存者仍成立）。事务级 db 错（磁盘满）仍整批 fold-back+retry（正当 never-lose）。
+
+## 5. config 值绑 artifact 生命周期，非 live config（MAJOR-2 根因）
+
+一个 config 值若**播种一个永久不可变 artifact**（本项目：`sketch_gamma` 决定 DDSketch 的 bin 映射，写进 permanent cumulative blob），且该 artifact 的后续操作要求该值**恒定**（DDSketch merge 要求同 γ），则该值**必须绑 artifact 的生命周期、不能读 live mutable config**：开库时从 artifact（`tel_meta['sketch_gamma']`）读回冻结值，缺失（全新库）才写入当前 config 值；此后所有建 sketch 用**冻结值**不读 `state.*`；config 与库值不符时 warn「须删库才换」。否则热重载改 config → 新值产的 artifact 与旧值产的 permanent artifact 不兼容 → merge fail-loud → 叠加单事务 all-or-nothing（§4）= 永久 wedge。**判据**：config 值是否被烘进一个比进程更久、且要求跨读一致的持久物？是则冻结绑 artifact，per-process freeze 都不够（跨重启新进程仍读新 config）。
+
+
 - 实测裁决（真实 http entry 读回、探针复制生产接线）：skill `empirical-verification`。
 - 后台 backfill 的可恢复骨架（相邻但不同域）：skill `history-backfill`。
 - schema 结构 / 迁移账本：skill `history-sqlite-schema`。

@@ -1,5 +1,7 @@
 # Kickoff:上游 Transport middleware(ad-hoc hook 机制)
 
+> **⚠️ 已被取代(SUPERSEDED,2026-07-12)。** 本 kickoff 描述的是 SDD 开始前的调研锚点;特性已完整实施并合并 master(`118a9c33`)。**实际设计偏离本文档**:采用 driver 编排的三挂载点(非本文档设想的 HookedTransport decorator)。权威现状看:spec [2026-07-12-upstream-hook-middleware.md](../spec/2026-07-12-upstream-hook-middleware.md) + ADR [decisions/2026-07-12-driver-orchestrated-upstream-hooks.md](../decisions/2026-07-12-driver-orchestrated-upstream-hooks.md) + [README.md](2026-07-12-upstream-hook-middleware/README.md)(阶段 DAG) + 用法 skill `upstream-hook-mocking`。本文档仅存作历史调研快照,勿据此重新实施。
+
 > **本文档是新会话的启动起点。** 这是一个已调研出方向、未开始 SDD 的中大型新特性。新会话应从 `superpowers:brainstorming` 开始,敲定下方「未决设计问题」后再写 spec → plan → 执行。本文档提供已完成的调研锚点,免于重建。
 
 **源起**:2026-07-12 cache_control 子字段剥离特性的实测中,发现「验证代理行为不得不真发 GHC」(消耗 Copilot 额度、依赖网络、且无法构造特定上游响应如 400 来测 reactive 学习腿)。用户提出需要一个 hook 机制:既用本 proxy 的完整处理管线,又能给出 mock 上游交互。

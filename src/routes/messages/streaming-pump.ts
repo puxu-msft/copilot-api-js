@@ -15,60 +15,25 @@ import type { SseEventRecord } from "~/lib/history/store"
 import type { StreamEvent } from "~/types/api/anthropic"
 
 import { logServerToolBlock } from "~/lib/anthropic/server-tool-filter"
-import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
-import { formatErrorWithCause } from "~/lib/error"
-import { classifyStreamError } from "~/lib/stream"
-import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
-
-/** Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error. */
-export function anthropicStreamErrorType(error: unknown): string {
-  switch (classifyStreamError(error)) {
-    case "idle-timeout": {
-      return "timeout_error"
-    }
-    case "shutdown": {
-      return "overloaded_error"
-    }
-    default: {
-      return "api_error"
-    }
-  }
-}
+import { upstreamFrameDiagType } from "~/lib/upstream-stream-diagnostics"
 
 /**
- * Extract live-stream signals and emit a detailed upstream-disconnect log.
+ * Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error.
  *
- * Pulls the diagnostic signals out of the handler-internal stream state and
- * delegates formatting/emission to `logUpstreamStreamDisconnect`. The `silence`
- * it surfaces (gap between the last upstream frame and the disconnect) is the
- * smoking gun for "died during a silent thinking stall".
+ * G-3: the mapping logic now lives in `error-shaping.ts` (`classifyStreamErrorType`, the single home
+ * for error→Anthropic-wire shaping). This re-export keeps the original name/signature so the two
+ * real call sites — `handler-v4.ts:1193` (H3 branch) and `handler-v4.ts:1452` (translate-leg pump) —
+ * stay byte-for-byte unchanged; only the implementation moved. `codec.ts:619` merely mentions the
+ * name in a comment (not a call site).
  */
-export function logUpstreamStreamError(
-  error: unknown,
-  ctx: {
-    model: string
-    streamState: StreamPumpState
-    acc: ReturnType<typeof createAnthropicStreamAccumulator>
-    sseEvents: Array<SseEventRecord>
-  },
-): void {
-  const { model, streamState, acc, sseEvents } = ctx
-  const last = sseEvents.at(-1)
-  const kind = classifyStreamError(error)
-  logUpstreamStreamDisconnect({
-    model,
-    kindLabel: kind === "other" ? "transport-close" : kind,
-    detail: error instanceof Error ? formatErrorWithCause(error) : String(error),
-    elapsedMs: Date.now() - streamState.streamStartMs,
-    frames: sseEvents.length,
-    bytes: streamState.bytesIn,
-    lastFrameType: last?.type,
-    lastFrameOffsetMs: last?.offsetMs ?? 0,
-    stuckBlockType: streamState.currentBlockType,
-    inputTokens: acc.inputTokens,
-    outputTokens: acc.outputTokens,
-  })
-}
+export { classifyStreamErrorType as anthropicStreamErrorType } from "~/lib/anthropic/error-shaping"
+
+/**
+ * The upstream-disconnect diagnostic emitter now lives in the shared leaf `~/lib/upstream-stream-diagnostics`
+ * (used by ALL non-native-Anthropic pumps too — Responses direct/reverse/WS). Re-exported here so the
+ * existing `handler-v4.ts` import path stays unchanged.
+ */
+export { logUpstreamStreamError } from "~/lib/upstream-stream-diagnostics"
 
 /** Mutable counters/state threaded through the streaming pump. */
 export interface StreamPumpState {
@@ -107,11 +72,13 @@ export function recordUpstreamFrame(args: RecordUpstreamFrameArgs): void {
 
   // Faithfully record every raw upstream event, including `ping` keepalives —
   // their timing reveals upstream idle gaps. `raw` stores the verbatim upstream
-  // `data:` bytes (no parse round-trip); `type` is derived for indexing. Required by
-  // 原则3 (后端存储必须完整,不主动丢弃任何可观测原始数据).
+  // `data:` bytes (no parse round-trip); `type` is derived via the SHARED
+  // `upstreamFrameDiagType` (single source of truth for honest last-frame labels) so this
+  // native pump never drifts from the shared collector — e.g. a malformed data-bearing frame
+  // is labelled `malformed`, NOT `keepalive` (LOW-1). Required by 原则3 (后端存储必须完整).
   sseEvents.push({
     offsetMs: Date.now() - streamState.streamStartMs,
-    type: parsed?.type ?? rawEvent.event ?? "keepalive",
+    type: upstreamFrameDiagType(rawEvent),
     raw: rawEvent.data ?? "",
   })
 

@@ -94,10 +94,12 @@ async function sdkAccumulate(frames: Array<ServerSentEventMessage>): Promise<imp
         break
       }
       case "content_block_delta": {
-        const d = ev.delta as { type: string; text?: string; partial_json?: string }
+        const d = ev.delta as { type: string; text?: string; partial_json?: string; thinking?: string; signature?: string }
         const b = blocks[ev.index]
         if (d.type === "text_delta") b.text = String(b.text ?? "") + (d.text ?? "")
         if (d.type === "input_json_delta") b._json = String(b._json ?? "") + (d.partial_json ?? "")
+        if (d.type === "thinking_delta") b.thinking = String(b.thinking ?? "") + (d.thinking ?? "")
+        if (d.type === "signature_delta") b.signature = String(b.signature ?? "") + (d.signature ?? "")
         break
       }
       case "message_delta": {
@@ -116,6 +118,7 @@ async function sdkAccumulate(frames: Array<ServerSentEventMessage>): Promise<imp
   // Finalize tool_use inputs from the accumulated json.
   message.content = blocks.filter(Boolean).map((b) => {
     if (b.type === "tool_use") return { type: "tool_use", id: b.id, name: b.name, input: b._json ? JSON.parse(String(b._json)) : {} } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
+    if (b.type === "thinking") return { type: "thinking", thinking: b.thinking ?? "", signature: b.signature ?? "" } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
     return { type: "text", text: b.text ?? "", citations: null } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
   })
   return message
@@ -134,6 +137,10 @@ function toolStart(idx: number, id: string, name: string, choiceIdx = 0): Server
 /** A tool_call args chunk at CC tool index `idx`. */
 function toolArgs(idx: number, args: string, choiceIdx = 0): ServerSentEventMessage {
   return ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: choiceIdx, delta: { tool_calls: [{ index: idx, function: { arguments: args } }] }, finish_reason: null }] })
+}
+/** A reasoning delta on choices[0] (GHC plaintext-reasoning extension). */
+function reasoningDelta(text: string, field: "reasoning" | "reasoning_content" = "reasoning"): ServerSentEventMessage {
+  return ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { [field]: text }, finish_reason: null }] })
 }
 /** The terminal chunk carrying finish_reason + usage. */
 function finish(finishReason: string, usage: Record<string, unknown>): ServerSentEventMessage {
@@ -187,16 +194,104 @@ describe("cc-to-anthropic-stream — W1 block-index allocator", () => {
   })
 })
 
-describe("cc-to-anthropic-stream — W2 thinking-drop (never synthesize unsigned thinking)", () => {
-  test("reasoning deltas are DROPPED, not rendered as a thinking block", () => {
-    const reasoning = ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { reasoning: "internal thoughts" }, finish_reason: null }] })
-    const frames = renderAll([reasoning, textDelta("visible"), finish("stop", { prompt_tokens: 5, completion_tokens: 2 })])
-    // No thinking block ever opened.
+describe("cc-to-anthropic-stream — reasoning → synthetic thinking block (forward, sentinel-signed)", () => {
+  const PREFIX = "copilot-api:synthetic-reasoning:v1:"
+  /** A reasoning delta carrying GHC's opaque encrypted_content (our CC intermediate carrier). */
+  function reasoningEncrypted(encrypted: string): ServerSentEventMessage {
+    return ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { reasoning_encrypted_content: encrypted }, finish_reason: null }] })
+  }
+
+  test("reasoning deltas render a thinking block at index 0 (thinking-first), text follows at index 1", () => {
+    const frames = renderAll([reasoningDelta("internal "), reasoningDelta("thoughts"), textDelta("visible"), finish("stop", { prompt_tokens: 5, completion_tokens: 2 })])
+    assertEventLineInvariant(frames)
     const starts = frames.filter((f) => data(f).type === "content_block_start")
-    expect(starts.every((f) => (data(f).content_block as { type: string }).type !== "thinking")).toBe(true)
-    // Text is the ONLY block, at index 0.
-    expect(starts.map((f) => data(f).index)).toEqual([0])
-    expect(data(starts[0]).content_block).toMatchObject({ type: "text" })
+    // thinking at 0 (arrived first), text at 1.
+    expect(starts.map((f) => data(f).index)).toEqual([0, 1])
+    expect(data(starts[0]).content_block).toMatchObject({ type: "thinking" })
+    expect(data(starts[1]).content_block).toMatchObject({ type: "text" })
+  })
+
+  test("thinking_delta carries the reasoning text; a signature_delta with the SENTINEL precedes the block stop", () => {
+    const frames = renderAll([reasoningDelta("step 1 "), reasoningDelta("step 2"), textDelta("answer"), finish("stop", { prompt_tokens: 5, completion_tokens: 2 })])
+    const thinkingDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "thinking_delta")
+    expect(thinkingDeltas.map((f) => (data(f).delta as { thinking: string }).thinking).join("")).toBe("step 1 step 2")
+
+    // The signature_delta must come BEFORE the thinking block's content_block_stop (index 0).
+    const seq = frames.map((f) => {
+      const d = data(f)
+      if (d.type === "content_block_delta" && (d.delta as { type: string }).type === "signature_delta") return `sig@${d.index}`
+      if (d.type === "content_block_stop") return `stop@${d.index}`
+      return null
+    }).filter(Boolean)
+    expect(seq.indexOf("sig@0")).toBeGreaterThanOrEqual(0)
+    expect(seq.indexOf("sig@0")).toBeLessThan(seq.indexOf("stop@0"))
+
+    const sig = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "signature_delta")!
+    expect((data(sig).delta as { signature: string }).signature).toBe(PREFIX)
+  })
+
+  test("reasoning_encrypted_content is embedded in the signature (base64url) for cross-turn round-trip", async () => {
+    const encrypted = "OPAQUE-encrypted-blob-xyz=="
+    const frames = renderAll([reasoningEncrypted(encrypted), reasoningDelta("summary text"), textDelta("answer"), finish("stop", { prompt_tokens: 5, completion_tokens: 2 })])
+    const sig = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "signature_delta")!
+    const signature = (data(sig).delta as { signature: string }).signature
+    expect(signature.startsWith(PREFIX)).toBe(true)
+    // The embedded payload decodes back to the original encrypted_content (round-trip).
+    const { extractEncryptedReasoning } = await import("~/lib/anthropic/synthetic-reasoning")
+    expect(extractEncryptedReasoning(signature)).toBe(encrypted)
+  })
+
+  test("reasoning_content field (alt GHC spelling) is also forwarded", () => {
+    const frames = renderAll([reasoningDelta("via reasoning_content", "reasoning_content"), textDelta("x"), finish("stop", { prompt_tokens: 1, completion_tokens: 1 })])
+    const thinkingDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "thinking_delta")
+    expect(thinkingDeltas.map((f) => (data(f).delta as { thinking: string }).thinking).join("")).toBe("via reasoning_content")
+  })
+
+  test("reasoning-then-tool (no text): thinking at 0, tool at 1", () => {
+    const frames = renderAll([reasoningDelta("planning"), toolStart(0, "toolu_a", "Read"), toolArgs(0, "{}"), finish("tool_calls", { prompt_tokens: 3, completion_tokens: 1 })])
+    const starts = frames.filter((f) => data(f).type === "content_block_start")
+    expect(starts.map((f) => (data(f).content_block as { type: string }).type)).toEqual(["thinking", "tool_use"])
+    expect(starts.map((f) => data(f).index)).toEqual([0, 1])
+  })
+
+  test("SDK ORACLE: a reasoning+text stream accumulates a well-formed thinking block via the REAL @anthropic-ai/sdk (accept, not reject)", async () => {
+    const frames = renderAll([reasoningDelta("Let me reason. "), reasoningDelta("Done."), textDelta("The answer is 42."), finish("stop", { prompt_tokens: 5, completion_tokens: 3 })])
+    const msg = await sdkAccumulate(frames)
+    // The real SDK decoder ACCEPTED the sentinel-signed thinking block (did not throw/drop it).
+    expect(msg.content.map((b) => b.type)).toEqual(["thinking", "text"])
+    const thinking = msg.content[0] as { type: "thinking"; thinking: string; signature: string }
+    expect(thinking.thinking).toBe("Let me reason. Done.")
+    expect(thinking.signature).toBe(PREFIX)
+    expect((msg.content[1] as { type: "text"; text: string }).text).toBe("The answer is 42.")
+  })
+})
+
+describe("cc-to-anthropic-stream — interleaved parallel tool-call args (reviewer gap #1)", () => {
+  // KNOWN GAP (test.todo): the LIVE translator emits input_json_delta in upstream arrival order, so
+  // INTERLEAVED tool args (tool0, tool1, tool0-args, tool1-args) target an already-STOPPED block —
+  // an illegal Anthropic reopen. Proper fix = render tool blocks from the accumulator at a commit
+  // boundary (the buffered-commit-render design), not a live per-frame patch. Tracked in
+  // docs/todo/deferred-backlog.md. When fixed, this promotes to a passing test.
+  test.todo("interleaved tool args never emit a content_block_delta on an already-stopped block", () => {
+    const frames = renderAll([
+      toolStart(0, "toolu_a", "Read"),
+      toolStart(1, "toolu_b", "Write"),
+      toolArgs(0, '{"a":'),
+      toolArgs(1, '{"b":'),
+      toolArgs(0, "1}"),
+      toolArgs(1, "2}"),
+      finish("tool_calls", { prompt_tokens: 5, completion_tokens: 3 }),
+    ])
+    assertEventLineInvariant(frames)
+
+    const stopped = new Set<number>()
+    const illegal: Array<number> = []
+    for (const f of frames) {
+      const d = data(f)
+      if (d.type === "content_block_stop") stopped.add(d.index as number)
+      if (d.type === "content_block_delta" && stopped.has(d.index as number)) illegal.push(d.index as number)
+    }
+    expect(illegal, `deltas targeted already-stopped blocks: ${JSON.stringify(illegal)}`).toEqual([])
   })
 })
 

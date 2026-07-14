@@ -135,10 +135,6 @@ describe("config compat — legacy key migration (file load)", () => {
     { old: "strip_read_tool_result_tags", new: "tool_strip_read_result_tags", value: true },
     { old: "non_deferred_tools", new: "tool_search_non_deferred", value: ["Foo"] },
     { old: "tool_non_deferred", new: "tool_search_non_deferred", value: ["Bar"] },
-    { old: "decode_tool_input_fields", new: "tool_decode_input_fields", value: { AskUserQuestion: ["questions"] } },
-    { old: "decode_all_tool_input_fields", new: "tool_decode_all_input_fields", value: true },
-    { old: "recover_tool_call_text", new: "tool_recover_call_text", value: true },
-    { old: "backfill_question_from_header", new: "tool_backfill_question", value: false },
     { old: "rewrite_system_reminders", new: "system_rewrite_reminders", value: true },
     { old: "strip_beta_headers", new: "beta_strip_headers", value: { "claude-x": ["foo"] } },
     { old: "strip_request_headers", new: "request_header_blacklist", value: ["x-anthropic-billing-header"] },
@@ -155,6 +151,44 @@ describe("config compat — legacy key migration (file load)", () => {
       expect(anthropic?.[oldKey]).toBeUndefined()
     })
   }
+
+  // Response-wire fixes regrouped under `response_text_fix` / `response_tool_use_fix` (nested
+  // sections). Migrations do NOT chain, so BOTH the ancestral spelling and the intermediate flat
+  // `tool_*` spelling map DIRECTLY to the final nested leaf. `decode_all` is removed outright.
+  const RESPONSE_FIX_RENAMES: ReadonlyArray<{ old: string; section: "response_text_fix" | "response_tool_use_fix"; leaf: string; value: unknown }> = [
+    { old: "decode_tool_input_fields", section: "response_tool_use_fix", leaf: "decode_top_level_field", value: { AskUserQuestion: ["questions"] } },
+    { old: "tool_decode_input_fields", section: "response_tool_use_fix", leaf: "decode_top_level_field", value: { SendMessage: ["x"] } },
+    { old: "recover_tool_call_text", section: "response_text_fix", leaf: "invoke_in_text", value: true },
+    { old: "tool_recover_call_text", section: "response_text_fix", leaf: "invoke_in_text", value: false },
+    { old: "backfill_question_from_header", section: "response_tool_use_fix", leaf: "ask_user_question_question_missing", value: false },
+    { old: "tool_backfill_question", section: "response_tool_use_fix", leaf: "ask_user_question_question_missing", value: true },
+    { old: "tool_repair_malformed_input", section: "response_tool_use_fix", leaf: "malformed_input", value: "tags" },
+  ]
+
+  for (const { old: oldKey, section, leaf, value } of RESPONSE_FIX_RENAMES) {
+    test(`anthropic.${oldKey} → anthropic.${section}.${leaf}`, () => {
+      const result = validateConfig({ anthropic: { [oldKey]: value } })
+      const anthropic = result.anthropic as Record<string, unknown> | undefined
+      const sectionObj = anthropic?.[section] as Record<string, unknown> | undefined
+      // malformed_input is transformed (comma-string → item array); others land verbatim.
+      const expected = oldKey === "tool_repair_malformed_input" ? ["tags"] : value
+      expect(sectionObj?.[leaf]).toEqual(expected)
+      expect(anthropic?.[oldKey]).toBeUndefined()
+    })
+  }
+
+  test("decode-ALL-tool-input-fields (both spellings) is dropped, not migrated", () => {
+    for (const key of ["decode_all_tool_input_fields", "tool_decode_all_input_fields"]) {
+      const result = validateConfig({ anthropic: { [key]: true } })
+      const anthropic = result.anthropic as Record<string, unknown> | undefined
+      expect(anthropic?.[key]).toBeUndefined()
+      // Not smuggled into either nested section either.
+      const toolUseFix = anthropic?.response_tool_use_fix as Record<string, unknown> | undefined
+      expect(toolUseFix).toBeUndefined()
+    }
+    // A removal deprecation warned (message names the removed feature).
+    expect(warnedMessages().some((m) => m.includes("decode-ALL-tool-input-fields"))).toBe(true)
+  })
 
   // The web_search double-hop + server_tool_strip/rewrite config keys were RETIRED
   // (2026-07-13) → dropped with a warn-and-continue deprecation, NOT migrated.

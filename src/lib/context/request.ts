@@ -250,15 +250,28 @@ export function createRequestContext(opts: {
   // The failureReason projection reads this first, then falls back to `_response.error`.
   let _failureReason: string | null = null
   let _pipelineInfo: PipelineInfo | null = null
+  // The initial (attempt-0) Anthropic sanitization-info envelope — the first element of the retry
+  // `sanitization` list. Request-lifecycle-STABLE (written once by the sanitize rewrite's
+  // onInitialSanitizationInfo), read by the retry pipeline-info rebuild. Re-homed here from the
+  // anthropic codec closure (RFC 2026-07-13 §11.2 / §11.9 MEDIUM) so the CellAssembly-routed direct
+  // leg's rebuild reads it from ctx instead of a codec accessor.
+  let _initialSanitizationInfo: SanitizationInfo | undefined
   // Cross-request-lifecycle scalar diagnostics (per-model effective timeouts),
   // kept PARALLEL to `_pipelineInfo` because the 4 existing `setPipelineInfo`
   // call sites do a full-replace and are gated on sanitization/truncation changes
   // (many requests never trigger any of them). Merging via `mergedPipelineInfo()`
   // lets these fields survive regardless, without touching those 4 call sites.
   let _streamTimeouts: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number } | null = null
+  let _askNormalization: PipelineInfo["askUserQuestionNormalization"] | null = null
+  let _sendMessageNormalization: PipelineInfo["sendMessageNormalization"] | null = null
   const mergedPipelineInfo = (): PipelineInfo | null => {
-    if (!_pipelineInfo && !_streamTimeouts) return null
-    return { ..._pipelineInfo, ..._streamTimeouts }
+    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization) return null
+    return {
+      ..._pipelineInfo,
+      ..._streamTimeouts,
+      ...(_askNormalization && { askUserQuestionNormalization: _askNormalization }),
+      ...(_sendMessageNormalization && { sendMessageNormalization: _sendMessageNormalization }),
+    }
   }
   let _sseEvents: Array<SseEventRecord> | null = null
   let _httpHeaders: {
@@ -272,6 +285,9 @@ export function createRequestContext(opts: {
   const _warningMessages: Array<WarningMessage> = []
   let _toolNameMapper: ToolNameMapper | null = null
   const _attempts: Array<Attempt> = []
+  // 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻的绝对 epoch（once 语义）。
+  // toHistoryEntry 减 startTime 得相对 offset（timing.client）。
+  const _clientTimingEpochs: { streamOpen?: number; firstReal?: number; bufferHoldStart?: number } = {}
   let _endTime: number | null = null
   /** Per-attempt tool-input repair outcomes (reset by resetRepairOutcomesForAttempt on L2 retry). */
   const _repairOutcomes: Array<RepairOutcomeRecord> = []
@@ -299,6 +315,7 @@ export function createRequestContext(opts: {
       id,
       endpoint: opts.endpoint,
       ...(opts.sessionId !== undefined && { sessionId: opts.sessionId }),
+      ...(opts.agentId !== undefined && { agentId: opts.agentId }),
       ...(opts.rawPath !== undefined && { rawPath: opts.rawPath }),
       method,
       path,
@@ -324,6 +341,25 @@ export function createRequestContext(opts: {
     },
     recordRepairOutcome(record) {
       _repairOutcomes.push(record)
+    },
+    recordAskUserQuestionNormalization(diag) {
+      // Merge (last-write-wins per field) so multiple AskUserQuestion blocks in one response accumulate.
+      // Request-level, intentionally NOT per-attempt-reset: this records normalization performed on ANY
+      // attempt's stream — under buffered-retry it may reflect a discarded attempt, not the committed
+      // one (a known diagnostic-fidelity limitation, tracked in docs/todo/deferred-backlog.md; gated on
+      // buffered-retry being enabled). Forwarded-wire correctness is unaffected either way.
+      _askNormalization = { ..._askNormalization, ...diag }
+      // MUST publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler
+      // (history sink); onTerminal's projection allowlist does NOT include pipelineInfo. Mirrors
+      // setStreamTimeouts exactly.
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
+    },
+    recordSendMessageNormalization(diag) {
+      // Same shape/lifecycle as recordAskUserQuestionNormalization: request-level, NOT per-attempt-reset
+      // (under buffered-retry may reflect a discarded attempt; forwarded-wire correctness unaffected). MUST
+      // publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler.
+      _sendMessageNormalization = { ..._sendMessageNormalization, ...diag }
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
     get repairOutcomes() {
       return _repairOutcomes
@@ -390,6 +426,9 @@ export function createRequestContext(opts: {
     },
     get currentAttempt() {
       return _attempts.at(-1) ?? null
+    },
+    get initialSanitizationInfo() {
+      return _initialSanitizationInfo
     },
     get queueWaitMs() {
       return _queueWaitMs
@@ -520,6 +559,10 @@ export function createRequestContext(opts: {
       }
     },
 
+    setInitialSanitizationInfo(info: SanitizationInfo) {
+      _initialSanitizationInfo = info
+    },
+
     setAttemptCacheControlStripped(fields: ReadonlyArray<string>) {
       const attempt = ctx.currentAttempt
       if (attempt && fields.length > 0) {
@@ -566,6 +609,12 @@ export function createRequestContext(opts: {
       // summary (head blob), no heavy stage.
       const attempt = ctx.currentAttempt
       if (attempt) attempt.responseHeaders = headers
+    },
+
+    setClientTimingEpoch(kind, epoch) {
+      // 首包埋点（spec 2026-07-14 §3.2）：once 语义——首写为准。toHistoryEntry 换算成
+      // 相对 started_at 的 offset。driver（bufferHoldStart）/ handler（streamOpen）/ client-sink（firstReal）调用。
+      if (_clientTimingEpochs[kind] === undefined) _clientTimingEpochs[kind] = epoch
     },
 
     setAttemptError(error: ApiError) {
@@ -760,6 +809,13 @@ export function createRequestContext(opts: {
       // Extract request metadata from the original payload
       const p = _originalRequest?.payload as Record<string, unknown> | undefined
       const endedAt = _endTime ?? Date.now()
+      // 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻 epoch → 相对 started_at 的 offset ms。
+      const off = (epoch: number | undefined): number | undefined => (epoch === undefined ? undefined : epoch - startTime)
+      const clientTiming = {
+        ...(off(_clientTimingEpochs.streamOpen) !== undefined && { streamOpenMs: off(_clientTimingEpochs.streamOpen) }),
+        ...(off(_clientTimingEpochs.firstReal) !== undefined && { firstRealMs: off(_clientTimingEpochs.firstReal) }),
+        ...(off(_clientTimingEpochs.bufferHoldStart) !== undefined && { bufferHoldStartMs: off(_clientTimingEpochs.bufferHoldStart) }),
+      }
       const entry: HistoryEntryData = {
         id,
         endpoint: opts.endpoint,
@@ -773,6 +829,7 @@ export function createRequestContext(opts: {
         lastUpdatedAt: endedAt,
         queueWaitMs: _queueWaitMs,
         durationMs: endedAt - startTime,
+        ...(Object.keys(clientTiming).length > 0 && { timing: { client: clientTiming } }),
         ...(ctx.transport ? { transport: ctx.transport } : {}),
         ...(_warningMessages.length > 0 && { warningMessages: [..._warningMessages] }),
       }
@@ -910,6 +967,12 @@ export function createRequestContext(opts: {
             // Non-final buffered-retry attempts keep their own committed upstream frames.
             sseEvents: a.sseEvents,
             responseHeaders: a.responseHeaders,
+            // 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻（第一段投影 Attempt → HistoryEntryData.attempts[]）。
+            // 显式清单——漏此则字段在此静默丢，toHistoryAttempts 拿到已空（plan review M-A）。
+            ...(a.upstreamHeadersAt !== undefined && { upstreamHeadersAt: a.upstreamHeadersAt }),
+            ...(a.upstreamMessageStartAt !== undefined && { upstreamMessageStartAt: a.upstreamMessageStartAt }),
+            ...(a.upstreamFirstTokenAt !== undefined && { upstreamFirstTokenAt: a.upstreamFirstTokenAt }),
+            ...(a.upstreamLastTokenAt !== undefined && { upstreamLastTokenAt: a.upstreamLastTokenAt }),
             // ─── New per-attempt legs (RFC §3). effectiveSource carries this attempt's
             //     aggregated `pipeline` (RFC §4); upstreamResponse carries success/
             //     trailers/rawBody + unified frames. ───

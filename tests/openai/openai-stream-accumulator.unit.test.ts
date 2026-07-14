@@ -299,3 +299,24 @@ describe("accumulateOpenAIStreamEvent", () => {
     expect(acc.streamError).toEqual({ message: "Unknown stream error", type: "server_error" })
   })
 })
+
+describe("reasoning text capture (synthetic-reasoning passthrough)", () => {
+  test("delta.reasoning appends into reasoningText across chunks", () => {
+    const acc = createOpenAIStreamAccumulator()
+    accumulateOpenAIStreamEvent(makeChunk({ choices: [{ index: 0, delta: { reasoning: "step 1 " } as unknown as ChatCompletionChunk["choices"][number]["delta"], finish_reason: null }] }), acc)
+    accumulateOpenAIStreamEvent(makeChunk({ choices: [{ index: 0, delta: { reasoning: "step 2" } as unknown as ChatCompletionChunk["choices"][number]["delta"], finish_reason: null }] }), acc)
+    expect(acc.reasoningText).toBe("step 1 step 2")
+  })
+
+  test("delta.reasoning_content (alt GHC spelling) is also captured", () => {
+    const acc = createOpenAIStreamAccumulator()
+    accumulateOpenAIStreamEvent(makeChunk({ choices: [{ index: 0, delta: { reasoning_content: "alt reasoning" } as unknown as ChatCompletionChunk["choices"][number]["delta"], finish_reason: null }] }), acc)
+    expect(acc.reasoningText).toBe("alt reasoning")
+  })
+
+  test("reasoningText defaults empty when no reasoning is emitted", () => {
+    const acc = createOpenAIStreamAccumulator()
+    accumulateOpenAIStreamEvent(textDelta("just content"), acc)
+    expect(acc.reasoningText).toBe("")
+  })
+})

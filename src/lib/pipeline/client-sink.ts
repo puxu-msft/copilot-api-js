@@ -103,6 +103,13 @@ export interface SseSinkOptions {
    * A format passes a constant `() => "generateContent"` to preserve that history-track label.
    */
   forwardedType?: (frame: ClientFrame) => string
+  /**
+   * 首包埋点（spec 2026-07-14 §3.2）：格式无关的「真实内容帧」谓词 + 首次命中回调。
+   * sink 保持格式无关——handler 绑定 `isClientContentFrame(frame, clientFormat)` 与
+   * `() => ctx.setClientTimingEpoch("firstReal", Date.now())`。仅在**非-synthetic** 帧上判、只触发一次。
+   */
+  isRealContentFrame?: (frame: ClientFrame) => boolean
+  onFirstRealContent?: () => void
 }
 
 /**
@@ -149,8 +156,10 @@ function frameType(frame: ClientFrame): string {
 
 /** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
 export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
-  const { heartbeat, onForwarded, streamStartMs = Date.now(), forwardedType } = opts
+  const { heartbeat, onForwarded, streamStartMs = Date.now(), forwardedType, isRealContentFrame, onFirstRealContent } = opts
   const enqueue = makeSerializer()
+  // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧只捕获一次。
+  let firstRealFired = false
 
   // Bare SSE write. Forwards the full SSE framing (event/data/id/retry) — `id`/`retry`
   // are part of the wire (the upstream may emit `id:`/`retry:` lines), so dropping them
@@ -166,13 +175,21 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
       }),
     )
 
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery"): void => {
+  const sampleForwarded = (
+    frame: ClientFrame,
+    synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
+  ): void => {
     onForwarded?.({
       offsetMs: Date.now() - streamStartMs,
       type: (forwardedType ?? frameType)(frame),
       raw: frame.data ?? "",
       ...(synthetic ? { synthetic } : {}),
     })
+    // 首包埋点：首个非-synthetic 真实内容帧 → ctx firstReal（handler 绑定谓词/回调）。
+    if (!synthetic && !firstRealFired && isRealContentFrame?.(frame)) {
+      firstRealFired = true
+      onFirstRealContent?.()
+    }
   }
 
   // Forward-idle (SOFT) racer state — only armed when a heartbeat is configured. It does
@@ -434,6 +451,9 @@ export interface WsSinkOptions {
    * does (R3.5; empirically固化 in responses-ws-keepalive.unit.test.ts).
    */
   heartbeat?: WsSinkHeartbeat
+  /** 首包埋点（spec 2026-07-14 §3.2）：同 {@link SseSinkOptions} — 格式无关谓词 + 首次命中回调。 */
+  isRealContentFrame?: (frame: ClientFrame) => boolean
+  onFirstRealContent?: () => void
 }
 
 /**
@@ -499,15 +519,25 @@ function startFixedForwardIdleHeartbeat(
 
 /** WS sink — writes JSON frame strings through a Hono `WSContext` (the Responses WS path). */
 export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
-  const { onForwarded, streamStartMs = Date.now(), heartbeat } = opts
+  const { onForwarded, streamStartMs = Date.now(), heartbeat, isRealContentFrame, onFirstRealContent } = opts
   const enqueue = makeSerializer()
+  // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧只捕获一次。
+  let firstRealFired = false
 
   // Sample the forwarded track synchronously at call time (before the enqueued send). WS frames carry
   // only `data` (no SSE event/id/retry line), matching legacy `ws.send`. `synthetic` marks a proxy-
   // injected keepalive OR a hook-rewritten frame so history/UI/logs never mistake either for real
   // unaltered upstream content.
-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery"): void => {
+  const sampleForwarded = (
+    frame: ClientFrame,
+    synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
+  ): void => {
     onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) })
+    // 首包埋点：首个非-synthetic 真实内容帧 → ctx firstReal（handler 绑定谓词/回调）。
+    if (!synthetic && !firstRealFired && isRealContentFrame?.(frame)) {
+      firstRealFired = true
+      onFirstRealContent?.()
+    }
   }
   const sendRaw = (frame: ClientFrame): Promise<void> =>
     enqueue(() => {

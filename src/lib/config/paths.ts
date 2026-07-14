@@ -62,6 +62,8 @@ export const PATHS = {
   BUNDLED_CONFIG_YAML: locateBundledConfig(),
   LEARNED_LIMITS: path.join(APP_DIR, "learned-limits.json"),
   REQUEST_TELEMETRY: path.join(APP_DIR, "request-telemetry.json"),
+  /** Independent SQLite DB for tiered telemetry (raw/hourly/daily rollup + cumulative). Own retention lifecycle, separate from history.db. `REQUEST_TELEMETRY` (legacy JSON) is read only for migration/backfill. */
+  TELEMETRY_DB: path.join(APP_DIR, "telemetry.db"),
   NEGOTIATION_STATES: path.join(APP_DIR, "negotiation-states.json"),
   HISTORY_DB: path.join(APP_DIR, "history.db"),
   /** Sidecar SQLite DB for the durable (session,agent) thinking-quarantine store (L3). */

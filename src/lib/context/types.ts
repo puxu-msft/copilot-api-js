@@ -1,3 +1,8 @@
+import type {
+  //
+  AskNormalizationDiag,
+  SendMessageNormalizationDiag,
+} from "~/lib/anthropic/decode-tool-input-core"
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -142,6 +147,11 @@ export interface Attempt {
   sseEvents?: Array<SseEventRecord>
   /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
   responseHeaders?: Record<string, string>
+  /** 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻，绝对 epoch instant，每 attempt 各记自己的。once 除 last。 */
+  upstreamHeadersAt?: number
+  upstreamMessageStartAt?: number
+  upstreamFirstTokenAt?: number
+  upstreamLastTokenAt?: number
 }
 
 // ─── History Entry Data ───
@@ -325,7 +335,17 @@ export interface HistoryEntryData {
     sseEvents?: Array<SseEventRecord>
     /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
     responseHeaders?: Record<string, string>
+    /** 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻，绝对 epoch。producer 写、两段投影透传到 HistoryEntry。 */
+    upstreamHeadersAt?: number
+    upstreamMessageStartAt?: number
+    upstreamFirstTokenAt?: number
+    upstreamLastTokenAt?: number
   }>
+  /**
+   * 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻，offset ms 相对 started_at。
+   * `toHistoryEntry` 由 ctx 的 client-timing epoch 减 started_at 得出（Task 2.3）。
+   */
+  timing?: { client?: { streamOpenMs?: number; firstRealMs?: number; bufferHoldStartMs?: number } }
 }
 
 // ─── RequestContext Interface ───
@@ -343,6 +363,9 @@ export interface RepairOutcomeRecord {
   /** Decode-target field whose stringified inner JSON was repaired (e.g. `questions`); absent for whole-input repair. */
   field?: string
 }
+
+/** 首包埋点（spec 2026-07-14 §3.2）：客户端侧 3 个时刻的键。 */
+export type ClientTimingKind = "streamOpen" | "firstReal" | "bufferHoldStart"
 
 export interface RequestContext {
   readonly id: string
@@ -411,6 +434,8 @@ export interface RequestContext {
 
   readonly attempts: ReadonlyArray<Attempt>
   readonly currentAttempt: Attempt | null
+  /** The initial (attempt-0) Anthropic sanitization-info envelope (re-homed from the codec closure — the retry pipeline-info rebuild reads it). */
+  readonly initialSanitizationInfo: SanitizationInfo | undefined
   readonly queueWaitMs: number
   readonly warningMessages: ReadonlyArray<WarningMessage>
 
@@ -444,6 +469,8 @@ export interface RequestContext {
   addWarningMessage(warning: WarningMessage): void
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: RequestTransport }): void
   setAttemptSanitization(info: SanitizationInfo): void
+  /** Record the initial (attempt-0) sanitization-info envelope (request-lifecycle-stable; retry rebuild reads it via {@link initialSanitizationInfo}). */
+  setInitialSanitizationInfo(info: SanitizationInfo): void
   /** 记录本 attempt passthrough 剥掉的 cache_control 子字段（→ pipelineFromAttempt → history）。 */
   setAttemptCacheControlStripped(fields: ReadonlyArray<string>): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void
@@ -451,6 +478,11 @@ export interface RequestContext {
   setAttemptTransport(transport: RequestTransport): void
   setAttemptResponse(response: ResponseData): void
   setAttemptResponseHeaders(headers: Record<string, string>): void
+  /**
+   * 首包埋点（spec 2026-07-14 §3.2）：记录客户端侧一个时刻的绝对 epoch（once 语义，首写为准）。
+   * `toHistoryEntry` 换算成相对 started_at 的 offset ms（`timing.client`）。驱动/handler/sink 调用。
+   */
+  setClientTimingEpoch(kind: ClientTimingKind, epoch: number): void
   setAttemptError(error: ApiError): void
   /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
   commitAttemptSseEvents(): void
@@ -502,6 +534,20 @@ export interface RequestContext {
    * reflect per-request outcomes — NOT the buffered retry count.
    */
   recordRepairOutcome(record: RepairOutcomeRecord): void
+  /**
+   * Record AskUserQuestion top-level-key normalization diagnostics (salvage / strip / dropped-value
+   * trace). Merged into `pipelineInfo` and MUST publish `context_updated`(field:`pipelineInfo`) so it
+   * reaches SQLite via the in-flight handler — `onTerminal`'s projection allowlist does NOT include
+   * pipelineInfo. See spec 2026-07-13 §3. Request-level: reflects normalization on ANY attempt's stream
+   * (under buffered-retry, possibly a discarded one — a diagnostic-fidelity limitation, not a wire bug).
+   */
+  recordAskUserQuestionNormalization(diag: AskNormalizationDiag): void
+  /**
+   * Record the diagnostic when `normalizeSendMessageInput` recovered a SendMessage recipient by renaming a
+   * misnamed `agentId` alias → the required `to`. Merges into pipelineInfo (published via context_updated).
+   * Same request-level lifecycle caveat as `recordAskUserQuestionNormalization`.
+   */
+  recordSendMessageNormalization(diag: SendMessageNormalizationDiag): void
   /** The repair outcomes accumulated for the current (committed) attempt. */
   readonly repairOutcomes: ReadonlyArray<RepairOutcomeRecord>
   /** Derived: the first UNREPAIRABLE tool of the current attempt, or null (drives the handler fail-gate). */

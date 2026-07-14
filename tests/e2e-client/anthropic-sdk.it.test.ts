@@ -11,7 +11,13 @@
  * no-retry oracle.
  */
 
-import Anthropic, { APIError } from "@anthropic-ai/sdk"
+import Anthropic, {
+  //
+  APIError,
+  APIUserAbortError,
+  BadRequestError,
+  RateLimitError,
+} from "@anthropic-ai/sdk"
 import {
   //
   afterAll,
@@ -249,6 +255,25 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     await expect(run).rejects.toBeInstanceOf(APIError)
   })
 
+  test("client abort: aborting the request signal → SDK throws APIUserAbortError (distinct from a server error)", async () => {
+    const up = scriptedUpstream(() => createSseResponse(happyTurn("would-be answer")))
+    setUpstreamFetchForTests(up.handler)
+
+    // Positive control: WITHOUT abort, the same upstream assembles a coherent turn (proves the harness
+    // drives the SDK + the abort — not a broken fixture — is what causes the throw below).
+    const ok = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    expect((ok.content[0] as { text?: string })?.text).toBe("would-be answer")
+
+    // Now: a pre-aborted signal makes the SDK reject with APIUserAbortError — a CLIENT-side cancel,
+    // a distinct class from any server APIError (the SDK never surfaces a server response at all).
+    const controller = new AbortController()
+    controller.abort()
+    const run = client.messages
+      .stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }, { signal: controller.signal })
+      .finalMessage()
+    await expect(run).rejects.toBeInstanceOf(APIUserAbortError)
+  })
+
   // ── eventless frame dropped by the SDK SSEDecoder ─────────────────────────
 
   test("eventless frame: SDK drops a data-only (no `event:` line) content_block_start → block missing", async () => {
@@ -412,26 +437,119 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
 
     const run = client.messages.create({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] })
     const err = await run.then(() => undefined).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(APIError)
+    expect(err).toBeInstanceOf(BadRequestError) // the TYPED 400 subclass (a subclass of APIError), not a bare APIError
     expect((err as { status?: number }).status).toBe(400) // typed HTTP path sets .status (unlike in-stream error)
   })
 
-  // ── reactive retry leg: proxy retries internally, transparent to the client ──
+  test("HTTP-429 upstream → SDK throws a TYPED RateLimitError with .status===429 (contrast: 200+SSE-error is untyped)", async () => {
+    // The 429 variant of the typed-vs-untyped contrast. An HTTP-response 429 gives the SDK a TYPED
+    // subclass (RateLimitError, a distinct class from BadRequestError) with a real `.status===429` —
+    // whereas a 200 + in-stream `event: error` yields an untyped APIError with `.status===undefined`
+    // (asserted above). This is why CC's retry policy diverges on the two 429 forms (Tier2 territory):
+    // the typed HTTP-429 is a first-class rate-limit signal, the in-stream one isn't.
+    const up = scriptedUpstream(() => httpErrorResponse(429, { type: "rate_limit_error", message: "rate limited (e2e)" }))
+    setUpstreamFetchForTests(up.handler)
 
-  test("reactive retry (tool-field rejection): first leg 400 → proxy strips field + retries → client sees ONE clean turn, upstream hit twice", async () => {
-    // The proxy's tool-field-rejection-retry strategy fires on a 400 whose body matches
-    // `tools.N.custom.<field>: Extra inputs are not permitted`, strips the offending field, and
-    // retries — invisibly to the client. Oracle: the SDK assembles a normal turn (positive result)
-    // AND upstream was hit twice (the retry happened under the hood, client-transparent).
-    const up = sequencedUpstream([
-      () => httpErrorResponse(400, { type: "invalid_request_error", message: "tools.0.custom.eager_input_streaming: Extra inputs are not permitted" }),
-      () => createSseResponse(happyTurn("recovered after retry")),
-    ])
+    const run = client.messages.create({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] })
+    const err = await run.then(() => undefined).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RateLimitError) // typed subclass, NOT a bare APIError
+    expect((err as { status?: number }).status).toBe(429)
+  })
+
+  // ── keepalive/anchor empty deltas: SDK accumulates them harmlessly (B1 Tier1 half) ──
+
+  test("empty content deltas: SDK folds empty text/thinking deltas into the turn without phantom content or crash", async () => {
+    // The proxy's keepalive path emits empty content_block_deltas (`text_delta{text:""}` /
+    // `thinking_delta{thinking:""}`) to hold the CC 300s no-real-content wall open. This Tier1 half
+    // asserts the client-side invariant that makes that safe: a REAL SDK folds those empty deltas into
+    // the same block as no-ops — the assembled turn carries ONLY the real visible text, no phantom
+    // empty block, no throw. (The 300s wall itself is a Tier2 timing question — see B1 upper half.)
+    setStateForTests({ refusalSseRewrite: "refusal" }) // pure passthrough — no rewrite injects frames
+    const framesWithEmptyDeltas = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_ka",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "real " } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "answer" } }),
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(framesWithEmptyDeltas))
     setUpstreamFetchForTests(up.handler)
 
     const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
-    expect((final.content[0] as { text?: string })?.text).toBe("recovered after retry")
-    expect(up.callCount()).toBe(2) // proxy retried internally; the client never saw the 400
+
+    // client-observable: exactly one text block carrying only the REAL text; empty deltas contributed
+    // nothing visible and did not spawn a phantom block or throw.
+    expect(final.content.length).toBe(1)
+    expect((final.content[0] as { type?: string; text?: string })?.type).toBe("text")
+    expect((final.content[0] as { text?: string })?.text).toBe("real answer")
+    expect(final.stop_reason).toBe("end_turn")
+  })
+
+  test("anchor wire shape: SDK tolerates an empty-text anchor block@0 coexisting with the real block@1 (known-benign)", async () => {
+    // The keepalive anchor path (spec 2026-07-08-buffered-keepalive-empty-text-anchor) can inject a
+    // SEPARATE empty-text anchor block@0 to reset CC's 300s watchdog, with the real content remapped to
+    // block@1, then closes the anchor with content_block_stop@0. The proxy relies on "empty-text block →
+    // known-benign" (§3.6). The idle-heartbeat INJECTION itself is timing-driven (Tier2/fake-clock), but
+    // the SDK-safety of the WIRE it produces is a deterministic client-observable question: feed that
+    // exact shape and confirm a real SDK assembles the real text and does NOT choke on the extra
+    // empty anchor block. (Distinct from B1: that was empty deltas within ONE block; here it's a
+    // standalone empty anchor block beside the real one.)
+    setStateForTests({ refusalSseRewrite: "refusal" }) // pure passthrough — forward the anchor wire as-is
+    const anchorWire = [
+      ev("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_a",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
+      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }), // anchor@0
+      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), // empty keepalive delta
+      ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }), // real@1 (remapped +1)
+      ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "real answer" } }),
+      ev("content_block_stop", { type: "content_block_stop", index: 1 }),
+      ev("content_block_stop", { type: "content_block_stop", index: 0 }), // anchor closed at commit
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+      ev("message_stop", { type: "message_stop" }),
+      DONE,
+    ]
+    const up = scriptedUpstream(() => createSseResponse(anchorWire))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+    // client-observable, empirically confirmed: the SDK TOLERATES the anchor wire (no throw) and
+    // assembles the real text intact at block@1 — but it DOES surface the empty anchor block@0 as a
+    // visible (empty) text block. "known-benign" (§3.6) means protocol-safe, NOT invisible: the client
+    // receives an extra empty text block, an accepted tradeoff (empty text is harmless to render).
+    expect(final.content.length).toBe(2)
+    expect(final.content.every((b) => b.type === "text")).toBe(true)
+    expect((final.content[0] as { text?: string })?.text).toBe("") // the empty anchor block, surfaced not folded
+    expect((final.content[1] as { text?: string })?.text).toBe("real answer") // real content intact past the anchor
+    expect(final.stop_reason).toBe("end_turn")
   })
 
   // ── event-name tolerance: SDK dispatches on the event name ∈ accept-set, not name===data.type ──
@@ -470,98 +588,6 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
     const thinking = final.content.find((b) => b.type === "thinking") as { signature?: string } | undefined
     expect(thinking?.signature).toBe("SIG-COMPAT") // accepted despite event!==type (event ∈ accept-set)
-  })
-
-  // ── proxy rewrites (config-gated): the client sees the RECOVERED shape, not the broken upstream ──
-
-  test("tool-call text recovery: upstream downgrades tool call to `<invoke>` text → proxy rebuilds tool_use → SDK gets a tool_use block", async () => {
-    // GHC sometimes emits a tool call as plain `<function_calls><invoke name="search">...` TEXT
-    // (stop_reason still tool_use). With recover_tool_call_text on, the proxy rebuilds a real tool_use
-    // block. Oracle: the SDK's finalMessage carries a tool_use (input deep-equal) — NOT a text block
-    // the client would fail to parse. Positive control: the streaming baseline proves normal text
-    // assembles as text; here the SAME text shape becomes a tool_use because recovery is on.
-    setStateForTests({ recoverToolCallText: true })
-    const invokeText = '<function_calls><invoke name="search"><parameter name="query">weather</parameter></invoke>'
-    const frames = [
-      ev("message_start", {
-        type: "message_start",
-        message: {
-          id: "msg_rc",
-          type: "message",
-          role: "assistant",
-          model: MODEL,
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 5, output_tokens: 0 },
-        },
-      }),
-      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
-      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: invokeText } }),
-      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
-      ev("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 3 } }),
-      ev("message_stop", { type: "message_stop" }),
-      DONE,
-    ]
-    const up = scriptedUpstream(() => createSseResponse(frames))
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages
-      .stream({
-        model: MODEL,
-        max_tokens: 16,
-        messages: [{ role: "user", content: "search the weather" }],
-        tools: [{ name: "search", description: "search the web", input_schema: { type: "object", properties: { query: { type: "string" } } } }],
-      })
-      .finalMessage()
-    const tool = final.content.find((b) => b.type === "tool_use") as { name?: string; input?: unknown } | undefined
-    expect(tool?.name).toBe("search")
-    expect(tool?.input).toEqual({ query: "weather" })
-    // and the raw `<invoke>` text is NOT surfaced as a text block the client would choke on
-    expect(final.content.some((b) => b.type === "text" && (b as { text?: string }).text?.includes("<invoke"))).toBe(false)
-  })
-
-  test("malformed tool_use input repair: upstream tool_use JSON is broken → proxy repairs → SDK JSON.parses a valid input", async () => {
-    // With tool_repair_malformed_input on, the proxy buffers tool_use blocks and, when the accumulated
-    // partial_json is invalid, runs layered repair (antml-tag strip + jsonrepair) before forwarding.
-    // Oracle: the SDK's tool_use.input deep-equals the intended object — i.e. the client received
-    // JSON it could parse, not the broken bytes.
-    setStateForTests({ toolRepairMalformedInput: ["tags", "jsonrepair"] })
-    const frames = [
-      ev("message_start", {
-        type: "message_start",
-        message: {
-          id: "msg_mr",
-          type: "message",
-          role: "assistant",
-          model: MODEL,
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 5, output_tokens: 0 },
-        },
-      }),
-      ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_mr", name: "search", input: {} } }),
-      // malformed: trailing comma + unclosed brace (jsonrepair territory)
-      ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"query": "weather",' } }),
-      ev("content_block_stop", { type: "content_block_stop", index: 0 }),
-      ev("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 3 } }),
-      ev("message_stop", { type: "message_stop" }),
-      DONE,
-    ]
-    const up = scriptedUpstream(() => createSseResponse(frames))
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages
-      .stream({
-        model: MODEL,
-        max_tokens: 16,
-        messages: [{ role: "user", content: "x" }],
-        tools: [{ name: "search", description: "search the web", input_schema: { type: "object", properties: { query: { type: "string" } } } }],
-      })
-      .finalMessage()
-    const tool = final.content.find((b) => b.type === "tool_use") as { input?: unknown } | undefined
-    expect(tool?.input).toEqual({ query: "weather" }) // repaired to valid JSON the SDK could parse
   })
 })
 

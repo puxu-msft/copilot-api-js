@@ -82,6 +82,12 @@ interface QueuedRequest<T> {
   retryAfterSeconds?: number
   /** Timestamp when request was enqueued */
   enqueuedAt: number
+  /**
+   * Set by `rejectQueued()` (shutdown) before rejecting the caller. `processQueue` re-checks it
+   * after the pre-execute sleep so an in-flight iteration that already picked this request does
+   * NOT run its upstream work for a caller that was already rejected (RC4 orphan).
+   */
+  cancelled?: boolean
 }
 
 /** Result wrapper that includes queue wait time */
@@ -474,6 +480,11 @@ export class AdaptiveRateLimiter {
 
       this.lastRequestTime = Date.now()
 
+      // RC4: rejectQueued() may have cancelled + rejected this request during the sleep above
+      // (it drains the queue + aborts the sleep). Re-check ownership before running upstream work —
+      // otherwise we execute for a caller that already got "Server shutting down".
+      if (request.cancelled) break
+
       try {
         const result = await request.execute()
 
@@ -525,6 +536,9 @@ export class AdaptiveRateLimiter {
     while (this.queue.length > 0) {
       const request = this.queue.shift()
       if (!request) break
+      // Mark cancelled BEFORE rejecting so an in-flight processQueue iteration that already picked
+      // this request (and is mid-sleep) re-checks it after the sleep and skips the upstream execute.
+      request.cancelled = true
       request.reject(new Error("Server shutting down"))
     }
     this.processing = false

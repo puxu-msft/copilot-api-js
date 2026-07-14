@@ -168,8 +168,16 @@ export const BUILTIN_REQUEST_REWRITES: ReadonlyArray<RequestRewrite> = []
  *
  * The buffer/flush + multi-buffer cascade + index-densify invariants these orders
  * depend on are locked by tests/pipeline/response-rewrite-contract.unit.test.ts.
+ *
+ *   - `errorFrameCanonical` (50) runs FIRST (smallest order): it intercepts a raw upstream
+ *     `event:error` frame and reshapes it into a canonical Anthropic envelope. It MUST precede
+ *     `recoverRefusal` (400), which itself SYNTHESIZES an `event:error` frame in `error` mode — a
+ *     synthesized canonical frame must never be re-shaped. `passThrough` runs strictly forward
+ *     (driver.ts), so a rewrite at order 50 only ever sees UPSTREAM-ORIGINAL error frames; the
+ *     refusal-synthesized one flows to LATER rewrites only and can never reach this one.
  */
 export const RESPONSE_REWRITE_ORDER = {
+  errorFrameCanonical: 50,
   recoverToolCall: 100,
   thinkingSignatureCompat: 150,
   toolInputDecode: 200,

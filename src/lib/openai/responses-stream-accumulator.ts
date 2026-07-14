@@ -28,6 +28,16 @@ export interface ResponsesStreamAccumulator extends BaseStreamAccumulator {
   toolCalls: Array<{ id: string; callId: string; name: string; arguments: string }>
   /** Tool call accumulators indexed by output_index */
   toolCallMap: Map<number, ToolCallAccumulator>
+  /**
+   * `output_index` values already emitted into `toolCalls` — the dedup key for the two-phase
+   * finalization. A function_call item is terminated by BOTH `function_call_arguments.done` AND
+   * `output_item.done`; whichever fires first finalizes, the other must skip. We key on
+   * `output_index` (stable across every event for one logical item) rather than `item.id`, because
+   * GHC RE-ENCRYPTS the opaque `item.id` on every event — an id-keyed guard never matches and
+   * doubles every tool_call. `buildResponsesResponseData`'s trailing `toolCallMap` sweep consults
+   * this same set so a never-`done` item isn't re-finalized either.
+   */
+  finalizedOutputIndexes: Set<number>
   /** Text content parts for O(1) accumulation, joined on read via finalContent() */
   contentParts: Array<string>
   /** Reasoning output tokens (from output_tokens_details) */
@@ -62,6 +72,7 @@ export function createResponsesStreamAccumulator(): ResponsesStreamAccumulator {
     responseId: "",
     toolCalls: [],
     toolCallMap: new Map(),
+    finalizedOutputIndexes: new Set(),
     contentParts: [],
     reasoningTokens: 0,
     cachedInputTokens: 0,
@@ -155,30 +166,39 @@ export function accumulateResponsesStreamEvent(event: ResponsesStreamEvent, acc:
 
     case "response.function_call_arguments.done": {
       const tcAcc = acc.toolCallMap.get(event.output_index)
-      if (tcAcc) {
+      if (tcAcc && !acc.finalizedOutputIndexes.has(event.output_index)) {
+        acc.finalizedOutputIndexes.add(event.output_index)
         acc.toolCalls.push({
           id: tcAcc.id,
           callId: tcAcc.callId,
           name: tcAcc.name,
-          arguments: tcAcc.argumentParts.join(""),
+          // `.done.arguments` is the AUTHORITATIVE complete final value (OpenAI/GHC contract). Prefer it
+          // over the concatenated deltas — the no-delta merge shape (only lifecycle + `.done`, e.g.
+          // responses-nodelta.probe) carries the full arguments HERE and nowhere else, so ignoring it
+          // dropped them to "". Fall back to the joined deltas only when `.done` omits them (defensive).
+          // The `.length > 0` (not just `typeof === "string"`) is DELIBERATE, not a presence-vs-empty
+          // confusion: a review flagged that a legal empty `.done.arguments` "should" win, but real GHC
+          // never sends "" with content (no-arg calls are "{}"), and treating an empty `.done` as
+          // authoritative would DROP already-captured delta content in the (delta + empty-done) shape —
+          // a richest-data-flow regression. Empty `.done` ⇒ keep the deltas. (record-not-adopted, 2026-07-14)
+          arguments: typeof event.arguments === "string" && event.arguments.length > 0 ? event.arguments : tcAcc.argumentParts.join(""),
         })
       }
       break
     }
 
     case "response.output_item.done": {
-      // Final output item — if it's a function call that wasn't already finalized
-      // via arguments.done, finalize it now
-      if (event.item.type === "function_call") {
-        const existing = acc.toolCalls.find((tc) => tc.id === event.item.id)
-        if (!existing) {
-          acc.toolCalls.push({
-            id: event.item.id,
-            callId: "call_id" in event.item ? event.item.call_id : "",
-            name: "name" in event.item ? event.item.name : "",
-            arguments: "arguments" in event.item ? event.item.arguments : "",
-          })
-        }
+      // Final output item — if it's a function call that wasn't already finalized via
+      // arguments.done, finalize it now. Dedup by `output_index` (stable), NOT `item.id`: GHC
+      // re-encrypts `item.id` every event, so an id-keyed guard never matches and doubles the call.
+      if (event.item.type === "function_call" && !acc.finalizedOutputIndexes.has(event.output_index)) {
+        acc.finalizedOutputIndexes.add(event.output_index)
+        acc.toolCalls.push({
+          id: event.item.id,
+          callId: "call_id" in event.item ? event.item.call_id : "",
+          name: "name" in event.item ? event.item.name : "",
+          arguments: "arguments" in event.item ? event.item.arguments : "",
+        })
       }
       break
     }

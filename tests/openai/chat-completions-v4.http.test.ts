@@ -17,8 +17,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
@@ -364,13 +366,26 @@ describe("CC v4 driver path", () => {
     const errMock = mock(() => Promise.resolve(createSseResponseThenError([ccStreamFrames("gpt-4o")[0]], new Error("ECONNRESET: mid-stream upstream blowup"))))
     applyFetchMock(errMock)
 
-    const text = await (
-      await app.request("/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }),
-      })
-    ).text()
+    // The CC direct leg must ALSO emit the disconnect diagnostic with REAL signals (it previously
+    // emitted none) — one `chat.completion.chunk` arrived before the throw.
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let text: string
+    try {
+      text = await (
+        await app.request("/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }),
+        })
+      ).text()
+    } finally {
+      const line = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(line).toBeDefined()
+      expect(line).toContain("model=gpt-4o")
+      expect(line).not.toContain("frames=0")
+      expect(line).toContain("last-frame=chat.completion.chunk@")
+    }
 
     // The first frame was forwarded, THEN the OpenAI-shape error frame (event: error).
     expect(text).toContain("Hello")

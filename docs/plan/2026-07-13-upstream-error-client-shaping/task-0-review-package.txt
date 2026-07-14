@@ -1,0 +1,452 @@
+### COMMITS (2526f42f..HEAD)
+fa5ebefe docs(plan): phase-0 execution report — error-shaping config scaffolding
+67ca59b7 test: register error-shaping keys in config-hot-reload completeness guard
+6fddd1fd feat: wire error-shaping config keys through config.ts + state.ts
+170340fb feat: add error-shaping config schema (4 keys)
+
+### DIFFSTAT
+ .../task-0-report.md                               |  43 +++++++
+ src/lib/config/config.ts                           |   4 +
+ src/lib/config/schema.ts                           |   8 ++
+ src/lib/state.ts                                   |  29 +++++
+ tests/config/config-hot-reload.it.test.ts          |  28 +++++
+ tests/config/error-shaping-config.unit.test.ts     | 135 +++++++++++++++++++++
+ 6 files changed, 247 insertions(+)
+
+### FULL DIFF (-U10)
+diff --git a/src/lib/config/config.ts b/src/lib/config/config.ts
+index 3c1b4c87..a37ac033 100644
+--- a/src/lib/config/config.ts
++++ b/src/lib/config/config.ts
+@@ -709,20 +709,24 @@ export async function applyConfigToState(): Promise<Config> {
+     // (normalizeModelKeyedRecord folds case/separators and is model-specific).
+     // cloneStatePatch deep-clones the record, so passing the parsed value is safe.
+     if (a.tool_decode_input_fields !== undefined) setAnthropicBehavior({ decodeToolInputFields: a.tool_decode_input_fields })
+     if (a.tool_decode_all_input_fields !== undefined) setAnthropicBehavior({ decodeAllToolInputFields: a.tool_decode_all_input_fields })
+     if (a.tool_recover_call_text !== undefined) setAnthropicBehavior({ recoverToolCallText: a.tool_recover_call_text })
+     if (a.tool_repair_malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: a.tool_repair_malformed_input })
+     if (a.refusal_sse_rewrite !== undefined) setAnthropicBehavior({ refusalSseRewrite: a.refusal_sse_rewrite })
+     if (a.refusal_end_turn_text !== undefined) setAnthropicBehavior({ refusalEndTurnText: a.refusal_end_turn_text })
+     if (a.refusal_error_message !== undefined) setAnthropicBehavior({ refusalErrorMessage: a.refusal_error_message })
+     if (a.refusal_error_type !== undefined) setAnthropicBehavior({ refusalErrorType: a.refusal_error_type })
++    if (a.error_shaping_enabled !== undefined) setAnthropicBehavior({ errorShapingEnabled: a.error_shaping_enabled })
++    if (a.error_ask_user_question !== undefined) setAnthropicBehavior({ errorAskUserQuestion: a.error_ask_user_question })
++    if (a.error_auq_template !== undefined) setAnthropicBehavior({ errorAuqTemplate: a.error_auq_template })
++    if (a.error_selfheal_delegate !== undefined) setAnthropicBehavior({ errorSelfhealDelegate: a.error_selfheal_delegate })
+     if (a.tool_backfill_question !== undefined) setAnthropicBehavior({ backfillQuestionFromHeader: a.tool_backfill_question })
+     if (a.system_rewrite_reminders !== undefined) {
+       // Collection: entire replacement — deleted rules disappear
+       if (typeof a.system_rewrite_reminders === "boolean") {
+         setAnthropicBehavior({ rewriteSystemReminders: a.system_rewrite_reminders })
+       } else {
+         setAnthropicBehavior({ rewriteSystemReminders: compileRewriteRules(a.system_rewrite_reminders) })
+       }
+     }
+   }
+diff --git a/src/lib/config/schema.ts b/src/lib/config/schema.ts
+index 6e6c7378..2aa98f8d 100644
+--- a/src/lib/config/schema.ts
++++ b/src/lib/config/schema.ts
+@@ -501,20 +501,28 @@ export const AnthropicConfigSchema = z
+     tool_decode_input_fields: z.record(z.string(), z.array(z.string())).optional(),
+     tool_decode_all_input_fields: nullableBoolean(),
+     tool_recover_call_text: nullableBoolean(),
+     refusal_sse_rewrite: nullableEnum(["refusal", "end_turn", "error"] as const),
+     /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。支持占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留。空串=不追加 text 块（仅改 end_turn）。未配=内置默认（逐字节等价旧固定文案）。 */
+     refusal_end_turn_text: nullableString(),
+     /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。未配=内置默认。 */
+     refusal_error_message: nullableString(),
+     /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。未配=内置默认。 */
+     refusal_error_type: nullableString(),
++    /** 上游错误 → 客户端可行动形态整形总开关。关闭时三个终点（forward.ts / 终点①② / S5 canonical rewrite）逐字节回退现状。默认 true。 */
++    error_shaping_enabled: nullableBoolean(),
++    /** B 类：content_filtered / 402 / 403(token-refresh 耗尽) 是否合成 AskUserQuestion 轮次而非拍平成错误帧。仅交互式部署应开启（无服务端探测信号，见 plan D-0）。默认 false。 */
++    error_ask_user_question: nullableBoolean(),
++    /** AUQ 问题文案模板，占位符 {model}/{request_id}/{error_type}/{status}，复用 renderRefusalTemplate。空=内置默认。 */
++    error_auq_template: nullableString(),
++    /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」。键=策略 .name（如 "adaptive-thinking-rejection-retry"），值 "proxy"|"delegate"。未列=proxy（默认更可控）。 */
++    error_selfheal_delegate: z.record(z.string(), z.enum(["proxy", "delegate"])).optional(),
+     /**
+      * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item with a header but no question).
+      * Only items missing the `question` key are touched. Default true.
+      */
+     tool_backfill_question: nullableBoolean(),
+     /**
+      * Repair malformed `tool_use` input that upstream emitted as invalid JSON on
+      * the Anthropic response wire. A **comma-separated set of repair items** — a
+      * subset of `tags` (structure-aware antml-tag stripping), `unicode`
+      * (whitespace-broken `\uXXXX` escape fix), `jsonrepair` (jsonrepair structural
+diff --git a/src/lib/state.ts b/src/lib/state.ts
+index 0d7eade1..cc3e48f8 100644
+--- a/src/lib/state.ts
++++ b/src/lib/state.ts
+@@ -177,20 +177,29 @@ export interface State {
+   /** 上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块）的处理策略：`refusal`=透传不改写、`end_turn`=合成 text 块改 end_turn、`error`=发 error SSE 帧并记请求失败（ctx.fail）。默认 `error`。 */
+   readonly refusalSseRewrite: "refusal" | "end_turn" | "error"
+ 
+   /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留；空串=不追加 text 块（仅改 end_turn）。默认见 `DEFAULT_REFUSAL_END_TURN_TEXT`。 */
+   readonly refusalEndTurnText: string
+   /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。默认见 `DEFAULT_REFUSAL_ERROR_MESSAGE`。 */
+   readonly refusalErrorMessage: string
+   /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。默认 `api_error`。 */
+   readonly refusalErrorType: string
+ 
++  /** 上游错误 → 客户端可行动形态整形总开关（`anthropic.error_shaping_enabled`）。关闭时逐字节回退现状。默认 true。 */
++  readonly errorShapingEnabled: boolean
++  /** B 类：content_filtered / 402 / 403(token-refresh 耗尽) 是否合成 AskUserQuestion 轮次而非拍平成错误帧（`anthropic.error_ask_user_question`）。仅交互式部署应开启。默认 false。 */
++  readonly errorAskUserQuestion: boolean
++  /** AUQ 问题文案模板（`anthropic.error_auq_template`），占位符 `{model}`/`{request_id}`/`{error_type}`/`{status}`。空串=内置默认。默认 `""`。 */
++  readonly errorAuqTemplate: string
++  /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」（`anthropic.error_selfheal_delegate`）。键=策略 `.name`，值 `"proxy"|"delegate"`。未列=proxy。默认 `{}`。 */
++  readonly errorSelfhealDelegate: Readonly<Record<string, "proxy" | "delegate">>
++
+   /**
+    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
+    * normalized model-name "family" prefixes; a model has the capability when its normalized id
+    * equals an entry or starts with `entry + "-"` (see `features.ts:matchModelCapability`). Bundled
+    * defaults mirror GHC's capability checks; editing config adds/removes models without code changes.
+    */
+   readonly contextEditingModels: ReadonlyArray<string>
+   readonly interleavedThinkingModels: ReadonlyArray<string>
+   readonly adaptiveThinkingModels: ReadonlyArray<string>
+ 
+@@ -951,20 +960,21 @@ function cloneBufferedRetryOverrides(source: Record<string, Partial<BufferedRetr
+ 
+ function cloneState(source: MutableState): MutableState {
+   return {
+     ...source,
+     adaptiveRateLimitConfig: source.adaptiveRateLimitConfig ? { ...source.adaptiveRateLimitConfig } : undefined,
+     copilotTokenInfo: source.copilotTokenInfo ? { ...source.copilotTokenInfo } : undefined,
+     modelIds: new Set(source.modelIds),
+     modelIndex: new Map(source.modelIndex),
+     modelOverrides: { ...source.modelOverrides },
+     toolSearchOverrides: { ...source.toolSearchOverrides },
++    errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
+     effortsOverrides: { ...source.effortsOverrides },
+     streamIdleTimeoutOverrides: { ...source.streamIdleTimeoutOverrides },
+     responseHeaderTimeoutOverrides: { ...source.responseHeaderTimeoutOverrides },
+     negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
+     bufferedRetryShared: { ...source.bufferedRetryShared },
+     bufferedRetryOverrides: cloneBufferedRetryOverrides(source.bufferedRetryOverrides),
+     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
+     stripCacheControlSubfields: cloneStripBetaHeaders(source.stripCacheControlSubfields),
+     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
+     stripToolFields: cloneStripBetaHeaders(source.stripToolFields),
+@@ -999,20 +1009,23 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
+   }
+   if ("modelIndex" in patch) {
+     cloned.modelIndex = patch.modelIndex ? new Map(patch.modelIndex) : undefined
+   }
+   if ("modelOverrides" in patch) {
+     cloned.modelOverrides = patch.modelOverrides ? { ...patch.modelOverrides } : undefined
+   }
+   if ("toolSearchOverrides" in patch) {
+     cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
+   }
++  if ("errorSelfhealDelegate" in patch) {
++    cloned.errorSelfhealDelegate = patch.errorSelfhealDelegate ? { ...patch.errorSelfhealDelegate } : undefined
++  }
+   if ("models" in patch) {
+     cloned.models = cloneModels(patch.models)
+   }
+   if ("rewriteSystemReminders" in patch) {
+     cloned.rewriteSystemReminders = patch.rewriteSystemReminders === undefined ? undefined : cloneRewriteRules(patch.rewriteSystemReminders)
+   }
+   if ("systemPromptOverrides" in patch) {
+     cloned.systemPromptOverrides = patch.systemPromptOverrides ? [...patch.systemPromptOverrides] : undefined
+   }
+   if ("systemPromptPrepend" in patch) {
+@@ -1221,20 +1234,24 @@ export function setAnthropicBehavior(
+       | "systemPromptOverrides"
+       | "systemPromptPrepend"
+       | "systemPromptAppend"
+       | "sanitizeToolNames"
+       | "recoverToolCallText"
+       | "toolRepairMalformedInput"
+       | "refusalSseRewrite"
+       | "refusalEndTurnText"
+       | "refusalErrorMessage"
+       | "refusalErrorType"
++      | "errorShapingEnabled"
++      | "errorAskUserQuestion"
++      | "errorAuqTemplate"
++      | "errorSelfhealDelegate"
+       | "contextEditingModels"
+       | "toolSearchOverrides"
+       | "memoryToolEnabled"
+       | "memoryModels"
+       | "interleavedThinkingModels"
+       | "adaptiveThinkingModels"
+       | "warmupPolicy"
+       | "effortsOverrides"
+       | "streamIdleTimeoutOverrides"
+       | "responseHeaderTimeoutOverrides"
+@@ -1533,20 +1550,24 @@ export const CONFIG_MANAGED_DEFAULTS = {
+   systemPromptAppend: [] as Array<CompiledSystemPromptEntry>,
+   // Shared reactive-retry budget (was auto_truncate.max_retries). Inlined default 5.
+   maxReactiveRetries: 5,
+   sanitizeToolNames: false,
+   recoverToolCallText: false,
+   toolRepairMalformedInput: [] as ReadonlyArray<RepairItem>,
+   refusalSseRewrite: "error" as "refusal" | "end_turn" | "error",
+   refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
+   refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
+   refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,
++  errorShapingEnabled: true,
++  errorAskUserQuestion: false,
++  errorAuqTemplate: "",
++  errorSelfhealDelegate: {} as Readonly<Record<string, "proxy" | "delegate">>,
+   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
+   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
+   // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
+   // only holds per-model force-on/off overrides. Empty by default.
+   toolSearchOverrides: {} as Record<string, boolean>,
+   // Memory tool: default OFF (CAPI acceptance of memory_20250818 unverified). memoryModels mirrors GHC
+   // modelSupportsMemory — the BARE `claude-sonnet-4` / `claude-opus-4` entries are load-bearing (they
+   // cover all sonnet-4.x / opus-4.x via the dash-boundary matcher); the specific entries are redundant
+   // but kept as self-documentation. Do NOT drop the bare entries.
+   memoryToolEnabled: false,
+@@ -1655,20 +1676,24 @@ export function resetConfigManagedState(): void {
+     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
+     systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
+     systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
+     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
+     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+     toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
+     refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+     refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+     refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+     refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
++    errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
++    errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
++    errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
++    errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
+     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
+     toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
+     memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+     memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
+     interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
+     adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
+     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
+     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+     streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },
+     responseHeaderTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides },
+@@ -1738,20 +1763,24 @@ const mutableState: MutableState = {
+   ghcApiBaseUrl: "",
+   maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
+   tokenBasedBilling: false,
+   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
+   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+   toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
+   refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+   refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+   refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+   refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
++  errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
++  errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
++  errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
++  errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
+   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
+   toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
+   memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+   memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
+   interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
+   adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
+   contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
+   contextEditingTrigger: CONFIG_MANAGED_DEFAULTS.contextEditingTrigger,
+   contextEditingKeepTools: CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools,
+   contextEditingKeepThinking: CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking,
+diff --git a/tests/config/config-hot-reload.it.test.ts b/tests/config/config-hot-reload.it.test.ts
+index b1164ff7..3363d137 100644
+--- a/tests/config/config-hot-reload.it.test.ts
++++ b/tests/config/config-hot-reload.it.test.ts
+@@ -693,20 +693,48 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
+     expectedStateValue: "err {model}",
+     defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+   },
+   {
+     configKey: "anthropic.refusal_error_type",
+     stateKey: "refusalErrorType",
+     sampleYamlValue: "custom_type",
+     expectedStateValue: "custom_type",
+     defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+   },
++  {
++    configKey: "anthropic.error_shaping_enabled",
++    stateKey: "errorShapingEnabled",
++    sampleYamlValue: "false",
++    expectedStateValue: false,
++    defaultStateValue: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
++  },
++  {
++    configKey: "anthropic.error_ask_user_question",
++    stateKey: "errorAskUserQuestion",
++    sampleYamlValue: "true",
++    expectedStateValue: true,
++    defaultStateValue: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
++  },
++  {
++    configKey: "anthropic.error_auq_template",
++    stateKey: "errorAuqTemplate",
++    sampleYamlValue: "model={model} status={status}",
++    expectedStateValue: "model={model} status={status}",
++    defaultStateValue: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
++  },
++  {
++    configKey: "anthropic.error_selfheal_delegate",
++    stateKey: "errorSelfhealDelegate",
++    sampleYamlValue: `\n  "adaptive-thinking-rejection-retry": delegate`,
++    expectedStateValue: { "adaptive-thinking-rejection-retry": "delegate" },
++    defaultStateValue: CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate,
++  },
+   {
+     configKey: "anthropic.tool_backfill_question",
+     stateKey: "backfillQuestionFromHeader",
+     sampleYamlValue: "false",
+     expectedStateValue: false,
+     defaultStateValue: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+   },
+ 
+   // ── model_overrides / model_preference / disabled_models ───────────
+   {
+diff --git a/tests/config/error-shaping-config.unit.test.ts b/tests/config/error-shaping-config.unit.test.ts
+new file mode 100644
+index 00000000..c28ee2ff
+--- /dev/null
++++ b/tests/config/error-shaping-config.unit.test.ts
+@@ -0,0 +1,135 @@
++/**
++ * Phase 0 — upstream-error-client-shaping config scaffolding.
++ *
++ * Covers the 4 new `anthropic.*` keys' 3 touch points:
++ *   - schema.ts: AnthropicConfigSchema zod validation (task 0.1)
++ *   - config.ts + state.ts: applyConfigToState() → state.* wiring, defaults,
++ *     and hot-reload retain-on-absence semantics (task 0.2)
++ *
++ * See docs/plan/2026-07-13-upstream-error-client-shaping/phase-0-config-scaffolding.md
++ */
++
++import {
++  //
++  afterEach,
++  beforeEach,
++  describe,
++  expect,
++  test,
++} from "bun:test"
++import fs from "node:fs/promises"
++import os from "node:os"
++import path from "node:path"
++
++import {
++  //
++  applyConfigToState,
++  resetApplyState,
++  resetConfigCache,
++  setBundledConfigForTests,
++} from "~/lib/config/config"
++import { PATHS } from "~/lib/config/paths"
++import { AnthropicConfigSchema } from "~/lib/config/schema"
++import {
++  //
++  resetConfigManagedState,
++  restoreStateForTests,
++  snapshotStateForTests,
++  state,
++  type StateSnapshot,
++} from "~/lib/state"
++
++describe("error-shaping config schema", () => {
++  test("accepts all 4 keys with valid values", () => {
++    const parsed = AnthropicConfigSchema.parse({
++      error_shaping_enabled: true,
++      error_ask_user_question: false,
++      error_auq_template: "model={model} status={status}",
++      error_selfheal_delegate: { "adaptive-thinking-rejection-retry": "delegate", "tool-field-rejection-retry": "proxy" },
++    })
++    expect(parsed.error_shaping_enabled).toBe(true)
++    expect(parsed.error_selfheal_delegate).toEqual({ "adaptive-thinking-rejection-retry": "delegate", "tool-field-rejection-retry": "proxy" })
++  })
++
++  test("rejects invalid error_selfheal_delegate value (not proxy/delegate)", () => {
++    expect(() => AnthropicConfigSchema.parse({ error_selfheal_delegate: { foo: "bogus" } })).toThrow()
++  })
++
++  test("all 4 keys optional — absent config parses to undefined (warn-and-continue philosophy, no required keys)", () => {
++    const parsed = AnthropicConfigSchema.parse({})
++    expect(parsed.error_shaping_enabled).toBeUndefined()
++    expect(parsed.error_selfheal_delegate).toBeUndefined()
++  })
++})
++
++// ============================================================================
++// config.ts + state.ts wiring — isolated tmp-dir harness (mirrors
++// buffered-retry-keys.test.ts / config-hot-reload.it.test.ts)
++// ============================================================================
++
++let tmpDir: string
++let savedAppDir: string
++let savedConfigYaml: string
++let originalState: StateSnapshot = snapshotStateForTests()
++
++async function writeConfig(content: string): Promise<void> {
++  await fs.writeFile(PATHS.CONFIG_YAML, content, "utf8")
++}
++
++beforeEach(async () => {
++  originalState = snapshotStateForTests()
++  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "error-shaping-config-"))
++  savedAppDir = PATHS.APP_DIR
++  savedConfigYaml = PATHS.CONFIG_YAML
++  ;(PATHS as { APP_DIR: string }).APP_DIR = tmpDir
++  ;(PATHS as { CONFIG_YAML: string }).CONFIG_YAML = path.join(tmpDir, "config.yaml")
++  resetConfigCache()
++  resetApplyState()
++  setBundledConfigForTests({})
++})
++
++afterEach(async () => {
++  restoreStateForTests(originalState)
++  ;(PATHS as { APP_DIR: string }).APP_DIR = savedAppDir
++  ;(PATHS as { CONFIG_YAML: string }).CONFIG_YAML = savedConfigYaml
++  await fs.rm(tmpDir, { recursive: true, force: true })
++  resetConfigCache()
++  resetApplyState()
++  setBundledConfigForTests(null)
++})
++
++describe("error-shaping config → state (three touch points)", () => {
++  test("defaults match CONFIG_MANAGED_DEFAULTS when config omits the keys", async () => {
++    await writeConfig("anthropic: {}\n")
++    await applyConfigToState()
++    expect(state.errorShapingEnabled).toBe(true)
++    expect(state.errorAskUserQuestion).toBe(false)
++    expect(state.errorAuqTemplate).toBe("")
++    expect(state.errorSelfhealDelegate).toEqual({})
++  })
++
++  test("applies configured values", async () => {
++    await writeConfig('anthropic:\n  error_shaping_enabled: false\n  error_selfheal_delegate:\n    "system-reject-retry": delegate\n')
++    await applyConfigToState()
++    expect(state.errorShapingEnabled).toBe(false)
++    expect(state.errorSelfhealDelegate).toEqual({ "system-reject-retry": "delegate" })
++  })
++
++  test("hot-reload: re-applying a fresh empty config RETAINS the value (unified retain-on-absence semantic, see config-hot-reload.it.test.ts R2)", async () => {
++    await writeConfig('anthropic:\n  error_selfheal_delegate:\n    "system-reject-retry": delegate\n')
++    await applyConfigToState()
++    expect(state.errorSelfhealDelegate).toEqual({ "system-reject-retry": "delegate" })
++
++    resetConfigCache()
++    await writeConfig("") // second load (hot-reload) — every key absent
++    await applyConfigToState()
++
++    // Retain-on-absence: an absent key does NOT reset to default — only
++    // resetConfigManagedState() does that (matches every other Record-typed
++    // key, e.g. tool_strip_fields / retry_reject_body_fields).
++    expect(state.errorSelfhealDelegate).toEqual({ "system-reject-retry": "delegate" })
++
++    resetConfigManagedState()
++    expect(state.errorSelfhealDelegate).toEqual({})
++  })
++})

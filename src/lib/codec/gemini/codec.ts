@@ -25,7 +25,7 @@
  * This realizes codec.md §3's "Gemini codec 委托 openai-cc 处理 CC payload" with the render shell
  * now IN the codec (B5) rather than the handler.
  *
- * **Per-request stateful factory.** `createOpenAiGeminiCodec()` holds the internal
+ * **Per-request stateful factory.** `createGeminiCodec()` holds the internal
  * cc codec instance (whose closure carries the via-responses Responses→CC stream
  * translator) + the Gemini ctx + the auto-truncate baseline.
  */
@@ -49,13 +49,13 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { RequestState } from "~/lib/pipeline/request-state"
 import type {
   //
   ClassifiedStreamError,
   ClientFrame,
   FormatCodec,
   RawHttpRequest,
-  RequestSample,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
@@ -103,7 +103,7 @@ const DROPPED_GEMINI_PARAMS_WARNING_CODE = "gemini_dropped_params"
  * context + truncation baseline accessors (the driver consumes it as a plain
  * `FormatCodec`; the handler reads the extras + the captured Gemini model id).
  */
-export interface OpenAiGeminiCodec extends FormatCodec {
+export interface GeminiCodec extends FormatCodec {
   /** The RequestContext created by `parse` (route `c.set` + failure settle). `undefined` before parse. */
   getContext(): RequestContext | undefined
   /** The auto-truncate baseline: the post-system-prompt, pre-sanitize CC payload. `undefined` before parse. */
@@ -122,18 +122,24 @@ export interface OpenAiGeminiCodec extends FormatCodec {
   getStreamMeta(): GeminiStreamMeta
 }
 
-/** Args for {@link createOpenAiGeminiCodec}. */
-export interface CreateOpenAiGeminiCodecArgs {
+/** Args for {@link createGeminiCodec}. */
+export interface CreateGeminiCodecArgs {
   /**
    * REVERSE `@messages` leg only: the shared per-request beta probe, threaded to the internal cc
    * delegate so its `prepareWire` records the outbound Anthropic betas. Absent for the direct/via-responses
    * Gemini legs.
    */
   reverseBetaProbe?: import("~/lib/anthropic/pipeline").BetaProbe
+  /**
+   * REVERSE `@messages` leg only: the shared per-request mapper holder. `parse` threads it onto
+   * `env.requestState` so the `OUTBOUND_LEGS[/v1/messages]` reverse branch (C2b) reads the SAME instance.
+   * Absent for the direct/via-responses Gemini legs.
+   */
+  reverseMapperHolder?: import("~/lib/codec/openai-cc/reverse-anthropic-rewrite").ReverseAnthropicMapperHolder
 }
 
 /** Build the gemini codec for one request (holds the internal cc codec + Gemini ctx). */
-export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGeminiCodecArgs): OpenAiGeminiCodec {
+export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs): GeminiCodec {
   // Internal delegate: the openai-cc codec drives the CC-payload S2–S6 (route
   // decision incl. via-responses, wire prep, response normalization, sampling).
   // We call its methods WITHOUT its `parse` — they are pure over `env` (+ its own
@@ -156,7 +162,18 @@ export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGemi
       const { env, baseline, ctx } = parseGemini(raw, modelId)
       requestContext = ctx
       truncateBaseline = baseline
-      return env
+      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
+      // the `truncateBaseline` (the CC auto-truncate baseline) from `env.requestState` — the forward `@cc`
+      // cell reads it via `OUTBOUND_LEGS[CHAT_COMPLETIONS]` (C3). The REVERSE `@messages` leg supply (C2b —
+      // the shared beta probe + mapper holder) is added when the handler injects them; both coexist.
+      // Populating requestState is also the driver's cell-keyed fork discriminator.
+      return env.with({
+        requestState: {
+          truncateBaseline: baseline,
+          ...(opts?.reverseBetaProbe && { betaProbe: opts.reverseBetaProbe }),
+          ...(opts?.reverseMapperHolder && { reverseMapperHolder: opts.reverseMapperHolder }),
+        },
+      })
     },
 
     getContext() {
@@ -167,17 +184,9 @@ export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGemi
       return truncateBaseline
     },
 
-    // S2–S6 over the CC payload: delegate to the internal cc codec. These never
-    // touch cc's parse-created closure state (requestContext/truncateBaseline are
-    // ours); the only cc closure state used is its via-responses stream translator,
-    // lazily built inside cc.renderResponse.
-    translateOut(env) {
-      return cc.translateOut(env)
-    },
-
-    prepareWire(env) {
-      return cc.prepareWire(env)
-    },
+    // S2 translateOut / S4 prepareWire / S4-sample: the CellAssembly's `OUTBOUND_LEGS` own the outbound
+    // wire for every real Gemini request (via the shared cc/responses leg cores); the codec no longer
+    // implements them. renderResponse below is the RESPONSE side (InboundCodec) — Gemini's CC→Gemini hop.
 
     // renderResponse normalizes the upstream to CC (cc handles the via-responses Responses→CC
     // leg), then drives the per-request CC→Gemini translator per-frame (B5) so the owns-sink driver
@@ -212,12 +221,6 @@ export function createOpenAiGeminiCodec(modelId: string, opts?: CreateOpenAiGemi
       // outbound-track accumulator is the CC one. (`env` threaded to the cc delegate for the interface;
       // Gemini has no `→ messages` translate leg, so the leg never changes the accumulator.)
       return cc.createResponseAccumulator(env)
-    },
-
-    sampleRequest(wire, env): RequestSample {
-      // Effective + wire are both CC-shaped for Gemini (the Gemini original lives
-      // in setOriginalRequest), matching the legacy CC pipeline's bookkeeping.
-      return cc.sampleRequest?.(wire, env) as RequestSample
     },
 
     formatError(err, _env) {
@@ -389,6 +392,7 @@ interface EnvelopeInit {
   body: unknown
   ctx: RequestContext
   prepareHints?: PrepareHints
+  requestState?: RequestState
 }
 
 /** Build a {@link RequestEnvelope} (clientFormat `gemini`, CC-shaped body). */
@@ -401,6 +405,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     stream: init.stream,
     body: init.body,
     prepareHints: init.prepareHints ?? {},
+    ...(init.requestState !== undefined && { requestState: init.requestState }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createGeminiLazyView(env.body)
@@ -414,6 +419,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         body: env.body,
         ctx: env.ctx,
         prepareHints: env.prepareHints,
+        requestState: env.requestState,
         ...patch,
       })
     },

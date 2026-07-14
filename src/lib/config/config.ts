@@ -31,6 +31,7 @@ import {
   setResponsesConfig,
   setShutdownConfig,
   setReactiveRetryConfig,
+  setTelemetryConfig,
   setTimeoutConfig,
   setTimeoutOverridesConfig,
   state,
@@ -41,6 +42,8 @@ import type {
   EndpointScope,
   SystemPromptEntry,
 } from "./schema"
+
+import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
@@ -708,15 +711,23 @@ export async function applyConfigToState(): Promise<Config> {
     // Tool-name-keyed: keys are tool names, matched verbatim. Do NOT normalize
     // (normalizeModelKeyedRecord folds case/separators and is model-specific).
     // cloneStatePatch deep-clones the record, so passing the parsed value is safe.
-    if (a.tool_decode_input_fields !== undefined) setAnthropicBehavior({ decodeToolInputFields: a.tool_decode_input_fields })
-    if (a.tool_decode_all_input_fields !== undefined) setAnthropicBehavior({ decodeAllToolInputFields: a.tool_decode_all_input_fields })
-    if (a.tool_recover_call_text !== undefined) setAnthropicBehavior({ recoverToolCallText: a.tool_recover_call_text })
-    if (a.tool_repair_malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: a.tool_repair_malformed_input })
+    // Response-wire fixes live under the `response_text_fix` / `response_tool_use_fix` sections.
+    const textFix = a.response_text_fix
+    const toolUseFix = a.response_tool_use_fix
+    if (textFix?.invoke_in_text !== undefined) setAnthropicBehavior({ recoverToolCallText: textFix.invoke_in_text })
+    if (toolUseFix?.decode_top_level_field !== undefined) setAnthropicBehavior({ decodeToolInputFields: toolUseFix.decode_top_level_field })
+    if (toolUseFix?.malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: toolUseFix.malformed_input })
+    if (toolUseFix?.send_message_to_missing !== undefined) setAnthropicBehavior({ fixSendMessageRecipient: toolUseFix.send_message_to_missing })
+    if (toolUseFix?.ask_user_question_question_missing !== undefined)
+      setAnthropicBehavior({ backfillQuestionFromHeader: toolUseFix.ask_user_question_question_missing })
     if (a.refusal_sse_rewrite !== undefined) setAnthropicBehavior({ refusalSseRewrite: a.refusal_sse_rewrite })
     if (a.refusal_end_turn_text !== undefined) setAnthropicBehavior({ refusalEndTurnText: a.refusal_end_turn_text })
     if (a.refusal_error_message !== undefined) setAnthropicBehavior({ refusalErrorMessage: a.refusal_error_message })
     if (a.refusal_error_type !== undefined) setAnthropicBehavior({ refusalErrorType: a.refusal_error_type })
-    if (a.tool_backfill_question !== undefined) setAnthropicBehavior({ backfillQuestionFromHeader: a.tool_backfill_question })
+    if (a.error_shaping_enabled !== undefined) setAnthropicBehavior({ errorShapingEnabled: a.error_shaping_enabled })
+    if (a.error_ask_user_question !== undefined) setAnthropicBehavior({ errorAskUserQuestion: a.error_ask_user_question })
+    if (a.error_auq_template !== undefined) setAnthropicBehavior({ errorAuqTemplate: a.error_auq_template })
+    if (a.error_selfheal_delegate !== undefined) setAnthropicBehavior({ errorSelfhealDelegate: a.error_selfheal_delegate })
     if (a.system_rewrite_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.system_rewrite_reminders === "boolean") {
@@ -792,6 +803,40 @@ export async function applyConfigToState(): Promise<Config> {
     if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
   }
 
+  // Telemetry settings (telemetry.*, nested: override only when present). Business-layer
+  // validation (T2.3) does warn-continue fallbacks — never fail-fast on hot-reload.
+  if (config.telemetry) {
+    const t = config.telemetry
+    if (t.enabled !== undefined) setTelemetryConfig({ telemetryEnabled: t.enabled })
+    if (t.db_path !== undefined) setTelemetryConfig({ telemetryDbPath: t.db_path })
+    if (t.persist_interval !== undefined) setTelemetryConfig({ telemetryPersistInterval: t.persist_interval })
+    if (t.rollup_interval !== undefined) setTelemetryConfig({ telemetryRollupInterval: t.rollup_interval })
+    if (t.cardinality_cap !== undefined) setTelemetryConfig({ telemetryCardinalityCap: t.cardinality_cap })
+    if (t.cumulative !== undefined) setTelemetryConfig({ telemetryCumulative: t.cumulative })
+    // γ 下限 ~0.005：更紧会触发 DDSketch bin 塌缩（PoC：0.001→6909 bin>2048）→ 警告回落 0.01。
+    if (t.sketch_gamma !== undefined) {
+      if (t.sketch_gamma < 0.005) {
+        consola.warn(`[config] telemetry.sketch_gamma=${t.sketch_gamma} 低于下限 0.005（会触发 DDSketch bin 塌缩）——回落到默认 0.01`)
+        setTelemetryConfig({ telemetrySketchGamma: 0.01 })
+      } else {
+        setTelemetryConfig({ telemetrySketchGamma: t.sketch_gamma })
+      }
+    }
+    if (t.tiers?.raw?.resolution_minutes !== undefined) {
+      // raw 分辨率须整除 60（hourly rollup 上卷前提）→ 非整除警告回落 5。
+      const res = t.tiers.raw.resolution_minutes
+      if (res <= 0 || 60 % res !== 0) {
+        consola.warn(`[config] telemetry.tiers.raw.resolution_minutes=${res} 非 60 的整除因子（hourly rollup 要求）——回落到默认 5`)
+        setTelemetryConfig({ telemetryRawResolutionMinutes: 5 })
+      } else {
+        setTelemetryConfig({ telemetryRawResolutionMinutes: res })
+      }
+    }
+    if (t.tiers?.raw?.retention_days !== undefined) setTelemetryConfig({ telemetryRawRetentionDays: t.tiers.raw.retention_days })
+    if (t.tiers?.hourly?.retention_days !== undefined) setTelemetryConfig({ telemetryHourlyRetentionDays: t.tiers.hourly.retention_days })
+    if (t.tiers?.daily?.retention_days !== undefined) setTelemetryConfig({ telemetryDailyRetentionDays: t.tiers.daily.retention_days })
+  }
+
   // Upstream hook module (nested: override only when present). Declarative only — writes
   // state so start.ts (and, in future phases, a reload API) can decide whether/what to load;
   // never triggers the module load itself.
@@ -810,12 +855,17 @@ export async function applyConfigToState(): Promise<Config> {
 
   // Timeouts section (scalar: override only when present)
   if (config.timeouts) {
+    // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
+    // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
+    // than inferred. Pure observation — reads state, records a diff, no behavior change.
+    const timeoutBefore = { staleRequestMaxAge: state.staleRequestMaxAge, responseHeaderTimeout: state.responseHeaderTimeout, streamIdleTimeout: state.streamIdleTimeout }
     const t = config.timeouts
     if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
     if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
     if (t.upstream_keepalive !== undefined) setTimeoutConfig({ upstreamKeepaliveDelay: t.upstream_keepalive })
     if (t.upstream_h2_ping !== undefined) setTimeoutConfig({ upstreamH2PingInterval: t.upstream_h2_ping })
     if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
+    if (t.request_deadline !== undefined) setTimeoutConfig({ requestDeadline: t.request_deadline })
     // Per-model override maps (already bundled+user per-key merged upstream).
     // Replace semantics per field; app-guard only (no dispatcher rebuild).
     if (t.stream_idle_overrides !== undefined) {
@@ -826,6 +876,7 @@ export async function applyConfigToState(): Promise<Config> {
         responseHeaderTimeoutOverrides: normalizeModelKeyedRecord(t.response_header_overrides, "timeouts.response_header_overrides"),
       })
     }
+    recordConfigReloadTimeoutDiff(timeoutBefore, { staleRequestMaxAge: state.staleRequestMaxAge, responseHeaderTimeout: state.responseHeaderTimeout, streamIdleTimeout: state.streamIdleTimeout })
   }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 

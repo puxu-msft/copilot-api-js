@@ -35,6 +35,12 @@ import type {
 } from "~/lib/observability"
 import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
+import {
+  //
+  responseThinkingFromBody,
+  toolNamesFromResponseBody,
+} from "~/lib/history/entry-view"
+import { isTerminalState } from "~/lib/history/lifecycle-state"
 import { assertNever } from "~/lib/observability"
 import {
   //
@@ -49,6 +55,7 @@ import { handleShutdownSignal } from "~/lib/shutdown"
 import type { UiState } from "./controller"
 import type { TerminalRegionState } from "./terminal-coordinator"
 
+import { AgentOrdinalRegistry } from "./agent-ordinal-registry"
 import {
   //
   INITIAL_UI_STATE,
@@ -104,6 +111,14 @@ interface ActiveRequest {
   streamBlockType?: string
   /** Features applied to this request (e.g. "beta-stripped", "via-responses"). */
   tags: Array<string>
+  /**
+   * Tool names the recoverer rebuilt from downgraded upstream text (from the
+   * `tool-call-recovered` feature detail). Feeds the completion line's
+   * `tool_use(<names>)` token as a FALLBACK: the upstream-original response body
+   * (what the line normally reads) keeps the raw downgraded text with NO tool_use
+   * block (Option A), so the recovered names are only knowable via this channel.
+   */
+  recoveredToolNames?: Array<string>
   /**
    * Thinking as a terminal dimension (NOT an accumulated tag): `requested` is
    * set once (fixed), `effective` is overwritten per attempt (last wins). Rendered
@@ -182,6 +197,8 @@ export class TerminalUi {
   private readonly showActive: boolean
   private readonly silent: boolean
   private readonly active = new Map<string, ActiveRequest>()
+  /** First-seen subagent numbering (per session) for the session-identity block. */
+  private readonly agentOrdinals = new AgentOrdinalRegistry()
   private footerVisible = false
   private footerTimer: ReturnType<typeof setInterval> | null = null
   private readonly unsubscribe: () => void
@@ -410,6 +427,13 @@ export class TerminalUi {
         }
         const tag = renderFeatureTag(event.feature, event.detail)
         if (tag && !entry.tags.includes(tag)) entry.tags.push(tag)
+        // Stash the recovered tool names (feature detail) so the completion line can
+        // fall back to them when the upstream-original body carries no tool_use block
+        // (the downgraded-text case). The bare-name TAG is still rendered above.
+        if (event.feature === "tool-call-recovered") {
+          const tools = (event.detail as { tools?: unknown } | undefined)?.tools
+          if (Array.isArray(tools)) entry.recoveredToolNames = tools.filter((t): t is string => typeof t === "string")
+        }
         return
       }
       case "request.completed": {
@@ -489,6 +513,10 @@ export class TerminalUi {
   // ============================================================================
 
   private onCreated(ctx: RequestContextSnapshot): void {
+    // Lock the subagent's first-seen ordinal at arrival (idempotent) so the
+    // session-identity block numbers agents by when they FIRST appear, not when
+    // they terminate.
+    this.agentOrdinals.ordinalFor(ctx.sessionId, ctx.agentId)
     const entry: ActiveRequest = {
       ctx,
       tags: [],
@@ -524,6 +552,18 @@ export class TerminalUi {
         attemptCount: 0,
         attempts: [],
       }
+      // Terminal guard: a request that has already reached a terminal state
+      // (completed/failed/aborted/interrupted) must NEVER be re-materialized into
+      // `active` — its `onTerminal` has already run (`active.delete`) and no further
+      // terminal event is coming, so re-inserting it would spin it in the footer
+      // forever. This happens when a producer records a late feature AFTER `ctx.fail()`
+      // (e.g. error-shaping's `error-shaping-decided`, whose `feature_applied` carries
+      // `state:"failed"`). Return a throwaway entry (callers still mutate it — tag push
+      // etc.) WITHOUT inserting it, mirroring `onTerminal`'s already-gone branch. The
+      // sibling active-map consumers already hold this invariant (WsSink counter is
+      // immune; ui-v4's live-store no-ops `feature_applied` for an absent id) — this
+      // aligns the TUI with them.
+      if (isTerminalState(ctx.state)) return entry
       this.active.set(ctx.id, entry)
       this.startFooterTimer()
     } else {
@@ -556,6 +596,9 @@ export class TerminalUi {
       time: formatTime(),
       method: event.ctx.method,
       path: event.ctx.path,
+      sessionId: event.ctx.sessionId,
+      agentId: event.ctx.agentId,
+      agentOrdinal: this.agentOrdinals.ordinalFor(event.ctx.sessionId, event.ctx.agentId),
       model: event.ctx.resolvedModel,
       clientModel: event.ctx.clientModel,
       multiplier: event.ctx.multiplier,
@@ -639,13 +682,21 @@ export class TerminalUi {
     // attempt's upstream usage — the same direct optional-chain access used by
     // context/request.ts). Undefined usage (no attempts / failed early) omits
     // the columns; the log-line formatter is null-tolerant.
-    const usage = historyEntry?.attempts?.at(-1)?.upstreamResponse?.usage
+    const finalUpstreamResponse = historyEntry?.attempts?.at(-1)?.upstreamResponse
+    const usage = finalUpstreamResponse?.usage
 
     const message = formatLogLine({
       prefix: isError ? "[FAIL]" : "[ OK ]",
       time: formatTime(),
       method: ctx.method,
       path: ctx.path,
+      // Successful lines render `<inputFormat>/<model>` from the inbound endpoint
+      // instead of `<method> <path> <model>`; failure lines keep the full form
+      // (formatLogLine gates the compact form on !isError). See INPUT_FORMAT_LABEL.
+      inputFormat: ctx.endpoint,
+      sessionId: ctx.sessionId,
+      agentId: ctx.agentId,
+      agentOrdinal: this.agentOrdinals.ordinalFor(ctx.sessionId, ctx.agentId),
       model: ctx.resolvedModel,
       clientModel: ctx.clientModel,
       multiplier: ctx.multiplier,
@@ -659,6 +710,17 @@ export class TerminalUi {
       outputTokens: usage?.output_tokens,
       cacheReadInputTokens: usage?.cache_read_input_tokens,
       cacheCreationInputTokens: usage?.cache_creation_input_tokens,
+      // Terminal stop_reason token (`end_turn` / `tool_use(Bash,Edit)` / …) —
+      // success lines only; a failure carries its error in `extra` and no
+      // stop_reason. Tool names come from the upstream-original response body;
+      // when it carries none but the recoverer rebuilt tool_use(s) from downgraded
+      // text (Option A keeps that track as raw text), fall back to the recovered
+      // names so the token isn't a bare `tool_use` with no `(<names>)`.
+      stopReason: isError ? undefined : finalUpstreamResponse?.stopReason,
+      toolNames: isError ? undefined : resolveCompletionToolNames(finalUpstreamResponse?.body, entry.recoveredToolNames),
+      // Response-side thinking token (`think:…(<blocks>)`) — success lines only,
+      // derived from the same final-attempt response body as toolNames.
+      responseThinking: isError ? undefined : responseThinkingFromBody(finalUpstreamResponse?.body),
       extra,
       reqId: isError ? ctx.id : undefined,
       isError,
@@ -1192,6 +1254,22 @@ export class TerminalUi {
 // ============================================================================
 
 /**
+ * Resolve the completion line's `tool_use(<names>)` tool names. Primary source is
+ * the upstream-original response `body` (in call order, deduped-free). When it
+ * yields none but the recoverer rebuilt tool_use(s) from downgraded text, fall
+ * back to the recovered names — the upstream-original track keeps that response as
+ * raw text with NO tool_use block (Option A), so those names are ONLY on the
+ * `tool-call-recovered` feature detail. A Tier-A rebuild requires no pre-existing
+ * tool_use block, so the two sources never both apply; the fallback is exact, not
+ * a merge.
+ */
+function resolveCompletionToolNames(body: unknown, recoveredToolNames: Array<string> | undefined): Array<string> {
+  const upstream = toolNamesFromResponseBody(body)
+  if (upstream.length > 0) return upstream
+  return recoveredToolNames ?? []
+}
+
+/**
  * Render the thinking terminal field into a single console tag. `effective` is
  * the authoritative "what actually ran"; a differing `requested` is shown as
  * `requested→effective` (matching the `ws→http` convention) to surface coercion.
@@ -1230,6 +1308,9 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
     case "tool-call-recovered":
     case "refusal-recovered":
     case "refusal-errored":
+    case "error-shaping-decided":
+    case "error-shaping-auq-synthesized":
+    case "error-shaping-selfheal-delegated":
     case "tool-input-decode-failed":
     case "protect-streaming-retry":
     case "context-edits-applied":

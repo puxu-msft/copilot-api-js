@@ -153,6 +153,9 @@ export function migrateValue(oldPath: string, isLegacy: (value: unknown) => bool
 const SERVER_TOOL_RETIRED_MSG =
   "removed with the web_search double-hop retirement (2026-07-13): native server-tool stripping/rewriting is now reactive-only, and web_search is no longer synthesized. See docs/decisions/2026-07-13-server-tool-positioning-and-web-search-retirement.md"
 
+const TOOL_DECODE_ALL_REMOVED_MSG =
+  "the decode-ALL-tool-input-fields feature was removed; use anthropic.response_tool_use_fix.decode_top_level_field (per-tool field list) instead; ignoring"
+
 export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // ── Historical migrations (carried over from schema.ts) ───────────────────
   renameLeaf("anthropic.immutable_thinking_messages", "anthropic.thinking_block_message_policy", {
@@ -268,10 +271,19 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // applies when tool_search is enabled, so it now carries the tool_search_ sub-concern
   // prefix. Same string[]→string[] shape, no value transform.
   renameLeaf("anthropic.tool_non_deferred", "anthropic.tool_search_non_deferred"),
-  renameLeaf("anthropic.decode_tool_input_fields", "anthropic.tool_decode_input_fields"),
-  renameLeaf("anthropic.decode_all_tool_input_fields", "anthropic.tool_decode_all_input_fields"),
-  renameLeaf("anthropic.recover_tool_call_text", "anthropic.tool_recover_call_text"),
-  renameLeaf("anthropic.backfill_question_from_header", "anthropic.tool_backfill_question"),
+  // Response-wire fixes regrouped under `response_text_fix` (text blocks) /
+  // `response_tool_use_fix` (tool_use blocks). Migrations do NOT chain (each reads the
+  // raw payload), so BOTH the ancestral and the intermediate flat spellings map DIRECTLY
+  // to the final nested path. `*_decode_all_*` is removed outright (feature deleted).
+  renameLeaf("anthropic.decode_tool_input_fields", "anthropic.response_tool_use_fix.decode_top_level_field"),
+  renameLeaf("anthropic.tool_decode_input_fields", "anthropic.response_tool_use_fix.decode_top_level_field"),
+  removeKey("anthropic.decode_all_tool_input_fields", TOOL_DECODE_ALL_REMOVED_MSG),
+  removeKey("anthropic.tool_decode_all_input_fields", TOOL_DECODE_ALL_REMOVED_MSG),
+  renameLeaf("anthropic.recover_tool_call_text", "anthropic.response_text_fix.invoke_in_text"),
+  renameLeaf("anthropic.tool_recover_call_text", "anthropic.response_text_fix.invoke_in_text"),
+  renameLeaf("anthropic.backfill_question_from_header", "anthropic.response_tool_use_fix.ask_user_question_question_missing"),
+  renameLeaf("anthropic.tool_backfill_question", "anthropic.response_tool_use_fix.ask_user_question_question_missing"),
+  renameLeaf("anthropic.tool_repair_malformed_input", "anthropic.response_tool_use_fix.malformed_input"),
   renameLeaf("anthropic.rewrite_system_reminders", "anthropic.system_rewrite_reminders"),
   renameLeaf("anthropic.strip_beta_headers", "anthropic.beta_strip_headers"),
   // strip_request_headers → request_header_blacklist: the HTTP request-header strip is

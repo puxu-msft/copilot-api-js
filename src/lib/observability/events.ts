@@ -74,6 +74,8 @@ export interface RequestContextSnapshot {
   id: string
   endpoint: EndpointType
   sessionId?: string
+  /** Subagent id (`x-claude-code-agent-id`); absent for the main agent. Carried so display sinks can render the session-identity block. */
+  agentId?: string
   rawPath?: string
   /** HTTP method, or "WS" / "STDIO" for non-HTTP entry points. */
   method: string
@@ -145,12 +147,18 @@ export type FeatureKind =
   | "dropped-params"
   /** request used a non-default transport — `detail: { kind: TransportKind }` */
   | "transport"
-  /** streaming recoverer rebuilt a tool_use from downgraded upstream text */
+  /** recoverer rebuilt tool_use(s) from downgraded upstream text — `detail: { tools: string[] }` (the recovered tool names, in call order) */
   | "tool-call-recovered"
   /** recovered a thinking-only upstream refusal by synthesizing a text completion */
   | "refusal-recovered"
   /** error mode: surfaced a thinking-only upstream refusal as an `event: error` frame + ctx.fail */
   | "refusal-errored"
+  /** error-shaping 决策命中 — detail: { decision: "retry-signal"|"ask-user-question"|"canonical-error"|"defer-to-block-level", errorType: ApiErrorType, commitPhase: "pre-commit"|"post-commit" } */
+  | "error-shaping-decided"
+  /** error-shaping B类 AskUserQuestion 合成命中 — detail: { errorType: ApiErrorType } */
+  | "error-shaping-auq-synthesized"
+  /** error-shaping D类自愈委派命中（策略被强制 canHandle=false）— detail: { strategyName: string } */
+  | "error-shaping-selfheal-delegated"
   /** a tool_use input field selected for decode couldn't be decoded — `detail: { tool, field?, reason }` */
   | "tool-input-decode-failed"
   /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */

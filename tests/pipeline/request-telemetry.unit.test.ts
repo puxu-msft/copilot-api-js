@@ -12,6 +12,7 @@ import path from "node:path"
 
 import {
   //
+  _projectDimBucketsForTests,
   _resetRequestTelemetryForTests,
   _setRequestTelemetryFilePathForTests,
   getDimensionBreakdown,
@@ -21,20 +22,36 @@ import {
   persistRequestTelemetry,
   recordAcceptedRequest,
   recordSettledRequest,
+  TELEMETRY_HISTOGRAMS,
 } from "~/lib/request-telemetry"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+  type StateSnapshot,
+} from "~/lib/state"
 
 let tempDir: string
 let telemetryFile: string
+let dbPath: string
+let stateSnapshot: StateSnapshot
 
 beforeEach(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "request-telemetry-test-"))
   telemetryFile = path.join(tempDir, "request-telemetry.json")
+  dbPath = path.join(tempDir, "telemetry.db")
+  stateSnapshot = snapshotStateForTests()
+  // P7 single-track: the 7d window rebuilds from SQLite (tel_raw) across restarts, so an isolated
+  // per-test telemetry.db path is required for the restart oracles. telemetryCumulative on for parity.
+  setStateForTests({ telemetryEnabled: true, telemetryDbPath: dbPath, telemetryCumulative: true })
   _resetRequestTelemetryForTests()
   _setRequestTelemetryFilePathForTests(telemetryFile)
 })
 
 afterEach(async () => {
   _resetRequestTelemetryForTests()
+  restoreStateForTests(stateSnapshot)
   await fs.rm(tempDir, { recursive: true, force: true })
 })
 
@@ -165,6 +182,9 @@ describe("request telemetry", () => {
     // and calls pruneBuckets() against the wall clock on restart.
     const now = Date.now()
 
+    // init opens telemetry.db so the dual-write feeds the outbox; persist drains it to SQLite (the sole
+    // persistent store under P7 single-track). The restart then REBUILDS the 7d window from tel_raw.
+    await initRequestTelemetry()
     recordAcceptedRequest(now)
     recordSettledRequest(
       { model: "gpt-5.2" },
@@ -205,8 +225,9 @@ describe("request telemetry", () => {
     })
   })
 
-  test("concurrent persists serialize and produce a readable file (no torn writes)", async () => {
+  test("concurrent persists serialize and drain to SQLite without loss (single-track)", async () => {
     const now = Date.now()
+    await initRequestTelemetry()
     for (let i = 0; i < 50; i++) {
       recordSettledRequest(
         { model: `model-${i % 3}` },
@@ -219,24 +240,23 @@ describe("request telemetry", () => {
       )
     }
 
-    // Fire many persists in parallel — the periodic timer and shutdown can
-    // race in production. With the serialized atomic-write path, the final
-    // file must be parseable JSON, not torn bytes.
+    // Fire many persists in parallel — the periodic timer and shutdown can race in production. The
+    // serialized flush + outbox snapshot-and-swap must drain to SQLite exactly once (no double-count,
+    // no torn state). The legacy JSON write path is gone, so the only durable store is telemetry.db.
     await Promise.all(Array.from({ length: 25 }, () => persistRequestTelemetry()))
 
-    const raw = await fs.readFile(telemetryFile, "utf8")
-    expect(() => JSON.parse(raw)).not.toThrow()
+    // No JSON file is ever written under the single-track convergence.
+    await expect(fs.access(telemetryFile)).rejects.toThrow()
 
-    // No stray temp files should be left behind.
-    const siblings = await fs.readdir(tempDir)
-    expect(siblings.filter((name) => name.includes(".tmp."))).toEqual([])
-
-    // Re-init from the persisted file → state survives.
+    // Re-init rebuilds the 7d window from telemetry.db → state survives.
     _resetRequestTelemetryForTests()
     _setRequestTelemetryFilePathForTests(telemetryFile)
     await initRequestTelemetry()
     const snapshot = getRequestTelemetrySnapshot(now)
-    expect(snapshot.modelsLast7d.length).toBeGreaterThan(0)
+    expect(snapshot.modelsLast7d.length).toBe(3)
+    // Exactly-once drain: total request count across the 3 models is 50 (no double-count from 25 flushes).
+    const totalRequests = snapshot.modelsLast7d.reduce((sum, m) => sum + m.requestCount, 0)
+    expect(totalRequests).toBe(50)
   })
 
   test("corrupted telemetry file is quarantined and starts fresh", async () => {
@@ -255,96 +275,66 @@ describe("request telemetry", () => {
     expect(siblings).not.toContain(path.basename(telemetryFile))
   })
 
-  test("migrates a legacy V2 file (modelBuckets → model dimension); since-start stays empty", async () => {
+  test("rebuild-equivalence oracle: dual-write → persist → restart rebuilds dimBuckets counters + series byte-equal (histograms empty)", async () => {
+    // T7.1 承重 oracle: the 7d window rebuilt from SQLite tel_raw must reproduce the in-memory dimBuckets
+    // counters + series EXACTLY (byte-for-byte per field). Independent oracle: capture the pre-restart
+    // getDimensionBreakdown across MULTIPLE dimensions, restart (rebuild from SQLite), compare field-by-field.
     const now = Date.now()
-    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
-    const v2 = {
-      version: 2,
-      buckets: { [String(bucketTs)]: 3 },
-      modelBuckets: {
-        [String(bucketTs)]: {
-          "claude-opus-4.8": {
-            requestCount: 2,
-            successCount: 2,
-            failureCount: 0,
-            totalDurationMs: 4_000,
-            inputTokens: 200,
-            outputTokens: 80,
-            cacheReadInputTokens: 10,
-            cacheCreationInputTokens: 5,
-            reasoningTokens: 30,
+    await initRequestTelemetry()
+
+    const bucketMs = 5 * 60 * 1000
+    // Spread requests across 3 buckets × multiple dims/keys so the rebuild must restore a sparse
+    // multi-bucket multi-dimension structure (not just one flat aggregate).
+    for (let b = 0; b < 3; b++) {
+      const at = now - b * bucketMs
+      for (let i = 0; i < 5; i++) {
+        recordSettledRequest(
+          { model: `m${i % 2}`, endpoint: "anthropic-messages", agentKind: i % 2 === 0 ? "main" : "subagent" },
+          {
+            startedAt: at,
+            endedAt: at + 100 + i,
+            success: i % 3 !== 0,
+            multiplier: 3,
+            usage: { input_tokens: 10 * (i + 1), output_tokens: 4 * (i + 1), cache_read_input_tokens: i },
           },
-        },
-      },
+        )
+      }
     }
-    await fs.writeFile(telemetryFile, JSON.stringify(v2), "utf8")
-    await initRequestTelemetry()
-
-    const snapshot = getRequestTelemetrySnapshot(now)
-    expect(snapshot.modelsSinceStart).toEqual([]) // C2: since-start is process-ephemeral, never seeded from buckets on load
-    expect(snapshot.modelsLast7d).toHaveLength(1)
-    expect(snapshot.modelsLast7d[0]).toMatchObject({
-      model: "claude-opus-4.8",
-      requestCount: 2,
-      successCount: 2,
-      failureCount: 0,
-      totalDurationMs: 4_000,
-      averageDurationMs: 2_000,
-      usage: { inputTokens: 200, outputTokens: 80, totalTokens: 280, cacheReadInputTokens: 10, cacheCreationInputTokens: 5, reasoningTokens: 30 },
-    })
-  })
-
-  test("round-trips an unknown future dimension without loss (forward-compat)", async () => {
-    const now = Date.now()
-    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
-    const acc = {
-      requestCount: 1,
-      successCount: 1,
-      failureCount: 0,
-      totalDurationMs: 100,
-      inputTokens: 5,
-      outputTokens: 3,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-      reasoningTokens: 0,
-    }
-    // A V3 file carrying an "endpoint" dimension this build registers no extractor for.
-    const v3 = {
-      version: 3,
-      buckets: { [String(bucketTs)]: 1 },
-      dimensions: {
-        model: { buckets: { [String(bucketTs)]: { m1: acc } } },
-        endpoint: { buckets: { [String(bucketTs)]: { "anthropic-messages": acc } } },
-      },
-    }
-    await fs.writeFile(telemetryFile, JSON.stringify(v3), "utf8")
-    await initRequestTelemetry()
-
-    // The known model dimension still projects; the unknown endpoint dim loaded into storage.
-    expect(getRequestTelemetrySnapshot(now).modelsLast7d).toHaveLength(1)
-
-    // Persist round-trips the unknown dimension (no allow-list drop).
     await persistRequestTelemetry()
-    const reloaded = JSON.parse(await fs.readFile(telemetryFile, "utf8")) as {
-      version: number
-      dimensions: Record<string, { buckets: Record<string, Record<string, { requestCount: number }>> }>
+
+    // Capture the pre-restart breakdowns (the ground truth to reproduce).
+    const dims = ["model", "endpoint", "agentKind"] as const
+    const before = Object.fromEntries(dims.map((d) => [d, getDimensionBreakdown(d, "7d", 100, now)]))
+
+    // Restart: reset process state, rebuild from tel_raw.
+    _resetRequestTelemetryForTests()
+    _setRequestTelemetryFilePathForTests(telemetryFile)
+    await initRequestTelemetry()
+
+    for (const d of dims) {
+      const after = getDimensionBreakdown(d, "7d", 100, now)
+      // counters + series reproduce EXACTLY (independent field-by-field, not a self-consistency check).
+      expect(after.totalKeys).toBe(before[d].totalKeys)
+      expect(after.keys.map((k) => k.key).sort()).toEqual(before[d].keys.map((k) => k.key).sort())
+      for (const key of after.keys) {
+        const priorKey = before[d].keys.find((k) => k.key === key.key)!
+        expect(key.counters).toEqual(priorKey.counters)
+        expect(key.series).toEqual(priorKey.series)
+        // 7d histograms are retired → empty stub (both before AND after — never populated for dimBuckets).
+        expect(key.histograms).toEqual({})
+        expect(priorKey.histograms).toEqual({})
+      }
     }
-    expect(reloaded.version).toBe(3)
-    expect(reloaded.dimensions.endpoint.buckets[String(bucketTs)]["anthropic-messages"].requestCount).toBe(1)
   })
 })
 
 /**
- * Persist + re-read the file to inspect raw per-dimension counters (the snapshot
- * surface only projects `model` until commit 8's `getDimensionBreakdown`). This
- * exercises the real generic persistence path, so it doubles as a serializer test.
+ * Inspect the raw per-dimension per-bucket counters directly from the in-memory `dimBuckets` (the
+ * snapshot surface only projects `model`). P7 removed the JSON write path, so this reads the in-memory
+ * projection hook instead of persisting + re-reading a file. Kept async for call-site churn minimalism.
  */
 async function persistedDimensions(): Promise<Record<string, { buckets: Record<string, Record<string, Record<string, number>>> }>> {
-  await persistRequestTelemetry()
-  const parsed = JSON.parse(await fs.readFile(telemetryFile, "utf8")) as {
-    dimensions: Record<string, { buckets: Record<string, Record<string, Record<string, number>>> }>
-  }
-  return parsed.dimensions
+  return _projectDimBucketsForTests()
 }
 
 describe("dimension/measure framework", () => {
@@ -594,72 +584,42 @@ describe("distribution histograms", () => {
     expect(hist.queue_wait_ms.p50).toBeGreaterThan(100) // 250 lands in the (100,250] bucket
   })
 
-  test("histograms round-trip through persistence (the __histograms sibling)", async () => {
+  test("7d histogram stub (T7.2): sinceStart histograms are FULL (feed /metrics); 7d histograms are empty {}", () => {
     const now = Date.now()
+    // Record with observable latency + token + queue-wait so sinceStart histograms populate.
+    for (let i = 0; i < 5; i++) {
+      recordSettledRequest(
+        { model: "m" },
+        { startedAt: now, endedAt: now + 50, success: true, queueWaitMs: 120, usage: { input_tokens: 3000, output_tokens: 60 } },
+      )
+    }
+
+    // sinceStart leg (feeds /metrics Prometheus histogram) — histograms MUST stay full (not regressed).
+    const sinceStart = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms
+    expect(sinceStart.duration_ms.count).toBe(5)
+    expect(sinceStart.duration_ms.sum).toBe(250)
+    expect(sinceStart.input_tokens.count).toBe(5)
+    expect(sinceStart.queue_wait_ms.sum).toBe(600)
+
+    // 7d leg (old ui/ only, ui-v4 unused) — histograms are RETIRED → empty stub. counters/series stay full.
+    const sevenDay = getDimensionBreakdown("model", "7d", 20, now).keys[0]
+    expect(sevenDay.counters.requestCount).toBe(5) // counters intact
+    expect(sevenDay.histograms).toEqual({}) // empty stub — no latency/token/queue-wait percentiles
+  })
+
+  test("7d histogram stub survives a rebuild: after restart the 7d histograms stay {} while counters rebuild exactly", async () => {
+    const now = Date.now()
+    await initRequestTelemetry()
     for (let i = 0; i < 3; i++) recordSettledRequest({ model: "m" }, { startedAt: now, endedAt: now + 50, success: true })
     await persistRequestTelemetry()
 
-    // Raw file carries __histograms.
-    const parsed = JSON.parse(await fs.readFile(telemetryFile, "utf8")) as {
-      dimensions: Record<string, { buckets: Record<string, Record<string, { __histograms?: Record<string, { buckets: Array<number>; sum: number }> }>> }>
-    }
-    const bucketTs = String(Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000))
-    expect(parsed.dimensions.model.buckets[bucketTs].m.__histograms?.duration_ms.buckets).toBeDefined()
-
-    // Reload → histograms survive into the 7d window.
     _resetRequestTelemetryForTests()
     _setRequestTelemetryFilePathForTests(telemetryFile)
     await initRequestTelemetry()
-    const hist = getDimensionBreakdown("model", "7d", 20, now).keys[0].histograms.duration_ms
-    expect(hist.count).toBe(3)
-  })
-
-  test("a legacy V3 file WITHOUT __histograms loads cleanly (back-compat, histograms start empty)", async () => {
-    const now = Date.now()
-    const bucketTs = String(Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000))
-    const legacy = {
-      version: 3,
-      buckets: { [bucketTs]: 1 },
-      dimensions: { model: { buckets: { [bucketTs]: { m: { requestCount: 1, inputTokens: 10, outputTokens: 5 } } } } },
-    }
-    await fs.writeFile(telemetryFile, JSON.stringify(legacy), "utf8")
-    await initRequestTelemetry()
 
     const key = getDimensionBreakdown("model", "7d", 20, now).keys[0]
-    expect(key.counters.requestCount).toBe(1) // counters intact
-    expect(key.histograms).toEqual({}) // no histogram observations → empty summary
-  })
-
-  test("histogram sum/count stay consistent across a window straddling a pre-histogram upgrade (H1)", async () => {
-    // A legacy bucket carries only counters (totalDurationMs, no __histograms); a new
-    // bucket carries the self-tracked histogram. Aggregating the 7d window must NOT mix
-    // the legacy counter's duration into the histogram's sum (which would skew average +
-    // violate the Prometheus _sum/_count contract). count + sum derive from the same obs.
-    const now = Date.now()
-    const bucketMs = 5 * 60 * 1000
-    const tsOld = String(Math.floor((now - bucketMs) / bucketMs) * bucketMs)
-    const tsNew = String(Math.floor(now / bucketMs) * bucketMs)
-    const durationBuckets = Array.from({ length: 16 }, () => 0)
-    durationBuckets[3] = 2 // 2 observations in the le=50 bucket
-    const file = {
-      version: 3,
-      buckets: {},
-      dimensions: {
-        model: {
-          buckets: {
-            [tsOld]: { m: { requestCount: 10, totalDurationMs: 100_000 } }, // legacy: 10 reqs, NO histogram
-            [tsNew]: { m: { requestCount: 2, totalDurationMs: 100, __histograms: { duration_ms: { buckets: durationBuckets, sum: 100 } } } },
-          },
-        },
-      },
-    }
-    await fs.writeFile(telemetryFile, JSON.stringify(file), "utf8")
-    await initRequestTelemetry()
-
-    const hist = getDimensionBreakdown("model", "7d", 20, now).keys[0].histograms.duration_ms
-    expect(hist.count).toBe(2) // only the 2 histogram-observed requests
-    expect(hist.sum).toBe(100) // the histogram's OWN sum, NOT the legacy 100_000 counter
-    expect(hist.average).toBe(50) // 100/2 — sane, not the skewed 50_050
+    expect(key.counters.requestCount).toBe(3) // counters rebuilt from tel_raw
+    expect(key.histograms).toEqual({}) // 7d histograms retired — empty stub after rebuild too
   })
 
   test("clamps a negative observation (clock-skewed queueWaitMs) into bucket 0 without polluting the sum (M2)", () => {
@@ -668,5 +628,34 @@ describe("distribution histograms", () => {
     const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms.queue_wait_ms
     expect(hist.count).toBe(1)
     expect(hist.sum).toBe(0) // -250 clamped to 0, not subtracted
+  })
+
+  test("timing distributions registered + observe their ms values (spec 2026-07-14 §6.1)", () => {
+    // Registration: the 3 timing histograms are in the shared registry → also exposed on /metrics.
+    const names = TELEMETRY_HISTOGRAMS.map((h) => h.name)
+    expect(names).toContain("upstream_first_token_ms")
+    expect(names).toContain("client_first_real_ms")
+    expect(names).toContain("buffer_hold_ms")
+
+    const now = Date.now()
+    recordSettledRequest(
+      { model: "m" },
+      { startedAt: now, endedAt: now + 80_000, success: true, upstreamFirstTokenMs: 6000, clientFirstRealMs: 79_000, bufferHoldMs: 78_980 },
+    )
+    const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms
+    expect(hist.upstream_first_token_ms.count).toBe(1)
+    expect(hist.upstream_first_token_ms.sum).toBe(6000)
+    expect(hist.client_first_real_ms.sum).toBe(79_000)
+    expect(hist.buffer_hold_ms.sum).toBe(78_980)
+    // 400_000 top boundary covers the observed max (~356s) — 79s lands well inside, not +Inf.
+    expect(hist.client_first_real_ms.p50).toBeLessThan(400_000)
+  })
+
+  test("absent timing → distribution not observed (omitted from breakdown)", () => {
+    const now = Date.now()
+    recordSettledRequest({ model: "m" }, { startedAt: now, endedAt: now + 5, success: true })
+    const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms
+    // Unobserved distributions are omitted from the breakdown (only duration_ms is always present).
+    expect(hist.upstream_first_token_ms).toBeUndefined()
   })
 })

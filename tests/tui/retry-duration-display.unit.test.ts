@@ -150,11 +150,10 @@ describe("onTerminal 汇总行 last/total(N)", () => {
     expect(ok).toContain("45.2s/621.9s(2)")
   })
 
-  test("无重试（1 attempt）→ 单值，零回归（无斜杠）", () => {
+  test("无重试（1 attempt）→ 单值，零回归（无 duration 斜杠）", () => {
     const out = drive({
       kind: "completed",
       startTime: NOW - 1200, // total ≈ 1.2s
-      path: "messages", // slashless path 使 not.toContain("/") 只针对 duration 字段有意义
       entry: {
         id: "a",
         endpoint: "anthropic-messages",
@@ -165,7 +164,9 @@ describe("onTerminal 汇总行 last/total(N)", () => {
     const ok = out.split("\n").find((l) => l.includes("[ OK ]"))
     expect(ok).toBeDefined()
     expect(ok).toMatch(/\b\d+\.\ds\b/) // 单值形态
-    expect(ok).not.toContain("/") // 无 triplet 斜杠
+    // 无 last/total triplet 斜杠。success 行的 `anthropic/model` 紧凑段本身含一个 `/`，
+    // 故只针对 duration 三元组的 `<num>s/<num>s` 斜杠断言，而非整行 not.toContain("/")。
+    expect(ok).not.toMatch(/\ds\/\d/)
   })
 
   test("零 attempt 终态（attempts undefined）→ 不崩、单值", () => {

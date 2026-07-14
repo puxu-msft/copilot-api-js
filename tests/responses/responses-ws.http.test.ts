@@ -5,8 +5,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 import { Hono } from "hono"
 import {
   //
@@ -359,6 +361,8 @@ describe("Responses WebSocket transport", () => {
     })
     emitTruncated = true
 
+    // HIGH-1: the WS clean-EOF truncation also emits the rich diagnostic (kind=truncated).
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
     server = startWsServer()
     const ws = new WebSocket(`${server.url}/responses`)
     const closePromise = waitForSocketClose(ws)
@@ -366,6 +370,13 @@ describe("Responses WebSocket transport", () => {
     ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "hi" } }))
 
     const result = await closePromise
+
+    const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+    diagSpy.mockRestore()
+    expect(diagLine).toBeDefined()
+    expect(diagLine).toContain("kind=truncated")
+    expect(diagLine).not.toContain("frames=0")
+    expect(diagLine).toContain("last-frame=response.output_text.delta@")
 
     // A clean terminator: an error frame + the WS H3 close code (1011), not a silent 1000.
     const errorFrame = result.messages.find((m) => m.type === "error") as { error?: { message?: string } } | undefined
@@ -501,6 +512,10 @@ describe("Responses WebSocket transport", () => {
     // stalled read — establishing the case-b precondition before shutdown starts.
     await new Promise((r) => setTimeout(r, 60))
 
+    // The WS leg must ALSO emit the [upstream-diagnostics] disconnect line with REAL signals (this leg
+    // previously emitted none). response.created arrived before the shutdown abort → frames>0, honest last-frame.
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+
     // Fire Phase 3 abort via a fast-timing graceful shutdown (mock tracker keeps
     // one "active" request so Phase 2 → Phase 3 transition runs).
     const shutdownPromise = gracefulShutdown("SIGTERM", {
@@ -523,6 +538,12 @@ describe("Responses WebSocket transport", () => {
     const errorFrame = result.messages.find((m) => m.type === "error") as { error: { type: string; message: string } } | undefined
     expect(errorFrame?.error.type).toBe("server_error")
     expect(result.code).toBe(1011)
+    const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+    diagSpy.mockRestore()
+    expect(diagLine).toBeDefined()
+    expect(diagLine).toContain("model=gpt-4o")
+    expect(diagLine).not.toContain("frames=0")
+    expect(diagLine).toContain("last-frame=response.created@")
     await shutdownPromise
   })
 

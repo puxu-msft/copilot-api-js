@@ -9,7 +9,9 @@ import {
   //
   compress,
   compressAsync,
+  compressBytes,
   decompress,
+  decompressBytes,
   gzipJsonLegacy,
 } from "~/lib/history/sqlite/compression"
 
@@ -75,5 +77,35 @@ describe("sqlite/compression", () => {
       expect(Buffer.from(async)).toEqual(Buffer.from(sync))
       expect(decompress(async)).toEqual(p)
     }
+  })
+
+  // P3-a (telemetry sketch blob): raw-bytes variants for binary blobs (DDSketch
+  // packed frames) that must NOT go through JSON.stringify (would mangle/inflate
+  // a Uint8Array into a JSON number array).
+  describe("compressBytes / decompressBytes (raw-bytes, non-JSON)", () => {
+    test("roundtrips arbitrary binary data byte-for-byte through zstd", () => {
+      const bytes = new Uint8Array(4096)
+      for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 37 + 11) % 256 // deterministic pseudo-random fill
+      const blob = compressBytes(bytes)
+      expect(blob).toBeInstanceOf(Uint8Array)
+      // zstd frame magic
+      expect([blob[0], blob[1], blob[2], blob[3]]).toEqual([0x28, 0xb5, 0x2f, 0xfd])
+      const round = decompressBytes(blob)
+      expect(Buffer.from(round)).toEqual(Buffer.from(bytes))
+    })
+
+    test("roundtrips an empty byte array", () => {
+      const blob = compressBytes(new Uint8Array([]))
+      expect(Buffer.from(decompressBytes(blob))).toEqual(Buffer.from([]))
+    })
+
+    test("decompressBytes throws a clear error on an empty / too-short blob", () => {
+      expect(() => decompressBytes(new Uint8Array([]))).toThrow(/too short/)
+      expect(() => decompressBytes(new Uint8Array([0x28, 0xb5, 0x2f]))).toThrow(/too short/)
+    })
+
+    test("decompressBytes throws on an unrecognized magic (not JSON.parse'd — raw bytes)", () => {
+      expect(() => decompressBytes(new Uint8Array([0, 1, 2, 3, 4]))).toThrow(/unrecognized blob magic/)
+    })
   })
 })

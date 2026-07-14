@@ -94,7 +94,7 @@
 | `error_shaping_enabled` | `true` | 总开关（关则逐字节回退现状 forward.ts + post-commit-error.ts + pump 终端行为） |
 | `error_ask_user_question` | `false` | B：content_filtered / 403-permission 合成 AskUserQuestion（仅交互式部署应开） |
 | `error_auq_template` | 内置默认 | AUQ 文案模板（占位符 `{model}`/`{request_id}`/`{error_type}`/`{status}`，复用 `renderRefusalTemplate`） |
-| `error_selfheal_delegate` | `{}`（全 proxy 自修） | D：**键 = 反应式策略名**（如 `"adaptive-thinking-rejection"`/`"tool-field-rejection"`），值 `"proxy"`/`"delegate"`；未列 = proxy |
+| `error_selfheal_delegate` | `{}`（全 proxy 自修） | D：**键 = 反应式策略名**（如 `"adaptive-thinking-rejection-retry"`/`"tool-field-rejection-retry"`——须带 `-retry` 后缀与策略 .name 精确匹配），值 `"proxy"`/`"delegate"`；未列 = proxy |
 
 - **无 `error_post_commit_overloaded_relabel` 键**（v1 曾有，B-1 定案删除：post-commit 不做客户端重试 relabel）。
 - 延迟提交联动复用已有 `streamCommitAfterSec`，不新增窗口键。post-commit 重放的默认态**归 block-level G2**（§A，非本 spec 决策）。

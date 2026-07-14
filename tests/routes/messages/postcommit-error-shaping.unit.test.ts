@@ -1,0 +1,178 @@
+/**
+ * Unit tests for `shapePostcommitErrorFrame` (Phase 3 Task 3.2, G-3 canonical ownership of the
+ * post-commit terminal error frame — docs/plan/2026-07-13-upstream-error-client-shaping/phase-3-postcommit-canonical-frame.md).
+ *
+ * Pure helper: classify → decide(post-commit) → buildCanonicalErrorFrame, with a CF-2 golden lock
+ * (disabled = return the caller's legacy frame verbatim). No Hono app / no runtime bootstrap;
+ * `autoRestoreState()` is the isolation tool (mirrors `error-shaping-glue.unit.test.ts`).
+ */
+
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import type { ClientFrame } from "~/lib/pipeline/types"
+
+import { HTTPError } from "~/lib/error"
+import { setStateForTests } from "~/lib/state"
+
+import {
+  //
+  shapePostcommitErrorFrame,
+  shapeRawStreamErrorFrame,
+} from "../../../src/routes/messages/error-shaping-glue"
+import {
+  //
+  anthropicErrorFrame,
+  anthropicHttpErrorFrame,
+} from "../../../src/routes/messages/post-commit-error"
+import { autoRestoreState } from "../../helpers/state-fixture"
+
+describe("shapePostcommitErrorFrame — CF-2 golden lock (disabled)", () => {
+  autoRestoreState()
+
+  test("errorShapingEnabled=false → returns the caller's legacy HTTPError frame verbatim (byte-identical)", () => {
+    setStateForTests({ errorShapingEnabled: false })
+    const error = new HTTPError("Unauthorized", 401, JSON.stringify({ type: "error", error: { type: "authentication_error", message: "mock 401" } }))
+    const legacy = anthropicHttpErrorFrame(error)
+    const out = shapePostcommitErrorFrame(error, legacy)
+    expect(out).toEqual(legacy)
+    expect(out.data).toBe(legacy.data) // exact same string bytes
+  })
+
+  test("errorShapingEnabled=false → returns the caller's legacy unknown-non-HTTP frame verbatim (terminus ①')", () => {
+    setStateForTests({ errorShapingEnabled: false })
+    const error = new Error("socket hang up ECONNRESET")
+    const legacy = anthropicErrorFrame("api_error", error.message)
+    const out = shapePostcommitErrorFrame(error, legacy)
+    expect(out).toEqual(legacy)
+  })
+})
+
+describe("shapePostcommitErrorFrame — enabled (canonical via decide)", () => {
+  autoRestoreState()
+
+  test("terminus ①' network_error (socket reset) → decide() reached → canonical api_error frame (proves the truth-table network_error→canonical-error leg is exercised, not the old hand-built branch)", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const error = new Error("socket hang up ECONNRESET")
+    // legacy would have been api_error too, so byte-equivalence here isn't the point — the point is
+    // this frame is produced by decide()/buildCanonicalErrorFrame, not the hand-built literal.
+    const out = shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", "SENTINEL-legacy-untouched"))
+    const data = JSON.parse(out.data ?? "{}") as { type: string; error: { type: string; message: string } }
+    expect(data.type).toBe("error")
+    expect(data.error.type).toBe("api_error") // anthropicErrorTypeForApiError("network_error")
+    expect(data.error.message).toContain("socket hang up")
+    expect(data.error.message).not.toBe("SENTINEL-legacy-untouched") // legacy frame NOT returned
+  })
+
+  test("terminus ①' HTTP2 REFUSED_STREAM → network_error → canonical api_error frame", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const error = new Error("Stream closed with error code NGHTTP2_REFUSED_STREAM")
+    const out = shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", "x"))
+    const data = JSON.parse(out.data ?? "{}") as { error: { type: string } }
+    expect(data.error.type).toBe("api_error")
+  })
+
+  test("terminus ① 402 quota_exceeded HTTPError → canonical rate_limit_error (CF-3 wire literal), retry_after carried when present", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const error = new HTTPError("Quota exceeded", 402, JSON.stringify({ error: { message: "quota", retry_after: 30 } }))
+    const out = shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error))
+    const data = JSON.parse(out.data ?? "{}") as { type: string; error: { type: string; message: string; retry_after?: number } }
+    expect(data.type).toBe("error")
+    expect(data.error.type).toBe("rate_limit_error") // anthropicErrorTypeForApiError("quota_exceeded") — CF-3
+    expect(data.error.retry_after).toBe(30)
+  })
+
+  test("terminus ① 500 server_error HTTPError → canonical api_error frame", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const error = new HTTPError("Server error", 500, "")
+    const out = shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error))
+    const data = JSON.parse(out.data ?? "{}") as { error: { type: string } }
+    expect(data.error.type).toBe("api_error") // anthropicErrorTypeForApiError("server_error")
+  })
+})
+
+describe("shapeRawStreamErrorFrame — FIX-2 (H3 / truncation termini, direct pump + translate leg)", () => {
+  autoRestoreState()
+
+  test("enabled → buildCanonicalErrorFrame({errorType, message}) is byte-identical to the legacy hand-built literal", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    // The former hand-built literal both pumps emitted for H3 / truncation.
+    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "boom" } }) }
+    const out = shapeRawStreamErrorFrame("overloaded_error", "boom", legacy)
+    expect(out).toEqual(legacy) // byte-identical field order {type, error:{type, message}}, no retry_after
+  })
+
+  test("enabled → truncation frame byte-identical to the legacy literal (both pumps' truncation message)", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const msg = "Upstream stream truncated before completion (no message_stop)"
+    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) }
+    expect(shapeRawStreamErrorFrame("api_error", msg, legacy)).toEqual(legacy)
+  })
+
+  test("DISABLED → returns the caller's legacy frame verbatim (CF-2 golden lock, uniform with ①/①')", () => {
+    setStateForTests({ errorShapingEnabled: false })
+    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "timeout_error", message: "idle" } }) }
+    const out = shapeRawStreamErrorFrame("timeout_error", "idle", legacy)
+    expect(out).toBe(legacy) // same object reference — no rebuild at all when disabled
+  })
+})
+
+// ============================================================================
+// FIX-OBS-2 (whole-branch review cross-phase gap): `error-shaping-decided` was declared in
+// FeatureKind but had ZERO production call sites for the post-commit `decide()` invocation
+// (`shapePostcommitErrorFrame`). `ctx` is an OPTIONAL 3rd param (both existing call sites in
+// `handler-v4.ts` already hold `codec.getContext()` in scope — see task report) so every existing
+// call site + test keeps compiling; recording is a no-op when omitted (`ctx?.recordFeature`).
+//
+// `shapeRawStreamErrorFrame` deliberately does NOT gain this wiring: it never calls `decide()` (no
+// `ApiError` classification — the caller already resolved a wire-level `errorType` string that is
+// NOT an `ApiErrorType`), so there is no `decide()` decision to report — see task report for the
+// full reasoning.
+// ============================================================================
+describe("shapePostcommitErrorFrame — recordFeature('error-shaping-decided') wiring (FIX-OBS-2)", () => {
+  autoRestoreState()
+
+  function fakeCtx() {
+    const features: Array<{ feature: string; detail?: Record<string, unknown> }> = []
+    const ctx = { recordFeature: (feature: string, detail?: Record<string, unknown>) => features.push({ feature, detail }) }
+    return { ctx: ctx as never, features }
+  }
+
+  test("enabled + terminus ① HTTPError → records error-shaping-decided(decision=canonical-error, commitPhase=post-commit)", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const { ctx, features } = fakeCtx()
+    const error = new HTTPError("Server error", 500, "")
+    shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error), ctx)
+    expect(features).toEqual([
+      { feature: "error-shaping-decided", detail: { decision: "canonical-error", errorType: "server_error", commitPhase: "post-commit" } },
+    ])
+  })
+
+  test("enabled + terminus ①' network_error (socket reset) → records error-shaping-decided with errorType=network_error", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const { ctx, features } = fakeCtx()
+    const error = new Error("socket hang up ECONNRESET")
+    shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", "x"), ctx)
+    expect(features).toEqual([
+      { feature: "error-shaping-decided", detail: { decision: "canonical-error", errorType: "network_error", commitPhase: "post-commit" } },
+    ])
+  })
+
+  test("CF-2 disabled → decide() never runs → error-shaping-decided NOT recorded even when ctx is passed", () => {
+    setStateForTests({ errorShapingEnabled: false })
+    const { ctx, features } = fakeCtx()
+    const error = new HTTPError("Server error", 500, "")
+    shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error), ctx)
+    expect(features).toEqual([])
+  })
+
+  test("ctx omitted (backward-compat) → does not throw, ctx?.recordFeature is a safe no-op", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const error = new HTTPError("Server error", 500, "")
+    expect(() => shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error))).not.toThrow()
+  })
+})

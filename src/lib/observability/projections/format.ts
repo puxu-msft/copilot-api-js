@@ -124,6 +124,60 @@ export function formatTokens(input?: number, output?: number, cacheRead?: number
 }
 
 /**
+ * Category color for a response's terminal stop_reason, rendered as the
+ * `<reason>` token on completion lines. The stored value is heterogeneous
+ * across upstream formats — Anthropic `stop_reason` (end_turn / tool_use /
+ * max_tokens / stop_sequence / refusal / pause_turn), OpenAI chat
+ * `finish_reason` (stop / length / tool_calls / function_call / content_filter),
+ * and the Responses `status` (completed / incomplete / failed) — so
+ * categorization is a normalized lowercase match with a dim fallback that still
+ * shows any unknown value verbatim:
+ *   normal completion (end_turn / stop / stop_sequence / completed) → green
+ *   agentic continuation (tool_use / tool_calls / function_call / pause_turn):
+ *     → cyan when an AskUserQuestion tool was invoked (an interactive pause for
+ *       the user, worth distinguishing), otherwise → white
+ *   truncation (max_tokens / length / incomplete) → yellow
+ *   problematic (refusal / content_filter / failed / error) → red
+ *   unknown → dim
+ *
+ * `toolNames` are the tools invoked in the response (see
+ * `history/entry-view.ts#toolNamesFromResponseBody`); only consulted for the
+ * agentic band.
+ */
+export function stopReasonColor(reason: string, toolNames?: ReadonlyArray<string>): (s: string) => string {
+  switch (reason.toLowerCase()) {
+    case "tool_use":
+    case "tool_calls":
+    case "function_call":
+    case "pause_turn": {
+      const asksUser = toolNames?.some((name) => name.toLowerCase() === "askuserquestion") ?? false
+      return asksUser ? pc.cyan : pc.white
+    }
+    case "max_tokens":
+    case "length":
+    case "incomplete": {
+      return pc.yellow
+    }
+    case "refusal":
+    case "content_filter":
+    case "failed":
+    case "error": {
+      return pc.red
+    }
+    case "end_turn":
+    case "stop":
+    case "stop_sequence":
+    case "completed": {
+      return pc.green
+    }
+    default: {
+      // Any unknown / unmapped value — still shown raw.
+      return pc.dim
+    }
+  }
+}
+
+/**
  * Severity color for the cache-hit percentage: a LOW hit rate means the cache
  * did not pay off (expensive fresh tokens), so it is emphasized progressively;
  * a healthy rate stays dim. `+new%` (cache written this request) is neutral.

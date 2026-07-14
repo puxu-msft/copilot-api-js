@@ -26,6 +26,7 @@ import type { MessagesPayload } from "~/types/api/anthropic"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
+import { resolveCellAssembly } from "~/lib/pipeline/cell-assembly"
 
 const NO_PREPROCESS = { strippedReadTagCount: 0, dedupedToolCallCount: 0 }
 
@@ -33,12 +34,12 @@ function makeCodec() {
   return createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: NO_PREPROCESS })
 }
 
-const fakeEnv = { body: { model: "claude-sonnet-4", messages: [] } } as unknown as RequestEnvelope
+const fakeEnv = { clientFormat: "anthropic", targetEndpoint: "/v1/messages", body: { model: "claude-sonnet-4", messages: [] } } as unknown as RequestEnvelope
 
 describe("anthropic codec — identity S2/S6", () => {
   test("translateOut is identity (bypass-direct, no translation)", () => {
-    const codec = makeCodec()
-    expect(codec.translateOut(fakeEnv)).toBe(fakeEnv)
+    // translateOut moved off the codec onto the (anthropic × /v1/messages) CELL; the direct leg is identity.
+    expect(resolveCellAssembly("anthropic", fakeEnv.targetEndpoint).translateOut(fakeEnv)).toBe(fakeEnv)
   })
 
   test("renderResponse forwards the upstream frame verbatim", () => {
@@ -92,76 +93,14 @@ describe("anthropic codec — createResponseAccumulator", () => {
   })
 })
 
-describe("anthropic codec — prepareWire tool-field stripping", () => {
-  // The codec's prepareWire is the S4 last-mile that maps env.prepareHints.* into
-  // prepareAnthropicRequest opts. This closes the seam for excludeToolFields
-  // (codec.ts) — asserting the per-attempt hint threads all the way to the wire,
-  // alongside the always-on built-in default strip.
-  function envWithTools(tools: unknown, prepareHints: Record<string, unknown> = {}): RequestEnvelope {
-    return {
-      model: undefined,
-      body: { model: "claude-sonnet-4", max_tokens: 16, messages: [], tools },
-      prepareHints,
-    } as unknown as RequestEnvelope
-  }
-
-  test("built-in default strips eager_input_streaming through prepareWire", () => {
-    const codec = makeCodec()
-    const prepared = codec.prepareWire(envWithTools([{ name: "Read", input_schema: {}, eager_input_streaming: true }]))
-    const tools = (prepared.body as { tools: Array<Record<string, unknown>> }).tools
-    expect(tools[0].eager_input_streaming).toBeUndefined()
-  })
-
-  test("prepareHints.excludeToolFields threads to the wire (codec mapping)", () => {
-    const codec = makeCodec()
-    const prepared = codec.prepareWire(envWithTools([{ name: "Read", input_schema: {}, future_x: 1 }], { excludeToolFields: ["future_x"] }))
-    const tools = (prepared.body as { tools: Array<Record<string, unknown>> }).tools
-    expect(tools[0].future_x).toBeUndefined()
-    expect(tools[0].name).toBe("Read")
-  })
-
-  // HIGH-1 (合并态审查)：passthrough 剥掉的 cache_control 子字段须经 getter 上抛，供 handler
-  // 塞 pipelineInfo 持久化 history（recordFeature 单通道只到 live TUI、被 history sink 丢弃）。
-  function envWithScopedSystem(prepareHints: Record<string, unknown> = {}): RequestEnvelope {
-    return {
-      model: undefined,
-      body: {
-        model: "claude-opus-4-8",
-        max_tokens: 16,
-        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-        system: [{ type: "text", text: "s", cache_control: { type: "ephemeral", scope: "global" } }],
-      },
-      prepareHints,
-    } as unknown as RequestEnvelope
-  }
-
-  test("passthrough 剥 scope 并经 getLatestStrippedCacheControlSubfields 上抛（HIGH-1 持久化通道）", () => {
-    const codec = makeCodec()
-    const prepared = codec.prepareWire(envWithScopedSystem())
-    const system = (prepared.body as { system: Array<Record<string, unknown>> }).system
-    expect(system[0].cache_control).toEqual({ type: "ephemeral" }) // scope 已剥
-    expect(codec.getLatestStrippedCacheControlSubfields()).toEqual(["scope"]) // 上抛供 pipelineInfo 持久化
-  })
-
-  test("源④ excludeCacheControlSubfields hint 经 codec 桥接剥掉（reactive→prepare 通道）", () => {
-    const codec = makeCodec()
-    const prepared = codec.prepareWire(
-      // system 带一个非内置黑名单的假想子字段 foo，仅经 hint 才剥
-      {
-        model: undefined,
-        body: {
-          model: "claude-opus-4-8",
-          max_tokens: 16,
-          messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-          system: [{ type: "text", text: "s", cache_control: { type: "ephemeral", foo: "x" } }],
-        },
-        prepareHints: { excludeCacheControlSubfields: ["foo"] },
-      } as unknown as RequestEnvelope,
-    )
-    const system = (prepared.body as { system: Array<Record<string, unknown>> }).system
-    expect(system[0].cache_control).toEqual({ type: "ephemeral" }) // foo 经 hint 剥掉
-  })
-})
+// NOTE — the anthropic prepareWire tool-field / cache_control subfield stripping (and the stripped-subfields
+// uplift) moved off the codec onto the (anthropic × /v1/messages) CELL → anthropic-leg's prepareAnthropicWire →
+// prepareAnthropicRequest. Its coverage now lives at the pure-core level:
+//   - tool-field strip (eager_input_streaming + per-attempt excludeToolFields): strip-tool-fields.it.test.ts
+//   - cache_control scope strip + strippedCacheControlSubfields uplift + 源④ excludeCacheControlSubfields
+//     hint→wire end-to-end: cache-control-subfield-strip.unit.test.ts
+// The codec's getLatestStrippedCacheControlSubfields accessor is dead (writer deleted); the live persistence
+// channel is anthropic-cell.sampleWireTrack → ctx.setAttemptCacheControlStripped → handler pipeline-info.
 
 describe("buildAnthropicStrategies", () => {
   const stubResanitize = (p: MessagesPayload): SanitizeResult<MessagesPayload> => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 })

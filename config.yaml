@@ -202,6 +202,19 @@ timeouts:
   # Safety net for requests that never complete/fail normally. / 兜底永不正常完成/失败的请求。
   stale_request_max_age: 1200
 
+  # Hard total-duration deadline (seconds) for a single request — a user-facing SLA enforced by a
+  # PRECISE per-request timer, NOT the periodic stale reaper (which can fire late after a config
+  # reload or a process/WSL suspend — RFC RC2). On expiry the request is cancelled + settled with a
+  # deadline error. 0 = disabled (behavior then identical to the stale-reaper-only path).
+  # 单请求硬总时长上限（秒）——用户可依赖的 SLA，由 PRECISE 的 per-request 定时器强制，而非会迟到的
+  # 周期 stale reaper（RFC RC2）。到点即取消 + 结算请求并记 deadline 错误。0 = 禁用（等同仅 stale-reaper 路径）。
+  # NOTE: this is an intentional product default (900s = 15min), kept BELOW stale_request_max_age
+  # (1200s) so the precise deadline is the primary cap and the reaper only mops up anomalies that
+  # outlive it (a leaked / non-quiescing op).
+  # 注意：这是有意的产品默认（900s = 15 分钟），刻意小于 stale_request_max_age（1200s），让精确 deadline
+  # 作主上限、reaper 只兜底越过它仍未静止的异常（泄漏 / 不退出的工作）。
+  request_deadline: 900
+
 # Seconds between background model list refreshes (0 = disabled).
 # 后台刷新模型列表的间隔秒数（0 = 禁用）。
 # Keeps /models cache fresh for long-running instances without requiring a restart.
@@ -237,6 +250,43 @@ history:
   # Seconds between reaper passes that trim each bucket (0 = disabled, default: 600)
   # reaper 修剪各桶的周期秒数（0 = 禁用，默认 600）
   reaper_interval: 3600
+
+# ============================================================================
+# Telemetry (tiered persistence) / 遥测（分层持久化）
+# ============================================================================
+# 独立 telemetry.db（与 history.db 分家、生命周期另算）：三层 rollup（raw 5min /
+# hourly / daily）+ 终身累计。分布度量走 DDSketch、可加度量精确 SUM。近期/远期分辨率与保留可配。
+# Independent telemetry.db: three-tier rollup + lifetime cumulative. Distributions
+# use DDSketch; additive measures use exact SUM. Near/far resolution & retention configurable.
+telemetry:
+  # 总开关（默认 true = 一直采集）。 / Master switch (default true).
+  enabled: true
+  # telemetry.db 路径；留空=用默认 <APP_DIR>/telemetry.db。 / DB path; empty = default.
+  # db_path: ""
+  # raw 落盘/flush 间隔秒（默认 60）。 / raw persist/flush interval seconds (default 60).
+  persist_interval: 60
+  # rollup 上卷间隔秒（默认 3600，独立于 persist、应 ≫ persist）。 / rollup interval seconds (default 3600).
+  rollup_interval: 3600
+  # capped 维度（client/tool）key 上限，溢出并入 "other"（默认 200）。 / capped-dimension key cap (default 200).
+  cardinality_cap: 200
+  # DDSketch 相对误差 γ（默认 0.01=1%）。下限 ~0.005——配更紧会触发 bin 塌缩、警告回落 0.01。
+  # DDSketch relative accuracy (default 0.01). Lower bound ~0.005; tighter warns + falls back.
+  sketch_gamma: 0.01
+  # 终身累计层开关（永久有效，默认 true）。 / lifetime cumulative layer (default true).
+  cumulative: true
+  # 分层保留 / tiered retention
+  tiers:
+    raw:
+      # 近期桶分辨率（分钟，默认 5；须整除 60，否则警告回落 5）。 / near-term bucket resolution minutes.
+      resolution_minutes: 5
+      # 近期高分辨率保留天数（默认 7）。 / near-term retention days (default 7).
+      retention_days: 7
+    hourly:
+      # 中期 rollup 保留天数（默认 90）。 / mid-term retention days (default 90).
+      retention_days: 90
+    daily:
+      # 远期保留天数（0 = 永久，默认 0）。 / far-term retention days (0 = forever, default 0).
+      retention_days: 0
 
 # ============================================================================
 # Web Search (double-hop) / 网络搜索（双跳）
@@ -689,49 +739,51 @@ anthropic:
   #   claude-opus-4.7: [model_specific_field]
 
   # ---------------------------------------------------------------------------
-  # tool_use input field decoding / tool_use 输入字段解码
+  # Response-wire fixes / 响应 wire 修复
   # ---------------------------------------------------------------------------
-  # Upstream models occasionally serialize a tool_use input field that should be an array/object into a JSON string (e.g. AskUserQuestion with `questions: "[{...}]"` instead of `questions: [{...}]`).
-  # 上游模型偶尔把本应为数组/对象的 tool_use input 字段序列化成 JSON 字符串（如 AskUserQuestion 的 `questions: "[{...}]"` 而非 `questions: [{...}]`）。
-  # These options decode such fields back to structured form on the response wire (streaming + non-streaming) before forwarding to the client.
-  # 这些选项在响应 wire（流式 + 非流式）上把这类字段 decode 回结构化形式再转发客户端。
-  # History records keep the original stringified form — decode never touches sseEvents or the stored response, so the upstream anomaly stays visible in history.
-  # 历史记录保留原始 stringified 形态——decode 绝不碰 sseEvents 或存储响应，故上游异常在历史中仍可见。
-  #
-  # tool_decode_input_fields: per-tool list of top-level input fields to decode. / tool_decode_input_fields：每工具要 decode 的顶层 input 字段列表。
-  #   Keys are tool names, matched verbatim (no normalization). Replace semantic: setting this key replaces the whole map (write {} to disable entirely). / 键是逐字匹配的工具名（不归一化）。replace 语义：设此键替换整个 map（写 {} 完全禁用）。
-  #   Default: { AskUserQuestion: [questions] }. / 默认：{ AskUserQuestion: [questions] }。
-  tool_decode_input_fields:
-    AskUserQuestion:
-      - questions
+  # Fixes applied to the Anthropic RESPONSE before forwarding to the client, grouped by which block
+  # they target: `response_text_fix` (text blocks) and `response_tool_use_fix` (tool_use blocks).
+  # 在转发给客户端前对 Anthropic 响应做的修复，按作用的块分组：`response_text_fix`（text 块）与 `response_tool_use_fix`（tool_use 块）。
+  # History records keep the upstream-original form — these never touch sseEvents or the stored response, so the upstream anomaly stays visible in history.
+  # 历史记录保留上游原始形态——这些修复绝不碰 sseEvents 或存储响应，故上游异常在历史中仍可见。
+  response_text_fix:
+    # invoke_in_text: transparently recover a tool call the upstream degraded into plain text (`call<invoke>…`), rebuilding it into a standard tool_use block.
+    # invoke_in_text：透明恢复上游降级成纯文本（`call<invoke>…`）的工具调用，重建为标准 tool_use block。
+    # Default false (enable only when the upstream degradation is confirmed). See docs/rfc/tool-call-text-recovery.md. / 默认 false（仅在确认遭遇该上游降级时开启）。
+    invoke_in_text: true
 
-  # tool_decode_all_input_fields: when true, attempt to decode ALL top-level string fields of every tool_use input (ignores the map above). / 为 true 时尝试 decode 每个 tool_use input 的所有顶层 string 字段（忽略上面的 map）。
-  #   server_tool_use is never affected. Default: false. / server_tool_use 永不受影响。默认 false。
-  tool_decode_all_input_fields: false
+  response_tool_use_fix:
+    # decode_top_level_field: per-tool list of top-level input fields to decode from a stringified JSON string back to structured form (e.g. AskUserQuestion with `questions: "[{...}]"`).
+    # decode_top_level_field：每工具要从 stringified JSON 字符串 decode 回结构化形式的顶层 input 字段列表（如 AskUserQuestion 的 `questions: "[{...}]"`）。
+    #   Keys are tool names, matched verbatim (no normalization). Replace semantic: setting this key replaces the whole map (write {} to disable). Default: { AskUserQuestion: [questions] }.
+    #   键是逐字匹配的工具名（不归一化）。replace 语义：设此键替换整个 map（写 {} 禁用）。默认：{ AskUserQuestion: [questions] }。
+    decode_top_level_field:
+      AskUserQuestion:
+        - questions
 
-  # Transparently recover responses where the upstream occasionally degrades a tool call into plain text (call<invoke>…), rebuilding it into a standard tool_use block.
-  # 透明恢复上游偶发把工具调用降级成纯文本（call<invoke>…）的响应，重建为标准 tool_use block。
-  # Default false (enable only when the upstream degradation is confirmed). See docs/rfc/tool-call-text-recovery.md.
-  # 默认 false（仅在确认遭遇该上游降级时开启）。详见 docs/rfc/tool-call-text-recovery.md。
-  tool_recover_call_text: false
+    # malformed_input: repair malformed tool_use input JSON the upstream occasionally leaks. A COMMA-SEPARATED SET of repair items (order in the string is ignored; items cascade in a fixed canonical order and stack on each other). Forwarded stream only.
+    #   ""            = off — forward the malformed bytes as-is.
+    #   tags          = structure-aware antml-tag stripping (fixes antml wrapper tags like `…]</parameter></invoke>` bleeding into the input).
+    #   unicode       = whitespace-broken `\uXXXX` escape fix (e.g. `\u9 ed8` → 默; jsonrepair THROWS on these so it needs its own item).
+    #   jsonrepair    = jsonrepair structural fix (missing brackets / truncated structures; heuristic).
+    #   unicode-lossy = LOSSY last resort — un-completable `\uXXXX` escapes (a hex digit dropped) → U+FFFD. Runs AFTER all lossless items; only reached when they fail.
+    # If no enabled item yields valid JSON, the request is recorded failed + a synthetic error frame is emitted (never a silent broken tool call). See docs/spec/anthropic-malformed-tool-input-repair.md.
+    # malformed_input：修复上游偶发漏出的畸形 tool_use input JSON。逗号分隔的修复项目集（字符串里的顺序无关；项目按固定规范顺序级联、互相叠加）。仅作用于转发流。
+    #   ""            = 关——原样转发畸形字节。
+    #   tags          = 结构感知剥 antml 标签。  unicode = 修空白打断的 `\uXXXX` 转义。  jsonrepair = jsonrepair 结构修复。  unicode-lossy = 有损兜底（无法凑齐的 `\uXXXX`→U+FFFD，排最后）。
+    malformed_input: "tags,unicode,unicode-lossy,jsonrepair"
 
-  # Repair malformed tool_use input JSON that the upstream occasionally leaks. A COMMA-SEPARATED SET of repair items (order in the string is ignored; items cascade in a fixed canonical order and stack on each other). Forwarded stream only — history's sseEvents keeps the upstream-original malformed bytes.
-  #   ""          = off (default) — forward the malformed bytes as-is.
-  #   tags        = structure-aware antml-tag stripping (fixes antml wrapper tags like `…]</parameter></invoke>` bleeding into the input).
-  #   unicode     = whitespace-broken `\uXXXX` escape fix (e.g. `\u9 ed8` → 默, where a space split the 4 hex digits; jsonrepair THROWS on these so it needs its own item).
-  #   jsonrepair  = jsonrepair structural fix (missing brackets / truncated structures; heuristic).
-  #   unicode-lossy = LOSSY last resort — un-completable `\uXXXX` escapes (a hex digit dropped, e.g. `\u9 44`) → U+FFFD; rescues an otherwise-dead input at the cost of ≥1 garbled char. Runs AFTER all lossless items; only reached when they fail.
-  #   e.g. "tags" / "tags,jsonrepair" / "unicode" / "tags,unicode,jsonrepair" / "tags,unicode,jsonrepair,unicode-lossy".
-  # If no enabled item yields valid JSON, the request is recorded failed + a synthetic error frame is emitted (never a silent broken tool call). See docs/spec/anthropic-malformed-tool-input-repair.md.
-  # 修复上游偶发漏出的畸形 tool_use input JSON。逗号分隔的修复项目集（字符串里的顺序无关；项目按固定规范顺序级联、互相叠加）。仅作用于转发流——history 的 sseEvents 保留上游原始畸形字节。
-  #   ""          = 关（默认）——原样转发畸形字节。
-  #   tags        = 结构感知剥 antml 标签（修 antml 包裹标签如 `…]</parameter></invoke>` 溢入 input）。
-  #   unicode     = 修空白打断的 `\uXXXX` 转义（如 `\u9 ed8` → 默，空格把 4 位 hex 打断；jsonrepair 对这类会抛异常故需独立项目）。
-  #   jsonrepair  = jsonrepair 结构修复（缺括号/截断结构；启发式）。
-  #   unicode-lossy = 有损兜底——无法凑齐 4 位的 `\uXXXX` 转义（丢了 hex 位，如 `\u9 44`）替换成 U+FFFD；以糊 ≥1 个字符为代价救活否则必死的输入。排在所有无损项之后，仅当它们全失败才触发。
-  #   例：'tags' / 'tags,jsonrepair' / 'unicode' / 'tags,unicode,jsonrepair' / 'tags,unicode,jsonrepair,unicode-lossy'。
-  # 任一启用项都修不出合法 JSON 则请求记为失败 + 发合成 error 帧（绝不静默转发坏的工具调用）。详见 docs/spec/anthropic-malformed-tool-input-repair.md。
-  tool_repair_malformed_input: "tags,unicode,unicode-lossy,jsonrepair"
+    # send_message_to_missing: recover a missing SendMessage `to` recipient from a misnamed alias (agentId / agent_id / agent) — the client rejects a SendMessage call whose required `to` is absent.
+    # send_message_to_missing：从错名的别名（agentId / agent_id / agent）抢救 SendMessage 缺失的 `to` 收件人（客户端拒收缺必填 `to` 的 SendMessage 调用）。
+    #   Root cause: a finished subagent's tool_result text reads `agentId: <id> (use SendMessage with to: '<id>')`, so the model copies the camelCase LABEL as the param name. Only touched when `to` is absent and an alias holds a non-empty string (present-but-empty `to` is left alone). Default: true.
+    #   根因：subagent 完成时 tool_result 文本写 `agentId: <id> (use SendMessage with to: '<id>')`，模型把 camelCase 标签抄成了参数名。仅当 `to` 缺失且某别名为非空字符串时处理（present-but-empty `to` 不动）。默认 true。
+    send_message_to_missing: true
+
+    # ask_user_question_question_missing: Claude Code rejects an AskUserQuestion `questions[]` item that has a `header` but no `question` field ("must have a question").
+    # ask_user_question_question_missing：Claude Code 拒收有 `header` 却缺 `question` 字段的 AskUserQuestion `questions[]` item。
+    #   Each item MISSING the `question` key (present-but-empty is left untouched) whose `header` is a non-empty string gets `question = header`. Runs after decode_top_level_field. Default: true.
+    #   缺 `question` 键（present-but-empty 不动）且 `header` 非空者回填 `question = header`，在 decode_top_level_field 之后运行。默认 true。
+    ask_user_question_question_missing: true
 
   # How to handle the upstream thinking-only refusal (stop_reason:"refusal" with only a thinking block, no text/tool_use). Three modes:
   #   "refusal"  = pass the upstream refusal through unchanged (client gets a dead/empty turn).
@@ -744,12 +796,6 @@ anthropic:
   # Forwarded stream only (history's sseEvents keeps the upstream-original refusal). Default "error". See docs/refusal-recovery.md.
   # 仅作用于转发流（history 的 sseEvents 保留上游原始 refusal）。默认 "error"。详见 docs/refusal-recovery.md。
   refusal_sse_rewrite: error
-
-  # tool_backfill_question: Claude Code rejects an AskUserQuestion `questions[]` item that has a `header` but no `question` field ("must have a question").
-  # tool_backfill_question：Claude Code 拒收有 `header` 却缺 `question` 字段的 AskUserQuestion `questions[]` item（"must have a question"）。
-  #   Upstream models occasionally emit such items. When true, each item that is MISSING the `question` key (present-but-empty is left untouched) and whose `header` is a non-empty string gets `question = header`. / 上游模型偶尔产出此类 item。为 true 时，缺 `question` 键（present-but-empty 不动）且 `header` 非空者回填 `question = header`。
-  #   Applies on the response wire only (streaming + non-streaming), after tool_decode_input_fields; history keeps the upstream-original form. Default: true. / 仅作用于响应 wire（流式 + 非流式）、在 tool_decode_input_fields 之后；history 保留上游原始形态。默认 true。
-  tool_backfill_question: true
 
 # ============================================================================
 # Responses API

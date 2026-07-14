@@ -100,14 +100,27 @@ tests/e2e-client/
 
 ## e2e 场景覆盖 roadmap（2026-07-13 考古后）
 
-现有 **18 场景**（Tier 1 SDK 16 = Anthropic 15 + OpenAI 1；Tier 2 CLI 2），均变异验证有牙（MUTANT-A/C/D 各精准逮住对应测试）。挖掘全清单见 Explore agent 考古（本会话），来源可信度分 `[DOC-REAL]`（文档实证、最高价值）/ `[CODE-INFER]`（需实测）。
+**现状（2026-07-14 错配审计后）**：Tier 1 SDK **17**（Anthropic 16 + OpenAI 1）+ Tier 2 CLI 2 = **19 测试**，收敛为纯 SDK-behavior 集；审计前为 29 场景，清 10 条测试类型错配 + 迁移到 golden/.http（详见下方 ⚠️ 框）。均变异验证有牙。挖掘全清单见 Explore agent 考古（本会话），来源可信度分 `[DOC-REAL]`（文档实证、最高价值）/ `[CODE-INFER]`（需实测）。
 
-**已覆盖**：eventless 帧丢弃、tool_use input 深等、thinking signature 累积、refusal end_turn/空串/error、200+SSE-error throws、空串 stall（CLI）、**截断→throws、HTTP-4xx 类型化子类对照、reactive-retry 内部重试透明（callCount=2）、tool-call 文本恢复、畸形 input 修复、event 名宽容、OpenAI vendor smoke**。
+> **⚠️ 2026-07-14 错配审计更正（本节以下「已覆盖」列表是审计前的历史快照，现状以本框为准）**：跨模型对抗审计（Claude + GPT reviewer）按「e2e 独特价值唯一判据」清出 **10 条测试类型错配**（真相是 wire 字节而非 SDK 反应，golden∘baseline 已等价覆盖）。**修复（零覆盖损失，commit `e543ba7e`）**：① 删 10 条冗余 e2e（server-tool filter / tool-call recovery / tool-name restore→迁 golden / malformed repair→迁 golden / 5 条 reactive+buffered retry）；② 3 条仅 unit 覆盖的 retry 腿（cache_control-subfield / unsupported-beta / poisoned-thinking）**迁到** `tests/anthropic/reactive-retry-legs-wiring.http.test.ts`（端到端 driver-wiring + callCount）；③ 补 `tool-name-sanitize.http` 流式 restore golden + `tool-input-repair-fail.http` repaired-bytes 断言；④ 修 HTTP-400 oracle 缺陷（原只断言 APIError，现断言 `BadRequestError`）。**e2e 套件 27→17**，收敛为**纯 SDK-behavior 集**（throws-类型 / 静默丢帧 / fold-vs-surface / 累积 / accept-set / abort / vendor-neutral——golden 证不了的客户端反应）。方法论固化于 skill `choosing-test-type`（真相域归位 + 试金石 + 错配四型 + 删/迁移/先补再删）。
+
+**已覆盖**：eventless 帧丢弃、tool_use input 深等、thinking signature 累积、refusal end_turn/空串/error、200+SSE-error throws、空串 stall（CLI）、**截断→throws、HTTP-4xx 类型化子类对照（400 BadRequestError / 429 RateLimitError，对照 200+SSE-error 无类型）、client-abort→APIUserAbortError、buffered-retry 上游 RST 透明重试（半截不泄漏、callCount=2）、server-tool 块过滤 + 索引重映射（SDK 只见真实块）、anchor 空-text 块 wire SDK 宽容（不崩、但空块被 surface 非折叠）、reactive-retry 内部重试透明（callCount=2）—— tool-field / cache_control-subfield / server-tool / unsupported-beta / poisoned-thinking 五腿（各腿变异摘 canHandle 后精准红）、空 delta 被 SDK 无害折叠（B1 Tier1 半）、tool-call 文本恢复、畸形 input 修复、tool name 清洗后还原（入站还原客户端原名）、event 名宽容、OpenAI vendor smoke**。
 
 **未覆盖 backlog（按承重排序，供后续扩展；每条真实、多数 `[DOC-REAL]` 可直接实现或 TDD 先红）**：
-- **一梯队**（生产 incident 催生）：B1 CC 300s no-real-content keepalive 墙（Tier 2 计时/空 delta 保活）、B8 thinking 双相邻块毒化 reactive 恢复、B9 其余 retry 腿（server-tool/cache-control/unsupported-beta，逐腿一断言）。
-- **二梯队**：B2 synthetic-message-start anchor 保活、B3 block-aware 空 delta 类型匹配、B5 非流式语义截断、B10/B11 server_tool/empty-encrypted 降级、B13 HTTP-429 vs 200-error-429 CC 重试发散（Tier 2）、B16 buffered-retry 上游 RST 透明、B17 三类中止（client-abort/reaper/header-timeout）客户端侧区分（Tier 2）。
-- **三梯队（广度）**：B12 通用翻译矩阵反向腿逐 cell（Anthropic client × CC/Responses/Gemini upstream）、B18 Responses SSE/WS keepalive、B15 合成帧空 delta 不泄漏成可见内容、B20 repetition-detector 终止、B22 cache_control 剥离透明、B23 tool name 清洗后还原。
+- **一梯队**（生产 incident 催生）：B1 CC 300s no-real-content keepalive 墙 —— **Tier1 半已覆盖**（空 text/thinking delta 被 SDK 无害折叠、无幻块无崩），**真 300s 墙留 Tier2 计时**。~~B8 thinking 双相邻块毒化 reactive 恢复~~ ✅ **已覆盖**（400 `thinking cannot be modified` → L2 strip-all + 单重试 → callCount=2；实测坐实 outbound 保留 thinking 块可剥）。~~B9 retry 腿~~ ✅ **全覆盖**（tool-field/cache_control-subfield/server-tool/unsupported-beta 四腿，逐腿一断言 + 变异有牙）。
+- **二梯队**：**B2 anchor wire SDK 宽容** ✅ **Tier1 半已覆盖**（喂 anchor 空-text 块@0 + 真实块@1 wire → SDK 不崩、真实文本 intact，但空 anchor 块被 surface 成可见空块非折叠；**idle-heartbeat 注入本体是时序驱动、仍属 Tier2/fake-clock**）、B3 block-aware 空 delta 类型匹配、B5 非流式语义截断、**B10 server-tool 块过滤** ✅ **已覆盖**（无条件剥 server_tool_use/*_tool_result + 索引重映射 → SDK 只见真实块；变异 `isServerToolBlock→false` 精准红）/ **B11 empty-encrypted 降级**（机制未定名、需先厘清是哪条降级路径——疑与 thinking-signature-compat/redacted_thinking 域重叠，待坐实再实现，别猜）、B13 HTTP-429 vs 200-error-429 CC 重试发散（**Tier1 半已覆盖**：HTTP-429→RateLimitError vs 200+SSE-error 无类型；CC 重试次数发散仍属 Tier2）、~~B16 buffered-retry 上游 RST 透明~~ ✅ **已覆盖**（protect_streaming_generation on + 中途 RST → 透明重试 → 客户端拿完整 turn、半截不泄漏、callCount=2；变异关 gate → 精准红）、B17 三类中止（client-abort/reaper/header-timeout）客户端侧区分（**client-abort 半已覆盖**：Tier1 pre-aborted signal→APIUserAbortError；reaper/header-timeout 需真计时+history，仍 Tier2）。
+- **三梯队（广度）**：B12 通用翻译矩阵反向腿逐 cell（Anthropic client × CC/Responses/Gemini upstream）、B18 Responses SSE keepalive（Tier1 用 OpenAI SDK responses；**WS 路由不覆盖**）、B15 合成帧空 delta 不泄漏成可见内容、~~B20 repetition-detector 终止~~（检测逻辑改单元/property、见下「方法适配」）、~~B22 cache_control 剥离透明~~（改 golden/history、见下）、~~B23 tool name 清洗后还原~~ ✅ **已覆盖**（sanitize_tool_names on + 出站清洗 `my.search.tool`→`my_search_tool` + 入站 `toClient` 还原 → SDK 见原名；变异关 gate 精准红）。
 - **需实测先坐实再固化断言**（`[CODE-INFER]`）：B3/B9/B20/B22/B23。
+
+### 方法适配：哪些该留在 client e2e，哪些该换测试类型（2026-07-13 归类）
+
+e2e（真实 SDK/CLI 当 oracle）的**独特价值仅当「真相 = 客户端库/agent-loop 拿到 wire 后的反应」**（parse/拼装/throws 某类/丢帧、agent-loop stall/重试几次）。真相落在别处时 e2e 是杀鸡用牛刀甚至 oracle 失明，剩余 backlog 据此归类：
+
+- **留 e2e（独特价值最高）**：B12 翻译矩阵反向腿逐 cell（happy-path smoke，广度回归锚点，量大）、B3 空 delta 类型匹配的 SDK 宽容那半（检测逻辑本体归单元/property）、B15 合成帧空 delta 不泄漏（与 B1 Tier1 半重叠、可并）。**Tier2 重、gated、仅主动验证**：B1 上半 300s 墙、B13 上半 CC 重试次数发散、B17 后两类（reaper/header-timeout）、B18 WS 路由（Tier1 骨架明确不覆盖 WS）。
+- **改用其他方法（e2e 错配，oracle 盲/弱）**：
+  - **B22 cache_control 剥离透明** → **出站请求**改写，客户端看不到剥离；真相在 request-sanitize 出站字节（golden/单元）或 history `upstreamRequest`，非客户端 oracle。
+  - **B5 非流式语义截断** → 有趣的 fail 在 **history 侧**（记 fail 但仍转发 partial），客户端 oracle 弱；用 golden + history 断言。
+  - **B17 reaper/header-timeout** → 三类中止客户端都抛同一字面量，只能靠 **history `state`（600 vs 300s、failed≠aborted）** 区分 + 真计时主动验证，非客户端 oracle（client-abort 那腿才是 e2e，已做）。
+  - **B20 repetition-detector / B11 empty-encrypted 降级的检测逻辑** → 阈值/窗口/降级判定是纯函数，**单元/property** 更精准；e2e 至多加一条「SDK 拿终止流/降级块干净收尾」的 smoke。
 
 纪律（扩展时守）：否定断言必配正样本对照；`[CODE-INFER]` 先跑真实客户端 oracle 坐实；新绿测试做变异验证有牙（关掉被测行为→测试变红）。详见 skill `client-proxy-e2e-testing`。

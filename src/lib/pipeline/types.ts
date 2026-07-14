@@ -684,15 +684,22 @@ export interface FormatCodec {
   /** S1: parse inbound HTTP → envelope (model resolution, body extraction, ctx). */
   parse(raw: RawHttpRequest): RequestEnvelope
 
-  /** S2: translate body to the target-endpoint format (passthrough = identity). */
-  translateOut(env: RequestEnvelope): RequestEnvelope
+  /**
+   * S2: translate body to the target-endpoint format (passthrough = identity). OPTIONAL since the
+   * CellAssembly refactor — the outbound leg (`OUTBOUND_LEGS[targetEndpoint].translateOut`) owns this for
+   * every real request (the driver dispatches through `migratedCell(env)`); a codec only implements it as
+   * the mock/legacy fallback for a driver-orchestration unit test whose env has no `requestState`.
+   */
+  translateOut?(env: RequestEnvelope): RequestEnvelope
 
   /**
    * S4 last-mile: derive the wire (header + body trim) for one attempt from env
    * (consumes prepareHints + negotiation cache + model + config). Idempotent for
-   * a given env; does NOT write back to env.body (retry-transport.md §3).
+   * a given env; does NOT write back to env.body (retry-transport.md §3). OPTIONAL since the CellAssembly
+   * refactor — the outbound leg owns it for every real request; a codec implements it only as the
+   * mock/legacy fallback (a non-migrated env).
    */
-  prepareWire(env: RequestEnvelope): PreparedRequest
+  prepareWire?(env: RequestEnvelope): PreparedRequest
 
   /**
    * S4 first-attempt only: an async pre-send hook the driver awaits ONCE before the

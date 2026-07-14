@@ -22,6 +22,8 @@ import {
   test,
 } from "bun:test"
 
+import { sessionAnsi256 } from "~/lib/observability/projections/session-block"
+
 // SGR building blocks (picocolors basic-mode codes; code 22 resets bold AND dim).
 const RESET_FG = "\x1b[39m"
 const OFF = "\x1b[22m"
@@ -30,6 +32,9 @@ const BOLD = "\x1b[1m"
 const WHITE = "\x1b[37m"
 const YELLOW = "\x1b[33m"
 const RED = "\x1b[31m"
+const CYAN = "\x1b[36m"
+const GREEN = "\x1b[32m"
+const GRAY = "\x1b[90m"
 
 // The exact bytes picocolors emits for each severity band (probed under FORCE_COLOR).
 // Both scales share the yellow → red → bold-red escalation; they differ only at
@@ -39,6 +44,9 @@ const band = {
   white: (s: string) => `${WHITE}${s}${RESET_FG}`,
   yellow: (s: string) => `${YELLOW}${s}${RESET_FG}`,
   red: (s: string) => `${RED}${s}${RESET_FG}`,
+  cyan: (s: string) => `${CYAN}${s}${RESET_FG}`,
+  green: (s: string) => `${GREEN}${s}${RESET_FG}`,
+  gray: (s: string) => `${GRAY}${s}${RESET_FG}`,
   boldRed: (s: string) => `${BOLD}${RED}${s}${RESET_FG}${OFF}`,
 }
 
@@ -68,6 +76,76 @@ const durationCases: Array<{ label: string; ms: number; expect: string }> = [
 ]
 
 /**
+ * stop_reason cases: reason → expected category-colored `<reason>` token.
+ * The whole token (marker + word + optional tool suffix) carries the category
+ * color. Covers one value per band, an unknown value that falls back to dim
+ * (still shown raw), a tool_use case with its invoked tool names (white), and an
+ * agentic case whose tools include AskUserQuestion (cyan, the interactive-pause
+ * highlight).
+ */
+const stopReasonCases: Array<{ label: string; reason: string; toolNames?: Array<string>; expect: string }> = [
+  { label: "end_turn → green (normal completion)", reason: "end_turn", expect: band.green("end_turn") },
+  { label: "stop → green (openai normal)", reason: "stop", expect: band.green("stop") },
+  { label: "tool_use → white (agentic)", reason: "tool_use", expect: band.white("tool_use") },
+  { label: "tool_use with names → white token incl (Bash,Edit)", reason: "tool_use", toolNames: ["Bash", "Edit"], expect: band.white("tool_use(Bash,Edit)") },
+  {
+    label: "tool_use with AskUserQuestion → cyan (interactive pause)",
+    reason: "tool_use",
+    toolNames: ["AskUserQuestion"],
+    expect: band.cyan("tool_use(AskUserQuestion)"),
+  },
+  { label: "tool_calls → white (openai agentic)", reason: "tool_calls", expect: band.white("tool_calls") },
+  { label: "max_tokens → yellow (truncation)", reason: "max_tokens", expect: band.yellow("max_tokens") },
+  { label: "length → yellow (openai truncation)", reason: "length", expect: band.yellow("length") },
+  { label: "refusal → red (problematic)", reason: "refusal", expect: band.red("refusal") },
+  { label: "content_filter → red (openai problematic)", reason: "content_filter", expect: band.red("content_filter") },
+  { label: "surprise → dim (unknown fallback, shown raw)", reason: "surprise", expect: band.dim("surprise") },
+]
+
+/**
+ * response-thinking token cases: the `think:…(<blocks>)` token is gray for a
+ * legitimate thought (plaintext present OR empty-but-signed/redacted encrypted)
+ * and yellow for the empty-plaintext poisoning case. Calibrated against real GHC
+ * data where opus thinking arrives plaintext-stripped-but-signed (→ `enc`, gray).
+ */
+const thinkingCases: Array<{
+  label: string
+  responseThinking: { blockCount: number; chars: number; hasSignature: boolean; poisoned: boolean }
+  expect: string
+}> = [
+  {
+    label: "plaintext thinking → gray think:<chars>(<blocks>)",
+    responseThinking: { blockCount: 3, chars: 1200, hasSignature: true, poisoned: false },
+    expect: band.gray("think:1.2k(3)"),
+  },
+  {
+    label: "encrypted (empty+signed) → gray think:enc",
+    responseThinking: { blockCount: 3, chars: 0, hasSignature: true, poisoned: false },
+    expect: band.gray("think:enc(3)"),
+  },
+  {
+    label: "poisoned (empty+unsigned) → yellow think:poison",
+    responseThinking: { blockCount: 2, chars: 0, hasSignature: false, poisoned: true },
+    expect: band.yellow("think:poison(2)"),
+  },
+]
+
+/**
+ * session-identity block cases: the `sessionId`-hashed 256-color glyph (`■` main /
+ * `❶❷…` subagent). Expected bytes computed via the real `sessionAnsi256` so the
+ * test tracks the palette; a plain `■`/`❶` fallback would prove nothing. Same
+ * session ⇒ same color code for main and subagent (only the glyph differs).
+ */
+const SESS = "sess-alpha"
+const blockCode = sessionAnsi256(SESS)
+const block256 = (code: number, glyph: string): string => `\x1b[38;5;${code}m${glyph}\x1b[39m`
+const blockCases: Array<{ label: string; sessionId?: string; agentId?: string; agentOrdinal?: number; expect: string }> = [
+  { label: "main agent → colored solid square", sessionId: SESS, expect: block256(blockCode, "■") },
+  { label: "subagent ❶ → same session color, circled 1", sessionId: SESS, agentId: "ag1", agentOrdinal: 1, expect: block256(blockCode, "❶") },
+  { label: "subagent ❷ → same session color, circled 2", sessionId: SESS, agentId: "ag2", agentOrdinal: 2, expect: block256(blockCode, "❷") },
+]
+
+/**
  * Render every case in one forced-color child process. The script imports the
  * real formatLogLine from source (cwd = project root under bun test); duration
  * text is `formatDuration(ms)` so the expected strings above must match its
@@ -87,6 +165,12 @@ function renderAllUnderForcedColor(): Record<string, string> {
     // (independent of formatDuration's rounding), while durationMs drives the color.
     const durText = { 3000: "3s", 20000: "20s", 20001: "20.001s", 60000: "60s", 60001: "60.001s", 180000: "180s", 180001: "180.001s", 200000: "200s" }
     for (const c of durationCases) out[c.label] = formatLogLine({ ...base, duration: durText[c.ms], durationMs: c.ms })
+    const stopReasonCases = ${JSON.stringify(stopReasonCases.map((c) => ({ label: c.label, reason: c.reason, toolNames: c.toolNames })))}
+    for (const c of stopReasonCases) out[c.label] = formatLogLine({ ...base, stopReason: c.reason, toolNames: c.toolNames })
+    const thinkingCases = ${JSON.stringify(thinkingCases.map((c) => ({ label: c.label, responseThinking: c.responseThinking })))}
+    for (const c of thinkingCases) out[c.label] = formatLogLine({ ...base, responseThinking: c.responseThinking })
+    const blockCases = ${JSON.stringify(blockCases.map((c) => ({ label: c.label, sessionId: c.sessionId, agentId: c.agentId, agentOrdinal: c.agentOrdinal })))}
+    for (const c of blockCases) out[c.label] = formatLogLine({ ...base, sessionId: c.sessionId, agentId: c.agentId, agentOrdinal: c.agentOrdinal })
     process.stdout.write(JSON.stringify(out))
   `
   const proc = Bun.spawnSync(["bun", "-e", script], {
@@ -114,6 +198,29 @@ describe("formatLogLine severity coloring (FORCE_COLOR integration — authorita
     })
   }
 
+  for (const c of stopReasonCases) {
+    test(`stop_reason ${c.label}`, () => {
+      expect(out[c.label]).toContain(c.expect)
+    })
+  }
+
+  for (const c of thinkingCases) {
+    test(`response-thinking ${c.label}`, () => {
+      expect(out[c.label]).toContain(c.expect)
+    })
+  }
+
+  for (const c of blockCases) {
+    test(`session-block ${c.label}`, () => {
+      expect(out[c.label]).toContain(c.expect)
+    })
+  }
+
+  test("main and subagent of one session share the exact color code (only the glyph differs)", () => {
+    expect(out["main agent → colored solid square"]).toContain(block256(blockCode, "■"))
+    expect(out["subagent ❶ → same session color, circled 1"]).toContain(block256(blockCode, "❶"))
+  })
+
   test("bands are mutually distinct (a fast/high-hit case is never colored like a severe one)", () => {
     // Cross-checks: the healthy cache marker is not red; the fast duration is not
     // red. (That the <20 band is specifically BOLD red — not plain red — is
@@ -121,5 +228,12 @@ describe("formatLogLine severity coloring (FORCE_COLOR integration — authorita
     // regression drops the leading \e[1m and fails that toContain.)
     expect(out["hit 80% → dim (≥80 boundary)"]).not.toContain(RED + "↻80%")
     expect(out["3s → white"]).not.toContain(RED + "3s")
+    // A normal end_turn is green, never colored like the agentic (white) or
+    // problematic (red) bands — guards against an "always white/red" mutation.
+    expect(out["end_turn → green (normal completion)"]).not.toContain(WHITE + "end_turn")
+    expect(out["end_turn → green (normal completion)"]).not.toContain(RED + "end_turn")
+    // A plain tool_use is white, not the AskUserQuestion cyan highlight — guards
+    // against the AskUserQuestion detection collapsing to "always cyan".
+    expect(out["tool_use → white (agentic)"]).not.toContain(CYAN + "tool_use")
   })
 })

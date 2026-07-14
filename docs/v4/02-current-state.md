@@ -131,7 +131,7 @@ S1 processAnthropicSystem / S2 processOpenAIMessages / S3 processResponsesInstru
 ### 3.1 Anthropic（`messages/handler.ts`）
 
 - **A1** createServerToolBlockFilter（server-tool 过滤+工具名还原 A1b） — 逐帧 — 始终 — `server-tool-filter.ts:102` — **R**
-- **A2** createToolInputStreamDecoder — 整体累积后改写 — `state.decodeToolInputFields`/`decodeAllToolInputFields` — `decode-tool-input.ts:83` — **R**
+- **A2** createToolInputStreamDecoder — 整体累积后改写 — `state.decodeToolInputFields` — `decode-tool-input.ts:83` — **R**
 - **A3** applyThinkingSignatureCompat — 逐帧（单→多帧） — `state.thinkingSignatureCompat` — `thinking-signature-compat.ts:69`（短路 return） — **R**
 - **A4** startForwardedSseHeartbeat — 合成注入 — `state.anthropicFakeSseHeartbeat` — `handler.ts:873` — **R**
 

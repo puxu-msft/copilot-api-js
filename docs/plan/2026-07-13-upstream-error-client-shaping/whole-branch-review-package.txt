@@ -1,0 +1,1572 @@
+### BRANCH COMMITS (2526f42ff991e730ba1956d884fcd9d0326e35b2..HEAD)
+61bf5d31 test: add GATED describe.skip contract skeleton for Phase 6 post-commit truncation consumption
+f03e3fbb docs: record Phase 5 selfheal-delegation task report + discrepancies
+2a3d868d test: lock D-class boundary invariants (media-strip no-mapping, quarantine isolation)
+060e6ebc feat: wire D-class self-heal delegation into ENDPOINT.MESSAGES strategy assembly
+d89741e3 feat: add filterDelegatedStrategies for D-class self-heal delegation
+9dd2f1c4 docs: record D-2 options-schema fix + task-4 FIX-A/B/C report
+edafec97 fix: AUQ options adopt CC {label,description} object schema (Critical wire bug)
+cf196ba3 docs: record D-1 clientResponse-after-fail gap + MED-3 risk + task-4 report
+02b0c5a9 test: add MED-3 wire-shape oracle to AUQ unit tests
+8cc1ba4b feat: wire AUQ synthesis into pre-commit error shaping glue
+5b64050e feat: add AUQ synthesis builders (streaming + non-streaming variants, two-pass template render)
+c727d151 docs: backlog 2 Phase-3 error-shaping findings + append FIX-1/2/3 report (FIX-3)
+a2df6649 refactor: complete G-3 canonical ownership on the translate leg + unify raw-stream termini (FIX-2)
+92301bb8 test: lock errorFrameCanonical-before-recoverRefusal no-double-reshape invariant (FIX-1)
+bdebda73 docs(plan): phase-3 execution report — post-commit canonical frame shaping
+140d1957 refactor: delegate post-commit terminal error frames to error-shaping builders (G-3 canonical ownership, 4 termini)
+04c88acd feat: add errorFrameCanonical S5 rewrite for upstream event:error frames (G-3)
+bb89b9ab docs(plan): phase-2 execution report — precommit retry-signal glue
+e9e19f8d test(messages): exhaustive unit coverage for shapePrecommitError branches
+d86751fc test(messages): integration coverage for pre-commit error-shaping wiring
+2dcebc76 feat(messages): pre-commit error-shaping glue for /v1/messages routes
+c6a03ba1 docs(plan): phase-1 execution report — error-shaping core engine
+ecaced8e refactor: absorb anthropicStreamErrorType into error-shaping (G-3)
+5202f110 feat: add error-shaping decision engine (decide truth table + canonical/AUQ builders)
+26e51e23 feat: extend SyntheticOriginKind + FeatureKind for error-shaping
+fa5ebefe docs(plan): phase-0 execution report — error-shaping config scaffolding
+67ca59b7 test: register error-shaping keys in config-hot-reload completeness guard
+6fddd1fd feat: wire error-shaping config keys through config.ts + state.ts
+170340fb feat: add error-shaping config schema (4 keys)
+
+### DIFFSTAT
+ src/lib/anthropic/error-shaping.ts                 | 477 +++++++++++++++++++++
+ .../anthropic/error-frame-canonical-rewrite.ts     |  51 +++
+ .../codec/anthropic/response-rewrite-adapters.ts   |  15 +-
+ src/lib/config/config.ts                           |   4 +
+ src/lib/config/schema.ts                           |   8 +
+ src/lib/history/types.ts                           |  17 +-
+ src/lib/observability/events.ts                    |   6 +
+ src/lib/pipeline/client-sink.ts                    |  10 +-
+ src/lib/pipeline/frame-origin.ts                   |   2 +-
+ src/lib/pipeline/rewrite-registry.ts               |   8 +
+ src/lib/state.ts                                   |  29 ++
+ src/lib/tui/terminal-ui.ts                         |   3 +
+ src/routes/messages/error-shaping-glue.ts          | 182 ++++++++
+ src/routes/messages/handler-v4.ts                  |  83 +++-
+ src/routes/messages/route.ts                       |   7 +-
+ src/routes/messages/streaming-pump.ts              |  24 +-
+ tests/anthropic/error-shaping-auq.unit.test.ts     | 140 ++++++
+ .../anthropic/error-shaping-selfheal.unit.test.ts  | 173 ++++++++
+ tests/anthropic/error-shaping.unit.test.ts         | 245 +++++++++++
+ .../error-frame-canonical-rewrite.unit.test.ts     | 105 +++++
+ tests/config/config-hot-reload.it.test.ts          |  28 ++
+ tests/config/error-shaping-config.unit.test.ts     | 135 ++++++
+ .../response-rewrite-contract.unit.test.ts         |  52 +++
+ tests/routes/messages/error-shaping-auq.it.test.ts | 187 ++++++++
+ .../messages/error-shaping-glue.unit.test.ts       | 165 +++++++
+ .../messages/error-shaping-precommit.it.test.ts    | 268 ++++++++++++
+ .../handler-v4-selfheal-delegation.it.test.ts      | 156 +++++++
+ .../messages/postcommit-error-shaping.it.test.ts   | 243 +++++++++++
+ .../messages/postcommit-error-shaping.unit.test.ts | 122 ++++++
+ .../postcommit-truncation-shaping.it.test.ts       | 161 +++++++
+ .../translate-leg-error-shaping.it.test.ts         | 115 +++++
+ 31 files changed, 3177 insertions(+), 44 deletions(-)
+
+### FULL PRODUCTION DIFF (-U8, src/ only)
+diff --git a/src/lib/anthropic/error-shaping.ts b/src/lib/anthropic/error-shaping.ts
+new file mode 100644
+index 00000000..149ec334
+--- /dev/null
++++ b/src/lib/anthropic/error-shaping.ts
+@@ -0,0 +1,477 @@
++/**
++ * Error-shaping decision engine — the pure-logic base for turning a classified upstream failure
++ * into a client-facing shaping decision (retry signal / AskUserQuestion / canonical error frame /
++ * block-level deferral).
++ *
++ * This module is `lib`-layer and MUST NOT import from `routes/` (dependency direction is
++ * routes→lib; same rule as `recover-refusal.ts` / `post-commit-error.ts`). `decide()` and every
++ * builder here are pure functions with no I/O and no `state` access — the caller reads the config
++ * snapshot from `state` and passes it in, and performs any header write / SSE emission / delegation
++ * itself. That keeps the whole decision surface unit-testable.
++ *
++ * Design notes (see docs/plan/2026-07-13-upstream-error-client-shaping/):
++ *  - The 11 `ApiErrorType`s bucket into three shaping classes (spec §核心设计 A/B/C):
++ *      A (retryable): network_error / server_error / upstream_rate_limited / rate_limited
++ *      B (AUQ candidates): content_filtered / quota_exceeded(402) / auth_expired(401/403 leg)
++ *      C (terminal canonical): token_limit / payload_too_large / bad_request
++ *    `aborted` is a NON-target (handled by the existing abort path) — passing it to `decide()`
++ *    is a caller misuse and throws.
++ *  - `clientVisibleStopEmitted` is currently a no-op for the two `ApiError` call sites (both pass
++ *    `false`); it is a forward-compat slot for Phase 6's block-level `defer-to-block-level` sub-
++ *    decision, which does NOT flow through this truth table.
++ */
++
++import type { ServerSentEventMessage } from "fetch-event-stream"
++
++import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
++import type { ApiError } from "~/lib/error"
++import type {
++  //
++  ClientFrame,
++  RetryStrategy,
++  UpstreamFrame,
++} from "~/lib/pipeline/types"
++
++import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
++import { classifyStreamError } from "~/lib/stream"
++
++import { anthropicSseFrame } from "./sse-frame"
++
++// ============================================================================
++// Config + input/output types (README §4 contract — consumed verbatim by Phase 2/3/4/5)
++// ============================================================================
++
++/** The 4 error-shaping config keys, read from `state` by the caller and passed in as a snapshot. */
++export interface ErrorShapingConfig {
++  enabled: boolean // error_shaping_enabled
++  askUserQuestion: boolean // error_ask_user_question
++  auqTemplate: string // error_auq_template（空 = 内置默认）
++  selfhealDelegate: Readonly<Record<string, "proxy" | "delegate">> // error_selfheal_delegate
++}
++
++/** The three-dimensional input to the decision engine (pure, no I/O). */
++export interface ShapingInput {
++  error: ApiError // ~/lib/error, one of 11 ApiErrorType
++  commitPhase: "pre-commit" | "post-commit"
++  clientVisibleStopEmitted: boolean // includes a synthetic anchor stop; only meaningful post-commit
++  config: ErrorShapingConfig // snapshot of the 4 new keys
++}
++
++/** The decision engine output — one of four kinds; the caller executes the write/delegation. */
++export type ShapingDecision =
++  | { kind: "retry-signal"; retryAfterSec?: number } // A类 pre-commit
++  | { kind: "ask-user-question"; questions: ReadonlyArray<AuqQuestion> } // B类
++  | { kind: "canonical-error"; errorType: string; message: string; retryAfterSec?: number } // C类
++  | { kind: "defer-to-block-level" } // A类 post-commit 截断/RST（G-4 gated，Phase 6 消费）
++
++// ============================================================================
++// Error-class buckets (spec §核心设计 A/B/C)
++// ============================================================================
++
++/** A class — retryable failures. pre-commit → retry-signal; post-commit → canonical-error. */
++const RETRYABLE_TYPES = new Set<ApiError["type"]>(["rate_limited", "server_error", "upstream_rate_limited", "network_error"])
++
++/** B class — AskUserQuestion candidates (only when `askUserQuestion=true` && pre-commit). */
++const AUQ_CANDIDATE_TYPES = new Set<ApiError["type"]>(["content_filtered", "quota_exceeded", "auth_expired"])
++
++// ============================================================================
++// decide()
++// ============================================================================
++
++/**
++ * Map a classified `ApiError` (+ config + commitPhase) to a `ShapingDecision`.
++ *
++ * `aborted` is a non-target and throws (caller misuse guard). Otherwise:
++ *  - A class: pre-commit → `retry-signal` (retryAfterSec = error.retryAfter); post-commit →
++ *    `canonical-error` (status is locked once bytes are committed — no client-side retry possible).
++ *  - B class: pre-commit && config.askUserQuestion → `ask-user-question` (with rendered questions);
++ *    otherwise → `canonical-error`.
++ *  - C class (everything else): always `canonical-error`.
++ */
++export function decide(input: ShapingInput): ShapingDecision {
++  const { error, commitPhase, config } = input
++
++  if (error.type === "aborted") {
++    throw new Error("error-shaping.decide() must not be called for `aborted` errors (non-target; handled by the abort path)")
++  }
++
++  if (RETRYABLE_TYPES.has(error.type)) {
++    if (commitPhase === "pre-commit") {
++      return { kind: "retry-signal", retryAfterSec: error.retryAfter }
++    }
++    return canonicalErrorDecision(error)
++  }
++
++  if (AUQ_CANDIDATE_TYPES.has(error.type) && commitPhase === "pre-commit" && config.askUserQuestion) {
++    return {
++      kind: "ask-user-question",
++      questions: [buildAuqQuestion(error, config)],
++    }
++  }
++
++  // B class without AUQ (disabled / post-commit) and all C class → canonical.
++  return canonicalErrorDecision(error)
++}
++
++/** Build the `canonical-error` decision for an `ApiError`, mapping its `type` to the Anthropic wire
++ *  `error.type` literal and carrying through any `retryAfter`. */
++function canonicalErrorDecision(error: ApiError): Extract<ShapingDecision, { kind: "canonical-error" }> {
++  return {
++    kind: "canonical-error",
++    errorType: anthropicErrorTypeForApiError(error.type),
++    message: error.message,
++    ...(error.retryAfter === undefined ? {} : { retryAfterSec: error.retryAfter }),
++  }
++}
++
++/** Map an `ApiErrorType` to the Anthropic wire `error.type` literal the client SDK branches on. */
++function anthropicErrorTypeForApiError(type: ApiError["type"]): string {
++  switch (type) {
++    case "rate_limited":
++    case "quota_exceeded":
++    case "upstream_rate_limited": {
++      return "rate_limit_error"
++    }
++    case "server_error":
++    case "network_error": {
++      return "api_error"
++    }
++    case "content_filtered": {
++      return "invalid_request_error"
++    }
++    case "payload_too_large": {
++      return "request_too_large"
++    }
++    case "token_limit":
++    case "bad_request": {
++      return "invalid_request_error"
++    }
++    case "auth_expired": {
++      return "authentication_error"
++    }
++    // `aborted` is guarded out in `decide()`; default keeps the switch total.
++    default: {
++      return "api_error"
++    }
++  }
++}
++
++// ============================================================================
++// canonical error frame (G-3: the single constructor for post-commit terminal error frames)
++// ============================================================================
++
++/**
++ * Build the Anthropic `event: error` frame from a `canonical-error` decision. Hand-built canonical
++ * JSON (not via the `routes/` `anthropicErrorFrame` helper — `lib/` must not depend on `routes/`;
++ * same convention as `recover-refusal.ts:212-219`); the shape is protocol-fixed
++ * (`{ type:"error", error:{ type, message, retry_after? } }`) so it cannot drift.
++ *
++ * `retry_after` is OMITTED entirely (not `null`/`undefined` literal) when the decision has no
++ * `retryAfterSec`, matching `post-commit-error.ts` behaviour.
++ */
++export function buildCanonicalErrorFrame(decision: Extract<ShapingDecision, { kind: "canonical-error" }>): ClientFrame {
++  const error: Record<string, unknown> = { type: decision.errorType, message: decision.message }
++  if (decision.retryAfterSec !== undefined) error.retry_after = decision.retryAfterSec
++  return { event: "error", data: JSON.stringify({ type: "error", error }) }
++}
++
++/**
++ * Best-effort extraction of an upstream-sent `event:error` frame's `{type, message}` — tolerant of
++ * non-Anthropic-shaped bodies (raw GHC/Copilot error JSON). Mirrors `stream-accumulator.ts`'s
++ * `error` case parsing (`err.type` / `err.message`), plus a top-level `{type, message}` fallback,
++ * so both consumers agree on what "the upstream said" means. Never throws (returns `{}` on
++ * unparseable data).
++ */
++export function parseRawUpstreamErrorFrame(frame: UpstreamFrame): { type?: string; message?: string } {
++  try {
++    const parsed = JSON.parse(frame.data ?? "{}") as { type?: string; error?: { type?: string; message?: string }; message?: string }
++    // Prefer the nested `error` object (mirrors stream-accumulator.ts's `err?.type` / `err?.message`, so
++    // both consumers agree on "what the upstream said"). Fall back to a FLAT `{type, message}` shape — but
++    // never treat the `"error"` DISCRIMINATOR as the taxonomy: a `{type:"error", error:{message}}` frame's
++    // canonical error type is `api_error` (the builder's fallback), not the literal `"error"`.
++    const topType = parsed.type === "error" ? undefined : parsed.type
++    return { type: parsed.error?.type ?? topType, message: parsed.error?.message ?? parsed.message }
++  } catch {
++    return {}
++  }
++}
++
++/**
++ * G-3 sole-ownership canonical builder for a RAW upstream `event:error` frame (the S5
++ * `errorFrameCanonical` rewrite's transform) — always resolves to a valid Anthropic `event:error`
++ * envelope, falling back to `"api_error"` / a generic message when the upstream shape is
++ * unrecognized (never throws, never drops the frame). Distinct from {@link buildCanonicalErrorFrame},
++ * which takes an already-classified `canonical-error` decision: this one has no `ApiError` to
++ * classify (an upstream-emitted frame is not a thrown error), so it preserves the upstream's own
++ * `error.type` verbatim rather than re-mapping through `decide()`.
++ */
++export function buildCanonicalErrorFrameFromRaw(frame: UpstreamFrame): ClientFrame {
++  const { type, message } = parseRawUpstreamErrorFrame(frame)
++  return buildCanonicalErrorFrame({ kind: "canonical-error", errorType: type ?? "api_error", message: message ?? "Upstream reported an error" })
++}
++
++/**
++ * Map a streaming error to its Anthropic SSE `error.type` (absorbed from
++ * `streaming-pump.ts:anthropicStreamErrorType`, G-3): shutdown → retryable `overloaded_error`,
++ * idle-timeout → `timeout_error`, everything else → `api_error`. Pure function — same input yields
++ * same output regardless of call site, so `streaming-pump.ts` re-exports this under the old name.
++ */
++export function classifyStreamErrorType(error: unknown): string {
++  switch (classifyStreamError(error)) {
++    case "idle-timeout": {
++      return "timeout_error"
++    }
++    case "shutdown": {
++      return "overloaded_error"
++    }
++    default: {
++      return "api_error"
++    }
++  }
++}
++
++// ============================================================================
++// AskUserQuestion content construction (B class)
++// ============================================================================
++
++/** A single selectable option in a B-class AUQ question. Matches Claude Code's real AskUserQuestion
++ *  wire schema — `{ label, description }` OBJECTS, NOT plain strings (verified against captured real
++ *  GHC-downgrade traffic in `tests/infra/debug-dry-run-pipeline.http.test.ts:108`, and CC 2.1.207
++ *  `app.pretty.js:318507` which validates this schema and rejects a bare-string option). `label` is
++ *  the short button text; `description` is the longer explanation. Both may carry `{model}`/
++ *  `{request_id}` placeholders left for Phase 4's second render pass. */
++export interface AuqOption {
++  label: string // may still contain unrendered {model}/{request_id}
++  description: string // may still contain unrendered {model}/{request_id}
++}
++
++/** B-class question content. `decide()` completes the `{error_type}`/`{status}` first-pass render;
++ *  `{model}`/`{request_id}` are left verbatim for Phase 4's builder second pass. */
++export interface AuqQuestion {
++  question: string // may still contain unrendered {model}/{request_id}
++  header: string
++  multiSelect: boolean
++  options: ReadonlyArray<AuqOption>
++}
++
++/**
++ * Default AUQ question template. Uses exactly the 4 spec-given placeholders
++ * (`{error_type}`/`{status}`/`{model}`/`{request_id}`, single-brace) — no `{message}`.
++ */
++export const DEFAULT_AUQ_TEMPLATE = "上游返回错误 {error_type}（HTTP {status}），模型 {model}、请求 {request_id}。请选择如何继续？"
++
++/**
++ * Render an AUQ template: literal `{name}` substitution for keys present in `vars`; UNKNOWN
++ * placeholders are left VERBATIM (never throw / never drop). Same regex semantics as
++ * `recover-refusal.ts:96` `renderRefusalTemplate` — this enables the two-pass render (complementary
++ * `vars` subsets across two calls). Reimplemented locally (not imported) to avoid a needless cross-
++ * file coupling; both are the same tiny hand-built helper per the `recover-refusal.ts:212-219`
++ * "hand-built small function, no cross-layer reuse" convention.
++ */
++export function renderAuqQuestion(tmpl: string, vars: Partial<{ model: string; request_id: string; error_type: string; status: string }>): string {
++  return tmpl.replaceAll(/\{(\w+)\}/g, (whole, key: string) => (key in vars ? String((vars as Record<string, unknown>)[key]) : whole))
++}
++
++/** Per-errorType option sets for the B-class AUQ. User-facing wording (not protocol behaviour);
++ *  minimal starter set per the plan — if it conflicts with the spec appendix, the spec wins. Each
++ *  option is a CC-schema `{ label, description }` object (see {@link AuqOption}). */
++function optionsForErrorType(type: ApiError["type"]): ReadonlyArray<AuqOption> {
++  switch (type) {
++    case "quota_exceeded": {
++      return [
++        { label: "等待后重试", description: "配额恢复后再次发送本次请求" },
++        { label: "切换模型", description: "改用未超额的其他模型继续" },
++        { label: "放弃", description: "取消本次请求，不再重试" },
++      ]
++    }
++    case "content_filtered": {
++      return [
++        { label: "改写重试", description: "修改提示词以绕过内容过滤后重试" },
++        { label: "切换模型", description: "改用过滤策略不同的其他模型" },
++        { label: "放弃", description: "取消本次请求，不再重试" },
++      ]
++    }
++    case "auth_expired": {
++      return [
++        { label: "刷新凭据", description: "重新登录或刷新令牌后重试" },
++        { label: "检查授权", description: "检查账户授权与订阅状态" },
++        { label: "放弃", description: "取消本次请求，不再重试" },
++      ]
++    }
++    default: {
++      return [
++        { label: "重试", description: "重新发送本次请求" },
++        { label: "放弃", description: "取消本次请求，不再重试" },
++      ]
++    }
++  }
++}
++
++/** Build the single B-class question: first-pass render of `{error_type}`/`{status}` (the only
++ *  fields available at classification), `{model}`/`{request_id}` left for Phase 4's second pass. */
++function buildAuqQuestion(error: ApiError, config: ErrorShapingConfig): AuqQuestion {
++  return {
++    question: renderAuqQuestion(config.auqTemplate || DEFAULT_AUQ_TEMPLATE, { error_type: error.type, status: String(error.status) }),
++    header: "如何继续？",
++    multiSelect: false,
++    options: optionsForErrorType(error.type),
++  }
++}
++
++// ============================================================================
++// AskUserQuestion synthesis (Phase 4: pre-commit whole-turn synthesis, streaming + non-streaming)
++// ============================================================================
++
++/** The AUQ tool's wire input shape (`decode-tool-input-core.ts`'s existing `AskUserQuestion`
++ *  consumer convention: `questions[]`, each `{question, header, multiSelect, options}`, `options`
++ *  being CC-schema `{label, description}` objects — see {@link AuqOption}). Rendered (second-pass
++ *  `{model}`/`{request_id}` substituted throughout, options included) — never carries an unrendered
++ *  placeholder. */
++interface RenderedAuqInput {
++  questions: Array<{ question: string; header: string; multiSelect: boolean; options: ReadonlyArray<AuqOption> }>
++}
++
++/** Second-pass render every question's `{model}`/`{request_id}` (first pass — `{error_type}`/
++ *  `{status}` — already done by `decide()`/`buildAuqQuestion`), producing the tool's wire input. The
++ *  render reaches into each option's `label`/`description` too, so an option template carrying
++ *  `{model}`/`{request_id}` is substituted the same as the question text (today's default copy has no
++ *  option-level placeholders, but the render is correct for object fields and future-proofed). */
++function renderAuqInput(questions: ReadonlyArray<AuqQuestion>, ctx: { model: string; reqId: string }): RenderedAuqInput {
++  const renderVars = { model: ctx.model, request_id: ctx.reqId }
++  return {
++    questions: questions.map((q) => ({
++      question: renderAuqQuestion(q.question, renderVars),
++      header: q.header,
++      multiSelect: q.multiSelect,
++      options: q.options.map((o) => ({
++        label: renderAuqQuestion(o.label, renderVars),
++        description: renderAuqQuestion(o.description, renderVars),
++      })),
++    })),
++  }
++}
++
++/** Deterministic-free synthetic Anthropic tool_use id — `toolu_` prefix matches the wire convention
++ *  clients defensively validate against (see `recover-tool-call/core.ts`'s `synthesizeToolUseId` for
++ *  the deterministic streaming-replay sibling; this one-shot AUQ synthesis needs no determinism). */
++function syntheticToolUseId(): string {
++  return `toolu_${crypto.randomUUID().replaceAll("-", "")}`
++}
++
++/**
++ * B-class pre-commit whole-turn synthesis — non-streaming (`stream:false`) variant. Builds a
++ * complete `AnthropicMessageResponse` carrying a single `AskUserQuestion` `tool_use` block
++ * (`stop_reason:"tool_use"`), so the client's existing native AskUserQuestion handling renders an
++ * interactive question instead of a flattened error body.
++ *
++ * Constructed as a minimal object cast through `unknown` (same established convention as
++ * `debug/dry-run-pipeline.ts`'s `rebuildNonStreamingResponse`) rather than satisfying every strict
++ * SDK `Message` field (`container`/`stop_details`/the full `Usage` breakdown) — this is a synthetic
++ * turn with no real upstream response to source those from. `usage:{0,0}` is an accepted wire/billing
++ * divergence (richest-data-flow ADR §2, same acceptance as `keepalive-anchor.ts`'s synthetic
++ * `message_start`) — a synthetic turn has no real token cost to report.
++ */
++export function buildAskUserQuestionResponse(
++  decision: Extract<ShapingDecision, { kind: "ask-user-question" }>,
++  ctx: { model: string; reqId: string },
++): AnthropicMessageResponse {
++  const input = renderAuqInput(decision.questions, ctx)
++  return {
++    id: `msg_${crypto.randomUUID().replaceAll("-", "")}`,
++    type: "message",
++    role: "assistant",
++    model: ctx.model,
++    content: [{ type: "tool_use", id: syntheticToolUseId(), name: "AskUserQuestion", input }],
++    stop_reason: "tool_use",
++    stop_sequence: null,
++    usage: { input_tokens: 0, output_tokens: 0 },
++  } as unknown as AnthropicMessageResponse
++}
++
++/**
++ * B-class pre-commit whole-turn synthesis — streaming (`stream:true`) variant. Mirrors
++ * `recover-refusal.ts`'s `buildSyntheticTextFrames` pattern: a self-contained frame sequence
++ * (`message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` →
++ * `message_delta` → `message_stop`) carrying the same `AskUserQuestion` `tool_use` block as
++ * {@link buildAskUserQuestionResponse}, serialized as a single `input_json_delta` (the whole JSON
++ * string in one delta — no incremental construction needed for a synthetic, already-complete turn).
++ *
++ * Every frame is tagged `tagFrameSynthetic(frame, "error-shaping-auq")` (richest-data-flow §3): this
++ * whole turn is injected, not upstream traffic, and must stay distinguishable on the forwarded track.
++ */
++export function buildAskUserQuestionFrames(
++  decision: Extract<ShapingDecision, { kind: "ask-user-question" }>,
++  ctx: { model: string; reqId: string },
++): Array<ClientFrame> {
++  const input = renderAuqInput(decision.questions, ctx)
++  const messageId = `msg_${crypto.randomUUID().replaceAll("-", "")}`
++  const toolUseId = syntheticToolUseId()
++  const frames: Array<ServerSentEventMessage> = [
++    anthropicSseFrame({
++      type: "message_start",
++      message: {
++        id: messageId,
++        type: "message",
++        role: "assistant",
++        model: ctx.model,
++        content: [],
++        stop_reason: null,
++        stop_sequence: null,
++        usage: { input_tokens: 0, output_tokens: 0 },
++      },
++    }),
++    anthropicSseFrame({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: {} } }),
++    anthropicSseFrame({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } }),
++    anthropicSseFrame({ type: "content_block_stop", index: 0 }),
++    anthropicSseFrame({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 0 } }),
++    anthropicSseFrame({ type: "message_stop" }),
++  ]
++  return frames.map((frame) => tagFrameSynthetic(frame, "error-shaping-auq"))
++}
++
++// ============================================================================
++// D-class self-heal delegation (Phase 5, README §4 contract)
++// ============================================================================
++
++/**
++ * Wrap a reactive `RetryStrategy[]` (the `assembleStrategiesForEndpoint` output) so a strategy
++ * flagged `"delegate"` in `delegateConfig` (keyed by the strategy's own `.name`, matching
++ * `state.errorSelfhealDelegate` / `error_selfheal_delegate`) never actually fires — the 400 it would
++ * have retried is instead let through to the client, where Claude Code's own self-heal logic handles
++ * it (thinking-signature strip, mid-conv-system, etc.).
++ *
++ * Only `canHandle` is wrapped; `handle`/`onResolved` pass through unchanged (a `"delegate"`-flagged
++ * strategy's `canHandle` never returns `true`, so its `handle`/`onResolved` are never invoked by the
++ * driver — wrapping them would be dead code). Entries whose `.name` is absent from `delegateConfig`,
++ * or mapped to `"proxy"`, pass through BY REFERENCE (same strategy object) — cheap and lets identity
++ * checks in other tests keep working.
++ *
++ * `onDelegated` fires ONLY when the wrapped `canHandle` would otherwise have returned `true` (i.e. a
++ * real delegation happened, not an irrelevant probe) — the caller wires it to
++ * `env.ctx.recordFeature("error-shaping-selfheal-delegated", { strategyName })` (`~/lib/context/*` is
++ * NOT imported here — this module stays `lib`-layer, callback-injected, per the file-header
++ * dependency-direction rule).
++ *
++ * `filterDelegatedStrategies` only ever sees the REACTIVE `RetryStrategy[]` array
++ * (`assembleStrategiesForEndpoint`'s return value) — the always-on L1 thinking-signature quarantine
++ * (pre-flight sanitize in the codec's `resanitize`/`requestRewrites` chain, not a `RetryStrategy`)
++ * structurally never appears in that array, so it is untouched by delegation with no extra guard
++ * needed (see `tests/anthropic/error-shaping-selfheal.unit.test.ts`'s quarantine-isolation test).
++ */
++export function filterDelegatedStrategies(
++  strategies: ReadonlyArray<RetryStrategy>,
++  delegateConfig: Readonly<Record<string, "proxy" | "delegate">>,
++  onDelegated?: (strategyName: string) => void,
++): ReadonlyArray<RetryStrategy> {
++  return strategies.map((strategy) => {
++    if (delegateConfig[strategy.name] !== "delegate") return strategy
++    return {
++      ...strategy,
++      canHandle(error: ApiError): boolean {
++        const wouldHandle = strategy.canHandle(error)
++        if (wouldHandle) onDelegated?.(strategy.name)
++        return false
++      },
++    }
++  })
++}
+diff --git a/src/lib/codec/anthropic/error-frame-canonical-rewrite.ts b/src/lib/codec/anthropic/error-frame-canonical-rewrite.ts
+new file mode 100644
+index 00000000..224c6b36
+--- /dev/null
++++ b/src/lib/codec/anthropic/error-frame-canonical-rewrite.ts
+@@ -0,0 +1,51 @@
++/**
++ * v4 pipeline — the `errorFrameCanonical` Anthropic response rewrite (S5, order 50 = runs FIRST).
++ *
++ * A raw upstream `event:error` frame (H2 — a terminal upstream decision delivered mid-stream) is,
++ * absent this rewrite, forwarded VERBATIM to the client (`stream-accumulator.ts` only RECORDS it into
++ * `acc.streamError` for the handler's H2 bookkeeping; nothing reshapes it). Non-Anthropic upstreams
++ * emit non-canonical error bodies, so the client SDK cannot reliably branch on `error.type`. This
++ * rewrite reshapes such a frame — BEFORE forwarding — into a canonical Anthropic `event:error`
++ * envelope (G-3: the single canonical constructor is `error-shaping.ts`'s `buildCanonicalErrorFrameFromRaw`).
++ *
++ * Two-axis endpoint gate (HIGH-2): `ANTHROPIC_RESPONSE_REWRITES` is folded into the union
++ * `ALL_RESPONSE_REWRITES`, which the gemini / chat-completions / responses drivers ALSO receive. Only
++ * the `targetEndpoint === /v1/messages` legs process the Anthropic upstream wire, so this rewrite gates
++ * on `targetEndpoint` (NOT `clientFormat`) exactly like the five sibling adapters' `ANTHROPIC(env)`
++ * predicate (`response-rewrite-adapters.ts`). The inline predicate mirrors that private helper rather
++ * than exporting a shared const — same "hand-built small predicate, no cross-file export" convention the
++ * sibling files (`thinking-quarantine`, `reverse-anthropic-rewrite`, `request-rewrite-adapter`) already
++ * follow.
++ *
++ * Ordering (order 50, ahead of `recoverRefusal`'s 400): `recoverRefusal` in `error` mode SYNTHESIZES a
++ * canonical `event:error` frame. `passThrough` (driver.ts) runs strictly forward, so a rewrite at order
++ * 50 only ever sees UPSTREAM-ORIGINAL frames — the refusal-synthesized canonical frame flows to LATER
++ * rewrites only and can never reach this one for a wrongful second reshape.
++ */
++
++import type { RequestEnvelope } from "~/lib/pipeline/envelope"
++import type {
++  //
++  FrameAction,
++  ResponseRewrite,
++  RewriteState,
++} from "~/lib/pipeline/rewrite-registry"
++import type { UpstreamFrame } from "~/lib/pipeline/types"
++
++import { buildCanonicalErrorFrameFromRaw } from "~/lib/anthropic/error-shaping"
++import { ENDPOINT } from "~/lib/models/endpoint"
++import { RESPONSE_REWRITE_ORDER } from "~/lib/pipeline/rewrite-registry"
++import { state } from "~/lib/state"
++
++export const errorFrameCanonicalRewrite: ResponseRewrite = {
++  name: "errorFrameCanonical",
++  order: RESPONSE_REWRITE_ORDER.errorFrameCanonical,
++  // HIGH-2 two-axis gate: MESSAGES leg only (never the gemini/cc/responses legs sharing
++  // ALL_RESPONSE_REWRITES) AND the master error-shaping toggle on (off = byte-identical passthrough,
++  // the golden lock — the frame is forwarded verbatim as today).
++  appliesTo: (env: RequestEnvelope): boolean => env.targetEndpoint === ENDPOINT.MESSAGES && state.errorShapingEnabled,
++  transform: (frame: UpstreamFrame, _state: RewriteState): FrameAction => {
++    if (frame.event !== "error") return { kind: "emit", frames: [frame] }
++    return { kind: "emit", frames: [buildCanonicalErrorFrameFromRaw(frame)] }
++  },
++}
+diff --git a/src/lib/codec/anthropic/response-rewrite-adapters.ts b/src/lib/codec/anthropic/response-rewrite-adapters.ts
+index e1c27e86..258bed3c 100644
+--- a/src/lib/codec/anthropic/response-rewrite-adapters.ts
++++ b/src/lib/codec/anthropic/response-rewrite-adapters.ts
+@@ -75,16 +75,18 @@ import {
+   logServerToolBlocks,
+   restoreToolNamesInResponse,
+ } from "~/lib/anthropic/server-tool-filter"
+ import { applyThinkingSignatureCompat } from "~/lib/anthropic/thinking-signature-compat"
+ import { ENDPOINT } from "~/lib/models/endpoint"
+ import { RESPONSE_REWRITE_ORDER } from "~/lib/pipeline/rewrite-registry"
+ import { state } from "~/lib/state"
+ 
++import { errorFrameCanonicalRewrite } from "./error-frame-canonical-rewrite"
++
+ /** Best-effort parse of an SSE data payload (undefined on failure / keepalive). */
+ function parseFrame(data: string | undefined): StreamEvent | undefined {
+   if (!data) return undefined
+   try {
+     return JSON.parse(data) as StreamEvent
+   } catch {
+     return undefined
+   }
+@@ -341,11 +343,20 @@ const refusalRewrite: ResponseRewrite = {
+     const vars = { model: resp.model, request_id: env.ctx.id, thinking_tokens: resp.usage.output_tokens }
+     return recoverRefusalInResponse(resp, renderRefusalTemplate(state.refusalEndTurnText, vars))
+   },
+ }
+ 
+ /**
+  * The Anthropic streaming response rewrites, in registry form. Ordered by `order`
+  * at assembly (the array order here is cosmetic). Passed to the driver via
+- * `deps.responseRewrites` by the Anthropic handler.
++ * `deps.responseRewrites` by the Anthropic handler. `errorFrameCanonical` (order 50)
++ * runs first — it reshapes a raw upstream `event:error` frame into a canonical envelope
++ * before any other rewrite (and before the refusal rewrite could synthesize its own).
+  */
+-export const ANTHROPIC_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = [recoverRewrite, thinkingRewrite, decodeRewrite, filterRewrite, refusalRewrite]
++export const ANTHROPIC_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = [
++  errorFrameCanonicalRewrite,
++  recoverRewrite,
++  thinkingRewrite,
++  decodeRewrite,
++  filterRewrite,
++  refusalRewrite,
++]
+diff --git a/src/lib/config/config.ts b/src/lib/config/config.ts
+index 3c1b4c87..a37ac033 100644
+--- a/src/lib/config/config.ts
++++ b/src/lib/config/config.ts
+@@ -711,16 +711,20 @@ export async function applyConfigToState(): Promise<Config> {
+     if (a.tool_decode_input_fields !== undefined) setAnthropicBehavior({ decodeToolInputFields: a.tool_decode_input_fields })
+     if (a.tool_decode_all_input_fields !== undefined) setAnthropicBehavior({ decodeAllToolInputFields: a.tool_decode_all_input_fields })
+     if (a.tool_recover_call_text !== undefined) setAnthropicBehavior({ recoverToolCallText: a.tool_recover_call_text })
+     if (a.tool_repair_malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: a.tool_repair_malformed_input })
+     if (a.refusal_sse_rewrite !== undefined) setAnthropicBehavior({ refusalSseRewrite: a.refusal_sse_rewrite })
+     if (a.refusal_end_turn_text !== undefined) setAnthropicBehavior({ refusalEndTurnText: a.refusal_end_turn_text })
+     if (a.refusal_error_message !== undefined) setAnthropicBehavior({ refusalErrorMessage: a.refusal_error_message })
+     if (a.refusal_error_type !== undefined) setAnthropicBehavior({ refusalErrorType: a.refusal_error_type })
++    if (a.error_shaping_enabled !== undefined) setAnthropicBehavior({ errorShapingEnabled: a.error_shaping_enabled })
++    if (a.error_ask_user_question !== undefined) setAnthropicBehavior({ errorAskUserQuestion: a.error_ask_user_question })
++    if (a.error_auq_template !== undefined) setAnthropicBehavior({ errorAuqTemplate: a.error_auq_template })
++    if (a.error_selfheal_delegate !== undefined) setAnthropicBehavior({ errorSelfhealDelegate: a.error_selfheal_delegate })
+     if (a.tool_backfill_question !== undefined) setAnthropicBehavior({ backfillQuestionFromHeader: a.tool_backfill_question })
+     if (a.system_rewrite_reminders !== undefined) {
+       // Collection: entire replacement — deleted rules disappear
+       if (typeof a.system_rewrite_reminders === "boolean") {
+         setAnthropicBehavior({ rewriteSystemReminders: a.system_rewrite_reminders })
+       } else {
+         setAnthropicBehavior({ rewriteSystemReminders: compileRewriteRules(a.system_rewrite_reminders) })
+       }
+diff --git a/src/lib/config/schema.ts b/src/lib/config/schema.ts
+index 6e6c7378..2aa98f8d 100644
+--- a/src/lib/config/schema.ts
++++ b/src/lib/config/schema.ts
+@@ -503,16 +503,24 @@ export const AnthropicConfigSchema = z
+     tool_recover_call_text: nullableBoolean(),
+     refusal_sse_rewrite: nullableEnum(["refusal", "end_turn", "error"] as const),
+     /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。支持占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留。空串=不追加 text 块（仅改 end_turn）。未配=内置默认（逐字节等价旧固定文案）。 */
+     refusal_end_turn_text: nullableString(),
+     /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。未配=内置默认。 */
+     refusal_error_message: nullableString(),
+     /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。未配=内置默认。 */
+     refusal_error_type: nullableString(),
++    /** 上游错误 → 客户端可行动形态整形总开关。关闭时三个终点（forward.ts / 终点①② / S5 canonical rewrite）逐字节回退现状。默认 true。 */
++    error_shaping_enabled: nullableBoolean(),
++    /** B 类：content_filtered / 402 / 403(token-refresh 耗尽) 是否合成 AskUserQuestion 轮次而非拍平成错误帧。仅交互式部署应开启（无服务端探测信号，见 plan D-0）。默认 false。 */
++    error_ask_user_question: nullableBoolean(),
++    /** AUQ 问题文案模板，占位符 {model}/{request_id}/{error_type}/{status}，复用 renderRefusalTemplate。空=内置默认。 */
++    error_auq_template: nullableString(),
++    /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」。键=策略 .name（如 "adaptive-thinking-rejection-retry"），值 "proxy"|"delegate"。未列=proxy（默认更可控）。 */
++    error_selfheal_delegate: z.record(z.string(), z.enum(["proxy", "delegate"])).optional(),
+     /**
+      * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item with a header but no question).
+      * Only items missing the `question` key are touched. Default true.
+      */
+     tool_backfill_question: nullableBoolean(),
+     /**
+      * Repair malformed `tool_use` input that upstream emitted as invalid JSON on
+      * the Anthropic response wire. A **comma-separated set of repair items** — a
+diff --git a/src/lib/history/types.ts b/src/lib/history/types.ts
+index 1cf59aa9..bf5c166a 100644
+--- a/src/lib/history/types.ts
++++ b/src/lib/history/types.ts
+@@ -175,18 +175,33 @@ export interface SseEventRecord {
+    *     real GHC upstream response — richest-data-flow requires this be distinguishable from genuine
+    *     upstream traffic.
+    *   - "hook-rewrite" — the FORWARDED track's frame was produced by a `rewriteUpstreamFrame` hook
+    *     (differs from the pre-hook frame the upstream track kept); the upstream track itself never
+    *     carries this variant (it always records the pre-hook original — spec §3.2/§3.4 H2).
+    *   - "refusal-recovery" — the FORWARDED track's frame was injected or rewritten by refusal recovery
+    *     (the end_turn synthetic text block + rewritten end_turn delta, or the error-mode `event: error`
+    *     frame). The upstream track never carries it (it keeps the genuine upstream `refusal`).
++   *   - "error-shaping-canonical" — the FORWARDED track's post-commit terminal `event: error` frame was
++   *     produced by error-shaping's `buildCanonicalErrorFrame` (G-3), REPLACING the upstream terminator;
++   *     the upstream track keeps the real upstream error. (Phase 3 wiring.)
++   *   - "error-shaping-auq" — the FORWARDED track's frames are the pre-commit AskUserQuestion synthesis
++   *     (a whole fabricated success turn injected in lieu of the upstream error); the upstream track
++   *     keeps the real error. (Phase 4 wiring.)
+    */
+-  synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-mock" | "hook-rewrite" | "hook-replay" | "refusal-recovery"
++  synthetic?:
++    | "keepalive"
++    | "anchor"
++    | "synthetic-message-start"
++    | "hook-mock"
++    | "hook-rewrite"
++    | "hook-replay"
++    | "refusal-recovery"
++    | "error-shaping-canonical"
++    | "error-shaping-auq"
+ }
+ 
+ /**
+  * The response as actually forwarded to the client (proxy→client), AFTER
+  * server-tool filtering, tool-name restoration, and tool-input decoding. The
+  * upstream-original response lives in `HistoryEntry.response` / `sseEvents`;
+  * this is the client-visible variant. Recording both gives the "what upstream
+  * sent vs what the client received" diff that diagnoses forwarding bugs.
+diff --git a/src/lib/observability/events.ts b/src/lib/observability/events.ts
+index 3c7f838b..db2ad7f0 100644
+--- a/src/lib/observability/events.ts
++++ b/src/lib/observability/events.ts
+@@ -146,16 +146,22 @@ export type FeatureKind =
+   /** request used a non-default transport — `detail: { kind: TransportKind }` */
+   | "transport"
+   /** streaming recoverer rebuilt a tool_use from downgraded upstream text */
+   | "tool-call-recovered"
+   /** recovered a thinking-only upstream refusal by synthesizing a text completion */
+   | "refusal-recovered"
+   /** error mode: surfaced a thinking-only upstream refusal as an `event: error` frame + ctx.fail */
+   | "refusal-errored"
++  /** error-shaping 决策命中 — detail: { decision: "retry-signal"|"ask-user-question"|"canonical-error"|"defer-to-block-level", errorType: ApiErrorType, commitPhase: "pre-commit"|"post-commit" } */
++  | "error-shaping-decided"
++  /** error-shaping B类 AskUserQuestion 合成命中 — detail: { errorType: ApiErrorType } */
++  | "error-shaping-auq-synthesized"
++  /** error-shaping D类自愈委派命中（策略被强制 canHandle=false）— detail: { strategyName: string } */
++  | "error-shaping-selfheal-delegated"
+   /** a tool_use input field selected for decode couldn't be decoded — `detail: { tool, field?, reason }` */
+   | "tool-input-decode-failed"
+   /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */
+   | "protect-streaming-retry"
+   /** Streaming keepalive: proxy opened a 200 SSE stream on request receipt and started the connection-
+    *  level heartbeat immediately, decoupled from the upstream. `detail: {}`. */
+   | "stream-immediate-keepalive"
+   /** Upstream resolved after the immediate keepalive commit — `detail: { totalStalledMs: number }`. */
+diff --git a/src/lib/pipeline/client-sink.ts b/src/lib/pipeline/client-sink.ts
+index 13757ab8..4e1ae046 100644
+--- a/src/lib/pipeline/client-sink.ts
++++ b/src/lib/pipeline/client-sink.ts
+@@ -161,17 +161,20 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
+       stream.writeSSE({
+         data: frame.data ?? "",
+         ...(frame.event !== undefined && { event: frame.event }),
+         ...(frame.id !== undefined && { id: String(frame.id) }),
+         ...(frame.retry !== undefined && { retry: frame.retry }),
+       }),
+     )
+ 
+-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery"): void => {
++  const sampleForwarded = (
++    frame: ClientFrame,
++    synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
++  ): void => {
+     onForwarded?.({
+       offsetMs: Date.now() - streamStartMs,
+       type: (forwardedType ?? frameType)(frame),
+       raw: frame.data ?? "",
+       ...(synthetic ? { synthetic } : {}),
+     })
+   }
+ 
+@@ -485,17 +488,20 @@ function startFixedForwardIdleHeartbeat(
+ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
+   const { onForwarded, streamStartMs = Date.now(), heartbeat } = opts
+   const enqueue = makeSerializer()
+ 
+   // Sample the forwarded track synchronously at call time (before the enqueued send). WS frames carry
+   // only `data` (no SSE event/id/retry line), matching legacy `ws.send`. `synthetic` marks a proxy-
+   // injected keepalive OR a hook-rewritten frame so history/UI/logs never mistake either for real
+   // unaltered upstream content.
+-  const sampleForwarded = (frame: ClientFrame, synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery"): void => {
++  const sampleForwarded = (
++    frame: ClientFrame,
++    synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
++  ): void => {
+     onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) })
+   }
+   const sendRaw = (frame: ClientFrame): Promise<void> =>
+     enqueue(() => {
+       ws.send(frame.data ?? "")
+     })
+ 
+   // Forward-idle heartbeat — armed only when configured. Built BEFORE `write` so `write` can push the
+diff --git a/src/lib/pipeline/frame-origin.ts b/src/lib/pipeline/frame-origin.ts
+index 36d47077..4e4bd847 100644
+--- a/src/lib/pipeline/frame-origin.ts
++++ b/src/lib/pipeline/frame-origin.ts
+@@ -21,17 +21,17 @@ import type { ClientFrame } from "~/lib/pipeline/types"
+  * wherever a later stage builds a brand-new object without spreading the input. A hook that mutates
+  * a frame in place and returns the SAME reference is unmarked by design (no cheap way to observe
+  * "it changed") — synthesizers wanting provenance return a fresh (or Object.assign-tagged) object.
+  */
+ const FRAME_SYNTHETIC_ORIGIN = Symbol("frameSyntheticOrigin")
+ 
+ /** Provenance kinds a forwarded-track frame can carry (record-layer metadata only; never affects
+  *  the wire bytes sent to the client). */
+-export type SyntheticOriginKind = "hook-rewrite" | "refusal-recovery"
++export type SyntheticOriginKind = "hook-rewrite" | "refusal-recovery" | "error-shaping-auq" | "error-shaping-canonical"
+ 
+ /** Tag a frame with its synthetic origin (mutates + returns the SAME object — see module doc). */
+ export function tagFrameSynthetic<T extends ClientFrame>(frame: T, kind: SyntheticOriginKind): T {
+   return Object.assign(frame, { [FRAME_SYNTHETIC_ORIGIN]: kind })
+ }
+ 
+ /** Read a frame's synthetic-origin kind (undefined = a genuine real frame, not synthetic). */
+ export function readSyntheticKind(frame: ClientFrame): SyntheticOriginKind | undefined {
+diff --git a/src/lib/pipeline/rewrite-registry.ts b/src/lib/pipeline/rewrite-registry.ts
+index f186b2aa..8f87a45f 100644
+--- a/src/lib/pipeline/rewrite-registry.ts
++++ b/src/lib/pipeline/rewrite-registry.ts
+@@ -163,18 +163,26 @@ export const BUILTIN_REQUEST_REWRITES: ReadonlyArray<RequestRewrite> = []
+  *     block at `maxIndex + 1`, so observing the final densified index space guarantees
+  *     a non-colliding index). It is independent of the tool/thinking rewrites: a
+  *     thinking-only refusal carries no tools/downgraded-text, so recover/decode/filter
+  *     are no-ops on it, and thinking-signature-compat only reshapes the thinking start
+  *     frame (which refusal-recovery passes through untouched).
+  *
+  * The buffer/flush + multi-buffer cascade + index-densify invariants these orders
+  * depend on are locked by tests/pipeline/response-rewrite-contract.unit.test.ts.
++ *
++ *   - `errorFrameCanonical` (50) runs FIRST (smallest order): it intercepts a raw upstream
++ *     `event:error` frame and reshapes it into a canonical Anthropic envelope. It MUST precede
++ *     `recoverRefusal` (400), which itself SYNTHESIZES an `event:error` frame in `error` mode — a
++ *     synthesized canonical frame must never be re-shaped. `passThrough` runs strictly forward
++ *     (driver.ts), so a rewrite at order 50 only ever sees UPSTREAM-ORIGINAL error frames; the
++ *     refusal-synthesized one flows to LATER rewrites only and can never reach this one.
+  */
+ export const RESPONSE_REWRITE_ORDER = {
++  errorFrameCanonical: 50,
+   recoverToolCall: 100,
+   thinkingSignatureCompat: 150,
+   toolInputDecode: 200,
+   serverToolFilter: 300,
+   recoverRefusal: 400,
+ } as const
+ 
+ /**
+diff --git a/src/lib/state.ts b/src/lib/state.ts
+index 0d7eade1..cc3e48f8 100644
+--- a/src/lib/state.ts
++++ b/src/lib/state.ts
+@@ -179,16 +179,25 @@ export interface State {
+ 
+   /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留；空串=不追加 text 块（仅改 end_turn）。默认见 `DEFAULT_REFUSAL_END_TURN_TEXT`。 */
+   readonly refusalEndTurnText: string
+   /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。默认见 `DEFAULT_REFUSAL_ERROR_MESSAGE`。 */
+   readonly refusalErrorMessage: string
+   /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。默认 `api_error`。 */
+   readonly refusalErrorType: string
+ 
++  /** 上游错误 → 客户端可行动形态整形总开关（`anthropic.error_shaping_enabled`）。关闭时逐字节回退现状。默认 true。 */
++  readonly errorShapingEnabled: boolean
++  /** B 类：content_filtered / 402 / 403(token-refresh 耗尽) 是否合成 AskUserQuestion 轮次而非拍平成错误帧（`anthropic.error_ask_user_question`）。仅交互式部署应开启。默认 false。 */
++  readonly errorAskUserQuestion: boolean
++  /** AUQ 问题文案模板（`anthropic.error_auq_template`），占位符 `{model}`/`{request_id}`/`{error_type}`/`{status}`。空串=内置默认。默认 `""`。 */
++  readonly errorAuqTemplate: string
++  /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」（`anthropic.error_selfheal_delegate`）。键=策略 `.name`，值 `"proxy"|"delegate"`。未列=proxy。默认 `{}`。 */
++  readonly errorSelfhealDelegate: Readonly<Record<string, "proxy" | "delegate">>
++
+   /**
+    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
+    * normalized model-name "family" prefixes; a model has the capability when its normalized id
+    * equals an entry or starts with `entry + "-"` (see `features.ts:matchModelCapability`). Bundled
+    * defaults mirror GHC's capability checks; editing config adds/removes models without code changes.
+    */
+   readonly contextEditingModels: ReadonlyArray<string>
+   readonly interleavedThinkingModels: ReadonlyArray<string>
+@@ -953,16 +962,17 @@ function cloneState(source: MutableState): MutableState {
+   return {
+     ...source,
+     adaptiveRateLimitConfig: source.adaptiveRateLimitConfig ? { ...source.adaptiveRateLimitConfig } : undefined,
+     copilotTokenInfo: source.copilotTokenInfo ? { ...source.copilotTokenInfo } : undefined,
+     modelIds: new Set(source.modelIds),
+     modelIndex: new Map(source.modelIndex),
+     modelOverrides: { ...source.modelOverrides },
+     toolSearchOverrides: { ...source.toolSearchOverrides },
++    errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
+     effortsOverrides: { ...source.effortsOverrides },
+     streamIdleTimeoutOverrides: { ...source.streamIdleTimeoutOverrides },
+     responseHeaderTimeoutOverrides: { ...source.responseHeaderTimeoutOverrides },
+     negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
+     bufferedRetryShared: { ...source.bufferedRetryShared },
+     bufferedRetryOverrides: cloneBufferedRetryOverrides(source.bufferedRetryOverrides),
+     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
+     stripCacheControlSubfields: cloneStripBetaHeaders(source.stripCacheControlSubfields),
+@@ -1001,16 +1011,19 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
+     cloned.modelIndex = patch.modelIndex ? new Map(patch.modelIndex) : undefined
+   }
+   if ("modelOverrides" in patch) {
+     cloned.modelOverrides = patch.modelOverrides ? { ...patch.modelOverrides } : undefined
+   }
+   if ("toolSearchOverrides" in patch) {
+     cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
+   }
++  if ("errorSelfhealDelegate" in patch) {
++    cloned.errorSelfhealDelegate = patch.errorSelfhealDelegate ? { ...patch.errorSelfhealDelegate } : undefined
++  }
+   if ("models" in patch) {
+     cloned.models = cloneModels(patch.models)
+   }
+   if ("rewriteSystemReminders" in patch) {
+     cloned.rewriteSystemReminders = patch.rewriteSystemReminders === undefined ? undefined : cloneRewriteRules(patch.rewriteSystemReminders)
+   }
+   if ("systemPromptOverrides" in patch) {
+     cloned.systemPromptOverrides = patch.systemPromptOverrides ? [...patch.systemPromptOverrides] : undefined
+@@ -1223,16 +1236,20 @@ export function setAnthropicBehavior(
+       | "systemPromptAppend"
+       | "sanitizeToolNames"
+       | "recoverToolCallText"
+       | "toolRepairMalformedInput"
+       | "refusalSseRewrite"
+       | "refusalEndTurnText"
+       | "refusalErrorMessage"
+       | "refusalErrorType"
++      | "errorShapingEnabled"
++      | "errorAskUserQuestion"
++      | "errorAuqTemplate"
++      | "errorSelfhealDelegate"
+       | "contextEditingModels"
+       | "toolSearchOverrides"
+       | "memoryToolEnabled"
+       | "memoryModels"
+       | "interleavedThinkingModels"
+       | "adaptiveThinkingModels"
+       | "warmupPolicy"
+       | "effortsOverrides"
+@@ -1535,16 +1552,20 @@ export const CONFIG_MANAGED_DEFAULTS = {
+   maxReactiveRetries: 5,
+   sanitizeToolNames: false,
+   recoverToolCallText: false,
+   toolRepairMalformedInput: [] as ReadonlyArray<RepairItem>,
+   refusalSseRewrite: "error" as "refusal" | "end_turn" | "error",
+   refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
+   refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
+   refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,
++  errorShapingEnabled: true,
++  errorAskUserQuestion: false,
++  errorAuqTemplate: "",
++  errorSelfhealDelegate: {} as Readonly<Record<string, "proxy" | "delegate">>,
+   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
+   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
+   // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
+   // only holds per-model force-on/off overrides. Empty by default.
+   toolSearchOverrides: {} as Record<string, boolean>,
+   // Memory tool: default OFF (CAPI acceptance of memory_20250818 unverified). memoryModels mirrors GHC
+   // modelSupportsMemory — the BARE `claude-sonnet-4` / `claude-opus-4` entries are load-bearing (they
+   // cover all sonnet-4.x / opus-4.x via the dash-boundary matcher); the specific entries are redundant
+@@ -1657,16 +1678,20 @@ export function resetConfigManagedState(): void {
+     systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
+     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
+     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+     toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
+     refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+     refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+     refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+     refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
++    errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
++    errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
++    errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
++    errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
+     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
+     toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
+     memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+     memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
+     interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
+     adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
+     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
+     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+@@ -1740,16 +1765,20 @@ const mutableState: MutableState = {
+   tokenBasedBilling: false,
+   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
+   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+   toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
+   refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+   refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+   refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+   refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
++  errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
++  errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
++  errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
++  errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
+   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
+   toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
+   memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+   memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
+   interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
+   adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
+   contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
+   contextEditingTrigger: CONFIG_MANAGED_DEFAULTS.contextEditingTrigger,
+diff --git a/src/lib/tui/terminal-ui.ts b/src/lib/tui/terminal-ui.ts
+index 32d7ba40..d7f03a01 100644
+--- a/src/lib/tui/terminal-ui.ts
++++ b/src/lib/tui/terminal-ui.ts
+@@ -1225,16 +1225,19 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
+     case "dropped-params": {
+       return feature
+     }
+     // Recovery / repair outcomes — surfaced as bare-name tags (detail
+     // enrichment deferred to backlog; keeping the pre-exhaustiveness behavior).
+     case "tool-call-recovered":
+     case "refusal-recovered":
+     case "refusal-errored":
++    case "error-shaping-decided":
++    case "error-shaping-auq-synthesized":
++    case "error-shaping-selfheal-delegated":
+     case "tool-input-decode-failed":
+     case "protect-streaming-retry":
+     case "context-edits-applied":
+     case "tool-input-repaired":
+     case "tool-input-unrepairable":
+     case "translated-content-filter": {
+       return feature
+     }
+diff --git a/src/routes/messages/error-shaping-glue.ts b/src/routes/messages/error-shaping-glue.ts
+new file mode 100644
+index 00000000..1c3d6991
+--- /dev/null
++++ b/src/routes/messages/error-shaping-glue.ts
+@@ -0,0 +1,182 @@
++/**
++ * Pre-commit error-shaping glue for the Anthropic `/v1/messages` route (Phase 2,
++ * docs/plan/2026-07-13-upstream-error-client-shaping/phase-2-precommit-retry-signal.md).
++ *
++ * `route.ts`'s two `catch (error)` blocks (`/` and `/count_tokens`) are the ONLY pre-commit entry
++ * point — `handleMessagesV4`/`handleCountTokens` throw before any bytes are committed, so the HTTP
++ * status/headers are still free to shape here. This module is deliberately a `routes/` file (not
++ * `lib/`): it composes `lib/error` (`classifyError`/`forwardError`, format-agnostic, shared by 6
++ * non-Anthropic routes) with `lib/anthropic/error-shaping` (Phase 1's `decide()`, Anthropic-only) —
++ * a combination that must NOT live inside either `lib/` module (see error-shaping.ts's header: it
++ * must not depend on `routes/`, and `forward.ts` must stay untouched so the other 6 routes are
++ * unaffected, Global Constraint #3). Dependency direction is routes→lib, which is allowed.
++ *
++ * `forwardError` itself is called UNCHANGED in every branch — only the RESPONSE HEADERS are
++ * augmented via Hono's `c.header()` (which must run BEFORE `c.json()` builds the response, same
++ * convention as `handler-v4.ts:applyForwardedAnthropicResponseHeaders`). The response BODY is
++ * always whatever `forwardError` already produces; this Phase does not touch it.
++ *
++ * Scope: only the A-class (`retry-signal`) branch is acted on. `ask-user-question` (B-class) and
++ * `canonical-error` (C-class, and B-class with the AUQ toggle off) fall through to plain
++ * `forwardError` — AUQ body synthesis is Phase 4's job (see `decide()`'s doc comment for the class
++ * table). `defer-to-block-level` is a post-commit-only decision kind that `decide()` never returns
++ * for a pre-commit input, so it is unreachable here (exhaustive `switch` would need a `never` guard;
++ * a `if` chain is enough since the two acted-on/passthrough kinds cover the pre-commit range).
++ */
++import type { Context } from "hono"
++
++import { streamSSE } from "hono/streaming"
++
++import type { RequestContext } from "~/lib/context/request"
++import type { ClientFrame } from "~/lib/pipeline/types"
++
++import {
++  //
++  buildAskUserQuestionFrames,
++  buildAskUserQuestionResponse,
++  buildCanonicalErrorFrame,
++  decide,
++  type ErrorShapingConfig,
++} from "~/lib/anthropic/error-shaping"
++import {
++  //
++  classifyError,
++  forwardError,
++  isAbortError,
++} from "~/lib/error"
++import { state } from "~/lib/state"
++
++/** Snapshot the 4 error-shaping config keys off `state` (Phase 0) into the pure `decide()` input. */
++export function errorShapingConfigFromState(): ErrorShapingConfig {
++  return {
++    enabled: state.errorShapingEnabled,
++    askUserQuestion: state.errorAskUserQuestion,
++    auqTemplate: state.errorAuqTemplate,
++    selfhealDelegate: state.errorSelfhealDelegate,
++  }
++}
++
++/**
++ * Pre-commit Anthropic error entry point for `route.ts`.
++ *
++ * Golden-locked (CF-2): when `error_shaping_enabled` is false, `decide()` is never called at all —
++ * this delegates straight to `forwardError`, byte-identical to the pre-error-shaping behaviour.
++ * `decide()` itself does NOT read `config.enabled` (Phase 1 leaves that gate to the caller), so this
++ * check must happen here, before `decide()` is invoked.
++ *
++ * Aborts are also routed straight to `forwardError` unchanged: `classifyError` maps them to the
++ * `aborted` type, which `decide()` explicitly refuses (throws) as a non-target — aborts are not an
++ * upstream failure to shape, they are the existing client-disconnect / header-timeout path.
++ *
++ * CF-1 (carry-forward from the Phase 1 review): a 401/403 that still has a token-refresh left is
++ * consumed transparently by the `token-refresh` `RetryStrategy` several layers below this — the
++ * pipeline retries and either succeeds (no error ever reaches here) or fails with a DIFFERENT error.
++ * Only an EXHAUSTED 401/403 (`token-refresh`'s `canHandle` returns false because it already spent its
++ * one refresh) bubbles out of the pipeline as an `HTTPError` and reaches this function as
++ * `auth_expired`. This function does not special-case that — it is a structural property of the
++ * pipeline's strategy ordering, verified from the caller's (black-box) side by the `.it` integration
++ * test (`error-shaping-precommit.it.test.ts`), not re-implemented here.
++ */
++export function shapePrecommitError(c: Context, error: unknown): Response {
++  if (!state.errorShapingEnabled) return forwardError(c, error)
++  if (error instanceof Error && isAbortError(error)) return forwardError(c, error)
++
++  const apiError = classifyError(error)
++  if (apiError.type === "aborted") return forwardError(c, error)
++
++  const decision = decide({
++    error: apiError,
++    commitPhase: "pre-commit",
++    clientVisibleStopEmitted: false,
++    config: errorShapingConfigFromState(),
++  })
++
++  if (decision.kind === "retry-signal") {
++    if (decision.retryAfterSec !== undefined) c.header("Retry-After", String(decision.retryAfterSec))
++    c.header("x-should-retry", "true")
++  }
++
++  if (decision.kind === "ask-user-question") {
++    // The pre-commit ctx (built by `handler-v4.ts`'s `runMessagesDriver` before the throw that
++    // landed us here) is ALREADY exposed via `c.set("requestContext", ctx)` — reading it here
++    // avoids adding a redundant `c.set("clientRequestStream", ...)` side-channel (a planned
++    // deviation from this Phase's plan doc, recorded in task-4-report.md): `originalRequest`
++    // already carries both `stream` and `model` (the exact two fields the plan's proposed new
++    // side-channel would have duplicated), and `ctx.id` is the request id. Falls back to safe
++    // defaults for the (currently unreachable in practice) `/count_tokens` leg, whose own
++    // internal try/catch never lets an error reach this function — see `count-tokens.ts`.
++    const ctx = c.get("requestContext") as RequestContext | undefined
++    const streamRequested = ctx?.originalRequest?.stream ?? false
++    const auqCtx = { model: ctx?.originalRequest?.model ?? "unknown", reqId: ctx?.id ?? "unknown" }
++
++    if (streamRequested) {
++      return streamSSE(c, async (stream) => {
++        for (const frame of buildAskUserQuestionFrames(decision, auqCtx)) {
++          await stream.writeSSE({ data: frame.data ?? "", ...(frame.event !== undefined && { event: frame.event }) })
++        }
++      })
++    }
++    return c.json(buildAskUserQuestionResponse(decision, auqCtx))
++  }
++
++  // "canonical-error": current forwardError behaviour is already correct, no header changes.
++  return forwardError(c, error)
++}
++
++/**
++ * POST-COMMIT terminal-frame shaping for the handler's `writeSynthetic` termini (Phase 3, G-3
++ * canonical ownership). Once the proxy has committed a 200 SSE stream the HTTP status is locked, so an
++ * upstream failure can only be delivered as an Anthropic `event:error` FRAME. The two `ApiError`-bearing
++ * termini (① HTTPError, ①' unknown-non-HTTP e.g. `network_error`/socket reset) classify their error and
++ * delegate the frame construction here, replacing hand-built JSON with the single `error-shaping`
++ * builder.
++ *
++ * Golden lock (CF-2): when `error_shaping_enabled` is false, `decide()` is NEVER called — this returns
++ * the caller's `legacyFrame` verbatim (byte-identical to the pre-error-shaping behaviour). When enabled,
++ * `decide({commitPhase:"post-commit"})` always resolves to a `canonical-error` kind (post-commit has no
++ * retry-signal / AUQ option in the Phase 1 truth table — the status is locked), so
++ * `buildCanonicalErrorFrame` produces the frame. The `network_error` post-commit case (terminus ①',
++ * which `classifyError` only ever produces from the non-HTTPError branch) is thus routed through
++ * `decide()` for the first time — the truth table's `network_error → canonical-error` promise is finally
++ * exercised end-to-end.
++ *
++ * CF-3: the canonical `event:error` frame carries `error.type` = the Anthropic wire literal (e.g. 402 →
++ * `rate_limit_error`); with the SSE status locked at 200 (undefined at the client), CC's post-commit
++ * retry triggers (status 529 / a `"type":"overloaded_error"` message substring — exp/cc-error-retry-surface/FINDINGS.md)
++ * are not hit, so this frame never provokes an unintended client retry.
++ */
++export function shapePostcommitErrorFrame(error: unknown, legacyFrame: ClientFrame): ClientFrame {
++  if (!state.errorShapingEnabled) return legacyFrame
++  const decision = decide({
++    error: classifyError(error),
++    commitPhase: "post-commit",
++    clientVisibleStopEmitted: false,
++    config: errorShapingConfigFromState(),
++  })
++  // Post-commit `decide()` is total onto `canonical-error` (no retry-signal / AUQ / defer post-commit).
++  // The defensive fallback keeps the legacy frame if a future truth-table change ever yields otherwise.
++  if (decision.kind !== "canonical-error") return legacyFrame
++  return buildCanonicalErrorFrame(decision)
++}
++
++/**
++ * POST-COMMIT terminal-frame shaping for the STREAM-lifecycle termini that have NO classifiable
++ * `ApiError` object (Phase 3 FIX-2, G-3 canonical ownership completion). These are the pumps' H3
++ * (`stream-error` — the upstream iterable/sink threw; the caller pre-classifies via
++ * `anthropicStreamErrorType`) and truncation (a clean drain WITHOUT the terminator) branches, on BOTH the
++ * direct Anthropic pump AND the reverse translate leg (whose client IS a `/v1/messages` client, so the
++ * "Anthropic path only" scope covers it — the excluded formats are OpenAI/Gemini clients on their OWN
++ * endpoints, not this leg).
++ *
++ * Unlike {@link shapePostcommitErrorFrame} there is no `ApiError` to run through `decide()`: the caller
++ * already resolved the wire `errorType` + `message`, so this just routes them through the single
++ * `buildCanonicalErrorFrame` constructor (G-3) instead of hand-built JSON. The output is BYTE-IDENTICAL to
++ * the former hand-built `{type:"error", error:{type, message}}` literal (same field order, no retry_after),
++ * so the enabled/disabled split is a formality here — but the CF-2 golden lock is kept for symmetry with
++ * ①/①' (and to make "off = the exact legacy bytes" a single, uniform contract across all six termini): the
++ * caller passes the legacy frame and gets it back verbatim when `error_shaping_enabled` is false.
++ */
++export function shapeRawStreamErrorFrame(errorType: string, message: string, legacyFrame: ClientFrame): ClientFrame {
++  if (!state.errorShapingEnabled) return legacyFrame
++  return buildCanonicalErrorFrame({ kind: "canonical-error", errorType, message })
++}
+diff --git a/src/routes/messages/handler-v4.ts b/src/routes/messages/handler-v4.ts
+index 0a39888b..448a67a0 100644
+--- a/src/routes/messages/handler-v4.ts
++++ b/src/routes/messages/handler-v4.ts
+@@ -58,16 +58,17 @@ import type {
+ import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+ 
+ import { bridgeClientAbort } from "~/lib/abort-bridge"
+ import {
+   //
+   extractAppliedEdits,
+   summarizeAppliedEdits,
+ } from "~/lib/anthropic/applied-context-edits"
++import { filterDelegatedStrategies } from "~/lib/anthropic/error-shaping"
+ import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
+ import {
+   //
+   anchorDeltaFrame,
+   anchorStartFrame,
+   anchorStopFrame,
+   closeAnchorIfOpen,
+   makeSyntheticAnchorInjector,
+@@ -144,16 +145,21 @@ import {
+ import {
+   //
+   resolveBufferedCaps,
+   state,
+ } from "~/lib/state"
+ import { processAnthropicSystem } from "~/lib/system-prompt"
+ import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+ 
++import {
++  //
++  shapePostcommitErrorFrame,
++  shapeRawStreamErrorFrame,
++} from "./error-shaping-glue"
+ import {
+   //
+   anthropicErrorFrame,
+   anthropicHttpErrorFrame,
+   anthropicRejectErrorFrame,
+   classifyPostCommitAbort,
+ } from "./post-commit-error"
+ import { retryMetaFeature } from "./retry-meta-feature"
+@@ -264,25 +270,35 @@ export function buildMessagesDriverStrategies(
+   deps: { codec: ReturnType<typeof createAnthropicCodec>; betaProbe: ReturnType<typeof createBetaProbe> },
+ ): ReadonlyArray<RetryStrategy> {
+   const { codec, betaProbe } = deps
+   if (env.targetEndpoint === ENDPOINT.MESSAGES) {
+     // parse resolves the factory AFTER parse populated resanitize, so it is present here; the guard is
+     // defensive (an unreachable parse failure would have thrown before the factory runs).
+     const resanitize = codec.getResanitize()
+     if (!resanitize) throw new Error("[Anthropic:v4] resanitize chain unavailable — codec.parse did not run")
+-    return assembleStrategiesForEndpoint(env.targetEndpoint, {
++    const strategies = assembleStrategiesForEndpoint(env.targetEndpoint, {
+       anthropic: {
+         originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
+         resanitize,
+         model: env.model as Model | undefined,
+         maxRetries: state.maxReactiveRetries,
+         betaProbe,
+       },
+     })
++    // D-class self-heal delegation (Phase 5, docs/plan/2026-07-13-upstream-error-client-shaping/
++    // phase-5-selfheal-delegation.md): ONLY the direct /v1/messages leg — a "delegate"-flagged
++    // reactive strategy never fires, letting its 400 pass through untouched to Claude Code's own
++    // self-heal logic. Gated on error_shaping_enabled (disabled = today's full, undelegated stack).
++    // The always-on L1 thinking-signature quarantine pre-flight sanitize is NOT a RetryStrategy —
++    // it runs in the S3 request-rewrite chain, never in this array, so it is structurally untouched.
++    if (!state.errorShapingEnabled) return strategies
++    return filterDelegatedStrategies(strategies, state.errorSelfhealDelegate, (strategyName) =>
++      env.ctx.recordFeature("error-shaping-selfheal-delegated", { strategyName }),
++    )
+   }
+ 
+   // FORWARD translate leg (anthropic→cc/responses): the CC strategy stack off the hub-translated CC body.
+   return assembleStrategiesForEndpoint(env.targetEndpoint, {
+     cc: {
+       originalPayload: env.body as ChatCompletionsPayload,
+       model: env.model as Model | undefined,
+       maxRetries: state.maxReactiveRetries,
+@@ -559,24 +575,31 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
+               anthropicErrorFrame("api_error", "Request cancelled by the stale-request reaper")
+             : anthropicErrorFrame("api_error", "Upstream timed out before sending response headers"),
+           )
+           return
+         }
+         if (error instanceof HTTPError) {
+           // (c) upstream 4xx/5xx — the dominant POST-COMMIT divergence. The rich frame preserves
+           // error.type (+ retry_after) so the client SDK still branches correctly (Q2 §4.2.5).
++          // G-3: delegated to the error-shaping builder (canonical ownership); disabled = the legacy
++          // anthropicHttpErrorFrame verbatim (CF-2 golden lock).
+           ctx?.fail(resolvedName, error)
+           await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
+-          await sink.writeSynthetic?.(anthropicHttpErrorFrame(error))
++          await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error)))
+           return
+         }
+         ctx?.fail(resolvedName, error) // unknown non-HTTP, non-abort
+         await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
+-        await sink.writeSynthetic?.(anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error)))
++        // (①' G-3, MEDIUM-1) classifyError maps this branch's errors (socket reset / HTTP2
++        // REFUSED_STREAM / other non-HTTPError) to network_error / bad_request → decide() → canonical.
++        // This is the ONLY path that produces post-commit network_error, so the Phase 1 truth table's
++        // network_error→canonical-error promise is exercised here. Disabled = the legacy api_error frame
++        // verbatim (CF-2 golden lock).
++        await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error))))
+         return
+       }
+       if (!result.ok) {
+         // (b) decideRoute reject — RESOLVE not throw (C2), the try/catch above can't catch it.
+         const ctx = codec.getContext()
+         ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }) // forwarded pings before settling (richest-data-flow)
+         ctx?.fail(resolvedName, new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason))
+         await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5, M1 — was missing in the first plan)
+@@ -1193,17 +1216,22 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options):
+       const errorType = anthropicStreamErrorType(error)
+       // §10.5 gap (whole-branch review I-1): the live pump can stream-error BEFORE the first real
+       // content_block_start (a delayed-commit stall injected the anchor, then the upstream body threw) —
+       // reconcileLiveFrame never got to close the anchor, so it is still OPEN. Close it off (stop@0) BEFORE
+       // the error frame or the client is left with a dangling block. Idempotent + inert (shared anchorClosed
+       // guard): a no-op when reconcile already closed it, or when no anchor was injected.
+       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+       await sink
+-        .writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
++        .writeSynthetic?.(
++          shapeRawStreamErrorFrame(errorType, errorMessage, {
++            event: "error",
++            data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }),
++          }),
++        )
+         .catch(() => undefined)
+       recordForwarded()
+       // C1: preserve the partial content accumulated before the throw (mirrors the
+       // truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
+       const partial = buildAnthropicResponseData(acc, model)
+       env.ctx.fail(acc.model || model, error, {
+         usage: partial.usage,
+         stop_reason: partial.stop_reason,
+@@ -1218,18 +1246,21 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options):
+     const ctxEdits = summarizeAppliedEdits(acc.appliedContextEdits)
+     if (ctxEdits.count > 0) {
+       summaryParts.push(`ctx_cleared:${ctxEdits.clearedInputTokens}tok×${ctxEdits.count}`)
+       env.ctx.recordFeature("context-edits-applied", { count: ctxEdits.count, clearedInputTokens: ctxEdits.clearedInputTokens, types: ctxEdits.types })
+     }
+     consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
+ 
+     if (acc.streamError) {
+-      // H2 — a terminal upstream `error` SSE event was forwarded as a content frame (clean
+-      // drain, never a thrown error → outcome is `complete`); settle as fail from the acc.
++      // H2 — a terminal upstream `error` SSE event (a clean drain, never a thrown error → outcome is
++      // `complete`). When error-shaping is on, the `errorFrameCanonical` S5 rewrite already RESHAPED the
++      // forwarded frame into a canonical Anthropic envelope before it reached the client (off = forwarded
++      // verbatim); either way the client got the frame. This branch only settles ctx.fail from the
++      // upstream-original `acc.streamError` (acc sees pre-rewrite frames) — it writes NO frame itself.
+       consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
+       // C1: preserve the partial content accumulated before the terminal error frame (mirrors
+       // the truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
+       const partial = buildAnthropicResponseData(acc, model)
+       env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`), {
+         usage: partial.usage,
+         stop_reason: partial.stop_reason,
+         content: partial.content,
+@@ -1299,20 +1330,22 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options):
+       const partial = buildAnthropicResponseData(acc, model)
+       consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
+       // §10.5 gap (I-1): the live pump can truncate (clean EOF, no message_stop) BEFORE the first real
+       // content_block_start — a delayed-commit stall injected the anchor, then the upstream closed silently.
+       // reconcile never closed the anchor, so close it off (stop@0) before the error frame. Idempotent (a
+       // real first block already closed it → no-op) + inert (no anchor injected → byte-equivalent).
+       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+       await sink
+-        .writeSynthetic?.({
+-          event: "error",
+-          data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
+-        })
++        .writeSynthetic?.(
++          shapeRawStreamErrorFrame("api_error", "Upstream stream truncated before completion (no message_stop)", {
++            event: "error",
++            data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
++          }),
++        )
+         .catch(() => undefined)
+       recordForwarded()
+       env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
+         usage: partial.usage,
+         stop_reason: partial.stop_reason,
+         content: partial.content,
+       })
+     } else {
+@@ -1439,24 +1472,29 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
+       const error = outcome.error
+       logUpstreamStreamError(error, {
+         model,
+         streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
+         acc: createAnthropicStreamAccumulator(),
+         sseEvents: [],
+       })
+       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
++      // G-3 (FIX-2): the translate leg's client IS an Anthropic /v1/messages client, so its H3 error
++      // terminator is owned by the same canonical builder (byte-identical to the former hand-built JSON;
++      // CF-2 golden-locked off).
+       await sink
+-        .writeSynthetic?.({
+-          event: "error",
+-          data: JSON.stringify({
+-            type: "error",
+-            error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) },
++        .writeSynthetic?.(
++          shapeRawStreamErrorFrame(anthropicStreamErrorType(error), error instanceof Error ? error.message : String(error), {
++            event: "error",
++            data: JSON.stringify({
++              type: "error",
++              error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) },
++            }),
+           }),
+-        })
++        )
+         .catch(() => undefined)
+       recordForwarded()
+       env.ctx.fail(model, error, outboundResponseData())
+       return
+     }
+ 
+     // outcome.kind === "complete" — the upstream drained cleanly. The terminal stop_reason is the F2
+     // signal: undefined ⇒ the CC/Responses stream ended with NO finish_reason ⇒ truncation.
+@@ -1465,21 +1503,26 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
+       // Truncation: forward the translator's block-close frames (partial content stays balanced) but DROP
+       // its terminal message_delta/message_stop (they'd signal a clean completion), then write a synthetic
+       // Anthropic error terminator + fail (mirrors the gemini truncation gate + the direct pump's). The
+       // block-close frame goes through `clientSink` so its index is +1-remapped under an injected anchor.
+       for (const frame of codec.flushResponse(env)) {
+         if (!isMessageTerminatorFrame(frame)) await clientSink.write(frame)
+       }
+       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
++      // G-3 (FIX-2): translate-leg truncation terminator via the canonical builder (byte-identical to the
++      // former hand-built JSON — note the translate leg's message says "no finish_reason", the CC/Responses
++      // terminator, distinct from the direct pump's "no message_stop"; CF-2 golden-locked off).
+       await sink
+-        .writeSynthetic?.({
+-          event: "error",
+-          data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
+-        })
++        .writeSynthetic?.(
++          shapeRawStreamErrorFrame("api_error", "Upstream stream truncated before completion (no finish_reason)", {
++            event: "error",
++            data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
++          }),
++        )
+         .catch(() => undefined)
+       recordForwarded()
+       consola.error(`[Anthropic:v4:translate] Upstream truncated for ${model}: drained without a finish_reason`)
+       env.ctx.fail(model, new Error("upstream stream truncated: closed without finish_reason"), outboundResponseData())
+       return
+     }
+ 
+     // Clean completion: drain the translator's terminal frames (the last block's content_block_stop +
+diff --git a/src/routes/messages/route.ts b/src/routes/messages/route.ts
+index cdff0cd3..be8ce834 100644
+--- a/src/routes/messages/route.ts
++++ b/src/routes/messages/route.ts
+@@ -1,24 +1,23 @@
+ import { Hono } from "hono"
+ 
+-import { forwardError } from "~/lib/error"
+-
+ import { handleCountTokens } from "./count-tokens"
++import { shapePrecommitError } from "./error-shaping-glue"
+ import { handleMessagesV4 } from "./handler-v4"
+ 
+ export const messagesRoutes = new Hono()
+ 
+ messagesRoutes.post("/", async (c) => {
+   try {
+     return await handleMessagesV4(c)
+   } catch (error) {
+-    return forwardError(c, error)
++    return shapePrecommitError(c, error)
+   }
+ })
+ 
+ messagesRoutes.post("/count_tokens", async (c) => {
+   try {
+     return await handleCountTokens(c)
+   } catch (error) {
+-    return forwardError(c, error)
++    return shapePrecommitError(c, error)
+   }
+ })
+diff --git a/src/routes/messages/streaming-pump.ts b/src/routes/messages/streaming-pump.ts
+index 5227706b..d701b2da 100644
+--- a/src/routes/messages/streaming-pump.ts
++++ b/src/routes/messages/streaming-pump.ts
+@@ -15,30 +15,26 @@ import type { SseEventRecord } from "~/lib/history/store"
+ import type { StreamEvent } from "~/types/api/anthropic"
+ 
+ import { logServerToolBlock } from "~/lib/anthropic/server-tool-filter"
+ import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+ import { formatErrorWithCause } from "~/lib/error"
+ import { classifyStreamError } from "~/lib/stream"
+ import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
+ 
+-/** Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error. */
+-export function anthropicStreamErrorType(error: unknown): string {
+-  switch (classifyStreamError(error)) {
+-    case "idle-timeout": {
+-      return "timeout_error"
+-    }
+-    case "shutdown": {
+-      return "overloaded_error"
+-    }
+-    default: {
+-      return "api_error"
+-    }
+-  }
+-}
++/**
++ * Map a streaming error to its Anthropic SSE `error.type`. Shutdown → retryable overloaded_error.
++ *
++ * G-3: the mapping logic now lives in `error-shaping.ts` (`classifyStreamErrorType`, the single home
++ * for error→Anthropic-wire shaping). This re-export keeps the original name/signature so the two
++ * real call sites — `handler-v4.ts:1193` (H3 branch) and `handler-v4.ts:1452` (translate-leg pump) —
++ * stay byte-for-byte unchanged; only the implementation moved. `codec.ts:619` merely mentions the
++ * name in a comment (not a call site).
++ */
++export { classifyStreamErrorType as anthropicStreamErrorType } from "~/lib/anthropic/error-shaping"
+ 
+ /**
+  * Extract live-stream signals and emit a detailed upstream-disconnect log.
+  *
+  * Pulls the diagnostic signals out of the handler-internal stream state and
+  * delegates formatting/emission to `logUpstreamStreamDisconnect`. The `silence`
+  * it surfaces (gap between the last upstream frame and the disconnect) is the
+  * smoking gun for "died during a silent thinking stall".

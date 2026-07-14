@@ -7,6 +7,10 @@ description: 当需要在 copilot-api-js 里验证「真实客户端（@anthropi
 
 golden/http 测试断言的是**代理转发的字节**；本骨架断言**真实客户端拿到那些字节后的可观测行为**——SDK 是否拼出连贯 message、是否 throws、是否静默丢帧；CLI agent-loop 是否 stall。字节对 ≠ 客户端接受。落地在 `tests/e2e-client/`，权威实证结论见 `exp/cli-e2e-stall/FINDINGS.md`。
 
+**本 skill 上游全程 mock、离线不烧额度**（客户端侧当 oracle）。若要反过来打**真实 GHC 计费后端**、用 History API 当 oracle 端到端验证一个改动在生产形态下正确（烧真实额度）→ skill `live-ghc-e2e-verification`。两 skill 各自内联本领域的 spawn/隔离操作摘要（各自自足）；共享的 spawn 机制**实现权威是代码** `tests/e2e-client/harness/spawn-proxy.ts`（`realGithubTokenPath()`/隔离 XDG/端口精确 pkill），有疑问看它、别让两份自然语言漂移。
+
+**运行入口**：Tier 1（离线确定性）`bun run test:backend`（含 `tests/e2e-client/*.it.test.ts`）或单跑 `bun test tests/e2e-client/anthropic-sdk.it.test.ts`；Tier 2（gated）`bun test tests/e2e-client/anthropic-cli.e2e.test.ts`——须 `claude` 在 PATH + 真 github_token + 网络（否则 skip）。
+
 ## 两层 oracle（按能测什么选）
 
 | 层 | 客户端 | 屏蔽机制 | 能测 | 文件 |
@@ -23,6 +27,8 @@ Tier 1 offline 确定性（`.it.test.ts` 进 `test:backend`）；Tier 2 需真 a
 
 ### CLI 让 claude 认自定义端点
 必须 **`ANTHROPIC_AUTH_TOKEN`（非 `ANTHROPIC_API_KEY`——订阅 OAuth 会覆盖 API_KEY、直连真 Anthropic）+ `ANTHROPIC_BASE_URL` + 隔离 HOME**（`.claude.json` 含 `hasCompletedOnboarding:true`、`.claude/settings.json` 写 env），对齐 `src/setup-claude-code.ts` `buildEssentialEnv`。隔离 HOME 既防订阅覆盖、又不污染用户真实 `~/.claude`。stall oracle = `claude -p --output-format json` 的 `{num_turns, result}`：**stall = `num_turns>1 && result===""`**（agent 空转一轮），对照非空 recovery → `num_turns===1`。
+
+> **想深挖 claude 客户端**「为何这样反应」（stall 判据 / agent-loop 何时续轮 / SSE 如何解析累积 / 环境变量优先级）—— 读 **Claude Code 反混淆源码** `~/.claude/refs/claude-code-<ver>/app.pretty.js`（当前 `claude-code-2.1.207`，用 glob 取最新版目录）。它是客户端**内部机制**的权威源（比实测更能看清「为何」，实测负责坐实「是否」——`empirical-verification` 可信度阶梯：源码看 how/why、实测定 that）。同理 `@anthropic-ai/sdk` 的累积/throw 逻辑读其 `node_modules` 源。
 
 ### spawn 真 proxy 的两个坑
 - **boot 需真 auth+网络**：`bun run ./src/main.ts start --port <非4141>`（**带 `start` 子命令**，`bun run start` 的 npm 脚本无子命令会把端口当未知命令），隔离 `XDG_DATA_HOME`（→ 自有 config.yaml + history.db），把真 github_token 复制进隔离 APP_DIR（boot 做 github→copilot 交换 + model fetch）。token 真实路径用 `homedir()` 基（`~/.local/share/copilot-api/github_token`），**非** 被测试沙箱重定向的 `XDG_DATA_HOME`。
@@ -45,4 +51,16 @@ config-hook（Tier 2 mock 上游）经 `Bun.Transpiler`+`data:` URL 加载（`ho
 - **空串 refusal recovery（thinking-only end_turn）让 Claude Code STALL**（`num_turns=2, result=""`，上游被调 2 次）；非空 recovery 文本防住（`num_turns=1`）——实证了 refusal-recovery 特性的存在价值。→ `docs/refusal-recovery.md` 空串节。
 
 ## 扩展新场景/新 vendor
-骨架 vendor 无关（已证：OpenAI SDK vendor smoke 与 Anthropic 共用核心）：`upstream-script`（脚本化上游 SSE，`createSseResponse`/`jsonResponse`/`httpErrorResponse`/`sequencedUpstream`——最后一个逐腿不同响应、驱动 proxy 内部 reactive retry）+ `spawn-proxy` 的 baseURL 契约 Tier1/Tier2 共用。加 OpenAI/Gemini SDK 场景改客户端库 + 上游帧构造即可，核心不重构。加新上游形状：Tier1 喂 `setUpstreamFetchForTests`，Tier2 改 `cli-refusal-hook.ts` 的 base64 帧元组（注意上面 data-URL 坑）。**待覆盖场景 backlog**（按承重排序、多数 `[DOC-REAL]`）见 spec `docs/spec/2026-07-13-client-proxy-sdk-e2e-harness.md`「e2e 场景覆盖 roadmap」节——挖自 docs/skills/memories 的客户端可观测行为考古，含 keepalive 300s 墙 / thinking 毒化恢复 / 其余 reactive retry 腿 / 翻译矩阵反向腿 / 三类中止区分等。**新绿测试务必变异验证有牙**（关掉被测行为→测试应变红、且只红对应那条）。
+
+> **加新 e2e 前先过错配试金石**（skill `choosing-test-type`）：把断言换成 golden 逐字节 + callCount，若不损失「SDK 会不会 parse/throw某类/累积/choke/fold」→ 才配 e2e；否则归 golden/.http/unit（**别借真 SDK 之名写集成测试**）。2026-07-14 审计曾清出 10 条错配（server-tool filter/tool-call recovery/retry 腿等 golden∘baseline 已覆盖），e2e 收敛到纯 SDK-behavior 集。
+
+骨架 vendor 无关（已证：OpenAI SDK vendor smoke 与 Anthropic 共用核心）：`upstream-script`（脚本化上游 SSE，`createSseResponse`/`jsonResponse`/`httpErrorResponse`/`sequencedUpstream`——最后一个逐腿不同响应、驱动 proxy 内部 reactive retry）+ `spawn-proxy` 的 baseURL 契约 Tier1/Tier2 共用。加 OpenAI/Gemini SDK 场景改客户端库 + 上游帧构造即可，核心不重构。加新上游形状：Tier1 喂 `setUpstreamFetchForTests`，Tier2 改 `cli-refusal-hook.ts` 的 base64 帧元组（注意上面 data-URL 坑）。
+
+**待覆盖 backlog 的逐条实现配方 + kickoff prompt** 见 **plan `docs/plan/2026-07-13-e2e-client-scenario-backlog.md`**（层/config/上游 400-pattern/oracle/harness 需求/gotcha/变异，逐条可直接执行）；roadmap（优先级）见 spec `docs/spec/2026-07-13-client-proxy-sdk-e2e-harness.md`。常用扩展模式：
+- **reactive retry 腿**（已落地 5 腿，全同构）：`sequencedUpstream([() => httpErrorResponse(400, {type,message: 命中该腿正则}), () => createSseResponse(happyTurn())])` → 断言 `callCount===2` + 客户端拿正常 turn；变异摘对应腿 `canHandle`/`match` → 仅该腿测试红。各腿 message pattern：tool-field=`tools.N.custom.<field>: Extra inputs are not permitted`、cache_control-subfield=`<sec>.N.cache_control.<variant>.<field>: Extra inputs are not permitted`、server-tool=`The use of the web search tool is not supported.`、unsupported-beta（用 explicit 路径确定单重试）=`unsupported beta header(s): <flag>`（laconic `invalid beta flag` 需 outbound 真带 beta 才 probe）、poisoned-thinking=`messages.N.content.M.thinking: cannot be modified`（gated `state.stripThinkingOnReject`（默认 true）；**请求须带含 thinking 块的前序 assistant 轮**否则 `strippedCount===0 → abort` 不重试）；正则/表在 `src/lib/request/strategies/<腿>.ts` 与 `src/lib/codec/anthropic/strategies.ts` 注册序。
+- **时序（keepalive/idle）**：`tests/helpers/fake-clock.ts`+`fake-stream.ts` 驱动确定性时间别真 sleep；真 CC 300s 墙只能 Tier2 真计时（重、gated，`exp/cc-idle-280s`），Tier1 只能验「空 content_block_delta 被 SDK 无害累积、不进可见内容」（喂空 `text_delta{text:""}` 交错真实 delta → finalMessage 唯一块=真实文本、无幻块）。
+- **client-abort**：Tier1 pre-aborted `AbortController`（`controller.abort()` 后经 `stream(body, { signal })`）→ SDK 抛 `APIUserAbortError`（客户端 cancel、独立于任何 server APIError）；配正样本对照（无 abort 同上游正常拼装）证 abort 是 throw 之因。
+- **类型化错误对照**：HTTP-4xx 给 SDK **类型化子类** + 真 `.status`（400→`BadRequestError`、429→`RateLimitError`），对照 200+流内 `event: error` 的**无类型** `APIError`（`.status===undefined`）；变异翻 fixture status（429→400）→ 类型断言精准红。
+- **buffered-retry 上游 RST**：`setStateForTests({ protectStreamingGeneration: "on" })`（默认 caps `maxRetries:3`，无需额外 config）+ `sequencedUpstream([() => createSseResponseThenError(partial, new Error("RST")), () => createSseResponse(happyTurn())])` → 客户端拿完整 turn、首腿半截不泄漏（`JSON.stringify(content).not.toContain("HALF")`）、`callCount===2`。**实测无真 backoff sleep（确定性 body-error 非 timer）**；变异翻 gate 为 `false`（真 off-path）→ 精准红。
+
+**新绿测试务必变异验证有牙**（关掉被测行为→测试应变红、且只红对应那条；已示范 MUTANT-A 空串守卫 / MUTANT-C stall / MUTANT-D 截断 gate，各精准逮住单条）。

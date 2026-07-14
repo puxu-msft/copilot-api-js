@@ -165,6 +165,18 @@ function yamlForField(f: FieldSpec): string {
 }
 
 const FIELDS: ReadonlyArray<FieldSpec> = [
+  // ── telemetry.* (分层遥测) — 样本值避开 apply 层回落分支（γ≥0.005、resolution 整除 60） ──
+  { configKey: "telemetry.enabled", stateKey: "telemetryEnabled", sampleYamlValue: "false", expectedStateValue: false, defaultStateValue: true },
+  { configKey: "telemetry.db_path", stateKey: "telemetryDbPath", sampleYamlValue: "/tmp/tel-test.db", expectedStateValue: "/tmp/tel-test.db", defaultStateValue: "" },
+  { configKey: "telemetry.persist_interval", stateKey: "telemetryPersistInterval", sampleYamlValue: "30", expectedStateValue: 30, defaultStateValue: 60 },
+  { configKey: "telemetry.rollup_interval", stateKey: "telemetryRollupInterval", sampleYamlValue: "1800", expectedStateValue: 1800, defaultStateValue: 3600 },
+  { configKey: "telemetry.cardinality_cap", stateKey: "telemetryCardinalityCap", sampleYamlValue: "100", expectedStateValue: 100, defaultStateValue: 200 },
+  { configKey: "telemetry.sketch_gamma", stateKey: "telemetrySketchGamma", sampleYamlValue: "0.02", expectedStateValue: 0.02, defaultStateValue: 0.01 },
+  { configKey: "telemetry.cumulative", stateKey: "telemetryCumulative", sampleYamlValue: "false", expectedStateValue: false, defaultStateValue: true },
+  { configKey: "telemetry.tiers.raw.resolution_minutes", stateKey: "telemetryRawResolutionMinutes", sampleYamlValue: "10", expectedStateValue: 10, defaultStateValue: 5 },
+  { configKey: "telemetry.tiers.raw.retention_days", stateKey: "telemetryRawRetentionDays", sampleYamlValue: "14", expectedStateValue: 14, defaultStateValue: 7 },
+  { configKey: "telemetry.tiers.hourly.retention_days", stateKey: "telemetryHourlyRetentionDays", sampleYamlValue: "30", expectedStateValue: 30, defaultStateValue: 90 },
+  { configKey: "telemetry.tiers.daily.retention_days", stateKey: "telemetryDailyRetentionDays", sampleYamlValue: "180", expectedStateValue: 180, defaultStateValue: 0 },
   // ── Top-level scalars ───────────────────────────────────────────────
   {
     configKey: "timeouts.response_header",
@@ -217,6 +229,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: "1234",
     expectedStateValue: 1234,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+  },
+  {
+    configKey: "timeouts.request_deadline",
+    stateKey: "requestDeadline",
+    sampleYamlValue: "1800",
+    expectedStateValue: 1800,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.requestDeadline,
   },
   {
     configKey: "model_refresh_interval",
@@ -645,28 +664,28 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.rejectBodyFields,
   },
   {
-    configKey: "anthropic.tool_decode_input_fields",
+    configKey: "anthropic.response_tool_use_fix.decode_top_level_field",
     stateKey: "decodeToolInputFields",
     sampleYamlValue: `\n  "MyTool":\n    - foo`,
     expectedStateValue: { MyTool: ["foo"] },
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.decodeToolInputFields,
   },
   {
-    configKey: "anthropic.tool_decode_all_input_fields",
-    stateKey: "decodeAllToolInputFields",
-    sampleYamlValue: "true",
-    expectedStateValue: true,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
-  },
-  {
-    configKey: "anthropic.tool_recover_call_text",
+    configKey: "anthropic.response_text_fix.invoke_in_text",
     stateKey: "recoverToolCallText",
     sampleYamlValue: "true",
     expectedStateValue: true,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
   },
   {
-    configKey: "anthropic.tool_repair_malformed_input",
+    configKey: "anthropic.response_tool_use_fix.send_message_to_missing",
+    stateKey: "fixSendMessageRecipient",
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
+  },
+  {
+    configKey: "anthropic.response_tool_use_fix.malformed_input",
     stateKey: "toolRepairMalformedInput",
     sampleYamlValue: "tags,jsonrepair",
     expectedStateValue: ["tags", "jsonrepair"],
@@ -701,7 +720,35 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
   },
   {
-    configKey: "anthropic.tool_backfill_question",
+    configKey: "anthropic.error_shaping_enabled",
+    stateKey: "errorShapingEnabled",
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
+  },
+  {
+    configKey: "anthropic.error_ask_user_question",
+    stateKey: "errorAskUserQuestion",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
+  },
+  {
+    configKey: "anthropic.error_auq_template",
+    stateKey: "errorAuqTemplate",
+    sampleYamlValue: "model={model} status={status}",
+    expectedStateValue: "model={model} status={status}",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
+  },
+  {
+    configKey: "anthropic.error_selfheal_delegate",
+    stateKey: "errorSelfhealDelegate",
+    sampleYamlValue: `\n  "adaptive-thinking-rejection-retry": delegate`,
+    expectedStateValue: { "adaptive-thinking-rejection-retry": "delegate" },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate,
+  },
+  {
+    configKey: "anthropic.response_tool_use_fix.ask_user_question_question_missing",
     stateKey: "backfillQuestionFromHeader",
     sampleYamlValue: "false",
     expectedStateValue: false,

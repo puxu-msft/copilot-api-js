@@ -151,6 +151,12 @@ export interface EntryRow {
   request_bytes: number | null
   response_bytes: number | null
   multiplier: number | null
+  // 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻，offset ms 相对 started_at。Column-only
+  // mirrors of `entry.timing.client.*`（in META_KEYS → excluded from head blob, restored from
+  // the row in deserializeEntry）。老行 NULL（additive 列范式，不回填）。
+  client_stream_open_ms: number | null
+  client_first_real_ms: number | null
+  buffer_hold_start_ms: number | null
   blob_gz: Uint8Array
 }
 
@@ -178,6 +184,9 @@ const META_KEYS = new Set<string>([
   "requestBytes",
   "responseBytes",
   "multiplier",
+  // 首包埋点（spec 2026-07-14 §3.2）：nested `timing` object mirrored into 3 columns —
+  // excluded from the head blob (restored from columns in deserializeEntry).
+  "timing",
 ])
 
 // ============================================================================
@@ -428,6 +437,11 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
     request_bytes: deriveRequestBytes(entry),
     response_bytes: deriveResponseBytes(entry),
     multiplier: entry.multiplier ?? null,
+    // 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻 offset ms（column mirrors of
+    // entry.timing.client.*，excluded from blob via META_KEYS，restored in deserializeEntry）。
+    client_stream_open_ms: entry.timing?.client?.streamOpenMs ?? null,
+    client_first_real_ms: entry.timing?.client?.firstRealMs ?? null,
+    buffer_hold_start_ms: entry.timing?.client?.bufferHoldStartMs ?? null,
     blob_gz: headBlob,
   }
   return row
@@ -441,6 +455,12 @@ export function buildHeadRow(entry: HistoryEntry, statusOverride: string | undef
 export function deserializeEntry(row: EntryRow, blob?: Uint8Array): HistoryEntry {
   const bytes = blob ?? row.blob_gz
   const restored = decompress(bytes) as Partial<HistoryEntry>
+  // 首包埋点（spec 2026-07-14 §3.2）：从 3 列重组 timing.client（blob 已排除 timing via META_KEYS）。
+  const client = {
+    ...(row.client_stream_open_ms !== null && { streamOpenMs: row.client_stream_open_ms }),
+    ...(row.client_first_real_ms !== null && { firstRealMs: row.client_first_real_ms }),
+    ...(row.buffer_hold_start_ms !== null && { bufferHoldStartMs: row.buffer_hold_start_ms }),
+  }
   return {
     ...restored,
     id: row.id,
@@ -459,6 +479,7 @@ export function deserializeEntry(row: EntryRow, blob?: Uint8Array): HistoryEntry
     ...(row.request_bytes !== null && { requestBytes: row.request_bytes }),
     ...(row.response_bytes !== null && { responseBytes: row.response_bytes }),
     ...(row.multiplier !== null && { multiplier: row.multiplier }),
+    ...(Object.keys(client).length > 0 && { timing: { client } }),
     lastUpdatedAt: row.ended_at ?? row.started_at,
   } as HistoryEntry
 }

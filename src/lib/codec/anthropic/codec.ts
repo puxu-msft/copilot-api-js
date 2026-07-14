@@ -13,13 +13,15 @@
  * **Per-request stateful factory.** `createAnthropicCodec({ betaProbe, preprocessInfo })`
  * is built once per request. The closure holds: the RequestContext (parse-created),
  * the truncation/message-mapping baseline (preprocessed, pre-initial-sanitize), the
- * client `anthropic-beta` header, the initial sanitization info, the resanitize
- * closure, and the latest effective messages/thinking (updated by `sampleRequest`,
- * read by the route to rebuild retry pipeline-info — RFC §12.4/§12.5).
+ * initial sanitization info, and the resanitize closure — the per-request accessors the
+ * route reads to rebuild retry pipeline-info (RFC §12.4/§12.5). The OUTBOUND-side state
+ * (latest effective messages, stripped cache_control subfields, outbound betas) now lives
+ * on the CellAssembly leg → ctx side-channels, not this closure (RFC 2026-07-13 §11).
  *
  * **betaProbe is a cross-component handle** (RFC §2.4): the handler builds it once
- * and injects the SAME instance into both this codec (which records the outbound
- * betas in `prepareWire`) and the strategies (the unsupported-beta strategy reads
+ * and injects the SAME instance into both `parse` (which threads it onto `env.requestState`
+ * for the anthropic-cell's `prepareWire` to record the outbound betas) and the strategies
+ * (the unsupported-beta strategy reads
  * the candidates). The factory takes it as a parameter.
  *
  * Mirrors the deferred markers of openai-cc (P2.2-D*): system-prompt injection is
@@ -34,11 +36,6 @@ import type {
   BetaProbe,
 } from "~/lib/anthropic/pipeline"
 import type { RequestContext } from "~/lib/context/request"
-import type {
-  //
-  EffectiveRequest,
-  WireRequest,
-} from "~/lib/context/types"
 import type {
   //
   EndpointType,
@@ -57,15 +54,14 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { RequestState } from "~/lib/pipeline/request-state"
 import type { RequestRewrite } from "~/lib/pipeline/rewrite-registry"
 import type {
   //
   ClassifiedStreamError,
   ClientFrame,
   FormatCodec,
-  PreparedRequest,
   RawHttpRequest,
-  RequestSample,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
 import type { PrepareHints } from "~/lib/request/pipeline"
@@ -76,7 +72,6 @@ import type {
 } from "~/types/api/anthropic"
 
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
-import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
 import {
   //
   toSanitizationInfo,
@@ -88,7 +83,6 @@ import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   captureInboundHeaders,
-  sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
 import {
   //
@@ -108,15 +102,9 @@ import {
   createForwardStreamTranslator,
   type ForwardStreamTranslator,
   renderResponseNonStreamingVia,
-  translateRequestVia,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 
-import {
-  //
-  createOpenAiCcCodec,
-  type OpenAiCcCodec,
-} from "../openai-cc/codec"
 import { createAnthropicSanitizeRewrite } from "./request-rewrite-adapter"
 
 const CLIENT_FORMAT: ClientFormat = "anthropic"
@@ -141,10 +129,6 @@ export interface AnthropicCodec extends FormatCodec {
   getPreprocessInfo(): PreprocessInfo | undefined
   /** The resanitize closure (= the direct sanitize chain) the strategies reuse. */
   getResanitize(): AnthropicSanitizeFn | undefined
-  /** Latest attempt's effective `messages` (sampleRequest-captured; message-mapping rebuild). */
-  getLatestEffectiveMessages(): Array<unknown> | undefined
-  /** Latest attempt 的 passthrough 剥掉的 cache_control 子字段（喂 pipelineInfo.cacheControlStripped 持久化，spec §8）。 */
-  getLatestStrippedCacheControlSubfields(): ReadonlyArray<string> | undefined
   /** The per-request request rewrites (driver S3): the sanitize chain + its side-channel recordings (RFC §4.A0). */
   getRequestRewrites(): ReadonlyArray<RequestRewrite>
   /**
@@ -179,20 +163,8 @@ export interface CreateAnthropicCodecArgs {
 export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicCodec {
   let requestContext: RequestContext | undefined
   let truncateBaseline: MessagesPayload | undefined
-  let clientAnthropicBeta: string | undefined
-  let clientRequestHeaders: Record<string, string> | undefined
   let initialSanitizationInfo: SanitizationInfo | undefined
   let resanitize: AnthropicSanitizeFn | undefined
-  let latestEffectiveMessages: Array<unknown> | undefined
-  let latestStrippedCacheControlSubfields: ReadonlyArray<string> | undefined
-
-  // Internal openai-cc delegate for the FORWARD translation legs (anthropic → cc/responses). Built
-  // lazily on the first translate-leg call (a direct `/v1/messages` request never touches it). Its
-  // methods are pure over `env` (+ its own lazily-built via-responses translator closure), so — like
-  // the gemini codec's cc delegate — they work standalone without cc's own `parse` (RFC §4.2). The
-  // codec's own ctx / baseline / sanitize state stay ours; only cc's CC-wire prep + sampling are reused.
-  let cc: OpenAiCcCodec | undefined
-  const ccDelegate = (): OpenAiCcCodec => (cc ??= createOpenAiCcCodec())
 
   // FORWARD translate-leg STREAMING translator (Phase 4), built lazily on the first streaming
   // `renderResponse` for a translate leg. The cc leg drives it single-hop (CC→Anthropic); the responses
@@ -231,10 +203,22 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       const parsed = parseAnthropic(raw)
       requestContext = parsed.env.ctx
       truncateBaseline = parsed.baseline
-      clientAnthropicBeta = parsed.clientAnthropicBeta
-      clientRequestHeaders = parsed.clientRequestHeaders
       resanitize = parsed.resanitize
-      return parsed.env
+      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the direct
+      // `/v1/messages` CellAssembly reads it from `env.requestState` instead of this codec closure
+      // (C2a). Additive today: no reader until the driver's cell-keyed hybrid fork routes the direct
+      // cell through the assembly (C2a.2). `initialSanitizationInfo` is a side-channel written later by
+      // the sanitize rewrite → it lives on `ctx`, not here.
+      return parsed.env.with({
+        requestState: {
+          betaProbe: args.betaProbe,
+          truncateBaseline: parsed.baseline,
+          resanitize: parsed.resanitize as (payload: unknown) => unknown,
+          clientRequestHeaders: parsed.clientRequestHeaders,
+          preprocessInfo: args.preprocessInfo,
+          ...(parsed.clientAnthropicBeta !== undefined && { clientAnthropicBeta: parsed.clientAnthropicBeta }),
+        },
+      })
     },
 
     getContext() {
@@ -252,27 +236,15 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     getResanitize() {
       return resanitize
     },
-    getLatestEffectiveMessages() {
-      return latestEffectiveMessages
-    },
-    getLatestStrippedCacheControlSubfields() {
-      return latestStrippedCacheControlSubfields
-    },
     getRequestRewrites() {
       return requestRewrites
     },
 
-    // S2 translateOut: direct `/v1/messages` (the only leg the bypass-direct path uses) is identity,
-    // byte-for-byte — as is an unset targetEndpoint (isolated unit-test envs). A FORWARD translate leg
-    // (`@cc`/`@responses` → CC/Responses) delegates to the hub, producing a CC-canonical body that the
-    // cc delegate's prepareWire turns into the CC / Responses wire (T2.4 / RFC §4.2). env.body becomes
-    // CC-shaped from here on, so the Anthropic request rewrites (gated on targetEndpoint===/v1/messages)
-    // correctly do NOT fire on the translated body.
-    translateOut(env) {
-      if (!isForwardTranslateLeg(env.targetEndpoint)) return env
-      const ccBody = translateRequestVia(CLIENT_FORMAT, env.targetEndpoint, env.body, { model: env.model })
-      return env.with({ body: ccBody })
-    },
+    // S2 translateOut / S4 prepareWire / S4-sample are owned by the CellAssembly's `OUTBOUND_LEGS` for
+    // every real request (direct `/v1/messages` via anthropic-cell, forward `@cc`/`@responses` via the CC
+    // leg); the codec no longer implements them. The RESPONSE-side render below stays here (InboundCodec):
+    // it dispatches the same `isForwardTranslateLeg` (a FORWARD leg drives the CC→Anthropic response
+    // translator; the direct leg is identity).
 
     // S6 render (streaming): the direct path is identity. A FORWARD translate leg drives the per-request
     // CC→Anthropic STREAMING translator (Phase 4, T4.1/T4.2) — cc leg single-hop, responses leg two-hop
@@ -293,41 +265,6 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.targetEndpoint, upstream)
       if (contentFiltered) env.ctx.recordFeature("translated-content-filter")
       return rendered
-    },
-
-    prepareWire(env) {
-      // FORWARD translate leg: the body is CC-shaped (translateOut delegated to the hub), so the cc
-      // delegate's prepareWire does the CC / CC→Responses wire prep (openai-cc P2.2-D1).
-      if (isForwardTranslateLeg(env.targetEndpoint)) return ccDelegate().prepareWire(env)
-      const prepared = prepareAnthropicWire(env, {
-        betaProbe: args.betaProbe,
-        clientAnthropicBeta,
-        clientRequestHeaders,
-        requestContext,
-        // requested = the client's original thinking type, from the FIXED truncate
-        // baseline (never the per-attempt env.body, which legacy-thinking-retry
-        // mutates enabled→adaptive on retry).
-        requestedThinkingType: (truncateBaseline?.thinking as { type?: string } | undefined)?.type,
-      })
-      // 记住本 attempt 剥掉的 cache_control 子字段（最后 accepted attempt wins），供 handler 塞 pipelineInfo 持久化。
-      latestStrippedCacheControlSubfields = prepared.strippedCacheControlSubfields
-      return prepared
-    },
-
-
-    sampleRequest(wire, env): RequestSample {
-      // Translate leg: the effective + wire are CC-shaped — delegate to the cc sampler (correct format
-      // labels + Responses `input` extraction). latestEffectiveMessages stays unset (only the messages
-      // leg's retry rebuild reads it).
-      if (isForwardTranslateLeg(env.targetEndpoint)) return ccDelegate().sampleRequest?.(wire, env) as RequestSample
-      const sample = sampleAnthropicRequest(wire, env)
-      latestEffectiveMessages = sample.effectiveMessages
-      // 把本 attempt prepareWire 剥掉的 cache_control 子字段挂到 currentAttempt（beginAttempt 已建立）→
-      // pipelineFromAttempt 落 history。覆盖首次成功 + retry 全路径（handler 顶层 pipelineInfo 只覆盖 accepted-retry）。
-      if (requestContext && latestStrippedCacheControlSubfields?.length) {
-        requestContext.setAttemptCacheControlStripped(latestStrippedCacheControlSubfields)
-      }
-      return sample.requestSample
     },
 
     formatError(err) {
@@ -483,127 +420,6 @@ function parseContentLength(header: string | null): number | undefined {
 }
 
 // ============================================================================
-// S4 — prepareWire
-// ============================================================================
-
-interface PrepareWireDeps {
-  betaProbe: BetaProbe
-  clientAnthropicBeta: string | undefined
-  /** Client's raw inbound headers (lowercased) for optional upstream passthrough. */
-  clientRequestHeaders: Record<string, string> | undefined
-  requestContext: RequestContext | undefined
-  /**
-   * Client's original `thinking.type` (fixed across retries — from the truncate
-   * baseline, NOT `env.body` which retries mutate). Recorded as the `requested`
-   * half of the merged `thinking` feature alongside the effective wire value.
-   */
-  requestedThinkingType: string | undefined
-}
-
-/**
- * S4 last-mile: env → wire via `prepareAnthropicRequest` (B1-B12 — wire payload +
- * reject/server-tool strip + coerce-thinking + clamp-effort + cache-control +
- * headers). Records the outbound betas on the probe (replacing the legacy adapter's
- * `onPrepared`) + surfaces the actual wire `thinking` shape as a feature.
- *
- * Idempotent (RFC §3): `prepareAnthropicRequest` deep-clones and does not write
- * back to `env.body`, so the same env → the same wire.
- */
-function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): PreparedRequest & { strippedCacheControlSubfields?: ReadonlyArray<string> } {
-  const model = env.model as Model | undefined
-  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
-    ...(model && { resolvedModel: model }),
-    ...(deps.clientAnthropicBeta !== undefined && { clientAnthropicBeta: deps.clientAnthropicBeta }),
-    ...(deps.clientRequestHeaders !== undefined && { clientRequestHeaders: deps.clientRequestHeaders }),
-    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
-    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
-    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
-    ...(env.prepareHints.excludeToolFields && { excludeToolFields: env.prepareHints.excludeToolFields }),
-    ...(env.prepareHints.excludeCacheControlSubfields && { excludeCacheControlSubfields: env.prepareHints.excludeCacheControlSubfields }),
-    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
-  })
-
-  // Record the betas actually sent (sanitized headers — same value the legacy
-  // adapter's onPrepared received) so unsupported-beta can probe them.
-  deps.betaProbe.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
-
-  // Record `thinking` as a per-request terminal dimension: `effective` = the
-  // ACTUAL outbound wire shape (post coerceAdaptiveThinking), `requested` = the
-  // client's original type (fixed baseline, supplied by the codec). The console
-  // overwrites `effective` per attempt and renders requested→effective once, so
-  // a coercion stays visible even when a retry rewrites the body.
-  const wireThinking = prepared.wire.thinking as { type?: string } | undefined
-  if (wireThinking?.type && wireThinking.type !== "disabled") {
-    deps.requestContext?.recordFeature("thinking", {
-      ...(deps.requestedThinkingType !== undefined && { requested: deps.requestedThinkingType }),
-      effective: wireThinking.type,
-    })
-  }
-
-  // passthrough 剥掉 GHC 未支持的 cache_control 子字段（如 scope）——记 live TUI/WS 看板（cc-strip:<fields>）。
-  // 持久化（pipelineInfo.cacheControlStripped）经返回值上抛给闭包 prepareWire → getLatestStrippedCacheControlSubfields（spec §8 双通道）。
-  if (prepared.strippedCacheControlSubfields?.length) {
-    deps.requestContext?.recordFeature("cache-control-stripped", { fields: prepared.strippedCacheControlSubfields })
-  }
-
-  return {
-    url: ENDPOINT.MESSAGES,
-    headers: new Headers(prepared.headers),
-    body: prepared.wire,
-    stream: (prepared.wire.stream as boolean | undefined) ?? false,
-    ...(prepared.strippedCacheControlSubfields?.length && { strippedCacheControlSubfields: prepared.strippedCacheControlSubfields }),
-  }
-}
-
-// ============================================================================
-// S4 — preSend (main-path pre-flight truncation)
-// ============================================================================
-
-// ============================================================================
-// S4 — sampleRequest (two-track observability)
-// ============================================================================
-
-interface SampleAnthropicResult {
-  requestSample: RequestSample
-  effectiveMessages: Array<unknown>
-}
-
-/**
- * S4 observability (P2.3-S): the two history tracks. Both are `anthropic-messages`
- * format (translateOut is identity, so env.body stays Anthropic-shaped):
- *   - `effective` = the post-rewrite logical request (`env.body`).
- *   - `wire` = the actual outbound bytes (`prepared.wire`, B1-B12 + sanitized headers).
- *
- * Captures the latest effective `messages` for the route to rebuild retry
- * message-mapping (RFC §12.4/§12.5). The §12.5 invariant
- * (`action.env.body === action.payload`) makes these the same objects the legacy
- * `recordRetryPipelineState` reads from `newPayload`.
- */
-function sampleAnthropicRequest(wire: PreparedRequest, env: RequestEnvelope): SampleAnthropicResult {
-  const effBody = env.body as MessagesPayload
-  const effectiveMessages: Array<unknown> = Array.isArray(effBody.messages) ? effBody.messages : []
-
-  const effective: EffectiveRequest = {
-    model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
-    messages: effectiveMessages,
-    payload: env.body,
-    format: ENDPOINT_TYPE,
-  }
-
-  const wireBody = wire.body as { model?: unknown; messages?: unknown }
-  const wireRequest: WireRequest = {
-    model: typeof wireBody.model === "string" ? wireBody.model : "",
-    messages: Array.isArray(wireBody.messages) ? wireBody.messages : [],
-    payload: wire.body,
-    headers: Object.fromEntries(wire.headers.entries()),
-    format: ENDPOINT_TYPE,
-  }
-
-  return { requestSample: { effective, wire: wireRequest }, effectiveMessages }
-}
-
-// ============================================================================
 // S7 — formatError
 // ============================================================================
 
@@ -654,6 +470,7 @@ interface EnvelopeInit {
   body: unknown
   ctx: RequestContext
   prepareHints?: PrepareHints
+  requestState?: RequestState
 }
 
 /** Build a {@link RequestEnvelope}; `with()` shallow-copies + patches, `view` is a lazy Anthropic projection. */
@@ -666,6 +483,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     stream: init.stream,
     body: init.body,
     prepareHints: init.prepareHints ?? {},
+    ...(init.requestState !== undefined && { requestState: init.requestState }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createAnthropicLazyView(env.body)
@@ -679,6 +497,7 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
         body: env.body,
         ctx: env.ctx,
         prepareHints: env.prepareHints,
+        requestState: env.requestState,
         ...patch,
       })
     },

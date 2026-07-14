@@ -161,9 +161,14 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
   const existingNamesLower = new Set(tools.map((t) => t.name.toLowerCase()))
   const toolSearchEnabled = state.toolSearchEnabled && modelSupportsToolSearch(modelId, resolvedModel)
 
-  // Collect tool names already referenced in message history — these must
-  // stay non-deferred to avoid "Tool reference not found" errors
-  const historyToolNames = toolSearchEnabled ? collectHistoryToolNames(messages) : undefined
+  // Collect tool names already referenced in message history. Two independent
+  // consumers below:
+  //  - shouldDefer (tool_search only): these must stay non-deferred to avoid
+  //    "Tool reference not found" errors — gated by its own `toolSearchEnabled &&`.
+  //  - the history-stub safety net (Path 2 below): name-agnostic, applies regardless
+  //    of tool_search — an orphaned historical tool_use gets rejected by GHC whether
+  //    or not tool_search is on, so this must NOT be gated on toolSearchEnabled.
+  const historyToolNames = collectHistoryToolNames(messages)
 
   const nonDeferred: Array<Tool> = []
   const deferred: Array<Tool> = []
@@ -191,7 +196,7 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
       && tool.defer_loading !== false
       && !NON_DEFERRED_TOOL_NAMES.has(tool.name)
       && !state.nonDeferredTools.includes(tool.name)
-      && !historyToolNames?.has(tool.name)
+      && !historyToolNames.has(tool.name)
 
     if (shouldDefer) {
       deferred.push({ ...normalized, defer_loading: true })
@@ -230,7 +235,7 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
   // turns but not included in the current request. Without these stubs, the API
   // rejects the request because the historical tool_use references a tool that
   // doesn't exist in the tools list at all.
-  if (historyToolNames) {
+  if (historyToolNames.size > 0) {
     const allResultNames = new Set([...nonDeferred, ...deferred, ...result].map((t) => t.name))
     for (const name of historyToolNames) {
       if (!allResultNames.has(name)) {
@@ -336,6 +341,11 @@ const API_DEFINED_TOOL_TYPE_PREFIXES = [
   "text_editor_",
   "computer_",
   "bash_",
+  // CC 2.1.207 additions (F32) — server-tool `type` values seen in app.pretty.js.
+  "advisor_",
+  "agent_toolset_",
+  "memory_",
+  "tool_search_",
 ]
 
 /** Check whether a tool's `type` matches a known API-defined typed-tool prefix (NOT necessarily server-executed — see above). */

@@ -21,7 +21,6 @@ import {
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import type { Model } from "~/lib/models/client"
 import type {
   //
   ClientFrame,
@@ -29,19 +28,14 @@ import type {
   Transport,
   UpstreamStream,
 } from "~/lib/pipeline/types"
-import type { MessagesPayload } from "~/types/api/anthropic"
 import type { ResponsesStreamEvent } from "~/types/api/openai-responses"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
-  buildReverseResanitize,
   createReverseAnthropicMapperHolder,
-  createReverseAnthropicSanitizeRewrite,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
-import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { withCapturingManager } from "~/lib/context/manager"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { accumulateResponsesStreamEvent, createResponsesStreamAccumulator, finalizeResponsesContent } from "~/lib/openai/responses-stream-accumulator"
@@ -63,19 +57,14 @@ function sseStream(frames: Array<ServerSentEventMessage>, nonStream?: unknown): 
 function makeReverseDriver(upstream: UpstreamStream) {
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder("claude-x")
-  const codec = createOpenAiResponsesCodec({ reverseBetaProbe })
+  const codec = createOpenAiResponsesCodec({ reverseBetaProbe, reverseMapperHolder })
   const transport: Transport = { send: () => Promise.resolve(upstream) }
+  // C2b/C4: the reverse `(openai-responses, /v1/messages)` cell (and every other) is dispatched through the
+  // CellAssembly, which reads the beta probe + mapper holder off `env.requestState`. The driver takes no
+  // `requestRewrites`/`strategies` deps — this test drives the REAL assembly end-to-end.
   const driver = createPipelineDriver({
     codec,
     transport,
-    requestRewrites: [createReverseAnthropicSanitizeRewrite(reverseMapperHolder)],
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) =>
-      env.targetEndpoint === ENDPOINT.MESSAGES ?
-        assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, {
-          anthropic: { originalPayload: env.body as MessagesPayload, resanitize: buildReverseResanitize(reverseMapperHolder), model: env.model as Model | undefined, maxRetries: 0, betaProbe: reverseBetaProbe },
-        })
-      : [],
     maxRetries: 0,
     maxLearningRetries: 0,
   })

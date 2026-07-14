@@ -153,6 +153,9 @@ function toEntryRow(r: LegacyRow): EntryRow {
     request_bytes: null,
     response_bytes: null,
     multiplier: null,
+    client_stream_open_ms: null,
+    client_first_real_ms: null,
+    buffer_hold_start_ms: null,
     blob_gz: r.blob_gz,
   }
 }

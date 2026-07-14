@@ -9,7 +9,7 @@
 4. skills：`telemetry-architecture`（registry 三支柱 + cap per-store + histogram _sum/_count 同批坑）、`history-sqlite-schema`（Umzug hybrid + STRICT/WITHOUT ROWID + zstd）、`history-backfill`（可恢复骨架）、`test-isolation`（DI 临时 db_path）、`bun-node-runtime-gotchas`。
 
 **红线（Global Constraints，每 task 隐含继承）：**
-- cost 用 **scaled-int nano**（`round(cost*1e9)` INTEGER），绝不 STRICT INTEGER 存 REAL（PoC 证抛异常）。
+- cost 用 **scaled-int micro**（`round(cost*1e6)`、列名 `cost_*_micro`、INTEGER），绝不 STRICT INTEGER 存 REAL（PoC 证抛异常）。**micro 非 nano**：nano 使永久 cumulative 撞 2^53 丢精度、且 token 是整数使 micro 下限已够。
 - DDSketch **手动 DenseStore 序列化**（保 min/max），绝不 `toProto/fromProto`；`sketch_gamma` 下限 ~0.005。
 - `/metrics` 读**精确固定桶**（非 sketch），`_sum`/`_count` 同批；DDSketch 仅供 `/api/stats`。
 - **双轨计数**：进程内 process-lifetime（/metrics + thinking_blocks 归零契约）+ 持久 cumulative（lifetime）。

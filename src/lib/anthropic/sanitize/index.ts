@@ -21,6 +21,7 @@ import {
   //
   countAnthropicContentBlocks,
   filterEmptyThinkingBlocks,
+  stripSyntheticReasoningBlocks,
 } from "./content-blocks"
 import { deduplicateToolCalls } from "./deduplicate-tool-calls"
 import { destackAdjacentThinking } from "./destack-adjacent-thinking"
@@ -115,6 +116,11 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // prior-turn server-tool blocks so this is a no-op) and narrowly targets only the
   // proven-broken shape. See empty-encrypted-search-result.ts.
   messages = downgradeEmptyEncryptedSearchResults(messages).messages
+
+  // Strip OUR synthetic-reasoning thinking blocks (sentinel-signed GPT-reasoning forwards) FIRST and
+  // UNCONDITIONALLY — a client echoing one back onto the direct Claude leg would 400 upstream with our
+  // unforgeable signature. This is a self-owned poison guard, NOT gated by thinkingBlockSanitizeCheck.
+  messages = stripSyntheticReasoningBlocks(messages)
 
   // Drop corrupt (unsigned) thinking blocks BEFORE processToolBlocks so its existing
   // empty-message cleanup (content.length === 0 → drop the whole message) handles any

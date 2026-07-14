@@ -10,9 +10,11 @@
 
 ## 核心事实（已核实）
 
-`logUpstreamStreamDisconnect` **全仓唯一可达调用链**：[streaming-pump.ts:70](../src/routes/messages/streaming-pump.ts#L70) `logUpstreamStreamError` ← 仅被 [handler-v4.ts:1191](../src/routes/messages/handler-v4.ts#L1191)（Anthropic Messages 主 pump）+ [web-search-direct.ts:496](../src/routes/messages/web-search-direct.ts#L496)（Anthropic web_search 直连）调用。
+> **⚠️ 2026-07-14 更新（部分已实施，本节旧结论已被推翻）**：下面「Anthropic Messages 端点独占」的结论**已不再成立**。`logUpstreamStreamError` 已抽出到共享 leaf [`src/lib/upstream-stream-diagnostics.ts`](../src/lib/upstream-stream-diagnostics.ts)，并接线**全部 7 条非原生-Anthropic pump**（messages translate、responses 直连/反向、responses WS、cc 直连/反向、gemini 直连/反向）+ messages 原生主 pump —— stream-error 路径的 `[upstream-diagnostics] STREAM DISCONNECT` 现已跨端点统一发射（覆盖矩阵里标 ❌「CC/Responses/Gemini 仅泛型 consola.error」的 **stream-error 分支已解决**；`idle-timeout`/`reaper`/truncation 等非-stream-error 触发路径仍待特性②统一）。`web-search-direct.ts` 已随 web_search 双跳退役删除（下方对它的引用失效）。见 `docs/todo/upstream-transport-observability.md` §11。
 
-即：**这条富归因行是 Anthropic Messages 端点独占**。它对 `classifyStreamError`（[stream.ts:85](../src/lib/stream.ts#L85)）的四种非 client-abort kind 都覆盖（`idle-timeout`/`shutdown`/`reaper-cancel`/`other`→重贴 `transport-close`）；`client-abort` 被 driver 短路成 `settled-abort` 永不到达。
+~~`logUpstreamStreamDisconnect` **全仓唯一可达调用链**：[streaming-pump.ts:70](../src/routes/messages/streaming-pump.ts#L70) `logUpstreamStreamError` ← 仅被 [handler-v4.ts:1191](../src/routes/messages/handler-v4.ts#L1191)（Anthropic Messages 主 pump）+ web-search-direct.ts:496（Anthropic web_search 直连）调用。~~ （2026-07-14 起：见上方更新——已跨全部非原生 pump 发射。）
+
+即：~~**这条富归因行是 Anthropic Messages 端点独占**~~（已推翻，见上）。它对 `classifyStreamError`（[stream.ts:85](../src/lib/stream.ts#L85)）的四种非 client-abort kind 都覆盖（`idle-timeout`/`shutdown`/`reaper-cancel`/`other`→重贴 `transport-close`）；`client-abort` 被 driver 短路成 `settled-abort` 永不到达。
 
 ## 覆盖矩阵
 

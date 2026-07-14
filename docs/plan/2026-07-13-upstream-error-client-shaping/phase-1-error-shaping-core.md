@@ -1,5 +1,7 @@
 # Phase 1：error-shaping.ts 核心决策引擎 + canonical 构造 + 类型扩展
 
+> **评审 HIGH-3 共享文件提示**：本 Phase 新建的 `error-shaping.ts` 是 Phase 3/4/5 三方共同追加的共享基座（Phase 3 追加 `buildCanonicalErrorFrameFromRaw`/`parseRawUpstreamErrorFrame`，Phase 4 追加 `buildAskUserQuestionFrames`/`buildAskUserQuestionResponse`，Phase 5 追加 `filterDelegatedStrategies`）。本 Phase 本身与 Phase 2/3/4/5 无编辑冲突（此文件在本 Phase 是新建，尚无人追加），但**必须先于 Phase 3/4/5 全部完成并提交**，且完成后建议按 3→4→5 顺序串行推进下游三个 Phase（详见 README §3 Phase DAG「订正」段），不要假设三者可以各自独立并行追加同一文件而不产生合并冲突。
+
 **依赖**：Phase 0（需要 `state.errorShapingEnabled` 等 4 个字段存在，供测试组装 `ErrorShapingConfig`；决策引擎本身是纯函数，不直接 import `state`）
 **产出**：`src/lib/anthropic/error-shaping.ts`（新文件）+ `SyntheticOriginKind`/`FeatureKind` 扩展
 
@@ -15,7 +17,7 @@ Spec 规定 `decide()` 输入为 `ApiError + config + commitPhase + clientVisibl
 ## 涉及文件
 
 - `src/lib/anthropic/error-shaping.ts`（新增）
-- `src/lib/anthropic/streaming-pump.ts`（`anthropicStreamErrorType` 改为委托 `error-shaping.ts` 的内部辅助，保留导出签名 `(error: unknown) => string` 不变，因为 `codec.ts` 仍引用它）
+- `src/routes/messages/streaming-pump.ts`（**订正（评审 MEDIUM-2）**：文件路径原文误写为 `src/lib/anthropic/streaming-pump.ts`，实际是 `src/routes/messages/streaming-pump.ts:24`；`anthropicStreamErrorType` 改为委托 `error-shaping.ts` 的内部辅助，保留导出签名 `(error: unknown) => string` 不变。真实调用方是 `handler-v4.ts:1193`（`pumpAnthropicStreamingV4` 的 H3 分支）+ `handler-v4.ts:1452`（`pumpTranslateLegStreamingV4` 反向翻译腿），并非 `codec.ts`——`codec.ts:619` 只是一行注释"mirrors legacy anthropicStreamErrorType"，不是调用点，两处真实调用方零改动）
 - `src/lib/pipeline/frame-origin.ts`（`SyntheticOriginKind` 扩两个成员）
 - `src/lib/observability/events.ts`（`FeatureKind` 扩若干成员）
 - `tests/anthropic/error-shaping.unit.test.ts`（新增）
@@ -124,12 +126,12 @@ Spec 规定 `decide()` 输入为 `ApiError + config + commitPhase + clientVisibl
     })
   })
   ```
-  （第二个 describe 的具体断言需要参照 `~/lib/stream` 的 `classifyStreamError` 输入构造既有等价用例——直接照搬 `streaming-pump.ts:24-36` 现有逻辑搬迁，不改变行为，故此测试的核心目的是「确认搬迁后行为不变」而非探索新分支。）
+  （第二个 describe 的具体断言需要参照 `~/lib/stream` 的 `classifyStreamError` 输入构造既有等价用例——直接照搬 `streaming-pump.ts:24-36` 现有逻辑搬迁，不改变行为，故此测试的核心目的是「确认搬迁后行为不变」而非探索新分支。**（评审 MEDIUM-2 补充）**：`anthropicStreamErrorType` 是纯函数（`(error: unknown) => string`），re-export 后对同一输入返回同一输出与调用方无关，因此本 describe 的等价性断言天然覆盖 `handler-v4.ts:1193`（H3 分支）与 `handler-v4.ts:1452`（translate-leg）两个真实调用点——不需要为每个调用点各写一条集成测试，只需确认现有 Phase 3 任务 3.2 里对 `:1193` 的端到端回归测试（golden 锁）与本任务的纯函数单测共同锁定该不变量；`:1452` 因不在本计划改动范围内（全局约束 5），不需要新增集成测试，只依赖此处的纯函数单测保证其消费的实现未变。）
 - [ ] 跑测试确认红
 - [ ] 最小实现：
   - `error-shaping.ts` 内新增 `export function buildCanonicalErrorFrame(d: Extract<ShapingDecision, {kind:"canonical-error"}>): ClientFrame` —— 复用 `post-commit-error.ts` 里 `anthropicErrorFrame`/`anthropicHttpErrorFrame` 已确立的手搓 JSON 模式（不 import `routes/`，遵循 `recover-refusal.ts:212-219` 同款注释约定：「手搓 canonical，因为 `lib/` 不得依赖 `routes/`」）
   - `error-shaping.ts` 内新增 `export function classifyStreamErrorType(error: unknown): string`（把 `streaming-pump.ts:24-36` 的 switch 逻辑原样搬来）
-  - `streaming-pump.ts` 的 `anthropicStreamErrorType` 改为 `export const anthropicStreamErrorType = classifyStreamErrorType`（re-export，保持原导出名/签名，`codec.ts` + `handler-v4.ts` 两处调用方零改动）
+  - `streaming-pump.ts` 的 `anthropicStreamErrorType` 改为 `export const anthropicStreamErrorType = classifyStreamErrorType`（re-export，保持原导出名/签名；**订正（评审 MEDIUM-2）**：真实调用方零改动的是 `handler-v4.ts:1193` + `handler-v4.ts:1452` 两处，非"`codec.ts` + `handler-v4.ts`"——`codec.ts:619` 只是注释，见上方「涉及文件」订正说明）
 - [ ] 确认绿
 - [ ] 提交（`refactor: absorb anthropicStreamErrorType into error-shaping (G-3)`）
 

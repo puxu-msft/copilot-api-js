@@ -13,8 +13,8 @@ import type { ClientFrame } from "~/lib/pipeline/types"
  * event through the decoder.
  *
  * NO `event:` line — real GHC Chat Completions passthrough frames carry `data:` only (no SSE
- * `event:` line; only the via-Responses bridge synthesizes `event: "message"`, see
- * `renderResponsesFrameToCc`). Omitting `event` here matches the DOMINANT real-wire shape (direct
+ * `event:` line; only the via-Responses bridge synthesizes `event: "message"`, see the hub's
+ * `createResponsesToCcFrameRenderer`). Omitting `event` here matches the DOMINANT real-wire shape (direct
  * `/chat/completions` passthrough), so this keepalive is indistinguishable in framing from a real
  * upstream content chunk.
  *

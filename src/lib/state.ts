@@ -184,6 +184,15 @@ export interface State {
   /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。默认 `api_error`。 */
   readonly refusalErrorType: string
 
+  /** 上游错误 → 客户端可行动形态整形总开关（`anthropic.error_shaping_enabled`）。关闭时逐字节回退现状。默认 true。 */
+  readonly errorShapingEnabled: boolean
+  /** B 类：content_filtered / 402 / 403(token-refresh 耗尽) 是否合成 AskUserQuestion 轮次而非拍平成错误帧（`anthropic.error_ask_user_question`）。仅交互式部署应开启。默认 false。 */
+  readonly errorAskUserQuestion: boolean
+  /** AUQ 问题文案模板（`anthropic.error_auq_template`），占位符 `{model}`/`{request_id}`/`{error_type}`/`{status}`。空串=内置默认。默认 `""`。 */
+  readonly errorAuqTemplate: string
+  /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」（`anthropic.error_selfheal_delegate`）。键=策略 `.name`，值 `"proxy"|"delegate"`。未列=proxy。默认 `{}`。 */
+  readonly errorSelfhealDelegate: Readonly<Record<string, "proxy" | "delegate">>
+
   /**
    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
    * normalized model-name "family" prefixes; a model has the capability when its normalized id
@@ -608,6 +617,30 @@ export interface State {
    */
   readonly historyDbPath: string
 
+  // ── 分层遥测（telemetry.*，独立 telemetry.db）。近期/远期分辨率与保留可配。 ──
+  /** 遥测总开关（默认 true）。 */
+  readonly telemetryEnabled: boolean
+  /** telemetry.db 路径；空串=用 PATHS.TELEMETRY_DB 默认。 */
+  readonly telemetryDbPath: string
+  /** raw 落盘/flush 间隔秒（默认 60）。 */
+  readonly telemetryPersistInterval: number
+  /** rollup 上卷间隔秒（默认 3600，独立于 persist）。 */
+  readonly telemetryRollupInterval: number
+  /** capped 维度（client/tool）key 上限（默认 200）。 */
+  readonly telemetryCardinalityCap: number
+  /** DDSketch 相对误差 γ（默认 0.01；下限 ~0.005，apply 层校验回落）。 */
+  readonly telemetrySketchGamma: number
+  /** 终身累计层开关（默认 true）。 */
+  readonly telemetryCumulative: boolean
+  /** raw 层桶分辨率（分钟，默认 5；须整除 60，apply 层校验回落）。 */
+  readonly telemetryRawResolutionMinutes: number
+  /** raw 层保留天数（默认 7）。 */
+  readonly telemetryRawRetentionDays: number
+  /** hourly 层保留天数（默认 90）。 */
+  readonly telemetryHourlyRetentionDays: number
+  /** daily 层保留天数（默认 0=永久）。 */
+  readonly telemetryDailyRetentionDays: number
+
   /**
    * Fetch timeout in seconds.
    * Time from request start to receiving HTTP response headers.
@@ -692,6 +725,16 @@ export interface State {
    * 0 = disabled. Default: 600 (10 minutes).
    */
   readonly staleRequestMaxAge: number
+
+  /**
+   * Hard total-duration deadline (seconds) for a single request — the user-facing SLA that a
+   * request will be cancelled + settled by, enforced by a per-request monotonic timer (NOT the
+   * periodic stale reaper, which fires late — see reaper-diagnostics / RFC RC2). 0 = disabled,
+   * in which case behavior is byte-identical to the old stale-reaper-only path. Bundled config
+   * ships an explicit value (an intentional product default; the stale reaper stays as the
+   * leak safety-net for anomalies that outlive the deadline).
+   */
+  readonly requestDeadline: number
 
   /**
    * Interval in seconds for refreshing the cached model list from Copilot.
@@ -862,18 +905,19 @@ export interface State {
   readonly decodeToolInputFields: Record<string, Array<string>>
 
   /**
-   * When true, decode ALL top-level string fields of every tool_use input
-   * (ignores `decodeToolInputFields`). Default false. server_tool_use is
-   * never affected.
-   */
-  readonly decodeAllToolInputFields: boolean
-
-  /**
    * When true, backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item that has a header but no question).
    * Only items missing the `question` key are touched; present-but-empty is left alone. History keeps the upstream-original form.
    * Default true. Runs after `decodeToolInputFields` (so a stringified `questions` array is structured first).
    */
   readonly backfillQuestionFromHeader: boolean
+
+  /**
+   * When true, recover a missing SendMessage `to` recipient from a misnamed `agentId` alias on the
+   * response wire (the client rejects a SendMessage call whose required `to` is absent). Only touched
+   * when `to` is absent and `agentId` is a non-empty string; History keeps the upstream-original form.
+   * Default true.
+   */
+  readonly fixSendMessageRecipient: boolean
 
   /**
    * Default TTL (ms) for reactive learning records (feature-negotiation cache).
@@ -958,6 +1002,7 @@ function cloneState(source: MutableState): MutableState {
     modelIndex: new Map(source.modelIndex),
     modelOverrides: { ...source.modelOverrides },
     toolSearchOverrides: { ...source.toolSearchOverrides },
+    errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
     effortsOverrides: { ...source.effortsOverrides },
     streamIdleTimeoutOverrides: { ...source.streamIdleTimeoutOverrides },
     responseHeaderTimeoutOverrides: { ...source.responseHeaderTimeoutOverrides },
@@ -1005,6 +1050,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("toolSearchOverrides" in patch) {
     cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
+  }
+  if ("errorSelfhealDelegate" in patch) {
+    cloned.errorSelfhealDelegate = patch.errorSelfhealDelegate ? { ...patch.errorSelfhealDelegate } : undefined
   }
   if ("models" in patch) {
     cloned.models = cloneModels(patch.models)
@@ -1228,6 +1276,10 @@ export function setAnthropicBehavior(
       | "refusalEndTurnText"
       | "refusalErrorMessage"
       | "refusalErrorType"
+      | "errorShapingEnabled"
+      | "errorAskUserQuestion"
+      | "errorAuqTemplate"
+      | "errorSelfhealDelegate"
       | "contextEditingModels"
       | "toolSearchOverrides"
       | "memoryToolEnabled"
@@ -1245,8 +1297,8 @@ export function setAnthropicBehavior(
       | "keepToolFields"
       | "rejectBodyFields"
       | "decodeToolInputFields"
-      | "decodeAllToolInputFields"
       | "backfillQuestionFromHeader"
+      | "fixSendMessageRecipient"
     >
   >,
 ): void {
@@ -1284,6 +1336,47 @@ export function setHistoryConfig(
   if (reaperConfigChanged) {
     for (const listener of historyLimitListeners) listener()
   }
+}
+
+/** 遥测 timer（persist/rollup 间隔）变更监听者——telemetry 模块用它热重载重调周期而不循环 import。 */
+const telemetryConfigListeners = new Set<() => void>()
+
+/**
+ * 应用 telemetry.* 配置补丁到 state。任何影响 persist/rollup timer 的键（间隔/enabled）
+ * 变更时通知监听者重调周期（对齐 setHistoryConfig 的 reaper retune 模式）。
+ */
+export function setTelemetryConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "telemetryEnabled"
+      | "telemetryDbPath"
+      | "telemetryPersistInterval"
+      | "telemetryRollupInterval"
+      | "telemetryCardinalityCap"
+      | "telemetrySketchGamma"
+      | "telemetryCumulative"
+      | "telemetryRawResolutionMinutes"
+      | "telemetryRawRetentionDays"
+      | "telemetryHourlyRetentionDays"
+      | "telemetryDailyRetentionDays"
+    >
+  >,
+): void {
+  const timerConfigChanged =
+    (patch.telemetryPersistInterval !== undefined && patch.telemetryPersistInterval !== mutableState.telemetryPersistInterval)
+    || (patch.telemetryRollupInterval !== undefined && patch.telemetryRollupInterval !== mutableState.telemetryRollupInterval)
+    || (patch.telemetryEnabled !== undefined && patch.telemetryEnabled !== mutableState.telemetryEnabled)
+  updateState(patch)
+  if (timerConfigChanged) {
+    for (const listener of telemetryConfigListeners) listener()
+  }
+}
+
+/** 订阅 telemetry timer 配置变更（persist/rollup 间隔或 enabled）。返回退订函数。 */
+export function onTelemetryConfigChange(listener: () => void): () => void {
+  telemetryConfigListeners.add(listener)
+  return () => telemetryConfigListeners.delete(listener)
 }
 
 /**
@@ -1337,7 +1430,7 @@ export function setTimeoutConfig(
   patch: Partial<
     Pick<
       MutableState,
-      "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval" | "upstreamKeepaliveDelay" | "upstreamH2PingInterval"
+      "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval" | "upstreamKeepaliveDelay" | "upstreamH2PingInterval"
     >
   >,
 ): void {
@@ -1542,6 +1635,10 @@ export const CONFIG_MANAGED_DEFAULTS = {
   refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
   refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
   refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,
+  errorShapingEnabled: true,
+  errorAskUserQuestion: false,
+  errorAuqTemplate: "",
+  errorSelfhealDelegate: {} as Readonly<Record<string, "proxy" | "delegate">>,
   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
   // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
@@ -1572,6 +1669,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   upstreamKeepaliveDelay: 15,
   upstreamH2PingInterval: 15,
   staleRequestMaxAge: 600,
+  requestDeadline: 0,
   modelRefreshInterval: 600,
   shutdownGracefulWait: 60,
   shutdownAbortWait: 120,
@@ -1579,6 +1677,17 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyFailureLimit: 200,
   historyReaperInterval: 600,
   historyDbPath: "",
+  telemetryEnabled: true,
+  telemetryDbPath: "",
+  telemetryPersistInterval: 60,
+  telemetryRollupInterval: 3600,
+  telemetryCardinalityCap: 200,
+  telemetrySketchGamma: 0.01,
+  telemetryCumulative: true,
+  telemetryRawResolutionMinutes: 5,
+  telemetryRawRetentionDays: 7,
+  telemetryHourlyRetentionDays: 90,
+  telemetryDailyRetentionDays: 0,
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
   // Default ON (P2/P4 flip, 2026-07-14): covers BOTH Responses-HTTP (P2) and
@@ -1609,8 +1718,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   keepToolFields: {} as Record<string, Array<string>>,
   rejectBodyFields: {} as Record<string, Array<string>>,
   decodeToolInputFields: { AskUserQuestion: ["questions"] } as Record<string, Array<string>>,
-  decodeAllToolInputFields: false,
   backfillQuestionFromHeader: true,
+  fixSendMessageRecipient: true,
   negotiationDefaultTtlMs: 30 * 86_400_000,
   negotiationTtlOverridesMs: { toolFields: 90 * 86_400_000, partnerFeatures: Number.POSITIVE_INFINITY } as Record<string, number>,
   disabledModels: [] as ReadonlyArray<string>,
@@ -1669,6 +1778,10 @@ export function resetConfigManagedState(): void {
     refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
     refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
     refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+    errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
+    errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
+    errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
+    errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
     toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
     memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
@@ -1686,8 +1799,8 @@ export function resetConfigManagedState(): void {
     keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
     rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
-    decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
     backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+    fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
   })
   setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
   setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
@@ -1697,6 +1810,7 @@ export function resetConfigManagedState(): void {
     upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
     upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
     staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+    requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
     modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   })
   setShutdownConfig({
@@ -1716,6 +1830,19 @@ export function resetConfigManagedState(): void {
     historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
     historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  })
+  setTelemetryConfig({
+    telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
+    telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
+    telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
+    telemetryRollupInterval: CONFIG_MANAGED_DEFAULTS.telemetryRollupInterval,
+    telemetryCardinalityCap: CONFIG_MANAGED_DEFAULTS.telemetryCardinalityCap,
+    telemetrySketchGamma: CONFIG_MANAGED_DEFAULTS.telemetrySketchGamma,
+    telemetryCumulative: CONFIG_MANAGED_DEFAULTS.telemetryCumulative,
+    telemetryRawResolutionMinutes: CONFIG_MANAGED_DEFAULTS.telemetryRawResolutionMinutes,
+    telemetryRawRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryRawRetentionDays,
+    telemetryHourlyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryHourlyRetentionDays,
+    telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
   })
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
@@ -1752,6 +1879,10 @@ const mutableState: MutableState = {
   refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
   refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
   refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+  errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
+  errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
+  errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
+  errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
   toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
   memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
@@ -1803,6 +1934,17 @@ const mutableState: MutableState = {
   historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
   historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
+  telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
+  telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
+  telemetryRollupInterval: CONFIG_MANAGED_DEFAULTS.telemetryRollupInterval,
+  telemetryCardinalityCap: CONFIG_MANAGED_DEFAULTS.telemetryCardinalityCap,
+  telemetrySketchGamma: CONFIG_MANAGED_DEFAULTS.telemetrySketchGamma,
+  telemetryCumulative: CONFIG_MANAGED_DEFAULTS.telemetryCumulative,
+  telemetryRawResolutionMinutes: CONFIG_MANAGED_DEFAULTS.telemetryRawResolutionMinutes,
+  telemetryRawRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryRawRetentionDays,
+  telemetryHourlyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryHourlyRetentionDays,
+  telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
   modelIds: new Set(),
   modelIndex: new Map(),
   modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },
@@ -1811,6 +1953,7 @@ const mutableState: MutableState = {
   shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
   staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+  requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
   modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
@@ -1839,8 +1982,8 @@ const mutableState: MutableState = {
   keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
   rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
   decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
-  decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
   backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+  fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
   negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
   negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
   disabledModels: [...CONFIG_MANAGED_DEFAULTS.disabledModels],

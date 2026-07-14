@@ -12,6 +12,11 @@ import type {
   WebSearchToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages"
 
+import type {
+  //
+  AskNormalizationDiag,
+  SendMessageNormalizationDiag,
+} from "~/lib/anthropic/decode-tool-input-core"
 import type { DestackStats } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { ProcessIdentity } from "~/lib/process-identity"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
@@ -180,8 +185,23 @@ export interface SseEventRecord {
    *   - "refusal-recovery" — the FORWARDED track's frame was injected or rewritten by refusal recovery
    *     (the end_turn synthetic text block + rewritten end_turn delta, or the error-mode `event: error`
    *     frame). The upstream track never carries it (it keeps the genuine upstream `refusal`).
+   *   - "error-shaping-canonical" — the FORWARDED track's post-commit terminal `event: error` frame was
+   *     produced by error-shaping's `buildCanonicalErrorFrame` (G-3), REPLACING the upstream terminator;
+   *     the upstream track keeps the real upstream error. (Phase 3 wiring.)
+   *   - "error-shaping-auq" — the FORWARDED track's frames are the pre-commit AskUserQuestion synthesis
+   *     (a whole fabricated success turn injected in lieu of the upstream error); the upstream track
+   *     keeps the real error. (Phase 4 wiring.)
    */
-  synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-mock" | "hook-rewrite" | "hook-replay" | "refusal-recovery"
+  synthetic?:
+    | "keepalive"
+    | "anchor"
+    | "synthetic-message-start"
+    | "hook-mock"
+    | "hook-rewrite"
+    | "hook-replay"
+    | "refusal-recovery"
+    | "error-shaping-canonical"
+    | "error-shaping-auq"
 }
 
 /**
@@ -213,6 +233,10 @@ export interface PipelineInfo {
   streamIdleTimeoutMs?: number
   /** 本请求的 per-model 有效首字节超时（ms；`resolveResponseHeaderTimeoutMs`）。 */
   responseHeaderTimeoutMs?: number
+  /** AskUserQuestion 顶层键规范化诊断（spec 2026-07-13）：salvage 抢救顶层 question / 剥离 schema 非法顶层键 / 留痕被丢弃的真问题文本。落 history 供全人群审计。 */
+  askUserQuestionNormalization?: AskNormalizationDiag
+  /** SendMessage 收件人抢救诊断：把错名的 `agentId` 别名重命名回必填的 `to`（客户端否则报 `to is missing`）。落 history 供全人群审计。 */
+  sendMessageNormalization?: SendMessageNormalizationDiag
 }
 
 export interface WarningMessage {
@@ -304,7 +328,7 @@ export interface ModelInfo {
    *   - `routeOverride` — the client's explicit `@cc/@responses/@messages` leg pin (undefined = none).
    *   - `outboundEndpoint` — the ACTUAL outbound leg chosen (`env.targetEndpoint`).
    *   - `translated` — did the leg require a format translation (`kind==="translate"`) vs a direct
-   *     passthrough (`false`)? Mirrors the openai-gemini `ENDPOINT_TYPE` translation-vs-direct label,
+   *     passthrough (`false`)? Mirrors the gemini `ENDPOINT_TYPE` translation-vs-direct label,
    *     so history/UI can distinguish a translated leg from a direct one. In Phase 1 there is no
    *     translation leg yet, so every live request records `translated:false` (a direct leg).
    */
@@ -523,7 +547,14 @@ export interface HistoryEntry {
     sseEvents?: Array<SseEventRecord>
     /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
     responseHeaders?: Record<string, string>
+    /** 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻，绝对 epoch。经 toHistoryAttempts 透传（owner）。 */
+    upstreamHeadersAt?: number
+    upstreamMessageStartAt?: number
+    upstreamFirstTokenAt?: number
+    upstreamLastTokenAt?: number
   }>
+  /** 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻，offset ms 相对 started_at。落 entry 列。 */
+  timing?: { client?: { streamOpenMs?: number; firstRealMs?: number; bufferHoldStartMs?: number } }
 }
 
 export interface HistoryState {

@@ -26,9 +26,10 @@
  *   - `finish_reason` → `stop_reason`: stop→end_turn / tool_calls→tool_use / length→max_tokens /
  *     content_filter→end_turn (N3: content-filter is DISTINGUISHABLE — the codec records a ctx marker;
  *     Anthropic has no content_filter stop_reason so the wire value degrades to end_turn).
- *   - `message.reasoning`/`reasoning_content` — DROPPED (cc leg returns none non-streaming, PROBE OQ1;
- *     the reverse red line against SYNTHESIZING thinking is a request-side concern, N/A here — this is
- *     a genuine model response, but there is no signed thinking to reconstruct, so none is fabricated).
+ *   - `message.reasoning`/`reasoning_content` — FORWARDED as a leading synthetic `thinking` block under a
+ *     SENTINEL signature (richest-data-flow; stripped on echo-back, see `~/lib/anthropic/synthetic-reasoning`).
+ *     GHC's non-streaming cc leg usually returns none (PROBE OQ1), so this is typically a no-op — but when
+ *     present it is no longer dropped. We cannot forge a real signature, hence the sentinel + request-side strip.
  */
 
 import type { StopReason } from "@anthropic-ai/sdk/resources/messages"
@@ -36,6 +37,7 @@ import type { StopReason } from "@anthropic-ai/sdk/resources/messages"
 import type {
   //
   TextBlockParam,
+  ThinkingBlockParam,
   ToolUseBlockParam,
 } from "~/types/api/anthropic"
 import type {
@@ -46,13 +48,14 @@ import type {
 } from "~/types/api/openai-chat-completions"
 
 import { repairToolInput } from "~/lib/anthropic/tool-input-repair"
+import { buildSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
 import { netInputTokens } from "~/lib/request/usage-normalize"
 
 /** The default repair cascade for a malformed tool-call `arguments` JSON string (full battle-tested stack). */
 const RESPONSE_TOOL_REPAIR_ITEMS = ["tags", "unicode", "jsonrepair"] as const
 
-/** A translated Anthropic response content block (text or tool_use — the only shapes a CC completion yields). */
-type AnthropicResponseBlock = TextBlockParam | ToolUseBlockParam
+/** A translated Anthropic response content block (thinking / text / tool_use — the shapes a CC completion yields). */
+type AnthropicResponseBlock = ThinkingBlockParam | TextBlockParam | ToolUseBlockParam
 
 /**
  * The Anthropic Messages response shape produced from a CC completion (spec §7.1). A structural subset
@@ -103,11 +106,20 @@ export function translateCCResponseToAnthropic(response: ChatCompletionResponse)
   let sawToolUse = false
   let sawLength = false
   let contentFiltered = false
+  // Collect plaintext reasoning across choices — forwarded as a leading synthetic thinking block
+  // (richest-data-flow; stripped on echo-back via the labeled-envelope signature). GHC's non-streaming
+  // cc leg usually returns none (PROBE OQ1), so this is typically a no-op — but never drop it when present.
+  let reasoningText = ""
+  let reasoningEncrypted: string | undefined
 
   // Multi-choices FOLD: walk EVERY choice in order (GHC splits text/tool across choices) and append
   // its text block (if any) then its tool_use blocks — preserving block order across the fold.
   for (const choice of response.choices) {
     const message = choice.message
+    const msgExt = message as { reasoning?: unknown; reasoning_content?: unknown; reasoning_encrypted_content?: unknown }
+    const reasoningRaw = msgExt.reasoning ?? msgExt.reasoning_content
+    if (typeof reasoningRaw === "string") reasoningText += reasoningRaw
+    if (typeof msgExt.reasoning_encrypted_content === "string" && msgExt.reasoning_encrypted_content.length > 0) reasoningEncrypted = msgExt.reasoning_encrypted_content
     if (typeof message.content === "string" && message.content.length > 0) {
       content.push({ type: "text", text: message.content } satisfies TextBlockParam)
     }
@@ -134,6 +146,11 @@ export function translateCCResponseToAnthropic(response: ChatCompletionResponse)
   // content_filter that blocked everything) would otherwise yield `content:[]`, which a client
   // assuming ≥1 block may choke on — degrade to a single empty text block to stay wire-faithful.
   if (content.length === 0) content.push({ type: "text", text: "" } satisfies TextBlockParam)
+
+  // Prepend the synthetic reasoning (thinking) block, if any — Anthropic requires thinking FIRST.
+  if (reasoningText.length > 0) {
+    content.unshift({ type: "thinking", thinking: reasoningText, signature: buildSyntheticReasoningSignature(reasoningEncrypted) } satisfies ThinkingBlockParam)
+  }
 
   return {
     response: {

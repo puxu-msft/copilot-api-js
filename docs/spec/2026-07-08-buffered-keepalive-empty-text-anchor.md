@@ -349,3 +349,9 @@ buffered 路径在 commit flush 时一次性 remap（§3.3）；**live 路径帧
 - **`enveloped_ping` 若 oracle 判「撑不过 300s」**：同 `ping` 会超时，但客户端有 message 信封——知情中间档。
 - **web_search bypass 独立心跳**（[streaming-pump.ts](../../src/routes/messages/streaming-pump.ts)，§4）：本扩展不动，可后续复用合成前奏。
 - **其他端点（OpenAI CC / Gemini / Responses）scope（L2，`defer-potential-demand`）**：300s no-real-content 是 **CC 客户端特有** watchdog；这些端点服务其他客户端，其超时行为未实测。本扩展**仅 scope Anthropic `/v1/messages`**。是否有类似 pre-response 超时风险、是否需同类保活——**记录待查**（`docs/todo/deferred-backlog.md`），不静默省略、也不在本次做（无实测证据前不臆断）。
+
+### 10.10 修正（2026-07-14）：early-message_start-then-silence 的双 message_start
+
+§10.1.5 C1 的事故是**纯 pre-response 静默**（连 message_start 都没有），故注入器只在「无 message_start 可捕获」时合成。但**翻译型 /responses 上游**破坏了这个心智模型：上游 `response.created` 在 t≈0 就翻成一个**真实 message_start** 经 live pump 早早转发（`injected=false` → 对账层 passthrough），随后是**整段 reasoning 静默**（reasoning 帧非客户端 content）。等心跳 idle tick 触发时，注入器只看 `state.injected`（仍 false）、`capturedMessageStart`（undefined——该字段仅 buffered 路径写）→ **合成第二个 message_start**。客户端遂收到两个 message_start（History `req_1784035548020_524` / `_564` / `_719`，全是长 reasoning 的 gpt-5.6-sol turn；History 详情页两个 leg 各渲一个更放大观感）。
+
+**修正**：`reconcileLiveFrame` 在 not-injected passthrough 时，若帧是真实 message_start 就置 `messageStartForwarded=true`（wire 逐字节不变，仅翻共享 flag）。两个注入器（`empty_text` 的 `makeSyntheticAnchorInjector` + `enveloped_ping` 的 envelope-only）都**先查 `messageStartForwarded`**：已转发则**不再发 message_start**，`empty_text` 只开锚点 block + 空 delta、`enveloped_ping` 直接标 `injected` 退裸 ping。exactly-one-message_start 不变量因此覆盖**两条转发路径**（buffered 捕获腿 + live 早转发腿），不只 buffered。producer-oracle 回归 [live-reconcile-collision-e2e.test.ts](../../tests/pipeline/live-reconcile-collision-e2e.test.ts)（真 driver + 早 message_start + 静默 + resume → wire 恰一个 message_start）。

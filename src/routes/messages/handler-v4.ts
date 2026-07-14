@@ -46,7 +46,6 @@ import type {
   ClientFrame,
   ClientSink,
   DriverRequestResult,
-  RetryStrategy,
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
@@ -55,7 +54,6 @@ import type {
   MessagesPayload,
   StreamEvent,
 } from "~/types/api/anthropic"
-import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import {
@@ -108,8 +106,6 @@ import {
 } from "~/lib/anthropic/warmup"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { anthropicCommitBoundaries } from "~/lib/codec/anthropic/commit-boundaries"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
-import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import {
   //
   HTTPError,
@@ -135,6 +131,7 @@ import {
 import { makeSseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
+import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
 import {
   //
@@ -149,7 +146,17 @@ import {
 } from "~/lib/state"
 import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
+import {
+  //
+  createUpstreamFrameDiagnostics,
+  logUpstreamStreamTruncation,
+} from "~/lib/upstream-stream-diagnostics"
 
+import {
+  //
+  shapePostcommitErrorFrame,
+  shapeRawStreamErrorFrame,
+} from "./error-shaping-glue"
 import {
   //
   anthropicErrorFrame,
@@ -243,55 +250,6 @@ interface RunMessagesDriverArgs {
   routeOverride?: RouteOverride
 }
 
-/**
- * Build the driver's per-request retry-strategy stack for the Anthropic /v1/messages route, keyed
- * by the OUTBOUND leg (`env.targetEndpoint`), resolved AFTER `translateOut` so `env.body` is already
- * the target-leg body. This is the SINGLE production factory (the driver invokes it as `deps.strategies`);
- * exported so tests can drive the REAL seam instead of injecting `strategies:[]`.
- *
- *   - DIRECT / reverse `/v1/messages`: the ANTHROPIC stack (RFC §7.1 / W-strategies-builder). The
- *     Anthropic supply is decoupled from the route codec (resanitize/betaProbe/baseline), so a reverse
- *     leg could fill the SAME supply from the hub. `env.body` is the Anthropic body → truncation baseline
- *     is the codec's captured baseline (falls back to `env.body`).
- *   - FORWARD translate `/chat/completions` | `/responses` | `ws:/responses` (Phase 7): the CC stack.
- *     `env.body` is post-`translateOut`, i.e. already the CC-shaped body the hub produced, so it is the
- *     correct auto-truncate baseline (the CC→Responses wire step is deferred to `prepareWire`, so the
- *     Responses legs still truncate on the CC shape — parity with the openai-cc/gemini via-responses legs).
- *     Before Phase 7 this path threw `no strategy builder registered`, 500ing every `@cc`/`@responses`
- *     forward request.
- */
-export function buildMessagesDriverStrategies(
-  env: RequestEnvelope,
-  deps: { codec: ReturnType<typeof createAnthropicCodec>; betaProbe: ReturnType<typeof createBetaProbe> },
-): ReadonlyArray<RetryStrategy> {
-  const { codec, betaProbe } = deps
-  if (env.targetEndpoint === ENDPOINT.MESSAGES) {
-    // parse resolves the factory AFTER parse populated resanitize, so it is present here; the guard is
-    // defensive (an unreachable parse failure would have thrown before the factory runs).
-    const resanitize = codec.getResanitize()
-    if (!resanitize) throw new Error("[Anthropic:v4] resanitize chain unavailable — codec.parse did not run")
-    return assembleStrategiesForEndpoint(env.targetEndpoint, {
-      anthropic: {
-        originalPayload: codec.getTruncateBaseline() ?? (env.body as MessagesPayload),
-        resanitize,
-        model: env.model as Model | undefined,
-        maxRetries: state.maxReactiveRetries,
-        betaProbe,
-      },
-    })
-  }
-
-  // FORWARD translate leg (anthropic→cc/responses): the CC strategy stack off the hub-translated CC body.
-  return assembleStrategiesForEndpoint(env.targetEndpoint, {
-    cc: {
-      originalPayload: env.body as ChatCompletionsPayload,
-      model: env.model as Model | undefined,
-      maxRetries: state.maxReactiveRetries,
-      label: env.targetEndpoint === ENDPOINT.RESPONSES ? "Anthropic(→Responses)" : "Anthropic(→CC)",
-    },
-  })
-}
-
 async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promise<Response> {
   const { wireBody, clientRaw, resolvedName, preprocessInfo } = args
 
@@ -315,17 +273,10 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   const driver = createPipelineDriver({
     codec,
     transport,
-    // S3 — the Anthropic request sanitize chain + its recordings, lifted from
-    // codec.parse into a per-request RequestRewrite (RFC §4.A0). The codec owns them
-    // (they close over preprocessInfo + write initialSanitizationInfo back).
-    requestRewrites: codec.getRequestRewrites(),
-    // S5 — the FULL-FORMAT response-rewrite union (RFC §7.1); the driver's
-    // `assembleResponseRewrites` filters it to the outbound leg by each rewrite's
-    // `targetEndpoint`-keyed `appliesTo`. For anthropic-direct (targetEndpoint===/v1/messages)
-    // that subset is exactly the Anthropic chain (recover/thinking/decode/filter/refusal) — the
-    // per-route array this replaced — so forwarded bytes are unchanged.
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) => buildMessagesDriverStrategies(env, { codec, betaProbe }),
+    // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
+    // (C5 — every anthropic cell is migrated: the direct `/v1/messages` cell + the forward `@cc`/`@responses`
+    // cells). `OUTBOUND_LEGS[/v1/messages]` supplies the sanitize chain (from env.requestState.preprocessInfo)
+    // + the Anthropic strategy stack (from the codec-threaded truncateBaseline / resanitize / betaProbe).
     maxRetries: state.maxReactiveRetries,
     maxLearningRetries: MAX_LEARNING_RETRIES,
     // Post-gate meta sink (C0-② / RFC §11.2 + §12.4): rebuild the retry pipeline-info
@@ -427,6 +378,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       const { buffered, heartbeatSec } = resolveBufferedAndHeartbeat(env)
       const forwardedSseEvents: Array<SseEventRecord> = []
       const streamStartMs = Date.now()
+      env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
       // Synthetic-prelude keepalive: the sink's heartbeat carries the handler-owned UNIQUE injector (spec
       // §10.1.5 C1) + a shared AnchorState threaded to the pump → driver's buffered commit/close-off/remap.
       // `empty_text` → full anchor injector; `enveloped_ping` → envelope-only injector (message_start + bare
@@ -439,6 +391,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         clientAbortSignal: clientAbort.signal,
         resolvedName,
         reqId: codec.getContext()?.id ?? "unknown",
+        ...clientFirstRealSinkOpts(env),
       })
       try {
         await pumpAnthropicStreamingDispatch({ sink, buffered, forwardedSseEvents, streamStartMs, driver, codec, upstream, env, anchorHooks, anchorState })
@@ -496,6 +449,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     const pingSec = state.streamKeepalivePingSec > 0 ? state.streamKeepalivePingSec : resolveBufferedCaps("anthropic").heartbeatSec
     const forwardedSseEvents: Array<SseEventRecord> = []
     const streamStartMs = Date.now()
+    commitCtx?.setClientTimingEpoch("streamOpen", commitInstant) // 首包埋点：延迟提交路径的 200 决定时刻
     // Synthetic-prelude keepalive (delayed-commit path). Built BEFORE the upstream settles — this is the
     // PURE pre-response window the incident hit: the sink's heartbeat carries the handler-owned UNIQUE
     // injector (spec §10.1.5 C1) which fires INDEPENDENTLY of the driver/pump (they don't run until
@@ -509,6 +463,8 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       clientAbortSignal: clientAbort.signal,
       resolvedName,
       reqId: codec.getContext()?.id ?? "unknown",
+      // 首包埋点：/v1/messages 客户端格式恒 "anthropic"（延迟提交路径无 env 变量在 scope）。
+      ...(commitCtx && clientFirstRealSinkOpts({ clientFormat: "anthropic", ctx: commitCtx })),
     })
     stream.onAbort(() => clientAbort.abort()) // register BEFORE the first ping (round-B L1)
     // ④ capture proxy→client headers (set synchronously by streamSSE before this callback).
@@ -565,14 +521,23 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         if (error instanceof HTTPError) {
           // (c) upstream 4xx/5xx — the dominant POST-COMMIT divergence. The rich frame preserves
           // error.type (+ retry_after) so the client SDK still branches correctly (Q2 §4.2.5).
+          // G-3: delegated to the error-shaping builder (canonical ownership); disabled = the legacy
+          // anthropicHttpErrorFrame verbatim (CF-2 golden lock).
           ctx?.fail(resolvedName, error)
           await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
-          await sink.writeSynthetic?.(anthropicHttpErrorFrame(error))
+          await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error), ctx))
           return
         }
         ctx?.fail(resolvedName, error) // unknown non-HTTP, non-abort
         await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
-        await sink.writeSynthetic?.(anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error)))
+        // (①' G-3, MEDIUM-1) classifyError maps this branch's errors (socket reset / HTTP2
+        // REFUSED_STREAM / other non-HTTPError) to network_error / bad_request → decide() → canonical.
+        // This is the ONLY path that produces post-commit network_error, so the Phase 1 truth table's
+        // network_error→canonical-error promise is exercised here. Disabled = the legacy api_error frame
+        // verbatim (CF-2 golden lock).
+        await sink.writeSynthetic?.(
+          shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error)), ctx),
+        )
         return
       }
       if (!result.ok) {
@@ -614,29 +579,36 @@ interface RecordRetryPipelineStateV4Args {
  * Rebuild `setPipelineInfo` + features for an accepted retry. Mirrors the legacy
  * `recordRetryPipelineState`, but the data comes from two channels (RFC §12.4):
  *   - message-mapping baseline ← `codec.getTruncateBaseline()` (preprocessed,
- *     pre-initial-sanitize); mapping effective ← `codec.getLatestEffectiveMessages()`
- *     (sampleRequest-captured, the `action.env.body === action.payload` invariant
- *     makes it the retry's body). (The `thinking` feature is NOT rebuilt here — it
- *     is emitted per-attempt by `prepareWire` as a terminal `{requested, effective}`
- *     dimension; see codec.ts / observability console sink.)
+ *     pre-initial-sanitize); mapping effective ← `ctx.currentAttempt?.effectiveRequest?.messages`
+ *     (the per-attempt sample the anthropic-cell captured; the `action.env.body === action.payload`
+ *     invariant makes it the retry's body). (The `thinking` feature is NOT rebuilt here — it
+ *     is emitted per-attempt by the leg's wire prep as a terminal `{requested, effective}`
+ *     dimension; see anthropic-leg.ts / observability console sink.)
  *   - sanitization / strippedBetas / probedBetas ← `meta` (onMeta, post-gate).
  */
 function recordRetryPipelineStateV4(args: RecordRetryPipelineStateV4Args): void {
-  const { meta, codec, preprocessInfo } = args
+  const { meta, codec, preprocessInfo, env } = args
   const ctx = codec.getContext()
   if (!ctx) return
 
-  const baseline = codec.getTruncateBaseline()
-  const effectiveMessages = codec.getLatestEffectiveMessages()
+  // Data sources re-homed from the codec closure to env.requestState + ctx (RFC §11.2 / C2a): the
+  // direct `/v1/messages` cell is now dispatched through the CellAssembly (stateless), so the codec's
+  // prepareWire/sampleRequest closure is no longer written — the leg supply lives on env.requestState and
+  // the per-attempt side-channels on ctx.currentAttempt. The message-mapping / stripped-cache-control are
+  // DIRECT-leg concerns only (a forward @cc/@responses leg's ctx attempt is CC-shaped), so gate them on
+  // the direct target exactly as the codec's `!isForwardTranslateLeg` branch did.
+  const isDirect = env.targetEndpoint === ENDPOINT.MESSAGES
+  const baseline = env.requestState?.truncateBaseline as MessagesPayload | undefined
+  const effectiveMessages = isDirect ? ctx.currentAttempt?.effectiveRequest?.messages : undefined
 
-  const initialSanitizationInfo = codec.getInitialSanitizationInfo()
+  const initialSanitizationInfo = ctx.initialSanitizationInfo
   const retrySanitization = meta.sanitization as SanitizationStats | undefined
   const allSanitization = [...(initialSanitizationInfo ? [initialSanitizationInfo] : []), ...(retrySanitization ? [toSanitizationInfo(retrySanitization)] : [])]
 
   const retryMessageMapping =
     baseline && effectiveMessages ? buildMessageMapping(baseline.messages, effectiveMessages as MessagesPayload["messages"]) : undefined
 
-  const strippedCacheControl = codec.getLatestStrippedCacheControlSubfields()
+  const strippedCacheControl = isDirect ? ctx.currentAttempt?.cacheControlStripped : undefined
   ctx.setPipelineInfo({
     preprocessing: preprocessInfo,
     sanitization: allSanitization,
@@ -877,9 +849,12 @@ function makeAnchoredSseSink(
     clientAbortSignal: AbortSignal
     resolvedName: string
     reqId: string
+    // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧 → ctx firstReal（透传给 makeSseSink）。
+    isRealContentFrame?: (frame: ClientFrame) => boolean
+    onFirstRealContent?: () => void
   },
 ): { sink: ClientSink; anchorState: AnchorState; anchorHooks: AnchorHooks | undefined } {
-  const { onForwarded, streamStartMs, heartbeatSec, clientAbortSignal, resolvedName, reqId } = args
+  const { onForwarded, streamStartMs, heartbeatSec, clientAbortSignal, resolvedName, reqId, isRealContentFrame, onFirstRealContent } = args
   // Hooks are built for BOTH synthetic-prelude modes (empty_text + enveloped_ping); only `ping` opts out.
   // The mode then selects WHICH injector runs (full anchor vs envelope-only) and whether `anchorBlockOpen`
   // is set — the hooks themselves are the same format primitives.
@@ -897,6 +872,8 @@ function makeAnchoredSseSink(
   const sink = makeSseSink(stream, {
     onForwarded,
     streamStartMs,
+    ...(isRealContentFrame && { isRealContentFrame }),
+    ...(onFirstRealContent && { onFirstRealContent }),
     ...(heartbeatSec > 0 && {
       heartbeat: {
         intervalSec: heartbeatSec,
@@ -1097,7 +1074,12 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     // unrepairable/repair signal never leaks into the committed one (audit C1/H1).
     env.ctx.resetRepairOutcomesForAttempt()
     streamState = {
-      streamStartMs: streamState.streamStartMs,
+      // MEDIUM-2: reset the diagnostic time base to THIS attempt's start (paired with the `sseEvents = []`
+      // reset above) so a zero-frame final buffered attempt reports `silence` relative to the attempt, not
+      // the whole request — otherwise a healthy attempt-1 + instant-fail attempt-2 re-reads as whole-request
+      // silence (the gpt-5.6-sol misread, in a sub-case). `streamStartMs` here feeds ONLY recordUpstreamFrame's
+      // offsetMs + the disconnect elapsed (both per-attempt); the client timing epoch uses the outer const.
+      streamStartMs: Date.now(),
       bytesIn: 0,
       eventsIn: 0,
       currentBlockType: "",
@@ -1207,7 +1189,12 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // guard): a no-op when reconcile already closed it, or when no anchor was injected.
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
       await sink
-        .writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }) })
+        .writeSynthetic?.(
+          shapeRawStreamErrorFrame(errorType, errorMessage, {
+            event: "error",
+            data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }),
+          }),
+        )
         .catch(() => undefined)
       recordForwarded()
       // C1: preserve the partial content accumulated before the throw (mirrors the
@@ -1232,8 +1219,11 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
     if (acc.streamError) {
-      // H2 — a terminal upstream `error` SSE event was forwarded as a content frame (clean
-      // drain, never a thrown error → outcome is `complete`); settle as fail from the acc.
+      // H2 — a terminal upstream `error` SSE event (a clean drain, never a thrown error → outcome is
+      // `complete`). When error-shaping is on, the `errorFrameCanonical` S5 rewrite already RESHAPED the
+      // forwarded frame into a canonical Anthropic envelope before it reached the client (off = forwarded
+      // verbatim); either way the client got the frame. This branch only settles ctx.fail from the
+      // upstream-original `acc.streamError` (acc sees pre-rewrite frames) — it writes NO frame itself.
       consola.error(`[Stream] Upstream error for ${acc.model || model}: ${acc.streamError.type} — ${acc.streamError.message}`)
       // C1: preserve the partial content accumulated before the terminal error frame (mirrors
       // the truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
@@ -1307,16 +1297,19 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // Order: writeSynthetic (samples the error frame) → recordForwarded → fail (see H3 branch).
       const partial = buildAnthropicResponseData(acc, model)
       consola.error(`[Stream] Upstream truncated for ${acc.model || model}: closed after ${streamState.eventsIn} events without message_stop`)
+      logUpstreamStreamTruncation("Upstream stream truncated before completion (no message_stop)", { model: acc.model || model, streamState, acc, sseEvents })
       // §10.5 gap (I-1): the live pump can truncate (clean EOF, no message_stop) BEFORE the first real
       // content_block_start — a delayed-commit stall injected the anchor, then the upstream closed silently.
       // reconcile never closed the anchor, so close it off (stop@0) before the error frame. Idempotent (a
       // real first block already closed it → no-op) + inert (no anchor injected → byte-equivalent).
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
       await sink
-        .writeSynthetic?.({
-          event: "error",
-          data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
-        })
+        .writeSynthetic?.(
+          shapeRawStreamErrorFrame("api_error", "Upstream stream truncated before completion (no message_stop)", {
+            event: "error",
+            data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
+          }),
+        )
         .catch(() => undefined)
       recordForwarded()
       env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
@@ -1399,8 +1392,20 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
   const ccAcc = targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? createOpenAIStreamAccumulator() : undefined
   const respAcc = ccAcc ? undefined : createResponsesStreamAccumulator()
 
+  // Live-stream diagnostic signals for `logUpstreamStreamError` (the blind-spot fix): the translate leg's
+  // upstream is a CC/Responses SSE stream, so it can't reuse the direct pump's Anthropic `recordUpstreamFrame`.
+  // The shared collector observes every raw frame the driver hands this hook (empty keepalives included — the
+  // driver filters the `[DONE]` sentinel BEFORE onUpstreamFrame, so it never reaches here) with an honest
+  // format-agnostic last-frame label — feeding real frames/bytes to the disconnect log so a healthy long stream
+  // capped by the upstream is never misread as `frames=0 / silence=<whole duration>` (the gpt-5.6-sol incident).
+  // The PERSISTED upstream-original track is the driver's (this is diagnostics-only).
+  const diag = createUpstreamFrameDiagnostics(streamStartMs)
+
   const onUpstreamFrame = (frame: UpstreamFrame): void => {
     const rawEvent = frame as ServerSentEventMessage
+    diag.observe(rawEvent)
+    // Accumulation additionally skips empty frames (they carry no outbound-leg content); the diagnostic
+    // counts them as wire activity. (`[DONE]` is already filtered by the driver upstream of this hook.)
     if (!rawEvent.data || rawEvent.data === "[DONE]") return
     try {
       const parsed = JSON.parse(rawEvent.data) as Record<string, unknown>
@@ -1446,21 +1451,27 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       // Anthropic error terminator, snapshot the forwarded track, THEN fail (order load-bearing — ctx.fail
       // freezes inboundResponse; a post-fail snapshot misses the error frame).
       const error = outcome.error
+      const errUsage = codec.getStreamMeta()?.usage
       logUpstreamStreamError(error, {
         model,
-        streamState: { streamStartMs, bytesIn: 0, eventsIn: 0, currentBlockType: "", firstEventLogged: false, recoverFeatureLogged: false },
-        acc: createAnthropicStreamAccumulator(),
-        sseEvents: [],
+        streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+        acc: { inputTokens: errUsage?.input_tokens ?? 0, outputTokens: errUsage?.output_tokens ?? 0 },
+        sseEvents: diag.sseEvents,
       })
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+      // G-3 (FIX-2): the translate leg's client IS an Anthropic /v1/messages client, so its H3 error
+      // terminator is owned by the same canonical builder (byte-identical to the former hand-built JSON;
+      // CF-2 golden-locked off).
       await sink
-        .writeSynthetic?.({
-          event: "error",
-          data: JSON.stringify({
-            type: "error",
-            error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) },
+        .writeSynthetic?.(
+          shapeRawStreamErrorFrame(anthropicStreamErrorType(error), error instanceof Error ? error.message : String(error), {
+            event: "error",
+            data: JSON.stringify({
+              type: "error",
+              error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) },
+            }),
           }),
-        })
+        )
         .catch(() => undefined)
       recordForwarded()
       env.ctx.fail(model, error, outboundResponseData())
@@ -1479,14 +1490,26 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         if (!isMessageTerminatorFrame(frame)) await clientSink.write(frame)
       }
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+      // G-3 (FIX-2): translate-leg truncation terminator via the canonical builder (byte-identical to the
+      // former hand-built JSON — note the translate leg's message says "no finish_reason", the CC/Responses
+      // terminator, distinct from the direct pump's "no message_stop"; CF-2 golden-locked off).
       await sink
-        .writeSynthetic?.({
-          event: "error",
-          data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
-        })
+        .writeSynthetic?.(
+          shapeRawStreamErrorFrame("api_error", "Upstream stream truncated before completion (no finish_reason)", {
+            event: "error",
+            data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
+          }),
+        )
         .catch(() => undefined)
       recordForwarded()
       consola.error(`[Anthropic:v4:translate] Upstream truncated for ${model}: drained without a finish_reason`)
+      const truncUsage = codec.getStreamMeta()?.usage
+      logUpstreamStreamTruncation("Upstream stream truncated before completion (no finish_reason)", {
+        model,
+        streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+        acc: { inputTokens: truncUsage?.input_tokens ?? 0, outputTokens: truncUsage?.output_tokens ?? 0 },
+        sseEvents: diag.sseEvents,
+      })
       env.ctx.fail(model, new Error("upstream stream truncated: closed without finish_reason"), outboundResponseData())
       return
     }

@@ -231,6 +231,74 @@ function nullableBufferedRetry() {
     .optional()
 }
 
+/**
+ * Response-wire fix group — TEXT blocks. Fixes applied to `text` content blocks in the Anthropic
+ * response before forwarding to the client.
+ */
+const ResponseTextFixSchema = z
+  .object({
+    /**
+     * Convert a leaked `<invoke name=…>` tool call that upstream emitted as plain `text` into a real
+     * `tool_use` block (the client otherwise renders it as text and never executes the tool). Default true.
+     */
+    invoke_in_text: nullableBoolean(),
+  })
+  .strict()
+
+/**
+ * Response-wire fix group — TOOL_USE blocks. Fixes applied to `tool_use` content blocks in the Anthropic
+ * response before forwarding to the client. History keeps the upstream-original bytes; only the forwarded
+ * stream/response is repaired.
+ */
+const ResponseToolUseFixSchema = z
+  .object({
+    /**
+     * Repair malformed `tool_use` input that upstream emitted as invalid JSON. A **comma-separated set of
+     * repair items** — a subset of `tags` (structure-aware antml-tag stripping), `unicode` (whitespace-broken
+     * `\uXXXX` escape fix), `jsonrepair` (jsonrepair structural fix), and `unicode-lossy` (LOSSY best-effort:
+     * un-completable `\uXXXX` escapes → U+FFFD, garbling ≥1 char to rescue an otherwise-dead input). Items
+     * cascade in a fixed canonical order (spelling order is ignored) and stack on each other; the lossy
+     * `unicode-lossy` runs LAST, only when every lossless item failed. Empty string (default) = off.
+     */
+    malformed_input: z
+      .string({ error: REPAIR_ITEMS_MSG })
+      .nullable()
+      .transform((v, ctx): ReadonlyArray<RepairItem> | undefined => {
+        if (v === null) return undefined
+        const tokens = v
+          .split(",")
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0)
+        const invalid = tokens.filter((t) => !(REPAIR_ITEMS as ReadonlyArray<string>).includes(t))
+        if (invalid.length > 0) {
+          ctx.addIssue({ code: "custom", message: `${REPAIR_ITEMS_MSG} — got invalid item(s): ${invalid.join(", ")}` })
+          return z.NEVER
+        }
+        // Dedup + canonical order (REPAIR_ITEMS order == cascade order). Empty set = off.
+        const set = new Set(tokens)
+        return REPAIR_ITEMS.filter((it) => set.has(it))
+      })
+      .optional(),
+    /**
+     * Tool name → list of top-level `tool_use` input fields to decode from a stringified JSON string back
+     * to structured form (e.g. `AskUserQuestion.questions` arriving as a JSON string). Keys matched verbatim
+     * against the tool name (NOT model-keyed — no case/separator folding).
+     */
+    decode_top_level_field: z.record(z.string(), z.array(z.string())).optional(),
+    /**
+     * Recover a missing SendMessage `to` recipient from a misnamed `agentId` alias (the client rejects a
+     * SendMessage call whose required `to` is absent). Only touched when `to` is absent and `agentId` is a
+     * non-empty string. Default true.
+     */
+    send_message_to_missing: nullableBoolean(),
+    /**
+     * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` (Claude Code rejects a
+     * question item with a header but no question). Only items missing the `question` key are touched. Default true.
+     */
+    ask_user_question_question_missing: nullableBoolean(),
+  })
+  .strict()
+
 export const AnthropicConfigSchema = z
   .object({
     /** Forward `/v1/messages/count_tokens` to the GHC upstream (exact counts, uses the copilot token). Default true. When false, count_tokens uses the local calibrated tiktoken estimate only. */
@@ -498,9 +566,10 @@ export const AnthropicConfigSchema = z
     // Tool-name-keyed (NOT model-keyed): keys are matched verbatim against the
     // tool name — must NOT go through normalizeModelKeyedRecord, which would
     // fold case/separators and break lookups. Replace semantic (default).
-    tool_decode_input_fields: z.record(z.string(), z.array(z.string())).optional(),
-    tool_decode_all_input_fields: nullableBoolean(),
-    tool_recover_call_text: nullableBoolean(),
+    // Response-wire fixes are grouped under `response_text_fix` (text blocks) and
+    // `response_tool_use_fix` (tool_use blocks); see those section schemas below.
+    response_text_fix: nullableSection(ResponseTextFixSchema),
+    response_tool_use_fix: nullableSection(ResponseToolUseFixSchema),
     refusal_sse_rewrite: nullableEnum(["refusal", "end_turn", "error"] as const),
     /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。支持占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留。空串=不追加 text 块（仅改 end_turn）。未配=内置默认（逐字节等价旧固定文案）。 */
     refusal_end_turn_text: nullableString(),
@@ -508,42 +577,14 @@ export const AnthropicConfigSchema = z
     refusal_error_message: nullableString(),
     /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。未配=内置默认。 */
     refusal_error_type: nullableString(),
-    /**
-     * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item with a header but no question).
-     * Only items missing the `question` key are touched. Default true.
-     */
-    tool_backfill_question: nullableBoolean(),
-    /**
-     * Repair malformed `tool_use` input that upstream emitted as invalid JSON on
-     * the Anthropic response wire. A **comma-separated set of repair items** — a
-     * subset of `tags` (structure-aware antml-tag stripping), `unicode`
-     * (whitespace-broken `\uXXXX` escape fix), `jsonrepair` (jsonrepair structural
-     * fix), and `unicode-lossy` (LOSSY best-effort: un-completable `\uXXXX` escapes
-     * → U+FFFD, garbling ≥1 char to rescue an otherwise-dead input). Items cascade in
-     * a fixed canonical order (spelling order is ignored) and stack on each other;
-     * the lossy `unicode-lossy` runs LAST, only when every lossless item failed.
-     * Empty string (default) = off. History keeps the upstream-original bytes — only
-     * the forwarded stream/response is repaired.
-     */
-    tool_repair_malformed_input: z
-      .string({ error: REPAIR_ITEMS_MSG })
-      .nullable()
-      .transform((v, ctx): ReadonlyArray<RepairItem> | undefined => {
-        if (v === null) return undefined
-        const tokens = v
-          .split(",")
-          .map((t) => t.trim())
-          .filter((t) => t.length > 0)
-        const invalid = tokens.filter((t) => !(REPAIR_ITEMS as ReadonlyArray<string>).includes(t))
-        if (invalid.length > 0) {
-          ctx.addIssue({ code: "custom", message: `${REPAIR_ITEMS_MSG} — got invalid item(s): ${invalid.join(", ")}` })
-          return z.NEVER
-        }
-        // Dedup + canonical order (REPAIR_ITEMS order == cascade order). Empty set = off.
-        const set = new Set(tokens)
-        return REPAIR_ITEMS.filter((it) => set.has(it))
-      })
-      .optional(),
+    /** 上游错误 → 客户端可行动形态整形总开关。关闭时三个终点（forward.ts / 终点①② / S5 canonical rewrite）逐字节回退现状。默认 true。 */
+    error_shaping_enabled: nullableBoolean(),
+    /** B 类：content_filtered / 402 / 403(token-refresh 耗尽) 是否合成 AskUserQuestion 轮次而非拍平成错误帧。仅交互式部署应开启（无服务端探测信号，见 plan D-0）。默认 false。 */
+    error_ask_user_question: nullableBoolean(),
+    /** AUQ 问题文案模板，占位符 {model}/{request_id}/{error_type}/{status}，复用 renderRefusalTemplate。空=内置默认。 */
+    error_auq_template: nullableString(),
+    /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」。键=策略 .name（如 "adaptive-thinking-rejection-retry"），值 "proxy"|"delegate"。未列=proxy（默认更可控）。 */
+    error_selfheal_delegate: z.record(z.string(), z.enum(["proxy", "delegate"])).optional(),
     /**
      * Synthetic SSE keepalive ping cadence (seconds) for the client-facing live
      * Anthropic stream. `0` disables; default **20**, clamped to a large margin
@@ -719,6 +760,47 @@ export const HistoryConfigSchema = z
   .strict()
 
 
+/**
+ * `telemetry.*` —— 分层遥测持久化（独立 telemetry.db）。近期/远期分辨率与保留均可配。
+ * 业务级校验（sketch_gamma 下限、resolution 整除 60）在 config apply 层做 warn-continue，非 zod。
+ */
+export const TelemetryTiersConfigSchema = z
+  .object({
+    raw: nullableSection(
+      z
+        .object({
+          resolution_minutes: nullableNonnegativeInt(),
+          retention_days: nullableNonnegativeInt(),
+        })
+        .strict(),
+    ),
+    hourly: nullableSection(z.object({ retention_days: nullableNonnegativeInt() }).strict()),
+    daily: nullableSection(z.object({ retention_days: nullableNonnegativeInt() }).strict()),
+  })
+  .strict()
+
+export const TelemetryConfigSchema = z
+  .object({
+    /** 总开关（默认 true = 旧行为一直开）。 */
+    enabled: nullableBoolean(),
+    /** 独立 DB 路径（默认 <APP_DIR>/telemetry.db）。 */
+    db_path: nullableString(),
+    /** raw 落盘/flush 间隔秒（默认 60）。 */
+    persist_interval: nullableNonnegativeInt(),
+    /** rollup 上卷间隔秒（默认 3600，独立于 persist，≫ persist）。 */
+    rollup_interval: nullableNonnegativeInt(),
+    /** capped 维度（client/tool）key 上限（默认 200）。 */
+    cardinality_cap: nullableNonnegativeInt(),
+    /** DDSketch 相对误差 γ（默认 0.01=1%；apply 层下限 ~0.005，配更紧警告回落）。上限/下限业务校验在 apply 层。 */
+    sketch_gamma: nullablePositiveNumber(),
+    /** 终身累计层开关（默认 true）。 */
+    cumulative: nullableBoolean(),
+    /** 分层保留（近期 raw / 中期 hourly / 远期 daily）。 */
+    tiers: nullableSection(TelemetryTiersConfigSchema),
+  })
+  .strict()
+
+
 export const RetryConfigSchema = z
   .object({
     /** Shared per-request cap on ALL reactive retry strategies (network / server-error / token-refresh / 400-class negotiation etc.). 0 = a single attempt, no retry. Default 5. Was `auto_truncate.max_retries`. */
@@ -765,6 +847,14 @@ export const TimeoutsConfigSchema = z
     upstream_h2_ping: nullableNonnegativeInt(),
     /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled). Was top-level `stale_request_max_age`. */
     stale_request_max_age: nullableNonnegativeInt(),
+    /**
+     * Hard total-duration deadline (seconds) for a single request — a user-facing SLA enforced by a
+     * per-request timer (NOT the periodic stale reaper, which fires late — RFC RC2). 0 = disabled,
+     * behavior then byte-identical to the stale-reaper-only path. Bundled default is an explicit value
+     * (intentional product default); the stale reaper stays as the leak safety-net (`stale_request_max_age`
+     * should be > `request_deadline`).
+     */
+    request_deadline: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -911,6 +1001,7 @@ export const ConfigSchema = z
     hooks: nullableSection(HooksConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
+    telemetry: nullableSection(TelemetryConfigSchema),
     model_refresh_interval: nullableNonnegativeInt(),
     /**
      * Reactive-learning (feature-negotiation) TTL lifecycle. `default_ttl_days`
@@ -986,6 +1077,7 @@ export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type ChatCompletionsConfig = z.infer<typeof ChatCompletionsConfigSchema>
 export type BufferedRetryOverride = z.infer<typeof BufferedRetryOverrideSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
+export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
 export type Config = z.infer<typeof ConfigSchema>

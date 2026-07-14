@@ -15,14 +15,14 @@
  *      consumer oracle) + the honest OUTBOUND Anthropic accumulator stays distinct (richest-data-flow).
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
 import {
   //
   describe,
   expect,
   test,
 } from "bun:test"
-
-import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type {
   //
@@ -37,20 +37,18 @@ import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import {
   //
-  buildReverseResanitize,
   createReverseAnthropicMapperHolder,
-  createReverseAnthropicSanitizeRewrite,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
-import { assembleStrategiesForEndpoint } from "~/lib/codec/strategy-registry"
 import { withCapturingManager } from "~/lib/context/manager"
 import { ENDPOINT } from "~/lib/models/endpoint"
+import {
+  //
+  accumulateOpenAIStreamEvent,
+  createOpenAIStreamAccumulator,
+} from "~/lib/openai/stream-accumulator"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { accumulateOpenAIStreamEvent, createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import { setModels } from "~/lib/state"
-import type { Model } from "~/lib/models/client"
-import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -67,19 +65,15 @@ function sseStream(frames: Array<ServerSentEventMessage>, nonStream?: unknown): 
 function makeReverseDriver(upstream: UpstreamStream) {
   const reverseBetaProbe = createBetaProbe(undefined)
   const reverseMapperHolder = createReverseAnthropicMapperHolder("claude-x")
-  const codec = createOpenAiCcCodec({ reverseBetaProbe })
+  // C2b/C3: the reverse `(openai-cc, /v1/messages)` cell AND the direct CC leg are both dispatched through
+  // the CellAssembly now, which reads the beta probe + mapper holder off `env.requestState` (parse threads
+  // them from these args). The driver's cell-keyed fork supersedes any `requestRewrites`/`strategies` deps
+  // for every real cell, so the driver takes none — this test drives the REAL assembly end-to-end.
+  const codec = createOpenAiCcCodec({ reverseBetaProbe, reverseMapperHolder })
   const transport: Transport = { send: () => Promise.resolve(upstream) }
   const driver = createPipelineDriver({
     codec,
     transport,
-    requestRewrites: [createReverseAnthropicSanitizeRewrite(reverseMapperHolder)],
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) =>
-      env.targetEndpoint === ENDPOINT.MESSAGES ?
-        assembleStrategiesForEndpoint(ENDPOINT.MESSAGES, {
-          anthropic: { originalPayload: env.body as MessagesPayload, resanitize: buildReverseResanitize(reverseMapperHolder), model: env.model as Model | undefined, maxRetries: 0, betaProbe: reverseBetaProbe },
-        })
-      : [],
     maxRetries: 0,
     maxLearningRetries: 0,
   })
@@ -100,12 +94,24 @@ function ccAccumulate(frames: Array<ClientFrame>): ReturnType<typeof createOpenA
 
 describe("T5.2 — REVERSE cc→messages request wire (dry-run inspectRequest)", () => {
   useIsolatedRuntime()
-  const seed = () => setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
+  const seed = () =>
+    setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
 
   test("@messages leg → prepare-wire yields an Anthropic-shaped wire at /v1/messages (CC→Anthropic reached the wire)", () => {
     seed()
     const { driver } = makeReverseDriver(sseStream([]))
-    const raw = { body: { model: "claude-x@messages", messages: [{ role: "system", content: "be terse" }, { role: "user", content: "hi" }] }, headers: new Headers(), path: "/chat/completions", method: "POST" } as unknown as RawHttpRequest
+    const raw = {
+      body: {
+        model: "claude-x@messages",
+        messages: [
+          { role: "system", content: "be terse" },
+          { role: "user", content: "hi" },
+        ],
+      },
+      headers: new Headers(),
+      path: "/chat/completions",
+      method: "POST",
+    } as unknown as RawHttpRequest
     const insp = withCapturingManager(() => driver.inspectRequest(raw, "prepare-wire")).result
     expect(insp.stoppedAt).toBe("prepare-wire")
 
@@ -127,7 +133,12 @@ describe("T5.2 — REVERSE cc→messages request wire (dry-run inspectRequest)",
   test("direct CC leg (no suffix) → wire stays CC-shaped at /chat/completions (zero regression)", () => {
     seed()
     const { driver } = makeReverseDriver(sseStream([]))
-    const raw = { body: { model: "claude-x", messages: [{ role: "user", content: "hi" }] }, headers: new Headers(), path: "/chat/completions", method: "POST" } as unknown as RawHttpRequest
+    const raw = {
+      body: { model: "claude-x", messages: [{ role: "user", content: "hi" }] },
+      headers: new Headers(),
+      path: "/chat/completions",
+      method: "POST",
+    } as unknown as RawHttpRequest
     const insp = withCapturingManager(() => driver.inspectRequest(raw, "prepare-wire")).result
     const wire = insp.stages["prepare-wire"]
     expect(wire?.url).toBe(ENDPOINT.CHAT_COMPLETIONS)
@@ -137,12 +148,25 @@ describe("T5.2 — REVERSE cc→messages request wire (dry-run inspectRequest)",
 
 describe("T5.2 — REVERSE cc→messages streaming leg end-to-end (mock Anthropic SSE upstream → forwarded CC frames)", () => {
   useIsolatedRuntime()
-  const seed = () => setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
+  const seed = () =>
+    setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
 
   test("text + tool_use Anthropic stream → forwarded CC frames rebuild the completion (independent CC oracle)", async () => {
     seed()
     const upstream = sseStream([
-      anthropicEvent({ type: "message_start", message: { id: "msg_r", type: "message", role: "assistant", model: "claude-x", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 20, output_tokens: 0 } } }),
+      anthropicEvent({
+        type: "message_start",
+        message: {
+          id: "msg_r",
+          type: "message",
+          role: "assistant",
+          model: "claude-x",
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 20, output_tokens: 0 },
+        },
+      }),
       anthropicEvent({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
       anthropicEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Let me check. " } }),
       anthropicEvent({ type: "content_block_stop", index: 0 }),
@@ -153,7 +177,12 @@ describe("T5.2 — REVERSE cc→messages streaming leg end-to-end (mock Anthropi
       anthropicEvent({ type: "message_stop" }),
     ])
     const { codec, driver } = makeReverseDriver(upstream)
-    const raw = { body: { model: "claude-x@messages", messages: [{ role: "user", content: "weather?" }], stream: true }, headers: new Headers(), path: "/chat/completions", method: "POST" } as unknown as RawHttpRequest
+    const raw = {
+      body: { model: "claude-x@messages", messages: [{ role: "user", content: "weather?" }], stream: true },
+      headers: new Headers(),
+      path: "/chat/completions",
+      method: "POST",
+    } as unknown as RawHttpRequest
 
     const { frames, meta } = await withCapturingManager(async () => {
       const result = await driver.runRequest(raw)
@@ -182,7 +211,8 @@ describe("T5.2 — REVERSE cc→messages streaming leg end-to-end (mock Anthropi
 
 describe("T5.2 — REVERSE cc→messages non-streaming leg end-to-end (honest Anthropic outbound)", () => {
   useIsolatedRuntime()
-  const seed = () => setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
+  const seed = () =>
+    setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
 
   test("Anthropic response → CC completion (client) with usage + content preserved", async () => {
     seed()
@@ -197,7 +227,12 @@ describe("T5.2 — REVERSE cc→messages non-streaming leg end-to-end (honest An
       usage: { input_tokens: 12, output_tokens: 4 },
     }
     const { driver } = makeReverseDriver(sseStream([], anthropicResponse))
-    const raw = { body: { model: "claude-x@messages", messages: [{ role: "user", content: "weather?" }] }, headers: new Headers(), path: "/chat/completions", method: "POST" } as unknown as RawHttpRequest
+    const raw = {
+      body: { model: "claude-x@messages", messages: [{ role: "user", content: "weather?" }] },
+      headers: new Headers(),
+      path: "/chat/completions",
+      method: "POST",
+    } as unknown as RawHttpRequest
 
     const cc = await withCapturingManager(async () => {
       const result = await driver.runRequest(raw)
@@ -205,7 +240,11 @@ describe("T5.2 — REVERSE cc→messages non-streaming leg end-to-end (honest An
       return driver.runResponseNonStreaming(result.upstream, result.env)
     }).result
 
-    const ccResp = cc as { object: string; choices: Array<{ message: { content: string }; finish_reason: string }>; usage: { prompt_tokens: number; completion_tokens: number } }
+    const ccResp = cc as {
+      object: string
+      choices: Array<{ message: { content: string }; finish_reason: string }>
+      usage: { prompt_tokens: number; completion_tokens: number }
+    }
     expect(ccResp.object).toBe("chat.completion")
     expect(ccResp.choices[0]?.message.content).toBe("It is sunny.")
     expect(ccResp.choices[0]?.finish_reason).toBe("stop")

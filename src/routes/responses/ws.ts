@@ -9,6 +9,7 @@
  * WebSocket message → extract payload → pipeline → SSE events → WS JSON frames.
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Hono } from "hono"
 import type {
   //
@@ -23,6 +24,7 @@ import type {
   //
   ClientFrame,
   DriverRequestResult,
+  UpstreamFrame,
 } from "~/lib/pipeline/types"
 import type {
   //
@@ -33,8 +35,6 @@ import type {
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
-import { ALL_RESPONSE_REWRITES } from "~/lib/codec/response-rewrite-registry"
 import {
   //
   registerResponseSession,
@@ -57,6 +57,7 @@ import {
 } from "~/lib/openai/tool-name-sanitize"
 import { makeWsSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import {
@@ -66,6 +67,12 @@ import {
 } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
+import {
+  //
+  createUpstreamFrameDiagnostics,
+  logUpstreamStreamError,
+  logUpstreamStreamTruncation,
+} from "~/lib/upstream-stream-diagnostics"
 
 import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
 
@@ -239,13 +246,8 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const driver = createPipelineDriver({
     codec,
     transport,
-    // S5 — the full-format response-rewrite union (RFC §7.1); `appliesTo` filters it to
-    // fix-stream-ids for the /responses leg (DIRECT only), identical to the prior per-route array.
-    responseRewrites: ALL_RESPONSE_REWRITES,
-    strategies: (env) => {
-      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
-      return buildOpenAiResponsesStrategiesForEnv(env)
-    },
+    // S5 response-rewrites + the S4 retry stack come from the CellAssembly now (C5 — the openai-responses
+    // direct/fallback cells are migrated; RETRY_SEMANTICS encodes the R1 corner auto-truncate OFF / maxRetries 1).
     maxRetries: 1,
     maxLearningRetries: 32,
   })
@@ -304,7 +306,14 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const mapper = env.ctx.toolNameMapper
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
+  env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
   let eventsReceived = 0
+
+  // Upstream-frame diagnostics (disconnect-log blind-spot fix): the WS leg also emits the disconnect
+  // diagnostic on a stream-error now, so observe the RAW upstream frames for real frames/bytes/last-frame.
+  // `let` so `onAttemptReset` rebinds a fresh collector per buffered attempt (last-failing-attempt frames).
+  let diag = createUpstreamFrameDiagnostics(streamStartMs)
+  const onUpstreamFrame = (frame: UpstreamFrame): void => diag.observe(frame as ServerSentEventMessage)
 
   // The driver-owned WS sink: ws.send write-out + forwarded sampling + a forward-idle keepalive
   // (Phase 2 Task 2.2 / R3.5). EMPIRICAL DECISION — app-layer frame, NOT protocol ping:
@@ -322,6 +331,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const sink = makeWsSink(ws, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
+    ...clientFirstRealSinkOpts(env),
     ...(keepaliveSec > 0 && {
       heartbeat: {
         intervalSec: keepaliveSec,
@@ -395,6 +405,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
         onRenderedFrame: restoreAccumulateCount,
+        onUpstreamFrame,
         stopAfterFrame: isTerminal,
         // commitBoundaries intentionally OMITTED — see the comment above. Terminal-only: the driver's
         // own `sawMessageStop` gate below is the ONLY commit trigger.
@@ -424,9 +435,12 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
         onAttemptReset: () => {
           acc = createResponsesStreamAccumulator()
           eventsReceived = 0
+          // MEDIUM-2: anchor the fresh collector at THIS attempt's start (not the original request time) so
+          // a zero-frame final attempt reports `silence` relative to the attempt, not the whole request.
+          diag = createUpstreamFrameDiagnostics(Date.now())
         },
       })
-    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, stopAfterFrame: isTerminal })
+    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, onUpstreamFrame, stopAfterFrame: isTerminal })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -444,6 +458,12 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     const error = outcome.error
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
+    logUpstreamStreamError(error, {
+      model: acc.model || resolvedModel,
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), { events: forwardedSseEvents, streamStartMs })
     recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, error, {
@@ -478,6 +498,12 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     const partial = buildResponsesResponseData(acc, resolvedModel)
     const truncErr = new Error("Upstream stream truncated before completion (no response.completed)")
     consola.error(`[WS] Upstream truncated for ${acc.model || resolvedModel}: drained without a terminal response event`)
+    logUpstreamStreamTruncation(truncErr.message, {
+      model: acc.model || resolvedModel,
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
     // Emit the error frame (recorded into forwarded) + close, THEN snapshot + settle (sample →
     // recordForwarded → ctx.fail; fail freezes inboundResponse).
     sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr), { events: forwardedSseEvents, streamStartMs })

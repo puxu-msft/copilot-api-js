@@ -185,3 +185,36 @@ describe("translateCCResponseToAnthropic — usage", () => {
     expect(response.usage).toEqual({ input_tokens: 0, output_tokens: 0 })
   })
 })
+
+describe("translateCCResponseToAnthropic — synthetic reasoning (thinking) passthrough", () => {
+  const PREFIX = "copilot-api:synthetic-reasoning:v1:"
+
+  test("message.reasoning is prepended as a sentinel-signed thinking block (thinking-first)", () => {
+    const msg = { role: "assistant", content: "the answer", reasoning: "my reasoning" } as unknown as Partial<ResponseMessage>
+    const { response } = translateCCResponseToAnthropic(ccResponse([choice(msg)]))
+    expect(response.content.map((b) => b.type)).toEqual(["thinking", "text"])
+    const thinking = response.content[0] as { type: "thinking"; thinking: string; signature: string }
+    expect(thinking).toMatchObject({ type: "thinking", thinking: "my reasoning", signature: PREFIX })
+    expect((response.content[1] as { type: "text"; text: string }).text).toBe("the answer")
+  })
+
+  test("reasoning_content (alt spelling) is also forwarded", () => {
+    const msg = { role: "assistant", content: "x", reasoning_content: "alt" } as unknown as Partial<ResponseMessage>
+    const { response } = translateCCResponseToAnthropic(ccResponse([choice(msg)]))
+    expect(response.content[0]).toMatchObject({ type: "thinking", thinking: "alt", signature: PREFIX })
+  })
+
+  test("reasoning_encrypted_content is embedded in the signature for cross-turn round-trip", async () => {
+    const msg = { role: "assistant", content: "x", reasoning: "r", reasoning_encrypted_content: "ENC==" } as unknown as Partial<ResponseMessage>
+    const { response } = translateCCResponseToAnthropic(ccResponse([choice(msg)]))
+    const sig = (response.content[0] as { signature: string }).signature
+    expect(sig.startsWith(PREFIX)).toBe(true)
+    const { extractEncryptedReasoning } = await import("~/lib/anthropic/synthetic-reasoning")
+    expect(extractEncryptedReasoning(sig)).toBe("ENC==")
+  })
+
+  test("no reasoning → no thinking block (typical non-streaming cc leg)", () => {
+    const { response } = translateCCResponseToAnthropic(ccResponse([choice({ content: "plain" })]))
+    expect(response.content.every((b) => b.type !== "thinking")).toBe(true)
+  })
+})
