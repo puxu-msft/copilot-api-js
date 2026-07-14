@@ -152,6 +152,65 @@ describe("F28 — NON_DEFERRED_TOOL_NAMES spread (tool_search defer_loading)", (
   })
 })
 
+describe("F28 root cause — history-stub safety net (Path 2) is not gated on tool_search", () => {
+  let originalToolSearchEnabled: typeof state.toolSearchEnabled
+  let originalInject: typeof state.injectClaudeCodeOfficialTools
+
+  beforeEach(() => {
+    originalToolSearchEnabled = state.toolSearchEnabled
+    originalInject = state.injectClaudeCodeOfficialTools
+    // Path 1 (injectClaudeCodeOfficialTools) is a separate, unconditional stub source —
+    // disable it here so only Path 2 (the history-reference safety net under test) fires.
+    setStateForTests({ toolSearchEnabled: false, injectClaudeCodeOfficialTools: false })
+  })
+
+  afterEach(() => {
+    setStateForTests({ toolSearchEnabled: originalToolSearchEnabled, injectClaudeCodeOfficialTools: originalInject })
+  })
+
+  test("injects a stub for an orphaned non-official history tool_use even with tool_search OFF", () => {
+    // tool_search OFF (state.toolSearchEnabled=false) — before the fix, `historyToolNames`
+    // was computed as `undefined` in this branch, so Path 2's name-agnostic safety net
+    // never ran and GHC would reject the request over the dangling tool_use reference.
+    const result = preprocessTools(
+      makePayload({
+        tools: [{ name: "custom_tool", input_schema: { type: "object" } }],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "toolu_1", name: "some_mcp_tool", input: {} }],
+          },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] },
+        ],
+      }),
+    )
+
+    const names = toolNames(result.tools)
+    expect(names).toContain("some_mcp_tool")
+
+    const stub = (result.tools ?? []).find((t) => t.name === "some_mcp_tool")
+    expect(stub).toMatchObject({
+      name: "some_mcp_tool",
+      input_schema: { type: "object", properties: {}, required: [] },
+    })
+  })
+
+  test("negative control: no orphaned history reference means no extra stub is injected", () => {
+    // Same tool_search-OFF state, but history contains no tool_use at all — proves the
+    // safety net is reference-driven (only fires when there's something to backfill),
+    // not an unconditional injection now that it's no longer gated on tool_search.
+    const result = preprocessTools(
+      makePayload({
+        tools: [{ name: "custom_tool", input_schema: { type: "object" } }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      }),
+    )
+
+    const names = toolNames(result.tools)
+    expect(names).toEqual(["custom_tool"])
+  })
+})
+
 describe("F32 — isApiDefinedToolType (message-tools.ts)", () => {
   test("recognizes the newly added CC 2.1.207 server-tool type prefixes", () => {
     expect(isApiDefinedToolType("advisor_20260301")).toBe(true)
