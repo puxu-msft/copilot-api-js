@@ -51,6 +51,9 @@ config-hook（Tier 2 mock 上游）经 `Bun.Transpiler`+`data:` URL 加载（`ho
 - **空串 refusal recovery（thinking-only end_turn）让 Claude Code STALL**（`num_turns=2, result=""`，上游被调 2 次）；非空 recovery 文本防住（`num_turns=1`）——实证了 refusal-recovery 特性的存在价值。→ `docs/refusal-recovery.md` 空串节。
 
 ## 扩展新场景/新 vendor
+
+> **加新 e2e 前先过错配试金石**（skill `choosing-test-type`）：把断言换成 golden 逐字节 + callCount，若不损失「SDK 会不会 parse/throw某类/累积/choke/fold」→ 才配 e2e；否则归 golden/.http/unit（**别借真 SDK 之名写集成测试**）。2026-07-14 审计曾清出 10 条错配（server-tool filter/tool-call recovery/retry 腿等 golden∘baseline 已覆盖），e2e 收敛到纯 SDK-behavior 集。
+
 骨架 vendor 无关（已证：OpenAI SDK vendor smoke 与 Anthropic 共用核心）：`upstream-script`（脚本化上游 SSE，`createSseResponse`/`jsonResponse`/`httpErrorResponse`/`sequencedUpstream`——最后一个逐腿不同响应、驱动 proxy 内部 reactive retry）+ `spawn-proxy` 的 baseURL 契约 Tier1/Tier2 共用。加 OpenAI/Gemini SDK 场景改客户端库 + 上游帧构造即可，核心不重构。加新上游形状：Tier1 喂 `setUpstreamFetchForTests`，Tier2 改 `cli-refusal-hook.ts` 的 base64 帧元组（注意上面 data-URL 坑）。
 
 **待覆盖 backlog 的逐条实现配方 + kickoff prompt** 见 **plan `docs/plan/2026-07-13-e2e-client-scenario-backlog.md`**（层/config/上游 400-pattern/oracle/harness 需求/gotcha/变异，逐条可直接执行）；roadmap（优先级）见 spec `docs/spec/2026-07-13-client-proxy-sdk-e2e-harness.md`。常用扩展模式：
