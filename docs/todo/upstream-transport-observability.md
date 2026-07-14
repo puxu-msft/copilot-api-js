@@ -103,3 +103,13 @@
 ```
 在 copilot-api-js 做「上游传输可观测性子系统」特性。先读 docs/todo/upstream-transport-observability.md（信息交接 + 设计草案，范围/用途决策已锁定），再读 src/lib/observability/ 全貌与 skill telemetry-architecture / history-sqlite-schema / debugging-ghc-api-upstream-transport。走 brainstorming → docs/spec/ → docs/plan/ → 执行；先定 §5 的多路复用关联模型与 §6 的 history 字段形状，subagent 对抗审查后再实现。裁判轴：长远正确 + 完整，别用 ROI/YAGNI 缩范围。最小可交付的第一刀建议：先补 GOAWAY 收到 + close-reason（clean-end/close-before-end/rstCode）+ truncation 归因的结构化日志与 history 字段，让复现机能直接读出 A/B。
 ```
+
+## 11. 已修的一角 + 剩余同类缺口（2026-07-14 gpt-5.6-sol 事故派生）
+
+事故：`/v1/messages` 请求模型翻译到出站 `/responses`，上游实际流了 312s／3484 帧、客户端收 3475 个真实 `content_block_delta`，最后被上游 `NGHTTP2_CANCEL` 封顶砍断。但诊断行打成 `frames=0 bytes=0 last-frame=none@0ms silence=313462ms tokens=0/0`——一条健康长流被误报成全程静默 stall。
+
+- **已修（已提交）**：translate leg（[handler-v4.ts pumpTranslateLegStreamingV4](../../src/routes/messages/handler-v4.ts) 的 stream-error 分支）此前把 `logUpstreamStreamError` 的 `streamState`/`acc`/`sseEvents` **硬编码全零/空壳**传入，而该 leg 从没维护帧计数。修法：① 收紧 [`logUpstreamStreamError`](../../src/routes/messages/streaming-pump.ts) 入参为最小结构子集（防再塞空壳，类型系统前置逼两调用点同改）；② translate leg `onUpstreamFrame` 维护 `diagBytesIn`/`diagSseEvents`（last-frame 类型诚实推导：Responses 用 `type`、CC 用 `object`），error 路径 token 从 `codec.getStreamMeta()?.usage` 取 last-known。测试 `tests/routes/messages/translate-leg-error-shaping.it.test.ts` 加断言钉死 frames/bytes/last-frame/silence。
+- **剩余缺口 A（minor，本节记录，未修）**：`[upstream-diagnostics] STREAM DISCONNECT` 这条线**只**从 messages 路由发。原生 `/responses`（[routes/responses/handler-v4.ts](../../src/routes/responses/handler-v4.ts)）与 WS（[routes/responses/ws.ts](../../src/routes/responses/ws.ts)）直连 handler 在 stream-error 时**根本不发**这条诊断（只 `ctx.fail`）。不是误报，是「完全无诊断」的 pre-existing 缺口——与本子系统 §6「结构化日志」目标同向，应在本特性内统一补齐（三 handler 共用一个诊断发射点）。
+- **剩余缺口 B（nit，未修）**：translate leg 的 `diagBytesIn`/`diagSseEvents` 因先 `return` 掉 `[DONE]`/空 data 帧，会漏计 CC 的 `: ping` 空帧与 `[DONE]`，与直连 pump `recordUpstreamFrame`（无条件计所有帧）轻微不一致。对「区分健康流 vs 全程静默」无实质影响（空帧近零字节），追求严格 parity 时对空帧也记一条 keepalive。
+
+发现方：gpt-5.6-sol 断流事故诊断 + 修复评审（2026-07-14）。诊断复盘的关键教训见记忆库。
