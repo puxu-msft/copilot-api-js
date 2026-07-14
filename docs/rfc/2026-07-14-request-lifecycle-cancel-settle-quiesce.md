@@ -2,8 +2,8 @@
 
 - 状态: **定稿 v4(6 轮独立 GPT 对抗复核收敛:第 6 轮 0 blocker / 0 major、verdict「可进入计划阶段」;2 处 minor 文字残留已修)→ 进入实施计划**
 - 日期: 2026-07-14
-- 关联: [docs/shutdown.md](../shutdown.md)、[docs/streaming.md](../streaming.md)、[docs/timeout-attribution-audit.md](../timeout-attribution-audit.md)、[docs/request-pipeline.md](../request-pipeline.md)
-- 取代/影响: `docs/shutdown.md` §Stale Request Reaper 与 §Shutdown 信号、`docs/DESIGN.md` 活的架构现状(超时相关行)
+- 关联: [docs/lifecycle.md](../lifecycle.md)、[docs/streaming.md](../streaming.md)、[docs/timeout-attribution-audit.md](../timeout-attribution-audit.md)、[docs/request-pipeline.md](../request-pipeline.md)
+- 取代/影响: `docs/lifecycle.md` §Stale Request Reaper 与 §Shutdown 信号、`docs/DESIGN.md` 活的架构现状(超时相关行)
 
 ## 1. 问题陈述(带 file:line 证据 + 证实状态)
 
@@ -26,7 +26,7 @@
 
 ### 1.3 doc-vs-code 矛盾(RFC 须修正)
 
-`docs/shutdown.md:29` 承诺"每个在途流式请求 / 上游 fetch 在发起时就把 shutdown 信号注册进自己的 abort race"——被 `send.ts:113` 对 streaming pre-response fetch 的**排除**证伪。该承诺对**延迟提交窗口的 pre-header 阶段是 aspirational/不成立**的。
+`docs/lifecycle.md:29` 承诺"每个在途流式请求 / 上游 fetch 在发起时就把 shutdown 信号注册进自己的 abort race"——被 `send.ts:113` 对 streaming pre-response fetch 的**排除**证伪。该承诺对**延迟提交窗口的 pre-header 阶段是 aspirational/不成立**的。
 
 ## 2. 当前状态分析
 
@@ -159,7 +159,7 @@
 - **C4a(遗漏等待点接入,含 global scope)**:token refresh(共享 refresh 归 `globalOperationScope`、单请求用 `raceWithSignal` 退出)、hook `preSend`/`onExchange`/`onResolved`、heartbeat serializer(`closeAndDrain`)、**feature-negotiation debounce persist(第六类)归 `globalOperationScope`** 全接入。**invariant**:§3.2 分层表每层(含 global)可取消/可追踪。
 - **C4b(deadline + reaper 降级,有界 grace)**:`request_deadline` per-request timer(属 operation scope、unref、dispose 清理、inspection 豁免)→ **`cancel(deadline) → race(whenOperationQuiesced, grace) → settle`**(grace 超时仍 settle + `operationLeak=true` + scope 保留告警);`stale_request_max_age` 降为泄漏安全网(有界 grace 后**强制 settle** 未 quiesce scope)+ 热重载重调度(修 RC2)+ compat。**依赖 C4a**。**invariant**:`request_deadline=0` 时旧行为字节不变;不 quiesce 的 operation **仍能 settle**(客户端拿到终态)。
 - **C5(drain 原子切换双 join + global drain)**:shutdown drain 切到 operation-body quiesce(有界 grace)+ **keyed finalization drain**(per-request coordinator)+ **`drainGlobalOperations()`**(feature-negotiation debounce / 共享 token refresh)。**严格串行、必须晚于 C4a**。**invariant**:强制终止 = cancel→race(quiesce,grace)→settle→finalization-drain;drain 不因出册漏等未 quiesce/未 finalize 工作;UI/status active 语义不变(visibleContexts);grace 超时的 leak 不阻塞 settle、但仍挡 resource drain 并告警。
-- **C6-final(长期 observability + 收尾)**:新机制长期指标(`operationLeak` 计数、trackedOperationCount)、文档同步(shutdown.md/DESIGN.md/streaming.md)、whole-domain audit。
+- **C6-final(长期 observability + 收尾)**:新机制长期指标(`operationLeak` 计数、trackedOperationCount)、文档同步(lifecycle.md/DESIGN.md/streaming.md)、whole-domain audit。
 
 **DAG 关键边**:C0-observe ∥ C0-lifecycle → (C1+C2) → C3(integration 依赖 C0-lifecycle)→ C4a → C4b(依赖 C4a)→ C5(严格串行,晚于 C4a)→ C6。deadline 与 drain 切换**必须**在 operation coverage(C4a)完成后,不可提前。
 

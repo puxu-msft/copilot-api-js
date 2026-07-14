@@ -11,7 +11,7 @@
 - ✅ **C1+C2 原子**(commit `2c295dd5`):**修 RC1+RC3(两个已证实根因)**——send.ts 一律折入 shutdown(streaming pre-header 不再挂 Phase4)+ `abortableDelay` + driver 退避 gate(reaper/shutdown 中断退避、settle 后不起新 attempt、关 529 重试窗口)。918 pass 全绿,RC3 gate 10x 确定。RC1 全 server 集成验证(delayed-commit+Ctrl+C)列后续。
 - ✅ **C4b request_deadline**(commit `9563883a`):**RC2 治根**——`timeouts.request_deadline`(默认 0=禁用字节等价;bundled config.yaml=900s 有意默认、<stale 1200 让 deadline 主控 reaper 兜底)+ manager.create per-request 精确 setTimeout 到点调 reapInFlight+fail(**按 T 精确、绕过会迟到的 60s scan**)+ unref + onSettled 清除 + inspection 豁免。920+721 pass,deadline 10x 确定。
 - ✅ **C3 RC4 限流**(commit `7615823d`):QueuedRequest 加 `cancelled`,rejectQueued reject 前置 true,processQueue sleep 后 execute 前 gate——消除 reject/execute 竞争(caller 拿 shutting-down 后仍跑上游的 orphan)。10x 确定。
-- ✅ **C6 doc-sync(部分)**:`docs/shutdown.md` 已同步 RC1/RC3/request_deadline + 修 doc-vs-code。
+- ✅ **C6 doc-sync(部分)**:`docs/lifecycle.md` 已同步 RC1/RC3/request_deadline + 修 doc-vs-code。
 - ⏳ **剩余(完整架构,建议新会话按 kickoff 执行)**:C4a(逃逸点 token-refresh/hook + global scope)、**C5(把已备 operation-scope`4b8d62e4`+finalization-coordinator`0be3aad8` primitive 接线进 RequestContext operationSignal/trackOperationBody/whenOperationQuiesced + manager 双 registry〔删除条件 operationQuiesced && finalized〕+ shutdown drain 切双 join + 有界 cancellation grace)**、C6 余下(DESIGN.md 活的架构现状 + 记忆库)。**C5 是 6 轮复核逼出 3 个死锁/orphan 缺陷的核心、最微妙,须严格按 RFC §3.1/§3.3 + commit invariants,不可仓促。**
 
 **当前结论**:**四个已证实根因(RC1/RC2/RC3/RC4)已全部治根修复 + 测试**,直接解决观测到的 2800s 越超时 + 07-12 Phase3 挂起。整合态 1079 pass / 0 fail、typecheck 干净。RC1 全 server 集成验证 + C4a/C5 完整架构未做。
@@ -231,7 +231,7 @@ describe("reaper-diagnostics", () => {
 
 **Tasks:**
 - [ ] Task C6-1:`operationLeak`/`trackedOperationCount` 长期指标 + 存在性守卫测试。
-- [ ] Task C6-2:doc-sync——`docs/shutdown.md`(四段生命周期 + 双 registry + 有界 grace,修 §29 doc-vs-code)、`docs/streaming.md`、`docs/DESIGN.md` 活的架构现状 + 端点/config 变化;跨文档 grep 验证。
+- [ ] Task C6-2:doc-sync——`docs/lifecycle.md`(四段生命周期 + 双 registry + 有界 grace,修 §29 doc-vs-code)、`docs/streaming.md`、`docs/DESIGN.md` 活的架构现状 + 端点/config 变化;跨文档 grep 验证。
 - [ ] Task C6-3:whole-domain audit(subagent 合并态审:signal 覆盖完整性、无遗漏第七类等待点、UI active 语义不变)。
 - [ ] Commit `docs: 同步请求生命周期重构到 shutdown/streaming/DESIGN + 长期 observability`。
 
