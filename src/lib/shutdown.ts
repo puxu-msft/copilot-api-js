@@ -33,7 +33,8 @@ import {
   stopHistoryBackgroundWork,
 } from "./history"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
-import { shutdownRequestTelemetry } from "./request-telemetry"
+import { shutdownRequestTelemetry, stopTelemetryBackgroundWork } from "./request-telemetry"
+import { notifyStopping } from "./restart/notify"
 import { state } from "./state"
 import { stopTokenRefresh } from "./token"
 import { closeHttp2Sessions } from "./transport/http2-client"
@@ -384,8 +385,12 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   // drained + closed later in finalize() (RFC history-finalize-async-offload §4.1).
   stopRefresh()
   stopHistoryBackgroundWork()
+  stopTelemetryBackgroundWork() // 停 telemetry rollup timer，避免与接管的新进程并发上卷（lifecycle.md overlap ②）
   closeHttp2Sessions()
   peekUpstreamWsManager()?.stopNew()
+
+  // 通知 supervisor 正在收尾（systemd STOPPING=1；非 systemd no-op）
+  notifyStopping()
 
   // NOTE: Browser-observer WebSocket clients (history/status dashboards) are
   // NOT closed here. They subscribe to `notifyShutdownPhaseChanged` events;
