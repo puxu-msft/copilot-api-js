@@ -216,3 +216,28 @@ test("oracle E — 空 db（从未写过 cumulative）时 seed 不抛、cap 权�
   expect(readCumulativeKeys(dbPath, "client").has("client-0")).toBe(true)
   expect(_getCumulativeCapKeysForTests().get("client")?.size).toBe(1)
 })
+
+test("oracle F — Fix2：telemetryCardinalityCap 可配（设 3 → 第 4 个 client key 折 other，live 记录路径）", async () => {
+  // 把 cap 从默认 200 调到 3——验证 resolveCappedKey + resolveCumulativeCappedKey 真读 state.telemetryCardinalityCap
+  // （非硬编码 200）。独立 oracle：直读 db，非读被测代码回推。
+  setStateForTests({ telemetryCardinalityCap: 3 })
+  await initRequestTelemetry()
+  const base = bucketStart(Date.now())
+  // 4 个 distinct client key 落进同一个 5min 桶（同一 bucketDims store）：前 3 真实、第 4 折 other。
+  recordClient(base, "c-0")
+  recordClient(base, "c-1")
+  recordClient(base, "c-2")
+  recordClient(base, "c-3")
+  await persistRequestTelemetry()
+
+  // cumulative 腿：3 真实键 + other（cap=3 生效）。
+  const cumKeys = readCumulativeKeys(dbPath, "client")
+  expect([...cumKeys].filter((k) => k !== "other").length).toBe(3)
+  expect(cumKeys.has("other")).toBe(true)
+  expect(cumKeys.has("c-3")).toBe(false)
+  // raw 桶腿（同一桶 store，cap=3）：c-3 也折 other、非真实键。
+  expect(readRawScalar(dbPath, "client", "c-3", base, "req_count")).toBeNull()
+  expect(readRawScalar(dbPath, "client", "other", base, "req_count")).toBe(1)
+  // 正样本对照：cap 权威真长到 3（非「seed 空 / 未到 cap」的假阳性）。
+  expect(_getCumulativeCapKeysForTests().get("client")?.size).toBe(3)
+})

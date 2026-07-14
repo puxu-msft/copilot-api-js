@@ -124,6 +124,22 @@ interface LegacyTelemetryJson {
 /** V2 → 迁移用的 model 维度名（对齐 request-telemetry.ts 的 `MODEL_DIMENSION`）。 */
 const MODEL_DIMENSION = "model"
 
+/** `"other"` 折叠 key（对齐 live 路径 `resolveCappedKey`/`resolveCumulativeCappedKey` 的溢出 key）。 */
+const OTHER_KEY = "other"
+
+/**
+ * backfill 的维度语义配置（state-free 投影，调用方从 live `state` 映射进来——镜像 {@link RollupConfig}
+ * 的注入模式，让本模块对 `state` 无依赖、纯函数可测）。承担 Fix round 2 的三个 live 对齐点：
+ * - `cappedDimensions`：哪些维度受基数 cap（= live `CAPPED_DIMENSION_NAMES` = model/client/tool）。
+ * - `cardinalityCap`：cap 上限（= live `state.telemetryCardinalityCap`，默认 200，可配）。
+ * - `cumulativeEnabled`：是否写 tel_cumulative 腿（= live `state.telemetryCumulative`）。
+ */
+export interface BackfillDimensionConfig {
+  cappedDimensions: ReadonlySet<string>
+  cardinalityCap: number
+  cumulativeEnabled: boolean
+}
+
 /**
  * 把旧 `request-telemetry.json` 的 **init 时刻快照** 全量吸收进 telemetry.db。version 守卫 +
  * never-throw + 可选 cooperative-stop。
@@ -136,6 +152,14 @@ const MODEL_DIMENSION = "model"
  * 那一刻的内容**、永不含任何 post-startup persist 写入 → disjointness 结构成立。快照的读取 / 缺失 /
  * 损坏判定与「读一次、消费后清空」的生命周期由调用方（`request-telemetry.ts`）负责。
  *
+ * **cumulative 腿基数 cap（Fix round 2）**：tel_cumulative 无 bucket 维、是 seed `cumulativeCapKeys` 的
+ * 权威源。legacy JSON 是 **per-bucket cap** 的（旧内存逐桶 cap），跨桶 union 后某 capped 维度可 >cap
+ * distinct key。若 backfill 无 cap 地把它们全写进 tel_cumulative → 该维度 cumulative 行越过 cap → 重启
+ * `seedCumulativeCapKeys` 继承 over-cap 集 → live `resolveCumulativeCappedKey` 的 `size>=cap` 恒真 →
+ * **post-migration 重启后 live 停止跟踪新 key、全折 other（活路径功能降级）**。故 backfill 的 cumulative
+ * 腿对 capped 维度**同样 cap 折叠**（迁移内 per-dim 已见集，含 `"other"`），与 live 对同一 legacy key
+ * 的结果一致（忠实）。raw 腿（有 bucket 维、legacy 已 per-bucket cap）**不额外 cap**——逐桶导入即保留原 cap。
+ *
  * 解析失败（理论上不该发生——init 已验证可解析后才 stash）→ warn + skip（不设守卫、可重试）。
  * 空但可解析（零 settled 行）→ 设 version 守卫（已处理、不再重扫）但**不设 boundary_ts**（无迁移前
  * settled 数据、避免 lifetime `preMigrationSketchGap` 假阳性）。成功吸收 ≥1 settled 行后调
@@ -143,6 +167,7 @@ const MODEL_DIMENSION = "model"
  *
  * @param snapshotJson init 时刻冻结的 JSON 文件内容（调用方保证非 null——缺失/损坏时不调用本函数）。
  * @param now 迁移边界时间戳（生产传 `Date.now()`、测试传固定值）：写入 boundary_ts + 传给 rollup。
+ * @param dimConfig 维度语义投影（cap 集 / cap 值 / cumulative 开关）——对齐 live 路径，见 {@link BackfillDimensionConfig}。
  * @param shouldStop 可选 cooperative-stop getter（匹配 shutdown phase）：置位则在写入前优雅放弃（不设守卫、下次重试）。
  */
 export function migrateJsonToTelemetryDb(
@@ -150,6 +175,7 @@ export function migrateJsonToTelemetryDb(
   snapshotJson: string,
   now: number,
   rollupConfig: RollupConfig,
+  dimConfig: BackfillDimensionConfig,
   shouldStop?: () => boolean,
 ): void {
   try {
@@ -186,11 +212,14 @@ export function migrateJsonToTelemetryDb(
       // settled 可加维度：V3 generic `dimensions`（结构优先），否则 V2 `modelBuckets` → model 维度。
       // 结构判定（非仅靠 version tag）与内存 loader 的防御式检查同构，对任何版本鲁棒、全量吸收不丢。
       // 返回实际写入的 settled 行数——boundary_ts 只在真吸收过 pre-migration settled 数据时才记（见下）。
+      // cumulativeCapKeys：迁移内 per-dim 已见 cumulative key 集（含 "other"）——对齐 live 的
+      // `cumulativeCapKeys`/`resolveCumulativeCappedKey`，让 tel_cumulative 的 capped 维度不越 cap。
+      const cumulativeCapKeys = new Map<string, Set<string>>()
       let settledRows = 0
       if (parsed.dimensions && typeof parsed.dimensions === "object") {
-        settledRows = absorbDimensions(db, parsed.dimensions)
+        settledRows = absorbDimensions(db, parsed.dimensions, dimConfig, cumulativeCapKeys)
       } else if (parsed.modelBuckets && typeof parsed.modelBuckets === "object") {
-        settledRows = absorbModelBuckets(db, parsed.modelBuckets)
+        settledRows = absorbModelBuckets(db, parsed.modelBuckets, dimConfig, cumulativeCapKeys)
       }
 
       // 完成守卫（同事务原子）：re-run 短路——**无条件**置位（空 JSON 也算「已处理」、不再重扫）。
@@ -215,7 +244,12 @@ export function migrateJsonToTelemetryDb(
  * 吸收 V3 generic `dimensions[dim].buckets[ts][key] = countersBag` 进 tel_raw + tel_cumulative
  * （逐 dim intern、逐桶可加）。返回实际写入的 settled 行数（供 boundary_ts 门控）。
  */
-function absorbDimensions(db: TelemetryDatabase, dimensions: Record<string, unknown>): number {
+function absorbDimensions(
+  db: TelemetryDatabase,
+  dimensions: Record<string, unknown>,
+  dimConfig: BackfillDimensionConfig,
+  cumulativeCapKeys: Map<string, Set<string>>,
+): number {
   let settledRows = 0
   for (const [dimName, dimValue] of Object.entries(dimensions)) {
     if (!dimValue || typeof dimValue !== "object") continue
@@ -227,7 +261,7 @@ function absorbDimensions(db: TelemetryDatabase, dimensions: Record<string, unkn
       if (!Number.isFinite(bucketTs) || !keysValue || typeof keysValue !== "object") continue
       for (const [key, counters] of Object.entries(keysValue as Record<string, unknown>)) {
         if (!counters || typeof counters !== "object") continue
-        if (upsertKeyMeasures(db, dimId, key, bucketTs, counters as Record<string, unknown>)) settledRows += 1
+        if (upsertKeyMeasures(db, dimName, dimId, key, bucketTs, counters as Record<string, unknown>, dimConfig, cumulativeCapKeys)) settledRows += 1
       }
     }
   }
@@ -238,7 +272,12 @@ function absorbDimensions(db: TelemetryDatabase, dimensions: Record<string, unkn
  * 吸收 V2 legacy `modelBuckets[ts][model] = PersistedModelTelemetry` → model 维度（对齐内存
  * loadV2ModelBuckets）。返回实际写入的 settled 行数（供 boundary_ts 门控）。
  */
-function absorbModelBuckets(db: TelemetryDatabase, modelBuckets: Record<string, unknown>): number {
+function absorbModelBuckets(
+  db: TelemetryDatabase,
+  modelBuckets: Record<string, unknown>,
+  dimConfig: BackfillDimensionConfig,
+  cumulativeCapKeys: Map<string, Set<string>>,
+): number {
   const dimId = internDim(db, MODEL_DIMENSION)
   let settledRows = 0
   for (const [tsStr, modelsValue] of Object.entries(modelBuckets)) {
@@ -246,10 +285,30 @@ function absorbModelBuckets(db: TelemetryDatabase, modelBuckets: Record<string, 
     if (!Number.isFinite(bucketTs) || !modelsValue || typeof modelsValue !== "object") continue
     for (const [model, counters] of Object.entries(modelsValue as Record<string, unknown>)) {
       if (!counters || typeof counters !== "object") continue
-      if (upsertKeyMeasures(db, dimId, model, bucketTs, counters as Record<string, unknown>)) settledRows += 1
+      if (upsertKeyMeasures(db, MODEL_DIMENSION, dimId, model, bucketTs, counters as Record<string, unknown>, dimConfig, cumulativeCapKeys)) settledRows += 1
     }
   }
   return settledRows
+}
+
+/**
+ * Resolve a capped dimension's effective cumulative key against the migration-scoped seen-set
+ * (`cumulativeCapKeys`) — mirrors live `resolveCumulativeCappedKey`: a genuinely new (under-cap) key is
+ * tracked and returned verbatim; once the dimension's tracked count reaches `cap`, further NEW keys fold
+ * into `"other"`. Only capped dimensions call this (bounded dims write the raw key). The seen-set excludes
+ * `"other"` from the count (it is a synthetic overflow key, not one of the `cap` real keys) — matching
+ * live semantics where `cumulativeCapKeys` tracks real keys only.
+ */
+function resolveBackfillCumulativeKey(dimName: string, key: string, cap: number, cumulativeCapKeys: Map<string, Set<string>>): string {
+  let seen = cumulativeCapKeys.get(dimName)
+  if (!seen) {
+    seen = new Set()
+    cumulativeCapKeys.set(dimName, seen)
+  }
+  if (seen.has(key)) return key
+  if (seen.size >= cap) return OTHER_KEY
+  seen.add(key)
+  return key
 }
 
 /**
@@ -257,14 +316,36 @@ function absorbModelBuckets(db: TelemetryDatabase, modelBuckets: Record<string, 
  * （Σ 7d 窗，是我们唯一有的 lifetime 种子——JSON 不含进程生命周期 dimSinceStart，故这是**诚实的部分累计**，
  * 无法恢复 pre-7d lifetime；见模块头 richest-data-flow）。全 0 的 key 跳过（不建空行）、返回 false。sketch
  * 不写（HIGH-1：迁移前时段无 hist_blob）。返回 true 当且仅当实际写入了一行（供 boundary_ts 门控计数）。
+ *
+ * **raw 腿用原始 key、逐桶导入**（legacy JSON 已 per-bucket cap，不额外折）。**cumulative 腿**（无 bucket
+ * 维）对 capped 维度经 {@link resolveBackfillCumulativeKey} 折 cap，防越 cap 污染 seed（见 migrate 头 doc
+ * 的 cumulative 腿说明）；且仅当 `dimConfig.cumulativeEnabled` 为真才写——对齐 live `cumulativeEnabled` 门。
  */
-function upsertKeyMeasures(db: TelemetryDatabase, dimId: number, key: string, bucketTs: number, counters: Record<string, unknown>): boolean {
+function upsertKeyMeasures(
+  db: TelemetryDatabase,
+  dimName: string,
+  dimId: number,
+  key: string,
+  bucketTs: number,
+  counters: Record<string, unknown>,
+  dimConfig: BackfillDimensionConfig,
+  cumulativeCapKeys: Map<string, Set<string>>,
+): boolean {
   const measures = countersToMeasures(counters)
   // 空 measures（全 0 或只有 __histograms）→ 不建行（加性 UPSERT 会 INSERT 一个全 0 行，无意义且污染 key 集）。
   if (Object.keys(measures).length === 0) return false
-  const keyId = internKey(db, dimId, key)
-  upsertSettledTier(db, "tel_raw", bucketTs, dimId, keyId, measures)
-  upsertCumulative(db, dimId, keyId, measures)
+
+  // raw 腿：原始 key（legacy 已 per-bucket cap，逐桶导入保留原 cap 结果，无需再折）。
+  const rawKeyId = internKey(db, dimId, key)
+  upsertSettledTier(db, "tel_raw", bucketTs, dimId, rawKeyId, measures)
+
+  // cumulative 腿：仅当开关开启才写（对齐 live cumulativeEnabled）；capped 维度折 cap（防 seed 越 cap）。
+  if (dimConfig.cumulativeEnabled) {
+    const cumulativeKey =
+      dimConfig.cappedDimensions.has(dimName) ? resolveBackfillCumulativeKey(dimName, key, dimConfig.cardinalityCap, cumulativeCapKeys) : key
+    const cumulativeKeyId = cumulativeKey === key ? rawKeyId : internKey(db, dimId, cumulativeKey)
+    upsertCumulative(db, dimId, cumulativeKeyId, measures)
+  }
   return true
 }
 

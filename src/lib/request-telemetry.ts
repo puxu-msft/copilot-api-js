@@ -24,6 +24,7 @@ import {
 } from "./telemetry/dictionary"
 import {
   //
+  type BackfillDimensionConfig,
   cleanupOrphanTelemetryTmpFiles,
   migrateJsonToTelemetryDb,
 } from "./telemetry/migrate-json"
@@ -126,8 +127,11 @@ const MEASURE_NAMES = [...BASE_MEASURE_NAMES, ...COST_MEASURE_NAMES, ...EXTRA_ME
 /** The full measure name list (base + cost) — exported for the `/metrics` Prometheus projection so it stays single-sourced. */
 export const TELEMETRY_MEASURE_NAMES: ReadonlyArray<string> = MEASURE_NAMES
 
-/** High-cardinality dimensions (client/tool) bound their key count at this cap; overflow merges into `"other"`. */
-const CARDINALITY_CAP = 200
+/**
+ * High-cardinality dimensions (client/tool) bound their key count at `state.telemetryCardinalityCap`
+ * (config-driven, default 200 — see CONFIG_MANAGED_DEFAULTS in state.ts); overflow merges into `"other"`.
+ * The cap is read live at each resolve so a hot-reload applies (only bounding NEW keys — see resolveCappedKey).
+ */
 
 /**
  * A registered distribution histogram (the third registry kind, alongside
@@ -443,7 +447,7 @@ let telemetryPoisonLogged = false
  * outage is acceptable — memory safety wins.
  *
  * Sizing (loose): ~5 registered dimensions (model/endpoint/client/agentKind/tool) × the ~200 cap
- * (CARDINALITY_CAP + `"other"`) ≈ ~1k key-slots per 5-minute bucket worst case; 50k covers ~50 such
+ * (the cardinality cap + `"other"`) ≈ ~1k key-slots per 5-minute bucket worst case; 50k covers ~50 such
  * buckets (~4h of retained deltas) of headroom before eviction — far beyond any healthy persist
  * interval's accumulation, so it only ever trips on a real sustained outage.
  */
@@ -1093,7 +1097,7 @@ function rebuildAcceptedBucketsFromDb(now = Date.now()): void {
 /**
  * Rebuild the PERSISTENT cumulative-leg cardinality-cap authority (`cumulativeCapKeys`) from the
  * durable `tel_cumulative` rows — closes spec invariant 6: without this, a fresh empty in-memory
- * authority would let a dimension already at `CARDINALITY_CAP` in `tel_cumulative` accumulate a
+ * authority would let a dimension already at the cap in `tel_cumulative` accumulate a
  * second batch of "real" keys past the cap after every restart (`dimSinceStart`'s in-memory
  * authority resets to empty by design; `tel_cumulative` must not). Only capped dimensions are
  * seeded (bounded dimensions like `agentKind`/`endpoint` never cap — see `CAPPED_DIMENSION_NAMES`).
@@ -1259,7 +1263,7 @@ export function recordAcceptedRequest(timestamp = Date.now()): void {
 /**
  * Resolve a capped dimension's effective key against ONE store (the process-lifetime
  * `dimSinceStart` OR the target 5-minute bucket). Each store is its own cap authority
- * so its key count is bounded at `CARDINALITY_CAP + 1` INDEPENDENTLY — critical across
+ * so its key count is bounded at `state.telemetryCardinalityCap + 1` INDEPENDENTLY — critical across
  * a restart: on load `dimSinceStart` resets to empty while a loaded bucket keeps its
  * (already-capped) keys, so a single shared authority (the old `dimSinceStart`-only
  * design) would let post-restart writes blow past the cap in that bucket. Resolving
@@ -1272,7 +1276,10 @@ function resolveCappedKey(store: Map<string, Map<string, StatAccumulator>>, dimN
   const dim = store.get(dimName)
   if (!dim) return key
   if (dim.has(key)) return key
-  if (dim.size >= CARDINALITY_CAP) return "other"
+  // Cap is config-driven (state.telemetryCardinalityCap, default 200). Read live so a
+  // hot-reload takes effect; `dim.has(key)` short-circuits ABOVE the size check, so shrinking the cap
+  // only bounds NEW keys and never evicts already-tracked ones (spec §cardinality_cap hot-reload).
+  if (dim.size >= state.telemetryCardinalityCap) return "other"
   return key
 }
 
@@ -1287,7 +1294,7 @@ function resolveCappedKey(store: Map<string, Map<string, StatAccumulator>>, dimN
  * critical way: it must survive a restart (because `tel_cumulative` itself is permanent), so unlike
  * `dimSinceStart` (intentionally reset to empty on load), this one is seeded from the durable rows
  * BEFORE the first request of a new process — closing spec invariant 6 (a dimension already at
- * CARDINALITY_CAP in `tel_cumulative` keeps folding new keys into `"other"` across a restart).
+ * the cap in `tel_cumulative` keeps folding new keys into `"other"` across a restart).
  *
  * Mutates `cumulativeCapKeys`: a genuinely new (under-cap) key is added to the dimension's set so
  * both later calls IN THIS SESSION and the next restart's re-seed see it (the authority grows
@@ -1302,7 +1309,9 @@ function resolveCumulativeCappedKey(dimName: string, key: string): string {
     cumulativeCapKeys.set(dimName, dim)
   }
   if (dim.has(key)) return key
-  if (dim.size >= CARDINALITY_CAP) return "other"
+  // Cap is config-driven (state.telemetryCardinalityCap, default 200) — read live so a
+  // hot-reload applies. `dim.has(key)` short-circuits above, so a shrink only bounds NEW keys.
+  if (dim.size >= state.telemetryCardinalityCap) return "other"
   dim.add(key)
   return key
 }
@@ -1715,7 +1724,22 @@ export function runTelemetryJsonBackfill(now = Date.now()): void {
   // Consume the snapshot up front (single-shot): even if a guard below no-ops, a re-fire won't re-absorb.
   pendingBackfillJson = null
   if (!db || !state.telemetryEnabled || snapshot === null) return
-  migrateJsonToTelemetryDb(db, snapshot, now, currentRollupConfig(), () => telemetryBackfillStopRequested)
+  migrateJsonToTelemetryDb(db, snapshot, now, currentRollupConfig(), currentBackfillDimensionConfig(), () => telemetryBackfillStopRequested)
+}
+
+/**
+ * Project the live dimension-semantics config into the backfill input (single read point, mirrors
+ * {@link currentRollupConfig}). Keeps the backfill's cap folding / cumulative gating aligned with the
+ * live record path: same capped-dimension set (`CAPPED_DIMENSION_NAMES`), same config-driven cap
+ * (`state.telemetryCardinalityCap`, so the backfill honors a tuned cap too — Fix round 2), and the same
+ * cumulative on/off gate (`state.telemetryCumulative`).
+ */
+function currentBackfillDimensionConfig(): BackfillDimensionConfig {
+  return {
+    cappedDimensions: CAPPED_DIMENSION_NAMES,
+    cardinalityCap: state.telemetryCardinalityCap,
+    cumulativeEnabled: state.telemetryCumulative,
+  }
 }
 
 export function _resetRequestTelemetryForTests(): void {

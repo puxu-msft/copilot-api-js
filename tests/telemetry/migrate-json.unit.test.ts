@@ -41,6 +41,7 @@ import {
 } from "~/lib/telemetry/db"
 import {
   //
+  type BackfillDimensionConfig,
   cleanupOrphanTelemetryTmpFiles,
   migrateJsonToTelemetryDb,
   TELEMETRY_JSON_BACKFILL_VERSION,
@@ -66,6 +67,18 @@ const ROLLUP_CONFIG: RollupConfig = {
   rawRetentionDays: 7,
   hourlyRetentionDays: 90,
   dailyRetentionDays: 0,
+}
+
+/** 标准 dim config：cap = model/client/tool，cap 值 200，cumulative 开（对齐 live 默认）。 */
+const DIM_CONFIG: BackfillDimensionConfig = {
+  cappedDimensions: new Set(["model", "client", "tool"]),
+  cardinalityCap: 200,
+  cumulativeEnabled: true,
+}
+
+/** 覆写 dim config 的便捷助手（默认继承 DIM_CONFIG）。 */
+function dimConfig(overrides: Partial<BackfillDimensionConfig> = {}): BackfillDimensionConfig {
+  return { ...DIM_CONFIG, ...overrides }
 }
 
 /** V3 envelope builder：dims[dimName][bucketTsStr][key] = counters bag（可含 __histograms）。 */
@@ -164,7 +177,7 @@ test("oracle 1 — 可加列 + accepted 精确吸收（独立重算 Σ）", () =
     },
   })
 
-  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG, DIM_CONFIG)
 
   // accepted：逐桶精确 + 终身累计 Σ。
   expect(readAccepted(db, B1)).toBe(3)
@@ -203,7 +216,7 @@ test("oracle 2 — cost float→micro（round(cost*1e6)）", () => {
     },
   })
 
-  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG, DIM_CONFIG)
 
   expect(readRaw(db, "model", "opus", B1, "cost_input_micro")).toBe(Math.round(0.0123 * 1e6)) // 12300
   expect(readRaw(db, "model", "opus", B1, "cost_output_micro")).toBe(Math.round(1.5 * 1e6)) // 1500000
@@ -219,14 +232,14 @@ test("oracle 3 — 续跑幂等（真实重放：version 守卫 → 第二次 no
     },
   })
 
-  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG, DIM_CONFIG)
   expect(readMetaInt(db, "json_backfill_version")).toBe(TELEMETRY_JSON_BACKFILL_VERSION)
   expect(sumRaw(db, "model", "opus", "req_count")).toBe(4)
   expect(readAccepted(db, B1)).toBe(7)
   expect(readCumulativeAccepted(db)).toBe(7)
 
   // 真实重放：第二次调用应 no-op（version 守卫短路），SUM 绝不翻倍。
-  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG, DIM_CONFIG)
   expect(sumRaw(db, "model", "opus", "req_count")).toBe(4)
   expect(readRaw(db, "model", "opus", B1, "input_tok")).toBe(200)
   expect(readAccepted(db, B1)).toBe(7)
@@ -238,7 +251,7 @@ test("oracle 4 — 损坏快照 never-throw（不写、不设 version 守卫）"
   const warn = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
 
   // 理论上 init 已验证可解析后才 stash；此处直接喂损坏字符串，验防御性 never-throw 分支。
-  expect(migrateJsonToTelemetryDb(db, "{ this is not valid json ", NOW, ROLLUP_CONFIG)).toBeUndefined()
+  expect(migrateJsonToTelemetryDb(db, "{ this is not valid json ", NOW, ROLLUP_CONFIG, DIM_CONFIG)).toBeUndefined()
 
   // 未写任何数据、未设 version 守卫（下次可重试）。
   expect(readMetaInt(db, "json_backfill_version")).toBeNull()
@@ -265,7 +278,7 @@ test("oracle 5 — __histograms 不污染可加列", () => {
     },
   })
 
-  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG, DIM_CONFIG)
 
   // 可加列精确、未被 __histograms 的 buckets/sum 污染。
   expect(readRaw(db, "model", "opus", B1, "req_count")).toBe(1)
@@ -292,7 +305,7 @@ test("oracle 6 — rollup 种子：backfilled raw 上卷进 hourly（长窗可�
     },
   })
 
-  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG, DIM_CONFIG)
 
   // B2 = B1+30*5min = B1+2.5h → 不同 hour 桶。hourly 层跨桶 SUM 应等于 raw 全量（链式上卷等价）。
   expect(sumHourly(db, "model", "opus", "req_count")).toBe(5)
@@ -304,7 +317,7 @@ test("oracle 7 — 迁移前 sketch 缺失可辨识标注（boundary_ts，真吸
 
   expect(readJsonBackfillBoundaryTs(db)).toBeNull() // 迁移前无标注
 
-  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG, DIM_CONFIG)
 
   expect(readJsonBackfillBoundaryTs(db)).toBe(NOW) // 吸收了 1 settled 行 → 迁移边界 = now
 })
@@ -328,7 +341,7 @@ test("oracle 8 — .tmp 精确清理 + JSON 本体不删（no-destructive）", a
 })
 
 test("oracle 9 — 空 V3（可解析但零 settled 行）设 version 守卫、但不设 boundary_ts（防 gap 假阳性）", () => {
-  migrateJsonToTelemetryDb(db, v3({ buckets: {}, dimensions: {} }), NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, v3({ buckets: {}, dimensions: {} }), NOW, ROLLUP_CONFIG, DIM_CONFIG)
   // 已处理（不再重扫）。
   expect(readMetaInt(db, "json_backfill_version")).toBe(TELEMETRY_JSON_BACKFILL_VERSION)
   // 零 settled 行 → 不标注 boundary（否则 lifetime preMigrationSketchGap 假报 true）。
@@ -337,8 +350,82 @@ test("oracle 9 — 空 V3（可解析但零 settled 行）设 version 守卫、�
 
 test("oracle 10 — 只有 accepted 无 settled 行：设守卫、不设 boundary（accepted 非 settled 分布）", () => {
   // 只有 accepted buckets、无 dimensions settled 行：boundary 只由 settled 行门控（sketch 缺失是 settled 分布的属性）。
-  migrateJsonToTelemetryDb(db, v3({ buckets: { [String(B1)]: 5 }, dimensions: {} }), NOW, ROLLUP_CONFIG)
+  migrateJsonToTelemetryDb(db, v3({ buckets: { [String(B1)]: 5 }, dimensions: {} }), NOW, ROLLUP_CONFIG, DIM_CONFIG)
   expect(readMetaInt(db, "json_backfill_version")).toBe(TELEMETRY_JSON_BACKFILL_VERSION)
   expect(readCumulativeAccepted(db)).toBe(5)
   expect(readJsonBackfillBoundaryTs(db)).toBeNull()
+})
+
+/** tel_cumulative 某维度的 distinct key 行集（含 "other"）——独立 oracle 用（直读库、非读被测代码回推）。 */
+function cumulativeKeys(db: TelemetryDatabase, dimName: string): Set<string> {
+  const dim = db.prepare("SELECT id FROM tel_dim WHERE name = ?").get(dimName) as { id: number } | undefined
+  if (!dim) return new Set()
+  const rows = db.prepare("SELECT k.key AS key FROM tel_cumulative c JOIN tel_key k ON k.id = c.key_id WHERE c.dim = ?").all(dim.id) as Array<{ key: string }>
+  return new Set(rows.map((r) => r.key))
+}
+
+/** 造一个 capped 维度跨桶 union 超 cap 的 fixture：n 个 distinct key，逐个塞进各自的 5min 桶（模拟 legacy per-bucket cap）。 */
+function manyKeysAcrossBuckets(dimName: string, n: number, reqPerKey = 1): V3Fixture {
+  const buckets: Record<string, Record<string, Record<string, unknown>>> = {}
+  for (let i = 0; i < n; i++) {
+    const ts = String(B1 + i * BUCKET_MS)
+    buckets[ts] = { [`k-${i}`]: { requestCount: reqPerKey, inputTokens: 10 } }
+  }
+  return { buckets: {}, dimensions: { [dimName]: { buckets } } }
+}
+
+test("oracle 11 — Fix1：capped 维度 cumulative 腿折 cap（跨桶 union >cap → tel_cumulative ≤ cap+1 行、other==被折 Σ）", () => {
+  // client 是 capped 维度；造 205 个 distinct key（跨 205 个桶，各 1 req）——legacy per-bucket cap 不会拦（每桶 1 key），
+  // 但跨桶 union = 205 > cap(200)。无 cap 折叠时 tel_cumulative 会有 205 行 client key（越 cap → 污染 seed → live 降级）。
+  migrateJsonToTelemetryDb(db, v3(manyKeysAcrossBuckets("client", 205)), NOW, ROLLUP_CONFIG, DIM_CONFIG)
+
+  const keys = cumulativeKeys(db, "client")
+  // 承重：cumulative 该维度 ≤ 201 行（200 真实键 + "other"）。
+  expect(keys.size).toBe(201)
+  expect(keys.has("other")).toBe(true)
+  expect([...keys].filter((k) => k !== "other").length).toBe(200)
+
+  // 独立 oracle：other 行的 req_count == 被折的 5 个 key 的 SUM（205-200=5，各 1 req）。
+  expect(readCumulative(db, "client", "other", "req_count")).toBe(5)
+  expect(readCumulative(db, "client", "other", "input_tok")).toBe(5 * 10)
+
+  // raw 腿不折（有 bucket 维、legacy 已 per-bucket cap）：第 205 个真实键在 raw 里仍是自己的行、非 other。
+  expect(readRaw(db, "client", "k-204", B1 + 204 * BUCKET_MS, "req_count")).toBe(1)
+})
+
+test("oracle 12 — Fix1：非 capped 维度（agentKind）超 cap 不折（cumulative 全真实键、无 other）", () => {
+  // agentKind 不在 cappedDimensions；人为构造 205 distinct → 全部原样落 cumulative、无 "other" 折叠（spec invariant 7）。
+  migrateJsonToTelemetryDb(db, v3(manyKeysAcrossBuckets("agentKind", 205)), NOW, ROLLUP_CONFIG, DIM_CONFIG)
+
+  const keys = cumulativeKeys(db, "agentKind")
+  expect(keys.size).toBe(205)
+  expect(keys.has("other")).toBe(false)
+})
+
+test("oracle 13 — Fix2：cardinalityCap 可配（设 3 → 第 4 个 key 折 other，独立 oracle）", () => {
+  // 把 cap 调到 3：client 跨桶 union 5 个 key → 前 3 真实键 + 第 4/5 折 other。
+  migrateJsonToTelemetryDb(db, v3(manyKeysAcrossBuckets("client", 5)), NOW, ROLLUP_CONFIG, dimConfig({ cardinalityCap: 3 }))
+
+  const keys = cumulativeKeys(db, "client")
+  expect(keys.size).toBe(4) // 3 真实键 + other
+  expect([...keys].filter((k) => k !== "other").length).toBe(3)
+  // other == 被折的 2 个 key SUM（5-3=2，各 1 req）。
+  expect(readCumulative(db, "client", "other", "req_count")).toBe(2)
+})
+
+test("oracle 14 — Fix3：cumulativeEnabled=false 时不写 tel_cumulative，但仍写 tel_raw/tel_accepted", () => {
+  const snapshot = v3({
+    buckets: { [String(B1)]: 6 },
+    dimensions: { model: { buckets: { [String(B1)]: { opus: { requestCount: 4, inputTokens: 200 } } } } },
+  })
+
+  migrateJsonToTelemetryDb(db, snapshot, NOW, ROLLUP_CONFIG, dimConfig({ cumulativeEnabled: false }))
+
+  // cumulative 腿被跳过：tel_cumulative 空。
+  const n = (db.prepare("SELECT COUNT(*) AS n FROM tel_cumulative").get() as { n: number }).n
+  expect(n).toBe(0)
+  // raw + accepted 仍导入。
+  expect(readRaw(db, "model", "opus", B1, "req_count")).toBe(4)
+  expect(readAccepted(db, B1)).toBe(6)
+  expect(readCumulativeAccepted(db)).toBe(6) // accepted lifetime 累计（tel_meta）不受 cumulative 开关影响
 })
