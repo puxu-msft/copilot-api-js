@@ -65,6 +65,10 @@
 ## Phase 0：PoC 门槛 — reusePort overlap 内核连接分发正确性
 
 > 这是设计列出的唯一实现前置 PoC。**必须先绿**才能建其上。产物留 `exp/graceful-restart-reuseport/`。
+>
+> **实施状态（2026-07-14，GPT 实施者）：Phase 0 全部完成，两个门槛均 PASS。**
+> - Task 0：fresh-connection 探针 5/5 连跑 100% 确定性 PASS（关旧 listener 后新连接全落新进程），keep-alive 对照探针复现假阳性、证实方法论警告成立。commit `5eb153db`。
+> - Task 0.5：sd_notify 传输选型定为 **`bun:ffi socket(2)+sendto(2)` 直接 syscall**（3/3 连跑稳定 PASS，零外部依赖）；候选 2（spawn `systemd-notify --no-block`）同样可行，留作 fallback 记录；`node:dgram unix_dgram` 与原生绑定包 `sd-notify` 均确认不可行。commit `59c15aca`。
 
 ### Task 0: reusePort 重叠窗口内核分发 spike
 
@@ -75,7 +79,7 @@
 **Interfaces:**
 - Produces: 结论「旧进程关闭 listen socket 后，新连接 100% 落到新进程、无 RST、无丢连；已建连接在旧进程存活直到完成」——写入 FINDINGS.md，被后续 Phase 门控。
 
-- [ ] **Step 1: 写 probe（fresh-connection 探针——每次新建 TCP，绝不复用连接池）**
+- [x] **Step 1: 写 probe（fresh-connection 探针——每次新建 TCP，绝不复用连接池）**
 
 > ⚠️ **承重方法论（R1 评审 BLOCKER-1，实测 8/8 复现）**：用默认 `fetch()` 会因 keep-alive 连接池复用**指向旧进程的旧连接**，把「客户端复用旧连接」误判成「内核仍往旧进程分发新连接」→ 假阳性 FAIL、进而可能误判 reusePort 机制不可靠。**必须每次新建 TCP 连接**（`Connection: close` + `keepalive:false`，或 `net.connect`），并用 keep-alive vs fresh 双探针交叉验证。
 
@@ -122,20 +126,20 @@ if (distinct.size === 1 && distinct.has("NEW")) {
 await newSrv.stop(true)
 ```
 
-- [ ] **Step 1.5: 交叉验证——keep-alive 探针复现假阳性、fresh 探针稳定通过**
+- [x] **Step 1.5: 交叉验证——keep-alive 探针复现假阳性、fresh 探针稳定通过**
 
 再写一个用 `fetch()`（keep-alive）的对照探针，确认它会 FAIL（含 OLD）；证明 fresh 探针的通过不是运气、而是真排除了连接池变量。把两者结果都记进 FINDINGS.md。
 
-- [ ] **Step 2: 连跑 5 次证时序确定性**
+- [x] **Step 2: 连跑 5 次证时序确定性**
 
 Run: `for i in 1 2 3 4 5; do bun run exp/graceful-restart-reuseport/probe.ts; done`
 Expected: 每次都 `PASS: 关旧 listener 后 fresh 新连接 100% 落新进程`，「关旧 listener 后 fresh 分布」恒为 `[NEW]`。
 
-- [ ] **Step 3: 若任一次 FAIL — 停下上报，不继续后续 Phase**
+- [x] **Step 3: 若任一次 FAIL — 停下上报，不继续后续 Phase**
 
 FAIL 意味着 reusePort 重叠机制无法保证零停机分发，需回设计文档改形（如改为「新进程绑定前旧进程先关 listener」的无重叠交接，牺牲部分零停机）。**这是硬门。**
 
-- [ ] **Step 4: 写 FINDINGS.md 记录结论 + 连跑输出**
+- [x] **Step 4: 写 FINDINGS.md 记录结论 + 连跑输出**
 
 ```markdown
 # reusePort overlap 内核分发 PoC 结论
@@ -144,7 +148,7 @@ FAIL 意味着 reusePort 重叠机制无法保证零停机分发，需回设计�
 - 含义: 支撑 lifecycle.md「T3 旧关 listen fd → 内核只把新连接投给新进程」。
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -- exp/graceful-restart-reuseport/probe.ts exp/graceful-restart-reuseport/FINDINGS.md
@@ -162,7 +166,7 @@ git commit -m "test(restart): PoC reusePort overlap kernel dispatch correctness"
 **Interfaces:**
 - Produces: 结论「在 Bun 1.3.x 下向 systemd `SOCK_DGRAM` `$NOTIFY_SOCKET` 发 `READY=1` 的可行方式 = <选定方案>」，供 Task 9 实现 `sdNotify` 时照此写。
 
-- [ ] **Step 1: 起一个真 `SOCK_DGRAM` AF_UNIX server（Python，模拟 systemd）+ 逐个试候选发送方**
+- [x] **Step 1: 起一个真 `SOCK_DGRAM` AF_UNIX server（Python，模拟 systemd）+ 逐个试候选发送方**
 
 候选按优先级实测（每个都对准真 dgram server、验证 server 收到 `READY=1`）：
 1. **`bun:ffi` 直接 syscall**：`socket(AF_UNIX, SOCK_DGRAM, 0)` + `sendto(2)` 到 socket 路径（含 abstract socket 前导 NUL 处理）。最无外部依赖、最可控。
@@ -176,7 +180,7 @@ git commit -m "test(restart): PoC reusePort overlap kernel dispatch correctness"
 // 3. 记录每个候选：可行? 依赖? 复杂度?
 ```
 
-- [ ] **Step 2: 选定 + 写 FINDINGS.md**
+- [x] **Step 2: 选定 + 写 FINDINGS.md**
 
 ```markdown
 # sd_notify 传输选型 PoC 结论
@@ -187,7 +191,7 @@ git commit -m "test(restart): PoC reusePort overlap kernel dispatch correctness"
 - Task 9 的 sdNotify() 按此实现。
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -- exp/graceful-restart-sdnotify/
