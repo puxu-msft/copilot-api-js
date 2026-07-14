@@ -231,6 +231,74 @@ function nullableBufferedRetry() {
     .optional()
 }
 
+/**
+ * Response-wire fix group — TEXT blocks. Fixes applied to `text` content blocks in the Anthropic
+ * response before forwarding to the client.
+ */
+const ResponseTextFixSchema = z
+  .object({
+    /**
+     * Convert a leaked `<invoke name=…>` tool call that upstream emitted as plain `text` into a real
+     * `tool_use` block (the client otherwise renders it as text and never executes the tool). Default true.
+     */
+    invoke_in_text: nullableBoolean(),
+  })
+  .strict()
+
+/**
+ * Response-wire fix group — TOOL_USE blocks. Fixes applied to `tool_use` content blocks in the Anthropic
+ * response before forwarding to the client. History keeps the upstream-original bytes; only the forwarded
+ * stream/response is repaired.
+ */
+const ResponseToolUseFixSchema = z
+  .object({
+    /**
+     * Repair malformed `tool_use` input that upstream emitted as invalid JSON. A **comma-separated set of
+     * repair items** — a subset of `tags` (structure-aware antml-tag stripping), `unicode` (whitespace-broken
+     * `\uXXXX` escape fix), `jsonrepair` (jsonrepair structural fix), and `unicode-lossy` (LOSSY best-effort:
+     * un-completable `\uXXXX` escapes → U+FFFD, garbling ≥1 char to rescue an otherwise-dead input). Items
+     * cascade in a fixed canonical order (spelling order is ignored) and stack on each other; the lossy
+     * `unicode-lossy` runs LAST, only when every lossless item failed. Empty string (default) = off.
+     */
+    malformed_input: z
+      .string({ error: REPAIR_ITEMS_MSG })
+      .nullable()
+      .transform((v, ctx): ReadonlyArray<RepairItem> | undefined => {
+        if (v === null) return undefined
+        const tokens = v
+          .split(",")
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0)
+        const invalid = tokens.filter((t) => !(REPAIR_ITEMS as ReadonlyArray<string>).includes(t))
+        if (invalid.length > 0) {
+          ctx.addIssue({ code: "custom", message: `${REPAIR_ITEMS_MSG} — got invalid item(s): ${invalid.join(", ")}` })
+          return z.NEVER
+        }
+        // Dedup + canonical order (REPAIR_ITEMS order == cascade order). Empty set = off.
+        const set = new Set(tokens)
+        return REPAIR_ITEMS.filter((it) => set.has(it))
+      })
+      .optional(),
+    /**
+     * Tool name → list of top-level `tool_use` input fields to decode from a stringified JSON string back
+     * to structured form (e.g. `AskUserQuestion.questions` arriving as a JSON string). Keys matched verbatim
+     * against the tool name (NOT model-keyed — no case/separator folding).
+     */
+    decode_top_level_field: z.record(z.string(), z.array(z.string())).optional(),
+    /**
+     * Recover a missing SendMessage `to` recipient from a misnamed `agentId` alias (the client rejects a
+     * SendMessage call whose required `to` is absent). Only touched when `to` is absent and `agentId` is a
+     * non-empty string. Default true.
+     */
+    send_message_to_missing: nullableBoolean(),
+    /**
+     * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` (Claude Code rejects a
+     * question item with a header but no question). Only items missing the `question` key are touched. Default true.
+     */
+    ask_user_question_question_missing: nullableBoolean(),
+  })
+  .strict()
+
 export const AnthropicConfigSchema = z
   .object({
     /** Forward `/v1/messages/count_tokens` to the GHC upstream (exact counts, uses the copilot token). Default true. When false, count_tokens uses the local calibrated tiktoken estimate only. */
@@ -498,9 +566,10 @@ export const AnthropicConfigSchema = z
     // Tool-name-keyed (NOT model-keyed): keys are matched verbatim against the
     // tool name — must NOT go through normalizeModelKeyedRecord, which would
     // fold case/separators and break lookups. Replace semantic (default).
-    tool_decode_input_fields: z.record(z.string(), z.array(z.string())).optional(),
-    tool_decode_all_input_fields: nullableBoolean(),
-    tool_recover_call_text: nullableBoolean(),
+    // Response-wire fixes are grouped under `response_text_fix` (text blocks) and
+    // `response_tool_use_fix` (tool_use blocks); see those section schemas below.
+    response_text_fix: nullableSection(ResponseTextFixSchema),
+    response_tool_use_fix: nullableSection(ResponseToolUseFixSchema),
     refusal_sse_rewrite: nullableEnum(["refusal", "end_turn", "error"] as const),
     /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。支持占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留。空串=不追加 text 块（仅改 end_turn）。未配=内置默认（逐字节等价旧固定文案）。 */
     refusal_end_turn_text: nullableString(),
@@ -516,42 +585,6 @@ export const AnthropicConfigSchema = z
     error_auq_template: nullableString(),
     /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」。键=策略 .name（如 "adaptive-thinking-rejection-retry"），值 "proxy"|"delegate"。未列=proxy（默认更可控）。 */
     error_selfheal_delegate: z.record(z.string(), z.enum(["proxy", "delegate"])).optional(),
-    /**
-     * Backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item with a header but no question).
-     * Only items missing the `question` key are touched. Default true.
-     */
-    tool_backfill_question: nullableBoolean(),
-    /**
-     * Repair malformed `tool_use` input that upstream emitted as invalid JSON on
-     * the Anthropic response wire. A **comma-separated set of repair items** — a
-     * subset of `tags` (structure-aware antml-tag stripping), `unicode`
-     * (whitespace-broken `\uXXXX` escape fix), `jsonrepair` (jsonrepair structural
-     * fix), and `unicode-lossy` (LOSSY best-effort: un-completable `\uXXXX` escapes
-     * → U+FFFD, garbling ≥1 char to rescue an otherwise-dead input). Items cascade in
-     * a fixed canonical order (spelling order is ignored) and stack on each other;
-     * the lossy `unicode-lossy` runs LAST, only when every lossless item failed.
-     * Empty string (default) = off. History keeps the upstream-original bytes — only
-     * the forwarded stream/response is repaired.
-     */
-    tool_repair_malformed_input: z
-      .string({ error: REPAIR_ITEMS_MSG })
-      .nullable()
-      .transform((v, ctx): ReadonlyArray<RepairItem> | undefined => {
-        if (v === null) return undefined
-        const tokens = v
-          .split(",")
-          .map((t) => t.trim())
-          .filter((t) => t.length > 0)
-        const invalid = tokens.filter((t) => !(REPAIR_ITEMS as ReadonlyArray<string>).includes(t))
-        if (invalid.length > 0) {
-          ctx.addIssue({ code: "custom", message: `${REPAIR_ITEMS_MSG} — got invalid item(s): ${invalid.join(", ")}` })
-          return z.NEVER
-        }
-        // Dedup + canonical order (REPAIR_ITEMS order == cascade order). Empty set = off.
-        const set = new Set(tokens)
-        return REPAIR_ITEMS.filter((it) => set.has(it))
-      })
-      .optional(),
     /**
      * Synthetic SSE keepalive ping cadence (seconds) for the client-facing live
      * Anthropic stream. `0` disables; default **20**, clamped to a large margin

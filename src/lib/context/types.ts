@@ -1,4 +1,8 @@
-import type { AskNormalizationDiag } from "~/lib/anthropic/decode-tool-input-core"
+import type {
+  //
+  AskNormalizationDiag,
+  SendMessageNormalizationDiag,
+} from "~/lib/anthropic/decode-tool-input-core"
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -538,6 +542,12 @@ export interface RequestContext {
    * (under buffered-retry, possibly a discarded one — a diagnostic-fidelity limitation, not a wire bug).
    */
   recordAskUserQuestionNormalization(diag: AskNormalizationDiag): void
+  /**
+   * Record the diagnostic when `normalizeSendMessageInput` recovered a SendMessage recipient by renaming a
+   * misnamed `agentId` alias → the required `to`. Merges into pipelineInfo (published via context_updated).
+   * Same request-level lifecycle caveat as `recordAskUserQuestionNormalization`.
+   */
+  recordSendMessageNormalization(diag: SendMessageNormalizationDiag): void
   /** The repair outcomes accumulated for the current (committed) attempt. */
   readonly repairOutcomes: ReadonlyArray<RepairOutcomeRecord>
   /** Derived: the first UNREPAIRABLE tool of the current attempt, or null (drives the handler fail-gate). */

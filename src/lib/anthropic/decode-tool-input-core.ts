@@ -19,15 +19,10 @@
 export interface DecodeToolInputConfig {
   /**
    * Tool name → list of top-level field names to decode. A tool absent from
-   * this map (and not covered by `all`) is left untouched. Keys are matched
-   * against the raw tool name verbatim — no normalization.
+   * this map is left untouched. Keys are matched against the raw tool name
+   * verbatim — no normalization.
    */
   fields: Record<string, Array<string>>
-  /**
-   * When true, attempt to decode ALL top-level string fields of every
-   * tool_use input, ignoring `fields`. Default behavior is opt-in per tool.
-   */
-  all: boolean
 }
 
 /**
@@ -56,7 +51,6 @@ export function tryDecodeJsonString(value: string): Record<string, unknown> | Ar
 
 /** Whether a tool's input is eligible for field decoding under `cfg`. */
 export function shouldDecodeToolInput(name: string, cfg: DecodeToolInputConfig): boolean {
-  if (cfg.all) return true
   return Object.hasOwn(cfg.fields, name) && cfg.fields[name].length > 0
 }
 
@@ -120,8 +114,7 @@ export function backfillAskUserQuestionHeaders(name: string, input: unknown): un
  * Decode stringified-JSON fields in a tool_use input object.
  *
  * - Non-plain-object input (string, array, null, primitive) is returned unchanged.
- * - Target fields are every top-level key when `cfg.all`, otherwise the
- *   field names listed for `name` in `cfg.fields`.
+ * - Target fields are the field names listed for `name` in `cfg.fields`.
  * - For each target field whose value is a string that decodes to an
  *   object/array, the field is replaced; every other value is preserved as-is.
  * - Returns a NEW object when at least one field changed, otherwise the
@@ -134,14 +127,8 @@ export function decodeToolUseInput(name: string, input: unknown, cfg: DecodeTool
   const obj = input as Record<string, unknown>
   // `Object.hasOwn` guards the Record index (typed as non-undefined, but a
   // missing tool name would be undefined at runtime).
-  let targetFields: Array<string>
-  if (cfg.all) {
-    targetFields = Object.keys(obj)
-  } else if (Object.hasOwn(cfg.fields, name)) {
-    targetFields = cfg.fields[name]
-  } else {
-    return input
-  }
+  if (!Object.hasOwn(cfg.fields, name)) return input
+  const targetFields = cfg.fields[name]
   if (targetFields.length === 0) return input
 
   let result: Record<string, unknown> | undefined
@@ -243,5 +230,46 @@ export function normalizeAskUserQuestionInput(name: string, input: unknown, onDi
     if (ASK_ALLOWED_TOP_KEYS.has(k)) result[k] = backfilled[k]
   }
   if (diag.salvaged || diag.strippedKeys || diag.droppedQuestionValue || diag.multiItemAmbiguous) onDiag?.(diag)
+  return result
+}
+
+/** Tool name whose missing required `to` recipient may be recovered from a misnamed `agentId` alias. */
+export const SEND_MESSAGE_TOOL = "SendMessage"
+
+/** What {@link normalizeSendMessageInput} did — persisted for diagnostics (parallel to {@link AskNormalizationDiag}). */
+export interface SendMessageNormalizationDiag {
+  /** The required `to` recipient was recovered by renaming a misnamed `agentId` alias. */
+  renamedRecipient?: boolean
+}
+
+/**
+ * Recover a missing SendMessage `to` recipient from a misnamed `agentId` alias on the forwarded wire.
+ *
+ * FleetView's SendMessage requires `to` (the recipient agent). opus-4.8 occasionally emits the
+ * recipient under `agentId` instead, leaving `to` absent → the client rejects the tool call
+ * ("required parameter `to` is missing"). When `to` is ABSENT and `agentId` is a non-empty string,
+ * this moves `agentId`'s value into `to` and drops `agentId` (a stray key the client would otherwise
+ * reject as an unexpected parameter).
+ *
+ * SendMessage-specific: a no-op for any other tool name. Every other case is returned unchanged (same
+ * reference, enabling zero-perturbation pass-through via `===`): `to` already present (present-but-empty
+ * is the client's own valid-shape choice, not overwritten), `agentId` missing / empty / non-string, or
+ * non-plain-object input. Deliberately narrow — it only touches the observed `to`-missing shape; a call
+ * that carries a valid `to` alongside a stray `agentId` is left to the (separate, deferred) tool-agnostic
+ * invalid-key strip. `onDiag` fires once when the rename happens.
+ */
+export function normalizeSendMessageInput(name: string, input: unknown, onDiag?: (d: SendMessageNormalizationDiag) => void): unknown {
+  if (name !== SEND_MESSAGE_TOOL) return input
+  if (!isPlainObject(input)) return input
+  // Only recover when the required `to` is ABSENT — a present-but-empty `to` is the client's own
+  // (valid-shape) choice and must not be overwritten.
+  if (Object.hasOwn(input, "to")) return input
+  const alias = input.agentId
+  if (typeof alias !== "string" || alias.length === 0) return input
+
+  // Move the recipient into `to` and drop the misnamed `agentId` (a stray key the client rejects).
+  const result: Record<string, unknown> = { ...input, to: alias }
+  delete result.agentId
+  onDiag?.({ renamedRecipient: true })
   return result
 }
