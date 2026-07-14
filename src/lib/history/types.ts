@@ -541,7 +541,14 @@ export interface HistoryEntry {
     sseEvents?: Array<SseEventRecord>
     /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
     responseHeaders?: Record<string, string>
+    /** 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻，绝对 epoch。经 toHistoryAttempts 透传（owner）。 */
+    upstreamHeadersAt?: number
+    upstreamMessageStartAt?: number
+    upstreamFirstTokenAt?: number
+    upstreamLastTokenAt?: number
   }>
+  /** 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻，offset ms 相对 started_at。落 entry 列。 */
+  timing?: { client?: { streamOpenMs?: number; firstRealMs?: number; bufferHoldStartMs?: number } }
 }
 
 export interface HistoryState {

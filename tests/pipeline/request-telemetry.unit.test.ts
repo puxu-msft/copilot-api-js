@@ -22,6 +22,7 @@ import {
   persistRequestTelemetry,
   recordAcceptedRequest,
   recordSettledRequest,
+  TELEMETRY_HISTOGRAMS,
 } from "~/lib/request-telemetry"
 import {
   //
@@ -627,5 +628,34 @@ describe("distribution histograms", () => {
     const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms.queue_wait_ms
     expect(hist.count).toBe(1)
     expect(hist.sum).toBe(0) // -250 clamped to 0, not subtracted
+  })
+
+  test("timing distributions registered + observe their ms values (spec 2026-07-14 §6.1)", () => {
+    // Registration: the 3 timing histograms are in the shared registry → also exposed on /metrics.
+    const names = TELEMETRY_HISTOGRAMS.map((h) => h.name)
+    expect(names).toContain("upstream_first_token_ms")
+    expect(names).toContain("client_first_real_ms")
+    expect(names).toContain("buffer_hold_ms")
+
+    const now = Date.now()
+    recordSettledRequest(
+      { model: "m" },
+      { startedAt: now, endedAt: now + 80_000, success: true, upstreamFirstTokenMs: 6000, clientFirstRealMs: 79_000, bufferHoldMs: 78_980 },
+    )
+    const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms
+    expect(hist.upstream_first_token_ms.count).toBe(1)
+    expect(hist.upstream_first_token_ms.sum).toBe(6000)
+    expect(hist.client_first_real_ms.sum).toBe(79_000)
+    expect(hist.buffer_hold_ms.sum).toBe(78_980)
+    // 400_000 top boundary covers the observed max (~356s) — 79s lands well inside, not +Inf.
+    expect(hist.client_first_real_ms.p50).toBeLessThan(400_000)
+  })
+
+  test("absent timing → distribution not observed (omitted from breakdown)", () => {
+    const now = Date.now()
+    recordSettledRequest({ model: "m" }, { startedAt: now, endedAt: now + 5, success: true })
+    const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms
+    // Unobserved distributions are omitted from the breakdown (only duration_ms is always present).
+    expect(hist.upstream_first_token_ms).toBeUndefined()
   })
 })

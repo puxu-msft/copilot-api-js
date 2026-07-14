@@ -56,6 +56,13 @@ import {
 } from "./cell-assembly"
 import {
   //
+  isFirstUpstreamContent,
+  isUpstreamContentFrame,
+  recordLatest,
+  recordOnce,
+} from "./request-timing"
+import {
+  //
   assembleRequestRewrites,
   assembleResponseRewrites,
   BUILTIN_REQUEST_REWRITES,
@@ -66,7 +73,6 @@ import {
   type RewriteState,
 } from "./rewrite-registry"
 import { decideRoute } from "./router"
-
 /**
  * Everything the driver needs to orchestrate one format. The route layer (P2.3+)
  * selects the codec by prefix and constructs a driver per request.
@@ -395,6 +401,11 @@ async function runExchange(
       const hook = getUpstreamHook()
       const upstream =
         hook?.onExchange ? await hook.onExchange(wire, current, () => deps.transport.send(wire, current)) : await deps.transport.send(wire, current)
+      // 首包埋点（spec 2026-07-14 §3.2）：上游响应头到达（每 attempt 各记自己的，绝对 epoch）。
+      {
+        const timingAttempt = current.ctx.currentAttempt
+        if (timingAttempt) recordOnce(timingAttempt, "upstreamHeadersAt", Date.now())
+      }
       // RFC history-http-header-capture Phase 2: driver owns the outbound header
       // capture (no handler-side HeadersCapture bag). ② outboundRequest = the wire
       // headers in hand; ③ outboundResponse = the upstream response headers carried
@@ -536,6 +547,16 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
           ...(origin && { synthetic: origin }),
         })
         if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
+        // 首包埋点（spec 2026-07-14 §3.2）：上游 3 刻记到当前 attempt（绝对 epoch）。单点采样在
+        // driver loop-top（每格式 raw 帧无条件流经此，Responses direct 也在此），谓词按 targetEndpoint。
+        // message_start 为 Anthropic-format 专有帧，非-Anthropic 上游此刻恒 undefined（符合预期）。
+        const timingAttempt = env.ctx.currentAttempt
+        if (timingAttempt) {
+          const now = Date.now()
+          if (frame.event === "message_start") recordOnce(timingAttempt, "upstreamMessageStartAt", now)
+          if (isFirstUpstreamContent(frame, env.targetEndpoint)) recordOnce(timingAttempt, "upstreamFirstTokenAt", now)
+          if (isUpstreamContentFrame(frame, env.targetEndpoint)) recordLatest(timingAttempt, "upstreamLastTokenAt", now)
+        }
         // Hand the raw upstream frame to the handler's upstream-side work (accumulate
         // → outboundResponse, repetition, progress, diagnostics) BEFORE the rewrite
         // chain (RFC §4.A1 — keeps those on the upstream-original, not the rewritten
@@ -813,6 +834,9 @@ export async function runResponseBufferedSink(
           // handler's unique idle injector can forward it AHEAD of the anchor block. It is STILL buffered
           // as normal — the commit flush skips the already-forwarded copy (H1 dedup below).
           if (anchor && anchorState.capturedMessageStart === undefined && anchor.isMessageStart(toWrite)) anchorState.capturedMessageStart = toWrite
+          // 首包埋点（spec 2026-07-14 §3.2）：首帧被扣留进 buffer 的时刻（entry-level first hold，
+          // 跨失败 retry；once 语义保留全局最早）。protect_streaming_generation 与 L2 共用此函数。
+          if (buffer.length === 0) currentEnv.ctx.setClientTimingEpoch("bufferHoldStart", Date.now())
           buffer.push(toWrite)
           bufferedBytes += (toWrite.data?.length ?? 0) + (toWrite.event?.length ?? 0)
           if (bufferCapBytes > 0 && bufferedBytes > bufferCapBytes) {

@@ -43,8 +43,9 @@ INSERT INTO entries_v2 (
   message_count, preview_text, response_preview_text,
   pid, boot_time, git_sha,
   request_bytes, response_bytes, multiplier,
+  client_stream_open_ms, client_first_real_ms, buffer_hold_start_ms,
   blob_gz
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   session_id = excluded.session_id, agent_id = excluded.agent_id, started_at = excluded.started_at, ended_at = excluded.ended_at,
   duration_ms = excluded.duration_ms, model = excluded.model, endpoint = excluded.endpoint, raw_path = excluded.raw_path,
@@ -59,6 +60,7 @@ ON CONFLICT(id) DO UPDATE SET
   response_preview_text = excluded.response_preview_text,
   pid = excluded.pid, boot_time = excluded.boot_time, git_sha = excluded.git_sha,
   request_bytes = excluded.request_bytes, response_bytes = excluded.response_bytes, multiplier = excluded.multiplier,
+  client_stream_open_ms = excluded.client_stream_open_ms, client_first_real_ms = excluded.client_first_real_ms, buffer_hold_start_ms = excluded.buffer_hold_start_ms,
   blob_gz = excluded.blob_gz
 `
 
@@ -101,6 +103,9 @@ function runHeadInsert(db: ReturnType<typeof getDatabase>, row: EntryRow): void 
     row.request_bytes,
     row.response_bytes,
     row.multiplier,
+    row.client_stream_open_ms,
+    row.client_first_real_ms,
+    row.buffer_hold_start_ms,
     row.blob_gz,
   )
 }

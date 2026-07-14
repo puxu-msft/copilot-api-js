@@ -57,6 +57,7 @@ import {
 } from "~/lib/openai/tool-name-sanitize"
 import { makeWsSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import {
@@ -304,6 +305,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const mapper = env.ctx.toolNameMapper
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
+  env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
   let eventsReceived = 0
 
   // Upstream-frame diagnostics (disconnect-log blind-spot fix): the WS leg also emits the disconnect
@@ -328,6 +330,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const sink = makeWsSink(ws, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
+    ...clientFirstRealSinkOpts(env),
     ...(keepaliveSec > 0 && {
       heartbeat: {
         intervalSec: keepaliveSec,

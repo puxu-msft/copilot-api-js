@@ -107,6 +107,9 @@ export function updateEntry(
       | "transport"
       | "warningMessages"
       | "multiplier"
+      // 首包埋点（spec 2026-07-14 §3.2）：client 3 刻 nested timing — dual-written by the sink
+      // at terminal (onTerminal projection → HERE → finalizeEntry → buildHeadRow → 列). plan M-B.
+      | "timing"
     >
   >,
 ): void {
