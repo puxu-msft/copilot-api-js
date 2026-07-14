@@ -73,7 +73,7 @@ reconcileH2SessionsForConfigChange()
 
 1. `0` 语义在所有数值旋钮上必须一致——本阶段读取 `getUpstreamH2PingIntervalMs()`/`getUpstreamKeepAliveDelayMs()`/`getPooledConnectionIdleTimeoutMs()` 时复用 P2 已经保证这一致性的读取函数，不重新实现语义判断。
 2. **新旋钮只影响新建连接是 P2 范围；已存在连接受配置热更新影响是 P4 的专属职责，且必须是 generation-based retire-and-replace，不是 drain-then-replace**——本阶段正是这条约束落地的地方。
-3. **每会话 active-stream 计数必须恰好递减一次**，覆盖所有终止路径——本阶段用 `req.once("close", ...)` 兑现，见 Architecture 节。
+3. **每会话 active-stream 计数必须恰好递减一次**，覆盖所有终止路径——本阶段用 `req.once("close", ...)` 兑现，见 Architecture 节；这条不变量不能只靠"正常 end()"一条路径侧面推断，Task 1 Step 1 新增的四行失败矩阵（pre-header `req.error`/post-header `body.cancel()`/服务端 RST without `end`/整会话销毁）逐一用真实 h2c server 验证每条路径都能让 retiring 会话真的被回收（spec §7 追加，reviewer + 用户裁决，A4）。
 4. **正在 retire 的会话的 PING/keepalive 定时器必须存活到 drain 完成**——本阶段的 `retire`/`dispose` 分离设计正是为了保留这条既有不变量，见 Task 1 Step 2 的详细论证。
 5. SSOT-types——本阶段不新增跨前后端类型（P5 职责）。
 6. PUT 迁移——P3 职责，不涉及。
@@ -129,7 +129,7 @@ interface H2SessionEntry {
 function reschedulePingTimer(entry: H2SessionEntry, intervalMs: number): void
 ```
 
-### Step 1 — 写失败测试：reconcile 后新请求拿到新会话，旧会话上的在飞流不受影响
+### Step 1 — 写失败测试：reconcile 后新请求拿到新会话、旧会话在飞流不受影响、ping cadence 热切换（A3）、四类终止路径 exactly-once（A4）
 
 在 `/home/xp/src/copilot-api-js/tests/transport/http2-generation-reconcile.it.test.ts` 新建：
 
@@ -426,9 +426,131 @@ describe("h2 generation-based retire-and-replace", () => {
     expect(await res.text()).toBe("first-chunklast-chunk")
   })
 })
+
+// A4（spec 全局约束 #3 + #4 组合）——activeStreamCount 的 exactly-once 递减必须在
+// 全部四类真实终止路径下都成立，不能只靠"正常 end()"这一条路径侧面推断。矩阵：
+//
+// | # | 场景 | 触发方 | 触发点 | http2Fetch 的 Promise |
+// |---|------|--------|--------|------------------------|
+// | 1 | pre-header `req.error` | 服务端 | 响应头之前，销毁底层会话 | reject |
+// | 2 | post-header `body.cancel()` | 客户端 | 收到响应头之后，主动取消 body reader | resolve，之后读体报错/中止 |
+// | 3 | RST without `end` | 服务端 | 收到响应头之后，`stream.close(code)` 但从不调 `.end()` | resolve，之后读体报错 |
+// | 4 | session close/reset | 服务端 | 收到响应头之后，销毁整个 h2 会话（不只是这一条流） | resolve，之后读体报错 |
+//
+// 四行的触发时机/触发方结构性不同（行 1 在响应头之前、无法先 `await` 到 Response；
+// 行 2-4 都在响应头之后，但行 2 是客户端主动取消、行 3-4 是服务端单方终止），
+// 不适合硬套同一个 `test.each` 参数化模板——所以写成四个独立 `test()`，但共享同一
+// 个可观测的后置断言：这个会话在 reconcile 后已经是 `retiring`（唯一一条流），无论
+// 走哪条终止路径，这条 retiring 的 entry 最终必须从 `getH2SessionStatusSnapshot()`
+// 里彻底消失（`activeStreamCount` 精确归零 → `maybeReclaimRetiringSession` 才会真的
+// `close()` 它）——如果 Step 4 的 `req.once("close")` 记账在某条路径下没有触发（例如
+// Bun 对某种终止的 h2 事件行为与 Node 不同，这正是本文件其它地方已经记录过的已知
+// Bun 差异——见 `tests/transport/http2-client.it.test.ts` 里 rstCode=0 的注释），这个
+// entry 会永远卡在 `retiringSessions` 里、快照永远非空——测试会在轮询超时后失败，
+// 而不是被内部计数器"看起来对了"糊弄过去。
+describe("activeStreamCount exactly-once across every real stream-termination path (spec constraint #3 x #4, A4)", () => {
+  autoRestoreState()
+
+  const waitForReclaim = async (): Promise<void> => {
+    for (let i = 0; i < 40 && getH2SessionStatusSnapshot().length > 0; i++) await sleep(5)
+    expect(getH2SessionStatusSnapshot()).toHaveLength(0)
+  }
+
+  test("row 1 — pre-header req.error (server destroys the underlying session before any response headers)", async () => {
+    let serverStream: http2.ServerHttp2Stream | undefined
+    handler = (stream) => {
+      serverStream = stream
+      // Never respond — this row's client is still waiting for headers when
+      // the underlying transport is forced to error out from under it.
+    }
+
+    const fetchPromise = http2Fetch(`${url}/matrix-pre-header-error`, {})
+    await sleep(30) // let the stream actually open server-side before we snapshot
+    const before = getH2SessionStatusSnapshot()
+    expect(before).toHaveLength(1)
+    expect(before[0].activeStreamCount).toBe(1)
+
+    reconcileH2SessionsForConfigChange()
+    expect(getH2SessionStatusSnapshot()[0]?.lifecycle).toBe("retiring")
+
+    // Force a genuine pre-header client-side `req` error (not a fabricated
+    // event) by destroying the SERVER session's socket — the client's
+    // `req.once("error", ...)` at http2-client.ts:484 is what turns this into
+    // a rejection, since no `response` was ever received.
+    serverStream?.session.destroy(new Error("simulated pre-header transport failure"))
+
+    await expect(fetchPromise).rejects.toThrow()
+    await waitForReclaim()
+  })
+
+  test("row 2 — post-header body.cancel() (client cancels the response body reader after headers arrive)", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("first-chunk")
+      // Never end() — this row's stream terminates via the CLIENT cancelling
+      // the body reader, not via any server-side action.
+    }
+
+    const res = await http2Fetch(`${url}/matrix-post-header-cancel`, {})
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(1)
+
+    reconcileH2SessionsForConfigChange()
+    expect(getH2SessionStatusSnapshot()[0]?.lifecycle).toBe("retiring")
+
+    // The ReadableStream adapter's cancel() calls req.close(NGHTTP2_CANCEL) —
+    // http2-client.ts:473-475.
+    await res.body!.cancel()
+    await waitForReclaim()
+  })
+
+  test("row 3 — server RST_STREAM without end() (upstream resets the stream but never finishes it)", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("first-chunk")
+      setTimeout(() => stream.close(http2.constants.NGHTTP2_INTERNAL_ERROR), 20)
+    }
+
+    const res = await http2Fetch(`${url}/matrix-server-rst`, {})
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(1)
+
+    reconcileH2SessionsForConfigChange()
+    expect(getH2SessionStatusSnapshot()[0]?.lifecycle).toBe("retiring")
+
+    // The body adapter's own close-before-end backstop (http2-client.ts:463-471)
+    // turns this into a read error for the CONSUMER — this row only cares
+    // whether the SEPARATE Step-4 bookkeeping listener also decremented.
+    await res.text().catch(() => {
+      /* expected: a reset-without-end body surfaces as a read error, not this row's concern */
+    })
+    await waitForReclaim()
+  })
+
+  test("row 4 — whole session destroyed mid-stream (upstream connection drop, not just this stream)", async () => {
+    let serverSession: http2.ServerHttp2Session | undefined
+    handler = (stream) => {
+      serverSession = stream.session
+      stream.respond({ ":status": 200 })
+      stream.write("first-chunk")
+      // Never end() — the whole session dies out from under this stream instead.
+    }
+
+    const res = await http2Fetch(`${url}/matrix-session-destroy`, {})
+    expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(1)
+
+    reconcileH2SessionsForConfigChange()
+    expect(getH2SessionStatusSnapshot()[0]?.lifecycle).toBe("retiring")
+
+    serverSession?.destroy(new Error("simulated upstream session drop"))
+
+    await res.text().catch(() => {
+      /* expected: whole-session teardown surfaces as a read error on the open body */
+    })
+    await waitForReclaim()
+  })
+})
 ```
 
-跑 `bun test tests/transport/http2-generation-reconcile.it.test.ts` 确认失败（`getH2ReconcileStatus`/`getH2SessionStatusSnapshot`/`reconcileH2SessionsForConfigChange` 尚未导出，导入报错；新增的两个 reschedule 测试同样因 `reschedulePingTimer` 尚不存在、reconcile 尚未调用它而失败——退休后 `effectivePingIntervalMs` 仍是创建时的旧值，且旧定时器继续按旧 cadence 触发，导致这两个新断言不成立）。
+跑 `bun test tests/transport/http2-generation-reconcile.it.test.ts` 确认失败（`getH2ReconcileStatus`/`getH2SessionStatusSnapshot`/`reconcileH2SessionsForConfigChange` 尚未导出，导入报错；新增的两个 reschedule 测试同样因 `reschedulePingTimer` 尚不存在、reconcile 尚未调用它而失败——退休后 `effectivePingIntervalMs` 仍是创建时的旧值，且旧定时器继续按旧 cadence 触发，导致这两个新断言不成立；A4 的四行矩阵测试此时 `activeStreamCount` 恒为 `0`——Step 4 才接线，`before[0].activeStreamCount).toBe(1)` 这类断言会失败）。
 
 ### Step 2 — 实现：`H2SessionEntry` + 池结构升级
 
@@ -820,7 +942,7 @@ git commit -F <msgfile> -- src/lib/transport/http2-client.ts tests/transport/htt
 ```
 提交信息：`feat(transport): generation-based retire-and-replace for h2 sessions on config hot-reload`
 
-**独立 Oracle**：三个新测试都通过真实本地 h2c server + 真实 h2 stream 观测——"新请求是否真的走了不同的 TCP 会话"（第一个测试断言 generation 变化）、"在飞流是否真的完整收到两段 chunk"（第二个测试用真实的延迟 stream + 真实的 `res.text()` 断言完整拼接结果，而非只断言 `activeStreamCount` 字段），不是仅断言内部状态。
+**独立 Oracle**：本 Task 的全部测试都通过真实本地 h2c server + 真实 h2 stream 观测，不是仅断言内部状态——"新请求是否真的走了不同的 TCP 会话"（第一个测试断言 generation 变化）、"在飞流是否真的完整收到两段 chunk"（第二个测试用真实的延迟 stream + 真实的 `res.text()` 断言完整拼接结果，而非只断言 `activeStreamCount` 字段）、"新 ping cadence 是否真的按新间隔触发 `session.ping()`"（A3 的两个 reschedule 测试用真实 `setInterval` + spy 观测调用次数变化，而非只断言 `effectivePingIntervalMs` 字段被赋值）、"四类真实终止路径是否都能让 retiring 会话真的从快照消失"（A4 的四行矩阵——真实销毁会话/真实取消 body reader/真实服务端 RST/真实整会话销毁，断言的是 `getH2SessionStatusSnapshot()` 最终清空，而不是断言 `activeStreamCount` 内部计数器归零；后者本身在四条路径下走的是四种不同的 Node/Bun 事件时序，只有让它们真的驱动 `maybeReclaimRetiringSession()` 关闭会话，才是这条 exactly-once 不变量真正被兑现的证据）。
 
 ---
 
