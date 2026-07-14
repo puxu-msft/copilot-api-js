@@ -7,6 +7,8 @@ description: 当需要在 copilot-api-js 里验证「真实客户端（@anthropi
 
 golden/http 测试断言的是**代理转发的字节**；本骨架断言**真实客户端拿到那些字节后的可观测行为**——SDK 是否拼出连贯 message、是否 throws、是否静默丢帧；CLI agent-loop 是否 stall。字节对 ≠ 客户端接受。落地在 `tests/e2e-client/`，权威实证结论见 `exp/cli-e2e-stall/FINDINGS.md`。
 
+**本 skill 上游全程 mock、离线不烧额度**（客户端侧当 oracle）。若要反过来打**真实 GHC 计费后端**、用 History API 当 oracle 端到端验证一个改动在生产形态下正确（烧真实额度）→ skill `live-ghc-e2e-verification`。两者共享服务器 spawn 机制（本 skill §spawn 真 proxy 是单一源）。
+
 ## 两层 oracle（按能测什么选）
 
 | 层 | 客户端 | 屏蔽机制 | 能测 | 文件 |
