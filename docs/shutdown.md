@@ -22,6 +22,8 @@
 - 等待 handler 处理 abort 并清理
 - 超时：`state.shutdownAbortWait` 秒（默认 120）
 
+> **2026-07-14 修复（RFC `2026-07-14-request-lifecycle-cancel-settle-quiesce`）**：此前 streaming 请求的 pre-response fetch **故意排除** shutdown signal（`send.ts` 旧 `stream ? undefined : getShutdownSignal()`），导致 delayed-commit 期卡在 pre-response `await p`（stream-body guard 尚不存在）的流式请求 **Phase 3 abort 够不着** → 一直挂到 Phase 4 强关（2026-07-12 实测卡 120s）。现已改为**对 stream/non-stream 一律折入稳定 shutdown signal**（RC1）。同时 driver 退避改 `abortableDelay` + attempt 边界 cancel gate（RC3），shutdown/reaper 能中断退避、settle 后不起新 attempt。
+
 ### Shutdown 信号（稳定信号）
 
 `getShutdownSignal()` 返回一个**进程启动即创建、稳定存在**的 `AbortSignal`，仅在 Phase 3 `abort()` 一次：
@@ -65,4 +67,12 @@ Phase 1 的信号忽略确保这种情况不会导致意外退出。
 - 超时的请求由 reaper 强制清理，防止泄漏
 - 安全网机制：正常情况下请求应通过 stream 完成或超时自然终结
 
-相关代码：`src/lib/shutdown.ts`、`src/lib/context/`
+### Hard Request Deadline（`request_deadline`，2026-07-14 新增，RC2 治根）
+
+- `state.requestDeadline`（config `timeouts.request_deadline`，bundled 默认 900s，0 = 禁用）：单请求**硬总时长上限**，是用户可依赖的 SLA。
+- **由 per-request 精确 `setTimeout` 强制**（`manager.create` 武装、`onSettled` 清除、`unref`），到点调用与 reaper 同款 `reapInFlight()`（取消在飞上游）+ `fail()`（记终态）。
+- **为何独立于 stale reaper**：reaper 是**周期扫描**（`staleRequestMaxAge/3` clamp 到 [250ms,60s]），实测会**迟到**（一次迟 198s，age 1398s vs max 1200s）——候选机制：config 热重载改阈值但 scan cadence 冻结、或**进程/WSL2 suspend** 让所有 timer 一起冻结（诊断见 `reaper-diagnostics.ts`，坐实判据 = 墙钟 gap vs 单调 gap）。per-request timer 按 T 精确触发、**绕过**这个迟到。
+- **两旋钮关系**：`request_deadline`（精确、主上限）应 < `stale_request_max_age`（周期、泄漏兜底），reaper 只兜底越过 deadline 仍未静止的异常。
+- **dry-run 豁免**：capturing manager（`withCapturingManager`）传 `armDeadlineTimers:false`，inspection ctx 不武装 deadline。
+
+相关代码：`src/lib/shutdown.ts`、`src/lib/context/`、`src/lib/observability/reaper-diagnostics.ts`
