@@ -151,13 +151,15 @@ export const ServerConfigSchema = z.object({
   export interface UpstreamWsStatusRow {
     key: string
     model: string
-    state: "active" | "busy" | "idle"
+    state: "connecting" | "busy" | "idle"
     generation: number
   }
   export function getUpstreamWsStatusSnapshot(manager: UpstreamWsManager): ReadonlyArray<UpstreamWsStatusRow>
   ```
 
 以上签名在各阶段计划文档中保持逐字一致；如某阶段执行中发现必须偏离，须先回来更新本节，不得在单阶段文档里私自改名。
+
+**`UpstreamWsStatusRow.state` 的 `"connecting"`（非 `"active"`）是 reviewer + 用户裁决的强制改名**：`H2SessionStatusRow.lifecycle` 的 `"active"` 语义是"已建立、可路由"，而 WS 侧原计划的 `"active"` 却表示"尚未建立"——两个同名字面量在同一状态面板里含义互反，是明显的 footgun。裁决=WS 侧改用 `"connecting"` 消除反义；映射规则不变：`!isOpen → "connecting"`，`isOpen && isBusy → "busy"`，`isOpen && !isBusy → "idle"`。P4（实现+测试）、P5（mock/Badge 渲染/过滤/API 测试）须逐字同步这个改名，不得残留 `"active"` 作为 WS 状态字面量。
 
 ## 自审记录（本计划落笔前的 spec 覆盖检查）
 

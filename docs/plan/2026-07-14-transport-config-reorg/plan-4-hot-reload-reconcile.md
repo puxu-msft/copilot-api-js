@@ -698,7 +698,7 @@ rescheduleIdleTimeout(newIdleTimeoutMs: number): void
 export interface UpstreamWsStatusRow {
   key: string
   model: string
-  state: "active" | "busy" | "idle"
+  state: "connecting" | "busy" | "idle"
   generation: number
 }
 export function getUpstreamWsStatusSnapshot(manager: UpstreamWsManager): ReadonlyArray<UpstreamWsStatusRow>
@@ -1220,7 +1220,7 @@ export interface UpstreamWsManager {
 export interface UpstreamWsStatusRow {
   key: string
   model: string
-  state: "active" | "busy" | "idle"
+  state: "connecting" | "busy" | "idle"
   generation: number
 }
 ```
@@ -1317,7 +1317,7 @@ export interface UpstreamWsStatusRow {
     statusSnapshot() {
       const rows: Array<UpstreamWsStatusRow> = []
       for (const [key, connection] of connections) {
-        const connectionState: UpstreamWsStatusRow["state"] = !connection.isOpen ? "active" : connection.isBusy ? "busy" : "idle"
+        const connectionState: UpstreamWsStatusRow["state"] = !connection.isOpen ? "connecting" : connection.isBusy ? "busy" : "idle"
         rows.push({
           key,
           model: connection.model,
@@ -1329,7 +1329,7 @@ export interface UpstreamWsStatusRow {
     },
 ```
 
-**`state` 三值映射的设计说明**（README 只锁定 `UpstreamWsStatusRow` 的形状，未规定哪个连接条件对应哪个字符串值，这里显式记录选定映射，供 P5 展示层复用同一语义）：`!connection.isOpen` → `"active"`（握手尚未完成的连接，套用 h2 侧"active"=正在承载工作的连接之意，区别于已建立的 socket）；`isOpen && isBusy` → `"busy"`；`isOpen && !isBusy` → `"idle"`。
+**`state` 三值映射（reviewer + 用户裁决强制改名，`"active"` → `"connecting"`）**：起草阶段曾选 `"active"` 表示"握手尚未完成的连接"，套用 h2 侧"active=正在承载工作"的措辞习惯——但两者语义其实相反（h2 的 `"active"` 指"已建立且可路由"，WS 原计划的 `"active"` 却指"尚未建立"），这个反义命名是明显的 footgun，reviewer 抓出后用户裁决改名消除。改后映射：`!connection.isOpen` → `"connecting"`；`isOpen && isBusy` → `"busy"`；`isOpen && !isBusy` → `"idle"`（busy/idle 两档映射不变，只改第一档字符串值）。README「跨阶段共享接口清单」已同步锁定 `state: "connecting" | "busy" | "idle"`，P5 展示层须逐字复用这个映射与字符串值，不得残留 `"active"` 作为 WS 状态字面量。
 
 在文件底部（`setUpstreamWsConnectionFactoryForTests` 之后）新增导出自由函数：
 ```ts
@@ -1425,7 +1425,7 @@ bun run lint:all
 **起草过程中自查并已修正的三处设计缺陷**（记录在案，供审查核对本文档现状即为修正后版本，不是遗留风险）：起草期间发现最初的设计草稿在三处违反了 spec §4 的硬性要求，均已在本文档写入最终版之前修正完毕——(a) h2 `getSession()` 最初用递归调用处理"建连完成时 generation 已过期"，改为同一 creation 帧内的 `for(;;)` 循环 + 捕获 `generationAtStart` 比较丢弃重试（HIGH-3），且 `reconcileH2SessionsForConfigChange()` 的 catch 块改为记录 `failed` 状态而不重新 throw；(b) WS `rescheduleIdleTimeout` 最初按"调用时刻 + 新窗口"重新计算 deadline（等价于完整重启窗口、丢弃已经过去的空闲时间），改为按 `idleSince`（记录的绝对空闲起点）+ 新窗口计算绝对 deadline（HIGH-6）；(c) manager 的 `reconcileForConfigChange()` 最初的驱逐循环依赖 `connections.size` 在同一个同步循环内因 `victim.close()` 而缩小，但真实连接的 `onClose` 通知是异步的（WS "close" 事件要等下一个 tick），会导致循环在驱逐第一个连接后就误判"没有生效"而提前退出——改为 `evictExcessIdleConnections()` 按需要驱逐的数量计数循环，并新增 `onIdle` 回调让每次 busy→idle 转换都重新触发一次驱逐检查（覆盖"reload 时全部连接都在 busy、之后陆续转回 idle"这条此前完全没有被覆盖的路径，HIGH-5）。
 
 1. **`UpstreamWsManager` 新增 `reconcileForConfigChange`/`statusSnapshot` 两个方法未被 README 锁定**——是本阶段为了让 `getUpstreamWsStatusSnapshot(manager)` 这个 README 锁定的自由函数有内部状态可读而必须新增的实现细节，沿用了 `breakerSnapshot()` 的既有风格。风险很低（纯新增方法，不改动任何既有方法签名），但记入待裁决清单供主会话确认这类"计划范围内合理延伸"是否需要事后补录进 README 的跨阶段契约清单。
-2. **`UpstreamWsStatusRow.state` 的三值映射选定为 `!isOpen→"active"`/`isOpen&&isBusy→"busy"`/`isOpen&&!isBusy→"idle"`**——README 只锁定了类型形状，未规定语义映射；本计划选择了"active=正在建立中的连接"这个解读（对齐 h2 侧"active=当前可路由"的措辞习惯，但语义其实不同——h2 的 active 指"已建立且可路由"，WS 的 active 指"尚未建立"），这个不对称命名可能造成 P5 展示层的读者困惑，值得主会话确认是否满意这个选择，或改用更明确的三值（如 `"connecting"|"busy"|"idle"`——但这会偏离 README 逐字锁定的 `"active"|"busy"|"idle"`，需要先改 README）。
+2. ~~**`UpstreamWsStatusRow.state` 的三值映射选定为 `!isOpen→"active"`/`isOpen&&isBusy→"busy"`/`isOpen&&!isBusy→"idle"`**——README 只锁定了类型形状,未规定语义映射...~~ **已裁决（0e3926ab）**：reviewer 抓出 `"active"` 与 h2 侧 `H2SessionStatusRow.lifecycle` 的 `"active"`（已建立可路由）反义，用户裁决改名为 `"connecting"`。README 已同步锁定 `state: "connecting" | "busy" | "idle"`，本文档 Task 2/3 的实现与测试已按新名改写，此条不再是待裁决分叉。
 3. **`onUpstreamTransportChange` 是覆盖 5 个字段变化的单一粗粒度事件**——任何一个字段变化都会触发 h2 的全量 retire-and-replace（即使变化的字段与 h2 无关，如单独改 `softMaxUpstreamWsConnections`）以及 WS 的全量 reconcile（即使变化的字段与 WS 无关，如单独改 `sessionConnectTimeout`）。这是 P1 单一事件设计的既定代价，非本阶段引入的新问题，但会造成可观测的、技术上不必要的连接重建（h2 侧尤其明显：一次 reconcile 会让所有 origin 的活跃会话立即变为 retiring，下一个请求都要重新握手）。记入待裁决清单，供主会话评估是否值得在未来某阶段把 `onUpstreamTransportChange` 拆分为按字段分组的更细粒度事件（当前判断：不值得为此增加 P1 的复杂度，代价是"配置很少变化 + 重新握手成本对本项目场景可忽略"，但这是主会话该做的成本判断，不应由本计划单方面定案）。
 
 ---

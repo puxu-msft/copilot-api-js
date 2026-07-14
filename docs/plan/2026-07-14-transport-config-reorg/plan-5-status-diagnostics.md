@@ -892,7 +892,7 @@ export function OverviewShadcn() {
                       key={row.key}
                       className="flex items-center gap-2 text-sm"
                     >
-                      <Badge variant={row.state === "busy" ? "default" : row.state === "active" ? "secondary" : "outline"}>{row.state}</Badge>
+                      <Badge variant={row.state === "busy" ? "default" : row.state === "connecting" ? "secondary" : "outline"}>{row.state}</Badge>
                       <span className="font-mono">{row.model}</span>
                       <span className="text-muted-foreground">gen {row.generation}</span>
                     </div>
