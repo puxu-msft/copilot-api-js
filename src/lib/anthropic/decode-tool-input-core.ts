@@ -233,30 +233,45 @@ export function normalizeAskUserQuestionInput(name: string, input: unknown, onDi
   return result
 }
 
-/** Tool name whose missing required `to` recipient may be recovered from a misnamed `agentId` alias. */
+/** Tool name whose missing required `to` recipient may be recovered from a misnamed alias. */
 export const SEND_MESSAGE_TOOL = "SendMessage"
+
+/**
+ * Recipient aliases the upstream model hallucinates for SendMessage's required `to`, in precedence
+ * order (first non-empty match wins). `agentId` is the empirically observed form: a finished
+ * subagent's `tool_result` text literally reads `agentId: <id> (use SendMessage with to: '<id>')`,
+ * so the model copies the camelCase LABEL `agentId` as the param name while getting the value right.
+ * (History scan: `agentId` appears as a JSON key; `agent_id` never does.) `agent_id` / `agent` are
+ * added defensively — the exact spelling is a hallucination, so a small alias set is cheap insurance.
+ */
+export const SEND_MESSAGE_RECIPIENT_ALIASES = ["agentId", "agent_id", "agent"] as const
+
+/** Set form of {@link SEND_MESSAGE_RECIPIENT_ALIASES} for key membership tests (avoids dynamic `delete`). */
+const SEND_MESSAGE_ALIAS_SET: ReadonlySet<string> = new Set(SEND_MESSAGE_RECIPIENT_ALIASES)
 
 /** What {@link normalizeSendMessageInput} did — persisted for diagnostics (parallel to {@link AskNormalizationDiag}). */
 export interface SendMessageNormalizationDiag {
-  /** The required `to` recipient was recovered by renaming a misnamed `agentId` alias. */
+  /** The required `to` recipient was recovered by renaming a misnamed alias. */
   renamedRecipient?: boolean
+  /** Which alias key the recipient value was recovered from (e.g. `"agentId"`) — audits spelling drift. */
+  fromAlias?: string
 }
 
 /**
- * Recover a missing SendMessage `to` recipient from a misnamed `agentId` alias on the forwarded wire.
+ * Recover a missing SendMessage `to` recipient from a misnamed alias on the forwarded wire.
  *
  * FleetView's SendMessage requires `to` (the recipient agent). opus-4.8 occasionally emits the
- * recipient under `agentId` instead, leaving `to` absent → the client rejects the tool call
- * ("required parameter `to` is missing"). When `to` is ABSENT and `agentId` is a non-empty string,
- * this moves `agentId`'s value into `to` and drops `agentId` (a stray key the client would otherwise
- * reject as an unexpected parameter).
+ * recipient under a misnamed alias ({@link SEND_MESSAGE_RECIPIENT_ALIASES}) instead, leaving `to`
+ * absent → the client rejects the tool call ("required parameter `to` is missing"). When `to` is
+ * ABSENT and the first alias (in precedence order) carrying a non-empty string is found, this moves
+ * that value into `to` and drops EVERY alias key present (all are stray keys the client would reject).
  *
  * SendMessage-specific: a no-op for any other tool name. Every other case is returned unchanged (same
  * reference, enabling zero-perturbation pass-through via `===`): `to` already present (present-but-empty
- * is the client's own valid-shape choice, not overwritten), `agentId` missing / empty / non-string, or
+ * is the client's own valid-shape choice, not overwritten), no alias carrying a non-empty string, or
  * non-plain-object input. Deliberately narrow — it only touches the observed `to`-missing shape; a call
- * that carries a valid `to` alongside a stray `agentId` is left to the (separate, deferred) tool-agnostic
- * invalid-key strip. `onDiag` fires once when the rename happens.
+ * that carries a valid `to` alongside a stray alias is left to the (separate, deferred) tool-agnostic
+ * invalid-key strip. `onDiag` fires once when the rename happens, naming the alias used.
  */
 export function normalizeSendMessageInput(name: string, input: unknown, onDiag?: (d: SendMessageNormalizationDiag) => void): unknown {
   if (name !== SEND_MESSAGE_TOOL) return input
@@ -264,12 +279,27 @@ export function normalizeSendMessageInput(name: string, input: unknown, onDiag?:
   // Only recover when the required `to` is ABSENT — a present-but-empty `to` is the client's own
   // (valid-shape) choice and must not be overwritten.
   if (Object.hasOwn(input, "to")) return input
-  const alias = input.agentId
-  if (typeof alias !== "string" || alias.length === 0) return input
 
-  // Move the recipient into `to` and drop the misnamed `agentId` (a stray key the client rejects).
-  const result: Record<string, unknown> = { ...input, to: alias }
-  delete result.agentId
-  onDiag?.({ renamedRecipient: true })
+  // First alias (in precedence order) carrying a non-empty string recipient wins.
+  let fromAlias: string | undefined
+  let recipient: string | undefined
+  for (const alias of SEND_MESSAGE_RECIPIENT_ALIASES) {
+    const v = input[alias]
+    if (typeof v === "string" && v.length > 0) {
+      fromAlias = alias
+      recipient = v
+      break
+    }
+  }
+  if (fromAlias === undefined || recipient === undefined) return input
+
+  // Copy every non-alias key, then set `to` — drops ALL alias keys present (each is a stray key the
+  // client rejects) without a dynamic `delete`. `to` was already confirmed absent above.
+  const result: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(input)) {
+    if (!SEND_MESSAGE_ALIAS_SET.has(k)) result[k] = v
+  }
+  result.to = recipient
+  onDiag?.({ renamedRecipient: true, fromAlias })
   return result
 }

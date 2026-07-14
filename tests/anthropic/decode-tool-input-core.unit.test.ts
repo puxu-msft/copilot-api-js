@@ -366,10 +366,38 @@ describe("normalizeSendMessageInput", () => {
     expect(Object.hasOwn(out, "agentId")).toBe(false)
   })
 
-  test("fires the diag exactly once when it renames", () => {
+  test("fires the diag exactly once, naming the alias used", () => {
     const diags: Array<unknown> = []
     normalizeSendMessageInput("SendMessage", { agentId: "planner" }, (d) => diags.push(d))
-    expect(diags).toEqual([{ renamedRecipient: true }])
+    expect(diags).toEqual([{ renamedRecipient: true, fromAlias: "agentId" }])
+  })
+
+  test("recovers from the `agent_id` alias too", () => {
+    const out = normalizeSendMessageInput("SendMessage", { agent_id: "planner", content: "hi" }) as Record<string, unknown>
+    expect(out).toEqual({ to: "planner", content: "hi" })
+  })
+
+  test("recovers from the `agent` alias too", () => {
+    const out = normalizeSendMessageInput("SendMessage", { agent: "planner" }) as Record<string, unknown>
+    expect(out).toEqual({ to: "planner" })
+  })
+
+  test("alias precedence: agentId wins over agent_id/agent, and ALL alias keys are dropped", () => {
+    const diags: Array<unknown> = []
+    const out = normalizeSendMessageInput("SendMessage", { agent: "z", agent_id: "y", agentId: "x", content: "hi" }, (d) => diags.push(d)) as Record<
+      string,
+      unknown
+    >
+    expect(out).toEqual({ to: "x", content: "hi" })
+    expect(Object.hasOwn(out, "agentId")).toBe(false)
+    expect(Object.hasOwn(out, "agent_id")).toBe(false)
+    expect(Object.hasOwn(out, "agent")).toBe(false)
+    expect(diags).toEqual([{ renamedRecipient: true, fromAlias: "agentId" }])
+  })
+
+  test("falls through to a later alias when an earlier one is empty/non-string", () => {
+    const out = normalizeSendMessageInput("SendMessage", { agentId: "", agent_id: 42, agent: "planner" }) as Record<string, unknown>
+    expect(out).toEqual({ to: "planner" })
   })
 
   test("no-op (same reference) when `to` is already present — even alongside a stray agentId", () => {

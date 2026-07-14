@@ -773,9 +773,10 @@ anthropic:
     #   tags          = 结构感知剥 antml 标签。  unicode = 修空白打断的 `\uXXXX` 转义。  jsonrepair = jsonrepair 结构修复。  unicode-lossy = 有损兜底（无法凑齐的 `\uXXXX`→U+FFFD，排最后）。
     malformed_input: "tags,unicode,unicode-lossy,jsonrepair"
 
-    # send_message_to_missing: recover a missing SendMessage `to` recipient from a misnamed `agentId` alias (the client rejects a SendMessage call whose required `to` is absent).
-    # send_message_to_missing：从错名的 `agentId` 别名抢救 SendMessage 缺失的 `to` 收件人（客户端拒收缺必填 `to` 的 SendMessage 调用）。
-    #   Only touched when `to` is absent and `agentId` is a non-empty string (a present-but-empty `to` is left alone). Default: true. / 仅当 `to` 缺失且 `agentId` 非空字符串时处理（present-but-empty `to` 不动）。默认 true。
+    # send_message_to_missing: recover a missing SendMessage `to` recipient from a misnamed alias (agentId / agent_id / agent) — the client rejects a SendMessage call whose required `to` is absent.
+    # send_message_to_missing：从错名的别名（agentId / agent_id / agent）抢救 SendMessage 缺失的 `to` 收件人（客户端拒收缺必填 `to` 的 SendMessage 调用）。
+    #   Root cause: a finished subagent's tool_result text reads `agentId: <id> (use SendMessage with to: '<id>')`, so the model copies the camelCase LABEL as the param name. Only touched when `to` is absent and an alias holds a non-empty string (present-but-empty `to` is left alone). Default: true.
+    #   根因：subagent 完成时 tool_result 文本写 `agentId: <id> (use SendMessage with to: '<id>')`，模型把 camelCase 标签抄成了参数名。仅当 `to` 缺失且某别名为非空字符串时处理（present-but-empty `to` 不动）。默认 true。
     send_message_to_missing: true
 
     # ask_user_question_question_missing: Claude Code rejects an AskUserQuestion `questions[]` item that has a `header` but no `question` field ("must have a question").

@@ -273,7 +273,7 @@ describe("createToolInputStreamDecoder — SendMessage recipient recovery", () =
     const diags: Array<unknown> = []
     const d = createToolInputStreamDecoder(cfg({}), { normalizeSendMessageRecipient: true, onSendMessageNormalize: (dg) => diags.push(dg) })
     run(d, [start(0, "SendMessage"), delta(0, '{"agentId":"planner"}'), stop(0)])
-    expect(diags).toEqual([{ renamedRecipient: true }])
+    expect(diags).toEqual([{ renamedRecipient: true, fromAlias: "agentId" }])
   })
 
   test("no rewrite when `to` already present → original deltas replayed", () => {
