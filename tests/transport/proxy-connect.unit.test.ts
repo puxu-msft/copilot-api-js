@@ -1,9 +1,12 @@
+import type { AddressInfo } from "node:net"
+
 import {
   //
   describe,
   expect,
   test,
 } from "bun:test"
+import net from "node:net"
 
 import {
   //
@@ -21,6 +24,34 @@ describe("connectProxiedSocket — scheme dispatch", () => {
     await expect(
       connectProxiedSocket({ targetHost: "api.anthropic.com", targetPort: 443, proxyUrl: "ftp://proxy.example:21", timeoutMs: 1000 }),
     ).rejects.toThrow("Unsupported proxy protocol: ftp: Supported: http, https, socks5, socks5h")
+  })
+
+  test("connectViaHttpConnect: timeoutMs<=0 never times out (does not fire almost-instantly)", async () => {
+    const blackhole = net.createServer(() => {
+      /* accept, never respond */
+    })
+    await new Promise<void>((resolve) => blackhole.listen(0, "localhost", resolve))
+    const port = (blackhole.address() as AddressInfo).port
+
+    const resultP = connectProxiedSocket({
+      targetHost: "example.invalid",
+      targetPort: 443,
+      proxyUrl: `http://localhost:${port}`,
+      timeoutMs: 0,
+    })
+    // If the bug is present, this rejects almost immediately (setTimeout(fn, 0)
+    // fires on the next macrotask). Race it against a short grace window: the
+    // promise must NOT have settled by then.
+    const raced = await Promise.race([
+      resultP.then(() => "resolved" as const).catch(() => "rejected" as const),
+      new Promise<"pending">((r) => setTimeout(() => r("pending"), 300)),
+    ])
+    expect(raced).toBe("pending")
+
+    // Clean up: the promise is still pending (by design, no deadline) — destroy
+    // the underlying server so the test process can exit; the socket itself
+    // will be GC'd once nothing references it (test process teardown).
+    await blackhole.close()
   })
 })
 

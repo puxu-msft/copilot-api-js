@@ -31,6 +31,7 @@ import {
   getUpstreamH2PingIntervalMs,
   getUpstreamKeepAliveDelayMs,
 } from "~/lib/proxy"
+import { state } from "~/lib/state"
 
 import type { UpstreamFetchInit } from "./upstream-fetch"
 
@@ -41,12 +42,26 @@ import {
 } from "./crash-safety"
 import { connectProxiedSocket } from "./proxy-connect"
 
-/** TCP connect + TLS handshake deadline (mirrors undici's default connectTimeout). */
-const CONNECT_TIMEOUT_MS = 10_000
-/** Effective connect deadline; overridable in tests via {@link setConnectTimeoutForTests}. */
-let connectTimeoutMs = CONNECT_TIMEOUT_MS
+/**
+ * Test-only override for the connect/handshake deadline. `undefined` (the
+ * default) means "read from `state.sessionConnectTimeout` on every call" — see
+ * {@link getSessionConnectTimeoutMs}. Set via {@link setConnectTimeoutForTests}.
+ */
+let connectTimeoutOverrideMs: number | undefined
 /** Fallback keepalive delay when `upstreamKeepaliveDelay` is 0/unset. */
 const DEFAULT_KEEPALIVE_MS = 15_000
+
+/**
+ * Effective TCP-connect + TLS-handshake deadline in milliseconds for the NEXT
+ * `createSession` call. `0` = disabled (no deadline — see D3/D5). Reads
+ * `state.sessionConnectTimeout` (seconds) fresh on every call, unless a test
+ * override is active — so a hot-reloaded value only affects the next
+ * connection attempt, never one already in flight (which captured its own
+ * snapshot via the local `connectTimeoutMs` const in {@link createSession}).
+ */
+export function getSessionConnectTimeoutMs(): number {
+  return connectTimeoutOverrideMs ?? Math.ceil(state.sessionConnectTimeout * 1000)
+}
 
 /** Headers illegal in HTTP/2 (connection-specific) — stripped before `session.request`. */
 const H2_ILLEGAL_HEADERS = new Set(["host", "connection", "transfer-encoding", "keep-alive", "upgrade", "proxy-connection"])
@@ -85,6 +100,7 @@ let poolEpoch = 0
  */
 async function createSession(origin: string): Promise<http2.ClientHttp2Session> {
   const keepAliveMs = getUpstreamKeepAliveDelayMs() ?? DEFAULT_KEEPALIVE_MS
+  const connectTimeoutMs = getSessionConnectTimeoutMs()
   const u = new URL(origin)
   const port = u.port ? Number(u.port) : 443
   const proxyUrl = getProxyUrlForOrigin(u)
@@ -108,7 +124,7 @@ async function createSession(origin: string): Promise<http2.ClientHttp2Session> 
     tlsSocket.setKeepAlive(true, keepAliveMs)
   }
 
-  await awaitH2Handshake(tlsSocket)
+  await awaitH2Handshake(tlsSocket, connectTimeoutMs)
   // The returned session is deliberately NOT withErrorSink'd here: {@link getSession}
   // is the ownership boundary for sessions (it decides pool-vs-discard), so it applies
   // the sink to whatever the factory returns — covering this prod factory AND injected
@@ -135,7 +151,7 @@ async function createSession(origin: string): Promise<http2.ClientHttp2Session> 
  * a connect timeout). Either layer alone prevents the "[http2] TLS connect timeout"
  * whole-server crash; both are kept as defense-in-depth.
  */
-function awaitH2Handshake(sock: tls.TLSSocket): Promise<void> {
+function awaitH2Handshake(sock: tls.TLSSocket, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const settle = (err?: Error): void => {
       sock.removeListener("error", onError)
@@ -150,7 +166,7 @@ function awaitH2Handshake(sock: tls.TLSSocket): Promise<void> {
       resolve()
     }
     const onError = (err: Error): void => settle(err)
-    const onTimeout = (): void => settle(new Error(`[http2] TLS connect timeout after ${connectTimeoutMs}ms`))
+    const onTimeout = (): void => settle(new Error(`[http2] TLS connect timeout after ${timeoutMs}ms`))
     const onSecure = (): void => {
       if (sock.alpnProtocol !== "h2") {
         settle(new Error(`[http2] upstream did not negotiate HTTP/2 (alpn=${String(sock.alpnProtocol)}) — check for a TLS-terminating proxy`))
@@ -158,7 +174,10 @@ function awaitH2Handshake(sock: tls.TLSSocket): Promise<void> {
       }
       settle()
     }
-    sock.setTimeout(connectTimeoutMs)
+    // `sock.setTimeout(0)` is Node's own "disable the timer" contract — a `0`
+    // deadline (D5: disabled) naturally means "never times out" here with no
+    // extra branching, matching `getSessionConnectTimeoutMs()`'s `0`=disabled.
+    sock.setTimeout(timeoutMs)
     sock.once("error", onError)
     sock.once("timeout", onTimeout)
     sock.once("secureConnect", onSecure)
@@ -290,10 +309,11 @@ export function setHttp2SessionFactoryForTests(fn: ((origin: string) => http2.Cl
  * timeout→teardown path — the one that produced the "[http2] TLS connect timeout
  * after 10000ms" whole-server crash — is fast and deterministic to exercise
  * against a peer that accepts TCP but never completes TLS. `undefined` restores
- * the production {@link CONNECT_TIMEOUT_MS}.
+ * production behavior (read from {@link getSessionConnectTimeoutMs}, i.e.
+ * `state.sessionConnectTimeout`).
  */
 export function setConnectTimeoutForTests(ms: number | undefined): void {
-  connectTimeoutMs = ms ?? CONNECT_TIMEOUT_MS
+  connectTimeoutOverrideMs = ms
 }
 
 /** An AbortError-named Error (the WHATWG abort convention consumers check via `err.name`). */
