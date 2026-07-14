@@ -321,7 +321,7 @@ interface SettledTelemetryInput {
  */
 interface StatAccumulator {
   counters: Record<string, number>
-  /** histName → bucket counts + self-tracked sum. Generic-serialized under `__histograms`. */
+  /** histName → bucket counts + self-tracked sum. Feeds the sinceStart leg's `/metrics` Prometheus histogram; process-lifetime only (no longer persisted since the single-track SQLite convergence — the 7d/dimBuckets leg leaves this empty). */
   histograms: Record<string, HistogramAccumulator>
 }
 
