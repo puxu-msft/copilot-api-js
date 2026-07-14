@@ -12,9 +12,15 @@
 - ✅ **C4b request_deadline**(commit `9563883a`):**RC2 治根**——`timeouts.request_deadline`(默认 0=禁用字节等价;bundled config.yaml=900s 有意默认、<stale 1200 让 deadline 主控 reaper 兜底)+ manager.create per-request 精确 setTimeout 到点调 reapInFlight+fail(**按 T 精确、绕过会迟到的 60s scan**)+ unref + onSettled 清除 + inspection 豁免。920+721 pass,deadline 10x 确定。
 - ✅ **C3 RC4 限流**(commit `7615823d`):QueuedRequest 加 `cancelled`,rejectQueued reject 前置 true,processQueue sleep 后 execute 前 gate——消除 reject/execute 竞争(caller 拿 shutting-down 后仍跑上游的 orphan)。10x 确定。
 - ✅ **C6 doc-sync(部分)**:`docs/shutdown.md` 已同步 RC1/RC3/request_deadline + 修 doc-vs-code。
-- ⏳ **剩余(完整架构,建议新会话按 kickoff 执行)**:C4a(逃逸点 token-refresh/hook + global scope)、**C5(把已备 operation-scope`4b8d62e4`+finalization-coordinator`0be3aad8` primitive 接线进 RequestContext operationSignal/trackOperationBody/whenOperationQuiesced + manager 双 registry〔删除条件 operationQuiesced && finalized〕+ shutdown drain 切双 join + 有界 cancellation grace)**、C6 余下(DESIGN.md 活的架构现状 + 记忆库)。**C5 是 6 轮复核逼出 3 个死锁/orphan 缺陷的核心、最微妙,须严格按 RFC §3.1/§3.3 + commit invariants,不可仓促。**
+- ✅ **合并回 master**(`1a1856a0`):四根因修复 + peer 埋点 3-way 干净合并,已 FF master,peer 未提交工作完好。
+- ✅ **C0-lifecycle Task 4**(commit `ecdbb0bc`):RequestContext 加 `operationSignal`/`cancel(reason)`/`cancelled`/`trackOperationBody`/`sealOperationScope`/`whenOperationQuiesced`(新 API 无生产调用方=行为保持)。85 pass。
+- ⏳ **剩余(C5 drain 重排——行为变更核心,强烈建议清上下文新会话按 kickoff)**:
+  - **C0-lifecycle Task 5**:manager 双 registry(visibleContexts 服务 UI/getAll/activeCount〔=现 activeContexts,settle 即删,行为保持〕+ operationScopes 服务 drain,删除条件 `operationQuiesced && finalized`)。
+  - **C5**:shutdown drain 从 `getAll()` 切到 operation-body quiesce(有界 grace)+ keyed finalization drain + global scope drain + Phase4 abandoned。**先 golden 预捕获当前 drain 序列**(`tests/shutdown/shutdown.unit.test.ts` 等)再逐增量证等价。**须严守 `persistence-async-invariants` skill**:drain-before-close 结构性前置、自有 pending set 不靠 bus.flush(§1 警告其零生产调用方)、fire-and-forget never-throw、test teardown 先 drain——这类失效**静默**(编译过、测试偶尔过却丢数据),**不可在疲劳上下文仓促做**。
+  - **C4a**:token-refresh/hook/heartbeat 接 operationSignal + global scope。
+  - **C6 余下**:DESIGN.md 活的架构现状。
 
-**当前结论**:**四个已证实根因(RC1/RC2/RC3/RC4)已全部治根修复 + 测试**,直接解决观测到的 2800s 越超时 + 07-12 Phase3 挂起。整合态 1079 pass / 0 fail、typecheck 干净。RC1 全 server 集成验证 + C4a/C5 完整架构未做。
+**当前结论**:**四个已证实根因(RC1/RC2/RC3/RC4)全部治根修复 + 已合 master 上线**;C5 地基(3 primitive + ctx API)全部 committed+tested。剩 C5 drain 重排(行为变更、静默失效风险高)+ C4a + C6,handover 就绪。
 
 **续跑入口**:worktree 已建(node_modules symlink),下一步 C0-lifecycle Task 2(lifecycle-record 状态机)。全部 primitive 尚未接生产路径(行为零变化,commit invariant 保持)。
 
