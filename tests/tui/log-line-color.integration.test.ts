@@ -30,6 +30,7 @@ const BOLD = "\x1b[1m"
 const WHITE = "\x1b[37m"
 const YELLOW = "\x1b[33m"
 const RED = "\x1b[31m"
+const CYAN = "\x1b[36m"
 
 // The exact bytes picocolors emits for each severity band (probed under FORCE_COLOR).
 // Both scales share the yellow → red → bold-red escalation; they differ only at
@@ -39,6 +40,7 @@ const band = {
   white: (s: string) => `${WHITE}${s}${RESET_FG}`,
   yellow: (s: string) => `${YELLOW}${s}${RESET_FG}`,
   red: (s: string) => `${RED}${s}${RESET_FG}`,
+  cyan: (s: string) => `${CYAN}${s}${RESET_FG}`,
   boldRed: (s: string) => `${BOLD}${RED}${s}${RESET_FG}${OFF}`,
 }
 
@@ -68,6 +70,23 @@ const durationCases: Array<{ label: string; ms: number; expect: string }> = [
 ]
 
 /**
+ * stop_reason cases: reason → expected category-colored `⇥<reason>` token.
+ * The whole token (marker + word) carries the category color. Covers one value
+ * per band plus an unknown value that must fall back to dim (still shown raw).
+ */
+const stopReasonCases: Array<{ label: string; reason: string; expect: string }> = [
+  { label: "end_turn → dim (normal completion)", reason: "end_turn", expect: band.dim("⇥end_turn") },
+  { label: "stop → dim (openai normal)", reason: "stop", expect: band.dim("⇥stop") },
+  { label: "tool_use → cyan (agentic)", reason: "tool_use", expect: band.cyan("⇥tool_use") },
+  { label: "tool_calls → cyan (openai agentic)", reason: "tool_calls", expect: band.cyan("⇥tool_calls") },
+  { label: "max_tokens → yellow (truncation)", reason: "max_tokens", expect: band.yellow("⇥max_tokens") },
+  { label: "length → yellow (openai truncation)", reason: "length", expect: band.yellow("⇥length") },
+  { label: "refusal → red (problematic)", reason: "refusal", expect: band.red("⇥refusal") },
+  { label: "content_filter → red (openai problematic)", reason: "content_filter", expect: band.red("⇥content_filter") },
+  { label: "surprise → dim (unknown fallback, shown raw)", reason: "surprise", expect: band.dim("⇥surprise") },
+]
+
+/**
  * Render every case in one forced-color child process. The script imports the
  * real formatLogLine from source (cwd = project root under bun test); duration
  * text is `formatDuration(ms)` so the expected strings above must match its
@@ -87,6 +106,8 @@ function renderAllUnderForcedColor(): Record<string, string> {
     // (independent of formatDuration's rounding), while durationMs drives the color.
     const durText = { 3000: "3s", 20000: "20s", 20001: "20.001s", 60000: "60s", 60001: "60.001s", 180000: "180s", 180001: "180.001s", 200000: "200s" }
     for (const c of durationCases) out[c.label] = formatLogLine({ ...base, duration: durText[c.ms], durationMs: c.ms })
+    const stopReasonCases = ${JSON.stringify(stopReasonCases.map((c) => ({ label: c.label, reason: c.reason })))}
+    for (const c of stopReasonCases) out[c.label] = formatLogLine({ ...base, stopReason: c.reason })
     process.stdout.write(JSON.stringify(out))
   `
   const proc = Bun.spawnSync(["bun", "-e", script], {
@@ -114,6 +135,12 @@ describe("formatLogLine severity coloring (FORCE_COLOR integration — authorita
     })
   }
 
+  for (const c of stopReasonCases) {
+    test(`stop_reason ${c.label}`, () => {
+      expect(out[c.label]).toContain(c.expect)
+    })
+  }
+
   test("bands are mutually distinct (a fast/high-hit case is never colored like a severe one)", () => {
     // Cross-checks: the healthy cache marker is not red; the fast duration is not
     // red. (That the <20 band is specifically BOLD red — not plain red — is
@@ -121,5 +148,9 @@ describe("formatLogLine severity coloring (FORCE_COLOR integration — authorita
     // regression drops the leading \e[1m and fails that toContain.)
     expect(out["hit 80% → dim (≥80 boundary)"]).not.toContain(RED + "↻80%")
     expect(out["3s → white"]).not.toContain(RED + "3s")
+    // A normal end_turn is dim, never colored like the agentic (cyan) or
+    // problematic (red) bands — guards against an "always cyan/red" mutation.
+    expect(out["end_turn → dim (normal completion)"]).not.toContain(CYAN + "⇥end_turn")
+    expect(out["end_turn → dim (normal completion)"]).not.toContain(RED + "⇥end_turn")
   })
 })

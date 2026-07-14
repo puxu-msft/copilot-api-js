@@ -124,6 +124,47 @@ export function formatTokens(input?: number, output?: number, cacheRead?: number
 }
 
 /**
+ * Category color for a response's terminal stop_reason, rendered as the
+ * `⇥<reason>` token on completion lines. The stored value is heterogeneous
+ * across upstream formats — Anthropic `stop_reason` (end_turn / tool_use /
+ * max_tokens / stop_sequence / refusal / pause_turn), OpenAI chat
+ * `finish_reason` (stop / length / tool_calls / function_call / content_filter),
+ * and the Responses `status` (completed / incomplete / failed) — so
+ * categorization is a normalized lowercase match with a dim fallback that still
+ * shows any unknown value verbatim:
+ *   normal completion (end_turn / stop / stop_sequence / completed) → dim
+ *   agentic continuation (tool_use / tool_calls / function_call / pause_turn) → cyan
+ *   truncation (max_tokens / length / incomplete) → yellow
+ *   problematic (refusal / content_filter / failed / error) → red
+ *   unknown → dim
+ */
+export function stopReasonColor(reason: string): (s: string) => string {
+  switch (reason.toLowerCase()) {
+    case "tool_use":
+    case "tool_calls":
+    case "function_call":
+    case "pause_turn": {
+      return pc.cyan
+    }
+    case "max_tokens":
+    case "length":
+    case "incomplete": {
+      return pc.yellow
+    }
+    case "refusal":
+    case "content_filter":
+    case "failed":
+    case "error": {
+      return pc.red
+    }
+    default: {
+      // end_turn / stop / stop_sequence / completed + any unknown value.
+      return pc.dim
+    }
+  }
+}
+
+/**
  * Severity color for the cache-hit percentage: a LOW hit rate means the cache
  * did not pay off (expensive fresh tokens), so it is emphasized progressively;
  * a healthy rate stays dim. `+new%` (cache written this request) is neutral.

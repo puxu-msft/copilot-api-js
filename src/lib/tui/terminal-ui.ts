@@ -639,7 +639,8 @@ export class TerminalUi {
     // attempt's upstream usage — the same direct optional-chain access used by
     // context/request.ts). Undefined usage (no attempts / failed early) omits
     // the columns; the log-line formatter is null-tolerant.
-    const usage = historyEntry?.attempts?.at(-1)?.upstreamResponse?.usage
+    const finalUpstreamResponse = historyEntry?.attempts?.at(-1)?.upstreamResponse
+    const usage = finalUpstreamResponse?.usage
 
     const message = formatLogLine({
       prefix: isError ? "[FAIL]" : "[ OK ]",
@@ -659,6 +660,9 @@ export class TerminalUi {
       outputTokens: usage?.output_tokens,
       cacheReadInputTokens: usage?.cache_read_input_tokens,
       cacheCreationInputTokens: usage?.cache_creation_input_tokens,
+      // Terminal stop_reason token (`⇥end_turn` / `⇥tool_use` / …) — success
+      // lines only; a failure carries its error in `extra` and no stop_reason.
+      stopReason: isError ? undefined : finalUpstreamResponse?.stopReason,
       extra,
       reqId: isError ? ctx.id : undefined,
       isError,

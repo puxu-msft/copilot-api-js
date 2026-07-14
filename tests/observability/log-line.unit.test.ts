@@ -117,3 +117,26 @@ describe("formatLogLine — duration rendering", () => {
     expect(stripAnsi(formatLogLine(okParts({ duration: "1.2s", durationMs: undefined, isRetry: true })))).toContain("1.2s")
   })
 })
+
+describe("formatLogLine — stop_reason token", () => {
+  test("renders as a `⇥<reason>` token when supplied", () => {
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "end_turn" })))).toContain("⇥end_turn")
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "tool_use" })))).toContain("⇥tool_use")
+    expect(stripAnsi(formatLogLine(okParts({ stopReason: "max_tokens" })))).toContain("⇥max_tokens")
+  })
+
+  test("is omitted entirely when no stop_reason is supplied", () => {
+    expect(stripAnsi(formatLogLine(okParts()))).not.toContain("⇥")
+  })
+
+  test("sits after the feature tags and before the request id", () => {
+    const line = stripAnsi(formatLogLine(okParts({ extra: " (thinking)", stopReason: "tool_use", reqId: "req_abc" })))
+    // Order: tags → ⇥stopReason → reqId.
+    expect(line.indexOf("(thinking)")).toBeLessThan(line.indexOf("⇥tool_use"))
+    expect(line.indexOf("⇥tool_use")).toBeLessThan(line.indexOf("req_abc"))
+  })
+
+  test("dim (start/history) lines never carry the stop_reason token", () => {
+    expect(stripAnsi(formatLogLine(okParts({ isDim: true, stopReason: "end_turn" })))).not.toContain("⇥")
+  })
+})

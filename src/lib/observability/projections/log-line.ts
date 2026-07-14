@@ -1,6 +1,6 @@
 /**
  * Pure formatter for the canonical log line shape:
- *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> <extra> <retryableMeta>
+ *   [PREFIX] HH:MM:SS <status> <method> <path> <model> (<mult>x) <dur> ↑<req> ↓<resp> ↑<in>+<cache> ↻<hit%>+<new%> ↓<out> <extra> ⇥<stopReason> <retryableMeta>
  *
  * Shared source of truth for the log-line shape, consumed by
  * `~/lib/tui/terminal-ui.ts` (the TerminalUi renderer) and its `render/`
@@ -22,6 +22,7 @@ import {
   formatBillingLabel,
   formatBytes,
   formatTokens,
+  stopReasonColor,
 } from "./format"
 
 export interface LogLineParts {
@@ -47,6 +48,13 @@ export interface LogLineParts {
   extra?: string
   /** Dim metadata appended at the end (e.g. "(retryable: network-retry, wait 1.0s)") */
   retryableMeta?: string
+  /**
+   * Response terminal stop_reason (e.g. "end_turn", "tool_use", "max_tokens").
+   * Rendered as a category-colored `⇥<reason>` token after {@link extra}; the
+   * caller supplies it only on successful completion lines (a failed/aborted
+   * request has no upstream stop_reason). Color is by {@link stopReasonColor}.
+   */
+  stopReason?: string
   /** Request id (e.g. "req_178..."), appended dim on error lines for history lookup */
   reqId?: string
   isError?: boolean
@@ -83,6 +91,7 @@ export function formatLogLine(parts: LogLineParts): string {
     queueWait,
     extra,
     retryableMeta,
+    stopReason,
     reqId,
     isError,
     isRetry,
@@ -152,10 +161,16 @@ export function formatLogLine(parts: LogLineParts): string {
   // Dim metadata (e.g. retry strategy info) appended after the error message.
   const retryableMetaPart = retryableMeta ? ` ${pc.dim(retryableMeta)}` : ""
 
+  // Terminal stop_reason token (`⇥<reason>`), the whole token category-colored by
+  // stopReasonColor (dim for normal end_turn, cyan for tool_use, yellow for
+  // truncation, red for refusal/error). Present only when the caller supplies it
+  // — i.e. on successful completion lines.
+  const stopReasonPart = stopReason ? ` ${stopReasonColor(stopReason)(`⇥${stopReason}`)}` : ""
+
   // Request id appended dim at the very end (only when provided, e.g. error lines) for history lookup.
   const reqIdPart = reqId ? ` ${pc.dim(reqId)}` : ""
 
   const statusAndMethod = coloredStatus ? `${coloredStatus} ${coloredMethod}` : coloredMethod
 
-  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}${retryableMetaPart}${reqIdPart}`
+  return `${coloredPrefix} ${coloredTime} ${statusAndMethod} ${coloredPath}${coloredModel}${coloredMultiplier}${coloredDuration}${coloredQueueWait}${sizeInfo}${tokenInfo}${extraPart}${stopReasonPart}${retryableMetaPart}${reqIdPart}`
 }
