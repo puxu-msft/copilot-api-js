@@ -594,6 +594,14 @@ export interface QueryOptions {
   mainAgentOnly?: boolean
   /** Filter to records produced by a specific process (uses the pid SQL column). */
   pid?: number
+  /**
+   * View-domain selector (tiered-archive, spec 2026-07-14). `"hot"` (default) =
+   * query the HOT store (history.db) — current behavior. `"archive"` = query the
+   * archive VIEW (archive.db tier-1; tier-2 sealed units via manifest, added with
+   * Phase 6). The HOT view and the archive view query DIFFERENT databases and
+   * NEVER co-list, so there is no cross-tier UNION and no duplicate-id de-dup.
+   */
+  tier?: "hot" | "archive"
 }
 
 export interface HistoryResult {
