@@ -500,3 +500,11 @@
 - **当前行为**：`error-shaping-decided` recordFeature 只在 glue 的 pre/post-commit `decide()` 路径产出（有 ApiError 分类）；raw-stream 透传路径的 canonical 化仍打 `synthetic:"error-shaping-canonical"`（帧级可辨识不丢），只是缺 feature 维度的「走了哪条整形分支」诊断。
 - **为何暂缓**：非数据丢失（synthetic 标记 + upstream/forwarded 双轨 diff 仍可还原）；raw-stream 路径本无 ApiError 分类语义，硬塞 decided 维度需为「纯 wire 透传路径」设计专属 FeatureKind，属观测面扩展独立工作项。发现于 error-shaping 终局 whole-branch review 的观测面接线 fix。
 - **若做需改什么**：为 raw-stream 终点设计专属 FeatureKind 维度（如 `error-shaping-raw-canonical{errorType:wire-string}`）+ 在 `shapeRawStreamErrorFrame` 接线；或让 raw-stream 路径也经一次轻量 classify 复原 ApiErrorType（成本/收益需评估）。
+## typed server 工具可被 tool-search 延迟（F32 校正遗留，2026-07-14）
+
+- **根因**：`message-tools.ts` 的 `shouldDefer`（199-204）判据**只按 `tool.name`** 匹配 `NON_DEFERRED_TOOL_NAMES`，**从不检查 `tool.type`/`isApiDefinedToolType(tool.type)`**。F32 给 `API_DEFINED_TOOL_TYPE_PREFIXES` 补的 4 个前缀（`advisor_`/`agent_toolset_`/`memory_`/`tool_search_`）只修了 `buildAnthropicToolNameMapper` 的 sanitize 排除路径（typed 工具不进 custom-name 集、不被 rename），**没有**、也**不能**触及 `shouldDefer`——两者是完全独立的判据函数，前缀补全不会自动传导到延迟保护。
+- **当前行为**：任何 typed server 工具（不限本轮新增 4 前缀，**含原有 6 前缀** `web_search_`/`web_fetch_`/`code_execution_`/`text_editor_`/`computer_`/`bash_`）只要其 `name` 不在 `NON_DEFERRED_TOOL_NAMES` 里，在 tool-search 默认 ON 时都会被打上 `defer_loading:true`——即使它是 server-tool 协议契约的一部分。这与「server 工具名是 upstream 协议契约、不该被当作可延迟的 custom 工具对待」的设计意图不一致，但**目前尚未观测到该行为对上游造成实际拒绝**（未实测确认 GHC 对「被 defer 的 server 工具」的具体反应——可能上游本就接受 server 工具带 `defer_loading:true` 并原样处理，也可能拒绝）。
+- **理想架构**：`shouldDefer` 增加 `&& !isApiDefinedToolType(tool.type)` 条件，让 typed server 工具（无论前缀新旧）在延迟判定上获得与 sanitize 判定一致的保护——两个判据函数共享同一个「是否 API-defined」原语，消除当前的不对称。
+- **为何暂缓**：① 需先确认 GHC 对「携带 `defer_loading:true` 的 server-tool-typed 工具」的实际反应（可能是良性的——GHC 也许直接忽略 defer_loading 语义处理已知 server 工具；也可能是真实拒绝，需要 e2e 探针，见 skill `client-proxy-e2e-testing`）；② 与本任务（F28 根因修复 + F32 清单回退）范围独立，属于 F32 揭示但未纳入本次改动范围的第四类判据修复，需要单独的实现 + 测试周期。
+- **若做需改什么**：① `message-tools.ts` 的 `shouldDefer` 加 `!isApiDefinedToolType(tool.type)` 条件；② 补回归测试：一个 `type:"web_search_20260209"`（或新前缀）的工具在 tool-search ON 时不应被 `defer_loading:true`；③ 若探针证实 GHC 对 defer 的 server 工具确有拒绝行为，标注为「确认功能 gap」并提升优先级；若证实良性，仍建议修（协议语义正确性 > 观测到的表面无害）。发现方：F32 task-reviewer 探针实测（2026-07-14，`docs/plan/2026-07-13-cc-tool-inventory-completion.md` Task 2）。
+

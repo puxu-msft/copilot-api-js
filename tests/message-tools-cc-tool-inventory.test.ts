@@ -1,11 +1,18 @@
 /**
  * F28/F32 — CC 2.1.207 tool inventory completion.
  *
- * `CLAUDE_CODE_OFFICIAL_TOOLS` and `API_DEFINED_TOOL_TYPE_PREFIXES` are internal
- * constants (not exported) — every assertion below goes through the same public
- * surface production code uses (`preprocessTools`, `isApiDefinedToolType`,
- * `buildAnthropicToolNameMapper`), so a passing test actually exercises the
- * updated lists rather than merely re-stating them.
+ * F28 landed as a root-cause fix (ungating the Path 2 history-stub safety net
+ * from tool_search — see `message-tools.ts`), NOT a `CLAUDE_CODE_OFFICIAL_TOOLS`
+ * list addition — that list addition was reverted as redundant once the safety
+ * net covers any orphaned history tool_use regardless of official-tool status.
+ * F32's `API_DEFINED_TOOL_TYPE_PREFIXES` additions are a genuine list addition
+ * (kept).
+ *
+ * `API_DEFINED_TOOL_TYPE_PREFIXES` is an internal constant (not exported) —
+ * every assertion below goes through the same public surface production code
+ * uses (`preprocessTools`, `isApiDefinedToolType`, `buildAnthropicToolNameMapper`),
+ * so a passing test actually exercises the underlying logic rather than merely
+ * re-stating it.
  */
 
 import {
@@ -48,109 +55,6 @@ function makePayload(overrides: Partial<MessagesPayload> = {}): MessagesPayload 
 function toolNames(tools: Array<Tool> | undefined): Array<string> {
   return (tools ?? []).map((t) => t.name)
 }
-
-describe("F28 — CLAUDE_CODE_OFFICIAL_TOOLS stub injection (message-tools.ts)", () => {
-  let originalInject: typeof state.injectClaudeCodeOfficialTools
-
-  beforeEach(() => {
-    originalInject = state.injectClaudeCodeOfficialTools
-    setStateForTests({ injectClaudeCodeOfficialTools: true })
-  })
-
-  afterEach(() => {
-    setStateForTests({ injectClaudeCodeOfficialTools: originalInject })
-  })
-
-  test("injects stubs for the newly added CC 2.1.207 tools when missing", () => {
-    const result = preprocessTools(
-      makePayload({
-        tools: [{ name: "custom_tool", input_schema: { type: "object" } }],
-        // No tool_use in history — this isolates the CLAUDE_CODE_OFFICIAL_TOOLS-driven
-        // stub injection from the separate history-reference stub mechanism.
-        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-      }),
-    )
-
-    const names = toolNames(result.tools)
-
-    // New F28 additions must be present as stubs.
-    for (const name of ["WebSearch", "BashOutput", "NotebookRead", "ListMcpResources", "ReadMcpResource"]) {
-      expect(names).toContain(name)
-    }
-
-    // Original 16 must still be present (no accidental deletion).
-    for (const name of [
-      "Task",
-      "TaskOutput",
-      "Bash",
-      "Glob",
-      "Grep",
-      "Read",
-      "Edit",
-      "Write",
-      "NotebookEdit",
-      "WebFetch",
-      "TodoWrite",
-      "KillShell",
-      "AskUserQuestion",
-      "Skill",
-      "EnterPlanMode",
-      "ExitPlanMode",
-    ]) {
-      expect(names).toContain(name)
-    }
-
-    // Sanity: the stub actually has the expected shape.
-    const webSearchStub = (result.tools ?? []).find((t) => t.name === "WebSearch")
-    expect(webSearchStub).toMatchObject({
-      name: "WebSearch",
-      input_schema: { type: "object", properties: {}, required: [] },
-    })
-  })
-
-  test("negative control: does NOT inject tools deliberately excluded from the list (MultiEdit / Agent)", () => {
-    // Proves injection is list-driven (selective), not "inject anything CC-shaped" —
-    // and doubles as a regression guard on the plan's explicit non-addition decision.
-    const result = preprocessTools(
-      makePayload({
-        tools: [{ name: "custom_tool", input_schema: { type: "object" } }],
-        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-      }),
-    )
-
-    const names = toolNames(result.tools)
-    expect(names).not.toContain("MultiEdit")
-    expect(names).not.toContain("Agent")
-  })
-})
-
-describe("F28 — NON_DEFERRED_TOOL_NAMES spread (tool_search defer_loading)", () => {
-  test("WebSearch (newly added) stays non-deferred alongside a custom tool that IS deferred", () => {
-    // Model must support tool_search for defer_loading to apply at all — reuses the
-    // same model as the existing "orders tools" test in anthropic-message-tools.unit.test.ts.
-    const result = preprocessTools(
-      makePayload({
-        tools: [
-          { name: "WebSearch", input_schema: { type: "object" } },
-          { name: "custom_deferred_tool", input_schema: { type: "object" } },
-        ],
-      }),
-    )
-
-    const tools = result.tools ?? []
-    const webSearch = tools.find((t) => t.name === "WebSearch")
-    const custom = tools.find((t) => t.name === "custom_deferred_tool")
-
-    expect(webSearch).toBeDefined()
-    expect(custom).toBeDefined()
-
-    // Positive contrast: the custom tool (NOT in CLAUDE_CODE_OFFICIAL_TOOLS) IS deferred,
-    // proving tool_search is actually active in this test and would defer WebSearch too
-    // if the spread hadn't picked it up.
-    expect(custom?.defer_loading).toBe(true)
-    expect(webSearch?.defer_loading).toBeUndefined()
-  })
-})
 
 describe("F28 root cause — history-stub safety net (Path 2) is not gated on tool_search", () => {
   let originalToolSearchEnabled: typeof state.toolSearchEnabled
