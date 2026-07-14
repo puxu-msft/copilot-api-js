@@ -21,6 +21,8 @@ mock 的「上游帧是你捏的」**不是缺陷、是它换来广度+免费+�
 
 隔离靠 `XDG_DATA_HOME` 覆盖 `APP_DIR`（`src/lib/config/paths.ts`：token/config.yaml/history.db 全在此下）。给隔离 dir 复制**真** github_token（保 GHC 认证）+ config.yaml（保用户真实路由/模型覆盖），这样行为「符合预期」= 跟生产一致，但 history 写进独立库、不污染真库（25GB+，别碰）。
 
+> **警告（防静默变 mock）**：复制真 config.yaml 后确认它**没启用** upstream hook（`hooks.enabled: true` + `upstream_module`）——否则隔离服务器 boot 期经 `loadUpstreamHookSafe` 加载该 hook、在 `onExchange` 拦截上游，你的「真实 GHC 计费」验证会**静默变成 mock**（curl 仍 200、但打的不是真 GHC）。核验时顺手查 History 上游轨**无** `synthetic:"hook-mock"` 标记（`upstream-hook-mocking` skill），确认打的是真 GHC。当前 hook 特性尚在 spec 阶段、生产 config 大概率 `enabled:false`，但手册防未来。
+
 ```bash
 # 实测可用配方（4142 为例，任意非 4141 高位端口）
 TESTDATA=/tmp/copilot-test-4142
@@ -100,25 +102,35 @@ curl -s "http://localhost:4142/history/api/entries/$EID" | python3 -m json.tool 
 - **真行为改动**（改了帧结构/翻译/路由/持久化）→ 精准构造能走到那条路径的请求 + 对着预期字节/字段核验。
   实例：cell-assembly 收尾里，「删 codec 出站方法」对真实请求零行为变化（恒走 cell），而「HIGH-1 提 Responses→CC renderer 进 hub」是**唯一**真行为变化——所以重点发 **C) via-responses**（`@responses`）核验 CC 帧逐字段结构，其余格式只冒烟。
 
+**一个只有 billed 能做的靶向用途——校准 mock 的错误 fixture**：分工表把错误注入/边界归 mock 是对的，但 mock 的错误帧是**你以为的**形态。当 mock 的 error fixture 需要贴合真上游时，靶向触发一发真 GHC 错误（如超大 `max_tokens`/畸形请求触 400、或压测触 rate-limit），拿 History 上游轨的真实 `rawBody`/`status` 作 fixture 蓝本 → 回填给 mock。这是「billed 校准 mock」而非「billed 替 mock」，仍守靶向哲学。
+
 ## 5. 盲点（诚实边界，别声称超出实测的覆盖）
 
 - **`live=旧码`**：验新码必确认测试服务器跑的是当前 worktree（`git log --oneline -1` 对账 + 隔离端口非 4141）。
 - **单尝试 ≠ retry 路径**：一次成功请求**不触发** retry-only 逻辑（message-mapping 重建走 `ctx.currentAttempt.effectiveRequest.messages`、cacheControlStripped、反应式重试策略）。要 live 验 retry 得刻意触发（畸形请求/thinking-signature/rate-limit mock），额外烧额度；否则如实说「retry 路径由单测 + 数据流追踪覆盖，未 live 验」。
 - **单请求 ≠ 多轮/会话**：prompt-cache 命中、会话注册、reverse-exchange id 跨轮保全需多轮请求（`empirical-verification` prompt-cache 诊断）。
 - **合成帧污染**：验功能对之外，查 history `clientResponse.sseEvents` 里合成 keepalive/anchor/message-start 是否打了 `synthetic` 标记（`empirical-verification` 完备性维度③可观测性）。
+- **反向 `@messages` 腿未 live 实测**：§2 的 `@messages` 配方据 cell-assembly 架构（`cell-assembly.ts` C2b 反向 cell + `resolver.ts` 后缀剥离）推断，本 skill 作者只 live 跑过四条正向腿（anthropic 直连 / openai-cc 直连+via-responses / gemini）；跑反向前先确认后缀解析 + 反向 translator 真落地，别当已验路径。
 
-## 6. 清理（PID 精确、绝不泛杀）
+## 6. 清理（端口/PID 精确、禁泛杀）
 
-`bun run ./src/main.ts` 的父进程（`bun run` launcher）与真正监听端口的**子进程 PID 不同**——kill `server.pid`（父）后端口可能仍被子进程占。清理两步：
+**唯一红线是泛杀**（`protect-user-main-server`）：`killall bun`、`pkill bun`、任何可能匹配到 4141 主服务器或 peer worktree 的宽 pattern 一律禁止。**端口/PID 精确**认自己起的那个则允许——两种等价合规做法，按语境选：
+
+**交互式手动验证（本 skill 主场景）** —— `ss`→PID：
 ```bash
 kill "$(cat /tmp/copilot-test-4142/server.pid)"          # 杀父 launcher
-ss -tlnp | grep ':4142'                                   # 找真正监听的子进程 PID
-# 确认该 PID != 4141 主服务器 PID 后再精确 kill 子进程；绝不 pkill/killall（会误伤 4141/peer worktree）
+ss -tlnp | grep ':4142'                                   # bun run 父子进程树：找真正监听端口的子进程 PID
+# 确认该 PID != 4141 主服务器 PID 后精确 kill 子进程（父 launcher 杀了不够、子进程仍占端口）
 kill <子进程PID>
 rm -rf /tmp/copilot-test-4142                             # 隔离临时数据，可恢复
 curl -s http://localhost:4141/health                      # 复核 4141 主服务器毫发无损
 ```
-`protect-user-main-server`：清理只按**端口/PID 精确**认自己起的那个；`kill`/`rm -rf` 可能被权限护栏拦（拆成单命令或让用户执行），别用 `pkill -f`/`killall` 泛匹配。
+
+**自动化 harness（`tests/e2e-client/`）** —— **端口精确** pkill：`pkill -9 -f "main.ts start --port <唯一高位端口>"`（`spawn-proxy.ts:100`）。这**不是泛杀**——pattern 含唯一高位端口号，只匹配自己那个 server，4141 的 argv 是 `--port 4141`、peer 是别的端口，**结构上碰不到**。teardown 里 `proc.kill()` 只杀 `bun run` launcher、子 server leftover（`bun`+volta shim 进程树），故 harness 用端口精确 pkill 补杀。
+
+两者都合规（都精确认自己的、都碰不到 4141）；`ss`→PID 更贴 CLAUDE.md「按 PID 精确」字面、手动场景首选，端口精确 pkill 是 harness 里批量 teardown 的等价手段。**注**：`kill`/`rm -rf` 可能被本机权限护栏拦（拆成单命令或让用户执行）。
+
+> 清理法**因语境而异**（交互 vs harness），故非单一源；真正单一源的是**服务器 spawn/隔离机制**——见 `client-proxy-e2e-testing` §spawn 真 proxy（token 真实路径、进程树、config hook 加载的权威说明）。
 
 ## 交叉引用
 - 服务器 spawn/隔离/清理的更多坑（token 路径、进程树、config hook 加载）→ skill `client-proxy-e2e-testing`（那个 mock 上游，本 skill 打真 GHC，机制共享）。
