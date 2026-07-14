@@ -81,7 +81,7 @@
 - [v4 流水线重构](project-v4-pipeline-rearchitecture.md) — v4 P0-P3 + response-pipeline Stage A/B 全落地;权威 DESIGN.md + archive/2606-landed-rfcs/
 - [GHC 三特性对齐已落地](project-ghc-feature-alignment-landed.md) — tool-search default-allow / extended-cache-ttl / memory tool;现状 skill `ghc-api-reference`
 - [history client/upstream 双腿重构已落地](project-history-client-upstream-legs-landed.md) — clientRequest/clientResponse+model{}+attempts[];已 merge master 5db1aff6;权威 DESIGN.md「类型架构」
-- [thinking「cannot be modified」400 三层修复（已并 master）](reference-undici-websocket-runtime-split-bun-vs-node.md) — 权威 docs/spec/2026-07-07-thinking-signature-quarantine + DESIGN.md + skill `ghc-anthropic-upstream`(根因=相邻性)
+- [thinking「cannot be modified」400 三层修复（已并 master）](reference-undici-websocket-runtime-split-bun-vs-node.md) — 权威 docs/spec/2026-07-07-thinking-signature-quarantine + DESIGN.md + skill `ghc-anthropic-upstream`(根因=相邻性;另含加密 thinking 分类=明文空+signature 合法非毒、逐块 poison 判「空明文≠毒化」、消费方 TUI 完成行 `think:enc/poison` token)
 - [反应式学习记录 TTL 生命周期 + Learned 页](project-negotiation-learning-lifecycle-landed.md) — per-entry TTL+pin,单一判据 `isEntryActive`;门控只在 reader;已 merge master 67afa1af;权威 docs/spec/2026-07-08
 
 ## 已删除记忆的话题去向
