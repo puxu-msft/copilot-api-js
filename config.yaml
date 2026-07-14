@@ -1,64 +1,114 @@
 # Copilot API Configuration / Copilot API 配置
-# Copy this file to ~/.local/share/copilot-api/config.yaml and customize as needed.
-# 把本文件复制到 ~/.local/share/copilot-api/config.yaml 后按需修改。
-# All settings are hot-reloadable unless noted otherwise.
-# 除非另有说明，所有设置均支持热重载。
+#
+# 配置生效的典型优先级：
+#   1. CLI 参数（如有）
+#   2. 环境变量（如有）
+#   3. 配置文件。路径来自
+#      1. CLI --config 参数
+#      2. $XDG_DATA_HOME/copilot-api/config.yaml (~/.local/share/copilot-api/config.yaml)
+#   4. 发布包内置的 config.yaml
+#   5. 代码内置的默认值
+#
+# Typical priority of effective configuration:
+#   1. CLI options (if any)
+#   2. Environment variables (if any)
+#   3. Config file. Path comes from
+#      1. CLI --config option
+#      2. $XDG_DATA_HOME/copilot-api/config.yaml (~/.local/share/copilot-api/config.yaml)
+#   4. Bundled config.yaml in the dist package
+#   5. Hard-coded defaults in the code
+#
+# 本文件中的是作者调优的值，尽可能只摘取、覆盖你需要的部分到用户配置中。
+# Values in this file are author-tuned; try to only copy/override what you need into your user config.
+#
+# 除非另有说明，所有设置均支持热重载。 / All settings are hot-reloadable unless noted otherwise.
 
 # ============================================================================
-# Proxy / 代理
+# Upstream (GHC API) / 上游
 # ============================================================================
-# Proxy URL for all outgoing requests to GitHub / Copilot APIs. Supports http://, https://, socks5://, socks5h://.
-# 所有发往 GitHub / Copilot API 的出站请求所用的代理 URL，支持 http://、https://、socks5://、socks5h://。
-# socks5h:// routes DNS through the proxy (recommended for privacy). Auth via URL: socks5h://user:pass@host:port
-# socks5h:// 会把 DNS 解析也走代理（更利于隐私）。认证写在 URL 里：socks5h://user:pass@host:port
-# Lowest priority: HTTP_PROXY/HTTPS_PROXY env vars (when --http-proxy-from-env is on) and the CLI --proxy flag both take precedence over this setting. Priority: CLI --proxy > env vars > this.
-# 优先级最低：HTTP_PROXY/HTTPS_PROXY 环境变量（在 --http-proxy-from-env 开启时）与 CLI 的 --proxy 参数都优先于本设置。优先级：CLI --proxy > 环境变量 > 本设置。
-# NOT hot-reloadable (requires restart). / 不支持热重载（需重启）。
 
+# 为发往 GitHub / Copilot API 的所有出站请求配置网络代理。支持 http://、https://、socks5://、socks5h://。
+# Network proxy URL for all outgoing requests to GitHub / Copilot APIs. Supports http://, https://, socks5://, socks5h://.
+#
+# 生效的优先级：
+#   1. CLI --proxy 参数
+#   2. HTTP_PROXY/HTTPS_PROXY 环境变量（在 --http-proxy-from-env 开启时）
+#   3. 本设置
+#
+# Priority of effective configuration:
+#   1. CLI --proxy flag
+#   2. HTTP_PROXY/HTTPS_PROXY env vars (when --http-proxy-from-env is on)
+#   3. This setting
+#
+# 不支持热重载（需重启）。 / Not hot-reloadable (requires restart).
+#
 # proxy: "http://127.0.0.1:7890"
 # proxy: "socks5h://127.0.0.1:1080"
 # proxy: "socks5h://user:pass@proxy.example.com:1080"
 
-# ============================================================================
-# GHC API base URL
-# ============================================================================
-# Explicit upstream GitHub Copilot API base URL. When set, this overrides the URL derived from --account-type. Useful for self-hosted GHC proxies or unusual deployments. Must be http:// or https://.
-# CLI --ghc-api-base-url takes precedence over this setting.
-# NOT hot-reloadable (requires restart).
-
+# 显式指定上游 GitHub Copilot API 基础 URL。
+# Explicit upstream GitHub Copilot API base URL.
+#
+# 生效的优先级：
+#   1. CLI --ghc-api-base-url 参数
+#   2. 本设置
+#   3. --account-type 参数。默认 individual → https://api.githubcopilot.com
+#
+# Priority of effective configuration:
+#   1. CLI --ghc-api-base-url flag
+#   2. This setting
+#   3. --account-type flag. "individual" by default → https://api.githubcopilot.com
+#
+# 不支持热重载（需重启）。 / Not hot-reloadable (requires restart).
+#
 # ghc_api_base_url: "https://api.githubcopilot.com"
 
 # ============================================================================
 # Model / 模型
 # ============================================================================
-# Model name overrides: request model → target model.
+
+# 后台刷新模型列表的间隔秒数（0 = 禁用）。
+# Seconds between background model list refreshes (0 = disabled).
+# 让长时间运行的实例无需重启即可保持 `GET /models` 缓存新鲜。
+# Keeps `GET /models` cache fresh for long-running instances without requiring a restart.
+model_refresh_interval: 3600
+
 # 模型名映射：请求模型 → 目标模型。
+# Model name mappings: request model → target model.
+#
+# 注意：这是模型名映射的唯一来源——没有任何内置默认值。
 # This is the SOLE source of model-name mapping — there are no built-in defaults.
-# 这是模型名映射的唯一来源——没有任何内置默认值。
-# Short aliases (opus/sonnet/haiku) resolve ONLY if you map them here; an unmapped alias is sent upstream as-is and rejected.
-# 短别名（opus/sonnet/haiku）只有在这里映射后才会解析；未映射的别名原样发往上游并被拒绝。
 #
-# Override values can be full names ("claude-opus-4.6") or short aliases that are themselves mapped here.
-# 映射的目标值可以是全名（"claude-opus-4.6"），也可以是同样在这里被映射的短别名。
-# Keys/values are spelling-insensitive: "4.6" and "4-6" (and case) match the same model; listing both keys → the later wins (with a warning).
-# 键/值对拼写不敏感："4.6" 与 "4-6"（及大小写）匹配同一模型；同时列出两个键则后者胜出（并发出警告）。
+# 大小写不敏感。 / Keys/values are spelling-insensitive.
 #
-# Matching order: / 匹配顺序：
-#   1. Whole name (e.g. "opus", "opus-1m", "claude-opus-4.6").
-#      整名匹配（如 "opus"、"opus-1m"、"claude-opus-4.6"）。
-#   2. Modifier suffix: "opus[1m]" → "opus-1m"; if no "opus-1m" mapping exists but "opus" is mapped, the base is redirected and "-1m" is re-attached.
-#      修饰后缀："opus[1m]" → "opus-1m"；若无 "opus-1m" 映射但 "opus" 已映射，则基名被重定向后再拼回 "-1m"。
-#   3. Hyphen/dot + date-suffix normalization, then a final override check.
-#      连字符/点号 + 日期后缀归一化，再做一次最终的 override 检查。
+# Anthropic 模型名兼容处理："." 与 "-" 可互换。
+#   例如，入站 "claude-opus-4-5" 可命中下述规则：
+#     claude-opus-4.5: claude-opus-4.8
 #
-# Only the exact keys listed are affected — NO family-level propagation. To redirect a whole family, list each canonical name.
-# 仅列出的精确键受影响——不做 family 级传播。要重定向整个 family，请逐个列出其规范名。
-# If a target isn't in the available models list it's treated as an alias and resolved again; if still unavailable it's passed through (the upstream then rejects it).
-# 若目标不在可用模型列表中，则当作别名再次解析；仍不可用就直接透传（上游随后拒绝它）。
+# Anthropic 模型名兼容处理：剥离 "[1m]" 后缀。
+#   例如，入站 "opus[1m]" 可命中下述规则（按顺序尝试）：
+#     opus-1m: claude-opus-4.8
+#     opus: claude-opus-4.8
+#
+# Anthropic-compatible model name resolver: "." and "-" are interchangeable
+#   For example, ingress "claude-opus-4-5" can hit the following rule:
+#     claude-opus-4.5: claude-opus-4.8
+#
+# Anthropic-compatible model name resolver: strip "[1m]" suffix
+#   For example, ingress "opus[1m]" can hit the following rules (in order):
+#     opus-1m: claude-opus-4.8
+#     opus: claude-opus-4.8
+#
+# 若目标在可用模型列表中，直接解析命中；否则，当作别名再次尝试解析；仍不可用则放弃映射、直接透传（上游随后拒绝它）。
+# If a target is in the available models list, it is resolved directly; otherwise, it is treated as an alias and resolved again;
+# if still unavailable, the mapping is abandoned and passed through (the upstream then rejects it).
+#
+model_mappings:
 
-model_overrides:
+  # 短别名必须指定，否则会被直接透传给上游并被拒绝。
+  # Short aliases must be set; an unmapped alias is sent upstream as-is and rejected.
 
-  # Use latest opus / 使用最新 opus
+  # 使用最新 opus / Use latest opus
   opus: claude-opus-4.8
   opus-1m: claude-opus-4.8
   claude-opus-4.1: claude-opus-4.8
@@ -66,59 +116,51 @@ model_overrides:
   claude-opus-4.6: claude-opus-4.8
   claude-opus-4.7: claude-opus-4.8
 
-  # Use latest sonnet / 使用最新 sonnet
+  # 使用最新 sonnet / Use latest sonnet
   sonnet: claude-sonnet-5
   claude-sonnet-4.5: claude-sonnet-5
   claude-sonnet-4.6: claude-sonnet-5
 
-  # Redirect all sonnet requests to best opus / 把所有 sonnet 请求重定向到最好的 opus
+  # 重定向 sonnet 到最好的 opus / Redirect all sonnet requests to best opus
   # sonnet: claude-opus-4.6
   # claude-sonnet-4.5: claude-opus-4.6
   # claude-sonnet-4.6: claude-opus-4.6
 
-  # Use latest haiku
-  haiku: claude-haiku-4.5
+  # 使用最新 haiku / Use latest haiku
+  # haiku: claude-haiku-4.5
 
-  # Upgrade haiku to sonnet / 把 haiku 升级到 sonnet
-  # haiku: claude-sonnet-4.6
-  # claude-haiku-4.5: claude-sonnet-4.6
+  # 升级 haiku 到 sonnet / Upgrade haiku to sonnet
+  haiku: claude-sonnet-4.6
+  claude-haiku-4.5: claude-sonnet-4.6
 
-  # Dated Anthropic snapshot names → canonical dot form.
-  # 带日期的 Anthropic 快照名 → 规范点形式（把「快照日期归一」与「版本升级」解耦：
-  # 这里只做日期归一到规范名，升级到哪个模型交给上面的 family 重定向组接管，改一处即联动）。
-  # 代理不再自动剥离日期后缀（-YYYYMMDD）——这曾是隐式硬逻辑，现改为在此显式配置。
-  # 外部客户端（裸 Anthropic SDK / 硬编码带日期 id 的 subagent）发来的带日期名，
-  # 若不在此列出就会原样透传给上游并被拒（失败可见，而非被静默改写）。按你实际客户端增删。
-  claude-haiku-4-5-20251001: claude-haiku-4.5 # haiku-4.5 直接可用
-  claude-sonnet-4-5-20250929: claude-sonnet-4.5 # → 经上面 4.5 组链到 claude-sonnet-5
-  claude-opus-4-1-20250805: claude-opus-4.1 # → 经上面 4.1 组链到 claude-opus-4.8
+  # Anthropic 模型名兼容处理：日期后缀 / Anthropic-compatible model name resolver: date-suffix
+  #
+  # 自 2026/07/16 起，不再自动剥离日期后缀 "-YYYYMMDD"，必须显式配置。
+  # Since 2026/07/16, date-suffix "-YYYYMMDD" is no longer internally stripped; must be explicitly set.
+  #
+  claude-opus-4-5-20251101: claude-opus-4.8
+  claude-opus-4-1-20250805: claude-opus-4.8
+  claude-haiku-4-5-20251001: claude-haiku-4.5
+  claude-sonnet-4-5-20250929: claude-sonnet-5
 
-# ============================================================================
-# Disabled Models / 禁用模型
-# ============================================================================
-# Hide specific models from the available list by ID, even when Copilot advertises them.
-# 按 ID 把指定模型从可用列表里隐藏，即便 Copilot 仍在对外提供它们。
-# Use this to suppress deprecated/legacy models so they don't show up in `/models`, the UI picker, or model resolution fallbacks.
-# 用它屏蔽弃用/遗留模型，使其不出现在 `/models`、UI 选择器或模型解析回退中。
-# Match is exact against `Model.id`. Empty/omitted = nothing disabled.
-# 按 `Model.id` 精确匹配。留空/省略 = 不禁用任何模型。
-
+# 禁用模型，即便 Copilot 仍在对外提供它们。只匹配上游 `model.id`。
+# Disable models even if Copilot still advertises them. Match is exact against `model.id`.
+#
 disabled_models:
-  - claude-opus-4.6-1m
   - claude-opus-4.6
-  # - claude-opus-4.8
-  # - claude-opus-4.7-high
-  # - claude-opus-4.7-xhigh
   # - claude-opus-4.7
   # - claude-opus-4.8
   # - clause-sonnet-4.6
+  # - clause-sonnet-5
   # - gemini-3.1-pro-preview
   # - gemini-3.5-flash
-  - gpt-5.2-codex
   - gpt-5.3-codex
   # - gpt-5.4-mini
   # - gpt-5.4
   # - gpt-5.5
+  # - gpt-5.6-luna
+  # - gpt-5.6-sol
+  # - gpt-5.6-terra
   # - mai-code-1-flash-picker
   # - trajectory-compaction
   - gpt-5-mini
@@ -133,7 +175,6 @@ disabled_models:
   - gemini-3-flash-preview
   - gemini-2.5-pro
   - gpt-4.1-2025-04-14
-  - gpt-5.2
   - gpt-41-copilot
   - gpt-3.5-turbo-0613
   - gpt-4
@@ -148,91 +189,80 @@ disabled_models:
   - text-embedding-ada-002
 
 # ============================================================================
-# Timeouts / 超时
+# Lifecycle / 生命周期
 # ============================================================================
-# Timeout settings for upstream API connections. Apply to all streaming paths.
-# 上游 API 连接的超时设置，作用于所有流式路径。
 
 timeouts:
-  # Max seconds from request start to receiving HTTP response headers (0 = no timeout).
-  # 从请求开始到收到 HTTP 响应头的最大秒数（0 = 不超时）。
-  # Applies to all upstream API clients. / 作用于所有上游 API 客户端。
+  # 单次尝试上游，从请求发起到开始收到 HTTP 响应头的最大秒数（0 = 不超时）。
+  # Each upstream attempt: Max seconds from request start to receiving HTTP response headers (0 = no timeout).
   response_header: 600
 
-  # Max seconds between SSE events (0 = no timeout).
-  # SSE 事件之间的最大间隔秒数（0 = 不超时）。
-  # Applies to all streaming paths (Anthropic, Chat Completions, Responses).
-  # 作用于所有流式路径（Anthropic、Chat Completions、Responses）。
-  stream_idle: 300
+  # 按模型覆盖 response_header（秒），键规则同 stream_idle_overrides。无内置值。
+  # Per-model response_header override (seconds), same keying as stream_idle_overrides. No built-in value.
+  response_header_overrides: {}
 
-  # Per-model stream_idle override (seconds), keyed by model-name substring; "*" = all models.
+  # 单次尝试上游，SSE 事件之间的最大间隔秒数（0 = 不超时）。适用于所有流式路径。
+  # Each upstream attempt: Max seconds between SSE events (0 = no timeout). Applies to all streaming paths.
+  stream_idle: 600
+
   # 按模型覆盖 stream_idle（秒），键为模型名子串；"*" = 所有模型。
-  # A match wins over the scalar stream_idle above; 0 = disabled (no idle timeout). Longest-substring match wins.
+  # Per-model stream_idle override (seconds), keyed by model-name substring; "*" = all models.
+  #
   # 命中项优先于上面的标量 stream_idle；0 = 禁用（无空闲超时）。最长子串匹配胜出。
-  # gpt-5.5 (effort=high) emits a single 266–462s zero-frame silent-reasoning gap before a terminal burst — the 300s scalar would kill it as a false idle timeout (measured 2026-07-12). App-guard only.
-  # gpt-5.5（effort=high）在末尾爆发前有单个 266–462s 的零帧静默推理段——300s 标量会把它误判为空闲超时掐断（2026-07-12 实测）。仅作用于应用层 guard。
+  # A match wins over the scalar stream_idle above; 0 = disabled (no idle timeout). Longest-substring match wins.
+  #
+  # 引入理由：观察到 gpt-5.5 (effort=high) 爆发前有 266–462s 的零帧静默期，但一些早期模型不会。
+  # Reason: Observed gpt-5.5 (effort=high) emits a single 266–462s zero-frame silent-reasoning gap before a burst, but some earlier models do not.
   stream_idle_overrides:
     gpt-5.5: 600
 
-  # Per-model response_header override (seconds), same keying as stream_idle_overrides. No built-in value.
-  # 按模型覆盖 response_header（秒），键规则同 stream_idle_overrides。无内置值。
-  response_header_overrides: {}
-
+  # *实验性* 主动向上游发送 TCP keepalive 探针的间隔秒数（0 = 用 undici 内置默认 60s）。
+  # *Experimental* Upstream TCP keepalive probe interval seconds (0 = use undici's 60s default).
   # Upstream TCP keepalive initial-probe delay in seconds (0 = use undici's 60s default).
-  # 上游 TCP keepalive 首探针延迟秒数（0 = 用 undici 内置默认 60s）。
-  # Keeps the GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it ("terminated (cause: other side closed)").
-  # 在 opus 长思考的静默期保持 GHC 连接存活，避免 NAT/防火墙的空闲回收把它砍断（"terminated (cause: other side closed)"）。
-  # Effective on BOTH Bun and Node — all upstream requests go through one undici dispatcher (Bun's global fetch ignores it, so we load real undici via a file subpath).
-  # Bun 与 Node 均生效——所有上游请求统一经一个 undici dispatcher（Bun 的全局 fetch 会忽略它，故经文件子路径加载真 undici）。
+  #
+  # 观察到长时间的静默期，无上/下行流量，上行连接被掐断。故尝试性引入 L4 维持不被 NAT 回收。
+  # Observed long silent periods with no send/recv traffic, resulting in upstream connection termination.
+  # Hence, experimentally keeps L4 alive through NAT.
+  #
+  # TODO: rename upstream_keepalive as upstream_tcp_keepalive
   upstream_keepalive: 15
 
-  # Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled).
-  # 上游 HTTP/2 PING 保活间隔秒数（0 = 禁用）。
-  # Application-layer complement to upstream_keepalive: GHC's CAPI proxy does NOT forward Anthropic's SSE `event: ping` frames, so a long thinking silence is a truly idle stream.
-  # upstream_keepalive 的应用层补充：GHC 的 CAPI 代理不透传 Anthropic 的 SSE `event: ping` 帧，故长思考静默期是一条真正空闲的流。
-  # TCP keepalive keeps L4 alive through NAT but does not defeat a connection-idle reaper (middlebox/GHC edge) counting application-layer silence (a real cut fired at ~112s) — a PING puts a real frame on the wire.
-  # TCP keepalive 只维持 L4 不被 NAT 回收，挡不住按应用层静默计时的空闲回收方（中间设备/GHC 边缘，实测 ~112s 掐断）——PING 在 wire 上放一个真帧。
-  # With a network proxy this is the ONLY keepalive covering the full path to the real upstream: https stays h2 end-to-end through the CONNECT/SOCKS tunnel, so TCP keepalive only protects the local↔proxy leg (loopback if the proxy is local) while these PING frames traverse the tunnel to GHC.
-  # 经网络 proxy 时这是唯一覆盖到真上游全程的保活：https 经 CONNECT/SOCKS 隧道仍是 h2 端到端，TCP keepalive 只护「我方↔proxy」腿（本地 proxy 则为 loopback），而这些 PING 帧穿隧道直达 GHC。
-  # Node-only (the node:http2 transport). / 仅 Node（node:http2 传输）。
+  # *实验性* 主动向上游 HTTP/2 PING 保活的间隔秒数（0 = 禁用）。
+  # *Experimental* Upstream HTTP/2 PING keepalive interval seconds (0 = disabled).
+  #
+  # 经过网络代理时，TCP keepalive 只覆盖 this <-> proxy，到不了上游。H2 ping 帧则仍能透过代理发往上游。
+  # TCP keepalive only covers this <-> proxy when a network proxy is set; H2 ping can still a H2 ping puts a real frame on the wire.
+  #
   upstream_h2_ping: 15
 
-  # Max seconds an active request can live before the stale reaper forces it to fail (0 = disabled).
-  # 活跃请求被 stale reaper 强制失败前的最大存活秒数（0 = 禁用）。
-  # Safety net for requests that never complete/fail normally. / 兜底永不正常完成/失败的请求。
+  # 单次尝试上游，最大存活秒数（0 = 禁用）。
+  # Max seconds an active upstream request can live (0 = disabled).
+  #
+  # TODO: rename stale_request_max_age as upstream_request_deadline
   stale_request_max_age: 1200
 
-  # Hard total-duration deadline (seconds) for a single request — a user-facing SLA enforced by a
-  # PRECISE per-request timer, NOT the periodic stale reaper (which can fire late after a config
-  # reload or a process/WSL suspend — RFC RC2). On expiry the request is cancelled + settled with a
-  # deadline error. 0 = disabled (behavior then identical to the stale-reaper-only path).
-  # 单请求硬总时长上限（秒）——用户可依赖的 SLA，由 PRECISE 的 per-request 定时器强制，而非会迟到的
-  # 周期 stale reaper（RFC RC2）。到点即取消 + 结算请求并记 deadline 错误。0 = 禁用（等同仅 stale-reaper 路径）。
-  # NOTE: this is an intentional product default (900s = 15min), kept BELOW stale_request_max_age
-  # (1200s) so the precise deadline is the primary cap and the reaper only mops up anomalies that
-  # outlive it (a leaked / non-quiescing op).
-  # 注意：这是有意的产品默认（900s = 15 分钟），刻意小于 stale_request_max_age（1200s），让精确 deadline
-  # 作主上限、reaper 只兜底越过它仍未静止的异常（泄漏 / 不退出的工作）。
-  request_deadline: 900
+  # 客户端请求的最大存活秒数（0 = 禁用）。一次客户端请求可能会被多次内部重试。
+  # Max seconds an active client request can live (0 = disabled). One client request may be attempted multiple times.
+  #
+  # TODO: rename request_deadline as client_request_deadline
+  request_deadline: 1200
 
-# Seconds between background model list refreshes (0 = disabled).
-# 后台刷新模型列表的间隔秒数（0 = 禁用）。
-# Keeps /models cache fresh for long-running instances without requiring a restart.
-# 让长时间运行的实例无需重启即可保持 /models 缓存新鲜。
-# (Stays top-level — a refresh interval, not a timeout.) / （保留顶层——这是刷新周期，不是超时。）
-model_refresh_interval: 3600
-
-# ============================================================================
-# Shutdown / 关闭
-# ============================================================================
-# Control graceful shutdown timing. / 控制优雅关闭的时序。
-
+# 优雅退出分为以下阶段：
+#   1. 收到关闭信号，停止接收新请求（立即）。
+#   2. 等待在飞请求自然完成（默认 60s）。
+#   3. 中止在飞请求，等待内部处理收尾（默认 120s）。
+#   4. 强制退出（立即）。
+#
+# Graceful shutdown by following phases:
+#   1. Stop accepting new requests (immediate) on shutdown signal.
+#   2. Wait for in-flight requests to complete naturally (default 60s).
+#   3. Abort in-flight requests; wait for internal handlers to wrap up (default 120s).
+#   4. Force exit (immediate).
+#
 shutdown:
-  # Phase 2: seconds to wait for in-flight requests to complete naturally (default: 60)
-  # 阶段 2：等待在飞请求自然完成的秒数（默认 60）
+  # 阶段 2 / Phase 2
   graceful_wait: 300
-  # Phase 3: seconds to wait after abort signal for handlers to wrap up (default: 120)
-  # 阶段 3：发出 abort 信号后等待 handler 收尾的秒数（默认 120）
+  # 阶段 3 / Phase 3
   abort_wait: 120
 
 # ============================================================================

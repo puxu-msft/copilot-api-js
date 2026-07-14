@@ -112,14 +112,6 @@ interface ActiveRequest {
   /** Features applied to this request (e.g. "beta-stripped", "via-responses"). */
   tags: Array<string>
   /**
-   * Tool names the recoverer rebuilt from downgraded upstream text (from the
-   * `tool-call-recovered` feature detail). Feeds the completion line's
-   * `tool_use(<names>)` token as a FALLBACK: the upstream-original response body
-   * (what the line normally reads) keeps the raw downgraded text with NO tool_use
-   * block (Option A), so the recovered names are only knowable via this channel.
-   */
-  recoveredToolNames?: Array<string>
-  /**
    * Thinking as a terminal dimension (NOT an accumulated tag): `requested` is
    * set once (fixed), `effective` is overwritten per attempt (last wins). Rendered
    * once at completion via {@link formatThinkingTag}, so a multi-attempt request
@@ -427,13 +419,6 @@ export class TerminalUi {
         }
         const tag = renderFeatureTag(event.feature, event.detail)
         if (tag && !entry.tags.includes(tag)) entry.tags.push(tag)
-        // Stash the recovered tool names (feature detail) so the completion line can
-        // fall back to them when the upstream-original body carries no tool_use block
-        // (the downgraded-text case). The bare-name TAG is still rendered above.
-        if (event.feature === "tool-call-recovered") {
-          const tools = (event.detail as { tools?: unknown } | undefined)?.tools
-          if (Array.isArray(tools)) entry.recoveredToolNames = tools.filter((t): t is string => typeof t === "string")
-        }
         return
       }
       case "request.completed": {
@@ -712,12 +697,9 @@ export class TerminalUi {
       cacheCreationInputTokens: usage?.cache_creation_input_tokens,
       // Terminal stop_reason token (`end_turn` / `tool_use(Bash,Edit)` / …) —
       // success lines only; a failure carries its error in `extra` and no
-      // stop_reason. Tool names come from the upstream-original response body;
-      // when it carries none but the recoverer rebuilt tool_use(s) from downgraded
-      // text (Option A keeps that track as raw text), fall back to the recovered
-      // names so the token isn't a bare `tool_use` with no `(<names>)`.
+      // stop_reason. Tool names are extracted from the response body.
       stopReason: isError ? undefined : finalUpstreamResponse?.stopReason,
-      toolNames: isError ? undefined : resolveCompletionToolNames(finalUpstreamResponse?.body, entry.recoveredToolNames),
+      toolNames: isError ? undefined : toolNamesFromResponseBody(finalUpstreamResponse?.body),
       // Response-side thinking token (`think:…(<blocks>)`) — success lines only,
       // derived from the same final-attempt response body as toolNames.
       responseThinking: isError ? undefined : responseThinkingFromBody(finalUpstreamResponse?.body),
@@ -1252,22 +1234,6 @@ export class TerminalUi {
 // ============================================================================
 // Helpers
 // ============================================================================
-
-/**
- * Resolve the completion line's `tool_use(<names>)` tool names. Primary source is
- * the upstream-original response `body` (in call order, deduped-free). When it
- * yields none but the recoverer rebuilt tool_use(s) from downgraded text, fall
- * back to the recovered names — the upstream-original track keeps that response as
- * raw text with NO tool_use block (Option A), so those names are ONLY on the
- * `tool-call-recovered` feature detail. A Tier-A rebuild requires no pre-existing
- * tool_use block, so the two sources never both apply; the fallback is exact, not
- * a merge.
- */
-function resolveCompletionToolNames(body: unknown, recoveredToolNames: Array<string> | undefined): Array<string> {
-  const upstream = toolNamesFromResponseBody(body)
-  if (upstream.length > 0) return upstream
-  return recoveredToolNames ?? []
-}
 
 /**
  * Render the thinking terminal field into a single console tag. `effective` is
