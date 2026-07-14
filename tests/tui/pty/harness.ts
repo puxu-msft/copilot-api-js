@@ -71,31 +71,36 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
   let rawBytes = 0
   const snapshots: Record<string, Array<string>> = {}
   const pendingMarkers = new Map((opts.snapshots ?? []).map((s) => [s.marker, s.label]))
-  const armed = new Map<string, string>() // marker → label：已在网格出现、待静默后抓拍
+  const armed = new Map<string, { label: string; at: number }>() // marker → {label, 检测到的时刻}
   let lastDataAt = Date.now()
-  // 抓拍原子性（GPT 复审 HIGH-1）：marker 日志的 write 与紧随的 renderRegion() 是 printLog
-  // 里两个连续 stdout.write（terminal-ui.ts:805-806），PTY 可拆成不同 chunk。故检测到 marker
-  // 不立即抓，先 armed，待串行流「静默」QUIESCE_MS 无新字节再抓，确保 panel 重绘字节已到齐。
-  const QUIESCE_MS = 80 // 【实现期实测校准】连跑 10 次快照稳定含 panel footer 即达标；不稳则调大。
+  // 抓拍时机（GPT 复审 HIGH-1 + 实测修正）：marker 日志的 write 与紧随的 renderRegion() 是
+  // printLog 里两个连续 stdout.write（terminal-ui.ts:805-806），PTY 可拆成不同 chunk。且日志
+  // 持续流下「等数据静默」不可靠（静默点随机落在日志间隙）。故检测到 marker 后不立即抓，
+  // 记 armedAt，等固定 SNAP_SETTLE_MS（覆盖 2+ 个 100ms footer 重绘周期）再抓，确保 panel
+  // 重绘字节已到齐——不依赖静默，在持续日志流下确定。
+  const SNAP_SETTLE_MS = 250 // 【实测校准】连跑 10 次快照稳定含 panel footer 即达标；不稳则调大。
+  const QUIESCE_MS = 80 // 仅 finally drain 用（driver 退出后无日志，静默判定有效）。
 
   const detectMarkers = (): void => {
     if (pendingMarkers.size === 0) return
     const text = collectGrid(xterm).join("\n")
     for (const [marker, label] of pendingMarkers) {
       if (text.includes(marker)) {
-        armed.set(marker, label)
+        armed.set(marker, { label, at: Date.now() })
         pendingMarkers.delete(marker)
       }
     }
   }
-  const snapArmedIfQuiet = (): void => {
+  const snapArmedIfSettled = (): void => {
     if (armed.size === 0) return
-    if (Date.now() - lastDataAt < QUIESCE_MS) return // 仍有新字节流入，等静默
-    const grid = collectGrid(xterm)
-    for (const [, label] of armed) snapshots[label] = grid
-    armed.clear()
+    const now = Date.now()
+    for (const [marker, { label, at }] of armed) {
+      if (now - at < SNAP_SETTLE_MS) continue // 等 panel 重绘 settle
+      snapshots[label] = collectGrid(xterm)
+      armed.delete(marker)
+    }
   }
-  const quiesceTimer = setInterval(snapArmedIfQuiet, 20)
+  const quiesceTimer = setInterval(snapArmedIfSettled, 20)
 
   const terminal = new Bun.Terminal({
     name: "xterm-256color",
@@ -161,8 +166,10 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
       await writeXterm(xterm, tail)
       detectMarkers()
     }
-    snapArmedIfQuiet() // 末态若仍有 armed（driver 未静默即退），退化为末态快照
-    for (const [, label] of armed) snapshots[label] = collectGrid(xterm)
+    // driver 已退出：任何仍 armed 的 marker 直接抓末态（settle 计时已无意义），
+    // pending 未检测到的也退化为末态（driver 未静默即退的边缘）。
+    for (const [, { label }] of armed) snapshots[label] = collectGrid(xterm)
+    armed.clear()
     terminal.close()
   }
   const grid = collectGrid(xterm)
