@@ -44,7 +44,7 @@ import { initHistory } from "~/lib/history"
 import {
   //
   CONFIG_MANAGED_DEFAULTS,
-  DEFAULT_MODEL_OVERRIDES,
+  DEFAULT_MODEL_MAPPINGS,
   onHistoryLimitChange,
   resetConfigManagedState,
   restoreStateForTests,
@@ -755,14 +755,14 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
   },
 
-  // ── model_overrides / model_preference / disabled_models ───────────
+  // ── model_mappings / model_preference / disabled_models ───────────
   {
-    configKey: "model_overrides",
-    stateKey: "modelOverrides",
+    configKey: "model_mappings",
+    stateKey: "modelMappings",
     sampleYamlValue: `\n  custom-alias: claude-opus-4.6`,
-    // merged on top of DEFAULT_MODEL_OVERRIDES
-    expectedStateValue: { ...DEFAULT_MODEL_OVERRIDES, "custom-alias": "claude-opus-4.6" },
-    defaultStateValue: DEFAULT_MODEL_OVERRIDES,
+    // merged on top of DEFAULT_MODEL_MAPPINGS
+    expectedStateValue: { ...DEFAULT_MODEL_MAPPINGS, "custom-alias": "claude-opus-4.6" },
+    defaultStateValue: DEFAULT_MODEL_MAPPINGS,
   },
   {
     configKey: "disabled_models",
@@ -1219,7 +1219,7 @@ system_prompt_overrides:
   test("empty config does not mutate any pre-existing runtime state", async () => {
     setStateForTests({
       responseHeaderTimeout: 99,
-      modelOverrides: { opus: "custom-model" },
+      modelMappings: { opus: "custom-model" },
       systemPromptOverrides: [{ from: /test/, to: "keep" }],
       historySuccessLimit: 500,
       disabledModels: ["foo"],
@@ -1228,17 +1228,17 @@ system_prompt_overrides:
     await applyConfigToState()
 
     expect(state.responseHeaderTimeout).toBe(99)
-    expect(state.modelOverrides.opus).toBe("custom-model")
+    expect(state.modelMappings.opus).toBe("custom-model")
     expect(state.systemPromptOverrides).toHaveLength(1)
     expect(state.historySuccessLimit).toBe(500)
     expect(state.disabledModels).toEqual(["foo"])
   })
 
   test("missing config file does not mutate state", async () => {
-    setStateForTests({ modelOverrides: { opus: "custom-model" } })
+    setStateForTests({ modelMappings: { opus: "custom-model" } })
     await removeConfig()
     await applyConfigToState()
-    expect(state.modelOverrides.opus).toBe("custom-model")
+    expect(state.modelMappings.opus).toBe("custom-model")
   })
 
   test("disabled_models retain semantic: writing one field doesn't wipe a previously-set list", async () => {
@@ -1255,10 +1255,10 @@ system_prompt_overrides:
     expect(state.disabledModels).toEqual(["foo"]) // NOT cleared
   })
 
-  test("resetConfigManagedState restores model_overrides to DEFAULT_MODEL_OVERRIDES", () => {
-    setStateForTests({ modelOverrides: { custom: "model" } })
+  test("resetConfigManagedState restores model_mappings to DEFAULT_MODEL_MAPPINGS", () => {
+    setStateForTests({ modelMappings: { custom: "model" } })
     resetConfigManagedState()
-    expect(state.modelOverrides).toEqual(DEFAULT_MODEL_OVERRIDES)
+    expect(state.modelMappings).toEqual(DEFAULT_MODEL_MAPPINGS)
   })
 
   test("system_reject_* defaults are the empirically-confirmed reject set + as_user", () => {

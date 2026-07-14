@@ -11,21 +11,18 @@
 - ✅ **C1+C2 原子**(commit `2c295dd5`):**修 RC1+RC3(两个已证实根因)**——send.ts 一律折入 shutdown(streaming pre-header 不再挂 Phase4)+ `abortableDelay` + driver 退避 gate(reaper/shutdown 中断退避、settle 后不起新 attempt、关 529 重试窗口)。918 pass 全绿,RC3 gate 10x 确定。RC1 全 server 集成验证(delayed-commit+Ctrl+C)列后续。
 - ✅ **C4b request_deadline**(commit `9563883a`):**RC2 治根**——`timeouts.request_deadline`(默认 0=禁用字节等价;bundled config.yaml=900s 有意默认、<stale 1200 让 deadline 主控 reaper 兜底)+ manager.create per-request 精确 setTimeout 到点调 reapInFlight+fail(**按 T 精确、绕过会迟到的 60s scan**)+ unref + onSettled 清除 + inspection 豁免。920+721 pass,deadline 10x 确定。
 - ✅ **C3 RC4 限流**(commit `7615823d`):QueuedRequest 加 `cancelled`,rejectQueued reject 前置 true,processQueue sleep 后 execute 前 gate——消除 reject/execute 竞争(caller 拿 shutting-down 后仍跑上游的 orphan)。10x 确定。
-- ✅ **C6 doc-sync(部分)**:`docs/shutdown.md` 已同步 RC1/RC3/request_deadline + 修 doc-vs-code。
+- ✅ **C6 doc-sync(部分)**:`docs/lifecycle.md` 已同步 RC1/RC3/request_deadline + 修 doc-vs-code。
 - ✅ **合并回 master**(`1a1856a0`):四根因修复 + peer 埋点 3-way 干净合并,已 FF master,peer 未提交工作完好。
 - ✅ **C0-lifecycle Task 4**(commit `ecdbb0bc`):RequestContext 加 `operationSignal`/`cancel(reason)`/`cancelled`/`trackOperationBody`/`sealOperationScope`/`whenOperationQuiesced`(新 API 无生产调用方=行为保持)。85 pass。
 - ✅ **C0-lifecycle Task 5**(commit `25b34eac`):manager 双 registry——visibleContexts(getAll/activeCount,settle 即删,UI/status 不变)+ operationScopes(getTrackedOperations/trackedOperationCount,settle 时 seal→未接线 ctx quiesce 即删=行为保持,有 tracked 工作则保留)。20 pass、10x。
 - ✅ **C5 drain-switch**(commit `13fc36f6`):shutdown drain 源切 getTrackedOperations——settled-but-not-quiesced 请求的 orphan 工作现被 drain 等待(**用户原始问题的架构正解**)。Phase 超时=有界 grace;reaper/deadline 仍立即 settle(不阻塞)。81→83 shutdown golden 保持 + 新能力 12x 确定。
-- ⏳ **剩余(让 C5 结构对生产生效 + 收尾)**:
-  - **C4a(让 operationScopes 真正被喂)**:在实际 settle-前工作站点调 `ctx.trackOperationBody`(driver fetch/stream/backoff、token-refresh、hook、heartbeat serializer)。当前无接线 = operationScopes settle 即空(行为保持);C4a 后 drain 才真正等到 orphan 工作。触碰 driver/transport 热路径,须逐站点 TDD。
-  - **finalization coordinator 接线 shutdown**:History/Calibration finalize 走 keyed drain(RFC §3.1.1),Phase 4 前 drainAllFinalizations。
-  - **C6**:DESIGN.md 活的架构现状 + 记忆库。
+- ✅ **C4a driver 追踪 exchange**(commit `4deebe0b`):driver `runRequest` 把 runExchange(transport+RC3 退避/重试)作 operation-body child 追踪——观测的 2800s 退避 orphan 现被 drain 等待。865 pass 行为保持 + 集成 10x。
+- ✅ **C6 DESIGN.md**:活的架构现状加请求生命周期硬化行(四根因 LIVE + C5 结构)。
+- ⏳ **剩余(让 C5 结构对更多站点生效 + 收尾)**:
+  - **其余 operation 站点**(token-refresh/hook/heartbeat/response-pump,低频 orphan)接 `trackOperationBody`。
+  - **finalization coordinator 接线 shutdown**:History/Calibration finalize 走 keyed drain(RFC §3.1.1),Phase 4 前 drainAllFinalizations(注意别破坏 working 的 History pendingFinalizations drain)。
 
-**当前结论**:**四根因已治根上线(LIVE)+ C5 结构核心完成**(ctx API + 双 registry + drain-等-operation,全行为保持、golden 保持)。剩 C4a 接线(让结构对生产生效)+ finalization 接线 + C6。
-
-**当前结论**:**四个已证实根因(RC1/RC2/RC3/RC4)全部治根修复 + 已合 master 上线**;C5 地基(3 primitive + ctx API)全部 committed+tested。剩 C5 drain 重排(行为变更、静默失效风险高)+ C4a + C6,handover 就绪。
-
-**续跑入口**:worktree 已建(node_modules symlink),下一步 C0-lifecycle Task 2(lifecycle-record 状态机)。全部 primitive 尚未接生产路径(行为零变化,commit invariant 保持)。
+**当前结论**:**四根因已治根上线(LIVE)+ C5 结构核心 + C4a 承重接线 + C6 完成**(ctx API + 双 registry + drain-等-operation + driver 追踪 exchange,全行为保持、golden 保持)。剩其余低频 operation 站点接线 + finalization 接线。
 
 ---
 
@@ -240,7 +237,7 @@ describe("reaper-diagnostics", () => {
 
 **Tasks:**
 - [ ] Task C6-1:`operationLeak`/`trackedOperationCount` 长期指标 + 存在性守卫测试。
-- [ ] Task C6-2:doc-sync——`docs/shutdown.md`(四段生命周期 + 双 registry + 有界 grace,修 §29 doc-vs-code)、`docs/streaming.md`、`docs/DESIGN.md` 活的架构现状 + 端点/config 变化;跨文档 grep 验证。
+- [ ] Task C6-2:doc-sync——`docs/lifecycle.md`(四段生命周期 + 双 registry + 有界 grace,修 §29 doc-vs-code)、`docs/streaming.md`、`docs/DESIGN.md` 活的架构现状 + 端点/config 变化;跨文档 grep 验证。
 - [ ] Task C6-3:whole-domain audit(subagent 合并态审:signal 覆盖完整性、无遗漏第七类等待点、UI active 语义不变)。
 - [ ] Commit `docs: 同步请求生命周期重构到 shutdown/streaming/DESIGN + 长期 observability`。
 
