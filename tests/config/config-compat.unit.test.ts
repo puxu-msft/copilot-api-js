@@ -254,3 +254,26 @@ describe("config compat — validateConfigInput (PUT) also migrates (C3)", () =>
     if (!r.valid) expect(r.details[0].field).toBe("timeouts.response_header")
   })
 })
+
+describe("validateConfigInput (PUT) — SOCKS session_connect_timeout=0 hard-rejects (D3 exception)", () => {
+  test("rejects with structured detail naming the SOCKS caveat", () => {
+    const r = validateConfigInput({
+      proxy: "socks5://proxy.example:1080",
+      upstream_transport: { http2: { session_connect_timeout: 0 } },
+    })
+    expect(r.valid).toBe(false)
+    if (r.valid) return
+    const detail = r.details.find((d) => d.field === "upstream_transport.http2.session_connect_timeout")
+    expect(detail).toBeDefined()
+    expect(detail?.message).toContain("SOCKS")
+    expect(detail?.value).toBe(0)
+  })
+
+  test("accepts a positive session_connect_timeout with the same SOCKS proxy", () => {
+    const r = validateConfigInput({
+      proxy: "socks5://proxy.example:1080",
+      upstream_transport: { http2: { session_connect_timeout: 5 } },
+    })
+    expect(r.valid).toBe(true)
+  })
+})

@@ -1097,6 +1097,24 @@ export const ConfigSchema = z
       .optional(),
   })
   .strict()
+  .superRefine((cfg, ctx) => {
+    const sessionConnectTimeout = cfg.upstream_transport?.http2?.session_connect_timeout
+    if (sessionConnectTimeout !== 0 || !cfg.proxy) return
+    let scheme: string
+    try {
+      scheme = new URL(cfg.proxy).protocol
+    } catch {
+      return // malformed proxy URL is already flagged by ProxySchema's own superRefine; don't double-report
+    }
+    if (scheme !== "socks5:" && scheme !== "socks5h:") return
+    ctx.addIssue({
+      code: "custom",
+      path: ["upstream_transport", "http2", "session_connect_timeout"],
+      message:
+        "session_connect_timeout: 0 (disable connect deadline) cannot be honored with a SOCKS proxy — the socks library floors the connect timeout at its own 30s default regardless (node_modules/socks source verified). Set an explicit positive value, or use a direct connection / HTTP CONNECT proxy where 0 genuinely disables the deadline.",
+      params: { rejectedValue: sessionConnectTimeout },
+    })
+  })
 
 // ============================================================================
 // Legacy key migrations (renames / relocations / removals) live in ./compat.ts
