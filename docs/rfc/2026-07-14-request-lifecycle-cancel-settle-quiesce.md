@@ -1,6 +1,6 @@
 # RFC: 请求生命周期 cancel / settle / quiesce 三态分离与统一取消信号
 
-- 状态: **草案 v2(3 轮独立 GPT 对抗复核完成;v2 据轮 3 大改:四段生命周期修因果环 blocker、双 registry、operation scope sealing、分层穷尽等待点表 +token-refresh 第五类、重排 cutover DAG、修 config 矛盾 —— 待第 4 轮复审 v2 修订 → 计划)**
+- 状态: **草案 v3(4 轮独立 GPT 对抗复核;v3 据轮 4 新 blocker 修:有界 cancellation grace(不 quiesce 的 operation 仍能 settle、reaper 强制 settle)、keyed finalization coordinator、root 不自 join、第六类逃逸点+global operation scope、§4 同步 v2 架构 —— 待第 5 轮确认收敛 → 计划)**
 - 日期: 2026-07-14
 - 关联: [docs/shutdown.md](../shutdown.md)、[docs/streaming.md](../streaming.md)、[docs/timeout-attribution-audit.md](../timeout-attribution-audit.md)、[docs/request-pipeline.md](../request-pipeline.md)
 - 取代/影响: `docs/shutdown.md` §Stale Request Reaper 与 §Shutdown 信号、`docs/DESIGN.md` 活的架构现状(超时相关行)
@@ -68,9 +68,28 @@
 3. **`settle(outcome)`** —— 冻结并发布终态(现有 complete/fail/abort,不变 wire)。发布 terminal event(触发 finalization)。
 4. **finalization drain**(`whenFinalized()`)—— settle-**后** 由 terminal event 触发的异步工作:History `finalizeEntry`、Calibration token-count、WS terminal broadcast。**复用现有 History `pendingFinalizations` drain 语义**,扩展到 Calibration/`bus.flush()`。
 
-**顺序不变量(强制终止 = reaper/deadline/shutdown)**:`cancel → 等 operation-body quiesce → settle → 等 finalization drain`。**正常完成**:`自然 operation quiesce → settle → 等 finalization drain`(**不** cancel)。两路径**只在是否 cancel 上不对称,finalization ownership 对称**(修第 3 轮 major #11——正常 complete 也有 Calibration/finalize 未 quiesce,不能在 finalization 上不对称)。
+**顺序不变量(强制终止 = reaper/deadline/shutdown)——有界 grace,非无限等待(修第 4 轮复核 blocker)**:
 
-**settle 后禁副作用不变量**:`failed`/`aborted`/`completed` 之后不得再起 attempt 或产生 upstream 业务副作用。
+> **第 4 轮复核发现新 blocker**:v2 的"cancel → 等**完全** operation-body quiesce → settle"让 deadline/reaper **无法处理真正不 quiesce 的 operation**(忽略 AbortSignal 的 hook/第三方 IO/serializer wedge)——若永不 quiesce 则 `whenOperationQuiesced` 永不 resolve → 永不 settle → 客户端永远拿不到 deadline-exceeded → 泄漏 reaper 自己也被卡。**这恰恰打败 RFC 核心目标**(处理"无法及时退出的工作"),且与现状矛盾(现 reaper 无视 quiesce **强制** settle)。
+
+修订:强制终止 = **`cancel(reason) → race(whenOperationQuiesced, cancellationGrace) → settle(outcome) → 等 finalization drain`**。
+
+- grace 内静止 → 正常 settle,operation scope 释放。
+- **grace 超时仍必须 settle**(客户端/History 拿到 deadline/reaper terminal outcome)+ 标 `operationLeak=true` + operation scope **保留在 manager** 继续挡 shutdown resource drain 并告警(operator 可见"有请求越 deadline 仍未静止");orphan 最终由 Phase4 / 进程退出兜底。
+- **"settle 后禁副作用"由 `operationSignal` gate + `cancelled` 标志保证**(attempt 边界 gate),**不靠**无限等所有旧工作结束。
+- **stale reaper 必须能强制 settle 未 quiesce scope**(有界 grace 后 force-settle),否则"泄漏 reaper"名不副实。
+
+**正常完成**:`自然 operation quiesce → settle → 等 finalization drain`(**不** cancel、无 grace 竞速——正常完成的 operation 已自然结束)。两路径**只在是否 cancel 上不对称,finalization ownership 对称**(修第 3 轮 major #11——正常 complete 也有 Calibration/finalize 未 quiesce,不能在 finalization 上不对称)。
+
+**settle 后禁副作用不变量**:`failed`/`aborted`/`completed` 之后不得再起 attempt 或产生 upstream 业务副作用(由 operationSignal/cancelled gate 保证,非靠等待)。
+
+### 3.1.1 finalization 用 keyed coordinator,非 global `bus.flush()`(修第 4 轮复核 major)
+
+`whenFinalized()` 是 **per-request** join,但现 `bus.flush()`(`bus.ts:161-167`)与 History `pendingFinalizations`(`entries.ts:143-173`)都是 **global set**、按 request 无法区分、只 snapshot 一次不循环至稳定。故引入 **keyed finalization coordinator**:
+
+- `registerFinalization(requestId, promise)` / `sealFinalizations(requestId)` / `whenFinalized(requestId)`。
+- History terminal write、Calibration token-count、WS terminal broadcast 均把各自 promise 注册到**同一 request id**。
+- global shutdown 另有 `drainAllFinalizations()`;**不拿 global `bus.flush()` 冒充 per-request join**。
 
 ### 3.2 统一 `operationSignal` + 分层穷尽等待点表(修第 3 轮 major #6/#7/#8)
 
@@ -86,17 +105,20 @@
 | ratelimit | 限流 sleep | ⚠️ reject-race | `adaptive-rate-limiter.ts:442-535` |
 | hook | `preSend`/`onExchange`/`onResolved` 扩展点 | ❌ 不接 signal、可任意 async I/O + 副作用持久化 | `driver.ts:372-398,411-418`、`feature-negotiation.ts:512-535` |
 | response sink | heartbeat detached serializer write | ⚠️ close 清 timer 但已入队 write 未撤 | `client-sink.ts:341-349,513-523,108-123` |
+| **global(非请求私有)** | feature-negotiation debounce persist(第六类,第 4 轮发现)、共享 token refresh | ❌ `onResolved` 同步返回后 detached 1s timer→`atomicWriteJson`;多请求合并同一 debounce | `unsupported-beta-retry.ts:187-197`、`feature-negotiation.ts:512-535` |
 
-**token refresh 特例(共享 refresh 不能被单请求粗暴 abort)**:多请求共享 `refreshInFlight`,单请求取消用 `raceWithSignal(sharedRefreshPromise, operationSignal)` **退出等待**、不 abort 共享 refresh(其他请求仍需);共享 refresh 仅在 global shutdown 整体 abort。
+**global operation scope(第 4 轮 major)**:feature-negotiation debounce persist 与共享 token refresh **不属单请求**(多请求合并/共享),不能塞进 per-request scope(跟踪 `onResolved` promise ≠ 跟踪它安排的 detached timer)。归 **`globalOperationScope`**:请求侧只拥有 waiter(`raceWithSignal` 退出),底层归 global;**shutdown 必须 cancel debounce + flush 最新 snapshot + await 序列化 chain**、并整体 drain 共享 refresh 的 fetch/backoff。这是独立于 per-request finalization 的 global drain。
+
+**token refresh 特例(共享 refresh 不能被单请求粗暴 abort)**:多请求共享 `refreshInFlight`,单请求取消用 `raceWithSignal(sharedRefreshPromise, operationSignal)` **退出等待**、不 abort 共享 refresh(其他请求仍需);共享 refresh 归 `globalOperationScope`、仅 global shutdown 整体 abort/drain。
 
 ### 3.3 双 registry:drain 等 operation、UI 等 visible(修第 3 轮 major #9)
 
 原"active record 直到 quiesce 才移除 + getAll() 仍返回 ctx"会让**已 settle 未 quiesce** 的 ctx 继续出现在 UI connected 快照/status activeCount,与 WsSink 增量递减冲突。拆两个 registry:
 
 - **`visibleContexts`** —— terminal settle 即删除,服务 UI/status/`getAll()`/`activeCount`(保持现语义:terminal event 即离开 active UI)。
-- **`operationScopes`** —— quiesce/finalize 后才删除,服务 shutdown drain。新增 `trackedOperationCount`(与 `activeCount` 分离)。
+- **`operationScopes`(lifecycle record)** —— **finalization 完成后**才删除(修第 4 轮 major:删除时点统一为 finalize 后,不是含糊的"quiesce/finalize");其中 operation **child registry** 可在 operation-body quiesce 后释放,但 **lifecycle record + finalization coordinator 必须保留到 finalize 完成**。服务 shutdown drain。新增 `trackedOperationCount`(与 `activeCount` 分离)。
 
-**operation scope 结构化并发(sealing,修第 3 轮 major #4/#5)**:operation 分阶段出现(exchange 先结束、response pump 后登记、buffered retry 响应期还可能重进 `runExchange`)。开放式"随时 track"会在暂时归零窗口过早 resolve → 新 attempt 成 drain 看不见的 orphan。改结构化:scope 维护 `childCount` + `sealed`;**仅 `sealed && childCount===0` 才 quiesced**;顶层 handler/pipeline 在唯一 `finally` seal。测试覆盖"暂时归零后又登记 buffered retry"反例。
+**operation scope 结构化并发(sealing + root owner,修第 3 轮 major #4/#5 + 第 4 轮 self-join)**:operation 分阶段出现(exchange 先结束、response pump 后登记、buffered retry 响应期还可能重进 `runExchange`)。开放式"随时 track"会在暂时归零窗口过早 resolve → 新 attempt 成 drain 看不见的 orphan。改结构化:scope 维护 `childCount` + `sealed`;**仅 `sealed && childCount===0` 才 quiesced**;顶层 handler/pipeline 在唯一 `finally` `seal()`。**root owner 不计入 childCount**(修第 4 轮:否则 handler `await whenOperationQuiesced()` 自等 → self-join 死锁);lifecycle orchestrator 在 **root operation 之外**等待 quiescence。测试覆盖"暂时归零后又登记 buffered retry"**与**"root 不自 join"两个反例。
 
 ### 3.4 双旋钮:request_deadline + 泄漏 reaper(修第 3 轮 major #10/#12 config 矛盾)
 
@@ -107,11 +129,14 @@
 
 ## 4. 接口契约
 
-> 具体签名在计划阶段定稿,此处定契约方向。
+> 具体签名在计划阶段定稿,此处定契约方向(第 4 轮复核已同步 v2 架构,清除 v1 残留名)。
 
-- `RequestContext`:新增 `cancel(reason: CancelReason): void`(abort operationSignal + 置 `cancelled` 标志禁新 attempt)、`operationSignal: AbortSignal`(union)、`trackOperation(p: Promise<unknown>): void` / `whenQuiesced(): Promise<void>`。现有 `complete/fail/abort` 保持 settle 语义、不变 wire。
-- `RequestContextManager`:active record 从 `ctx` 扩为 `{ ctx, operationSignal, whenQuiesced }`;`getAll()` 保持返回 ctx(兼容 UI);新增 drain 用的 `getTrackedOperations()`。
-- `sendUpstreamHttp`:`fetchSignal` 一律含稳定 shutdown signal(删 `stream ? undefined` 分支);新增 deadline 分量。
+- `RequestContext`:新增 `cancel(reason: CancelReason): void`(abort operationSignal + 置 `cancelled` 禁新 attempt)、`operationSignal: AbortSignal`(union: client/reaper/shutdown/deadline)、`trackOperationBody(p): void`(注册 settle-前 child)、`sealOperationScope(): void`(root 唯一 finally 调,此后不再登记)、`whenOperationQuiesced(): Promise<void>`(`sealed && childCount===0`,**root 不计入 childCount**)。现有 `complete/fail/abort` 保持 settle 语义、不变 wire。**`cancel` 与 settle 解耦**:强制终止路径 `cancel → race(whenOperationQuiesced, grace) → settle`。
+- finalization coordinator(keyed,§3.1.1):`registerFinalization(requestId, p)` / `sealFinalizations(requestId)` / `whenFinalized(requestId)`;global `drainAllFinalizations()`。History/Calibration/WS terminal handler 注册到同 request id。
+- `RequestContextManager`:**双 registry**——`visibleContexts`(terminal settle 即删,服务 `getAll()`/`activeCount`/UI/status,语义不变)+ `operationScopes`(finalize 后删,服务 drain);新增 `getTrackedOperations()`/`trackedOperationCount`。`getAll()`/`activeCount` **来源仍是 visibleContexts**(UI 无可观测变化)。
+- `globalOperationScope`(§3.2):feature-negotiation debounce persist + 共享 token refresh 归此;shutdown `drainGlobalOperations()`(cancel debounce + flush snapshot + await chain + drain 共享 refresh)。
+- ClientSink:新增 `closeAndDrain(): Promise<void>`——暴露 serializer tail promise,quiescence 等**实际 tail**、非只清 timer(修第 3 轮 minor #8 接口未同步)。
+- `sendUpstreamHttp`:`fetchSignal` 一律含稳定 shutdown signal(删 `stream ? undefined` 分支);新增 deadline 分量(经 operationSignal)。
 - `delay()` → `abortableDelay(ms, signal)`:signal abort 抛 `OperationCancelledError(reason)`;driver retry loop 在每个 attempt 边界 gate `ctx.cancelled || operationSignal.aborted` → break。
 - adaptive-rate-limiter:queue item 加 `cancelled` 状态/ per-item signal;sleep 返回后 execute 前重校验。
 
@@ -120,13 +145,13 @@
 > 第 3 轮复核证明原 `C1→…→C6` 线性顺序**有隐藏依赖**:C4(deadline)依赖 C5 的 `cancel/operationSignal/whenQuiesced`;C1/C2 在统一 signal 前无法保证"shutdown-abort-529 不在已取消请求上重试";C6 的 `frozen-interval` 观测必须在 C4 改掉 timer **之前**采集才能坐实 RC2。重排为下列 DAG,每 commit **终态不变量**:测试套件通过、无半破碎中间态、无新旧双写、过渡态显式无害。
 
 - **C0-observe(先,不改行为)**:旧 reaper drift/frozen-cadence 观测(scheduledAt/actualAt/driftMs/scan-duration/live-maxAge/frozen-interval + monotonic-vs-wall-clock 区分 suspend vs 阻塞)+ config reload timeout 字段 before/after diff + `monitorEventLoopDelay` histogram。**invariant**:纯增观测、行为不变;**必须早于 C4b**(否则旧 frozen cadence 已消失、RC2 无法坐实)。可与 C0-lifecycle 并行。
-- **C0-lifecycle(基础设施,不接生产路径)**:引入 `operationSignal`、`cancelled` state、operation scope(childCount+sealed+seal API)、`visibleContexts`/`operationScopes` 双 registry、`whenOperationQuiesced()`/`whenFinalized()` 两 join。新 API 尚不接生产、行为不变(显式无害:仅定义,不订阅)。**invariant**:typecheck + 现有测试全过、生产路径零行为变化。
+- **C0-lifecycle(基础设施,不接生产路径)**:引入 `operationSignal`、`cancelled` state、operation scope(childCount+sealed+seal API、**root 不计入 childCount**)、`visibleContexts`/`operationScopes` 双 registry、`whenOperationQuiesced()` + **keyed finalization coordinator**(`registerFinalization`/`sealFinalizations`/`whenFinalized(requestId)`)。新 API 尚不接生产、行为不变(显式无害:仅定义,不订阅)。**invariant**:typecheck + 现有测试全过、生产路径零行为变化。
 - **C1+C2(原子切换,避免 529 重试窗口)**:streaming pre-header fetch 折入稳定 shutdown signal(RC1)+ `abortableDelay`(RC3)+ retry loop attempt 边界 gate `cancelled || operationSignal.aborted`(**不只 settled**——Phase3 cancel 与 terminal settle 间 settled 仍 false)+ shutdown-abort-529 不得在已取消请求上重试。三者**同一原子 commit**(拆开会留 529 重试窗口)。golden 预捕获 RC1"挂到 Phase4"行为 → 修 → 证 Phase3 即中断。**invariant**:streaming/non-stream pre-header 取消对称;settle/cancel 后不起新 attempt。
 - **C3(限流所有权)**:per-item `cancelled` 状态/signal + reject/execute 竞争消除。内部实现可与 C1/C2 并行开发,但 **integration 依赖 C0-lifecycle 的 signal 契约**。**invariant**:调用方拿到 shutdown 响应后无 upstream 副作用。
-- **C4a(遗漏等待点接入)**:token refresh(共享 refresh 用 `raceWithSignal` 退出等待、不 abort 共享)、hook `preSend`/`onExchange`/`onResolved`、heartbeat serializer 全接入 operation scope。**invariant**:§3.2 分层表每层可取消/可追踪。
-- **C4b(deadline + reaper 降级)**:`request_deadline` per-request timer(属 operation scope、unref、dispose 清理、inspection 豁免)+ `stale_request_max_age` 降为泄漏安全网 + 热重载重调度(修 RC2)+ compat。**依赖 C4a**(所有主要等待点已可取消)。**invariant**:`request_deadline=0` 时旧行为字节不变。
-- **C5(drain 原子切换双 join)**:shutdown drain 切到 operation/finalization 双 join(operation-body quiesce + finalization drain,后者复用 History `pendingFinalizations` 扩到 Calibration/`bus.flush()`)。**严格串行、必须晚于 C4a**(operation coverage 完成后)。**invariant**:强制终止 = cancel→operation-quiesce→settle→finalization-drain;drain 不因出册漏等未 quiesce 工作;UI/status active 语义不变(visibleContexts)。
-- **C6-final(长期 observability + 收尾)**:新机制长期指标、文档同步(shutdown.md/DESIGN.md/streaming.md)、whole-domain audit。
+- **C4a(遗漏等待点接入,含 global scope)**:token refresh(共享 refresh 归 `globalOperationScope`、单请求用 `raceWithSignal` 退出)、hook `preSend`/`onExchange`/`onResolved`、heartbeat serializer(`closeAndDrain`)、**feature-negotiation debounce persist(第六类)归 `globalOperationScope`** 全接入。**invariant**:§3.2 分层表每层(含 global)可取消/可追踪。
+- **C4b(deadline + reaper 降级,有界 grace)**:`request_deadline` per-request timer(属 operation scope、unref、dispose 清理、inspection 豁免)→ **`cancel(deadline) → race(whenOperationQuiesced, grace) → settle`**(grace 超时仍 settle + `operationLeak=true` + scope 保留告警);`stale_request_max_age` 降为泄漏安全网(有界 grace 后**强制 settle** 未 quiesce scope)+ 热重载重调度(修 RC2)+ compat。**依赖 C4a**。**invariant**:`request_deadline=0` 时旧行为字节不变;不 quiesce 的 operation **仍能 settle**(客户端拿到终态)。
+- **C5(drain 原子切换双 join + global drain)**:shutdown drain 切到 operation-body quiesce(有界 grace)+ **keyed finalization drain**(per-request coordinator)+ **`drainGlobalOperations()`**(feature-negotiation debounce / 共享 token refresh)。**严格串行、必须晚于 C4a**。**invariant**:强制终止 = cancel→race(quiesce,grace)→settle→finalization-drain;drain 不因出册漏等未 quiesce/未 finalize 工作;UI/status active 语义不变(visibleContexts);grace 超时的 leak 不阻塞 settle、但仍挡 resource drain 并告警。
+- **C6-final(长期 observability + 收尾)**:新机制长期指标(`operationLeak` 计数、trackedOperationCount)、文档同步(shutdown.md/DESIGN.md/streaming.md)、whole-domain audit。
 
 **DAG 关键边**:C0-observe ∥ C0-lifecycle → (C1+C2) → C3(integration 依赖 C0-lifecycle)→ C4a → C4b(依赖 C4a)→ C5(严格串行,晚于 C4a)→ C6。deadline 与 drain 切换**必须**在 operation coverage(C4a)完成后,不可提前。
 
@@ -141,7 +166,7 @@
 ## 7. 验证
 
 - **golden 预捕获**(large-refactor §4):改动前锁定 shutdown drain 序列 / reaper force-fail 行为 / abort 分类(client vs reaper vs timeout,`post-commit-error.ts`)/ 现有 `reaper-abort-unhandled.it.test.ts` 通过 → 重构后同测试仍过。
-- **新增测试**:C1 delayed-commit pre-header shutdown 集成;C2 settle 后不起新 attempt;C3 限流 reject/execute 竞争;C4 deadline 到点 cancel+settle & 未配时旧行为等价 & 热重载重调度;C5 drain 等未 quiesce operation;C6 observability 字段存在性守卫。
+- **新增测试**:C1 delayed-commit pre-header shutdown 集成;C2 settle/cancel 后不起新 attempt;C3 限流 reject/execute 竞争;C4 deadline 到点 cancel+**有界 grace**+settle & `request_deadline=0` 时旧行为字节等价 & 热重载重调度 & **不 quiesce 的 operation 仍能 settle(leak 不阻塞)**;C4a "暂时归零后又登记 buffered retry" + "root 不自 join" 两反例;C5 drain 等未 quiesce operation + keyed finalization + global scope drain;C6 observability 字段存在性守卫。
 - **flaky/时序**:deadline/reaper 时序测试用 fake timers + 连跑 10–25× 证确定性(empirical-verification)。
 - **真实验证**:C1 落地后可在非 4141 端口起隔离测试服务器复现 delayed-commit + Ctrl+C,确认 Phase3 即中断(绝不碰 4141 主服务器)。
 
