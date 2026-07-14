@@ -59,6 +59,8 @@ gh search code --repo microsoft/vscode "isAnthropicToolSearchEnabled" --json pat
 
 **调试「Copilot 返回意外响应」**：① 比对实发 header（`X-Initiator`/`anthropic-beta`/`X-Model-Provider-Preference`/`anthropic-version`）与上游 `getExtraHeaders`；② 比对 body（thinking adaptive vs enabled、`context_management` edits、cache_control 位置 tools→system→messages ≤4 断点）；③ model name 是否正确解析（`resolver.ts`）；④ 查 history 的 `sseEvents` 看上游原始帧。**症状类排查**（thinking signature 400 / tool_use 降级 / usage 异常）→ 转 skill `ghc-anthropic-upstream`。
 
+**GHC Responses 流 wire 陷阱**：同一逻辑 output item 的不透明 `item.id` **每个事件都被重新加密**——`output_item.added` / `function_call_arguments.done` / `output_item.done` 各带一个**不同**的 `item.id`；**跨事件关联只能用 `output_index`（整数、稳定）或 `call_id`，绝不能用 `item.id`**。曾致 tool_call 恒 2× 翻倍（accumulator 双终结守卫误用 item.id → 永不命中 → 每 tool 重复；History 22/22 gpt-5.6-sol 工具响应全中招）。修复 commit `16a10615`，累积器 `finalizedOutputIndexes: Set<number>`。教训延伸：stable-id 的合成 fixture 掩盖了 per-event-id 的真缺陷（测试与实现同源盲区）。
+
 ## 何时用本 skill vs 相邻 skill
 
 - **本 skill（ghc-api-reference）**：**上游 / 我们消费的** GHC/Copilot API——以官方客户端源码为准，**对齐**请求格式/能力/wire 形状（正向核对、新增 feature、新模型同步）。

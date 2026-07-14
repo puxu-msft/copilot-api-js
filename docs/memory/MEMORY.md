@@ -40,6 +40,7 @@
 - [面向用户永久只用中文、禁日语](feedback-chinese-only-never-japanese.md) — 输出层自检语言=中文;内部推理语言无所谓
 - [写 plan 引用现有接线须核实位置与桥接](methodology-plan-verify-interface-location-and-wiring-channel.md) — 同名 interface 核实确切文件;**recordFeature 不落盘,持久化 prepare 诊断走 pipelineInfo**;新 union 打爆 ui-v4 穷尽 Record
 - [畸形 tool_use 全人群扫描法](methodology-malformed-tooluse-full-population-scan.md) — 查全 decode error 别只看 error_message;扫 upstream blob 分真缺陷 vs abort 伪畸形;实例=\uXXXX 击中 opus-4.8
+- [GHC Responses item.id 每事件重加密](reference-ghc-responses-item-id-reencrypted-per-event.md) → skill `ghc-api-reference` — 跨事件关联只能用 output_index/call_id 不用 item.id;曾致 tool_call 恒 2× 翻倍(accumulator 双终结守卫误用 item.id、22/22 gpt-5.6-sol 中招、经 conversation-rebuild 传播);修=finalizedOutputIndexes 稳定键(c 16a10615);stable-id fixture 掩盖 per-event-id 真缺陷
 - [配置哲学独立：留兼容层 + 警告并继续](feedback-config-philosophy-separate-compat-and-warn-continue.md) — 配置**不**享代码「无向后兼容负担」;键重命名留旧键别名读时映射;运行时热重载绝不因配置问题杀进程
 - [微改动别反射式派 subagent 评审](feedback-tier-subagent-review-skip-for-mechanical-micro-changes.md) — `subagent-explicit-rubric` 须与 user-rule 41 `tiered-review-by-risk` 合读;机械低风险走 TDD,微改攒批合并态审
 - [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — `--cache` 对缓存过期文件假绿;`lint:all` 已去 cache、核单文件用 `bunx eslint <path>`
