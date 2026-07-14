@@ -706,6 +706,19 @@ export interface State {
   readonly upstreamH2PingInterval: number
 
   /**
+   * TCP connect + TLS handshake deadline (seconds) for a single h2 session
+   * establishment attempt. Was the hardcoded `CONNECT_TIMEOUT_MS` in
+   * http2-client.ts; wired to real connection attempts in Plan 2. Default 10.
+   */
+  readonly sessionConnectTimeout: number
+  /**
+   * Idle timeout (seconds) for a pooled upstream Responses WS connection
+   * before proactive close. Was the hardcoded `DEFAULT_IDLE_TIMEOUT_MS` in
+   * upstream-ws-connection.ts; wired to real connections in Plan 2. Default 300.
+   */
+  readonly pooledConnectionIdleTimeout: number
+
+  /**
    * Shutdown Phase 2 timeout in seconds.
    * Wait for in-flight requests to complete naturally before sending abort signal.
    * Default: 60.
@@ -1313,7 +1326,7 @@ export function setModelOverrides(modelOverrides: Record<string, string>): void 
  * Replace the per-model stream-idle / response-header timeout override maps.
  * Replace semantics per field (the maps are already per-key merged with the
  * bundled defaults upstream in `mergeConfigs`). Deliberately does NOT fire
- * `transportTimeoutListeners` — these are app-guard-only knobs with no bearing
+ * `requestWatchdogListeners` — these are app-guard-only knobs with no bearing
  * on the undici dispatcher (which serves plaintext SearXNG on the scalar
  * `streamIdleTimeout`; GHC rides node:http2 with no transport body-idle). See
  * ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
@@ -1427,34 +1440,64 @@ export function setReactiveRetryConfig(patch: Partial<Pick<MutableState, "maxRea
 }
 
 export function setTimeoutConfig(
-  patch: Partial<
-    Pick<
-      MutableState,
-      "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval" | "upstreamKeepaliveDelay" | "upstreamH2PingInterval"
-    >
-  >,
+  patch: Partial<Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval">>,
 ): void {
   const transportChanged =
     (patch.responseHeaderTimeout !== undefined && patch.responseHeaderTimeout !== mutableState.responseHeaderTimeout)
     || (patch.streamIdleTimeout !== undefined && patch.streamIdleTimeout !== mutableState.streamIdleTimeout)
-    || (patch.upstreamKeepaliveDelay !== undefined && patch.upstreamKeepaliveDelay !== mutableState.upstreamKeepaliveDelay)
   updateState(patch)
   if (transportChanged) {
-    for (const listener of transportTimeoutListeners) listener()
+    for (const listener of requestWatchdogListeners) listener()
   }
 }
 
 /**
- * Listeners notified when `responseHeaderTimeout`, `streamIdleTimeout`, or
- * `upstreamKeepaliveDelay` change.
+ * Listeners notified when `responseHeaderTimeout` or `streamIdleTimeout` change.
  * Used by transport layer (undici dispatcher) to rebuild with new options.
  */
-const transportTimeoutListeners = new Set<() => void>()
+const requestWatchdogListeners = new Set<() => void>()
 
-/** Subscribe to transport-relevant timeout changes (responseHeaderTimeout, streamIdleTimeout). */
-export function onTransportTimeoutChange(listener: () => void): () => void {
-  transportTimeoutListeners.add(listener)
-  return () => transportTimeoutListeners.delete(listener)
+/** Subscribe to request-watchdog-relevant timeout changes (responseHeaderTimeout, streamIdleTimeout). */
+export function onRequestWatchdogChange(listener: () => void): () => void {
+  requestWatchdogListeners.add(listener)
+  return () => requestWatchdogListeners.delete(listener)
+}
+
+/**
+ * Upstream-transport-axis config setter — the outbound-connection counterpart
+ * to `setTimeoutConfig` (protocol-agnostic request watchdogs) and
+ * `setResponsesWsIngressConfig` (inbound client-facing WS limits). Notifies
+ * `onUpstreamTransportChange` listeners on ANY tracked field change, including
+ * `upstreamH2PingInterval` — a pre-existing gap in the old combined
+ * `setTimeoutConfig` (upstreamH2PingInterval changes never notified
+ * `requestWatchdogListeners`) that this split fixes as a side effect.
+ */
+export function setUpstreamTransportConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      "upstreamKeepaliveDelay" | "upstreamH2PingInterval" | "sessionConnectTimeout" | "pooledConnectionIdleTimeout" | "softMaxUpstreamWsConnections"
+    >
+  >,
+): void {
+  const changed =
+    (patch.upstreamKeepaliveDelay !== undefined && patch.upstreamKeepaliveDelay !== mutableState.upstreamKeepaliveDelay)
+    || (patch.upstreamH2PingInterval !== undefined && patch.upstreamH2PingInterval !== mutableState.upstreamH2PingInterval)
+    || (patch.sessionConnectTimeout !== undefined && patch.sessionConnectTimeout !== mutableState.sessionConnectTimeout)
+    || (patch.pooledConnectionIdleTimeout !== undefined && patch.pooledConnectionIdleTimeout !== mutableState.pooledConnectionIdleTimeout)
+    || (patch.softMaxUpstreamWsConnections !== undefined && patch.softMaxUpstreamWsConnections !== mutableState.softMaxUpstreamWsConnections)
+  updateState(patch)
+  if (changed) {
+    for (const listener of transportUpstreamListeners) listener()
+  }
+}
+
+/** Subscribers notified after a hot-reload changes any `setUpstreamTransportConfig` field. Plan 2/4 (proxy.ts, http2-client.ts, upstream-ws*.ts) subscribe here to rebuild connections/reschedule timers. */
+const transportUpstreamListeners = new Set<() => void>()
+
+export function onUpstreamTransportChange(listener: () => void): () => void {
+  transportUpstreamListeners.add(listener)
+  return () => transportUpstreamListeners.delete(listener)
 }
 
 export function setResponsesConfig(
@@ -1666,6 +1709,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   streamIdleTimeout: 300,
   upstreamKeepaliveDelay: 15,
   upstreamH2PingInterval: 15,
+  sessionConnectTimeout: 10,
+  pooledConnectionIdleTimeout: 300,
   staleRequestMaxAge: 600,
   requestDeadline: 0,
   modelRefreshInterval: 600,
@@ -1800,11 +1845,16 @@ export function resetConfigManagedState(): void {
   setTimeoutConfig({
     responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
     streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
-    upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
-    upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
     staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
     requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
     modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
+  })
+  setUpstreamTransportConfig({
+    upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
+    upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+    sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
+    pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
+    softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
   })
   setShutdownConfig({
     shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
@@ -1951,6 +2001,8 @@ const mutableState: MutableState = {
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
   upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+  sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
+  pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
   systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
   systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],

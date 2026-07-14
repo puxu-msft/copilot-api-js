@@ -30,7 +30,7 @@ import {
 
 import {
   //
-  onTransportTimeoutChange,
+  onRequestWatchdogChange,
   state,
 } from "./state"
 import { buildSocksProxy } from "./transport/proxy-connect"
@@ -227,7 +227,7 @@ function logDispatcherInstalled(options: ProxyOptions): void {
 /** Subscribe once to timeout/keepalive hot-reload, rebuilding the cached dispatcher. */
 function ensureTimeoutSubscription(): void {
   if (timeoutSubscriptionInstalled) return
-  onTransportTimeoutChange(rebuildUpstreamDispatcher)
+  onRequestWatchdogChange(rebuildUpstreamDispatcher)
   timeoutSubscriptionInstalled = true
 }
 
