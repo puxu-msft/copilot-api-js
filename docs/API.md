@@ -109,15 +109,14 @@
 
 | 路由 | 方法 | 说明 |
 |------|------|------|
-| `/history/api/entries` | GET | 分页 entry 列表（按 model / endpoint / status / session / time 过滤）。`?terminalOnly=true` 按 state 剔除 active 在飞行、只返回终态条目（给有独立 Live 泳道的 ui-v4 用；过滤作用于 merge 后结果故 `total`/游标分页正确）。`?search=` 是轻量 `preview_text` 快筛（与专门搜索分离） |
-| `/history/api/entries/:id` | GET | 单条 entry（解码后的 payload + response、headers、timing、billing） |
+| `/history/api/entries` | GET | 分页 entry 列表（按 model / endpoint / status / session / time 过滤）。`?terminalOnly=true` 按 state 剔除 active 在飞行、只返回终态条目（给有独立 Live 泳道的 ui-v4 用；过滤作用于 merge 后结果故 `total`/游标分页正确）。`?search=` 是轻量 `preview_text` 快筛（与专门搜索分离）。**`?tier=hot\|archive`**（三层归档，默认 `hot`）：`hot` 查 `history.db`（近 3d + pinned）；`archive` 查归档视图 `archive.db`（tier-1 + tier2_manifest 封存条目 UNION）——两视图从不同库查、绝不同列 |
+| `/history/api/entries/:id` | GET | 单条 entry（解码后的 payload + response、headers、timing、billing）。**`?tier=archive`** 读归档视图（tier-1 未命中→经 manifest 定位解压 tier-2 封存单元） |
 | `/history/api/entries/:id/export` | GET | 单条 entry 的**规范全量形式**（`getEntry` → 所有 stage / per-attempt sseEvents / 各腿 headers）服务端 zstd 压缩为 `.json.zst` 附件下载（`Content-Type: application/zstd`，复用 `sqlite/compression.ts`；两套前端 UI 的 Export 都走它、前端零压缩依赖） |
-| `/history/api/entries/:id/pin`、`.../unpin` | POST | 切换 debug-pin——pinned 条目豁免 reaper 淘汰 + 计数，返回更新后的完整 entry |
-| `/history/api/entries` | DELETE | 全量清空所有 history（**破坏性**）。按 session 删除见 `/history/api/sessions/:id` |
+| `/history/api/entries/:id/pin`、`.../unpin` | POST | 切换 debug-pin——pinned 条目豁免 reaper 淘汰 + 计数 **+ 永不降温（永驻 HOT）**，返回更新后的完整 entry |
+| `/history/api/archive-now` | POST | **立即归档**（产品面删除的替代，spec §3.6）：把匹配 list 过滤（或全部）的终态非 pinned HOT 行**移动到 tier-1 冷归档**（`{success, archived: N}`）——**永不真删**。取代已移除的 `DELETE /api/entries` + `DELETE /api/sessions/:id`（其 SQL 原语保留为 test-only 内部、不再 HTTP 暴露） |
 | `/history/api/stats` | GET | 聚合计数、token 总量、billing multiplier、model breakdown |
 | `/history/api/sessions` | GET | Session 列表（Claude Code / Codex session 从 headers 推断） |
-| `/history/api/sessions/:id` | DELETE | 删除某 session 的所有 entry |
-| `/history/api/search` | GET | 内容寻址全文搜索：`?source=&q=&limit=&cursor=`（5 源单选 inbound / rewrites-req / rewrites-resp / req-headers / resp-headers，backfill 未完成时 inbound 返 `partial+builtPct`）。见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md) |
+| `/history/api/search` | GET | 内容寻址全文搜索：`?source=&q=&limit=&cursor=`（5 源单选 inbound / rewrites-req / rewrites-resp / req-headers / resp-headers，backfill 未完成时 inbound 返 `partial+builtPct`）。**`?tier=archive`** 按归档库分域搜索（tier-2 层以 manifest.preview_text 粒度参与）。见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md) |
 | `/history/api/search/contains` | GET | `?hash=` 懒取某消息 hash 的全部引用请求 |
 | `/history/api/export` | GET | 导出 history 为 JSON |
 

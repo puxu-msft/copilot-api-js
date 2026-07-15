@@ -81,6 +81,13 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 每桶按 `started_at ASC, id ASC` 删除最旧条目，保留最新的对应 `limit` 条。**活跃态（`pending`/`executing`/`streaming`）落在两桶之外**——reaper 既不计数也不淘汰进行中请求的 head 行；它们的回收由下文的孤儿/stale 回收负责。删除 head 行时，其 `entry_stages` 子行经 `ON DELETE CASCADE` 一并删除。
 
+> **注（三层降温归档，2026-07-14 起）**：当 `history.archive.enabled=true`（默认）时，reaper 的到量 `DELETE` 被 **move-to-tier1** 取代——超量/超龄行**搬进 `archive.db` 冷归档而非删除**（永不真删）。数量上限降级为安全阀、时间搬迁（>`hot_days`=3d）成主机制。详见下节「三层降温归档」；权威架构见 [DESIGN.md](DESIGN.md)「活的架构现状」History 三层降温归档行 + ADR [decisions/2026-07-14-tiered-archive-cold-format.md](decisions/2026-07-14-tiered-archive-cold-format.md) + spec [spec/2026-07-14-history-tiered-archive.md](spec/2026-07-14-history-tiered-archive.md)。`enabled=false` 时行为退回本节所述的到量硬删。
+
+### 三层降温归档（tiered archive）
+
+`history.db`（HOT，近 `hot_days` + pinned 永驻）→ `archive.db`（TIER-1，SQLite 同 schema，ATTACH 主连接）→ `archive-NNNN.db`（TIER-2，按 session 分组的 max-zstd 封存冷单元）三层单向降温、**产品面无删除**、按视图分域（`?tier=hot\|archive`）访问。move 语义（先写 archive 单文件原子事务 + 多子表 verify + 才删 HOT、显式列名免疫列序、删-再-写覆盖语义）、tier-2 格式（session-group 9× 压缩，PoC 裁决）、archive-now 端点（替代删除）等细节见 spec / ADR / DESIGN.md，此处不重复。config 见 `history.archive.*`（`enabled`/`hot_days`/`tier1_size_cap`/`tier2_warn_count`/`tier2_warn_bytes`/`dir`）。
+
+
 ### Debug-pin（豁免淘汰）
 
 `entries_v2.pinned`（`INTEGER NOT NULL DEFAULT 0`）是 debug 用的钉住标志。调试时常需保留某条 entry 的完整原始数据（请求/响应/sseEvents/per-attempt），但默认 reaper 会按桶超额淘汰把关键样本挤掉。**pinned 行与活跃态行一样落在两桶之外**——reaper 的 `SUCCESS_WHERE`/`FAILURE_WHERE` 各带 `AND pinned = 0`，而 `evictBucket` 的 COUNT 与 DELETE 子查询共用此谓词，故 pinned 行**既不被淘汰、也不计入 success/failure 名额**（pin 满 limit 条不会把正常历史挤空）。

@@ -700,3 +700,17 @@
 - **当前行为**：现实路径（用户在同一个 `config.yaml` 里同时写 `proxy` 和 `upstream_transport.http2.session_connect_timeout`，或经 PUT `/api/config` 一次性提交两者）完全被覆盖，因为两个字段确实在同一次 `safeParse()` 内。只有把 `proxy` 放进一层、把 `session_connect_timeout: 0` 放进另一层（bundled vs user 分裂）才会漏检——且 bundled `config.yaml` 从不出货显式 `0`（默认是正数 10）、`proxy` 又几乎总是用户覆盖层独有，这个组合在实践中概率极低。
 - **理想架构 / 若做需改什么**：在 `mergeBySchema()` 产出 effective config 之后，对合并结果**再跑一次** `ConfigSchema` 级别的跨字段校验（或至少重跑本条 superRefine），需要新增一个「合并后二次校验」的调用点，并想清楚二次校验失败时的降级策略（此时已经没有「stripped 用默认值重来」的简单退路，因为两层都已经算"验证通过"）。
 - **为何暂缓**：本条是 B8 实现过程中顺带发现的架构缝隙，不是 B8 本身要求的验收范围（B8 只要求"配 SOCKS 时 validation 拒绝 0"，同层内已完整满足）；触发条件是「bundled 与用户配置分裂持有这两个字段」这一现实中基本不出现的组合，为此新增合并后二次校验层是过度工程。**触发条件（满足才值得做）**：项目引入多层配置来源（例如按环境分层的多个 YAML 文件，而不仅是 bundled+单一用户覆盖）、或 schema 上出现更多类似的高价值跨字段约束，值得一次性建「合并后校验」机制而非逐条特殊处理。发现方：本 planner 在 B8（transport-config-reorg plan 修正）落 SOCKS 校验时的架构核实。
+
+## 三层降温归档 · 长跑服务器 tier-1 无界增长（O3，MEDIUM，2026-07-14 记）
+
+- **根因 / 现状**：T1→T2 封存（`tier2-seal.ts` `startTier2Seal`）**仅启动时触发一次**（用户裁定：封存是昂贵的 Parquet-级重编码，不进周期 tick）。若服务长期不重启，`archive.db`（tier-1）撞 `tier1_size_cap`（默认 2GB）后**无运行期封存触发点**，tier-1 会持续增长。
+- **当前行为**：由运行期 `consola.warn`（`tier2_warn_count`/`tier2_warn_bytes` 同机制）提示用户重启/手动。数据不丢（只是 tier-1 变大、ATTACH 查询变慢）。
+- **理想架构 / 若做需改什么**：把「archive.db > tier1_size_cap」也作为**运行期触发点**——在 reaper tick（`runReaperTick`）里加一个轻量 size 检查，超限时后台 `runTier2SealOnce()`（一次封存一个 session、非阻塞）。需想清楚封存的 CPU/IO 成本在周期 tick 里的节流（不能每 tick 都全量封存）。
+- **为何暂缓**：用户明确选「T1→T2 仅启动时」作为初始触发策略；周期封存是 nice-to-have，不阻塞核心「永不真删 + 高压缩」诉求。**触发条件（满足才值得做）**：出现长跑（数周不重启）+ tier-1 实测显著膨胀影响归档视图查询延迟的真实案例。发现方：spec 2026-07-14-history-tiered-archive §8-O3 设计阶段预留。
+
+## 三层降温归档 · tier-2 深度搜索粒度（O4，LOW，2026-07-14 记）
+
+- **根因 / 现状**：归档视图深度搜索（`/history/api/search?tier=archive`）对 **tier-1（archive.entries_v2）** 走完整五 facet 内容寻址搜索；对 **tier-2（封存冷单元）** 只以 `tier2_manifest.preview_text` 粒度参与（封存时未在 manifest 建 msg_blob/req_aux 级搜索文本）。
+- **当前行为**：tier-2 条目可按 preview_text 子串命中，但不支持 rewrites/headers 等 facet 的逐字节深搜。
+- **理想架构 / 若做需改什么**：封存时在 `tier2_manifest` 旁建一张 tier-2 专用的 flat 搜索文本表（或把 msg_blob/req_aux 文本也冗余进 manifest），使 tier-2 也支持五 facet；或封存单元内保留可搜文本。
+- **为何暂缓**：tier-2 是最深冷层、访问罕见，preview_text 粒度对冷数据检索够用；全 facet 冷索引是额外存储 + 复杂度。**触发条件**：出现「需要对已封存冷数据做 header/rewrite 级精确搜索」的真实运维需求。发现方：spec §8-O4。
