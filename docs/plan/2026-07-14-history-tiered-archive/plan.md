@@ -1,5 +1,7 @@
 # History Tiered Archive Implementation Plan
 
+> **实施状态（2026-07-14，全 8 阶段 landed，待合并 master）**：worktree `.worktrees/tiered-archive/` @ `feat/history-tiered-archive`。**P0-P8.1 全部实现 + 各阶段测试绿**（P0 PoC 格式裁决 SQLite sealed+session-group ✅ / P1 config 5 触点 369 pass ✅ / P2 archive.db 骨架 6 pass ✅ / **P3 HOT→T1 搬迁承重 + reaper 分流 10 pass**（GPT reviewer 用真实 32GB 库实测复现 2 BLOCKER〔SELECT * 列序错位 + verify 不比内容〕、已治根修复 + legacy-shape 回归测试）✅ / P4 读路径视图分域 5 pass ✅ / P5 移除产品 delete + archive-now 17 pass ✅ / P6 T1→T2 session-group 封存 + 归档读 7 pass ✅ / P7 ui-v4 归档文案 + ui/ 死码 + leak 修复 ✅ / P8.1 启动接线 4 pass ✅ / P8.3 doc-sync 全 landed ✅）。广 history 套件 510 pass。**待收尾**：P8.2 合并态评审（GPT reviewer 后台进行）+ merge master（分支落后、有 peer WIP 并发）。承重教训见 ADR `2026-07-14-tiered-archive-cold-format` + 记忆 `project-history-tiered-archive`。**4 个测试失败（ConsoleSink thinking×3 + resetReaperDiagnosticsForTests）是并发 peer WIP、不在本 diff。**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **每 task 的逐字节 bite-sized TDD 步骤在执行期由 per-task subagent 即时展开**——本 plan 给出每 task 的文件/接口/测试 oracle/不变量/验收，Phase 0 附全套 bite-sized 模板。
 
 **Goal:** 把 History 从「单库 history.db + 到量硬删（真丢失）」升级为 **HOT（history.db，近 3d + pinned）→ TIER-1（archive.db，SQLite）→ TIER-2（archive-NNNN 封存，SQLite sealed + session-group）** 三层单向降温、产品面无删除、按视图分域访问的归档体系。
