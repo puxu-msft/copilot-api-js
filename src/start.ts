@@ -184,6 +184,13 @@ interface RunServerOptions {
   proxy?: string
   httpProxyFromEnv: boolean
   externalUiUrl?: string
+  /**
+   * 零停机接管：若已有裸手动实例在跑（pidfile 活性检查检测到），绑定同端口
+   * （reusePort）并向其发 SIGUSR2 交接，待其 drain 完退出。仅裸手动路径生效；
+   * systemd/pm2 下由 supervisor 编排交接、本 flag 被忽略（lifecycle.md「优雅重启」）。
+   * 接线（guard→写 pidfile→notifyReady→交接→退出清理）留给 Task 12。
+   */
+  restart: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -651,6 +658,11 @@ export const start = defineCommand({
       type: "string",
       description: "Proxy /ui to an external frontend dev/build server (for example http://localhost:5173)",
     },
+    restart: {
+      type: "boolean",
+      default: false,
+      description: "零停机接管：若已有实例在跑，绑定同端口并向其发 SIGUSR2 交接（仅裸手动路径；systemd/pm2 由 supervisor 编排）。",
+    },
   },
   run({ args }) {
     // Check for unknown arguments
@@ -694,6 +706,8 @@ export const start = defineCommand({
       // external-ui-url
       "external-ui-url",
       "externalUiUrl",
+      // restart
+      "restart",
     ])
     const unknownArgs = Object.keys(args).filter((key) => !knownArgs.has(key))
     if (unknownArgs.length > 0) {
@@ -715,6 +729,7 @@ export const start = defineCommand({
       proxy: args.proxy,
       httpProxyFromEnv: args["http-proxy-from-env"],
       externalUiUrl: args["external-ui-url"],
+      restart: args.restart,
     })
   },
 })
