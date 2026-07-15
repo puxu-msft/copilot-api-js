@@ -1054,4 +1054,132 @@ system_prompt_overrides:
     expect(state.systemPromptOverrides).toEqual([])
     expect(await readConfig()).not.toContain("system_prompt_overrides:")
   })
+
+  test("PUT /api/config/yaml deletes a legacy top-level key from disk after migrating it", async () => {
+    await writeConfig(`
+fetch_timeout: 45
+model_refresh_interval: 600
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model_refresh_interval: 601 }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("fetch_timeout")
+    expect(written).toContain("response_header: 45")
+    expect(written).toContain("model_refresh_interval: 601")
+  })
+
+  test("PUT /api/config/yaml prunes a legacy section that becomes empty after its only key is removed", async () => {
+    await writeConfig(`
+timeouts:
+  upstream_keepalive: 0
+  stream_idle: 300
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("upstream_keepalive")
+    expect(written).toContain("stream_idle: 300")
+  })
+
+  test("PUT /api/config/yaml deleting the last legacy key inside openai_responses removes the section but keeps siblings", async () => {
+    await writeConfig(`
+openai_responses:
+  client_ws_keep_open: true
+  max_ws_frame_bytes: 0
+  max_client_ws_connections: 128
+  max_upstream_ws_connections: 64
+  upstream_ws: false
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("client_ws_keep_open")
+    expect(written).not.toContain("max_ws_frame_bytes")
+    expect(written).not.toContain("max_client_ws_connections")
+    expect(written).not.toContain("max_upstream_ws_connections")
+    expect(written).toContain("openai_responses:")
+    expect(written).toContain("upstream_ws: false")
+  })
+
+  test("PUT /api/config/yaml writes upstream_transport and server sections when present in the body", async () => {
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        upstream_transport: { tcp_keepalive_probe_delay: 20, http2: { ping_interval: 25, session_connect_timeout: 8 } },
+        server: { responses_ws: { keep_open: true, max_frame_bytes: 65536, max_connections: 64 } },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      upstream_transport: { tcp_keepalive_probe_delay: 20, http2: { ping_interval: 25, session_connect_timeout: 8 } },
+      server: { responses_ws: { keep_open: true, max_frame_bytes: 65536, max_connections: 64 } },
+    })
+
+    const written = await readConfig()
+    expect(written).toContain("upstream_transport:")
+    expect(written).toContain("tcp_keepalive_probe_delay: 20")
+    expect(written).toContain("session_connect_timeout: 8")
+    expect(written).toContain("server:")
+    expect(written).toContain("keep_open: true")
+  })
+
+  test("PUT /api/config/yaml migrating a legacy key into upstream_transport does not clobber an already-written sibling", async () => {
+    await writeConfig(`
+upstream_transport:
+  http2:
+    session_connect_timeout: 8
+timeouts:
+  upstream_h2_ping: 40
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("upstream_h2_ping")
+    expect(written).toContain("ping_interval: 40")
+  })
+
+  test("PUT /api/config/yaml in-place value migration (thinking_block_sanitize) does not touch legacy-path deletion machinery", async () => {
+    await writeConfig(`
+anthropic:
+  thinking_block_sanitize: empty_thinking
+  tool_dedup_calls: result
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).toContain("thinking_block_sanitize: all_empty")
+    expect(written).toContain("tool_dedup_calls: result")
+  })
 })

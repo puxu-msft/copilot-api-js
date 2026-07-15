@@ -420,8 +420,15 @@ function deepCloneJsonSafe<T>(value: T): T {
   return structuredClone(value)
 }
 
-/** Deep-merge `patch` into `target` ONLY for keys not already present (user-set value wins) */
-function deepMergeMissingOnly(target: Record<string, unknown>, patch: Record<string, unknown>): void {
+/**
+ * Deep-merge `patch` into `target` ONLY for keys not already present (user-set
+ * value wins). Exported because it is ALSO used by `routes/config/route.ts` to
+ * missing-only-merge the disk-only migration patch (see
+ * `extractDiskOnlyMigrationPatch` below) into the PUT body's already-migrated
+ * value, without re-writing unrelated disk content (collections in
+ * particular — see that function's doc comment for why).
+ */
+export function deepMergeMissingOnly(target: Record<string, unknown>, patch: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(patch)) {
     const existing = target[key]
     if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -443,20 +450,19 @@ export interface ConfigMigrationApplyResult {
 }
 
 /**
- * Apply every CONFIG_MIGRATIONS rule to `raw`, returning the migrated
- * payload plus the list of legacy dot-paths that were actually present and
- * removed (declaration order; a path appears at most once). `renameLeaf`/
- * `renameSection`/`removeKey` migrations are reported; `migrateValue`
- * in-place value consolidations (`isInPlaceValueMigration: true`) are not
- * (see the field's doc comment on `ConfigMigration`).
- *
- * Consumed by BOTH validation paths: file load's `validateConfig` (only
- * uses `.value`, unchanged behavior) and HTTP PUT's `validateConfigInput`
- * (also threads `.legacyPathsRemoved` through `ConfigValidationResult` to
- * `routes/config/route.ts`, which deletes those paths from the on-disk
- * YAML document before writing the migrated value back).
+ * Shared migration-walk core for both `extractAndTranslateDeprecatedWithOps`
+ * (below) and `extractDiskOnlyMigrationPatch` (below). Walks CONFIG_MIGRATIONS
+ * top-down against a (mutated) working copy of `raw`, deleting/translating/
+ * warning as each rule's locator matches. When `patchAccumulator` is passed,
+ * every migration that actually translates a value ALSO missing-only-merges
+ * that SAME patch into it — giving callers a second, sparse view containing
+ * ONLY the new-path values migrations contributed (no passthrough of raw's
+ * untouched content), while `out`'s full-payload mutation still drives
+ * migration CHAINING (a `renameSection` can produce a flat key that a later
+ * `renameLeaf` rule then re-migrates within the same pass — see
+ * `config-compat.unit.test.ts`'s "openai-responses section..." test).
  */
-export function extractAndTranslateDeprecatedWithOps(raw: Record<string, unknown>): ConfigMigrationApplyResult {
+function applyMigrations(raw: Record<string, unknown>, patchAccumulator?: Record<string, unknown>): ConfigMigrationApplyResult {
   const out: Record<string, unknown> = deepCloneJsonSafe(raw)
   const legacyPathsRemoved: Array<string> = []
 
@@ -479,7 +485,59 @@ export function extractAndTranslateDeprecatedWithOps(raw: Record<string, unknown
     const patch = dep.translate(legacyValue)
     if (!patch) continue
     deepMergeMissingOnly(out, patch)
+    if (patchAccumulator) deepMergeMissingOnly(patchAccumulator, deepCloneJsonSafe(patch))
   }
 
   return { value: out, legacyPathsRemoved }
+}
+
+/**
+ * Apply every CONFIG_MIGRATIONS rule to `raw`, returning the migrated
+ * payload plus the list of legacy dot-paths that were actually present and
+ * removed (declaration order; a path appears at most once). `renameLeaf`/
+ * `renameSection`/`removeKey` migrations are reported; `migrateValue`
+ * in-place value consolidations (`isInPlaceValueMigration: true`) are not
+ * (see the field's doc comment on `ConfigMigration`).
+ *
+ * Consumed by BOTH validation paths: file load's `validateConfig` (only
+ * uses `.value`, unchanged behavior) and HTTP PUT's `validateConfigInput`
+ * (also threads `.legacyPathsRemoved` through `ConfigValidationResult` to
+ * `routes/config/route.ts`, which deletes those paths from the on-disk
+ * YAML document before writing the migrated value back).
+ */
+export function extractAndTranslateDeprecatedWithOps(raw: Record<string, unknown>): ConfigMigrationApplyResult {
+  return applyMigrations(raw)
+}
+
+/**
+ * PUT-only companion to `extractAndTranslateDeprecatedWithOps`: migrates the
+ * RAW ON-DISK config.yaml content (not the PUT body) and returns ONLY the
+ * sparse patch of new-path values migrations contributed, plus the legacy
+ * paths that fired.
+ *
+ * Why this exists (plan-3 correction, see plan-3-put-migration.md "偏离与根
+ * 因" note): the PUT handler only migrates the REQUEST BODY via
+ * `validateConfigInput`. A legacy key can sit on disk WITHOUT ever being
+ * echoed back in a PUT body — e.g. a PUT with an empty `{}` body (or one that
+ * edits an unrelated field) must still migrate a disk-resident legacy key,
+ * or the "PUT never fully finishes migrating" bug this whole phase exists to
+ * fix would persist. But recomputing the FULL migrated disk payload
+ * (`extractAndTranslateDeprecatedWithOps(diskRaw).value`) and merging THAT
+ * wholesale into the PUT body's value is unsafe: any disk-resident
+ * collection field with no migration target at all (e.g. `model_overrides`,
+ * `system_prompt_overrides`) would ALSO get merged back into the value
+ * handed to `mergeConfigIntoDocument`, which writes collections via
+ * `replaceCollection` (`deleteIn` + `setIn`) — silently repositioning that
+ * collection to the end of its parent map and destroying its original
+ * placement/comments, even though nothing about it changed. This function
+ * uses `applyMigrations`'s `patchAccumulator` so the returned `patch` is
+ * populated EXCLUSIVELY by fields migrations actually wrote (a strict
+ * subset of legacy-adjacent new paths), never by unrelated raw content —
+ * callers missing-only-merge `patch` into the PUT body's already-migrated
+ * value before writing, so unrelated collections are never touched.
+ */
+export function extractDiskOnlyMigrationPatch(diskRaw: Record<string, unknown>): { patch: Record<string, unknown>; legacyPathsRemoved: ReadonlyArray<string> } {
+  const patchAccumulator: Record<string, unknown> = {}
+  const { legacyPathsRemoved } = applyMigrations(diskRaw, patchAccumulator)
+  return { patch: patchAccumulator, legacyPathsRemoved }
 }
