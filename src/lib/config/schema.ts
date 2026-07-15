@@ -1036,6 +1036,13 @@ export const ConfigSchema = z
       .nullable()
       .optional(),
     unknown_endpoint_logging: nullableSection(UnknownEndpointLoggingSchema),
+    /**
+     * 优雅重启（零停机换代）裸手动路径的 pidfile 路径覆盖。缺省用 `PATHS.PIDFILE`
+     * （`~/.local/share/copilot-api/copilot-api.pid`）。仅裸手动路径读取（supervisor
+     * 环境跳过整个 pidfile 机制），且只在 boot 时读一次（不参与热重载——见
+     * config-hot-reload.it.test.ts EXEMPT，与 `ghc_api_base_url` 同理）。
+     */
+    pidfile: nullableString(),
   })
   .strict()
 

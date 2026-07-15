@@ -939,6 +939,10 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
     reason: "Read once in start.ts; switching upstream mid-flight would mis-route active requests, so changes require restart",
   },
   {
+    configKey: "pidfile",
+    reason: "Graceful-restart bare-metal pidfile path override; read once at boot (Task 12 wiring), not part of hot reload",
+  },
+  {
     configKey: "rate_limiter.retry_interval",
     reason: "AdaptiveRateLimiter is a stateful singleton constructed once in start.ts; not re-init on hot reload",
   },

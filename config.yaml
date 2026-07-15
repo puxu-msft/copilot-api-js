@@ -29,6 +29,20 @@
 # ghc_api_base_url: "https://api.githubcopilot.com"
 
 # ============================================================================
+# Graceful restart pidfile / 优雅重启 pidfile
+# ============================================================================
+# Override the pidfile path used by the bare-metal graceful-restart handover
+# protocol (pid + bootTime + port liveness check). Only read by the bare-metal
+# path (no supervisor detected); systemd/pm2 skip pidfile entirely. Defaults to
+# ~/.local/share/copilot-api/copilot-api.pid when unset.
+# 覆盖裸手动优雅重启接管协议所用的 pidfile 路径（pid + bootTime + port 活性检查）。
+# 仅裸手动路径读取（无 supervisor 时）；systemd/pm2 完全跳过 pidfile 机制。
+# 缺省为 ~/.local/share/copilot-api/copilot-api.pid。
+# NOT hot-reloadable (requires restart). / 不支持热重载（需重启）。
+
+# pidfile: "/run/copilot-api/copilot-api.pid"
+
+# ============================================================================
 # Model / 模型
 # ============================================================================
 # Model name overrides: request model → target model.
