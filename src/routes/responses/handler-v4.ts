@@ -108,7 +108,6 @@ import {
   resolveBufferedCaps,
   state,
 } from "~/lib/state"
-import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 import {
   //
@@ -132,14 +131,15 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   const clientRaw = (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
   const azureModelOverride = c.get("azureModelOverride") as string | undefined
 
-  // Apply the async, non-idempotent system-prompt injection (instructions) BEFORE
-  // the sync codec.parse, passing the client raw separately for the history
-  // snapshot. Resolve the model HERE (before processResponsesInstructions' config
-  // reload) and pass it as `preResolved` — matching the legacy handler's order.
+  // Resolve the model HERE (transport idle-timeout, codec setup, reverse mapper holder). The async
+  // system-prompt injection (`processResponsesInstructions`) has moved OFF the route into the codec's
+  // S1b `translateInbound` (RFC 2026-07-14 §4) so `client.inbound` sees the client-native body. Unlike
+  // openai-cc, the Responses parse reads no config-managed state, and the legacy flow only reloaded
+  // config when `instructions` were present (processResponsesInstructions early-returns otherwise), so
+  // no route-level `applyConfigToState` is added here — translateInbound's own reload (when it runs)
+  // preserves the exact legacy behavior.
   const { name: resolvedName, routeOverride } = resolveModelTarget(azureModelOverride ?? clientRaw.model)
   const selectedModel = state.modelIndex.get(resolvedName)
-  const wireInstructions = await processResponsesInstructions(clientRaw.instructions, resolvedName, "openai-responses")
-  const wireBody: ResponsesPayload = { ...clientRaw, instructions: wireInstructions }
 
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
@@ -169,8 +169,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   let result: DriverRequestResult
   try {
     result = await driver.runRequest({
-      body: wireBody,
-      originalBodyForHistory: clientRaw,
+      body: clientRaw,
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,

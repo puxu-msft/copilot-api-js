@@ -115,6 +115,7 @@ import {
   createCCToResponsesStreamTranslator,
   translateCCToResponsesResponse,
 } from "~/lib/openai/translate"
+import { processResponsesInstructions } from "~/lib/system-prompt"
 import {
   //
   createReverseStreamTranslator,
@@ -248,6 +249,15 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
 
     getContext() {
       return requestContext
+    },
+
+    // S1b (RFC 2026-07-14 §4): async system-prompt injection (Responses `instructions`), moved off
+    // the route handler so `client.inbound` (Phase 4) sees the client-NATIVE body (pre-injection).
+    // `env.body.model` is the resolved name (parse set it). One-shot, outside the retry loop.
+    async translateInbound(env) {
+      const body = env.body as ResponsesPayload
+      const instructions = await processResponsesInstructions(body.instructions, body.model, "openai-responses")
+      return env.with({ body: { ...body, instructions } })
     },
 
     getFallbackResponseId() {
