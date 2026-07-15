@@ -26,12 +26,14 @@ import type {
 import type { ServerInstance } from "./serve"
 
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
+import { flushAndFreezePersistence as freezeNegotiation } from "./anthropic/feature-negotiation"
 import { getRequestContextManager } from "./context/manager"
 import {
   //
   shutdownHistory,
   stopHistoryBackgroundWork,
 } from "./history"
+import { flushAndFreezePersistence as freezeCalibration } from "./models/calibration/engine"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
 import { shutdownRequestTelemetry, stopTelemetryBackgroundWork } from "./request-telemetry"
 import { notifyStopping } from "./restart/notify"
@@ -391,6 +393,12 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
 
   // 通知 supervisor 正在收尾（systemd STOPPING=1；非 systemd no-op）
   notifyStopping()
+
+  // states.json flush-then-freeze —— 仅 handoff（有后继者接管学习）才做；普通关机无后继者、无需 freeze
+  // （且普通关机 freeze 会污染测试里 28+ 处 gracefulShutdown("SIGINT"/"SIGTERM")——R2 BLOCKER-NEW-1）。
+  if (signal === "SIGUSR2") {
+    await Promise.allSettled([freezeNegotiation(), freezeCalibration()])
+  }
 
   // NOTE: Browser-observer WebSocket clients (history/status dashboards) are
   // NOT closed here. They subscribe to `notifyShutdownPhaseChanged` events;
