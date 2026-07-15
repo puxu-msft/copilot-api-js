@@ -1,6 +1,7 @@
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
+  ClientFrame,
   PreparedRequest,
   UpstreamFrame,
   UpstreamStream,
@@ -33,7 +34,15 @@ export interface UpstreamHook {
      * (immutable-return + defense-in-depth: §3.5). Return a new env to rewrite the request.
      */
     inbound?: (env: RequestEnvelope) => RequestEnvelope | undefined
-    // outbound?: ...                                                    // RFC Phase 6 (gated on sink-egress unification)
+    /**
+     * Per rendered client frame (client-protocol format), at S6 render→yield, before the sink write.
+     * Return a new frame to rewrite it, or `undefined` to drop it. COVERAGE (RFC §5 / spec §9): sees
+     * the frames produced by `codec.renderResponse` — NOT sink-layer synthetic/heartbeat/anchor frames
+     * (which don't flow through the render yield point; a full sink-egress unification to cover those
+     * is a deferred-backlog enhancement). A rewrite inherits the same forwarded-track provenance-mark
+     * coverage gap as `upstream.inbound` (§9).
+     */
+    outbound?: (frame: ClientFrame, env: RequestEnvelope) => ClientFrame | undefined
   }
   /** upstream/target format. */
   upstream?: {

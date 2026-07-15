@@ -1059,6 +1059,10 @@ function runResponseWhole(deps: DriverDeps, response: unknown, env: RequestEnvel
 function* renderFrames(deps: DriverDeps, frame: UpstreamFrame, env: RequestEnvelope): Generator<ClientFrame> {
   const rendered = deps.codec.renderResponse(frame, env)
   const frames = Array.isArray(rendered) ? rendered : [rendered]
+  // Hook point: client.outbound (RFC §5) — per rendered client frame, before the sink write. Covers
+  // the render-produced frames; sink-layer synthetic/heartbeat frames don't flow through here (the
+  // documented §9 coverage gap — a full sink-egress unification is a deferred-backlog enhancement).
+  const clientOutbound = getUpstreamHook()?.client?.outbound
   for (const out of frames) {
     // Forwarded-frame (`inboundResponse`) sampling stays handler-side (P3.2b /
     // Option B): the TRUE client bytes are produced where the handler transforms
@@ -1068,6 +1072,12 @@ function* renderFrames(deps: DriverDeps, frame: UpstreamFrame, env: RequestEnvel
     // heartbeat (P1.5-OQ1) — do not flow through this yield point and cannot be
     // expressed as per-frame rewrites, so the driver cannot own forwarded sampling
     // without reintroducing the byte-critical risk those decisions deferred.
+    if (clientOutbound) {
+      const hooked = clientOutbound(out, env)
+      if (hooked === undefined) continue // hook dropped this client frame
+      yield hooked
+      continue
+    }
     yield out
   }
 }

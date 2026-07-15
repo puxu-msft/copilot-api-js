@@ -700,3 +700,11 @@
 - **当前行为**：现实路径（用户在同一个 `config.yaml` 里同时写 `proxy` 和 `upstream_transport.http2.session_connect_timeout`，或经 PUT `/api/config` 一次性提交两者）完全被覆盖，因为两个字段确实在同一次 `safeParse()` 内。只有把 `proxy` 放进一层、把 `session_connect_timeout: 0` 放进另一层（bundled vs user 分裂）才会漏检——且 bundled `config.yaml` 从不出货显式 `0`（默认是正数 10）、`proxy` 又几乎总是用户覆盖层独有，这个组合在实践中概率极低。
 - **理想架构 / 若做需改什么**：在 `mergeBySchema()` 产出 effective config 之后，对合并结果**再跑一次** `ConfigSchema` 级别的跨字段校验（或至少重跑本条 superRefine），需要新增一个「合并后二次校验」的调用点，并想清楚二次校验失败时的降级策略（此时已经没有「stripped 用默认值重来」的简单退路，因为两层都已经算"验证通过"）。
 - **为何暂缓**：本条是 B8 实现过程中顺带发现的架构缝隙，不是 B8 本身要求的验收范围（B8 只要求"配 SOCKS 时 validation 拒绝 0"，同层内已完整满足）；触发条件是「bundled 与用户配置分裂持有这两个字段」这一现实中基本不出现的组合，为此新增合并后二次校验层是过度工程。**触发条件（满足才值得做）**：项目引入多层配置来源（例如按环境分层的多个 YAML 文件，而不仅是 bundled+单一用户覆盖）、或 schema 上出现更多类似的高价值跨字段约束，值得一次性建「合并后校验」机制而非逐条特殊处理。发现方：本 planner 在 B8（transport-config-reorg plan 修正）落 SOCKS 校验时的架构核实。
+
+## client.outbound 全量 sink-egress 统一化（2026-07-14，RFC symmetric-4-point Phase 6 部分实现）
+
+- **现状**：`client.outbound` hook 已接线在 driver `renderFrames`（S6 render→yield，`driver.ts`），覆盖 `codec.renderResponse` 产出的**渲染帧**——per-frame 改写/丢弃可用（RFC §5，`hooks/types.ts` 有 cardinality + 覆盖注释）。
+- **根因 / 当前行为**：`renderFrames` 的 yield 点**看不到 sink 层注入的合成/心跳/anchor 帧**（`client-sink.ts` 的 `writeSynthetic`/`writeAnchor`/heartbeat ping 不经此点），也看不到 Gemini 整流翻译器 / Anthropic timer heartbeat（`renderFrames` 注释是 load-bearing 约束——这些是 byte-critical 风险被历史决策推迟的）。故 client.outbound 有一个**已知、接受**的覆盖缺口：只覆盖渲染帧，不覆盖 sink 合成/心跳帧（继承 `hook-rewrite` 的 §9 forwarded-标记覆盖缺口）。
+- **理想架构**：把所有 client 帧（渲染帧 + sink 合成/心跳/anchor 帧）汇聚到单一可挂载的 **sink write 串行层**，让 client.outbound 见全量 client 字节 + 统一 forwarded-轨 provenance 标记。这是 byte-critical 重构（`renderFrames` 注释明言推迟过）。
+- **为何暂缓**：需求方拍板「client.outbound 语义/接线首版到位、full sink-egress 统一化晚做」；reviewer MEDIUM-2 标为 byte-critical 风险、须独立谨慎推进。
+- **若做需改什么**：统一 sink egress choke point（`client-sink.ts` makeSseSink/makeArraySink 的 write 串行层）+ 把 renderFrames 的 client.outbound 挂载迁到该层 + synthetic/heartbeat 帧的 provenance 标记 + 四格式 render 腿（Gemini 整流/Anthropic heartbeat）的交互复验 + golden 字节等价预捕。
