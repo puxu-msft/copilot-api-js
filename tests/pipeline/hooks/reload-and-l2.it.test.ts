@@ -99,14 +99,10 @@ async function hooksState(): Promise<HooksStateBody> {
 }
 
 /** A hook whose `exchange` never calls `next()` — it short-circuits with a marker frame, so a
- *  real driver run's rendered output betrays WHICH version (v1/v2) is currently effective. No
- *  external imports (the data-URL import mechanism resolves relative to no directory, so a
- *  self-contained fixture avoids any `~/` alias-resolution uncertainty). Deliberately a PLAIN
- *  string payload (not a nested object-literal expression / `JSON.stringify` call) — empirically,
- *  Bun.Transpiler's data-URL reload path mis-parses a `yield { ...: <object-literal-valued
- *  expression> }` body (drops disambiguating parens, corrupting ESM export detection to
- *  `{__esModule, default}` instead of the named export) — unrelated to this feature, a Bun
- *  transpiler quirk with nested object literals inside a yielded object literal. */
+ *  real driver run's rendered output betrays WHICH version (v1/v2) is currently effective. Kept a
+ *  self-contained fixture (no imports) for simplicity, though the loader now compiles to a
+ *  project-internal file (RFC 2026-07-14 Phase 5) that resolves `~/` aliases + has no data-URL
+ *  brace quirks, so imports/nested object literals would be fine too. */
 function markerHookSource(marker: string): string {
   return `
 export const hooks = {
