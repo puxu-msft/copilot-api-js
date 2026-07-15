@@ -17,7 +17,7 @@ import {
   type BufferedRetryCaps,
   type CompiledRewriteRule,
   type CompiledSystemPromptEntry,
-  DEFAULT_MODEL_OVERRIDES,
+  DEFAULT_MODEL_MAPPINGS,
   resolveBufferedCaps,
   setAnthropicBehavior,
   setBufferedRetryOverride,
@@ -26,7 +26,8 @@ import {
   setDisabledModels,
   setHistoryConfig,
   setHooksConfig,
-  setModelOverrides,
+  setModelMappings,
+  setModelTranslation,
   setNegotiationConfig,
   setResponsesConfig,
   setShutdownConfig,
@@ -34,6 +35,7 @@ import {
   setTelemetryConfig,
   setTimeoutConfig,
   setTimeoutOverridesConfig,
+  setUnknownEndpointLogging,
   state,
 } from "~/lib/state"
 
@@ -421,7 +423,7 @@ export class ConfigParseError extends Error {
  *     declared sub-field gets its own merge strategy based on its schema.
  *   - **ZodRecord (custom keys)** — two sub-variants distinguished by a
  *     `mergeStrategy` meta tag on the schema:
- *       · `"per-key"` (e.g. `model_overrides`): shallow merge at the key
+ *       · `"per-key"` (e.g. `model_mappings`): shallow merge at the key
  *         level — user keys add/replace, bundled keys without a user
  *         counterpart remain. Values are atomic (replaced wholesale).
  *       · `"replace"` (default — e.g. `anthropic.effort_overrides`,
@@ -508,7 +510,7 @@ function mergeBySchema(schema: z.ZodType, bundled: unknown, user: unknown): unkn
   }
 
   // ZodRecord — custom keys. Default: user table replaces bundled wholesale.
-  // Opt-in `mergeStrategy: "per-key"` for additive maps like `model_overrides`.
+  // Opt-in `mergeStrategy: "per-key"` for additive maps like `model_mappings`.
   if (inner instanceof z.ZodRecord) {
     if (!isRecord(bundled) || !isRecord(user)) return user
     const strategy = readMergeStrategy(schema) ?? readMergeStrategy(inner) ?? "replace"
@@ -787,11 +789,18 @@ export async function applyConfigToState(): Promise<Config> {
     setAnthropicBehavior({ systemPromptAppend: compileSystemPromptEntries(config.system_prompt_append) })
   }
 
-  // Model overrides: retain-on-absence. An explicit `model_overrides: {}` (or
-  // any present map) replaces the live override map merged on top of defaults;
+  // Model mapping: retain-on-absence. An explicit `model_mappings: {}` (or
+  // any present map) replaces the live mapping merged on top of defaults;
   // omitting the key keeps the prior runtime value.
-  if (config.model_overrides !== undefined) {
-    setModelOverrides(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_OVERRIDES, ...config.model_overrides }, "model_overrides"))
+  if (config.model_mappings !== undefined) {
+    setModelMappings(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_MAPPINGS, ...config.model_mappings }, "model_mappings"))
+  }
+
+  // model_translation: retain-on-absence (mirrors model_mappings). An explicit
+  // `model_translation: {}` clears to defaults (empty — every pair falls back to
+  // scenario A); missing key keeps the prior runtime value.
+  if (config.model_translation !== undefined) {
+    setModelTranslation(config.model_translation)
   }
 
   // Disabled models: retain-on-absence. An explicit empty list clears; missing
@@ -929,6 +938,15 @@ export async function applyConfigToState(): Promise<Config> {
       for (const [cat, days] of Object.entries(nl.ttl_days)) overrides[cat] = toMs(days)
       setNegotiationConfig({ negotiationTtlOverridesMs: overrides })
     }
+  }
+
+  // unknown HTTP endpoint 日志级别（scalar: override only when present; retain-on-absence）。
+  if (config.unknown_endpoint_logging) {
+    const u = config.unknown_endpoint_logging
+    setUnknownEndpointLogging({
+      notFound: u.not_found ?? state.unknownEndpointLogging.notFound,
+      methodNotAllowed: u.method_not_allowed ?? state.unknownEndpointLogging.methodNotAllowed,
+    })
   }
 
   // Responses API settings (scalar: override only when present)

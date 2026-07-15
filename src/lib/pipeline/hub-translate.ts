@@ -71,9 +71,10 @@ import {
   createStreamTranslator,
   translateAnthropicResponseToCC,
   translateAnthropicToChatCompletions,
+  translateAnthropicToResponses,
   translateCCResponseToAnthropic,
   translateChatCompletionsToAnthropic,
-  translateResponsesResponseToCC,
+  translateResponsesResponseToAnthropic,
   translateResponsesToChatCompletions,
   type TranslateExchangeContext,
 } from "~/lib/openai/translate"
@@ -113,12 +114,17 @@ const anthropicToChatCompletionsBridge: RequestBridge = (body, ctx) =>
   translateAnthropicToChatCompletions(body as MessagesPayload, { model: ctx?.model, reqId: ctx?.reqId })
 
 /**
- * `anthropic → /responses | ws:/responses`: Anthropic Messages → CC-canonical (the CC→Responses WIRE
- * step stays in the codec's `prepareWire` — this hub stage stops at CC, same as the `/chat/completions`
- * entry above, but is a SEPARATE function so Phase 3 can swap only this one for the direct bridge).
+ * `anthropic → /responses | ws:/responses`: Anthropic Messages → Responses-canonical DIRECT bridge
+ * (RFC 2026-07-14-anthropic-responses-direct-bridge §3/§4.1) — skips the CC intermediate representation
+ * entirely (no multi-choices fold, no CC tool_call-index bookkeeping — Responses' `input[]` granularity
+ * needs neither). `env.body` becomes Responses-shaped HERE (at translateOut), unlike the sibling
+ * `/chat/completions` bridge above which stops at CC — the responses leg's `prepareWire` /
+ * `cc-family-strategies.ts` retry-baseline read `env.clientFormat==="anthropic"` to take the matching
+ * Responses-shaped path (R-NO-INTERNAL-ADAPT: this is a genuine behavior change, not an internal-shape
+ * refactor — the three call sites were updated together, RFC §2.3 three-point corner).
  */
 const anthropicToResponsesBridge: RequestBridge = (body, ctx) =>
-  translateAnthropicToChatCompletions(body as MessagesPayload, { model: ctx?.model, reqId: ctx?.reqId })
+  translateAnthropicToResponses(body as MessagesPayload, { model: ctx?.model, reqId: ctx?.reqId })
 
 /** `openai-cc | gemini → /v1/messages`: CC-canonical → Anthropic Messages (shared — no gemini-held Anthropic sub-codec). */
 const ccToAnthropicRequestBridge: RequestBridge = (body) => translateChatCompletionsToAnthropic(body as ChatCompletionsPayload)
@@ -206,10 +212,16 @@ const ccUpstreamToAnthropicResponseBridge: ResponseBridge = (upstream) => {
   return { rendered: response, contentFiltered }
 }
 
-/** FORWARD `/responses` | `ws:/responses` leg (anthropic client): two-hop (WARN-F) Responses → CC → Anthropic. */
+/**
+ * FORWARD `/responses` | `ws:/responses` leg (anthropic client): DIRECT bridge (RFC
+ * 2026-07-14-anthropic-responses-direct-bridge §3/§4.1) — a single-hop Responses → Anthropic walk,
+ * skipping the CC intermediate (was a two-hop Responses → CC → Anthropic, WARN-F). Reached ONLY by the
+ * anthropic codec's `renderResponseNonStreaming` for its FORWARD `@responses` leg — the openai-cc/gemini
+ * via-responses cells call `translateResponsesResponseToCC` directly (never this bridge-table entry), so
+ * swapping this one cell does not affect them.
+ */
 const responsesUpstreamToAnthropicResponseBridge: ResponseBridge = (upstream) => {
-  const cc = translateResponsesResponseToCC(upstream as ResponsesResponse)
-  const { response, contentFiltered } = translateCCResponseToAnthropic(cc)
+  const { response, contentFiltered } = translateResponsesResponseToAnthropic(upstream as ResponsesResponse)
   return { rendered: response, contentFiltered }
 }
 

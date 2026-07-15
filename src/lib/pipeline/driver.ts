@@ -274,7 +274,15 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
   // env), not `rewritten` (pre-exchange). Consumers — e.g. the Anthropic pump
   // building the tool-call recoverer from env.body.tools, which deferred-tool-retry
   // mutates — must see what was actually sent on the successful attempt.
-  const { upstream, env: settled } = await runExchange(deps, afterHook, strategies)
+  //
+  // C4a: the exchange (transport fetch + stream first-event + the RC3 retry/backoff loop) is
+  // settle-BEFORE operation-body work — the exact orphan the user observed (a reaper/deadline
+  // settled the request at 1200s while a 631s backoff kept running). Track its promise so the
+  // shutdown drain (operationScopes) waits for it to actually unwind after a mid-flight settle.
+  // Optional-chained for mock/legacy ctxs (same pattern as `setRouteInfo?.`).
+  const exchangePromise = runExchange(deps, afterHook, strategies)
+  parsed.ctx.trackOperationBody?.(exchangePromise)
+  const { upstream, env: settled } = await exchangePromise
   return { ok: true, upstream, env: settled }
 }
 

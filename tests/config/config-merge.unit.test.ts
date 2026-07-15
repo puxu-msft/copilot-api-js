@@ -3,7 +3,7 @@
  * overrides. The merge rules:
  *   - Top-level nested sections (anthropic, history, …): field-by-field
  *     merge (user keys win).
- *   - Free-form maps (model_overrides, anthropic.effort_overrides, …):
+ *   - Free-form maps (model_mappings, anthropic.effort_overrides, …):
  *     per-key shallow merge.
  *   - model_preference: per-family replacement.
  *   - Top-level arrays / scalars: replace-on-presence.
@@ -99,13 +99,13 @@ describe("loadConfig() — bundled + user merge", () => {
     expect(cfg.anthropic?.tool_strip_read_result_tags).toBe(true) // overridden
   })
 
-  test("model_overrides merges per-key (user wins, bundled-only keys survive)", async () => {
+  test("model_mappings merges per-key (user wins, bundled-only keys survive)", async () => {
     setBundledConfigForTests({
-      model_overrides: { opus: "claude-opus-bundled", sonnet: "claude-sonnet-bundled", haiku: "claude-haiku-bundled" },
+      model_mappings: { opus: "claude-opus-bundled", sonnet: "claude-sonnet-bundled", haiku: "claude-haiku-bundled" },
     })
-    await writeUserConfig("model_overrides:\n  opus: claude-opus-user\n")
+    await writeUserConfig("model_mappings:\n  opus: claude-opus-user\n")
     const cfg = await loadConfig()
-    expect(cfg.model_overrides).toEqual({
+    expect(cfg.model_mappings).toEqual({
       opus: "claude-opus-user",
       sonnet: "claude-sonnet-bundled",
       haiku: "claude-haiku-bundled",

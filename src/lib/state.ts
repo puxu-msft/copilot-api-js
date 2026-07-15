@@ -1,6 +1,7 @@
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
 import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
+import type { ModelTranslation } from "~/lib/config/schema"
 import type {
   //
   Model,
@@ -113,7 +114,18 @@ export interface BufferedRetryCaps {
   heartbeatSec: number
 }
 
+/** unknown HTTP endpoint 日志级别（silent = 不打）。值须与 config/schema.ts 的 LOG_LEVELS 一致。 */
+export type LogLevel = "silent" | "debug" | "info" | "warn" | "error"
+
+/** unknown HTTP endpoint 按状态码分类的日志级别（404 = notFound / 405 = methodNotAllowed）。 */
+export interface UnknownEndpointLogging {
+  notFound: LogLevel
+  methodNotAllowed: LogLevel
+}
+
 export interface State {
+  /** unknown HTTP endpoint（未匹配任何业务路由）按状态码分类的日志级别。默认 warn/warn。 */
+  readonly unknownEndpointLogging: UnknownEndpointLogging
   readonly githubToken?: string
   readonly copilotToken?: string
 
@@ -483,13 +495,26 @@ export interface State {
   readonly thinkingSignatureCompat: false | "signature_delta" | "redacted_thinking"
 
   /**
-   * Model name overrides: request model → target model.
+   * Model name mappings: request model → target model.
    *
    * Override values can be full model names or short aliases (opus, sonnet, haiku).
    * If the target is not in available models, it's resolved as an alias.
-   * Defaults to DEFAULT_MODEL_OVERRIDES; config.yaml `model.model_overrides` replaces entirely.
+   * Defaults to DEFAULT_MODEL_MAPPINGS; config.yaml top-level `model_mappings` replaces entirely.
    */
-  readonly modelOverrides: Record<string, string>
+  readonly modelMappings: Record<string, string>
+
+  /**
+   * Per-pair (ingress format → match rule list) translation feature declarations
+   * (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1, Phase 7). Consumed via
+   * `resolveTranslationFeatures()` (~/lib/config/model-translation) by the
+   * format-agnostic bridge-selection layer — NOT read per-cell `translateOut`, to
+   * keep the two round-trip scenarios (stable model vs mid-conversation model
+   * switch) from drifting out of sync across call sites (Phase 5 consumer).
+   * Defaults to `{}` (no declared pairs — every pair resolves to scenario A, full
+   * round-trip, no stripped features). Hot-reloadable: entirely replaced on config
+   * reload (including to `{}` on deletion), mirroring `modelMappings`.
+   */
+  readonly modelTranslation: ModelTranslation
 
   /**
    * Model IDs to hide from the available models list, even when Copilot
@@ -1007,6 +1032,15 @@ function cloneBufferedRetryOverrides(source: Record<string, Partial<BufferedRetr
   return out
 }
 
+/** Deep-clone `modelTranslation` (ingress → rule list, each rule its own object with its own `features` array). */
+function cloneModelTranslation(source: ModelTranslation): ModelTranslation {
+  const out: ModelTranslation = {}
+  for (const [ingress, rules] of Object.entries(source) as Array<[keyof ModelTranslation, NonNullable<ModelTranslation[keyof ModelTranslation]>]>) {
+    out[ingress] = rules.map((rule) => ({ ...rule, features: rule.features ? [...rule.features] : undefined }))
+  }
+  return out
+}
+
 function cloneState(source: MutableState): MutableState {
   return {
     ...source,
@@ -1014,7 +1048,8 @@ function cloneState(source: MutableState): MutableState {
     copilotTokenInfo: source.copilotTokenInfo ? { ...source.copilotTokenInfo } : undefined,
     modelIds: new Set(source.modelIds),
     modelIndex: new Map(source.modelIndex),
-    modelOverrides: { ...source.modelOverrides },
+    modelMappings: { ...source.modelMappings },
+    modelTranslation: cloneModelTranslation(source.modelTranslation),
     toolSearchOverrides: { ...source.toolSearchOverrides },
     errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
     effortsOverrides: { ...source.effortsOverrides },
@@ -1059,8 +1094,11 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("modelIndex" in patch) {
     cloned.modelIndex = patch.modelIndex ? new Map(patch.modelIndex) : undefined
   }
-  if ("modelOverrides" in patch) {
-    cloned.modelOverrides = patch.modelOverrides ? { ...patch.modelOverrides } : undefined
+  if ("modelMappings" in patch) {
+    cloned.modelMappings = patch.modelMappings ? { ...patch.modelMappings } : undefined
+  }
+  if ("modelTranslation" in patch) {
+    cloned.modelTranslation = patch.modelTranslation ? cloneModelTranslation(patch.modelTranslation) : undefined
   }
   if ("toolSearchOverrides" in patch) {
     cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
@@ -1237,6 +1275,10 @@ export function setDisabledModels(disabledModels: ReadonlyArray<string>): void {
   rebuildModelIndex()
 }
 
+export function setUnknownEndpointLogging(value: UnknownEndpointLogging): void {
+  mutableState.unknownEndpointLogging = value
+}
+
 export function setAnthropicBehavior(
   patch: Partial<
     Pick<
@@ -1319,8 +1361,12 @@ export function setAnthropicBehavior(
   updateState(patch)
 }
 
-export function setModelOverrides(modelOverrides: Record<string, string>): void {
-  updateState({ modelOverrides })
+export function setModelMappings(modelMappings: Record<string, string>): void {
+  updateState({ modelMappings })
+}
+
+export function setModelTranslation(modelTranslation: ModelTranslation): void {
+  updateState({ modelTranslation })
 }
 
 /**
@@ -1586,20 +1632,24 @@ export function rebuildModelIndex(): void {
   })
 }
 /**
- * Built-in model overrides. Intentionally EMPTY: model name mapping (short
+ * Built-in model mapping. Intentionally EMPTY: model name mapping (short
  * aliases like opus/sonnet/haiku, redirects) is owned exclusively by the
  * bundled `config.yaml`, the single source of truth. If config.yaml can't be
- * read, overrides stay empty and unknown aliases simply fail to resolve
+ * read, the mapping stays empty and unknown aliases simply fail to resolve
  * (the upstream rejects them) rather than falling back to hardcoded names.
  */
-export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
+export const DEFAULT_MODEL_MAPPINGS: Record<string, string> = {}
+
+/** Built-in `model_translation` mapping. Intentionally EMPTY — see {@link DEFAULT_MODEL_MAPPINGS} rationale. */
+export const DEFAULT_MODEL_TRANSLATION: ModelTranslation = {}
 
 /**
  * Default values for config-managed scalar/runtime fields.
  * Single source of truth for mutableState initialization and resetConfigManagedState().
- * Model overrides continue to use DEFAULT_MODEL_OVERRIDES.
+ * Model mapping continues to use DEFAULT_MODEL_MAPPINGS.
  */
 export const CONFIG_MANAGED_DEFAULTS = {
+  unknownEndpointLogging: { notFound: "warn", methodNotAllowed: "warn" } as UnknownEndpointLogging,
   useUpstreamCountTokens: true,
   strictResponseHeaders: false,
   strictRequestHeaders: false,
@@ -1737,7 +1787,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   effortsOverrides: {} as Record<string, Array<string>>,
   // Empty by design — the bundled `gpt-5.5: 600` product default lives in
   // config.yaml (`timeouts.stream_idle_overrides`), NOT here, mirroring
-  // `model_overrides` (H1: BUILTIN code-constant + union would be wrong; this is
+  // `model_mappings` (H1: BUILTIN code-constant + union would be wrong; this is
   // per-key merge with the shippable config, degrading to scalar if config.yaml
   // is absent). See docs/spec/2026-07-12-per-model-idle-timeout.md §4.2.
   streamIdleTimeoutOverrides: {} as Record<string, number>,
@@ -1759,6 +1809,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
 }
 
 export function resetConfigManagedState(): void {
+  setUnknownEndpointLogging({ ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging })
   setAnthropicBehavior({
     useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
@@ -1833,7 +1884,8 @@ export function resetConfigManagedState(): void {
     backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
     fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
   })
-  setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
+  setModelMappings({ ...DEFAULT_MODEL_MAPPINGS })
+  setModelTranslation(cloneModelTranslation(DEFAULT_MODEL_TRANSLATION))
   setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
   setTimeoutConfig({
     responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
@@ -1905,6 +1957,7 @@ export function resetConfigManagedState(): void {
 }
 
 const mutableState: MutableState = {
+  unknownEndpointLogging: { ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging },
   accountType: "individual",
   ghcApiBaseUrl: "",
   maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
@@ -1990,7 +2043,8 @@ const mutableState: MutableState = {
   telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
   modelIds: new Set(),
   modelIndex: new Map(),
-  modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },
+  modelMappings: { ...DEFAULT_MODEL_MAPPINGS },
+  modelTranslation: cloneModelTranslation(DEFAULT_MODEL_TRANSLATION),
   rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
   shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,

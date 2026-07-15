@@ -54,7 +54,7 @@ import {
 import { getHistory } from "~/lib/history"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -521,7 +521,7 @@ const app = createFullTestApp()
 
 function injectModels(): void {
   setModels({ object: "list", data: [mockModel("claude-sonnet-4.6", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
-  setModelOverrides({})
+  setModelMappings({})
 }
 
 async function postStream(extra?: Record<string, unknown>): Promise<string> {

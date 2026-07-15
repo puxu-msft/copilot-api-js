@@ -21,7 +21,7 @@ import { PATHS } from "~/lib/config/paths"
 import { initHistory } from "~/lib/history"
 import {
   //
-  DEFAULT_MODEL_OVERRIDES,
+  DEFAULT_MODEL_MAPPINGS,
   restoreStateForTests,
   setStateForTests,
   snapshotStateForTests,
@@ -101,7 +101,7 @@ anthropic:
   test("GET /api/config/yaml returns all known config fields", async () => {
     await writeConfig(`
 proxy: "http://127.0.0.1:7890"
-model_overrides:
+model_mappings:
   sonnet: claude-sonnet-4.7
 timeouts:
   stream_idle: 301
@@ -155,7 +155,7 @@ system_prompt_append: "append"
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       proxy: "http://127.0.0.1:7890",
-      model_overrides: {
+      model_mappings: {
         sonnet: "claude-sonnet-4.7",
       },
       timeouts: {
@@ -425,7 +425,7 @@ model_refresh_interval: 600
   test("PUT /api/config/yaml accepts a valid full config payload", async () => {
     const payload = {
       proxy: "http://127.0.0.1:7890",
-      model_overrides: {
+      model_mappings: {
         sonnet: "claude-sonnet-4.7",
         custom: "gpt-4.1",
       },
@@ -498,7 +498,7 @@ model_refresh_interval: 600
 
     const written = await readConfig()
     expect(written).toContain("proxy: http://127.0.0.1:7890")
-    expect(written).toContain("model_overrides:")
+    expect(written).toContain("model_mappings:")
     expect(written).toContain("stream_idle: 301")
     expect(written).toContain("response_header: 600")
     expect(written).toContain("stale_request_max_age: 900")
@@ -821,9 +821,9 @@ rate_limiter:
     expect(written).toContain("recovery_interval: 60")
   })
 
-  test("PUT /api/config/yaml replaces model_overrides collections instead of merging old keys", async () => {
+  test("PUT /api/config/yaml replaces model_mappings collections instead of merging old keys", async () => {
     await writeConfig(`
-model_overrides:
+model_mappings:
   sonnet: claude-sonnet-4.7
   haiku: claude-haiku-4.6
   custom: gpt-4.1
@@ -833,7 +833,7 @@ model_overrides:
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model_overrides: {
+        model_mappings: {
           sonnet: "claude-sonnet-4.8",
         },
       }),
@@ -841,18 +841,18 @@ model_overrides:
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      model_overrides: {
+      model_mappings: {
         sonnet: "claude-sonnet-4.8",
       },
     })
 
     const written = await readConfig()
-    expect(written).toContain("model_overrides:")
+    expect(written).toContain("model_mappings:")
     expect(written).toContain("sonnet: claude-sonnet-4.8")
     expect(written).not.toContain("haiku:")
     expect(written).not.toContain("custom:")
-    expect(state.modelOverrides).toEqual({
-      ...DEFAULT_MODEL_OVERRIDES,
+    expect(state.modelMappings).toEqual({
+      ...DEFAULT_MODEL_MAPPINGS,
       sonnet: "claude-sonnet-4.8",
     })
   })
@@ -957,7 +957,7 @@ history:
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model_overrides: {
+        model_mappings: {
           "": "claude-sonnet-4.6",
         },
       }),
@@ -968,7 +968,7 @@ history:
       error: "Config validation failed",
       details: [
         {
-          field: "model_overrides.",
+          field: "model_mappings.",
           message: "Override key must be a non-empty string",
           value: "",
         },
@@ -1005,15 +1005,15 @@ anthropic:
     expect(state.contextEditingMode).toBe("clear-thinking")
   })
 
-  test("PUT /api/config/yaml deleting model_overrides resets runtime state to defaults", async () => {
+  test("PUT /api/config/yaml deleting model_mappings resets runtime state to defaults", async () => {
     await writeConfig(`
-model_overrides:
+model_mappings:
   sonnet: claude-sonnet-4.7
   custom: gpt-4.1
 `)
     await applyConfigToState()
-    expect(state.modelOverrides).toEqual({
-      ...DEFAULT_MODEL_OVERRIDES,
+    expect(state.modelMappings).toEqual({
+      ...DEFAULT_MODEL_MAPPINGS,
       sonnet: "claude-sonnet-4.7",
       custom: "gpt-4.1",
     })
@@ -1022,14 +1022,14 @@ model_overrides:
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model_overrides: null,
+        model_mappings: null,
       }),
     })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({})
-    expect(state.modelOverrides).toEqual(DEFAULT_MODEL_OVERRIDES)
-    expect(await readConfig()).not.toContain("model_overrides:")
+    expect(state.modelMappings).toEqual(DEFAULT_MODEL_MAPPINGS)
+    expect(await readConfig()).not.toContain("model_mappings:")
   })
 
   test("PUT /api/config/yaml deleting system_prompt_overrides resets runtime state to empty array", async () => {

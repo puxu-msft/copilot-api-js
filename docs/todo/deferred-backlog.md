@@ -689,7 +689,7 @@
 
 ## history/telemetry 拆独立持久化服务（架构选项，2026-07-14 优雅重启设计时评估）
 
-- **根因 / 现状**：优雅重启（`docs/shutdown.md`「优雅重启」节）的 overlap 窗口里新旧两进程同时写 history.db / telemetry.db。当前方案靠**靶向修**消除隐患——① reclaim-orphan 排除 live 前任 ② 旧进程 drain 期停遥测 persist timer ③ WAL + busy_timeout 串行化两写者。持久化仍是**进程内嵌入式**（同进程 await 保证 never-lose-settle）。
+- **根因 / 现状**：优雅重启（`docs/lifecycle.md`「优雅重启」节）的 overlap 窗口里新旧两进程同时写 history.db / telemetry.db。当前方案靠**靶向修**消除隐患——① reclaim-orphan 排除 live 前任 ② 旧进程 drain 期停遥测 persist timer ③ WAL + busy_timeout 串行化两写者。持久化仍是**进程内嵌入式**（同进程 await 保证 never-lose-settle）。
 - **当前行为**：单进程代际交替下，overlap 写竞争有界（旧进程降级后只剩个位数在途 finalize + 新进程新写）、罕见、可被 SQLite WAL 正确串行化。读侧（`/history/api/*`、`/api/status`、`/metrics`、WS 实时推送）全是进程内同步读。
 - **理想架构 / 若做需改什么**：把 history/telemetry 抽成常驻独立服务 → 单写者、跨重启常驻、reclaim-orphan 逻辑作废。但需：给富且演进的 payload（zstd blob / 内容寻址 search_index / 异步两相 finalize / DDSketch）定义 IPC wire 协议；把「同进程 await 的 never-lose-settle 不变量」重做成分布式投递协议（背压 / 缓冲 / at-least-once）；读侧端点全部跨界或端进服务。真走到这步，正确的问法是「是否直接换 client-server DB（Postgres）」。
 - **为何暂缓**：本项目是单用户内部工具、并发仅「运维偶尔重启一次」，为有界罕见问题引常驻 sidecar + IPC 是过度工程；靶向修已治根因。**触发条件（满足才值得重做）**：① 转向多进程 / 多 worker 常驻并发 serving（不再是单进程代际交替）；② 持久化延迟 / 背压开始阻塞请求 serving（in-process 写变热路径瓶颈）；③ history/telemetry 体量长出 SQLite、本就要迁 client-server DB——那时顺势做 persistence-as-a-service 才自然。

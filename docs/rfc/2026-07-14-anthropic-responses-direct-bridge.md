@@ -20,7 +20,7 @@
 2. **anthropic↔responses 直接桥（前向 + 反向一次做完）**：新增 6 个方向的直接翻译原语（去重后 2 组核心方向 × 3 层），跳过 CC 中间表示。
 3. **reasoning / server tool 全链路 round-trip（决不妥协）**：复用 `synthetic-reasoning.ts` 哨兵签名封装**真·上游签发密文**，跨轮回喂上游续接。真伪密文之别是 round-trip 可行性的分水岭（§1.2）。
 4. **两场景 per-pair 配置**：稳定模型（完整互填）vs 中途切换模型（剥签名保文本）——代理无法自动判定（信息只在用户侧），交 `model_translation` per-pair `features` 声明。
-5. **配置重命名** 顶层 `model_overrides` → `model_mapping`（经 compat renameLeaf 留旧键读时别名）。
+5. **配置重命名** 顶层 `model_overrides` → `model_mappings`（经 compat renameLeaf 留旧键读时别名）。
 
 **红线（§9）**：全面显式桥表（不挖洞）｜byte-equivalence 仅指客户端边界（不适配内部模块）｜等价区 vs 改进区 golden 双区划线（旧 CC-via 输出绝不当改进区目标）｜真 signature 转发与哨兵合成两路径不共享。
 
@@ -205,27 +205,27 @@ reasoning round-trip 有两个语义不同的场景，**代理无法自动判定
 ```yaml
 model_translation:
   anthropic-messages:
-    - match: gpt-5.5@openai-responses   # 仅当 model_mapping 等最终把路由定到 model=gpt-5.5 且走 openai-responses format 时生效
+    - match: gpt-5.5@openai-responses   # 仅当 model_mappings 等最终把路由定到 model=gpt-5.5 且走 openai-responses format 时生效
       features: ['strip-thinking-signature']
 ```
 
 - **key = ingress format**（客户端入口格式），**value = 有限规则列表**。
-- `match: <model>@<format>` = 对**最终路由结果**（经 model_mapping 解析后的真实上游 model + format）匹配，非对客户端原始 model 名匹配——匹配发生在路由裁决**之后**。核实：`router.ts` 的 `decideRoute` 先解析 `targetEndpoint`，之后才走 hub 桥选择，故时序上可行。plan 须显式确认配置读取点挂在**格式无关的桥选择函数**内部（非 per-cell `translateOut` 各读一次，避免两路径状态不一致）。
+- `match: <model>@<format>` = 对**最终路由结果**（经 model_mappings 解析后的真实上游 model + format）匹配，非对客户端原始 model 名匹配——匹配发生在路由裁决**之后**。核实：`router.ts` 的 `decideRoute` 先解析 `targetEndpoint`，之后才走 hub 桥选择，故时序上可行。plan 须显式确认配置读取点挂在**格式无关的桥选择函数**内部（非 per-cell `translateOut` 各读一次，避免两路径状态不一致）。
 - `features: [...]` = 该配对生效的翻译特性列表（首个特性 `strip-thinking-signature` = 声明场景 B）。默认无 `features` = 场景 A 完整互填。
 
-### 6.2 配置重命名 `model_overrides` → `model_mapping`（审查 MAJOR 订正：顶层键、非 `model.` 段）
+### 6.2 配置重命名 `model_overrides` → `model_mappings`（审查 MAJOR 订正：顶层键、非 `model.` 段）
 
-**校正**：`model_overrides` 是 ConfigSchema **顶层**字段（[schema.ts:982](../../src/lib/config/schema.ts)，与 `buffered_retry`/`disabled_models`/`retry` 同级），**无 `model` 段**。先前 §5/§6.2 写的 `model.model_overrides` 事实错。目标是**顶层 `model_mapping`**（不新建 `model` 段，避免连带 5 项嵌套段改动）。`Record<string,string>`，model 名→canonical id 映射，消费点 [resolver.ts:114](../../src/lib/models/resolver.ts)。
+**校正**：`model_overrides` 是 ConfigSchema **顶层**字段（[schema.ts:982](../../src/lib/config/schema.ts)，与 `buffered_retry`/`disabled_models`/`retry` 同级），**无 `model` 段**。先前 §5/§6.2 写的 `model.model_overrides` 事实错。目标是**顶层 `model_mappings`**（不新建 `model` 段，避免连带 5 项嵌套段改动）。`Record<string,string>`，model 名→canonical id 映射，消费点 [resolver.ts:114](../../src/lib/models/resolver.ts)。
 
 **触及清单（补全）**：
-- [schema.ts:982](../../src/lib/config/schema.ts)（字段名）+ `RECORD_MERGE_STRATEGIES`（[schema.ts:1059](../../src/lib/config/schema.ts) 现绑 `ModelOverridesSchema` 的 per-key 策略，换名后须重绑否则退化 replace）。
-- **[compat.ts:159](../../src/lib/config/compat.ts) `CONFIG_MIGRATIONS`**（先前漏）：加一条 `renameLeaf("model_overrides", "model_mapping")`——这是「留旧键读时别名」的**唯一正确归属**（贴现有 renameLeaf 模式）。
-- [state.ts](../../src/lib/state.ts)（`DEFAULT_MODEL_OVERRIDES`/`modelOverrides` 内部字段）+ [config.ts](../../src/lib/config/config.ts) + resolver.ts + [route.ts:264](../../src/routes/config/route.ts)（`replaceCollection` 路径 + `:191 out.modelOverrides` HTTP API 字段）。
+- [schema.ts:982](../../src/lib/config/schema.ts)（字段名）+ `RECORD_MERGE_STRATEGIES`（[schema.ts:1059](../../src/lib/config/schema.ts) 现绑 `ModelMappingsSchema` 的 per-key 策略，换名后须重绑否则退化 replace）。
+- **[compat.ts:159](../../src/lib/config/compat.ts) `CONFIG_MIGRATIONS`**（先前漏）：加一条 `renameLeaf("model_overrides", "model_mappings")`——这是「留旧键读时别名」的**唯一正确归属**（贴现有 renameLeaf 模式）。
+- [state.ts](../../src/lib/state.ts)（`DEFAULT_MODEL_MAPPINGS`/`modelMappings` 内部字段）+ [config.ts](../../src/lib/config/config.ts) + resolver.ts + [route.ts:264](../../src/routes/config/route.ts)（`replaceCollection` 路径 + `:191 out.modelMappings` HTTP API 字段）。
 - **`config.schema.json`（生成物，须 `scripts/generate-config-json-schema.ts` 重生成）** + `config.example.yaml` + 用户 `config.yaml`（靠 compat 迁移）。
 - [normalize-id.ts:16](../../src/lib/models/normalize-id.ts)（仅注释提及，改注释）。
 - **doc-sync**：`docs/` 下多份仍引用 `model_overrides`（`model-resolution.md` / `anthropic-compat.md` / `DESIGN.md` / `spec/anthropic-via-openai-translation.md`），落地时 grep 全仓一并同步。
 
-**界定（plan 澄清）**：内部 camelCase 字段 `state.modelOverrides` + HTTP config API 字段 `out.modelOverrides` 是否同改？倾向只改 YAML 键 + 内部字段一并改（`ui-v4` grep 无 `modelOverrides` 消费，无前端涟漪），但 `route.ts:191` 是 config API 契约字段——plan 界定改内部字段是否动 API。
+**界定（plan 澄清）**：内部 camelCase 字段 `state.modelMappings` + HTTP config API 字段 `out.modelMappings` 是否同改？倾向只改 YAML 键 + 内部字段一并改（`ui-v4` grep 无 `modelMappings` 消费，无前端涟漪），但 `route.ts:191` 是 config API 契约字段——plan 界定改内部字段是否动 API。
 
 **兼容层（配置享兼容负担、代码不享）**：旧键 `model_overrides` 经 compat renameLeaf 读时映射，配置问题绝不杀进程（warn-continue、热重载安全）。
 

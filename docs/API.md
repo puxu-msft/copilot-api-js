@@ -103,6 +103,19 @@
 | `/ui/*` | GET | 旧 Vue History UI 静态文件（**legacy，正逐页退役到 `/ui-v4`**；`/models` 已退役 2026-07-10；退役路线图 [vue-ui-retirement.md](vue-ui-retirement.md)） |
 | `/ui-v4/*` | GET | 当前活的 React History UI 静态文件 |
 
+### 未知端点行为（404 / 405）
+
+打到代理但没匹配任何业务路由的请求，由全局 `notFound` 三态分类（见 [spec/2026-07-14-unknown-endpoint-logging.md](spec/2026-07-14-unknown-endpoint-logging.md)）：
+
+| 情形 | 状态 | body | 头 |
+|------|------|------|----|
+| 路径存在但 HTTP method 不对 | **405** | `{ "error": "Method Not Allowed" }` | `Allow: <methods>` |
+| 真正未匹配的路径 | **404** | `{ "error": "Not Found" }` | — |
+| 已匹配 handler 主动 `c.notFound()`（如 UI 静态资源缺失） | 404 | handler 自身 body | — |
+| 浏览器探针（`/favicon.ico` / devtools） | 204 | 空 | —（静默、不进日志） |
+
+405 检测从公开 `server.routes` 派生影子 router（绕开全局中间件污染）。unknown endpoint 的日志级别由 config `unknown_endpoint_logging.{not_found,method_not_allowed}` 控制（`silent|debug|info|warn|error`，默认 `warn`；见 [CONFIG 参考](../config.example.yaml)）。全局 `cors()` 对所有 OPTIONS 返 204，故 unknown OPTIONS 不进本管线（明确例外）。
+
 ---
 
 ## History REST（`/history/api/*`）

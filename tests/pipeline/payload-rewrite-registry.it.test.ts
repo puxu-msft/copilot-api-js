@@ -46,7 +46,7 @@ import {
 } from "~/lib/history"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -80,7 +80,7 @@ const app = createFullTestApp()
 
 function injectAnthropicModel(): void {
   setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
-  setModelOverrides({})
+  setModelMappings({})
 }
 
 function payload(messages: Array<unknown>, extra?: Partial<MessagesPayload>): MessagesPayload {

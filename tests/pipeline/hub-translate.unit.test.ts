@@ -15,8 +15,16 @@ import {
   test,
 } from "bun:test"
 
-import type { Message as AnthropicResponse, MessagesPayload } from "~/types/api/anthropic"
-import type { ChatCompletionResponse, ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  Message as AnthropicResponse,
+  MessagesPayload,
+} from "~/types/api/anthropic"
+import type {
+  //
+  ChatCompletionResponse,
+  ChatCompletionsPayload,
+} from "~/types/api/openai-chat-completions"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
@@ -51,11 +59,17 @@ describe("translateRequestVia — forward legs (→ CC-canonical)", () => {
     expect(out.messages[1]).toEqual({ role: "user", content: "hi" })
   })
 
-  test("anthropic → /responses ALSO produces a CC body (the CC→Responses wire step stays in prepareWire)", () => {
-    const out = translateRequestVia("anthropic", ENDPOINT.RESPONSES, anthropicBody) as ChatCompletionsPayload
-    // Still CC-shaped (has `messages`, not Responses `input`).
-    expect(Array.isArray(out.messages)).toBe(true)
-    expect((out as unknown as { input?: unknown }).input).toBeUndefined()
+  test("anthropic → /responses produces a Responses body DIRECTLY (RFC 2026-07-14 direct bridge — no CC hop)", () => {
+    const out = translateRequestVia("anthropic", ENDPOINT.RESPONSES, anthropicBody) as {
+      model: string
+      instructions?: string
+      input?: unknown
+      messages?: unknown
+    }
+    // Responses-shaped directly at translateOut — no CC intermediate (has `input`, not `messages`).
+    expect(Array.isArray(out.input)).toBe(true)
+    expect(out.messages).toBeUndefined()
+    expect(out.instructions).toBe("sys")
   })
 
   test("openai-cc / gemini → CC leg is identity (already CC)", () => {
@@ -145,7 +159,14 @@ describe("createForwardStreamTranslator — STREAMING forward-leg dispatch (Phas
     const t = createForwardStreamTranslator(ENDPOINT.CHAT_COMPLETIONS, "claude-x")
     const frames = [
       ...t.renderFrame(ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }] })),
-      ...t.renderFrame(ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2 } })),
+      ...t.renderFrame(
+        ccChunk({
+          id: "msg_x",
+          model: "claude-x",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 5, completion_tokens: 2 },
+        }),
+      ),
       ...t.flush(),
     ]
     const types = frames.map((f) => JSON.parse(f.data ?? "{}").type)
@@ -160,7 +181,9 @@ describe("createForwardStreamTranslator — STREAMING forward-leg dispatch (Phas
     const frames = [
       ...t.renderFrame(rEvent({ type: "response.created", response: { id: "resp_1", model: "gpt-x" } })),
       ...t.renderFrame(rEvent({ type: "response.output_text.delta", delta: "hello" })),
-      ...t.renderFrame(rEvent({ type: "response.completed", response: { id: "resp_1", model: "gpt-x", usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } } })),
+      ...t.renderFrame(
+        rEvent({ type: "response.completed", response: { id: "resp_1", model: "gpt-x", usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } } }),
+      ),
       ...t.flush(),
     ]
     const types = frames.map((f) => JSON.parse(f.data ?? "{}").type)
@@ -179,7 +202,19 @@ describe("createForwardStreamTranslator — STREAMING forward-leg dispatch (Phas
 
 describe("createReverseStreamTranslator — REVERSE-leg dispatch (Phase 5, T5.2/T5.3/T5.4)", () => {
   const aev = (obj: unknown): { data: string; event: string } => ({ data: JSON.stringify(obj), event: (obj as { type: string }).type })
-  const start = aev({ type: "message_start", message: { id: "msg_r", type: "message", role: "assistant", model: "claude-x", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } })
+  const start = aev({
+    type: "message_start",
+    message: {
+      id: "msg_r",
+      type: "message",
+      role: "assistant",
+      model: "claude-x",
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 5, output_tokens: 0 },
+    },
+  })
   const textStart = aev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
   const textDelta = aev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } })
   const textStop = aev({ type: "content_block_stop", index: 0 })
@@ -188,8 +223,18 @@ describe("createReverseStreamTranslator — REVERSE-leg dispatch (Phase 5, T5.2/
 
   test("cc leg: single-hop Anthropic → CC frames (role chunk + content + finish, getMeta net usage)", () => {
     const t = createReverseStreamTranslator("openai-cc", "claude-x")
-    const frames = [...t.renderFrame(start), ...t.renderFrame(textStart), ...t.renderFrame(textDelta), ...t.renderFrame(textStop), ...t.renderFrame(msgDelta), ...t.renderFrame(msgStop), ...t.flush()]
-    const objs = frames.map((f) => JSON.parse(f.data ?? "{}") as { object?: string; choices?: Array<{ delta?: Record<string, unknown>; finish_reason?: unknown }> })
+    const frames = [
+      ...t.renderFrame(start),
+      ...t.renderFrame(textStart),
+      ...t.renderFrame(textDelta),
+      ...t.renderFrame(textStop),
+      ...t.renderFrame(msgDelta),
+      ...t.renderFrame(msgStop),
+      ...t.flush(),
+    ]
+    const objs = frames.map(
+      (f) => JSON.parse(f.data ?? "{}") as { object?: string; choices?: Array<{ delta?: Record<string, unknown>; finish_reason?: unknown }> },
+    )
     // First CC chunk is the role delta; a content delta carries delta.content; a finish chunk carries finish_reason.
     expect(objs[0].choices?.[0]?.delta).toEqual({ role: "assistant" })
     expect(objs.some((o) => o.choices?.[0]?.delta?.content === "hi")).toBe(true)
@@ -201,13 +246,30 @@ describe("createReverseStreamTranslator — REVERSE-leg dispatch (Phase 5, T5.2/
 
   test("gemini leg: single-hop Anthropic → CC frames (the gemini codec does the CC→Gemini second hop)", () => {
     const t = createReverseStreamTranslator("gemini", "claude-x")
-    const frames = [...t.renderFrame(start), ...t.renderFrame(textStart), ...t.renderFrame(textDelta), ...t.renderFrame(textStop), ...t.renderFrame(msgDelta), ...t.renderFrame(msgStop)]
-    expect(frames.some((f) => (JSON.parse(f.data ?? "{}") as { choices?: Array<{ delta?: { content?: string } }> }).choices?.[0]?.delta?.content === "hi")).toBe(true)
+    const frames = [
+      ...t.renderFrame(start),
+      ...t.renderFrame(textStart),
+      ...t.renderFrame(textDelta),
+      ...t.renderFrame(textStop),
+      ...t.renderFrame(msgDelta),
+      ...t.renderFrame(msgStop),
+    ]
+    expect(
+      frames.some((f) => (JSON.parse(f.data ?? "{}") as { choices?: Array<{ delta?: { content?: string } }> }).choices?.[0]?.delta?.content === "hi"),
+    ).toBe(true)
   })
 
   test("responses leg: two-hop Anthropic → CC → Responses lifecycle events (needs the reverse exchange)", () => {
     const t = createReverseStreamTranslator("openai-responses", "claude-x", { responseId: "resp_r", itemId: "item_r", clientModel: "claude-x" })
-    const frames = [...t.renderFrame(start), ...t.renderFrame(textStart), ...t.renderFrame(textDelta), ...t.renderFrame(textStop), ...t.renderFrame(msgDelta), ...t.renderFrame(msgStop), ...t.flush()]
+    const frames = [
+      ...t.renderFrame(start),
+      ...t.renderFrame(textStart),
+      ...t.renderFrame(textDelta),
+      ...t.renderFrame(textStop),
+      ...t.renderFrame(msgDelta),
+      ...t.renderFrame(msgStop),
+      ...t.flush(),
+    ]
     const events = frames.map((f) => f.event)
     expect(events).toContain("response.created")
     expect(events).toContain("response.output_text.delta")
