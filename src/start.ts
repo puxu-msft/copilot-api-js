@@ -6,6 +6,7 @@ import pc from "picocolors"
 import { getProxyForUrl } from "proxy-from-env"
 
 import type { Model } from "./lib/models/client"
+import type { PidfileContent } from "./lib/restart/pidfile"
 
 import packageJson from "../package.json"
 import {
@@ -53,13 +54,29 @@ import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
 import { attachWsSink } from "./lib/observability/sinks/ws"
 import { setRequestLinePublisher } from "./lib/observability/synthetic-request-line"
 import { loadUpstreamHookSafe } from "./lib/pipeline/hooks/loader"
-import { initProcessIdentity } from "./lib/process-identity"
+import {
+  //
+  getProcessIdentity,
+  initProcessIdentity,
+} from "./lib/process-identity"
 import { initProxy } from "./lib/proxy"
 import {
   //
   initRequestTelemetry,
   runTelemetryJsonBackfill,
 } from "./lib/request-telemetry"
+import { notifyReady } from "./lib/restart/notify"
+import {
+  //
+  removePidfileIfOwnedBySelf,
+  writePidfile,
+} from "./lib/restart/pidfile"
+import { isSupervised } from "./lib/restart/supervisor-env"
+import {
+  //
+  resolveManualStartup,
+  signalPredecessorHandoff,
+} from "./lib/restart/takeover"
 import { startServer } from "./lib/serve"
 import {
   //
@@ -188,7 +205,6 @@ interface RunServerOptions {
    * 零停机接管：若已有裸手动实例在跑（pidfile 活性检查检测到），绑定同端口
    * （reusePort）并向其发 SIGUSR2 交接，待其 drain 完退出。仅裸手动路径生效；
    * systemd/pm2 下由 supervisor 编排交接、本 flag 被忽略（lifecycle.md「优雅重启」）。
-   * 接线（guard→写 pidfile→notifyReady→交接→退出清理）留给 Task 12。
    */
   restart: boolean
 }
@@ -352,6 +368,29 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const envHasProxy = options.httpProxyFromEnv && getProxyForUrl(state.ghcApiBaseUrl || "https://api.githubcopilot.com") !== ""
   const proxyUrl = cliProxy ?? (envHasProxy ? undefined : config.proxy)
   initProxy({ url: proxyUrl, fromEnv: !cliProxy && options.httpProxyFromEnv })
+
+  // ===========================================================================
+  // Phase 2.7: Graceful-restart startup guard (bare-metal path only)
+  // ===========================================================================
+  // Must run AFTER config load (needs config.pidfile) but strictly BEFORE
+  // Phase 3's initHistory(reclaim) below — reclaimOrphanedActiveRows reads the
+  // predecessor-registry to skip a live predecessor's in-flight rows, and that
+  // registry has to already carry the predecessor by the time initHistory runs
+  // (lifecycle.md「overlap 共享状态安全 ①」). resolveManualStartup collapses the
+  // supervisor branch + decideStartup + setExcludedPredecessor into one pure,
+  // unit-tested function (tests/restart/runserver-wiring.unit.test.ts); this
+  // call site only does the IO reaction (exit/log/record) on its result.
+  const pidfilePath = config.pidfile ?? PATHS.PIDFILE
+  const manualStartup = resolveManualStartup({ pidfilePath, restart: options.restart, supervised: isSupervised() })
+  let takeoverPredecessor: PidfileContent | null = null
+  if (manualStartup.kind === "refuse") {
+    consola.error(`已有实例在运行（pid=${manualStartup.predecessor.pid}, port=${manualStartup.predecessor.port}）。` + `用 --restart 接管，或先停旧实例。`)
+    process.exit(1)
+  }
+  if (manualStartup.kind === "takeover") {
+    takeoverPredecessor = manualStartup.predecessor
+    consola.info(`[restart] 接管模式：将在监听后向前任 pid=${takeoverPredecessor.pid} 发交接信号`)
+  }
 
   // ===========================================================================
   // Phase 3: Initialize backing stores, their sinks, and the rate limiter
@@ -549,6 +588,27 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setServerInstance(serverInstance)
   setupShutdownHandlers()
 
+  // Bare-metal pidfile write (仅裸手动路径；supervisor 环境跳过整个 pidfile 机制) —
+  // must happen AFTER the server is actually listening (setServerInstance above),
+  // so a reader never observes a pidfile pointing at a process that isn't accepting
+  // connections yet.
+  if (!isSupervised()) {
+    const id = getProcessIdentity()
+    writePidfile(pidfilePath, { pid: id.pid, bootTime: id.bootTime, port: options.port })
+    // Best-effort fallback for non-graceful exits (e.g. an uncaught throw that
+    // bypasses the `finally` below): `process.on("exit")` handlers must be fully
+    // synchronous, so this is the same compare-and-delete primitive used there —
+    // never an unconditional delete (B2: would erase a takeover successor's live
+    // pidfile).
+    process.on("exit", () => removePidfileIfOwnedBySelf(pidfilePath, { pid: id.pid, bootTime: id.bootTime }))
+  }
+
+  // 就绪通知（三后端：sd_notify READY=1 / pm2 process.send('ready') / 裸手动 no-op，
+  // 各自按环境自动 no-op）——此刻服务器已在监听，对外通知「可以路由流量了」是准确的。
+  notifyReady()
+  // 裸手动接管：现在才向前任发交接信号（新进程已监听同端口，前任此刻停 accept 是安全的）。
+  if (takeoverPredecessor) signalPredecessorHandoff(takeoverPredecessor.pid)
+
   // Fire-and-forget the recoverable background backfills now that the server is
   // listening: the usage net-of-cache normalization first (fast, guarded by
   // usage_normalized), then the heavier search_index + preview_text backfill.
@@ -583,6 +643,16 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     await waitForShutdown()
   } finally {
     stopModelRefreshLoop()
+    // Bare-metal pidfile cleanup — compare-and-delete (B2): a takeover already
+    // overwrote this same path with the successor's pid, so an unconditional
+    // delete here would erase a LIVE successor's pidfile out from under it
+    // (permanently disabling the guard, silently allowing a third instance to
+    // stack on the next plain start). removePidfileIfOwnedBySelf only deletes
+    // when the on-disk pid still matches our own.
+    if (!isSupervised()) {
+      const id = getProcessIdentity()
+      removePidfileIfOwnedBySelf(pidfilePath, { pid: id.pid, bootTime: id.bootTime })
+    }
   }
 }
 
