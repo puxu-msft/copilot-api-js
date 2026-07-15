@@ -7,8 +7,10 @@
  * tool_use id/name/arguments, usage numeric fields. Improvement-zone assertions (independent oracle, NOT
  * locked to the old lossy CC-via golden — RFC R-GOLDEN-TWO-ZONE): reasoning passthrough (the old CC hop
  * dropped `reasoning` items entirely — `responses-to-cc.ts` DOES forward it onto CC-intermediate fields,
- * but this file tests the DIRECT single-hop path independently) and the stop_reason single-hop remap
- * (content_filter → `refusal`, not degraded through CC's finish_reason to `end_turn`).
+ * but this file tests the DIRECT single-hop path independently) and the max_output_tokens single-hop
+ * remap (max_tokens, reached in one hop instead of two). `content_filter` maps to `end_turn` + the
+ * `contentFiltered` result field (N3 convention, project-wide — NOT `refusal`, a distinct Responses-native
+ * concept, corrected post-review).
  */
 
 import {
@@ -170,11 +172,11 @@ describe("translateResponsesResponseToAnthropic — status/incomplete_details �
     expect(response.stop_reason).toBe("max_tokens")
   })
 
-  test("incomplete + content_filter → refusal (single-hop; NOT degraded to end_turn as the old CC hop did) + contentFiltered flag", () => {
+  test("incomplete + content_filter → end_turn (N3 convention — refusal is a distinct Responses concept, not a substitute) + contentFiltered flag", () => {
     const result = translateResponsesResponseToAnthropic(
       responsesResponse([messageItem("", "incomplete")], { status: "incomplete", incomplete_details: { reason: "content_filter" } }),
     )
-    expect(result.response.stop_reason).toBe("refusal")
+    expect(result.response.stop_reason).toBe("end_turn")
     expect(result.contentFiltered).toBe(true)
   })
 

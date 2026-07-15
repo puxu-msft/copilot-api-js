@@ -15,17 +15,34 @@
  *     envelope (forward direction only, R-DIRECTION-ASYMMETRY — this Phase does NOT do encrypted_content
  *     round-trip; Phase 5 wires that in, this bridge only forwards the DISPLAYABLE summary text).
  *
- * stop_reason / status (phase-2-audit §③, "须重新推导" — NOT continuing the CC hop's degradation):
- * mapped in a SINGLE hop from Responses `status`+`incomplete_details.reason` straight to Anthropic's
- * `StopReason` — see {@link mapResponsesStatusToStopReason}. The CC hop's `mapIncompleteFinishReason`
- * (responses-to-cc.ts) collapses BOTH `max_output_tokens` and `content_filter` incomplete reasons through
- * CC's narrower `FinishReason` (`length` / `content_filter`) before the CC→Anthropic leg further degrades
- * `content_filter` to `end_turn` (cc-to-anthropic.ts `aggregateStopReason`) — a double degradation this
- * direct bridge must NOT inherit (RFC §3.2 audit finding, "经 CC 中转 refusal/pause_turn 退化为 end_turn").
- * Since Responses has no native `refusal`/`pause_turn` status distinct from `incomplete`, those two
- * Anthropic-only stop reasons are unreachable from a genuine Responses response — this bridge maps every
- * REACHABLE Responses outcome to its most-faithful Anthropic equivalent instead of leaving them as
- * dead code paths that only matter for a mapping table's aesthetic completeness (documented at the site).
+ * stop_reason / status (phase-2-audit §③, "须重新推导" — NOT continuing the CC hop's degradation for
+ * `refusal`/`pause_turn`, but SHARING the N3 convention for `content_filter`, corrected against a
+ * user-cited code-level counter-argument post-subtask-B review): mapped in a SINGLE hop from Responses
+ * `status`+`incomplete_details.reason` straight to Anthropic's `StopReason` — see
+ * {@link mapResponsesStatusToStopReason}. The CC hop's `mapIncompleteFinishReason` (responses-to-cc.ts)
+ * collapses `max_output_tokens` through CC's narrower `FinishReason` (`length`) before the CC→Anthropic
+ * leg maps it to `max_tokens` — this direct bridge reproduces the SAME faithful `max_tokens` result in one
+ * hop (no degradation either way, just fewer hops).
+ *
+ * ⚠️ `content_filter` is NOT mapped to Anthropic's `refusal` stop_reason (an EARLIER version of this file
+ * did — corrected). `refusal` and `content_filter` are two DISTINCT concepts even within the Responses
+ * API's own model: a Responses `part.type==="refusal"` (the model's own structured-output refusal, handled
+ * separately below as a text-block passthrough) is NOT the same thing as `incomplete_details.reason===
+ * "content_filter"` (a moderation-layer truncation). Mapping the latter to Anthropic's `refusal` would be
+ * a SEMANTIC MISMATCH (conflating two concepts Responses itself keeps separate), not a fidelity gain.
+ * Anthropic genuinely has NO `content_filter` stop_reason (`cc-to-anthropic.ts` records this explicitly:
+ * "Anthropic has no such stop_reason") — this is the SAME physical gap the whole codebase already has a
+ * settled answer for: N3 (`end_turn` on the wire + the `contentFiltered` ctx marker, "distinguishable via
+ * observability, not by inventing a wire value that doesn't mean the same thing"). This bridge REUSES
+ * that N3 convention rather than reinventing a new (wrong) one — the `contentFiltered` result field below
+ * IS the distinguishability RFC/audit asked for, just via ctx instead of a mismatched wire stop_reason.
+ *
+ * `tool_calls` wins regardless of status (a tool turn — mirrors both the CC-leg's `hasToolCalls` override
+ * and `responses-to-cc.ts`'s `mapFinishReason`). Anthropic's OWN `pause_turn` has no Responses equivalent
+ * either (Responses has no mid-turn-pause status distinct from `incomplete`/`completed`) — unreachable
+ * from a genuine Responses response, so intentionally not modeled as a mapping target (same reasoning as
+ * `content_filter`, just without an N3-equivalent ctx marker since nothing is actually lost — there is no
+ * Responses-side signal to preserve).
  *
  * usage (phase-2-audit §③, "须重新推导" — precision matches, arithmetic is shared ①): Responses
  * `input_tokens` is the TOTAL prompt INCLUDING cached tokens (same convention as CC's `prompt_tokens`),
@@ -190,18 +207,14 @@ function parseToolArguments(args: string): unknown {
 
 /**
  * Map a Responses `status` (+ `incomplete_details.reason` when `incomplete`) directly to an Anthropic
- * `StopReason`, in ONE hop — the CC intermediate's double-degradation (incomplete→CC FinishReason→
- * Anthropic stop_reason, which loses `content_filter` as a distinguishable reason on the SECOND hop) is
- * NOT reproduced here (RFC/audit finding — reasoning bridge target only, not the lossy CC-via one).
- *
- * `tool_calls` wins regardless of status (a tool turn — mirrors both the CC-leg's `hasToolCalls` override
- * and `responses-to-cc.ts`'s `mapFinishReason`). `content_filter` maps to Anthropic's own `refusal`
- * stop_reason (the closest faithful match Anthropic exposes for a content-filtered completion — NOT
- * degraded to `end_turn` as the CC hop does; the `contentFiltered` flag ALSO surfaces this via ctx (N3)
- * for observability, so the wire value and the ctx marker agree instead of the wire hiding it).
- * `max_output_tokens` → `max_tokens`. `completed`/any other status → `end_turn` (Anthropic's `pause_turn`
- * has no Responses equivalent — Responses has no mid-turn-pause status distinct from `incomplete`/`completed`,
- * so it is unreachable from a genuine Responses response and intentionally not modeled as a mapping target).
+ * `StopReason`, in ONE hop. `tool_calls` wins regardless of status (a tool turn — mirrors both the
+ * CC-leg's `hasToolCalls` override and `responses-to-cc.ts`'s `mapFinishReason`). `content_filter` maps
+ * to `end_turn` — NOT `refusal` (corrected post-review: `refusal` is a distinct Responses-native concept,
+ * see the module docstring's N3 discussion above) — the `contentFiltered` result field is how this
+ * distinguishability is surfaced instead (N3 convention, matches `cc-to-anthropic.ts` project-wide).
+ * `max_output_tokens` → `max_tokens`. `completed`/any other reachable status → `end_turn` (Anthropic's
+ * `pause_turn` has no Responses equivalent — unreachable from a genuine Responses response, intentionally
+ * not modeled as a mapping target).
  */
 function mapResponsesStatusToStopReason(
   status: ResponsesResponse["status"],
@@ -209,11 +222,10 @@ function mapResponsesStatusToStopReason(
   hasToolCalls: boolean,
 ): StopReason {
   if (hasToolCalls) return "tool_use"
-  if (status === "incomplete") {
-    if (incompleteDetails?.reason === "content_filter") return "refusal"
-    return "max_tokens"
-  }
-  // "completed" / "cancelled" / any future status — the most-faithful reachable default.
+  if (status === "incomplete" && incompleteDetails?.reason !== "content_filter") return "max_tokens"
+  // "completed" / "cancelled" / incomplete+content_filter / any future status — the most-faithful
+  // reachable default. content_filter's distinguishability lives in the `contentFiltered` result field
+  // (N3), not the wire stop_reason (Anthropic has none that means the same thing).
   return "end_turn"
 }
 
