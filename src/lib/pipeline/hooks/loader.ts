@@ -27,7 +27,7 @@ export function resetUpstreamHook(): void {
  * { upstream: { inbound, outbound }, exchange, ... }`; the loader navigates each leaf path and
  * collects the ones that are functions. `client.inbound` lands in RFC Phase 4.
  */
-const HOOK_POINTS = ["upstream.inbound", "upstream.outbound", "exchange"] as const
+const HOOK_POINTS = ["client.inbound", "upstream.inbound", "upstream.outbound", "exchange"] as const
 
 /** Read a dot-path leaf off a nested object (returns undefined if any segment is missing/non-object). */
 function getLeaf(root: unknown, path: string): unknown {

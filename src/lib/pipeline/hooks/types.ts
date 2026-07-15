@@ -24,10 +24,16 @@ import type {
  * declared/named but its per-frame wiring is gated on sink-egress unification (RFC Phase 6).
  */
 export interface UpstreamHook {
-  /** client-native format (client-original request in, response out). Phase 4 adds `inbound`. */
+  /** client-native format (client-original request in, response out). */
   client?: {
-    // inbound?: (env: RequestEnvelope) => RequestEnvelope | undefined   // RFC Phase 4
-    // outbound?: ...                                                    // RFC Phase 6 (gated)
+    /**
+     * Client-native inbound request rewrite, ONE-SHOT, at driver S1a→S1b (after parse, before
+     * translate/sanitize) — the ONLY point where every format's body is client-native (RFC §3). The
+     * driver hands the hook a defensive body clone and, on `undefined`, keeps the original parsed env
+     * (immutable-return + defense-in-depth: §3.5). Return a new env to rewrite the request.
+     */
+    inbound?: (env: RequestEnvelope) => RequestEnvelope | undefined
+    // outbound?: ...                                                    // RFC Phase 6 (gated on sink-egress unification)
   }
   /** upstream/target format. */
   upstream?: {

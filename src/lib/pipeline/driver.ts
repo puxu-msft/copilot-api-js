@@ -234,11 +234,20 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
   // S1a — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model). SYNC.
   const parsed = deps.codec.parse(raw)
 
+  // Hook point: client.inbound — one-shot client-NATIVE request rewrite, at S1a→S1b (before
+  // translate/sanitize), the only point where every format's body is client-native (RFC §3/§3.5).
+  // Defensive body snapshot: the hook receives a clone-backed env so an in-place mutation can't穿透
+  // downstream (or into the frozen clientRequest history track); on `undefined` the driver keeps the
+  // ORIGINAL parsed env (immutable-return semantics). `snapshotBody` is the codec-agnostic tolerant
+  // structuredClone (falls back to the original for an unclonable body).
+  const inboundHook = getUpstreamHook()?.client?.inbound
+  const clientNative = inboundHook ? (inboundHook(parsed.with({ body: snapshotBody(parsed.body) })) ?? parsed) : parsed
+
   // S1b — Translate-in (async, RFC 2026-07-14 §3): per-format async inbound processing —
   // gemini `Gemini→CC` + each format's async system-prompt injection (awaits applyConfigToState).
-  // Runs ONCE, outside the retry loop, after parse (so `client.inbound` in Phase 4 still sees the
-  // native body) and before S2. No-op unless the codec implements `translateInbound`.
-  const ingested = (await deps.codec.translateInbound?.(parsed)) ?? parsed
+  // Runs ONCE, outside the retry loop, after parse + client.inbound. No-op unless the codec
+  // implements `translateInbound`.
+  const ingested = (await deps.codec.translateInbound?.(clientNative)) ?? clientNative
 
   // S2 — Translate-out (route): decideRoute (passthrough / translate / reject) + translateOut.
   // The route decision moved to the free-function `router.decideRoute` (ADR 2026-07-11),
