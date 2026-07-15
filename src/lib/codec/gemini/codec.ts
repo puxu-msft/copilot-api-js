@@ -93,6 +93,7 @@ import {
 import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { state } from "~/lib/state"
+import { processOpenAIMessages } from "~/lib/system-prompt"
 
 const CLIENT_FORMAT: ClientFormat = "gemini"
 const ENDPOINT_TYPE: EndpointType = "gemini-generate-content"
@@ -159,17 +160,14 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
     format: CLIENT_FORMAT,
 
     parse(raw) {
-      const { env, baseline, ctx } = parseGemini(raw, modelId)
+      const { env, ctx } = parseGemini(raw, modelId)
       requestContext = ctx
-      truncateBaseline = baseline
-      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the CellAssembly reads
-      // the `truncateBaseline` (the CC auto-truncate baseline) from `env.requestState` — the forward `@cc`
-      // cell reads it via `OUTBOUND_LEGS[CHAT_COMPLETIONS]` (C3). The REVERSE `@messages` leg supply (C2b —
-      // the shared beta probe + mapper holder) is added when the handler injects them; both coexist.
-      // Populating requestState is also the driver's cell-keyed fork discriminator.
+      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) as the cell-fork
+      // discriminator + reverse-leg supply. The CC auto-truncate baseline is NOT known yet (parse
+      // keeps the native Gemini body); S1b `translateInbound` computes the CC payload and merges
+      // `truncateBaseline` onto requestState before S2/S4 (where the forward `@cc` cell reads it).
       return env.with({
         requestState: {
-          truncateBaseline: baseline,
           ...(opts?.reverseBetaProbe && { betaProbe: opts.reverseBetaProbe }),
           ...(opts?.reverseMapperHolder && { reverseMapperHolder: opts.reverseMapperHolder }),
         },
@@ -178,6 +176,32 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
 
     getContext() {
       return requestContext
+    },
+
+    // S1b (RFC 2026-07-14 §4): Gemini→CC translation + async system-prompt injection + sanitize +
+    // O10 fill, moved off the route so `client.inbound` (Phase 4) sees the native `contents[]` body.
+    // Records the droppedParams warning + sets the CC auto-truncate baseline (closure + requestState,
+    // read by the forward `@cc` leg's OUTBOUND_LEGS at S4). One-shot, outside the retry loop.
+    async translateInbound(env) {
+      const geminiBody = env.body as GenerateContentRequest
+      const resolvedName = env.model.id
+      const { payload: ccPayload, droppedParams } = convertGeminiRequestToOpenAI(geminiBody, { model: resolvedName, stream: env.stream })
+      ccPayload.messages = await processOpenAIMessages(ccPayload.messages, resolvedName, "gemini")
+
+      if (droppedParams.length > 0) {
+        const message = `Gemini → ChatCompletions translation dropped unsupported params: ${droppedParams.join(", ")}`
+        consola.warn(`[gemini] model=${resolvedName} ${message}`)
+        env.ctx.addWarningMessage({ code: DROPPED_GEMINI_PARAMS_WARNING_CODE, message })
+        env.ctx.recordFeature("dropped-params")
+      }
+
+      // Sanitize + fill O10 (mirrors legacy prepareGeminiRequest — Gemini fills O10 here, unlike the
+      // CC codec which defers it to prepareWire, so env.body / the effective history track carries it).
+      const { payload: sanitizedPayload } = sanitizeOpenAIMessages(ccPayload)
+      const filledPayload = fillMaxCompletionTokens(sanitizedPayload, env.model as ResolvedModel)
+      // The post-system-prompt, PRE-sanitize CC payload is the stable auto-truncate baseline.
+      truncateBaseline = ccPayload
+      return env.with({ body: filledPayload, requestState: { ...env.requestState, truncateBaseline: ccPayload } })
     },
 
     getTruncateBaseline() {
@@ -234,37 +258,23 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
 // ============================================================================
 
 /**
- * S1: inbound Gemini HTTP → envelope (CC-shaped body + Gemini ctx). Reproduces
- * the legacy `prepareGeminiRequest` (routes/gemini/handler.ts): snapshot the raw
- * Gemini body, resolve the model, translate Gemini→CC (recording dropped params),
- * create the `gemini-generate-content` ctx with the Gemini-shape original request,
- * sanitize + fill O10. `env.body` is the sanitized + O10-filled CC payload.
- *
- * Async system-prompt injection (`processOpenAIMessages`) is done by the route
- * BEFORE parse on the translated CC messages (parse is sync, the injection is
- * async + non-idempotent — parity with the CC/Responses codecs); the route passes
- * the already-injected CC body as `raw.body` and the raw Gemini body as
- * `raw.originalBodyForHistory`.
+ * S1a: inbound Gemini HTTP → envelope (client-NATIVE `contents[]` body + Gemini ctx). RFC
+ * 2026-07-14 §4: parse no longer pre-translates Gemini→CC — it keeps the native body so the
+ * `client.inbound` hook (Phase 4) sees it, and the S1b `translateInbound` does the Gemini→CC
+ * translation + async system-prompt injection + sanitize + O10 + truncate baseline. Parse only
+ * snapshots the raw Gemini body, resolves the model, and creates the `gemini-generate-content` ctx
+ * with the Gemini-shape original request. `env.body` = the native `GenerateContentRequest`.
  */
-function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelope; baseline: ChatCompletionsPayload; ctx: RequestContext } {
-  // `raw.body` is the post-system-prompt CC payload (the route translated Gemini→CC
-  // and injected system-prompt); `raw.originalBodyForHistory` is the raw Gemini body.
-  // Defensively clone the Gemini body for the history snapshot (parity with the
-  // legacy `structuredClone(body)` — guards history against any later mutation of
-  // the live request object).
-  const ccBody = raw.body as ChatCompletionsPayload
-  const geminiSnapshot = structuredClone(raw.originalBodyForHistory as GenerateContentRequest)
+function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelope; ctx: RequestContext } {
+  // `raw.body` is the client-NATIVE Gemini body. Defensively clone it for the history snapshot
+  // (parity with the legacy `structuredClone(body)` — guards history against later mutation).
+  const geminiSnapshot = structuredClone(raw.body as GenerateContentRequest)
 
   const resolvedTarget = raw.preResolved ?? resolveModelTarget(modelId)
   const resolvedName = resolvedTarget.name
   const routeOverride = resolvedTarget.routeOverride
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
-
-  // Re-derive the lossy-translation dropped params from the raw Gemini body. The
-  // translation is a pure function of the body; re-running it (the route already
-  // translated for the wire body + system-prompt) yields the same droppedParams
-  // without threading a Gemini-specific field through RawHttpRequest.
-  const { droppedParams } = convertGeminiRequestToOpenAI(geminiSnapshot, { model: resolvedName, stream: ccBody.stream ?? false })
+  const stream = raw.stream ?? false
 
   const manager = getRequestContextManager()
   const reqBodySize = parseContentLength(raw.headers.get("content-length"))
@@ -282,42 +292,29 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
     // `messages` reflects the original wire shape (Gemini contents), mirroring how
     // the Anthropic handler stores Anthropic-shape messages.
     messages: projectGeminiContentsAsMessages(geminiSnapshot.contents ?? [], geminiSnapshot.systemInstruction),
-    stream: ccBody.stream ?? false,
+    stream,
     tools: geminiSnapshot.tools?.flatMap((t) => (t.functionDeclarations ?? []).map((f) => ({ name: f.name ?? "", description: f.description }))),
     payload: geminiSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
-
-  if (droppedParams.length > 0) {
-    const message = `Gemini → ChatCompletions translation dropped unsupported params: ${droppedParams.join(", ")}`
-    consola.warn(`[gemini] model=${resolvedName} ${message}`)
-    ctx.addWarningMessage({ code: DROPPED_GEMINI_PARAMS_WARNING_CODE, message })
-    ctx.recordFeature("dropped-params")
-  }
 
   ctx.setResolvedModel({
     resolved: resolvedName,
     ...(modelId !== resolvedName && { client: modelId }),
   })
 
-  // Sanitize + fill O10 (mirrors legacy prepareGeminiRequest). Unlike the CC codec
-  // (which defers O10 to prepareWire), Gemini fills it here so env.body — and thus
-  // the effective history track — carries it, matching the legacy Gemini pipeline.
-  const { payload: sanitizedPayload } = sanitizeOpenAIMessages(ccBody)
-  const filledPayload = fillMaxCompletionTokens(sanitizedPayload, selectedModel)
-
+  // env.body stays the client-NATIVE Gemini `contents[]`; S1b `translateInbound` turns it into the
+  // sanitized + O10-filled CC payload (+ droppedParams warning + the CC auto-truncate baseline).
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, // initial; the driver overwrites it after S2 routing (see lib/pipeline/router)
     ...(routeOverride && { routeOverride }),
     model: selectedModel as ResolvedModel,
-    stream: filledPayload.stream ?? false,
-    body: filledPayload,
+    stream,
+    body: geminiSnapshot,
     ctx,
   })
 
-  // The post-system-prompt, PRE-sanitize CC payload is the stable auto-truncate
-  // baseline — matching the legacy `originalPayload` (openaiPayload before sanitize).
-  return { env, baseline: ccBody, ctx }
+  return { env, ctx }
 }
 
 function parseContentLength(header: string | null): number | undefined {

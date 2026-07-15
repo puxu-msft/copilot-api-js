@@ -70,9 +70,7 @@ import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
 import { withCapturingManagerAsync } from "~/lib/context/manager"
 import { createRequestContext } from "~/lib/context/request"
-import { convertGeminiRequestToOpenAI } from "~/lib/gemini"
 import { getEntry } from "~/lib/history"
-import { resolveModelName } from "~/lib/models/resolver"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { assembleResponseRewrites } from "~/lib/pipeline/rewrite-registry"
 
@@ -264,11 +262,11 @@ function inspectFormatRequest(format: DryRunFormat, payload: Record<string, unkn
 }
 
 /**
- * Build the CC / Responses / Gemini request-side codec + RawHttpRequest. CC/Responses parse
- * read `raw.body` as their native format directly; Gemini parse expects the ALREADY-translated
- * CC body as `raw.body` + the original Gemini snapshot as `originalBodyForHistory` (the route
- * translates Gemini→CC before parse), so we mirror that translation here (the handler's
- * system-prompt injection on the CC messages is NOT mirrored — caveat).
+ * Build the CC / Responses / Gemini request-side codec + RawHttpRequest. All three parse read
+ * `raw.body` as their NATIVE format directly (RFC 2026-07-14 §4: the gemini codec's parse now keeps
+ * the native `contents[]` body — the Gemini→CC translation + system-prompt injection moved into S1b
+ * `translateInbound`, which `inspectRequest` runs, so the `translate-inbound` stage's body is the CC
+ * projection and downstream stages see CC).
  */
 function buildNonAnthropicRequest(format: Exclude<DryRunFormat, "anthropic">, payload: Record<string, unknown>): { codec: FormatCodec; raw: RawHttpRequest } {
   if (format === "openai-cc") {
@@ -283,13 +281,13 @@ function buildNonAnthropicRequest(format: Exclude<DryRunFormat, "anthropic">, pa
       raw: { body: payload, headers: new Headers(), path: "/responses", method: "POST" } as unknown as RawHttpRequest,
     }
   }
-  // Gemini: model carried in the body for the dry-run (live path takes it from the URL).
+  // Gemini: model carried in the body for the dry-run (live path takes it from the URL). Parse now
+  // takes the NATIVE Gemini body (S1b translateInbound does the Gemini→CC hop).
   const modelId = typeof payload.model === "string" ? payload.model : ""
   const geminiBody = payload as unknown as GenerateContentRequest
-  const { payload: ccPayload } = convertGeminiRequestToOpenAI(geminiBody, { model: resolveModelName(modelId), stream: false })
   const raw = {
-    body: ccPayload,
-    originalBodyForHistory: geminiBody,
+    body: geminiBody,
+    stream: false,
     headers: new Headers(),
     path: `/v1beta/models/${modelId || "gemini"}:generateContent`,
     method: "POST",

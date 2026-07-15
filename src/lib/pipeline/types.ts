@@ -208,6 +208,14 @@ export interface RawHttpRequest {
   /** Model override injected by Azure deployment routing (codec.parse reads it). */
   readonly modelOverride?: string
   /**
+   * Whether the client asked for a streaming response, when that is NOT derivable from `body`.
+   * Gemini's stream flag comes from the URL (`streamGenerateContent` vs `generateContent`), not the
+   * request body, so the route passes it here for the gemini codec's S1b `translateInbound` (RFC
+   * 2026-07-14 §4 — parse now keeps the native `contents[]` body, which has no stream field). Other
+   * codecs read stream off `body` and ignore this.
+   */
+  readonly stream?: boolean
+  /**
    * The client's raw inbound body for the history snapshot, when it differs from
    * `body`. The route applies the async, non-idempotent system-prompt injection
    * to `body` BEFORE `codec.parse` (parse is sync — P2.2-D3); it passes the

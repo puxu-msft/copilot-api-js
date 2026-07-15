@@ -67,7 +67,6 @@ import {
 import { HTTPError } from "~/lib/error"
 import {
   //
-  convertGeminiRequestToOpenAI,
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
 import { ENDPOINT } from "~/lib/models/endpoint"
@@ -86,7 +85,6 @@ import { buildAnthropicResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
 import { classifyStreamError } from "~/lib/stream"
-import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
@@ -147,19 +145,18 @@ async function runGeminiRequest(
   const { name: resolvedName, routeOverride } = resolveModelTarget(modelId)
   const selectedModel = state.modelIndex.get(resolvedName)
 
-  // Translate Gemini → CC, then inject the system-prompt on the CC messages
-  // (async, non-idempotent) BEFORE the sync codec.parse.
-  const { payload: ccPayload } = convertGeminiRequestToOpenAI(geminiBody, { model: resolvedName, stream })
-  ccPayload.messages = await processOpenAIMessages(ccPayload.messages, resolvedName, "gemini")
-
+  // Gemini→CC translation + async system-prompt injection have moved OFF the route into the gemini
+  // codec's S1b `translateInbound` (RFC 2026-07-14 §4), so `client.inbound` (Phase 4) sees the native
+  // `contents[]` body. Parse resolves the model (before translateInbound's config reload), and reads
+  // no config-managed state on the native body — so no route-level applyConfigToState is needed here.
   const bundle = buildGeminiDriver(c, modelId, resolvedName, selectedModel?.vendor)
   const { driver, codec, clientAbort, detachClientAbort } = bundle
 
   let result: DriverRequestResult
   try {
     result = await driver.runRequest({
-      body: ccPayload,
-      originalBodyForHistory: geminiBody,
+      body: geminiBody,
+      stream,
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,

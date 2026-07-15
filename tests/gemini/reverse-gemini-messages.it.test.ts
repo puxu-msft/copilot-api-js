@@ -35,7 +35,6 @@ import {
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { withCapturingManager, withCapturingManagerAsync } from "~/lib/context/manager"
-import { convertGeminiRequestToOpenAI } from "~/lib/gemini"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
@@ -72,9 +71,10 @@ function makeReverseDriver(upstream: UpstreamStream) {
 const anthropicEvent = (obj: unknown): ServerSentEventMessage => ({ data: JSON.stringify(obj), event: (obj as { type: string }).type })
 
 /** The gemini route translates Gemini→CC BEFORE codec.parse; the codec.parse consumes the CC body + raw Gemini. */
-function rawFor(geminiBody: unknown, stream: boolean, nonStreamModel = "claude-x@messages"): RawHttpRequest {
-  const { payload: ccPayload } = convertGeminiRequestToOpenAI(geminiBody as never, { model: nonStreamModel, stream })
-  return { body: ccPayload, originalBodyForHistory: geminiBody, headers: new Headers(), path: "/v1beta/models/claude-x:streamGenerateContent", method: "POST" } as unknown as RawHttpRequest
+function rawFor(geminiBody: unknown, stream: boolean, _nonStreamModel = "claude-x@messages"): RawHttpRequest {
+  // RFC 2026-07-14 §4: the gemini codec's parse now takes the client-NATIVE Gemini body (the
+  // Gemini→CC translation moved into S1b `translateInbound`); the route no longer pre-translates.
+  return { body: geminiBody, stream, headers: new Headers(), path: "/v1beta/models/claude-x:streamGenerateContent", method: "POST" } as unknown as RawHttpRequest
 }
 
 /** Collect the text + functionCall names from forwarded Gemini frames (independent consumer oracle). */
