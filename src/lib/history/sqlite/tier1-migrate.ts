@@ -240,6 +240,23 @@ export function runTier1MigrationOnce(main: Database, opts: { hotDays: number; b
   return migrateEntriesToTier1(main, ids)
 }
 
+/**
+ * Drain the entire >hot_days backlog by calling `runTier1MigrationOnce` in bounded
+ * batches until a pass moves 0 rows (or a safety bound is hit). Shared by the
+ * startup cool-down (startHistoryBackfills) and the manual on-demand cool-down
+ * endpoint. Returns the TOTAL number moved across all batches this call.
+ */
+export function drainTier1Backlog(main: Database, opts: { hotDays: number; batchSize: number; maxBatches?: number }): number {
+  let total = 0
+  let guard = opts.maxBatches ?? 10_000
+  while (guard-- > 0) {
+    const n = runTier1MigrationOnce(main, opts)
+    if (n === 0) break
+    total += n
+  }
+  return total
+}
+
 /** Whether HOT→TIER-1 migration should run (config gate). */
 export function isArchiveEnabled(): boolean {
   return state.historyArchiveEnabled

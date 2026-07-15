@@ -38,6 +38,7 @@ export {
   setHistoryPublisher,
   setPinned,
   shutdownHistory,
+  runArchiveCooldownNow,
   startHistoryBackfills,
   startSearchIndexBackfill,
   stopHistoryBackgroundWork,

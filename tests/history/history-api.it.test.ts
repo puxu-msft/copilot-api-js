@@ -34,11 +34,13 @@ import {
 } from "~/lib/history"
 import { persistEntryEager } from "~/lib/history/store"
 import { closeArchiveDb } from "~/lib/history/sqlite/archive-db"
+import { getDatabase } from "~/lib/history/sqlite/connection"
 import { querySummaries } from "~/lib/history/sqlite/read"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 import {
   //
+  handleArchiveCooldown,
   handleArchiveNow,
   handleExport,
   handleGetEntries,
@@ -56,6 +58,7 @@ app.get("/api/entries/:id", handleGetEntry)
 app.post("/api/entries/:id/pin", handlePinEntry)
 app.post("/api/entries/:id/unpin", handleUnpinEntry)
 app.post("/api/archive-now", handleArchiveNow)
+app.post("/api/archive-cooldown", handleArchiveCooldown)
 app.get("/api/stats", handleGetStats)
 app.get("/api/export", handleExport)
 
@@ -395,6 +398,29 @@ describe("POST /api/archive-now", () => {
     // Only the non-matching entry survives in HOT.
     const list = await json<{ entries: Array<{ id: string }> }>(await get("/api/entries?terminalOnly=true"))
     expect(list.entries.map((e) => e.id)).toEqual([openai.id])
+  })
+})
+
+// ─── handleArchiveCooldown (age-based on-demand cool-down) ───
+
+describe("POST /api/archive-cooldown", () => {
+  test("moves only rows older than hot_days into tier-1; recent rows stay HOT", async () => {
+    setStateForTests({ historyArchiveHotDays: 3 })
+    const old = await createEntry("anthropic-messages", "test", [{ role: "user", content: "old" }])
+    const recent = await createEntry("anthropic-messages", "test", [{ role: "user", content: "recent" }])
+    // backdate `old` past the hot window (createEntry stamps started_at ≈ now).
+    getDatabase()
+      .prepare("UPDATE entries_v2 SET started_at = ? WHERE id = ?")
+      .run(Date.now() - 5 * 86400_000, old.id)
+
+    const res = await post("/api/archive-cooldown")
+    expect(res.status).toBe(200)
+    expect(await json<{ success: boolean; migrated: number }>(res)).toEqual({ success: true, migrated: 1 })
+
+    // old → archive view (cooled), recent stays in HOT view.
+    expect(querySummaries({ tier: "archive", limit: 100 }).map((s) => s.id)).toEqual([old.id])
+    const hot = await json<{ entries: Array<{ id: string }> }>(await get("/api/entries?terminalOnly=true"))
+    expect(hot.entries.map((e) => e.id)).toEqual([recent.id])
   })
 })
 

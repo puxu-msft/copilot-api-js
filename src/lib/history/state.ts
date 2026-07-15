@@ -37,7 +37,7 @@ import {
   isArchiveOpen,
   migrateArchiveDb,
 } from "./sqlite/archive-db"
-import { runTier1MigrationOnce } from "./sqlite/tier1-migrate"
+import { drainTier1Backlog } from "./sqlite/tier1-migrate"
 import { startTier2Seal } from "./sqlite/tier2-seal"
 import {
   //
@@ -281,13 +281,30 @@ export function startHistoryBackfills(): void {
     void migrateArchiveDb()
       .then(() => {
         // Drain the >hot_days backlog in bounded batches (resumable) until caught up.
-        const main = getDatabase()
-        let guard = 10_000
-        while (guard-- > 0 && runTier1MigrationOnce(main, { hotDays: state.historyArchiveHotDays, batchSize: 200 }) > 0) {
-          /* keep draining */
-        }
+        drainTier1Backlog(getDatabase(), { hotDays: state.historyArchiveHotDays, batchSize: 200 })
         startTier2Seal()
       })
       .catch((err: unknown) => consola.warn("[history/archive] startup archive work failed", err))
+  }
+}
+
+/**
+ * Manual on-demand cool-down (API `POST /history/api/archive-cooldown`): run the
+ * SAME age-based HOT→tier-1 migration the startup + periodic passes run — drain the
+ * whole >hot_days backlog now, without waiting for the reaper tick. Respects
+ * `hot_days` (only rows older than it move) and pinned exemption. Distinct from
+ * `archiveNow` (which force-archives all/filtered rows regardless of age). Ensures
+ * archive.db is attached first. Returns the total number cooled down; 0 when
+ * archiving is disabled / not attachable. Never throws.
+ */
+export function runArchiveCooldownNow(): number {
+  if (!enabled || !isDatabaseOpen() || !state.historyArchiveEnabled) return 0
+  try {
+    const main = getDatabase()
+    ensureArchiveAttachedToMain(main)
+    return drainTier1Backlog(main, { hotDays: state.historyArchiveHotDays, batchSize: 200 })
+  } catch (err: unknown) {
+    consola.warn("[history/archive] manual cool-down failed", err)
+    return 0
   }
 }

@@ -36,6 +36,7 @@ export {
   historyState,
   initHistory,
   isHistoryEnabled,
+  runArchiveCooldownNow,
   setHistoryMaxEntries,
   setHistoryPublisher,
   shutdownHistory,

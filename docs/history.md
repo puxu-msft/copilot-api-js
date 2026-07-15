@@ -190,7 +190,8 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 | `POST /history/api/entries/:id/pin` | 钉住该 entry（`pinned=1`）：豁免 reaper 淘汰+计数 **+ 永不降温（永驻 HOT）**，返回更新后的完整 entry；未知 id → 404 |
 | `POST /history/api/entries/:id/unpin` | 取消钉住（`pinned=0`），恢复正常淘汰/降温资格；返回更新后的完整 entry |
 | `GET /history/api/sessions` | 列出 per-session 聚合摘要（`?limit=N`）。**无独立 session-detail 端点**——某 session 的 entries 经 `GET /history/api/entries?sessionId=<id>` 取 |
-| `POST /history/api/archive-now` | **立即归档**（产品面删除的替代，spec §3.6）：移动匹配 list 过滤（或全部）的终态非 pinned HOT 行到 tier-1 冷归档（`{success, archived}`），**永不真删**。取代已移除的 `DELETE /api/entries` + `DELETE /api/sessions/:id`（其 SQL 原语 `clearAllEntries`/`deleteEntries`/`deleteSession` 保留为 test-only 内部、不再 HTTP 暴露） |
+| `POST /history/api/archive-now` | **立即归档**（产品面删除的替代，spec §3.6）：移动匹配 list 过滤（或全部）的终态非 pinned HOT 行到 tier-1 冷归档（`{success, archived}`），**永不真删**、**忽略年龄**。取代已移除的 `DELETE /api/entries` + `DELETE /api/sessions/:id`（其 SQL 原语 `clearAllEntries`/`deleteEntries`/`deleteSession` 保留为 test-only 内部、不再 HTTP 暴露） |
+| `POST /history/api/archive-cooldown` | **手动触发标准年龄降温**：立即跑一次 `> hot_days` 的 HOT→tier-1 降温（同启动 + reaper 周期），排空旧数据 backlog（`{success, migrated}`）。**遵 hot_days**（只搬超龄行）+ pinned 豁免——区别于 `archive-now`（忽略年龄强制归档） |
 | `GET /history/api/stats` | 聚合统计数据 |
 | `GET /history/api/entries/:id/export` | 单条 entry 导出：`getEntry` 规范全量形式（所有 stage / per-attempt sseEvents / 各腿 headers）经 `compressAsync` 服务端 zstd 压缩为 `.json.zst` 附件（`Content-Type: application/zstd`）；未知 id → 404。两套前端 UI（`ui/` + `ui-v4/`）的 Export 按钮都走它 |
 | `GET /history/api/export` | 导出全部历史（JSON/CSV，明文；与单条 zst 导出并存） |

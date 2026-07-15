@@ -9,6 +9,7 @@ import {
   getSessionSummaries,
   getStats,
   isHistoryEnabled,
+  runArchiveCooldownNow,
   searchContains,
   searchHistory,
   setPinned,
@@ -190,6 +191,22 @@ export function handleArchiveNow(c: Context) {
   const hasFilter = Object.values(filters).some((v) => v !== undefined)
   const archived = archiveNow(hasFilter ? filters : undefined)
   return c.json({ success: true, archived })
+}
+
+/**
+ * POST /history/api/archive-cooldown — run the standard AGE-based HOT→tier-1
+ * cool-down on demand (the same pass the startup + periodic reaper run), draining
+ * the whole `> hot_days` backlog now without waiting for the next reaper tick.
+ * RESPECTS `hot_days` (only rows older than it move) + pinned exemption — distinct
+ * from `archive-now`, which force-archives all/filtered rows regardless of age.
+ * Returns `{ success, migrated: N }`.
+ */
+export function handleArchiveCooldown(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+  const migrated = runArchiveCooldownNow()
+  return c.json({ success: true, migrated })
 }
 
 export function handleGetStats(c: Context) {

@@ -2,6 +2,7 @@ import { Hono } from "hono"
 
 import {
   //
+  handleArchiveCooldown,
   handleArchiveNow,
   handleExport,
   handleExportEntry,
@@ -37,6 +38,9 @@ historyRoutes.post("/api/entries/:id/unpin", handleUnpinEntry)
 // "archive now" (HOT→tier-1 move, never a delete). The delete SQL primitives
 // stay as test-only internals; they are no longer HTTP-exposed.
 historyRoutes.post("/api/archive-now", handleArchiveNow)
+// Age-based on-demand cool-down: run the standard `> hot_days` HOT→tier-1 pass now
+// (respects hot_days; distinct from archive-now which force-archives regardless of age).
+historyRoutes.post("/api/archive-cooldown", handleArchiveCooldown)
 historyRoutes.get("/api/stats", handleGetStats)
 historyRoutes.get("/api/sessions", handleGetSessions)
 historyRoutes.get("/api/export", handleExport)
