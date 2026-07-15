@@ -26,6 +26,8 @@ export {
 } from "./cc-to-anthropic-stream"
 export type { CcToAnthropicStreamMeta, CcToAnthropicStreamStep, CcToAnthropicStreamTranslator } from "./cc-to-anthropic-stream"
 export { splitInstructionsAndConversation, translateChatCompletionsToResponses } from "./cc-to-responses"
+export { translateResponsesResponseToAnthropic } from "./responses-to-anthropic"
+export type { ResponsesToAnthropicResult, TranslatedAnthropicResponseFromResponses, TranslatedAnthropicUsageFromResponses } from "./responses-to-anthropic"
 export { translateResponsesResponseToCC } from "./responses-to-cc"
 export {
   //

@@ -74,7 +74,7 @@ import {
   translateAnthropicToResponses,
   translateCCResponseToAnthropic,
   translateChatCompletionsToAnthropic,
-  translateResponsesResponseToCC,
+  translateResponsesResponseToAnthropic,
   translateResponsesToChatCompletions,
   type TranslateExchangeContext,
 } from "~/lib/openai/translate"
@@ -212,10 +212,16 @@ const ccUpstreamToAnthropicResponseBridge: ResponseBridge = (upstream) => {
   return { rendered: response, contentFiltered }
 }
 
-/** FORWARD `/responses` | `ws:/responses` leg (anthropic client): two-hop (WARN-F) Responses → CC → Anthropic. */
+/**
+ * FORWARD `/responses` | `ws:/responses` leg (anthropic client): DIRECT bridge (RFC
+ * 2026-07-14-anthropic-responses-direct-bridge §3/§4.1) — a single-hop Responses → Anthropic walk,
+ * skipping the CC intermediate (was a two-hop Responses → CC → Anthropic, WARN-F). Reached ONLY by the
+ * anthropic codec's `renderResponseNonStreaming` for its FORWARD `@responses` leg — the openai-cc/gemini
+ * via-responses cells call `translateResponsesResponseToCC` directly (never this bridge-table entry), so
+ * swapping this one cell does not affect them.
+ */
 const responsesUpstreamToAnthropicResponseBridge: ResponseBridge = (upstream) => {
-  const cc = translateResponsesResponseToCC(upstream as ResponsesResponse)
-  const { response, contentFiltered } = translateCCResponseToAnthropic(cc)
+  const { response, contentFiltered } = translateResponsesResponseToAnthropic(upstream as ResponsesResponse)
   return { rendered: response, contentFiltered }
 }
 
