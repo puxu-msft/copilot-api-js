@@ -189,6 +189,7 @@ function buildEffectiveConfig(): Record<string, unknown> {
   out.showGitHubToken = state.showGitHubToken
   out.tokenBasedBilling = state.tokenBasedBilling
   out.modelMappings = state.modelMappings
+  out.modelTranslation = state.modelTranslation
   out.rateLimiter = state.adaptiveRateLimitConfig ?? null
 
   return out
@@ -262,6 +263,7 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "system_prompt_prepend")) setScalar(doc, ["system_prompt_prepend"], body.system_prompt_prepend)
   if (hasOwn(body, "system_prompt_append")) setScalar(doc, ["system_prompt_append"], body.system_prompt_append)
   if (hasOwn(body, "model_mappings")) replaceCollection(doc, ["model_mappings"], body.model_mappings)
+  if (hasOwn(body, "model_translation")) replaceCollection(doc, ["model_translation"], body.model_translation)
   if (hasOwn(body, "system_prompt_overrides")) {
     replaceCollection(doc, ["system_prompt_overrides"], body.system_prompt_overrides)
   }

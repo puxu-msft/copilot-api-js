@@ -27,6 +27,7 @@ import {
   setHistoryConfig,
   setHooksConfig,
   setModelMappings,
+  setModelTranslation,
   setNegotiationConfig,
   setResponsesConfig,
   setShutdownConfig,
@@ -772,6 +773,13 @@ export async function applyConfigToState(): Promise<Config> {
   // omitting the key keeps the prior runtime value.
   if (config.model_mappings !== undefined) {
     setModelMappings(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_MAPPINGS, ...config.model_mappings }, "model_mappings"))
+  }
+
+  // model_translation: retain-on-absence (mirrors model_mappings). An explicit
+  // `model_translation: {}` clears to defaults (empty — every pair falls back to
+  // scenario A); missing key keeps the prior runtime value.
+  if (config.model_translation !== undefined) {
+    setModelTranslation(config.model_translation)
   }
 
   // Disabled models: retain-on-absence. An explicit empty list clears; missing

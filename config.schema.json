@@ -1696,6 +1696,50 @@
         }
       ]
     },
+    "model_translation": {
+      "anyOf": [
+        {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "enum": [
+              "anthropic-messages",
+              "openai-cc",
+              "openai-responses",
+              "gemini"
+            ]
+          },
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "match": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "features": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "strip-thinking-signature"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "match"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "disabled_models": {
       "anyOf": [
         {

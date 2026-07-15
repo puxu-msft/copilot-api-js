@@ -1,6 +1,7 @@
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
 import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
+import type { ModelTranslation } from "~/lib/config/schema"
 import type {
   //
   Model,
@@ -501,6 +502,19 @@ export interface State {
    * Defaults to DEFAULT_MODEL_MAPPINGS; config.yaml top-level `model_mappings` replaces entirely.
    */
   readonly modelMappings: Record<string, string>
+
+  /**
+   * Per-pair (ingress format → match rule list) translation feature declarations
+   * (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1, Phase 7). Consumed via
+   * `resolveTranslationFeatures()` (~/lib/config/model-translation) by the
+   * format-agnostic bridge-selection layer — NOT read per-cell `translateOut`, to
+   * keep the two round-trip scenarios (stable model vs mid-conversation model
+   * switch) from drifting out of sync across call sites (Phase 5 consumer).
+   * Defaults to `{}` (no declared pairs — every pair resolves to scenario A, full
+   * round-trip, no stripped features). Hot-reloadable: entirely replaced on config
+   * reload (including to `{}` on deletion), mirroring `modelMappings`.
+   */
+  readonly modelTranslation: ModelTranslation
 
   /**
    * Model IDs to hide from the available models list, even when Copilot
@@ -1004,6 +1018,15 @@ function cloneBufferedRetryOverrides(source: Record<string, Partial<BufferedRetr
   return out
 }
 
+/** Deep-clone `modelTranslation` (ingress → rule list, each rule its own object with its own `features` array). */
+function cloneModelTranslation(source: ModelTranslation): ModelTranslation {
+  const out: ModelTranslation = {}
+  for (const [ingress, rules] of Object.entries(source) as Array<[keyof ModelTranslation, NonNullable<ModelTranslation[keyof ModelTranslation]>]>) {
+    out[ingress] = rules.map((rule) => ({ ...rule, features: rule.features ? [...rule.features] : undefined }))
+  }
+  return out
+}
+
 function cloneState(source: MutableState): MutableState {
   return {
     ...source,
@@ -1012,6 +1035,7 @@ function cloneState(source: MutableState): MutableState {
     modelIds: new Set(source.modelIds),
     modelIndex: new Map(source.modelIndex),
     modelMappings: { ...source.modelMappings },
+    modelTranslation: cloneModelTranslation(source.modelTranslation),
     toolSearchOverrides: { ...source.toolSearchOverrides },
     errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
     effortsOverrides: { ...source.effortsOverrides },
@@ -1058,6 +1082,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("modelMappings" in patch) {
     cloned.modelMappings = patch.modelMappings ? { ...patch.modelMappings } : undefined
+  }
+  if ("modelTranslation" in patch) {
+    cloned.modelTranslation = patch.modelTranslation ? cloneModelTranslation(patch.modelTranslation) : undefined
   }
   if ("toolSearchOverrides" in patch) {
     cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
@@ -1324,6 +1351,10 @@ export function setModelMappings(modelMappings: Record<string, string>): void {
   updateState({ modelMappings })
 }
 
+export function setModelTranslation(modelTranslation: ModelTranslation): void {
+  updateState({ modelTranslation })
+}
+
 /**
  * Replace the per-model stream-idle / response-header timeout override maps.
  * Replace semantics per field (the maps are already per-key merged with the
@@ -1577,6 +1608,9 @@ export function rebuildModelIndex(): void {
  */
 export const DEFAULT_MODEL_MAPPINGS: Record<string, string> = {}
 
+/** Built-in `model_translation` mapping. Intentionally EMPTY — see {@link DEFAULT_MODEL_MAPPINGS} rationale. */
+export const DEFAULT_MODEL_TRANSLATION: ModelTranslation = {}
+
 /**
  * Default values for config-managed scalar/runtime fields.
  * Single source of truth for mutableState initialization and resetConfigManagedState().
@@ -1813,6 +1847,7 @@ export function resetConfigManagedState(): void {
     fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
   })
   setModelMappings({ ...DEFAULT_MODEL_MAPPINGS })
+  setModelTranslation(cloneModelTranslation(DEFAULT_MODEL_TRANSLATION))
   setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
   setTimeoutConfig({
     responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
@@ -1959,6 +1994,7 @@ const mutableState: MutableState = {
   modelIds: new Set(),
   modelIndex: new Map(),
   modelMappings: { ...DEFAULT_MODEL_MAPPINGS },
+  modelTranslation: cloneModelTranslation(DEFAULT_MODEL_TRANSLATION),
   rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
   shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,

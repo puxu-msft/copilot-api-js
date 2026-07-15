@@ -45,6 +45,7 @@ import {
   //
   CONFIG_MANAGED_DEFAULTS,
   DEFAULT_MODEL_MAPPINGS,
+  DEFAULT_MODEL_TRANSLATION,
   onHistoryLimitChange,
   resetConfigManagedState,
   restoreStateForTests,
@@ -763,6 +764,19 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     // merged on top of DEFAULT_MODEL_MAPPINGS
     expectedStateValue: { ...DEFAULT_MODEL_MAPPINGS, "custom-alias": "claude-opus-4.6" },
     defaultStateValue: DEFAULT_MODEL_MAPPINGS,
+  },
+  {
+    // model_translation: retain-on-absence (mirrors model_mappings), but the config
+    // schema (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1, Phase 7) is a
+    // per-ingress list of rules, not a flat scalar map — applyConfigToState() REPLACES
+    // wholesale (no per-key merge like model_mappings; every declared ingress is
+    // user-owned) so expectedStateValue is exactly the sample, not merged with any
+    // built-in default (DEFAULT_MODEL_TRANSLATION is `{}`).
+    configKey: "model_translation",
+    stateKey: "modelTranslation",
+    sampleYamlValue: `\n  anthropic-messages:\n    - match: gpt-5.5@openai-responses\n      features:\n        - strip-thinking-signature`,
+    expectedStateValue: { "anthropic-messages": [{ match: "gpt-5.5@openai-responses", features: ["strip-thinking-signature"] }] },
+    defaultStateValue: DEFAULT_MODEL_TRANSLATION,
   },
   {
     configKey: "disabled_models",

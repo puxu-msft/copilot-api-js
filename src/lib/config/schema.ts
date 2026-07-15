@@ -895,6 +895,58 @@ const ModelMappingsSchema = z.record(z.string(), z.string()).superRefine((value,
 })
 
 /**
+ * Ingress format enum for `model_translation` (RFC §6.1) — the client's inbound
+ * protocol, mirroring `ClientFormat` in `~/lib/pipeline/envelope.ts` but spelled
+ * out with the `-messages`/`-cc`/`-responses` suffixes to match the vendor-scoped
+ * naming used elsewhere in config (`ENDPOINT_SCOPE_VALUES` uses the terser
+ * `anthropic`/`openai-cc`/`openai-responses`/`gemini` form for a different concern —
+ * this is intentionally its own enum, not a reuse, since the two config surfaces
+ * are allowed to diverge without one accidentally constraining the other).
+ */
+export const MODEL_TRANSLATION_INGRESS_VALUES = ["anthropic-messages", "openai-cc", "openai-responses", "gemini"] as const
+
+/**
+ * Per-pair translation features (RFC §6.1) — declared per `(ingress, model@format)`
+ * match to disambiguate the two round-trip scenarios a proxy cannot infer on its
+ * own (stable-model full round-trip vs mid-conversation model switch, where a
+ * carried-over `signature`/`encrypted_content` from a DIFFERENT upstream model is no
+ * longer valid and must be stripped rather than round-tripped). Currently a single
+ * feature; the array shape is deliberately open for future additions.
+ */
+export const MODEL_TRANSLATION_FEATURE_VALUES = ["strip-thinking-signature"] as const
+
+/**
+ * A single `model_translation` match rule: `match` pins a `<model>@<format>` pair
+ * against the FINAL routed target (post `model_mappings` resolution, post router
+ * decision — never the client's raw requested model name; see RFC §6.1). `features`
+ * lists which translation features apply to that pair; omitted/empty = scenario A
+ * (full round-trip, no stripping).
+ *
+ * v1 `match` is EXACT-STRING ONLY (no wildcard/glob) — RFC §6.1 OQ2 defers wildcard
+ * support (`*@openai-responses`) to a future extension; this schema doesn't need to
+ * change to add it later (a superset string syntax parsed downstream), so no
+ * placeholder is added here.
+ */
+const ModelTranslationRuleSchema = z
+  .object({
+    match: z.string({ error: STRING_MSG }).min(1, "match must be a non-empty string"),
+    features: z.array(z.enum(MODEL_TRANSLATION_FEATURE_VALUES)).optional(),
+  })
+  .strict()
+
+/**
+ * `model_translation` (RFC §6.1): per-ingress-format list of per-pair translation
+ * rules. Key = ingress format (client's inbound protocol); value = ordered rule
+ * list, first match wins (mirrors `findMostSpecific`-style config precedent but
+ * simpler — v1 has no specificity ranking since match is exact-string only).
+ *
+ * `z.partialRecord` (not `z.record`) so an unrecognized ingress key raises a
+ * standard `invalid_key` issue on THAT key alone — `cleanInvalidPaths()` drops
+ * just the offending ingress entry (warn-and-continue, never fails config load).
+ */
+const ModelTranslationSchema = z.partialRecord(z.enum(MODEL_TRANSLATION_INGRESS_VALUES), z.array(ModelTranslationRuleSchema))
+
+/**
  * Explicit upstream GHC API base URL. Overrides the URL derived from
  * `accountType`. Useful when routing through a self-hosted GHC proxy or
  * when upstream's hostname-by-account-type convention doesn't fit the
@@ -998,6 +1050,18 @@ export const ConfigSchema = z
     model_mappings: ModelMappingsSchema.nullable()
       .transform((v): z.infer<typeof ModelMappingsSchema> | undefined => v ?? undefined)
       .optional(),
+    /**
+     * Per-pair (ingress format → match rule list) translation feature declarations
+     * (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1). Consumed by the
+     * format-agnostic bridge-selection layer (Phase 5), not per-cell translateOut —
+     * keeps the two round-trip scenarios (stable model vs mid-conversation switch)
+     * from drifting out of sync across call sites. Default (key absent, or ingress
+     * present with an empty/absent rule list) = scenario A, full round-trip, no
+     * features stripped.
+     */
+    model_translation: ModelTranslationSchema.nullable()
+      .transform((v): z.infer<typeof ModelTranslationSchema> | undefined => v ?? undefined)
+      .optional(),
     disabled_models: nullableNonemptyStringArray(),
     /**
      * Reactive-retry budget shared by ALL retry strategies (400-class negotiation,
@@ -1097,4 +1161,8 @@ export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
 export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
+export type ModelTranslationIngress = (typeof MODEL_TRANSLATION_INGRESS_VALUES)[number]
+export type ModelTranslationFeature = (typeof MODEL_TRANSLATION_FEATURE_VALUES)[number]
+export type ModelTranslationRule = z.infer<typeof ModelTranslationRuleSchema>
+export type ModelTranslation = z.infer<typeof ModelTranslationSchema>
 export type Config = z.infer<typeof ConfigSchema>
