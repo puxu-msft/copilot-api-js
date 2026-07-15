@@ -1,6 +1,6 @@
 # RFC：对称四点 hook 模型 + 统一翻译进 driver
 
-> 状态：**定稿 v2**（2026-07-14，1 轮对抗评审 + 主会话 grep 双重核实，两 HIGH/两 MEDIUM 已整合，client.outbound phasing 需求方已拍板 §10）→ 待写分 phase 实施计划。大型架构重构，走 RFC-first（skill `large-refactor`）。
+> 状态：**已实施**（2026-07-14→15，worktree `feat/hook-symmetric-4point`，7 phase 提交 e4e01b76→a05436a9；1 轮对抗评审 + verifier 验收）。大型架构重构，走 RFC-first（skill `large-refactor`）。实施期修正：① loader 从 data-URL 改项目内唯一文件（data-URL 不解析 `~/` 别名，spec 头部详）；② 各格式 config-freshness 前置按「parse 是否读 config 态」分治（cc 无条件 applyConfigToState / anthropic 条件 `if(payload.system)` / responses·gemini 不加）。
 > 关联：hook 机制细节权威 [spec 2026-07-12-upstream-hook-middleware.md](../spec/2026-07-12-upstream-hook-middleware.md)（v3）；可行性实测 [PoC FINDINGS](../../exp/hook-symmetric-4point/FINDINGS.md)；shipped v2 ADR [2026-07-12-driver-orchestrated-upstream-hooks.md](../decisions/2026-07-12-driver-orchestrated-upstream-hooks.md)；被本 RFC 吸收/升级的重命名 plan [2026-07-14-upstream-hook-v3-rename-migration.md](../plan/2026-07-14-upstream-hook-v3-rename-migration.md)。
 
 ## 1. 动机与决策
