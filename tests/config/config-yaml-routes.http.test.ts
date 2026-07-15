@@ -1182,4 +1182,95 @@ anthropic:
     expect(written).toContain("thinking_block_sanitize: all_empty")
     expect(written).toContain("tool_dedup_calls: result")
   })
+
+  test("PUT /api/config/yaml deep-merges upstream_transport.http2 instead of whole-replacing the section (B9)", async () => {
+    await writeConfig(`
+upstream_transport:
+  http2:
+    ping_interval: 30
+    session_connect_timeout: 5
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        upstream_transport: { http2: { session_connect_timeout: 8 } },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).toContain("ping_interval: 30")
+    expect(written).toContain("session_connect_timeout: 8")
+  })
+
+  test("PUT /api/config/yaml null-deletes a single leaf inside upstream_transport.http2 while preserving its sibling (B9)", async () => {
+    await writeConfig(`
+upstream_transport:
+  http2:
+    ping_interval: 30
+    session_connect_timeout: 5
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        upstream_transport: { http2: { ping_interval: null } },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("ping_interval")
+    expect(written).toContain("session_connect_timeout: 5")
+  })
+
+  test("PUT /api/config/yaml anthropic.buffered_retry deep-merges instead of whole-replacing (B9, existing field switched to new semantics)", async () => {
+    await writeConfig(`
+anthropic:
+  buffered_retry:
+    max_retries: 5
+    heartbeat_sec: 20
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        anthropic: { buffered_retry: { max_retries: 9 } },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).toContain("heartbeat_sec: 20")
+    expect(written).toContain("max_retries: 9")
+  })
+
+  test("PUT /api/config/yaml sending null for a whole nested sub-object still deletes it entirely (regression, any depth)", async () => {
+    await writeConfig(`
+anthropic:
+  buffered_retry:
+    max_retries: 5
+    heartbeat_sec: 20
+  tool_strip_read_result_tags: true
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        anthropic: { buffered_retry: null },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("buffered_retry")
+    expect(written).not.toContain("max_retries")
+    expect(written).not.toContain("heartbeat_sec")
+    expect(written).toContain("tool_strip_read_result_tags: true")
+  })
 })

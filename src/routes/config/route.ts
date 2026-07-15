@@ -340,6 +340,25 @@ function setScalar(doc: ConfigDocument, path: Array<string>, value: unknown): vo
   doc.setIn(path, value)
 }
 
+/**
+ * Recursively merge `value`'s keys into `doc` at `path`. A nested plain-object
+ * child recurses into a fresh merge at the child path (so untouched sibling
+ * keys survive at EVERY nesting depth, not just the top one); `null`/
+ * `undefined` deletes that exact key at any depth (`setScalar` already
+ * handles this); any other value (scalar, array) is written wholesale.
+ *
+ * Used to stop recursing after the first level: a nested-object CHILD value
+ * (e.g. `anthropic.buffered_retry`, `upstream_transport.http2`) was handed to
+ * `setScalar`, which does `doc.setIn(childPath, wholeObject)` — silently
+ * replacing the entire child node and erasing sibling fields the PUT body
+ * didn't mention (`ping_interval` disappearing when a PUT only sent
+ * `session_connect_timeout`). Recursing keeps every already-existing sibling
+ * untouched at any depth, matching this API's "sparse override" PUT
+ * semantics (`docs/spec/2026-07-14-upstream-transport-config-reorg.md` §5 —
+ * user decision; `anthropic.buffered_retry`, the one existing field that hit
+ * this bug, switches to the same semantics too — no back-compat burden for a
+ * config PUT behavior change).
+ */
 function setNestedScalarContainer(doc: ConfigDocument, path: Array<string>, value: unknown, options?: { excludeKeys?: Set<string> }): void {
   if (value === null || value === undefined) {
     doc.deleteIn(path)
@@ -349,7 +368,9 @@ function setNestedScalarContainer(doc: ConfigDocument, path: Array<string>, valu
 
   for (const [key, child] of Object.entries(value)) {
     if (options?.excludeKeys?.has(key)) continue
-    setScalar(doc, [...path, key], child)
+    const childPath = [...path, key]
+    if (isPlainObject(child)) setNestedScalarContainer(doc, childPath, child)
+    else setScalar(doc, childPath, child)
   }
 }
 
