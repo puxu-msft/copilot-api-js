@@ -2,6 +2,7 @@ import consola from "consola"
 import fs from "node:fs"
 import path from "node:path"
 
+import { PATHS } from "~/lib/config/paths"
 import { state } from "~/lib/state"
 
 import type { Database } from "./connection"
@@ -31,15 +32,27 @@ const BUSY_TIMEOUT_MS = 5000
 let db: Database | null = null
 let openedPath: string | null = null
 
-/** Resolve the archive.db path from config: `<archive.dir or history.db dir>/archive.db`. */
-export function resolveArchiveDbPath(dir: string, historyDbPath: string): string {
-  const baseDir = dir !== "" ? dir : path.dirname(historyDbPath)
-  return path.join(baseDir, "archive.db")
+/**
+ * Effective HOT db path — mirrors initHistory's `state.historyDbPath || PATHS.HISTORY_DB`
+ * so the archive lands NEXT TO the real history.db, not in cwd when the config path is
+ * empty (a "" historyDbPath means "use the default", NOT "current directory").
+ */
+function effectiveHistoryDbPath(historyDbPath: string): string {
+  return historyDbPath || PATHS.HISTORY_DB
 }
 
-/** Directory holding archive.db + the numbered tier-2 seal-unit files. */
+/** Resolve the archive.db path: an explicit `dir` wins (file archive even for an in-memory HOT); otherwise it goes next to the effective history.db, and an in-memory HOT with no explicit dir → `:memory:` (ephemeral, no file). */
+export function resolveArchiveDbPath(dir: string, historyDbPath: string): string {
+  if (dir !== "") return path.join(dir, "archive.db")
+  const effective = effectiveHistoryDbPath(historyDbPath)
+  if (effective === ":memory:") return ":memory:"
+  return path.join(path.dirname(effective), "archive.db")
+}
+
+/** Directory holding archive.db + the numbered tier-2 seal-unit files. An explicit `dir` wins; else the effective history.db dir. */
 export function resolveArchiveDir(dir: string, historyDbPath: string): string {
-  return dir !== "" ? dir : path.dirname(historyDbPath)
+  if (dir !== "") return dir
+  return path.dirname(effectiveHistoryDbPath(historyDbPath))
 }
 
 /**
@@ -137,6 +150,10 @@ export function ensureArchiveAttachedToMain(main: Database): void {
   const attached = (main.prepare("PRAGMA database_list").all() as Array<{ name: string }>).some((r) => r.name === "archive")
   if (attached) return
   const dbPath = resolveArchiveDbPath(state.historyArchiveDir, state.historyDbPath)
+  // Ephemeral HOT (`:memory:`) → no persistent archive (nothing to cool down to a
+  // durable tier). Skip the attach; the reaper falls back to its legacy in-memory
+  // trimming. Prevents writing a stray archive.db into cwd during tests/ephemeral runs.
+  if (dbPath === ":memory:") return
   if (!isArchiveOpen()) openArchiveDb(dbPath)
   attachArchive(main, dbPath)
 }
