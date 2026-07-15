@@ -143,7 +143,7 @@ import {
   resolveBufferedCaps,
   state,
 } from "~/lib/state"
-import { processAnthropicSystem } from "~/lib/system-prompt"
+import { applyConfigToState } from "~/lib/config/config"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
@@ -215,10 +215,16 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
   // inboundRequest; the wire body below is the server-modified form).
   const clientRaw = structuredClone(payload)
 
-  // System-prompt collection + config overrides (async, non-idempotent) on the
-  // model-resolved wire body, BEFORE the sync codec.parse.
+  // System-prompt injection (async, non-idempotent) has moved OFF the route into the anthropic
+  // codec's S1b `translateInbound` (RFC 2026-07-14 §4) so `client.inbound` (Phase 4) sees the
+  // client-native `system`. Config freshness stays a route concern: anthropic parse reads
+  // config-managed state (`state.sanitizeToolNames` → the tool-name mapper), and the legacy flow
+  // reloaded config before parse ONLY when a system was present (processAnthropicSystem early-returns
+  // otherwise) — so this reload is guarded on `payload.system` to preserve that exact conditionality
+  // (an unconditional reload would reset config state that system-less tests set up). Model resolved
+  // just above, before the reload — legacy order preserved.
   const wireBody: MessagesPayload = { ...payload, model: resolvedName }
-  if (wireBody.system) wireBody.system = await processAnthropicSystem(wireBody.system, resolvedName, "anthropic")
+  if (payload.system) await applyConfigToState()
 
   // Phase 1: one-time message-level preprocessing (idempotent). The ctx's
   // toolNameMapper is NOT yet built here (that's codec.parse) — but

@@ -104,6 +104,7 @@ import {
   renderResponseNonStreamingVia,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
+import { processAnthropicSystem } from "~/lib/system-prompt"
 
 import { createAnthropicSanitizeRewrite } from "./request-rewrite-adapter"
 
@@ -224,6 +225,18 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     getContext() {
       return requestContext
     },
+
+    // S1b (RFC 2026-07-14 §4): async system-prompt injection over the top-level `system` field,
+    // moved off the route handler so `client.inbound` (Phase 4) sees the client-NATIVE system
+    // (pre-injection). Early-returns when there is no system (mirrors the legacy route's
+    // `if (wireBody.system)` guard). `env.body.model` is the resolved name (parse set it).
+    async translateInbound(env) {
+      const body = env.body as MessagesPayload
+      if (!body.system) return env
+      const system = await processAnthropicSystem(body.system, body.model, "anthropic")
+      return env.with({ body: { ...body, system } })
+    },
+
     getTruncateBaseline() {
       return truncateBaseline
     },
