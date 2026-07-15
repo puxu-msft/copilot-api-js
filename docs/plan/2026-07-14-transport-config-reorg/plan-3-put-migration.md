@@ -1,4 +1,4 @@
-> **状态**：待执行。属于 `docs/plan/2026-07-14-transport-config-reorg/README.md` 定义的 P3 阶段——依赖 P1（`plan-1-config-reorg.md`，需已落地：`schema.ts` 的 `upstream_transport`/`server.responses_ws` 三段 Zod schema + 顶层挂载 + `compat.ts` 的 6 条新 `renameLeaf` 迁移规则），与 P2（`plan-2-new-knobs-wiring.md`）无文件交集，可并行执行。P3 完成后解锁 P4（热重载 reconcile）。
+> **状态**：已实施（Task 1-4 全部落地，见文末「偏离与根因」——Task 3 主体机制在执行期发现并校正了一处设计缺口，已按新机制实现+测试+提交）。属于 `docs/plan/2026-07-14-transport-config-reorg/README.md` 定义的 P3 阶段——依赖 P1（`plan-1-config-reorg.md`，需已落地：`schema.ts` 的 `upstream_transport`/`server.responses_ws` 三段 Zod schema + 顶层挂载 + `compat.ts` 的 6 条新 `renameLeaf` 迁移规则），与 P2（`plan-2-new-knobs-wiring.md`）无文件交集，可并行执行。P3 完成后解锁 P4（热重载 reconcile）。
 
 # P3 — PUT 文档级迁移：legacy 路径可追踪 + YAML 写回时真正清除旧键
 
@@ -946,3 +946,13 @@ compat.ts: extractAndTranslateDeprecatedWithOps(raw)
 ## 待本阶段自身记录、汇总进 `plan-kickoff.md`「待主会话裁决」的条目
 
 1. ~~嵌套 section 的 PUT 部分更新是"整体替换"而非"深度合并"~~——**已裁决（B9）：升级为递归深合并 + 任意深度 `null` 删除**，`anthropic.buffered_retry` 一并切换，实现见上方"Task 3 附加范围"。此条目原为开放问题，现已被用户裁决关闭，不再是待主会话决定的分叉；保留删除线记录决策沿革，供 `plan-kickoff.md` 的 C10 收尾步骤引用核对。
+
+## 偏离与根因（执行期发现，实现时校正）
+
+**Task 3 主体机制的字面描述（"PUT handler 只把 `validation.legacyPathsRemoved` 传给 `deleteLegacyPathsAndPruneEmptyParents`，`validation.value` 直接交给 `mergeConfigIntoDocument`"）满足不了本文件自己定义的测试用例，实现时发现并校正**：
+
+- **根因**：`validateConfigInput(body)`（因而 `validation.legacyPathsRemoved`）只对 **PUT 请求体**（`body`）跑迁移。但 Task 3 自己的测试（如"prunes a legacy section that becomes empty..."、"migrating a legacy key into upstream_transport does not clobber..."）写的场景是——legacy 键**只存在于磁盘上**，PUT body 是空 `{}` 或只改无关字段。这类场景下 `validation.legacyPathsRemoved` 恒为空，字面机制完全不会触发磁盘清理，测试必然失败（实测复现：5/6 新增用例在最小实现后失败，见执行记录）。这正是本阶段 Goal 要修的那个 bug 的另一半——不仅"PUT 写回不清理磁盘旧键"，而且哪怕 PUT body 根本没提到那个旧键，只要它还在磁盘上，也该被这次写回顺手迁移掉（否则用户永远等不到一次"覆盖到这个字段"的 PUT，deprecation 警告就永远清不掉）。
+- **校正方案**：`compat.ts` 新增 `extractDiskOnlyMigrationPatch(diskRaw)`——对**磁盘原始内容**（而非 PUT body）跑迁移，但只返回迁移**实际写入的稀疏 patch**（哪些新路径被填了值）+ 命中的 legacy 路径，而不是完整迁移后的 payload。PUT handler 读磁盘 `doc.toJSON()`，调用这个函数拿到 `{patch, legacyPathsRemoved}`，把 `patch` 用**已有的** missing-only 深合并（`deepMergeMissingOnly`，从 `validation.ts` 私有函数**提升为 `compat.ts` 导出函数**，供 route.ts 复用）合进 `validation.value`（PUT body 迁移后的值），再把两路 `legacyPathsRemoved` 取并集，一并交给 `deleteLegacyPathsAndPruneEmptyParents`。
+- **为什么不能直接把整份 `extractAndTranslateDeprecatedWithOps(diskRaw).value` 合并进去**：磁盘上完全没有 legacy 命中的字段（典型如 `model_overrides`、`system_prompt_overrides` 这类数组集合）如果被裹进合并结果再交给 `mergeConfigIntoDocument`，会被 `replaceCollection`（`doc.deleteIn` + `doc.setIn`）当作"这次 PUT 也提到了这个字段"来写——即使值完全没变，也会把该集合从原位置删除、追加到父 Map 末尾，丢失原始摆放顺序（虽然目前测试未断言这类字段的确切行位置，但这违反"未触碰字段不应产生任何写回副作用"的最小惊讶原则，且已知 `replaceCollection` 有此重定位副作用——见 Task 3 正文对 `anthropic.thinking_block_sanitize` in-place 迁移同类问题的分析）。改为共享的 `applyMigrations` 核心 + 可选 `patchAccumulator` 参数，让"只迁移实际命中的新路径值"和"完整迁移收敛（供 chaining）"复用同一遍历逻辑、不产生逻辑分叉。
+- **对 README「跨阶段共享接口清单」的影响**：无——`extractDiskOnlyMigrationPatch`/`deepMergeMissingOnly`（导出版）是 P3 内部实现细节，不在 P2/P4 消费的签名列表里，不影响跨阶段契约。`extractAndTranslateDeprecatedWithOps`/`ConfigMigrationApplyResult`/`ConfigValidationResult.legacyPathsRemoved` 三个签名逐字未变。
+- **测试证据**：Task 3 全部 6 个新增用例 + B9 全部 4 个新增用例，加回归套件（既有"保留兄弟字段/注释""空 body 保持不变""collections 整体替换"等用例）全部通过，见执行报告。
