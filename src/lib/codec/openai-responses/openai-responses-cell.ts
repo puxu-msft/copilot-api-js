@@ -13,10 +13,14 @@
  *     `prepareViaResponsesWire`. auto-truncate ON (the CC stack on the CC baseline).
  *   - `anthropic` (FORWARD `@responses`) — RFC 2026-07-14-anthropic-responses-direct-bridge §3 DIRECT
  *     bridge: the hub's `translateOut` produces a Responses-shaped body DIRECTLY (skips CC entirely —
- *     no multi-choices fold), so `prepareViaResponsesWire` only runs `prepareResponsesRequest` on it
- *     (no CC→Responses re-translation — R-NO-INTERNAL-ADAPT §2.3 three-point corner: this leg,
- *     `cc-family-strategies.ts`'s retry baseline, and `hub-translate.ts`'s bridge table entry were all
- *     updated together, else a Responses body would be mistaken for CC and double-translated).
+ *     no multi-choices fold). Once translated, the body is Responses-shaped exactly like the
+ *     openai-responses DIRECT cell — `prepareWire`/`sampleWireTrack` route it through the SAME
+ *     `prepareResponsesDirectWire`/`sampleResponsesDirectWireTrack` cores (`bodyIsResponsesShaped`,
+ *     below), not a duplicate anthropic-only branch bolted onto the via-responses/CC path (cleanup
+ *     post-subtask-A review: the two were byte-identical, a copy-paste smell — dedup here instead).
+ *     `translateOut`'s OWN dispatch stays keyed on `isDirect` (whether translation is SKIPPED, not
+ *     whether the body ENDS UP Responses-shaped) — anthropic still must run through `translateOut`'s
+ *     translation step, unlike openai-responses which is already-Responses identity.
  */
 
 import type { Model } from "~/lib/models/client"
@@ -52,9 +56,22 @@ import {
   sampleViaResponsesWireTrack,
 } from "./openai-responses-leg"
 
-/** Is this a DIRECT `(openai-responses, /responses)` cell (vs a via-responses/forward CC-shaped cell)? */
+/** Does `translateOut` SKIP translation for this cell (env.body is already the leg's canonical shape)? */
 function isDirect(env: RequestEnvelope): boolean {
   return env.clientFormat === "openai-responses"
+}
+
+/**
+ * Is `env.body` Responses-shaped (regardless of whether `translateOut` skipped or ran a translation)?
+ * True for `openai-responses` DIRECT (already Responses, translateOut skipped) AND `anthropic` FORWARD
+ * `@responses` (translateOut RAN the direct anthropic→responses bridge, RFC 2026-07-14 §3 — the body ends
+ * up Responses-shaped too, just via a different translateOut path). `openai-cc`/`gemini` via-responses stay
+ * CC-shaped (translateOut is identity for them; the CC→Responses wire step happens in `prepareWire`).
+ * `prepareWire`/`sampleWireTrack` dispatch on THIS predicate — not `isDirect` — since what matters to them
+ * is the body's ACTUAL shape, not why it got there.
+ */
+function bodyIsResponsesShaped(env: RequestEnvelope): boolean {
+  return env.clientFormat === "openai-responses" || env.clientFormat === "anthropic"
 }
 
 /** Build the `/responses` outbound leg — shared by the RESPONSES + WS_RESPONSES records (same wire). */
@@ -81,9 +98,10 @@ function makeResponsesLeg(targetEndpoint: typeof ENDPOINT.RESPONSES | typeof END
     },
 
     prepareWire(env): PreparedRequest {
-      // DIRECT: Responses-shaped env.body → Responses wire. via-responses/FORWARD: CC-shaped env.body →
-      // CC→Responses wire (+ dropped-params warning + normalizeCallIds).
-      return isDirect(env) ? prepareResponsesDirectWire(env) : prepareViaResponsesWire(env)
+      // Responses-shaped body (openai-responses DIRECT identity + anthropic FORWARD direct-bridge):
+      // Responses wire. via-responses/FORWARD (openai-cc/gemini): CC-shaped env.body → CC→Responses wire
+      // (+ dropped-params warning + normalizeCallIds).
+      return bodyIsResponsesShaped(env) ? prepareResponsesDirectWire(env) : prepareViaResponsesWire(env)
     },
 
     responseRewrites(): ReadonlyArray<ResponseRewrite> {
@@ -93,8 +111,9 @@ function makeResponsesLeg(targetEndpoint: typeof ENDPOINT.RESPONSES | typeof END
     // No preSend: neither the Responses nor the CC stack has an Anthropic-style pre-flight truncation.
 
     sampleWireTrack(wire, env): RequestSample {
-      // DIRECT: Responses effective + Responses wire. via-responses: CC effective + Responses wire.
-      return isDirect(env) ? sampleResponsesDirectWireTrack(wire, env) : sampleViaResponsesWireTrack(wire, env)
+      // Responses-shaped body: Responses effective + Responses wire. via-responses (CC-shaped): CC
+      // effective + Responses wire.
+      return bodyIsResponsesShaped(env) ? sampleResponsesDirectWireTrack(wire, env) : sampleViaResponsesWireTrack(wire, env)
     },
 
     buildLegStrategies(spec: RetrySemanticsSpec, env): ReadonlyArray<RetryStrategy> {

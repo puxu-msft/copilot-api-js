@@ -33,7 +33,11 @@ import { ENDPOINT } from "~/lib/models/endpoint"
 import { buildOpenAiCcStrategies } from "./openai-cc/strategies"
 import { buildOpenAiResponsesStrategies } from "./openai-responses/strategies"
 
-/** Is this the anthropic-client DIRECT-bridge `@responses` cell (Responses-shaped env.body, no CC hop)? */
+/**
+ * Is this the anthropic-client DIRECT-bridge `@responses` cell (Responses-shaped env.body, no CC hop)?
+ * Same underlying condition as `openai-responses-cell.ts`'s `bodyIsResponsesShaped` restricted to the
+ * anthropic clientFormat (this dispatcher's `openai-responses` branch above already covers that format).
+ */
 function isAnthropicDirectResponsesLeg(env: RequestEnvelope): boolean {
   return env.clientFormat === "anthropic" && (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES)
 }

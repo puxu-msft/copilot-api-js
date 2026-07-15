@@ -5,10 +5,14 @@
  * extraction is byte-for-byte identical (the C0 ws golden + responses http goldens lock it).
  *
  * Three wire shapes reach the RESPONSES leg / the responses-fallback CHAT leg, dispatched by clientFormat:
- *   - `prepareResponsesDirectWire` — `(openai-responses, /responses)` DIRECT: Responses-shaped env.body →
- *     `prepareResponsesRequest`. R1/HIGH-A corner: this leg's retry stack is the Responses stack (no
- *     auto-truncate, maxRetries 1) — encoded in RETRY_SEMANTICS, not here.
- *   - `prepareViaResponsesWire` — `(openai-cc|gemini|anthropic, /responses)` via-responses/FORWARD: a
+ *   - `prepareResponsesDirectWire` — `(openai-responses, /responses)` DIRECT AND `(anthropic, /responses)`
+ *     FORWARD (RFC 2026-07-14-anthropic-responses-direct-bridge §3): both reach `prepareWire` with an
+ *     ALREADY Responses-shaped `env.body` (openai-responses via translateOut identity; anthropic via the
+ *     hub's direct anthropic→responses bridge) → `prepareResponsesRequest`. R1/HIGH-A corner: the
+ *     openai-responses cell's retry stack is the Responses stack (no auto-truncate, maxRetries 1) —
+ *     encoded in RETRY_SEMANTICS, not here; the anthropic cell's retry stack is ALSO the Responses stack
+ *     (`cc-family-strategies.ts`'s `isAnthropicDirectResponsesLeg`), but at `maxReactiveRetries` (not 1).
+ *   - `prepareViaResponsesWire` — `(openai-cc|gemini, /responses)` via-responses/FORWARD: a
  *     CC-shaped env.body → CC→Responses translation (+ dropped-params warning + normalizeCallIds) →
  *     `prepareResponsesRequest`. The auto-truncate baseline stays CC-shaped (translation deferred to wire).
  *   - `prepareResponsesFallbackWire` — `(openai-responses, /chat)` FALLBACK: a Responses-shaped env.body →
@@ -120,23 +124,15 @@ export function prepareResponsesDirectWire(env: RequestEnvelope): PreparedReques
  * `prepareResponsesRequest`. Extracted VERBATIM from the openai-cc codec's `prepareOpenAiCcWire` RESPONSES
  * branch (C4). Idempotent (pure function of env.body + model + the once-recorded ctx warning).
  *
- * `(anthropic, /responses)` FORWARD wire: env.body is ALREADY Responses-shaped (RFC
- * 2026-07-14-anthropic-responses-direct-bridge §2.3/§3 direct bridge — the hub's `translateOut`
- * produces a Responses body directly, skipping CC) — this function must NOT re-translate it (CC→Responses
- * on an already-Responses body would be a double-translation / garbage request, RFC §2.3 承重). Only
- * `prepareResponsesRequest` (the last-mile wire shaping) still applies.
+ * `(anthropic, /responses)` FORWARD does NOT reach this function — its body is ALREADY Responses-shaped
+ * (RFC 2026-07-14-anthropic-responses-direct-bridge §2.3/§3 direct bridge — the hub's `translateOut`
+ * produces a Responses body directly, skipping CC), so `openai-responses-cell.ts`'s `bodyIsResponsesShaped`
+ * routes it through `prepareResponsesDirectWire` instead (the SAME core the openai-responses DIRECT cell
+ * uses — a CC→Responses re-translation here would be a double-translation / garbage request, and was
+ * previously a byte-identical duplicate branch bolted onto this via-responses path — cleanup post-subtask-A).
  */
 export function prepareViaResponsesWire(env: RequestEnvelope): PreparedRequest {
   const model = env.model as Model | undefined
-  if (env.clientFormat === "anthropic") {
-    const prepared = prepareResponsesRequest(env.body as ResponsesPayload, { resolvedModel: model })
-    return {
-      url: ENDPOINT.RESPONSES,
-      headers: new Headers(prepared.headers),
-      body: prepared.wire,
-      stream: prepared.wire.stream ?? false,
-    }
-  }
   const ccPayload = fillMaxCompletionTokens(env.body as ChatCompletionsPayload, model)
   const { payload: responsesPayload, droppedParams } = translateChatCompletionsToResponses(ccPayload)
   if (droppedParams.length > 0) recordDroppedCcParamsWarning(env.ctx, ccPayload.model, droppedParams)
@@ -226,32 +222,12 @@ export function sampleResponsesDirectWireTrack(wire: PreparedRequest, env: Reque
  * (`openai-chat-completions`), wire = Responses `input` items (`openai-responses`). Extracted VERBATIM
  * from the openai-cc codec's `sampleOpenAiCcRequest` RESPONSES branch (C4).
  *
- * `(anthropic, /responses)` FORWARD sampler: env.body is ALREADY Responses-shaped (the direct bridge,
- * RFC 2026-07-14 §2.3/§3) — effective is sampled as `openai-responses`, not CC (R-NO-INTERNAL-ADAPT: the
- * observability track reflects the actual body shape, it does not pretend a CC shape that no longer exists).
+ * `(anthropic, /responses)` FORWARD does NOT reach this function — its body is ALREADY Responses-shaped
+ * (the direct bridge, RFC 2026-07-14 §2.3/§3), so `openai-responses-cell.ts`'s `bodyIsResponsesShaped`
+ * samples it via `sampleResponsesDirectWireTrack` instead (cleanup post-subtask-A: this file previously
+ * carried a byte-identical anthropic-only branch duplicating that sampler).
  */
 export function sampleViaResponsesWireTrack(wire: PreparedRequest, env: RequestEnvelope): RequestSample {
-  const wireBody = wire.body as { model?: unknown; input?: string | Array<ResponsesInputItem> }
-  const wireRequest: WireRequest = {
-    model: typeof wireBody.model === "string" ? wireBody.model : "",
-    messages: extractInputItems(wireBody.input ?? []),
-    payload: wire.body,
-    headers: Object.fromEntries(wire.headers.entries()),
-    format: RESPONSES_ENDPOINT_TYPE,
-  }
-
-  if (env.clientFormat === "anthropic") {
-    const effBody = env.body as { model?: unknown; input?: string | Array<ResponsesInputItem> }
-    const effective: EffectiveRequest = {
-      model: typeof effBody.model === "string" ? effBody.model : "",
-      resolvedModel: env.model as Model | undefined,
-      messages: extractInputItems(effBody.input ?? []),
-      payload: env.body,
-      format: RESPONSES_ENDPOINT_TYPE,
-    }
-    return { effective, wire: wireRequest }
-  }
-
   const effBody = env.body as { model?: unknown; messages?: unknown }
   const effective: EffectiveRequest = {
     model: typeof effBody.model === "string" ? effBody.model : "",
@@ -259,6 +235,15 @@ export function sampleViaResponsesWireTrack(wire: PreparedRequest, env: RequestE
     messages: Array.isArray(effBody.messages) ? effBody.messages : [],
     payload: env.body,
     format: CC_ENDPOINT_TYPE,
+  }
+
+  const wireBody = wire.body as { model?: unknown; input?: string | Array<ResponsesInputItem> }
+  const wireRequest: WireRequest = {
+    model: typeof wireBody.model === "string" ? wireBody.model : "",
+    messages: extractInputItems(wireBody.input ?? []),
+    payload: wire.body,
+    headers: Object.fromEntries(wire.headers.entries()),
+    format: RESPONSES_ENDPOINT_TYPE,
   }
 
   return { effective, wire: wireRequest }
