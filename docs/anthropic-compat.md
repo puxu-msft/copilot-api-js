@@ -18,7 +18,7 @@ Anthropic 直连为 **bypass-direct** codec（translate/render = identity）—�
 ## 认证与模型 ID
 
 - **入站认证不校验**：`x-api-key` / `Authorization` 传占位符即可（如 `dummy`）；真正认证在上游（GitHub → Copilot token），见 [authentication.md](authentication.md)。
-- **模型 ID 是 Copilot 目录 ID**：如 `claude-opus-4.8`、`claude-sonnet-4.6`。短别名（`opus`/`sonnet`/`haiku`）、带日期/连字符版本名（`claude-opus-4-8` → `claude-opus-4.8`）、`model_overrides` 同样适用（`src/lib/models/resolver.ts`）。
+- **模型 ID 是 Copilot 目录 ID**：如 `claude-opus-4.8`、`claude-sonnet-4.6`。短别名（`opus`/`sonnet`/`haiku`）、带日期/连字符版本名（`claude-opus-4-8` → `claude-opus-4.8`）、`model_mappings` 同样适用（`src/lib/models/resolver.ts`）。
 - **任意客户端用任意模型**：Anthropic 客户端可用非-Anthropic 模型——无后缀时自动 forward-translate（优先级 `messages > responses > cc`，故 Claude Code 直接写 `gpt-5.6-sol` 即可），或用 `@cc` / `@responses` 后缀显式钉出站腿。详见 [API.md](API.md#调用基础) + [rfc/2026-07-11-anthropic-via-openai-translation.md](rfc/2026-07-11-anthropic-via-openai-translation.md)。
 
 ## codec 与改写

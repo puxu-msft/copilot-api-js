@@ -24,7 +24,7 @@ OpenAI 是本项目的**内部规范格式**——Chat Completions 就是各格�
 ## 认证与模型 ID
 
 - **入站认证不校验**：`Authorization` / `api-key` 传占位符即可（如 `dummy`）；真正认证在上游（GitHub → Copilot token），见 [authentication.md](authentication.md)。
-- **模型 ID 是 Copilot 目录 ID**（非 OpenAI 官方 ID）：如 `gpt-4o`、`gpt-5.5`、`claude-sonnet-4.6`、`gemini-2.5-pro`。短别名（`opus`/`sonnet`/`haiku`）、带日期/连字符版本名、`model_overrides` 同样适用（`src/lib/models/resolver.ts`）。
+- **模型 ID 是 Copilot 目录 ID**（非 OpenAI 官方 ID）：如 `gpt-4o`、`gpt-5.5`、`claude-sonnet-4.6`、`gemini-2.5-pro`。短别名（`opus`/`sonnet`/`haiku`）、带日期/连字符版本名、`model_mappings` 同样适用（`src/lib/models/resolver.ts`）。
 - **未知 `gpt-*` 回退**：不在模型目录里的 `gpt-*` 名也能透传上游（`env.model` 解析容忍目录外模型，codec P2.2-D5）。
 
 ## 模型列表扩展字段

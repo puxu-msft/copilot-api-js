@@ -12,7 +12,7 @@
 | `/v1beta/models/<model>:streamGenerateContent` | POST | 流式生成（Server-Sent Events） |
 | `/v1beta/models/<model>:countTokens` | POST | Token 计数（本地估算） |
 
-`<model>` 可以是任意 Copilot 模型 ID（如 `gpt-4o`、`claude-sonnet-4.6`、`gemini-2.5-pro`）。短别名（`opus`、`sonnet`、`haiku`）和 model_overrides 同样适用。
+`<model>` 可以是任意 Copilot 模型 ID（如 `gpt-4o`、`claude-sonnet-4.6`、`gemini-2.5-pro`）。短别名（`opus`、`sonnet`、`haiku`）和 model_mappings 同样适用。
 
 ## 架构
 
