@@ -114,7 +114,16 @@ export function runTier2SealOnce(): number {
   while (archiveDbBytes(db) > state.historyArchiveTier1SizeCap && guard-- > 0) {
     const sessionId = oldestTier1Session(db)
     if (!sessionId) break
-    sealed += sealSession(sessionId, dir)
+    const n = sealSession(sessionId, dir)
+    // A session that seals 0 (all its tier-1 entries failed to assemble) is NOT
+    // removed from tier-1, so oldestTier1Session keeps re-selecting it — the loop
+    // would silently burn guard iterations while archive.db stays over cap (reviewer
+    // HIGH-2). Surface it and stop (can't make progress) rather than exhaust silently.
+    if (n === 0) {
+      consola.warn(`[history/tier2] session ${sessionId} sealed 0 entries (unassemblable?) while archive.db over tier1_size_cap — sealing stalled, needs attention`)
+      break
+    }
+    sealed += n
   }
 
   if (sealed > 0) {

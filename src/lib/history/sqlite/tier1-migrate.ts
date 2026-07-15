@@ -159,12 +159,40 @@ export function gcArchiveOrphanMsgBlobs(main: Database): void {
  * once. Powers both the manual "archive now" trigger and the time/overflow drivers.
  * Returns the number successfully moved.
  */
+/**
+ * Batch-level precheck: does archive.* cover every column the explicit-column copy
+ * will reference (main's column set ⊆ archive's, for all 5 tables)? A schema drift
+ * (archive.db's independent 001+ migration lagging behind HOT's, or a future column
+ * added to HOT but not yet to archive) makes the copy INSERT reference an
+ * archive-missing column → every entry in the batch throws the SAME error. Without
+ * this precheck, per-entry try/catch catches but does NOT isolate (the mismatch is
+ * GLOBAL, not per-row) → the WHOLE batch fails 0-moved and the count safety valve
+ * silently stops working (reviewer BLOCKER). Fail the batch FAST with ONE clear
+ * "archive schema behind HOT" warning instead of N near-identical per-entry ones.
+ */
+function archiveSchemaCovers(main: Database): boolean {
+  for (const table of ["entries_v2", "entry_stages", "req_msg", "req_aux", "msg_blob"]) {
+    const mainCols = new Set((main.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name))
+    const archiveCols = new Set((main.prepare(`PRAGMA archive.table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name))
+    for (const c of mainCols) if (!archiveCols.has(c)) return false
+  }
+  return true
+}
+
 export function migrateEntriesToTier1(main: Database, ids: ReadonlyArray<string>): number {
+  if (ids.length === 0) return 0
+  // Batch-level schema-drift guard (reviewer BLOCKER): if archive.db can't cover
+  // HOT's columns, skip the WHOLE batch with ONE warning rather than letting every
+  // entry fail identically. Fail-closed: rows stay in HOT for a later retry once
+  // archive.db's schema catches up (an observable "migration paused" signal).
+  if (!archiveSchemaCovers(main)) {
+    consola.warn("[history/tier1] archive.db schema is behind HOT (missing columns) — tier-1 migration paused this pass; will resume once archive migrations catch up")
+    return 0
+  }
   let moved = 0
   for (const id of ids) {
-    // Per-entry fault isolation (reviewer MEDIUM): one entry that throws (e.g. a
-    // corrupt legacy row) must NOT abort the whole batch and wedge the pipeline —
-    // log it and continue; it stays in HOT for a later retry (fail-closed, no loss).
+    // Per-entry fault isolation: a single corrupt row that throws must NOT abort the
+    // whole batch — log it and continue; it stays in HOT for a later retry (fail-closed).
     try {
       if (moveEntryToTier1(main, id)) moved++
     } catch (err: unknown) {

@@ -714,3 +714,10 @@
 - **当前行为**：tier-2 条目可按 preview_text 子串命中，但不支持 rewrites/headers 等 facet 的逐字节深搜。
 - **理想架构 / 若做需改什么**：封存时在 `tier2_manifest` 旁建一张 tier-2 专用的 flat 搜索文本表（或把 msg_blob/req_aux 文本也冗余进 manifest），使 tier-2 也支持五 facet；或封存单元内保留可搜文本。
 - **为何暂缓**：tier-2 是最深冷层、访问罕见，preview_text 粒度对冷数据检索够用；全 facet 冷索引是额外存储 + 复杂度。**触发条件**：出现「需要对已封存冷数据做 header/rewrite 级精确搜索」的真实运维需求。发现方：spec §8-O4。
+
+## 三层降温归档 · archive.db 独立迁移账本追不上 HOT 的时序缝（HIGH，2026-07-14 合并态评审发现，MIGRATIONS 首条前必解）
+
+- **根因 / 现状**：archive.db 跑**独立** `applyForwardMigrations`（自己的 `history_meta.schema_migrations` 账本），且在 `startHistoryBackfills` 里**异步**触发（`migrateArchiveDb()`），而 HOT 侧 `initHistory` 同步 attach archive + 启动 reaper。当前 `MIGRATIONS=[]`（floor 覆盖全列）故两库总同构、无风险。但一旦 `MIGRATIONS` 迎来第一条真实 001+ 迁移：从 initHistory 到 archive `migrateArchiveDb()` resolve 之间有个窗口，reaper 周期 tick 可能在 archive 尚未跑完自己的 001+ 迁移时就触发 move → archive 缺列。
+- **当前行为（已缓解，非崩溃）**：`migrateEntriesToTier1` 的**批次级 `archiveSchemaCovers` 前置校验**（2026-07-14 治 reviewer BLOCKER-3 时加）会检测「main 列 ⊄ archive 列」并**整批跳过 + 一次告警**「archive schema behind HOT — migration paused」，fail-closed 不丢数据、可观测。所以时序窗口期间是「搬迁暂停直到 archive 追上」，而非「per-entry 崩溃 / 数据丢失」。
+- **理想架构 / 若做需改什么**：要么 `initHistory` 的 `ensureArchiveAttachedToMain` 之后紧跟 `await migrateArchiveDb()`（对齐 HOT 侧「先迁移完成再起 reaper」纪律，`start.ts` 就这么做）；要么给 `isArchiveAttached`/`runTier1MigrationOnce` 前加「archive schema 版本已追上」门控（仿 `search_index_version` 的 history_meta 守卫）。
+- **为何暂缓**：当前 `MIGRATIONS=[]` 无风险，且批次前置校验已把最坏情况降级为可观测的「暂停」。**触发条件（必解）**：给 archive 加**第一条真实 001+ 迁移前**必须先接线时序（否则首次迁移期间归档暂停、tier-1 可能短暂膨胀）。发现方：合并态评审 HIGH-1（reviewer 实测确认当前无害、预警将来）。

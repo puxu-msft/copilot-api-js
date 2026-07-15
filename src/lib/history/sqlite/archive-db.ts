@@ -49,10 +49,12 @@ export function resolveArchiveDbPath(dir: string, historyDbPath: string): string
   return path.join(path.dirname(effective), "archive.db")
 }
 
-/** Directory holding archive.db + the numbered tier-2 seal-unit files. An explicit `dir` wins; else the effective history.db dir. */
+/** Directory holding archive.db + the numbered tier-2 seal-unit files. An explicit `dir` wins; else the effective history.db dir. Mirrors resolveArchiveDbPath's `:memory:` short-circuit (returns `:memory:` so a no-dir in-memory HOT never resolves seal files into cwd). */
 export function resolveArchiveDir(dir: string, historyDbPath: string): string {
   if (dir !== "") return dir
-  return path.dirname(effectiveHistoryDbPath(historyDbPath))
+  const effective = effectiveHistoryDbPath(historyDbPath)
+  if (effective === ":memory:") return ":memory:"
+  return path.dirname(effective)
 }
 
 /**

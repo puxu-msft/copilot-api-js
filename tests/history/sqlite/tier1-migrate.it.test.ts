@@ -234,6 +234,23 @@ describe("tier1 move — BLOCKER regressions (reviewer-found)", () => {
     expect(Array.from(archivedBlob)).toEqual([4, 2]) // HOT's current content, NOT the stale [9,9,9]
     expect(countMain("entries_v2", "WHERE id = 'e1'")).toBe(0)
   })
+
+  test("BLOCKER-3: schema drift (HOT has a column archive lacks) fails the WHOLE batch fast, isolating healthy rows in HOT", () => {
+    // archive.db (from beforeEach) lacks `future_col`; add it to HOT only → column-set mismatch.
+    main.exec("ALTER TABLE entries_v2 ADD COLUMN future_col TEXT")
+    seedEntry(main, "healthy-1")
+    seedEntry(main, "healthy-2")
+    // Batch precheck must skip the whole batch (0 moved) WITHOUT per-entry attempts,
+    // and NEVER lose a row (both stay in HOT for a later retry once archive catches up).
+    const moved = migrateEntriesToTier1(main, ["healthy-1", "healthy-2"])
+    expect(moved).toBe(0)
+    expect(countMain("entries_v2")).toBe(2) // both fail-closed in HOT, none lost
+    expect(countArchive("entries_v2")).toBe(0) // nothing half-written to archive
+    // Sanity: once archive catches up (add the column there too), the SAME batch succeeds.
+    main.exec("ALTER TABLE archive.entries_v2 ADD COLUMN future_col TEXT")
+    expect(migrateEntriesToTier1(main, ["healthy-1", "healthy-2"])).toBe(2)
+    expect(countArchive("entries_v2")).toBe(2)
+  })
 })
 
 describe("tier1 move — drivers + exemptions", () => {
