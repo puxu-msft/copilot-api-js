@@ -1434,7 +1434,7 @@ if (takeoverPredecessor) signalPredecessorHandoff(takeoverPredecessor.pid)
 // ...（waitForShutdown 之后的 finally / 退出路径，清理 pidfile：仅裸手动路径）...
 ```
 
-- [ ] **Step 1: 写测试（把「接管序」关键不变量抽成可测纯函数或用注入 dep 的小测）**
+- [x] **Step 1: 写测试（把「接管序」关键不变量抽成可测纯函数或用注入 dep 的小测）**
 
 对「decideStartup=refuse→exit(1)」「takeover→先 setExcludedPredecessor 再返回前任」这类可隔离逻辑，若 runServer 太大难单测，抽一个 `resolveManualStartup(pidfilePath, restart, isSupervised, deps)` 纯函数承载决策 + 副作用注入，对它单测：
 
@@ -1454,12 +1454,12 @@ test("takeover 时先登记前任到寄存器", () => {
 
 > 实现者注：把 supervisor 分流 + decideStartup + setExcludedPredecessor 收进 `resolveManualStartup`（takeover.ts），返回 `ManualStartupResult`（= `StartupDecision | { kind: "skip" }`，见 Task 8 Interfaces——`"skip"` 是 supervisor 环境）。runServer 只调它 + 按返回 kind 做 exit(refuse)/记 predecessor(takeover)/直接继续(proceed|skip)。这样接管决策可完整单测，runServer 只剩 IO 编排（留 e2e）。术语与 Task 8 保持一致，勿新造第四态。
 
-- [ ] **Step 2: 跑测试确认失败 → 实现 resolveManualStartup → 通过**
+- [x] **Step 2: 跑测试确认失败 → 实现 resolveManualStartup → 通过**
 
 Run: `bun test tests/restart/runserver-wiring.unit.test.ts`
 Expected: 先 FAIL 后 PASS。
 
-- [ ] **Step 3: runServer 按上「接线序」接入 + 退出清理**
+- [x] **Step 3: runServer 按上「接线序」接入 + 退出清理**
 
 退出清理：在 `runServer` 末尾 `waitForShutdown()` 的 `finally`（`stopModelRefreshLoop()` 旁）加。**必须用 compare-and-delete（B2）**——接管后新进程已用自己的 pid 覆写同一 pidfile，无条件删会误删后继者的活 pidfile：
 
@@ -1475,17 +1475,21 @@ Expected: 先 FAIL 后 PASS。
 
 并加一个 best-effort 兜底 `process.on("exit", () => { if (!isSupervised()) removePidfileIfOwnedBySelf(path, self) })`（同步、compare-and-delete，覆盖非优雅退出路径；同样绝不无条件删）。
 
-- [ ] **Step 4: typecheck + 既有 start/serve 测试防回归**
+- [x] **Step 4: typecheck + 既有 start/serve 测试防回归**
 
 Run: `bun run typecheck && bun test tests/ -t serve`
-Expected: 绿。
+Expected: 绿。（typecheck 剩基线既有 2 个 `item_id` 错误，与本 Task 无关，不新增；`test:backend` 剩既有 history UI 1 个基线失败，同样与本 Task 无关。）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add -- src/start.ts src/lib/restart/takeover.ts tests/restart/runserver-wiring.unit.test.ts
+git add -- src/lib/restart/takeover.ts tests/restart/runserver-wiring.unit.test.ts
+git commit -m "feat(restart): resolveManualStartup pure decision function (Task 12 Step 1-2)"
+git add -- src/start.ts
 git commit -m "feat(restart): wire takeover guard/pidfile/notifyReady/handoff into runServer"
 ```
+
+**实施状态**：已完成（commit `47d5c29e` + `ef73b4cf`）。接线序与计划一致：`resolveManualStartup` 在 Phase 2.7（config 加载后、Phase 3 `initHistory` 之前）调用，`takeover` 分支在返回前已调 `setExcludedPredecessor`；pidfile 写入在 Phase 5 `setServerInstance` 之后；`notifyReady` + `signalPredecessorHandoff` 顺序不变；退出清理的 `finally` 与 `process.on("exit")` 兜底均用 `removePidfileIfOwnedBySelf`（compare-and-delete）。
 
 ---
 
