@@ -106,13 +106,14 @@ describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectR
     const insp = inspect("claude-r@responses", "prepare-wire")
     expect(insp.stoppedAt).toBe("prepare-wire")
 
-    // translate stage: env.body is CC-canonical (the hub stops at CC for the responses leg; the
-    // CC→Responses wire step is deferred to prepareWire — P2.2-D1 parity).
+    // translate stage: env.body is ALREADY Responses-canonical (RFC 2026-07-14 direct bridge — the hub
+    // skips the CC intermediate for the anthropic→responses pair entirely, unlike the @cc leg above).
     const translated = insp.stages.translate
     expect(translated?.targetEndpoint).toBe(ENDPOINT.RESPONSES)
-    const tbody = translated?.body as { model: string; messages?: Array<{ role: string }> }
+    const tbody = translated?.body as { model: string; input?: unknown; messages?: unknown }
     expect(tbody.model).toBe("claude-r")
-    expect(Array.isArray(tbody.messages)).toBe(true) // still CC-shaped at the translate stage
+    expect(Array.isArray(tbody.input)).toBe(true) // Responses-shaped already at the translate stage
+    expect(tbody.messages).toBeUndefined()
 
     // prepare-wire: the outbound wire targets /responses and is Responses-shaped (input[], no messages[]).
     const wire = insp.stages["prepare-wire"]
@@ -142,7 +143,12 @@ describe("T3.3/T4.2 — non-streaming + streaming response side translate for a 
   useIsolatedRuntime()
 
   function translateLegEnv(): RequestEnvelope {
-    return { targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, body: { model: "claude-x" }, model: { id: "claude-x" }, ctx: { recordFeature: () => {} } } as unknown as RequestEnvelope
+    return {
+      targetEndpoint: ENDPOINT.CHAT_COMPLETIONS,
+      body: { model: "claude-x" },
+      model: { id: "claude-x" },
+      ctx: { recordFeature: () => {} },
+    } as unknown as RequestEnvelope
   }
   function directEnv(): RequestEnvelope {
     return { targetEndpoint: ENDPOINT.MESSAGES, body: {}, model: {} } as unknown as RequestEnvelope
@@ -150,7 +156,10 @@ describe("T3.3/T4.2 — non-streaming + streaming response side translate for a 
   const codec = () => createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
 
   test("renderResponse (STREAMING) TRANSLATES a CC frame to Anthropic frame(s) for a translate leg (T4.2)", () => {
-    const out = codec().renderResponse({ data: JSON.stringify({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }] }), event: "message" }, translateLegEnv())
+    const out = codec().renderResponse(
+      { data: JSON.stringify({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }] }), event: "message" },
+      translateLegEnv(),
+    )
     const frames = Array.isArray(out) ? out : [out]
     const types = frames.map((f) => JSON.parse((f as { data: string }).data).type)
     expect(types).toContain("message_start")

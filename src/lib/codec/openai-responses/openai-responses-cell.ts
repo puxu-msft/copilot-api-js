@@ -8,9 +8,15 @@
  *   - `openai-responses` (DIRECT `/responses`) — Responses-shaped env.body → `prepareResponsesDirectWire`.
  *     R1/HIGH-A corner: this cell's retry stack has auto-truncate OFF (maxRetries 1) — encoded in
  *     RETRY_SEMANTICS, dispatched in `buildCcFamilyLegStrategies`.
- *   - `openai-cc` / `gemini` (via-responses) + `anthropic` (FORWARD `@responses`) — the hub translates
- *     source→CC in `translateOut` (identity for openai-cc, whose body is already CC), then the leg builds
- *     the CC→Responses wire in `prepareViaResponsesWire`. auto-truncate ON (the CC stack on the CC baseline).
+ *   - `openai-cc` / `gemini` (via-responses) — the hub translates source→CC in `translateOut`
+ *     (identity for openai-cc, whose body is already CC), then the leg builds the CC→Responses wire in
+ *     `prepareViaResponsesWire`. auto-truncate ON (the CC stack on the CC baseline).
+ *   - `anthropic` (FORWARD `@responses`) — RFC 2026-07-14-anthropic-responses-direct-bridge §3 DIRECT
+ *     bridge: the hub's `translateOut` produces a Responses-shaped body DIRECTLY (skips CC entirely —
+ *     no multi-choices fold), so `prepareViaResponsesWire` only runs `prepareResponsesRequest` on it
+ *     (no CC→Responses re-translation — R-NO-INTERNAL-ADAPT §2.3 three-point corner: this leg,
+ *     `cc-family-strategies.ts`'s retry baseline, and `hub-translate.ts`'s bridge table entry were all
+ *     updated together, else a Responses body would be mistaken for CC and double-translated).
  */
 
 import type { Model } from "~/lib/models/client"
