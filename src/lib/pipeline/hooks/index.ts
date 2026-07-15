@@ -34,6 +34,13 @@ export {
 } from "./origin"
 export {
   //
+  type ClientTurn,
+  mapClientMessages,
+  stripMessageBlock,
+  stripSystemText,
+} from "./client-rewrite"
+export {
+  //
   delay,
   mockAnthropicMessage,
   mockCcChunks,

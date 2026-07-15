@@ -26,3 +26,4 @@ exp/
 
 # scaffold task scratch reports (worktree-local)
 .c*-report.md
+.hooks-cache/

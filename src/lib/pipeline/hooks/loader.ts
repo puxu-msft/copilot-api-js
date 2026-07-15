@@ -1,5 +1,6 @@
 import consola from "consola"
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 
 import type {
   //
@@ -75,15 +76,30 @@ export function setUpstreamHookForTests(hook: UpstreamHook | undefined): void {
 // of wall-clock resolution, so `version` is always unique and strictly increasing.
 let loadSeq = 0
 
-/**
- * Load (or reload) the hook module via data-URL (bypasses Bun's path-keyed ESM cache).
- * The module exports `export const hooks = { ... }` (nested, RFC §3/§4.1); the loader navigates
- * each {@link HOOK_POINTS} leaf path off `mod.hooks` and assembles the nested {@link UpstreamHook}.
- */
+// Hot-reload compile cache: transpiled JS is written to a UNIQUE file per reload under this dir, then
+// dynamically imported. A unique path bypasses Bun's path-keyed ESM cache (the reason a bare
+// `import(modulePath)` won't pick up on-disk edits — docs/memory reference-bun-esm-cache-busting),
+// while a real project-internal file (unlike a `data:` URL) lets Bun resolve `~/` aliases via the
+// project's tsconfig `paths` — so a hook CAN `import { … } from "~/lib/pipeline/hooks"` (the toolkit).
+// The dir is gitignored + emptied at process start.
+const HOOK_CACHE_DIR = ".hooks-cache"
+let cacheInitialized = false
+
+/** Load (or reload) the hook module via a unique compiled file (bypasses Bun's path-keyed ESM cache;
+ * a real project file — unlike a `data:` URL — resolves `~/` aliases so hooks can import the toolkit).
+ * The module exports `export const hooks = { ... }` (nested, RFC §3/§4.1); the loader navigates each
+ * {@link HOOK_POINTS} leaf path off `mod.hooks` and assembles the nested {@link UpstreamHook}. */
 export async function loadUpstreamHook(modulePath: string): Promise<UpstreamHookState> {
   const src = readFileSync(modulePath, "utf8")
   const js = new Bun.Transpiler({ loader: "ts" }).transformSync(src)
-  const mod = (await import("data:text/javascript," + encodeURIComponent(js))) as Record<string, unknown>
+  if (!cacheInitialized) {
+    rmSync(HOOK_CACHE_DIR, { recursive: true, force: true })
+    mkdirSync(HOOK_CACHE_DIR, { recursive: true })
+    cacheInitialized = true
+  }
+  const compiledPath = join(HOOK_CACHE_DIR, `hook-${Date.now()}-${++loadSeq}.mjs`)
+  writeFileSync(compiledPath, js)
+  const mod = (await import(join(process.cwd(), compiledPath))) as Record<string, unknown>
   const hooksRoot = mod.hooks
   const exports = HOOK_POINTS.filter((p) => typeof getLeaf(hooksRoot, p) === "function")
   if (exports.length === 0) {
@@ -96,7 +112,7 @@ export async function loadUpstreamHook(modulePath: string): Promise<UpstreamHook
     hook: hook as UpstreamHook,
     module: modulePath,
     loadedAt,
-    version: `${loadedAt}-${++loadSeq}`,
+    version: `${loadedAt}-${loadSeq}`,
     exports: [...exports],
   }
   return hookState
