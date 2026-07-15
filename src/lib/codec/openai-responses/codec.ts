@@ -115,13 +115,13 @@ import {
   createCCToResponsesStreamTranslator,
   translateCCToResponsesResponse,
 } from "~/lib/openai/translate"
-import { processResponsesInstructions } from "~/lib/system-prompt"
 import {
   //
   createReverseStreamTranslator,
   renderResponseNonStreamingVia,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
+import { processResponsesInstructions } from "~/lib/system-prompt"
 import { rebuildConversationMessages } from "~/routes/responses/conversation-rebuild"
 
 import { type ResponsesFallbackScratch } from "./openai-responses-leg"

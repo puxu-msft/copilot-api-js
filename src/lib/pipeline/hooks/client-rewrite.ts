@@ -36,30 +36,32 @@ type Body = Record<string, unknown>
 function messageText(content: unknown): string {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return ""
-  return content
-    .map((b) => (b && typeof b === "object" && (b as { type?: string }).type === "text" ? String((b as { text?: string }).text ?? "") : ""))
-    .join("")
+  return content.map((b) => (b && typeof b === "object" && (b as { type?: string }).type === "text" ? ((b as { text?: string }).text ?? "") : "")).join("")
 }
 
 /** Concatenate the text of a gemini content `parts` (array of {text}). */
 function partsText(parts: unknown): string {
   if (!Array.isArray(parts)) return ""
-  return parts.map((p) => (p && typeof p === "object" ? String((p as { text?: string }).text ?? "") : "")).join("")
+  return parts.map((p) => (p && typeof p === "object" ? ((p as { text?: string }).text ?? "") : "")).join("")
 }
 
 /** Read the turn list + a text projector for the given format. */
 function turnListKey(format: string): { key: string; project: (turn: Record<string, unknown>) => string } | undefined {
   switch (format) {
     case "anthropic":
-    case "openai-cc":
+    case "openai-cc": {
       return { key: "messages", project: (t) => messageText(t.content) }
-    case "openai-responses":
+    }
+    case "openai-responses": {
       // Responses `input` items: message items carry `content` (array of {type,text}); others project empty.
       return { key: "input", project: (t) => messageText(t.content) }
-    case "gemini":
+    }
+    case "gemini": {
       return { key: "contents", project: (t) => partsText(t.parts) }
-    default:
+    }
+    default: {
       return undefined
+    }
   }
 }
 
@@ -76,11 +78,11 @@ export function mapClientMessages(env: RequestEnvelope, fn: (turn: ClientTurn) =
   const list = body[spec.key]
   if (!Array.isArray(list)) return env
 
-  let changed = false
+  let changed = false as boolean
   const out: Array<unknown> = []
   for (const item of list) {
     const raw = (item ?? {}) as Record<string, unknown>
-    const turn: ClientTurn = { role: String(raw.role ?? ""), raw, text: spec.project(raw) }
+    const turn: ClientTurn = { role: typeof raw.role === "string" ? raw.role : "", raw, text: spec.project(raw) }
     const kept = fn(turn)
     if (kept === null) {
       changed = true
@@ -121,11 +123,11 @@ export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestE
         return next === sys ? env : env.with({ body: next ? { ...body, system: next } : omit(body, "system") })
       }
       if (Array.isArray(sys)) {
-        let changed = false
+        let changed = false as boolean
         const kept = sys
           .map((b) => {
             if (b && typeof b === "object" && (b as { type?: string }).type === "text") {
-              const t = strip(String((b as { text?: string }).text ?? ""))
+              const t = strip((b as { text?: string }).text ?? "")
               if (t !== (b as { text?: string }).text) changed = true
               return t ? { ...(b as object), text: t } : null
             }
@@ -145,19 +147,20 @@ export function stripSystemText(env: RequestEnvelope, pattern: RegExp): RequestE
     case "gemini": {
       const si = body.systemInstruction as { parts?: Array<{ text?: string }> } | undefined
       if (!si || !Array.isArray(si.parts)) return env
-      let changed = false
+      let changed = false as boolean
       const parts = si.parts
         .map((p) => {
-          const t = strip(String(p.text ?? ""))
+          const t = strip(p.text ?? "")
           if (t !== p.text) changed = true
           return t ? { ...p, text: t } : null
         })
         .filter((p) => p !== null)
       if (!changed) return env
-      return env.with({ body: parts.length ? { ...body, systemInstruction: { ...si, parts } } : omit(body, "systemInstruction") })
+      return env.with({ body: parts.length > 0 ? { ...body, systemInstruction: { ...si, parts } } : omit(body, "systemInstruction") })
     }
-    default:
+    default: {
       return env
+    }
   }
 }
 

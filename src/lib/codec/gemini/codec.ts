@@ -198,7 +198,7 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
       // Sanitize + fill O10 (mirrors legacy prepareGeminiRequest — Gemini fills O10 here, unlike the
       // CC codec which defers it to prepareWire, so env.body / the effective history track carries it).
       const { payload: sanitizedPayload } = sanitizeOpenAIMessages(ccPayload)
-      const filledPayload = fillMaxCompletionTokens(sanitizedPayload, env.model as ResolvedModel)
+      const filledPayload = fillMaxCompletionTokens(sanitizedPayload, env.model)
       // The post-system-prompt, PRE-sanitize CC payload is the stable auto-truncate baseline.
       truncateBaseline = ccPayload
       return env.with({ body: filledPayload, requestState: { ...env.requestState, truncateBaseline: ccPayload } })

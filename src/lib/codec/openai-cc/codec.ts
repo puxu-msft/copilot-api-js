@@ -98,7 +98,6 @@ import {
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import { streamErrorKindToOpenAIErrorType } from "~/lib/openai/stream-error"
-import { processOpenAIMessages } from "~/lib/system-prompt"
 import {
   //
   applyChatCompletionsToolNameSanitization,
@@ -117,6 +116,7 @@ import {
   type ReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
+import { processOpenAIMessages } from "~/lib/system-prompt"
 
 import type { ReverseAnthropicMapperHolder } from "./reverse-anthropic-rewrite"
 

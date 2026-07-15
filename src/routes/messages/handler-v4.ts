@@ -105,6 +105,7 @@ import {
   isWarmupRequest,
 } from "~/lib/anthropic/warmup"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
+import { applyConfigToState } from "~/lib/config/config"
 import {
   //
   HTTPError,
@@ -143,7 +144,6 @@ import {
   resolveBufferedCaps,
   state,
 } from "~/lib/state"
-import { applyConfigToState } from "~/lib/config/config"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //

@@ -68,12 +68,12 @@ import {
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { ccKeepaliveFrame } from "~/lib/codec/openai-cc/keepalive"
 import { createReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
+import { applyConfigToState } from "~/lib/config/config"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { ccCommitBoundaries } from "~/lib/openai/cc-commit-boundaries"
-import { applyConfigToState } from "~/lib/config/config"
 import {
   //
   accumulateOpenAIStreamEvent,
@@ -265,11 +265,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
 // Non-streaming render
 // ============================================================================
 
-function renderNonStreamingV4(
-  c: Context,
-  env: RequestEnvelope,
-  originalResponse: ChatCompletionResponse,
-): Response {
+function renderNonStreamingV4(c: Context, env: RequestEnvelope, originalResponse: ChatCompletionResponse): Response {
   const response = originalResponse
 
   const choice = response.choices.at(0)
