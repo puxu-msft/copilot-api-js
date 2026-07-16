@@ -553,7 +553,11 @@ export function createRequestContext(opts: {
     const currentAttempt = currentGenerationAttempt()
     if (currentAttempt && !currentAttempt.settled)
       settleGenerationAttempt(currentAttempt, outcome === "completed" ? "committed" : "failed", `terminal:${outcome}`, error)
-    pendingGenerationTerminal = { outcome, ...(error !== undefined && { error: snapshotForRecorder(error) }), ...(attribution !== undefined && { attribution }) }
+    pendingGenerationTerminal = {
+      outcome,
+      ...(error !== undefined && { error: snapshotForRecorder(error) }),
+      ...(attribution !== undefined && { attribution }),
+    }
     if (deliveryFinalizationRequested) finalizeGenerationDelivery(pendingDeliveryClientPayload)
   }
 
@@ -1152,10 +1156,7 @@ export function createRequestContext(opts: {
       modelOperationRecorder.recordTransform({
         transformId: transform.transformId,
         stage: transform.stage,
-        inputs:
-          knownInputs.length > 0 ?
-            knownInputs.map(({ handle }) => ({ kind: "frame" as const, handle }))
-          : [{ kind: "frame", handle: parent }],
+        inputs: knownInputs.length > 0 ? knownInputs.map(({ handle }) => ({ kind: "frame" as const, handle })) : [{ kind: "frame", handle: parent }],
         outputs: outputHandles.map((handle) => ({ kind: "frame" as const, handle })),
         metadata: {
           action: transform.action,
@@ -1356,11 +1357,7 @@ export function createRequestContext(opts: {
       // usage / stop_reason / partial content). Guarded by the `settled` early
       // return at the method top, so it never double-writes.
       ctx.setAttemptResponse(_response)
-      recordGenerationLogicalTerminal(
-        "failed",
-        error,
-        opts?.attribution ?? { category: opts?.upstreamSucceeded ? "proxy" : "upstream", detail: errorMsg },
-      )
+      recordGenerationLogicalTerminal("failed", error, opts?.attribution ?? { category: opts?.upstreamSucceeded ? "proxy" : "upstream", detail: errorMsg })
 
       // Drive state via transition() so `state_changed` fires for the
       // terminal transition — keeps the WS observer view consistent with

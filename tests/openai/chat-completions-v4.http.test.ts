@@ -26,7 +26,6 @@ import type { RequestContext } from "~/lib/context/request"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { getRequestContextManager } from "~/lib/context/manager"
-
 import { getHistory } from "~/lib/history"
 import {
   //

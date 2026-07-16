@@ -160,7 +160,16 @@ function frameType(frame: ClientFrame): string {
 
 /** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
 export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
-  const { heartbeat, onForwarded, onGenerationFrame, streamStartMs = Date.now(), forwardedType, isRealContentFrame, onFirstRealContent, onDeliveryFinalized } = opts
+  const {
+    heartbeat,
+    onForwarded,
+    onGenerationFrame,
+    streamStartMs = Date.now(),
+    forwardedType,
+    isRealContentFrame,
+    onFirstRealContent,
+    onDeliveryFinalized,
+  } = opts
   const enqueue = makeSerializer()
   // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧只捕获一次。
   let firstRealFired = false

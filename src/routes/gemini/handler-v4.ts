@@ -513,8 +513,8 @@ function renderReverseGeminiNonStreamingV4(
     usage: {
       input_tokens: anthropicUpstream.usage.input_tokens,
       output_tokens: anthropicUpstream.usage.output_tokens,
-      ...(anthropicUpstream.usage.cache_read_input_tokens != null && { cache_read_input_tokens: anthropicUpstream.usage.cache_read_input_tokens }),
-      ...(anthropicUpstream.usage.cache_creation_input_tokens != null && { cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens }),
+      cache_read_input_tokens: anthropicUpstream.usage.cache_read_input_tokens ?? undefined,
+      cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens ?? undefined,
     },
     stop_reason: anthropicUpstream.stop_reason ?? undefined,
     content: { role: "assistant" as const, content: anthropicUpstream.content },

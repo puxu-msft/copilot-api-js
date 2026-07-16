@@ -240,7 +240,16 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
 
     const maxAgeMs = state.staleRequestMaxAge * 1000
     if (maxAgeMs <= 0) {
-      recordReaperTick({ scheduledAt, actualAt, scanDurationMs: performance.now() - scanStartMono, activeCount: activeContexts.size, liveMaxAgeSec: state.staleRequestMaxAge, frozenIntervalMs: reaperFrozenIntervalMs, monotonicGapMs, wallGapMs })
+      recordReaperTick({
+        scheduledAt,
+        actualAt,
+        scanDurationMs: performance.now() - scanStartMono,
+        activeCount: activeContexts.size,
+        liveMaxAgeSec: state.staleRequestMaxAge,
+        frozenIntervalMs: reaperFrozenIntervalMs,
+        monotonicGapMs,
+        wallGapMs,
+      })
       return // disabled
     }
 
@@ -270,7 +279,16 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         )
       }
     }
-    recordReaperTick({ scheduledAt, actualAt, scanDurationMs: performance.now() - scanStartMono, activeCount: activeContexts.size, liveMaxAgeSec: state.staleRequestMaxAge, frozenIntervalMs: reaperFrozenIntervalMs, monotonicGapMs, wallGapMs })
+    recordReaperTick({
+      scheduledAt,
+      actualAt,
+      scanDurationMs: performance.now() - scanStartMono,
+      activeCount: activeContexts.size,
+      liveMaxAgeSec: state.staleRequestMaxAge,
+      frozenIntervalMs: reaperFrozenIntervalMs,
+      monotonicGapMs,
+      wallGapMs,
+    })
   }
 
   function startReaper() {
@@ -331,7 +349,9 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         const timer = setTimeout(() => {
           deadlineTimers.delete(ctx.id)
           if (ctx.settled) return
-          consola.warn(`[context] Request ${ctx.id} exceeded hard deadline ${state.requestDeadline}s (model: ${ctx.originalRequest?.model ?? "unknown"}, state: ${ctx.state}) — cancelling`)
+          consola.warn(
+            `[context] Request ${ctx.id} exceeded hard deadline ${state.requestDeadline}s (model: ${ctx.originalRequest?.model ?? "unknown"}, state: ${ctx.state}) — cancelling`,
+          )
           ctx.reapInFlight()
           ctx.fail(
             ctx.originalRequest?.model ?? "unknown",

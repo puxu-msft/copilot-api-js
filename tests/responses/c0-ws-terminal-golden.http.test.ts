@@ -161,9 +161,7 @@ describe("C0 golden (c-ws) — Responses WS terminal forwarded messages (byte-fo
     const result = await closeP
 
     expect(result.code).toBe(1011)
-    expect(result.messages).toEqual([
-      { type: "error", error: { type: "server_error", message: "pre-driver websocket exchange failed" } },
-    ])
+    expect(result.messages).toEqual([{ type: "error", error: { type: "server_error", message: "pre-driver websocket exchange failed" } }])
     const operation = capturedCtx?.modelOperationTerminalRecord
     expect(operation?.terminal).toMatchObject({ outcome: "failed" })
     const clientFrame = operation?.arena.frames.find((node) => (node.value as { data?: string }).data?.includes("pre-driver websocket exchange failed"))

@@ -9,7 +9,11 @@ import {
 import { createRequestContext } from "~/lib/context/request"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { resetUpstreamHook, setUpstreamHookForTests } from "~/lib/pipeline/hooks"
+import {
+  //
+  resetUpstreamHook,
+  setUpstreamHookForTests,
+} from "~/lib/pipeline/hooks"
 
 import {
   //
@@ -164,7 +168,8 @@ describe("generation recorder v4 driver integration", () => {
       ]),
     )
     const bufferedEmit = record.transforms.find(
-      (transform) => transform.transformId === "rewrite-out:buffer-two" && (transform.metadata as { bufferedInputCount?: number } | undefined)?.bufferedInputCount === 1,
+      (transform) =>
+        transform.transformId === "rewrite-out:buffer-two" && (transform.metadata as { bufferedInputCount?: number } | undefined)?.bufferedInputCount === 1,
     )
     expect(bufferedEmit?.inputs).toHaveLength(2)
     expect(bufferedEmit?.outputs).toHaveLength(2)

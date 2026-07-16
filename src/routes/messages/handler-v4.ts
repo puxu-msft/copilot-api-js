@@ -857,7 +857,18 @@ function makeAnchoredSseSink(
     onDeliveryFinalized?: () => void
   },
 ): { sink: ClientSink; anchorState: AnchorState; anchorHooks: AnchorHooks | undefined } {
-  const { onForwarded, streamStartMs, heartbeatSec, clientAbortSignal, resolvedName, reqId, isRealContentFrame, onFirstRealContent, onGenerationFrame, onDeliveryFinalized } = args
+  const {
+    onForwarded,
+    streamStartMs,
+    heartbeatSec,
+    clientAbortSignal,
+    resolvedName,
+    reqId,
+    isRealContentFrame,
+    onFirstRealContent,
+    onGenerationFrame,
+    onDeliveryFinalized,
+  } = args
   // Hooks are built for BOTH synthetic-prelude modes (empty_text + enveloped_ping); only `ping` opts out.
   // The mode then selects WHICH injector runs (full anchor vs envelope-only) and whether `anchorBlockOpen`
   // is set — the hooks themselves are the same format primitives.

@@ -262,11 +262,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
 // Non-streaming render
 // ============================================================================
 
-function renderNonStreamingV4(
-  c: Context,
-  env: RequestEnvelope,
-  originalResponse: ChatCompletionResponse,
-): Response {
+function renderNonStreamingV4(c: Context, env: RequestEnvelope, originalResponse: ChatCompletionResponse): Response {
   const response = originalResponse
 
   const choice = response.choices.at(0)
@@ -626,8 +622,8 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, ccResp: C
     usage: {
       input_tokens: anthropicUpstream.usage.input_tokens,
       output_tokens: anthropicUpstream.usage.output_tokens,
-      ...(anthropicUpstream.usage.cache_read_input_tokens != null && { cache_read_input_tokens: anthropicUpstream.usage.cache_read_input_tokens }),
-      ...(anthropicUpstream.usage.cache_creation_input_tokens != null && { cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens }),
+      cache_read_input_tokens: anthropicUpstream.usage.cache_read_input_tokens ?? undefined,
+      cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens ?? undefined,
     },
     stop_reason: anthropicUpstream.stop_reason ?? undefined,
     content: { role: "assistant" as const, content: anthropicUpstream.content },

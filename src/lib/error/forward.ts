@@ -1,9 +1,9 @@
 import type { Context } from "hono"
-
-import type { RequestContext } from "~/lib/context/request"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
+
+import type { RequestContext } from "~/lib/context/request"
 
 import { state } from "~/lib/state"
 import { logToolDiagnostics } from "~/lib/upstream-diagnostics"
@@ -498,7 +498,8 @@ export function mapHttpErrorToEnvelope(
 
 function finalizeErrorDelivery(c: Context, body: Record<string, unknown>, status: ContentfulStatusCode): Response {
   const response = c.json(body, status)
-  const ctx = (c as Context & { get?: (key: string) => unknown }).get?.("requestContext") as RequestContext | undefined
+  const getContext = (c as unknown as { get?: (key: string) => unknown }).get
+  const ctx = (typeof getContext === "function" ? getContext.call(c, "requestContext") : undefined) as RequestContext | undefined
   if (ctx) {
     ctx.setForwardedResponse({ content: body })
     ctx.setInboundResponseHeaders(Object.fromEntries(response.headers.entries()))
