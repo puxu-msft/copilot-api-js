@@ -35,8 +35,6 @@ import {
   setHistoryPublisher,
   startHistoryBackfills,
 } from "./lib/history"
-import { getDatabase } from "./lib/history/sqlite/connection"
-import { applyForwardMigrations } from "./lib/history/sqlite/migrations/run"
 import { loadPersistedLimits } from "./lib/models/calibration"
 import { cacheModels } from "./lib/models/client"
 import { normalizeForMatching } from "./lib/models/model-name"
@@ -48,7 +46,6 @@ import { installConsolaRepublish } from "./lib/observability/republish"
 import { attachCalibrationSink } from "./lib/observability/sinks/calibration"
 import { attachCalibrationFailureSink } from "./lib/observability/sinks/calibration-failure"
 import { attachFileSink } from "./lib/observability/sinks/file"
-import { attachHistorySink } from "./lib/observability/sinks/history"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
 import { attachWsSink } from "./lib/observability/sinks/ws"
 import { setRequestLinePublisher } from "./lib/observability/synthetic-request-line"
@@ -356,34 +353,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Initialized" line is captured by the file sink and the --mock-rate-limiter-
   // throttled forced state transition actually reaches the bus).
   initHistory(true)
-  // Apply forward (001+) schema migrations now that the DB is open (initHistory
-  // → openDatabase built the floor + history_meta) and BEFORE the server starts
-  // serving. A failure is a HARD refuse-to-start: schema DDL is foundational, so
-  // serving on a half-migrated schema is worse than not starting (mirrors the
-  // config-parse abort above; deliberately NOT left to global unhandledRejection).
-  // initHistory also armed the reaper, but that is only an unref'd setInterval
-  // (default 600s, no synchronous schema work) so its first tick lands long after
-  // migrations complete — the ordering is benign even when 001+ is non-empty.
-  try {
-    await applyForwardMigrations(getDatabase())
-  } catch (err: unknown) {
-    consola.error("[history/sqlite] schema migration failed; refusing to start (a half-migrated schema is more dangerous than not starting)", err)
-    process.exit(1)
-  }
   await initRequestTelemetry()
 
-  // Sinks are AUTHORITATIVE (RFC docs/archive/2606-landed-rfcs/observability-rewrite.md §2.4-2.5) —
-  // manager.ts publishes request.* events; entries.ts/sessions.ts publish
-  // history.* events via the publisher installed by setHistoryPublisher. The
-  // one attach-order invariant that matters: HistorySink BEFORE WsSink, so a
-  // terminal entry is persisted before the history.entry_updated broadcast (a
-  // client receiving the WS notification and immediately querying
-  // GET /history/api/entries/:id must not find an empty row). ConsoleSink/
-  // FileSink already subscribed in Phase 1.5; they render/persist from the
-  // event payload and never query history, so their earlier position is benign.
+  // Canonical V3 terminal persistence is installed by initHistory. The legacy
+  // mutable-context HistorySink is deliberately not attached in production.
   const historyPublisher = bus.scope("history")
   setHistoryPublisher(historyPublisher)
-  attachHistorySink(bus, { publisher: historyPublisher })
   attachTelemetrySink(bus)
   attachCalibrationSink(bus)
   attachCalibrationFailureSink(bus)
@@ -413,8 +388,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   // Initialize request context manager with the request.* publisher so
-  // every lifecycle / context_updated event reaches HistorySink + WsSink +
-  // ConsoleSink + TelemetrySink. consumers.ts is deleted as of commit 3b;
+  // every lifecycle event reaches WsSink + ConsoleSink + TelemetrySink.
+  // consumers.ts is deleted as of commit 3b;
   // the bus is the only path for these signals now.
   const contextManager = initRequestContextManager({ publisher: bus.scope("request") })
 

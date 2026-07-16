@@ -104,7 +104,8 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
       maxObjectBytes: state.historyRawCaptureMaxObjectBytes,
     })
   })
-  startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
+  // V3 has no count retention or V2 table maintenance. The legacy reaper remains
+  // available only for isolated V2 test databases.
   // Subscribe to live limit changes from config hot-reload.
   // `onHistoryLimitChange` invokes the listener synchronously once with the
   // current value, so we don't miss any reset that happened before this point.

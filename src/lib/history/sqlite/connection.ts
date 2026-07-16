@@ -65,6 +65,7 @@ export function openDatabase(dbPath: string): Database {
     openedPath = null
     throw err
   }
+  const v3Only = dbPath !== ":memory:" && path.basename(dbPath) === "history-v3.db"
   // auto_vacuum MUST be set before ANY other write to the new file — switching
   // to WAL first initializes the DB header and locks auto_vacuum at mode 0
   // (verified empirically). Set on the still-empty file, it makes
@@ -76,6 +77,10 @@ export function openDatabase(dbPath: string): Database {
   db.exec("PRAGMA synchronous = NORMAL;")
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
   db.exec("PRAGMA foreign_keys = ON;")
+  if (v3Only) {
+    if (dbPath !== ":memory:") consola.info(`[history/v3] opened ${dbPath}`)
+    return db
+  }
   db.exec(SCHEMA_SQL)
   // Lineage subsystem removed (dead: zero clustering on real traffic) — drop its
   // orphan tables on existing DBs so they stop occupying space.
