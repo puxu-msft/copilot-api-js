@@ -21,9 +21,7 @@ import {
   //
   clearHistory,
   initHistory,
-  insertEntry,
   shutdownHistory,
-  updateEntry,
 } from "~/lib/history"
 import {
   //
@@ -50,6 +48,7 @@ import { TOOL_FIELD_PRESENT } from "~/lib/request/strategies/tool-field-rejectio
 import { BETA_ERROR_PATTERN } from "~/lib/request/strategies/unsupported-beta-retry"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
+import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 
 import { autoRestoreState } from "../../helpers/state-fixture"
 
@@ -321,15 +320,13 @@ function insertReplayFixture(opts: {
   sseEvents: Array<{ offsetMs: number; type: string; raw: string; synthetic?: "keepalive" | "hook-mock" }>
 }): string {
   const id = generateId()
-  insertEntry({
+  commitV3HistoryEntry({
     id,
     startedAt: Date.now(),
     endpoint: opts.endpoint,
+    state: "completed",
     model: { requested: opts.model, resolved: opts.model },
     clientRequest: { format: opts.endpoint, model: opts.model, messages: [] },
-  })
-  updateEntry(id, {
-    state: "completed",
     attempts: [
       {
         index: 0,

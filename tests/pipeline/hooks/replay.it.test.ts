@@ -26,12 +26,7 @@ import {
   test,
 } from "bun:test"
 
-import {
-  //
-  getEntry,
-  insertEntry,
-  updateEntry,
-} from "~/lib/history"
+import { getEntry } from "~/lib/history"
 import {
   //
   resetUpstreamHook,
@@ -42,6 +37,7 @@ import { replayFromHistory } from "~/lib/pipeline/hooks/toolkit"
 import { generateId } from "~/lib/utils"
 
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
+import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 import {
   //
   anthropicRawRequest,
@@ -56,15 +52,13 @@ import {
  *  for `replayFromHistory` to read back — mirrors `toolkit.unit.test.ts`'s `insertReplayFixture`. */
 function seedAnthropicEntry(text: string): string {
   const id = generateId()
-  insertEntry({
+  commitV3HistoryEntry({
     id,
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
+    state: "completed",
     model: { requested: "claude-seed", resolved: "claude-seed" },
     clientRequest: { format: "anthropic-messages", model: "claude-seed", messages: [] },
-  })
-  updateEntry(id, {
-    state: "completed",
     attempts: [
       {
         index: 0,
@@ -76,16 +70,8 @@ function seedAnthropicEntry(text: string): string {
           body: null,
           sseEvents: [
             { offsetMs: 0, type: "message_start", raw: JSON.stringify({ type: "message_start", message: { id: "msg_seed" } }) },
-            {
-              offsetMs: 1,
-              type: "content_block_start",
-              raw: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
-            },
-            {
-              offsetMs: 2,
-              type: "content_block_delta",
-              raw: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }),
-            },
+            { offsetMs: 1, type: "content_block_start", raw: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }) },
+            { offsetMs: 2, type: "content_block_delta", raw: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }) },
             { offsetMs: 3, type: "content_block_stop", raw: JSON.stringify({ type: "content_block_stop", index: 0 }) },
             { offsetMs: 4, type: "message_stop", raw: JSON.stringify({ type: "message_stop" }) },
           ],
@@ -98,15 +84,13 @@ function seedAnthropicEntry(text: string): string {
 
 function seedCcEntry(text: string): string {
   const id = generateId()
-  insertEntry({
+  commitV3HistoryEntry({
     id,
     startedAt: Date.now(),
     endpoint: "openai-chat-completions",
+    state: "completed",
     model: { requested: "gpt-seed", resolved: "gpt-seed" },
     clientRequest: { format: "openai-chat-completions", model: "gpt-seed", messages: [] },
-  })
-  updateEntry(id, {
-    state: "completed",
     attempts: [
       {
         index: 0,
@@ -117,9 +101,6 @@ function seedCcEntry(text: string): string {
           usage: { input_tokens: 0, output_tokens: 0 },
           body: null,
           sseEvents: [
-            // CC frames carry NO real event name — the driver fabricates the "message" label
-            // (driver.ts: `frame.event ?? (frame.data ? "message" : "keepalive")`); replayFromHistory
-            // must NOT re-emit that fabricated label as a bogus `event:` line.
             { offsetMs: 0, type: "message", raw: JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: null }] }) },
             { offsetMs: 1, type: "message", raw: JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) },
           ],
