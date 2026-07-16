@@ -935,7 +935,6 @@ export function createRequestContext(opts: {
           ...(attemptOpts.strategy !== undefined && { strategy: attemptOpts.strategy }),
           transport: attempt.transport,
           metadata: {
-            transport: attempt.transport,
             ...(attemptOpts.waitMs !== undefined && { waitMs: attemptOpts.waitMs }),
             ...(attemptOpts.truncation !== undefined && { truncation: attemptOpts.truncation }),
             startedAt: attempt.startTime,
@@ -1109,6 +1108,53 @@ export function createRequestContext(opts: {
         outputs: [{ kind: "frame", handle: output }],
       })
       rememberFrame(outputFrame, output)
+    },
+
+    captureGenerationFrameAction(inputFrames, outputFrames, transform) {
+      if (modelOperationRecorder.sealed) return
+      const knownInputs = inputFrames.flatMap((frame) => {
+        const known = knownFrame(frame)
+        return known === undefined ? [] : [{ frame, handle: known.handle }]
+      })
+      // Pure 1→1 byte-preserving pass-through is sharing, not a transform event.
+      if (
+        transform.action === "emit"
+        && !transform.forceDerived
+        && inputFrames.length === 1
+        && outputFrames.length === 1
+        && frameWireKey(inputFrames[0]) === frameWireKey(outputFrames[0])
+      ) {
+        if (knownInputs[0]) rememberFrame(outputFrames[0], knownInputs[0].handle)
+        return
+      }
+      const parent = knownInputs.at(-1)?.handle ?? transformRoot()
+      const attempt = currentGenerationAttempt()
+      const outputHandles = outputFrames.map((outputFrame) => {
+        const exact = knownFrame(outputFrame)
+        if (exact && !exact.bytesChanged && !transform.forceDerived) return exact.handle
+        const handle = modelOperationRecorder.deriveFrame(canonicalFrameValue(outputFrame), {
+          derivedFrom: parent,
+          transformId: transform.transformId,
+          origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { attempt: attempt.handle }) },
+          mediaType: "text/event-stream",
+        })
+        rememberFrame(outputFrame, handle)
+        return handle
+      })
+      modelOperationRecorder.recordTransform({
+        transformId: transform.transformId,
+        stage: transform.stage,
+        inputs:
+          knownInputs.length > 0 ?
+            knownInputs.map(({ handle }) => ({ kind: "frame" as const, handle }))
+          : [{ kind: "frame", handle: parent }],
+        outputs: outputHandles.map((handle) => ({ kind: "frame" as const, handle })),
+        metadata: {
+          action: transform.action,
+          ...(transform.action === "emit" && inputFrames.length > 1 && { bufferedInputCount: inputFrames.length - 1 }),
+          ...(inputFrames.length !== knownInputs.length && { unresolvedInputCount: inputFrames.length - knownInputs.length }),
+        },
+      })
     },
 
     captureForwardedGenerationFrame(frame, _record, syntheticKind) {

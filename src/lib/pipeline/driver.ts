@@ -560,14 +560,35 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
   let frameIndex = 0
   const onRewriteAction = opts?.onRewriteAction
   const sampleAction = onRewriteAction ? (name: string, action: FrameAction) => onRewriteAction(name, frameIndex, action) : undefined
-  const captureRewrite = (name: string, input: UpstreamFrame, outputs: ReadonlyArray<UpstreamFrame>): void => {
-    for (const output of outputs) {
-      env.ctx.captureGenerationFrameTransform?.(input, output, {
-        stage: "rewrite-out",
-        transformId: `rewrite-out:${name}`,
-        forceDerived: output !== input || readSyntheticKind(output) !== undefined,
-      })
+  const bufferedInputsByRewrite = new Map<string, Array<UpstreamFrame>>()
+  const captureRewrite = (name: string, input: UpstreamFrame, action: FrameAction): void => {
+    const transformId = `rewrite-out:${name}`
+    if (action.kind === "buffer") {
+      const buffered = bufferedInputsByRewrite.get(name) ?? []
+      buffered.push(input)
+      bufferedInputsByRewrite.set(name, buffered)
+      env.ctx.captureGenerationFrameAction?.([input], [], { stage: "rewrite-out", transformId, action: "buffer" })
+      return
     }
+    const buffered = bufferedInputsByRewrite.get(name) ?? []
+    bufferedInputsByRewrite.delete(name)
+    const inputs = [...buffered, input]
+    env.ctx.captureGenerationFrameAction?.(inputs, action.kind === "emit" ? action.frames : [], {
+      stage: "rewrite-out",
+      transformId,
+      action: action.kind,
+      forceDerived: action.kind === "emit" && action.frames.some((output) => output !== input || readSyntheticKind(output) !== undefined),
+    })
+  }
+  const captureFlush = (name: string, outputs: ReadonlyArray<UpstreamFrame>): void => {
+    const buffered = bufferedInputsByRewrite.get(name) ?? []
+    bufferedInputsByRewrite.delete(name)
+    env.ctx.captureGenerationFrameAction?.(buffered, outputs, {
+      stage: "rewrite-out",
+      transformId: `rewrite-out:${name}`,
+      action: "flush",
+      forceDerived: outputs.length > 0,
+    })
   }
 
   // Task 2.2: the hook-mock/hook-replay origin tag (if the upstream stream was tagged via
@@ -623,7 +644,13 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
         // fresh-literal-reconstructing `onRenderedFrame` — e.g. Responses' restoreAndAccumulate
         // — does not; a documented, accepted gap, not a defect of this mechanism).
         effFrame = rewritten !== undefined && rewritten !== frame ? tagFrameRewritten(rewritten) : rewritten
-        if (effFrame !== undefined && effFrame !== frame) {
+        if (effFrame === undefined) {
+          env.ctx.captureGenerationFrameAction?.([frame], [], {
+            stage: "rewrite-upstream-hook",
+            transformId: "hook:rewrite-upstream-frame",
+            action: "drop",
+          })
+        } else if (effFrame !== frame) {
           env.ctx.captureGenerationFrameTransform?.(frame, effFrame, {
             stage: "rewrite-upstream-hook",
             transformId: "hook:rewrite-upstream-frame",
@@ -666,7 +693,7 @@ async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: Req
     // rewrite into the registry) MUST NOT rely on this finally to deliver flushed
     // frames to an early-breaking consumer — that path needs an explicit flush
     // before the break (cf. the handler's post-loop flush, handler-v4.ts:655-663).
-    for (const flushed of flushChain(rewrites, states, captureRewrite)) {
+    for (const flushed of flushChain(rewrites, states, captureRewrite, captureFlush)) {
       if (opts?.skipRender) yield flushed
       else yield* renderFrames(deps, flushed, env)
     }
@@ -1102,7 +1129,7 @@ function passThrough(
   states: Array<RewriteState>,
   startIdx: number,
   sample?: (rewriteName: string, action: FrameAction) => void,
-  capture?: (rewriteName: string, input: UpstreamFrame, outputs: ReadonlyArray<UpstreamFrame>) => void,
+  capture?: (rewriteName: string, input: UpstreamFrame, action: FrameAction) => void,
 ): Array<UpstreamFrame> {
   let current = frames
   for (let i = startIdx; i < rewrites.length; i++) {
@@ -1110,10 +1137,8 @@ function passThrough(
     for (const frame of current) {
       const action = rewrites[i].transform(frame, states[i])
       sample?.(rewrites[i].name, action)
-      if (action.kind === "emit") {
-        capture?.(rewrites[i].name, frame, action.frames)
-        next.push(...action.frames)
-      }
+      capture?.(rewrites[i].name, frame, action)
+      if (action.kind === "emit") next.push(...action.frames)
       // suppress / buffer → emit nothing now (buffer is held in the rewrite's state)
     }
     current = next
@@ -1139,11 +1164,13 @@ function passThrough(
 function flushChain(
   rewrites: ReadonlyArray<ResponseRewrite>,
   states: Array<RewriteState>,
-  capture?: (rewriteName: string, input: UpstreamFrame, outputs: ReadonlyArray<UpstreamFrame>) => void,
+  capture?: (rewriteName: string, input: UpstreamFrame, action: FrameAction) => void,
+  captureFlush?: (rewriteName: string, outputs: ReadonlyArray<UpstreamFrame>) => void,
 ): Array<UpstreamFrame> {
   const out: Array<UpstreamFrame> = []
   for (let i = 0; i < rewrites.length; i++) {
     const flushed = rewrites[i].flush?.(states[i]) ?? []
+    if (rewrites[i].flush !== undefined) captureFlush?.(rewrites[i].name, flushed)
     if (flushed.length > 0) out.push(...passThrough(flushed, rewrites, states, i + 1, undefined, capture))
   }
   return out
