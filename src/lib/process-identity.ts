@@ -97,3 +97,24 @@ export function resetProcessIdentityForTests(): void {
   identity = null
   warnedMissingInit = false
 }
+
+/**
+ * Is the OS process for `pid` still alive? `kill(pid, 0)` sends no signal, it
+ * only probes existence/permission.
+ *
+ * A leaf primitive deliberately placed here (not in `restart/pidfile.ts`) so
+ * that history/sqlite code (which needs it for the overlap-window liveness
+ * checks in `reclaimOrphanedActiveRows` / `openDatabase`'s VACUUM gate,
+ * lifecycle.md「overlap 共享状态安全 ①⑤」) does not have to import from the
+ * `restart` subsystem — `process-identity` is the neutral, dependency-free
+ * home both sides can import from without creating a cross-module coupling.
+ */
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    // ESRCH = does not exist; EPERM = exists but no permission (still alive).
+    return (err as NodeJS.ErrnoException).code === "EPERM"
+  }
+}

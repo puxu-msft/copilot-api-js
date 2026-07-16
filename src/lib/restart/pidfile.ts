@@ -1,6 +1,14 @@
 import consola from "consola"
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 
+import { isProcessAlive } from "../process-identity"
+
+// Re-exported for backward-compat call sites / tests that import isProcessAlive
+// from this module (e.g. tests/restart/pidfile.unit.test.ts). The canonical
+// definition now lives in process-identity.ts (a neutral leaf both `restart`
+// and `history/sqlite` can import without cross-subsystem coupling).
+export { isProcessAlive }
+
 /** pidfile 内容 —— 复用 process-identity 的 pid+bootTime，加 port。 */
 export interface PidfileContent {
   pid: number
@@ -29,17 +37,6 @@ export function readPidfile(path: string): PidfileContent | null {
     return { pid: raw.pid, bootTime: raw.bootTime, port: raw.port }
   } catch {
     return null // ENOENT / 损坏 JSON / 权限 —— 一律当「无有效 pidfile」
-  }
-}
-
-/** 进程是否存活。`kill(pid, 0)` 不实际发信号，只探存在性。 */
-export function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    // ESRCH = 不存在；EPERM = 存在但无权限（仍算存活）。
-    return (err as NodeJS.ErrnoException).code === "EPERM"
   }
 }
 
