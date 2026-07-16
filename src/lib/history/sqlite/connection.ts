@@ -2,9 +2,8 @@ import consola from "consola"
 import fs from "node:fs"
 import path from "node:path"
 
-import { getProcessIdentity } from "~/lib/process-identity"
+import { getProcessIdentity, isProcessAlive } from "~/lib/process-identity"
 
-import { getExcludedPredecessor } from "../../restart/predecessor-registry"
 import {
   //
   createDatabase,
@@ -82,14 +81,15 @@ export function openDatabase(dbPath: string): Database {
   dropLegacyFtsAndSearchText(db)
   migrateEntriesColumns(db)
   reclaimOrphanedActiveRows(db)
-  if (getExcludedPredecessor()) {
-    // Handover overlap: a live predecessor process may still be serving normal
-    // traffic against this same DB file. VACUUM needs an exclusive write lock and
-    // its duration scales with file size — easily exceeding busy_timeout — so the
-    // predecessor's concurrent writes would hit SQLITE_BUSY and silently drop
+  if (hasLiveForeignOwner(db, getProcessIdentity().pid)) {
+    // Handover overlap: a live process (any environment — bare-metal takeover,
+    // systemd blue-green, pm2 blue/green) may still be serving normal traffic
+    // against this same DB file. VACUUM needs an exclusive write lock and its
+    // duration scales with file size — easily exceeding busy_timeout — so that
+    // process's concurrent writes would hit SQLITE_BUSY and silently drop
     // history records (never-throw persist guard). Defer to the next exclusive
     // startup; the reaper's incremental_vacuum stays safe to run meanwhile.
-    consola.info("[history/sqlite] 检测到接管中的前任，跳过启动 VACUUM（延后到下次独占启动）")
+    consola.info("[history/sqlite] 检测到存活的共享库进程，跳过启动 VACUUM（延后到下次独占启动）")
   } else {
     maybeVacuumOnStartup(db, dbPath)
   }
@@ -238,31 +238,55 @@ export function runOptimize(database: Database): void {
 }
 
 /**
- * (pending/executing/streaming) that does NOT belong to the current process is
- * a leftover from a process that crashed before finalizing. Flip it to
- * `interrupted` so the request is discoverable (and reaper-eligible) rather than
- * stuck "active" forever. Matched by (pid, boot_time) — a restart that reuses a
- * pid is distinguished by boot_time.
+ * Distinct non-self owner pids currently holding an active
+ * (pending/executing/streaming) row in `entries_v2`. Shared by
+ * `reclaimOrphanedActiveRows` (①) and the VACUUM gate (⑤) — both need the same
+ * "who else might still be writing this DB" enumeration before deciding
+ * whether that owner is alive.
+ */
+function distinctActiveOwnerPids(database: Database, selfPid: number): Array<number> {
+  const rows = database
+    .prepare("SELECT DISTINCT pid FROM entries_v2 WHERE status IN ('pending','executing','streaming') AND pid IS NOT NULL AND pid != ?")
+    .all(selfPid) as Array<{ pid: number }>
+  return rows.map((r) => r.pid)
+}
+
+/**
+ * Is any *other* (non-self) process that owns an active row in this DB still
+ * alive right now? Environment-agnostic liveness check shared by the VACUUM
+ * gate (⑤) and usable anywhere else that needs "am I the sole live writer".
+ */
+function hasLiveForeignOwner(database: Database, selfPid: number): boolean {
+  return distinctActiveOwnerPids(database, selfPid).some((pid) => isProcessAlive(pid))
+}
+
+/**
+ * (pending/executing/streaming) rows not owned by a still-alive process are
+ * leftovers from a process that crashed before finalizing. Flip them to
+ * `interrupted` so the request is discoverable (and reaper-eligible) rather
+ * than stuck "active" forever.
  *
- * During a graceful-restart handover overlap, a *live* predecessor process may
- * still be draining in-flight requests when the new process opens the DB — its
- * rows are legitimately active, not orphaned. `getExcludedPredecessor()` (set by
- * the takeover path before `initHistory`, lifecycle.md「overlap 共享状态安全 ①」)
- * carries that predecessor's (pid, boot_time) so this scan skips its rows too.
- * Exported for isolated testing (tests/restart/reclaim-excludes-predecessor.it.test.ts).
+ * During a graceful-restart handover overlap (bare-metal takeover, systemd
+ * blue-green, or pm2 blue/green — lifecycle.md「overlap 共享状态安全 ①」), a
+ * *live* other process may still be draining in-flight requests when this
+ * process opens the DB — its rows are legitimately active, not orphaned.
+ * Judged by **process liveness** (`isProcessAlive(owner_pid)`), not by an
+ * environment-specific exclusion registry: a live owner's rows are always
+ * skipped, a dead owner's rows are always reclaimed, uniformly across all
+ * three deployment paths. A pid that gets reused by an unrelated process
+ * after the real owner died is a rare, safe-direction miss (we skip
+ * reclaiming that row this cycle; the reaper still eventually catches it),
+ * never a false reclaim of a live owner's row.
+ * Exported for isolated testing (tests/restart/reclaim-liveness.it.test.ts).
  */
 export function reclaimOrphanedActiveRows(database: Database): void {
-  const { pid, bootTime } = getProcessIdentity()
-  const predecessor = getExcludedPredecessor()
-  let where = "status IN ('pending','executing','streaming') AND NOT (pid = ? AND boot_time = ?)"
-  const params: Array<number> = [pid, bootTime]
-  if (predecessor) {
-    where += " AND NOT (pid = ? AND boot_time = ?)"
-    params.push(predecessor.pid, predecessor.bootTime)
-  }
-  // Count directly rather than via `.run().changes` (kept defensive: any future
-  // AFTER-write trigger on entries_v2 would otherwise fold its writes into `changes`).
-  const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(...params) as { n: number }
+  const { pid: selfPid } = getProcessIdentity()
+  const deadOwnerPids = distinctActiveOwnerPids(database, selfPid).filter((pid) => !isProcessAlive(pid))
+  // Own rows are never touched (they're the current process's own in-flight
+  // work); dead-other-owner rows are the only reclaim target.
+  const where = deadOwnerPids.length > 0 ? `status IN ('pending','executing','streaming') AND pid IN (${deadOwnerPids.map(() => "?").join(",")})` : null
+  if (!where) return
+  const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(...deadOwnerPids) as { n: number }
   if (n === 0) return
   // Backfill a failure reason (richest-data-flow) so the orphaned row surfaces WHY in the
   // list view; COALESCE preserves any real reason already persisted before the crash.
@@ -270,7 +294,7 @@ export function reclaimOrphanedActiveRows(database: Database): void {
     .prepare(
       `UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, started_at), error_message = COALESCE(error_message, 'orphaned by a prior process — recovered on restart') WHERE ${where}`,
     )
-    .run(...params)
+    .run(...deadOwnerPids)
   consola.info(`[history/sqlite] reclaimed ${n} orphaned active row(s) from a prior process → interrupted`)
 }
 
