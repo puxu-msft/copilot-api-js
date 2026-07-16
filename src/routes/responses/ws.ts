@@ -211,6 +211,24 @@ function sendErrorAndClose(
  * deterministically rather than waiting for finalization.
  */
 const wsClientAborts = new WeakMap<WSContext, AbortController>()
+const wsConnectionIds = new WeakMap<object, string>()
+
+function wsConnectionKey(ws: WSContext): object {
+  return typeof ws.raw === "object" && ws.raw !== null ? ws.raw : ws
+}
+
+function stableWsConnectionId(ws: WSContext): string {
+  const key = wsConnectionKey(ws)
+  const existing = wsConnectionIds.get(key)
+  if (existing !== undefined) return existing
+  const created = `wsconn_${crypto.randomUUID()}`
+  wsConnectionIds.set(key, created)
+  return created
+}
+
+function responseCreateId(payload: ResponsesPayload): string {
+  return typeof payload.id === "string" && payload.id.length > 0 ? payload.id : `wsresp_${crypto.randomUUID()}`
+}
 
 /** Handle a response.create message over WebSocket */
 async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload): Promise<void> {
@@ -249,6 +267,12 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
  * keepalive (Task 2.2 / R3.5 — see the sink construction below for the protocol-ping-vs-app-frame decision).
  */
 async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
+  const operationIdentity = {
+    kind: "responses_ws" as const,
+    connectionId: stableWsConnectionId(ws),
+    responseCreateId: responseCreateId(rawPayload),
+    ...(rawPayload.previous_response_id !== undefined && { previousResponseId: rawPayload.previous_response_id }),
+  }
   const requestedModel = rawPayload.model
   const { name: resolvedModel, routeOverride } = resolveModelTarget(requestedModel)
   const selectedModel = state.modelIndex.get(resolvedModel)
@@ -282,6 +306,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       method: "WS",
       path: "/v1/responses",
       preResolved: { name: resolvedModel, model: selectedModel, ...(routeOverride && { routeOverride }) },
+      operationIdentity,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -676,6 +701,7 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
         return
       }
       liveConnectionCount += 1
+      stableWsConnectionId(ws)
       consola.debug(`[WS] Responses API WebSocket connected (active: ${liveConnectionCount})`)
       armIdleTimer(ws)
     },

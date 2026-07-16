@@ -130,6 +130,8 @@ export interface ResponsesContextManagement {
 
 /** Request payload for POST /responses */
 export interface ResponsesPayload {
+  /** Optional client identity for one Responses WebSocket response.create operation. */
+  id?: string
   model: string
   input: string | Array<ResponsesInputItem>
   instructions?: string | null
