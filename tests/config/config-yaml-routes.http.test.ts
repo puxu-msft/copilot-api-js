@@ -115,7 +115,7 @@ shutdown:
 history:
   raw_capture:
     enabled: false
-  reaper_interval: 120
+    max_object_bytes: 1048576
 anthropic:
   tool_strip_read_result_tags: true
   tool_dedup_calls: result
@@ -917,7 +917,7 @@ history:
     expect(await res.json()).toEqual({
       model_refresh_interval: 600,
       history: {
-        limit: 20,
+        raw_capture: { enabled: false },
       },
     })
 
@@ -925,7 +925,7 @@ history:
     expect(written).toContain("# keep comment")
     expect(written).toContain("model_refresh_interval: 600")
     expect(written).toContain("history:")
-    expect(written).toContain("limit: 20")
+    expect(written).toContain("enabled: false")
   })
 
   test("PUT /api/config/yaml rejects negative nested timeout values", async () => {
