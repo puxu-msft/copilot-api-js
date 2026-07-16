@@ -1,5 +1,6 @@
 import {
   //
+  afterEach,
   describe,
   expect,
   test,
@@ -8,6 +9,7 @@ import {
 import { createRequestContext } from "~/lib/context/request"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { resetUpstreamHook, setUpstreamHookForTests } from "~/lib/pipeline/hooks"
 
 import {
   //
@@ -19,6 +21,7 @@ import {
 } from "./hooks/driver-test-helpers"
 
 describe("generation recorder v4 driver integration", () => {
+  afterEach(() => resetUpstreamHook())
   test("captures S2, effective/wire request tracks, raw upstream frames, and render derivation at producer boundaries", async () => {
     const ctx = createRequestContext({ endpoint: "openai-chat-completions", method: "POST", path: "/v1/chat/completions" })
     ctx.setOriginalRequest({
@@ -64,6 +67,7 @@ describe("generation recorder v4 driver integration", () => {
     expect(outcome.kind).toBe("complete")
     expect(frames).toHaveLength(1)
     ctx.complete({ success: true, model: "gpt-5.5", usage: { input_tokens: 1, output_tokens: 1 }, content: "HELLO", stop_reason: "stop" })
+    ctx.finalizeModelOperationDelivery()
 
     const record = ctx.modelOperationTerminalRecord!
     expect(record.routing).toMatchObject({ clientFormat: "openai-cc", upstreamEndpoint: "/chat/completions" })
@@ -72,7 +76,97 @@ describe("generation recorder v4 driver integration", () => {
     expect(record.attempts[0]?.upstreamRequest?.payload).toMatch(/^payload:/)
     const upstreamNode = record.arena.frames.find((node) => node.origin.track === "upstream")
     const renderedNode = record.arena.frames.find((node) => node.provenance === "derived" && node.transformId === "render:openai-cc")
-    expect(upstreamNode?.value).toMatchObject({ raw: upstreamFrame.data })
+    expect(upstreamNode?.value).toEqual({ data: upstreamFrame.data })
     expect(renderedNode).toMatchObject({ provenance: "derived", derivedFrom: upstreamNode?.handle, origin: { stage: "render", track: "client" } })
+  })
+
+  test("records full frame fields plus suppress, buffer, flush N→M, and hook-drop provenance", async () => {
+    const ctx = createRequestContext({ endpoint: "openai-chat-completions" })
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: { model: "m", messages: [], stream: true } })
+    ctx.setInboundRequestHeaders({ "x-ingress": "yes" })
+    ctx.recordModelOperationIngress()
+    const env = makeEnv(ctx, { model: "m", messages: [] })
+    const { codec } = makeCodec({ env })
+    codec.sampleRequest = () => ({
+      effective: { model: "m", resolvedModel: undefined, messages: [], payload: env.body, format: "openai-chat-completions" },
+      wire: { model: "m", messages: [], payload: env.body, headers: {}, format: "openai-chat-completions" },
+    })
+    let seen = 0
+    const buffered: Array<{ event?: string; data?: string; id?: string | number; retry?: number }> = []
+    setUpstreamHookForTests({
+      rewriteUpstreamFrame(frame) {
+        if (frame.data === "drop-me") return undefined
+        return frame
+      },
+    })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: () => ({ kind: "passthrough", endpoint: "/chat/completions" }),
+      responseRewrites: [
+        {
+          name: "buffer-two",
+          order: 1,
+          appliesTo: () => true,
+          transform(frame) {
+            seen++
+            if (seen < 2) {
+              buffered.push(frame)
+              return { kind: "buffer" }
+            }
+            return {
+              kind: "emit",
+              frames: [
+                { ...buffered[0], data: "flushed-a" },
+                { ...frame, data: "flushed-b" },
+              ],
+            }
+          },
+        },
+        {
+          name: "suppress-a",
+          order: 2,
+          appliesTo: () => true,
+          transform(frame) {
+            return frame.data === "flushed-a" ? { kind: "suppress" } : { kind: "emit", frames: [frame] }
+          },
+        },
+      ],
+      transport: makeTransport(async () =>
+        okStream([
+          { event: "message", data: "one", id: "evt-1", retry: 2500 },
+          { event: "message", data: "two", id: "evt-2", retry: 3000 },
+          { event: "message", data: "drop-me", id: "evt-3", retry: 3500 },
+        ]),
+      ),
+    })
+
+    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    if (!request.ok) throw new Error("unexpected rejection")
+    const { sink } = makeArraySink()
+    await driver.runResponseSink(request.upstream, request.env, sink)
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: "ok" })
+    ctx.finalizeModelOperationDelivery()
+
+    const record = ctx.modelOperationTerminalRecord!
+    expect(record.arena.frames.find((node) => (node.value as { id?: string }).id === "evt-1")?.value).toEqual({
+      event: "message",
+      data: "one",
+      id: "evt-1",
+      retry: 2500,
+    })
+    expect(record.transforms).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ transformId: "rewrite-out:buffer-two", metadata: { action: "buffer" }, outputs: [] }),
+        expect.objectContaining({ transformId: "rewrite-out:buffer-two", metadata: { action: "emit", bufferedInputCount: 1 } }),
+        expect.objectContaining({ transformId: "rewrite-out:suppress-a", metadata: { action: "suppress" }, outputs: [] }),
+        expect.objectContaining({ transformId: "hook:rewrite-upstream-frame", metadata: { action: "drop" }, outputs: [] }),
+      ]),
+    )
+    const bufferedEmit = record.transforms.find(
+      (transform) => transform.transformId === "rewrite-out:buffer-two" && (transform.metadata as { bufferedInputCount?: number } | undefined)?.bufferedInputCount === 1,
+    )
+    expect(bufferedEmit?.inputs).toHaveLength(2)
+    expect(bufferedEmit?.outputs).toHaveLength(2)
   })
 })
