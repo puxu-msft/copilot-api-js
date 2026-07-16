@@ -69,6 +69,8 @@ export const PATHS = {
   HISTORY_DB: path.join(APP_DIR, "history.db"),
   /** Online History V3 store. Starts empty and never backfills from HISTORY_DB. */
   HISTORY_V3_DB: path.join(APP_DIR, "history-v3.db"),
+  /** Optional exact-byte CAS, physically and lifecycle-isolated from semantic V3. */
+  HISTORY_RAW_DB: path.join(APP_DIR, "raw.db"),
   /** Sidecar SQLite DB for the durable (session,agent) thinking-quarantine store (L3). */
   THINKING_QUARANTINE_DB: path.join(APP_DIR, "thinking-quarantine.db"),
   /** Rotating file log for non-HTTP consola output (startup, auth, warnings, errors). */

@@ -810,6 +810,27 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: 120,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   },
+  {
+    configKey: "history.raw_capture.enabled",
+    stateKey: "historyRawCaptureEnabled",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+  },
+  {
+    configKey: "history.raw_capture.db_path",
+    stateKey: "historyRawCaptureDbPath",
+    sampleYamlValue: '"/tmp/raw-hot-reload.db"',
+    expectedStateValue: "/tmp/raw-hot-reload.db",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+  },
+  {
+    configKey: "history.raw_capture.max_object_bytes",
+    stateKey: "historyRawCaptureMaxObjectBytes",
+    sampleYamlValue: "1048576",
+    expectedStateValue: 1048576,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
+  },
   // ── shutdown.* ─────────────────────────────────────────────────────
   {
     configKey: "shutdown.graceful_wait",

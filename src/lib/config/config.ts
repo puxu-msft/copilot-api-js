@@ -809,6 +809,9 @@ export async function applyConfigToState(): Promise<Config> {
     if (successLimit !== undefined) setHistoryConfig({ historySuccessLimit: successLimit })
     if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
+    if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
+    if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
+    if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
 
   }
 

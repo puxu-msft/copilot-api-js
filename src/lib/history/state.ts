@@ -6,6 +6,7 @@ import { PATHS } from "~/lib/config/paths"
 import {
   //
   onHistoryLimitChange,
+  onHistoryRawCaptureChange,
   state,
 } from "~/lib/state"
 
@@ -72,10 +73,16 @@ import {
   drainModelOperationTerminalSubscribers,
   subscribeModelOperationTerminals,
 } from "./v3/terminal-bus"
+import {
+  //
+  configureRawCapture,
+  shutdownRawCapture,
+} from "./raw/manager"
 
 let enabled = false
 let unsubscribeHistoryLimit: (() => void) | undefined
 let unsubscribeV3Terminal: (() => void) | undefined
+let unsubscribeRawCapture: (() => void) | undefined
 let _publisher: ScopedPublisher<"history"> | undefined
 
 export const historyState = {
@@ -122,6 +129,14 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   recoverV3Journal(getDatabase())
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = subscribeModelOperationTerminals(enqueueModelOperation)
+  unsubscribeRawCapture?.()
+  unsubscribeRawCapture = onHistoryRawCaptureChange(() => {
+    configureRawCapture({
+      enabled: state.historyRawCaptureEnabled,
+      dbPath: state.historyRawCaptureDbPath || PATHS.HISTORY_RAW_DB,
+      maxObjectBytes: state.historyRawCaptureMaxObjectBytes,
+    })
+  })
   startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
   // Subscribe to live limit changes from config hot-reload.
   // `onHistoryLimitChange` invokes the listener synchronously once with the
@@ -146,6 +161,8 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
 export function stopHistoryBackgroundWork(): void {
   unsubscribeHistoryLimit?.()
   unsubscribeHistoryLimit = undefined
+  unsubscribeRawCapture?.()
+  unsubscribeRawCapture = undefined
   unsubscribeV3Terminal?.()
   stopReaper()
   // Signal the background backfills to stop BEFORE the DB closes (each saves its
@@ -178,6 +195,7 @@ export async function shutdownHistory(): Promise<void> {
   unsubscribeV3Terminal = undefined
   await drainModelOperationTerminalSubscribers()
   await drainV3Writer()
+  shutdownRawCapture()
   closeDatabase()
   enabled = false
 }

@@ -51,6 +51,7 @@ import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-st
 import { resetResponsePreviewBackfillForTests } from "~/lib/history/sqlite/response-preview-backfill"
 import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
 import { resetUsageNormalizeBackfillForTests } from "~/lib/history/sqlite/usage-normalize-backfill"
+import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
 import { resetV3WriterForTests } from "~/lib/history/v3/store"
 import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
@@ -104,6 +105,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetModelOperationTerminalRegistryForTests", reset: resetModelOperationTerminalRegistryForTests },
   { name: "resetModelOperationTerminalBusForTests", reset: resetModelOperationTerminalBusForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
+  { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },
   { name: "resetAllLimitsForTesting", reset: resetAllLimitsForTesting },

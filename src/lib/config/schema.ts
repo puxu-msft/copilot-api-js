@@ -755,6 +755,15 @@ export const HistoryConfigSchema = z
     /** Max failed entries kept in SQLite (0 = unlimited). */
     failure_limit: nullableNonnegativeInt(),
     reaper_interval: nullableNonnegativeInt(),
+    raw_capture: nullableSection(
+      z
+        .object({
+          enabled: nullableBoolean(),
+          db_path: nullableString(),
+          max_object_bytes: nullableNonnegativeInt(),
+        })
+        .strict(),
+    ),
   })
   .strict()
 

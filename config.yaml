@@ -280,6 +280,13 @@ history:
   # Seconds between non-destructive maintenance passes (0 = disabled, default: 600).
   # 非破坏性维护周期秒数（0 = 禁用，默认 600）。
   reaper_interval: 3600
+  # Optional exact-byte capture in an independent CAS database. Hot reload rotates
+  # only new operations; in-flight operations drain their frozen store generation.
+  # 可选精确字节捕获，保存到独立 CAS 数据库。热重载只切新 operation，在途 operation 继续写冻结代。
+  raw_capture:
+    enabled: false
+    # db_path: "" # Empty = <APP_DIR>/raw.db. / 留空 = <APP_DIR>/raw.db。
+    max_object_bytes: 16777216
 
 # ============================================================================
 # Telemetry (tiered persistence) / 遥测（分层持久化）

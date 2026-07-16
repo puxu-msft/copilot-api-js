@@ -641,6 +641,10 @@ export interface State {
     * the legacy PATHS.HISTORY_DB artifact.
    */
   readonly historyDbPath: string
+  /** Optional raw capture is hot-reloadable through artifact generations. */
+  readonly historyRawCaptureEnabled: boolean
+  readonly historyRawCaptureDbPath: string
+  readonly historyRawCaptureMaxObjectBytes: number
 
   // ── 分层遥测（telemetry.*，独立 telemetry.db）。近期/远期分辨率与保留可配。 ──
   /** 遥测总开关（默认 true）。 */
@@ -1376,9 +1380,16 @@ export function setHistoryConfig(
       | "historyFailureLimit"
       | "historyReaperInterval"
       | "historyDbPath"
+      | "historyRawCaptureEnabled"
+      | "historyRawCaptureDbPath"
+      | "historyRawCaptureMaxObjectBytes"
     >
   >,
 ): void {
+  const rawCaptureChanged =
+    (patch.historyRawCaptureEnabled !== undefined && patch.historyRawCaptureEnabled !== mutableState.historyRawCaptureEnabled)
+    || (patch.historyRawCaptureDbPath !== undefined && patch.historyRawCaptureDbPath !== mutableState.historyRawCaptureDbPath)
+    || (patch.historyRawCaptureMaxObjectBytes !== undefined && patch.historyRawCaptureMaxObjectBytes !== mutableState.historyRawCaptureMaxObjectBytes)
   const reaperConfigChanged =
     (patch.historySuccessLimit !== undefined && patch.historySuccessLimit !== mutableState.historySuccessLimit)
     || (patch.historyFailureLimit !== undefined && patch.historyFailureLimit !== mutableState.historyFailureLimit)
@@ -1387,6 +1398,15 @@ export function setHistoryConfig(
   if (reaperConfigChanged) {
     for (const listener of historyLimitListeners) listener()
   }
+  if (rawCaptureChanged) for (const listener of historyRawCaptureListeners) listener()
+}
+
+const historyRawCaptureListeners = new Set<() => void>()
+
+export function onHistoryRawCaptureChange(listener: () => void): () => void {
+  historyRawCaptureListeners.add(listener)
+  listener()
+  return () => historyRawCaptureListeners.delete(listener)
 }
 
 /** 遥测 timer（persist/rollup 间隔）变更监听者——telemetry 模块用它热重载重调周期而不循环 import。 */
@@ -1730,6 +1750,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyFailureLimit: 200,
   historyReaperInterval: 600,
   historyDbPath: "",
+  historyRawCaptureEnabled: false,
+  historyRawCaptureDbPath: "",
+  historyRawCaptureMaxObjectBytes: 16 * 1024 * 1024,
   telemetryEnabled: true,
   telemetryDbPath: "",
   telemetryPersistInterval: 60,
@@ -1880,6 +1903,9 @@ export function resetConfigManagedState(): void {
     historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
     historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+    historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+    historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+    historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   })
   setTelemetryConfig({
     telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
@@ -1985,6 +2011,9 @@ const mutableState: MutableState = {
   historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
   historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+  historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+  historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
   telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
   telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
