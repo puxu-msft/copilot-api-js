@@ -51,7 +51,11 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import consola from "consola"
 
 import type { UsageData } from "~/lib/history/types"
-import type { ResponsesStreamEvent } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesStreamEvent,
+  ResponsesUsage,
+} from "~/types/api/openai-responses"
 
 import { anthropicSseFrame } from "~/lib/anthropic/sse-frame"
 import { buildSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
@@ -118,20 +122,12 @@ export function createResponsesToAnthropicStreamTranslator(modelId: string): Res
   let sawToolUse = false
   let terminalStatus: string | undefined
   let terminalIncompleteReason: string | undefined
-  let terminalUsage: { input_tokens: number; output_tokens: number; input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } } | undefined
+  let terminalUsage: ResponsesUsage | undefined
   let flushed = false
 
   const getMeta = (): ResponsesToAnthropicStreamMeta => {
     const contentFiltered = terminalStatus === "incomplete" && terminalIncompleteReason === "content_filter"
-    const usage =
-      terminalUsage ?
-        mapUsage({
-          input_tokens: terminalUsage.input_tokens,
-          output_tokens: terminalUsage.output_tokens,
-          total_tokens: terminalUsage.input_tokens + terminalUsage.output_tokens,
-          input_tokens_details: terminalUsage.input_tokens_details,
-        })
-      : { input_tokens: 0, output_tokens: 0 }
+    const usage = terminalUsage ? mapUsage(terminalUsage) : { input_tokens: 0, output_tokens: 0 }
     return {
       ...(terminalStatus !== undefined && {
         stopReason: mapResponsesStatusToStopReason(
@@ -323,11 +319,7 @@ export function createResponsesToAnthropicStreamTranslator(modelId: string): Res
           terminalIncompleteReason = event.response.incomplete_details?.reason
           if (event.response.model) model = event.response.model
           if (event.response.usage) {
-            terminalUsage = {
-              input_tokens: event.response.usage.input_tokens,
-              output_tokens: event.response.usage.output_tokens,
-              input_tokens_details: event.response.usage.input_tokens_details,
-            }
+            terminalUsage = event.response.usage
           }
           break
         }

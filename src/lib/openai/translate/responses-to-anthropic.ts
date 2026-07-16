@@ -9,8 +9,13 @@
  *
  * Reused verbatim (Phase 2 audit ①, cross-format primitives):
  *   - `repairToolInput` (tool-input-repair.ts) — malformed `function_call.arguments` JSON repair cascade.
- *   - `netInputTokens` (usage-normalize.ts) — Responses `input_tokens` already excludes cache (unlike CC's
- *     `prompt_tokens`, which INCLUDES it) — see the usage section below, phase-2-audit §③.
+ *   - `usageFromTotalInput` (usage-normalize.ts) — net-of-cache arithmetic + reasoning_tokens + modality
+ *     breakdown passthrough (post-review MAJOR fix: an EARLIER version of this file called the bare
+ *     `netInputTokens` cache-subtraction primitive directly, which silently dropped `reasoning_tokens` +
+ *     the modality/prediction breakdown a genuine Responses `usage.output_tokens_details` carries — a
+ *     richest-data-flow regression vs the two-hop CC bridge, which DOES forward reasoning_tokens,
+ *     responses-to-cc-stream.ts:237-238 / responses-to-cc.ts:120-121 — corrected, see the usage section
+ *     below, phase-2-audit §③).
  *   - `buildSyntheticReasoningSignature` (synthetic-reasoning.ts) — the sentinel-signed thinking-block
  *     envelope (forward direction only, R-DIRECTION-ASYMMETRY — this Phase does NOT do encrypted_content
  *     round-trip; Phase 5 wires that in, this bridge only forwards the DISPLAYABLE summary text).
@@ -44,12 +49,13 @@
  * `content_filter`, just without an N3-equivalent ctx marker since nothing is actually lost — there is no
  * Responses-side signal to preserve).
  *
- * usage (phase-2-audit §③, "须重新推导" — precision matches, arithmetic is shared ①): Responses
- * `input_tokens` is the TOTAL prompt INCLUDING cached tokens (same convention as CC's `prompt_tokens`),
- * so the shared `netInputTokens`/cache-subtraction primitive from usage-normalize.ts applies UNCHANGED —
- * only the outer field names differ (Responses `input_tokens_details.cached_tokens`/`.cache_write_tokens`
- * vs Anthropic `cache_read_input_tokens`/`cache_creation_input_tokens`), which this file assembles fresh
- * (no CC intermediate `prompt_tokens_details` to re-read).
+ * usage (phase-2-audit §③, "须重新推导" — precision matches, arithmetic reused ① via `usageFromTotalInput`,
+ * not a bare cache-subtraction call): Responses `input_tokens` is the TOTAL prompt INCLUDING cached
+ * tokens (same convention as CC's `prompt_tokens`), so the shared net-of-cache arithmetic applies
+ * UNCHANGED — only the outer field names differ (Responses `input_tokens_details.cached_tokens`/
+ * `.cache_write_tokens` vs Anthropic `cache_read_input_tokens`/`cache_creation_input_tokens`), which this
+ * file assembles fresh (no CC intermediate `prompt_tokens_details` to re-read). `reasoning_tokens` +
+ * modality/prediction details are ALSO forwarded (not dropped — see the docstring correction above).
  */
 
 import type { StopReason } from "@anthropic-ai/sdk/resources/messages"
@@ -62,6 +68,11 @@ import type {
 } from "~/types/api/anthropic"
 import type {
   //
+  GhcCompletionTokensDetails,
+  GhcInputTokensDetails,
+} from "~/types/api/ghc-usage"
+import type {
+  //
   ResponsesOutputItem,
   ResponsesResponse,
   ResponsesUsage,
@@ -70,7 +81,12 @@ import type {
 import { buildSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
 import { repairToolInput } from "~/lib/anthropic/tool-input-repair"
 import { HTTPError } from "~/lib/error"
-import { netInputTokens } from "~/lib/request/usage-normalize"
+import { usageFromTotalInput } from "~/lib/request/usage-normalize"
+import {
+  //
+  mapInputDetails,
+  mapOutputDetails,
+} from "~/types/api/ghc-usage"
 
 /** The default repair cascade for a malformed `function_call.arguments` JSON string (mirrors cc-to-anthropic.ts). */
 const RESPONSE_TOOL_REPAIR_ITEMS = ["tags", "unicode", "jsonrepair"] as const
@@ -90,12 +106,31 @@ export interface TranslatedAnthropicResponseFromResponses {
   usage: TranslatedAnthropicUsageFromResponses
 }
 
-/** Anthropic usage projected from Responses usage (input/output + best-effort cache tokens). */
+/**
+ * Anthropic usage projected from Responses usage (input/output + best-effort cache tokens + reasoning/
+ * modality details). `output_tokens_details.reasoning_tokens` mirrors Anthropic's OWN `Usage.output_tokens_details.
+ * thinking_tokens` concept (a real Anthropic field, not a GHC-only extension) — richest-data-flow requires
+ * forwarding it, not silently dropping it (post-review MAJOR fix: an earlier version of this file used the
+ * bare `netInputTokens` primitive instead of the full `usageFromTotalInput`, losing reasoning_tokens + the
+ * modality breakdowns the two-hop CC bridge — responses-to-cc-stream.ts:237-238 — already preserved).
+ */
 export interface TranslatedAnthropicUsageFromResponses {
   input_tokens: number
   output_tokens: number
   cache_read_input_tokens?: number
   cache_creation_input_tokens?: number
+  /** Input-side modality breakdown (GHC extension, blob-only; non-empty only). */
+  input_tokens_details?: { text?: number; audio?: number; image?: number; video?: number }
+  /** Output-side: reasoning (mirrors Anthropic's own `thinking_tokens` concept) + modality + prediction breakdown. */
+  output_tokens_details?: {
+    reasoning_tokens?: number
+    text?: number
+    audio?: number
+    image?: number
+    video?: number
+    accepted_prediction_tokens?: number
+    rejected_prediction_tokens?: number
+  }
 }
 
 /** The distinguishable degradations the codec surfaces as ctx markers (N3 parity with the CC leg). */
@@ -212,9 +247,13 @@ function parseToolArguments(args: string): unknown {
  * to `end_turn` — NOT `refusal` (corrected post-review: `refusal` is a distinct Responses-native concept,
  * see the module docstring's N3 discussion above) — the `contentFiltered` result field is how this
  * distinguishability is surfaced instead (N3 convention, matches `cc-to-anthropic.ts` project-wide).
- * `max_output_tokens` → `max_tokens`. `completed`/any other reachable status → `end_turn` (Anthropic's
- * `pause_turn` has no Responses equivalent — unreachable from a genuine Responses response, intentionally
- * not modeled as a mapping target).
+ * `max_output_tokens` → `max_tokens` (matched EXPLICITLY, not by negating `content_filter` — corrected
+ * post-review minor: a `status==="incomplete"` guard alone is forward-fragile, since a THIRD/future
+ * `incomplete_details.reason` value would silently fall through to `max_tokens` too; explicit matching
+ * degrades any UNKNOWN incomplete reason to the conservative, observable `end_turn` default instead).
+ * `completed`/any other reachable status → `end_turn` (Anthropic's `pause_turn` has no Responses
+ * equivalent — unreachable from a genuine Responses response, intentionally not modeled as a mapping
+ * target).
  *
  * Exported: the streaming translator (`responses-to-anthropic-stream.ts`) reuses this SAME mapping for
  * its terminal `response.completed`/`.incomplete` events — one source of truth (fix-all-comparison-sites),
@@ -227,10 +266,12 @@ export function mapResponsesStatusToStopReason(
   hasToolCalls: boolean,
 ): StopReason {
   if (hasToolCalls) return "tool_use"
-  if (status === "incomplete" && incompleteDetails?.reason !== "content_filter") return "max_tokens"
-  // "completed" / "cancelled" / incomplete+content_filter / any future status — the most-faithful
-  // reachable default. content_filter's distinguishability lives in the `contentFiltered` result field
-  // (N3), not the wire stop_reason (Anthropic has none that means the same thing).
+  if (status === "incomplete" && incompleteDetails?.reason === "max_output_tokens") return "max_tokens"
+  // "completed" / "cancelled" / incomplete+content_filter / incomplete+ANY OTHER (including unknown/future)
+  // reason / any future top-level status — the most-faithful, conservative, OBSERVABLE default.
+  // content_filter's distinguishability lives in the `contentFiltered` result field (N3), not the wire
+  // stop_reason (Anthropic has none that means the same thing); an unknown incomplete reason degrades
+  // here rather than being silently misclassified as `max_tokens`.
   return "end_turn"
 }
 
@@ -239,23 +280,31 @@ export function mapResponsesStatusToStopReason(
 // ============================================================================
 
 /**
- * Responses `usage` → Anthropic `usage` (audit ③: field-name reassembly, arithmetic reused ① unchanged).
- * Responses `input_tokens` is the TOTAL prompt INCLUDING cached tokens (same convention as CC's
- * `prompt_tokens`) — `netInputTokens` subtracts the cache legs so Anthropic's net-input convention holds
- * (mirrors `cc-to-anthropic.ts`'s `mapUsage`, just reading Responses' own field names directly instead of
- * CC's `prompt_tokens_details` re-projection).
+ * Responses `usage` → Anthropic `usage` (audit ③: field-name reassembly, arithmetic reused ① via the
+ * FULL `usageFromTotalInput` primitive — NOT the bare `netInputTokens` cache-subtraction alone, corrected
+ * post-review MAJOR: the bare primitive silently dropped `reasoning_tokens` + the modality/prediction
+ * breakdown, a richest-data-flow regression vs the two-hop CC bridge which DOES forward them,
+ * responses-to-cc-stream.ts:237-238 / responses-to-cc.ts:120-121). Responses `input_tokens` is the TOTAL
+ * prompt INCLUDING cached tokens (same convention as CC's `prompt_tokens`) — `usageFromTotalInput`
+ * subtracts the cache legs so Anthropic's net-input convention holds, same as `cc-to-anthropic.ts`'s
+ * `mapUsage`, just reading Responses' own field names directly instead of CC's `prompt_tokens_details`
+ * re-projection — mirrors `routes/responses/handler-v4.ts`'s non-streaming usage assembly (the existing,
+ * already-correct call site for this exact primitive).
  *
- * Exported: the streaming translator's non-streaming-shaped usage projection (the CLIENT WIRE
- * `message_delta.usage`, which mirrors this non-streaming shape, NOT the richer history `UsageData`)
- * reuses this for the terminal `response.completed`/`.incomplete` events.
+ * Exported: the streaming translator's terminal usage projection reuses this for `response.completed`/
+ * `.incomplete` events.
  */
 export function mapUsage(usage: ResponsesUsage): TranslatedAnthropicUsageFromResponses {
   const cacheRead = usage.input_tokens_details?.cached_tokens
   const cacheCreation = usage.input_tokens_details?.cache_write_tokens
-  return {
-    input_tokens: netInputTokens(usage.input_tokens, cacheRead ?? 0, cacheCreation ?? 0),
-    output_tokens: usage.output_tokens,
-    ...(cacheRead !== undefined && { cache_read_input_tokens: cacheRead }),
-    ...(cacheCreation !== undefined && { cache_creation_input_tokens: cacheCreation }),
-  }
+  const built = usageFromTotalInput({
+    totalInput: usage.input_tokens,
+    output: usage.output_tokens,
+    cacheRead,
+    cacheCreation,
+    reasoning: usage.output_tokens_details?.reasoning_tokens,
+    inputDetails: mapInputDetails(usage.input_tokens_details as GhcInputTokensDetails | undefined),
+    outputDetails: mapOutputDetails(usage.output_tokens_details as GhcCompletionTokensDetails | undefined),
+  })
+  return built
 }

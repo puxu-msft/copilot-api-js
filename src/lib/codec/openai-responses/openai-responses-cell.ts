@@ -88,8 +88,13 @@ function makeResponsesLeg(targetEndpoint: typeof ENDPOINT.RESPONSES | typeof END
     translateOut(env) {
       if (env.clientFormat === "openai-cc" || env.clientFormat === "gemini") env.ctx.recordFeature("via-responses")
       if (isDirect(env) || env.clientFormat === "openai-cc") return env
-      const ccBody = translateRequestVia(env.clientFormat, ENDPOINT.RESPONSES, env.body, { model: env.model as Model | undefined, reqId: env.ctx.id })
-      return env.with({ body: ccBody })
+      // Reaches here for `gemini` (via-responses → CC-shaped, translated further to Responses in
+      // prepareWire) AND `anthropic` (RFC 2026-07-14 §3 direct bridge → Responses-shaped already) — the
+      // translated body's ACTUAL shape differs per clientFormat, so it is NOT named `ccBody` (nit fix
+      // post-subtask-C review: that name was misleading for the anthropic branch, which produces
+      // Responses-shaped output, not CC).
+      const translatedBody = translateRequestVia(env.clientFormat, ENDPOINT.RESPONSES, env.body, { model: env.model as Model | undefined, reqId: env.ctx.id })
+      return env.with({ body: translatedBody })
     },
 
     // S3: no request rewrite (the reverse-sanitize dep is MESSAGES-gated, inert on /responses).

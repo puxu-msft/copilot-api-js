@@ -19,14 +19,14 @@
  * `.added` capture) use the REAL SDK accumulator as the independent oracle.
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
 import {
   //
   describe,
   expect,
   test,
 } from "bun:test"
-
-import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import { createResponsesToAnthropicStreamTranslator } from "~/lib/openai/translate/responses-to-anthropic-stream"
 
@@ -61,7 +61,16 @@ function data(frame: ServerSentEventMessage): Record<string, unknown> {
 }
 
 /** The Anthropic stream event names the @anthropic-ai/sdk SSEDecoder dispatches on. */
-const SDK_STREAM_EVENTS = new Set(["message_start", "message_delta", "message_stop", "content_block_start", "content_block_delta", "content_block_stop", "ping", "error"])
+const SDK_STREAM_EVENTS = new Set([
+  "message_start",
+  "message_delta",
+  "message_stop",
+  "content_block_start",
+  "content_block_delta",
+  "content_block_stop",
+  "ping",
+  "error",
+])
 
 /** N1 invariant: EVERY synthesized frame carries an `event:` line equal to its JSON `type`, SDK-recognized. */
 function assertEventLineInvariant(frames: Array<ServerSentEventMessage>): void {
@@ -105,10 +114,10 @@ async function sdkAccumulate(frames: Array<ServerSentEventMessage>): Promise<imp
       case "content_block_delta": {
         const d = ev.delta as { type: string; text?: string; partial_json?: string; thinking?: string; signature?: string }
         const b = blocks[ev.index]
-        if (d.type === "text_delta") b.text = String(b.text ?? "") + (d.text ?? "")
-        if (d.type === "input_json_delta") b._json = String(b._json ?? "") + (d.partial_json ?? "")
-        if (d.type === "thinking_delta") b.thinking = String(b.thinking ?? "") + (d.thinking ?? "")
-        if (d.type === "signature_delta") b.signature = String(b.signature ?? "") + (d.signature ?? "")
+        if (d.type === "text_delta") b.text = ((b.text as string | undefined) ?? "") + (d.text ?? "")
+        if (d.type === "input_json_delta") b._json = ((b._json as string | undefined) ?? "") + (d.partial_json ?? "")
+        if (d.type === "thinking_delta") b.thinking = ((b.thinking as string | undefined) ?? "") + (d.thinking ?? "")
+        if (d.type === "signature_delta") b.signature = ((b.signature as string | undefined) ?? "") + (d.signature ?? "")
         break
       }
       case "message_delta": {
@@ -125,8 +134,19 @@ async function sdkAccumulate(frames: Array<ServerSentEventMessage>): Promise<imp
   }
   if (!message) throw new Error("SDK oracle: no message_start survived the decoder (N1 event-line drop)")
   message.content = blocks.filter(Boolean).map((b) => {
-    if (b.type === "tool_use") return { type: "tool_use", id: b.id, name: b.name, input: b._json ? JSON.parse(String(b._json)) : {} } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
-    if (b.type === "thinking") return { type: "thinking", thinking: b.thinking ?? "", signature: b.signature ?? "" } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
+    if (b.type === "tool_use")
+      return {
+        type: "tool_use",
+        id: b.id,
+        name: b.name,
+        input: b._json ? JSON.parse(b._json as string) : {},
+      } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
+    if (b.type === "thinking")
+      return {
+        type: "thinking",
+        thinking: b.thinking ?? "",
+        signature: b.signature ?? "",
+      } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
     return { type: "text", text: b.text ?? "", citations: null } as unknown as import("@anthropic-ai/sdk/resources/messages").ContentBlock
   })
   return message
@@ -141,22 +161,43 @@ function textDelta(text: string, outputIndex = 0): ServerSentEventMessage {
   return rEvent({ type: "response.output_text.delta", output_index: outputIndex, content_index: 0, delta: text })
 }
 function reasoningAdded(outputIndex: number, encrypted?: string): ServerSentEventMessage {
-  return rEvent({ type: "response.output_item.added", output_index: outputIndex, item: { type: "reasoning", id: "r1", summary: [], ...(encrypted !== undefined && { encrypted_content: encrypted }) } })
+  return rEvent({
+    type: "response.output_item.added",
+    output_index: outputIndex,
+    item: { type: "reasoning", id: "r1", summary: [], ...(encrypted !== undefined && { encrypted_content: encrypted }) },
+  })
 }
 function reasoningSummaryDelta(text: string, outputIndex: number): ServerSentEventMessage {
   return rEvent({ type: "response.reasoning_summary_text.delta", item_id: "r1", output_index: outputIndex, summary_index: 0, delta: text })
 }
 function reasoningDone(outputIndex: number, encrypted: string): ServerSentEventMessage {
-  return rEvent({ type: "response.output_item.done", output_index: outputIndex, item: { type: "reasoning", id: "r1", summary: [], encrypted_content: encrypted } })
+  return rEvent({
+    type: "response.output_item.done",
+    output_index: outputIndex,
+    item: { type: "reasoning", id: "r1", summary: [], encrypted_content: encrypted },
+  })
 }
 function functionCallAdded(outputIndex: number, callId: string, name: string): ServerSentEventMessage {
-  return rEvent({ type: "response.output_item.added", output_index: outputIndex, item: { type: "function_call", id: `fc_${outputIndex}`, call_id: callId, name, arguments: "", status: "in_progress" } })
+  return rEvent({
+    type: "response.output_item.added",
+    output_index: outputIndex,
+    item: { type: "function_call", id: `fc_${outputIndex}`, call_id: callId, name, arguments: "", status: "in_progress" },
+  })
 }
 function functionCallArgsDelta(outputIndex: number, delta: string): ServerSentEventMessage {
   return rEvent({ type: "response.function_call_arguments.delta", output_index: outputIndex, item_id: `fc_${outputIndex}`, delta })
 }
-function completed(usage: Record<string, unknown>, status: "completed" | "incomplete" = "completed", incompleteDetails?: { reason: string }, id = "resp_1", model = "gpt-5.5"): ServerSentEventMessage {
-  return rEvent({ type: "response.completed", response: { id, model, status, usage, ...(incompleteDetails !== undefined && { incomplete_details: incompleteDetails }) } })
+function completed(
+  usage: Record<string, unknown>,
+  status: "completed" | "incomplete" = "completed",
+  incompleteDetails?: { reason: string },
+  id = "resp_1",
+  model = "gpt-5.5",
+): ServerSentEventMessage {
+  return rEvent({
+    type: "response.completed",
+    response: { id, model, status, usage, ...(incompleteDetails !== undefined && { incomplete_details: incompleteDetails }) },
+  })
 }
 
 describe("responses-to-anthropic-stream — text + tool_use block indices (native output_index, never CC-remapped)", () => {
@@ -180,14 +221,24 @@ describe("responses-to-anthropic-stream — text + tool_use block indices (nativ
   })
 
   test("leading tool (no text) → tool lands at index 0 (lazy allocator, arrival order)", () => {
-    const frames = renderAll([created(), functionCallAdded(0, "call_only", "Bash"), functionCallArgsDelta(0, "{}"), completed({ input_tokens: 3, output_tokens: 1, total_tokens: 4 })])
+    const frames = renderAll([
+      created(),
+      functionCallAdded(0, "call_only", "Bash"),
+      functionCallArgsDelta(0, "{}"),
+      completed({ input_tokens: 3, output_tokens: 1, total_tokens: 4 }),
+    ])
     const starts = frames.filter((f) => data(f).type === "content_block_start")
     expect(starts.map((f) => data(f).index)).toEqual([0])
     expect(data(starts[0]).content_block).toMatchObject({ type: "tool_use", id: "call_only" })
   })
 
   test("tool_calls forces stop_reason=tool_use regardless of terminal status", () => {
-    const { meta } = renderAllWithMeta([created(), functionCallAdded(0, "call_a", "f"), functionCallArgsDelta(0, "{}"), completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 })])
+    const { meta } = renderAllWithMeta([
+      created(),
+      functionCallAdded(0, "call_a", "f"),
+      functionCallArgsDelta(0, "{}"),
+      completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 }),
+    ])
     expect(meta.stopReason).toBe("tool_use")
   })
 
@@ -204,6 +255,21 @@ describe("responses-to-anthropic-stream — text + tool_use block indices (nativ
     assertEventLineInvariant(frames)
     const jsonDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "input_json_delta")
     expect(jsonDeltas.length).toBe(2)
+  })
+
+  test("NEGATIVE SAMPLE (proves output_index is NOT used verbatim as the Anthropic block index): a sparse/large native output_index (e.g. 7, after several unmodeled prior items) still allocates a small monotone Anthropic index — a naive `anthropicIndex = event.output_index` bug would emit an ILLEGAL block_start at index 7 (Anthropic requires 0,1,2,… with no gaps)", () => {
+    const frames = renderAll([
+      created(),
+      textDelta("first", 0),
+      functionCallAdded(7, "call_sparse", "f"),
+      functionCallArgsDelta(7, "{}"),
+      completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 }),
+    ])
+    const starts = frames.filter((f) => data(f).type === "content_block_start")
+    // Anthropic block indices are the ALLOCATOR's own monotone counter (0, 1) — NEVER the raw
+    // Responses output_index (0, 7) — this is what distinguishes "keyed allocation" from "verbatim passthrough".
+    expect(starts.map((f) => data(f).index)).toEqual([0, 1])
+    expect(data(starts[1]).content_block).toMatchObject({ type: "tool_use", id: "call_sparse" })
   })
 })
 
@@ -226,7 +292,14 @@ describe("responses-to-anthropic-stream — reasoning → synthetic thinking blo
   const PREFIX = "copilot-api:synthetic-reasoning:v1:"
 
   test("reasoning summary deltas render a thinking block FIRST (thinking-first), text follows", () => {
-    const frames = renderAll([created(), reasoningAdded(0), reasoningSummaryDelta("internal ", 0), reasoningSummaryDelta("thoughts", 0), textDelta("visible", 1), completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 })])
+    const frames = renderAll([
+      created(),
+      reasoningAdded(0),
+      reasoningSummaryDelta("internal ", 0),
+      reasoningSummaryDelta("thoughts", 0),
+      textDelta("visible", 1),
+      completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 }),
+    ])
     assertEventLineInvariant(frames)
     const starts = frames.filter((f) => data(f).type === "content_block_start")
     expect(starts.map((f) => data(f).index)).toEqual([0, 1])
@@ -235,21 +308,33 @@ describe("responses-to-anthropic-stream — reasoning → synthetic thinking blo
   })
 
   test("reasoning summary delta with NO preceding .added event still opens its own thinking block (defensive lazy-open)", () => {
-    const frames = renderAll([created(), reasoningSummaryDelta("thoughts without added", 0), textDelta("answer", 1), completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 })])
+    const frames = renderAll([
+      created(),
+      reasoningSummaryDelta("thoughts without added", 0),
+      textDelta("answer", 1),
+      completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 }),
+    ])
     const starts = frames.filter((f) => data(f).type === "content_block_start")
     expect(starts.map((f) => (data(f).content_block as { type: string }).type)).toEqual(["thinking", "text"])
   })
 
   test("thinking_delta carries the summary text; a signature_delta with the SENTINEL precedes the block stop", () => {
-    const frames = renderAll([created(), reasoningAdded(0), reasoningSummaryDelta("step 1 ", 0), reasoningSummaryDelta("step 2", 0), textDelta("answer", 1), completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 })])
+    const frames = renderAll([
+      created(),
+      reasoningAdded(0),
+      reasoningSummaryDelta("step 1 ", 0),
+      reasoningSummaryDelta("step 2", 0),
+      textDelta("answer", 1),
+      completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 }),
+    ])
     const thinkingDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "thinking_delta")
     expect(thinkingDeltas.map((f) => (data(f).delta as { thinking: string }).thinking).join("")).toBe("step 1 step 2")
 
     const seq = frames
       .map((f) => {
         const d = data(f)
-        if (d.type === "content_block_delta" && (d.delta as { type: string }).type === "signature_delta") return `sig@${d.index}`
-        if (d.type === "content_block_stop") return `stop@${d.index}`
+        if (d.type === "content_block_delta" && (d.delta as { type: string }).type === "signature_delta") return `sig@${d.index as number}`
+        if (d.type === "content_block_stop") return `stop@${d.index as number}`
         return null
       })
       .filter(Boolean)
@@ -263,7 +348,14 @@ describe("responses-to-anthropic-stream — reasoning → synthetic thinking blo
   test("encrypted_content is captured ONLY from .done, NEVER .added (Phase 0 FINDINGS: added is a mid-state blob, done is authoritative)", async () => {
     const addedBlob = "MID-STATE-added-blob"
     const doneBlob = "AUTHORITATIVE-done-blob"
-    const frames = renderAll([created(), reasoningAdded(0, addedBlob), reasoningSummaryDelta("thinking", 0), reasoningDone(0, doneBlob), textDelta("answer", 1), completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 })])
+    const frames = renderAll([
+      created(),
+      reasoningAdded(0, addedBlob),
+      reasoningSummaryDelta("thinking", 0),
+      reasoningDone(0, doneBlob),
+      textDelta("answer", 1),
+      completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 }),
+    ])
     const sig = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "signature_delta")!
     const signature = (data(sig).delta as { signature: string }).signature
     const { extractEncryptedReasoning } = await import("~/lib/anthropic/synthetic-reasoning")
@@ -273,7 +365,13 @@ describe("responses-to-anthropic-stream — reasoning → synthetic thinking blo
 
   test("no .done event arrives (stream truncated mid-reasoning) → signature falls back to bare prefix (no payload), never the mid-state .added blob", async () => {
     const addedBlob = "MID-STATE-added-blob"
-    const frames = renderAll([created(), reasoningAdded(0, addedBlob), reasoningSummaryDelta("thinking", 0), textDelta("answer", 1), completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 })])
+    const frames = renderAll([
+      created(),
+      reasoningAdded(0, addedBlob),
+      reasoningSummaryDelta("thinking", 0),
+      textDelta("answer", 1),
+      completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 }),
+    ])
     const sig = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "signature_delta")!
     const signature = (data(sig).delta as { signature: string }).signature
     expect(signature).toBe(PREFIX)
@@ -291,6 +389,7 @@ describe("responses-to-anthropic-stream — reasoning → synthetic thinking blo
       textDelta("The weather is sunny.", 2),
       completed({ input_tokens: 20, output_tokens: 10, total_tokens: 30 }),
     ])
+    assertEventLineInvariant(frames)
     const msg = await sdkAccumulate(frames)
     expect(msg.content.map((b) => b.type)).toEqual(["thinking", "tool_use", "text"])
     const thinking = msg.content[0] as { type: "thinking"; thinking: string; signature: string }
@@ -315,18 +414,39 @@ describe("responses-to-anthropic-stream — self-contained terminal meta (usage 
   })
 
   test("cached input tokens subtracted (net-of-cache, reused ① from subtask B)", () => {
-    const { meta } = renderAllWithMeta([created(), textDelta("hi", 0), completed({ input_tokens: 100, output_tokens: 4, total_tokens: 104, input_tokens_details: { cached_tokens: 30 } })])
+    const { meta } = renderAllWithMeta([
+      created(),
+      textDelta("hi", 0),
+      completed({ input_tokens: 100, output_tokens: 4, total_tokens: 104, input_tokens_details: { cached_tokens: 30 } }),
+    ])
     expect(meta.usage).toEqual({ input_tokens: 70, output_tokens: 4, cache_read_input_tokens: 30 })
   })
 
+  test("MAJOR FIX (was silently dropped by the bare netInputTokens primitive): reasoning_tokens is forwarded onto the terminal usage", () => {
+    const { meta } = renderAllWithMeta([
+      created(),
+      textDelta("hi", 0),
+      completed({ input_tokens: 20, output_tokens: 10, total_tokens: 30, output_tokens_details: { reasoning_tokens: 6 } }),
+    ])
+    expect(meta.usage).toEqual({ input_tokens: 20, output_tokens: 10, output_tokens_details: { reasoning_tokens: 6 } })
+  })
+
   test("incomplete + max_output_tokens → max_tokens stop_reason", () => {
-    const { meta } = renderAllWithMeta([created(), textDelta("hi", 0), completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 }, "incomplete", { reason: "max_output_tokens" })])
+    const { meta } = renderAllWithMeta([
+      created(),
+      textDelta("hi", 0),
+      completed({ input_tokens: 5, output_tokens: 2, total_tokens: 7 }, "incomplete", { reason: "max_output_tokens" }),
+    ])
     expect(meta.stopReason).toBe("max_tokens")
     expect(meta.contentFiltered).toBe(false)
   })
 
   test("incomplete + content_filter → end_turn (N3 — NOT refusal, matches the non-streaming bridge's corrected mapping) + contentFiltered flag", () => {
-    const { meta } = renderAllWithMeta([created(), textDelta("", 0), completed({ input_tokens: 5, output_tokens: 0, total_tokens: 5 }, "incomplete", { reason: "content_filter" })])
+    const { meta } = renderAllWithMeta([
+      created(),
+      textDelta("", 0),
+      completed({ input_tokens: 5, output_tokens: 0, total_tokens: 5 }, "incomplete", { reason: "content_filter" }),
+    ])
     expect(meta.stopReason).toBe("end_turn")
     expect(meta.contentFiltered).toBe(true)
   })

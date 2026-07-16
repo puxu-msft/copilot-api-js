@@ -1478,6 +1478,12 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     // outcome.kind === "complete" — the upstream drained cleanly. The terminal stop_reason is the F2
     // signal: undefined ⇒ the CC/Responses stream ended with NO finish_reason ⇒ truncation.
     const meta = codec.getStreamMeta()
+    // N3 (RFC 2026-07-14-anthropic-responses-direct-bridge §3 subtask C): the direct Responses→Anthropic
+    // streaming bridge's meta is a superset carrying `contentFiltered` — record the SAME ctx marker the
+    // non-streaming leg already records (codec.ts renderResponseNonStreaming), so a content-filtered
+    // streaming completion stays observably distinguishable even though its wire stop_reason is end_turn
+    // (Anthropic has no content_filter stop_reason — the marker IS the distinguishability, not the wire value).
+    if (meta?.contentFiltered) env.ctx.recordFeature("translated-content-filter")
     if (meta?.stopReason === undefined) {
       // Truncation: forward the translator's block-close frames (partial content stays balanced) but DROP
       // its terminal message_delta/message_stop (they'd signal a clean completion), then write a synthetic

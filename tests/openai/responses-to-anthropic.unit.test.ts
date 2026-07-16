@@ -172,6 +172,13 @@ describe("translateResponsesResponseToAnthropic — status/incomplete_details �
     expect(response.stop_reason).toBe("max_tokens")
   })
 
+  test("incomplete + an UNKNOWN/future reason (not max_output_tokens, not content_filter) → end_turn (explicit-match fix: NOT silently misclassified as max_tokens)", () => {
+    const { response } = translateResponsesResponseToAnthropic(
+      responsesResponse([messageItem("hi", "incomplete")], { status: "incomplete", incomplete_details: { reason: "some_future_reason" } }),
+    )
+    expect(response.stop_reason).toBe("end_turn")
+  })
+
   test("incomplete + content_filter → end_turn (N3 convention — refusal is a distinct Responses concept, not a substitute) + contentFiltered flag", () => {
     const result = translateResponsesResponseToAnthropic(
       responsesResponse([messageItem("", "incomplete")], { status: "incomplete", incomplete_details: { reason: "content_filter" } }),
@@ -188,6 +195,21 @@ describe("translateResponsesResponseToAnthropic — status/incomplete_details �
 
 describe("translateResponsesResponseToAnthropic — usage (equivalence zone: numeric fields; net-of-cache arithmetic reused ①)", () => {
   const usage = (over?: Partial<ResponsesUsage>): ResponsesUsage => ({ input_tokens: 100, output_tokens: 20, total_tokens: 120, ...over })
+  /** GHC's real wire carries a richer output_tokens_details bag than the type declares (mirrors handler-v4.ts's cast). */
+  const usageWithOutputDetails = (outputDetails: {
+    reasoning_tokens: number
+    text_tokens?: number
+    audio_tokens?: number
+    image_tokens?: number
+    video_tokens?: number
+    accepted_prediction_tokens?: number
+    rejected_prediction_tokens?: number
+  }): ResponsesUsage => ({
+    input_tokens: 100,
+    output_tokens: 20,
+    total_tokens: 120,
+    output_tokens_details: outputDetails as unknown as ResponsesUsage["output_tokens_details"],
+  })
 
   test("no usage → zeros", () => {
     const { response } = translateResponsesResponseToAnthropic(responsesResponse([messageItem("hi")], { usage: null }))
@@ -211,5 +233,30 @@ describe("translateResponsesResponseToAnthropic — usage (equivalence zone: num
       responsesResponse([messageItem("hi")], { usage: usage({ input_tokens_details: { cached_tokens: 10, cache_write_tokens: 5 } }) }),
     )
     expect(response.usage).toEqual({ input_tokens: 85, output_tokens: 20, cache_read_input_tokens: 10, cache_creation_input_tokens: 5 })
+  })
+
+  test("MAJOR FIX (was silently dropped by the bare netInputTokens primitive): output_tokens_details.reasoning_tokens is forwarded onto the Anthropic usage (richest-data-flow — mirrors Anthropic's own thinking_tokens concept)", () => {
+    const { response } = translateResponsesResponseToAnthropic(
+      responsesResponse([messageItem("hi")], { usage: usage({ output_tokens_details: { reasoning_tokens: 30 } }) }),
+    )
+    expect(response.usage).toEqual({ input_tokens: 100, output_tokens: 20, output_tokens_details: { reasoning_tokens: 30 } })
+  })
+
+  test("output-side modality/prediction breakdown is also forwarded (not just reasoning_tokens)", () => {
+    const { response } = translateResponsesResponseToAnthropic(
+      responsesResponse([messageItem("hi")], { usage: usageWithOutputDetails({ reasoning_tokens: 4, text_tokens: 16, accepted_prediction_tokens: 2 }) }),
+    )
+    expect(response.usage).toEqual({
+      input_tokens: 100,
+      output_tokens: 20,
+      output_tokens_details: { reasoning_tokens: 4, text: 16, accepted_prediction_tokens: 2 },
+    })
+  })
+
+  test("input-side modality breakdown is also forwarded", () => {
+    const { response } = translateResponsesResponseToAnthropic(
+      responsesResponse([messageItem("hi")], { usage: usage({ input_tokens_details: { cached_tokens: 10, image_tokens: 8 } }) }),
+    )
+    expect(response.usage).toEqual({ input_tokens: 90, output_tokens: 20, cache_read_input_tokens: 10, input_tokens_details: { image: 8 } })
   })
 })
