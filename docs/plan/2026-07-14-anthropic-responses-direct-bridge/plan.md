@@ -1,5 +1,7 @@
 # anthropic ↔ responses 直接桥 —— 实施计划
 
+> **实施状态（2026-07-15）：✅ 全部完成。** Phase 0（探针 a-e）/ 1（hub 穷尽桥表）/ 2（三分类审计）/ 3（前向桥）/ 4（反向桥）/ 5（reasoning round-trip 两向 + 两场景）/ 6（server-tool 透传+降级）/ 7（配置 model_mappings+model_translation）全 landed，Phase 3/4/5/6 各过合并态异模型对抗审查（Phase 3/4 各修 1 usage MAJOR、Phase 5/6 0 major）。权威终态见 RFC + ADR [2026-07-14-lossless-per-pair-bridge](../../decisions/2026-07-14-lossless-per-pair-bridge.md) + DESIGN.md「anthropic↔responses 直接桥」行。推迟项见 [deferred-backlog](../../todo/deferred-backlog.md)（gemini 直接桥 / 反向 server-tool / via-responses added-capture）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐 task 实施。步骤用 checkbox（`- [ ]`）跟踪。
 
 **Goal:** 给 `(anthropic ↔ responses)` 做无损直接翻译桥（前向 + 反向），把 hub-translate 从 CC-canonical 枢纽重塑为 per-pair 显式桥选择器，消除 non-CC↔non-CC 经 CC 中转的保真损失（reasoning 折成 reasoning_effort 标量、thinking 结构丢失、server tool strip）。
