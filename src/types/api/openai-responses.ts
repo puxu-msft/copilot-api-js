@@ -348,6 +348,8 @@ export interface OutputTextDeltaEvent {
   type: "response.output_text.delta"
   output_index: number
   content_index: number
+  /** The output item id this text delta belongs to (real GHC wire carries it — cross-event correlation, mirrors the sibling delta events). */
+  item_id: string
   delta: string
   sequence_number: number
 }
