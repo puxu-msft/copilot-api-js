@@ -8,7 +8,6 @@ import {
   resolveResponseUsage,
   resolveStopReason,
 } from "./entry-view"
-import { listInFlight } from "./in-flight"
 import { getHistory } from "./queries"
 
 function formatLocalTimestamp(ts: number): string {
@@ -32,58 +31,27 @@ function escapeCsvValue(value: unknown): string {
 }
 
 export function getStats(): HistoryStats {
-  const persisted = getHistory({ limit: 1_000_000 }).entries
-  const base: HistoryStats = {
-    totalRequests: persisted.length,
-    successfulRequests: persisted.filter((entry) => entry.state === "completed").length,
-    failedRequests: persisted.filter((entry) => entry.state === "failed").length,
-    abortedRequests: persisted.filter((entry) => entry.state === "aborted").length,
-    interruptedRequests: persisted.filter((entry) => entry.state === "interrupted").length,
-    totalInputTokens: persisted.reduce((sum, entry) => sum + (resolveResponseUsage(entry)?.input_tokens ?? 0), 0),
-    totalOutputTokens: persisted.reduce((sum, entry) => sum + (resolveResponseUsage(entry)?.output_tokens ?? 0), 0),
-    averageDurationMs: persisted.length === 0 ? 0 : persisted.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0) / persisted.length,
+  const entries = getHistory({ limit: 1_000_000 }).entries
+  const stats: HistoryStats = {
+    totalRequests: entries.length,
+    successfulRequests: entries.filter((entry) => entry.state === "completed" || resolveResponseSuccess(entry) === true).length,
+    failedRequests: entries.filter((entry) => entry.state === "failed" || resolveResponseSuccess(entry) === false).length,
+    abortedRequests: entries.filter((entry) => entry.state === "aborted").length,
+    interruptedRequests: entries.filter((entry) => entry.state === "interrupted").length,
+    totalInputTokens: entries.reduce((sum, entry) => sum + (resolveResponseUsage(entry)?.input_tokens ?? 0), 0),
+    totalOutputTokens: entries.reduce((sum, entry) => sum + (resolveResponseUsage(entry)?.output_tokens ?? 0), 0),
+    averageDurationMs: entries.length === 0 ? 0 : entries.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0) / entries.length,
     modelDistribution: {},
     endpointDistribution: {},
     recentActivity: [],
-    activeSessions: new Set(persisted.map((entry) => entry.sessionId).filter(Boolean)).size,
+    activeSessions: new Set(entries.map((entry) => entry.sessionId).filter(Boolean)).size,
   }
-  for (const entry of persisted) {
+  for (const entry of entries) {
     const model = resolveResponseModel(entry) ?? entry.clientRequest?.model
-    if (model) base.modelDistribution[model] = (base.modelDistribution[model] ?? 0) + 1
-    base.endpointDistribution[entry.endpoint] = (base.endpointDistribution[entry.endpoint] ?? 0) + 1
+    if (model) stats.modelDistribution[model] = (stats.modelDistribution[model] ?? 0) + 1
+    stats.endpointDistribution[entry.endpoint] = (stats.endpointDistribution[entry.endpoint] ?? 0) + 1
   }
-  const inFlight = listInFlight()
-  if (inFlight.length === 0) return base
-
-  const modelDistribution = { ...base.modelDistribution }
-  const endpointDistribution = { ...base.endpointDistribution }
-  let totalInputTokens = base.totalInputTokens
-  let totalOutputTokens = base.totalOutputTokens
-  let successful = base.successfulRequests
-  let failed = base.failedRequests
-
-  for (const entry of inFlight) {
-    const model = resolveResponseModel(entry) ?? entry.clientRequest?.model
-    if (model) modelDistribution[model] = (modelDistribution[model] ?? 0) + 1
-    endpointDistribution[entry.endpoint] = (endpointDistribution[entry.endpoint] ?? 0) + 1
-    const usage = resolveResponseUsage(entry)
-    totalInputTokens += usage?.input_tokens ?? 0
-    totalOutputTokens += usage?.output_tokens ?? 0
-    const success = resolveResponseSuccess(entry)
-    if (success === true) successful += 1
-    else if (success === false) failed += 1
-  }
-
-  return {
-    ...base,
-    totalRequests: base.totalRequests + inFlight.length,
-    successfulRequests: successful,
-    failedRequests: failed,
-    totalInputTokens,
-    totalOutputTokens,
-    modelDistribution,
-    endpointDistribution,
-  }
+  return stats
 }
 
 export function exportHistory(format: "json" | "csv" = "json"): string {
