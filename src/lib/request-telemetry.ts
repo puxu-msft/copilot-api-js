@@ -1728,6 +1728,14 @@ export function persistRequestTelemetry(): Promise<void> {
 export async function shutdownRequestTelemetry(): Promise<void> {
   stopPeriodicPersistence()
   stopRollupTimer()
+  // Unsubscribe BEFORE the flush await below (not after) — defense-in-depth for the
+  // same M1 hazard documented at the Phase-1 handoff call site above: if a config
+  // hot-reload lands while this function is `await`ing persistRequestTelemetry(),
+  // an un-unsubscribed telemetryConfigUnsub would let `restartTelemetryTimers`
+  // re-arm the just-stopped rollup timer pointed at a db handle that's about to
+  // close underneath it. Unsubscribing first closes that window entirely.
+  telemetryConfigUnsub?.()
+  telemetryConfigUnsub = null
   // Signal the one-shot JSON backfill to bail BEFORE the db closes below (cooperative-stop: a backfill
   // still in flight must not write against a closing handle). migrate-json checks this getter before its
   // parse + write phases and its top-level try/catch swallows any close-race throw regardless.
@@ -1740,8 +1748,6 @@ export async function shutdownRequestTelemetry(): Promise<void> {
   await persistRequestTelemetry()
   telemetryDb?.close()
   telemetryDb = null
-  telemetryConfigUnsub?.()
-  telemetryConfigUnsub = null
 }
 
 /**
