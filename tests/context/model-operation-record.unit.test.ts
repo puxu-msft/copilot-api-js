@@ -43,7 +43,7 @@ describe("ModelOperationRecord canonical shape", () => {
     expect(record.terminal).toBeNull()
   })
 
-  it("retains source values by readonly reference while freezing arena-owned containers", () => {
+  it("retains source identity while freezing semantic values and arena-owned containers", () => {
     const recorder = makeRecorder()
     const payload = { model: "claude-opus-4.8", messages: [{ role: "user", content: "hello" }] }
     const frame = { type: "message_start", message: { id: "msg-1" } }
@@ -53,8 +53,9 @@ describe("ModelOperationRecord canonical shape", () => {
     const record = recorder.snapshot()
     expect(record.arena.payloads[0]?.value).toBe(payload)
     expect(record.arena.frames[0]?.value).toBe(frame)
-    expect(Object.isFrozen(payload)).toBe(false)
-    expect(Object.isFrozen(frame)).toBe(false)
+    expect(Object.isFrozen(payload)).toBe(true)
+    expect(Object.isFrozen(payload.messages)).toBe(true)
+    expect(Object.isFrozen(frame)).toBe(true)
     expect(Object.isFrozen(record)).toBe(true)
     expect(Object.isFrozen(record.arena)).toBe(true)
     expect(Object.isFrozen(record.arena.payloads)).toBe(true)
@@ -82,6 +83,23 @@ describe("ModelOperationRecord canonical shape", () => {
     expect(record.egress?.upstream.frames[0]).toBe(record.egress?.client.frames[0])
     expect(record.egress?.upstream).not.toBe(record.egress?.client)
     expect(record.egress?.upstream.frames).not.toBe(record.egress?.client.frames)
+  })
+
+  it("preserves repeated ordered header fields without comma-folding", () => {
+    const recorder = makeRecorder()
+    recorder.recordIngress({
+      request: {
+        headers: [
+          ["set-cookie", "a=1"],
+          ["set-cookie", "b=2"],
+        ],
+      },
+    })
+
+    expect(recorder.snapshot().ingress?.request.headers).toEqual([
+      ["set-cookie", "a=1"],
+      ["set-cookie", "b=2"],
+    ])
   })
 
   it("requires explicit provenance for every derived payload and frame and keeps tracks independent", () => {
@@ -251,6 +269,8 @@ describe("ModelOperationRecord canonical shape", () => {
     const record = recorder.commitTerminal({ outcome: "completed", extensions: { "vendor.terminal": { extra: "value" } } })
 
     expect(record.extensions["vendor.future"]).toBe(future)
+    expect(Object.isFrozen(future)).toBe(true)
+    expect(Object.isFrozen(future.previouslyUnknown)).toBe(true)
     // This assertion intentionally exercises the persistence-neutral JSON wire round-trip.
     // eslint-disable-next-line unicorn/prefer-structured-clone
     const roundTripped = JSON.parse(JSON.stringify(record)) as typeof record
@@ -274,6 +294,26 @@ describe("ModelOperationRecord canonical shape", () => {
     expect(snapshotOne.arena.frames.map((node) => node.handle)).toEqual([first])
     expect(snapshotTwo.arena.frames.map((node) => node.handle)).toEqual([first, second])
     expect(() => (snapshotOne.arena.frames as Array<unknown>).push({})).toThrow()
+  })
+
+  it("freezes nested extension values so prior snapshots cannot drift", () => {
+    const recorder = makeRecorder()
+    const extension = { nested: { count: 1 } }
+    recorder.setExtension("vendor.mutable", extension)
+    const snapshot = recorder.snapshot()
+
+    expect(() => {
+      extension.nested.count = 2
+    }).toThrow()
+    expect(snapshot.extensions["vendor.mutable"]).toEqual({ nested: { count: 1 } })
+  })
+
+  it("rejects invalid references and terminal attempt selections", () => {
+    const recorder = makeRecorder()
+    expect(() => recorder.recordTransform({ transformId: "bad", stage: "render", inputs: [{ kind: "frame", handle: "frame:404" as FrameNodeHandle }], outputs: [] })).toThrow(/unknown frame/i)
+    const failed = recorder.beginAttempt({})
+    recorder.settleAttempt(failed, { verdict: "failed" })
+    expect(() => recorder.commitTerminal({ outcome: "failed", committedAttempt: failed })).toThrow(/must reference a committed attempt/i)
   })
 })
 

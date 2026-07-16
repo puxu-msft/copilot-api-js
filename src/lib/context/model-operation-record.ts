@@ -1,9 +1,10 @@
 /**
  * History V3's inert canonical record for one model operation.
  *
- * The recorder owns only structural containers. Payloads, frames, diagnostics, and
- * extension values are retained as readonly references: no structured clone, JSON
- * round-trip, or deep freeze is performed on caller-owned values.
+ * The recorder owns structural containers and recursively freezes captured JSON-like
+ * values in place. No structured clone or JSON round-trip is performed: identity is
+ * preserved, while producers must stop mutating values after registration. Opaque
+ * platform objects are frozen at their outer boundary only.
  */
 
 /** Kinds of model operations represented by the canonical record. */
@@ -11,6 +12,23 @@ export type OperationKind = "generation" | "count_tokens" | "embeddings" | "resp
 
 /** Forward-compatible extension namespace. Values are intentionally opaque. */
 export type OperationExtensions = Readonly<Record<string, unknown>>
+
+/** Ordered HTTP field tuple. Repeated names and original ordering remain representable. */
+export type OperationHeaderField = readonly [name: string, value: string]
+
+/** Runtime capability of an exact raw capture boundary. */
+export type CaptureCapability = "available" | "unavailable" | "not-requested"
+
+/** Cross-vendor usage with typed canonical counters and an open details bag. */
+export interface OperationUsage {
+  readonly inputTokens?: number
+  readonly outputTokens?: number
+  readonly cacheReadTokens?: number
+  readonly cacheWriteTokens?: number
+  readonly reasoningTokens?: number
+  readonly toolSearchRequests?: number
+  readonly details?: Readonly<Record<string, unknown>>
+}
 
 /** Provenance location for an arena node. */
 export interface ArenaNodeOrigin {
@@ -96,7 +114,8 @@ export interface OperationTrackInput {
   readonly payload?: PayloadNodeHandle
   readonly frames?: ReadonlyArray<FrameNodeHandle>
   readonly status?: number
-  readonly headers?: Readonly<Record<string, string>>
+  readonly headers?: ReadonlyArray<OperationHeaderField>
+  readonly rawCapture?: Readonly<{ capability: CaptureCapability; ref?: string; byteLength?: number; gap?: string }>
   readonly metadata?: unknown
   readonly extensions?: Readonly<Record<string, unknown>>
 }
@@ -106,7 +125,8 @@ export interface OperationTrack {
   readonly payload?: PayloadNodeHandle
   readonly frames: ReadonlyArray<FrameNodeHandle>
   readonly status?: number
-  readonly headers?: Readonly<Record<string, string>>
+  readonly headers?: ReadonlyArray<OperationHeaderField>
+  readonly rawCapture?: Readonly<{ capability: CaptureCapability; ref?: string; byteLength?: number; gap?: string }>
   readonly metadata?: unknown
   readonly extensions?: OperationExtensions
 }
@@ -119,6 +139,10 @@ export interface ModelOperationIdentity {
   readonly parentOperationId?: string
   readonly sessionId?: string
   readonly clientRequestId?: string
+  readonly connectionId?: string
+  readonly responseCreateId?: string
+  readonly previousResponseId?: string
+  readonly process?: Readonly<{ pid: number; bootTime?: number; version?: string; gitSha?: string }>
   readonly extensions?: OperationExtensions
 }
 
@@ -199,6 +223,7 @@ export interface ModelOperationEgress {
 
 /** Final operation outcome. */
 export type TerminalOutcome = "completed" | "failed" | "cancelled" | "aborted"
+  | "interrupted"
 
 /** Immutable terminal commit. */
 export interface ModelOperationTerminal {
@@ -206,7 +231,12 @@ export interface ModelOperationTerminal {
   readonly outcome: TerminalOutcome
   readonly committedAttempt?: AttemptHandle
   readonly error?: unknown
-  readonly usage?: unknown
+  readonly usage?: OperationUsage
+  readonly attribution?: Readonly<{
+    category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"
+    code?: string
+    detail?: string
+  }>
   readonly metadata?: unknown
   readonly extensions?: OperationExtensions
 }
@@ -234,6 +264,10 @@ export interface CreateModelOperationRecorderInput {
     readonly parentOperationId?: string
     readonly sessionId?: string
     readonly clientRequestId?: string
+    readonly connectionId?: string
+    readonly responseCreateId?: string
+    readonly previousResponseId?: string
+    readonly process?: Readonly<{ pid: number; bootTime?: number; version?: string; gitSha?: string }>
     readonly extensions?: Readonly<Record<string, unknown>>
   }
   readonly extensions?: Readonly<Record<string, unknown>>
@@ -311,7 +345,8 @@ export interface CommitTerminalInput {
   readonly outcome: TerminalOutcome
   readonly committedAttempt?: AttemptHandle
   readonly error?: unknown
-  readonly usage?: unknown
+  readonly usage?: OperationUsage
+  readonly attribution?: ModelOperationTerminal["attribution"]
   readonly metadata?: unknown
   readonly extensions?: Readonly<Record<string, unknown>>
 }
@@ -356,12 +391,29 @@ function requireNonEmpty(value: string, field: string): void {
   if (value.trim().length === 0) throw new Error(`[model-operation-record] ${field} must not be empty`)
 }
 
-function freezeExtensions(input: Readonly<Record<string, unknown>> | undefined): OperationExtensions | undefined {
-  return input === undefined ? undefined : Object.freeze({ ...input })
+function freezeCapturedValue<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object") return value
+  const object = value as object
+  if (seen.has(object)) return value
+  seen.add(object)
+  // Typed arrays cannot be frozen when they contain elements. Their bytes are
+  // raw-capture concerns; semantic callers must stop mutating after registration.
+  if (!ArrayBuffer.isView(object)) {
+    for (const nested of Object.values(object)) freezeCapturedValue(nested, seen)
+    Object.freeze(object)
+  }
+  return value
 }
 
-function freezeHeaders(input: Readonly<Record<string, string>> | undefined): Readonly<Record<string, string>> | undefined {
-  return input === undefined ? undefined : Object.freeze({ ...input })
+function freezeExtensions(input: Readonly<Record<string, unknown>> | undefined): OperationExtensions | undefined {
+  if (input === undefined) return undefined
+  const copy = { ...input }
+  for (const value of Object.values(copy)) freezeCapturedValue(value)
+  return Object.freeze(copy)
+}
+
+function freezeHeaders(input: ReadonlyArray<OperationHeaderField> | undefined): ReadonlyArray<OperationHeaderField> | undefined {
+  return input === undefined ? undefined : Object.freeze(input.map(([name, value]) => Object.freeze([name, value] as const)))
 }
 
 function freezeOrigin(origin: ArenaNodeOrigin): Readonly<ArenaNodeOrigin> {
@@ -398,6 +450,10 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     ...(input.identity.parentOperationId === undefined ? {} : { parentOperationId: input.identity.parentOperationId }),
     ...(input.identity.sessionId === undefined ? {} : { sessionId: input.identity.sessionId }),
     ...(input.identity.clientRequestId === undefined ? {} : { clientRequestId: input.identity.clientRequestId }),
+    ...(input.identity.connectionId === undefined ? {} : { connectionId: input.identity.connectionId }),
+    ...(input.identity.responseCreateId === undefined ? {} : { responseCreateId: input.identity.responseCreateId }),
+    ...(input.identity.previousResponseId === undefined ? {} : { previousResponseId: input.identity.previousResponseId }),
+    ...(input.identity.process === undefined ? {} : { process: Object.freeze({ ...input.identity.process }) }),
     ...(input.identity.extensions === undefined ? {} : { extensions: freezeExtensions(input.identity.extensions) }),
   })
 
@@ -427,6 +483,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       frames: Object.freeze([...(source.frames ?? [])]),
       ...(source.status === undefined ? {} : { status: source.status }),
       ...(source.headers === undefined ? {} : { headers: freezeHeaders(source.headers) }),
+      ...(source.rawCapture === undefined ? {} : { rawCapture: Object.freeze({ ...source.rawCapture }) }),
       ...(source.metadata === undefined ? {} : { metadata: source.metadata }),
       ...(source.extensions === undefined ? {} : { extensions: freezeExtensions(source.extensions) }),
     })
@@ -490,7 +547,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const node: SourceArenaNode<PayloadNodeHandle> = Object.freeze({
         handle,
         sequence: nextSequence(),
-        value,
+        value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "source",
         ...(nodeInput.mediaType === undefined ? {} : { mediaType: nodeInput.mediaType }),
@@ -509,7 +566,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const node: DerivedArenaNode<PayloadNodeHandle> = Object.freeze({
         handle,
         sequence: nextSequence(),
-        value,
+        value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "derived",
         derivedFrom: nodeInput.derivedFrom,
@@ -528,7 +585,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const node: SourceArenaNode<FrameNodeHandle> = Object.freeze({
         handle,
         sequence: nextSequence(),
-        value,
+        value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "source",
         ...(nodeInput.mediaType === undefined ? {} : { mediaType: nodeInput.mediaType }),
@@ -547,7 +604,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const node: DerivedArenaNode<FrameNodeHandle> = Object.freeze({
         handle,
         sequence: nextSequence(),
-        value,
+        value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "derived",
         derivedFrom: nodeInput.derivedFrom,
@@ -569,7 +626,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
         ...(recordInput.format === undefined ? {} : { format: recordInput.format }),
         ...(recordInput.method === undefined ? {} : { method: recordInput.method }),
         ...(recordInput.path === undefined ? {} : { path: recordInput.path }),
-        ...(recordInput.metadata === undefined ? {} : { metadata: recordInput.metadata }),
+        ...(recordInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(recordInput.metadata) }),
         ...(recordInput.extensions === undefined ? {} : { extensions: freezeExtensions(recordInput.extensions) }),
       })
     },
@@ -585,7 +642,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
         ...(recordInput.upstreamProtocol === undefined ? {} : { upstreamProtocol: recordInput.upstreamProtocol }),
         ...(recordInput.upstreamEndpoint === undefined ? {} : { upstreamEndpoint: recordInput.upstreamEndpoint }),
         ...(recordInput.transport === undefined ? {} : { transport: recordInput.transport }),
-        ...(recordInput.metadata === undefined ? {} : { metadata: recordInput.metadata }),
+        ...(recordInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(recordInput.metadata) }),
         ...(recordInput.extensions === undefined ? {} : { extensions: freezeExtensions(recordInput.extensions) }),
       })
     },
@@ -601,7 +658,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
           stage: recordInput.stage,
           inputs: Object.freeze(recordInput.inputs.map((reference) => freezeReference(reference))),
           outputs: Object.freeze(recordInput.outputs.map((reference) => freezeReference(reference))),
-          ...(recordInput.metadata === undefined ? {} : { metadata: recordInput.metadata }),
+          ...(recordInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(recordInput.metadata) }),
           ...(recordInput.extensions === undefined ? {} : { extensions: freezeExtensions(recordInput.extensions) }),
         }),
       )
@@ -617,7 +674,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
         ...(attemptInput.strategy === undefined ? {} : { strategy: attemptInput.strategy }),
         ...(attemptInput.effectiveRequest === undefined ? {} : { effectiveRequest: freezeTrack(attemptInput.effectiveRequest) }),
         ...(attemptInput.upstreamRequest === undefined ? {} : { upstreamRequest: freezeTrack(attemptInput.upstreamRequest) }),
-        ...(attemptInput.metadata === undefined ? {} : { metadata: attemptInput.metadata }),
+        ...(attemptInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(attemptInput.metadata) }),
         ...(attemptInput.extensions === undefined ? {} : { extensions: freezeExtensions(attemptInput.extensions) }),
       }
       attempts.push(attempt)
@@ -636,7 +693,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
           kind: diagnosticInput.kind,
           severity: diagnosticInput.severity,
           ...(diagnosticInput.message === undefined ? {} : { message: diagnosticInput.message }),
-          ...(diagnosticInput.data === undefined ? {} : { data: diagnosticInput.data }),
+          ...(diagnosticInput.data === undefined ? {} : { data: freezeCapturedValue(diagnosticInput.data) }),
           ...(diagnosticInput.extensions === undefined ? {} : { extensions: freezeExtensions(diagnosticInput.extensions) }),
         }),
       )
@@ -647,13 +704,13 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const attempt = getAttempt(handle)
       if (attempt.verdict !== undefined) throw new Error(`[model-operation-record] attempt already settled: ${handle}`)
       if (settlement.verdict === "committed" && committedAttempt !== undefined) {
-        throw new Error(`[model-operation-record] attempt ${committedAttempt} is already committed`)
+        throw new Error(`[model-operation-record] attempt ${handle} cannot be committed: attempt ${committedAttempt} is already committed`)
       }
       attempt.verdict = settlement.verdict
       attempt.settledSequence = nextSequence()
       if (settlement.upstreamResponse !== undefined) attempt.upstreamResponse = freezeTrack(settlement.upstreamResponse)
       if (settlement.reason !== undefined) attempt.reason = settlement.reason
-      if (settlement.error !== undefined) attempt.error = settlement.error
+      if (settlement.error !== undefined) attempt.error = freezeCapturedValue(settlement.error)
       if (settlement.extensions !== undefined) attempt.settlementExtensions = freezeExtensions(settlement.extensions)
       if (settlement.verdict === "committed") committedAttempt = handle
     },
@@ -665,7 +722,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
         sequence: nextSequence(),
         upstream: freezeTrack(recordInput.upstream),
         client: freezeTrack(recordInput.client),
-        ...(recordInput.metadata === undefined ? {} : { metadata: recordInput.metadata }),
+        ...(recordInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(recordInput.metadata) }),
         ...(recordInput.extensions === undefined ? {} : { extensions: freezeExtensions(recordInput.extensions) }),
       })
     },
@@ -673,7 +730,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     setExtension(namespace, value): void {
       assertWritable()
       requireNonEmpty(namespace, "extension namespace")
-      extensions[namespace] = value
+      extensions[namespace] = freezeCapturedValue(value)
     },
 
     commitTerminal(terminalInput): ModelOperationRecord {
@@ -691,9 +748,10 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
         sequence: nextSequence(),
         outcome: terminalInput.outcome,
         ...(terminalCommittedAttempt === undefined ? {} : { committedAttempt: terminalCommittedAttempt }),
-        ...(terminalInput.error === undefined ? {} : { error: terminalInput.error }),
-        ...(terminalInput.usage === undefined ? {} : { usage: terminalInput.usage }),
-        ...(terminalInput.metadata === undefined ? {} : { metadata: terminalInput.metadata }),
+        ...(terminalInput.error === undefined ? {} : { error: freezeCapturedValue(terminalInput.error) }),
+        ...(terminalInput.usage === undefined ? {} : { usage: freezeCapturedValue(terminalInput.usage) }),
+        ...(terminalInput.attribution === undefined ? {} : { attribution: Object.freeze({ ...terminalInput.attribution }) }),
+        ...(terminalInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(terminalInput.metadata) }),
         ...(terminalInput.extensions === undefined ? {} : { extensions: freezeExtensions(terminalInput.extensions) }),
       })
       sealed = true
