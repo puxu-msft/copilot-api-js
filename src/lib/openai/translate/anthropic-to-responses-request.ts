@@ -35,9 +35,15 @@
  *   - `thinking` → `reasoning.effort` (+ unconditional `summary:"auto"` so the model's reasoning is
  *     forwarded) PLUS the Phase 5 round-trip above for an echoed-back sentinel-signed block.
  *   - `cache_control` → STRIPPED (Responses has no cache-breakpoint concept).
- *   - native server tools (`web_search`, `code_execution`, …) → STRIPPED, warned (Phase 6 wires the
- *     `web_search_preview` mapping; until then this leg behaves like the CC leg — never silently drop
- *     without a warning).
+ *   - native server tools (RFC §5 / Phase 6): a per-type MAPPING TABLE ({@link SERVER_TOOL_MAPPING})
+ *     translates the true server-executed Anthropic tools (`web_search`, `web_fetch`, `code_execution` —
+ *     NOT the client-executed `memory`/`computer`/`text_editor`/`bash` builtins that share the same
+ *     API-defined-type prefix convention, ADR 2026-07-13-server-tool-positioning §Part-1) to their
+ *     Responses builtin-tool counterpart, letting the Responses upstream execute them NATIVELY (no
+ *     double-hop impersonation — R-NO-REVIVE only guards the RESULT-rendering side, §5 in
+ *     `anthropic-to-responses.ts`/`-stream.ts`). A server tool with NO mapping entry (or a
+ *     client-executed builtin misclassified as one) still STRIPS + WARNS, same graceful-degradation
+ *     discipline as before.
  *   - `redacted_thinking` ASSISTANT blocks → dropped (Anthropic redacts it entirely, no plaintext/no
  *     sentinel to recover — nothing to round-trip).
  *   - `top_k` → dropped (no Responses equivalent).
@@ -63,6 +69,7 @@ import type {
   ResponsesInputContentPart,
   ResponsesInputItem,
   ResponsesPayload,
+  ResponsesTool,
   ResponsesToolChoice,
 } from "~/types/api/openai-responses"
 
@@ -301,15 +308,59 @@ function imageBlockToInputPart(block: ImageBlockParam): ResponsesInputContentPar
 // ============================================================================
 
 /**
- * Anthropic `tools[]` → Responses function tools. Native server tools (`web_search`, `code_execution`, …)
- * are STRIPPED (warned) until Phase 6 wires the `web_search_preview` mapping — matches the CC leg's
- * current behavior so this Phase does not regress server-tool handling, it just doesn't yet improve it.
+ * Server-tool name-gap mapping table (RFC §5.1, Phase 6): Anthropic's true SERVER-EXECUTED tools
+ * (ADR 2026-07-13-server-tool-positioning-and-web-search-retirement §Part-1 — `web_search`/`web_fetch`/
+ * `code_execution`, which the Anthropic API executes server-side and returns via `server_tool_use` +
+ * `*_tool_result`; NOT the CLIENT-executed `memory`/`computer`/`text_editor`/`bash` builtins that share
+ * the same API-defined-type-prefix convention but are executed by the CLIENT) → their Responses builtin
+ * counterpart. Keyed on the Anthropic tool's TYPE PREFIX (Anthropic types carry a dated suffix, e.g.
+ * `web_search_20250305` — the prefix is the stable match key, mirrors `isApiDefinedToolType`'s own
+ * prefix-matching convention). A tool whose prefix has NO entry here (unmapped OR a client-executed
+ * builtin misclassified by `isApiDefinedToolType`) falls through to the strip+warn degradation path —
+ * this table is a GENERIC extension point, not a `web_search` special case (learn-by-analogy: adding a
+ * new true server tool's Responses counterpart is one more table row, no new branch).
+ *
+ * Probe (c) (`exp/anthropic-responses-direct/FINDINGS.md`) confirmed the request-side leg of this
+ * mapping is genuinely lossless: `/responses` accepted `tools:[{type:"web_search"}]` and the upstream
+ * executed the search NATIVELY (no proxy impersonation) — the response-side result rendering is a
+ * SEPARATE, asymmetric concern (§5.1/R-NO-REVIVE: always degrades, never round-trips — see
+ * `anthropic-to-responses.ts`/`-stream.ts`).
  */
-function translateTools(tools: Array<AnthropicTool>, reqId: string | undefined): Array<ResponsesFunctionTool> {
-  const out: Array<ResponsesFunctionTool> = []
+const SERVER_TOOL_MAPPING: ReadonlyArray<{ anthropicPrefix: string; responsesType: ResponsesBuiltinToolType }> = [
+  // Anthropic's Responses-facing web_search request is a bare `{type:"web_search"}` (Phase 0 probe (c) —
+  // NOT the richer `web_search_preview`/schema-carrying shape some OpenAI docs describe elsewhere; the
+  // GHC Responses upstream accepted the bare form and returned real results).
+  { anthropicPrefix: "web_search_", responsesType: "web_search" },
+  // web_fetch / code_execution have NO probed Responses-upstream request shape yet (Phase 0 only probed
+  // web_search) — omitted from the table until probed, rather than guessed. Falls through to strip+warn.
+]
+
+/** The Responses builtin-tool `type` values this table may emit (a subset of `ResponsesBuiltinTool["type"]`). */
+type ResponsesBuiltinToolType = "web_search"
+
+/** Look up the Responses builtin-tool mapping for an Anthropic tool's `type`, or undefined if unmapped. */
+function mapServerToolType(anthropicType: string): ResponsesBuiltinToolType | undefined {
+  return SERVER_TOOL_MAPPING.find((entry) => anthropicType.startsWith(entry.anthropicPrefix))?.responsesType
+}
+
+/**
+ * Anthropic `tools[]` → Responses tools (function + native server-tool passthrough, RFC §5.1/Phase 6).
+ * A true server-executed Anthropic tool (`isApiDefinedToolType`) with a {@link SERVER_TOOL_MAPPING}
+ * entry passes through as the mapped Responses builtin tool (letting the Responses upstream execute it
+ * natively); one with NO entry (unmapped type, or a client-executed builtin sharing the type-prefix
+ * convention) is STRIPPED + WARNED — the same graceful-degradation discipline the CC leg still uses
+ * (this bridge's request-side improvement is scoped to the mapped set, not a blanket passthrough).
+ */
+function translateTools(tools: Array<AnthropicTool>, reqId: string | undefined): Array<ResponsesTool> {
+  const out: Array<ResponsesTool> = []
   for (const tool of tools) {
     if (isApiDefinedToolType(tool.type)) {
-      dropWarn(`dropping native server tool "${tool.name}" (type: ${tool.type}) — unsupported on the direct Responses bridge (Phase 6)`, reqId)
+      const mapped = tool.type ? mapServerToolType(tool.type) : undefined
+      if (mapped) {
+        out.push({ type: mapped })
+      } else {
+        dropWarn(`dropping native server tool "${tool.name}" (type: ${tool.type}) — no Responses-builtin mapping (unmapped type or a client-executed builtin)`, reqId)
+      }
       continue
     }
     out.push({
@@ -317,7 +368,7 @@ function translateTools(tools: Array<AnthropicTool>, reqId: string | undefined):
       name: tool.name,
       ...(tool.description !== undefined && { description: tool.description }),
       ...(tool.input_schema !== undefined && { parameters: tool.input_schema }),
-    })
+    } satisfies ResponsesFunctionTool)
   }
   return out
 }

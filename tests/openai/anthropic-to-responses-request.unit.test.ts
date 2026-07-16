@@ -14,8 +14,10 @@ import {
   //
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import type {
   //
@@ -28,8 +30,8 @@ import type { ResponsesInputItem } from "~/types/api/openai-responses"
 import { buildSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
 import { translateAnthropicToResponses } from "~/lib/openai/translate/anthropic-to-responses-request"
 
-function payload(messages: Array<MessageParam>): MessagesPayload {
-  return { model: "gpt-5.5", max_tokens: 100, messages }
+function payload(messages: Array<MessageParam>, over?: Partial<MessagesPayload>): MessagesPayload {
+  return { model: "gpt-5.5", max_tokens: 100, messages, ...over }
 }
 
 /** `ResponsesPayload.input` is `string | Array<ResponsesInputItem>` — every translated payload here is array-shaped. */
@@ -125,5 +127,47 @@ describe("translateAnthropicToResponses — forward reasoning round-trip (IMPROV
     const reasoningItems = inputItems(result).filter((i) => i.type === "reasoning")
     expect(reasoningItems.length).toBe(2)
     expect(reasoningItems.map((r) => r.encrypted_content)).toEqual(["enc-1", "enc-2"])
+  })
+})
+
+describe("translateAnthropicToResponses — server-tool request-side passthrough (RFC §5.1, Phase 6, IMPROVEMENT ZONE)", () => {
+  test("web_search (a true server-executed tool) maps to the Responses builtin web_search tool — passed through, not stripped", () => {
+    const result = translateAnthropicToResponses(payload([{ role: "user", content: "x" }], { tools: [{ name: "web_search", type: "web_search_20250305" }] }))
+    expect(result.tools).toEqual([{ type: "web_search" }])
+  })
+
+  test("an unmapped server-tool type (code_execution — no probed Responses request shape yet) is STRIPPED + WARNED, never silently dropped", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      const result = translateAnthropicToResponses(payload([{ role: "user", content: "x" }], { tools: [{ name: "code_exec", type: "code_execution_20250522" }] }))
+      expect(result.tools).toBeUndefined()
+      const dropLine = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes("dropping native server tool"))
+      expect(dropLine).toBeDefined()
+      expect(dropLine).toContain("no Responses-builtin mapping")
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("a client-executed builtin (memory — shares the API-defined-type-prefix convention but is NOT server-executed, ADR 2026-07-13) has no mapping entry — stripped + warned, never mis-mapped to a Responses builtin", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      const result = translateAnthropicToResponses(payload([{ role: "user", content: "x" }], { tools: [{ name: "memory", type: "memory_20250818" }] }))
+      expect(result.tools).toBeUndefined()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("web_search alongside a normal function tool — only web_search maps, the function tool passes through unaffected (equivalence zone)", () => {
+    const result = translateAnthropicToResponses(
+      payload([{ role: "user", content: "x" }], {
+        tools: [
+          { name: "web_search", type: "web_search_20250305" },
+          { name: "get_weather", input_schema: { type: "object" } },
+        ],
+      }),
+    )
+    expect(result.tools).toEqual([{ type: "web_search" }, { type: "function", name: "get_weather", parameters: { type: "object" } }])
   })
 })
