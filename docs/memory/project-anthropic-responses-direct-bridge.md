@@ -1,6 +1,6 @@
 ---
 name: project-anthropic-responses-direct-bridge
-description: anthropic↔responses 直接桥 + hub-translate 重塑为 per-pair 桥选择器（RFC 定稿、审查中、未实现）——推翻 CC-as-canonical 前提。权威 docs/rfc/2026-07-14-anthropic-responses-direct-bridge.md
+description: anthropic↔responses 直接桥 + hub-translate 重塑为 per-pair 桥选择器（Phase 0-7 全 landed + 3 次合并态审查 + 收官）——推翻 CC-as-canonical 前提、lossless-per-pair 为默认。权威 docs/rfc/2026-07-14-anthropic-responses-direct-bridge.md + ADR 2026-07-14-lossless-per-pair-bridge
 metadata: 
   node_type: memory
   type: project
