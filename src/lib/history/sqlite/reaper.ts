@@ -3,8 +3,6 @@ import consola from "consola"
 import { getProcessIdentity } from "~/lib/process-identity"
 import { state } from "~/lib/state"
 
-import type { Database } from "./connection"
-
 import { ACTIVE_STATES } from "../lifecycle-state"
 import {
   //
@@ -13,8 +11,6 @@ import {
   incrementalVacuum,
   runOptimize,
 } from "./connection"
-import { GC_ORPHAN_MSG_BLOB_SQL } from "./write"
-import { migrateOverflowToTier1, runTier1MigrationOnce } from "./tier1-migrate"
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -31,96 +27,19 @@ export function setReaperTickHook(fn: (() => void) | null): void {
   tickHook = fn
 }
 
-/**
- * SQL predicates partitioning entries_v2 into success / failure buckets.
- *
- * Only TERMINAL rows are bucketed. Active rows (pending/executing/streaming),
- * introduced by eager persistence, fall OUTSIDE both buckets so the reaper never
- * counts or evicts an in-progress request's head row. Their backstop is
- * `reclaimStaleActiveRows` (runtime) + startup orphan recovery, which flip a
- * stuck/dead row to `interrupted` (a failure-bucket terminal state).
- *
- * `AND pinned = 0` similarly excludes debug-pinned rows from BOTH buckets:
- * `evictBucket` reuses the same predicate for its COUNT and its DELETE subquery,
- * so a pinned row is neither counted toward the limit (never pushes an unpinned
- * row out) nor eligible for eviction. Pinning a row keeps its raw data forever.
- */
-const FAILURE_WHERE = "status IN ('failed','aborted','interrupted') AND pinned = 0"
-const SUCCESS_WHERE = "status = 'completed' AND pinned = 0"
-
 /** Active (non-terminal) statuses — reaper-exempt; reclaimed only via interrupted. Sourced from the
  *  single lifecycle-state primitive (`ACTIVE_STATES`) so this SQL binding can't drift from the JS
  *  partition used by history/queries.ts + the TUI. */
 const ACTIVE_STATUSES = ACTIVE_STATES
 
-/** Evict the oldest rows in one status bucket beyond `limit`. Returns the head-row count evicted. */
-function evictBucket(db: Database, where: string, limit: number): number {
-  if (limit <= 0) return 0
-  const { n } = db.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get() as { n: number }
-  if (n <= limit) return 0
-  const excess = n - limit
-  db.prepare(
-    `DELETE FROM entries_v2 WHERE id IN (
-       SELECT id FROM entries_v2 WHERE ${where} ORDER BY started_at ASC, id ASC LIMIT ?
-     )`,
-  ).run(excess)
-  // Return `excess`, NOT result.changes: with entry_stages ON DELETE CASCADE,
-  // `changes` counts cascade-deleted stage rows too. The subquery targets exactly
-  // `excess` head rows (n > limit guarantees they exist), so that is the head count.
-  return excess
-}
-
-export function runReaperOnce(successLimit: number, failureLimit: number): number {
-  const db = getDatabase()
-
-  // Tiered-archive mode: when enabled AND the archive is attached, overflow rows
-  // are MOVED to tier-1 instead of DELETEd (never-truly-delete red line, spec §3.1).
-  // The count limits become a safety valve (bound HOT growth within the hot window)
-  // rather than a lossy eviction. Falls back to the legacy DELETE path when archiving
-  // is off or the archive isn't attached yet (e.g. before startup wiring runs).
-  if (state.historyArchiveEnabled && isArchiveAttached(db)) {
-    const moved = migrateOverflowToTier1(db, successLimit, failureLimit)
-    if (moved > 0) {
-      consola.info(`[history/sqlite] reaper moved ${moved} overflow entries HOT→tier-1 (successLimit=${successLimit}, failureLimit=${failureLimit})`)
-      // HOT-side msg_blob orphan sweep (req_msg/req_aux cascade-removed with the moved
-      // head rows; archive-side GC ran inside migrateOverflowToTier1's batch).
-      db.prepare(GC_ORPHAN_MSG_BLOB_SQL).run()
-    }
-    return moved
-  }
-
-  const deletedSuccess = evictBucket(db, SUCCESS_WHERE, successLimit)
-  const deletedFailure = evictBucket(db, FAILURE_WHERE, failureLimit)
-  const deleted = deletedSuccess + deletedFailure
-  if (deleted > 0) {
-    consola.info(
-      `[history/sqlite] reaper evicted ${deletedSuccess} success (limit=${successLimit}) + ${deletedFailure} failure (limit=${failureLimit}) entries`,
-    )
-    // Sweep msg_blob rows orphaned by this eviction. GATED on `deleted>0` so a
-    // no-op tick never scans (req_msg/req_aux cascade-removed with the head rows;
-    // only the un-FK'd content-addressed blobs need the NOT EXISTS sweep — RFC C3).
-    db.prepare(GC_ORPHAN_MSG_BLOB_SQL).run()
-  }
-  return deleted
-}
-
 /**
- * Whether archive.db is ATTACHed as `archive` on this connection — a precondition
- * for the reaper's move-to-tier1 path. Probed via `pragma database_list` rather
- * than assumed, so a tick that fires before startup wiring attaches the archive
- * safely falls back to the legacy DELETE path instead of throwing.
+ * Retention limits are retained in the public signature during Phase 0 so config
+ * reload callers remain source-compatible, but online maintenance never deletes
+ * or moves terminal records. Capacity governance moves to V3 byte budgets and
+ * explicit operator tooling; it is not a periodic model-operation mutation.
  */
-function isArchiveAttached(db: Database): boolean {
-  try {
-    const rows = db.prepare("PRAGMA database_list").all() as Array<{ name: string }>
-    return rows.some((r) => r.name === "archive")
-  } catch (err: unknown) {
-    // A genuine connection fault here (vs "archive simply not attached") would
-    // silently route to the legacy DELETE path — surface it so it's diagnosable
-    // rather than masquerading as "archiving disabled".
-    consola.debug("[history/sqlite] archive-attached probe failed; falling back to legacy delete path", err)
-    return false
-  }
+export function runReaperOnce(_successLimit: number, _failureLimit: number): number {
+  return 0
 }
 
 /**
@@ -159,8 +78,8 @@ export function reclaimStaleActiveRows(maxAgeMs: number = state.staleRequestMaxA
 }
 
 /**
- * One full reaper tick: drain deferred finalizations → reclaim stale active rows
- * → evict overflow buckets → return freed pages → checkpoint the WAL. Exported so
+ * One full maintenance tick: drain deferred finalizations → reclaim stale active
+ * rows → return freed pages → checkpoint the WAL → optimize. Exported so
  * it can be exercised directly in tests without waiting on the interval timer.
  */
 export function runReaperTick(successLimit: number, failureLimit: number): void {
@@ -171,23 +90,14 @@ export function runReaperTick(successLimit: number, failureLimit: number): void 
   // row is counted/bucketed by the NEXT tick's eviction, not this one. Benign: a
   // one-tick delay in counting a freshly-persisted retry never evicts it early.
   tickHook?.()
-  // Reclaim stale active rows so freshly-interrupted rows are eligible for
-  // failure-bucket eviction in the same tick. Independent of in-flight finalizes:
+  // Reclaim stale active rows without removing their terminal records. Independent of in-flight finalizes:
   // it flips PERSISTED rows by status only. A row mid async-finalize is still
   // `streaming` here and may be flipped to `interrupted`, but the finalize's
   // terminal head upsert overwrites it back to its real terminal state (I3 benign —
   // finalize always wins; no loss/corruption, only a transient blip).
   reclaimStaleActiveRows()
   runReaperOnce(successLimit, failureLimit)
-  // Periodic time-based HOT→tier-1 migration (spec §3.3: startup + periodic). One
-  // bounded batch per tick (resumable — a large backlog drains over several ticks),
-  // gated on archiving enabled + attached. Independent of the count safety-valve in
-  // runReaperOnce (which handles overflow within the hot window); this cools rows
-  // that have simply aged past hot_days.
-  if (state.historyArchiveEnabled && isArchiveAttached(db)) {
-    runTier1MigrationOnce(db, { hotDays: state.historyArchiveHotDays, batchSize: 200 })
-  }
-  // Return the pages just freed by eviction to the OS (no-op unless
+  // Return already-free pages to the OS (no-op unless
   // auto_vacuum=INCREMENTAL is in effect — see incrementalVacuum).
   incrementalVacuum(db)
   // Keep the WAL bounded so lock windows stay short (fewer SQLITE_BUSY for the
@@ -201,13 +111,9 @@ export function runReaperTick(successLimit: number, failureLimit: number): void 
 export function startReaper(successLimit: number, failureLimit: number, intervalSeconds: number): void {
   stopReaper()
   // Gate the periodic timer ONLY on the interval knob ("do periodic maintenance?"),
-  // NOT on the retention limits. The tick now does more than eviction — it drains
+  // NOT on the retired retention limits. The tick drains
   // deferred finalizations, returns freed pages, and checkpoints the WAL — all of
-  // which must keep running even when a user sets both limits to 0 (= unlimited
-  // retention). Eviction itself self-disables: `evictBucket` no-ops on limit<=0.
-  // (Previously a `limits<=0` short-circuit also killed the timer, which coupled
-  // the finalize-retry drain to the eviction config and made "unlimited retention"
-  // silently force every transient finalize failure straight to a lossy tombstone.)
+  // which must keep running regardless of compatibility limit values.
   if (intervalSeconds <= 0) return
   timer = setInterval(() => {
     try {

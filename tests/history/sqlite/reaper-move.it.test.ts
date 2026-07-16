@@ -76,38 +76,33 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-describe("reaper move-to-tier1 dispatch", () => {
-  test("enabled + attached: overflow MOVED to tier-1, not deleted", async () => {
+describe("terminal-record-preserving history maintenance", () => {
+  test("enabled + attached: count limits never move or delete terminal records", async () => {
     setHistoryConfig({ historyArchiveEnabled: true })
     attachFileArchive()
     await seed(5, "completed")
-    // successLimit 2 → 3 overflow moved to archive
-    const moved = runReaperOnce(2, 0)
-    expect(moved).toBe(3)
-    expect(queryEntryCount()).toBe(2) // HOT trimmed to limit
-    expect(archiveCount()).toBe(3) // moved, NOT lost
+    expect(runReaperOnce(2, 0)).toBe(0)
+    expect(queryEntryCount()).toBe(5)
+    expect(archiveCount()).toBe(0)
   })
 
-  test("disabled: falls back to legacy DELETE (no archive rows)", async () => {
+  test("disabled: count limits never delete terminal records", async () => {
     attachFileArchive()
     setHistoryConfig({ historyArchiveEnabled: false })
     await seed(5, "completed")
-    const deleted = runReaperOnce(2, 0)
-    expect(deleted).toBe(3)
-    expect(queryEntryCount()).toBe(2)
-    expect(archiveCount()).toBe(0) // legacy path destroys, nothing archived
+    expect(runReaperOnce(2, 0)).toBe(0)
+    expect(queryEntryCount()).toBe(5)
+    expect(archiveCount()).toBe(0)
   })
 
-  test("enabled but archive NOT attached: safe fallback to legacy DELETE", async () => {
+  test("enabled but archive not attached: count limits never delete terminal records", async () => {
     setHistoryConfig({ historyArchiveEnabled: true })
-    // no attachFileArchive() → isArchiveAttached false → legacy path, no throw
     await seed(4, "completed")
-    const deleted = runReaperOnce(1, 0)
-    expect(deleted).toBe(3)
-    expect(queryEntryCount()).toBe(1)
+    expect(runReaperOnce(1, 0)).toBe(0)
+    expect(queryEntryCount()).toBe(4)
   })
 
-  test("runReaperTick performs periodic time-based HOT→tier-1 migration for aged rows", async () => {
+  test("runReaperTick performs maintenance without age-based migration", async () => {
     setHistoryConfig({ historyArchiveEnabled: true, historyArchiveHotDays: 3 })
     attachFileArchive()
     const now = Date.now()
@@ -128,10 +123,8 @@ describe("reaper move-to-tier1 dispatch", () => {
     await mk("aged", now - 5 * 86400_000)
     await mk("recent", now - 1 * 86400_000)
 
-    runReaperTick(10_000, 10_000) // limits high → no overflow eviction; only time-migration acts
-    // the aged row cooled to archive; the recent one stays HOT
-    expect(archiveCount()).toBe(1)
-    expect((getDatabase().prepare("SELECT COUNT(*) n FROM archive.entries_v2 WHERE id = 'aged'").get() as { n: number }).n).toBe(1)
-    expect(queryEntryCount()).toBe(1) // only "recent" left in HOT
+    runReaperTick(10_000, 10_000)
+    expect(archiveCount()).toBe(0)
+    expect(queryEntryCount()).toBe(2)
   })
 })
