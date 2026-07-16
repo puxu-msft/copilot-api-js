@@ -15,10 +15,9 @@ function userPreview(entry: HistoryEntry, edge: "first" | "last"): string {
   const ordered = edge === "first" ? messages : [...messages].reverse()
   for (const message of ordered) {
     if (message.role !== "user") continue
-    const text =
-      typeof message.content === "string" ? message.content
-      : Array.isArray(message.content) ? message.content.map((block) => (block?.type === "text" ? block.text : "")).join(" ")
-      : ""
+    let text = ""
+    if (typeof message.content === "string") text = message.content
+    else if (Array.isArray(message.content)) text = message.content.map((block) => (block?.type === "text" ? block.text : "")).join(" ")
     let cleaned = text
     for (let previous = ""; previous !== cleaned; ) {
       previous = cleaned
@@ -36,7 +35,7 @@ function userPreview(entry: HistoryEntry, edge: "first" | "last"): string {
 /** Per-session aggregate projected exclusively from terminal V3 generation records. */
 export function getSessionSummaries(limit = 200): Array<SessionSummary> {
   const entries = listV3StoredOperations("generation", 1_000_000).map((stored) => recordToHistoryEntry(stored.record, stored))
-  const grouped = new Map<string, HistoryEntry[]>()
+  const grouped = new Map<string, Array<HistoryEntry>>()
   for (const entry of entries) {
     if (!entry.sessionId) continue
     const group = grouped.get(entry.sessionId) ?? []
@@ -61,11 +60,28 @@ export function getSessionSummaries(limit = 200): Array<SessionSummary> {
         outputTokens += usage?.output_tokens ?? 0
         const model = entry.attempts?.at(-1)?.upstreamResponse?.model ?? entry.model?.resolved ?? entry.model?.requested
         if (model) models.add(model)
-        if (entry.state === "completed") completed++
-        else if (entry.state === "failed") failed++
-        else if (entry.state === "aborted" || entry.state === "interrupted") aborted++
+        switch (entry.state) {
+          case "completed": {
+            completed++
+            break
+          }
+          case "failed": {
+            failed++
+            break
+          }
+          case "aborted":
+          case "interrupted": {
+            aborted++
+            break
+          }
+          default: {
+            break
+          }
+        }
       }
       const first = sessionEntries[0]
+      // Group construction guarantees at least one entry.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       const last = sessionEntries.at(-1)!
       return {
         sessionId,

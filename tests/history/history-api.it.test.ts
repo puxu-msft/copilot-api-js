@@ -28,7 +28,6 @@ import {
 } from "~/lib/history"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
-import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 import {
   //
   handleExport,
@@ -38,6 +37,8 @@ import {
   handlePinEntry,
   handleUnpinEntry,
 } from "~/routes/history/handler"
+
+import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 
 // ─── Test app ───
 
@@ -326,8 +327,6 @@ describe("POST /api/entries/:id/pin and /unpin", () => {
     expect(res.status).toBe(404)
     expect((await json<{ error: string }>(res)).error).toContain("not found")
   })
-
-
 })
 
 describe("retired archive surface", () => {

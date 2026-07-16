@@ -2,7 +2,11 @@ import type { HistoryEntry } from "~/lib/history/types"
 
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import { getDatabase } from "~/lib/history/sqlite/connection"
-import { commitPreparedOperation, prepareModelOperation } from "~/lib/history/v3/store"
+import {
+  //
+  commitPreparedOperation,
+  prepareModelOperation,
+} from "~/lib/history/v3/store"
 
 /** Persist a terminal History-shaped fixture through the canonical V3 store. */
 export function commitV3HistoryEntry(entry: HistoryEntry): void {
@@ -47,18 +51,28 @@ export function commitV3HistoryEntry(entry: HistoryEntry): void {
   for (const attempt of entry.attempts ?? []) {
     const effectiveBody = attempt.effectiveSource?.body
     const upstreamBody = attempt.upstreamRequest?.body
-    const effective = effectiveBody === undefined ? undefined : recorder.registerPayload(effectiveBody, { origin: { stage: "effective-request", track: "proxy" } })
+    const effective =
+      effectiveBody === undefined ? undefined : recorder.registerPayload(effectiveBody, { origin: { stage: "effective-request", track: "proxy" } })
     const upstream = upstreamBody === undefined ? undefined : recorder.registerPayload(upstreamBody, { origin: { stage: "upstream-wire", track: "upstream" } })
     const handle = recorder.beginAttempt({
       strategy: attempt.strategy,
       transport: attempt.transport,
       effectiveRequest: effective === undefined ? undefined : { payload: effective, metadata: attempt.effectiveSource },
       upstreamRequest:
-        upstream === undefined ? undefined : { payload: upstream, headers: attempt.upstreamRequest?.headers ? Object.entries(attempt.upstreamRequest.headers) : undefined, metadata: attempt.upstreamRequest },
+        upstream === undefined ? undefined : (
+          {
+            payload: upstream,
+            headers: attempt.upstreamRequest?.headers ? Object.entries(attempt.upstreamRequest.headers) : undefined,
+            metadata: attempt.upstreamRequest,
+          }
+        ),
       metadata: { transport: attempt.transport },
     })
     const response = attempt.upstreamResponse
-    const responsePayload = response?.body === undefined ? undefined : recorder.registerPayload(response.body, { origin: { stage: "upstream-response", track: "upstream", attempt: handle } })
+    const responsePayload =
+      response?.body === undefined ?
+        undefined
+      : recorder.registerPayload(response.body, { origin: { stage: "upstream-response", track: "upstream", attempt: handle } })
     const frameHandles = (response?.sseEvents ?? []).map((frame) =>
       recorder.registerFrame(frame, { origin: { stage: "upstream-capture", track: "upstream", attempt: handle }, mediaType: "text/event-stream" }),
     )
@@ -77,7 +91,8 @@ export function commitV3HistoryEntry(entry: HistoryEntry): void {
   }
 
   const clientBodyOut = entry.clientResponse?.body
-  const clientPayload = clientBodyOut === undefined ? undefined : recorder.registerPayload(clientBodyOut, { origin: { stage: "client-egress", track: "client" } })
+  const clientPayload =
+    clientBodyOut === undefined ? undefined : recorder.registerPayload(clientBodyOut, { origin: { stage: "client-egress", track: "client" } })
   const clientFrames = (entry.clientResponse?.sseEvents ?? []).map((frame) =>
     recorder.registerFrame(frame, { origin: { stage: "client-sink", track: "client" }, mediaType: "text/event-stream" }),
   )

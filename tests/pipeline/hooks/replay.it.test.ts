@@ -36,8 +36,8 @@ import { readOrigin } from "~/lib/pipeline/hooks/origin"
 import { replayFromHistory } from "~/lib/pipeline/hooks/toolkit"
 import { generateId } from "~/lib/utils"
 
-import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
+import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import {
   //
   anthropicRawRequest,
@@ -70,7 +70,11 @@ function seedAnthropicEntry(text: string): string {
           body: null,
           sseEvents: [
             { offsetMs: 0, type: "message_start", raw: JSON.stringify({ type: "message_start", message: { id: "msg_seed" } }) },
-            { offsetMs: 1, type: "content_block_start", raw: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }) },
+            {
+              offsetMs: 1,
+              type: "content_block_start",
+              raw: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+            },
             { offsetMs: 2, type: "content_block_delta", raw: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }) },
             { offsetMs: 3, type: "content_block_stop", raw: JSON.stringify({ type: "content_block_stop", index: 0 }) },
             { offsetMs: 4, type: "message_stop", raw: JSON.stringify({ type: "message_stop" }) },

@@ -48,8 +48,8 @@ import { TOOL_FIELD_PRESENT } from "~/lib/request/strategies/tool-field-rejectio
 import { BETA_ERROR_PATTERN } from "~/lib/request/strategies/unsupported-beta-retry"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
-import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 
+import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 import { autoRestoreState } from "../../helpers/state-fixture"
 
 // Snapshot global state once and restore after every test — the `replayFromHistory` describe block

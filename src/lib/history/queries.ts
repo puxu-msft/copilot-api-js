@@ -16,14 +16,18 @@ import {
 } from "./in-flight"
 import { isActiveState } from "./lifecycle-state"
 import { extractInboundSearchText } from "./normalize-message"
-import { getV3StoredOperation, listV3StoredOperations } from "./v3/store"
+import { formatFromEndpoint } from "./sqlite/search-index-write"
 import {
   //
   recordMatchesQuery,
   recordToEntrySummary,
   recordToHistoryEntry,
 } from "./v3/projection"
-import { formatFromEndpoint } from "./sqlite/search-index-write"
+import {
+  //
+  getV3StoredOperation,
+  listV3StoredOperations,
+} from "./v3/store"
 
 function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   if (opts.sessionId && entry.sessionId !== opts.sessionId) return false

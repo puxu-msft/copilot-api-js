@@ -10,16 +10,16 @@ export {
   listV3StoredOperations,
   prepareModelOperation,
   recoverV3Journal,
-  setV3OperationPinned,
   resetV3WriterForTests,
+  setV3OperationPinned,
   V3_SCHEMA_SQL,
   type V3StoredOperation,
   type V3StoreStatus,
 } from "./store"
 export {
   drainModelOperationTerminalSubscribers,
+  type ModelOperationTerminalSubscriber,
   publishModelOperationTerminal,
   resetModelOperationTerminalBusForTests,
   subscribeModelOperationTerminals,
-  type ModelOperationTerminalSubscriber,
 } from "./terminal-bus"

@@ -16,10 +16,23 @@ import {
   setPinned,
   shutdownHistory,
 } from "~/lib/history"
-import { getEntry, getHistorySummaries } from "~/lib/history/queries"
-import { closeDatabase, getDatabase } from "~/lib/history/sqlite/connection"
+import {
+  //
+  getEntry,
+  getHistorySummaries,
+} from "~/lib/history/queries"
+import {
+  //
+  closeDatabase,
+  getDatabase,
+} from "~/lib/history/sqlite/connection"
+import {
+  //
+  commitPreparedOperation,
+  prepareModelOperation,
+  resetV3WriterForTests,
+} from "~/lib/history/v3/store"
 import { setStateForTests } from "~/lib/state"
-import { commitPreparedOperation, prepareModelOperation, resetV3WriterForTests } from "~/lib/history/v3/store"
 
 function record(
   id: string,
@@ -37,7 +50,12 @@ function record(
   })
   const messages = [{ role: "user" as const, content: id }]
   const request = recorder.registerPayload({ model: "m", messages }, { origin: { stage: "ingress", track: "client" } })
-  recorder.recordIngress({ format: "anthropic-messages", method: "POST", path: "/v1/messages", request: { payload: request, metadata: { model: "m", messages } } })
+  recorder.recordIngress({
+    format: "anthropic-messages",
+    method: "POST",
+    path: "/v1/messages",
+    request: { payload: request, metadata: { model: "m", messages } },
+  })
   recorder.recordRouting({ requestedModel: "m", resolvedModel: "m", clientFormat: "anthropic" })
   const attempt = recorder.beginAttempt({ effectiveRequest: { payload: request }, upstreamRequest: { payload: request } })
   recorder.settleAttempt(attempt, {
@@ -88,7 +106,9 @@ describe("History V3 read cutover", () => {
     )
     commitPreparedOperation(
       getDatabase(),
-      prepareModelOperation(record("session-last", "generation", { createdAt: 20, sessionId: "session-v3", agentId: "agent-1", inputTokens: 5, outputTokens: 4 })),
+      prepareModelOperation(
+        record("session-last", "generation", { createdAt: 20, sessionId: "session-v3", agentId: "agent-1", inputTokens: 5, outputTokens: 4 }),
+      ),
     )
 
     expect(getSessionSummaries()).toContainEqual({
@@ -128,5 +148,4 @@ describe("History V3 read cutover", () => {
     expect(setPinned("generation-1", false)).toBe(true)
     expect(getEntry("generation-1")?.pinned).toBe(false)
   })
-
 })

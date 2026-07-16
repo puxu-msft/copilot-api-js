@@ -16,12 +16,16 @@ import {
   initHistory,
   shutdownHistory,
 } from "~/lib/history"
-import { registerResponseSession, resolveResponseSessionId } from "~/lib/openai/response-session-store"
 import {
   //
   closeDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
+import {
+  //
+  registerResponseSession,
+  resolveResponseSessionId,
+} from "~/lib/openai/response-session-store"
 import { setStateForTests } from "~/lib/state"
 
 describe("history session resolution", () => {

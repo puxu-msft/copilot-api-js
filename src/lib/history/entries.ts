@@ -22,7 +22,6 @@ import {
   runHistoryWriteAsync,
 } from "./persist-guard"
 import { getEntry } from "./queries"
-import { setV3OperationPinned } from "./v3/store"
 import {
   //
   isReaperRunning,
@@ -43,6 +42,7 @@ import {
 } from "./sqlite/write"
 import { historyState } from "./state"
 import { getStats } from "./stats"
+import { setV3OperationPinned } from "./v3/store"
 
 /** Publish after persistence through the scoped history observability channel. */
 function publishEntryAdded(summary: EntrySummary): void {

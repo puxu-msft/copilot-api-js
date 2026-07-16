@@ -29,7 +29,14 @@ import { getDatabase } from "~/lib/history/sqlite/connection"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
 async function seed(id: string, messages: Array<MessageContent>, startedAt: number, sessionId = "s"): Promise<void> {
-  const entry = { id, sessionId, startedAt, endpoint: "anthropic-messages", model: { requested: "m" }, clientRequest: { format: "anthropic-messages", model: "m", messages, stream: true } } as unknown as HistoryEntry
+  const entry = {
+    id,
+    sessionId,
+    startedAt,
+    endpoint: "anthropic-messages",
+    model: { requested: "m" },
+    clientRequest: { format: "anthropic-messages", model: "m", messages, stream: true },
+  } as unknown as HistoryEntry
   insertEntry(entry)
   updateEntry(id, {
     state: "completed",

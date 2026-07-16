@@ -19,6 +19,11 @@ import {
 import { clearInFlight } from "./in-flight"
 import {
   //
+  configureRawCapture,
+  shutdownRawCapture,
+} from "./raw/manager"
+import {
+  //
   closeDatabase,
   getDatabase,
   openDatabase,
@@ -40,11 +45,6 @@ import {
   drainModelOperationTerminalSubscribers,
   subscribeModelOperationTerminals,
 } from "./v3/terminal-bus"
-import {
-  //
-  configureRawCapture,
-  shutdownRawCapture,
-} from "./raw/manager"
 
 let enabled = false
 let unsubscribeHistoryLimit: (() => void) | undefined

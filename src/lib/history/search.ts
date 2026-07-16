@@ -1,9 +1,8 @@
+import type { SearchParams } from "./search-types"
 import type {
   //
   SearchResult,
 } from "./types"
-
-import type { SearchParams } from "./search-types"
 
 const UNSUPPORTED = "History V3 search is unsupported until the canonical search facade lands"
 
