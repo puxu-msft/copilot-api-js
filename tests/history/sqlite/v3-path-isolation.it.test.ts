@@ -10,7 +10,12 @@ import os from "node:os"
 import path from "node:path"
 
 import { PATHS } from "~/lib/config/paths"
-import { getDatabase } from "~/lib/history/sqlite/connection"
+import {
+  //
+  getDatabase,
+  openInMemoryDatabase,
+} from "~/lib/history/sqlite/connection"
+import { createDatabase } from "~/lib/history/sqlite/driver"
 import {
   //
   initHistory,
@@ -48,5 +53,20 @@ describe("History V3 physical isolation", () => {
     expect(fs.readFileSync(PATHS.HISTORY_DB)).toEqual(legacyBytes)
     expect(fs.statSync(PATHS.HISTORY_DB).mtimeMs).toBe(legacyStat.mtimeMs)
     expect(fs.existsSync(PATHS.HISTORY_V3_DB)).toBe(true)
+  })
+
+  test("refuses an existing unowned database before schema reconciliation", () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "history-v3-owner-"))
+    const unowned = path.join(dir, "history.db")
+    const legacy = createDatabase(unowned)
+    legacy.exec("CREATE TABLE legacy_sentinel (value TEXT); INSERT INTO legacy_sentinel VALUES ('preserve-me')")
+    legacy.close()
+    const sentinel = fs.readFileSync(unowned)
+    setHistoryConfig({ historyDbPath: unowned })
+
+    expect(() => initHistory(true)).toThrow("refusing to open unowned existing database")
+    expect(fs.readFileSync(unowned)).toEqual(sentinel)
+    // Keep teardown idempotent after the expected init failure.
+    openInMemoryDatabase()
   })
 })
