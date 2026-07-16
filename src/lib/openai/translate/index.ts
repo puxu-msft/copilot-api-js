@@ -14,6 +14,7 @@ export {
   translateAnthropicStreamToCCStream,
 } from "./anthropic-to-cc-stream"
 export type { AnthropicToCcStreamMeta, AnthropicToCcStreamStep, AnthropicToCcStreamTranslator } from "./anthropic-to-cc-stream"
+export { translateAnthropicResponseToResponses } from "./anthropic-to-responses"
 export { translateAnthropicToResponses } from "./anthropic-to-responses-request"
 export type { AnthropicToResponsesOptions } from "./anthropic-to-responses-request"
 export { translateCCResponseToAnthropic } from "./cc-to-anthropic"

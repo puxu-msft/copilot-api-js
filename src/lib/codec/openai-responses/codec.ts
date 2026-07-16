@@ -36,6 +36,7 @@
 
 import consola from "consola"
 
+import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { BetaProbe } from "~/lib/anthropic/pipeline"
 import type { ReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import type { RequestContext } from "~/lib/context/request"
@@ -113,12 +114,12 @@ import {
 import {
   //
   createCCToResponsesStreamTranslator,
+  translateAnthropicResponseToResponses,
   translateCCToResponsesResponse,
 } from "~/lib/openai/translate"
 import {
   //
   createReverseStreamTranslator,
-  renderResponseNonStreamingVia,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
@@ -297,11 +298,13 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
 
     renderResponseNonStreaming(upstream, env) {
       if (env.targetEndpoint === ENDPOINT.RESPONSES) return upstream
-      // REVERSE `@messages` leg (Phase 5): Anthropic upstream → CC-canonical (hub) → Responses (二跳,
-      // 疑点 5 — translateCCToResponsesResponse eats the reverse-exchange).
+      // REVERSE `@messages` leg — DIRECT bridge (RFC 2026-07-14-anthropic-responses-direct-bridge §3/§4.2,
+      // Phase 4 subtask E): a single-hop Anthropic upstream → Responses walk, skipping the CC intermediate
+      // entirely (was Anthropic→CC(hub)→Responses, 疑点 5). `upstream` here is the RAW Anthropic response
+      // (the hub's CC bridge is no longer called on this leg) — reuses the SAME `ensureReverseExchange`
+      // id-management the old two-hop path used (RFC §2.3: no new exchange contract).
       if (env.targetEndpoint === ENDPOINT.MESSAGES) {
-        const cc = renderResponseNonStreamingVia(ENDPOINT.MESSAGES, upstream).rendered as ChatCompletionResponse
-        return translateCCToResponsesResponse(cc, ensureReverseExchange(env))
+        return translateAnthropicResponseToResponses(upstream as AnthropicMessageResponse, ensureReverseExchange(env))
       }
       if (!fallbackScratch.exchange) return upstream
       return translateCCToResponsesResponse(upstream as ChatCompletionResponse, {
