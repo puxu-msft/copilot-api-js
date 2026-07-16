@@ -123,3 +123,37 @@ describe("RequestContext generation recorder lifecycle", () => {
     expect(ctx.modelOperationSnapshot.lastSequence).toBe(sequence)
   })
 })
+
+describe("RequestContext generation terminal ordering", () => {
+  test("fail commits and seals the canonical record before request.failed publish", () => {
+    const bus = createBus()
+    const ctx = createRequestContext({ endpoint: "anthropic-messages", publisher: bus.scope("request") })
+    ctx.beginAttempt({})
+    let terminalAtPublish: unknown
+    bus.subscribe((event) => {
+      if (event.kind === "request.failed") terminalAtPublish = ctx.modelOperationTerminalRecord?.terminal
+    })
+
+    ctx.fail("m", new Error("upstream failed"))
+
+    expect(terminalAtPublish).toMatchObject({ outcome: "failed" })
+    expect(ctx.modelOperationTerminalRecord?.attempts[0]?.verdict).toBe("failed")
+    expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord)
+  })
+
+  test("abort commits and seals the canonical record before request.aborted publish", () => {
+    const bus = createBus()
+    const ctx = createRequestContext({ endpoint: "openai-responses", publisher: bus.scope("request") })
+    ctx.beginAttempt({})
+    let terminalAtPublish: unknown
+    bus.subscribe((event) => {
+      if (event.kind === "request.aborted") terminalAtPublish = ctx.modelOperationTerminalRecord?.terminal
+    })
+
+    ctx.abort("m")
+
+    expect(terminalAtPublish).toMatchObject({ outcome: "aborted", attribution: { category: "client", code: "client-disconnected" } })
+    expect(ctx.modelOperationTerminalRecord?.attempts[0]?.verdict).toBe("failed")
+    expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord)
+  })
+})
