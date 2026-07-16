@@ -378,15 +378,15 @@ describe("GET /api/export", () => {
   })
 })
 
-describe("retired V2 search surface", () => {
-  test("returns explicit 501 instead of reading the V2 search index", async () => {
+describe("V3 search surface", () => {
+  test("returns V3 search results without reading the V2 index", async () => {
     const search = await get("/api/search?source=inbound&q=needle")
-    expect(search.status).toBe(501)
-    expect((await json<{ error: string }>(search)).error).toContain("History V3 search is unsupported")
+    expect(search.status).toBe(200)
+    expect((await json<{ rows: unknown[]; partial: boolean }>(search))).toMatchObject({ rows: [], partial: false })
 
     const contains = await get("/api/search/contains?hash=deadbeef")
-    expect(contains.status).toBe(501)
-    expect((await json<{ error: string }>(contains)).error).toContain("History V3 search is unsupported")
+    expect(contains.status).toBe(200)
+     expect(await json<{ hash: string; reqIds: string[] }>(contains)).toEqual({ hash: "deadbeef", reqIds: [] })
   })
 })
 

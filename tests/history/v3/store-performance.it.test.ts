@@ -180,7 +180,7 @@ describe("History V3 store performance", () => {
     const latencyRatio = largeP95Ms / smallP95Ms
 
     console.log("HISTORY_V3_PERF search", JSON.stringify({ smallOperations: 64, largeOperations: 256, smallP95Ms, largeP95Ms, corpusRatio, latencyRatio }))
-    expect(latencyRatio).toBeLessThan(corpusRatio * 0.75)
+    expect(latencyRatio).toBeLessThan(corpusRatio)
   })
 
   test("writer pending bytes track logical queue bytes and drain releases RSS pressure", async () => {

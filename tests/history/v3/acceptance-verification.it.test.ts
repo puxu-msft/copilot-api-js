@@ -39,7 +39,6 @@ import {
   drainV3Writer,
   enqueueModelOperation,
   getV3Operation,
-  getV3StoreStatus,
   listV3Operations,
   listV3StoredOperations,
   prepareModelOperation,
