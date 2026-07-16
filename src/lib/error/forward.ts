@@ -499,8 +499,15 @@ export function mapHttpErrorToEnvelope(
 function finalizeErrorDelivery(c: Context, body: Record<string, unknown>, status: ContentfulStatusCode): Response {
   const response = c.json(body, status)
   const getContext = (c as unknown as { get?: (key: string) => unknown }).get
-  const ctx = (typeof getContext === "function" ? getContext.call(c, "requestContext") : undefined) as RequestContext | undefined
-  if (ctx) {
+  const candidate = (typeof getContext === "function" ? getContext.call(c, "requestContext") : undefined) as Partial<RequestContext> | undefined
+  if (
+    candidate
+    && typeof candidate.setForwardedResponse === "function"
+    && typeof candidate.setInboundResponseHeaders === "function"
+    && typeof candidate.setClientResponseStatus === "function"
+    && typeof candidate.finalizeModelOperationDelivery === "function"
+  ) {
+    const ctx = candidate as RequestContext
     ctx.setForwardedResponse({ content: body })
     ctx.setInboundResponseHeaders(Object.fromEntries(response.headers.entries()))
     ctx.setClientResponseStatus(response.status)

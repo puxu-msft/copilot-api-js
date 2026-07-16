@@ -52,6 +52,7 @@ import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-in
 import { resetUsageNormalizeBackfillForTests } from "~/lib/history/sqlite/usage-normalize-backfill"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
+import { resetReaperDiagnosticsForTests } from "~/lib/observability/reaper-diagnostics"
 import {
   //
   resetUpstreamWsManagerForTests,
@@ -104,6 +105,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetModelsEtagForTests", reset: resetModelsEtagForTests },
   { name: "resetRawModelsForTests", reset: resetRawModelsForTests },
   { name: "resetProcessIdentityForTests", reset: resetProcessIdentityForTests },
+  { name: "resetReaperDiagnosticsForTests", reset: resetReaperDiagnosticsForTests },
   { name: "_resetConfigValidationWarnTrackingForTests", reset: _resetConfigValidationWarnTrackingForTests },
   { name: "resetBundledConfigCacheForTests", reset: resetBundledConfigCacheForTests },
   { name: "resetUpstreamWsManagerForTests", reset: () => void resetUpstreamWsManagerForTests() },
