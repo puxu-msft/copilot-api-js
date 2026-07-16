@@ -12,6 +12,8 @@ export {
   recoverV3Journal,
   resetV3WriterForTests,
   setV3OperationPinned,
+  searchV3OperationIds,
+  containingV3OperationIds,
   V3_SCHEMA_SQL,
   type V3StoredOperation,
   type V3StoreStatus,

@@ -33,10 +33,10 @@ describe("History V3 read-consumer cutover guard", () => {
     }
   })
 
-  test("unsupported V2-only search and calibration backfill never run against the V3 production store", () => {
+  test("V3 search and calibration startup never read legacy V2 indexes", () => {
     const search = source("src/lib/history/search.ts")
     expect(search).not.toMatch(/\.\/sqlite\/(?:search-query|meta|connection)/)
-    expect(search).toMatch(/History V3 search is unsupported/)
+    expect(search).toMatch(/searchV3OperationIds/)
 
     const state = source("src/lib/history/state.ts")
     expect(state).not.toMatch(/runCalibrationBackfill|runSearchIndexBackfill|runLegacyStageBackfill|runUsageNormalizeBackfill/)

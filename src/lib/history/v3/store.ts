@@ -446,6 +446,25 @@ export function setV3OperationPinned(operationId: string, pinned: boolean): bool
   return true
 }
 
+export function searchV3OperationIds(query: string, kind: string | undefined, limit: number): string[] {
+  const needle = `%${query}%`
+  const rows = kind ?
+      getDatabase()
+        .prepare("SELECT d.operation_id FROM v3_search_documents d JOIN v3_operations o ON o.operation_id=d.operation_id WHERE d.document LIKE ? AND o.kind=? ORDER BY o.created_at DESC LIMIT ?")
+        .all(needle, kind, limit)
+    : getDatabase()
+        .prepare("SELECT d.operation_id FROM v3_search_documents d JOIN v3_operations o ON o.operation_id=d.operation_id WHERE d.document LIKE ? ORDER BY o.created_at DESC LIMIT ?")
+        .all(needle, limit)
+  return (rows as Array<{ operation_id: string }>).map((row) => row.operation_id)
+}
+
+export function containingV3OperationIds(objectHash: string): string[] {
+  const rows = getDatabase().prepare("SELECT DISTINCT operation_id FROM v3_tracks WHERE refs_json LIKE ? ORDER BY operation_id").all(`%${objectHash}%`) as Array<{
+    operation_id: string
+  }>
+  return rows.map((row) => row.operation_id)
+}
+
 function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperationRecord {
   const manifest = JSON.parse(decoder.decode(decompressBytes(manifestBlob))) as {
     record: Omit<ModelOperationRecord, "arena"> & {

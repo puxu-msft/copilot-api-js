@@ -3,15 +3,25 @@ import type {
   //
   SearchResult,
 } from "./types"
+import { recordToEntrySummary } from "./v3/projection"
+import {
+  //
+  containingV3OperationIds,
+  getV3Operation,
+  searchV3OperationIds,
+} from "./v3/store"
 
-const UNSUPPORTED = "History V3 search is unsupported until the canonical search facade lands"
-
-/** V3 has no stable search projection yet; never fall through to legacy V2 tables. */
-export function searchHistory(_params: SearchParams): SearchResult {
-  throw new Error(UNSUPPORTED)
+export function searchHistory(params: SearchParams): SearchResult {
+  const limit = params.limit && params.limit > 0 ? params.limit : 30
+  const operationKind = params.filters?.operationKind ?? "generation"
+  const ids = params.q ? searchV3OperationIds(params.q, operationKind === "all" ? undefined : operationKind, limit) : []
+  const rows = ids.flatMap((id) => {
+    const record = getV3Operation(id)
+    return record ? [{ source: params.source, hash: id, ownerReqId: id, snippet: params.q, summary: recordToEntrySummary(record) }] : []
+  })
+  return { rows, nextCursor: rows.length === limit ? rows.at(-1)?.ownerReqId ?? null : null, partial: false }
 }
 
-/** V3 has no content-hash reverse lookup yet; never read the legacy req_msg index. */
-export function searchContains(_hash: string): Array<string> {
-  throw new Error(UNSUPPORTED)
+export function searchContains(hash: string): Array<string> {
+  return containingV3OperationIds(hash)
 }
