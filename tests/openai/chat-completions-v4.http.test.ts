@@ -223,7 +223,9 @@ describe("CC v4 driver path", () => {
     })
     const operation = capturedCtx?.modelOperationTerminalRecord
     const clientPayload = operation?.egress?.client.payload
+    const upstreamPayload = operation?.egress?.upstream.payload
     expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.arena.payloads.find((node) => node.handle === upstreamPayload)?.value).toEqual(v4)
     expect(operation?.terminal?.outcome).toBe("completed")
     expect(v4Wire?.model).toBe("gpt-4o")
     expect(v4Wire?.messages).toEqual([{ role: "user", content: "hi" }])

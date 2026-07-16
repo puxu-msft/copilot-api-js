@@ -106,8 +106,14 @@ export function observabilityMiddleware(): MiddlewareHandler {
       // completeFromHttpStatus snapshots the entry, so `clientResponse.status` records the
       // forwarded status. Self-settled handlers already captured it at their own forward point;
       // this write lands post-snapshot for them (harmless no-op on the frozen entry).
+      ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
       ctx.setClientResponseStatus(c.res.status)
       ctx.completeFromHttpStatus(c.res.status)
+      // Delivery finalization is independent from logical settle. A handler may already have
+      // called abort()/fail()/complete() and intentionally rely on this non-streaming boundary
+      // to seal the canonical operation (pre-response 499 is the critical case). Both methods
+      // are idempotent, so explicitly-finalized handlers remain no-ops here.
+      ctx.finalizeModelOperationDelivery()
     }
   }
 }

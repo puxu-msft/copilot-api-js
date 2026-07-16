@@ -174,4 +174,49 @@ describe("generation recorder v4 driver integration", () => {
     expect(bufferedEmit?.inputs).toHaveLength(2)
     expect(bufferedEmit?.outputs).toHaveLength(2)
   })
+  test("natural upstream EOF flushes buffered rewrite output through the real sink boundary", async () => {
+    const ctx = createRequestContext({ endpoint: "openai-chat-completions" })
+    ctx.setOriginalRequest({ model: "m", messages: [], stream: true, payload: { model: "m", messages: [], stream: true } })
+    const env = makeEnv(ctx, { model: "m", messages: [] })
+    const { codec } = makeCodec({ env })
+    codec.sampleRequest = () => ({
+      effective: { model: "m", resolvedModel: undefined, messages: [], payload: env.body, format: "openai-chat-completions" },
+      wire: { model: "m", messages: [], payload: env.body, headers: {}, format: "openai-chat-completions" },
+    })
+    let upstreamReachedEof = false
+    async function* frames() {
+      try {
+        yield { data: "held-until-eof" }
+      } finally {
+        upstreamReachedEof = true
+      }
+    }
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: () => ({ kind: "passthrough", endpoint: "/chat/completions" }),
+      responseRewrites: [
+        {
+          name: "flush-on-eof",
+          order: 1,
+          appliesTo: () => true,
+          transform: () => ({ kind: "buffer" }),
+          flush: () => [{ data: "flushed-at-real-eof" }],
+        },
+      ],
+      transport: makeTransport(async () => ({ frames: frames(), headers: new Headers() })),
+    })
+
+    const request = await driver.runRequest({ body: env.body, headers: new Headers(), method: "POST", path: "/v1/chat/completions" })
+    if (!request.ok) throw new Error("unexpected rejection")
+    const { sink, frames: written } = makeArraySink()
+    const outcome = await driver.runResponseSink(request.upstream, request.env, sink)
+
+    expect(upstreamReachedEof).toBe(true)
+    expect(outcome.kind).toBe("complete")
+    expect(written).toEqual([{ data: "flushed-at-real-eof" }])
+    expect(ctx.modelOperationSnapshot.transforms).toEqual(
+      expect.arrayContaining([expect.objectContaining({ transformId: "rewrite-out:flush-on-eof", metadata: { action: "flush" } })]),
+    )
+  })
 })

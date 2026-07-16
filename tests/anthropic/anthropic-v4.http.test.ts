@@ -261,7 +261,9 @@ describe("Anthropic v4 driver path", () => {
     expect(v4).toEqual(JSON.parse(nonStreamingBody("claude-sonnet-4.6")) as Record<string, unknown>)
     const operation = capturedCtx?.modelOperationTerminalRecord
     const clientPayload = operation?.egress?.client.payload
+    const upstreamPayload = operation?.egress?.upstream.payload
     expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.arena.payloads.find((node) => node.handle === upstreamPayload)?.value).toEqual(v4)
     expect(operation?.terminal?.outcome).toBe("completed")
     expect(capturedWire?.model).toBe("claude-sonnet-4.6")
     // Default mode is passthrough — no proxy cache_control injection; the request (which

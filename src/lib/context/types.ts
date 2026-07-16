@@ -92,6 +92,8 @@ export interface ResponseData {
    * non-streaming success path (JSON.stringify of the pristine upstream response →
    * rawBody), so non-streaming rows can re-derive usage fields. See spec §6.1. */
   responseText?: string
+  /** Complete parsed upstream response envelope for non-streaming success paths. */
+  sourceBody?: unknown
   /** Responses API: upstream response id (`resp_...`) from event.response.id */
   responseId?: string
   /** Copilot-specific: IP code citations collected from stream events (Anthropic path) */

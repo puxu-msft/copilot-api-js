@@ -15,6 +15,7 @@
  * the legacy one is replaced by this one as formats migrate (P2 / P0.4).
  */
 
+import type { OperationKind } from "~/lib/context/model-operation-record"
 import type {
   //
   EffectiveRequest,
@@ -225,6 +226,13 @@ export interface RawHttpRequest {
    * legacy handler. `model: undefined` is a valid value (unknown gpt-* fallback).
    */
   readonly preResolved?: { name: string; model: ResolvedModel | undefined; routeOverride?: RouteOverride }
+  /** Non-HTTP operation identity supplied by transport entry points such as Responses WS. */
+  readonly operationIdentity?: {
+    readonly kind: OperationKind
+    readonly connectionId?: string
+    readonly responseCreateId?: string
+    readonly previousResponseId?: string | null
+  }
   /** Downstream client-disconnect signal, folded into the upstream fetch signal. */
   readonly clientAbortSignal?: AbortSignal
 }

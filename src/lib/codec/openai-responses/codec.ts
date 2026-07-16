@@ -366,6 +366,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
     ...(raw.path !== undefined && { rawPath: raw.path, path: raw.path }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
+    ...(raw.operationIdentity !== undefined && { operationIdentity: raw.operationIdentity }),
   })
 
   ctx.setOriginalRequest({

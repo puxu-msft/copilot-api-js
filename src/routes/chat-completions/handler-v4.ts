@@ -303,6 +303,7 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, originalResponse
     // parsed pristine `originalResponse` (transport already discarded the raw text
     // at .json(); a re-serialization is data-lossless — only formatting differs).
     // See docs/spec/2026-07-12-ghc-usage-details.md §6.1 (G6).
+    sourceBody: originalResponse,
     responseText: JSON.stringify(originalResponse),
   }
   if (truncationReason) {

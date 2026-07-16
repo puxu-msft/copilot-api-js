@@ -291,6 +291,7 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesR
     // G6 (richest-data-flow): persist upstream body into rawBody (responseText →
     // rawBody) so non-streaming rows can re-derive cache_write later. Re-serialized
     // from the parsed pristine `resp` (data-lossless). Spec §6.1 (G6).
+    sourceBody: resp,
     responseText: JSON.stringify(resp),
   }
   if (truncationReason) {

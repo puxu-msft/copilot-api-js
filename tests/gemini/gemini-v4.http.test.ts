@@ -212,7 +212,16 @@ describe("Gemini v4 driver path", () => {
     })
     const operation = capturedCtx?.modelOperationTerminalRecord
     const clientPayload = operation?.egress?.client.payload
+    const upstreamPayload = operation?.egress?.upstream.payload
     expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.arena.payloads.find((node) => node.handle === upstreamPayload)?.value).toEqual({
+      id: "chatcmpl-g",
+      object: "chat.completion",
+      created: 1,
+      model: "gpt-4o",
+      choices: [{ index: 0, message: { role: "assistant", content: "Mocked Gemini response" }, finish_reason: "stop", logprobs: null }],
+      usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
+    })
     expect(operation?.terminal?.outcome).toBe("completed")
     expect(v4Wire?.model).toBe("gpt-4o")
     expect(v4Wire?.messages).toEqual([{ role: "user", content: "Hello Gemini" }])

@@ -147,7 +147,7 @@ export interface ModelOperationIdentity {
   readonly clientRequestId?: string
   readonly connectionId?: string
   readonly responseCreateId?: string
-  readonly previousResponseId?: string
+  readonly previousResponseId?: string | null
   readonly process?: Readonly<{ pid: number; bootTime?: number; version?: string; gitSha?: string; gitDirty?: boolean; synthetic?: boolean }>
   readonly extensions?: OperationExtensions
 }
@@ -273,7 +273,7 @@ export interface CreateModelOperationRecorderInput {
     readonly clientRequestId?: string
     readonly connectionId?: string
     readonly responseCreateId?: string
-    readonly previousResponseId?: string
+    readonly previousResponseId?: string | null
     readonly process?: Readonly<{ pid: number; bootTime?: number; version?: string; gitSha?: string; gitDirty?: boolean; synthetic?: boolean }>
     readonly extensions?: Readonly<Record<string, unknown>>
   }

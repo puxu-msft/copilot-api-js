@@ -760,6 +760,8 @@ function renderNonStreamingV4(
     },
     stop_reason: response.stop_reason ?? undefined,
     content: { role: "assistant", content: response.content },
+    sourceBody: response,
+    responseText: JSON.stringify(response),
   }
   if (failReason) {
     // Unrepairable = upstream delivered a COMPLETE 200 body that the proxy rejected → upstreamSucceeded

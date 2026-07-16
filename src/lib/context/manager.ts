@@ -30,6 +30,7 @@ import { recordReaperTick } from "~/lib/observability/reaper-diagnostics"
 import { recordAcceptedRequest } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
 
+import type { OperationKind } from "./model-operation-record"
 import type {
   //
   RequestContext,
@@ -56,6 +57,12 @@ export interface RequestContextManager {
     path?: string
     /** Inbound Content-Length header value, if present. */
     requestBodySize?: number
+    operationIdentity?: {
+      kind: OperationKind
+      connectionId?: string
+      responseCreateId?: string
+      previousResponseId?: string | null
+    }
   }): RequestContext
 
   /** Get an active request by ID */
@@ -317,6 +324,7 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         method: opts.method,
         path: opts.path,
         requestBodySize: opts.requestBodySize,
+        operationIdentity: opts.operationIdentity,
         // Pure resource-management hook — remove the context from the active
         // map when it settles. Lifecycle events reach the bus via the context's
         // own `publisher` (the single event channel since P0.3), not via a
@@ -341,10 +349,10 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
       recordAcceptedRequest(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
       operationScopes.set(ctx.id, ctx)
-      // Arm the hard-deadline timer (C4b). Uses the same cancel+settle as the reaper but fires
-      // ON TIME via a per-request timer (bypasses RC2's late scan). `unref` so it never keeps the
-      // process alive on its own. reapInFlight gives the cancel teeth (C1+C2 folded the reaper
-      // signal into the fetch + backoff); fail records the terminal outcome (settled-guard dedups).
+      // Arm the hard-deadline timer (C4b). It enters the unified cancellation provenance first
+      // (`cancelReason=request_deadline`, operationSignal abort), then records the timeout terminal.
+      // This fires ON TIME via a per-request timer (bypasses RC2's late scan); `unref` prevents it
+      // from keeping the process alive. fail records the terminal outcome (settled-guard dedups).
       if (armDeadlineTimers && state.requestDeadline > 0) {
         const timer = setTimeout(() => {
           deadlineTimers.delete(ctx.id)
@@ -352,7 +360,7 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
           consola.warn(
             `[context] Request ${ctx.id} exceeded hard deadline ${state.requestDeadline}s (model: ${ctx.originalRequest?.model ?? "unknown"}, state: ${ctx.state}) — cancelling`,
           )
-          ctx.reapInFlight()
+          ctx.cancel("request_deadline")
           ctx.fail(
             ctx.originalRequest?.model ?? "unknown",
             new Error(`Request exceeded hard deadline of ${state.requestDeadline}s (request_deadline)`),

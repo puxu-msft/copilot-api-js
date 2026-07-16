@@ -57,6 +57,10 @@ describe("RequestContext generation recorder lifecycle", () => {
       ["authorization", "Bearer client"],
       ["x-request-id", "ingress-1"],
     ])
+    expect(ctx.modelOperationSnapshot.ingress?.request.rawCapture).toMatchObject({
+      capability: "unavailable",
+      gap: expect.stringContaining("repeated header"),
+    })
     expect(() => ctx.setOriginalRequest(original)).toThrow(/original request.*already|ingress.*already/i)
 
     ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
@@ -122,6 +126,10 @@ describe("RequestContext generation recorder lifecycle", () => {
     expect(terminal?.attempts[1]?.diagnostics.map((diagnostic) => diagnostic.kind)).toEqual(
       expect.arrayContaining(["timing.upstreamFirstTokenAt", "timing.upstreamLastTokenAt", "timing.client.firstReal"]),
     )
+    expect(terminal?.attempts[1]?.upstreamResponse?.rawCapture).toMatchObject({
+      capability: "unavailable",
+      gap: expect.stringContaining("repeated header/trailer"),
+    })
     expect(terminal?.terminal).toMatchObject({
       outcome: "completed",
       usage: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 3 },

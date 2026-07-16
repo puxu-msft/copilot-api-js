@@ -37,6 +37,7 @@ import type {
   AttemptHandle,
   FrameNodeHandle,
   ModelOperationRecord,
+  OperationKind,
   PayloadNodeHandle,
 } from "./model-operation-record"
 import type {
@@ -215,6 +216,12 @@ export function createRequestContext(opts: {
   path?: string
   /** Inbound Content-Length, if present. */
   requestBodySize?: number
+  operationIdentity?: {
+    kind: OperationKind
+    connectionId?: string
+    responseCreateId?: string
+    previousResponseId?: string | null
+  }
   /**
    * Lifecycle hook invoked once when the request settles (complete/fail/abort),
    * after the terminal `request.*` event is published. The manager passes this
@@ -307,8 +314,11 @@ export function createRequestContext(opts: {
   const modelOperationRecorder = createModelOperationRecorder({
     identity: {
       operationId: id,
-      kind: "generation",
+      kind: opts.operationIdentity?.kind ?? "generation",
       createdAt: startTime,
+      ...(opts.operationIdentity?.connectionId !== undefined && { connectionId: opts.operationIdentity.connectionId }),
+      ...(opts.operationIdentity?.responseCreateId !== undefined && { responseCreateId: opts.operationIdentity.responseCreateId }),
+      ...(opts.operationIdentity?.previousResponseId !== undefined && { previousResponseId: opts.operationIdentity.previousResponseId }),
       ...(opts.sessionId !== undefined && { sessionId: opts.sessionId }),
       ...(opts.agentId !== undefined && { agentId: opts.agentId }),
       process: getProcessIdentity(),
@@ -338,6 +348,7 @@ export function createRequestContext(opts: {
     wirePayload?: PayloadNodeHandle
     responsePayload?: PayloadNodeHandle
     rawResponsePayload?: PayloadNodeHandle
+    sourceBodyPayload?: PayloadNodeHandle
     upstreamFrames: Array<FrameNodeHandle>
     settled: boolean
   }
@@ -385,6 +396,15 @@ export function createRequestContext(opts: {
 
   const orderedHeaders = (headers: Record<string, string> | undefined): Array<readonly [string, string]> | undefined =>
     headers === undefined ? undefined : Object.entries(headers)
+
+  // Every currently-wired transport exposes semantic JSON/SSE plus WHATWG Headers or folded
+  // Record<string,string> views, not the original HTTP field tuples/bytes. Keep the capability
+  // honest: tuple-shaped fields remain forward-compatible, but repeated names and original field
+  // ordering cannot be reconstructed from these producers. Trailers have the same limitation.
+  const semanticCaptureGap = {
+    capability: "unavailable" as const,
+    gap: "semantic payload/frames captured; exact raw bytes unavailable; headers/trailers originate from folded views, so repeated header/trailer tuples and original field ordering are unavailable",
+  }
 
   function frameWireKey(frame: unknown): string | undefined {
     if (typeof frame !== "object" || frame === null) return typeof frame === "string" ? `string:${frame}` : undefined
@@ -492,7 +512,7 @@ export function createRequestContext(opts: {
     const v2 = _attempts[generationAttempts.indexOf(attempt)]
     const response = v2.response
     const attemptError = v2.error
-    const primaryResponsePayload = attempt.rawResponsePayload ?? attempt.responsePayload
+    const primaryResponsePayload = attempt.rawResponsePayload ?? attempt.sourceBodyPayload ?? attempt.responsePayload
     const hasUpstreamResponse =
       response !== null
       || primaryResponsePayload !== undefined
@@ -511,7 +531,7 @@ export function createRequestContext(opts: {
           ...(responseStatus !== undefined && { status: responseStatus }),
           ...(v2.responseHeaders !== undefined && { headers: orderedHeaders(v2.responseHeaders) }),
           ...(_httpHeaders?.outboundResponseTrailers !== undefined && { trailers: orderedHeaders(_httpHeaders.outboundResponseTrailers) }),
-          rawCapture: { capability: "unavailable", gap: "semantic SSE/WS frames captured; exact raw framing bytes unavailable" },
+          rawCapture: semanticCaptureGap,
           metadata: snapshotForRecorder({ response, error: attemptError }),
         },
       }),
@@ -569,7 +589,7 @@ export function createRequestContext(opts: {
       return
     }
     const finalAttempt = currentGenerationAttempt()
-    const primaryUpstreamPayload = finalAttempt?.rawResponsePayload ?? finalAttempt?.responsePayload
+    const primaryUpstreamPayload = finalAttempt?.rawResponsePayload ?? finalAttempt?.sourceBodyPayload ?? finalAttempt?.responsePayload
     if (clientPayload !== undefined) {
       clientPayloadHandle = capturePayload(clientPayload, {
         stage: "egress",
@@ -583,7 +603,6 @@ export function createRequestContext(opts: {
         ...(primaryUpstreamPayload !== undefined && { derivedFrom: primaryUpstreamPayload, transformId: "response:forwarded-projection" }),
       })
     }
-    const rawGap = { capability: "unavailable" as const, gap: "semantic SSE/WS frames captured; exact raw framing bytes unavailable" }
     modelOperationRecorder.recordEgress({
       upstream: {
         ...(primaryUpstreamPayload !== undefined && { payload: primaryUpstreamPayload }),
@@ -591,7 +610,7 @@ export function createRequestContext(opts: {
         ...(_response?.status !== undefined && { status: _response.status }),
         ...(_httpHeaders?.outboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.outboundResponse) }),
         ...(_httpHeaders?.outboundResponseTrailers !== undefined && { trailers: orderedHeaders(_httpHeaders.outboundResponseTrailers) }),
-        rawCapture: rawGap,
+        rawCapture: semanticCaptureGap,
         metadata: snapshotForRecorder(_response),
       },
       client: {
@@ -599,7 +618,7 @@ export function createRequestContext(opts: {
         frames: clientFrameHandles,
         ...(_clientResponseStatus !== undefined && { status: _clientResponseStatus }),
         ...(_httpHeaders?.inboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.inboundResponse) }),
-        rawCapture: rawGap,
+        rawCapture: semanticCaptureGap,
         metadata: snapshotForRecorder(_forwardedResponse),
       },
     })
@@ -831,7 +850,12 @@ export function createRequestContext(opts: {
       if (_httpHeaders?.inboundRequest === undefined) throw new Error("[RequestContext] cannot record ingress before inbound headers")
       ingressPayloadHandle = capturePayload(_originalRequest.payload, { stage: "ingress", track: "client" })
       modelOperationRecorder.recordIngress({
-        request: { payload: ingressPayloadHandle, headers: orderedHeaders(_httpHeaders.inboundRequest), metadata: snapshotForRecorder(_originalRequest) },
+        request: {
+          payload: ingressPayloadHandle,
+          headers: orderedHeaders(_httpHeaders.inboundRequest),
+          rawCapture: semanticCaptureGap,
+          metadata: snapshotForRecorder(_originalRequest),
+        },
         format: opts.endpoint,
         method,
         path,
@@ -991,6 +1015,7 @@ export function createRequestContext(opts: {
           })
           modelOperationRecorder.setAttemptEffectiveRequest(generationAttempt.handle, {
             payload: generationAttempt.effectivePayload,
+            rawCapture: semanticCaptureGap,
             metadata: snapshotForRecorder(req),
           })
         }
@@ -1013,6 +1038,7 @@ export function createRequestContext(opts: {
           modelOperationRecorder.setAttemptUpstreamRequest(generationAttempt.handle, {
             payload: generationAttempt.wirePayload,
             headers: orderedHeaders(req.headers),
+            rawCapture: semanticCaptureGap,
             metadata: snapshotForRecorder(req),
           })
         }
@@ -1041,10 +1067,27 @@ export function createRequestContext(opts: {
         const generationAttempt = currentGenerationAttempt()
         if (generationAttempt && !generationAttempt.settled && !modelOperationRecorder.sealed) {
           generationAttempt.responsePayload = capturePayload(response.content, {
-            stage: "upstream-response",
+            stage: "upstream-response-projection",
             track: "upstream",
             attempt: generationAttempt.handle,
           })
+          if (response.sourceBody !== undefined) {
+            generationAttempt.sourceBodyPayload = capturePayload(response.sourceBody, {
+              stage: "upstream-response-envelope",
+              track: "upstream",
+              attempt: generationAttempt.handle,
+            })
+          } else if (response.responseText !== undefined) {
+            try {
+              generationAttempt.sourceBodyPayload = capturePayload(JSON.parse(response.responseText), {
+                stage: "upstream-response-envelope",
+                track: "upstream",
+                attempt: generationAttempt.handle,
+              })
+            } catch {
+              // Non-JSON error bodies are retained verbatim by rawResponsePayload/responseText.
+            }
+          }
           recordAttemptDiagnostic("response.settled", response.success ? "info" : "error", response)
           settleGenerationAttempt(
             generationAttempt,
