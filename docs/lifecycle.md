@@ -57,7 +57,7 @@ Phase 1 的信号忽略确保这种情况不会导致意外退出。
 
 ## 优雅重启（零停机换代）
 
-> 状态：**设计（未实现）**。本节是活文档的设计定稿，实现落地后就地转为「现状」描述。
+> 状态：**已实施**（`feat/graceful-restart`，Task 0-15 全落地 + 两轮异模型对抗审查，合并态 review 逮出 supervised 路径 overlap 保护缺口并按 root-cause 修复——见 overlap ①⑤「按进程存活性裁决」）。**唯一 gated follow-up**：真双进程 bare-metal e2e（`tests/e2e/handover.e2e.test.ts`）需在 GitHub API 无故障时复跑确认（重构后曾撞 GitHub `/user` 503 维护态未跑成，代码级已由存活性单测 + 全量套件零新增 + boot 实证覆盖）。实现代码见 `src/lib/restart/*` + `src/lib/{serve,shutdown}.ts` + `src/lib/history/sqlite/connection.ts`。
 
 ### 目标
 
