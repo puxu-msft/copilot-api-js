@@ -37,7 +37,6 @@ import {
   //
   clearAllEntries,
   insertCompletedEntry,
-  setEntryPinned,
   upsertHeadRow,
 } from "./sqlite/write"
 import { historyState } from "./state"
@@ -353,12 +352,12 @@ export function clearHistory(): void {
  * summary so connected WS clients reflect the new state. Returns whether the
  * entry exists. A pinned entry is exempt from reaper eviction AND retention
  * counting (see `setEntryPinned` + reaper SUCCESS_WHERE/FAILURE_WHERE), so its
- * raw data survives GC for debugging. No stats broadcast — pinning changes
- * neither the completed/failed counts nor token sums.
+ * raw data survives V3 retention for debugging. No stats broadcast — pinning
+ * changes neither the completed/failed counts nor token sums. There is no V2 fallback.
  */
 export function setPinned(id: string, pinned: boolean): boolean {
   if (!historyState.enabled) return false
-  const changed = setV3OperationPinned(id, pinned) || setEntryPinned(id, pinned)
+  const changed = setV3OperationPinned(id, pinned)
   if (!changed) return false
   // The `pinned` column is authoritative, but an entry that is still in-flight
   // (eager-persisted yet un-finalized) is read in-flight-FIRST by `getEntry`.
