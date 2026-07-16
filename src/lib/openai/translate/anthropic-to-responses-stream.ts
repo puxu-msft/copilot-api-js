@@ -35,15 +35,16 @@
  * NEVER references any CC-proprietary tool-call index space (there is none here; this is a direct
  * Anthropic→Responses path with no CC intermediate to begin with).
  *
- * ⚠️ R-DIRECTION-ASYMMETRY (RFC §4.4, Phase 4 boundary — reasoning rendering, NOT round-trip): a Claude
+ * ⚠️ R-DIRECTION-ASYMMETRY (RFC §4.4 — reasoning rendering + Phase 5 round-trip carrier): a Claude
  * `thinking` block streamed here carries a REAL, Anthropic-signed `signature` (via a trailing
  * `signature_delta`) — never a sentinel (that's the FORWARD leg's synthetic mechanism, Phase 3, a
  * different mechanism). This translator renders the thinking block's PLAINTEXT `thinking_delta` text as
  * a Responses `reasoning` item's `summary` streamed via `response.reasoning_summary_text.delta`
- * (richest-data-flow), but — exactly like subtask E — does NOT decide a round-trippable
- * `encrypted_content` carrier for the real signature and NEVER copies the plaintext into one. The
- * `signature_delta` payload (the real signature) is deliberately NOT captured/forwarded anywhere in this
- * Phase (Phase 5 scope: the round-trip primitive + its carrier format).
+ * (richest-data-flow) AND carries the real signature (accumulated from `signature_delta`, which probe
+ * (e) confirmed fires exactly ONCE with the complete signature — no `added`≠`done` mid-state ambiguity
+ * like the FORWARD leg's Responses `encrypted_content`) BYTE-EXACT into the closed reasoning output
+ * item's `encrypted_content` via `claude-signature-carrier.ts` (a wholly separate, non-shared primitive
+ * from the forward leg's `synthetic-reasoning.ts` sentinel envelope).
  *
  * Self-contained terminal meta accumulator (phase-2-audit §3.3 "第3类显式 helper"): {@link
  * AnthropicToResponsesStreamMeta} is built from THIS file's own running state (usage + status), never
@@ -65,6 +66,8 @@ import type {
   ResponsesOutputItem,
   ResponsesResponse,
 } from "~/types/api/openai-responses"
+
+import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-carrier"
 
 import {
   //
@@ -135,6 +138,17 @@ export function createAnthropicToResponsesStreamTranslator(
   const textParts = new Map<number, Array<string>>()
   /** Reasoning summary text accumulated per output_index. */
   const reasoningParts = new Map<number, Array<string>>()
+  /** Real Claude thinking signature accumulated per output_index (from `signature_delta` — probe (e): fires exactly ONCE with the complete signature). */
+  const reasoningSignatures = new Map<number, string>()
+  /**
+   * output_index values that opened a `thinking` block, regardless of whether any `thinking_delta` text
+   * ever arrived. NEEDED because probe (e) confirmed several Claude models (opus/sonnet-4.6/sonnet-5)
+   * emit EMPTY plaintext `thinking` + a real `signature` — `reasoningParts` alone would never gain an
+   * entry for such a block (the `delta.thinking.length > 0` guard below never fires), which would
+   * silently drop the reasoning item (and the signature carried in it) at flush(). Tracked separately so
+   * flush()'s `reasoningParts.has(outputIndex)` dispatch is replaced with membership in this set.
+   */
+  const reasoningOutputIndexes = new Set<number>()
   /** Tool call bookkeeping per output_index: id/name/accumulated-arguments. */
   const toolCalls = new Map<number, { id: string; name: string; argumentParts: Array<string> }>()
   /** Which output_index values had a content_part.added emitted (text items only). */
@@ -241,6 +255,7 @@ export function createAnthropicToResponsesStreamTranslator(
             }
             case "thinking": {
               blockKind.set(blockIndex, "thinking")
+              reasoningOutputIndexes.add(outputIndex)
               out.push(
                 responsesSseFrame("response.output_item.added", {
                   sequence_number: sequenceNumber++,
@@ -264,7 +279,7 @@ export function createAnthropicToResponsesStreamTranslator(
           const blockIndex = event.index
           const kind = blockKind.get(blockIndex)
           const outputIndex = outputIndexMap.get(blockIndex)
-          const delta = event.delta as { type?: string; text?: string; partial_json?: string; thinking?: string }
+          const delta = event.delta as { type?: string; text?: string; partial_json?: string; thinking?: string; signature?: string }
 
           if (delta.type === "text_delta" && kind === "text" && outputIndex !== undefined && typeof delta.text === "string" && delta.text.length > 0) {
             if (!contentPartOpened.has(outputIndex)) {
@@ -325,9 +340,12 @@ export function createAnthropicToResponsesStreamTranslator(
                 delta: delta.thinking,
               }),
             )
+          } else if (delta.type === "signature_delta" && kind === "thinking" && outputIndex !== undefined && typeof delta.signature === "string" && delta.signature.length > 0) {
+            // Phase 5 round-trip carrier: capture the REAL Claude signature (probe (e): fires exactly
+            // ONCE with the complete signature, no mid-state/authoritative-version ambiguity like the
+            // forward leg's Responses encrypted_content) — surfaced at flush() via claude-signature-carrier.
+            reasoningSignatures.set(outputIndex, delta.signature)
           }
-          // signature_delta (the REAL Claude signature) is deliberately NOT captured/forwarded here —
-          // R-DIRECTION-ASYMMETRY, Phase 5 scope (see module docstring).
           break
         }
 
@@ -378,12 +396,14 @@ export function createAnthropicToResponsesStreamTranslator(
       // Close each accumulated output item in allocation order (blockIndex → outputIndex insertion order).
       const sortedOutputIndexes = [...outputIndexMap.values()].sort((a, b) => a - b)
       for (const outputIndex of sortedOutputIndexes) {
-        if (reasoningParts.has(outputIndex)) {
+        if (reasoningOutputIndexes.has(outputIndex)) {
           const text = reasoningParts.get(outputIndex)?.join("") ?? ""
+          const carrier = buildClaudeSignatureCarrier(reasoningSignatures.get(outputIndex))
           const item: ResponsesOutputItem = {
             type: "reasoning",
             id: `${ctx.itemId}_reasoning_${outputIndex}`,
             summary: text.length > 0 ? [{ type: "summary_text", text }] : [],
+            ...(carrier !== undefined && { encrypted_content: carrier }),
           }
           output.push(item)
           out.push(responsesSseFrame("response.output_item.done", { sequence_number: sequenceNumber++, output_index: outputIndex, item }))

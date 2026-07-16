@@ -10,8 +10,8 @@
  * the CC-intermediate leg's `ccUsageToResponsesUsage` never carried reasoning_tokens at all, since CC
  * itself has no first-class reasoning-token field to relay); the 3 Anthropic-only stop_reason values
  * (`pause_turn`/`refusal`/genuine `tool_use`-without-CC-degradation) that a CC hop cannot represent
- * faithfully; and reasoning (thinking) rendering as a Responses `reasoning` output item's summary
- * (R-DIRECTION-ASYMMETRY — plaintext only, no signature/encrypted_content carrier decided yet, Phase 5).
+ * faithfully; and reasoning (thinking) rendering as a Responses `reasoning` output item's summary +
+ * the Phase 5 byte-exact `claude-signature-carrier` round-trip of the real Claude signature.
  */
 
 import type { Message as AnthropicResponse } from "@anthropic-ai/sdk/resources/messages"
@@ -29,6 +29,7 @@ import type {
   ResponsesReasoningOutput,
 } from "~/types/api/openai-responses"
 
+import { extractClaudeSignature } from "~/lib/anthropic/claude-signature-carrier"
 import { translateAnthropicResponseToResponses } from "~/lib/openai/translate/anthropic-to-responses"
 
 /** Minimal Anthropic response builder. */
@@ -122,7 +123,7 @@ describe("translateAnthropicResponseToResponses — text/tool_use output items (
   })
 })
 
-describe("translateAnthropicResponseToResponses — reasoning rendering (IMPROVEMENT ZONE, R-DIRECTION-ASYMMETRY — plaintext only, no signature carrier yet)", () => {
+describe("translateAnthropicResponseToResponses — reasoning rendering (IMPROVEMENT ZONE, R-DIRECTION-ASYMMETRY — real signature carried byte-exact via claude-signature-carrier, Phase 5)", () => {
   test("a thinking block renders as a LEADING reasoning output item with the plaintext summary", () => {
     const result = translateAnthropicResponseToResponses(
       anthropicResponse([
@@ -136,18 +137,19 @@ describe("translateAnthropicResponseToResponses — reasoning rendering (IMPROVE
     expect(reasoning.summary).toEqual([{ type: "summary_text", text: "step 1... step 2..." }])
   })
 
-  test("the real Claude signature is NEVER copied into encrypted_content (no round-trip carrier decided yet — Phase 5) — the reasoning item omits encrypted_content entirely", () => {
-    const result = translateAnthropicResponseToResponses(
-      anthropicResponse([{ type: "thinking", thinking: "reasoning text", signature: "REAL-SIGNATURE-xyz" }]),
-      ctx,
-    )
+  test("the real Claude signature is carried BYTE-EXACT in encrypted_content via the claude-signature-carrier (Phase 5 round-trip) — recoverable via extractClaudeSignature", () => {
+    const result = translateAnthropicResponseToResponses(anthropicResponse([{ type: "thinking", thinking: "reasoning text", signature: "REAL-SIGNATURE-xyz" }]), ctx)
     const reasoning = result.output[0] as ResponsesReasoningOutput
-    expect(reasoning.encrypted_content).toBeUndefined()
-    // Never accidentally leak the signature value anywhere in the rendered item either.
-    expect(JSON.stringify(reasoning)).not.toContain("REAL-SIGNATURE-xyz")
+    expect(reasoning.encrypted_content).toBeDefined()
+    // Byte-exact recoverability is the load-bearing property (probe (e): Claude's upstream rejects a
+    // signature altered by even one byte) — not merely "some carrier string is present".
+    expect(extractClaudeSignature(reasoning.encrypted_content)).toBe("REAL-SIGNATURE-xyz")
+    // The carrier is a distinguishable wire envelope, never the bare plaintext signature verbatim
+    // (R-DIRECTION-ASYMMETRY: a stamped, recognizable carrier, not an indistinguishable raw blob).
+    expect(reasoning.encrypted_content).toContain("copilot-api:claude-signature:v1:")
   })
 
-  test("redacted_thinking blocks (no plaintext available) produce no reasoning item", () => {
+  test("redacted_thinking blocks (no plaintext/no signature available) produce no reasoning item", () => {
     const result = translateAnthropicResponseToResponses(
       anthropicResponse([
         { type: "redacted_thinking", data: "opaque-redacted-blob" },
@@ -161,6 +163,27 @@ describe("translateAnthropicResponseToResponses — reasoning rendering (IMPROVE
   test("no thinking block → no reasoning item (typical non-reasoning turn)", () => {
     const result = translateAnthropicResponseToResponses(anthropicResponse([{ type: "text", text: "hi", citations: null }]), ctx)
     expect(result.output.every((o) => o.type !== "reasoning")).toBe(true)
+  })
+
+  test("per-block (not merged): TWO thinking blocks in the same turn produce TWO separate reasoning items, each with its OWN carried signature", () => {
+    const result = translateAnthropicResponseToResponses(
+      anthropicResponse([
+        { type: "thinking", thinking: "first", signature: "SIG-ONE" },
+        { type: "text", text: "interleaved", citations: null },
+        { type: "thinking", thinking: "second", signature: "SIG-TWO" },
+        { type: "text", text: "final", citations: null },
+      ]),
+      ctx,
+    )
+    const reasoningItems = result.output.filter((o): o is ResponsesReasoningOutput => o.type === "reasoning")
+    expect(reasoningItems.length).toBe(2)
+    expect(reasoningItems.map((r) => r.summary)).toEqual([
+      [{ type: "summary_text", text: "first" }],
+      [{ type: "summary_text", text: "second" }],
+    ])
+    expect(reasoningItems.map((r) => extractClaudeSignature(r.encrypted_content))).toEqual(["SIG-ONE", "SIG-TWO"])
+    // Distinct ids (no accidental id collision now that reasoning is per-block).
+    expect(new Set(reasoningItems.map((r) => r.id)).size).toBe(2)
   })
 })
 

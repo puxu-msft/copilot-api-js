@@ -31,6 +31,7 @@ import {
 
 import type { ResponsesStreamEvent } from "~/types/api/openai-responses"
 
+import { extractClaudeSignature } from "~/lib/anthropic/claude-signature-carrier"
 import {
   //
   accumulateResponsesStreamEvent,
@@ -216,7 +217,7 @@ describe("anthropic-to-responses-stream — tool_use (equivalence zone, native o
   })
 })
 
-describe("anthropic-to-responses-stream — reasoning rendering (IMPROVEMENT ZONE, R-DIRECTION-ASYMMETRY — real signature, plaintext-only forward, no carrier decided)", () => {
+describe("anthropic-to-responses-stream — reasoning rendering (IMPROVEMENT ZONE, R-DIRECTION-ASYMMETRY — real signature carried byte-exact via claude-signature-carrier, Phase 5)", () => {
   test("thinking block streams as a leading reasoning item summary via response.reasoning_summary_text.delta", () => {
     const frames = renderAll([
       messageStart(),
@@ -236,17 +237,34 @@ describe("anthropic-to-responses-stream — reasoning rendering (IMPROVEMENT ZON
     expect(summaryDeltas.map((f) => data(f).delta as string).join("")).toBe("step 1... step 2...")
   })
 
-  test("the REAL Claude signature (via signature_delta) is NEVER forwarded/leaked anywhere in the Responses frames (no round-trip carrier decided yet — Phase 5)", () => {
+  test("the REAL Claude signature (via signature_delta) is carried byte-exact into the closed reasoning item's encrypted_content (Phase 5 round-trip carrier) — never as bare plaintext on the wire", () => {
     const frames = renderAll([
       messageStart(),
       thinkingBlockStart(0),
       thinkingDelta(0, "reasoning text"),
-      signatureDelta(0, "REAL-SIGNATURE-xyz-do-not-leak"),
+      signatureDelta(0, "REAL-SIGNATURE-xyz-do-not-leak-bare"),
       blockStop(0),
       messageDelta("end_turn"),
     ])
     const wire = frames.map((f) => f.data ?? "").join("")
-    expect(wire).not.toContain("REAL-SIGNATURE-xyz-do-not-leak")
+    // The RAW signature never appears verbatim (it's base64url-encoded inside the carrier) — this is a
+    // side-effect of the carrier's encoding, not the mechanism that protects it (R-DIRECTION-ASYMMETRY is
+    // about which primitive owns the value, not obscurity).
+    expect(wire).not.toContain("REAL-SIGNATURE-xyz-do-not-leak-bare")
+    const doneEvent = frames.find((f) => data(f).type === "response.output_item.done" && (data(f).item as { type: string }).type === "reasoning")
+    expect(doneEvent).toBeDefined()
+    const item = data(doneEvent as ServerSentEventMessage).item as { encrypted_content?: string }
+    expect(item.encrypted_content).toBeDefined()
+    expect(extractClaudeSignature(item.encrypted_content)).toBe("REAL-SIGNATURE-xyz-do-not-leak-bare")
+  })
+
+  test("a thinking block with EMPTY plaintext (opus/sonnet convention — real reasoning lives entirely in the signature, probe (e)) still emits a reasoning item carrying the signature — never silently dropped", () => {
+    const frames = renderAll([messageStart(), thinkingBlockStart(0), signatureDelta(0, "ENCRYPTED-ONLY-NO-PLAINTEXT-SIG"), blockStop(0), messageDelta("end_turn")])
+    const doneEvent = frames.find((f) => data(f).type === "response.output_item.done" && (data(f).item as { type: string }).type === "reasoning")
+    expect(doneEvent).toBeDefined()
+    const item = data(doneEvent as ServerSentEventMessage).item as { summary: Array<unknown>; encrypted_content?: string }
+    expect(item.summary).toEqual([])
+    expect(extractClaudeSignature(item.encrypted_content)).toBe("ENCRYPTED-ONLY-NO-PLAINTEXT-SIG")
   })
 
   test("INDEPENDENT ORACLE: the real Responses accumulator's toolCallMap/content are unaffected by an interleaved reasoning item (no cross-contamination)", () => {

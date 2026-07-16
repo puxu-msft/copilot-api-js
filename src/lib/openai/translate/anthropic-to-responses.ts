@@ -17,18 +17,21 @@
  * ADD-BACK direction, so this file reimplements the small forward arithmetic inline rather than force-fit
  * a mismatched-direction primitive).
  *
- * ⚠️ R-DIRECTION-ASYMMETRY (RFC §4.4, Phase 4 boundary — reasoning rendering, NOT round-trip):
+ * ⚠️ R-DIRECTION-ASYMMETRY (RFC §4.4 — reasoning rendering + Phase 5 round-trip carrier):
  * A Claude `thinking` block carries a REAL, Anthropic-signed `signature` (never a sentinel — that's the
  * FORWARD leg's哨兵合成, Phase 3, a different mechanism entirely). This leg renders the thinking block's
  * PLAINTEXT `thinking` text as a Responses `reasoning` output item's `summary` (richest-data-flow: the
- * client sees the model's visible reasoning, never silently dropped) — but does NOT yet decide how the
- * real `signature` maps onto a round-trippable Responses carrier (`encrypted_content`, or a different
- * field). That decision + the round-trip primitive (client echoes the reasoning item back → this leg
- * reconstructs the real Claude signature for re-submission upstream) is Phase 5 scope — this file
- * deliberately does NOT populate `encrypted_content` (leaving it undefined) rather than guessing a format
- * now and being wrong later, and NEVER copies the plaintext `thinking` text into `encrypted_content` (that
- * would be indistinguishable from a real opaque blob and could be innocently mistaken for one downstream —
- * worse than leaving the round-trip field simply absent).
+ * client sees the model's visible reasoning, never silently dropped) AND carries the real `signature`
+ * BYTE-EXACT in `encrypted_content` via `claude-signature-carrier.ts` — a wholly separate, non-shared
+ * primitive from the forward leg's `synthetic-reasoning.ts` sentinel envelope (probe (e),
+ * exp/anthropic-responses-direct/FINDINGS.md: Claude's upstream rejects a signature altered by even ONE
+ * byte, so this carrier must be lossless). `redacted_thinking` has no signature field to carry (Anthropic
+ * redacts it entirely) — it renders no reasoning item at all (nothing to forward).
+ *
+ * Per-block (not merged): EACH `thinking` block becomes its OWN reasoning output item (its own id +
+ * carrier), matching the streaming leg's existing per-`content_block` granularity — a turn with multiple
+ * thinking blocks (interleaved with text/tool_use) no longer collapses them into a single accumulated
+ * reasoning item.
  */
 
 import type { StopReason } from "@anthropic-ai/sdk/resources/messages"
@@ -49,6 +52,8 @@ import type {
 
 import type { TranslateExchangeContext } from "./responses-to-cc-request"
 
+import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-carrier"
+
 /**
  * Translate an Anthropic Messages response into a Responses response (REVERSE leg, direct bridge).
  *
@@ -66,13 +71,22 @@ import type { TranslateExchangeContext } from "./responses-to-cc-request"
  */
 export function translateAnthropicResponseToResponses(response: AnthropicResponse, ctx: TranslateExchangeContext): ResponsesResponse {
   const output: Array<ResponsesOutputItem> = []
-  let reasoningText = ""
+  const reasoningItems: Array<ResponsesReasoningOutput> = []
+  let reasoningIndex = 0
   let hasToolCalls = false
 
   for (const block of response.content) {
     switch (block.type) {
       case "thinking": {
-        reasoningText += block.thinking
+        // Per-block (not merged): each thinking block gets its OWN reasoning item, id, and signature
+        // carrier — matches the streaming leg's per-content_block granularity (Phase 5 unification).
+        const carrier = buildClaudeSignatureCarrier(block.signature)
+        reasoningItems.push({
+          type: "reasoning",
+          id: `${ctx.itemId}_reasoning_${reasoningIndex++}`,
+          summary: block.thinking.length > 0 ? [{ type: "summary_text", text: block.thinking }] : [],
+          ...(carrier !== undefined && { encrypted_content: carrier }),
+        })
         break
       }
       case "redacted_thinking": {
@@ -103,16 +117,9 @@ export function translateAnthropicResponseToResponses(response: AnthropicRespons
     }
   }
 
-  if (reasoningText.length > 0) {
-    // Leading reasoning item — Responses' own convention (Phase 0 probe observed reasoning items precede
-    // message/function_call items). `encrypted_content` intentionally OMITTED (see module docstring —
-    // Phase 5 round-trip scope, never guessed/faked here).
-    output.unshift({
-      type: "reasoning",
-      id: `${ctx.itemId}_reasoning`,
-      summary: [{ type: "summary_text", text: reasoningText }],
-    } satisfies ResponsesReasoningOutput)
-  }
+  // Leading reasoning items — Responses' own convention (Phase 0 probe observed reasoning items precede
+  // message/function_call items). Emitted in block order, all BEFORE the rest of the turn's output.
+  output.unshift(...reasoningItems)
 
   const { status, incompleteReason } = mapStopReasonToResponsesStatus(response.stop_reason, hasToolCalls)
 
