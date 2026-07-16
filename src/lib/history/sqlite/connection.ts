@@ -277,16 +277,35 @@ function hasLiveForeignOwner(database: Database, selfPid: number): boolean {
  * after the real owner died is a rare, safe-direction miss (we skip
  * reclaiming that row this cycle; the reaper still eventually catches it),
  * never a false reclaim of a live owner's row.
+ *
+ * PID-REUSE CASE (must stay distinguished by boot_time, not just liveness):
+ * when the OS reassigns a crashed predecessor's exact pid to THIS process
+ * (rare but real on long-lived hosts with a wrapping pid counter), that
+ * predecessor's orphaned row has `pid == selfPid` — `distinctActiveOwnerPids`
+ * excludes self-pid rows entirely (by design, so this process never touches
+ * its OWN in-flight rows), and even if it didn't, `isProcessAlive(selfPid)`
+ * is trivially true (it's evaluating itself) — liveness alone can never
+ * distinguish "my own row" from "a dead predecessor's row that happens to
+ * share my pid". Only `boot_time` can: this process's OWN rows carry ITS
+ * `boot_time` (set at write time via getProcessIdentity()), while a
+ * pid-reused predecessor's leftover row carries the OLD boot_time. So the
+ * reclaim target is the union of (a) dead-foreign-owner rows and (b)
+ * self-pid rows whose boot_time does NOT match this process's boot_time.
  * Exported for isolated testing (tests/restart/reclaim-liveness.it.test.ts).
  */
 export function reclaimOrphanedActiveRows(database: Database): void {
-  const { pid: selfPid } = getProcessIdentity()
+  const { pid: selfPid, bootTime: selfBootTime } = getProcessIdentity()
   const deadOwnerPids = distinctActiveOwnerPids(database, selfPid).filter((pid) => !isProcessAlive(pid))
-  // Own rows are never touched (they're the current process's own in-flight
-  // work); dead-other-owner rows are the only reclaim target.
-  const where = deadOwnerPids.length > 0 ? `status IN ('pending','executing','streaming') AND pid IN (${deadOwnerPids.map(() => "?").join(",")})` : null
-  if (!where) return
-  const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(...deadOwnerPids) as { n: number }
+  const deadOwnerClause = deadOwnerPids.length > 0 ? `pid IN (${deadOwnerPids.map(() => "?").join(",")})` : null
+  // Self-pid-reuse clause: a predecessor's orphaned row that happens to share
+  // this process's pid (reassigned by the OS) but carries an OLD boot_time.
+  // `boot_time IS NOT NULL` excludes legacy pre-pid-column rows (NULL means
+  // "never recorded a boot_time", not "definitely stale") — those are left to
+  // the reaper rather than guessed at here.
+  const selfReuseClause = "(pid = ? AND boot_time IS NOT NULL AND boot_time != ?)"
+  const where = `status IN ('pending','executing','streaming') AND (${[deadOwnerClause, selfReuseClause].filter(Boolean).join(" OR ")})`
+  const params = [...deadOwnerPids, selfPid, selfBootTime]
+  const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(...params) as { n: number }
   if (n === 0) return
   // Backfill a failure reason (richest-data-flow) so the orphaned row surfaces WHY in the
   // list view; COALESCE preserves any real reason already persisted before the crash.
@@ -294,7 +313,7 @@ export function reclaimOrphanedActiveRows(database: Database): void {
     .prepare(
       `UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, started_at), error_message = COALESCE(error_message, 'orphaned by a prior process — recovered on restart') WHERE ${where}`,
     )
-    .run(...deadOwnerPids)
+    .run(...params)
   consola.info(`[history/sqlite] reclaimed ${n} orphaned active row(s) from a prior process → interrupted`)
 }
 
