@@ -21,7 +21,6 @@ import {
   runHistoryWrite,
   runHistoryWriteAsync,
 } from "./persist-guard"
-import { queryEntryCount } from "./sqlite/read"
 import { getEntry } from "./queries"
 import { setV3OperationPinned } from "./v3/store"
 import {
@@ -338,17 +337,11 @@ export function clearHistory(): void {
   const inFlightCount = listInFlight().length
   clearInFlight()
   if (historyState.enabled) {
-    let persistedCount = 0
-    try {
-      persistedCount = queryEntryCount()
-    } catch {
-      /* count is best-effort, purely for the log line */
-    }
     try {
       clearAllEntries()
-      consola.warn(`[history] CLEARED ALL entries (${persistedCount} persisted + ${inFlightCount} in-flight) via DELETE /api/entries`)
+      consola.warn(`[history] CLEARED test store (${inFlightCount} in-flight entries); this primitive is test-only`)
     } catch (err: unknown) {
-      consola.error("[history] failed to clear sqlite entries", err)
+      consola.error("[history] failed to clear test sqlite entries", err)
     }
   }
   publishHistoryCleared()
