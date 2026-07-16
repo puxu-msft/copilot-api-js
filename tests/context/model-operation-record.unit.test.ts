@@ -102,6 +102,21 @@ describe("ModelOperationRecord canonical shape", () => {
     ])
   })
 
+  it("preserves response trailers independently from headers", () => {
+    const recorder = makeRecorder()
+    recorder.recordEgress({
+      upstream: {
+        headers: [["content-type", "text/event-stream"]],
+        trailers: [["x-request-cost", "17"]],
+      },
+    })
+
+    expect(recorder.snapshot().egress?.upstream).toMatchObject({
+      headers: [["content-type", "text/event-stream"]],
+      trailers: [["x-request-cost", "17"]],
+    })
+  })
+
   it("requires explicit provenance for every derived payload and frame and keeps tracks independent", () => {
     const recorder = makeRecorder()
     const sourcePayload = recorder.registerPayload({ model: "wire-model" }, { origin: upstreamEgress })
@@ -273,6 +288,15 @@ describe("ModelOperationRecord canonical shape", () => {
     })
     expect(() => recorder.setAttemptEffectiveRequest(attempt, { payload: effective })).toThrow(/already recorded/i)
     expect(() => recorder.setAttemptUpstreamRequest(attempt, { payload: wire })).toThrow(/already recorded/i)
+  })
+
+  it("updates the typed attempt transport after runtime transport selection", () => {
+    const recorder = makeRecorder()
+    const attempt = recorder.beginAttempt({ transport: "http" })
+
+    recorder.setAttemptTransport(attempt, "upstream-ws")
+
+    expect(recorder.snapshot().attempts[0]?.transport).toBe("upstream-ws")
   })
 
   it("rejects terminal commit while an attempt remains open", () => {

@@ -8,6 +8,7 @@ import {
 import type { RequestContext } from "~/lib/context/request"
 
 import { createRequestContext } from "~/lib/context/request"
+import { HTTPError } from "~/lib/error"
 import { createBus } from "~/lib/observability"
 import {
   //
@@ -49,7 +50,13 @@ describe("RequestContext generation recorder lifecycle", () => {
       payload: { model: "claude-opus-4.8", messages: [{ role: "user", content: "hello" }], stream: true },
     }
     ctx.setOriginalRequest(original)
+    ctx.setInboundRequestHeaders({ authorization: "Bearer client", "x-request-id": "ingress-1" })
+    ctx.recordModelOperationIngress()
     expect(ctx.modelOperationSnapshot.ingress?.request.payload).toBeDefined()
+    expect(ctx.modelOperationSnapshot.ingress?.request.headers).toEqual([
+      ["authorization", "Bearer client"],
+      ["x-request-id", "ingress-1"],
+    ])
     expect(() => ctx.setOriginalRequest(original)).toThrow(/original request.*already|ingress.*already/i)
 
     ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
@@ -89,8 +96,11 @@ describe("RequestContext generation recorder lifecycle", () => {
       stop_reason: "end_turn",
     })
 
+    expect(ctx.modelOperationTerminalRecord).toBeNull()
+    ctx.finalizeModelOperationDelivery({ clientPayload: { type: "message", role: "assistant", content: [{ type: "text", text: "done" }] } })
+
     const terminal = ctx.modelOperationTerminalRecord
-    expect(terminalWasCommittedAtV2Publish).toBe(true)
+    expect(terminalWasCommittedAtV2Publish).toBe(false)
     expect(terminal).not.toBeNull()
     expect(terminal).toBe(ctx.modelOperationSnapshot)
     expect(terminal?.routing).toMatchObject({
@@ -125,7 +135,7 @@ describe("RequestContext generation recorder lifecycle", () => {
 })
 
 describe("RequestContext generation terminal ordering", () => {
-  test("fail commits and seals the canonical record before request.failed publish", () => {
+  test("fail records the logical outcome but delivery finalization seals later", () => {
     const bus = createBus()
     const ctx = createRequestContext({ endpoint: "anthropic-messages", publisher: bus.scope("request") })
     ctx.beginAttempt({})
@@ -136,12 +146,15 @@ describe("RequestContext generation terminal ordering", () => {
 
     ctx.fail("m", new Error("upstream failed"))
 
-    expect(terminalAtPublish).toMatchObject({ outcome: "failed" })
+    expect(terminalAtPublish).toBeUndefined()
+    expect(ctx.modelOperationTerminalRecord).toBeNull()
+    ctx.finalizeModelOperationDelivery()
+    expect(ctx.modelOperationTerminalRecord?.terminal).toMatchObject({ outcome: "failed" })
     expect(ctx.modelOperationTerminalRecord?.attempts[0]?.verdict).toBe("failed")
     expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord!)
   })
 
-  test("abort commits and seals the canonical record before request.aborted publish", () => {
+  test("abort records the logical outcome but delivery finalization seals later", () => {
     const bus = createBus()
     const ctx = createRequestContext({ endpoint: "openai-responses", publisher: bus.scope("request") })
     ctx.beginAttempt({})
@@ -152,8 +165,29 @@ describe("RequestContext generation terminal ordering", () => {
 
     ctx.abort("m")
 
-    expect(terminalAtPublish).toMatchObject({ outcome: "aborted", attribution: { category: "client", code: "client-disconnected" } })
+    expect(terminalAtPublish).toBeUndefined()
+    ctx.finalizeModelOperationDelivery()
+    expect(ctx.modelOperationTerminalRecord?.terminal).toMatchObject({ outcome: "aborted", attribution: { category: "client", code: "client-disconnected" } })
     expect(ctx.modelOperationTerminalRecord?.attempts[0]?.verdict).toBe("failed")
     expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord!)
+  })
+
+  test("preserves an HTTPError raw response as the primary upstream payload and JSON error fields", () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    const rawBody = JSON.stringify({ type: "error", error: { message: "bad beta" } })
+    const error = new HTTPError("bad beta", 400, rawBody)
+    ctx.beginAttempt({})
+    ctx.setAttemptError({ type: "bad_request", status: 400, message: error.message, raw: error })
+
+    ctx.fail("m", error)
+    ctx.finalizeModelOperationDelivery({ clientPayload: { type: "error", error: { message: "bad beta" } } })
+
+    const record = ctx.modelOperationTerminalRecord!
+    const upstreamHandle = record.attempts[0]?.upstreamResponse?.payload
+    expect(record.arena.payloads.find((node) => node.handle === upstreamHandle)?.value).toBe(rawBody)
+    const roundTripped = JSON.parse(JSON.stringify(record)) as typeof record
+    expect(roundTripped.attempts[0]?.error).toMatchObject({ name: "HTTPError", message: "bad beta", status: 400, responseText: rawBody })
+    expect(roundTripped.terminal?.error).toMatchObject({ name: "HTTPError", message: "bad beta", status: 400, responseText: rawBody })
+    expect(roundTripped.attempts[0]?.error).toHaveProperty("stack")
   })
 })
