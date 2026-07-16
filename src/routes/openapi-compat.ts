@@ -165,20 +165,6 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     request: { params: z.object({ id: z.string() }) },
     responses: { 200: { description: "zstd-compressed entry JSON" }, 404: { description: "Not found", ...jsonContent() } },
   })
-  registry.registerPath({
-    method: "post",
-    path: "/history/api/archive-now",
-    tags: historyTag,
-    summary: "Archive now — move terminal non-pinned HOT entries (matching the list filters, or all) into tier-1 cold archive. The product-facing replacement for the removed delete API (never truly deletes).",
-    responses: ok200("Archive result { success, archived }"),
-  })
-  registry.registerPath({
-    method: "post",
-    path: "/history/api/archive-cooldown",
-    tags: historyTag,
-    summary: "Run the standard age-based HOT→tier-1 cool-down on demand — drains the whole `> hot_days` backlog now (respects hot_days + pinned exemption). Distinct from archive-now (which force-archives all/filtered regardless of age).",
-    responses: ok200("Cool-down result { success, migrated }"),
-  })
   registry.registerPath({ method: "get", path: "/history/api/stats", tags: historyTag, summary: "History store statistics", responses: ok200("Stats") })
   registry.registerPath({
     method: "get",

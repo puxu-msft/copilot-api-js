@@ -32,15 +32,6 @@ import {
 } from "./sqlite/connection"
 import {
   //
-  closeArchiveDb,
-  ensureArchiveAttachedToMain,
-  isArchiveOpen,
-  migrateArchiveDb,
-} from "./sqlite/archive-db"
-import { drainTier1Backlog } from "./sqlite/tier1-migrate"
-import { startTier2Seal } from "./sqlite/tier2-seal"
-import {
-  //
   runLegacyStageBackfill,
   stopLegacyStageBackfill,
 } from "./sqlite/legacy-stage-backfill"
@@ -111,18 +102,6 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   if (!enable) return
   const dbPath = state.historyDbPath || PATHS.HISTORY_DB
   openDatabase(dbPath)
-  // Tiered-archive: open archive.db + ATTACH it onto the main connection BEFORE
-  // the reaper's first tick, so its move-to-tier1 path (spec §3.1) can run its
-  // cross-db `INSERT INTO archive.* SELECT FROM main.*`. Idempotent; a no-op when
-  // archiving is disabled. Archive schema migration + startup HOT→tier-1 move +
-  // tier-2 seal run async in startHistoryBackfills (never block startup).
-  if (state.historyArchiveEnabled) {
-    try {
-      ensureArchiveAttachedToMain(getDatabase())
-    } catch (err: unknown) {
-      consola.warn("[history/archive] attach failed at init (archiving degraded to no-op this run)", err)
-    }
-  }
   startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
   // Subscribe to live limit changes from config hot-reload.
   // `onHistoryLimitChange` invokes the listener synchronously once with the
@@ -173,7 +152,6 @@ export async function shutdownHistory(): Promise<void> {
   await retryPendingFinalizations()
   await drainPendingFinalizations()
   closeDatabase()
-  closeArchiveDb()
   enabled = false
 }
 
@@ -271,40 +249,4 @@ export function startHistoryBackfills(): void {
   void runUsageNormalizeBackfill(getDatabase())
     .catch((err: unknown) => consola.warn("[history] usage-normalize backfill failed", err))
     .finally(() => startLegacyStageBackfill())
-
-  // Tiered-archive startup work (spec §3.3): migrate the archive schema, then run
-  // ONE startup HOT→tier-1 time-migration pass and ONE tier-2 seal pass. All
-  // fire-and-forget + never-throw so they never block startup or serving. The
-  // PERIODIC HOT→tier-1 pass rides the reaper tick (runReaperTick); T1→T2 sealing
-  // is startup-only (user's trigger decision).
-  if (state.historyArchiveEnabled && isArchiveOpen()) {
-    void migrateArchiveDb()
-      .then(() => {
-        // Drain the >hot_days backlog in bounded batches (resumable) until caught up.
-        drainTier1Backlog(getDatabase(), { hotDays: state.historyArchiveHotDays, batchSize: 200 })
-        startTier2Seal()
-      })
-      .catch((err: unknown) => consola.warn("[history/archive] startup archive work failed", err))
-  }
-}
-
-/**
- * Manual on-demand cool-down (API `POST /history/api/archive-cooldown`): run the
- * SAME age-based HOT→tier-1 migration the startup + periodic passes run — drain the
- * whole >hot_days backlog now, without waiting for the reaper tick. Respects
- * `hot_days` (only rows older than it move) and pinned exemption. Distinct from
- * `archiveNow` (which force-archives all/filtered rows regardless of age). Ensures
- * archive.db is attached first. Returns the total number cooled down; 0 when
- * archiving is disabled / not attachable. Never throws.
- */
-export function runArchiveCooldownNow(): number {
-  if (!enabled || !isDatabaseOpen() || !state.historyArchiveEnabled) return 0
-  try {
-    const main = getDatabase()
-    ensureArchiveAttachedToMain(main)
-    return drainTier1Backlog(main, { hotDays: state.historyArchiveHotDays, batchSize: 200 })
-  } catch (err: unknown) {
-    consola.warn("[history/archive] manual cool-down failed", err)
-    return 0
-  }
 }
