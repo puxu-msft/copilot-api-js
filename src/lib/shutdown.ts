@@ -1,11 +1,14 @@
 /**
  * Centralized graceful shutdown management.
  *
- * Coordinates a 4-phase shutdown sequence:
- *   Phase 1 (0s):       Stop accepting new requests, drain rate limiter queue
- *   Phase 2 (0–Ns):     Wait for in-flight requests to complete naturally
- *   Phase 3 (N–N+Ms):   Fire abort signal, wait for handlers to wrap up
- *   Phase 4:            Force-close all connections, clean up
+ * One termination signal starts the complete four-step shutdown sequence:
+ *   1. Stop accepting new work
+ *   2. Wait for in-flight work to complete naturally
+ *   3. Abort remaining work after the graceful deadline
+ *   4. Force-close connections after the abort deadline
+ * Persistence finalization follows those four request-lifecycle steps. A second
+ * termination signal is a process-wide escape hatch and exits immediately; it
+ * never advances the sequence one step at a time.
  *
  * Phase 2/3 timeouts are configurable via state.shutdownGracefulWait and
  * state.shutdownAbortWait (seconds), set from config.yaml `shutdown` section.
@@ -37,6 +40,7 @@ import { shutdownRequestTelemetry } from "./request-telemetry"
 import { state } from "./state"
 import { stopTokenRefresh } from "./token"
 import { closeHttp2Sessions } from "./transport/http2-client"
+import { emergencyWrite } from "./tui/terminal-coordinator"
 import {
   //
   closeAllClients,
@@ -58,7 +62,18 @@ export const DRAIN_PROGRESS_INTERVAL_MS = 5_000
 
 let serverInstance: ServerInstance | null = null
 let _isShuttingDown = false
-let shutdownResolve: (() => void) | null = null
+
+export type ProcessLifecycleState = "idle" | "stopping" | "draining" | "aborting" | "forcing" | "finalizing" | "notifying" | "stopped" | "failed"
+
+function createCompletionLatch(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+let shutdownCompletion = createCompletionLatch()
 
 /**
  * Create the process-global shutdown AbortController.
@@ -90,8 +105,9 @@ function createShutdownController(): AbortController {
  */
 let shutdownAbortController: AbortController = createShutdownController()
 let shutdownDrainAbortController: AbortController | null = null
-let shutdownPhase: "idle" | "phase1" | "phase2" | "phase3" | "phase4" | "finalized" = "idle"
+let shutdownPhase: ProcessLifecycleState = "idle"
 let shutdownPromise: Promise<void> | null = null
+let signalHandlers: { sigint: () => void; sigterm: () => void } | null = null
 
 /**
  * Scoped publisher for `system.shutdown_phase_changed` events. Set once at
@@ -108,23 +124,23 @@ export function setShutdownPublisher(publisher: ScopedPublisher<"system"> | unde
 }
 
 /**
- * Map the internal phase enum (`phase1`/`phase2`/`phase3`/`phase4`/
- * `finalized`/`idle`) to the bus-visible ShutdownPhase enum
- * (`draining`/`aborting`/`finalized`) per RFC §2.3. WS clients receive
- * the simpler 3-state taxonomy; the internal 5-state remains for code
- * clarity (drain → drain-with-abort-signal → force-cleanup → finalize).
+ * Map the detailed process state to the stable bus taxonomy. `finalizing` is
+ * deliberately not mapped: `finalized` is published only after History and
+ * Telemetry have both finished, so dashboards never report completion while
+ * persistence is still draining.
  */
 function toBusPhase(p: typeof shutdownPhase): ShutdownPhase | null {
   switch (p) {
-    case "phase1":
-    case "phase2": {
+    case "stopping":
+    case "draining": {
       return "draining"
     }
-    case "phase3":
-    case "phase4": {
+    case "aborting":
+    case "forcing": {
       return "aborting"
     }
-    case "finalized": {
+    case "notifying":
+    case "stopped": {
       return "finalized"
     }
     default: {
@@ -148,7 +164,7 @@ function setPhase(phase: typeof shutdownPhase): Promise<{ stillBuffering: number
   if (prev === phase) return Promise.resolve({ stillBuffering: 0 })
   const newBusPhase = toBusPhase(phase)
   const prevBusPhase = toBusPhase(prev)
-  if (!newBusPhase || !_shutdownPublisher) {
+  if (!newBusPhase || newBusPhase === prevBusPhase || !_shutdownPublisher) {
     return Promise.resolve({ stillBuffering: 0 })
   }
   return _shutdownPublisher
@@ -206,9 +222,7 @@ export function getShutdownSignal(): AbortSignal {
  * Used by runServer() to keep the async function alive until shutdown.
  */
 export function waitForShutdown(): Promise<void> {
-  return new Promise((resolve) => {
-    shutdownResolve = resolve
-  })
+  return shutdownCompletion.promise
 }
 
 /** Store the server instance for shutdown */
@@ -237,6 +251,11 @@ export interface ShutdownDeps {
   getClientCountFn?: () => number
   /** Request context manager (for stopping stale reaper during shutdown) */
   contextManager?: { stopReaper: () => void }
+  /** Persistence seams used by lifecycle tests. Production uses the real stores. */
+  shutdownHistoryFn?: () => Promise<void>
+  shutdownRequestTelemetryFn?: () => Promise<void>
+  /** Test seam for the final completion notification barrier. */
+  publishStoppedFn?: () => Promise<void>
   /** Timing overrides (for testing — avoids real 20s/120s waits) */
   gracefulWaitMs?: number
   abortWaitMs?: number
@@ -340,7 +359,10 @@ export async function drainActiveRequests(
  * @param signal - The signal that triggered shutdown (e.g. "SIGINT")
  * @param deps - Optional dependency injection for testing
  */
-export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Promise<void> {
+export async function gracefulShutdown(_signal: string, deps?: ShutdownDeps): Promise<void> {
+  if (shutdownPhase === "stopped") return
+  if (shutdownPhase !== "idle" && shutdownPhase !== "stopping") return shutdownCompletion.promise
+
   const tracker: ShutdownDrainSource = deps?.tracker ?? {
     // C5: drain waits on the OPERATION registry (quiesce), not just the visible registry (settle).
     // A settled-but-not-quiesced request keeps orphan settle-before work (fetch/backoff) that must
@@ -355,6 +377,22 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   const stopRefresh = deps?.stopTokenRefreshFn ?? stopTokenRefresh
   const closeWsClients = deps?.closeAllClientsFn ?? closeAllClients
   const getWsClientCount = deps?.getClientCountFn ?? getClientCount
+  const closeHistory = deps?.shutdownHistoryFn ?? shutdownHistory
+  const closeTelemetry = deps?.shutdownRequestTelemetryFn ?? shutdownRequestTelemetry
+  const publishStopped =
+    deps?.publishStoppedFn
+    ?? (() => {
+      const previousPhase = toBusPhase("finalizing")
+      if (!_shutdownPublisher) return Promise.resolve()
+      return _shutdownPublisher
+        .publishAndFlush({
+          kind: "system.shutdown_phase_changed",
+          phase: "finalized",
+          previousPhase,
+          needsFlush: true,
+        })
+        .then(() => undefined)
+    })
 
   // Timing (defaults to state values from config, overridable for testing)
   const gracefulWaitMs = deps?.gracefulWaitMs ?? state.shutdownGracefulWait * 1000
@@ -364,17 +402,15 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     progressIntervalMs: deps?.drainProgressIntervalMs ?? DRAIN_PROGRESS_INTERVAL_MS,
   }
 
-  // ── Phase 1: Stop accepting new requests ──────────────────────────────
+  // ── Step 1: Stop accepting new requests ───────────────────────────────
   _isShuttingDown = true
   // NOTE: do NOT recreate shutdownAbortController here. It is created eagerly at
   // module load and reused for the whole process lifetime, so requests that
   // began (and possibly blocked on a stalled upstream) BEFORE this point already
   // hold its signal in their abort race and will observe the Phase 3 abort.
-  // Fire-and-forget: phase1/2/3 don't precede force-close, so we don't need
-  // to await the broadcast drain. Phase4 + finalized DO await (see below).
-  setPhaseFireAndForget("phase1")
-
-  consola.info(`Received ${signal}, shutting down gracefully...`)
+  // Fire-and-forget: Steps 1–3 do not immediately force-close observer sockets.
+  // The force-close boundary and final completion notification are awaited.
+  setPhaseFireAndForget("stopping")
 
   // Stop stale context reaper before drain (avoid racing with drain logic)
   try {
@@ -419,11 +455,11 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     consola.info("Stopped accepting new connections")
   }
 
-  // ── Phase 2: Wait for natural completion ──────────────────────────────
+  // ── Step 2: Wait for natural completion ───────────────────────────────
   const activeCount = tracker.getActive().length
   if (activeCount > 0) {
-    consola.info(`Phase 2: Waiting up to ${gracefulWaitMs / 1000}s for ${activeCount} active request(s)...`)
-    setPhaseFireAndForget("phase2")
+    consola.info(`Step 2/4: Waiting up to ${gracefulWaitMs / 1000}s for ${activeCount} active request(s)...`)
+    setPhaseFireAndForget("draining")
     shutdownDrainAbortController = new AbortController()
 
     try {
@@ -433,18 +469,18 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
       })
       if (phase2Result === "drained") {
         consola.info("All requests completed naturally")
-        await finalize({ closeWsClients, getWsClientCount })
+        await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, publishStopped })
         return
       }
     } catch (error) {
-      consola.error("Error during Phase 2 drain:", error)
+      consola.error("Error during Step 2 drain:", error)
     }
 
-    // ── Phase 3: Abort signal + extended wait ─────────────────────────────
+    // ── Step 3: Abort signal + extended wait ──────────────────────────────
     const remaining = tracker.getActive().length
-    consola.info(`Phase 3: Sending abort signal to ${remaining} remaining request(s), ` + `waiting up to ${abortWaitMs / 1000}s...`)
+    consola.info(`Step 3/4: Sending abort signal to ${remaining} remaining request(s), ` + `waiting up to ${abortWaitMs / 1000}s...`)
 
-    setPhaseFireAndForget("phase3")
+    setPhaseFireAndForget("aborting")
     shutdownDrainAbortController = new AbortController()
     shutdownAbortController.abort()
 
@@ -455,21 +491,21 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
       })
       if (phase3Result === "drained") {
         consola.info("All requests completed after abort signal")
-        await finalize({ closeWsClients, getWsClientCount })
+        await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, publishStopped })
         return
       }
     } catch (error) {
-      consola.error("Error during Phase 3 drain:", error)
+      consola.error("Error during Step 3 drain:", error)
     }
 
-    // ── Phase 4: Force close ────────────────────────────────────────────
+    // ── Step 4: Force close ──────────────────────────────────────────────
     // setPhase resolves once the broadcast frame has actually drained on every
     // status-subscribed WS client (or its internal deadline elapses). Awaiting
     // here means the dashboard is guaranteed to see "phase4" before we yank
     // the sockets in the next step.
-    await setPhase("phase4")
+    await setPhase("forcing")
     const forceRemaining = tracker.getActive().length
-    consola.warn(`Phase 4: Force-closing ${forceRemaining} remaining request(s)`)
+    consola.warn(`Step 4/4: Force-closing ${forceRemaining} remaining request(s)`)
 
     // Close upstream WS connections BEFORE force-closing the downstream server.
     // Order matters: if the downstream HTTP/WS server is force-closed first, any
@@ -495,53 +531,71 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     }
   }
 
-  await finalize({ closeWsClients, getWsClientCount })
+  await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, publishStopped })
 }
 
 interface FinalizeDeps {
   closeWsClients: () => void
   getWsClientCount: () => number
+  closeHistory: () => Promise<void>
+  closeTelemetry: () => Promise<void>
+  publishStopped: () => Promise<void>
 }
 
 /** Final cleanup after drain/force-close */
 async function finalize(deps: FinalizeDeps): Promise<void> {
-  // Await the broadcast drain so dashboards reliably see "finalized" before we
-  // close their sockets in the graceful (drained) path. Force-close path has
-  // already broadcast phase4 with the same drain semantics.
-  await setPhase("finalized")
-
+  setPhaseFireAndForget("finalizing")
   shutdownDrainAbortController = null
+  writeEmergencyNoThrow("[shutdown] Requests settled; flushing History and Telemetry. Press Ctrl+C again to exit immediately")
 
-  // Drain in-flight async finalizes, then close the history DB (I4). This runs
-  // AFTER Phase 2/3 request drain on EVERY exit path (the choke point), so every
-  // request that settled during drain has had its async finalize kicked; we await
-  // those here so none writes to a closed DB / is lost. Never throws.
-  await shutdownHistory()
+  const failures: Array<unknown> = []
+
+  // Drain in-flight async finalizes, then close History (I4). This runs after
+  // request drain on every normal exit path. The second-signal escape hatch can
+  // still terminate this wait immediately without routing through persistence.
+  try {
+    await deps.closeHistory()
+  } catch (error) {
+    failures.push(error)
+    consola.error("History shutdown failed:", error)
+  }
+
+  // Telemetry is part of lifecycle completion, not detached background work.
+  // Awaiting it makes `stopped` and `waitForShutdown()` truthful.
+  try {
+    await deps.closeTelemetry()
+  } catch (error) {
+    failures.push(error)
+    consola.error("Telemetry shutdown failed:", error)
+  }
+
   // Release any upstream WS connections that survived the graceful path.
   // `closeAll()` is idempotent, so this is a no-op if Phase 4 already ran.
   // Without this, drain-success paths (Phase 2/3 drained) leave upstream
   // sockets dangling until process GC — wasting GHC-side connection quota.
   peekUpstreamWsManager()?.closeAll()
 
-  // Close any remaining observer WS clients (no-op if Phase 4 already did).
+  // Publish true completion while observer clients are still connected, then
+  // close them. Unlike the old `finalized` transition, this occurs only after
+  // both persistence barriers have settled.
+  shutdownPhase = "notifying"
+  await deps.publishStopped()
+
+  // Close any remaining observer WS clients (no-op if Step 4 already did).
   const remaining = deps.getWsClientCount()
   if (remaining > 0) {
     deps.closeWsClients()
     consola.info(`Disconnected ${remaining} WebSocket client(s) at finalize`)
   }
 
-  // (Legacy `tracker.destroy()` removed in commit 4 — ConsoleSink owns
-  // stdout lifecycle now and is torn down by the Node process exit hook;
-  // sinks holding subscriptions are unsubscribed when the bus singleton
-  // is garbage-collected. No explicit destroy needed during shutdown.)
-  // shutdownRequestTelemetry awaits the serialized persist chain in atomic-fs,
-  // so any timer-fired or ad-hoc persist already enqueued runs to completion
-  // before `.finally` resolves shutdownResolve. fire-and-forget is intentional:
-  // a telemetry write failure must not block process exit.
-  void shutdownRequestTelemetry().finally(() => {
-    consola.info("Shutdown complete")
-    shutdownResolve?.()
-  })
+  if (failures.length > 0) {
+    shutdownPhase = "failed"
+    throw new AggregateError(failures, "Shutdown persistence failed")
+  }
+
+  shutdownPhase = "stopped"
+  consola.info("Shutdown complete")
+  shutdownCompletion.resolve()
 }
 
 // ============================================================================
@@ -553,72 +607,64 @@ interface HandleShutdownSignalOptions {
   exitFn?: (code: number) => void
 }
 
+function forcedExitCode(signal: string): number {
+  return signal === "SIGTERM" ? 143 : 130
+}
+
+/** Critical signal feedback is best-effort; it must never prevent exit. */
+function writeEmergencyNoThrow(message: string): void {
+  try {
+    emergencyWrite(message)
+  } catch {
+    // The terminal owner itself is broken. Do not recurse into consola or the
+    // observability bus here; the caller must continue to its lifecycle action.
+  }
+}
+
 export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignalOptions): Promise<void> | undefined {
   const shutdownFn = opts?.gracefulShutdownFn ?? ((shutdownSignal: string) => gracefulShutdown(shutdownSignal))
   const exitFn = opts?.exitFn ?? ((code: number) => process.exit(code))
 
-  if (_isShuttingDown) {
-    switch (shutdownPhase) {
-      case "phase1": {
-        // Phase 1 is fast synchronous setup — ignore duplicate signal, it will
-        // proceed to phase2 momentarily. This commonly happens when bun --watch
-        // forwards SIGINT to both parent and child processes.
-        consola.warn("Signal received during Phase 1 setup, waiting for shutdown to proceed")
-        return shutdownPromise ?? undefined
-      }
+  if (shutdownPhase === "stopped") return shutdownPromise ?? shutdownCompletion.promise
 
-      case "phase2": {
-        consola.warn("Second signal received, escalating shutdown to abort active requests")
-        shutdownDrainAbortController?.abort()
-        return shutdownPromise ?? undefined
-      }
-
-      case "phase3": {
-        consola.warn("Additional signal received, escalating shutdown to force-close remaining requests")
-        shutdownDrainAbortController?.abort()
-        return shutdownPromise ?? undefined
-      }
-
-      case "phase4": {
-        // Force close is already in progress — user insists on immediate exit
-        consola.warn("Additional signal received during forced shutdown, exiting immediately")
-        exitFn(1)
-        return shutdownPromise ?? undefined
-      }
-
-      case "finalized": {
-        // Cleanup is already completing — ignore
-        consola.info("Signal received after shutdown finalized, ignoring")
-        return shutdownPromise ?? undefined
-      }
-
-      default: {
-        // Should not happen, but guard exhaustively
-        consola.warn("Signal received in unexpected shutdown phase, exiting immediately")
-        exitFn(1)
-        return shutdownPromise ?? undefined
-      }
-    }
+  if (shutdownPhase !== "idle") {
+    // Deliberately bypass consola → observability bus → FileSink → History. The
+    // escape hatch must remain visible and must not wait for any subsystem it is
+    // intended to escape from.
+    writeEmergencyNoThrow(`[shutdown] Second termination signal (${signal}); exiting immediately`)
+    exitFn(forcedExitCode(signal))
+    return shutdownPromise ?? undefined
   }
 
+  // Claim the lifecycle synchronously before invoking the async task. This
+  // closes the old idle/phase1 race: a second signal arriving immediately after
+  // the first is always recognized as the force-exit signal.
+  _isShuttingDown = true
+  setPhaseFireAndForget("stopping")
+  writeEmergencyNoThrow(`[shutdown] Received ${signal}; graceful shutdown started. Press Ctrl+C again to exit immediately`)
+
   shutdownPromise = shutdownFn(signal).catch((error: unknown) => {
-    consola.error("Fatal error during shutdown:", error)
-    shutdownResolve?.() // Ensure waitForShutdown resolves even on error
+    writeEmergencyNoThrow(`[shutdown] Fatal error during shutdown: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`)
+    shutdownPhase = "failed"
     exitFn(1)
   })
   return shutdownPromise
 }
 
 /** Setup process signal handlers for graceful shutdown */
-export function setupShutdownHandlers(): void {
+export function setupShutdownHandlers(opts?: HandleShutdownSignalOptions): void {
+  if (signalHandlers) return
   const handler = (signal: string) => {
     // Fire-and-forget: handleShutdownSignal manages its own error handling
     // and process.exit lifecycle. Errors thrown inside would already become
     // unhandled rejections — explicit `void` documents the intent.
-    void handleShutdownSignal(signal)
+    void handleShutdownSignal(signal, opts)
   }
-  process.on("SIGINT", () => handler("SIGINT"))
-  process.on("SIGTERM", () => handler("SIGTERM"))
+  const sigint = () => handler("SIGINT")
+  const sigterm = () => handler("SIGTERM")
+  signalHandlers = { sigint, sigterm }
+  process.on("SIGINT", sigint)
+  process.on("SIGTERM", sigterm)
 }
 
 // ============================================================================
@@ -628,7 +674,7 @@ export function setupShutdownHandlers(): void {
 /** Reset module state (for tests only) */
 export function _resetShutdownState(): void {
   _isShuttingDown = false
-  shutdownResolve = null
+  shutdownCompletion = createCompletionLatch()
   // Fresh, un-aborted controller so the next test starts clean. Tests MUST
   // ensure their in-flight streams have ended before resetting, otherwise a
   // stream holding the previous signal reference would never see an abort.
@@ -637,4 +683,10 @@ export function _resetShutdownState(): void {
   shutdownPhase = "idle"
   shutdownPromise = null
   serverInstance = null
+  _shutdownPublisher = undefined
+  if (signalHandlers) {
+    process.removeListener("SIGINT", signalHandlers.sigint)
+    process.removeListener("SIGTERM", signalHandlers.sigterm)
+    signalHandlers = null
+  }
 }

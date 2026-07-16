@@ -434,6 +434,8 @@ let telemetryDb: TelemetryDatabase | null = null
 let effectiveSketchGamma: number | null = null
 /** Unsubscribe for the persist-timer hot-reload listener (null when not subscribed). */
 let telemetryConfigUnsub: (() => void) | null = null
+/** Once set, config callbacks can no longer re-arm timers during shutdown. */
+let telemetryShutdownSealed = false
 /** Warn-once debounce for SQLite dual-write drain failures (mirrors persistFailureLogged for JSON). */
 let telemetryDrainFailureLogged = false
 /**
@@ -1054,6 +1056,7 @@ function restartRollupTimer(): void {
 
 /** Retune BOTH telemetry timers on a config hot-reload (persist interval + rollup interval / enabled). */
 function restartTelemetryTimers(): void {
+  if (telemetryShutdownSealed) return
   restartPeriodicPersistence()
   restartRollupTimer()
 }
@@ -1708,6 +1711,12 @@ export function persistRequestTelemetry(): Promise<void> {
 }
 
 export async function shutdownRequestTelemetry(): Promise<void> {
+  // Seal the timer producer first. Otherwise a config change during the await
+  // below can restart persistence/rollup timers after we stopped them, leaving
+  // a live timer targeting a closed database.
+  telemetryShutdownSealed = true
+  telemetryConfigUnsub?.()
+  telemetryConfigUnsub = null
   stopPeriodicPersistence()
   stopRollupTimer()
   // Signal the one-shot JSON backfill to bail BEFORE the db closes below (cooperative-stop: a backfill
@@ -1722,8 +1731,6 @@ export async function shutdownRequestTelemetry(): Promise<void> {
   await persistRequestTelemetry()
   telemetryDb?.close()
   telemetryDb = null
-  telemetryConfigUnsub?.()
-  telemetryConfigUnsub = null
 }
 
 /**
@@ -1794,6 +1801,7 @@ export function _resetRequestTelemetryForTests(): void {
   outboxSoftCap = OUTBOX_SOFT_CAP
   telemetryConfigUnsub?.()
   telemetryConfigUnsub = null
+  telemetryShutdownSealed = false
 }
 
 export function _setRequestTelemetryFilePathForTests(path: string): void {
@@ -1826,6 +1834,10 @@ export function _getTelemetryDbForTests(): TelemetryDatabase | null {
 /** Whether the rollup timer is currently armed — test assertion hook for the timer wiring (init arm / shutdown clear / config restart). */
 export function _isRollupTimerArmedForTests(): boolean {
   return rollupTimer !== null
+}
+
+export function _isTelemetryShutdownSealedForTests(): boolean {
+  return telemetryShutdownSealed
 }
 
 /**

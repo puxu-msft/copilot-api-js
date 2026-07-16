@@ -4,56 +4,65 @@
 
 ## 优雅关闭
 
-`src/lib/shutdown.ts` 实现 4 阶段优雅关闭：
+`src/lib/shutdown.ts` 实现一次信号启动的 4 步优雅关闭流水线。**4 步是进程内部自动推进的阶段，不是要求用户按 4 次 Ctrl+C。**
 
-### Phase 1: Setup（立即）
+信号契约只有两层：
+
+1. 第一次 SIGINT/SIGTERM 启动完整关闭流水线，并立即通过独立于 observability、FileSink、History 的终端紧急通道反馈“正在优雅关闭；再次 Ctrl+C 将立即退出”。
+2. 第二次 SIGINT/SIGTERM 是全局逃生舱：只要生命周期尚未进入 `stopped`，无论当前在停止入口、等待请求、发送 abort、强关连接、History 落盘还是 Telemetry flush，均直接 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。第二次信号不再用于把流水线逐步推进一格。
+
+### Step 1: Setup（立即）
 - 停止接受新请求
 - 标记服务器为 draining 状态
 - 停止后台服务（token 刷新 `stopRefresh`、关闭 HTTP/2 会话池 `closeHttp2Sessions`、停止新建上游 WebSocket `stopNew`）
-- 停止 history 后台工作（reaper / search-index backfill），但**保持 history DB 打开**——异步 finalize（[spec/history-finalize-async-offload.md](spec/history-finalize-async-offload.md)）的落盘要贯穿 Phase 2/3 drain，故 DB 的 drain-未决-finalize-再-close 推迟到 Finalized 阶段（`shutdownHistory`），旧的 Phase-1 同步关 DB 会丢 drain 期间 settle 的请求
+- 停止 history 后台工作（reaper / search-index backfill），但**保持 history DB 打开**——异步 finalize（[spec/history-finalize-async-offload.md](spec/history-finalize-async-offload.md)）的落盘要贯穿 Step 2/3 drain，故 DB 的 drain-未决-finalize-再-close 推迟到 `finalizing`（`shutdownHistory`），旧的 Step-1 同步关 DB 会丢 drain 期间 settle 的请求
 - 排空 rate limiter 队列
 - 停止监听新连接（`server.close(false)`，已建连接保留）
-- **注意：浏览器观察者 WS 客户端（history/status dashboard）此时不关**——它们订阅 phase 事件，Phase 1 关掉会让用户看不到后续进度；故意留到 Phase 4 才拆
+- **注意：浏览器观察者 WS 客户端（history/status dashboard）此时不关**——它们订阅 lifecycle 事件，Step 1 关掉会让用户看不到后续进度；故意留到 Step 4 或持久化完成后才拆
 
-### Phase 2: Graceful Wait
+### Step 2: Graceful Wait
 - 等待活跃请求自然完成
 - 超时：`state.shutdownGracefulWait` 秒（默认 60）
 
-### Phase 3: Abort
+### Step 3: Abort
 - 向所有仍在进行的请求发送 abort signal
 - 等待 handler 处理 abort 并清理
 - 超时：`state.shutdownAbortWait` 秒（默认 120）
 
-> **2026-07-14 修复（RFC `2026-07-14-request-lifecycle-cancel-settle-quiesce`）**：此前 streaming 请求的 pre-response fetch **故意排除** shutdown signal（`send.ts` 旧 `stream ? undefined : getShutdownSignal()`），导致 delayed-commit 期卡在 pre-response `await p`（stream-body guard 尚不存在）的流式请求 **Phase 3 abort 够不着** → 一直挂到 Phase 4 强关（2026-07-12 实测卡 120s）。现已改为**对 stream/non-stream 一律折入稳定 shutdown signal**（RC1）。同时 driver 退避改 `abortableDelay` + attempt 边界 cancel gate（RC3），shutdown/reaper 能中断退避、settle 后不起新 attempt。
+> **2026-07-14 修复（RFC `2026-07-14-request-lifecycle-cancel-settle-quiesce`）**：此前 streaming 请求的 pre-response fetch **故意排除** shutdown signal（`send.ts` 旧 `stream ? undefined : getShutdownSignal()`），导致 delayed-commit 期卡在 pre-response `await p`（stream-body guard 尚不存在）的流式请求 **Step 3 abort 够不着** → 一直挂到 Step 4 强关（2026-07-12 实测卡 120s）。现已改为**对 stream/non-stream 一律折入稳定 shutdown signal**（RC1）。同时 driver 退避改 `abortableDelay` + attempt 边界 cancel gate（RC3），shutdown/reaper 能中断退避、settle 后不起新 attempt。
 
 ### Shutdown 信号（稳定信号）
 
-`getShutdownSignal()` 返回一个**进程启动即创建、稳定存在**的 `AbortSignal`，仅在 Phase 3 `abort()` 一次：
+`getShutdownSignal()` 返回一个**进程启动即创建、稳定存在**的 `AbortSignal`，仅在 Step 3 `abort()` 一次：
 
-- **为什么稳定**：每个在途流式请求 / 上游 fetch 在发起时就把该信号注册进自己的 abort race。若信号延迟到 Phase 1 才创建（返回 `undefined`），一个在 shutdown 开始**之前**就阻塞在停滞上游上的 `iterator.next()` 会捕获 `undefined`，从而**永远观察不到**后来的 Phase 3 abort（只能等 idle timeout / Phase 4 强杀）。稳定信号消除了这个时序缺陷。
-- **"是否在 shutdown" 用 `getIsShuttingDown()` 判断**（Phase 1 置位），**不要**用信号是否存在来判断。Phase 3 的 abort 用 `getShutdownSignal().aborted` 判断。
-- **约束：shutdown 不可取消**。eager 单例从不重建（`_resetShutdownState` 仅供测试重置），`_isShuttingDown` 守卫保证 `gracefulShutdown` 不重入、Phase 3 的 `abort()` 只调一次。若未来要支持"取消 shutdown"，需重新设计该单例生命周期。
+- **为什么稳定**：每个在途流式请求 / 上游 fetch 在发起时就把该信号注册进自己的 abort race。若信号延迟到 Step 1 才创建（返回 `undefined`），一个在 shutdown 开始**之前**就阻塞在停滞上游上的 `iterator.next()` 会捕获 `undefined`，从而**永远观察不到**后来的 Step 3 abort（只能等 idle timeout / Step 4 强杀）。稳定信号消除了这个时序缺陷。
+- **“是否在 shutdown”用 `getIsShuttingDown()` 判断**（Step 1 置位），**不要**用信号是否存在来判断。Step 3 的 abort 用 `getShutdownSignal().aborted` 判断。
+- **约束：shutdown 不可取消**。eager 单例从不重建（`_resetShutdownState` 仅供测试重置），状态机守卫保证 `gracefulShutdown` 不重入、Step 3 的 `abort()` 只调一次。若未来要支持“取消 shutdown”，需重新设计该单例生命周期。
 - 流式消费者（`guardSseIterable` / `processAnthropicStream`）把该信号 + per-request 客户端断开信号转发进一个 per-stream 本地 controller，并在所有退出路径**显式移除 listener**——共享信号上每个流恰好 1 个 listener、确定性回收，不依赖 GC。
 
-### Phase 4: Force Close
+### Step 4: Force Close
 - 强制关闭所有连接（`server.close(true)`）
-- 关闭浏览器观察者 WS 客户端（`closeAllClients`）——延迟到此刻，使 dashboard 能观察到 phase2/3/4 全过程
+- 关闭浏览器观察者 WS 客户端（`closeAllClients`）——强关路径在此拆；自然 drain 路径则保留到持久化完成，使 dashboard 能观察完整过程
 - 关闭所有上游 WebSocket 连接（`peekUpstreamWsManager().closeAll()`）
 
-### 信号升级
+### Finalizing 与 Stopped
 
-多次收到终止信号（SIGINT/SIGTERM）时的行为：
+请求生命周期的 4 步结束后，进程进入 `finalizing`：
 
-| 当前 Phase | 信号效果 |
-|-----------|---------|
-| Phase 1 | 忽略（Phase 1 很快完成，马上进入 Phase 2） |
-| Phase 2 | 跳过等待，升级到 Phase 3（发送 abort signal） |
-| Phase 3 | 跳过等待，升级到 Phase 4（强制关闭） |
-| Phase 4 | `process.exit(1)` 立即退出 |
-| Finalized | 忽略（清理已在进行） |
+1. `shutdownHistory()` 排空异步 terminal finalization、重试暂存写入并关闭 History 数据库。
+2. `shutdownRequestTelemetry()` 先封闭 config 订阅与周期 timer 的生产端，再排空 pending delta、关闭 telemetry 数据库。
+3. 持久化 barrier 完成后，向仍在线的观察者发布 bus `finalized`，再关闭观察者连接。
+4. 所有进程资源成功关闭后，内部状态才进入 `stopped`，`waitForShutdown()` 的 completion latch 才 resolve；History 或 Telemetry barrier 失败则进入 `failed` 并以非零状态退出，不谎报完成。
 
-注意：`bun run --watch` 模式下，Ctrl+C 可能导致信号被发送两次（父子进程各一次）。
-Phase 1 的信号忽略确保这种情况不会导致意外退出。
+因此 `finalizing` 不等于完成；该阶段的第二次 Ctrl+C 仍立即强退。`waitForShutdown()` 是真正的 latch：多个并发 waiter 都会被唤醒，关闭完成后才注册的 waiter 也会立即 resolve。
+
+### 用户可见反馈不依赖持久化
+
+第一次和第二次信号的关键反馈经 `terminal-coordinator.emergencyWrite()` 直接写当前终端 owner；无 TUI owner 时直接写 stderr。它不经过 consola republish、observability bus、FileSink、History 或 Telemetry，避免“History 正在落盘，所以 Ctrl+C 看起来没有响应”的依赖环。普通阶段进度日志仍走标准 observability 日志管线。
+
+纯 JavaScript 信号回调只能在事件循环获得调度时运行。主树 History finalize 已把 zstd 放到 libuv，并分片搜索索引，但大型 `JSON.stringify` 与短同步 SQLite transaction 仍可能造成有界延迟；第二信号一旦进入 JS handler，绝不再等待这些 barrier。若未来实测同步块重新增长，必须继续把 CPU prepare 移出主线程，而不是削弱两信号契约。
+
+`bun run dev` 使用 `bun --watch`。若 watch 父子进程把用户的一次 Ctrl+C 分别转发成两个 SIGINT，进程会按统一契约把第二个信号解释为强退；这是刻意保持“第二个进程信号永远是逃生舱”的结果，而不是再引入按时间猜测“重复信号”的特殊窗口。需要验证完整持久化关闭时，应使用 `bun run start`；watch 模式的首要目标是快速结束开发进程树。
 
 ## 优雅重启（零停机换代）
 
@@ -136,7 +145,7 @@ T1–T5 之间新旧两进程同时活着、连着同一批磁盘文件（histor
 - **② 遥测并发写（telemetry.db）**：区分两类，只有一类是真风险——
   - **persist（pending-delta flush）不双计**：每个进程有**独立的内存 pending-delta outbox**，旧进程 flush 的是它自己服务过的请求 delta、新进程 flush 自己的，两者写进 `tel_cumulative` 恰好是正确相加（A+B），无重叠。
   - **rollup 才是承重风险**：rollup timer 读 `tel_raw` 链式上卷 hourly/daily 并推进 `tel_meta` watermark，两进程并发上卷可能都从同一 watermark 起、重复上卷放大（watermark 幂等只防**同进程重放**，不防**跨进程并发**）。
-  - **修法**：旧进程 Phase 1 停**两个 telemetry timer（persist + rollup）**——`stopPeriodicPersistence()` + `stopRollupTimer()`（都在 `request-telemetry.ts`，`shutdownRequestTelemetry` 已调、但那是 finalize 阶段；接管场景要在 **Phase 1** 就停 rollup，避免 drain 期与新进程并发上卷）。**且必须同时注销 config 热重载订阅** `telemetryConfigUnsub`（当前只在 finalize 的 `shutdownRequestTelemetry` 注销，见 `request-telemetry.ts:1725`）——否则 drain 期（默认最长 180s）任一次配置热重载（在途请求走 `applyConfigToState()`）会经 `restartTelemetryTimers` 把刚停的 rollup timer **重新拉活**，抵消修复。最终 flush 仍推迟到 finalize（drain-before-close，不丢在途 delta）。overlap 期只有新进程做 rollup，无并发上卷。
+  - **修法**：旧进程 Step 1 停**两个 telemetry timer（persist + rollup）**——`stopPeriodicPersistence()` + `stopRollupTimer()`。最终 `shutdownRequestTelemetry()` 已先注销 `telemetryConfigUnsub`，再停 timer、排空并关闭数据库，保证 await 窗口内 config 热重载不能把 timer 重新拉活。接管场景还应在 Step 1 提前执行 producer seal，避免 drain 期与新进程并发上卷；最终 flush 仍推迟到 `finalizing`（drain-before-close，不丢在途 delta）。
 - **③ states.json（calibration `learned-limits.json` / feature-negotiation）—— 真有竞争，非「无冲突」**：两者都是 **debounce 全量快照覆盖写**（`schedulePersist()` → `atomicWriteJson` 整文件替换），且从**请求处理路径**触发（feature-negotiation 18 处、calibration 多处），**不受 Phase 1 的 `stopHistoryBackgroundWork`/`stopTelemetryBackgroundWork` 影响**——旧进程在整个 drain 期处理在途请求时仍会继续 `schedulePersist`。因是**整内存态覆盖整磁盘态**（非 telemetry 的可加 delta、非 reclaim 的行级 WHERE），若旧进程一次覆盖写 `rename()` 晚于新进程的覆盖写落地，会把新进程 overlap 期新学到的负反馈**整体覆盖丢失**。**修法（flush-then-freeze，仅 handoff）**：旧进程收到 **handoff 信号（SIGUSR2）时**对两个持久化各做一次 flush（清空 debounce、落最后一份），随后把 `schedulePersist` 降级为 **no-op（freeze）**——把「继续学习并落盘」的所有权让给新进程。**freeze 仅在 handoff 路径**：普通 SIGINT/SIGTERM 关机无后继者、freeze 无意义（且会污染反复 gracefulShutdown 的测试）——`gracefulShutdown(signal)` 据 `signal==="SIGUSR2"` gate。`persistenceFrozen` 单例的 reset 折进既有 `clearAnthropicFeatureNegotiationForTests`/`resetAllLimitsForTesting`（已在 RESETTERS 表、被 L1 守卫覆盖）。丢失只是可重学的缓存（符合「无向后兼容负担」下可接受的降级），但正确形状是 handoff-gated freeze、不是放任覆盖竞争。**Phase 1 IO 注记**：handoff 路径 Phase 1 因此含两次 `atomicWriteJson` 落盘（有界毫秒级），不再是纯同步 CPU-bound setup；普通关机 Phase 1 仍纯同步。
 - **④ WAL 并发写**：history.db 仍有「旧进程在途请求 settle 的 finalize 写」+「新进程新请求写」。WAL + `busy_timeout=5000` 已串行化两写者——这正是 SQLite WAL 多进程写者的设计场景，几秒内几笔串行写余量绰绰有余，无需额外锁。
 - **⑤ 新进程一次性 schema/维护动作 —— `maybeVacuumOnStartup`（VACUUM）是承重遗漏**：新进程 `initHistory()` 的 `openDatabase()` 同步路径（`connection.ts:84`）会跑 `maybeVacuumOnStartup`——它在 **Phase 3、早于 Phase 5 listen/发 SIGUSR2**，即**旧进程还完全不知道接管、仍在正常 accept + 正常流量写 history.db** 的窗口。VACUUM 需**独占整库写锁**且时长随库大小线性增长（代码注释引用过 2.17GB 库的真实案例），可能远超 `busy_timeout=5000`；命中阈值时旧进程正常流量的任意 `entries_v2` 写会 `SQLITE_BUSY`→多数走 never-throw `warn` 静默降级 = **该请求 history 记录丢失**，且无 reclaim/telemetry 那样的补救。这与 ①② 是**同一类缺陷**（新进程的独占维护动作撞上仍存活的旧进程），只是落在此前没点名的 VACUUM 上。**修法**：接管场景（predecessor registry 非空）**跳过** `maybeVacuumOnStartup`——VACUUM 本就是有阈值的一次性维护，延后到下次真正独占启动即可（reaper 的 incremental vacuum 仍安全运行）。`migrateEntriesColumns`（ADD COLUMN）/`dropLegacyFtsAndSearchText`（DROP）同窗口跑但是毫秒级元数据操作、风险远小，文档备注即可、不同等处理。
