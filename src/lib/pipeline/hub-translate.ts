@@ -400,12 +400,17 @@ export function createResponsesToCcFrameRenderer(): ResponsesToCcFrameRenderer {
  *     {@link createAnthropicToCcStreamTranslator}, producing CC-canonical frames. The gemini codec does a
  *     further CC→Gemini hop in its own render (T5.4); the hub stops at CC (parity with the non-streaming
  *     `renderResponseNonStreamingVia` returning CC-canonical).
- *   - `openai-responses` — TWO hop (WARN-F): Anthropic→CC frames feed the existing
- *     {@link createCCToResponsesStreamTranslator} (the Responses second segment), which needs the
- *     `exchangeCtx` (responseId / itemId / clientModel) the responses handler builds as a reverse-exchange.
+ *   - `openai-responses` — DIRECT bridge (RFC 2026-07-14-anthropic-responses-direct-bridge §3/§4.2, Phase 4
+ *     subtask F, Phase 5 reasoning round-trip carrier): the upstream Anthropic SSE stream feeds
+ *     {@link createAnthropicToResponsesStreamTranslator} directly, a SINGLE hop (was a two-hop
+ *     Anthropic→CC→Responses via {@link createAnthropicToCcStreamTranslator} +
+ *     {@link createCCToResponsesStreamTranslator}, WARN-F — superseded).
  *
- * `getMeta` is ALWAYS the Anthropic→CC translator's meta (finishReason + grossed-up usage + sawMessageStop
- * — the F2 truncation signal): the CC→Responses second segment carries no terminal stop/usage of its own.
+ * `getMeta` is the Anthropic→CC translator's meta (finishReason + grossed-up usage + sawMessageStop — the
+ * F2 truncation signal) for the `openai-cc`/`gemini` legs; the `openai-responses` DIRECT leg's own
+ * `AnthropicToResponsesStreamMeta` has no CC-shaped finishReason/usage to project, so its factory returns
+ * an honest minimal `{ sawMessageStop }` (see `responsesReverseStreamFactory` below) rather than
+ * fabricating CC fields it does not produce.
  */
 export interface ReverseStreamTranslator {
   /** Translate ONE raw upstream Anthropic SSE frame → 0+ client-format SSE frames. */

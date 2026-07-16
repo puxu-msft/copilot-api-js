@@ -303,6 +303,22 @@ describe("translateResponsesToAnthropicRequest — Phase 5 reverse round-trip: a
     const thinkingBlock = content.find((b) => b.type === "thinking")
     expect(thinkingBlock?.thinking).toBe("from summary field")
   })
+
+  test("a reasoning item with an EMPTY `content` array still falls back to `summary` text — never silently drops an already-populated summary (merged-state review nit fix)", () => {
+    const carrier = buildClaudeSignatureCarrier("SIG-EMPTY-CONTENT-FALLBACK")
+    const item: ResponsesInputItem = {
+      type: "reasoning",
+      id: "r1",
+      content: [], // present but empty — extractText([]) yields ""
+      summary: [{ type: "summary_text", text: "must fall back here" }],
+      encrypted_content: carrier,
+    }
+    const result = translateResponsesToAnthropicRequest(responsesPayload([userMessage("x"), item, assistantMessage("y")]))
+    const assistantMsg = result.messages.find((m) => m.role === "assistant")
+    const content = assistantMsg?.content as Array<{ type: string; thinking?: string }>
+    const thinkingBlock = content.find((b) => b.type === "thinking")
+    expect(thinkingBlock?.thinking).toBe("must fall back here")
+  })
 })
 
 describe("translateResponsesToAnthropicRequest — tools / tool_choice (equivalence zone)", () => {

@@ -304,7 +304,11 @@ function reconstructThinkingBlock(item: ResponsesInputItem): ThinkingBlockParam 
   if (signature === undefined) return undefined
   // A reasoning item's displayable text lives in `content` (rare, echoed verbatim) OR `summary` (the
   // native reasoning-item slot this bridge itself renders it into, `anthropic-to-responses.ts`).
-  const text = item.content !== undefined ? extractText(item.content) : (item.summary ?? []).map((s) => s.text).join("")
+  // `content` wins ONLY when it actually yields non-empty text — an item that carries `content` but no
+  // extractable text (e.g. an empty array) must still fall back to `summary` rather than silently
+  // discarding an already-populated summary (nit fix, Phase 5 merged-state review).
+  const fromContent = item.content !== undefined ? extractText(item.content) : ""
+  const text = fromContent.length > 0 ? fromContent : (item.summary ?? []).map((s) => s.text).join("")
   return { type: "thinking", thinking: text, signature }
 }
 
