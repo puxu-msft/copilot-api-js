@@ -203,6 +203,11 @@ export function createAnthropicToResponsesStreamTranslator(
           ensureStarted(out)
           const msg = event.message
           if (msg.model) model = msg.model
+          // MAJOR (Phase 4 reviewer): Anthropic reports input_tokens + cache_read/creation FIRST (and often
+          // ONLY) on message_start (stream-accumulator.ts:211); the terminal message_delta.usage typically
+          // carries just output_tokens. Seed terminalUsage HERE so the message_delta spread-merge preserves
+          // the input/cache legs — otherwise mapUsage sees totalInput=undefined → NaN → client usage `null`.
+          if (msg.usage) terminalUsage = msg.usage
           break
         }
 

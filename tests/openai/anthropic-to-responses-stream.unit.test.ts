@@ -314,6 +314,41 @@ describe("anthropic-to-responses-stream — self-contained terminal meta (sawMes
   })
 })
 
+describe("anthropic-to-responses-stream — terminal usage (MAJOR fix: message_start usage was dropped → client saw null)", () => {
+  // Phase 4 reviewer MAJOR (false-green, Phase 3 same-class recurrence): Anthropic reports input_tokens +
+  // cache legs FIRST/ONLY on message_start; the terminal message_delta usually carries just output_tokens.
+  // The pre-fix translator read only msg.model on message_start → totalInput undefined → NaN → client usage null.
+  test("input_tokens + cache_read from message_start are grossed-up onto response.completed.usage (was NaN→null pre-fix)", () => {
+    const frames = renderAll([
+      messageStart("claude-opus-4.8", { input_tokens: 15, output_tokens: 0, cache_read_input_tokens: 5 }),
+      textBlockStart(0),
+      textDelta(0, "hi"),
+      blockStop(0),
+      messageDelta("end_turn", { output_tokens: 8 }),
+      messageStop(),
+    ])
+    const completed = frames.find((f) => data(f).type === "response.completed")
+    expect(completed).toBeDefined()
+    const usage = (data(completed!).response as { usage: unknown }).usage
+    // Anthropic input_tokens is net-of-cache (15); Responses input_tokens is total-including-cache (15+5=20).
+    expect(usage).toEqual({ input_tokens: 20, output_tokens: 8, total_tokens: 28, input_tokens_details: { cached_tokens: 5 } })
+  })
+
+  test("reasoning_tokens (thinking_tokens) from message_delta is forwarded onto the terminal usage (richest-data-flow)", () => {
+    const frames = renderAll([
+      messageStart("claude-opus-4.8", { input_tokens: 10, output_tokens: 0 }),
+      textBlockStart(0),
+      textDelta(0, "hi"),
+      blockStop(0),
+      messageDelta("end_turn", { output_tokens: 12, output_tokens_details: { thinking_tokens: 7 } }),
+      messageStop(),
+    ])
+    const completed = frames.find((f) => data(f).type === "response.completed")
+    const usage = (data(completed!).response as { usage: { output_tokens_details?: unknown } }).usage
+    expect(usage.output_tokens_details).toEqual({ reasoning_tokens: 7 })
+  })
+})
+
 describe("anthropic-to-responses-stream — unparseable / malformed frames + error propagation (never-swallow)", () => {
   test("an unparseable JSON frame is skipped, not thrown", () => {
     const t = createAnthropicToResponsesStreamTranslator("claude-opus-4.8", ctx)
