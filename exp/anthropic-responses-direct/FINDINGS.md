@@ -82,3 +82,18 @@
 
 ## 4141 保护
 测试服务器起在 **4157**、独立 history.db，实测后按 PID 精确清理；4141 主服务器全程未 kill、复核 healthy。
+
+---
+
+## 探针 (d)：GHC Anthropic 腿是否接受相邻同角色 turn（Phase 4 MAJOR-2 定级，2026-07-15）
+
+**问题**：反向请求腿把 mid-conversation system item 折成独立 user turn → 产生相邻同角色（user, user）。真 Anthropic API 要求严格交替，reviewer 标 MAJOR-2「可能 400」待验。
+
+**实测（隔离服务器 4159、真 GHC、claude-haiku-4.5）**：
+
+| 组 | messages | 结果 |
+|---|---|---|
+| CONTROL | user→assistant→user（严格交替） | HTTP 200 |
+| TEST | user→**user**→assistant→user（相邻同角色） | **HTTP 200 ACCEPTED** |
+
+**裁决**：GHC 的 Anthropic `/v1/messages` 腿**接受相邻同角色 turn**（不强制严格交替）。→ **MAJOR-2 降级为语义差异、非 wire 回归**：mid-conversation system 折成独立 user turn 是 **wire-safe** 的，且**保留了 item 位置**（旧两跳折进 top-level system 会丢位置）。按 richest-data-flow + 位置保全，当前行为反而更优，**无需修复**。（同族 [W2 探针](#) 证 GHC 接受任意 tool_use.id、此处证接受相邻同角色，GHC 上游对 Anthropic wire 约束比真 Anthropic API 宽松。）
