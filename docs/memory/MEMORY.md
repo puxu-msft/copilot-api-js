@@ -68,7 +68,7 @@
 - [穷举可行方案面再择优](methodology-exhaust-then-choose-over-single-solution.md) — 并行 subagent 分层穷举→实测 supersede 源码推断→异模型审→exp/FINDINGS 择优
 - [跨 phase 集成缝只在合并态审能抓](methodology-cross-phase-integration-seam-only-caught-at-merged-state.md) — Phase A 契约被下游漏接线逐 task 审看不到、只 whole-branch 逮;死枚举是红旗
 - [CLI e2e spawn+hook 两机制](reference-cli-e2e-spawn-and-hook-load-gotchas.md) — hook 经 data-URL 加载丢具名导出→帧存 base64;`proc.kill()` 漏杀真 server;权威 `exp/cli-e2e-stall/FINDINGS.md`
-- [Bun 忽略 import ?v= query、热重载须 data-URL](reference-bun-esm-cache-busting-query-fails-data-url-works.md) — Bun 按解析路径缓存 ESM,`?v=` 静默返旧;可行=`transformSync`→`import("data:...")`
+- [Bun 忽略 import ?v= query;热重载用项目内唯一文件(非 data-URL)](reference-bun-esm-cache-busting-query-fails-data-url-works.md) — Bun 按路径缓存 ESM、`?v=` 静默返旧;data-URL 绕缓存但**不解析 `~/` 别名**(实测证伪、带 import 的 hook 丢导出);可行=转译后写唯一项目文件再 import(绕缓存+解析别名两得)
 - [picocolors 在 bun test 塌缩成恒等](reference-picocolors-collapses-to-identity-in-bun-test.md) — 测退化文本;改测引用相等 + FORCE_COLOR 子进程 SGR
 - [迁移副作用旧路径仍被 eager 求值→双触发](methodology-migrate-side-effect-old-path-still-eager-evaluated.md) — driver eager 求值 `deps.strategies` 仍触发→双记;根因修=抽 lazy resolver
 - [无疑问改进当场做](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中就立即改,别以超范围推迟
@@ -77,8 +77,9 @@
 - [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/已完成 subagent 接续永远 `SendMessage`、绝不 `Agent` 重派(丢上下文);唯一 Agent 新派=真全新独立任务
 
 ## project 现状 stub（权威看正式归属；「全 landed」项细节在 docs/git）
-- [对称四点 hook 架构重构（RFC 待写，PoC 验证）](project-symmetric-four-point-hooks.md) — client/upstream×in/out;统一翻译进 driver;权威 docs/spec/2026-07-12 + exp/hook-symmetric-4point/
-- [请求生命周期 cancel/settle/quiesce（治根 landed worktree,C5 待续）](project-request-lifecycle-cancel-settle-quiesce.md) — 2800s 越超时多根因;有界 grace+per-request timer;worktree `feat/request-lifecycle` 合并前须 merge master
+- [History 三层降温归档（已合并 master，lifecycle follow-up `27b65b89`）](project-history-tiered-archive.md) — HOT→tier-1→不可变 session-generation sealed units；move 永不真删；Archive worker 以 durable unit 协作停/续跑、并发 sibling 全 settle 后关 DB；同 session 增量不覆盖；用户重启实例已实证加载
+- [对称四点 hook 架构重构（已实施合并 master 2a77bf7c）](project-symmetric-four-point-hooks.md) — client/upstream×in/out+exchange;四格式 async 入站下沉 driver S1b translateInbound;client.inbound 剥 TodoWrite;7 phase 全绿+verifier 验收;实测教训=data-URL 不解析别名·config-freshness 须 parse 前;权威 RFC docs/rfc/2026-07-14-symmetric-four-point-hooks
+- [请求生命周期 cancel/settle/quiesce（四根因+C5 结构全合 master）](project-request-lifecycle-cancel-settle-quiesce.md) — 2800s 越超时多根因;RFC 6 轮对抗复核逼出 3 死锁/orphan 缺陷;RC1-4 治根+C5(operation 三态/双 registry/drain-等-operation/driver 追踪 exchange)全 landed master;承重=有界 grace+per-request 精确 timer>周期 scan;剩低频站点接线;并发合并纪律=等 peer 提交后 3-way 自动合不 force
 - [请求首包/时序埋点（landed master f982e0e3）](project-request-timing-instrumentation-landed.md) — 上游4刻/客户端3刻/fleet DDSketch;承重=两段显式投影+WS 剥 event 行+谓词收完整帧
 - [AskUserQuestion 顶层 question 键抢救（landed master）](methodology-plan-verify-interface-location-and-wiring-channel.md) — salvage→兜底 header→strip;诊断落盘唯一=pipelineInfo;权威 docs/spec+plan/2026-07-13-askuserquestion-toplevel-key-salvage
 - [block 级缓冲重试（P0-P4 landed,剩 gated 翻转）](project-block-level-buffered-retry-execution.md) — merge master c2012555(默认 OFF);P1 wire 缺陷被绿测放过→3轮修;翻默认前门=真 CLI+scenario-B
