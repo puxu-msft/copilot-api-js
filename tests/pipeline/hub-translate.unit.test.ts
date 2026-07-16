@@ -175,14 +175,14 @@ describe("createForwardStreamTranslator — STREAMING forward-leg dispatch (Phas
     expect(t.getMeta().usage.input_tokens).toBe(5)
   })
 
-  test("responses leg (/responses): two-hop Responses → CC → Anthropic frames", () => {
+  test("responses leg (/responses): DIRECT single-hop Responses → Anthropic frames (RFC 2026-07-14 subtask C)", () => {
     const t = createForwardStreamTranslator(ENDPOINT.RESPONSES, "gpt-x")
     const rEvent = (obj: unknown): { data: string; event: string } => ({ data: JSON.stringify(obj), event: "message" })
     const frames = [
       ...t.renderFrame(rEvent({ type: "response.created", response: { id: "resp_1", model: "gpt-x" } })),
-      ...t.renderFrame(rEvent({ type: "response.output_text.delta", delta: "hello" })),
+      ...t.renderFrame(rEvent({ type: "response.output_text.delta", output_index: 0, delta: "hello" })),
       ...t.renderFrame(
-        rEvent({ type: "response.completed", response: { id: "resp_1", model: "gpt-x", usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } } }),
+        rEvent({ type: "response.completed", response: { id: "resp_1", model: "gpt-x", status: "completed", usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } } }),
       ),
       ...t.flush(),
     ]
@@ -190,7 +190,7 @@ describe("createForwardStreamTranslator — STREAMING forward-leg dispatch (Phas
     expect(types).toContain("message_start")
     expect(types).toContain("content_block_delta")
     expect(types).toContain("message_stop")
-    // The getStreamMeta signal chain (Responses翻译→CC帧→累积) surfaces the net usage.
+    // Self-contained terminal meta (this translator's OWN running state, not a CC accumulator).
     expect(t.getMeta().usage.input_tokens).toBe(7)
     expect(t.getMeta().stopReason).toBe("end_turn")
   })

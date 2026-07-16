@@ -18,10 +18,13 @@
  * cell resolves to the right translator, whether or not a codec consumes it yet (the forward
  * anthropic→cc/responses cells are wired by the anthropic codec in T2.4; the reverse `→ messages`
  * cells are wired in Phase 5). The NON-STREAMING RESPONSE-side dispatch (`renderResponseNonStreamingVia`)
- * is wired here in Phase 3 (both directions). The STREAMING response-side dispatch is wired here in
- * Phase 4 for the FORWARD legs via {@link createForwardStreamTranslator} (a per-request stateful factory
- * the anthropic codec drives per-frame): the cc leg is a single hop (CC→Anthropic), the responses leg a
- * two-hop (Responses→CC→Anthropic, WARN-F). The REVERSE `→ messages` streaming cells stay Phase 5.
+ * is wired here in Phase 3 (both directions; the `(anthropic, responses)` cell became a DIRECT single-hop
+ * bridge in RFC 2026-07-14-anthropic-responses-direct-bridge §3, subtask B — see `responses-to-anthropic.ts`).
+ * The STREAMING response-side dispatch is wired here in Phase 4 for the FORWARD legs via
+ * {@link createForwardStreamTranslator} (a per-request stateful factory the anthropic codec drives
+ * per-frame): the cc leg is a single hop (CC→Anthropic); the responses leg was originally a two-hop
+ * (Responses→CC→Anthropic, WARN-F) but became a DIRECT single-hop bridge in the same RFC's subtask C — see
+ * `responses-to-anthropic-stream.ts`. The REVERSE `→ messages` streaming cells stay Phase 5.
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
@@ -68,6 +71,7 @@ import {
   createAnthropicToCcStreamTranslator,
   createCcToAnthropicStreamTranslator,
   createCCToResponsesStreamTranslator,
+  createResponsesToAnthropicStreamTranslator,
   createStreamTranslator,
   translateAnthropicResponseToCC,
   translateAnthropicToChatCompletions,
@@ -76,6 +80,7 @@ import {
   translateChatCompletionsToAnthropic,
   translateResponsesResponseToAnthropic,
   translateResponsesToChatCompletions,
+  type ResponsesToAnthropicStreamTranslator,
   type TranslateExchangeContext,
 } from "~/lib/openai/translate"
 
@@ -245,11 +250,14 @@ export function renderResponseNonStreamingVia(targetEndpoint: UpstreamEndpoint, 
  * ForwardStreamTranslator.getMeta}). Two FORWARD legs (dispatched purely on `targetEndpoint`):
  *   - `/chat/completions` (cc leg) — SINGLE hop: the upstream CC SSE stream is fed straight into the
  *     {@link createCcToAnthropicStreamTranslator} (T4.1).
- *   - `/responses` | `ws:/responses` (responses leg) — TWO hop (WARN-F): the upstream Responses SSE
- *     stream is first translated to CC frames (the existing {@link createStreamTranslator} Responses→CC
- *     primitive), then those CC frames feed the CC→Anthropic translator. The getStreamMeta signal chain
- *     is therefore "Responses翻译 → CC帧 → 累积" — the CC→Anthropic translator's accumulator (fed the
- *     translated CC chunks) is the single source of the terminal usage/stop_reason.
+ *   - `/responses` | `ws:/responses` (responses leg) — DIRECT single-hop bridge (RFC
+ *     2026-07-14-anthropic-responses-direct-bridge §3, subtask C): the upstream Responses SSE stream
+ *     feeds {@link createResponsesToAnthropicStreamTranslator} directly (was a TWO-hop
+ *     Responses→CC→Anthropic via {@link createStreamTranslator} + {@link createCcToAnthropicStreamTranslator}
+ *     — see `responses-to-anthropic-stream.ts` for the state-machine + terminal-meta details). The
+ *     translator's `getMeta()` returns a {@link ResponsesToAnthropicStreamMeta} — a strict SUPERSET of
+ *     {@link CcToAnthropicStreamMeta} (adds `contentFiltered`, N3 parity with the non-streaming bridge),
+ *     so it satisfies `ForwardStreamTranslator.getMeta`'s type without a cast.
  *
  * The REVERSE `→ /v1/messages` streaming leg (Anthropic upstream → CC/gemini/responses client) stays
  * Phase 5 — {@link createForwardStreamTranslator} throws for it (never-swallow).
@@ -285,33 +293,20 @@ const chatCompletionsForwardStreamFactory: ForwardStreamTranslatorFactory = (mod
 }
 
 /**
- * `/responses` | `ws:/responses` (responses leg) — TWO hop (WARN-F): the upstream Responses SSE stream is
- * first translated to CC frames (the existing {@link createStreamTranslator} Responses→CC primitive), then
- * those CC frames feed the CC→Anthropic translator. The getStreamMeta signal chain is therefore
- * "Responses翻译 → CC帧 → 累积" — the CC→Anthropic translator's accumulator (fed the translated CC chunks)
- * is the single source of the terminal usage/stop_reason.
+ * `/responses` | `ws:/responses` (responses leg) — DIRECT bridge (RFC 2026-07-14-anthropic-responses-direct-bridge
+ * §3/§4.1, Phase 3 subtask C): the upstream Responses SSE stream feeds the single-hop
+ * {@link createResponsesToAnthropicStreamTranslator} directly (was a two-hop Responses→CC→Anthropic via
+ * {@link createStreamTranslator} + {@link createCcToAnthropicStreamTranslator}). The terminal meta is now
+ * SELF-CONTAINED (this translator's own running state), not the CC accumulator's — phase-2-audit §3.3's
+ * "第3类显式 helper" (a distinct terminal-meta concern the RFC calls out explicitly, not buried in "the
+ * response translator").
  */
 const responsesForwardStreamFactory: ForwardStreamTranslatorFactory = (modelId) => {
-  const ccToAnthropic: CcToAnthropicStreamTranslator = createCcToAnthropicStreamTranslator(modelId)
-  const responsesToCc = createStreamTranslator()
+  const direct: ResponsesToAnthropicStreamTranslator = createResponsesToAnthropicStreamTranslator(modelId)
   return {
-    renderFrame: (frame) => {
-      if (!frame.data || frame.data === "[DONE]") return []
-      let event: ResponsesStreamEvent
-      try {
-        event = JSON.parse(frame.data) as ResponsesStreamEvent
-      } catch {
-        // Unparseable upstream Responses frame — skip (mirrors the Responses→CC whole-stream wrapper).
-        return []
-      }
-      const out: Array<ClientFrame> = []
-      for (const ccChunk of responsesToCc.translate(event)) {
-        for (const s of ccToAnthropic.renderFrame({ data: JSON.stringify(ccChunk), event: "message" })) out.push(s.frame)
-      }
-      return out
-    },
-    flush: () => ccToAnthropic.flush().map((s) => s.frame),
-    getMeta: () => ccToAnthropic.getMeta(),
+    renderFrame: (frame) => direct.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
+    flush: () => direct.flush().map((s) => s.frame),
+    getMeta: () => direct.getMeta(),
   }
 }
 

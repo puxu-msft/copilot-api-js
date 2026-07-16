@@ -215,8 +215,13 @@ function parseToolArguments(args: string): unknown {
  * `max_output_tokens` → `max_tokens`. `completed`/any other reachable status → `end_turn` (Anthropic's
  * `pause_turn` has no Responses equivalent — unreachable from a genuine Responses response, intentionally
  * not modeled as a mapping target).
+ *
+ * Exported: the streaming translator (`responses-to-anthropic-stream.ts`) reuses this SAME mapping for
+ * its terminal `response.completed`/`.incomplete` events — one source of truth (fix-all-comparison-sites),
+ * never a copy-paste (mirrors `mapStopReason`/`mapUsage` in `cc-to-anthropic.ts` being shared with the
+ * streaming translator there).
  */
-function mapResponsesStatusToStopReason(
+export function mapResponsesStatusToStopReason(
   status: ResponsesResponse["status"],
   incompleteDetails: { reason: string } | null | undefined,
   hasToolCalls: boolean,
@@ -239,8 +244,12 @@ function mapResponsesStatusToStopReason(
  * `prompt_tokens`) — `netInputTokens` subtracts the cache legs so Anthropic's net-input convention holds
  * (mirrors `cc-to-anthropic.ts`'s `mapUsage`, just reading Responses' own field names directly instead of
  * CC's `prompt_tokens_details` re-projection).
+ *
+ * Exported: the streaming translator's non-streaming-shaped usage projection (the CLIENT WIRE
+ * `message_delta.usage`, which mirrors this non-streaming shape, NOT the richer history `UsageData`)
+ * reuses this for the terminal `response.completed`/`.incomplete` events.
  */
-function mapUsage(usage: ResponsesUsage): TranslatedAnthropicUsageFromResponses {
+export function mapUsage(usage: ResponsesUsage): TranslatedAnthropicUsageFromResponses {
   const cacheRead = usage.input_tokens_details?.cached_tokens
   const cacheCreation = usage.input_tokens_details?.cache_write_tokens
   return {

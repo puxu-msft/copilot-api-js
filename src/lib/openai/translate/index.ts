@@ -28,6 +28,8 @@ export type { CcToAnthropicStreamMeta, CcToAnthropicStreamStep, CcToAnthropicStr
 export { splitInstructionsAndConversation, translateChatCompletionsToResponses } from "./cc-to-responses"
 export { translateResponsesResponseToAnthropic } from "./responses-to-anthropic"
 export type { ResponsesToAnthropicResult, TranslatedAnthropicResponseFromResponses, TranslatedAnthropicUsageFromResponses } from "./responses-to-anthropic"
+export { createResponsesToAnthropicStreamTranslator } from "./responses-to-anthropic-stream"
+export type { ResponsesToAnthropicStreamMeta, ResponsesToAnthropicStreamStep, ResponsesToAnthropicStreamTranslator } from "./responses-to-anthropic-stream"
 export { translateResponsesResponseToCC } from "./responses-to-cc"
 export {
   //
