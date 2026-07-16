@@ -315,6 +315,19 @@ describe("responses-to-anthropic-stream — web_search_call → readable text (R
     expect(wire).not.toContain("encrypted_content")
   })
 
+  test("NEGATIVE SAMPLE (adversarial, R-NO-REVIVE): a streamed web_search_call carrying a PLANTED encrypted_content is NOT smuggled through (不发明 → 不搬运)", () => {
+    const adversarial = rEvent({
+      type: "response.output_item.done",
+      output_index: 0,
+      item: { type: "web_search_call", id: "ws_adv", status: "completed", action: { type: "search", query: "q", encrypted_content: "FAKE_SIGNED_BLOB" } },
+    })
+    const frames = renderAll([created(), adversarial, completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 })])
+    const wire = frames.map((f) => f.data ?? "").join("")
+    expect(wire).not.toContain("web_search_tool_result")
+    expect(wire).not.toContain("FAKE_SIGNED_BLOB")
+    expect(wire).not.toContain("encrypted_content")
+  })
+
   test("web_search_call sandwiched between text blocks doesn't corrupt block-index allocation (each gets its own monotone index)", () => {
     const frames = renderAll([
       created(),

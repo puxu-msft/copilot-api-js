@@ -154,6 +154,18 @@ describe("translateResponsesResponseToAnthropic — web_search_call → readable
     expect(JSON.stringify(response.content)).not.toContain("encrypted_content")
   })
 
+  test("NEGATIVE SAMPLE (adversarial, R-NO-REVIVE): a web_search_call carrying a PLANTED encrypted_content in its action is NOT carried through — output has neither web_search_tool_result nor the blob (upgrades 不发明 → 不搬运)", () => {
+    // The prior negative sample only proves 'never invents' (input had no encrypted_content). This one
+    // plants a fake signed blob in the input's `action` (its `[key:string]:unknown` index signature allows it)
+    // and proves the downgrade renderer never SMUGGLES it out — reads only query/status, per Phase 0 probe c.
+    const item = { type: "web_search_call", id: "ws_adv", status: "completed", action: { type: "search", query: "q", encrypted_content: "FAKE_SIGNED_BLOB" } } as unknown as ResponsesOutputItem
+    const { response } = translateResponsesResponseToAnthropic(responsesResponse([item]))
+    const wire = JSON.stringify(response.content)
+    expect(wire).not.toContain("web_search_tool_result")
+    expect(wire).not.toContain("FAKE_SIGNED_BLOB")
+    expect(wire).not.toContain("encrypted_content")
+  })
+
   test("web_search_call with only `action.queries` (array form, no singular `query`) still renders readable text", () => {
     const item: ResponsesOutputItem = { type: "web_search_call", id: "ws2", status: "completed", action: { type: "search", queries: ["query a", "query b"] } }
     const { response } = translateResponsesResponseToAnthropic(responsesResponse([item]))
