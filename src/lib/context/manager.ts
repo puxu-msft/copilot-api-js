@@ -262,7 +262,12 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         // stays as the terminal-state record + safety net for the no-active-consumer
         // edge; the `settled` guard dedups with the handler's own settle.
         ctx.reapInFlight()
-        ctx.fail(ctx.originalRequest?.model ?? "unknown", new Error(`Request exceeded maximum age of ${state.staleRequestMaxAge}s (stale context reaper)`))
+        ctx.fail(
+          ctx.originalRequest?.model ?? "unknown",
+          new Error(`Request exceeded maximum age of ${state.staleRequestMaxAge}s (stale context reaper)`),
+          undefined,
+          { attribution: { category: "reaper", code: "stale-context-reaper" } },
+        )
       }
     }
     recordReaperTick({ scheduledAt, actualAt, scanDurationMs: performance.now() - scanStartMono, activeCount: activeContexts.size, liveMaxAgeSec: state.staleRequestMaxAge, frozenIntervalMs: reaperFrozenIntervalMs, monotonicGapMs, wallGapMs })
@@ -328,7 +333,12 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
           if (ctx.settled) return
           consola.warn(`[context] Request ${ctx.id} exceeded hard deadline ${state.requestDeadline}s (model: ${ctx.originalRequest?.model ?? "unknown"}, state: ${ctx.state}) — cancelling`)
           ctx.reapInFlight()
-          ctx.fail(ctx.originalRequest?.model ?? "unknown", new Error(`Request exceeded hard deadline of ${state.requestDeadline}s (request_deadline)`))
+          ctx.fail(
+            ctx.originalRequest?.model ?? "unknown",
+            new Error(`Request exceeded hard deadline of ${state.requestDeadline}s (request_deadline)`),
+            undefined,
+            { attribution: { category: "timeout", code: "request_deadline" } },
+          )
         }, state.requestDeadline * 1000)
         ;(timer as unknown as { unref?: () => void }).unref?.()
         deadlineTimers.set(ctx.id, timer)
