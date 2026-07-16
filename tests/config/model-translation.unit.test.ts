@@ -28,7 +28,13 @@ import {
   validateConfig,
   validateConfigInput,
 } from "~/lib/config/config"
-import { resolveTranslationFeatures } from "~/lib/config/model-translation"
+import {
+  //
+  ingressForClientFormat,
+  modelIdFor,
+  resolveTranslationFeatures,
+  stripThinkingSignatureFor,
+} from "~/lib/config/model-translation"
 import { PATHS } from "~/lib/config/paths"
 import {
   //
@@ -297,5 +303,57 @@ describe("resolveTranslationFeatures — match semantics (exact model@format, po
       },
     })
     expect(resolveTranslationFeatures("anthropic-messages", "gpt-5.5", "openai-responses")).toEqual(["strip-thinking-signature"])
+  })
+})
+
+describe("ingressForClientFormat — ClientFormat → ModelTranslationIngress vocabulary bridge (Phase 5 wiring)", () => {
+  test("anthropic maps to the -messages-suffixed ingress spelling", () => {
+    expect(ingressForClientFormat("anthropic")).toBe("anthropic-messages")
+  })
+
+  test("openai-cc / openai-responses / gemini pass through unchanged (already the shared vocabulary)", () => {
+    expect(ingressForClientFormat("openai-cc")).toBe("openai-cc")
+    expect(ingressForClientFormat("openai-responses")).toBe("openai-responses")
+    expect(ingressForClientFormat("gemini")).toBe("gemini")
+  })
+})
+
+describe("stripThinkingSignatureFor — RFC §4.3 scenario A/B decision (Phase 5 wiring, hub-translate.ts's call-site adapter)", () => {
+  beforeEach(() => {
+    setStateForTests({
+      modelTranslation: {
+        "anthropic-messages": [{ match: "gpt-5.5@openai-responses", features: ["strip-thinking-signature"] }],
+      },
+    })
+  })
+
+  test("scenario B declared pair → true", () => {
+    expect(stripThinkingSignatureFor("anthropic-messages", "gpt-5.5", "openai-responses")).toBe(true)
+  })
+
+  test("scenario A (undeclared pair) → false (the default)", () => {
+    expect(stripThinkingSignatureFor("anthropic-messages", "gpt-6", "openai-responses")).toBe(false)
+  })
+
+  test("undefined model (no route resolved yet) → false, never throws", () => {
+    expect(stripThinkingSignatureFor("anthropic-messages", undefined, "openai-responses")).toBe(false)
+  })
+
+  test("wrong ingress/format axis on an otherwise-matching model → false", () => {
+    expect(stripThinkingSignatureFor("openai-responses", "gpt-5.5", "anthropic-messages")).toBe(false)
+  })
+})
+
+describe("modelIdFor — Model/body-fallback resolution (Phase 5 wiring)", () => {
+  test("prefers Model.id when present", () => {
+    expect(modelIdFor({ id: "claude-opus-4.8" } as never, "claude-x")).toBe("claude-opus-4.8")
+  })
+
+  test("falls back to the raw body model string when Model is absent", () => {
+    expect(modelIdFor(undefined, "claude-x")).toBe("claude-x")
+  })
+
+  test("both absent → undefined", () => {
+    expect(modelIdFor(undefined, undefined)).toBeUndefined()
   })
 })

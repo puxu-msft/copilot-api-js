@@ -105,8 +105,20 @@ interface OpenBlock {
   outputIndex?: number
 }
 
+/** Options for {@link createResponsesToAnthropicStreamTranslator} — RFC §4.3 scenario A/B. */
+export interface ResponsesToAnthropicStreamOptions {
+  /**
+   * Scenario B (`model_translation` `strip-thinking-signature` feature): when true, the
+   * encrypted_content payload is NEVER embedded into the emitted `signature_delta` (bare-prefix sentinel
+   * only) — the plaintext thinking text still streams (context continuity), but the round-trip carrier
+   * is omitted (a carried-over encrypted_content from a DIFFERENT upstream model is invalid). Default
+   * (false/absent) = scenario A, full round-trip.
+   */
+  stripThinkingSignature?: boolean
+}
+
 /** Build a per-request {@link ResponsesToAnthropicStreamTranslator} (holds ITS OWN running state — no CC accumulator). */
-export function createResponsesToAnthropicStreamTranslator(modelId: string): ResponsesToAnthropicStreamTranslator {
+export function createResponsesToAnthropicStreamTranslator(modelId: string, opts?: ResponsesToAnthropicStreamOptions): ResponsesToAnthropicStreamTranslator {
   let messageStarted = false
   let messageId = ""
   let model = modelId
@@ -170,7 +182,7 @@ export function createResponsesToAnthropicStreamTranslator(modelId: string): Res
         frame: anthropicSseFrame({
           type: "content_block_delta",
           index: openBlock.index,
-          delta: { type: "signature_delta", signature: buildSyntheticReasoningSignature(reasoningEncrypted) },
+          delta: { type: "signature_delta", signature: buildSyntheticReasoningSignature(opts?.stripThinkingSignature ? undefined : reasoningEncrypted) },
         }),
       })
     }

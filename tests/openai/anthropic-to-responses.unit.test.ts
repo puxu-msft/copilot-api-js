@@ -187,6 +187,25 @@ describe("translateAnthropicResponseToResponses — reasoning rendering (IMPROVE
   })
 })
 
+describe("translateAnthropicResponseToResponses — RFC §4.3 scenario A/B (Phase 5 model_translation wiring)", () => {
+  test("scenario B (stripThinkingSignature=true) NEVER populates encrypted_content — plaintext summary still renders", () => {
+    const result = translateAnthropicResponseToResponses(
+      anthropicResponse([{ type: "thinking", thinking: "still shown", signature: "SHOULD-NOT-BE-CARRIED" }]),
+      ctx,
+      { stripThinkingSignature: true },
+    )
+    const reasoning = result.output[0] as ResponsesReasoningOutput
+    expect(reasoning.encrypted_content).toBeUndefined()
+    expect(reasoning.summary).toEqual([{ type: "summary_text", text: "still shown" }])
+  })
+
+  test("scenario A (default, no opts) DOES populate encrypted_content — the default is full round-trip", () => {
+    const result = translateAnthropicResponseToResponses(anthropicResponse([{ type: "thinking", thinking: "shown", signature: "REAL-SIG" }]), ctx)
+    const reasoning = result.output[0] as ResponsesReasoningOutput
+    expect(extractClaudeSignature(reasoning.encrypted_content)).toBe("REAL-SIG")
+  })
+})
+
 describe("translateAnthropicResponseToResponses — stop_reason → status (IMPROVEMENT ZONE, single-hop, no CC intermediate)", () => {
   test("end_turn → completed", () => {
     const result = translateAnthropicResponseToResponses(anthropicResponse([{ type: "text", text: "hi", citations: null }], { stop_reason: "end_turn" }), ctx)

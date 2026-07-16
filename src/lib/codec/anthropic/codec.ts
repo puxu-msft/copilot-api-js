@@ -80,6 +80,7 @@ import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
 import { getRequestContextManager } from "~/lib/context/manager"
+import { stripThinkingSignatureFor } from "~/lib/config/model-translation"
 import {
   //
   captureInboundHeaders,
@@ -174,7 +175,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   let streamTranslator: ForwardStreamTranslator | undefined
   const ensureStreamTranslator = (env: RequestEnvelope): ForwardStreamTranslator => {
     const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
-    return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId))
+    return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId, reasoningRoundTripOpts(env)))
   }
 
   // The S3 request rewrite chain, built once per request. Execution order is by
@@ -275,7 +276,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     // as a ctx marker so the wire end_turn stays observably distinguishable (richest-data-flow).
     renderResponseNonStreaming(upstream, env) {
       if (!isForwardTranslateLeg(env.targetEndpoint)) return upstream
-      const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.targetEndpoint, upstream)
+      const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.targetEndpoint, upstream, reasoningRoundTripOpts(env))
       if (contentFiltered) env.ctx.recordFeature("translated-content-filter")
       return rendered
     },
@@ -320,6 +321,19 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
  */
 function isForwardTranslateLeg(targetEndpoint: UpstreamEndpoint | undefined): targetEndpoint is Exclude<UpstreamEndpoint, "/v1/messages"> {
   return targetEndpoint === ENDPOINT.CHAT_COMPLETIONS || targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES
+}
+
+/**
+ * RFC §4.3 scenario A/B (Phase 5): resolve `{ stripThinkingSignature }` for the FORWARD
+ * `(anthropic client, responses model)` reasoning round-trip. Only meaningful on the RESPONSES/
+ * WS_RESPONSES leg (the CC leg has no reasoning round-trip carrier concept) — the CC leg's
+ * `renderResponseNonStreamingVia`/`createForwardStreamTranslator` call sites simply ignore an
+ * always-`false` result, so passing it unconditionally on every forward leg is harmless (no
+ * conditional call-site duplication needed).
+ */
+function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature: boolean } {
+  const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model
+  return { stripThinkingSignature: stripThinkingSignatureFor("anthropic-messages", modelId, "openai-responses") }
 }
 
 // ============================================================================

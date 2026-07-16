@@ -50,8 +50,8 @@ function anthropicEvent(obj: unknown): ServerSentEventMessage {
 }
 
 /** Drive the translator over a list of Anthropic events + flush; return the ordered Responses frames. */
-function renderAll(events: Array<ServerSentEventMessage>, modelId = "claude-opus-4.8") {
-  const t = createAnthropicToResponsesStreamTranslator(modelId, ctx)
+function renderAll(events: Array<ServerSentEventMessage>, modelId = "claude-opus-4.8", opts?: { stripThinkingSignature?: boolean }) {
+  const t = createAnthropicToResponsesStreamTranslator(modelId, ctx, opts)
   const out: Array<ServerSentEventMessage> = []
   for (const e of events) for (const s of t.renderFrame(e)) out.push(s.frame)
   for (const s of t.flush()) out.push(s.frame)
@@ -280,6 +280,27 @@ describe("anthropic-to-responses-stream — reasoning rendering (IMPROVEMENT ZON
     ])
     const acc = responsesAccumulate(frames)
     expect(finalizeResponsesContent(acc)).toBe("answer text")
+  })
+})
+
+describe("anthropic-to-responses-stream — RFC §4.3 scenario A/B (Phase 5 model_translation wiring)", () => {
+  test("scenario B (stripThinkingSignature=true) NEVER populates encrypted_content — plaintext summary still streams", () => {
+    const frames = renderAll(
+      [messageStart(), thinkingBlockStart(0), thinkingDelta(0, "still shown"), signatureDelta(0, "SHOULD-NOT-BE-CARRIED"), blockStop(0), messageDelta("end_turn")],
+      "claude-opus-4.8",
+      { stripThinkingSignature: true },
+    )
+    const doneEvent = frames.find((f) => data(f).type === "response.output_item.done" && (data(f).item as { type: string }).type === "reasoning")
+    const item = data(doneEvent as ServerSentEventMessage).item as { summary: Array<{ type: string; text: string }>; encrypted_content?: string }
+    expect(item.encrypted_content).toBeUndefined()
+    expect(item.summary).toEqual([{ type: "summary_text", text: "still shown" }])
+  })
+
+  test("scenario A (default, no opts) DOES populate encrypted_content — the default is full round-trip", () => {
+    const frames = renderAll([messageStart(), thinkingBlockStart(0), thinkingDelta(0, "shown"), signatureDelta(0, "REAL-SIG"), blockStop(0), messageDelta("end_turn")])
+    const doneEvent = frames.find((f) => data(f).type === "response.output_item.done" && (data(f).item as { type: string }).type === "reasoning")
+    const item = data(doneEvent as ServerSentEventMessage).item as { encrypted_content?: string }
+    expect(extractClaudeSignature(item.encrypted_content)).toBe("REAL-SIG")
   })
 })
 

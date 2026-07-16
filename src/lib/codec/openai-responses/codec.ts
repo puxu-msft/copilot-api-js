@@ -79,6 +79,7 @@ import type {
 
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { getRequestContextManager } from "~/lib/context/manager"
+import { stripThinkingSignatureFor } from "~/lib/config/model-translation"
 import {
   //
   captureInboundHeaders,
@@ -176,6 +177,18 @@ function genShortId(): string {
 }
 
 /**
+ * RFC §4.3 scenario A/B (Phase 5): resolve `{ stripThinkingSignature }` for the REVERSE
+ * `(openai-responses client, Claude model @messages)` reasoning round-trip. Only meaningful on the
+ * MESSAGES leg (the fallback `/chat/completions` two-hop path has no reasoning round-trip carrier
+ * concept) — passing it unconditionally on every reverse call site is harmless (the CC-family
+ * factories in hub-translate.ts simply ignore an opts param they never read).
+ */
+function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature: boolean } {
+  const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model
+  return { stripThinkingSignature: stripThinkingSignatureFor("openai-responses", modelId, "anthropic-messages") }
+}
+
+/**
  * Build the openai-responses codec for one request. The returned instance holds
  * the per-request fallback exchange + CC→Responses translator in its closure.
  */
@@ -224,7 +237,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
 
   const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
     const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
-    return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, ensureReverseExchange(env)))
+    return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, ensureReverseExchange(env), reasoningRoundTripOpts(env)))
   }
 
   return {
@@ -304,7 +317,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       // (the hub's CC bridge is no longer called on this leg) — reuses the SAME `ensureReverseExchange`
       // id-management the old two-hop path used (RFC §2.3: no new exchange contract).
       if (env.targetEndpoint === ENDPOINT.MESSAGES) {
-        return translateAnthropicResponseToResponses(upstream as AnthropicMessageResponse, ensureReverseExchange(env))
+        return translateAnthropicResponseToResponses(upstream as AnthropicMessageResponse, ensureReverseExchange(env), reasoningRoundTripOpts(env))
       }
       if (!fallbackScratch.exchange) return upstream
       return translateCCToResponsesResponse(upstream as ChatCompletionResponse, {

@@ -38,8 +38,8 @@ function rEvent(obj: unknown): ServerSentEventMessage {
 }
 
 /** Drive the translator over a list of Responses events + flush; return the ordered Anthropic frames. */
-function renderAll(events: Array<ServerSentEventMessage>, modelId = "gpt-5.5"): Array<ServerSentEventMessage> {
-  const t = createResponsesToAnthropicStreamTranslator(modelId)
+function renderAll(events: Array<ServerSentEventMessage>, modelId = "gpt-5.5", opts?: { stripThinkingSignature?: boolean }): Array<ServerSentEventMessage> {
+  const t = createResponsesToAnthropicStreamTranslator(modelId, opts)
   const out: Array<ServerSentEventMessage> = []
   for (const e of events) for (const s of t.renderFrame(e)) out.push(s.frame)
   for (const s of t.flush()) out.push(s.frame)
@@ -402,6 +402,36 @@ describe("responses-to-anthropic-stream — reasoning → synthetic thinking blo
     expect((msg.content[2] as { type: "text"; text: string }).text).toBe("The weather is sunny.")
     // tool_use present → stop_reason tool_use (mirrors the non-streaming bridge's hasToolCalls override).
     expect(msg.stop_reason).toBe("tool_use")
+  })
+})
+
+describe("responses-to-anthropic-stream — RFC §4.3 scenario A/B (Phase 5 model_translation wiring)", () => {
+  test("scenario B (stripThinkingSignature=true) NEVER embeds encrypted_content into the sentinel — bare-prefix signature only, plaintext still streams", async () => {
+    const frames = renderAll(
+      [created(), reasoningAdded(0), reasoningSummaryDelta("still shown", 0), reasoningDone(0, "SHOULD-NOT-BE-CARRIED"), completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 })],
+      "gpt-5.5",
+      { stripThinkingSignature: true },
+    )
+    const sig = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "signature_delta")!
+    const signature = (data(sig).delta as { signature: string }).signature
+    const { extractEncryptedReasoning } = await import("~/lib/anthropic/synthetic-reasoning")
+    expect(extractEncryptedReasoning(signature)).toBeUndefined()
+    const thinkingDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "thinking_delta")
+    expect(thinkingDeltas.map((f) => (data(f).delta as { thinking: string }).thinking).join("")).toBe("still shown")
+  })
+
+  test("scenario A (default, no opts) DOES embed encrypted_content — the default is full round-trip", async () => {
+    const frames = renderAll([
+      created(),
+      reasoningAdded(0),
+      reasoningSummaryDelta("shown", 0),
+      reasoningDone(0, "REAL-ENC"),
+      completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 }),
+    ])
+    const sig = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "signature_delta")!
+    const signature = (data(sig).delta as { signature: string }).signature
+    const { extractEncryptedReasoning } = await import("~/lib/anthropic/synthetic-reasoning")
+    expect(extractEncryptedReasoning(signature)).toBe("REAL-ENC")
   })
 })
 

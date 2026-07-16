@@ -159,6 +159,23 @@ describe("translateResponsesResponseToAnthropic — reasoning passthrough (IMPRO
   })
 })
 
+describe("translateResponsesResponseToAnthropic — RFC §4.3 scenario A/B (Phase 5 model_translation wiring)", () => {
+  test("scenario B (stripThinkingSignature=true) never embeds encrypted_content into the sentinel signature — plaintext still renders as a bare-prefix sentinel", async () => {
+    const { response } = translateResponsesResponseToAnthropic(responsesResponse([reasoningItem("still shown", "SHOULD-NOT-BE-CARRIED")]), { stripThinkingSignature: true })
+    const thinking = response.content[0] as { type: "thinking"; thinking: string; signature: string }
+    expect(thinking.thinking).toBe("still shown")
+    const { extractEncryptedReasoning } = await import("~/lib/anthropic/synthetic-reasoning")
+    expect(extractEncryptedReasoning(thinking.signature)).toBeUndefined()
+  })
+
+  test("scenario A (default, no opts) DOES embed encrypted_content — the default is full round-trip", async () => {
+    const { response } = translateResponsesResponseToAnthropic(responsesResponse([reasoningItem("shown", "REAL-ENC")]))
+    const thinking = response.content[0] as { type: "thinking"; signature: string }
+    const { extractEncryptedReasoning } = await import("~/lib/anthropic/synthetic-reasoning")
+    expect(extractEncryptedReasoning(thinking.signature)).toBe("REAL-ENC")
+  })
+})
+
 describe("translateResponsesResponseToAnthropic — status/incomplete_details → stop_reason (IMPROVEMENT ZONE, single-hop remap)", () => {
   test("completed → end_turn", () => {
     const { response } = translateResponsesResponseToAnthropic(responsesResponse([messageItem("hi")], { status: "completed" }))

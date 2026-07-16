@@ -118,10 +118,22 @@ function responsesSseFrame(type: string, payload: Record<string, unknown>): Anth
   return { frame: { event: type, data: JSON.stringify({ type, ...payload }) } }
 }
 
+/** Options for {@link createAnthropicToResponsesStreamTranslator} — RFC §4.3 scenario A/B. */
+export interface AnthropicToResponsesStreamOptions {
+  /**
+   * Scenario B (`model_translation` `strip-thinking-signature` feature): when true, the REAL Claude
+   * signature accumulated from `signature_delta` is NEVER carried into the closed reasoning item's
+   * `encrypted_content` (the plaintext summary still streams — context continuity — but the round-trip
+   * carrier is omitted). Default (false/absent) = scenario A, full round-trip.
+   */
+  stripThinkingSignature?: boolean
+}
+
 /** Build a per-request {@link AnthropicToResponsesStreamTranslator} (holds ITS OWN running state — no CC accumulator). */
 export function createAnthropicToResponsesStreamTranslator(
   modelId: string,
   ctx: AnthropicToResponsesStreamExchangeContext,
+  opts?: AnthropicToResponsesStreamOptions,
 ): AnthropicToResponsesStreamTranslator {
   const createdAt = Math.floor(Date.now() / 1000)
   let model = modelId
@@ -398,7 +410,7 @@ export function createAnthropicToResponsesStreamTranslator(
       for (const outputIndex of sortedOutputIndexes) {
         if (reasoningOutputIndexes.has(outputIndex)) {
           const text = reasoningParts.get(outputIndex)?.join("") ?? ""
-          const carrier = buildClaudeSignatureCarrier(reasoningSignatures.get(outputIndex))
+          const carrier = opts?.stripThinkingSignature ? undefined : buildClaudeSignatureCarrier(reasoningSignatures.get(outputIndex))
           const item: ResponsesOutputItem = {
             type: "reasoning",
             id: `${ctx.itemId}_reasoning_${outputIndex}`,

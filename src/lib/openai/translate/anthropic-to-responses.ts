@@ -68,8 +68,18 @@ import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-ca
  * multi-choices fold/split to undo, symmetric with the forward leg's simplicity, phase-2-audit §②).
  * `thinking` blocks become a LEADING `reasoning` output item (Responses' own convention — Phase 0 FINDINGS
  * observed reasoning items precede the message/function_call items in a real Responses output[]).
+ *
+ * `opts.stripThinkingSignature` (RFC §4.3 scenario B): when true, the REAL Claude signature is NEVER
+ * carried into `encrypted_content` (the plaintext `summary` still renders — context continuity — but the
+ * round-trip carrier is omitted, since a signature carried over from a DIFFERENT upstream model is
+ * invalid for whatever Claude model this session switches to next). Default (false/absent) = scenario A,
+ * full round-trip.
  */
-export function translateAnthropicResponseToResponses(response: AnthropicResponse, ctx: TranslateExchangeContext): ResponsesResponse {
+export function translateAnthropicResponseToResponses(
+  response: AnthropicResponse,
+  ctx: TranslateExchangeContext,
+  opts?: { stripThinkingSignature?: boolean },
+): ResponsesResponse {
   const output: Array<ResponsesOutputItem> = []
   const reasoningItems: Array<ResponsesReasoningOutput> = []
   let reasoningIndex = 0
@@ -80,7 +90,8 @@ export function translateAnthropicResponseToResponses(response: AnthropicRespons
       case "thinking": {
         // Per-block (not merged): each thinking block gets its OWN reasoning item, id, and signature
         // carrier — matches the streaming leg's per-content_block granularity (Phase 5 unification).
-        const carrier = buildClaudeSignatureCarrier(block.signature)
+        // Scenario B (opts.stripThinkingSignature): never populate the carrier — plaintext summary only.
+        const carrier = opts?.stripThinkingSignature ? undefined : buildClaudeSignatureCarrier(block.signature)
         reasoningItems.push({
           type: "reasoning",
           id: `${ctx.itemId}_reasoning_${reasoningIndex++}`,

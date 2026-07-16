@@ -93,6 +93,18 @@ export interface HubTranslateContext {
 }
 
 /**
+ * RFC §4.3 scenario A/B decision, threaded into the anthropic↔responses direct-bridge RESPONSE-side
+ * render functions ONLY (the reasoning round-trip's carrier population point). `undefined`/absent
+ * `stripThinkingSignature` = scenario A (full round-trip, the default) — every OTHER bridge cell
+ * (CC family, gemini, the reverse `→messages` CC/gemini legs) ignores this entirely, since scenario
+ * B only has meaning for the direct anthropic↔responses reasoning carrier.
+ */
+export interface ReasoningRoundTripOptions {
+  /** True ⇒ never populate the reasoning round-trip carrier (encrypted_content); plaintext summary/text still renders. */
+  stripThinkingSignature?: boolean
+}
+
+/**
  * Request-side translation dispatch — RFC 2026-07-14 §2 per-pair bridge table (R-EXPLICIT). Was a
  * single-axis `if (targetEndpoint===MESSAGES) ... else ...` wrapping two `switch(sourceFormat){...
  * default:throw}` helpers (a runtime-throw fallback for an unhandled sourceFormat); now an EXHAUSTIVE
@@ -209,7 +221,7 @@ export interface RenderedNonStreamingResponse {
  * further branching on CC vs RESPONSES inline); now an EXHAUSTIVE `Record<UpstreamEndpoint, ...>` —
  * a missing leg is a COMPILE error via `satisfies`, not a silently-wrong fallthrough.
  */
-type ResponseBridge = (upstream: unknown) => RenderedNonStreamingResponse
+type ResponseBridge = (upstream: unknown, opts?: ReasoningRoundTripOptions) => RenderedNonStreamingResponse
 
 /** REVERSE `/v1/messages` leg: Anthropic upstream → CC-canonical (the client codec renders any further hop). */
 const anthropicUpstreamToCcResponseBridge: ResponseBridge = (upstream) => ({
@@ -229,10 +241,11 @@ const ccUpstreamToAnthropicResponseBridge: ResponseBridge = (upstream) => {
  * skipping the CC intermediate (was a two-hop Responses → CC → Anthropic, WARN-F). Reached ONLY by the
  * anthropic codec's `renderResponseNonStreaming` for its FORWARD `@responses` leg — the openai-cc/gemini
  * via-responses cells call `translateResponsesResponseToCC` directly (never this bridge-table entry), so
- * swapping this one cell does not affect them.
+ * swapping this one cell does not affect them. `opts.stripThinkingSignature` (Phase 5, RFC §4.3 scenario
+ * B) is threaded straight through to the reasoning round-trip carrier — see `responses-to-anthropic.ts`.
  */
-const responsesUpstreamToAnthropicResponseBridge: ResponseBridge = (upstream) => {
-  const { response, contentFiltered } = translateResponsesResponseToAnthropic(upstream as ResponsesResponse)
+const responsesUpstreamToAnthropicResponseBridge: ResponseBridge = (upstream, opts) => {
+  const { response, contentFiltered } = translateResponsesResponseToAnthropic(upstream as ResponsesResponse, opts)
   return { rendered: response, contentFiltered }
 }
 
@@ -243,8 +256,8 @@ const RESPONSE_BRIDGES = {
   [ENDPOINT.WS_RESPONSES]: responsesUpstreamToAnthropicResponseBridge,
 } satisfies Record<UpstreamEndpoint, ResponseBridge>
 
-export function renderResponseNonStreamingVia(targetEndpoint: UpstreamEndpoint, upstream: unknown): RenderedNonStreamingResponse {
-  return RESPONSE_BRIDGES[targetEndpoint](upstream)
+export function renderResponseNonStreamingVia(targetEndpoint: UpstreamEndpoint, upstream: unknown, opts?: ReasoningRoundTripOptions): RenderedNonStreamingResponse {
+  return RESPONSE_BRIDGES[targetEndpoint](upstream, opts)
 }
 
 /**
@@ -286,7 +299,7 @@ export interface ForwardStreamTranslator {
  * `/v1/messages` is an explicit, named "unreachable — reverse leg" factory (still an EXPLICIT bridge
  * table entry, not a `default` fallthrough — R-EXPLICIT requires every leg named, even the unreachable one).
  */
-type ForwardStreamTranslatorFactory = (modelId: string) => ForwardStreamTranslator
+type ForwardStreamTranslatorFactory = (modelId: string, opts?: ReasoningRoundTripOptions) => ForwardStreamTranslator
 
 /** `/chat/completions` (cc leg) — SINGLE hop: the upstream CC SSE stream feeds the CC→Anthropic translator directly. */
 const chatCompletionsForwardStreamFactory: ForwardStreamTranslatorFactory = (modelId) => {
@@ -305,10 +318,11 @@ const chatCompletionsForwardStreamFactory: ForwardStreamTranslatorFactory = (mod
  * {@link createStreamTranslator} + {@link createCcToAnthropicStreamTranslator}). The terminal meta is now
  * SELF-CONTAINED (this translator's own running state), not the CC accumulator's — phase-2-audit §3.3's
  * "第3类显式 helper" (a distinct terminal-meta concern the RFC calls out explicitly, not buried in "the
- * response translator").
+ * response translator"). `opts.stripThinkingSignature` (Phase 5, RFC §4.3 scenario B) threads straight
+ * through to the reasoning round-trip carrier — see `responses-to-anthropic-stream.ts`.
  */
-const responsesForwardStreamFactory: ForwardStreamTranslatorFactory = (modelId) => {
-  const direct: ResponsesToAnthropicStreamTranslator = createResponsesToAnthropicStreamTranslator(modelId)
+const responsesForwardStreamFactory: ForwardStreamTranslatorFactory = (modelId, opts) => {
+  const direct: ResponsesToAnthropicStreamTranslator = createResponsesToAnthropicStreamTranslator(modelId, opts)
   return {
     renderFrame: (frame) => direct.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
     flush: () => direct.flush().map((s) => s.frame),
@@ -335,8 +349,8 @@ const FORWARD_STREAM_FACTORIES = {
   [ENDPOINT.WS_RESPONSES]: responsesForwardStreamFactory,
 } satisfies Record<UpstreamEndpoint, ForwardStreamTranslatorFactory>
 
-export function createForwardStreamTranslator(targetEndpoint: UpstreamEndpoint, modelId: string): ForwardStreamTranslator {
-  return FORWARD_STREAM_FACTORIES[targetEndpoint](modelId)
+export function createForwardStreamTranslator(targetEndpoint: UpstreamEndpoint, modelId: string, opts?: ReasoningRoundTripOptions): ForwardStreamTranslator {
+  return FORWARD_STREAM_FACTORIES[targetEndpoint](modelId, opts)
 }
 
 /**
@@ -411,7 +425,7 @@ export interface ReverseStreamTranslator {
  * translator (a factory, not a plain value); `openai-responses`'s factory additionally threads the
  * `exchangeCtx` param (the second hop's responseId/itemId/clientModel).
  */
-type ReverseStreamTranslatorFactory = (modelId: string, exchangeCtx?: TranslateExchangeContext) => ReverseStreamTranslator
+type ReverseStreamTranslatorFactory = (modelId: string, exchangeCtx?: TranslateExchangeContext, opts?: ReasoningRoundTripOptions) => ReverseStreamTranslator
 
 /** `openai-cc` / `gemini` — SINGLE hop: the upstream Anthropic SSE stream feeds the Anthropic→CC translator directly. */
 const ccFamilyReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId) => {
@@ -429,15 +443,16 @@ const ccFamilyReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId) =
  * {@link createAnthropicToResponsesStreamTranslator} directly (was a TWO-hop Anthropic→CC→Responses via
  * {@link createAnthropicToCcStreamTranslator} + {@link createCCToResponsesStreamTranslator}). Reuses the
  * SAME `exchangeCtx` (responseId/itemId/clientModel) the old two-hop path already required — no new
- * exchange-context contract (mirrors subtask E's reuse of `TranslateExchangeContext`).
+ * exchange-context contract (mirrors subtask E's reuse of `TranslateExchangeContext`). `opts.stripThinkingSignature`
+ * (Phase 5, RFC §4.3 scenario B) threads straight through to the reasoning round-trip carrier.
  */
-const responsesReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId, exchangeCtx) => {
+const responsesReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId, exchangeCtx, opts) => {
   if (!exchangeCtx) {
     throw new Error(
       "[hub-translate] createReverseStreamTranslator: the openai-responses reverse leg requires an exchangeCtx (responseId/itemId/clientModel) — the responses handler must build a reverse-exchange",
     )
   }
-  const direct = createAnthropicToResponsesStreamTranslator(modelId, exchangeCtx)
+  const direct = createAnthropicToResponsesStreamTranslator(modelId, exchangeCtx, opts)
   return {
     renderFrame: (frame) => direct.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
     flush: () => direct.flush().map((s) => s.frame),
@@ -467,6 +482,11 @@ const REVERSE_STREAM_FACTORIES = {
   "openai-responses": responsesReverseStreamFactory,
 } satisfies Record<ClientFormat, ReverseStreamTranslatorFactory>
 
-export function createReverseStreamTranslator(clientFormat: ClientFormat, modelId: string, exchangeCtx?: TranslateExchangeContext): ReverseStreamTranslator {
-  return REVERSE_STREAM_FACTORIES[clientFormat](modelId, exchangeCtx)
+export function createReverseStreamTranslator(
+  clientFormat: ClientFormat,
+  modelId: string,
+  exchangeCtx?: TranslateExchangeContext,
+  opts?: ReasoningRoundTripOptions,
+): ReverseStreamTranslator {
+  return REVERSE_STREAM_FACTORIES[clientFormat](modelId, exchangeCtx, opts)
 }

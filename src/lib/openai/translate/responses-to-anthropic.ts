@@ -146,8 +146,15 @@ export interface ResponsesToAnthropicResult {
  * A single ordered walk of `output[]` — no CC multi-choices fold/split needed (Responses' output items
  * are already per-element, unlike CC's choices[] split). Reasoning items become a LEADING synthetic
  * thinking block (Anthropic requires thinking first); message/function_call items follow in order.
+ *
+ * `opts.stripThinkingSignature` (RFC §4.3 scenario B, `model_translation` `strip-thinking-signature`
+ * feature): when true, the encrypted_content payload is NEVER embedded into the rendered thinking
+ * block's signature (bare-prefix sentinel only) — the plaintext summary still renders (context
+ * continuity preserved), but the round-trip carrier is omitted because the client is mid-conversation
+ * model-switching and a carried-over encrypted_content from a DIFFERENT upstream model is invalid for
+ * whatever model comes next. Default (false/absent) = scenario A, full round-trip.
  */
-export function translateResponsesResponseToAnthropic(response: ResponsesResponse): ResponsesToAnthropicResult {
+export function translateResponsesResponseToAnthropic(response: ResponsesResponse, opts?: { stripThinkingSignature?: boolean }): ResponsesToAnthropicResult {
   if (response.status === "failed") {
     const message = response.error?.message ?? "Upstream response failed"
     throw new HTTPError(message, 500, JSON.stringify(response.error ?? { status: response.status }), response.model)
@@ -192,8 +199,14 @@ export function translateResponsesResponseToAnthropic(response: ResponsesRespons
   if (content.length === 0) content.push({ type: "text", text: "" } satisfies TextBlockParam)
 
   // Prepend the synthetic reasoning (thinking) block, if any — Anthropic requires thinking FIRST.
+  // Scenario B (opts.stripThinkingSignature): omit encrypted_content from the envelope — the plaintext
+  // summary still renders (context continuity), but the carrier is never populated (RFC §4.3).
   if (reasoningText.length > 0) {
-    content.unshift({ type: "thinking", thinking: reasoningText, signature: buildSyntheticReasoningSignature(reasoningEncrypted) } satisfies ThinkingBlockParam)
+    content.unshift({
+      type: "thinking",
+      thinking: reasoningText,
+      signature: buildSyntheticReasoningSignature(opts?.stripThinkingSignature ? undefined : reasoningEncrypted),
+    } satisfies ThinkingBlockParam)
   }
 
   const contentFiltered = response.status === "incomplete" && response.incomplete_details?.reason === "content_filter"
