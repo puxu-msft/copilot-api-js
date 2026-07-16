@@ -186,6 +186,15 @@ export function translateResponsesResponseToAnthropic(response: ResponsesRespons
         hasToolCalls = true
         break
       }
+      case "web_search_call": {
+        // R-NO-REVIVE (RFC §5.1/§9): a native Responses web_search_call has NO encrypted_content (Phase 0
+        // probe (c)) — rendering it as an Anthropic `web_search_tool_result` block would require SYNTHESIZING
+        // one, which is exactly the retired web_search double-hop's death trap (encrypted-content-400).
+        // ALWAYS degrades to readable text instead (richest-data-flow: never silently drop the search query/
+        // status — just never impersonate a signed server-tool result block).
+        content.push({ type: "text", text: webSearchCallToText(item) } satisfies TextBlockParam)
+        break
+      }
       default: {
         // Exhaustive over the current ResponsesOutputItem union; a future item type not yet modeled
         // degrades to a silent no-op HERE rather than throwing (never-swallow at the block level would
@@ -233,6 +242,26 @@ export function translateResponsesResponseToAnthropic(response: ResponsesRespons
 /** Responses `function_call` output item → Anthropic `tool_use` block (call_id passed through as the Anthropic tool_use id). */
 function functionCallToToolUseBlock(item: Extract<ResponsesOutputItem, { type: "function_call" }>): ToolUseBlockParam {
   return { type: "tool_use", id: item.call_id, name: item.name, input: parseToolArguments(item.arguments) }
+}
+
+// ============================================================================
+// web_search_call → readable text (R-NO-REVIVE, RFC §5.1 — ALWAYS degrades, never round-trips)
+// ============================================================================
+
+/**
+ * Responses `web_search_call` output item → a readable Anthropic text block (never a synthesized
+ * `web_search_tool_result` — R-NO-REVIVE). Preserves the search query/status as human-readable text
+ * (richest-data-flow: the search DID happen, the client should still see what was searched even though
+ * this bridge cannot round-trip a signed result block for it).
+ *
+ * Exported: the streaming translator (`responses-to-anthropic-stream.ts`) reuses this SAME formatting
+ * for its own `response.output_item.done` handling of `web_search_call` — one source of truth
+ * (fix-all-comparison-sites), never a copy-paste (mirrors `mapResponsesStatusToStopReason`/`mapUsage`
+ * being shared with the streaming translator).
+ */
+export function webSearchCallToText(item: Extract<ResponsesOutputItem, { type: "web_search_call" }>): string {
+  const query = item.action.query ?? item.action.queries?.join(", ") ?? "(unknown query)"
+  return `[web_search: "${query}"] (status: ${item.status})`
 }
 
 /**
