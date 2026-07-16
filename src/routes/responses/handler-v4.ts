@@ -654,7 +654,8 @@ interface PumpReverseAnthropicLegOptions {
 
 /**
  * Stream pump for a REVERSE `@messages` leg (responses→messages) — the upstream is an Anthropic SSE stream,
- * the codec's two-hop `renderResponse` translates each Anthropic frame to Responses event(s), and the client
+ * the codec's DIRECT single-hop `renderResponse` (RFC 2026-07-14-anthropic-responses-direct-bridge §3/§4.2,
+ * Phase 4 subtask F) translates each Anthropic frame straight to Responses event(s), and the client
  * receives the Responses stream. This handler:
  *   - accumulates the RAW UPSTREAM Anthropic frame into the Anthropic accumulator via `onUpstreamFrame` for
  *     the honest `outboundResponse` (RFC §4.1 / richest-data-flow),
@@ -662,7 +663,10 @@ interface PumpReverseAnthropicLegOptions {
  *     reverse translator's Responses `response.completed` terminal — 疑点 7b; without it the client never
  *     gets the terminal),
  *   - has NO heartbeat / anchor (a Responses client is not Claude Code),
- *   - settles from `codec.getStreamMeta()`: a clean drain WITHOUT a finish_reason is an upstream truncation
+ *   - settles from its OWN raw Anthropic accumulator (`classifyReverseAnthropicTerminal(anthropicAcc)`
+ *     below — NOT `codec.getStreamMeta()`, whose declared `AnthropicToCcStreamMeta` shape carries CC-only
+ *     `finishReason`/`usage` fields this leg's direct translator does not produce; `getMeta()` here only
+ *     supplies `sawMessageStop` honestly): a clean drain WITHOUT `message_stop` is an upstream truncation
  *     (F2), failed with a synthetic Responses error terminator.
  */
 async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): Promise<void> {

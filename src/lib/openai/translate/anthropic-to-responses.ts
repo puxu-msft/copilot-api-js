@@ -169,8 +169,12 @@ function toolUseBlockToFunctionCall(block: Extract<ContentBlock, { type: "tool_u
  * inventing an honest string beats silently mapping to content_filter, WHICH WOULD BE WRONG per Phase 3's
  * corrected finding that content_filter and refusal are themselves two distinct concepts — reusing that
  * mismatch here would repeat the exact error Phase 3 fixed, just in the opposite direction).
+ *
+ * Exported: the streaming translator (`anthropic-to-responses-stream.ts`, subtask F) reuses this SAME
+ * mapping for its terminal `message_delta` — one source of truth (fix-all-comparison-sites), never a
+ * copy-paste (mirrors subtask C's reuse of subtask B's `mapResponsesStatusToStopReason`/`mapUsage`).
  */
-function mapStopReasonToResponsesStatus(
+export function mapStopReasonToResponsesStatus(
   stopReason: StopReason | null,
   hasToolCalls: boolean,
 ): { status: ResponsesResponse["status"]; incompleteReason?: string } {
@@ -211,8 +215,10 @@ function mapStopReasonToResponsesStatus(
  * thinking_tokens` (a REAL Anthropic field, not a GHC-only extension — confirmed against the
  * `@anthropic-ai/sdk` `OutputTokensDetails` type) — MUST NOT be silently dropped (Phase 3 MAJOR fix
  * precedent: an earlier version of the forward leg dropped this exact class of field).
+ *
+ * Exported: the streaming translator (subtask F) reuses this SAME projection for its terminal usage.
  */
-function mapUsage(usage: AnthropicResponse["usage"]): ResponsesUsage {
+export function mapUsage(usage: AnthropicResponse["usage"]): ResponsesUsage {
   const cacheRead = usage.cache_read_input_tokens ?? 0
   const cacheCreation = usage.cache_creation_input_tokens ?? 0
   const totalInput = usage.input_tokens + cacheRead + cacheCreation

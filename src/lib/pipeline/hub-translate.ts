@@ -67,10 +67,9 @@ import {
   type AnthropicToCcStreamTranslator,
   type CcToAnthropicStreamMeta,
   type CcToAnthropicStreamTranslator,
-  type CCToResponsesStreamTranslator,
   createAnthropicToCcStreamTranslator,
+  createAnthropicToResponsesStreamTranslator,
   createCcToAnthropicStreamTranslator,
-  createCCToResponsesStreamTranslator,
   createResponsesToAnthropicStreamTranslator,
   createStreamTranslator,
   translateAnthropicResponseToCC,
@@ -425,31 +424,30 @@ const ccFamilyReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId) =
 }
 
 /**
- * `openai-responses` — TWO hop (WARN-F): Anthropic→CC frames feed the existing
- * {@link createCCToResponsesStreamTranslator} (the Responses second segment), which needs the
- * `exchangeCtx` (responseId / itemId / clientModel) the responses handler builds as a reverse-exchange.
+ * `openai-responses` — DIRECT bridge (RFC 2026-07-14-anthropic-responses-direct-bridge §3/§4.2, Phase 4
+ * subtask F): the upstream Anthropic SSE stream feeds
+ * {@link createAnthropicToResponsesStreamTranslator} directly (was a TWO-hop Anthropic→CC→Responses via
+ * {@link createAnthropicToCcStreamTranslator} + {@link createCCToResponsesStreamTranslator}). Reuses the
+ * SAME `exchangeCtx` (responseId/itemId/clientModel) the old two-hop path already required — no new
+ * exchange-context contract (mirrors subtask E's reuse of `TranslateExchangeContext`).
  */
 const responsesReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId, exchangeCtx) => {
-  const anthropicToCc: AnthropicToCcStreamTranslator = createAnthropicToCcStreamTranslator(modelId)
   if (!exchangeCtx) {
     throw new Error(
       "[hub-translate] createReverseStreamTranslator: the openai-responses reverse leg requires an exchangeCtx (responseId/itemId/clientModel) — the responses handler must build a reverse-exchange",
     )
   }
-  const ccToResponses: CCToResponsesStreamTranslator = createCCToResponsesStreamTranslator(exchangeCtx)
+  const direct = createAnthropicToResponsesStreamTranslator(modelId, exchangeCtx)
   return {
-    renderFrame: (frame) => {
-      const out: Array<ClientFrame> = []
-      // Anthropic frame → 0+ CC frames → feed each CC frame's `data` string into the Responses segment.
-      for (const ccStep of anthropicToCc.renderFrame(frame as ServerSentEventMessage)) {
-        for (const rf of ccToResponses.translate(ccStep.frame.data ?? "")) out.push({ event: rf.event, data: rf.data })
-      }
-      return out
-    },
-    // The CC segment's own flush is [] (finish/usage are inline on message_delta), so only the Responses
-    // segment's flush (`response.completed`) matters — MUST be called or the client never gets the terminal.
-    flush: () => ccToResponses.flush().map((rf): ClientFrame => ({ event: rf.event, data: rf.data })),
-    getMeta: () => anthropicToCc.getMeta(),
+    renderFrame: (frame) => direct.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
+    flush: () => direct.flush().map((s) => s.frame),
+    // The translator's own AnthropicToResponsesStreamMeta lacks `usage`/`finishReason` (CC-shaped fields);
+    // ReverseStreamTranslator.getMeta's declared type is AnthropicToCcStreamMeta for interface uniformity
+    // across all three reverse legs, but this leg's actual consumer (routes/responses/handler-v4.ts) reads
+    // its OWN raw Anthropic accumulator for truncation classification, not this getMeta() — so an honest
+    // minimal projection (sawMessageStop only) satisfies the interface without fabricating CC-shaped
+    // finishReason/usage this leg's direct translator does not produce.
+    getMeta: () => ({ sawMessageStop: direct.getMeta().sawMessageStop }),
   }
 }
 

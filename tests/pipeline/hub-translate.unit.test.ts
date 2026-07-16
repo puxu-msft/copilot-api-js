@@ -262,7 +262,7 @@ describe("createReverseStreamTranslator — REVERSE-leg dispatch (Phase 5, T5.2/
     ).toBe(true)
   })
 
-  test("responses leg: two-hop Anthropic → CC → Responses lifecycle events (needs the reverse exchange)", () => {
+  test("responses leg: DIRECT single-hop Anthropic → Responses lifecycle events (RFC 2026-07-14 subtask F, needs the reverse exchange)", () => {
     const t = createReverseStreamTranslator("openai-responses", "claude-x", { responseId: "resp_r", itemId: "item_r", clientModel: "claude-x" })
     const frames = [
       ...t.renderFrame(start),
@@ -277,8 +277,10 @@ describe("createReverseStreamTranslator — REVERSE-leg dispatch (Phase 5, T5.2/
     expect(events).toContain("response.created")
     expect(events).toContain("response.output_text.delta")
     expect(events).toContain("response.completed")
-    // getMeta is the Anthropic→CC translator's meta (the truncation signal source).
-    expect(t.getMeta().finishReason).toBe("stop")
+    // The direct bridge's getMeta only honestly supplies sawMessageStop (CC-shaped finishReason/usage
+    // this leg's direct translator does not produce) — the handler classifies truncation from its OWN
+    // raw Anthropic accumulator instead (routes/responses/handler-v4.ts), not this getMeta().
+    expect(t.getMeta().sawMessageStop).toBe(true)
   })
 
   test("responses leg WITHOUT an exchange ctx throws (never-swallow — the handler must build a reverse-exchange)", () => {

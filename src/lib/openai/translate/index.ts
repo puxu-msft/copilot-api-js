@@ -17,6 +17,13 @@ export type { AnthropicToCcStreamMeta, AnthropicToCcStreamStep, AnthropicToCcStr
 export { translateAnthropicResponseToResponses } from "./anthropic-to-responses"
 export { translateAnthropicToResponses } from "./anthropic-to-responses-request"
 export type { AnthropicToResponsesOptions } from "./anthropic-to-responses-request"
+export { createAnthropicToResponsesStreamTranslator } from "./anthropic-to-responses-stream"
+export type {
+  AnthropicToResponsesStreamExchangeContext,
+  AnthropicToResponsesStreamMeta,
+  AnthropicToResponsesStreamStep,
+  AnthropicToResponsesStreamTranslator,
+} from "./anthropic-to-responses-stream"
 export { translateCCResponseToAnthropic } from "./cc-to-anthropic"
 export type { CcToAnthropicResult, TranslatedAnthropicResponse, TranslatedAnthropicUsage } from "./cc-to-anthropic"
 export { translateChatCompletionsToAnthropic } from "./cc-to-anthropic-request"
