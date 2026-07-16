@@ -171,3 +171,107 @@ describe("translateAnthropicToResponses — server-tool request-side passthrough
     expect(result.tools).toEqual([{ type: "web_search" }, { type: "function", name: "get_weather", parameters: { type: "object" } }])
   })
 })
+
+describe("translateAnthropicToResponses — basic content translation (equivalence zone: message/tool/image/tool_choice/thinking-effort/envelope)", () => {
+  test("string user content → a single message item with an input_text part", () => {
+    const result = translateAnthropicToResponses(payload([{ role: "user", content: "hello" }]))
+    expect(inputItems(result)).toEqual([{ type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }])
+  })
+
+  test("empty string content produces NO input item", () => {
+    const result = translateAnthropicToResponses(payload([{ role: "user", content: "" }, { role: "user", content: "real" }]))
+    expect(inputItems(result)).toEqual([{ type: "message", role: "user", content: [{ type: "input_text", text: "real" }] }])
+  })
+
+  test("assistant tool_use → a function_call item (id=call_id=block.id, arguments=JSON.stringify(input)); text+tool_use are SEPARATE items (per-block, no CC-style fold)", () => {
+    const result = translateAnthropicToResponses(
+      payload([
+        { role: "user", content: "weather?" },
+        { role: "assistant", content: [{ type: "text", text: "checking" }, { type: "tool_use", id: "toolu_1", name: "get_weather", input: { city: "SF" } }] },
+      ]),
+    )
+    const items = inputItems(result)
+    expect(items.find((i) => i.type === "function_call")).toEqual({ type: "function_call", id: "toolu_1", call_id: "toolu_1", name: "get_weather", arguments: '{"city":"SF"}' })
+    // text + tool_use are SEPARATE items (not folded): user message, assistant text message, function_call.
+    expect(items.map((i) => i.type)).toEqual(["message", "message", "function_call"])
+  })
+
+  test("user tool_result (string content) → function_call_output keyed by tool_use_id", () => {
+    const result = translateAnthropicToResponses(payload([{ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "18C sunny" }] }]))
+    expect(inputItems(result).find((i) => i.type === "function_call_output")).toEqual({ type: "function_call_output", call_id: "toolu_1", output: "18C sunny" })
+  })
+
+  test("tool_result is_error → output prefixed with [tool_error]", () => {
+    const result = translateAnthropicToResponses(payload([{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "boom", is_error: true }] }]))
+    expect(inputItems(result).find((i) => i.type === "function_call_output")?.output).toBe("[tool_error] boom")
+  })
+
+  test("tool_result array content: text blocks concatenated, image blocks dropped+warned", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      const result = translateAnthropicToResponses(
+        payload([
+          {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "part1 " }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AAA" } }, { type: "text", text: "part2" }] }],
+          },
+        ]),
+      )
+      expect(inputItems(result).find((i) => i.type === "function_call_output")?.output).toBe("part1 part2")
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).some((m) => m.includes("dropped 1 image"))).toBe(true)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("image block: base64 → data URL input_image; url → passthrough", () => {
+    const b64 = translateAnthropicToResponses(payload([{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "Zm9v" } }] }]))
+    expect(inputItems(b64)[0]).toEqual({ type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/jpeg;base64,Zm9v" }] })
+    const url = translateAnthropicToResponses(payload([{ role: "user", content: [{ type: "image", source: { type: "url", url: "https://x/i.png" } }] }]))
+    expect((inputItems(url)[0] as { content: Array<{ image_url: string }> }).content[0].image_url).toBe("https://x/i.png")
+  })
+
+  test("tool_choice mapping: auto→auto, any→required, none→none, tool→{type:function,name}", () => {
+    const tc = (choice: MessagesPayload["tool_choice"]) => translateAnthropicToResponses(payload([{ role: "user", content: "x" }], { tool_choice: choice })).tool_choice
+    expect(tc({ type: "auto" })).toBe("auto")
+    expect(tc({ type: "any" })).toBe("required")
+    expect(tc({ type: "none" })).toBe("none")
+    expect(tc({ type: "tool", name: "f" })).toEqual({ type: "function", name: "f" })
+  })
+
+  test("thinking enabled{budget} → reasoning:{effort, summary:'auto'}; disabled/absent → no reasoning", () => {
+    const enabled = translateAnthropicToResponses(payload([{ role: "user", content: "x" }], { thinking: { type: "enabled", budget_tokens: 10000 } }))
+    expect(enabled.reasoning).toEqual({ effort: expect.any(String), summary: "auto" })
+    expect(translateAnthropicToResponses(payload([{ role: "user", content: "x" }], { thinking: { type: "disabled" } })).reasoning).toBeUndefined()
+    expect(translateAnthropicToResponses(payload([{ role: "user", content: "x" }])).reasoning).toBeUndefined()
+  })
+
+  test("assistant server_tool_use block (echoed back) is dropped+warned (no Responses input equivalent yet — Phase 6), surrounding text still lands", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      const result = translateAnthropicToResponses(
+        payload([{ role: "user", content: "x" }, { role: "assistant", content: [{ type: "server_tool_use", id: "srv_1", name: "web_search", input: {} } as unknown as import("~/types/api/anthropic").ContentBlockParam, { type: "text", text: "answer" }] }]),
+      )
+      const items = inputItems(result)
+      expect(items.some((i) => i.type === "message" && i.role === "assistant")).toBe(true)
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).some((m) => m.includes("server_tool_use"))).toBe(true)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("envelope: instructions (system flatten) / max_output_tokens=max_tokens / temperature/top_p/stream / metadata.user_id→user; Anthropic-only top_k/stop_sequences dropped", () => {
+    const result = translateAnthropicToResponses(
+      payload([{ role: "user", content: "x" }], { system: "be terse", max_tokens: 256, temperature: 0.3, top_p: 0.9, stream: true, top_k: 5, stop_sequences: ["STOP"], metadata: { user_id: "u1" } }),
+    )
+    expect(result.instructions).toBe("be terse")
+    expect(result.max_output_tokens).toBe(256)
+    expect(result.temperature).toBe(0.3)
+    expect(result.top_p).toBe(0.9)
+    expect(result.stream).toBe(true)
+    expect(result.user).toBe("u1")
+    const wire = JSON.stringify(result)
+    expect(wire).not.toContain("top_k")
+    expect(wire).not.toContain("stop_sequences")
+  })
+})

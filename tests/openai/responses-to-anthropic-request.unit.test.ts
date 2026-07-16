@@ -334,6 +334,12 @@ describe("translateResponsesToAnthropicRequest — tools / tool_choice (equivale
     expect(result.tools).toBeUndefined()
   })
 
+  test("a builtin tool (web_search) is dropped — this reverse leg only forwards function tools (server-tool passthrough on this direction is not implemented; Claude web_search_tool_result carries real encrypted_content, a separate backlog item)", () => {
+    const result = translateResponsesToAnthropicRequest(responsesPayload([userMessage("x")], { tools: [{ type: "web_search" }, { type: "function", name: "get_weather", parameters: { type: "object" } }] }))
+    // only the function tool survives; the builtin is dropped, never mis-forwarded.
+    expect(result.tools).toEqual([{ name: "get_weather", input_schema: { type: "object" } }])
+  })
+
   test("tool_choice vocabulary: auto/required/none/named", () => {
     expect(translateResponsesToAnthropicRequest(responsesPayload([userMessage("x")], { tool_choice: "auto" })).tool_choice).toEqual({ type: "auto" })
     expect(translateResponsesToAnthropicRequest(responsesPayload([userMessage("x")], { tool_choice: "required" })).tool_choice).toEqual({ type: "any" })
