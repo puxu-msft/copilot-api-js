@@ -350,21 +350,17 @@ export function clearHistory(): void {
 /**
  * Toggle the debug-pin flag on a persisted entry, then broadcast the refreshed
  * summary so connected WS clients reflect the new state. Returns whether the
- * entry exists. A pinned entry is exempt from reaper eviction AND retention
- * counting (see `setEntryPinned` + reaper SUCCESS_WHERE/FAILURE_WHERE), so its
- * raw data survives V3 retention for debugging. No stats broadcast — pinning
- * changes neither the completed/failed counts nor token sums. There is no V2 fallback.
+ * V3 operation exists. The V3 `pinned` column is the only product pin state;
+ * there is no legacy-row fallback. No stats broadcast — pinning changes neither
+ * the completed/failed counts nor token sums.
  */
 export function setPinned(id: string, pinned: boolean): boolean {
   if (!historyState.enabled) return false
   const changed = setV3OperationPinned(id, pinned)
   if (!changed) return false
-  // The `pinned` column is authoritative, but an entry that is still in-flight
-  // (eager-persisted yet un-finalized) is read in-flight-FIRST by `getEntry`.
-  // Sync the in-flight copy so HTTP responses and the broadcast summary reflect
-  // the new flag immediately — not only after the entry finalizes. No-op when the
-  // entry is already terminal (no in-flight copy). The pin survives finalize
-  // regardless: INSERT_ENTRY_SQL never writes the column (see setEntryPinned).
+  // Sync a same-id in-flight copy defensively so broadcasts and immediate reads
+  // agree with the V3 column. A normal V3 pin targets a terminal operation and
+  // therefore has no in-flight twin.
   updateInFlight(id, { pinned })
   const entry = getInFlight(id) ?? getEntry(id)
   if (entry) publishEntryUpdated(toEntrySummary(entry))
