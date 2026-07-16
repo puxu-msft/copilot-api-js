@@ -14,10 +14,9 @@ import {
   getCurrentSession,
   getSessionIdFromHeaders,
   initHistory,
-  registerResponseSession,
-  resolveResponseSessionId,
   shutdownHistory,
 } from "~/lib/history"
+import { registerResponseSession, resolveResponseSessionId } from "~/lib/openai/response-session-store"
 import {
   //
   closeDatabase,
@@ -71,7 +70,7 @@ describe("history session resolution", () => {
   })
 
   test("uses previous response ids as real responses session anchors", async () => {
-    expect(resolveResponseSessionId("resp_root")).toBe("resp_root")
+    expect(resolveResponseSessionId("resp_root")).toBeUndefined()
 
     registerResponseSession("resp_followup", "resp_root")
 

@@ -40,6 +40,18 @@ function metadata<T>(value: unknown): T | undefined {
   return value && typeof value === "object" ? (value as T) : undefined
 }
 
+function projectUsage(value: Record<string, unknown> | undefined): NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"]>["usage"] {
+  if (!value) return undefined
+  if ("input_tokens" in value || "output_tokens" in value) return value as unknown as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"]>["usage"]
+  return {
+    input_tokens: typeof value.inputTokens === "number" ? value.inputTokens : 0,
+    output_tokens: typeof value.outputTokens === "number" ? value.outputTokens : 0,
+    ...(typeof value.cacheReadTokens === "number" && { cache_read_input_tokens: value.cacheReadTokens }),
+    ...(typeof value.cacheWriteTokens === "number" && { cache_creation_input_tokens: value.cacheWriteTokens }),
+    ...(typeof value.reasoningTokens === "number" && { output_tokens_details: { reasoning_tokens: value.reasoningTokens } }),
+  }
+}
+
 function lifecycleState(record: ModelOperationRecord): HistoryState["enabled"] extends boolean ? HistoryEntry["state"] : never {
   switch (record.terminal?.outcome) {
     case "completed":
@@ -97,7 +109,7 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
         headers: headers(attempt.upstreamResponse),
         body: payload(values, attempt.upstreamResponse) as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"]>["body"],
         sseEvents: frames(values, attempt.upstreamResponse),
-        usage: (response?.usage ?? responseMeta?.usage) as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"]>["usage"],
+        usage: projectUsage(response?.usage ?? responseMeta?.usage ?? (index === record.attempts.length - 1 ? (record.terminal?.usage as Record<string, unknown> | undefined) : undefined)),
         stopReason: response?.stop_reason,
         model: response?.model ?? record.routing?.resolvedModel,
         responseId: response?.responseId,
@@ -113,7 +125,7 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
     id: record.identity.operationId,
     operationKind: record.identity.kind,
     sessionId: record.identity.sessionId,
-    agentId: metadata<{ agentId?: string }>(record.identity.extensions)?.agentId,
+    agentId: record.identity.agentId,
     startedAt: record.identity.createdAt,
     endedAt: record.identity.createdAt + Math.max(0, (record.terminal?.sequence ?? record.lastSequence) - 1),
     durationMs: metadata<{ durationMs?: number }>(record.terminal?.metadata)?.durationMs,

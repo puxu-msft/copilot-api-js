@@ -1,34 +1,90 @@
-import consola from "consola"
-
 import type {
   //
   CursorResult,
   EndpointType,
   HistoryEntry,
+  SessionSummary,
 } from "./types"
 
-import {
-  //
-  listInFlight,
-  removeInFlight,
-} from "./in-flight"
-import {
-  //
-  queryEntries,
-  resolveResponseSession,
-} from "./sqlite/read"
-import { querySessionSummaries } from "./sqlite/sessions-agg"
-import { computeStats } from "./sqlite/stats"
-import {
-  //
-  deleteSession as sqliteDeleteSession,
-  upsertResponseSession,
-} from "./sqlite/write"
-import { historyState } from "./state"
+import { resolveResponseUsage } from "./entry-view"
+import { recordToHistoryEntry } from "./v3/projection"
+import { listV3StoredOperations } from "./v3/store"
 
-/** Per-session aggregate view (GROUP BY session_id over terminal entries_v2 rows). */
-export function getSessionSummaries(limit?: number): ReturnType<typeof querySessionSummaries> {
-  return querySessionSummaries(limit)
+function userPreview(entry: HistoryEntry, edge: "first" | "last"): string {
+  const messages = entry.clientRequest?.messages ?? []
+  const ordered = edge === "first" ? messages : [...messages].reverse()
+  for (const message of ordered) {
+    if (message.role !== "user") continue
+    const text =
+      typeof message.content === "string" ? message.content
+      : Array.isArray(message.content) ? message.content.map((block) => (block?.type === "text" ? block.text : "")).join(" ")
+      : ""
+    let cleaned = text
+    for (let previous = ""; previous !== cleaned; ) {
+      previous = cleaned
+      cleaned = cleaned.replaceAll(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replaceAll(/<ide_[^>]*>[\s\S]*?<\/ide_[^>]*>/g, "")
+    }
+    cleaned = cleaned
+      .replaceAll(/The TodoWrite tool hasn't been used[\s\S]*/g, "")
+      .replaceAll(/The following skills are available[\s\S]*/g, "")
+      .trim()
+    if (cleaned) return cleaned.slice(0, 100)
+  }
+  return ""
+}
+
+/** Per-session aggregate projected exclusively from terminal V3 generation records. */
+export function getSessionSummaries(limit = 200): Array<SessionSummary> {
+  const entries = listV3StoredOperations("generation", 1_000_000).map((stored) => recordToHistoryEntry(stored.record, stored))
+  const grouped = new Map<string, HistoryEntry[]>()
+  for (const entry of entries) {
+    if (!entry.sessionId) continue
+    const group = grouped.get(entry.sessionId) ?? []
+    group.push(entry)
+    grouped.set(entry.sessionId, group)
+  }
+
+  return [...grouped.entries()]
+    .map(([sessionId, sessionEntries]) => {
+      sessionEntries.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
+      const models = new Set<string>()
+      let inputTokens = 0
+      let outputTokens = 0
+      let completed = 0
+      let failed = 0
+      let aborted = 0
+      const agents = new Set<string>()
+      for (const entry of sessionEntries) {
+        if (entry.agentId) agents.add(entry.agentId)
+        const usage = resolveResponseUsage(entry)
+        inputTokens += (usage?.input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0)
+        outputTokens += usage?.output_tokens ?? 0
+        const model = entry.attempts?.at(-1)?.upstreamResponse?.model ?? entry.model?.resolved ?? entry.model?.requested
+        if (model) models.add(model)
+        if (entry.state === "completed") completed++
+        else if (entry.state === "failed") failed++
+        else if (entry.state === "aborted" || entry.state === "interrupted") aborted++
+      }
+      const first = sessionEntries[0]
+      const last = sessionEntries.at(-1)!
+      return {
+        sessionId,
+        requestCount: sessionEntries.length,
+        agentCount: agents.size,
+        inputTokens,
+        outputTokens,
+        firstStartedAt: first.startedAt,
+        lastStartedAt: last.startedAt,
+        completed,
+        failed,
+        aborted,
+        models: [...models],
+        firstPreview: userPreview(first, "first"),
+        preview: userPreview(last, "last"),
+      }
+    })
+    .sort((a, b) => b.lastStartedAt - a.lastStartedAt || b.sessionId.localeCompare(a.sessionId))
+    .slice(0, Math.max(0, limit))
 }
 
 // `x-claude-code-session-id` is what Claude Code actually sends (a stable per-conversation UUID,
@@ -67,19 +123,6 @@ export function getAgentIdFromHeaders(headers: Headers | Record<string, string |
   return normalizeSessionId(value)
 }
 
-export function resolveResponseSessionId(previousResponseId: string | null | undefined): string | undefined {
-  const normalized = normalizeSessionId(previousResponseId)
-  if (!normalized) return undefined
-  return resolveResponseSession(normalized) ?? normalized
-}
-
-export function registerResponseSession(responseId: string | null | undefined, sessionId: string | undefined): void {
-  const normalizedResponseId = normalizeSessionId(responseId)
-  const normalizedSessionId = normalizeSessionId(sessionId)
-  if (!normalizedResponseId || !normalizedSessionId) return
-  upsertResponseSession(normalizedResponseId, normalizedSessionId)
-}
-
 /**
  * Return the normalized session id when the caller has a real session identifier.
  *
@@ -93,7 +136,10 @@ export function getCurrentSession(_endpoint: EndpointType, sessionId?: string): 
 
 export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
   const { cursor, limit = 50 } = options
-  const all = queryEntries({ sessionId, limit: 1_000_000 }).sort((a, b) => a.startedAt - b.startedAt)
+  const all = listV3StoredOperations("generation", 1_000_000)
+    .filter(({ record }) => record.identity.sessionId === sessionId)
+    .map((stored) => recordToHistoryEntry(stored.record, stored))
+    .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
 
   const total = all.length
   let startIdx = 0
@@ -105,28 +151,5 @@ export function getSessionEntries(sessionId: string, options: { cursor?: string;
   const entries = all.slice(startIdx, startIdx + limit)
   const nextCursor = startIdx + limit < total ? (entries.at(-1)?.id ?? null) : null
   const prevCursor = startIdx > 0 ? (entries[0]?.id ?? null) : null
-
   return { entries, total, nextCursor, prevCursor }
-}
-
-export function deleteSession(sessionId: string): boolean {
-  const existed = queryEntries({ sessionId, limit: 1 }).length > 0
-  const deleted = sqliteDeleteSession(sessionId)
-
-  // Also remove any in-flight entries belonging to this session
-  const inFlightMatches = listInFlight().filter((e) => e.sessionId === sessionId)
-  for (const entry of inFlightMatches) removeInFlight(entry.id)
-
-  if (!existed && deleted === 0 && inFlightMatches.length === 0) {
-    return false
-  }
-
-  // Destructive + irreversible (removes the session's entries, including any
-  // 'failed' diagnostic rows) → log loudly so it is never an invisible cause of
-  // disappearing records. Mirrors the clearHistory log.
-  consola.warn(`[history] DELETED session ${sessionId} (${deleted} persisted + ${inFlightMatches.length} in-flight entries) via DELETE /api/sessions/:id`)
-
-  historyState.publisher?.publish({ kind: "history.session_deleted", sessionId })
-  historyState.publisher?.publish({ kind: "history.stats_changed", stats: computeStats() })
-  return true
 }
