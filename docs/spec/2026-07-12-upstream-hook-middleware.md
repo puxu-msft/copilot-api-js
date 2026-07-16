@@ -22,7 +22,7 @@
 | **注入接缝** | 收口进 `createPipelineDriver` 内部；6 处 handler transport 构造点**一行不改** | driver 是 transport 唯一消费者、也是 stage 编排者，天然收口 |
 | **hook 粒度** | driver 编排的**多挂载点**（非单一 transport decorator）；同一 hook 模块按参数自辨 model/endpoint/format；**无声明式匹配** | 用户明确要「分阶段多挂载点 + 同 hook 按参数区分、不用声明式」 |
 | **挂载点命名（v3 重构）** | 二维分组 `hooks.{client,upstream}.{inbound,outbound}` + 非方向性边界拦截器 `hooks.exchange`；`client\|upstream` 轴编码 body 形状（客户端原样 / 上游形状），`inbound\|outbound` 轴相对 proxy（流入 / 流出）；`on*` 前缀在 hook 导出层整个丢弃 | 见 §11 v3 裁决：`onInboundRequest` 一旦要存在就证明 `onRequest` 名字不表意；owner 定分组体系，`client\|upstream` 让作者一眼知拿到哪种形状 |
-| **挂载点集合** | 首版实现四个：`client.inbound`（client-native 请求改写，新）、`upstream.outbound`（旧 `onRequest`，upstream-bound 请求改写）、`upstream.inbound`（旧 `rewriteUpstreamFrame`，逐帧上游响应改写）、`exchange`（旧 `onExchange`，S4 拦截）；`client.outbound`（回客户端响应改写）**命名预留、实现延后**（§8 + deferred-backlog）；全部可选、未导出=直通 | against-YAGNI 与对称完整之间：四象限里 3 个是 v2 已有的重命名、1 个新槽、1 个预留槽 |
+| **挂载点集合** | 首版实现四个：`client.inbound`（client-native 请求改写，新）、`upstream.outbound`（旧 `onRequest`，upstream-bound 请求改写）、`upstream.inbound`（旧 `rewriteUpstreamFrame`，逐帧上游响应改写）、`exchange`（旧 `onExchange`，S4 拦截）；`client.outbound`（回客户端响应改写）**已接线 S6 renderFrames**（覆盖渲染帧；full sink-egress 统一化 deferred，§8 + deferred-backlog）；全部可选、未导出=直通 | against-YAGNI 与对称完整之间：四象限里 3 个是 v2 已有的重命名、1 个新槽、1 个 S6 接线槽 |
 | **observe vs rewrite** | 不设独立 observe-only 导出——改写 hook `return undefined` 即等于 observe（做完副作用后原样直通） | owner 反问「有 rewrite 还需要 observe 版本吗」，成立；v2 的 M3 改名防的是 hook 导出与 driver **内部**采样 sink 撞名，非导出层有 observe 成员 |
 | **mock 编写接口** | 高层 helper 工具箱 + **raw 逃生口**（直接返回 `UpstreamStream`） | helper 覆盖 90%，raw 造任意畸形帧 |
 | **录制-回放源** | **复用 history.db** 的 `upstreamResponse.sseEvents`（每请求已自动录，零新录制路径） | 无需独立 cassette 文件 |
@@ -56,7 +56,7 @@
 
 | | **inbound**（流入 proxy） | **outbound**（流出 proxy） |
 |---|---|---|
-| **client**（client-native 形状） | `client.inbound` — 客户端原始请求改写（**新，生产用途主战场**） | `client.outbound` — 回客户端响应改写（**命名预留、实现延后**，§8） |
+| **client**（client-native 形状） | `client.inbound` — 客户端原始请求改写（**新，生产用途主战场**） | `client.outbound` — 回客户端响应改写（**已接线 S6 render**，§8） |
 | **upstream**（上游/目标形状） | `upstream.inbound` — 上游原始响应逐帧改写（旧 `rewriteUpstreamFrame`） | `upstream.outbound` — 朝上游的请求改写（旧 `onRequest`） |
 
 **首版实现的四个挂载点**（签名 + 位置）：
@@ -256,7 +256,7 @@ ad-hoc hook 文件用 `import()` 在**同进程**加载（Bun 直接跑 .ts）�
 ## 8. 边界与暂缓
 
 - **上游 WS（Responses ws:/responses）**：`exchange` 收口在 `Transport.send`，覆盖 http-transport（messages/cc/gemini）+ responses-transport 的 HTTP 腿。Responses 的**上游 WebSocket** 腿（[src/routes/responses/ws.ts](../../src/routes/responses/ws.ts)）是 transport-internal 的独立通道——本特性首版覆盖 `Transport.send` 边界即可（四用途在 http 腿全满足）；WS 腿的 hook 若需要，记 `docs/todo/deferred-backlog.md` 后续。
-- **`client.outbound`（回客户端响应改写）命名预留、实现延后（v3）**：二维分组把它作为 `client.inbound` 的对称槽**暴露并命名**（在翻译回客户端之后、投递前改客户端形状的响应帧），但现有 spec 的响应侧只有 `upstream.inbound`（翻译回客户端**之前**的上游帧）。补 `client.outbound` 才让请求/响应两条路径对称完整，但需额外一个响应侧挂载点的实现 + provenance 不变量（回客户端合成帧须打 forwarded 轨标记，类比 §3.4）+ 与既有 translate/render 腿的交互——首版**不实现**、不建未用挂载点，作为声明式预留槽记 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)「`client.outbound` 响应改写挂载点」节（含语义、若做需改什么：新响应侧回调位置、forwarded 轨 provenance、四格式 render 腿交互）。
+- **`client.outbound`（回客户端响应改写）已接线 S6 renderFrames（v3 Phase 6，部分覆盖）**：二维分组把它作为 `client.inbound` 的对称槽暴露并命名，首版接线在 driver `renderFrames`（S6 render→yield），**覆盖 `codec.renderResponse` 产出的渲染帧**——per-frame 改写/丢弃可用。**已知覆盖缺口**：sink 层合成/心跳/anchor 帧不经 renderFrames yield 点（`renderFrames` 注释是 load-bearing 约束），故 client.outbound 只覆盖渲染帧、不覆盖 sink 合成帧（继承 `hook-rewrite` 的 §9 forwarded-标记覆盖缺口）。**full sink-egress 统一化**（把所有 client 帧汇聚单一 choke point + 统一 provenance）是 byte-critical 重构，记 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)「client.outbound 全量 sink-egress 统一化」节。
 - **非流式响应**：`exchange` 返回的 `UpstreamStream` 可带 `nonStream`；helper 覆盖流式为主，非流式 mock 用 raw 逃生口构造 `{ nonStream, headers }`。
 - **`upstream.inbound` 与 driver 现有 `RunResponseOpts.onUpstreamFrame`**（[types.ts:243](../../src/lib/pipeline/types.ts#L243)）：后者是 handler 内部的 upstream-original 采样 hook（观察用）。本特性的逐帧挂载点是 hook 分组对象叶子 `upstream.inbound`（v3 命名，与 driver 内部字段分属两层、无撞名）并**定位在 [driver.ts:446](../../src/lib/pipeline/driver.ts#L446) 采样之后**（§3.2），故上游-original track 天然记 pre-hook 真实帧、改写只进 forwarded 侧——初稿「留到实现时确认」的先后关系已在 §3.2/§3.4 钉死（评审 H2）。
 
@@ -300,7 +300,7 @@ ad-hoc hook 文件用 `import()` 在**同进程**加载（Bun 直接跑 .ts）�
 | 挂载位置 | 新增 **client-native、pre-translate/pre-sanitize** 挂载点 | 客户端注入的噪声只有在「客户端原样」时匹配才准；旧 `onRequest` 落在 translate+sanitize 之后、拿不到 client-native 形状、四格式退化为一种。not-adopted：复用旧 onRequest（准确性不足）/ 同时提供两个（YAGNI，client.inbound 已够） |
 | 命名体系 | `on*` 一旦要区分 `onInboundRequest`/`onRequest` 就证明旧名不表意 → **整体重构** `hooks.{client,upstream}.{inbound,outbound}` + `hooks.exchange` | `client\|upstream` 轴直接编码 body 形状（作者最需一眼看懂的），优于「inbound/outbound request」（需先固定参照系）。not-adopted：对称 `on<Phase>`（on* 不再区分 observe/mutate 且与内部采样 sink 概念相邻）、`hooks` 嵌套对象但导出从扁平变嵌套 |
 | observe 版本 | **不设**独立 observe-only 导出 | 用户反问成立：改写 hook `return undefined` = observe。旧 M3 防的是 hook 导出与 driver 内部采样 sink 撞名，非导出层需 observe 成员 |
-| `client.outbound` | 二维分组**暴露**该对称槽，但首版**命名预留、实现延后** | 补它才让请求/响应对称完整（richest-data-flow 对称思维），但需额外响应侧挂载点 + provenance；against-YAGNI 不建未用挂载点，记 deferred-backlog（§8） |
+| `client.outbound` | 二维分组**暴露**该对称槽，首版**已接线 S6 renderFrames**（覆盖渲染帧，v3 Phase 6） | 补它让请求/响应对称完整（richest-data-flow 对称思维）；full sink-egress 统一化（覆盖 sink 合成/心跳帧）是 byte-critical 重构，记 deferred-backlog（§8） |
 | 请求侧 provenance | 新增 §3.5 承重不变量（对称于 §3.4） | `client.inbound` 改写不得污染 `clientRequest` 客户端原样轨；已核实 `orig.payload` 冻结先于 hook，靠不可变返回契约 + 实现期核实共享引用（防御性 snapshot）保证 |
 
 ### 11.2 v2 评审裁决记录（2026-07-12）

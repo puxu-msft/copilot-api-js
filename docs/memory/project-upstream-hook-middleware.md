@@ -7,6 +7,10 @@ metadata:
   originSessionId: 7a99eb70-2a38-46f6-90fe-c6c9b3c41e28
 ---
 
+> **v3 已重构为对称四点（2026-07-15 合并 master `2a77bf7c`）**：下方 v2 记述的扁平三挂载点 `onRequest`/`onExchange`/`rewriteUpstreamFrame` 已全量迁移到 `export const hooks = { client:{inbound,outbound}, upstream:{inbound,outbound}, exchange }`（旧名→`upstream.outbound`/`exchange`/`upstream.inbound`）；新增 client-native `client.inbound`（剥客户端注入块，四格式 async 入站处理下沉 driver S1b `translateInbound`）+ `client.outbound`（S6 render）。**loader 机制 v2 的 data-URL 已弃**（不解析 `~/` 别名）→ 改项目内唯一文件加载。权威见 RFC [docs/rfc/2026-07-14-symmetric-four-point-hooks.md](../rfc/2026-07-14-symmetric-four-point-hooks.md) + 更新后的 spec v3。Claude auto-memory `project-symmetric-four-point-hooks` 有实测教训。下方 v2 记述保留作历史（旧名是当时事实）。
+
+---
+
 上游 ad-hoc hook 中间件特性——在 proxy 上游边界引入 driver 编排的多挂载点 hook，让开发者用 config 声明的 TS 文件 mock/拦截/录制回放/注入故障上游响应，不真发 GHC（复用完整处理管线，只 mock 上游那一段）。源起 2026-07-12 cache_control 剥离实测中「验证不得不真发 GHC、无法造 400/畸形帧测 reactive 学习腿」。
 
 **权威文档**：[docs/spec/2026-07-12-upstream-hook-middleware.md]，取代 kickoff `docs/plan/2026-07-12-upstream-hook-middleware-KICKOFF.md`。
