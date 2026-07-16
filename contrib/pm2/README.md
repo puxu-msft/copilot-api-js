@@ -1,6 +1,6 @@
 # pm2 零停机换代
 
-本目录提供 copilot-api 在 pm2 下的托管样例：`ecosystem.config.cjs`。
+本目录提供 copilot-api 在 pm2 下的托管样例：`ecosystem.config.cjs`（`copilot-api-blue` / `copilot-api-green` 两个 app 条目——日常只运行其中一个，换代时才短暂并存，详见下方「零停机换代」）。
 
 机制背景（reusePort 接管、SIGUSR2 交接协议、共享状态安全）见项目内 [docs/lifecycle.md](../../docs/lifecycle.md#路径三pm2)——本 README 只讲“怎么装、怎么用”。
 
@@ -8,7 +8,7 @@
 
 ```bash
 npm install -g pm2   # 或任意包管理器
-pm2 start contrib/pm2/ecosystem.config.cjs
+pm2 start contrib/pm2/ecosystem.config.cjs --only copilot-api-blue   # 首次只起一个槽
 pm2 save             # 可选：让 pm2 开机自启时恢复此进程列表
 ```
 
@@ -18,21 +18,27 @@ pm2 save             # 可选：让 pm2 开机自启时恢复此进程列表
 
 pm2 的 `reload` 在 **fork 模式**（本项目使用的模式，Bun 不是 pm2 cluster 模式的稳定目标）下**等价于重启**：先杀旧进程再起新进程，中间有真实的服务间隙（非零停机）。pm2 的 cluster 模式虽然理论上支持零停机 reload，但依赖 Node 的 `cluster` 模块语义，与 Bun 运行时兼容性不稳定，本项目不采用。
 
-## 零停机换代：起带 `--restart` 的第二实例接管
+## 零停机换代：显式双 app 条目 blue/green
 
-零停机换代复用与裸手动 / systemd 完全相同的 **reusePort 接管协议**，不依赖 pm2 原生 reload：
+pm2 托管的实例 `isSupervised()`=true → **不写 pidfile**（pidfile 机制仅裸手动路径专属），所以新实例**读不到**旧实例的 pidfile、无法自动发现前任并自发 SIGUSR2——「起个 `--restart` 新实例自动接管」在 pm2 下**发不出信号、两实例会永久并存**（一半流量打旧码）。
+
+正确形态与 systemd blue-green 一致：**两个 pm2 app 条目**（不同 `name`，例如 `copilot-api-blue` / `copilot-api-green`）+ **操作者 / 部署脚本显式发信号**，不依赖任何"自动接管"：
 
 ```bash
-# 部署好新代码后，在 pm2 托管之外临时起一个带 --restart 的新实例；
-# 它会 reusePort 绑定同一端口、就绪后向存活的旧实例发 SIGUSR2 触发交接。
-bun run src/main.ts start --restart
+# 1. 部署好新代码后，起 green 槽（reusePort 绑定同一端口，wait_ready 等 READY=1）
+pm2 start ecosystem.config.cjs --only copilot-api-green
+
+# 2. green 就绪后，显式向 blue 槽发交接信号（不是杀它——SIGUSR2 触发 4-phase drain）
+pm2 sendSignal SIGUSR2 copilot-api-blue
+
+# 3. blue 走完 drain 后以 exit 0 正常退出（pm2 记为进程退出，不会被自动重启）；
+#    确认退出后清理该条目
+pm2 delete copilot-api-blue
 ```
 
-交接完成后：
-- 旧实例（原 pm2 托管的那个）走完 4-phase drain 后**正常退出（exit 0）**——pm2 会将其记为进程退出，可用 `pm2 delete copilot-api` 清理该条目。
-- 把新实例重新纳入 pm2 托管（例如用同一份 `ecosystem.config.cjs` 重新 `pm2 start`），恢复 pm2 的自愈/开机自启能力。
+下次换代时反过来（起 blue、向 green 发信号、删 green），两个条目互相扮演对方的"新槽"——原理与 systemd 双槽完全一致，只是把"槽"从 systemd 实例换成 pm2 app 条目。
 
-或者更接近 systemd blue-green 的做法：用**两个 pm2 app 条目**（不同 `name`，例如 `copilot-api-a` / `copilot-api-b`）互相扮演对方的“新槽”，换代时用 pm2 启动另一条目并带 `--restart`，交接后 `pm2 delete` 旧条目——原理与 systemd 双槽一致，只是把“槽”从 systemd 实例换成 pm2 app 条目。
+overlap 期（blue/green 短暂同时持有端口、同时写 history.db/telemetry.db）的数据安全由 lifecycle.md「overlap 共享状态安全 ①⑤」的**进程存活性判据**自动保证——与是否走了这套显式脚本、是否有 pidfile 无关，reclaim/VACUUM 只看"这个 owner pid 现在还活不活"，环境无关。
 
 ## `process.send('ready')` 与 sd_notify 共用同一钩子
 
