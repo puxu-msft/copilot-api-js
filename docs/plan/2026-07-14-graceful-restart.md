@@ -1510,7 +1510,7 @@ git commit -m "feat(restart): wire takeover guard/pidfile/notifyReady/handoff in
 4. 断言：旧进程的**在途慢请求完成、不被中断**（drain），完成后旧进程退出。
 5. 断言：旧进程在途请求的 history 行**未被新进程 reclaim 成 interrupted**（查 history.db，状态为 completed）。
 
-- [ ] **Step 1: 写 e2e（spawn 两进程，端口 41992，独立 history.db 临时目录）**
+- [x] **Step 1: 写 e2e（spawn 两进程，端口 41992，独立 history.db 临时目录）**
 
 ```ts
 // tests/e2e/handover.e2e.test.ts —— 骨架，实现者补全 spawn/探针细节
@@ -1531,17 +1531,35 @@ test("裸手动接管：新进程接新连接、旧进程 drain 在途、reclaim
 
 > 实现者注：这是承重验收测试，务必用**正样本对照**先证探针能抓到「未接管」的坏情况（如不发 SIGUSR2 时旧进程仍接连接），再信绿。连跑 5 次证时序确定性（reusePort 分发 + drain 时序）。参考 skill `client-proxy-e2e-testing`（spawn 骨架）、`upstream-hook-mocking`（造慢响应）、`empirical-verification`（History API 当 oracle）。
 
-- [ ] **Step 2: 跑 e2e**
+- [x] **Step 2: 跑 e2e**
 
 Run: `bun test tests/e2e/handover.e2e.test.ts`
 Expected: PASS，连跑 5 次确定。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -- tests/e2e/handover.e2e.test.ts
 git commit -m "test(restart): end-to-end manual takeover handover e2e"
 ```
+
+> **实施记录（2026-07-16）**：commit `1799da9c`（含 3 文件：`tests/e2e/handover.e2e.test.ts` + `tests/e2e/harness/{spawn-handover-proxy,handover-upstream-hook}.ts`，实际比计划骨架多拆两个 harness 模块）。5 条验收 oracle 全部实测 PASS（真 spawn 双进程 + 真 `Bun.serve({reusePort:true})` + 真 SIGUSR2，非 mock OS 原语；GHC 上游经 config-hook 全程 mock，零额度消耗）：
+> 1. 旧进程非 4141 端口启动 + 慢请求在途 ✅（hook 按请求体 `SLOWMARKER` 子串 sleep 1.5s）
+> 2. 新进程 `--restart` 同端口绑定成功 + 发 SIGUSR2 ✅（`resolveManualStartup`/`signalPredecessorHandoff` 真实链路，非 mock）
+> 3. 接管后新连接全部落新进程 ✅（收敛式断言：reusePort overlap 窗口内允许瞬时命中旧进程/503/ECONNRESET——非 defect，短 poll 收敛到 100% NEW，符合 PoC 结论「关旧 listener 后新连接 100% 落新进程」）
+> 4. 旧进程在途慢请求完成不受扰 + 旧进程随后自行退出 ✅（`process.kill(pid,0)` liveness 轮询确认）
+> 5. 旧进程在途请求 history 行未被误 reclaim 成 interrupted、稳定为 completed ✅（`GET /history/api/entries?pid=<old>` 查询）
+>
+> **正样本对照**（未接管坏情况，empirical-verification 要求）：① 无 `--restart` 时第二实例走 `decideStartup` 的 refuse 分支 exit(1)，旧进程从未收到信号、继续以自身 pid 服务请求（专项验证，独立于主 e2e）；② 主 e2e 内置的「positive control」用例：单进程无接管场景下，探针 100% 命中自身 pid（证明探针本身有辨别力，非恒真断言）。
+> **连跑确定性**：完整测试文件（positive control + 5 次 handover run）本次交付过程中连续跑 5 次全绿，另加多次单场景调试跑，0 例外。
+> **承重踩坑**（均已写入两个 harness 文件的 header 注释）：
+> a) `bun run ./src/main.ts`（+ volta bun shim）把真 server 包进父子进程树，`Subprocess.pid` 是 launcher 非真 server pid——用 `pgrep` 递归 child-walk 按 cmdline 含 `main.ts start --port <port>` 精确定位真 server pid（供 `process["pid"]` 标记比对 + 精确清理）。
+> b) 两进程共享同一 `--port`，**不可用**既有 `spawn-proxy.ts` 的 `killByPort`（`pkill -f "...--port <port>"`）清理——会把接管中仍存活的旧进程一并误杀；改用按精确 PID kill（`SIGKILL` 目标 pid，never-throw）。
+> c) hook 走 data-URL loader（`Bun.Transpiler`），**任意点号属性访问**（`foo.bar`）在 Bun 1.3.14 下会让具名导出静默丢失（比既有 skill `upstream-hook-mocking` 记录的「仅 JSON.stringify / 对象字面量触发」更宽——本次 bisect 新增证据），全文件改用方括号访问 `foo["bar"]` 规避。
+> d) **反直觉发现**：两进程共享 reusePort 端口时，"旧进程专属 HTTP 探针"（如轮询旧进程 `/api/status` 等其 `shutdown.phase` 变化）不可信——内核按 fd 级负载均衡分发，同一 `baseURL` 的请求可能落到新进程（本次实测：轮询"旧进程"`/api/status` 15 次全显示 `phase:"idle"`，即便旧进程早已退出——因为连接实际全落在新进程上）。唯一无歧义的单进程 oracle 是 OS 级 `process.kill(pid, 0)` 存活检查，非 HTTP 层。
+> e) `bun test` 运行时下，长驻子进程的 stdout/stderr `data` 事件（Bun `Subprocess.stdout` 异步迭代器 + Node `child_process` 均如此）从不触发（同一 API 对短命令/普通 shell 回显正常，仅长驻嵌套 bun 进程受影响）——弃用日志抓取式断言，改用行为层 HTTP/进程存活 oracle。
+> **spawn 端口所有权验证**：每次 spawn 后用 `ss -ltnp` 核实监听 PID 确为本次 spawn 的进程（非 peer 泄漏），会话结束前确认 4141 未被触碰、测试端口范围（419xx）无残留监听。
+
 
 ---
 
