@@ -333,6 +333,8 @@ export interface OutputTextDeltaEvent {
   type: "response.output_text.delta"
   output_index: number
   content_index: number
+  /** Present on native Responses streams; optional for internally translated compatibility frames. */
+  item_id?: string
   delta: string
   sequence_number: number
 }
