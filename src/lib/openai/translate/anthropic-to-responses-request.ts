@@ -22,15 +22,24 @@
  *   - `budgetToEffort` (thinking-coercion.ts) — budget_tokens → effort tier heuristic.
  *   - `isApiDefinedToolType` (message-tools.ts) — native server-tool type-prefix detection.
  *
+ * Phase 5 (RFC §4.1 step 3, RFC 2026-07-14-anthropic-responses-direct-bridge — forward reasoning
+ * round-trip): an echoed-back `thinking` block whose `signature` carries OUR sentinel envelope
+ * (`synthetic-reasoning.ts`'s `isSyntheticReasoningSignature`/`extractEncryptedReasoning`, the SAME
+ * forward-only primitive Phase 3's response leg used to RENDER it) is RECONSTRUCTED into a Responses
+ * `reasoning` input item — see {@link reconstructReasoningInputItem}. A thinking block with a
+ * non-sentinel (foreign/absent) signature is still dropped, never synthesized (R-DIRECTION-ASYMMETRY:
+ * this forward leg only ever round-trips ITS OWN sentinel-signed blocks, never a real Claude signature
+ * — that direction is the REVERSE leg's `claude-signature-carrier.ts`, a wholly separate primitive).
+ *
  * Graceful degradation (mirrors anthropic-to-cc-request.ts's discipline, spec §1.4 "尽力而为"):
  *   - `thinking` → `reasoning.effort` (+ unconditional `summary:"auto"` so the model's reasoning is
- *     forwarded — this Phase does NOT do encrypted_content round-trip; Phase 5 wires that in).
+ *     forwarded) PLUS the Phase 5 round-trip above for an echoed-back sentinel-signed block.
  *   - `cache_control` → STRIPPED (Responses has no cache-breakpoint concept).
  *   - native server tools (`web_search`, `code_execution`, …) → STRIPPED, warned (Phase 6 wires the
  *     `web_search_preview` mapping; until then this leg behaves like the CC leg — never silently drop
  *     without a warning).
- *   - `thinking`/`redacted_thinking` ASSISTANT blocks (prior-turn echo) → dropped (no round-trip yet,
- *     Phase 5). The forward drop is benign (mirrors the CC leg's same drop for the same reason).
+ *   - `redacted_thinking` ASSISTANT blocks → dropped (Anthropic redacts it entirely, no plaintext/no
+ *     sentinel to recover — nothing to round-trip).
  *   - `top_k` → dropped (no Responses equivalent).
  */
 
@@ -58,6 +67,7 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { isApiDefinedToolType } from "~/lib/anthropic/message-tools"
+import { extractEncryptedReasoning, isSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
 import { budgetToEffort } from "~/lib/anthropic/thinking-coercion"
 
 import {
@@ -138,9 +148,23 @@ function translateMessage(message: MessageParam, reqId: string | undefined): Arr
   return message.role === "assistant" ? translateAssistantBlocks(blocks, reqId) : translateUserBlocks(blocks, reqId)
 }
 
-/** Assistant turn: each text block → a `message` item; each tool_use → a `function_call` item (block order preserved). */
+/**
+ * Assistant turn: each text block → a `message` item; each tool_use → a `function_call` item (block
+ * order preserved); a hitherto-forwarded `thinking` block whose `signature` carries OUR sentinel
+ * envelope (Phase 3's `buildSyntheticReasoningSignature`) is RECONSTRUCTED into a `reasoning` input
+ * item (RFC §4.1 step 3, Phase 5 forward round-trip) — the client echoing back exactly the block we
+ * rendered on a prior turn. Reasoning items are emitted FIRST (Responses' own convention: a reasoning
+ * item precedes the message/function_call items of the same turn, mirrored from the non-streaming
+ * response leg's `unshift`, `anthropic-to-responses.ts`).
+ *
+ * A `thinking` block with NO sentinel signature (a real, non-ours block — should never happen on this
+ * leg since Responses models never emit real Anthropic signatures, but defensive nonetheless) is
+ * dropped, not synthesized — mirrors the pre-Phase-5 forward drop for anything outside our own
+ * round-trip contract.
+ */
 function translateAssistantBlocks(blocks: Array<ContentBlockParam>, reqId: string | undefined): Array<ResponsesInputItem> {
   const items: Array<ResponsesInputItem> = []
+  const reasoningItems: Array<ResponsesInputItem> = []
   const textParts: Array<string> = []
 
   for (const block of blocks) {
@@ -153,10 +177,14 @@ function translateAssistantBlocks(blocks: Array<ContentBlockParam>, reqId: strin
         items.push(toolUseToFunctionCall(block))
         break
       }
-      case "thinking":
+      case "thinking": {
+        const reconstructed = reconstructReasoningInputItem(block, reqId)
+        if (reconstructed) reasoningItems.push(reconstructed)
+        break
+      }
       case "redacted_thinking": {
-        // No round-trip yet (Phase 5 wires encrypted_content reconstruction) — benign forward drop,
-        // mirrors the CC leg's same drop (this direction never synthesizes, only forgets prior-turn echo).
+        // No round-trip carrier for a redacted block (Anthropic redacts it entirely, no plaintext/no
+        // sentinel to recover) — benign forward drop, mirrors the CC leg's same drop.
         break
       }
       case "server_tool_use": {
@@ -170,7 +198,31 @@ function translateAssistantBlocks(blocks: Array<ContentBlockParam>, reqId: strin
   }
 
   if (textParts.length > 0) items.unshift({ type: "message", role: "assistant", content: [{ type: "output_text", text: textParts.join("") }] })
+  items.unshift(...reasoningItems)
   return items
+}
+
+/**
+ * Reconstruct a Responses `reasoning` input item from an echoed-back synthetic-reasoning `thinking`
+ * block (Phase 5 forward round-trip, RFC §4.1 step 3). Only fires for OUR sentinel-signed blocks
+ * (`isSyntheticReasoningSignature`) — a thinking block with a foreign/absent signature is not ours to
+ * reconstruct (dropped by the caller, never synthesized). `extractEncryptedReasoning` recovers the
+ * REAL upstream `encrypted_content` the sentinel envelope carried (Phase 3's `.done`-captured
+ * authoritative blob) — undefined payload (bare-prefix block, no `encrypted_content` was captured)
+ * still reconstructs a valid reasoning item with just the summary text, since a Responses reasoning
+ * item's `encrypted_content` is optional (RFC §7.2 probe (a): the upstream accepts empty/absent too).
+ */
+function reconstructReasoningInputItem(block: Extract<ContentBlockParam, { type: "thinking" }>, reqId: string | undefined): ResponsesInputItem | undefined {
+  if (!isSyntheticReasoningSignature(block.signature)) {
+    dropWarn("dropping a thinking block with a non-sentinel signature (not ours to round-trip — no synthesis)", reqId)
+    return undefined
+  }
+  const encryptedContent = extractEncryptedReasoning(block.signature)
+  return {
+    type: "reasoning",
+    summary: block.thinking.length > 0 ? [{ type: "summary_text", text: block.thinking }] : [],
+    ...(encryptedContent !== undefined && { encrypted_content: encryptedContent }),
+  }
 }
 
 /** User turn: each tool_result → its own `function_call_output` item; remaining text/image → a `message` item. */
