@@ -138,7 +138,7 @@ describe("RequestContext generation terminal ordering", () => {
 
     expect(terminalAtPublish).toMatchObject({ outcome: "failed" })
     expect(ctx.modelOperationTerminalRecord?.attempts[0]?.verdict).toBe("failed")
-    expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord)
+    expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord!)
   })
 
   test("abort commits and seals the canonical record before request.aborted publish", () => {
@@ -154,6 +154,6 @@ describe("RequestContext generation terminal ordering", () => {
 
     expect(terminalAtPublish).toMatchObject({ outcome: "aborted", attribution: { category: "client", code: "client-disconnected" } })
     expect(ctx.modelOperationTerminalRecord?.attempts[0]?.verdict).toBe("failed")
-    expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord)
+    expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord!)
   })
 })
