@@ -25,7 +25,6 @@ import {
   updateEntry,
 } from "~/lib/history"
 import { getDatabase } from "~/lib/history/sqlite/connection"
-import { runReaperOnce } from "~/lib/history/sqlite/reaper"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 

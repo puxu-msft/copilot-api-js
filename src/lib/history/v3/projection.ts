@@ -134,6 +134,10 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
     active: false,
     pinned: stored.pinned ?? false,
     lastUpdatedAt: record.identity.createdAt,
+    process:
+      record.identity.process?.bootTime !== undefined && record.identity.process.version !== undefined
+        ? (record.identity.process as HistoryEntry["process"])
+        : undefined,
     transport: record.routing?.transport as HistoryEntry["transport"],
     model: {
       requested: record.routing?.requestedModel ?? ingressMeta?.model,
@@ -201,6 +205,9 @@ export function recordToEntrySummary(record: ModelOperationRecord, stored: { pin
 export function recordMatchesQuery(record: ModelOperationRecord, options: QueryOptions & { operationKind?: string }): boolean {
   if (options.operationKind && options.operationKind !== "all" && record.identity.kind !== options.operationKind) return false
   if (options.sessionId && record.identity.sessionId !== options.sessionId) return false
+  if (options.agentId && record.identity.agentId !== options.agentId) return false
+  if (!options.agentId && options.mainAgentOnly && record.identity.agentId !== undefined) return false
+  if (options.pid !== undefined && record.identity.process?.pid !== options.pid) return false
   if (options.endpoint && record.ingress?.format !== options.endpoint) return false
   if (options.model) {
     const needle = options.model.toLowerCase()

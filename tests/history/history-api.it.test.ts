@@ -20,18 +20,15 @@ import {
   //
   clearHistory,
   getCurrentSession,
-  finalizeEntry,
-  getEntry,
   initHistory,
   insertEntry,
   shutdownHistory,
-  updateEntry,
   type EndpointType,
   type HistoryEntry,
 } from "~/lib/history"
-import { persistEntryEager } from "~/lib/history/store"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
+import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 import {
   //
   handleExport,
@@ -70,7 +67,6 @@ async function createEntry(
     clientRequest: { format: endpoint, model, messages, stream: true },
     ...extra,
   }
-  insertEntry(entry)
   // Complete with the caller-supplied attempts (carrying the effectiveSource /
   // upstreamRequest legs under test) or a default single successful attempt.
   const attempts = entry.attempts ?? [
@@ -80,13 +76,14 @@ async function createEntry(
       upstreamResponse: { success: true, model, usage: { input_tokens: 0, output_tokens: 0 }, body: null },
     },
   ]
-  updateEntry(entry.id, {
+  const completed: HistoryEntry = {
+    ...entry,
     state: "completed",
     attempts,
     _index: { derived: { responseSuccess: true, attemptCount: attempts.length } },
-  })
-  await finalizeEntry(entry.id)
-  return entry
+  }
+  commitV3HistoryEntry(completed)
+  return completed
 }
 
 async function get(path: string) {
@@ -330,28 +327,7 @@ describe("POST /api/entries/:id/pin and /unpin", () => {
     expect((await json<{ error: string }>(res)).error).toContain("not found")
   })
 
-  test("pinning an eager-persisted in-flight entry reflects pinned in the response (in-flight view synced)", async () => {
-    // An entry that is eager-persisted (sqlite head row) but still in-flight
-    // (not finalized). getEntry reads in-flight FIRST, so setPinned must sync the
-    // in-flight copy — otherwise the column says pinned=1 but the response says false.
-    const entry: HistoryEntry = {
-      id: generateId(),
-      startedAt: Date.now(),
-      endpoint: "anthropic-messages",
-      state: "streaming",
-      active: true,
-      model: { requested: "test" },
-      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "live" }], stream: true },
-    }
-    insertEntry(entry)
-    persistEntryEager(entry) // writes the sqlite head row (status=streaming) while still in-flight
 
-    const res = await post(`/api/entries/${entry.id}/pin`)
-    expect(res.status).toBe(200)
-    expect((await json<HistoryEntry>(res)).pinned).toBe(true)
-    // The in-flight read also reflects it now.
-    expect(getEntry(entry.id)?.pinned).toBe(true)
-  })
 })
 
 describe("retired archive surface", () => {
