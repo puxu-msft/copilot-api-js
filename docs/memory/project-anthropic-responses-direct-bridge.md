@@ -7,7 +7,7 @@ metadata:
   originSessionId: 6d3ca528-62fc-4185-bcfb-7992d9022f37
 ---
 
-**anthropic↔responses 直接桥**（2026-07-14 RFC 定稿、两 reviewer 审查中、未实现）。源起用户裁决「non-CC↔non-CC 经 CC 中转有损违背 richest-data-flow」，接手 [handoff](../todo/anthropic-responses-direct-mapping-handoff.md)（两轮对抗审查硬发现）。
+**anthropic↔responses 直接桥**（2026-07-15 **Phase 0-7 全 landed + 4 次合并态异模型对抗审查 + 收官**）。源起用户裁决「non-CC↔non-CC 经 CC 中转有损违背 richest-data-flow」，接手 [handoff](../todo/anthropic-responses-direct-mapping-handoff.md)（两轮对抗审查硬发现，多经探针精化/推翻）。权威终态 = RFC + ADR [2026-07-14-lossless-per-pair-bridge](../decisions/2026-07-14-lossless-per-pair-bridge.md) + DESIGN.md「anthropic↔responses 直接桥」行。
 
 **四个中心分叉的用户裁决**（brainstorming 收敛）：
 1. **hub 形状** → 重塑 hub-translate 为 **per-pair `(source,target)` 桥选择器**（全面显式桥表、漏对=编译错），非「保住 CC-hub 挖洞」。用户明确「全面显式桥接」。**关键校正**：cell-assembly C0-C6 后出站层**已是 `(cf×te)` 穷尽笛卡尔积**，托管结构已存在，本 RFC 只重塑 hub-translate **内部**翻译原语选择、不动 cell-assembly/driver。
