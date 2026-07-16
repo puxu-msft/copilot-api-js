@@ -16,20 +16,12 @@ export {
 } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"
 export { searchContains, searchHistory } from "./search"
-// Scoped delete raw primitive — reuses read.ts `applyWhere`, deletes terminal
-// rows only (never in-flight head rows). Domain `deleteSession` lives in
-// ./sessions; this is the multi-filter counterpart consumed by the DELETE
-// /api/entries handler.
-export { deleteEntries } from "./sqlite/write"
 export {
-  deleteSession,
   getAgentIdFromHeaders,
   getCurrentSession,
   getSessionEntries,
   getSessionIdFromHeaders,
   getSessionSummaries,
-  registerResponseSession,
-  resolveResponseSessionId,
 } from "./sessions"
 export {
   historyState,
@@ -39,7 +31,6 @@ export {
   setHistoryPublisher,
   shutdownHistory,
   startHistoryBackfills,
-  startSearchIndexBackfill,
   stopHistoryBackgroundWork,
 } from "./state"
 export { exportHistory, getStats } from "./stats"

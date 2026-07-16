@@ -232,14 +232,18 @@ export function handleSearch(c: Context) {
   // 其余 10 个结构化维与 list / delete 完全一致，享受单一事实源、免于将来的解析漂移。
   const { search: _search, ...filters } = parseListFilters(query)
 
-  const result = searchHistory({
-    source,
-    q: query.q || "",
-    limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
-    cursor: query.cursor || undefined,
-    filters,
-  })
-  return c.json(result)
+  try {
+    const result = searchHistory({
+      source,
+      q: query.q || "",
+      limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
+      cursor: query.cursor || undefined,
+      filters,
+    })
+    return c.json(result)
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 501)
+  }
 }
 
 /**
@@ -255,5 +259,9 @@ export function handleSearchContains(c: Context) {
   if (!hash) {
     return c.json({ error: "hash query parameter is required" }, 400)
   }
-  return c.json({ hash, reqIds: searchContains(hash) })
+  try {
+    return c.json({ hash, reqIds: searchContains(hash) })
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 501)
+  }
 }
