@@ -337,6 +337,7 @@ export interface SettleAttemptInput {
   readonly upstreamResponse?: OperationTrackInput
   readonly reason?: string
   readonly error?: unknown
+  readonly metadata?: Readonly<Record<string, unknown>>
   readonly extensions?: Readonly<Record<string, unknown>>
 }
 
@@ -772,6 +773,9 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       if (settlement.upstreamResponse !== undefined) attempt.upstreamResponse = freezeTrack(settlement.upstreamResponse)
       if (settlement.reason !== undefined) attempt.reason = settlement.reason
       if (settlement.error !== undefined) attempt.error = freezeCapturedValue(settlement.error)
+      if (settlement.metadata !== undefined) {
+        attempt.metadata = freezeCapturedValue({ ...(attempt.metadata as Readonly<Record<string, unknown>> | undefined), ...settlement.metadata })
+      }
       if (settlement.extensions !== undefined) attempt.settlementExtensions = freezeExtensions(settlement.extensions)
       if (settlement.verdict === "committed") committedAttempt = handle
     },

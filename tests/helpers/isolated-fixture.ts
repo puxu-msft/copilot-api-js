@@ -38,6 +38,7 @@ import { resetProtectStreamingStatsForTests } from "~/lib/anthropic/protect-stre
 import { resetToolInputRepairStatsForTests } from "~/lib/anthropic/tool-input-repair-stats"
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
+import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
 import {
   //
   __setTerminalWriterForTests,
@@ -98,6 +99,7 @@ import {
  */
 export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promise<void> }> = [
   { name: "clearAnthropicFeatureNegotiationForTests", reset: clearAnthropicFeatureNegotiationForTests },
+  { name: "resetModelOperationTerminalRegistryForTests", reset: resetModelOperationTerminalRegistryForTests },
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },
   { name: "resetAllLimitsForTesting", reset: resetAllLimitsForTesting },
