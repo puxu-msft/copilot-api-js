@@ -372,14 +372,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   // Phase 2.7: Graceful-restart startup guard (bare-metal path only)
   // ===========================================================================
-  // Must run AFTER config load (needs config.pidfile) but strictly BEFORE
-  // Phase 3's initHistory(reclaim) below — reclaimOrphanedActiveRows reads the
-  // predecessor-registry to skip a live predecessor's in-flight rows, and that
-  // registry has to already carry the predecessor by the time initHistory runs
-  // (lifecycle.md「overlap 共享状态安全 ①」). resolveManualStartup collapses the
-  // supervisor branch + decideStartup + setExcludedPredecessor into one pure,
-  // unit-tested function (tests/restart/runserver-wiring.unit.test.ts); this
-  // call site only does the IO reaction (exit/log/record) on its result.
+  // resolveManualStartup collapses the supervisor branch + decideStartup into
+  // one pure, unit-tested function (tests/restart/runserver-wiring.unit.test.ts);
+  // this call site only does the IO reaction (exit/log/record) on its result.
+  // Overlap-window data safety (reclaim exclusion / VACUUM skip) no longer
+  // depends on this decision — it's judged by process liveness directly in
+  // history/sqlite/connection.ts (lifecycle.md「overlap 共享状态安全 ①⑤」).
   const pidfilePath = config.pidfile ?? PATHS.PIDFILE
   const manualStartup = resolveManualStartup({ pidfilePath, restart: options.restart, supervised: isSupervised() })
   let takeoverPredecessor: PidfileContent | null = null

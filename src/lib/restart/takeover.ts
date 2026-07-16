@@ -3,7 +3,6 @@ import consola from "consola"
 import type { PidfileContent } from "./pidfile"
 
 import { readLivePredecessor } from "./pidfile"
-import { setExcludedPredecessor } from "./predecessor-registry"
 
 /**
  * 裸手动路径的启动决策（lifecycle.md「路径一」+「pidfile 活性检查」）。
@@ -28,22 +27,17 @@ export function decideStartup(args: { pidfilePath: string; hasRestartFlag: boole
 }
 
 /**
- * runServer 的裸手动启动决策入口（Task 12）——把「supervisor 分流 + decideStartup +
- * setExcludedPredecessor」三步收拢为一个可单测的纯函数，使 runServer 只需按返回的
- * `kind` 做 IO 编排（exit(1)/记 predecessor/继续），不必自己内联这段承重逻辑。
+ * runServer 的裸手动启动决策入口（Task 12）——把「supervisor 分流 + decideStartup」
+ * 两步收拢为一个可单测的纯函数，使 runServer 只需按返回的 `kind` 做 IO 编排
+ * （exit(1)/记 predecessor/继续），不必自己内联这段逻辑。
  *
- * 关键不变量：`takeover` 分支必须在返回前就调 `setExcludedPredecessor`——调用方
- * （runServer）会在紧随其后的 `initHistory`（reclaim）之前拿到这个结果，reclaim 要
- * 排除前任在途行就依赖此刻寄存器已经写入（lifecycle.md「overlap 共享状态安全 ①」）。
- * `refuse`/`proceed`/`skip` 均不登记寄存器——只有真正要接管时才需要排除前任。
+ * 不再登记任何排除寄存器——overlap 期间「reclaim 排除前任 / VACUUM 跳过」现按
+ * `isProcessAlive(owner_pid)` 的进程存活性裁决（lifecycle.md「overlap 共享状态安全
+ * ①⑤」），环境无关、三路径统一，不依赖 takeover 分支是否被触发。
  */
 export function resolveManualStartup(args: { pidfilePath: string; restart: boolean; supervised: boolean; selfPid?: number }): ManualStartupResult {
   if (args.supervised) return { kind: "skip" }
-  const decision = decideStartup({ pidfilePath: args.pidfilePath, hasRestartFlag: args.restart, selfPid: args.selfPid })
-  if (decision.kind === "takeover") {
-    setExcludedPredecessor({ pid: decision.predecessor.pid, bootTime: decision.predecessor.bootTime })
-  }
-  return decision
+  return decideStartup({ pidfilePath: args.pidfilePath, hasRestartFlag: args.restart, selfPid: args.selfPid })
 }
 
 /** 向 live 前任发 SIGUSR2 交接信号。never-throw：前任恰好在此刻退出（ESRCH）不算错。 */
