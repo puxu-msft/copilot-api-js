@@ -12,7 +12,9 @@
  *  4. the old process's in-flight slow request completes undisturbed (not aborted by
  *     the takeover), and the old process then exits.
  *  5. the old process's in-flight request's history row is NOT reclaimed to
- *     "interrupted" by the new process (predecessor-registry exclusion, Task 6/7) —
+ *     "interrupted" by the new process (process-liveness reclaim gate — the old
+ *     process's own pid is alive at reclaim time, so its row is skipped, Task 6/7,
+ *     later revised to a liveness check away from the retired predecessor-registry) —
  *     it settles "completed".
  *
  * Real spawn, no mocked OS primitives: exercises the actual `Bun.serve({reusePort:true})`

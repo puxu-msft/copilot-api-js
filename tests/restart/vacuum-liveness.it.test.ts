@@ -14,7 +14,6 @@ import {
   getDatabase,
   openDatabase,
 } from "~/lib/history/sqlite/connection"
-import { setExcludedPredecessor } from "~/lib/restart/predecessor-registry"
 
 /** PRAGMA single-int helper mirroring connection.ts. */
 function pragmaInt(name: string): number {
@@ -22,15 +21,21 @@ function pragmaInt(name: string): number {
   return Number(Object.values(row)[0])
 }
 
+const DEAD_PID = 2 ** 30 // astronomically unlikely to be a real pid on any system
+
 const tmpDirs: Array<string> = []
 function freshDbPath(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-vacuum-takeover-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-vacuum-liveness-"))
   tmpDirs.push(dir)
   return path.join(dir, "history.db")
 }
 
-/** Inflate a fresh DB past the maybeVacuumOnStartup threshold (freelist ratio ≥ 25% AND ≥ 64 MB). */
-function bloatPastVacuumThreshold(dbPath: string): void {
+/**
+ * Inflate a fresh DB past the maybeVacuumOnStartup threshold (freelist ratio ≥
+ * 25% AND ≥ 64 MB), then optionally leave one active row behind (owned by
+ * `activeOwnerPid`) to exercise the VACUUM liveness gate.
+ */
+function bloatPastVacuumThreshold(dbPath: string, activeOwnerPid?: number): void {
   const db = openDatabase(dbPath)
   const blob = new Uint8Array(64 * 1024).fill(0x41) // 64 KB per row
   db.prepare("INSERT INTO entries_v2 (id, started_at, status, blob_gz) VALUES ('seed', 1, 'completed', ?)").run(new Uint8Array([0x28, 0xb5, 0x2f, 0xfd]))
@@ -38,31 +43,45 @@ function bloatPastVacuumThreshold(dbPath: string): void {
   // 64 KB * 1100 rows ≈ 68 MB — clears both the 64 MB floor and the 25% freelist ratio once deleted.
   for (let i = 0; i < 1100; i++) insert.run(`s${i}`, blob)
   db.exec("DELETE FROM entry_stages")
+  if (activeOwnerPid !== undefined) {
+    db.prepare("INSERT INTO entries_v2 (id, started_at, status, pid, boot_time, blob_gz) VALUES ('active-owner', ?, 'streaming', ?, ?, ?)").run(
+      Date.now(),
+      activeOwnerPid,
+      1,
+      new Uint8Array([0x28, 0xb5, 0x2f, 0xfd]),
+    )
+  }
   closeDatabase()
 }
 
 afterEach(() => {
-  setExcludedPredecessor(null)
   closeDatabase()
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test("predecessor 非空时 openDatabase 跳过启动 VACUUM（freelist 保持未回收）", () => {
+test("存在存活的非自己 owner 的 active 行 → openDatabase 跳过启动 VACUUM（freelist 保持未回收）", () => {
   const dbPath = freshDbPath()
-  bloatPastVacuumThreshold(dbPath)
+  bloatPastVacuumThreshold(dbPath, 1) // pid=1（init）恒存活，代表仍在服务的别的进程
 
-  setExcludedPredecessor({ pid: 1, bootTime: 1 })
   openDatabase(dbPath)
 
   // 跳过时 freelist 应仍处于膨胀状态（未被 VACUUM 压实）。
   expect(pragmaInt("freelist_count")).toBeGreaterThan(0)
 })
 
-test("predecessor 为空时（非接管路径）行为不变——照常跑启动 VACUUM", () => {
+test("active 行的 owner 已死 → openDatabase 照常跑启动 VACUUM（freelist 归零）", () => {
+  const dbPath = freshDbPath()
+  bloatPastVacuumThreshold(dbPath, DEAD_PID)
+
+  openDatabase(dbPath)
+
+  expect(pragmaInt("freelist_count")).toBe(0)
+})
+
+test("无 active 行（非接管路径）→ 照常跑启动 VACUUM，行为不变", () => {
   const dbPath = freshDbPath()
   bloatPastVacuumThreshold(dbPath)
 
-  // getExcludedPredecessor() 恒 null（未 set）——回归既有行为：VACUUM 应该跑，freelist 归零。
   openDatabase(dbPath)
 
   expect(pragmaInt("freelist_count")).toBe(0)
