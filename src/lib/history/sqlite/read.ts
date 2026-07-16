@@ -5,6 +5,7 @@ import type {
   QueryOptions,
 } from "~/lib/history/types"
 
+import { getArchiveDb } from "./archive-db"
 import { getDatabase } from "./connection"
 import {
   //
@@ -15,6 +16,17 @@ import {
 
 /** Portable bind-parameter type for SQLite (matches better-sqlite3 and bun:sqlite). */
 type SqlBinding = string | number | bigint | Buffer | null
+
+/**
+ * Resolve which physical DB a read hits from the view-domain selector (spec §2/§4).
+ * `tier="archive"` reads the archive connection (its own entries_v2 = tier-1 rows);
+ * everything else (default) reads the HOT store. The SAME SQL runs against either
+ * connection — the archive.db is built from the identical schema — so no query
+ * needs schema-qualified table names. The two views NEVER co-list.
+ */
+function resolveReadDb(tier: QueryOptions["tier"]): ReturnType<typeof getDatabase> {
+  return tier === "archive" ? getArchiveDb() : getDatabase()
+}
 
 /** Batch-load stage rows for a set of entry ids, grouped by entry_id (avoids N+1). */
 function loadStagesFor(db: ReturnType<typeof getDatabase>, ids: Array<string>): Map<string, Array<StageRow>> {
@@ -97,7 +109,7 @@ export function applyWhere(opts: QueryOptions | undefined): WhereClause {
 }
 
 export function queryEntries(opts?: QueryOptions): Array<HistoryEntry> {
-  const db = getDatabase()
+  const db = resolveReadDb(opts?.tier)
   const { sql, params } = applyWhere(opts)
   const limit = opts?.limit ?? 100
   const rows = db.prepare(`SELECT * FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`).all(...params, limit, 0) as Array<EntryRow>
@@ -110,20 +122,62 @@ export function queryEntries(opts?: QueryOptions): Array<HistoryEntry> {
 
 type SummaryRow = Omit<EntryRow, "blob_gz">
 
+/** The summary projection column list (shared by the HOT arm and the archive tier-1 arm). */
+const SUMMARY_COLS = `id, session_id, agent_id, started_at, ended_at, duration_ms,
+        model, endpoint, raw_path, transport, status,
+        input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
+        stop_reason, error_message,
+        message_count, preview_text, response_preview_text, pid, pinned,
+        request_bytes, response_bytes, multiplier`
+
+/**
+ * tier2_manifest projected to the SAME summary shape/order as SUMMARY_COLS, so it
+ * UNION ALLs cleanly with the tier-1 arm. The manifest keys the entry by
+ * `entry_id` (→ `id`) and has no `pid`/`pinned` (sealed cold rows are never
+ * pinned and carry no live pid) → NULL / 0.
+ */
+const MANIFEST_SUMMARY_COLS = `entry_id AS id, session_id, agent_id, started_at, ended_at, duration_ms,
+        model, endpoint, raw_path, transport, status,
+        input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
+        stop_reason, error_message,
+        message_count, preview_text, response_preview_text, NULL AS pid, 0 AS pinned,
+        request_bytes, response_bytes, multiplier`
+
+/**
+ * WHERE for the tier2_manifest arm. Reuses applyWhere for the shared columns but
+ * DROPS the `pid` predicate (manifest has no pid column). A pid filter therefore
+ * excludes ALL sealed rows (`AND 1 = 0`) — correct, since sealed cold entries have
+ * no live pid to match.
+ */
+function applyWhereManifest(opts: QueryOptions | undefined): WhereClause {
+  const base = applyWhere({ ...opts, pid: undefined })
+  if (opts?.pid === undefined) return base
+  return base.sql ? { sql: `${base.sql} AND 1 = 0`, params: base.params } : { sql: "WHERE 1 = 0", params: [] }
+}
+
 export function querySummaries(opts?: QueryOptions): Array<EntrySummary> {
-  const db = getDatabase()
+  const db = resolveReadDb(opts?.tier)
   const { sql, params } = applyWhere(opts)
   const limit = opts?.limit ?? 100
+
+  // Archive view = tier-1 (archive.entries_v2) UNION ALL tier-2 (tier2_manifest,
+  // meta-only). Both live in the archive connection; the two tiers never overlap
+  // (a row is in exactly one), so UNION ALL needs no de-dup (spec §2/§4).
+  if (opts?.tier === "archive") {
+    const m = applyWhereManifest(opts)
+    const rows = db
+      .prepare(
+        `SELECT ${SUMMARY_COLS} FROM entries_v2 ${sql}
+         UNION ALL
+         SELECT ${MANIFEST_SUMMARY_COLS} FROM tier2_manifest ${m.sql}
+         ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+      )
+      .all(...params, ...m.params, limit, 0) as Array<SummaryRow>
+    return rows.map((r) => rowToSummary(r))
+  }
+
   const rows = db
-    .prepare(
-      `SELECT id, session_id, agent_id, started_at, ended_at, duration_ms,
-              model, endpoint, raw_path, transport, status,
-              input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
-              stop_reason, error_message,
-              message_count, preview_text, response_preview_text, pid, pinned,
-              request_bytes, response_bytes, multiplier
-         FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
-    )
+    .prepare(`SELECT ${SUMMARY_COLS} FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`)
     .all(...params, limit, 0) as Array<SummaryRow>
   return rows.map((r) => rowToSummary(r))
 }
@@ -177,10 +231,9 @@ function rowToSummary(r: SummaryRow): EntrySummary {
  * Load lightweight summaries for a set of ids, keyed by id (no head-blob decode).
  * Used by the dedicated search path to attach an `EntrySummary` to each result.
  */
-export function loadSummariesByIds(ids: Array<string>): Map<string, EntrySummary> {
+export function loadSummariesByIds(ids: Array<string>, db: ReturnType<typeof getDatabase> = getDatabase()): Map<string, EntrySummary> {
   const map = new Map<string, EntrySummary>()
   if (ids.length === 0) return map
-  const db = getDatabase()
   const placeholders = ids.map(() => "?").join(",")
   const rows = db
     .prepare(
@@ -197,8 +250,8 @@ export function loadSummariesByIds(ids: Array<string>): Map<string, EntrySummary
   return map
 }
 
-export function getEntryById(id: string): HistoryEntry | undefined {
-  const db = getDatabase()
+export function getEntryById(id: string, tier?: QueryOptions["tier"]): HistoryEntry | undefined {
+  const db = resolveReadDb(tier)
   const row = db.prepare("SELECT * FROM entries_v2 WHERE id = ?").get(id) as EntryRow | undefined
   if (!row) return undefined
   const stages = loadStagesFor(db, [id]).get(id) ?? []
@@ -206,7 +259,7 @@ export function getEntryById(id: string): HistoryEntry | undefined {
 }
 
 export function queryEntryCount(opts?: QueryOptions): number {
-  const db = getDatabase()
+  const db = resolveReadDb(opts?.tier)
   const { sql, params } = applyWhere(opts)
   const row = db.prepare(`SELECT COUNT(*) AS n FROM entries_v2 ${sql}`).get(...params) as { n: number }
   return row.n

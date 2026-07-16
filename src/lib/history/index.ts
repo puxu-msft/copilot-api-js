@@ -6,6 +6,7 @@
 
 // Store (persistence and query)
 export {
+  archiveNow,
   clearHistory,
   deleteEntries,
   deleteSession,
@@ -37,6 +38,7 @@ export {
   setHistoryPublisher,
   setPinned,
   shutdownHistory,
+  runArchiveCooldownNow,
   startHistoryBackfills,
   startSearchIndexBackfill,
   stopHistoryBackgroundWork,

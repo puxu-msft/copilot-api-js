@@ -8,13 +8,13 @@
 
 **Tech Stack:** Hono 4.12.27（`server.routes` 公开 API + `hono/router/trie-router` 的 `TrieRouter`）；consola；Zod 4；`bun test`。
 
-## 实施状态（2026-07-14）
+## 实施状态（2026-07-14，全部完成）
 
 - ✅ **Task 1**（commit `6ba4eb71`）：schema + state + config→state 接线，7 test 绿。
 - ✅ **Task 2**（commit `9057abb0`）：`unknown-endpoint.ts` 三态分类 + 影子 TrieRouter，10 test 绿。
 - ✅ **Task 3**（commit `924bd0bc`）：server.ts notFound 405 拆分 + finalizer，9 集成 test 绿（真实 createServer）。
-- 🟡 **Task 4 部分**（commit `55b3d032`）：`.all()` 守卫测试（红绿对照验证）+ config.example.yaml + docs/API.md 已落地。
-- ⏸️ **Task 4 推迟三项发布物**：`config.yaml`（bundled 默认）/ `config.schema.json`（IDE schema）/ `docs/DESIGN.md`（可选架构行）——因**并发 peer 会话正在重写 config.yaml（model_overrides→model_mappings，304 行未提交）+ schema.ts**，pathspec 提交会侵占 peer 工作、schema.json 生成会领先 peer 的 schema commit。**功能不受影响**（`CONFIG_MANAGED_DEFAULTS` 已保证 warn/warn 默认、schema.ts 校验已生效、行为已在 API.md 文档化）。补齐条件：peer 提交其 config.yaml/schema.ts 重构、工作树这两文件 clean 后，`bun run generate:config-schema` + 加 config.yaml 默认块 + pathspec commit。
+- ✅ **Task 4**（commit `55b3d032` + `05aeecd2`）：`.all()` 守卫（红绿对照）+ config.example.yaml + docs/API.md + config.yaml bundled 默认 + docs/DESIGN.md 架构行 + config-hot-reload 完整性登记（两 leaf EXEMPT）。config.schema.json 已含定义（peer 生成时带上）。
+- 曾因并发 peer 会话重写 config.yaml/schema.ts（model_overrides→model_mappings）短暂推迟三项发布物，peer 提交后已全部补齐。
 
 ## Global Constraints
 

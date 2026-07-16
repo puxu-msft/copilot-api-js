@@ -5,10 +5,14 @@
  * extraction is byte-for-byte identical (the C0 ws golden + responses http goldens lock it).
  *
  * Three wire shapes reach the RESPONSES leg / the responses-fallback CHAT leg, dispatched by clientFormat:
- *   - `prepareResponsesDirectWire` — `(openai-responses, /responses)` DIRECT: Responses-shaped env.body →
- *     `prepareResponsesRequest`. R1/HIGH-A corner: this leg's retry stack is the Responses stack (no
- *     auto-truncate, maxRetries 1) — encoded in RETRY_SEMANTICS, not here.
- *   - `prepareViaResponsesWire` — `(openai-cc|gemini|anthropic, /responses)` via-responses/FORWARD: a
+ *   - `prepareResponsesDirectWire` — `(openai-responses, /responses)` DIRECT AND `(anthropic, /responses)`
+ *     FORWARD (RFC 2026-07-14-anthropic-responses-direct-bridge §3): both reach `prepareWire` with an
+ *     ALREADY Responses-shaped `env.body` (openai-responses via translateOut identity; anthropic via the
+ *     hub's direct anthropic→responses bridge) → `prepareResponsesRequest`. R1/HIGH-A corner: the
+ *     openai-responses cell's retry stack is the Responses stack (no auto-truncate, maxRetries 1) —
+ *     encoded in RETRY_SEMANTICS, not here; the anthropic cell's retry stack is ALSO the Responses stack
+ *     (`cc-family-strategies.ts`'s `isAnthropicDirectResponsesLeg`), but at `maxReactiveRetries` (not 1).
+ *   - `prepareViaResponsesWire` — `(openai-cc|gemini, /responses)` via-responses/FORWARD: a
  *     CC-shaped env.body → CC→Responses translation (+ dropped-params warning + normalizeCallIds) →
  *     `prepareResponsesRequest`. The auto-truncate baseline stays CC-shaped (translation deferred to wire).
  *   - `prepareResponsesFallbackWire` — `(openai-responses, /chat)` FALLBACK: a Responses-shaped env.body →
@@ -34,7 +38,11 @@ import type {
   PreparedRequest,
   RequestSample,
 } from "~/lib/pipeline/types"
-import type { ChatCompletionsPayload, Message } from "~/types/api/openai-chat-completions"
+import type {
+  //
+  ChatCompletionsPayload,
+  Message,
+} from "~/types/api/openai-chat-completions"
 import type {
   //
   ResponsesInputItem,
@@ -111,10 +119,17 @@ export function prepareResponsesDirectWire(env: RequestEnvelope): PreparedReques
 }
 
 /**
- * `(openai-cc|gemini|anthropic, /responses)` via-responses wire: env.body is CC-shaped → O10 fill →
+ * `(openai-cc|gemini, /responses)` via-responses wire: env.body is CC-shaped → O10 fill →
  * CC→Responses translation (+ dropped-params warning, deduped on ctx) → optional normalizeCallIds →
  * `prepareResponsesRequest`. Extracted VERBATIM from the openai-cc codec's `prepareOpenAiCcWire` RESPONSES
  * branch (C4). Idempotent (pure function of env.body + model + the once-recorded ctx warning).
+ *
+ * `(anthropic, /responses)` FORWARD does NOT reach this function — its body is ALREADY Responses-shaped
+ * (RFC 2026-07-14-anthropic-responses-direct-bridge §2.3/§3 direct bridge — the hub's `translateOut`
+ * produces a Responses body directly, skipping CC), so `openai-responses-cell.ts`'s `bodyIsResponsesShaped`
+ * routes it through `prepareResponsesDirectWire` instead (the SAME core the openai-responses DIRECT cell
+ * uses — a CC→Responses re-translation here would be a double-translation / garbage request, and was
+ * previously a byte-identical duplicate branch bolted onto this via-responses path — cleanup post-subtask-A).
  */
 export function prepareViaResponsesWire(env: RequestEnvelope): PreparedRequest {
   const model = env.model as Model | undefined
@@ -203,9 +218,14 @@ export function sampleResponsesDirectWireTrack(wire: PreparedRequest, env: Reque
 }
 
 /**
- * `(openai-cc|gemini|anthropic, /responses)` via-responses sampler: effective = CC-shaped env.body
+ * `(openai-cc|gemini, /responses)` via-responses sampler: effective = CC-shaped env.body
  * (`openai-chat-completions`), wire = Responses `input` items (`openai-responses`). Extracted VERBATIM
  * from the openai-cc codec's `sampleOpenAiCcRequest` RESPONSES branch (C4).
+ *
+ * `(anthropic, /responses)` FORWARD does NOT reach this function — its body is ALREADY Responses-shaped
+ * (the direct bridge, RFC 2026-07-14 §2.3/§3), so `openai-responses-cell.ts`'s `bodyIsResponsesShaped`
+ * samples it via `sampleResponsesDirectWireTrack` instead (cleanup post-subtask-A: this file previously
+ * carried a byte-identical anthropic-only branch duplicating that sampler).
  */
 export function sampleViaResponsesWireTrack(wire: PreparedRequest, env: RequestEnvelope): RequestSample {
   const effBody = env.body as { model?: unknown; messages?: unknown }

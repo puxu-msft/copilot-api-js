@@ -2,15 +2,14 @@ import type { Context } from "hono"
 
 import {
   //
-  clearHistory,
-  deleteEntries,
-  deleteSession,
+  archiveNow,
   exportHistory,
   getEntry,
   getHistorySummaries,
   getSessionSummaries,
   getStats,
   isHistoryEnabled,
+  runArchiveCooldownNow,
   searchContains,
   searchHistory,
   setPinned,
@@ -43,6 +42,9 @@ function parseListFilters(query: Record<string, string>): QueryOptions {
     agentId: query.agentId || undefined,
     mainAgentOnly: query.mainAgentOnly === "true" ? true : undefined,
     pid: query.pid ? Number.parseInt(query.pid, 10) : undefined,
+    // View-domain selector (tiered-archive): `?tier=archive` reads the archive
+    // view (archive.db); default/absent = HOT. Applied to list / detail / search.
+    tier: query.tier === "archive" ? "archive" : undefined,
   }
 }
 
@@ -89,7 +91,7 @@ export function handleGetEntry(c: Context) {
   if (!id) {
     return c.json({ error: "Entry id is required" }, 400)
   }
-  const entry = getEntry(id)
+  const entry = getEntry(id, c.req.query("tier") === "archive" ? "archive" : undefined)
 
   if (!entry) {
     return c.json({ error: "Entry not found" }, 404)
@@ -172,16 +174,14 @@ export function handleUnpinEntry(c: Context) {
 }
 
 /**
- * DELETE /history/api/entries — parameterized clear.
- *
- * With NO filters it is the historical clear-all (`clearHistory`, wipes the whole
- * store) → `{ success, message }`. With any filter present it is a scoped delete
- * (`deleteEntries`, mirrors the list query's WHERE via read.ts `applyWhere`, never
- * touches in-flight head rows) → `{ success, deleted: N }` so the caller learns
- * exactly how many terminal rows were removed. `cursor`/`limit`/`direction`/
- * `terminalOnly` are pagination-only and intentionally NOT treated as filters.
+ * POST /history/api/archive-now — the product-facing replacement for the removed
+ * delete API (spec §3.6). Moves the terminal, non-pinned HOT entries matching the
+ * list filters (or ALL of them when no filter is present) into tier-1 cold archive
+ * instead of deleting them (never-truly-delete red line). `cursor`/`limit`/
+ * `direction`/`terminalOnly` are pagination-only and NOT treated as filters.
+ * Returns `{ success, archived: N }`.
  */
-export function handleDeleteEntries(c: Context) {
+export function handleArchiveNow(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
@@ -189,13 +189,24 @@ export function handleDeleteEntries(c: Context) {
   const query = c.req.query()
   const filters = parseListFilters(query)
   const hasFilter = Object.values(filters).some((v) => v !== undefined)
-  if (!hasFilter) {
-    clearHistory()
-    return c.json({ success: true, message: "History cleared" })
-  }
+  const archived = archiveNow(hasFilter ? filters : undefined)
+  return c.json({ success: true, archived })
+}
 
-  const deleted = deleteEntries(filters)
-  return c.json({ success: true, deleted })
+/**
+ * POST /history/api/archive-cooldown — run the standard AGE-based HOT→tier-1
+ * cool-down on demand (the same pass the startup + periodic reaper run), draining
+ * the whole `> hot_days` backlog now without waiting for the next reaper tick.
+ * RESPECTS `hot_days` (only rows older than it move) + pinned exemption — distinct
+ * from `archive-now`, which force-archives all/filtered rows regardless of age.
+ * Returns `{ success, migrated: N }`.
+ */
+export function handleArchiveCooldown(c: Context) {
+  if (!isHistoryEnabled()) {
+    return c.json({ error: "History recording is not enabled" }, 400)
+  }
+  const migrated = runArchiveCooldownNow()
+  return c.json({ success: true, migrated })
 }
 
 export function handleGetStats(c: Context) {
@@ -224,25 +235,6 @@ export function handleExport(c: Context) {
   }
 
   return c.body(data)
-}
-
-/** Session management endpoints */
-export function handleDeleteSession(c: Context) {
-  if (!isHistoryEnabled()) {
-    return c.json({ error: "History recording is not enabled" }, 400)
-  }
-
-  const id = c.req.param("id")
-  if (!id) {
-    return c.json({ error: "Session id is required" }, 400)
-  }
-  const success = deleteSession(id)
-
-  if (!success) {
-    return c.json({ error: "Session not found" }, 404)
-  }
-
-  return c.json({ success: true, message: "Session deleted" })
 }
 
 const SEARCH_SOURCES: ReadonlySet<SearchSource> = new Set<SearchSource>(["inbound", "rewrites-req", "rewrites-resp", "req-headers", "resp-headers"])

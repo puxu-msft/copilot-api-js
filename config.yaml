@@ -280,6 +280,21 @@ history:
   # Seconds between reaper passes that trim each bucket (0 = disabled, default: 600)
   # reaper 修剪各桶的周期秒数（0 = 禁用，默认 600）
   reaper_interval: 3600
+  # 三层降温冷归档（HOT→tier-1→tier-2）：旧数据不再到量硬删、而是逐级降温到高压缩比冷存储、永不真删。
+  # Tiered cold-archive: old data is cooled down to high-ratio cold storage instead of hard-deleted — never truly deleted.
+  archive:
+    # 总开关（默认 true）。false = 退回现状（数量 reaper 硬删、无归档）。 / Master switch (default true); false = legacy count-based hard delete.
+    enabled: true
+    # 热库保留天数；此前的终态非 pinned 行降温到 tier-1（默认 3）。 / HOT retention days; older terminal non-pinned rows cool to tier-1.
+    hot_days: 3
+    # archive.db(tier-1) 大小上限，超限触发 T1→T2 封存（默认 "2GB"）。 / tier-1 size cap; over it triggers T1→T2 sealing.
+    tier1_size_cap: "2GB"
+    # tier-2 seal 单元数告警阈值（默认 200，仅告警不删）。 / tier-2 seal-unit count warn threshold (warn only, never delete).
+    tier2_warn_count: 200
+    # tier-2 总量告警阈值（默认 "500MB"，仅告警不删）。 / tier-2 total-bytes warn threshold (warn only).
+    tier2_warn_bytes: "500MB"
+    # archive.db + 封存文件落盘目录（留空=同 history.db 同级）。 / archive dir; empty = same dir as history.db.
+    # dir: ""
 
 # ============================================================================
 # Telemetry (tiered persistence) / 遥测（分层持久化）
@@ -959,3 +974,16 @@ hooks:
   # Load the hook module. Default false — the feature is fully off unless true.
   # 是否加载 hook 模块。默认 false——除非 true 否则特性完全关闭。
   enabled: false
+
+# ============================================================================
+# Unknown HTTP Endpoint Logging / 未知 HTTP 端点日志
+# ============================================================================
+# 打到代理但没匹配任何业务路由的请求（客户端打错 path / base URL / method）按归类状态码
+# 分别控制日志级别。日志经 consola → TUI + copilot-api.log。
+# Requests that reach the proxy but match no business route, logged per classified status.
+#   not_found          → 404: real routing miss / 真正未匹配的路径
+#   method_not_allowed → 405: path exists, wrong method (returns 405 + Allow header)
+# Levels: silent (off) | debug | info | warn | error. Default warn/warn.
+unknown_endpoint_logging:
+  not_found: warn
+  method_not_allowed: warn

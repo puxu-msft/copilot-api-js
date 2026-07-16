@@ -27,6 +27,7 @@ import {
   setHistoryConfig,
   setHooksConfig,
   setModelMappings,
+  setModelTranslation,
   setNegotiationConfig,
   setResponsesConfig,
   setShutdownConfig,
@@ -217,6 +218,27 @@ const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20
 let warnedKeepaliveClamp = false
 
 /** Clamp a keepalive interval/window (0 = disabled) to stay WELL below the client idle deadline; warn once. */
+/**
+ * Parse a human-readable byte size ("2GB" / "500MB" / "1024") into a byte count.
+ * Accepts a bare number (already bytes) or a number + unit suffix
+ * (B/KB/MB/GB/TB, case-insensitive, binary 1024-based). Returns `undefined` for
+ * `undefined` input (caller skips the setter) and WARN-CONTINUES on a malformed
+ * value (config never kills the process — feedback-config-philosophy). */
+function parseByteSize(value: string | undefined, keyLabel: string): number | undefined {
+  if (value === undefined) return undefined
+  const trimmed = String(value).trim()
+  if (trimmed === "") return undefined
+  const m = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb)?$/i.exec(trimmed)
+  if (!m) {
+    consola.warn(`[config] ${keyLabel}: cannot parse byte size "${value}" — ignoring, keeping current value`)
+    return undefined
+  }
+  const n = Number(m[1])
+  const unit = (m[2] ?? "b").toLowerCase()
+  const mult = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 }[unit] ?? 1
+  return Math.round(n * mult)
+}
+
 function clampKeepaliveCadence(sec: number): number {
   if (sec <= 0 || sec <= KEEPALIVE_CADENCE_MAX) return sec
   if (!warnedKeepaliveClamp) {
@@ -774,6 +796,13 @@ export async function applyConfigToState(): Promise<Config> {
     setModelMappings(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_MAPPINGS, ...config.model_mappings }, "model_mappings"))
   }
 
+  // model_translation: retain-on-absence (mirrors model_mappings). An explicit
+  // `model_translation: {}` clears to defaults (empty — every pair falls back to
+  // scenario A); missing key keeps the prior runtime value.
+  if (config.model_translation !== undefined) {
+    setModelTranslation(config.model_translation)
+  }
+
   // Disabled models: retain-on-absence. An explicit empty list clears; missing
   // key keeps the prior runtime value. Re-filters `state.models` from cached raw.
   if (config.disabled_models !== undefined) {
@@ -802,6 +831,21 @@ export async function applyConfigToState(): Promise<Config> {
     if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
     if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
+
+    // Tiered cold-archive (history.archive.*). Size caps accept a human-readable
+    // string ("2GB"/"500MB") OR a raw byte count; parseByteSize warn-continues on
+    // a bad value (config never kills the process).
+    if (h.archive) {
+      const a = h.archive
+      if (a.enabled !== undefined) setHistoryConfig({ historyArchiveEnabled: a.enabled })
+      if (a.hot_days !== undefined) setHistoryConfig({ historyArchiveHotDays: a.hot_days })
+      if (a.tier2_warn_count !== undefined) setHistoryConfig({ historyArchiveTier2WarnCount: a.tier2_warn_count })
+      if (a.dir !== undefined) setHistoryConfig({ historyArchiveDir: a.dir })
+      const sizeCap = parseByteSize(a.tier1_size_cap, "history.archive.tier1_size_cap")
+      if (sizeCap !== undefined) setHistoryConfig({ historyArchiveTier1SizeCap: sizeCap })
+      const warnBytes = parseByteSize(a.tier2_warn_bytes, "history.archive.tier2_warn_bytes")
+      if (warnBytes !== undefined) setHistoryConfig({ historyArchiveTier2WarnBytes: warnBytes })
+    }
   }
 
   // Telemetry settings (telemetry.*, nested: override only when present). Business-layer

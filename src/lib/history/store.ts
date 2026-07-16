@@ -1,5 +1,6 @@
 export {
   __setTerminalWriterForTests,
+  archiveNow,
   clearHistory,
   drainPendingFinalizations,
   finalizeEntry,
@@ -35,6 +36,7 @@ export {
   historyState,
   initHistory,
   isHistoryEnabled,
+  runArchiveCooldownNow,
   setHistoryMaxEntries,
   setHistoryPublisher,
   shutdownHistory,

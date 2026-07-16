@@ -715,3 +715,23 @@
 - **根因 / 当前行为**：`processResponsesInstructions`/`processAnthropicSystem` 在 system/instructions 空时**早返回、不触发 applyConfigToState**。而 responses `parseOpenAiResponses` 读 config-managed 态（`state.normalizeResponsesCallIds`、`buildResponsesToolNameMapper`→`state.sanitizeToolNames`），parse 在 translateInbound 之前跑——故**当请求无 instructions 时，本请求的 parse 用的是上次某请求 reload 后的 config 值**（若期间 config.yaml 被编辑则陈旧）。**这是旧代码的精确保真复刻**（旧 `processResponsesInstructions` 同样只在 instructions 存在时 reload），**非本次重构引入的新 bug**——verifier 判 LOW、行为等价、不阻塞合并。
 - **理想架构**：config-freshness 是 per-request 的 route lifecycle 关注点，应与「注入是否发生」解耦——route 层**无条件** `await applyConfigToState()`（所有格式统一），使 parse 永远见新鲜 config。**为何暂缓**：responses/gemini 无条件 reload 曾打爆 call-id-normalization/WS 测（它们设 config 态 + 发无 instructions 请求，reload 重置了测试设的态）——统一前须先修那些测试的隔离方式（用 config 文件驱动而非 state setter），是独立工作。
 - **若做需改什么**：四 route 统一无条件 `applyConfigToState()` before runRequest（删条件）；修 `tests/responses/*` 里靠 state setter 设 config 态又发无 instructions 请求的测试（改 config 文件驱动 / 或接受 reload）；核 gemini 同理。
+## 三层降温归档 · 长跑服务器 tier-1 无界增长（O3，MEDIUM，2026-07-14 记）
+
+- **根因 / 现状**：T1→T2 封存（`tier2-seal.ts` `startTier2Seal`）**仅启动时触发一次**（用户裁定：封存是昂贵的 Parquet-级重编码，不进周期 tick）。若服务长期不重启，`archive.db`（tier-1）撞 `tier1_size_cap`（默认 2GB）后**无运行期封存触发点**，tier-1 会持续增长。
+- **当前行为**：由运行期 `consola.warn`（`tier2_warn_count`/`tier2_warn_bytes` 同机制）提示用户重启/手动。数据不丢（只是 tier-1 变大、ATTACH 查询变慢）。
+- **理想架构 / 若做需改什么**：把「archive.db > tier1_size_cap」也作为**运行期触发点**——在 reaper tick（`runReaperTick`）里加一个轻量 size 检查，超限时后台 `runTier2SealOnce()`（一次封存一个 session、非阻塞）。需想清楚封存的 CPU/IO 成本在周期 tick 里的节流（不能每 tick 都全量封存）。
+- **为何暂缓**：用户明确选「T1→T2 仅启动时」作为初始触发策略；周期封存是 nice-to-have，不阻塞核心「永不真删 + 高压缩」诉求。**触发条件（满足才值得做）**：出现长跑（数周不重启）+ tier-1 实测显著膨胀影响归档视图查询延迟的真实案例。发现方：spec 2026-07-14-history-tiered-archive §8-O3 设计阶段预留。
+
+## 三层降温归档 · tier-2 深度搜索粒度（O4，LOW，2026-07-14 记）
+
+- **根因 / 现状**：归档视图深度搜索（`/history/api/search?tier=archive`）对 **tier-1（archive.entries_v2）** 走完整五 facet 内容寻址搜索；对 **tier-2（封存冷单元）** 只以 `tier2_manifest.preview_text` 粒度参与（封存时未在 manifest 建 msg_blob/req_aux 级搜索文本）。
+- **当前行为**：tier-2 条目可按 preview_text 子串命中，但不支持 rewrites/headers 等 facet 的逐字节深搜。
+- **理想架构 / 若做需改什么**：封存时在 `tier2_manifest` 旁建一张 tier-2 专用的 flat 搜索文本表（或把 msg_blob/req_aux 文本也冗余进 manifest），使 tier-2 也支持五 facet；或封存单元内保留可搜文本。
+- **为何暂缓**：tier-2 是最深冷层、访问罕见，preview_text 粒度对冷数据检索够用；全 facet 冷索引是额外存储 + 复杂度。**触发条件**：出现「需要对已封存冷数据做 header/rewrite 级精确搜索」的真实运维需求。发现方：spec §8-O4。
+
+## 三层降温归档 · archive.db 独立迁移账本追不上 HOT 的时序缝（HIGH，2026-07-14 合并态评审发现，MIGRATIONS 首条前必解）
+
+- **根因 / 现状**：archive.db 跑**独立** `applyForwardMigrations`（自己的 `history_meta.schema_migrations` 账本），且在 `startHistoryBackfills` 里**异步**触发（`migrateArchiveDb()`），而 HOT 侧 `initHistory` 同步 attach archive + 启动 reaper。当前 `MIGRATIONS=[]`（floor 覆盖全列）故两库总同构、无风险。但一旦 `MIGRATIONS` 迎来第一条真实 001+ 迁移：从 initHistory 到 archive `migrateArchiveDb()` resolve 之间有个窗口，reaper 周期 tick 可能在 archive 尚未跑完自己的 001+ 迁移时就触发 move → archive 缺列。
+- **当前行为（已缓解，非崩溃）**：`migrateEntriesToTier1` 的**批次级 `archiveSchemaCovers` 前置校验**（2026-07-14 治 reviewer BLOCKER-3 时加）会检测「main 列 ⊄ archive 列」并**整批跳过 + 一次告警**「archive schema behind HOT — migration paused」，fail-closed 不丢数据、可观测。所以时序窗口期间是「搬迁暂停直到 archive 追上」，而非「per-entry 崩溃 / 数据丢失」。
+- **理想架构 / 若做需改什么**：要么 `initHistory` 的 `ensureArchiveAttachedToMain` 之后紧跟 `await migrateArchiveDb()`（对齐 HOT 侧「先迁移完成再起 reaper」纪律，`start.ts` 就这么做）；要么给 `isArchiveAttached`/`runTier1MigrationOnce` 前加「archive schema 版本已追上」门控（仿 `search_index_version` 的 history_meta 守卫）。
+- **为何暂缓**：当前 `MIGRATIONS=[]` 无风险，且批次前置校验已把最坏情况降级为可观测的「暂停」。**触发条件（必解）**：给 archive 加**第一条真实 001+ 迁移前**必须先接线时序（否则首次迁移期间归档暂停、tier-1 可能短暂膨胀）。发现方：合并态评审 HIGH-1（reviewer 实测确认当前无害、预警将来）。

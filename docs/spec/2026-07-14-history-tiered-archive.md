@@ -55,15 +55,14 @@ digraph tiered {
 - **主机制 = 时间搬迁**：`started_at < now - hot_days` 的**终态**行搬走。**排除谓词须同时含活跃态豁免 AND `pinned = 0`**（对齐 reaper 现有 `SUCCESS_WHERE`/`FAILURE_WHERE` 的 `pinned=0` 语义，`reaper.ts:47-48`）——pinned 行永不降温（§3.3）。
 - **数量上限降级为安全阀**：`historySuccessLimit` / `historyFailureLimit` 仍生效，但超量行**搬去 tier-1 而非删除**——防热库在 3d 内突发海量请求时无界膨胀，同时保证「永不真删」。复用现有 `SUCCESS_WHERE`/`FAILURE_WHERE`（已含 `pinned=0`）。
 
-### 3.2 tier-2 封存格式（核心技术点，格式 Phase 0 裁决 — 诉求②③④）
+### 3.2 tier-2 封存格式与粒度（Phase 0 PoC 已裁决 — 诉求②③④）
 
-History entry 是**深嵌套重 blob 文档**（client 请求/响应 + N 个 attempt 各带 upstream 请求/响应/sse_events + 消息数组 + 内容寻址 dedup + zstd 合并帧），**不是列式扁平表**。tier-2 载体经 Phase 0 PoC 在两个候选间实测裁决（§6 H5）：
+History entry 是**深嵌套重 blob 文档**，**不是列式扁平表**。Phase 0 用真实 blob（150 巨型 agent 对话 entry + 真库 32 GB 锚点）实测裁决，权威 [exp/tiered-archive-format/FINDINGS.md](../../exp/tiered-archive-format/FINDINGS.md)：
 
-- **候选 A — 纯 JS Parquet**（`hyparquet` + `hyparquet-writer`，用户初选）：meta 列落原生 Parquet 类型列，重 payload（`assembleFullEntry` 产物）我方先经 `compression.ts` zstd 压成字节、落单个 `BYTE_ARRAY` 列（hyparquet 内建仅 SNAPPY，不依赖其 zstd 编码——已实证 §10-O2）。
-- **候选 B — SQLite sealed**（VACUUM + 只读 + max-zstd 整行 blob，零新依赖、复用全部现有 serialize/compression/driver）。
-- **共同点**：无论 A/B，`tier2_manifest`（SQLite，存 `archive.db`）**冗余全部 meta 列 + `preview_text` + 封存单元定位（file NNNN + row/rowid）**——使**富可索引 + 归档视图 list/search-preview 只命中 manifest**（SQL 索引全在），**detail 才开封存单元读单条**（低访问代价）。
-
-**Phase 0 裁决问题（H5，源码级质疑）**：本设计对 tier-2 的**实际**访问模式是「manifest 精确定位 → 读单条已压缩 payload」，从不按 meta 列做范围扫描/聚合——故 Parquet 列存的核心卖点（row-group min/max 剪枝、列裁剪）在此**基本兑现不了**，meta 列在 tier-2 文件里是 manifest 的冗余、主字节量集中在已 zstd 压缩的单个 BLOB。Phase 0 **必须**正面回答「候选 A 相对候选 B 在真实分布下有无可测的压缩/访问优势」；若无（大概率），采候选 B（更简单、零依赖、复用现有栈）。
+- **格式 = SQLite sealed**（VACUUM + 只读 + max-zstd，零新依赖、复用现有 serialize/compression/driver）。**否决 Parquet**（候选 A）：实测压缩与 SQLite **统计等同**（A/B=0.994）、单条读**慢 1.56×**、多两个依赖 + 三个陷阱（`utf8:false` / Buffer 池化偏移 / INT64 须 BigInt）。根因坐实 reviewer H5——tier-2 payload 是单个已 zstd 压缩的大 BLOB（占 99.4% 字节），Parquet 列存核心卖点在「manifest 精确定位 + 单条读」访问模式下全部失效。格式决策另立 ADR [2026-07-14-tiered-archive-cold-format](../decisions/2026-07-14-tiered-archive-cold-format.md)。
+- **封存粒度 = 按 `session_id` 分组**（用户裁定，9× 压缩杠杆）。per-entry 独立压缩 28.20 MB → **按 session-group 单 zstd 流压缩 3.16 MB（省 88.8%）**。根因：Claude Code 每轮重发增长对话（请求 N 含消息 1..N，且 clientRequest + effectiveSource + upstream_request 三处各带完整消息体），per-entry 把共享前缀在每个独立流各压一遍；session-group 进单一 zstd 流后跨请求冗余坍缩到近零。
+- **manifest 富索引**：`tier2_manifest`（SQLite，存 `archive.db`）冗余全部 meta 列 + `preview_text` + 封存单元定位（`seal_file` NNNN + `session_id` + `index_in_session`）——使 list/search-preview 只命中 manifest（SQL 索引全在），detail 才**解压对应 session blob、索引取单条**（`deserializeEntry` 复原）。
+- **读代价权衡**：session-group 单条读 665 ms（解压整 session blob，16.6× 慢于 per-entry）——对**冷归档可接受**（罕访问 + 按 session 浏览一次解压展示整组、摊薄）。**大 session 有界**：单 seal unit 上限约 50 MB 解压后 / 或 N≈100 条，超则同 session 拆多子单元（manifest 仍按 session 分组浏览），防单次解压爆内存。
 
 ### 3.3 pinned 行永不降温（用户裁定）
 
@@ -84,8 +83,9 @@ WAL 模式**无跨文件事务原子性**（SQLite 官方：跨库 COMMIT 崩溃
 
 - `req_msg`/`req_aux`（有 FK、per-request）随 head **移动**（写 archive + 删 HOT）。
 - `msg_blob` 按引用 **复制**（`INSERT OR IGNORE INTO archive.msg_blob …`）——**绝不因 HOT 仍需要而跳过复制到 archive**，否则 archive 侧 `req_msg` 会引用不存在的 msg_blob 行，`search-query.ts:160-161` 的 INNER JOIN 使该消息**静默从搜索消失**。
-- **两侧各自独立孤儿 GC**：HOT 侧维持现状（`GC_ORPHAN_MSG_BLOB_SQL`，按 HOT 自己的 `req_msg` 判定，`write.ts:217`）；archive.db 侧另有一份同构 GC，**挂载点：`tier1-migrate.ts` 每批搬迁事务收尾**（MINOR 收口，§5 点名）。
-- **膨胀代价显式承认**：同一消息可能同时活在 HOT 和 archive 两份拷贝，tier-1 存储膨胀率高于「自足去重」直觉——这是正确性（搜索不丢）换来的可接受成本，Phase 0 量化其幅度。
+- **两侧各自独立孤儿 GC**：HOT 侧维持现状（`GC_ORPHAN_MSG_BLOB_SQL`，按 HOT 自己的 `req_msg` 判定，`write.ts:217`）；archive.db（tier-1）侧另有一份同构 GC，**挂载点：`tier1-migrate.ts` 每批搬迁事务收尾**（MINOR 收口，§5 点名）。
+- **膨胀代价显式承认**：同一消息可能同时活在 HOT 和 archive（tier-1）两份拷贝，tier-1 存储膨胀率高于「自足去重」直觉——这是正确性（搜索不丢）换来的可接受成本，Phase 0 量化其幅度。
+- **tier-2 不做内容寻址 dedup（Phase 0 修订，session-group supersede）**：spec 原设想 tier-2 放弃跨 entry dedup 是可接受成本。Phase 0 实测推翻其前提又给出更优解——① 跨 entry 消息 dedup 比达 **10.98×**，但 distinct 消息 zstd 后仅 1.67 MB（**消息非瓶颈，`entry_stages` 才是**）；② **按 session-group 单 zstd 流（§3.2）同时收割消息 AND stage 的跨请求冗余（3.16 MB），远优于只去重消息的内容寻址**。故 tier-2 封存单元**不建** msg_blob/req_msg 内容寻址表，session-group zstd 即可、更简单。tier-1（SQLite 同 schema、warm 层 per-entry 快查）**仍保留**内容寻址。
 
 ### 3.6 移除产品面删除，替换为「立即归档」触发（用户裁定，H2 修复 + 复审收口）
 
@@ -104,8 +104,8 @@ WAL 模式**无跨文件事务原子性**（SQLite 官方：跨库 COMMIT 崩溃
 |---|---|---|
 | `history.archive.enabled` | `true` | 总开关；`false` 时行为退回现状（数量 reaper 硬删，无归档；产品面 delete 移除是独立的、不受此开关影响） |
 | `history.archive.hot_days` | `3` | 热库保留天数；此前的终态非 pinned 行降温到 tier-1 |
-| `history.archive.tier1_size_cap` | `500MB` | `archive.db` 大小上限；超限触发 T1→T2 封存 |
-| `history.archive.tier2_warn_count` | Phase 0 定 | tier-2 文件数告警阈值（按真实 entry 体积换算，§6） |
+| `history.archive.tier1_size_cap` | `2GB`（Phase 0 校准） | `archive.db` 大小上限；超限触发 T1→T2 封存。**Phase 0 实测**：500MB 对重度用户太小（>3d 数据可达数 GB、瞬间撑爆触发大量封存）；tier-1 是 SQLite/ATTACH 查询、大些无妨，提高到 2 GB 起 |
+| `history.archive.tier2_warn_count` | `200`（Phase 0 校准） | tier-2 seal 单元数告警阈值 |
 | `history.archive.tier2_warn_bytes` | `500MB` | tier-2 总量告警阈值 |
 | `history.archive.dir` | `<APP_DIR>` | archive.db + 封存文件落盘目录（默认同 history.db 同级） |
 

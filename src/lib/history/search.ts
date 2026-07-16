@@ -14,6 +14,7 @@ import type {
   SearchSource,
 } from "./types"
 
+import { getArchiveDb } from "./sqlite/archive-db"
 import { getDatabase } from "./sqlite/connection"
 import { isSearchIndexComplete } from "./sqlite/meta"
 import {
@@ -45,7 +46,11 @@ function computeBuiltPct(): number {
 
 /** Run a dedicated search over one facet, with backfill-progress gating for `inbound`. */
 export function searchHistory(params: SearchParams): SearchResult {
-  const db = getDatabase()
+  // View-domain split (spec §4): `tier="archive"` searches the archive.db content
+  // index (its own msg_blob / req_msg / req_aux / entries_v2); default = HOT. The
+  // SAME facet SQL runs against either connection (identical schema), and summaries
+  // are loaded from the SAME db so an archive hit resolves an archive summary.
+  const db = params.filters?.tier === "archive" ? getArchiveDb() : getDatabase()
   const limit = params.limit && params.limit > 0 ? params.limit : DEFAULT_LIMIT
   const q = params.q
 

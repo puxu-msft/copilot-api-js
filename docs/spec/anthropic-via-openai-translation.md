@@ -2,7 +2,7 @@
 
 > ⚠️ **历史设计快照（2026-07-14 注）**：本 spec 是**设计期产物**，描述特性落地**前**的目标态，正文的 `file:line`、对象模型与部分措辞已随实现漂移，作历史设计记录读。**当前架构现状以 [docs/DESIGN.md](../DESIGN.md)「活的架构现状」为准**。关键漂移：① 特性**已全部 landed**（通用翻译矩阵 Phase 0-7，非「待 RFC review」）；② `decideRoute` 已于 ADR [2026-07-11-route-decision-separated-from-format-codec](../decisions/2026-07-11-route-decision-separated-from-format-codec.md) **从 FormatCodec 拆出到 `pipeline/router.ts` 自由函数**（故下文「codec 内 decideRoute」等叙述已不成立）；③ 出站关切 2026-07-13 收敛入 `resolveCellAssembly`（见 DESIGN 活现状「出站关切装配」行）；④ `codec/openai-gemini/` 已剥前缀为 `codec/gemini/`（`GeminiCodec`）。
 
-状态：设计已批准，待 RFC 对抗 review + 分 phase 计划｜触发：用户配置 `model_overrides` 把 Anthropic 入站模型导向 OpenAI 协议腿（`opus: claude-opus-4.8@cc` / `claude-opus-4.8: gpt-5.5`）时当前一律 400 reject｜关联：`docs/DESIGN.md`「活的架构现状」、`src/lib/codec/openai-gemini/codec.ts`（精确镜像先例）、[[feedback-pass-null-clean-not-self-validating]]、[[reference-anthropic-sdk-drops-eventless-sse-frames]]
+状态：设计已批准，待 RFC 对抗 review + 分 phase 计划｜触发：用户配置 `model_mappings` 把 Anthropic 入站模型导向 OpenAI 协议腿（`opus: claude-opus-4.8@cc` / `claude-opus-4.8: gpt-5.5`）时当前一律 400 reject｜关联：`docs/DESIGN.md`「活的架构现状」、`src/lib/codec/openai-gemini/codec.ts`（精确镜像先例）、[[feedback-pass-null-clean-not-self-validating]]、[[reference-anthropic-sdk-drops-eventless-sse-frames]]
 
 ## 1. 背景与动机
 
@@ -38,8 +38,8 @@ gpt-5.4 : ["/responses", "/chat/completions", "ws:/responses"]  (两腿都有)
 
 让 Anthropic endpoint 在以下两种情况下经协议翻译访问 OpenAI 协议腿，而非 reject：
 
-- **显式后缀**：`model_overrides` value 写 `<name>@cc` 或 `<name>@responses`，强制该模型走指定协议腿（即使是支持 direct 的 Claude）。
-- **隐式重映射**：`model_overrides` value 是一个**不能 direct** 的模型（非 Anthropic vendor，或无 `/v1/messages` 腿），自动按其 `supported_endpoints` 选 OpenAI 腿翻译。
+- **显式后缀**：`model_mappings` value 写 `<name>@cc` 或 `<name>@responses`，强制该模型走指定协议腿（即使是支持 direct 的 Claude）。
+- **隐式重映射**：`model_mappings` value 是一个**不能 direct** 的模型（非 Anthropic vendor，或无 `/v1/messages` 腿），自动按其 `supported_endpoints` 选 OpenAI 腿翻译。
 
 `reject 400` 退化为**最终兜底**：仅当「既不能 direct，又找不到任何可翻译的 OpenAI 腿」时返回。
 
@@ -56,10 +56,10 @@ gpt-5.4 : ["/responses", "/chat/completions", "ws:/responses"]  (两腿都有)
 
 ### 2.1 路由后缀
 
-`model_overrides` 的 **value** 支持可选后缀 `@<route>`，`route ∈ { cc, responses }`：
+`model_mappings` 的 **value** 支持可选后缀 `@<route>`，`route ∈ { cc, responses }`：
 
 ```yaml
-model_overrides:
+model_mappings:
   opus: "claude-opus-4.8@cc"            # Claude 强制走 chat/completions 腿
   sonnet: "claude-sonnet-4.6@responses" # Claude 强制走 responses 腿
   haiku: "gpt-5.5@responses"            # 非 Anthropic 模型，走 responses 腿
@@ -116,7 +116,7 @@ export function resolveModelTarget(model: string): ModelTarget
 
 ### 3.3 为何在 resolver（而非 route/codec）
 
-后缀是 config（model_overrides value）的一部分，解析配置的唯一权威点是 resolver。在此剥离保证：① 任何调用方拿到的 `name` 都是干净 canonical（modelIds 校验、tool-name mapper、capability 名单匹配等全部不被 `@cc` 污染）；② 后缀解析逻辑只有一处，不散落到 route。
+后缀是 config（model_mappings value）的一部分，解析配置的唯一权威点是 resolver。在此剥离保证：① 任何调用方拿到的 `name` 都是干净 canonical（modelIds 校验、tool-name mapper、capability 名单匹配等全部不被 `@cc` 污染）；② 后缀解析逻辑只有一处，不散落到 route。
 
 ## 4. 路由分层（decideRoute 兜底语义）
 

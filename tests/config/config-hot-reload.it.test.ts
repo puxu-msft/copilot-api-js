@@ -45,6 +45,7 @@ import {
   //
   CONFIG_MANAGED_DEFAULTS,
   DEFAULT_MODEL_MAPPINGS,
+  DEFAULT_MODEL_TRANSLATION,
   onHistoryLimitChange,
   resetConfigManagedState,
   restoreStateForTests,
@@ -765,6 +766,19 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: DEFAULT_MODEL_MAPPINGS,
   },
   {
+    // model_translation: retain-on-absence (mirrors model_mappings), but the config
+    // schema (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1, Phase 7) is a
+    // per-ingress list of rules, not a flat scalar map — applyConfigToState() REPLACES
+    // wholesale (no per-key merge like model_mappings; every declared ingress is
+    // user-owned) so expectedStateValue is exactly the sample, not merged with any
+    // built-in default (DEFAULT_MODEL_TRANSLATION is `{}`).
+    configKey: "model_translation",
+    stateKey: "modelTranslation",
+    sampleYamlValue: `\n  anthropic-messages:\n    - match: gpt-5.5@openai-responses\n      features:\n        - strip-thinking-signature`,
+    expectedStateValue: { "anthropic-messages": [{ match: "gpt-5.5@openai-responses", features: ["strip-thinking-signature"] }] },
+    defaultStateValue: DEFAULT_MODEL_TRANSLATION,
+  },
+  {
     configKey: "disabled_models",
     stateKey: "disabledModels",
     // Sample written in dot form; state stores the normalized (hyphen) form so
@@ -802,6 +816,51 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     sampleYamlValue: '"/tmp/custom.db"',
     expectedStateValue: "/tmp/custom.db",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  },
+
+  // ── history.archive.* (tiered cold-archive) ────────────────────────
+  {
+    configKey: "history.archive.enabled",
+    stateKey: "historyArchiveEnabled",
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveEnabled,
+  },
+  {
+    configKey: "history.archive.hot_days",
+    stateKey: "historyArchiveHotDays",
+    sampleYamlValue: "7",
+    expectedStateValue: 7,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveHotDays,
+  },
+  {
+    // Human-readable size string → parsed to bytes in the apply layer.
+    configKey: "history.archive.tier1_size_cap",
+    stateKey: "historyArchiveTier1SizeCap",
+    sampleYamlValue: '"1GB"',
+    expectedStateValue: 1024 * 1024 * 1024,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveTier1SizeCap,
+  },
+  {
+    configKey: "history.archive.tier2_warn_count",
+    stateKey: "historyArchiveTier2WarnCount",
+    sampleYamlValue: "50",
+    expectedStateValue: 50,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnCount,
+  },
+  {
+    configKey: "history.archive.tier2_warn_bytes",
+    stateKey: "historyArchiveTier2WarnBytes",
+    sampleYamlValue: '"250MB"',
+    expectedStateValue: 250 * 1024 * 1024,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnBytes,
+  },
+  {
+    configKey: "history.archive.dir",
+    stateKey: "historyArchiveDir",
+    sampleYamlValue: '"/tmp/archive-test"',
+    expectedStateValue: "/tmp/archive-test",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveDir,
   },
 
   // ── shutdown.* ─────────────────────────────────────────────────────
@@ -925,6 +984,14 @@ interface ExemptField {
 }
 
 const EXEMPT: ReadonlyArray<ExemptField> = [
+  {
+    configKey: "unknown_endpoint_logging.not_found",
+    reason: "nested object sub-key → state.unknownEndpointLogging.notFound; config→state + null-delete + default(warn) + retain-on-absence covered in tests/config/unknown-endpoint-logging-config.unit.test.ts",
+  },
+  {
+    configKey: "unknown_endpoint_logging.method_not_allowed",
+    reason: "see unknown_endpoint_logging.not_found — same dedicated test file",
+  },
   {
     configKey: "history.limit",
     reason:

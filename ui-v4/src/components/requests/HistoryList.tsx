@@ -313,22 +313,22 @@ export function HistoryList({
   // 短列表(内容不溢出)由 react-virtuoso 报 atBottom=true → 即时可见;长列表滚到底才露出。
   const [atBottom, setAtBottom] = useState(false)
 
-  // 清空历史确认 Modal:开合 + 删除在途(防重复提交)。筛选感知——有筛选走 scoped delete、无筛选走 clear-all。
+  // 立即归档确认 Modal:开合 + 归档在途(防重复提交)。筛选感知——有筛选归档命中子集、无筛选归档全部。
   const [clearOpen, setClearOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
   const confirmClear = useCallback(async () => {
     setClearing(true)
     try {
-      // 有筛选 → scoped delete(带 query);无筛选 → clear-all(无 query)。后端按 query 有无分流(Phase 0)。
+      // 产品面删除已移除(spec §3.6):「清空」改「立即归档」——把命中的终态行移到 tier-1 冷存储(非删除)。
       const qs = toQueryString(filters)
-      const res = await api.delete<{ success: boolean; deleted?: number }>(`/history/api/entries${qs ? `?${qs}` : ""}`)
-      if (res.deleted !== undefined) console.info(`[HistoryList] 已删除 ${res.deleted} 条历史`)
+      const res = await api.post<{ success: boolean; archived?: number }>(`/history/api/archive-now${qs ? `?${qs}` : ""}`, {})
+      if (res.archived !== undefined) console.info(`[HistoryList] 已归档 ${res.archived} 条历史到冷存储`)
       // queryKey 形如 ["history-infinite", filterSig];前缀匹配 invalidate 命中所有 filter 变体。
       await queryClient.invalidateQueries({ queryKey: ["history-infinite"] })
       setClearOpen(false)
     } catch (err) {
-      // 删除失败不吞:曝光错误(内部工具可观测性优先),保持 Modal 开着供重试。
-      console.error("[HistoryList] 清空历史失败:", err)
+      // 归档失败不吞:曝光错误(内部工具可观测性优先),保持 Modal 开着供重试。
+      console.error("[HistoryList] 立即归档失败:", err)
     } finally {
       setClearing(false)
     }
@@ -624,7 +624,7 @@ export function HistoryList({
           className="text-[var(--color-primary)]"
           onClick={() => setClearOpen(true)}
         >
-          清空
+          归档
         </button>
       </div>
       {outOfFilter && (
@@ -824,11 +824,11 @@ export function HistoryList({
       </div>
       {clearOpen && (
         <Modal
-          title="清空历史"
+          title="立即归档"
           onClose={() => setClearOpen(false)}
         >
           <div className="mono flex flex-col gap-4 text-[13px] text-[var(--color-text)]">
-            <p>{hasAnyFilter(filters) ? `删除当前筛选命中的 ${total} 条？` : `清空全部 ${total} 条？`}</p>
+            <p>{hasAnyFilter(filters) ? `归档当前筛选命中的 ${total} 条到冷存储？` : `归档全部 ${total} 条到冷存储？`}</p>
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -843,7 +843,7 @@ export function HistoryList({
                 className="border border-[var(--color-primary)] px-3 py-1 text-[var(--color-primary)] disabled:opacity-50"
                 onClick={() => void confirmClear()}
               >
-                确认
+                确认归档
               </button>
             </div>
           </div>

@@ -15,6 +15,9 @@ import {
   test,
 } from "bun:test"
 import { Hono } from "hono"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 
 import {
   //
@@ -30,12 +33,15 @@ import {
   type HistoryEntry,
 } from "~/lib/history"
 import { persistEntryEager } from "~/lib/history/store"
+import { closeArchiveDb } from "~/lib/history/sqlite/archive-db"
+import { getDatabase } from "~/lib/history/sqlite/connection"
+import { querySummaries } from "~/lib/history/sqlite/read"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 import {
   //
-  handleDeleteEntries,
-  handleDeleteSession,
+  handleArchiveCooldown,
+  handleArchiveNow,
   handleExport,
   handleGetEntries,
   handleGetEntry,
@@ -51,10 +57,10 @@ app.get("/api/entries", handleGetEntries)
 app.get("/api/entries/:id", handleGetEntry)
 app.post("/api/entries/:id/pin", handlePinEntry)
 app.post("/api/entries/:id/unpin", handleUnpinEntry)
-app.delete("/api/entries", handleDeleteEntries)
+app.post("/api/archive-now", handleArchiveNow)
+app.post("/api/archive-cooldown", handleArchiveCooldown)
 app.get("/api/stats", handleGetStats)
 app.get("/api/export", handleExport)
-app.delete("/api/sessions/:id", handleDeleteSession)
 
 // ─── Helpers ───
 
@@ -97,10 +103,6 @@ async function get(path: string) {
   return app.request(path)
 }
 
-async function del(path: string) {
-  return app.request(path, { method: "DELETE" })
-}
-
 async function post(path: string) {
   return app.request(path, { method: "POST" })
 }
@@ -111,15 +113,20 @@ async function json<T = unknown>(res: Response): Promise<T> {
 
 // ─── Setup / Teardown ───
 
+let archiveDir: string
+
 beforeEach(async () => {
-  setStateForTests({ historyDbPath: ":memory:" })
+  archiveDir = fs.mkdtempSync(path.join(os.tmpdir(), "history-api-archive-"))
+  setStateForTests({ historyDbPath: ":memory:", historyArchiveEnabled: true, historyArchiveDir: archiveDir })
   initHistory(true, 200)
 })
 
 afterEach(async () => {
   clearHistory()
   await shutdownHistory()
-  setStateForTests({ historyDbPath: "" })
+  closeArchiveDb()
+  setStateForTests({ historyDbPath: "", historyArchiveDir: "" })
+  fs.rmSync(archiveDir, { recursive: true, force: true })
 })
 
 // ─── handleGetEntries ───
@@ -362,46 +369,58 @@ describe("POST /api/entries/:id/pin and /unpin", () => {
   })
 })
 
-// ─── handleDeleteEntries ───
+// ─── handleArchiveNow (product-facing replacement for delete) ───
 
-describe("DELETE /api/entries", () => {
-  test("clears all history", async () => {
+describe("POST /api/archive-now", () => {
+  test("with no filter archives ALL terminal entries (moved to tier-1, not deleted)", async () => {
     await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
     await createEntry("anthropic-messages", "test", [{ role: "user", content: "world" }])
 
-    const res = await del("/api/entries")
+    const res = await post("/api/archive-now")
     expect(res.status).toBe(200)
-    const body = await json<{ success: boolean }>(res)
-    expect(body.success).toBe(true)
+    expect(await json<{ success: boolean; archived: number }>(res)).toEqual({ success: true, archived: 2 })
 
-    // Verify empty
-    const listRes = await get("/api/entries")
-    const listBody = await json<{ total: number }>(listRes)
+    // HOT view now empty…
+    const listBody = await json<{ total: number }>(await get("/api/entries"))
     expect(listBody.total).toBe(0)
+    // …but the rows moved to the archive view (never truly deleted).
+    expect(querySummaries({ tier: "archive", limit: 100 })).toHaveLength(2)
   })
 
-  test("with an endpoint filter deletes only matching rows and returns the count", async () => {
+  test("with an endpoint filter archives only matching rows and returns the count", async () => {
     await createEntry("anthropic-messages", "test", [{ role: "user", content: "anthropic" }])
     const openai = await createEntry("openai-chat-completions", "gpt-4o", [{ role: "user", content: "openai" }])
 
-    const res = await del("/api/entries?endpoint=anthropic-messages")
+    const res = await post("/api/archive-now?endpoint=anthropic-messages")
     expect(res.status).toBe(200)
-    expect(await json<{ success: boolean; deleted: number }>(res)).toEqual({ success: true, deleted: 1 })
+    expect(await json<{ success: boolean; archived: number }>(res)).toEqual({ success: true, archived: 1 })
 
-    // Only the non-matching entry survives.
+    // Only the non-matching entry survives in HOT.
     const list = await json<{ entries: Array<{ id: string }> }>(await get("/api/entries?terminalOnly=true"))
     expect(list.entries.map((e) => e.id)).toEqual([openai.id])
   })
+})
 
-  test("with no filters clears all (clear-all path, message not count)", async () => {
-    await createEntry("anthropic-messages", "test", [{ role: "user", content: "x1" }])
+// ─── handleArchiveCooldown (age-based on-demand cool-down) ───
 
-    const res = await del("/api/entries")
+describe("POST /api/archive-cooldown", () => {
+  test("moves only rows older than hot_days into tier-1; recent rows stay HOT", async () => {
+    setStateForTests({ historyArchiveHotDays: 3 })
+    const old = await createEntry("anthropic-messages", "test", [{ role: "user", content: "old" }])
+    const recent = await createEntry("anthropic-messages", "test", [{ role: "user", content: "recent" }])
+    // backdate `old` past the hot window (createEntry stamps started_at ≈ now).
+    getDatabase()
+      .prepare("UPDATE entries_v2 SET started_at = ? WHERE id = ?")
+      .run(Date.now() - 5 * 86400_000, old.id)
+
+    const res = await post("/api/archive-cooldown")
     expect(res.status).toBe(200)
-    const body = await json<{ success: boolean; message: string; deleted?: number }>(res)
-    expect(body.success).toBe(true)
-    expect(body.message).toBe("History cleared")
-    expect(body.deleted).toBeUndefined()
+    expect(await json<{ success: boolean; migrated: number }>(res)).toEqual({ success: true, migrated: 1 })
+
+    // old → archive view (cooled), recent stays in HOT view.
+    expect(querySummaries({ tier: "archive", limit: 100 }).map((s) => s.id)).toEqual([old.id])
+    const hot = await json<{ entries: Array<{ id: string }> }>(await get("/api/entries?terminalOnly=true"))
+    expect(hot.entries.map((e) => e.id)).toEqual([recent.id])
   })
 })
 
@@ -439,24 +458,6 @@ describe("GET /api/export", () => {
   })
 })
 
-// ─── handleDeleteSession ───
-
-describe("sessions API", () => {
-  test("DELETE /api/sessions/:id deletes session", async () => {
-    const entry = await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
-    const sessionId = entry.sessionId
-
-    const res = await del(`/api/sessions/${sessionId}`)
-    expect(res.status).toBe(200)
-    const body = await json<{ success: boolean }>(res)
-    expect(body.success).toBe(true)
-
-    // Verify deleted
-    expect(getEntry(entry.id)).toBeUndefined()
-  })
-
-  test("DELETE /api/sessions/:id returns 404 for non-existent session", async () => {
-    const res = await del("/api/sessions/nonexistent")
-    expect(res.status).toBe(404)
-  })
-})
+// ─── sessions API ───
+// (DELETE /api/sessions/:id removed with the product-facing delete surface, spec
+// §3.6; archiving a session is done via POST /api/archive-now?sessionId=….)
