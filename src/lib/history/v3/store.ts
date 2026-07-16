@@ -41,6 +41,7 @@ interface PreparedOperation {
   terminalSequence: number
   manifest: Uint8Array
   compressedManifest: Uint8Array
+  compressedJournalRecord: Uint8Array
   objects: PreparedObject[]
   tracks: Array<{ name: string; attemptIndex: number; refs: string }>
   timeline: Array<{ chunkIndex: number; firstSequence: number; lastSequence: number; payload: Uint8Array; compressed: Uint8Array }>
@@ -222,6 +223,7 @@ export function prepareModelOperation(record: ModelOperationRecord): PreparedOpe
   }
   const manifestText = JSON.stringify({ formatVersion: FORMAT_VERSION, record: manifestValue, objectHashes: Object.fromEntries(objectHashes) })
   const manifest = encoder.encode(manifestText)
+  const journalRecord = encoder.encode(JSON.stringify(record))
   const digest = digestBytes("operation", manifest)
   const timelineEvents = [
     ...record.arena.payloads.map((node) => ({ sequence: node.sequence, type: "payload", handle: node.handle })),
@@ -255,6 +257,7 @@ export function prepareModelOperation(record: ModelOperationRecord): PreparedOpe
     terminalSequence: record.terminal.sequence,
     manifest,
     compressedManifest: compressBytes(manifest),
+    compressedJournalRecord: compressBytes(journalRecord),
     objects,
     tracks,
     timeline,
@@ -286,7 +289,9 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
     status = { ...status, conflicts: status.conflicts + 1, lastError: `operation conflict: ${prepared.id}` }
     throw new Error(`[history/v3] operation conflict: ${prepared.id}`)
   }
-  const journalPayload = prepared.compressedManifest
+  // Journal is self-contained: operation tx rollback may remove every CAS object,
+  // so recovery cannot depend on value-stripped manifest + v3_objects.
+  const journalPayload = prepared.compressedJournalRecord
   db.prepare("INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error) VALUES(?,?,?,?,?,?,NULL,NULL)").run(
     prepared.id,
     prepared.revision,
@@ -304,7 +309,7 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
       prepared.kind,
       prepared.createdAt,
       prepared.terminalSequence,
-      journalPayload,
+      prepared.compressedManifest,
       Date.now(),
     )
     const trackStmt = db.prepare("INSERT INTO v3_tracks(operation_id,track_name,attempt_index,refs_json) VALUES(?,?,?,?)")
@@ -375,7 +380,9 @@ export function enqueueModelOperation(record: ModelOperationRecord): Promise<voi
   pendingBytes += estimatedBytes
   status = { ...status, pendingOperations: pending.length, pendingBytes }
   let drain: Promise<void>
-  drain = runDrain().finally(() => pendingDrains.delete(drain))
+  drain = runDrain()
+    .catch(() => undefined)
+    .finally(() => pendingDrains.delete(drain))
   pendingDrains.add(drain)
   return done
 }
@@ -457,7 +464,7 @@ export function recoverV3Journal(db: Database = getDatabase()): number {
   let recovered = 0
   for (const row of rows) {
     try {
-      const recoveredRecord = hydrateManifest(db, row.payload_gz)
+      const recoveredRecord = JSON.parse(decoder.decode(decompressBytes(row.payload_gz))) as ModelOperationRecord
       const prepared = prepareModelOperation(recoveredRecord)
       if (prepared.revision !== row.revision || prepared.digest !== row.digest) throw new Error("journal digest mismatch")
       commitPreparedOperation(db, prepared)

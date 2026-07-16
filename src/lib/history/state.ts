@@ -147,7 +147,6 @@ export function stopHistoryBackgroundWork(): void {
   unsubscribeHistoryLimit?.()
   unsubscribeHistoryLimit = undefined
   unsubscribeV3Terminal?.()
-  unsubscribeV3Terminal = undefined
   stopReaper()
   // Signal the background backfills to stop BEFORE the DB closes (each saves its
   // cursor per batch and resumes on next start — a post-close prepare would throw).
@@ -173,6 +172,10 @@ export async function shutdownHistory(): Promise<void> {
   await drainPendingFinalizations()
   await retryPendingFinalizations()
   await drainPendingFinalizations()
+  // Keep the canonical terminal subscriber alive through request drain. Only
+  // detach after no more requests can settle, then drain terminal work to disk.
+  unsubscribeV3Terminal?.()
+  unsubscribeV3Terminal = undefined
   await drainModelOperationTerminalSubscribers()
   await drainV3Writer()
   closeDatabase()

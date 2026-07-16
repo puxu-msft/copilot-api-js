@@ -23,6 +23,7 @@ import {
   getV3StoreStatus,
   listV3Operations,
   prepareModelOperation,
+  recoverV3Journal,
   resetV3WriterForTests,
   V3_SCHEMA_SQL,
 } from "~/lib/history/v3/store"
@@ -80,7 +81,7 @@ describe("History V3 semantic store", () => {
     expect(() => commitPreparedOperation(getDatabase(), conflicting)).toThrow(/operation conflict/i)
   })
 
-  test("keeps an uncommitted journal row when the transaction fails", () => {
+  test("recovers a self-contained uncommitted journal after the operation transaction fails", () => {
     const prepared = prepareModelOperation(terminalRecord("op-failpoint"))
     getDatabase().exec(V3_SCHEMA_SQL)
     getDatabase().exec(`CREATE TRIGGER fail_v3_operation BEFORE INSERT ON v3_operations BEGIN SELECT RAISE(ABORT, 'failpoint'); END;`)
@@ -88,5 +89,9 @@ describe("History V3 semantic store", () => {
     expect(() => commitPreparedOperation(getDatabase(), prepared)).toThrow(/failpoint/i)
     const row = getDatabase().prepare("SELECT committed_at FROM v3_journal WHERE operation_id=?").get(prepared.id) as { committed_at: number | null }
     expect(row.committed_at).toBeNull()
+
+    getDatabase().exec("DROP TRIGGER fail_v3_operation")
+    expect(recoverV3Journal()).toBe(1)
+    expect(getV3Operation(prepared.id)?.identity.operationId).toBe(prepared.id)
   })
 })
