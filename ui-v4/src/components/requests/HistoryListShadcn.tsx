@@ -4,7 +4,6 @@ import {
   horizontalListSortingStrategy,
   useSortable,
 } from "@dnd-kit/sortable"
-import { useQueryClient } from "@tanstack/react-query"
 import {
   //
   flexRender,
@@ -47,16 +46,7 @@ import type {
 } from "@/types"
 
 import { SessionPaletteSelectShadcn } from "@/components/requests/SessionPaletteSelectShadcn"
-import { Button } from "@/components/ui/button"
-import {
-  //
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
-import { api } from "@/lib/api"
 import {
   //
   DEFAULT_COLUMN_VISIBILITY,
@@ -268,27 +258,6 @@ export function HistoryListShadcn({
   const { entries, total, isLoading, isError, error, refetch, hasNextPage, fetchNextPage } = useHistoryInfinite(filters)
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
-  const queryClient = useQueryClient()
-
-  const [clearOpen, setClearOpen] = useState(false)
-  const [clearing, setClearing] = useState(false)
-  const confirmClear = useCallback(async () => {
-    setClearing(true)
-    try {
-      // Product-facing delete removed (spec §3.6): "clear" is now "archive now" —
-      // move the matching terminal rows to tier-1 cold archive (never a delete).
-      const qs = toQueryString(filters)
-      const res = await api.post<{ success: boolean; archived?: number }>(`/history/api/archive-now${qs ? `?${qs}` : ""}`, {})
-      if (res.archived !== undefined) console.info(`[HistoryListShadcn] 已归档 ${res.archived} 条历史到冷存储`)
-      await queryClient.invalidateQueries({ queryKey: ["history-infinite"] })
-      setClearOpen(false)
-    } catch (err) {
-      // 归档失败不吞:曝光错误(内部工具可观测性优先),保持 Dialog 开着供重试。
-      console.error("[HistoryListShadcn] 立即归档失败:", err)
-    } finally {
-      setClearing(false)
-    }
-  }, [filters, queryClient])
 
   const [internalVisibility, setInternalVisibility] = useState<VisibilityState>(DEFAULT_COLUMN_VISIBILITY)
   const columnVisibility = controlledVisibility ?? internalVisibility
@@ -502,13 +471,6 @@ export function HistoryListShadcn({
           value={paletteName}
           onChange={setPalette}
         />
-        <button
-          type="button"
-          className="ml-auto text-primary"
-          onClick={() => setClearOpen(true)}
-        >
-          归档
-        </button>
       </div>
       {outOfFilter && (
         <div className="mono flex items-center justify-center gap-2 border-b border-border bg-muted py-1 text-center text-[13px] text-foreground">
@@ -649,38 +611,6 @@ export function HistoryListShadcn({
           </div>
         )}
       </div>
-      <Dialog
-        open={clearOpen}
-        onOpenChange={setClearOpen}
-      >
-        <DialogContent className="mono max-w-sm">
-          <DialogHeader>
-            <DialogTitle>立即归档</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-4 text-[13px] text-foreground">
-            <p>{hasAnyFilter(filters) ? `归档当前筛选命中的 ${total} 条到冷存储？` : `归档全部 ${total} 条到冷存储？`}</p>
-            <div className="flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setClearOpen(false)}
-              >
-                取消
-              </Button>
-              <Button
-                type="button"
-                variant="default"
-                size="sm"
-                disabled={clearing}
-                onClick={() => void confirmClear()}
-              >
-                确认归档
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

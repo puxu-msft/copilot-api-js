@@ -612,43 +612,10 @@ describe("HistoryList", () => {
     expect(other?.getAttribute("aria-current")).toBeNull()
   })
 
-  // ── Task 4.3:筛选感知立即归档 + 确认 Modal ──
-
-  it("archive (with filters): modal shows the filtered-count prompt; 确认 issues scoped archive-now + invalidates", async () => {
-    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries")
-    mockHistory = { ...mockHistory, entries: [entry("e1")], total: 3 }
-    const filters: RequestFilters = { ...EMPTY_FILTERS, endpoint: "anthropic-messages" }
-    renderList(["/requests"], filters)
-    fireEvent.click(screen.getByText("归档"))
-    // 有筛选 → 文案含「筛选命中的 3」。
-    expect(screen.getByText(/筛选命中的 3/)).toBeDefined()
-    fireEvent.click(screen.getByText("确认归档"))
-    await waitFor(() => expect(apiPostMock).toHaveBeenCalled())
-    const url = apiPostMock.mock.calls[0][0] as string
-    expect(url).toContain("/history/api/archive-now?")
-    expect(url).toContain("endpoint=anthropic-messages")
-    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["history-infinite"] }))
-    // 归档后 Modal 关闭。
-    await waitFor(() => expect(screen.queryByText("确认归档")).toBeNull())
-  })
-
-  it("archive (no filters): modal shows the archive-all prompt; 确认 issues an unscoped archive-now (no query)", async () => {
+  it("does not expose the retired built-in archive action", () => {
     mockHistory = { ...mockHistory, entries: [entry("e1")], total: 5 }
     renderList()
-    fireEvent.click(screen.getByText("归档"))
-    // 无筛选 → 文案「全部」+「5」。
-    expect(screen.getByText(/全部 5/)).toBeDefined()
-    fireEvent.click(screen.getByText("确认归档"))
-    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/history/api/archive-now", {}))
-  })
-
-  it("archive: 取消 closes the modal without archiving", () => {
-    mockHistory = { ...mockHistory, entries: [entry("e1")], total: 5 }
-    renderList()
-    fireEvent.click(screen.getByText("归档"))
-    expect(screen.getByText("确认归档")).toBeDefined()
-    fireEvent.click(screen.getByText("取消"))
-    expect(screen.queryByText("确认归档")).toBeNull()
+    expect(screen.queryByText("归档")).toBeNull()
     expect(apiPostMock).not.toHaveBeenCalled()
   })
 })
