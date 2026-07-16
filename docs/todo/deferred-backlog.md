@@ -749,3 +749,12 @@
 - **为何未做（非拖延，是不对称性）**：反向与前向**不对称、不能无脑镜像**——① Phase 0 只探针了前向方向（anthropic web_search 声明 → responses 原生执行），未探反向（responses 客户端声明 web_search → Claude 是否原生执行、返回结果形状是什么）；② 更关键的物理不对称：**Claude 的 `web_search_tool_result` 结果块真带 `encrypted_content`**（真实服务端签名，ADR 2026-07-13 §Part-1 明确指出 server tool 结果通道的签名本质），这与前向方向"Responses `web_search_call` 无 encrypted_content、结果回显必须降级"的物理约束**完全相反**——反向方向理论上**可能有真密文可round-trip**（不像前向那样天然只能降级），但这**必须先实测验证**（Claude 结果格式、Responses 客户端能否/是否愿意携带一个它自己 schema 里没有字段存放的 opaque blob、real round-trip 可行性），不能凭前向经验想当然复制。
 - **理想架构 / 若做需改什么**：Phase 0 式新探针——① Responses 客户端声明 `{type:"web_search"}`（或类似）请求 Claude `@messages` 模型，观察 Claude 上游是否原生执行 web_search（Claude 自己的 server tool 机制，与 Copilot Responses 的 web_search 完全是两套后端）；② 若原生执行，探 `server_tool_use`+`web_search_tool_result`（真 encrypted_content）渲染回 Responses `web_search_call` 形状是否可行、是否需要在 Responses 侧开新字段承载真密文（Responses `ResponsesWebSearchCallOutput` 目前无该字位）；③ 若探明可行，对称做请求侧映射表 + 响应侧 round-trip（而非前向那种降级）。
 - **触发条件（值得做）**：出现 Responses 客户端（如 Codex）访问 Claude 模型且需要 web_search 能力的真实需求；或用户明确要求反向 server-tool 对等能力。发现方：Phase 6 checkpoint（协调者裁定记录，2026-07-16，明确指示"若可对称轻量落地就做、否则记 backlog，别硬塞、别想当然"）。
+
+## via-responses (openai-cc/gemini→responses) 腿 web_search_call 静默丢弃
+
+- **根因**：`responses-to-cc.ts` / `responses-conversion.ts`（Responses→CC 供 OpenAI-chat 客户端）遇上游 `web_search_call` 输出 item 直接不处理，搜索 query 静默蒸发（不像 anthropic↔responses 直接桥降级为可读 text）。
+- **当前行为**：无消费者触发（via-responses 场景暂无 web_search 流量），故不阻断。
+- **理想架构**：与直接桥的 `webSearchCallToText` 一致降级，保留 query/status（richest-data-flow）。
+- **为何暂缓**：出 anthropic↔responses 直接桥 RFC 范围；属未来 gemini/openai-cc↔responses 直接桥项目的债。
+- **若做需改什么**：`responses-to-cc.ts` 的 output-item 翻译补 web_search_call→CC 文本分支；对齐直接桥模板。
+- 来源：Phase 6 收官审查建议（2026-07-15）。
