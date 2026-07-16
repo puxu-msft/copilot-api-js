@@ -21,11 +21,9 @@ import {
   runHistoryWrite,
   runHistoryWriteAsync,
 } from "./persist-guard"
-import {
-  //
-  getEntryById,
-  queryEntryCount,
-} from "./sqlite/read"
+import { queryEntryCount } from "./sqlite/read"
+import { getEntry } from "./queries"
+import { setV3OperationPinned } from "./v3/store"
 import {
   //
   isReaperRunning,
@@ -367,7 +365,7 @@ export function clearHistory(): void {
  */
 export function setPinned(id: string, pinned: boolean): boolean {
   if (!historyState.enabled) return false
-  const changed = setEntryPinned(id, pinned)
+  const changed = setV3OperationPinned(id, pinned) || setEntryPinned(id, pinned)
   if (!changed) return false
   // The `pinned` column is authoritative, but an entry that is still in-flight
   // (eager-persisted yet un-finalized) is read in-flight-FIRST by `getEntry`.
@@ -376,7 +374,7 @@ export function setPinned(id: string, pinned: boolean): boolean {
   // entry is already terminal (no in-flight copy). The pin survives finalize
   // regardless: INSERT_ENTRY_SQL never writes the column (see setEntryPinned).
   updateInFlight(id, { pinned })
-  const entry = getInFlight(id) ?? getEntryById(id)
+  const entry = getInFlight(id) ?? getEntry(id)
   if (entry) publishEntryUpdated(toEntrySummary(entry))
   return true
 }

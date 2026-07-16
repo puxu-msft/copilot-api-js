@@ -15,6 +15,11 @@ const FORMAT_VERSION = 1
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+export interface V3StoredOperation {
+  record: ModelOperationRecord
+  pinned: boolean
+}
+
 export interface V3StoreStatus {
   pendingOperations: number
   pendingBytes: number
@@ -87,6 +92,7 @@ CREATE TABLE IF NOT EXISTS v3_operations (
   created_at INTEGER NOT NULL,
   terminal_sequence INTEGER NOT NULL,
   manifest_gz BLOB NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
   committed_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_v3_operations_created ON v3_operations(created_at DESC, operation_id DESC);
@@ -401,21 +407,43 @@ export function getV3StoreStatus(): V3StoreStatus {
   return { ...status, pendingOperations: pending.length, pendingBytes, searchBacklog }
 }
 
-export function getV3Operation(operationId: string): ModelOperationRecord | undefined {
+export function getV3StoredOperation(operationId: string): V3StoredOperation | undefined {
   const db = getDatabase()
   db.exec(V3_SCHEMA_SQL)
-  const row = db.prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get(operationId) as { manifest_gz: Uint8Array } | undefined
+  const row = db.prepare("SELECT manifest_gz,pinned FROM v3_operations WHERE operation_id=?").get(operationId) as
+    | { manifest_gz: Uint8Array; pinned: number }
+    | undefined
   if (!row) return undefined
-  return hydrateManifest(db, row.manifest_gz)
+  return { record: hydrateManifest(db, row.manifest_gz), pinned: row.pinned === 1 }
 }
 
-export function listV3Operations(kind?: string, limit = 100): ModelOperationRecord[] {
+export function getV3Operation(operationId: string): ModelOperationRecord | undefined {
+  return getV3StoredOperation(operationId)?.record
+}
+
+export function listV3StoredOperations(kind?: string, limit = 100): V3StoredOperation[] {
   const db = getDatabase()
   db.exec(V3_SCHEMA_SQL)
   const rows = kind ?
-      db.prepare("SELECT manifest_gz FROM v3_operations WHERE kind=? ORDER BY created_at DESC LIMIT ?").all(kind, limit)
-    : db.prepare("SELECT manifest_gz FROM v3_operations ORDER BY created_at DESC LIMIT ?").all(limit)
-  return (rows as Array<{ manifest_gz: Uint8Array }>).map((row) => hydrateManifest(db, row.manifest_gz))
+      db.prepare("SELECT manifest_gz,pinned FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ?").all(kind, limit)
+    : db.prepare("SELECT manifest_gz,pinned FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ?").all(limit)
+  return (rows as Array<{ manifest_gz: Uint8Array; pinned: number }>).map((row) => ({
+    record: hydrateManifest(db, row.manifest_gz),
+    pinned: row.pinned === 1,
+  }))
+}
+
+export function listV3Operations(kind?: string, limit = 100): ModelOperationRecord[] {
+  return listV3StoredOperations(kind, limit).map(({ record }) => record)
+}
+
+export function setV3OperationPinned(operationId: string, pinned: boolean): boolean {
+  const db = getDatabase()
+  db.exec(V3_SCHEMA_SQL)
+  const exists = db.prepare("SELECT 1 FROM v3_operations WHERE operation_id=?").get(operationId)
+  if (!exists) return false
+  db.prepare("UPDATE v3_operations SET pinned=? WHERE operation_id=?").run(pinned ? 1 : 0, operationId)
+  return true
 }
 
 function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperationRecord {

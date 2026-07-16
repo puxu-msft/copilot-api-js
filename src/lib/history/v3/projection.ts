@@ -55,7 +55,7 @@ function lifecycleState(record: ModelOperationRecord): HistoryState["enabled"] e
 }
 
 /** Pure terminal projection. Canonical record remains the authority. */
-export function recordToHistoryEntry(record: ModelOperationRecord): HistoryEntry {
+export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pinned?: boolean } = {}): HistoryEntry {
   const values = nodeValues(record)
   const ingressMeta = metadata<{
     model?: string
@@ -120,6 +120,7 @@ export function recordToHistoryEntry(record: ModelOperationRecord): HistoryEntry
     endpoint: (record.ingress?.format ?? "unknown") as HistoryEntry["endpoint"],
     state,
     active: false,
+    pinned: stored.pinned ?? false,
     lastUpdatedAt: record.identity.createdAt,
     transport: record.routing?.transport as HistoryEntry["transport"],
     model: {
@@ -159,8 +160,8 @@ export function recordToHistoryEntry(record: ModelOperationRecord): HistoryEntry
   }
 }
 
-export function recordToEntrySummary(record: ModelOperationRecord): EntrySummary {
-  const entry = recordToHistoryEntry(record)
+export function recordToEntrySummary(record: ModelOperationRecord, stored: { pinned?: boolean } = {}): EntrySummary {
+  const entry = recordToHistoryEntry(record, stored)
   const last = entry.attempts?.at(-1)?.upstreamResponse
   return {
     id: entry.id,
@@ -171,6 +172,7 @@ export function recordToEntrySummary(record: ModelOperationRecord): EntrySummary
     endpoint: entry.endpoint,
     state: entry.state,
     active: false,
+    pinned: stored.pinned ?? false,
     lastUpdatedAt: entry.lastUpdatedAt,
     requestModel: entry.model?.requested,
     responseModel: last?.model ?? entry.model?.resolved,
