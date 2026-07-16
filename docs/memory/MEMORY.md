@@ -52,6 +52,8 @@
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件/notFound 须用真实 createServer 测(createFullTestApp 无中间件镜像);config 中间件每请求覆盖 state→level 测须 config 文件驱动
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败但 health 仍绿;spawn 后必验 server.log 无 port-in-use + ss 真监听 PID 是我的
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约 + 独立 oracle 裁决,别反射式"让它编译"
+- [复用共享原语选完整版非小版、否则静默丢字段+单测假绿](methodology-full-primitive-not-partial-else-silent-field-drop.md) — usageFromTotalInput vs netInputTokens 丢 reasoning_tokens;3 次复发、合并态审+coverage 才逮;映射测须构造每个非平凡字段
+- [「别继承退化」建议只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — content_filter→refusal 过度改进;目标无对应值→诚实退化+marker;实现者采纳审计意见最易过度应用、orchestrator 亲手核实两侧类型才裁
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发;grep 全仓逐处修+抽共享 primitive;盲区靠合并态审逮
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 路由既有 outcome 复用全 handler + 类型系统逼出全站点
 - [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加 retry 策略前 grep 同错误子串既有 matcher;收紧旧正则+新策略排前
@@ -84,7 +86,7 @@
 - [AskUserQuestion 顶层 question 键抢救（landed master）](methodology-plan-verify-interface-location-and-wiring-channel.md) — salvage→兜底 header→strip;诊断落盘唯一=pipelineInfo;权威 docs/spec+plan/2026-07-13-askuserquestion-toplevel-key-salvage
 - [block 级缓冲重试（P0-P4 landed,剩 gated 翻转）](project-block-level-buffered-retry-execution.md) — merge master c2012555(默认 OFF);P1 wire 缺陷被绿测放过→3轮修;翻默认前门=真 CLI+scenario-B
 - [上游错误→客户端形态整形（spec+plan 评审中）](project-upstream-error-client-shaping.md) — 按 commit 阶段分治;Phase 6 依赖 P1;权威 docs/spec+plan/2026-07-13-upstream-error-client-shaping
-- [anthropic↔responses 直接桥（RFC 定稿、审查中）](project-anthropic-responses-direct-bridge.md) — 推翻 CC-as-canonical;per-pair 桥表;`model_overrides`→`model_mappings`（复数，用户裁决订正）;权威 docs/rfc/2026-07-14-anthropic-responses-direct-bridge.md
+- [anthropic↔responses 直接桥（Phase 0-7 全 landed + 4 次合并态审查 + 收官）](project-anthropic-responses-direct-bridge.md) — 推翻 CC-as-canonical、lossless-per-pair 为默认;per-pair 穷尽桥表 + 前向/反向六腿直连 + reasoning 全链路 round-trip 两向(claude-signature 载体 byte-exact、探针 e 背书)+ 两场景 model_translation + server-tool 透传/降级;`model_overrides`→`model_mappings`;权威 RFC + ADR 2026-07-14-lossless-per-pair-bridge + DESIGN 活的架构现状行
 - [unknown HTTP endpoint 可配置日志（Task1-3 landed，Task4 部分）](project-unknown-endpoint-logging.md) — 404/405 配日志级别;影子 TrieRouter 绕中间件污染+三态分类(route-owned 保 404);config.yaml/schema.json/DESIGN 待 peer model_mappings 后补;权威 docs/spec+plan/2026-07-14
 - [auto-truncate 移除 + calibration 重定位（实施未合并）](project-remove-auto-truncate-keep-calibration.md) — worktree rebase 风险;权威 RFC/plan 2026-07-13
 - [web_search 双跳退役（2026-07-13 landed）](project-web-search-double-hop-retired.md) — 双跳+config 键整套删;教训=称职实现≠有需求;权威 ADR 2026-07-13-server-tool-positioning
