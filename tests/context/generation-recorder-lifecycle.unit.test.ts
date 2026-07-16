@@ -17,7 +17,7 @@ import {
 } from "~/lib/process-identity"
 
 describe("RequestContext generation recorder lifecycle", () => {
-  test("captures identity, ingress, routing, attempt verdicts, diagnostics, and commits before the V2 terminal event", () => {
+  test("captures identity, ingress, routing, attempt verdicts, diagnostics, and seals only after the V2 terminal event", () => {
     resetProcessIdentityForTests()
     const processIdentity = initProcessIdentity("9.9.9-test")
     let terminalWasCommittedAtV2Publish = false

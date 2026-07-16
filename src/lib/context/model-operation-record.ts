@@ -19,6 +19,9 @@ export type OperationHeaderField = readonly [name: string, value: string]
 /** Runtime capability of an exact raw capture boundary. */
 export type CaptureCapability = "available" | "unavailable" | "not-requested"
 
+/** Concrete transport selected for one generation attempt. */
+export type OperationTransport = "http" | "upstream-ws" | "upstream-ws-fallback"
+
 /** Cross-vendor usage with typed canonical counters and an open details bag. */
 export interface OperationUsage {
   readonly inputTokens?: number
@@ -115,6 +118,7 @@ export interface OperationTrackInput {
   readonly frames?: ReadonlyArray<FrameNodeHandle>
   readonly status?: number
   readonly headers?: ReadonlyArray<OperationHeaderField>
+  readonly trailers?: ReadonlyArray<OperationHeaderField>
   readonly rawCapture?: Readonly<{ capability: CaptureCapability; ref?: string; byteLength?: number; gap?: string }>
   readonly metadata?: unknown
   readonly extensions?: Readonly<Record<string, unknown>>
@@ -126,6 +130,7 @@ export interface OperationTrack {
   readonly frames: ReadonlyArray<FrameNodeHandle>
   readonly status?: number
   readonly headers?: ReadonlyArray<OperationHeaderField>
+  readonly trailers?: ReadonlyArray<OperationHeaderField>
   readonly rawCapture?: Readonly<{ capability: CaptureCapability; ref?: string; byteLength?: number; gap?: string }>
   readonly metadata?: unknown
   readonly extensions?: OperationExtensions
@@ -200,6 +205,7 @@ export interface ModelOperationAttempt {
   readonly handle: AttemptHandle
   readonly sequence: number
   readonly strategy?: string
+  readonly transport?: OperationTransport
   readonly effectiveRequest?: OperationTrack
   readonly upstreamRequest?: OperationTrack
   readonly upstreamResponse?: OperationTrack
@@ -309,6 +315,7 @@ export interface RecordTransformInput {
 /** Attempt start input. */
 export interface BeginAttemptInput {
   readonly strategy?: string
+  readonly transport?: OperationTransport
   readonly effectiveRequest?: OperationTrackInput
   readonly upstreamRequest?: OperationTrackInput
   readonly metadata?: unknown
@@ -365,6 +372,7 @@ export interface ModelOperationRecorder {
   recordTransform(input: RecordTransformInput): void
   beginAttempt(input: BeginAttemptInput): AttemptHandle
   setAttemptEffectiveRequest(attempt: AttemptHandle, request: OperationTrackInput): void
+  setAttemptTransport(attempt: AttemptHandle, transport: OperationTransport): void
   setAttemptUpstreamRequest(attempt: AttemptHandle, request: OperationTrackInput): void
   recordAttemptDiagnostic(attempt: AttemptHandle, input: RecordAttemptDiagnosticInput): void
   settleAttempt(attempt: AttemptHandle, input: SettleAttemptInput): void
@@ -378,6 +386,7 @@ interface MutableAttempt {
   handle: AttemptHandle
   sequence: number
   strategy?: string
+  transport?: OperationTransport
   effectiveRequest?: OperationTrack
   upstreamRequest?: OperationTrack
   upstreamResponse?: OperationTrack
@@ -493,6 +502,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       frames: Object.freeze([...(source.frames ?? [])]),
       ...(source.status === undefined ? {} : { status: source.status }),
       ...(source.headers === undefined ? {} : { headers: freezeHeaders(source.headers) }),
+      ...(source.trailers === undefined ? {} : { trailers: freezeHeaders(source.trailers) }),
       ...(source.rawCapture === undefined ? {} : { rawCapture: Object.freeze({ ...source.rawCapture }) }),
       ...(source.metadata === undefined ? {} : { metadata: freezeCapturedValue(source.metadata) }),
       ...(source.extensions === undefined ? {} : { extensions: freezeExtensions(source.extensions) }),
@@ -516,6 +526,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       handle: attempt.handle,
       sequence: attempt.sequence,
       ...(attempt.strategy === undefined ? {} : { strategy: attempt.strategy }),
+      ...(attempt.transport === undefined ? {} : { transport: attempt.transport }),
       ...(attempt.effectiveRequest === undefined ? {} : { effectiveRequest: attempt.effectiveRequest }),
       ...(attempt.upstreamRequest === undefined ? {} : { upstreamRequest: attempt.upstreamRequest }),
       ...(attempt.upstreamResponse === undefined ? {} : { upstreamResponse: attempt.upstreamResponse }),
@@ -698,6 +709,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
         sequence: nextSequence(),
         diagnostics: [],
         ...(attemptInput.strategy === undefined ? {} : { strategy: attemptInput.strategy }),
+        ...(attemptInput.transport === undefined ? {} : { transport: attemptInput.transport }),
         ...(attemptInput.effectiveRequest === undefined ? {} : { effectiveRequest: freezeTrack(attemptInput.effectiveRequest) }),
         ...(attemptInput.upstreamRequest === undefined ? {} : { upstreamRequest: freezeTrack(attemptInput.upstreamRequest) }),
         ...(attemptInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(attemptInput.metadata) }),
@@ -714,6 +726,13 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       if (attempt.verdict !== undefined) throw new Error(`[model-operation-record] attempt already settled: ${handle}`)
       if (attempt.effectiveRequest !== undefined) throw new Error(`[model-operation-record] attempt effective request already recorded: ${handle}`)
       attempt.effectiveRequest = freezeTrack(request)
+    },
+
+    setAttemptTransport(handle, transport): void {
+      assertWritable()
+      const attempt = getAttempt(handle)
+      if (attempt.verdict !== undefined) throw new Error(`[model-operation-record] attempt already settled: ${handle}`)
+      attempt.transport = transport
     },
 
     setAttemptUpstreamRequest(handle, request): void {

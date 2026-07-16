@@ -460,6 +460,10 @@ export interface RequestContext {
   setSessionId(sessionId: string | undefined): void
   setAgentId(agentId: string | undefined): void
   setOriginalRequest(req: OriginalRequest): void
+  /** Record canonical ingress once both the V2 body and inbound headers are available. */
+  recordModelOperationIngress(): void
+  /** Seal the canonical operation only after client delivery is fully constructed/drained. */
+  finalizeModelOperationDelivery(input?: { clientPayload?: unknown }): void
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
   /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */
@@ -498,6 +502,12 @@ export interface RequestContext {
   captureUpstreamGenerationFrame?(frame: unknown, record: SseEventRecord): void
   /** Register an explicit rewrite/render relationship before the output reaches ClientSink. */
   captureGenerationFrameTransform?(inputFrame: unknown, outputFrame: unknown, transform: { stage: string; transformId: string; forceDerived?: boolean }): void
+  /** Record an N→M frame transform, including suppress/buffer/flush/drop actions. */
+  captureGenerationFrameAction?(
+    inputFrames: ReadonlyArray<unknown>,
+    outputFrames: ReadonlyArray<unknown>,
+    transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
+  ): void
   /** ClientSink producer hook: register the exact frame attempted on the client wire. */
   captureForwardedGenerationFrame?(frame: unknown, record: SseEventRecord, syntheticKind?: string): void
   /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
@@ -520,7 +530,15 @@ export interface RequestContext {
    * request verdict is projected to `failureReason` instead of being jammed into the upstream
    * leg's `error`. Leave it unset for genuine upstream failures (HTTP errors, truncation, H3).
    */
-  fail(model: string, error: unknown, partial?: PartialResponseInfo, opts?: { upstreamSucceeded?: boolean }): void
+  fail(
+    model: string,
+    error: unknown,
+    partial?: PartialResponseInfo,
+    opts?: {
+      upstreamSucceeded?: boolean
+      attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string }
+    },
+  ): void
   /**
    * Settle the request as `aborted` — the downstream client disconnected
    * mid-stream. Distinct terminal state from complete/fail. `partial` preserves

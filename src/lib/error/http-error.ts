@@ -12,6 +12,7 @@ export class HTTPError extends Error {
 
   constructor(message: string, status: number, responseText: string, modelId?: string, responseHeaders?: Headers, diagnostics?: ToolDiagnostics) {
     super(message)
+    this.name = "HTTPError"
     this.status = status
     this.responseText = responseText
     this.modelId = modelId

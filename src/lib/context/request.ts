@@ -322,12 +322,20 @@ export function createRequestContext(opts: {
   const latestFrameHandleByWire = new Map<string, FrameNodeHandle>()
   let syntheticFrameRoot: FrameNodeHandle | undefined
   let unresolvedTransformRoot: FrameNodeHandle | undefined
+  let pendingGenerationTerminal:
+    | {
+        outcome: "completed" | "failed" | "aborted"
+        error?: unknown
+        attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string }
+      }
+    | undefined
 
   interface GenerationAttemptCapture {
     handle: AttemptHandle
     effectivePayload?: PayloadNodeHandle
     wirePayload?: PayloadNodeHandle
     responsePayload?: PayloadNodeHandle
+    rawResponsePayload?: PayloadNodeHandle
     upstreamFrames: Array<FrameNodeHandle>
     settled: boolean
   }
@@ -337,14 +345,40 @@ export function createRequestContext(opts: {
   const currentGenerationAttempt = (): GenerationAttemptCapture | undefined => generationAttempts.at(-1)
 
   function snapshotForRecorder<T>(value: T): T | Readonly<Record<string, unknown>> {
-    try {
-      return structuredClone(value)
-    } catch {
-      if (value instanceof Error) {
-        return Object.freeze({ name: value.name, message: value.message, stack: value.stack })
+    const seen = new WeakMap<object, unknown>()
+    const copy = (candidate: unknown): unknown => {
+      if (candidate === null || typeof candidate !== "object") return candidate
+      if (candidate instanceof Error) {
+        const serialized: Record<string, unknown> = {
+          name: candidate.name,
+          message: candidate.message,
+          stack: candidate.stack,
+        }
+        seen.set(candidate, serialized)
+        if (candidate instanceof HTTPError) {
+          serialized.status = candidate.status
+          serialized.responseText = candidate.responseText
+        }
+        if ("cause" in candidate && candidate.cause !== undefined) serialized.cause = copy(candidate.cause)
+        for (const key of Object.keys(candidate)) {
+          if (!(key in serialized)) serialized[key] = copy((candidate as unknown as Record<string, unknown>)[key])
+        }
+        return serialized
       }
-      return Object.freeze({ captureUnavailable: true, type: typeof value, display: String(value) })
+      const known = seen.get(candidate)
+      if (known !== undefined) return known
+      if (Array.isArray(candidate)) {
+        const array: Array<unknown> = []
+        seen.set(candidate, array)
+        for (const item of candidate) array.push(copy(item))
+        return array
+      }
+      const object: Record<string, unknown> = {}
+      seen.set(candidate, object)
+      for (const [key, nested] of Object.entries(candidate)) object[key] = copy(nested)
+      return object
     }
+    return copy(value) as T | Readonly<Record<string, unknown>>
   }
 
   const orderedHeaders = (headers: Record<string, string> | undefined): Array<readonly [string, string]> | undefined =>
@@ -365,20 +399,16 @@ export function createRequestContext(opts: {
     ])
   }
 
-  function semanticFrameRecord(frame: unknown, synthetic?: string): SseEventRecord {
-    const candidate = (typeof frame === "object" && frame !== null ? frame : {}) as { event?: unknown; data?: unknown; raw?: unknown }
-    let raw = typeof frame === "string" ? frame : ""
-    if (typeof candidate.data === "string") raw = candidate.data
-    else if (typeof candidate.raw === "string") raw = candidate.raw
-    let type = raw ? "message" : "keepalive"
-    if (typeof candidate.event === "string") type = candidate.event
-    try {
-      const parsed = JSON.parse(raw) as { type?: unknown }
-      if (typeof parsed.type === "string") type = parsed.type
-    } catch {
-      // Non-JSON data keeps the explicit event/message fallback.
-    }
-    return { offsetMs: Date.now() - startTime, type, raw, ...(synthetic ? { extensionsSynthetic: synthetic } : {}) } as SseEventRecord
+  function canonicalFrameValue(frame: unknown): Readonly<Record<string, unknown>> {
+    if (typeof frame !== "object" || frame === null) return Object.freeze({ data: typeof frame === "string" ? frame : String(frame) })
+    const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
+    return Object.freeze({
+      ...(candidate.event !== undefined && { event: candidate.event }),
+      ...(candidate.data !== undefined && { data: candidate.data }),
+      ...(candidate.id !== undefined && { id: candidate.id }),
+      ...(candidate.retry !== undefined && { retry: candidate.retry }),
+      ...(candidate.data === undefined && candidate.raw !== undefined && { data: candidate.raw }),
+    })
   }
 
   function rememberFrame(frame: unknown, handle: FrameNodeHandle): void {
@@ -460,9 +490,10 @@ export function createRequestContext(opts: {
     const v2 = _attempts[generationAttempts.indexOf(attempt)]
     const response = v2.response
     const attemptError = v2.error
+    const primaryResponsePayload = attempt.rawResponsePayload ?? attempt.responsePayload
     const hasUpstreamResponse =
       response !== null
-      || attempt.responsePayload !== undefined
+      || primaryResponsePayload !== undefined
       || attempt.upstreamFrames.length > 0
       || v2.responseHeaders !== undefined
       || attemptError !== null
@@ -473,10 +504,12 @@ export function createRequestContext(opts: {
       verdict,
       ...(hasUpstreamResponse && {
         upstreamResponse: {
-          ...(attempt.responsePayload !== undefined && { payload: attempt.responsePayload }),
+          ...(primaryResponsePayload !== undefined && { payload: primaryResponsePayload }),
           frames: attempt.upstreamFrames,
           ...(responseStatus !== undefined && { status: responseStatus }),
           ...(v2.responseHeaders !== undefined && { headers: orderedHeaders(v2.responseHeaders) }),
+          ...(_httpHeaders?.outboundResponseTrailers !== undefined && { trailers: orderedHeaders(_httpHeaders.outboundResponseTrailers) }),
+          rawCapture: { capability: "unavailable", gap: "semantic SSE/WS frames captured; exact raw framing bytes unavailable" },
           metadata: snapshotForRecorder({ response, error: attemptError }),
         },
       }),
@@ -509,31 +542,44 @@ export function createRequestContext(opts: {
     }
   }
 
-  function commitGenerationTerminal(
+  function recordGenerationLogicalTerminal(
     outcome: "completed" | "failed" | "aborted",
     error?: unknown,
     attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string },
   ): void {
-    if (modelOperationRecorder.sealed) return
+    if (modelOperationRecorder.sealed || pendingGenerationTerminal !== undefined) return
     const currentAttempt = currentGenerationAttempt()
     if (currentAttempt && !currentAttempt.settled)
       settleGenerationAttempt(currentAttempt, outcome === "completed" ? "committed" : "failed", `terminal:${outcome}`, error)
+    pendingGenerationTerminal = { outcome, ...(error !== undefined && { error: snapshotForRecorder(error) }), ...(attribution !== undefined && { attribution }) }
+  }
 
+  function finalizeGenerationDelivery(clientPayload?: unknown): void {
+    if (modelOperationRecorder.sealed || pendingGenerationTerminal === undefined) return
     const finalAttempt = currentGenerationAttempt()
-    if (_forwardedResponse?.content !== undefined) {
-      const upstreamPayload = finalAttempt?.responsePayload
-      clientPayloadHandle = capturePayload(_forwardedResponse.content, {
+    const primaryUpstreamPayload = finalAttempt?.rawResponsePayload ?? finalAttempt?.responsePayload
+    if (clientPayload !== undefined) {
+      clientPayloadHandle = capturePayload(clientPayload, {
         stage: "egress",
         track: "client",
-        ...(upstreamPayload !== undefined && { derivedFrom: upstreamPayload, transformId: "response:forwarded" }),
+        ...(primaryUpstreamPayload !== undefined && { derivedFrom: primaryUpstreamPayload, transformId: "response:client-envelope" }),
+      })
+    } else if (_forwardedResponse?.content !== undefined && clientPayloadHandle === undefined) {
+      clientPayloadHandle = capturePayload(_forwardedResponse.content, {
+        stage: "egress-fallback",
+        track: "client",
+        ...(primaryUpstreamPayload !== undefined && { derivedFrom: primaryUpstreamPayload, transformId: "response:forwarded-projection" }),
       })
     }
+    const rawGap = { capability: "unavailable" as const, gap: "semantic SSE/WS frames captured; exact raw framing bytes unavailable" }
     modelOperationRecorder.recordEgress({
       upstream: {
-        ...(finalAttempt?.responsePayload !== undefined && { payload: finalAttempt.responsePayload }),
+        ...(primaryUpstreamPayload !== undefined && { payload: primaryUpstreamPayload }),
         frames: finalAttempt?.upstreamFrames ?? [],
         ...(_response?.status !== undefined && { status: _response.status }),
         ...(_httpHeaders?.outboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.outboundResponse) }),
+        ...(_httpHeaders?.outboundResponseTrailers !== undefined && { trailers: orderedHeaders(_httpHeaders.outboundResponseTrailers) }),
+        rawCapture: rawGap,
         metadata: snapshotForRecorder(_response),
       },
       client: {
@@ -541,14 +587,15 @@ export function createRequestContext(opts: {
         frames: clientFrameHandles,
         ...(_clientResponseStatus !== undefined && { status: _clientResponseStatus }),
         ...(_httpHeaders?.inboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.inboundResponse) }),
+        rawCapture: rawGap,
         metadata: snapshotForRecorder(_forwardedResponse),
       },
     })
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
-      outcome,
-      ...(error !== undefined && { error: snapshotForRecorder(error) }),
+      outcome: pendingGenerationTerminal.outcome,
+      ...(pendingGenerationTerminal.error !== undefined && { error: pendingGenerationTerminal.error }),
       ...(operationUsage(_response) !== undefined && { usage: operationUsage(_response) }),
-      ...(attribution !== undefined && { attribution }),
+      ...(pendingGenerationTerminal.attribution !== undefined && { attribution: pendingGenerationTerminal.attribution }),
     })
   }
 
@@ -764,14 +811,23 @@ export function createRequestContext(opts: {
     setOriginalRequest(req: OriginalRequest) {
       if (_originalRequest !== null) throw new Error("[RequestContext] original request already registered")
       _originalRequest = req
-      ingressPayloadHandle = capturePayload(req.payload, { stage: "ingress", track: "client" })
+      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "originalRequest", contextRef: ctx })
+    },
+
+    recordModelOperationIngress() {
+      if (_originalRequest === null) throw new Error("[RequestContext] cannot record ingress before original request")
+      if (_httpHeaders?.inboundRequest === undefined) throw new Error("[RequestContext] cannot record ingress before inbound headers")
+      ingressPayloadHandle = capturePayload(_originalRequest.payload, { stage: "ingress", track: "client" })
       modelOperationRecorder.recordIngress({
-        request: { payload: ingressPayloadHandle, headers: orderedHeaders(_httpHeaders?.inboundRequest), metadata: snapshotForRecorder(req) },
+        request: { payload: ingressPayloadHandle, headers: orderedHeaders(_httpHeaders.inboundRequest), metadata: snapshotForRecorder(_originalRequest) },
         format: opts.endpoint,
         method,
         path,
       })
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "originalRequest", contextRef: ctx })
+    },
+
+    finalizeModelOperationDelivery(input) {
+      finalizeGenerationDelivery(input?.clientPayload)
     },
 
     setToolNameMapper(mapper: ToolNameMapper | null) {
@@ -877,6 +933,7 @@ export function createRequestContext(opts: {
       if (!modelOperationRecorder.sealed) {
         const handle = modelOperationRecorder.beginAttempt({
           ...(attemptOpts.strategy !== undefined && { strategy: attemptOpts.strategy }),
+          transport: attempt.transport,
           metadata: {
             transport: attempt.transport,
             ...(attemptOpts.waitMs !== undefined && { waitMs: attemptOpts.waitMs }),
@@ -956,6 +1013,10 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.transport = transport
+        const generationAttempt = currentGenerationAttempt()
+        if (generationAttempt && !generationAttempt.settled && !modelOperationRecorder.sealed) {
+          modelOperationRecorder.setAttemptTransport(generationAttempt.handle, transport)
+        }
         recordAttemptDiagnostic("transport.selected", "info", { transport })
         publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
@@ -978,7 +1039,7 @@ export function createRequestContext(opts: {
             generationAttempt,
             response.success ? "committed" : "failed",
             response.success ? undefined : response.error,
-            response.success ? undefined : response.error,
+            response.success ? undefined : (attempt.error?.raw ?? response.error),
           )
         }
       }
@@ -1013,10 +1074,10 @@ export function createRequestContext(opts: {
       recordAttemptDiagnostic(`timing.${kind}`, "info", { epoch, mode })
     },
 
-    captureUpstreamGenerationFrame(frame, record) {
+    captureUpstreamGenerationFrame(frame, _record) {
       if (modelOperationRecorder.sealed) return
       const attempt = currentGenerationAttempt()
-      const handle = modelOperationRecorder.registerFrame(record, {
+      const handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
         origin: { stage: "upstream-capture", track: "upstream", ...(attempt !== undefined && { attempt: attempt.handle }) },
         mediaType: "text/event-stream",
       })
@@ -1035,7 +1096,7 @@ export function createRequestContext(opts: {
       }
       const parentHandle = parent?.handle ?? transformRoot()
       const attempt = currentGenerationAttempt()
-      const output = modelOperationRecorder.deriveFrame(semanticFrameRecord(outputFrame), {
+      const output = modelOperationRecorder.deriveFrame(canonicalFrameValue(outputFrame), {
         derivedFrom: parentHandle,
         transformId: transform.transformId,
         origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { attempt: attempt.handle }) },
@@ -1050,14 +1111,14 @@ export function createRequestContext(opts: {
       rememberFrame(outputFrame, output)
     },
 
-    captureForwardedGenerationFrame(frame, record, syntheticKind) {
+    captureForwardedGenerationFrame(frame, _record, syntheticKind) {
       if (modelOperationRecorder.sealed) return
       const known = knownFrame(frame)
       let handle: FrameNodeHandle
       if (syntheticKind !== undefined || known?.bytesChanged) {
         const parent = known?.handle ?? syntheticRoot()
         const transformId = `client-sink:${syntheticKind ?? "mutation"}`
-        handle = modelOperationRecorder.deriveFrame(record, {
+        handle = modelOperationRecorder.deriveFrame(canonicalFrameValue(frame), {
           derivedFrom: parent,
           transformId,
           origin: { stage: "client-sink", track: "proxy", detail: syntheticKind ?? "mutation" },
@@ -1073,7 +1134,7 @@ export function createRequestContext(opts: {
       } else if (known) {
         handle = known.handle
       } else {
-        handle = modelOperationRecorder.registerFrame(record, {
+        handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
           origin: { stage: "client-sink", track: "client" },
           mediaType: "text/event-stream",
         })
@@ -1089,7 +1150,7 @@ export function createRequestContext(opts: {
         attempt.durationMs = Date.now() - attempt.startTime
         const generationAttempt = currentGenerationAttempt()
         if (generationAttempt && !generationAttempt.settled && error.raw instanceof HTTPError && error.raw.responseText) {
-          generationAttempt.responsePayload = capturePayload(error.raw.responseText, {
+          generationAttempt.rawResponsePayload = capturePayload(error.raw.responseText, {
             stage: "upstream-error-response",
             track: "upstream",
             attempt: generationAttempt.handle,
@@ -1161,7 +1222,7 @@ export function createRequestContext(opts: {
       }
       _response = normalized
       ctx.setAttemptResponse(normalized)
-      commitGenerationTerminal("completed")
+      recordGenerationLogicalTerminal("completed")
       // Drive state via the same `transition` API used by every other state
       // change — emits `state_changed` so subscribers observing transitions
       // (e.g. WS clients) see the final terminal transition explicitly.
@@ -1175,7 +1236,15 @@ export function createRequestContext(opts: {
       onSettled?.(id)
     },
 
-    fail(model: string, error: unknown, partial?: PartialResponseInfo, opts?: { upstreamSucceeded?: boolean }) {
+    fail(
+      model: string,
+      error: unknown,
+      partial?: PartialResponseInfo,
+      opts?: {
+        upstreamSucceeded?: boolean
+        attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string }
+      },
+    ) {
       if (settled) return
       settled = true
       _endTime = Date.now()
@@ -1233,7 +1302,11 @@ export function createRequestContext(opts: {
       // usage / stop_reason / partial content). Guarded by the `settled` early
       // return at the method top, so it never double-writes.
       ctx.setAttemptResponse(_response)
-      commitGenerationTerminal("failed", error, { category: opts?.upstreamSucceeded ? "proxy" : "upstream", detail: errorMsg })
+      recordGenerationLogicalTerminal(
+        "failed",
+        error,
+        opts?.attribution ?? { category: opts?.upstreamSucceeded ? "proxy" : "upstream", detail: errorMsg },
+      )
 
       // Drive state via transition() so `state_changed` fires for the
       // terminal transition — keeps the WS observer view consistent with
@@ -1275,7 +1348,7 @@ export function createRequestContext(opts: {
       // (symmetric with complete()/fail()). Single leg here — no upstreamSucceeded
       // branch — so a plain post-`_response` write covers it. Guarded by `settled`.
       ctx.setAttemptResponse(_response)
-      commitGenerationTerminal("aborted", new Error("client disconnected"), { category: "client", code: "client-disconnected" })
+      recordGenerationLogicalTerminal("aborted", new Error("client disconnected"), { category: "client", code: "client-disconnected" })
 
       ctx.transition("aborted")
       const entry = ctx.toHistoryEntry()
