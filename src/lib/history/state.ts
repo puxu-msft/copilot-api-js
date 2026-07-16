@@ -36,6 +36,7 @@ import {
 } from "./v3/store"
 import {
   //
+  clearRecentModelOperationTerminalsForTests,
   drainModelOperationTerminalSubscribers,
   subscribeModelOperationTerminals,
 } from "./v3/terminal-bus"
@@ -78,6 +79,7 @@ export function isHistoryEnabled(): boolean {
 
 export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   clearInFlight()
+  clearRecentModelOperationTerminalsForTests()
   enabled = enable
   if (!enable) return
   // `historyDbPath` is retained only as an injected test seam during the V3

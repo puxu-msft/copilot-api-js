@@ -42,6 +42,7 @@ import {
 import { historyState } from "./state"
 import { getStats } from "./stats"
 import { setV3OperationPinned } from "./v3/store"
+import { clearRecentModelOperationTerminalsForTests } from "./v3/terminal-bus"
 
 /** Publish after persistence through the scoped history observability channel. */
 function publishEntryAdded(summary: EntrySummary): void {
@@ -335,6 +336,7 @@ export function persistEntryStages(id: string, stages: Array<StagePayload>): voi
 export function clearHistory(): void {
   const inFlightCount = listInFlight().length
   clearInFlight()
+  clearRecentModelOperationTerminalsForTests()
   if (historyState.enabled) {
     try {
       clearAllEntries()

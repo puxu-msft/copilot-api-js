@@ -48,6 +48,11 @@ export function listRecentModelOperationTerminals(): ReadonlyArray<ModelOperatio
   return [...recent.values()]
 }
 
+/** Test-only cache clear used by the legacy fixture reset surface. */
+export function clearRecentModelOperationTerminalsForTests(): void {
+  recent.clear()
+}
+
 /** Drain to quiescence, including work published while a prior batch settles. */
 export async function drainModelOperationTerminalSubscribers(): Promise<void> {
   while (pending.size > 0) await Promise.allSettled([...pending])
