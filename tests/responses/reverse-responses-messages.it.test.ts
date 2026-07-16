@@ -91,7 +91,7 @@ describe("T5.3 — REVERSE responses→messages request wire (dry-run inspectReq
   useIsolatedRuntime()
   const seed = () => setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.RESPONSES] })] })
 
-  test("@messages leg → prepare-wire yields an Anthropic-shaped wire at /v1/messages (two-hop Responses→CC→Anthropic reached the wire)", async () => {
+  test("@messages leg → prepare-wire yields an Anthropic-shaped wire at /v1/messages (DIRECT single-hop Responses→Anthropic bridge reached the wire, RFC 2026-07-14 subtask D)", async () => {
     seed()
     const { driver } = makeReverseDriver(sseStream([]))
     const raw = { body: { model: "claude-x@messages", instructions: "be terse", input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }] }, headers: new Headers(), path: "/responses", method: "POST" } as unknown as RawHttpRequest
@@ -101,7 +101,7 @@ describe("T5.3 — REVERSE responses→messages request wire (dry-run inspectReq
     const translated = insp.stages.translate
     expect(translated?.targetEndpoint).toBe(ENDPOINT.MESSAGES)
     const tbody = translated?.body as { system?: unknown; messages: Array<{ role: string }>; max_tokens?: number }
-    expect(tbody.system).toBe("be terse") // Responses instructions → CC system → Anthropic top-level system
+    expect(tbody.system).toBe("be terse") // Responses instructions → Anthropic top-level system (direct, no CC hop)
     expect(typeof tbody.max_tokens).toBe("number")
 
     const wire = insp.stages["prepare-wire"]

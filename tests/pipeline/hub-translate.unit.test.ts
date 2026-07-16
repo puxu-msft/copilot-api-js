@@ -98,7 +98,7 @@ describe("translateRequestVia — reverse legs (→ /v1/messages)", () => {
     expect(out.messages).toEqual([{ role: "user", content: "hi" }])
   })
 
-  test("openai-responses → /v1/messages two-hops Responses → CC → Anthropic", () => {
+  test("openai-responses → /v1/messages DIRECT single-hop Responses → Anthropic (RFC 2026-07-14 subtask D)", () => {
     const out = translateRequestVia("openai-responses", ENDPOINT.MESSAGES, responsesBody) as MessagesPayload
     expect(out.system).toBe("sys")
     expect(out.messages).toEqual([{ role: "user", content: "hi" }])
@@ -182,7 +182,10 @@ describe("createForwardStreamTranslator — STREAMING forward-leg dispatch (Phas
       ...t.renderFrame(rEvent({ type: "response.created", response: { id: "resp_1", model: "gpt-x" } })),
       ...t.renderFrame(rEvent({ type: "response.output_text.delta", output_index: 0, delta: "hello" })),
       ...t.renderFrame(
-        rEvent({ type: "response.completed", response: { id: "resp_1", model: "gpt-x", status: "completed", usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } } }),
+        rEvent({
+          type: "response.completed",
+          response: { id: "resp_1", model: "gpt-x", status: "completed", usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } },
+        }),
       ),
       ...t.flush(),
     ]

@@ -79,6 +79,7 @@ import {
   translateCCResponseToAnthropic,
   translateChatCompletionsToAnthropic,
   translateResponsesResponseToAnthropic,
+  translateResponsesToAnthropicRequest,
   translateResponsesToChatCompletions,
   type ResponsesToAnthropicStreamTranslator,
   type TranslateExchangeContext,
@@ -134,9 +135,15 @@ const anthropicToResponsesBridge: RequestBridge = (body, ctx) =>
 /** `openai-cc | gemini → /v1/messages`: CC-canonical → Anthropic Messages (shared — no gemini-held Anthropic sub-codec). */
 const ccToAnthropicRequestBridge: RequestBridge = (body) => translateChatCompletionsToAnthropic(body as ChatCompletionsPayload)
 
-/** `openai-responses → /v1/messages`: two-hop (WARN-F) Responses → CC → Anthropic. */
-const responsesToAnthropicRequestBridge: RequestBridge = (body) =>
-  translateChatCompletionsToAnthropic(translateResponsesToChatCompletions(body as ResponsesPayload))
+/**
+ * `openai-responses → /v1/messages`: DIRECT bridge (RFC 2026-07-14-anthropic-responses-direct-bridge
+ * §3/§4.2, Phase 4 subtask D) — a single fold of Responses `input[]` straight into Anthropic
+ * `MessageParam[]`, skipping the CC intermediate entirely (was a two-hop Responses→CC→Anthropic, WARN-F).
+ * This reverse request leg is purely hub-internal (RFC §2.3 — unlike the forward `@responses` request
+ * leg, no three-point corner: the anthropic-messages leg's `translateOut`/`prepareWire`/retry-baseline
+ * already treat a REVERSE cell's translated body as Anthropic-shaped regardless of source clientFormat).
+ */
+const responsesToAnthropicRequestBridge: RequestBridge = (body) => translateResponsesToAnthropicRequest(body as ResponsesPayload)
 
 /** `openai-responses → /chat/completions | /responses | ws:/responses`: Responses → CC-canonical (the responses-leg CC→Responses re-translation happens later in `prepareWire`). */
 const responsesToCcRequestBridge: RequestBridge = (body) => translateResponsesToChatCompletions(body as ResponsesPayload)
