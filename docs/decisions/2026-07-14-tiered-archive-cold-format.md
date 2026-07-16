@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-07-16** — 本 ADR 描述的内置 cold format 已从生产删除，被“独立 History V3、零迁移、无内置 archiver”决策取代。保留本文仅作历史记录。
+
 # ADR: tier-2 冷归档格式 —— SQLite sealed + session-group（否决 Parquet）
 
 - **状态**：Accepted

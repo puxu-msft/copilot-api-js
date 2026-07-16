@@ -128,7 +128,7 @@
 | `/history/api/entries/:id/pin`、`.../unpin` | POST | 更新 `v3_operations.pinned` 专列；详情和 summary 均立即反映。 |
 | `/history/api/stats` | GET | 从 V3 列表与 in-flight 合并视图聚合计数、token 与 model breakdown。 |
 | `/history/api/sessions` | GET | 从 V3 generation records 聚合 Session 列表；不读 `entries_v2`。 |
-| `/history/api/search`、`/history/api/search/contains` | GET | 当前 V3 搜索 facade 尚未落地，明确返回 501；绝不回读 V2 `search_index`。 |
+| `/history/api/search`、`/history/api/search/contains` | GET | V3 unique semantic payload 搜索与 object→operation companion；绝不回读 V2 `search_index`。 |
 | `/history/api/export` | GET | 从 V3 facade 导出 JSON / CSV。 |
 
 

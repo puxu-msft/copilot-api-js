@@ -81,11 +81,14 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 每桶按 `started_at ASC, id ASC` 删除最旧条目，保留最新的对应 `limit` 条。**活跃态（`pending`/`executing`/`streaming`）落在两桶之外**——reaper 既不计数也不淘汰进行中请求的 head 行；它们的回收由下文的孤儿/stale 回收负责。删除 head 行时，其 `entry_stages` 子行经 `ON DELETE CASCADE` 一并删除。
 
-> **注（三层降温归档，2026-07-14 起）**：当 `history.archive.enabled=true`（默认）时，reaper 的到量 `DELETE` 被 **move-to-tier1** 取代——超量/超龄行**搬进 `archive.db` 冷归档而非删除**（永不真删）。数量上限降级为安全阀、时间搬迁（>`hot_days`=3d）成主机制。详见下节「三层降温归档」；权威架构见 [DESIGN.md](DESIGN.md)「活的架构现状」History 三层降温归档行 + ADR [decisions/2026-07-14-tiered-archive-cold-format.md](decisions/2026-07-14-tiered-archive-cold-format.md) + spec [spec/2026-07-14-history-tiered-archive.md](spec/2026-07-14-history-tiered-archive.md)。`enabled=false` 时行为退回本节所述的到量硬删。
+> **History V3（2026-07-16 起）**：在线服务只打开独立 `history-v3.db`，不打开、读取、迁移、回填或删除旧 `history.db` / `archive.db` / seal。终态 `ModelOperationRecord` 经单写者落 `v3_*` 表：semantic object CAS、operation manifest、ordered tracks、timeline chunks、自包含 journal 与可重建搜索投影。在线无 count retention、无自动删除、无内置冷归档。
 
-### 三层降温归档（tiered archive）
+### Canonical store 与 raw capture
 
-`history.db`（HOT，近 `hot_days` + pinned 永驻）→ `archive.db`（TIER-1，SQLite 同 schema，ATTACH 主连接）→ `archive-NNNN.db`（TIER-2，按 session 分组的 max-zstd 封存冷单元）三层单向降温、**产品面无删除**、按视图分域（`?tier=hot\|archive`）访问。move 语义（先写 archive 单文件原子事务 + 多子表 verify + 才删 HOT、显式列名免疫列序、删-再-写覆盖语义）、tier-2 格式（session-group 9× 压缩，PoC 裁决）、archive-now 端点（替代删除）等细节见 spec / ADR / DESIGN.md，此处不重复。config 见 `history.archive.*`（`enabled`/`hot_days`/`tier1_size_cap`/`tier2_warn_count`/`tier2_warn_bytes`/`dir`）。
+- semantic V3 默认启用，完整记录 generation、Responses WS、count tokens、embeddings 与 Azure 元数据。
+- `history.raw_capture.enabled=false` 默认关闭。开启后 exact bytes 写独立 `raw.db` CAS；热重载只切新 operation，旧在途 operation 继续写冻结 store generation 后 drain 关闭。
+- raw capture 失败不阻断代理或 semantic V3；status 暴露 generation、gap 与 last error。
+- 搜索只索引 unique semantic payload object，operation membership 独立保存；权威 operation 不依赖搜索成功。
 
 
 ### Debug-pin（豁免淘汰）
@@ -112,9 +115,7 @@ REST 用法见下文 `POST /history/api/entries/:id/pin|unpin`。
 
 ## 数据库位置
 
-默认路径：`$XDG_DATA_HOME/copilot-api/history.db`，未设置 `XDG_DATA_HOME` 时回退到 `~/.local/share/copilot-api/history.db`。
-
-可通过 `config.yaml` 中的 `history.db_path` 覆盖。
+默认路径：`$XDG_DATA_HOME/copilot-api/history-v3.db`；可选 raw store 默认为同目录 `raw.db`。旧 `history.db` 保持原样，在线服务不会触碰。
 
 ## 进行中 vs 持久化（增量持久化）
 
@@ -195,7 +196,7 @@ History 产品读面已切到 V3 canonical store：列表、详情、session 聚
 | `GET /history/api/stats` | V3 persisted + in-flight 去重合并视图统计。 |
 | `GET /history/api/entries/:id/export` | V3 entry 投影的 `.json.zst` 下载。 |
 | `GET /history/api/export` | V3 全量 JSON / CSV 导出。 |
-| `GET /history/api/search`、`GET /history/api/search/contains` | V3 搜索未就绪，明确 501 unsupported；绝不偷读 V2 搜索表。 |
+| `GET /history/api/search`、`GET /history/api/search/contains` | V3 unique semantic object 搜索与 object→operation companion；绝不读 V2 搜索表。 |
 
 ## 内容寻址搜索 (search_index)
 

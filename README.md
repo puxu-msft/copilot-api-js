@@ -178,7 +178,8 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 ~/.local/share/copilot-api/         # or $XDG_DATA_HOME/copilot-api/
 ├── config.yaml                     # user config (hot-reloaded)
 ├── github_token                    # GitHub device-flow token
-├── history.db                      # SQLite history (gzip-compressed payloads)
+├── history-v3.db                   # Canonical semantic CAS + journal + search
+├── raw.db                          # Optional exact-byte CAS (disabled by default)
 ├── negotiation-states.json         # learned per-model bans (betas / body fields / efforts)
 ```
 

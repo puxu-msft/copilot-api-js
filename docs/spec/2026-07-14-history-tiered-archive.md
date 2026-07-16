@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-07-16** — 内置 tiered archive 已退役。在线服务只写 `history-v3.db`，不读取/迁移旧 History；旧数据库由项目外工具未来自行处理，协议适配不属于本项目。当前权威架构见 [History V3 设计](../DESIGN.md#活的架构现状v4-迁移态) 与 [history.md](../history.md)。
+
 # Spec: History 三层降温归档（tiered archive）
 
 - **状态**：Draft v3（已吸收 GPT reviewer 两轮对抗评审 3 BLOCKER + 8 HIGH + MEDIUM，见 §10 评审台账；待用户审 → 收尾确认 → plan）
