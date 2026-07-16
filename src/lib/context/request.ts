@@ -29,10 +29,16 @@ import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import { getErrorMessage } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
 import { normalizeModelId } from "~/lib/models/resolver"
+import { getProcessIdentity } from "~/lib/process-identity"
 import { state as appState } from "~/lib/state"
 
-import { createOperationScope } from "./operation-scope"
-
+import type {
+  //
+  AttemptHandle,
+  FrameNodeHandle,
+  ModelOperationRecord,
+  PayloadNodeHandle,
+} from "./model-operation-record"
 import type {
   //
   Attempt,
@@ -52,6 +58,8 @@ import type {
 } from "./types"
 
 import { snapshotWithSummary } from "./activity-summary"
+import { createModelOperationRecorder } from "./model-operation-record"
+import { createOperationScope } from "./operation-scope"
 
 export type {
   Attempt,
@@ -293,6 +301,257 @@ export function createRequestContext(opts: {
   let _endTime: number | null = null
   /** Per-attempt tool-input repair outcomes (reset by resetRepairOutcomesForAttempt on L2 retry). */
   const _repairOutcomes: Array<RepairOutcomeRecord> = []
+
+  // History V3 generation recorder. The mutable recorder stays private to RequestContext;
+  // consumers see only immutable snapshots / the canonical terminal record.
+  const modelOperationRecorder = createModelOperationRecorder({
+    identity: {
+      operationId: id,
+      kind: "generation",
+      createdAt: startTime,
+      ...(opts.sessionId !== undefined && { sessionId: opts.sessionId }),
+      ...(opts.agentId !== undefined && { agentId: opts.agentId }),
+      process: getProcessIdentity(),
+    },
+  })
+  let modelOperationTerminalRecord: ModelOperationRecord | null = null
+  let ingressPayloadHandle: PayloadNodeHandle | undefined
+  let clientPayloadHandle: PayloadNodeHandle | undefined
+  const payloadHandleByObject = new WeakMap<object, PayloadNodeHandle>()
+  const frameHandleByObject = new WeakMap<object, { handle: FrameNodeHandle; wireKey: string | undefined }>()
+  const latestFrameHandleByWire = new Map<string, FrameNodeHandle>()
+  let syntheticFrameRoot: FrameNodeHandle | undefined
+  let unresolvedTransformRoot: FrameNodeHandle | undefined
+
+  interface GenerationAttemptCapture {
+    handle: AttemptHandle
+    effectivePayload?: PayloadNodeHandle
+    wirePayload?: PayloadNodeHandle
+    responsePayload?: PayloadNodeHandle
+    upstreamFrames: Array<FrameNodeHandle>
+    settled: boolean
+  }
+  const generationAttempts: Array<GenerationAttemptCapture> = []
+  const clientFrameHandles: Array<FrameNodeHandle> = []
+
+  const currentGenerationAttempt = (): GenerationAttemptCapture | undefined => generationAttempts.at(-1)
+
+  function snapshotForRecorder<T>(value: T): T | Readonly<Record<string, unknown>> {
+    try {
+      return structuredClone(value)
+    } catch {
+      if (value instanceof Error) {
+        return Object.freeze({ name: value.name, message: value.message, stack: value.stack })
+      }
+      return Object.freeze({ captureUnavailable: true, type: typeof value, display: String(value) })
+    }
+  }
+
+  const orderedHeaders = (headers: Record<string, string> | undefined): Array<readonly [string, string]> | undefined =>
+    headers === undefined ? undefined : Object.entries(headers)
+
+  function frameWireKey(frame: unknown): string | undefined {
+    if (typeof frame !== "object" || frame === null) return typeof frame === "string" ? `string:${frame}` : undefined
+    const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
+    let data: string | undefined
+    if (typeof candidate.data === "string") data = candidate.data
+    else if (typeof candidate.raw === "string") data = candidate.raw
+    if (data === undefined) return undefined
+    return JSON.stringify([
+      typeof candidate.event === "string" ? candidate.event : null,
+      data,
+      typeof candidate.id === "string" || typeof candidate.id === "number" ? candidate.id : null,
+      typeof candidate.retry === "number" ? candidate.retry : null,
+    ])
+  }
+
+  function semanticFrameRecord(frame: unknown, synthetic?: string): SseEventRecord {
+    const candidate = (typeof frame === "object" && frame !== null ? frame : {}) as { event?: unknown; data?: unknown; raw?: unknown }
+    let raw = typeof frame === "string" ? frame : ""
+    if (typeof candidate.data === "string") raw = candidate.data
+    else if (typeof candidate.raw === "string") raw = candidate.raw
+    let type = raw ? "message" : "keepalive"
+    if (typeof candidate.event === "string") type = candidate.event
+    try {
+      const parsed = JSON.parse(raw) as { type?: unknown }
+      if (typeof parsed.type === "string") type = parsed.type
+    } catch {
+      // Non-JSON data keeps the explicit event/message fallback.
+    }
+    return { offsetMs: Date.now() - startTime, type, raw, ...(synthetic ? { extensionsSynthetic: synthetic } : {}) } as SseEventRecord
+  }
+
+  function rememberFrame(frame: unknown, handle: FrameNodeHandle): void {
+    const key = frameWireKey(frame)
+    if (typeof frame === "object" && frame !== null) frameHandleByObject.set(frame, { handle, wireKey: key })
+    if (key !== undefined) latestFrameHandleByWire.set(key, handle)
+  }
+
+  function knownFrame(frame: unknown): { handle: FrameNodeHandle; bytesChanged: boolean } | undefined {
+    if (typeof frame === "object" && frame !== null) {
+      const known = frameHandleByObject.get(frame)
+      if (known) return { handle: known.handle, bytesChanged: known.wireKey !== frameWireKey(frame) }
+    }
+    const key = frameWireKey(frame)
+    const handle = key === undefined ? undefined : latestFrameHandleByWire.get(key)
+    return handle === undefined ? undefined : { handle, bytesChanged: false }
+  }
+
+  function syntheticRoot(): FrameNodeHandle {
+    if (syntheticFrameRoot !== undefined) return syntheticFrameRoot
+    syntheticFrameRoot = modelOperationRecorder.registerFrame(Object.freeze({ kind: "proxy-synthetic-root" }), {
+      origin: { stage: "synthetic-root", track: "internal" },
+      mediaType: "application/x.history-v3-frame-root",
+    })
+    return syntheticFrameRoot
+  }
+
+  function transformRoot(): FrameNodeHandle {
+    if (unresolvedTransformRoot !== undefined) return unresolvedTransformRoot
+    unresolvedTransformRoot = modelOperationRecorder.registerFrame(Object.freeze({ kind: "unresolved-transform-root" }), {
+      origin: { stage: "transform-root", track: "internal" },
+      mediaType: "application/x.history-v3-frame-root",
+    })
+    return unresolvedTransformRoot
+  }
+
+  function capturePayload(
+    value: unknown,
+    input: {
+      stage: string
+      track: "client" | "upstream" | "proxy" | "internal"
+      attempt?: AttemptHandle
+      derivedFrom?: PayloadNodeHandle
+      transformId?: string
+    },
+  ): PayloadNodeHandle {
+    if (typeof value === "object" && value !== null) {
+      const known = payloadHandleByObject.get(value)
+      if (known !== undefined) return known
+    }
+    const origin = { stage: input.stage, track: input.track, ...(input.attempt !== undefined && { attempt: input.attempt }) }
+    const handle =
+      input.derivedFrom !== undefined && input.transformId !== undefined ?
+        modelOperationRecorder.derivePayload(snapshotForRecorder(value), {
+          origin,
+          derivedFrom: input.derivedFrom,
+          transformId: input.transformId,
+          mediaType: "application/json",
+        })
+      : modelOperationRecorder.registerPayload(snapshotForRecorder(value), { origin, mediaType: "application/json" })
+    if (typeof value === "object" && value !== null) payloadHandleByObject.set(value, handle)
+    return handle
+  }
+
+  function recordAttemptDiagnostic(kind: string, severity: "info" | "warning" | "error", data?: unknown, message?: string): void {
+    if (modelOperationRecorder.sealed) return
+    const attempt = currentGenerationAttempt()
+    if (!attempt || attempt.settled) return
+    modelOperationRecorder.recordAttemptDiagnostic(attempt.handle, {
+      kind,
+      severity,
+      ...(message !== undefined && { message }),
+      ...(data !== undefined && { data: snapshotForRecorder(data) }),
+    })
+  }
+
+  function settleGenerationAttempt(attempt: GenerationAttemptCapture, verdict: "committed" | "discarded" | "failed", reason?: string, error?: unknown): void {
+    if (modelOperationRecorder.sealed || attempt.settled) return
+    const v2 = _attempts[generationAttempts.indexOf(attempt)]
+    const response = v2.response
+    const attemptError = v2.error
+    const hasUpstreamResponse =
+      response !== null
+      || attempt.responsePayload !== undefined
+      || attempt.upstreamFrames.length > 0
+      || v2.responseHeaders !== undefined
+      || attemptError !== null
+    let responseStatus: number | undefined
+    if (response?.status !== undefined) responseStatus = response.status
+    else if (attemptError?.status !== undefined) responseStatus = attemptError.status
+    modelOperationRecorder.settleAttempt(attempt.handle, {
+      verdict,
+      ...(hasUpstreamResponse && {
+        upstreamResponse: {
+          ...(attempt.responsePayload !== undefined && { payload: attempt.responsePayload }),
+          frames: attempt.upstreamFrames,
+          ...(responseStatus !== undefined && { status: responseStatus }),
+          ...(v2.responseHeaders !== undefined && { headers: orderedHeaders(v2.responseHeaders) }),
+          metadata: snapshotForRecorder({ response, error: attemptError }),
+        },
+      }),
+      ...(reason !== undefined && { reason }),
+      ...(error !== undefined && { error: snapshotForRecorder(error) }),
+    })
+    attempt.settled = true
+  }
+
+  function operationUsage(response: ResponseData | null):
+    | {
+        inputTokens?: number
+        outputTokens?: number
+        cacheReadTokens?: number
+        cacheWriteTokens?: number
+        reasoningTokens?: number
+        toolSearchRequests?: number
+        details?: Readonly<Record<string, unknown>>
+      }
+    | undefined {
+    if (!response) return undefined
+    return {
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      ...(response.usage.cache_read_input_tokens !== undefined && { cacheReadTokens: response.usage.cache_read_input_tokens }),
+      ...(response.usage.cache_creation_input_tokens !== undefined && { cacheWriteTokens: response.usage.cache_creation_input_tokens }),
+      ...(response.usage.output_tokens_details?.reasoning_tokens !== undefined && { reasoningTokens: response.usage.output_tokens_details.reasoning_tokens }),
+      ...(response.toolSearchRequests !== undefined && { toolSearchRequests: response.toolSearchRequests }),
+      details: response.usage,
+    }
+  }
+
+  function commitGenerationTerminal(
+    outcome: "completed" | "failed" | "aborted",
+    error?: unknown,
+    attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string },
+  ): void {
+    if (modelOperationRecorder.sealed) return
+    const currentAttempt = currentGenerationAttempt()
+    if (currentAttempt && !currentAttempt.settled)
+      settleGenerationAttempt(currentAttempt, outcome === "completed" ? "committed" : "failed", `terminal:${outcome}`, error)
+
+    const finalAttempt = currentGenerationAttempt()
+    if (_forwardedResponse?.content !== undefined) {
+      const upstreamPayload = finalAttempt?.responsePayload
+      clientPayloadHandle = capturePayload(_forwardedResponse.content, {
+        stage: "egress",
+        track: "client",
+        ...(upstreamPayload !== undefined && { derivedFrom: upstreamPayload, transformId: "response:forwarded" }),
+      })
+    }
+    modelOperationRecorder.recordEgress({
+      upstream: {
+        ...(finalAttempt?.responsePayload !== undefined && { payload: finalAttempt.responsePayload }),
+        frames: finalAttempt?.upstreamFrames ?? [],
+        ...(_response?.status !== undefined && { status: _response.status }),
+        ...(_httpHeaders?.outboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.outboundResponse) }),
+        metadata: snapshotForRecorder(_response),
+      },
+      client: {
+        ...(clientPayloadHandle !== undefined && { payload: clientPayloadHandle }),
+        frames: clientFrameHandles,
+        ...(_clientResponseStatus !== undefined && { status: _clientResponseStatus }),
+        ...(_httpHeaders?.inboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.inboundResponse) }),
+        metadata: snapshotForRecorder(_forwardedResponse),
+      },
+    })
+    modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
+      outcome,
+      ...(error !== undefined && { error: snapshotForRecorder(error) }),
+      ...(operationUsage(_response) !== undefined && { usage: operationUsage(_response) }),
+      ...(attribution !== undefined && { attribution }),
+    })
+  }
+
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
   let settled = false
   /** Lifecycle abort — fired by the reaper (reapInFlight) to cancel in-flight upstream work (缺陷④). */
@@ -381,6 +640,7 @@ export function createRequestContext(opts: {
       return operationScope.whenOperationQuiesced()
     },
     recordRepairOutcome(record) {
+      recordAttemptDiagnostic(`repair.${record.outcome}`, record.outcome === "unrepairable" ? "error" : "info", record)
       _repairOutcomes.push(record)
     },
     recordAskUserQuestionNormalization(diag) {
@@ -390,6 +650,7 @@ export function createRequestContext(opts: {
       // one (a known diagnostic-fidelity limitation, tracked in docs/todo/deferred-backlog.md; gated on
       // buffered-retry being enabled). Forwarded-wire correctness is unaffected either way.
       _askNormalization = { ..._askNormalization, ...diag }
+      recordAttemptDiagnostic("repair.ask_user_question_normalization", "warning", diag)
       // MUST publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler
       // (history sink); onTerminal's projection allowlist does NOT include pipelineInfo. Mirrors
       // setStreamTimeouts exactly.
@@ -400,6 +661,7 @@ export function createRequestContext(opts: {
       // (under buffered-retry may reflect a discarded attempt; forwarded-wire correctness unaffected). MUST
       // publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler.
       _sendMessageNormalization = { ..._sendMessageNormalization, ...diag }
+      recordAttemptDiagnostic("repair.send_message_normalization", "warning", diag)
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
     get repairOutcomes() {
@@ -444,6 +706,12 @@ export function createRequestContext(opts: {
     get settled() {
       return settled
     },
+    get modelOperationSnapshot() {
+      return modelOperationRecorder.snapshot()
+    },
+    get modelOperationTerminalRecord() {
+      return modelOperationTerminalRecord
+    },
     get originalRequest() {
       return _originalRequest
     },
@@ -482,15 +750,27 @@ export function createRequestContext(opts: {
     },
 
     setSessionId(sessionId: string | undefined) {
+      const previous = _sessionId
       _sessionId = sessionId
+      if (previous === undefined && !modelOperationRecorder.sealed) modelOperationRecorder.setIdentityContext({ sessionId })
     },
 
     setAgentId(agentId: string | undefined) {
+      const previous = _agentId
       _agentId = agentId
+      if (previous === undefined && !modelOperationRecorder.sealed) modelOperationRecorder.setIdentityContext({ agentId })
     },
 
     setOriginalRequest(req: OriginalRequest) {
+      if (_originalRequest !== null) throw new Error("[RequestContext] original request already registered")
       _originalRequest = req
+      ingressPayloadHandle = capturePayload(req.payload, { stage: "ingress", track: "client" })
+      modelOperationRecorder.recordIngress({
+        request: { payload: ingressPayloadHandle, headers: orderedHeaders(_httpHeaders?.inboundRequest), metadata: snapshotForRecorder(req) },
+        format: opts.endpoint,
+        method,
+        path,
+      })
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "originalRequest", contextRef: ctx })
     },
 
@@ -501,6 +781,7 @@ export function createRequestContext(opts: {
     setPipelineInfo(info: PipelineInfo) {
       // Direct assignment — caller assembles the complete PipelineInfo
       _pipelineInfo = info
+      recordAttemptDiagnostic("pipeline.info", "info", info)
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
 
@@ -572,10 +853,13 @@ export function createRequestContext(opts: {
       if (exists) return
 
       _warningMessages.push(warning)
+      recordAttemptDiagnostic(`warning.${warning.code}`, "warning", warning, warning.message)
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "warningMessages", contextRef: ctx })
     },
 
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
+      const previous = currentGenerationAttempt()
+      if (previous && !previous.settled) settleGenerationAttempt(previous, "discarded", "superseded by next attempt")
       const attempt: Attempt = {
         index: _attempts.length,
         effectiveRequest: null, // Set later via setAttemptEffectiveRequest
@@ -590,6 +874,18 @@ export function createRequestContext(opts: {
         durationMs: 0,
       }
       _attempts.push(attempt)
+      if (!modelOperationRecorder.sealed) {
+        const handle = modelOperationRecorder.beginAttempt({
+          ...(attemptOpts.strategy !== undefined && { strategy: attemptOpts.strategy }),
+          metadata: {
+            transport: attempt.transport,
+            ...(attemptOpts.waitMs !== undefined && { waitMs: attemptOpts.waitMs }),
+            ...(attemptOpts.truncation !== undefined && { truncation: attemptOpts.truncation }),
+            startedAt: attempt.startTime,
+          },
+        })
+        generationAttempts.push({ handle, upstreamFrames: [], settled: false })
+      }
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
     },
 
@@ -597,6 +893,7 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.sanitization = info
+        recordAttemptDiagnostic("request.sanitization", "info", info)
       }
     },
 
@@ -608,6 +905,7 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt && fields.length > 0) {
         attempt.cacheControlStripped = [...fields]
+        recordAttemptDiagnostic("request.cache_control_stripped", "info", { fields })
       }
     },
 
@@ -615,6 +913,19 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.effectiveRequest = req
+        const generationAttempt = currentGenerationAttempt()
+        if (generationAttempt && !generationAttempt.settled && !modelOperationRecorder.sealed) {
+          generationAttempt.effectivePayload = capturePayload(req.payload, {
+            stage: "effective-request",
+            track: "proxy",
+            attempt: generationAttempt.handle,
+            ...(ingressPayloadHandle !== undefined && { derivedFrom: ingressPayloadHandle, transformId: "request:effective" }),
+          })
+          modelOperationRecorder.setAttemptEffectiveRequest(generationAttempt.handle, {
+            payload: generationAttempt.effectivePayload,
+            metadata: snapshotForRecorder(req),
+          })
+        }
         publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
@@ -623,6 +934,20 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.wireRequest = req
+        const generationAttempt = currentGenerationAttempt()
+        if (generationAttempt && !generationAttempt.settled && !modelOperationRecorder.sealed) {
+          generationAttempt.wirePayload = capturePayload(req.payload, {
+            stage: "wire-request",
+            track: "upstream",
+            attempt: generationAttempt.handle,
+            ...(generationAttempt.effectivePayload !== undefined && { derivedFrom: generationAttempt.effectivePayload, transformId: "request:prepare-wire" }),
+          })
+          modelOperationRecorder.setAttemptUpstreamRequest(generationAttempt.handle, {
+            payload: generationAttempt.wirePayload,
+            headers: orderedHeaders(req.headers),
+            metadata: snapshotForRecorder(req),
+          })
+        }
         publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
@@ -631,6 +956,7 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt) {
         attempt.transport = transport
+        recordAttemptDiagnostic("transport.selected", "info", { transport })
         publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
@@ -640,6 +966,21 @@ export function createRequestContext(opts: {
       if (attempt) {
         attempt.response = response
         attempt.durationMs = Date.now() - attempt.startTime
+        const generationAttempt = currentGenerationAttempt()
+        if (generationAttempt && !generationAttempt.settled && !modelOperationRecorder.sealed) {
+          generationAttempt.responsePayload = capturePayload(response.content, {
+            stage: "upstream-response",
+            track: "upstream",
+            attempt: generationAttempt.handle,
+          })
+          recordAttemptDiagnostic("response.settled", response.success ? "info" : "error", response)
+          settleGenerationAttempt(
+            generationAttempt,
+            response.success ? "committed" : "failed",
+            response.success ? undefined : response.error,
+            response.success ? undefined : response.error,
+          )
+        }
       }
     },
 
@@ -649,13 +990,96 @@ export function createRequestContext(opts: {
       // unlike `response` (final attempt only via complete/fail). Small → rides the attempt
       // summary (head blob), no heavy stage.
       const attempt = ctx.currentAttempt
-      if (attempt) attempt.responseHeaders = headers
+      if (attempt) {
+        attempt.responseHeaders = headers
+        recordAttemptDiagnostic("response.headers", "info", { headers })
+      }
     },
 
     setClientTimingEpoch(kind, epoch) {
       // 首包埋点（spec 2026-07-14 §3.2）：once 语义——首写为准。toHistoryEntry 换算成
       // 相对 started_at 的 offset。driver（bufferHoldStart）/ handler（streamOpen）/ client-sink（firstReal）调用。
-      if (_clientTimingEpochs[kind] === undefined) _clientTimingEpochs[kind] = epoch
+      if (_clientTimingEpochs[kind] === undefined) {
+        _clientTimingEpochs[kind] = epoch
+        recordAttemptDiagnostic(`timing.client.${kind}`, "info", { epoch })
+      }
+    },
+
+    setAttemptTimingEpoch(kind, epoch, mode) {
+      const attempt = ctx.currentAttempt
+      if (!attempt) return
+      if (mode === "once" && attempt[kind] !== undefined) return
+      attempt[kind] = epoch
+      recordAttemptDiagnostic(`timing.${kind}`, "info", { epoch, mode })
+    },
+
+    captureUpstreamGenerationFrame(frame, record) {
+      if (modelOperationRecorder.sealed) return
+      const attempt = currentGenerationAttempt()
+      const handle = modelOperationRecorder.registerFrame(record, {
+        origin: { stage: "upstream-capture", track: "upstream", ...(attempt !== undefined && { attempt: attempt.handle }) },
+        mediaType: "text/event-stream",
+      })
+      rememberFrame(frame, handle)
+      attempt?.upstreamFrames.push(handle)
+    },
+
+    captureGenerationFrameTransform(inputFrame, outputFrame, transform) {
+      if (modelOperationRecorder.sealed) return
+      const parent = knownFrame(inputFrame)
+      if (!parent && !transform.forceDerived) return
+      const sameBytes = frameWireKey(inputFrame) === frameWireKey(outputFrame)
+      if (parent && !transform.forceDerived && sameBytes) {
+        rememberFrame(outputFrame, parent.handle)
+        return
+      }
+      const parentHandle = parent?.handle ?? transformRoot()
+      const attempt = currentGenerationAttempt()
+      const output = modelOperationRecorder.deriveFrame(semanticFrameRecord(outputFrame), {
+        derivedFrom: parentHandle,
+        transformId: transform.transformId,
+        origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { attempt: attempt.handle }) },
+        mediaType: "text/event-stream",
+      })
+      modelOperationRecorder.recordTransform({
+        transformId: transform.transformId,
+        stage: transform.stage,
+        inputs: [{ kind: "frame", handle: parentHandle }],
+        outputs: [{ kind: "frame", handle: output }],
+      })
+      rememberFrame(outputFrame, output)
+    },
+
+    captureForwardedGenerationFrame(frame, record, syntheticKind) {
+      if (modelOperationRecorder.sealed) return
+      const known = knownFrame(frame)
+      let handle: FrameNodeHandle
+      if (syntheticKind !== undefined || known?.bytesChanged) {
+        const parent = known?.handle ?? syntheticRoot()
+        const transformId = `client-sink:${syntheticKind ?? "mutation"}`
+        handle = modelOperationRecorder.deriveFrame(record, {
+          derivedFrom: parent,
+          transformId,
+          origin: { stage: "client-sink", track: "proxy", detail: syntheticKind ?? "mutation" },
+          mediaType: "text/event-stream",
+        })
+        modelOperationRecorder.recordTransform({
+          transformId,
+          stage: "client-sink",
+          inputs: [{ kind: "frame", handle: parent }],
+          outputs: [{ kind: "frame", handle }],
+        })
+        rememberFrame(frame, handle)
+      } else if (known) {
+        handle = known.handle
+      } else {
+        handle = modelOperationRecorder.registerFrame(record, {
+          origin: { stage: "client-sink", track: "client" },
+          mediaType: "text/event-stream",
+        })
+        rememberFrame(frame, handle)
+      }
+      clientFrameHandles.push(handle)
     },
 
     setAttemptError(error: ApiError) {
@@ -663,6 +1087,15 @@ export function createRequestContext(opts: {
       if (attempt) {
         attempt.error = error
         attempt.durationMs = Date.now() - attempt.startTime
+        const generationAttempt = currentGenerationAttempt()
+        if (generationAttempt && !generationAttempt.settled && error.raw instanceof HTTPError && error.raw.responseText) {
+          generationAttempt.responsePayload = capturePayload(error.raw.responseText, {
+            stage: "upstream-error-response",
+            track: "upstream",
+            attempt: generationAttempt.handle,
+          })
+        }
+        recordAttemptDiagnostic("upstream_error", "error", error, error.message)
       }
     },
 
@@ -687,6 +1120,7 @@ export function createRequestContext(opts: {
       const attempt = ctx.currentAttempt
       if (attempt && attempt.durationMs === 0) {
         attempt.durationMs = Date.now() - attempt.startTime
+        recordAttemptDiagnostic("timing.duration", "info", { durationMs: attempt.durationMs })
       }
     },
 
@@ -727,6 +1161,7 @@ export function createRequestContext(opts: {
       }
       _response = normalized
       ctx.setAttemptResponse(normalized)
+      commitGenerationTerminal("completed")
       // Drive state via the same `transition` API used by every other state
       // change — emits `state_changed` so subscribers observing transitions
       // (e.g. WS clients) see the final terminal transition explicitly.
@@ -798,6 +1233,7 @@ export function createRequestContext(opts: {
       // usage / stop_reason / partial content). Guarded by the `settled` early
       // return at the method top, so it never double-writes.
       ctx.setAttemptResponse(_response)
+      commitGenerationTerminal("failed", error, { category: opts?.upstreamSucceeded ? "proxy" : "upstream", detail: errorMsg })
 
       // Drive state via transition() so `state_changed` fires for the
       // terminal transition — keeps the WS observer view consistent with
@@ -811,7 +1247,7 @@ export function createRequestContext(opts: {
         kind: "request.failed",
         ctx: snapshotWithSummary(ctx),
         entry,
-        error: entry._index?.derived?.failureReason ?? _response?.error ?? "Unknown error",
+        error: entry._index?.derived?.failureReason ?? _response.error ?? "Unknown error",
         ...(finalUpstream?.status !== undefined && { statusCode: finalUpstream.status }),
       })
       onSettled?.(id)
@@ -839,6 +1275,7 @@ export function createRequestContext(opts: {
       // (symmetric with complete()/fail()). Single leg here — no upstreamSucceeded
       // branch — so a plain post-`_response` write covers it. Guarded by `settled`.
       ctx.setAttemptResponse(_response)
+      commitGenerationTerminal("aborted", new Error("client disconnected"), { category: "client", code: "client-disconnected" })
 
       ctx.transition("aborted")
       const entry = ctx.toHistoryEntry()
@@ -1064,8 +1501,26 @@ export function createRequestContext(opts: {
       publisher?.publish({ kind: "request.model_resolved", ctx: snapshot() })
     },
 
-    setRouteInfo(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean }) {
+    setRouteInfo(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean; clientFormat?: string }) {
       _routeInfo = info
+      if (!modelOperationRecorder.sealed && modelOperationRecorder.snapshot().routing === null) {
+        modelOperationRecorder.recordRouting({
+          requestedModel: _originalRequest?.model ?? undefined,
+          resolvedModel: _resolvedModel ?? undefined,
+          clientFormat:
+            info.clientFormat
+            ?? (
+              {
+                "anthropic-messages": "anthropic",
+                "openai-chat-completions": "openai-cc",
+                "openai-responses": "openai-responses",
+                "gemini-generate-content": "gemini",
+              } as const
+            )[opts.endpoint],
+          upstreamEndpoint: info.outboundEndpoint,
+          metadata: info,
+        })
+      }
     },
 
     recordFeature(feature: FeatureKind, detail?: Record<string, unknown>) {
@@ -1118,6 +1573,14 @@ export function createRequestContext(opts: {
             ...(a.error.raw instanceof HTTPError && { rawBody: a.error.raw.responseText }),
           },
         }),
+      }
+      recordAttemptDiagnostic("retry", args.willRetry ? "warning" : "error", args)
+      const generationAttempt = currentGenerationAttempt()
+      if (generationAttempt && !generationAttempt.settled) {
+        let reason = "failed"
+        if (args.nextStrategy !== undefined) reason = `retry:${args.nextStrategy}`
+        else if (args.willRetry) reason = "retry"
+        settleGenerationAttempt(generationAttempt, args.willRetry ? "discarded" : "failed", reason, a?.error)
       }
       publisher?.publish({
         kind: "request.attempt_failed",

@@ -1,0 +1,125 @@
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+
+import type { RequestContext } from "~/lib/context/request"
+
+import { createRequestContext } from "~/lib/context/request"
+import { createBus } from "~/lib/observability"
+import {
+  //
+  initProcessIdentity,
+  resetProcessIdentityForTests,
+} from "~/lib/process-identity"
+
+describe("RequestContext generation recorder lifecycle", () => {
+  test("captures identity, ingress, routing, attempt verdicts, diagnostics, and commits before the V2 terminal event", () => {
+    resetProcessIdentityForTests()
+    const processIdentity = initProcessIdentity("9.9.9-test")
+    let terminalWasCommittedAtV2Publish = false
+    const bus = createBus()
+    const ctx: RequestContext = createRequestContext({
+      endpoint: "anthropic-messages",
+      sessionId: "session-generation-1",
+      agentId: "agent-generation-1",
+      method: "POST",
+      path: "/v1/messages",
+      publisher: bus.scope("request"),
+    })
+    bus.subscribe((event) => {
+      if (event.kind === "request.completed") terminalWasCommittedAtV2Publish = ctx.modelOperationTerminalRecord !== null
+    })
+
+    expect(ctx.modelOperationSnapshot.identity).toMatchObject({
+      operationId: ctx.id,
+      kind: "generation",
+      sessionId: "session-generation-1",
+      agentId: "agent-generation-1",
+      process: processIdentity,
+    })
+    expect(ctx.modelOperationTerminalRecord).toBeNull()
+
+    const original = {
+      model: "claude-opus-4.8",
+      messages: [{ role: "user", content: "hello" }],
+      stream: true,
+      payload: { model: "claude-opus-4.8", messages: [{ role: "user", content: "hello" }], stream: true },
+    }
+    ctx.setOriginalRequest(original)
+    expect(ctx.modelOperationSnapshot.ingress?.request.payload).toBeDefined()
+    expect(() => ctx.setOriginalRequest(original)).toThrow(/original request.*already|ingress.*already/i)
+
+    ctx.setResolvedModel({ resolved: "claude-opus-4.8" })
+    ctx.setRouteInfo?.({ outboundEndpoint: "/v1/messages", translated: false })
+
+    ctx.beginAttempt({})
+    ctx.setAttemptEffectiveRequest({
+      model: "claude-opus-4.8",
+      resolvedModel: undefined,
+      messages: original.messages,
+      payload: original.payload,
+      format: "anthropic-messages",
+    })
+    ctx.setAttemptWireRequest({
+      model: "claude-opus-4.8",
+      messages: original.messages,
+      payload: original.payload,
+      headers: { "anthropic-version": "2023-06-01" },
+      format: "anthropic-messages",
+    })
+    ctx.setAttemptTimingEpoch!("upstreamHeadersAt", 101, "once")
+    const rejectedFrame = { event: "error", data: JSON.stringify({ type: "error", error: { message: "unsupported beta" } }) }
+    ctx.captureUpstreamGenerationFrame!(rejectedFrame, { offsetMs: 1, type: "error", raw: rejectedFrame.data })
+    ctx.recordRepairOutcome({ outcome: "jsonrepair", tool: "Edit", beforeLength: 4, afterLength: 5 })
+    ctx.setAttemptError({ type: "bad_request", status: 400, message: "unsupported beta", raw: new Error("unsupported beta") })
+    ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "unsupported-beta-retry", learning: true })
+
+    ctx.beginAttempt({ strategy: "unsupported-beta-retry" })
+    ctx.setAttemptTimingEpoch!("upstreamFirstTokenAt", 202, "once")
+    ctx.setAttemptTimingEpoch!("upstreamLastTokenAt", 303, "latest")
+    ctx.setClientTimingEpoch("firstReal", 404)
+    ctx.complete({
+      success: true,
+      model: "claude-opus-4.8",
+      usage: { input_tokens: 12, output_tokens: 7, cache_read_input_tokens: 3 },
+      content: [{ type: "text", text: "done" }],
+      stop_reason: "end_turn",
+    })
+
+    const terminal = ctx.modelOperationTerminalRecord
+    expect(terminalWasCommittedAtV2Publish).toBe(true)
+    expect(terminal).not.toBeNull()
+    expect(terminal).toBe(ctx.modelOperationSnapshot)
+    expect(terminal?.routing).toMatchObject({
+      requestedModel: "claude-opus-4.8",
+      resolvedModel: "claude-opus-4.8",
+      clientFormat: "anthropic",
+      upstreamEndpoint: "/v1/messages",
+    })
+    expect(terminal?.attempts.map((attempt) => attempt.verdict)).toEqual(["discarded", "committed"])
+    expect(terminal?.attempts[0]).toMatchObject({
+      reason: "retry:unsupported-beta-retry",
+    })
+    expect(terminal?.attempts[0]?.effectiveRequest?.payload).toMatch(/^payload:/)
+    expect(terminal?.attempts[0]?.upstreamRequest?.payload).toMatch(/^payload:/)
+    expect(terminal?.attempts[0]?.upstreamResponse?.frames).toHaveLength(1)
+    expect(terminal?.attempts[0]?.diagnostics.map((diagnostic) => diagnostic.kind)).toEqual(
+      expect.arrayContaining(["timing.upstreamHeadersAt", "repair.jsonrepair", "upstream_error", "retry"]),
+    )
+    expect(terminal?.attempts[1]?.diagnostics.map((diagnostic) => diagnostic.kind)).toEqual(
+      expect.arrayContaining(["timing.upstreamFirstTokenAt", "timing.upstreamLastTokenAt", "timing.client.firstReal"]),
+    )
+    expect(terminal?.terminal).toMatchObject({
+      outcome: "completed",
+      usage: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 3 },
+    })
+
+    const sequence = terminal!.lastSequence
+    ctx.setClientTimingEpoch("streamOpen", 999)
+    ctx.recordRepairOutcome({ outcome: "unrepairable", tool: "Late" })
+    expect(ctx.modelOperationSnapshot.lastSequence).toBe(sequence)
+  })
+})

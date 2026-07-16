@@ -245,6 +245,36 @@ describe("ModelOperationRecord canonical shape", () => {
     expect(record.terminal?.committedAttempt).toBe(attempt)
   })
 
+  it("enriches late session/agent identity without mutating prior snapshots", () => {
+    const recorder = createModelOperationRecorder({ identity: { operationId: "late-identity", kind: "generation", createdAt: 1 } })
+    const before = recorder.snapshot()
+
+    recorder.setIdentityContext({ sessionId: "session-late", agentId: "agent-late" })
+    const after = recorder.snapshot()
+
+    expect(before.identity.sessionId).toBeUndefined()
+    expect(before.identity.agentId).toBeUndefined()
+    expect(after.identity).toMatchObject({ sessionId: "session-late", agentId: "agent-late" })
+    expect(() => recorder.setIdentityContext({ sessionId: "other" })).toThrow(/cannot be replaced/i)
+  })
+
+  it("accepts effective and upstream request tracks after attempt begin exactly once", () => {
+    const recorder = makeRecorder()
+    const effective = recorder.registerPayload({ stage: "effective" }, { origin: { stage: "effective", track: "proxy" } })
+    const wire = recorder.registerPayload({ stage: "wire" }, { origin: { stage: "wire", track: "upstream" } })
+    const attempt = recorder.beginAttempt({})
+
+    recorder.setAttemptEffectiveRequest(attempt, { payload: effective })
+    recorder.setAttemptUpstreamRequest(attempt, { payload: wire })
+
+    expect(recorder.snapshot().attempts[0]).toMatchObject({
+      effectiveRequest: { payload: effective },
+      upstreamRequest: { payload: wire },
+    })
+    expect(() => recorder.setAttemptEffectiveRequest(attempt, { payload: effective })).toThrow(/already recorded/i)
+    expect(() => recorder.setAttemptUpstreamRequest(attempt, { payload: wire })).toThrow(/already recorded/i)
+  })
+
   it("rejects terminal commit while an attempt remains open", () => {
     const recorder = makeRecorder()
     recorder.beginAttempt({})
@@ -310,7 +340,9 @@ describe("ModelOperationRecord canonical shape", () => {
 
   it("rejects invalid references and terminal attempt selections", () => {
     const recorder = makeRecorder()
-    expect(() => recorder.recordTransform({ transformId: "bad", stage: "render", inputs: [{ kind: "frame", handle: "frame:404" as FrameNodeHandle }], outputs: [] })).toThrow(/unknown frame/i)
+    expect(() =>
+      recorder.recordTransform({ transformId: "bad", stage: "render", inputs: [{ kind: "frame", handle: "frame:404" as FrameNodeHandle }], outputs: [] }),
+    ).toThrow(/unknown frame/i)
     const failed = recorder.beginAttempt({})
     recorder.settleAttempt(failed, { verdict: "failed" })
     expect(() => recorder.commitTerminal({ outcome: "failed", committedAttempt: failed })).toThrow(/must reference a committed attempt/i)

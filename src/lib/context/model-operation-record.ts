@@ -138,11 +138,12 @@ export interface ModelOperationIdentity {
   readonly createdAt: number
   readonly parentOperationId?: string
   readonly sessionId?: string
+  readonly agentId?: string
   readonly clientRequestId?: string
   readonly connectionId?: string
   readonly responseCreateId?: string
   readonly previousResponseId?: string
-  readonly process?: Readonly<{ pid: number; bootTime?: number; version?: string; gitSha?: string }>
+  readonly process?: Readonly<{ pid: number; bootTime?: number; version?: string; gitSha?: string; gitDirty?: boolean; synthetic?: boolean }>
   readonly extensions?: OperationExtensions
 }
 
@@ -222,8 +223,7 @@ export interface ModelOperationEgress {
 }
 
 /** Final operation outcome. */
-export type TerminalOutcome = "completed" | "failed" | "cancelled" | "aborted"
-  | "interrupted"
+export type TerminalOutcome = "completed" | "failed" | "cancelled" | "aborted" | "interrupted"
 
 /** Immutable terminal commit. */
 export interface ModelOperationTerminal {
@@ -263,11 +263,12 @@ export interface CreateModelOperationRecorderInput {
     readonly createdAt: number
     readonly parentOperationId?: string
     readonly sessionId?: string
+    readonly agentId?: string
     readonly clientRequestId?: string
     readonly connectionId?: string
     readonly responseCreateId?: string
     readonly previousResponseId?: string
-    readonly process?: Readonly<{ pid: number; bootTime?: number; version?: string; gitSha?: string }>
+    readonly process?: Readonly<{ pid: number; bootTime?: number; version?: string; gitSha?: string; gitDirty?: boolean; synthetic?: boolean }>
     readonly extensions?: Readonly<Record<string, unknown>>
   }
   readonly extensions?: Readonly<Record<string, unknown>>
@@ -354,6 +355,7 @@ export interface CommitTerminalInput {
 /** Typed, append-only recorder for a ModelOperationRecord. */
 export interface ModelOperationRecorder {
   readonly sealed: boolean
+  setIdentityContext(input: { readonly sessionId?: string; readonly agentId?: string }): void
   registerPayload(value: unknown, input: SourceNodeInput): PayloadNodeHandle
   derivePayload(value: unknown, input: DerivedPayloadInput): PayloadNodeHandle
   registerFrame(value: unknown, input: SourceNodeInput): FrameNodeHandle
@@ -362,6 +364,8 @@ export interface ModelOperationRecorder {
   recordRouting(input: RecordRoutingInput): void
   recordTransform(input: RecordTransformInput): void
   beginAttempt(input: BeginAttemptInput): AttemptHandle
+  setAttemptEffectiveRequest(attempt: AttemptHandle, request: OperationTrackInput): void
+  setAttemptUpstreamRequest(attempt: AttemptHandle, request: OperationTrackInput): void
   recordAttemptDiagnostic(attempt: AttemptHandle, input: RecordAttemptDiagnosticInput): void
   settleAttempt(attempt: AttemptHandle, input: SettleAttemptInput): void
   recordEgress(input: RecordEgressInput): void
@@ -443,19 +447,25 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
   const attemptByHandle = new Map<AttemptHandle, MutableAttempt>()
   const extensions: Record<string, unknown> = { ...input.extensions }
 
-  const identity: ModelOperationIdentity = Object.freeze({
-    operationId: input.identity.operationId,
-    kind: input.identity.kind,
-    createdAt: input.identity.createdAt,
-    ...(input.identity.parentOperationId === undefined ? {} : { parentOperationId: input.identity.parentOperationId }),
-    ...(input.identity.sessionId === undefined ? {} : { sessionId: input.identity.sessionId }),
-    ...(input.identity.clientRequestId === undefined ? {} : { clientRequestId: input.identity.clientRequestId }),
-    ...(input.identity.connectionId === undefined ? {} : { connectionId: input.identity.connectionId }),
-    ...(input.identity.responseCreateId === undefined ? {} : { responseCreateId: input.identity.responseCreateId }),
-    ...(input.identity.previousResponseId === undefined ? {} : { previousResponseId: input.identity.previousResponseId }),
-    ...(input.identity.process === undefined ? {} : { process: Object.freeze({ ...input.identity.process }) }),
-    ...(input.identity.extensions === undefined ? {} : { extensions: freezeExtensions(input.identity.extensions) }),
-  })
+  let identitySessionId = input.identity.sessionId
+  let identityAgentId = input.identity.agentId
+
+  function snapshotIdentity(): ModelOperationIdentity {
+    return Object.freeze({
+      operationId: input.identity.operationId,
+      kind: input.identity.kind,
+      createdAt: input.identity.createdAt,
+      ...(input.identity.parentOperationId === undefined ? {} : { parentOperationId: input.identity.parentOperationId }),
+      ...(identitySessionId === undefined ? {} : { sessionId: identitySessionId }),
+      ...(identityAgentId === undefined ? {} : { agentId: identityAgentId }),
+      ...(input.identity.clientRequestId === undefined ? {} : { clientRequestId: input.identity.clientRequestId }),
+      ...(input.identity.connectionId === undefined ? {} : { connectionId: input.identity.connectionId }),
+      ...(input.identity.responseCreateId === undefined ? {} : { responseCreateId: input.identity.responseCreateId }),
+      ...(input.identity.previousResponseId === undefined ? {} : { previousResponseId: input.identity.previousResponseId }),
+      ...(input.identity.process === undefined ? {} : { process: Object.freeze({ ...input.identity.process }) }),
+      ...(input.identity.extensions === undefined ? {} : { extensions: freezeExtensions(input.identity.extensions) }),
+    })
+  }
 
   function assertWritable(): void {
     if (sealed) throw new Error("[model-operation-record] terminal already committed; recorder is sealed")
@@ -484,7 +494,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       ...(source.status === undefined ? {} : { status: source.status }),
       ...(source.headers === undefined ? {} : { headers: freezeHeaders(source.headers) }),
       ...(source.rawCapture === undefined ? {} : { rawCapture: Object.freeze({ ...source.rawCapture }) }),
-      ...(source.metadata === undefined ? {} : { metadata: source.metadata }),
+      ...(source.metadata === undefined ? {} : { metadata: freezeCapturedValue(source.metadata) }),
       ...(source.extensions === undefined ? {} : { extensions: freezeExtensions(source.extensions) }),
     })
   }
@@ -523,7 +533,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
   function buildSnapshot(): ModelOperationRecord {
     if (finalRecord) return finalRecord
     return Object.freeze({
-      identity,
+      identity: snapshotIdentity(),
       arena: Object.freeze({ payloads: Object.freeze([...payloads]), frames: Object.freeze([...frames]) }),
       ingress,
       routing,
@@ -539,6 +549,22 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
   const recorder: ModelOperationRecorder = {
     get sealed(): boolean {
       return sealed
+    },
+
+    setIdentityContext(context): void {
+      assertWritable()
+      if (context.sessionId !== undefined) {
+        if (identitySessionId !== undefined && identitySessionId !== context.sessionId) {
+          throw new Error("[model-operation-record] identity.sessionId cannot be replaced")
+        }
+        identitySessionId = context.sessionId
+      }
+      if (context.agentId !== undefined) {
+        if (identityAgentId !== undefined && identityAgentId !== context.agentId) {
+          throw new Error("[model-operation-record] identity.agentId cannot be replaced")
+        }
+        identityAgentId = context.agentId
+      }
     },
 
     registerPayload(value, nodeInput): PayloadNodeHandle {
@@ -680,6 +706,22 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       attempts.push(attempt)
       attemptByHandle.set(handle, attempt)
       return handle
+    },
+
+    setAttemptEffectiveRequest(handle, request): void {
+      assertWritable()
+      const attempt = getAttempt(handle)
+      if (attempt.verdict !== undefined) throw new Error(`[model-operation-record] attempt already settled: ${handle}`)
+      if (attempt.effectiveRequest !== undefined) throw new Error(`[model-operation-record] attempt effective request already recorded: ${handle}`)
+      attempt.effectiveRequest = freezeTrack(request)
+    },
+
+    setAttemptUpstreamRequest(handle, request): void {
+      assertWritable()
+      const attempt = getAttempt(handle)
+      if (attempt.verdict !== undefined) throw new Error(`[model-operation-record] attempt already settled: ${handle}`)
+      if (attempt.upstreamRequest !== undefined) throw new Error(`[model-operation-record] attempt upstream request already recorded: ${handle}`)
+      attempt.upstreamRequest = freezeTrack(request)
     },
 
     recordAttemptDiagnostic(handle, diagnosticInput): void {

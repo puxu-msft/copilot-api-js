@@ -22,6 +22,8 @@ import type { FeatureKind } from "~/lib/observability"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
+import type { ModelOperationRecord } from "./model-operation-record"
+
 // ─── Request State Machine ───
 
 export type RequestState = RequestLifecycleState
@@ -367,6 +369,8 @@ export interface RepairOutcomeRecord {
 /** 首包埋点（spec 2026-07-14 §3.2）：客户端侧 3 个时刻的键。 */
 export type ClientTimingKind = "streamOpen" | "firstReal" | "bufferHoldStart"
 
+export type AttemptTimingKind = "upstreamHeadersAt" | "upstreamMessageStartAt" | "upstreamFirstTokenAt" | "upstreamLastTokenAt"
+
 export interface RequestContext {
   readonly id: string
   readonly sessionId: string | undefined
@@ -416,6 +420,10 @@ export interface RequestContext {
   readonly durationMs: number
   /** Whether this context has been settled (completed or failed). Handler code can check this to detect reaper force-fail. */
   readonly settled: boolean
+  /** Immutable point-in-time History V3 generation record. The mutable recorder is never exposed. */
+  readonly modelOperationSnapshot: ModelOperationRecord
+  /** Canonical terminal record after settle, otherwise null. */
+  readonly modelOperationTerminalRecord: ModelOperationRecord | null
 
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
@@ -483,7 +491,15 @@ export interface RequestContext {
    * `toHistoryEntry` 换算成相对 started_at 的 offset ms（`timing.client`）。驱动/handler/sink 调用。
    */
   setClientTimingEpoch(kind: ClientTimingKind, epoch: number): void
+  /** Record one upstream attempt timing instant through the same producer setter that updates the V2 carrier. */
+  setAttemptTimingEpoch?(kind: AttemptTimingKind, epoch: number, mode: "once" | "latest"): void
   setAttemptError(error: ApiError): void
+  /** Register a raw upstream SSE/WS frame in the generation arena and current-attempt track. */
+  captureUpstreamGenerationFrame?(frame: unknown, record: SseEventRecord): void
+  /** Register an explicit rewrite/render relationship before the output reaches ClientSink. */
+  captureGenerationFrameTransform?(inputFrame: unknown, outputFrame: unknown, transform: { stage: string; transformId: string; forceDerived?: boolean }): void
+  /** ClientSink producer hook: register the exact frame attempted on the client wire. */
+  captureForwardedGenerationFrame?(frame: unknown, record: SseEventRecord, syntheticKind?: string): void
   /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
   commitAttemptSseEvents(): void
   /** 定稿当前 attempt 的 durationMs（截断路径无 error/response setter 时用）。见 request.ts。 */
@@ -596,7 +612,7 @@ export interface RequestContext {
    * direct passthrough. Projected into the history `model{}`. Called by the driver right after
    * the route decision (non-reject); optional so mock/legacy ctxs that omit it are unaffected.
    */
-  setRouteInfo?(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean }): void
+  setRouteInfo?(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean; clientFormat?: string }): void
   /**
    * Record an applied feature (truncate / thinking / beta-strip / transport /
    * via-X-fallback / dropped-params). Replaces the legacy `tags: string[]`
