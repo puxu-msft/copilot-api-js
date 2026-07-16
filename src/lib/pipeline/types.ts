@@ -568,6 +568,8 @@ export interface ClientSink {
    * abort / write-reject) so a self-rescheduling timer can't leak (design §3.3).
    */
   close?(): void
+  /** Seal the canonical operation after every real/synthetic client frame has been delivered. */
+  finalize?(): void
 }
 
 /**

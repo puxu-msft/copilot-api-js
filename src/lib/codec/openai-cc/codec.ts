@@ -346,6 +346,7 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
     payload: originalSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+  ctx.recordModelOperationIngress()
 
   // Tool-name sanitization (client → upstream) over the wire-logical body. The
   // mapper is stored on ctx so the response-side restore can reverse it.

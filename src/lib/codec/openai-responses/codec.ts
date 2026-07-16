@@ -377,6 +377,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
     payload: originalSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+  ctx.recordModelOperationIngress()
 
   // Normalize call IDs (call_ → fc_) BEFORE tool-name sanitization — matches the
   // legacy handler order (handleResponses: normalizeCallIds then tool-name). This

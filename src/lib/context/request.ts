@@ -322,6 +322,8 @@ export function createRequestContext(opts: {
   const latestFrameHandleByWire = new Map<string, FrameNodeHandle>()
   let syntheticFrameRoot: FrameNodeHandle | undefined
   let unresolvedTransformRoot: FrameNodeHandle | undefined
+  let deliveryFinalizationRequested = false
+  let pendingDeliveryClientPayload: unknown
   let pendingGenerationTerminal:
     | {
         outcome: "completed" | "failed" | "aborted"
@@ -552,10 +554,16 @@ export function createRequestContext(opts: {
     if (currentAttempt && !currentAttempt.settled)
       settleGenerationAttempt(currentAttempt, outcome === "completed" ? "committed" : "failed", `terminal:${outcome}`, error)
     pendingGenerationTerminal = { outcome, ...(error !== undefined && { error: snapshotForRecorder(error) }), ...(attribution !== undefined && { attribution }) }
+    if (deliveryFinalizationRequested) finalizeGenerationDelivery(pendingDeliveryClientPayload)
   }
 
   function finalizeGenerationDelivery(clientPayload?: unknown): void {
-    if (modelOperationRecorder.sealed || pendingGenerationTerminal === undefined) return
+    if (modelOperationRecorder.sealed) return
+    if (pendingGenerationTerminal === undefined) {
+      deliveryFinalizationRequested = true
+      if (clientPayload !== undefined) pendingDeliveryClientPayload = snapshotForRecorder(clientPayload)
+      return
+    }
     const finalAttempt = currentGenerationAttempt()
     const primaryUpstreamPayload = finalAttempt?.rawResponsePayload ?? finalAttempt?.responsePayload
     if (clientPayload !== undefined) {

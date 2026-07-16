@@ -19,6 +19,7 @@ import type {
 
 import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
 import type {
   //
@@ -154,6 +155,7 @@ function sendErrorAndClose(
     streamStartMs: number
     captureGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: string) => void
   },
+  deliveryCtx?: RequestContext,
 ): void {
   const data = JSON.stringify({
     type: "error",
@@ -163,6 +165,11 @@ function sendErrorAndClose(
     const record: SseEventRecord = { offsetMs: Date.now() - forwarded.streamStartMs, type: "error", raw: data }
     forwarded.events.push(record)
     forwarded.captureGenerationFrame?.({ data }, record, "synthetic")
+  }
+  if (deliveryCtx) {
+    const record: SseEventRecord = { offsetMs: Date.now() - deliveryCtx.startTime, type: "error", raw: data }
+    deliveryCtx.captureForwardedGenerationFrame?.({ data }, record, "synthetic")
+    deliveryCtx.setForwardedResponse({ content: JSON.parse(data), sseEvents: [record] })
   }
   try {
     ws.send(data)
@@ -178,6 +185,7 @@ function sendErrorAndClose(
   } catch {
     // Already closed
   }
+  if (deliveryCtx) deliveryCtx.finalizeModelOperationDelivery({ clientPayload: JSON.parse(data) })
 }
 
 // ============================================================================
@@ -284,7 +292,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     wsClientAborts.delete(ws)
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
-    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), undefined, ctx)
     return
   }
 
@@ -294,7 +302,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       ctx.fail(resolvedModel, new Error(result.rejection.reason))
     }
     wsClientAborts.delete(ws)
-    sendErrorAndClose(ws, result.rejection.reason, "invalid_request_error")
+    sendErrorAndClose(ws, result.rejection.reason, "invalid_request_error", undefined, ctx)
     return
   }
 
@@ -469,6 +477,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
         outputDetails: acc.outputDetails,
       }),
     })
+    sink.finalize?.()
     return
   }
 
@@ -502,6 +511,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
         outputDetails: acc.outputDetails,
       }),
     })
+    sink.finalize?.()
     return
   }
 
@@ -546,11 +556,13 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     })
     recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, truncErr, { usage: partial.usage, content: partial.content })
+    sink.finalize?.()
     return
   }
 
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, resolvedModel))
+  sink.finalize?.()
 
   if (!state.clientWebsocketKeepOpen) ws.close(1000, "done")
 }

@@ -112,6 +112,8 @@ export interface SseSinkOptions {
    */
   isRealContentFrame?: (frame: ClientFrame) => boolean
   onFirstRealContent?: () => void
+  /** Delivery-boundary callback; invoked once by `sink.finalize()` after all terminal writes. */
+  onDeliveryFinalized?: () => void
 }
 
 /**
@@ -158,7 +160,7 @@ function frameType(frame: ClientFrame): string {
 
 /** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
 export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
-  const { heartbeat, onForwarded, onGenerationFrame, streamStartMs = Date.now(), forwardedType, isRealContentFrame, onFirstRealContent } = opts
+  const { heartbeat, onForwarded, onGenerationFrame, streamStartMs = Date.now(), forwardedType, isRealContentFrame, onFirstRealContent, onDeliveryFinalized } = opts
   const enqueue = makeSerializer()
   // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧只捕获一次。
   let firstRealFired = false
@@ -318,6 +320,13 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     stopped = true
     if (timer) clearTimeout(timer)
   }
+  let deliveryFinalized = false
+  const finalize = (): void => {
+    close()
+    if (deliveryFinalized) return
+    deliveryFinalized = true
+    onDeliveryFinalized?.()
+  }
 
   // freezeHeartbeat stops the heartbeat timer WITHOUT closing the sink — `write` stays fully
   // usable (unlike close(), which sets `stopped` and refuses future ticks). The buffered anchor
@@ -351,7 +360,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   }
 
   if (!heartbeatOn) {
-    return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
+    return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, finalize, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
   }
 
   const intervalMs = heartbeat.intervalSec * 1000
@@ -417,7 +426,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     ;(timer as unknown as { unref?: () => void }).unref?.()
   }
 
-  return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
+  return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, finalize, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
 }
 
 /** {@link makeWsSink} options — forwarded-track sampling (optional) + forward-idle heartbeat (optional). */
@@ -445,6 +454,8 @@ export interface WsSinkOptions {
   /** 首包埋点（spec 2026-07-14 §3.2）：同 {@link SseSinkOptions} — 格式无关谓词 + 首次命中回调。 */
   isRealContentFrame?: (frame: ClientFrame) => boolean
   onFirstRealContent?: () => void
+  /** Delivery-boundary callback; invoked once by `sink.finalize()` after terminal WS send/close. */
+  onDeliveryFinalized?: () => void
 }
 
 /**
@@ -510,7 +521,7 @@ function startFixedForwardIdleHeartbeat(
 
 /** WS sink — writes JSON frame strings through a Hono `WSContext` (the Responses WS path). */
 export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
-  const { onForwarded, onGenerationFrame, streamStartMs = Date.now(), heartbeat, isRealContentFrame, onFirstRealContent } = opts
+  const { onForwarded, onGenerationFrame, streamStartMs = Date.now(), heartbeat, isRealContentFrame, onFirstRealContent, onDeliveryFinalized } = opts
   const enqueue = makeSerializer()
   // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧只捕获一次。
   let firstRealFired = false
@@ -575,7 +586,14 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
 
   // `close` stops the heartbeat timer — runResponseSink's `finally` MUST call it on every exit so a
   // self-rescheduling timer can't leak (the timer is also `unref`'d). Omitted with no heartbeat.
-  return hb ? { write, writeSynthetic, close: hb.stop } : { write, writeSynthetic }
+  let deliveryFinalized = false
+  const finalize = (): void => {
+    hb?.stop()
+    if (deliveryFinalized) return
+    deliveryFinalized = true
+    onDeliveryFinalized?.()
+  }
+  return hb ? { write, writeSynthetic, close: hb.stop, finalize } : { write, writeSynthetic, finalize }
 }
 
 /**

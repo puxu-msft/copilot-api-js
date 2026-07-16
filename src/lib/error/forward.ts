@@ -1,4 +1,6 @@
 import type { Context } from "hono"
+
+import type { RequestContext } from "~/lib/context/request"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
@@ -494,6 +496,18 @@ export function mapHttpErrorToEnvelope(
   return { body: helpers.defaultError(bodyMessage, error.status >= 500, error.status), status: error.status, log, classified: false }
 }
 
+function finalizeErrorDelivery(c: Context, body: Record<string, unknown>, status: ContentfulStatusCode): Response {
+  const response = c.json(body, status)
+  const ctx = (c as Context & { get?: (key: string) => unknown }).get?.("requestContext") as RequestContext | undefined
+  if (ctx) {
+    ctx.setForwardedResponse({ content: body })
+    ctx.setInboundResponseHeaders(Object.fromEntries(response.headers.entries()))
+    ctx.setClientResponseStatus(response.status)
+    ctx.finalizeModelOperationDelivery({ clientPayload: body })
+  }
+  return response
+}
+
 export function forwardError(c: Context, error: unknown, format: ErrorWireFormat = "anthropic") {
   const helpers = pickHelpers(format)
 
@@ -511,7 +525,7 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
       logToolDiagnostics(error.modelId ?? "unknown", error.diagnostics)
       body.tool_diagnostics = error.diagnostics
     }
-    return c.json(body, status as ContentfulStatusCode)
+    return finalizeErrorDelivery(c, body, status as ContentfulStatusCode)
   }
 
   const errorMessage = error instanceof Error ? formatErrorWithCause(error) : String(error)
@@ -529,15 +543,15 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
     const clientSignal = c.req.raw.signal as AbortSignal | undefined
     if (clientSignal?.aborted) {
       consola.debug(`Client disconnected (pre-response) in ${c.req.method} ${c.req.path}`)
-      return c.json(helpers.defaultError("Client closed request", false, 499), 499 as ContentfulStatusCode)
+      return finalizeErrorDelivery(c, helpers.defaultError("Client closed request", false, 499), 499 as ContentfulStatusCode)
     }
     consola.warn(`Upstream response-header timeout in ${c.req.method} ${c.req.path} (${state.responseHeaderTimeout}s)`)
-    return c.json(helpers.defaultError("Upstream timed out before sending response headers", true, 504), 504 as ContentfulStatusCode)
+    return finalizeErrorDelivery(c, helpers.defaultError("Upstream timed out before sending response headers", true, 504), 504 as ContentfulStatusCode)
   }
 
   consola.error(`Unexpected non-HTTP error in ${c.req.method} ${c.req.path}:`, errorMessage)
 
-  return c.json(helpers.defaultError(errorMessage, true, 500), 500)
+  return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 500), 500)
 }
 
 /** Truncate a string for log display, adding ellipsis if truncated */

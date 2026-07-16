@@ -285,6 +285,7 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
     env.ctx.complete(responseData)
   }
 
+  env.ctx.finalizeModelOperationDelivery({ clientPayload: gemini })
   return httpResponse
 }
 
@@ -360,6 +361,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     consola.debug("[gemini:v4] Client disconnected mid-stream — recording aborted")
     const meta = codec.getStreamMeta()
     env.ctx.abort(model, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
+    sink.finalize?.()
     return
   }
 
@@ -389,6 +391,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(model, error, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
+    sink.finalize?.()
     return
   }
 
@@ -429,6 +432,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(model, truncErr, { usage: geminiUsageFromMeta(meta) })
+    sink.finalize?.()
     return
   }
 
@@ -445,6 +449,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     stop_reason: meta.finishReason,
     content: null,
   })
+  sink.finalize?.()
 }
 
 /**
@@ -524,6 +529,7 @@ function renderReverseGeminiNonStreamingV4(
   } else {
     env.ctx.complete(responseData)
   }
+  env.ctx.finalizeModelOperationDelivery({ clientPayload: gemini })
   return httpResponse
 }
 
@@ -585,6 +591,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     recordForwarded()
     consola.debug("[gemini:v4:reverse] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(anthropicAcc.model || model, buildAnthropicResponseData(anthropicAcc, model))
+    sink.finalize?.()
     return
   }
 
@@ -609,6 +616,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
+    sink.finalize?.()
     return
   }
 
@@ -622,6 +630,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     consola.error(`[gemini:v4:reverse] Upstream error for ${anthropicAcc.model || model}: ${terminal.error.type} — ${terminal.error.message}`)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(`${terminal.error.type}: ${terminal.error.message}`), buildAnthropicResponseData(anthropicAcc, model))
+    sink.finalize?.()
     return
   }
   // Truncation (F2): a clean drain WITHOUT the mandatory `message_stop`. Drop the geminiTranslator's
@@ -649,6 +658,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
+    sink.finalize?.()
     return
   }
 
@@ -657,4 +667,5 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
   for (const frame of codec.flushResponse(env)) await sink.write(frame)
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
+  sink.finalize?.()
 }

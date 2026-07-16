@@ -287,6 +287,7 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
     payload: geminiSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+  ctx.recordModelOperationIngress()
 
   if (droppedParams.length > 0) {
     const message = `Gemini → ChatCompletions translation dropped unsupported params: ${droppedParams.join(", ")}`

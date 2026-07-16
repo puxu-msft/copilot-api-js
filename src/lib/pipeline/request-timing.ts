@@ -164,15 +164,18 @@ export function clientFirstRealSinkOpts(env: {
   ctx: {
     setClientTimingEpoch: (kind: "streamOpen" | "firstReal" | "bufferHoldStart", epoch: number) => void
     captureForwardedGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: string) => void
+    finalizeModelOperationDelivery: (input?: { clientPayload?: unknown }) => void
   }
 }): {
   isRealContentFrame: (frame: RawFrame) => boolean
   onFirstRealContent: () => void
   onGenerationFrame: (frame: RawFrame, record: SseEventRecord, syntheticKind?: string) => void
+  onDeliveryFinalized: () => void
 } {
   return {
     isRealContentFrame: (frame) => isClientContentFrame(frame, env.clientFormat),
     onFirstRealContent: () => env.ctx.setClientTimingEpoch("firstReal", Date.now()),
     onGenerationFrame: (frame, record, syntheticKind) => env.ctx.captureForwardedGenerationFrame?.(frame, record, syntheticKind),
+    onDeliveryFinalized: () => env.ctx.finalizeModelOperationDelivery(),
   }
 }
