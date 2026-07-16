@@ -50,6 +50,7 @@ export interface RawCaptureStatus {
 }
 
 interface Generation {
+  key: string
   id: string
   config: Readonly<RawCaptureConfig>
   db: SqliteDatabase
@@ -118,14 +119,14 @@ function openGeneration(next: RawCaptureConfig): Generation {
     throw new Error(`[history/raw] incompatible store artifact: ${next.dbPath}`)
   }
   if (!identity) db.prepare("INSERT INTO raw_store_identity(store_id,schema_version,codec) VALUES(?,?,?)").run(id, RAW_SCHEMA_VERSION, "zstd-json-v1")
-  return { id, config: Object.freeze({ ...next }), db, leases: 0, retiring: false }
+  return { key: randomUUID(), id, config: Object.freeze({ ...next }), db, leases: 0, retiring: false }
 }
 
 function closeRetired(): void {
-  for (const [id, generation] of generations) {
+  for (const [key, generation] of generations) {
     if (generation.retiring && generation.leases === 0) {
       generation.db.close()
-      generations.delete(id)
+      generations.delete(key)
     }
   }
 }
@@ -144,7 +145,7 @@ export function configureRawCapture(next: RawCaptureConfig): boolean {
     const generation = openGeneration(frozen)
     const previous = active
     active = generation
-    generations.set(generation.id, generation)
+    generations.set(generation.key, generation)
     config = frozen
     if (previous && previous !== generation) previous.retiring = true
     closeRetired()

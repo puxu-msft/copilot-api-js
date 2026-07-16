@@ -58,6 +58,21 @@ describe("RawCaptureManager generations", () => {
     expect(getRawCaptureStatus().generations).toBe(0)
   })
 
+  test("same-path hot reload keeps a leased old handle tracked until release", () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "history-raw-same-path-"))
+    const dbPath = path.join(dir, "raw.db")
+    expect(configureRawCapture({ enabled: true, dbPath, maxObjectBytes: 1024 })).toBe(true)
+    const old = acquireRawCaptureLease()
+    expect(configureRawCapture({ enabled: true, dbPath, maxObjectBytes: 2048 })).toBe(true)
+    const fresh = acquireRawCaptureLease()
+
+    expect(fresh.storeId).toBe(old.storeId)
+    expect(getRawCaptureStatus()).toMatchObject({ generations: 2, leasedOperations: 2 })
+    old.release()
+    expect(getRawCaptureStatus()).toMatchObject({ generations: 1, leasedOperations: 1 })
+    fresh.release()
+  })
+
   test("deduplicates exact bytes and records explicit oversize gaps", () => {
     expect(configureRawCapture({ enabled: true, dbPath: ":memory:", maxObjectBytes: 3 })).toBe(true)
     const lease = acquireRawCaptureLease()
