@@ -31,6 +31,7 @@ import { HTTPError } from "~/lib/error"
 import { normalizeModelId } from "~/lib/models/resolver"
 import { getProcessIdentity } from "~/lib/process-identity"
 import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
+import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
 import { state as appState } from "~/lib/state"
 
 import type {
@@ -325,6 +326,7 @@ export function createRequestContext(opts: {
       process: getProcessIdentity(),
     },
   })
+  const rawCaptureLease = acquireRawCaptureLease()
   let modelOperationTerminalRecord: ModelOperationRecord | null = null
   let ingressPayloadHandle: PayloadNodeHandle | undefined
   let clientPayloadHandle: PayloadNodeHandle | undefined
@@ -420,6 +422,26 @@ export function createRequestContext(opts: {
       typeof candidate.id === "string" || typeof candidate.id === "number" ? candidate.id : null,
       typeof candidate.retry === "number" ? candidate.retry : null,
     ])
+  }
+
+  function captureRawFrame(frame: unknown, sequence: number, track: string): void {
+    if (!rawCaptureLease.requested) return
+    const candidate = (typeof frame === "object" && frame !== null ? frame : { data: String(frame) }) as {
+      event?: unknown
+      data?: unknown
+      id?: unknown
+      retry?: unknown
+    }
+    const bytes = new TextEncoder().encode(
+      JSON.stringify({
+        event: typeof candidate.event === "string" ? candidate.event : null,
+        data: typeof candidate.data === "string" ? candidate.data : "",
+        id: typeof candidate.id === "string" || typeof candidate.id === "number" ? candidate.id : null,
+        retry: typeof candidate.retry === "number" ? candidate.retry : null,
+      }),
+    )
+    const result = rawCaptureLease.putObject(bytes, "sse-frame-fields-v1")
+    rawCaptureLease.appendRef(id, sequence, track, result)
   }
 
   function canonicalFrameValue(frame: unknown): Readonly<Record<string, unknown>> {
@@ -630,6 +652,7 @@ export function createRequestContext(opts: {
       ...(pendingGenerationTerminal.attribution !== undefined && { attribution: pendingGenerationTerminal.attribution }),
     })
     publishModelOperationTerminal(modelOperationTerminalRecord)
+    rawCaptureLease.release()
   }
 
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
@@ -1139,6 +1162,7 @@ export function createRequestContext(opts: {
       })
       rememberFrame(frame, handle)
       attempt?.upstreamFrames.push(handle)
+      captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "upstream-frame")
     },
 
     captureGenerationFrameTransform(inputFrame, outputFrame, transform) {
@@ -1241,6 +1265,7 @@ export function createRequestContext(opts: {
         rememberFrame(frame, handle)
       }
       clientFrameHandles.push(handle)
+      captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "client-frame")
     },
 
     setAttemptError(error: ApiError) {
