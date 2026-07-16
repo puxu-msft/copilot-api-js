@@ -17,7 +17,13 @@ import type {
   Part as GeminiPart,
 } from "~/types/api/gemini"
 
-import { HTTPError } from "~/lib/error"
+import { createLightweightModelOperation } from "~/lib/context/lightweight-model-operation"
+import {
+  //
+  forwardError,
+  HTTPError,
+  isAbortError,
+} from "~/lib/error"
 import { resolveModelName } from "~/lib/models/resolver"
 import { countTextTokens } from "~/lib/models/tokenizer"
 import { state } from "~/lib/state"
@@ -36,25 +42,52 @@ import { state } from "~/lib/state"
  */
 export async function handleCountTokens(c: Context, modelId: string): Promise<Response> {
   const body = await c.req.json<CountTokensRequest>()
-
+  const semanticInput = structuredClone(body)
+  const operation = createLightweightModelOperation({
+    kind: "count_tokens",
+    request: c.req.raw,
+    semanticRequest: semanticInput,
+    format: "gemini",
+    requestedModel: modelId,
+    metadata: { source: "gemini", requestedModel: modelId },
+  })
   const resolved = resolveModelName(modelId)
-  const model = state.modelIndex.get(resolved)
-  if (!model) {
-    throw new HTTPError(`Model "${modelId}" not found`, 404, `Model "${modelId}" not found`)
-  }
-
+  operation.recordRouting({ resolvedModel: resolved, source: "local", metadata: { tokenizerSource: "local" } })
   const text = collectCountTokensText(body)
-  const totalTokens = await countTextTokens(text, model)
+  const model = state.modelIndex.get(resolved)
+  const attempt = operation.beginAttempt({
+    source: "local",
+    effectiveRequest: body,
+    wireRequest: { tokenizerText: text, model: resolved, tokenizer: model?.capabilities?.tokenizer ?? null },
+  })
 
-  const response: CountTokensResponse = {
-    totalTokens,
-    // Mirror agent-maestro: when client sends `cachedContent`, surface a
-    // zero `cachedContentTokenCount` placeholder so clients that key on its
-    // presence don't see an undefined field.
-    ...(body.cachedContent ? { cachedContentTokenCount: 0 } : {}),
+  try {
+    if (!model) {
+      throw new HTTPError(`Model "${modelId}" not found`, 404, `Model "${modelId}" not found`)
+    }
+
+    const totalTokens = await countTextTokens(text, model)
+    const responseBody: CountTokensResponse = {
+      totalTokens,
+      ...(body.cachedContent ? { cachedContentTokenCount: 0 } : {}),
+    }
+    attempt.commit({
+      result: responseBody,
+      usage: { inputTokens: totalTokens },
+      metadata: { rawCount: totalTokens, calibratedCount: totalTokens, source: "local" },
+    })
+    const response = c.json(responseBody)
+    await operation.complete(response, {
+      usage: { inputTokens: totalTokens },
+      metadata: { countTokens: { rawCount: totalTokens, calibratedCount: totalTokens, source: "local" } },
+    })
+    return response
+  } catch (error) {
+    attempt.fail({ error, reason: "local Gemini token count failed" })
+    const response = forwardError(c, error, "gemini")
+    await (error instanceof Error && isAbortError(error) ? operation.abort(response, error) : operation.fail(response, error))
+    return response
   }
-
-  return c.json(response)
 }
 
 // ============================================================================
