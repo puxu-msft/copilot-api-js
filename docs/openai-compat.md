@@ -62,7 +62,7 @@ Codex CLI 的一等公民路径，也是偏差最集中处。每请求由 codec�
 - **input 归一化**：裸 string input 会被规整成单元素数组（部分上游 provider 拒裸 string）。
 - 始终非流式，折入 shutdown signal（Phase 3 abort 可中断）。
 - 支持 `encoding_format`（`float`/`base64`）、`dimensions`。
-- Embeddings 不建 `RequestContext`、不进 V2 History sink；History V3 旁路 lifecycle 会生成完整 canonical `ModelOperation` terminal record（当前仅 bounded registry shadow-recording，未切持久化/read API）。
+- Embeddings 不建 `RequestContext`、不进 V2 History sink；History V3 旁路 lifecycle 会生成完整 canonical `ModelOperation` terminal record（terminal 同时进入 bounded registry 与独立 V3 store，可经 V3 read API 查询）。
 
 ## 跨 vendor 出站腿后缀（通用翻译矩阵）
 
