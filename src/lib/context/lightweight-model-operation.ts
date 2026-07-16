@@ -1,4 +1,5 @@
 import { getProcessIdentity } from "~/lib/process-identity"
+import { publishModelOperationTerminal as publishTerminalToBus } from "~/lib/history/v3/terminal-bus"
 
 import type {
   //
@@ -135,6 +136,7 @@ function rawCaptureGap(): OperationTrackInput["rawCapture"] {
 
 function publishTerminal(record: ModelOperationRecord): void {
   terminalRegistry.set(record.identity.operationId, record)
+  publishTerminalToBus(record)
   while (terminalRegistry.size > MODEL_OPERATION_TERMINAL_REGISTRY_CAPACITY) {
     const oldest = terminalRegistry.keys().next().value
     if (oldest === undefined) break

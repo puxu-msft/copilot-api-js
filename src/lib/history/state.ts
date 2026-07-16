@@ -60,9 +60,22 @@ import {
   runUsageNormalizeBackfill,
   stopUsageNormalizeBackfill,
 } from "./sqlite/usage-normalize-backfill"
+import {
+  //
+  drainV3Writer,
+  enqueueModelOperation,
+  recoverV3Journal,
+  V3_SCHEMA_SQL,
+} from "./v3/store"
+import {
+  //
+  drainModelOperationTerminalSubscribers,
+  subscribeModelOperationTerminals,
+} from "./v3/terminal-bus"
 
 let enabled = false
 let unsubscribeHistoryLimit: (() => void) | undefined
+let unsubscribeV3Terminal: (() => void) | undefined
 let _publisher: ScopedPublisher<"history"> | undefined
 
 export const historyState = {
@@ -105,6 +118,10 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   // separate V3 artifact, so opening History never mutates legacy history.db.
   const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
   openDatabase(dbPath)
+  getDatabase().exec(V3_SCHEMA_SQL)
+  recoverV3Journal(getDatabase())
+  unsubscribeV3Terminal?.()
+  unsubscribeV3Terminal = subscribeModelOperationTerminals(enqueueModelOperation)
   startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
   // Subscribe to live limit changes from config hot-reload.
   // `onHistoryLimitChange` invokes the listener synchronously once with the
@@ -129,6 +146,8 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
 export function stopHistoryBackgroundWork(): void {
   unsubscribeHistoryLimit?.()
   unsubscribeHistoryLimit = undefined
+  unsubscribeV3Terminal?.()
+  unsubscribeV3Terminal = undefined
   stopReaper()
   // Signal the background backfills to stop BEFORE the DB closes (each saves its
   // cursor per batch and resumes on next start — a post-close prepare would throw).
@@ -154,6 +173,8 @@ export async function shutdownHistory(): Promise<void> {
   await drainPendingFinalizations()
   await retryPendingFinalizations()
   await drainPendingFinalizations()
+  await drainModelOperationTerminalSubscribers()
+  await drainV3Writer()
   closeDatabase()
   enabled = false
 }

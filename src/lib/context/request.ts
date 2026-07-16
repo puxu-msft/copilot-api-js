@@ -30,6 +30,7 @@ import { getErrorMessage } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
 import { normalizeModelId } from "~/lib/models/resolver"
 import { getProcessIdentity } from "~/lib/process-identity"
+import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
 import { state as appState } from "~/lib/state"
 
 import type {
@@ -628,6 +629,7 @@ export function createRequestContext(opts: {
       ...(operationUsage(_response) !== undefined && { usage: operationUsage(_response) }),
       ...(pendingGenerationTerminal.attribution !== undefined && { attribution: pendingGenerationTerminal.attribution }),
     })
+    publishModelOperationTerminal(modelOperationTerminalRecord)
   }
 
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
