@@ -708,3 +708,10 @@
 - **理想架构**：把所有 client 帧（渲染帧 + sink 合成/心跳/anchor 帧）汇聚到单一可挂载的 **sink write 串行层**，让 client.outbound 见全量 client 字节 + 统一 forwarded-轨 provenance 标记。这是 byte-critical 重构（`renderFrames` 注释明言推迟过）。
 - **为何暂缓**：需求方拍板「client.outbound 语义/接线首版到位、full sink-egress 统一化晚做」；reviewer MEDIUM-2 标为 byte-critical 风险、须独立谨慎推进。
 - **若做需改什么**：统一 sink egress choke point（`client-sink.ts` makeSseSink/makeArraySink 的 write 串行层）+ 把 renderFrames 的 client.outbound 挂载迁到该层 + synthetic/heartbeat 帧的 provenance 标记 + 四格式 render 腿（Gemini 整流/Anthropic heartbeat）的交互复验 + golden 字节等价预捕。
+
+## responses/gemini 无 system/instructions 时 route 层不 reload config（既有行为，verifier LOW，2026-07-15）
+
+- **现状**：四格式 async 入站下沉后（RFC symmetric-4-point Phase 3），config-freshness 前置按「parse 是否读 config 态」分治：cc route 无条件 `applyConfigToState`、anthropic route `if(payload.system)`、responses/gemini route **不加**。
+- **根因 / 当前行为**：`processResponsesInstructions`/`processAnthropicSystem` 在 system/instructions 空时**早返回、不触发 applyConfigToState**。而 responses `parseOpenAiResponses` 读 config-managed 态（`state.normalizeResponsesCallIds`、`buildResponsesToolNameMapper`→`state.sanitizeToolNames`），parse 在 translateInbound 之前跑——故**当请求无 instructions 时，本请求的 parse 用的是上次某请求 reload 后的 config 值**（若期间 config.yaml 被编辑则陈旧）。**这是旧代码的精确保真复刻**（旧 `processResponsesInstructions` 同样只在 instructions 存在时 reload），**非本次重构引入的新 bug**——verifier 判 LOW、行为等价、不阻塞合并。
+- **理想架构**：config-freshness 是 per-request 的 route lifecycle 关注点，应与「注入是否发生」解耦——route 层**无条件** `await applyConfigToState()`（所有格式统一），使 parse 永远见新鲜 config。**为何暂缓**：responses/gemini 无条件 reload 曾打爆 call-id-normalization/WS 测（它们设 config 态 + 发无 instructions 请求，reload 重置了测试设的态）——统一前须先修那些测试的隔离方式（用 config 文件驱动而非 state setter），是独立工作。
+- **若做需改什么**：四 route 统一无条件 `applyConfigToState()` before runRequest（删条件）；修 `tests/responses/*` 里靠 state setter 设 config 态又发无 instructions 请求的测试（改 config 文件驱动 / 或接受 reload）；核 gemini 同理。

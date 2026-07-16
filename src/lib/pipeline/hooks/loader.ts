@@ -1,5 +1,11 @@
 import consola from "consola"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  //
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { join } from "node:path"
 
 import type {
