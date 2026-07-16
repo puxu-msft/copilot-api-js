@@ -93,5 +93,6 @@ describe("History V3 semantic store", () => {
     getDatabase().exec("DROP TRIGGER fail_v3_operation")
     expect(recoverV3Journal()).toBe(1)
     expect(getV3Operation(prepared.id)?.identity.operationId).toBe(prepared.id)
+    expect(getDatabase().prepare("SELECT 1 FROM v3_journal WHERE operation_id=?").get(prepared.id)).toBeNull()
   })
 })

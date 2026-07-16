@@ -50,7 +50,7 @@ interface PreparedOperation {
   objects: PreparedObject[]
   tracks: Array<{ name: string; attemptIndex: number; refs: string }>
   timeline: Array<{ chunkIndex: number; firstSequence: number; lastSequence: number; payload: Uint8Array; compressed: Uint8Array }>
-  searchText: string
+  searchObjects: Array<{ hash: string; document: string }>
   byteLength: number
 }
 
@@ -123,10 +123,15 @@ CREATE TABLE IF NOT EXISTS v3_journal (
   error TEXT,
   PRIMARY KEY(operation_id, revision)
 );
-CREATE TABLE IF NOT EXISTS v3_search_documents (
-  operation_id TEXT PRIMARY KEY REFERENCES v3_operations(operation_id) ON DELETE CASCADE,
-  document TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS v3_search_objects (
+  object_hash TEXT PRIMARY KEY,
+  document_gz BLOB NOT NULL,
   version INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v3_search_membership (
+  operation_id TEXT NOT NULL REFERENCES v3_operations(operation_id) ON DELETE CASCADE,
+  object_hash TEXT NOT NULL,
+  PRIMARY KEY(operation_id, object_hash)
 );
 CREATE TABLE IF NOT EXISTS v3_search_backlog (
   operation_id TEXT PRIMARY KEY,
@@ -201,11 +206,14 @@ function references(record: ModelOperationRecord): Set<string> {
   return handles
 }
 
-function searchDocument(record: ModelOperationRecord): string {
-  const values: unknown[] = [record.identity, record.routing, record.terminal]
+function searchObjects(record: ModelOperationRecord, objectHashes: Map<string, string>): PreparedOperation["searchObjects"] {
+  const documents = new Map<string, string>()
   const used = references(record)
-  for (const node of [...record.arena.payloads, ...record.arena.frames]) if (used.has(node.handle)) values.push(node.value)
-  return values.map((value) => canonicalize(value)).join("\n")
+  for (const node of record.arena.payloads) {
+    const hash = objectHashes.get(node.handle)
+    if (hash && used.has(node.handle)) documents.set(hash, canonicalize(node.value))
+  }
+  return [...documents].map(([hash, document]) => ({ hash, document }))
 }
 
 export function prepareModelOperation(record: ModelOperationRecord): PreparedOperation {
@@ -217,7 +225,6 @@ export function prepareModelOperation(record: ModelOperationRecord): PreparedOpe
   const objectHashes = new Map<string, string>()
   record.arena.payloads.forEach((node, index) => objectHashes.set(node.handle, objects[index].hash))
   record.arena.frames.forEach((node, index) => objectHashes.set(node.handle, objects[record.arena.payloads.length + index].hash))
-  const replaceHandle = (handle: string): string => objectHashes.get(handle) ?? handle
   // Values live only in v3_objects. The manifest retains node metadata + the
   // handle→hash map, avoiding a second full copy of every payload/frame.
   const manifestValue = {
@@ -253,7 +260,10 @@ export function prepareModelOperation(record: ModelOperationRecord): PreparedOpe
       compressed: compressBytes(encoder.encode(JSON.stringify(chunk))),
     }
   })
-  const tracks = collectTracks(record).map((track) => ({ ...track, refs: track.refs.replaceAll(/"(payload|frame):\d+"/g, (match) => `"${replaceHandle(JSON.parse(match) as string)}"`) }))
+  // Tracks use compact operation-local handles; the manifest owns the single
+  // handle→CAS hash dictionary. Repeating 64-byte hashes per occurrence defeats
+  // CAS for long SSE tracks.
+  const tracks = collectTracks(record)
   return {
     id: record.identity.operationId,
     revision: record.lastSequence,
@@ -267,7 +277,7 @@ export function prepareModelOperation(record: ModelOperationRecord): PreparedOpe
     objects,
     tracks,
     timeline,
-    searchText: searchDocument(record),
+    searchObjects: searchObjects(record, objectHashes),
     byteLength: manifest.byteLength + objects.reduce((sum, object) => sum + object.canonical.byteLength, 0),
   }
 }
@@ -323,7 +333,13 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
     const timelineStmt = db.prepare("INSERT INTO v3_timeline_chunks(operation_id,chunk_index,first_sequence,last_sequence,payload_gz) VALUES(?,?,?,?,?)")
     for (const chunk of prepared.timeline) timelineStmt.run(prepared.id, chunk.chunkIndex, chunk.firstSequence, chunk.lastSequence, chunk.compressed)
     try {
-      db.prepare("INSERT INTO v3_search_documents(operation_id,document,version) VALUES(?,?,?)").run(prepared.id, prepared.searchText, FORMAT_VERSION)
+      const existingSearch = db.prepare("SELECT 1 FROM v3_search_objects WHERE object_hash=?")
+      const insertSearch = db.prepare("INSERT INTO v3_search_objects(object_hash,document_gz,version) VALUES(?,?,?)")
+      const insertMembership = db.prepare("INSERT INTO v3_search_membership(operation_id,object_hash) VALUES(?,?)")
+      for (const object of prepared.searchObjects) {
+        if (!existingSearch.get(object.hash)) insertSearch.run(object.hash, compressBytes(encoder.encode(object.document)), FORMAT_VERSION)
+        insertMembership.run(prepared.id, object.hash)
+      }
     } catch (error) {
       db.prepare("INSERT OR REPLACE INTO v3_search_backlog(operation_id,reason,attempts,updated_at) VALUES(?,?,COALESCE((SELECT attempts FROM v3_search_backlog WHERE operation_id=?),0)+1,?)").run(
         prepared.id,
@@ -332,7 +348,10 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
         Date.now(),
       )
     }
-    db.prepare("UPDATE v3_journal SET phase='committed',committed_at=? WHERE operation_id=? AND revision=?").run(Date.now(), prepared.id, prepared.revision)
+    // Once the operation transaction commits, the durable manifest + CAS objects are the
+    // recovery source. Keeping the self-contained journal payload after this point would
+    // duplicate every semantic value forever and defeat content-addressed storage.
+    db.prepare("DELETE FROM v3_journal WHERE operation_id=? AND revision=?").run(prepared.id, prepared.revision)
   })
   tx()
   return "inserted"
@@ -447,22 +466,30 @@ export function setV3OperationPinned(operationId: string, pinned: boolean): bool
 }
 
 export function searchV3OperationIds(query: string, kind: string | undefined, limit: number): string[] {
-  const needle = `%${query}%`
   const rows = kind ?
       getDatabase()
-        .prepare("SELECT d.operation_id FROM v3_search_documents d JOIN v3_operations o ON o.operation_id=d.operation_id WHERE d.document LIKE ? AND o.kind=? ORDER BY o.created_at DESC LIMIT ?")
-        .all(needle, kind, limit)
+        .prepare("SELECT m.operation_id,s.document_gz FROM v3_search_objects s JOIN v3_search_membership m ON m.object_hash=s.object_hash JOIN v3_operations o ON o.operation_id=m.operation_id WHERE o.kind=? ORDER BY o.created_at DESC")
+        .all(kind)
     : getDatabase()
-        .prepare("SELECT d.operation_id FROM v3_search_documents d JOIN v3_operations o ON o.operation_id=d.operation_id WHERE d.document LIKE ? ORDER BY o.created_at DESC LIMIT ?")
-        .all(needle, limit)
-  return (rows as Array<{ operation_id: string }>).map((row) => row.operation_id)
+        .prepare("SELECT m.operation_id,s.document_gz FROM v3_search_objects s JOIN v3_search_membership m ON m.object_hash=s.object_hash JOIN v3_operations o ON o.operation_id=m.operation_id ORDER BY o.created_at DESC")
+        .all()
+  const needle = query.toLowerCase()
+  const matched = new Set<string>()
+  for (const row of rows as Array<{ operation_id: string; document_gz: Uint8Array }>) {
+    if (decoder.decode(decompressBytes(row.document_gz)).toLowerCase().includes(needle)) matched.add(row.operation_id)
+    if (matched.size >= limit) break
+  }
+  return [...matched]
 }
 
 export function containingV3OperationIds(objectHash: string): string[] {
-  const rows = getDatabase().prepare("SELECT DISTINCT operation_id FROM v3_tracks WHERE refs_json LIKE ? ORDER BY operation_id").all(`%${objectHash}%`) as Array<{
-    operation_id: string
-  }>
-  return rows.map((row) => row.operation_id)
+  const rows = getDatabase().prepare("SELECT operation_id,manifest_gz FROM v3_operations ORDER BY operation_id").all() as Array<{ operation_id: string; manifest_gz: Uint8Array }>
+  return rows
+    .filter((row) => {
+      const manifest = JSON.parse(decoder.decode(decompressBytes(row.manifest_gz))) as { objectHashes?: Record<string, string> }
+      return Object.values(manifest.objectHashes ?? {}).includes(objectHash)
+    })
+    .map((row) => row.operation_id)
 }
 
 function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperationRecord {

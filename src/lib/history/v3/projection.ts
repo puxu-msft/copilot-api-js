@@ -220,7 +220,10 @@ export function recordToEntrySummary(record: ModelOperationRecord, stored: { pin
 }
 
 export function recordMatchesQuery(record: ModelOperationRecord, options: QueryOptions & { operationKind?: string }): boolean {
-  if (options.operationKind && options.operationKind !== "all" && record.identity.kind !== options.operationKind) return false
+  if (options.operationKind && options.operationKind !== "all") {
+    const matchesKind = options.operationKind === "generation" ? record.identity.kind === "generation" || record.identity.kind === "responses_ws" : record.identity.kind === options.operationKind
+    if (!matchesKind) return false
+  }
   if (options.sessionId && record.identity.sessionId !== options.sessionId) return false
   if (options.agentId && record.identity.agentId !== options.agentId) return false
   if (!options.agentId && options.mainAgentOnly && record.identity.agentId !== undefined) return false

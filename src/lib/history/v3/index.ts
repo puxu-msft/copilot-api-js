@@ -20,6 +20,8 @@ export {
 } from "./store"
 export {
   drainModelOperationTerminalSubscribers,
+  getRecentModelOperationTerminal,
+  listRecentModelOperationTerminals,
   type ModelOperationTerminalSubscriber,
   publishModelOperationTerminal,
   resetModelOperationTerminalBusForTests,

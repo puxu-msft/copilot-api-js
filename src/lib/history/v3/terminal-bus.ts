@@ -4,6 +4,8 @@ export type ModelOperationTerminalSubscriber = (record: ModelOperationRecord) =>
 
 const subscribers = new Set<ModelOperationTerminalSubscriber>()
 const pending = new Set<Promise<void>>()
+const recent = new Map<string, ModelOperationRecord>()
+const RECENT_CAPACITY = 256
 
 /** Subscribe to immutable canonical terminal records. Returns an unsubscribe function. */
 export function subscribeModelOperationTerminals(subscriber: ModelOperationTerminalSubscriber): () => void {
@@ -16,6 +18,12 @@ export function subscribeModelOperationTerminals(subscriber: ModelOperationTermi
  * shutdown/test drains; every rejection is observed so it cannot crash the process.
  */
 export function publishModelOperationTerminal(record: ModelOperationRecord): void {
+  recent.set(record.identity.operationId, record)
+  while (recent.size > RECENT_CAPACITY) {
+    const oldest = recent.keys().next().value
+    if (oldest === undefined) break
+    recent.delete(oldest)
+  }
   for (const subscriber of subscribers) {
     try {
       const result = subscriber(record)
@@ -32,6 +40,14 @@ export function publishModelOperationTerminal(record: ModelOperationRecord): voi
   }
 }
 
+export function getRecentModelOperationTerminal(operationId: string): ModelOperationRecord | undefined {
+  return recent.get(operationId)
+}
+
+export function listRecentModelOperationTerminals(): ReadonlyArray<ModelOperationRecord> {
+  return [...recent.values()]
+}
+
 /** Drain to quiescence, including work published while a prior batch settles. */
 export async function drainModelOperationTerminalSubscribers(): Promise<void> {
   while (pending.size > 0) await Promise.allSettled([...pending])
@@ -40,4 +56,5 @@ export async function drainModelOperationTerminalSubscribers(): Promise<void> {
 export function resetModelOperationTerminalBusForTests(): void {
   subscribers.clear()
   pending.clear()
+  recent.clear()
 }

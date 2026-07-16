@@ -28,6 +28,11 @@ import {
   getV3StoredOperation,
   listV3StoredOperations,
 } from "./v3/store"
+import {
+  //
+  getRecentModelOperationTerminal,
+  listRecentModelOperationTerminals,
+} from "./v3/terminal-bus"
 
 function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   if (opts.sessionId && entry.sessionId !== opts.sessionId) return false
@@ -95,6 +100,8 @@ function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined):
 export function getEntry(id: string): HistoryEntry | undefined {
   const inflight = getInFlight(id)
   if (inflight) return inflight
+  const recent = getRecentModelOperationTerminal(id)
+  if (recent) return recordToHistoryEntry(recent)
   const stored = getV3StoredOperation(id)
   return stored ? recordToHistoryEntry(stored.record, stored) : undefined
 }
@@ -102,6 +109,8 @@ export function getEntry(id: string): HistoryEntry | undefined {
 export function getSummary(id: string): EntrySummary | undefined {
   const inflight = getInFlight(id)
   if (inflight) return toEntrySummary(inflight)
+  const recent = getRecentModelOperationTerminal(id)
+  if (recent) return recordToEntrySummary(recent)
   const stored = getV3StoredOperation(id)
   return stored ? recordToEntrySummary(stored.record, stored) : undefined
 }
@@ -111,7 +120,11 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
 
   const inFlightMatches = listInFlight().filter((entry) => matchesFilters(entry, options) && inFlightMatchesSearch(entry, options.search))
   const operationKind = options.operationKind ?? "generation"
-  const persisted = listV3StoredOperations(operationKind === "all" ? undefined : operationKind, 1_000_000)
+  const persistedRecords = [
+    ...listRecentModelOperationTerminals().map((record) => ({ record, pinned: false })),
+    ...listV3StoredOperations(operationKind === "all" || operationKind === "generation" ? undefined : operationKind, 1_000_000),
+  ]
+  const persisted = [...new Map(persistedRecords.map((stored) => [stored.record.identity.operationId, stored])).values()]
     .filter(({ record }) => recordMatchesQuery(record, { ...options, operationKind }))
     .map((stored) => recordToHistoryEntry(stored.record, stored))
 
@@ -152,7 +165,11 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
     .map((entry) => toEntrySummary(entry))
     .filter((summary) => summaryMatchesFilters(summary, options))
   const operationKind = options.operationKind ?? "generation"
-  const persistedSummaries = listV3StoredOperations(operationKind === "all" ? undefined : operationKind, 1_000_000)
+  const persistedRecords = [
+    ...listRecentModelOperationTerminals().map((record) => ({ record, pinned: false })),
+    ...listV3StoredOperations(operationKind === "all" || operationKind === "generation" ? undefined : operationKind, 1_000_000),
+  ]
+  const persistedSummaries = [...new Map(persistedRecords.map((stored) => [stored.record.identity.operationId, stored])).values()]
     .filter(({ record }) => recordMatchesQuery(record, { ...options, operationKind }))
     .map((stored) => recordToEntrySummary(stored.record, stored))
 
