@@ -271,15 +271,6 @@ shutdown:
 # Control history recording behavior. / 控制历史记录行为。
 
 history:
-  # Deprecated compatibility value. Online maintenance never deletes terminal records.
-  # 已废弃兼容值。在线维护永不删除终态记录。
-  success_limit: 500
-  # Deprecated compatibility value. Online maintenance never deletes terminal records.
-  # 已废弃兼容值。在线维护永不删除终态记录。
-  failure_limit: 500
-  # Seconds between non-destructive maintenance passes (0 = disabled, default: 600).
-  # 非破坏性维护周期秒数（0 = 禁用，默认 600）。
-  reaper_interval: 3600
   # Optional exact-byte capture in an independent CAS database. Hot reload rotates
   # only new operations; in-flight operations drain their frozen store generation.
   # 可选精确字节捕获，保存到独立 CAS 数据库。热重载只切新 operation，在途 operation 继续写冻结代。

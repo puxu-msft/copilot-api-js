@@ -209,8 +209,6 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
       memory: {
         historyBackend: "sqlite",
         historyEntryCount,
-        historySuccessLimit: state.historySuccessLimit,
-        historyFailureLimit: state.historyFailureLimit,
         inFlightCount,
       },
 

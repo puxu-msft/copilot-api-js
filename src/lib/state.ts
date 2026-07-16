@@ -613,29 +613,6 @@ export interface State {
   readonly systemPromptAppend: Array<CompiledSystemPromptEntry>
 
   /**
-   * Maximum number of successful (non-failed) history entries to keep in SQLite.
-   * The reaper trims the success bucket (status != 'failed') to this size.
-   * 0 = unlimited. Default: 50.
-   */
-  readonly historySuccessLimit: number
-
-  /**
-   * Maximum number of failed history entries to keep in SQLite.
-   * The reaper trims the failure bucket (status = 'failed') to this size.
-   * Kept larger than the success limit by default — failures carry more
-   * diagnostic value. 0 = unlimited. Default: 200.
-   */
-  readonly historyFailureLimit: number
-
-  /**
-   * Interval in seconds between history reaper passes.
-   * The reaper periodically trims the SQLite history table to the per-status
-   * limits (`historySuccessLimit` / `historyFailureLimit`).
-   * Default: 600.
-   */
-  readonly historyReaperInterval: number
-
-  /**
     * Injected History database path for tests. Production config cannot set it;
     * an empty string selects PATHS.HISTORY_V3_DB so the online server never opens
     * the legacy PATHS.HISTORY_DB artifact.
@@ -1376,9 +1353,6 @@ export function setHistoryConfig(
   patch: Partial<
     Pick<
       MutableState,
-      | "historySuccessLimit"
-      | "historyFailureLimit"
-      | "historyReaperInterval"
       | "historyDbPath"
       | "historyRawCaptureEnabled"
       | "historyRawCaptureDbPath"
@@ -1390,14 +1364,7 @@ export function setHistoryConfig(
     (patch.historyRawCaptureEnabled !== undefined && patch.historyRawCaptureEnabled !== mutableState.historyRawCaptureEnabled)
     || (patch.historyRawCaptureDbPath !== undefined && patch.historyRawCaptureDbPath !== mutableState.historyRawCaptureDbPath)
     || (patch.historyRawCaptureMaxObjectBytes !== undefined && patch.historyRawCaptureMaxObjectBytes !== mutableState.historyRawCaptureMaxObjectBytes)
-  const reaperConfigChanged =
-    (patch.historySuccessLimit !== undefined && patch.historySuccessLimit !== mutableState.historySuccessLimit)
-    || (patch.historyFailureLimit !== undefined && patch.historyFailureLimit !== mutableState.historyFailureLimit)
-    || (patch.historyReaperInterval !== undefined && patch.historyReaperInterval !== mutableState.historyReaperInterval)
   updateState(patch)
-  if (reaperConfigChanged) {
-    for (const listener of historyLimitListeners) listener()
-  }
   if (rawCaptureChanged) for (const listener of historyRawCaptureListeners) listener()
 }
 
@@ -1448,26 +1415,6 @@ export function setTelemetryConfig(
 export function onTelemetryConfigChange(listener: () => void): () => void {
   telemetryConfigListeners.add(listener)
   return () => telemetryConfigListeners.delete(listener)
-}
-
-/**
- * Listeners notified when any reaper config (success/failure limit or interval)
- * changes. Used by the history module to retune its reaper without a circular
- * import. Invoked with no arguments — the listener re-reads state.
- */
-const historyLimitListeners = new Set<() => void>()
-
-/**
- * Subscribe to reaper config changes (success/failure limit or interval).
- *
- * The listener is invoked synchronously once on registration, so subscribers
- * that register after `resetConfigManagedState()` still pick up the initial
- * values. Returns an unsubscribe function.
- */
-export function onHistoryLimitChange(listener: () => void): () => void {
-  historyLimitListeners.add(listener)
-  listener()
-  return () => historyLimitListeners.delete(listener)
 }
 
 export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>): void {
@@ -1746,9 +1693,6 @@ export const CONFIG_MANAGED_DEFAULTS = {
   modelRefreshInterval: 600,
   shutdownGracefulWait: 60,
   shutdownAbortWait: 120,
-  historySuccessLimit: 50,
-  historyFailureLimit: 200,
-  historyReaperInterval: 600,
   historyDbPath: "",
   historyRawCaptureEnabled: false,
   historyRawCaptureDbPath: "",
@@ -1899,9 +1843,6 @@ export function resetConfigManagedState(): void {
     negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
   })
   setHistoryConfig({
-    historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
-    historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
-    historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
     historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
     historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
@@ -2007,9 +1948,6 @@ const mutableState: MutableState = {
   thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
-  historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
-  historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
-  historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
   historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
   historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,

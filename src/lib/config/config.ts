@@ -799,16 +799,6 @@ export async function applyConfigToState(): Promise<Config> {
   // History settings (nested: override only when present)
   if (config.history) {
     const h = config.history
-    // Split success/failure limits; legacy `limit` is the fallback for either
-    // bucket when the dedicated key is absent (backward compat). Reading the
-    // deprecated key here is the whole point of the shim, so the rule is off.
-    /* eslint-disable @typescript-eslint/no-deprecated */
-    const successLimit = h.success_limit ?? h.limit
-    const failureLimit = h.failure_limit ?? h.limit
-    /* eslint-enable @typescript-eslint/no-deprecated */
-    if (successLimit !== undefined) setHistoryConfig({ historySuccessLimit: successLimit })
-    if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
-    if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
     if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
     if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
     if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })

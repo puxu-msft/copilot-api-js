@@ -29,7 +29,6 @@ export {
   listInFlightSummaries,
   searchContains,
   searchHistory,
-  setHistoryMaxEntries,
   setHistoryPublisher,
   setPinned,
   shutdownHistory,

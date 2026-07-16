@@ -27,7 +27,6 @@ export {
   historyState,
   initHistory,
   isHistoryEnabled,
-  setHistoryMaxEntries,
   setHistoryPublisher,
   shutdownHistory,
   startHistoryBackfills,

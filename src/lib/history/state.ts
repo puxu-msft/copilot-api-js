@@ -3,7 +3,6 @@ import type { ScopedPublisher } from "~/lib/observability"
 import { PATHS } from "~/lib/config/paths"
 import {
   //
-  onHistoryLimitChange,
   onHistoryRawCaptureChange,
   state,
 } from "~/lib/state"
@@ -30,11 +29,6 @@ import {
 } from "./sqlite/connection"
 import {
   //
-  startReaper,
-  stopReaper,
-} from "./sqlite/reaper"
-import {
-  //
   drainV3Writer,
   enqueueModelOperation,
   recoverV3Journal,
@@ -47,7 +41,6 @@ import {
 } from "./v3/terminal-bus"
 
 let enabled = false
-let unsubscribeHistoryLimit: (() => void) | undefined
 let unsubscribeV3Terminal: (() => void) | undefined
 let unsubscribeRawCapture: (() => void) | undefined
 let _publisher: ScopedPublisher<"history"> | undefined
@@ -104,13 +97,6 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
       maxObjectBytes: state.historyRawCaptureMaxObjectBytes,
     })
   })
-  // V3 has no count retention or V2 table maintenance. The legacy reaper remains
-  // available only for isolated V2 test databases.
-  // Subscribe to live limit changes from config hot-reload.
-  // `onHistoryLimitChange` invokes the listener synchronously once with the
-  // current value, so we don't miss any reset that happened before this point.
-  unsubscribeHistoryLimit?.()
-  unsubscribeHistoryLimit = onHistoryLimitChange(setHistoryMaxEntries)
 }
 
 /**
@@ -127,12 +113,8 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
  * `enabled` true so in-flight finalizes still persist.
  */
 export function stopHistoryBackgroundWork(): void {
-  unsubscribeHistoryLimit?.()
-  unsubscribeHistoryLimit = undefined
   unsubscribeRawCapture?.()
   unsubscribeRawCapture = undefined
-  unsubscribeV3Terminal?.()
-  stopReaper()
   // Signal the background backfills to stop BEFORE the DB closes (each saves its
   // cursor per batch and resumes on next start — a post-close prepare would throw).
 }
@@ -160,10 +142,6 @@ export async function shutdownHistory(): Promise<void> {
   shutdownRawCapture()
   closeDatabase()
   enabled = false
-}
-
-export function setHistoryMaxEntries(): void {
-  startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
 }
 
 /** History V3 does not run V2 backfills or migrate a legacy history database. */

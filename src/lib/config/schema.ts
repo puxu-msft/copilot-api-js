@@ -748,13 +748,6 @@ export type HooksConfig = z.infer<typeof HooksConfigSchema>
 
 export const HistoryConfigSchema = z
   .object({
-    /** @deprecated 兼容旧配置;缺省的 success_limit/failure_limit 回退到它 */
-    limit: nullableNonnegativeInt(),
-    /** Max successful (non-failed) entries kept in SQLite (0 = unlimited). */
-    success_limit: nullableNonnegativeInt(),
-    /** Max failed entries kept in SQLite (0 = unlimited). */
-    failure_limit: nullableNonnegativeInt(),
-    reaper_interval: nullableNonnegativeInt(),
     raw_capture: nullableSection(
       z
         .object({

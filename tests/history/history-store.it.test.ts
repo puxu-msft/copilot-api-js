@@ -88,7 +88,7 @@ function totalEntryCount(): number {
 }
 
 // Snapshot global state once and restore after every test so per-test mutations
-// (e.g. setStateForTests({ historySuccessLimit: 50 })) can't leak into other test files.
+// (e.g. raw-capture config) can't leak into other test files.
 autoRestoreState()
 
 // Reset history state before each test
@@ -117,9 +117,9 @@ describe("initHistory", () => {
   })
 
   test("tracks history limit from state", async () => {
-    setStateForTests({ historySuccessLimit: 50 })
+    setStateForTests({ historyRawCaptureMaxObjectBytes: 50 })
     initHistory(true, 50)
-    expect(state.historySuccessLimit).toBe(50)
+    expect(state.historyRawCaptureMaxObjectBytes).toBe(50)
   })
 
   test("resets entries and sessions", async () => {
