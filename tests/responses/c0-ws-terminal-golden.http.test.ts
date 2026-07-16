@@ -26,12 +26,14 @@ import {
   websocket,
 } from "hono/bun"
 
+import type { RequestContext } from "~/lib/context/request"
 import type {
   //
   ResponsesPayload,
   ResponsesResponse,
 } from "~/types/api/openai-responses"
 
+import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   setModels,
@@ -44,6 +46,7 @@ import { applyFetchMock } from "../helpers/mock-fetch"
 import { createSseResponse } from "../helpers/sse"
 
 let capturedPayload: ResponsesPayload | undefined
+let throwPreDriver = false
 
 function baseResponse(model: string, status: ResponsesResponse["status"], usage: ResponsesResponse["usage"] = null): ResponsesResponse {
   return {
@@ -64,6 +67,7 @@ function baseResponse(model: string, status: ResponsesResponse["status"], usage:
 const upstreamFetchMock = mock((_input: string | URL | Request, init?: RequestInit) => {
   if (typeof init?.body !== "string") throw new TypeError("expected string body in mock")
   capturedPayload = JSON.parse(init.body) as ResponsesPayload
+  if (throwPreDriver) return Promise.reject(new Error("pre-driver websocket exchange failed"))
   return Promise.resolve(
     createSseResponse([
       `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: baseResponse(capturedPayload.model, "in_progress") })}\n\n`,
@@ -130,6 +134,7 @@ describe("C0 golden (c-ws) — Responses WS terminal forwarded messages (byte-fo
   beforeEach(() => {
     upstreamFetchMock.mockClear()
     capturedPayload = undefined
+    throwPreDriver = false
     applyFetchMock(upstreamFetchMock)
     setStateForTests({ copilotToken: "tok" })
     setModels({ object: "list", data: [] })
@@ -138,6 +143,33 @@ describe("C0 golden (c-ws) — Responses WS terminal forwarded messages (byte-fo
   afterEach(() => {
     server?.stop()
     server = undefined
+  })
+
+  test("pre-driver exchange error sends and records the WS error frame before sealing", async () => {
+    setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions", "/responses"] })] })
+    throwPreDriver = true
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closeP = waitForClose(ws)
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "fail before driver sink" } }))
+    const result = await closeP
+
+    expect(result.code).toBe(1011)
+    expect(result.messages).toEqual([
+      { type: "error", error: { type: "server_error", message: "pre-driver websocket exchange failed" } },
+    ])
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    expect(operation?.terminal).toMatchObject({ outcome: "failed" })
+    const clientFrame = operation?.arena.frames.find((node) => (node.value as { data?: string }).data?.includes("pre-driver websocket exchange failed"))
+    expect(clientFrame).toBeDefined()
+    expect(clientFrame!.sequence).toBeLessThan(operation!.terminal!.sequence)
+    expect(operation?.egress?.client.frames).toEqual([clientFrame!.handle])
   })
 
   test("response.create → forwarded WS messages are byte-locked, closes 1000/done", async () => {

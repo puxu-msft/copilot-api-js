@@ -27,7 +27,10 @@ import {
 } from "bun:test"
 import { Hono } from "hono"
 
+import type { RequestContext } from "~/lib/context/request"
+
 import { resetAnthropicFeatureNegotiationForTesting } from "~/lib/anthropic/feature-negotiation"
+import { getRequestContextManager } from "~/lib/context/manager"
 import { forwardError } from "~/lib/error"
 import {
   //
@@ -246,11 +249,20 @@ describe("Anthropic v4 driver path", () => {
   test("direct non-streaming: client json mirrors upstream + wire carries the request", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
 
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
+
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
 
     // Anthropic is bypass-direct (renderResponseNonStreaming = identity): the
     // client JSON is the upstream body verbatim.
     expect(v4).toEqual(JSON.parse(nonStreamingBody("claude-sonnet-4.6")) as Record<string, unknown>)
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    const clientPayload = operation?.egress?.client.payload
+    expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.terminal?.outcome).toBe("completed")
     expect(capturedWire?.model).toBe("claude-sonnet-4.6")
     // Default mode is passthrough — no proxy cache_control injection; the request (which
     // carries none) reaches the wire verbatim.

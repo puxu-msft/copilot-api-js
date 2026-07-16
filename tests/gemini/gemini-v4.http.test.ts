@@ -22,7 +22,10 @@ import {
 } from "bun:test"
 import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+
+import { getRequestContextManager } from "~/lib/context/manager"
 
 import { getHistory } from "~/lib/history"
 import {
@@ -187,6 +190,11 @@ describe("Gemini v4 driver path", () => {
   test("generateContent non-streaming: client Gemini json + CC wire", async () => {
     const body = { contents: [{ role: "user", parts: [{ text: "Hello Gemini" }] }] }
 
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
+
     const v4 = (await (await post("gpt-4o:generateContent", body)).json()) as Record<string, unknown>
     const v4Wire = lastCcWire
 
@@ -203,6 +211,10 @@ describe("Gemini v4 driver path", () => {
       modelVersion: "gpt-4o",
       responseId: "chatcmpl-g",
     })
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    const clientPayload = operation?.egress?.client.payload
+    expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.terminal?.outcome).toBe("completed")
     expect(v4Wire?.model).toBe("gpt-4o")
     expect(v4Wire?.messages).toEqual([{ role: "user", content: "Hello Gemini" }])
     // Gemini-shape sanity

@@ -22,7 +22,10 @@ import {
 } from "bun:test"
 import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
+
+import { getRequestContextManager } from "~/lib/context/manager"
 
 import { getHistory } from "~/lib/history"
 import {
@@ -203,6 +206,11 @@ describe("CC v4 driver path", () => {
   test("non-streaming passthrough: client json + wire payload", async () => {
     const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
 
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
+
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     const v4Wire = lastCcWire
 
@@ -214,6 +222,10 @@ describe("CC v4 driver path", () => {
       choices: [{ index: 0, message: { role: "assistant", content: "hi there" }, finish_reason: "stop", logprobs: null }],
       usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
     })
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    const clientPayload = operation?.egress?.client.payload
+    expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.terminal?.outcome).toBe("completed")
     expect(v4Wire?.model).toBe("gpt-4o")
     expect(v4Wire?.messages).toEqual([{ role: "user", content: "hi" }])
     expect(v4Wire?.stream).toBe(false)

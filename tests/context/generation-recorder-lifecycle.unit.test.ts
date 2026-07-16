@@ -172,6 +172,19 @@ describe("RequestContext generation terminal ordering", () => {
     expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord!)
   })
 
+  test("joins an early delivery finalization with a later middleware logical outcome", () => {
+    const ctx = createRequestContext({ endpoint: "openai-responses" })
+    const clientBody = { error: { message: "route rejected" } }
+
+    ctx.finalizeModelOperationDelivery({ clientPayload: clientBody })
+    expect(ctx.modelOperationTerminalRecord).toBeNull()
+    ctx.fail("m", new Error("route rejected"))
+
+    const record = ctx.modelOperationTerminalRecord!
+    expect(record.terminal?.outcome).toBe("failed")
+    expect(record.arena.payloads.find((node) => node.handle === record.egress?.client.payload)?.value).toEqual(clientBody)
+  })
+
   test("preserves an HTTPError raw response as the primary upstream payload and JSON error fields", () => {
     const ctx = createRequestContext({ endpoint: "anthropic-messages" })
     const rawBody = JSON.stringify({ type: "error", error: { message: "bad beta" } })

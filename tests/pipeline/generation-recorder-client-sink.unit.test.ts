@@ -49,6 +49,8 @@ describe("generation recorder ClientSink frame arena integration", () => {
     await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { message: "synthetic" } }) })
 
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: "done", stop_reason: "end_turn" })
+    expect(ctx.modelOperationTerminalRecord).toBeNull()
+    sink.finalize?.()
     const record = ctx.modelOperationTerminalRecord!
     const upstreamHandles = record.attempts[0]?.upstreamResponse?.frames ?? []
     const clientHandles = record.egress?.client.frames ?? []
@@ -63,10 +65,12 @@ describe("generation recorder ClientSink frame arena integration", () => {
       transformId: "rewrite-out:positive-mutation",
       origin: { stage: "rewrite-out", track: "client" },
     })
-    expect(record.arena.frames.find((node) => node.handle === clientHandles[2])).toMatchObject({
+    const synthetic = record.arena.frames.find((node) => node.handle === clientHandles[2])
+    expect(synthetic).toMatchObject({
       provenance: "derived",
       transformId: "client-sink:synthetic",
       origin: { stage: "client-sink", track: "proxy", detail: "synthetic" },
     })
+    expect(synthetic!.sequence).toBeLessThan(record.terminal!.sequence)
   })
 })
