@@ -35,6 +35,8 @@ import {
   handleGetEntry,
   handleGetStats,
   handlePinEntry,
+  handleSearch,
+  handleSearchContains,
   handleUnpinEntry,
 } from "~/routes/history/handler"
 
@@ -49,6 +51,8 @@ app.post("/api/entries/:id/pin", handlePinEntry)
 app.post("/api/entries/:id/unpin", handleUnpinEntry)
 app.get("/api/stats", handleGetStats)
 app.get("/api/export", handleExport)
+app.get("/api/search", handleSearch)
+app.get("/api/search/contains", handleSearchContains)
 
 // ─── Helpers ───
 
@@ -371,6 +375,18 @@ describe("GET /api/export", () => {
     const res = await get("/api/export?format=csv")
     expect(res.headers.get("Content-Type")).toContain("text/csv")
     expect(res.headers.get("Content-Disposition")).toContain("history.csv")
+  })
+})
+
+describe("retired V2 search surface", () => {
+  test("returns explicit 501 instead of reading the V2 search index", async () => {
+    const search = await get("/api/search?source=inbound&q=needle")
+    expect(search.status).toBe(501)
+    expect((await json<{ error: string }>(search)).error).toContain("History V3 search is unsupported")
+
+    const contains = await get("/api/search/contains?hash=deadbeef")
+    expect(contains.status).toBe(501)
+    expect((await json<{ error: string }>(contains)).error).toContain("History V3 search is unsupported")
   })
 })
 
