@@ -636,9 +636,9 @@ export interface State {
   readonly historyReaperInterval: number
 
   /**
-   * Filesystem path to the history SQLite database.
-   * Empty string means use the default path from PATHS.HISTORY_DB.
-   * Default: "".
+    * Injected History database path for tests. Production config cannot set it;
+    * an empty string selects PATHS.HISTORY_V3_DB so the online server never opens
+    * the legacy PATHS.HISTORY_DB artifact.
    */
   readonly historyDbPath: string
 

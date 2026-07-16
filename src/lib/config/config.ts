@@ -809,7 +809,6 @@ export async function applyConfigToState(): Promise<Config> {
     if (successLimit !== undefined) setHistoryConfig({ historySuccessLimit: successLimit })
     if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
-    if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
 
   }
 

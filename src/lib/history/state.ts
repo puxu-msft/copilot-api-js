@@ -100,7 +100,10 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   clearInFlight()
   enabled = enable
   if (!enable) return
-  const dbPath = state.historyDbPath || PATHS.HISTORY_DB
+  // `historyDbPath` is retained only as an injected test seam during the V3
+  // cutover. Production config cannot set it; the default is a physically
+  // separate V3 artifact, so opening History never mutates legacy history.db.
+  const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
   openDatabase(dbPath)
   startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
   // Subscribe to live limit changes from config hot-reload.

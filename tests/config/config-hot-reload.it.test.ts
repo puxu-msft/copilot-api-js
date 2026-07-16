@@ -810,14 +810,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     expectedStateValue: 120,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   },
-  {
-    configKey: "history.db_path",
-    stateKey: "historyDbPath",
-    sampleYamlValue: '"/tmp/custom.db"',
-    expectedStateValue: "/tmp/custom.db",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyDbPath,
-  },
-
   // ── shutdown.* ─────────────────────────────────────────────────────
   {
     configKey: "shutdown.graceful_wait",

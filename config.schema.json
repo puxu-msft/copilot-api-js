@@ -1841,16 +1841,6 @@
                   "type": "null"
                 }
               ]
-            },
-            "db_path": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
             }
           },
           "additionalProperties": false
