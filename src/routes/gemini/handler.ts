@@ -85,7 +85,8 @@ export async function handleCountTokens(c: Context, modelId: string): Promise<Re
   } catch (error) {
     attempt.fail({ error, reason: "local Gemini token count failed" })
     const response = forwardError(c, error, "gemini")
-    await (error instanceof Error && isAbortError(error) ? operation.abort(response, error) : operation.fail(response, error))
+    const terminal = { metadata: { countTokens: { source: "local", status: "failed" } } }
+    await (error instanceof Error && isAbortError(error) ? operation.abort(response, error, terminal) : operation.fail(response, error, terminal))
     return response
   }
 }
