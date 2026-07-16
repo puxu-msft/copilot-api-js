@@ -1,5 +1,9 @@
 # 优雅关闭、优雅重启与请求生命周期
 
+> **运行验证（2026-07-16）**：用户重启后的 4141 进程从主树启动，日志记录 `pid=1762072 sha=27b65b89-dirty`（晚于 lifecycle `e7bc33d0` 与 Archive follow-up `27b65b89`），`/health` healthy、shutdown phase=`idle`、HOT History API 正常。该运行配置显式关闭 `history.archive.enabled`；Archive API 因此返回 `409 archive_unavailable`，不会误报内部 500，也不会擅自启用归档。
+
+维护入口：进程两信号关闭与 durability barrier 见 skill `process-lifecycle-shutdown`；Archive durable-unit 协作停与恢复见 skill `archive-background-lifecycle`。
+
 优雅重启（零停机换代）本质是「新进程接管 + 旧进程复用同一套 4-phase drain」，与优雅关闭共享同一生命周期，故合为一篇。阅读顺序：先「优雅关闭」（drain 机制是基础），再「优雅重启」（在其上叠加接管协议）。
 
 ## 优雅关闭

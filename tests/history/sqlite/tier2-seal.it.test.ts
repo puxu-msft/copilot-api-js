@@ -35,6 +35,7 @@ import {
   getArchiveDb,
   openArchiveDb,
 } from "~/lib/history/sqlite/archive-db"
+import { resetArchiveWorkerForTests } from "~/lib/history/sqlite/archive-worker"
 import {
   //
   closeDatabase,
@@ -76,6 +77,7 @@ const archiveCount = () => (getArchiveDb().prepare("SELECT COUNT(*) n FROM entri
 const manifestCount = () => (getArchiveDb().prepare("SELECT COUNT(*) n FROM tier2_manifest").get() as { n: number }).n
 
 beforeEach(async () => {
+  resetArchiveWorkerForTests()
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "tier2-seal-test-"))
   setStateForTests({ historyDbPath: ":memory:", historyArchiveEnabled: true, historyArchiveDir: dir, historyArchiveTier1SizeCap: 0 })
   closeDatabase()

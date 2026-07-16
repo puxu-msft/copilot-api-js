@@ -32,10 +32,10 @@ import {
   type EndpointType,
   type HistoryEntry,
 } from "~/lib/history"
-import { persistEntryEager } from "~/lib/history/store"
 import { closeArchiveDb } from "~/lib/history/sqlite/archive-db"
 import { getDatabase } from "~/lib/history/sqlite/connection"
 import { querySummaries } from "~/lib/history/sqlite/read"
+import { persistEntryEager } from "~/lib/history/store"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 import {
@@ -132,6 +132,24 @@ afterEach(async () => {
 // ─── handleGetEntries ───
 
 describe("GET /api/entries", () => {
+  test("archive view returns explicit unavailable response when archive is disabled", async () => {
+    closeArchiveDb()
+    setStateForTests({ historyArchiveEnabled: false })
+
+    const res = await get("/api/entries?tier=archive")
+    expect(res.status).toBe(409)
+    expect(await json<{ error: { message: string; type: string } }>(res)).toEqual({
+      error: {
+        message: "History archive is disabled by history.archive.enabled",
+        type: "archive_unavailable",
+      },
+    })
+
+    const archiveNowRes = await post("/api/archive-now")
+    expect(archiveNowRes.status).toBe(409)
+    expect((await json<{ error: { type: string } }>(archiveNowRes)).error.type).toBe("archive_unavailable")
+  })
+
   test("returns empty result when no entries", async () => {
     const res = await get("/api/entries")
     expect(res.status).toBe(200)

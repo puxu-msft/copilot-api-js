@@ -17,7 +17,32 @@ import {
   type QueryOptions,
   type SearchSource,
 } from "~/lib/history"
+import { isArchiveOpen } from "~/lib/history/sqlite/archive-db"
 import { compressAsync } from "~/lib/history/sqlite/compression"
+import { state } from "~/lib/state"
+
+function archiveUnavailable(c: Context) {
+  return c.json(
+    {
+      error: {
+        message:
+          state.historyArchiveEnabled ?
+            "History archive is not initialized for this process; restart after checking archive startup logs"
+          : "History archive is disabled by history.archive.enabled",
+        type: "archive_unavailable",
+      },
+    },
+    409,
+  )
+}
+
+function archiveRequested(c: Context): boolean {
+  return c.req.query("tier") === "archive"
+}
+
+function archiveAvailable(): boolean {
+  return state.historyArchiveEnabled && isArchiveOpen()
+}
 
 /**
  * 从查询串解析 list / scoped-delete / search 三处共享的结构化 filter 维（11 个）：
@@ -52,6 +77,7 @@ export function handleGetEntries(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  if (archiveRequested(c) && !archiveAvailable()) return archiveUnavailable(c)
 
   const query = c.req.query()
   const options: QueryOptions = {
@@ -86,6 +112,7 @@ export function handleGetEntry(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  if (archiveRequested(c) && !archiveAvailable()) return archiveUnavailable(c)
 
   const id = c.req.param("id")
   if (!id) {
@@ -185,6 +212,7 @@ export function handleArchiveNow(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  if (!archiveAvailable()) return archiveUnavailable(c)
 
   const query = c.req.query()
   const filters = parseListFilters(query)
@@ -205,6 +233,7 @@ export function handleArchiveCooldown(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  if (!archiveAvailable()) return archiveUnavailable(c)
   const migrated = runArchiveCooldownNow()
   return c.json({ success: true, migrated })
 }
@@ -249,6 +278,7 @@ export function handleSearch(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  if (archiveRequested(c) && !archiveAvailable()) return archiveUnavailable(c)
 
   const query = c.req.query()
   const source = (query.source || "inbound") as SearchSource

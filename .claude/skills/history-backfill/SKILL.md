@@ -7,6 +7,8 @@ description: 当在 copilot-api-js 写或改 History 层的后台 backfill 时�
 
 对历史行做后台重算/回填（建索引、重算派生列、变换已存字段）的操作手册。活范例：`src/lib/history/sqlite/search-index-backfill.ts`（建 search_index + 重算 preview_text）、`src/lib/history/sqlite/usage-normalize-backfill.ts`（usage 净值化）。
 
+**边界**：HOT→T1 搬迁、T1 compact、T2 seal 不是行级 backfill。它们同时提交 seal file + locator/manifest，且 durable unit 是 session/batch；修改这些路径必须改读 skill `archive-background-lifecycle`，不要把“每批 stop flag”直接套到跨 artifact commit 中间。
+
 ## 权威真相源（优先读，别凭记忆）
 
 - 骨架与生命周期：`search-index-backfill.ts`（最完整的范例）。

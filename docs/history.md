@@ -85,7 +85,7 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 ### 三层降温归档（tiered archive）
 
-`history.db`（HOT，近 `hot_days` + pinned 永驻）→ `archive.db`（TIER-1，SQLite 同 schema，ATTACH 主连接）→ `archive-NNNN.db`（TIER-2，按 session 分组的 max-zstd 封存冷单元）三层单向降温、**产品面无删除**、按视图分域（`?tier=hot\|archive`）访问。move 语义（先写 archive 单文件原子事务 + 多子表 verify + 才删 HOT、显式列名免疫列序、删-再-写覆盖语义）、tier-2 格式（session-group 9× 压缩，PoC 裁决）、archive-now 端点（替代删除）等细节见 spec / ADR / DESIGN.md，此处不重复。config 见 `history.archive.*`（`enabled`/`hot_days`/`tier1_size_cap`/`tier2_warn_count`/`tier2_warn_bytes`/`dir`）。
+`history.db`（HOT，近 `hot_days` + pinned 永驻）→ `archive.db`（TIER-1，SQLite 同 schema，ATTACH 主连接）→ `archive-t{1,2}-<session>-g<generation>.db`（不可变 session-generation sealed units）三层单向降温、**产品面无删除**、按视图分域（`?tier=hot\|archive`）访问。move 语义为先写 archive 单文件原子事务→多子表 verify→才删 HOT；T1 compact/T2 seal 以 session 为 durable unit，完成 file+directory fsync 和 locator/manifest transaction 后检查 shutdown seal，停止领取下一单元，重启后按数据库剩余状态继续。并发 sibling failure 必须全部 settle 后才允许关闭 DB；同一 session 后续新增请求产生新 generation，绝不覆盖旧 locator/manifest 所指文件。config 见 `history.archive.*`（`enabled`/`hot_days`/`tier1_size_cap`/`tier2_warn_count`/`tier2_warn_bytes`/`dir`）。当运行配置显式 `enabled=false` 时，`?tier=archive`、archive-now、archive-cooldown 返回 `409 archive_unavailable`，而不是内部 500。
 
 
 ### Debug-pin（豁免淘汰）
@@ -190,8 +190,8 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 | `POST /history/api/entries/:id/pin` | 钉住该 entry（`pinned=1`）：豁免 reaper 淘汰+计数 **+ 永不降温（永驻 HOT）**，返回更新后的完整 entry；未知 id → 404 |
 | `POST /history/api/entries/:id/unpin` | 取消钉住（`pinned=0`），恢复正常淘汰/降温资格；返回更新后的完整 entry |
 | `GET /history/api/sessions` | 列出 per-session 聚合摘要（`?limit=N`）。**无独立 session-detail 端点**——某 session 的 entries 经 `GET /history/api/entries?sessionId=<id>` 取 |
-| `POST /history/api/archive-now` | **立即归档**（产品面删除的替代，spec §3.6）：移动匹配 list 过滤（或全部）的终态非 pinned HOT 行到 tier-1 冷归档（`{success, archived}`），**永不真删**、**忽略年龄**。取代已移除的 `DELETE /api/entries` + `DELETE /api/sessions/:id`（其 SQL 原语 `clearAllEntries`/`deleteEntries`/`deleteSession` 保留为 test-only 内部、不再 HTTP 暴露） |
-| `POST /history/api/archive-cooldown` | **手动触发标准年龄降温**：立即跑一次 `> hot_days` 的 HOT→tier-1 降温（同启动 + reaper 周期），排空旧数据 backlog（`{success, migrated}`）。**遵 hot_days**（只搬超龄行）+ pinned 豁免——区别于 `archive-now`（忽略年龄强制归档） |
+| `POST /history/api/archive-now` | **立即归档**：移动匹配 list 过滤（或全部）的终态非 pinned HOT 行到 tier-1，永不真删、忽略年龄；Archive unavailable 时返回 409 |
+| `POST /history/api/archive-cooldown` | **手动触发标准年龄降温**：跑一次 `> hot_days` 的 HOT→tier-1 降温、排空旧 backlog，遵 hot_days + pinned 豁免；Archive unavailable 时返回 409 |
 | `GET /history/api/stats` | 聚合统计数据 |
 | `GET /history/api/entries/:id/export` | 单条 entry 导出：`getEntry` 规范全量形式（所有 stage / per-attempt sseEvents / 各腿 headers）经 `compressAsync` 服务端 zstd 压缩为 `.json.zst` 附件（`Content-Type: application/zstd`）；未知 id → 404。两套前端 UI（`ui/` + `ui-v4/`）的 Export 按钮都走它 |
 | `GET /history/api/export` | 导出全部历史（JSON/CSV，明文；与单条 zst 导出并存） |

@@ -1,10 +1,10 @@
 # History Tiered Archive Implementation Plan
 
-> **实施状态（2026-07-14，全 8 阶段 landed，待合并 master）**：worktree `.worktrees/tiered-archive/` @ `feat/history-tiered-archive`。**P0-P8.1 全部实现 + 各阶段测试绿**（P0 PoC 格式裁决 SQLite sealed+session-group ✅ / P1 config 5 触点 369 pass ✅ / P2 archive.db 骨架 6 pass ✅ / **P3 HOT→T1 搬迁承重 + reaper 分流 10 pass**（GPT reviewer 用真实 32GB 库实测复现 2 BLOCKER〔SELECT * 列序错位 + verify 不比内容〕、已治根修复 + legacy-shape 回归测试）✅ / P4 读路径视图分域 5 pass ✅ / P5 移除产品 delete + archive-now 17 pass ✅ / P6 T1→T2 session-group 封存 + 归档读 7 pass ✅ / P7 ui-v4 归档文案 + ui/ 死码 + leak 修复 ✅ / P8.1 启动接线 4 pass ✅ / P8.3 doc-sync 全 landed ✅）。广 history 套件 510 pass。**待收尾**：P8.2 合并态评审（GPT reviewer 后台进行）+ merge master（分支落后、有 peer WIP 并发）。承重教训见 ADR `2026-07-14-tiered-archive-cold-format` + 记忆 `project-history-tiered-archive`。**4 个测试失败（ConsoleSink thinking×3 + resetReaperDiagnosticsForTests）是并发 peer WIP、不在本 diff。**
+> **实施状态（2026-07-16）：✅ 已完成并合并 master。** 原 P0–P8 全部落地；生命周期 follow-up `27b65b89` 增加 Archive cooperative stop、tracked worker ownership、T1/T2 immutable session-generation、file+directory fsync、同 session 增量不覆盖以及恢复测试。用户重启后的真实进程从主树启动，日志记录 `sha=27b65b89-dirty`，HOT API 与健康检查正常。本文以下保留原始阶段计划作为执行档案；最终架构以 [DESIGN.md](../../DESIGN.md)、[lifecycle.md](../../lifecycle.md)、spec 与 ADR 为准。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **每 task 的逐字节 bite-sized TDD 步骤在执行期由 per-task subagent 即时展开**——本 plan 给出每 task 的文件/接口/测试 oracle/不变量/验收，Phase 0 附全套 bite-sized 模板。
 
-**Goal:** 把 History 从「单库 history.db + 到量硬删（真丢失）」升级为 **HOT（history.db，近 3d + pinned）→ TIER-1（archive.db，SQLite）→ TIER-2（archive-NNNN 封存，SQLite sealed + session-group）** 三层单向降温、产品面无删除、按视图分域访问的归档体系。
+**Goal:** 把 History 从「单库 history.db + 到量硬删（真丢失）」升级为 **HOT（history.db，近 3d + pinned）→ TIER-1（archive.db，SQLite）→ TIER-2（不可变 session-generation SQLite sealed units）** 三层单向降温、产品面无删除、按视图分域访问的归档体系。
 
 **Architecture:** 新增 `archive.db`（复用 entries_v2/entry_stages/msg_blob/req_msg/req_aux schema + tier2_manifest）承 tier-1；reaper 的到量 DELETE 改为「先写 archive + 多子表校验 + 才删 HOT」的 move 语义；tier-1 撞 size_cap 后按 session_id 分组封存为编号不可变 SQLite sealed 冷单元（单 zstd 流、9× 压缩）+ manifest 富索引。**视图分域**：HOT 视图只查 history.db、归档视图（独立 URL `tier=archive`）只查 archive.db，两者绝不同列。tier-2 载体经 Phase 0 PoC 实测裁决为 SQLite sealed（否决 Parquet）。
 
@@ -194,7 +194,7 @@ digraph phases {
 **Test:** `tests/history/sqlite/tier2-seal.it.test.ts`（含崩溃注入）
 
 **Interfaces:**
-- Produces: `writeSealUnit(sessionId: string, entries: HistoryEntry[]): { fileName: string }`（session 分组、单 zstd 流、编号 sealed SQLite 文件 `archive-NNNN.db`）/ `readSealedEntry(sealFile: string, indexInSession: number): HistoryEntry`（解压 session blob 取第 i 条）/ `runTier2SealOnce(): number` / `startTier2Seal()`。
+- Produces（历史计划接口，已被最终实现 supersede）: `writeSealUnit(tmpPath, entries)` + `publishSealFile(tmpPath, finalPath)`；文件采用 `archive-t2-<session>-g<generation>.db` 不可变命名，`readSealedEntry` 按 locator 读取；worker 由 `archive-worker.ts` 统一追踪和协作停止。
 - `tier2_manifest` locator = `(seal_file, session_id, index_in_session)`。
 
 **Task 6.1** — `writeSealUnit`：按 session 收集 tier-1 待封存 entry → `assembleFullEntry` 数组 → **单 zstd 流（max level L19）** → 写编号 sealed SQLite 文件；临时文件 → fsync → 原子 rename。**大 session 有界**：单 seal unit 上限 ~50 MB 解压后 / N≈100 条，超则同 session 拆多子单元（`index_in_session` 连续跨单元）。**Oracle**：session 分组封存字节 ≈ Phase 0 session-group 数量级（≪ per-entry）；round-trip 深等。**不变量**：封存单元不可变、编号 NNNN。

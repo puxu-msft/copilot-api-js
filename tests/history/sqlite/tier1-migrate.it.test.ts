@@ -32,6 +32,10 @@ import {
   closeArchiveDb,
   openArchiveDb,
 } from "~/lib/history/sqlite/archive-db"
+import {
+  //
+  resetArchiveWorkerForTests,
+} from "~/lib/history/sqlite/archive-worker"
 import { migrateEntriesColumns } from "~/lib/history/sqlite/connection"
 import { createDatabase } from "~/lib/history/sqlite/driver"
 import { SCHEMA_SQL } from "~/lib/history/sqlite/schema"
@@ -86,6 +90,7 @@ function seedEntry(
 }
 
 beforeEach(() => {
+  resetArchiveWorkerForTests()
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "tier1-move-test-"))
   // real archive.db file with the shared schema, then close so we can ATTACH it.
   openArchiveDb(path.join(dir, "archive.db"))

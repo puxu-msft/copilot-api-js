@@ -34,6 +34,7 @@ import {
   getArchiveDb,
   openArchiveDb,
 } from "~/lib/history/sqlite/archive-db"
+import { resetArchiveWorkerForTests } from "~/lib/history/sqlite/archive-worker"
 import {
   //
   closeDatabase,
@@ -74,6 +75,7 @@ const archiveStageRows = () => (getArchiveDb().prepare("SELECT COUNT(*) n FROM e
 const locatorRows = () => (getArchiveDb().prepare("SELECT COUNT(*) n FROM tier1_locator").get() as { n: number }).n
 
 beforeEach(async () => {
+  resetArchiveWorkerForTests()
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "tier1-compact-test-"))
   setStateForTests({ historyDbPath: ":memory:", historyArchiveEnabled: true, historyArchiveDir: dir, historyArchiveTier1SizeCap: 2 * 1024 * 1024 * 1024 })
   closeDatabase()
