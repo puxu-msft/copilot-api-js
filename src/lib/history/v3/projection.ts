@@ -45,7 +45,7 @@ function metadata(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
 }
 
-function errorMessage(value: unknown): string {
+function errorMessage(value: unknown): string | undefined {
   if (value instanceof Error) return value.message
   const candidate = metadata(value)?.message
   return typeof candidate === "string" ? candidate : JSON.stringify(value)

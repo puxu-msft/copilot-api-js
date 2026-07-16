@@ -31,7 +31,7 @@ function escapeCsvValue(value: unknown): string {
 }
 
 export function getStats(): HistoryStats {
-  const entries = getHistory({ limit: 1_000_000 }).entries
+  const entries = getHistory({ limit: 1_000_000, operationKind: "all" }).entries
   const stats: HistoryStats = {
     totalRequests: entries.length,
     successfulRequests: entries.filter((entry) => entry.state === "completed" || resolveResponseSuccess(entry) === true).length,
