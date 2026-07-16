@@ -79,7 +79,7 @@ import type {
 
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { stripThinkingSignatureFor } from "~/lib/config/model-translation"
+import { modelIdFor, stripThinkingSignatureFor } from "~/lib/config/model-translation"
 import {
   //
   captureInboundHeaders,
@@ -184,7 +184,7 @@ function genShortId(): string {
  * factories in hub-translate.ts simply ignore an opts param they never read).
  */
 function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature: boolean } {
-  const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model
+  const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model)
   return { stripThinkingSignature: stripThinkingSignatureFor("openai-responses", modelId, "anthropic-messages") }
 }
 
@@ -236,7 +236,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     })
 
   const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
-    const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
+    const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
     return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, ensureReverseExchange(env), reasoningRoundTripOpts(env)))
   }
 

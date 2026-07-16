@@ -80,7 +80,7 @@ import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { stripThinkingSignatureFor } from "~/lib/config/model-translation"
+import { modelIdFor, stripThinkingSignatureFor } from "~/lib/config/model-translation"
 import {
   //
   captureInboundHeaders,
@@ -174,7 +174,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   // builds it (render is identity). `flushResponse` / `getStreamMeta` read the SAME instance.
   let streamTranslator: ForwardStreamTranslator | undefined
   const ensureStreamTranslator = (env: RequestEnvelope): ForwardStreamTranslator => {
-    const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
+    const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
     return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId, reasoningRoundTripOpts(env)))
   }
 
@@ -332,7 +332,7 @@ function isForwardTranslateLeg(targetEndpoint: UpstreamEndpoint | undefined): ta
  * conditional call-site duplication needed).
  */
 function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature: boolean } {
-  const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model
+  const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model)
   return { stripThinkingSignature: stripThinkingSignatureFor("anthropic-messages", modelId, "openai-responses") }
 }
 
