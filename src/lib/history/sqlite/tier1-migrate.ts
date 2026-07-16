@@ -1,11 +1,17 @@
 import consola from "consola"
 
+import type { QueryOptions } from "~/lib/history/types"
+
 import { state } from "~/lib/state"
 
 import type { Database } from "./connection"
-import type { QueryOptions } from "~/lib/history/types"
 
 import { ensureArchiveAttachedToMain } from "./archive-db"
+import {
+  //
+  archiveWorkerControl,
+  type ArchiveWorkerControl,
+} from "./archive-worker"
 import { applyWhere } from "./read"
 
 /**
@@ -85,7 +91,9 @@ function copyEntryToArchive(main: Database, entryId: string): void {
     main.prepare(`INSERT INTO archive.req_aux (${reqAuxCols}) SELECT ${reqAuxCols} FROM main.req_aux WHERE req_id = ?`).run(entryId)
     // COPY (not move) the content-addressed message blobs this request references.
     main
-      .prepare(`INSERT OR IGNORE INTO archive.msg_blob (${msgBlobCols}) SELECT ${msgBlobCols} FROM main.msg_blob WHERE hash IN (SELECT hash FROM main.req_msg WHERE req_id = ?)`)
+      .prepare(
+        `INSERT OR IGNORE INTO archive.msg_blob (${msgBlobCols}) SELECT ${msgBlobCols} FROM main.msg_blob WHERE hash IN (SELECT hash FROM main.req_msg WHERE req_id = ?)`,
+      )
       .run(entryId)
   })
   tx()
@@ -109,7 +117,9 @@ function verifyEntryInArchive(main: Database, entryId: string): boolean {
   if (!pairCount("req_aux", "req_id")) return false
   // Referential integrity: no archive.req_msg hash may dangle (msg_blob must have been copied).
   const dangling = (
-    main.prepare("SELECT COUNT(*) n FROM archive.req_msg rm WHERE rm.req_id = ? AND NOT EXISTS (SELECT 1 FROM archive.msg_blob mb WHERE mb.hash = rm.hash)").get(entryId) as {
+    main
+      .prepare("SELECT COUNT(*) n FROM archive.req_msg rm WHERE rm.req_id = ? AND NOT EXISTS (SELECT 1 FROM archive.msg_blob mb WHERE mb.hash = rm.hash)")
+      .get(entryId) as {
       n: number
     }
   ).n
@@ -186,7 +196,9 @@ export function migrateEntriesToTier1(main: Database, ids: ReadonlyArray<string>
   // entry fail identically. Fail-closed: rows stay in HOT for a later retry once
   // archive.db's schema catches up (an observable "migration paused" signal).
   if (!archiveSchemaCovers(main)) {
-    consola.warn("[history/tier1] archive.db schema is behind HOT (missing columns) — tier-1 migration paused this pass; will resume once archive migrations catch up")
+    consola.warn(
+      "[history/tier1] archive.db schema is behind HOT (missing columns) — tier-1 migration paused this pass; will resume once archive migrations catch up",
+    )
     return 0
   }
   let moved = 0
@@ -215,7 +227,9 @@ export function migrateOverflowToTier1(main: Database, successLimit: number, fai
     const { n } = main.prepare(`SELECT COUNT(*) AS n FROM main.entries_v2 WHERE ${where}`).get() as { n: number }
     if (n <= limit) return []
     const excess = n - limit
-    return (main.prepare(`SELECT id FROM main.entries_v2 WHERE ${where} ORDER BY started_at ASC, id ASC LIMIT ?`).all(excess) as Array<{ id: string }>).map((r) => r.id)
+    return (main.prepare(`SELECT id FROM main.entries_v2 WHERE ${where} ORDER BY started_at ASC, id ASC LIMIT ?`).all(excess) as Array<{ id: string }>).map(
+      (r) => r.id,
+    )
   }
   const ids = [
     ...overflowIds("status = 'completed' AND pinned = 0", successLimit),
@@ -225,19 +239,60 @@ export function migrateOverflowToTier1(main: Database, successLimit: number, fai
 }
 
 /**
- * Time-based main mechanism: move terminal non-pinned rows older than `hotDays`
- * into tier-1, oldest first, capped at `batchSize` per call (resumable — call
- * again until it returns 0). Returns the number moved this call.
+ * Session-atomic selection for the time-based pass ("写 tier-1 时按 session-id
+ * 聚合"): pick the OLDEST fully-cold sessions and move ALL their migratable
+ * entries together, so a session is never split across HOT and tier-1. Keeping a
+ * session whole through HOT→tier-1 is the precondition for tier-2's per-session
+ * group compression to see the complete session (where the cross-request
+ * redundancy folds). A session is "cold" only when its LAST activity (MAX over ALL
+ * its rows, incl. active/pinned) is older than `cutoff`, so a still-active session
+ * is never cooled. Pinned entries stay in HOT (pin = keep raw forever) — the only
+ * intentional split. Whole sessions accumulate until `batchSize` is reached (a
+ * single large session may exceed it — never split). NULL-session entries
+ * (ungroupable) fall back to individual oldest-first selection to fill the batch.
+ */
+function coldSessionAtomicIds(main: Database, cutoff: number, batchSize: number): Array<string> {
+  const sessions = main
+    .prepare(
+      `SELECT session_id AS sid FROM main.entries_v2
+       WHERE session_id IS NOT NULL
+       GROUP BY session_id
+       HAVING MAX(started_at) < ? AND SUM(CASE WHEN ${MIGRATABLE_WHERE} THEN 1 ELSE 0 END) > 0
+       ORDER BY MIN(started_at) ASC`,
+    )
+    .all(cutoff) as Array<{ sid: string }>
+  const ids: Array<string> = []
+  for (const { sid } of sessions) {
+    const sessionIds = (
+      main.prepare(`SELECT id FROM main.entries_v2 WHERE session_id = ? AND ${MIGRATABLE_WHERE} ORDER BY started_at ASC, id ASC`).all(sid) as Array<{
+        id: string
+      }>
+    ).map((r) => r.id)
+    ids.push(...sessionIds)
+    if (ids.length >= batchSize) return ids
+  }
+  // Fill remaining budget with ungroupable (NULL-session) cold entries, oldest-first.
+  if (ids.length < batchSize) {
+    const rest = (
+      main
+        .prepare(`SELECT id FROM main.entries_v2 WHERE session_id IS NULL AND started_at < ? AND ${MIGRATABLE_WHERE} ORDER BY started_at ASC, id ASC LIMIT ?`)
+        .all(cutoff, batchSize - ids.length) as Array<{ id: string }>
+    ).map((r) => r.id)
+    ids.push(...rest)
+  }
+  return ids
+}
+
+/**
+ * Time-based main mechanism: move terminal non-pinned rows of fully-cold sessions
+ * into tier-1, oldest SESSION first, session-atomic (never splitting a session),
+ * capped near `batchSize` entries per call (resumable — call again until it returns
+ * 0). Returns the number moved this call.
  */
 export function runTier1MigrationOnce(main: Database, opts: { hotDays: number; batchSize: number }): number {
   if (opts.hotDays <= 0) return 0
   const cutoff = Date.now() - opts.hotDays * 86400_000
-  const ids = (
-    main.prepare(`SELECT id FROM main.entries_v2 WHERE started_at < ? AND ${MIGRATABLE_WHERE} ORDER BY started_at ASC, id ASC LIMIT ?`).all(cutoff, opts.batchSize) as Array<{
-      id: string
-    }>
-  ).map((r) => r.id)
-  return migrateEntriesToTier1(main, ids)
+  return migrateEntriesToTier1(main, coldSessionAtomicIds(main, cutoff, opts.batchSize))
 }
 
 /**
@@ -253,6 +308,27 @@ export function drainTier1Backlog(main: Database, opts: { hotDays: number; batch
     const n = runTier1MigrationOnce(main, opts)
     if (n === 0) break
     total += n
+  }
+  return total
+}
+
+/**
+ * Background counterpart of {@link drainTier1Backlog}. Each migration batch is
+ * a durable unit (every entry copy→verify→delete is committed). After a batch,
+ * yield and honor the archive shutdown seal before selecting another batch.
+ */
+export async function runTier1BacklogWorker(
+  main: Database,
+  opts: { hotDays: number; batchSize: number; maxBatches?: number },
+  control: ArchiveWorkerControl = archiveWorkerControl,
+): Promise<number> {
+  let total = 0
+  let guard = opts.maxBatches ?? 10_000
+  while (guard-- > 0 && !control.shouldStop()) {
+    const moved = runTier1MigrationOnce(main, opts)
+    if (moved === 0) break
+    total += moved
+    if (await control.checkpoint()) break
   }
   return total
 }

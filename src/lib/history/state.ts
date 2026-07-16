@@ -20,6 +20,26 @@ import {
 import { clearInFlight } from "./in-flight"
 import {
   //
+  closeArchiveDb,
+  ensureArchiveAttachedToMain,
+  isArchiveOpen,
+  migrateArchiveDb,
+} from "./sqlite/archive-db"
+import {
+  //
+  archiveWorkerControl,
+  beginArchiveBackgroundWork,
+  drainArchiveBackgroundWork,
+  stopArchiveBackgroundWork,
+  trackArchiveBackgroundWork,
+} from "./sqlite/archive-worker"
+import {
+  //
+  runCacheWriteBackfill,
+  stopCacheWriteBackfill,
+} from "./sqlite/cache-write-backfill"
+import {
+  //
   runCalibrationBackfill,
   stopCalibrationBackfill,
 } from "./sqlite/calibration-backfill"
@@ -32,23 +52,9 @@ import {
 } from "./sqlite/connection"
 import {
   //
-  closeArchiveDb,
-  ensureArchiveAttachedToMain,
-  isArchiveOpen,
-  migrateArchiveDb,
-} from "./sqlite/archive-db"
-import { drainTier1Backlog } from "./sqlite/tier1-migrate"
-import { startTier2Seal } from "./sqlite/tier2-seal"
-import {
-  //
   runLegacyStageBackfill,
   stopLegacyStageBackfill,
 } from "./sqlite/legacy-stage-backfill"
-import {
-  //
-  runCacheWriteBackfill,
-  stopCacheWriteBackfill,
-} from "./sqlite/cache-write-backfill"
 import {
   //
   startReaper,
@@ -64,6 +70,13 @@ import {
   runSearchIndexBackfill,
   stopSearchIndexBackfill,
 } from "./sqlite/search-index-backfill"
+import { startTier1Compact } from "./sqlite/tier1-compact"
+import {
+  //
+  drainTier1Backlog,
+  runTier1BacklogWorker,
+} from "./sqlite/tier1-migrate"
+import { startTier2Seal } from "./sqlite/tier2-seal"
 import {
   //
   runUsageNormalizeBackfill,
@@ -107,6 +120,7 @@ export function isHistoryEnabled(): boolean {
 
 export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   clearInFlight()
+  beginArchiveBackgroundWork()
   enabled = enable
   if (!enable) return
   const dbPath = state.historyDbPath || PATHS.HISTORY_DB
@@ -156,6 +170,10 @@ export function stopHistoryBackgroundWork(): void {
   stopSearchIndexBackfill()
   stopResponsePreviewBackfill()
   stopCalibrationBackfill()
+  // Archive maintenance is resumable. Seal its producer now; an already
+  // claimed session/batch completes to its durable commit point, then workers
+  // stop before selecting another unit.
+  stopArchiveBackgroundWork()
 }
 
 /**
@@ -170,8 +188,14 @@ export async function shutdownHistory(): Promise<void> {
   // Idempotent: a direct call (tests / non-graceful paths) must also stop background work.
   stopHistoryBackgroundWork()
   await drainPendingFinalizations()
+  // Deferred terminal finalizations are already-accepted durability work, not
+  // background maintenance. Give them one last bounded-by-entry retry, then
+  // drain the resulting writes before closing the canonical History DB.
   await retryPendingFinalizations()
   await drainPendingFinalizations()
+  // Archive backlog is never drained here. Wait only for the unit that was
+  // already claimed before Step 1 sealed the producer.
+  await drainArchiveBackgroundWork()
   closeDatabase()
   closeArchiveDb()
   enabled = false
@@ -278,13 +302,22 @@ export function startHistoryBackfills(): void {
   // PERIODIC HOT→tier-1 pass rides the reaper tick (runReaperTick); T1→T2 sealing
   // is startup-only (user's trigger decision).
   if (state.historyArchiveEnabled && isArchiveOpen()) {
-    void migrateArchiveDb()
-      .then(() => {
-        // Drain the >hot_days backlog in bounded batches (resumable) until caught up.
-        drainTier1Backlog(getDatabase(), { hotDays: state.historyArchiveHotDays, batchSize: 200 })
-        startTier2Seal()
+    const work = migrateArchiveDb()
+      .then(async () => {
+        // One tracked background pipeline owns archive.db maintenance. Every
+        // stage checks the shared seal before claiming work; each session/batch
+        // is crash-safe and rediscovered on the next startup.
+        if (archiveWorkerControl.shouldStop()) return
+        await runTier1BacklogWorker(getDatabase(), { hotDays: state.historyArchiveHotDays, batchSize: 200 }).catch((err: unknown) =>
+          consola.warn("[history/archive] HOT→tier-1 worker failed; continuing existing archive maintenance", err),
+        )
+        if (archiveWorkerControl.shouldStop()) return
+        await startTier1Compact()
+        if (archiveWorkerControl.shouldStop()) return
+        await startTier2Seal()
       })
       .catch((err: unknown) => consola.warn("[history/archive] startup archive work failed", err))
+    void trackArchiveBackgroundWork(work)
   }
 }
 

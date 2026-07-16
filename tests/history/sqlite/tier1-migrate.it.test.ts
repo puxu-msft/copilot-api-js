@@ -23,8 +23,15 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-import { attachArchive, closeArchiveDb, openArchiveDb } from "~/lib/history/sqlite/archive-db"
+import type { ArchiveWorkerControl } from "~/lib/history/sqlite/archive-worker"
 import type { Database } from "~/lib/history/sqlite/connection"
+
+import {
+  //
+  attachArchive,
+  closeArchiveDb,
+  openArchiveDb,
+} from "~/lib/history/sqlite/archive-db"
 import { migrateEntriesColumns } from "~/lib/history/sqlite/connection"
 import { createDatabase } from "~/lib/history/sqlite/driver"
 import { SCHEMA_SQL } from "~/lib/history/sqlite/schema"
@@ -33,6 +40,7 @@ import {
   migrateEntriesToTier1,
   migrateOverflowToTier1,
   moveEntryToTier1,
+  runTier1BacklogWorker,
   runTier1MigrationOnce,
 } from "~/lib/history/sqlite/tier1-migrate"
 
@@ -56,12 +64,24 @@ function seedEntry(
     pinned,
     new Uint8Array([1, 2, 3]),
   )
-  db.prepare("INSERT INTO entry_stages (entry_id, stage, attempt_index, created_at, blob_gz) VALUES (?,?,?,?,?)").run(id, "client_request", -1, startedAt, new Uint8Array([4, 5]))
-  db.prepare("INSERT INTO entry_stages (entry_id, stage, attempt_index, created_at, blob_gz) VALUES (?,?,?,?,?)").run(id, "sse_events", 0, startedAt, new Uint8Array([6, 7, 8, 9]))
-  hashes.forEach((h, i) => {
+  db.prepare("INSERT INTO entry_stages (entry_id, stage, attempt_index, created_at, blob_gz) VALUES (?,?,?,?,?)").run(
+    id,
+    "client_request",
+    -1,
+    startedAt,
+    new Uint8Array([4, 5]),
+  )
+  db.prepare("INSERT INTO entry_stages (entry_id, stage, attempt_index, created_at, blob_gz) VALUES (?,?,?,?,?)").run(
+    id,
+    "sse_events",
+    0,
+    startedAt,
+    new Uint8Array([6, 7, 8, 9]),
+  )
+  for (const [i, h] of hashes.entries()) {
     db.prepare("INSERT OR IGNORE INTO msg_blob (hash, text) VALUES (?,?)").run(h, `text-${h}`)
     db.prepare("INSERT INTO req_msg (req_id, pos, hash) VALUES (?,?,?)").run(id, i, h)
-  })
+  }
   db.prepare("INSERT INTO req_aux (req_id, source, text) VALUES (?,?,?)").run(id, "req-headers", `aux-${id}`)
 }
 
@@ -123,9 +143,9 @@ describe("tier1 move — fidelity", () => {
     expect(countMain("msg_blob", "WHERE hash = 'H'")).toBe(1)
     expect(countArchive("msg_blob", "WHERE hash = 'H'")).toBe(1)
     // archive-side search JOIN resolves e1's messages (no dangling ref)
-    const joined = main
-      .prepare("SELECT COUNT(*) n FROM archive.req_msg rm JOIN archive.msg_blob mb ON mb.hash = rm.hash WHERE rm.req_id = 'e1'")
-      .get() as { n: number }
+    const joined = main.prepare("SELECT COUNT(*) n FROM archive.req_msg rm JOIN archive.msg_blob mb ON mb.hash = rm.hash WHERE rm.req_id = 'e1'").get() as {
+      n: number
+    }
     expect(joined.n).toBe(2)
   })
 
@@ -190,10 +210,16 @@ describe("tier1 move — BLOCKER regressions (reviewer-found)", () => {
       duration_ms INTEGER, model TEXT, endpoint TEXT, transport TEXT, status TEXT NOT NULL,
       input_tokens INTEGER, output_tokens INTEGER, cache_read INTEGER, cache_creation INTEGER,
       reasoning_tokens INTEGER, stop_reason TEXT, error_message TEXT, blob_gz BLOB NOT NULL)`)
-    legacy.exec(`CREATE TABLE entry_stages (entry_id TEXT NOT NULL, stage TEXT NOT NULL, attempt_index INTEGER NOT NULL DEFAULT -1, created_at INTEGER NOT NULL, blob_gz BLOB NOT NULL, PRIMARY KEY (entry_id, stage, attempt_index), FOREIGN KEY (entry_id) REFERENCES entries_v2(id) ON DELETE CASCADE)`)
+    legacy.exec(
+      `CREATE TABLE entry_stages (entry_id TEXT NOT NULL, stage TEXT NOT NULL, attempt_index INTEGER NOT NULL DEFAULT -1, created_at INTEGER NOT NULL, blob_gz BLOB NOT NULL, PRIMARY KEY (entry_id, stage, attempt_index), FOREIGN KEY (entry_id) REFERENCES entries_v2(id) ON DELETE CASCADE)`,
+    )
     legacy.exec(`CREATE TABLE msg_blob (hash TEXT PRIMARY KEY, text TEXT NOT NULL)`)
-    legacy.exec(`CREATE TABLE req_msg (req_id TEXT NOT NULL, pos INTEGER NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (req_id, pos), FOREIGN KEY (req_id) REFERENCES entries_v2(id) ON DELETE CASCADE)`)
-    legacy.exec(`CREATE TABLE req_aux (req_id TEXT NOT NULL, source TEXT NOT NULL, text TEXT NOT NULL, PRIMARY KEY (req_id, source), FOREIGN KEY (req_id) REFERENCES entries_v2(id) ON DELETE CASCADE)`)
+    legacy.exec(
+      `CREATE TABLE req_msg (req_id TEXT NOT NULL, pos INTEGER NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (req_id, pos), FOREIGN KEY (req_id) REFERENCES entries_v2(id) ON DELETE CASCADE)`,
+    )
+    legacy.exec(
+      `CREATE TABLE req_aux (req_id TEXT NOT NULL, source TEXT NOT NULL, text TEXT NOT NULL, PRIMARY KEY (req_id, source), FOREIGN KEY (req_id) REFERENCES entries_v2(id) ON DELETE CASCADE)`,
+    )
     migrateEntriesColumns(legacy) // ALTER-appends agent_id/pid/message_count/... at the end
     attachArchive(legacy, path.join(legacyDir, "archive.db"))
 
@@ -226,7 +252,9 @@ describe("tier1 move — BLOCKER regressions (reviewer-found)", () => {
     seedEntry(main, "e1")
     // simulate a crash-recovery window where archive has a STALE copy (old blob) but HOT
     // was since corrected by a backfill (new blob). Overwrite semantics must win with HOT's.
-    main.prepare("INSERT INTO archive.entries_v2 (id, session_id, started_at, status, blob_gz) VALUES ('e1','sess-1',1,'completed',?)").run(new Uint8Array([9, 9, 9]))
+    main
+      .prepare("INSERT INTO archive.entries_v2 (id, session_id, started_at, status, blob_gz) VALUES ('e1','sess-1',1,'completed',?)")
+      .run(new Uint8Array([9, 9, 9]))
     main.prepare("UPDATE main.entries_v2 SET blob_gz = ? WHERE id = 'e1'").run(new Uint8Array([4, 2]))
 
     expect(moveEntryToTier1(main, "e1")).toBe(true)
@@ -265,27 +293,62 @@ describe("tier1 move — drivers + exemptions", () => {
     expect(countMain("entries_v2", "WHERE id IN ('ok-3','ok-4')")).toBe(2)
   })
 
-  test("time migration moves rows older than hotDays, keeps recent + pinned in HOT", () => {
+  test("time migration cools a whole cold session, keeps active-session + pinned in HOT", () => {
     const now = Date.now()
-    seedEntry(main, "old-1", { startedAt: now - 5 * 86400_000 })
-    seedEntry(main, "old-pinned", { startedAt: now - 5 * 86400_000, pinned: 1 })
-    seedEntry(main, "recent", { startedAt: now - 1 * 86400_000 })
+    // Session-atomic: a session cools only when ALL its activity is older than the
+    // cutoff (never split a session, never cool one that is still active).
+    seedEntry(main, "old-1", { startedAt: now - 5 * 86400_000, sessionId: "sess-old" })
+    seedEntry(main, "old-pinned", { startedAt: now - 5 * 86400_000, pinned: 1, sessionId: "sess-pinned" })
+    seedEntry(main, "recent", { startedAt: now - 1 * 86400_000, sessionId: "sess-recent" })
 
     const moved = runTier1MigrationOnce(main, { hotDays: 3, batchSize: 100 })
-    expect(moved).toBe(1) // only old-1 (old-pinned exempt, recent within window)
+    expect(moved).toBe(1) // only old-1 (sess-pinned has no migratable row; sess-recent still active)
     expect(countMain("entries_v2", "WHERE id = 'old-1'")).toBe(0)
     expect(countArchive("entries_v2", "WHERE id = 'old-1'")).toBe(1)
     expect(countMain("entries_v2", "WHERE id = 'old-pinned'")).toBe(1) // pinned never cools
     expect(countMain("entries_v2", "WHERE id = 'recent'")).toBe(1)
   })
 
-  test("batchSize bounds a single pass; resumable across calls", () => {
+  test("a whole session migrates atomically — never split by batchSize", () => {
     const now = Date.now()
-    for (let i = 0; i < 5; i++) seedEntry(main, `old-${i}`, { startedAt: now - 10 * 86400_000 + i })
+    // One cold session with many entries: session-atomic selection moves ALL of them
+    // in one pass even though batchSize is small (a session is never split).
+    for (let i = 0; i < 5; i++) seedEntry(main, `big-${i}`, { startedAt: now - 10 * 86400_000 + i, sessionId: "sess-big" })
+    expect(runTier1MigrationOnce(main, { hotDays: 3, batchSize: 2 })).toBe(5)
+    expect(countArchive("entries_v2", "WHERE session_id = 'sess-big'")).toBe(5)
+    expect(countMain("entries_v2", "WHERE session_id = 'sess-big'")).toBe(0)
+  })
+
+  test("batchSize bounds a single pass across sessions; resumable across calls", () => {
+    const now = Date.now()
+    // 5 separate single-entry cold sessions: batchSize bounds how many WHOLE sessions
+    // a pass drains (a session is atomic, so the boundary lands between sessions).
+    for (let i = 0; i < 5; i++) seedEntry(main, `old-${i}`, { startedAt: now - 10 * 86400_000 + i, sessionId: `s-${i}` })
     expect(runTier1MigrationOnce(main, { hotDays: 3, batchSize: 2 })).toBe(2)
     expect(runTier1MigrationOnce(main, { hotDays: 3, batchSize: 2 })).toBe(2)
     expect(runTier1MigrationOnce(main, { hotDays: 3, batchSize: 2 })).toBe(1)
     expect(runTier1MigrationOnce(main, { hotDays: 3, batchSize: 2 })).toBe(0)
+    expect(countArchive("entries_v2")).toBe(5)
+    expect(countMain("entries_v2")).toBe(0)
+  })
+
+  test("background backlog stops after a committed batch and resumes later", async () => {
+    const now = Date.now()
+    for (let i = 0; i < 5; i++) seedEntry(main, `worker-${i}`, { startedAt: now - 10 * 86400_000 + i, sessionId: `worker-s-${i}` })
+    let stop = false
+    const control: ArchiveWorkerControl = {
+      shouldStop: () => stop,
+      async checkpoint() {
+        stop = true
+        return true
+      },
+    }
+
+    expect(await runTier1BacklogWorker(main, { hotDays: 3, batchSize: 2 }, control)).toBe(2)
+    expect(countArchive("entries_v2")).toBe(2)
+    expect(countMain("entries_v2")).toBe(3)
+
+    expect(await runTier1BacklogWorker(main, { hotDays: 3, batchSize: 2 })).toBe(3)
     expect(countArchive("entries_v2")).toBe(5)
     expect(countMain("entries_v2")).toBe(0)
   })
