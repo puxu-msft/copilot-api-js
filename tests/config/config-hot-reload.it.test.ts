@@ -818,51 +818,6 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyDbPath,
   },
 
-  // ── history.archive.* (tiered cold-archive) ────────────────────────
-  {
-    configKey: "history.archive.enabled",
-    stateKey: "historyArchiveEnabled",
-    sampleYamlValue: "false",
-    expectedStateValue: false,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveEnabled,
-  },
-  {
-    configKey: "history.archive.hot_days",
-    stateKey: "historyArchiveHotDays",
-    sampleYamlValue: "7",
-    expectedStateValue: 7,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveHotDays,
-  },
-  {
-    // Human-readable size string → parsed to bytes in the apply layer.
-    configKey: "history.archive.tier1_size_cap",
-    stateKey: "historyArchiveTier1SizeCap",
-    sampleYamlValue: '"1GB"',
-    expectedStateValue: 1024 * 1024 * 1024,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveTier1SizeCap,
-  },
-  {
-    configKey: "history.archive.tier2_warn_count",
-    stateKey: "historyArchiveTier2WarnCount",
-    sampleYamlValue: "50",
-    expectedStateValue: 50,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnCount,
-  },
-  {
-    configKey: "history.archive.tier2_warn_bytes",
-    stateKey: "historyArchiveTier2WarnBytes",
-    sampleYamlValue: '"250MB"',
-    expectedStateValue: 250 * 1024 * 1024,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnBytes,
-  },
-  {
-    configKey: "history.archive.dir",
-    stateKey: "historyArchiveDir",
-    sampleYamlValue: '"/tmp/archive-test"',
-    expectedStateValue: "/tmp/archive-test",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveDir,
-  },
-
   // ── shutdown.* ─────────────────────────────────────────────────────
   {
     configKey: "shutdown.graceful_wait",

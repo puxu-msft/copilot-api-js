@@ -4,11 +4,8 @@ import type {
   //
   EntrySummary,
   HistoryEntry,
-  QueryOptions,
 } from "./types"
 
-import { getDatabase } from "./sqlite/connection"
-import { archiveNow as archiveNowSqlite } from "./sqlite/tier1-migrate"
 import {
   //
   clearInFlight,
@@ -50,12 +47,7 @@ import {
 import { historyState } from "./state"
 import { getStats } from "./stats"
 
-/**
- * Publish a `history.*` ObservabilityEvent via the publisher installed at
- * start.ts (`setHistoryPublisher(bus.scope("history"))`). When no publisher
- * is installed (tests that don't need WS broadcast), it's a no-op — the
- * SQLite write already happened by the time we reach this function.
- */
+/** Publish after persistence through the scoped history observability channel. */
 function publishEntryAdded(summary: EntrySummary): void {
   historyState.publisher?.publish({ kind: "history.entry_added", summary })
 }
@@ -336,16 +328,6 @@ export function persistEntryStages(id: string, stages: Array<StagePayload>): voi
   const entry = getInFlight(id)
   if (!entry) return
   runHistoryWrite("stage", () => upsertHeadRow(entry, entry.state, stages))
-}
-
-/**
- * Manual "archive now" trigger (spec §3.6) — the product-facing replacement for
- * the removed delete API. Moves the terminal, non-pinned HOT entries matching
- * `filters` (or all when absent) into tier-1 instead of deleting them. Returns the
- * number archived; a no-op returning 0 when archiving is disabled.
- */
-export function archiveNow(filters?: QueryOptions): number {
-  return archiveNowSqlite(getDatabase(), filters)
 }
 
 /**
