@@ -281,7 +281,12 @@ function renderGeminiNonStreamingV4(c: Context, env: RequestEnvelope, chat: Chat
     responseText: JSON.stringify(chat),
   }
   if (truncationReason) {
-    env.ctx.fail(chat.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
+    env.ctx.fail(chat.model, new Error(truncationReason), {
+      usage: responseData.usage,
+      stop_reason: responseData.stop_reason,
+      content: responseData.content,
+      sourceBody: chat,
+    })
   } else {
     env.ctx.complete(responseData)
   }

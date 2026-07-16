@@ -1359,6 +1359,7 @@ export function createRequestContext(opts: {
           model: normalizeModelId(model),
           usage: partial?.usage ?? { input_tokens: 0, output_tokens: 0 },
           content: partial?.content ?? null,
+          ...(partial?.sourceBody !== undefined && { sourceBody: partial.sourceBody }),
           ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
         }
         _failureReason = errorMsg
@@ -1371,6 +1372,7 @@ export function createRequestContext(opts: {
           // Default null; the upstream-truncation path passes the accumulated partial
           // (richest-data-flow — keep the residual content on the failed entry).
           content: partial?.content ?? null,
+          ...(partial?.sourceBody !== undefined && { sourceBody: partial.sourceBody }),
           ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
         }
 

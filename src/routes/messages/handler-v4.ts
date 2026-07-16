@@ -722,6 +722,7 @@ function renderNonStreamingV4(
         },
         stop_reason: response.stop_reason,
         content: { role: "assistant", content: response.content },
+        sourceBody: response,
       },
       { upstreamSucceeded: true },
     )
@@ -770,7 +771,7 @@ function renderNonStreamingV4(
     reqCtx.fail(
       response.model,
       new Error(failReason),
-      { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content },
+      { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content, sourceBody: response },
       unrepairableTool !== null ? { upstreamSucceeded: true } : undefined,
     )
   } else {

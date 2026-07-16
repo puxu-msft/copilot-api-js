@@ -295,7 +295,12 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesR
     responseText: JSON.stringify(resp),
   }
   if (truncationReason) {
-    env.ctx.fail(resp.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
+    env.ctx.fail(resp.model, new Error(truncationReason), {
+      usage: responseData.usage,
+      stop_reason: responseData.stop_reason,
+      content: responseData.content,
+      sourceBody: resp,
+    })
   } else {
     env.ctx.complete(responseData)
   }

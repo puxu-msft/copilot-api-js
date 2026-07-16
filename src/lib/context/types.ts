@@ -110,6 +110,8 @@ export interface ResponseData {
 export interface PartialResponseInfo {
   usage?: ResponseData["usage"]
   stop_reason?: string
+  /** Complete upstream non-stream response envelope, retained independently of the proxy verdict. */
+  sourceBody?: unknown
   /**
    * Partial accumulated content to keep on the failed entry's `outboundResponse`
    * (richest-data-flow: the truncated content is observable diagnostic data). When

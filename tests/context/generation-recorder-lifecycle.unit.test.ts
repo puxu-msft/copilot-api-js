@@ -213,4 +213,31 @@ describe("RequestContext generation terminal ordering", () => {
     expect(roundTripped.terminal?.error).toMatchObject({ name: "HTTPError", message: "bad beta", status: 400, responseText: rawBody })
     expect(roundTripped.attempts[0]?.error).toHaveProperty("stack")
   })
+
+  test("preserves the complete upstream envelope when a semantic response receives a failed verdict", () => {
+    const ctx = createRequestContext({ endpoint: "openai-responses" })
+    const sourceBody = {
+      id: "resp_truncated",
+      status: "in_progress",
+      output: [],
+      provider_extra: { trace_id: "must-survive" },
+    }
+    ctx.beginAttempt({})
+
+    ctx.fail(
+      "gpt-test",
+      new Error("semantic truncation"),
+      {
+        usage: { input_tokens: 3, output_tokens: 1 },
+        content: null,
+        sourceBody,
+      },
+    )
+    ctx.finalizeModelOperationDelivery({ clientPayload: sourceBody })
+
+    const record = ctx.modelOperationTerminalRecord!
+    const upstreamHandle = record.attempts[0]?.upstreamResponse?.payload
+    expect(record.arena.payloads.find((node) => node.handle === upstreamHandle)?.value).toEqual(sourceBody)
+    expect(record.terminal?.outcome).toBe("failed")
+  })
 })

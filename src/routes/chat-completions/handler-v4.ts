@@ -311,6 +311,7 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, originalResponse
       usage: responseData.usage,
       stop_reason: responseData.stop_reason,
       content: responseData.content,
+      sourceBody: originalResponse,
     })
   } else {
     env.ctx.complete(responseData)
