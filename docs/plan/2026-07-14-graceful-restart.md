@@ -688,6 +688,8 @@ git commit -m "feat(restart): pidfile read/write/liveness/cleanup primitives"
 
 ## Phase 3：接管决策 + live 前任寄存器 + reclaim-orphan 修复
 
+> **2026-07-16 修订（合并态审查逮到 supervised 路径 overlap 保护缺失，MAJOR）**：本 Phase 当时设计的 `predecessor-registry`（Task 6）只在 bare-metal takeover 分支被填充，systemd/pm2 supervised 路径走 `{kind:"skip"}` 从不填充——导致 reclaim 排除（Task 7）与 VACUUM 跳过（Task 7b）这两项数据完整性保护在 supervised 环境完全不生效。已**退役** `predecessor-registry.ts`，reclaim/VACUUM 改为直接按 `isProcessAlive(owner_pid)` 的**进程存活性裁决**（环境无关、三路径天然统一）。以下 Task 6/7/7b 描述的 registry 机制是**历史记录，已被取代**，权威现状见 `docs/lifecycle.md`「overlap 共享状态安全 ①⑤」+ `src/lib/history/sqlite/connection.ts` 的 `hasLiveForeignOwner`/`distinctActiveOwnerPids`。
+
 ### Task 6: live 前任寄存器（供 connection.ts 读）
 
 **Files:**
@@ -1489,7 +1491,7 @@ git add -- src/start.ts
 git commit -m "feat(restart): wire takeover guard/pidfile/notifyReady/handoff into runServer"
 ```
 
-**实施状态**：已完成（commit `47d5c29e` + `ef73b4cf`）。接线序与计划一致：`resolveManualStartup` 在 Phase 2.7（config 加载后、Phase 3 `initHistory` 之前）调用，`takeover` 分支在返回前已调 `setExcludedPredecessor`；pidfile 写入在 Phase 5 `setServerInstance` 之后；`notifyReady` + `signalPredecessorHandoff` 顺序不变；退出清理的 `finally` 与 `process.on("exit")` 兜底均用 `removePidfileIfOwnedBySelf`（compare-and-delete）。
+**实施状态**：已完成（commit `47d5c29e` + `ef73b4cf`）。接线序与计划一致：`resolveManualStartup` 在 Phase 2.7（config 加载后、Phase 3 `initHistory` 之前）调用；pidfile 写入在 Phase 5 `setServerInstance` 之后；`notifyReady` + `signalPredecessorHandoff` 顺序不变；退出清理的 `finally` 与 `process.on("exit")` 兜底均用 `removePidfileIfOwnedBySelf`（compare-and-delete）。**2026-07-16 修订**：`takeover` 分支不再调 `setExcludedPredecessor`——该寄存器已退役，overlap 保护改按进程存活性裁决（见上 Phase 3 修订注）。
 
 ---
 
