@@ -86,7 +86,7 @@ postAnthropicUpstream(args: {
 6. **本地兜底**：`countTotalInputTokens(payload, selectedModel)`（现有 tiktoken 估算，也用于目录外 / 非-messages 模型；此处 `selectedModel` 必非空，由 step 4 早退保证）。
 7. 顶层 `catch` → `{ input_tokens: 1 }`（现状）。
 
-**observability 立场（精化）**：count_tokens 仍**不建 RequestContext、不进 history / telemetry / calibration / WS**（污染立场不变——`SYNTHETIC_PATHS` 豁免照旧）。但终态**渲染为请求样式行**而非 `[INFO]` syslog 行：经 display-only 事件 `system.request_line`（携与真实 `request.completed` 同款 `LogLineParts`）只到显示 sink（TerminalUi stdout + FileSink），永不触达 history/telemetry。发布走 `setRequestLinePublisher` DI（同 `setShutdownPublisher` 模式）。样式：`[ OK ] HH:MM:SS 200 POST /v1/messages/count_tokens <model> <dur>ms ↑N ↓0 (<channel>)`，channel ∈ {GHC upstream, local est …, inflated …, unknown model}。
+**observability 立场（History V3 Phase 2 修订）**：count_tokens 仍**不建 RequestContext、不进 V2 History / telemetry / calibration sink / WS**（`SYNTHETIC_PATHS` 豁免照旧），但由旁路 lightweight `ModelOperation` lifecycle shadow-record 完整 canonical ingress/routing/attempt/client-egress/terminal；terminal 只进 bounded registry，未切 SQLite/read API。显示面仍经 `system.request_line` 只到 TerminalUi + FileSink。样式：`[ OK ] HH:MM:SS 200 POST /v1/messages/count_tokens <model> <dur>ms ↑N ↓0 (<channel>)`，channel ∈ {GHC upstream, local est …, inflated …, unknown model}。
 
 **shutdown 期间**：step 5 的 `signal` 不折入 `getShutdownSignal()`（与现 `count-tokens.ts:68` 一致）——shutdown 时 count 调用跑到 timeout 后走本地兜底，对 out-of-observability 的 best-effort count 可接受。
 
@@ -123,7 +123,7 @@ postAnthropicUpstream(args: {
 
 ## 8. 不做的事 / 风险
 
-- 不改 observability 立场（count_tokens 仍在观测之外）。
+- 不接 driver/RequestContext/V2 History/telemetry/WS；History V3 Phase 2 仅通过 lightweight lifecycle 做 canonical shadow-recording。
 - 不引入渠道优先级可配（YAGNI；用户已定 GHC 为唯一默认 + 本地兜底）。
 - 风险：GHC count 与 canonical Anthropic count 数值可能不同——这是**期望行为**（对本代理更准），非缺陷。
 - 风险：`modelIndex` 未就绪（token/模型未初始化）时 `selectedModel` 缺失 → 自然落本地兜底，安全。
