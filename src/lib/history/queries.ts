@@ -16,12 +16,13 @@ import {
 } from "./in-flight"
 import { isActiveState } from "./lifecycle-state"
 import { extractInboundSearchText } from "./normalize-message"
+import { getV3Operation, listV3Operations } from "./v3/store"
 import {
   //
-  getEntryById,
-  queryEntries,
-  querySummaries,
-} from "./sqlite/read"
+  recordMatchesQuery,
+  recordToEntrySummary,
+  recordToHistoryEntry,
+} from "./v3/projection"
 import { formatFromEndpoint } from "./sqlite/search-index-write"
 
 function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
@@ -88,21 +89,27 @@ function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined):
 }
 
 export function getEntry(id: string): HistoryEntry | undefined {
-  return getInFlight(id) ?? getEntryById(id)
+  const inflight = getInFlight(id)
+  if (inflight) return inflight
+  const record = getV3Operation(id)
+  return record ? recordToHistoryEntry(record) : undefined
 }
 
 export function getSummary(id: string): EntrySummary | undefined {
   const inflight = getInFlight(id)
   if (inflight) return toEntrySummary(inflight)
-  const persisted = getEntryById(id)
-  return persisted ? toEntrySummary(persisted) : undefined
+  const record = getV3Operation(id)
+  return record ? recordToEntrySummary(record) : undefined
 }
 
 export function getHistory(options: QueryOptions = {}): HistoryResult {
   const { limit = 50 } = options
 
   const inFlightMatches = listInFlight().filter((entry) => matchesFilters(entry, options) && inFlightMatchesSearch(entry, options.search))
-  const persisted = queryEntries({ ...options, limit: 1_000_000 })
+  const operationKind = options.operationKind ?? "generation"
+  const persisted = listV3Operations(operationKind === "all" ? undefined : operationKind, 1_000_000)
+    .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
+    .map(recordToHistoryEntry)
 
   const seen = new Set<string>()
   const merged: Array<HistoryEntry> = []
@@ -140,8 +147,10 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
     .filter((entry) => inFlightMatchesSearch(entry, options.search))
     .map((entry) => toEntrySummary(entry))
     .filter((summary) => summaryMatchesFilters(summary, options))
-  // Fetch a larger slice from SQLite so cursor-based slicing works.
-  const persistedSummaries = querySummaries({ ...options, limit: 1_000_000 })
+  const operationKind = options.operationKind ?? "generation"
+  const persistedSummaries = listV3Operations(operationKind === "all" ? undefined : operationKind, 1_000_000)
+    .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
+    .map(recordToEntrySummary)
 
   const seen = new Set<string>()
   const merged: Array<EntrySummary> = []

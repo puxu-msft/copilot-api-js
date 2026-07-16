@@ -9,11 +9,7 @@ import {
   resolveStopReason,
 } from "./entry-view"
 import { listInFlight } from "./in-flight"
-import {
-  //
-  queryEntries,
-} from "./sqlite/read"
-import { computeStats } from "./sqlite/stats"
+import { getHistory } from "./queries"
 
 function formatLocalTimestamp(ts: number): string {
   const date = new Date(ts)
@@ -36,7 +32,26 @@ function escapeCsvValue(value: unknown): string {
 }
 
 export function getStats(): HistoryStats {
-  const base = computeStats()
+  const persisted = getHistory({ limit: 1_000_000 }).entries
+  const base: HistoryStats = {
+    totalRequests: persisted.length,
+    successfulRequests: persisted.filter((entry) => entry.state === "completed").length,
+    failedRequests: persisted.filter((entry) => entry.state === "failed").length,
+    abortedRequests: persisted.filter((entry) => entry.state === "aborted").length,
+    interruptedRequests: persisted.filter((entry) => entry.state === "interrupted").length,
+    totalInputTokens: persisted.reduce((sum, entry) => sum + (resolveResponseUsage(entry)?.input_tokens ?? 0), 0),
+    totalOutputTokens: persisted.reduce((sum, entry) => sum + (resolveResponseUsage(entry)?.output_tokens ?? 0), 0),
+    averageDurationMs: persisted.length === 0 ? 0 : persisted.reduce((sum, entry) => sum + (entry.durationMs ?? 0), 0) / persisted.length,
+    modelDistribution: {},
+    endpointDistribution: {},
+    recentActivity: [],
+    activeSessions: new Set(persisted.map((entry) => entry.sessionId).filter(Boolean)).size,
+  }
+  for (const entry of persisted) {
+    const model = resolveResponseModel(entry) ?? entry.clientRequest?.model
+    if (model) base.modelDistribution[model] = (base.modelDistribution[model] ?? 0) + 1
+    base.endpointDistribution[entry.endpoint] = (base.endpointDistribution[entry.endpoint] ?? 0) + 1
+  }
   const inFlight = listInFlight()
   if (inFlight.length === 0) return base
 
@@ -72,7 +87,7 @@ export function getStats(): HistoryStats {
 }
 
 export function exportHistory(format: "json" | "csv" = "json"): string {
-  const entries = queryEntries({ limit: 1_000_000 })
+  const entries = getHistory({ limit: 1_000_000, operationKind: "all" }).entries
 
   if (format === "json") {
     return JSON.stringify({ entries }, null, 2)

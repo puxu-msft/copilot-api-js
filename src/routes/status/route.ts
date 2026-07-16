@@ -19,7 +19,7 @@ import {
 } from "~/lib/anthropic/protect-streaming-stats"
 import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { queryEntryCount } from "~/lib/history/sqlite/read"
+import { getHistorySummaries } from "~/lib/history/queries"
 import { getRawCaptureStatus } from "~/lib/history/raw/manager"
 import { listInFlightEntries } from "~/lib/history/store"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
@@ -118,7 +118,7 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
 
   let historyEntryCount = 0
   try {
-    historyEntryCount = queryEntryCount()
+    historyEntryCount = getHistorySummaries({ operationKind: "all", limit: 1 }).total
   } catch {
     // DB not opened yet
   }

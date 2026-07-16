@@ -62,6 +62,7 @@ import {
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
+import { resetResponseSessionStoreForTests } from "~/lib/openai/response-session-store"
 import {
   //
   resetUpstreamHook,
@@ -106,6 +107,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetModelOperationTerminalBusForTests", reset: resetModelOperationTerminalBusForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
+  { name: "resetResponseSessionStoreForTests", reset: resetResponseSessionStoreForTests },
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },
   { name: "resetAllLimitsForTesting", reset: resetAllLimitsForTesting },

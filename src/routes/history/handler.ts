@@ -29,6 +29,7 @@ import { compressAsync } from "~/lib/history/sqlite/compression"
  */
 function parseListFilters(query: Record<string, string>): QueryOptions {
   return {
+    operationKind: (query.operationKind as QueryOptions["operationKind"]) || undefined,
     model: query.model || undefined,
     endpoint: query.endpoint as EndpointType | undefined,
     success: query.success ? query.success === "true" : undefined,

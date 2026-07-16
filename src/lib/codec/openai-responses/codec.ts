@@ -86,8 +86,8 @@ import {
   //
   getAgentIdFromHeaders,
   getSessionIdFromHeaders,
-  resolveResponseSessionId,
 } from "~/lib/history/store"
+import { resolveResponseSessionId } from "~/lib/openai/response-session-store"
 import {
   //
   ENDPOINT,

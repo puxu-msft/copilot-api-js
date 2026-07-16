@@ -71,8 +71,8 @@ import { HTTPError } from "~/lib/error"
 import {
   //
   getSessionIdFromHeaders,
-  registerResponseSession,
 } from "~/lib/history/store"
+import { registerResponseSession } from "~/lib/openai/response-session-store"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"

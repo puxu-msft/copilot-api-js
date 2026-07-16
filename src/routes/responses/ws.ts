@@ -36,10 +36,7 @@ import type {
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import {
-  //
-  registerResponseSession,
-} from "~/lib/history/store"
+import { registerResponseSession } from "~/lib/openai/response-session-store"
 import {
   //
   ENDPOINT,

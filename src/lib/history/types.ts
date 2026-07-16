@@ -454,6 +454,8 @@ export interface IndexProjection {
 
 export interface HistoryEntry {
   id: string
+  /** Canonical operation discriminator. Existing generation clients may omit it. */
+  operationKind?: "generation" | "count_tokens" | "embeddings" | "responses_ws"
   sessionId?: string
   agentId?: string
   rawPath?: string
@@ -562,6 +564,8 @@ export interface HistoryState {
 }
 
 export interface QueryOptions {
+  /** Canonical operation kind. Default generation; `all` includes bypass operations. */
+  operationKind?: "generation" | "count_tokens" | "embeddings" | "responses_ws" | "all"
   cursor?: string
   limit?: number
   direction?: "older" | "newer"
