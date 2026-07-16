@@ -5,6 +5,8 @@
  * started_at）。捕获在各事件真实发生点单点采样，绕过帧 offset 折叠/双原点的不可靠。
  */
 
+import type { SseEventRecord } from "~/lib/history"
+
 import { ENDPOINT } from "~/lib/models/endpoint"
 
 import type {
@@ -159,13 +161,18 @@ export function isClientContentFrame(frame: RawFrame, clientFormat: ClientFormat
  */
 export function clientFirstRealSinkOpts(env: {
   clientFormat: ClientFormat
-  ctx: { setClientTimingEpoch: (kind: "streamOpen" | "firstReal" | "bufferHoldStart", epoch: number) => void }
+  ctx: {
+    setClientTimingEpoch: (kind: "streamOpen" | "firstReal" | "bufferHoldStart", epoch: number) => void
+    captureForwardedGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: string) => void
+  }
 }): {
   isRealContentFrame: (frame: RawFrame) => boolean
   onFirstRealContent: () => void
+  onGenerationFrame: (frame: RawFrame, record: SseEventRecord, syntheticKind?: string) => void
 } {
   return {
     isRealContentFrame: (frame) => isClientContentFrame(frame, env.clientFormat),
     onFirstRealContent: () => env.ctx.setClientTimingEpoch("firstReal", Date.now()),
+    onGenerationFrame: (frame, record, syntheticKind) => env.ctx.captureForwardedGenerationFrame?.(frame, record, syntheticKind),
   }
 }

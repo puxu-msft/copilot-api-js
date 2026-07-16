@@ -145,12 +145,25 @@ function extractPayload(message: unknown): ResponsesPayload | null {
  * caller must `recordForwarded()` after this and before `ctx.fail` (fail freezes inboundResponse).
  * Pre-driver rejections omit `forwarded` (no forwarded track exists yet).
  */
-function sendErrorAndClose(ws: WSContext, message: string, code?: string, forwarded?: { events: Array<SseEventRecord>; streamStartMs: number }): void {
+function sendErrorAndClose(
+  ws: WSContext,
+  message: string,
+  code?: string,
+  forwarded?: {
+    events: Array<SseEventRecord>
+    streamStartMs: number
+    captureGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: string) => void
+  },
+): void {
   const data = JSON.stringify({
     type: "error",
     error: { type: code ?? "server_error", message },
   })
-  if (forwarded) forwarded.events.push({ offsetMs: Date.now() - forwarded.streamStartMs, type: "error", raw: data })
+  if (forwarded) {
+    const record: SseEventRecord = { offsetMs: Date.now() - forwarded.streamStartMs, type: "error", raw: data }
+    forwarded.events.push(record)
+    forwarded.captureGenerationFrame?.({ data }, record, "synthetic")
+  }
   try {
     ws.send(data)
   } catch {
@@ -446,7 +459,15 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     recordForwarded()
     consola.debug("[WS] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(acc.model || resolvedModel, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
+      usage: usageFromTotalInput({
+        totalInput: acc.inputTokens,
+        output: acc.outputTokens,
+        cacheRead: acc.cachedInputTokens,
+        cacheCreation: acc.cacheWriteInputTokens,
+        reasoning: acc.reasoningTokens,
+        inputDetails: acc.inputDetails,
+        outputDetails: acc.outputDetails,
+      }),
     })
     return
   }
@@ -464,10 +485,22 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
       sseEvents: diag.sseEvents,
     })
-    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), { events: forwardedSseEvents, streamStartMs })
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), {
+      events: forwardedSseEvents,
+      streamStartMs,
+      captureGenerationFrame: (frame, record, syntheticKind) => env.ctx.captureForwardedGenerationFrame?.(frame, record, syntheticKind),
+    })
     recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, error, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
+      usage: usageFromTotalInput({
+        totalInput: acc.inputTokens,
+        output: acc.outputTokens,
+        cacheRead: acc.cachedInputTokens,
+        cacheCreation: acc.cacheWriteInputTokens,
+        reasoning: acc.reasoningTokens,
+        inputDetails: acc.inputDetails,
+        outputDetails: acc.outputDetails,
+      }),
     })
     return
   }
@@ -506,7 +539,11 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     })
     // Emit the error frame (recorded into forwarded) + close, THEN snapshot + settle (sample →
     // recordForwarded → ctx.fail; fail freezes inboundResponse).
-    sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr), { events: forwardedSseEvents, streamStartMs })
+    sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr), {
+      events: forwardedSseEvents,
+      streamStartMs,
+      captureGenerationFrame: (frame, record, syntheticKind) => env.ctx.captureForwardedGenerationFrame?.(frame, record, syntheticKind),
+    })
     recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, truncErr, { usage: partial.usage, content: partial.content })
     return

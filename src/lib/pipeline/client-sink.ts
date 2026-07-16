@@ -94,6 +94,8 @@ export interface SseSinkOptions {
    * shape (offsetMs / parsed-type / raw bytes) mirrors the legacy forwarded-record shape (streaming-pump.ts `forwardClientFrame`, removed with the web_search retirement).
    */
   onForwarded?: (record: SseEventRecord) => void
+  /** History V3 arena hook, invoked at the same unique client-wire sampling point. */
+  onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: string) => void
   /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
   streamStartMs?: number
   /**
@@ -156,7 +158,7 @@ function frameType(frame: ClientFrame): string {
 
 /** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
 export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
-  const { heartbeat, onForwarded, streamStartMs = Date.now(), forwardedType, isRealContentFrame, onFirstRealContent } = opts
+  const { heartbeat, onForwarded, onGenerationFrame, streamStartMs = Date.now(), forwardedType, isRealContentFrame, onFirstRealContent } = opts
   const enqueue = makeSerializer()
   // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧只捕获一次。
   let firstRealFired = false
@@ -178,13 +180,16 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   const sampleForwarded = (
     frame: ClientFrame,
     synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
+    generationSynthetic: string | undefined = synthetic,
   ): void => {
-    onForwarded?.({
+    const record: SseEventRecord = {
       offsetMs: Date.now() - streamStartMs,
       type: (forwardedType ?? frameType)(frame),
       raw: frame.data ?? "",
       ...(synthetic ? { synthetic } : {}),
-    })
+    }
+    onForwarded?.(record)
+    onGenerationFrame?.(frame, record, generationSynthetic)
     // 首包埋点：首个非-synthetic 真实内容帧 → ctx firstReal（handler 绑定谓词/回调）。
     if (!synthetic && !firstRealFired && isRealContentFrame?.(frame)) {
       firstRealFired = true
@@ -267,7 +272,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // `ctx.fail/complete` — the settle snapshots `inboundResponse` synchronously, so a
   // post-settle snapshot (e.g. a trailing `finally`) would miss this frame.
   const writeSynthetic = (frame: ClientFrame): Promise<void> => {
-    sampleForwarded(frame)
+    sampleForwarded(frame, undefined, "synthetic")
     return writeSse(frame)
   }
 
@@ -423,6 +428,8 @@ export interface WsSinkOptions {
    * push (`{type: event.type, raw: forwardData}`; `frameType` yields the parsed JSON `type`).
    */
   onForwarded?: (record: SseEventRecord) => void
+  /** History V3 arena hook, invoked at the same unique client-wire sampling point. */
+  onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: string) => void
   /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
   streamStartMs?: number
   /**
@@ -503,7 +510,7 @@ function startFixedForwardIdleHeartbeat(
 
 /** WS sink — writes JSON frame strings through a Hono `WSContext` (the Responses WS path). */
 export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
-  const { onForwarded, streamStartMs = Date.now(), heartbeat, isRealContentFrame, onFirstRealContent } = opts
+  const { onForwarded, onGenerationFrame, streamStartMs = Date.now(), heartbeat, isRealContentFrame, onFirstRealContent } = opts
   const enqueue = makeSerializer()
   // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧只捕获一次。
   let firstRealFired = false
@@ -515,8 +522,11 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
   const sampleForwarded = (
     frame: ClientFrame,
     synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
+    generationSynthetic: string | undefined = synthetic,
   ): void => {
-    onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) })
+    const record: SseEventRecord = { offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) }
+    onForwarded?.(record)
+    onGenerationFrame?.(frame, record, generationSynthetic)
     // 首包埋点：首个非-synthetic 真实内容帧 → ctx firstReal（handler 绑定谓词/回调）。
     if (!synthetic && !firstRealFired && isRealContentFrame?.(frame)) {
       firstRealFired = true
@@ -559,7 +569,7 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
   // NOT note activity (it's terminal). The handler must `recordForwarded()` after this and before
   // `ctx.fail` (see makeSseSink).
   const writeSynthetic = (frame: ClientFrame): Promise<void> => {
-    sampleForwarded(frame)
+    sampleForwarded(frame, undefined, "synthetic")
     return sendRaw(frame)
   }
 

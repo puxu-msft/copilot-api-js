@@ -851,9 +851,10 @@ function makeAnchoredSseSink(
     // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧 → ctx firstReal（透传给 makeSseSink）。
     isRealContentFrame?: (frame: ClientFrame) => boolean
     onFirstRealContent?: () => void
+    onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: string) => void
   },
 ): { sink: ClientSink; anchorState: AnchorState; anchorHooks: AnchorHooks | undefined } {
-  const { onForwarded, streamStartMs, heartbeatSec, clientAbortSignal, resolvedName, reqId, isRealContentFrame, onFirstRealContent } = args
+  const { onForwarded, streamStartMs, heartbeatSec, clientAbortSignal, resolvedName, reqId, isRealContentFrame, onFirstRealContent, onGenerationFrame } = args
   // Hooks are built for BOTH synthetic-prelude modes (empty_text + enveloped_ping); only `ping` opts out.
   // The mode then selects WHICH injector runs (full anchor vs envelope-only) and whether `anchorBlockOpen`
   // is set — the hooks themselves are the same format primitives.
@@ -873,6 +874,7 @@ function makeAnchoredSseSink(
     streamStartMs,
     ...(isRealContentFrame && { isRealContentFrame }),
     ...(onFirstRealContent && { onFirstRealContent }),
+    ...(onGenerationFrame && { onGenerationFrame }),
     ...(heartbeatSec > 0 && {
       heartbeat: {
         intervalSec: heartbeatSec,
