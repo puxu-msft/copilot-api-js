@@ -25,6 +25,8 @@
  *     MessageParam's `content[]` as `tool_use` blocks (in order); an assistant `message` item's text
  *     folds into the SAME MessageParam's content BEFORE its tool_use blocks (Anthropic requires text
  *     before tool_use within one turn's content array — mirrors the forward leg's same-turn ordering).
+ *     A `reasoning` item carrying OUR signature carrier (Phase 5) folds in FIRST, before text/tool_use
+ *     (mirrors the forward leg's own thinking-leads convention, `anthropic-to-responses.ts`).
  *   - Consecutive `function_call_output` items fold into ONE user MessageParam's `content[]` as
  *     `tool_result` blocks (mirrors `cc-to-anthropic-request.ts`'s tool-result grouping for CC's
  *     `role:"tool"` messages — Responses' flat `function_call_output` items play the analogous role).
@@ -34,12 +36,21 @@
  * Reused (Phase 2/3 audit ①, cross-format primitives — physically imported, not re-derived):
  *   - `repairToolInput` (tool-input-repair.ts) — malformed `function_call.arguments` JSON repair cascade
  *     (mirrors `responses-to-anthropic.ts`'s `parseToolArguments`, this file's forward-leg sibling).
+ *   - `extractClaudeSignature` (Phase 5, `claude-signature-carrier.ts`) — decodes the byte-exact real
+ *     Claude signature this bridge's OWN F leg embedded (a SEPARATE, non-shared primitive from the
+ *     forward leg's `synthetic-reasoning.ts` — R-DIRECTION-ASYMMETRY).
  *
  * ⚠️ WARN-E hard-constraint checklist (mirrors `cc-to-anthropic-request.ts`'s red lines, same physical gap):
- *   ① thinking is NEVER synthesized. Responses `reasoning` input items (a client echoing back a PRIOR
- *      Responses reasoning item) have no verified-safe Anthropic mapping yet (round-trip is Phase 5,
- *      R-DIRECTION-ASYMMETRY — this leg does not yet forge/forward a signed thinking block); dropped here,
- *      NOT synthesized into an unsigned thinking block (which would hit GHC's "thinking blocks cannot be
+ *   ① thinking is reconstructed ONLY from an echoed-back `reasoning` input item that carries OUR
+ *      `claude-signature-carrier.ts` payload (Phase 5, R-DIRECTION-ASYMMETRY — the REAL Claude signature
+ *      this bridge itself rendered on a PRIOR turn via `anthropic-to-responses.ts`/`-stream.ts`). The
+ *      reconstructed block carries the signature BARE (no envelope/prefix — see
+ *      {@link reconstructThinkingBlock}), so it is invisible to `sanitize/content-blocks.ts`'s
+ *      `stripSyntheticReasoningBlocks` guard (that guard strips ONLY the FORWARD leg's
+ *      `synthetic-reasoning` sentinel prefix — a wholly different, non-shared primitive) and reaches the
+ *      Claude upstream unmodified, exactly as it must (the real signature IS valid there). A `reasoning`
+ *      item with NO recoverable carrier (foreign/absent — never OUR carrier) is dropped, NEVER
+ *      synthesized into an unsigned thinking block (which would hit GHC's "thinking blocks cannot be
  *      modified" 400 / poison the conversation, same red line as the CC reverse leg).
  *   ② tool_use.id: the Responses `call_id` is passed through verbatim as Anthropic `tool_use.id` (Responses
  *      IDs are `call_*`-prefixed by convention — inbound-acceptance by the Anthropic upstream is a
@@ -59,6 +70,7 @@ import type {
   MessageParam,
   MessagesPayload,
   TextBlockParam,
+  ThinkingBlockParam,
   Tool as AnthropicTool,
   ToolChoice as AnthropicToolChoice,
   ToolResultBlockParam,
@@ -74,6 +86,7 @@ import type {
   ResponsesToolChoice,
 } from "~/types/api/openai-responses"
 
+import { extractClaudeSignature } from "~/lib/anthropic/claude-signature-carrier"
 import { repairToolInput } from "~/lib/anthropic/tool-input-repair"
 
 /**
@@ -107,7 +120,8 @@ export function translateResponsesToAnthropicRequest(payload: ResponsesPayload):
   const system = payload.instructions ?? undefined
 
   // Intentional drops / NON-mappings (WARN-E + no Anthropic equivalent):
-  //   NOTE: reasoning         — DROPPED (WARN-E ①: never synthesize thinking; round-trip is Phase 5)
+  //   NOTE: reasoning         — RECONSTRUCTED when it carries OUR signature carrier (Phase 5, WARN-E ①);
+  //                             otherwise dropped, never synthesized.
   //   NOTE: cache_control     — NEVER injected (WARN-E ③, no Responses source for it anyway)
   //   NOTE: previous_response_id / store / metadata / truncation / context_management / text.verbosity
   //         — Responses-only, no Anthropic equivalent
@@ -132,7 +146,7 @@ export function translateResponsesToAnthropicRequest(payload: ResponsesPayload):
 
 /** Which Anthropic turn is currently being accumulated (or none). */
 type PendingTurn =
-  | { kind: "assistant"; textParts: Array<string>; toolUse: Array<ToolUseBlockParam> }
+  | { kind: "assistant"; textParts: Array<string>; thinking: Array<ThinkingBlockParam>; toolUse: Array<ToolUseBlockParam> }
   | { kind: "tool-results"; blocks: Array<ToolResultBlockParam> }
   | { kind: "plain"; role: "user" | "system" | "developer"; content: string | Array<ContentBlockParam> }
   | undefined
@@ -154,7 +168,9 @@ function foldInputItems(items: ReadonlyArray<ResponsesInputItem>): Array<Message
     if (pending === undefined) return
     switch (pending.kind) {
       case "assistant": {
-        const blocks: Array<ContentBlockParam> = []
+        // Anthropic turn ordering (mirrors the forward leg's own convention, `anthropic-to-responses.ts`):
+        // thinking blocks lead, then text, then tool_use.
+        const blocks: Array<ContentBlockParam> = [...pending.thinking]
         const text = pending.textParts.join("")
         if (text.length > 0) blocks.push({ type: "text", text } satisfies TextBlockParam)
         blocks.push(...pending.toolUse)
@@ -187,7 +203,7 @@ function foldInputItems(items: ReadonlyArray<ResponsesInputItem>): Array<Message
     if (type === "function_call") {
       if (pending?.kind !== "assistant") {
         flush()
-        pending = { kind: "assistant", textParts: [], toolUse: [] }
+        pending = { kind: "assistant", textParts: [], thinking: [], toolUse: [] }
       }
       pending.toolUse.push(functionCallToToolUseBlock(item))
       continue
@@ -203,9 +219,28 @@ function foldInputItems(items: ReadonlyArray<ResponsesInputItem>): Array<Message
       continue
     }
 
-    if (type === "reasoning" || type === "item_reference") {
-      // No verified-safe Anthropic mapping yet (WARN-E ①, R-DIRECTION-ASYMMETRY — round-trip is Phase 5)
-      // — drop, do not flush the current turn (a reasoning echo does not itself start a new turn).
+    if (type === "reasoning") {
+      // Phase 5 forward-of-reverse round-trip (RFC §4.2/§4.4, WARN-E ①): reconstruct a real, byte-exact
+      // signed thinking block ONLY when this item carries OUR claude-signature-carrier payload — the
+      // signature THIS bridge itself rendered on a prior turn (anthropic-to-responses.ts/-stream.ts). A
+      // foreign/absent carrier means there is no verified-safe signature to round-trip — dropped, never
+      // synthesized (would hit GHC's "cannot be modified" 400 / poison the conversation). Does not itself
+      // flush/start a turn boundary (a reasoning echo folds into whatever assistant turn is pending, or
+      // starts one — the surrounding function_call/message items decide the turn, not the reasoning item).
+      const thinkingBlock = reconstructThinkingBlock(item)
+      if (thinkingBlock) {
+        if (pending?.kind !== "assistant") {
+          flush()
+          pending = { kind: "assistant", textParts: [], thinking: [], toolUse: [] }
+        }
+        pending.thinking.push(thinkingBlock)
+      }
+      continue
+    }
+
+    if (type === "item_reference") {
+      // No verified-safe Anthropic mapping (a reference to a stored server-side item, not an inline
+      // reasoning payload) — drop, do not flush the current turn.
       continue
     }
 
@@ -232,7 +267,7 @@ function foldInputItems(items: ReadonlyArray<ResponsesInputItem>): Array<Message
 
     flush()
     if (role === "assistant") {
-      pending = { kind: "assistant", textParts: [extractText(item.content)], toolUse: [] }
+      pending = { kind: "assistant", textParts: [extractText(item.content)], thinking: [], toolUse: [] }
     } else {
       pending = { kind: "plain", role: "user", content: translateContentParts(item.content) }
     }
@@ -252,6 +287,25 @@ function extractText(content: ResponsesInputItem["content"]): string {
       return ""
     })
     .join("")
+}
+
+/**
+ * Reconstruct a real, byte-exact signed Anthropic `thinking` block from an echoed-back `reasoning`
+ * input item (Phase 5 forward-of-reverse round-trip, WARN-E ①). `encrypted_content` is decoded via
+ * `extractClaudeSignature` — returns undefined for anything that isn't OUR carrier (foreign/absent/
+ * corrupt), in which case the caller drops the item entirely (never synthesized). The reconstructed
+ * block carries the signature BARE (no envelope/prefix) — this is what makes it invisible to
+ * `stripSyntheticReasoningBlocks` (that guard only strips the FORWARD leg's `synthetic-reasoning`
+ * sentinel prefix) and lets it reach the Claude upstream unmodified, which is required for the real
+ * signature to validate (probe (e): Claude's upstream rejects ANY alteration, even one byte).
+ */
+function reconstructThinkingBlock(item: ResponsesInputItem): ThinkingBlockParam | undefined {
+  const signature = extractClaudeSignature(item.encrypted_content)
+  if (signature === undefined) return undefined
+  // A reasoning item's displayable text lives in `content` (rare, echoed verbatim) OR `summary` (the
+  // native reasoning-item slot this bridge itself renders it into, `anthropic-to-responses.ts`).
+  const text = item.content !== undefined ? extractText(item.content) : (item.summary ?? []).map((s) => s.text).join("")
+  return { type: "thinking", thinking: text, signature }
 }
 
 /** Translate a Responses `message` item's user-turn content into Anthropic content blocks (or a plain string). */

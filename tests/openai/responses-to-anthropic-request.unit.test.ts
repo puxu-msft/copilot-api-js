@@ -24,6 +24,9 @@ import type {
   ResponsesPayload,
 } from "~/types/api/openai-responses"
 
+import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-carrier"
+import { stripSyntheticReasoningBlocks } from "~/lib/anthropic/sanitize/content-blocks"
+import { isSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
 import { translateResponsesToAnthropicRequest } from "~/lib/openai/translate/responses-to-anthropic-request"
 
 /** Minimal Responses request builder. */
@@ -229,13 +232,76 @@ describe("translateResponsesToAnthropicRequest — mid-conversation system/devel
   })
 })
 
-describe("translateResponsesToAnthropicRequest — reasoning drop (WARN-E ①, R-DIRECTION-ASYMMETRY, no synthesis)", () => {
-  test("a reasoning input item (client echo) is dropped, never synthesized as a thinking block", () => {
+describe("translateResponsesToAnthropicRequest — reasoning drop (WARN-E ①, no synthesis for a foreign/non-carrier encrypted_content)", () => {
+  test("a reasoning input item with a FOREIGN (non-carrier) encrypted_content is dropped, never synthesized as a thinking block", () => {
     const item: ResponsesInputItem = { type: "reasoning", id: "r1", summary: [{ type: "summary_text", text: "prior reasoning" }], encrypted_content: "enc" }
     const result = translateResponsesToAnthropicRequest(responsesPayload([userMessage("x"), item, assistantMessage("y")]))
     expect(result.messages.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === "thinking"))).toBe(false)
     // The reasoning item doesn't itself start/end a turn — the surrounding user/assistant turns still land.
     expect(result.messages.map((m) => m.role)).toEqual(["user", "assistant"])
+  })
+
+  test("a reasoning input item with NO encrypted_content is dropped, never synthesized", () => {
+    const item: ResponsesInputItem = { type: "reasoning", id: "r1", summary: [{ type: "summary_text", text: "prior reasoning" }] }
+    const result = translateResponsesToAnthropicRequest(responsesPayload([userMessage("x"), item, assistantMessage("y")]))
+    expect(result.messages.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === "thinking"))).toBe(false)
+  })
+})
+
+describe("translateResponsesToAnthropicRequest — Phase 5 reverse round-trip: a reasoning item carrying OUR claude-signature-carrier reconstructs a real, byte-exact signed thinking block", () => {
+  test("a reasoning item with OUR carrier reconstructs a thinking block with the byte-exact recovered signature", () => {
+    const realSignature = "REAL-CLAUDE-SIGNATURE-that-must-round-trip-byte-exact"
+    const carrier = buildClaudeSignatureCarrier(realSignature)
+    const item: ResponsesInputItem = { type: "reasoning", id: "r1", summary: [{ type: "summary_text", text: "recovered reasoning" }], encrypted_content: carrier }
+    const result = translateResponsesToAnthropicRequest(responsesPayload([userMessage("x"), item, assistantMessage("y")]))
+
+    const assistantMsg = result.messages.find((m) => m.role === "assistant")
+    expect(assistantMsg).toBeDefined()
+    const content = assistantMsg?.content as Array<{ type: string; thinking?: string; signature?: string }>
+    const thinkingBlock = content.find((b) => b.type === "thinking")
+    expect(thinkingBlock).toBeDefined()
+    expect(thinkingBlock?.signature).toBe(realSignature)
+    expect(thinkingBlock?.thinking).toBe("recovered reasoning")
+  })
+
+  test("the reconstructed thinking block carries the signature BARE (no synthetic-reasoning sentinel prefix) — invisible to stripSyntheticReasoningBlocks, reaches Claude unmodified", () => {
+    const realSignature = "BARE-REAL-SIGNATURE-no-envelope"
+    const carrier = buildClaudeSignatureCarrier(realSignature)
+    const item: ResponsesInputItem = { type: "reasoning", id: "r1", summary: [], encrypted_content: carrier }
+    const result = translateResponsesToAnthropicRequest(responsesPayload([userMessage("x"), item, assistantMessage("y")]))
+    const assistantMsg = result.messages.find((m) => m.role === "assistant")
+    const content = assistantMsg?.content as Array<{ type: string; signature?: string }>
+    const thinkingBlock = content.find((b) => b.type === "thinking")
+    expect(thinkingBlock?.signature).toBe(realSignature)
+    expect(isSyntheticReasoningSignature(thinkingBlock?.signature)).toBe(false)
+
+    // The negative-sample oracle the checkpoint requested: a real signature block MUST survive
+    // stripSyntheticReasoningBlocks unmodified (that guard only strips OUR forward-leg sentinel).
+    const survived = stripSyntheticReasoningBlocks(result.messages)
+    const survivedAssistant = survived.find((m) => m.role === "assistant")
+    const survivedContent = survivedAssistant?.content as Array<{ type: string; signature?: string }>
+    expect(survivedContent.some((b) => b.type === "thinking" && b.signature === realSignature)).toBe(true)
+  })
+
+  test("thinking block leads the turn (before text/tool_use), mirroring the forward leg's own ordering convention", () => {
+    const carrier = buildClaudeSignatureCarrier("SIG")
+    const reasoningItem: ResponsesInputItem = { type: "reasoning", id: "r1", summary: [{ type: "summary_text", text: "thinking" }], encrypted_content: carrier }
+    const result = translateResponsesToAnthropicRequest(
+      responsesPayload([userMessage("x"), reasoningItem, assistantMessage("answer"), functionCall("call_a", "f", "{}")]),
+    )
+    const assistantMsg = result.messages.find((m) => m.role === "assistant")
+    const content = assistantMsg?.content as Array<{ type: string }>
+    expect(content.map((b) => b.type)).toEqual(["thinking", "text", "tool_use"])
+  })
+
+  test("a bare-carrier reasoning item with only summary text (no `content`) still reconstructs the block from `summary`", () => {
+    const carrier = buildClaudeSignatureCarrier("SIG-FROM-SUMMARY")
+    const item: ResponsesInputItem = { type: "reasoning", id: "r1", summary: [{ type: "summary_text", text: "from summary field" }], encrypted_content: carrier }
+    const result = translateResponsesToAnthropicRequest(responsesPayload([userMessage("x"), item, assistantMessage("y")]))
+    const assistantMsg = result.messages.find((m) => m.role === "assistant")
+    const content = assistantMsg?.content as Array<{ type: string; thinking?: string }>
+    const thinkingBlock = content.find((b) => b.type === "thinking")
+    expect(thinkingBlock?.thinking).toBe("from summary field")
   })
 })
 
