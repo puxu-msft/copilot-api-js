@@ -1,3 +1,11 @@
+// TODO(History V2 removal Phase 4b): this file drives `openDatabase` against
+// hand-seeded `entries_v2`/`entry_stages` rows (V2-only tables) to exercise the
+// "存活 owner 跳过 VACUUM" liveness gate. Per plan §6, that liveness semantic is
+// NOT adopted into V3 (`v3_operations` has no "in-flight owned row" concept), so
+// this file's assertions do not carry over verbatim — Phase 4b migrates the
+// remaining "VACUUM runs unconditionally against V3" assertion (see plan.md
+// §3 Phase 4b "迁移 vacuum-liveness.it.test.ts 的核心断言到 V3 路径") and this
+// file is deleted once that lands in 4a/4b together with entries_v2/schema.ts.
 import {
   //
   afterEach,
