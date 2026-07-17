@@ -49,4 +49,26 @@ describe("diagnostic snapshot boundary", () => {
     expect(Object.isFrozen(event)).toBe(true)
     expect(Object.isFrozen(event.fields)).toBe(true)
   })
+
+  test("secret-key values are removed from message and every error field before publication", () => {
+    const probe = "SYNTHETIC_SECRET_7f91"
+    const error = Object.assign(new Error(`authorization=${probe}`), {
+      cause: { refresh_token: probe },
+      code: "E_AUTH",
+      authorization: probe,
+    })
+    const event = createDiagnosticEvent({
+      level: "error",
+      event: "test.secret",
+      message: `access_token=${probe}`,
+      fields: { access_token: probe },
+      error,
+      origin: "native",
+    })
+
+    expect(JSON.stringify(event)).not.toContain(probe)
+    expect(event.message).toContain("[REDACTED]")
+    expect(event.error?.message).toContain("[REDACTED]")
+    expect(event.error?.stack).toContain("[REDACTED]")
+  })
 })

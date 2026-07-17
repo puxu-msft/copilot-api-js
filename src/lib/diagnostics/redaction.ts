@@ -1,12 +1,17 @@
-import type { DiagnosticValue } from "./types"
+import type {
+  //
+  DiagnosticError,
+  DiagnosticValue,
+} from "./types"
 
 const SECRET_KEY = /access[_-]?token|authorization|cookie|device[_-]?code|refresh[_-]?token|api[_-]?key|password|secret/i
 const SECRET_VALUE = /\b(?:Bearer\s+\S+|gh[opusr]_\w+|github_pat_\w+)\b/gi
+const SECRET_ASSIGNMENT = /(["']?(?:access[_-]?token|authorization|cookie|device[_-]?code|refresh[_-]?token|api[_-]?key|password|secret)["']?\s*[:=]\s*)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;}\]]+)/gi
 
 const REDACTED = "[REDACTED]"
 
 function redactString(value: string): string {
-  return value.replaceAll(SECRET_VALUE, REDACTED)
+  return value.replaceAll(SECRET_ASSIGNMENT, `$1${REDACTED}`).replaceAll(SECRET_VALUE, REDACTED)
 }
 
 export function redactDiagnosticValue(value: DiagnosticValue, logicalKey?: string): DiagnosticValue {
@@ -47,4 +52,16 @@ export function redactDiagnosticFields(fields: Record<string, DiagnosticValue>):
 
 export function redactDiagnosticText(text: string): string {
   return redactString(text)
+}
+
+export function redactDiagnosticError(error: DiagnosticError): DiagnosticError {
+  return {
+    name: redactString(error.name),
+    message: redactString(error.message),
+    ...(error.stack !== undefined && { stack: redactString(error.stack) }),
+    ...(error.cause !== undefined && { cause: redactDiagnosticValue(error.cause, "cause") }),
+    ...(error.code !== undefined && { code: error.code }),
+    ...(error.status !== undefined && { status: error.status }),
+    ...(error.fields !== undefined && { fields: redactDiagnosticFields({ ...error.fields }) }),
+  }
 }

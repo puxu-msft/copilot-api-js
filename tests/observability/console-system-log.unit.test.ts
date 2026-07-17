@@ -75,6 +75,27 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     expect(lines).toEqual(["[INFO] TT:TT:TT before", "[INFO] TT:TT:TT between", "[INFO] TT:TT:TT after"])
   })
 
+  test("consola adapter derives human text only from the redacted snapshot", () => {
+    const probe = "SYNTHETIC_SECRET_7f91"
+    const captured: Array<string> = []
+    const bus = createBus()
+    const unsub = bus.subscribe((event) => {
+      if (event.kind === "system.diagnostic") captured.push(JSON.stringify(event.diagnostic))
+    })
+    const uninstall = installConsolaRepublish(bus.scope("system"))
+    cleanups.push(() => {
+      unsub()
+      uninstall()
+    })
+
+    consola.level = 5
+    consola.error("auth failed", { access_token: probe }, Object.assign(new Error(`authorization=${probe}`), { authorization: probe }))
+
+    expect(captured).toHaveLength(1)
+    expect(captured[0]).not.toContain(probe)
+    expect(captured[0]).toContain("[REDACTED]")
+  })
+
   test("republish reporter does not recurse when a consola call fires during fan-out", () => {
     // A sink that logs via consola during its own handling would loop without
     // the reentrancy guard. Assert the guard routes the reentrant call through
