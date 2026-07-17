@@ -72,10 +72,10 @@ import {
   //
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
-import { registerResponseSession } from "~/lib/openai/response-session-store"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
+import { registerResponseSession } from "~/lib/openai/response-session-store"
 import { responsesOutputToContent } from "~/lib/openai/responses-conversion"
 import {
   //
@@ -365,13 +365,10 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // otherwise trip Codex's idle deadline; buffered forces a ping even when the operator left
   // `streamKeepalivePingSec` at 0). See resolveResponsesBufferedAndHeartbeat.
   const { buffered: bufferedConfigured, heartbeatSec } = resolveResponsesBufferedAndHeartbeat()
-  // Block-level buffered retry applies ONLY to the DIRECT (/responses) sub-path: the via-chat-completions
-  // fallback synthesizes its terminal lifecycle (output_item.done → response.completed) in
-  // codec.flushResponse POST-loop (handler-v4.ts closing drain below), invisible to the driver's in-loop
-  // commit-boundary flush AND to sawMessageStop — so a clean fallback drain would be mis-committed as a
-  // truncation and retried to exhaustion. Same structural root cause as Gemini (spec §7.4). Fallback stays
-  // live until flushResponse is refactored into the driver's buffered commit unit (docs/todo backlog).
-  const buffered = bufferedConfigured && !viaFallback
+  // Direct and via-chat fallback now share the same buffered unit: the response processor yields
+  // fallback `flushResponse()` closing frames before returning, so output_item.done / response.completed
+  // are visible to commit boundaries and `sawMessageStop` instead of living in a handler post-loop bypass.
+  const buffered = bufferedConfigured
   const sink = makeSseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
@@ -421,6 +418,10 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     env.ctx.recordStreamProgress({ bytesIn, eventsIn })
     return restoreAndAccumulate(frame)
   }
+  const finishResponse = () => ({
+    kind: "complete" as const,
+    frames: viaFallback ? [...codec.flushResponse(env)] : [],
+  })
 
   // L2 buffered path (opt-in) vs live default. Buffered adopts the driver's shared
   // `runResponseBufferedSink`: it buffers every rendered frame and commits the WHOLE generation to
@@ -444,6 +445,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
       await driver.runResponseBufferedSink(upstream, env, sink, {
         onRenderedFrame, // restore + accumulate (the buffered drain invokes it per frame)
         onUpstreamFrame, // raw-frame diagnostics (disconnect-log signals)
+        finishResponse,
         anchor: undefined, // the empty-text keepalive anchor is Anthropic-only → every driver anchor branch is inert
         // Block-level commit boundary (P2 Task 2, spec §3.1): flush at each output item's
         // `response.output_item.done` (+ the three lifecycle terminals + the in-band upstream `error`
@@ -488,7 +490,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
           consola.debug(`[protect-stream:responses] ${o} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
         },
       })
-    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame, onUpstreamFrame })
+    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame, onUpstreamFrame, finishResponse })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -538,20 +540,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   }
 
   // outcome.kind === "complete" — the upstream drained cleanly.
-  if (viaFallback) {
-    // Drain the CC→Responses translator's closing lifecycle (output_text.done … response.completed)
-    // — the per-frame renderResponse has no stream-end hook (mirrors how CC synthesizes [DONE]).
-    // Each closing frame goes through restoreAndAccumulate (response.completed sets responseId/usage)
-    // + the sink (sampled). Not progress-counted (legacy `forwardFrame` drain did not count).
-    // (Kept handler-side: the "move this into a driver S6 flush" idea was evaluated and rejected —
-    // the stream-end terminal handling is entangled with format-specific truncation detection +
-    // ctx settling, so a uniform driver flush is over-engineering. See
-    // docs/archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md.)
-    for (const closing of codec.flushResponse(env)) {
-      const out = restoreAndAccumulate(closing)
-      if (out) await sink.write(out)
-    }
-  } else {
+  if (!viaFallback) {
     // Direct registers the session after the loop with the upstream-reported id.
     if (!env.ctx.sessionId && acc.responseId) env.ctx.setSessionId(acc.responseId)
     registerResponseSession(acc.responseId, env.ctx.sessionId)
@@ -729,8 +718,16 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     env.ctx.recordStreamProgress({ bytesIn, eventsIn })
     return restore(frame)
   }
+  const finishResponse = () => {
+    const terminal = classifyReverseAnthropicTerminal(anthropicAcc)
+    if (terminal.kind === "upstream-error") return { kind: "terminal-failure" as const, frames: [], error: terminal.error }
+    if (terminal.kind === "truncated") {
+      return { kind: "truncated" as const, frames: [], reason: "Upstream Anthropic stream truncated before completion (no message_stop)" }
+    }
+    return { kind: "complete" as const, frames: [...codec.flushResponse(env)] }
+  }
 
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, onRenderedFrame })
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, onRenderedFrame, finishResponse })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -783,12 +780,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     sink.finalize?.()
     return
   }
-  // Drain the reverse translator's closing lifecycle (response.completed) — the per-frame render has no
-  // stream-end hook (疑点 7b). Each closing frame is restored + forwarded (sampled by the sink).
-  for (const closing of codec.flushResponse(env)) {
-    const out = restore(closing)
-    if (out) await sink.write(out)
-  }
+  // The processor finish boundary already emitted response.completed through restore/onRenderedFrame.
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
   sink.finalize?.()

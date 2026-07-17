@@ -355,9 +355,21 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     forwardedType: () => "generateContent",
   })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+  const finishResponse = () => {
+    const meta = codec.getStreamMeta()
+    const frames = [...codec.flushResponse(env)]
+    if (meta.finishReason === "FINISH_REASON_UNSPECIFIED") {
+      return {
+        kind: "truncated" as const,
+        frames: frames.filter((frame) => !isGeminiTerminalFrame(frame)),
+        reason: "Upstream stream truncated before completion (no finishReason)",
+      }
+    }
+    return { kind: "complete" as const, frames }
+  }
 
   // The driver drives codec.renderResponse (CC→Gemini per-frame) + writes the Gemini frames to the sink.
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, finishResponse })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -406,15 +418,8 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   // UNSPECIFIED finishReason to the client (P-Gem). See docs/spec/upstream-stream-truncation-detection.md.
   const meta = codec.getStreamMeta()
   if (meta.finishReason === "FINISH_REASON_UNSPECIFIED") {
-    // Forward any buffered partial content the translator accumulated (e.g. a tool_call whose
-    // args arrived before the truncation — Gemini uniquely buffers tool_calls to flush, unlike
-    // the delta-streaming formats), but DROP the translator's terminal frame: it carries the
-    // misleading UNSPECIFIED finishReason (the error frame below is the real terminator). The
-    // terminal is the only flushed frame with `candidates[0].finishReason`; tool_call frames
-    // carry a `functionCall` part and no finishReason. See docs/spec/upstream-stream-truncation-detection.md.
-    for (const frame of codec.flushResponse(env)) {
-      if (!isGeminiTerminalFrame(frame)) await sink.write(frame)
-    }
+    // The response processor already forwarded buffered partial tool calls and suppressed the
+    // misleading UNSPECIFIED terminal according to `finishResponse` above.
     const truncErr = new Error("Upstream stream truncated before completion (no finishReason)")
     consola.error(`[gemini:v4] Upstream truncated for ${model}: drained without a real finishReason`)
     logUpstreamStreamTruncation(truncErr.message, {
@@ -439,11 +444,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     return
   }
 
-  // drain the translator's stream-end frames (remaining tool calls + the terminal finishReason/usage
-  // frame), then settle from the codec-accumulated meta.
-  for (const frame of codec.flushResponse(env)) {
-    await sink.write(frame)
-  }
+  // Stream-end frames were emitted by the response processor finish boundary.
   recordForwarded()
   env.ctx.complete({
     success: true,
@@ -587,8 +588,21 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     ...clientFirstRealSinkOpts(env),
   })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+  const finishResponse = () => {
+    const terminal = classifyReverseAnthropicTerminal(anthropicAcc)
+    if (terminal.kind === "upstream-error") return { kind: "terminal-failure" as const, frames: [], error: terminal.error }
+    const frames = [...codec.flushResponse(env)]
+    if (terminal.kind === "truncated") {
+      return {
+        kind: "truncated" as const,
+        frames: frames.filter((frame) => !isGeminiTerminalFrame(frame)),
+        reason: "Upstream Anthropic stream truncated before completion (no message_stop)",
+      }
+    }
+    return { kind: "complete" as const, frames }
+  }
 
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame })
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, finishResponse })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -640,9 +654,8 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
   // terminal frame (misleading UNSPECIFIED finishReason) but forward any buffered partial (a tool_call
   // flushed before the cut).
   if (terminal.kind === "truncated") {
-    for (const frame of codec.flushResponse(env)) {
-      if (!isGeminiTerminalFrame(frame)) await sink.write(frame)
-    }
+    // The processor finish boundary already forwarded partial tool calls and suppressed the
+    // misleading Gemini terminal frame.
     const truncErr = new Error("Upstream Anthropic stream truncated before completion (no message_stop)")
     consola.error(`[gemini:v4:reverse] Upstream truncated for ${anthropicAcc.model || model}: drained without message_stop`)
     logUpstreamStreamTruncation(truncErr.message, {
@@ -665,9 +678,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     return
   }
 
-  // Drain the geminiTranslator's stream-end frames (remaining tool calls + the terminal finishReason/usage
-  // frame — 疑点 7b), then settle from the HONEST Anthropic accumulator (outbound).
-  for (const frame of codec.flushResponse(env)) await sink.write(frame)
+  // The processor finish boundary already emitted the geminiTranslator's stream-end frames.
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
   sink.finalize?.()

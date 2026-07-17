@@ -36,13 +36,13 @@ import type {
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { registerResponseSession } from "~/lib/openai/response-session-store"
 import {
   //
   ENDPOINT,
 } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
+import { registerResponseSession } from "~/lib/openai/response-session-store"
 import {
   //
   accumulateResponsesStreamEvent,
@@ -425,6 +425,10 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       return false
     }
   }
+  const finishResponse = () => ({
+    kind: "complete" as const,
+    frames: viaFallback ? [...codec.flushResponse(env)] : [],
+  })
 
   // P4 Task 1 — terminal-only buffered-retry selrouting (block-level-buffered-retry spec §7.3).
   // Reuses the SAME `responses.buffered_retry` config key the HTTP handlers use, but `commitBoundaries`
@@ -438,17 +442,16 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   // instead of retrying, delivering a half generation to the client (P4 Task 1 review finding). WS has
   // no mid-stream block/anchor needs, so terminal-only (byte-identical in spirit to the HTTP handler's
   // pre-block-level whole-response buffered predecessor) is the correct — and only — shape here.
-  // `buffered && !viaFallback`: the via-chat-completions fallback synthesizes its terminal lifecycle
-  // (output_item.done → response.completed) POST-loop via `codec.flushResponse` (see the `viaFallback`
-  // branch below), invisible to the driver's in-loop commit/sawMessageStop gate — same structural root
-  // cause as the HTTP handler's fallback exclusion (P2 Task 3 / handler-v4.ts:301-307). Fallback stays LIVE.
+  // Fallback closing frames now flow through the response processor finish boundary, so terminal-only
+  // buffering observes response.completed instead of relying on a handler post-loop bypass.
   const { buffered: bufferedConfigured } = resolveResponsesBufferedAndHeartbeat()
-  const buffered = bufferedConfigured && !viaFallback
+  const buffered = bufferedConfigured
   const outcome =
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
         onRenderedFrame: restoreAccumulateCount,
         onUpstreamFrame,
+        finishResponse,
         stopAfterFrame: isTerminal,
         // commitBoundaries intentionally OMITTED — see the comment above. Terminal-only: the driver's
         // own `sawMessageStop` gate below is the ONLY commit trigger.
@@ -483,7 +486,12 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
           diag = createUpstreamFrameDiagnostics(Date.now())
         },
       })
-    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, onUpstreamFrame, stopAfterFrame: isTerminal })
+    : await driver.runResponseSink(upstream, env, sink, {
+        onRenderedFrame: restoreAccumulateCount,
+        onUpstreamFrame,
+        stopAfterFrame: isTerminal,
+        finishResponse,
+      })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -538,18 +546,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   }
 
   // outcome.kind === "complete" — the upstream drained cleanly (or stopped at the terminal frame).
-  if (viaFallback) {
-    // Drain the CC→Responses translator's closing lifecycle (output_text.done … response.completed),
-    // counted + forward-sampled like loop frames (WS parity). (Kept handler-side: the "move this into
-    // a driver S6 flush" idea was evaluated and rejected — besides the truncation-detection entanglement,
-    // the WS sink's error terminator is the transport-coupled `sendErrorAndClose`+1011 (it must CLOSE the
-    // socket, which `sink.writeSynthetic` does not), which a uniform driver finalize cannot model. See
-    // docs/archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md.)
-    for (const closing of codec.flushResponse(env)) {
-      const out = restoreAccumulateCount(closing)
-      if (out) await sink.write(out)
-    }
-  } else {
+  if (!viaFallback) {
     if (!env.ctx.sessionId && acc.responseId) env.ctx.setSessionId(acc.responseId)
     registerResponseSession(acc.responseId, env.ctx.sessionId)
   }

@@ -216,7 +216,13 @@ export function expectedGenerationRuntimeResults(): Record<string, unknown> {
     },
     "responses-client-to-anthropic": {
       wire: responsesFromAnthropicWire(),
-      terminal: terminal(11, 7, [...Array.from({ length: 5 }, () => "client-transform:client"), ...Array.from({ length: 6 }, () => "client-sink:client")]),
+      // The reverse translator's six closing lifecycle frames now flow through the processor's
+      // ordinary post-render transform boundary instead of bypassing it in a handler-side drain.
+      terminal: terminal(
+        11,
+        7,
+        Array.from({ length: 11 }, () => "client-transform:client"),
+      ),
     },
     "cc-direct": {
       wire: ccDirectWire(),

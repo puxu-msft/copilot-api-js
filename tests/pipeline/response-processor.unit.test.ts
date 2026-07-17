@@ -7,7 +7,12 @@ import {
 
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { ResponseRewrite } from "~/lib/pipeline/rewrite-registry"
-import type { UpstreamFrame } from "~/lib/pipeline/types"
+import type {
+  //
+  ResponseFinishResult,
+  RunResponseOpts,
+  UpstreamFrame,
+} from "~/lib/pipeline/types"
 
 import { createResponseProcessor } from "~/lib/pipeline/stream/response-processor"
 
@@ -39,7 +44,11 @@ function envelope(captures?: { upstream: Array<unknown>; actions: Array<unknown>
   } as unknown as RequestEnvelope
 }
 
-async function collect(processor: ReturnType<typeof createResponseProcessor>, frames: Array<UpstreamFrame>): Promise<Array<UpstreamFrame>> {
+async function collect(
+  processor: ReturnType<typeof createResponseProcessor>,
+  frames: Array<UpstreamFrame>,
+  opts?: RunResponseOpts,
+): Promise<Array<UpstreamFrame>> {
   const upstream = {
     headers: new Headers(),
     frames: {
@@ -49,7 +58,7 @@ async function collect(processor: ReturnType<typeof createResponseProcessor>, fr
     },
   }
   const out: Array<UpstreamFrame> = []
-  for await (const frame of processor.stream(upstream)) out.push(frame)
+  for await (const frame of processor.stream(upstream, opts)) out.push(frame)
   return out
 }
 
@@ -122,5 +131,48 @@ describe("P2-T1 branch-local response processor", () => {
     expect(captures.upstream).toEqual([real])
     expect(captures.actions.map((capture) => (capture as { metadata: { action: string } }).metadata.action)).toEqual(["buffer", "buffer", "flush"])
     expect(captures.transforms).toHaveLength(2)
+  })
+
+  test("emits every protocol finish variant through the ordinary client-frame path", async () => {
+    const variants: Array<ResponseFinishResult> = [
+      { kind: "complete", frames: [{ data: "complete" }] },
+      { kind: "valid-terminal-without-boundary", frames: [{ data: "refusal" }], terminal: "refusal" },
+      { kind: "truncated", frames: [{ data: "partial" }], reason: "missing terminal" },
+      { kind: "terminal-failure", frames: [{ data: "upstream-error" }], error: new Error("upstream error") },
+    ]
+
+    for (const variant of variants) {
+      let resolved: ResponseFinishResult | undefined
+      const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
+      expect(
+        await collect(processor, [{ data: "body" }], {
+          finishResponse: () => variant,
+          onFinishResolved: (result) => (resolved = result),
+        }),
+      ).toEqual([{ data: "body" }, ...variant.frames])
+      expect(resolved).toBe(variant)
+    }
+  })
+
+  test("does not run protocol finish after an upstream iterator error", async () => {
+    let finishCalls = 0
+    const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
+    const upstream = {
+      headers: new Headers(),
+      frames: {
+        async *[Symbol.asyncIterator]() {
+          yield { data: "partial" }
+          throw new Error("transport cut")
+        },
+      },
+    }
+    const consume = async () => {
+      for await (const _frame of processor.stream(upstream, { finishResponse: () => (finishCalls++, { kind: "complete", frames: [] }) })) {
+        // drain until the upstream throw
+      }
+    }
+
+    await expect(consume()).rejects.toThrow("transport cut")
+    expect(finishCalls).toBe(0)
   })
 })

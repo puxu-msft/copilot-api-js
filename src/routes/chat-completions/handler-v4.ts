@@ -711,8 +711,17 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     env.ctx.recordStreamProgress({ bytesIn, eventsIn })
     return { ...frame, data: restoreStreamToolNames(frame.data, mapper) }
   }
+  const finishResponse = () => {
+    const terminal = classifyReverseAnthropicTerminal(anthropicAcc)
+    if (terminal.kind === "upstream-error") return { kind: "terminal-failure" as const, frames: [], error: terminal.error }
+    const frames = [...codec.flushResponse(env)]
+    if (terminal.kind === "truncated") {
+      return { kind: "truncated" as const, frames, reason: "Upstream Anthropic stream truncated before completion (no message_stop)" }
+    }
+    return { kind: "complete" as const, frames }
+  }
 
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, onRenderedFrame })
+  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, onRenderedFrame, finishResponse })
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -756,8 +765,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     sink.finalize?.()
     return
   }
-  // Flush the reverse translator's terminal frames (empty for the CC leg — finish/usage are inline).
-  for (const frame of codec.flushResponse(env)) await sink.write(frame)
+  // The processor finish boundary already emitted reverse translator terminal frames.
   if (terminal.kind === "truncated") {
     const truncErr = new Error("Upstream Anthropic stream truncated before completion (no message_stop)")
     consola.error(`[ChatCompletions:v4:reverse] Upstream truncated for ${anthropicAcc.model || model}: drained without message_stop`)

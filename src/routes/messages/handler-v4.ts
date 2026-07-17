@@ -1446,6 +1446,18 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
   /** The OUTBOUND-leg ResponseData (honest upstream shape) for the terminal settle. */
   const outboundResponseData = (): ReturnType<typeof buildOpenAIResponseData> =>
     ccAcc ? buildOpenAIResponseData(ccAcc, model) : buildResponsesResponseData(respAcc as NonNullable<typeof respAcc>, model)
+  const finishResponse = () => {
+    const meta = codec.getStreamMeta()
+    const frames = [...codec.flushResponse(env)]
+    if (meta?.stopReason === undefined) {
+      return {
+        kind: "truncated" as const,
+        frames: frames.filter((frame) => !isMessageTerminatorFrame(frame)),
+        reason: "Upstream stream truncated before completion (no finish_reason)",
+      }
+    }
+    return { kind: "complete" as const, frames }
+  }
 
   try {
     // LIVE owns-sink: the driver drives codec.renderResponse (CC/Responses→Anthropic per-frame) + writes
@@ -1458,7 +1470,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     // mismatch / dangling block) under `empty_text` anchor. reconcile leaves index-less message_delta /
     // message_stop unchanged, and is a transparent passthrough when no anchor was injected (byte-equivalent).
     const clientSink = liveReconcilingSink(sink, anchorHooks, anchorState)
-    const outcome = await driver.runResponseSink(upstream, env, clientSink, { onUpstreamFrame })
+    const outcome = await driver.runResponseSink(upstream, env, clientSink, { onUpstreamFrame, finishResponse })
 
     if (outcome.kind === "settled-abort") {
       recordForwarded()
@@ -1515,13 +1527,8 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     // (Anthropic has no content_filter stop_reason — the marker IS the distinguishability, not the wire value).
     if (meta?.contentFiltered) env.ctx.recordFeature("translated-content-filter")
     if (meta?.stopReason === undefined) {
-      // Truncation: forward the translator's block-close frames (partial content stays balanced) but DROP
-      // its terminal message_delta/message_stop (they'd signal a clean completion), then write a synthetic
-      // Anthropic error terminator + fail (mirrors the gemini truncation gate + the direct pump's). The
-      // block-close frame goes through `clientSink` so its index is +1-remapped under an injected anchor.
-      for (const frame of codec.flushResponse(env)) {
-        if (!isMessageTerminatorFrame(frame)) await clientSink.write(frame)
-      }
+      // The processor finish boundary already forwarded block-close frames through the reconciling
+      // sink and suppressed clean message terminators.
       await closeAnchorIfOpen(sink, anchorHooks, anchorState)
       // G-3 (FIX-2): translate-leg truncation terminator via the canonical builder (byte-identical to the
       // former hand-built JSON — note the translate leg's message says "no finish_reason", the CC/Responses
@@ -1548,11 +1555,8 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       return
     }
 
-    // Clean completion: drain the translator's terminal frames (the last block's content_block_stop +
-    // message_delta + message_stop) through `clientSink` so the block-close is +1-remapped under an injected
-    // anchor (message_delta / message_stop are index-less → passthrough), snapshot the forwarded track, then
-    // settle complete with the OUTBOUND-leg (upstream) response data.
-    for (const frame of codec.flushResponse(env)) await clientSink.write(frame)
+    // The processor finish boundary already emitted the translator's block-close and message terminal
+    // frames through the same reconciling sink.
     recordForwarded()
     env.ctx.complete(outboundResponseData())
     sink.finalize?.()

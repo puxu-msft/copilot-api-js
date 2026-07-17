@@ -578,8 +578,18 @@ async function runResponseSink(
   sink: ClientSink,
   opts?: RunResponseOpts,
 ): Promise<ResponseOutcome> {
+  let finish: import("./types").ResponseFinishResult | undefined
+  const responseOpts: RunResponseOpts = {
+    ...opts,
+    ...(opts?.finishResponse && {
+      onFinishResolved(result: import("./types").ResponseFinishResult) {
+        finish = result
+        opts.onFinishResolved?.(result)
+      },
+    }),
+  }
   try {
-    for await (const frame of runResponse(deps, upstream, env, opts)) {
+    for await (const frame of runResponse(deps, upstream, env, responseOpts)) {
       // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
       // handler synthesizes its own trailing terminator; Anthropic emits none).
       if (frame.data === "[DONE]") continue
@@ -601,7 +611,7 @@ async function runResponseSink(
         if (opts?.stopAfterFrame?.(toWrite)) break
       }
     }
-    return { kind: "complete", headers: upstream.headers }
+    return { kind: "complete", headers: upstream.headers, ...(finish && { finish }) }
   } catch (error) {
     // A client disconnect (the transport guard's StreamClientAbortError, or any error
     // classified client-abort) settles as abort — the handler writes nothing further.
@@ -744,8 +754,18 @@ export async function runResponseBufferedSink(
       let retreated = false
       let thrown: unknown
       let drained = false
+      let finish: import("./types").ResponseFinishResult | undefined
+      const responseOpts: RunBufferedOpts = {
+        ...opts,
+        ...(opts.finishResponse && {
+          onFinishResolved(result: import("./types").ResponseFinishResult) {
+            finish = result
+            opts.onFinishResolved?.(result)
+          },
+        }),
+      }
       try {
-        for await (const frame of runResponse(deps, current, currentEnv, opts)) {
+        for await (const frame of runResponse(deps, current, currentEnv, responseOpts)) {
           if (frame.data === "[DONE]") continue
           const toWrite = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
           if (!toWrite) continue
@@ -838,7 +858,7 @@ export async function runResponseBufferedSink(
       // stream-error (the throw / truncation surfaces as today).
       if (retreated) {
         opts.onBufferedResolve?.("retreated", attempt, { vendor })
-        if (drained) return { kind: "complete", headers: current.headers }
+        if (drained) return { kind: "complete", headers: current.headers, ...(finish && { finish }) }
         // M1: a post-retreat truncation still leaves the anchor open (it was injected during an idle stall
         // before the retreat) → close it before surfacing the stream-error.
         await closeAnchorIfOpen()
@@ -872,7 +892,7 @@ export async function runResponseBufferedSink(
           return { kind: "stream-error", error: res.error }
         }
         opts.onBufferedResolve?.("success", attempt, { vendor })
-        return { kind: "complete", headers: current.headers }
+        return { kind: "complete", headers: current.headers, ...(finish && { finish }) }
       }
 
       // Failure: a transport-close throw, OR a clean drain WITHOUT a terminal frame (truncation).

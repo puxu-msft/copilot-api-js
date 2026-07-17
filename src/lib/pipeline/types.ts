@@ -301,7 +301,23 @@ export interface RunResponseOpts {
    * actions; the flushed frames are reported separately by the inspector).
    */
   onRewriteAction?: (rewriteName: string, frameIndex: number, action: FrameAction) => void
+  /**
+   * Branch-local protocol finish callback, invoked only after a natural upstream drain and after
+   * S5 rewrite buffers flush. It returns already client-shaped closing frames plus the protocol
+   * completeness verdict. The processor yields `frames` through the normal post-render/sink path;
+   * thrown upstream errors do not invoke it.
+   */
+  finishResponse?: () => ResponseFinishResult
+  /** Internal observer used by the sink driver to return the processor verdict without re-running finish. */
+  onFinishResolved?: (result: ResponseFinishResult) => void
 }
+
+/** Protocol completion classification produced at the response processor's single finish boundary. */
+export type ResponseFinishResult =
+  | { kind: "complete"; frames: ReadonlyArray<ClientFrame> }
+  | { kind: "valid-terminal-without-boundary"; frames: ReadonlyArray<ClientFrame>; terminal: string }
+  | { kind: "truncated"; frames: ReadonlyArray<ClientFrame>; reason: string }
+  | { kind: "terminal-failure"; frames: ReadonlyArray<ClientFrame>; error: unknown }
 
 /**
  * Anthropic-supplied hooks for the buffered empty-text keepalive ANCHOR (spec
@@ -613,7 +629,10 @@ export interface ClientSink {
  *     "client-abort"`). The downstream stream is dead, so the handler writes ZERO further
  *     bytes and settles `ctx.abort` (B0-d "abort → zero bytes").
  */
-export type ResponseOutcome = { kind: "complete"; headers: Headers } | { kind: "stream-error"; error: unknown } | { kind: "settled-abort" }
+export type ResponseOutcome =
+  | { kind: "complete"; headers: Headers; finish?: ResponseFinishResult }
+  | { kind: "stream-error"; error: unknown }
+  | { kind: "settled-abort" }
 
 /**
  * Orchestrates the stage sequence, publishing events + sampling raw data at

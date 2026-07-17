@@ -175,6 +175,12 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
       else yield* renderFrames(renderResponse, flushed, env)
     }
   }
+
+  // An upstream throw propagates after the `finally` flush and never reaches here. Therefore this
+  // boundary runs only after a natural drain, exactly once.
+  const finish = opts?.finishResponse?.() ?? { kind: "complete" as const, frames: [] }
+  opts?.onFinishResolved?.(finish)
+  yield* finish.frames
 }
 
 function* renderFrames(renderResponse: FormatCodec["renderResponse"], frame: UpstreamFrame, env: RequestEnvelope): Generator<ClientFrame> {
