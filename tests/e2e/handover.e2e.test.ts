@@ -171,7 +171,7 @@ describe.skipIf(!GATED)("graceful restart — bare-metal manual takeover (real s
     cleanupProxies.push(proxy)
     const loaded = await proxy.reloadHook()
     expect(loaded.ok, `hook load failed: ${loaded.error}`).toBe(true)
-    expect(loaded.exports).toContain("onExchange")
+    expect(loaded.exports).toContain("exchange")
 
     const results = await Promise.all(Array.from({ length: 5 }, () => postMessages(proxy.baseURL)))
     for (const raw of results) {
