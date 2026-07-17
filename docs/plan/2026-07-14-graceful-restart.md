@@ -1,5 +1,7 @@
 # 优雅重启（零停机换代）Implementation Plan
 
+> **实施状态（2026-07-15）：已全部实现并合并 master（`ea1f9314`）。** Task 0-15 全落地 + 2 轮异模型对抗审查（逮出 supervised overlap 缺口 → root-cause 改进程存活性裁决、退役 predecessor-registry）+ 确认复审 ready-to-merge；e2e 真双进程接管复跑 6 pass；合并态全量套件我域零新增失败。承重实现细节以 [docs/lifecycle.md](../lifecycle.md)「优雅重启」节为准（本 plan 为执行拆解、留档）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 copilot-api-js 支持零停机换代——旧进程立即停止 accept 新连接 + 优雅 drain 已有连接的同时，新进程立刻监听并接受新会话，覆盖裸手动 / systemd / pm2 三种运行环境。
