@@ -54,6 +54,23 @@ CREATE INDEX IF NOT EXISTS idx_tier2_manifest_status   ON tier2_manifest(status,
 CREATE INDEX IF NOT EXISTS idx_tier2_manifest_sealfile ON tier2_manifest(seal_file);
 `
 
+/**
+ * tier1_locator — maps a WARM (tier-1) entry to its per-session columnar file
+ * (`archive-t1-<session>.db`) + row index. The entry's summary row still lives in
+ * archive.entries_v2 (the session-index that feeds the list view + search); the
+ * HEAVY payload (stages/raw) lives in the columnar file, NOT in archive.db, so
+ * archive.db stays a small index. Detail reads resolve entry → file via this table.
+ */
+export const TIER1_LOCATOR_DDL = `
+CREATE TABLE IF NOT EXISTS tier1_locator (
+  entry_id         TEXT PRIMARY KEY,
+  session_id       TEXT NOT NULL,
+  seal_file        TEXT NOT NULL,
+  index_in_session INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tier1_locator_sealfile ON tier1_locator(seal_file);
+`
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entries_v2 (
   id               TEXT PRIMARY KEY,
