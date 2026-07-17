@@ -24,6 +24,7 @@ export interface StructuredFileSinkOptions {
   directory: string
   maxSizeBytes?: number
   maxLengthBytes?: number
+  maxFilesPerProcess?: number
 }
 
 export class StructuredFileSink {
@@ -31,12 +32,15 @@ export class StructuredFileSink {
   private readonly logger: pino.Logger
   private readonly destination: PinoRollDestination
   private readonly baseName: string
+  private readonly maxFilesPerProcess: number
   private state: "ready" | "degraded" | "sealing" | "closed" = "ready"
   private droppedRecords = 0
+  private writesSincePrune = 0
 
-  private constructor(bus: ObservabilityBus, directory: string, baseName: string, destination: PinoRollDestination) {
+  private constructor(bus: ObservabilityBus, directory: string, baseName: string, destination: PinoRollDestination, maxFilesPerProcess: number) {
     this.destination = destination
     this.baseName = baseName
+    this.maxFilesPerProcess = maxFilesPerProcess
     this.logger = pino(
       {
         base: null,
@@ -86,7 +90,9 @@ export class StructuredFileSink {
       })
     }
     if (destination.file) fs.chmodSync(destination.file, 0o600)
-    return new StructuredFileSink(bus, options.directory, baseName, destination)
+    const sink = new StructuredFileSink(bus, options.directory, baseName, destination, options.maxFilesPerProcess ?? 7)
+    sink.pruneOwnSegments()
+    return sink
   }
 
   get health(): { state: string; droppedRecords: number; activePath: string } {
@@ -149,6 +155,10 @@ export class StructuredFileSink {
           this.logger.info({ record }, message)
         }
       }
+      if (++this.writesSincePrune >= 100) {
+        this.writesSincePrune = 0
+        this.pruneOwnSegments()
+      }
     } catch (error) {
       this.state = "degraded"
       writeEmergencyFallback(`[StructuredFileSink] ${error instanceof Error ? error.message : String(error)}`)
@@ -178,5 +188,25 @@ export class StructuredFileSink {
         }
       }),
     )
+  }
+
+  private pruneOwnSegments(): void {
+    if (this.maxFilesPerProcess <= 0) return
+    try {
+      const directory = path.dirname(this.baseName)
+      const prefix = path.basename(this.baseName, ".ndjson")
+      const active = this.destination.file
+      const files = fs
+        .readdirSync(directory)
+        .filter((name) => name.startsWith(prefix) && name.endsWith(".ndjson"))
+        .map((name) => ({ path: path.join(directory, name), mtime: fs.statSync(path.join(directory, name)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+      for (const file of files.slice(this.maxFilesPerProcess)) {
+        if (file.path !== active) fs.rmSync(file.path, { force: true })
+      }
+    } catch (error) {
+      this.state = "degraded"
+      writeEmergencyFallback(`[StructuredFileSink] retention failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }

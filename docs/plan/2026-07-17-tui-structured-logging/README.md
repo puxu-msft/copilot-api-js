@@ -1,6 +1,6 @@
 # TUI 模块化与结构化诊断日志实施计划
 
-- 状态：Planned
+- 状态：Partially implemented（Phase 1–7 核心行为完成；Phase 8 性能治理与 Phase 9 最终全域 closeout 进行中）
 - 日期：2026-07-17
 - 冻结设计：[RFC：TUI 模块化与结构化诊断日志](../../rfc/2026-07-17-tui-structured-logging.md)
 - 详细计划：[implementation-plan.md](implementation-plan.md)

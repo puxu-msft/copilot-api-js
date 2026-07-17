@@ -1,6 +1,6 @@
 # RFC：TUI 模块化与结构化诊断日志
 
-- 状态：Draft
+- 状态：Implemented（核心 P0/P1、structured diagnostics、per-process NDJSON、TUI store/input/session/output 拆分已落地；性能 coalescing 与完整 owner-manifest retention 仍按计划后续深化）
 - 日期：2026-07-17
 - 来源：[TUI 与终端日志机制全面审计](../audits/2026-07-17-tui-terminal-logging.md)
 - 实施分支：`feat/tui-structured-logging`
