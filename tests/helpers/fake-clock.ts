@@ -14,6 +14,9 @@ export class FakeClock {
   private origNow = Date.now
 
   install(): void {
+    this.now = 1_000_000
+    this.nextId = 1
+    this.timers.clear()
     Date.now = () => this.now
     ;(globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((cb: () => void, ms: number) => {
       const id = this.nextId++
@@ -44,6 +47,15 @@ export class FakeClock {
     let n = 0
     for (const t of this.timers.values()) if (!t.cleared) n++
     return n
+  }
+
+  /** Remaining delay of every live timer, sorted. Lets integration tests distinguish a leaked
+   * short-cadence heartbeat from unrelated long-lived runtime timers without depending on timer IDs. */
+  get liveTimerDelaysMs(): Array<number> {
+    return [...this.timers.values()]
+      .filter((timer) => !timer.cleared)
+      .map((timer) => timer.fireAt - this.now)
+      .sort((a, b) => a - b)
   }
 
   async advance(ms: number): Promise<void> {
