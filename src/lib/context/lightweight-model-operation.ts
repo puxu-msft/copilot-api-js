@@ -1,9 +1,9 @@
-import { getProcessIdentity } from "~/lib/process-identity"
 import { publishModelOperationTerminal as publishTerminalToBus } from "~/lib/history/v3/terminal-bus"
+import { getProcessIdentity } from "~/lib/process-identity"
 
 import type {
   //
-  AttemptHandle,
+  DispatchHandle,
   ModelOperationRecord,
   OperationHeaderField,
   OperationKind,
@@ -49,7 +49,7 @@ export interface LightweightAttemptSettlementInput {
 }
 
 export interface LightweightAttempt {
-  readonly handle: AttemptHandle
+  readonly handle: DispatchHandle
   commit(input: LightweightAttemptSettlementInput): void
   discard(input: LightweightAttemptSettlementInput): void
   fail(input: LightweightAttemptSettlementInput): void
@@ -199,7 +199,8 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
   })
 
   let routingRecorded = false
-  let committedAttempt: AttemptHandle | undefined
+  let primaryCandidate: import("./model-operation-record").CandidateHandle | undefined
+  let committedAttempt: DispatchHandle | undefined
   let latestResultTrack: OperationTrackInput | undefined
   let terminalRecord: ModelOperationRecord | null = null
 
@@ -227,7 +228,9 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
       mediaType: "application/json",
     })
     const startedAt = performance.now()
-    const handle = recorder.beginAttempt({
+    primaryCandidate ??= recorder.beginCandidate({ role: "primary" })
+    const handle = recorder.beginDispatch({
+      candidate: primaryCandidate,
       ...(attemptInput.source === "upstream" ? { transport: "http" as const } : {}),
       effectiveRequest: { payload: effectivePayload, metadata: attemptInput.effectiveRequest },
       upstreamRequest: {
@@ -251,7 +254,7 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
             origin: {
               stage: attemptInput.source === "local" ? "local-result" : "upstream-response",
               track: attemptInput.source === "local" ? "internal" : "upstream",
-              attempt: handle,
+              dispatch: handle,
             },
             mediaType: "application/json",
           })
@@ -269,7 +272,7 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
           ...settlement.metadata,
         },
       }
-      recorder.settleAttempt(handle, {
+      recorder.settleDispatch(handle, {
         verdict,
         upstreamResponse: responseTrack,
         reason: settlement.reason,
@@ -316,9 +319,16 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
         metadata: clientEnvelope,
       },
     })
+    if (primaryCandidate !== undefined) {
+      const candidate = recorder.snapshot().candidates.find((item) => item.handle === primaryCandidate)
+      if (candidate?.verdict === undefined) {
+        recorder.settleCandidate(primaryCandidate, { verdict: committedAttempt === undefined ? "failed" : "winner", reason: `terminal:${outcome}` })
+      }
+    }
     terminalRecord = recorder.commitTerminal({
       outcome,
-      committedAttempt,
+      ...(primaryCandidate !== undefined && { winnerCandidate: primaryCandidate }),
+      committedDispatch: committedAttempt,
       ...(error === undefined ? {} : { error: serializeError(error) }),
       usage: terminalInput.usage,
       attribution: terminalInput.attribution,

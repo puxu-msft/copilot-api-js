@@ -1,3 +1,5 @@
+/** @deprecated P4-P8 transition only. Canonical code must use DispatchHandle. */
+export type AttemptHandle = DispatchHandle
 /**
  * History V3's inert canonical record for one model operation.
  *
@@ -37,7 +39,10 @@ export interface OperationUsage {
 export interface ArenaNodeOrigin {
   readonly stage: string
   readonly track: "client" | "upstream" | "proxy" | "internal"
-  readonly attempt?: AttemptHandle
+  readonly candidate?: CandidateHandle
+  readonly dispatch?: DispatchHandle
+  /** @deprecated Input compatibility only; freezeOrigin canonicalizes this to dispatch. */
+  readonly attempt?: DispatchHandle
   readonly detail?: string
 }
 
@@ -51,10 +56,15 @@ declare const frameNodeHandleBrand: unique symbol
 /** Opaque handle for a frame node in this record's arena. */
 export type FrameNodeHandle = string & { readonly [frameNodeHandleBrand]: "FrameNodeHandle" }
 
-declare const attemptHandleBrand: unique symbol
+declare const dispatchHandleBrand: unique symbol
 
-/** Opaque handle for an attempt in this record. */
-export type AttemptHandle = string & { readonly [attemptHandleBrand]: "AttemptHandle" }
+/** Opaque handle for one physical upstream dispatch in this record. */
+export type DispatchHandle = string & { readonly [dispatchHandleBrand]: "DispatchHandle" }
+
+declare const candidateHandleBrand: unique symbol
+
+/** Opaque handle for one candidate generation branch. */
+export type CandidateHandle = string & { readonly [candidateHandleBrand]: "CandidateHandle" }
 
 /** Reference to either kind of arena node. */
 export type ArenaNodeReference = Readonly<{ kind: "payload"; handle: PayloadNodeHandle }> | Readonly<{ kind: "frame"; handle: FrameNodeHandle }>
@@ -187,8 +197,12 @@ export interface ModelOperationTransform {
   readonly extensions?: OperationExtensions
 }
 
-/** Attempt settlement verdict, independent from the operation terminal outcome. */
-export type AttemptVerdict = "committed" | "discarded" | "failed"
+/** Physical dispatch settlement verdict, independent from candidate and operation outcomes. */
+export type DispatchVerdict = "committed" | "discarded" | "failed" | "cancelled"
+
+/** Candidate topology role and terminal verdict. */
+export type CandidateRole = "primary" | "hedge" | "recovery"
+export type CandidateVerdict = "winner" | "loser" | "failed" | "cancelled"
 
 /** Diagnostic retained on the attempt that produced it. */
 export interface AttemptDiagnostic {
@@ -200,9 +214,10 @@ export interface AttemptDiagnostic {
   readonly extensions?: OperationExtensions
 }
 
-/** One upstream attempt, including failed/discarded diagnostic history. */
-export interface ModelOperationAttempt {
-  readonly handle: AttemptHandle
+/** One physical upstream dispatch, including failed/discarded diagnostic history. */
+export interface ModelOperationDispatch {
+  readonly handle: DispatchHandle
+  readonly candidate: CandidateHandle
   readonly sequence: number
   readonly strategy?: string
   readonly transport?: OperationTransport
@@ -210,13 +225,27 @@ export interface ModelOperationAttempt {
   readonly upstreamRequest?: OperationTrack
   readonly upstreamResponse?: OperationTrack
   readonly diagnostics: ReadonlyArray<AttemptDiagnostic>
-  readonly verdict?: AttemptVerdict
+  readonly verdict?: DispatchVerdict
   readonly settledSequence?: number
   readonly reason?: string
   readonly error?: unknown
   readonly metadata?: unknown
   readonly extensions?: OperationExtensions
   readonly settlementExtensions?: OperationExtensions
+}
+
+/** One generation candidate containing an ordered set of physical dispatches. */
+export interface ModelOperationCandidate {
+  readonly handle: CandidateHandle
+  readonly sequence: number
+  readonly role: CandidateRole
+  readonly parentCandidate?: CandidateHandle
+  readonly dispatches: ReadonlyArray<DispatchHandle>
+  readonly verdict?: CandidateVerdict
+  readonly settledSequence?: number
+  readonly reason?: string
+  readonly metadata?: unknown
+  readonly extensions?: OperationExtensions
 }
 
 /** Independent upstream and client egress tracks. */
@@ -235,7 +264,10 @@ export type TerminalOutcome = "completed" | "failed" | "cancelled" | "aborted" |
 export interface ModelOperationTerminal {
   readonly sequence: number
   readonly outcome: TerminalOutcome
-  readonly committedAttempt?: AttemptHandle
+  readonly winnerCandidate?: CandidateHandle
+  readonly committedDispatch?: DispatchHandle
+  /** @deprecated Projection compatibility through P8; aliases committedDispatch. */
+  readonly committedAttempt?: DispatchHandle
   readonly error?: unknown
   readonly usage?: OperationUsage
   readonly attribution?: Readonly<{
@@ -254,7 +286,10 @@ export interface ModelOperationRecord {
   readonly ingress: ModelOperationIngress | null
   readonly routing: ModelOperationRouting | null
   readonly transforms: ReadonlyArray<ModelOperationTransform>
-  readonly attempts: ReadonlyArray<ModelOperationAttempt>
+  readonly candidates: ReadonlyArray<ModelOperationCandidate>
+  readonly dispatches: ReadonlyArray<ModelOperationDispatch>
+  /** @deprecated Projection compatibility through P8; aliases dispatches. */
+  readonly attempts: ReadonlyArray<ModelOperationDispatch>
   readonly egress: ModelOperationEgress | null
   readonly terminal: ModelOperationTerminal | null
   readonly extensions: OperationExtensions
@@ -312,8 +347,17 @@ export interface RecordTransformInput {
   readonly extensions?: Readonly<Record<string, unknown>>
 }
 
-/** Attempt start input. */
-export interface BeginAttemptInput {
+/** Candidate start input. */
+export interface BeginCandidateInput {
+  readonly role: CandidateRole
+  readonly parentCandidate?: CandidateHandle
+  readonly metadata?: unknown
+  readonly extensions?: Readonly<Record<string, unknown>>
+}
+
+/** Physical dispatch start input. */
+export interface BeginDispatchInput {
+  readonly candidate: CandidateHandle
   readonly strategy?: string
   readonly transport?: OperationTransport
   readonly effectiveRequest?: OperationTrackInput
@@ -331,14 +375,20 @@ export interface RecordAttemptDiagnosticInput {
   readonly extensions?: Readonly<Record<string, unknown>>
 }
 
-/** Attempt settlement input. */
-export interface SettleAttemptInput {
-  readonly verdict: AttemptVerdict
+/** Physical dispatch settlement input. */
+export interface SettleDispatchInput {
+  readonly verdict: DispatchVerdict
   readonly upstreamResponse?: OperationTrackInput
   readonly reason?: string
   readonly error?: unknown
   readonly metadata?: Readonly<Record<string, unknown>>
   readonly extensions?: Readonly<Record<string, unknown>>
+}
+
+/** Candidate settlement input. */
+export interface SettleCandidateInput {
+  readonly verdict: CandidateVerdict
+  readonly reason?: string
 }
 
 /** Egress recording input. */
@@ -352,7 +402,10 @@ export interface RecordEgressInput {
 /** Terminal commit input. */
 export interface CommitTerminalInput {
   readonly outcome: TerminalOutcome
-  readonly committedAttempt?: AttemptHandle
+  readonly winnerCandidate?: CandidateHandle
+  readonly committedDispatch?: DispatchHandle
+  /** @deprecated P4-P8 transition only. */
+  readonly committedAttempt?: DispatchHandle
   readonly error?: unknown
   readonly usage?: OperationUsage
   readonly attribution?: ModelOperationTerminal["attribution"]
@@ -371,20 +424,30 @@ export interface ModelOperationRecorder {
   recordIngress(input: RecordIngressInput): void
   recordRouting(input: RecordRoutingInput): void
   recordTransform(input: RecordTransformInput): void
-  beginAttempt(input: BeginAttemptInput): AttemptHandle
-  setAttemptEffectiveRequest(attempt: AttemptHandle, request: OperationTrackInput): void
-  setAttemptTransport(attempt: AttemptHandle, transport: OperationTransport): void
-  setAttemptUpstreamRequest(attempt: AttemptHandle, request: OperationTrackInput): void
-  recordAttemptDiagnostic(attempt: AttemptHandle, input: RecordAttemptDiagnosticInput): void
-  settleAttempt(attempt: AttemptHandle, input: SettleAttemptInput): void
+  beginCandidate(input: BeginCandidateInput): CandidateHandle
+  settleCandidate(candidate: CandidateHandle, input: SettleCandidateInput): void
+  beginDispatch(input: BeginDispatchInput): DispatchHandle
+  setDispatchEffectiveRequest(dispatch: DispatchHandle, request: OperationTrackInput): void
+  setDispatchTransport(dispatch: DispatchHandle, transport: OperationTransport): void
+  setDispatchUpstreamRequest(dispatch: DispatchHandle, request: OperationTrackInput): void
+  recordDispatchDiagnostic(dispatch: DispatchHandle, input: RecordAttemptDiagnosticInput): void
+  settleDispatch(dispatch: DispatchHandle, input: SettleDispatchInput): void
+  /** @deprecated P4-P8 transition adapters. */
+  beginAttempt(input: Omit<BeginDispatchInput, "candidate">): DispatchHandle
+  setAttemptEffectiveRequest(dispatch: DispatchHandle, request: OperationTrackInput): void
+  setAttemptTransport(dispatch: DispatchHandle, transport: OperationTransport): void
+  setAttemptUpstreamRequest(dispatch: DispatchHandle, request: OperationTrackInput): void
+  recordAttemptDiagnostic(dispatch: DispatchHandle, input: RecordAttemptDiagnosticInput): void
+  settleAttempt(dispatch: DispatchHandle, input: SettleDispatchInput): void
   recordEgress(input: RecordEgressInput): void
   setExtension(namespace: string, value: unknown): void
   commitTerminal(input: CommitTerminalInput): ModelOperationRecord
   snapshot(): ModelOperationRecord
 }
 
-interface MutableAttempt {
-  handle: AttemptHandle
+interface MutableDispatch {
+  handle: DispatchHandle
+  candidate: CandidateHandle
   sequence: number
   strategy?: string
   transport?: OperationTransport
@@ -392,13 +455,26 @@ interface MutableAttempt {
   upstreamRequest?: OperationTrack
   upstreamResponse?: OperationTrack
   diagnostics: Array<AttemptDiagnostic>
-  verdict?: AttemptVerdict
+  verdict?: DispatchVerdict
   settledSequence?: number
   reason?: string
   error?: unknown
   metadata?: unknown
   extensions?: OperationExtensions
   settlementExtensions?: OperationExtensions
+}
+
+interface MutableCandidate {
+  handle: CandidateHandle
+  sequence: number
+  role: CandidateRole
+  parentCandidate?: CandidateHandle
+  dispatches: Array<DispatchHandle>
+  verdict?: CandidateVerdict
+  settledSequence?: number
+  reason?: string
+  metadata?: unknown
+  extensions?: OperationExtensions
 }
 
 function requireNonEmpty(value: string, field: string): void {
@@ -432,7 +508,15 @@ function freezeHeaders(input: ReadonlyArray<OperationHeaderField> | undefined): 
 
 function freezeOrigin(origin: ArenaNodeOrigin): Readonly<ArenaNodeOrigin> {
   requireNonEmpty(origin.stage, "origin.stage")
-  return Object.freeze({ ...origin })
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- P4-P8 input adapter canonicalizes to dispatch below.
+  const dispatch = origin.dispatch ?? origin.attempt
+  return Object.freeze({
+    stage: origin.stage,
+    track: origin.track,
+    ...(origin.candidate !== undefined && { candidate: origin.candidate }),
+    ...(dispatch !== undefined && { dispatch }),
+    ...(origin.detail !== undefined && { detail: origin.detail }),
+  })
 }
 
 /** Creates a new isolated canonical recorder. It does not attach to legacy History persistence. */
@@ -446,15 +530,18 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
   let routing: ModelOperationRouting | null = null
   let egress: ModelOperationEgress | null = null
   let terminal: ModelOperationTerminal | null = null
-  let committedAttempt: AttemptHandle | undefined
+  let committedDispatch: DispatchHandle | undefined
+  let legacyPrimaryCandidate: CandidateHandle | undefined
 
   const payloads: Array<PayloadArenaNode> = []
   const frames: Array<FrameArenaNode> = []
   const payloadHandles = new Set<PayloadNodeHandle>()
   const frameHandles = new Set<FrameNodeHandle>()
   const transforms: Array<ModelOperationTransform> = []
-  const attempts: Array<MutableAttempt> = []
-  const attemptByHandle = new Map<AttemptHandle, MutableAttempt>()
+  const candidates: Array<MutableCandidate> = []
+  const dispatches: Array<MutableDispatch> = []
+  const candidateByHandle = new Map<CandidateHandle, MutableCandidate>()
+  const dispatchByHandle = new Map<DispatchHandle, MutableDispatch>()
   const extensions: Record<string, unknown> = { ...input.extensions }
 
   let identitySessionId = input.identity.sessionId
@@ -516,15 +603,22 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     return Object.freeze({ ...reference })
   }
 
-  function getAttempt(handle: AttemptHandle): MutableAttempt {
-    const attempt = attemptByHandle.get(handle)
-    if (!attempt) throw new Error(`[model-operation-record] unknown attempt handle: ${handle}`)
-    return attempt
+  function getCandidate(handle: CandidateHandle): MutableCandidate {
+    const candidate = candidateByHandle.get(handle)
+    if (!candidate) throw new Error(`[model-operation-record] unknown candidate handle: ${handle}`)
+    return candidate
   }
 
-  function snapshotAttempt(attempt: MutableAttempt): ModelOperationAttempt {
+  function getDispatch(handle: DispatchHandle): MutableDispatch {
+    const dispatch = dispatchByHandle.get(handle)
+    if (!dispatch) throw new Error(`[model-operation-record] unknown dispatch handle: ${handle}`)
+    return dispatch
+  }
+
+  function snapshotDispatch(attempt: MutableDispatch): ModelOperationDispatch {
     return Object.freeze({
       handle: attempt.handle,
+      candidate: attempt.candidate,
       sequence: attempt.sequence,
       ...(attempt.strategy === undefined ? {} : { strategy: attempt.strategy }),
       ...(attempt.transport === undefined ? {} : { transport: attempt.transport }),
@@ -542,20 +636,39 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     })
   }
 
+  function snapshotCandidate(candidate: MutableCandidate): ModelOperationCandidate {
+    return Object.freeze({
+      handle: candidate.handle,
+      sequence: candidate.sequence,
+      role: candidate.role,
+      ...(candidate.parentCandidate === undefined ? {} : { parentCandidate: candidate.parentCandidate }),
+      dispatches: Object.freeze([...candidate.dispatches]),
+      ...(candidate.verdict === undefined ? {} : { verdict: candidate.verdict }),
+      ...(candidate.settledSequence === undefined ? {} : { settledSequence: candidate.settledSequence }),
+      ...(candidate.reason === undefined ? {} : { reason: candidate.reason }),
+      ...(candidate.metadata === undefined ? {} : { metadata: candidate.metadata }),
+      ...(candidate.extensions === undefined ? {} : { extensions: candidate.extensions }),
+    })
+  }
+
   function buildSnapshot(): ModelOperationRecord {
     if (finalRecord) return finalRecord
-    return Object.freeze({
+    const dispatchSnapshots = Object.freeze(dispatches.map((dispatch) => snapshotDispatch(dispatch)))
+    const record = {
       identity: snapshotIdentity(),
       arena: Object.freeze({ payloads: Object.freeze([...payloads]), frames: Object.freeze([...frames]) }),
       ingress,
       routing,
       transforms: Object.freeze([...transforms]),
-      attempts: Object.freeze(attempts.map((attempt) => snapshotAttempt(attempt))),
+      candidates: Object.freeze(candidates.map((candidate) => snapshotCandidate(candidate))),
+      dispatches: dispatchSnapshots,
       egress,
       terminal,
       extensions: Object.freeze({ ...extensions }),
       lastSequence: sequence,
-    })
+    } as Omit<ModelOperationRecord, "attempts"> & Partial<Pick<ModelOperationRecord, "attempts">>
+    Object.defineProperty(record, "attempts", { enumerable: false, configurable: false, get: () => dispatchSnapshots })
+    return Object.freeze(record) as ModelOperationRecord
   }
 
   const recorder: ModelOperationRecorder = {
@@ -702,54 +815,112 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       )
     },
 
-    beginAttempt(attemptInput): AttemptHandle {
+    beginCandidate(candidateInput): CandidateHandle {
       assertWritable()
-      const handle = `attempt:${attempts.length}` as AttemptHandle
-      const attempt: MutableAttempt = {
+      if (candidateInput.parentCandidate !== undefined) getCandidate(candidateInput.parentCandidate)
+      const handle = `candidate:${candidates.length}` as CandidateHandle
+      const candidate: MutableCandidate = {
         handle,
         sequence: nextSequence(),
-        diagnostics: [],
-        ...(attemptInput.strategy === undefined ? {} : { strategy: attemptInput.strategy }),
-        ...(attemptInput.transport === undefined ? {} : { transport: attemptInput.transport }),
-        ...(attemptInput.effectiveRequest === undefined ? {} : { effectiveRequest: freezeTrack(attemptInput.effectiveRequest) }),
-        ...(attemptInput.upstreamRequest === undefined ? {} : { upstreamRequest: freezeTrack(attemptInput.upstreamRequest) }),
-        ...(attemptInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(attemptInput.metadata) }),
-        ...(attemptInput.extensions === undefined ? {} : { extensions: freezeExtensions(attemptInput.extensions) }),
+        role: candidateInput.role,
+        dispatches: [],
+        ...(candidateInput.parentCandidate === undefined ? {} : { parentCandidate: candidateInput.parentCandidate }),
+        ...(candidateInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(candidateInput.metadata) }),
+        ...(candidateInput.extensions === undefined ? {} : { extensions: freezeExtensions(candidateInput.extensions) }),
       }
-      attempts.push(attempt)
-      attemptByHandle.set(handle, attempt)
+      candidates.push(candidate)
+      candidateByHandle.set(handle, candidate)
       return handle
     },
 
+    beginAttempt(attemptInput): DispatchHandle {
+      legacyPrimaryCandidate ??= recorder.beginCandidate({ role: "primary", metadata: { compatibility: "attempt-adapter" } })
+      return recorder.beginDispatch({ candidate: legacyPrimaryCandidate, ...attemptInput })
+    },
+
     setAttemptEffectiveRequest(handle, request): void {
-      assertWritable()
-      const attempt = getAttempt(handle)
-      if (attempt.verdict !== undefined) throw new Error(`[model-operation-record] attempt already settled: ${handle}`)
-      if (attempt.effectiveRequest !== undefined) throw new Error(`[model-operation-record] attempt effective request already recorded: ${handle}`)
-      attempt.effectiveRequest = freezeTrack(request)
+      recorder.setDispatchEffectiveRequest(handle, request)
     },
 
     setAttemptTransport(handle, transport): void {
-      assertWritable()
-      const attempt = getAttempt(handle)
-      if (attempt.verdict !== undefined) throw new Error(`[model-operation-record] attempt already settled: ${handle}`)
-      attempt.transport = transport
+      recorder.setDispatchTransport(handle, transport)
     },
 
     setAttemptUpstreamRequest(handle, request): void {
-      assertWritable()
-      const attempt = getAttempt(handle)
-      if (attempt.verdict !== undefined) throw new Error(`[model-operation-record] attempt already settled: ${handle}`)
-      if (attempt.upstreamRequest !== undefined) throw new Error(`[model-operation-record] attempt upstream request already recorded: ${handle}`)
-      attempt.upstreamRequest = freezeTrack(request)
+      recorder.setDispatchUpstreamRequest(handle, request)
     },
 
-    recordAttemptDiagnostic(handle, diagnosticInput): void {
+    recordAttemptDiagnostic(handle, diagnostic): void {
+      recorder.recordDispatchDiagnostic(handle, diagnostic)
+    },
+
+    settleAttempt(handle, settlement): void {
+      recorder.settleDispatch(handle, settlement)
+    },
+
+    settleCandidate(handle, settlement): void {
       assertWritable()
-      const attempt = getAttempt(handle)
-      if (attempt.verdict !== undefined) throw new Error(`[model-operation-record] attempt already settled: ${handle}`)
+      const candidate = getCandidate(handle)
+      if (candidate.verdict !== undefined) throw new Error(`[model-operation-record] candidate already settled: ${handle}`)
+      const openDispatches = candidate.dispatches.filter((dispatch) => getDispatch(dispatch).verdict === undefined)
+      if (openDispatches.length > 0) throw new Error(`[model-operation-record] candidate ${handle} has ${openDispatches.length} open dispatch(es)`)
+      candidate.verdict = settlement.verdict
+      candidate.settledSequence = nextSequence()
+      if (settlement.reason !== undefined) candidate.reason = settlement.reason
+    },
+
+    beginDispatch(dispatchInput): DispatchHandle {
+      assertWritable()
+      const candidate = getCandidate(dispatchInput.candidate)
+      if (candidate.verdict !== undefined) throw new Error(`[model-operation-record] candidate already settled: ${candidate.handle}`)
+      const handle = `dispatch:${dispatches.length}` as DispatchHandle
+      const dispatch: MutableDispatch = {
+        handle,
+        candidate: candidate.handle,
+        sequence: nextSequence(),
+        diagnostics: [],
+        ...(dispatchInput.strategy === undefined ? {} : { strategy: dispatchInput.strategy }),
+        ...(dispatchInput.transport === undefined ? {} : { transport: dispatchInput.transport }),
+        ...(dispatchInput.effectiveRequest === undefined ? {} : { effectiveRequest: freezeTrack(dispatchInput.effectiveRequest) }),
+        ...(dispatchInput.upstreamRequest === undefined ? {} : { upstreamRequest: freezeTrack(dispatchInput.upstreamRequest) }),
+        ...(dispatchInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(dispatchInput.metadata) }),
+        ...(dispatchInput.extensions === undefined ? {} : { extensions: freezeExtensions(dispatchInput.extensions) }),
+      }
+      dispatches.push(dispatch)
+      dispatchByHandle.set(handle, dispatch)
+      candidate.dispatches.push(handle)
+      return handle
+    },
+
+    setDispatchEffectiveRequest(handle, request): void {
+      assertWritable()
+      const dispatch = getDispatch(handle)
+      if (dispatch.verdict !== undefined) throw new Error(`[model-operation-record] dispatch already settled: ${handle}`)
+      if (dispatch.effectiveRequest !== undefined) throw new Error(`[model-operation-record] dispatch effective request already recorded: ${handle}`)
+      dispatch.effectiveRequest = freezeTrack(request)
+    },
+
+    setDispatchTransport(handle, transport): void {
+      assertWritable()
+      const dispatch = getDispatch(handle)
+      if (dispatch.verdict !== undefined) throw new Error(`[model-operation-record] dispatch already settled: ${handle}`)
+      dispatch.transport = transport
+    },
+
+    setDispatchUpstreamRequest(handle, request): void {
+      assertWritable()
+      const dispatch = getDispatch(handle)
+      if (dispatch.verdict !== undefined) throw new Error(`[model-operation-record] dispatch already settled: ${handle}`)
+      if (dispatch.upstreamRequest !== undefined) throw new Error(`[model-operation-record] dispatch upstream request already recorded: ${handle}`)
+      dispatch.upstreamRequest = freezeTrack(request)
+    },
+
+    recordDispatchDiagnostic(handle, diagnosticInput): void {
+      assertWritable()
+      const dispatch = getDispatch(handle)
+      if (dispatch.verdict !== undefined) throw new Error(`[model-operation-record] dispatch already settled: ${handle}`)
       requireNonEmpty(diagnosticInput.kind, "diagnostic.kind")
-      attempt.diagnostics.push(
+      dispatch.diagnostics.push(
         Object.freeze({
           sequence: nextSequence(),
           kind: diagnosticInput.kind,
@@ -761,23 +932,23 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       )
     },
 
-    settleAttempt(handle, settlement): void {
+    settleDispatch(handle, settlement): void {
       assertWritable()
-      const attempt = getAttempt(handle)
-      if (attempt.verdict !== undefined) throw new Error(`[model-operation-record] attempt already settled: ${handle}`)
-      if (settlement.verdict === "committed" && committedAttempt !== undefined) {
-        throw new Error(`[model-operation-record] attempt ${handle} cannot be committed: attempt ${committedAttempt} is already committed`)
+      const dispatch = getDispatch(handle)
+      if (dispatch.verdict !== undefined) throw new Error(`[model-operation-record] dispatch already settled: ${handle}`)
+      if (settlement.verdict === "committed" && committedDispatch !== undefined) {
+        throw new Error(`[model-operation-record] dispatch ${handle} cannot be committed: dispatch ${committedDispatch} is already committed`)
       }
-      attempt.verdict = settlement.verdict
-      attempt.settledSequence = nextSequence()
-      if (settlement.upstreamResponse !== undefined) attempt.upstreamResponse = freezeTrack(settlement.upstreamResponse)
-      if (settlement.reason !== undefined) attempt.reason = settlement.reason
-      if (settlement.error !== undefined) attempt.error = freezeCapturedValue(settlement.error)
+      dispatch.verdict = settlement.verdict
+      dispatch.settledSequence = nextSequence()
+      if (settlement.upstreamResponse !== undefined) dispatch.upstreamResponse = freezeTrack(settlement.upstreamResponse)
+      if (settlement.reason !== undefined) dispatch.reason = settlement.reason
+      if (settlement.error !== undefined) dispatch.error = freezeCapturedValue(settlement.error)
       if (settlement.metadata !== undefined) {
-        attempt.metadata = freezeCapturedValue({ ...(attempt.metadata as Readonly<Record<string, unknown>> | undefined), ...settlement.metadata })
+        dispatch.metadata = freezeCapturedValue({ ...(dispatch.metadata as Readonly<Record<string, unknown>> | undefined), ...settlement.metadata })
       }
-      if (settlement.extensions !== undefined) attempt.settlementExtensions = freezeExtensions(settlement.extensions)
-      if (settlement.verdict === "committed") committedAttempt = handle
+      if (settlement.extensions !== undefined) dispatch.settlementExtensions = freezeExtensions(settlement.extensions)
+      if (settlement.verdict === "committed") committedDispatch = handle
     },
 
     recordEgress(recordInput): void {
@@ -800,19 +971,33 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
 
     commitTerminal(terminalInput): ModelOperationRecord {
       assertWritable()
-      const openAttempts = attempts.filter((attempt) => attempt.verdict === undefined)
-      if (openAttempts.length > 0) throw new Error(`[model-operation-record] cannot commit terminal with ${openAttempts.length} open attempt(s)`)
-      if (terminalInput.committedAttempt !== undefined) {
-        const selected = getAttempt(terminalInput.committedAttempt)
-        if (selected.verdict !== "committed") {
-          throw new Error(`[model-operation-record] terminal committedAttempt must reference a committed attempt: ${terminalInput.committedAttempt}`)
+      if (legacyPrimaryCandidate !== undefined) {
+        const legacy = getCandidate(legacyPrimaryCandidate)
+        if (legacy.verdict === undefined) {
+          const legacyCommitted = legacy.dispatches.some((dispatch) => getDispatch(dispatch).verdict === "committed")
+          recorder.settleCandidate(legacy.handle, { verdict: legacyCommitted ? "winner" : "failed", reason: "attempt adapter terminal" })
         }
       }
-      const terminalCommittedAttempt = terminalInput.committedAttempt ?? committedAttempt
+      const openDispatches = dispatches.filter((dispatch) => dispatch.verdict === undefined)
+      if (openDispatches.length > 0) throw new Error(`[model-operation-record] cannot commit terminal with ${openDispatches.length} open dispatch(es)`)
+      const openCandidates = candidates.filter((candidate) => candidate.verdict === undefined)
+      if (openCandidates.length > 0) throw new Error(`[model-operation-record] cannot commit terminal with ${openCandidates.length} open candidate(s)`)
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- P4-P8 terminal adapter; canonical field is committedDispatch.
+      const requestedCommittedDispatch = terminalInput.committedDispatch ?? terminalInput.committedAttempt
+      if (requestedCommittedDispatch !== undefined) {
+        const selected = getDispatch(requestedCommittedDispatch)
+        if (selected.verdict !== "committed") {
+          throw new Error(`[model-operation-record] terminal committedDispatch must reference a committed dispatch: ${requestedCommittedDispatch}`)
+        }
+      }
+      const terminalCommittedDispatch = requestedCommittedDispatch ?? committedDispatch
+      const terminalWinnerCandidate =
+        terminalInput.winnerCandidate ?? (terminalCommittedDispatch === undefined ? undefined : getDispatch(terminalCommittedDispatch).candidate)
       terminal = Object.freeze({
         sequence: nextSequence(),
         outcome: terminalInput.outcome,
-        ...(terminalCommittedAttempt === undefined ? {} : { committedAttempt: terminalCommittedAttempt }),
+        ...(terminalWinnerCandidate === undefined ? {} : { winnerCandidate: terminalWinnerCandidate }),
+        ...(terminalCommittedDispatch === undefined ? {} : { committedDispatch: terminalCommittedDispatch, committedAttempt: terminalCommittedDispatch }),
         ...(terminalInput.error === undefined ? {} : { error: freezeCapturedValue(terminalInput.error) }),
         ...(terminalInput.usage === undefined ? {} : { usage: freezeCapturedValue(terminalInput.usage) }),
         ...(terminalInput.attribution === undefined ? {} : { attribution: Object.freeze({ ...terminalInput.attribution }) }),

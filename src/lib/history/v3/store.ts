@@ -8,7 +8,11 @@ import type {
 
 import type { Database } from "../sqlite/connection"
 
-import { compressBytes, decompressBytes } from "../sqlite/compression"
+import {
+  //
+  compressBytes,
+  decompressBytes,
+} from "../sqlite/compression"
 import { getDatabase } from "../sqlite/connection"
 
 const FORMAT_VERSION = 1
@@ -47,7 +51,7 @@ interface PreparedOperation {
   manifest: Uint8Array
   compressedManifest: Uint8Array
   compressedJournalRecord: Uint8Array
-  objects: PreparedObject[]
+  objects: Array<PreparedObject>
   tracks: Array<{ name: string; attemptIndex: number; refs: string }>
   timeline: Array<{ chunkIndex: number; firstSequence: number; lastSequence: number; payload: Uint8Array; compressed: Uint8Array }>
   searchObjects: Array<{ hash: string; document: string }>
@@ -60,7 +64,7 @@ interface PendingOperation {
   resolve: () => void
 }
 
-const pending: PendingOperation[] = []
+const pending: Array<PendingOperation> = []
 const pendingDrains = new Set<Promise<void>>()
 let pendingBytes = 0
 let draining = false
@@ -145,11 +149,15 @@ function canonicalize(value: unknown): string {
   const seen = new WeakSet<object>()
   const normalize = (input: unknown): unknown => {
     if (input === null || typeof input !== "object") return input
-    if (seen.has(input as object)) throw new Error("[history/v3] cyclic semantic value")
-    seen.add(input as object)
-    if (Array.isArray(input)) return input.map(normalize)
+    if (seen.has(input)) throw new Error("[history/v3] cyclic semantic value")
+    seen.add(input)
+    if (Array.isArray(input)) return input.map((value) => normalize(value))
     if (ArrayBuffer.isView(input)) return { $bytes: Buffer.from(input.buffer, input.byteOffset, input.byteLength).toString("base64") }
-    return Object.fromEntries(Object.entries(input).sort(([a], [b]) => a.localeCompare(b)).map(([key, nested]) => [key, normalize(nested)]))
+    return Object.fromEntries(
+      Object.entries(input)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, normalize(nested)]),
+    )
   }
   return JSON.stringify(normalize(value))
 }
@@ -170,14 +178,18 @@ function refs(track: { payload?: string; frames: ReadonlyArray<string> } | undef
 function collectTracks(record: ModelOperationRecord): PreparedOperation["tracks"] {
   const out: PreparedOperation["tracks"] = []
   if (record.ingress) out.push({ name: "client-ingress", attemptIndex: -1, refs: refs(record.ingress.request) })
-  for (const [index, attempt] of record.attempts.entries()) {
-    out.push({ name: "effective-request", attemptIndex: index, refs: refs(attempt.effectiveRequest) })
-    out.push({ name: "upstream-request", attemptIndex: index, refs: refs(attempt.upstreamRequest) })
-    out.push({ name: "upstream-response", attemptIndex: index, refs: refs(attempt.upstreamResponse) })
+  for (const [index, attempt] of record.dispatches.entries()) {
+    out.push(
+      { name: "effective-request", attemptIndex: index, refs: refs(attempt.effectiveRequest) },
+      { name: "upstream-request", attemptIndex: index, refs: refs(attempt.upstreamRequest) },
+      { name: "upstream-response", attemptIndex: index, refs: refs(attempt.upstreamResponse) },
+    )
   }
   if (record.egress) {
-    out.push({ name: "upstream-egress", attemptIndex: -1, refs: refs(record.egress.upstream) })
-    out.push({ name: "client-egress", attemptIndex: -1, refs: refs(record.egress.client) })
+    out.push(
+      { name: "upstream-egress", attemptIndex: -1, refs: refs(record.egress.upstream) },
+      { name: "client-egress", attemptIndex: -1, refs: refs(record.egress.client) },
+    )
   }
   return out
 }
@@ -186,19 +198,19 @@ function references(record: ModelOperationRecord): Set<string> {
   const handles = new Set<string>()
   const add = (reference: ArenaNodeReference): void => void handles.add(reference.handle)
   for (const transform of record.transforms) {
-    transform.inputs.forEach(add)
-    transform.outputs.forEach(add)
+    for (const input of transform.inputs) add(input)
+    for (const output of transform.outputs) add(output)
   }
   const addTrack = (track: { payload?: string; frames: ReadonlyArray<string> } | undefined): void => {
     if (track?.payload) handles.add(track.payload)
-    track?.frames.forEach((handle) => handles.add(handle))
+    for (const handle of track?.frames ?? []) handles.add(handle)
   }
   if (record.ingress) addTrack(record.ingress.request)
-  record.attempts.forEach((attempt) => {
+  for (const attempt of record.dispatches) {
     addTrack(attempt.effectiveRequest)
     addTrack(attempt.upstreamRequest)
     addTrack(attempt.upstreamResponse)
-  })
+  }
   if (record.egress) {
     addTrack(record.egress.upstream)
     addTrack(record.egress.client)
@@ -223,8 +235,8 @@ export function prepareModelOperation(record: ModelOperationRecord): PreparedOpe
     ...record.arena.frames.map((node) => objectHash("frame", node.value)),
   ]
   const objectHashes = new Map<string, string>()
-  record.arena.payloads.forEach((node, index) => objectHashes.set(node.handle, objects[index].hash))
-  record.arena.frames.forEach((node, index) => objectHashes.set(node.handle, objects[record.arena.payloads.length + index].hash))
+  for (const [index, node] of record.arena.payloads.entries()) objectHashes.set(node.handle, objects[index].hash)
+  for (const [index, node] of record.arena.frames.entries()) objectHashes.set(node.handle, objects[record.arena.payloads.length + index].hash)
   // Values live only in v3_objects. The manifest retains node metadata + the
   // handle→hash map, avoiding a second full copy of every payload/frame.
   const manifestValue = {
@@ -242,7 +254,7 @@ export function prepareModelOperation(record: ModelOperationRecord): PreparedOpe
     ...record.arena.payloads.map((node) => ({ sequence: node.sequence, type: "payload", handle: node.handle })),
     ...record.arena.frames.map((node) => ({ sequence: node.sequence, type: "frame", handle: node.handle })),
     ...record.transforms.map((event) => ({ sequence: event.sequence, type: "transform", value: event })),
-    ...record.attempts.flatMap((attempt) => [
+    ...record.dispatches.flatMap((attempt) => [
       { sequence: attempt.sequence, type: "attempt", handle: attempt.handle },
       ...attempt.diagnostics.map((diagnostic) => ({ sequence: diagnostic.sequence, type: "diagnostic", value: diagnostic })),
       ...(attempt.settledSequence ? [{ sequence: attempt.settledSequence, type: "attempt-settled", handle: attempt.handle, verdict: attempt.verdict }] : []),
@@ -299,7 +311,9 @@ function insertObject(db: Database, object: PreparedObject): void {
 
 export function commitPreparedOperation(db: Database, prepared: PreparedOperation): "inserted" | "idempotent" {
   db.exec(V3_SCHEMA_SQL)
-  const existing = db.prepare("SELECT revision,digest FROM v3_operations WHERE operation_id = ?").get(prepared.id) as { revision: number; digest: string } | undefined
+  const existing = db.prepare("SELECT revision,digest FROM v3_operations WHERE operation_id = ?").get(prepared.id) as
+    | { revision: number; digest: string }
+    | undefined
   if (existing) {
     if (existing.revision === prepared.revision && existing.digest === prepared.digest) return "idempotent"
     status = { ...status, conflicts: status.conflicts + 1, lastError: `operation conflict: ${prepared.id}` }
@@ -308,17 +322,14 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
   // Journal is self-contained: operation tx rollback may remove every CAS object,
   // so recovery cannot depend on value-stripped manifest + v3_objects.
   const journalPayload = prepared.compressedJournalRecord
-  db.prepare("INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error) VALUES(?,?,?,?,?,?,NULL,NULL)").run(
-    prepared.id,
-    prepared.revision,
-    prepared.digest,
-    "terminal",
-    journalPayload,
-    Date.now(),
-  )
+  db.prepare(
+    "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error) VALUES(?,?,?,?,?,?,NULL,NULL)",
+  ).run(prepared.id, prepared.revision, prepared.digest, "terminal", journalPayload, Date.now())
   const tx = db.transaction(() => {
     for (const object of prepared.objects) insertObject(db, object)
-    db.prepare("INSERT INTO v3_operations(operation_id,revision,digest,kind,created_at,terminal_sequence,manifest_gz,committed_at) VALUES(?,?,?,?,?,?,?,?)").run(
+    db.prepare(
+      "INSERT INTO v3_operations(operation_id,revision,digest,kind,created_at,terminal_sequence,manifest_gz,committed_at) VALUES(?,?,?,?,?,?,?,?)",
+    ).run(
       prepared.id,
       prepared.revision,
       prepared.digest,
@@ -341,12 +352,9 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
         insertMembership.run(prepared.id, object.hash)
       }
     } catch (error) {
-      db.prepare("INSERT OR REPLACE INTO v3_search_backlog(operation_id,reason,attempts,updated_at) VALUES(?,?,COALESCE((SELECT attempts FROM v3_search_backlog WHERE operation_id=?),0)+1,?)").run(
-        prepared.id,
-        error instanceof Error ? error.message : String(error),
-        prepared.id,
-        Date.now(),
-      )
+      db.prepare(
+        "INSERT OR REPLACE INTO v3_search_backlog(operation_id,reason,attempts,updated_at) VALUES(?,?,COALESCE((SELECT attempts FROM v3_search_backlog WHERE operation_id=?),0)+1,?)",
+      ).run(prepared.id, error instanceof Error ? error.message : String(error), prepared.id, Date.now())
     }
     // Once the operation transaction commits, the durable manifest + CAS objects are the
     // recovery source. Keeping the self-contained journal payload after this point would
@@ -370,7 +378,8 @@ async function runDrain(): Promise<void> {
   draining = true
   try {
     while (pending.length > 0) {
-      const item = pending.shift()!
+      const item = pending.shift()
+      if (!item) continue
       pendingBytes -= item.estimatedBytes
       status = { ...status, pendingOperations: pending.length, pendingBytes }
       try {
@@ -404,17 +413,15 @@ export function enqueueModelOperation(record: ModelOperationRecord): Promise<voi
   pending.push({ record, estimatedBytes, resolve })
   pendingBytes += estimatedBytes
   status = { ...status, pendingOperations: pending.length, pendingBytes }
-  let drain: Promise<void>
-  drain = runDrain()
-    .catch(() => undefined)
-    .finally(() => pendingDrains.delete(drain))
+  const drain = runDrain().catch(() => undefined)
   pendingDrains.add(drain)
+  void drain.finally(() => pendingDrains.delete(drain))
   return done
 }
 
 export async function drainV3Writer(): Promise<void> {
   while (pending.length > 0 || pendingDrains.size > 0) {
-    await Promise.allSettled([...pendingDrains])
+    await Promise.allSettled(pendingDrains)
     if (pending.length > 0) await runDrain()
   }
 }
@@ -440,10 +447,11 @@ export function getV3Operation(operationId: string): ModelOperationRecord | unde
   return getV3StoredOperation(operationId)?.record
 }
 
-export function listV3StoredOperations(kind?: string, limit = 100): V3StoredOperation[] {
+export function listV3StoredOperations(kind?: string, limit = 100): Array<V3StoredOperation> {
   const db = getDatabase()
   db.exec(V3_SCHEMA_SQL)
-  const rows = kind ?
+  const rows =
+    kind ?
       db.prepare("SELECT manifest_gz,pinned FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ?").all(kind, limit)
     : db.prepare("SELECT manifest_gz,pinned FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ?").all(limit)
   return (rows as Array<{ manifest_gz: Uint8Array; pinned: number }>).map((row) => ({
@@ -452,7 +460,7 @@ export function listV3StoredOperations(kind?: string, limit = 100): V3StoredOper
   }))
 }
 
-export function listV3Operations(kind?: string, limit = 100): ModelOperationRecord[] {
+export function listV3Operations(kind?: string, limit = 100): Array<ModelOperationRecord> {
   return listV3StoredOperations(kind, limit).map(({ record }) => record)
 }
 
@@ -465,13 +473,18 @@ export function setV3OperationPinned(operationId: string, pinned: boolean): bool
   return true
 }
 
-export function searchV3OperationIds(query: string, kind: string | undefined, limit: number): string[] {
-  const rows = kind ?
+export function searchV3OperationIds(query: string, kind: string | undefined, limit: number): Array<string> {
+  const rows =
+    kind ?
       getDatabase()
-        .prepare("SELECT m.operation_id,s.document_gz FROM v3_search_objects s JOIN v3_search_membership m ON m.object_hash=s.object_hash JOIN v3_operations o ON o.operation_id=m.operation_id WHERE o.kind=? ORDER BY o.created_at DESC")
+        .prepare(
+          "SELECT m.operation_id,s.document_gz FROM v3_search_objects s JOIN v3_search_membership m ON m.object_hash=s.object_hash JOIN v3_operations o ON o.operation_id=m.operation_id WHERE o.kind=? ORDER BY o.created_at DESC",
+        )
         .all(kind)
     : getDatabase()
-        .prepare("SELECT m.operation_id,s.document_gz FROM v3_search_objects s JOIN v3_search_membership m ON m.object_hash=s.object_hash JOIN v3_operations o ON o.operation_id=m.operation_id ORDER BY o.created_at DESC")
+        .prepare(
+          "SELECT m.operation_id,s.document_gz FROM v3_search_objects s JOIN v3_search_membership m ON m.object_hash=s.object_hash JOIN v3_operations o ON o.operation_id=m.operation_id ORDER BY o.created_at DESC",
+        )
         .all()
   const needle = query.toLowerCase()
   const matched = new Set<string>()
@@ -482,8 +495,11 @@ export function searchV3OperationIds(query: string, kind: string | undefined, li
   return [...matched]
 }
 
-export function containingV3OperationIds(objectHash: string): string[] {
-  const rows = getDatabase().prepare("SELECT operation_id,manifest_gz FROM v3_operations ORDER BY operation_id").all() as Array<{ operation_id: string; manifest_gz: Uint8Array }>
+export function containingV3OperationIds(objectHash: string): Array<string> {
+  const rows = getDatabase().prepare("SELECT operation_id,manifest_gz FROM v3_operations ORDER BY operation_id").all() as Array<{
+    operation_id: string
+    manifest_gz: Uint8Array
+  }>
   return rows
     .filter((row) => {
       const manifest = JSON.parse(decoder.decode(decompressBytes(row.manifest_gz))) as { objectHashes?: Record<string, string> }
@@ -544,7 +560,11 @@ export function recoverV3Journal(db: Database = getDatabase()): number {
       commitPreparedOperation(db, prepared)
       recovered++
     } catch (error) {
-      db.prepare("UPDATE v3_journal SET error=? WHERE operation_id=? AND revision=?").run(error instanceof Error ? error.message : String(error), row.operation_id, row.revision)
+      db.prepare("UPDATE v3_journal SET error=? WHERE operation_id=? AND revision=?").run(
+        error instanceof Error ? error.message : String(error),
+        row.operation_id,
+        row.revision,
+      )
     }
   }
   return recovered

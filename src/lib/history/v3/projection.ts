@@ -89,7 +89,7 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
     | { model?: string; messages?: Array<unknown>; stream?: boolean; tools?: Array<unknown>; system?: unknown; payload?: unknown }
     | undefined
   const clientBody = payload(values, record.ingress?.request)
-  const attempts = record.attempts.map((attempt, index) => {
+  const attempts = record.dispatches.map((attempt, index) => {
     const effectiveMeta = metadata(attempt.effectiveRequest?.metadata)
     const requestMeta = metadata(attempt.upstreamRequest?.metadata)
     const responseMeta = metadata(attempt.upstreamResponse?.metadata) as
@@ -125,7 +125,7 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
         usage: projectUsage(
           response?.usage
             ?? responseMeta?.usage
-            ?? (index === record.attempts.length - 1 ? (record.terminal?.usage as Record<string, unknown> | undefined) : undefined),
+            ?? (index === record.dispatches.length - 1 ? (record.terminal?.usage as Record<string, unknown> | undefined) : undefined),
         ),
         stopReason: response?.stop_reason,
         model: response?.model ?? record.routing?.resolvedModel,
@@ -221,7 +221,10 @@ export function recordToEntrySummary(record: ModelOperationRecord, stored: { pin
 
 export function recordMatchesQuery(record: ModelOperationRecord, options: QueryOptions & { operationKind?: string }): boolean {
   if (options.operationKind && options.operationKind !== "all") {
-    const matchesKind = options.operationKind === "generation" ? record.identity.kind === "generation" || record.identity.kind === "responses_ws" : record.identity.kind === options.operationKind
+    const matchesKind =
+      options.operationKind === "generation" ?
+        record.identity.kind === "generation" || record.identity.kind === "responses_ws"
+      : record.identity.kind === options.operationKind
     if (!matchesKind) return false
   }
   if (options.sessionId && record.identity.sessionId !== options.sessionId) return false

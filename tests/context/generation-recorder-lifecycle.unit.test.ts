@@ -204,14 +204,14 @@ describe("RequestContext generation terminal ordering", () => {
     ctx.finalizeModelOperationDelivery({ clientPayload: { type: "error", error: { message: "bad beta" } } })
 
     const record = ctx.modelOperationTerminalRecord!
-    const upstreamHandle = record.attempts[0]?.upstreamResponse?.payload
+    const upstreamHandle = record.dispatches[0]?.upstreamResponse?.payload
     expect(record.arena.payloads.find((node) => node.handle === upstreamHandle)?.value).toBe(rawBody)
     // Intentionally exercise the persistence-neutral JSON wire round-trip, not merely cloning.
     // eslint-disable-next-line unicorn/prefer-structured-clone
     const roundTripped = JSON.parse(JSON.stringify(record)) as typeof record
-    expect(roundTripped.attempts[0]?.error).toMatchObject({ name: "HTTPError", message: "bad beta", status: 400, responseText: rawBody })
+    expect(roundTripped.dispatches[0]?.error).toMatchObject({ name: "HTTPError", message: "bad beta", status: 400, responseText: rawBody })
     expect(roundTripped.terminal?.error).toMatchObject({ name: "HTTPError", message: "bad beta", status: 400, responseText: rawBody })
-    expect(roundTripped.attempts[0]?.error).toHaveProperty("stack")
+    expect(roundTripped.dispatches[0]?.error).toHaveProperty("stack")
   })
 
   test("preserves the complete upstream envelope when a semantic response receives a failed verdict", () => {
@@ -236,7 +236,7 @@ describe("RequestContext generation terminal ordering", () => {
     ctx.finalizeModelOperationDelivery({ clientPayload: sourceBody })
 
     const record = ctx.modelOperationTerminalRecord!
-    const upstreamHandle = record.attempts[0]?.upstreamResponse?.payload
+    const upstreamHandle = record.dispatches[0]?.upstreamResponse?.payload
     expect(record.arena.payloads.find((node) => node.handle === upstreamHandle)?.value).toEqual(sourceBody)
     expect(record.terminal?.outcome).toBe("failed")
   })
