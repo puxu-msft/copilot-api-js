@@ -6,6 +6,7 @@ import pino from "pino"
 import buildRoll from "pino-roll"
 
 import type { DiagnosticEvent } from "~/lib/diagnostics"
+import type { DiagnosticLevelThreshold } from "~/lib/diagnostics"
 import type {
   //
   ObservabilityBus,
@@ -13,6 +14,7 @@ import type {
 } from "~/lib/observability"
 import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
+import { isDiagnosticLevelEnabled } from "~/lib/diagnostics"
 import { writeEmergencyFallback } from "~/lib/diagnostics/emergency-output"
 import { getProcessIdentityQuiet } from "~/lib/process-identity"
 
@@ -25,6 +27,7 @@ export interface StructuredFileSinkOptions {
   maxSizeBytes?: number
   maxLengthBytes?: number
   maxFilesPerProcess?: number
+  level?: DiagnosticLevelThreshold | (() => DiagnosticLevelThreshold)
 }
 
 export class StructuredFileSink {
@@ -36,11 +39,19 @@ export class StructuredFileSink {
   private state: "ready" | "degraded" | "sealing" | "closed" = "ready"
   private droppedRecords = 0
   private writesSincePrune = 0
+  private readonly level: DiagnosticLevelThreshold | (() => DiagnosticLevelThreshold)
 
-  private constructor(directory: string, baseName: string, destination: PinoRollDestination, maxFilesPerProcess: number) {
+  private constructor(
+    directory: string,
+    baseName: string,
+    destination: PinoRollDestination,
+    maxFilesPerProcess: number,
+    level: DiagnosticLevelThreshold | (() => DiagnosticLevelThreshold),
+  ) {
     this.destination = destination
     this.baseName = baseName
     this.maxFilesPerProcess = maxFilesPerProcess
+    this.level = level
     this.logger = pino(
       {
         base: null,
@@ -73,7 +84,7 @@ export class StructuredFileSink {
     const baseName = path.join(options.directory, `copilot-api-${identity.bootTime}-${identity.pid}.ndjson`)
     const destination = await buildRoll({
       file: baseName,
-      size: options.maxSizeBytes ?? 10 * 1024 * 1024,
+      ...((options.maxSizeBytes ?? 10 * 1024 * 1024) > 0 && { size: options.maxSizeBytes ?? 10 * 1024 * 1024 }),
       frequency: "daily",
       dateFormat: "yyyy-MM-dd",
       mkdir: true,
@@ -89,7 +100,7 @@ export class StructuredFileSink {
       })
     }
     if (destination.file) fs.chmodSync(destination.file, 0o600)
-    const sink = new StructuredFileSink(options.directory, baseName, destination, options.maxFilesPerProcess ?? 7)
+    const sink = new StructuredFileSink(options.directory, baseName, destination, options.maxFilesPerProcess ?? 7, options.level ?? "debug")
     sink.pruneOwnSegments()
     return sink
   }
@@ -124,6 +135,8 @@ export class StructuredFileSink {
   private handle(event: ObservabilityEvent): void {
     if (this.state !== "ready") return
     if (event.kind === "system.diagnostic") {
+      const threshold = typeof this.level === "function" ? this.level() : this.level
+      if (!isDiagnosticLevelEnabled(event.diagnostic.severity, threshold)) return
       this.writeRecord({ recordType: "diagnostic", diagnostic: event.diagnostic })
       return
     }

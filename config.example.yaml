@@ -193,3 +193,18 @@
 # unknown_endpoint_logging:
 #   not_found: warn
 #   method_not_allowed: warn
+
+# ============================================================================
+# Structured diagnostics and terminal UI
+# ============================================================================
+# logging:
+#   terminal_level: info # hot-reloadable
+#   file_level: debug # hot-reloadable
+#   file:
+#     enabled: true # restart required
+#     directory: "" # empty = $APP_DIR/logs/diagnostic
+#     max_size_mb: 10 # 0 = no size rolling
+#     max_files_per_process: 7 # 0 = unlimited
+#     retention_days: 7 # 0 = no age retention
+# tui:
+#   enabled: true # restart required; CLI --no-tui wins

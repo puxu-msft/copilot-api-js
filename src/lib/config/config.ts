@@ -12,6 +12,7 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import { z } from "zod"
 
+import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 import {
   //
   type BufferedRetryCaps,
@@ -26,6 +27,7 @@ import {
   setDisabledModels,
   setHistoryConfig,
   setHooksConfig,
+  setLoggingConfig,
   setModelMappings,
   setModelTranslation,
   setNegotiationConfig,
@@ -35,6 +37,7 @@ import {
   setTelemetryConfig,
   setTimeoutConfig,
   setTimeoutOverridesConfig,
+  setTuiEnabled,
   setUnknownEndpointLogging,
   state,
 } from "~/lib/state"
@@ -44,8 +47,6 @@ import type {
   EndpointScope,
   SystemPromptEntry,
 } from "./schema"
-
-import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
@@ -803,13 +804,14 @@ export async function applyConfigToState(): Promise<Config> {
       if (!hasApplied) {
         setHistoryConfig({ historyEnabled: h.enabled })
       } else if (h.enabled !== state.historyEnabled) {
-        consola.warn(`[config] history.enabled=${h.enabled} requires a restart to take effect (running instance stays ${state.historyEnabled}); ignoring for now`)
+        consola.warn(
+          `[config] history.enabled=${h.enabled} requires a restart to take effect (running instance stays ${state.historyEnabled}); ignoring for now`,
+        )
       }
     }
     if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
     if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
     if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
-
   }
 
   // Telemetry settings (telemetry.*, nested: override only when present). Business-layer
@@ -867,7 +869,11 @@ export async function applyConfigToState(): Promise<Config> {
     // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
     // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
     // than inferred. Pure observation — reads state, records a diff, no behavior change.
-    const timeoutBefore = { staleRequestMaxAge: state.staleRequestMaxAge, responseHeaderTimeout: state.responseHeaderTimeout, streamIdleTimeout: state.streamIdleTimeout }
+    const timeoutBefore = {
+      staleRequestMaxAge: state.staleRequestMaxAge,
+      responseHeaderTimeout: state.responseHeaderTimeout,
+      streamIdleTimeout: state.streamIdleTimeout,
+    }
     const t = config.timeouts
     if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
     if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
@@ -885,7 +891,11 @@ export async function applyConfigToState(): Promise<Config> {
         responseHeaderTimeoutOverrides: normalizeModelKeyedRecord(t.response_header_overrides, "timeouts.response_header_overrides"),
       })
     }
-    recordConfigReloadTimeoutDiff(timeoutBefore, { staleRequestMaxAge: state.staleRequestMaxAge, responseHeaderTimeout: state.responseHeaderTimeout, streamIdleTimeout: state.streamIdleTimeout })
+    recordConfigReloadTimeoutDiff(timeoutBefore, {
+      staleRequestMaxAge: state.staleRequestMaxAge,
+      responseHeaderTimeout: state.responseHeaderTimeout,
+      streamIdleTimeout: state.streamIdleTimeout,
+    })
   }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 
@@ -912,6 +922,20 @@ export async function applyConfigToState(): Promise<Config> {
       methodNotAllowed: u.method_not_allowed ?? state.unknownEndpointLogging.methodNotAllowed,
     })
   }
+
+  if (config.logging) {
+    const logging = config.logging
+    setLoggingConfig({
+      ...(logging.terminal_level !== undefined && { terminalLevel: logging.terminal_level }),
+      ...(logging.file_level !== undefined && { fileLevel: logging.file_level }),
+      ...(logging.file?.enabled !== undefined && { fileEnabled: logging.file.enabled }),
+      ...(logging.file?.directory !== undefined && { fileDirectory: logging.file.directory }),
+      ...(logging.file?.max_size_mb !== undefined && { fileMaxSizeMb: logging.file.max_size_mb }),
+      ...(logging.file?.max_files_per_process !== undefined && { fileMaxFilesPerProcess: logging.file.max_files_per_process }),
+      ...(logging.file?.retention_days !== undefined && { retentionDays: logging.file.retention_days }),
+    })
+  }
+  if (config.tui?.enabled !== undefined) setTuiEnabled(config.tui.enabled)
 
   // Responses API settings (scalar: override only when present)
   const responsesConfig = config.openai_responses

@@ -1,4 +1,6 @@
 export { createDiagnosticEvent, diagnosticConsolaType, diagnosticValueText, projectDiagnosticArgument } from "./event"
+export type { DiagnosticLevelThreshold } from "./level"
+export { isDiagnosticLevelEnabled } from "./level"
 export type { DiagnosticBindings, DiagnosticLogger } from "./logger"
 export { createDiagnosticLogger, getDiagnosticLogger, initDiagnosticLogger, resetDiagnosticLoggerForTests } from "./logger"
 export { redactDiagnosticFields, redactDiagnosticText, redactDiagnosticValue } from "./redaction"

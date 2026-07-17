@@ -38,6 +38,14 @@ export async function shutdownStructuredFileSink(): Promise<void> {
   spool?.closeDurably()
 }
 
+export function disableStructuredFileLogging(): void {
+  const spool = activeSpool
+  activeSpool = undefined
+  if (!spool) return
+  spool.retireAndRead()
+  spool.removeDurably()
+}
+
 export function resetStructuredFileSinkForTests(): void {
   activeSink = undefined
   activeSpool = undefined

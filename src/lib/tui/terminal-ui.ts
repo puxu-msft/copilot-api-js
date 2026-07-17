@@ -1,5 +1,6 @@
 import consola from "consola"
 
+import type { DiagnosticLevelThreshold } from "~/lib/diagnostics"
 import type {
   //
   ObservabilityBus,
@@ -8,6 +9,7 @@ import type {
 
 type NonRequestEvent = Exclude<ObservabilityEvent, { kind: `request.${string}` }>
 
+import { isDiagnosticLevelEnabled } from "~/lib/diagnostics"
 import { assertNever } from "~/lib/observability"
 import { handleShutdownSignal } from "~/lib/shutdown"
 
@@ -48,6 +50,7 @@ export interface TerminalUiOptions {
   refreshIntervalMs?: number
   /** Injectable wall clock for deterministic event/render tests. */
   now?: () => number
+  diagnosticLevel?: DiagnosticLevelThreshold | (() => DiagnosticLevelThreshold)
   silent?: boolean
   stdin?: NodeJS.ReadStream
   onShutdownSignal?: (signal: string) => void
@@ -65,6 +68,7 @@ export class TerminalUi {
   private readonly silent: boolean
   private readonly isTTY: boolean
   private readonly onShutdownSignal: (signal: string) => void
+  private readonly diagnosticLevel: DiagnosticLevelThreshold | (() => DiagnosticLevelThreshold)
   private readonly decoder: KeyDecoder
   private readonly session: TerminalSession
   private readonly view: TerminalView
@@ -85,6 +89,7 @@ export class TerminalUi {
     this.now = options.now ?? Date.now
     this.silent = options.silent ?? false
     this.onShutdownSignal = options.onShutdownSignal ?? handleShutdownSignal
+    this.diagnosticLevel = options.diagnosticLevel ?? "info"
     const getColumns = numericSource(options.columns, () => (stdout as Partial<{ columns: number }>).columns, 80)
     const getRows = numericSource(options.rows, () => (stdout as Partial<{ rows: number }>).rows, 24)
 
@@ -151,6 +156,8 @@ export class TerminalUi {
   private handleNonRequest(event: NonRequestEvent): void {
     switch (event.kind) {
       case "system.diagnostic": {
+        const threshold = typeof this.diagnosticLevel === "function" ? this.diagnosticLevel() : this.diagnosticLevel
+        if (!isDiagnosticLevelEnabled(event.diagnostic.severity, threshold)) return
         this.view.printLine(renderSystemLogLine(event.diagnostic))
         this.render()
         return

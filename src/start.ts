@@ -2,6 +2,7 @@
 
 import { defineCommand } from "citty"
 import consola from "consola"
+import path from "node:path"
 import pc from "picocolors"
 import { getProxyForUrl } from "proxy-from-env"
 
@@ -35,6 +36,7 @@ import {
   //
   attachBootstrapDiagnosticSpool,
   attachStructuredFileSink,
+  disableStructuredFileLogging,
 } from "./lib/diagnostics/file"
 import {
   //
@@ -276,7 +278,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   initDiagnosticLogger(systemPublisher)
   // Explicitly pass process.stdin so the interactive raw-mode panel gates on
   // (evaluator §3): tests that omit stdin stay on the non-interactive P0 path.
-  attachTerminalUi(bus, options.tui ? { stdin: process.stdin } : { isTTY: false })
+  let detachTerminalUi = attachTerminalUi(bus, { isTTY: false, diagnosticLevel: () => state.logging.terminalLevel })
   attachBootstrapDiagnosticSpool(bus, PATHS.DIAGNOSTIC_LOG_DIR)
   installConsolaRepublish(systemPublisher)
 
@@ -326,12 +328,36 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const config = await applyConfigToState()
 
-  try {
-    await attachStructuredFileSink(bus, { directory: PATHS.DIAGNOSTIC_LOG_DIR })
-  } catch (error) {
-    // The secure per-boot spool remains crash-recoverable. Never fall back to
-    // the retired shared rotating file, which is unsafe during process overlap.
-    consola.error("Structured diagnostic file initialization failed; retaining secure bootstrap spool:", error)
+  // Boot diagnostics were shown once through the plain owner. Acquire raw-mode
+  // TUI only after config is frozen; the synchronous swap has no publish gap.
+  detachTerminalUi()
+  detachTerminalUi = attachTerminalUi(
+    bus,
+    options.tui && state.tuiEnabled ?
+      { stdin: process.stdin, diagnosticLevel: () => state.logging.terminalLevel }
+    : {
+        isTTY: false,
+        diagnosticLevel: () => state.logging.terminalLevel,
+      },
+  )
+
+  if (state.logging.fileEnabled) {
+    try {
+      const directory = state.logging.fileDirectory ? path.resolve(state.logging.fileDirectory) : PATHS.DIAGNOSTIC_LOG_DIR
+      const sink = await attachStructuredFileSink(bus, {
+        directory,
+        maxSizeBytes: state.logging.fileMaxSizeMb * 1024 * 1024,
+        maxFilesPerProcess: state.logging.fileMaxFilesPerProcess,
+        level: () => state.logging.fileLevel,
+      })
+      consola.info(`Structured diagnostics: ${sink.health.activePath}`)
+    } catch (error) {
+      // The secure per-boot spool remains crash-recoverable. Never fall back to
+      // the retired shared rotating file, which is unsafe during process overlap.
+      consola.error("Structured diagnostic file initialization failed; retaining secure bootstrap spool:", error)
+    }
+  } else {
+    disableStructuredFileLogging()
   }
 
   // Deprecation: ANTHROPIC_API_KEY previously routed count_tokens for Claude
@@ -622,6 +648,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     // process.exit(0) in main.ts (needed for one-shot commands).
     await waitForShutdown()
   } finally {
+    detachTerminalUi()
     stopModelRefreshLoop()
     // Bare-metal pidfile cleanup — compare-and-delete (B2): a takeover already
     // overwrote this same path with the successor's pid, so an unconditional
