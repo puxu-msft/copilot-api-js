@@ -1,6 +1,5 @@
 import consola from "consola"
 
-import { state } from "~/lib/state"
 import {
   //
   getDeviceCode,
@@ -46,7 +45,7 @@ export class DeviceAuthProvider extends GitHubTokenProvider {
       consola.info("Not logged in, starting device authorization flow...")
 
       const response = await getDeviceCode()
-      consola.debug("Device code response:", response)
+      consola.debug(`Device authorization started (expires_in=${response.expires_in}s interval=${response.interval}s)`)
 
       consola.info(`Please enter the code "${response.user_code}" at ${response.verification_uri}`)
 
@@ -54,11 +53,6 @@ export class DeviceAuthProvider extends GitHubTokenProvider {
 
       // Save to file for future sessions
       await this.fileProvider.saveToken(token)
-
-      // Show token if configured
-      if (state.showGitHubToken) {
-        consola.info("GitHub token:", token)
-      }
 
       return {
         token,

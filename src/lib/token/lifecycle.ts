@@ -15,6 +15,7 @@ import {
   setTokenState,
   state,
 } from "~/lib/state"
+import { writeSensitiveOnce } from "~/lib/tui/sensitive-output"
 
 import { CopilotTokenManager } from "./copilot-token-manager"
 import { getGitHubUser } from "./github-client"
@@ -73,8 +74,8 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
   }
 
   // Show token if configured
-  if (state.showGitHubToken) {
-    consola.info("GitHub token:", tokenInfo.token)
+  if (state.showGitHubToken && !writeSensitiveOnce("github-token", "GitHub token", tokenInfo.token)) {
+    consola.warn("GitHub token display requested, but no healthy interactive terminal is available")
   }
 
   // Validate and show user info

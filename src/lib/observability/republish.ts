@@ -19,6 +19,7 @@
  */
 
 import consola from "consola"
+import stringify from "safe-stable-stringify"
 
 import { emergencyWrite } from "~/lib/tui/terminal-coordinator"
 
@@ -38,9 +39,19 @@ interface ConsolaReporter {
 function joinArgs(args: Array<unknown>): string {
   return args
     .map((arg) => {
-      if (typeof arg === "string") return arg
-      if (arg instanceof Error) return arg.stack ?? arg.message
-      return JSON.stringify(arg)
+      try {
+        if (typeof arg === "string") return arg
+        if (typeof arg === "bigint") return `${arg}n`
+        if (arg instanceof Error) return arg.stack ?? arg.message
+        return (
+          stringify(arg, (_key, value) => {
+            if (typeof value === "bigint") return `${value}n`
+            return value
+          }) ?? String(arg)
+        )
+      } catch {
+        return "[Unserializable diagnostic value]"
+      }
     })
     .join(" ")
     .trimEnd()

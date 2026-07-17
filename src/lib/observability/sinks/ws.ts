@@ -59,6 +59,7 @@ export class WsSink {
       (event) => this.handle(event),
       // WS cares about every namespace.
       (event) => event.kind.startsWith("request.") || event.kind.startsWith("history.") || event.kind.startsWith("system."),
+      { name: "ws-sink" },
     )
   }
 

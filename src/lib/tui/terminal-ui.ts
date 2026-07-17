@@ -62,6 +62,7 @@ import {
   reduce,
 } from "./controller"
 import { parseKeys } from "./input/keys"
+import { OutputArbiter } from "./output-arbiter"
 import { buildActiveFooter } from "./render/footer"
 import {
   //
@@ -76,6 +77,7 @@ import {
   RESERVED_LOG_ROWS,
 } from "./render/region"
 import { renderSystemLogLine } from "./render/syslog"
+import { registerSensitiveOutput } from "./sensitive-output"
 import { registerTerminal } from "./terminal-coordinator"
 
 // ANSI escape code for "clear to end of line, return to column 0"
@@ -192,6 +194,7 @@ export interface TerminalUiOptions {
 
 export class TerminalUi {
   private readonly stdout: NodeJS.WritableStream
+  private readonly output: OutputArbiter
   private readonly isTTY: boolean
   private readonly columns: number | (() => number)
   private readonly showActive: boolean
@@ -288,9 +291,11 @@ export class TerminalUi {
    * constructor comment) so `destroy()` can call it unconditionally.
    */
   private readonly unregisterCoordinator: () => void
+  private readonly unregisterSensitiveOutput: () => void
 
   constructor(bus: ObservabilityBus, options?: TerminalUiOptions) {
     this.stdout = options?.stdout ?? process.stdout
+    this.output = new OutputArbiter(this.stdout)
     this.isTTY = options?.isTTY ?? process.stdout.isTTY
     this.columns = options?.columns ?? (() => (this.stdout as Partial<{ columns: number }>).columns ?? 80)
     this.showActive = options?.showActive ?? true
@@ -308,7 +313,7 @@ export class TerminalUi {
     if (this.interactive && stdin) {
       this.stdin = stdin
       this.region = new Region({
-        stdout: this.stdout,
+        stdout: { write: (s: string) => this.output.write(s) } as NodeJS.WritableStream,
         getColumns: () => this.getColumns(),
         getRows: () => this.getRows(),
       })
@@ -317,7 +322,7 @@ export class TerminalUi {
       stdin.setRawMode(true)
       stdin.resume()
       stdin.on("data", onData)
-      this.stdout.write(HIDE_CURSOR)
+      this.output.write(HIDE_CURSOR)
       // Crash / exit safety net (PoC-4): restore even if destroy() never runs.
       // `options` is narrowed non-null here (interactive implies stdin was given).
       ;(options.registerExitHook ?? ((fn: () => void) => process.on("exit", fn)))(() => this.restoreTerminal())
@@ -341,9 +346,19 @@ export class TerminalUi {
           write: (s) => this.emergencyWriteLine(s),
         })
 
-    this.unsubscribe = bus.subscribe((event) => {
-      this.handle(event)
+    this.output.setOnFault(() => this.unregisterCoordinator())
+    this.unregisterSensitiveOutput = registerSensitiveOutput({
+      isInteractive: () => this.isTTY && !this.output.faulted,
+      write: (text) => this.output.write(text),
     })
+
+    this.unsubscribe = bus.subscribe(
+      (event) => {
+        this.handle(event)
+      },
+      undefined,
+      { name: "terminal-ui" },
+    )
   }
 
   /** Current terminal width (read live per render). Non-positive → 80 fallback. */
@@ -364,16 +379,18 @@ export class TerminalUi {
   }
 
   destroy(): void {
+    this.unregisterSensitiveOutput()
     this.unregisterCoordinator()
     this.unsubscribe()
     this.stopFooterTimer()
     if (this.interactive) {
       this.restoreTerminal()
     } else if (this.footerVisible && this.isTTY) {
-      this.stdout.write(CLEAR_LINE)
+      this.output.write(CLEAR_LINE)
       this.footerVisible = false
     }
     this.active.clear()
+    this.output.destroy()
   }
 
   // ============================================================================
@@ -767,10 +784,10 @@ export class TerminalUi {
     if (!this.isTTY) return
     const footer = this.buildFooter()
     if (footer) {
-      this.stdout.write(CLEAR_LINE + footer)
+      this.output.write(CLEAR_LINE + footer)
       this.footerVisible = true
     } else if (this.footerVisible) {
-      this.stdout.write(CLEAR_LINE)
+      this.output.write(CLEAR_LINE)
       this.footerVisible = false
     }
   }
@@ -785,7 +802,7 @@ export class TerminalUi {
    */
   private clearFooterForLog(): void {
     if (this.footerVisible && this.isTTY) {
-      this.stdout.write(CLEAR_LINE)
+      this.output.write(CLEAR_LINE)
       this.footerVisible = false
     }
   }
@@ -833,12 +850,12 @@ export class TerminalUi {
       // the cursor (DECRC) inside the DECSTBM scroll region, so this log line
       // lands in the scrolling area *above* the panel. No `CLEAR_LINE` here — under
       // DECSTBM it would wrongly wipe the reserved panel row. Redraw after.
-      this.stdout.write(message + "\n")
+      this.output.write(message + "\n")
       this.renderRegion()
       return
     }
     this.clearFooterForLog()
-    this.stdout.write(message + "\n")
+    this.output.write(message + "\n")
     this.renderFooter()
   }
 
@@ -1064,12 +1081,12 @@ export class TerminalUi {
       this.detailActive = true
       // C1 (load-bearing order): enter alt screen → reset DECSTBM margins →
       // DECOM off (defensive) → clear + home cursor.
-      this.stdout.write("\x1b[?1049h" + "\x1b[r" + "\x1b[?6l" + "\x1b[H\x1b[2J")
+      this.output.write("\x1b[?1049h" + "\x1b[r" + "\x1b[?6l" + "\x1b[H\x1b[2J")
     } else if (resized) {
       // M7: a live resize while already in detail — re-run the margin-reset
       // half of the entry choreography (no alt-screen re-entry needed, we're
       // already there) before the full-screen repaint below.
-      this.stdout.write("\x1b[r" + "\x1b[?6l")
+      this.output.write("\x1b[r" + "\x1b[?6l")
     }
     this.detailRows = rows
     // `ActiveRequest` is structurally a `DetailView` (tags/thinking/attempts are
@@ -1079,7 +1096,7 @@ export class TerminalUi {
     const now = Date.now()
     const columns = this.getColumns()
     const lines = buildDetailLines({ entry, now, columns })
-    this.stdout.write("\x1b[H\x1b[2J" + lines.join("\r\n"))
+    this.output.write("\x1b[H\x1b[2J" + lines.join("\r\n"))
   }
 
   /**
@@ -1129,7 +1146,7 @@ export class TerminalUi {
     this.detailRows = undefined
     this.detailReqId = undefined
     this.uiState = { ...this.uiState, view: "panel" }
-    this.stdout.write("\x1b[?1049l")
+    this.output.write("\x1b[?1049l")
     this.region?.forceReestablish()
     this.flushReplayQueue()
     this.renderRegion()
@@ -1146,7 +1163,7 @@ export class TerminalUi {
    * costs nothing) can't see stale queued entries replayed twice.
    */
   private flushReplayQueue(): void {
-    for (const message of this.replayQueue.splice(0)) this.stdout.write(message + "\n")
+    for (const message of this.replayQueue.splice(0)) this.output.write(message + "\n")
   }
 
   /**
@@ -1170,7 +1187,7 @@ export class TerminalUi {
     if (!this.interactive || this.restored) return
     this.restored = true
     if (this.detailActive) {
-      this.stdout.write("\x1b[?1049l")
+      this.output.write("\x1b[?1049l")
       this.detailActive = false
       this.detailRows = undefined
       this.detailReqId = undefined
@@ -1245,7 +1262,7 @@ export class TerminalUi {
    * render from recursing into itself).
    */
   private emergencyWriteLine(s: string): void {
-    this.stdout.write(s)
+    this.output.write(s)
   }
 }
 

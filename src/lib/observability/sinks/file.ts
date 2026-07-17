@@ -107,9 +107,13 @@ export class FileSink {
     // line's day, so a stale construction-time value can't trigger a spurious rotation.
     this.currentDay = dayKey(Date.now())
 
-    this.unsubscribe = bus.subscribe((event) => {
-      this.handle(event)
-    })
+    this.unsubscribe = bus.subscribe(
+      (event) => {
+        this.handle(event)
+      },
+      undefined,
+      { name: "file-sink" },
+    )
   }
 
   destroy(): void {
@@ -138,8 +142,13 @@ export class FileSink {
   private append(time: number, byteLen: number, line: string): void {
     try {
       this.rotateIfNeeded(time, byteLen)
-      fs.mkdirSync(path.dirname(this.path), { recursive: true })
-      fs.appendFileSync(this.path, line)
+      const directory = path.dirname(this.path)
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
+      fs.chmodSync(directory, 0o700)
+      const existing = this.statArtifact()
+      if (existing && !existing.isFile()) throw new Error(`Refusing to write non-regular log artifact: ${this.path}`)
+      fs.appendFileSync(this.path, line, { mode: 0o600 })
+      fs.chmodSync(this.path, 0o600)
       this.currentSize += byteLen
       // Track the day of the last line ACTUALLY written, not the construction wall-clock
       // (`currentDay` was seeded from `Date.now()`). Events carry their own `time`, which can
@@ -179,9 +188,19 @@ export class FileSink {
 
   private statSize(): number {
     try {
-      return fs.statSync(this.path).size
+      const stat = this.statArtifact()
+      return stat?.isFile() ? stat.size : 0
     } catch {
       return 0
+    }
+  }
+
+  private statArtifact(): fs.Stats | undefined {
+    try {
+      return fs.lstatSync(this.path)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+      throw error
     }
   }
 }
