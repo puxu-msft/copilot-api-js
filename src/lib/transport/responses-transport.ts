@@ -40,7 +40,6 @@ import type {
 } from "~/lib/pipeline/types"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
-import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import {
   //
   attemptUpstreamResponsesWs,
@@ -63,12 +62,7 @@ export interface UpstreamResponsesTransportDeps {
 export function createUpstreamResponsesTransport(deps: UpstreamResponsesTransportDeps): Transport {
   return {
     async send(wire: PreparedRequest, env: RequestEnvelope): Promise<UpstreamStream> {
-      // The whole select-and-send runs inside the adaptive rate-limiter — legacy
-      // wrapped `createResponses` (which contains the same WS-or-HTTP selection)
-      // in `executeWithAdaptiveRateLimit`.
-      const { result, queueWaitMs } = await executeWithAdaptiveRateLimit(() => selectAndSend(wire, env, deps), { signal: env.ctx.operationSignal })
-      env.ctx.addQueueWaitMs(queueWaitMs)
-      return result
+      return selectAndSend(wire, env, deps)
     },
   }
 }

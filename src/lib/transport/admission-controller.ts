@@ -4,7 +4,11 @@ import type {
   RateLimitAdmissionDecision,
 } from "../adaptive-rate-limiter"
 
-import { AdaptiveRateLimiter } from "../adaptive-rate-limiter"
+import {
+  //
+  AdaptiveRateLimiter,
+  getAdaptiveRateLimiter,
+} from "../adaptive-rate-limiter"
 
 export interface UpstreamAdmissionInput {
   model: string
@@ -16,6 +20,8 @@ export interface UpstreamAdmissionInput {
 export interface UpstreamAdmissionObservation {
   model: string
   status?: number
+  /** Classified provider signal for non-429 HTTP envelopes carrying `error.code=rate_limited`. */
+  rateLimited?: boolean
   retryAfterMs?: number
   completedAt: number
 }
@@ -47,7 +53,7 @@ export class AdaptiveUpstreamAdmissionController implements UpstreamAdmissionCon
 
   observe(result: UpstreamAdmissionObservation): AdmissionDecision {
     return this.limiter.observeAdmission({
-      status: result.status,
+      status: result.rateLimited ? 429 : result.status,
       retryAfterMs: result.retryAfterMs,
       completedAt: result.completedAt,
     })
@@ -56,4 +62,21 @@ export class AdaptiveUpstreamAdmissionController implements UpstreamAdmissionCon
   rejectAll(reason: unknown): void {
     this.limiter.rejectAdmissions(reason)
   }
+}
+
+const immediateAdmissionController: UpstreamAdmissionController = {
+  async acquire(input) {
+    if (input.signal.aborted) throw input.signal.reason instanceof Error ? input.signal.reason : new DOMException("The operation was aborted.", "AbortError")
+    return { admittedAt: Date.now(), queueWaitMs: 0 }
+  },
+  observe() {
+    return { kind: "complete" }
+  },
+  rejectAll() {},
+}
+
+/** Resolve the process-global policy for one driver invocation; absent limiter means immediate admission. */
+export function getUpstreamAdmissionController(): UpstreamAdmissionController {
+  const limiter = getAdaptiveRateLimiter()
+  return limiter ? new AdaptiveUpstreamAdmissionController(limiter) : immediateAdmissionController
 }

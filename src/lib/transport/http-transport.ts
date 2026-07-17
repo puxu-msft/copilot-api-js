@@ -33,7 +33,6 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 
-import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { guardSseIterable } from "~/lib/stream"
@@ -66,29 +65,22 @@ export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Tr
       // (success) / `apiError.responseHeaders` (failure).
       const headersCapture: HeadersCapture = {}
 
-      const { result, queueWaitMs } = await executeWithAdaptiveRateLimit(
-        () =>
-          sendUpstreamHttp({
-            endpointPath: wire.url,
-            headers,
-            body: wire.body,
-            stream: wire.stream,
-            errorLabel: errorLabelFor(wire.url),
-            modelId: typeof body.model === "string" ? body.model : (env.model as Model | undefined)?.id,
-            diagnosticsTools: body.tools,
-            headersCapture,
-            clientAbortSignal: deps.clientAbortSignal,
-            reaperSignal: env.ctx.lifecycleSignal,
-            // Best-effort h2 response-trailers capture → ctx leg (richest-data-flow).
-            // node:http2 fires `trailers` before stream `end`, so it lands before the handler settles.
-            onTrailers: (trailers) => env.ctx.setOutboundResponseTrailers(trailers),
-            ...(deps.rewriteShutdownAbort && { rewriteShutdownAbort: true }),
-          }),
-        { signal: env.ctx.operationSignal },
-      )
-      // P2.3-S: record rate-limiter queue wait on the ctx (legacy parity —
-      // pipeline.ts `addQueueWaitMs`).
-      env.ctx.addQueueWaitMs(queueWaitMs)
+      const result = await sendUpstreamHttp({
+        endpointPath: wire.url,
+        headers,
+        body: wire.body,
+        stream: wire.stream,
+        errorLabel: errorLabelFor(wire.url),
+        modelId: typeof body.model === "string" ? body.model : (env.model as Model | undefined)?.id,
+        diagnosticsTools: body.tools,
+        headersCapture,
+        clientAbortSignal: deps.clientAbortSignal,
+        reaperSignal: env.ctx.lifecycleSignal,
+        // Best-effort h2 response-trailers capture → ctx leg (richest-data-flow).
+        // node:http2 fires `trailers` before stream `end`, so it lands before the handler settles.
+        onTrailers: (trailers) => env.ctx.setOutboundResponseTrailers(trailers),
+        ...(deps.rewriteShutdownAbort && { rewriteShutdownAbort: true }),
+      })
 
       // `UpstreamStream.headers` = the captured upstream response headers, read by
       // the driver to write ctx.httpHeaders.outboundResponse (RFC Phase 2).

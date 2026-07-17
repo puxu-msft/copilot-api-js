@@ -25,6 +25,11 @@ import {
 } from "~/lib/stream"
 import {
   //
+  getUpstreamAdmissionController,
+  type UpstreamAdmissionController,
+} from "~/lib/transport/admission-controller"
+import {
+  //
   abortableDelay,
   OperationCancelledError,
 } from "~/lib/util/abortable-delay"
@@ -75,6 +80,8 @@ import { createResponseProcessor } from "./stream/response-processor"
 export interface DriverDeps {
   codec: FormatCodec
   transport: Transport
+  /** Transport-independent queue/backoff policy; defaults to the process-global adaptive limiter. */
+  admission?: UpstreamAdmissionController
   /**
    * Ordered retry strategies for the LEGACY (non-migrated) path — a fixed array or a per-request factory.
    * OPTIONAL since C5: every real handler's cell is migrated, so its exchange stack comes from the
@@ -398,6 +405,7 @@ async function runExchange(
   let activeStrategy: RetryStrategy | undefined
   // The accepted retry's meta (post-gate), threaded to onMeta + onResolved (C0-②).
   let activeMeta: Record<string, unknown> | undefined
+  let nextAttemptStrategy: string | undefined
   // First-attempt-only pre-send hook guard (Task 9): the codec may pre-truncate
   // env.body ONCE before the initial send; reactive retry takes over afterward, so
   // we never re-run it per attempt (which would re-truncate an already-trimmed body).
@@ -415,7 +423,13 @@ async function runExchange(
       else if (deps.codec.preSend) current = await deps.codec.preSend(current)
     }
     const wire = outboundPrepareWire(deps, current)
-    current.ctx.beginAttempt({ ...(activeStrategy && { strategy: activeStrategy.name }) })
+    // One controller instance owns BOTH acquire + observe for this physical dispatch.
+    // The current adapter is stateless, but keeping the pair together is load-bearing for the
+    // upcoming scheduler, where admission may retain dispatch-correlated state.
+    const admission = deps.admission ?? getUpstreamAdmissionController()
+    const attemptStrategy = nextAttemptStrategy ?? activeStrategy?.name
+    current.ctx.beginAttempt({ ...(attemptStrategy && { strategy: attemptStrategy }) })
+    nextAttemptStrategy = undefined
     // S4 per-attempt sampling (P2.3-S): the codec / assembly derives the history effective +
     // wire request descriptors from the prepared wire + env (format-specific). The
     // attempt record exists (beginAttempt above); record both tracks on it.
@@ -426,6 +440,16 @@ async function runExchange(
     }
     current.ctx.transition("executing")
     try {
+      const modelId = current.model.id || "unknown"
+      const permit = await admission.acquire({
+        model: modelId,
+        candidateId: "primary",
+        // P5-T2a bridge only: the full GenerationCoordinator will pass the branded V3
+        // DispatchHandle directly instead of reconstructing a label from the legacy view.
+        dispatchId: current.ctx.currentAttempt ? `dispatch:${current.ctx.currentAttempt.index}` : "dispatch:unknown",
+        signal: current.ctx.operationSignal,
+      })
+      current.ctx.addQueueWaitMs(permit.queueWaitMs)
       const hook = getUpstreamHook()
       const upstream = hook?.exchange ? await hook.exchange(wire, current, () => deps.transport.send(wire, current)) : await deps.transport.send(wire, current)
       // 首包埋点（spec 2026-07-14 §3.2）：上游响应头到达（每 attempt 各记自己的，绝对 epoch）。
@@ -445,6 +469,7 @@ async function runExchange(
         ...(Object.keys(upstreamRespHeaders).length > 0 && { response: upstreamRespHeaders }),
       })
       if (Object.keys(upstreamRespHeaders).length > 0) current.ctx.setAttemptResponseHeaders(upstreamRespHeaders)
+      admission.observe({ model: modelId, status: 200, completedAt: Date.now() })
       // onResolved threads the post-gate meta of the retry that produced this env
       // (C0-② / RFC §11.2) so the owning strategy commits its learning from it
       // (e.g. unsupported-beta fixates meta.probedBetas). undefined on first-attempt
@@ -465,6 +490,27 @@ async function runExchange(
         ...(apiError.responseHeaders && { response: Object.fromEntries(apiError.responseHeaders.entries()) }),
       })
       if (apiError.responseHeaders) current.ctx.setAttemptResponseHeaders(Object.fromEntries(apiError.responseHeaders.entries()))
+
+      // Admission owns transient throttling only. `quota_exceeded`/402 is deliberately excluded:
+      // it is an account verdict, not a pacing signal, and must surface or be claimed by an explicit
+      // semantic strategy rather than loop indefinitely in the limiter.
+      const rateLimited = apiError.status === 429 || apiError.type === "rate_limited" || apiError.type === "upstream_rate_limited"
+      if (rateLimited) {
+        const decision = admission.observe({
+          model: current.model.id || "unknown",
+          status: apiError.status,
+          rateLimited: true,
+          ...(apiError.retryAfter !== undefined && { retryAfterMs: apiError.retryAfter * 1000 }),
+          completedAt: Date.now(),
+        })
+        if (decision.kind === "retry") {
+          // The replay is bounded by the request operation signal/deadline today. Phase 6 moves it
+          // under the GenerationCoordinator's maxTotalDispatches budget as the final hard count cap.
+          current.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "rate-limit-retry", waitMs: decision.retryAfterMs })
+          nextAttemptStrategy = "rate-limit-retry"
+          continue
+        }
+      }
 
       const strategy = strategies.find((s) => s.canHandle(apiError))
       if (!strategy) throw error // no strategy → [FAIL]
