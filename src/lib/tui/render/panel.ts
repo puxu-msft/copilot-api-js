@@ -36,6 +36,7 @@ import {
 import type { ActiveRequestView } from "./footer"
 
 import { buildActiveFooter } from "./footer"
+import { sanitizeTerminalText } from "./sanitize"
 
 /**
  * Literal reverse-video (SGR 7 / 27). Deliberately not `pc.inverse`: the panel
@@ -237,7 +238,7 @@ export function buildDetailLines(args: { entry: DetailView; now: number; columns
     : []),
   ]
 
-  return raw.map((line) => truncateToWidth(line, budget))
+  return raw.map((line) => truncateToWidth(sanitizeTerminalText(line), budget))
 }
 
 /** One attempt's plain diagnostic line: index, strategy, transport, and error if any. */

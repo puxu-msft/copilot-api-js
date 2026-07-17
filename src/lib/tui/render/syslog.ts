@@ -17,6 +17,7 @@ import pc from "picocolors"
 import type { DiagnosticEvent } from "~/lib/diagnostics"
 
 import { diagnosticConsolaType } from "~/lib/diagnostics"
+import { sanitizeTerminalText } from "./sanitize"
 import { formatTime } from "~/lib/observability/projections/format"
 
 /**
@@ -28,7 +29,8 @@ import { formatTime } from "~/lib/observability/projections/format"
  */
 export function renderSystemLogLine(event: Pick<DiagnosticEvent, "message" | "timeUnixMs"> & { severity: string; fields?: DiagnosticEvent["fields"] }): string {
   const prefix = consolaPrefix(diagnosticConsolaType(event), new Date(event.timeUnixMs))
-  return prefix ? `${prefix} ${event.message}` : event.message
+  const message = sanitizeTerminalText(event.message)
+  return prefix ? `${prefix} ${message}` : message
 }
 
 /**

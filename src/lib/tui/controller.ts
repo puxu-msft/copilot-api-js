@@ -35,6 +35,8 @@ export type UiState = {
   selectedIndex: number
   /** Index of the first visible row — the top of the scroll window. */
   scrollOffset: number
+  /** Top row of the detail document viewport. */
+  detailScrollOffset: number
   /** Whether the help overlay is shown. */
   showHelp: boolean
 }
@@ -52,6 +54,7 @@ export const INITIAL_UI_STATE: UiState = {
   view: "collapsed",
   selectedIndex: 0,
   scrollOffset: 0,
+  detailScrollOffset: 0,
   showHelp: false,
 }
 
@@ -107,7 +110,7 @@ export function reduce(state: UiState, key: KeyEvent, ctx: UiContext): UiState {
           return { ...state, selectedIndex, scrollOffset }
         }
         case "enter": {
-          return { ...state, view: "detail" }
+          return { ...state, view: "detail", detailScrollOffset: 0 }
         }
         case "space":
         case "tab": {
@@ -128,6 +131,12 @@ export function reduce(state: UiState, key: KeyEvent, ctx: UiContext): UiState {
       if (key.kind === "escape") {
         return { ...state, view: "panel" }
       }
+      if (key.kind === "home") return { ...state, detailScrollOffset: 0 }
+      if (key.kind === "up") return { ...state, detailScrollOffset: Math.max(0, state.detailScrollOffset - 1) }
+      if (key.kind === "page-up") return { ...state, detailScrollOffset: Math.max(0, state.detailScrollOffset - Math.max(1, ctx.visibleRows)) }
+      if (key.kind === "down") return { ...state, detailScrollOffset: state.detailScrollOffset + 1 }
+      if (key.kind === "page-down") return { ...state, detailScrollOffset: state.detailScrollOffset + Math.max(1, ctx.visibleRows) }
+      if (key.kind === "end") return { ...state, detailScrollOffset: Number.MAX_SAFE_INTEGER }
       return state
     }
 

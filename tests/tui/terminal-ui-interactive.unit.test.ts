@@ -171,15 +171,18 @@ describe("TerminalUi — P1 interactive integration", () => {
     //    are tolerated; the grow direction is what must never eat a log line
     //    (Region scroll-before-grow — see the dedicated tests below + the
     //    pty+pyte oracle `exp/tui-rawmode/pty_grid_test.py`).
-    stdin.emit("data", Buffer.from([0x1b])) // escape → panel
+    stdin.emit("data", Buffer.from("\x1bx")) // escape → panel; x is an inert trailing char
     mark = since()
-    stdin.emit("data", Buffer.from([0x1b])) // escape → collapsed (3→1 shrink, re-anchors)
+    stdin.emit("data", Buffer.from("\x1bx")) // escape → collapsed (3→1 shrink, re-anchors)
     const collapseOut = sliceFrom(mark)
     expect(collapseOut).toContain(SCROLL_RESET) // DECSTBM reset re-issued — geometry shrank
 
     // ⑥ ctrl-c → injected shutdown signal.
     stdin.emit("data", Buffer.from([0x03]))
     expect(onShutdownSignal).toHaveBeenCalledWith("SIGINT")
+    stdin.emit("data", Buffer.from("q"))
+    stdin.emit("data", Buffer.from([0x04]))
+    expect(onShutdownSignal).toHaveBeenCalledTimes(3)
 
     // ⑦ destroy → restore terminal: raw mode off, listener detached, paused.
     ui.destroy()
@@ -214,6 +217,48 @@ describe("TerminalUi — P1 interactive integration", () => {
     const out = text()
     expect(out).not.toMatch(DECSTBM_SET) // no DECSTBM — P0 footer path, not Region
     expect(out).toContain("[ OK ]") // P0 log line still rendered
+  })
+
+  test("TERM=dumb forces the plain non-interactive renderer", () => {
+    const previous = process.env.TERM
+    process.env.TERM = "dumb"
+    try {
+      const stdin = new FakeStdin()
+      const { stdout, chunks } = makeStdout()
+      const bus = createBus()
+      const ui = new TerminalUi(bus, { stdout, isTTY: true, stdin: stdin.asReadStream(), registerExitHook: () => {} })
+      bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("plain", "model", 1000) })
+      expect(stdin.setRawMode).not.toHaveBeenCalled()
+      expect(chunks.join("")).not.toContain("\x1b[1;")
+      ui.destroy()
+    } finally {
+      if (previous === undefined) delete process.env.TERM
+      else process.env.TERM = previous
+    }
+  })
+
+  test("selected last request settling before enter reconciles to a surviving row instead of a blank pseudo-detail", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, { stdout, isTTY: true, columns: 80, rows: 24, stdin: stdin.asReadStream(), registerExitHook: () => {} })
+    const req = bus.scope("request")
+    req.publish({ kind: "request.created", ctx: makeCtx("r1", "m1", 3000) })
+    req.publish({ kind: "request.created", ctx: makeCtx("r2", "m2", 2000) })
+    req.publish({ kind: "request.created", ctx: makeCtx("r3", "m3", 1000) })
+    stdin.emit("data", Buffer.from(" "))
+    stdin.emit("data", Buffer.from("\x1b[B\x1b[B"))
+    req.publish({
+      kind: "request.completed",
+      ctx: { ...makeCtx("r3", "m3", 1000), state: "completed" },
+      entry: { id: "r3", endpoint: "anthropic-messages", state: "completed" },
+    } as never)
+    chunks.length = 0
+    stdin.emit("data", Buffer.from("\r"))
+    const out = chunks.join("")
+    expect(out).toContain("\x1b[?1049h")
+    expect(out).toContain("req_id: r2")
+    ui.destroy()
   })
 
   test("collapsed default is a single row (N=1), not padded to the panel height", () => {
@@ -358,7 +403,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     stdin.emit("data", Buffer.from(" ")) // collapsed → panel
     stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
     chunks.length = 0
-    stdin.emit("data", Buffer.from("\x1b")) // detail → panel (esc)
+    stdin.emit("data", Buffer.from("\x1bx")) // detail → panel (esc)
     const out = chunks.join("")
     const iOff = out.indexOf("\x1b[?1049l")
     const iRegion = out.indexOf("\x1b[1;", iOff) // retreat off the alt screen, then rebuild DECSTBM
@@ -399,7 +444,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     bus.scope("system").publish(diagnostic("DURING-DETAIL"))
     expect(chunks.join("")).not.toContain("DURING-DETAIL") // queued, not written to the alt screen
 
-    stdin.emit("data", Buffer.from("\x1b")) // esc → exit detail + replay
+    stdin.emit("data", Buffer.from("\x1bx")) // esc → exit detail + replay
     expect(chunks.join("")).toContain("DURING-DETAIL") // replayed into the scrollback on exit
     ui.destroy()
   })
@@ -432,7 +477,7 @@ describe("TerminalUi — P1 interactive integration", () => {
       system.publish(diagnostic(label(i)))
     }
 
-    stdin.emit("data", Buffer.from("\x1b")) // esc → exit detail + replay
+    stdin.emit("data", Buffer.from("\x1bx")) // esc → exit detail + replay
     const out = chunks.join("")
     // Oldest entries (dropped by the bound) must not survive the replay.
     expect(out).not.toContain(label(0))

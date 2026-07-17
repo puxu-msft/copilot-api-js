@@ -49,6 +49,7 @@ describe("reduce — UI state machine", () => {
       view: "collapsed",
       selectedIndex: 0,
       scrollOffset: 0,
+      detailScrollOffset: 0,
       showHelp: false,
     })
   })
@@ -171,9 +172,9 @@ describe("reduce — UI state machine", () => {
     expect(before).toEqual(INITIAL_UI_STATE)
   })
 
-  test("up/down are no-ops outside the panel view", () => {
+  test("up/down are no-ops in collapsed and scroll detail", () => {
     expect(reduce(INITIAL_UI_STATE, down, CTX)).toEqual(INITIAL_UI_STATE)
     const detail = drive([{ kind: "space" }, { kind: "enter" }])
-    expect(reduce(detail, down, CTX)).toEqual(detail)
+    expect(reduce(detail, down, CTX).detailScrollOffset).toBe(1)
   })
 })

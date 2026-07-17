@@ -27,7 +27,6 @@ import pc from "picocolors"
 import type { HistoryEntryData } from "~/lib/context/types"
 import type {
   //
-  AttemptSnapshot,
   FeatureKind,
   ObservabilityBus,
   ObservabilityEvent,
@@ -40,7 +39,6 @@ import {
   responseThinkingFromBody,
   toolNamesFromResponseBody,
 } from "~/lib/history/entry-view"
-import { isTerminalState } from "~/lib/history/lifecycle-state"
 import { assertNever } from "~/lib/observability"
 import {
   //
@@ -52,16 +50,19 @@ import {
 import { formatLogLine } from "~/lib/observability/projections/log-line"
 import { handleShutdownSignal } from "~/lib/shutdown"
 
+import type { ActiveRequest } from "./active-request-store"
 import type { UiState } from "./controller"
+import type { KeyEvent } from "./input/keys"
 import type { TerminalRegionState } from "./terminal-coordinator"
 
+import { ActiveRequestStore } from "./active-request-store"
 import { AgentOrdinalRegistry } from "./agent-ordinal-registry"
 import {
   //
   INITIAL_UI_STATE,
   reduce,
 } from "./controller"
-import { parseKeys } from "./input/keys"
+import { KeyDecoder } from "./input/key-decoder"
 import { OutputArbiter } from "./output-arbiter"
 import { buildActiveFooter } from "./render/footer"
 import {
@@ -79,6 +80,7 @@ import {
 import { renderSystemLogLine } from "./render/syslog"
 import { registerSensitiveOutput } from "./sensitive-output"
 import { registerTerminal } from "./terminal-coordinator"
+import { TerminalSession } from "./terminal-session"
 
 // ANSI escape code for "clear to end of line, return to column 0"
 const CLEAR_LINE = "\x1b[2K\r"
@@ -103,46 +105,6 @@ const HIDE_CURSOR = "\x1b[?25l"
  * history.db, just not as this exact console line.
  */
 const REPLAY_CAP = 200
-
-/** Mutable per-request display state — replaces `TuiLogEntry`. */
-interface ActiveRequest {
-  ctx: RequestContextSnapshot
-  /** Streaming byte/event totals from `request.stream_progress`. */
-  streamBytesIn?: number
-  streamEventsIn?: number
-  streamBlockType?: string
-  /** Features applied to this request (e.g. "beta-stripped", "via-responses"). */
-  tags: Array<string>
-  /**
-   * Tool names the recoverer rebuilt from downgraded upstream text (from the
-   * `tool-call-recovered` feature detail). Feeds the completion line's
-   * `tool_use(<names>)` token as a FALLBACK: the upstream-original response body
-   * (what the line normally reads) keeps the raw downgraded text with NO tool_use
-   * block (Option A), so the recovered names are only knowable via this channel.
-   */
-  recoveredToolNames?: Array<string>
-  /**
-   * Thinking as a terminal dimension (NOT an accumulated tag): `requested` is
-   * set once (fixed), `effective` is overwritten per attempt (last wins). Rendered
-   * once at completion via {@link formatThinkingTag}, so a multi-attempt request
-   * yields exactly one thinking tag instead of a contradictory pile-up.
-   */
-  thinking?: { requested?: string; effective: string }
-  /** Was this a `/history/*` route? Suppresses completion line unless it errored. */
-  isHistoryAccess: boolean
-  /** Final status code from terminal event. */
-  statusCode?: number
-  /** Per-attempt counter — incremented on each `request.attempt_started`. */
-  attemptCount: number
-  /**
-   * Full per-attempt diagnostics accumulated from `request.attempt_started` /
-   * `attempt_failed` (richest-data-flow, evaluator §5): the interactive detail
-   * view surfaces the complete strategy / transport / error of every attempt,
-   * never a collapsed `attemptCount`. Empty for single-attempt requests until
-   * the first attempt event arrives.
-   */
-  attempts: Array<AttemptSnapshot>
-}
 
 export interface TerminalUiOptions {
   stdout?: NodeJS.WritableStream
@@ -199,7 +161,7 @@ export class TerminalUi {
   private readonly columns: number | (() => number)
   private readonly showActive: boolean
   private readonly silent: boolean
-  private readonly active = new Map<string, ActiveRequest>()
+  private readonly active = new ActiveRequestStore()
   /** First-seen subagent numbering (per session) for the session-identity block. */
   private readonly agentOrdinals = new AgentOrdinalRegistry()
   private footerVisible = false
@@ -215,20 +177,17 @@ export class TerminalUi {
    * one per instance — no in-instance seam).
    */
   private readonly interactive: boolean
-  /** Injected raw-mode stdin (only held when interactive). */
-  private readonly stdin?: NodeJS.ReadStream
   /** Terminal height source for the Region (interactive only). */
   private readonly rows: number | (() => number)
   /** Ctrl-C forwarder (raw mode swallows the kernel SIGINT). */
   private readonly onShutdownSignal: (signal: string) => void
   /** The DECSTBM sticky-region renderer — sole owner of the bottom panel. */
   private readonly region?: Region
-  /** The `stdin` "data" listener, retained so `restoreTerminal` can detach it. */
-  private readonly onData?: (chunk: Buffer) => void
+  /** Sole owner of stdin raw/cooked lifecycle. */
+  private readonly terminalSession: TerminalSession
+  private readonly keyDecoder: KeyDecoder
   /** Pure UI state machine cursor (view / selection / scroll / help). */
   private uiState: UiState = INITIAL_UI_STATE
-  /** Idempotency latch for {@link restoreTerminal} (exit-hook + destroy race). */
-  private restored = false
   /**
    * Set once the shutdown drain phase begins (scheme A, RFC §7). After this,
    * {@link renderRegion} no-ops so the drain period reverts to a plain log
@@ -302,30 +261,37 @@ export class TerminalUi {
     this.silent = options?.silent ?? false
     this.rows = options?.rows ?? (() => (this.stdout as Partial<{ rows: number }>).rows ?? 24)
     this.onShutdownSignal = options?.onShutdownSignal ?? handleShutdownSignal
+    this.keyDecoder = new KeyDecoder((events) => this.handleKeys(events))
 
     // Interactive gate: enabled *only* on explicit stdin injection so existing
     // non-injecting tests (golden / attach-order / usage) never touch the real
     // `process.stdin` (test-isolation, evaluator §3). Production wires
     // `process.stdin` explicitly at the attach site (start.ts).
     const stdin = options?.stdin
-    this.interactive = !this.silent && this.isTTY && stdin !== undefined && typeof stdin.setRawMode === "function"
+    this.interactive = !this.silent && this.isTTY && process.env.TERM !== "dumb" && stdin !== undefined && typeof stdin.setRawMode === "function"
 
     if (this.interactive && stdin) {
-      this.stdin = stdin
       this.region = new Region({
         stdout: { write: (s: string) => this.output.write(s) } as NodeJS.WritableStream,
         getColumns: () => this.getColumns(),
         getRows: () => this.getRows(),
       })
       const onData = (chunk: Buffer): void => this.onInput(chunk)
-      this.onData = onData
-      stdin.setRawMode(true)
-      stdin.resume()
-      stdin.on("data", onData)
       this.output.write(HIDE_CURSOR)
-      // Crash / exit safety net (PoC-4): restore even if destroy() never runs.
-      // `options` is narrowed non-null here (interactive implies stdin was given).
-      ;(options.registerExitHook ?? ((fn: () => void) => process.on("exit", fn)))(() => this.restoreTerminal())
+      this.terminalSession = new TerminalSession({
+        stdin,
+        interactive: true,
+        onData,
+        beforeRestore: () => this.restoreVisualTerminal(),
+        registerExitHook: options.registerExitHook ?? ((fn) => process.on("exit", fn)),
+      })
+    } else {
+      this.terminalSession = new TerminalSession({
+        interactive: false,
+        onData: () => {},
+        beforeRestore: () => {},
+        registerExitHook: () => {},
+      })
     }
 
     // Register with the terminal-coordinator singleton (P2.2) so republish.ts's
@@ -411,14 +377,14 @@ export class TerminalUi {
       case "request.attempt_started": {
         const entry = this.upsertCtx(event.ctx)
         entry.attemptCount = Math.max(entry.attemptCount, event.attempt.attemptIndex + 1)
-        this.recordAttempt(entry, event.attempt)
+        this.active.recordAttempt(entry, event.attempt)
         return
       }
       case "request.attempt_failed": {
         // Accumulate the richer (error-carrying) snapshot for the detail view
         // regardless of `willRetry`; the `[RETRY]` log line is retry-only.
         const entry = this.upsertCtx(event.ctx)
-        this.recordAttempt(entry, event.attempt)
+        this.active.recordAttempt(entry, event.attempt)
         if (event.willRetry) this.onAttemptFailed(event)
         return
       }
@@ -534,14 +500,7 @@ export class TerminalUi {
     // session-identity block numbers agents by when they FIRST appear, not when
     // they terminate.
     this.agentOrdinals.ordinalFor(ctx.sessionId, ctx.agentId)
-    const entry: ActiveRequest = {
-      ctx,
-      tags: [],
-      isHistoryAccess: ctx.path.startsWith("/history"),
-      attemptCount: 0,
-      attempts: [],
-    }
-    this.active.set(ctx.id, entry)
+    this.active.create(ctx)
     this.startFooterTimer()
 
     if (this.showActive && consola.level >= 5) {
@@ -558,35 +517,8 @@ export class TerminalUi {
   }
 
   private upsertCtx(ctx: RequestContextSnapshot): ActiveRequest {
-    let entry = this.active.get(ctx.id)
-    if (!entry) {
-      // Late-arriving event for a context we missed `created` for (e.g. test
-      // harness publishing without a prior `created`). Materialize on demand.
-      entry = {
-        ctx,
-        tags: [],
-        isHistoryAccess: ctx.path.startsWith("/history"),
-        attemptCount: 0,
-        attempts: [],
-      }
-      // Terminal guard: a request that has already reached a terminal state
-      // (completed/failed/aborted/interrupted) must NEVER be re-materialized into
-      // `active` — its `onTerminal` has already run (`active.delete`) and no further
-      // terminal event is coming, so re-inserting it would spin it in the footer
-      // forever. This happens when a producer records a late feature AFTER `ctx.fail()`
-      // (e.g. error-shaping's `error-shaping-decided`, whose `feature_applied` carries
-      // `state:"failed"`). Return a throwaway entry (callers still mutate it — tag push
-      // etc.) WITHOUT inserting it, mirroring `onTerminal`'s already-gone branch. The
-      // sibling active-map consumers already hold this invariant (WsSink counter is
-      // immune; ui-v4's live-store no-ops `feature_applied` for an absent id) — this
-      // aligns the TUI with them.
-      if (isTerminalState(ctx.state)) return entry
-      this.active.set(ctx.id, entry)
-      this.startFooterTimer()
-    } else {
-      // Refresh the snapshot — model_resolved / state changes carry updated ctx.
-      entry.ctx = ctx
-    }
+    const { entry, inserted } = this.active.upsert(ctx)
+    if (inserted) this.startFooterTimer()
     return entry
   }
 
@@ -648,14 +580,8 @@ export class TerminalUi {
     // below.
     const viewingId = this.detailActive ? this.detailReqId : undefined
 
-    const entry = this.active.get(ctx.id) ?? {
-      ctx,
-      tags: [],
-      isHistoryAccess: ctx.path.startsWith("/history"),
-      attemptCount: 0,
-      attempts: [],
-    }
-    this.active.delete(ctx.id)
+    const entry = this.active.remove(ctx.id) ?? this.active.upsert(ctx).entry
+    this.reconcileSelection()
     if (this.active.size === 0) this.stopFooterTimer()
 
     // Update snapshot for accurate clientModel/multiplier rendering.
@@ -879,15 +805,6 @@ export class TerminalUi {
    * for the same index replaces it with the error-carrying snapshot (richest
    * form wins) — so the detail view shows one row per attempt with its outcome.
    */
-  private recordAttempt(entry: ActiveRequest, snapshot: AttemptSnapshot): void {
-    const existing = entry.attempts.findIndex((a) => a.attemptIndex === snapshot.attemptIndex)
-    if (existing !== -1) {
-      entry.attempts[existing] = snapshot
-    } else {
-      entry.attempts.push(snapshot)
-    }
-  }
-
   /**
    * The render dispatcher for bus-driven redraws (footer timer, terminal-event
    * settle, keyboard input via {@link onInput}) — interactive → Region or
@@ -920,11 +837,16 @@ export class TerminalUi {
    * no-ops on `x`/`c`/`char`.
    */
   private onInput(chunk: Buffer): void {
-    for (const key of parseKeys(chunk)) {
-      if (key.kind === "ctrl-c") {
+    this.handleKeys(this.keyDecoder.feed(chunk))
+  }
+
+  private handleKeys(keys: ReadonlyArray<KeyEvent>): void {
+    for (const key of keys) {
+      if (key.kind === "ctrl-c" || key.kind === "ctrl-d" || key.kind === "quit") {
         this.onShutdownSignal("SIGINT")
         continue
       }
+      if (key.kind === "suspend") continue
       const prevView = this.uiState.view
       this.uiState = reduce(this.uiState, key, {
         activeCount: this.active.size,
@@ -1096,7 +1018,13 @@ export class TerminalUi {
     const now = Date.now()
     const columns = this.getColumns()
     const lines = buildDetailLines({ entry, now, columns })
-    this.output.write("\x1b[H\x1b[2J" + lines.join("\r\n"))
+    const viewportRows = Math.max(1, rows - 1)
+    const maxOffset = Math.max(0, lines.length - viewportRows)
+    const offset = Math.min(this.uiState.detailScrollOffset, maxOffset)
+    if (offset !== this.uiState.detailScrollOffset) this.uiState = { ...this.uiState, detailScrollOffset: offset }
+    const visible = lines.slice(offset, offset + viewportRows)
+    const status = `${offset > 0 ? `↑${offset} ` : ""}${offset + visible.length < lines.length ? `↓${lines.length - offset - visible.length} ` : ""}· ↑↓/PgUp/PgDn/Home/End · esc back`
+    this.output.write("\x1b[H\x1b[2J" + [...visible, status].join("\r\n"))
   }
 
   /**
@@ -1141,15 +1069,31 @@ export class TerminalUi {
    * `render()` dispatches to `renderRegion()` like an ordinary `esc`.
    */
   private exitDetail(): void {
-    if (!this.detailActive) return
+    // Logical state must converge even if the selected row disappeared before
+    // the first alternate-screen paint.
+    this.uiState = { ...this.uiState, view: "panel", detailScrollOffset: 0 }
+    this.detailReqId = undefined
+    if (!this.detailActive) {
+      this.renderRegion()
+      return
+    }
     this.detailActive = false
     this.detailRows = undefined
-    this.detailReqId = undefined
-    this.uiState = { ...this.uiState, view: "panel" }
     this.output.write("\x1b[?1049l")
     this.region?.forceReestablish()
     this.flushReplayQueue()
     this.renderRegion()
+  }
+
+  private reconcileSelection(): void {
+    const count = this.active.size
+    if (count === 0) {
+      this.uiState = { ...this.uiState, selectedIndex: 0, scrollOffset: 0, detailScrollOffset: 0, view: "collapsed" }
+      return
+    }
+    const selectedIndex = Math.min(this.uiState.selectedIndex, count - 1)
+    const maxOffset = Math.max(0, count - this.visibleRequestRows())
+    this.uiState = { ...this.uiState, selectedIndex, scrollOffset: Math.min(this.uiState.scrollOffset, maxOffset) }
   }
 
   /**
@@ -1184,17 +1128,17 @@ export class TerminalUi {
    * torn down for good).
    */
   private restoreTerminal(): void {
-    if (!this.interactive || this.restored) return
-    this.restored = true
+    this.terminalSession.restoreSyncBestEffort()
+  }
+
+  private restoreVisualTerminal(): void {
     if (this.detailActive) {
       this.output.write("\x1b[?1049l")
       this.detailActive = false
       this.detailRows = undefined
       this.detailReqId = undefined
     }
-    if (this.onData) this.stdin?.removeListener("data", this.onData)
-    this.stdin?.pause()
-    this.stdin?.setRawMode(false)
+    this.keyDecoder.destroy()
     this.region?.clear()
   }
 

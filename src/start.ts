@@ -201,6 +201,8 @@ interface RunServerOptions {
   mockRateLimiterThrottled: boolean
   githubToken?: string
   showGitHubToken: boolean
+  /** Enable interactive raw-mode TUI; false forces the plain log renderer. */
+  tui: boolean
   /** Explicit proxy URL (CLI --proxy). Takes precedence over env vars and config.yaml. */
   proxy?: string
   httpProxyFromEnv: boolean
@@ -285,7 +287,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setRequestLinePublisher(systemPublisher)
   // Explicitly pass process.stdin so the interactive raw-mode panel gates on
   // (evaluator §3): tests that omit stdin stay on the non-interactive P0 path.
-  attachTerminalUi(bus, { stdin: process.stdin })
+  attachTerminalUi(bus, options.tui ? { stdin: process.stdin } : { isTTY: false })
   // Keep the secure synchronous legacy sink through boot; the per-process
   // structured writer is attached after process identity and config are ready.
   const detachLegacyFileSink = attachFileSink(bus, { path: PATHS.COPILOT_LOG })
@@ -713,6 +715,11 @@ export const start = defineCommand({
       default: false,
       description: "Show GitHub token in logs (use --verbose for Copilot token refresh logs)",
     },
+    tui: {
+      type: "boolean",
+      default: true,
+      description: "Interactive terminal UI (disable with --no-tui)",
+    },
     proxy: {
       type: "string",
       description: "Proxy URL for all outgoing requests (http://, https://, socks5://, socks5h://). Overrides env vars and config.yaml.",
@@ -768,6 +775,7 @@ export const start = defineCommand({
       // show-github-token
       "show-github-token",
       "showGithubToken",
+      "tui",
       // proxy
       "proxy",
       // http-proxy-from-env (citty handles --no-http-proxy-from-env via built-in negation)
@@ -797,6 +805,7 @@ export const start = defineCommand({
       mockRateLimiterThrottled: args["mock-rate-limiter-throttled"],
       githubToken: args["github-token"],
       showGitHubToken: args["show-github-token"],
+      tui: args.tui,
       proxy: args.proxy,
       httpProxyFromEnv: args["http-proxy-from-env"],
       externalUiUrl: args["external-ui-url"],
