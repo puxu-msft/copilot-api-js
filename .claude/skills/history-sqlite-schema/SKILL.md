@@ -1,39 +1,51 @@
 ---
 name: history-sqlite-schema
-description: 当需要了解 copilot-api-js 的 History SQLite 数据库结构时使用——表/列/索引、entries_v2 head + entry_stages 拆表、content-addressed search_index(msg_blob/req_msg/req_aux)、history_meta 迁移账本、zstd blob 压缩、reaper 分桶、Umzug 迁移。也用于直接查库、写迁移、调试存储或解析 blob_gz。后台 backfill 的写法见 skill history-backfill。
+description: 当需要了解 copilot-api-js 当前 History V3 SQLite 结构时使用——history-v3.db semantic CAS/manifest/tracks/timeline/journal/search、可选 raw.db exact-byte CAS、artifact identity、zstd 编码与直接查库。旧 history.db/archive.db 仅作退役 V2 取证，不是当前在线 schema。
 ---
 
 # History SQLite Schema
 
 ## 权威真相源（优先用，别凭记忆）
 
-- **DDL 单一源**：`src/lib/history/sqlite/schema.ts`（`SCHEMA_SQL` + `HISTORY_META_DDL`）。
-- **驱动分流**：`src/lib/history/sqlite/driver.ts`（Bun `bun:sqlite` / Node `node:sqlite`，无 better-sqlite3）。
-- **设计**：`docs/DESIGN.md`「核心模块·history」+ `docs/history.md`。
-- **库文件**：`~/.local/share/copilot-api/history.db`（`PATHS.HISTORY_DB`，受 `XDG_DATA_HOME` / config `history.db_path` 影响；测试期 preload 重定向到临时目录）。
+- **专门活文档**：`docs/history-v3-schema.md`——当前表/列/PK/FK/索引、编码、journal、raw generation、运维查询的 SSOT。
+- **Semantic DDL**：`src/lib/history/v3/store.ts` 的 `V3_SCHEMA_SQL`。
+- **Raw DDL**：`src/lib/history/raw/manager.ts` 的 `RAW_SCHEMA`。
+- **artifact identity / connection PRAGMA**：`src/lib/history/sqlite/connection.ts`。
+- **驱动分流**：`src/lib/history/sqlite/driver.ts`（Bun `bun:sqlite` / Node `node:sqlite`）。
+- **默认文件**：`~/.local/share/copilot-api/history-v3.db`；raw capture 开启时另有 `raw.db`。旧 `history.db` / `archive.db` 不被在线服务打开或迁移。
 
-## 表
+## 当前表
 
-| 表 | 角色 |
-|---|---|
-| `entries_v2` | head 行（一请求一行），meta 列 + `blob_gz`（zstd 压缩生命周期）。`pinned=1` 豁免 reaper；`usage_normalized`（NOT NULL DEFAULT 0）= usage 净值化标记（新行生来 1，历史行由 usage-normalize-backfill 置 1，破坏性减法的幂等主闸） |
-| `entry_stages` | per-stage/attempt 重 blob。**新写路径**：`client_request`/`client_response`（entry 级，attempt_index -1）+ per-attempt `effective_source`/`upstream_request`/`upstream_response` + `sse_events`；finalize 时冗余请求体折进 `request_group` 合并帧。**legacy 只读**：旧行 `inbound_request`/`effective_request`/`outbound_request`/`outbound_response`/`inbound_response` 经 `adaptLegacyLegsInPlace` 读时适配为新腿。FK CASCADE |
-| `response_sessions` | response_id → session_id |
-| `msg_blob` | content-addressed：每条归一化消息存一次（hash PK），跨请求去重 |
-| `req_msg` | 请求→消息位置（FK CASCADE）；孤儿 msg_blob 由 reaper GC |
-| `req_aux` | per-request 4 facet 搜索文本（rewrites/headers） |
-| `history_meta` | KV：`search_index_version` 迁移守卫 + backfill 游标 + `usage_normalize_version`/`_cursor` + Umzug `schema_migrations` 账本 |
+| 文件 | 表 | 角色 |
+|---|---|---|
+| `history-v3.db` | `history_store_identity` | owner marker；防误开旧库 |
+| `history-v3.db` | `v3_meta` | V3 元数据预留表，当前无生产 reader/writer |
+| `history-v3.db` | `v3_objects` | semantic payload/frame CAS |
+| `history-v3.db` | `v3_operations` | terminal operation 根行、value-free manifest、pin |
+| `history-v3.db` | `v3_tracks` | operation-local ordered payload/frame handles |
+| `history-v3.db` | `v3_timeline_chunks` | sequence timeline chunks |
+| `history-v3.db` | `v3_journal` | self-contained crash recovery journal；成功提交后删除 |
+| `history-v3.db` | `v3_search_objects` / `v3_search_membership` / `v3_search_backlog` | 可重建搜索派生、operation membership、失败 backlog |
+| `raw.db` | `raw_store_identity` | raw artifact generation identity + schema/codec |
+| `raw.db` | `raw_objects` | exact-byte CAS |
+| `raw.db` | `raw_refs` | operation/sequence/track → raw object 或显式 gap |
 
 ## 直接查库
 
 ```bash
-sqlite3 ~/.local/share/copilot-api/history.db ".tables"
-sqlite3 ~/.local/share/copilot-api/history.db ".schema entries_v2"
-# 最近失败（status: failed/aborted/interrupted；成功=completed）
-sqlite3 history.db "SELECT id,model,status,error_message FROM entries_v2 WHERE status IN ('failed','aborted','interrupted') ORDER BY started_at DESC LIMIT 10"
-# 某会话
-sqlite3 history.db "SELECT id,status FROM entries_v2 WHERE session_id=? ORDER BY started_at"
+sqlite3 ~/.local/share/copilot-api/history-v3.db ".tables"
+sqlite3 ~/.local/share/copilot-api/history-v3.db ".schema v3_operations"
+sqlite3 ~/.local/share/copilot-api/history-v3.db "SELECT operation_id,kind,revision,pinned,created_at,committed_at FROM v3_operations ORDER BY created_at DESC LIMIT 20"
+sqlite3 ~/.local/share/copilot-api/history-v3.db "SELECT operation_id,revision,phase,error FROM v3_journal ORDER BY created_at"
+sqlite3 ~/.local/share/copilot-api/raw.db "SELECT store_id,schema_version,codec FROM raw_store_identity"
+sqlite3 ~/.local/share/copilot-api/raw.db "SELECT operation_id,sequence,track,capability,status,error FROM raw_refs WHERE capability <> 'available'"
 ```
+
+完整运维 SQL 与列级解释见 `docs/history-v3-schema.md`。运行中一致性读取优先走 `/history/api/*`，不要跨多表手工拼装后声称得到原子快照。
+
+## Legacy V2 边界
+
+下文关于 `entries_v2`、`entry_stages`、`msg_blob`、backfill、reaper、Umzug 和旧 FTS 的内容只用于历史取证或理解退役代码；它们不是当前在线 History V3 schema。不得据此给 `history-v3.db` 写迁移，也不得把旧 `history.db` / `archive.db` 接回生产。
 
 `blob_gz` 是 zstd（magic `28b52ffd`，旧库 gzip `1f8b`）：解压用 `compression.ts` 的 `decompress`。`entry_stages.stage`（**新写路径**）∈ client_request/client_response/effective_source/upstream_request/upstream_response/sse_events（finalized 后请求侧腿合并进 request_group 容器帧）；**legacy 只读**：旧行仍带 inbound_request/effective_request/outbound_request/outbound_response/inbound_response，读时经 `adaptLegacyLegsInPlace`（serialize.ts）适配为 client/upstream 新腿——`STAGE` 常量双列新旧名共存。**运行时 vs 持久化命名**：live `RequestContext`（`Attempt.{effectiveRequest,wireRequest,response}`、`_httpHeaders` 捕获袋）保留旧名，仅持久化 `HistoryEntry` 采用新腿。**勿对运行中库直读**——live churn 致 torn snapshot，用 `/history/api/entries/:id`（全腿全量 `assembleFullEntry`）。
 

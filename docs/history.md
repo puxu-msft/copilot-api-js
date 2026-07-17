@@ -83,6 +83,8 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 > **History V3（2026-07-16 起）**：在线服务只打开独立 `history-v3.db`，不打开、读取、迁移、回填或删除旧 `history.db` / `archive.db` / seal。终态 `ModelOperationRecord` 经单写者落 `v3_*` 表：semantic object CAS、operation manifest、ordered tracks、timeline chunks、自包含 journal 与可重建搜索投影。在线无 count retention、无自动删除、无内置冷归档。
 
+完整表／列／主键／FK／索引、编码、journal 恢复协议及可选 raw sidecar schema 见 [History V3 SQLite schema](history-v3-schema.md)。该文档也明确解释了旧称“history.db + archive.db”与当前 `history-v3.db + raw.db` 的对应及差异。
+
 ### Canonical store 与 raw capture
 
 - semantic V3 默认启用，完整记录 generation、Responses WS、count tokens、embeddings 与 Azure 元数据。
