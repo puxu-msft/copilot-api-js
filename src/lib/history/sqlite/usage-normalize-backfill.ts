@@ -43,14 +43,14 @@ import consola from "consola"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import { netInputTokens } from "~/lib/request/usage-normalize"
-
-import type { Database } from "./connection"
-
 import {
   //
   compress,
   decompress,
-} from "./compression"
+} from "~/lib/sqlite/compression"
+
+import type { Database } from "./connection"
+
 import {
   //
   getMeta,

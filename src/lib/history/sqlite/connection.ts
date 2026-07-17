@@ -2,13 +2,17 @@ import consola from "consola"
 import fs from "node:fs"
 import path from "node:path"
 
-import { getProcessIdentity, isProcessAlive } from "~/lib/process-identity"
-
+import {
+  //
+  getProcessIdentity,
+  isProcessAlive,
+} from "~/lib/process-identity"
 import {
   //
   createDatabase,
   type SqliteDatabase,
-} from "./driver"
+} from "~/lib/sqlite/driver"
+
 import { SCHEMA_SQL } from "./schema"
 
 /**

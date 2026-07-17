@@ -7,7 +7,7 @@ import { createRequire } from "node:module"
  */
 
 // 运行时条件加载 bun:ffi：`createRequire` 让 bundler 不在构建期静态解析这个模块
-// （同 src/lib/history/sqlite/driver.ts 对 bun:sqlite/node:sqlite 的既有惯例）。
+// （同 src/lib/sqlite/driver.ts 对 bun:sqlite/node:sqlite 的既有惯例）。
 const nodeRequire = createRequire(import.meta.url)
 
 /**

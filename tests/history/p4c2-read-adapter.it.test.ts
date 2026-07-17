@@ -42,11 +42,6 @@ import type {
   TruncationInfo,
 } from "~/lib/history/types"
 
-import {
-  //
-  compress,
-  decompress,
-} from "~/lib/history/sqlite/compression"
 import { buildSearchIndexForEntry } from "~/lib/history/sqlite/search-index-write"
 import {
   //
@@ -60,6 +55,11 @@ import {
   type StagePayload,
   type StageRow,
 } from "~/lib/history/sqlite/serialize"
+import {
+  //
+  compress,
+  decompress,
+} from "~/lib/sqlite/compression"
 
 /** View an assembled entry's runtime legacy leg data (read from the old stages). */
 function legacyView(entry: HistoryEntry): LegacyEntry {

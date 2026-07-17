@@ -15,7 +15,7 @@ import {
   type QueryOptions,
   type SearchSource,
 } from "~/lib/history"
-import { compressAsync } from "~/lib/history/sqlite/compression"
+import { compressAsync } from "~/lib/sqlite/compression"
 
 /**
  * 从查询串解析 list / scoped-delete / search 三处共享的结构化 filter 维（11 个）：

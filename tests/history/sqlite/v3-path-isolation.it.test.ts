@@ -15,12 +15,12 @@ import {
   getDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
-import { createDatabase } from "~/lib/history/sqlite/driver"
 import {
   //
   initHistory,
   shutdownHistory,
 } from "~/lib/history/state"
+import { createDatabase } from "~/lib/sqlite/driver"
 import { setHistoryConfig } from "~/lib/state"
 
 const originalLegacyPath = PATHS.HISTORY_DB

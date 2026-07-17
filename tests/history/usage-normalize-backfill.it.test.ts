@@ -18,10 +18,6 @@ import {
   test,
 } from "bun:test"
 
-import {
-  //
-  compress,
-} from "~/lib/history/sqlite/compression"
 import { getDatabase } from "~/lib/history/sqlite/connection"
 import {
   //
@@ -35,6 +31,10 @@ import {
   runUsageNormalizeBackfill,
   stopUsageNormalizeBackfill,
 } from "~/lib/history/sqlite/usage-normalize-backfill"
+import {
+  //
+  compress,
+} from "~/lib/sqlite/compression"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 

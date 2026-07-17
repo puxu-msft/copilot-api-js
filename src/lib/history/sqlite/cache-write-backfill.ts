@@ -32,9 +32,14 @@
 import consola from "consola"
 import { setTimeout as sleep } from "node:timers/promises"
 
+import {
+  //
+  compress,
+  decompress,
+} from "~/lib/sqlite/compression"
+
 import type { Database } from "./connection"
 
-import { compress, decompress } from "./compression"
 import {
   //
   CACHE_WRITE_BACKFILL_CURSOR_KEY,

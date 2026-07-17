@@ -56,12 +56,13 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import type { HistoryEntry } from "~/lib/history/types"
 
-import type { Database } from "./connection"
-
 import {
   //
   compress,
-} from "./compression"
+} from "~/lib/sqlite/compression"
+
+import type { Database } from "./connection"
+
 import {
   //
   getMeta,

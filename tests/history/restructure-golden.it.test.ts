@@ -51,7 +51,6 @@ import type {
   SseEventRecord,
 } from "~/lib/history/types"
 
-import { compress } from "~/lib/history/sqlite/compression"
 import { buildSearchIndexForEntry } from "~/lib/history/sqlite/search-index-write"
 import {
   //
@@ -62,6 +61,7 @@ import {
   serializeHeadEntry,
   type StageRow,
 } from "~/lib/history/sqlite/serialize"
+import { compress } from "~/lib/sqlite/compression"
 
 // ============================================================================
 // Golden snapshot helpers (EXPORTED — P2.6 / P4 re-run these to prove equivalence)

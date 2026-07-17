@@ -24,7 +24,6 @@ import consola from "consola"
 
 import type {
   //
-  EndpointType,
   HistoryEntry,
   MessageContent,
   SearchSource,
@@ -38,6 +37,7 @@ import {
   alignWithModified,
   type DiffMessage,
 } from "~/lib/diff/block-align"
+import { formatFromEndpoint } from "~/lib/history/endpoint-format"
 import {
   //
   finalUpstreamRequest,
@@ -79,21 +79,6 @@ export interface SearchIndexBuilt {
 }
 
 const EMPTY_BUILT: SearchIndexBuilt = { msgs: [], aux: [] }
-
-/** Map a persisted endpoint to the normalization format (Responses ≈ chat = openai). */
-export function formatFromEndpoint(endpoint: EndpointType): MessageFormat {
-  switch (endpoint) {
-    case "anthropic-messages": {
-      return "anthropic"
-    }
-    case "gemini-generate-content": {
-      return "gemini"
-    }
-    default: {
-      return "openai"
-    }
-  }
-}
 
 /** Content-addressed inbound messages: normalize + hash each, position-ordered. */
 function buildInboundMsgs(entry: HistoryEntry, format: MessageFormat): Array<BuiltMsg> {

@@ -6,9 +6,14 @@ import type {
   ModelOperationRecord,
 } from "~/lib/context/model-operation-record"
 
+import {
+  //
+  compressBytes,
+  decompressBytes,
+} from "~/lib/sqlite/compression"
+
 import type { Database } from "../sqlite/connection"
 
-import { compressBytes, decompressBytes } from "../sqlite/compression"
 import { getDatabase } from "../sqlite/connection"
 
 const FORMAT_VERSION = 1

@@ -9,12 +9,6 @@ import type { HistoryEntry } from "~/lib/history/types"
 
 import {
   //
-  compress,
-  decompress,
-  gzipJsonLegacy,
-} from "~/lib/history/sqlite/compression"
-import {
-  //
   assembleFullEntry,
   deserializeEntry,
   type EntryRow,
@@ -24,6 +18,12 @@ import {
   type StagePayload,
   type StageRow,
 } from "~/lib/history/sqlite/serialize"
+import {
+  //
+  compress,
+  decompress,
+  gzipJsonLegacy,
+} from "~/lib/sqlite/compression"
 
 /** Turn serializeHeadEntry's pre-compress stage payloads into persisted StageRows. */
 function toStageRows(entryId: string, stages: Array<StagePayload>): Array<StageRow> {

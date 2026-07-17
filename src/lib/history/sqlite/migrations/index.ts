@@ -9,7 +9,7 @@
 
 import type { MigrationFn } from "umzug"
 
-import type { SqliteDatabase } from "../driver"
+import type { SqliteDatabase } from "~/lib/sqlite/driver"
 
 /**
  * A single forward schema migration.

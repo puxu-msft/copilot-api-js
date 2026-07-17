@@ -25,11 +25,6 @@ import type { HistoryEntry } from "~/lib/history/types"
 import { hashMessage } from "~/lib/history/normalize-message"
 import {
   //
-  compress,
-  decompress,
-} from "~/lib/history/sqlite/compression"
-import {
-  //
   closeDatabase,
   getDatabase,
   openInMemoryDatabase,
@@ -41,6 +36,11 @@ import {
   buildSearchIndexForEntry,
 } from "~/lib/history/sqlite/search-index-write"
 import { insertCompletedEntry } from "~/lib/history/sqlite/write"
+import {
+  //
+  compress,
+  decompress,
+} from "~/lib/sqlite/compression"
 
 // A multi-stage entry exercising EVERY heavy finalize path the refactor touches:
 // request_group (clientRequest + effectiveSource + upstreamRequest bodies → one zstd

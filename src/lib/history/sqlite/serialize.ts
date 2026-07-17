@@ -22,13 +22,13 @@ import type {
 } from "~/lib/history/types"
 
 import { extractPreviewText } from "~/lib/history/in-flight"
-
-import { extractResponsePreviewText } from "../entry-view"
 import {
   //
   compress,
   decompress,
-} from "./compression"
+} from "~/lib/sqlite/compression"
+
+import { extractResponsePreviewText } from "../entry-view"
 
 // ============================================================================
 // Internal legacy read-shape (P4c-3)

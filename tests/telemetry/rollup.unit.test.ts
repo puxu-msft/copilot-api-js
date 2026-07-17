@@ -24,7 +24,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { decompressBytes } from "~/lib/history/sqlite/compression"
+import { decompressBytes } from "~/lib/sqlite/compression"
 import {
   //
   openTelemetryDb,

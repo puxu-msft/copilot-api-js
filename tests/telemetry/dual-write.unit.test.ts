@@ -26,11 +26,6 @@ import { join } from "node:path"
 
 import {
   //
-  compressBytes,
-  decompressBytes,
-} from "~/lib/history/sqlite/compression"
-import {
-  //
   _getEffectiveSketchGammaForTests,
   _getOutboxSizeForTests,
   _getTelemetryDbForTests,
@@ -44,6 +39,11 @@ import {
   recordAcceptedRequest,
   recordSettledRequest,
 } from "~/lib/request-telemetry"
+import {
+  //
+  compressBytes,
+  decompressBytes,
+} from "~/lib/sqlite/compression"
 import {
   //
   restoreStateForTests,

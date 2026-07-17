@@ -51,11 +51,6 @@ import {
 } from "~/lib/error"
 import {
   //
-  compress,
-  decompress,
-} from "~/lib/history/sqlite/compression"
-import {
-  //
   closeDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
@@ -83,6 +78,11 @@ import {
   attachHistorySink,
   collectAttemptStages,
 } from "~/lib/observability/sinks/history"
+import {
+  //
+  compress,
+  decompress,
+} from "~/lib/sqlite/compression"
 import { setHistoryConfig } from "~/lib/state"
 
 // ── Local reproduction of the production finalize stage-row layout ───────────

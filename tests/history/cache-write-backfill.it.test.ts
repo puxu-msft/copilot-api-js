@@ -14,11 +14,11 @@
 
 import { describe, expect, test } from "bun:test"
 
-import { compress } from "~/lib/history/sqlite/compression"
+import { runCacheWriteBackfill } from "~/lib/history/sqlite/cache-write-backfill"
 import { getDatabase } from "~/lib/history/sqlite/connection"
 import { getEntryById } from "~/lib/history/sqlite/read"
 import { insertCompletedEntry } from "~/lib/history/sqlite/write"
-import { runCacheWriteBackfill } from "~/lib/history/sqlite/cache-write-backfill"
+import { compress } from "~/lib/sqlite/compression"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 

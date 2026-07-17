@@ -8,7 +8,8 @@ import {
   //
   compress,
   compressAsync,
-} from "./compression"
+} from "~/lib/sqlite/compression"
+
 import { getDatabase } from "./connection"
 import { applyWhere } from "./read"
 import {
