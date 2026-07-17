@@ -4,7 +4,9 @@
 
 维护入口：进程两信号关闭与 durability barrier 见 skill `process-lifecycle-shutdown`；Archive durable-unit 协作停与恢复见 skill `archive-background-lifecycle`。
 
-优雅重启（零停机换代）本质是「新进程接管 + 旧进程复用同一套 4-phase drain」，与优雅关闭共享同一生命周期，故合为一篇。阅读顺序：先「优雅关闭」（drain 机制是基础），再「优雅重启」（在其上叠加接管协议）。
+优雅重启（零停机换代）本质是「新进程接管 + 旧进程复用同一套 drain 流水线」，与优雅关闭共享同一生命周期，故合为一篇。阅读顺序：先「优雅关闭」（drain 机制是基础），再「优雅重启」（在其上叠加接管协议）。
+
+> **术语对齐**：本重启节沿用 `shutdown.ts` 代码内部的 **Phase 1-4** 命名指代关闭 drain 流水线（= 上文「优雅关闭」的 **Step 1-4**，同一流水线，代码与文档措辞的历史差异）；而 **start.ts 启动 boot 的 Phase 0-5**（overlap ⑤ 提到的「Phase 3 开库 / Phase 5 listen」）是**另一套无关的启动阶段编号**，别混。
 
 ## 优雅关闭
 

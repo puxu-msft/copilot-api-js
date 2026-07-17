@@ -69,6 +69,7 @@
 - [一次性 connected 快照须常驻根订阅](methodology-one-shot-connected-snapshot-needs-root-subscriber.md) — WS `connected` 携初始快照无缓存;snapshot-then-delta 消费者须挂常驻宿主(AppShell)
 - [穷举可行方案面再择优](methodology-exhaust-then-choose-over-single-solution.md) — 并行 subagent 分层穷举→实测 supersede 源码推断→异模型审→exp/FINDINGS 择优
 - [跨 phase 集成缝只在合并态审能抓](methodology-cross-phase-integration-seam-only-caught-at-merged-state.md) — Phase A 契约被下游漏接线逐 task 审看不到、只 whole-branch 逮;死枚举是红旗
+- [并发分片的环境/路径分支缝 per-task+全量都证不了](methodology-merged-state-review-catches-env-branch-seam.md) — 合并态对抗审查须点名对每条路径(supervised vs bare-metal)第一人称走查;数据完整性判据须环境无关(存活性)非某路径记得填的外部名单;merge auto-合并无文本冲突≠语义正确(静默吞 peer 文件、先分类再信基线)
 - [CLI e2e spawn+hook 两机制](reference-cli-e2e-spawn-and-hook-load-gotchas.md) — hook 经 data-URL 加载丢具名导出→帧存 base64;`proc.kill()` 漏杀真 server;权威 `exp/cli-e2e-stall/FINDINGS.md`
 - [Bun 忽略 import ?v= query;热重载用项目内唯一文件(非 data-URL)](reference-bun-esm-cache-busting-query-fails-data-url-works.md) — Bun 按路径缓存 ESM、`?v=` 静默返旧;data-URL 绕缓存但**不解析 `~/` 别名**(实测证伪、带 import 的 hook 丢导出);可行=转译后写唯一项目文件再 import(绕缓存+解析别名两得)
 - [picocolors 在 bun test 塌缩成恒等](reference-picocolors-collapses-to-identity-in-bun-test.md) — 测退化文本;改测引用相等 + FORCE_COLOR 子进程 SGR
