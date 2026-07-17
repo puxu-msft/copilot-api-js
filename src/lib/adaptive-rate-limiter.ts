@@ -101,6 +101,16 @@ const DEFAULT_CONFIG: AdaptiveRateLimiterConfig = {
   gradualRecoverySteps: [5, 2, 1, 0], // 5s → 2s → 1s → full speed
 }
 
+interface QueuedAdmission {
+  resolve: (value: RateLimitAdmission) => void
+  reject: (error: unknown) => void
+  enqueuedAt: number
+  signal: AbortSignal
+  detachAbort?: () => void
+  waitAbortController?: AbortController
+  settled?: boolean
+}
+
 interface QueuedRequest<T> {
   execute: () => Promise<T>
   resolve: (value: T) => void
@@ -124,6 +134,23 @@ interface QueuedRequest<T> {
 export interface RateLimitExecutionOptions {
   signal?: AbortSignal
 }
+
+export interface RateLimitAdmissionOptions {
+  signal: AbortSignal
+}
+
+export interface RateLimitAdmission {
+  admittedAt: number
+  queueWaitMs: number
+}
+
+export interface RateLimitObservation {
+  status?: number
+  retryAfterMs?: number
+  completedAt: number
+}
+
+export type RateLimitAdmissionDecision = { kind: "complete" } | { kind: "retry"; retryAfterMs: number; retryAt: number }
 
 /** Result wrapper that includes queue wait time */
 export interface RateLimitedResult<T> {
@@ -162,6 +189,12 @@ export class AdaptiveRateLimiter {
    * pinning the limiter back into rate-limited mode forever.
    */
   private recoveringNextAvailableAt = 0
+  /** Permit-only queue used by UpstreamAdmissionController; it never owns transport work. */
+  private admissionQueue: Array<QueuedAdmission> = []
+  private processingAdmissions = false
+  private admissionNotBefore = 0
+  private admissionRetryCount = 0
+  private lastAdmissionTime = 0
 
   constructor(config: Partial<AdaptiveRateLimiterConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -181,6 +214,151 @@ export class AdaptiveRateLimiter {
       return this.executeInRecoveringMode(fn, options.signal)
     }
     return this.enqueue(fn, undefined, options.signal)
+  }
+
+  /**
+   * Acquire a transport-independent admission permit without receiving or invoking upstream work.
+   * The caller owns the physical dispatch and must re-check its signal immediately before opening transport after this promise resolves.
+   */
+  async acquireAdmission(options: RateLimitAdmissionOptions): Promise<RateLimitAdmission> {
+    throwIfAborted(options.signal)
+    if (this.mode === "normal") {
+      const admittedAt = Date.now()
+      return { admittedAt, queueWaitMs: 0 }
+    }
+    return this.enqueueAdmission(options.signal)
+  }
+
+  /**
+   * Feed one completed physical dispatch back into the three-mode limiter state machine.
+   * A 429 yields a retry decision for the scheduler; no transport callback exists on this path, so this method cannot replay or execute a fetch itself.
+   */
+  observeAdmission(observation: RateLimitObservation): RateLimitAdmissionDecision {
+    if (observation.status === 429) {
+      const retryAfterMs = this.resolveAdmissionRetryAfterMs(observation.retryAfterMs)
+      const retryAt = observation.completedAt + retryAfterMs
+      this.admissionNotBefore = Math.max(this.admissionNotBefore, retryAt)
+      this.admissionRetryCount++
+      this.enterRateLimitedMode(observation.completedAt)
+      this.wakeAdmissionQueue()
+      return { kind: "retry", retryAfterMs, retryAt }
+    }
+
+    const succeeded = observation.status !== undefined && observation.status >= 200 && observation.status < 400
+    if (!succeeded) return { kind: "complete" }
+
+    this.admissionRetryCount = 0
+    this.admissionNotBefore = 0
+    if (this.mode === "rate-limited") {
+      this.consecutiveSuccesses++
+      if (this.shouldAttemptRecovery()) this.startGradualRecovery()
+    } else if (this.mode === "recovering") {
+      this.recoveryStepIndex++
+      if (this.recoveryStepIndex >= this.config.gradualRecoverySteps.length) {
+        this.completeRecovery()
+      }
+    }
+    this.wakeAdmissionQueue()
+    return { kind: "complete" }
+  }
+
+  /** Reject only permit waiters. The legacy execute queue remains owned by rejectQueued(). */
+  rejectAdmissions(reason: unknown): number {
+    const pending = this.admissionQueue.splice(0)
+    for (const request of pending) {
+      if (request.settled) continue
+      request.settled = true
+      request.detachAbort?.()
+      request.waitAbortController?.abort(reason)
+      request.reject(reason)
+    }
+    return pending.length
+  }
+
+  private enqueueAdmission(signal: AbortSignal): Promise<RateLimitAdmission> {
+    return new Promise<RateLimitAdmission>((resolve, reject) => {
+      const request: QueuedAdmission = {
+        resolve,
+        reject,
+        enqueuedAt: Date.now(),
+        signal,
+      }
+      const onAbort = () => {
+        if (request.settled) return
+        request.settled = true
+        const index = this.admissionQueue.indexOf(request)
+        if (index !== -1) this.admissionQueue.splice(index, 1)
+        request.waitAbortController?.abort(signal.reason)
+        request.detachAbort?.()
+        request.reject(abortError(signal))
+      }
+      signal.addEventListener("abort", onAbort, { once: true })
+      request.detachAbort = () => signal.removeEventListener("abort", onAbort)
+      this.admissionQueue.push(request)
+      void this.processAdmissionQueue()
+    })
+  }
+
+  private async processAdmissionQueue(): Promise<void> {
+    if (this.processingAdmissions) return
+    this.processingAdmissions = true
+    try {
+      while (this.admissionQueue.length > 0) {
+        const request = this.admissionQueue[0]
+
+        if (this.mode === "rate-limited" && this.shouldAttemptRecovery()) this.startGradualRecovery()
+
+        const waitMs = this.admissionWaitMs(Date.now())
+        if (waitMs > 0) {
+          request.waitAbortController = new AbortController()
+          try {
+            await abortableWait(waitMs, request.waitAbortController.signal)
+          } catch {
+            // Cancellation/rejectAll already settles the caller.
+            // State changes use the same wake-up mechanism but leave the item unsettled, in which case the loop recomputes its gate.
+          } finally {
+            request.waitAbortController = undefined
+          }
+          // Per-item abort/rejectAll may remove this item; state changes may keep it. In both
+          // cases re-read the current queue head and recompute its gate.
+          continue
+        }
+
+        throwIfAborted(request.signal)
+        const admittedAt = Date.now()
+        this.lastAdmissionTime = admittedAt
+        this.removeAdmission(request)
+        request.settled = true
+        request.detachAbort?.()
+        request.resolve({ admittedAt, queueWaitMs: admittedAt - request.enqueuedAt })
+      }
+    } finally {
+      this.processingAdmissions = false
+      if (this.admissionQueue.length > 0) void this.processAdmissionQueue()
+    }
+  }
+
+  private admissionWaitMs(now: number): number {
+    if (this.mode === "normal") return 0
+    const intervalSeconds = this.mode === "recovering" ? (this.config.gradualRecoverySteps[this.recoveryStepIndex] ?? 0) : this.config.requestIntervalSeconds
+    const pacedAt = this.lastAdmissionTime > 0 ? this.lastAdmissionTime + intervalSeconds * 1000 : now
+    const notBefore = this.mode === "rate-limited" ? this.admissionNotBefore : 0
+    return Math.max(0, pacedAt, notBefore) - now
+  }
+
+  private removeAdmission(request: QueuedAdmission): void {
+    const index = this.admissionQueue.indexOf(request)
+    if (index !== -1) this.admissionQueue.splice(index, 1)
+  }
+
+  private resolveAdmissionRetryAfterMs(serverRetryAfterMs: number | undefined): number {
+    if (serverRetryAfterMs !== undefined && Number.isFinite(serverRetryAfterMs)) return Math.max(0, serverRetryAfterMs)
+    const backoffSeconds = this.config.baseRetryIntervalSeconds * Math.pow(2, this.admissionRetryCount)
+    return Math.min(backoffSeconds, this.config.maxRetryIntervalSeconds) * 1000
+  }
+
+  private wakeAdmissionQueue(): void {
+    this.admissionQueue[0]?.waitAbortController?.abort()
   }
 
   /**
@@ -352,12 +530,17 @@ export class AdaptiveRateLimiter {
   /**
    * Enter rate-limited mode
    */
-  private enterRateLimitedMode(): void {
-    if (this.mode === "rate-limited") return
+  private enterRateLimitedMode(observedAt = Date.now()): void {
+    if (this.mode === "rate-limited") {
+      // Repeated 429s restart the recovery window just like the legacy execute queue.
+      this.rateLimitedAt = observedAt
+      this.consecutiveSuccesses = 0
+      return
+    }
 
     const previousMode = this.mode
     this.mode = "rate-limited"
-    this.rateLimitedAt = Date.now()
+    this.rateLimitedAt = observedAt
     this.consecutiveSuccesses = 0
 
     consola.warn(
@@ -366,7 +549,7 @@ export class AdaptiveRateLimiter {
     publishRateLimitState({
       mode: this.mode,
       previousMode,
-      queueLength: this.queue.length,
+      queueLength: this.queue.length + this.admissionQueue.length,
       consecutiveSuccesses: this.consecutiveSuccesses,
       rateLimitedAt: this.rateLimitedAt,
     })
@@ -409,13 +592,14 @@ export class AdaptiveRateLimiter {
     // period leaves nextAvailableAt at its last value (possibly in the past,
     // which is harmless), but resetting makes the semantics explicit.
     this.recoveringNextAvailableAt = 0
+    this.lastAdmissionTime = 0
 
     const firstInterval = this.config.gradualRecoverySteps[0] ?? 0
     consola.info(`[RateLimiter] Starting ramp-up (${this.config.gradualRecoverySteps.length} steps, ` + `first interval: ${firstInterval}s)`)
     publishRateLimitState({
       mode: this.mode,
       previousMode,
-      queueLength: this.queue.length,
+      queueLength: this.queue.length + this.admissionQueue.length,
       consecutiveSuccesses: this.consecutiveSuccesses,
       rateLimitedAt: this.rateLimitedAt,
     })
@@ -428,12 +612,13 @@ export class AdaptiveRateLimiter {
     const previousMode = this.mode
     this.mode = "normal"
     this.recoveryStepIndex = 0
+    this.lastAdmissionTime = 0
 
     consola.success("[RateLimiter] Exiting rate-limited mode.")
     publishRateLimitState({
       mode: this.mode,
       previousMode,
-      queueLength: this.queue.length,
+      queueLength: this.queue.length + this.admissionQueue.length,
       consecutiveSuccesses: this.consecutiveSuccesses,
       rateLimitedAt: this.rateLimitedAt,
     })
@@ -648,7 +833,7 @@ export class AdaptiveRateLimiter {
   } {
     return {
       mode: this.mode,
-      queueLength: this.queue.length,
+      queueLength: this.queue.length + this.admissionQueue.length,
       consecutiveSuccesses: this.consecutiveSuccesses,
       rateLimitedAt: this.rateLimitedAt,
     }
@@ -675,7 +860,7 @@ export class AdaptiveRateLimiter {
     publishRateLimitState({
       mode: this.mode,
       previousMode,
-      queueLength: this.queue.length,
+      queueLength: this.queue.length + this.admissionQueue.length,
       consecutiveSuccesses: this.consecutiveSuccesses,
       rateLimitedAt: this.rateLimitedAt,
     })
