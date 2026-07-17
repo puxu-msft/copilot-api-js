@@ -88,8 +88,8 @@ import {
   //
   getAgentIdFromHeaders,
   getSessionIdFromHeaders,
-  resolveResponseSessionId,
 } from "~/lib/history/store"
+import { resolveResponseSessionId } from "~/lib/openai/response-session-store"
 import {
   //
   ENDPOINT,
@@ -392,6 +392,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
     ...(raw.path !== undefined && { rawPath: raw.path, path: raw.path }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
+    ...(raw.operationIdentity !== undefined && { operationIdentity: raw.operationIdentity }),
   })
 
   ctx.setOriginalRequest({
@@ -403,6 +404,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
     payload: originalSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+  ctx.recordModelOperationIngress()
 
   // Normalize call IDs (call_ → fc_) BEFORE tool-name sanitization — matches the
   // legacy handler order (handleResponses: normalizeCallIds then tool-name). This

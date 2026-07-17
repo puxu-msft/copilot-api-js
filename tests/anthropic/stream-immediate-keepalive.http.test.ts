@@ -16,6 +16,9 @@ import {
   test,
 } from "bun:test"
 
+import type { RequestContext } from "~/lib/context/request"
+
+import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history/store"
 import {
   //
@@ -236,8 +239,12 @@ describe("immediate-keepalive — stall cadence ping", () => {
     expect(types).toContain("message_stop")
   })
 
-  test("upstream stalls → cadence ping, then upstream 401 → rich SSE error frame (HTTP status stays 200)", async () => {
+  test("upstream stalls → cadence ping, then upstream 401 → rich SSE error frame ordered before canonical terminal", async () => {
     commitMode = "error-401"
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
     const resP = streamRequest("grace-commit-401")
     await gateReachedP
     await clock.advance(5_000) // cadence ping during the stall
@@ -264,5 +271,12 @@ describe("immediate-keepalive — stall cadence ping", () => {
       }
     })
     expect(forwardedTypes).toContain("ping")
+
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    expect(operation?.terminal).toMatchObject({ outcome: "failed" })
+    const errorFrame = operation?.arena.frames.find((node) => (node.value as { event?: string }).event === "error")
+    expect(errorFrame?.value).toMatchObject({ event: "error" })
+    expect(errorFrame!.sequence).toBeLessThan(operation!.terminal!.sequence)
+    expect(operation?.egress?.client.frames).toContain(errorFrame?.handle)
   })
 })

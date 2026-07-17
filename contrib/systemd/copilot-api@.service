@@ -1,0 +1,23 @@
+# contrib/systemd/copilot-api@.service
+# blue-green 双槽模板：实例化为 copilot-api@a / copilot-api@b。
+# 零停机换代靠 app 层 reusePort 接管（见 copilot-api-deploy.sh），非 socket activation。
+# 详见 docs/lifecycle.md「路径二：systemd blue-green 模板单元 + reusePort」。
+[Unit]
+Description=copilot-api (slot %i)
+After=network.target
+
+[Service]
+Type=notify
+# 用 bun 直连入口（非 `bun run`，否则 LISTEN_PID/notify 归属子进程混乱，见 README）
+# 路径按实际部署位置改写（此处为样例默认值）。
+ExecStart=/usr/bin/bun /opt/copilot-api/src/main.ts start
+# 交接时旧槽 drain 完 exit 0 → 不复活；仅真崩溃（非零退出）重启同色槽。
+# 定成 always 会把每次交接（正常 exit 0）当故障无限拉起，见 README。
+Restart=on-failure
+# 对齐 drain 宽限（shutdown.graceful_wait + abort_wait，默认 60+120=180s），留余量。
+# 若 config.yaml 调大过这两个值，须同步调大本项。
+TimeoutStopSec=200
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

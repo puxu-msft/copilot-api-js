@@ -208,12 +208,34 @@ describe("anthropic-to-responses-stream — tool_use (equivalence zone, native o
       blockStop(1),
       messageDelta("tool_use"),
     ])
-    const outputItemEvents = frames.filter(
-      (f) => data(f).type === "response.output_item.added" || (data(f).type === "response.content_part.added" && (data(f).output_index as number) === 0),
-    )
     const outputIndexes = [...new Set(frames.filter((f) => data(f).type === "response.output_item.added").map((f) => data(f).output_index))]
+    // tool gets output_index 1 — this translator's OWN monotone counter, never the raw Anthropic block index verbatim.
     expect(outputIndexes).toEqual([1])
-    void outputItemEvents
+    // text gets output_index 0 (the leading text message item; it streams via content_part.added / output_text.delta at 0).
+    const textOutputIndexes = frames.filter((f) => data(f).type === "response.content_part.added" || data(f).type === "response.output_text.delta").map((f) => data(f).output_index)
+    expect(textOutputIndexes.every((i) => i === 0)).toBe(true)
+    expect(textOutputIndexes.length).toBeGreaterThan(0)
+  })
+
+  test("a server_tool_use block mid-stream is safely dropped (no Responses output-item equivalent on this leg); the surrounding text still forwards, never crashes", () => {
+    const frames = renderAll([
+      messageStart(),
+      textBlockStart(0),
+      textDelta(0, "before"),
+      blockStop(0),
+      anthropicEvent({ type: "content_block_start", index: 1, content_block: { type: "server_tool_use", id: "srv_1", name: "web_search", input: {} } }),
+      anthropicEvent({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{}" } }),
+      blockStop(1),
+      textBlockStart(2),
+      textDelta(2, "after"),
+      blockStop(2),
+      messageDelta("end_turn"),
+      messageStop(),
+    ])
+    const wire = frames.map((f) => f.data ?? "").join("")
+    expect(wire).toContain("before")
+    expect(wire).toContain("after")
+    expect(wire).not.toContain("server_tool_use")
   })
 })
 

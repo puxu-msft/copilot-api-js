@@ -1,6 +1,12 @@
 # 优雅关闭、优雅重启与请求生命周期
 
-优雅重启（零停机换代）本质是「新进程接管 + 旧进程复用同一套 4-phase drain」，与优雅关闭共享同一生命周期，故合为一篇。阅读顺序：先「优雅关闭」（drain 机制是基础），再「优雅重启」（在其上叠加接管协议）。
+> **运行验证（2026-07-16）**：用户重启后的 4141 进程从主树启动，日志记录 `pid=1762072 sha=27b65b89-dirty`（晚于 lifecycle `e7bc33d0` 与 Archive follow-up `27b65b89`），`/health` healthy、shutdown phase=`idle`、HOT History API 正常。该运行配置显式关闭 `history.archive.enabled`；Archive API 因此返回 `409 archive_unavailable`，不会误报内部 500，也不会擅自启用归档。
+
+维护入口：进程两信号关闭与 durability barrier 见 skill `process-lifecycle-shutdown`；Archive durable-unit 协作停与恢复见 skill `archive-background-lifecycle`。
+
+优雅重启（零停机换代）本质是「新进程接管 + 旧进程复用同一套 drain 流水线」，与优雅关闭共享同一生命周期，故合为一篇。阅读顺序：先「优雅关闭」（drain 机制是基础），再「优雅重启」（在其上叠加接管协议）。
+
+> **术语对齐**：本重启节沿用 `shutdown.ts` 代码内部的 **Phase 1-4** 命名指代关闭 drain 流水线（= 上文「优雅关闭」的 **Step 1-4**，同一流水线，代码与文档措辞的历史差异）；而 **start.ts 启动 boot 的 Phase 0-5**（overlap ⑤ 提到的「Phase 3 开库 / Phase 5 listen」）是**另一套无关的启动阶段编号**，别混。
 
 ## 优雅关闭
 
@@ -16,6 +22,7 @@
 - 标记服务器为 draining 状态
 - 停止后台服务（token 刷新 `stopRefresh`、关闭 HTTP/2 会话池 `closeHttp2Sessions`、停止新建上游 WebSocket `stopNew`）
 - 停止 history 后台工作（reaper / search-index backfill），但**保持 history DB 打开**——异步 finalize（[spec/history-finalize-async-offload.md](spec/history-finalize-async-offload.md)）的落盘要贯穿 Step 2/3 drain，故 DB 的 drain-未决-finalize-再-close 推迟到 `finalizing`（`shutdownHistory`），旧的 Step-1 同步关 DB 会丢 drain 期间 settle 的请求
+- Seal Archive maintenance producer（HOT→tier-1 backlog、tier-1 compaction、tier-2 sealing）：已领取的 session/batch 完成到 crash-safe 提交点，随后检查 stop flag，不再领取下一单元；剩余 backlog 由下次启动按数据库现状继续
 - 排空 rate limiter 队列
 - 停止监听新连接（`server.close(false)`，已建连接保留）
 - **注意：浏览器观察者 WS 客户端（history/status dashboard）此时不关**——它们订阅 lifecycle 事件，Step 1 关掉会让用户看不到后续进度；故意留到 Step 4 或持久化完成后才拆
@@ -50,9 +57,10 @@
 请求生命周期的 4 步结束后，进程进入 `finalizing`：
 
 1. `shutdownHistory()` 排空异步 terminal finalization、重试暂存写入并关闭 History 数据库。
-2. `shutdownRequestTelemetry()` 先封闭 config 订阅与周期 timer 的生产端，再排空 pending delta、关闭 telemetry 数据库。
-3. 持久化 barrier 完成后，向仍在线的观察者发布 bus `finalized`，再关闭观察者连接。
-4. 所有进程资源成功关闭后，内部状态才进入 `stopped`，`waitForShutdown()` 的 completion latch 才 resolve；History 或 Telemetry barrier 失败则进入 `failed` 并以非零状态退出，不谎报完成。
+2. Archive **不在 shutdown 中继续搬迁、压缩或封存**；只等待首信号前已领取的 durable unit 完成，随后关闭 archive DB。每个 unit 都是 session 或迁移 batch，完成后已持久化 cursor/manifest/locator；下次启动重新查询剩余 backlog 继续。
+3. `shutdownRequestTelemetry()` 先封闭 config 订阅与周期 timer 的生产端，再排空 pending delta、关闭 telemetry 数据库。
+4. 持久化 barrier 完成后，向仍在线的观察者发布 bus `finalized`，再关闭观察者连接。
+5. 所有进程资源成功关闭后，内部状态才进入 `stopped`，`waitForShutdown()` 的 completion latch 才 resolve；History 或 Telemetry barrier 失败则进入 `failed` 并以非零状态退出，不谎报完成。
 
 因此 `finalizing` 不等于完成；该阶段的第二次 Ctrl+C 仍立即强退。`waitForShutdown()` 是真正的 latch：多个并发 waiter 都会被唤醒，关闭完成后才注册的 waiter 也会立即 resolve。
 
@@ -66,7 +74,7 @@
 
 ## 优雅重启（零停机换代）
 
-> 状态：**设计（未实现）**。本节是活文档的设计定稿，实现落地后就地转为「现状」描述。
+> 状态：**已实施**（`feat/graceful-restart`，Task 0-15 全落地 + 两轮异模型对抗审查，合并态 review 逮出 supervised 路径 overlap 保护缺口并按 root-cause 修复——见 overlap ①⑤「按进程存活性裁决」）。**唯一 gated follow-up**：真双进程 bare-metal e2e（`tests/e2e/handover.e2e.test.ts`）需在 GitHub API 无故障时复跑确认（重构后曾撞 GitHub `/user` 503 维护态未跑成，代码级已由存活性单测 + 全量套件零新增 + boot 实证覆盖）。实现代码见 `src/lib/restart/*` + `src/lib/{serve,shutdown}.ts` + `src/lib/history/sqlite/connection.ts`。
 
 ### 目标
 
@@ -134,21 +142,21 @@ systemctl enable  copilot-api@$NEXT
 
 pm2 fork 模式 `pm2 reload` = 重启（有 drain 间隙、非零停机）；cluster 模式 + Bun 兼容性不稳。故 pm2 也**复用 reusePort 接管**，不依赖 pm2 原生 reload：
 - 样例 `ecosystem.config.cjs`：`kill_timeout` 对齐 drain 宽限（≥ `shutdownGracefulWait + shutdownAbortWait`）、`wait_ready:true` + `listen_timeout`、SIGINT/SIGTERM 触发优雅 drain（已支持）。
-- 零停机 reload：起带 `--restart` 的新实例 reusePort 接管 + SIGUSR2 老实例 → 老实例 drain 退出 → pm2 收敛。
+- **零停机换代（脚本/操作者显式发信号，非新实例自动接管）**：⚠️ pm2 托管的旧实例 `isSupervised()`=true → **不写 pidfile**（pidfile 机制仅裸手动路径），故新实例**读不到** pidfile、无法自动发现前任并自发 SIGUSR2——「起个 --restart 新实例自动接管」在 pm2 下**发不出信号、两实例永久并存**（一半流量打旧码）。正确形态同 systemd：**双 app 条目（blue/green）+ 操作者/脚本显式发信号**：`pm2 start ecosystem --only copilot-api-green`（reusePort 绑 :4141、`wait_ready` 等 `READY=1`）→ `pm2 sendSignal SIGUSR2 copilot-api-blue`（旧实例 drain）→ `pm2 delete copilot-api-blue`。overlap 期数据安全由 ①⑤ 的**进程存活性判据**自动保证（与 pidfile/信号无关）。
 - `process.send('ready')` 与 sd_notify `READY=1` 共用 `notifyReady()` 钩子。
 
 ### overlap 窗口的共享状态安全
 
 T1–T5 之间新旧两进程同时活着、连着同一批磁盘文件（history.db / telemetry.db / states.json）。**核心原则：旧进程一进 drain 就从「共享可变状态的写者」降级为「只完成自己在途请求」**，把所有权干净交给新进程。逐个隐患：
 
-- **① 必修 bug —— `reclaimOrphanedActiveRows`（`src/lib/history/sqlite/connection.ts`）**：新进程开 history.db 时会把所有非「自己 `(pid, bootTime)`」的 active 行刷成 `interrupted`——overlap 期间会**误杀**旧进程正在 drain 的在途行（且旧进程还在写这些行→脏写）。**修法**：新进程启动时读旧 pidfile / 已知 live 前任的 `(pid, bootTime)`，reclaim 的 WHERE 额外 `AND NOT (pid=? AND boot_time=?)` 排除它。旧进程真正退出后其残留 active 行由下次开库或 reaper 正常回收。这是**正确性 bug**、不是竞争，一行 WHERE 靶向修。
+- **① 必修 bug —— `reclaimOrphanedActiveRows`（`src/lib/history/sqlite/connection.ts`）**：新进程开 history.db 时会把所有非「自己 `(pid, bootTime)`」的 active 行刷成 `interrupted`——overlap 期间会**误杀**任何仍存活进程正在 drain / 正常服务的在途行（且那进程还在写这些行→脏写）。**修法（按进程存活性裁决，环境无关）**：reclaim 扫到非自己 owner 的 active 行时用 `isProcessAlive(owner_pid)` 判存活——**存活则跳过**（合法在途、非孤儿），**只回收 owner 真死**的孤儿行。这是**单一环境无关不变量「reclaim 绝不碰任何存活进程的在途行」**，裸手动 / systemd / pm2 三路径天然统一受保护，**不依赖任何外部排除名单寄存器**（早期设计的 predecessor-registry 只在 bare-metal takeover 分支填充、systemd/pm2 裸奔，已退役）。正确性 bug 的根因修。
 - **② 遥测并发写（telemetry.db）**：区分两类，只有一类是真风险——
   - **persist（pending-delta flush）不双计**：每个进程有**独立的内存 pending-delta outbox**，旧进程 flush 的是它自己服务过的请求 delta、新进程 flush 自己的，两者写进 `tel_cumulative` 恰好是正确相加（A+B），无重叠。
   - **rollup 才是承重风险**：rollup timer 读 `tel_raw` 链式上卷 hourly/daily 并推进 `tel_meta` watermark，两进程并发上卷可能都从同一 watermark 起、重复上卷放大（watermark 幂等只防**同进程重放**，不防**跨进程并发**）。
   - **修法**：旧进程 Step 1 停**两个 telemetry timer（persist + rollup）**——`stopPeriodicPersistence()` + `stopRollupTimer()`。最终 `shutdownRequestTelemetry()` 已先注销 `telemetryConfigUnsub`，再停 timer、排空并关闭数据库，保证 await 窗口内 config 热重载不能把 timer 重新拉活。接管场景还应在 Step 1 提前执行 producer seal，避免 drain 期与新进程并发上卷；最终 flush 仍推迟到 `finalizing`（drain-before-close，不丢在途 delta）。
 - **③ states.json（calibration `learned-limits.json` / feature-negotiation）—— 真有竞争，非「无冲突」**：两者都是 **debounce 全量快照覆盖写**（`schedulePersist()` → `atomicWriteJson` 整文件替换），且从**请求处理路径**触发（feature-negotiation 18 处、calibration 多处），**不受 Phase 1 的 `stopHistoryBackgroundWork`/`stopTelemetryBackgroundWork` 影响**——旧进程在整个 drain 期处理在途请求时仍会继续 `schedulePersist`。因是**整内存态覆盖整磁盘态**（非 telemetry 的可加 delta、非 reclaim 的行级 WHERE），若旧进程一次覆盖写 `rename()` 晚于新进程的覆盖写落地，会把新进程 overlap 期新学到的负反馈**整体覆盖丢失**。**修法（flush-then-freeze，仅 handoff）**：旧进程收到 **handoff 信号（SIGUSR2）时**对两个持久化各做一次 flush（清空 debounce、落最后一份），随后把 `schedulePersist` 降级为 **no-op（freeze）**——把「继续学习并落盘」的所有权让给新进程。**freeze 仅在 handoff 路径**：普通 SIGINT/SIGTERM 关机无后继者、freeze 无意义（且会污染反复 gracefulShutdown 的测试）——`gracefulShutdown(signal)` 据 `signal==="SIGUSR2"` gate。`persistenceFrozen` 单例的 reset 折进既有 `clearAnthropicFeatureNegotiationForTests`/`resetAllLimitsForTesting`（已在 RESETTERS 表、被 L1 守卫覆盖）。丢失只是可重学的缓存（符合「无向后兼容负担」下可接受的降级），但正确形状是 handoff-gated freeze、不是放任覆盖竞争。**Phase 1 IO 注记**：handoff 路径 Phase 1 因此含两次 `atomicWriteJson` 落盘（有界毫秒级），不再是纯同步 CPU-bound setup；普通关机 Phase 1 仍纯同步。
 - **④ WAL 并发写**：history.db 仍有「旧进程在途请求 settle 的 finalize 写」+「新进程新请求写」。WAL + `busy_timeout=5000` 已串行化两写者——这正是 SQLite WAL 多进程写者的设计场景，几秒内几笔串行写余量绰绰有余，无需额外锁。
-- **⑤ 新进程一次性 schema/维护动作 —— `maybeVacuumOnStartup`（VACUUM）是承重遗漏**：新进程 `initHistory()` 的 `openDatabase()` 同步路径（`connection.ts:84`）会跑 `maybeVacuumOnStartup`——它在 **Phase 3、早于 Phase 5 listen/发 SIGUSR2**，即**旧进程还完全不知道接管、仍在正常 accept + 正常流量写 history.db** 的窗口。VACUUM 需**独占整库写锁**且时长随库大小线性增长（代码注释引用过 2.17GB 库的真实案例），可能远超 `busy_timeout=5000`；命中阈值时旧进程正常流量的任意 `entries_v2` 写会 `SQLITE_BUSY`→多数走 never-throw `warn` 静默降级 = **该请求 history 记录丢失**，且无 reclaim/telemetry 那样的补救。这与 ①② 是**同一类缺陷**（新进程的独占维护动作撞上仍存活的旧进程），只是落在此前没点名的 VACUUM 上。**修法**：接管场景（predecessor registry 非空）**跳过** `maybeVacuumOnStartup`——VACUUM 本就是有阈值的一次性维护，延后到下次真正独占启动即可（reaper 的 incremental vacuum 仍安全运行）。`migrateEntriesColumns`（ADD COLUMN）/`dropLegacyFtsAndSearchText`（DROP）同窗口跑但是毫秒级元数据操作、风险远小，文档备注即可、不同等处理。
+- **⑤ 新进程一次性 schema/维护动作 —— `maybeVacuumOnStartup`（VACUUM）是承重遗漏**：新进程 `initHistory()` 的 `openDatabase()` 同步路径（`connection.ts:84`）会跑 `maybeVacuumOnStartup`——它在 **Phase 3、早于 Phase 5 listen/发 SIGUSR2**，即**旧进程还完全不知道接管、仍在正常 accept + 正常流量写 history.db** 的窗口。VACUUM 需**独占整库写锁**且时长随库大小线性增长（代码注释引用过 2.17GB 库的真实案例），可能远超 `busy_timeout=5000`；命中阈值时旧进程正常流量的任意 `entries_v2` 写会 `SQLITE_BUSY`→多数走 never-throw `warn` 静默降级 = **该请求 history 记录丢失**，且无 reclaim/telemetry 那样的补救。这与 ①② 是**同一类缺陷**（新进程的独占维护动作撞上仍存活的旧进程），只是落在此前没点名的 VACUUM 上。**修法（按存活性裁决，环境无关）**：`openDatabase` 跑 VACUUM 前判「是否存在**存活的、非自己 owner** 共享此库」——即扫 `entries_v2` 里 active 行的 distinct owner pid，若有任一 `isProcessAlive` 且 ≠ 自己，则**跳过** `maybeVacuumOnStartup`（延后到下次真正独占启动，reaper incremental vacuum 仍安全）。与 ① 同一存活性判据、同一环境无关不变量，三路径统一、不依赖 registry。`migrateEntriesColumns`（ADD COLUMN）/`dropLegacyFtsAndSearchText`（DROP）同窗口跑但毫秒级、风险远小，文档备注即可。
 
 > **为何不把 history/telemetry 拆成独立持久化服务**（曾评估）：overlap 写竞争是**有界、罕见、可被靶向修覆盖**的（旧进程降级后只剩个位数在途 finalize + 新进程新写），几个真隐患（reclaim 误杀 / telemetry rollup 并发上卷 / VACUUM 独占锁 / states.json 覆盖竞争）都是廉价靶向修（排除 WHERE / 停 timer+注销订阅 / 接管跳过 VACUUM / flush-then-freeze）。而拆服务代价不成比例：需给极富且在演进的 payload（zstd blob / 内容寻址 search_index / 异步两相 finalize / DDSketch）定义 IPC wire 协议，把「同进程一个 await 保证的 never-lose-settle 不变量」变成分布式投递协议；读侧（`/history/api/*`、`/api/status`、`/metrics`、WS 实时推送）也全是进程内同步读；SQLite 的价值本就是嵌入式零 IPC。本项目是单用户内部工具、并发仅「偶尔重启一次」，为有界问题引常驻 sidecar 是过度工程。**触发条件**（满足才值得重做，见 `docs/todo/deferred-backlog.md`）：转向多进程/多 worker 常驻并发 serving；或持久化背压开始阻塞请求 serving；或体量长出 SQLite、本就要迁 client-server DB。
 

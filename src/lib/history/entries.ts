@@ -4,11 +4,8 @@ import type {
   //
   EntrySummary,
   HistoryEntry,
-  QueryOptions,
 } from "./types"
 
-import { getDatabase } from "./sqlite/connection"
-import { archiveNow as archiveNowSqlite } from "./sqlite/tier1-migrate"
 import {
   //
   clearInFlight,
@@ -24,11 +21,7 @@ import {
   runHistoryWrite,
   runHistoryWriteAsync,
 } from "./persist-guard"
-import {
-  //
-  getEntryById,
-  queryEntryCount,
-} from "./sqlite/read"
+import { getEntry } from "./queries"
 import {
   //
   isReaperRunning,
@@ -44,18 +37,14 @@ import {
   //
   clearAllEntries,
   insertCompletedEntry,
-  setEntryPinned,
   upsertHeadRow,
 } from "./sqlite/write"
 import { historyState } from "./state"
 import { getStats } from "./stats"
+import { setV3OperationPinned } from "./v3/store"
+import { clearRecentModelOperationTerminalsForTests } from "./v3/terminal-bus"
 
-/**
- * Publish a `history.*` ObservabilityEvent via the publisher installed at
- * start.ts (`setHistoryPublisher(bus.scope("history"))`). When no publisher
- * is installed (tests that don't need WS broadcast), it's a no-op — the
- * SQLite write already happened by the time we reach this function.
- */
+/** Publish after persistence through the scoped history observability channel. */
 function publishEntryAdded(summary: EntrySummary): void {
   historyState.publisher?.publish({ kind: "history.entry_added", summary })
 }
@@ -339,16 +328,6 @@ export function persistEntryStages(id: string, stages: Array<StagePayload>): voi
 }
 
 /**
- * Manual "archive now" trigger (spec §3.6) — the product-facing replacement for
- * the removed delete API. Moves the terminal, non-pinned HOT entries matching
- * `filters` (or all when absent) into tier-1 instead of deleting them. Returns the
- * number archived; a no-op returning 0 when archiving is disabled.
- */
-export function archiveNow(filters?: QueryOptions): number {
-  return archiveNowSqlite(getDatabase(), filters)
-}
-
-/**
  * Wipe ALL history (in-flight + every SQLite table). **Test-only internal
  * primitive** (spec §3.6): the HTTP delete surface is removed — this stays only
  * as the isolation-reset used by resetTestRuntime + integration tests. Logs
@@ -357,18 +336,13 @@ export function archiveNow(filters?: QueryOptions): number {
 export function clearHistory(): void {
   const inFlightCount = listInFlight().length
   clearInFlight()
+  clearRecentModelOperationTerminalsForTests()
   if (historyState.enabled) {
-    let persistedCount = 0
-    try {
-      persistedCount = queryEntryCount()
-    } catch {
-      /* count is best-effort, purely for the log line */
-    }
     try {
       clearAllEntries()
-      consola.warn(`[history] CLEARED ALL entries (${persistedCount} persisted + ${inFlightCount} in-flight) via DELETE /api/entries`)
+      consola.warn(`[history] CLEARED test store (${inFlightCount} in-flight entries); this primitive is test-only`)
     } catch (err: unknown) {
-      consola.error("[history] failed to clear sqlite entries", err)
+      consola.error("[history] failed to clear test sqlite entries", err)
     }
   }
   publishHistoryCleared()
@@ -378,23 +352,19 @@ export function clearHistory(): void {
 /**
  * Toggle the debug-pin flag on a persisted entry, then broadcast the refreshed
  * summary so connected WS clients reflect the new state. Returns whether the
- * entry exists. A pinned entry is exempt from reaper eviction AND retention
- * counting (see `setEntryPinned` + reaper SUCCESS_WHERE/FAILURE_WHERE), so its
- * raw data survives GC for debugging. No stats broadcast — pinning changes
- * neither the completed/failed counts nor token sums.
+ * V3 operation exists. The V3 `pinned` column is the only product pin state;
+ * there is no legacy-row fallback. No stats broadcast — pinning changes neither
+ * the completed/failed counts nor token sums.
  */
 export function setPinned(id: string, pinned: boolean): boolean {
   if (!historyState.enabled) return false
-  const changed = setEntryPinned(id, pinned)
+  const changed = setV3OperationPinned(id, pinned)
   if (!changed) return false
-  // The `pinned` column is authoritative, but an entry that is still in-flight
-  // (eager-persisted yet un-finalized) is read in-flight-FIRST by `getEntry`.
-  // Sync the in-flight copy so HTTP responses and the broadcast summary reflect
-  // the new flag immediately — not only after the entry finalizes. No-op when the
-  // entry is already terminal (no in-flight copy). The pin survives finalize
-  // regardless: INSERT_ENTRY_SQL never writes the column (see setEntryPinned).
+  // Sync a same-id in-flight copy defensively so broadcasts and immediate reads
+  // agree with the V3 column. A normal V3 pin targets a terminal operation and
+  // therefore has no in-flight twin.
   updateInFlight(id, { pinned })
-  const entry = getInFlight(id) ?? getEntryById(id)
+  const entry = getInFlight(id) ?? getEntry(id)
   if (entry) publishEntryUpdated(toEntrySummary(entry))
   return true
 }

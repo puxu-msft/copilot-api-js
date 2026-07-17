@@ -71,9 +71,9 @@ describe("loadRawConfigFile (boot-path strict parse)", () => {
   })
 
   test("well-formed file parses normally", async () => {
-    await writeConfig("history:\n  limit: 99\n")
+    await writeConfig("history:\n  raw_capture:\n    max_object_bytes: 99\n")
     const out = await loadRawConfigFile()
-    expect(out.history?.limit).toBe(99)
+    expect(out.history?.raw_capture?.max_object_bytes).toBe(99)
   })
 
   test("DUPLICATE KEY in a mapping throws ConfigParseError (would silently overwrite under permissive parse)", async () => {
@@ -114,12 +114,12 @@ describe("loadRawConfigFile (boot-path strict parse)", () => {
 
 describe("loadConfig (hot-reload path) absorbs ConfigParseError as a warning + bundled fallback", () => {
   test("malformed user config does NOT throw; returns bundled defaults so the server stays up", async () => {
-    setBundledConfigForTests({ history: { limit: 50 } })
+    setBundledConfigForTests({ history: { raw_capture: { max_object_bytes: 50 } } })
     await writeConfig("history:\n  limit: 1\n  limit: 999\n")
     // Must not throw — that is the contract that keeps a mid-flight bad edit
     // from taking the server down. The user sees one warning in the log.
     const cfg = await loadConfig()
-    expect(cfg.history?.limit).toBe(50) // bundled, not the corrupted 999
+    expect(cfg.history?.raw_capture?.max_object_bytes).toBe(50)
   })
 
   test("repeated loadConfig on the same broken file does NOT re-parse — mtime cache prevents log spam", async () => {

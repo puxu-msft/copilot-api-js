@@ -6,6 +6,7 @@ import pc from "picocolors"
 import { getProxyForUrl } from "proxy-from-env"
 
 import type { Model } from "./lib/models/client"
+import type { PidfileContent } from "./lib/restart/pidfile"
 
 import packageJson from "../package.json"
 import {
@@ -35,8 +36,6 @@ import {
   setHistoryPublisher,
   startHistoryBackfills,
 } from "./lib/history"
-import { getDatabase } from "./lib/history/sqlite/connection"
-import { applyForwardMigrations } from "./lib/history/sqlite/migrations/run"
 import { loadPersistedLimits } from "./lib/models/calibration"
 import { cacheModels } from "./lib/models/client"
 import { normalizeForMatching } from "./lib/models/model-name"
@@ -48,18 +47,33 @@ import { installConsolaRepublish } from "./lib/observability/republish"
 import { attachCalibrationSink } from "./lib/observability/sinks/calibration"
 import { attachCalibrationFailureSink } from "./lib/observability/sinks/calibration-failure"
 import { attachFileSink } from "./lib/observability/sinks/file"
-import { attachHistorySink } from "./lib/observability/sinks/history"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
 import { attachWsSink } from "./lib/observability/sinks/ws"
 import { setRequestLinePublisher } from "./lib/observability/synthetic-request-line"
 import { loadUpstreamHookSafe } from "./lib/pipeline/hooks/loader"
-import { initProcessIdentity } from "./lib/process-identity"
+import {
+  //
+  getProcessIdentity,
+  initProcessIdentity,
+} from "./lib/process-identity"
 import { initProxy } from "./lib/proxy"
 import {
   //
   initRequestTelemetry,
   runTelemetryJsonBackfill,
 } from "./lib/request-telemetry"
+import { notifyReady } from "./lib/restart/notify"
+import {
+  //
+  removePidfileIfOwnedBySelf,
+  writePidfile,
+} from "./lib/restart/pidfile"
+import { isSupervised } from "./lib/restart/supervisor-env"
+import {
+  //
+  resolveManualStartup,
+  signalPredecessorHandoff,
+} from "./lib/restart/takeover"
 import { startServer } from "./lib/serve"
 import {
   //
@@ -176,6 +190,12 @@ interface RunServerOptions {
   ghcApiBaseUrl?: string
   // Adaptive rate limiting (disabled if rateLimit is false)
   rateLimit: boolean
+  /**
+   * History recording master switch (CLI --history / --no-history). undefined =
+   * unset → fall back to config `history.enabled` (default true). false forces
+   * no-history mode: no history.db is opened and nothing is recorded.
+   */
+  history?: boolean
   /** Mock rate limiter throttle: reject all requests with 429 */
   mockRateLimiterThrottled: boolean
   githubToken?: string
@@ -184,6 +204,12 @@ interface RunServerOptions {
   proxy?: string
   httpProxyFromEnv: boolean
   externalUiUrl?: string
+  /**
+   * 零停机接管：若已有裸手动实例在跑（pidfile 活性检查检测到），绑定同端口
+   * （reusePort）并向其发 SIGUSR2 交接，待其 drain 完退出。仅裸手动路径生效；
+   * systemd/pm2 下由 supervisor 编排交接、本 flag 被忽略（lifecycle.md「优雅重启」）。
+   */
+  restart: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -347,6 +373,27 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   initProxy({ url: proxyUrl, fromEnv: !cliProxy && options.httpProxyFromEnv })
 
   // ===========================================================================
+  // Phase 2.7: Graceful-restart startup guard (bare-metal path only)
+  // ===========================================================================
+  // resolveManualStartup collapses the supervisor branch + decideStartup into
+  // one pure, unit-tested function (tests/restart/runserver-wiring.unit.test.ts);
+  // this call site only does the IO reaction (exit/log/record) on its result.
+  // Overlap-window data safety (reclaim exclusion / VACUUM skip) no longer
+  // depends on this decision — it's judged by process liveness directly in
+  // history/sqlite/connection.ts (lifecycle.md「overlap 共享状态安全 ①⑤」).
+  const pidfilePath = config.pidfile ?? PATHS.PIDFILE
+  const manualStartup = resolveManualStartup({ pidfilePath, restart: options.restart, supervised: isSupervised() })
+  let takeoverPredecessor: PidfileContent | null = null
+  if (manualStartup.kind === "refuse") {
+    consola.error(`已有实例在运行（pid=${manualStartup.predecessor.pid}, port=${manualStartup.predecessor.port}）。` + `用 --restart 接管，或先停旧实例。`)
+    process.exit(1)
+  }
+  if (manualStartup.kind === "takeover") {
+    takeoverPredecessor = manualStartup.predecessor
+    consola.info(`[restart] 接管模式：将在监听后向前任 pid=${takeoverPredecessor.pid} 发交接信号`)
+  }
+
+  // ===========================================================================
   // Phase 3: Initialize backing stores, their sinks, and the rate limiter
   // ===========================================================================
   // The log-stream sinks (Console, File) + system publisher were wired in
@@ -355,35 +402,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // setRateLimitPublisher + installConsolaRepublish, so its "[RateLimiter]
   // Initialized" line is captured by the file sink and the --mock-rate-limiter-
   // throttled forced state transition actually reaches the bus).
-  initHistory(true)
-  // Apply forward (001+) schema migrations now that the DB is open (initHistory
-  // → openDatabase built the floor + history_meta) and BEFORE the server starts
-  // serving. A failure is a HARD refuse-to-start: schema DDL is foundational, so
-  // serving on a half-migrated schema is worse than not starting (mirrors the
-  // config-parse abort above; deliberately NOT left to global unhandledRejection).
-  // initHistory also armed the reaper, but that is only an unref'd setInterval
-  // (default 600s, no synchronous schema work) so its first tick lands long after
-  // migrations complete — the ordering is benign even when 001+ is non-empty.
-  try {
-    await applyForwardMigrations(getDatabase())
-  } catch (err: unknown) {
-    consola.error("[history/sqlite] schema migration failed; refusing to start (a half-migrated schema is more dangerous than not starting)", err)
-    process.exit(1)
-  }
+  const historyEnabled = options.history ?? state.historyEnabled
+  initHistory(historyEnabled)
   await initRequestTelemetry()
 
-  // Sinks are AUTHORITATIVE (RFC docs/archive/2606-landed-rfcs/observability-rewrite.md §2.4-2.5) —
-  // manager.ts publishes request.* events; entries.ts/sessions.ts publish
-  // history.* events via the publisher installed by setHistoryPublisher. The
-  // one attach-order invariant that matters: HistorySink BEFORE WsSink, so a
-  // terminal entry is persisted before the history.entry_updated broadcast (a
-  // client receiving the WS notification and immediately querying
-  // GET /history/api/entries/:id must not find an empty row). ConsoleSink/
-  // FileSink already subscribed in Phase 1.5; they render/persist from the
-  // event payload and never query history, so their earlier position is benign.
+  // Canonical V3 terminal persistence is installed by initHistory. The legacy
+  // mutable-context HistorySink is deliberately not attached in production.
   const historyPublisher = bus.scope("history")
   setHistoryPublisher(historyPublisher)
-  attachHistorySink(bus, { publisher: historyPublisher })
   attachTelemetrySink(bus)
   attachCalibrationSink(bus)
   attachCalibrationFailureSink(bus)
@@ -413,8 +439,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   // Initialize request context manager with the request.* publisher so
-  // every lifecycle / context_updated event reaches HistorySink + WsSink +
-  // ConsoleSink + TelemetrySink. consumers.ts is deleted as of commit 3b;
+  // every lifecycle event reaches WsSink + ConsoleSink + TelemetrySink.
+  // consumers.ts is deleted as of commit 3b;
   // the bus is the only path for these signals now.
   const contextManager = initRequestContextManager({ publisher: bus.scope("request") })
 
@@ -542,6 +568,27 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setServerInstance(serverInstance)
   setupShutdownHandlers()
 
+  // Bare-metal pidfile write (仅裸手动路径；supervisor 环境跳过整个 pidfile 机制) —
+  // must happen AFTER the server is actually listening (setServerInstance above),
+  // so a reader never observes a pidfile pointing at a process that isn't accepting
+  // connections yet.
+  if (!isSupervised()) {
+    const id = getProcessIdentity()
+    writePidfile(pidfilePath, { pid: id.pid, bootTime: id.bootTime, port: options.port })
+    // Best-effort fallback for non-graceful exits (e.g. an uncaught throw that
+    // bypasses the `finally` below): `process.on("exit")` handlers must be fully
+    // synchronous, so this is the same compare-and-delete primitive used there —
+    // never an unconditional delete (B2: would erase a takeover successor's live
+    // pidfile).
+    process.on("exit", () => removePidfileIfOwnedBySelf(pidfilePath, { pid: id.pid, bootTime: id.bootTime }))
+  }
+
+  // 就绪通知（三后端：sd_notify READY=1 / pm2 process.send('ready') / 裸手动 no-op，
+  // 各自按环境自动 no-op）——此刻服务器已在监听，对外通知「可以路由流量了」是准确的。
+  notifyReady()
+  // 裸手动接管：现在才向前任发交接信号（新进程已监听同端口，前任此刻停 accept 是安全的）。
+  if (takeoverPredecessor) signalPredecessorHandoff(takeoverPredecessor.pid)
+
   // Fire-and-forget the recoverable background backfills now that the server is
   // listening: the usage net-of-cache normalization first (fast, guarded by
   // usage_normalized), then the heavier search_index + preview_text backfill.
@@ -576,6 +623,16 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     await waitForShutdown()
   } finally {
     stopModelRefreshLoop()
+    // Bare-metal pidfile cleanup — compare-and-delete (B2): a takeover already
+    // overwrote this same path with the successor's pid, so an unconditional
+    // delete here would erase a LIVE successor's pidfile out from under it
+    // (permanently disabling the guard, silently allowing a third instance to
+    // stack on the next plain start). removePidfileIfOwnedBySelf only deletes
+    // when the on-disk pid still matches our own.
+    if (!isSupervised()) {
+      const id = getProcessIdentity()
+      removePidfileIfOwnedBySelf(pidfilePath, { pid: id.pid, bootTime: id.bootTime })
+    }
   }
 }
 
@@ -623,6 +680,13 @@ export const start = defineCommand({
       default: true,
       description: "Adaptive rate limiting (disable with --no-rate-limit)",
     },
+    history: {
+      type: "boolean",
+      // No default on purpose: unset → undefined → fall back to config
+      // `history.enabled` (default true). --no-history forces the no-history
+      // mode (no history.db opened, nothing recorded) and wins over config.
+      description: "Record request history to SQLite (disable with --no-history)",
+    },
     "mock-rate-limiter-throttled": {
       type: "boolean",
       default: false,
@@ -651,6 +715,11 @@ export const start = defineCommand({
       type: "string",
       description: "Proxy /ui to an external frontend dev/build server (for example http://localhost:5173)",
     },
+    restart: {
+      type: "boolean",
+      default: false,
+      description: "零停机接管：若已有实例在跑，绑定同端口并向其发 SIGUSR2 交接（仅裸手动路径；systemd/pm2 由 supervisor 编排）。",
+    },
   },
   run({ args }) {
     // Check for unknown arguments
@@ -676,6 +745,8 @@ export const start = defineCommand({
       // rate-limit (citty handles --no-rate-limit via built-in negation)
       "rate-limit",
       "rateLimit",
+      // history (citty handles --no-history via built-in negation)
+      "history",
       // mock-rate-limiter-throttled
       "mock-rate-limiter-throttled",
       "mockRateLimiterThrottled",
@@ -694,6 +765,8 @@ export const start = defineCommand({
       // external-ui-url
       "external-ui-url",
       "externalUiUrl",
+      // restart
+      "restart",
     ])
     const unknownArgs = Object.keys(args).filter((key) => !knownArgs.has(key))
     if (unknownArgs.length > 0) {
@@ -709,12 +782,14 @@ export const start = defineCommand({
       accountType: args["account-type"] as "individual" | "business" | "enterprise" | undefined,
       ghcApiBaseUrl: args["ghc-api-base-url"],
       rateLimit: args["rate-limit"],
+      history: args.history,
       mockRateLimiterThrottled: args["mock-rate-limiter-throttled"],
       githubToken: args["github-token"],
       showGitHubToken: args["show-github-token"],
       proxy: args.proxy,
       httpProxyFromEnv: args["http-proxy-from-env"],
       externalUiUrl: args["external-ui-url"],
+      restart: args.restart,
     })
   },
 })

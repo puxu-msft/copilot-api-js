@@ -1,0 +1,121 @@
+import type { HistoryEntry } from "~/lib/history/types"
+
+import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
+import { getDatabase } from "~/lib/history/sqlite/connection"
+import {
+  //
+  commitPreparedOperation,
+  prepareModelOperation,
+} from "~/lib/history/v3/store"
+
+/** Persist a terminal History-shaped fixture through the canonical V3 store. */
+export function commitV3HistoryEntry(entry: HistoryEntry): void {
+  const recorder = createModelOperationRecorder({
+    identity: {
+      operationId: entry.id,
+      kind: entry.operationKind ?? "generation",
+      createdAt: entry.startedAt,
+      sessionId: entry.sessionId,
+      agentId: entry.agentId,
+      process: entry.process,
+    },
+  })
+  const clientBody = entry.clientRequest?.body ?? {
+    model: entry.clientRequest?.model ?? entry.model?.requested,
+    messages: entry.clientRequest?.messages ?? [],
+    stream: entry.clientRequest?.stream,
+    tools: entry.clientRequest?.tools,
+    system: entry.clientRequest?.system,
+  }
+  const ingress = recorder.registerPayload(clientBody, { origin: { stage: "ingress", track: "client" } })
+  recorder.recordIngress({
+    format: entry.endpoint,
+    method: entry.clientRequest?.method ?? "POST",
+    path: entry.clientRequest?.path ?? "/",
+    request: {
+      payload: ingress,
+      headers: entry.clientRequest?.headers ? Object.entries(entry.clientRequest.headers) : undefined,
+      metadata: entry.clientRequest,
+    },
+  })
+  recorder.recordRouting({
+    requestedModel: entry.model?.requested ?? entry.clientRequest?.model,
+    resolvedModel: entry.model?.resolved ?? entry.attempts?.at(-1)?.upstreamResponse?.model,
+    clientFormat: entry.endpoint,
+    upstreamEndpoint: entry.model?.outboundEndpoint,
+    transport: entry.transport,
+    metadata: { translated: entry.model?.translated },
+  })
+
+  let committedAttempt: ReturnType<typeof recorder.beginAttempt> | undefined
+  for (const attempt of entry.attempts ?? []) {
+    const effectiveBody = attempt.effectiveSource?.body
+    const upstreamBody = attempt.upstreamRequest?.body
+    const effective =
+      effectiveBody === undefined ? undefined : recorder.registerPayload(effectiveBody, { origin: { stage: "effective-request", track: "proxy" } })
+    const upstream = upstreamBody === undefined ? undefined : recorder.registerPayload(upstreamBody, { origin: { stage: "upstream-wire", track: "upstream" } })
+    const handle = recorder.beginAttempt({
+      strategy: attempt.strategy,
+      transport: attempt.transport,
+      effectiveRequest: effective === undefined ? undefined : { payload: effective, metadata: attempt.effectiveSource },
+      upstreamRequest:
+        upstream === undefined ? undefined : (
+          {
+            payload: upstream,
+            headers: attempt.upstreamRequest?.headers ? Object.entries(attempt.upstreamRequest.headers) : undefined,
+            metadata: attempt.upstreamRequest,
+          }
+        ),
+      metadata: { transport: attempt.transport },
+    })
+    const response = attempt.upstreamResponse
+    const responsePayload =
+      response?.body === undefined ?
+        undefined
+      : recorder.registerPayload(response.body, { origin: { stage: "upstream-response", track: "upstream", attempt: handle } })
+    const frameHandles = (response?.sseEvents ?? []).map((frame) =>
+      recorder.registerFrame(frame, { origin: { stage: "upstream-capture", track: "upstream", attempt: handle }, mediaType: "text/event-stream" }),
+    )
+    recorder.settleAttempt(handle, {
+      verdict: response?.success === false ? "failed" : "committed",
+      upstreamResponse: {
+        payload: responsePayload,
+        frames: frameHandles,
+        status: response?.status,
+        headers: response?.headers ? Object.entries(response.headers) : undefined,
+        metadata: { response, latencyMs: attempt.durationMs },
+      },
+      error: attempt.error,
+    })
+    if (response?.success !== false) committedAttempt = handle
+  }
+
+  const clientBodyOut = entry.clientResponse?.body
+  const clientPayload =
+    clientBodyOut === undefined ? undefined : recorder.registerPayload(clientBodyOut, { origin: { stage: "client-egress", track: "client" } })
+  const clientFrames = (entry.clientResponse?.sseEvents ?? []).map((frame) =>
+    recorder.registerFrame(frame, { origin: { stage: "client-sink", track: "client" }, mediaType: "text/event-stream" }),
+  )
+  recorder.recordEgress({
+    upstream: {},
+    client: {
+      payload: clientPayload,
+      frames: clientFrames,
+      status: entry.clientResponse?.status ?? (entry.state === "completed" ? 200 : undefined),
+      headers: entry.clientResponse?.headers ? Object.entries(entry.clientResponse.headers) : undefined,
+    },
+  })
+
+  const outcome =
+    entry.state === "completed" ? "completed"
+    : entry.state === "aborted" ? "aborted"
+    : entry.state === "interrupted" ? "interrupted"
+    : "failed"
+  const terminal = recorder.commitTerminal({
+    outcome,
+    committedAttempt,
+    error: entry._index?.derived?.failureReason,
+    metadata: { durationMs: entry.durationMs },
+  })
+  commitPreparedOperation(getDatabase(), prepareModelOperation(terminal))
+}

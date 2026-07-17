@@ -64,6 +64,7 @@ import {
   //
   mapResponsesStatusToStopReason,
   mapUsage,
+  webSearchCallToText,
 } from "./responses-to-anthropic"
 
 /**
@@ -275,6 +276,20 @@ export function createResponsesToAnthropicStreamTranslator(modelId: string, opts
           // is the final, round-trippable blob — never captured on `.added` (recorded fix).
           if (event.item.type === "reasoning" && typeof event.item.encrypted_content === "string" && event.item.encrypted_content.length > 0) {
             reasoningEncrypted = event.item.encrypted_content
+          }
+          // R-NO-REVIVE (RFC §5.1/§9, Phase 6 subtask Q): a web_search_call item arrives WHOLE on `.done`
+          // (no intermediate delta events, Phase 0 probe (c)) — degrade to a readable text block, NEVER a
+          // synthesized `web_search_tool_result` (no encrypted_content on this item to round-trip).
+          if (event.item.type === "web_search_call") {
+            emitMessageStart(out)
+            closeOpenBlock(out)
+            const idx = blockIndexFor(event.output_index)
+            const text = webSearchCallToText(event.item)
+            out.push({ frame: anthropicSseFrame({ type: "content_block_start", index: idx, content_block: { type: "text", text: "" } }) })
+            out.push({ frame: anthropicSseFrame({ type: "content_block_delta", index: idx, delta: { type: "text_delta", text } }) })
+            out.push({ frame: anthropicSseFrame({ type: "content_block_stop", index: idx }) })
+            // openBlock stays undefined (this block is already fully closed) — the NEXT block (if any)
+            // opens fresh via its own lifecycle event, mirrors closeOpenBlock's own post-close state.
           }
           break
         }

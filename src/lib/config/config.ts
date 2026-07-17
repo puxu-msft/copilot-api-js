@@ -218,27 +218,6 @@ const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20
 let warnedKeepaliveClamp = false
 
 /** Clamp a keepalive interval/window (0 = disabled) to stay WELL below the client idle deadline; warn once. */
-/**
- * Parse a human-readable byte size ("2GB" / "500MB" / "1024") into a byte count.
- * Accepts a bare number (already bytes) or a number + unit suffix
- * (B/KB/MB/GB/TB, case-insensitive, binary 1024-based). Returns `undefined` for
- * `undefined` input (caller skips the setter) and WARN-CONTINUES on a malformed
- * value (config never kills the process — feedback-config-philosophy). */
-function parseByteSize(value: string | undefined, keyLabel: string): number | undefined {
-  if (value === undefined) return undefined
-  const trimmed = String(value).trim()
-  if (trimmed === "") return undefined
-  const m = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb)?$/i.exec(trimmed)
-  if (!m) {
-    consola.warn(`[config] ${keyLabel}: cannot parse byte size "${value}" — ignoring, keeping current value`)
-    return undefined
-  }
-  const n = Number(m[1])
-  const unit = (m[2] ?? "b").toLowerCase()
-  const mult = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 }[unit] ?? 1
-  return Math.round(n * mult)
-}
-
 function clampKeepaliveCadence(sec: number): number {
   if (sec <= 0 || sec <= KEEPALIVE_CADENCE_MAX) return sec
   if (!warnedKeepaliveClamp) {
@@ -820,32 +799,17 @@ export async function applyConfigToState(): Promise<Config> {
   // History settings (nested: override only when present)
   if (config.history) {
     const h = config.history
-    // Split success/failure limits; legacy `limit` is the fallback for either
-    // bucket when the dedicated key is absent (backward compat). Reading the
-    // deprecated key here is the whole point of the shim, so the rule is off.
-    /* eslint-disable @typescript-eslint/no-deprecated */
-    const successLimit = h.success_limit ?? h.limit
-    const failureLimit = h.failure_limit ?? h.limit
-    /* eslint-enable @typescript-eslint/no-deprecated */
-    if (successLimit !== undefined) setHistoryConfig({ historySuccessLimit: successLimit })
-    if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
-    if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
-    if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
-
-    // Tiered cold-archive (history.archive.*). Size caps accept a human-readable
-    // string ("2GB"/"500MB") OR a raw byte count; parseByteSize warn-continues on
-    // a bad value (config never kills the process).
-    if (h.archive) {
-      const a = h.archive
-      if (a.enabled !== undefined) setHistoryConfig({ historyArchiveEnabled: a.enabled })
-      if (a.hot_days !== undefined) setHistoryConfig({ historyArchiveHotDays: a.hot_days })
-      if (a.tier2_warn_count !== undefined) setHistoryConfig({ historyArchiveTier2WarnCount: a.tier2_warn_count })
-      if (a.dir !== undefined) setHistoryConfig({ historyArchiveDir: a.dir })
-      const sizeCap = parseByteSize(a.tier1_size_cap, "history.archive.tier1_size_cap")
-      if (sizeCap !== undefined) setHistoryConfig({ historyArchiveTier1SizeCap: sizeCap })
-      const warnBytes = parseByteSize(a.tier2_warn_bytes, "history.archive.tier2_warn_bytes")
-      if (warnBytes !== undefined) setHistoryConfig({ historyArchiveTier2WarnBytes: warnBytes })
+    if (h.enabled !== undefined) {
+      if (!hasApplied) {
+        setHistoryConfig({ historyEnabled: h.enabled })
+      } else if (h.enabled !== state.historyEnabled) {
+        consola.warn(`[config] history.enabled=${h.enabled} requires a restart to take effect (running instance stays ${state.historyEnabled}); ignoring for now`)
+      }
     }
+    if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
+    if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
+    if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
+
   }
 
   // Telemetry settings (telemetry.*, nested: override only when present). Business-layer

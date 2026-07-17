@@ -15,25 +15,17 @@ import {
   expect,
   test,
 } from "bun:test"
-import fs from "node:fs"
-import os from "node:os"
-import path from "node:path"
 
 import type { HistoryEntry, RequestLifecycleState } from "~/lib/history/types"
 
-import { closeArchiveDb, openArchiveDb } from "~/lib/history/sqlite/archive-db"
 import {
   //
   closeDatabase,
-  getDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
 import { queryEntryCount } from "~/lib/history/sqlite/read"
 import { runReaperOnce, runReaperTick } from "~/lib/history/sqlite/reaper"
 import { insertCompletedEntry } from "~/lib/history/sqlite/write"
-import { setHistoryConfig } from "~/lib/state"
-
-let dir: string
 
 async function seed(n: number, status: RequestLifecycleState = "completed", startBase = 1_000): Promise<void> {
   for (let i = 0; i < n; i++) {
@@ -54,62 +46,29 @@ async function seed(n: number, status: RequestLifecycleState = "completed", star
   }
 }
 
-function attachFileArchive(): void {
-  const archivePath = path.join(dir, "archive.db")
-  openArchiveDb(archivePath)
-  closeArchiveDb()
-  getDatabase().prepare("ATTACH DATABASE ? AS archive").run(archivePath)
-}
-
-const archiveCount = () => (getDatabase().prepare("SELECT COUNT(*) n FROM archive.entries_v2").get() as { n: number }).n
-
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "reaper-move-test-"))
   closeDatabase()
   openInMemoryDatabase()
 })
 
 afterEach(() => {
   closeDatabase()
-  closeArchiveDb()
-  setHistoryConfig({ historyArchiveEnabled: true })
-  fs.rmSync(dir, { recursive: true, force: true })
 })
 
-describe("reaper move-to-tier1 dispatch", () => {
-  test("enabled + attached: overflow MOVED to tier-1, not deleted", async () => {
-    setHistoryConfig({ historyArchiveEnabled: true })
-    attachFileArchive()
+describe("terminal-record-preserving history maintenance", () => {
+  test("success count limits never mutate terminal records", async () => {
     await seed(5, "completed")
-    // successLimit 2 → 3 overflow moved to archive
-    const moved = runReaperOnce(2, 0)
-    expect(moved).toBe(3)
-    expect(queryEntryCount()).toBe(2) // HOT trimmed to limit
-    expect(archiveCount()).toBe(3) // moved, NOT lost
+    expect(runReaperOnce(2, 0)).toBe(0)
+    expect(queryEntryCount()).toBe(5)
   })
 
-  test("disabled: falls back to legacy DELETE (no archive rows)", async () => {
-    attachFileArchive()
-    setHistoryConfig({ historyArchiveEnabled: false })
-    await seed(5, "completed")
-    const deleted = runReaperOnce(2, 0)
-    expect(deleted).toBe(3)
-    expect(queryEntryCount()).toBe(2)
-    expect(archiveCount()).toBe(0) // legacy path destroys, nothing archived
+  test("failure count limits never mutate terminal records", async () => {
+    await seed(4, "failed")
+    expect(runReaperOnce(0, 1)).toBe(0)
+    expect(queryEntryCount()).toBe(4)
   })
 
-  test("enabled but archive NOT attached: safe fallback to legacy DELETE", async () => {
-    setHistoryConfig({ historyArchiveEnabled: true })
-    // no attachFileArchive() → isArchiveAttached false → legacy path, no throw
-    await seed(4, "completed")
-    const deleted = runReaperOnce(1, 0)
-    expect(deleted).toBe(3)
-    expect(queryEntryCount()).toBe(1)
-  })
-
-  test("runReaperTick performs periodic time-based HOT→tier-1 migration for aged rows", async () => {
-    setHistoryConfig({ historyArchiveEnabled: true, historyArchiveHotDays: 3 })
-    attachFileArchive()
+  test("runReaperTick performs maintenance without age-based migration", async () => {
     const now = Date.now()
     const mk = async (id: string, startedAt: number) =>
       insertCompletedEntry({
@@ -128,10 +87,7 @@ describe("reaper move-to-tier1 dispatch", () => {
     await mk("aged", now - 5 * 86400_000)
     await mk("recent", now - 1 * 86400_000)
 
-    runReaperTick(10_000, 10_000) // limits high → no overflow eviction; only time-migration acts
-    // the aged row cooled to archive; the recent one stays HOT
-    expect(archiveCount()).toBe(1)
-    expect((getDatabase().prepare("SELECT COUNT(*) n FROM archive.entries_v2 WHERE id = 'aged'").get() as { n: number }).n).toBe(1)
-    expect(queryEntryCount()).toBe(1) // only "recent" left in HOT
+    runReaperTick(10_000, 10_000)
+    expect(queryEntryCount()).toBe(2)
   })
 })

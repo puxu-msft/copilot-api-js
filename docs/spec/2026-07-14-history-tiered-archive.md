@@ -1,11 +1,15 @@
+> **SUPERSEDED 2026-07-16** — 内置 tiered archive 已退役。在线服务只写 `history-v3.db`，不读取/迁移旧 History；旧数据库由项目外工具未来自行处理，协议适配不属于本项目。当前权威架构见 [History V3 设计](../DESIGN.md#活的架构现状v4-迁移态) 与 [history.md](../history.md)。
+
 # Spec: History 三层降温归档（tiered archive）
 
-- **状态**：Draft v3（已吸收 GPT reviewer 两轮对抗评审 3 BLOCKER + 8 HIGH + MEDIUM，见 §10 评审台账；待用户审 → 收尾确认 → plan）
+- **状态**：Implemented（2026-07-16，已合并 master；核心归档 + lifecycle follow-up `27b65b89`；用户重启实例实测 `sha=27b65b89-dirty`、HOT API healthy）
 - **日期**：2026-07-14
 - **归属**：`docs/spec/`（模块契约层）。落地后架构现状进 [DESIGN.md](../DESIGN.md)「活的架构现状」，配置进 [API.md](../API.md) / config 参考，冷存储格式决策另立 ADR。
 - **相关**：现状 skill `history-sqlite-schema` / `history-backfill`、ADR [2026-07-05-dependency-selection-bun-first](../decisions/2026-07-05-dependency-selection-bun-first.md)、ADR [2026-07-05-richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)、[docs/history.md](../history.md)。
 
 ## 1. 问题与目标
+
+> **落地后增补——Archive lifecycle 与 generation 契约（2026-07-16）**：后台维护与 shutdown durability 分离。HOT→T1 迁移 batch、T1 compact session、T2 seal session-generation 是 durable units；首个关闭信号 seal producer，已领取 unit 完成 file fsync→rename→directory fsync + locator/manifest transaction 后停止，不在 shutdown 排空 backlog，下一次启动重新查询剩余状态继续。并发 worker 不得 fail-fast 遗弃 sibling；所有已领取 unit settle 后才能关闭 DB。T1/T2 文件名含 entry-id generation SHA-256 截断 hash，同一 session 后续新请求生成新不可变 unit，不覆盖旧 locator/manifest。运行配置关闭 Archive 时，归档读写 API 返回明确 `409 archive_unavailable`。
 
 `history.db` 是单一热库，reaper 到**数量上限**（`historySuccessLimit` / `historyFailureLimit`）就 `DELETE` 最旧行——这是**真数据丢失**，与项目 `no-destructive` / `richest-data-flow` 立场相悖：用户的历史请求（含完整 upstream 往返、sse 帧、计费）一旦超量即永久蒸发，无法事后诊断或审计。
 
@@ -27,7 +31,7 @@
 |---|---|---|---|---|
 | **HOT (tier0)** | `history.db`（现状写路径零改动） | 近 `hot_days`（默认 3d）活跃数据 + **全部 pinned 行永久驻留**（§3.3） | 唯一写入端（请求管线） | **默认请求列表视图**：list/detail/search（现状不变，只查 HOT） |
 | **TIER-1** | `archive.db`（新，SQLite，**复用** `entries_v2` / `entry_stages` / `msg_blob` / `req_msg` / `req_aux` schema） | 3d 前搬来的温数据，累积至 `tier1_size_cap` | 降温流水线（HOT→T1） | **归档视图**（独立 URL）：list/detail/search 只查 archive.db |
-| **TIER-2** | `archive-NNNN.<ext>`（不可变、编号、纯 JS、格式待 PoC 定，§6）+ `archive.db` 内 `tier2_manifest` 表 | tier-1 撞上限后**封存**的深冷数据 | 降温流水线（T1→T2） | **归档视图**：manifest 查/browse/搜 preview；detail 按需读封存单元单条 |
+| **TIER-2** | `archive-t2-<session>-g<generation>.db`（不可变 session-generation SQLite sealed unit）+ `archive.db` 内 `tier2_manifest` 表 | tier-1 撞上限后**封存**的深冷数据 | 后台降温流水线（T1→T2） | **归档视图**：manifest 查/browse/搜 preview；detail 按需读封存单元单条 |
 
 **降温流水线（单向、产品面无删除）：**
 
@@ -36,13 +40,13 @@ digraph tiered {
   rankdir=LR;
   HOT [label="history.db\n(HOT/tier0, 近 3d + pinned)\n默认请求列表视图"];
   T1  [label="archive.db\n(TIER-1)\n归档视图(独立 URL)"];
-  T2  [label="archive-NNNN\n(TIER-2, sealed)\n归档视图"];
+  T2  [label="archive-t2-<session>-g<generation>\n(TIER-2, immutable sealed)\n归档视图"];
   HOT -> T1 [label="> hot_days\n启动+周期+手动'立即归档'"];
   T1  -> T2 [label="archive.db > tier1_size_cap\n启动(后台)"];
 }
 ```
 
-**成本分配理由**：HOT→T1 是廉价的 SQLite→SQLite 行搬迁（同 schema、blob 直接转移），故**启动 + 周期 + 用户手动触发**都跑；T1→T2 是昂贵的封存重编码 + max 重压，故**仅启动时后台**跑一次（长跑不重启的 tier-1 无界增长风险见 §8-O3）。
+**成本分配理由**：HOT→T1 是廉价的 SQLite→SQLite 行搬迁（同 schema、blob 直接转移），故**启动 + 周期 + 用户手动触发**都跑；T1 compact/T2 seal 是昂贵的重编码，故由启动后的 tracked background pipeline 执行。关闭只 seal producer 并等待已领取 unit，不把剩余 backlog 拉进 shutdown 主线。
 
 **视图分域的收益**：因 HOT 与归档从不同视图查询、**从不同列**，v2 的 H4（ATTACH+UNION 迁移窗口同 id 重复）**天然消解**——不再需要跨库 UNION 去重（§4）。
 
@@ -61,7 +65,7 @@ History entry 是**深嵌套重 blob 文档**，**不是列式扁平表**。Phas
 
 - **格式 = SQLite sealed**（VACUUM + 只读 + max-zstd，零新依赖、复用现有 serialize/compression/driver）。**否决 Parquet**（候选 A）：实测压缩与 SQLite **统计等同**（A/B=0.994）、单条读**慢 1.56×**、多两个依赖 + 三个陷阱（`utf8:false` / Buffer 池化偏移 / INT64 须 BigInt）。根因坐实 reviewer H5——tier-2 payload 是单个已 zstd 压缩的大 BLOB（占 99.4% 字节），Parquet 列存核心卖点在「manifest 精确定位 + 单条读」访问模式下全部失效。格式决策另立 ADR [2026-07-14-tiered-archive-cold-format](../decisions/2026-07-14-tiered-archive-cold-format.md)。
 - **封存粒度 = 按 `session_id` 分组**（用户裁定，9× 压缩杠杆）。per-entry 独立压缩 28.20 MB → **按 session-group 单 zstd 流压缩 3.16 MB（省 88.8%）**。根因：Claude Code 每轮重发增长对话（请求 N 含消息 1..N，且 clientRequest + effectiveSource + upstream_request 三处各带完整消息体），per-entry 把共享前缀在每个独立流各压一遍；session-group 进单一 zstd 流后跨请求冗余坍缩到近零。
-- **manifest 富索引**：`tier2_manifest`（SQLite，存 `archive.db`）冗余全部 meta 列 + `preview_text` + 封存单元定位（`seal_file` NNNN + `session_id` + `index_in_session`）——使 list/search-preview 只命中 manifest（SQL 索引全在），detail 才**解压对应 session blob、索引取单条**（`deserializeEntry` 复原）。
+- **manifest 富索引**：`tier2_manifest`（SQLite，存 `archive.db`）冗余全部 meta 列 + `preview_text` + 封存单元定位（`seal_file` generation filename + `session_id` + `index_in_session`）——使 list/search-preview 只命中 manifest（SQL 索引全在），detail 才解压对应 generation 的列式 blob、索引取单条。
 - **读代价权衡**：session-group 单条读 665 ms（解压整 session blob，16.6× 慢于 per-entry）——对**冷归档可接受**（罕访问 + 按 session 浏览一次解压展示整组、摊薄）。**大 session 有界**：单 seal unit 上限约 50 MB 解压后 / 或 N≈100 条，超则同 session 拆多子单元（manifest 仍按 session 分组浏览），防单次解压爆内存。
 
 ### 3.3 pinned 行永不降温（用户裁定）
@@ -131,7 +135,7 @@ WAL 模式**无跨文件事务原子性**（SQLite 官方：跨库 COMMIT 崩溃
 | `src/lib/history/sqlite/archive-db.ts`（新） | 打开/管理 `archive.db`（复用 schema.ts DDL + `tier2_manifest` 新表）、ATTACH/独立连接、**跑独立 `applyForwardMigrations` 账本**（§H1） |
 | `src/lib/history/sqlite/tier1-migrate.ts`（新） | HOT→TIER-1 搬迁（可恢复骨架 §3.4；改造 reaper 淘汰为搬迁；含手动「立即归档」触发 §3.6；**archive 侧 msg_blob 孤儿 GC 挂此，每批搬迁事务收尾** §3.5） |
 | `src/lib/history/sqlite/tier2-seal.ts`（新） | TIER-1→TIER-2 封存（格式 §3.2 候选 A/B + manifest 写入，manifest 写 + 删 tier-1 源行**同 archive.db 单库事务** §M1） |
-| `src/lib/history/sqlite/tier2-archive.ts`（新） | 封存单元格式封装（PoC 裁决后定 Parquet 或 SQLite sealed）：schema + 单条读 + 写 |
+| `src/lib/history/sqlite/tier2-archive.ts`（新） | SQLite sealed 列式 session-generation 格式：流式写列、单条读、immutable filename、durable publish |
 | `src/lib/history/sqlite/reaper.ts`（改） | `evictBucket` 的 DELETE → move-to-tier1（`enabled` 时），谓词含 `pinned=0` |
 | `src/lib/history/sqlite/read.ts`（改） | list/detail 按 `tier` 参数分域（HOT/archive） |
 | `src/lib/history/sqlite/search-query.ts`（改，**B1**） | 深度搜索五 facet 按 `tier` 分域（archive 加前缀） |

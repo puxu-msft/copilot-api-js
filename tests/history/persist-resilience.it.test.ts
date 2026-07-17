@@ -17,7 +17,6 @@ import {
 import { getEntryById } from "~/lib/history/sqlite/read"
 import {
   //
-  isReaperRunning,
   runReaperTick,
   stopReaper,
 } from "~/lib/history/sqlite/reaper"
@@ -172,18 +171,6 @@ describe("history persistence resilience", () => {
     // Must NOT be retained in-flight (would leak); degrades straight to tombstone.
     expect(getInFlightEntry("d1")).toBeUndefined()
     expect(getEntryById("d1")?.state).toBe("failed")
-  })
-
-  test("the reaper timer (transient-retry drain) runs with retention limits=0 — drain not coupled to eviction config", async () => {
-    // A user setting both limits to 0 ("unlimited retention") must NOT lose the
-    // deferred-finalize drain: the timer is gated on the interval knob, not on
-    // the limits. Without the decouple, limits=0 forced every transient finalize
-    // failure straight to a lossy tombstone.
-    await shutdownHistory()
-    setHistoryConfig({ historyDbPath: ":memory:", historySuccessLimit: 0, historyFailureLimit: 0 })
-    initHistory(true)
-    expect(isReaperRunning()).toBe(true)
-    setHistoryConfig({ historySuccessLimit: 50, historyFailureLimit: 200 }) // restore for sibling tests
   })
 
   test("a head-only row (no stage rows) reads back without crashing — clientRequest absent, model preserved", async () => {

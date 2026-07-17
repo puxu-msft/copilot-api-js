@@ -185,6 +185,7 @@ function buildEffectiveConfig(): Record<string, unknown> {
   // ─── Startup-phase config fields (not hot-reloadable; not in CONFIG_MANAGED_DEFAULTS) ───
   out.accountType = state.accountType
   out.ghcApiBaseUrl = state.ghcApiBaseUrl
+  out.historyEnabled = state.historyEnabled
   out.verbose = state.verbose
   out.showGitHubToken = state.showGitHubToken
   out.tokenBasedBilling = state.tokenBasedBilling

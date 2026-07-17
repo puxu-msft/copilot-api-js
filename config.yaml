@@ -64,6 +64,20 @@
 # ghc_api_base_url: "https://api.githubcopilot.com"
 
 # ============================================================================
+# Graceful restart pidfile / 优雅重启 pidfile
+# ============================================================================
+# Override the pidfile path used by the bare-metal graceful-restart handover
+# protocol (pid + bootTime + port liveness check). Only read by the bare-metal
+# path (no supervisor detected); systemd/pm2 skip pidfile entirely. Defaults to
+# ~/.local/share/copilot-api/copilot-api.pid when unset.
+# 覆盖裸手动优雅重启接管协议所用的 pidfile 路径（pid + bootTime + port 活性检查）。
+# 仅裸手动路径读取（无 supervisor 时）；systemd/pm2 完全跳过 pidfile 机制。
+# 缺省为 ~/.local/share/copilot-api/copilot-api.pid。
+# NOT hot-reloadable (requires restart). / 不支持热重载（需重启）。
+
+# pidfile: "/run/copilot-api/copilot-api.pid"
+
+# ============================================================================
 # Model / 模型
 # ============================================================================
 
@@ -271,30 +285,16 @@ shutdown:
 # Control history recording behavior. / 控制历史记录行为。
 
 history:
-  # Successful (non-failed) entries kept in SQLite (0 = unlimited, default: 50)
-  # SQLite 中保留的成功（非失败）条目上限（0 = 无限制，默认 50）
-  success_limit: 500
-  # Failed entries kept in SQLite — larger by default for diagnostics (0 = unlimited, default: 200)
-  # SQLite 中保留的失败条目上限——默认更大以利诊断（0 = 无限制，默认 200）
-  failure_limit: 500
-  # Seconds between reaper passes that trim each bucket (0 = disabled, default: 600)
-  # reaper 修剪各桶的周期秒数（0 = 禁用，默认 600）
-  reaper_interval: 3600
-  # 三层降温冷归档（HOT→tier-1→tier-2）：旧数据不再到量硬删、而是逐级降温到高压缩比冷存储、永不真删。
-  # Tiered cold-archive: old data is cooled down to high-ratio cold storage instead of hard-deleted — never truly deleted.
-  archive:
-    # 总开关（默认 true）。false = 退回现状（数量 reaper 硬删、无归档）。 / Master switch (default true); false = legacy count-based hard delete.
-    enabled: true
-    # 热库保留天数；此前的终态非 pinned 行降温到 tier-1（默认 3）。 / HOT retention days; older terminal non-pinned rows cool to tier-1.
-    hot_days: 3
-    # archive.db(tier-1) 大小上限，超限触发 T1→T2 封存（默认 "2GB"）。 / tier-1 size cap; over it triggers T1→T2 sealing.
-    tier1_size_cap: "2GB"
-    # tier-2 seal 单元数告警阈值（默认 200，仅告警不删）。 / tier-2 seal-unit count warn threshold (warn only, never delete).
-    tier2_warn_count: 200
-    # tier-2 总量告警阈值（默认 "500MB"，仅告警不删）。 / tier-2 total-bytes warn threshold (warn only).
-    tier2_warn_bytes: "500MB"
-    # archive.db + 封存文件落盘目录（留空=同 history.db 同级）。 / archive dir; empty = same dir as history.db.
-    # dir: ""
+  # Startup-only master switch. CLI --no-history takes precedence.
+  # 启动期总开关；CLI --no-history 优先。
+  enabled: true
+  # Optional exact-byte capture in an independent CAS database. Hot reload rotates
+  # only new operations; in-flight operations drain their frozen store generation.
+  # 可选精确字节捕获，保存到独立 CAS 数据库。热重载只切新 operation，在途 operation 继续写冻结代。
+  raw_capture:
+    enabled: false
+    # db_path: "" # Empty = <APP_DIR>/raw.db. / 留空 = <APP_DIR>/raw.db。
+    max_object_bytes: 16777216
 
 # ============================================================================
 # Telemetry (tiered persistence) / 遥测（分层持久化）
@@ -305,7 +305,7 @@ history:
 # use DDSketch; additive measures use exact SUM. Near/far resolution & retention configurable.
 telemetry:
   # 总开关（默认 true = 一直采集）。 / Master switch (default true).
-  enabled: true
+  enabled: false
   # telemetry.db 路径；留空=用默认 <APP_DIR>/telemetry.db。 / DB path; empty = default.
   # db_path: ""
   # raw 落盘/flush 间隔秒（默认 60）。 / raw persist/flush interval seconds (default 60).

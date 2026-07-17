@@ -160,6 +160,18 @@ describe("translateAnthropicResponseToResponses — reasoning rendering (IMPROVE
     expect(result.output.map((o) => o.type)).toEqual(["message"])
   })
 
+  test("a server_tool_use block (server-side artifact, no Responses output-item equivalent on this leg) is safely dropped; the surrounding text still lands", () => {
+    const result = translateAnthropicResponseToResponses(
+      anthropicResponse([
+        { type: "server_tool_use", id: "srv_1", name: "web_search", input: {} } as unknown as AnthropicResponse["content"][number],
+        { type: "text", text: "visible answer", citations: null },
+      ]),
+      ctx,
+    )
+    expect(result.output.map((o) => o.type)).toEqual(["message"])
+    expect(JSON.stringify(result.output)).toContain("visible answer")
+  })
+
   test("no thinking block → no reasoning item (typical non-reasoning turn)", () => {
     const result = translateAnthropicResponseToResponses(anthropicResponse([{ type: "text", text: "hi", citations: null }]), ctx)
     expect(result.output.every((o) => o.type !== "reasoning")).toBe(true)

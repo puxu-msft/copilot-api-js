@@ -127,10 +127,18 @@ export function shapePrecommitError(c: Context, error: unknown): Response {
       return streamSSE(c, async (stream) => {
         for (const frame of buildAskUserQuestionFrames(decision, auqCtx)) {
           await stream.writeSSE({ data: frame.data ?? "", ...(frame.event !== undefined && { event: frame.event }) })
+          ctx?.captureForwardedGenerationFrame?.(frame, { offsetMs: 0, type: frame.event ?? "message", raw: frame.data ?? "" }, "error-shaping-auq")
         }
+        ctx?.setClientResponseStatus(200)
+        ctx?.finalizeModelOperationDelivery()
       })
     }
-    return c.json(buildAskUserQuestionResponse(decision, auqCtx))
+    const body = buildAskUserQuestionResponse(decision, auqCtx)
+    const response = c.json(body)
+    ctx?.setClientResponseStatus(response.status)
+    ctx?.setInboundResponseHeaders(Object.fromEntries(response.headers.entries()))
+    ctx?.finalizeModelOperationDelivery({ clientPayload: body })
+    return response
   }
 
   // "canonical-error": current forwardError behaviour is already correct, no header changes.

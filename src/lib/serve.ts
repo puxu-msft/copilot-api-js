@@ -123,6 +123,7 @@ async function startNodeServer(options: NodeStartOptions): Promise<ServerInstanc
         port: options.port,
         host: options.hostname,
         exclusive: false,
+        reusePort: true, // 与 Bun 路径对齐（lifecycle.md「优雅重启」）；Node <23.1 忽略未知选项，由 exclusive:false 兜底
         ipv6Only: options.ipv6Only,
       },
       () => {
@@ -162,6 +163,7 @@ async function startBunServer(options: BunStartOptions): Promise<ServerInstance>
     },
     port: options.port,
     hostname: options.hostname,
+    reusePort: true, // 零停机换代：新旧进程重叠期同绑一端口（lifecycle.md「优雅重启」）
     idleTimeout: 255, // seconds (Bun max — default 10s is too short for LLM streaming)
     // The proxy must not self-limit client input size. Bun.serve defaults
     // maxRequestBodySize to 128 MiB; the Node path (@hono/node-server → node:http)

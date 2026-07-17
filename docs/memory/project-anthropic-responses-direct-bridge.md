@@ -1,13 +1,13 @@
 ---
 name: project-anthropic-responses-direct-bridge
-description: anthropic↔responses 直接桥 + hub-translate 重塑为 per-pair 桥选择器（RFC 定稿、审查中、未实现）——推翻 CC-as-canonical 前提。权威 docs/rfc/2026-07-14-anthropic-responses-direct-bridge.md
+description: anthropic↔responses 直接桥 + hub-translate 重塑为 per-pair 桥选择器（Phase 0-7 全 landed + 3 次合并态审查 + 收官）——推翻 CC-as-canonical 前提、lossless-per-pair 为默认。权威 docs/rfc/2026-07-14-anthropic-responses-direct-bridge.md + ADR 2026-07-14-lossless-per-pair-bridge
 metadata: 
   node_type: memory
   type: project
   originSessionId: 6d3ca528-62fc-4185-bcfb-7992d9022f37
 ---
 
-**anthropic↔responses 直接桥**（2026-07-14 RFC 定稿、两 reviewer 审查中、未实现）。源起用户裁决「non-CC↔non-CC 经 CC 中转有损违背 richest-data-flow」，接手 [handoff](../todo/anthropic-responses-direct-mapping-handoff.md)（两轮对抗审查硬发现）。
+**anthropic↔responses 直接桥**（2026-07-15 **Phase 0-7 全 landed + 4 次合并态异模型对抗审查 + 收官**）。源起用户裁决「non-CC↔non-CC 经 CC 中转有损违背 richest-data-flow」，接手 [handoff](../todo/anthropic-responses-direct-mapping-handoff.md)（两轮对抗审查硬发现，多经探针精化/推翻）。权威终态 = RFC + ADR [2026-07-14-lossless-per-pair-bridge](../decisions/2026-07-14-lossless-per-pair-bridge.md) + DESIGN.md「anthropic↔responses 直接桥」行。
 
 **四个中心分叉的用户裁决**（brainstorming 收敛）：
 1. **hub 形状** → 重塑 hub-translate 为 **per-pair `(source,target)` 桥选择器**（全面显式桥表、漏对=编译错），非「保住 CC-hub 挖洞」。用户明确「全面显式桥接」。**关键校正**：cell-assembly C0-C6 后出站层**已是 `(cf×te)` 穷尽笛卡尔积**，托管结构已存在，本 RFC 只重塑 hub-translate **内部**翻译原语选择、不动 cell-assembly/driver。
@@ -49,3 +49,5 @@ metadata:
 **两个 checkpoint 裁决教训（本会话，orchestrator 亲手核实 file:line 非橡皮图章）**：
 - **怪味「已 direct 塞进 via 路径」**：agent 把已 Responses 形的 anthropic 塞进 `prepareViaResponsesWire` 加一个与 `prepareResponsesDirectWire` 逐字节重复的旁路。根因=`isDirect` 一个谓词混了「wire 形状」与「跳过翻译」两概念。修=拆两谓词、anthropic 走 direct 路径。
 - **审计意见过度应用（content_filter→refusal）**：agent 采纳审计「别继承 CC 退化」但**过度**——审计对 Anthropic 真有的值（refusal/pause_turn，CC 丢了）成立，但 content_filter 是 Anthropic **客观无对应 stop_reason** 的情况（cc-to-anthropic.ts:27-28 记载），且 Responses 自身把 content_filter（审核过滤）与 refusal（模型拒答）区分为两概念（responses-to-anthropic.ts:119-121）。裁决=沿用既有 N3（end_turn + contentFiltered marker）。教训：「别继承退化」的正确适用范围是「目标格式真有对应值」，目标无对应值时保守映射+marker 才保真。相关 [[methodology-broken-reference-supply-vs-delete]]、[[feedback-never-paper-over-smells-warn-loudly]]。
+
+**收尾（2026-07-15，全 landed 后）**：typecheck 归零（`OutputTextDeltaEvent` 缺 `item_id`、用 Phase 0 探针真实 GHC 帧当独立 oracle 裁决=补符号非删测试，格式域是我任务、history 域非）；异模型 `choosing-test-type` 审计格式处理测试域 → 整改（forward-request 腿覆盖 53%→91%、scenario-B 接线 .it mutation-验证有牙、server_tool_use/builtin drop、oracle 死代码修，无真冗余可删）。**两条承重方法论教训下沉**：[[methodology-full-primitive-not-partial-else-silent-field-drop]]（usage 复用小原语丢 reasoning_tokens、3 次复发假绿）、[[methodology-degradation-advice-scoped-to-target-has-equivalent]]（content_filter→refusal 过度应用）。会话流程教训：GPT 底座反复抖动全靠 resume 纪律接续（transcript 客观丢失才 fresh/inline）；主树 shared-guarded 显式 pathspec 60+ commit 零冲突;empirical-first（反向 round-trip 载体设计+探针 e 先行再实现）。

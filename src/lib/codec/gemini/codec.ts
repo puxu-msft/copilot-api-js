@@ -297,6 +297,7 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
     payload: geminiSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+  ctx.recordModelOperationIngress()
 
   ctx.setResolvedModel({
     resolved: resolvedName,

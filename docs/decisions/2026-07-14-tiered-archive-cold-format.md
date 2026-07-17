@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-07-16** — 本 ADR 描述的内置 cold format 已从生产删除，被“独立 History V3、零迁移、无内置 archiver”决策取代。保留本文仅作历史记录。
+
 # ADR: tier-2 冷归档格式 —— SQLite sealed + session-group（否决 Parquet）
 
 - **状态**：Accepted
@@ -11,7 +13,7 @@ History 三层降温归档（HOT `history.db` → TIER-1 `archive.db` → TIER-2
 
 ## 决策
 
-**tier-2 冷单元 = SQLite sealed 文件（`archive-NNNN.db`），封存粒度按 `session_id` 分组、每 session-chunk 一个 max-zstd（L19）blob。否决 Parquet。**
+**tier-2 冷单元 = SQLite sealed 文件，封存粒度按 `session_id` 分组、每次领取的 session generation 一个 max-zstd（L19）不可变 unit。文件名为 `archive-t2-<session>-g<generation>.db`，generation 由本轮 entry ids 的 SHA-256 截断派生：相同未提交 unit 重试复用 orphan 名，同一 session 后续新增请求产生新 unit，绝不覆盖旧 manifest。否决 Parquet。**
 
 两条实测依据（FINDINGS.md）：
 
@@ -31,3 +33,4 @@ History 三层降温归档（HOT `history.db` → TIER-1 `archive.db` → TIER-2
 
 - **正向**：零新运行时依赖（复用 `compression.ts` zstd / `serialize.ts` / `driver.ts`）；9× 压缩直击「高压缩比」诉求；`tier2_manifest`（SQLite，存 archive.db）冗余全 meta + preview_text，使归档视图 list/search 只命中 manifest（富可索引）、detail 才解压单 session（低访问代价）。
 - **代价**：session-group 单条读 665ms（冷数据可接受）；tier-2 放弃跨 session 全局 dedup（封存单元自足、不可变、读罕见）；大 session 需有界拆分逻辑。
+- **生命周期**：归档编码只在后台运行；shutdown seal producer，仅等待已领取 durable unit 完成并提交后停止。并发 sibling 即使一条失败，也必须全部 settle 后才能关闭 archive DB；剩余 backlog 下次启动续跑。

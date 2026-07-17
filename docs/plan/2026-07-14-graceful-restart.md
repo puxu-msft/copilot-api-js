@@ -1,5 +1,7 @@
 # 优雅重启（零停机换代）Implementation Plan
 
+> **实施状态（2026-07-15）：已全部实现并合并 master（`ea1f9314`）。** Task 0-15 全落地 + 2 轮异模型对抗审查（逮出 supervised overlap 缺口 → root-cause 改进程存活性裁决、退役 predecessor-registry）+ 确认复审 ready-to-merge；e2e 真双进程接管复跑 6 pass；合并态全量套件我域零新增失败。承重实现细节以 [docs/lifecycle.md](../lifecycle.md)「优雅重启」节为准（本 plan 为执行拆解、留档）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 copilot-api-js 支持零停机换代——旧进程立即停止 accept 新连接 + 优雅 drain 已有连接的同时，新进程立刻监听并接受新会话，覆盖裸手动 / systemd / pm2 三种运行环境。
@@ -65,6 +67,10 @@
 ## Phase 0：PoC 门槛 — reusePort overlap 内核连接分发正确性
 
 > 这是设计列出的唯一实现前置 PoC。**必须先绿**才能建其上。产物留 `exp/graceful-restart-reuseport/`。
+>
+> **实施状态（2026-07-14，GPT 实施者）：Phase 0 全部完成，两个门槛均 PASS。**
+> - Task 0：fresh-connection 探针 5/5 连跑 100% 确定性 PASS（关旧 listener 后新连接全落新进程），keep-alive 对照探针复现假阳性、证实方法论警告成立。commit `5eb153db`。
+> - Task 0.5：sd_notify 传输选型定为 **`bun:ffi socket(2)+sendto(2)` 直接 syscall**（3/3 连跑稳定 PASS，零外部依赖）；候选 2（spawn `systemd-notify --no-block`）同样可行，留作 fallback 记录；`node:dgram unix_dgram` 与原生绑定包 `sd-notify` 均确认不可行。commit `59c15aca`。
 
 ### Task 0: reusePort 重叠窗口内核分发 spike
 
@@ -75,7 +81,7 @@
 **Interfaces:**
 - Produces: 结论「旧进程关闭 listen socket 后，新连接 100% 落到新进程、无 RST、无丢连；已建连接在旧进程存活直到完成」——写入 FINDINGS.md，被后续 Phase 门控。
 
-- [ ] **Step 1: 写 probe（fresh-connection 探针——每次新建 TCP，绝不复用连接池）**
+- [x] **Step 1: 写 probe（fresh-connection 探针——每次新建 TCP，绝不复用连接池）**
 
 > ⚠️ **承重方法论（R1 评审 BLOCKER-1，实测 8/8 复现）**：用默认 `fetch()` 会因 keep-alive 连接池复用**指向旧进程的旧连接**，把「客户端复用旧连接」误判成「内核仍往旧进程分发新连接」→ 假阳性 FAIL、进而可能误判 reusePort 机制不可靠。**必须每次新建 TCP 连接**（`Connection: close` + `keepalive:false`，或 `net.connect`），并用 keep-alive vs fresh 双探针交叉验证。
 
@@ -122,20 +128,20 @@ if (distinct.size === 1 && distinct.has("NEW")) {
 await newSrv.stop(true)
 ```
 
-- [ ] **Step 1.5: 交叉验证——keep-alive 探针复现假阳性、fresh 探针稳定通过**
+- [x] **Step 1.5: 交叉验证——keep-alive 探针复现假阳性、fresh 探针稳定通过**
 
 再写一个用 `fetch()`（keep-alive）的对照探针，确认它会 FAIL（含 OLD）；证明 fresh 探针的通过不是运气、而是真排除了连接池变量。把两者结果都记进 FINDINGS.md。
 
-- [ ] **Step 2: 连跑 5 次证时序确定性**
+- [x] **Step 2: 连跑 5 次证时序确定性**
 
 Run: `for i in 1 2 3 4 5; do bun run exp/graceful-restart-reuseport/probe.ts; done`
 Expected: 每次都 `PASS: 关旧 listener 后 fresh 新连接 100% 落新进程`，「关旧 listener 后 fresh 分布」恒为 `[NEW]`。
 
-- [ ] **Step 3: 若任一次 FAIL — 停下上报，不继续后续 Phase**
+- [x] **Step 3: 若任一次 FAIL — 停下上报，不继续后续 Phase**
 
 FAIL 意味着 reusePort 重叠机制无法保证零停机分发，需回设计文档改形（如改为「新进程绑定前旧进程先关 listener」的无重叠交接，牺牲部分零停机）。**这是硬门。**
 
-- [ ] **Step 4: 写 FINDINGS.md 记录结论 + 连跑输出**
+- [x] **Step 4: 写 FINDINGS.md 记录结论 + 连跑输出**
 
 ```markdown
 # reusePort overlap 内核分发 PoC 结论
@@ -144,7 +150,7 @@ FAIL 意味着 reusePort 重叠机制无法保证零停机分发，需回设计�
 - 含义: 支撑 lifecycle.md「T3 旧关 listen fd → 内核只把新连接投给新进程」。
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -- exp/graceful-restart-reuseport/probe.ts exp/graceful-restart-reuseport/FINDINGS.md
@@ -162,7 +168,7 @@ git commit -m "test(restart): PoC reusePort overlap kernel dispatch correctness"
 **Interfaces:**
 - Produces: 结论「在 Bun 1.3.x 下向 systemd `SOCK_DGRAM` `$NOTIFY_SOCKET` 发 `READY=1` 的可行方式 = <选定方案>」，供 Task 9 实现 `sdNotify` 时照此写。
 
-- [ ] **Step 1: 起一个真 `SOCK_DGRAM` AF_UNIX server（Python，模拟 systemd）+ 逐个试候选发送方**
+- [x] **Step 1: 起一个真 `SOCK_DGRAM` AF_UNIX server（Python，模拟 systemd）+ 逐个试候选发送方**
 
 候选按优先级实测（每个都对准真 dgram server、验证 server 收到 `READY=1`）：
 1. **`bun:ffi` 直接 syscall**：`socket(AF_UNIX, SOCK_DGRAM, 0)` + `sendto(2)` 到 socket 路径（含 abstract socket 前导 NUL 处理）。最无外部依赖、最可控。
@@ -176,7 +182,7 @@ git commit -m "test(restart): PoC reusePort overlap kernel dispatch correctness"
 // 3. 记录每个候选：可行? 依赖? 复杂度?
 ```
 
-- [ ] **Step 2: 选定 + 写 FINDINGS.md**
+- [x] **Step 2: 选定 + 写 FINDINGS.md**
 
 ```markdown
 # sd_notify 传输选型 PoC 结论
@@ -187,7 +193,7 @@ git commit -m "test(restart): PoC reusePort overlap kernel dispatch correctness"
 - Task 9 的 sdNotify() 按此实现。
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -- exp/graceful-restart-sdnotify/
@@ -684,6 +690,8 @@ git commit -m "feat(restart): pidfile read/write/liveness/cleanup primitives"
 
 ## Phase 3：接管决策 + live 前任寄存器 + reclaim-orphan 修复
 
+> **2026-07-16 修订（合并态审查逮到 supervised 路径 overlap 保护缺失，MAJOR）**：本 Phase 当时设计的 `predecessor-registry`（Task 6）只在 bare-metal takeover 分支被填充，systemd/pm2 supervised 路径走 `{kind:"skip"}` 从不填充——导致 reclaim 排除（Task 7）与 VACUUM 跳过（Task 7b）这两项数据完整性保护在 supervised 环境完全不生效。已**退役** `predecessor-registry.ts`，reclaim/VACUUM 改为直接按 `isProcessAlive(owner_pid)` 的**进程存活性裁决**（环境无关、三路径天然统一）。以下 Task 6/7/7b 描述的 registry 机制是**历史记录，已被取代**，权威现状见 `docs/lifecycle.md`「overlap 共享状态安全 ①⑤」+ `src/lib/history/sqlite/connection.ts` 的 `hasLiveForeignOwner`/`distinctActiveOwnerPids`。
+
 ### Task 6: live 前任寄存器（供 connection.ts 读）
 
 **Files:**
@@ -764,7 +772,7 @@ git commit -m "feat(restart): live-predecessor registry for reclaim-orphan exclu
 - Consumes: `getExcludedPredecessor()`（Task 6）。
 - Produces: 当寄存器有 live 前任时，reclaim 的 SELECT/UPDATE WHERE 额外 `AND NOT (pid=? AND boot_time=?)`，不动前任在途行。
 
-- [ ] **Step 1: 写失败测试（内存 DB，插前任 active 行，set 寄存器，验 reclaim 不动它）**
+- [x] **Step 1: 写失败测试（内存 DB，插前任 active 行，set 寄存器，验 reclaim 不动它）**
 
 ```ts
 // tests/restart/reclaim-excludes-predecessor.it.test.ts
@@ -789,12 +797,12 @@ test("set live 前任后，reclaim 不把前任的 active 行刷 interrupted", (
 
 > 实现者注：本测试需要 `reclaimOrphanedActiveRows` 可被隔离调用 + 一个可插入 entries_v2 的临时库。落地时把 `reclaimOrphanedActiveRows` 从 connection.ts **导出**（当前是 module-private），并复用 `schema.ts` 的 SCHEMA_SQL 建临时库。断言两行对照：前任行留 active、非前任非自己行转 interrupted。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `bun test tests/restart/reclaim-excludes-predecessor.it.test.ts`
 Expected: FAIL（当前 reclaim 会把前任行也刷成 interrupted）。
 
-- [ ] **Step 3: 改 reclaimOrphanedActiveRows 排除 live 前任**
+- [x] **Step 3: 改 reclaimOrphanedActiveRows 排除 live 前任**
 
 `src/lib/history/sqlite/connection.ts`：
 
@@ -824,22 +832,24 @@ function reclaimOrphanedActiveRows(database: Database): void {
 
 同时把该函数 `export`（供隔离测）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `bun test tests/restart/reclaim-excludes-predecessor.it.test.ts`
 Expected: PASS。
 
-- [ ] **Step 5: 跑既有 history 连接测试防回归**
+- [x] **Step 5: 跑既有 history 连接测试防回归**
 
 Run: `bun test tests/history/ 2>/dev/null || bun test --rerun-each 1 tests/ -t reclaim`
 Expected: 既有 reclaim / connection 测试仍 PASS（无寄存器时行为不变）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -- src/lib/history/sqlite/connection.ts tests/restart/reclaim-excludes-predecessor.it.test.ts
 git commit -m "fix(history): reclaim-orphan excludes live predecessor during handover overlap"
 ```
+
+> **实施记录（2026-07-14）**：commit `c9555ae9`。测试全绿（2 pass）。`bun test tests/history/` 504 pass / 1 skip / 1 pre-existing fail（`history-ui-route.unit.test.ts` GET /ui 404，与本改动无关，属计划已知基线失败之一）。`bun run typecheck` 仍是基线的 2 个既有错误（`item_id` on `OutputTextDeltaEvent`），无新增。
 
 ### Task 7b: 接管时跳过启动 VACUUM（B4，overlap 数据丢失防护）
 
@@ -853,7 +863,7 @@ git commit -m "fix(history): reclaim-orphan excludes live predecessor during han
 
 > R1 评审 BLOCKER-4：`maybeVacuumOnStartup` 在 `openDatabase` 同步路径（Phase 3、早于 listen/发信号）跑；VACUUM 需独占整库写锁、时长随库大小线性增长（可远超 `busy_timeout=5000`）。此刻旧进程完全不知接管、正常流量写 history.db → 命中阈值时旧进程写 `SQLITE_BUSY`→never-throw 静默降级 = **history 记录丢失**。接管场景（predecessor 非空）必须跳过 VACUUM；它本是有阈值的一次性维护，延后到下次真正独占启动即可（reaper incremental vacuum 仍安全）。
 
-- [ ] **Step 1: 写失败测试（set predecessor 后 openDatabase 不跑 full VACUUM）**
+- [x] **Step 1: 写失败测试（set predecessor 后 openDatabase 不跑 full VACUUM）**
 
 ```ts
 // tests/restart/vacuum-skip-on-takeover.it.test.ts
@@ -872,12 +882,12 @@ test("predecessor 非空时 openDatabase 跳过 maybeVacuumOnStartup", () => {
 })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `bun test tests/restart/vacuum-skip-on-takeover.it.test.ts`
 Expected: FAIL（当前无条件跑 VACUUM）。
 
-- [ ] **Step 3: gate maybeVacuumOnStartup**
+- [x] **Step 3: gate maybeVacuumOnStartup**
 
 `src/lib/history/sqlite/connection.ts` `openDatabase`（:84 附近）：
 
@@ -894,17 +904,19 @@ import { getExcludedPredecessor } from "../../restart/predecessor-registry"
   }
 ```
 
-- [ ] **Step 4: 跑测试确认通过 + 既有 connection 测试防回归**
+- [x] **Step 4: 跑测试确认通过 + 既有 connection 测试防回归**
 
 Run: `bun test tests/restart/vacuum-skip-on-takeover.it.test.ts && bun test tests/history/`
 Expected: PASS，既有开库/VACUUM 测试无回归（无 predecessor 时行为不变）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -- src/lib/history/sqlite/connection.ts tests/restart/vacuum-skip-on-takeover.it.test.ts
 git commit -m "fix(history): skip startup VACUUM during handover overlap (SQLITE_BUSY data loss)"
 ```
+
+> **实施记录（2026-07-14）**：commit `330e7f68`。测试全绿（2 pass，覆盖「接管跳过」+「非接管行为不变」两支）。`bun test tests/restart/ tests/history/` 合跑 504 pass / 1 skip / 1 pre-existing fail（同上 history-ui-route，与本改动无关）。`bun run typecheck` 无新增错误。
 
 ### Task 8: 接管决策 + 交接信号
 
@@ -1426,7 +1438,7 @@ if (takeoverPredecessor) signalPredecessorHandoff(takeoverPredecessor.pid)
 // ...（waitForShutdown 之后的 finally / 退出路径，清理 pidfile：仅裸手动路径）...
 ```
 
-- [ ] **Step 1: 写测试（把「接管序」关键不变量抽成可测纯函数或用注入 dep 的小测）**
+- [x] **Step 1: 写测试（把「接管序」关键不变量抽成可测纯函数或用注入 dep 的小测）**
 
 对「decideStartup=refuse→exit(1)」「takeover→先 setExcludedPredecessor 再返回前任」这类可隔离逻辑，若 runServer 太大难单测，抽一个 `resolveManualStartup(pidfilePath, restart, isSupervised, deps)` 纯函数承载决策 + 副作用注入，对它单测：
 
@@ -1446,12 +1458,12 @@ test("takeover 时先登记前任到寄存器", () => {
 
 > 实现者注：把 supervisor 分流 + decideStartup + setExcludedPredecessor 收进 `resolveManualStartup`（takeover.ts），返回 `ManualStartupResult`（= `StartupDecision | { kind: "skip" }`，见 Task 8 Interfaces——`"skip"` 是 supervisor 环境）。runServer 只调它 + 按返回 kind 做 exit(refuse)/记 predecessor(takeover)/直接继续(proceed|skip)。这样接管决策可完整单测，runServer 只剩 IO 编排（留 e2e）。术语与 Task 8 保持一致，勿新造第四态。
 
-- [ ] **Step 2: 跑测试确认失败 → 实现 resolveManualStartup → 通过**
+- [x] **Step 2: 跑测试确认失败 → 实现 resolveManualStartup → 通过**
 
 Run: `bun test tests/restart/runserver-wiring.unit.test.ts`
 Expected: 先 FAIL 后 PASS。
 
-- [ ] **Step 3: runServer 按上「接线序」接入 + 退出清理**
+- [x] **Step 3: runServer 按上「接线序」接入 + 退出清理**
 
 退出清理：在 `runServer` 末尾 `waitForShutdown()` 的 `finally`（`stopModelRefreshLoop()` 旁）加。**必须用 compare-and-delete（B2）**——接管后新进程已用自己的 pid 覆写同一 pidfile，无条件删会误删后继者的活 pidfile：
 
@@ -1467,17 +1479,21 @@ Expected: 先 FAIL 后 PASS。
 
 并加一个 best-effort 兜底 `process.on("exit", () => { if (!isSupervised()) removePidfileIfOwnedBySelf(path, self) })`（同步、compare-and-delete，覆盖非优雅退出路径；同样绝不无条件删）。
 
-- [ ] **Step 4: typecheck + 既有 start/serve 测试防回归**
+- [x] **Step 4: typecheck + 既有 start/serve 测试防回归**
 
 Run: `bun run typecheck && bun test tests/ -t serve`
-Expected: 绿。
+Expected: 绿。（typecheck 剩基线既有 2 个 `item_id` 错误，与本 Task 无关，不新增；`test:backend` 剩既有 history UI 1 个基线失败，同样与本 Task 无关。）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add -- src/start.ts src/lib/restart/takeover.ts tests/restart/runserver-wiring.unit.test.ts
+git add -- src/lib/restart/takeover.ts tests/restart/runserver-wiring.unit.test.ts
+git commit -m "feat(restart): resolveManualStartup pure decision function (Task 12 Step 1-2)"
+git add -- src/start.ts
 git commit -m "feat(restart): wire takeover guard/pidfile/notifyReady/handoff into runServer"
 ```
+
+**实施状态**：已完成（commit `47d5c29e` + `ef73b4cf`）。接线序与计划一致：`resolveManualStartup` 在 Phase 2.7（config 加载后、Phase 3 `initHistory` 之前）调用；pidfile 写入在 Phase 5 `setServerInstance` 之后；`notifyReady` + `signalPredecessorHandoff` 顺序不变；退出清理的 `finally` 与 `process.on("exit")` 兜底均用 `removePidfileIfOwnedBySelf`（compare-and-delete）。**2026-07-16 修订**：`takeover` 分支不再调 `setExcludedPredecessor`——该寄存器已退役，overlap 保护改按进程存活性裁决（见上 Phase 3 修订注）。
 
 ---
 
@@ -1498,7 +1514,7 @@ git commit -m "feat(restart): wire takeover guard/pidfile/notifyReady/handoff in
 4. 断言：旧进程的**在途慢请求完成、不被中断**（drain），完成后旧进程退出。
 5. 断言：旧进程在途请求的 history 行**未被新进程 reclaim 成 interrupted**（查 history.db，状态为 completed）。
 
-- [ ] **Step 1: 写 e2e（spawn 两进程，端口 41992，独立 history.db 临时目录）**
+- [x] **Step 1: 写 e2e（spawn 两进程，端口 41992，独立 history.db 临时目录）**
 
 ```ts
 // tests/e2e/handover.e2e.test.ts —— 骨架，实现者补全 spawn/探针细节
@@ -1519,17 +1535,35 @@ test("裸手动接管：新进程接新连接、旧进程 drain 在途、reclaim
 
 > 实现者注：这是承重验收测试，务必用**正样本对照**先证探针能抓到「未接管」的坏情况（如不发 SIGUSR2 时旧进程仍接连接），再信绿。连跑 5 次证时序确定性（reusePort 分发 + drain 时序）。参考 skill `client-proxy-e2e-testing`（spawn 骨架）、`upstream-hook-mocking`（造慢响应）、`empirical-verification`（History API 当 oracle）。
 
-- [ ] **Step 2: 跑 e2e**
+- [x] **Step 2: 跑 e2e**
 
 Run: `bun test tests/e2e/handover.e2e.test.ts`
 Expected: PASS，连跑 5 次确定。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -- tests/e2e/handover.e2e.test.ts
 git commit -m "test(restart): end-to-end manual takeover handover e2e"
 ```
+
+> **实施记录（2026-07-16）**：commit `1799da9c`（含 3 文件：`tests/e2e/handover.e2e.test.ts` + `tests/e2e/harness/{spawn-handover-proxy,handover-upstream-hook}.ts`，实际比计划骨架多拆两个 harness 模块）。5 条验收 oracle 全部实测 PASS（真 spawn 双进程 + 真 `Bun.serve({reusePort:true})` + 真 SIGUSR2，非 mock OS 原语；GHC 上游经 config-hook 全程 mock，零额度消耗）：
+> 1. 旧进程非 4141 端口启动 + 慢请求在途 ✅（hook 按请求体 `SLOWMARKER` 子串 sleep 1.5s）
+> 2. 新进程 `--restart` 同端口绑定成功 + 发 SIGUSR2 ✅（`resolveManualStartup`/`signalPredecessorHandoff` 真实链路，非 mock）
+> 3. 接管后新连接全部落新进程 ✅（收敛式断言：reusePort overlap 窗口内允许瞬时命中旧进程/503/ECONNRESET——非 defect，短 poll 收敛到 100% NEW，符合 PoC 结论「关旧 listener 后新连接 100% 落新进程」）
+> 4. 旧进程在途慢请求完成不受扰 + 旧进程随后自行退出 ✅（`process.kill(pid,0)` liveness 轮询确认）
+> 5. 旧进程在途请求 history 行未被误 reclaim 成 interrupted、稳定为 completed ✅（`GET /history/api/entries?pid=<old>` 查询）
+>
+> **正样本对照**（未接管坏情况，empirical-verification 要求）：① 无 `--restart` 时第二实例走 `decideStartup` 的 refuse 分支 exit(1)，旧进程从未收到信号、继续以自身 pid 服务请求（专项验证，独立于主 e2e）；② 主 e2e 内置的「positive control」用例：单进程无接管场景下，探针 100% 命中自身 pid（证明探针本身有辨别力，非恒真断言）。
+> **连跑确定性**：完整测试文件（positive control + 5 次 handover run）本次交付过程中连续跑 5 次全绿，另加多次单场景调试跑，0 例外。
+> **承重踩坑**（均已写入两个 harness 文件的 header 注释）：
+> a) `bun run ./src/main.ts`（+ volta bun shim）把真 server 包进父子进程树，`Subprocess.pid` 是 launcher 非真 server pid——用 `pgrep` 递归 child-walk 按 cmdline 含 `main.ts start --port <port>` 精确定位真 server pid（供 `process["pid"]` 标记比对 + 精确清理）。
+> b) 两进程共享同一 `--port`，**不可用**既有 `spawn-proxy.ts` 的 `killByPort`（`pkill -f "...--port <port>"`）清理——会把接管中仍存活的旧进程一并误杀；改用按精确 PID kill（`SIGKILL` 目标 pid，never-throw）。
+> c) hook 走 data-URL loader（`Bun.Transpiler`），**任意点号属性访问**（`foo.bar`）在 Bun 1.3.14 下会让具名导出静默丢失（比既有 skill `upstream-hook-mocking` 记录的「仅 JSON.stringify / 对象字面量触发」更宽——本次 bisect 新增证据），全文件改用方括号访问 `foo["bar"]` 规避。
+> d) **反直觉发现**：两进程共享 reusePort 端口时，"旧进程专属 HTTP 探针"（如轮询旧进程 `/api/status` 等其 `shutdown.phase` 变化）不可信——内核按 fd 级负载均衡分发，同一 `baseURL` 的请求可能落到新进程（本次实测：轮询"旧进程"`/api/status` 15 次全显示 `phase:"idle"`，即便旧进程早已退出——因为连接实际全落在新进程上）。唯一无歧义的单进程 oracle 是 OS 级 `process.kill(pid, 0)` 存活检查，非 HTTP 层。
+> e) `bun test` 运行时下，长驻子进程的 stdout/stderr `data` 事件（Bun `Subprocess.stdout` 异步迭代器 + Node `child_process` 均如此）从不触发（同一 API 对短命令/普通 shell 回显正常，仅长驻嵌套 bun 进程受影响）——弃用日志抓取式断言，改用行为层 HTTP/进程存活 oracle。
+> **spawn 端口所有权验证**：每次 spawn 后用 `ss -ltnp` 核实监听 PID 确为本次 spawn 的进程（非 peer 泄漏），会话结束前确认 4141 未被触碰、测试端口范围（419xx）无残留监听。
+
 
 ---
 

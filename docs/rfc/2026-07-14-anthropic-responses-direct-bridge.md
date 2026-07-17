@@ -1,6 +1,6 @@
 # RFC：anthropic ↔ responses 直接桥 + hub-translate 重塑为 per-pair 桥选择器
 
-日期：2026-07-14｜状态：**v2（两轮异模型对抗审查已处理：GPT 1 BLOCKER + Claude/GPT 各 major，全部亲手核实 file:line 后订正）→ 待用户审 → plan**
+日期：2026-07-14｜状态：**✅ landed（Phase 0-7 全实施 + 三次合并态异模型对抗审查 + 收官审查；ADR [2026-07-14-lossless-per-pair-bridge](../decisions/2026-07-14-lossless-per-pair-bridge.md) 记录设计轴翻转）** ← v2（两轮对抗审查已处理：GPT 1 BLOCKER + Claude/GPT 各 major，全部亲手核实 file:line 后订正）
 需求源：用户裁决「non-CC↔non-CC 经 CC 中转有损违背 richest-data-flow，给 (anthropic↔responses) 做直接 translator」（2026-07-14 会话）
 前置：
 - 交接硬发现 [docs/todo/anthropic-responses-direct-mapping-handoff.md](../todo/anthropic-responses-direct-mapping-handoff.md)（两轮异构对抗审查的裁决，本 RFC 校正其两处基于推断的过度表述，见 §1.3）

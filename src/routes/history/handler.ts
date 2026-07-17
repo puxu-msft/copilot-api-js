@@ -2,14 +2,12 @@ import type { Context } from "hono"
 
 import {
   //
-  archiveNow,
   exportHistory,
   getEntry,
   getHistorySummaries,
   getSessionSummaries,
   getStats,
   isHistoryEnabled,
-  runArchiveCooldownNow,
   searchContains,
   searchHistory,
   setPinned,
@@ -31,6 +29,7 @@ import { compressAsync } from "~/lib/history/sqlite/compression"
  */
 function parseListFilters(query: Record<string, string>): QueryOptions {
   return {
+    operationKind: (query.operationKind as QueryOptions["operationKind"]) || undefined,
     model: query.model || undefined,
     endpoint: query.endpoint as EndpointType | undefined,
     success: query.success ? query.success === "true" : undefined,
@@ -42,16 +41,20 @@ function parseListFilters(query: Record<string, string>): QueryOptions {
     agentId: query.agentId || undefined,
     mainAgentOnly: query.mainAgentOnly === "true" ? true : undefined,
     pid: query.pid ? Number.parseInt(query.pid, 10) : undefined,
-    // View-domain selector (tiered-archive): `?tier=archive` reads the archive
-    // view (archive.db); default/absent = HOT. Applied to list / detail / search.
-    tier: query.tier === "archive" ? "archive" : undefined,
   }
+}
+
+function rejectsRetiredArchiveTier(c: Context): Response | undefined {
+  if (c.req.query("tier") === "archive") return c.json({ error: "The built-in archive tier has been retired" }, 400)
+  return undefined
 }
 
 export function handleGetEntries(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  const retiredTier = rejectsRetiredArchiveTier(c)
+  if (retiredTier) return retiredTier
 
   const query = c.req.query()
   const options: QueryOptions = {
@@ -86,12 +89,14 @@ export function handleGetEntry(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  const retiredTier = rejectsRetiredArchiveTier(c)
+  if (retiredTier) return retiredTier
 
   const id = c.req.param("id")
   if (!id) {
     return c.json({ error: "Entry id is required" }, 400)
   }
-  const entry = getEntry(id, c.req.query("tier") === "archive" ? "archive" : undefined)
+  const entry = getEntry(id)
 
   if (!entry) {
     return c.json({ error: "Entry not found" }, 404)
@@ -173,42 +178,6 @@ export function handleUnpinEntry(c: Context) {
   return setEntryPinState(c, false)
 }
 
-/**
- * POST /history/api/archive-now — the product-facing replacement for the removed
- * delete API (spec §3.6). Moves the terminal, non-pinned HOT entries matching the
- * list filters (or ALL of them when no filter is present) into tier-1 cold archive
- * instead of deleting them (never-truly-delete red line). `cursor`/`limit`/
- * `direction`/`terminalOnly` are pagination-only and NOT treated as filters.
- * Returns `{ success, archived: N }`.
- */
-export function handleArchiveNow(c: Context) {
-  if (!isHistoryEnabled()) {
-    return c.json({ error: "History recording is not enabled" }, 400)
-  }
-
-  const query = c.req.query()
-  const filters = parseListFilters(query)
-  const hasFilter = Object.values(filters).some((v) => v !== undefined)
-  const archived = archiveNow(hasFilter ? filters : undefined)
-  return c.json({ success: true, archived })
-}
-
-/**
- * POST /history/api/archive-cooldown — run the standard AGE-based HOT→tier-1
- * cool-down on demand (the same pass the startup + periodic reaper run), draining
- * the whole `> hot_days` backlog now without waiting for the next reaper tick.
- * RESPECTS `hot_days` (only rows older than it move) + pinned exemption — distinct
- * from `archive-now`, which force-archives all/filtered rows regardless of age.
- * Returns `{ success, migrated: N }`.
- */
-export function handleArchiveCooldown(c: Context) {
-  if (!isHistoryEnabled()) {
-    return c.json({ error: "History recording is not enabled" }, 400)
-  }
-  const migrated = runArchiveCooldownNow()
-  return c.json({ success: true, migrated })
-}
-
 export function handleGetStats(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
@@ -249,6 +218,8 @@ export function handleSearch(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  const retiredTier = rejectsRetiredArchiveTier(c)
+  if (retiredTier) return retiredTier
 
   const query = c.req.query()
   const source = (query.source || "inbound") as SearchSource
@@ -261,14 +232,18 @@ export function handleSearch(c: Context) {
   // 其余 10 个结构化维与 list / delete 完全一致，享受单一事实源、免于将来的解析漂移。
   const { search: _search, ...filters } = parseListFilters(query)
 
-  const result = searchHistory({
-    source,
-    q: query.q || "",
-    limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
-    cursor: query.cursor || undefined,
-    filters,
-  })
-  return c.json(result)
+  try {
+    const result = searchHistory({
+      source,
+      q: query.q || "",
+      limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
+      cursor: query.cursor || undefined,
+      filters,
+    })
+    return c.json(result)
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 501)
+  }
 }
 
 /**
@@ -284,5 +259,9 @@ export function handleSearchContains(c: Context) {
   if (!hash) {
     return c.json({ error: "hash query parameter is required" }, 400)
   }
-  return c.json({ hash, reqIds: searchContains(hash) })
+  try {
+    return c.json({ hash, reqIds: searchContains(hash) })
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 501)
+  }
 }

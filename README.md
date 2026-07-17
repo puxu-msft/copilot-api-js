@@ -65,6 +65,7 @@ BROWSER=wslview npm dist-tag add @hsupu/copilot-api@0.8.3 latest
 | `--proxy` |  | Override outbound proxy URL (http/https/socks5/socks5h) |
 | `--no-http-proxy-from-env` | enabled | Ignore `HTTP_PROXY` / `HTTPS_PROXY` env vars |
 | `--no-rate-limit` | enabled | Disable the adaptive rate limiter |
+| `--no-history` | enabled | No-history mode: don't open/create `history.db` or record anything (overrides config `history.enabled`) |
 
 `--account-type` determines the upstream API base URL (unless `--ghc-api-base-url` overrides it):
 
@@ -178,7 +179,8 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 ~/.local/share/copilot-api/         # or $XDG_DATA_HOME/copilot-api/
 ├── config.yaml                     # user config (hot-reloaded)
 ├── github_token                    # GitHub device-flow token
-├── history.db                      # SQLite history (gzip-compressed payloads)
+├── history-v3.db                   # Canonical semantic CAS + journal + search
+├── raw.db                          # Optional exact-byte CAS (disabled by default)
 ├── negotiation-states.json         # learned per-model bans (betas / body fields / efforts)
 ```
 
@@ -187,6 +189,8 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 ## Internal API Endpoints
 
 Management (`/api/*`), History REST (`/history/api/*`), metrics (`/metrics`), health probes (`/health`, `/health/readiness`, `/health/liveness`), the History WebSocket (`/ws`), and the Web UIs (`/ui/*`, `/ui-v4/*`) are all documented in **[`docs/API.md`](docs/API.md)** alongside the vendor-compatible endpoints.
+
+History archiving is configured under `history.archive.*`. When enabled, old entries cool from HOT `history.db` into `archive.db` and immutable session-generation seal units instead of being hard-deleted. Shutdown seals archive workers after their current durable unit; remaining backlog resumes on the next start. See **[`docs/history.md`](docs/history.md)** and **[`docs/lifecycle.md`](docs/lifecycle.md)**.
 
 ---
 

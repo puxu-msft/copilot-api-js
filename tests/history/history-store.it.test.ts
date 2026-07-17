@@ -31,8 +31,6 @@ import {
   getCurrentSession,
   getEntry,
   getHistory,
-  getSessionEntries,
-  getStats,
   initHistory,
   insertEntry,
   isHistoryEnabled,
@@ -42,7 +40,6 @@ import {
   finalizeEntry,
 } from "~/lib/history"
 import { queryEntryCount } from "~/lib/history/sqlite/read"
-import { runReaperOnce } from "~/lib/history/sqlite/reaper"
 import {
   //
   setStateForTests,
@@ -88,7 +85,7 @@ function totalEntryCount(): number {
 }
 
 // Snapshot global state once and restore after every test so per-test mutations
-// (e.g. setStateForTests({ historySuccessLimit: 50 })) can't leak into other test files.
+// (e.g. raw-capture config) can't leak into other test files.
 autoRestoreState()
 
 // Reset history state before each test
@@ -96,13 +93,12 @@ beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
   initHistory(true, 200)
 })
-
 afterEach(async () => {
   clearHistory()
   await shutdownHistory()
   setStateForTests({ historyDbPath: "" })
 })
-
+// End of History store integration coverage.
 // ─── initHistory ───
 
 describe("initHistory", () => {
@@ -117,9 +113,9 @@ describe("initHistory", () => {
   })
 
   test("tracks history limit from state", async () => {
-    setStateForTests({ historySuccessLimit: 50 })
+    setStateForTests({ historyRawCaptureMaxObjectBytes: 50 })
     initHistory(true, 50)
-    expect(state.historySuccessLimit).toBe(50)
+    expect(state.historyRawCaptureMaxObjectBytes).toBe(50)
   })
 
   test("resets entries and sessions", async () => {
@@ -135,7 +131,6 @@ describe("initHistory", () => {
     expect(totalEntryCount()).toBe(0)
   })
 })
-
 // ─── insertEntry ───
 
 describe("insertEntry", () => {
@@ -742,70 +737,6 @@ describe("updateEntry stores sseEvents", () => {
   })
 })
 
-// ─── getSessionEntries pagination ───
-
-describe("getSessionEntries pagination", () => {
-  test("returns paginated results with default limit", async () => {
-    const sessionId = getCurrentSession("anthropic-messages", generateId())!
-
-    for (let i = 0; i < 5; i++) {
-      const entry: HistoryEntry = {
-        id: generateId(),
-        sessionId,
-        startedAt: Date.now() + i,
-        endpoint: "anthropic-messages",
-        model: { requested: "test" },
-        clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
-      }
-      insertEntry(entry)
-      await completeEntry(entry.id)
-    }
-
-    const result = getSessionEntries(sessionId)
-    expect(result.total).toBe(5)
-    expect(result.entries).toHaveLength(5)
-    expect(result.prevCursor).toBeNull()
-  })
-
-  test("respects cursor and limit", async () => {
-    const sessionId = getCurrentSession("anthropic-messages", generateId())!
-
-    for (let i = 0; i < 10; i++) {
-      const entry: HistoryEntry = {
-        id: generateId(),
-        sessionId,
-        startedAt: Date.now() + i,
-        endpoint: "anthropic-messages",
-        model: { requested: "test" },
-        clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
-      }
-      insertEntry(entry)
-      await completeEntry(entry.id)
-    }
-
-    // First page: no cursor
-    const page1 = getSessionEntries(sessionId, { limit: 3 })
-    expect(page1.total).toBe(10)
-    expect(page1.entries).toHaveLength(3)
-    expect(page1.nextCursor).not.toBeNull()
-    expect(page1.prevCursor).toBeNull()
-
-    // Second page: use last entry ID from first page as cursor
-    const page2 = getSessionEntries(sessionId, { cursor: page1.entries.at(-1)!.id, limit: 3 })
-    expect(page2.entries).toHaveLength(3)
-    expect(page2.prevCursor).not.toBeNull()
-
-    // Different entries on different pages
-    expect(page1.entries[0].id).not.toBe(page2.entries[0].id)
-  })
-
-  test("returns empty for non-existent session", async () => {
-    const result = getSessionEntries("nonexistent")
-    expect(result.total).toBe(0)
-    expect(result.entries).toHaveLength(0)
-  })
-})
-
 // ─── clearHistory ───
 
 describe("clearHistory", () => {
@@ -831,85 +762,5 @@ describe("clearHistory", () => {
     expect(listInFlightEntries().length).toBe(1)
     clearHistory()
     expect(listInFlightEntries().length).toBe(0)
-  })
-})
-
-// ─── getStats ───
-
-describe("getStats", () => {
-  test("returns aggregate statistics", async () => {
-    const entry = insertHistoryEntry("anthropic-messages", {
-      model: "claude-sonnet-4-20250514",
-      messages: [{ role: "user", content: "hello" }],
-    })
-
-    updateEntry(entry.id, {
-      state: "completed",
-      attempts: [
-        {
-          index: 0,
-          strategy: "primary",
-          durationMs: 0,
-          upstreamResponse: {
-            success: true,
-            model: "claude-sonnet-4-20250514",
-            usage: { input_tokens: 100, output_tokens: 50 },
-            body: null,
-          },
-        },
-      ],
-      _index: { derived: { responseSuccess: true, attemptCount: 1, currentStrategy: "primary" } },
-      durationMs: 500,
-    })
-    await finalizeEntry(entry.id)
-
-    const stats = getStats()
-    expect(stats.totalRequests).toBe(1)
-    expect(stats.successfulRequests).toBe(1)
-    expect(stats.failedRequests).toBe(0)
-    expect(stats.totalInputTokens).toBe(100)
-    expect(stats.totalOutputTokens).toBe(50)
-    expect(stats.averageDurationMs).toBe(500)
-    expect(stats.modelDistribution["claude-sonnet-4-20250514"]).toBe(1)
-    expect(stats.endpointDistribution["anthropic-messages"]).toBe(1)
-  })
-})
-
-// ─── Max entries enforcement ───
-
-describe("Max entries enforcement", () => {
-  test("reaper removes oldest entries when exceeding limit", async () => {
-    const baseTime = Date.now()
-    const entries: Array<HistoryEntry> = []
-    for (let i = 0; i < 5; i++) {
-      const entry: HistoryEntry = {
-        id: generateId(),
-        sessionId: `session-${i}`,
-        startedAt: baseTime + i,
-        endpoint: "anthropic-messages",
-        model: { requested: "test" },
-        clientRequest: {
-          format: "anthropic-messages",
-          model: "test",
-          messages: [{ role: "user", content: `msg-${i}` }],
-          stream: true,
-        },
-      }
-      insertEntry(entry)
-      entries.push(entry)
-    }
-    // Complete all entries so they are persisted to SQLite
-    for (const entry of entries) await completeEntry(entry.id)
-
-    expect(queryEntryCount()).toBe(5)
-
-    // Run reaper with success-limit=3 — should evict 2 oldest successes
-    runReaperOnce(3, 0)
-
-    expect(queryEntryCount()).toBe(3)
-    // Oldest entries should be removed (FIFO by startedAt)
-    expect(getEntry(entries[0].id)).toBeUndefined()
-    expect(getEntry(entries[1].id)).toBeUndefined()
-    expect(getEntry(entries[2].id)).toBeDefined()
   })
 })

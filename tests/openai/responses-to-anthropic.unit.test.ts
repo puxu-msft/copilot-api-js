@@ -65,6 +65,10 @@ function reasoningItem(summaryText: string, encrypted?: string): ResponsesOutput
   }
 }
 
+function webSearchCallItem(query: string, status = "completed"): ResponsesOutputItem {
+  return { type: "web_search_call", id: "ws1", status, action: { type: "search", query } }
+}
+
 describe("translateResponsesResponseToAnthropic — top-level envelope", () => {
   test("wraps in a well-formed Anthropic message envelope (id/type/role/model)", () => {
     const { response } = translateResponsesResponseToAnthropic(responsesResponse([messageItem("hello")], { id: "resp_011", model: "gpt-5.5" }))
@@ -129,6 +133,49 @@ describe("translateResponsesResponseToAnthropic — function_call → tool_use (
       responsesResponse([functionCallItem("f", "{}")], { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } }),
     )
     expect(response.stop_reason).toBe("tool_use")
+  })
+})
+
+describe("translateResponsesResponseToAnthropic — web_search_call → readable text (R-NO-REVIVE, RFC §5.1/§9, Phase 6 subtask Q)", () => {
+  test("a web_search_call output item degrades to a readable text block carrying the query", () => {
+    const { response } = translateResponsesResponseToAnthropic(responsesResponse([webSearchCallItem("official Bun runtime website"), messageItem("https://bun.com/")]))
+    expect(response.content).toEqual([
+      { type: "text", text: '[web_search: "official Bun runtime website"] (status: completed)' },
+      { type: "text", text: "https://bun.com/" },
+    ])
+  })
+
+  test("NEGATIVE SAMPLE (R-NO-REVIVE load-bearing assertion): the rendered content NEVER contains a web_search_tool_result block type, regardless of input shape", () => {
+    const { response } = translateResponsesResponseToAnthropic(
+      responsesResponse([reasoningItem("thinking"), webSearchCallItem("query one"), webSearchCallItem("query two"), messageItem("final answer")]),
+    )
+    expect(response.content.every((b) => (b.type as string) !== "web_search_tool_result")).toBe(true)
+    // Never synthesizes ANY encrypted_content-bearing block for this item either.
+    expect(JSON.stringify(response.content)).not.toContain("encrypted_content")
+  })
+
+  test("NEGATIVE SAMPLE (adversarial, R-NO-REVIVE): a web_search_call carrying a PLANTED encrypted_content in its action is NOT carried through — output has neither web_search_tool_result nor the blob (upgrades 不发明 → 不搬运)", () => {
+    // The prior negative sample only proves 'never invents' (input had no encrypted_content). This one
+    // plants a fake signed blob in the input's `action` (its `[key:string]:unknown` index signature allows it)
+    // and proves the downgrade renderer never SMUGGLES it out — reads only query/status, per Phase 0 probe c.
+    const item = { type: "web_search_call", id: "ws_adv", status: "completed", action: { type: "search", query: "q", encrypted_content: "FAKE_SIGNED_BLOB" } } as unknown as ResponsesOutputItem
+    const { response } = translateResponsesResponseToAnthropic(responsesResponse([item]))
+    const wire = JSON.stringify(response.content)
+    expect(wire).not.toContain("web_search_tool_result")
+    expect(wire).not.toContain("FAKE_SIGNED_BLOB")
+    expect(wire).not.toContain("encrypted_content")
+  })
+
+  test("web_search_call with only `action.queries` (array form, no singular `query`) still renders readable text", () => {
+    const item: ResponsesOutputItem = { type: "web_search_call", id: "ws2", status: "completed", action: { type: "search", queries: ["query a", "query b"] } }
+    const { response } = translateResponsesResponseToAnthropic(responsesResponse([item]))
+    expect(response.content).toEqual([{ type: "text", text: '[web_search: "query a, query b"] (status: completed)' }])
+  })
+
+  test("web_search_call alongside tool_use — stop_reason still reflects the real function_call, web_search_call never counted as a tool_use", () => {
+    const { response } = translateResponsesResponseToAnthropic(responsesResponse([webSearchCallItem("q"), functionCallItem("f", "{}")]))
+    expect(response.stop_reason).toBe("tool_use")
+    expect(response.content.map((b) => b.type)).toEqual(["text", "tool_use"])
   })
 })
 

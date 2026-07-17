@@ -29,14 +29,17 @@ import type {
 import type { ServerInstance } from "./serve"
 
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
+import { flushAndFreezePersistence as freezeNegotiation } from "./anthropic/feature-negotiation"
 import { getRequestContextManager } from "./context/manager"
 import {
   //
   shutdownHistory,
   stopHistoryBackgroundWork,
 } from "./history"
+import { flushAndFreezePersistence as freezeCalibration } from "./models/calibration/engine"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
-import { shutdownRequestTelemetry } from "./request-telemetry"
+import { shutdownRequestTelemetry, stopTelemetryBackgroundWork } from "./request-telemetry"
+import { notifyStopping } from "./restart/notify"
 import { state } from "./state"
 import { stopTokenRefresh } from "./token"
 import { closeHttp2Sessions } from "./transport/http2-client"
@@ -107,7 +110,7 @@ let shutdownAbortController: AbortController = createShutdownController()
 let shutdownDrainAbortController: AbortController | null = null
 let shutdownPhase: ProcessLifecycleState = "idle"
 let shutdownPromise: Promise<void> | null = null
-let signalHandlers: { sigint: () => void; sigterm: () => void } | null = null
+let signalHandlers: { sigint: () => void; sigterm: () => void; sigusr2: () => void } | null = null
 
 /**
  * Scoped publisher for `system.shutdown_phase_changed` events. Set once at
@@ -359,7 +362,7 @@ export async function drainActiveRequests(
  * @param signal - The signal that triggered shutdown (e.g. "SIGINT")
  * @param deps - Optional dependency injection for testing
  */
-export async function gracefulShutdown(_signal: string, deps?: ShutdownDeps): Promise<void> {
+export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Promise<void> {
   if (shutdownPhase === "stopped") return
   if (shutdownPhase !== "idle" && shutdownPhase !== "stopping") return shutdownCompletion.promise
 
@@ -426,8 +429,18 @@ export async function gracefulShutdown(_signal: string, deps?: ShutdownDeps): Pr
   // drained + closed later in finalize() (RFC history-finalize-async-offload §4.1).
   stopRefresh()
   stopHistoryBackgroundWork()
+  stopTelemetryBackgroundWork() // 停 telemetry rollup timer，避免与接管的新进程并发上卷（lifecycle.md overlap ②）
   closeHttp2Sessions()
   peekUpstreamWsManager()?.stopNew()
+
+  // 通知 supervisor 正在收尾（systemd STOPPING=1；非 systemd no-op）
+  notifyStopping()
+
+  // states.json flush-then-freeze —— 仅 handoff（有后继者接管学习）才做；普通关机无后继者、无需 freeze
+  // （且普通关机 freeze 会污染测试里 28+ 处 gracefulShutdown("SIGINT"/"SIGTERM")——R2 BLOCKER-NEW-1）。
+  if (signal === "SIGUSR2") {
+    await Promise.allSettled([freezeNegotiation(), freezeCalibration()])
+  }
 
   // NOTE: Browser-observer WebSocket clients (history/status dashboards) are
   // NOT closed here. They subscribe to `notifyShutdownPhaseChanged` events;
@@ -662,9 +675,13 @@ export function setupShutdownHandlers(opts?: HandleShutdownSignalOptions): void 
   }
   const sigint = () => handler("SIGINT")
   const sigterm = () => handler("SIGTERM")
-  signalHandlers = { sigint, sigterm }
+  // 优雅重启交接信号：与 SIGTERM 同款 drain，仅日志标签区分（lifecycle.md「优雅重启」）。
+  // 三环境共用（裸手动=新进程自发、systemd/pm2=脚本/supervisor 发）。
+  const sigusr2 = () => handler("SIGUSR2")
+  signalHandlers = { sigint, sigterm, sigusr2 }
   process.on("SIGINT", sigint)
   process.on("SIGTERM", sigterm)
+  process.on("SIGUSR2", sigusr2)
 }
 
 // ============================================================================
@@ -687,6 +704,7 @@ export function _resetShutdownState(): void {
   if (signalHandlers) {
     process.removeListener("SIGINT", signalHandlers.sigint)
     process.removeListener("SIGTERM", signalHandlers.sigterm)
+    process.removeListener("SIGUSR2", signalHandlers.sigusr2)
     signalHandlers = null
   }
 }

@@ -187,6 +187,13 @@ function functionCallAdded(outputIndex: number, callId: string, name: string): S
 function functionCallArgsDelta(outputIndex: number, delta: string): ServerSentEventMessage {
   return rEvent({ type: "response.function_call_arguments.delta", output_index: outputIndex, item_id: `fc_${outputIndex}`, delta })
 }
+function webSearchCallDone(outputIndex: number, query: string, status = "completed"): ServerSentEventMessage {
+  return rEvent({
+    type: "response.output_item.done",
+    output_index: outputIndex,
+    item: { type: "web_search_call", id: `ws_${outputIndex}`, status, action: { type: "search", query } },
+  })
+}
 function completed(
   usage: Record<string, unknown>,
   status: "completed" | "incomplete" = "completed",
@@ -285,6 +292,52 @@ describe("responses-to-anthropic-stream — structured-output refusal (never-swa
     expect(data(starts[0]).content_block).toMatchObject({ type: "text" })
     const textDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "text_delta")
     expect(textDeltas.map((f) => (data(f).delta as { text: string }).text).join("")).toBe("I cannot help with that")
+  })
+})
+
+describe("responses-to-anthropic-stream — web_search_call → readable text (R-NO-REVIVE, RFC §5.1/§9, Phase 6 subtask Q)", () => {
+  test("a web_search_call arrives whole on .done (no intermediate deltas) and renders as a complete, self-closed text block", () => {
+    const frames = renderAll([created(), webSearchCallDone(0, "official Bun runtime website"), textDelta("https://bun.com/", 1), completed({ input_tokens: 3, output_tokens: 2, total_tokens: 5 })])
+    const starts = frames.filter((f) => data(f).type === "content_block_start")
+    expect(starts.length).toBe(2) // web_search text block + the answer text block
+    expect(data(starts[0]).content_block).toMatchObject({ type: "text" })
+    const stops = frames.filter((f) => data(f).type === "content_block_stop")
+    expect(stops.map((f) => data(f).index)).toEqual([0, 1])
+    const textDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "text_delta")
+    expect(textDeltas[0]).toBeDefined()
+    expect((data(textDeltas[0]).delta as { text: string }).text).toBe('[web_search: "official Bun runtime website"] (status: completed)')
+  })
+
+  test("NEGATIVE SAMPLE (R-NO-REVIVE load-bearing assertion): the streamed wire NEVER contains a web_search_tool_result type or any encrypted_content for this item", () => {
+    const frames = renderAll([created(), webSearchCallDone(0, "query"), completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 })])
+    const wire = frames.map((f) => f.data ?? "").join("")
+    expect(wire).not.toContain("web_search_tool_result")
+    expect(wire).not.toContain("encrypted_content")
+  })
+
+  test("NEGATIVE SAMPLE (adversarial, R-NO-REVIVE): a streamed web_search_call carrying a PLANTED encrypted_content is NOT smuggled through (不发明 → 不搬运)", () => {
+    const adversarial = rEvent({
+      type: "response.output_item.done",
+      output_index: 0,
+      item: { type: "web_search_call", id: "ws_adv", status: "completed", action: { type: "search", query: "q", encrypted_content: "FAKE_SIGNED_BLOB" } },
+    })
+    const frames = renderAll([created(), adversarial, completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 })])
+    const wire = frames.map((f) => f.data ?? "").join("")
+    expect(wire).not.toContain("web_search_tool_result")
+    expect(wire).not.toContain("FAKE_SIGNED_BLOB")
+    expect(wire).not.toContain("encrypted_content")
+  })
+
+  test("web_search_call sandwiched between text blocks doesn't corrupt block-index allocation (each gets its own monotone index)", () => {
+    const frames = renderAll([
+      created(),
+      textDelta("before", 0),
+      webSearchCallDone(1, "query"),
+      textDelta("after", 2),
+      completed({ input_tokens: 3, output_tokens: 3, total_tokens: 6 }),
+    ])
+    const starts = frames.filter((f) => data(f).type === "content_block_start")
+    expect(starts.map((f) => data(f).index)).toEqual([0, 1, 2])
   })
 })
 

@@ -83,7 +83,8 @@ describe("config yaml routes", () => {
 timeouts:
   response_header: 600
 history:
-  limit: 20
+  raw_capture:
+    enabled: false
 anthropic:
   tool_strip_read_result_tags: true
 `)
@@ -93,7 +94,7 @@ anthropic:
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       timeouts: { response_header: 600 },
-      history: { limit: 20 },
+      history: { raw_capture: { enabled: false } },
       anthropic: { tool_strip_read_result_tags: true },
     })
   })
@@ -112,8 +113,9 @@ shutdown:
   graceful_wait: 12
   abort_wait: 34
 history:
-  limit: 20
-  reaper_interval: 120
+  raw_capture:
+    enabled: false
+    max_object_bytes: 1048576
 anthropic:
   tool_strip_read_result_tags: true
   tool_dedup_calls: result
@@ -169,8 +171,7 @@ system_prompt_append: "append"
         abort_wait: 34,
       },
       history: {
-        limit: 20,
-        reaper_interval: 120,
+        raw_capture: { enabled: false, max_object_bytes: 1048576 },
       },
       anthropic: {
         tool_strip_read_result_tags: true,
@@ -440,8 +441,7 @@ model_refresh_interval: 600
         abort_wait: 34,
       },
       history: {
-        limit: 20,
-        reaper_interval: 120,
+        raw_capture: { enabled: false, max_object_bytes: 1048576 },
       },
       anthropic: {
         tool_strip_read_result_tags: true,
@@ -519,9 +519,8 @@ model_refresh_interval: 600
     expect(state.modelRefreshInterval).toBe(0)
     expect(state.shutdownGracefulWait).toBe(12)
     expect(state.shutdownAbortWait).toBe(34)
-    expect(state.historySuccessLimit).toBe(20)
-    expect(state.historyFailureLimit).toBe(20)
-    expect(state.historyReaperInterval).toBe(120)
+    expect(state.historyRawCaptureEnabled).toBe(false)
+    expect(state.historyRawCaptureMaxObjectBytes).toBe(1048576)
     expect(state.stripReadToolResultTags).toBe(true)
     expect(state.contextEditingMode).toBe("clear-both")
     expect(state.contextEditingTrigger).toBe(200000)
@@ -904,7 +903,8 @@ anthropic:
 # keep comment
 model_refresh_interval: 600
 history:
-  limit: 20
+  raw_capture:
+    enabled: false
 `)
 
     const res = await app.request("/api/config/yaml", {
@@ -917,7 +917,7 @@ history:
     expect(await res.json()).toEqual({
       model_refresh_interval: 600,
       history: {
-        limit: 20,
+        raw_capture: { enabled: false },
       },
     })
 
@@ -925,7 +925,7 @@ history:
     expect(written).toContain("# keep comment")
     expect(written).toContain("model_refresh_interval: 600")
     expect(written).toContain("history:")
-    expect(written).toContain("limit: 20")
+    expect(written).toContain("enabled: false")
   })
 
   test("PUT /api/config/yaml rejects negative nested timeout values", async () => {
