@@ -92,6 +92,11 @@ export function getProcessIdentity(): ProcessIdentity {
   return { pid: process.pid, bootTime: 0, version: "unknown", synthetic: true }
 }
 
+/** Read process identity without emitting diagnostics; safe inside the logger itself. */
+export function getProcessIdentityQuiet(): ProcessIdentity {
+  return identity ?? { pid: process.pid, bootTime: 0, version: "unknown", synthetic: true }
+}
+
 /** Test-only: reset the captured identity so a test can re-init deterministically. */
 export function resetProcessIdentityForTests(): void {
   identity = null

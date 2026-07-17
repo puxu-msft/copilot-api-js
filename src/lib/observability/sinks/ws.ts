@@ -149,7 +149,7 @@ export class WsSink {
       case "request.attempt_started":
       case "request.stream_progress":
       case "request.context_updated":
-      case "system.log":
+      case "system.diagnostic":
       case "system.request_line": {
         return
       }

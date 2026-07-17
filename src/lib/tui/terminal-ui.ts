@@ -476,7 +476,7 @@ export class TerminalUi {
       // Non-HTTP consola logs republished onto the bus (republish.ts). Rendered
       // through the same footer-coordinated printLog path the old hijack
       // reporter used, so stdout bytes are unchanged.
-      case "system.log": {
+      case "system.diagnostic": {
         this.onSystemLog(event)
         return
       }
@@ -865,8 +865,8 @@ export class TerminalUi {
    * args-joined by republish.ts; {@link renderSystemLogLine} produces the full
    * `[INFO] HH:MM:SS message` line from the log's own timestamp.
    */
-  private onSystemLog(event: Extract<ObservabilityEvent, { kind: "system.log" }>): void {
-    this.printLog(renderSystemLogLine(event))
+  private onSystemLog(event: Extract<ObservabilityEvent, { kind: "system.diagnostic" }>): void {
+    this.printLog(renderSystemLogLine(event.diagnostic))
   }
 
   // ============================================================================

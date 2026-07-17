@@ -41,6 +41,7 @@ import type {
   RequestContext,
   RequestState,
 } from "~/lib/context/types"
+import type { DiagnosticEvent } from "~/lib/diagnostics"
 import type {
   //
   EntrySummary,
@@ -272,7 +273,7 @@ export type ObservabilityEvent =
   //    both sinks share one representation; `logType` is the consola level name
   //    ("info" | "warn" | "error" | "success" | "debug" | …) for prefix
   //    selection; `time` is the log timestamp in epoch ms. ──
-  | { kind: "system.log"; logType: string; message: string; time: number }
+  | { kind: "system.diagnostic"; diagnostic: DiagnosticEvent }
 
 /** Top-level namespace prefix of an event kind. */
 export type EventNamespace = "request" | "history" | "system"

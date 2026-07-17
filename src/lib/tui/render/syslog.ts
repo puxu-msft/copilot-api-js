@@ -14,6 +14,9 @@
 
 import pc from "picocolors"
 
+import type { DiagnosticEvent } from "~/lib/diagnostics"
+
+import { diagnosticConsolaType } from "~/lib/diagnostics"
 import { formatTime } from "~/lib/observability/projections/format"
 
 /**
@@ -23,8 +26,8 @@ import { formatTime } from "~/lib/observability/projections/format"
  * yields the bare timestamp prefix (message only when the prefix is empty,
  * which never happens today since the default branch still returns the time).
  */
-export function renderSystemLogLine(event: { logType: string; message: string; time: number }): string {
-  const prefix = consolaPrefix(event.logType, new Date(event.time))
+export function renderSystemLogLine(event: Pick<DiagnosticEvent, "message" | "timeUnixMs"> & { severity: string; fields?: DiagnosticEvent["fields"] }): string {
+  const prefix = consolaPrefix(diagnosticConsolaType(event), new Date(event.timeUnixMs))
   return prefix ? `${prefix} ${event.message}` : event.message
 }
 

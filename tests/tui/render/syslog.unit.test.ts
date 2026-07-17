@@ -25,6 +25,8 @@ import {
   test,
 } from "bun:test"
 
+import type { DiagnosticLevel } from "~/lib/diagnostics"
+
 import { renderSystemLogLine } from "~/lib/tui/render/syslog"
 
 const NOW = new Date("2023-11-14T14:25:36").getTime()
@@ -35,7 +37,7 @@ const stripAnsi = (s: string): string => s.replaceAll(/\x1b\[[0-9;]*m/g, "")
 
 describe("renderSystemLogLine (system.log pure renderer)", () => {
   test("info → [INFO] badge, normalized time, and message", () => {
-    const line = stripAnsi(renderSystemLogLine({ logType: "info", message: "hi", time: NOW }))
+    const line = stripAnsi(renderSystemLogLine({ severity: "info", message: "hi", timeUnixMs: NOW }))
     expect(line.startsWith("[INFO] ")).toBe(true)
     expect(line).toContain("14:25:36")
     expect(line.endsWith(" hi")).toBe(true)
@@ -44,7 +46,7 @@ describe("renderSystemLogLine (system.log pure renderer)", () => {
   })
 
   test("each logType maps to its fixed badge", () => {
-    const cases: Array<[string, string]> = [
+    const cases: Array<[DiagnosticLevel | "success", string]> = [
       ["error", "[ERR ]"],
       ["fatal", "[ERR ]"],
       ["warn", "[WARN]"],
@@ -53,13 +55,13 @@ describe("renderSystemLogLine (system.log pure renderer)", () => {
       ["debug", "[DBG ]"],
     ]
     for (const [logType, badge] of cases) {
-      const line = stripAnsi(renderSystemLogLine({ logType, message: "m", time: NOW }))
+      const line = stripAnsi(renderSystemLogLine({ severity: logType, message: "m", timeUnixMs: NOW }))
       expect(line).toBe(`${badge} 14:25:36 m`)
     }
   })
 
   test("unknown logType → bare timestamp prefix (no badge)", () => {
-    const line = stripAnsi(renderSystemLogLine({ logType: "trace", message: "m", time: NOW }))
+    const line = stripAnsi(renderSystemLogLine({ severity: "trace", message: "m", timeUnixMs: NOW }))
     expect(line).toBe("14:25:36 m")
   })
 })

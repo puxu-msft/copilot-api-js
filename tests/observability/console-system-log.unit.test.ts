@@ -8,9 +8,14 @@ import {
 } from "bun:test"
 import consola from "consola"
 
+import { createDiagnosticEvent } from "~/lib/diagnostics"
 import { createBus } from "~/lib/observability/bus"
 import { installConsolaRepublish } from "~/lib/observability/republish"
 import { TerminalUi } from "~/lib/tui"
+
+function diagnostic(message: string) {
+  return { kind: "system.diagnostic" as const, diagnostic: createDiagnosticEvent({ level: "info", event: "test.log", message, origin: "native" }) }
+}
 
 /** Collect stdout bytes from a sink, normalizing the HH:MM:SS stamp. */
 function makeCapture() {
@@ -50,7 +55,7 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     expect(cap.text()).toBe(golden)
   })
 
-  test("system.log interleaves with request lifecycle lines in publish order", () => {
+  test("system.diagnostic interleaves with request lifecycle lines in publish order", () => {
     const cap = makeCapture()
     const bus = createBus()
     const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
@@ -61,10 +66,10 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     })
 
     const sys = bus.scope("system")
-    sys.publish({ kind: "system.log", logType: "info", message: "before", time: Date.now() })
+    sys.publish(diagnostic("before"))
     consola.level = 5
     consola.info("between")
-    sys.publish({ kind: "system.log", logType: "info", message: "after", time: Date.now() })
+    sys.publish(diagnostic("after"))
 
     const lines = cap.text().trimEnd().split("\n")
     expect(lines).toEqual(["[INFO] TT:TT:TT before", "[INFO] TT:TT:TT between", "[INFO] TT:TT:TT after"])
@@ -82,7 +87,7 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     // classic recursion trigger.
     let handledCount = 0
     const unsub = bus.subscribe((e) => {
-      if (e.kind === "system.log" && handledCount === 0) {
+      if (e.kind === "system.diagnostic" && handledCount === 0) {
         handledCount++
         consola.warn("reentrant warning")
       }
@@ -113,7 +118,7 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     const uninstall = installConsolaRepublish(bus.scope("system"))
     let handledCount = 0
     const unsub = bus.subscribe((e) => {
-      if (e.kind === "system.log" && handledCount === 0) {
+      if (e.kind === "system.diagnostic" && handledCount === 0) {
         handledCount++
         consola.warn("reentrant warning")
       }

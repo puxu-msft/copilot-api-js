@@ -39,6 +39,7 @@ import { readFileSync } from "node:fs"
 
 import type { RequestContextSnapshot } from "~/lib/observability"
 
+import { createDiagnosticEvent } from "~/lib/diagnostics"
 import { createBus } from "~/lib/observability"
 import { attachTerminalUi } from "~/lib/tui"
 
@@ -74,7 +75,10 @@ export function renderGoldenScenario(attach: (bus: ReturnType<typeof createBus>,
   req.publish({ kind: "request.created", ctx: ctxB })
   req.publish({ kind: "request.created", ctx: ctxC })
   req.publish({ kind: "request.stream_progress", ctx: ctxA, bytesIn: 12_345, eventsIn: 42 } as never)
-  sys.publish({ kind: "system.log", logType: "info", message: "golden line", time: NOW })
+  sys.publish({
+    kind: "system.diagnostic",
+    diagnostic: createDiagnosticEvent({ level: "info", event: "test.golden", message: "golden line", timeUnixMs: NOW, origin: "native" }),
+  })
   req.publish({ kind: "request.completed", ctx: ctxA, entry: { id: "a", endpoint: "anthropic-messages", state: "completed" } } as never)
   req.publish({ kind: "request.failed", ctx: ctxB, statusCode: 429, error: "rate_limited" } as never) // error 腿
   detach()

@@ -34,6 +34,7 @@ import type {
   RequestContextSnapshot,
 } from "~/lib/observability"
 
+import { createDiagnosticEvent } from "~/lib/diagnostics"
 import { createBus } from "~/lib/observability"
 import { TerminalUi } from "~/lib/tui"
 
@@ -95,7 +96,10 @@ function renderFooter(opts: { contexts: Array<RequestContextSnapshot>; columns: 
   for (const ctx of opts.contexts) pub.publish(created(ctx))
 
   // Trigger a footer render synchronously (avoids the 100ms timer).
-  bus.scope("system").publish({ kind: "system.log", logType: "info", message: "tick", time: NOW })
+  bus.scope("system").publish({
+    kind: "system.diagnostic",
+    diagnostic: createDiagnosticEvent({ level: "info", event: "test.tick", message: "tick", timeUnixMs: NOW, origin: "native" }),
+  })
 
   // The footer is written as a single `CLEAR_LINE + footer` chunk; find the
   // last chunk carrying the active-request marker.

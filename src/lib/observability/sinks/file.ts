@@ -25,6 +25,7 @@
 import fs from "node:fs"
 import path from "node:path"
 
+import { diagnosticConsolaType } from "~/lib/diagnostics"
 import { emergencyWrite } from "~/lib/tui/terminal-coordinator"
 
 import type {
@@ -133,10 +134,11 @@ export class FileSink {
       this.append(now, Buffer.byteLength(line), line)
       return
     }
-    if (event.kind !== "system.log") return
-    const message = event.message.replaceAll(ANSI_SGR, "")
-    const line = `${formatStamp(event.time)} [${levelLabel(event.logType)}] ${message}\n`
-    this.append(event.time, Buffer.byteLength(line), line)
+    if (event.kind !== "system.diagnostic") return
+    const diagnostic = event.diagnostic
+    const message = diagnostic.message.replaceAll(ANSI_SGR, "")
+    const line = `${formatStamp(diagnostic.timeUnixMs)} [${levelLabel(diagnosticConsolaType(diagnostic))}] ${message}\n`
+    this.append(diagnostic.timeUnixMs, Buffer.byteLength(line), line)
   }
 
   private append(time: number, byteLen: number, line: string): void {

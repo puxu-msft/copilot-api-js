@@ -39,10 +39,18 @@ import { EventEmitter } from "node:events"
 
 import type { RequestContextSnapshot } from "~/lib/observability"
 
+import { createDiagnosticEvent } from "~/lib/diagnostics"
 import { createBus } from "~/lib/observability"
 import { TerminalUi } from "~/lib/tui"
 
 const NOW = 1_700_000_000_000
+
+function diagnostic(message: string) {
+  return {
+    kind: "system.diagnostic" as const,
+    diagnostic: createDiagnosticEvent({ level: "info", event: "test.interactive", message, timeUnixMs: NOW, origin: "native" }),
+  }
+}
 
 // DECSTBM set-scroll-region sequence `\x1b[1;<N>r` — the Region's tell that it
 // established a sticky bottom panel (absent on the P0 footer path).
@@ -222,7 +230,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     })
     bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
     chunks.length = 0
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "x", time: Date.now() } as never)
+    bus.scope("system").publish(diagnostic("x"))
     // Collapsed with a single in-flight request: the DECSTBM region reserves
     // exactly ONE bottom row (rows-1 = 23) — user 2026-07-11 wants the default
     // view to occupy one row, not the padded MAX_PANEL_ROWS.
@@ -247,7 +255,7 @@ describe("TerminalUi — P1 interactive integration", () => {
       registerExitHook: () => {},
     })
     bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "x", time: Date.now() } as never)
+    bus.scope("system").publish(diagnostic("x"))
     chunks.length = 0
     stdin.emit("data", Buffer.from(" ")) // collapsed (N=1) → panel (N=3): region grows by 2
     const out = chunks.join("")
@@ -311,7 +319,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     // `detailActive` guard, call `renderRegion` → `region.clear()`, which
     // writes `RESET_SCROLL_REGION` + `ERASE_TO_END` + `SHOW_CURSOR` straight
     // into the alt screen and wipes the detail paint.
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "concurrent", time: Date.now() } as never)
+    bus.scope("system").publish(diagnostic("concurrent"))
     req.publish({ kind: "request.created", ctx: makeCtx("bbbbbbbb", "gpt-5", 500) })
     req.publish({
       kind: "request.completed",
@@ -388,7 +396,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
     chunks.length = 0
 
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "DURING-DETAIL", time: Date.now() } as never)
+    bus.scope("system").publish(diagnostic("DURING-DETAIL"))
     expect(chunks.join("")).not.toContain("DURING-DETAIL") // queued, not written to the alt screen
 
     stdin.emit("data", Buffer.from("\x1b")) // esc → exit detail + replay
@@ -421,7 +429,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     // otherwise false-positive-match inside "LOG-90"/"LOG-99"/…).
     const label = (i: number) => `LOG-${String(i).padStart(4, "0")}`
     for (let i = 0; i < REPLAY_CAP + overflow; i++) {
-      system.publish({ kind: "system.log", logType: "info", message: label(i), time: Date.now() } as never)
+      system.publish(diagnostic(label(i)))
     }
 
     stdin.emit("data", Buffer.from("\x1b")) // esc → exit detail + replay
@@ -510,7 +518,7 @@ describe("TerminalUi — P1 interactive integration", () => {
       registerExitHook: () => {},
     })
     bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "SENTINEL", time: Date.now() } as never)
+    bus.scope("system").publish(diagnostic("SENTINEL"))
     chunks.length = 0
     stdin.emit("data", Buffer.from(" ")) // collapsed (N=1) → panel (N=3): GROW
     const growOut = chunks.join("")

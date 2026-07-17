@@ -21,6 +21,7 @@
 import consola from "consola"
 import stringify from "safe-stable-stringify"
 
+import { createDiagnosticEvent } from "~/lib/diagnostics"
 import { emergencyWrite } from "~/lib/tui/terminal-coordinator"
 
 import type { ScopedPublisher } from "./bus"
@@ -79,7 +80,20 @@ export function installConsolaRepublish(publisher: ScopedPublisher<"system">): (
       }
       reentrant = true
       try {
-        publisher.publish({ kind: "system.log", logType: logObj.type, message, time: Date.now() })
+        const error = logObj.args.find((arg) => arg instanceof Error)
+        publisher.publish({
+          kind: "system.diagnostic",
+          diagnostic: createDiagnosticEvent({
+            level: consolaLevel(logObj.type),
+            event: "consola.log",
+            message,
+            args: logObj.args,
+            fields: { consolaType: logObj.type },
+            ...(error !== undefined && { error }),
+            timeUnixMs: logObj.date?.getTime() ?? Date.now(),
+            origin: "consola-adapter",
+          }),
+        })
       } finally {
         reentrant = false
       }
@@ -89,5 +103,29 @@ export function installConsolaRepublish(publisher: ScopedPublisher<"system">): (
   consola.setReporters([reporter])
   return () => {
     consola.setReporters(original)
+  }
+}
+
+function consolaLevel(type: string): "trace" | "debug" | "info" | "warn" | "error" | "fatal" {
+  switch (type) {
+    case "fatal": {
+      return "fatal"
+    }
+    case "error": {
+      return "error"
+    }
+    case "warn": {
+      return "warn"
+    }
+    case "debug":
+    case "verbose": {
+      return "debug"
+    }
+    case "trace": {
+      return "trace"
+    }
+    default: {
+      return "info"
+    }
   }
 }
