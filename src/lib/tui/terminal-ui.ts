@@ -11,6 +11,7 @@ type NonRequestEvent = Exclude<ObservabilityEvent, { kind: `request.${string}` }
 
 import { isDiagnosticLevelEnabled } from "~/lib/diagnostics"
 import { assertNever } from "~/lib/observability"
+import { StreamProgressCoalescer } from "~/lib/observability/stream-progress-coalescer"
 import { handleShutdownSignal } from "~/lib/shutdown"
 
 import type { RequestEvent } from "./active-request-store"
@@ -48,6 +49,8 @@ export interface TerminalUiOptions {
   showActive?: boolean
   /** Footer repaint cadence; 0 disables the timer for deterministic byte-golden tests. */
   refreshIntervalMs?: number
+  /** Presentation stream-progress coalescing cadence; 0 disables coalescing for deterministic tests. */
+  progressIntervalMs?: number
   /** Injectable wall clock for deterministic event/render tests. */
   now?: () => number
   diagnosticLevel?: DiagnosticLevelThreshold | (() => DiagnosticLevelThreshold)
@@ -73,6 +76,8 @@ export class TerminalUi {
   private readonly session: TerminalSession
   private readonly view: TerminalView
   private readonly unsubscribe: () => void
+  private readonly progress: StreamProgressCoalescer
+  private readonly coalesceProgress: boolean
   private unregisterCoordinator: () => void = () => {}
   private readonly unregisterSensitiveOutput: () => void
   private uiState: UiState = INITIAL_UI_STATE
@@ -94,6 +99,8 @@ export class TerminalUi {
     const getRows = numericSource(options.rows, () => (stdout as Partial<{ rows: number }>).rows, 24)
 
     this.decoder = new KeyDecoder((events) => this.handleKeys(events))
+    this.coalesceProgress = (options.progressIntervalMs ?? 75) > 0
+    this.progress = new StreamProgressCoalescer({ intervalMs: options.progressIntervalMs ?? 75, deliver: (event) => this.handleRequestNow(event) })
     this.session = new TerminalSession({
       stdin: options.stdin,
       interactive: !this.silent && this.isTTY,
@@ -139,6 +146,7 @@ export class TerminalUi {
     this.unregisterCoordinator()
     this.unsubscribe()
     this.stopTimer()
+    this.progress.destroy()
     this.session.restoreSyncBestEffort()
     this.view.destroy()
     this.store.clear()
@@ -195,6 +203,16 @@ export class TerminalUi {
   }
 
   private handleRequest(event: RequestEvent): void {
+    if (event.kind === "request.stream_progress") {
+      if (this.coalesceProgress) this.progress.push(event)
+      else this.handleRequestNow(event)
+      return
+    }
+    if (event.kind === "request.completed" || event.kind === "request.failed" || event.kind === "request.aborted") this.progress.flush(event.ctx.id)
+    this.handleRequestNow(event)
+  }
+
+  private handleRequestNow(event: RequestEvent): void {
     if (event.kind === "request.created") this.ordinals.ordinalFor(event.ctx.sessionId, event.ctx.agentId)
     const before = this.uiState
     const change = this.store.apply(event)
