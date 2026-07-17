@@ -44,9 +44,10 @@ describe("StructuredFileSink", () => {
         .filter(Boolean)
         .map((line) => JSON.parse(line) as Record<string, unknown>),
     )
-    expect(records).toHaveLength(2)
+    expect(records).toHaveLength(3)
     expect(records.every((record) => Object.keys(record).filter((key) => key === "record").length === 1)).toBe(true)
-    expect(records.map((record) => (record.record as { recordType: string }).recordType).sort()).toEqual(["diagnostic", "request-line"])
+    expect(records.map((record) => (record.record as { recordType: string }).recordType).sort()).toEqual(["diagnostic", "diagnostic", "request-line"])
+    expect(records.some((record) => (record.record as { diagnostic?: { event?: string } }).diagnostic?.event === "shutdown.diagnostic-sealing")).toBe(true)
     expect(fs.statSync(directory).mode & 0o777).toBe(0o700)
     for (const file of files) expect(fs.statSync(path.join(directory, file)).mode & 0o777).toBe(0o600)
   })

@@ -6,6 +6,7 @@ declare module "pino-roll" {
     readonly file: string
     readonly destroyed: boolean
     readonly writableEnded?: boolean
+    write(data: string): boolean
     flush(callback?: (error?: Error | null) => void): void
     end(): void
     on(event: "ready" | "close" | "drain", listener: () => void): this

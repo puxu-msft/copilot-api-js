@@ -52,6 +52,7 @@ export function resetStructuredFileSinkForTests(): void {
 }
 
 export { BootstrapDiagnosticSpool } from "./bootstrap-spool"
+export { CountingDestination } from "./counting-destination"
 export { createOwnerManifest, ownerIsDefinitelyDead, readOwnerManifest } from "./owner-manifest"
 export { sweepDiagnosticRetention } from "./retention"
 

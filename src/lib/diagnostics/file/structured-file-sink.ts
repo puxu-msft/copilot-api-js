@@ -18,6 +18,8 @@ import { isDiagnosticLevelEnabled } from "~/lib/diagnostics"
 import { writeEmergencyFallback } from "~/lib/diagnostics/emergency-output"
 import { getProcessIdentityQuiet } from "~/lib/process-identity"
 
+import { createDiagnosticEvent } from "../event"
+import { CountingDestination } from "./counting-destination"
 import { createOwnerManifest } from "./owner-manifest"
 import { sweepDiagnosticRetention } from "./retention"
 
@@ -38,6 +40,7 @@ export class StructuredFileSink {
   private unsubscribe: (() => void) | undefined
   private readonly logger: pino.Logger
   private readonly destination: PinoRollDestination
+  private readonly counted: CountingDestination
   private readonly baseName: string
   private readonly maxFilesPerProcess: number
   private state: "ready" | "degraded" | "sealing" | "closed" = "ready"
@@ -53,6 +56,7 @@ export class StructuredFileSink {
     level: DiagnosticLevelThreshold | (() => DiagnosticLevelThreshold),
   ) {
     this.destination = destination
+    this.counted = new CountingDestination(destination)
     this.baseName = baseName
     this.maxFilesPerProcess = maxFilesPerProcess
     this.level = level
@@ -62,13 +66,13 @@ export class StructuredFileSink {
         timestamp: false,
         redact: { paths: ["record.diagnostic.fields.*.value.access_token", "record.diagnostic.fields.*.value.authorization"], censor: "[REDACTED]" },
       },
-      destination,
+      this.counted,
     )
-    destination.on("drop", () => {
+    this.counted.on("drop", () => {
       this.droppedRecords++
       this.state = "degraded"
     })
-    destination.on("error", (error) => {
+    this.counted.on("error", (error: Error) => {
       this.state = "degraded"
       writeEmergencyFallback(`[StructuredFileSink] ${error.message}`)
     })
@@ -121,15 +125,19 @@ export class StructuredFileSink {
     )
   }
 
-  get health(): { state: string; droppedRecords: number; activePath: string } {
-    return { state: this.state, droppedRecords: this.droppedRecords, activePath: this.destination.file }
+  get health(): { state: string; droppedRecords: number; activePath: string; queuedBytes: number; writtenBytes: number; droppedBytes: number } {
+    return { state: this.state, droppedRecords: this.droppedRecords, activePath: this.destination.file, ...this.counted.health }
   }
 
   async close(): Promise<void> {
     if (this.state === "closed" || this.state === "sealing") return
-    this.state = "sealing"
     this.unsubscribe?.()
     this.unsubscribe = undefined
+    this.writeRecord({
+      recordType: "diagnostic",
+      diagnostic: createDiagnosticEvent({ level: "info", event: "shutdown.diagnostic-sealing", message: "Diagnostic writer sealing", origin: "native" }),
+    })
+    this.state = "sealing"
     await this.durable()
     this.destination.end()
     await new Promise<void>((resolve, reject) => {
@@ -193,7 +201,8 @@ export class StructuredFileSink {
 
   async durable(): Promise<void> {
     await this.flush()
-    await this.fsyncSegments()
+    await this.counted.waitForIdle()
+    await this.fsyncSegments(this.counted.takeDirtyPaths())
   }
 
   private flush(): Promise<void> {
@@ -205,13 +214,17 @@ export class StructuredFileSink {
     })
   }
 
-  private async fsyncSegments(): Promise<void> {
+  private async fsyncSegments(dirtyPaths: Array<string>): Promise<void> {
     const directory = path.dirname(this.baseName)
     const prefix = path.basename(this.baseName)
-    const files = fs.readdirSync(directory).filter((name) => name.startsWith(prefix) && name.endsWith(".ndjson"))
+    const discovered = fs
+      .readdirSync(directory)
+      .filter((name) => name.startsWith(prefix) && name.endsWith(".ndjson"))
+      .map((name) => path.join(directory, name))
+    const files = [...new Set([...dirtyPaths, ...discovered])]
     await Promise.all(
-      files.map(async (name) => {
-        const handle = await fs.promises.open(path.join(directory, name), "r")
+      files.map(async (file) => {
+        const handle = await fs.promises.open(file, "r")
         try {
           await handle.sync()
         } finally {
