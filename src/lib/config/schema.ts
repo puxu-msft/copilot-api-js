@@ -769,6 +769,12 @@ export const HistoryArchiveConfigSchema = z
 
 export const HistoryConfigSchema = z
   .object({
+    /**
+     * History subsystem master switch. false = "no-history mode": no history.db
+     * is opened/created, nothing is recorded, and every /history/api/* route
+     * no-ops. STARTUP-ONLY (not hot-reloadable — requires a restart). Default: true.
+     */
+    enabled: nullableBoolean(),
     /** @deprecated 兼容旧配置;缺省的 success_limit/failure_limit 回退到它 */
     limit: nullableNonnegativeInt(),
     /** Max successful (non-failed) entries kept in SQLite (0 = unlimited). */

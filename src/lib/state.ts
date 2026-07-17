@@ -636,6 +636,20 @@ export interface State {
   readonly historyReaperInterval: number
 
   /**
+   * Master switch for the whole history subsystem. When false, `initHistory`
+   * short-circuits BEFORE opening the SQLite DB — no history.db file is created
+   * or touched, the reaper/backfills never start, and every `/history/api/*`
+   * route + the HistorySink no-op via `isHistoryEnabled()`.
+   *
+   * STARTUP-PHASE (not in CONFIG_MANAGED_DEFAULTS): read once by start.ts, so it
+   * survives hot-reload untouched — a runtime `history.enabled` change warns and
+   * requires a restart (mirrors accountType / rate_limiter / proxy). Precedence:
+   * CLI --no-history > config `history.enabled` > this default.
+   * Default: true.
+   */
+  readonly historyEnabled: boolean
+
+  /**
    * Filesystem path to the history SQLite database.
    * Empty string means use the default path from PATHS.HISTORY_DB.
    * Default: "".
@@ -1389,6 +1403,7 @@ export function setHistoryConfig(
       | "historySuccessLimit"
       | "historyFailureLimit"
       | "historyReaperInterval"
+      | "historyEnabled"
       | "historyDbPath"
       | "historyArchiveEnabled"
       | "historyArchiveHotDays"
@@ -1960,6 +1975,10 @@ const mutableState: MutableState = {
   unknownEndpointLogging: { ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging },
   accountType: "individual",
   ghcApiBaseUrl: "",
+  // History master switch (startup-phase; see the field doc). NOT in
+  // CONFIG_MANAGED_DEFAULTS so resetConfigManagedState leaves it at the boot
+  // value across hot-reloads.
+  historyEnabled: true,
   maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
   tokenBasedBilling: false,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,

@@ -176,6 +176,12 @@ interface RunServerOptions {
   ghcApiBaseUrl?: string
   // Adaptive rate limiting (disabled if rateLimit is false)
   rateLimit: boolean
+  /**
+   * History recording master switch (CLI --history / --no-history). undefined =
+   * unset → fall back to config `history.enabled` (default true). false forces
+   * no-history mode: no history.db is opened and nothing is recorded.
+   */
+  history?: boolean
   /** Mock rate limiter throttle: reject all requests with 429 */
   mockRateLimiterThrottled: boolean
   githubToken?: string
@@ -355,7 +361,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // setRateLimitPublisher + installConsolaRepublish, so its "[RateLimiter]
   // Initialized" line is captured by the file sink and the --mock-rate-limiter-
   // throttled forced state transition actually reaches the bus).
-  initHistory(true)
+  // History master switch. CLI --no-history (options.history === false) wins over
+  // config `history.enabled` (already applied to state.historyEnabled at Phase
+  // 2.5); an unset CLI flag (undefined) falls back to config. When disabled,
+  // initHistory short-circuits BEFORE opening the DB — no history.db is created.
+  const historyEnabled = options.history ?? state.historyEnabled
+  initHistory(historyEnabled)
   // Apply forward (001+) schema migrations now that the DB is open (initHistory
   // → openDatabase built the floor + history_meta) and BEFORE the server starts
   // serving. A failure is a HARD refuse-to-start: schema DDL is foundational, so
@@ -364,11 +375,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // initHistory also armed the reaper, but that is only an unref'd setInterval
   // (default 600s, no synchronous schema work) so its first tick lands long after
   // migrations complete — the ordering is benign even when 001+ is non-empty.
-  try {
-    await applyForwardMigrations(getDatabase())
-  } catch (err: unknown) {
-    consola.error("[history/sqlite] schema migration failed; refusing to start (a half-migrated schema is more dangerous than not starting)", err)
-    process.exit(1)
+  // Skipped entirely in no-history mode (the DB was never opened; getDatabase would throw).
+  if (historyEnabled) {
+    try {
+      await applyForwardMigrations(getDatabase())
+    } catch (err: unknown) {
+      consola.error("[history/sqlite] schema migration failed; refusing to start (a half-migrated schema is more dangerous than not starting)", err)
+      process.exit(1)
+    }
   }
   await initRequestTelemetry()
 
@@ -623,6 +637,13 @@ export const start = defineCommand({
       default: true,
       description: "Adaptive rate limiting (disable with --no-rate-limit)",
     },
+    history: {
+      type: "boolean",
+      // No default on purpose: unset → undefined → fall back to config
+      // `history.enabled` (default true). --no-history forces the no-history
+      // mode (no history.db opened, nothing recorded) and wins over config.
+      description: "Record request history to SQLite (disable with --no-history)",
+    },
     "mock-rate-limiter-throttled": {
       type: "boolean",
       default: false,
@@ -676,6 +697,8 @@ export const start = defineCommand({
       // rate-limit (citty handles --no-rate-limit via built-in negation)
       "rate-limit",
       "rateLimit",
+      // history (citty handles --no-history via built-in negation)
+      "history",
       // mock-rate-limiter-throttled
       "mock-rate-limiter-throttled",
       "mockRateLimiterThrottled",
@@ -709,6 +732,7 @@ export const start = defineCommand({
       accountType: args["account-type"] as "individual" | "business" | "enterprise" | undefined,
       ghcApiBaseUrl: args["ghc-api-base-url"],
       rateLimit: args["rate-limit"],
+      history: args.history,
       mockRateLimiterThrottled: args["mock-rate-limiter-throttled"],
       githubToken: args["github-token"],
       showGitHubToken: args["show-github-token"],

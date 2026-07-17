@@ -10,7 +10,12 @@ import type { Database } from "./connection"
 import { migrateEntriesColumns } from "./connection"
 import { createDatabase } from "./driver"
 import { applyForwardMigrations } from "./migrations/run"
-import { SCHEMA_SQL, TIER2_MANIFEST_DDL } from "./schema"
+import {
+  //
+  SCHEMA_SQL,
+  TIER1_LOCATOR_DDL,
+  TIER2_MANIFEST_DDL,
+} from "./schema"
 
 /**
  * archive.db — the TIER-1 store of the tiered cold-archive (spec
@@ -85,6 +90,7 @@ export function openArchiveDb(dbPath: string): Database {
   // two files stay column-identical (single source of truth).
   migrateEntriesColumns(db)
   db.exec(TIER2_MANIFEST_DDL)
+  db.exec(TIER1_LOCATOR_DDL)
   if (dbPath !== ":memory:") consola.info(`[history/archive] opened ${dbPath}`)
   return db
 }

@@ -1,3 +1,5 @@
+import path from "node:path"
+
 import type {
   //
   EntrySummary,
@@ -5,7 +7,13 @@ import type {
   QueryOptions,
 } from "~/lib/history/types"
 
-import { getArchiveDb } from "./archive-db"
+import { state } from "~/lib/state"
+
+import {
+  //
+  getArchiveDb,
+  resolveArchiveDir,
+} from "./archive-db"
 import { getDatabase } from "./connection"
 import {
   //
@@ -13,6 +21,7 @@ import {
   type EntryRow,
   type StageRow,
 } from "./serialize"
+import { readSealedEntry } from "./tier2-archive"
 
 /** Portable bind-parameter type for SQLite (matches better-sqlite3 and bun:sqlite). */
 type SqlBinding = string | number | bigint | Buffer | null
@@ -254,6 +263,18 @@ export function getEntryById(id: string, tier?: QueryOptions["tier"]): HistoryEn
   const db = resolveReadDb(tier)
   const row = db.prepare("SELECT * FROM entries_v2 WHERE id = ?").get(id) as EntryRow | undefined
   if (!row) return undefined
+  // Archive tier: a session's heavy stages may have been compacted OUT of archive.db
+  // into a per-session columnar file (tier1_locator). Resolve the detail from the file
+  // when present; otherwise assemble from stages (not-yet-compacted / HOT rows).
+  if (tier === "archive") {
+    const loc = db.prepare("SELECT seal_file, index_in_session FROM tier1_locator WHERE entry_id = ?").get(id) as
+      | { seal_file: string; index_in_session: number }
+      | undefined
+    if (loc) {
+      const fromFile = readSealedEntry(path.join(resolveArchiveDir(state.historyArchiveDir, state.historyDbPath), loc.seal_file), loc.index_in_session)
+      if (fromFile) return fromFile
+    }
+  }
   const stages = loadStagesFor(db, [id]).get(id) ?? []
   return assembleFullEntry(row, stages)
 }
