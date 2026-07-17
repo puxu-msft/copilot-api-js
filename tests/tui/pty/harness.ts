@@ -147,7 +147,7 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
     // 排空已进 data 回调的写入，不保证 PTY EOF。故轮询「静默」——连续 QUIESCE_MS 无新字节
     // 视为排空——再关闭，替代裸 sleep 猜测。上限兜底防挂死。
     const drainDeadline = Date.now() + 2000
-    // eslint-disable-next-line no-unmodified-loop-condition -- lastDataAt 在 data 回调里更新
+
     while (Date.now() - lastDataAt < QUIESCE_MS && Date.now() < drainDeadline) {
       await Bun.sleep(20)
     }

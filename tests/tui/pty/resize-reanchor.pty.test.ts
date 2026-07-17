@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { missingNumbers, runDriver } from "./harness"
+import {
+  //
+  missingNumbers,
+  runDriver,
+} from "./harness"
 
 const OBSERVE_ROWS = 40 // 固定大观察窗口 > 所有 resize 目标，避开 xterm.resize reflow 丢行。
 
@@ -26,7 +35,7 @@ describe("⑤ resize 重锚：rows 变化时 Region 重锚、旧 panel 无孤儿
       const snap = r.snapshots["postresize"]
       expect(snap).toBeDefined()
       // 孤儿行断言：整快照只有一个 footer（重锚后的新底），无 resize 遗留的旧 footer。
-      const footerRows = snap!.filter((l) => l.includes("claude-sonnet-4-5"))
+      const footerRows = snap.filter((l) => l.includes("claude-sonnet-4-5"))
       expect(footerRows.length).toBe(1)
     }
   }, 90_000)

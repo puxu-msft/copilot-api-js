@@ -1,9 +1,20 @@
-import { describe, expect, test } from "bun:test"
 import { Terminal } from "@xterm/headless"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 
-import { collectGrid, missingNumbers, PROJECT_ROOT, writeXterm } from "./harness"
+import {
+  //
+  collectGrid,
+  missingNumbers,
+  PROJECT_ROOT,
+  writeXterm,
+} from "./harness"
 
 describe("pty harness 管线自证", () => {
   test("Bun.Terminal 存在（缺依赖硬 fail 前提）", () => {

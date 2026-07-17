@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { missingNumbers, runDriver } from "./harness"
+import {
+  //
+  missingNumbers,
+  runDriver,
+} from "./harness"
 
 describe("④ 切 detail 不覆盖底部日志：detail 期间日志退出后完整回放", () => {
   // 红样本：删 src/lib/tui/terminal-ui.ts:1103 的 flushReplayQueue() →
