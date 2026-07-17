@@ -654,7 +654,7 @@ describe("P0-T3 pending-first-event and stale-queue cleanup oracle", () => {
     await pending.catch(() => {})
   })
 
-  test("sendRequest abort wakes pending first event and releases legacy busy state", async () => {
+  test("sendRequest abort wakes pending first event and quarantines the connection", async () => {
     const socket = new FakeSocket()
     const connection = createUpstreamWsConnection({
       headers: { authorization: "Bearer test" },
@@ -674,6 +674,8 @@ describe("P0-T3 pending-first-event and stale-queue cleanup oracle", () => {
 
     await expect(pending).rejects.toThrow("Upstream WebSocket request aborted")
     expect(connection.isBusy).toBe(false)
+    expect(connection.isOpen).toBe(false)
+    // Defensive cleanup — onAbort already closed the socket.
     connection.close()
   })
 
@@ -697,8 +699,7 @@ describe("P0-T3 pending-first-event and stale-queue cleanup oracle", () => {
     connection.close()
   })
 
-  // RED verified 2026-07-17: the pool reuses the aborted loser and the next iterator observes resp_late_from_loser.
-  test.todo("P5 contract: aborting a loser quarantines its connection so late frames cannot poison the next same-conversation request", async () => {
+  test("P5 contract: aborting a loser quarantines its connection so late frames cannot poison the next same-conversation request", async () => {
     const sockets: Array<FakeSocket> = []
     setUpstreamWsConnectionFactoryForTests((opts) =>
       createUpstreamWsConnection({

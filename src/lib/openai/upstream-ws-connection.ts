@@ -341,7 +341,13 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
 
       const abortSignal = requestOpts?.abortSignal
       const onAbort = guardCallback(() => {
+        // The Responses WS wire has no request-local cancel frame. Releasing `busy` while
+        // keeping this socket reusable lets the old remote generation's late frames enter the
+        // next same-conversation request queue. Quarantine synchronously, fail the owned queue,
+        // then close the socket; its close event lets the pool owner remove it.
+        markUnusable()
         failRequest(new Error("Upstream WebSocket request aborted"))
+        closeUpstreamWs(socket, "Request aborted")
       }, onCallbackEscape)
 
       currentAbortCleanup = () => {
