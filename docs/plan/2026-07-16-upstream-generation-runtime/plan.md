@@ -266,6 +266,8 @@ Phase 1 后停止。确认 History V3 已合并 master；否则不得执行 P2�
 
 **RED**：per-item cancel、`rejectAll`、sleep中cancel、admission后dispatch前二次gate、429 decision不执行fetch。
 
+必须解锁并转绿 P0-T3 留下的两条 `test.todo`：queued admission 单项取消、429 backoff replay 单项取消；禁止以新测试替代后遗忘旧todo。
+
 **GREEN**：`acquire(signal)`只管排队／节流，`observe(429)`返回下一dispatch决策；旧 wrapper保留短期 adapter但同一请求只有一条活路径。
 
 **Commit**：`refactor(transport): split cancelable admission from dispatch`
@@ -283,6 +285,8 @@ Phase 1 后停止。确认 History V3 已合并 master；否则不得执行 P2�
 **HTTP/2 cases**：dispose只关闭自有stream，共享session sibling继续，H2 PING仍由pool owner管理。
 
 **WS cases**：loser mark unusable/draining；旧远端迟到帧不进入下一请求queue；pool owner close后 barrier resolve；连接绝不提前复用。
+
+必须解锁并转绿 P0-T3 留下的 WS loser queue-isolation `test.todo`；其 `nextConnection !== loser` 断言有意钉死 RFC“loser连接不回池、由pool owner关闭并新建”的路线。
 
 直接复用／扩展 P0-T3 的 WS 污染 fixture，不重写一套同源夹具。注入 pool-owner close delay，断言 delay期间 `dispose()` 与 `quiesced` 均不 resolve；close、listener detach、queue isolation、busy-state barrier完成后才resolve。
 
