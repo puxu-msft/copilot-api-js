@@ -1,4 +1,6 @@
 export { createDiagnosticEvent, diagnosticConsolaType, diagnosticValueText, projectDiagnosticArgument } from "./event"
+export type { DiagnosticBindings, DiagnosticLogger } from "./logger"
+export { createDiagnosticLogger, getDiagnosticLogger, initDiagnosticLogger, resetDiagnosticLoggerForTests } from "./logger"
 export { redactDiagnosticFields, redactDiagnosticText, redactDiagnosticValue } from "./redaction"
 export { deepFreezeDiagnostic, snapshotDiagnosticError, snapshotDiagnosticValue } from "./snapshot"
 export type { DiagnosticError, DiagnosticEvent, DiagnosticLevel, DiagnosticValue } from "./types"

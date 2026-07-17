@@ -28,7 +28,7 @@ export interface StructuredFileSinkOptions {
 }
 
 export class StructuredFileSink {
-  private readonly unsubscribe: () => void
+  private unsubscribe: (() => void) | undefined
   private readonly logger: pino.Logger
   private readonly destination: PinoRollDestination
   private readonly baseName: string
@@ -37,7 +37,7 @@ export class StructuredFileSink {
   private droppedRecords = 0
   private writesSincePrune = 0
 
-  private constructor(bus: ObservabilityBus, directory: string, baseName: string, destination: PinoRollDestination, maxFilesPerProcess: number) {
+  private constructor(directory: string, baseName: string, destination: PinoRollDestination, maxFilesPerProcess: number) {
     this.destination = destination
     this.baseName = baseName
     this.maxFilesPerProcess = maxFilesPerProcess
@@ -57,17 +57,16 @@ export class StructuredFileSink {
       this.state = "degraded"
       writeEmergencyFallback(`[StructuredFileSink] ${error.message}`)
     })
-    this.unsubscribe = bus.subscribe(
-      (event) => this.handle(event),
-      (event) => event.kind === "system.diagnostic" || event.kind === "system.request_line",
-      {
-        name: "structured-file-sink",
-      },
-    )
     void directory
   }
 
   static async create(bus: ObservabilityBus, options: StructuredFileSinkOptions): Promise<StructuredFileSink> {
+    const sink = await StructuredFileSink.createDetached(options)
+    sink.activate(bus)
+    return sink
+  }
+
+  static async createDetached(options: StructuredFileSinkOptions): Promise<StructuredFileSink> {
     fs.mkdirSync(options.directory, { recursive: true, mode: 0o700 })
     fs.chmodSync(options.directory, 0o700)
     const identity = getProcessIdentityQuiet()
@@ -90,9 +89,18 @@ export class StructuredFileSink {
       })
     }
     if (destination.file) fs.chmodSync(destination.file, 0o600)
-    const sink = new StructuredFileSink(bus, options.directory, baseName, destination, options.maxFilesPerProcess ?? 7)
+    const sink = new StructuredFileSink(options.directory, baseName, destination, options.maxFilesPerProcess ?? 7)
     sink.pruneOwnSegments()
     return sink
+  }
+
+  activate(bus: ObservabilityBus): void {
+    if (this.unsubscribe) throw new Error("StructuredFileSink already active")
+    this.unsubscribe = bus.subscribe(
+      (event) => this.handle(event),
+      (event) => event.kind === "system.diagnostic" || event.kind === "system.request_line",
+      { name: "structured-file-sink" },
+    )
   }
 
   get health(): { state: string; droppedRecords: number; activePath: string } {
@@ -102,9 +110,9 @@ export class StructuredFileSink {
   async close(): Promise<void> {
     if (this.state === "closed" || this.state === "sealing") return
     this.state = "sealing"
-    this.unsubscribe()
-    await this.flush()
-    await this.fsyncSegments()
+    this.unsubscribe?.()
+    this.unsubscribe = undefined
+    await this.durable()
     this.destination.end()
     await new Promise<void>((resolve, reject) => {
       this.destination.once("close", resolve)
@@ -116,19 +124,17 @@ export class StructuredFileSink {
   private handle(event: ObservabilityEvent): void {
     if (this.state !== "ready") return
     if (event.kind === "system.diagnostic") {
-      this.write({ recordType: "diagnostic", diagnostic: event.diagnostic }, event.diagnostic.severity, event.diagnostic.message)
+      this.writeRecord({ recordType: "diagnostic", diagnostic: event.diagnostic })
       return
     }
     if (event.kind === "system.request_line") {
-      this.write(
-        { recordType: "request-line", timeUnixMs: Date.now(), process: getProcessIdentityQuiet(), parts: event.parts },
-        "info",
-        `${event.parts.method} ${event.parts.path}`,
-      )
+      this.writeRecord({ recordType: "request-line", timeUnixMs: Date.now(), process: getProcessIdentityQuiet(), parts: event.parts })
     }
   }
 
-  private write(record: StructuredFileRecord, level: DiagnosticEvent["severity"], message: string): void {
+  writeRecord(record: StructuredFileRecord): void {
+    const level = record.recordType === "diagnostic" ? record.diagnostic.severity : "info"
+    const message = record.recordType === "diagnostic" ? record.diagnostic.message : `${record.parts.method} ${record.parts.path}`
     try {
       switch (level) {
         case "trace": {
@@ -163,6 +169,11 @@ export class StructuredFileSink {
       this.state = "degraded"
       writeEmergencyFallback(`[StructuredFileSink] ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  async durable(): Promise<void> {
+    await this.flush()
+    await this.fsyncSegments()
   }
 
   private flush(): Promise<void> {

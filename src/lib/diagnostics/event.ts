@@ -30,6 +30,8 @@ export interface DiagnosticEventInput {
   message: string
   args?: ReadonlyArray<unknown>
   fields?: Readonly<Record<string, unknown>>
+  projectedFields?: Readonly<Record<string, DiagnosticValue>>
+  correlation?: DiagnosticEvent["correlation"]
   error?: unknown
   timeUnixMs?: number
   origin: "native" | "consola-adapter"
@@ -37,6 +39,7 @@ export interface DiagnosticEventInput {
 
 function snapshotFields(input: DiagnosticEventInput): Record<string, DiagnosticValue> {
   const fields = Object.create(null) as Record<string, DiagnosticValue>
+  for (const [key, value] of Object.entries(input.projectedFields ?? {})) fields[key] = value
   for (const [key, value] of Object.entries(input.fields ?? {})) fields[key] = snapshotDiagnosticValue(value)
   if (input.args && input.args.length > 0) fields.args = snapshotDiagnosticValue(input.args)
   return redactDiagnosticFields(fields)
@@ -51,6 +54,7 @@ export function createDiagnosticEvent(input: DiagnosticEventInput): DiagnosticEv
     scope: [...(input.scope ?? [])],
     event: input.event,
     message: redactDiagnosticText(input.message),
+    ...(input.correlation !== undefined && { correlation: { ...input.correlation } }),
     process: { ...getProcessIdentityQuiet() },
     fields: snapshotFields(input),
     ...(error !== undefined && { error: redactDiagnosticError(error) }),
@@ -91,7 +95,7 @@ function toHumanValue(value: DiagnosticValue): unknown {
   if (!value || typeof value !== "object" || !("$type" in value)) return value
   switch (value.$type) {
     case "array": {
-      return value.value.map(toHumanValue)
+      return value.value.map((item) => toHumanValue(item))
     }
     case "object": {
       return Object.fromEntries(Object.entries(value.value).map(([key, item]) => [key, toHumanValue(item)]))
