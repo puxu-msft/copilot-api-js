@@ -31,6 +31,7 @@ import type { ServerInstance } from "./serve"
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import { flushAndFreezePersistence as freezeNegotiation } from "./anthropic/feature-negotiation"
 import { getRequestContextManager } from "./context/manager"
+import { shutdownStructuredFileSink } from "./diagnostics/file"
 import {
   //
   shutdownHistory,
@@ -38,7 +39,11 @@ import {
 } from "./history"
 import { flushAndFreezePersistence as freezeCalibration } from "./models/calibration/engine"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
-import { shutdownRequestTelemetry, stopTelemetryBackgroundWork } from "./request-telemetry"
+import {
+  //
+  shutdownRequestTelemetry,
+  stopTelemetryBackgroundWork,
+} from "./request-telemetry"
 import { notifyStopping } from "./restart/notify"
 import { state } from "./state"
 import { stopTokenRefresh } from "./token"
@@ -257,6 +262,7 @@ export interface ShutdownDeps {
   /** Persistence seams used by lifecycle tests. Production uses the real stores. */
   shutdownHistoryFn?: () => Promise<void>
   shutdownRequestTelemetryFn?: () => Promise<void>
+  shutdownDiagnosticLoggingFn?: () => Promise<void>
   /** Test seam for the final completion notification barrier. */
   publishStoppedFn?: () => Promise<void>
   /** Timing overrides (for testing — avoids real 20s/120s waits) */
@@ -382,6 +388,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   const getWsClientCount = deps?.getClientCountFn ?? getClientCount
   const closeHistory = deps?.shutdownHistoryFn ?? shutdownHistory
   const closeTelemetry = deps?.shutdownRequestTelemetryFn ?? shutdownRequestTelemetry
+  const closeDiagnostics = deps?.shutdownDiagnosticLoggingFn ?? shutdownStructuredFileSink
   const publishStopped =
     deps?.publishStoppedFn
     ?? (() => {
@@ -482,7 +489,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
       })
       if (phase2Result === "drained") {
         consola.info("All requests completed naturally")
-        await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, publishStopped })
+        await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
         return
       }
     } catch (error) {
@@ -504,7 +511,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
       })
       if (phase3Result === "drained") {
         consola.info("All requests completed after abort signal")
-        await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, publishStopped })
+        await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
         return
       }
     } catch (error) {
@@ -544,7 +551,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     }
   }
 
-  await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, publishStopped })
+  await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
 }
 
 interface FinalizeDeps {
@@ -552,6 +559,7 @@ interface FinalizeDeps {
   getWsClientCount: () => number
   closeHistory: () => Promise<void>
   closeTelemetry: () => Promise<void>
+  closeDiagnostics: () => Promise<void>
   publishStopped: () => Promise<void>
 }
 
@@ -582,6 +590,16 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
     consola.error("Telemetry shutdown failed:", error)
   }
 
+  // Diagnostic artifacts are part of truthful shutdown completion. Execute
+  // this barrier even after another persistence failure so those diagnostics
+  // are still given a chance to reach disk.
+  try {
+    await deps.closeDiagnostics()
+  } catch (error) {
+    failures.push(error)
+    writeEmergencyNoThrow(`[shutdown] Diagnostic logging shutdown failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
   // Release any upstream WS connections that survived the graceful path.
   // `closeAll()` is idempotent, so this is a no-op if Phase 4 already ran.
   // Without this, drain-success paths (Phase 2/3 drained) leave upstream
@@ -591,8 +609,10 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
   // Publish true completion while observer clients are still connected, then
   // close them. Unlike the old `finalized` transition, this occurs only after
   // both persistence barriers have settled.
-  shutdownPhase = "notifying"
-  await deps.publishStopped()
+  if (failures.length === 0) {
+    shutdownPhase = "notifying"
+    await deps.publishStopped()
+  }
 
   // Close any remaining observer WS clients (no-op if Step 4 already did).
   const remaining = deps.getWsClientCount()

@@ -30,6 +30,7 @@ import {
 import { snapshotWithSummary } from "./lib/context/activity-summary"
 import { initRequestContextManager } from "./lib/context/manager"
 import { cacheVSCodeVersion } from "./lib/copilot-api"
+import { attachStructuredFileSink } from "./lib/diagnostics/file"
 import {
   //
   initHistory,
@@ -285,7 +286,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Explicitly pass process.stdin so the interactive raw-mode panel gates on
   // (evaluator §3): tests that omit stdin stay on the non-interactive P0 path.
   attachTerminalUi(bus, { stdin: process.stdin })
-  attachFileSink(bus, { path: PATHS.COPILOT_LOG })
+  // Keep the secure synchronous legacy sink through boot; the per-process
+  // structured writer is attached after process identity and config are ready.
+  const detachLegacyFileSink = attachFileSink(bus, { path: PATHS.COPILOT_LOG })
   installConsolaRepublish(systemPublisher)
 
   // ===========================================================================
@@ -333,6 +336,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   const config = await applyConfigToState()
+
+  try {
+    await attachStructuredFileSink(bus, { directory: PATHS.DIAGNOSTIC_LOG_DIR })
+    detachLegacyFileSink()
+  } catch (error) {
+    // The secure legacy sink remains attached as a boot-safe fallback.
+    consola.error("Structured diagnostic file initialization failed; keeping legacy file logging:", error)
+  }
 
   // Deprecation: ANTHROPIC_API_KEY previously routed count_tokens for Claude
   // models to api.anthropic.com. That path is retired — count_tokens now

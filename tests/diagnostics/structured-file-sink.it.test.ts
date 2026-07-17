@@ -1,0 +1,53 @@
+import {
+  //
+  afterEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+import { createDiagnosticEvent } from "~/lib/diagnostics"
+import { StructuredFileSink } from "~/lib/diagnostics/file"
+import { createBus } from "~/lib/observability"
+
+const dirs: Array<string> = []
+afterEach(() => {
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+describe("StructuredFileSink", () => {
+  test("writes per-process parseable NDJSON with mutually-exclusive record payloads", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostic-file-"))
+    dirs.push(directory)
+    const bus = createBus()
+    const sink = await StructuredFileSink.create(bus, { directory, maxSizeBytes: 1024 * 1024 })
+    bus.scope("system").publish({
+      kind: "system.diagnostic",
+      diagnostic: createDiagnosticEvent({ level: "warn", event: "test.record", message: "hello", fields: { count: 1n }, origin: "native" }),
+    })
+    bus.scope("system").publish({
+      kind: "system.request_line",
+      parts: { prefix: "[ OK ]", time: "12:00:00", method: "POST", path: "/v1/messages" },
+    })
+    await sink.close()
+
+    const files = fs.readdirSync(directory).filter((name) => name.endsWith(".ndjson"))
+    expect(files.length).toBeGreaterThan(0)
+    const records = files.flatMap((name) =>
+      fs
+        .readFileSync(path.join(directory, name), "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>),
+    )
+    expect(records).toHaveLength(2)
+    expect(records.every((record) => Object.keys(record).filter((key) => key === "record").length === 1)).toBe(true)
+    expect(records.map((record) => (record.record as { recordType: string }).recordType).sort()).toEqual(["diagnostic", "request-line"])
+    expect(fs.statSync(directory).mode & 0o777).toBe(0o700)
+    for (const file of files) expect(fs.statSync(path.join(directory, file)).mode & 0o777).toBe(0o600)
+  })
+})
