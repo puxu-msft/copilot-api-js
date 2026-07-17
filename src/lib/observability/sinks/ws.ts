@@ -212,6 +212,9 @@ export class WsSink {
         notifyShutdownPhaseChanged({ phase: "finalized", previousPhase: null, needsFlush: false })
         return
       }
+      case "system.shutdown_failed": {
+        return broadcastAndFlush({ type: "shutdown_failed", data: { errors: event.errors }, timestamp: Date.now() }, "status").then(() => {})
+      }
       default: {
         // Exhaustiveness check.
         assertNever(event)

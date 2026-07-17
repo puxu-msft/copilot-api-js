@@ -255,6 +255,7 @@ export type ObservabilityEvent =
   | { kind: "system.rate_limit_state"; mode: RateLimitMode; queuedCount: number; detail?: Record<string, unknown> }
   | { kind: "system.shutdown_phase_changed"; phase: ShutdownPhase; previousPhase: ShutdownPhase | null; needsFlush: boolean }
   | { kind: "system.shutdown_completed" }
+  | { kind: "system.shutdown_failed"; errors: ReadonlyArray<{ name: string; message: string }> }
 
   // ── Synthetic request-style log line (out-of-observability helpers) ──
   //    A pre-built request-line projection for routes that are deliberately

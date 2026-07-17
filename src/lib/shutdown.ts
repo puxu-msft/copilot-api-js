@@ -31,6 +31,7 @@ import type { ServerInstance } from "./serve"
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import { flushAndFreezePersistence as freezeNegotiation } from "./anthropic/feature-negotiation"
 import { getRequestContextManager } from "./context/manager"
+import { getDiagnosticLogger } from "./diagnostics"
 import { shutdownStructuredFileSink } from "./diagnostics/file"
 import {
   //
@@ -401,6 +402,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
           previousPhase,
           needsFlush: true,
         })
+        .then(() => _shutdownPublisher?.publishAndFlush({ kind: "system.shutdown_completed" }))
         .then(() => undefined)
     })
 
@@ -590,6 +592,12 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
     consola.error("Telemetry shutdown failed:", error)
   }
 
+  // Record the pre-close verdict while the diagnostic writer is still live.
+  // This does not claim the diagnostic barrier itself succeeded; the sink adds
+  // its own sealing marker and only returns after write completion + fsync.
+  if (failures.length === 0) getDiagnosticLogger().info("shutdown.persistence-ready", "History and telemetry barriers completed")
+  else getDiagnosticLogger().error("shutdown.persistence-failed", "One or more persistence barriers failed", { failureCount: failures.length }, failures[0])
+
   // Diagnostic artifacts are part of truthful shutdown completion. Execute
   // this barrier even after another persistence failure so those diagnostics
   // are still given a chance to reach disk.
@@ -606,13 +614,20 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
   // sockets dangling until process GC — wasting GHC-side connection quota.
   peekUpstreamWsManager()?.closeAll()
 
-  // Publish true completion while observer clients are still connected, then
-  // close them. Unlike the old `finalized` transition, this occurs only after
-  // both persistence barriers have settled.
-  if (failures.length === 0) {
-    shutdownPhase = "notifying"
-    await deps.publishStopped()
-  }
+  // Publish the truthful terminal outcome while observer clients are still
+  // connected. Diagnostic close has already returned, so completed means every
+  // durability barrier succeeded. Failure is a distinct event, never a
+  // finalized-then-rollback sequence.
+  shutdownPhase = "notifying"
+  if (failures.length === 0) await deps.publishStopped()
+  else if (_shutdownPublisher)
+    await _shutdownPublisher.publishAndFlush({
+      kind: "system.shutdown_failed",
+      errors: failures.map((error) => ({
+        name: error instanceof Error ? error.name : "Error",
+        message: error instanceof Error ? error.message : String(error),
+      })),
+    })
 
   // Close any remaining observer WS clients (no-op if Step 4 already did).
   const remaining = deps.getWsClientCount()

@@ -184,6 +184,10 @@ export class TerminalUi {
       case "system.shutdown_completed": {
         return
       }
+      case "system.shutdown_failed": {
+        this.view.printLine(`[shutdown] failed: ${event.errors.map((error) => error.message).join("; ")}`)
+        return
+      }
       default: {
         assertNever(event)
       }
