@@ -14,16 +14,9 @@
 
 import consola from "consola"
 
-import type { SseEventRecord } from "~/lib/history"
-
 import { classifyError } from "~/lib/error"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
-import {
-  //
-  readOrigin,
-  tagFrameRewritten,
-} from "~/lib/pipeline/hooks/origin"
 import { getShutdownSignal } from "~/lib/shutdown"
 import {
   //
@@ -55,7 +48,6 @@ import type {
   RunBufferedOpts,
   RunResponseOpts,
   Transport,
-  UpstreamFrame,
   UpstreamStream,
 } from "./types"
 
@@ -67,21 +59,15 @@ import {
 } from "./cell-assembly"
 import {
   //
-  isFirstUpstreamContent,
-  isUpstreamContentFrame,
-} from "./request-timing"
-import {
-  //
   assembleRequestRewrites,
   assembleResponseRewrites,
   BUILTIN_REQUEST_REWRITES,
   BUILTIN_RESPONSE_REWRITES,
-  type FrameAction,
   type RequestRewrite,
   type ResponseRewrite,
-  type RewriteState,
 } from "./rewrite-registry"
 import { decideRoute } from "./router"
+import { createResponseProcessor } from "./stream/response-processor"
 /**
  * Everything the driver needs to orchestrate one format. The route layer (P2.3+)
  * selects the codec by prefix and constructs a driver per request.
@@ -441,8 +427,7 @@ async function runExchange(
     current.ctx.transition("executing")
     try {
       const hook = getUpstreamHook()
-      const upstream =
-        hook?.exchange ? await hook.exchange(wire, current, () => deps.transport.send(wire, current)) : await deps.transport.send(wire, current)
+      const upstream = hook?.exchange ? await hook.exchange(wire, current, () => deps.transport.send(wire, current)) : await deps.transport.send(wire, current)
       // 首包埋点（spec 2026-07-14 §3.2）：上游响应头到达（每 attempt 各记自己的，绝对 epoch）。
       {
         current.ctx.setAttemptTimingEpoch?.("upstreamHeadersAt", Date.now(), "once")
@@ -553,174 +538,11 @@ async function runExchange(
 // Response side (S5→S7)
 // ============================================================================
 
-/** S5→S7: rewrite-out (per-frame chain + flush) → renderResponse → yield. */
-async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: RequestEnvelope, opts?: RunResponseOpts): AsyncIterable<ClientFrame> {
-  // S5 — Rewrite-out: assemble the response-rewrite chain (per-request state, seeded from env).
-  const rewrites = assembleResponseRewrites(env, migratedCell(env)?.responseRewrites(env) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES)
-  const states: Array<RewriteState> = rewrites.map((r) => r.createState?.(env) ?? {})
-
-  // S4-exit sampling (P3.2b, envelope-driver.md §4): record each upstream-ORIGINAL
-  // frame (raw verbatim) BEFORE the rewrite/render chain. The `outboundResponse`
-  // track must capture the upstream bytes PRE-translation — CC via-responses /
-  // Responses fallback `renderResponse` is NOT identity (only Anthropic/direct
-  // is), so the yield point is the wrong place for the upstream track. Universal
-  // across every format that drives runResponse (CC / Responses / Gemini / Anthropic
-  // HTTP + client WS), closing the "sseEvents recorded only on Anthropic" gap (§4
-  // "关键改进", D8 原始记录完整性). `frame.event` is the SSE event type — for
-  // Anthropic it equals the `parsed.type` the legacy pump recorded (Anthropic always
-  // sends an event line), so this stays byte-equivalent there; the fallback only
-  // applies to formats whose chunks carry no event line (CC).
-  //
-  // Pushed per-frame and aliased onto ctx on the first frame (setSseEvents stores
-  // the array reference): a consumer that breaks early (the Anthropic pump breaks
-  // on [DONE]/error) abandons this generator, so code AFTER the loop never runs —
-  // but the aliased array already holds every frame consumed up to the break.
-  const upstreamSse: Array<SseEventRecord> = []
-  const streamStartMs = Date.now()
-  // T2 (dry-run): the upstream-frame ordinal threaded to `onRewriteAction`. Increments
-  // per upstream frame iterated (the sampler closure reads the live value).
-  let frameIndex = 0
-  const onRewriteAction = opts?.onRewriteAction
-  const sampleAction = onRewriteAction ? (name: string, action: FrameAction) => onRewriteAction(name, frameIndex, action) : undefined
-  const bufferedInputsByRewrite = new Map<string, Array<UpstreamFrame>>()
-  const captureRewrite = (name: string, input: UpstreamFrame, action: FrameAction): void => {
-    const transformId = `rewrite-out:${name}`
-    if (action.kind === "buffer") {
-      const buffered = bufferedInputsByRewrite.get(name) ?? []
-      buffered.push(input)
-      bufferedInputsByRewrite.set(name, buffered)
-      env.ctx.captureGenerationFrameAction?.([input], [], { stage: "rewrite-out", transformId, action: "buffer" })
-      return
-    }
-    const buffered = bufferedInputsByRewrite.get(name) ?? []
-    bufferedInputsByRewrite.delete(name)
-    const inputs = [...buffered, input]
-    env.ctx.captureGenerationFrameAction?.(inputs, action.kind === "emit" ? action.frames : [], {
-      stage: "rewrite-out",
-      transformId,
-      action: action.kind,
-      forceDerived: action.kind === "emit" && action.frames.some((output) => output !== input || readSyntheticKind(output) !== undefined),
-    })
-  }
-  const captureFlush = (name: string, outputs: ReadonlyArray<UpstreamFrame>): void => {
-    const buffered = bufferedInputsByRewrite.get(name) ?? []
-    bufferedInputsByRewrite.delete(name)
-    env.ctx.captureGenerationFrameAction?.(buffered, outputs, {
-      stage: "rewrite-out",
-      transformId: `rewrite-out:${name}`,
-      action: "flush",
-      forceDerived: outputs.length > 0,
-    })
-  }
-
-  // Task 2.2: the hook-mock/hook-replay origin tag (if the upstream stream was tagged via
-  // `tagStream`) is constant for the WHOLE stream — read it ONCE outside the loop rather
-  // than per-frame (spec LOW-2).
-  const origin = readOrigin(upstream)
-
-  try {
-    for await (const frame of upstream.frames) {
-      // Skip the `[DONE]` sentinel — it's a gateway-injected transport terminator
-      // (OpenAI convention, NOT part of the Anthropic protocol; anthropic/stream.ts:104),
-      // not a content frame. The accumulators skip it and the legacy Anthropic pump
-      // broke before recording it, so excluding it keeps the upstream-original track to
-      // real content frames (no mislabeled `type:"message"` sentinel) + matches the
-      // pre-P3.2b Anthropic baseline. Forwarded never carried it either (pump breaks).
-      if (frame.data !== "[DONE]") {
-        const upstreamRecord: SseEventRecord = {
-          offsetMs: Date.now() - streamStartMs,
-          type: frame.event ?? (frame.data ? "message" : "keepalive"),
-          raw: frame.data ?? "",
-          ...(origin && { synthetic: origin }),
-        }
-        upstreamSse.push(upstreamRecord)
-        env.ctx.captureUpstreamGenerationFrame?.(frame, upstreamRecord)
-        if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
-        // 首包埋点（spec 2026-07-14 §3.2）：上游 3 刻记到当前 attempt（绝对 epoch）。单点采样在
-        // driver loop-top（每格式 raw 帧无条件流经此，Responses direct 也在此），谓词按 targetEndpoint。
-        // message_start 为 Anthropic-format 专有帧，非-Anthropic 上游此刻恒 undefined（符合预期）。
-        {
-          const now = Date.now()
-          if (frame.event === "message_start") env.ctx.setAttemptTimingEpoch?.("upstreamMessageStartAt", now, "once")
-          if (isFirstUpstreamContent(frame, env.targetEndpoint)) env.ctx.setAttemptTimingEpoch?.("upstreamFirstTokenAt", now, "once")
-          if (isUpstreamContentFrame(frame, env.targetEndpoint)) env.ctx.setAttemptTimingEpoch?.("upstreamLastTokenAt", now, "latest")
-        }
-        // Hand the raw upstream frame to the handler's upstream-side work (accumulate
-        // → outboundResponse, repetition, progress, diagnostics) BEFORE the rewrite
-        // chain (RFC §4.A1 — keeps those on the upstream-original, not the rewritten
-        // frames the loop yields below). Same skip-[DONE] condition as upstreamSse.
-        opts?.onUpstreamFrame?.(frame)
-      }
-      // Hook point: upstream.inbound (was rewriteUpstreamFrame) — per-frame rewrite AFTER
-      // upstream-original sampling, so the upstream track keeps pre-hook real frames
-      // (spec §3.2/§3.4 H2 / RFC §3). undefined → drop.
-      const hook = getUpstreamHook()
-      let effFrame: UpstreamFrame | undefined = frame
-      if (hook?.upstream?.inbound && frame.data !== "[DONE]") {
-        const rewritten = hook.upstream.inbound(frame, env)
-        // Task 2.3 (spec §3.4 decision 1/§9, plan-2 Task 2.3): a GENUINELY changed frame (a
-        // NEW object — `undefined` means dropped, the SAME reference means the hook chose not
-        // to rewrite this one) is tagged so the sink can mark its forwarded-track sample
-        // `synthetic:"hook-rewrite"` — see hooks/origin.ts (`tagFrameRewritten`) for exactly
-        // which downstream shapes preserve vs. lose the tag (passthrough-leg codecs + a
-        // spreading `onRenderedFrame` preserve it; a translate-leg codec or a
-        // fresh-literal-reconstructing `onRenderedFrame` — e.g. Responses' restoreAndAccumulate
-        // — does not; a documented, accepted gap, not a defect of this mechanism).
-        effFrame = rewritten !== undefined && rewritten !== frame ? tagFrameRewritten(rewritten) : rewritten
-        if (effFrame === undefined) {
-          env.ctx.captureGenerationFrameAction?.([frame], [], {
-            stage: "rewrite-upstream-hook",
-            transformId: "hook:rewrite-upstream-frame",
-            action: "drop",
-          })
-        } else if (effFrame !== frame) {
-          env.ctx.captureGenerationFrameTransform?.(frame, effFrame, {
-            stage: "rewrite-upstream-hook",
-            transformId: "hook:rewrite-upstream-frame",
-            forceDerived: true,
-          })
-        }
-      }
-      // Guard the rewrite chain instead of `continue` — so `frameIndex++` below ALWAYS
-      // runs (评审 LOW-1: `continue` would skip it, corrupting dry-run frame ordinals).
-      // A dropped frame (undefined) just skips passThrough; frameIndex still advances.
-      if (effFrame !== undefined) {
-        // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
-        for (const rewritten of passThrough([effFrame], rewrites, states, 0, sampleAction, captureRewrite)) {
-          // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.
-          // skipRender (dry-run T1) yields the S5 frame verbatim — the consumer wants the
-          // rewrite-chain output BEFORE the S6 render translation.
-          if (opts?.skipRender) yield rewritten
-          else yield* renderFrames(deps, rewritten, env)
-        }
-      }
-
-      frameIndex++
-    }
-  } finally {
-    // S5 flush: drain buffered frames at stream end. In `finally` (RFC §4.0.5, H3
-    // pre-step) so `flushChain` RUNS on every generator exit — normal completion, an
-    // upstream throw, AND a consumer-triggered `.return()` (`break`) / `.throw()`.
-    //
-    // Frame DELIVERY differs by exit, though (ECMAScript IteratorClose):
-    //   - normal completion / upstream throw → the `yield*` below delivers flushed
-    //     frames to the consumer (on a throw, BEFORE the error re-propagates — the
-    //     generator unwinds through finally), so nothing is dropped.
-    //   - consumer `break` → `.return()` → the finally still RUNS (buffer state /
-    //     side effects clear), but IteratorClose DISCARDS values yielded here, so a
-    //     breaking consumer does NOT receive them.
-    //
-    // With `BUILTIN_RESPONSE_REWRITES` empty this is a no-op (flushChain → []), so it is
-    // behavior-preserving today — the live Anthropic pump always `break`s on
-    // [DONE]/error and is unaffected. Phase 4 (migrating a buffering decode/recover
-    // rewrite into the registry) MUST NOT rely on this finally to deliver flushed
-    // frames to an early-breaking consumer — that path needs an explicit flush
-    // before the break (cf. the handler's post-loop flush, handler-v4.ts:655-663).
-    for (const flushed of flushChain(rewrites, states, captureRewrite, captureFlush)) {
-      if (opts?.skipRender) yield flushed
-      else yield* renderFrames(deps, flushed, env)
-    }
-  }
+/** S5→S7: construct and return the branch-local processor iterable without an extra async-generator delegation layer. */
+function runResponse(deps: DriverDeps, upstream: UpstreamStream, env: RequestEnvelope, opts?: RunResponseOpts): AsyncIterable<ClientFrame> {
+  const responseRewrites = migratedCell(env)?.responseRewrites(env) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
+  const processor = createResponseProcessor({ env, responseRewrites, renderResponse: (frame, requestEnv) => deps.codec.renderResponse(frame, requestEnv) })
+  return processor.stream(upstream, opts)
 }
 
 /**
@@ -1116,95 +938,4 @@ function runResponseWhole(deps: DriverDeps, response: unknown, env: RequestEnvel
     if (rewrite.transformWhole) current = rewrite.transformWhole(current, env)
   }
   return current
-}
-
-/** S6 + S7: render one upstream frame to client frame(s) and surface them. */
-function* renderFrames(deps: DriverDeps, frame: UpstreamFrame, env: RequestEnvelope): Generator<ClientFrame> {
-  const rendered = deps.codec.renderResponse(frame, env)
-  const frames = Array.isArray(rendered) ? rendered : [rendered]
-  // Hook point: client.outbound (RFC §5) — per rendered client frame, before the sink write. Covers
-  // the render-produced frames; sink-layer synthetic/heartbeat frames don't flow through here (the
-  // documented §9 coverage gap — a full sink-egress unification is a deferred-backlog enhancement).
-  const clientOutbound = getUpstreamHook()?.client?.outbound
-  for (const out of frames) {
-    env.ctx.captureGenerationFrameTransform?.(frame, out, {
-      stage: "render",
-      transformId: `render:${env.clientFormat}`,
-      forceDerived: out !== frame || readSyntheticKind(out) !== undefined,
-    })
-    // Forwarded-frame (`inboundResponse`) sampling stays handler-side (P3.2b /
-    // Option B): the TRUE client bytes are produced where the handler transforms
-    // (tool-name restore, fix-stream-ids, CC→Gemini whole-stream translation) and
-    // injects (verbose marker, via-responses [DONE], idle heartbeat). Two of those
-    // — Gemini's whole-stream translator (P2.5-D1) and Anthropic's timer-driven
-    // heartbeat (P1.5-OQ1) — do not flow through this yield point and cannot be
-    // expressed as per-frame rewrites, so the driver cannot own forwarded sampling
-    // without reintroducing the byte-critical risk those decisions deferred.
-    if (clientOutbound) {
-      const hooked = clientOutbound(out, env)
-      if (hooked === undefined) continue // hook dropped this client frame
-      yield hooked
-      continue
-    }
-    yield out
-  }
-}
-
-/**
- * Thread frames through `rewrites[startIdx..]` in order. Each rewrite's
- * `transform` may emit 0+ frames (fed to the next rewrite), suppress, or buffer
- * (held in its own state, drained at flush). Returns the frames surviving the
- * whole sub-chain.
- */
-function passThrough(
-  frames: Array<UpstreamFrame>,
-  rewrites: ReadonlyArray<ResponseRewrite>,
-  states: Array<RewriteState>,
-  startIdx: number,
-  sample?: (rewriteName: string, action: FrameAction) => void,
-  capture?: (rewriteName: string, input: UpstreamFrame, action: FrameAction) => void,
-): Array<UpstreamFrame> {
-  let current = frames
-  for (let i = startIdx; i < rewrites.length; i++) {
-    const next: Array<UpstreamFrame> = []
-    for (const frame of current) {
-      const action = rewrites[i].transform(frame, states[i])
-      sample?.(rewrites[i].name, action)
-      capture?.(rewrites[i].name, frame, action)
-      if (action.kind === "emit") next.push(...action.frames)
-      // suppress / buffer → emit nothing now (buffer is held in the rewrite's state)
-    }
-    current = next
-  }
-  return current
-}
-
-/**
- * Drain each rewrite's flush in ASCENDING order; each flushed frame threads the
- * rewrites AFTER it (`passThrough` startIdx = `i + 1`). This is a deterministic
- * multi-buffer cascade (§4.A1 — resolves the P2.1-M2 "single buffer" assumption),
- * locked by tests/pipeline/response-rewrite-contract.unit.test.ts:
- *
- *   for i in 0..n: rewrites[i].flush() → passThrough(flushed, rewrites, states, i+1)
- *
- * So an earlier buffer's flushed frames are re-threaded through every later rewrite
- * — including a later BUFFERING rewrite, which may itself buffer them and release
- * them at ITS flush turn. Concretely for recover-tool-call(100) + tool-input-decode(200):
- * recover.flush → decode.transform (may buffer) → … → decode.flush drains them
- * (= handler-v4.ts:655-663's two-pass stream-end flush). Ordering is fully defined:
- * frames released by rewrite[i] always precede frames released by rewrite[j] for j > i.
- */
-function flushChain(
-  rewrites: ReadonlyArray<ResponseRewrite>,
-  states: Array<RewriteState>,
-  capture?: (rewriteName: string, input: UpstreamFrame, action: FrameAction) => void,
-  captureFlush?: (rewriteName: string, outputs: ReadonlyArray<UpstreamFrame>) => void,
-): Array<UpstreamFrame> {
-  const out: Array<UpstreamFrame> = []
-  for (let i = 0; i < rewrites.length; i++) {
-    const flushed = rewrites[i].flush?.(states[i]) ?? []
-    if (rewrites[i].flush !== undefined) captureFlush?.(rewrites[i].name, flushed)
-    if (flushed.length > 0) out.push(...passThrough(flushed, rewrites, states, i + 1, undefined, capture))
-  }
-  return out
 }
