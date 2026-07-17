@@ -20,7 +20,9 @@ import {
   drainV3Writer,
   enqueueModelOperation,
   getV3Operation,
+  getV3StoredOperation,
   getV3StoreStatus,
+  ensureV3Schema,
   listV3Operations,
   prepareModelOperation,
   recoverV3Journal,
@@ -52,11 +54,73 @@ afterEach(async () => {
 })
 
 describe("History V3 semantic store", () => {
+  test("accepts JSON-compatible shared references instead of misclassifying them as cycles", () => {
+    const shared = { type: "text", text: "same block" }
+    const recorder = createModelOperationRecorder({ identity: { operationId: "shared-dag", kind: "generation", createdAt: 100 } })
+    const payload = recorder.registerPayload({ content: [shared], mirrored: shared }, { origin: { stage: "ingress", track: "client" } })
+    recorder.recordIngress({ request: { payload } })
+    const operation = recorder.commitTerminal({ outcome: "completed" })
+
+    const prepared = prepareModelOperation(operation)
+    commitPreparedOperation(getDatabase(), prepared)
+    expect(getV3Operation("shared-dag")?.arena.payloads[0]?.value).toEqual({
+      content: [{ type: "text", text: "same block" }],
+      mirrored: { type: "text", text: "same block" },
+    })
+  })
+
+  test("migrates legacy operation rows to an explicitly marked storage-commit upper bound", () => {
+    closeDatabase()
+    openInMemoryDatabase()
+    const db = getDatabase()
+    db.exec(`
+      CREATE TABLE v3_operations (
+        operation_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL,
+        digest TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        terminal_sequence INTEGER NOT NULL,
+        manifest_gz BLOB NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        committed_at INTEGER NOT NULL
+      );
+    `)
+    db.prepare("INSERT INTO v3_operations VALUES(?,?,?,?,?,?,?,?,?)").run("legacy", 1, "digest", "generation", 1_000, 4, new Uint8Array([1]), 0, 9_000)
+
+    ensureV3Schema(db)
+    ensureV3Schema(db)
+
+    expect(db.prepare("SELECT ended_at,timing_source FROM v3_operations WHERE operation_id='legacy'").get()).toEqual({
+      ended_at: 9_000,
+      timing_source: "storage-commit-upper-bound",
+    })
+    db.prepare("UPDATE v3_operations SET ended_at=NULL WHERE operation_id='legacy'").run()
+    ensureV3Schema(db)
+    expect(db.prepare("SELECT ended_at FROM v3_operations WHERE operation_id='legacy'").get()).toEqual({ ended_at: null })
+  })
+
+  test("keeps newly imported records without canonical terminal time explicitly unavailable", () => {
+    const current = terminalRecord("legacy-terminal-time")
+    // Intentionally model an already-persisted JSON record from before canonical event clocks.
+    // eslint-disable-next-line unicorn/prefer-structured-clone
+    const legacy = JSON.parse(JSON.stringify(current)) as typeof current
+    if (legacy.terminal) delete (legacy.terminal as { occurredAt?: number }).occurredAt
+    const prepared = prepareModelOperation(legacy)
+    commitPreparedOperation(getDatabase(), prepared)
+
+    const stored = getV3StoredOperation("legacy-terminal-time")!
+    expect(stored.timingSource).toBe("unavailable")
+    expect(stored.endedAt).toBeUndefined()
+  })
+
   test("round-trips the canonical record and keeps unknown extensions", async () => {
     const record = terminalRecord("op-roundtrip")
     await enqueueModelOperation(record)
     await drainV3Writer()
 
+    // Persistence-neutral JSON wire oracle: stored records are JSON semantic documents.
+    // eslint-disable-next-line unicorn/prefer-structured-clone
     expect(getV3Operation(record.identity.operationId)).toEqual(JSON.parse(JSON.stringify(record)))
     expect(listV3Operations("generation").map((item) => item.identity.operationId)).toEqual(["op-roundtrip"])
     expect(getV3StoreStatus()).toMatchObject({ persistedOperations: 1, failedOperations: 0, pendingOperations: 0 })

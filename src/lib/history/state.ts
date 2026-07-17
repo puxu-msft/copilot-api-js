@@ -31,8 +31,8 @@ import {
   //
   drainV3Writer,
   enqueueModelOperation,
+  ensureV3Schema,
   recoverV3Journal,
-  V3_SCHEMA_SQL,
 } from "./v3/store"
 import {
   //
@@ -95,7 +95,7 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   // separate V3 artifact, so opening History never mutates legacy history.db.
   const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
   openDatabase(dbPath)
-  getDatabase().exec(V3_SCHEMA_SQL)
+  ensureV3Schema(getDatabase())
   recoverV3Journal(getDatabase())
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = subscribeModelOperationTerminals(enqueueModelOperation)

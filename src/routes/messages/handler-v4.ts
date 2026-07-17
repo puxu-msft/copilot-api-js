@@ -862,7 +862,7 @@ function makeAnchoredSseSink(
     // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧 → ctx firstReal（透传给 makeSseSink）。
     isRealContentFrame?: (frame: ClientFrame) => boolean
     onFirstRealContent?: () => void
-    onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: string) => void
+    onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
     onDeliveryFinalized?: () => void
   },
 ): { sink: ClientSink; anchorState: AnchorState; anchorHooks: AnchorHooks | undefined } {

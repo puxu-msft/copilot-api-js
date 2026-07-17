@@ -36,13 +36,13 @@ import type {
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { registerResponseSession } from "~/lib/openai/response-session-store"
 import {
   //
   ENDPOINT,
 } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
+import { registerResponseSession } from "~/lib/openai/response-session-store"
 import {
   //
   accumulateResponsesStreamEvent,
@@ -150,7 +150,7 @@ function sendErrorAndClose(
   forwarded?: {
     events: Array<SseEventRecord>
     streamStartMs: number
-    captureGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: string) => void
+    captureGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
   },
   deliveryCtx?: RequestContext,
 ): void {

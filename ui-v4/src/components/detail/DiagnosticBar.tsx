@@ -32,11 +32,24 @@ export function DiagnosticBar({ entry }: { entry: HistoryEntry }) {
   // The proxy failure verdict (unrepairable tool input, refusal, truncation, upstream error …) —
   // surfaced here so it's visible on EVERY detail tab, not buried in the Response tab's leg sections.
   const verdict = entry._index?.derived?.failureReason ?? resolveResponseError(entry)
+  const timingSource = entry.timing?.operation?.source
+  const approximateDuration = timingSource === "storage-commit-upper-bound" || timingSource === "terminal-log-rounded"
+  let approximateDurationTitle: string | undefined
+  if (timingSource === "storage-commit-upper-bound") approximateDurationTitle = "历史记录仅保留持久化提交时间；该时长是真实终态时长的上界"
+  else if (timingSource === "terminal-log-rounded") approximateDurationTitle = "该时长从终端舍入日志恢复，精度受日志显示限制"
   return (
     <div className="mono flex flex-wrap items-center gap-2 border-b border-[var(--surface-border)] bg-[var(--surface-diagnostic)] px-3 py-1.5 text-[13px] text-[var(--content-value)]">
       <span style={{ color: SIGNAL_COLOR[signal] }}>{entry.state ?? "—"}</span>
       <span className="text-[var(--content-accent)]">{entry.endpoint}</span>
-      {entry.durationMs === undefined ? null : <span className="text-[var(--content-dim)]">{formatDuration(entry.durationMs)}</span>}
+      {entry.durationMs === undefined ? null : (
+        <span
+          className="text-[var(--content-dim)]"
+          title={approximateDurationTitle}
+        >
+          {approximateDuration ? "≈" : ""}
+          {formatDuration(entry.durationMs)}
+        </span>
+      )}
       {attemptCount === undefined ? null : <span className="text-[var(--content-dim)]">{attemptCount} att</span>}
       {tokens ?
         <span className="text-[var(--content-dim)]">{formatUsageTokens(tokens)} tok</span>

@@ -18,6 +18,7 @@ import type {
   SendMessageNormalizationDiag,
 } from "~/lib/anthropic/decode-tool-input-core"
 import type { DestackStats } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import type { OperationSyntheticKind } from "~/lib/context/model-operation-record"
 import type { ProcessIdentity } from "~/lib/process-identity"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
@@ -155,7 +156,10 @@ export interface PreprocessInfo {
  * "keepalive" for frames without a parseable JSON body.
  */
 export interface SseEventRecord {
+  /** Relative frame offset. When `offsetSource === "unavailable"`, zero is a compatibility sentinel and has no timing meaning. */
   offsetMs: number
+  /** V3 provenance: omitted on legacy V2 rows, whose captured offsets remain authoritative. */
+  offsetSource?: "observed" | "unavailable"
   type: string
   raw: string
   /**
@@ -192,16 +196,7 @@ export interface SseEventRecord {
    *     (a whole fabricated success turn injected in lieu of the upstream error); the upstream track
    *     keeps the real error. (Phase 4 wiring.)
    */
-  synthetic?:
-    | "keepalive"
-    | "anchor"
-    | "synthetic-message-start"
-    | "hook-mock"
-    | "hook-rewrite"
-    | "hook-replay"
-    | "refusal-recovery"
-    | "error-shaping-canonical"
-    | "error-shaping-auq"
+  synthetic?: OperationSyntheticKind
 }
 
 /**
@@ -524,6 +519,7 @@ export interface HistoryEntry {
     index: number
     strategy?: string
     durationMs: number
+    timing?: { source: "canonical" | "upstream-latency" | "next-attempt-upper-bound" | "operation-upper-bound" | "unavailable" }
     transport?: RequestTransport
     error?: string
     /** New capture (RFC §4): attempt wall-clock start; producer wires in P4. */
@@ -556,7 +552,10 @@ export interface HistoryEntry {
     upstreamLastTokenAt?: number
   }>
   /** 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻，offset ms 相对 started_at。落 entry 列。 */
-  timing?: { client?: { streamOpenMs?: number; firstRealMs?: number; bufferHoldStartMs?: number } }
+  timing?: {
+    client?: { streamOpenMs?: number; firstRealMs?: number; bufferHoldStartMs?: number }
+    operation?: { source: "canonical" | "storage-commit-upper-bound" | "terminal-log-rounded" | "unavailable" }
+  }
 }
 
 export interface HistoryState {
@@ -691,6 +690,7 @@ export interface EntrySummary {
     cache_creation_input_tokens?: number
   }
   durationMs?: number
+  timing?: { operation?: { source: "canonical" | "storage-commit-upper-bound" | "terminal-log-rounded" | "unavailable" } }
   /** Wire byte size of the upstream request (↑). Derived at serialize time; column-backed. */
   requestBytes?: number
   /** Byte size of the upstream response (↓). Derived at serialize time; column-backed. */

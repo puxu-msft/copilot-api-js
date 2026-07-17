@@ -28,10 +28,10 @@ import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 
 import { getErrorMessage } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
+import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
+import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
 import { normalizeModelId } from "~/lib/models/resolver"
 import { getProcessIdentity } from "~/lib/process-identity"
-import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
-import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
 import { state as appState } from "~/lib/state"
 
 import type {
@@ -39,6 +39,7 @@ import type {
   AttemptHandle,
   FrameNodeHandle,
   ModelOperationRecord,
+  OperationFrameObservation,
   OperationKind,
   PayloadNodeHandle,
 } from "./model-operation-record"
@@ -353,10 +354,12 @@ export function createRequestContext(opts: {
     rawResponsePayload?: PayloadNodeHandle
     sourceBodyPayload?: PayloadNodeHandle
     upstreamFrames: Array<FrameNodeHandle>
+    upstreamFrameObservations: Array<OperationFrameObservation>
     settled: boolean
   }
   const generationAttempts: Array<GenerationAttemptCapture> = []
   const clientFrameHandles: Array<FrameNodeHandle> = []
+  const clientFrameObservations: Array<OperationFrameObservation> = []
 
   const currentGenerationAttempt = (): GenerationAttemptCapture | undefined => generationAttempts.at(-1)
 
@@ -551,6 +554,7 @@ export function createRequestContext(opts: {
         upstreamResponse: {
           ...(primaryResponsePayload !== undefined && { payload: primaryResponsePayload }),
           frames: attempt.upstreamFrames,
+          frameObservations: attempt.upstreamFrameObservations,
           ...(responseStatus !== undefined && { status: responseStatus }),
           ...(v2.responseHeaders !== undefined && { headers: orderedHeaders(v2.responseHeaders) }),
           ...(_httpHeaders?.outboundResponseTrailers !== undefined && { trailers: orderedHeaders(_httpHeaders.outboundResponseTrailers) }),
@@ -630,6 +634,7 @@ export function createRequestContext(opts: {
       upstream: {
         ...(primaryUpstreamPayload !== undefined && { payload: primaryUpstreamPayload }),
         frames: finalAttempt?.upstreamFrames ?? [],
+        frameObservations: finalAttempt?.upstreamFrameObservations ?? [],
         ...(_response?.status !== undefined && { status: _response.status }),
         ...(_httpHeaders?.outboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.outboundResponse) }),
         ...(_httpHeaders?.outboundResponseTrailers !== undefined && { trailers: orderedHeaders(_httpHeaders.outboundResponseTrailers) }),
@@ -639,6 +644,7 @@ export function createRequestContext(opts: {
       client: {
         ...(clientPayloadHandle !== undefined && { payload: clientPayloadHandle }),
         frames: clientFrameHandles,
+        frameObservations: clientFrameObservations,
         ...(_clientResponseStatus !== undefined && { status: _clientResponseStatus }),
         ...(_httpHeaders?.inboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.inboundResponse) }),
         rawCapture: semanticCaptureGap,
@@ -1001,7 +1007,7 @@ export function createRequestContext(opts: {
             startedAt: attempt.startTime,
           },
         })
-        generationAttempts.push({ handle, upstreamFrames: [], settled: false })
+        generationAttempts.push({ handle, upstreamFrames: [], upstreamFrameObservations: [], settled: false })
       }
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
     },
@@ -1153,7 +1159,7 @@ export function createRequestContext(opts: {
       recordAttemptDiagnostic(`timing.${kind}`, "info", { epoch, mode })
     },
 
-    captureUpstreamGenerationFrame(frame, _record) {
+    captureUpstreamGenerationFrame(frame, record) {
       if (modelOperationRecorder.sealed) return
       const attempt = currentGenerationAttempt()
       const handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
@@ -1161,7 +1167,17 @@ export function createRequestContext(opts: {
         mediaType: "text/event-stream",
       })
       rememberFrame(frame, handle)
-      attempt?.upstreamFrames.push(handle)
+      if (attempt) {
+        attempt.upstreamFrames.push(handle)
+        attempt.upstreamFrameObservations.push({
+          handle,
+          offsetMs: record.offsetMs,
+          observedAt: modelOperationRecorder.now(),
+          type: record.type,
+          raw: record.raw,
+          ...(record.synthetic !== undefined && { synthetic: record.synthetic }),
+        })
+      }
       captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "upstream-frame")
     },
 
@@ -1235,7 +1251,7 @@ export function createRequestContext(opts: {
       })
     },
 
-    captureForwardedGenerationFrame(frame, _record, syntheticKind) {
+    captureForwardedGenerationFrame(frame, record, syntheticKind) {
       if (modelOperationRecorder.sealed) return
       const known = knownFrame(frame)
       let handle: FrameNodeHandle
@@ -1265,6 +1281,14 @@ export function createRequestContext(opts: {
         rememberFrame(frame, handle)
       }
       clientFrameHandles.push(handle)
+      clientFrameObservations.push({
+        handle,
+        offsetMs: record.offsetMs,
+        observedAt: modelOperationRecorder.now(),
+        type: record.type,
+        raw: record.raw,
+        ...((record.synthetic ?? syntheticKind) !== undefined && { synthetic: record.synthetic ?? syntheticKind }),
+      })
       captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "client-frame")
     },
 

@@ -1,8 +1,10 @@
 export {
   //
   commitPreparedOperation,
+  containingV3OperationIds,
   drainV3Writer,
   enqueueModelOperation,
+  ensureV3Schema,
   getV3Operation,
   getV3StoredOperation,
   getV3StoreStatus,
@@ -11,12 +13,12 @@ export {
   prepareModelOperation,
   recoverV3Journal,
   resetV3WriterForTests,
-  setV3OperationPinned,
   searchV3OperationIds,
-  containingV3OperationIds,
+  setV3OperationPinned,
   V3_SCHEMA_SQL,
   type V3StoredOperation,
   type V3StoreStatus,
+  type V3TimingSource,
 } from "./store"
 export {
   drainModelOperationTerminalSubscribers,

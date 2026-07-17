@@ -95,7 +95,7 @@ export interface SseSinkOptions {
    */
   onForwarded?: (record: SseEventRecord) => void
   /** History V3 arena hook, invoked at the same unique client-wire sampling point. */
-  onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: string) => void
+  onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
   /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
   streamStartMs?: number
   /**
@@ -191,7 +191,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   const sampleForwarded = (
     frame: ClientFrame,
     synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
-    generationSynthetic: string | undefined = synthetic,
+    generationSynthetic: SseEventRecord["synthetic"] = synthetic,
   ): void => {
     const record: SseEventRecord = {
       offsetMs: Date.now() - streamStartMs,
@@ -447,7 +447,7 @@ export interface WsSinkOptions {
    */
   onForwarded?: (record: SseEventRecord) => void
   /** History V3 arena hook, invoked at the same unique client-wire sampling point. */
-  onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: string) => void
+  onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
   /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
   streamStartMs?: number
   /**
@@ -542,7 +542,7 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
   const sampleForwarded = (
     frame: ClientFrame,
     synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
-    generationSynthetic: string | undefined = synthetic,
+    generationSynthetic: SseEventRecord["synthetic"] = synthetic,
   ): void => {
     const record: SseEventRecord = { offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) }
     onForwarded?.(record)

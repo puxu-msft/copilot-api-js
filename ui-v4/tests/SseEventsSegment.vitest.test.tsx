@@ -98,4 +98,13 @@ describe("SseEventsSegment", () => {
     // …and no dimmed rows.
     expect(container.querySelectorAll(".opacity-60").length).toBe(0)
   })
+
+  it("shows unavailable instead of rendering a fabricated frame offset", () => {
+    const entry = {
+      ...withFrames,
+      clientResponse: { sseEvents: [{ offsetMs: 0, offsetSource: "unavailable", type: "message_start", raw: "{}" }] },
+    } as HistoryEntry
+    render(<SseEventsSegment entry={entry} />)
+    expect(screen.getByText("时间不可用")).toBeDefined()
+  })
 })

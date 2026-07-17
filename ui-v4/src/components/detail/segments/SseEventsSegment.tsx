@@ -27,7 +27,12 @@ function FrameList({ label, frames, startedAt }: { label: string; frames: Array<
             className={`mono overflow-hidden text-ellipsis whitespace-nowrap px-2 py-0.5 text-[13px] text-[var(--content-secondary)] ${f.synthetic ? "opacity-60" : ""}`}
           >
             <span className="text-[var(--content-muted)]">
-              {formatClockMs(startedAt + f.offsetMs)} {formatElapsed(f.offsetMs)}
+              {f.offsetSource === "unavailable" ?
+                <span title="该帧来自修复前的 History V3 记录，原始时间偏移未被保存">时间不可用</span>
+              : <>
+                  {formatClockMs(startedAt + f.offsetMs)} {formatElapsed(f.offsetMs)}
+                </>
+              }
             </span>{" "}
             {f.synthetic ?
               <span className="mono mr-1 border border-[var(--surface-border)] px-1 text-[10px] uppercase tracking-wider text-[var(--content-muted)]">

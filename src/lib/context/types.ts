@@ -513,7 +513,7 @@ export interface RequestContext {
     transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
   ): void
   /** ClientSink producer hook: register the exact frame attempted on the client wire. */
-  captureForwardedGenerationFrame?(frame: unknown, record: SseEventRecord, syntheticKind?: string): void
+  captureForwardedGenerationFrame?(frame: unknown, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]): void
   /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
   commitAttemptSseEvents(): void
   /** 定稿当前 attempt 的 durationMs（截断路径无 error/response setter 时用）。见 request.ts。 */

@@ -71,6 +71,21 @@ describe("generation recorder ClientSink frame arena integration", () => {
       transformId: "client-sink:synthetic",
       origin: { stage: "client-sink", track: "proxy", detail: "synthetic" },
     })
+    expect(record.attempts[0]?.upstreamResponse?.frameObservations).toEqual([
+      { handle: upstreamHandles[0], offsetMs: 1, type: "content_block_delta", raw: raw.data, observedAt: expect.any(Number) },
+    ])
+    expect(record.egress?.client.frameObservations).toEqual([
+      { handle: clientHandles[0], offsetMs: expect.any(Number), type: "content_block_delta", raw: raw.data, observedAt: expect.any(Number) },
+      { handle: clientHandles[1], offsetMs: expect.any(Number), type: "content_block_delta", raw: rewritten.data, observedAt: expect.any(Number) },
+      {
+        handle: clientHandles[2],
+        offsetMs: expect.any(Number),
+        type: "error",
+        raw: expect.stringContaining("synthetic"),
+        synthetic: "synthetic",
+        observedAt: expect.any(Number),
+      },
+    ])
     expect(synthetic!.sequence).toBeLessThan(record.terminal!.sequence)
   })
 })
