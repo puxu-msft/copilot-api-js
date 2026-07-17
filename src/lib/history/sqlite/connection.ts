@@ -182,6 +182,14 @@ function maybeVacuumOnStartup(database: Database, dbPath: string): void {
     database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
     database.exec("PRAGMA auto_vacuum = INCREMENTAL;") // activated by the VACUUM below
     database.exec("VACUUM;")
+    // VACUUM rewrote the ENTIRE db into the -wal file (WAL mode), so the -wal now
+    // sits at a ~full-db high-water mark (observed: a 26 GB -wal after a 25 GB
+    // VACUUM). A PASSIVE checkpoint — all the reaper ever runs — NEVER ftruncates
+    // the -wal file; only TRUNCATE reclaims its bytes on disk. We are still
+    // single-connection at startup (server not yet listening) so TRUNCATE takes
+    // its exclusive moment uncontended and shrinks the -wal back to zero. Without
+    // this the multi-GB WAL persists on disk indefinitely.
+    database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
     const afterBytes = pragmaInt(database, "page_count") * pageSize
     consola.info(
       `[history/sqlite] startup VACUUM reclaimed ${((totalBytes - afterBytes) / 1048576).toFixed(0)}MB (${(totalBytes / 1048576).toFixed(0)}MB → ${(afterBytes / 1048576).toFixed(0)}MB)`,

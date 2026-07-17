@@ -285,6 +285,13 @@ shutdown:
 # Control history recording behavior. / 控制历史记录行为。
 
 history:
+  # 总开关（默认 true）。false = 无 history 模式：不打开/创建 history.db、不记录任何请求、
+  # 所有 /history/api/* 路由与 History Web UI 返回 disabled。仅启动期生效（不支持热重载，需重启）。
+  # CLI --no-history 覆盖本键。
+  # Master switch (default true). false = no-history mode: history.db is never opened/created,
+  # nothing is recorded, and every /history/api/* route + History Web UI reports disabled.
+  # STARTUP-ONLY (not hot-reloadable — requires a restart). CLI --no-history overrides this key.
+  enabled: true
   # Successful (non-failed) entries kept in SQLite (0 = unlimited, default: 50)
   # SQLite 中保留的成功（非失败）条目上限（0 = 无限制，默认 50）
   success_limit: 500
@@ -300,13 +307,13 @@ history:
     # 总开关（默认 true）。false = 退回现状（数量 reaper 硬删、无归档）。 / Master switch (default true); false = legacy count-based hard delete.
     enabled: true
     # 热库保留天数；此前的终态非 pinned 行降温到 tier-1（默认 3）。 / HOT retention days; older terminal non-pinned rows cool to tier-1.
-    hot_days: 3
+    hot_days: 1
     # archive.db(tier-1) 大小上限，超限触发 T1→T2 封存（默认 "2GB"）。 / tier-1 size cap; over it triggers T1→T2 sealing.
     tier1_size_cap: "2GB"
     # tier-2 seal 单元数告警阈值（默认 200，仅告警不删）。 / tier-2 seal-unit count warn threshold (warn only, never delete).
-    tier2_warn_count: 200
+    tier2_warn_count: 1000000
     # tier-2 总量告警阈值（默认 "500MB"，仅告警不删）。 / tier-2 total-bytes warn threshold (warn only).
-    tier2_warn_bytes: "500MB"
+    tier2_warn_bytes: "5GB"
     # archive.db + 封存文件落盘目录（留空=同 history.db 同级）。 / archive dir; empty = same dir as history.db.
     # dir: ""
 
@@ -319,7 +326,7 @@ history:
 # use DDSketch; additive measures use exact SUM. Near/far resolution & retention configurable.
 telemetry:
   # 总开关（默认 true = 一直采集）。 / Master switch (default true).
-  enabled: true
+  enabled: false
   # telemetry.db 路径；留空=用默认 <APP_DIR>/telemetry.db。 / DB path; empty = default.
   # db_path: ""
   # raw 落盘/flush 间隔秒（默认 60）。 / raw persist/flush interval seconds (default 60).

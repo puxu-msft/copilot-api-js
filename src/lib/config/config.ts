@@ -832,6 +832,20 @@ export async function applyConfigToState(): Promise<Config> {
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
     if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
 
+    // History master switch — STARTUP-ONLY (opening/closing the SQLite DB +
+    // reaper/backfills/sinks mid-flight is out of scope; see the design). Applied
+    // to state only at boot (start.ts reads it, with CLI --no-history winning); a
+    // runtime change is ignored-with-warn so the running instance keeps its boot
+    // wiring (mirrors rate_limiter / proxy). Comparing against state.historyEnabled
+    // detects a change to the CONFIG value regardless of any CLI override.
+    if (h.enabled !== undefined) {
+      if (!hasApplied) {
+        setHistoryConfig({ historyEnabled: h.enabled })
+      } else if (h.enabled !== state.historyEnabled) {
+        consola.warn(`[config] history.enabled=${h.enabled} requires a restart to take effect (running instance stays ${state.historyEnabled}); ignoring for now`)
+      }
+    }
+
     // Tiered cold-archive (history.archive.*). Size caps accept a human-readable
     // string ("2GB"/"500MB") OR a raw byte count; parseByteSize warn-continues on
     // a bad value (config never kills the process).

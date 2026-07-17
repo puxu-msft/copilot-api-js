@@ -993,6 +993,11 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
     reason: "see unknown_endpoint_logging.not_found — same dedicated test file",
   },
   {
+    configKey: "history.enabled",
+    reason:
+      "STARTUP-ONLY master switch: applied to state.historyEnabled only at boot (hasApplied=false); read once in start.ts to gate initHistory. A runtime change warns + requires a restart (mirrors proxy / ghc_api_base_url). Boot-apply + hot-reload-warn covered in tests/config/history-enabled-config.unit.test.ts",
+  },
+  {
     configKey: "history.limit",
     reason:
       "Deprecated legacy key; no dedicated state field — falls back to success_limit/failure_limit (covered by the 'legacy history.limit falls back' test)",
