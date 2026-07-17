@@ -15,6 +15,8 @@ import type {
   DeliveryFrame,
   DeliverySnapshot,
   DeliverySyntheticKind,
+  DeliveryHeartbeat,
+  DeliveryTerminalCommand,
 } from "./types"
 
 import { createDeliverySerializer } from "./serializer"
@@ -23,26 +25,30 @@ import { createDeliverySerializer } from "./serializer"
 export interface CreateDownstreamDeliverySessionOptions {
   readonly sink: ClientSink
   readonly monotonicNow?: () => number
+  readonly heartbeat?: DeliveryHeartbeat
 }
 
 /** Generation-scoped delivery port consumed by the retry/competition engine. */
 export interface DownstreamDeliverySession {
   readonly identity: symbol
   readonly snapshot: DeliverySnapshot
+  readonly clientSink: ClientSink
   writeScaffold(frames: ReadonlyArray<DeliveryFrame>): Promise<void>
   commitWinnerBlock(candidateId: string, frames: ReadonlyArray<DeliveryFrame | DeliveryFrame["frame"]>): Promise<void>
   writeWinnerFrame(candidateId: string, frame: DeliveryFrame | DeliveryFrame["frame"]): Promise<void>
   noteUpstreamRoundEnded(reason: string): void
   noteUpstreamRoundStarted(candidateId: string): void
+  terminate(command: DeliveryTerminalCommand): Promise<void>
 }
 
 /** Create a delivery session whose identity and ledger outlive every upstream round. */
 export function createDownstreamDeliverySession(options: CreateDownstreamDeliverySessionOptions): DownstreamDeliverySession {
   const { sink } = options
   const monotonicNow = options.monotonicNow ?? performance.now.bind(performance)
+  const heartbeat = options.heartbeat
   const serializer = createDeliverySerializer()
   const identity = Symbol("downstreamDeliverySession")
-  const state: DeliverySnapshot["state"] = "open"
+  let state: DeliverySnapshot["state"] = "open"
   let winnerCandidateId: string | undefined
   let messageEnvelope: ClientBlockLedger["messageEnvelope"] = "none"
   let openBlocks: Array<DeliveredOpenBlock> = []
@@ -51,14 +57,80 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   let terminalWritten = false
   let writeCount = 0
   const upstreamRounds: Array<string> = []
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let heartbeatSuspended = false
+  let heartbeatStopped = false
+  let scaffoldAttempted = false
+  let pendingOpenBlocks: Array<DeliveredOpenBlock> = []
 
-  const write = async (entry: DeliveryFrame): Promise<void> => {
+  const write = async (entry: DeliveryFrame, allowTerminating = false): Promise<void> => {
     await serializer.enqueue(async () => {
+      if (state !== "open" && (!allowTerminating || state !== "terminating")) return
+      applyPendingFrame(entry)
       await writeToSink(sink, entry)
       applyWireFrame(entry)
       lastWriteAtMonotonic = monotonicNow()
       writeCount++
     })
+  }
+
+  const currentLedger = (): ClientBlockLedger =>
+    Object.freeze({
+      messageEnvelope,
+      openBlocks: Object.freeze(openBlocks.map((block) => Object.freeze({ ...block }))),
+      lastWriteAtMonotonic,
+      semanticBlockCount,
+      terminalWritten,
+    })
+
+  const stopHeartbeat = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = undefined
+  }
+  const closeHeartbeat = (): void => {
+    heartbeatStopped = true
+    stopHeartbeat()
+  }
+  const armHeartbeat = (delay = heartbeat?.intervalMs ?? 0): void => {
+    if (!heartbeat || heartbeat.intervalMs <= 0 || state !== "open" || heartbeatSuspended || heartbeatStopped) return
+    stopHeartbeat()
+    timer = setTimeout(tickHeartbeat, delay)
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+  }
+  const tickHeartbeat = (): void => {
+    timer = undefined
+    if (!heartbeat || state !== "open" || heartbeatSuspended || heartbeatStopped || heartbeat.clientAbortSignal?.aborted) return
+    const elapsed = monotonicNow() - lastWriteAtMonotonic
+    if (elapsed < heartbeat.intervalMs) {
+      armHeartbeat(heartbeat.intervalMs - elapsed)
+      return
+    }
+    if (heartbeat.injectScaffold && pendingOpenBlocks.length === 0 && !scaffoldAttempted) {
+      scaffoldAttempted = true
+      void heartbeat
+        .injectScaffold()
+        .then((injected) => {
+          if (!injected) scaffoldAttempted = false
+        })
+        .catch(() => {
+          scaffoldAttempted = false
+        })
+        .finally(() => armHeartbeat())
+      return
+    }
+    const heartbeatLedger = Object.freeze({ ...currentLedger(), openBlocks: Object.freeze(pendingOpenBlocks.map((block) => Object.freeze({ ...block }))) })
+    void write(makeEnvelope(heartbeat.frame(heartbeatLedger), "keepalive", monotonicNow())).finally(() => armHeartbeat())
+  }
+
+  const applyPendingFrame = (entry: DeliveryFrame): void => {
+    const payload = parsePayload(entry.frame.data)
+    if (!payload) return
+    if (payload.type === "content_block_start" && typeof payload.index === "number" && typeof payload.content_block?.type === "string") {
+      pendingOpenBlocks.push({ index: payload.index, type: payload.content_block.type, synthetic: syntheticKind(entry) === "anchor" })
+    }
+    if (payload.type === "content_block_stop" && typeof payload.index === "number") {
+      pendingOpenBlocks = pendingOpenBlocks.filter((block) => block.index !== payload.index)
+    }
   }
 
   const applyWireFrame = (entry: DeliveryFrame): void => {
@@ -76,23 +148,41 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     if (payload.type === "message_stop" || payload.type === "response.completed" || payload.type === "error") terminalWritten = true
   }
 
-  return {
+  const clientSink: ClientSink = {
+    write: async (frame) => {
+      if (!winnerCandidateId) winnerCandidateId = "sole"
+      await write(asDeliveryFrame(frame))
+    },
+    writeSynthetic: (frame) => write(makeEnvelope(frame, "synthetic", monotonicNow())),
+    writeKeepalive: (frame) => write(makeEnvelope(frame, "keepalive", monotonicNow())),
+    writeSyntheticEnvelope: (frame) => write(makeEnvelope(frame, "synthetic-message-start", monotonicNow())),
+    writeAnchor: (frame) => write(makeEnvelope(frame, "anchor", monotonicNow())),
+    freezeHeartbeat: closeHeartbeat,
+    suspendHeartbeat() {
+      heartbeatSuspended = true
+      stopHeartbeat()
+    },
+    resumeHeartbeat() {
+      if (!heartbeatSuspended || state !== "open" || heartbeatStopped) return
+      heartbeatSuspended = false
+      lastWriteAtMonotonic = monotonicNow()
+      armHeartbeat()
+    },
+    close: closeHeartbeat,
+  }
+
+  const session: DownstreamDeliverySession = {
     identity,
     get snapshot() {
       return Object.freeze({
         state,
         ...(winnerCandidateId && { winnerCandidateId }),
-        ledger: Object.freeze({
-          messageEnvelope,
-          openBlocks: Object.freeze(openBlocks.map((block) => Object.freeze({ ...block }))),
-          lastWriteAtMonotonic,
-          semanticBlockCount,
-          terminalWritten,
-        }),
+        ledger: currentLedger(),
         upstreamRounds: Object.freeze([...upstreamRounds]),
         writeCount,
       })
     },
+    clientSink,
     async writeScaffold(frames) {
       for (const entry of frames) await write(entry)
     },
@@ -111,7 +201,30 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     noteUpstreamRoundStarted(candidateId) {
       upstreamRounds.push(candidateId)
     },
+    async terminate(command) {
+      if (state !== "open") return
+      state = "terminating"
+      closeHeartbeat()
+      const frames = command.kind === "client-aborted" ? [] : (command.frames ?? [])
+      for (const entry of frames) await write(entry, true)
+      state = "closed"
+      sink.close?.()
+      await sink.finalize?.()
+    },
   }
+
+  clientSink.finalize = () => session.terminate({ kind: "complete" })
+  armHeartbeat()
+  return session
+}
+
+function makeEnvelope(frame: DeliveryFrame["frame"], synthetic: DeliverySyntheticKind, observedAtMonotonic: number): DeliveryFrame {
+  return Object.freeze({
+    frame,
+    sequence: 0,
+    observedAtMonotonic,
+    provenance: Object.freeze({ kind: "synthetic" as const, syntheticKind: synthetic }),
+  })
 }
 
 function asDeliveryFrame(value: DeliveryFrame | DeliveryFrame["frame"]): DeliveryFrame {

@@ -72,7 +72,7 @@ import {
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
-import { makeSseSink } from "~/lib/pipeline/client-sink"
+import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -348,7 +348,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   const diag = createUpstreamFrameDiagnostics(streamStartMs)
   const onUpstreamFrame = (frame: UpstreamFrame): void => diag.observe(frame as ServerSentEventMessage)
 
-  const sink = makeSseSink(stream, {
+  const sink = makeDeliverySseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
     ...clientFirstRealSinkOpts(env),
@@ -581,7 +581,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     }
   }
 
-  const sink = makeSseSink(stream, {
+  const sink = makeDeliverySseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
     forwardedType: () => "generateContent",

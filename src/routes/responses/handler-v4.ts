@@ -88,7 +88,7 @@ import {
   restoreResponsesOutputToolNames,
   restoreResponsesStreamFrameToolNames,
 } from "~/lib/openai/tool-name-sanitize"
-import { makeSseSink } from "~/lib/pipeline/client-sink"
+import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -369,7 +369,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   // fallback `flushResponse()` closing frames before returning, so output_item.done / response.completed
   // are visible to commit boundaries and `sawMessageStop` instead of living in a handler post-loop bypass.
   const buffered = bufferedConfigured
-  const sink = makeSseSink(stream, {
+  const sink = makeDeliverySseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
     ...clientFirstRealSinkOpts(env),
@@ -696,7 +696,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
   let bytesIn = 0
   let eventsIn = 0
-  const sink = makeSseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs, ...clientFirstRealSinkOpts(env) })
+  const sink = makeDeliverySseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs, ...clientFirstRealSinkOpts(env) })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
   // Restore function_call names on the rendered Responses frame (forwarded-only). The ANTHROPIC

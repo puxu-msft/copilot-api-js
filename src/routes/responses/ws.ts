@@ -53,7 +53,7 @@ import {
   //
   restoreResponsesStreamFrameToolNames,
 } from "~/lib/openai/tool-name-sanitize"
-import { makeWsSink } from "~/lib/pipeline/client-sink"
+import { makeDeliveryWsSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { buildResponsesResponseData } from "~/lib/request/recording"
@@ -371,7 +371,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   //     `streamKeepalivePingSec` of forward silence, marked `synthetic:"keepalive"` in the forwarded
   //     track (never the upstream track). Reuses the keepalive INTERVAL only — not `streamKeepaliveMode`.
   const keepaliveSec = state.streamKeepalivePingSec
-  const sink = makeWsSink(ws, {
+  const sink = makeDeliveryWsSink(ws, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
     ...clientFirstRealSinkOpts(env),

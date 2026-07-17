@@ -1,4 +1,5 @@
 import type { ClientFrameEnvelope } from "../stream/frame-envelope"
+import type { ClientFrame } from "../types"
 
 /** Synthetic provenance selected by the delivery engine's dedicated sink port. */
 export type DeliverySyntheticKind = "keepalive" | "anchor" | "synthetic-message-start" | "synthetic"
@@ -30,3 +31,19 @@ export interface DeliverySnapshot {
   readonly upstreamRounds: ReadonlyArray<string>
   readonly writeCount: number
 }
+
+/** Generation-owned downstream heartbeat; it reads only the post-wire ledger. */
+export interface DeliveryHeartbeat {
+  readonly intervalMs: number
+  readonly clientAbortSignal?: AbortSignal
+  frame(ledger: ClientBlockLedger): ClientFrame
+  injectScaffold?(): Promise<boolean>
+}
+
+/** First terminal command wins; protocol-specific balancing is supplied by the caller. */
+export type DeliveryTerminalCommand =
+  | { kind: "complete"; frames?: ReadonlyArray<DeliveryFrame> }
+  | { kind: "upstream-exhausted"; frames: ReadonlyArray<DeliveryFrame> }
+  | { kind: "upstream-nonretryable"; frames: ReadonlyArray<DeliveryFrame> }
+  | { kind: "request-cancelled"; frames: ReadonlyArray<DeliveryFrame> }
+  | { kind: "client-aborted" }

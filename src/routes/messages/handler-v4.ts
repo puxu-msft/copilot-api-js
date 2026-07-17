@@ -128,7 +128,7 @@ import {
   accumulateOpenAIStreamEvent,
   createOpenAIStreamAccumulator,
 } from "~/lib/openai/stream-accumulator"
-import { makeSseSink } from "~/lib/pipeline/client-sink"
+import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
@@ -851,7 +851,7 @@ function buildAnthropicAnchorHooks(enabled: boolean): AnchorHooks | undefined {
  * plain ping (byte-identical to before); `heartbeatSec <= 0` omits the heartbeat entirely.
  */
 function makeAnchoredSseSink(
-  stream: Parameters<typeof makeSseSink>[0],
+  stream: Parameters<typeof makeDeliverySseSink>[0],
   args: {
     onForwarded: (record: SseEventRecord) => void
     streamStartMs: number
@@ -892,7 +892,7 @@ function makeAnchoredSseSink(
   const makeInjector = state.streamKeepaliveMode === "enveloped_ping" ? makeSyntheticEnvelopeInjector : makeSyntheticAnchorInjector
   const injectAnchor =
     anchorHooks ? makeInjector({ anchor: anchorHooks, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId }) : undefined
-  const sink = makeSseSink(stream, {
+  const sink = makeDeliverySseSink(stream, {
     onForwarded,
     streamStartMs,
     ...(isRealContentFrame && { isRealContentFrame }),
