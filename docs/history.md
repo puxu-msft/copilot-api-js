@@ -81,6 +81,13 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 每桶按 `started_at ASC, id ASC` 删除最旧条目，保留最新的对应 `limit` 条。**活跃态（`pending`/`executing`/`streaming`）落在两桶之外**——reaper 既不计数也不淘汰进行中请求的 head 行；它们的回收由下文的孤儿/stale 回收负责。删除 head 行时，其 `entry_stages` 子行经 `ON DELETE CASCADE` 一并删除。
 
+> **注（三层降温归档，2026-07-14 起）**：当 `history.archive.enabled=true`（默认）时，reaper 的到量 `DELETE` 被 **move-to-tier1** 取代——超量/超龄行**搬进 `archive.db` 冷归档而非删除**（永不真删）。数量上限降级为安全阀、时间搬迁（>`hot_days`=3d）成主机制。详见下节「三层降温归档」；权威架构见 [DESIGN.md](DESIGN.md)「活的架构现状」History 三层降温归档行 + ADR [decisions/2026-07-14-tiered-archive-cold-format.md](decisions/2026-07-14-tiered-archive-cold-format.md) + spec [spec/2026-07-14-history-tiered-archive.md](spec/2026-07-14-history-tiered-archive.md)。`enabled=false` 时行为退回本节所述的到量硬删。
+
+### 三层降温归档（tiered archive）
+
+`history.db`（HOT，近 `hot_days` + pinned 永驻）→ `archive.db`（TIER-1，SQLite 同 schema，ATTACH 主连接）→ `archive-t{1,2}-<session>-g<generation>.db`（不可变 session-generation sealed units）三层单向降温、**产品面无删除**、按视图分域（`?tier=hot\|archive`）访问。move 语义为先写 archive 单文件原子事务→多子表 verify→才删 HOT；T1 compact/T2 seal 以 session 为 durable unit，完成 file+directory fsync 和 locator/manifest transaction 后检查 shutdown seal，停止领取下一单元，重启后按数据库剩余状态继续。并发 sibling failure 必须全部 settle 后才允许关闭 DB；同一 session 后续新增请求产生新 generation，绝不覆盖旧 locator/manifest 所指文件。config 见 `history.archive.*`（`enabled`/`hot_days`/`tier1_size_cap`/`tier2_warn_count`/`tier2_warn_bytes`/`dir`）。当运行配置显式 `enabled=false` 时，`?tier=archive`、archive-now、archive-cooldown 返回 `409 archive_unavailable`，而不是内部 500。
+
+
 ### Debug-pin（豁免淘汰）
 
 `entries_v2.pinned`（`INTEGER NOT NULL DEFAULT 0`）是 debug 用的钉住标志。调试时常需保留某条 entry 的完整原始数据（请求/响应/sseEvents/per-attempt），但默认 reaper 会按桶超额淘汰把关键样本挤掉。**pinned 行与活跃态行一样落在两桶之外**——reaper 的 `SUCCESS_WHERE`/`FAILURE_WHERE` 各带 `AND pinned = 0`，而 `evictBucket` 的 COUNT 与 DELETE 子查询共用此谓词，故 pinned 行**既不被淘汰、也不计入 success/failure 名额**（pin 满 limit 条不会把正常历史挤空）。
@@ -92,7 +99,7 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 - **存在性判定不读 `.run().changes`**：任何 AFTER-write 触发器/级联都可能把额外写入计入 bun:sqlite 的 `changes`，故 `setEntryPinned` 用 `SELECT 1` 判断行是否存在（防御性——旧 `entries_fts` 触发器即此类，P3 已移除但模式保留）。
 - **in-flight 同步**：`setPinned`（`entries.ts`）切换列后调 `updateInFlight(id, { pinned })` 同步内存副本——因 `getEntry` 是 in-flight 优先，eager-persisted 但未 finalize 的 entry 否则会读到旧 `pinned`（HTTP 响应与广播都会失真）；`toEntrySummary` 也带 `pinned`，避免 producer 丢字段。
 - **广播**：同步后 `publishEntryUpdated`，已连接的 WS 客户端实时反映 `pinned`（不改 stats——pinning 不影响 completed/failed 计数）。
-- **只豁免自动 reaper，非永久不可删**：pin 仅挡后台 reaper 的自动淘汰；显式 `DELETE /history/api/sessions/:id`（删 session）与 `DELETE /history/api/entries`（clear-all）仍会删除 pinned 条目。
+- **pin = 永驻 HOT、永不降温**（三层归档 2026-07-14 起）：pin 既豁免 reaper 自动淘汰、也豁免时间/数量搬迁与手动「立即归档」（时间搬迁 + 数量安全阀 + `archiveNow` 谓词均含 `pinned = 0`）——pinned 行永远留在 HOT 快库、随手可读。产品面删除已移除（无 `DELETE` 端点），故 pinned 行不存在被显式删除的路径。
 
 REST 用法见下文 `POST /history/api/entries/:id/pin|unpin`。
 
@@ -178,13 +185,13 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 | 端点 | 说明 |
 |------|------|
-| `GET /history/api/entries` | 分页查询 entries（`?cursor=&limit=` 分页；`?model=&endpoint=&from=&to=&sessionId=&search=` 过滤——`sessionId` 取某 session 的 entries，`search` 是 `preview_text` 子串快筛；`?terminalOnly=true` 剔除 active 在飞行、只返回终态条目，给有独立 Live 泳道的消费者用） |
-| `GET /history/api/entries/:id` | 获取单个 entry |
-| `POST /history/api/entries/:id/pin` | 钉住该 entry（`pinned=1`）：豁免 reaper 淘汰+计数，返回更新后的完整 entry；未知 id → 404 |
-| `POST /history/api/entries/:id/unpin` | 取消钉住（`pinned=0`），恢复正常淘汰资格；返回更新后的完整 entry |
+| `GET /history/api/entries` | 分页查询 entries（`?cursor=&limit=` 分页；`?model=&endpoint=&from=&to=&sessionId=&search=` 过滤——`sessionId` 取某 session 的 entries，`search` 是 `preview_text` 子串快筛；`?terminalOnly=true` 剔除 active 在飞行、只返回终态条目，给有独立 Live 泳道的消费者用；**`?tier=hot\|archive`** 视图分域，默认 hot） |
+| `GET /history/api/entries/:id` | 获取单个 entry（**`?tier=archive`** 读归档视图，含 tier-2 封存单元解压） |
+| `POST /history/api/entries/:id/pin` | 钉住该 entry（`pinned=1`）：豁免 reaper 淘汰+计数 **+ 永不降温（永驻 HOT）**，返回更新后的完整 entry；未知 id → 404 |
+| `POST /history/api/entries/:id/unpin` | 取消钉住（`pinned=0`），恢复正常淘汰/降温资格；返回更新后的完整 entry |
 | `GET /history/api/sessions` | 列出 per-session 聚合摘要（`?limit=N`）。**无独立 session-detail 端点**——某 session 的 entries 经 `GET /history/api/entries?sessionId=<id>` 取 |
-| `DELETE /history/api/entries` | **清空全部** history（`clearHistory` → 删所有表）。破坏性、不可逆 |
-| `DELETE /history/api/sessions/:id` | 删除 session（`deleteSession` → 删该 session 的所有 entries）。破坏性、不可逆 |
+| `POST /history/api/archive-now` | **立即归档**：移动匹配 list 过滤（或全部）的终态非 pinned HOT 行到 tier-1，永不真删、忽略年龄；Archive unavailable 时返回 409 |
+| `POST /history/api/archive-cooldown` | **手动触发标准年龄降温**：跑一次 `> hot_days` 的 HOT→tier-1 降温、排空旧 backlog，遵 hot_days + pinned 豁免；Archive unavailable 时返回 409 |
 | `GET /history/api/stats` | 聚合统计数据 |
 | `GET /history/api/entries/:id/export` | 单条 entry 导出：`getEntry` 规范全量形式（所有 stage / per-attempt sseEvents / 各腿 headers）经 `compressAsync` 服务端 zstd 压缩为 `.json.zst` 附件（`Content-Type: application/zstd`）；未知 id → 404。两套前端 UI（`ui/` + `ui-v4/`）的 Export 按钮都走它 |
 | `GET /history/api/export` | 导出全部历史（JSON/CSV，明文；与单条 zst 导出并存） |
@@ -214,7 +221,7 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 **`prev_req_id`**：entries_v2 上的 best-effort 对话血缘列（组内时间最近一条、无 FK、**与搜索完全解耦**），待将来对话线程化消费。
 
-> **破坏性删除必高声记录**：`clearHistory`/`deleteSession` 都 `consola.warn` 打印删除条目数 + 触发来源（`clearHistory`：`CLEARED ALL entries (N persisted + M in-flight) via DELETE /api/entries`；`deleteSession` 类似）。一次不可逆全量销毁绝不静默——否则它与持久化 bug 不可分辨（曾因 `clearHistory` 无日志，一条已落盘的失败记录"消失"耗费长时间盲查才定位是 dev UI 误触发 `DELETE /api/entries`）。
+> **破坏性删除必高声记录（test-only 原语）**：产品面删除已移除（无 HTTP `DELETE` 端点，spec §3.6）；`clearHistory`/`deleteEntries`/`deleteSession` 仅保留为 **test-only 内部原语**（`resetTestRuntime` 隔离重置依赖）。它们仍 `consola.warn` 打印删除条目数 + 触发来源——一次不可逆全量销毁绝不静默（历史教训：曾因 `clearHistory` 无日志，一条已落盘的失败记录"消失"耗费长时间盲查才定位是 dev UI 误触发删除；现产品面已无此路径）。
 
 ## WebSocket 实时推送
 

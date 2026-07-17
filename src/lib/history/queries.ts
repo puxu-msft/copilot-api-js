@@ -23,6 +23,7 @@ import {
   querySummaries,
 } from "./sqlite/read"
 import { formatFromEndpoint } from "./sqlite/search-index-write"
+import { readTier2Entry } from "./sqlite/tier2-seal"
 
 function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   if (opts.sessionId && entry.sessionId !== opts.sessionId) return false
@@ -87,11 +88,19 @@ function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined):
   return text.toLowerCase().includes(needle.toLowerCase())
 }
 
-export function getEntry(id: string): HistoryEntry | undefined {
+export function getEntry(id: string, tier?: QueryOptions["tier"]): HistoryEntry | undefined {
+  // Archive detail: skip the in-flight map (in-flight is HOT-only). Try tier-1
+  // (archive.entries_v2) first, then fall back to a tier-2 sealed unit via the
+  // manifest locator (spec §3.2). Returns undefined when in neither.
+  if (tier === "archive") return getEntryById(id, "archive") ?? readTier2Entry(id)
   return getInFlight(id) ?? getEntryById(id)
 }
 
-export function getSummary(id: string): EntrySummary | undefined {
+export function getSummary(id: string, tier?: QueryOptions["tier"]): EntrySummary | undefined {
+  if (tier === "archive") {
+    const persisted = getEntryById(id, "archive") ?? readTier2Entry(id)
+    return persisted ? toEntrySummary(persisted) : undefined
+  }
   const inflight = getInFlight(id)
   if (inflight) return toEntrySummary(inflight)
   const persisted = getEntryById(id)
@@ -101,7 +110,11 @@ export function getSummary(id: string): EntrySummary | undefined {
 export function getHistory(options: QueryOptions = {}): HistoryResult {
   const { limit = 50 } = options
 
-  const inFlightMatches = listInFlight().filter((entry) => matchesFilters(entry, options) && inFlightMatchesSearch(entry, options.search))
+  // Archive view has no in-flight lane (in-flight lives only in HOT). Skip the
+  // in-flight merge entirely so the archive view lists purely persisted archive
+  // rows and never co-lists a HOT streaming entry (view-domain split, spec §2).
+  const inFlightMatches =
+    options.tier === "archive" ? [] : listInFlight().filter((entry) => matchesFilters(entry, options) && inFlightMatchesSearch(entry, options.search))
   const persisted = queryEntries({ ...options, limit: 1_000_000 })
 
   const seen = new Set<string>()
@@ -136,10 +149,15 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
 export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
   const { limit = 50, cursor, terminalOnly } = options
 
-  const inFlightSummaries = listInFlight()
-    .filter((entry) => inFlightMatchesSearch(entry, options.search))
-    .map((entry) => toEntrySummary(entry))
-    .filter((summary) => summaryMatchesFilters(summary, options))
+  // Archive view: no in-flight lane (view-domain split, spec §2) — list purely
+  // persisted archive summaries, never co-list a HOT streaming entry.
+  const inFlightSummaries =
+    options.tier === "archive" ?
+      []
+    : listInFlight()
+        .filter((entry) => inFlightMatchesSearch(entry, options.search))
+        .map((entry) => toEntrySummary(entry))
+        .filter((summary) => summaryMatchesFilters(summary, options))
   // Fetch a larger slice from SQLite so cursor-based slicing works.
   const persistedSummaries = querySummaries({ ...options, limit: 1_000_000 })
 

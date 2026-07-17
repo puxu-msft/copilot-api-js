@@ -248,7 +248,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     lastRealMs = Date.now()
     noteBlockState(frame) // update open-block state from real forwarded frames (provider mode only)
     // A synthetic-origin frame (tagged via `tagFrameSynthetic`, frame-origin.ts) samples forwarded
-    // with its `synthetic` kind — `"hook-rewrite"` (a `rewriteUpstreamFrame` hook changed the frame)
+    // with its `synthetic` kind — `"hook-rewrite"` (a `upstream.inbound` hook changed the frame)
     // or `"refusal-recovery"` (refusal recovery's injected end_turn text / rewritten delta / error
     // frame). Same forwarded-only treatment as the other synthetic markers (keepalive/anchor), just
     // driven by a per-frame TAG read off the frame itself rather than a distinct write method: such a

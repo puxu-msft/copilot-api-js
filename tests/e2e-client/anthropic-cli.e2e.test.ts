@@ -53,7 +53,7 @@ describe.skipIf(!GATED)("client↔proxy CLI e2e (real claude → real proxy → 
       proxy = await spawnProxy({ port: port("stall"), configYaml: configYaml("") })
       const loaded = await proxy.reloadHook()
       expect(loaded.ok, `hook load failed: ${loaded.error}`).toBe(true)
-      expect(loaded.exports).toContain("onExchange")
+      expect(loaded.exports).toContain("exchange")
 
       const r = driveClaudeCli({ baseURL: proxy.baseURL, prompt: "say hello" })
       // STALL signature: the agent looped on the empty (thinking-only) turn and surfaced nothing.

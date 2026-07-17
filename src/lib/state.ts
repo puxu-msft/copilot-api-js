@@ -1,6 +1,7 @@
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
 import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
+import type { ModelTranslation } from "~/lib/config/schema"
 import type {
   //
   Model,
@@ -494,13 +495,26 @@ export interface State {
   readonly thinkingSignatureCompat: false | "signature_delta" | "redacted_thinking"
 
   /**
-   * Model name overrides: request model → target model.
+   * Model name mappings: request model → target model.
    *
    * Override values can be full model names or short aliases (opus, sonnet, haiku).
    * If the target is not in available models, it's resolved as an alias.
-   * Defaults to DEFAULT_MODEL_OVERRIDES; config.yaml `model.model_overrides` replaces entirely.
+   * Defaults to DEFAULT_MODEL_MAPPINGS; config.yaml top-level `model_mappings` replaces entirely.
    */
-  readonly modelOverrides: Record<string, string>
+  readonly modelMappings: Record<string, string>
+
+  /**
+   * Per-pair (ingress format → match rule list) translation feature declarations
+   * (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1, Phase 7). Consumed via
+   * `resolveTranslationFeatures()` (~/lib/config/model-translation) by the
+   * format-agnostic bridge-selection layer — NOT read per-cell `translateOut`, to
+   * keep the two round-trip scenarios (stable model vs mid-conversation model
+   * switch) from drifting out of sync across call sites (Phase 5 consumer).
+   * Defaults to `{}` (no declared pairs — every pair resolves to scenario A, full
+   * round-trip, no stripped features). Hot-reloadable: entirely replaced on config
+   * reload (including to `{}` on deletion), mirroring `modelMappings`.
+   */
+  readonly modelTranslation: ModelTranslation
 
   /**
    * Model IDs to hide from the available models list, even when Copilot
@@ -627,6 +641,20 @@ export interface State {
    * Default: "".
    */
   readonly historyDbPath: string
+
+  // ── 三层降温冷归档（history.archive.*，HOT→tier-1→tier-2）。spec 2026-07-14-history-tiered-archive。──
+  /** 归档总开关（默认 true）。false = 退回现状（数量 reaper 硬删、无归档）。 */
+  readonly historyArchiveEnabled: boolean
+  /** 热库保留天数；此前的终态非 pinned 行降温到 tier-1（默认 3）。 */
+  readonly historyArchiveHotDays: number
+  /** archive.db 大小上限（字节，apply 层从 "2GB" 解析）；超限触发 T1→T2 封存。默认 2GB。 */
+  readonly historyArchiveTier1SizeCap: number
+  /** tier-2 seal 单元数告警阈值（默认 200）。 */
+  readonly historyArchiveTier2WarnCount: number
+  /** tier-2 总量告警阈值（字节，apply 层从 "500MB" 解析）。默认 500MB。 */
+  readonly historyArchiveTier2WarnBytes: number
+  /** archive.db + 封存文件落盘目录（空=同 history.db 同级 <APP_DIR>）。默认 ""。 */
+  readonly historyArchiveDir: string
 
   // ── 分层遥测（telemetry.*，独立 telemetry.db）。近期/远期分辨率与保留可配。 ──
   /** 遥测总开关（默认 true）。 */
@@ -1004,6 +1032,15 @@ function cloneBufferedRetryOverrides(source: Record<string, Partial<BufferedRetr
   return out
 }
 
+/** Deep-clone `modelTranslation` (ingress → rule list, each rule its own object with its own `features` array). */
+function cloneModelTranslation(source: ModelTranslation): ModelTranslation {
+  const out: ModelTranslation = {}
+  for (const [ingress, rules] of Object.entries(source) as Array<[keyof ModelTranslation, NonNullable<ModelTranslation[keyof ModelTranslation]>]>) {
+    out[ingress] = rules.map((rule) => ({ ...rule, features: rule.features ? [...rule.features] : undefined }))
+  }
+  return out
+}
+
 function cloneState(source: MutableState): MutableState {
   return {
     ...source,
@@ -1011,7 +1048,8 @@ function cloneState(source: MutableState): MutableState {
     copilotTokenInfo: source.copilotTokenInfo ? { ...source.copilotTokenInfo } : undefined,
     modelIds: new Set(source.modelIds),
     modelIndex: new Map(source.modelIndex),
-    modelOverrides: { ...source.modelOverrides },
+    modelMappings: { ...source.modelMappings },
+    modelTranslation: cloneModelTranslation(source.modelTranslation),
     toolSearchOverrides: { ...source.toolSearchOverrides },
     errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
     effortsOverrides: { ...source.effortsOverrides },
@@ -1056,8 +1094,11 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("modelIndex" in patch) {
     cloned.modelIndex = patch.modelIndex ? new Map(patch.modelIndex) : undefined
   }
-  if ("modelOverrides" in patch) {
-    cloned.modelOverrides = patch.modelOverrides ? { ...patch.modelOverrides } : undefined
+  if ("modelMappings" in patch) {
+    cloned.modelMappings = patch.modelMappings ? { ...patch.modelMappings } : undefined
+  }
+  if ("modelTranslation" in patch) {
+    cloned.modelTranslation = patch.modelTranslation ? cloneModelTranslation(patch.modelTranslation) : undefined
   }
   if ("toolSearchOverrides" in patch) {
     cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
@@ -1320,8 +1361,12 @@ export function setAnthropicBehavior(
   updateState(patch)
 }
 
-export function setModelOverrides(modelOverrides: Record<string, string>): void {
-  updateState({ modelOverrides })
+export function setModelMappings(modelMappings: Record<string, string>): void {
+  updateState({ modelMappings })
+}
+
+export function setModelTranslation(modelTranslation: ModelTranslation): void {
+  updateState({ modelTranslation })
 }
 
 /**
@@ -1338,15 +1383,33 @@ export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "str
 }
 
 export function setHistoryConfig(
-  patch: Partial<Pick<MutableState, "historySuccessLimit" | "historyFailureLimit" | "historyReaperInterval" | "historyDbPath">>,
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "historySuccessLimit"
+      | "historyFailureLimit"
+      | "historyReaperInterval"
+      | "historyDbPath"
+      | "historyArchiveEnabled"
+      | "historyArchiveHotDays"
+      | "historyArchiveTier1SizeCap"
+      | "historyArchiveTier2WarnCount"
+      | "historyArchiveTier2WarnBytes"
+      | "historyArchiveDir"
+    >
+  >,
 ): void {
-  // Any of the three reaper inputs (both limits + interval) must retune the
-  // running timer, else changing only reaper_interval on hot-reload would
-  // update state but leave the timer firing at the old cadence.
+  // Any of the three reaper inputs (both limits + interval) OR an archive knob
+  // that retunes the migration/seal cadence (enabled / hot_days / size_cap) must
+  // notify listeners, else changing only that key on hot-reload would update
+  // state but leave the running timers firing on the old config.
   const reaperConfigChanged =
     (patch.historySuccessLimit !== undefined && patch.historySuccessLimit !== mutableState.historySuccessLimit)
     || (patch.historyFailureLimit !== undefined && patch.historyFailureLimit !== mutableState.historyFailureLimit)
     || (patch.historyReaperInterval !== undefined && patch.historyReaperInterval !== mutableState.historyReaperInterval)
+    || (patch.historyArchiveEnabled !== undefined && patch.historyArchiveEnabled !== mutableState.historyArchiveEnabled)
+    || (patch.historyArchiveHotDays !== undefined && patch.historyArchiveHotDays !== mutableState.historyArchiveHotDays)
+    || (patch.historyArchiveTier1SizeCap !== undefined && patch.historyArchiveTier1SizeCap !== mutableState.historyArchiveTier1SizeCap)
   updateState(patch)
   if (reaperConfigChanged) {
     for (const listener of historyLimitListeners) listener()
@@ -1569,18 +1632,21 @@ export function rebuildModelIndex(): void {
   })
 }
 /**
- * Built-in model overrides. Intentionally EMPTY: model name mapping (short
+ * Built-in model mapping. Intentionally EMPTY: model name mapping (short
  * aliases like opus/sonnet/haiku, redirects) is owned exclusively by the
  * bundled `config.yaml`, the single source of truth. If config.yaml can't be
- * read, overrides stay empty and unknown aliases simply fail to resolve
+ * read, the mapping stays empty and unknown aliases simply fail to resolve
  * (the upstream rejects them) rather than falling back to hardcoded names.
  */
-export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
+export const DEFAULT_MODEL_MAPPINGS: Record<string, string> = {}
+
+/** Built-in `model_translation` mapping. Intentionally EMPTY — see {@link DEFAULT_MODEL_MAPPINGS} rationale. */
+export const DEFAULT_MODEL_TRANSLATION: ModelTranslation = {}
 
 /**
  * Default values for config-managed scalar/runtime fields.
  * Single source of truth for mutableState initialization and resetConfigManagedState().
- * Model overrides continue to use DEFAULT_MODEL_OVERRIDES.
+ * Model mapping continues to use DEFAULT_MODEL_MAPPINGS.
  */
 export const CONFIG_MANAGED_DEFAULTS = {
   unknownEndpointLogging: { notFound: "warn", methodNotAllowed: "warn" } as UnknownEndpointLogging,
@@ -1691,6 +1757,12 @@ export const CONFIG_MANAGED_DEFAULTS = {
   historyFailureLimit: 200,
   historyReaperInterval: 600,
   historyDbPath: "",
+  historyArchiveEnabled: true,
+  historyArchiveHotDays: 3,
+  historyArchiveTier1SizeCap: 2 * 1024 * 1024 * 1024,
+  historyArchiveTier2WarnCount: 200,
+  historyArchiveTier2WarnBytes: 500 * 1024 * 1024,
+  historyArchiveDir: "",
   telemetryEnabled: true,
   telemetryDbPath: "",
   telemetryPersistInterval: 60,
@@ -1715,7 +1787,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   effortsOverrides: {} as Record<string, Array<string>>,
   // Empty by design — the bundled `gpt-5.5: 600` product default lives in
   // config.yaml (`timeouts.stream_idle_overrides`), NOT here, mirroring
-  // `model_overrides` (H1: BUILTIN code-constant + union would be wrong; this is
+  // `model_mappings` (H1: BUILTIN code-constant + union would be wrong; this is
   // per-key merge with the shippable config, degrading to scalar if config.yaml
   // is absent). See docs/spec/2026-07-12-per-model-idle-timeout.md §4.2.
   streamIdleTimeoutOverrides: {} as Record<string, number>,
@@ -1812,7 +1884,8 @@ export function resetConfigManagedState(): void {
     backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
     fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
   })
-  setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
+  setModelMappings({ ...DEFAULT_MODEL_MAPPINGS })
+  setModelTranslation(cloneModelTranslation(DEFAULT_MODEL_TRANSLATION))
   setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
   setTimeoutConfig({
     responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
@@ -1840,6 +1913,12 @@ export function resetConfigManagedState(): void {
     historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
     historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+    historyArchiveEnabled: CONFIG_MANAGED_DEFAULTS.historyArchiveEnabled,
+    historyArchiveHotDays: CONFIG_MANAGED_DEFAULTS.historyArchiveHotDays,
+    historyArchiveTier1SizeCap: CONFIG_MANAGED_DEFAULTS.historyArchiveTier1SizeCap,
+    historyArchiveTier2WarnCount: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnCount,
+    historyArchiveTier2WarnBytes: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnBytes,
+    historyArchiveDir: CONFIG_MANAGED_DEFAULTS.historyArchiveDir,
   })
   setTelemetryConfig({
     telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
@@ -1945,6 +2024,12 @@ const mutableState: MutableState = {
   historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
   historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  historyArchiveEnabled: CONFIG_MANAGED_DEFAULTS.historyArchiveEnabled,
+  historyArchiveHotDays: CONFIG_MANAGED_DEFAULTS.historyArchiveHotDays,
+  historyArchiveTier1SizeCap: CONFIG_MANAGED_DEFAULTS.historyArchiveTier1SizeCap,
+  historyArchiveTier2WarnCount: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnCount,
+  historyArchiveTier2WarnBytes: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnBytes,
+  historyArchiveDir: CONFIG_MANAGED_DEFAULTS.historyArchiveDir,
   telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
   telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
   telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
@@ -1958,7 +2043,8 @@ const mutableState: MutableState = {
   telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
   modelIds: new Set(),
   modelIndex: new Map(),
-  modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },
+  modelMappings: { ...DEFAULT_MODEL_MAPPINGS },
+  modelTranslation: cloneModelTranslation(DEFAULT_MODEL_TRANSLATION),
   rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
   shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,

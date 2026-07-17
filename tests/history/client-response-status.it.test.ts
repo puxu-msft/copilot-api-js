@@ -41,7 +41,7 @@ import type {
 import { getHistory } from "~/lib/history"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -127,7 +127,7 @@ const CLIENT_HEADERS = { "Content-Type": "application/json", authorization: "Bea
 
 function setModel(name: string, vendor: string, endpoints: Array<string>): void {
   setModels({ object: "list", data: [mockModel(name, { vendor, supported_endpoints: endpoints })] })
-  setModelOverrides({})
+  setModelMappings({})
 }
 
 describe("P3 clientResponse.status capture at forward boundary", () => {

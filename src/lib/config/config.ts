@@ -17,7 +17,7 @@ import {
   type BufferedRetryCaps,
   type CompiledRewriteRule,
   type CompiledSystemPromptEntry,
-  DEFAULT_MODEL_OVERRIDES,
+  DEFAULT_MODEL_MAPPINGS,
   resolveBufferedCaps,
   setAnthropicBehavior,
   setBufferedRetryOverride,
@@ -26,7 +26,8 @@ import {
   setDisabledModels,
   setHistoryConfig,
   setHooksConfig,
-  setModelOverrides,
+  setModelMappings,
+  setModelTranslation,
   setNegotiationConfig,
   setResponsesConfig,
   setShutdownConfig,
@@ -217,6 +218,27 @@ const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20
 let warnedKeepaliveClamp = false
 
 /** Clamp a keepalive interval/window (0 = disabled) to stay WELL below the client idle deadline; warn once. */
+/**
+ * Parse a human-readable byte size ("2GB" / "500MB" / "1024") into a byte count.
+ * Accepts a bare number (already bytes) or a number + unit suffix
+ * (B/KB/MB/GB/TB, case-insensitive, binary 1024-based). Returns `undefined` for
+ * `undefined` input (caller skips the setter) and WARN-CONTINUES on a malformed
+ * value (config never kills the process — feedback-config-philosophy). */
+function parseByteSize(value: string | undefined, keyLabel: string): number | undefined {
+  if (value === undefined) return undefined
+  const trimmed = String(value).trim()
+  if (trimmed === "") return undefined
+  const m = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb)?$/i.exec(trimmed)
+  if (!m) {
+    consola.warn(`[config] ${keyLabel}: cannot parse byte size "${value}" — ignoring, keeping current value`)
+    return undefined
+  }
+  const n = Number(m[1])
+  const unit = (m[2] ?? "b").toLowerCase()
+  const mult = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 }[unit] ?? 1
+  return Math.round(n * mult)
+}
+
 function clampKeepaliveCadence(sec: number): number {
   if (sec <= 0 || sec <= KEEPALIVE_CADENCE_MAX) return sec
   if (!warnedKeepaliveClamp) {
@@ -401,7 +423,7 @@ export class ConfigParseError extends Error {
  *     declared sub-field gets its own merge strategy based on its schema.
  *   - **ZodRecord (custom keys)** — two sub-variants distinguished by a
  *     `mergeStrategy` meta tag on the schema:
- *       · `"per-key"` (e.g. `model_overrides`): shallow merge at the key
+ *       · `"per-key"` (e.g. `model_mappings`): shallow merge at the key
  *         level — user keys add/replace, bundled keys without a user
  *         counterpart remain. Values are atomic (replaced wholesale).
  *       · `"replace"` (default — e.g. `anthropic.effort_overrides`,
@@ -488,7 +510,7 @@ function mergeBySchema(schema: z.ZodType, bundled: unknown, user: unknown): unkn
   }
 
   // ZodRecord — custom keys. Default: user table replaces bundled wholesale.
-  // Opt-in `mergeStrategy: "per-key"` for additive maps like `model_overrides`.
+  // Opt-in `mergeStrategy: "per-key"` for additive maps like `model_mappings`.
   if (inner instanceof z.ZodRecord) {
     if (!isRecord(bundled) || !isRecord(user)) return user
     const strategy = readMergeStrategy(schema) ?? readMergeStrategy(inner) ?? "replace"
@@ -767,11 +789,18 @@ export async function applyConfigToState(): Promise<Config> {
     setAnthropicBehavior({ systemPromptAppend: compileSystemPromptEntries(config.system_prompt_append) })
   }
 
-  // Model overrides: retain-on-absence. An explicit `model_overrides: {}` (or
-  // any present map) replaces the live override map merged on top of defaults;
+  // Model mapping: retain-on-absence. An explicit `model_mappings: {}` (or
+  // any present map) replaces the live mapping merged on top of defaults;
   // omitting the key keeps the prior runtime value.
-  if (config.model_overrides !== undefined) {
-    setModelOverrides(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_OVERRIDES, ...config.model_overrides }, "model_overrides"))
+  if (config.model_mappings !== undefined) {
+    setModelMappings(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_MAPPINGS, ...config.model_mappings }, "model_mappings"))
+  }
+
+  // model_translation: retain-on-absence (mirrors model_mappings). An explicit
+  // `model_translation: {}` clears to defaults (empty — every pair falls back to
+  // scenario A); missing key keeps the prior runtime value.
+  if (config.model_translation !== undefined) {
+    setModelTranslation(config.model_translation)
   }
 
   // Disabled models: retain-on-absence. An explicit empty list clears; missing
@@ -802,6 +831,21 @@ export async function applyConfigToState(): Promise<Config> {
     if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
     if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
     if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
+
+    // Tiered cold-archive (history.archive.*). Size caps accept a human-readable
+    // string ("2GB"/"500MB") OR a raw byte count; parseByteSize warn-continues on
+    // a bad value (config never kills the process).
+    if (h.archive) {
+      const a = h.archive
+      if (a.enabled !== undefined) setHistoryConfig({ historyArchiveEnabled: a.enabled })
+      if (a.hot_days !== undefined) setHistoryConfig({ historyArchiveHotDays: a.hot_days })
+      if (a.tier2_warn_count !== undefined) setHistoryConfig({ historyArchiveTier2WarnCount: a.tier2_warn_count })
+      if (a.dir !== undefined) setHistoryConfig({ historyArchiveDir: a.dir })
+      const sizeCap = parseByteSize(a.tier1_size_cap, "history.archive.tier1_size_cap")
+      if (sizeCap !== undefined) setHistoryConfig({ historyArchiveTier1SizeCap: sizeCap })
+      const warnBytes = parseByteSize(a.tier2_warn_bytes, "history.archive.tier2_warn_bytes")
+      if (warnBytes !== undefined) setHistoryConfig({ historyArchiveTier2WarnBytes: warnBytes })
+    }
   }
 
   // Telemetry settings (telemetry.*, nested: override only when present). Business-layer

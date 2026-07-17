@@ -2,8 +2,8 @@ import { Hono } from "hono"
 
 import {
   //
-  handleDeleteEntries,
-  handleDeleteSession,
+  handleArchiveCooldown,
+  handleArchiveNow,
   handleExport,
   handleExportEntry,
   handleGetEntries,
@@ -34,13 +34,16 @@ historyRoutes.get("/api/entries/:id", handleGetEntry)
 historyRoutes.get("/api/entries/:id/export", handleExportEntry)
 historyRoutes.post("/api/entries/:id/pin", handlePinEntry)
 historyRoutes.post("/api/entries/:id/unpin", handleUnpinEntry)
-historyRoutes.delete("/api/entries", handleDeleteEntries)
+// Product-facing delete surface removed (spec §3.6): "clear history" is now
+// "archive now" (HOT→tier-1 move, never a delete). The delete SQL primitives
+// stay as test-only internals; they are no longer HTTP-exposed.
+historyRoutes.post("/api/archive-now", handleArchiveNow)
+// Age-based on-demand cool-down: run the standard `> hot_days` HOT→tier-1 pass now
+// (respects hot_days; distinct from archive-now which force-archives regardless of age).
+historyRoutes.post("/api/archive-cooldown", handleArchiveCooldown)
 historyRoutes.get("/api/stats", handleGetStats)
 historyRoutes.get("/api/sessions", handleGetSessions)
 historyRoutes.get("/api/export", handleExport)
 // Dedicated full-text search (content-addressed index) + lazy hash→requests companion.
 historyRoutes.get("/api/search", handleSearch)
 historyRoutes.get("/api/search/contains", handleSearchContains)
-
-/** Session endpoints */
-historyRoutes.delete("/api/sessions/:id", handleDeleteSession)

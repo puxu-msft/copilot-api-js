@@ -214,8 +214,9 @@ gemini -p "hello"
 - `openai-responses.*` — `normalize_call_ids`、`upstream_ws`、`fix_stream_ids`、`client_ws_keep_open`、`strip_image_generation_tool`、`max_ws_frame_bytes`、`max_client_ws_connections`、`max_upstream_ws_connections`。
 - `rate_limiter.*` — 重试间隔、请求间隔、恢复超时、连续成功阈值。**需要重启。**
 - `system_prompt_prepend` / `system_prompt_append` / `system_prompt_overrides` — 完整的 system prompt 修改管道（line 或 regex 替换，可选 `model` 过滤）。
-- `history.limit` / `history.reaper_interval` / `history.db_path` — SQLite history 保留策略。
-- `shutdown.graceful_wait` / `shutdown.abort_wait` — 关闭排空时长。
+- `history.success_limit` / `history.failure_limit` / `history.reaper_interval` / `history.db_path` — SQLite History 保留策略。
+- `history.archive.*` — HOT→TIER-1→TIER-2 三层降温归档；后台任务按 durable unit 协作停，重启后续跑。
+- `shutdown.graceful_wait` / `shutdown.abort_wait` — 首次信号自动执行四步关闭流水线；第二次 Ctrl+C 立即强退。
 - `stream_idle_timeout` / `fetch_timeout` / `model_refresh_interval` / `stale_request_max_age` — 网络相关旋钮。
 - `proxy` — 出站代理 URL。**需要重启。**
 
@@ -228,7 +229,10 @@ gemini -p "hello"
 ├── config.yaml                     # 用户配置（热重载）
 ├── github_token                    # GitHub Device Flow token
 ├── copilot-token.json              # 缓存的 Copilot bearer（含过期时间）
-├── history.db                      # SQLite history（payload 经 gzip 压缩）
+├── history.db                      # HOT SQLite History（payload 经 zstd 压缩）
+├── archive.db                      # TIER-1 归档索引/存储（启用时）
+├── archive-t1-*.db                 # 不可变温层 session-generation units
+├── archive-t2-*.db                 # 不可变冷层 session-generation units
 ├── negotiation-states.json         # 学习到的每模型禁用项（betas / body 字段 / efforts）
 ├── auto-truncate-limits.json       # 学习到的每模型 token 计数 calibration 因子
 └── system-prompts/                 # 可选的 system prompt 转储（开启时）

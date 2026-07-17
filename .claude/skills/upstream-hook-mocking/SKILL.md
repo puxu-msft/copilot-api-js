@@ -11,16 +11,22 @@ copilot-api-js 在上游边界（`Transport.send`）提供 driver 编排的 ad-h
 
 ## 快速开始（三步）
 
-1. **写 hook 文件**（放 `exp/` 或 `tests/` 下——见下方「hook 文件放哪」），导出你关心的挂载点：
+1. **写 hook 文件**（放任意别名可解析处——loader 转译到项目内文件、`~/` 别名全局可解析），`export const hooks = { ... }` 导出你关心的挂载点：
 
 ```ts
-// exp/my-hook.ts
-import { mockUpstreamError, mockAnthropicMessage } from "~/lib/pipeline/hooks"
+// hooks/my-hook.ts
+import { mockUpstreamError, stripMessageBlock } from "~/lib/pipeline/hooks"
 
-export const onExchange = async (wire, env, next) => {
-  // 只对某模型 mock 一个 400，其余真发 GHC
-  if (env.model?.id === "claude-opus-4-8") return mockUpstreamError.toolFieldRejection()
-  return next()
+export const hooks = {
+  client: {
+    // 生产改写：剥客户端注入的 role:system 噪声（client-native body，翻译/sanitize 之前）
+    inbound: (env) => stripMessageBlock(env, (t) => t.role === "system" && /TodoWrite/.test(t.text)),
+  },
+  exchange: async (wire, env, next) => {
+    // 测试：只对某模型 mock 一个 400，其余真发 GHC
+    if (env.model?.id === "claude-opus-4-8") return mockUpstreamError.toolFieldRejection()
+    return next()
+  },
 }
 ```
 
@@ -28,21 +34,25 @@ export const onExchange = async (wire, env, next) => {
 
 ```yaml
 hooks:
-  upstream_module: "./exp/my-hook.ts"
+  upstream_module: "./hooks/my-hook.ts"
   enabled: true          # 默认 false，必须显式 true 才加载
 ```
 
 3. **启动服务器**（启动期自动加载）；改了 hook 文件后 **`curl -X POST localhost:4141/api/hooks/reload`** 热重载，不必重启。
 
-## 三个挂载点（`UpstreamHook`，全部可选、未导出=直通）
+## 对称四挂载点 + exchange（`export const hooks`，全部可选、未导出=直通、`return undefined`=observe）
+
+`client|upstream`=body 形状（客户端原生 / 上游目标）、`inbound|outbound`=相对 proxy 方向。
 
 | 挂载点 | 何时调 | 签名 | 典型用途 |
 |---|---|---|---|
-| `onRequest` | 一次性，retry 循环**外** | `(env) => RequestEnvelope \| undefined`（返回 undefined = 不改） | 人体工学地改写逻辑请求 |
-| `onExchange` | S4 上游交换核心，包裹 `transport.send` | `(wire, env, next) => Promise<UpstreamStream>` | 四用途全覆盖（见下） |
-| `rewriteUpstreamFrame` | 逐帧，上游采样**之后** | `(frame, env) => UpstreamFrame \| undefined`（undefined = 丢弃该帧） | 逐帧改写/丢帧 |
+| `client.inbound` | 一次性，S1a parse 后 / S1b translate 前（**唯一** client-native 点，driver 给防御性 body 克隆） | `(env) => RequestEnvelope \| undefined` | **生产改写请求**：剥客户端注入块、省 token（`stripMessageBlock`/`stripSystemText` 四格式 helper） |
+| `upstream.outbound`（旧 `onRequest`） | 一次性，retry 循环**外**、朝上游 | `(env) => RequestEnvelope \| undefined` | 贴近上游的最终请求改写 |
+| `exchange`（旧 `onExchange`） | S4 上游交换核心，包裹 `transport.send`（**L1×L2 次**） | `(wire, env, next) => Promise<UpstreamStream>` | mock/拦截/回放/故障四用途 |
+| `upstream.inbound`（旧 `rewriteUpstreamFrame`） | 逐帧，上游采样**之后** | `(frame, env) => UpstreamFrame \| undefined`（undefined=丢帧） | 逐帧改写上游响应 |
+| `client.outbound` | 逐 client 帧，S6 render 后（覆盖渲染帧，不含 sink 合成/心跳帧——见 deferred-backlog） | `(frame, env) => ClientFrame \| undefined`（undefined=丢帧） | 改写回客户端的响应帧 |
 
-`onExchange` 如何覆盖四用途：
+`exchange` 如何覆盖四测试用途：
 
 - **Mock 上游**：不调 `next`，返回合成 `UpstreamStream`（离线、零额度）。
 - **拦截改写**：调 `next` 前改 `wire`，或调 `next` 后包裹返回的 stream。
@@ -64,7 +74,7 @@ hooks:
 | `delay(ms)` | `<T>(s) => Promise<T>` 包装器 | `return delay(2000)(mockAnthropicMessage("hi"))` |
 | `truncateAfter(n, stream)` | 只保留前 n 帧的 stream | 造断流 |
 
-**raw 逃生口**：`onExchange` 可直接返回手构的 `UpstreamStream = { frames: AsyncIterable<{event?,data?,id?,retry?}>, headers: Headers, nonStream? }`——能造**任意畸形帧序列**（helper 造不出的边界情况）。
+**raw 逃生口**：`exchange` 可直接返回手构的 `UpstreamStream = { frames: AsyncIterable<{event?,data?,id?,retry?}>, headers: Headers, nonStream? }`——能造**任意畸形帧序列**（helper 造不出的边界情况）。
 
 ### 驱动 reactive retry 学习腿（核心动机）
 
@@ -86,12 +96,12 @@ mockUpstreamError.unsupportedBeta()       // → unsupported-beta-retry
 
 ## 承重坑（务必知道，都是实测踩过的）
 
-1. **data-URL 具名导出丢失**：hook 经 `Bun.Transpiler` + data-URL 加载。**别在 `yield` 里内联嵌套对象字面量**（如 `yield { data: JSON.stringify({...}) }`）——转译后会丢具名导出、挂载点静默变 `undefined`、hook 静默失效。规避：先赋值到变量再 yield，或用 helper（`sse`/`streamOf`）。详见记忆 `reference-bun-esm-cache-busting-query-fails-data-url-works`。
-2. **hook 文件放哪**：要 `import "~/lib/pipeline/hooks"` 别名，hook 文件须在别名可解析处——**放 `exp/` 或 `tests/`**。放仓库外须用相对路径或包导出。
-3. **`onExchange` 被调 L1×L2 次**：同一客户端请求内，`onExchange` 可能被调多次（L1 retry 循环 × L2 buffered-retry 再交换）。有状态 hook（计数器、录制）须知道这点。对返回固定响应的 mock 无害。
+1. **loader 机制（2026-07-14 起）**：hook 经 `Bun.Transpiler` 转译后写 `.hooks-cache/` 唯一项目文件再 import——绕 Bun path-keyed ESM 缓存（热重载有效）**且**经 tsconfig `paths` 解析 `~/` 别名（旧 data-URL 方案不解析别名、带 import 的 hook 静默失效，已弃）。data-URL 时代的「yield 内联对象字面量丢导出」坑随之消失。
+2. **hook 文件放哪**：loader 转译到项目内文件，`~/` 别名全局可解析——放任意项目内位置皆可（如 `hooks/`）。放仓库外须用相对路径或包导出。
+3. **`exchange` 被调 L1×L2 次**：同一客户端请求内，`exchange` 可能被调多次（L1 retry 循环 × L2 buffered-retry 再交换）。有状态 hook（计数器、录制）须知道这点。对返回固定响应的 mock 无害。
 4. **mock 流绕过守卫**：不调 `next` 的 mock 流**绕过** `guardSseIterable`（idle/shutdown/client-abort 守卫）+ adaptive rate-limiter（都在 `transport.send` 内）。要测超时/断流须自己在 raw 逃生口构造。
-5. **history 可辨识性**：mock/回放帧在 history 上游轨自动打 `synthetic:"hook-mock"`/`"hook-replay"`；改写帧在 forwarded 轨打 `"hook-rewrite"`——所以事后看 history 能区分真实 vs hook 产物。**上游轨永远记 hook 改写前的真实帧**（`rewriteUpstreamFrame` 只影响 forwarded 侧）。**注意**：forwarded `hook-rewrite` 标记**仅 Anthropic `/v1/messages` 直连 + CC 直连腿可靠**——Responses 腿（因 `restoreAndAccumulate` 重建帧）+ translate 腿会丢标（见 `docs/todo/deferred-backlog.md`）。
-6. **`onRequest` 是一次性的**：落在 retry 循环外，多 attempt 只调一次——别指望它每 attempt 改 env（那会破坏 reactive 策略的 env 修正）。要每 attempt 介入用 `onExchange`。
+5. **history 可辨识性**：mock/回放帧在 history 上游轨自动打 `synthetic:"hook-mock"`/`"hook-replay"`；改写帧在 forwarded 轨打 `"hook-rewrite"`——所以事后看 history 能区分真实 vs hook 产物。**上游轨永远记 hook 改写前的真实帧**（`upstream.inbound` 只影响 forwarded 侧）。**注意**：forwarded `hook-rewrite` 标记**仅 Anthropic `/v1/messages` 直连 + CC 直连腿可靠**——Responses 腿（因 `restoreAndAccumulate` 重建帧）+ translate 腿会丢标（见 `docs/todo/deferred-backlog.md`）。
+6. **`upstream.outbound`（及 `client.inbound`）是一次性的**：落在 retry 循环外，多 attempt 只调一次——别指望它每 attempt 改 env（那会破坏 reactive 策略的 env 修正）。要每 attempt 介入用 `exchange`。
 
 ## 测试里用（不起服务器）
 

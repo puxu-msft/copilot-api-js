@@ -1,7 +1,7 @@
 /**
  * Task 5.1 (docs/plan/2026-07-12-upstream-hook-middleware/plan-5-integration-closeout.md) — the
  * CORE MOTIVATION acceptance test: does mounting `mockUpstreamError.toolFieldRejection()` on
- * `onExchange` really drive the REAL reactive retry leg end-to-end, or does it just look like it
+ * `exchange` really drive the REAL reactive retry leg end-to-end, or does it just look like it
  * from the hook's own vantage point?
  *
  * Independent oracle (review H3, non-self-validating): the hook never asserts anything about
@@ -60,7 +60,7 @@ describe("Task 5.1 — reactive retry leg end-to-end (mockUpstreamError.toolFiel
 
     let onExchangeCalls = 0
     setUpstreamHookForTests({
-      onExchange: async (_wire, _env, next) => {
+      exchange: async (_wire, _env, next) => {
         onExchangeCalls++
         if (onExchangeCalls === 1) mockUpstreamError.toolFieldRejection()
         return next()
@@ -113,7 +113,7 @@ describe("Task 5.1 — reactive retry leg end-to-end (mockUpstreamError.toolFiel
 
     let onExchangeCalls = 0
     setUpstreamHookForTests({
-      onExchange: async () => {
+      exchange: async () => {
         onExchangeCalls++
         // A 400 that looks nothing like ANY reactive-rejection pattern this strategy stack knows.
         throw new HTTPError("unrelated failure", 400, "totally unrelated body text")

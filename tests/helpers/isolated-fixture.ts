@@ -44,6 +44,7 @@ import {
   drainPendingFinalizations,
 } from "~/lib/history/entries"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import { resetArchiveWorkerForTests } from "~/lib/history/sqlite/archive-worker"
 import { resetCacheWriteBackfillForTests } from "~/lib/history/sqlite/cache-write-backfill"
 import { resetCalibrationBackfillForTests } from "~/lib/history/sqlite/calibration-backfill"
 import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-stage-backfill"
@@ -123,6 +124,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetCacheWriteBackfillForTests", reset: resetCacheWriteBackfillForTests },
   { name: "resetResponsePreviewBackfillForTests", reset: resetResponsePreviewBackfillForTests },
   { name: "resetCalibrationBackfillForTests", reset: resetCalibrationBackfillForTests },
+  { name: "resetArchiveWorkerForTests", reset: resetArchiveWorkerForTests },
   // TUI terminal-coordinator module-level singleton (whole-branch review I3):
   // a test that constructs a non-`silent` TerminalUi and forgets `destroy()`
   // would otherwise leak its registration into the next test file.

@@ -14,6 +14,7 @@ import {
   runOptimize,
 } from "./connection"
 import { GC_ORPHAN_MSG_BLOB_SQL } from "./write"
+import { migrateOverflowToTier1, runTier1MigrationOnce } from "./tier1-migrate"
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -71,6 +72,23 @@ function evictBucket(db: Database, where: string, limit: number): number {
 
 export function runReaperOnce(successLimit: number, failureLimit: number): number {
   const db = getDatabase()
+
+  // Tiered-archive mode: when enabled AND the archive is attached, overflow rows
+  // are MOVED to tier-1 instead of DELETEd (never-truly-delete red line, spec §3.1).
+  // The count limits become a safety valve (bound HOT growth within the hot window)
+  // rather than a lossy eviction. Falls back to the legacy DELETE path when archiving
+  // is off or the archive isn't attached yet (e.g. before startup wiring runs).
+  if (state.historyArchiveEnabled && isArchiveAttached(db)) {
+    const moved = migrateOverflowToTier1(db, successLimit, failureLimit)
+    if (moved > 0) {
+      consola.info(`[history/sqlite] reaper moved ${moved} overflow entries HOT→tier-1 (successLimit=${successLimit}, failureLimit=${failureLimit})`)
+      // HOT-side msg_blob orphan sweep (req_msg/req_aux cascade-removed with the moved
+      // head rows; archive-side GC ran inside migrateOverflowToTier1's batch).
+      db.prepare(GC_ORPHAN_MSG_BLOB_SQL).run()
+    }
+    return moved
+  }
+
   const deletedSuccess = evictBucket(db, SUCCESS_WHERE, successLimit)
   const deletedFailure = evictBucket(db, FAILURE_WHERE, failureLimit)
   const deleted = deletedSuccess + deletedFailure
@@ -84,6 +102,25 @@ export function runReaperOnce(successLimit: number, failureLimit: number): numbe
     db.prepare(GC_ORPHAN_MSG_BLOB_SQL).run()
   }
   return deleted
+}
+
+/**
+ * Whether archive.db is ATTACHed as `archive` on this connection — a precondition
+ * for the reaper's move-to-tier1 path. Probed via `pragma database_list` rather
+ * than assumed, so a tick that fires before startup wiring attaches the archive
+ * safely falls back to the legacy DELETE path instead of throwing.
+ */
+function isArchiveAttached(db: Database): boolean {
+  try {
+    const rows = db.prepare("PRAGMA database_list").all() as Array<{ name: string }>
+    return rows.some((r) => r.name === "archive")
+  } catch (err: unknown) {
+    // A genuine connection fault here (vs "archive simply not attached") would
+    // silently route to the legacy DELETE path — surface it so it's diagnosable
+    // rather than masquerading as "archiving disabled".
+    consola.debug("[history/sqlite] archive-attached probe failed; falling back to legacy delete path", err)
+    return false
+  }
 }
 
 /**
@@ -142,6 +179,14 @@ export function runReaperTick(successLimit: number, failureLimit: number): void 
   // finalize always wins; no loss/corruption, only a transient blip).
   reclaimStaleActiveRows()
   runReaperOnce(successLimit, failureLimit)
+  // Periodic time-based HOT→tier-1 migration (spec §3.3: startup + periodic). One
+  // bounded batch per tick (resumable — a large backlog drains over several ticks),
+  // gated on archiving enabled + attached. Independent of the count safety-valve in
+  // runReaperOnce (which handles overflow within the hot window); this cools rows
+  // that have simply aged past hot_days.
+  if (state.historyArchiveEnabled && isArchiveAttached(db)) {
+    runTier1MigrationOnce(db, { hotDays: state.historyArchiveHotDays, batchSize: 200 })
+  }
   // Return the pages just freed by eviction to the OS (no-op unless
   // auto_vacuum=INCREMENTAL is in effect — see incrementalVacuum).
   incrementalVacuum(db)

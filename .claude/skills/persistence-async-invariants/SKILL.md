@@ -5,6 +5,8 @@ description: 当在 copilot-api-js 改动 history/telemetry 持久化/异步落�
 
 # 持久化异步化 / settle 时点不变量
 
+进程级 stop/drain/abort/force、两信号强退与 completion latch 见 skill `process-lifecycle-shutdown`；Archive session/batch durable unit、不可变 generation 与跨 artifact 可恢复提交见 skill `archive-background-lifecycle`。本文只管 canonical History/Telemetry 的异步落盘不变量。
+
 history 持久化层三类高危不变量：**同步→异步落盘的不变量清单**、**settle 同步冻结 entry 快照的时点契约**、**buffered-retry 信号的记录时点**。三者共性=异步窗口 / retry 窗口 / settle 边界把"同步隐式保证"打破，且失效**静默**（编译过、fire-and-forget 类型兼容、单测偶尔过）。改这些代码前逐条核。
 
 ## 1. 同步持久化路径改异步的不变量清单

@@ -54,7 +54,7 @@ export function streamOf(frames: Array<UpstreamFrame>, headers = new Headers()):
 // ============================================================================
 //
 // Each builds a MINIMAL BUT WIRE-VALID SSE sequence for its format, so a hook
-// author's `onExchange` can `return mockXxx("...")` in place of a real upstream
+// author's `exchange` can `return mockXxx("...")` in place of a real upstream
 // call. Correctness of each is independently verified in
 // tests/pipeline/hooks/toolkit.unit.test.ts by feeding the frames through the
 // SAME production stream accumulator/translator the driver uses to decode a
@@ -131,7 +131,7 @@ export function mockGeminiResponse(text: string): UpstreamStream {
 
 /**
  * Throw a real `HTTPError` (never a plain `Error`/string) so a hook's
- * `onExchange` can `return mockUpstreamError(400, ...)` in place of a real
+ * `exchange` can `return mockUpstreamError(400, ...)` in place of a real
  * upstream call to simulate an upstream rejection. `body` is serialized into
  * `responseText` — the pipeline's reactive retry strategies read
  * `error.raw.responseText` (see e.g. `tool-field-rejection-retry.ts`'s
@@ -191,7 +191,7 @@ function rebuildHeaders(entry: HistoryEntry): Headers {
 
 /**
  * Rebuild an `UpstreamStream` from a recorded history entry's LAST attempt's upstream-original SSE
- * frames — so a hook's `onExchange` can `return await replayFromHistory(selector)` to deterministically
+ * frames — so a hook's `exchange` can `return await replayFromHistory(selector)` to deterministically
  * re-play a real captured exchange instead of a hand-built mock.
  *
  * FORMAT-LAYERED FIDELITY (H4, spec §5): a recorded `SseEventRecord.raw` is only ever the `data:`
@@ -226,7 +226,7 @@ export async function replayFromHistory(selector: string | { model?: string; end
 
 /** Build a delay-injecting passthrough: `delay(ms)(value)` awaits `ms` (real `Bun.sleep`, not a
  *  same-tick no-op) then resolves to `value` unchanged. Curried so a hook author can drop it into
- *  a pipeline stage, e.g. `onExchange: async (wire, env, next) => delay(2000)(await next())`. */
+ *  a pipeline stage, e.g. `exchange: async (wire, env, next) => delay(2000)(await next())`. */
 export function delay(ms: number): <T>(value: T) => Promise<T> {
   return async <T>(value: T): Promise<T> => {
     await Bun.sleep(ms)

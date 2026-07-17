@@ -1,6 +1,6 @@
 /**
  * Task 1.3 + 2.2 (docs/plan/2026-07-12-upstream-hook-middleware, plan-1 §Task 1.3 +
- * plan-2 §Task 2.2) — the `rewriteUpstreamFrame` per-frame mount point AND the
+ * plan-2 §Task 2.2) — the `upstream.inbound` per-frame mount point AND the
  * mock/replay `HOOK_ORIGIN` upstream-track synthetic marker. Landed together: both touch
  * the exact same `runResponse` loop body (driver.ts ~line 440-456) and share the same
  *承重不变量 — the upstream-original track (`ctx.sseEvents`, sampled via `upstreamSse.push`
@@ -66,13 +66,13 @@ afterEach(() => {
   resetUpstreamHook()
 })
 
-describe("hooks — rewriteUpstreamFrame mount point (Task 1.3)", () => {
+describe("hooks — upstream.inbound mount point (Task 1.3)", () => {
   test("H2: forwarded frames are rewritten, but ctx.sseEvents (upstream-original track) keeps the PRE-hook frame", async () => {
     const { ctx, calls } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
     setUpstreamHookForTests({
-      rewriteUpstreamFrame: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }),
+      upstream: { inbound: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) },
     })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const frames: Array<UpstreamFrame> = [{ data: "a" }, { data: "b" }]
@@ -90,7 +90,7 @@ describe("hooks — rewriteUpstreamFrame mount point (Task 1.3)", () => {
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
     setUpstreamHookForTests({
-      rewriteUpstreamFrame: (frame) => (frame.data === "drop" ? undefined : frame),
+      upstream: { inbound: (frame) => (frame.data === "drop" ? undefined : frame) },
     })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const frames: Array<UpstreamFrame> = [{ data: "a" }, { data: "drop" }, { data: "b" }]
@@ -105,7 +105,7 @@ describe("hooks — rewriteUpstreamFrame mount point (Task 1.3)", () => {
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
     setUpstreamHookForTests({
-      rewriteUpstreamFrame: (frame) => (frame.data === "drop" ? undefined : frame),
+      upstream: { inbound: (frame) => (frame.data === "drop" ? undefined : frame) },
     })
     // A single identity rewrite so `onRewriteAction` fires per SURVIVING frame — its
     // `frameIndex` argument is the raw-upstream-frame ordinal (advanced once per loop
@@ -129,11 +129,11 @@ describe("hooks — rewriteUpstreamFrame mount point (Task 1.3)", () => {
     expect(seenFrameIndexes).toEqual([0, 2])
   })
 
-  test("no rewriteUpstreamFrame mounted (hook has only other mount points) → frames pass through unchanged", async () => {
+  test("no upstream.inbound mounted (hook has only other mount points) → frames pass through unchanged", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
-    setUpstreamHookForTests({ onRequest: (e) => e })
+    setUpstreamHookForTests({ upstream: { outbound: (e) => e } })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const frames: Array<UpstreamFrame> = [{ data: "a" }, { data: "b" }]
 
@@ -198,13 +198,13 @@ describe("hooks — HOOK_ORIGIN upstream-track provenance marking (Task 2.2)", (
   })
 })
 
-describe("hooks — rewriteUpstreamFrame forwarded-track hook-rewrite marking (Task 2.3)", () => {
+describe("hooks — upstream.inbound forwarded-track hook-rewrite marking (Task 2.3)", () => {
   test("PASSTHROUGH leg (identity codec.renderResponse, e.g. Anthropic/CC direct): a rewritten frame is marked synthetic:'hook-rewrite' in the forwarded track; the upstream-original track stays pre-hook pure", async () => {
     const { ctx, calls } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env }) // default renderResponse is identity (returns `frame` verbatim)
     setUpstreamHookForTests({
-      rewriteUpstreamFrame: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }),
+      upstream: { inbound: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) },
     })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const forwarded: Array<{ raw: string; synthetic?: string }> = []
@@ -230,7 +230,7 @@ describe("hooks — rewriteUpstreamFrame forwarded-track hook-rewrite marking (T
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
-    setUpstreamHookForTests({ rewriteUpstreamFrame: (frame) => frame })
+    setUpstreamHookForTests({ upstream: { inbound: (frame) => frame } })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const forwarded: Array<{ synthetic?: string }> = []
     const sink = makeSseSink(mockStream(), { onForwarded: (r) => forwarded.push({ ...(r.synthetic ? { synthetic: r.synthetic } : {}) }) })
@@ -244,7 +244,7 @@ describe("hooks — rewriteUpstreamFrame forwarded-track hook-rewrite marking (T
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
-    setUpstreamHookForTests({ rewriteUpstreamFrame: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) })
+    setUpstreamHookForTests({ upstream: { inbound: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) } })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const forwarded: Array<{ raw: string; synthetic?: string }> = []
     const sink = makeSseSink(mockStream(), { onForwarded: (r) => forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }) })
@@ -259,7 +259,7 @@ describe("hooks — rewriteUpstreamFrame forwarded-track hook-rewrite marking (T
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env, renderResponse: (frame) => ({ data: `TRANSLATED(${frame.data})` }) })
-    setUpstreamHookForTests({ rewriteUpstreamFrame: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) })
+    setUpstreamHookForTests({ upstream: { inbound: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) } })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const forwarded: Array<{ raw: string; synthetic?: string }> = []
     const sink = makeSseSink(mockStream(), { onForwarded: (r) => forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }) })
@@ -276,7 +276,7 @@ describe("hooks — rewriteUpstreamFrame forwarded-track hook-rewrite marking (T
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env }) // identity renderResponse (passthrough leg)
-    setUpstreamHookForTests({ rewriteUpstreamFrame: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) })
+    setUpstreamHookForTests({ upstream: { inbound: (frame) => ({ ...frame, data: `REWRITTEN(${frame.data})` }) } })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
     const forwarded: Array<{ raw: string; synthetic?: string }> = []
     const sink = makeSseSink(mockStream(), { onForwarded: (r) => forwarded.push({ raw: r.raw, ...(r.synthetic ? { synthetic: r.synthetic } : {}) }) })

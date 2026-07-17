@@ -108,7 +108,6 @@ import {
   resolveBufferedCaps,
   state,
 } from "~/lib/state"
-import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 import {
   //
@@ -132,14 +131,15 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   const clientRaw = (c.get("injectedPayload") as ResponsesPayload | undefined) ?? (await c.req.json<ResponsesPayload>())
   const azureModelOverride = c.get("azureModelOverride") as string | undefined
 
-  // Apply the async, non-idempotent system-prompt injection (instructions) BEFORE
-  // the sync codec.parse, passing the client raw separately for the history
-  // snapshot. Resolve the model HERE (before processResponsesInstructions' config
-  // reload) and pass it as `preResolved` — matching the legacy handler's order.
+  // Resolve the model HERE (transport idle-timeout, codec setup, reverse mapper holder). The async
+  // system-prompt injection (`processResponsesInstructions`) has moved OFF the route into the codec's
+  // S1b `translateInbound` (RFC 2026-07-14 §4) so `client.inbound` sees the client-native body. Unlike
+  // openai-cc, the Responses parse reads no config-managed state, and the legacy flow only reloaded
+  // config when `instructions` were present (processResponsesInstructions early-returns otherwise), so
+  // no route-level `applyConfigToState` is added here — translateInbound's own reload (when it runs)
+  // preserves the exact legacy behavior.
   const { name: resolvedName, routeOverride } = resolveModelTarget(azureModelOverride ?? clientRaw.model)
   const selectedModel = state.modelIndex.get(resolvedName)
-  const wireInstructions = await processResponsesInstructions(clientRaw.instructions, resolvedName, "openai-responses")
-  const wireBody: ResponsesPayload = { ...clientRaw, instructions: wireInstructions }
 
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
@@ -169,8 +169,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   let result: DriverRequestResult
   try {
     result = await driver.runRequest({
-      body: wireBody,
-      originalBodyForHistory: clientRaw,
+      body: clientRaw,
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
@@ -655,7 +654,8 @@ interface PumpReverseAnthropicLegOptions {
 
 /**
  * Stream pump for a REVERSE `@messages` leg (responses→messages) — the upstream is an Anthropic SSE stream,
- * the codec's two-hop `renderResponse` translates each Anthropic frame to Responses event(s), and the client
+ * the codec's DIRECT single-hop `renderResponse` (RFC 2026-07-14-anthropic-responses-direct-bridge §3/§4.2,
+ * Phase 4 subtask F) translates each Anthropic frame straight to Responses event(s), and the client
  * receives the Responses stream. This handler:
  *   - accumulates the RAW UPSTREAM Anthropic frame into the Anthropic accumulator via `onUpstreamFrame` for
  *     the honest `outboundResponse` (RFC §4.1 / richest-data-flow),
@@ -663,7 +663,10 @@ interface PumpReverseAnthropicLegOptions {
  *     reverse translator's Responses `response.completed` terminal — 疑点 7b; without it the client never
  *     gets the terminal),
  *   - has NO heartbeat / anchor (a Responses client is not Claude Code),
- *   - settles from `codec.getStreamMeta()`: a clean drain WITHOUT a finish_reason is an upstream truncation
+ *   - settles from its OWN raw Anthropic accumulator (`classifyReverseAnthropicTerminal(anthropicAcc)`
+ *     below — NOT `codec.getStreamMeta()`, whose declared `AnthropicToCcStreamMeta` shape carries CC-only
+ *     `finishReason`/`usage` fields this leg's direct translator does not produce; `getMeta()` here only
+ *     supplies `sawMessageStop` honestly): a clean drain WITHOUT `message_stop` is an upstream truncation
  *     (F2), failed with a synthetic Responses error terminator.
  */
 async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): Promise<void> {

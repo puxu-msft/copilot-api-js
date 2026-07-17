@@ -4,8 +4,11 @@ import type {
   //
   EntrySummary,
   HistoryEntry,
+  QueryOptions,
 } from "./types"
 
+import { getDatabase } from "./sqlite/connection"
+import { archiveNow as archiveNowSqlite } from "./sqlite/tier1-migrate"
 import {
   //
   clearInFlight,
@@ -336,12 +339,20 @@ export function persistEntryStages(id: string, stages: Array<StagePayload>): voi
 }
 
 /**
- * Wipe ALL history (in-flight + every SQLite table). Triggered by
- * `DELETE /history/api/entries` (the UI's "clear all"). This is a destructive,
- * irreversible operation, so it logs LOUDLY with the count it removed — a silent
- * full wipe is invisible in the logs and indistinguishable from a persistence
- * bug (it cost a long forensic investigation to attribute one lost failed entry
- * to a clear rather than a finalize/reaper defect).
+ * Manual "archive now" trigger (spec §3.6) — the product-facing replacement for
+ * the removed delete API. Moves the terminal, non-pinned HOT entries matching
+ * `filters` (or all when absent) into tier-1 instead of deleting them. Returns the
+ * number archived; a no-op returning 0 when archiving is disabled.
+ */
+export function archiveNow(filters?: QueryOptions): number {
+  return archiveNowSqlite(getDatabase(), filters)
+}
+
+/**
+ * Wipe ALL history (in-flight + every SQLite table). **Test-only internal
+ * primitive** (spec §3.6): the HTTP delete surface is removed — this stays only
+ * as the isolation-reset used by resetTestRuntime + integration tests. Logs
+ * LOUDLY (a silent full wipe is indistinguishable from a persistence bug).
  */
 export function clearHistory(): void {
   const inFlightCount = listInFlight().length

@@ -67,6 +67,15 @@ export interface RequestContextManager {
   /** Number of active requests */
   readonly activeCount: number
 
+  /**
+   * C5: OPERATION registry — a ctx stays tracked here until its operation body QUIESCES
+   * (settle-before work done), not merely until settle. Serves the shutdown drain so orphan
+   * settle-before work is waited on. For an unwired ctx (no `trackOperationBody`) this empties at
+   * settle, same as the visible registry (behavior-preserving).
+   */
+  getTrackedOperations(): Array<RequestContext>
+  readonly trackedOperationCount: number
+
   /** Start periodic cleanup of stale active contexts */
   startReaper(): void
 
@@ -153,10 +162,42 @@ export function withCapturingManager<T>(fn: () => T): { result: T; events: Array
   }
 }
 
+/**
+ * Async counterpart of {@link withCapturingManager}: `fn` is `await`ed **inside** the capture
+ * window, so a caller whose work is asynchronous (e.g. the driver's `inspectRequest`, which now
+ * runs an async S1b `translateInbound` stage — RFC 2026-07-14 §3 / review MEDIUM-1) keeps its
+ * `request.*` events captured for the whole duration. The sync {@link withCapturingManager}
+ * restores the manager the moment `fn()` returns a Promise — closing the window before the async
+ * body runs — which would let the async side effects escape to the real bus. Use THIS whenever
+ * `fn` returns a Promise; keep the sync one for sync `fn`s (e.g. `codec.parse`).
+ */
+export async function withCapturingManagerAsync<T>(fn: () => Promise<T>): Promise<{ result: T; events: Array<CapturedRequestEvent> }> {
+  const saved = _manager
+  const events: Array<CapturedRequestEvent> = []
+  const publisher = {
+    publish: (event: CapturedRequestEvent) => void events.push(event),
+    publishAndFlush: (event: CapturedRequestEvent) => {
+      events.push(event)
+      return Promise.resolve({ delivered: true } as never)
+    },
+  } as unknown as ScopedPublisher<"request">
+  _manager = createRequestContextManager({ publisher, armDeadlineTimers: false })
+  try {
+    return { result: await fn(), events }
+  } finally {
+    _manager = saved
+  }
+}
+
 // ─── Factory ───
 
 export function createRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
   const activeContexts = new Map<string, RequestContext>()
+  // C5 operation registry: a ctx stays here until its operation body QUIESCES (not merely settle).
+  // Populated on create alongside activeContexts; on settle the scope is SEALED and the ctx is
+  // removed once `whenOperationQuiesced()` resolves. Unwired ctx (childCount 0) quiesces on the
+  // next microtask ⇒ empties at settle like the visible registry (behavior-preserving).
+  const operationScopes = new Map<string, RequestContext>()
   const publisher = options?.publisher
   const armDeadlineTimers = options?.armDeadlineTimers ?? true
   // Per-request hard-deadline timers (RFC C4b). Unlike the periodic reaper scan (which fires
@@ -287,11 +328,23 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         onSettled: (id) => {
           clearDeadlineTimer(id)
           activeContexts.delete(id)
+          // C5: settle ⇒ no new operations start ⇒ seal the scope, then leave the OPERATION
+          // registry once the body quiesces. Fire-and-forget is safe: `whenOperationQuiesced`
+          // only ever RESOLVES (never rejects — see operation-scope.ts), so no unhandled
+          // rejection. Unwired ctx quiesces on the next microtask (childCount 0).
+          const tracked = operationScopes.get(id)
+          if (tracked) {
+            tracked.sealOperationScope()
+            void tracked.whenOperationQuiesced().then(() => {
+              operationScopes.delete(id)
+            })
+          }
         },
         publisher,
       })
       recordAcceptedRequest(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
+      operationScopes.set(ctx.id, ctx)
       // Arm the hard-deadline timer (C4b). Uses the same cancel+settle as the reaper but fires
       // ON TIME via a per-request timer (bypasses RC2's late scan). `unref` so it never keeps the
       // process alive on its own. reapInFlight gives the cancel teeth (C1+C2 folded the reaper
@@ -321,6 +374,14 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
 
     get activeCount() {
       return activeContexts.size
+    },
+
+    getTrackedOperations() {
+      return Array.from(operationScopes.values())
+    },
+
+    get trackedOperationCount() {
+      return operationScopes.size
     },
 
     startReaper,

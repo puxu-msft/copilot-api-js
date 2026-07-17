@@ -275,14 +275,16 @@ export function HistoryListShadcn({
   const confirmClear = useCallback(async () => {
     setClearing(true)
     try {
+      // Product-facing delete removed (spec §3.6): "clear" is now "archive now" —
+      // move the matching terminal rows to tier-1 cold archive (never a delete).
       const qs = toQueryString(filters)
-      const res = await api.delete<{ success: boolean; deleted?: number }>(`/history/api/entries${qs ? `?${qs}` : ""}`)
-      if (res.deleted !== undefined) console.info(`[HistoryListShadcn] 已删除 ${res.deleted} 条历史`)
+      const res = await api.post<{ success: boolean; archived?: number }>(`/history/api/archive-now${qs ? `?${qs}` : ""}`, {})
+      if (res.archived !== undefined) console.info(`[HistoryListShadcn] 已归档 ${res.archived} 条历史到冷存储`)
       await queryClient.invalidateQueries({ queryKey: ["history-infinite"] })
       setClearOpen(false)
     } catch (err) {
-      // 删除失败不吞:曝光错误(内部工具可观测性优先),保持 Dialog 开着供重试。
-      console.error("[HistoryListShadcn] 清空历史失败:", err)
+      // 归档失败不吞:曝光错误(内部工具可观测性优先),保持 Dialog 开着供重试。
+      console.error("[HistoryListShadcn] 立即归档失败:", err)
     } finally {
       setClearing(false)
     }
@@ -505,7 +507,7 @@ export function HistoryListShadcn({
           className="ml-auto text-primary"
           onClick={() => setClearOpen(true)}
         >
-          清空
+          归档
         </button>
       </div>
       {outOfFilter && (
@@ -653,10 +655,10 @@ export function HistoryListShadcn({
       >
         <DialogContent className="mono max-w-sm">
           <DialogHeader>
-            <DialogTitle>清空历史</DialogTitle>
+            <DialogTitle>立即归档</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col gap-4 text-[13px] text-foreground">
-            <p>{hasAnyFilter(filters) ? `删除当前筛选命中的 ${total} 条？` : `清空全部 ${total} 条？`}</p>
+            <p>{hasAnyFilter(filters) ? `归档当前筛选命中的 ${total} 条到冷存储？` : `归档全部 ${total} 条到冷存储？`}</p>
             <div className="flex justify-end gap-2">
               <Button
                 type="button"
@@ -668,12 +670,12 @@ export function HistoryListShadcn({
               </Button>
               <Button
                 type="button"
-                variant="destructive"
+                variant="default"
                 size="sm"
                 disabled={clearing}
                 onClick={() => void confirmClear()}
               >
-                确认
+                确认归档
               </Button>
             </div>
           </div>

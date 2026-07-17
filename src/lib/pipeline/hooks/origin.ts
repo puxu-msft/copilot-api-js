@@ -25,7 +25,7 @@ export function readOrigin(s: UpstreamStream): HookOrigin | undefined {
 
 /**
  * Task 2.3 (docs/plan/2026-07-12-upstream-hook-middleware, plan-2 §Task 2.3): tag a frame
- * `rewriteUpstreamFrame` genuinely changed (returned a DIFFERENT object than the frame it was
+ * `upstream.inbound` genuinely changed (returned a DIFFERENT object than the frame it was
  * given) so the sink's forwarded-track sample can mark it `synthetic:"hook-rewrite"`
  * (richest-data-flow — a hook-modified frame the client receives must stay distinguishable
  * from a real upstream one, spec §3.4 decision 2: the mark belongs on the FORWARDED track;

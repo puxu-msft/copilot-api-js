@@ -51,7 +51,7 @@ describe("loadUpstreamHook", () => {
     const state = await loadUpstreamHook(validHookPath)
 
     expect(state.module).toBe(validHookPath)
-    expect(state.exports).toContain("onExchange")
+    expect(state.exports).toContain("exchange")
     // `version` embeds `loadedAt` but is NOT identical to `String(loadedAt)` — it also carries a
     // monotonic sequence suffix so two reloads landing in the same millisecond still get distinct,
     // strictly-increasing versions (see `loader.ts`'s `loadSeq` counter).
@@ -59,7 +59,7 @@ describe("loadUpstreamHook", () => {
 
     const hook = getUpstreamHook()
     expect(hook).toBeDefined()
-    expect(typeof hook?.onExchange).toBe("function")
+    expect(typeof hook?.exchange).toBe("function")
 
     expect(getUpstreamHookState()).toBe(state)
   })
@@ -145,14 +145,14 @@ describe("data-URL reload (regression: Bun path-keyed ESM cache bypass)", () => 
   })
 
   test("re-loads fresh module source after the file changes on disk", async () => {
-    writeFileSync(reloadPath, `export const onExchange = async () => "v1" as any\n`)
+    writeFileSync(reloadPath, `export const hooks = { exchange: async () => "v1" as any }\n`)
     await loadUpstreamHook(reloadPath)
-    const v1 = await (getUpstreamHook()?.onExchange as unknown as () => Promise<string>)()
+    const v1 = await (getUpstreamHook()?.exchange as unknown as () => Promise<string>)()
     expect(v1).toBe("v1")
 
-    writeFileSync(reloadPath, `export const onExchange = async () => "v2" as any\n`)
+    writeFileSync(reloadPath, `export const hooks = { exchange: async () => "v2" as any }\n`)
     await loadUpstreamHook(reloadPath)
-    const v2 = await (getUpstreamHook()?.onExchange as unknown as () => Promise<string>)()
+    const v2 = await (getUpstreamHook()?.exchange as unknown as () => Promise<string>)()
     expect(v2).toBe("v2")
   })
 })

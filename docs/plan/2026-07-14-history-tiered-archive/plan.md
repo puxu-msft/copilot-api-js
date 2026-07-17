@@ -1,12 +1,14 @@
 # History Tiered Archive Implementation Plan
 
+> **实施状态（2026-07-16）：✅ 已完成并合并 master。** 原 P0–P8 全部落地；生命周期 follow-up `27b65b89` 增加 Archive cooperative stop、tracked worker ownership、T1/T2 immutable session-generation、file+directory fsync、同 session 增量不覆盖以及恢复测试。用户重启后的真实进程从主树启动，日志记录 `sha=27b65b89-dirty`，HOT API 与健康检查正常。本文以下保留原始阶段计划作为执行档案；最终架构以 [DESIGN.md](../../DESIGN.md)、[lifecycle.md](../../lifecycle.md)、spec 与 ADR 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **每 task 的逐字节 bite-sized TDD 步骤在执行期由 per-task subagent 即时展开**——本 plan 给出每 task 的文件/接口/测试 oracle/不变量/验收，Phase 0 附全套 bite-sized 模板。
 
-**Goal:** 把 History 从「单库 history.db + 到量硬删（真丢失）」升级为 **HOT（history.db，近 3d + pinned）→ TIER-1（archive.db，SQLite）→ TIER-2（archive-NNNN 封存，格式 Phase 0 裁决）** 三层单向降温、产品面无删除、按视图分域访问的归档体系。
+**Goal:** 把 History 从「单库 history.db + 到量硬删（真丢失）」升级为 **HOT（history.db，近 3d + pinned）→ TIER-1（archive.db，SQLite）→ TIER-2（不可变 session-generation SQLite sealed units）** 三层单向降温、产品面无删除、按视图分域访问的归档体系。
 
-**Architecture:** 新增 `archive.db`（复用 entries_v2/entry_stages/msg_blob/req_msg/req_aux schema + tier2_manifest）承 tier-1；reaper 的到量 DELETE 改为「先写 archive + 多子表校验 + 才删 HOT」的 move 语义；tier-1 撞 size_cap 后封存为编号不可变冷单元 + manifest 富索引。**视图分域**：HOT 视图只查 history.db、归档视图（独立 URL `tier=archive`）只查 archive.db，两者绝不同列。tier-2 载体（纯 JS Parquet vs SQLite sealed）由 Phase 0 PoC 实测裁决。
+**Architecture:** 新增 `archive.db`（复用 entries_v2/entry_stages/msg_blob/req_msg/req_aux schema + tier2_manifest）承 tier-1；reaper 的到量 DELETE 改为「先写 archive + 多子表校验 + 才删 HOT」的 move 语义；tier-1 撞 size_cap 后按 session_id 分组封存为编号不可变 SQLite sealed 冷单元（单 zstd 流、9× 压缩）+ manifest 富索引。**视图分域**：HOT 视图只查 history.db、归档视图（独立 URL `tier=archive`）只查 archive.db，两者绝不同列。tier-2 载体经 Phase 0 PoC 实测裁决为 SQLite sealed（否决 Parquet）。
 
-**Tech Stack:** Bun 1.3.14（主）/ Node 24.16（compat），`bun:sqlite`/`node:sqlite`（无 better-sqlite3），Umzug hybrid forward-runner，`node:zlib` zstd（`compression.ts`），条件依赖 `hyparquet`+`hyparquet-writer`（纯 JS、零 node-gyp，仅 Phase 0 采候选 A 时引入）。
+**Tech Stack:** Bun 1.3.14（主）/ Node 24.16（compat），`bun:sqlite`/`node:sqlite`（无 better-sqlite3），Umzug hybrid forward-runner，`node:zlib` zstd（`compression.ts`，tier-2 用 max level L19）。**零新运行时依赖**（Phase 0 否决 Parquet/hyparquet）。
 
 **权威依据：** spec [docs/spec/2026-07-14-history-tiered-archive.md](../../spec/2026-07-14-history-tiered-archive.md)（三轮 GPT 对抗评审 3 BLOCKER + 8 HIGH + 2 MEDIUM + 2 LOW 全吸收、判可进 plan）。现状 skill `history-sqlite-schema` / `history-backfill` / `persistence-async-invariants` / `test-isolation`。
 
@@ -35,7 +37,7 @@ digraph phases {
   P3 [label="P3 HOT→T1 搬迁+reaper 改造"];
   P4 [label="P4 读路径视图分域"];
   P5 [label="P5 移除产品 delete\n+立即归档+路由"];
-  P6 [label="P6 T1→T2 封存\n(FORMAT-GATED on P0)"];
+  P6 [label="P6 T1→T2 封存\n(SQLite sealed+session-group)"];
   P7 [label="P7 ui-v4 视图+ui/ 死码清理"];
   P8 [label="P8 启动接线+合并态+doc-sync"];
   P1 -> P3; P2 -> P3; P2 -> P4;
@@ -46,15 +48,15 @@ digraph phases {
 }
 ```
 
-**红线**：P6（tier-2 封存）的详细实现任务**不得在 Phase 0 出 FINDINGS 前展开**——格式（Parquet vs SQLite sealed）实测裁决前写详细代码违反 empirical-verification、大概率白写。P6 任务在本 plan 只给「format-gated 占位 + 两候选各自的接口契约」，Phase 0 结论后由 subagent 即时展开采纳候选的 bite-sized 步骤。
+**Phase 0 已解格式门**：tier-2 = SQLite sealed（否决 Parquet）+ 按 session_id 分组单 zstd 流（9× 压缩，权威 `exp/tiered-archive-format/FINDINGS.md`）。P6 任务已按此展开。
 
 ## 文件结构（decomposition 锁定）
 
 **新建：**
 - `src/lib/history/sqlite/archive-db.ts` — archive.db 打开/schema/tier2_manifest DDL/独立 `applyForwardMigrations`/连接管理。`openArchiveDb(dir)` / `getArchiveDb()` / `isArchiveOpen()` / `closeArchiveDb()`。
 - `src/lib/history/sqlite/tier1-migrate.ts` — HOT→TIER-1 搬迁（可恢复骨架 + 多子表 move+verify + msg_blob 复制 + archive 侧 GC + 手动「立即归档」）。`runTier1MigrationOnce(opts)` / `migrateEntriesToTier1(ids)` / `startTier1Migration()` / `stopTier1Migration()`。
-- `src/lib/history/sqlite/tier2-seal.ts` — TIER-1→TIER-2 封存编排（manifest 写 + 删 tier-1 源行同 archive.db 单库事务）。`runTier2SealOnce()` / `startTier2Seal()`（**format-gated**，P6）。
-- `src/lib/history/sqlite/tier2-archive.ts` — 封存单元格式封装（Phase 0 裁决后定 Parquet 或 SQLite sealed）。`writeSealUnit(entries) → fileName` / `readSealedEntry(file, locator) → HistoryEntry`（**format-gated**，P6）。
+- `src/lib/history/sqlite/tier2-seal.ts` — TIER-1→TIER-2 封存编排（session-group、manifest 写 + 删 tier-1 源行同 archive.db 单库事务）。`runTier2SealOnce()` / `startTier2Seal()`（P6）。
+- `src/lib/history/sqlite/tier2-archive.ts` — 封存单元格式（SQLite sealed + session-group，Phase 0 裁决）。`writeSealUnit(sessionId, entries) → fileName` / `readSealedEntry(sealFile, indexInSession) → HistoryEntry`（P6）。
 - `exp/tiered-archive-format/` — Phase 0 PoC 实验代码 + `FINDINGS.md`（keep-poc-in-project）。
 
 **修改：**
@@ -73,7 +75,9 @@ digraph phases {
 
 ---
 
-## Phase 0 — PoC 格式裁决（format-agnostic，next to execute，全 bite-sized）
+## Phase 0 — PoC 格式裁决（✅ 已完成，裁决 SQLite sealed + session-group）
+
+> **实施状态**：landed（commit c88fd735）。裁决权威 `exp/tiered-archive-format/FINDINGS.md`。下方 bite-sized 步骤为存档记录。
 
 **目标**：用**真实 history blob** 实测裁决 tier-2 载体（候选 A Parquet vs 候选 B SQLite sealed），并交付容量锚点 / dedup 膨胀 / warn 默认值。产出 `exp/tiered-archive-format/FINDINGS.md`。**GATES P6**。
 
@@ -182,21 +186,21 @@ digraph phases {
 
 ---
 
-## Phase 6 — TIER-1→TIER-2 封存（**FORMAT-GATED on Phase 0**）
+## Phase 6 — TIER-1→TIER-2 封存（**Phase 0 已裁决：SQLite sealed + session-group**）
 
-> **⚠️ 本 Phase 的 bite-sized 步骤在 Phase 0 出 FINDINGS 裁决前不展开。** 下方给两候选**共同的接口契约 + 不变量**；Phase 0 结论后由 subagent 即时展开采纳候选（Parquet 或 SQLite sealed）的详细 TDD 步骤。
+> **Phase 0 FINDINGS 已解格式门**（`exp/tiered-archive-format/FINDINGS.md`）：tier-2 = **SQLite sealed**（否决 Parquet，零新依赖）+ **按 session_id 分组的单 zstd 流**（9× 压缩 vs per-entry：28.20→3.16 MB）。下方任务已按此裁决展开。
 
-**Files:** Create `tier2-seal.ts` + `tier2-archive.ts`；Modify `schema.ts`（tier2_manifest 已在 P2）。
+**Files:** Create `tier2-seal.ts` + `tier2-archive.ts`；Modify `schema.ts`（tier2_manifest 已在 P2，locator 列 `seal_file`/`session_id`/`index_in_session`）。
 **Test:** `tests/history/sqlite/tier2-seal.it.test.ts`（含崩溃注入）
 
-**Interfaces（两候选共同）:**
-- Produces: `writeSealUnit(entries: HistoryEntry[]): { fileName: string; locators: Map<id, locator> }` / `readSealedEntry(fileName: string, locator): HistoryEntry` / `runTier2SealOnce(): number` / `startTier2Seal()`。
-- 候选 A locator = `row_index`；候选 B locator = sealed-db `rowid`/`id`。
+**Interfaces:**
+- Produces（历史计划接口，已被最终实现 supersede）: `writeSealUnit(tmpPath, entries)` + `publishSealFile(tmpPath, finalPath)`；文件采用 `archive-t2-<session>-g<generation>.db` 不可变命名，`readSealedEntry` 按 locator 读取；worker 由 `archive-worker.ts` 统一追踪和协作停止。
+- `tier2_manifest` locator = `(seal_file, session_id, index_in_session)`。
 
-**Task 6.1（gated）** — 封存单元写（`tier2-archive.ts` `writeSealUnit`：临时文件 → fsync → 原子 rename）。**不变量**：封存单元不可变、编号 NNNN。
-**Task 6.2（gated）** — manifest 写 + 删 tier-1 源行**同 archive.db 单库事务**（§M1，防中途崩溃重复封存）。**Oracle**：崩溃在「写完 parquet、没写 manifest」→ 重跑不重复封存（manifest 已存在则跳过）。
-**Task 6.3（gated）** — `readSealedEntry` 单条读 + `deserializeEntry` 复原。**Oracle**：封存后 detail 复原深等；round-trip 保真。
-**Task 6.4（gated）** — size_cap 触发 + tier2_warn 告警（超 count/bytes 仅 `consola.warn` 绝不删）。**Oracle**：archive.db > size_cap 触发封存；tier-2 超阈值 warn、文件不删。
+**Task 6.1** — `writeSealUnit`：按 session 收集 tier-1 待封存 entry → `assembleFullEntry` 数组 → **单 zstd 流（max level L19）** → 写编号 sealed SQLite 文件；临时文件 → fsync → 原子 rename。**大 session 有界**：单 seal unit 上限 ~50 MB 解压后 / N≈100 条，超则同 session 拆多子单元（`index_in_session` 连续跨单元）。**Oracle**：session 分组封存字节 ≈ Phase 0 session-group 数量级（≪ per-entry）；round-trip 深等。**不变量**：封存单元不可变、编号 NNNN。
+**Task 6.2** — manifest 写 + 删 tier-1 源行**同 archive.db 单库事务**（§M1）。**Oracle**：崩溃在「写完 seal 文件、没写 manifest」→ 重跑不重复封存（manifest 已存在则跳过该 session）。**连跑 10 次证确定性**。
+**Task 6.3** — `readSealedEntry`：manifest 定位 → 解压 session blob → 取第 i 条 → `deserializeEntry`。**Oracle**：封存后归档视图 detail 复原深等；可选 session-blob LRU 缓存摊薄 665ms 单条读。
+**Task 6.4** — size_cap 触发（archive.db > `tier1_size_cap` 默认 2GB）+ tier2_warn 告警（超 `tier2_warn_count`=200 / `tier2_warn_bytes`=500MB 仅 `consola.warn` 绝不删）。**Oracle**：archive.db > cap 触发封存最旧 session；tier-2 超阈值 warn、文件不删。
 
 ---
 
@@ -231,5 +235,5 @@ digraph phases {
 - **spec §4 全读路径**：list/detail/search(P4) + in-flight 不变 ✅
 - **spec §6 Phase 0 六项**：P0 Step 1-9 全覆盖 ✅
 - **spec §10 评审台账 B1/B2/B3/H1-H5/M1/M2/2LOW**：B1(P4.3)/B2(P3.1,3.3)/B3(P3.2,3.4)/H1(P2.2)/H2(P5)/H3(P3.5,3.6)/H4(P4 视图分域消解)/H5(P0)/M1(P6.2)/M2(P0.6)/LOW-ui(P7.3)/LOW-验收(P8.3 doc) ✅
-- **格式门**：P6 显式 gated on P0 ✅
+- **格式门**：Phase 0 已裁决 SQLite sealed + session-group，P6 按此展开 ✅
 </content>

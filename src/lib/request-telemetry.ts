@@ -434,6 +434,8 @@ let telemetryDb: TelemetryDatabase | null = null
 let effectiveSketchGamma: number | null = null
 /** Unsubscribe for the persist-timer hot-reload listener (null when not subscribed). */
 let telemetryConfigUnsub: (() => void) | null = null
+/** Once set, config callbacks can no longer re-arm timers during shutdown. */
+let telemetryShutdownSealed = false
 /** Warn-once debounce for SQLite dual-write drain failures (mirrors persistFailureLogged for JSON). */
 let telemetryDrainFailureLogged = false
 /**
@@ -1072,6 +1074,7 @@ function restartRollupTimer(): void {
 
 /** Retune BOTH telemetry timers on a config hot-reload (persist interval + rollup interval / enabled). */
 function restartTelemetryTimers(): void {
+  if (telemetryShutdownSealed) return
   restartPeriodicPersistence()
   restartRollupTimer()
 }
@@ -1726,16 +1729,14 @@ export function persistRequestTelemetry(): Promise<void> {
 }
 
 export async function shutdownRequestTelemetry(): Promise<void> {
-  stopPeriodicPersistence()
-  stopRollupTimer()
-  // Unsubscribe BEFORE the flush await below (not after) — defense-in-depth for the
-  // same M1 hazard documented at the Phase-1 handoff call site above: if a config
-  // hot-reload lands while this function is `await`ing persistRequestTelemetry(),
-  // an un-unsubscribed telemetryConfigUnsub would let `restartTelemetryTimers`
-  // re-arm the just-stopped rollup timer pointed at a db handle that's about to
-  // close underneath it. Unsubscribing first closes that window entirely.
+  // Seal the timer producer first. Otherwise a config change during the await
+  // below can restart persistence/rollup timers after we stopped them, leaving
+  // a live timer targeting a closed database.
+  telemetryShutdownSealed = true
   telemetryConfigUnsub?.()
   telemetryConfigUnsub = null
+  stopPeriodicPersistence()
+  stopRollupTimer()
   // Signal the one-shot JSON backfill to bail BEFORE the db closes below (cooperative-stop: a backfill
   // still in flight must not write against a closing handle). migrate-json checks this getter before its
   // parse + write phases and its top-level try/catch swallows any close-race throw regardless.
@@ -1818,6 +1819,7 @@ export function _resetRequestTelemetryForTests(): void {
   outboxSoftCap = OUTBOX_SOFT_CAP
   telemetryConfigUnsub?.()
   telemetryConfigUnsub = null
+  telemetryShutdownSealed = false
 }
 
 export function _setRequestTelemetryFilePathForTests(path: string): void {
@@ -1850,6 +1852,10 @@ export function _getTelemetryDbForTests(): TelemetryDatabase | null {
 /** Whether the rollup timer is currently armed — test assertion hook for the timer wiring (init arm / shutdown clear / config restart). */
 export function _isRollupTimerArmedForTests(): boolean {
   return rollupTimer !== null
+}
+
+export function _isTelemetryShutdownSealedForTests(): boolean {
+  return telemetryShutdownSealed
 }
 
 /**

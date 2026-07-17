@@ -54,7 +54,7 @@ describe("validateConfig — happy paths", () => {
         effort_overrides: { "claude-opus-4.7": ["medium"] },
       },
       history: { limit: 100, reaper_interval: 600 },
-      model_overrides: { foo: "bar" },
+      model_mappings: { foo: "bar" },
     }
     const result = validateConfig(input)
     expect(result.anthropic?.cache_control).toBe("proxied")
@@ -84,10 +84,10 @@ describe("validateConfig — unknown keys", () => {
 
   test("free-form Record fields accept arbitrary user-defined keys", () => {
     const result = validateConfig({
-      model_overrides: { "claude-3-opus": "claude-opus-4.7", "weird.dots": "x" },
+      model_mappings: { "claude-3-opus": "claude-opus-4.7", "weird.dots": "x" },
       anthropic: { effort_overrides: { "claude-opus-4.7-1m-internal": ["medium", "high"] } },
     })
-    expect(result.model_overrides?.["claude-3-opus"]).toBe("claude-opus-4.7")
+    expect(result.model_mappings?.["claude-3-opus"]).toBe("claude-opus-4.7")
     expect(result.anthropic?.effort_overrides?.["claude-opus-4.7-1m-internal"]).toEqual(["medium", "high"])
     expect(warnSpy).not.toHaveBeenCalled()
   })

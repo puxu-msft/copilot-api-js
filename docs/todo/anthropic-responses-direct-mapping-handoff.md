@@ -1,6 +1,8 @@
 # 交接:anthropic ↔ responses 直接映射(绕开 CC 中转)
 
-> 状态:**方向已由用户决定推进,但由并发同伴会话接手实现**(2026-07-14)。本文件只保存两轮异构对抗审查挖出的硬发现,供接手者避坑。设计对话本身未落 RFC,不视为定稿 spec。
+> 状态:**✅ 已被 RFC 取代并全部实施完成（2026-07-15）**。本文件是最初的两轮对抗审查硬发现交接稿，其方向已落为 RFC [2026-07-14-anthropic-responses-direct-bridge](../rfc/2026-07-14-anthropic-responses-direct-bridge.md)（Phase 0-7 全 landed + 3 次合并态审查）+ ADR [2026-07-14-lossless-per-pair-bridge](../decisions/2026-07-14-lossless-per-pair-bridge.md)。**本文档的硬发现大多已被后续实测精化/推翻**（尤其：reasoning「只能单向明文」被探针 a/e 推翻=完整 round-trip 物理可行；server-tool 结果回显边界经探针 c 精化）。历史留存供追溯，**当前终态以 RFC/ADR/DESIGN.md 为准**。
+>
+> ~~方向已由用户决定推进,但由并发同伴会话接手实现(2026-07-14)。本文件只保存两轮异构对抗审查挖出的硬发现,供接手者避坑。设计对话本身未落 RFC,不视为定稿 spec。~~
 
 ## 背景一句话
 

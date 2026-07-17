@@ -19,7 +19,7 @@ import { resolveModelName } from "~/lib/models/resolver"
 import {
   //
   restoreStateForTests,
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
   snapshotStateForTests,
@@ -37,7 +37,7 @@ const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
 
 describeWithToken("Model Name Resolution", () => {
   // Restore the shared `state` singleton after the block (bun single-process suite
-  // leaks githubToken/accountType/modelOverrides into later files otherwise).
+  // leaks githubToken/accountType/modelMappings into later files otherwise).
   let stateSnapshot: ReturnType<typeof snapshotStateForTests>
   afterAll(() => {
     if (stateSnapshot) restoreStateForTests(stateSnapshot)
@@ -63,10 +63,10 @@ describeWithToken("Model Name Resolution", () => {
       throw new Error("Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.")
     }
     setModels(models)
-    // Short aliases resolve ONLY via model_overrides now (no built-in family
+    // Short aliases resolve ONLY via model_mappings now (no built-in family
     // preference). Simulate the bundled config's alias mappings so the alias
     // resolution assertions below stay meaningful.
-    setModelOverrides({ opus: "claude-opus-4.8", sonnet: "claude-sonnet-4.6", haiku: "claude-haiku-4.5" })
+    setModelMappings({ opus: "claude-opus-4.8", sonnet: "claude-sonnet-4.6", haiku: "claude-haiku-4.5" })
 
     console.log(
       "[Setup] Available Claude models:",
@@ -113,17 +113,17 @@ describeWithToken("Model Name Resolution", () => {
 
     test("dated snapshot names are NOT auto-stripped — they pass through unchanged", () => {
       // Date-suffix stripping was removed; a dated name only remaps via an explicit
-      // model_overrides entry, otherwise it falls through verbatim.
+      // model_mappings entry, otherwise it falls through verbatim.
       expect(resolveModelName("claude-sonnet-4-20250514")).toBe("claude-sonnet-4-20250514")
       expect(resolveModelName("claude-sonnet-4-5-20250514")).toBe("claude-sonnet-4-5-20250514")
       expect(resolveModelName("claude-opus-4-5-20250101")).toBe("claude-opus-4-5-20250101")
     })
 
-    test("a dated name resolves when model_overrides maps it explicitly", () => {
-      setModelOverrides({ "claude-haiku-4-5-20251001": "claude-haiku-4.5" })
+    test("a dated name resolves when model_mappings maps it explicitly", () => {
+      setModelMappings({ "claude-haiku-4-5-20251001": "claude-haiku-4.5" })
       expect(resolveModelName("claude-haiku-4-5-20251001")).toBe("claude-haiku-4.5")
       // Restore the alias overrides the rest of the block relies on.
-      setModelOverrides({ opus: "claude-opus-4.8", sonnet: "claude-sonnet-4.6", haiku: "claude-haiku-4.5" })
+      setModelMappings({ opus: "claude-opus-4.8", sonnet: "claude-sonnet-4.6", haiku: "claude-haiku-4.5" })
     })
 
     test("should pass through already-correct model names unchanged", () => {

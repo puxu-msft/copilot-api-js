@@ -1,6 +1,6 @@
 /**
  * Task 1.1-1.2 (docs/plan/2026-07-12-upstream-hook-middleware/plan-1-driver-hookpoints.md)
- * — `onRequest` (one-shot, retry-loop-external) + `onExchange` (wraps `transport.send`)
+ * — `upstream.outbound` (one-shot, retry-loop-external) + `exchange` (wraps `transport.send`)
  * hook mount points. Byte-equivalence when unconfigured is the golden test's job
  * (driver-passthrough-golden.it.test.ts); this file exercises the CONFIGURED behavior +
  * the invariants the plan calls out by name (H1 one-shot, H2 upstream-track purity —
@@ -44,15 +44,15 @@ afterEach(() => {
   resetUpstreamHook()
 })
 
-describe("hooks — onRequest mount point (Task 1.1)", () => {
-  test("onRequest's return value is what reaches transport.send (env rewrite is observed by the exchange)", async () => {
+describe("hooks — upstream.outbound mount point (Task 1.1)", () => {
+  test("upstream.outbound's return value is what reaches transport.send (env rewrite is observed by the exchange)", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx, { tag: "original" })
     const { codec } = makeCodec({ env })
     let sentBody: unknown
     const transport = makeTransport(async (_wire, e) => ((sentBody = e.body), okStream()))
     setUpstreamHookForTests({
-      onRequest: (e) => e.with({ body: { tag: "rewritten-by-hook" } }),
+      upstream: { outbound: (e) => e.with({ body: { tag: "rewritten-by-hook" } }) },
     })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport })
 
@@ -62,13 +62,13 @@ describe("hooks — onRequest mount point (Task 1.1)", () => {
     expect(sentBody).toEqual({ tag: "rewritten-by-hook" })
   })
 
-  test("onRequest returning undefined falls back to the pre-hook rewritten env (no-op)", async () => {
+  test("upstream.outbound returning undefined falls back to the pre-hook rewritten env (no-op)", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx, { tag: "original" })
     const { codec } = makeCodec({ env })
     let sentBody: unknown
     const transport = makeTransport(async (_wire, e) => ((sentBody = e.body), okStream()))
-    setUpstreamHookForTests({ onRequest: () => undefined })
+    setUpstreamHookForTests({ upstream: { outbound: () => undefined } })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport })
 
     await driver.runRequest({ body: {}, headers: new Headers() })
@@ -76,7 +76,7 @@ describe("hooks — onRequest mount point (Task 1.1)", () => {
     expect(sentBody).toEqual({ tag: "original" })
   })
 
-  test("H1: onRequest is invoked exactly ONCE, even when a strategy retries several attempts", async () => {
+  test("H1: upstream.outbound is invoked exactly ONCE, even when a strategy retries several attempts", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx, { tag: "original" })
     const { codec } = makeCodec({ env })
@@ -88,9 +88,11 @@ describe("hooks — onRequest mount point (Task 1.1)", () => {
     })
     let onRequestCalls = 0
     setUpstreamHookForTests({
-      onRequest: (e) => {
-        onRequestCalls++
-        return e
+      upstream: {
+        outbound: (e) => {
+          onRequestCalls++
+          return e
+        },
       },
     })
     const strategy = { name: "retry-always", canHandle: () => true, handle: async (_err: unknown, e: RequestEnvelope) => ({ kind: "retry" as const, env: e }) }
@@ -103,13 +105,13 @@ describe("hooks — onRequest mount point (Task 1.1)", () => {
     expect(onRequestCalls).toBe(1)
   })
 
-  test("no onRequest mounted (hook has only other mount points) → env passes through unchanged", async () => {
+  test("no upstream.outbound mounted (hook has only other mount points) → env passes through unchanged", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx, { tag: "original" })
     const { codec } = makeCodec({ env })
     let sentBody: unknown
     const transport = makeTransport(async (_wire, e) => ((sentBody = e.body), okStream()))
-    setUpstreamHookForTests({ onExchange: async (_wire, _e, next) => next() })
+    setUpstreamHookForTests({ exchange: async (_wire, _e, next) => next() })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport })
 
     await driver.runRequest({ body: {}, headers: new Headers() })
@@ -118,15 +120,15 @@ describe("hooks — onRequest mount point (Task 1.1)", () => {
   })
 })
 
-describe("hooks — onExchange mount point (Task 1.2)", () => {
-  test("onExchange short-circuits (never calls next) → transport.send is NEVER invoked, hook's stream is used", async () => {
+describe("hooks — exchange mount point (Task 1.2)", () => {
+  test("exchange short-circuits (never calls next) → transport.send is NEVER invoked, hook's stream is used", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
     let sendCalled = false
     const transport = makeTransport(async () => ((sendCalled = true), okStream()))
     const mockUpstream: UpstreamStream = okStream([{ data: "mocked" }])
-    setUpstreamHookForTests({ onExchange: async () => mockUpstream })
+    setUpstreamHookForTests({ exchange: async () => mockUpstream })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport })
 
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
@@ -136,7 +138,7 @@ describe("hooks — onExchange mount point (Task 1.2)", () => {
     if (result.ok) expect(result.upstream).toBe(mockUpstream)
   })
 
-  test("onExchange calls next() and wraps the result → transport.send IS invoked, wrapped stream flows through", async () => {
+  test("exchange calls next() and wraps the result → transport.send IS invoked, wrapped stream flows through", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
@@ -145,7 +147,7 @@ describe("hooks — onExchange mount point (Task 1.2)", () => {
     const transport = makeTransport(async () => ((sendCalled = true), realUpstream))
     let nextCalled = false
     setUpstreamHookForTests({
-      onExchange: async (_wire, _e, next) => {
+      exchange: async (_wire, _e, next) => {
         const upstream = await next()
         nextCalled = true
         return upstream
@@ -161,13 +163,13 @@ describe("hooks — onExchange mount point (Task 1.2)", () => {
     if (result.ok) expect(result.upstream).toBe(realUpstream)
   })
 
-  test("onExchange throws an HTTPError → driver's catch handles it exactly like a transport.send throw (reactive-retry branch)", async () => {
+  test("exchange throws an HTTPError → driver's catch handles it exactly like a transport.send throw (reactive-retry branch)", async () => {
     const { ctx, calls } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })
     let attempts = 0
     setUpstreamHookForTests({
-      onExchange: async () => {
+      exchange: async () => {
         attempts++
         if (attempts === 1) throw new HTTPError("bad request", 400, "boom-body")
         return okStream()
@@ -190,7 +192,7 @@ describe("hooks — onExchange mount point (Task 1.2)", () => {
     expect(calls.setAttemptError).toHaveLength(1)
   })
 
-  test("unconfigured onExchange → deps.transport.send is called directly (golden-equivalent path)", async () => {
+  test("unconfigured exchange → deps.transport.send is called directly (golden-equivalent path)", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
     const { codec } = makeCodec({ env })

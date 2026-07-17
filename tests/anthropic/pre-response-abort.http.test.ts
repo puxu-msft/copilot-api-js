@@ -28,7 +28,7 @@ import {
 import { observabilityMiddleware } from "~/lib/observability/middleware"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -64,7 +64,7 @@ describe("pre-response client abort → aborted + 499 (②)", () => {
   beforeEach(() => {
     setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     setModels({ object: "list", data: [mockModel("claude-opus-4.6", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
-    setModelOverrides({ opus: "claude-opus-4.6" })
+    setModelMappings({ opus: "claude-opus-4.6" })
     clearHistory()
 
     clientAbort = new AbortController()

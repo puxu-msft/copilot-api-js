@@ -700,3 +700,61 @@
 - **当前行为**：现实路径（用户在同一个 `config.yaml` 里同时写 `proxy` 和 `upstream_transport.http2.session_connect_timeout`，或经 PUT `/api/config` 一次性提交两者）完全被覆盖，因为两个字段确实在同一次 `safeParse()` 内。只有把 `proxy` 放进一层、把 `session_connect_timeout: 0` 放进另一层（bundled vs user 分裂）才会漏检——且 bundled `config.yaml` 从不出货显式 `0`（默认是正数 10）、`proxy` 又几乎总是用户覆盖层独有，这个组合在实践中概率极低。
 - **理想架构 / 若做需改什么**：在 `mergeBySchema()` 产出 effective config 之后，对合并结果**再跑一次** `ConfigSchema` 级别的跨字段校验（或至少重跑本条 superRefine），需要新增一个「合并后二次校验」的调用点，并想清楚二次校验失败时的降级策略（此时已经没有「stripped 用默认值重来」的简单退路，因为两层都已经算"验证通过"）。
 - **为何暂缓**：本条是 B8 实现过程中顺带发现的架构缝隙，不是 B8 本身要求的验收范围（B8 只要求"配 SOCKS 时 validation 拒绝 0"，同层内已完整满足）；触发条件是「bundled 与用户配置分裂持有这两个字段」这一现实中基本不出现的组合，为此新增合并后二次校验层是过度工程。**触发条件（满足才值得做）**：项目引入多层配置来源（例如按环境分层的多个 YAML 文件，而不仅是 bundled+单一用户覆盖）、或 schema 上出现更多类似的高价值跨字段约束，值得一次性建「合并后校验」机制而非逐条特殊处理。发现方：本 planner 在 B8（transport-config-reorg plan 修正）落 SOCKS 校验时的架构核实。
+
+## client.outbound 全量 sink-egress 统一化（2026-07-14，RFC symmetric-4-point Phase 6 部分实现）
+
+- **现状**：`client.outbound` hook 已接线在 driver `renderFrames`（S6 render→yield，`driver.ts`），覆盖 `codec.renderResponse` 产出的**渲染帧**——per-frame 改写/丢弃可用（RFC §5，`hooks/types.ts` 有 cardinality + 覆盖注释）。
+- **根因 / 当前行为**：`renderFrames` 的 yield 点**看不到 sink 层注入的合成/心跳/anchor 帧**（`client-sink.ts` 的 `writeSynthetic`/`writeAnchor`/heartbeat ping 不经此点），也看不到 Gemini 整流翻译器 / Anthropic timer heartbeat（`renderFrames` 注释是 load-bearing 约束——这些是 byte-critical 风险被历史决策推迟的）。故 client.outbound 有一个**已知、接受**的覆盖缺口：只覆盖渲染帧，不覆盖 sink 合成/心跳帧（继承 `hook-rewrite` 的 §9 forwarded-标记覆盖缺口）。
+- **理想架构**：把所有 client 帧（渲染帧 + sink 合成/心跳/anchor 帧）汇聚到单一可挂载的 **sink write 串行层**，让 client.outbound 见全量 client 字节 + 统一 forwarded-轨 provenance 标记。这是 byte-critical 重构（`renderFrames` 注释明言推迟过）。
+- **为何暂缓**：需求方拍板「client.outbound 语义/接线首版到位、full sink-egress 统一化晚做」；reviewer MEDIUM-2 标为 byte-critical 风险、须独立谨慎推进。
+- **若做需改什么**：统一 sink egress choke point（`client-sink.ts` makeSseSink/makeArraySink 的 write 串行层）+ 把 renderFrames 的 client.outbound 挂载迁到该层 + synthetic/heartbeat 帧的 provenance 标记 + 四格式 render 腿（Gemini 整流/Anthropic heartbeat）的交互复验 + golden 字节等价预捕。
+
+## responses/gemini 无 system/instructions 时 route 层不 reload config（既有行为，verifier LOW，2026-07-15）
+
+- **现状**：四格式 async 入站下沉后（RFC symmetric-4-point Phase 3），config-freshness 前置按「parse 是否读 config 态」分治：cc route 无条件 `applyConfigToState`、anthropic route `if(payload.system)`、responses/gemini route **不加**。
+- **根因 / 当前行为**：`processResponsesInstructions`/`processAnthropicSystem` 在 system/instructions 空时**早返回、不触发 applyConfigToState**。而 responses `parseOpenAiResponses` 读 config-managed 态（`state.normalizeResponsesCallIds`、`buildResponsesToolNameMapper`→`state.sanitizeToolNames`），parse 在 translateInbound 之前跑——故**当请求无 instructions 时，本请求的 parse 用的是上次某请求 reload 后的 config 值**（若期间 config.yaml 被编辑则陈旧）。**这是旧代码的精确保真复刻**（旧 `processResponsesInstructions` 同样只在 instructions 存在时 reload），**非本次重构引入的新 bug**——verifier 判 LOW、行为等价、不阻塞合并。
+- **理想架构**：config-freshness 是 per-request 的 route lifecycle 关注点，应与「注入是否发生」解耦——route 层**无条件** `await applyConfigToState()`（所有格式统一），使 parse 永远见新鲜 config。**为何暂缓**：responses/gemini 无条件 reload 曾打爆 call-id-normalization/WS 测（它们设 config 态 + 发无 instructions 请求，reload 重置了测试设的态）——统一前须先修那些测试的隔离方式（用 config 文件驱动而非 state setter），是独立工作。
+- **若做需改什么**：四 route 统一无条件 `applyConfigToState()` before runRequest（删条件）；修 `tests/responses/*` 里靠 state setter 设 config 态又发无 instructions 请求的测试（改 config 文件驱动 / 或接受 reload）；核 gemini 同理。
+## 三层降温归档 · 长跑服务器 tier-1 无界增长（O3，MEDIUM，2026-07-14 记）
+
+- **根因 / 现状**：T1→T2 封存（`tier2-seal.ts` `startTier2Seal`）**仅启动时触发一次**（用户裁定：封存是昂贵的 Parquet-级重编码，不进周期 tick）。若服务长期不重启，`archive.db`（tier-1）撞 `tier1_size_cap`（默认 2GB）后**无运行期封存触发点**，tier-1 会持续增长。
+- **当前行为**：由运行期 `consola.warn`（`tier2_warn_count`/`tier2_warn_bytes` 同机制）提示用户重启/手动。数据不丢（只是 tier-1 变大、ATTACH 查询变慢）。
+- **理想架构 / 若做需改什么**：把「archive.db > tier1_size_cap」也作为**运行期触发点**——在 reaper tick（`runReaperTick`）里加一个轻量 size 检查，超限时后台 `runTier2SealOnce()`（一次封存一个 session、非阻塞）。需想清楚封存的 CPU/IO 成本在周期 tick 里的节流（不能每 tick 都全量封存）。
+- **为何暂缓**：用户明确选「T1→T2 仅启动时」作为初始触发策略；周期封存是 nice-to-have，不阻塞核心「永不真删 + 高压缩」诉求。**触发条件（满足才值得做）**：出现长跑（数周不重启）+ tier-1 实测显著膨胀影响归档视图查询延迟的真实案例。发现方：spec 2026-07-14-history-tiered-archive §8-O3 设计阶段预留。
+
+## 三层降温归档 · tier-2 深度搜索粒度（O4，LOW，2026-07-14 记）
+
+- **根因 / 现状**：归档视图深度搜索（`/history/api/search?tier=archive`）对 **tier-1（archive.entries_v2）** 走完整五 facet 内容寻址搜索；对 **tier-2（封存冷单元）** 只以 `tier2_manifest.preview_text` 粒度参与（封存时未在 manifest 建 msg_blob/req_aux 级搜索文本）。
+- **当前行为**：tier-2 条目可按 preview_text 子串命中，但不支持 rewrites/headers 等 facet 的逐字节深搜。
+- **理想架构 / 若做需改什么**：封存时在 `tier2_manifest` 旁建一张 tier-2 专用的 flat 搜索文本表（或把 msg_blob/req_aux 文本也冗余进 manifest），使 tier-2 也支持五 facet；或封存单元内保留可搜文本。
+- **为何暂缓**：tier-2 是最深冷层、访问罕见，preview_text 粒度对冷数据检索够用；全 facet 冷索引是额外存储 + 复杂度。**触发条件**：出现「需要对已封存冷数据做 header/rewrite 级精确搜索」的真实运维需求。发现方：spec §8-O4。
+
+## 三层降温归档 · archive.db 独立迁移账本追不上 HOT 的时序缝（HIGH，2026-07-14 合并态评审发现，MIGRATIONS 首条前必解）
+
+- **根因 / 现状**：archive.db 跑**独立** `applyForwardMigrations`（自己的 `history_meta.schema_migrations` 账本），且在 `startHistoryBackfills` 里**异步**触发（`migrateArchiveDb()`），而 HOT 侧 `initHistory` 同步 attach archive + 启动 reaper。当前 `MIGRATIONS=[]`（floor 覆盖全列）故两库总同构、无风险。但一旦 `MIGRATIONS` 迎来第一条真实 001+ 迁移：从 initHistory 到 archive `migrateArchiveDb()` resolve 之间有个窗口，reaper 周期 tick 可能在 archive 尚未跑完自己的 001+ 迁移时就触发 move → archive 缺列。
+- **当前行为（已缓解，非崩溃）**：`migrateEntriesToTier1` 的**批次级 `archiveSchemaCovers` 前置校验**（2026-07-14 治 reviewer BLOCKER-3 时加）会检测「main 列 ⊄ archive 列」并**整批跳过 + 一次告警**「archive schema behind HOT — migration paused」，fail-closed 不丢数据、可观测。所以时序窗口期间是「搬迁暂停直到 archive 追上」，而非「per-entry 崩溃 / 数据丢失」。
+- **理想架构 / 若做需改什么**：要么 `initHistory` 的 `ensureArchiveAttachedToMain` 之后紧跟 `await migrateArchiveDb()`（对齐 HOT 侧「先迁移完成再起 reaper」纪律，`start.ts` 就这么做）；要么给 `isArchiveAttached`/`runTier1MigrationOnce` 前加「archive schema 版本已追上」门控（仿 `search_index_version` 的 history_meta 守卫）。
+- **为何暂缓**：当前 `MIGRATIONS=[]` 无风险，且批次前置校验已把最坏情况降级为可观测的「暂停」。**触发条件（必解）**：给 archive 加**第一条真实 001+ 迁移前**必须先接线时序（否则首次迁移期间归档暂停、tier-1 可能短暂膨胀）。发现方：合并态评审 HIGH-1（reviewer 实测确认当前无害、预警将来）。
+
+## via-responses（openai-cc/gemini→responses）reasoning encrypted_content 仍捕 `.added` 中间态而非 `.done` 权威版（LOW，2026-07-16，Phase 5 checkpoint 记）
+
+- **根因 / 现状**：`responses-to-cc-stream.ts:58-64` 的 `response.output_item.added` 分支捕获 reasoning item 的 `encrypted_content` 并塞进 CC-intermediate 的 `delta.reasoning_encrypted_content`。Phase 0 实测（`exp/anthropic-responses-direct/FINDINGS.md` 探针 a）证实同一 reasoning item 的 `encrypted_content` 在 `.added`（中间态）与 `.done`（权威定稿版）之间**不同 blob**（enc_len 1600 vs 1684，不同 id）——`.added` 只是过程中的临时快照。anthropic↔responses 直接桥（Phase 3 `responses-to-anthropic-stream.ts`）已修正为只捕 `.done`；但这个**旧 CC-intermediate 路径**（`createStreamTranslator`/`createResponsesToCcFrameRenderer`，`hub-translate.ts:371`）**仍是活路径**——供 `(openai-cc, /responses)` 与 `(gemini, /responses)` 的 via-responses 转发使用（direct 桥只接管了 `(anthropic, /responses)` 这一对，未触及这两条）。
+- **当前行为**：openai-cc/gemini 客户端经 via-responses 拿到的 reasoning encrypted_content 是**中间态快照**而非定稿版——若这个值将来被下游用于跨轮回喂续接（当前 CC-intermediate 路径本身不做 round-trip，只透传展示），可能因非权威版导致续接失败或不一致。
+- **理想架构 / 若做需改什么**：参照 anthropic↔responses 直接桥的修法——把 `responses-to-cc-stream.ts` 的捕获点从 `response.output_item.added` 挪到 `response.output_item.done`（同 `responses-to-anthropic-stream.ts:262-267` 的判定逻辑：`event.item.type === "reasoning" && typeof encrypted_content === "string" && length > 0`）。
+- **为何暂缓**：出 anthropic↔responses 直接桥 RFC 范围（该 RFC 只覆盖 `(anthropic, responses)` 一对，openai-cc/gemini↔responses 的 CC-intermediate 路径是另一条独立债务）；Phase 5 的任务边界是 anthropic↔responses 的 reasoning round-trip，不含这条旧路径的修复。**触发条件（值得做）**：openai-cc/gemini via-responses 的 reasoning encrypted_content 出现被下游消费用于回喂续接的真实需求（当前它只是展示用途，尚无回喂消费点）；或该债务被合并进未来 gemini/openai-cc↔responses 直接桥项目（RFC §10 提到的推迟债务）时一并解决。发现方：Phase 5 checkpoint 核实（协调者裁定记录，2026-07-16）。
+
+## 反向 server-tool 请求侧透传（openai-responses 客户端声明 web_search → Claude 模型）未做（Phase 6，2026-07-16 记）
+
+- **根因 / 现状**：Phase 6 只做了**前向**（anthropic 客户端 → responses 模型）server-tool 请求侧透传（`SERVER_TOOL_MAPPING`，`anthropic-to-responses-request.ts`）+ 响应侧降级（`web_search_call`→text）。**反向**（openai-responses 客户端声明 `web_search`/`file_search`/`code_interpreter` → Claude `@messages` 模型）的请求侧仍走 `responses-to-anthropic-request.ts:translateTools` 的"非 function 类型一律丢弃+warn"通用逻辑（`tool.type !== "function"` → drop），未做对称映射（Responses builtin tool → Anthropic 对应 server tool 声明）。
+- **为何未做（非拖延，是不对称性）**：反向与前向**不对称、不能无脑镜像**——① Phase 0 只探针了前向方向（anthropic web_search 声明 → responses 原生执行），未探反向（responses 客户端声明 web_search → Claude 是否原生执行、返回结果形状是什么）；② 更关键的物理不对称：**Claude 的 `web_search_tool_result` 结果块真带 `encrypted_content`**（真实服务端签名，ADR 2026-07-13 §Part-1 明确指出 server tool 结果通道的签名本质），这与前向方向"Responses `web_search_call` 无 encrypted_content、结果回显必须降级"的物理约束**完全相反**——反向方向理论上**可能有真密文可round-trip**（不像前向那样天然只能降级），但这**必须先实测验证**（Claude 结果格式、Responses 客户端能否/是否愿意携带一个它自己 schema 里没有字段存放的 opaque blob、real round-trip 可行性），不能凭前向经验想当然复制。
+- **理想架构 / 若做需改什么**：Phase 0 式新探针——① Responses 客户端声明 `{type:"web_search"}`（或类似）请求 Claude `@messages` 模型，观察 Claude 上游是否原生执行 web_search（Claude 自己的 server tool 机制，与 Copilot Responses 的 web_search 完全是两套后端）；② 若原生执行，探 `server_tool_use`+`web_search_tool_result`（真 encrypted_content）渲染回 Responses `web_search_call` 形状是否可行、是否需要在 Responses 侧开新字段承载真密文（Responses `ResponsesWebSearchCallOutput` 目前无该字位）；③ 若探明可行，对称做请求侧映射表 + 响应侧 round-trip（而非前向那种降级）。
+- **触发条件（值得做）**：出现 Responses 客户端（如 Codex）访问 Claude 模型且需要 web_search 能力的真实需求；或用户明确要求反向 server-tool 对等能力。发现方：Phase 6 checkpoint（协调者裁定记录，2026-07-16，明确指示"若可对称轻量落地就做、否则记 backlog，别硬塞、别想当然"）。
+
+## via-responses (openai-cc/gemini→responses) 腿 web_search_call 静默丢弃
+
+- **根因**：`responses-to-cc.ts` / `responses-conversion.ts`（Responses→CC 供 OpenAI-chat 客户端）遇上游 `web_search_call` 输出 item 直接不处理，搜索 query 静默蒸发（不像 anthropic↔responses 直接桥降级为可读 text）。
+- **当前行为**：无消费者触发（via-responses 场景暂无 web_search 流量），故不阻断。
+- **理想架构**：与直接桥的 `webSearchCallToText` 一致降级，保留 query/status（richest-data-flow）。
+- **为何暂缓**：出 anthropic↔responses 直接桥 RFC 范围；属未来 gemini/openai-cc↔responses 直接桥项目的债。
+- **若做需改什么**：`responses-to-cc.ts` 的 output-item 翻译补 web_search_call→CC 文本分支；对齐直接桥模板。
+- 来源：Phase 6 收官审查建议（2026-07-15）。

@@ -68,6 +68,7 @@ import {
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { ccKeepaliveFrame } from "~/lib/codec/openai-cc/keepalive"
 import { createReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
+import { applyConfigToState } from "~/lib/config/config"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
@@ -104,7 +105,6 @@ import {
   resolveBufferedCaps,
   state,
 } from "~/lib/state"
-import { processOpenAIMessages } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
@@ -145,18 +145,22 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   const clientRaw = (c.get("injectedPayload") as ChatCompletionsPayload | undefined) ?? (await c.req.json<ChatCompletionsPayload>())
   const azureModelOverride = c.get("azureModelOverride") as string | undefined
 
-  // P2.2-D3: apply the async, non-idempotent system-prompt injection to the wire
-  // body BEFORE the sync codec.parse, passing the client raw separately for the
-  // history snapshot. System-prompt uses the resolved model name (override rules).
-  //
-  // Resolve the model HERE (before processOpenAIMessages' config reload) and pass
-  // it to parse as `preResolved`, matching the legacy handler's order (read model
-  // → then system-prompt reload). Otherwise a `disabled_models` reload during
-  // system-prompt would shift parse's model lookup vs. legacy.
+  // Resolve the model HERE (transport idle-timeout, codec setup, reverse mapper holder) and pass it
+  // to parse as `preResolved`. The async system-prompt injection (`processOpenAIMessages`) has moved
+  // OFF the route into the codec's S1b `translateInbound` (RFC 2026-07-14 §4) so `client.inbound`
+  // sees the client-native body; model is still resolved at parse (before translateInbound's config
+  // reload), preserving the legacy order.
   const { name: resolvedName, routeOverride } = resolveModelTarget(azureModelOverride ?? clientRaw.model)
   const selectedModel = state.modelIndex.get(resolvedName)
-  const wireMessages = await processOpenAIMessages(clientRaw.messages, resolvedName, "openai-cc")
-  const wireBody: ChatCompletionsPayload = { ...clientRaw, messages: wireMessages }
+  // Config freshness is a ROUTE lifecycle concern (distinct from the S1b body injection, which the
+  // codec's `translateInbound` owns): `codec.parse` reads config-managed state (e.g.
+  // `state.sanitizeToolNames` → the tool-name mapper), so live config.yaml edits must be applied
+  // BEFORE parse. The legacy handler got this for free because `processOpenAIMessages` (which awaited
+  // `applyConfigToState`) ran at the route pre-parse; now that injection moved to translateInbound
+  // (post-parse), the route reloads config explicitly here to preserve parse's config freshness.
+  // Model was resolved just above (before the reload) so a `disabled_models` reload can't shift the
+  // lookup — matching the legacy order.
+  await applyConfigToState()
 
   const clientAbort = new AbortController()
   const detachClientAbort = bridgeClientAbort(c, clientAbort)
@@ -183,8 +187,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   let result: DriverRequestResult
   try {
     result = await driver.runRequest({
-      body: wireBody,
-      originalBodyForHistory: clientRaw,
+      body: clientRaw,
       headers: c.req.raw.headers,
       method: c.req.method,
       path: c.req.path,
@@ -262,11 +265,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
 // Non-streaming render
 // ============================================================================
 
-function renderNonStreamingV4(
-  c: Context,
-  env: RequestEnvelope,
-  originalResponse: ChatCompletionResponse,
-): Response {
+function renderNonStreamingV4(c: Context, env: RequestEnvelope, originalResponse: ChatCompletionResponse): Response {
   const response = originalResponse
 
   const choice = response.choices.at(0)

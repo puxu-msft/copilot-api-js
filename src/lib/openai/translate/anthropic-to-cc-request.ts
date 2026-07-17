@@ -133,8 +133,14 @@ export function translateAnthropicToChatCompletions(payload: MessagesPayload, op
 // System prompt
 // ============================================================================
 
-/** Flatten Anthropic `system` (string OR TextBlockParam[]) to a plain string, dropping cache_control. */
-function anthropicSystemToText(system: MessagesPayload["system"]): string {
+/**
+ * Flatten Anthropic `system` (string OR TextBlockParam[]) to a plain string, dropping cache_control.
+ *
+ * Exported: format-agnostic (no CC-specific shape), reused verbatim by the direct anthropic→responses
+ * bridge (`anthropic-to-responses-request.ts`) for the Responses `instructions` field — Phase 2 audit
+ * classification ① (真跨格式通用可提取).
+ */
+export function anthropicSystemToText(system: MessagesPayload["system"]): string {
   if (system === undefined) return ""
   if (typeof system === "string") return system
   // The array form is TextBlockParam[] (only text blocks) — concatenate the text, drop cache_control.
@@ -383,16 +389,22 @@ function translateThinkingToEffort(payload: MessagesPayload, model: Model | unde
   return effort
 }
 
-/** CC `reasoning_effort` accepts only low/medium/high — clamp/normalize any other effort string. */
-function clampToCcEffort(effort: string | undefined): "low" | "medium" | "high" | undefined {
+/**
+ * CC/Responses `reasoning.effort` accepts only low/medium/high — clamp/normalize any other effort string.
+ * Exported: format-agnostic, reused verbatim by the direct anthropic→responses bridge (① extractable).
+ */
+export function clampToCcEffort(effort: string | undefined): "low" | "medium" | "high" | undefined {
   if (effort === "low" || effort === "medium" || effort === "high") return effort
   if (effort === "none") return "low"
   if (effort === "xhigh" || effort === "max") return "high"
   return undefined
 }
 
-/** Does the model advertise a non-empty `reasoning_effort` capability array? */
-function modelSupportsReasoningEffort(model: Model): boolean {
+/**
+ * Does the model advertise a non-empty `reasoning_effort` capability array?
+ * Exported: format-agnostic gate, reused verbatim by the direct anthropic→responses bridge.
+ */
+export function modelSupportsReasoningEffort(model: Model): boolean {
   const support = model.capabilities?.supports?.reasoning_effort
   return Array.isArray(support) && support.length > 0
 }

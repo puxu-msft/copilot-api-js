@@ -1,11 +1,11 @@
 /**
  * Unified model name resolution and normalization.
  *
- * Handles short aliases (opus/sonnet/haiku) — resolved ONLY via `model_overrides`,
+ * Handles short aliases (opus/sonnet/haiku) — resolved ONLY via `model_mappings`,
  * no built-in family fallback — plus catalog-driven spelling canonicalization
  * (claude-opus-4-6 → claude-opus-4.6, data-driven off `/models`) and override
  * chains. Date suffixes are NOT auto-stripped — mapping a dated snapshot name to a
- * canonical id is a config-driven `model_overrides` decision.
+ * canonical id is a config-driven `model_mappings` decision.
  */
 
 import consola from "consola"
@@ -111,7 +111,7 @@ export function normalizeModelNameList(list: ReadonlyArray<string>, configLabel:
  */
 function lookupModelOverride(name: string): string | undefined {
   const target = normalizeForMatching(name)
-  for (const [key, value] of Object.entries(state.modelOverrides)) {
+  for (const [key, value] of Object.entries(state.modelMappings)) {
     if (normalizeForMatching(key) === target) return value
   }
   return undefined
@@ -152,7 +152,7 @@ function normalizeBracketNotation(model: string): string {
 }
 
 /**
- * Resolve a model name to its canonical form, applying model_overrides.
+ * Resolve a model name to its canonical form, applying model_mappings.
  *
  * Thin wrapper over {@link resolveModelTarget} that discards the route-override
  * suffix — the 13 legacy callers that only need the canonical NAME keep calling
@@ -206,7 +206,7 @@ export function resolveModelTarget(model: string): { name: string; routeOverride
  *    override check on the normalized name.
  *
  * No family-level propagation and no built-in defaults: short aliases resolve only if
- * model_overrides defines them, otherwise the name is returned as-is and the upstream
+ * model_mappings defines them, otherwise the name is returned as-is and the upstream
  * rejects it.
  */
 function resolveNameWithOverride(model: string): { name: string; routeOverride?: RouteOverride } {
@@ -244,7 +244,7 @@ function resolveNameWithOverride(model: string): { name: string; routeOverride?:
   }
 
   // No family-level propagation: a short alias / family override only affects the
-  // exact keys defined in model_overrides (spelling variants are unified by
+  // exact keys defined in model_mappings (spelling variants are unified by
   // normalization). To redirect a whole family, list each canonical name.
   return { name: resolved }
 }
@@ -295,13 +295,13 @@ function resolveOverrideTarget(source: string, target: string, seen?: Set<string
  *
  * Handles:
  * 1. Modifier suffixes: "claude-opus-4-6-fast" → "claude-opus-4.6-fast"
- * 2. Short aliases ("opus"): resolved ONLY via model_overrides (this function has
+ * 2. Short aliases ("opus"): resolved ONLY via model_mappings (this function has
  *    no built-in family fallback — a bare alias with no override is returned as-is).
  * 3. Spelling canonicalization via the live catalog: "claude-opus-4-6" →
  *    "claude-opus-4.6" (data-driven off `/models`, not a hard-coded regex).
  *
  * Date suffixes are NOT stripped: "claude-opus-4-6-20250514" has no catalog twin
- * and is returned as-is (only a matching `model_overrides` entry can remap it).
+ * and is returned as-is (only a matching `model_mappings` entry can remap it).
  */
 function resolveModelNameCore(model: string): string {
   // Extract modifier suffix (e.g., "-fast") before resolution
@@ -334,7 +334,7 @@ function resolveModelNameCore(model: string): string {
  * whose id contains dots (e.g. `gemini-3.1-pro-preview`), never invents a name
  * absent from the catalog, and needs no per-model config. Spelling equivalence
  * (hyphen↔dot) is a property of the same model, like case-insensitivity — not a
- * policy decision, so it stays here rather than in `model_overrides`.
+ * policy decision, so it stays here rather than in `model_mappings`.
  */
 function canonicalizeFromCatalog(model: string): string | undefined {
   const target = normalizeForMatching(model)
@@ -349,7 +349,7 @@ function resolveBase(model: string): string {
   // Spelling normalization (hyphen→dot etc.) is data-driven off the live catalog:
   // a client spelling like claude-opus-4-6 resolves to the upstream's real id
   // claude-opus-4.6. Date suffixes are NOT stripped — a dated snapshot name has no
-  // catalog twin, so it falls through unchanged and only an explicit model_overrides
+  // catalog twin, so it falls through unchanged and only an explicit model_mappings
   // entry can remap it (otherwise the upstream rejects it — failure stays visible).
   //
   // Unlike the modifier/override paths' `modelIds.size === 0` optimistic accept, base
@@ -363,7 +363,7 @@ function resolveBase(model: string): string {
   }
 
   // Short aliases (opus/sonnet/haiku), dated snapshot names, and anything else are
-  // returned verbatim; they only resolve if model_overrides defines them, otherwise
+  // returned verbatim; they only resolve if model_mappings defines them, otherwise
   // the upstream rejects the unknown model (resolution intentionally fails — no
   // built-in family preference fallback and no date-suffix stripping).
   return model

@@ -1,6 +1,6 @@
 /**
  * Task 5.2 (docs/plan/2026-07-12-upstream-hook-middleware/plan-5-integration-closeout.md) — the
- * OFFLINE REPLAY acceptance test: mounting `replayFromHistory(reqId)` on `onExchange` must drive a
+ * OFFLINE REPLAY acceptance test: mounting `replayFromHistory(reqId)` on `exchange` must drive a
  * request end-to-end WITHOUT ever touching the real upstream, and the replayed frames must land on
  * the NEW request's own persisted history entry, correctly marked as hook-produced (not
  * indistinguishable from a genuine GHC response — richest-data-flow).
@@ -145,11 +145,11 @@ describe("Task 5.2 — offline replay end-to-end (replayFromHistory → zero rea
     const seedId = seedAnthropicEntry("hello from history")
 
     setUpstreamHookForTests({
-      onExchange: async () => replayFromHistory(seedId),
+      exchange: async () => replayFromHistory(seedId),
     })
     // A transport that would record ANY call — proves the driver truly never touched "upstream".
     const { transport, sendCount } = makeCountingTransport(() => {
-      throw new Error("transport.send must NEVER be called during a replay — the hook short-circuits onExchange")
+      throw new Error("transport.send must NEVER be called during a replay — the hook short-circuits exchange")
     })
     const driver = makeRealAnthropicDriver(transport)
 
@@ -199,7 +199,7 @@ describe("Task 5.2 — offline replay end-to-end (replayFromHistory → zero rea
 
   test("a hook that mounts replayFromHistory for a NON-EXISTENT entry rejects loudly (no silent empty replay)", async () => {
     seedAnthropicModel("claude-x")
-    setUpstreamHookForTests({ onExchange: async () => replayFromHistory("no-such-entry-id") })
+    setUpstreamHookForTests({ exchange: async () => replayFromHistory("no-such-entry-id") })
     const { transport, sendCount } = makeCountingTransport(() => {
       throw new Error("transport.send must never be called")
     })

@@ -105,6 +105,7 @@ import {
   isWarmupRequest,
 } from "~/lib/anthropic/warmup"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
+import { applyConfigToState } from "~/lib/config/config"
 import {
   //
   HTTPError,
@@ -143,7 +144,6 @@ import {
   resolveBufferedCaps,
   state,
 } from "~/lib/state"
-import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
@@ -215,10 +215,16 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
   // inboundRequest; the wire body below is the server-modified form).
   const clientRaw = structuredClone(payload)
 
-  // System-prompt collection + config overrides (async, non-idempotent) on the
-  // model-resolved wire body, BEFORE the sync codec.parse.
+  // System-prompt injection (async, non-idempotent) has moved OFF the route into the anthropic
+  // codec's S1b `translateInbound` (RFC 2026-07-14 §4) so `client.inbound` (Phase 4) sees the
+  // client-native `system`. Config freshness stays a route concern: anthropic parse reads
+  // config-managed state (`state.sanitizeToolNames` → the tool-name mapper), and the legacy flow
+  // reloaded config before parse ONLY when a system was present (processAnthropicSystem early-returns
+  // otherwise) — so this reload is guarded on `payload.system` to preserve that exact conditionality
+  // (an unconditional reload would reset config state that system-less tests set up). Model resolved
+  // just above, before the reload — legacy order preserved.
   const wireBody: MessagesPayload = { ...payload, model: resolvedName }
-  if (wireBody.system) wireBody.system = await processAnthropicSystem(wireBody.system, resolvedName, "anthropic")
+  if (payload.system) await applyConfigToState()
 
   // Phase 1: one-time message-level preprocessing (idempotent). The ctx's
   // toolNameMapper is NOT yet built here (that's codec.parse) — but
@@ -1472,6 +1478,12 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     // outcome.kind === "complete" — the upstream drained cleanly. The terminal stop_reason is the F2
     // signal: undefined ⇒ the CC/Responses stream ended with NO finish_reason ⇒ truncation.
     const meta = codec.getStreamMeta()
+    // N3 (RFC 2026-07-14-anthropic-responses-direct-bridge §3 subtask C): the direct Responses→Anthropic
+    // streaming bridge's meta is a superset carrying `contentFiltered` — record the SAME ctx marker the
+    // non-streaming leg already records (codec.ts renderResponseNonStreaming), so a content-filtered
+    // streaming completion stays observably distinguishable even though its wire stop_reason is end_turn
+    // (Anthropic has no content_filter stop_reason — the marker IS the distinguishability, not the wire value).
+    if (meta?.contentFiltered) env.ctx.recordFeature("translated-content-filter")
     if (meta?.stopReason === undefined) {
       // Truncation: forward the translator's block-close frames (partial content stays balanced) but DROP
       // its terminal message_delta/message_stop (they'd signal a clean completion), then write a synthetic

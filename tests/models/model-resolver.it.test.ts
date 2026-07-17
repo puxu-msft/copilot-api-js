@@ -21,7 +21,7 @@ import {
 import {
   //
   setDisabledModels,
-  setModelOverrides,
+  setModelMappings,
   setModels as setCachedModels,
   state,
 } from "~/lib/state"
@@ -62,9 +62,9 @@ describe("Model Name Translation", () => {
         mockModel("claude-haiku-3.5"),
       ],
     })
-    // Short aliases resolve ONLY via model_overrides now (no built-in family
+    // Short aliases resolve ONLY via model_mappings now (no built-in family
     // preference). Simulate the bundled config's alias mappings.
-    setModelOverrides({
+    setModelMappings({
       opus: "claude-opus-4.6",
       sonnet: "claude-sonnet-4.5",
       haiku: "claude-haiku-4.5",
@@ -78,7 +78,7 @@ describe("Model Name Translation", () => {
   })
 
   test("short alias without an override is returned as-is (upstream then rejects)", () => {
-    setModelOverrides({})
+    setModelMappings({})
     expect(resolveModelName("opus")).toBe("opus")
     expect(resolveModelName("sonnet")).toBe("sonnet")
   })
@@ -107,7 +107,7 @@ describe("Model Name Translation", () => {
 
   test("does NOT auto-strip date suffixes — dated names pass through unchanged", () => {
     // Date-suffix stripping was removed: mapping a dated snapshot name to a
-    // canonical id is now an explicit model_overrides decision, not hidden logic.
+    // canonical id is now an explicit model_mappings decision, not hidden logic.
     // With no matching override, the dated name falls through verbatim (the
     // upstream then rejects it — the failure stays visible instead of being
     // silently remapped).
@@ -119,10 +119,10 @@ describe("Model Name Translation", () => {
     expect(resolveModelName("claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5-20251001")
   })
 
-  test("a dated snapshot name resolves ONLY via an explicit model_overrides entry", () => {
+  test("a dated snapshot name resolves ONLY via an explicit model_mappings entry", () => {
     // This is the config-driven replacement for the removed auto-stripping: an
     // operator maps the dated name to a canonical GHC id (or a redirect target).
-    setModelOverrides({
+    setModelMappings({
       "claude-haiku-4-5-20251001": "claude-haiku-4.5",
       "claude-sonnet-4-5-20250929": "claude-opus-4.6", // may point anywhere, incl. a redirect
     })
@@ -221,46 +221,46 @@ describe("model overrides", () => {
   })
 
   test("should override exact model name to available target", () => {
-    setModelOverrides({ "claude-sonnet-4.5": "claude-opus-4.6" })
+    setModelMappings({ "claude-sonnet-4.5": "claude-opus-4.6" })
     expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6")
   })
 
   test("should override short alias to specific model", () => {
-    setModelOverrides({ sonnet: "claude-opus-4.6" })
+    setModelMappings({ sonnet: "claude-opus-4.6" })
     expect(resolveModelName("sonnet")).toBe("claude-opus-4.6")
   })
 
   test("matches an override key across dot/hyphen spelling differences", () => {
     // Operator wrote the hyphen form; client requests the canonical dot form.
-    setModelOverrides({ "claude-sonnet-4-5": "claude-opus-4.6" })
+    setModelMappings({ "claude-sonnet-4-5": "claude-opus-4.6" })
     expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6")
   })
 
   test("matches an override key case-insensitively", () => {
-    setModelOverrides({ "Claude-Sonnet-4.5": "claude-opus-4.6" })
+    setModelMappings({ "Claude-Sonnet-4.5": "claude-opus-4.6" })
     expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6")
   })
 
   test("override target that is itself an undefined alias is returned as-is", () => {
     // "opus" has no override of its own → no built-in resolution → as-is.
-    setModelOverrides({ sonnet: "opus" })
+    setModelMappings({ sonnet: "opus" })
     expect(resolveModelName("sonnet")).toBe("opus")
   })
 
   test("should match resolved model name when raw name has no override", () => {
     // "claude-sonnet-4-5" resolves to "claude-sonnet-4.5", then check override
-    setModelOverrides({ "claude-sonnet-4.5": "claude-opus-4.6" })
+    setModelMappings({ "claude-sonnet-4.5": "claude-opus-4.6" })
     expect(resolveModelName("claude-sonnet-4-5")).toBe("claude-opus-4.6")
   })
 
   test("should not apply override to non-matching models", () => {
-    setModelOverrides({ sonnet: "claude-opus-4.6" })
+    setModelMappings({ sonnet: "claude-opus-4.6" })
     expect(resolveModelName("claude-opus-4.6")).toBe("claude-opus-4.6")
     expect(resolveModelName("gpt-4")).toBe("gpt-4")
   })
 
   test("should pass through when no overrides configured", () => {
-    setModelOverrides({})
+    setModelMappings({})
     // Canonical name passes through; a bare alias has no override and is
     // returned as-is (no built-in alias resolution anymore).
     expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-sonnet-4.5")
@@ -268,7 +268,7 @@ describe("model overrides", () => {
   })
 
   test("should handle override to unknown model as passthrough", () => {
-    setModelOverrides({ sonnet: "my-custom-model" })
+    setModelMappings({ sonnet: "my-custom-model" })
     // my-custom-model is not available and not a known family — passed through
     expect(resolveModelName("sonnet")).toBe("my-custom-model")
   })
@@ -278,7 +278,7 @@ describe("model overrides", () => {
       object: "list",
       data: [mockModel("claude-opus-4.6"), mockModel("claude-opus-4.6-1m"), mockModel("claude-sonnet-4.5"), mockModel("claude-haiku-4.5")],
     })
-    setModelOverrides({ opus: "claude-opus-4.6-1m", sonnet: "opus" })
+    setModelMappings({ opus: "claude-opus-4.6-1m", sonnet: "opus" })
     // sonnet → opus (override) → claude-opus-4.6-1m (chained override)
     expect(resolveModelName("sonnet")).toBe("claude-opus-4.6-1m")
     // opus → claude-opus-4.6-1m (direct override)
@@ -286,19 +286,19 @@ describe("model overrides", () => {
   })
 
   test("normalizes a hyphenated full name (no override) to dot form", () => {
-    setModelOverrides({})
+    setModelMappings({})
     expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4.6")
   })
 
   test("should handle circular override chains gracefully", () => {
-    setModelOverrides({ sonnet: "opus", opus: "sonnet" })
+    setModelMappings({ sonnet: "opus", opus: "sonnet" })
     // Should not infinite loop — falls back to alias resolution
     const result = resolveModelName("sonnet")
     expect(result).toBeDefined()
   })
 
   test("only the listed override keys are affected (no family propagation)", () => {
-    setModelOverrides({ sonnet: "claude-opus-4.6", "claude-sonnet-4.5": "claude-opus-4.6" })
+    setModelMappings({ sonnet: "claude-opus-4.6", "claude-sonnet-4.5": "claude-opus-4.6" })
     expect(resolveModelName("sonnet")).toBe("claude-opus-4.6")
     expect(resolveModelName("claude-sonnet-4.5")).toBe("claude-opus-4.6")
     // A sonnet variant NOT listed is left untouched.
@@ -320,7 +320,7 @@ describe("Modifier suffix handling (-fast)", () => {
       ],
     })
     // Short aliases resolve via overrides; the modifier suffix is re-attached.
-    setModelOverrides({ opus: "claude-opus-4.6", sonnet: "claude-sonnet-4.5", haiku: "claude-haiku-4.5" })
+    setModelMappings({ opus: "claude-opus-4.6", sonnet: "claude-sonnet-4.5", haiku: "claude-haiku-4.5" })
   })
 
   test("should pass through direct -fast model names", () => {
@@ -371,7 +371,7 @@ describe("Bracket notation handling [1m]", () => {
       ],
     })
     // Short aliases resolve via overrides; the bracket/modifier suffix is re-attached.
-    setModelOverrides({ opus: "claude-opus-4.6", sonnet: "claude-sonnet-4.5", haiku: "claude-haiku-4.5" })
+    setModelMappings({ opus: "claude-opus-4.6", sonnet: "claude-sonnet-4.5", haiku: "claude-haiku-4.5" })
   })
 
   test("should resolve short alias with bracket notation", () => {
@@ -381,7 +381,7 @@ describe("Bracket notation handling [1m]", () => {
 
   test("explicit opus-1m override wins over the opus base", () => {
     // opus[1m] → opus-1m which HAS its own override → use it directly.
-    setModelOverrides({ opus: "claude-opus-4.6", "opus-1m": "claude-opus-4.5" })
+    setModelMappings({ opus: "claude-opus-4.6", "opus-1m": "claude-opus-4.5" })
     expect(resolveModelName("opus[1m]")).toBe("claude-opus-4.5")
   })
 
@@ -429,7 +429,7 @@ describe("resolveModelTarget — route-override suffix parsing (@cc / @responses
         mockModel("claude-haiku-4.5"),
       ],
     })
-    setModelOverrides({ opus: "claude-opus-4.6", sonnet: "claude-sonnet-4.5", haiku: "claude-haiku-4.5" })
+    setModelMappings({ opus: "claude-opus-4.6", sonnet: "claude-sonnet-4.5", haiku: "claude-haiku-4.5" })
   })
 
   test("no suffix → no routeOverride (byte-identical to resolveModelName)", () => {
@@ -462,19 +462,19 @@ describe("resolveModelTarget — route-override suffix parsing (@cc / @responses
 
   test("override TARGET carrying @route strips the suffix off the resolved name (FAIL-1)", () => {
     // The @cc must NOT punch through into the resolved id — it rides back as routeOverride.
-    setModelOverrides({ opus: "claude-opus-4.6@cc" })
+    setModelMappings({ opus: "claude-opus-4.6@cc" })
     expect(resolveModelTarget("opus")).toEqual({ name: "claude-opus-4.6", routeOverride: "cc" })
   })
 
   test("override-target suffix flows through a modifier redirect (FAIL-1, mid-chain)", () => {
     // "opus-1m" has no own override; base "opus" → "claude-opus-4.6@messages": the ring
     // strips @messages before the modelIds check, re-attaches -1m, and the override rides out.
-    setModelOverrides({ opus: "claude-opus-4.6@messages" })
+    setModelMappings({ opus: "claude-opus-4.6@messages" })
     expect(resolveModelTarget("opus[1m]")).toEqual({ name: "claude-opus-4.6-1m", routeOverride: "messages" })
   })
 
   test("client top-level suffix wins over an override-target suffix", () => {
-    setModelOverrides({ opus: "claude-opus-4.6@messages" })
+    setModelMappings({ opus: "claude-opus-4.6@messages" })
     // Client typed @cc explicitly → primary intent wins over the target's @messages.
     expect(resolveModelTarget("opus@cc")).toEqual({ name: "claude-opus-4.6", routeOverride: "cc" })
   })
@@ -482,7 +482,7 @@ describe("resolveModelTarget — route-override suffix parsing (@cc / @responses
   test("deeper override-chain suffix wins over a shallower one", () => {
     // sonnet → opus@cc → claude-opus-4.6@messages: the deepest ring (closest to the
     // final model) pins @messages.
-    setModelOverrides({ sonnet: "opus@cc", opus: "claude-opus-4.6@messages" })
+    setModelMappings({ sonnet: "opus@cc", opus: "claude-opus-4.6@messages" })
     expect(resolveModelTarget("sonnet")).toEqual({ name: "claude-opus-4.6", routeOverride: "messages" })
   })
 

@@ -95,7 +95,7 @@ describe("GET /api/config — effective config snapshot", () => {
 
   test("startup-phase config fields (not hot-reloadable) are included", async () => {
     const body = await getConfig()
-    for (const key of ["accountType", "ghcApiBaseUrl", "verbose", "modelOverrides", "rateLimiter"]) {
+    for (const key of ["accountType", "ghcApiBaseUrl", "verbose", "modelMappings", "rateLimiter"]) {
       expect(key in body).toBe(true)
     }
   })

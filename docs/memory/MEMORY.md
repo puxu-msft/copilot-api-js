@@ -52,6 +52,8 @@
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件/notFound 须用真实 createServer 测(createFullTestApp 无中间件镜像);config 中间件每请求覆盖 state→level 测须 config 文件驱动
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败但 health 仍绿;spawn 后必验 server.log 无 port-in-use + ss 真监听 PID 是我的
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约 + 独立 oracle 裁决,别反射式"让它编译"
+- [复用共享原语选完整版非小版、否则静默丢字段+单测假绿](methodology-full-primitive-not-partial-else-silent-field-drop.md) — usageFromTotalInput vs netInputTokens 丢 reasoning_tokens;3 次复发、合并态审+coverage 才逮;映射测须构造每个非平凡字段
+- [「别继承退化」建议只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — content_filter→refusal 过度改进;目标无对应值→诚实退化+marker;实现者采纳审计意见最易过度应用、orchestrator 亲手核实两侧类型才裁
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发;grep 全仓逐处修+抽共享 primitive;盲区靠合并态审逮
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 路由既有 outcome 复用全 handler + 类型系统逼出全站点
 - [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加 retry 策略前 grep 同错误子串既有 matcher;收紧旧正则+新策略排前
@@ -68,7 +70,7 @@
 - [穷举可行方案面再择优](methodology-exhaust-then-choose-over-single-solution.md) — 并行 subagent 分层穷举→实测 supersede 源码推断→异模型审→exp/FINDINGS 择优
 - [跨 phase 集成缝只在合并态审能抓](methodology-cross-phase-integration-seam-only-caught-at-merged-state.md) — Phase A 契约被下游漏接线逐 task 审看不到、只 whole-branch 逮;死枚举是红旗
 - [CLI e2e spawn+hook 两机制](reference-cli-e2e-spawn-and-hook-load-gotchas.md) — hook 经 data-URL 加载丢具名导出→帧存 base64;`proc.kill()` 漏杀真 server;权威 `exp/cli-e2e-stall/FINDINGS.md`
-- [Bun 忽略 import ?v= query、热重载须 data-URL](reference-bun-esm-cache-busting-query-fails-data-url-works.md) — Bun 按解析路径缓存 ESM,`?v=` 静默返旧;可行=`transformSync`→`import("data:...")`
+- [Bun 忽略 import ?v= query;热重载用项目内唯一文件(非 data-URL)](reference-bun-esm-cache-busting-query-fails-data-url-works.md) — Bun 按路径缓存 ESM、`?v=` 静默返旧;data-URL 绕缓存但**不解析 `~/` 别名**(实测证伪、带 import 的 hook 丢导出);可行=转译后写唯一项目文件再 import(绕缓存+解析别名两得)
 - [picocolors 在 bun test 塌缩成恒等](reference-picocolors-collapses-to-identity-in-bun-test.md) — 测退化文本;改测引用相等 + FORCE_COLOR 子进程 SGR
 - [迁移副作用旧路径仍被 eager 求值→双触发](methodology-migrate-side-effect-old-path-still-eager-evaluated.md) — driver eager 求值 `deps.strategies` 仍触发→双记;根因修=抽 lazy resolver
 - [无疑问改进当场做](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中就立即改,别以超范围推迟
@@ -77,13 +79,14 @@
 - [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/已完成 subagent 接续永远 `SendMessage`、绝不 `Agent` 重派(丢上下文);唯一 Agent 新派=真全新独立任务
 
 ## project 现状 stub（权威看正式归属；「全 landed」项细节在 docs/git）
-- [对称四点 hook 架构重构（RFC 待写，PoC 验证）](project-symmetric-four-point-hooks.md) — client/upstream×in/out;统一翻译进 driver;权威 docs/spec/2026-07-12 + exp/hook-symmetric-4point/
-- [请求生命周期 cancel/settle/quiesce（治根 landed worktree,C5 待续）](project-request-lifecycle-cancel-settle-quiesce.md) — 2800s 越超时多根因;有界 grace+per-request timer;worktree `feat/request-lifecycle` 合并前须 merge master
+- [History 三层降温归档（已合并 master，lifecycle follow-up `27b65b89`）](project-history-tiered-archive.md) — HOT→tier-1→不可变 session-generation sealed units；move 永不真删；Archive worker 以 durable unit 协作停/续跑、并发 sibling 全 settle 后关 DB；同 session 增量不覆盖；用户重启实例已实证加载
+- [对称四点 hook 架构重构（已实施合并 master 2a77bf7c）](project-symmetric-four-point-hooks.md) — client/upstream×in/out+exchange;四格式 async 入站下沉 driver S1b translateInbound;client.inbound 剥 TodoWrite;7 phase 全绿+verifier 验收;实测教训=data-URL 不解析别名·config-freshness 须 parse 前;权威 RFC docs/rfc/2026-07-14-symmetric-four-point-hooks
+- [请求生命周期 cancel/settle/quiesce（四根因+C5 结构全合 master）](project-request-lifecycle-cancel-settle-quiesce.md) — 2800s 越超时多根因;RFC 6 轮对抗复核逼出 3 死锁/orphan 缺陷;RC1-4 治根+C5(operation 三态/双 registry/drain-等-operation/driver 追踪 exchange)全 landed master;承重=有界 grace+per-request 精确 timer>周期 scan;剩低频站点接线;并发合并纪律=等 peer 提交后 3-way 自动合不 force
 - [请求首包/时序埋点（landed master f982e0e3）](project-request-timing-instrumentation-landed.md) — 上游4刻/客户端3刻/fleet DDSketch;承重=两段显式投影+WS 剥 event 行+谓词收完整帧
 - [AskUserQuestion 顶层 question 键抢救（landed master）](methodology-plan-verify-interface-location-and-wiring-channel.md) — salvage→兜底 header→strip;诊断落盘唯一=pipelineInfo;权威 docs/spec+plan/2026-07-13-askuserquestion-toplevel-key-salvage
 - [block 级缓冲重试（P0-P4 landed,剩 gated 翻转）](project-block-level-buffered-retry-execution.md) — merge master c2012555(默认 OFF);P1 wire 缺陷被绿测放过→3轮修;翻默认前门=真 CLI+scenario-B
 - [上游错误→客户端形态整形（spec+plan 评审中）](project-upstream-error-client-shaping.md) — 按 commit 阶段分治;Phase 6 依赖 P1;权威 docs/spec+plan/2026-07-13-upstream-error-client-shaping
-- [anthropic↔responses 直接桥（RFC 定稿、审查中）](project-anthropic-responses-direct-bridge.md) — 推翻 CC-as-canonical;per-pair 桥表;`model_overrides`→`model_mappings`（复数，用户裁决订正）;权威 docs/rfc/2026-07-14-anthropic-responses-direct-bridge.md
+- [anthropic↔responses 直接桥（Phase 0-7 全 landed + 4 次合并态审查 + 收官）](project-anthropic-responses-direct-bridge.md) — 推翻 CC-as-canonical、lossless-per-pair 为默认;per-pair 穷尽桥表 + 前向/反向六腿直连 + reasoning 全链路 round-trip 两向(claude-signature 载体 byte-exact、探针 e 背书)+ 两场景 model_translation + server-tool 透传/降级;`model_overrides`→`model_mappings`;权威 RFC + ADR 2026-07-14-lossless-per-pair-bridge + DESIGN 活的架构现状行
 - [unknown HTTP endpoint 可配置日志（Task1-3 landed，Task4 部分）](project-unknown-endpoint-logging.md) — 404/405 配日志级别;影子 TrieRouter 绕中间件污染+三态分类(route-owned 保 404);config.yaml/schema.json/DESIGN 待 peer model_mappings 后补;权威 docs/spec+plan/2026-07-14
 - [auto-truncate 移除 + calibration 重定位（实施未合并）](project-remove-auto-truncate-keep-calibration.md) — worktree rebase 风险;权威 RFC/plan 2026-07-13
 - [web_search 双跳退役（2026-07-13 landed）](project-web-search-double-hop-retired.md) — 双跳+config 键整套删;教训=称职实现≠有需求;权威 ADR 2026-07-13-server-tool-positioning
