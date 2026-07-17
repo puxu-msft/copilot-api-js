@@ -67,7 +67,7 @@ function countOf(haystack: string, needle: string): number {
 function makeRegion(cols: number, rowsRef: { rows: number }): { region: Region; io: ReturnType<typeof makeStdout> } {
   const io = makeStdout()
   const region = new Region({
-    stdout: io.stdout,
+    output: { writeFrame: (data: string) => io.stdout.write(data) },
     getColumns: () => cols,
     getRows: () => rowsRef.rows,
   })

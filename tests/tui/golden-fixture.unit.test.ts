@@ -56,7 +56,7 @@ export function renderGoldenScenario(attach: (bus: ReturnType<typeof createBus>,
   const bus = createBus()
   const prevLevel = consola.level
   consola.level = 5 // render the [....] start line (console.ts onCreated guard)
-  const detach = attach(bus, { stdout: cap.stdout, isTTY: true, columns: 80 })
+  const detach = attach(bus, { stdout: cap.stdout, isTTY: true, columns: 80, refreshIntervalMs: 0, now: () => NOW })
   const req = bus.scope("request")
   const sys = bus.scope("system")
   const ctxA = {

@@ -3,7 +3,7 @@ import type { KeyEvent } from "./keys"
 const ESC = 0x1b
 const ESC_DELAY_MS = 50
 
-/** Stateful raw-terminal decoder that preserves incomplete CSI/UTF-8 sequences across chunks. */
+/** Stateful decoder: incomplete UTF-8 and terminal sequences remain buffered across chunks. */
 export class KeyDecoder {
   private readonly emitDeferred: (events: Array<KeyEvent>) => void
   private pending = Buffer.alloc(0)
@@ -17,10 +17,10 @@ export class KeyDecoder {
   feed(chunk: Buffer): Array<KeyEvent> {
     this.clearEscapeTimer()
     this.pending = Buffer.concat([this.pending, chunk])
-    const { consumed, events, incompleteEscape } = decodeAvailable(this.pending)
-    this.pending = this.pending.subarray(consumed)
-    if (incompleteEscape && this.pending.length === 1 && this.pending[0] === ESC) this.scheduleEscape()
-    return events
+    const result = decodeAvailable(this.pending)
+    this.pending = this.pending.subarray(result.consumed)
+    if (result.incompleteEscape && this.pending.length === 1 && this.pending[0] === ESC) this.scheduleEscape()
+    return result.events
   }
 
   destroy(): void {
@@ -36,7 +36,7 @@ export class KeyDecoder {
       try {
         this.emitDeferred([{ kind: "escape" }])
       } catch {
-        // Deferred input delivery must not crash the process.
+        /* input delivery is never allowed to crash */
       }
     }, ESC_DELAY_MS)
     this.escapeTimer.unref()
@@ -51,52 +51,88 @@ export class KeyDecoder {
 
 function decodeAvailable(buffer: Buffer): { consumed: number; events: Array<KeyEvent>; incompleteEscape: boolean } {
   const events: Array<KeyEvent> = []
-  let i = 0
-  while (i < buffer.length) {
-    const byte = buffer[i]
-    if (byte !== ESC) {
-      const decoded = decodeByte(byte)
-      if (decoded) events.push(decoded)
-      i++
+  let index = 0
+  while (index < buffer.length) {
+    const byte = buffer[index]
+    if (byte === ESC) {
+      if (index + 1 >= buffer.length) return { consumed: index, events, incompleteEscape: true }
+      const introducer = buffer[index + 1]
+      if (introducer !== 0x5b && introducer !== 0x4f) {
+        events.push({ kind: "escape" })
+        index++
+        continue
+      }
+      const sequence = decodeEscape(buffer.subarray(index))
+      if (sequence === "incomplete") return { consumed: index, events, incompleteEscape: true }
+      if (sequence.event) events.push(sequence.event)
+      index += sequence.length
       continue
     }
-    if (i + 1 >= buffer.length) return { consumed: i, events, incompleteEscape: true }
-    if (buffer[i + 1] !== 0x5b && buffer[i + 1] !== 0x4f) {
-      events.push({ kind: "escape" })
-      i++
+
+    const length = utf8Length(byte)
+    if (length === 0) {
+      index++
       continue
     }
-    if (i + 2 >= buffer.length) return { consumed: i, events, incompleteEscape: true }
-    const rest = buffer.subarray(i)
-    const match = decodeEscape(rest)
-    if (match === "incomplete") return { consumed: i, events, incompleteEscape: true }
-    if (match.event) events.push(match.event)
-    i += match.length
+    if (index + length > buffer.length) return { consumed: index, events, incompleteEscape: false }
+    const bytes = buffer.subarray(index, index + length)
+    if (length > 1 && !bytes.subarray(1).every((value) => value >= 0x80 && value <= 0xbf)) {
+      index++
+      continue
+    }
+    const text = bytes.toString("utf8")
+    if (text.includes("�")) {
+      index++
+      continue
+    }
+    const event = decodeCharacter(text)
+    if (event) events.push(event)
+    index += length
   }
-  return { consumed: i, events, incompleteEscape: false }
+  return { consumed: index, events, incompleteEscape: false }
 }
 
 function decodeEscape(buffer: Buffer): { event?: KeyEvent; length: number } | "incomplete" {
-  const text = buffer.toString("ascii")
-  const simple: Record<string, KeyEvent["kind"]> = { "\x1b[A": "up", "\x1b[B": "down", "\x1b[H": "home", "\x1b[F": "end", "\x1bOH": "home", "\x1bOF": "end" }
-  for (const [sequence, kind] of Object.entries(simple)) if (text.startsWith(sequence)) return { event: { kind }, length: sequence.length }
-  // eslint-disable-next-line no-control-regex -- matching a terminal ESC sequence is intentional.
-  const page = /^\x1b\[(5|6)~/.exec(text)
-  if (page) return { event: { kind: page[1] === "5" ? "page-up" : "page-down" }, length: page[0].length }
-  const final = text.slice(2).search(/[A-Z~]/i)
-  if (final === -1) return "incomplete"
-  return { length: final + 3 }
+  if (buffer.length < 3) return "incomplete"
+  const introducer = buffer[1]
+  if (introducer === 0x4f) {
+    const kinds: Partial<Record<number, KeyEvent["kind"]>> = { 0x41: "up", 0x42: "down", 0x48: "home", 0x46: "end" }
+    const kind = kinds[buffer[2]]
+    return { event: kind === undefined ? undefined : { kind }, length: 3 }
+  }
+  let final = 2
+  while (final < buffer.length && (buffer[final] < 0x40 || buffer[final] > 0x7e)) final++
+  if (final >= buffer.length) return "incomplete"
+  const sequence = buffer.subarray(0, final + 1).toString("ascii")
+  const known: Partial<Record<string, KeyEvent["kind"]>> = {
+    "\x1b[A": "up",
+    "\x1b[B": "down",
+    "\x1b[H": "home",
+    "\x1b[F": "end",
+    "\x1b[5~": "page-up",
+    "\x1b[6~": "page-down",
+  }
+  const kind = known[sequence]
+  return { event: kind === undefined ? undefined : { kind }, length: final + 1 }
 }
 
-function decodeByte(byte: number): KeyEvent | undefined {
+function utf8Length(first: number): number {
+  if (first <= 0x7f) return 1
+  if (first >= 0xc2 && first <= 0xdf) return 2
+  if (first >= 0xe0 && first <= 0xef) return 3
+  if (first >= 0xf0 && first <= 0xf4) return 4
+  return 0
+}
+
+function decodeCharacter(char: string): KeyEvent | undefined {
+  const byte = char.length === 1 ? (char.codePointAt(0) ?? -1) : -1
   if (byte === 0x03) return { kind: "ctrl-c" }
   if (byte === 0x04) return { kind: "ctrl-d" }
   if (byte === 0x1a) return { kind: "suspend" }
   if (byte === 0x0d || byte === 0x0a) return { kind: "enter" }
   if (byte === 0x09) return { kind: "tab" }
   if (byte === 0x20) return { kind: "space" }
-  if (byte < 0x20 || byte > 0x7e) return undefined
-  const char = String.fromCodePoint(byte)
+  if (byte >= 0 && (byte < 0x20 || byte === 0x7f)) return undefined
   if (char === "k") return { kind: "up" }
   if (char === "j") return { kind: "down" }
   if (char === "?") return { kind: "help" }

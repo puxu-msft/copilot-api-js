@@ -16,19 +16,24 @@ function ctx(id: string, state: RequestContextSnapshot["state"] = "executing"): 
 describe("ActiveRequestStore", () => {
   test("upserts live snapshots but never resurrects terminal late events", () => {
     const store = new ActiveRequestStore()
-    expect(store.upsert(ctx("a")).inserted).toBe(true)
-    expect(store.upsert({ ...ctx("a"), resolvedModel: "m" }).inserted).toBe(false)
-    store.remove("a")
-    expect(store.upsert(ctx("a", "failed")).inserted).toBe(false)
+    store.apply({ kind: "request.created", ctx: ctx("a") })
+    store.apply({ kind: "request.model_resolved", ctx: { ...ctx("a"), resolvedModel: "m" } })
+    store.apply({ kind: "request.failed", ctx: ctx("a", "failed"), entry: { id: "a", endpoint: "anthropic-messages", state: "failed" }, error: "x" } as never)
+    store.apply({ kind: "request.feature_applied", ctx: ctx("a", "failed"), feature: "error-shaping-decided" })
     expect(store.size).toBe(0)
   })
 
   test("replaces an attempt snapshot with the richer settled version", () => {
     const store = new ActiveRequestStore()
-    const entry = store.create(ctx("a"))
-    store.recordAttempt(entry, { attemptIndex: 0, strategy: "first" })
-    store.recordAttempt(entry, { attemptIndex: 0, strategy: "first", error: { status: 500, message: "x", type: "server_error" } })
-    expect(entry.attempts).toHaveLength(1)
-    expect(entry.attempts[0].error?.status).toBe(500)
+    store.apply({ kind: "request.created", ctx: ctx("a") })
+    store.apply({ kind: "request.attempt_started", ctx: ctx("a"), attempt: { attemptIndex: 0, strategy: "first" } })
+    store.apply({
+      kind: "request.attempt_failed",
+      ctx: ctx("a"),
+      attempt: { attemptIndex: 0, strategy: "first", error: { status: 500, message: "x", type: "server_error" } },
+      willRetry: false,
+    })
+    expect(store.get("a")?.attempts).toHaveLength(1)
+    expect(store.get("a")?.attempts[0].error?.status).toBe(500)
   })
 })
