@@ -4,7 +4,6 @@ import {
   horizontalListSortingStrategy,
   useSortable,
 } from "@dnd-kit/sortable"
-import { useQueryClient } from "@tanstack/react-query"
 import {
   //
   flexRender,
@@ -47,9 +46,7 @@ import type {
 } from "@/types"
 
 import { SessionPaletteSelect } from "@/components/requests/SessionPaletteSelect"
-import { Modal } from "@/components/shared/Modal"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
-import { api } from "@/lib/api"
 import {
   //
   DEFAULT_COLUMN_VISIBILITY,
@@ -297,7 +294,6 @@ export function HistoryList({
   const { entries, total, isLoading, isError, error, refetch, hasNextPage, fetchNextPage, isFetchingNextPage } = useHistoryInfinite(filters)
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
-  const queryClient = useQueryClient()
 
   // 自动加载开关(默认关):关时滚动不触底自拉,只靠列底「加载更多」手动翻页;开时恢复触底自动翻页。持久化。
   const [autoLoad, setAutoLoad] = useState(loadAutoLoad)
@@ -312,27 +308,6 @@ export function HistoryList({
   // 列底「加载更多」footer 只在滚到底(atBottom)才显 —— 不常驻(用户诉求)。
   // 短列表(内容不溢出)由 react-virtuoso 报 atBottom=true → 即时可见;长列表滚到底才露出。
   const [atBottom, setAtBottom] = useState(false)
-
-  // 立即归档确认 Modal:开合 + 归档在途(防重复提交)。筛选感知——有筛选归档命中子集、无筛选归档全部。
-  const [clearOpen, setClearOpen] = useState(false)
-  const [clearing, setClearing] = useState(false)
-  const confirmClear = useCallback(async () => {
-    setClearing(true)
-    try {
-      // 产品面删除已移除(spec §3.6):「清空」改「立即归档」——把命中的终态行移到 tier-1 冷存储(非删除)。
-      const qs = toQueryString(filters)
-      const res = await api.post<{ success: boolean; archived?: number }>(`/history/api/archive-now${qs ? `?${qs}` : ""}`, {})
-      if (res.archived !== undefined) console.info(`[HistoryList] 已归档 ${res.archived} 条历史到冷存储`)
-      // queryKey 形如 ["history-infinite", filterSig];前缀匹配 invalidate 命中所有 filter 变体。
-      await queryClient.invalidateQueries({ queryKey: ["history-infinite"] })
-      setClearOpen(false)
-    } catch (err) {
-      // 归档失败不吞:曝光错误(内部工具可观测性优先),保持 Modal 开着供重试。
-      console.error("[HistoryList] 立即归档失败:", err)
-    } finally {
-      setClearing(false)
-    }
-  }, [filters, queryClient])
 
   // 列可见性:受控优先,否则内部 state。留好 Task 3.4 的受控接口(菜单 + localStorage 持久化)。
   const [internalVisibility, setInternalVisibility] = useState<VisibilityState>(DEFAULT_COLUMN_VISIBILITY)
@@ -619,13 +594,6 @@ export function HistoryList({
         >
           {autoLoad ? "⟳ 自动" : "⟳ 手动"}
         </button>
-        <button
-          type="button"
-          className="text-[var(--color-primary)]"
-          onClick={() => setClearOpen(true)}
-        >
-          归档
-        </button>
       </div>
       {outOfFilter && (
         <div className="mono flex items-center justify-center gap-2 border-b border-[#5a4a2a] bg-[#2a2418] py-1 text-center text-[13px] text-[#d8c088]">
@@ -822,33 +790,6 @@ export function HistoryList({
           </div>
         )}
       </div>
-      {clearOpen && (
-        <Modal
-          title="立即归档"
-          onClose={() => setClearOpen(false)}
-        >
-          <div className="mono flex flex-col gap-4 text-[13px] text-[var(--color-text)]">
-            <p>{hasAnyFilter(filters) ? `归档当前筛选命中的 ${total} 条到冷存储？` : `归档全部 ${total} 条到冷存储？`}</p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                className="border border-[var(--color-border)] px-3 py-1 text-[var(--color-muted)] hover:text-[var(--color-text)]"
-                onClick={() => setClearOpen(false)}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                disabled={clearing}
-                className="border border-[var(--color-primary)] px-3 py-1 text-[var(--color-primary)] disabled:opacity-50"
-                onClick={() => void confirmClear()}
-              >
-                确认归档
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
     </div>
   )
 }

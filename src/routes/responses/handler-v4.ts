@@ -71,8 +71,8 @@ import { HTTPError } from "~/lib/error"
 import {
   //
   getSessionIdFromHeaders,
-  registerResponseSession,
 } from "~/lib/history/store"
+import { registerResponseSession } from "~/lib/openai/response-session-store"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
@@ -262,7 +262,7 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesR
   // response. Computed before complete() so the forwarded content is recorded;
   // complete() records the upstream-original content.
   const clientResponse = restoreResponsesOutputToolNames(resp, env.ctx.toolNameMapper)
-  env.ctx.setForwardedResponse({ content: responsesOutputToContent(clientResponse.output) })
+  env.ctx.setForwardedResponse({ content: clientResponse })
 
   // RFC Phase 4: ④ build the client response first, capture its headers, THEN complete.
   const httpResponse = c.json(clientResponse)
@@ -290,14 +290,21 @@ function renderNonStreamingV4(c: Context, env: RequestEnvelope, resp: ResponsesR
     // G6 (richest-data-flow): persist upstream body into rawBody (responseText →
     // rawBody) so non-streaming rows can re-derive cache_write later. Re-serialized
     // from the parsed pristine `resp` (data-lossless). Spec §6.1 (G6).
+    sourceBody: resp,
     responseText: JSON.stringify(resp),
   }
   if (truncationReason) {
-    env.ctx.fail(resp.model, new Error(truncationReason), { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content })
+    env.ctx.fail(resp.model, new Error(truncationReason), {
+      usage: responseData.usage,
+      stop_reason: responseData.stop_reason,
+      content: responseData.content,
+      sourceBody: resp,
+    })
   } else {
     env.ctx.complete(responseData)
   }
 
+  env.ctx.finalizeModelOperationDelivery({ clientPayload: clientResponse })
   return httpResponse
 }
 
@@ -497,6 +504,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         outputDetails: acc.outputDetails,
       }),
     })
+    sink.finalize?.()
     return
   }
 
@@ -525,6 +533,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
         outputDetails: acc.outputDetails,
       }),
     })
+    sink.finalize?.()
     return
   }
 
@@ -563,6 +572,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     consola.error(`[Responses:v4] Upstream error for ${acc.model || model}: ${acc.streamError.code} — ${acc.streamError.message}`)
     recordForwarded()
     env.ctx.fail(acc.model || model, new Error(`${acc.streamError.code}: ${acc.streamError.message}`), { usage: partial.usage, content: partial.content })
+    sink.finalize?.()
     return
   }
 
@@ -589,11 +599,13 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, truncErr, { usage: partial.usage, content: partial.content })
+    sink.finalize?.()
     return
   }
 
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, model))
+  sink.finalize?.()
 }
 
 // ============================================================================
@@ -611,7 +623,7 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: Res
   registerResponseSession(resp.id, env.ctx.sessionId)
 
   const clientResponse = restoreResponsesOutputToolNames(resp, env.ctx.toolNameMapper)
-  env.ctx.setForwardedResponse({ content: responsesOutputToContent(clientResponse.output) })
+  env.ctx.setForwardedResponse({ content: clientResponse })
 
   const httpResponse = c.json(clientResponse)
   env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
@@ -624,8 +636,8 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: Res
     usage: {
       input_tokens: anthropicUpstream.usage.input_tokens,
       output_tokens: anthropicUpstream.usage.output_tokens,
-      ...(anthropicUpstream.usage.cache_read_input_tokens != null && { cache_read_input_tokens: anthropicUpstream.usage.cache_read_input_tokens }),
-      ...(anthropicUpstream.usage.cache_creation_input_tokens != null && { cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens }),
+      cache_read_input_tokens: anthropicUpstream.usage.cache_read_input_tokens ?? undefined,
+      cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens ?? undefined,
     },
     stop_reason: anthropicUpstream.stop_reason ?? undefined,
     content: { role: "assistant" as const, content: anthropicUpstream.content },
@@ -640,6 +652,7 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: Res
   } else {
     env.ctx.complete(responseData)
   }
+  env.ctx.finalizeModelOperationDelivery({ clientPayload: clientResponse })
   return httpResponse
 }
 
@@ -723,6 +736,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     recordForwarded()
     consola.debug("[Responses:v4:reverse] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(anthropicAcc.model || model, buildAnthropicResponseData(anthropicAcc, model))
+    sink.finalize?.()
     return
   }
 
@@ -738,6 +752,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(error)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, error, buildAnthropicResponseData(anthropicAcc, model))
+    sink.finalize?.()
     return
   }
 
@@ -750,6 +765,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     consola.error(`[Responses:v4:reverse] Upstream error for ${anthropicAcc.model || model}: ${terminal.error.type} — ${terminal.error.message}`)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, new Error(`${terminal.error.type}: ${terminal.error.message}`), buildAnthropicResponseData(anthropicAcc, model))
+    sink.finalize?.()
     return
   }
   if (terminal.kind === "truncated") {
@@ -764,6 +780,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
+    sink.finalize?.()
     return
   }
   // Drain the reverse translator's closing lifecycle (response.completed) — the per-frame render has no
@@ -774,4 +791,5 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   }
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
+  sink.finalize?.()
 }

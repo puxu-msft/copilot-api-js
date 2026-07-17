@@ -19,6 +19,7 @@ import type {
 
 import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
 import type {
   //
@@ -35,10 +36,7 @@ import type {
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import {
-  //
-  registerResponseSession,
-} from "~/lib/history/store"
+import { registerResponseSession } from "~/lib/openai/response-session-store"
 import {
   //
   ENDPOINT,
@@ -145,12 +143,31 @@ function extractPayload(message: unknown): ResponsesPayload | null {
  * caller must `recordForwarded()` after this and before `ctx.fail` (fail freezes inboundResponse).
  * Pre-driver rejections omit `forwarded` (no forwarded track exists yet).
  */
-function sendErrorAndClose(ws: WSContext, message: string, code?: string, forwarded?: { events: Array<SseEventRecord>; streamStartMs: number }): void {
+function sendErrorAndClose(
+  ws: WSContext,
+  message: string,
+  code?: string,
+  forwarded?: {
+    events: Array<SseEventRecord>
+    streamStartMs: number
+    captureGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: string) => void
+  },
+  deliveryCtx?: RequestContext,
+): void {
   const data = JSON.stringify({
     type: "error",
     error: { type: code ?? "server_error", message },
   })
-  if (forwarded) forwarded.events.push({ offsetMs: Date.now() - forwarded.streamStartMs, type: "error", raw: data })
+  if (forwarded) {
+    const record: SseEventRecord = { offsetMs: Date.now() - forwarded.streamStartMs, type: "error", raw: data }
+    forwarded.events.push(record)
+    forwarded.captureGenerationFrame?.({ data }, record, "synthetic")
+  }
+  if (deliveryCtx) {
+    const record: SseEventRecord = { offsetMs: Date.now() - deliveryCtx.startTime, type: "error", raw: data }
+    deliveryCtx.captureForwardedGenerationFrame?.({ data }, record, "synthetic")
+    deliveryCtx.setForwardedResponse({ content: JSON.parse(data), sseEvents: [record] })
+  }
   try {
     ws.send(data)
   } catch {
@@ -165,6 +182,7 @@ function sendErrorAndClose(ws: WSContext, message: string, code?: string, forwar
   } catch {
     // Already closed
   }
+  if (deliveryCtx) deliveryCtx.finalizeModelOperationDelivery({ clientPayload: JSON.parse(data) })
 }
 
 // ============================================================================
@@ -190,6 +208,24 @@ function sendErrorAndClose(ws: WSContext, message: string, code?: string, forwar
  * deterministically rather than waiting for finalization.
  */
 const wsClientAborts = new WeakMap<WSContext, AbortController>()
+const wsConnectionIds = new WeakMap<object, string>()
+
+function wsConnectionKey(ws: WSContext): object {
+  return typeof ws.raw === "object" && ws.raw !== null ? ws.raw : ws
+}
+
+function stableWsConnectionId(ws: WSContext): string {
+  const key = wsConnectionKey(ws)
+  const existing = wsConnectionIds.get(key)
+  if (existing !== undefined) return existing
+  const created = `wsconn_${crypto.randomUUID()}`
+  wsConnectionIds.set(key, created)
+  return created
+}
+
+function responseCreateId(payload: ResponsesPayload): string {
+  return typeof payload.id === "string" && payload.id.length > 0 ? payload.id : `wsresp_${crypto.randomUUID()}`
+}
 
 /** Handle a response.create message over WebSocket */
 async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload): Promise<void> {
@@ -228,6 +264,12 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
  * keepalive (Task 2.2 / R3.5 — see the sink construction below for the protocol-ping-vs-app-frame decision).
  */
 async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
+  const operationIdentity = {
+    kind: "responses_ws" as const,
+    connectionId: stableWsConnectionId(ws),
+    responseCreateId: responseCreateId(rawPayload),
+    ...(rawPayload.previous_response_id !== undefined && { previousResponseId: rawPayload.previous_response_id }),
+  }
   const requestedModel = rawPayload.model
   const { name: resolvedModel, routeOverride } = resolveModelTarget(requestedModel)
   const selectedModel = state.modelIndex.get(resolvedModel)
@@ -261,6 +303,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       method: "WS",
       path: "/v1/responses",
       preResolved: { name: resolvedModel, model: selectedModel, ...(routeOverride && { routeOverride }) },
+      operationIdentity,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -271,7 +314,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     wsClientAborts.delete(ws)
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
-    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), undefined, ctx)
     return
   }
 
@@ -281,7 +324,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       ctx.fail(resolvedModel, new Error(result.rejection.reason))
     }
     wsClientAborts.delete(ws)
-    sendErrorAndClose(ws, result.rejection.reason, "invalid_request_error")
+    sendErrorAndClose(ws, result.rejection.reason, "invalid_request_error", undefined, ctx)
     return
   }
 
@@ -446,8 +489,17 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     recordForwarded()
     consola.debug("[WS] Client disconnected mid-stream — recording aborted")
     env.ctx.abort(acc.model || resolvedModel, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
+      usage: usageFromTotalInput({
+        totalInput: acc.inputTokens,
+        output: acc.outputTokens,
+        cacheRead: acc.cachedInputTokens,
+        cacheCreation: acc.cacheWriteInputTokens,
+        reasoning: acc.reasoningTokens,
+        inputDetails: acc.inputDetails,
+        outputDetails: acc.outputDetails,
+      }),
     })
+    sink.finalize?.()
     return
   }
 
@@ -464,11 +516,24 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
       sseEvents: diag.sseEvents,
     })
-    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), { events: forwardedSseEvents, streamStartMs })
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), {
+      events: forwardedSseEvents,
+      streamStartMs,
+      captureGenerationFrame: (frame, record, syntheticKind) => env.ctx.captureForwardedGenerationFrame?.(frame, record, syntheticKind),
+    })
     recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, error, {
-      usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
+      usage: usageFromTotalInput({
+        totalInput: acc.inputTokens,
+        output: acc.outputTokens,
+        cacheRead: acc.cachedInputTokens,
+        cacheCreation: acc.cacheWriteInputTokens,
+        reasoning: acc.reasoningTokens,
+        inputDetails: acc.inputDetails,
+        outputDetails: acc.outputDetails,
+      }),
     })
+    sink.finalize?.()
     return
   }
 
@@ -506,14 +571,20 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     })
     // Emit the error frame (recorded into forwarded) + close, THEN snapshot + settle (sample →
     // recordForwarded → ctx.fail; fail freezes inboundResponse).
-    sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr), { events: forwardedSseEvents, streamStartMs })
+    sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr), {
+      events: forwardedSseEvents,
+      streamStartMs,
+      captureGenerationFrame: (frame, record, syntheticKind) => env.ctx.captureForwardedGenerationFrame?.(frame, record, syntheticKind),
+    })
     recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, truncErr, { usage: partial.usage, content: partial.content })
+    sink.finalize?.()
     return
   }
 
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, resolvedModel))
+  sink.finalize?.()
 
   if (!state.clientWebsocketKeepOpen) ws.close(1000, "done")
 }
@@ -627,6 +698,7 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
         return
       }
       liveConnectionCount += 1
+      stableWsConnectionId(ws)
       consola.debug(`[WS] Responses API WebSocket connected (active: ${liveConnectionCount})`)
       armIdleTimer(ws)
     },

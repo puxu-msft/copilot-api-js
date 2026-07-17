@@ -130,6 +130,8 @@ export interface ResponsesContextManagement {
 
 /** Request payload for POST /responses */
 export interface ResponsesPayload {
+  /** Optional client identity for one Responses WebSocket response.create operation. */
+  id?: string
   model: string
   input: string | Array<ResponsesInputItem>
   instructions?: string | null
@@ -348,8 +350,8 @@ export interface OutputTextDeltaEvent {
   type: "response.output_text.delta"
   output_index: number
   content_index: number
-  /** The output item id this text delta belongs to (real GHC wire carries it — cross-event correlation, mirrors the sibling delta events). */
-  item_id: string
+  /** Present on native Responses streams; optional for internally translated compatibility frames. */
+  item_id?: string
   delta: string
   sequence_number: number
 }

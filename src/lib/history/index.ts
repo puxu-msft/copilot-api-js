@@ -6,10 +6,7 @@
 
 // Store (persistence and query)
 export {
-  archiveNow,
   clearHistory,
-  deleteEntries,
-  deleteSession,
   drainPendingFinalizations,
   exportHistory,
   finalizeEntry,
@@ -30,17 +27,12 @@ export {
   isHistoryEnabled,
   listInFlightEntries,
   listInFlightSummaries,
-  registerResponseSession,
-  resolveResponseSessionId,
   searchContains,
   searchHistory,
-  setHistoryMaxEntries,
   setHistoryPublisher,
   setPinned,
   shutdownHistory,
-  runArchiveCooldownNow,
   startHistoryBackfills,
-  startSearchIndexBackfill,
   stopHistoryBackgroundWork,
   updateEntry,
 } from "./store"

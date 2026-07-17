@@ -46,7 +46,6 @@ import {
   CONFIG_MANAGED_DEFAULTS,
   DEFAULT_MODEL_MAPPINGS,
   DEFAULT_MODEL_TRANSLATION,
-  onHistoryLimitChange,
   resetConfigManagedState,
   restoreStateForTests,
   setStateForTests,
@@ -790,79 +789,26 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── history.* ──────────────────────────────────────────────────────
   {
-    configKey: "history.success_limit",
-    stateKey: "historySuccessLimit",
-    sampleYamlValue: "500",
-    expectedStateValue: 500,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
+    configKey: "history.raw_capture.enabled",
+    stateKey: "historyRawCaptureEnabled",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
   },
   {
-    configKey: "history.failure_limit",
-    stateKey: "historyFailureLimit",
-    sampleYamlValue: "300",
-    expectedStateValue: 300,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
+    configKey: "history.raw_capture.db_path",
+    stateKey: "historyRawCaptureDbPath",
+    sampleYamlValue: '"/tmp/raw-hot-reload.db"',
+    expectedStateValue: "/tmp/raw-hot-reload.db",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
   },
   {
-    configKey: "history.reaper_interval",
-    stateKey: "historyReaperInterval",
-    sampleYamlValue: "120",
-    expectedStateValue: 120,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
+    configKey: "history.raw_capture.max_object_bytes",
+    stateKey: "historyRawCaptureMaxObjectBytes",
+    sampleYamlValue: "1048576",
+    expectedStateValue: 1048576,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   },
-  {
-    configKey: "history.db_path",
-    stateKey: "historyDbPath",
-    sampleYamlValue: '"/tmp/custom.db"',
-    expectedStateValue: "/tmp/custom.db",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyDbPath,
-  },
-
-  // ── history.archive.* (tiered cold-archive) ────────────────────────
-  {
-    configKey: "history.archive.enabled",
-    stateKey: "historyArchiveEnabled",
-    sampleYamlValue: "false",
-    expectedStateValue: false,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveEnabled,
-  },
-  {
-    configKey: "history.archive.hot_days",
-    stateKey: "historyArchiveHotDays",
-    sampleYamlValue: "7",
-    expectedStateValue: 7,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveHotDays,
-  },
-  {
-    // Human-readable size string → parsed to bytes in the apply layer.
-    configKey: "history.archive.tier1_size_cap",
-    stateKey: "historyArchiveTier1SizeCap",
-    sampleYamlValue: '"1GB"',
-    expectedStateValue: 1024 * 1024 * 1024,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveTier1SizeCap,
-  },
-  {
-    configKey: "history.archive.tier2_warn_count",
-    stateKey: "historyArchiveTier2WarnCount",
-    sampleYamlValue: "50",
-    expectedStateValue: 50,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnCount,
-  },
-  {
-    configKey: "history.archive.tier2_warn_bytes",
-    stateKey: "historyArchiveTier2WarnBytes",
-    sampleYamlValue: '"250MB"',
-    expectedStateValue: 250 * 1024 * 1024,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnBytes,
-  },
-  {
-    configKey: "history.archive.dir",
-    stateKey: "historyArchiveDir",
-    sampleYamlValue: '"/tmp/archive-test"',
-    expectedStateValue: "/tmp/archive-test",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyArchiveDir,
-  },
-
   // ── shutdown.* ─────────────────────────────────────────────────────
   {
     configKey: "shutdown.graceful_wait",
@@ -1243,45 +1189,6 @@ system_prompt_overrides:
     expect(state.systemPromptOverrides[1].from).toBe("exact line")
   })
 
-  test("history.success_limit also syncs setHistoryMaxEntries (side effect)", async () => {
-    // initHistory at default; apply changes success limit to 50.
-    initHistory(true, 200)
-    await writeConfig("history:\n  success_limit: 50\n")
-    await applyConfigToState()
-    expect(state.historySuccessLimit).toBe(50)
-    // setHistoryMaxEntries effect verified indirectly — historySuccessLimit reflects it.
-  })
-
-  test("legacy history.limit falls back to both success and failure limits", async () => {
-    initHistory(true, 200)
-    await writeConfig("history:\n  limit: 77\n")
-    await applyConfigToState()
-    expect(state.historySuccessLimit).toBe(77)
-    expect(state.historyFailureLimit).toBe(77)
-  })
-
-  test("dedicated limits override legacy history.limit fallback", async () => {
-    await writeConfig("history:\n  limit: 77\n  success_limit: 10\n  failure_limit: 20\n")
-    await applyConfigToState()
-    expect(state.historySuccessLimit).toBe(10)
-    expect(state.historyFailureLimit).toBe(20)
-  })
-
-  test("changing only reaper_interval retunes the reaper (listener fires)", async () => {
-    // Register a listener AFTER the initial sync so we only observe the
-    // interval-triggered notification, not the synchronous registration call.
-    let fired = 0
-    const unsubscribe = onHistoryLimitChange(() => {
-      fired++
-    })
-    fired = 0 // discard the synchronous on-register invocation
-    await writeConfig("history:\n  reaper_interval: 999\n")
-    await applyConfigToState()
-    unsubscribe()
-    expect(state.historyReaperInterval).toBe(999)
-    expect(fired).toBeGreaterThan(0)
-  })
-
   test("model_refresh_interval: 0 disables the refresh loop", async () => {
     await writeConfig("model_refresh_interval: 0\n")
     await applyConfigToState()
@@ -1293,7 +1200,6 @@ system_prompt_overrides:
       responseHeaderTimeout: 99,
       modelMappings: { opus: "custom-model" },
       systemPromptOverrides: [{ from: /test/, to: "keep" }],
-      historySuccessLimit: 500,
       disabledModels: ["foo"],
     })
     await writeConfig("")
@@ -1302,7 +1208,6 @@ system_prompt_overrides:
     expect(state.responseHeaderTimeout).toBe(99)
     expect(state.modelMappings.opus).toBe("custom-model")
     expect(state.systemPromptOverrides).toHaveLength(1)
-    expect(state.historySuccessLimit).toBe(500)
     expect(state.disabledModels).toEqual(["foo"])
   })
 
@@ -1344,7 +1249,5 @@ system_prompt_overrides:
     expect(state.thinkingBlockMessagePolicy).toBe(CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy)
     expect(state.responseHeaderTimeout).toBe(CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout)
     expect(state.streamIdleTimeout).toBe(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout)
-    expect(state.historySuccessLimit).toBe(CONFIG_MANAGED_DEFAULTS.historySuccessLimit)
-    expect(state.historyFailureLimit).toBe(CONFIG_MANAGED_DEFAULTS.historyFailureLimit)
   })
 })

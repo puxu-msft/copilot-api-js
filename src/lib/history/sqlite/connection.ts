@@ -42,6 +42,7 @@ const BUSY_TIMEOUT_MS = 5000
 const VACUUM_FREELIST_RATIO = 0.25
 const VACUUM_MIN_FREE_BYTES = 64 * 1024 * 1024
 const VACUUM_WARN_BYTES = 1024 * 1024 * 1024
+const V3_OWNER_MARKER = "copilot-api-history-v3"
 
 let db: Database | null = null
 let openedPath: string | null = null
@@ -53,8 +54,18 @@ export function openDatabase(dbPath: string): Database {
   if (dbPath !== ":memory:") {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   }
+  const existed = dbPath !== ":memory:" && fs.existsSync(dbPath)
   db = createDatabase(dbPath)
   openedPath = dbPath
+  try {
+    assertV3Owner(db, existed, dbPath)
+  } catch (err) {
+    db.close()
+    db = null
+    openedPath = null
+    throw err
+  }
+  const v3Only = dbPath !== ":memory:" && path.basename(dbPath) === "history-v3.db"
   // auto_vacuum MUST be set before ANY other write to the new file — switching
   // to WAL first initializes the DB header and locks auto_vacuum at mode 0
   // (verified empirically). Set on the still-empty file, it makes
@@ -66,6 +77,10 @@ export function openDatabase(dbPath: string): Database {
   db.exec("PRAGMA synchronous = NORMAL;")
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
   db.exec("PRAGMA foreign_keys = ON;")
+  if (v3Only) {
+    if (dbPath !== ":memory:") consola.info(`[history/v3] opened ${dbPath}`)
+    return db
+  }
   db.exec(SCHEMA_SQL)
   // Lineage subsystem removed (dead: zero clustering on real traffic) — drop its
   // orphan tables on existing DBs so they stop occupying space.
@@ -92,6 +107,22 @@ export function openDatabase(dbPath: string): Database {
   // history_meta(search_index_version).
   if (dbPath !== ":memory:") consola.info(`[history/sqlite] opened ${dbPath}`)
   return db
+}
+
+/**
+ * Refuse to reconcile an existing unowned SQLite artifact as V3. This closes the
+ * remaining escape hatch where a test seam or future caller could point the V3
+ * opener at legacy history.db and trigger DROP/ALTER/VACUUM before detection.
+ */
+function assertV3Owner(database: Database, existed: boolean, dbPath: string): void {
+  if (!existed || dbPath === ":memory:") {
+    database.exec("CREATE TABLE IF NOT EXISTS history_store_identity (owner TEXT PRIMARY KEY)")
+    database.prepare("INSERT OR IGNORE INTO history_store_identity (owner) VALUES (?)").run(V3_OWNER_MARKER)
+    return
+  }
+  const identityTable = database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'history_store_identity'").get()
+  const owner = identityTable ? (database.prepare("SELECT owner FROM history_store_identity LIMIT 1").get() as { owner?: string } | undefined)?.owner : undefined
+  if (owner !== V3_OWNER_MARKER) throw new Error(`[history/v3] refusing to open unowned existing database: ${dbPath}`)
 }
 
 /**

@@ -746,45 +746,19 @@ export const HooksConfigSchema = z
   .strict()
 export type HooksConfig = z.infer<typeof HooksConfigSchema>
 
-/**
- * `history.archive.*` —— 三层降温冷归档（HOT→tier-1→tier-2）。size 字段接受人类可读串
- * （"2GB" / "500MB"）或字节数，业务解析在 config apply 层（warn-continue）。
- */
-export const HistoryArchiveConfigSchema = z
-  .object({
-    /** 总开关（默认 true）。false = 退回现状（数量 reaper 硬删、无归档）。 */
-    enabled: nullableBoolean(),
-    /** 热库保留天数；此前的终态非 pinned 行降温到 tier-1（默认 3）。 */
-    hot_days: nullableNonnegativeInt(),
-    /** archive.db 大小上限（"2GB"/字节）；超限触发 T1→T2 封存。默认 "2GB"。 */
-    tier1_size_cap: nullableString(),
-    /** tier-2 seal 单元数告警阈值（默认 200）。 */
-    tier2_warn_count: nullableNonnegativeInt(),
-    /** tier-2 总量告警阈值（"500MB"/字节）。默认 "500MB"。 */
-    tier2_warn_bytes: nullableString(),
-    /** archive.db + 封存文件落盘目录（空=同 history.db 同级 <APP_DIR>）。 */
-    dir: nullableString(),
-  })
-  .strict()
-
 export const HistoryConfigSchema = z
   .object({
-    /**
-     * History subsystem master switch. false = "no-history mode": no history.db
-     * is opened/created, nothing is recorded, and every /history/api/* route
-     * no-ops. STARTUP-ONLY (not hot-reloadable — requires a restart). Default: true.
-     */
+    /** Startup-only master switch. false means no History database is opened. */
     enabled: nullableBoolean(),
-    /** @deprecated 兼容旧配置;缺省的 success_limit/failure_limit 回退到它 */
-    limit: nullableNonnegativeInt(),
-    /** Max successful (non-failed) entries kept in SQLite (0 = unlimited). */
-    success_limit: nullableNonnegativeInt(),
-    /** Max failed entries kept in SQLite (0 = unlimited). */
-    failure_limit: nullableNonnegativeInt(),
-    reaper_interval: nullableNonnegativeInt(),
-    db_path: nullableString(),
-    /** Tiered cold-archive lifecycle (HOT→tier-1→tier-2). See spec 2026-07-14-history-tiered-archive. */
-    archive: nullableSection(HistoryArchiveConfigSchema),
+    raw_capture: nullableSection(
+      z
+        .object({
+          enabled: nullableBoolean(),
+          db_path: nullableString(),
+          max_object_bytes: nullableNonnegativeInt(),
+        })
+        .strict(),
+    ),
   })
   .strict()
 
@@ -1187,7 +1161,6 @@ export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type ChatCompletionsConfig = z.infer<typeof ChatCompletionsConfigSchema>
 export type BufferedRetryOverride = z.infer<typeof BufferedRetryOverrideSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
-export type HistoryArchiveConfig = z.infer<typeof HistoryArchiveConfigSchema>
 export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
