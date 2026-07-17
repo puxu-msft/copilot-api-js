@@ -98,18 +98,6 @@ export const api = {
     return res.blob()
   },
 
-  async deleteEntries(): Promise<void> {
-    // Product-facing delete removed (spec §3.6): repoint to the archive-now move.
-    // (Legacy Vue UI, phased out; kept wired to a live endpoint so it never 404s.)
-    await request("/archive-now", { method: "POST" })
-  },
-
-  // Sessions
-  async deleteSession(id: string): Promise<void> {
-    // Delete surface removed; archive that session's rows instead of deleting.
-    await request("/archive-now?sessionId=" + encodeURIComponent(id), { method: "POST" })
-  },
-
   // Stats & Export
   async fetchStats(): Promise<HistoryStats> {
     return request<HistoryStats>("/stats")

@@ -613,62 +613,21 @@ export interface State {
   readonly systemPromptAppend: Array<CompiledSystemPromptEntry>
 
   /**
-   * Maximum number of successful (non-failed) history entries to keep in SQLite.
-   * The reaper trims the success bucket (status != 'failed') to this size.
-   * 0 = unlimited. Default: 50.
-   */
-  readonly historySuccessLimit: number
-
-  /**
-   * Maximum number of failed history entries to keep in SQLite.
-   * The reaper trims the failure bucket (status = 'failed') to this size.
-   * Kept larger than the success limit by default — failures carry more
-   * diagnostic value. 0 = unlimited. Default: 200.
-   */
-  readonly historyFailureLimit: number
-
-  /**
-   * Interval in seconds between history reaper passes.
-   * The reaper periodically trims the SQLite history table to the per-status
-   * limits (`historySuccessLimit` / `historyFailureLimit`).
-   * Default: 600.
-   */
-  readonly historyReaperInterval: number
-
-  /**
-   * Master switch for the whole history subsystem. When false, `initHistory`
-   * short-circuits BEFORE opening the SQLite DB — no history.db file is created
-   * or touched, the reaper/backfills never start, and every `/history/api/*`
-   * route + the HistorySink no-op via `isHistoryEnabled()`.
-   *
-   * STARTUP-PHASE (not in CONFIG_MANAGED_DEFAULTS): read once by start.ts, so it
-   * survives hot-reload untouched — a runtime `history.enabled` change warns and
-   * requires a restart (mirrors accountType / rate_limiter / proxy). Precedence:
-   * CLI --no-history > config `history.enabled` > this default.
-   * Default: true.
+   * Startup-only master switch for semantic V3 and optional raw capture.
+   * CLI --no-history overrides this config-backed value.
    */
   readonly historyEnabled: boolean
 
   /**
-   * Filesystem path to the history SQLite database.
-   * Empty string means use the default path from PATHS.HISTORY_DB.
-   * Default: "".
+    * Injected History database path for tests. Production config cannot set it;
+    * an empty string selects PATHS.HISTORY_V3_DB so the online server never opens
+    * the legacy PATHS.HISTORY_DB artifact.
    */
   readonly historyDbPath: string
-
-  // ── 三层降温冷归档（history.archive.*，HOT→tier-1→tier-2）。spec 2026-07-14-history-tiered-archive。──
-  /** 归档总开关（默认 true）。false = 退回现状（数量 reaper 硬删、无归档）。 */
-  readonly historyArchiveEnabled: boolean
-  /** 热库保留天数；此前的终态非 pinned 行降温到 tier-1（默认 3）。 */
-  readonly historyArchiveHotDays: number
-  /** archive.db 大小上限（字节，apply 层从 "2GB" 解析）；超限触发 T1→T2 封存。默认 2GB。 */
-  readonly historyArchiveTier1SizeCap: number
-  /** tier-2 seal 单元数告警阈值（默认 200）。 */
-  readonly historyArchiveTier2WarnCount: number
-  /** tier-2 总量告警阈值（字节，apply 层从 "500MB" 解析）。默认 500MB。 */
-  readonly historyArchiveTier2WarnBytes: number
-  /** archive.db + 封存文件落盘目录（空=同 history.db 同级 <APP_DIR>）。默认 ""。 */
-  readonly historyArchiveDir: string
+  /** Optional raw capture is hot-reloadable through artifact generations. */
+  readonly historyRawCaptureEnabled: boolean
+  readonly historyRawCaptureDbPath: string
+  readonly historyRawCaptureMaxObjectBytes: number
 
   // ── 分层遥测（telemetry.*，独立 telemetry.db）。近期/远期分辨率与保留可配。 ──
   /** 遥测总开关（默认 true）。 */
@@ -1400,35 +1359,28 @@ export function setHistoryConfig(
   patch: Partial<
     Pick<
       MutableState,
-      | "historySuccessLimit"
-      | "historyFailureLimit"
-      | "historyReaperInterval"
       | "historyEnabled"
       | "historyDbPath"
-      | "historyArchiveEnabled"
-      | "historyArchiveHotDays"
-      | "historyArchiveTier1SizeCap"
-      | "historyArchiveTier2WarnCount"
-      | "historyArchiveTier2WarnBytes"
-      | "historyArchiveDir"
+      | "historyRawCaptureEnabled"
+      | "historyRawCaptureDbPath"
+      | "historyRawCaptureMaxObjectBytes"
     >
   >,
 ): void {
-  // Any of the three reaper inputs (both limits + interval) OR an archive knob
-  // that retunes the migration/seal cadence (enabled / hot_days / size_cap) must
-  // notify listeners, else changing only that key on hot-reload would update
-  // state but leave the running timers firing on the old config.
-  const reaperConfigChanged =
-    (patch.historySuccessLimit !== undefined && patch.historySuccessLimit !== mutableState.historySuccessLimit)
-    || (patch.historyFailureLimit !== undefined && patch.historyFailureLimit !== mutableState.historyFailureLimit)
-    || (patch.historyReaperInterval !== undefined && patch.historyReaperInterval !== mutableState.historyReaperInterval)
-    || (patch.historyArchiveEnabled !== undefined && patch.historyArchiveEnabled !== mutableState.historyArchiveEnabled)
-    || (patch.historyArchiveHotDays !== undefined && patch.historyArchiveHotDays !== mutableState.historyArchiveHotDays)
-    || (patch.historyArchiveTier1SizeCap !== undefined && patch.historyArchiveTier1SizeCap !== mutableState.historyArchiveTier1SizeCap)
+  const rawCaptureChanged =
+    (patch.historyRawCaptureEnabled !== undefined && patch.historyRawCaptureEnabled !== mutableState.historyRawCaptureEnabled)
+    || (patch.historyRawCaptureDbPath !== undefined && patch.historyRawCaptureDbPath !== mutableState.historyRawCaptureDbPath)
+    || (patch.historyRawCaptureMaxObjectBytes !== undefined && patch.historyRawCaptureMaxObjectBytes !== mutableState.historyRawCaptureMaxObjectBytes)
   updateState(patch)
-  if (reaperConfigChanged) {
-    for (const listener of historyLimitListeners) listener()
-  }
+  if (rawCaptureChanged) for (const listener of historyRawCaptureListeners) listener()
+}
+
+const historyRawCaptureListeners = new Set<() => void>()
+
+export function onHistoryRawCaptureChange(listener: () => void): () => void {
+  historyRawCaptureListeners.add(listener)
+  listener()
+  return () => historyRawCaptureListeners.delete(listener)
 }
 
 /** 遥测 timer（persist/rollup 间隔）变更监听者——telemetry 模块用它热重载重调周期而不循环 import。 */
@@ -1470,26 +1422,6 @@ export function setTelemetryConfig(
 export function onTelemetryConfigChange(listener: () => void): () => void {
   telemetryConfigListeners.add(listener)
   return () => telemetryConfigListeners.delete(listener)
-}
-
-/**
- * Listeners notified when any reaper config (success/failure limit or interval)
- * changes. Used by the history module to retune its reaper without a circular
- * import. Invoked with no arguments — the listener re-reads state.
- */
-const historyLimitListeners = new Set<() => void>()
-
-/**
- * Subscribe to reaper config changes (success/failure limit or interval).
- *
- * The listener is invoked synchronously once on registration, so subscribers
- * that register after `resetConfigManagedState()` still pick up the initial
- * values. Returns an unsubscribe function.
- */
-export function onHistoryLimitChange(listener: () => void): () => void {
-  historyLimitListeners.add(listener)
-  listener()
-  return () => historyLimitListeners.delete(listener)
 }
 
 export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>): void {
@@ -1768,16 +1700,10 @@ export const CONFIG_MANAGED_DEFAULTS = {
   modelRefreshInterval: 600,
   shutdownGracefulWait: 60,
   shutdownAbortWait: 120,
-  historySuccessLimit: 50,
-  historyFailureLimit: 200,
-  historyReaperInterval: 600,
   historyDbPath: "",
-  historyArchiveEnabled: true,
-  historyArchiveHotDays: 3,
-  historyArchiveTier1SizeCap: 2 * 1024 * 1024 * 1024,
-  historyArchiveTier2WarnCount: 200,
-  historyArchiveTier2WarnBytes: 500 * 1024 * 1024,
-  historyArchiveDir: "",
+  historyRawCaptureEnabled: false,
+  historyRawCaptureDbPath: "",
+  historyRawCaptureMaxObjectBytes: 16 * 1024 * 1024,
   telemetryEnabled: true,
   telemetryDbPath: "",
   telemetryPersistInterval: 60,
@@ -1924,16 +1850,10 @@ export function resetConfigManagedState(): void {
     negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
   })
   setHistoryConfig({
-    historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
-    historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
-    historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
-    historyArchiveEnabled: CONFIG_MANAGED_DEFAULTS.historyArchiveEnabled,
-    historyArchiveHotDays: CONFIG_MANAGED_DEFAULTS.historyArchiveHotDays,
-    historyArchiveTier1SizeCap: CONFIG_MANAGED_DEFAULTS.historyArchiveTier1SizeCap,
-    historyArchiveTier2WarnCount: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnCount,
-    historyArchiveTier2WarnBytes: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnBytes,
-    historyArchiveDir: CONFIG_MANAGED_DEFAULTS.historyArchiveDir,
+    historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+    historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+    historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   })
   setTelemetryConfig({
     telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
@@ -2039,16 +1959,10 @@ const mutableState: MutableState = {
   thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
-  historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
-  historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
-  historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
-  historyArchiveEnabled: CONFIG_MANAGED_DEFAULTS.historyArchiveEnabled,
-  historyArchiveHotDays: CONFIG_MANAGED_DEFAULTS.historyArchiveHotDays,
-  historyArchiveTier1SizeCap: CONFIG_MANAGED_DEFAULTS.historyArchiveTier1SizeCap,
-  historyArchiveTier2WarnCount: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnCount,
-  historyArchiveTier2WarnBytes: CONFIG_MANAGED_DEFAULTS.historyArchiveTier2WarnBytes,
-  historyArchiveDir: CONFIG_MANAGED_DEFAULTS.historyArchiveDir,
+  historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+  historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+  historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
   telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
   telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,

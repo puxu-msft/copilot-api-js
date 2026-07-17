@@ -38,6 +38,7 @@ import { resetProtectStreamingStatsForTests } from "~/lib/anthropic/protect-stre
 import { resetToolInputRepairStatsForTests } from "~/lib/anthropic/tool-input-repair-stats"
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
+import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
 import {
   //
   __setTerminalWriterForTests,
@@ -51,13 +52,19 @@ import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-st
 import { resetResponsePreviewBackfillForTests } from "~/lib/history/sqlite/response-preview-backfill"
 import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
 import { resetUsageNormalizeBackfillForTests } from "~/lib/history/sqlite/usage-normalize-backfill"
+import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
+import { resetV3WriterForTests } from "~/lib/history/v3/store"
+import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
+import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
+import { resetReaperDiagnosticsForTests } from "~/lib/observability/reaper-diagnostics"
 import {
   //
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
+import { resetResponseSessionStoreForTests } from "~/lib/openai/response-session-store"
 import {
   //
   resetUpstreamHook,
@@ -98,6 +105,12 @@ import {
  */
 export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promise<void> }> = [
   { name: "clearAnthropicFeatureNegotiationForTests", reset: clearAnthropicFeatureNegotiationForTests },
+  { name: "resetModelOperationTerminalRegistryForTests", reset: resetModelOperationTerminalRegistryForTests },
+  { name: "resetModelOperationTerminalBusForTests", reset: resetModelOperationTerminalBusForTests },
+  { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
+  { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
+  { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
+  { name: "resetResponseSessionStoreForTests", reset: resetResponseSessionStoreForTests },
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },
   { name: "resetAllLimitsForTesting", reset: resetAllLimitsForTesting },
@@ -105,6 +118,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetModelsEtagForTests", reset: resetModelsEtagForTests },
   { name: "resetRawModelsForTests", reset: resetRawModelsForTests },
   { name: "resetProcessIdentityForTests", reset: resetProcessIdentityForTests },
+  { name: "resetReaperDiagnosticsForTests", reset: resetReaperDiagnosticsForTests },
   { name: "_resetConfigValidationWarnTrackingForTests", reset: _resetConfigValidationWarnTrackingForTests },
   { name: "resetBundledConfigCacheForTests", reset: resetBundledConfigCacheForTests },
   { name: "resetUpstreamWsManagerForTests", reset: () => void resetUpstreamWsManagerForTests() },

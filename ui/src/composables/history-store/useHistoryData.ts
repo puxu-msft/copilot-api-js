@@ -62,7 +62,6 @@ export interface HistoryDataState {
   selectEntry: (id: string) => Promise<void>
   selectAdjacentEntry: (direction: "next" | "prev") => void
   clearSelection: () => void
-  clearAll: () => Promise<void>
   refresh: () => Promise<void>
   loadNext: () => void
   loadPrev: () => void
@@ -194,24 +193,6 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
     selectedEntry.value = null
   }
 
-  async function clearAll(): Promise<void> {
-    try {
-      await api.deleteEntries()
-      entries.value = []
-      selectedEntry.value = null
-      stats.value = null
-      total.value = 0
-      nextCursor.value = null
-      prevCursor.value = null
-      hasMore.value = false
-      showToast("History cleared", "success")
-      await fetchStats()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to clear history"
-      showToast(msg, "error")
-    }
-  }
-
   async function refresh(): Promise<void> {
     const currentId = selectedEntry.value?.id
     await Promise.all([fetchEntries(), fetchStats()])
@@ -284,7 +265,6 @@ export function useHistoryData(showToast: (message: string, type: "success" | "e
     selectEntry,
     selectAdjacentEntry,
     clearSelection,
-    clearAll,
     refresh,
     loadNext,
     loadPrev,

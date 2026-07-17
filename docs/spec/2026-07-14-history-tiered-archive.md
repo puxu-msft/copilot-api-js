@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-07-16** — 内置 tiered archive 已退役。在线服务只写 `history-v3.db`，不读取/迁移旧 History；旧数据库由项目外工具未来自行处理，协议适配不属于本项目。当前权威架构见 [History V3 设计](../DESIGN.md#活的架构现状v4-迁移态) 与 [history.md](../history.md)。
+
 # Spec: History 三层降温归档（tiered archive）
 
 - **状态**：Implemented（2026-07-16，已合并 master；核心归档 + lifecycle follow-up `27b65b89`；用户重启实例实测 `sha=27b65b89-dirty`、HOT API healthy）

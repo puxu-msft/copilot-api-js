@@ -1,7 +1,7 @@
 /**
  * P3 decommission: the legacy trigram FTS + `search_text` column are dropped, the
  * search index is the sole search path, and orphaned `msg_blob` rows are GC'd at
- * every delete site (reaper / deleteSession / clearAll).
+ * legacy search index maintenance remains isolated to V2 test primitives.
  */
 
 import {
@@ -20,18 +20,23 @@ import type {
 import {
   //
   clearHistory,
-  deleteSession,
   finalizeEntry,
   insertEntry,
   updateEntry,
 } from "~/lib/history"
 import { getDatabase } from "~/lib/history/sqlite/connection"
-import { runReaperOnce } from "~/lib/history/sqlite/reaper"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
 async function seed(id: string, messages: Array<MessageContent>, startedAt: number, sessionId = "s"): Promise<void> {
-  const entry = { id, sessionId, startedAt, endpoint: "anthropic-messages", model: { requested: "m" }, clientRequest: { format: "anthropic-messages", model: "m", messages, stream: true } } as unknown as HistoryEntry
+  const entry = {
+    id,
+    sessionId,
+    startedAt,
+    endpoint: "anthropic-messages",
+    model: { requested: "m" },
+    clientRequest: { format: "anthropic-messages", model: "m", messages, stream: true },
+  } as unknown as HistoryEntry
   insertEntry(entry)
   updateEntry(id, {
     state: "completed",
@@ -67,43 +72,12 @@ describe("search_index P3 decommission + GC", () => {
     expect(n).toBe(1)
   })
 
-  test("deleteSession GCs the now-orphaned msg_blob rows", async () => {
-    await seed("d1", [{ role: "user", content: "session-unique-A" }], 1000, "sA")
-    await seed("d2", [{ role: "user", content: "session-unique-B" }], 2000, "sB")
-    expect(blobCount()).toBe(2)
-    deleteSession("sA")
-    // d1's blob is now orphaned (no req_msg) → swept; d2's remains.
-    expect(blobCount()).toBe(1)
-  })
-
-  test("deleteSession keeps a blob still referenced by another session", async () => {
-    const shared: MessageContent = { role: "user", content: "shared-across-sessions" }
-    await seed("k1", [shared], 1000, "sX")
-    await seed("k2", [shared], 2000, "sY")
-    expect(blobCount()).toBe(1) // content-addressed dedup
-    deleteSession("sX")
-    // k2 (session sY) still references the blob → NOT swept.
-    expect(blobCount()).toBe(1)
-  })
-
   test("clearHistory wipes msg_blob + req_aux entirely", async () => {
     await seed("c1", [{ role: "user", content: "to be cleared" }], 1000)
     expect(blobCount()).toBeGreaterThan(0)
     clearHistory()
     expect(blobCount()).toBe(0)
     expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM req_aux").get() as { n: number }).n).toBe(0)
-  })
-
-  test("reaper eviction GCs orphaned blobs (gated on a real eviction)", async () => {
-    // success limit 1 → seeding 3 success rows evicts 2 oldest.
-    await seed("r0", [{ role: "user", content: "reaper-row-0" }], 1000)
-    await seed("r1", [{ role: "user", content: "reaper-row-1" }], 2000)
-    await seed("r2", [{ role: "user", content: "reaper-row-2" }], 3000)
-    expect(blobCount()).toBe(3)
-    const evicted = runReaperOnce(1, 200)
-    expect(evicted).toBe(2)
-    // The 2 evicted rows' blobs are orphaned → swept; the surviving row's blob stays.
-    expect(blobCount()).toBe(1)
   })
 
   test("reopening the DB does not resurrect the search_text column", async () => {

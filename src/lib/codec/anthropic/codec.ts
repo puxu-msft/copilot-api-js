@@ -399,6 +399,7 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
     payload: originalSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+  ctx.recordModelOperationIngress()
 
   // Tool-name mapper from the client's ORIGINAL tools (preprocess does not touch
   // tools, so `incoming.tools` is still the client's set). Stored on ctx so the

@@ -19,7 +19,8 @@ import {
 } from "~/lib/anthropic/protect-streaming-stats"
 import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { queryEntryCount } from "~/lib/history/sqlite/read"
+import { getHistorySummaries } from "~/lib/history/queries"
+import { getRawCaptureStatus } from "~/lib/history/raw/manager"
 import { listInFlightEntries } from "~/lib/history/store"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
 import {
@@ -72,6 +73,7 @@ const ServerStatusSchema = z
     protect_streaming: z.record(z.string(), z.unknown()),
     tool_input_repair: z.record(z.string(), z.unknown()),
     thinking_blocks: z.record(z.string(), z.unknown()),
+    history_raw_capture: z.record(z.string(), z.unknown()),
   })
   .openapi("ServerStatus")
 
@@ -116,7 +118,7 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
 
   let historyEntryCount = 0
   try {
-    historyEntryCount = queryEntryCount()
+    historyEntryCount = getHistorySummaries({ operationKind: "all", limit: 1 }).total
   } catch {
     // DB not opened yet
   }
@@ -202,11 +204,11 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
 
       requestTelemetry,
 
+      history_raw_capture: getRawCaptureStatus(),
+
       memory: {
         historyBackend: "sqlite",
         historyEntryCount,
-        historySuccessLimit: state.historySuccessLimit,
-        historyFailureLimit: state.historyFailureLimit,
         inFlightCount,
       },
 

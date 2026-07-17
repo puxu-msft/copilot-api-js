@@ -31,7 +31,6 @@ import type { WSMessage } from "~/lib/ws"
 import {
   //
   clearHistory,
-  deleteSession,
   getCurrentSession,
   initHistory,
   insertEntry,
@@ -548,42 +547,20 @@ describe("history disabled", () => {
   })
 })
 
-// ─── clearHistory / deleteSession → WS notifications ───
+// ─── clearHistory → WS notifications ───
 
-describe("clearHistory and deleteSession broadcast WS notifications", () => {
+describe("clearHistory broadcasts WS notifications", () => {
   test("clearHistory broadcasts history_cleared and stats_updated", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
     createEntry("anthropic-messages", { model: "test" })
-    // Clear sent messages to isolate clearHistory effects
     ;(ws.send as ReturnType<typeof mock>).mockClear()
 
     clearHistory()
 
-    const msgs = getSentMessages(ws)
-    const types = msgs.map((m) => m.type)
+    const types = getSentMessages(ws).map((message) => message.type)
     expect(types).toContain("history_cleared")
     expect(types).toContain("stats_updated")
-  })
-
-  test("deleteSession broadcasts session_deleted and stats_updated", () => {
-    const ws = createMockWebSocket()
-    addClient(ws)
-
-    const entry = createEntry("anthropic-messages", { model: "test" })
-    expect(entry.sessionId).toBeTruthy()
-    ;(ws.send as ReturnType<typeof mock>).mockClear()
-
-    deleteSession(entry.sessionId!)
-
-    const msgs = getSentMessages(ws)
-    const types = msgs.map((m) => m.type)
-    expect(types).toContain("session_deleted")
-    expect(types).toContain("stats_updated")
-
-    // session_deleted message includes sessionId
-    const sessionMsg = msgs.find((m) => m.type === "session_deleted")!
-    expect((sessionMsg.data as { sessionId: string }).sessionId).toBe(entry.sessionId!)
   })
 })

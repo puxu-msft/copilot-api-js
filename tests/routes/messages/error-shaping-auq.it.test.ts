@@ -177,11 +177,7 @@ describe("AUQ synthesis — history recording (Task 4.3 sentinel / D-1)", () => 
     expect(attempt?.upstreamResponse?.status).toBe(402)
     expect(attempt?.upstreamResponse?.success).toBe(false)
 
-    // DOCUMENTED GAP (D-1): the client actually received a synthesized 200 AUQ, but
-    // clientResponse does not reflect it — it is absent (never captured), because
-    // ctx.fail() froze the entry before shapePrecommitError built the 200. This is a
-    // KNOWN limitation pending the D-1 settle-lifecycle decision, locked here as a
-    // sentinel so a future fix cannot land silently.
-    expect(entry?.clientResponse?.status).toBeUndefined()
+    expect(entry?.clientResponse?.status).toBe(200)
+    expect(entry?.clientResponse?.body).toBeDefined()
   })
 })
