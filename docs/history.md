@@ -92,6 +92,13 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 - raw capture 失败不阻断代理或 semantic V3；status 暴露 generation、gap 与 last error。
 - 搜索只索引 unique semantic payload object，operation membership 独立保存；权威 operation 不依赖搜索成功。
 
+### Canonical 时间与帧观测
+
+- `ModelOperationRecord.sequence` 只负责全局事件排序；每个 canonical event 另存 epoch-ms `occurredAt`，attempt 另存 `settledAt`，terminal `occurredAt` 投影为 `endedAt`，`durationMs = endedAt - startedAt`。禁止再从 sequence 推导时间。
+- SSE/WS semantic frame 的 CAS value 只含 wire 语义字段；per-track `frameObservations` 与 `frames` 一一对齐，保存该帧在 upstream/client 轨各自的 `offsetMs`、`observedAt`、`type` 与 `synthetic`。同一 semantic handle 可在两轨共享而拥有不同观测，不破坏 CAS 去重。
+- `v3_operations.ended_at` 与 `timing_source` 记录时间 provenance：新记录是 `canonical`；修复前已持久行只能以 `committed_at` 作诚实的 `storage-commit-upper-bound`；有独立终端日志的恢复行可为 `terminal-log-rounded`；没有独立 oracle 的恢复行是 `unavailable`。UI 对近似值显示 `≈`，对不可恢复帧 offset 显示“时间不可用”。
+- 修复前 canonicalizer 把 JSON-compatible 共享引用误判为 cycle，导致 generation prepare 失败而 bypass 简单 payload 正常。cycle guard 现只追踪当前递归栈；writer 失败会 ERROR 日志，不再静默。保留的 HistoryEntry 投影用 `scripts/recover-history-v3-projections.ts` 流式、幂等恢复；恢复记录明确标记 projection/raw/timing gap，不冒充完整 canonical/raw 数据。
+
 
 ### Debug-pin（豁免淘汰）
 
