@@ -65,7 +65,7 @@ BROWSER=wslview npm dist-tag add @hsupu/copilot-api@0.8.3 latest
 | `--proxy` |  | Override outbound proxy URL (http/https/socks5/socks5h) |
 | `--no-http-proxy-from-env` | enabled | Ignore `HTTP_PROXY` / `HTTPS_PROXY` env vars |
 | `--no-rate-limit` | enabled | Disable the adaptive rate limiter |
-| `--no-history` | enabled | No-history mode: don't open/create `history.db` or record anything (overrides config `history.enabled`) |
+| `--no-history` | enabled | No-history mode: don't open/create the History database or record anything (overrides config `history.enabled`) |
 
 `--account-type` determines the upstream API base URL (unless `--ghc-api-base-url` overrides it):
 

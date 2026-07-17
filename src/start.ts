@@ -193,7 +193,7 @@ interface RunServerOptions {
   /**
    * History recording master switch (CLI --history / --no-history). undefined =
    * unset → fall back to config `history.enabled` (default true). false forces
-   * no-history mode: no history.db is opened and nothing is recorded.
+   * no-history mode: no History database is opened and nothing is recorded.
    */
   history?: boolean
   /** Mock rate limiter throttle: reject all requests with 429 */
@@ -684,7 +684,7 @@ export const start = defineCommand({
       type: "boolean",
       // No default on purpose: unset → undefined → fall back to config
       // `history.enabled` (default true). --no-history forces the no-history
-      // mode (no history.db opened, nothing recorded) and wins over config.
+      // mode (no History database opened, nothing recorded) and wins over config.
       description: "Record request history to SQLite (disable with --no-history)",
     },
     "mock-rate-limiter-throttled": {
