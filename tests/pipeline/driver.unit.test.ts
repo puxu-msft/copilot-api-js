@@ -46,6 +46,7 @@ import {
 } from "~/lib/pipeline/driver"
 import { adaptLegacyStrategy } from "~/lib/pipeline/legacy-strategy-adapter"
 import { StreamClientAbortError } from "~/lib/stream"
+import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
 
 // ── ctx recorder ──────────────────────────────────────────────────────────
 
@@ -251,6 +252,46 @@ describe("driver.runRequest — orchestration", () => {
     expect(result.ok).toBe(true)
     expect(sends).toBe(2)
     expect(handled).toBe(1)
+  })
+
+  test("WS before-first-event fallback starts a separately admitted HTTP dispatch", async () => {
+    const { ctx, calls } = makeCtx()
+    const env = { ...makeEnv(ctx), model: { id: "model" } as RequestEnvelope["model"] } as RequestEnvelope
+    const { codec } = makeCodec({ env })
+    const dispatchOptions: Array<unknown> = []
+    let sends = 0
+    const transport = makeTransport(async (_wire, _env, options) => {
+      dispatchOptions.push(options)
+      sends++
+      if (sends === 1) throw new UpstreamTransportFallbackError("ws-before-first-event", new Error("WS closed before first event"))
+      return okStream()
+    })
+    const admitted: Array<string> = []
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport,
+      admission: {
+        async acquire(input) {
+          admitted.push(input.dispatchId)
+          return { admittedAt: Date.now(), queueWaitMs: 0 }
+        },
+        observe() {
+          return { kind: "complete" }
+        },
+        rejectAll() {},
+      },
+    })
+
+    const result = await driver.runRequest({ body: {}, headers: new Headers() })
+
+    expect(result.ok).toBe(true)
+    expect(sends).toBe(2)
+    expect(admitted).toHaveLength(2)
+    expect(calls.beginAttempt).toEqual([{}, { strategy: "ws-fallback" }])
+    expect(calls.recordAttemptFailure).toEqual([{ willRetry: true, nextStrategy: "ws-fallback" }])
+    expect(dispatchOptions).toEqual([undefined, { forceHttp: true }])
   })
 
   test("reject: decideRoute(reject) → ok:false, transport never called", async () => {

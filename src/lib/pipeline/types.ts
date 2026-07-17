@@ -99,6 +99,12 @@ export interface PreparedRequest {
   stream: boolean
 }
 
+/** Scheduler-owned controls for ONE physical transport dispatch. */
+export interface TransportDispatchOptions {
+  /** Skip the Responses WS-first choice for an explicit `ws-fallback` HTTP dispatch. */
+  forceHttp?: boolean
+}
+
 /**
  * Pure send/receive, format-agnostic. Extracted from the three clients' shared
  * skeleton (docs/v4/02-current-state.md §6.1): token check → combine signals →
@@ -107,7 +113,7 @@ export interface PreparedRequest {
  * wraps this at the call site (kept, see retry-transport.md §5).
  */
 export interface Transport {
-  send(wire: PreparedRequest, env: RequestEnvelope): Promise<UpstreamStream>
+  send(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<UpstreamStream>
 }
 
 // ============================================================================

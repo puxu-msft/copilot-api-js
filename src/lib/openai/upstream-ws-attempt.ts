@@ -63,7 +63,7 @@ export function canUseUpstreamWebSocket(model: Model | undefined, modelKey: stri
   return state.upstreamWebSocket && !manager.temporarilyDisabled(modelKey) && !manager.stopped && isWsResponsesSupported(model)
 }
 
-export type UpstreamWsAttempt = { kind: "ok"; generator: AsyncGenerator<ServerSentEventMessage> } | { kind: "fallback" }
+export type UpstreamWsAttempt = { kind: "ok"; generator: AsyncGenerator<ServerSentEventMessage> } | { kind: "fallback"; error: unknown }
 
 /** Options governing one upstream-WS attempt (reuse keying + lifecycle aborts). */
 export interface UpstreamWsAttemptOptions {
@@ -119,7 +119,7 @@ export async function attemptUpstreamResponsesWs(
       `[responses] Upstream WS acquire failed, falling back to HTTP `
         + `(${manager.consecutiveFallbacks(wire.model)}/3): ${error instanceof Error ? error.message : String(error)}`,
     )
-    return { kind: "fallback" }
+    return { kind: "fallback", error }
   }
 
   // requestAbort governs the WS request lifecycle (connect + sendRequest).
@@ -196,7 +196,7 @@ export async function attemptUpstreamResponsesWs(
       `[responses] Upstream WS failed before first event, falling back to HTTP `
         + `(${manager.consecutiveFallbacks(wire.model)}/3): ${error instanceof Error ? error.message : String(error)}`,
     )
-    return { kind: "fallback" }
+    return { kind: "fallback", error }
   }
 }
 

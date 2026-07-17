@@ -643,6 +643,7 @@ describe("attemptUpstreamResponsesWs — §1.1 before-first-event fallback", () 
     const attempt = await attemptUpstreamResponsesWs(prepared, { clientAbortSignal: clientAbort.signal })
 
     expect(attempt.kind).toBe("fallback")
+    if (attempt.kind === "fallback") expect(attempt.error).toBeInstanceOf(Error)
     // Load-bearing regression guard: the strict socket only records a close for a
     // WHATWG-legal code. Recording exactly { code: 1000 } proves the fallback-catch
     // close used the legal code — a 1001 regression throws before recording, so

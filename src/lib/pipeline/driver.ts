@@ -28,6 +28,7 @@ import {
   getUpstreamAdmissionController,
   type UpstreamAdmissionController,
 } from "~/lib/transport/admission-controller"
+import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
 import {
   //
   abortableDelay,
@@ -53,6 +54,7 @@ import type {
   RunBufferedOpts,
   RunResponseOpts,
   Transport,
+  TransportDispatchOptions,
   UpstreamStream,
 } from "./types"
 
@@ -406,6 +408,9 @@ async function runExchange(
   // The accepted retry's meta (post-gate), threaded to onMeta + onResolved (C0-②).
   let activeMeta: Record<string, unknown> | undefined
   let nextAttemptStrategy: string | undefined
+  // Once Responses WS fails before its first event, this candidate remains on HTTP for every
+  // subsequent semantic/rate-limit dispatch. Retrying WS would repeat the failed transport hop.
+  let forceHttp = false
   // First-attempt-only pre-send hook guard (Task 9): the codec may pre-truncate
   // env.body ONCE before the initial send; reactive retry takes over afterward, so
   // we never re-run it per attempt (which would re-truncate an already-trimmed body).
@@ -451,7 +456,11 @@ async function runExchange(
       })
       current.ctx.addQueueWaitMs(permit.queueWaitMs)
       const hook = getUpstreamHook()
-      const upstream = hook?.exchange ? await hook.exchange(wire, current, () => deps.transport.send(wire, current)) : await deps.transport.send(wire, current)
+      const transportOptions: TransportDispatchOptions | undefined = forceHttp ? { forceHttp: true } : undefined
+      const upstream =
+        hook?.exchange ?
+          await hook.exchange(wire, current, () => deps.transport.send(wire, current, transportOptions))
+        : await deps.transport.send(wire, current, transportOptions)
       // 首包埋点（spec 2026-07-14 §3.2）：上游响应头到达（每 attempt 各记自己的，绝对 epoch）。
       {
         current.ctx.setAttemptTimingEpoch?.("upstreamHeadersAt", Date.now(), "once")
@@ -479,6 +488,18 @@ async function runExchange(
       // not the caller's pre-exchange env — consumers read what was actually sent.
       return { upstream, env: current }
     } catch (error) {
+      if (error instanceof UpstreamTransportFallbackError) {
+        const dispatchError = classifyError(error.dispatchError)
+        current.ctx.setAttemptError(dispatchError)
+        current.ctx.setHttpHeaders({ request: Object.fromEntries(wire.headers.entries()) })
+        // Complete the permit lifecycle even though the failure has no HTTP status. Current
+        // admission treats it as neutral; future inflight accounting must still see the dispatch end.
+        admission.observe({ model: current.model.id || "unknown", completedAt: Date.now() })
+        current.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "ws-fallback" })
+        nextAttemptStrategy = "ws-fallback"
+        forceHttp = true
+        continue
+      }
       const apiError = classifyError(error)
       current.ctx.setAttemptError(apiError)
       // RFC Phase 2: capture the outbound legs on the failure path too. ② from the
