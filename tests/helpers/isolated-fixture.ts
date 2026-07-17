@@ -39,12 +39,14 @@ import { resetToolInputRepairStatsForTests } from "~/lib/anthropic/tool-input-re
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
 import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
+import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
 import {
   //
   __setTerminalWriterForTests,
   drainPendingFinalizations,
 } from "~/lib/history/entries"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
 import { resetArchiveWorkerForTests } from "~/lib/history/sqlite/archive-worker"
 import { resetCacheWriteBackfillForTests } from "~/lib/history/sqlite/cache-write-backfill"
 import { resetCalibrationBackfillForTests } from "~/lib/history/sqlite/calibration-backfill"
@@ -52,19 +54,18 @@ import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-st
 import { resetResponsePreviewBackfillForTests } from "~/lib/history/sqlite/response-preview-backfill"
 import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
 import { resetUsageNormalizeBackfillForTests } from "~/lib/history/sqlite/usage-normalize-backfill"
-import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
 import { resetV3WriterForTests } from "~/lib/history/v3/store"
 import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
 import { resetReaperDiagnosticsForTests } from "~/lib/observability/reaper-diagnostics"
+import { resetResponseSessionStoreForTests } from "~/lib/openai/response-session-store"
 import {
   //
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
-import { resetResponseSessionStoreForTests } from "~/lib/openai/response-session-store"
 import {
   //
   resetUpstreamHook,
@@ -85,6 +86,7 @@ import {
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
+import { resetSensitiveOutputForTests } from "~/lib/tui/sensitive-output"
 import { resetTerminalCoordinatorForTests } from "~/lib/tui/terminal-coordinator"
 
 import { restoreFetch } from "./mock-fetch"
@@ -143,6 +145,8 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   // a test that constructs a non-`silent` TerminalUi and forgets `destroy()`
   // would otherwise leak its registration into the next test file.
   { name: "resetTerminalCoordinatorForTests", reset: resetTerminalCoordinatorForTests },
+  { name: "resetSensitiveOutputForTests", reset: resetSensitiveOutputForTests },
+  { name: "resetStructuredFileSinkForTests", reset: resetStructuredFileSinkForTests },
   // Upstream-hook DI seam (module-global `hookState`, read at driver-suite level
   // via `getUpstreamHook()`): a test file that loads/injects a hook and forgets
   // its own afterEach would otherwise leak the mounted hook into any later test —

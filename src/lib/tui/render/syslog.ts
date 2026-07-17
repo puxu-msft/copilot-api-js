@@ -17,8 +17,9 @@ import pc from "picocolors"
 import type { DiagnosticEvent } from "~/lib/diagnostics"
 
 import { diagnosticConsolaType } from "~/lib/diagnostics"
-import { sanitizeTerminalText } from "./sanitize"
 import { formatTime } from "~/lib/observability/projections/format"
+
+import { sanitizeTerminalText } from "./sanitize"
 
 /**
  * Render a republished consola log (`system.log` event) into its full terminal
