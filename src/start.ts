@@ -348,6 +348,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
         directory,
         maxSizeBytes: state.logging.fileMaxSizeMb * 1024 * 1024,
         maxFilesPerProcess: state.logging.fileMaxFilesPerProcess,
+        retentionDays: state.logging.retentionDays,
         level: () => state.logging.fileLevel,
       })
       consola.info(`Structured diagnostics: ${sink.health.activePath}`)

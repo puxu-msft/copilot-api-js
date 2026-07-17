@@ -18,6 +18,9 @@ import { isDiagnosticLevelEnabled } from "~/lib/diagnostics"
 import { writeEmergencyFallback } from "~/lib/diagnostics/emergency-output"
 import { getProcessIdentityQuiet } from "~/lib/process-identity"
 
+import { createOwnerManifest } from "./owner-manifest"
+import { sweepDiagnosticRetention } from "./retention"
+
 export type StructuredFileRecord =
   | { recordType: "diagnostic"; diagnostic: DiagnosticEvent }
   | { recordType: "request-line"; timeUnixMs: number; process: ReturnType<typeof getProcessIdentityQuiet>; parts: LogLineParts }
@@ -27,6 +30,7 @@ export interface StructuredFileSinkOptions {
   maxSizeBytes?: number
   maxLengthBytes?: number
   maxFilesPerProcess?: number
+  retentionDays?: number
   level?: DiagnosticLevelThreshold | (() => DiagnosticLevelThreshold)
 }
 
@@ -81,7 +85,10 @@ export class StructuredFileSink {
     fs.mkdirSync(options.directory, { recursive: true, mode: 0o700 })
     fs.chmodSync(options.directory, 0o700)
     const identity = getProcessIdentityQuiet()
-    const baseName = path.join(options.directory, `copilot-api-${identity.bootTime}-${identity.pid}.ndjson`)
+    const artifactStem = `copilot-api-${identity.bootTime}-${identity.pid}`
+    createOwnerManifest(options.directory, identity, artifactStem)
+    sweepDiagnosticRetention(options.directory, options.retentionDays ?? 7)
+    const baseName = path.join(options.directory, `${artifactStem}.ndjson`)
     const destination = await buildRoll({
       file: baseName,
       ...((options.maxSizeBytes ?? 10 * 1024 * 1024) > 0 && { size: options.maxSizeBytes ?? 10 * 1024 * 1024 }),
