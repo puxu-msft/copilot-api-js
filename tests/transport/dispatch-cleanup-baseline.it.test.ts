@@ -122,13 +122,8 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-type ExecuteWithSignal = <T>(fn: () => Promise<T>, opts: { signal: AbortSignal }) => Promise<RateLimitedResult<T>>
-
-/**
- * P5 will replace execute-wrapper semantics with cancelable admission. Casting the future second argument here makes the RED contract compile today; the legacy method ignores the extra JavaScript argument, which is the gap these tests are expected to expose.
- */
 function executeWithCandidateSignal<T>(limiter: AdaptiveRateLimiter, fn: () => Promise<T>, signal: AbortSignal): Promise<RateLimitedResult<T>> {
-  return (limiter.execute as ExecuteWithSignal)(fn, { signal })
+  return limiter.execute(fn, { signal })
 }
 
 function rateLimitError(): HTTPError {
@@ -226,49 +221,7 @@ describe("pending SSE frame cleanup", () => {
 })
 
 describe("adaptive rate-limit queue and backoff cleanup", () => {
-  test("oracle positive control: legacy candidate abort is ignored while work is queued", async () => {
-    const limiter = new AdaptiveRateLimiter({
-      baseRetryIntervalSeconds: 0.2,
-      requestIntervalSeconds: 0.2,
-    })
-    let blockerCalls = 0
-    const blocker = limiter.execute(async () => {
-      blockerCalls += 1
-      if (blockerCalls <= 2) throw rateLimitError()
-      return "blocker"
-    })
-    // Attach immediately: cleanup in finally rejects this promise synchronously.
-    void blocker.catch(() => {})
-    const candidateAbort = new AbortController()
-    let queuedCalls = 0
-
-    try {
-      await waitUntil(() => limiter.getStatus().mode === "rate-limited" && limiter.getStatus().queueLength === 1, {
-        label: "rate limiter blocker backoff",
-      })
-      const queued = executeWithCandidateSignal(
-        limiter,
-        async () => {
-          queuedCalls += 1
-          return "queued"
-        },
-        candidateAbort.signal,
-      )
-      void queued.catch(() => {})
-      candidateAbort.abort()
-      await delay(20)
-
-      expect(limiter.getStatus().queueLength).toBe(2)
-      expect(queuedCalls).toBe(0)
-      void queued
-    } finally {
-      limiter.rejectQueued()
-      await Promise.allSettled([blocker])
-    }
-  })
-
-  // RED verified 2026-07-17: legacy execute() ignores the signal, so the request remains pending and queueLength stays 2.
-  test.todo("P5 contract: candidate abort removes only that queued admission", async () => {
+  test("P5 contract: candidate abort removes only that queued admission", async () => {
     const limiter = new AdaptiveRateLimiter({
       baseRetryIntervalSeconds: 0.2,
       requestIntervalSeconds: 0.2,
@@ -313,40 +266,7 @@ describe("adaptive rate-limit queue and backoff cleanup", () => {
     }
   })
 
-  test("oracle positive control: legacy candidate abort does not stop 429 backoff replay", async () => {
-    const limiter = new AdaptiveRateLimiter({
-      baseRetryIntervalSeconds: 0.01,
-      requestIntervalSeconds: 0.01,
-      consecutiveSuccessesForRecovery: 1,
-      gradualRecoverySteps: [0],
-    })
-    const candidateAbort = new AbortController()
-    let calls = 0
-
-    try {
-      const result = executeWithCandidateSignal(
-        limiter,
-        async () => {
-          calls += 1
-          if (calls <= 2) throw rateLimitError()
-          return "replayed"
-        },
-        candidateAbort.signal,
-      )
-      await waitUntil(() => calls === 2 && limiter.getStatus().mode === "rate-limited" && limiter.getStatus().queueLength === 1, {
-        label: "rate limiter retry backoff",
-      })
-      candidateAbort.abort()
-
-      await expect(result).resolves.toMatchObject({ result: "replayed" })
-      expect(calls).toBe(3)
-    } finally {
-      limiter.rejectQueued()
-    }
-  })
-
-  // RED verified 2026-07-17: the aborted legacy request resolves after replay and calls upstream a third time.
-  test.todo("P5 contract: candidate abort stops a pending 429 backoff replay", async () => {
+  test("P5 contract: candidate abort stops a pending 429 backoff replay", async () => {
     const limiter = new AdaptiveRateLimiter({
       baseRetryIntervalSeconds: 0.01,
       requestIntervalSeconds: 0.01,
@@ -380,6 +300,31 @@ describe("adaptive rate-limit queue and backoff cleanup", () => {
     } finally {
       limiter.rejectQueued()
     }
+  })
+
+  test("aborted in-flight request cannot shift the next queued admission when upstream also rejects", async () => {
+    const limiter = new AdaptiveRateLimiter({ baseRetryIntervalSeconds: 0.01, requestIntervalSeconds: 0.01 })
+    const gate = new AbortController()
+    const firstAbort = new AbortController()
+    let firstStarted = false
+    const first = limiter.execute(
+      async () => {
+        firstStarted = true
+        await new Promise<void>((resolve) => gate.signal.addEventListener("abort", () => resolve(), { once: true }))
+        throw new Error("upstream unwound after abort")
+      },
+      { signal: firstAbort.signal },
+    )
+    await waitUntil(() => firstStarted, { label: "first in-flight limiter request" })
+    limiter.forceRateLimitedMode()
+    const second = limiter.execute(async () => "second-survived")
+
+    firstAbort.abort()
+    gate.abort()
+
+    await expect(first).rejects.toThrow(/abort/i)
+    await expect(second).resolves.toMatchObject({ result: "second-survived" })
+    expect(limiter.getStatus().queueLength).toBe(0)
   })
 
   test("legacy global rejectQueued remains a green cleanup baseline", async () => {

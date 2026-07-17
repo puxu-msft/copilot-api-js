@@ -8,6 +8,34 @@ import type {
   ScopedPublisher,
 } from "./observability"
 
+function abortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason
+  if (reason instanceof Error) return reason
+  return new DOMException(typeof reason === "string" ? reason : "The operation was aborted.", "AbortError")
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError(signal)
+}
+
+function abortableWait(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  throwIfAborted(signal)
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(done, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", onAbort)
+      reject(abortError(signal))
+    }
+    function done(): void {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
 /**
  * Scoped publisher for `system.rate_limit_state` events. Set once at
  * start.ts via `setRateLimitPublisher(bus.scope('system'))`. When unset
@@ -88,6 +116,13 @@ interface QueuedRequest<T> {
    * NOT run its upstream work for a caller that was already rejected (RC4 orphan).
    */
   cancelled?: boolean
+  signal?: AbortSignal
+  detachAbort?: () => void
+  settled?: boolean
+}
+
+export interface RateLimitExecutionOptions {
+  signal?: AbortSignal
 }
 
 /** Result wrapper that includes queue wait time */
@@ -137,14 +172,15 @@ export class AdaptiveRateLimiter {
    * Returns a promise that resolves when the request succeeds.
    * The request will be retried automatically on 429 errors.
    */
-  async execute<T>(fn: () => Promise<T>): Promise<RateLimitedResult<T>> {
+  async execute<T>(fn: () => Promise<T>, options: RateLimitExecutionOptions = {}): Promise<RateLimitedResult<T>> {
+    throwIfAborted(options.signal)
     if (this.mode === "normal") {
-      return this.executeInNormalMode(fn)
+      return this.executeInNormalMode(fn, options.signal)
     }
     if (this.mode === "recovering") {
-      return this.executeInRecoveringMode(fn)
+      return this.executeInRecoveringMode(fn, options.signal)
     }
-    return this.enqueue(fn)
+    return this.enqueue(fn, undefined, options.signal)
   }
 
   /**
@@ -214,7 +250,7 @@ export class AdaptiveRateLimiter {
   /**
    * Execute in normal mode - full speed
    */
-  private async executeInNormalMode<T>(fn: () => Promise<T>): Promise<RateLimitedResult<T>> {
+  private async executeInNormalMode<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<RateLimitedResult<T>> {
     try {
       const result = await fn()
       return { result, queueWaitMs: 0 }
@@ -223,7 +259,7 @@ export class AdaptiveRateLimiter {
       if (isRateLimit) {
         this.enterRateLimitedMode()
         // Queue this request for retry instead of failing
-        return this.enqueue(fn, retryAfter)
+        return this.enqueue(fn, retryAfter, signal)
       }
       throw error
     }
@@ -250,7 +286,7 @@ export class AdaptiveRateLimiter {
    *      the first round of concurrency (defeating the whole point of a
    *      multi-step ramp).
    */
-  private async executeInRecoveringMode<T>(fn: () => Promise<T>): Promise<RateLimitedResult<T>> {
+  private async executeInRecoveringMode<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<RateLimitedResult<T>> {
     const startTime = Date.now()
     const reservedStepIndex = this.recoveryStepIndex
     const currentInterval = this.config.gradualRecoverySteps[reservedStepIndex] ?? 0
@@ -272,8 +308,9 @@ export class AdaptiveRateLimiter {
 
     const waitMs = slotStart - now
     if (waitMs > 0) {
-      await this.sleep(waitMs)
+      await abortableWait(waitMs, signal)
     }
+    throwIfAborted(signal)
 
     try {
       const result = await fn()
@@ -306,7 +343,7 @@ export class AdaptiveRateLimiter {
         // mode for *future* execute() calls.
         consola.warn("[RateLimiter] Hit rate limit during ramp-up, returning to rate-limited mode")
         this.enterRateLimitedMode()
-        return this.enqueue(fn, retryAfter)
+        return this.enqueue(fn, retryAfter, signal)
       }
       throw error
     }
@@ -405,7 +442,8 @@ export class AdaptiveRateLimiter {
   /**
    * Enqueue a request for later execution
    */
-  private enqueue<T>(fn: () => Promise<T>, retryAfterSeconds?: number): Promise<RateLimitedResult<T>> {
+  private enqueue<T>(fn: () => Promise<T>, retryAfterSeconds?: number, signal?: AbortSignal): Promise<RateLimitedResult<T>> {
+    throwIfAborted(signal)
     return new Promise<RateLimitedResult<T>>((resolve, reject) => {
       const request: QueuedRequest<unknown> = {
         execute: fn as () => Promise<unknown>,
@@ -414,6 +452,27 @@ export class AdaptiveRateLimiter {
         retryCount: 0,
         retryAfterSeconds,
         enqueuedAt: Date.now(),
+        ...(signal && { signal }),
+      }
+
+      if (signal) {
+        const onAbort = () => {
+          if (request.settled || request.cancelled) return
+          request.cancelled = true
+          request.settled = true
+          const index = this.queue.indexOf(request)
+          if (index !== -1) this.queue.splice(index, 1)
+          request.reject(abortError(signal))
+          publishRateLimitState({
+            mode: this.mode,
+            previousMode: this.mode,
+            queueLength: this.queue.length,
+            consecutiveSuccesses: this.consecutiveSuccesses,
+            rateLimitedAt: this.rateLimitedAt,
+          })
+        }
+        signal.addEventListener("abort", onAbort, { once: true })
+        request.detachAbort = () => signal.removeEventListener("abort", onAbort)
       }
 
       this.queue.push(request)
@@ -483,10 +542,12 @@ export class AdaptiveRateLimiter {
       // RC4: rejectQueued() may have cancelled + rejected this request during the sleep above
       // (it drains the queue + aborts the sleep). Re-check ownership before running upstream work —
       // otherwise we execute for a caller that already got "Server shutting down".
-      if (request.cancelled) break
+      if (request.cancelled) continue
 
       try {
         const result = await request.execute()
+
+        if (request.signal?.aborted || request.settled) continue
 
         // Success!
         this.queue.shift()
@@ -496,11 +557,16 @@ export class AdaptiveRateLimiter {
         // Calculate queue wait time
         const queueWaitMs = Date.now() - request.enqueuedAt
         request.resolve({ result, queueWaitMs })
+        request.settled = true
+        request.detachAbort?.()
 
         if (this.mode === "rate-limited") {
           consola.info(`[RateLimiter] Request succeeded (${this.consecutiveSuccesses}/${this.config.consecutiveSuccessesForRecovery} for ramp-up)`)
         }
       } catch (error) {
+        // A per-item abort may have removed + rejected this request while its upstream call was
+        // still unwinding. Never shift the new queue head or settle the old caller twice.
+        if (request.settled || request.signal?.aborted) continue
         const { isRateLimit, retryAfter } = this.isRateLimitError(error)
         if (isRateLimit) {
           // Still rate limited, retry with exponential backoff
@@ -515,6 +581,8 @@ export class AdaptiveRateLimiter {
         } else {
           // Other error, fail this request and continue with queue
           this.queue.shift()
+          request.settled = true
+          request.detachAbort?.()
           request.reject(error)
         }
       }
@@ -539,6 +607,8 @@ export class AdaptiveRateLimiter {
       // Mark cancelled BEFORE rejecting so an in-flight processQueue iteration that already picked
       // this request (and is mid-sleep) re-checks it after the sleep and skips the upstream execute.
       request.cancelled = true
+      request.settled = true
+      request.detachAbort?.()
       request.reject(new Error("Server shutting down"))
     }
     this.processing = false
@@ -683,10 +753,11 @@ export function setMockRateLimiterThrottled(enabled: boolean): void {
  * When mock throttle is enabled, waits for baseRetryIntervalSeconds
  * then throws a 429 error without calling the upstream function.
  */
-export async function executeWithAdaptiveRateLimit<T>(fn: () => Promise<T>): Promise<RateLimitedResult<T>> {
+export async function executeWithAdaptiveRateLimit<T>(fn: () => Promise<T>, options: RateLimitExecutionOptions = {}): Promise<RateLimitedResult<T>> {
+  throwIfAborted(options.signal)
   if (mockThrottled) {
     const delay = rateLimiterInstance?.getConfig().baseRetryIntervalSeconds ?? DEFAULT_CONFIG.baseRetryIntervalSeconds
-    await new Promise((resolve) => setTimeout(resolve, delay * 1000))
+    await abortableWait(delay * 1000, options.signal)
     throw new HTTPError(
       "Mock rate limiter: all requests throttled",
       429,
@@ -698,5 +769,5 @@ export async function executeWithAdaptiveRateLimit<T>(fn: () => Promise<T>): Pro
     const result = await fn()
     return { result, queueWaitMs: 0 }
   }
-  return rateLimiterInstance.execute(fn)
+  return rateLimiterInstance.execute(fn, options)
 }

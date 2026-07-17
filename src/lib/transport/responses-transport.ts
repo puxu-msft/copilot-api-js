@@ -66,7 +66,7 @@ export function createUpstreamResponsesTransport(deps: UpstreamResponsesTranspor
       // The whole select-and-send runs inside the adaptive rate-limiter — legacy
       // wrapped `createResponses` (which contains the same WS-or-HTTP selection)
       // in `executeWithAdaptiveRateLimit`.
-      const { result, queueWaitMs } = await executeWithAdaptiveRateLimit(() => selectAndSend(wire, env, deps))
+      const { result, queueWaitMs } = await executeWithAdaptiveRateLimit(() => selectAndSend(wire, env, deps), { signal: env.ctx.operationSignal })
       env.ctx.addQueueWaitMs(queueWaitMs)
       return result
     },
