@@ -18,6 +18,7 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
 import http2 from "node:http2"
@@ -288,6 +289,38 @@ describe("h2 generation-based retire-and-replace", () => {
     const res = await responsePromise
     expect(res.ok).toBe(true)
     expect(await res.text()).toBe("first-chunklast-chunk")
+  })
+
+  test("reconcile reschedules each RETIRING session's ping timer exactly ONCE per call, even for a session newly retired in this same call (nit-1 fix: no double clearInterval/setInterval churn)", async () => {
+    // Real setInterval/clearInterval spies observe how many times the module
+    // actually re-arms the keepalive timer — a session that is newly retired
+    // by THIS reconcile call must be visited by exactly one of the two
+    // internal loops (the "newly retiring" loop or the "already retiring"
+    // loop), never both. Before the fix, the second loop iterated the LIVE
+    // `retiringSessions` set (which the first loop had already mutated), so a
+    // freshly-retired entry got rescheduled twice in one call.
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    await http2Fetch(`${url}/reschedule-once`, {})
+    expect(getH2SessionStatusSnapshot()).toHaveLength(1) // one active entry, one prior setInterval from creation
+
+    const setIntervalSpy = spyOn(globalThis, "setInterval")
+    const clearIntervalSpy = spyOn(globalThis, "clearInterval")
+    setIntervalSpy.mockClear()
+    clearIntervalSpy.mockClear()
+
+    reconcileH2SessionsForConfigChange()
+
+    // Exactly one entry existed and was newly retired by this call — its ping
+    // timer must be rescheduled exactly once (one clear of the old timer, one
+    // set of the new one), not twice.
+    expect(clearIntervalSpy.mock.calls.length).toBe(1)
+    expect(setIntervalSpy.mock.calls.length).toBe(1)
+
+    setIntervalSpy.mockRestore()
+    clearIntervalSpy.mockRestore()
   })
 })
 

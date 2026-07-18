@@ -447,6 +447,18 @@ export function reconcileH2SessionsForConfigChange(): void {
   try {
     currentGeneration += 1
     const freshPingIntervalMs = getUpstreamH2PingIntervalMs()
+    // Snapshot BEFORE the first loop mutates retiringSessions (nit-1, reviewer
+    // second pass): entries already retiring from an EARLIER event (a prior
+    // reconcile, or an upstream-initiated GOAWAY) need their own reschedule
+    // pass below — but if the second loop iterated the LIVE `retiringSessions`
+    // set, it would also re-visit every entry the FIRST loop just newly
+    // retired and reschedule its ping timer a second time in the same call
+    // (harmless — just a redundant clearInterval+setInterval churn — but
+    // needless work on every reconcile). Snapshotting the set's membership
+    // up front (Set iteration order is insertion order, so cloning captures
+    // exactly "what was already retiring before this call") lets the second
+    // loop visit each entry exactly once per reconcile.
+    const preexistingRetiring = new Set(retiringSessions)
     for (const [origin, entry] of sessions) {
       sessions.delete(origin)
       if (entry.lifecycle === "active") {
@@ -460,7 +472,7 @@ export function reconcileH2SessionsForConfigChange(): void {
     // upstream-initiated GOAWAY) are a config change's concern too — the fresh
     // ping cadence must reach every draining session, not just the ones this
     // particular reconcile call is newly retiring.
-    for (const entry of retiringSessions) reschedulePingTimer(entry, freshPingIntervalMs)
+    for (const entry of preexistingRetiring) reschedulePingTimer(entry, freshPingIntervalMs)
     lastCompletedGeneration = currentGeneration
     lastReconcileError = null
     reconcileState = "idle"
