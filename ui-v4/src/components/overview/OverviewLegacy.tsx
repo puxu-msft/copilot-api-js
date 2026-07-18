@@ -11,6 +11,7 @@ export function OverviewLegacy() {
   const quota = data?.quota as { status?: string } | undefined
   const memory = data?.memory as { historyEntryCount?: number; inFlightCount?: number } | undefined
   const ws = data?.upstream_ws as { enabled?: boolean; active_connections?: number } | undefined
+  const transport = data?.transport
   return (
     <div className="mono flex flex-col gap-4 p-2">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -40,6 +41,11 @@ export function OverviewLegacy() {
           label="Upstream WS"
           value={ws?.enabled ? "on" : "off"}
           sub={ws?.active_connections === undefined ? undefined : `${ws.active_connections} conn`}
+        />
+        <StatCard
+          label="Transport"
+          value={transport?.h2Reconcile.state ?? "—"}
+          sub={transport === undefined ? undefined : `h2 ${transport.h2Sessions.length} · ws ${transport.upstreamWsPool.length}`}
         />
       </div>
       <div className="border border-dashed border-[#2f4a6f] bg-[#10161f] p-3 text-[13px]">
