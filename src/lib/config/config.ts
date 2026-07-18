@@ -12,6 +12,7 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import { z } from "zod"
 
+import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 import {
   //
   type BufferedRetryCaps,
@@ -25,6 +26,7 @@ import {
   setChatCompletionsConfig,
   setDisabledModels,
   setHistoryConfig,
+  setGenerationRuntimeConfig,
   setHooksConfig,
   setModelMappings,
   setModelTranslation,
@@ -44,8 +46,6 @@ import type {
   EndpointScope,
   SystemPromptEntry,
 } from "./schema"
-
-import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
@@ -792,6 +792,32 @@ export async function applyConfigToState(): Promise<Config> {
   if (config.retry?.max_reactive_retries !== undefined) {
     setReactiveRetryConfig({ maxReactiveRetries: config.retry.max_reactive_retries })
   }
+  const generation = config.generation
+  if (generation) {
+    const patch = {
+      ...(generation.hedge?.enabled !== undefined && { generationHedgeEnabled: generation.hedge.enabled }),
+      ...(generation.hedge?.threshold_sec !== undefined && { generationHedgeThresholdSec: generation.hedge.threshold_sec }),
+      ...(generation.hedge?.max_secondary_candidates !== undefined && { generationHedgeMaxSecondaryCandidates: generation.hedge.max_secondary_candidates }),
+      ...(generation.hedge?.allow_server_tools !== undefined && { generationHedgeAllowServerTools: generation.hedge.allow_server_tools }),
+      ...(generation.recovery?.max_candidates !== undefined && { generationRecoveryMaxCandidates: generation.recovery.max_candidates }),
+      ...(generation.max_active_candidates !== undefined && { generationMaxActiveCandidates: generation.max_active_candidates }),
+      ...(generation.max_active_dispatches !== undefined && { generationMaxActiveDispatches: generation.max_active_dispatches }),
+      ...(generation.max_total_candidates !== undefined && { generationMaxTotalCandidates: generation.max_total_candidates }),
+      ...(generation.max_total_dispatches !== undefined && { generationMaxTotalDispatches: generation.max_total_dispatches }),
+      ...(generation.cleanup_grace_sec !== undefined && { generationCleanupGraceSec: generation.cleanup_grace_sec }),
+    }
+    const next = { ...state, ...patch }
+    if (next.generationMaxTotalCandidates < next.generationMaxActiveCandidates) {
+      throw new Error("generation.max_total_candidates must be >= generation.max_active_candidates")
+    }
+    if (next.generationMaxTotalDispatches < next.generationMaxActiveDispatches) {
+      throw new Error("generation.max_total_dispatches must be >= generation.max_active_dispatches")
+    }
+    if (next.generationMaxActiveCandidates < 1 + next.generationHedgeMaxSecondaryCandidates) {
+      throw new Error("generation.max_active_candidates must allow the primary plus max_secondary_candidates")
+    }
+    setGenerationRuntimeConfig(patch)
+  }
 
   // Tool-name sanitization (cross-protocol top-level toggle; scalar override)
   if (config.sanitize_tool_names !== undefined) setAnthropicBehavior({ sanitizeToolNames: config.sanitize_tool_names })
@@ -803,13 +829,14 @@ export async function applyConfigToState(): Promise<Config> {
       if (!hasApplied) {
         setHistoryConfig({ historyEnabled: h.enabled })
       } else if (h.enabled !== state.historyEnabled) {
-        consola.warn(`[config] history.enabled=${h.enabled} requires a restart to take effect (running instance stays ${state.historyEnabled}); ignoring for now`)
+        consola.warn(
+          `[config] history.enabled=${h.enabled} requires a restart to take effect (running instance stays ${state.historyEnabled}); ignoring for now`,
+        )
       }
     }
     if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
     if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
     if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
-
   }
 
   // Telemetry settings (telemetry.*, nested: override only when present). Business-layer
@@ -867,7 +894,11 @@ export async function applyConfigToState(): Promise<Config> {
     // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
     // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
     // than inferred. Pure observation — reads state, records a diff, no behavior change.
-    const timeoutBefore = { staleRequestMaxAge: state.staleRequestMaxAge, responseHeaderTimeout: state.responseHeaderTimeout, streamIdleTimeout: state.streamIdleTimeout }
+    const timeoutBefore = {
+      staleRequestMaxAge: state.staleRequestMaxAge,
+      responseHeaderTimeout: state.responseHeaderTimeout,
+      streamIdleTimeout: state.streamIdleTimeout,
+    }
     const t = config.timeouts
     if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
     if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
@@ -885,7 +916,11 @@ export async function applyConfigToState(): Promise<Config> {
         responseHeaderTimeoutOverrides: normalizeModelKeyedRecord(t.response_header_overrides, "timeouts.response_header_overrides"),
       })
     }
-    recordConfigReloadTimeoutDiff(timeoutBefore, { staleRequestMaxAge: state.staleRequestMaxAge, responseHeaderTimeout: state.responseHeaderTimeout, streamIdleTimeout: state.streamIdleTimeout })
+    recordConfigReloadTimeoutDiff(timeoutBefore, {
+      staleRequestMaxAge: state.staleRequestMaxAge,
+      responseHeaderTimeout: state.responseHeaderTimeout,
+      streamIdleTimeout: state.streamIdleTimeout,
+    })
   }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 

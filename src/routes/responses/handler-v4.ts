@@ -70,6 +70,7 @@ import { openAIStreamErrorFrame } from "~/lib/openai/stream-error"
 import { restoreResponsesOutputToolNames } from "~/lib/openai/tool-name-sanitize"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
 import {
   //
   anthropicNonStreamingTruncation,
@@ -142,6 +143,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   const driver = createPipelineDriver({
     codec,
     transport,
+    hedgePolicy: createRuntimeHedgePolicy(resolvedName),
     candidateResponseSessionFactory: createResponsesCandidateResponseSessionFactory("http"),
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every openai-responses cell is migrated: direct `/responses` + `/chat` fallback + reverse

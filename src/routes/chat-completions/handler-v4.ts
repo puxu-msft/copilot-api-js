@@ -91,6 +91,7 @@ import {
   type CandidateResponseSession,
   type CandidateResponseSessionFactory,
 } from "~/lib/pipeline/generation/candidate-response-session"
+import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
 import {
   //
   openaiNonStreamingTruncation,
@@ -179,6 +180,7 @@ export async function handleChatCompletionV4(c: Context): Promise<Response> {
   const driver = createPipelineDriver({
     codec,
     transport,
+    hedgePolicy: createRuntimeHedgePolicy(resolvedName),
     candidateResponseSessionFactory: createChatCandidateResponseSession,
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every CC-client cell is migrated: openai-cc direct/via-responses + the reverse `@messages` cell).

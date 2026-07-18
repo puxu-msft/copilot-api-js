@@ -135,6 +135,7 @@ import {
   type CandidateResponseSession,
   type CandidateResponseSessionFactory,
 } from "~/lib/pipeline/generation/candidate-response-session"
+import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
@@ -389,6 +390,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   const driver = createPipelineDriver({
     codec,
     transport,
+    hedgePolicy: createRuntimeHedgePolicy(resolvedName),
     candidateResponseSessionFactory: createAnthropicCandidateResponseSession,
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every anthropic cell is migrated: the direct `/v1/messages` cell + the forward `@cc`/`@responses`

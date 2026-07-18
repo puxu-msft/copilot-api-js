@@ -51,7 +51,6 @@ function nullableNonnegativeInt() {
     .optional()
 }
 
-
 function nullableBoolean() {
   return z
     .boolean({ error: BOOLEAN_MSG })
@@ -65,6 +64,16 @@ function nullablePositiveNumber() {
   return z
     .number({ error: POSITIVE_NUMBER_MSG })
     .gt(0, POSITIVE_NUMBER_MSG)
+    .nullable()
+    .transform((v): number | undefined => v ?? undefined)
+    .optional()
+}
+
+function nullablePositiveInt() {
+  return z
+    .number({ error: POSITIVE_NUMBER_MSG })
+    .int(POSITIVE_NUMBER_MSG)
+    .positive(POSITIVE_NUMBER_MSG)
     .nullable()
     .transform((v): number | undefined => v ?? undefined)
     .optional()
@@ -762,7 +771,6 @@ export const HistoryConfigSchema = z
   })
   .strict()
 
-
 /**
  * `telemetry.*` —— 分层遥测持久化（独立 telemetry.db）。近期/远期分辨率与保留均可配。
  * 业务级校验（sketch_gamma 下限、resolution 整除 60）在 config apply 层做 warn-continue，非 zod。
@@ -803,11 +811,37 @@ export const TelemetryConfigSchema = z
   })
   .strict()
 
-
 export const RetryConfigSchema = z
   .object({
     /** Shared per-request cap on ALL reactive retry strategies (network / server-error / token-refresh / 400-class negotiation etc.). 0 = a single attempt, no retry. Default 5. Was `auto_truncate.max_retries`. */
     max_reactive_retries: nullableNonnegativeInt(),
+  })
+  .strict()
+
+const GenerationHedgeConfigSchema = z
+  .object({
+    enabled: nullableBoolean(),
+    threshold_sec: nullableNonnegativeInt(),
+    max_secondary_candidates: nullableNonnegativeInt(),
+    allow_server_tools: nullableBoolean(),
+  })
+  .strict()
+
+const GenerationRecoveryConfigSchema = z
+  .object({
+    max_candidates: nullableNonnegativeInt(),
+  })
+  .strict()
+
+export const GenerationConfigSchema = z
+  .object({
+    hedge: nullableSection(GenerationHedgeConfigSchema),
+    recovery: nullableSection(GenerationRecoveryConfigSchema),
+    max_active_candidates: nullablePositiveInt(),
+    max_active_dispatches: nullablePositiveInt(),
+    max_total_candidates: nullablePositiveInt(),
+    max_total_dispatches: nullablePositiveInt(),
+    cleanup_grace_sec: nullableNonnegativeInt(),
   })
   .strict()
 
@@ -1072,6 +1106,7 @@ export const ConfigSchema = z
      * hoisted out because it never was truncation-specific.
      */
     retry: nullableSection(RetryConfigSchema),
+    generation: nullableSection(GenerationConfigSchema),
     /**
      * Sanitize tool names that violate the target model's constraints (illegal
      * characters like dots, over-length, collisions) into legal names before
@@ -1171,6 +1206,7 @@ export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
 export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
+export type GenerationConfigSection = z.infer<typeof GenerationConfigSchema>
 export type ModelTranslationIngress = (typeof MODEL_TRANSLATION_INGRESS_VALUES)[number]
 export type ModelTranslationFeature = (typeof MODEL_TRANSLATION_FEATURE_VALUES)[number]
 export type ModelTranslationRule = z.infer<typeof ModelTranslationRuleSchema>

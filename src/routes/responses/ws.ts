@@ -41,6 +41,7 @@ import { registerResponseSession } from "~/lib/openai/response-session-store"
 import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
 import { makeDeliveryWsSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
@@ -277,6 +278,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const driver = createPipelineDriver({
     codec,
     transport,
+    hedgePolicy: createRuntimeHedgePolicy(resolvedModel),
     candidateResponseSessionFactory: createResponsesCandidateResponseSessionFactory("ws"),
     // S5 response-rewrites + the S4 retry stack come from the CellAssembly now (C5 — the openai-responses
     // direct/fallback cells are migrated; RETRY_SEMANTICS encodes the R1 corner auto-truncate OFF / maxRetries 1).

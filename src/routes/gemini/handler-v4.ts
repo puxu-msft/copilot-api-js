@@ -80,6 +80,7 @@ import {
   type CandidateResponseSession,
   type CandidateResponseSessionFactory,
 } from "~/lib/pipeline/generation/candidate-response-session"
+import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
 import {
   //
   anthropicNonStreamingTruncation,
@@ -130,6 +131,7 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
   const driver = createPipelineDriver({
     codec,
     transport,
+    hedgePolicy: createRuntimeHedgePolicy(resolvedName),
     candidateResponseSessionFactory: createGeminiCandidateResponseSession,
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every Gemini cell is migrated: gemini forward `@cc`/via-responses + the reverse `@messages`

@@ -870,6 +870,27 @@ openai_responses:
   client_ws_keep_open: false
 
 # ============================================================================
+# Generation runtime / 生成运行时
+# ============================================================================
+generation:
+  hedge:
+    # Start one secondary request after this many seconds without a complete real client block. Synthetic keepalive scaffold does not close the window.
+    # 首个物理请求在此秒数后仍无真实完整客户端 block 时启动一个 secondary。合成 keepalive 脚手架不关闭窗口。
+    enabled: true
+    threshold_sec: 300
+    max_secondary_candidates: 1
+    # Server-executed tools may run twice and consume duplicate quota; keep disabled unless explicitly accepted.
+    # server-side tool 可能重复执行并消耗双份额度；仅在明确接受风险时开启。
+    allow_server_tools: false
+  recovery:
+    max_candidates: 3
+  max_active_candidates: 2
+  max_active_dispatches: 2
+  max_total_candidates: 5
+  max_total_dispatches: 16
+  cleanup_grace_sec: 10
+
+# ============================================================================
 # Buffered-retry caps (vendor-neutral SHARED) + per-vendor overrides
 # 缓冲重试上限（vendor 中立共享）+ 各 vendor 覆盖
 # ============================================================================

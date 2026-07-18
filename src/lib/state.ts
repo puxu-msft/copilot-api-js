@@ -162,6 +162,16 @@ export interface State {
    * etc.), not truncation-specific. Config `retry.max_reactive_retries`.
    */
   readonly maxReactiveRetries: number
+  readonly generationHedgeEnabled: boolean
+  readonly generationHedgeThresholdSec: number
+  readonly generationHedgeMaxSecondaryCandidates: number
+  readonly generationRecoveryMaxCandidates: number
+  readonly generationMaxActiveCandidates: number
+  readonly generationMaxTotalCandidates: number
+  readonly generationMaxActiveDispatches: number
+  readonly generationMaxTotalDispatches: number
+  readonly generationCleanupGraceSec: number
+  readonly generationHedgeAllowServerTools: boolean
 
   /**
    * Account is on token-based (PAYG) billing rather than premium-request
@@ -619,9 +629,9 @@ export interface State {
   readonly historyEnabled: boolean
 
   /**
-    * Injected History database path for tests. Production config cannot set it;
-    * an empty string selects PATHS.HISTORY_V3_DB so the online server never opens
-    * the legacy PATHS.HISTORY_DB artifact.
+   * Injected History database path for tests. Production config cannot set it;
+   * an empty string selects PATHS.HISTORY_V3_DB so the online server never opens
+   * the legacy PATHS.HISTORY_DB artifact.
    */
   readonly historyDbPath: string
   /** Optional raw capture is hot-reloadable through artifact generations. */
@@ -1357,14 +1367,7 @@ export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "str
 
 export function setHistoryConfig(
   patch: Partial<
-    Pick<
-      MutableState,
-      | "historyEnabled"
-      | "historyDbPath"
-      | "historyRawCaptureEnabled"
-      | "historyRawCaptureDbPath"
-      | "historyRawCaptureMaxObjectBytes"
-    >
+    Pick<MutableState, "historyEnabled" | "historyDbPath" | "historyRawCaptureEnabled" | "historyRawCaptureDbPath" | "historyRawCaptureMaxObjectBytes">
   >,
 ): void {
   const rawCaptureChanged =
@@ -1451,11 +1454,37 @@ export function setReactiveRetryConfig(patch: Partial<Pick<MutableState, "maxRea
   updateState(patch)
 }
 
+export function setGenerationRuntimeConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "generationHedgeEnabled"
+      | "generationHedgeThresholdSec"
+      | "generationHedgeMaxSecondaryCandidates"
+      | "generationRecoveryMaxCandidates"
+      | "generationMaxActiveCandidates"
+      | "generationMaxTotalCandidates"
+      | "generationMaxActiveDispatches"
+      | "generationMaxTotalDispatches"
+      | "generationCleanupGraceSec"
+      | "generationHedgeAllowServerTools"
+    >
+  >,
+): void {
+  updateState(patch)
+}
+
 export function setTimeoutConfig(
   patch: Partial<
     Pick<
       MutableState,
-      "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval" | "upstreamKeepaliveDelay" | "upstreamH2PingInterval"
+      | "responseHeaderTimeout"
+      | "streamIdleTimeout"
+      | "staleRequestMaxAge"
+      | "requestDeadline"
+      | "modelRefreshInterval"
+      | "upstreamKeepaliveDelay"
+      | "upstreamH2PingInterval"
     >
   >,
 ): void {
@@ -1655,6 +1684,16 @@ export const CONFIG_MANAGED_DEFAULTS = {
   systemPromptAppend: [] as Array<CompiledSystemPromptEntry>,
   // Shared reactive-retry budget (was auto_truncate.max_retries). Inlined default 5.
   maxReactiveRetries: 5,
+  generationHedgeEnabled: true,
+  generationHedgeThresholdSec: 300,
+  generationHedgeMaxSecondaryCandidates: 1,
+  generationRecoveryMaxCandidates: 3,
+  generationMaxActiveCandidates: 2,
+  generationMaxTotalCandidates: 5,
+  generationMaxActiveDispatches: 2,
+  generationMaxTotalDispatches: 16,
+  generationCleanupGraceSec: 10,
+  generationHedgeAllowServerTools: false,
   sanitizeToolNames: false,
   recoverToolCallText: false,
   toolRepairMalformedInput: [] as ReadonlyArray<RepairItem>,
@@ -1889,6 +1928,18 @@ export function resetConfigManagedState(): void {
   })
   // Shared reactive-retry budget (was auto_truncate.max_retries).
   setReactiveRetryConfig({ maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries })
+  setGenerationRuntimeConfig({
+    generationHedgeEnabled: CONFIG_MANAGED_DEFAULTS.generationHedgeEnabled,
+    generationHedgeThresholdSec: CONFIG_MANAGED_DEFAULTS.generationHedgeThresholdSec,
+    generationHedgeMaxSecondaryCandidates: CONFIG_MANAGED_DEFAULTS.generationHedgeMaxSecondaryCandidates,
+    generationRecoveryMaxCandidates: CONFIG_MANAGED_DEFAULTS.generationRecoveryMaxCandidates,
+    generationMaxActiveCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxActiveCandidates,
+    generationMaxTotalCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxTotalCandidates,
+    generationMaxActiveDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxActiveDispatches,
+    generationMaxTotalDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxTotalDispatches,
+    generationCleanupGraceSec: CONFIG_MANAGED_DEFAULTS.generationCleanupGraceSec,
+    generationHedgeAllowServerTools: CONFIG_MANAGED_DEFAULTS.generationHedgeAllowServerTools,
+  })
 }
 
 const mutableState: MutableState = {
@@ -1900,6 +1951,16 @@ const mutableState: MutableState = {
   // value across hot-reloads.
   historyEnabled: true,
   maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
+  generationHedgeEnabled: CONFIG_MANAGED_DEFAULTS.generationHedgeEnabled,
+  generationHedgeThresholdSec: CONFIG_MANAGED_DEFAULTS.generationHedgeThresholdSec,
+  generationHedgeMaxSecondaryCandidates: CONFIG_MANAGED_DEFAULTS.generationHedgeMaxSecondaryCandidates,
+  generationRecoveryMaxCandidates: CONFIG_MANAGED_DEFAULTS.generationRecoveryMaxCandidates,
+  generationMaxActiveCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxActiveCandidates,
+  generationMaxTotalCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxTotalCandidates,
+  generationMaxActiveDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxActiveDispatches,
+  generationMaxTotalDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxTotalDispatches,
+  generationCleanupGraceSec: CONFIG_MANAGED_DEFAULTS.generationCleanupGraceSec,
+  generationHedgeAllowServerTools: CONFIG_MANAGED_DEFAULTS.generationHedgeAllowServerTools,
   tokenBasedBilling: false,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
