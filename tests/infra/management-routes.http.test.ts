@@ -12,6 +12,12 @@ import type {
   HistoryEntry,
   HistoryStats,
 } from "~/lib/history"
+import type {
+  //
+  CreateUpstreamWsConnectionOptions,
+  UpstreamWsConnection,
+} from "~/lib/openai/upstream-ws-connection"
+import type { TransportStatusSnapshot } from "~/lib/transport/status-snapshot"
 
 import {
   //
@@ -20,6 +26,11 @@ import {
   initHistory,
   insertEntry,
 } from "~/lib/history"
+import {
+  //
+  resetUpstreamWsManagerForTests,
+  setUpstreamWsConnectionFactoryForTests,
+} from "~/lib/openai/upstream-ws"
 import {
   //
   _resetRequestTelemetryForTests,
@@ -164,6 +175,7 @@ interface StatusResponseBody {
       }>
     }>
   }
+  transport: TransportStatusSnapshot
 }
 
 function createHistoryEntry(overrides?: {
@@ -421,6 +433,37 @@ describe("management and history HTTP routes", () => {
     expect(body.requestTelemetry).not.toHaveProperty("dimensions")
     expect(body.requestTelemetry).not.toHaveProperty("agentKind")
     expect(body.requestTelemetry).not.toHaveProperty("endpoint")
+  })
+
+  test("GET /api/status carries transport diagnostics (D7 HIGH-7): configured values + runtime capability + per-row arrays, not a single generation scalar", async () => {
+    const fakeConnection = (opts: CreateUpstreamWsConnectionOptions): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model: opts.model,
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
+      close: () => {},
+    })
+    setUpstreamWsConnectionFactoryForTests(fakeConnection)
+    const manager = resetUpstreamWsManagerForTests()
+    await manager.create({ headers: {}, model: "gpt-5.5" })
+
+    const res = await app.request("/api/status")
+    const body = (await res.json()) as StatusResponseBody
+
+    expect(res.status).toBe(200)
+    expect(body.transport.configured).toHaveProperty("tcpKeepaliveProbeDelayMs")
+    expect(body.transport.configured).toHaveProperty("softMaxUpstreamWsConnections")
+    expect(Array.isArray(body.transport.h2Sessions)).toBe(true)
+    expect(Array.isArray(body.transport.upstreamWsPool)).toBe(true)
+    expect(body.transport.upstreamWsPool).toHaveLength(1)
+    expect(body.transport.upstreamWsPool[0]).toMatchObject({ model: "gpt-5.5", state: "idle" })
+    expect(["idle", "running", "failed"]).toContain(body.transport.h2Reconcile.state)
+    expect(body.transport.runtimeCapability).toEqual({ runtime: "bun", wsApplicationKeepalive: "unavailable" })
   })
 
   test("GET /metrics returns Prometheus exposition projecting the telemetry registry", async () => {

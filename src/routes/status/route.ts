@@ -42,6 +42,7 @@ import {
   getCopilotUsage,
   type QuotaDetail,
 } from "~/lib/token/copilot-client"
+import { getTransportStatusSnapshot } from "~/lib/transport/status-snapshot"
 
 import packageJson from "../../../package.json"
 
@@ -50,8 +51,9 @@ export const statusRoutes = new OpenAPIHono()
 /**
  * Aggregated server status. Top-level keys are documented; the nested objects
  * (auth / quota / rateLimiter / requestTelemetry / memory / upstream_ws /
- * protect_streaming) carry runtime-dynamic, evolving shapes and are described as
- * open objects to avoid schema drift — see the handler / DESIGN.md for fields.
+ * transport / protect_streaming) carry runtime-dynamic, evolving shapes and
+ * are described as open objects to avoid schema drift — see the handler /
+ * DESIGN.md for fields.
  */
 const ServerStatusSchema = z
   .object({
@@ -68,6 +70,7 @@ const ServerStatusSchema = z
     shutdown: z.object({ phase: z.unknown() }),
     models: z.object({ totalCount: z.number().int(), availableCount: z.number().int() }),
     upstream_ws: z.record(z.string(), z.unknown()),
+    transport: z.record(z.string(), z.unknown()),
     responses: z.record(z.string(), z.unknown()),
     protect_streaming: z.record(z.string(), z.unknown()),
     tool_input_repair: z.record(z.string(), z.unknown()),
@@ -269,6 +272,14 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
       // measures (summed across the agentKind dimension), NOT a separate counter like
       // protect_streaming / tool_input_repair. { nonEmpty, emptySigned, emptyUnsigned }.
       thinking_blocks: getThinkingBlockTotals(),
+
+      // Upstream transport diagnostics (D7 HIGH-7): configured effective values
+      // (normalized 0/undefined → null), h2 session pool + hot-reload reconcile
+      // status, upstream WS connection pool, and runtime capability flags. See
+      // src/lib/transport/status-snapshot.ts for the full shape — deliberately
+      // NOT collapsed to a single generation scalar (spec explicitly forbids
+      // that as a "form-only" implementation).
+      transport: getTransportStatusSnapshot(),
     },
     200,
   )
