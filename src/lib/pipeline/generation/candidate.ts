@@ -1,0 +1,133 @@
+/**
+ * One branch-local generation candidate.
+ *
+ * The runtime opens physical dispatches through a candidate-local scheduler and hands a successful
+ * upstream plus a fresh processor to the future coordinator. It never reads frames, chooses a winner,
+ * owns delivery timers, or writes a sink. Consequently the processor remains paused at its initial
+ * boundary until the coordinator starts consuming it in P6-T2.
+ */
+
+import type {
+  //
+  CandidateHandle,
+  CandidateRole,
+  CandidateVerdict,
+  DispatchHandle,
+  DispatchVerdict,
+} from "~/lib/context/model-operation-record"
+import type { RequestEnvelope } from "~/lib/pipeline/envelope"
+import type { UpstreamStream } from "~/lib/pipeline/types"
+
+import { OperationCancelledError } from "~/lib/util/abortable-delay"
+
+import type {
+  //
+  DispatchRecordingPort,
+  DispatchScheduler,
+} from "./dispatch-scheduler"
+
+export interface RecoveryCandidateRequest {
+  readonly role: "recovery"
+  readonly parentCandidate: CandidateHandle
+  readonly env: RequestEnvelope
+  readonly reason: string
+}
+
+export interface CandidateReady<TProcessor> {
+  readonly candidate: CandidateHandle
+  readonly dispatch: DispatchHandle
+  readonly env: RequestEnvelope
+  readonly upstream: UpstreamStream
+  readonly processor: TProcessor
+  settleDispatch(input: { verdict: DispatchVerdict; reason?: string; error?: unknown }): Promise<void>
+}
+
+export interface CandidateRuntime<TProcessor> {
+  readonly handle: CandidateHandle
+  readonly role: CandidateRole
+  run(): Promise<CandidateReady<TProcessor>>
+  cancel(reason: string): Promise<void>
+  settle(input: { verdict: CandidateVerdict; reason?: string }): void
+  recovery(reason: string): RecoveryCandidateRequest
+}
+
+export interface CreateCandidateRuntimeInput<TProcessor> {
+  readonly role: CandidateRole
+  readonly parentCandidate?: CandidateHandle
+  readonly env: RequestEnvelope
+  readonly recording: DispatchRecordingPort
+  readonly scheduler: DispatchScheduler
+  readonly createProcessor: (input: { candidate: CandidateHandle; dispatch: DispatchHandle; env: RequestEnvelope; upstream: UpstreamStream }) => TProcessor
+}
+
+/** Create a single-use candidate runtime. Buffered recovery is represented only as a child-candidate request. */
+export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntimeInput<TProcessor>): CandidateRuntime<TProcessor> {
+  const handle = input.recording.beginCandidate({ role: input.role, ...(input.parentCandidate && { parentCandidate: input.parentCandidate }) })
+  const controller = new AbortController()
+  let started = false
+  let settled = false
+  let latestEnv = input.env
+  let runPromise: Promise<CandidateReady<TProcessor>> | undefined
+
+  const settleCandidate = (settlement: { verdict: CandidateVerdict; reason?: string }): void => {
+    if (settled) return
+    settled = true
+    input.recording.settleCandidate(handle, settlement)
+  }
+
+  return {
+    handle,
+    role: input.role,
+
+    run() {
+      if (started) throw new Error("[candidate-runtime] candidate already started")
+      started = true
+      runPromise = (async () => {
+        try {
+          const ready = await input.scheduler.run({ candidate: handle, env: latestEnv, signal: controller.signal })
+          latestEnv = ready.env
+          return {
+            candidate: handle,
+            dispatch: ready.dispatch,
+            env: ready.env,
+            upstream: ready.upstream,
+            processor: input.createProcessor({ candidate: handle, dispatch: ready.dispatch, env: ready.env, upstream: ready.upstream }),
+            settleDispatch: (settlement) => input.scheduler.settle(ready.dispatch, settlement),
+          }
+        } catch (error) {
+          if (!controller.signal.aborted) settleCandidate({ verdict: "failed", reason: error instanceof Error ? error.message : "candidate failed" })
+          throw error
+        }
+      })()
+      return runPromise
+    },
+
+    async cancel(reason) {
+      if (!controller.signal.aborted) controller.abort(new OperationCancelledError(reason))
+      let cleanupError: unknown
+      try {
+        await input.scheduler.cancelActive(reason)
+      } catch (error) {
+        cleanupError = error
+      }
+      if (runPromise) {
+        try {
+          await runPromise
+        } catch {
+          // The original run promise remains rejected for its caller. This second observer only
+          // joins the expected cancellation path so cancel cannot return before late-open cleanup.
+        }
+      }
+      settleCandidate({ verdict: "cancelled", reason })
+      if (cleanupError !== undefined) throw cleanupError instanceof Error ? cleanupError : new Error("Candidate cleanup failed", { cause: cleanupError })
+    },
+
+    settle(settlement) {
+      settleCandidate(settlement)
+    },
+
+    recovery(reason) {
+      return { role: "recovery", parentCandidate: handle, env: latestEnv, reason }
+    },
+  }
+}
