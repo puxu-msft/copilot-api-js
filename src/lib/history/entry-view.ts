@@ -6,9 +6,10 @@
  * `upstreamResponse` legs and the `_index.derived` projection. P4c-3 removed the
  * legacy top-level legs (`outboundResponse` / `outboundRequest` / `effectiveRequest`
  * / `sseEvents`) and the deprecated top-level scalars (`attemptCount` /
- * `currentStrategy` / `failureReason`); a legacy DB row's OLD stages are mapped
- * into these new legs at read time by the serialize.ts adapter, so every consumer
- * reads the new legs uniformly (live rows and historical rows alike).
+ * `currentStrategy` / `failureReason`). Entries now come from the V3 canonical
+ * store's projection (`v3/projection.ts`), which produces the new client/upstream
+ * legs directly; there is no legacy-row read adapter (V2 `entries_v2`/`entry_stages`
+ * removed 2026-07-18), so every consumer reads the new legs uniformly.
  */
 
 import type {

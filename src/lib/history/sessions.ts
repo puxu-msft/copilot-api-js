@@ -142,8 +142,8 @@ export function getAgentIdFromHeaders(headers: Headers | Record<string, string |
 /**
  * Return the normalized session id when the caller has a real session identifier.
  *
- * Returns undefined when no trustworthy identifier is available. The SQLite
- * session row is created on entry completion by `insertCompletedEntry`, so no
+ * Returns undefined when no trustworthy identifier is available. Session views are
+ * derived on read from committed V3 terminal records (grouped by sessionId), so no
  * eager session-map tracking is necessary here.
  */
 export function getCurrentSession(_endpoint: EndpointType, sessionId?: string): string | undefined {

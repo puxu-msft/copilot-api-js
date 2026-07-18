@@ -111,12 +111,16 @@ export interface ToolDefinition {
 /**
  * Per-attempt truncation diagnostics.
  *
- * 有意保留（写侧不再 populate、读侧仍活）：auto-truncate 移除后（RFC
+ * 有意保留（写侧不再 populate）：auto-truncate 移除后（RFC
  * `2026-07-13-remove-auto-truncate-keep-calibration`）生产不再产出 truncation
- * （`beginAttempt` 不传、无构造点），但本类型 + `PipelineInfo.truncation` +
- * 读侧适配 `pipelineFromLegacyAttempt`（`sqlite/serialize.ts`）必须保留：① richest-data-flow
- * ADR——旧 history.db 存过真实发生的 truncation 诊断，读侧忠实读出、不丢；② Vue `ui/`
- * 详情页（`usePipelineInfo.ts` / `AttemptsTimeline.vue` 等 10 处）仍渲染这些历史数据。
+ * （`beginAttempt` 不传、无构造点）。本类型 + `PipelineInfo.truncation` 作为
+ * `PipelineInfo`/`HistoryEntry` schema 形状的**被动槽位**保留（SSOT 稳定性 +
+ * richest-data-flow：未来若恢复 truncation 诊断，槽位就位）。
+ *
+ * **注（History V2 removal 2026-07-18）**：旧的读侧适配 `pipelineFromLegacyAttempt`
+ * （`sqlite/serialize.ts`）随 V2 整体删除——History V3 不打开/读取旧 `history.db`，
+ * 故不再有「从旧行读回 truncation 诊断」的活路径；旧库历史数据的取证需用 `sqlite3`
+ * 直接查旧文件（见 `docs/archive/2607-history-v2-removal/`）。
  */
 export interface TruncationInfo {
   wasTruncated: boolean

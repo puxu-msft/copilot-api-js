@@ -71,8 +71,8 @@ export function handleGetEntries(c: Context) {
 }
 
 /**
- * GET /history/api/sessions — per-session aggregate view (GROUP BY session_id over
- * terminal entries_v2 rows). `?limit=N` caps the number of sessions returned
+ * GET /history/api/sessions — per-session aggregate view (grouped by session_id over
+ * terminal V3 operation records). `?limit=N` caps the number of sessions returned
  * (defaults to the store's internal cap when absent). Returns `{ sessions: [...] }`.
  */
 export function handleGetSessions(c: Context) {
