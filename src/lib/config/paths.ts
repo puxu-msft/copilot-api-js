@@ -73,8 +73,6 @@ export const PATHS = {
   HISTORY_RAW_DB: path.join(APP_DIR, "raw.db"),
   /** Sidecar SQLite DB for the durable (session,agent) thinking-quarantine store (L3). */
   THINKING_QUARANTINE_DB: path.join(APP_DIR, "thinking-quarantine.db"),
-  /** Rotating file log for non-HTTP consola output (startup, auth, warnings, errors). */
-  COPILOT_LOG: path.join(APP_DIR, "copilot-api.log"),
   /** Per-process structured NDJSON diagnostic artifacts. */
   DIAGNOSTIC_LOG_DIR: path.join(APP_DIR, "logs", "diagnostic"),
   /** Codex CLI config file (`$CODEX_HOME/config.toml`, default `~/.codex/config.toml`). */
