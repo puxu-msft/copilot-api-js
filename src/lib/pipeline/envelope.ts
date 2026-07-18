@@ -13,7 +13,7 @@
 import type { RequestContext } from "~/lib/context/request"
 import type { Model } from "~/lib/models/client"
 import type { RouteOverride } from "~/lib/models/normalize-id"
-import type { PrepareHints } from "~/lib/request/pipeline"
+import type { PrepareHints } from "~/lib/request/retry-types"
 
 import type { RequestState } from "./request-state"
 

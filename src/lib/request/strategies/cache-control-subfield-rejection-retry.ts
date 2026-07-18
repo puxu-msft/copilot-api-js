@@ -34,7 +34,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 /** 捕获每个 `...cache_control.<variant>.<field>: Extra inputs are not permitted` 的 field（去重）。 */
 const CC_SUBFIELD_EXTRA_INPUTS = /\.cache_control\.\w+\.([a-z_]\w*): Extra inputs are not permitted/gi

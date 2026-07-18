@@ -26,7 +26,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 // Matches "<field>: Extra inputs are not permitted" with <field> = a TOP-LEVEL
 // body-field identifier (snake/camel case). The `(?<![.\w])` lookbehind anchors

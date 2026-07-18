@@ -8,7 +8,6 @@
 import consola from "consola"
 
 import type { RequestContext } from "~/lib/context/request"
-import type { ApiError } from "~/lib/error"
 import type {
   //
   EndpointType,
@@ -17,6 +16,15 @@ import type {
 import type { Model } from "~/lib/models/client"
 
 import { classifyError } from "~/lib/error"
+
+import type {
+  //
+  PrepareHints,
+  RetryAction,
+  RetryContext,
+  RetryStrategy,
+  SanitizeResult,
+} from "./retry-types"
 
 // --- FormatAdapter ---
 
@@ -37,21 +45,6 @@ function safeStringifyUnknown(value: unknown): string {
   }
 }
 
-export interface SanitizeResult<TPayload> {
-  payload: TPayload
-  /** Convenience: total blocks removed (sum of orphans + empty text) */
-  blocksRemoved: number
-  /** Convenience: number of system reminder tags removed */
-  systemReminderRemovals: number
-  /**
-   * Structured breakdown of what was removed/modified — format-specific detail.
-   * Values are usually flat counts, but MAY be nested objects (e.g. the Anthropic
-   * `destack` sub-record), so this is `unknown`-valued rather than number-valued;
-   * concrete consumers cast to their format's stats type (e.g. `SanitizationStats`).
-   */
-  stats?: Record<string, unknown>
-}
-
 export interface FormatAdapter<TPayload> {
   readonly format: EndpointType
   sanitize(payload: TPayload): SanitizeResult<TPayload>
@@ -67,125 +60,6 @@ export interface FormatAdapter<TPayload> {
    */
   execute(payload: TPayload, hints?: PrepareHints): Promise<{ result: unknown; queueWaitMs: number }>
   logPayloadSize(payload: TPayload): void | Promise<void>
-}
-
-// --- RetryStrategy ---
-
-export interface RetryContext<TPayload> {
-  attempt: number
-  originalPayload: TPayload
-  model: Model | undefined
-  maxRetries: number
-}
-
-/**
- * Optional preparation hints attached to a retry action. The pipeline passes
- * these to the adapter on the next attempt; the adapter forwards them to
- * format-specific request preparation (e.g. `prepareAnthropicRequest`).
- *
- * Why this exists: previously, strategies like `unsupported-beta-retry`
- * communicated "exclude these betas on the next prep" implicitly via a
- * global negotiation cache. That coupled retry success to an undocumented
- * adapter contract ("execute() must re-prepare and re-read cache every
- * attempt"). Hints make the dependency explicit, statically typed, and
- * testable — the cache continues to exist as a cross-request memo, but
- * it is no longer the only carrier of intra-retry intent.
- *
- * Adapters that don't recognize a hint field MUST ignore it (forward-compat).
- */
-export interface PrepareHints {
-  /**
-   * Beta tokens to drop from the outbound `anthropic-beta` header on the
-   * next prep, in addition to anything the global cache already strips.
-   */
-  excludeBetas?: ReadonlyArray<string>
-  /**
-   * Body fields to drop from the next wire payload, in addition to anything
-   * the global cache already strips.
-   */
-  rejectFields?: ReadonlyArray<string>
-  /**
-   * Native server tool type prefixes (e.g. `web_search_`) to strip from the
-   * next wire payload, in addition to anything the global config / negotiation
-   * cache already strips. Set by the server-tool-rejection retry strategy.
-   */
-  excludeServerToolTypes?: ReadonlyArray<string>
-  /**
-   * Custom-tool top-level field names (e.g. `eager_input_streaming`) to strip
-   * from every tool in the next wire payload, in addition to anything the
-   * built-in defaults / global config / negotiation cache already strips. Set by
-   * the tool-field-rejection retry strategy when the upstream rejects an unknown
-   * tool field with `tools.N.<variant>.<field>: Extra inputs are not permitted`.
-   */
-  excludeToolFields?: ReadonlyArray<string>
-  /**
-   * 源④ per-attempt：cache_control 子字段 rejection retry 腿注入。上游以
-   * `<section>.N...cache_control.<variant>.<field>: Extra inputs are not permitted` 拒绝时，
-   * 剥掉该子字段重试。桥接到 `PrepareAnthropicRequestOptions.excludeCacheControlSubfields`。
-   */
-  excludeCacheControlSubfields?: ReadonlyArray<string>
-  /**
-   * L2 buffered-retry escalation (RFC §8): FORCE an aggressive native `clear_tool_uses`
-   * context_management edit on this attempt's wire (independent of `context_editing` mode) to
-   * compress the context so the generation finishes faster. Set by the buffered driver's
-   * `escalate` hook per retry, with progressively tighter values. Skipped when the model doesn't
-   * support context_management (gated by `contextManagementDisabled`).
-   */
-  contextEscalation?: { trigger: number; keepTools: number; keepThinking: number }
-}
-
-export type RetryAction<TPayload> =
-  | {
-      action: "retry"
-      payload: TPayload
-      waitMs?: number
-      meta?: Record<string, unknown>
-      /** Format-specific preparation hints forwarded to the next adapter.execute() call. */
-      prepareHints?: PrepareHints
-      /**
-       * Mark this as a **learning-type** retry — a deterministically converging
-       * probe (e.g. beta combination enumeration) that locates an upstream
-       * incompatibility. Learning retries draw from a separate budget and do
-       * NOT consume the main `maxRetries` allowance, so a strategy can iterate
-       * far enough to pinpoint the offending element without starving ordinary
-       * retries. Capped independently (`MAX_LEARNING_RETRIES`) to bound latency
-       * and prevent combinatorial runaway.
-       */
-      learning?: boolean
-    }
-  | { action: "abort"; error: ApiError }
-
-/**
- * Context passed to a strategy's `onResolved` hook when one of its retry
- * actions ultimately produced a successful response. Lets a strategy commit
- * what it learned (e.g. persist the located offending betas to the negotiation
- * cache) — keeping "who modified, who learns" cohesive inside the strategy
- * instead of leaking demux logic into every handler.
- */
-export interface ResolvedContext<TPayload> {
-  /** The effective payload that ultimately succeeded. */
-  payload: TPayload
-  /** Preparation hints carried by the successful attempt. */
-  prepareHints?: PrepareHints
-  /** Meta from the retry action that produced the successful attempt. */
-  meta?: Record<string, unknown>
-  /** 0-based execution index that succeeded (equals total retries). */
-  attempt: number
-}
-
-export interface RetryStrategy<TPayload> {
-  readonly name: string
-  /** Check if this strategy can handle the given error */
-  canHandle(error: ApiError): boolean
-  /** Handle the error and decide whether to retry or abort */
-  handle(error: ApiError, payload: TPayload, context: RetryContext<TPayload>): Promise<RetryAction<TPayload>>
-  /**
-   * Called when a retry action produced by THIS strategy ultimately led to a
-   * successful response. Optional. Receives the successful payload, the hints
-   * and meta carried by that final attempt. Use it to commit learning (e.g.
-   * fixate the located offending betas into the negotiation cache).
-   */
-  onResolved?(context: ResolvedContext<TPayload>): void | Promise<void>
 }
 
 // --- Pipeline ---
@@ -267,6 +141,7 @@ export async function executeRequestPipeline<TPayload>(opts: PipelineOptions<TPa
 
   for (;;) {
     // 1. Create attempt first (ensures currentAttempt is available for subsequent calls)
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- removed with this compatibility executor in the next P9 semantic unit
     requestContext?.beginAttempt({
       strategy: execIndex > 0 ? lastStrategyName : undefined,
     })

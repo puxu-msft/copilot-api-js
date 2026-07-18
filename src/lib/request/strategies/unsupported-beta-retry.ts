@@ -42,7 +42,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 const UNSUPPORTED_BETA_PATTERN = /unsupported beta header\(s\):\s*([^"}]+)/i
 const INVALID_BETA_FLAG_PATTERN = /invalid beta flag/i

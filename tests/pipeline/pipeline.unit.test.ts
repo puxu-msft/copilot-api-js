@@ -14,7 +14,7 @@ import {
 } from "bun:test"
 
 import type { ApiError } from "~/lib/error"
-import type { RetryStrategy } from "~/lib/request/pipeline"
+import type { RetryStrategy } from "~/lib/request/retry-types"
 
 import { HTTPError } from "~/lib/error"
 import { executeRequestPipeline } from "~/lib/request/pipeline"

@@ -27,7 +27,7 @@
  * whose `model`/`view` invariants are P2 driver guarantees not yet true here.
  */
 
-import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { SanitizeResult } from "~/lib/request/retry-types"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { MessagesPayload } from "~/types/api/anthropic"
 

@@ -38,8 +38,8 @@ import type {
 import type {
   //
   FormatAdapter,
-  RetryStrategy,
 } from "~/lib/request/pipeline"
+import type { RetryStrategy } from "~/lib/request/retry-types"
 
 import { createRequestContextManager } from "~/lib/context/manager"
 import { HTTPError } from "~/lib/error"

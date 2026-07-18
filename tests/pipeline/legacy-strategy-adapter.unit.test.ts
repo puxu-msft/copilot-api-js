@@ -18,7 +18,7 @@ import {
 
 import type { ApiError } from "~/lib/error"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
-import type { RetryStrategy as LegacyRetryStrategy } from "~/lib/request/pipeline"
+import type { RetryStrategy as LegacyRetryStrategy } from "~/lib/request/retry-types"
 
 import {
   //

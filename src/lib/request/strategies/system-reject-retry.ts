@@ -27,7 +27,7 @@ import { markSystemRejectModel } from "~/lib/anthropic/feature-negotiation"
 import { HTTPError } from "~/lib/error"
 import { createReactiveRejectionStrategy } from "~/lib/request/strategies/reactive-rejection"
 
-import type { RetryStrategy } from "../pipeline"
+import type { RetryStrategy } from "../retry-types"
 
 /**
  * Upstream message for an inline role:"system" rejection.

@@ -7,7 +7,7 @@
  * the `invalid beta flag` retry can probe candidates).
  */
 
-import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { SanitizeResult } from "~/lib/request/retry-types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 /** A sanitize step usable as both the adapter's `sanitize` and auto-truncate's `resanitize`. */

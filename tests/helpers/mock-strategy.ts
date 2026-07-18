@@ -10,7 +10,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "~/lib/request/pipeline"
+} from "~/lib/request/retry-types"
 
 /**
  * Create a mock RetryStrategy with controllable behavior.

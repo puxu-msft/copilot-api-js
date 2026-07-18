@@ -10,7 +10,7 @@
  */
 
 import type { BetaProbe } from "~/lib/anthropic/pipeline"
-import type { PrepareHints } from "~/lib/request/pipeline"
+import type { PrepareHints } from "~/lib/request/retry-types"
 
 import type { RequestEnvelope } from "../envelope"
 import type { RequestState } from "../request-state"

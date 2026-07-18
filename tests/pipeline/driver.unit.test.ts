@@ -35,7 +35,7 @@ import type {
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
-import type { RetryStrategy as LegacyRetryStrategy } from "~/lib/request/pipeline"
+import type { RetryStrategy as LegacyRetryStrategy } from "~/lib/request/retry-types"
 
 import { HTTPError } from "~/lib/error"
 import { makeArraySink } from "~/lib/pipeline/client-sink"

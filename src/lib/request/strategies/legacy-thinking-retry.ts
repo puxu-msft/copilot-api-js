@@ -25,7 +25,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 /**
  * Match the adaptive-only rejection. The upstream phrasing names the offending

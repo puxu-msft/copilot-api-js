@@ -21,7 +21,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 export interface ReactiveRejectionConfig<TPayload extends { model: string }> {
   name: string

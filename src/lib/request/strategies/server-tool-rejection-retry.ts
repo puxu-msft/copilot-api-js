@@ -39,7 +39,7 @@ import { markAnthropicServerToolUnsupported } from "~/lib/anthropic/feature-nego
 import { HTTPError } from "~/lib/error"
 import { createReactiveRejectionStrategy } from "~/lib/request/strategies/reactive-rejection"
 
-import type { RetryStrategy } from "../pipeline"
+import type { RetryStrategy } from "../retry-types"
 
 /**
  * Upstream-message pattern → server-tool type prefix to strip. Only tools with

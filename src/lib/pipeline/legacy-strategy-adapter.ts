@@ -38,7 +38,7 @@ import type {
   //
   RetryContext,
   RetryStrategy as LegacyRetryStrategy,
-} from "~/lib/request/pipeline"
+} from "~/lib/request/retry-types"
 
 /** Mutable shared attempt counter (the legacy global execution index). */
 export interface AttemptRef {

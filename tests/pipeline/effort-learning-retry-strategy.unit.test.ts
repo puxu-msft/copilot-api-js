@@ -19,7 +19,7 @@ import {
 } from "bun:test"
 
 import type { ApiError } from "~/lib/error"
-import type { RetryContext } from "~/lib/request/pipeline"
+import type { RetryContext } from "~/lib/request/retry-types"
 
 import { HTTPError } from "~/lib/error"
 import { createEffortLearningRetryStrategy } from "~/lib/request/strategies/effort-learning-retry"
