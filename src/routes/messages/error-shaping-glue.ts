@@ -127,7 +127,18 @@ export function shapePrecommitError(c: Context, error: unknown): Response {
       return streamSSE(c, async (stream) => {
         for (const frame of buildAskUserQuestionFrames(decision, auqCtx)) {
           await stream.writeSSE({ data: frame.data ?? "", ...(frame.event !== undefined && { event: frame.event }) })
-          ctx?.captureForwardedGenerationFrame?.(frame, { offsetMs: 0, type: frame.event ?? "message", raw: frame.data ?? "" }, "error-shaping-auq")
+          // Cross-model review Major: `synthetic` must be set ON THE RECORD (not just the 3rd
+          // `syntheticKind` param, which only drives arena origin/transformId) — projection.ts's
+          // `frames()` reads `node.value.synthetic`, so without this the FORWARDED-track frame
+          // stayed indistinguishable from real content (richest-data-flow / ADR 2026-07-05
+          // "合成帧必打可辨识标记"). "error-shaping-auq" is a valid SseEventRecord["synthetic"]
+          // union member (types.ts:191) — exactly this "pre-commit AskUserQuestion synthesis"
+          // frame kind.
+          ctx?.captureForwardedGenerationFrame?.(
+            frame,
+            { offsetMs: 0, type: frame.event ?? "message", raw: frame.data ?? "", synthetic: "error-shaping-auq" },
+            "error-shaping-auq",
+          )
         }
         ctx?.setClientResponseStatus(200)
         ctx?.finalizeModelOperationDelivery()
