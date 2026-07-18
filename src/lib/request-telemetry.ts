@@ -112,7 +112,18 @@ const EXTRA_MEASURE_NAMES = ["queueWaitMs"] as const
  * bag + generic (de)serializer mean no persistence-version bump, and `/metrics` + `/api/stats` fan
  * out over `TELEMETRY_MEASURE_NAMES` generically (no edit there).
  */
-const FEATURE_MEASURE_NAMES = ["thinkingBlocksNonEmpty", "thinkingBlocksEmptySigned", "thinkingBlocksEmptyUnsigned"] as const
+const FEATURE_MEASURE_NAMES = [
+  "thinkingBlocksNonEmpty",
+  "thinkingBlocksEmptySigned",
+  "thinkingBlocksEmptyUnsigned",
+  "generationCandidates",
+  "upstreamDispatches",
+  "hedgeCandidates",
+  "hedgeWins",
+  "recoveryCandidates",
+  "cancelledDispatches",
+  "unknownUsageDispatches",
+] as const
 
 /**
  * All measures present in a fresh accumulator. `createAccumulator` initializes
@@ -341,6 +352,15 @@ interface SettledTelemetryInput {
   upstreamFirstTokenMs?: number
   clientFirstRealMs?: number
   bufferHoldMs?: number
+  generation?: {
+    candidates: number
+    dispatches: number
+    hedgeCandidates: number
+    hedgeWins: number
+    recoveryCandidates: number
+    cancelledDispatches: number
+    unknownUsageDispatches: number
+  }
 }
 
 /**
@@ -531,6 +551,13 @@ function buildSettledDelta(opts: SettledTelemetryInput): SettledMeasures {
     thinking_nonempty: opts.thinkingBlocks?.nonEmpty ?? 0,
     thinking_empty_signed: opts.thinkingBlocks?.emptySigned ?? 0,
     thinking_empty_unsigned: opts.thinkingBlocks?.emptyUnsigned ?? 0,
+    generation_candidates: opts.generation?.candidates ?? 0,
+    upstream_dispatches: opts.generation?.dispatches ?? 0,
+    hedge_candidates: opts.generation?.hedgeCandidates ?? 0,
+    hedge_wins: opts.generation?.hedgeWins ?? 0,
+    recovery_candidates: opts.generation?.recoveryCandidates ?? 0,
+    cancelled_dispatches: opts.generation?.cancelledDispatches ?? 0,
+    unknown_usage_dispatches: opts.generation?.unknownUsageDispatches ?? 0,
   }
 }
 
@@ -829,6 +856,13 @@ function applySettledMeasures(acc: StatAccumulator, opts: SettledTelemetryInput,
   c.thinkingBlocksNonEmpty += opts.thinkingBlocks?.nonEmpty ?? 0
   c.thinkingBlocksEmptySigned += opts.thinkingBlocks?.emptySigned ?? 0
   c.thinkingBlocksEmptyUnsigned += opts.thinkingBlocks?.emptyUnsigned ?? 0
+  c.generationCandidates += opts.generation?.candidates ?? 0
+  c.upstreamDispatches += opts.generation?.dispatches ?? 0
+  c.hedgeCandidates += opts.generation?.hedgeCandidates ?? 0
+  c.hedgeWins += opts.generation?.hedgeWins ?? 0
+  c.recoveryCandidates += opts.generation?.recoveryCandidates ?? 0
+  c.cancelledDispatches += opts.generation?.cancelledDispatches ?? 0
+  c.unknownUsageDispatches += opts.generation?.unknownUsageDispatches ?? 0
 
   // Distribution histograms: only the process-lifetime `dimSinceStart` leg fills them (`withHistograms`),
   // because it is the SOLE consumer that survives P7's single-track convergence — it feeds `/metrics`

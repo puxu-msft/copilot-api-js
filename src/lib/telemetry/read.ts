@@ -76,6 +76,13 @@ const COUNTER_PROJECTIONS: ReadonlyArray<{ sqlCol: (typeof SETTLED_MEASURE_COLUM
   { sqlCol: "thinking_nonempty", counterName: "thinkingBlocksNonEmpty", scale: 1 },
   { sqlCol: "thinking_empty_signed", counterName: "thinkingBlocksEmptySigned", scale: 1 },
   { sqlCol: "thinking_empty_unsigned", counterName: "thinkingBlocksEmptyUnsigned", scale: 1 },
+  { sqlCol: "generation_candidates", counterName: "generationCandidates", scale: 1 },
+  { sqlCol: "upstream_dispatches", counterName: "upstreamDispatches", scale: 1 },
+  { sqlCol: "hedge_candidates", counterName: "hedgeCandidates", scale: 1 },
+  { sqlCol: "hedge_wins", counterName: "hedgeWins", scale: 1 },
+  { sqlCol: "recovery_candidates", counterName: "recoveryCandidates", scale: 1 },
+  { sqlCol: "cancelled_dispatches", counterName: "cancelledDispatches", scale: 1 },
+  { sqlCol: "unknown_usage_dispatches", counterName: "unknownUsageDispatches", scale: 1 },
 ]
 
 /** 一个 key 的聚合 counters（字段名对齐内存路径）+ 折叠进它的原始 key 名集合（供 sketch 合并定位物理行）。 */

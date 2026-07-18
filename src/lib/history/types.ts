@@ -522,6 +522,13 @@ export interface HistoryEntry {
   pipelineInfo?: PipelineInfo
   attempts?: Array<{
     index: number
+    candidateId?: string
+    candidateRole?: "primary" | "hedge" | "recovery"
+    parentCandidateId?: string
+    candidateVerdict?: "winner" | "loser" | "failed" | "cancelled"
+    dispatchId?: string
+    dispatchVerdict?: "committed" | "discarded" | "failed" | "cancelled"
+    dispatchReason?: string
     strategy?: string
     durationMs: number
     transport?: RequestTransport

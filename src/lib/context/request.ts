@@ -866,6 +866,22 @@ export function createRequestContext(opts: {
     }
   }
 
+  function generationTopologyForV2(index: number): Partial<NonNullable<HistoryEntryData["attempts"]>[number]> {
+    const capture = generationAttempts[index]
+    const operation = modelOperationRecorder.snapshot()
+    const dispatch = operation.dispatches.find((entry) => entry.handle === capture.handle)
+    const candidate = dispatch === undefined ? undefined : operation.candidates.find((entry) => entry.handle === dispatch.candidate)
+    return {
+      candidateId: dispatch?.candidate,
+      candidateRole: candidate?.role,
+      parentCandidateId: candidate?.parentCandidate,
+      candidateVerdict: candidate?.verdict,
+      dispatchId: dispatch?.handle,
+      dispatchVerdict: dispatch?.verdict,
+      dispatchReason: dispatch?.reason,
+    }
+  }
+
   const ctx: RequestContext = {
     id,
     get lifecycleSignal() {
@@ -1827,6 +1843,7 @@ export function createRequestContext(opts: {
             : undefined
           return {
             index: a.index,
+            ...generationTopologyForV2(i),
             strategy: a.strategy,
             durationMs: a.durationMs,
             transport: a.transport,

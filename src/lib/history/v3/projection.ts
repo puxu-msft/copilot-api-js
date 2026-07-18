@@ -90,6 +90,7 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
     | undefined
   const clientBody = payload(values, record.ingress?.request)
   const attempts = record.dispatches.map((attempt, index) => {
+    const candidate = record.candidates.find((entry) => entry.handle === attempt.candidate)
     const effectiveMeta = metadata(attempt.effectiveRequest?.metadata)
     const requestMeta = metadata(attempt.upstreamRequest?.metadata)
     const responseMeta = metadata(attempt.upstreamResponse?.metadata) as
@@ -103,6 +104,13 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
     const response = responseMeta?.response
     return {
       index,
+      candidateId: attempt.candidate,
+      candidateRole: candidate?.role,
+      parentCandidateId: candidate?.parentCandidate,
+      candidateVerdict: candidate?.verdict,
+      dispatchId: attempt.handle,
+      dispatchVerdict: attempt.verdict,
+      dispatchReason: attempt.reason,
       strategy: attempt.strategy,
       durationMs: responseMeta?.latencyMs ?? 0,
       transport: metadata(attempt.metadata)?.transport as HistoryEntry["transport"] | undefined,

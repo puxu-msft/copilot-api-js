@@ -118,5 +118,17 @@ describe("generation delivery and observability terminal", () => {
     })
     expect(record.candidates.find((candidate) => candidate.handle === primary)?.verdict).toBe("failed")
     expect(record.candidates.find((candidate) => candidate.handle === recovery)?.verdict).toBe("winner")
+    const projected = (await import("~/lib/history/v3/projection")).recordToHistoryEntry(record)
+    expect(projected.attempts).toMatchObject([
+      { candidateId: primary, candidateRole: "primary", candidateVerdict: "failed", dispatchId: primaryDispatch, dispatchVerdict: "discarded" },
+      {
+        candidateId: recovery,
+        candidateRole: "recovery",
+        parentCandidateId: primary,
+        candidateVerdict: "winner",
+        dispatchId: recoveryDispatch,
+        dispatchVerdict: "committed",
+      },
+    ])
   })
 })
