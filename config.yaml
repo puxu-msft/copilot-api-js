@@ -228,8 +228,26 @@ disabled_models:
   - text-embedding-ada-002
 
 # ============================================================================
-# Lifecycle / 生命周期
+# Lifecycle (Shutdown + Timeout + Retry) / 生命周期（关闭+超时+重试）
 # ============================================================================
+
+# 优雅退出分为以下阶段：
+#   1. 收到关闭信号，停止接收新请求（立即）。
+#   2. 等待在飞请求自然完成（默认 60s）。
+#   3. 中止在飞请求，等待内部处理收尾（默认 120s）。
+#   4. 强制退出（立即）。
+#
+# Graceful shutdown by following phases:
+#   1. Stop accepting new requests (immediate) on shutdown signal.
+#   2. Wait for in-flight requests to complete naturally (default 60s).
+#   3. Abort in-flight requests; wait for internal handlers to wrap up (default 120s).
+#   4. Force exit (immediate).
+#
+shutdown:
+  # 阶段 2 / Phase 2
+  graceful_wait: 300
+  # 阶段 3 / Phase 3
+  abort_wait: 120
 
 timeouts:
   # 单次尝试上游，从请求发起到开始收到 HTTP 响应头的最大秒数（0 = 不超时）。
@@ -286,53 +304,93 @@ timeouts:
   # TODO: rename request_deadline as client_request_deadline
   request_deadline: 1200
 
-# 优雅退出分为以下阶段：
-#   1. 收到关闭信号，停止接收新请求（立即）。
-#   2. 等待在飞请求自然完成（默认 60s）。
-#   3. 中止在飞请求，等待内部处理收尾（默认 120s）。
-#   4. 强制退出（立即）。
-#
-# Graceful shutdown by following phases:
-#   1. Stop accepting new requests (immediate) on shutdown signal.
-#   2. Wait for in-flight requests to complete naturally (default 60s).
-#   3. Abort in-flight requests; wait for internal handlers to wrap up (default 120s).
-#   4. Force exit (immediate).
-#
-shutdown:
-  # 阶段 2 / Phase 2
-  graceful_wait: 300
-  # 阶段 3 / Phase 3
-  abort_wait: 120
+# 反应式速率限制仅在上游返回 HTTP 429 / 502 时触发；不影响上游返回 503/504 的重试行为。不支持热重载（需重启）。
+# Reactive rate limiting is only triggered on upstream HTTP 429 / 502; does not affect upstream 503/504 retry behavior. Not hot-reloadable (requires restart).
+rate_limiter:
+  # 速率限制错误后重试前的等待秒数
+  # Seconds to wait before retrying after rate limit error
+  retry_interval: 10
+  # 受限模式下请求之间的间隔秒数
+  # Seconds between requests in rate-limited mode
+  request_interval: 10
+  # 受限模式下尝试恢复前的等待秒数
+  # Seconds before attempting recovery from rate-limited mode
+  recovery_interval: 600
+  # Consecutive successes needed to exit rate-limited mode
+  # 退出受限模式所需的连续成功次数
+  consecutive_successes: 5
 
 # ============================================================================
-# History / 历史
+# Buffered-retry caps (vendor-neutral SHARED) + per-vendor overrides
+# 缓冲重试上限（vendor 中立共享）+ 各 vendor 覆盖
 # ============================================================================
-# Control history recording behavior. / 控制历史记录行为。
+# max_retries / buffer_cap_bytes / heartbeat_sec three caps are SHARED across all
+# vendors (anthropic / responses / chat_completions), overridden per-vendor via
+# <vendor>.buffered_retry.*. Resolution priority: per-vendor override > shared
+# buffered_retry.* > built-in default (3 / 16777216 / 15).
+# 三项 caps 对所有 vendor 共享，可被 <vendor>.buffered_retry.* 覆盖。优先级：per-vendor 覆盖 > 共享 > 内置默认。
+# Legacy anthropic.protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} migrate
+# here automatically (warn-once on the old key). / 旧键自动迁移到此（读旧键 warn 一次）。
+
+buffered_retry:
+  # Max transport-close / truncation retries (loop/cost guard, NOT a timeout guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
+  # transport-close/truncation 最大重试次数（loop/成本闸，非超时闸——客户端由下方强制心跳保活）。0 = 不重试。
+  max_retries: 3
+  # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering and retreating to live forwarding for the rest of THIS response (which then loses L2 protection). Prevents a pathologically huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
+  # 缓冲路径内存守卫：累计缓冲超此字节即放弃缓冲、本响应剩余部分退回实时转发（随之失去 L2 保护）。防止病态超大生成无界缓冲导致 OOM。0 = 无限制。默认 16MiB。
+  buffer_cap_bytes: 16777216
+  # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until commit, so a heartbeat is constructed UNCONDITIONALLY — using stream_keepalive_ping_sec when >0, else this fallback.
+  # 缓冲路径的强制心跳间隔秒数：缓冲期在提交前不发任何真实帧，故无条件构造心跳——stream_keepalive_ping_sec >0 时取其值，否则用本值兜底。
+  heartbeat_sec: 15
+
+# Per-vendor overrides + enabled mode switch (examples, commented out by default):
+# 各 vendor 覆盖 + enabled 开关（示例，默认注释）：
+#   anthropic.buffered_retry — caps override only; Anthropic's switch is anthropic.protect_streaming_generation (default false — block-level anchor-coexist shape is CLI-unsafe, see tests/e2e-client/anthropic-coexist-cli.e2e.test.ts; enabled ignored here).
+#   anthropic.buffered_retry — 仅覆盖 caps；Anthropic 的开关是 protect_streaming_generation（默认 false——block-level anchor-coexist 形状对 CLI 不安全，见 tests/e2e-client/anthropic-coexist-cli.e2e.test.ts；此处 enabled 被忽略）。
+#   openai_responses.buffered_retry / chat_completions.buffered_retry — boolean shorthand = enabled, or map { enabled, max_retries, buffer_cap_bytes, heartbeat_sec }. Both DEFAULT TRUE (2026-07-14 flip; covers Responses-HTTP + Responses-WS, which has no independent switch and inherits openai_responses.buffered_retry) — buffering/generation-preservation was chosen over the downstream streaming UX. Set to `false` explicitly to opt back into live (unbuffered) forwarding.
+#   openai_responses.buffered_retry / chat_completions.buffered_retry — bool 简写 = enabled，或 map { enabled, ...caps }。两者默认皆为 true（2026-07-14 翻转；覆盖 Responses-HTTP + Responses-WS——WS 无独立开关，继承 openai_responses.buffered_retry）——缓冲/生成保全被选中优先于下游流式体验。显式设 `false` 可退回实时（非缓冲）转发。
+# anthropic:
+#   buffered_retry:
+#     max_retries: 5
+# openai_responses:
+#   buffered_retry: false           # opt back into live (unbuffered) forwarding; default is true. or: { enabled: false }
+# chat_completions:
+#   buffered_retry: false           # opt back into live (unbuffered) forwarding; default is true. or: { enabled: true, max_retries: 4 }
+
+# ============================================================================
+# History & Telemetry / 历史记录与遥测
+# ============================================================================
 
 history:
-  # Startup-only master switch. CLI --no-history takes precedence.
-  # 启动期总开关；CLI --no-history 优先。
-  enabled: true
-  # Optional exact-byte capture in an independent CAS database. Hot reload rotates
-  # only new operations; in-flight operations drain their frozen store generation.
-  # 可选精确字节捕获，保存到独立 CAS 数据库。热重载只切新 operation，在途 operation 继续写冻结代。
+  # 是否启用历史记录。CLI --no-history 优先。不支持热重载。
+  # Enable history recording. CLI --no-history takes precedence. Not hot-reloadable.
+  enabled: false
+  db_path: "history.db"
+
+  # 保留的最新成功/失败请求数（-1 = 无限制，0 = 临时禁止）。
+  # Successful/Failed entries kept in SQLite (-1 = unlimited, 0 = temporarily disabled).
+  success_limit: 1000
+  failure_limit: 1000
+
+  # Seconds between reaper passes that trim each bucket (0 = disabled, default: 600)
+  # 修剪各桶的周期间隔秒数（0 = 禁用，默认 3600）
+  reaper_interval: 3600
+
+  # 捕捉原始客户端/上游字节流到独立数据库。需启用历史记录。
+  # Exact-byte capture in an independent database. History must be enabled.
   raw_capture:
     enabled: false
-    # db_path: "" # Empty = <APP_DIR>/raw.db. / 留空 = <APP_DIR>/raw.db。
+    db_path: "raw.db"
     max_object_bytes: 16777216
 
-# ============================================================================
-# Telemetry (tiered persistence) / 遥测（分层持久化）
-# ============================================================================
-# 独立 telemetry.db（与 history.db 分家、生命周期另算）：三层 rollup（raw 5min /
-# hourly / daily）+ 终身累计。分布度量走 DDSketch、可加度量精确 SUM。近期/远期分辨率与保留可配。
-# Independent telemetry.db: three-tier rollup + lifetime cumulative. Distributions
-# use DDSketch; additive measures use exact SUM. Near/far resolution & retention configurable.
+# 遥测分三层滚筒（5min/1h/1d）+ 终身累计。
+# Telemetry has three-tier rollup (5min / hourly / daily) + lifetime cumulative.
 telemetry:
-  # 总开关（默认 true = 一直采集）。 / Master switch (default true).
+  # 是否启用遥测。CLI --no-telemetry 优先。不支持热重载。
+  # Enable telemetry. CLI --no-telemetry takes precedence. Not hot-reloadable.
   enabled: false
-  # telemetry.db 路径；留空=用默认 <APP_DIR>/telemetry.db。 / DB path; empty = default.
-  # db_path: ""
+  db_path: "telemetry.db"
+
   # raw 落盘/flush 间隔秒（默认 60）。 / raw persist/flush interval seconds (default 60).
   persist_interval: 60
   # rollup 上卷间隔秒（默认 3600，独立于 persist、应 ≫ persist）。 / rollup interval seconds (default 3600).
@@ -359,60 +417,8 @@ telemetry:
       retention_days: 0
 
 # ============================================================================
-# Web Search (double-hop) / 网络搜索（双跳）
+# Anthropic Format and Features / Anthropic 格式与功能
 # ============================================================================
-# Real web_search server-tool implementation for the Anthropic/Claude path.
-# ============================================================================
-# System prompt (cross-endpoint) / 系统提示（跨端点）
-# ============================================================================
-# Rewrite / prepend / append the system prompt across ALL four inbound endpoints
-# (Anthropic system, OpenAI Chat Completions + Gemini messages, Responses instructions).
-# 改写 / 前置 / 后置 system prompt，作用于全部 4 个入站端点
-# （Anthropic system、OpenAI Chat Completions + Gemini 的 messages、Responses instructions）。
-#
-# Two-axis SCOPE (each rule/entry, optional): `model` + `endpoint`, AND semantics
-# (a present axis must match; an absent axis matches all).
-# 两轴作用域（每条 rule/entry 可选）：`model` + `endpoint`，AND 语义（present 轴须命中、absent 轴匹配全体）。
-#   model:    model-name regex (case-insensitive), e.g. "opus" / "^claude-sonnet"
-#             模型名正则（大小写不敏感），如 "opus" / "^claude-sonnet"
-#   endpoint: inbound client format — one of: anthropic | openai-cc | openai-responses | gemini
-#             (single value or a list). NOTE: it is the INBOUND client format — Gemini requests
-#             are internally translated to CC but the axis still matches on `gemini`.
-#             入站客户端格式，取值：anthropic | openai-cc | openai-responses | gemini（单值或列表）。
-#             注：是入站客户端格式——Gemini 请求内部会转成 CC，但轴仍按 `gemini` 匹配。
-
-# Rewrite rules applied to the system prompt (line / regex methods; first-to-last, all apply).
-# 改写 system prompt 的规则（line / regex 两法；自上而下、全部应用）。
-# system_prompt_overrides:
-#   - from: "COMPANY_INTERNAL"           # regex (default) or line
-#     to: "REDACTED"
-#   - from: "You are Claude"             # only rewrite Anthropic-endpoint Claude requests
-#     to: "You are an assistant"
-#     model: "claude"
-#     endpoint: anthropic
-
-# Prepend text to the system prompt. Accepts (backward-compatible union):
-#   - a plain string (legacy, unscoped), OR
-#   - a single entry { text, model?, endpoint? }, OR
-#   - a list of entries (top-down; matching entries joined with "\n\n").
-# 前置注入。接受三形态（向后兼容 union）：纯字符串（旧式无作用域）| 单条 { text, model?, endpoint? } | 条目列表（自上而下、命中者以 "\n\n" 拼接）。
-# system_prompt_prepend: "Always answer concisely."     # legacy string form (all endpoints)
-# system_prompt_prepend:
-#   - text: "Respond in English."                        # applies everywhere
-#   - text: "You may use extended thinking."             # only Claude via Anthropic/Responses
-#     model: "opus"
-#     endpoint: [anthropic, openai-responses]
-
-# Append text to the system prompt. Same forms/scope as system_prompt_prepend (appended at the end).
-# 后置注入。形态/作用域同 system_prompt_prepend（追加到末尾）。
-# system_prompt_append:
-#   - text: "Cite sources when possible."
-#     endpoint: openai-cc
-
-# ============================================================================
-# Anthropic
-# ============================================================================
-# Settings for Anthropic API tool handling and timeouts. / Anthropic API 的工具处理与超时设置。
 
 anthropic:
   # Model-capability allowlists — which models get each Anthropic capability.
@@ -894,89 +900,6 @@ openai_responses:
   # Concurrent `response.create` on the same socket is rejected with an error frame. / 同 socket 上并发 `response.create` 会被 error 帧拒绝。
   client_ws_keep_open: false
 
-# ============================================================================
-# Buffered-retry caps (vendor-neutral SHARED) + per-vendor overrides
-# 缓冲重试上限（vendor 中立共享）+ 各 vendor 覆盖
-# ============================================================================
-# max_retries / buffer_cap_bytes / heartbeat_sec three caps are SHARED across all
-# vendors (anthropic / responses / chat_completions), overridden per-vendor via
-# <vendor>.buffered_retry.*. Resolution priority: per-vendor override > shared
-# buffered_retry.* > built-in default (3 / 16777216 / 15).
-# 三项 caps 对所有 vendor 共享，可被 <vendor>.buffered_retry.* 覆盖。优先级：per-vendor 覆盖 > 共享 > 内置默认。
-# Legacy anthropic.protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} migrate
-# here automatically (warn-once on the old key). / 旧键自动迁移到此（读旧键 warn 一次）。
-
-buffered_retry:
-  # Max transport-close / truncation retries (loop/cost guard, NOT a timeout guard — the client is kept alive by the forced heartbeat below). 0 = no retry.
-  # transport-close/truncation 最大重试次数（loop/成本闸，非超时闸——客户端由下方强制心跳保活）。0 = 不重试。
-  max_retries: 3
-  # Buffered-path memory guard: max bytes to buffer before ABANDONING buffering and retreating to live forwarding for the rest of THIS response (which then loses L2 protection). Prevents a pathologically huge generation from buffering unbounded → OOM. 0 = unlimited. Default 16MiB.
-  # 缓冲路径内存守卫：累计缓冲超此字节即放弃缓冲、本响应剩余部分退回实时转发（随之失去 L2 保护）。防止病态超大生成无界缓冲导致 OOM。0 = 无限制。默认 16MiB。
-  buffer_cap_bytes: 16777216
-  # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until commit, so a heartbeat is constructed UNCONDITIONALLY — using stream_keepalive_ping_sec when >0, else this fallback.
-  # 缓冲路径的强制心跳间隔秒数：缓冲期在提交前不发任何真实帧，故无条件构造心跳——stream_keepalive_ping_sec >0 时取其值，否则用本值兜底。
-  heartbeat_sec: 15
-
-# Per-vendor overrides + enabled mode switch (examples, commented out by default):
-# 各 vendor 覆盖 + enabled 开关（示例，默认注释）：
-#   anthropic.buffered_retry — caps override only; Anthropic's switch is anthropic.protect_streaming_generation (default false — block-level anchor-coexist shape is CLI-unsafe, see tests/e2e-client/anthropic-coexist-cli.e2e.test.ts; enabled ignored here).
-#   anthropic.buffered_retry — 仅覆盖 caps；Anthropic 的开关是 protect_streaming_generation（默认 false——block-level anchor-coexist 形状对 CLI 不安全，见 tests/e2e-client/anthropic-coexist-cli.e2e.test.ts；此处 enabled 被忽略）。
-#   openai_responses.buffered_retry / chat_completions.buffered_retry — boolean shorthand = enabled, or map { enabled, max_retries, buffer_cap_bytes, heartbeat_sec }. Both DEFAULT TRUE (2026-07-14 flip; covers Responses-HTTP + Responses-WS, which has no independent switch and inherits openai_responses.buffered_retry) — buffering/generation-preservation was chosen over the downstream streaming UX. Set to `false` explicitly to opt back into live (unbuffered) forwarding.
-#   openai_responses.buffered_retry / chat_completions.buffered_retry — bool 简写 = enabled，或 map { enabled, ...caps }。两者默认皆为 true（2026-07-14 翻转；覆盖 Responses-HTTP + Responses-WS——WS 无独立开关，继承 openai_responses.buffered_retry）——缓冲/生成保全被选中优先于下游流式体验。显式设 `false` 可退回实时（非缓冲）转发。
-# anthropic:
-#   buffered_retry:
-#     max_retries: 5
-# openai_responses:
-#   buffered_retry: false           # opt back into live (unbuffered) forwarding; default is true. or: { enabled: false }
-# chat_completions:
-#   buffered_retry: false           # opt back into live (unbuffered) forwarding; default is true. or: { enabled: true, max_retries: 4 }
-
-# ============================================================================
-# Rate Limiter / 速率限制
-# ============================================================================
-# Fine-tune the adaptive rate limiter behavior. The rate limiter is enabled/disabled via --no-rate-limit CLI flag; these settings control its parameters when enabled.
-# 微调自适应速率限制行为。速率限制经 --no-rate-limit CLI 参数启停；以下参数在启用时控制其行为。
-# NOT hot-reloadable (stateful singleton built once at startup; requires restart). / 不支持热重载（stateful 单例启动期构造一次；需重启）。
-
-rate_limiter:
-  # Seconds to wait before retrying after rate limit error / 速率限制错误后重试前的等待秒数
-  retry_interval: 10
-  # Seconds between requests in rate-limited mode / 受限模式下请求之间的间隔秒数
-  request_interval: 10
-  # Seconds before attempting recovery from rate-limited mode / 受限模式下尝试恢复前的等待秒数
-  recovery_interval: 600
-  # Consecutive successes needed to exit rate-limited mode / 退出受限模式所需的连续成功次数
-  consecutive_successes: 5
-
-# ============================================================================
-# Auto-Truncate
-# ============================================================================
-# Control auto-truncation behavior when context limits are hit.
-
-# Reactive auto-truncate (nested section). When `enabled` and an upstream token-limit error (400/413) is
-# returned, retry with a truncated payload instead of surfacing the error. Spans both the Anthropic and Chat
-# Completions retry pipelines. Hot-reloadable. The CLI flag --auto-truncate / --no-auto-truncate overrides
-# `enabled` when passed. The tuning fields below are config-only.
-# auto_truncate:
-#   # Enable reactive auto-truncate. Default: false.
-#   enabled: true
-#   # Truncation target as a fraction of the upstream-reported limit (target = limit × factor). Range (0, 1];
-#   # smaller = safer / removes more, larger = leaner but closer to the limit. 0 is invalid. Default: 0.9.
-#   target_factor: 0.9
-#   # Max reactive auto-truncate retries per request. 0 = a single attempt, no retry. Default: 5.
-#   max_retries: 5
-#   # Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress
-#   # everything. Default: 10000.
-#   compress_threshold: 10000
-#   # Main-path pre-flight truncation. Before sending, predict via the learned size-aware calibration factor
-#   # whether the request will exceed the model's token limit and pre-truncate it, saving a guaranteed-to-fail
-#   # 400 round-trip. Reactive truncation (above) stays the fallback. Opt-in. Default: false.
-#   preflight: false
-
-# Compress old tool_result content before truncating messages. When enabled, large tool_result content blocks
-# are compressed to reduce context size before resorting to message removal. Default: true.
-# auto_truncate:
-#   compress_tool_results: false
 
 # ============================================================================
 # Tool Name Sanitization / 工具名清洗
