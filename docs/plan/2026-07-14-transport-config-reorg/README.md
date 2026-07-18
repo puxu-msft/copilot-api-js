@@ -155,7 +155,14 @@ export const ServerConfigSchema = z.object({
     generation: number
   }
   export function getUpstreamWsStatusSnapshot(manager: UpstreamWsManager): ReadonlyArray<UpstreamWsStatusRow>
+  export interface UpstreamWsReconcileStatus {
+    state: "idle" | "running" | "failed"
+    lastCompletedGeneration: number
+    lastError: string | null
+  }
+  export function getUpstreamWsReconcileStatus(manager: UpstreamWsManager): UpstreamWsReconcileStatus
   ```
+  `UpstreamWsReconcileStatus` 是合并态审查 major 修复后追加的对称契约——`getH2ReconcileStatus()` 早已给 h2 侧提供 reconcile-run 可观测性（`idle`/`running`/`failed`），但 WS 侧最初只有 `reconcileForConfigChange()` 本身且**无 never-throw 守卫**，违反 spec §4 D7 HIGH-3（三个 transport 订阅者共享 state.ts 同一个无 try/catch 的 listener 循环，任一订阅者抛错会静默跳过其后注册的订阅者）。修复把 `reconcileForConfigChange()` 主体包 try/catch（catch 记录失败状态 + `consola.error`、绝不 re-throw，逐字镜像 h2 侧既有实现），并新增 `UpstreamWsManager.reconcileStatus()` 方法 + `getUpstreamWsReconcileStatus(manager)` 自由函数暴露该状态，供 P5 与 `getH2ReconcileStatus()` 对称渲染两个 transport 的 reconcile 健康度。
 
 以上签名在各阶段计划文档中保持逐字一致；如某阶段执行中发现必须偏离，须先回来更新本节，不得在单阶段文档里私自改名。
 

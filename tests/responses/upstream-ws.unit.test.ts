@@ -20,6 +20,7 @@ import {
   //
   createUpstreamWsManager,
   getUpstreamWsManager,
+  getUpstreamWsReconcileStatus,
   getUpstreamWsStatusSnapshot,
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
@@ -876,6 +877,122 @@ describe("reconcileForConfigChange / statusSnapshot (P4 hot-reload)", () => {
     idleTriggers[0]?.()
 
     expect(manager.statusSnapshot()).toHaveLength(1)
+    setUpstreamWsConnectionFactoryForTests(null)
+  })
+
+  test("reconcileStatus() reflects idle -> running -> idle with a bumped lastCompletedGeneration; getUpstreamWsReconcileStatus delegates to it", async () => {
+    const fakeConnection = (model: string): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model,
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
+      close: () => {},
+    })
+    setUpstreamWsConnectionFactoryForTests(() => fakeConnection("gpt-5.2"))
+    const manager = createUpstreamWsManager()
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+
+    const before = manager.reconcileStatus()
+    expect(before).toEqual({ state: "idle", lastCompletedGeneration: 0, lastError: null })
+
+    manager.reconcileForConfigChange(120_000)
+
+    const after = getUpstreamWsReconcileStatus(manager)
+    expect(after).toEqual({ state: "idle", lastCompletedGeneration: 1, lastError: null })
+    setUpstreamWsConnectionFactoryForTests(null)
+  })
+
+  test("never-throw guard (major fix, spec §4 D7 HIGH-3): a connection's rescheduleIdleTimeout throwing does NOT propagate out of reconcileForConfigChange, and the failure is recorded observably", async () => {
+    // Two connections; the SECOND one's rescheduleIdleTimeout throws. This
+    // proves the guard doesn't just swallow-and-stop (which could look like a
+    // pass if only the throwing connection were exercised) — it must not
+    // itself re-throw so a caller iterating multiple listeners (state.ts's
+    // unprotected transportUpstreamListeners loop) never sees an exception
+    // from THIS listener, regardless of whether other pooled connections
+    // would have succeeded.
+    let secondRescheduleCalled = false
+    const fakeConnection = (model: string, throwing: boolean): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model,
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {
+        if (throwing) {
+          secondRescheduleCalled = true
+          throw new Error("simulated rescheduleIdleTimeout failure")
+        }
+      },
+      close: () => {},
+    })
+    let created = 0
+    setUpstreamWsConnectionFactoryForTests(() => {
+      created += 1
+      return fakeConnection("gpt-5.2", created === 2)
+    })
+    const manager = createUpstreamWsManager()
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+
+    // The call itself must not throw — this is the load-bearing assertion:
+    // if the guard were absent, this expression would throw synchronously and
+    // the test would fail right here (not at a later .toEqual assertion).
+    expect(() => manager.reconcileForConfigChange(90_000)).not.toThrow()
+    expect(secondRescheduleCalled).toBe(true) // proves the throwing path was actually exercised
+
+    const status = manager.reconcileStatus()
+    expect(status.state).toBe("failed")
+    expect(status.lastError).toContain("simulated rescheduleIdleTimeout failure")
+    // lastCompletedGeneration must NOT have been bumped by a failed reconcile —
+    // only a reconcile that ran to completion updates it.
+    expect(status.lastCompletedGeneration).toBe(0)
+    setUpstreamWsConnectionFactoryForTests(null)
+  })
+
+  test("never-throw guard: a later state.ts listener still runs after this reconcile listener throws (the exact HIGH-3 failure mode — 'silently skip later subscribers')", async () => {
+    // Simulates state.ts's unprotected `for (const listener of
+    // transportUpstreamListeners) listener()` loop directly (rather than
+    // routing through the real onUpstreamTransportChange subscription, which
+    // would require getUpstreamWsManager()'s process-wide singleton and
+    // pollute other tests) — the guard under test is INSIDE
+    // reconcileForConfigChange itself, so exercising it as one of several
+    // listeners in a bare loop is a faithful proxy for that shared loop.
+    const fakeConnection = (): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model: "gpt-5.2",
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {
+        throw new Error("simulated failure")
+      },
+      close: () => {},
+    })
+    setUpstreamWsConnectionFactoryForTests(() => fakeConnection())
+    const manager = createUpstreamWsManager()
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+
+    let laterListenerRan = false
+    const listeners: Array<() => void> = [() => manager.reconcileForConfigChange(90_000), () => (laterListenerRan = true)]
+
+    // Faithful reproduction of state.ts's actual loop shape (no try/catch at
+    // the loop level) — if reconcileForConfigChange's OWN guard were missing,
+    // this loop itself would throw and laterListenerRan would stay false.
+    for (const listener of listeners) listener()
+
+    expect(laterListenerRan).toBe(true)
+    expect(manager.reconcileStatus().state).toBe("failed")
     setUpstreamWsConnectionFactoryForTests(null)
   })
 })

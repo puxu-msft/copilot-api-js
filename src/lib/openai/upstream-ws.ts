@@ -73,6 +73,27 @@ export interface UpstreamWsStatusRow {
   generation: number
 }
 
+/**
+ * Observability for `reconcileForConfigChange()` (P4 major fix, spec §4 D7
+ * HIGH-3) — mirrors h2's `getH2ReconcileStatus()` shape verbatim so /api/status
+ * (P5) can render both transports' reconcile health the same way. `state`
+ * here is reconcile-run status ("idle" = not currently running / last run
+ * succeeded, "running" = mid-call, "failed" = last call threw and was
+ * caught), a DIFFERENT axis from `UpstreamWsStatusRow.state` (per-connection
+ * connecting/busy/idle) — same field name, unrelated meaning, exactly as h2's
+ * own `H2SessionStatusRow.lifecycle` vs `getH2ReconcileStatus().state` are
+ * two separate axes under different field names in that module; kept as
+ * `state` here (not renamed) because it is a 1:1 mirror of
+ * `getH2ReconcileStatus()`'s own field name, and the two interfaces
+ * (`UpstreamWsStatusRow` vs `UpstreamWsReconcileStatus`) are never mixed at
+ * a single call site.
+ */
+export interface UpstreamWsReconcileStatus {
+  state: "idle" | "running" | "failed"
+  lastCompletedGeneration: number
+  lastError: string | null
+}
+
 export interface UpstreamWsManager {
   findReusable(opts: { previousResponseId?: string; conversationId?: string; model: string }): UpstreamWsConnection | undefined
   create(opts: { headers: Record<string, string>; model: string; conversationId?: string }): Promise<UpstreamWsConnection>
@@ -92,6 +113,8 @@ export interface UpstreamWsManager {
   reconcileForConfigChange(newIdleTimeoutMs: number): void
   /** Per-connection status rows for /api/status (P5). */
   statusSnapshot(): ReadonlyArray<UpstreamWsStatusRow>
+  /** Observability for the LAST `reconcileForConfigChange()` call — mirrors h2's `getH2ReconcileStatus()` (P5). */
+  reconcileStatus(): UpstreamWsReconcileStatus
   readonly stopped: boolean
 }
 
@@ -116,6 +139,9 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
   /** Generation stamped at create() time; bumped on every reconcileForConfigChange() call. Instance-scoped (per-manager), unlike h2's module-global currentGeneration — each manager owns its own connection pool. */
   const connectionGeneration = new Map<string, number>()
   let currentGeneration = 0
+  let reconcileRunState: "idle" | "running" | "failed" = "idle"
+  let lastCompletedReconcileGeneration = 0
+  let lastReconcileError: string | null = null
   let stopped = false
   // Per-model circuit breaker: `consecutiveFallbacks`/`disabledUntil` keyed by
   // the bare model string (same key space as the connection pool's
@@ -370,18 +396,46 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
       return rows
     },
 
+    /**
+     * Hot-reload reconcile (P4 major fix, spec §4 D7 HIGH-3): must NEVER
+     * throw. This runs as one of possibly several synchronous listeners
+     * inside state.ts's `setUpstreamTransportConfig()` listener loop (`for
+     * (const listener of transportUpstreamListeners) listener()` — no
+     * try/catch there), sharing that loop with the h2-side reconcile listener
+     * and proxy.ts's dispatcher-rebuild listener. A thrown error here would
+     * abort the loop and silently skip every listener registered after this
+     * one — exactly the "silently skip later subscribers" failure mode HIGH-3
+     * calls out, and exactly what `reconcileH2SessionsForConfigChange`
+     * (http2-client.ts) already guards against; this mirrors that guard so
+     * the WS side carries the same defense instead of leaving it half-implemented.
+     * Any failure (e.g. a connection's `rescheduleIdleTimeout` throwing) is
+     * caught, recorded (`reconcileRunState`/`lastReconcileError`, observable
+     * via `reconcileStatus()`/P5's `getUpstreamWsReconcileStatus()`) and
+     * logged via consola.error — never silently swallowed, never re-thrown.
+     */
     reconcileForConfigChange(newIdleTimeoutMs) {
-      currentGeneration += 1
-      for (const [key, connection] of connections) {
-        connection.rescheduleIdleTimeout(newIdleTimeoutMs)
-        connectionGeneration.set(key, currentGeneration)
+      reconcileRunState = "running"
+      try {
+        currentGeneration += 1
+        for (const [key, connection] of connections) {
+          connection.rescheduleIdleTimeout(newIdleTimeoutMs)
+          connectionGeneration.set(key, currentGeneration)
+        }
+        // The soft-max cap may have shrunk — evict now-excess IDLE connections
+        // down to it. Busy connections are left untouched (see Architecture).
+        // evictExcessIdleConnections() computes the excess ONCE up front — see
+        // its own doc comment for why re-checking connections.size mid-loop
+        // would silently under-evict.
+        evictExcessIdleConnections()
+        lastCompletedReconcileGeneration = currentGeneration
+        lastReconcileError = null
+        reconcileRunState = "idle"
+      } catch (err) {
+        reconcileRunState = "failed"
+        lastReconcileError = err instanceof Error ? err.message : String(err)
+        consola.error(`[upstream-ws] reconcileForConfigChange failed (generation=${currentGeneration}): ${lastReconcileError}`)
+        // Deliberately NOT re-thrown — see the doc comment above.
       }
-      // The soft-max cap may have shrunk — evict now-excess IDLE connections
-      // down to it. Busy connections are left untouched (see Architecture).
-      // evictExcessIdleConnections() computes the excess ONCE up front — see
-      // its own doc comment for why re-checking connections.size mid-loop
-      // would silently under-evict.
-      evictExcessIdleConnections()
     },
 
     statusSnapshot() {
@@ -398,6 +452,10 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
         })
       }
       return rows
+    },
+
+    reconcileStatus() {
+      return { state: reconcileRunState, lastCompletedGeneration: lastCompletedReconcileGeneration, lastError: lastReconcileError }
     },
 
     get stopped() {
@@ -446,4 +504,9 @@ export function setUpstreamWsConnectionFactoryForTests(factory: ((opts: CreateUp
 /** Free-function wrapper (README "P4 produces, P5 consumes" signature) — the manager itself owns the per-connection state, so this just delegates. */
 export function getUpstreamWsStatusSnapshot(manager: UpstreamWsManager): ReadonlyArray<UpstreamWsStatusRow> {
   return manager.statusSnapshot()
+}
+
+/** Free-function wrapper (README "P4 produces, P5 consumes" signature) — mirrors {@link getUpstreamWsStatusSnapshot}'s delegation pattern. */
+export function getUpstreamWsReconcileStatus(manager: UpstreamWsManager): UpstreamWsReconcileStatus {
+  return manager.reconcileStatus()
 }
