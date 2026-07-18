@@ -50,10 +50,11 @@ import {
 } from "@/stores/list-store"
 
 // hoisted 供 vi.mock 工厂引用的 spy:虚拟列表 scrollToIndex + 单条 summary 查询 + 捕获 endReached / atBottom(供测门控/滚到底)。
-const { scrollToIndexMock, apiGetMock, apiDeleteMock, endReachedRef, atBottomRef } = vi.hoisted(() => ({
+const { scrollToIndexMock, apiGetMock, apiDeleteMock, apiPostMock, endReachedRef, atBottomRef } = vi.hoisted(() => ({
   scrollToIndexMock: vi.fn(),
   apiGetMock: vi.fn(),
   apiDeleteMock: vi.fn(),
+  apiPostMock: vi.fn(),
   endReachedRef: { current: null as null | (() => void) },
   atBottomRef: { current: null as null | ((v: boolean) => void) },
 }))
@@ -100,7 +101,7 @@ vi.mock("react-virtuoso", async () => {
   return { TableVirtuoso: FakeTableVirtuoso }
 })
 
-vi.mock("@/lib/api", () => ({ api: { get: apiGetMock, delete: apiDeleteMock } }))
+vi.mock("@/lib/api", () => ({ api: { get: apiGetMock, delete: apiDeleteMock, post: apiPostMock } }))
 
 // 可变 mock:各用例设置 entries/hasNextPage/fetchNextPage;工厂在调用时读取(非 import 时)。
 let mockHistory: {
@@ -170,6 +171,8 @@ describe("HistoryList", () => {
     apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
     apiDeleteMock.mockReset()
     apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
+    apiPostMock.mockReset()
+    apiPostMock.mockResolvedValue({ success: true, archived: 1 })
   })
   afterEach(() => vi.restoreAllMocks())
 
@@ -609,44 +612,11 @@ describe("HistoryList", () => {
     expect(other?.getAttribute("aria-current")).toBeNull()
   })
 
-  // ── Task 4.3:筛选感知清空历史 + 确认 Modal ──
-
-  it("clear (with filters): modal shows the filtered-count prompt; 确认 issues scoped delete + invalidates", async () => {
-    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries")
-    mockHistory = { ...mockHistory, entries: [entry("e1")], total: 3 }
-    const filters: RequestFilters = { ...EMPTY_FILTERS, endpoint: "anthropic-messages" }
-    renderList(["/requests"], filters)
-    fireEvent.click(screen.getByText("清空"))
-    // 有筛选 → 文案含「筛选命中的 3」。
-    expect(screen.getByText(/筛选命中的 3/)).toBeDefined()
-    fireEvent.click(screen.getByText("确认"))
-    await waitFor(() => expect(apiDeleteMock).toHaveBeenCalled())
-    const url = apiDeleteMock.mock.calls[0][0] as string
-    expect(url).toContain("/history/api/entries?")
-    expect(url).toContain("endpoint=anthropic-messages")
-    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["history-infinite"] }))
-    // 删除后 Modal 关闭。
-    await waitFor(() => expect(screen.queryByText("确认")).toBeNull())
-  })
-
-  it("clear (no filters): modal shows the clear-all prompt; 确认 issues an unscoped delete (no query)", async () => {
+  it("does not expose the retired built-in archive action", () => {
     mockHistory = { ...mockHistory, entries: [entry("e1")], total: 5 }
     renderList()
-    fireEvent.click(screen.getByText("清空"))
-    // 无筛选 → 文案「全部」+「5」。
-    expect(screen.getByText(/全部 5/)).toBeDefined()
-    fireEvent.click(screen.getByText("确认"))
-    await waitFor(() => expect(apiDeleteMock).toHaveBeenCalledWith("/history/api/entries"))
-  })
-
-  it("clear: 取消 closes the modal without deleting", () => {
-    mockHistory = { ...mockHistory, entries: [entry("e1")], total: 5 }
-    renderList()
-    fireEvent.click(screen.getByText("清空"))
-    expect(screen.getByText("确认")).toBeDefined()
-    fireEvent.click(screen.getByText("取消"))
-    expect(screen.queryByText("确认")).toBeNull()
-    expect(apiDeleteMock).not.toHaveBeenCalled()
+    expect(screen.queryByText("归档")).toBeNull()
+    expect(apiPostMock).not.toHaveBeenCalled()
   })
 })
 
@@ -659,6 +629,8 @@ describe("HistoryList — 列宽 resize（Task 2）", () => {
     apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
     apiDeleteMock.mockReset()
     apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
+    apiPostMock.mockReset()
+    apiPostMock.mockResolvedValue({ success: true, archived: 1 })
   })
   afterEach(() => vi.restoreAllMocks())
 
@@ -740,6 +712,8 @@ describe("HistoryList — 列策展 + cache 列 + inline width（Task 1）", () 
     apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
     apiDeleteMock.mockReset()
     apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
+    apiPostMock.mockReset()
+    apiPostMock.mockResolvedValue({ success: true, archived: 1 })
   })
   afterEach(() => vi.restoreAllMocks())
 
@@ -805,6 +779,8 @@ describe("HistoryList — session 色带（Task 2 默认态）", () => {
     apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
     apiDeleteMock.mockReset()
     apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
+    apiPostMock.mockReset()
+    apiPostMock.mockResolvedValue({ success: true, archived: 1 })
   })
   afterEach(() => vi.restoreAllMocks())
 
@@ -981,6 +957,8 @@ describe("HistoryList — dnd 列序 reorder（Task 3）", () => {
     apiGetMock.mockResolvedValue(fetchedEntry("x", "anthropic-messages"))
     apiDeleteMock.mockReset()
     apiDeleteMock.mockResolvedValue({ success: true, deleted: 1 })
+    apiPostMock.mockReset()
+    apiPostMock.mockResolvedValue({ success: true, archived: 1 })
   })
   afterEach(() => vi.restoreAllMocks())
 

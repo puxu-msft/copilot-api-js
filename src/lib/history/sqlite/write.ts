@@ -263,6 +263,10 @@ export function deleteEntries(filters: QueryOptions): number {
 
 export function clearAllEntries(): void {
   const db = getDatabase()
+  // Production History V3 databases never contain this legacy table. Keep the
+  // test-only reset compatible with old characterization fixtures without
+  // issuing V2 DELETE statements against a V3-only artifact.
+  if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='entries_v2'").get()) return
   const tx = db.transaction(() => {
     // entry_stages / req_msg / req_aux cascade from entries_v2 on row delete, but a
     // bare `DELETE FROM entries_v2` (no WHERE) still fires per-row cascade; the

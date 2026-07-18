@@ -586,10 +586,9 @@ describe("getHistorySummaries", () => {
     expect(terminal.total).toBe(1)
   })
 
-  test("terminalOnly excludes a persisted streaming head row not in the in-flight map (state branch)", async () => {
-    // Belt-and-suspenders: an entry eager-persisted as `streaming` then removed
-    // from the in-flight map (transient state) reads back `active: false`, so only
-    // the state-based check in isInFlightSummary catches it.
+  test("V3 summaries ignore a retired V2 eager streaming head row", async () => {
+    // V3 list reads only canonical terminal operations. The legacy eager-row
+    // helper remains a test seam during cutover but must not leak into V3 list.
     const done = insertHistoryEntry("anthropic-messages", {
       model: "done-model",
       messages: [{ role: "user", content: "done" }],
@@ -608,8 +607,7 @@ describe("getHistorySummaries", () => {
     removeInFlight(streamingRow.id) // now only the persisted row remains (active: false, state: streaming)
 
     const all = getHistorySummaries()
-    expect(all.entries.map((e) => e.id).sort()).toEqual([done.id, streamingRow.id].sort())
-    expect(all.entries.find((e) => e.id === streamingRow.id)?.active).toBe(false)
+    expect(all.entries.map((e) => e.id)).toEqual([done.id])
 
     const terminal = getHistorySummaries({ terminalOnly: true })
     expect(terminal.entries.map((e) => e.id)).toEqual([done.id])

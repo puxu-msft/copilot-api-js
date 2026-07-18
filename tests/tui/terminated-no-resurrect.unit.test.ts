@@ -72,7 +72,7 @@ function makeSink() {
   const bus = createBus()
   const sink = new TerminalUi(bus, { isTTY: false, silent: true })
   cleanups.push(() => sink.destroy())
-  const active = (sink as unknown as { active: Map<string, unknown> }).active
+  const active = (sink as unknown as { store: { size: number } }).store
   return { pub: bus.scope("request"), active }
 }
 

@@ -74,7 +74,11 @@ describe("CC v4 — upstream stream truncation detection", () => {
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0, streamIdleTimeout: 0 })
+    // Pin the PLAIN owns-sink path: this file locks the live-stream truncation detection (partial
+    // content forwarded + error frame + kind=truncated). `chatCompletionsBufferedRetry` defaults to
+    // true (2026-07-14 flip) → the buffered path is all-or-nothing (discards the partial on truncation),
+    // covered separately in tests/chat-completions/cc-buffered.integration.test.ts.
+    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0, streamIdleTimeout: 0, chatCompletionsBufferedRetry: false })
     applyFetchMock(upstreamFetchMock)
   })
 

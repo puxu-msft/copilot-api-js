@@ -1,4 +1,9 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
 import { runDriver } from "./harness"
 
@@ -20,7 +25,7 @@ describe("② footer/panel 钉底：footer 内容在末 panel 区、滚动日志
       expect(r.exitCode).toBe(0)
       const snap = r.snapshots["panel"]
       expect(snap).toBeDefined() // 握手成功（marker 抓到快照）
-      const visible = snap!.slice(-24)
+      const visible = snap.slice(-24)
       const panelZone = visible.slice(-PANEL_ROWS) // 末 3 行 = panel 区
       const aboveZone = visible.slice(0, -PANEL_ROWS)
       // footer 内容（在途 request 的 model 名）在 panel 区，不在其上的滚动区。

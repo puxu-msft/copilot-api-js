@@ -93,7 +93,7 @@ describe("/api/hooks", () => {
       expect(body.enabled).toBe(true)
       expect(body.declaredModule).toBe(validHookPath)
       expect(body.loadedModule).toBe(validHookPath)
-      expect(body.exports).toEqual(["onExchange"])
+      expect(body.exports).toEqual(["exchange"])
       expect(typeof body.loadedAt).toBe("number")
       expect(typeof body.version).toBe("string")
       expect(body).not.toHaveProperty("lastReloadError")
@@ -117,7 +117,7 @@ describe("/api/hooks", () => {
       // (loaded) hook is untouched — the old module/exports are still active.
       expect(body.declaredModule).toBe(noExportsPath)
       expect(body.loadedModule).toBe(validHookPath)
-      expect(body.exports).toEqual(["onExchange"])
+      expect(body.exports).toEqual(["exchange"])
       expect(body.lastReloadError).toContain("exports none of")
     })
   })
@@ -140,7 +140,7 @@ describe("/api/hooks", () => {
 
       expect(body.ok).toBe(true)
       expect(body.module).toBe(validHookPath)
-      expect(body.exports).toEqual(["onExchange"])
+      expect(body.exports).toEqual(["exchange"])
       expect(typeof body.version).toBe("string")
     })
 

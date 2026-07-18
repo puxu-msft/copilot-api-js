@@ -24,7 +24,7 @@ import type { RawHttpRequest } from "~/lib/pipeline/types"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { preprocessAnthropicMessages } from "~/lib/anthropic/sanitize"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
-import { withCapturingManager } from "~/lib/context/manager"
+import { withCapturingManagerAsync } from "~/lib/context/manager"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { setModels } from "~/lib/state"
@@ -39,7 +39,7 @@ const dryRunTransport = {
 } as never
 
 /** Build the REAL anthropic codec + driver (mirrors dry-run-pipeline.ts `inspectFormatRequest`). */
-function inspect(modelName: string, stopAfter: "translate" | "prepare-wire") {
+async function inspect(modelName: string, stopAfter: "translate" | "prepare-wire") {
   const messages = [{ role: "user" as const, content: "hi" }]
   const pre = preprocessAnthropicMessages(messages as never)
   const betaProbe = createBetaProbe(undefined)
@@ -61,7 +61,7 @@ function inspect(modelName: string, stopAfter: "translate" | "prepare-wire") {
     path: "/v1/messages",
     method: "POST",
   } as unknown as RawHttpRequest
-  return withCapturingManager(() => driver.inspectRequest(raw, stopAfter)).result
+  return (await withCapturingManagerAsync(() => driver.inspectRequest(raw, stopAfter))).result
 }
 
 describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectRequest)", () => {
@@ -78,9 +78,9 @@ describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectR
       data: [mockModel("claude-r", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES] })],
     })
 
-  test("@cc forward leg → prepare-wire yields a CC-shaped wire at /chat/completions (translation reached the wire)", () => {
+  test("@cc forward leg → prepare-wire yields a CC-shaped wire at /chat/completions (translation reached the wire)", async () => {
     seedModel()
-    const insp = inspect("claude-x@cc", "prepare-wire")
+    const insp = await inspect("claude-x@cc", "prepare-wire")
     expect(insp.stoppedAt).toBe("prepare-wire")
 
     // translate stage: the body became CC-canonical (has `messages`, model stripped of @cc).
@@ -101,18 +101,19 @@ describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectR
     expect(wbody.thinking).toBeUndefined()
   })
 
-  test("@responses forward leg → prepare-wire yields a Responses-shaped wire at /responses (input[], not messages[]) — W4", () => {
+  test("@responses forward leg → prepare-wire yields a Responses-shaped wire at /responses (input[], not messages[]) — W4", async () => {
     seedResponsesModel()
-    const insp = inspect("claude-r@responses", "prepare-wire")
+    const insp = await inspect("claude-r@responses", "prepare-wire")
     expect(insp.stoppedAt).toBe("prepare-wire")
 
-    // translate stage: env.body is CC-canonical (the hub stops at CC for the responses leg; the
-    // CC→Responses wire step is deferred to prepareWire — P2.2-D1 parity).
+    // translate stage: env.body is ALREADY Responses-canonical (RFC 2026-07-14 direct bridge — the hub
+    // skips the CC intermediate for the anthropic→responses pair entirely, unlike the @cc leg above).
     const translated = insp.stages.translate
     expect(translated?.targetEndpoint).toBe(ENDPOINT.RESPONSES)
-    const tbody = translated?.body as { model: string; messages?: Array<{ role: string }> }
+    const tbody = translated?.body as { model: string; input?: unknown; messages?: unknown }
     expect(tbody.model).toBe("claude-r")
-    expect(Array.isArray(tbody.messages)).toBe(true) // still CC-shaped at the translate stage
+    expect(Array.isArray(tbody.input)).toBe(true) // Responses-shaped already at the translate stage
+    expect(tbody.messages).toBeUndefined()
 
     // prepare-wire: the outbound wire targets /responses and is Responses-shaped (input[], no messages[]).
     const wire = insp.stages["prepare-wire"]
@@ -122,9 +123,9 @@ describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectR
     expect(wbody.messages).toBeUndefined()
   })
 
-  test("DIRECT leg (no suffix) → wire stays Anthropic-shaped at /v1/messages (zero regression)", () => {
+  test("DIRECT leg (no suffix) → wire stays Anthropic-shaped at /v1/messages (zero regression)", async () => {
     seedModel()
-    const insp = inspect("claude-x", "prepare-wire")
+    const insp = await inspect("claude-x", "prepare-wire")
     const translated = insp.stages.translate
     expect(translated?.targetEndpoint).toBe(ENDPOINT.MESSAGES)
     // Direct path: translateOut is identity — the body is still the Anthropic payload (has top-level system).
@@ -142,7 +143,12 @@ describe("T3.3/T4.2 — non-streaming + streaming response side translate for a 
   useIsolatedRuntime()
 
   function translateLegEnv(): RequestEnvelope {
-    return { targetEndpoint: ENDPOINT.CHAT_COMPLETIONS, body: { model: "claude-x" }, model: { id: "claude-x" }, ctx: { recordFeature: () => {} } } as unknown as RequestEnvelope
+    return {
+      targetEndpoint: ENDPOINT.CHAT_COMPLETIONS,
+      body: { model: "claude-x" },
+      model: { id: "claude-x" },
+      ctx: { recordFeature: () => {} },
+    } as unknown as RequestEnvelope
   }
   function directEnv(): RequestEnvelope {
     return { targetEndpoint: ENDPOINT.MESSAGES, body: {}, model: {} } as unknown as RequestEnvelope
@@ -150,14 +156,17 @@ describe("T3.3/T4.2 — non-streaming + streaming response side translate for a 
   const codec = () => createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
 
   test("renderResponse (STREAMING) TRANSLATES a CC frame to Anthropic frame(s) for a translate leg (T4.2)", () => {
-    const out = codec().renderResponse({ data: JSON.stringify({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }] }), event: "message" }, translateLegEnv())
+    const out = codec().renderResponse(
+      { data: JSON.stringify({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }] }), event: "message" },
+      translateLegEnv(),
+    )
     const frames = Array.isArray(out) ? out : [out]
     const types = frames.map((f) => JSON.parse((f as { data: string }).data).type)
     expect(types).toContain("message_start")
     expect(types).toContain("content_block_delta")
   })
 
-  test("renderResponseNonStreaming TRANSLATES a CC completion back to an Anthropic response (T3.3)", () => {
+  test("renderResponseNonStreaming TRANSLATES a CC completion back to an Anthropic response (T3.3)", async () => {
     const ccResponse = {
       id: "msg_x",
       object: "chat.completion",
@@ -180,12 +189,12 @@ describe("T3.3/T4.2 — non-streaming + streaming response side translate for a 
     expect(out.usage).toEqual({ input_tokens: 5, output_tokens: 2 })
   })
 
-  test("direct-leg non-streaming render stays identity (no translation)", () => {
+  test("direct-leg non-streaming render stays identity (no translation)", async () => {
     const upstream = { id: "msg_direct", type: "message", content: [] }
     expect(codec().renderResponseNonStreaming(upstream, directEnv())).toBe(upstream)
   })
 
-  test("direct-leg streaming render stays identity (no throw)", () => {
+  test("direct-leg streaming render stays identity (no throw)", async () => {
     const frame = { data: '{"type":"content_block_delta"}', event: "content_block_delta" }
     expect(codec().renderResponse(frame, directEnv())).toBe(frame)
   })

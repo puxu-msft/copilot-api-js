@@ -11,7 +11,7 @@ Bun（实测 1.3.14）**按解析后的文件路径缓存 ESM 模块、忽略 im
 
 **可行的热重载 .ts 手法**（实测重载成功）：读磁盘 → `new Bun.Transpiler({loader:"ts"}).transformSync(src)` → `import("data:text/javascript," + encodeURIComponent(js))`。每次 data-URL specifier 唯一 → 绕过缓存。
 
-**意外但实测为真**：data-URL 模块 import `~/lib/xxx` 时 **`~/` tsconfig-paths 别名仍解析成功**（无文件系统锚点也能走 Bun 的 paths 解析），exp/ 真实文件同样解析成功。故用 data-URL 重载不牺牲别名 import 契约。
+**⚠️ 修正（2026-07-15 symmetric-4-point 实测证伪原断言）**：原记「data-URL 模块 import `~/lib/xxx` 时 `~/` 别名仍解析成功」**为假**——一个 `import { stripMessageBlock } from "~/lib/pipeline/hooks"` 的 hook 经 data-URL 加载**失败**（具名 `hooks` 导出静默消失、报 `exports none of`），cli-refusal-hook 陷阱注释早已发现「data-URL 模块 `~/` 别名不解析」。data-URL **无文件系统锚点、不走 tsconfig paths**。**可行修法**：转译后写**项目内唯一文件**（`.hooks-cache/hook-<ts>-<seq>.mjs`，gitignored）再 `import(绝对路径)`——既每次唯一路径绕 Bun path-keyed ESM 缓存、又因是真项目文件而经 tsconfig `paths` 解析 `~/` 别名。loader 已改此机制（`src/lib/pipeline/hooks/loader.ts`）。**教训**:「绕缓存」和「解析别名」是两个正交需求,data-URL 只满足前者;唯一文件路径两者兼得。
 
 **Why**：copilot-api-js 的 upstream-hook 特性 `POST /api/hooks/reload` 依赖热重载 ad-hoc .ts hook 文件；对抗评审用 Bun 探针实测推翻了原 spec 的 `?v=` 假设（属承重机制、写码前挡下）。
 

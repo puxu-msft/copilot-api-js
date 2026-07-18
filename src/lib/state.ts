@@ -1,6 +1,7 @@
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
 import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
+import type { ModelTranslation } from "~/lib/config/schema"
 import type {
   //
   Model,
@@ -113,7 +114,32 @@ export interface BufferedRetryCaps {
   heartbeatSec: number
 }
 
+/** unknown HTTP endpoint 日志级别（silent = 不打）。值须与 config/schema.ts 的 LOG_LEVELS 一致。 */
+export type LogLevel = "silent" | "debug" | "info" | "warn" | "error"
+
+/** unknown HTTP endpoint 按状态码分类的日志级别（404 = notFound / 405 = methodNotAllowed）。 */
+export interface UnknownEndpointLogging {
+  notFound: LogLevel
+  methodNotAllowed: LogLevel
+}
+
+export type DiagnosticLogLevel = "silent" | "trace" | "debug" | "info" | "warn" | "error" | "fatal"
+
+export interface LoggingConfigState {
+  terminalLevel: DiagnosticLogLevel
+  fileLevel: DiagnosticLogLevel
+  fileEnabled: boolean
+  fileDirectory: string
+  fileMaxSizeMb: number
+  fileMaxFilesPerProcess: number
+  retentionDays: number
+}
+
 export interface State {
+  /** unknown HTTP endpoint（未匹配任何业务路由）按状态码分类的日志级别。默认 warn/warn。 */
+  readonly unknownEndpointLogging: UnknownEndpointLogging
+  readonly logging: LoggingConfigState
+  readonly tuiEnabled: boolean
   readonly githubToken?: string
   readonly copilotToken?: string
 
@@ -483,13 +509,26 @@ export interface State {
   readonly thinkingSignatureCompat: false | "signature_delta" | "redacted_thinking"
 
   /**
-   * Model name overrides: request model → target model.
+   * Model name mappings: request model → target model.
    *
    * Override values can be full model names or short aliases (opus, sonnet, haiku).
    * If the target is not in available models, it's resolved as an alias.
-   * Defaults to DEFAULT_MODEL_OVERRIDES; config.yaml `model.model_overrides` replaces entirely.
+   * Defaults to DEFAULT_MODEL_MAPPINGS; config.yaml top-level `model_mappings` replaces entirely.
    */
-  readonly modelOverrides: Record<string, string>
+  readonly modelMappings: Record<string, string>
+
+  /**
+   * Per-pair (ingress format → match rule list) translation feature declarations
+   * (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1, Phase 7). Consumed via
+   * `resolveTranslationFeatures()` (~/lib/config/model-translation) by the
+   * format-agnostic bridge-selection layer — NOT read per-cell `translateOut`, to
+   * keep the two round-trip scenarios (stable model vs mid-conversation model
+   * switch) from drifting out of sync across call sites (Phase 5 consumer).
+   * Defaults to `{}` (no declared pairs — every pair resolves to scenario A, full
+   * round-trip, no stripped features). Hot-reloadable: entirely replaced on config
+   * reload (including to `{}` on deletion), mirroring `modelMappings`.
+   */
+  readonly modelTranslation: ModelTranslation
 
   /**
    * Model IDs to hide from the available models list, even when Copilot
@@ -588,34 +627,21 @@ export interface State {
   readonly systemPromptAppend: Array<CompiledSystemPromptEntry>
 
   /**
-   * Maximum number of successful (non-failed) history entries to keep in SQLite.
-   * The reaper trims the success bucket (status != 'failed') to this size.
-   * 0 = unlimited. Default: 50.
+   * Startup-only master switch for semantic V3 and optional raw capture.
+   * CLI --no-history overrides this config-backed value.
    */
-  readonly historySuccessLimit: number
+  readonly historyEnabled: boolean
 
   /**
-   * Maximum number of failed history entries to keep in SQLite.
-   * The reaper trims the failure bucket (status = 'failed') to this size.
-   * Kept larger than the success limit by default — failures carry more
-   * diagnostic value. 0 = unlimited. Default: 200.
-   */
-  readonly historyFailureLimit: number
-
-  /**
-   * Interval in seconds between history reaper passes.
-   * The reaper periodically trims the SQLite history table to the per-status
-   * limits (`historySuccessLimit` / `historyFailureLimit`).
-   * Default: 600.
-   */
-  readonly historyReaperInterval: number
-
-  /**
-   * Filesystem path to the history SQLite database.
-   * Empty string means use the default path from PATHS.HISTORY_DB.
-   * Default: "".
+   * Injected History database path for tests. Production config cannot set it;
+   * an empty string selects PATHS.HISTORY_V3_DB so the online server never opens
+   * the legacy PATHS.HISTORY_DB artifact.
    */
   readonly historyDbPath: string
+  /** Optional raw capture is hot-reloadable through artifact generations. */
+  readonly historyRawCaptureEnabled: boolean
+  readonly historyRawCaptureDbPath: string
+  readonly historyRawCaptureMaxObjectBytes: number
 
   // ── 分层遥测（telemetry.*，独立 telemetry.db）。近期/远期分辨率与保留可配。 ──
   /** 遥测总开关（默认 true）。 */
@@ -1010,6 +1036,15 @@ function cloneBufferedRetryOverrides(source: Record<string, Partial<BufferedRetr
   return out
 }
 
+/** Deep-clone `modelTranslation` (ingress → rule list, each rule its own object with its own `features` array). */
+function cloneModelTranslation(source: ModelTranslation): ModelTranslation {
+  const out: ModelTranslation = {}
+  for (const [ingress, rules] of Object.entries(source) as Array<[keyof ModelTranslation, NonNullable<ModelTranslation[keyof ModelTranslation]>]>) {
+    out[ingress] = rules.map((rule) => ({ ...rule, features: rule.features ? [...rule.features] : undefined }))
+  }
+  return out
+}
+
 function cloneState(source: MutableState): MutableState {
   return {
     ...source,
@@ -1017,7 +1052,8 @@ function cloneState(source: MutableState): MutableState {
     copilotTokenInfo: source.copilotTokenInfo ? { ...source.copilotTokenInfo } : undefined,
     modelIds: new Set(source.modelIds),
     modelIndex: new Map(source.modelIndex),
-    modelOverrides: { ...source.modelOverrides },
+    modelMappings: { ...source.modelMappings },
+    modelTranslation: cloneModelTranslation(source.modelTranslation),
     toolSearchOverrides: { ...source.toolSearchOverrides },
     errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
     effortsOverrides: { ...source.effortsOverrides },
@@ -1062,8 +1098,11 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("modelIndex" in patch) {
     cloned.modelIndex = patch.modelIndex ? new Map(patch.modelIndex) : undefined
   }
-  if ("modelOverrides" in patch) {
-    cloned.modelOverrides = patch.modelOverrides ? { ...patch.modelOverrides } : undefined
+  if ("modelMappings" in patch) {
+    cloned.modelMappings = patch.modelMappings ? { ...patch.modelMappings } : undefined
+  }
+  if ("modelTranslation" in patch) {
+    cloned.modelTranslation = patch.modelTranslation ? cloneModelTranslation(patch.modelTranslation) : undefined
   }
   if ("toolSearchOverrides" in patch) {
     cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
@@ -1240,6 +1279,18 @@ export function setDisabledModels(disabledModels: ReadonlyArray<string>): void {
   rebuildModelIndex()
 }
 
+export function setUnknownEndpointLogging(value: UnknownEndpointLogging): void {
+  mutableState.unknownEndpointLogging = value
+}
+
+export function setLoggingConfig(value: Partial<LoggingConfigState>): void {
+  mutableState.logging = { ...mutableState.logging, ...value }
+}
+
+export function setTuiEnabled(value: boolean): void {
+  mutableState.tuiEnabled = value
+}
+
 export function setAnthropicBehavior(
   patch: Partial<
     Pick<
@@ -1322,8 +1373,12 @@ export function setAnthropicBehavior(
   updateState(patch)
 }
 
-export function setModelOverrides(modelOverrides: Record<string, string>): void {
-  updateState({ modelOverrides })
+export function setModelMappings(modelMappings: Record<string, string>): void {
+  updateState({ modelMappings })
+}
+
+export function setModelTranslation(modelTranslation: ModelTranslation): void {
+  updateState({ modelTranslation })
 }
 
 /**
@@ -1340,19 +1395,24 @@ export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "str
 }
 
 export function setHistoryConfig(
-  patch: Partial<Pick<MutableState, "historySuccessLimit" | "historyFailureLimit" | "historyReaperInterval" | "historyDbPath">>,
+  patch: Partial<
+    Pick<MutableState, "historyEnabled" | "historyDbPath" | "historyRawCaptureEnabled" | "historyRawCaptureDbPath" | "historyRawCaptureMaxObjectBytes">
+  >,
 ): void {
-  // Any of the three reaper inputs (both limits + interval) must retune the
-  // running timer, else changing only reaper_interval on hot-reload would
-  // update state but leave the timer firing at the old cadence.
-  const reaperConfigChanged =
-    (patch.historySuccessLimit !== undefined && patch.historySuccessLimit !== mutableState.historySuccessLimit)
-    || (patch.historyFailureLimit !== undefined && patch.historyFailureLimit !== mutableState.historyFailureLimit)
-    || (patch.historyReaperInterval !== undefined && patch.historyReaperInterval !== mutableState.historyReaperInterval)
+  const rawCaptureChanged =
+    (patch.historyRawCaptureEnabled !== undefined && patch.historyRawCaptureEnabled !== mutableState.historyRawCaptureEnabled)
+    || (patch.historyRawCaptureDbPath !== undefined && patch.historyRawCaptureDbPath !== mutableState.historyRawCaptureDbPath)
+    || (patch.historyRawCaptureMaxObjectBytes !== undefined && patch.historyRawCaptureMaxObjectBytes !== mutableState.historyRawCaptureMaxObjectBytes)
   updateState(patch)
-  if (reaperConfigChanged) {
-    for (const listener of historyLimitListeners) listener()
-  }
+  if (rawCaptureChanged) for (const listener of historyRawCaptureListeners) listener()
+}
+
+const historyRawCaptureListeners = new Set<() => void>()
+
+export function onHistoryRawCaptureChange(listener: () => void): () => void {
+  historyRawCaptureListeners.add(listener)
+  listener()
+  return () => historyRawCaptureListeners.delete(listener)
 }
 
 /** 遥测 timer（persist/rollup 间隔）变更监听者——telemetry 模块用它热重载重调周期而不循环 import。 */
@@ -1396,26 +1456,6 @@ export function onTelemetryConfigChange(listener: () => void): () => void {
   return () => telemetryConfigListeners.delete(listener)
 }
 
-/**
- * Listeners notified when any reaper config (success/failure limit or interval)
- * changes. Used by the history module to retune its reaper without a circular
- * import. Invoked with no arguments — the listener re-reads state.
- */
-const historyLimitListeners = new Set<() => void>()
-
-/**
- * Subscribe to reaper config changes (success/failure limit or interval).
- *
- * The listener is invoked synchronously once on registration, so subscribers
- * that register after `resetConfigManagedState()` still pick up the initial
- * values. Returns an unsubscribe function.
- */
-export function onHistoryLimitChange(listener: () => void): () => void {
-  historyLimitListeners.add(listener)
-  listener()
-  return () => historyLimitListeners.delete(listener)
-}
-
 export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>): void {
   updateState(patch)
 }
@@ -1444,7 +1484,16 @@ export function setReactiveRetryConfig(patch: Partial<Pick<MutableState, "maxRea
 }
 
 export function setTimeoutConfig(
-  patch: Partial<Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval">>,
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "responseHeaderTimeout"
+      | "streamIdleTimeout"
+      | "staleRequestMaxAge"
+      | "requestDeadline"
+      | "modelRefreshInterval"
+    >
+  >,
 ): void {
   const transportChanged =
     (patch.responseHeaderTimeout !== undefined && patch.responseHeaderTimeout !== mutableState.responseHeaderTimeout)
@@ -1602,20 +1651,34 @@ export function rebuildModelIndex(): void {
   })
 }
 /**
- * Built-in model overrides. Intentionally EMPTY: model name mapping (short
+ * Built-in model mapping. Intentionally EMPTY: model name mapping (short
  * aliases like opus/sonnet/haiku, redirects) is owned exclusively by the
  * bundled `config.yaml`, the single source of truth. If config.yaml can't be
- * read, overrides stay empty and unknown aliases simply fail to resolve
+ * read, the mapping stays empty and unknown aliases simply fail to resolve
  * (the upstream rejects them) rather than falling back to hardcoded names.
  */
-export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
+export const DEFAULT_MODEL_MAPPINGS: Record<string, string> = {}
+
+/** Built-in `model_translation` mapping. Intentionally EMPTY — see {@link DEFAULT_MODEL_MAPPINGS} rationale. */
+export const DEFAULT_MODEL_TRANSLATION: ModelTranslation = {}
 
 /**
  * Default values for config-managed scalar/runtime fields.
  * Single source of truth for mutableState initialization and resetConfigManagedState().
- * Model overrides continue to use DEFAULT_MODEL_OVERRIDES.
+ * Model mapping continues to use DEFAULT_MODEL_MAPPINGS.
  */
 export const CONFIG_MANAGED_DEFAULTS = {
+  unknownEndpointLogging: { notFound: "warn", methodNotAllowed: "warn" } as UnknownEndpointLogging,
+  logging: {
+    terminalLevel: "info",
+    fileLevel: "debug",
+    fileEnabled: true,
+    fileDirectory: "",
+    fileMaxSizeMb: 10,
+    fileMaxFilesPerProcess: 7,
+    retentionDays: 7,
+  } as LoggingConfigState,
+  tuiEnabled: true,
   useUpstreamCountTokens: true,
   strictResponseHeaders: false,
   strictRequestHeaders: false,
@@ -1630,7 +1693,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } as BufferedRetryCaps,
   bufferedRetryOverrides: {} as Record<string, Partial<BufferedRetryCaps>>,
-  chatCompletionsBufferedRetry: false,
+  // Default ON (P3 flip, 2026-07-14): buffering/generation-preservation beats the
+  // downstream streaming UX for CC. See docs/decisions/ + plan README frozen contract.
+  chatCompletionsBufferedRetry: true,
   protectStreamingEscalateContext: false,
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
@@ -1721,10 +1786,10 @@ export const CONFIG_MANAGED_DEFAULTS = {
   modelRefreshInterval: 600,
   shutdownGracefulWait: 60,
   shutdownAbortWait: 120,
-  historySuccessLimit: 50,
-  historyFailureLimit: 200,
-  historyReaperInterval: 600,
   historyDbPath: "",
+  historyRawCaptureEnabled: false,
+  historyRawCaptureDbPath: "",
+  historyRawCaptureMaxObjectBytes: 16 * 1024 * 1024,
   telemetryEnabled: true,
   telemetryDbPath: "",
   telemetryPersistInterval: 60,
@@ -1738,7 +1803,12 @@ export const CONFIG_MANAGED_DEFAULTS = {
   telemetryDailyRetentionDays: 0,
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
-  responsesBufferedRetry: false,
+  // Default ON (P2/P4 flip, 2026-07-14): covers BOTH Responses-HTTP (P2) and
+  // Responses-WS (P4, no independent key — ws.ts's resolveResponsesBufferedAndHeartbeat
+  // reads this same field). Buffering/generation-preservation beats the downstream
+  // streaming UX. P1 Anthropic stays default OFF (see protectStreamingGeneration above)
+  // — block-level anchor-coexist shape is CLI-unsafe (tests/e2e-client/anthropic-coexist-cli.e2e.test.ts).
+  responsesBufferedRetry: true,
   fixResponsesStreamIds: true,
   stripImageGenerationTool: false,
   clientWebsocketKeepOpen: false,
@@ -1749,7 +1819,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   effortsOverrides: {} as Record<string, Array<string>>,
   // Empty by design — the bundled `gpt-5.5: 600` product default lives in
   // config.yaml (`timeouts.stream_idle_overrides`), NOT here, mirroring
-  // `model_overrides` (H1: BUILTIN code-constant + union would be wrong; this is
+  // `model_mappings` (H1: BUILTIN code-constant + union would be wrong; this is
   // per-key merge with the shippable config, degrading to scalar if config.yaml
   // is absent). See docs/spec/2026-07-12-per-model-idle-timeout.md §4.2.
   streamIdleTimeoutOverrides: {} as Record<string, number>,
@@ -1771,6 +1841,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
 }
 
 export function resetConfigManagedState(): void {
+  setUnknownEndpointLogging({ ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging })
+  setLoggingConfig({ ...CONFIG_MANAGED_DEFAULTS.logging })
+  setTuiEnabled(CONFIG_MANAGED_DEFAULTS.tuiEnabled)
   setAnthropicBehavior({
     useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
@@ -1845,7 +1918,8 @@ export function resetConfigManagedState(): void {
     backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
     fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
   })
-  setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
+  setModelMappings({ ...DEFAULT_MODEL_MAPPINGS })
+  setModelTranslation(cloneModelTranslation(DEFAULT_MODEL_TRANSLATION))
   setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
   setTimeoutConfig({
     responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
@@ -1874,10 +1948,10 @@ export function resetConfigManagedState(): void {
     negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
   })
   setHistoryConfig({
-    historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
-    historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
-    historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
     historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+    historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+    historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+    historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   })
   setTelemetryConfig({
     telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
@@ -1917,8 +1991,15 @@ export function resetConfigManagedState(): void {
 }
 
 const mutableState: MutableState = {
+  unknownEndpointLogging: { ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging },
+  logging: { ...CONFIG_MANAGED_DEFAULTS.logging },
+  tuiEnabled: CONFIG_MANAGED_DEFAULTS.tuiEnabled,
   accountType: "individual",
   ghcApiBaseUrl: "",
+  // History master switch (startup-phase; see the field doc). NOT in
+  // CONFIG_MANAGED_DEFAULTS so resetConfigManagedState leaves it at the boot
+  // value across hot-reloads.
+  historyEnabled: true,
   maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
   tokenBasedBilling: false,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
@@ -1979,10 +2060,10 @@ const mutableState: MutableState = {
   thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
   responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
-  historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
-  historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
-  historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+  historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+  historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
   telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
   telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
@@ -1996,7 +2077,8 @@ const mutableState: MutableState = {
   telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
   modelIds: new Set(),
   modelIndex: new Map(),
-  modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },
+  modelMappings: { ...DEFAULT_MODEL_MAPPINGS },
+  modelTranslation: cloneModelTranslation(DEFAULT_MODEL_TRANSLATION),
   rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
   shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,

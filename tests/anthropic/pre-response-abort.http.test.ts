@@ -19,6 +19,9 @@ import {
 } from "bun:test"
 import { Hono } from "hono"
 
+import type { RequestContext } from "~/lib/context/request"
+
+import { getRequestContextManager } from "~/lib/context/manager"
 import { forwardError } from "~/lib/error"
 import {
   //
@@ -28,7 +31,7 @@ import {
 import { observabilityMiddleware } from "~/lib/observability/middleware"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -60,12 +63,16 @@ describe("pre-response client abort → aborted + 499 (②)", () => {
   useIsolatedRuntime()
 
   let clientAbort: AbortController
+  let capturedCtx: RequestContext | undefined
 
   beforeEach(() => {
     setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     setModels({ object: "list", data: [mockModel("claude-opus-4.6", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
-    setModelOverrides({ opus: "claude-opus-4.6" })
+    setModelMappings({ opus: "claude-opus-4.6" })
     clearHistory()
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
 
     clientAbort = new AbortController()
     // Simulate the client disconnecting while we await response headers: abort the
@@ -94,6 +101,8 @@ describe("pre-response client abort → aborted + 499 (②)", () => {
     // not a committed 200. The `aborted` terminal proves ②'s ctx.abort() fired, not ctx.fail().
     expect(res.status).toBe(499)
     expect(getHistory({ endpoint: "anthropic-messages" }).entries[0]?.state).toBe("aborted")
+    expect(capturedCtx?.modelOperationTerminalRecord?.terminal).toMatchObject({ outcome: "aborted" })
+    expect(capturedCtx?.modelOperationTerminalRecord?.egress?.client.status).toBe(499)
   })
 
   test("non-streaming, client gone pre-response → 499 + 'aborted' (shared outer catch)", async () => {
@@ -105,5 +114,7 @@ describe("pre-response client abort → aborted + 499 (②)", () => {
     })
     expect(res.status).toBe(499)
     expect(getHistory({ endpoint: "anthropic-messages" }).entries[0]?.state).toBe("aborted")
+    expect(capturedCtx?.modelOperationTerminalRecord?.terminal).toMatchObject({ outcome: "aborted" })
+    expect(capturedCtx?.modelOperationTerminalRecord?.egress?.client.status).toBe(499)
   })
 })

@@ -2,7 +2,7 @@
 
 > **实施状态：已完成**
 > **落地**：—
-> **现状锚点**：`src/lib/shutdown.ts` `createShutdownController`/`getShutdownSignal`；docs/shutdown.md「shutdown 不可取消」
+> **现状锚点**：`src/lib/shutdown.ts` `createShutdownController`/`getShutdownSignal`；docs/lifecycle.md「shutdown 不可取消」
 > **备注**：case b 根治：eager stable 信号 + thunk 移除 + 显式 listener 管理
 
 ## Context（背景）

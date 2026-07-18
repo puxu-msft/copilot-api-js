@@ -49,6 +49,8 @@ observability-rewrite（landed RFC）把散落的 `src/lib/tui/` god-module 解�
 
 **补记 ②（2026-07-11，演进——DECSTBM 适合恒定几何、不适合跨视图变高）**：DECSTBM 选型正确但不完整。后续用户真终端实测暴露：**任何 DECSTBM 滚动区几何变化都扰动日志流**（视图切换 collapsed/panel/detail 高度不同 → 吃日志行/留空行/footer 泄漏）。经 PoC 对照两方案（MODE A 恒定高度区 vs MODE B 内联 footer+按需区）实测裁决 **MODE A**，演进为完整渲染模型：**交互实例始终恒定高度 DECSTBM 区（collapsed 补空行）+ detail 走备用屏幕 + fix A 每拍重申明自愈 + 三态 emergencyWrite 输出协调**。决策 1（终端所有权）、2（格式化件位置）、3（ESLint 边界）不变；**BLOCK-1 单渲染模型不变量被保留而非反转**（MODE A 让 collapsed 也走 Region，实例级 mode 两分无会话内切换）。权威见 spec/plan [2026-07-11-tui-render-model-layered](../spec/2026-07-11-tui-render-model-layered.md)、DESIGN.md「交互式 live 面板」节。
 
+**补记 ③（2026-07-17，最终现状）**：用户随后否决 MODE A 默认常驻两空行，最终活模型改为 collapsed N=1 + panel N≤3 + scroll-before-grow；detail 仍走备用屏。2026-07-17 的结构化日志/TUI 重构进一步把 owner 内部拆成 `ActiveRequestStore`、`KeyDecoder`、`TerminalSession`、`OutputArbiter`，`TerminalUi` 只编排；stdout 同步/异步 EPIPE 在 OutputArbiter 内熔断，stderr 由独立 EmergencyOutput 防崩。终端所有权仍单一，未回流 observability sinks；权威见 [RFC](../rfc/2026-07-17-tui-structured-logging.md) 与 DESIGN.md。
+
 ## 备选方案（未采纳）
 
 - **就地扩展 ConsoleSink 加输入/abort**：最少改动，但**破坏 ESLint 钉死的「只读显示」不变量**——把控制副作用注入显示路径，正是 observability-rewrite 刻意消除的耦合（D9「两个广播通道」的同类病）。放弃它换取「进度快」是短期将就，违反 architecture-health-first。

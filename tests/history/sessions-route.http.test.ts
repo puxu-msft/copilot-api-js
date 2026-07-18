@@ -24,14 +24,9 @@ import type {
   SessionSummary,
 } from "~/lib/history"
 
-import {
-  //
-  finalizeEntry,
-  insertEntry,
-  updateEntry,
-} from "~/lib/history"
 import { generateId } from "~/lib/utils"
 
+import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { createFullTestApp } from "../helpers/test-app"
 
@@ -57,13 +52,12 @@ async function seedEntry(opts: SeedOpts): Promise<string> {
     model: { requested: opts.model },
     clientRequest: { format: "anthropic-messages", model: opts.model, messages: [{ role: "user", content: "hi" }], stream: true },
   }
-  insertEntry(entry)
-  updateEntry(id, {
+  commitV3HistoryEntry({
+    ...entry,
     state: "completed",
     attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: opts.model, usage: { input_tokens: 10, output_tokens: 5 }, body: null } }],
     _index: { derived: { responseSuccess: true, attemptCount: 1 } },
   })
-  await finalizeEntry(id)
   return id
 }
 

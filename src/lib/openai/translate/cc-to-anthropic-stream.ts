@@ -69,6 +69,15 @@ export interface CcToAnthropicStreamMeta {
   stopReason?: StopReason
   /** Canonical net usage built from the CC accumulator (input_tokens net of cache; cache_read/creation + reasoning/details preserved). */
   usage: UsageData
+  /**
+   * TRUE when the terminal status was content-filtered (N3 distinguishability marker). Optional here —
+   * the CC leg's finish_reason has no distinct content_filter-vs-degradation signal to report (always
+   * undefined for this leg); the RESPONSES leg's {@link
+   * import("./responses-to-anthropic-stream").ResponsesToAnthropicStreamMeta} (a superset of this
+   * interface) DOES populate it — the handler reads this field generically off whichever meta shape the
+   * active leg produced (RFC 2026-07-14-anthropic-responses-direct-bridge §3 subtask C N3 wiring).
+   */
+  contentFiltered?: boolean
 }
 
 /** One step of the translator: an Anthropic SSE frame. */
@@ -170,7 +179,13 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
     // signature (sentinel prefix + optional base64url encrypted_content) — distinguishable as ours +
     // stripped on echo-back + carries encrypted_content for cross-turn round-trip (synthetic-reasoning.ts).
     if (openBlock.kind === "thinking") {
-      out.push({ frame: anthropicSseFrame({ type: "content_block_delta", index: openBlock.index, delta: { type: "signature_delta", signature: buildSyntheticReasoningSignature(reasoningEncrypted) } }) })
+      out.push({
+        frame: anthropicSseFrame({
+          type: "content_block_delta",
+          index: openBlock.index,
+          delta: { type: "signature_delta", signature: buildSyntheticReasoningSignature(reasoningEncrypted) },
+        }),
+      })
     }
     out.push({ frame: anthropicSseFrame({ type: "content_block_stop", index: openBlock.index }) })
     openBlock = undefined
@@ -211,7 +226,8 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
         // stripped on echo-back (synthetic-reasoning.ts). Reasoning arrives before content, so lazy
         // allocation yields index 0 (thinking-first). The accumulator still captures reasoning_tokens.
         const deltaExt = delta as { reasoning?: unknown; reasoning_content?: unknown; reasoning_encrypted_content?: unknown }
-        if (typeof deltaExt.reasoning_encrypted_content === "string" && deltaExt.reasoning_encrypted_content.length > 0) reasoningEncrypted = deltaExt.reasoning_encrypted_content
+        if (typeof deltaExt.reasoning_encrypted_content === "string" && deltaExt.reasoning_encrypted_content.length > 0)
+          reasoningEncrypted = deltaExt.reasoning_encrypted_content
         const reasoningRaw = deltaExt.reasoning ?? deltaExt.reasoning_content
         const reasoningDelta = typeof reasoningRaw === "string" ? reasoningRaw : ""
         if (reasoningDelta.length > 0) {
@@ -219,9 +235,17 @@ export function createCcToAnthropicStreamTranslator(modelId: string): CcToAnthro
             closeOpenBlock(out)
             thinkingBlockIndex = nextIndex++
             openBlock = { index: thinkingBlockIndex, kind: "thinking" }
-            out.push({ frame: anthropicSseFrame({ type: "content_block_start", index: thinkingBlockIndex, content_block: { type: "thinking", thinking: "", signature: "" } }) })
+            out.push({
+              frame: anthropicSseFrame({
+                type: "content_block_start",
+                index: thinkingBlockIndex,
+                content_block: { type: "thinking", thinking: "", signature: "" },
+              }),
+            })
           }
-          out.push({ frame: anthropicSseFrame({ type: "content_block_delta", index: openBlock.index, delta: { type: "thinking_delta", thinking: reasoningDelta } }) })
+          out.push({
+            frame: anthropicSseFrame({ type: "content_block_delta", index: openBlock.index, delta: { type: "thinking_delta", thinking: reasoningDelta } }),
+          })
         }
 
         // Text delta → open/continue the text block, stream a text_delta.

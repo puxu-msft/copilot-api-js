@@ -18,6 +18,7 @@ import type {
   SendMessageNormalizationDiag,
 } from "~/lib/anthropic/decode-tool-input-core"
 import type { DestackStats } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import type { OperationSyntheticKind } from "~/lib/context/model-operation-record"
 import type { ProcessIdentity } from "~/lib/process-identity"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
@@ -155,7 +156,10 @@ export interface PreprocessInfo {
  * "keepalive" for frames without a parseable JSON body.
  */
 export interface SseEventRecord {
+  /** Relative frame offset. When `offsetSource === "unavailable"`, zero is a compatibility sentinel and has no timing meaning. */
   offsetMs: number
+  /** V3 provenance: omitted on legacy V2 rows, whose captured offsets remain authoritative. */
+  offsetSource?: "observed" | "unavailable"
   type: string
   raw: string
   /**
@@ -175,11 +179,11 @@ export interface SseEventRecord {
    *     "anchor": it carries a fake `id` + zeroed `usage`, an accepted wire/billing divergence, so it is
    *     marked distinctly rather than folded into "anchor" (richest-data-flow: real vs synthetic must
    *     stay distinguishable).
-   *   - "hook-mock" / "hook-replay" — the UPSTREAM-original track's frames came from an `onExchange`
+   *   - "hook-mock" / "hook-replay" — the UPSTREAM-original track's frames came from an `exchange`
    *     upstream-hook mock/replay stream (`tagStream`/`readOrigin`, ~/lib/pipeline/hooks/origin), NOT a
    *     real GHC upstream response — richest-data-flow requires this be distinguishable from genuine
    *     upstream traffic.
-   *   - "hook-rewrite" — the FORWARDED track's frame was produced by a `rewriteUpstreamFrame` hook
+   *   - "hook-rewrite" — the FORWARDED track's frame was produced by a `upstream.inbound` hook
    *     (differs from the pre-hook frame the upstream track kept); the upstream track itself never
    *     carries this variant (it always records the pre-hook original — spec §3.2/§3.4 H2).
    *   - "refusal-recovery" — the FORWARDED track's frame was injected or rewritten by refusal recovery
@@ -192,16 +196,7 @@ export interface SseEventRecord {
    *     (a whole fabricated success turn injected in lieu of the upstream error); the upstream track
    *     keeps the real error. (Phase 4 wiring.)
    */
-  synthetic?:
-    | "keepalive"
-    | "anchor"
-    | "synthetic-message-start"
-    | "hook-mock"
-    | "hook-rewrite"
-    | "hook-replay"
-    | "refusal-recovery"
-    | "error-shaping-canonical"
-    | "error-shaping-auq"
+  synthetic?: OperationSyntheticKind
 }
 
 /**
@@ -454,6 +449,8 @@ export interface IndexProjection {
 
 export interface HistoryEntry {
   id: string
+  /** Canonical operation discriminator. Existing generation clients may omit it. */
+  operationKind?: "generation" | "count_tokens" | "embeddings" | "responses_ws"
   sessionId?: string
   agentId?: string
   rawPath?: string
@@ -522,6 +519,7 @@ export interface HistoryEntry {
     index: number
     strategy?: string
     durationMs: number
+    timing?: { source: "canonical" | "upstream-latency" | "next-attempt-upper-bound" | "operation-upper-bound" | "unavailable" }
     transport?: RequestTransport
     error?: string
     /** New capture (RFC §4): attempt wall-clock start; producer wires in P4. */
@@ -554,7 +552,10 @@ export interface HistoryEntry {
     upstreamLastTokenAt?: number
   }>
   /** 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻，offset ms 相对 started_at。落 entry 列。 */
-  timing?: { client?: { streamOpenMs?: number; firstRealMs?: number; bufferHoldStartMs?: number } }
+  timing?: {
+    client?: { streamOpenMs?: number; firstRealMs?: number; bufferHoldStartMs?: number }
+    operation?: { source: "canonical" | "storage-commit-upper-bound" | "terminal-log-rounded" | "unavailable" }
+  }
 }
 
 export interface HistoryState {
@@ -562,6 +563,8 @@ export interface HistoryState {
 }
 
 export interface QueryOptions {
+  /** Canonical operation kind. Default generation; `all` includes bypass operations. */
+  operationKind?: "generation" | "count_tokens" | "embeddings" | "responses_ws" | "all"
   cursor?: string
   limit?: number
   direction?: "older" | "newer"
@@ -658,6 +661,7 @@ export interface SessionSummary {
 
 export interface EntrySummary {
   id: string
+  operationKind?: "generation" | "count_tokens" | "embeddings" | "responses_ws"
   sessionId?: string
   agentId?: string
   rawPath?: string
@@ -687,6 +691,7 @@ export interface EntrySummary {
     cache_creation_input_tokens?: number
   }
   durationMs?: number
+  timing?: { operation?: { source: "canonical" | "storage-commit-upper-bound" | "terminal-log-rounded" | "unavailable" } }
   /** Wire byte size of the upstream request (↑). Derived at serialize time; column-backed. */
   requestBytes?: number
   /** Byte size of the upstream response (↓). Derived at serialize time; column-backed. */

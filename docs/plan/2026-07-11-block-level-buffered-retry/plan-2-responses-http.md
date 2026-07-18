@@ -45,8 +45,8 @@ P2 是 **纯消费方**。下列签名由 P0（机制地基）+ P1（driver 侧�
 - [ ] **Task 3** — via-chat-completions fallback 子路径路由回 live + backlog 登记（**结构不兼容修复**）
 - [ ] **Task 4** — Golden fixture：多 output_item 首块前截断→重试、首块后截断→partial-degrade（it 测试）
 - [ ] **Task 5** — keepalive M-2 实证 oracle（`exp/`，R4 默认翻转门控，no-auto-server）
-- [ ] **Task 6** — 翻默认 `responses.buffered_retry.enabled` = true（R4 门后）
-- [ ] **Task 7** — doc-sync + backlog 关闭（session-closeout）
+- [x] **Task 6** — 翻默认 `responses.buffered_retry.enabled` = true（2026-07-14 完成——用户明确决策越过原定「M-2 门后」顺序直接翻转，`exp/responses-keepalive-idle-oracle` 降级为 merge-to-master 前置确认项，非本次分支翻转阻塞门；见 `.superpowers/sdd/progress.md` + `docs/todo/deferred-backlog.md`）
+- [x] **Task 7** — doc-sync + backlog 关闭（session-closeout，2026-07-14 随 P2/P3/P4 default-on 一并完成）
 
 ---
 

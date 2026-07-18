@@ -1,6 +1,6 @@
 # Spec：TUI raw-mode 编排层的 PTY 终端网格测试
 
-状态：**已实施 ①②③④⑤（landed 2026-07-14，commit fcfc91ea..6b870214）**——5 个不变量全部落地、各配红绿对照实测。⑤ resize 曾一度误判「无法测」降 backlog，收尾审计（GPT HIGH-2）推翻并复活（driver 内注入 mutable rows source 绕开 Bun 限制，见 §3⑤）；仅「生产尺寸来源链路」这一薄环节留 backlog。PoC 已实证、GPT 对抗审查已吸收（4 轮：设计 4 HIGH + plan 6→2→0 BLOCK + 收尾审计 2 HIGH）。
+状态：**已实施 ①②③④⑤⑥（①～⑤ landed 2026-07-14，⑥ landed 2026-07-18）**——6 个不变量全部落地、各配可证伪 oracle。⑥ 补齐此前缺失的水平真相域：Unicode 字素簇完整性、ANSI 安全截断、窄终端不自动换行、动态 columns 重算；核心宽度原语归 `src/lib/tui/render/width.ts`，PTY 网格记录 `occupiedColumns`/`isWrapped`。⑤ resize 曾一度误判「无法测」降 backlog，收尾审计（GPT HIGH-2）推翻并复活（driver 内注入 mutable rows source 绕开 Bun 限制，见 §3⑤）；仅 Bun.Terminal 不投递真实 resize 通知这一宿主薄环节留 backlog。PoC 已实证、GPT 对抗审查已吸收。
 归属：本项目 TUI 测试策略。相关代码 `src/lib/tui/`、`tests/tui/pty/`，相关 PoC `exp/tui-rawmode/`、`exp/poc-js-pty-grid/`。
 
 ## 1. 问题与动机（why）
@@ -49,6 +49,7 @@ PoC 亲验（`bun exp/poc-js-pty-grid/index.ts driver`，主会话复跑一次�
 | ③ | **退出干净还原**（混合 oracle，见下）| 删 `terminal-ui.ts:1141-1150` 的 alt-leave / `region.clear()` → 残留 | 新增 |
 | ④ | **切 detail 不覆盖底部日志**：真进备用屏后底部日志不被吃 | 破坏 `terminal-ui.ts:1032-1051/1095-1104` 的 alt-screen entry/exit/replay | ✅ landed a8e9e543 |
 | ⑤ | **resize 重锚**：rows 变化时重锚、旧 panel 无孤儿行 | 注释 `region.ts:138-145` 重锚清除 → 孤儿 footer | ✅ landed 6b870214 |
+| ⑥ | **水平宽度**：按完整 grapheme cluster 截断；SGR/OSC 状态闭合；固定 7 列不拆国旗、不 wrap；columns 30→7 后下一帧重算 | 恢复 code-point 累加 → `1️⃣…` 超预算、`🇨…` 拆旗；Region 改回 plain-only clamp → `ESC[7…` 残缺序列；水平 oracle 自证写入第 8 列 → 下一行 `isWrapped=true` | ✅ landed 2026-07-18 |
 
 ### ③ 退出还原是混合 oracle（GPT HIGH，采纳）
 
@@ -62,6 +63,12 @@ PoC 亲验（`bun exp/poc-js-pty-grid/index.ts driver`，主会话复跑一次�
 初判「无法 PTY 测」曾降 backlog，收尾审计（GPT HIGH-2）推翻并经主会话亲验：**实测发现的 Bun 硬限制只堵死「生产尺寸来源」一环**——`Bun.Terminal.resize()` 不给子进程投递 SIGWINCH、子进程 `process.stdout.rows` 不刷新（探针 got=0 / rows 恒 24），故生产里靠 `process.stdout.rows` 感知真实 resize 的那一环 Bun 下无法自动化验。**但 `Region` 的重锚逻辑可测**：`TerminalUiOptions.rows` 支持函数式 `() => number`（`terminal-ui.ts:171`，`Region.getRows` 经它读值），driver 内部持 mutable `curRows`、发满日志后改值 → 下个 100ms 重绘 `Region` 读到新 rows → `geometryChanged` → 走重锚清除分支。红绿对照实测：绿态 footerCount===1、注释 `region.ts:138-145` 重锚清除 → footerCount===2（孤儿 footer 可见）。
 
 **教训**（呼应 `verifying-authoritative-claims`「通过不自证」）：初判「无法测」是被 `process.stdout.rows` 一条生产路径堵死、漏了注入口的盲区；曾被「稳定 6/6 绿」误导（实为 resize 从没生效）——是收尾审计的独立探针 + 对 `rows: () => number` 注入路径的核实才纠回。**仍无法端到端测的「生产尺寸来源链路」**收窄进 `docs/todo/deferred-backlog.md`。known-seam（`region.ts:125-137` 同帧吞行）本就在 backlog:11，不受影响。
+
+### ⑥ 水平宽度 —— landed（grapheme + ANSI + PTY 网格三层，2026-07-18）
+
+旧 `truncateToWidth` 用 `string-width` 计算整串宽度，却在截断循环按 code point 逐个累加。二者对多 code-point grapheme 不可加：`1️⃣` 整体宽 2、逐 code point 合计宽 1，导致 `truncateToWidth("1️⃣x",2)` 产出宽 3 的 `1️⃣…`；国旗会被拆成 `🇨…`，ZWJ emoji 会过度截断。修复后纯文本按 `Intl.Segmenter({granularity:"grapheme"})` 迭代，Region 的 ANSI 防御层使用 `slice-ansi` 闭合 SGR/OSC hyperlink，二者都保留一列省略号预算。因 `slice-ansi` 与 canonical `string-width` 对 `♠` 等 East Asian ambiguous 字符可能采用不同宽度，ANSI 路径另做 canonical 后验；若超预算则在 ANSI-safe slice coordinate 上二分回退，最终不变量仍以 `string-width(result)≤maxCols` 裁决。
+
+测试按真相域分三层：① `width.unit.test.ts` 覆盖 ASCII/CJK/keycap/flag/肤色/ZWJ/组合字符和所有窄预算，并钉死 SGR/OSC 闭合；② footer/panel/detail 生产 builder 对 hostile Unicode 做 columns 1～100 矩阵，防止原语正确但接线漏用；③ `horizontal-width.pty.test.ts` 驱动真 TerminalUi，在固定 7 列和注入 columns 30→7 两场景各连跑 8 次，从 xterm 网格独立断言 `occupiedColumns≤columns-1`、`isWrapped=false`、无半旗。harness 自证先写适配行，再多写一列，必须观察到下一行 `isWrapped=true`，证明水平 oracle 有牙。默认 `stdout.columns` getter 链另有真实 bus→TerminalUi→Region unit 覆盖，避免只测测试专用注入口。
 
 ### 覆盖面其余项（GPT 挑「漏没漏」的回应）
 
@@ -96,5 +103,5 @@ GPT reviewer（异模型第二双眼睛）verdict：**0 BLOCK / 4 HIGH，修 HIG
 
 - 不覆盖 macOS/Windows、非 Bun-1.3.14 版本、`node-pty` beta/fork（PoC 未验，不影响当前选型）。
 - ⑤ 的**同帧 resize known-seam 未加哨兵**（`region.ts:125-137`）——harness 无法从两个同 at 的 timer 确定性构造「同帧」（键输入跨进程异步、源码只承诺 MAY 吞行，`test.failing` 会 flake），故不加自动化哨兵、仍仅留 `deferred-backlog.md:11`。⑤ 的正测覆盖的是 resize 重锚**主逻辑**（rows 变→重锚清除→无孤儿行），不含同帧窄缝。
-- ⑤ 的**生产尺寸来源链路**（`process.stdout.rows` 感知真实终端 resize）在 Bun.Terminal 下无法端到端测——见 `deferred-backlog.md`。重锚逻辑本身已由注入 mutable rows source 覆盖。
+- Bun.Terminal 下仍无法端到端测的是**宿主 resize 通知传播**：它不向子进程投递 SIGWINCH，也不刷新子进程 `process.stdout.rows/columns`。默认 getter 链已由可变 fake stdout 的生产接线单测覆盖，垂直/水平重绘逻辑分别由注入 mutable rows/columns 的 PTY 覆盖；仅“真实 PTY resize 导致 stdout 属性变化”这一宿主环节留 `deferred-backlog.md`。
 - OSC52 剪贴板、视觉闪烁观感等 `exp/tui-rawmode/README.md` 标注「需真人真终端」的项，pty 验不了，不在本 spec。

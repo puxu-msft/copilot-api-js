@@ -165,13 +165,6 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     request: { params: z.object({ id: z.string() }) },
     responses: { 200: { description: "zstd-compressed entry JSON" }, 404: { description: "Not found", ...jsonContent() } },
   })
-  registry.registerPath({
-    method: "delete",
-    path: "/history/api/entries",
-    tags: historyTag,
-    summary: "Clear history entries",
-    responses: ok200("Deletion result"),
-  })
   registry.registerPath({ method: "get", path: "/history/api/stats", tags: historyTag, summary: "History store statistics", responses: ok200("Stats") })
   registry.registerPath({
     method: "get",
@@ -194,14 +187,6 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     tags: historyTag,
     summary: "Lazy companion: request ids referencing a given message hash",
     responses: ok200("Containing request ids"),
-  })
-  registry.registerPath({
-    method: "delete",
-    path: "/history/api/sessions/{id}",
-    tags: historyTag,
-    summary: "Delete a session",
-    request: { params: z.object({ id: z.string() }) },
-    responses: ok200("Deletion result"),
   })
   registry.registerPath({
     method: "post",

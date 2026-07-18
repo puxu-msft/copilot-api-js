@@ -20,29 +20,27 @@ import {
   //
   clearHistory,
   getCurrentSession,
-  finalizeEntry,
-  getEntry,
   initHistory,
   insertEntry,
   shutdownHistory,
-  updateEntry,
   type EndpointType,
   type HistoryEntry,
 } from "~/lib/history"
-import { persistEntryEager } from "~/lib/history/store"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 import {
   //
-  handleDeleteEntries,
-  handleDeleteSession,
   handleExport,
   handleGetEntries,
   handleGetEntry,
   handleGetStats,
   handlePinEntry,
+  handleSearch,
+  handleSearchContains,
   handleUnpinEntry,
 } from "~/routes/history/handler"
+
+import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 
 // ─── Test app ───
 
@@ -51,10 +49,10 @@ app.get("/api/entries", handleGetEntries)
 app.get("/api/entries/:id", handleGetEntry)
 app.post("/api/entries/:id/pin", handlePinEntry)
 app.post("/api/entries/:id/unpin", handleUnpinEntry)
-app.delete("/api/entries", handleDeleteEntries)
 app.get("/api/stats", handleGetStats)
 app.get("/api/export", handleExport)
-app.delete("/api/sessions/:id", handleDeleteSession)
+app.get("/api/search", handleSearch)
+app.get("/api/search/contains", handleSearchContains)
 
 // ─── Helpers ───
 
@@ -74,7 +72,6 @@ async function createEntry(
     clientRequest: { format: endpoint, model, messages, stream: true },
     ...extra,
   }
-  insertEntry(entry)
   // Complete with the caller-supplied attempts (carrying the effectiveSource /
   // upstreamRequest legs under test) or a default single successful attempt.
   const attempts = entry.attempts ?? [
@@ -84,21 +81,18 @@ async function createEntry(
       upstreamResponse: { success: true, model, usage: { input_tokens: 0, output_tokens: 0 }, body: null },
     },
   ]
-  updateEntry(entry.id, {
+  const completed: HistoryEntry = {
+    ...entry,
     state: "completed",
     attempts,
     _index: { derived: { responseSuccess: true, attemptCount: attempts.length } },
-  })
-  await finalizeEntry(entry.id)
-  return entry
+  }
+  commitV3HistoryEntry(completed)
+  return completed
 }
 
 async function get(path: string) {
   return app.request(path)
-}
-
-async function del(path: string) {
-  return app.request(path, { method: "DELETE" })
 }
 
 async function post(path: string) {
@@ -337,71 +331,16 @@ describe("POST /api/entries/:id/pin and /unpin", () => {
     expect(res.status).toBe(404)
     expect((await json<{ error: string }>(res)).error).toContain("not found")
   })
-
-  test("pinning an eager-persisted in-flight entry reflects pinned in the response (in-flight view synced)", async () => {
-    // An entry that is eager-persisted (sqlite head row) but still in-flight
-    // (not finalized). getEntry reads in-flight FIRST, so setPinned must sync the
-    // in-flight copy — otherwise the column says pinned=1 but the response says false.
-    const entry: HistoryEntry = {
-      id: generateId(),
-      startedAt: Date.now(),
-      endpoint: "anthropic-messages",
-      state: "streaming",
-      active: true,
-      model: { requested: "test" },
-      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "live" }], stream: true },
-    }
-    insertEntry(entry)
-    persistEntryEager(entry) // writes the sqlite head row (status=streaming) while still in-flight
-
-    const res = await post(`/api/entries/${entry.id}/pin`)
-    expect(res.status).toBe(200)
-    expect((await json<HistoryEntry>(res)).pinned).toBe(true)
-    // The in-flight read also reflects it now.
-    expect(getEntry(entry.id)?.pinned).toBe(true)
-  })
 })
 
-// ─── handleDeleteEntries ───
-
-describe("DELETE /api/entries", () => {
-  test("clears all history", async () => {
-    await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
-    await createEntry("anthropic-messages", "test", [{ role: "user", content: "world" }])
-
-    const res = await del("/api/entries")
-    expect(res.status).toBe(200)
-    const body = await json<{ success: boolean }>(res)
-    expect(body.success).toBe(true)
-
-    // Verify empty
-    const listRes = await get("/api/entries")
-    const listBody = await json<{ total: number }>(listRes)
-    expect(listBody.total).toBe(0)
+describe("retired archive surface", () => {
+  test("archive mutation endpoints are not registered", async () => {
+    expect((await post("/api/archive-now")).status).toBe(404)
+    expect((await post("/api/archive-cooldown")).status).toBe(404)
   })
 
-  test("with an endpoint filter deletes only matching rows and returns the count", async () => {
-    await createEntry("anthropic-messages", "test", [{ role: "user", content: "anthropic" }])
-    const openai = await createEntry("openai-chat-completions", "gpt-4o", [{ role: "user", content: "openai" }])
-
-    const res = await del("/api/entries?endpoint=anthropic-messages")
-    expect(res.status).toBe(200)
-    expect(await json<{ success: boolean; deleted: number }>(res)).toEqual({ success: true, deleted: 1 })
-
-    // Only the non-matching entry survives.
-    const list = await json<{ entries: Array<{ id: string }> }>(await get("/api/entries?terminalOnly=true"))
-    expect(list.entries.map((e) => e.id)).toEqual([openai.id])
-  })
-
-  test("with no filters clears all (clear-all path, message not count)", async () => {
-    await createEntry("anthropic-messages", "test", [{ role: "user", content: "x1" }])
-
-    const res = await del("/api/entries")
-    expect(res.status).toBe(200)
-    const body = await json<{ success: boolean; message: string; deleted?: number }>(res)
-    expect(body.success).toBe(true)
-    expect(body.message).toBe("History cleared")
-    expect(body.deleted).toBeUndefined()
+  test("tier=archive is rejected instead of silently reading HOT", async () => {
+    expect((await get("/api/entries?tier=archive")).status).toBe(400)
   })
 })
 
@@ -439,24 +378,16 @@ describe("GET /api/export", () => {
   })
 })
 
-// ─── handleDeleteSession ───
+describe("V3 search surface", () => {
+  test("returns V3 search results without reading the V2 index", async () => {
+    const search = await get("/api/search?source=inbound&q=needle")
+    expect(search.status).toBe(200)
+    expect((await json<{ rows: unknown[]; partial: boolean }>(search))).toMatchObject({ rows: [], partial: false })
 
-describe("sessions API", () => {
-  test("DELETE /api/sessions/:id deletes session", async () => {
-    const entry = await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
-    const sessionId = entry.sessionId
-
-    const res = await del(`/api/sessions/${sessionId}`)
-    expect(res.status).toBe(200)
-    const body = await json<{ success: boolean }>(res)
-    expect(body.success).toBe(true)
-
-    // Verify deleted
-    expect(getEntry(entry.id)).toBeUndefined()
-  })
-
-  test("DELETE /api/sessions/:id returns 404 for non-existent session", async () => {
-    const res = await del("/api/sessions/nonexistent")
-    expect(res.status).toBe(404)
+    const contains = await get("/api/search/contains?hash=deadbeef")
+    expect(contains.status).toBe(200)
+     expect(await json<{ hash: string; reqIds: string[] }>(contains)).toEqual({ hash: "deadbeef", reqIds: [] })
   })
 })
+
+// ─── sessions API ───

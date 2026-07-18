@@ -39,6 +39,7 @@ export class TelemetrySink {
       },
       // Only the two terminal kinds matter — aborted intentionally excluded.
       (event) => event.kind === "request.completed" || event.kind === "request.failed",
+      { name: "telemetry-sink" },
     )
   }
 

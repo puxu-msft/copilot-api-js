@@ -25,12 +25,14 @@ import {
 } from "bun:test"
 import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
 import type {
   //
   ResponsesPayload,
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
+import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history"
 import {
   //
@@ -199,6 +201,11 @@ describe("Responses v4 driver path", () => {
   test("direct non-streaming: client json + wire payload", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: false }
 
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
+
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     const v4Wire = lastResponsesWire
 
@@ -218,6 +225,12 @@ describe("Responses v4 driver path", () => {
       parallel_tool_calls: false,
       store: false,
     })
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    const clientPayload = operation?.egress?.client.payload
+    const upstreamPayload = operation?.egress?.upstream.payload
+    expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.arena.payloads.find((node) => node.handle === upstreamPayload)?.value).toEqual(v4)
+    expect(operation?.terminal?.outcome).toBe("completed")
     expect(v4Wire?.model).toBe("gpt-resp")
     expect(v4Wire?.stream).toBe(false)
   })
@@ -235,6 +248,12 @@ describe("Responses v4 driver path", () => {
   // owns-sink-two-racer.unit.test.ts; these lock the HANDLER's mapping).
   test("owns-sink streaming H3: mid-stream upstream error → entry failed + OpenAI error frame", async () => {
     setModels({ object: "list", data: [mockModel("gpt-resp", { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
+    // Explicit-false: this test is a LIVE-path baseline (it asserts `response.created` reaches the
+    // client BEFORE the mid-stream error). Default is now `true` (2026-07-14 P2 flip) — under
+    // buffered mode this ECONNRESET is a retryable transport-close, which the driver retries to
+    // exhaustion and then surfaces ONLY the synthesized error frame (no `response.created`, buffered
+    // and discarded). Force live so this test still exercises what it means to.
+    setStateForTests({ responsesBufferedRetry: false })
     const errMock = mock(() =>
       Promise.resolve(createSseResponseThenError([responsesStreamFrames("gpt-resp")[0]], new Error("ECONNRESET: mid-stream upstream blowup"))),
     )

@@ -2,7 +2,9 @@
 
 > **实施状态（2026-07-10）：已实施 + 已通过评审，待提交。** 三处改动全部落地：① `format.ts` 新增 `truncateToWidth`；② `console.ts` 的 `getColumns`/`finalizeFooter` 单一收口 + `buildFooter` 按模型分组 + 宽度驱动纳入；③ `renderFeatureTag` 穷尽守卫。新测试 `console-footer.unit.test.ts` + `format.unit.test.ts` 全绿、连跑确定。两轮 plan 评审达 consensus，1 轮 code review 无 BLOCK/MAJOR（仅修一处注释失真 + 收紧一处断言）。推迟四项记入 `docs/todo/deferred-backlog.md`。活现状见 `docs/DESIGN.md`「Console UI」节。
 >
-> **端到端人工验证待用户执行**（no-auto-server）：窄开终端并发打请求，肉眼确认 footer 不留残影 + 分组显示。
+> **历史验收备注（已取代）：** 2026-07-10 曾要求用户在窄终端人工确认；2026-07-18 起由下述自动 PTY 水平 oracle 取代。
+
+> **后续演进（2026-07-18）：** 本计划保留 2026-07-10 的历史落地形态；当前宽度原语已从 `observability/projections/format.ts` 迁到 `tui/render/width.ts`，由 grapheme-aware 单测 + Bun.Terminal/xterm 水平 PTY oracle 自动验收，不再依赖人工窄终端验证。权威现状见 [TUI PTY spec](../spec/2026-07-14-tui-pty-terminal-grid-testing.md)。
 
 ## Context（为什么做）
 

@@ -110,7 +110,13 @@ describe("extractToolNames", () => {
     expect(
       extractToolNames(
         makeEntry({
-          attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, body: { role: "assistant", content: "plain text" } } }],
+          attempts: [
+            {
+              index: 0,
+              durationMs: 0,
+              upstreamResponse: { success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, body: { role: "assistant", content: "plain text" } },
+            },
+          ],
         }),
       ),
     ).toEqual([])
@@ -226,7 +232,11 @@ describe("extractThinkingBlockCounts", () => {
     expect(extractThinkingBlockCounts(makeEntry())).toEqual(zero)
     expect(extractThinkingBlockCounts(withBlocks([]))).toEqual(zero)
     expect(
-      extractThinkingBlockCounts(makeEntry({ attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: null } }] })),
+      extractThinkingBlockCounts(
+        makeEntry({
+          attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: false, model: "m", usage: { input_tokens: 0, output_tokens: 0 }, body: null } }],
+        }),
+      ),
     ).toEqual(zero)
   })
 })

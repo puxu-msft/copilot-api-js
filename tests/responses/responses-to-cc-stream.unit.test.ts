@@ -78,6 +78,7 @@ describe("createStreamTranslator", () => {
       sequence_number: 1,
       output_index: 0,
       content_index: 0,
+      item_id: "msg_1",
       delta: "Hello",
     })
     const completed = translator.translate({
@@ -550,6 +551,7 @@ describe("createStreamTranslator", () => {
           sequence_number: 1,
           output_index: 0,
           content_index: 0,
+          item_id: "msg_1",
           delta: "after-malformed",
         }),
       }

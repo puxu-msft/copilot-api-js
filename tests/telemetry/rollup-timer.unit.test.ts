@@ -24,6 +24,7 @@ import {
   //
   _getTelemetryDbForTests,
   _isRollupTimerArmedForTests,
+  _isTelemetryShutdownSealedForTests,
   _resetRequestTelemetryForTests,
   _runRollupTickForTests,
   _setRequestTelemetryFilePathForTests,
@@ -85,6 +86,20 @@ test("config 变更（rollup interval）restart timer（仍 armed）", async () 
   expect(_isRollupTimerArmedForTests()).toBe(true)
   setTelemetryConfig({ telemetryRollupInterval: 120 }) // 触发 onTelemetryConfigChange → restartTelemetryTimers
   expect(_isRollupTimerArmedForTests()).toBe(true) // restart 后仍 armed
+})
+
+test("shutdown seals config callbacks before clearing timers", async () => {
+  await initRequestTelemetry()
+  expect(_isRollupTimerArmedForTests()).toBe(true)
+
+  await shutdownRequestTelemetry()
+  expect(_isTelemetryShutdownSealedForTests()).toBe(true)
+  expect(_isRollupTimerArmedForTests()).toBe(false)
+
+  // A stale callback or later config write cannot re-arm a timer targeting the
+  // now-closed telemetry database.
+  setTelemetryConfig({ telemetryRollupInterval: 240 })
+  expect(_isRollupTimerArmedForTests()).toBe(false)
 })
 
 test("live-config 投影上卷：记 settled 请求 → flush → _runRollupTickForTests 把封口 raw 桶卷进 hourly", async () => {

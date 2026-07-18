@@ -4,7 +4,6 @@ import {
   horizontalListSortingStrategy,
   useSortable,
 } from "@dnd-kit/sortable"
-import { useQueryClient } from "@tanstack/react-query"
 import {
   //
   flexRender,
@@ -47,14 +46,6 @@ import type {
 } from "@/types"
 
 import { SessionPaletteSelectShadcn } from "@/components/requests/SessionPaletteSelectShadcn"
-import { Button } from "@/components/ui/button"
-import {
-  //
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
 import { api } from "@/lib/api"
 import {
@@ -268,25 +259,6 @@ export function HistoryListShadcn({
   const { entries, total, isLoading, isError, error, refetch, hasNextPage, fetchNextPage } = useHistoryInfinite(filters)
   const tailOn = useListStore((s) => s.tailOn)
   const dispatch = useListStore((s) => s.dispatch)
-  const queryClient = useQueryClient()
-
-  const [clearOpen, setClearOpen] = useState(false)
-  const [clearing, setClearing] = useState(false)
-  const confirmClear = useCallback(async () => {
-    setClearing(true)
-    try {
-      const qs = toQueryString(filters)
-      const res = await api.delete<{ success: boolean; deleted?: number }>(`/history/api/entries${qs ? `?${qs}` : ""}`)
-      if (res.deleted !== undefined) console.info(`[HistoryListShadcn] 已删除 ${res.deleted} 条历史`)
-      await queryClient.invalidateQueries({ queryKey: ["history-infinite"] })
-      setClearOpen(false)
-    } catch (err) {
-      // 删除失败不吞:曝光错误(内部工具可观测性优先),保持 Dialog 开着供重试。
-      console.error("[HistoryListShadcn] 清空历史失败:", err)
-    } finally {
-      setClearing(false)
-    }
-  }, [filters, queryClient])
 
   const [internalVisibility, setInternalVisibility] = useState<VisibilityState>(DEFAULT_COLUMN_VISIBILITY)
   const columnVisibility = controlledVisibility ?? internalVisibility
@@ -500,13 +472,6 @@ export function HistoryListShadcn({
           value={paletteName}
           onChange={setPalette}
         />
-        <button
-          type="button"
-          className="ml-auto text-primary"
-          onClick={() => setClearOpen(true)}
-        >
-          清空
-        </button>
       </div>
       {outOfFilter && (
         <div className="mono flex items-center justify-center gap-2 border-b border-border bg-muted py-1 text-center text-[13px] text-foreground">
@@ -647,38 +612,6 @@ export function HistoryListShadcn({
           </div>
         )}
       </div>
-      <Dialog
-        open={clearOpen}
-        onOpenChange={setClearOpen}
-      >
-        <DialogContent className="mono max-w-sm">
-          <DialogHeader>
-            <DialogTitle>清空历史</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-4 text-[13px] text-foreground">
-            <p>{hasAnyFilter(filters) ? `删除当前筛选命中的 ${total} 条？` : `清空全部 ${total} 条？`}</p>
-            <div className="flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setClearOpen(false)}
-              >
-                取消
-              </Button>
-              <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                disabled={clearing}
-                onClick={() => void confirmClear()}
-              >
-                确认
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

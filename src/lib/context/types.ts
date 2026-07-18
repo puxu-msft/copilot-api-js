@@ -22,6 +22,8 @@ import type { FeatureKind } from "~/lib/observability"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
+import type { ModelOperationRecord } from "./model-operation-record"
+
 // ─── Request State Machine ───
 
 export type RequestState = RequestLifecycleState
@@ -90,6 +92,8 @@ export interface ResponseData {
    * non-streaming success path (JSON.stringify of the pristine upstream response →
    * rawBody), so non-streaming rows can re-derive usage fields. See spec §6.1. */
   responseText?: string
+  /** Complete parsed upstream response envelope for non-streaming success paths. */
+  sourceBody?: unknown
   /** Responses API: upstream response id (`resp_...`) from event.response.id */
   responseId?: string
   /** Copilot-specific: IP code citations collected from stream events (Anthropic path) */
@@ -106,6 +110,8 @@ export interface ResponseData {
 export interface PartialResponseInfo {
   usage?: ResponseData["usage"]
   stop_reason?: string
+  /** Complete upstream non-stream response envelope, retained independently of the proxy verdict. */
+  sourceBody?: unknown
   /**
    * Partial accumulated content to keep on the failed entry's `outboundResponse`
    * (richest-data-flow: the truncated content is observable diagnostic data). When
@@ -367,6 +373,8 @@ export interface RepairOutcomeRecord {
 /** 首包埋点（spec 2026-07-14 §3.2）：客户端侧 3 个时刻的键。 */
 export type ClientTimingKind = "streamOpen" | "firstReal" | "bufferHoldStart"
 
+export type AttemptTimingKind = "upstreamHeadersAt" | "upstreamMessageStartAt" | "upstreamFirstTokenAt" | "upstreamLastTokenAt"
+
 export interface RequestContext {
   readonly id: string
   readonly sessionId: string | undefined
@@ -416,6 +424,10 @@ export interface RequestContext {
   readonly durationMs: number
   /** Whether this context has been settled (completed or failed). Handler code can check this to detect reaper force-fail. */
   readonly settled: boolean
+  /** Immutable point-in-time History V3 generation record. The mutable recorder is never exposed. */
+  readonly modelOperationSnapshot: ModelOperationRecord
+  /** Canonical terminal record after settle, otherwise null. */
+  readonly modelOperationTerminalRecord: ModelOperationRecord | null
 
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
@@ -452,6 +464,10 @@ export interface RequestContext {
   setSessionId(sessionId: string | undefined): void
   setAgentId(agentId: string | undefined): void
   setOriginalRequest(req: OriginalRequest): void
+  /** Record canonical ingress once both the V2 body and inbound headers are available. */
+  recordModelOperationIngress(): void
+  /** Seal the canonical operation only after client delivery is fully constructed/drained. */
+  finalizeModelOperationDelivery(input?: { clientPayload?: unknown }): void
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
   /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */
@@ -483,7 +499,21 @@ export interface RequestContext {
    * `toHistoryEntry` 换算成相对 started_at 的 offset ms（`timing.client`）。驱动/handler/sink 调用。
    */
   setClientTimingEpoch(kind: ClientTimingKind, epoch: number): void
+  /** Record one upstream attempt timing instant through the same producer setter that updates the V2 carrier. */
+  setAttemptTimingEpoch?(kind: AttemptTimingKind, epoch: number, mode: "once" | "latest"): void
   setAttemptError(error: ApiError): void
+  /** Register a raw upstream SSE/WS frame in the generation arena and current-attempt track. */
+  captureUpstreamGenerationFrame?(frame: unknown, record: SseEventRecord): void
+  /** Register an explicit rewrite/render relationship before the output reaches ClientSink. */
+  captureGenerationFrameTransform?(inputFrame: unknown, outputFrame: unknown, transform: { stage: string; transformId: string; forceDerived?: boolean }): void
+  /** Record an N→M frame transform, including suppress/buffer/flush/drop actions. */
+  captureGenerationFrameAction?(
+    inputFrames: ReadonlyArray<unknown>,
+    outputFrames: ReadonlyArray<unknown>,
+    transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
+  ): void
+  /** ClientSink producer hook: register the exact frame attempted on the client wire. */
+  captureForwardedGenerationFrame?(frame: unknown, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]): void
   /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
   commitAttemptSseEvents(): void
   /** 定稿当前 attempt 的 durationMs（截断路径无 error/response setter 时用）。见 request.ts。 */
@@ -504,7 +534,15 @@ export interface RequestContext {
    * request verdict is projected to `failureReason` instead of being jammed into the upstream
    * leg's `error`. Leave it unset for genuine upstream failures (HTTP errors, truncation, H3).
    */
-  fail(model: string, error: unknown, partial?: PartialResponseInfo, opts?: { upstreamSucceeded?: boolean }): void
+  fail(
+    model: string,
+    error: unknown,
+    partial?: PartialResponseInfo,
+    opts?: {
+      upstreamSucceeded?: boolean
+      attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string }
+    },
+  ): void
   /**
    * Settle the request as `aborted` — the downstream client disconnected
    * mid-stream. Distinct terminal state from complete/fail. `partial` preserves
@@ -526,6 +564,30 @@ export interface RequestContext {
    * request settles `failed` (not silently truncated / mis-recorded `aborted`).
    */
   reapInFlight(): void
+  /**
+   * C5 operation lifecycle (RFC §3.3) — NEW API, no production callers until C5 wires
+   * handlers/manager/shutdown (behavior-preserving additions).
+   *
+   * `operationSignal` is the per-request cancel signal (reaper/deadline/`cancel` all abort it).
+   * Consumers that also need client-abort/shutdown combine those at the call site.
+   */
+  readonly operationSignal: AbortSignal
+  /** Whether `cancel()` (or the reaper via lifecycle) has requested cancellation. */
+  readonly cancelled: boolean
+  /** Reason recorded by the first `cancel(reason)` call, if any. */
+  readonly cancelReason: string | undefined
+  /**
+   * Request cancellation, decoupled from settle (RFC): abort `operationSignal` + record reason +
+   * forbid new attempts. Idempotent (first reason wins). Does NOT write a terminal state — the
+   * forced-termination path is `cancel → race(whenOperationQuiesced, grace) → settle`.
+   */
+  cancel(reason: string): void
+  /** Register a settle-BEFORE operation-body child (fetch/stream/backoff/hook/…) for quiescence tracking. */
+  trackOperationBody(p: Promise<unknown>): void
+  /** Seal the operation scope (root owner, in its single `finally`): no further children may register. */
+  sealOperationScope(): void
+  /** Resolves once the operation scope is sealed AND all tracked children have settled. */
+  whenOperationQuiesced(): Promise<void>
   /**
    * Record one tool-input repair outcome for the CURRENT attempt (S5 decode). Accumulated on the
    * ctx and RESET per L2 buffered-retry attempt (`resetRepairOutcomesForAttempt`) so a discarded
@@ -572,7 +634,7 @@ export interface RequestContext {
    * direct passthrough. Projected into the history `model{}`. Called by the driver right after
    * the route decision (non-reject); optional so mock/legacy ctxs that omit it are unaffected.
    */
-  setRouteInfo?(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean }): void
+  setRouteInfo?(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean; clientFormat?: string }): void
   /**
    * Record an applied feature (truncate / thinking / beta-strip / transport /
    * via-X-fallback / dropped-params). Replaces the legacy `tags: string[]`

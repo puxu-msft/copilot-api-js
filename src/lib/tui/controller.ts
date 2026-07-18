@@ -1,138 +1,92 @@
-/**
- * `controller.ts` — pure UI state machine for the interactive TUI (P1 panel).
- *
- * The last side-effect-free leaf of the read-only interactive TUI: a reducer
- * that maps `(state, key, ctx)` to the next {@link UiState} with no I/O and no
- * mutation of the input state. The terminal-ui layer owns rendering and stdin;
- * it feeds each decoded {@link KeyEvent} through {@link reduce} and re-renders
- * from the returned state. Keeping the transition logic here — pure and
- * deterministic — makes it exhaustively unit-testable without a terminal.
- *
- * View model (three nested panes):
- *
- *   - `collapsed` — the idle single-line footer; `space`/`tab` opens the panel;
- *   - `panel` — the scrollable request list; `up`/`down` move the selection
- *     (with the visible window following), `enter` drills into `detail`,
- *     `space`/`tab` collapses back, `escape` collapses back;
- *   - `detail` — a single request's detail; `escape` returns to `panel`.
- *
- * `escape` steps back one level (detail → panel → collapsed). `help` (`?`)
- * toggles the help overlay from any view.
- *
- * P1 is strictly read-only: the destructive `x` (abort) and `c` (copy) actions,
- * and any other `char`, are intentional no-ops here — they are deferred to P2.
- * `ctrl-c` is likewise not this reducer's concern: terminal-ui forwards it to
- * tear the UI down, so `reduce` leaves the state unchanged.
- */
-
+import type { StoreChange } from "./active-request-store"
 import type { KeyEvent } from "./input/keys"
 
-/** The complete, immutable UI state driven by {@link reduce}. */
 export type UiState = {
-  /** Which of the three nested panes is active. */
   view: "collapsed" | "panel" | "detail"
-  /** Index of the highlighted request row (clamped to `[0, activeCount-1]`). */
-  selectedIndex: number
-  /** Index of the first visible row — the top of the scroll window. */
+  selectedRequestId?: string
+  detailRequestId?: string
   scrollOffset: number
-  /** Whether the help overlay is shown. */
+  detailScrollOffset: number
   showHelp: boolean
 }
 
-/** Ambient dimensions the reducer needs to clamp selection and scrolling. */
-export type UiContext = {
-  /** Number of active requests currently in the list. */
-  activeCount: number
-  /** Number of request rows the panel can display at once. */
-  visibleRows: number
+export type UiContext = { activeIds: ReadonlyArray<string>; visibleRows: number }
+
+export const INITIAL_UI_STATE: UiState = { view: "collapsed", scrollOffset: 0, detailScrollOffset: 0, showHelp: false }
+
+const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value))
+
+export function selectedIndex(state: UiState, activeIds: ReadonlyArray<string>): number {
+  if (activeIds.length === 0) return -1
+  if (state.selectedRequestId === undefined) return 0
+  const index = activeIds.indexOf(state.selectedRequestId)
+  return index === -1 ? 0 : index
 }
 
-/** The pane state a freshly attached TUI starts in: collapsed, nothing shown. */
-export const INITIAL_UI_STATE: UiState = {
-  view: "collapsed",
-  selectedIndex: 0,
-  scrollOffset: 0,
-  showHelp: false,
+function scrollToShow(index: number, offset: number, visibleRows: number): number {
+  if (index < 0) return 0
+  if (index < offset) return index
+  if (index >= offset + visibleRows) return index - visibleRows + 1
+  return offset
 }
 
-/** Clamp `value` into the inclusive range `[min, max]`. */
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value))
-}
-
-/**
- * Recompute the scroll window's top so `selectedIndex` stays visible.
- *
- * RFC §6 overflow scroll: if the selection moved above the window, snap the
- * window up to it; if it moved below the window's last visible row, snap the
- * window down so the selection sits on that last row. Otherwise the window is
- * unchanged.
- */
-function scrollToShow(selectedIndex: number, scrollOffset: number, visibleRows: number): number {
-  if (selectedIndex < scrollOffset) return selectedIndex
-  if (selectedIndex >= scrollOffset + visibleRows) {
-    return selectedIndex - visibleRows + 1
-  }
-  return scrollOffset
-}
-
-/**
- * Advance the UI state machine by one key event. Pure: the returned state is a
- * new object on every transition and the input `state` is never mutated.
- * Unrecognized `(view, key)` pairs (including P1's deferred `x`/`c`/`char` and
- * the terminal-ui-owned `ctrl-c`) return the input `state` unchanged.
- */
 export function reduce(state: UiState, key: KeyEvent, ctx: UiContext): UiState {
-  // `help` toggles the overlay from any view.
-  if (key.kind === "help") {
-    return { ...state, showHelp: !state.showHelp }
+  if (key.kind === "help") return { ...state, showHelp: !state.showHelp }
+  const ids = ctx.activeIds
+  const index = selectedIndex(state, ids)
+
+  if (state.view === "collapsed") {
+    if (key.kind !== "space" && key.kind !== "tab") return state
+    return { ...state, view: "panel", selectedRequestId: ids[Math.max(index, 0)] }
   }
 
-  switch (state.view) {
-    case "collapsed": {
-      // `space`/`tab` opens the panel; everything else is inert while idle.
-      if (key.kind === "space" || key.kind === "tab") {
-        return { ...state, view: "panel" }
-      }
-      return state
+  if (state.view === "panel") {
+    if (key.kind === "space" || key.kind === "tab" || key.kind === "escape") return { ...state, view: "collapsed" }
+    if (key.kind === "enter") {
+      if (index < 0) return state
+      const id = ids[index]
+      return { ...state, view: "detail", selectedRequestId: id, detailRequestId: id, detailScrollOffset: 0 }
     }
-
-    case "panel": {
-      switch (key.kind) {
-        case "up":
-        case "down": {
-          const delta = key.kind === "up" ? -1 : 1
-          const selectedIndex = clamp(state.selectedIndex + delta, 0, ctx.activeCount - 1)
-          const scrollOffset = scrollToShow(selectedIndex, state.scrollOffset, ctx.visibleRows)
-          return { ...state, selectedIndex, scrollOffset }
-        }
-        case "enter": {
-          return { ...state, view: "detail" }
-        }
-        case "space":
-        case "tab": {
-          return { ...state, view: "collapsed" }
-        }
-        case "escape": {
-          return { ...state, view: "collapsed" }
-        }
-        default: {
-          // P1 read-only: `x`/`c`/`char`, `ctrl-c` — no-op.
-          return state
-        }
-      }
+    if (key.kind === "up" || key.kind === "down") {
+      if (ids.length === 0) return state
+      const nextIndex = clamp(index + (key.kind === "up" ? -1 : 1), 0, ids.length - 1)
+      return { ...state, selectedRequestId: ids[nextIndex], scrollOffset: scrollToShow(nextIndex, state.scrollOffset, Math.max(1, ctx.visibleRows)) }
     }
-
-    case "detail": {
-      // `escape` steps back to the panel; other keys are inert in detail.
-      if (key.kind === "escape") {
-        return { ...state, view: "panel" }
-      }
-      return state
-    }
-
-    default: {
-      return state
-    }
+    return state
   }
+
+  if (key.kind === "escape") return { ...state, view: "panel", detailRequestId: undefined, detailScrollOffset: 0 }
+  if (key.kind === "home") return { ...state, detailScrollOffset: 0 }
+  if (key.kind === "up") return { ...state, detailScrollOffset: Math.max(0, state.detailScrollOffset - 1) }
+  if (key.kind === "page-up") return { ...state, detailScrollOffset: Math.max(0, state.detailScrollOffset - Math.max(1, ctx.visibleRows)) }
+  if (key.kind === "down") return { ...state, detailScrollOffset: state.detailScrollOffset + 1 }
+  if (key.kind === "page-down") return { ...state, detailScrollOffset: state.detailScrollOffset + Math.max(1, ctx.visibleRows) }
+  if (key.kind === "end") return { ...state, detailScrollOffset: Number.MAX_SAFE_INTEGER }
+  return state
+}
+
+/** Reconcile identity before any render/effect after the active list changes. */
+export function reconcile(state: UiState, activeIds: ReadonlyArray<string>, change: StoreChange, visibleRows: number): UiState {
+  if (activeIds.length === 0)
+    return { ...state, view: "collapsed", selectedRequestId: undefined, detailRequestId: undefined, scrollOffset: 0, detailScrollOffset: 0 }
+
+  let selectedRequestId = state.selectedRequestId
+  if (selectedRequestId === undefined || !activeIds.includes(selectedRequestId)) {
+    const removal = change.removed
+    let oldIndex = Math.max(0, change.previousIds.indexOf(selectedRequestId ?? ""))
+    if (removal && removal.id === selectedRequestId) oldIndex = removal.index
+    selectedRequestId = activeIds[Math.min(oldIndex, activeIds.length - 1)]
+  }
+
+  const detailMissing = state.detailRequestId !== undefined && !activeIds.includes(state.detailRequestId)
+  const view = detailMissing ? "panel" : state.view
+  const detailRequestId = detailMissing ? undefined : state.detailRequestId
+  const index = activeIds.indexOf(selectedRequestId)
+  const maxOffset = Math.max(0, activeIds.length - Math.max(1, visibleRows))
+  const scrollOffset = clamp(scrollToShow(index, state.scrollOffset, Math.max(1, visibleRows)), 0, maxOffset)
+  return { ...state, view, selectedRequestId, detailRequestId, scrollOffset, detailScrollOffset: detailMissing ? 0 : state.detailScrollOffset }
+}
+
+export function withDetailOffset(state: UiState, offset: number): UiState {
+  return offset === state.detailScrollOffset ? state : { ...state, detailScrollOffset: offset }
 }

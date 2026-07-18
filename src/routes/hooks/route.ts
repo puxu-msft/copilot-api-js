@@ -39,7 +39,7 @@ const HooksStateSchema = z
       .string()
       .nullable()
       .openapi({ description: "`${loadedAt}-${seq}` — monotonically unique, changes on every successful reload (even within the same millisecond)" }),
-    exports: z.array(z.string()).openapi({ description: 'Hook mount points exported by the effective module, e.g. ["onExchange"]' }),
+    exports: z.array(z.string()).openapi({ description: 'Hook mount points exported by the effective module, e.g. ["exchange"]' }),
     lastReloadError: z.string().optional().openapi({ description: "Present only if the most recent reload attempt failed" }),
   })
   .openapi("HooksState")

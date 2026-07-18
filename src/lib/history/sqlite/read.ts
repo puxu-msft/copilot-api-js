@@ -110,20 +110,20 @@ export function queryEntries(opts?: QueryOptions): Array<HistoryEntry> {
 
 type SummaryRow = Omit<EntryRow, "blob_gz">
 
+const SUMMARY_COLS = `id, session_id, agent_id, started_at, ended_at, duration_ms,
+        model, endpoint, raw_path, transport, status,
+        input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
+        stop_reason, error_message,
+        message_count, preview_text, response_preview_text, pid, pinned,
+        request_bytes, response_bytes, multiplier`
+
 export function querySummaries(opts?: QueryOptions): Array<EntrySummary> {
   const db = getDatabase()
   const { sql, params } = applyWhere(opts)
   const limit = opts?.limit ?? 100
+
   const rows = db
-    .prepare(
-      `SELECT id, session_id, agent_id, started_at, ended_at, duration_ms,
-              model, endpoint, raw_path, transport, status,
-              input_tokens, output_tokens, cache_read, cache_creation, reasoning_tokens,
-              stop_reason, error_message,
-              message_count, preview_text, response_preview_text, pid, pinned,
-              request_bytes, response_bytes, multiplier
-         FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
-    )
+    .prepare(`SELECT ${SUMMARY_COLS} FROM entries_v2 ${sql} ORDER BY started_at DESC LIMIT ? OFFSET ?`)
     .all(...params, limit, 0) as Array<SummaryRow>
   return rows.map((r) => rowToSummary(r))
 }
@@ -177,10 +177,9 @@ function rowToSummary(r: SummaryRow): EntrySummary {
  * Load lightweight summaries for a set of ids, keyed by id (no head-blob decode).
  * Used by the dedicated search path to attach an `EntrySummary` to each result.
  */
-export function loadSummariesByIds(ids: Array<string>): Map<string, EntrySummary> {
+export function loadSummariesByIds(ids: Array<string>, db: ReturnType<typeof getDatabase> = getDatabase()): Map<string, EntrySummary> {
   const map = new Map<string, EntrySummary>()
   if (ids.length === 0) return map
-  const db = getDatabase()
   const placeholders = ids.map(() => "?").join(",")
   const rows = db
     .prepare(

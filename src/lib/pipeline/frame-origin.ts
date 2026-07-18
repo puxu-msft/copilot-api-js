@@ -4,7 +4,7 @@ import type { ClientFrame } from "~/lib/pipeline/types"
  * Per-frame synthetic-origin provenance (a pipeline-level primitive).
  *
  * Some frames that reach the FORWARDED (proxy→client) track are not verbatim upstream frames:
- * they were REWRITTEN by a `rewriteUpstreamFrame` hook, or INJECTED/rewritten by refusal recovery
+ * they were REWRITTEN by a `upstream.inbound` hook, or INJECTED/rewritten by refusal recovery
  * (the synthetic end_turn text block + rewritten delta, or the error-mode `event: error` frame).
  * richest-data-flow (ADR 2026-07-05) §3 requires such synthetic frames stay DISTINGUISHABLE from
  * genuine upstream traffic on the forwarded track (the upstream-original track is sampled pre-rewrite

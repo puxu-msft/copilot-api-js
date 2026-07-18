@@ -24,7 +24,7 @@ OpenAI 是本项目的**内部规范格式**——Chat Completions 就是各格�
 ## 认证与模型 ID
 
 - **入站认证不校验**：`Authorization` / `api-key` 传占位符即可（如 `dummy`）；真正认证在上游（GitHub → Copilot token），见 [authentication.md](authentication.md)。
-- **模型 ID 是 Copilot 目录 ID**（非 OpenAI 官方 ID）：如 `gpt-4o`、`gpt-5.5`、`claude-sonnet-4.6`、`gemini-2.5-pro`。短别名（`opus`/`sonnet`/`haiku`）、带日期/连字符版本名、`model_overrides` 同样适用（`src/lib/models/resolver.ts`）。
+- **模型 ID 是 Copilot 目录 ID**（非 OpenAI 官方 ID）：如 `gpt-4o`、`gpt-5.5`、`claude-sonnet-4.6`、`gemini-2.5-pro`。短别名（`opus`/`sonnet`/`haiku`）、带日期/连字符版本名、`model_mappings` 同样适用（`src/lib/models/resolver.ts`）。
 - **未知 `gpt-*` 回退**：不在模型目录里的 `gpt-*` 名也能透传上游（`env.model` 解析容忍目录外模型，codec P2.2-D5）。
 
 ## 模型列表扩展字段
@@ -62,11 +62,20 @@ Codex CLI 的一等公民路径，也是偏差最集中处。每请求由 codec�
 - **input 归一化**：裸 string input 会被规整成单元素数组（部分上游 provider 拒裸 string）。
 - 始终非流式，折入 shutdown signal（Phase 3 abort 可中断）。
 - 支持 `encoding_format`（`float`/`base64`）、`dimensions`。
-- Embeddings **不进 history 快照**（无对应 history sink）。
+- Embeddings 不建 `RequestContext`、不进 V2 History sink；History V3 旁路 lifecycle 会生成完整 canonical `ModelOperation` terminal record（terminal 同时进入 bounded registry 与独立 V3 store，可经 V3 read API 查询）。
 
 ## 跨 vendor 出站腿后缀（通用翻译矩阵）
 
 任意 OpenAI 客户端可用**任意 GHC 模型**——模型名加后缀 `@cc` / `@responses` / `@messages`（大小写不敏感）显式钉出站腿。例如 OpenAI 客户端发 `claude-opus-4.8@messages` 经 Anthropic `/v1/messages` 上游。后缀经 `resolveModelTarget` 剥离，路由在 `pipeline/router.ts`，翻译经 `pipeline/hub-translate.ts`。详见 [API.md](API.md#调用基础) + [rfc/2026-07-11-anthropic-via-openai-translation.md](rfc/2026-07-11-anthropic-via-openai-translation.md)。
+
+### `@messages` 反向腿：Anthropic-only stop 信号的诚实映射（非标准扩展，Phase 4/5 直接桥）
+
+Responses 客户端（`openai-responses` 入站）访问 Claude 模型（`@messages` 反向腿）时，`translateAnthropicResponseToResponses`/`-stream.ts`（`src/lib/openai/translate/`）把两个 Anthropic **专有**、Responses 词汇表本身没有对应词的 `stop_reason` 值，映射为**非标准**但诚实的 `incomplete_details.reason` 字符串，而非静默折叠成 `max_output_tokens`（会话失真）或丢弃（信息丢失）：
+
+- `pause_turn` → `incomplete_details: { reason: "pause_turn" }`（Anthropic 的 agentic 长任务中途暂停信号，Responses 无对应状态）。
+- `refusal` → `incomplete_details: { reason: "refusal" }`（Anthropic 的模型拒答信号；注意与 Responses 自身 `part.type==="refusal"`——结构化输出内容层面的拒答——是两个不同概念，本映射不与其混淆）。
+
+这是本代理**有意的扩展**（richest-data-flow：宁可给客户端一个诚实、可读的非标准值，也不要伪造一个 Responses 原生但语义不符的值）。Responses 官方词汇表里 `incomplete_details.reason` 是开放字符串字段（非封闭 enum），故客户端遇到未识别值应优雅降级，不会 wire 报错——但**排障时**如果看到这两个字符串，据此可知：上游是 Claude 模型、且触发了 Anthropic 特有的停止语义，非本代理 bug。
 
 ## 客户端配置
 

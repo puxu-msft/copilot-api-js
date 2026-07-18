@@ -5,7 +5,8 @@
  * - State management (getIsShuttingDown, getShutdownSignal, waitForShutdown)
  * - formatActiveRequestsSummary
  * - drainActiveRequests
- * - 4-phase orchestration (Phase 1 → 2 → 3 → 4 transitions)
+ * - 4-step orchestration (stop ingress → drain → abort → force close)
+ * - two-signal contract (first starts graceful shutdown, second exits immediately)
  * - Middleware integration (503 rejection during shutdown)
  * - Error resilience (server.close failures)
  */
@@ -21,7 +22,9 @@ import {
 } from "bun:test"
 
 import type { RequestContext } from "~/lib/context/request"
+import type { ShutdownPhase } from "~/lib/observability"
 
+import { createBus } from "~/lib/observability"
 import {
   //
   getUpstreamWsManager,
@@ -37,8 +40,10 @@ import {
   getShutdownSignal,
   gracefulShutdown,
   handleShutdownSignal,
+  setShutdownPublisher,
   waitForShutdown,
 } from "~/lib/shutdown"
+import { registerTerminal } from "~/lib/tui/terminal-coordinator"
 
 import { createMockServer } from "../helpers/mock-server"
 import { createMockTracker } from "../helpers/mock-tracker"
@@ -67,6 +72,9 @@ function createNoopDeps(overrides: Record<string, unknown> = {}) {
     stopTokenRefreshFn: mock(() => {}),
     closeAllClientsFn: mock(() => {}),
     getClientCountFn: () => 0,
+    shutdownHistoryFn: mock(async () => {}),
+    shutdownRequestTelemetryFn: mock(async () => {}),
+    shutdownDiagnosticLoggingFn: mock(async () => {}),
     ...FAST_TIMING,
     ...overrides,
   }
@@ -129,6 +137,217 @@ describe("waitForShutdown", () => {
     const promise = waitForShutdown()
     await gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
     await expect(promise).resolves.toBeUndefined()
+  })
+
+  test("is a completion latch for multiple and late waiters", async () => {
+    const first = waitForShutdown()
+    const second = waitForShutdown()
+
+    await gracefulShutdown("SIGINT", createNoopDeps())
+
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+    await expect(waitForShutdown()).resolves.toBeUndefined()
+  })
+
+  test("does not resolve until History, Telemetry, Diagnostic, notification, and observer close complete", async () => {
+    const order: Array<string> = []
+    let releaseHistory!: () => void
+    let releaseTelemetry!: () => void
+    let releaseDiagnostic!: () => void
+    let releaseNotification!: () => void
+    const historyBarrier = new Promise<void>((resolve) => {
+      releaseHistory = resolve
+    })
+    const telemetryBarrier = new Promise<void>((resolve) => {
+      releaseTelemetry = resolve
+    })
+    const diagnosticBarrier = new Promise<void>((resolve) => {
+      releaseDiagnostic = resolve
+    })
+    const notificationBarrier = new Promise<void>((resolve) => {
+      releaseNotification = resolve
+    })
+    let completed = false
+    const closeClients = mock(() => order.push("observers"))
+
+    const shutdownDone = gracefulShutdown(
+      "SIGINT",
+      createNoopDeps({
+        shutdownHistoryFn: async () => {
+          order.push("history:start")
+          await historyBarrier
+          order.push("history:end")
+        },
+        shutdownRequestTelemetryFn: async () => {
+          order.push("telemetry:start")
+          await telemetryBarrier
+          order.push("telemetry:end")
+        },
+        shutdownDiagnosticLoggingFn: async () => {
+          order.push("diagnostic:start")
+          await diagnosticBarrier
+          order.push("diagnostic:end")
+        },
+        publishStoppedFn: async () => {
+          order.push("notify:start")
+          await notificationBarrier
+          order.push("notify:end")
+        },
+        closeAllClientsFn: closeClients,
+        getClientCountFn: () => 1,
+      }),
+    )
+    void waitForShutdown().then(() => {
+      completed = true
+      order.push("latch")
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(getShutdownPhase()).toBe("finalizing")
+    expect(completed).toBe(false)
+
+    releaseHistory()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(order).toEqual(["history:start", "history:end", "telemetry:start"])
+    expect(getShutdownPhase()).toBe("finalizing")
+
+    releaseTelemetry()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(order.at(-1)).toBe("diagnostic:start")
+    expect(getShutdownPhase()).toBe("finalizing")
+
+    releaseDiagnostic()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(getShutdownPhase()).toBe("notifying")
+    expect(order.at(-1)).toBe("notify:start")
+
+    releaseNotification()
+    await shutdownDone
+    await waitForShutdown()
+
+    expect(order).toEqual([
+      "history:start",
+      "history:end",
+      "telemetry:start",
+      "telemetry:end",
+      "diagnostic:start",
+      "diagnostic:end",
+      "notify:start",
+      "notify:end",
+      "observers",
+      "latch",
+    ])
+    expect(getShutdownPhase()).toBe("stopped")
+    expect(completed).toBe(true)
+  })
+
+  test("persistence failure enters failed and never resolves the successful-completion latch", async () => {
+    let completed = false
+    void waitForShutdown().then(() => {
+      completed = true
+    })
+
+    await expect(
+      gracefulShutdown(
+        "SIGINT",
+        createNoopDeps({
+          shutdownHistoryFn: async () => {
+            throw new Error("history close failed")
+          },
+        }),
+      ),
+    ).rejects.toThrow("Shutdown persistence failed")
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(getShutdownPhase()).toBe("failed")
+    expect(completed).toBe(false)
+  })
+
+  test("a Diagnostic barrier failure publishes failed, never finalized, and rejects the successful latch", async () => {
+    const published: Array<string> = []
+    setShutdownPublisher({
+      publish: (event) => published.push(event.kind),
+      publishAndFlush: async (event) => {
+        published.push(event.kind)
+        return { pendingWsBuffer: 0 }
+      },
+    })
+    let completed = false
+    void waitForShutdown().then(() => {
+      completed = true
+    })
+
+    await expect(
+      gracefulShutdown(
+        "SIGINT",
+        createNoopDeps({
+          shutdownDiagnosticLoggingFn: async () => {
+            throw new Error("diagnostic fsync failed")
+          },
+        }),
+      ),
+    ).rejects.toThrow("Shutdown persistence failed")
+
+    expect(getShutdownPhase()).toBe("failed")
+    expect(completed).toBe(false)
+    expect(published).toContain("system.shutdown_failed")
+    expect(published).not.toContain("system.shutdown_completed")
+    expect(published.filter((kind) => kind === "system.shutdown_phase_changed")).toHaveLength(1)
+  })
+
+  test("a completion notification failure never exposes finalized and converges to failed", async () => {
+    const published: Array<string> = []
+    setShutdownPublisher({
+      publish: (event) => published.push(event.kind),
+      publishAndFlush: async (event) => {
+        if (event.kind === "system.shutdown_phase_changed" && event.phase === "finalized") throw new Error("observer flush failed")
+        published.push(event.kind === "system.shutdown_phase_changed" ? `${event.kind}:${event.phase}` : event.kind)
+        return { pendingWsBuffer: 0 }
+      },
+    })
+
+    await expect(gracefulShutdown("SIGINT", createNoopDeps())).rejects.toThrow("Shutdown persistence failed")
+
+    expect(getShutdownPhase()).toBe("failed")
+    expect(published).toContain("system.shutdown_failed")
+    expect(published).not.toContain("system.shutdown_completed")
+    expect(published).not.toContain("system.shutdown_phase_changed:finalized")
+  })
+
+  test("the production bus surfaces a finalized subscriber rejection to shutdown", async () => {
+    const bus = createBus()
+    const observed: Array<string> = []
+    bus.subscribe(
+      async (event) => {
+        if (event.kind === "system.shutdown_phase_changed" && event.phase === "finalized") throw new Error("real bus observer failed")
+        if (event.kind === "system.shutdown_failed") observed.push(event.kind)
+      },
+      undefined,
+      { name: "reject-finalized" },
+    )
+    setShutdownPublisher(bus.scope("system"))
+
+    await expect(gracefulShutdown("SIGINT", createNoopDeps())).rejects.toThrow("Shutdown persistence failed")
+
+    expect(getShutdownPhase()).toBe("failed")
+    expect(observed).toEqual(["system.shutdown_failed"])
+  })
+
+  test("production publisher emits finalized only after persistence barriers", async () => {
+    const published: Array<ShutdownPhase> = []
+    setShutdownPublisher({
+      publish: (event) => {
+        if (event.kind === "system.shutdown_phase_changed") published.push(event.phase)
+      },
+      publishAndFlush: async (event) => {
+        if (event.kind === "system.shutdown_phase_changed") published.push(event.phase)
+        return { pendingWsBuffer: 0 }
+      },
+    })
+
+    await gracefulShutdown("SIGINT", createNoopDeps())
+
+    expect(published).toEqual(["draining", "finalized"])
   })
 })
 
@@ -460,8 +679,37 @@ describe("error resilience", () => {
 // Signal escalation
 // ============================================================================
 
-describe("signal escalation", () => {
-  test("second signal during Phase 2 escalates to abort phase instead of exiting immediately", async () => {
+describe("two-signal contract", () => {
+  test("broken terminal feedback cannot prevent the second signal from exiting", async () => {
+    const unregister = registerTerminal({
+      state: () => {
+        throw new Error("broken terminal")
+      },
+      clearPanel: () => "",
+      redrawPanel: () => "",
+      write: () => {
+        throw new Error("broken terminal")
+      },
+    })
+    const exitFn = mock((_code: number) => {})
+    let finishShutdown!: () => void
+    const heldShutdown = new Promise<void>((resolve) => {
+      finishShutdown = resolve
+    })
+
+    try {
+      const shutdownPromise = handleShutdownSignal("SIGINT", { gracefulShutdownFn: () => heldShutdown, exitFn })
+      void handleShutdownSignal("SIGINT", { exitFn })
+
+      expect(exitFn).toHaveBeenCalledWith(130)
+      finishShutdown()
+      await shutdownPromise
+    } finally {
+      unregister()
+    }
+  })
+
+  test("second signal during request drain exits immediately", async () => {
     const tracker = createMockTracker([{ status: "executing" }])
     const exitFn = mock((_code: number) => {})
 
@@ -473,85 +721,60 @@ describe("signal escalation", () => {
     expect(shutdownPromise).toBeDefined()
     expect(getIsShuttingDown()).toBe(true)
 
-    // Escalate while still draining in Phase 2
+    // The second signal is the global escape hatch. It does not advance one
+    // internal step at a time and must not wait for the request drain.
     void handleShutdownSignal("SIGINT", {
       gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
       exitFn,
     })
 
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (getShutdownSignal()?.aborted) {
-          tracker._clearRequests()
-          clearInterval(check)
-          resolve()
-        }
-      }, 5)
-    })
+    expect(exitFn).toHaveBeenCalledTimes(1)
+    expect(exitFn).toHaveBeenCalledWith(130)
 
-    await shutdownPromise
-
-    expect(getShutdownSignal().aborted).toBe(true)
-    expect(exitFn).not.toHaveBeenCalled()
-  })
-
-  test("second signal during Phase 1 does not exit — waits for shutdown to proceed", async () => {
-    const tracker = createMockTracker([{ status: "executing" }])
-    const exitFn = mock((_code: number) => {})
-
-    // Use a gracefulShutdownFn that stays in phase1 longer by delaying the
-    // actual gracefulShutdown call. The first handleShutdownSignal sets
-    // _isShuttingDown=true but the async function hasn't started gracefulShutdown
-    // yet, so shutdownPhase is still "idle". However, in production, bun --watch
-    // sends a second SIGINT while phase1 is executing synchronously inside
-    // gracefulShutdown. Since phase1 is synchronous and fast, we simulate this
-    // by injecting a gracefulShutdownFn that delays before calling the real
-    // gracefulShutdown, then sending the second signal during that delay window.
-    //
-    // The key insight: handleShutdownSignal sets _isShuttingDown via the
-    // gracefulShutdownFn's *synchronous* first line, but the shutdownPhase
-    // only advances to "phase1" inside gracefulShutdown. Between these two
-    // points, shutdownPhase can be "idle" or "phase1".
-    //
-    // We test that phase1 signals don't exit by directly calling
-    // handleShutdownSignal, letting gracefulShutdown set phase to "phase1",
-    // and then immediately sending a second signal before phase2 is reached.
-    let resolveDelay: () => void
-    const delayBarrier = new Promise<void>((r) => {
-      resolveDelay = r
-    })
-
-    const shutdownPromise = handleShutdownSignal("SIGINT", {
-      gracefulShutdownFn: async (signal) => {
-        // gracefulShutdown sets _isShuttingDown=true and phase="phase1" synchronously
-        const done = gracefulShutdown(signal, createNoopDeps({ tracker }))
-        // Hold here while phase1 is active (before drainActiveRequests advances to phase2)
-        await delayBarrier
-        return done
-      },
-      exitFn,
-    })
-
-    // Yield to let the async function start — gracefulShutdown has set phase1
-    await new Promise((r) => setTimeout(r, 5))
-
-    // At this point, phase is "phase1" or "phase2" — both should be safe
-    const phase = getShutdownPhase()
-    expect(phase === "phase1" || phase === "phase2").toBe(true)
-
-    // Second signal arrives
-    void handleShutdownSignal("SIGINT", { exitFn })
-
-    // Must NOT have called exitFn (the bug was: exitFn was called here)
-    expect(exitFn).not.toHaveBeenCalled()
-
-    // Release barrier and let shutdown complete
-    resolveDelay!()
     tracker._clearRequests()
     await shutdownPromise
   })
 
-  test("signal during Phase 4 (force close) calls exitFn(1)", async () => {
+  test("second signal exits even before the graceful task enters its first step", async () => {
+    const exitFn = mock((_code: number) => {})
+    let finishShutdown!: () => void
+    const heldShutdown = new Promise<void>((resolve) => {
+      finishShutdown = resolve
+    })
+
+    const shutdownPromise = handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: () => heldShutdown,
+      exitFn,
+    })
+
+    void handleShutdownSignal("SIGINT", { exitFn })
+
+    expect(exitFn).toHaveBeenCalledWith(130)
+
+    finishShutdown()
+    await shutdownPromise
+  })
+
+  test("second SIGTERM uses the conventional forced-exit status", async () => {
+    const exitFn = mock((_code: number) => {})
+    let finishShutdown!: () => void
+    const heldShutdown = new Promise<void>((resolve) => {
+      finishShutdown = resolve
+    })
+
+    const shutdownPromise = handleShutdownSignal("SIGTERM", {
+      gracefulShutdownFn: () => heldShutdown,
+      exitFn,
+    })
+
+    void handleShutdownSignal("SIGTERM", { exitFn })
+    expect(exitFn).toHaveBeenCalledWith(143)
+
+    finishShutdown()
+    await shutdownPromise
+  })
+
+  test("second signal during force close exits immediately", async () => {
     const tracker = createMockTracker([{ status: "streaming" }])
     // Never clear — requests persist through all phases to reach Phase 4
     const exitFn = mock((_code: number) => {})
@@ -575,17 +798,17 @@ describe("signal escalation", () => {
     // Wait for Phase 4 to be reached
     await new Promise<void>((resolve) => {
       const check = setInterval(() => {
-        if (getShutdownPhase() === "phase4") {
+        if (getShutdownPhase() === "forcing") {
           clearInterval(check)
           resolve()
         }
       }, 5)
     })
 
-    // Send signal during Phase 4
+    // Send the second signal while the automatic force-close step is blocked.
     void handleShutdownSignal("SIGINT", { exitFn })
 
-    expect(exitFn).toHaveBeenCalledWith(1)
+    expect(exitFn).toHaveBeenCalledWith(130)
 
     // Clean up — release force close barrier and let shutdown complete
     resolveForceClose!()
@@ -593,61 +816,63 @@ describe("signal escalation", () => {
     await shutdownPromise
   })
 
-  test("signal after finalized phase is ignored", async () => {
+  test("second signal during history finalization exits immediately", async () => {
+    const exitFn = mock((_code: number) => {})
+    let releaseHistory!: () => void
+    const historyBarrier = new Promise<void>((resolve) => {
+      releaseHistory = resolve
+    })
+
+    const shutdownPromise = handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: (signal) =>
+        gracefulShutdown(
+          signal,
+          createNoopDeps({
+            shutdownHistoryFn: () => historyBarrier,
+          }),
+        ),
+      exitFn,
+    })
+
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (getShutdownPhase() === "finalizing") {
+          clearInterval(check)
+          resolve()
+        }
+      }, 5)
+    })
+
+    void handleShutdownSignal("SIGINT", { exitFn })
+    expect(exitFn).toHaveBeenCalledWith(130)
+
+    releaseHistory()
+    await shutdownPromise
+  })
+
+  test("signal after the lifecycle is stopped is ignored", async () => {
     const exitFn = mock((_code: number) => {})
 
-    // Complete shutdown with no active requests (goes straight to finalized)
     await gracefulShutdown("SIGINT", createNoopDeps())
-    expect(getShutdownPhase()).toBe("finalized")
+    expect(getShutdownPhase()).toBe("stopped")
 
-    // Send signal after shutdown is finalized
     void handleShutdownSignal("SIGINT", { exitFn })
 
     expect(exitFn).not.toHaveBeenCalled()
   })
 
-  test("triple signal escalates through phase2 → phase3 → phase4", async () => {
+  test("the four internal steps advance automatically after one signal", async () => {
     const tracker = createMockTracker([{ status: "streaming" }])
-    // Never clear — requests persist through all phases
-    const exitFn = mock((_code: number) => {})
-    const opts = { exitFn }
+    const server = createMockServer()
 
-    const shutdownPromise = handleShutdownSignal("SIGINT", {
-      gracefulShutdownFn: (signal) => gracefulShutdown(signal, createNoopDeps({ tracker })),
-      ...opts,
+    await handleShutdownSignal("SIGINT", {
+      gracefulShutdownFn: (signal) =>
+        gracefulShutdown(signal, createNoopDeps({ tracker, server, gracefulWaitMs: 10, abortWaitMs: 10, drainPollIntervalMs: 2 })),
     })
 
-    // Wait for Phase 2
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (getShutdownPhase() === "phase2") {
-          clearInterval(check)
-          resolve()
-        }
-      }, 5)
-    })
-
-    // Second signal: phase2 → phase3
-    void handleShutdownSignal("SIGINT", opts)
-
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (getShutdownPhase() === "phase3") {
-          clearInterval(check)
-          resolve()
-        }
-      }, 5)
-    })
-
-    // Third signal: phase3 → phase4
-    void handleShutdownSignal("SIGINT", opts)
-
-    // Wait for shutdown to complete (Phase 4 force-closes)
-    await shutdownPromise
-
-    // Should NOT have called exitFn — Phase 4 ran to completion
-    expect(exitFn).not.toHaveBeenCalled()
     expect(getShutdownSignal().aborted).toBe(true)
+    expect(server.close.mock.calls).toEqual([[false], [true]])
+    expect(getShutdownPhase()).toBe("stopped")
   })
 })
 

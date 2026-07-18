@@ -512,7 +512,16 @@ function buildV2Snapshot(): NegotiationStateFileV2 {
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 const PERSIST_DEBOUNCE_MS = 1000
 
+/**
+ * handoff（SIGUSR2）Phase 1 冻结门：置 true 后 `schedulePersist` 永久降级为 no-op，
+ * 直到下一次经既有 `clearAnthropicFeatureNegotiationForTests` 重置（M2 / R2 BLOCKER-NEW-1）。
+ * 语义前提是「有后继者接手学习职责」——只有 handoff 才该冻结；普通关机没有后继者，
+ * 不该冻结（shutdown.ts 已按 `signal === "SIGUSR2"` 门控，绝不无条件调用）。
+ */
+let persistenceFrozen = false
+
 function schedulePersist(): void {
+  if (persistenceFrozen) return // handoff 后冻结：学习落盘所有权已让给接管的新进程（M2）
   if (persistTimer) return
   persistTimer = setTimeout(() => {
     persistTimer = null
@@ -536,6 +545,28 @@ export const persistFeatureNegotiation = createSerializedAsyncFn(async () => {
     consola.debug("[FeatureNegotiation] persist failed:", err)
   }
 })
+
+/**
+ * handoff（SIGUSR2）Phase 1：立即落最后一份快照，随后把 `schedulePersist` 冻结为
+ * no-op（M2，防 overlap 期在途请求的 debounce 覆盖写把接管新进程新学到的负反馈整体覆盖丢失）。
+ * 清掉待触发的 debounce timer 再落盘，确保这次 flush 捕获的是最新内存态。never-throw：
+ * `persistFeatureNegotiation` 内部已吞写盘失败，这里额外兜底避免 finally 之外抛出。
+ * 解冻只走既有 `clearAnthropicFeatureNegotiationForTests`（R2 BLOCKER-NEW-1：不新增
+ * RESETTERS 条目，复用已被 L1 守卫覆盖的现有 resetter）。
+ */
+export async function flushAndFreezePersistence(): Promise<void> {
+  if (persistTimer) {
+    clearTimeout(persistTimer)
+    persistTimer = null
+  }
+  try {
+    await persistFeatureNegotiation()
+  } catch (err) {
+    consola.warn("[restart] feature-negotiation states flush 失败（非致命）", err)
+  } finally {
+    persistenceFrozen = true
+  }
+}
 
 function toMeta(now: number, migrated: boolean): LearnedEntryMeta {
   return migrated ? { firstLearnedAt: now, lastConfirmedAt: now, migrated: true } : { firstLearnedAt: now, lastConfirmedAt: now }
@@ -909,4 +940,8 @@ export function clearAnthropicFeatureNegotiationForTests(): void {
     persistTimer = null
   }
   clearNegotiationMaps()
+  // 解冻（M2 / R2 BLOCKER-NEW-1）：`persistenceFrozen` 是模块级单例、无独立
+  // reset 导出——折进本既有 resetter（已在 RESETTERS 表、被 L1 守卫覆盖），
+  // 避免新 module-global 绕过命名约定守卫。
+  persistenceFrozen = false
 }

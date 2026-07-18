@@ -49,6 +49,7 @@ export class CalibrationSink {
       // safety is preserved.
       (event) => this.handle(event),
       (event) => event.kind === "request.completed",
+      { name: "calibration-sink" },
     )
   }
 

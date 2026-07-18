@@ -170,7 +170,7 @@ export function searchInbound(
   params.push(limit)
   const rows = db.prepare(sql).all(...params) as Array<InboundHitRow>
 
-  const summaries = loadSummariesByIds(rows.map((r) => r.owner_req_id))
+  const summaries = loadSummariesByIds(rows.map((r) => r.owner_req_id), db)
   return rows.flatMap((r) => {
     const summary = summaries.get(r.owner_req_id)
     if (!summary) return []
@@ -208,7 +208,7 @@ export function searchAux(
   params.push(limit)
   const rows = db.prepare(sql).all(...params) as Array<AuxHitRow>
 
-  const summaries = loadSummariesByIds(rows.map((r) => r.req_id))
+  const summaries = loadSummariesByIds(rows.map((r) => r.req_id), db)
   return rows.flatMap((r) => {
     const summary = summaries.get(r.req_id)
     if (!summary) return []

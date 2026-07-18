@@ -4,8 +4,8 @@
  *
  * The upstream-hook-middleware's single highest-risk invariant: when no hook module is
  * loaded (`getUpstreamHook() === undefined`), the driver's output must be byte-for-byte
- * identical to pre-hook master. Every subsequent Task (1.1 onRequest / 1.2 onExchange /
- * 1.3 rewriteUpstreamFrame / 2.2 origin tagging) inserts an `if (getUpstreamHook()?.X)`
+ * identical to pre-hook master. Every subsequent Task (1.1 upstream.outbound / 1.2 exchange /
+ * 1.3 upstream.inbound / 2.2 origin tagging) inserts an `if (getUpstreamHook()?.X)`
  * guard around new behavior — this test never mounts a hook, so it must keep passing
  * completely unmodified across every one of those commits. A failure here means an
  * "unconfigured" guard leaked observable behavior — STOP and fix the guard, don't touch

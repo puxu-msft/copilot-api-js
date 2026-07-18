@@ -21,7 +21,7 @@ import { PATHS } from "~/lib/config/paths"
 import { initHistory } from "~/lib/history"
 import {
   //
-  DEFAULT_MODEL_OVERRIDES,
+  DEFAULT_MODEL_MAPPINGS,
   restoreStateForTests,
   setStateForTests,
   snapshotStateForTests,
@@ -83,7 +83,8 @@ describe("config yaml routes", () => {
 timeouts:
   response_header: 600
 history:
-  limit: 20
+  raw_capture:
+    enabled: false
 anthropic:
   tool_strip_read_result_tags: true
 `)
@@ -93,7 +94,7 @@ anthropic:
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       timeouts: { response_header: 600 },
-      history: { limit: 20 },
+      history: { raw_capture: { enabled: false } },
       anthropic: { tool_strip_read_result_tags: true },
     })
   })
@@ -101,7 +102,7 @@ anthropic:
   test("GET /api/config/yaml returns all known config fields", async () => {
     await writeConfig(`
 proxy: "http://127.0.0.1:7890"
-model_overrides:
+model_mappings:
   sonnet: claude-sonnet-4.7
 timeouts:
   stream_idle: 301
@@ -112,8 +113,9 @@ shutdown:
   graceful_wait: 12
   abort_wait: 34
 history:
-  limit: 20
-  reaper_interval: 120
+  raw_capture:
+    enabled: false
+    max_object_bytes: 1048576
 anthropic:
   tool_strip_read_result_tags: true
   tool_dedup_calls: result
@@ -155,7 +157,7 @@ system_prompt_append: "append"
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       proxy: "http://127.0.0.1:7890",
-      model_overrides: {
+      model_mappings: {
         sonnet: "claude-sonnet-4.7",
       },
       timeouts: {
@@ -169,8 +171,7 @@ system_prompt_append: "append"
         abort_wait: 34,
       },
       history: {
-        limit: 20,
-        reaper_interval: 120,
+        raw_capture: { enabled: false, max_object_bytes: 1048576 },
       },
       anthropic: {
         tool_strip_read_result_tags: true,
@@ -425,7 +426,7 @@ model_refresh_interval: 600
   test("PUT /api/config/yaml accepts a valid full config payload", async () => {
     const payload = {
       proxy: "http://127.0.0.1:7890",
-      model_overrides: {
+      model_mappings: {
         sonnet: "claude-sonnet-4.7",
         custom: "gpt-4.1",
       },
@@ -440,8 +441,7 @@ model_refresh_interval: 600
         abort_wait: 34,
       },
       history: {
-        limit: 20,
-        reaper_interval: 120,
+        raw_capture: { enabled: false, max_object_bytes: 1048576 },
       },
       anthropic: {
         tool_strip_read_result_tags: true,
@@ -498,7 +498,7 @@ model_refresh_interval: 600
 
     const written = await readConfig()
     expect(written).toContain("proxy: http://127.0.0.1:7890")
-    expect(written).toContain("model_overrides:")
+    expect(written).toContain("model_mappings:")
     expect(written).toContain("stream_idle: 301")
     expect(written).toContain("response_header: 600")
     expect(written).toContain("stale_request_max_age: 900")
@@ -519,9 +519,8 @@ model_refresh_interval: 600
     expect(state.modelRefreshInterval).toBe(0)
     expect(state.shutdownGracefulWait).toBe(12)
     expect(state.shutdownAbortWait).toBe(34)
-    expect(state.historySuccessLimit).toBe(20)
-    expect(state.historyFailureLimit).toBe(20)
-    expect(state.historyReaperInterval).toBe(120)
+    expect(state.historyRawCaptureEnabled).toBe(false)
+    expect(state.historyRawCaptureMaxObjectBytes).toBe(1048576)
     expect(state.stripReadToolResultTags).toBe(true)
     expect(state.contextEditingMode).toBe("clear-both")
     expect(state.contextEditingTrigger).toBe(200000)
@@ -821,9 +820,9 @@ rate_limiter:
     expect(written).toContain("recovery_interval: 60")
   })
 
-  test("PUT /api/config/yaml replaces model_overrides collections instead of merging old keys", async () => {
+  test("PUT /api/config/yaml replaces model_mappings collections instead of merging old keys", async () => {
     await writeConfig(`
-model_overrides:
+model_mappings:
   sonnet: claude-sonnet-4.7
   haiku: claude-haiku-4.6
   custom: gpt-4.1
@@ -833,7 +832,7 @@ model_overrides:
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model_overrides: {
+        model_mappings: {
           sonnet: "claude-sonnet-4.8",
         },
       }),
@@ -841,18 +840,18 @@ model_overrides:
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      model_overrides: {
+      model_mappings: {
         sonnet: "claude-sonnet-4.8",
       },
     })
 
     const written = await readConfig()
-    expect(written).toContain("model_overrides:")
+    expect(written).toContain("model_mappings:")
     expect(written).toContain("sonnet: claude-sonnet-4.8")
     expect(written).not.toContain("haiku:")
     expect(written).not.toContain("custom:")
-    expect(state.modelOverrides).toEqual({
-      ...DEFAULT_MODEL_OVERRIDES,
+    expect(state.modelMappings).toEqual({
+      ...DEFAULT_MODEL_MAPPINGS,
       sonnet: "claude-sonnet-4.8",
     })
   })
@@ -904,7 +903,8 @@ anthropic:
 # keep comment
 model_refresh_interval: 600
 history:
-  limit: 20
+  raw_capture:
+    enabled: false
 `)
 
     const res = await app.request("/api/config/yaml", {
@@ -917,7 +917,7 @@ history:
     expect(await res.json()).toEqual({
       model_refresh_interval: 600,
       history: {
-        limit: 20,
+        raw_capture: { enabled: false },
       },
     })
 
@@ -925,7 +925,7 @@ history:
     expect(written).toContain("# keep comment")
     expect(written).toContain("model_refresh_interval: 600")
     expect(written).toContain("history:")
-    expect(written).toContain("limit: 20")
+    expect(written).toContain("enabled: false")
   })
 
   test("PUT /api/config/yaml rejects negative nested timeout values", async () => {
@@ -957,7 +957,7 @@ history:
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model_overrides: {
+        model_mappings: {
           "": "claude-sonnet-4.6",
         },
       }),
@@ -968,7 +968,7 @@ history:
       error: "Config validation failed",
       details: [
         {
-          field: "model_overrides.",
+          field: "model_mappings.",
           message: "Override key must be a non-empty string",
           value: "",
         },
@@ -1005,15 +1005,15 @@ anthropic:
     expect(state.contextEditingMode).toBe("clear-thinking")
   })
 
-  test("PUT /api/config/yaml deleting model_overrides resets runtime state to defaults", async () => {
+  test("PUT /api/config/yaml deleting model_mappings resets runtime state to defaults", async () => {
     await writeConfig(`
-model_overrides:
+model_mappings:
   sonnet: claude-sonnet-4.7
   custom: gpt-4.1
 `)
     await applyConfigToState()
-    expect(state.modelOverrides).toEqual({
-      ...DEFAULT_MODEL_OVERRIDES,
+    expect(state.modelMappings).toEqual({
+      ...DEFAULT_MODEL_MAPPINGS,
       sonnet: "claude-sonnet-4.7",
       custom: "gpt-4.1",
     })
@@ -1022,14 +1022,14 @@ model_overrides:
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model_overrides: null,
+        model_mappings: null,
       }),
     })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({})
-    expect(state.modelOverrides).toEqual(DEFAULT_MODEL_OVERRIDES)
-    expect(await readConfig()).not.toContain("model_overrides:")
+    expect(state.modelMappings).toEqual(DEFAULT_MODEL_MAPPINGS)
+    expect(await readConfig()).not.toContain("model_mappings:")
   })
 
   test("PUT /api/config/yaml deleting system_prompt_overrides resets runtime state to empty array", async () => {
@@ -1277,14 +1277,17 @@ anthropic:
   test("PUT /api/config/yaml with an empty body migrates a disk-only legacy key WITHOUT relocating an untouched collection (scoped-patch regression guard)", async () => {
     // This is the ONLY reason the disk-only migration fix (extractDiskOnlyMigrationPatch,
     // see plan-3-put-migration.md "偏离与根因") returns a SPARSE patch instead of the full
-    // migrated disk payload: a naive full-payload merge would hand model_overrides back to
+    // migrated disk payload: a naive full-payload merge would hand model_mappings back to
     // mergeConfigIntoDocument even though the PUT body never mentioned it, and
     // replaceCollection (deleteIn + setIn) would silently relocate it to the END of the
     // document, destroying its original position and comment. The empty `{}` body here is
     // deliberate — it proves the disk-only legacy key (timeouts.upstream_keepalive) still
     // gets migrated even when nothing in the request body triggers it.
-    const original = `# model overrides comment
-model_overrides:
+    // NOTE: uses model_mappings (the current canonical collection name post the master
+    // model_overrides→model_mappings rename) so the collection under test is itself NOT a
+    // migratable legacy key — otherwise it would legitimately relocate on migration.
+    const original = `# model mappings comment
+model_mappings:
   sonnet: claude-sonnet-4.7
   haiku: claude-haiku-4.6
 timeouts:
@@ -1309,21 +1312,21 @@ timeouts:
     // The untouched collection's comment, keys, and — crucially — its ORIGINAL POSITION
     // (before `timeouts`, not moved to the end after the newly-appended
     // `upstream_transport` section) are preserved byte-for-byte.
-    const modelOverridesLines = written
+    const modelMappingsLines = written
       .split("\n")
       .slice(
         0,
         written.split("\n").findIndex((line) => line.startsWith("timeouts:")),
       )
       .join("\n")
-    expect(modelOverridesLines).toBe(`# model overrides comment
-model_overrides:
+    expect(modelMappingsLines).toBe(`# model mappings comment
+model_mappings:
   sonnet: claude-sonnet-4.7
   haiku: claude-haiku-4.6`)
 
     // Sanity: upstream_transport (the newly-migrated section) was appended AFTER
-    // timeouts/model_overrides, not interleaved with or ahead of them.
-    const modelOverridesIndex = written.indexOf("model_overrides:")
+    // timeouts/model_mappings, not interleaved with or ahead of them.
+    const modelOverridesIndex = written.indexOf("model_mappings:")
     const timeoutsIndex = written.indexOf("timeouts:")
     const upstreamTransportIndex = written.indexOf("upstream_transport:")
     expect(modelOverridesIndex).toBeGreaterThanOrEqual(0)

@@ -325,6 +325,9 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("anthropic.protect_streaming_buffer_cap_bytes", "anthropic.buffered_retry.buffer_cap_bytes", {
     message: "anthropic.protect_streaming_buffer_cap_bytes is renamed to anthropic.buffered_retry.buffer_cap_bytes; update your config.yaml",
   }),
+  // model_overrides → model_mappings: top-level rename (anthropic↔responses direct-bridge
+  // RFC §6.2). Pure spelling change, no shape/value transform — the map itself is unchanged.
+  renameLeaf("model_overrides", "model_mappings"),
   // rate_limiter unit unification: minutes → seconds (value auto-converted ×60)
   renameLeaf("rate_limiter.recovery_timeout", "rate_limiter.recovery_interval", {
     transform: (v) => (typeof v === "number" ? v * 60 : v),

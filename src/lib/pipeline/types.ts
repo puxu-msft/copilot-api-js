@@ -15,6 +15,7 @@
  * the legacy one is replaced by this one as formats migrate (P2 / P0.4).
  */
 
+import type { OperationKind } from "~/lib/context/model-operation-record"
 import type {
   //
   EffectiveRequest,
@@ -208,6 +209,14 @@ export interface RawHttpRequest {
   /** Model override injected by Azure deployment routing (codec.parse reads it). */
   readonly modelOverride?: string
   /**
+   * Whether the client asked for a streaming response, when that is NOT derivable from `body`.
+   * Gemini's stream flag comes from the URL (`streamGenerateContent` vs `generateContent`), not the
+   * request body, so the route passes it here for the gemini codec's S1b `translateInbound` (RFC
+   * 2026-07-14 §4 — parse now keeps the native `contents[]` body, which has no stream field). Other
+   * codecs read stream off `body` and ignore this.
+   */
+  readonly stream?: boolean
+  /**
    * The client's raw inbound body for the history snapshot, when it differs from
    * `body`. The route applies the async, non-idempotent system-prompt injection
    * to `body` BEFORE `codec.parse` (parse is sync — P2.2-D3); it passes the
@@ -225,6 +234,13 @@ export interface RawHttpRequest {
    * legacy handler. `model: undefined` is a valid value (unknown gpt-* fallback).
    */
   readonly preResolved?: { name: string; model: ResolvedModel | undefined; routeOverride?: RouteOverride }
+  /** Non-HTTP operation identity supplied by transport entry points such as Responses WS. */
+  readonly operationIdentity?: {
+    readonly kind: OperationKind
+    readonly connectionId?: string
+    readonly responseCreateId?: string
+    readonly previousResponseId?: string | null
+  }
   /** Downstream client-disconnect signal, folded into the upstream fetch signal. */
   readonly clientAbortSignal?: AbortSignal
 }
@@ -568,6 +584,8 @@ export interface ClientSink {
    * abort / write-reject) so a self-rescheduling timer can't leak (design §3.3).
    */
   close?(): void
+  /** Seal the canonical operation after every real/synthetic client frame has been delivered. */
+  finalize?(): void
 }
 
 /**
@@ -591,11 +609,17 @@ export interface ClientSink {
  *     frame, logs the disconnect diagnostic, and settles `ctx.fail` — none of which the
  *     format-agnostic driver can do without losing fidelity (a lossy `{type,message}`
  *     summary would drop the error's cause chain + force a re-classification).
+ *     `truncated:true` marks the buffered-path variant where the failure is a CLEAN drain
+ *     WITHOUT a terminal (a truncation, not a thrown transport error — the synthetic error
+ *     carries no meaningful cause chain). The handler routes it to the `truncated`
+ *     disconnect label instead of `classifyStreamError` (which would relabel it
+ *     `transport-close`), keeping HIGH-1's `kind=truncated` uniform across the plain AND
+ *     buffered legs. Absent/false → a real thrown error (`transport-close`).
  *   - `settled-abort` — the throw was a client disconnect (`classifyStreamError ===
  *     "client-abort"`). The downstream stream is dead, so the handler writes ZERO further
  *     bytes and settles `ctx.abort` (B0-d "abort → zero bytes").
  */
-export type ResponseOutcome = { kind: "complete"; headers: Headers } | { kind: "stream-error"; error: unknown } | { kind: "settled-abort" }
+export type ResponseOutcome = { kind: "complete"; headers: Headers } | { kind: "stream-error"; error: unknown; truncated?: boolean } | { kind: "settled-abort" }
 
 /**
  * Orchestrates the stage sequence, publishing events + sampling raw data at
@@ -615,11 +639,11 @@ export interface PipelineDriver {
    * S1-S3 have no `await`. Isolation (the global manager touched by `codec.parse`) is the
    * caller's concern, NOT this method's.
    */
-  inspectRequest(raw: RawHttpRequest, stopAfter: RequestInspectStage): RequestInspection
+  inspectRequest(raw: RawHttpRequest, stopAfter: RequestInspectStage): Promise<RequestInspection>
 }
 
 /** Request-side stage to stop {@link PipelineDriver.inspectRequest} after. */
-export type RequestInspectStage = "parse" | "translate" | "rewrite-in" | "prepare-wire"
+export type RequestInspectStage = "parse" | "translate-inbound" | "translate" | "rewrite-in" | "prepare-wire"
 
 /** Result of {@link PipelineDriver.inspectRequest} — per-stage snapshots up to the stop point. */
 export interface RequestInspection {
@@ -629,6 +653,13 @@ export interface RequestInspection {
   rejected?: { status: number; reason: string }
   stages: {
     parse?: { clientFormat: string; targetEndpoint?: string; model: unknown; body: unknown }
+    /**
+     * S1b `codec.translateInbound` output — the client-native body after async inbound processing
+     * (gemini `Gemini→CC` + per-format async system-prompt injection). For gemini this is where the
+     * `parse` stage's native `contents[]` becomes CC `messages[]` (RFC §3/§4). Absent for a format
+     * that omits `translateInbound` (no-op).
+     */
+    "translate-inbound"?: { body: unknown }
     translate?: { targetEndpoint?: string; body: unknown }
     "rewrite-in"?: { body: unknown; applied: Array<{ name: string; changed: boolean }> }
     /**
@@ -681,8 +712,21 @@ export type ClassifiedStreamError = StreamErrorKind
 export interface FormatCodec {
   readonly format: ClientFormat
 
-  /** S1: parse inbound HTTP → envelope (model resolution, body extraction, ctx). */
+  /** S1: parse inbound HTTP → envelope (model resolution, body extraction, ctx). SYNC by contract. */
   parse(raw: RawHttpRequest): RequestEnvelope
+
+  /**
+   * S1b: async inbound processing that turns the client-NATIVE envelope (post-`parse`, post-
+   * `client.inbound` hook) into the driver's outbound-canonical shape — the seam that absorbs
+   * per-format async work the route layer used to own (RFC 2026-07-14-symmetric-four-point-hooks
+   * §3/§4): gemini's `Gemini→CC` translation, and each format's async system-prompt injection
+   * (`processOpenAIMessages`/`processResponsesInstructions`/`processAnthropicSystem`, which await
+   * `applyConfigToState`). Runs ONCE per logical request, OUTSIDE the retry loop, AFTER `parse` (so
+   * `client.inbound` can still see the native body) and BEFORE S2 route/translate. Optional — a
+   * format with no async inbound work omits it (no-op). Distinct from S2 `translateOut` (that is the
+   * per-target-endpoint outbound leg, run later). Returns the transformed env.
+   */
+  translateInbound?(env: RequestEnvelope): Promise<RequestEnvelope>
 
   /**
    * S2: translate body to the target-endpoint format (passthrough = identity). OPTIONAL since the

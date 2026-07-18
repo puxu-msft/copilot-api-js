@@ -179,3 +179,65 @@
 #   - from: "\\n\\s*\\n\\s*\\n"
 #     to: "\\n\\n"
 #     method: regex
+
+# ============================================================================
+# Buffered-retry caps + per-vendor switches
+# ============================================================================
+# Shared caps (max_retries / buffer_cap_bytes / heartbeat_sec) applied across
+# anthropic / responses / chat_completions, overridable per vendor. See
+# config.yaml's `buffered_retry:` section for the full field docs.
+
+# buffered_retry:
+#   max_retries: 5              # override the shared cap (built-in default: 3)
+#   buffer_cap_bytes: 33554432  # 32MiB (built-in default: 16MiB)
+#   heartbeat_sec: 10           # built-in default: 15
+
+# Responses (HTTP + WS — WS has no independent switch, it inherits this) and
+# Chat Completions default their `buffered_retry` switch to TRUE (2026-07-14
+# flip: buffering/generation-preservation was chosen over the downstream
+# streaming UX). Set to `false` to opt back into live (unbuffered) forwarding
+# for that vendor, or use the map form to also override caps.
+
+# openai_responses:
+#   buffered_retry: false                              # opt back into live forwarding (default: true)
+# chat_completions:
+#   buffered_retry: { enabled: true, max_retries: 5 }   # keep buffered, override just the cap for this vendor
+
+# Anthropic's buffered-retry switch is a DIFFERENT key (`protect_streaming_generation`,
+# under `anthropic:` — see config.yaml) and defaults to `false`: the block-level
+# anchor-coexist wire shape was found to silently drop content in the real Claude
+# Code CLI (tests/e2e-client/anthropic-coexist-cli.e2e.test.ts), so it stays gated
+# pending a shape fix. `anthropic.buffered_retry` here only overrides caps.
+
+# anthropic:
+#   buffered_retry:
+#     max_retries: 5
+
+# ============================================================================
+# Unknown HTTP Endpoint Logging
+# ============================================================================
+# 打到代理但没匹配任何业务路由的请求（客户端打错 path / 用错 base URL / 用错 method）
+# 按归类状态码分别控制日志级别。日志经 consola → TUI + copilot-api.log。
+#   - not_found          → 404：真正未匹配的路径
+#   - method_not_allowed → 405：路径存在但 HTTP method 不对（返回 405 + Allow 头）
+# 级别：silent（不打） | debug | info | warn | error。默认 warn/warn。
+# 注意：debug/info 受 consola 全局 level gate 节制（默认 level 下可能不显示）。
+#
+# unknown_endpoint_logging:
+#   not_found: warn
+#   method_not_allowed: warn
+
+# ============================================================================
+# Structured diagnostics and terminal UI
+# ============================================================================
+# logging:
+#   terminal_level: info # hot-reloadable
+#   file_level: debug # hot-reloadable
+#   file:
+#     enabled: true # restart required
+#     directory: "" # empty = $APP_DIR/logs/diagnostic
+#     max_size_mb: 10 # 0 = no size rolling
+#     max_files_per_process: 7 # 0 = unlimited
+#     retention_days: 7 # 0 = no age retention
+# tui:
+#   enabled: true # restart required; CLI --no-tui wins

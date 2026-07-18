@@ -36,6 +36,7 @@
 
 import consola from "consola"
 
+import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { BetaProbe } from "~/lib/anthropic/pipeline"
 import type { ReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import type { RequestContext } from "~/lib/context/request"
@@ -78,6 +79,7 @@ import type {
 
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { getRequestContextManager } from "~/lib/context/manager"
+import { modelIdFor, stripThinkingSignatureFor } from "~/lib/config/model-translation"
 import {
   //
   captureInboundHeaders,
@@ -86,8 +88,8 @@ import {
   //
   getAgentIdFromHeaders,
   getSessionIdFromHeaders,
-  resolveResponseSessionId,
 } from "~/lib/history/store"
+import { resolveResponseSessionId } from "~/lib/openai/response-session-store"
 import {
   //
   ENDPOINT,
@@ -113,14 +115,15 @@ import {
 import {
   //
   createCCToResponsesStreamTranslator,
+  translateAnthropicResponseToResponses,
   translateCCToResponsesResponse,
 } from "~/lib/openai/translate"
 import {
   //
   createReverseStreamTranslator,
-  renderResponseNonStreamingVia,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
+import { processResponsesInstructions } from "~/lib/system-prompt"
 import { rebuildConversationMessages } from "~/routes/responses/conversation-rebuild"
 
 import { type ResponsesFallbackScratch } from "./openai-responses-leg"
@@ -174,6 +177,18 @@ function genShortId(): string {
 }
 
 /**
+ * RFC §4.3 scenario A/B (Phase 5): resolve `{ stripThinkingSignature }` for the REVERSE
+ * `(openai-responses client, Claude model @messages)` reasoning round-trip. Only meaningful on the
+ * MESSAGES leg (the fallback `/chat/completions` two-hop path has no reasoning round-trip carrier
+ * concept) — passing it unconditionally on every reverse call site is harmless (the CC-family
+ * factories in hub-translate.ts simply ignore an opts param they never read).
+ */
+function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature: boolean } {
+  const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model)
+  return { stripThinkingSignature: stripThinkingSignatureFor("openai-responses", modelId, "anthropic-messages") }
+}
+
+/**
  * Build the openai-responses codec for one request. The returned instance holds
  * the per-request fallback exchange + CC→Responses translator in its closure.
  */
@@ -221,8 +236,8 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     })
 
   const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
-    const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
-    return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, ensureReverseExchange(env)))
+    const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
+    return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, ensureReverseExchange(env), reasoningRoundTripOpts(env)))
   }
 
   return {
@@ -248,6 +263,15 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
 
     getContext() {
       return requestContext
+    },
+
+    // S1b (RFC 2026-07-14 §4): async system-prompt injection (Responses `instructions`), moved off
+    // the route handler so `client.inbound` (Phase 4) sees the client-NATIVE body (pre-injection).
+    // `env.body.model` is the resolved name (parse set it). One-shot, outside the retry loop.
+    async translateInbound(env) {
+      const body = env.body as ResponsesPayload
+      const instructions = await processResponsesInstructions(body.instructions, body.model, "openai-responses")
+      return env.with({ body: { ...body, instructions } })
     },
 
     getFallbackResponseId() {
@@ -287,11 +311,13 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
 
     renderResponseNonStreaming(upstream, env) {
       if (env.targetEndpoint === ENDPOINT.RESPONSES) return upstream
-      // REVERSE `@messages` leg (Phase 5): Anthropic upstream → CC-canonical (hub) → Responses (二跳,
-      // 疑点 5 — translateCCToResponsesResponse eats the reverse-exchange).
+      // REVERSE `@messages` leg — DIRECT bridge (RFC 2026-07-14-anthropic-responses-direct-bridge §3/§4.2,
+      // Phase 4 subtask E): a single-hop Anthropic upstream → Responses walk, skipping the CC intermediate
+      // entirely (was Anthropic→CC(hub)→Responses, 疑点 5). `upstream` here is the RAW Anthropic response
+      // (the hub's CC bridge is no longer called on this leg) — reuses the SAME `ensureReverseExchange`
+      // id-management the old two-hop path used (RFC §2.3: no new exchange contract).
       if (env.targetEndpoint === ENDPOINT.MESSAGES) {
-        const cc = renderResponseNonStreamingVia(ENDPOINT.MESSAGES, upstream).rendered as ChatCompletionResponse
-        return translateCCToResponsesResponse(cc, ensureReverseExchange(env))
+        return translateAnthropicResponseToResponses(upstream as AnthropicMessageResponse, ensureReverseExchange(env), reasoningRoundTripOpts(env))
       }
       if (!fallbackScratch.exchange) return upstream
       return translateCCToResponsesResponse(upstream as ChatCompletionResponse, {
@@ -366,6 +392,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
     ...(raw.path !== undefined && { rawPath: raw.path, path: raw.path }),
     ...(raw.method !== undefined && { method: raw.method }),
     ...(reqBodySize !== undefined && { requestBodySize: reqBodySize }),
+    ...(raw.operationIdentity !== undefined && { operationIdentity: raw.operationIdentity }),
   })
 
   ctx.setOriginalRequest({
@@ -377,6 +404,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
     payload: originalSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+  ctx.recordModelOperationIngress()
 
   // Normalize call IDs (call_ → fc_) BEFORE tool-name sanitization — matches the
   // legacy handler order (handleResponses: normalizeCallIds then tool-name). This

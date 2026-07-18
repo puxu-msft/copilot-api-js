@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
 
-import { missingNumbers, runDriver } from "./harness"
+import {
+  //
+  missingNumbers,
+  runDriver,
+} from "./harness"
 
 describe("① 不吞行：space 反复切视图时编号日志连续无缺号", () => {
   // 红样本：删 src/lib/tui/render/region.ts:133-137 的 scroll-before-grow →

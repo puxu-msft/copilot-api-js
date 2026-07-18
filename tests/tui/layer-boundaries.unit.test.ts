@@ -22,19 +22,19 @@ function tuiFiles(): Array<string> {
 // a path separator or the closing quote so a future sinks/index.ts barrel
 // import is still caught.
 const SINK_IMPORT = /from\s+["']~\/lib\/observability\/sinks[/"']/
-const RAW_STDIN = /setRawMode|process\.stdin/
+const RAW_STDIN = /\.setRawMode\(|process\.stdin/
 
 /**
  * Raw-mode / stdin ownership (P1): the terminal integration owner
- * (`terminal-ui.ts`) drives the raw-mode lifecycle. The pure leaves —
+ * (`terminal-session.ts`) drives the raw-mode lifecycle. The pure leaves —
  * `controller.ts` (state machine), `render/*` (presentation builders + Region),
  * and `input/keys.ts` (a pure Buffer→KeyEvent parser that never reads a stream)
  * — must stay raw-mode-free so they remain unit-testable without a terminal.
  * (The `eslint.config.js` path-group formalization lands in the dedicated P1
  * boundary task.)
  */
-const RAW_MODE_OWNER = "terminal-ui.ts"
-const isPureLeaf = (f: string): boolean => !f.endsWith(RAW_MODE_OWNER)
+const RAW_MODE_OWNERS = ["terminal-session.ts", "terminal-ui.ts"]
+const isPureLeaf = (f: string): boolean => !RAW_MODE_OWNERS.some((owner) => f.endsWith(owner))
 
 /**
  * `terminal-coordinator.ts` (P2.1/P2.2, ADR `docs/decisions/2026-07-10-tui-terminal-ownership.md`)
@@ -59,7 +59,7 @@ describe("tui layer boundaries (L1 guard)", () => {
     expect(SINK_IMPORT.test('import x from "~/lib/observability/sinks"')).toBe(true) // barrel form
     // Positive control: the raw-mode owner really does use raw mode (else the
     // "pure leaves" assertion below could pass vacuously if the owner were renamed).
-    const owner = tuiFiles().find((f) => f.endsWith(RAW_MODE_OWNER))
+    const owner = tuiFiles().find((f) => f.endsWith("terminal-session.ts"))
     expect(owner).toBeDefined()
     expect(readFileSync(owner!, "utf8")).toMatch(RAW_STDIN)
   })

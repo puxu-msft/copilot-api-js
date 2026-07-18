@@ -67,7 +67,7 @@ function countOf(haystack: string, needle: string): number {
 function makeRegion(cols: number, rowsRef: { rows: number }): { region: Region; io: ReturnType<typeof makeStdout> } {
   const io = makeStdout()
   const region = new Region({
-    stdout: io.stdout,
+    output: { writeFrame: (data: string) => io.stdout.write(data) },
     getColumns: () => cols,
     getRows: () => rowsRef.rows,
   })
@@ -137,6 +137,24 @@ describe("Region (DECSTBM sticky bottom panel)", () => {
     expect(out).toContain("z")
     expect(out).not.toContain("more below")
     expect(countOf(out, "\x1b[2K")).toBe(3) // N = 3
+  })
+
+  test("defensive width clamp preserves complete ANSI SGR sequences and grapheme clusters", () => {
+    const { region, io } = makeRegion(4, rowsRef)
+    region.render(["\x1b[7m1️⃣1️⃣x\x1b[27m"])
+    const out = io.all()
+
+    expect(out).toContain("\x1b[7m1️⃣\x1b[27m…")
+    expect(out).not.toContain("\x1b[7…")
+  })
+
+  test("defensive width clamp honors canonical width for ambiguous symbols", () => {
+    const { region, io } = makeRegion(4, rowsRef)
+    region.render(["\x1b[2m♠♠♠\x1b[22m"])
+    const out = io.all()
+
+    expect(out).toContain("\x1b[2m♠\x1b[22m…")
+    expect(out).not.toContain("♠♠…")
   })
 
   test("steady-state re-render with unchanged rows/N re-asserts DECSTBM (fix A self-heal)", () => {

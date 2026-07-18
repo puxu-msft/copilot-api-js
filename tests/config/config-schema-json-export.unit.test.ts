@@ -36,7 +36,7 @@ describe("ConfigSchema → JSON Schema export", () => {
   test("known top-level keys are present in JSON Schema properties", () => {
     const json = toJsonSchema()
     const props = json.properties as Record<string, unknown>
-    for (const key of ["proxy", "anthropic", "history", "shutdown", "rate_limiter", "openai_responses", "model_overrides", "timeouts", "retry"]) {
+    for (const key of ["proxy", "anthropic", "history", "shutdown", "rate_limiter", "openai_responses", "model_mappings", "timeouts", "retry"]) {
       expect(props[key]).toBeDefined()
     }
   })
@@ -66,11 +66,11 @@ describe("ConfigSchema → JSON Schema export", () => {
 
   test("free-form records appear as additionalProperties: {schema}", () => {
     const json = toJsonSchema()
-    const modelOverrides = pickObjectSchema((json.properties as Record<string, unknown>).model_overrides)
-    expect(modelOverrides.type).toBe("object")
-    expect(modelOverrides.additionalProperties).toBeDefined()
+    const modelMappings = pickObjectSchema((json.properties as Record<string, unknown>).model_mappings)
+    expect(modelMappings.type).toBe("object")
+    expect(modelMappings.additionalProperties).toBeDefined()
     // user-defined keys allowed
-    expect(modelOverrides.additionalProperties).not.toBe(false)
+    expect(modelMappings.additionalProperties).not.toBe(false)
   })
 
   test("upstream_transport section: http2 + websocket sub-sections with expected leaf keys", () => {

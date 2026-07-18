@@ -57,7 +57,9 @@ const EXEMPT: Record<string, string> = {
   _getCumulativeCapKeysForTests: "read-only assertion hook — no state to reset",
   _projectDimBucketsForTests: "read-only projection hook — no state to reset",
   _isRollupTimerArmedForTests: "read-only assertion hook — no state to reset",
+  _isTelemetryShutdownSealedForTests: "read-only assertion hook — no state to reset",
   _runRollupTickForTests: "action hook (drives one rollup tick) — no state to reset",
+  resetReaperDiagnosticsForTests: "diagnostic snapshot reset — exercised by its owning tests",
   // telemetry injectors: per-test opt-in; their effect is undone by _resetRequestTelemetryForTests
   // (registered), which closes the injected db handle + restores OUTBOX_SOFT_CAP.
   _setTelemetryDbForTests: "db injector — reset via _resetRequestTelemetryForTests",

@@ -93,6 +93,7 @@ export class HistorySink {
       // system.* events. HistorySink subscribes only to request.* and does
       // NOT see its own emitted history.* events (avoids noisy default-case).
       (event) => event.kind.startsWith("request."),
+      { name: "history-sink" },
     )
   }
 
@@ -199,7 +200,7 @@ export class HistorySink {
         // `resolved`/`multiplier` are unknown at request entry (model not yet resolved) —
         // the terminal `toHistoryEntry` completes them. `max_tokens`/`temperature`/`thinking`
         // are derivable from `body` and filled at terminal.
-        ...(orig.model !== undefined && { model: { requested: orig.model } }),
+        model: { requested: orig.model },
         clientRequest: {
           method: ctx.method,
           path: ctx.path,
@@ -320,7 +321,8 @@ export function collectAttemptStages(ctx: RequestContext): Array<StagePayload> {
   // New per-attempt leg stages (RFC §3). The upstreamResponse layers on per-attempt
   // response headers + the attempt's own committed frames (top-level trailers/frames
   // resolve at finalize).
-  if (a.effectiveRequest) stages.push({ stage: STAGE.effectiveSource, attemptIndex: a.index, payload: legFromEffectiveSource(a.effectiveRequest, pipelineFromAttempt(a)) })
+  if (a.effectiveRequest)
+    stages.push({ stage: STAGE.effectiveSource, attemptIndex: a.index, payload: legFromEffectiveSource(a.effectiveRequest, pipelineFromAttempt(a)) })
   if (a.wireRequest) stages.push({ stage: STAGE.upstreamRequest, attemptIndex: a.index, payload: legFromUpstreamRequest(a.wireRequest) })
   if (attemptResponse) {
     stages.push({

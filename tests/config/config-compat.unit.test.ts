@@ -40,6 +40,23 @@ function warnedMessages(): Array<string> {
 }
 
 describe("config compat — legacy key migration (file load)", () => {
+  // model_overrides → model_mappings (top-level key rename, Phase 7 of the
+  // anthropic↔responses direct-bridge RFC §6.2). Legacy key read-time aliased.
+  test("model_overrides → model_mappings (top-level rename)", () => {
+    const result = validateConfig({ model_overrides: { opus: "claude-opus-4.8" } })
+    expect(result.model_mappings).toEqual({ opus: "claude-opus-4.8" })
+    expect((result as Record<string, unknown>).model_overrides).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("model_overrides"))).toBe(true)
+  })
+
+  test("model_overrides → model_mappings: user-set new key wins over migrated legacy key", () => {
+    const result = validateConfig({
+      model_overrides: { opus: "legacy-target" },
+      model_mappings: { opus: "new-target" },
+    })
+    expect(result.model_mappings).toEqual({ opus: "new-target" })
+  })
+
   test("rate_limiter.recovery_timeout (minutes) → recovery_interval (seconds, ×60)", () => {
     const result = validateConfig({ rate_limiter: { recovery_timeout: 10 } })
     // 10 minutes → 600 seconds (the unit unification)
@@ -283,6 +300,12 @@ describe("config compat — legacy key migration (file load)", () => {
 })
 
 describe("config compat — validateConfigInput (PUT) also migrates (C3)", () => {
+  test("PUT with legacy model_overrides migrates to model_mappings", () => {
+    const r = validateConfigInput({ model_overrides: { sonnet: "claude-sonnet-5" } })
+    expect(r.valid).toBe(true)
+    if (r.valid) expect(r.value.model_mappings).toEqual({ sonnet: "claude-sonnet-5" })
+  })
+
   test("PUT with legacy fetch_timeout is accepted (not 400) and migrated to timeouts.response_header", () => {
     const r = validateConfigInput({ fetch_timeout: 30 })
     expect(r.valid).toBe(true)

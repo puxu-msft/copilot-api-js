@@ -3,7 +3,7 @@
  * bundled defaults, NOT replace. The load-bearing regression is the H3 case —
  * a user `stream_idle_overrides: {}` must NOT wipe the bundled `gpt-5.5: 600`.
  *
- * Mirrors the `model_overrides merges per-key` harness in config-merge.unit.test.ts.
+ * Mirrors the `model_mappings merges per-key` harness in config-merge.unit.test.ts.
  */
 
 import {
