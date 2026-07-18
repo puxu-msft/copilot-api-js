@@ -243,7 +243,7 @@ async function getSession(origin: string): Promise<http2.ClientHttp2Session> {
     // Two distinct responsibilities, split by event: `removeFromPool` stops routing
     // NEW requests to this session (all of error/close/goaway — a GOAWAY'd session
     // must not take new streams); `clearInterval` stops the keepalive PING only on
-    // actual session death (error/close). A `goaway` does NOT destroy the session —
+    // actual session death (error/close). @invariant A `goaway` does NOT destroy the session —
     // its already-in-flight streams keep running, so the keepalive must keep pinging
     // them until `close` fires (which is guaranteed to follow, and clears the timer
     // then). Clearing on `goaway` would strand a draining long-thinking stream in

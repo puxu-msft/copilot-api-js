@@ -52,4 +52,24 @@ describe("generation runtime engine import boundaries", () => {
       expect(source, file).not.toMatch(/hono\/(?:streaming|ws)|makeSseSink|makeWsSink|makeDeliverySseSink|makeDeliveryWsSink/)
     }
   })
+
+  test("dispatch disposal cannot own pooled HTTP/2 sessions or their keepalive timers", async () => {
+    const source = await readFile(path.resolve(import.meta.dir, "../../src/lib/transport/dispatch-lifecycle.ts"), "utf8")
+    expect(source).not.toMatch(/http2-client|closeHttp2Sessions|scheduleH2KeepalivePing|clearInterval|session\.close/)
+    expect(source).toContain("connectionReusable: true")
+  })
+
+  test("HTTP/2 GOAWAY removes routing eligibility but preserves PING until error or close", async () => {
+    const source = await readFile(path.resolve(import.meta.dir, "../../src/lib/transport/http2-client.ts"), "utf8")
+    expect(source).toMatch(/session\.on\("error", dispose\)/)
+    expect(source).toMatch(/session\.on\("close", dispose\)/)
+    expect(source).toMatch(/session\.on\("goaway", removeFromPool\)/)
+    expect(source).not.toMatch(/session\.on\("goaway", dispose\)/)
+  })
+
+  test("upstream WS has no application PING scheduler that could masquerade as semantic progress", async () => {
+    const source = await readFile(path.resolve(import.meta.dir, "../../src/lib/openai/upstream-ws-connection.ts"), "utf8")
+    const code = source.replaceAll(/^\/\/.*$/gm, "")
+    expect(code).not.toMatch(/\.ping\(|setInterval\(/)
+  })
 })
