@@ -48,6 +48,7 @@ vi.mock("@/hooks/useStatus", () => ({
         ],
         h2Reconcile: { state: "idle", lastCompletedGeneration: 3, lastError: null },
         upstreamWsPool: [{ key: "conn-1", model: "gpt-5.5", state: "busy", generation: 1 }],
+        upstreamWsReconcile: { state: "failed", lastCompletedGeneration: 1, lastError: "simulated rescheduleIdleTimeout failure" },
         runtimeCapability: { runtime: "bun", wsApplicationKeepalive: "unavailable" },
       },
     },
@@ -109,5 +110,9 @@ describe("OverviewPage · fork B (designVersion routes legacy vs shadcn)", () =>
     expect(screen.getByText("active")).toBeDefined()
     expect(screen.getByText("busy")).toBeDefined()
     expect(screen.getByText("32")).toBeDefined()
+
+    // Upstream WS reconcile(merged-state review fix,spec §4 D7 HIGH-3/HIGH-7 对称性)—— h2/WS 两侧
+    // 各自 reconcile 状态独立可见,非只 h2 一侧;失败态 + lastError 都渲染出来,不是死字段。
+    expect(screen.getByText(/simulated rescheduleIdleTimeout failure/)).toBeDefined()
   })
 })

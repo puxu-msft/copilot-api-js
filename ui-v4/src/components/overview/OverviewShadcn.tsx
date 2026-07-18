@@ -168,9 +168,15 @@ export function OverviewShadcn() {
                   </div>
                 ))}
                 <div className="flex flex-col gap-0.5">
-                  <dt className="text-xs text-muted-foreground">Reconcile</dt>
+                  <dt className="text-xs text-muted-foreground">H2 reconcile</dt>
                   <dd className="font-medium tabular-nums">
                     {transport.h2Reconcile.state} (gen {transport.h2Reconcile.lastCompletedGeneration})
+                  </dd>
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <dt className="text-xs text-muted-foreground">Upstream WS reconcile</dt>
+                  <dd className="font-medium tabular-nums">
+                    {transport.upstreamWsReconcile.state} (gen {transport.upstreamWsReconcile.lastCompletedGeneration})
                   </dd>
                 </div>
                 <div className="flex flex-col gap-0.5">
@@ -182,7 +188,10 @@ export function OverviewShadcn() {
               </dl>
 
               {transport.h2Reconcile.lastError === null ? null : (
-                <div className="text-sm text-destructive">Last reconcile error: {transport.h2Reconcile.lastError}</div>
+                <div className="text-sm text-destructive">H2 reconcile error: {transport.h2Reconcile.lastError}</div>
+              )}
+              {transport.upstreamWsReconcile.lastError === null ? null : (
+                <div className="text-sm text-destructive">Upstream WS reconcile error: {transport.upstreamWsReconcile.lastError}</div>
               )}
 
               <div className="flex flex-col gap-1">
