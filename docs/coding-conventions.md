@@ -31,6 +31,8 @@ CLAUDE.md 放原则；本文件放可查阅的事实性约定。
 
 禁止用一个 wall-clock 测试跨层证明全部行为。任何“rotation / exactly-once / production wired / flush completed”断言先用正样本证明目标路径确实触发；exactly-once 用计数多重集，不用会折叠重复的 `Set`。诊断文件域详见 skill `diagnostic-durability`。
 
+## 实现前门禁
+
 复杂持久化或生命周期改动开始前，先把冻结 spec/plan 与代码做 inventory，逐项标记 `present / missing / misplaced`；再写 producer ownership、durable unit、commit point、crash-before/after-commit、retry、corrupt、concurrent shutdown failure matrix。计划承诺的核心模块缺失时，应先补架构，不得在最近的 consumer 内打补丁。
 
 ## 依赖选型 bun-first
