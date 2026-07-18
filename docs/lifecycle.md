@@ -14,7 +14,7 @@
 
 信号契约只有两层：
 
-1. 第一次 SIGINT/SIGTERM 启动完整关闭流水线，并立即通过独立于 observability、FileSink、History 的终端紧急通道反馈“正在优雅关闭；再次 Ctrl+C 将立即退出”。
+1. 第一次 SIGINT/SIGTERM 启动完整关闭流水线，并立即通过独立于 observability、StructuredFileSink、History 的终端紧急通道反馈“正在优雅关闭；再次 Ctrl+C 将立即退出”。
 2. 第二次 SIGINT/SIGTERM 是全局逃生舱：只要生命周期尚未进入 `stopped`，无论当前在停止入口、等待请求、发送 abort、强关连接、History 落盘还是 Telemetry flush，均直接 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。第二次信号不再用于把流水线逐步推进一格。
 
 ### Step 1: Setup（立即）
@@ -66,7 +66,7 @@
 
 ### 用户可见反馈不依赖持久化
 
-第一次和第二次信号的关键反馈经 `terminal-coordinator.emergencyWrite()` 直接写当前终端 owner；无 TUI owner 时直接写 stderr。它不经过 consola republish、observability bus、FileSink、History 或 Telemetry，避免“History 正在落盘，所以 Ctrl+C 看起来没有响应”的依赖环。普通阶段进度日志仍走标准 observability 日志管线。
+第一次和第二次信号的关键反馈经 `terminal-coordinator.emergencyWrite()` 直接写当前终端 owner；无 TUI owner 时由 `EmergencyOutput` best-effort 写 stderr。它不经过 consola adapter、observability bus、StructuredFileSink、History 或 Telemetry，避免“History 正在落盘，所以 Ctrl+C 看起来没有响应”的依赖环。普通阶段进度日志走 canonical `system.diagnostic` 管线。finalize 聚合 History/Telemetry/diagnostic 三个 barrier：writer drop/error 是 sticky failure，发布 `system.shutdown_failed` 且不 resolve 成功 latch；只有全部 durability barrier 成功才发布唯一 finalized wire 终态并进入 stopped。
 
 纯 JavaScript 信号回调只能在事件循环获得调度时运行。主树 History finalize 已把 zstd 放到 libuv，并分片搜索索引，但大型 `JSON.stringify` 与短同步 SQLite transaction 仍可能造成有界延迟；第二信号一旦进入 JS handler，绝不再等待这些 barrier。若未来实测同步块重新增长，必须继续把 CPU prepare 移出主线程，而不是削弱两信号契约。
 

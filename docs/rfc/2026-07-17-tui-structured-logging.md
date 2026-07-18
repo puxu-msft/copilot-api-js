@@ -1,6 +1,6 @@
 # RFC：TUI 模块化与结构化诊断日志
 
-- 状态：部分实施（Phase 5–7 TUI 已完成；structured file/logger/config/shutdown durability 与 Phase 8–9 不由本次 TUI 实施宣告完成）
+- 状态：Implemented（Phase 1–9 已完成；验收证据见实施计划 README）
 - 日期：2026-07-17
 - 来源：[TUI 与终端日志机制全面审计](../audits/2026-07-17-tui-terminal-logging.md)
 - 实施分支：`feat/tui-structured-logging`
@@ -285,7 +285,7 @@ tui:
 6. TUI session/input/output：KeyDecoder、OutputArbiter、TerminalSession，消除 TerminalUi 直接 I/O。
 7. Detail/capability：viewport、sanitizer、TERM/no-tui、SIGTSTP/SIGCONT、resize。
 
-Phase 5–7 实施状态（2026-07-17）：已完成。`TerminalUi` 为 264 行薄编排；request projection 全归纯 `ActiveRequestStore.apply()`；controller 以 request id 为真值；detail 拆为 keyed document + viewport；输入、session、output 与 terminal view 各有独立 owner。真 PTY oracle 在独立 controlling session 中以 `waitpid(WUNTRACED)`/`WIFSTOPPED` 连跑 8 次，并验证 stop 前 cooked、SIGCONT 后 raw。Bun 1.3 的两个运行时差异已收敛在 `TerminalSession`：JS listener 移除后须恢复 native `SIG_DFL`，且 Bun CLI/JS worker 是同一前台 process group，故通过 libc 向整组发送 SIGTSTP。此状态不覆盖 Phase 8 性能测量或 Phase 9 全项目 closeout，也不替 structured logging 其余模块背书。
+Phase 5–7 实施状态（2026-07-17）：已完成。`TerminalUi` 为不足 400 行的薄编排；request projection 全归纯 `ActiveRequestStore.apply()`；controller 以 request id 为真值；detail 拆为 keyed document + viewport；输入、session、output 与 terminal view 各有独立 owner。真 PTY oracle 在独立 controlling session 中以 `waitpid(WUNTRACED)`/`WIFSTOPPED` 连跑 8 次，并验证 stop 前 cooked、SIGCONT 后 raw。Bun 1.3 的两个运行时差异已收敛在 `TerminalSession`：JS listener 移除后须恢复 native `SIG_DFL`，且 Bun CLI/JS worker 是同一前台 process group，故通过 libc 向整组发送 SIGTSTP。
 8. Performance：真实 workload probe 后定 coalescing/buffer caps，stream_progress 50–100ms coalesce，terminal 前 flush。
 9. Closeout：全量/PTY 8–25 连跑、双进程 logs 25 轮、Bun+Node backend、文档/ADR/backlog 同步、合并态对抗 review。
 

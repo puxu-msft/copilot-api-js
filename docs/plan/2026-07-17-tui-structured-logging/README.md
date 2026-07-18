@@ -1,6 +1,6 @@
 # TUI 模块化与结构化诊断日志实施计划
 
-- 状态：Partially implemented（Phase 1–7 核心行为完成；Phase 8 性能治理与 Phase 9 最终全域 closeout 进行中）
+- 状态：Implemented（Phase 1–9 完成；合并态评审 major 已闭环）
 - 日期：2026-07-17
 - 冻结设计：[RFC：TUI 模块化与结构化诊断日志](../../rfc/2026-07-17-tui-structured-logging.md)
 - 详细计划：[implementation-plan.md](implementation-plan.md)
@@ -54,6 +54,15 @@ RFC 编号顺序仍是默认集成顺序。Phase 4 与 Phase 5 只有逻辑并�
 | 7 | viewport、安全渲染、capability 与 job control | 50+ attempts 全可达、恶意 ANSI 被阻断、TERM/no-tui plain、真 PTY WIFSTOPPED |
 | 8 | 由实测数据驱动的有界性能治理 | workload probe、50–100ms coalesce、terminal 前 flush、队列 cap 与 health 可见 |
 | 9 | 合并态验收与文档收口 | 全量绿、PTY 8–25 连跑、双进程 25 轮、Bun+Node、文档与 backlog 同步、独立 review |
+
+## 最终验收证据
+
+- Backend：全量单进程套件 `5451 pass / 0 fail`；删去 legacy FileSink 专属测试后总数相应减少，后续复跑仍为 0 fail。
+- PTY：9 个测试全绿；no-eaten/footer/detail/resize 各连跑 10 次，job-control 独立 controlling PTY 连跑 8 次并以 `WIFSTOPPED` 证明真 suspend。
+- Structured file：两个独立进程并发 size roll，25 轮共 5000 个标识 exactly-once、零 ENOENT；drop/error 是 sticky durability failure，close reject 并驱动 shutdown failed。
+- Credential：随机 secret-key 正样本在 raw source 可命中，canonical/terminal/NDJSON 全轨零命中；GitHub token 与 device user_code 仅走 `SensitiveOutputPort.writeOnce()`。
+- Performance：production-wired 10k stream-progress probe 约 21ms、最大 event-loop gap约 11ms、terminal 输出 65 bytes；75ms latest-value coalescer 在 terminal 前按 request id 强制 flush。
+- Static/build：typecheck、changed-files lint、backend build 通过。全仓 `lint:all` 仍有 133 个既有文件的 469 个基线问题；本特性变更文件零 lint error。
 
 ## 全局验证命令
 
