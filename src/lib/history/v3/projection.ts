@@ -207,6 +207,22 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
   const state = lifecycleState(record)
   const lastAttempt = attempts.at(-1)
   const clientTrack = record.egress?.client
+  // The terminal.metadata channel (commitTerminal, request.ts finalizeGenerationDelivery) is the
+  // producer for entry-level fields that have no other natural home in the V3 record shape —
+  // queueWaitMs/warningMessages/pipelineInfo/preprocessing/timing/rawPath/multiplier (V3 projection
+  // gap audit §C step 5). `durationMs` was already wired; the rest are new.
+  const terminalMeta = metadata(record.terminal?.metadata) as
+    | {
+        durationMs?: number
+        queueWaitMs?: number
+        warningMessages?: HistoryEntry["warningMessages"]
+        pipelineInfo?: HistoryEntry["pipelineInfo"]
+        preprocessing?: HistoryEntry["preprocessing"]
+        timing?: HistoryEntry["timing"]
+        rawPath?: string
+        multiplier?: number
+      }
+    | undefined
   const clientPayload = payload(values, clientTrack)
   const clientMetadata = metadata(clientTrack?.metadata)
   return {
@@ -216,12 +232,21 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
     agentId: record.identity.agentId,
     startedAt: record.identity.createdAt,
     endedAt: record.identity.createdAt + Math.max(0, (record.terminal?.sequence ?? record.lastSequence) - 1),
-    durationMs: metadata(record.terminal?.metadata)?.durationMs as number | undefined,
+    durationMs: terminalMeta?.durationMs,
     endpoint: (record.ingress?.format ?? "unknown") as HistoryEntry["endpoint"],
     state,
     active: false,
     pinned: stored.pinned ?? false,
     lastUpdatedAt: record.identity.createdAt,
+    queueWaitMs: terminalMeta?.queueWaitMs,
+    ...(terminalMeta?.warningMessages && terminalMeta.warningMessages.length > 0 && { warningMessages: terminalMeta.warningMessages }),
+    ...(terminalMeta?.pipelineInfo && { pipelineInfo: terminalMeta.pipelineInfo }),
+    ...(terminalMeta?.preprocessing && { preprocessing: terminalMeta.preprocessing }),
+    ...(terminalMeta?.timing && { timing: terminalMeta.timing }),
+    ...(terminalMeta?.rawPath !== undefined && { rawPath: terminalMeta.rawPath }),
+    // Deprecated top-level scalar (dual-written alongside `model.multiplier`, mirrors the legacy
+    // V2 producer — kept until consumers fully migrate to reading `model.multiplier`, RFC §4).
+    ...(terminalMeta?.multiplier !== undefined && { multiplier: terminalMeta.multiplier }),
     process:
       record.identity.process?.bootTime !== undefined && record.identity.process.version !== undefined ?
         (record.identity.process as HistoryEntry["process"])
@@ -230,6 +255,7 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
     model: {
       requested: record.routing?.requestedModel ?? ingressMeta?.model,
       resolved: record.routing?.resolvedModel,
+      ...(terminalMeta?.multiplier !== undefined && { multiplier: terminalMeta.multiplier }),
       outboundEndpoint: record.routing?.upstreamEndpoint,
       translated: metadata(record.routing?.metadata)?.translated as boolean | undefined,
       // `routeOverride` (the client's explicit `@cc/@responses/@messages` leg pin) is already

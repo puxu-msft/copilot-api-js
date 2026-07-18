@@ -662,11 +662,38 @@ export function createRequestContext(opts: {
         metadata: snapshotForRecorder(_forwardedResponse),
       },
     })
+    // Reuses the terminal.metadata channel (previously unused) as the minimal producer surface
+    // for entry-level fields that have no other natural home in the V3 record shape — mirrors the
+    // legacy V2 toHistoryEntry() producer (request.ts:1499+) so V3 doesn't silently drop them
+    // (V3 projection gap audit §C step 5). `durationMs` was ALREADY read back by projection.ts
+    // (`:` metadata(record.terminal?.metadata)?.durationMs) — this is what actually populates it;
+    // queueWaitMs/warningMessages/pipelineInfo/preprocessing/timing/rawPath/multiplier are new.
+    const finalEndTime = _endTime ?? Date.now()
+    const off = (epoch: number | undefined): number | undefined => (epoch === undefined ? undefined : epoch - startTime)
+    const clientTiming = {
+      ...(off(_clientTimingEpochs.streamOpen) !== undefined && { streamOpenMs: off(_clientTimingEpochs.streamOpen) }),
+      ...(off(_clientTimingEpochs.firstReal) !== undefined && { firstRealMs: off(_clientTimingEpochs.firstReal) }),
+      ...(off(_clientTimingEpochs.bufferHoldStart) !== undefined && { bufferHoldStartMs: off(_clientTimingEpochs.bufferHoldStart) }),
+    }
+    const mergedInfo = mergedPipelineInfo()
+    const resolvedForBilling = _resolvedModel ?? undefined
+    const billing = resolvedForBilling ? appState.modelIndex.get(resolvedForBilling)?.billing : undefined
+    const terminalMetadata = {
+      durationMs: finalEndTime - startTime,
+      queueWaitMs: _queueWaitMs,
+      ...(_warningMessages.length > 0 && { warningMessages: [..._warningMessages] }),
+      ...(mergedInfo && { pipelineInfo: mergedInfo }),
+      ...(mergedInfo?.preprocessing && { preprocessing: mergedInfo.preprocessing }),
+      ...(Object.keys(clientTiming).length > 0 && { timing: { client: clientTiming } }),
+      ...(opts.rawPath !== undefined && { rawPath: opts.rawPath }),
+      ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+    }
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
       outcome: pendingGenerationTerminal.outcome,
       ...(pendingGenerationTerminal.error !== undefined && { error: pendingGenerationTerminal.error }),
       ...(operationUsage(_response) !== undefined && { usage: operationUsage(_response) }),
       ...(pendingGenerationTerminal.attribution !== undefined && { attribution: pendingGenerationTerminal.attribution }),
+      metadata: terminalMetadata,
     })
     publishModelOperationTerminal(modelOperationTerminalRecord)
     rawCaptureLease.release()
