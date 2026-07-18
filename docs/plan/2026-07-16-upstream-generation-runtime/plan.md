@@ -1,6 +1,6 @@
 # 上游生成运行时重构——分阶段 TDD 实施计划
 
-日期：2026-07-16｜状态：**待评审**｜权威规格：[RFC](../../rfc/2026-07-16-upstream-generation-runtime.md)
+日期：2026-07-16｜状态：**Phase 0-9 后端完成；终局 merged-state review PASS，待 P10 client/真实 GHC 验证**｜权威规格：[RFC](../../rfc/2026-07-16-upstream-generation-runtime.md)
 
 ## 0. 目标与红线
 
@@ -422,7 +422,7 @@ Client-effective request telemetry在delivery terminal；upstream-physical dispa
 
 ### P10-T3：默认开启与最终评审
 
-通过真实oracle后把 `generation.hedge.enabled` bundled默认翻true。连跑时序测试25次；独立 verifier按RFC推导黑盒oracle；whole-branch reviewer 0 blocker/major后合并。
+`generation.hedge.enabled` 已在配置接线阶段提前翻为 bundled default `true`，完整后端测试与终局 merged-state review均通过；P10 仍须用真实client/GHC oracle验证该默认值。连跑时序测试25次；独立 verifier按RFC推导黑盒oracle；whole-branch reviewer 0 blocker/major后合并。
 
 **Commit**：`feat(pipeline): enable fast-retry generation runtime`
 
