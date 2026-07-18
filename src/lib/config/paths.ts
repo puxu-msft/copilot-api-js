@@ -69,6 +69,8 @@ export const PATHS = {
   HISTORY_DB: path.join(APP_DIR, "history.db"),
   /** Online History V3 store. Starts empty and never backfills from HISTORY_DB. */
   HISTORY_V3_DB: path.join(APP_DIR, "history-v3.db"),
+  /** Disposable Tantivy full-text index. Never authoritative and never stored inside History SQLite. */
+  HISTORY_SEARCH_DIR: path.join(APP_DIR, "history-search"),
   /** Optional exact-byte CAS, physically and lifecycle-isolated from semantic V3. */
   HISTORY_RAW_DB: path.join(APP_DIR, "raw.db"),
   /** Sidecar SQLite DB for the durable (session,agent) thinking-quarantine store (L3). */

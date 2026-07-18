@@ -33,7 +33,6 @@ import {
   getV3StoreStatus,
   prepareModelOperation,
   resetV3WriterForTests,
-  searchV3OperationIds,
 } from "~/lib/history/v3/store"
 
 import {
@@ -49,11 +48,6 @@ import {
 function median(values: Array<number>): number {
   const sorted = [...values].sort((a, b) => a - b)
   return sorted[Math.floor(sorted.length / 2)]
-}
-
-function p95(values: Array<number>): number {
-  const sorted = [...values].sort((a, b) => a - b)
-  return sorted[Math.ceil(sorted.length * 0.95) - 1]
 }
 
 function deterministicNoise(seed: number, bytes: number): string {
@@ -78,9 +72,7 @@ function liveV3Bytes(db: Database): number {
         COALESCE((SELECT SUM(LENGTH(manifest_gz)) FROM v3_operations), 0) +
         COALESCE((SELECT SUM(COALESCE(LENGTH(track_gz), LENGTH(refs_json))) FROM v3_tracks), 0) +
         COALESCE((SELECT SUM(LENGTH(payload_gz)) FROM v3_timeline_chunks), 0) +
-        COALESCE((SELECT SUM(LENGTH(payload_gz)) FROM v3_journal), 0) +
-        COALESCE((SELECT SUM(LENGTH(document_gz)) FROM v3_search_objects), 0) +
-        COALESCE((SELECT SUM(LENGTH(operation_id) + LENGTH(object_hash)) FROM v3_search_membership), 0) AS bytes`,
+        COALESCE((SELECT SUM(LENGTH(payload_gz)) FROM v3_journal), 0) AS bytes`,
     )
     .get() as { bytes: number }
   return row.bytes
@@ -171,44 +163,6 @@ describe("History V3 store performance", () => {
     expect(physicalRatio).toBeGreaterThanOrEqual(10)
     expect(liveRatio).toBeGreaterThanOrEqual(10)
   }, 15_000)
-
-  test("search p95 stays within the interactive latency budget at 256 operations", () => {
-    const seedCorpus = (offset: number, count: number): void => {
-      for (let index = 0; index < count; index++) {
-        const record = longConversationFixture(`search-${offset + index}`, 12, 384)
-        commitPreparedOperation(getDatabase(), prepareModelOperation(record))
-      }
-    }
-    const sample = (needle: string): number => {
-      searchV3OperationIds(needle, undefined, 25) // warm statements/pages
-      const rounds = Array.from({ length: 3 }, () => {
-        const latencies = Array.from({ length: 80 }, () => {
-          const start = performance.now()
-          searchV3OperationIds(needle, undefined, 25)
-          return performance.now() - start
-        })
-        return p95(latencies)
-      })
-      // Full-suite Bun runs share one process with GC and unrelated timers. The
-      // minimum repeated p95 represents the stable query path while still using
-      // 80 samples; a single scheduling pause must not turn this into a false red.
-      return Math.min(...rounds)
-    }
-
-    seedCorpus(0, 64)
-    const smallP95Ms = sample("no-such-search-token")
-    seedCorpus(64, 192)
-    const largeP95Ms = sample("no-such-search-token")
-    const corpusRatio = 4
-    const latencyRatio = largeP95Ms / smallP95Ms
-
-    console.log("HISTORY_V3_PERF search", JSON.stringify({ smallOperations: 64, largeOperations: 256, smallP95Ms, largeP95Ms, corpusRatio, latencyRatio }))
-    // The current unique-payload membership search is corpus-dependent; a
-    // strict ratio < corpusRatio is mathematically mismatched and becomes
-    // flaky when the 64-row baseline is unusually cache-hot. Gate the actual
-    // operator-facing SLO instead, while logging the ratio as trend data.
-    expect(largeP95Ms).toBeLessThan(25)
-  })
 
   test("writer pending bytes track logical queue bytes and drain releases RSS pressure", async () => {
     const records = [

@@ -21,6 +21,7 @@ import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats
 import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistorySummaries } from "~/lib/history/queries"
 import { getRawCaptureStatus } from "~/lib/history/raw/manager"
+import { getTantivySearchStatus } from "~/lib/history/search-tantivy"
 import { listInFlightEntries } from "~/lib/history/store"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
 import {
@@ -77,6 +78,7 @@ const ServerStatusSchema = z
     tool_input_repair: z.record(z.string(), z.unknown()),
     thinking_blocks: z.record(z.string(), z.unknown()),
     history_raw_capture: z.record(z.string(), z.unknown()),
+    history_search: z.record(z.string(), z.unknown()),
   })
   .openapi("ServerStatus")
 
@@ -208,6 +210,7 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
       requestTelemetry,
 
       history_raw_capture: getRawCaptureStatus(),
+      history_search: getTantivySearchStatus(),
 
       memory: {
         historyBackend: "sqlite",

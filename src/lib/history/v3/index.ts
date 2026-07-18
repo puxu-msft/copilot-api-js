@@ -1,7 +1,6 @@
 export {
   //
   commitPreparedOperation,
-  containingV3OperationIds,
   drainV3Writer,
   enqueueModelOperation,
   ensureV3Schema,
@@ -13,7 +12,6 @@ export {
   prepareModelOperation,
   recoverV3Journal,
   resetV3WriterForTests,
-  searchV3OperationIds,
   setV3OperationPinned,
   V3_SCHEMA_SQL,
   type V3StoredOperation,

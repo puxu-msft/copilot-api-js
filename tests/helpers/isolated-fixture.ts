@@ -49,6 +49,8 @@ import {
 } from "~/lib/history/entries"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
 import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
+import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
+import { resetTantivySearchForTests } from "~/lib/history/search-tantivy"
 import { resetArchiveWorkerForTests } from "~/lib/history/sqlite/archive-worker"
 import { resetCacheWriteBackfillForTests } from "~/lib/history/sqlite/cache-write-backfill"
 import { resetCalibrationBackfillForTests } from "~/lib/history/sqlite/calibration-backfill"
@@ -114,6 +116,8 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
+  { name: "resetTantivySearchForTests", reset: resetTantivySearchForTests },
+  { name: "setNativeHistorySearchForTests", reset: () => setNativeHistorySearchForTests(undefined) },
   { name: "resetResponseSessionStoreForTests", reset: resetResponseSessionStoreForTests },
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },

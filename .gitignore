@@ -9,6 +9,8 @@
 coverage/
 dist/
 node_modules/
+native/history-search/target/
+native/history-search/*.node
 
 .superpowers
 .env

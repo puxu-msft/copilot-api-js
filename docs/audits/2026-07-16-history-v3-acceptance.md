@@ -21,7 +21,7 @@
 
 只读检查现有 `history-v3.db`：约 **3.996 GB／2,113 operations**。其中 compressed manifests 约 1.034 GB、objects 约 1.385 GB、tracks 约 145 MB、search objects 约 1.359 GB；最大单个 compressed manifest 约 6.53 MB（解压约 18.35 MB）。同一大请求通过 metadata/tracks/search 被重复保存。
 
-处置：format-v2 manifest 只保留结构、handle→CAS 映射、sequence roots/overlays；完整 tracks 压缩到 `track_gz`；search v2 复用 authoritative CAS，不再复制 document bytes。**没有修改该生产数据库。**
+处置：format-v2 manifest 只保留结构、handle→CAS 映射、sequence roots/overlays；完整 tracks 压缩到 `track_gz`。随后 schema v5 完全删除 `v3_search_*`，新 terminal 派生进独立 Tantivy v1 sidecar。**审计过程没有修改生产数据库；代码只在未来正常启动 reconcile 时执行迁移。**
 
 ### 3. Raw 热重载证据更正
 
@@ -37,7 +37,7 @@
 
 ### 4. 读取内存与派生数据
 
-修复前 search 使用 `.all()` 载入全部 search rows 并逐个解压。修复后按 128 个对象分页；列表/session/stats 优先读取 `summary_json`，旧 V3 行由有 poison backlog 的 summary backfill 补齐。详情仍按需 hydrate canonical record。
+修复前 search 使用 `.all()` 载入全部 search rows 并逐个解压。当前实现已移除该读取与全部内嵌 search tables；兼容 API 返回空数据。列表/session/stats 优先读取 `summary_json`，旧 V3 行由有 poison backlog 的 summary backfill 补齐。详情仍按需 hydrate canonical record。
 
 ### 5. 测试隔离
 
@@ -55,7 +55,7 @@
 | Raw generation 热重载 | 通过 | `tests/history/raw/manager.it.test.ts` |
 | V3-only 产品读面 | 通过 | query/session/stats guard 与 API tests |
 | 生产无 retention/自动删除 | 通过 | 无 reaper 接入；仅 test-only `clearHistory()` 可清空临时 V3 store |
-| 等价压缩容量 ≥10× | 通过 | 复核运行约 14.0× page delta、29.5× live blobs；测试硬门槛为 10× |
+| 等价压缩容量 ≥10× | 通过 | schema-v5 复核运行约 20.1× page delta、39.3× live blobs；测试硬门槛为 10× |
 | 已有 format-v1 数据自动瘦身 | 不在范围 | 明确不在线迁移、不触碰 legacy artifact |
 
 ## 可复现测试

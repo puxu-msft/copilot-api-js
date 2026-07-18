@@ -710,11 +710,11 @@ export interface SummaryResult {
   prevCursor: string | null
 }
 
-/** The five search facets exposed by the dedicated `/api/search` endpoint. */
+/** Retained wire values for the compatibility `/api/search` endpoint. */
 export type SearchSource = "inbound" | "rewrites-req" | "rewrites-resp" | "req-headers" | "resp-headers"
 
 /**
- * One row of a dedicated full-text search result (RFC search-index, reviewer M5).
+ * Legacy wire shape retained while embedded full-text search is retired.
  * For the content-addressed `inbound` source, `hash` is the matched message hash
  * and `ownerReqId` is the EARLIEST (min started_at) request referencing it — the
  * "eliminate previous" dedup so a message recurring across N requests is ONE row.
@@ -730,11 +730,11 @@ export interface SearchResultRow {
   summary: EntrySummary
 }
 
-/** A page of search results plus a partial-completion hint while the backfill runs. */
+/** Compatibility search page; the current HTTP implementation returns empty rows. */
 export interface SearchResult {
   rows: Array<SearchResultRow>
   nextCursor: string | null
-  /** True while the backfill is incomplete — `inbound` results cover only already-built rows. */
+  /** Legacy completeness hint; current empty compatibility responses use false. */
   partial: boolean
   /** Rough fraction (0–1) of rows indexed so far, when `partial`. */
   builtPct?: number

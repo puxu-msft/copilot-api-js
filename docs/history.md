@@ -49,7 +49,7 @@ Session header 候选（按优先级）：`x-session-id` → `x-conversation-id`
 **per-attempt 上游轨**（proxy ↔ upstream，`attempts[]` 逐次保留——~13 重试策略各产生独立上游往返，常见长度 =1）：
 
 - `effectiveSource` — 本轮 pipeline 工作载荷：`body` = `env.body` 本尊（SoT，逐字保留、不归一 IR）；`{ format, model, messageCount, messages, system }` 是 `body` 的非权威投影；`pipeline` 载本轮 truncation/sanitization/messageMapping。**注**：`env.body` 未必等于客户端端点格式——Gemini 在 route/parse 就 Gemini→CC，故其 `effectiveSource.format='cc'`、原始 Gemini 体只在 `clientRequest.body`
-- `upstreamRequest` — proxy → upstream：发往上游的最终 wire 请求，`{ format, model, messages, system, headers, body }`（**带 messages 投影**——`rewrites-req` 搜索 facet 读这条腿的 `messages`，丢投影会静默断搜索）
+- `upstreamRequest` — proxy → upstream：发往上游的最终 wire 请求，`{ format, model, messages, system, headers, body }`（带 messages 投影，供详情／debug replay 忠实还原）
 - `upstreamResponse` — upstream → proxy：**每个已 settled 的 attempt 恒载一条**（成功=真实响应；失败=合成裁决，`fail()`/`abort()` 与 `complete()` 对称写入）。`success` = 上游返回完整 2xx 且协议正常终止；`{ success, status?, headers, trailers?, body?, rawBody?, sseEvents?, usage?, stopReason?, model?, responseId?, copilotAnnotations?, toolSearchRequests? }`。成功流上游帧统一进 `upstreamResponse.sseEvents`；失败（非最终）attempt 的帧在 `attempts[].sseEvents`（L2 buffered-retry D1，仅失败 attempt 落 per-attempt 行）
 - `responseHeaders` — 逐 attempt 上游响应头（driver 每 attempt 写）
 
@@ -81,7 +81,7 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 每桶按 `started_at ASC, id ASC` 删除最旧条目，保留最新的对应 `limit` 条。**活跃态（`pending`/`executing`/`streaming`）落在两桶之外**——reaper 既不计数也不淘汰进行中请求的 head 行；它们的回收由下文的孤儿/stale 回收负责。删除 head 行时，其 `entry_stages` 子行经 `ON DELETE CASCADE` 一并删除。
 
-> **History V3（2026-07-16 起）**：在线服务只打开独立 `history-v3.db`，不打开、读取、迁移、回填或删除旧 `history.db` / `archive.db` / seal。终态 `ModelOperationRecord` 经单写者落 `v3_*` 表：semantic object CAS、operation manifest、ordered tracks、timeline chunks、自包含 journal 与可重建搜索投影。在线无 count retention、无自动删除、无内置冷归档。
+> **History V3（2026-07-16 起）**：在线服务只打开独立 `history-v3.db`，不打开、读取、迁移、回填或删除旧 `history.db` / `archive.db` / seal。终态 `ModelOperationRecord` 经单写者落 `v3_*` 表：semantic object CAS、operation manifest、ordered tracks、timeline chunks 与自包含 journal。schema v5 不再包含任何全文搜索表。在线无 count retention、无自动删除、无内置冷归档。
 
 完整表／列／主键／FK／索引、编码、journal 恢复协议及可选 raw sidecar schema 见 [History V3 SQLite schema](history-v3-schema.md)。该文档也明确解释了旧称“history.db + archive.db”与当前 `history-v3.db + raw.db` 的对应及差异。
 
@@ -91,7 +91,8 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 - `history.raw_capture.enabled=false` 默认关闭。开启后 exact bytes 写独立 `raw.db` CAS；热重载只切新 operation，旧在途 operation 继续写冻结 store generation 后 drain 关闭。
 - raw capture 失败不阻断代理或 semantic V3；status 暴露 generation、gap 与 last error。
 - format-v2 将对象数组拆成可共享的 sequence-prefix DAG，`cache_control`／`ephemeral` 作为 occurrence overlay 还原；manifest 不再携带大 semantic values，完整 ordered tracks 压缩存入 `track_gz`。
-- 搜索只登记 unique semantic payload object 与 operation membership，version 2 直接复用 authoritative CAS，不再复制 search document；按 128 个对象分页扫描。权威 operation 不依赖搜索成功。
+- 旧 `v3_search_objects`／`v3_search_membership`／`v3_search_backlog` 在 schema v5 reconcile 中事务性删除；canonical operation/CAS 不受影响，legacy `history.db` 不打开。
+- 磁盘 History 的新 terminal operation 异步写入独立 `history-search/` Tantivy v1 sidecar；索引不 stored 原始 content，只 stored operation identity/kind/time。失败只在 `/api/status.history_search` 显式降级，不回滚 History。
 - list/session/stats 优先读取 `v3_operations.summary_json`；旧 V3 行由带 poison backlog 的小批次 backfill 补齐，不改 canonical digest/manifest。
 - format-v1 行保持可读且不会在线重写；新布局只影响新写入。prepare/hash/compress 当前仍在主 JS 线程同步执行，本次容量优化不等于 event-loop CPU 隔离。
 
@@ -208,11 +209,11 @@ History 产品读面已切到 V3 canonical store：列表、详情、session 聚
 | `GET /history/api/stats` | V3 persisted + in-flight 去重合并视图统计。 |
 | `GET /history/api/entries/:id/export` | V3 entry 投影的 `.json.zst` 下载。 |
 | `GET /history/api/export` | V3 全量 JSON / CSV 导出。 |
-| `GET /history/api/search`、`GET /history/api/search/contains` | V3 unique semantic object 搜索与 object→operation companion；绝不读 V2 搜索表。 |
+| `GET /history/api/search`、`GET /history/api/search/contains` | 兼容端点；当前固定返回空 rows／reqIds，绝不读取 History SQLite 或 Tantivy。 |
 
 ## Legacy V2 内容寻址搜索（非产品读面）
 
-以下 `msg_blob`／`req_msg` 子系统只描述保留的 V2 `history.db` schema，**当前 History 产品搜索不读取它**。V3 搜索使用 `v3_search_objects`／`v3_search_membership`，format-v2 document bytes 直接复用 `v3_objects` CAS。旧设计见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md)。
+以下 `msg_blob`／`req_msg` 子系统只描述保留的 V2 `history.db` schema 与 characterization code，**当前在线服务不打开它，产品搜索也不读取它**。旧 artifact 按“不迁移、不修改”约束保留；新搜索架构见 [History search Tantivy sidecar v1](history-search-tantivy.md)。旧设计见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md)。
 
 **表**（`schema.ts`）：
 

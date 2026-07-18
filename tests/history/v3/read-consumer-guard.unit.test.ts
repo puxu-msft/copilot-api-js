@@ -33,10 +33,11 @@ describe("History V3 read-consumer cutover guard", () => {
     }
   })
 
-  test("V3 search and calibration startup never read legacy V2 indexes", () => {
+  test("History search returns empty without reading embedded V2 or V3 indexes", () => {
     const search = source("src/lib/history/search.ts")
     expect(search).not.toMatch(/\.\/sqlite\/(?:search-query|meta|connection)/)
-    expect(search).toMatch(/searchV3OperationIds/)
+    expect(search).not.toMatch(/searchV3OperationIds|containingV3OperationIds|v3\/store/)
+    expect(search).toContain("return { rows: [], nextCursor: null, partial: false }")
 
     const state = source("src/lib/history/state.ts")
     expect(state).not.toMatch(/runCalibrationBackfill|runSearchIndexBackfill|runLegacyStageBackfill|runUsageNormalizeBackfill/)

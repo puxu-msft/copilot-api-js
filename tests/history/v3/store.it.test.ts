@@ -108,6 +108,31 @@ describe("History V3 semantic store", () => {
     expect(db.prepare("SELECT ended_at FROM v3_operations WHERE operation_id='legacy'").get()).toEqual({ ended_at: null })
   })
 
+  test("drops the embedded search projection without touching canonical operations", () => {
+    const db = getDatabase()
+    db.exec(V3_SCHEMA_SQL)
+    commitPreparedOperation(db, prepareModelOperation(terminalRecord("keep-canonical")))
+    db.exec(`
+      CREATE TABLE v3_search_objects(object_hash TEXT PRIMARY KEY, document_gz BLOB NOT NULL, version INTEGER NOT NULL);
+      CREATE TABLE v3_search_membership(operation_id TEXT NOT NULL, object_hash TEXT NOT NULL, PRIMARY KEY(operation_id,object_hash));
+      CREATE TABLE v3_search_backlog(operation_id TEXT PRIMARY KEY, reason TEXT NOT NULL, attempts INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    `)
+    db.prepare("INSERT OR REPLACE INTO v3_meta(key,value) VALUES('schema_version','4')").run()
+    db.prepare("INSERT INTO v3_search_objects VALUES(?,?,?)").run("obsolete", new Uint8Array([1]), 2)
+
+    ensureV3Schema(db)
+
+    const tableExists = (name: string): boolean => Boolean(db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(name))
+    expect(tableExists("v3_search_objects")).toBe(false)
+    expect(tableExists("v3_search_membership")).toBe(false)
+    expect(tableExists("v3_search_backlog")).toBe(false)
+    expect(getV3Operation("keep-canonical")?.identity.operationId).toBe("keep-canonical")
+
+    db.exec("CREATE TABLE v3_search_objects(object_hash TEXT PRIMARY KEY, document_gz BLOB NOT NULL, version INTEGER NOT NULL)")
+    ensureV3Schema(db)
+    expect(tableExists("v3_search_objects")).toBe(false)
+  })
+
   test("keeps newly imported records without canonical terminal time explicitly unavailable", () => {
     const current = terminalRecord("legacy-terminal-time")
     // Intentionally model an already-persisted JSON record from before canonical event clocks.
@@ -181,7 +206,6 @@ describe("History V3 semantic store", () => {
   test("clears every V3 data table while retaining schema metadata", () => {
     commitPreparedOperation(getDatabase(), prepareModelOperation(terminalRecord("op-clear")))
     const db = getDatabase()
-    db.prepare("INSERT INTO v3_search_backlog(operation_id,reason,attempts,updated_at) VALUES(?,?,?,?)").run("search-poison", "test", 1, 100)
     db.prepare("INSERT INTO v3_summary_backlog(operation_id,reason,updated_at) VALUES(?,?,?)").run("summary-poison", "test", 100)
     db.prepare("INSERT INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at) VALUES(?,?,?,?,?,?)").run(
       "journal-only",
@@ -194,18 +218,7 @@ describe("History V3 semantic store", () => {
 
     clearV3Store(db)
 
-    for (const table of [
-      "v3_search_membership",
-      "v3_search_objects",
-      "v3_search_backlog",
-      "v3_summary_backlog",
-      "v3_timeline_chunks",
-      "v3_tracks",
-      "v3_operations",
-      "v3_sequence_nodes",
-      "v3_objects",
-      "v3_journal",
-    ]) {
+    for (const table of ["v3_summary_backlog", "v3_timeline_chunks", "v3_tracks", "v3_operations", "v3_sequence_nodes", "v3_objects", "v3_journal"]) {
       expect((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n, table).toBe(0)
     }
     expect((db.prepare("SELECT COUNT(*) AS n FROM v3_meta").get() as { n: number }).n).toBeGreaterThan(0)

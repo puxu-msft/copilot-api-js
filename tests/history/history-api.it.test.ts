@@ -378,15 +378,15 @@ describe("GET /api/export", () => {
   })
 })
 
-describe("V3 search surface", () => {
-  test("returns V3 search results without reading the V2 index", async () => {
+describe("retired embedded search surface", () => {
+  test("keeps the compatibility contract but returns empty data", async () => {
     const search = await get("/api/search?source=inbound&q=needle")
     expect(search.status).toBe(200)
-    expect((await json<{ rows: unknown[]; partial: boolean }>(search))).toMatchObject({ rows: [], partial: false })
+    expect(await json<{ rows: Array<unknown>; partial: boolean }>(search)).toMatchObject({ rows: [], partial: false })
 
     const contains = await get("/api/search/contains?hash=deadbeef")
     expect(contains.status).toBe(200)
-     expect(await json<{ hash: string; reqIds: string[] }>(contains)).toEqual({ hash: "deadbeef", reqIds: [] })
+    expect(await json<{ hash: string; reqIds: Array<string> }>(contains)).toEqual({ hash: "deadbeef", reqIds: [] })
   })
 })
 

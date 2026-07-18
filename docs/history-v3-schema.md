@@ -4,18 +4,19 @@
 
 ## 1．数据库命名与职责
 
-当前 History V3 **没有活跃的 `history.db + archive.db` 双库**。这两个文件名属于已退役的 V2／tiered-archive 设计，生产服务不会打开、迁移、回填或删除它们。V3 的两个物理库如下。
+当前 History V3 **没有活跃的 `history.db + archive.db` 双库**。这两个文件名属于已退役的 V2／tiered-archive 设计，生产服务不会打开、迁移、回填或删除它们。V3 与派生 sidecar 如下。
 
 | 逻辑角色 | 当前文件 | 默认路径 | 是否默认启用 | 说明 |
 |---|---|---|---|---|
-| Semantic History DB | `history-v3.db` | `$XDG_DATA_HOME/copilot-api/history-v3.db`，未设置 XDG 时为 `~/.local/share/copilot-api/history-v3.db` | 是 | `ModelOperationRecord` 的权威 semantic CAS、manifest、ordered tracks、timeline、journal、搜索派生数据 |
+| Semantic History DB | `history-v3.db` | `$XDG_DATA_HOME/copilot-api/history-v3.db`，未设置 XDG 时为 `~/.local/share/copilot-api/history-v3.db` | 是 | `ModelOperationRecord` 的权威 semantic CAS、manifest、ordered tracks、timeline、journal；**不含全文索引** |
 | Raw capture sidecar | `raw.db` | 与 `history-v3.db` 同目录 | 否 | 可选 exact-byte CAS 与 operation/sequence/track 引用；配置热重载按 store generation 切换 |
+| Search sidecar | `history-search/` | 与 `history-v3.db` 同目录 | 是（磁盘 History） | Tantivy v1 倒排索引；可删除、可重建、非权威；当前兼容 HTTP 搜索接口仍返回空数据 |
 | Legacy V2 | `history.db` | 同 `$XDG_DATA_HOME/copilot-api/` 目录 | 否 | 保留原样；不是 V3 schema，不被在线服务触碰 |
 | Legacy tiered archive | `archive.db`、seal files | 原归档目录 | 否 | 内置 archiver 已退役；不是 V3 schema，不被在线服务触碰 |
 
 因此，如果运维语境仍把两个 V3 库简称为“history DB + archive DB”，对应关系应理解为：**semantic `history-v3.db` + optional raw `raw.db`**，而不是字面文件 `history.db + archive.db`。
 
-路径常量在 [`src/lib/config/paths.ts`](../src/lib/config/paths.ts)：`PATHS.HISTORY_V3_DB` 与 `PATHS.HISTORY_RAW_DB`。`history.enabled=false` 或 CLI `--no-history` 会在开库前关闭整个 History 子系统；`history.raw_capture.enabled=false` 只关闭 raw sidecar，不影响 semantic V3。
+路径常量在 [`src/lib/config/paths.ts`](../src/lib/config/paths.ts)：`PATHS.HISTORY_V3_DB`、`PATHS.HISTORY_RAW_DB` 与 `PATHS.HISTORY_SEARCH_DIR`。`history.enabled=false` 或 CLI `--no-history` 会在开库前关闭整个 History 子系统；`history.raw_capture.enabled=false` 只关闭 raw sidecar，不影响 semantic V3。
 
 ## 2．总关系图
 
@@ -24,13 +25,10 @@ erDiagram
     HISTORY_STORE_IDENTITY ||--|| V3_META : owns
     V3_OPERATIONS ||--o{ V3_TRACKS : has
     V3_OPERATIONS ||--o{ V3_TIMELINE_CHUNKS : has
-    V3_OPERATIONS ||--o{ V3_SEARCH_MEMBERSHIP : references
-    V3_SEARCH_OBJECTS ||--o{ V3_SEARCH_MEMBERSHIP : indexed_by
     V3_OBJECTS ||--o{ V3_OPERATIONS : resolved_through_manifest
     V3_SEQUENCE_NODES }o--|| V3_OBJECTS : points_to_item
     V3_SEQUENCE_NODES }o--o| V3_SEQUENCE_NODES : extends_prefix
     V3_JOURNAL ||--o| V3_OPERATIONS : recovers_into
-    V3_OPERATIONS ||--o| V3_SEARCH_BACKLOG : records_projection_failure
     V3_OPERATIONS ||--o| V3_SUMMARY_BACKLOG : records_summary_failure
     RAW_STORE_IDENTITY ||--o{ RAW_OBJECTS : owns
     RAW_OBJECTS ||--o{ RAW_REFS : referenced_by
@@ -57,7 +55,7 @@ erDiagram
 | `key` | `TEXT` | `PRIMARY KEY` | V3 schema／store 元数据键 |
 | `value` | `TEXT` | `NOT NULL` | 元数据值 |
 
-当前生产代码写入并读取 `schema_version`。format-v2 当前 schema version 为 `4`；reconcile 只有在版本落后时才检查／增加列并更新该键。
+当前生产代码写入并读取 `schema_version`。format-v2 当前 schema version 为 `5`；reconcile 只有在版本落后时才检查／增加列并更新该键。v4→v5 在同一事务中 `DROP TABLE IF EXISTS v3_search_membership/v3_search_objects/v3_search_backlog`，不修改 canonical operations、objects、tracks 或 journal。旧 `history.db` 不会被打开。
 
 ### 3.3 `v3_objects`
 
@@ -171,41 +169,9 @@ format-v2 manifest 中同位置只保留空的结构占位，读取时按 `(trac
 
 主键：`(operation_id, revision)`。
 
-提交顺序：事务外 prepare/hash/compress → 先 append 自包含 journal → 单 SQLite 事务写 CAS objects、operation、tracks、timeline、搜索派生 → 事务内删除 journal → commit。若 operation 事务失败，journal 独立留存；下次 `initHistory()` 调 `recoverV3Journal()` 查询 `committed_at IS NULL` 的行，重建全部 prepared artifacts，校验 revision/digest 后重放。
+提交顺序：事务外 prepare/hash/compress → 先 append 自包含 journal → 单 SQLite 事务写 CAS objects、operation、tracks、timeline → 事务内删除 journal → commit。若 operation 事务失败，journal 独立留存；下次 `initHistory()` 调 `recoverV3Journal()` 查询 `committed_at IS NULL` 的行，重建全部 prepared artifacts，校验 revision/digest 后重放。Tantivy 不参与此事务，其失败绝不回滚 semantic History。
 
-### 3.9 `v3_search_objects`
-
-搜索是可重建派生，不是 authoritative History。
-
-| 列 | 类型 | 约束 | 语义 |
-|---|---|---|---|
-| `object_hash` | `TEXT` | `PRIMARY KEY` | semantic payload object hash |
-| `document_gz` | `BLOB` | `NOT NULL` | format-v1 搜索 document；format-v2 为零字节占位，不复制 canonical payload |
-| `version` | `INTEGER` | `NOT NULL` | 独立搜索投影版本；当前 `SEARCH_VERSION=2` |
-
-只索引 unique payload／payload-skeleton object，不重复索引 frame 或每个 operation 的完整对话。version 2 搜索通过 `object_hash` join `v3_objects.canonical_gz`，直接扫描 authoritative semantic CAS；version 1 才解压 `document_gz`。查询按 128 个对象分页，避免 SQLite `.all()` 一次把全部 search rows 放进 JS heap；它仍是 distinct CAS objects 的线性 substring scan，不是 FTS 索引。
-
-### 3.10 `v3_search_membership`
-
-| 列 | 类型 | 约束 | 语义 |
-|---|---|---|---|
-| `operation_id` | `TEXT` | `NOT NULL`，FK → `v3_operations(operation_id) ON DELETE CASCADE` | operation |
-| `object_hash` | `TEXT` | `NOT NULL` | `v3_search_objects.object_hash` 的逻辑引用 |
-
-主键：`(operation_id, object_hash)`。未建立 SQL FK 到 `v3_search_objects`，因为搜索对象是可重建派生；权威 operation commit 不以搜索派生成功为前提。
-
-### 3.11 `v3_search_backlog`
-
-| 列 | 类型 | 约束 | 语义 |
-|---|---|---|---|
-| `operation_id` | `TEXT` | `PRIMARY KEY` | 需要重建搜索投影的 operation |
-| `reason` | `TEXT` | `NOT NULL` | 最近失败原因 |
-| `attempts` | `INTEGER` | `NOT NULL DEFAULT 0` | 派生尝试次数 |
-| `updated_at` | `INTEGER` | `NOT NULL` | 最近更新时间 |
-
-搜索投影写失败时写入 backlog；semantic CAS/manifest 仍可提交并读取。
-
-### 3.12 `v3_summary_backlog`
+### 3.9 `v3_summary_backlog`
 
 | 列 | 类型 | 约束 | 语义 |
 |---|---|---|---|
@@ -268,7 +234,6 @@ raw capture 的失败、超大对象或数据库故障不会回滚 semantic V3�
 | Product list summary | `v3_operations.summary_json` | `EntrySummary` JSON | plain |
 | Timeline | `v3_timeline_chunks.payload_gz` | sequence-ordered JSON chunk | zstd |
 | Crash journal | `v3_journal.payload_gz` | self-contained terminal record JSON | zstd |
-| Search projection | `v3_search_objects` + `v3_objects` | v2 只存 membership/version，document 复用 semantic CAS | CAS blob 已 zstd |
 | Raw object | `raw_objects.blob_gz` | exact bytes | zstd |
 
 Detail 读取先解压 manifest，批量读取直接 arena object hashes；每个 extracted sequence root 用 recursive CTE 展开 prefix chain，再批量补读缺失 item objects并应用 occurrence overlays；最后从 `track_gz` 恢复完整轨。对象读取不是逐 item N+1，但当前每个 sequence root 有一次 recursive CTE。`pinned` 来自 `v3_operations` 专列，不写回 manifest。列表/session/stats 在 `summary_json` 可用时不 hydrate canonical payload。
@@ -320,11 +285,6 @@ SELECT operation_id, revision, phase, created_at, committed_at, error
 FROM v3_journal
 ORDER BY created_at;
 
--- 搜索派生失败
-SELECT operation_id, reason, attempts, updated_at
-FROM v3_search_backlog
-ORDER BY updated_at DESC;
-
 -- summary 派生失败
 SELECT operation_id, reason, updated_at
 FROM v3_summary_backlog
@@ -344,10 +304,10 @@ ORDER BY operation_id, sequence;
 
 ## 8．Schema 演进规则
 
-1. `history-v3.db` 与 `raw.db` 各有独立 artifact identity，不允许用 live config 把既有 artifact 按另一套 schema 解释。
+1. `history-v3.db`、`raw.db` 与 Tantivy `history-search/` 各有独立 artifact identity，不允许用 live config 把既有 artifact 按另一套 schema 解释。
 2. 新增 authoritative 字段时，先更新 backend-owned `ModelOperationRecord`，再更新 manifest/store/projection；不能从 REST/UI DTO 反向定义 producer 数据。
 3. 新增大对象优先进入 CAS；manifest 与 tracks 只保存结构和引用，避免重复 payload/frame bytes。
-4. 派生搜索失败必须显式进入 backlog，不得阻断或回滚 authoritative operation。
+4. 全文搜索不得在 `history-v3.db` 建表、存 document 或参与 authoritative transaction；Tantivy 失败只更新独立 runtime status。
 5. journal 必须保持自包含；不能依赖可能与 operation transaction 一起回滚的 CAS rows。
 6. raw config 的 `enabled`、`db_path`、`max_object_bytes` 只影响新 acquisition；旧 lease 始终按冻结 generation 完成并 drain。
 7. Legacy `history.db` / `archive.db` 的任何迁移、归档、删除或格式适配都不属于在线 History V3 schema 生命周期。
