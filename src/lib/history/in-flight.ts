@@ -150,6 +150,7 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
   const cached = getCachedSummaryText(entry)
   return {
     id: entry.id,
+    operationKind: entry.operationKind,
     ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
     ...(entry.agentId ? { agentId: entry.agentId } : {}),
     rawPath: entry.rawPath,

@@ -72,20 +72,22 @@ describe("generation recorder ClientSink frame arena integration", () => {
       origin: { stage: "client-sink", track: "proxy", detail: "synthetic" },
     })
     expect(record.attempts[0]?.upstreamResponse?.frameObservations).toEqual([
-      { handle: upstreamHandles[0], offsetMs: 1, type: "content_block_delta", raw: raw.data, observedAt: expect.any(Number) },
+      { handle: upstreamHandles[0], offsetMs: 1, type: "content_block_delta", observedAt: expect.any(Number) },
     ])
     expect(record.egress?.client.frameObservations).toEqual([
-      { handle: clientHandles[0], offsetMs: expect.any(Number), type: "content_block_delta", raw: raw.data, observedAt: expect.any(Number) },
-      { handle: clientHandles[1], offsetMs: expect.any(Number), type: "content_block_delta", raw: rewritten.data, observedAt: expect.any(Number) },
+      { handle: clientHandles[0], offsetMs: expect.any(Number), type: "content_block_delta", observedAt: expect.any(Number) },
+      { handle: clientHandles[1], offsetMs: expect.any(Number), type: "content_block_delta", observedAt: expect.any(Number) },
       {
         handle: clientHandles[2],
         offsetMs: expect.any(Number),
         type: "error",
-        raw: expect.stringContaining("synthetic"),
         synthetic: "synthetic",
         observedAt: expect.any(Number),
       },
     ])
+    expect(record.arena.frames.find((node) => node.handle === upstreamHandles[0])?.value).toMatchObject({ data: raw.data })
+    expect(record.arena.frames.find((node) => node.handle === clientHandles[1])?.value).toMatchObject({ data: rewritten.data })
+    expect(synthetic?.value).toMatchObject({ data: expect.stringContaining("synthetic") })
     expect(synthetic!.sequence).toBeLessThan(record.terminal!.sequence)
   })
 })

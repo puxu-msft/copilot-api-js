@@ -661,6 +661,7 @@ export interface SessionSummary {
 
 export interface EntrySummary {
   id: string
+  operationKind?: "generation" | "count_tokens" | "embeddings" | "responses_ws"
   sessionId?: string
   agentId?: string
   rawPath?: string

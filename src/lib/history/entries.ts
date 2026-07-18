@@ -41,7 +41,11 @@ import {
 } from "./sqlite/write"
 import { historyState } from "./state"
 import { getStats } from "./stats"
-import { setV3OperationPinned } from "./v3/store"
+import {
+  //
+  clearV3Store,
+  setV3OperationPinned,
+} from "./v3/store"
 import { clearRecentModelOperationTerminalsForTests } from "./v3/terminal-bus"
 
 /** Publish after persistence through the scoped history observability channel. */
@@ -339,6 +343,7 @@ export function clearHistory(): void {
   clearRecentModelOperationTerminalsForTests()
   if (!historyState.enabled) return
   try {
+    clearV3Store()
     clearAllEntries()
     consola.warn(`[history] CLEARED test store (${inFlightCount} in-flight entries); this primitive is test-only`)
   } catch (err: unknown) {

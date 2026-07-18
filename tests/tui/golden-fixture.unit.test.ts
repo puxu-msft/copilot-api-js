@@ -44,11 +44,22 @@ import { createBus } from "~/lib/observability"
 import { attachTerminalUi } from "~/lib/tui"
 
 const NOW = 1_700_000_000_000
+const SGR_PATTERN = new RegExp(`${String.fromCodePoint(27)}\\[[0-9;]*m`, "g")
 
 function makeCapture() {
   const chunks: Array<string> = []
   const stdout = { write: (s: string) => (chunks.push(s), true), isTTY: true } as unknown as NodeJS.WritableStream
-  return { stdout, text: () => chunks.join("").replaceAll(/\d\d:\d\d:\d\d/g, "TT:TT:TT") }
+  // picocolors support is process-global and may differ between an isolated
+  // run and the full suite. SGR styling is covered by renderer unit tests; this
+  // whole-stream oracle normalizes only SGR while preserving cursor controls.
+  return {
+    stdout,
+    text: () =>
+      chunks
+        .join("")
+        .replaceAll(SGR_PATTERN, "")
+        .replaceAll(/\d\d:\d\d:\d\d/g, "TT:TT:TT"),
+  }
 }
 
 export function renderGoldenScenario(attach: (bus: ReturnType<typeof createBus>, o: unknown) => () => void): string {

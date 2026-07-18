@@ -90,7 +90,10 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 - semantic V3 默认启用，完整记录 generation、Responses WS、count tokens、embeddings 与 Azure 元数据。
 - `history.raw_capture.enabled=false` 默认关闭。开启后 exact bytes 写独立 `raw.db` CAS；热重载只切新 operation，旧在途 operation 继续写冻结 store generation 后 drain 关闭。
 - raw capture 失败不阻断代理或 semantic V3；status 暴露 generation、gap 与 last error。
-- 搜索只索引 unique semantic payload object，operation membership 独立保存；权威 operation 不依赖搜索成功。
+- format-v2 将对象数组拆成可共享的 sequence-prefix DAG，`cache_control`／`ephemeral` 作为 occurrence overlay 还原；manifest 不再携带大 semantic values，完整 ordered tracks 压缩存入 `track_gz`。
+- 搜索只登记 unique semantic payload object 与 operation membership，version 2 直接复用 authoritative CAS，不再复制 search document；按 128 个对象分页扫描。权威 operation 不依赖搜索成功。
+- list/session/stats 优先读取 `v3_operations.summary_json`；旧 V3 行由带 poison backlog 的小批次 backfill 补齐，不改 canonical digest/manifest。
+- format-v1 行保持可读且不会在线重写；新布局只影响新写入。prepare/hash/compress 当前仍在主 JS 线程同步执行，本次容量优化不等于 event-loop CPU 隔离。
 
 ### Canonical 时间与帧观测
 
@@ -193,7 +196,7 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 ## REST API
 
-History 产品读面已切到 V3 canonical store：列表、详情、session 聚合、stats、export、logs、debug replay 与 hook replay 都经 V3 facade；不会回读 `entries_v2`。生产面不导出 `deleteSession` / `deleteEntries`，`clearHistory` 与旧 SQLite 删除函数仅供隔离测试临时库。旧库不迁移、不归档。
+History 产品读面已切到 V3 canonical store：列表、详情、session 聚合、stats、export、logs、debug replay 与 hook replay 都经 V3 facade；不会回读 `entries_v2`。生产面不导出 `deleteSession` / `deleteEntries`；`clearHistory` 仅供隔离测试，事务清空临时库的 V3 data tables 并保留 schema metadata；若旧 characterization fixture 在同一内存库创建了 `entries_v2`，reset 会额外清理这些测试行，V3-only artifact 不执行 legacy DELETE。旧库不迁移、不归档。
 
 | 端点 | 说明 |
 |------|------|
@@ -207,9 +210,9 @@ History 产品读面已切到 V3 canonical store：列表、详情、session 聚
 | `GET /history/api/export` | V3 全量 JSON / CSV 导出。 |
 | `GET /history/api/search`、`GET /history/api/search/contains` | V3 unique semantic object 搜索与 object→operation companion；绝不读 V2 搜索表。 |
 
-## 内容寻址搜索 (search_index)
+## Legacy V2 内容寻址搜索（非产品读面）
 
-请求历史的全文搜索由内容寻址 `search_index` 子系统提供（取代旧 trigram FTS5 + `search_text` 列，P3 已 DROP）。设计见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md)。
+以下 `msg_blob`／`req_msg` 子系统只描述保留的 V2 `history.db` schema，**当前 History 产品搜索不读取它**。V3 搜索使用 `v3_search_objects`／`v3_search_membership`，format-v2 document bytes 直接复用 `v3_objects` CAS。旧设计见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md)。
 
 **表**（`schema.ts`）：
 

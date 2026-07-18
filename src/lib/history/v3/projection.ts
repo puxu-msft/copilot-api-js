@@ -15,6 +15,8 @@ import type {
 
 import type { V3TimingSource } from "./store"
 
+import { toEntrySummary } from "../in-flight"
+
 function nodeValues(record: ModelOperationRecord): Map<string, unknown> {
   return new Map([...record.arena.payloads, ...record.arena.frames].map((node) => [node.handle, node.value]))
 }
@@ -119,10 +121,16 @@ export function recordToHistoryEntry(
     | { model?: string; messages?: Array<unknown>; stream?: boolean; tools?: Array<unknown>; system?: unknown; payload?: unknown }
     | undefined
   const clientBody = payload(values, record.ingress?.request)
+  const clientBodyMeta = metadata(clientBody)
+  const clientProjection = metadata(clientBodyMeta?.payload) ?? clientBodyMeta ?? metadata(ingressMeta?.payload) ?? ingressMeta
   const attempts = record.attempts.map((attempt, index) => {
     const attemptMeta = metadata(attempt.metadata)
     const effectiveMeta = metadata(attempt.effectiveRequest?.metadata)
     const requestMeta = metadata(attempt.upstreamRequest?.metadata)
+    const effectiveBody = payload(values, attempt.effectiveRequest)
+    const requestBody = payload(values, attempt.upstreamRequest)
+    const effectiveProjection = metadata(effectiveBody)
+    const requestProjection = metadata(requestBody)
     const responseMeta = metadata(attempt.upstreamResponse?.metadata) as
       | {
           response?: { success?: boolean; model?: string; usage?: Record<string, unknown>; stop_reason?: string; responseId?: string; error?: string }
@@ -161,11 +169,22 @@ export function recordToHistoryEntry(
       ...(attempt.error ? { error: errorMessage(attempt.error) } : {}),
       effectiveSource: {
         ...effectiveMeta,
-        body: payload(values, attempt.effectiveRequest),
+        ...(typeof effectiveProjection?.model === "string" && { model: effectiveProjection.model }),
+        ...(Array.isArray(effectiveProjection?.messages) && { messages: effectiveProjection.messages }),
+        ...((typeof effectiveProjection?.system === "string" || Array.isArray(effectiveProjection?.system)) && {
+          system: effectiveProjection.system as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["effectiveSource"]>["system"],
+        }),
+        ...(Array.isArray(effectiveProjection?.messages) && { messageCount: effectiveProjection.messages.length }),
+        body: effectiveBody,
       },
       upstreamRequest: {
         ...requestMeta,
-        body: payload(values, attempt.upstreamRequest),
+        ...(typeof requestProjection?.model === "string" && { model: requestProjection.model }),
+        ...(Array.isArray(requestProjection?.messages) && { messages: requestProjection.messages }),
+        ...((typeof requestProjection?.system === "string" || Array.isArray(requestProjection?.system)) && {
+          system: requestProjection.system as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamRequest"]>["system"],
+        }),
+        body: requestBody,
         headers: headers(attempt.upstreamRequest),
       },
       upstreamResponse: {
@@ -209,7 +228,7 @@ export function recordToHistoryEntry(
       : undefined,
     transport: record.routing?.transport as HistoryEntry["transport"],
     model: {
-      requested: record.routing?.requestedModel ?? ingressMeta?.model,
+      requested: record.routing?.requestedModel ?? (typeof clientProjection?.model === "string" ? clientProjection.model : undefined),
       resolved: record.routing?.resolvedModel,
       outboundEndpoint: record.routing?.upstreamEndpoint,
       translated: metadata(record.routing?.metadata)?.translated as boolean | undefined,
@@ -220,11 +239,11 @@ export function recordToHistoryEntry(
       format: record.ingress?.format as HistoryEntry["endpoint"],
       headers: headers(record.ingress?.request),
       body: clientBody,
-      model: ingressMeta?.model,
-      messages: ingressMeta?.messages as NonNullable<HistoryEntry["clientRequest"]>["messages"],
-      stream: ingressMeta?.stream,
-      tools: ingressMeta?.tools as NonNullable<HistoryEntry["clientRequest"]>["tools"],
-      system: ingressMeta?.system as NonNullable<HistoryEntry["clientRequest"]>["system"],
+      model: typeof clientProjection?.model === "string" ? clientProjection.model : undefined,
+      messages: clientProjection?.messages as NonNullable<HistoryEntry["clientRequest"]>["messages"],
+      stream: typeof clientProjection?.stream === "boolean" ? clientProjection.stream : undefined,
+      tools: clientProjection?.tools as NonNullable<HistoryEntry["clientRequest"]>["tools"],
+      system: clientProjection?.system as NonNullable<HistoryEntry["clientRequest"]>["system"],
     },
     clientResponse: {
       status: clientTrack?.status,
@@ -251,29 +270,7 @@ export function recordToEntrySummary(
   stored: { pinned?: boolean; endedAt?: number; timingSource?: V3TimingSource } = {},
 ): EntrySummary {
   const entry = recordToHistoryEntry(record, stored)
-  const last = entry.attempts?.at(-1)?.upstreamResponse
-  return {
-    id: entry.id,
-    sessionId: entry.sessionId,
-    agentId: entry.agentId,
-    startedAt: entry.startedAt,
-    endedAt: entry.endedAt,
-    endpoint: entry.endpoint,
-    state: entry.state,
-    active: false,
-    pinned: stored.pinned ?? false,
-    lastUpdatedAt: entry.lastUpdatedAt,
-    requestModel: entry.model?.requested,
-    responseModel: last?.model ?? entry.model?.resolved,
-    responseSuccess: entry.state === "completed",
-    responseError: entry._index?.derived?.failureReason,
-    messageCount: entry.clientRequest?.messages?.length ?? 0,
-    usage: last?.usage,
-    durationMs: entry.durationMs,
-    timing: entry.timing,
-    previewText: "",
-    responsePreviewText: "",
-  }
+  return { ...toEntrySummary(entry), active: false, pinned: stored.pinned ?? false }
 }
 
 export function recordMatchesQuery(record: ModelOperationRecord, options: QueryOptions & { operationKind?: string }): boolean {

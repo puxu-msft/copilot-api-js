@@ -559,7 +559,7 @@ export function createRequestContext(opts: {
           ...(v2.responseHeaders !== undefined && { headers: orderedHeaders(v2.responseHeaders) }),
           ...(_httpHeaders?.outboundResponseTrailers !== undefined && { trailers: orderedHeaders(_httpHeaders.outboundResponseTrailers) }),
           rawCapture: semanticCaptureGap,
-          metadata: snapshotForRecorder({ response, error: attemptError }),
+          ...(responseMetadata(response, attemptError) === undefined ? {} : { metadata: responseMetadata(response, attemptError) }),
         },
       }),
       ...(reason !== undefined && { reason }),
@@ -589,6 +589,37 @@ export function createRequestContext(opts: {
       ...(response.toolSearchRequests !== undefined && { toolSearchRequests: response.toolSearchRequests }),
       details: response.usage,
     }
+  }
+
+  function requestMetadata(request: OriginalRequest | EffectiveRequest | WireRequest): Readonly<Record<string, unknown>> {
+    return Object.freeze({
+      model: request.model,
+      messageCount: request.messages.length,
+      ...("format" in request ? { format: request.format } : {}),
+      ...("stream" in request ? { stream: request.stream } : {}),
+    })
+  }
+
+  function responseMetadata(response: ResponseData | null, error?: ApiError | null): Readonly<Record<string, unknown>> | undefined {
+    if (response === null && (error === null || error === undefined)) return undefined
+    return Object.freeze({
+      ...(response === null ?
+        {}
+      : {
+          response: {
+            success: response.success,
+            model: response.model,
+            usage: response.usage,
+            ...(response.stop_reason === undefined ? {} : { stop_reason: response.stop_reason }),
+            ...(response.status === undefined ? {} : { status: response.status }),
+            ...(response.error === undefined ? {} : { error: response.error }),
+            ...(response.responseId === undefined ? {} : { responseId: response.responseId }),
+            ...(response.toolSearchRequests === undefined ? {} : { toolSearchRequests: response.toolSearchRequests }),
+            ...(response.copilotAnnotations === undefined ? {} : { copilotAnnotations: response.copilotAnnotations }),
+          },
+        }),
+      ...(error === null || error === undefined ? {} : { error: { type: error.type, status: error.status, message: error.message } }),
+    })
   }
 
   function recordGenerationLogicalTerminal(
@@ -639,7 +670,7 @@ export function createRequestContext(opts: {
         ...(_httpHeaders?.outboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.outboundResponse) }),
         ...(_httpHeaders?.outboundResponseTrailers !== undefined && { trailers: orderedHeaders(_httpHeaders.outboundResponseTrailers) }),
         rawCapture: semanticCaptureGap,
-        metadata: snapshotForRecorder(_response),
+        ...(responseMetadata(_response) === undefined ? {} : { metadata: responseMetadata(_response) }),
       },
       client: {
         ...(clientPayloadHandle !== undefined && { payload: clientPayloadHandle }),
@@ -648,7 +679,6 @@ export function createRequestContext(opts: {
         ...(_clientResponseStatus !== undefined && { status: _clientResponseStatus }),
         ...(_httpHeaders?.inboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.inboundResponse) }),
         rawCapture: semanticCaptureGap,
-        metadata: snapshotForRecorder(_forwardedResponse),
       },
     })
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
@@ -885,7 +915,7 @@ export function createRequestContext(opts: {
           payload: ingressPayloadHandle,
           headers: orderedHeaders(_httpHeaders.inboundRequest),
           rawCapture: semanticCaptureGap,
-          metadata: snapshotForRecorder(_originalRequest),
+          metadata: requestMetadata(_originalRequest),
         },
         format: opts.endpoint,
         method,
@@ -1047,7 +1077,7 @@ export function createRequestContext(opts: {
           modelOperationRecorder.setAttemptEffectiveRequest(generationAttempt.handle, {
             payload: generationAttempt.effectivePayload,
             rawCapture: semanticCaptureGap,
-            metadata: snapshotForRecorder(req),
+            metadata: requestMetadata(req),
           })
         }
         publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
@@ -1070,7 +1100,7 @@ export function createRequestContext(opts: {
             payload: generationAttempt.wirePayload,
             headers: orderedHeaders(req.headers),
             rawCapture: semanticCaptureGap,
-            metadata: snapshotForRecorder(req),
+            metadata: requestMetadata(req),
           })
         }
         publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
@@ -1119,7 +1149,7 @@ export function createRequestContext(opts: {
               // Non-JSON error bodies are retained verbatim by rawResponsePayload/responseText.
             }
           }
-          recordAttemptDiagnostic("response.settled", response.success ? "info" : "error", response)
+          recordAttemptDiagnostic("response.settled", response.success ? "info" : "error", responseMetadata(response))
           settleGenerationAttempt(
             generationAttempt,
             response.success ? "committed" : "failed",
@@ -1174,7 +1204,6 @@ export function createRequestContext(opts: {
           offsetMs: record.offsetMs,
           observedAt: modelOperationRecorder.now(),
           type: record.type,
-          raw: record.raw,
           ...(record.synthetic !== undefined && { synthetic: record.synthetic }),
         })
       }
@@ -1286,7 +1315,6 @@ export function createRequestContext(opts: {
         offsetMs: record.offsetMs,
         observedAt: modelOperationRecorder.now(),
         type: record.type,
-        raw: record.raw,
         ...((record.synthetic ?? syntheticKind) !== undefined && { synthetic: record.synthetic ?? syntheticKind }),
       })
       captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "client-frame")

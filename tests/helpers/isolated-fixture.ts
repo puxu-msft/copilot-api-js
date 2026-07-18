@@ -41,6 +41,7 @@ import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validat
 import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
 import { resetDiagnosticLoggerForTests } from "~/lib/diagnostics"
 import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
+import { resetBootstrapSpoolForTests } from "~/lib/diagnostics/file/bootstrap-spool"
 import {
   //
   __setTerminalWriterForTests,
@@ -148,6 +149,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetTerminalCoordinatorForTests", reset: resetTerminalCoordinatorForTests },
   { name: "resetSensitiveOutputForTests", reset: resetSensitiveOutputForTests },
   { name: "resetStructuredFileSinkForTests", reset: resetStructuredFileSinkForTests },
+  { name: "resetBootstrapSpoolForTests", reset: resetBootstrapSpoolForTests },
   { name: "resetDiagnosticLoggerForTests", reset: resetDiagnosticLoggerForTests },
   // Upstream-hook DI seam (module-global `hookState`, read at driver-suite level
   // via `getUpstreamHook()`): a test file that loads/injects a hook and forgets
