@@ -1,6 +1,6 @@
 # History V2 层移除 —— 实施计划
 
-状态：**实施中** —— Phase 0-3 已合入分支（`df54b147`）。分支 `feat/history-v2-removal`（off `master` @ `5187c386`），worktree `.worktrees/v2-removal/`。Phase 3（删 V2 写链主体 + entries.ts 瘦身 + shutdownHistory 手术 + A 类读迁移）已完成——详见执行报告 `.superpowers/sdd/phase3-report.md`。剩余 Phase 4（connection.ts 手术 + schema/migrations/archive-worker 处置 + 三项采纳真接线）+ Phase 5（doc-sync + 归档）待执行。
+状态：**实施中** —— Phase 0-4 已合入分支。分支 `feat/history-v2-removal`（off `master` @ `5187c386`），worktree `.worktrees/v2-removal/`。Phase 3（删 V2 写链主体 + entries.ts 瘦身 + shutdownHistory 手术 + A 类读迁移）已完成——详见执行报告 `.superpowers/sdd/phase3-report.md`。Phase 4（connection.ts 手术 + schema/migrations/archive-worker 处置 + 三项采纳真接线，子步骤顺序 4a→4d→4b→4c，commits `763b2805`/`1cfaab64`/`a0eaf912`/`aeb27a15`）已完成——详见执行报告 `.superpowers/sdd/phase4-report.md`。剩余 Phase 5（doc-sync + 归档）待执行。
 
 依据：[docs/todo/v2-removal-scope.md](../../todo/v2-removal-scope.md)（blast-radius 逐文件裁决表 + 2026-07-15 用户裁决）。本计划把裁决转化为可执行、可 subagent-driven 的分阶段 TDD 计划。裁判轴：长远正确 + 完整（against-YAGNI）——采纳进 V3 的 DB-health / persist-guard 是**本次必做项**，不是 backlog。
 
