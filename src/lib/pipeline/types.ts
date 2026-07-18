@@ -344,7 +344,7 @@ export interface RunResponseOpts {
    * completeness verdict. The processor yields `frames` through the normal post-render/sink path;
    * thrown upstream errors do not invoke it.
    */
-  finishResponse?: () => ResponseFinishResult
+  finishResponse?: (rendererFrames: ReadonlyArray<ClientFrame>) => ResponseFinishResult
   /** Internal observer used by the sink driver to return the processor verdict without re-running finish. */
   onFinishResolved?: (result: ResponseFinishResult) => void
 }
@@ -463,7 +463,7 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * undetectable; transport/http2-client.ts:169-175). A clean drain WITHOUT message_stop
    * is a truncation → retryable.
    */
-  sawMessageStop: () => boolean
+  sawMessageStop?: () => boolean
   /**
    * Reads the handler's accumulator: did THIS attempt see a TERMINAL upstream `error` frame
    * (H2 — e.g. `overloaded_error`)? Such a frame is a clean drain WITHOUT `message_stop`, so
@@ -821,6 +821,9 @@ export interface FormatCodec {
    * wraps the legacy render method with an empty flush.
    */
   createCandidateRenderer?(env: RequestEnvelope): CandidateResponseRenderer
+
+  /** Fork opaque request-side state for one candidate; real codecs with mutable requestState implement this. */
+  createCandidateStateFactory?(env: RequestEnvelope): import("./generation/candidate-state").CandidateStateFactory
 
   /** S6 non-streaming: translate the whole upstream response back to the client. */
   renderResponseNonStreaming(upstream: unknown, env: RequestEnvelope): unknown

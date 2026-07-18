@@ -12,8 +12,8 @@
  * Stage B B5 — the codec's `renderResponse` ALSO does the per-frame CC→Gemini render
  * (`createGeminiStreamTranslator`, formerly the handler's whole-stream wrapper), so the
  * owns-the-sink driver writes Gemini frames directly. The streaming handler reads the
- * terminal usage/finishReason out-of-band via `codec.getStreamMeta()` and drains the
- * stream-end frames via `codec.flushResponse`. The non-streaming path still renders
+ * terminal usage/finishReason out-of-band via `candidate session renderer meta` and drains the
+ * stream-end frames via `CandidateResponseSession.renderer.flushResponse`. The non-streaming path still renders
  * CC → Gemini inline (`convertOpenAIResponseToGemini`).
  */
 
@@ -25,6 +25,7 @@ import { streamSSE } from "hono/streaming"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { GeminiCodec } from "~/lib/codec/gemini/codec"
+import type { GeminiStreamMeta } from "~/lib/gemini"
 import type { SseEventRecord } from "~/lib/history"
 import type { UsageData } from "~/lib/history/types"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
@@ -34,7 +35,6 @@ import type {
   DriverRequestResult,
   UpstreamStream,
 } from "~/lib/pipeline/types"
-import type { UpstreamFrame } from "~/lib/pipeline/types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 import type {
   //
@@ -74,6 +74,12 @@ import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import {
+  //
+  createCandidateResponseSession,
+  type CandidateResponseSession,
+  type CandidateResponseSessionFactory,
+} from "~/lib/pipeline/generation/candidate-response-session"
 import {
   //
   anthropicNonStreamingTruncation,
@@ -124,6 +130,7 @@ function buildGeminiDriver(c: Context, modelId: string, resolvedName: string, ve
   const driver = createPipelineDriver({
     codec,
     transport,
+    candidateResponseSessionFactory: createGeminiCandidateResponseSession,
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every Gemini cell is migrated: gemini forward `@cc`/via-responses + the reverse `@messages`
     // cell). The reverse leg's sanitize rewrite + Anthropic stack are assembled by OUTBOUND_LEGS from the
@@ -189,6 +196,72 @@ async function runGeminiRequest(
 }
 
 /** POST /v1beta/models/:model:generateContent (v4) */
+type GeminiCandidateResponseSnapshot =
+  | Readonly<{ kind: "gemini"; diag: ReturnType<typeof createUpstreamFrameDiagnostics>; meta: GeminiStreamMeta }>
+  | Readonly<{
+      kind: "reverse-anthropic"
+      anthropicAcc: ReturnType<typeof createAnthropicStreamAccumulator>
+      diag: ReturnType<typeof createUpstreamFrameDiagnostics>
+      meta: GeminiStreamMeta
+    }>
+
+const createGeminiCandidateResponseSession: CandidateResponseSessionFactory = (input) => {
+  const startedAtMs = Date.now()
+  if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
+    return createCandidateResponseSession({
+      ...input,
+      createState: () => ({ anthropicAcc: createAnthropicStreamAccumulator(), diag: createUpstreamFrameDiagnostics(startedAtMs) }),
+      onUpstreamFrame(state, frame) {
+        const raw = frame as ServerSentEventMessage
+        state.diag.observe(raw)
+        if (!raw.data || raw.data === "[DONE]") return
+        try {
+          accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, state.anthropicAcc)
+        } catch (error) {
+          consola.error("[gemini:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
+        }
+      },
+      finish(state, _renderer, rendererFrames) {
+        const terminal = classifyReverseAnthropicTerminal(state.anthropicAcc)
+        if (terminal.kind === "upstream-error") return { kind: "terminal-failure", frames: [], error: terminal.error }
+        if (terminal.kind === "truncated") {
+          return {
+            kind: "truncated",
+            frames: rendererFrames.filter((frame) => !isGeminiTerminalFrame(frame)),
+            reason: "Upstream Anthropic stream truncated before completion (no message_stop)",
+          }
+        }
+        return { kind: "complete", frames: rendererFrames }
+      },
+      snapshot: (state, renderer) => ({ kind: "reverse-anthropic" as const, ...state, meta: renderer.getStreamMeta?.() as GeminiStreamMeta }),
+    })
+  }
+
+  return createCandidateResponseSession({
+    ...input,
+    createState: () => ({ diag: createUpstreamFrameDiagnostics(startedAtMs) }),
+    onUpstreamFrame: (state, frame) => state.diag.observe(frame as ServerSentEventMessage),
+    finish(_state, renderer, rendererFrames) {
+      const meta = renderer.getStreamMeta?.() as GeminiStreamMeta
+      if (meta.finishReason === "FINISH_REASON_UNSPECIFIED") {
+        return {
+          kind: "truncated",
+          frames: rendererFrames.filter((frame) => !isGeminiTerminalFrame(frame)),
+          reason: "Upstream stream truncated before completion (no finishReason)",
+        }
+      }
+      return { kind: "complete", frames: rendererFrames }
+    },
+    snapshot: (state, renderer) => ({ kind: "gemini" as const, ...state, meta: renderer.getStreamMeta?.() as GeminiStreamMeta }),
+  })
+}
+
+function geminiCandidateSnapshot(driver: ReturnType<typeof createPipelineDriver>, upstream: UpstreamStream): GeminiCandidateResponseSnapshot {
+  const session = driver.getCandidateResponseSession(upstream) as CandidateResponseSession<GeminiCandidateResponseSnapshot> | undefined
+  if (!session) throw new Error("[gemini:v4] candidate response session missing")
+  return session.snapshot()
+}
+
 export async function handleGenerateContentV4(c: Context, modelId: string): Promise<Response> {
   const geminiBody = await c.req.json<GenerateContentRequest>()
   const { bundle, result } = await runGeminiRequest(c, geminiBody, modelId, false)
@@ -326,8 +399,8 @@ function geminiUsageFromMeta(meta: ReturnType<GeminiCodec["getStreamMeta"]>): Us
  *   - samples the FORWARDED track inside the sink (`onForwarded`), hard-labeling the record `type`
  *     "generateContent" (Gemini frames carry no event/type the default `frameType` could read),
  *   - drains the translator's stream-end frames (remaining tool calls + the terminal usage/finishReason
- *     frame) via `codec.flushResponse` after a clean drain (mirrors the Responses fallback flush),
- *   - reads the terminal meta out-of-band via `codec.getStreamMeta()` for `ctx.complete` / the
+ *     frame) via `CandidateResponseSession.renderer.flushResponse` after a clean drain (mirrors the Responses fallback flush),
+ *   - reads the terminal meta out-of-band via `candidate session renderer meta` for `ctx.complete` / the
  *     partial settle on error (renderResponse returns only frames). The H3 error frame is the Gemini
  *     data-only shape via the NON-sampling `writeSynthetic`. Gemini has no `[DONE]` / no heartbeat.
  *
@@ -336,17 +409,11 @@ function geminiUsageFromMeta(meta: ReturnType<GeminiCodec["getStreamMeta"]>): Us
  * `stop_reason` where the legacy handler omitted it — a history-only, failed-request edge field.
  */
 async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promise<void> {
-  const { stream, driver, codec, upstream, env } = opts
+  const { stream, driver, upstream, env } = opts
   const model = (env.body as ChatCompletionsPayload).model
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
-
-  // Upstream-frame diagnostics (disconnect-log blind-spot fix): observe the RAW upstream frames so a
-  // stream-error emits real frames/bytes/last-frame to `[upstream-diagnostics]` (this leg previously
-  // emitted none — the same blind spot as the messages/responses/cc pumps).
-  const diag = createUpstreamFrameDiagnostics(streamStartMs)
-  const onUpstreamFrame = (frame: UpstreamFrame): void => diag.observe(frame as ServerSentEventMessage)
 
   const sink = makeDeliverySseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
@@ -355,26 +422,17 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     forwardedType: () => "generateContent",
   })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
-  const finishResponse = () => {
-    const meta = codec.getStreamMeta()
-    const frames = [...codec.flushResponse(env)]
-    if (meta.finishReason === "FINISH_REASON_UNSPECIFIED") {
-      return {
-        kind: "truncated" as const,
-        frames: frames.filter((frame) => !isGeminiTerminalFrame(frame)),
-        reason: "Upstream stream truncated before completion (no finishReason)",
-      }
-    }
-    return { kind: "complete" as const, frames }
-  }
 
   // The driver drives codec.renderResponse (CC→Gemini per-frame) + writes the Gemini frames to the sink.
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, finishResponse })
+  const outcome = await driver.runResponseSink(upstream, env, sink)
+
+  const candidate = geminiCandidateSnapshot(driver, upstream)
+  if (candidate.kind !== "gemini") throw new Error("[gemini:v4] wrong candidate response session kind")
+  const { diag, meta } = candidate
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[gemini:v4] Client disconnected mid-stream — recording aborted")
-    const meta = codec.getStreamMeta()
     env.ctx.abort(model, { usage: geminiUsageFromMeta(meta), ...(meta.finishReason !== undefined && { stop_reason: meta.finishReason }) })
     sink.finalize?.()
     return
@@ -382,7 +440,6 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
 
   if (outcome.kind === "stream-error") {
     const error = outcome.error
-    const meta = codec.getStreamMeta()
     consola.error("[gemini:v4] Stream error:", error)
     logUpstreamStreamError(error, {
       model,
@@ -414,9 +471,8 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   // truncation: a complete Gemini stream carries a real finishReason (its source CC stream always
   // ends with finish_reason → accumulated into the meta DURING streaming). `getStreamMeta()`
   // defaults to FINISH_REASON_UNSPECIFIED when none was seen — a truncated upstream. Detect BEFORE
-  // the flush: `codec.flushResponse` would otherwise write a terminal frame carrying that misleading
+  // the flush: `CandidateResponseSession.renderer.flushResponse` would otherwise write a terminal frame carrying that misleading
   // UNSPECIFIED finishReason to the client (P-Gem). See docs/spec/upstream-stream-truncation-detection.md.
-  const meta = codec.getStreamMeta()
   if (meta.finishReason === "FINISH_REASON_UNSPECIFIED") {
     // The response processor already forwarded buffered partial tool calls and suppressed the
     // misleading UNSPECIFIED terminal according to `finishResponse` above.
@@ -553,7 +609,7 @@ interface PumpReverseGeminiStreamingV4Options {
  *   - accumulates the RAW UPSTREAM Anthropic frame into the Anthropic accumulator via `onUpstreamFrame`
  *     for the honest `outboundResponse` (RFC §4.1 / richest-data-flow — the base pumpGeminiStreamingV4 has
  *     NO opts, so the reverse Anthropic track would otherwise never be accumulated, BLOCK 疑点 7a),
- *   - forwards the rendered Gemini frames + MUST call `codec.flushResponse` (the geminiTranslator's terminal
+ *   - forwards the rendered Gemini frames + MUST call `CandidateResponseSession.renderer.flushResponse` (the geminiTranslator's terminal
  *     finishReason/usage frame — 疑点 7b),
  *   - has NO heartbeat (a Gemini client is not Claude Code),
  *   - detects truncation on the honest Anthropic accumulator's `sawMessageStop` (a clean drain without the
@@ -561,25 +617,11 @@ interface PumpReverseGeminiStreamingV4Options {
  *     (carries the misleading UNSPECIFIED finishReason) + write a Gemini error terminator + fail.
  */
 async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Options): Promise<void> {
-  const { stream, driver, codec, upstream, env } = opts
+  const { stream, driver, upstream, env } = opts
   const model = (env.body as MessagesPayload).model
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
-
-  const anthropicAcc = createAnthropicStreamAccumulator()
-  // Raw-frame diagnostics: this reverse leg also emits the disconnect diagnostic on a stream-error.
-  const diag = createUpstreamFrameDiagnostics(streamStartMs)
-  const onUpstreamFrame = (frame: UpstreamFrame): void => {
-    const raw = frame as ServerSentEventMessage
-    diag.observe(raw)
-    if (!raw.data || raw.data === "[DONE]") return
-    try {
-      accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, anthropicAcc)
-    } catch (error) {
-      consola.error("[gemini:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
-    }
-  }
 
   const sink = makeDeliverySseSink(stream, {
     onForwarded: (record) => forwardedSseEvents.push(record),
@@ -588,21 +630,11 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     ...clientFirstRealSinkOpts(env),
   })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
-  const finishResponse = () => {
-    const terminal = classifyReverseAnthropicTerminal(anthropicAcc)
-    if (terminal.kind === "upstream-error") return { kind: "terminal-failure" as const, frames: [], error: terminal.error }
-    const frames = [...codec.flushResponse(env)]
-    if (terminal.kind === "truncated") {
-      return {
-        kind: "truncated" as const,
-        frames: frames.filter((frame) => !isGeminiTerminalFrame(frame)),
-        reason: "Upstream Anthropic stream truncated before completion (no message_stop)",
-      }
-    }
-    return { kind: "complete" as const, frames }
-  }
 
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, finishResponse })
+  const outcome = await driver.runResponseSink(upstream, env, sink)
+  const candidate = geminiCandidateSnapshot(driver, upstream)
+  if (candidate.kind !== "reverse-anthropic") throw new Error("[gemini:v4:reverse] wrong candidate response session kind")
+  const { anthropicAcc, diag } = candidate
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()

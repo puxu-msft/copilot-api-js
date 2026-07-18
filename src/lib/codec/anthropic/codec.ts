@@ -73,6 +73,7 @@ import type {
 } from "~/types/api/anthropic"
 
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
   toSanitizationInfo,
@@ -103,6 +104,7 @@ import {
 } from "~/lib/models/resolver"
 import { createResponsesStreamAccumulator } from "~/lib/openai/responses-stream-accumulator"
 import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
+import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import {
   //
   createForwardStreamTranslator,
@@ -287,6 +289,15 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     },
     createCandidateRenderer() {
       return createRenderer()
+    },
+    createCandidateStateFactory(env) {
+      return createCandidateStateFactory(env, {
+        createBetaProbe,
+        createResanitize:
+          ({ source }) =>
+          (payload) =>
+            source(payload),
+      })
     },
     // S6 render (non-streaming): the direct path is identity. A FORWARD translate leg (Phase 3, T3.3)
     // delegates to the hub's CC→Anthropic response translator (`renderResponseNonStreamingVia`), turning

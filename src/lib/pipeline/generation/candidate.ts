@@ -56,6 +56,8 @@ export interface CreateCandidateRuntimeInput<TProcessor> {
   readonly role: CandidateRole
   readonly parentCandidate?: CandidateHandle
   readonly env: RequestEnvelope
+  /** Fork request/response state only after the canonical candidate handle exists. */
+  readonly forkEnv?: (candidate: CandidateHandle) => RequestEnvelope
   readonly recording: DispatchRecordingPort
   readonly scheduler: DispatchScheduler
   readonly createProcessor: (input: { candidate: CandidateHandle; dispatch: DispatchHandle; env: RequestEnvelope; upstream: UpstreamStream }) => TProcessor
@@ -64,11 +66,12 @@ export interface CreateCandidateRuntimeInput<TProcessor> {
 /** Create a single-use candidate runtime. Buffered recovery is represented only as a child-candidate request. */
 export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntimeInput<TProcessor>): CandidateRuntime<TProcessor> {
   const handle = input.recording.beginCandidate({ role: input.role, ...(input.parentCandidate && { parentCandidate: input.parentCandidate }) })
+  const candidateEnv = input.forkEnv?.(handle) ?? input.env
   const controller = new AbortController()
-  const signal = combineAbortSignals(controller.signal, input.env.ctx.operationSignal) ?? controller.signal
+  const signal = combineAbortSignals(controller.signal, candidateEnv.ctx.operationSignal) ?? controller.signal
   let started = false
   let settled = false
-  let latestEnv = input.env
+  let latestEnv = candidateEnv
   let runPromise: Promise<CandidateReady<TProcessor>> | undefined
 
   const settleCandidate = (settlement: { verdict: CandidateVerdict; reason?: string }): void => {

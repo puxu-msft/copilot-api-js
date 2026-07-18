@@ -15,14 +15,14 @@
  * tests/openai/cc-to-anthropic-stream.unit.test.ts (this drives the whole codec+driver seam).
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
 import {
   //
   describe,
   expect,
   test,
 } from "bun:test"
-
-import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type {
   //
@@ -66,9 +66,17 @@ function makeStreamingDriver(upstream: UpstreamStream) {
 }
 
 /** Run the codec+driver streaming translate leg into an array sink; return the forwarded Anthropic frames + terminal meta. */
-async function runStreamingLeg(modelName: string, upstream: UpstreamStream): Promise<{ frames: Array<ClientFrame>; meta: ReturnType<ReturnType<typeof createAnthropicCodec>["getStreamMeta"]> }> {
-  const { codec, driver, rawMessages } = makeStreamingDriver(upstream)
-  const raw = { body: { model: modelName, max_tokens: 128, messages: rawMessages, stream: true }, headers: new Headers(), path: "/v1/messages", method: "POST" } as unknown as RawHttpRequest
+async function runStreamingLeg(
+  modelName: string,
+  upstream: UpstreamStream,
+): Promise<{ frames: Array<ClientFrame>; meta: ReturnType<ReturnType<typeof createAnthropicCodec>["getStreamMeta"]> }> {
+  const { driver, rawMessages } = makeStreamingDriver(upstream)
+  const raw = {
+    body: { model: modelName, max_tokens: 128, messages: rawMessages, stream: true },
+    headers: new Headers(),
+    path: "/v1/messages",
+    method: "POST",
+  } as unknown as RawHttpRequest
   return withCapturingManager(async () => {
     const result = await driver.runRequest(raw)
     if (!result.ok) throw new Error(`runRequest rejected: ${result.rejection.reason}`)
@@ -76,8 +84,8 @@ async function runStreamingLeg(modelName: string, upstream: UpstreamStream): Pro
     const outcome = await driver.runResponseSink(result.upstream, result.env, sink)
     expect(outcome.kind).toBe("complete")
     // flushResponse drains the terminal message_delta + message_stop (mirrors the handler).
-    for (const f of codec.flushResponse(result.env)) frames.push(f)
-    return { frames, meta: codec.getStreamMeta() }
+    const session = driver.getCandidateResponseSession(result.upstream)
+    return { frames, meta: session?.renderer.getStreamMeta?.() as ReturnType<ReturnType<typeof createAnthropicCodec>["getStreamMeta"]> }
   }).result
 }
 
@@ -115,9 +123,28 @@ describe("T4.2 — @cc streaming leg end-to-end (mock CC SSE upstream → forwar
     seed()
     const upstream = sseStream([
       ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { content: "Let me check. " }, finish_reason: null }] }),
-      ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "toolu_w", type: "function", function: { name: "get_weather", arguments: "" } }] }, finish_reason: null }] }),
-      ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"city":"SF"}' } }] }, finish_reason: null }] }),
-      ccChunk({ id: "msg_x", model: "claude-x", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 20, completion_tokens: 6 } }),
+      ccChunk({
+        id: "msg_x",
+        model: "claude-x",
+        choices: [
+          {
+            index: 0,
+            delta: { tool_calls: [{ index: 0, id: "toolu_w", type: "function", function: { name: "get_weather", arguments: "" } }] },
+            finish_reason: null,
+          },
+        ],
+      }),
+      ccChunk({
+        id: "msg_x",
+        model: "claude-x",
+        choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"city":"SF"}' } }] }, finish_reason: null }],
+      }),
+      ccChunk({
+        id: "msg_x",
+        model: "claude-x",
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 20, completion_tokens: 6 },
+      }),
       { data: "[DONE]" },
     ])
     const { frames, meta } = await runStreamingLeg("claude-x@cc", upstream)
@@ -151,7 +178,10 @@ describe("T4.3 — @responses streaming leg end-to-end (mock Responses SSE upstr
     const upstream = sseStream([
       rEvent({ type: "response.created", response: { id: "resp_1", model: "claude-x" } }),
       rEvent({ type: "response.output_text.delta", output_index: 0, delta: "It is sunny." }),
-      rEvent({ type: "response.completed", response: { id: "resp_1", model: "claude-x", status: "completed", usage: { input_tokens: 15, output_tokens: 4, total_tokens: 19 } } }),
+      rEvent({
+        type: "response.completed",
+        response: { id: "resp_1", model: "claude-x", status: "completed", usage: { input_tokens: 15, output_tokens: 4, total_tokens: 19 } },
+      }),
     ])
     const { frames, meta } = await runStreamingLeg("claude-x@responses", upstream)
 

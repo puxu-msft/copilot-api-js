@@ -76,6 +76,7 @@ import type {
   ResponsesResponse,
 } from "~/types/api/openai-responses"
 
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
@@ -108,6 +109,7 @@ import {
   //
   translateResponsesResponseToCC,
 } from "~/lib/openai/translate"
+import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import {
   //
   type ResponsesToCcFrameRenderer,
@@ -119,7 +121,12 @@ import {
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 
-import type { ReverseAnthropicMapperHolder } from "./reverse-anthropic-rewrite"
+import {
+  //
+  buildReverseResanitize,
+  createReverseAnthropicMapperHolder,
+  type ReverseAnthropicMapperHolder,
+} from "./reverse-anthropic-rewrite"
 
 const CLIENT_FORMAT: ClientFormat = "openai-cc"
 const ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
@@ -264,6 +271,16 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     },
     createCandidateRenderer() {
       return createRenderer()
+    },
+    createCandidateStateFactory(env) {
+      return createCandidateStateFactory(env, {
+        createBetaProbe,
+        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.model.id, env.model.vendor),
+        createResanitize: ({ source, reverseMapperHolder }) =>
+          reverseMapperHolder ?
+            (payload) => buildReverseResanitize(reverseMapperHolder as ReverseAnthropicMapperHolder)(payload as never)
+          : (payload) => source(payload),
+      })
     },
 
     renderResponseNonStreaming(upstream, env) {

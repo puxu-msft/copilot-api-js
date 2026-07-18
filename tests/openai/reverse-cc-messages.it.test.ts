@@ -39,7 +39,11 @@ import {
   //
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
-import { withCapturingManager, withCapturingManagerAsync } from "~/lib/context/manager"
+import {
+  //
+  withCapturingManager,
+  withCapturingManagerAsync,
+} from "~/lib/context/manager"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
@@ -176,7 +180,7 @@ describe("T5.2 — REVERSE cc→messages streaming leg end-to-end (mock Anthropi
       anthropicEvent({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 6 } }),
       anthropicEvent({ type: "message_stop" }),
     ])
-    const { codec, driver } = makeReverseDriver(upstream)
+    const { driver } = makeReverseDriver(upstream)
     const raw = {
       body: { model: "claude-x@messages", messages: [{ role: "user", content: "weather?" }], stream: true },
       headers: new Headers(),
@@ -190,8 +194,8 @@ describe("T5.2 — REVERSE cc→messages streaming leg end-to-end (mock Anthropi
       const { sink, frames } = makeArraySink()
       const outcome = await driver.runResponseSink(result.upstream, result.env, sink, {})
       expect(outcome.kind).toBe("complete")
-      for (const f of codec.flushResponse(result.env)) frames.push(f)
-      return { frames, meta: codec.getStreamMeta() }
+      const session = driver.getCandidateResponseSession(result.upstream)
+      return { frames, meta: session?.renderer.getStreamMeta?.() as ReturnType<ReturnType<typeof createOpenAiCcCodec>["getStreamMeta"]> }
     }).result
 
     // INDEPENDENT CC oracle: the forwarded frames rebuild the text + tool_call.

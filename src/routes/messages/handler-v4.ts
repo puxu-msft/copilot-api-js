@@ -46,7 +46,6 @@ import type {
   ClientFrame,
   ClientSink,
   DriverRequestResult,
-  UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type {
@@ -130,6 +129,12 @@ import {
 } from "~/lib/openai/stream-accumulator"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import {
+  //
+  createCandidateResponseSession,
+  type CandidateResponseSession,
+  type CandidateResponseSessionFactory,
+} from "~/lib/pipeline/generation/candidate-response-session"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
@@ -190,6 +195,112 @@ const ESCALATE_MIN_TRIGGER = 4096
  * client-raw snapshot → async system-prompt injection → message preprocess →
  * web_search interception (legacy ctx, NOT driver) → driver bundle + runRequest.
  */
+type AnthropicCandidateResponseSnapshot =
+  | Readonly<{
+      kind: "anthropic-direct"
+      acc: ReturnType<typeof createAnthropicStreamAccumulator>
+      sseEvents: Array<SseEventRecord>
+      streamState: StreamPumpState
+    }>
+  | Readonly<{
+      kind: "anthropic-translate"
+      ccAcc: ReturnType<typeof createOpenAIStreamAccumulator> | undefined
+      respAcc: ReturnType<typeof createResponsesStreamAccumulator> | undefined
+      diag: ReturnType<typeof createUpstreamFrameDiagnostics>
+      meta: ReturnType<ReturnType<typeof createAnthropicCodec>["getStreamMeta"]>
+    }>
+
+const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory = (input) => {
+  const startedAtMs = Date.now()
+  const model = (input.env.body as { model?: string }).model ?? "unknown"
+  if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
+    return createCandidateResponseSession({
+      ...input,
+      createState: () => ({
+        acc: createAnthropicStreamAccumulator(),
+        checkRepetition: createStreamRepetitionChecker(model),
+        sseEvents: [] as Array<SseEventRecord>,
+        streamState: {
+          streamStartMs: startedAtMs,
+          bytesIn: 0,
+          eventsIn: 0,
+          currentBlockType: "",
+          firstEventLogged: false,
+          recoverFeatureLogged: false,
+        } satisfies StreamPumpState,
+      }),
+      onUpstreamFrame(state, frame) {
+        const rawEvent = frame as ServerSentEventMessage
+        let parsed: StreamEvent | undefined
+        if (rawEvent.data) {
+          try {
+            parsed = JSON.parse(rawEvent.data) as StreamEvent
+            accumulateAnthropicStreamEvent(parsed, state.acc)
+          } catch (error) {
+            consola.error("Failed to parse Anthropic stream event:", error, rawEvent.data)
+          }
+        }
+        recordUpstreamFrame({
+          rawEvent,
+          parsed,
+          streamState: state.streamState,
+          sseEvents: state.sseEvents,
+          reqCtx: input.env.ctx,
+          checkRepetition: state.checkRepetition,
+        })
+      },
+      sawMessageStop: (state) => state.acc.sawMessageStop,
+      sawUpstreamError: (state) => state.acc.streamError !== undefined,
+      onBufferedResolve(state, outcome, retries, meta) {
+        if (outcome === "success" && retries === 0) return
+        recordProtectStreamingOutcome(outcome, retries, meta)
+        input.env.ctx.recordFeature("protect-streaming-retry", { outcome, retries, vendor: meta.vendor })
+        consola.debug(`[protect-stream] ${outcome} for ${state.acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
+      },
+      snapshot: (state) => ({ kind: "anthropic-direct" as const, acc: state.acc, sseEvents: state.sseEvents, streamState: state.streamState }),
+    })
+  }
+
+  return createCandidateResponseSession({
+    ...input,
+    createState: () => ({
+      ccAcc: input.env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? createOpenAIStreamAccumulator() : undefined,
+      respAcc: input.env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? undefined : createResponsesStreamAccumulator(),
+      diag: createUpstreamFrameDiagnostics(startedAtMs),
+    }),
+    onUpstreamFrame(state, frame) {
+      const rawEvent = frame as ServerSentEventMessage
+      state.diag.observe(rawEvent)
+      if (!rawEvent.data || rawEvent.data === "[DONE]") return
+      try {
+        const parsed = JSON.parse(rawEvent.data) as Record<string, unknown>
+        if (state.ccAcc) accumulateOpenAIStreamEvent(parsed as never, state.ccAcc)
+        else if (state.respAcc) accumulateResponsesStreamEvent(parsed as never, state.respAcc)
+      } catch (error) {
+        consola.error("[Anthropic:v4:translate] Failed to parse upstream stream event:", error, rawEvent.data)
+      }
+    },
+    finish(_state, renderer, rendererFrames) {
+      const meta = renderer.getStreamMeta?.() as { stopReason?: string } | undefined
+      if (meta?.stopReason === undefined) {
+        return {
+          kind: "truncated",
+          frames: rendererFrames.filter((frame) => !isMessageTerminatorFrame(frame)),
+          reason: "Upstream stream truncated before completion (no finish_reason)",
+        }
+      }
+      return { kind: "complete", frames: rendererFrames }
+    },
+    snapshot: (state, renderer) => ({ kind: "anthropic-translate" as const, ...state, meta: renderer.getStreamMeta?.() }),
+  })
+}
+
+function anthropicCandidateSnapshot(driver: ReturnType<typeof createPipelineDriver>, upstream: UpstreamStream): AnthropicCandidateResponseSnapshot {
+  const session = driver.getCandidateResponseSession(upstream) as CandidateResponseSession<AnthropicCandidateResponseSnapshot> | undefined
+  if (!session) throw new Error("[Anthropic:v4] candidate response session missing")
+  return session.snapshot()
+}
+
 export async function handleMessagesV4(c: Context): Promise<Response> {
   const payload = await c.req.json<MessagesPayload>()
 
@@ -278,6 +389,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   const driver = createPipelineDriver({
     codec,
     transport,
+    candidateResponseSessionFactory: createAnthropicCandidateResponseSession,
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every anthropic cell is migrated: the direct `/v1/messages` cell + the forward `@cc`/`@responses`
     // cells). `OUTBOUND_LEGS[/v1/messages]` supplies the sanitize chain (from env.requestState.preprocessInfo)
@@ -1027,54 +1139,9 @@ function liveReconcilingSink(sink: ClientSink, anchorHooks: AnchorHooks | undefi
  * modified tools are reflected (via `createState(env)`).
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
-  const { sink, buffered, forwardedSseEvents, streamStartMs, driver, upstream, env, anchorHooks, anchorState } = opts
+  const { sink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
   const anthropicPayload = env.body as MessagesPayload
   const model = anthropicPayload.model
-
-  // These four upstream-side accumulators are reset BETWEEN buffered attempts (onAttemptReset):
-  // each retry is a fresh generation, so reusing them would double-count usage/tokens/bytes and
-  // leak the prior attempt's repetition/sse state. `let` (not `const`) so the reset can rebind
-  // them and the closures below read the CURRENT binding.
-  let acc = createAnthropicStreamAccumulator()
-  let checkRepetition = createStreamRepetitionChecker(model)
-
-  // Raw upstream SSE frames (verbatim) — a local copy for logUpstreamStreamError. The
-  // PERSISTED upstream-original track is the driver's (runResponse loop-top, P3.2b; per attempt
-  // in buffered mode via ctx.commitAttemptSseEvents). Reset per attempt so the final error log
-  // reflects the LAST (failing) attempt's frames, not all attempts concatenated.
-  let sseEvents: Array<SseEventRecord> = []
-  // `forwardedSseEvents` (what the client ACTUALLY received) is CALLER-OWNED and injected: the sink
-  // samples real frames + heartbeat pings into it via `onForwarded`, and the pump snapshots it onto
-  // ctx. NOT reset across buffered attempts (RFC §10 correction): the client received one continuous
-  // SSE stream, so heartbeat pings from EARLIER (failed) attempts genuinely stay on the wire; content
-  // frames enter it only once, at the final commit flush, so they can never double.
-
-  let streamState: StreamPumpState = {
-    streamStartMs,
-    bytesIn: 0,
-    eventsIn: 0,
-    currentBlockType: "",
-    firstEventLogged: false,
-    recoverFeatureLogged: false,
-  }
-
-  // Upstream-side work on the RAW frame (BEFORE the S5 rewrites): parse + accumulate
-  // (→ outboundResponse, upstream-original) + the shared recording (sseEvents,
-  // progress, repetition, server-tool logging). A malformed frame is logged but not
-  // fatal (RFC §12.6) — still recorded with parsed=undefined.
-  const onUpstreamFrame = (frame: UpstreamFrame): void => {
-    const rawEvent = frame as ServerSentEventMessage
-    let parsed: StreamEvent | undefined
-    if (rawEvent.data) {
-      try {
-        parsed = JSON.parse(rawEvent.data) as StreamEvent
-        accumulateAnthropicStreamEvent(parsed, acc)
-      } catch (error) {
-        consola.error("Failed to parse Anthropic stream event:", error, rawEvent.data)
-      }
-    }
-    recordUpstreamFrame({ rawEvent, parsed, streamState, sseEvents, reqCtx: env.ctx, checkRepetition })
-  }
 
   // Snapshot the forwarded track onto the ctx (R3-④: forwardedSseEvents is aliased by
   // entry.inboundResponse — `close()` in runResponseSink's finally already stopped the
@@ -1091,27 +1158,6 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   // each re-exchange so a fresh generation never double-counts the previous attempt; the driver
   // re-instantiates its own S5 chain state per attempt. `forwardedSseEvents` is intentionally
   // NOT reset (heartbeat pings already on the client wire stay recorded — RFC §10 correction).
-  const onAttemptReset = (): void => {
-    acc = createAnthropicStreamAccumulator()
-    checkRepetition = createStreamRepetitionChecker(model)
-    sseEvents = []
-    // Discard the prior attempt's tool-input repair outcomes so a discarded buffered attempt's
-    // unrepairable/repair signal never leaks into the committed one (audit C1/H1).
-    env.ctx.resetRepairOutcomesForAttempt()
-    streamState = {
-      // MEDIUM-2: reset the diagnostic time base to THIS attempt's start (paired with the `sseEvents = []`
-      // reset above) so a zero-frame final buffered attempt reports `silence` relative to the attempt, not
-      // the whole request — otherwise a healthy attempt-1 + instant-fail attempt-2 re-reads as whole-request
-      // silence (the gpt-5.6-sol misread, in a sub-case). `streamStartMs` here feeds ONLY recordUpstreamFrame's
-      // offsetMs + the disconnect elapsed (both per-attempt); the client timing epoch uses the outer const.
-      streamStartMs: Date.now(),
-      bytesIn: 0,
-      eventsIn: 0,
-      currentBlockType: "",
-      firstEventLogged: false,
-      recoverFeatureLogged: false,
-    }
-  }
 
   // The await is INSIDE the try so a throw from the driver/sink still records forwarded + settles the
   // entry (catch) — no dangling entry, no lost keepalive track. finally re-guards. The driver returns
@@ -1120,7 +1166,6 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     const outcome =
       buffered ?
         await driver.runResponseBufferedSink(upstream, env, sink, {
-          onUpstreamFrame,
           // Buffered synthetic-prelude keepalive (spec 2026-07-08 / §10.6): the handler's injector lazily
           // forwards a message_start prelude via the sink's heartbeat.injectAnchor during a pre-commit stall.
           // On commit the driver dedups the buffered message_start and — for `empty_text` (anchorBlockOpen) —
@@ -1128,12 +1173,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           // Undefined for `ping` → every anchor branch in the driver is inert.
           anchor: anchorHooks,
           anchorState,
-          sawMessageStop: () => acc.sawMessageStop,
           // H2 (a terminal upstream `error` frame) is a clean drain WITHOUT message_stop — the same
           // shape as an RST-truncation. This lets the buffered sink COMMIT it (the handler then fails
           // via acc.streamError, mirroring live) instead of wastefully retrying it as a truncation.
-          sawUpstreamError: () => acc.streamError !== undefined,
-          onAttemptReset,
           retryCap: resolveBufferedCaps("anthropic").maxRetries,
           bufferCapBytes: resolveBufferedCaps("anthropic").bufferCapBytes,
           // Vendor label the driver injects into onBufferedResolve's `meta.vendor` → the vendor-keyed
@@ -1156,24 +1198,12 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
                 },
               }),
           }),
-          // L2 hit-rate telemetry (RFC §10): aggregate counter (→ /api/status.protect_streaming) +
-          // a per-entry feature tag + an operator log line — recorded ONLY for an actual L2 engagement:
-          // a save after ≥1 retry, an exhaustion, a buffer-cap retreat, or a `partial-degrade` (a
-          // block-level commit-then-truncate). A clean first-try commit (retries === 0, no RST) is the
-          // silent buffered happy path — tagging/counting it would put `protect-streaming-retry` on
-          // essentially every 200 and inflate the "success" hit-rate with requests L2 never engaged on.
-          // `partial-degrade` is runtime-UNREACHABLE here today (this handler does not yet pass
-          // `commitBoundaries`, so `committedAny` never sets) — but the accounting is wired verbatim so
-          // P1 flipping on the Anthropic block-level predicate records it with zero further change; the
-          // driver-injected `meta` (vendor) is forwarded as-is (no vendor re-hardcoding).
-          onBufferedResolve: (outcome, retries, meta) => {
-            if (outcome === "success" && retries === 0) return
-            recordProtectStreamingOutcome(outcome, retries, meta)
-            env.ctx.recordFeature("protect-streaming-retry", { outcome, retries, vendor: meta.vendor })
-            consola.debug(`[protect-stream] ${outcome} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
-          },
         })
-      : await driver.runResponseSink(upstream, env, liveReconcilingSink(sink, anchorHooks, anchorState), { onUpstreamFrame })
+      : await driver.runResponseSink(upstream, env, liveReconcilingSink(sink, anchorHooks, anchorState))
+
+    const candidate = anthropicCandidateSnapshot(driver, upstream)
+    if (candidate.kind !== "anthropic-direct") throw new Error("[Anthropic:v4] wrong candidate response session kind")
+    const { acc, sseEvents, streamState } = candidate
 
     recordForwarded() // before any ctx.settle (settle finalizes the entry); finally re-guards a throw
     // Flush the COMMITTED attempt's tool-input repair outcomes once (telemetry + feature tag + log).
@@ -1345,6 +1375,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       sink.finalize?.()
     }
   } catch (error) {
+    const failedCandidate = anthropicCandidateSnapshot(driver, upstream)
+    if (failedCandidate.kind !== "anthropic-direct") throw error
+    const { acc } = failedCandidate
     // Unexpected throw from the driver/sink (not a returned outcome): surface a synthetic error
     // frame + record it into the forwarded track, THEN settle so the persisted inboundResponse
     // includes the client-received error frame (writeSynthetic → recordForwarded → fail).
@@ -1393,7 +1426,7 @@ function isMessageTerminatorFrame(frame: ClientFrame): boolean {
  *     `onUpstreamFrame`, so `outboundResponse` stays honest (the upstream's real shape — RFC §4.1 /
  *     richest-data-flow "后端存储必须完整"), while the client track (`inboundResponse.sseEvents`) is the
  *     forwarded Anthropic frames the sink samples,
- *   - settles from `codec.getStreamMeta()` (out-of-band terminal stop_reason + net usage): a clean drain
+ *   - settles from `candidate session renderer meta` (out-of-band terminal stop_reason + net usage): a clean drain
  *     WITHOUT a stop_reason is an upstream truncation (F2 — the CC stream ended with no finish_reason),
  *     failed with a synthetic Anthropic error terminator (mirrors the direct pump's truncation gate).
  *
@@ -1405,59 +1438,12 @@ function isMessageTerminatorFrame(frame: ClientFrame): boolean {
  * streaming (constraint #4: only the forward leg is unlocked; reverse streaming stays Phase 5).
  */
 async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchOptions): Promise<void> {
-  const { sink, forwardedSseEvents, streamStartMs, driver, codec, upstream, env, anchorHooks, anchorState } = opts
+  const { sink, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
   // The translate-leg env.body is the CC-canonical wire body (translateOut delegated to the hub), so it
   // carries the resolved model name; fall back to a literal when absent (defensive, never for a real leg).
   const model = (env.body as { model?: string }).model ?? "unknown"
-  const targetEndpoint = env.targetEndpoint
-
-  // OUTBOUND-leg (raw upstream) accumulator: cc leg → CC accumulator; responses leg → Responses
-  // accumulator (feeds `outboundResponse` the honest upstream shape). Distinct from the client-facing
-  // Anthropic frames the sink forwards + samples.
-  const ccAcc = targetEndpoint === ENDPOINT.CHAT_COMPLETIONS ? createOpenAIStreamAccumulator() : undefined
-  const respAcc = ccAcc ? undefined : createResponsesStreamAccumulator()
-
-  // Live-stream diagnostic signals for `logUpstreamStreamError` (the blind-spot fix): the translate leg's
-  // upstream is a CC/Responses SSE stream, so it can't reuse the direct pump's Anthropic `recordUpstreamFrame`.
-  // The shared collector observes every raw frame the driver hands this hook (empty keepalives included — the
-  // driver filters the `[DONE]` sentinel BEFORE onUpstreamFrame, so it never reaches here) with an honest
-  // format-agnostic last-frame label — feeding real frames/bytes to the disconnect log so a healthy long stream
-  // capped by the upstream is never misread as `frames=0 / silence=<whole duration>` (the gpt-5.6-sol incident).
-  // The PERSISTED upstream-original track is the driver's (this is diagnostics-only).
-  const diag = createUpstreamFrameDiagnostics(streamStartMs)
-
-  const onUpstreamFrame = (frame: UpstreamFrame): void => {
-    const rawEvent = frame as ServerSentEventMessage
-    diag.observe(rawEvent)
-    // Accumulation additionally skips empty frames (they carry no outbound-leg content); the diagnostic
-    // counts them as wire activity. (`[DONE]` is already filtered by the driver upstream of this hook.)
-    if (!rawEvent.data || rawEvent.data === "[DONE]") return
-    try {
-      const parsed = JSON.parse(rawEvent.data) as Record<string, unknown>
-      if (ccAcc) accumulateOpenAIStreamEvent(parsed as never, ccAcc)
-      else if (respAcc) accumulateResponsesStreamEvent(parsed as never, respAcc)
-    } catch (error) {
-      // A malformed upstream frame is logged, not fatal (parity with the direct pump / RFC §12.6).
-      consola.error("[Anthropic:v4:translate] Failed to parse upstream stream event:", error, rawEvent.data)
-    }
-  }
 
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
-  /** The OUTBOUND-leg ResponseData (honest upstream shape) for the terminal settle. */
-  const outboundResponseData = (): ReturnType<typeof buildOpenAIResponseData> =>
-    ccAcc ? buildOpenAIResponseData(ccAcc, model) : buildResponsesResponseData(respAcc as NonNullable<typeof respAcc>, model)
-  const finishResponse = () => {
-    const meta = codec.getStreamMeta()
-    const frames = [...codec.flushResponse(env)]
-    if (meta?.stopReason === undefined) {
-      return {
-        kind: "truncated" as const,
-        frames: frames.filter((frame) => !isMessageTerminatorFrame(frame)),
-        reason: "Upstream stream truncated before completion (no finish_reason)",
-      }
-    }
-    return { kind: "complete" as const, frames }
-  }
 
   try {
     // LIVE owns-sink: the driver drives codec.renderResponse (CC/Responses→Anthropic per-frame) + writes
@@ -1470,12 +1456,17 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     // mismatch / dangling block) under `empty_text` anchor. reconcile leaves index-less message_delta /
     // message_stop unchanged, and is a transparent passthrough when no anchor was injected (byte-equivalent).
     const clientSink = liveReconcilingSink(sink, anchorHooks, anchorState)
-    const outcome = await driver.runResponseSink(upstream, env, clientSink, { onUpstreamFrame, finishResponse })
+    const outcome = await driver.runResponseSink(upstream, env, clientSink)
+
+    const candidate = anthropicCandidateSnapshot(driver, upstream)
+    if (candidate.kind !== "anthropic-translate") throw new Error("[Anthropic:v4:translate] wrong candidate response session kind")
+    const { ccAcc, respAcc, diag, meta } = candidate
+    const outboundResponseData = (): ReturnType<typeof buildOpenAIResponseData> =>
+      ccAcc ? buildOpenAIResponseData(ccAcc, model) : buildResponsesResponseData(respAcc as NonNullable<typeof respAcc>, model)
 
     if (outcome.kind === "settled-abort") {
       recordForwarded()
       consola.debug("[Anthropic:v4:translate] Client disconnected mid-stream — recording aborted")
-      const meta = codec.getStreamMeta()
       env.ctx.abort(model, {
         usage: { input_tokens: meta?.usage.input_tokens ?? 0, output_tokens: meta?.usage.output_tokens ?? 0 },
         ...(meta?.stopReason && { stop_reason: meta.stopReason }),
@@ -1489,7 +1480,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       // Anthropic error terminator, snapshot the forwarded track, THEN fail (order load-bearing — ctx.fail
       // freezes inboundResponse; a post-fail snapshot misses the error frame).
       const error = outcome.error
-      const errUsage = codec.getStreamMeta()?.usage
+      const errUsage = meta?.usage
       logUpstreamStreamError(error, {
         model,
         streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
@@ -1519,7 +1510,6 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
 
     // outcome.kind === "complete" — the upstream drained cleanly. The terminal stop_reason is the F2
     // signal: undefined ⇒ the CC/Responses stream ended with NO finish_reason ⇒ truncation.
-    const meta = codec.getStreamMeta()
     // N3 (RFC 2026-07-14-anthropic-responses-direct-bridge §3 subtask C): the direct Responses→Anthropic
     // streaming bridge's meta is a superset carrying `contentFiltered` — record the SAME ctx marker the
     // non-streaming leg already records (codec.ts renderResponseNonStreaming), so a content-filtered
@@ -1543,7 +1533,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         .catch(() => undefined)
       recordForwarded()
       consola.error(`[Anthropic:v4:translate] Upstream truncated for ${model}: drained without a finish_reason`)
-      const truncUsage = codec.getStreamMeta()?.usage
+      const truncUsage = meta?.usage
       logUpstreamStreamTruncation("Upstream stream truncated before completion (no finish_reason)", {
         model,
         streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
@@ -1562,6 +1552,11 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     sink.finalize?.()
   } catch (error) {
     // Unexpected throw from the driver/sink: synthesize an Anthropic error terminator + record it, THEN fail.
+    const failedCandidate = anthropicCandidateSnapshot(driver, upstream)
+    if (failedCandidate.kind !== "anthropic-translate") throw error
+    const { ccAcc, respAcc } = failedCandidate
+    const failedResponseData = (): ReturnType<typeof buildOpenAIResponseData> =>
+      ccAcc ? buildOpenAIResponseData(ccAcc, model) : buildResponsesResponseData(respAcc as NonNullable<typeof respAcc>, model)
     await closeAnchorIfOpen(sink, anchorHooks, anchorState)
     await sink
       .writeSynthetic?.({
@@ -1570,7 +1565,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       })
       .catch(() => undefined)
     recordForwarded()
-    env.ctx.fail(model, error, outboundResponseData())
+    env.ctx.fail(model, error, failedResponseData())
     sink.finalize?.()
   } finally {
     recordForwarded()

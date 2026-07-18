@@ -38,7 +38,6 @@ import consola from "consola"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
 import type { BetaProbe } from "~/lib/anthropic/pipeline"
-import type { ReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import type { RequestContext } from "~/lib/context/request"
 import type { EndpointType } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
@@ -78,7 +77,14 @@ import type {
   ResponsesPayload,
 } from "~/types/api/openai-responses"
 
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import {
+  //
+  buildReverseResanitize,
+  createReverseAnthropicMapperHolder,
+  type ReverseAnthropicMapperHolder,
+} from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import {
   //
   modelIdFor,
@@ -123,6 +129,7 @@ import {
   translateAnthropicResponseToResponses,
   translateCCToResponsesResponse,
 } from "~/lib/openai/translate"
+import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import {
   //
   createReverseStreamTranslator,
@@ -207,17 +214,21 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
   // prepareWire) reference. parse threads it onto env.requestState so both sides see the SAME instance.
   // `ensure` builds the exchange LAZILY + idempotently (the build closure lives here — it needs
   // resolvedModelName / genShortId / rebuildConversationMessages); undefined for a direct request.
-  const fallbackScratch: ResponsesFallbackScratch = {
-    exchange: undefined,
-    ensure(env) {
-      return (fallbackScratch.exchange ??= {
-        responseId: `resp_${genShortId()}`,
-        itemId: `item_${genShortId()}`,
-        clientModel: resolvedModelName || (env.body as ResponsesPayload).model,
-        rebuiltMessages: rebuildConversationMessages(env.ctx.sessionId),
-      })
-    },
+  const createFallbackScratch = (): ResponsesFallbackScratch => {
+    const scratch: ResponsesFallbackScratch = {
+      exchange: undefined,
+      ensure(env) {
+        return (scratch.exchange ??= {
+          responseId: `resp_${genShortId()}`,
+          itemId: `item_${genShortId()}`,
+          clientModel: resolvedModelName || (env.body as ResponsesPayload).model,
+          rebuiltMessages: rebuildConversationMessages(env.ctx.sessionId),
+        })
+      },
+    }
+    return scratch
   }
+  const fallbackScratch = createFallbackScratch()
   const createRenderer = (candidateEnv?: RequestEnvelope): CandidateResponseRenderer => {
     let ccTranslator: CCToResponsesStreamTranslator | null = null
     let reverseExchange: TranslateExchangeContext | undefined
@@ -325,6 +336,17 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     },
     createCandidateRenderer(env) {
       return createRenderer(env)
+    },
+    createCandidateStateFactory(env) {
+      return createCandidateStateFactory(env, {
+        createBetaProbe,
+        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.model.id, env.model.vendor),
+        createResponsesFallbackScratch: () => createFallbackScratch(),
+        createResanitize: ({ source, reverseMapperHolder }) =>
+          reverseMapperHolder ?
+            (payload) => buildReverseResanitize(reverseMapperHolder as ReverseAnthropicMapperHolder)(payload as never)
+          : (payload) => source(payload),
+      })
     },
 
     flushResponse(env) {

@@ -68,11 +68,18 @@ import type {
 } from "~/types/api/gemini"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
   createOpenAiCcCodec,
   type OpenAiCcCodec,
 } from "~/lib/codec/openai-cc/codec"
+import {
+  //
+  buildReverseResanitize,
+  createReverseAnthropicMapperHolder,
+  type ReverseAnthropicMapperHolder,
+} from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
 import {
@@ -93,6 +100,7 @@ import {
 } from "~/lib/models/resolver"
 import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
+import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 
@@ -245,6 +253,16 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
     },
     createCandidateRenderer(env) {
       return createRenderer(env)
+    },
+    createCandidateStateFactory(env) {
+      return createCandidateStateFactory(env, {
+        createBetaProbe,
+        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.model.id, env.model.vendor),
+        createResanitize: ({ source, reverseMapperHolder }) =>
+          reverseMapperHolder ?
+            (payload) => buildReverseResanitize(reverseMapperHolder as ReverseAnthropicMapperHolder)(payload as never)
+          : (payload) => source(payload),
+      })
     },
 
     flushResponse(_env) {

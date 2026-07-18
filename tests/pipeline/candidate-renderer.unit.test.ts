@@ -157,4 +157,37 @@ describe("candidate-isolated response renderers", () => {
     expect(output.map((entry) => entry.data).join("\n")).toContain("resp_candidate")
     expect(output.map((entry) => entry.data).join("\n")).toContain("gpt-candidate")
   })
+
+  test("codec candidate state factory forks beta probes and fallback scratch", () => {
+    const codec = createOpenAiResponsesCodec()
+    const sourceBeta = createBetaProbe("client-beta")
+    const sourceScratch = {
+      exchange: undefined,
+      ensure() {
+        throw new Error("source scratch must not be used by candidate")
+      },
+    }
+    const requestEnv = {
+      ...env("/chat/completions", { model: "gpt-candidate" }),
+      requestState: { betaProbe: sourceBeta, clientAnthropicBeta: "client-beta", responsesFallbackScratch: sourceScratch },
+    } as RequestEnvelope
+    const factory = codec.createCandidateStateFactory!(requestEnv)
+
+    const first = factory.fork({ candidateId: "candidate-a", role: "primary" })
+    const second = factory.fork({ candidateId: "candidate-b", role: "hedge" })
+    const firstBeta = first.requestState?.betaProbe
+    const secondBeta = second.requestState?.betaProbe
+
+    expect(firstBeta).not.toBe(sourceBeta)
+    expect(secondBeta).not.toBe(sourceBeta)
+    expect(firstBeta).not.toBe(secondBeta)
+    expect(first.requestState?.responsesFallbackScratch).not.toBe(sourceScratch)
+    expect(second.requestState?.responsesFallbackScratch).not.toBe(sourceScratch)
+    expect(first.requestState?.responsesFallbackScratch).not.toBe(second.requestState?.responsesFallbackScratch)
+
+    firstBeta?.recordOutbound({ "anthropic-beta": "client-beta,first-only" })
+    secondBeta?.recordOutbound({ "anthropic-beta": "second-only" })
+    expect(firstBeta?.getCandidates()).toEqual(["client-beta", "first-only"])
+    expect(secondBeta?.getCandidates()).toEqual(["second-only"])
+  })
 })

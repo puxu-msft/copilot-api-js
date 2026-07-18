@@ -11,7 +11,7 @@
  * (accumulate + progress + the forwarded-only tool-name restore on the rendered Responses
  * frames; `undefined` return skips empty/unparseable frames), samples the forwarded track
  * inside the sink (`onForwarded`), and after a clean drain handles the format-specific
- * finishing the codec/driver do NOT: the fallback closing-lifecycle flush (`codec.flushResponse`,
+ * finishing the codec/driver do NOT: the fallback closing-lifecycle flush (`CandidateResponseSession.renderer.flushResponse`,
  * the CC→Responses translator's stream-end drain — kept handler-side; see
  * docs/archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md for why the "move flush into the driver
  * S6 flush" idea was evaluated and rejected) and session registration (fallback eager pre-stream;
@@ -25,7 +25,6 @@
  * synthesize a client error terminator; plus client-abort.
  */
 
-import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Context } from "hono"
 import type { SSEStreamingApi } from "hono/streaming"
 
@@ -38,9 +37,7 @@ import type { SseEventRecord } from "~/lib/history/store"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
-  ClientFrame,
   DriverRequestResult,
-  UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type { MessagesPayload } from "~/types/api/anthropic"
@@ -49,23 +46,15 @@ import type {
   //
   ResponsesPayload,
   ResponsesResponse,
-  ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
 import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
-import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
-import {
-  //
-  accumulateAnthropicStreamEvent,
-  createAnthropicStreamAccumulator,
-} from "~/lib/anthropic/stream-accumulator"
 import {
   //
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
-import { isResponsesCommitBoundary } from "~/lib/codec/openai-responses/commit-boundaries"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import { HTTPError } from "~/lib/error"
 import {
@@ -77,17 +66,8 @@ import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { registerResponseSession } from "~/lib/openai/response-session-store"
 import { responsesOutputToContent } from "~/lib/openai/responses-conversion"
-import {
-  //
-  accumulateResponsesStreamEvent,
-  createResponsesStreamAccumulator,
-} from "~/lib/openai/responses-stream-accumulator"
 import { openAIStreamErrorFrame } from "~/lib/openai/stream-error"
-import {
-  //
-  restoreResponsesOutputToolNames,
-  restoreResponsesStreamFrameToolNames,
-} from "~/lib/openai/tool-name-sanitize"
+import { restoreResponsesOutputToolNames } from "~/lib/openai/tool-name-sanitize"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
@@ -111,7 +91,6 @@ import {
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 import {
   //
-  createUpstreamFrameDiagnostics,
   logUpstreamStreamError,
   logUpstreamStreamTruncation,
 } from "~/lib/upstream-stream-diagnostics"
@@ -123,6 +102,11 @@ import {
 } from "~/types/api/ghc-usage"
 
 import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
+import {
+  //
+  createResponsesCandidateResponseSessionFactory,
+  responsesCandidateSnapshot,
+} from "./candidate-response-session"
 
 /** Responses has no learning-budget strategy; the value is inert (passed for completeness). */
 const MAX_LEARNING_RETRIES = 32
@@ -158,6 +142,7 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   const driver = createPipelineDriver({
     codec,
     transport,
+    candidateResponseSessionFactory: createResponsesCandidateResponseSessionFactory("http"),
     // S3 request-rewrites, S5 response-rewrites, and the S4 retry stack all come from the CellAssembly now
     // (C5 — every openai-responses cell is migrated: direct `/responses` + `/chat` fallback + reverse
     // `@messages`). The reverse leg's sanitize rewrite + Anthropic stack + the R1 corner (direct/fallback
@@ -224,7 +209,8 @@ export async function handleResponsesV4(c: Context): Promise<Response> {
   // request using `previous_response_id` mid-stream can resolve it (parity with
   // the legacy fallback). The direct path registers after the loop (acc.responseId).
   if (viaFallback) {
-    const respId = codec.getFallbackResponseId()
+    const candidate = responsesCandidateSnapshot(driver, upstream)
+    const respId = candidate.kind === "responses" ? candidate.fallbackResponseId : undefined
     if (respId) {
       if (!env.ctx.sessionId) env.ctx.setSessionId(respId)
       registerResponseSession(respId, env.ctx.sessionId)
@@ -328,13 +314,7 @@ interface PumpStreamingV4Options {
 }
 
 async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
-  const { stream, driver, codec, upstream, env, viaFallback } = opts
-  // `let` (not `const`) so the buffered `onAttemptReset` can rebind a FRESH accumulator between
-  // retries: each retry is a new generation, and the closures below (`restoreAndAccumulate` /
-  // `onRenderedFrame`) read the CURRENT binding — so a discarded attempt's text/tool-call/usage
-  // never leaks into the committed generation's history record (parity with Anthropic's `let acc`).
-  let acc = createResponsesStreamAccumulator()
-  const mapper = env.ctx.toolNameMapper
+  const { stream, driver, upstream, env, viaFallback } = opts
   const model = (env.body as ResponsesPayload).model
 
   // Forwarded SSE frames — what the client ACTUALLY received (tool-name restored). Filled by
@@ -347,15 +327,6 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
-  let bytesIn = 0
-  let eventsIn = 0
-
-  // Upstream-frame diagnostics (the disconnect-log blind-spot fix): observe the RAW upstream frames so a
-  // stream-error surfaces real frames/bytes/last-frame to `[upstream-diagnostics]` instead of nothing (this
-  // leg previously emitted no disconnect diagnostic at all). `let` so `onAttemptReset` rebinds a fresh
-  // collector per buffered attempt — the final error log then reflects the LAST (failing) attempt's frames.
-  let diag = createUpstreamFrameDiagnostics(streamStartMs)
-  const onUpstreamFrame = (frame: UpstreamFrame): void => diag.observe(frame as ServerSentEventMessage)
 
   // L2 buffered-retry routing + the forced client keepalive cadence (Task 3.2). `buffered`
   // (opt-in `responsesBufferedRetry`) selects the driver's `runResponseBufferedSink` — the SAME
@@ -383,46 +354,6 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
-  /**
-   * Accumulate one rendered Responses frame + restore function_call names (forwarded-only).
-   * Returns the restored frame to forward, or `undefined` to skip (empty / unparseable —
-   * the legacy loop's `!frame.data` guard + `forwardFrame`'s parse-fail early return).
-   * fix-stream-ids (direct) was already applied in the driver's S5 chain. Shared by the driver
-   * loop (via `onRenderedFrame`, which adds progress counting) AND the fallback closing drain.
-   */
-  const restoreAndAccumulate = (frame: ClientFrame): ClientFrame | undefined => {
-    if (!frame.data) return undefined
-    let event: ResponsesStreamEvent
-    try {
-      event = JSON.parse(frame.data) as ResponsesStreamEvent
-    } catch (err) {
-      consola.debug(`[Responses:v4] skipping unparseable SSE frame (${err instanceof Error ? err.message : String(err)}):`, frame.data.slice(0, 200))
-      return undefined
-    }
-    accumulateResponsesStreamEvent(event, acc)
-    // Wire `event:` line = `frame.event ?? event.type` (byte-identical to the legacy forwardFrame).
-    // The forwarded HISTORY-record `type` is derived by the sink's `frameType` (parsed-JSON-`type`-
-    // first), vs the legacy record's `rawEvent ?? event.type` (event-line-first) — these agree for
-    // every compliant Responses frame (the SSE `event:` line mirrors the JSON `type`); they'd only
-    // differ in the history label (never the wire) for a malformed upstream where `event:` ≠ `type`.
-    return { event: frame.event ?? event.type, data: restoreResponsesStreamFrameToolNames(frame.data, event.type, mapper) }
-  }
-
-  // Driver-loop hook: progress counting (loop frames only, mirroring the legacy loop body —
-  // the fallback closing drain did NOT count) + restore/accumulate. Skips empty BEFORE counting
-  // (legacy pre-count `!frame.data` guard); a parse-fail counts but does not forward (legacy).
-  const onRenderedFrame = (frame: ClientFrame): ClientFrame | undefined => {
-    if (!frame.data) return undefined
-    bytesIn += frame.data.length
-    eventsIn++
-    env.ctx.recordStreamProgress({ bytesIn, eventsIn })
-    return restoreAndAccumulate(frame)
-  }
-  const finishResponse = () => ({
-    kind: "complete" as const,
-    frames: viaFallback ? [...codec.flushResponse(env)] : [],
-  })
-
   // L2 buffered path (opt-in) vs live default. Buffered adopts the driver's shared
   // `runResponseBufferedSink`: it buffers every rendered frame and commits the WHOLE generation to
   // the sink ONLY on a clean drain that reached a terminal — retrying a transport-close/truncation
@@ -443,54 +374,21 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   const outcome =
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
-        onRenderedFrame, // restore + accumulate (the buffered drain invokes it per frame)
-        onUpstreamFrame, // raw-frame diagnostics (disconnect-log signals)
-        finishResponse,
         anchor: undefined, // the empty-text keepalive anchor is Anthropic-only → every driver anchor branch is inert
         // Block-level commit boundary (P2 Task 2, spec §3.1): flush at each output item's
         // `response.output_item.done` (+ the three lifecycle terminals + the in-band upstream `error`
         // frame, spec §5.3 M1) instead of once at the terminal drain. A boundary block committed live
         // closes the retry window (driver `committedAny`) — a later truncation degrades to
         // `partial-degrade` instead of retrying (the committed prefix is already on the wire).
-        commitBoundaries: isResponsesCommitBoundary,
-        sawMessageStop: () => acc.status !== "", // terminal seen (completed/failed/incomplete) = the R5.2 gate, reused from live
-        sawUpstreamError: () => acc.streamError !== undefined, // terminal upstream `error` frame → commit + fail (not retry); see above
-        // Per-attempt isolation: rebind a FRESH accumulator + zero the progress counters before each
-        // re-exchange so a discarded attempt's text/tool-calls/usage/bytes never fold into the committed
-        // generation's history record (mirrors Anthropic's onAttemptReset). `forwardedSseEvents` is
-        // deliberately NOT reset — the buffered path only writes to the client on commit, so it holds
-        // the committed attempt's frames plus any heartbeat pings already on the wire (continuous stream).
-        onAttemptReset: () => {
-          acc = createResponsesStreamAccumulator()
-          bytesIn = 0
-          eventsIn = 0
-          // MEDIUM-2: anchor the fresh collector at THIS attempt's start (not the original request time) so
-          // a zero-frame final attempt reports `silence` relative to the attempt, not the whole request.
-          diag = createUpstreamFrameDiagnostics(Date.now())
-        },
+        telemetryVendor: "responses",
         retryCap: resolveBufferedCaps("responses").maxRetries,
         bufferCapBytes: resolveBufferedCaps("responses").bufferCapBytes,
-        // Vendor label the driver injects into onBufferedResolve's `meta.vendor` → the vendor-keyed
-        // telemetry bucket. The handler forwards `meta` verbatim (no re-hardcoding the vendor string).
-        telemetryVendor: "responses",
-        // Hit-rate telemetry parity with Anthropic (messages/handler-v4.ts): counted ONLY for an actual
-        // L2 engagement (a save after ≥1 retry, an exhaustion, a buffer-cap retreat, or a
-        // `partial-degrade`). A clean first-try commit (retries === 0, no RST) is the silent happy path —
-        // tagging it would put `protect-streaming-retry` on essentially every buffered 200 and inflate
-        // the "success" rate. `partial-degrade` IS reachable now that `commitBoundaries` is wired above
-        // (P2 Task 2): a boundary block committed live, then a later truncation, is ALWAYS an L2
-        // engagement, so it is recorded even at retries === 0 (spec §9.2 M-1) — only the clean
-        // first-try `success` short-circuits. The driver-injected `meta` (vendor) is forwarded as-is
-        // (no vendor re-hardcoding, no re-deriving `retriesBeforeDegrade` — the stats module folds it
-        // from the `retries` formal param).
-        onBufferedResolve: (o, retries, meta) => {
-          if (o === "success" && retries === 0) return
-          recordProtectStreamingOutcome(o, retries, meta)
-          env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries, vendor: meta.vendor })
-          consola.debug(`[protect-stream:responses] ${o} for ${acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
-        },
       })
-    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame, onUpstreamFrame, finishResponse })
+    : await driver.runResponseSink(upstream, env, sink)
+
+  const candidate = responsesCandidateSnapshot(driver, upstream)
+  if (candidate.kind !== "responses") throw new Error("[Responses:v4] wrong candidate response session kind")
+  const { acc, diag } = candidate
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -661,73 +559,29 @@ interface PumpReverseAnthropicLegOptions {
  * receives the Responses stream. This handler:
  *   - accumulates the RAW UPSTREAM Anthropic frame into the Anthropic accumulator via `onUpstreamFrame` for
  *     the honest `outboundResponse` (RFC §4.1 / richest-data-flow),
- *   - forwards the rendered Responses frames (tool-name restored) + MUST call `codec.flushResponse` (the
+ *   - forwards the rendered Responses frames (tool-name restored) + MUST call `CandidateResponseSession.renderer.flushResponse` (the
  *     reverse translator's Responses `response.completed` terminal — 疑点 7b; without it the client never
  *     gets the terminal),
  *   - has NO heartbeat / anchor (a Responses client is not Claude Code),
  *   - settles from its OWN raw Anthropic accumulator (`classifyReverseAnthropicTerminal(anthropicAcc)`
- *     below — NOT `codec.getStreamMeta()`, whose declared `AnthropicToCcStreamMeta` shape carries CC-only
+ *     below — NOT `candidate session renderer meta`, whose declared `AnthropicToCcStreamMeta` shape carries CC-only
  *     `finishReason`/`usage` fields this leg's direct translator does not produce; `getMeta()` here only
  *     supplies `sawMessageStop` honestly): a clean drain WITHOUT `message_stop` is an upstream truncation
  *     (F2), failed with a synthetic Responses error terminator.
  */
 async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): Promise<void> {
-  const { stream, driver, codec, upstream, env } = opts
+  const { stream, driver, upstream, env } = opts
   const model = (env.body as MessagesPayload).model
-  const mapper = env.ctx.toolNameMapper
-
-  const anthropicAcc = createAnthropicStreamAccumulator()
   const streamStartMs = Date.now()
-  // Raw-frame diagnostics: this reverse leg (Anthropic upstream → Responses client) also emits the
-  // disconnect diagnostic on a stream-error, so observe every raw upstream frame for real signals.
-  const diag = createUpstreamFrameDiagnostics(streamStartMs)
-  const onUpstreamFrame = (frame: UpstreamFrame): void => {
-    const raw = frame as ServerSentEventMessage
-    diag.observe(raw)
-    if (!raw.data || raw.data === "[DONE]") return
-    try {
-      accumulateAnthropicStreamEvent(JSON.parse(raw.data) as never, anthropicAcc)
-    } catch (error) {
-      consola.error("[Responses:v4:reverse] Failed to parse upstream Anthropic stream event:", error, raw.data)
-    }
-  }
-
   const forwardedSseEvents: Array<SseEventRecord> = []
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
-  let bytesIn = 0
-  let eventsIn = 0
   const sink = makeDeliverySseSink(stream, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs, ...clientFirstRealSinkOpts(env) })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
-  // Restore function_call names on the rendered Responses frame (forwarded-only). The ANTHROPIC
-  // server-tool-filter already restored on the upstream frames, so this is an idempotent safety net.
-  const restore = (frame: ClientFrame): ClientFrame | undefined => {
-    if (!frame.data) return undefined
-    let event: ResponsesStreamEvent
-    try {
-      event = JSON.parse(frame.data) as ResponsesStreamEvent
-    } catch {
-      return undefined
-    }
-    return { event: frame.event ?? event.type, data: restoreResponsesStreamFrameToolNames(frame.data, event.type, mapper) }
-  }
-  const onRenderedFrame = (frame: ClientFrame): ClientFrame | undefined => {
-    if (!frame.data) return undefined
-    bytesIn += frame.data.length
-    eventsIn++
-    env.ctx.recordStreamProgress({ bytesIn, eventsIn })
-    return restore(frame)
-  }
-  const finishResponse = () => {
-    const terminal = classifyReverseAnthropicTerminal(anthropicAcc)
-    if (terminal.kind === "upstream-error") return { kind: "terminal-failure" as const, frames: [], error: terminal.error }
-    if (terminal.kind === "truncated") {
-      return { kind: "truncated" as const, frames: [], reason: "Upstream Anthropic stream truncated before completion (no message_stop)" }
-    }
-    return { kind: "complete" as const, frames: [...codec.flushResponse(env)] }
-  }
-
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onUpstreamFrame, onRenderedFrame, finishResponse })
+  const outcome = await driver.runResponseSink(upstream, env, sink)
+  const candidate = responsesCandidateSnapshot(driver, upstream)
+  if (candidate.kind !== "reverse-anthropic") throw new Error("[Responses:v4:reverse] wrong candidate response session kind")
+  const { anthropicAcc, diag } = candidate
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()

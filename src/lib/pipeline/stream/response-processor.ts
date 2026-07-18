@@ -24,6 +24,7 @@ import type { RequestEnvelope } from "../envelope"
 import type {
   //
   ClientFrame,
+  CandidateResponseRenderer,
   FormatCodec,
   RunResponseOpts,
   UpstreamFrame,
@@ -47,7 +48,10 @@ import {
 export interface CreateResponseProcessorInput {
   readonly env: RequestEnvelope
   readonly responseRewrites: ReadonlyArray<ResponseRewrite>
-  readonly renderResponse: FormatCodec["renderResponse"]
+  readonly renderer?: CandidateResponseRenderer
+  /** Response-only test adapter; production candidates pass renderer. */
+  readonly renderResponse?: FormatCodec["renderResponse"]
+  readonly onSettled?: () => void
 }
 
 /** A single-use response processor with private rewrite/translator state. */
@@ -58,7 +62,9 @@ export interface ResponseProcessor {
 
 /** Create a processor whose mutable state is isolated from every sibling candidate. */
 export function createResponseProcessor(input: CreateResponseProcessorInput): ResponseProcessor {
-  const { env, renderResponse } = input
+  const { env } = input
+  const renderer = input.renderer ?? (input.renderResponse ? { renderResponse: input.renderResponse, flushResponse: () => [] } : undefined)
+  if (!renderer) throw new Error("[response-processor] candidate renderer is required")
   const rewrites = assembleResponseRewrites(env, input.responseRewrites)
   const states: Array<RewriteState> = rewrites.map((rewrite) => rewrite.createState?.(env) ?? {})
   const identity = Symbol("responseProcessor")
@@ -69,7 +75,7 @@ export function createResponseProcessor(input: CreateResponseProcessorInput): Re
     stream(upstream, opts) {
       if (consumed) throw new Error("[response-processor] processor already consumed")
       consumed = true
-      return processFrames({ env, upstream, opts, rewrites, states, renderResponse })
+      return processFrames({ env, upstream, opts, rewrites, states, renderer, onSettled: input.onSettled })
     },
   }
 }
@@ -80,11 +86,12 @@ interface ProcessFramesInput {
   readonly opts?: RunResponseOpts
   readonly rewrites: ReadonlyArray<ResponseRewrite>
   readonly states: Array<RewriteState>
-  readonly renderResponse: FormatCodec["renderResponse"]
+  readonly renderer: CandidateResponseRenderer
+  readonly onSettled?: () => void
 }
 
 async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFrame> {
-  const { env, upstream, opts, rewrites, states, renderResponse } = input
+  const { env, upstream, opts, rewrites, states, renderer } = input
   const upstreamSse: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   let frameIndex = 0
@@ -121,6 +128,7 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
     })
   }
   const origin = readOrigin(upstream)
+  let naturalDrain = false
 
   try {
     for await (const frame of upstream.frames) {
@@ -164,42 +172,41 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
       if (effectiveFrame !== undefined) {
         for (const rewritten of passThrough([effectiveFrame], rewrites, states, 0, sampleAction, captureRewrite)) {
           if (opts?.skipRender) yield rewritten
-          else yield* renderFrames(renderResponse, rewritten, env)
+          else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), rewritten, env)
         }
       }
       frameIndex++
     }
+    naturalDrain = true
   } finally {
     for (const flushed of flushChain(rewrites, states, captureRewrite, captureFlush)) {
       if (opts?.skipRender) yield flushed
-      else yield* renderFrames(renderResponse, flushed, env)
+      else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), flushed, env)
     }
+    if (!naturalDrain) input.onSettled?.()
   }
 
   // An upstream throw propagates after the `finally` flush and never reaches here. Therefore this
   // boundary runs only after a natural drain, exactly once.
-  const finish = opts?.finishResponse?.() ?? { kind: "complete" as const, frames: [] }
+  // Renderer flush belongs to this exact candidate instance. It runs after S5 rewrite buffers
+  // drain and before protocol finish classification so meta/closing frames cannot cross siblings.
+  const rendererFrames = renderer.flushResponse(env)
+  const finish = opts?.finishResponse?.(rendererFrames) ?? { kind: "complete" as const, frames: rendererFrames }
   opts?.onFinishResolved?.(finish)
   yield* finish.frames
+  input.onSettled?.()
 }
 
 function* renderFrames(renderResponse: FormatCodec["renderResponse"], frame: UpstreamFrame, env: RequestEnvelope): Generator<ClientFrame> {
   const rendered = renderResponse(frame, env)
   const frames = Array.isArray(rendered) ? rendered : [rendered]
-  const clientOutbound = getUpstreamHook()?.client?.outbound
   for (const output of frames) {
     env.ctx.captureGenerationFrameTransform?.(frame, output, {
       stage: "render",
       transformId: `render:${env.clientFormat}`,
       forceDerived: output !== frame || readSyntheticKind(output) !== undefined,
     })
-    if (clientOutbound) {
-      const hooked = clientOutbound(output, env)
-      if (hooked === undefined) continue
-      yield hooked
-    } else {
-      yield output
-    }
+    yield output
   }
 }
 
