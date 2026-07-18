@@ -35,6 +35,7 @@ import {
   renderRequestEffect,
   renderSyntheticRequestLine,
 } from "./render/lifecycle"
+import { renderModelCatalogLines } from "./render/model-list"
 import { renderSystemLogLines } from "./render/syslog"
 import { registerSensitiveOutput } from "./sensitive-output"
 import { registerTerminal } from "./terminal-coordinator"
@@ -163,6 +164,13 @@ export class TerminalUi {
 
   private handleNonRequest(event: NonRequestEvent): void {
     switch (event.kind) {
+      case "system.model_catalog": {
+        const threshold = typeof this.diagnosticLevel === "function" ? this.diagnosticLevel() : this.diagnosticLevel
+        if (!isDiagnosticLevelEnabled("info", threshold)) return
+        for (const line of renderModelCatalogLines(event)) this.view.printLine(line)
+        this.render()
+        return
+      }
       case "system.diagnostic": {
         const threshold = typeof this.diagnosticLevel === "function" ? this.diagnosticLevel() : this.diagnosticLevel
         if (!isDiagnosticLevelEnabled(event.diagnostic.severity, threshold)) return

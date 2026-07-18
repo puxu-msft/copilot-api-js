@@ -30,7 +30,7 @@ export class BootstrapDiagnosticSpool {
     this.fd = fs.openSync(this.path, "wx", 0o600)
     this.unsubscribe = bus.subscribe(
       (event) => this.capture(event),
-      (event) => event.kind === "system.diagnostic" || event.kind === "system.request_line",
+      (event) => event.kind === "system.diagnostic" || event.kind === "system.model_catalog" || event.kind === "system.request_line",
       { name: "bootstrap-diagnostic-spool" },
     )
   }
@@ -68,9 +68,24 @@ export class BootstrapDiagnosticSpool {
   private capture(event: ObservabilityEvent): void {
     if (this.retired || this.closed) return
     let record: StructuredFileRecord | undefined
-    if (event.kind === "system.diagnostic") record = { recordType: "diagnostic", diagnostic: event.diagnostic }
-    else if (event.kind === "system.request_line")
-      record = { recordType: "request-line", timeUnixMs: Date.now(), process: getProcessIdentityQuiet(), parts: event.parts }
+    switch (event.kind) {
+      case "system.diagnostic": {
+        record = { recordType: "diagnostic", diagnostic: event.diagnostic }
+        break
+      }
+      case "system.model_catalog": {
+        const catalog = { models: event.models, tokenBasedBilling: event.tokenBasedBilling, timeUnixMs: event.timeUnixMs }
+        record = { recordType: "model-catalog", process: getProcessIdentityQuiet(), catalog }
+        break
+      }
+      case "system.request_line": {
+        record = { recordType: "request-line", timeUnixMs: Date.now(), process: getProcessIdentityQuiet(), parts: event.parts }
+        break
+      }
+      default: {
+        break
+      }
+    }
     if (record) fs.writeSync(this.fd, `${JSON.stringify(record)}\n`)
   }
 }

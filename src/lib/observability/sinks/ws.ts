@@ -145,11 +145,13 @@ export class WsSink {
       // higher-fidelity lifecycle events.
       // system.diagnostic is for terminal/file sinks only — not broadcast to WS clients.
       // system.request_line is likewise a display-only (stdout/file) synthetic line.
+      // system.model_catalog carries complete boot metadata for terminal/file consumers only.
       case "request.model_resolved":
       case "request.attempt_started":
       case "request.stream_progress":
       case "request.context_updated":
       case "system.diagnostic":
+      case "system.model_catalog":
       case "system.request_line": {
         return
       }

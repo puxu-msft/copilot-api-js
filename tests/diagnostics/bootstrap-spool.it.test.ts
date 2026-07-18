@@ -26,6 +26,7 @@ describe("BootstrapDiagnosticSpool", () => {
     const spool = BootstrapDiagnosticSpool.attach(bus, { directory })
     const system = bus.scope("system")
     system.publish({ kind: "system.diagnostic", diagnostic: createDiagnosticEvent({ level: "info", event: "pre", message: "pre", origin: "native" }) })
+    system.publish({ kind: "system.model_catalog", models: [], tokenBasedBilling: true, timeUnixMs: 123 })
 
     const replayed: Array<string> = []
     const records = spool.retireAndRead()
@@ -38,11 +39,11 @@ describe("BootstrapDiagnosticSpool", () => {
       { name: "post-cutover" },
     )
     system.publish({ kind: "system.diagnostic", diagnostic: createDiagnosticEvent({ level: "info", event: "post", message: "post", origin: "native" }) })
-    for (const record of records) replayed.push(record.recordType === "diagnostic" ? record.diagnostic.event : "request-line")
+    for (const record of records) replayed.push(record.recordType === "diagnostic" ? record.diagnostic.event : record.recordType)
     spool.removeDurably()
     unsub()
 
-    expect(replayed).toEqual(["pre"])
+    expect(replayed).toEqual(["pre", "model-catalog"])
     expect(post).toEqual(["post"])
     expect(fs.existsSync(spool.path)).toBe(false)
   })

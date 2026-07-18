@@ -9,6 +9,7 @@ import type { DiagnosticEvent } from "~/lib/diagnostics"
 import type { DiagnosticLevelThreshold } from "~/lib/diagnostics"
 import type {
   //
+  ModelCatalogData,
   ObservabilityBus,
   ObservabilityEvent,
 } from "~/lib/observability"
@@ -25,6 +26,7 @@ import { sweepDiagnosticRetention } from "./retention"
 
 export type StructuredFileRecord =
   | { recordType: "diagnostic"; diagnostic: DiagnosticEvent }
+  | { recordType: "model-catalog"; process: ReturnType<typeof getProcessIdentityQuiet>; catalog: ModelCatalogData }
   | { recordType: "request-line"; timeUnixMs: number; process: ReturnType<typeof getProcessIdentityQuiet>; parts: LogLineParts }
 
 export interface StructuredFileSinkOptions {
@@ -120,7 +122,7 @@ export class StructuredFileSink {
     if (this.unsubscribe) throw new Error("StructuredFileSink already active")
     this.unsubscribe = bus.subscribe(
       (event) => this.handle(event),
-      (event) => event.kind === "system.diagnostic" || event.kind === "system.request_line",
+      (event) => event.kind === "system.diagnostic" || event.kind === "system.model_catalog" || event.kind === "system.request_line",
       { name: "structured-file-sink" },
     )
   }
@@ -167,12 +169,33 @@ export class StructuredFileSink {
     }
     if (event.kind === "system.request_line") {
       this.writeRecord({ recordType: "request-line", timeUnixMs: Date.now(), process: getProcessIdentityQuiet(), parts: event.parts })
+      return
+    }
+    if (event.kind === "system.model_catalog") {
+      const threshold = typeof this.level === "function" ? this.level() : this.level
+      if (!isDiagnosticLevelEnabled("info", threshold)) return
+      const catalog = { models: event.models, tokenBasedBilling: event.tokenBasedBilling, timeUnixMs: event.timeUnixMs }
+      this.writeRecord({ recordType: "model-catalog", process: getProcessIdentityQuiet(), catalog })
     }
   }
 
   writeRecord(record: StructuredFileRecord): void {
     const level = record.recordType === "diagnostic" ? record.diagnostic.severity : "info"
-    const message = record.recordType === "diagnostic" ? record.diagnostic.message : `${record.parts.method} ${record.parts.path}`
+    let message: string
+    switch (record.recordType) {
+      case "diagnostic": {
+        message = record.diagnostic.message
+        break
+      }
+      case "model-catalog": {
+        message = "Available models"
+        break
+      }
+      case "request-line": {
+        message = `${record.parts.method} ${record.parts.path}`
+        break
+      }
+    }
     try {
       switch (level) {
         case "trace": {

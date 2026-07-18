@@ -1,20 +1,23 @@
+import pc from "picocolors"
 import stringWidth from "string-width"
 
-import type { Model } from "~/lib/models/client"
+import type {
+  //
+  ModelCatalogData,
+  ModelCatalogEntry,
+} from "~/lib/observability"
+
+import { sanitizeTerminalText } from "./sanitize"
+import { consolaPrefix } from "./syslog"
 
 /** Legacy label column expressed correctly in terminal display columns. */
 const MIN_LABEL_COLUMNS = 45
 
-export interface AvailableModelView {
-  model: Model
-  disabled: boolean
-  /** Precomputed account-aware billing badge, including its leading space. */
-  billingLabel: string
-}
+export type AvailableModelView = ModelCatalogEntry
 
 /** Format limit values as "Xk" or "?" if not available. */
 function formatLimit(value?: number): string {
-  return value ? `${Math.round(value / 1000)}k` : "?"
+  return value === undefined ? "?" : `${Math.round(value / 1000)}k`
 }
 
 /**
@@ -22,15 +25,27 @@ function formatLimit(value?: number): string {
  * labels share a minimum display-width column; longer labels remain complete
  * and move only their own limit fields right instead of being ellipsized.
  */
-export function formatAvailableModelLines(views: ReadonlyArray<AvailableModelView>): Array<string> {
-  return views.map(({ model, disabled, billingLabel }) => {
+export function formatAvailableModelLines(views: ReadonlyArray<AvailableModelView>, options: { tokenBasedBilling: boolean }): Array<string> {
+  return views.map(({ model, disabled }) => {
     const limits = model.capabilities?.limits
     const disabledTag = disabled ? " [disabled]" : ""
-    const label = `${model.id}${billingLabel} (${model.vendor})${disabledTag}`
+    const billingLabel = !options.tokenBasedBilling && model.billing?.multiplier !== undefined ? ` (${model.billing.multiplier}x)` : ""
+    const label = sanitizeTerminalText(`${model.id}${billingLabel} (${model.vendor})${disabledTag}`)
     const paddedLabel = `${label}${" ".repeat(Math.max(0, MIN_LABEL_COLUMNS - stringWidth(label)))}`
     const contextK = formatLimit(limits?.max_context_window_tokens)
     const promptK = formatLimit(limits?.max_prompt_tokens)
     const outputK = formatLimit(limits?.max_output_tokens)
-    return `  - ${paddedLabel} ctx:${contextK.padStart(5)} prp:${promptK.padStart(5)} out:${outputK.padStart(5)}`
+    const context = `ctx:${contextK.padStart(5)}`
+    const prompt = `prp:${promptK.padStart(5)}`
+    const output = `out:${outputK.padStart(5)}`
+    const plain = `  - ${paddedLabel} ${context} ${prompt} ${output}`
+    if (disabled) return pc.gray(plain)
+    const renderedContext = limits?.max_context_window_tokens !== undefined && limits.max_context_window_tokens >= 900_000 ? pc.yellow(context) : context
+    const renderedPrompt = limits?.max_prompt_tokens !== undefined && limits.max_prompt_tokens >= 900_000 ? pc.yellow(prompt) : prompt
+    return `  - ${paddedLabel} ${renderedContext} ${renderedPrompt} ${output}`
   })
+}
+
+export function renderModelCatalogLines(catalog: ModelCatalogData): Array<string> {
+  return [`${consolaPrefix("info", new Date(catalog.timeUnixMs))} Available models:`, ...formatAvailableModelLines(catalog.models, catalog)]
 }
