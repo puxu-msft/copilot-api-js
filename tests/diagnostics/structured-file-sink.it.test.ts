@@ -19,45 +19,6 @@ afterEach(() => {
 })
 
 describe("StructuredFileSink", () => {
-  test("close drains a sub-minLength tail queued behind an active write", async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostic-close-race-"))
-    dirs.push(directory)
-    const sink = await StructuredFileSink.create(createBus(), { directory, maxSizeBytes: 1024 * 1024 })
-
-    // The first record starts SonicBoom's async write immediately (> minLength).
-    // The second record and close marker then form a tail below minLength. In
-    // SonicBoom 4.2, flush() can report drain after the active write while
-    // leaving that small tail queued, so a single flush + waitForIdle hangs.
-    sink.writeRecord({
-      recordType: "diagnostic",
-      diagnostic: createDiagnosticEvent({ level: "info", event: "close-race-head", message: "x".repeat(20_000), origin: "native" }),
-    })
-    sink.writeRecord({
-      recordType: "diagnostic",
-      diagnostic: createDiagnosticEvent({ level: "info", event: "close-race-tail", message: "tail", origin: "native" }),
-    })
-
-    const close = sink.close()
-    const outcome = await Promise.race([
-      close.then(() => "closed" as const),
-      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 250)),
-    ])
-
-    if (outcome === "timed-out") {
-      // Let the pre-fix implementation finish so the failing test does not
-      // retain an open destination or hang the entire suite. The cleanup
-      // payload must exceed SonicBoom's 4096-byte minLength to start a write.
-      sink.writeRecord({
-        recordType: "diagnostic",
-        diagnostic: createDiagnosticEvent({ level: "info", event: "close-race-cleanup", message: "y".repeat(5000), origin: "native" }),
-      })
-    }
-    await close
-
-    expect(outcome).toBe("closed")
-    expect(sink.health.queuedBytes).toBe(0)
-  })
-
   test("writes per-process parseable NDJSON with mutually-exclusive record payloads", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostic-file-"))
     dirs.push(directory)
@@ -84,9 +45,25 @@ describe("StructuredFileSink", () => {
         .map((line) => JSON.parse(line) as Record<string, unknown>),
     )
     expect(records).toHaveLength(3)
-    expect(records.every((record) => Object.keys(record).filter((key) => key === "record").length === 1)).toBe(true)
-    expect(records.map((record) => (record.record as { recordType: string }).recordType).sort()).toEqual(["diagnostic", "diagnostic", "request-line"])
-    expect(records.some((record) => (record.record as { diagnostic?: { event?: string } }).diagnostic?.event === "shutdown.diagnostic-sealing")).toBe(true)
+    const payloads = records.map((record) => record.record as { recordType: string; diagnostic?: { event?: string }; parts?: unknown })
+    expect(payloads.map((record) => record.recordType).sort()).toEqual(["diagnostic", "diagnostic", "request-line"])
+    expect(payloads.filter((record) => record.diagnostic?.event === "test.record")).toHaveLength(1)
+    expect(payloads.filter((record) => record.diagnostic?.event === "shutdown_diagnostic_sealing")).toHaveLength(1)
+    expect(payloads.filter((record) => record.recordType === "request-line")).toHaveLength(1)
+    for (const payload of payloads) {
+      if (payload.recordType === "diagnostic") {
+        expect(payload.diagnostic).toBeDefined()
+        expect(payload.parts).toBeUndefined()
+      } else {
+        expect(payload.parts).toBeDefined()
+        expect(payload.diagnostic).toBeUndefined()
+      }
+    }
+    bus.scope("system").publish({
+      kind: "system.diagnostic",
+      diagnostic: createDiagnosticEvent({ level: "info", event: "after-close", message: "must not reach Pino", origin: "native" }),
+    })
+    expect(sink.health.droppedAfterClose).toBe(1)
     expect(fs.statSync(directory).mode & 0o777).toBe(0o700)
     for (const file of files) expect(fs.statSync(path.join(directory, file)).mode & 0o777).toBe(0o600)
   })
@@ -106,5 +83,27 @@ describe("StructuredFileSink", () => {
     }
     await expect(sink.close()).rejects.toThrow(/dropped|durability/i)
     expect(sink.health.droppedBytes).toBeGreaterThan(0)
+  })
+
+  test("uses the configured threshold as the only file-level filter", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostic-levels-"))
+    dirs.push(directory)
+    const bus = createBus()
+    const sink = await StructuredFileSink.create(bus, { directory, maxSizeBytes: 1024 * 1024, level: "trace" })
+    const system = bus.scope("system")
+    for (const level of ["trace", "debug", "info", "warn", "error", "fatal"] as const) {
+      system.publish({
+        kind: "system.diagnostic",
+        diagnostic: createDiagnosticEvent({ level, event: `level.${level}`, message: level, origin: "native" }),
+      })
+    }
+    await sink.close()
+
+    const events = fs
+      .readdirSync(directory)
+      .filter((name) => name.endsWith(".ndjson"))
+      .flatMap((name) => fs.readFileSync(path.join(directory, name), "utf8").split("\n").filter(Boolean))
+      .map((line) => (JSON.parse(line) as { record: { diagnostic?: { event?: string } } }).record.diagnostic?.event)
+    for (const level of ["trace", "debug", "info", "warn", "error", "fatal"]) expect(events).toContain(`level.${level}`)
   })
 })

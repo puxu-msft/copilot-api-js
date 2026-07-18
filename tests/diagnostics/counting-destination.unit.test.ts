@@ -20,24 +20,52 @@ class FakeDestination extends EventEmitter {
   end(): void {}
 }
 
+class ThrowingDestination extends FakeDestination {
+  override write(_data: string): boolean {
+    throw new Error("sync write failed")
+  }
+}
+
 describe("CountingDestination", () => {
-  test("tracks UTF-8 queued, written, dropped bytes without private fields", async () => {
+  test("tracks UTF-8 queued and written bytes without private fields", async () => {
     const raw = new FakeDestination()
     const counted = new CountingDestination(raw as never)
     counted.write("你\n")
-    expect(counted.health.queuedBytes).toBe(Buffer.byteLength("你\n"))
+    expect(counted.health).toEqual({ acceptedBytes: 4, settledBytes: 0, queuedBytes: 4, writtenBytes: 0, droppedBytes: 0 })
     raw.emit("write", Buffer.byteLength("你\n"))
-    await counted.waitForIdle()
-    expect(counted.health).toEqual({ queuedBytes: 0, writtenBytes: 4, droppedBytes: 0 })
+    await counted.waitForSettled(4)
+    expect(counted.health).toEqual({ acceptedBytes: 4, settledBytes: 4, queuedBytes: 0, writtenBytes: 4, droppedBytes: 0 })
     expect(counted.takeDirtyPaths()).toEqual(["/tmp/a.ndjson"])
   })
 
-  test("an async destination error rejects idle waiters instead of hanging shutdown", async () => {
+  test("an async destination error rejects settlement waiters instead of hanging shutdown", async () => {
     const raw = new FakeDestination()
     const counted = new CountingDestination(raw as never)
     counted.write("pending\n")
-    const idle = counted.waitForIdle()
+    const idle = counted.waitForSettled(counted.health.acceptedBytes)
     raw.emit("error", new Error("ENOSPC"))
     await expect(idle).rejects.toThrow("ENOSPC")
+  })
+
+  test("tracks partial writes and turns a drop into a sticky failure", async () => {
+    const raw = new FakeDestination()
+    const counted = new CountingDestination(raw as never)
+    counted.write("abcdef")
+    raw.emit("write", 2)
+    expect(counted.health).toEqual({ acceptedBytes: 6, settledBytes: 2, queuedBytes: 4, writtenBytes: 2, droppedBytes: 0 })
+    const idle = counted.waitForSettled(6)
+    raw.emit("drop", "cdef")
+
+    await expect(idle).rejects.toThrow(/dropped 4 bytes/i)
+    await expect(counted.waitForSettled(6)).rejects.toThrow(/dropped 4 bytes/i)
+    expect(counted.health).toEqual({ acceptedBytes: 6, settledBytes: 6, queuedBytes: 0, writtenBytes: 2, droppedBytes: 4 })
+  })
+
+  test("does not accept bytes when the destination write throws synchronously", () => {
+    const counted = new CountingDestination(new ThrowingDestination() as never)
+
+    expect(() => counted.write("bad")).toThrow("sync write failed")
+    expect(counted.health).toEqual({ acceptedBytes: 0, settledBytes: 0, queuedBytes: 0, writtenBytes: 0, droppedBytes: 0 })
+    expect(counted.failureReason?.message).toBe("sync write failed")
   })
 })

@@ -2,16 +2,18 @@ import type { PinoRollDestination } from "pino-roll"
 
 import { EventEmitter } from "node:events"
 
+import type { DiagnosticDestinationHealth } from "./types"
+
 /** Publicly-owned accounting wrapper; never reads SonicBoom private fields. */
 // eslint-disable-next-line unicorn/prefer-event-target -- Pino DestinationStream uses Node EventEmitter semantics.
 export class CountingDestination extends EventEmitter {
   private readonly destination: PinoRollDestination
+  private accepted = 0
   private queued = 0
   private written = 0
   private dropped = 0
   private readonly dirtyPaths = new Set<string>()
-  private readonly idleWaiters = new Set<() => void>()
-  private readonly errorWaiters = new Set<(error: Error) => void>()
+  private readonly settlementWaiters = new Set<{ targetBytes: number; resolve: () => void; reject: (error: Error) => void }>()
   private failure: Error | undefined
 
   constructor(destination: PinoRollDestination) {
@@ -25,37 +27,50 @@ export class CountingDestination extends EventEmitter {
       this.written += bytes
       this.queued = Math.max(0, this.queued - bytes)
       if (destination.file) this.dirtyPaths.add(destination.file)
-      this.resolveIdleIfNeeded()
+      this.resolveSettledWaiters()
     })
     destination.on("drop", (data) => {
       const bytes = Buffer.byteLength(data)
       this.dropped += bytes
       this.queued = Math.max(0, this.queued - bytes)
-      this.emit("drop", data)
       this.fail(new Error(`Diagnostic destination dropped ${bytes} bytes`))
-      this.resolveIdleIfNeeded()
+      this.emit("drop", data)
+      this.resolveSettledWaiters()
     })
     destination.on("error", (error) => {
-      this.emit("error", error)
       this.fail(error)
+      this.emit("error", error)
     })
   }
 
   write(data: string): boolean {
-    this.queued += Buffer.byteLength(data)
-    return this.destination.write(data)
+    const bytes = Buffer.byteLength(data)
+    this.accepted += bytes
+    this.queued += bytes
+    try {
+      return this.destination.write(data)
+    } catch (error) {
+      this.accepted -= bytes
+      this.queued -= bytes
+      const failure = error instanceof Error ? error : new Error(String(error))
+      this.fail(failure)
+      this.emit("error", failure)
+      throw error
+    }
   }
 
-  flush(callback?: (error?: Error | null) => void): void {
-    this.destination.flush(callback)
+  get health(): DiagnosticDestinationHealth {
+    return {
+      acceptedBytes: this.accepted,
+      settledBytes: this.written + this.dropped,
+      queuedBytes: this.queued,
+      writtenBytes: this.written,
+      droppedBytes: this.dropped,
+    }
   }
 
-  end(): void {
-    this.destination.end()
-  }
-
-  get health(): { queuedBytes: number; writtenBytes: number; droppedBytes: number } {
-    return { queuedBytes: this.queued, writtenBytes: this.written, droppedBytes: this.dropped }
+  get failureReason(): Error | undefined {
+    return this.failure
   }
 
   takeDirtyPaths(): Array<string> {
@@ -64,27 +79,27 @@ export class CountingDestination extends EventEmitter {
     return paths
   }
 
-  waitForIdle(): Promise<void> {
+  waitForSettled(targetBytes: number): Promise<void> {
     if (this.failure) return Promise.reject(this.failure)
-    if (this.queued === 0) return Promise.resolve()
+    if (this.written + this.dropped >= targetBytes) return Promise.resolve()
     return new Promise((resolve, reject) => {
-      this.idleWaiters.add(resolve)
-      this.errorWaiters.add(reject)
+      this.settlementWaiters.add({ targetBytes, resolve, reject })
     })
   }
 
-  private resolveIdleIfNeeded(): void {
-    if (this.queued !== 0) return
-    for (const resolve of this.idleWaiters) resolve()
-    this.idleWaiters.clear()
-    this.errorWaiters.clear()
+  private resolveSettledWaiters(): void {
+    const settledBytes = this.written + this.dropped
+    for (const waiter of this.settlementWaiters) {
+      if (settledBytes < waiter.targetBytes) continue
+      this.settlementWaiters.delete(waiter)
+      waiter.resolve()
+    }
   }
 
   private fail(error: Error): void {
     if (this.failure) return
     this.failure = error
-    for (const reject of this.errorWaiters) reject(error)
-    this.errorWaiters.clear()
-    this.idleWaiters.clear()
+    for (const waiter of this.settlementWaiters) waiter.reject(error)
+    this.settlementWaiters.clear()
   }
 }

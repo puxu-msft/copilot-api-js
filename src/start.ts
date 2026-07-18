@@ -236,11 +236,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Phase 1.5: Observability bootstrap (terminal + secure file WAL for the WHOLE boot)
   // ===========================================================================
   // The permanent terminal owner sees every event once. A secure O_EXCL spool is
-  // the pre-config/file-WAL: it captures canonical records until process identity
-  // and logging config are frozen, then replays file-only into the detached-ready
-  // structured sink. It is never re-published to the bus, so terminal output is not
-  // duplicated. Any cutover failure retains the spool for recovery; there is no
-  // fallback to the old cross-process shared copilot-api.log rotation protocol.
+  // the full-process file WAL: after config/identity freeze it replays boot records
+  // into the detached-ready structured sink, then remains the sole bus owner and
+  // WAL-first mirrors each live record into that sink with a stable delivery ID.
+  // It is never re-published to the bus, so terminal output is not duplicated.
+  // Clean shutdown deletes it only after the structured durability barrier; a
+  // crash or cutover failure leaves it for idempotent recovery.
   await ensurePaths()
   const bus = initBus()
   const systemPublisher = bus.scope("system")
@@ -330,7 +331,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       consola.error("Structured diagnostic file initialization failed; retaining secure bootstrap spool:", error)
     }
   } else {
-    disableStructuredFileLogging()
+    await disableStructuredFileLogging()
   }
 
   // Deprecation: ANTHROPIC_API_KEY previously routed count_tokens for Claude

@@ -196,9 +196,8 @@ export class WsSink {
               timestamp: Date.now(),
             },
             "status",
-          ).then(() => {
-            /* discard stillBuffering — bus's pendingWsBuffer is a fixed-shape
-               placeholder; shutdown only cares that the drain wait happened. */
+          ).then(({ stillBuffering }) => {
+            if (stillBuffering > 0) throw new Error(`${stillBuffering} WebSocket client(s) still buffering the shutdown phase after deadline`)
           })
         }
         notifyShutdownPhaseChanged({
@@ -212,7 +211,9 @@ export class WsSink {
         return
       }
       case "system.shutdown_failed": {
-        return broadcastAndFlush({ type: "shutdown_failed", data: { errors: event.errors }, timestamp: Date.now() }, "status").then(() => {})
+        return broadcastAndFlush({ type: "shutdown_failed", data: { errors: event.errors }, timestamp: Date.now() }, "status").then(({ stillBuffering }) => {
+          if (stillBuffering > 0) throw new Error(`${stillBuffering} WebSocket client(s) still buffering the shutdown failure after deadline`)
+        })
       }
       default: {
         // Exhaustiveness check.

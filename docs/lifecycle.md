@@ -59,8 +59,9 @@
 1. `shutdownHistory()` 排空异步 terminal finalization、重试暂存写入并关闭 History 数据库。
 2. Archive **不在 shutdown 中继续搬迁、压缩或封存**；只等待首信号前已领取的 durable unit 完成，随后关闭 archive DB。每个 unit 都是 session 或迁移 batch，完成后已持久化 cursor/manifest/locator；下次启动重新查询剩余 backlog 继续。
 3. `shutdownRequestTelemetry()` 先封闭 config 订阅与周期 timer 的生产端，再排空 pending delta、关闭 telemetry 数据库。
-4. 持久化 barrier 完成后，向仍在线的观察者发布 bus `finalized`，再关闭观察者连接。
-5. 所有进程资源成功关闭后，内部状态才进入 `stopped`，`waitForShutdown()` 的 completion latch 才 resolve；History 或 Telemetry barrier 失败则进入 `failed` 并以非零状态退出，不谎报完成。
+4. `shutdownStructuredFileSink()` 先 seal/fsync 全会话 bootstrap WAL producer，再经独立 `DurableFileWriter` 排空镜像到长期 NDJSON 的普通诊断记录并 fsync，写唯一 sealing marker、再次排空并 fsync，最后 end/close；只有 sink barrier 成功后才删除并 directory-fsync WAL。任一 flush 无进展、drop、I/O 或 fsync 失败均显式失败，不能卡成永不返回的成功路径。
+5. 三个 durability barrier 全部完成后，向仍在线的观察者发布 bus `finalized`，再关闭观察者连接。
+6. 所有进程资源成功关闭后，内部状态才进入 `stopped`，`waitForShutdown()` 的 completion latch 才 resolve；History、Telemetry 或 Diagnostic barrier 失败则进入 `failed` 并以非零状态退出，不谎报完成。
 
 因此 `finalizing` 不等于完成；该阶段的第二次 Ctrl+C 仍立即强退。`waitForShutdown()` 是真正的 latch：多个并发 waiter 都会被唤醒，关闭完成后才注册的 waiter 也会立即 resolve。
 

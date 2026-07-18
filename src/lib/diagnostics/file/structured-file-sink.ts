@@ -20,12 +20,21 @@ import { getProcessIdentityQuiet } from "~/lib/process-identity"
 
 import { createDiagnosticEvent } from "../event"
 import { CountingDestination } from "./counting-destination"
+import { DurableFileWriter } from "./durable-writer"
 import { createOwnerManifest } from "./owner-manifest"
 import { sweepDiagnosticRetention } from "./retention"
+import { listDiagnosticSegments } from "./segment-files"
 
-export type StructuredFileRecord =
+export interface SpoolDeliveryIdentity {
+  spoolId: string
+  sequence: number
+  digest: string
+}
+
+export type StructuredFileRecord = (
   | { recordType: "diagnostic"; diagnostic: DiagnosticEvent }
   | { recordType: "request-line"; timeUnixMs: number; process: ReturnType<typeof getProcessIdentityQuiet>; parts: LogLineParts }
+) & { delivery?: SpoolDeliveryIdentity }
 
 export interface StructuredFileSinkOptions {
   directory: string
@@ -40,12 +49,16 @@ export class StructuredFileSink {
   private unsubscribe: (() => void) | undefined
   private readonly logger: pino.Logger
   private readonly destination: PinoRollDestination
-  private readonly counted: CountingDestination
+  private readonly writer: DurableFileWriter
   private readonly baseName: string
   private readonly maxFilesPerProcess: number
-  private state: "ready" | "degraded" | "sealing" | "closed" = "ready"
+  private accepting = true
   private droppedRecords = 0
+  private droppedAfterClose = 0
   private writesSincePrune = 0
+  private pruningEnabled = true
+  private maintenanceTail: Promise<void> = Promise.resolve()
+  private closePromise: Promise<void> | undefined
   private readonly level: DiagnosticLevelThreshold | (() => DiagnosticLevelThreshold)
 
   private constructor(
@@ -56,24 +69,24 @@ export class StructuredFileSink {
     level: DiagnosticLevelThreshold | (() => DiagnosticLevelThreshold),
   ) {
     this.destination = destination
-    this.counted = new CountingDestination(destination)
+    const counted = new CountingDestination(destination)
+    this.writer = new DurableFileWriter(destination, counted, baseName)
     this.baseName = baseName
     this.maxFilesPerProcess = maxFilesPerProcess
     this.level = level
     this.logger = pino(
       {
         base: null,
+        level: "trace",
         timestamp: false,
         redact: { paths: ["record.diagnostic.fields.*.value.access_token", "record.diagnostic.fields.*.value.authorization"], censor: "[REDACTED]" },
       },
-      this.counted,
+      counted,
     )
-    this.counted.on("drop", () => {
+    counted.on("drop", () => {
       this.droppedRecords++
-      this.state = "degraded"
     })
-    this.counted.on("error", (error: Error) => {
-      this.state = "degraded"
+    counted.on("error", (error: Error) => {
       writeEmergencyFallback(`[StructuredFileSink] ${error.message}`)
     })
     void directory
@@ -95,7 +108,7 @@ export class StructuredFileSink {
     const baseName = path.join(options.directory, `${artifactStem}.ndjson`)
     const destination = await buildRoll({
       file: baseName,
-      ...((options.maxSizeBytes ?? 10 * 1024 * 1024) > 0 && { size: options.maxSizeBytes ?? 10 * 1024 * 1024 }),
+      ...((options.maxSizeBytes ?? 10 * 1024 * 1024) > 0 && { size: `${options.maxSizeBytes ?? 10 * 1024 * 1024}b` }),
       frequency: "daily",
       dateFormat: "yyyy-MM-dd",
       mkdir: true,
@@ -125,43 +138,56 @@ export class StructuredFileSink {
     )
   }
 
-  get health(): { state: string; droppedRecords: number; activePath: string; queuedBytes: number; writtenBytes: number; droppedBytes: number } {
-    return { state: this.state, droppedRecords: this.droppedRecords, activePath: this.destination.file, ...this.counted.health }
-  }
-
-  async close(): Promise<void> {
-    if (this.state === "closed" || this.state === "sealing") return
+  detach(): void {
     this.unsubscribe?.()
     this.unsubscribe = undefined
-    this.writeRecord({
-      recordType: "diagnostic",
-      diagnostic: createDiagnosticEvent({ level: "info", event: "shutdown.diagnostic-sealing", message: "Diagnostic writer sealing", origin: "native" }),
-    })
-    this.state = "sealing"
-    let failure: unknown
-    try {
-      await this.durable()
-    } catch (error) {
-      failure = error
-    }
-    this.destination.end()
-    try {
-      await new Promise<void>((resolve, reject) => {
-        this.destination.once("close", resolve)
-        this.destination.once("error", reject)
+  }
+
+  reportMaintenanceFailure(error: unknown): void {
+    this.writer.recordFailure(error)
+  }
+
+  disableRuntimePruning(): void {
+    this.pruningEnabled = false
+  }
+
+  get health(): {
+    state: string
+    droppedRecords: number
+    droppedAfterClose: number
+    activePath: string
+    acceptedBytes: number
+    settledBytes: number
+    queuedBytes: number
+    writtenBytes: number
+    droppedBytes: number
+  } {
+    return { ...this.writer.health, droppedRecords: this.droppedRecords, droppedAfterClose: this.droppedAfterClose, activePath: this.destination.file }
+  }
+
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise
+    this.accepting = false
+    this.closePromise = this.closeAfterMaintenance()
+    return this.closePromise
+  }
+
+  private async closeAfterMaintenance(): Promise<void> {
+    await this.maintenanceTail
+    await this.writer.close(() => {
+      this.writeRecordInternal({
+        recordType: "diagnostic",
+        diagnostic: createDiagnosticEvent({ level: "info", event: "shutdown_diagnostic_sealing", message: "Diagnostic writer sealing", origin: "native" }),
       })
-    } catch (error) {
-      failure ??= error
-    }
-    this.state = failure ? "degraded" : "closed"
-    if (failure) throw failure instanceof Error ? failure : new Error("Non-Error diagnostic durability failure")
+    })
   }
 
   private handle(event: ObservabilityEvent): void {
-    if (this.state !== "ready") return
+    if (!this.accepting) {
+      this.droppedAfterClose++
+      return
+    }
     if (event.kind === "system.diagnostic") {
-      const threshold = typeof this.level === "function" ? this.level() : this.level
-      if (!isDiagnosticLevelEnabled(event.diagnostic.severity, threshold)) return
       this.writeRecord({ recordType: "diagnostic", diagnostic: event.diagnostic })
       return
     }
@@ -171,6 +197,18 @@ export class StructuredFileSink {
   }
 
   writeRecord(record: StructuredFileRecord): void {
+    if (!this.accepting) {
+      this.droppedAfterClose++
+      return
+    }
+    if (record.recordType === "diagnostic") {
+      const threshold = typeof this.level === "function" ? this.level() : this.level
+      if (!isDiagnosticLevelEnabled(record.diagnostic.severity, threshold)) return
+    }
+    this.writeRecordInternal(record)
+  }
+
+  private writeRecordInternal(record: StructuredFileRecord): void {
     const level = record.recordType === "diagnostic" ? record.diagnostic.severity : "info"
     const message = record.recordType === "diagnostic" ? record.diagnostic.message : `${record.parts.method} ${record.parts.path}`
     try {
@@ -199,75 +237,45 @@ export class StructuredFileSink {
           this.logger.info({ record }, message)
         }
       }
-      if (++this.writesSincePrune >= 100) {
+      if (this.pruningEnabled && ++this.writesSincePrune >= 100) {
         this.writesSincePrune = 0
-        this.pruneOwnSegments()
+        this.schedulePrune()
       }
     } catch (error) {
-      this.state = "degraded"
+      this.writer.recordFailure(error)
       writeEmergencyFallback(`[StructuredFileSink] ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
   async durable(): Promise<void> {
-    // SonicBoom can invoke a flush callback when the currently active write
-    // drains while leaving a newly queued tail smaller than minLength buffered.
-    // A subsequent waitForIdle() would then wait forever because no write is
-    // scheduled for that tail. Keep flushing until our public byte accounting,
-    // rather than the backend callback alone, proves the queue is empty.
-    do {
-      await this.flush()
-    } while (this.counted.health.queuedBytes > 0)
-    await this.counted.waitForIdle()
-    await this.fsyncSegments(this.counted.takeDirtyPaths())
-    if (this.droppedRecords > 0 || this.state === "degraded") throw new Error(`Diagnostic durability failed: ${this.droppedRecords} dropped record chunk(s)`)
+    await this.maintenanceTail
+    await this.writer.durable()
   }
 
-  private flush(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.destination.flush((error) => {
-        if (error) reject(error)
-        else resolve()
+  private schedulePrune(): void {
+    this.maintenanceTail = this.maintenanceTail
+      .then(async () => {
+        await this.writer.durable()
+        this.pruneOwnSegments()
+        await this.writer.durable()
       })
-    })
-  }
-
-  private async fsyncSegments(dirtyPaths: Array<string>): Promise<void> {
-    const directory = path.dirname(this.baseName)
-    const prefix = path.basename(this.baseName)
-    const discovered = fs
-      .readdirSync(directory)
-      .filter((name) => name.startsWith(prefix) && name.endsWith(".ndjson"))
-      .map((name) => path.join(directory, name))
-    const files = [...new Set([...dirtyPaths, ...discovered])]
-    await Promise.all(
-      files.map(async (file) => {
-        const handle = await fs.promises.open(file, "r")
-        try {
-          await handle.sync()
-        } finally {
-          await handle.close()
-        }
-      }),
-    )
+      .catch((error: unknown) => {
+        this.writer.recordFailure(error)
+      })
   }
 
   private pruneOwnSegments(): void {
     if (this.maxFilesPerProcess <= 0) return
     try {
-      const directory = path.dirname(this.baseName)
-      const prefix = path.basename(this.baseName, ".ndjson")
       const active = this.destination.file
-      const files = fs
-        .readdirSync(directory)
-        .filter((name) => name.startsWith(prefix) && name.endsWith(".ndjson"))
-        .map((name) => ({ path: path.join(directory, name), mtime: fs.statSync(path.join(directory, name)).mtimeMs }))
+      const files = listDiagnosticSegments(this.baseName)
+        .map((file) => ({ path: file, mtime: fs.statSync(file).mtimeMs }))
         .sort((a, b) => b.mtime - a.mtime)
       for (const file of files.slice(this.maxFilesPerProcess)) {
         if (file.path !== active) fs.rmSync(file.path, { force: true })
       }
     } catch (error) {
-      this.state = "degraded"
+      this.writer.recordFailure(error)
       writeEmergencyFallback(`[StructuredFileSink] retention failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }

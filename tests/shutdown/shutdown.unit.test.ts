@@ -24,6 +24,7 @@ import {
 import type { RequestContext } from "~/lib/context/request"
 import type { ShutdownPhase } from "~/lib/observability"
 
+import { createBus } from "~/lib/observability"
 import {
   //
   getUpstreamWsManager,
@@ -73,6 +74,7 @@ function createNoopDeps(overrides: Record<string, unknown> = {}) {
     getClientCountFn: () => 0,
     shutdownHistoryFn: mock(async () => {}),
     shutdownRequestTelemetryFn: mock(async () => {}),
+    shutdownDiagnosticLoggingFn: mock(async () => {}),
     ...FAST_TIMING,
     ...overrides,
   }
@@ -147,16 +149,20 @@ describe("waitForShutdown", () => {
     await expect(waitForShutdown()).resolves.toBeUndefined()
   })
 
-  test("does not resolve until History, Telemetry, notification, and observer close complete", async () => {
+  test("does not resolve until History, Telemetry, Diagnostic, notification, and observer close complete", async () => {
     const order: Array<string> = []
     let releaseHistory!: () => void
     let releaseTelemetry!: () => void
+    let releaseDiagnostic!: () => void
     let releaseNotification!: () => void
     const historyBarrier = new Promise<void>((resolve) => {
       releaseHistory = resolve
     })
     const telemetryBarrier = new Promise<void>((resolve) => {
       releaseTelemetry = resolve
+    })
+    const diagnosticBarrier = new Promise<void>((resolve) => {
+      releaseDiagnostic = resolve
     })
     const notificationBarrier = new Promise<void>((resolve) => {
       releaseNotification = resolve
@@ -176,6 +182,11 @@ describe("waitForShutdown", () => {
           order.push("telemetry:start")
           await telemetryBarrier
           order.push("telemetry:end")
+        },
+        shutdownDiagnosticLoggingFn: async () => {
+          order.push("diagnostic:start")
+          await diagnosticBarrier
+          order.push("diagnostic:end")
         },
         publishStoppedFn: async () => {
           order.push("notify:start")
@@ -202,6 +213,11 @@ describe("waitForShutdown", () => {
 
     releaseTelemetry()
     await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(order.at(-1)).toBe("diagnostic:start")
+    expect(getShutdownPhase()).toBe("finalizing")
+
+    releaseDiagnostic()
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(getShutdownPhase()).toBe("notifying")
     expect(order.at(-1)).toBe("notify:start")
 
@@ -209,7 +225,18 @@ describe("waitForShutdown", () => {
     await shutdownDone
     await waitForShutdown()
 
-    expect(order).toEqual(["history:start", "history:end", "telemetry:start", "telemetry:end", "notify:start", "notify:end", "observers", "latch"])
+    expect(order).toEqual([
+      "history:start",
+      "history:end",
+      "telemetry:start",
+      "telemetry:end",
+      "diagnostic:start",
+      "diagnostic:end",
+      "notify:start",
+      "notify:end",
+      "observers",
+      "latch",
+    ])
     expect(getShutdownPhase()).toBe("stopped")
     expect(completed).toBe(true)
   })
@@ -234,6 +261,76 @@ describe("waitForShutdown", () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(getShutdownPhase()).toBe("failed")
     expect(completed).toBe(false)
+  })
+
+  test("a Diagnostic barrier failure publishes failed, never finalized, and rejects the successful latch", async () => {
+    const published: Array<string> = []
+    setShutdownPublisher({
+      publish: (event) => published.push(event.kind),
+      publishAndFlush: async (event) => {
+        published.push(event.kind)
+        return { pendingWsBuffer: 0 }
+      },
+    })
+    let completed = false
+    void waitForShutdown().then(() => {
+      completed = true
+    })
+
+    await expect(
+      gracefulShutdown(
+        "SIGINT",
+        createNoopDeps({
+          shutdownDiagnosticLoggingFn: async () => {
+            throw new Error("diagnostic fsync failed")
+          },
+        }),
+      ),
+    ).rejects.toThrow("Shutdown persistence failed")
+
+    expect(getShutdownPhase()).toBe("failed")
+    expect(completed).toBe(false)
+    expect(published).toContain("system.shutdown_failed")
+    expect(published).not.toContain("system.shutdown_completed")
+    expect(published.filter((kind) => kind === "system.shutdown_phase_changed")).toHaveLength(1)
+  })
+
+  test("a completion notification failure never exposes finalized and converges to failed", async () => {
+    const published: Array<string> = []
+    setShutdownPublisher({
+      publish: (event) => published.push(event.kind),
+      publishAndFlush: async (event) => {
+        if (event.kind === "system.shutdown_phase_changed" && event.phase === "finalized") throw new Error("observer flush failed")
+        published.push(event.kind === "system.shutdown_phase_changed" ? `${event.kind}:${event.phase}` : event.kind)
+        return { pendingWsBuffer: 0 }
+      },
+    })
+
+    await expect(gracefulShutdown("SIGINT", createNoopDeps())).rejects.toThrow("Shutdown persistence failed")
+
+    expect(getShutdownPhase()).toBe("failed")
+    expect(published).toContain("system.shutdown_failed")
+    expect(published).not.toContain("system.shutdown_completed")
+    expect(published).not.toContain("system.shutdown_phase_changed:finalized")
+  })
+
+  test("the production bus surfaces a finalized subscriber rejection to shutdown", async () => {
+    const bus = createBus()
+    const observed: Array<string> = []
+    bus.subscribe(
+      async (event) => {
+        if (event.kind === "system.shutdown_phase_changed" && event.phase === "finalized") throw new Error("real bus observer failed")
+        if (event.kind === "system.shutdown_failed") observed.push(event.kind)
+      },
+      undefined,
+      { name: "reject-finalized" },
+    )
+    setShutdownPublisher(bus.scope("system"))
+
+    await expect(gracefulShutdown("SIGINT", createNoopDeps())).rejects.toThrow("Shutdown persistence failed")
+
+    expect(getShutdownPhase()).toBe("failed")
+    expect(observed).toEqual(["system.shutdown_failed"])
   })
 
   test("production publisher emits finalized only after persistence barriers", async () => {

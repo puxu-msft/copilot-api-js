@@ -15,6 +15,8 @@ declare module "pino-roll" {
     on(event: "write", listener: (bytes: number) => void): this
     once(event: "ready" | "close" | "drain", listener: () => void): this
     once(event: "error", listener: (error: Error) => void): this
+    removeListener(event: "ready" | "close" | "drain", listener: () => void): this
+    removeListener(event: "error", listener: (error: Error) => void): this
   }
 
   export interface PinoRollOptions {

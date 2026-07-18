@@ -1,6 +1,6 @@
 # TUI 模块化与结构化诊断日志实施计划
 
-- 状态：Implemented（Phase 1–9 完成；合并态评审 major 已闭环）
+- 状态：Implemented（Phase 1–9 完成；2026-07-18 diagnostic durability 架构与测试分层缺口已闭环）
 - 日期：2026-07-17
 - 冻结设计：[RFC：TUI 模块化与结构化诊断日志](../../rfc/2026-07-17-tui-structured-logging.md)
 - 详细计划：[implementation-plan.md](implementation-plan.md)
@@ -60,6 +60,7 @@ RFC 编号顺序仍是默认集成顺序。Phase 4 与 Phase 5 只有逻辑并�
 - Backend：全量单进程套件 `5451 pass / 0 fail`；删去 legacy FileSink 专属测试后总数相应减少，后续复跑仍为 0 fail。
 - PTY：9 个测试全绿；no-eaten/footer/detail/resize 各连跑 10 次，job-control 独立 controlling PTY 连跑 8 次并以 `WIFSTOPPED` 证明真 suspend。
 - Structured file：两个独立进程并发 size roll，25 轮共 5000 个标识 exactly-once、零 ENOENT；drop/error 是 sticky durability failure，close reject 并驱动 shutdown failed。
+- Diagnostic durability：`CountingDestination` / `DurableFileWriter` / `StructuredFileSink` 三层职责独立；Bun+Node 真 SonicBoom early-flush 正样本、确定性 flush-progress/fsync unit、生产 `activeSink` seam、四 barrier shutdown 顺序与真实前台单 SIGINT→exit 0→artifact marker 均有独立 oracle。
 - Credential：随机 secret-key 正样本在 raw source 可命中，canonical/terminal/NDJSON 全轨零命中；GitHub token 与 device user_code 仅走 `SensitiveOutputPort.writeOnce()`。
 - Performance：production-wired 10k stream-progress probe 约 21ms、最大 event-loop gap约 11ms、terminal 输出 65 bytes；75ms latest-value coalescer 在 terminal 前按 request id 强制 flush。
 - Static/build：typecheck、changed-files lint、backend build 通过。全仓 `lint:all` 仍有 133 个既有文件的 469 个基线问题；本特性变更文件零 lint error。

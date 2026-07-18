@@ -183,7 +183,14 @@ function setPhase(phase: typeof shutdownPhase): Promise<{ stillBuffering: number
       previousPhase: prevBusPhase,
       needsFlush: true,
     })
-    .then((res) => ({ stillBuffering: res.pendingWsBuffer }))
+    .then((res) => {
+      if (res.failures?.length)
+        throw new AggregateError(
+          res.failures.map((failure) => failure.error),
+          `Shutdown phase ${newBusPhase} notification failed`,
+        )
+      return { stillBuffering: res.pendingWsBuffer }
+    })
 }
 
 /**
@@ -402,8 +409,13 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
           previousPhase,
           needsFlush: true,
         })
-        .then(() => _shutdownPublisher?.publishAndFlush({ kind: "system.shutdown_completed" }))
-        .then(() => undefined)
+        .then((result) => {
+          if (result.failures?.length)
+            throw new AggregateError(
+              result.failures.map((failure) => failure.error),
+              "Shutdown completion notification failed",
+            )
+        })
     })
 
   // Timing (defaults to state values from config, overridable for testing)
@@ -525,7 +537,11 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     // status-subscribed WS client (or its internal deadline elapses). Awaiting
     // here means the dashboard is guaranteed to see "phase4" before we yank
     // the sockets in the next step.
-    await setPhase("forcing")
+    try {
+      await setPhase("forcing")
+    } catch (error) {
+      writeEmergencyNoThrow(`[shutdown] Force-close phase notification failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
     const forceRemaining = tracker.getActive().length
     consola.warn(`Step 4/4: Force-closing ${forceRemaining} remaining request(s)`)
 
@@ -619,15 +635,30 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
   // durability barrier succeeded. Failure is a distinct event, never a
   // finalized-then-rollback sequence.
   shutdownPhase = "notifying"
-  if (failures.length === 0) await deps.publishStopped()
-  else if (_shutdownPublisher)
-    await _shutdownPublisher.publishAndFlush({
-      kind: "system.shutdown_failed",
-      errors: failures.map((error) => ({
-        name: error instanceof Error ? error.name : "Error",
-        message: error instanceof Error ? error.message : String(error),
-      })),
-    })
+  if (failures.length === 0) {
+    try {
+      await deps.publishStopped()
+    } catch (error) {
+      failures.push(error)
+      writeEmergencyNoThrow(`[shutdown] Completion notification failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  if (failures.length > 0 && _shutdownPublisher) {
+    try {
+      const result = await _shutdownPublisher.publishAndFlush({
+        kind: "system.shutdown_failed",
+        errors: failures.map((error) => ({
+          name: error instanceof Error ? error.name : "Error",
+          message: error instanceof Error ? error.message : String(error),
+        })),
+      })
+      if (result.failures?.length)
+        writeEmergencyNoThrow(`[shutdown] ${result.failures.length} observer(s) failed while receiving the shutdown failure terminal`)
+    } catch (error) {
+      failures.push(error)
+      writeEmergencyNoThrow(`[shutdown] Failure notification failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
 
   // Close any remaining observer WS clients (no-op if Step 4 already did).
   const remaining = deps.getWsClientCount()

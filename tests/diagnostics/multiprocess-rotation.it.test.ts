@@ -27,12 +27,18 @@ test("two per-process structured writers rotate concurrently for 25 rounds with 
     expect(exits).toEqual([0, 0])
   }
 
-  const found = new Set<string>()
-  for (const name of fs.readdirSync(directory).filter((item) => item.endsWith(".ndjson"))) {
+  const found = new Map<string, number>()
+  const segments = fs.readdirSync(directory).filter((item) => item.endsWith(".ndjson"))
+  expect(segments.length).toBeGreaterThan(25 * 2)
+  for (const name of segments) {
     for (const line of fs.readFileSync(path.join(directory, name), "utf8").split("\n").filter(Boolean)) {
       const parsed = JSON.parse(line) as { record?: { diagnostic?: { event?: string; message?: string } } }
-      if (parsed.record?.diagnostic?.event === "multiprocess" && parsed.record.diagnostic.message) found.add(parsed.record.diagnostic.message)
+      if (parsed.record?.diagnostic?.event === "multiprocess" && parsed.record.diagnostic.message) {
+        const message = parsed.record.diagnostic.message
+        found.set(message, (found.get(message) ?? 0) + 1)
+      }
     }
   }
   expect(found.size).toBe(25 * 2 * count)
+  expect([...found.values()].every((occurrences) => occurrences === 1)).toBe(true)
 }, 120_000)
