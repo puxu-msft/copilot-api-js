@@ -1,4 +1,14 @@
-> **状态**：待执行。属于 `docs/plan/2026-07-14-transport-config-reorg/README.md` 定义的 P4 阶段——依赖 P2（`plan-2-new-knobs-wiring.md`，必须已落地：`http2-client.ts` 的 `getSessionConnectTimeoutMs()`/keepalive 0-语义、`upstream-ws.ts` 的 `getPooledConnectionIdleTimeoutMs()` + `create()` 的 `idleTimeoutMs` 接线），不依赖 P3。P4 完成后解锁 P5（状态面板）。
+> **状态**：已实施（分支 `feat/transport-config-reorg`，提交 `f17f2b1b`(Task 1) / `71839a43`(Task 2)）。Task 1（h2 generation-based retire-and-replace）与 Task 2（WS idle-timeout reschedule + soft-cap 驱逐）均 TDD 落地，55+ 独立 oracle 测试全绿（真实 h2c server / 真实 socket / 真实 timer，非内部状态断言）；Task 3（跨 Task 回归 + 签名核对）见下方追加记录。属于 `docs/plan/2026-07-14-transport-config-reorg/README.md` 定义的 P4 阶段——依赖 P2（`plan-2-new-knobs-wiring.md`，必须已落地：`http2-client.ts` 的 `getSessionConnectTimeoutMs()`/keepalive 0-语义、`upstream-ws.ts` 的 `getPooledConnectionIdleTimeoutMs()` + `create()` 的 `idleTimeoutMs` 接线），不依赖 P3。P4 完成后解锁 P5（状态面板）。
+
+**Task 1 实施记录**：按计划落地，额外发现并修复一个真实生产缺陷（不在原计划内，根因驱动的必要相邻修复）——在 Bun 运行时下，服务端在响应头之前销毁整个 h2 会话时，客户端 `req` 只触发裸 `close`（rstCode=0），既不触发 `response` 也不触发 `error`，导致 `runHttp2Fetch` 的 pre-header 阶段永远挂起（`http2Fetch` 的 Promise 永不 settle）。修复：为 pre-header 阶段新增 `req.once("close")` backstop，若 `close` 在收到响应头之前触发则 reject。已用最小复现脚本 + 新增的 A4 矩阵 row 1 测试验证。
+
+**Task 2 实施记录**：按计划落地，顺带删除 `upstream-ws-connection.ts` 的失效常量 `DEFAULT_IDLE_TIMEOUT_MS`（spec §7 去硬编码要求）——默认值改为直接读 `state.pooledConnectionIdleTimeout`，使其成为唯一默认源，不再与 `CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout` 潜在漂移。因 `UpstreamWsConnection` 接口新增必需方法 `rescheduleIdleTimeout`，相邻修复了 4 个测试文件里手写的 mock 实现（`upstream-ws.unit.test.ts`/`openai-responses-client.it.test.ts`/`responses-v4.http.test.ts`）补齐该字段——纯类型层面的连带修复，不改变这些测试原有的断言意图。
+
+**Task 3（跨 Task 回归 + 签名核对）**：
+- `bun test tests/transport/ tests/responses/upstream-ws.unit.test.ts tests/responses/upstream-ws-connection.unit.test.ts tests/responses/upstream-ws-crash-safety.sub.test.ts tests/responses/openai-responses-client.it.test.ts tests/responses/responses-v4.http.test.ts` → 173 pass / 0 fail（含 3 次重跑核实无 flaky）。
+- `bun run typecheck` → 除基线既有的 2 处 `responses-to-cc-stream.unit.test.ts` `item_id` 错误（并发会话债务，明确排除在本次范围外）外全绿。
+- `bunx eslint`（针对本 Task 触碰的全部文件，非全仓）→ 干净；`bun run lint:all`（全仓）另有 108 个文件报错，逐一核对均不在本次改动文件列表内，是并发会话遗留的仓库级 lint 债务，与 P4 无关，不在本次范围内处理。
+- 5 个 README 锁定签名逐字核对：`H2SessionStatusRow`/`getH2SessionStatusSnapshot()`/`getH2ReconcileStatus()`/`UpstreamWsStatusRow`/`getUpstreamWsStatusSnapshot(manager)`/`UpstreamWsConnection.rescheduleIdleTimeout(newIdleTimeoutMs: number): void` —— 全部逐字符合，无偏离。
 
 # P4 — 热重载 Reconcile：generation-based retire-and-replace
 

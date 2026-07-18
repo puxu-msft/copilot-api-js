@@ -57,7 +57,7 @@ P1 (config reorg + read-path + state split)
 | P1 | schema 新增三个 section + 6 条 legacy 迁移 + state.ts setter 拆分改名 + config.yaml/schema.json 重写 + 误导性 "Node-only" 注释修正 | legacy 键仍可加载(迁移+告警一次)，新键在 schema 里，运行时语义等价(除 D5 批准的 undici 0→15 例外) | [plan-1-config-reorg.md](./plan-1-config-reorg.md) |
 | P2 | `session_connect_timeout`/`pooled_connection_idle_timeout` 真实接线到新连接；undici keepalive 0-语义修真（`keepAlive:false` 而非"省略 connect 选项让 undici 60s 默认生效"） | 新旋钮对新连接可观测生效 + 独立 oracle 验证 | [plan-2-new-knobs-wiring.md](./plan-2-new-knobs-wiring.md) |
 | P3 | compat 层暴露"本次迁移了哪些 legacy 路径"；PUT 写回时先删旧路径、再按新路径写规范化值、`0→absence` 只删不写、清空后的空 section 一并删除、保留未涉节点的注释 | 管理 API 写回新键，二次加载/PUT 不再告警 | [plan-3-put-migration.md](./plan-3-put-migration.md) |
-| P4 | 基于 generation 的 h2 session retire-and-replace；WS 池按 `idleSince` 重新调度空闲计时器；upstream WS 软上限（忙态转空闲再驱逐）与 client 硬上限分离处理 | 热更新对已存在连接生效，且不破坏 in-flight 长思考流 | [plan-4-hot-reload-reconcile.md](./plan-4-hot-reload-reconcile.md) |
+| P4 | 基于 generation 的 h2 session retire-and-replace；WS 池按 `idleSince` 重新调度空闲计时器；upstream WS 软上限（忙态转空闲再驱逐）与 client 硬上限分离处理 | 热更新对已存在连接生效，且不破坏 in-flight 长思考流 | [plan-4-hot-reload-reconcile.md](./plan-4-hot-reload-reconcile.md)（**已实施**，`feat/transport-config-reorg` 分支 `f17f2b1b`/`71839a43`） |
 | P5 | D7 HIGH-7 可判定字段（configured generation+values / h2 sessions / upstream WS / reconcile 状态 / runtime capability）接入 `/api/status`；SSOT-types 经 `~backend/*` re-export 给 ui-v4 | 诊断可观测，`typecheck:ui-v4` 绿 | [plan-5-status-diagnostics.md](./plan-5-status-diagnostics.md) |
 
 ## 承重不变量（跨阶段，任何阶段都不得违反）
