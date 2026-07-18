@@ -541,15 +541,109 @@ export function createRequestContext(opts: {
     return handle
   }
 
-  function recordAttemptDiagnostic(kind: string, severity: "info" | "warning" | "error", data?: unknown, message?: string): void {
+  function recordAttemptDiagnostic(
+    kind: string,
+    severity: "info" | "warning" | "error",
+    data?: unknown,
+    message?: string,
+    explicitAttempt?: GenerationAttemptCapture,
+  ): void {
     if (modelOperationRecorder.sealed) return
-    const attempt = currentGenerationAttempt()
+    const attempt = explicitAttempt ?? currentGenerationAttempt()
     if (!attempt || attempt.settled) return
     modelOperationRecorder.recordDispatchDiagnostic(attempt.handle, {
       kind,
       severity,
       ...(message !== undefined && { message }),
       ...(data !== undefined && { data: snapshotForRecorder(data) }),
+    })
+  }
+
+  function captureUpstreamFrameFor(attempt: GenerationAttemptCapture | undefined, frame: unknown): void {
+    if (modelOperationRecorder.sealed) return
+    const handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
+      origin: { stage: "upstream-capture", track: "upstream", ...(attempt !== undefined && { dispatch: attempt.handle }) },
+      mediaType: "text/event-stream",
+    })
+    rememberFrame(frame, handle)
+    attempt?.upstreamFrames.push(handle)
+    captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "upstream-frame")
+  }
+
+  function captureFrameTransformFor(
+    attempt: GenerationAttemptCapture | undefined,
+    inputFrame: unknown,
+    outputFrame: unknown,
+    transform: { stage: string; transformId: string; forceDerived?: boolean },
+  ): void {
+    if (modelOperationRecorder.sealed) return
+    const parent = knownFrame(inputFrame)
+    if (!parent && !transform.forceDerived) return
+    const sameBytes = frameWireKey(inputFrame) === frameWireKey(outputFrame)
+    if (parent && !transform.forceDerived && sameBytes) {
+      rememberFrame(outputFrame, parent.handle)
+      return
+    }
+    const parentHandle = parent?.handle ?? transformRoot()
+    const output = modelOperationRecorder.deriveFrame(canonicalFrameValue(outputFrame), {
+      derivedFrom: parentHandle,
+      transformId: transform.transformId,
+      origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { dispatch: attempt.handle }) },
+      mediaType: "text/event-stream",
+    })
+    modelOperationRecorder.recordTransform({
+      transformId: transform.transformId,
+      stage: transform.stage,
+      inputs: [{ kind: "frame", handle: parentHandle }],
+      outputs: [{ kind: "frame", handle: output }],
+    })
+    rememberFrame(outputFrame, output)
+  }
+
+  function captureFrameActionFor(
+    attempt: GenerationAttemptCapture | undefined,
+    inputFrames: ReadonlyArray<unknown>,
+    outputFrames: ReadonlyArray<unknown>,
+    transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
+  ): void {
+    if (modelOperationRecorder.sealed) return
+    const knownInputs = inputFrames.flatMap((frame) => {
+      const known = knownFrame(frame)
+      return known === undefined ? [] : [{ frame, handle: known.handle }]
+    })
+    if (
+      transform.action === "emit"
+      && !transform.forceDerived
+      && inputFrames.length === 1
+      && outputFrames.length === 1
+      && frameWireKey(inputFrames[0]) === frameWireKey(outputFrames[0])
+    ) {
+      if (knownInputs[0]) rememberFrame(outputFrames[0], knownInputs[0].handle)
+      return
+    }
+    const parent = knownInputs.at(-1)?.handle ?? transformRoot()
+    const outputHandles = outputFrames.map((outputFrame) => {
+      const exact = knownFrame(outputFrame)
+      if (exact && !exact.bytesChanged && !transform.forceDerived) return exact.handle
+      const handle = modelOperationRecorder.deriveFrame(canonicalFrameValue(outputFrame), {
+        derivedFrom: parent,
+        transformId: transform.transformId,
+        origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { dispatch: attempt.handle }) },
+        mediaType: "text/event-stream",
+      })
+      rememberFrame(outputFrame, handle)
+      return handle
+    })
+    modelOperationRecorder.recordTransform({
+      transformId: transform.transformId,
+      stage: transform.stage,
+      inputs: knownInputs.length > 0 ? knownInputs.map(({ handle }) => ({ kind: "frame" as const, handle })) : [{ kind: "frame", handle: parent }],
+      outputs: outputHandles.map((handle) => ({ kind: "frame" as const, handle })),
+      metadata: {
+        action: transform.action,
+        ...(transform.action === "emit" && inputFrames.length > 1 && { bufferedInputCount: inputFrames.length - 1 }),
+        ...(inputFrames.length !== knownInputs.length && { unresolvedInputCount: inputFrames.length - knownInputs.length }),
+      },
     })
   }
 
@@ -903,6 +997,10 @@ export function createRequestContext(opts: {
       return _attempts
     },
     get currentAttempt() {
+      if (activeGenerationDispatch !== undefined) {
+        const generationAttempt = generationAttemptByHandle.get(activeGenerationDispatch)
+        if (generationAttempt) return _attempts[generationAttempt.v2Index] ?? null
+      }
       return _attempts.at(-1) ?? null
     },
     get initialSanitizationInfo() {
@@ -1112,13 +1210,43 @@ export function createRequestContext(opts: {
     },
 
     setGenerationDispatchTimingEpoch(dispatch, kind, epoch, mode) {
-      selectGenerationAttempt(dispatch)
-      ctx.setAttemptTimingEpoch?.(kind, epoch, mode)
+      const generationAttempt = generationAttemptByHandle.get(dispatch)
+      if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      const attempt = _attempts[generationAttempt.v2Index]
+      if (mode === "once" && attempt[kind] !== undefined) return
+      attempt[kind] = epoch
+      recordAttemptDiagnostic(`timing.${kind}`, "info", { epoch, mode }, undefined, generationAttempt)
     },
 
     setGenerationDispatchError(dispatch, error) {
       selectGenerationAttempt(dispatch)
       ctx.setAttemptError(error)
+    },
+
+    setGenerationDispatchSseEvents(dispatch, events, projectToLegacy = false) {
+      const generationAttempt = generationAttemptByHandle.get(dispatch)
+      if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      const attempt = _attempts[generationAttempt.v2Index]
+      attempt.sseEvents = events.length > 0 ? events : undefined
+      if (projectToLegacy) ctx.setSseEvents(events)
+    },
+
+    captureUpstreamGenerationDispatchFrame(dispatch, frame, _record) {
+      const attempt = generationAttemptByHandle.get(dispatch)
+      if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      captureUpstreamFrameFor(attempt, frame)
+    },
+
+    captureGenerationDispatchFrameTransform(dispatch, inputFrame, outputFrame, transform) {
+      const attempt = generationAttemptByHandle.get(dispatch)
+      if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      captureFrameTransformFor(attempt, inputFrame, outputFrame, transform)
+    },
+
+    captureGenerationDispatchFrameAction(dispatch, inputFrames, outputFrames, transform) {
+      const attempt = generationAttemptByHandle.get(dispatch)
+      if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      captureFrameActionFor(attempt, inputFrames, outputFrames, transform)
     },
 
     settleGenerationDispatch(dispatch, input) {
@@ -1280,85 +1408,15 @@ export function createRequestContext(opts: {
     },
 
     captureUpstreamGenerationFrame(frame, _record) {
-      if (modelOperationRecorder.sealed) return
-      const attempt = currentGenerationAttempt()
-      const handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
-        origin: { stage: "upstream-capture", track: "upstream", ...(attempt !== undefined && { attempt: attempt.handle }) },
-        mediaType: "text/event-stream",
-      })
-      rememberFrame(frame, handle)
-      attempt?.upstreamFrames.push(handle)
-      captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "upstream-frame")
+      captureUpstreamFrameFor(currentGenerationAttempt(), frame)
     },
 
     captureGenerationFrameTransform(inputFrame, outputFrame, transform) {
-      if (modelOperationRecorder.sealed) return
-      const parent = knownFrame(inputFrame)
-      if (!parent && !transform.forceDerived) return
-      const sameBytes = frameWireKey(inputFrame) === frameWireKey(outputFrame)
-      if (parent && !transform.forceDerived && sameBytes) {
-        rememberFrame(outputFrame, parent.handle)
-        return
-      }
-      const parentHandle = parent?.handle ?? transformRoot()
-      const attempt = currentGenerationAttempt()
-      const output = modelOperationRecorder.deriveFrame(canonicalFrameValue(outputFrame), {
-        derivedFrom: parentHandle,
-        transformId: transform.transformId,
-        origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { attempt: attempt.handle }) },
-        mediaType: "text/event-stream",
-      })
-      modelOperationRecorder.recordTransform({
-        transformId: transform.transformId,
-        stage: transform.stage,
-        inputs: [{ kind: "frame", handle: parentHandle }],
-        outputs: [{ kind: "frame", handle: output }],
-      })
-      rememberFrame(outputFrame, output)
+      captureFrameTransformFor(currentGenerationAttempt(), inputFrame, outputFrame, transform)
     },
 
     captureGenerationFrameAction(inputFrames, outputFrames, transform) {
-      if (modelOperationRecorder.sealed) return
-      const knownInputs = inputFrames.flatMap((frame) => {
-        const known = knownFrame(frame)
-        return known === undefined ? [] : [{ frame, handle: known.handle }]
-      })
-      // Pure 1→1 byte-preserving pass-through is sharing, not a transform event.
-      if (
-        transform.action === "emit"
-        && !transform.forceDerived
-        && inputFrames.length === 1
-        && outputFrames.length === 1
-        && frameWireKey(inputFrames[0]) === frameWireKey(outputFrames[0])
-      ) {
-        if (knownInputs[0]) rememberFrame(outputFrames[0], knownInputs[0].handle)
-        return
-      }
-      const parent = knownInputs.at(-1)?.handle ?? transformRoot()
-      const attempt = currentGenerationAttempt()
-      const outputHandles = outputFrames.map((outputFrame) => {
-        const exact = knownFrame(outputFrame)
-        if (exact && !exact.bytesChanged && !transform.forceDerived) return exact.handle
-        const handle = modelOperationRecorder.deriveFrame(canonicalFrameValue(outputFrame), {
-          derivedFrom: parent,
-          transformId: transform.transformId,
-          origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { attempt: attempt.handle }) },
-          mediaType: "text/event-stream",
-        })
-        rememberFrame(outputFrame, handle)
-        return handle
-      })
-      modelOperationRecorder.recordTransform({
-        transformId: transform.transformId,
-        stage: transform.stage,
-        inputs: knownInputs.length > 0 ? knownInputs.map(({ handle }) => ({ kind: "frame" as const, handle })) : [{ kind: "frame", handle: parent }],
-        outputs: outputHandles.map((handle) => ({ kind: "frame" as const, handle })),
-        metadata: {
-          action: transform.action,
-          ...(transform.action === "emit" && inputFrames.length > 1 && { bufferedInputCount: inputFrames.length - 1 }),
-          ...(inputFrames.length !== knownInputs.length && { unresolvedInputCount: inputFrames.length - knownInputs.length }),
-        },
-      })
+      captureFrameActionFor(currentGenerationAttempt(), inputFrames, outputFrames, transform)
     },
 
     captureForwardedGenerationFrame(frame, _record, syntheticKind) {

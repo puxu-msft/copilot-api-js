@@ -511,6 +511,20 @@ export interface RequestContext {
   setGenerationDispatchResponseHeaders(dispatch: DispatchHandle, headers: Record<string, string>): void
   setGenerationDispatchTimingEpoch(dispatch: DispatchHandle, kind: AttemptTimingKind, epoch: number, mode: "once" | "latest"): void
   setGenerationDispatchError(dispatch: DispatchHandle, error: ApiError): void
+  setGenerationDispatchSseEvents(dispatch: DispatchHandle, events: Array<SseEventRecord>, projectToLegacy?: boolean): void
+  captureUpstreamGenerationDispatchFrame(dispatch: DispatchHandle, frame: unknown, record: SseEventRecord): void
+  captureGenerationDispatchFrameTransform(
+    dispatch: DispatchHandle,
+    inputFrame: unknown,
+    outputFrame: unknown,
+    transform: { stage: string; transformId: string; forceDerived?: boolean },
+  ): void
+  captureGenerationDispatchFrameAction(
+    dispatch: DispatchHandle,
+    inputFrames: ReadonlyArray<unknown>,
+    outputFrames: ReadonlyArray<unknown>,
+    transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
+  ): void
   settleGenerationDispatch(dispatch: DispatchHandle, input: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void
   /** @deprecated Serial compatibility adapter. New production dispatches use beginGenerationDispatch. */
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: RequestTransport }): void

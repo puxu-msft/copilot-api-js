@@ -31,6 +31,11 @@ function env(format: "anthropic" | "openai-cc" = "openai-cc"): RequestEnvelope {
     prepareHints: {},
     ctx: {
       captureGenerationFrameTransform() {},
+      captureGenerationDispatchFrameTransform() {},
+      captureGenerationDispatchFrameAction() {},
+      captureUpstreamGenerationDispatchFrame() {},
+      setGenerationDispatchSseEvents() {},
+      setGenerationDispatchTimingEpoch() {},
       setSseEvents() {},
       setAttemptTimingEpoch() {},
     } as never,

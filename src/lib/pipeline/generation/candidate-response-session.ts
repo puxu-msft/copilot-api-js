@@ -143,6 +143,7 @@ export function createCandidateResponseSession<State, Snapshot>(
     renderer: input.renderer,
     processor: createResponseProcessor({
       env: input.env,
+      dispatch: input.dispatch,
       responseRewrites: input.responseRewrites,
       renderer: input.renderer,
       onSettled: captureTerminalSnapshot,
