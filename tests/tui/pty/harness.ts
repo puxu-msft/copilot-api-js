@@ -8,10 +8,14 @@
  * 在串行 write 链上检测到该 marker 已解释进网格，即抓当时快照存入 result.snapshots。
  */
 import { Terminal } from "@xterm/headless"
+import path from "node:path"
 
 const COLS = 80
 const ROWS = 24
 const SCROLLBACK = 2000
+
+/** Current checkout/worktree root, derived from this harness instead of a developer-specific absolute path. */
+export const PROJECT_ROOT = path.resolve(import.meta.dir, "../../..")
 
 type Xterm = InstanceType<typeof Terminal>
 
@@ -116,7 +120,7 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
   terminal.ref()
 
   const proc = Bun.spawn(["bun", "run", opts.driver], {
-    cwd: "/home/xp/src/copilot-api-js",
+    cwd: PROJECT_ROOT,
     env: { ...process.env, FORCE_COLOR: "0", TERM: "xterm-256color", ...opts.env },
     terminal,
   })
@@ -143,7 +147,7 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
     // 排空已进 data 回调的写入，不保证 PTY EOF。故轮询「静默」——连续 QUIESCE_MS 无新字节
     // 视为排空——再关闭，替代裸 sleep 猜测。上限兜底防挂死。
     const drainDeadline = Date.now() + 2000
-    // eslint-disable-next-line no-unmodified-loop-condition -- lastDataAt 在 data 回调里更新
+
     while (Date.now() - lastDataAt < QUIESCE_MS && Date.now() < drainDeadline) {
       await Bun.sleep(20)
     }

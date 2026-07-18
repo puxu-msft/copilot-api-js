@@ -24,6 +24,31 @@
 # 除非另有说明，所有设置均支持热重载。 / All settings are hot-reloadable unless noted otherwise.
 
 # ============================================================================
+# Structured diagnostics and terminal UI / 结构化诊断与终端界面
+# ============================================================================
+# terminal_level / file_level 支持热重载；只过滤 diagnostic，不过滤请求终态行。
+# terminal_level / file_level are hot-reloadable and only filter diagnostics,
+# never request terminal lines. Levels: silent|trace|debug|info|warn|error|fatal.
+# file.* 与 tui.enabled 在启动时冻结，修改后需重启。
+# file.* and tui.enabled are frozen at startup and require a restart.
+logging:
+  terminal_level: info
+  file_level: debug
+  file:
+    enabled: true
+    # 空字符串解析到 $APP_DIR/logs/diagnostic。/ Empty resolves to $APP_DIR/logs/diagnostic.
+    directory: ""
+    # 0 = 不按大小分段。/ 0 = no size-based rolling.
+    max_size_mb: 10
+    # 0 = 不按数量裁剪本进程分段。/ 0 = no per-process count pruning.
+    max_files_per_process: 7
+    # 0 = 不按年龄清理已死亡进程 artifact。/ 0 = no age-based dead-owner retention.
+    retention_days: 7
+
+tui:
+  enabled: true
+
+# ============================================================================
 # Upstream (GHC API) / 上游
 # ============================================================================
 

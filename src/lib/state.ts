@@ -123,9 +123,23 @@ export interface UnknownEndpointLogging {
   methodNotAllowed: LogLevel
 }
 
+export type DiagnosticLogLevel = "silent" | "trace" | "debug" | "info" | "warn" | "error" | "fatal"
+
+export interface LoggingConfigState {
+  terminalLevel: DiagnosticLogLevel
+  fileLevel: DiagnosticLogLevel
+  fileEnabled: boolean
+  fileDirectory: string
+  fileMaxSizeMb: number
+  fileMaxFilesPerProcess: number
+  retentionDays: number
+}
+
 export interface State {
   /** unknown HTTP endpoint（未匹配任何业务路由）按状态码分类的日志级别。默认 warn/warn。 */
   readonly unknownEndpointLogging: UnknownEndpointLogging
+  readonly logging: LoggingConfigState
+  readonly tuiEnabled: boolean
   readonly githubToken?: string
   readonly copilotToken?: string
 
@@ -619,9 +633,9 @@ export interface State {
   readonly historyEnabled: boolean
 
   /**
-    * Injected History database path for tests. Production config cannot set it;
-    * an empty string selects PATHS.HISTORY_V3_DB so the online server never opens
-    * the legacy PATHS.HISTORY_DB artifact.
+   * Injected History database path for tests. Production config cannot set it;
+   * an empty string selects PATHS.HISTORY_V3_DB so the online server never opens
+   * the legacy PATHS.HISTORY_DB artifact.
    */
   readonly historyDbPath: string
   /** Optional raw capture is hot-reloadable through artifact generations. */
@@ -1252,6 +1266,14 @@ export function setUnknownEndpointLogging(value: UnknownEndpointLogging): void {
   mutableState.unknownEndpointLogging = value
 }
 
+export function setLoggingConfig(value: Partial<LoggingConfigState>): void {
+  mutableState.logging = { ...mutableState.logging, ...value }
+}
+
+export function setTuiEnabled(value: boolean): void {
+  mutableState.tuiEnabled = value
+}
+
 export function setAnthropicBehavior(
   patch: Partial<
     Pick<
@@ -1357,14 +1379,7 @@ export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "str
 
 export function setHistoryConfig(
   patch: Partial<
-    Pick<
-      MutableState,
-      | "historyEnabled"
-      | "historyDbPath"
-      | "historyRawCaptureEnabled"
-      | "historyRawCaptureDbPath"
-      | "historyRawCaptureMaxObjectBytes"
-    >
+    Pick<MutableState, "historyEnabled" | "historyDbPath" | "historyRawCaptureEnabled" | "historyRawCaptureDbPath" | "historyRawCaptureMaxObjectBytes">
   >,
 ): void {
   const rawCaptureChanged =
@@ -1455,7 +1470,13 @@ export function setTimeoutConfig(
   patch: Partial<
     Pick<
       MutableState,
-      "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval" | "upstreamKeepaliveDelay" | "upstreamH2PingInterval"
+      | "responseHeaderTimeout"
+      | "streamIdleTimeout"
+      | "staleRequestMaxAge"
+      | "requestDeadline"
+      | "modelRefreshInterval"
+      | "upstreamKeepaliveDelay"
+      | "upstreamH2PingInterval"
     >
   >,
 ): void {
@@ -1597,6 +1618,16 @@ export const DEFAULT_MODEL_TRANSLATION: ModelTranslation = {}
  */
 export const CONFIG_MANAGED_DEFAULTS = {
   unknownEndpointLogging: { notFound: "warn", methodNotAllowed: "warn" } as UnknownEndpointLogging,
+  logging: {
+    terminalLevel: "info",
+    fileLevel: "debug",
+    fileEnabled: true,
+    fileDirectory: "",
+    fileMaxSizeMb: 10,
+    fileMaxFilesPerProcess: 7,
+    retentionDays: 7,
+  } as LoggingConfigState,
+  tuiEnabled: true,
   useUpstreamCountTokens: true,
   strictResponseHeaders: false,
   strictRequestHeaders: false,
@@ -1751,6 +1782,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
 
 export function resetConfigManagedState(): void {
   setUnknownEndpointLogging({ ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging })
+  setLoggingConfig({ ...CONFIG_MANAGED_DEFAULTS.logging })
+  setTuiEnabled(CONFIG_MANAGED_DEFAULTS.tuiEnabled)
   setAnthropicBehavior({
     useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
@@ -1893,6 +1926,8 @@ export function resetConfigManagedState(): void {
 
 const mutableState: MutableState = {
   unknownEndpointLogging: { ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging },
+  logging: { ...CONFIG_MANAGED_DEFAULTS.logging },
+  tuiEnabled: CONFIG_MANAGED_DEFAULTS.tuiEnabled,
   accountType: "individual",
   ghcApiBaseUrl: "",
   // History master switch (startup-phase; see the field doc). NOT in

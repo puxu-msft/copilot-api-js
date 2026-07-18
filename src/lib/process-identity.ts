@@ -17,6 +17,7 @@
 
 import consola from "consola"
 import { execFileSync } from "node:child_process"
+import fs from "node:fs"
 
 /** Immutable fingerprint of the running process and its code version. */
 export interface ProcessIdentity {
@@ -30,6 +31,8 @@ export interface ProcessIdentity {
   gitSha?: string
   /** Whether the working tree had uncommitted changes at boot, when in a git checkout. */
   gitDirty?: boolean
+  /** Linux `/proc/<pid>/stat` field 22; distinguishes PID reuse. */
+  procStartTicks?: number
   /**
    * True when this identity is the uninitialized fallback (initProcessIdentity
    * was never called before the first read). A `synthetic` record means the
@@ -64,15 +67,35 @@ export function initProcessIdentity(version: string): ProcessIdentity {
   // `--porcelain` prints one line per change; any output means dirty. Only
   // meaningful when we actually resolved a sha (i.e. inside a git checkout).
   const gitDirty = gitSha !== undefined ? (tryGit(["status", "--porcelain"]) ?? "").length > 0 : undefined
+  const procStartTicks = readProcStartTicks(process.pid)
 
   identity = {
     pid: process.pid,
     bootTime: Date.now(),
     version,
+    ...(procStartTicks !== undefined && { procStartTicks }),
     ...(gitSha !== undefined && { gitSha }),
     ...(gitDirty !== undefined && { gitDirty }),
   }
   return identity
+}
+
+/** Parse field 22 without splitting the parenthesized comm, which may contain spaces or `)`. */
+export function readProcStartTicks(pid: number): number | undefined {
+  if (process.platform !== "linux") return undefined
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8")
+    const commEnd = stat.lastIndexOf(")")
+    if (commEnd === -1) return undefined
+    const fieldsFromState = stat
+      .slice(commEnd + 1)
+      .trim()
+      .split(/\s+/)
+    const value = Number(fieldsFromState[19])
+    return Number.isSafeInteger(value) && value >= 0 ? value : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -90,6 +113,11 @@ export function getProcessIdentity(): ProcessIdentity {
     consola.warn("[process-identity] getProcessIdentity() called before initProcessIdentity(); recording a synthetic identity (bootTime/version unreliable)")
   }
   return { pid: process.pid, bootTime: 0, version: "unknown", synthetic: true }
+}
+
+/** Read process identity without emitting diagnostics; safe inside the logger itself. */
+export function getProcessIdentityQuiet(): ProcessIdentity {
+  return identity ?? { pid: process.pid, bootTime: 0, version: "unknown", synthetic: true }
 }
 
 /** Test-only: reset the captured identity so a test can re-init deterministically. */

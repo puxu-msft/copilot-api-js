@@ -34,6 +34,8 @@
  * compatible.
  */
 
+import { writeEmergencyFallback } from "~/lib/diagnostics/emergency-output"
+
 /** The bottom-of-screen render state `emergencyWrite` branches on, queried fresh on every call. */
 export type TerminalRegionState = "region" | "alt" | "inline" | "none"
 
@@ -116,15 +118,21 @@ export function resetTerminalCoordinatorForTests(): void {
  */
 export function emergencyWrite(line: string): void {
   if (!registered) {
-    process.stderr.write(`${line}\n`)
+    writeEmergencyFallback(line)
     return
   }
-  const hooks = registered
-  const state = hooks.state()
-  if (state === "region" || state === "inline") {
-    hooks.write(`${hooks.clearPanel()}${line}\n${hooks.redrawPanel()}`)
-    return
+  try {
+    const hooks = registered
+    const state = hooks.state()
+    if (state === "region" || state === "inline") {
+      hooks.write(`${hooks.clearPanel()}${line}\n${hooks.redrawPanel()}`)
+      return
+    }
+    // "alt" (write-through, spec I-new-1) and "none" (nothing to clear/redraw).
+    hooks.write(`${line}\n`)
+  } catch {
+    // The registered terminal itself is broken. Never recurse through consola
+    // or retry the same stream; fall back to independently guarded stderr.
+    writeEmergencyFallback(line)
   }
-  // "alt" (write-through, spec I-new-1) and "none" (nothing to clear/redraw).
-  hooks.write(`${line}\n`)
 }

@@ -12,7 +12,7 @@
  * `runHistoryWrite` instead:
  *   - classifies the error as transient (retryable later) vs permanent,
  *   - logs at ERROR (not warn) so it surfaces in the file sink / console / the
- *     `system.log` bus event,
+ *     canonical `system.diagnostic` event,
  *   - bumps a per-`stage:class` counter (queryable via
  *     `getHistoryPersistErrorStats`) so failures are countable, and
  *   - returns the outcome so the caller can decide whether to retain-and-retry

@@ -51,7 +51,6 @@ function nullableNonnegativeInt() {
     .optional()
 }
 
-
 function nullableBoolean() {
   return z
     .boolean({ error: BOOLEAN_MSG })
@@ -762,7 +761,6 @@ export const HistoryConfigSchema = z
   })
   .strict()
 
-
 /**
  * `telemetry.*` —— 分层遥测持久化（独立 telemetry.db）。近期/远期分辨率与保留均可配。
  * 业务级校验（sketch_gamma 下限、resolution 整除 60）在 config apply 层做 warn-continue，非 zod。
@@ -802,7 +800,6 @@ export const TelemetryConfigSchema = z
     tiers: nullableSection(TelemetryTiersConfigSchema),
   })
   .strict()
-
 
 export const RetryConfigSchema = z
   .object({
@@ -982,6 +979,7 @@ const GhcApiBaseUrlSchema = z
 
 /** unknown HTTP endpoint 日志级别（silent = 不打）。见 UnknownEndpointLoggingSchema。 */
 export const LOG_LEVELS = ["silent", "debug", "info", "warn", "error"] as const
+export const DIAGNOSTIC_LOG_LEVELS = ["silent", "trace", "debug", "info", "warn", "error", "fatal"] as const
 
 /**
  * unknown HTTP endpoint（打到代理但没匹配任何业务路由）的按状态码分类日志级别。
@@ -995,6 +993,28 @@ const UnknownEndpointLoggingSchema = z
     method_not_allowed: nullableEnum(LOG_LEVELS),
   })
   .strict()
+
+const LoggingFileConfigSchema = z
+  .object({
+    enabled: nullableBoolean(),
+    directory: nullableString(),
+    max_size_mb: nullableNonnegativeInt(),
+    max_files_per_process: nullableNonnegativeInt(),
+    retention_days: nullableNonnegativeInt(),
+  })
+  .strict()
+
+const LoggingConfigSchema = z
+  .object({
+    terminal_level: nullableEnum(DIAGNOSTIC_LOG_LEVELS),
+    file_level: nullableEnum(DIAGNOSTIC_LOG_LEVELS),
+    file: LoggingFileConfigSchema.nullable()
+      .transform((value): z.infer<typeof LoggingFileConfigSchema> | undefined => value ?? undefined)
+      .optional(),
+  })
+  .strict()
+
+const TuiConfigSchema = z.object({ enabled: nullableBoolean() }).strict()
 
 const ProxySchema = z
   .string({ error: STRING_MSG })
@@ -1103,6 +1123,8 @@ export const ConfigSchema = z
       .nullable()
       .optional(),
     unknown_endpoint_logging: nullableSection(UnknownEndpointLoggingSchema),
+    logging: nullableSection(LoggingConfigSchema),
+    tui: nullableSection(TuiConfigSchema),
     /**
      * 优雅重启（零停机换代）裸手动路径的 pidfile 路径覆盖。缺省用 `PATHS.PIDFILE`
      * （`~/.local/share/copilot-api/copilot-api.pid`）。仅裸手动路径读取（supervisor

@@ -18,6 +18,7 @@ import { getEntryById } from "~/lib/history/sqlite/read"
 import {
   //
   runReaperTick,
+  startReaper,
   stopReaper,
 } from "~/lib/history/sqlite/reaper"
 import { STAGE } from "~/lib/history/sqlite/serialize"
@@ -85,10 +86,12 @@ describe("history persistence resilience", () => {
     setHistoryConfig({ historyDbPath: ":memory:" })
     initHistory(true)
     openInMemoryDatabase()
+    startReaper(100, 200, 600)
   })
 
   afterEach(async () => {
     __setTerminalWriterForTests(undefined)
+    stopReaper()
     await shutdownHistory()
     closeDatabase()
     setHistoryConfig({ historyDbPath: "" })

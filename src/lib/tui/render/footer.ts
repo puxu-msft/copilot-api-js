@@ -25,6 +25,8 @@ import {
   truncateToWidth,
 } from "~/lib/observability/projections/format"
 
+import { sanitizeTerminalText } from "./sanitize"
+
 /**
  * Read-only view of a single active request as the footer needs it. A projection
  * of `ConsoleSink`'s internal `ActiveRequest` — only the fields the footer reads.
@@ -169,7 +171,7 @@ function buildModelGroupSegments(active: ReadonlyArray<ActiveRequestView>, now: 
 function finalizeFooter(inner: string, columns: number): string {
   // Strip all C0 control chars (\n, \r, \t, …) — any of them would force a
   // second physical line and break the single-line invariant.
-  // eslint-disable-next-line no-control-regex -- intentional C0 range
-  const oneLine = inner.replaceAll(/[\x00-\x1f]+/g, " ")
+
+  const oneLine = sanitizeTerminalText(inner)
   return pc.dim(truncateToWidth(oneLine, columns - 1))
 }

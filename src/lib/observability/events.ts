@@ -41,6 +41,7 @@ import type {
   RequestContext,
   RequestState,
 } from "~/lib/context/types"
+import type { DiagnosticEvent } from "~/lib/diagnostics"
 import type {
   //
   EntrySummary,
@@ -254,6 +255,7 @@ export type ObservabilityEvent =
   | { kind: "system.rate_limit_state"; mode: RateLimitMode; queuedCount: number; detail?: Record<string, unknown> }
   | { kind: "system.shutdown_phase_changed"; phase: ShutdownPhase; previousPhase: ShutdownPhase | null; needsFlush: boolean }
   | { kind: "system.shutdown_completed" }
+  | { kind: "system.shutdown_failed"; errors: ReadonlyArray<{ name: string; message: string }> }
 
   // ── Synthetic request-style log line (out-of-observability helpers) ──
   //    A pre-built request-line projection for routes that are deliberately
@@ -272,7 +274,7 @@ export type ObservabilityEvent =
   //    both sinks share one representation; `logType` is the consola level name
   //    ("info" | "warn" | "error" | "success" | "debug" | …) for prefix
   //    selection; `time` is the log timestamp in epoch ms. ──
-  | { kind: "system.log"; logType: string; message: string; time: number }
+  | { kind: "system.diagnostic"; diagnostic: DiagnosticEvent }
 
 /** Top-level namespace prefix of an event kind. */
 export type EventNamespace = "request" | "history" | "system"

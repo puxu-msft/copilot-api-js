@@ -59,6 +59,7 @@ export class WsSink {
       (event) => this.handle(event),
       // WS cares about every namespace.
       (event) => event.kind.startsWith("request.") || event.kind.startsWith("history.") || event.kind.startsWith("system."),
+      { name: "ws-sink" },
     )
   }
 
@@ -142,13 +143,13 @@ export class WsSink {
       // request.context_updated is HistorySink-only (see events.ts) —
       // ignored here to avoid double-broadcasting; WS already sees the
       // higher-fidelity lifecycle events.
-      // system.log is for stdout/file sinks only — not broadcast to WS clients.
+      // system.diagnostic is for terminal/file sinks only — not broadcast to WS clients.
       // system.request_line is likewise a display-only (stdout/file) synthetic line.
       case "request.model_resolved":
       case "request.attempt_started":
       case "request.stream_progress":
       case "request.context_updated":
-      case "system.log":
+      case "system.diagnostic":
       case "system.request_line": {
         return
       }
@@ -208,8 +209,10 @@ export class WsSink {
         return
       }
       case "system.shutdown_completed": {
-        notifyShutdownPhaseChanged({ phase: "finalized", previousPhase: null, needsFlush: false })
         return
+      }
+      case "system.shutdown_failed": {
+        return broadcastAndFlush({ type: "shutdown_failed", data: { errors: event.errors }, timestamp: Date.now() }, "status").then(() => {})
       }
       default: {
         // Exhaustiveness check.

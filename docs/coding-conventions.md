@@ -26,3 +26,10 @@ CLAUDE.md 放原则；本文件放可查阅的事实性约定。
 Bun 一等公民，Node 仅兼容目标。外部库须 Bun 原生可跑，拒 node-gyp 绑定。命令走 `bun run`（非 `npm run`）。
 
 **决策背景与备选方案见 [decisions/2026-07-05-dependency-selection-bun-first.md](decisions/2026-07-05-dependency-selection-bun-first.md)（权威 ADR，真正的用户决策）**；实现分流见 DESIGN.md「运行时兼容」「测试组织」与 spec/test-env-isolation.md。
+
+## 诊断日志与终端输出
+
+- 新代码优先使用 scoped `DiagnosticLogger`，字段以 richest structured form 进入 `DiagnosticEvent`；consola 仅是存量兼容 adapter，禁止在新代码里把对象预先 `JSON.stringify` 成 message。
+- canonical 边界固定为 snapshot/project→recursive redact→deep-freeze→publish。token、device/user code、authorization/cookie/password/secret 不得进入 message/error/fields；需显式展示的一次性 credential 只走 `SensitiveOutputPort.writeOnce()`。
+- 服务模式 stdout 只能由 `OutputArbiter` 写，stderr 只能由 `EmergencyOutput` 兜底。render leaves 只返回 trusted ANSI frame；所有外部字符串先过 terminal sanitizer。
+- 长期文件日志只有 per-process NDJSON。目录/manifest/spool/segment 归属与 durability 由 `src/lib/diagnostics/file/` 管理；不得重新引入 shared active file 或自行实现第二套 rotation。

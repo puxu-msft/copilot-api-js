@@ -44,6 +44,7 @@ export type WSMessageType =
   | "active_request_changed"
   | "rate_limiter_changed"
   | "shutdown_phase_changed"
+  | "shutdown_failed"
 
 /** A WebSocket message sent to connected clients */
 export interface WSMessage {

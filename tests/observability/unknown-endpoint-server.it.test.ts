@@ -22,9 +22,20 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
-import { resetApplyState, resetConfigCache, setBundledConfigForTests } from "~/lib/config/config"
+import {
+  //
+  resetApplyState,
+  resetConfigCache,
+  setBundledConfigForTests,
+} from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
-import { resetConfigManagedState, restoreStateForTests, snapshotStateForTests, type StateSnapshot } from "~/lib/state"
+import {
+  //
+  resetConfigManagedState,
+  restoreStateForTests,
+  snapshotStateForTests,
+  type StateSnapshot,
+} from "~/lib/state"
 import { createServer } from "~/server"
 
 let originalState: StateSnapshot

@@ -23,6 +23,7 @@ import {
   //
   INITIAL_UI_STATE,
   reduce,
+  selectedIndex,
   type UiState,
 } from "~/lib/tui/controller"
 import {
@@ -57,9 +58,10 @@ function navigate(activeCount: number, rows: number, showHelp: boolean, steps: n
     ...(showHelp ? [{ kind: "help" } as KeyEvent] : []),
     ...Array.from<unknown, KeyEvent>({ length: steps }, () => ({ kind: "down" })),
   ]
+  const activeIds = views(activeCount).map((view) => view.ctx.id)
   return keys.reduce((state, key) => {
     const visibleRows = panelContentRows(rows, activeCount, state.showHelp)
-    return reduce(state, key, { activeCount, visibleRows })
+    return reduce(state, key, { activeIds, visibleRows })
   }, INITIAL_UI_STATE)
 }
 
@@ -70,13 +72,14 @@ describe("panel scroll alignment (controller ↔ buildPanelLines)", () => {
         const active = views(activeCount)
         // Walk the whole list one row at a time; at every step the rendered
         // window must contain the selected row.
-        let state: UiState = { ...INITIAL_UI_STATE, view: "panel" }
+        const activeIds = active.map((view) => view.ctx.id)
+        let state: UiState = { ...INITIAL_UI_STATE, view: "panel", selectedRequestId: activeIds[0] }
         for (let step = 0; step <= activeCount + 2; step++) {
           const lines = buildPanelLines({
             active,
             now: NOW,
             columns: 100,
-            selectedIndex: state.selectedIndex,
+            selectedIndex: selectedIndex(state, activeIds),
             scrollOffset: state.scrollOffset,
             rows,
             showHelp: false,
@@ -86,7 +89,7 @@ describe("panel scroll alignment (controller ↔ buildPanelLines)", () => {
           expect(reversed.length).toBe(1)
           // Advance one row (visibleRows in lockstep with the renderer).
           const visibleRows = panelContentRows(rows, activeCount, false)
-          state = reduce(state, { kind: "down" }, { activeCount, visibleRows })
+          state = reduce(state, { kind: "down" }, { activeIds, visibleRows })
         }
       })
     }
@@ -101,15 +104,22 @@ describe("panel scroll alignment (controller ↔ buildPanelLines)", () => {
       active,
       now: NOW,
       columns: 100,
-      selectedIndex: state.selectedIndex,
+      selectedIndex: selectedIndex(
+        state,
+        active.map((view) => view.ctx.id),
+      ),
       scrollOffset: state.scrollOffset,
       rows: 10,
       showHelp: state.showHelp,
     })
     const contentWindow = active.slice(state.scrollOffset, state.scrollOffset + visibleRows)
     // The selected global index maps into the rendered window.
-    expect(state.selectedIndex).toBeGreaterThanOrEqual(state.scrollOffset)
-    expect(state.selectedIndex).toBeLessThan(state.scrollOffset + visibleRows)
+    const index = selectedIndex(
+      state,
+      active.map((view) => view.ctx.id),
+    )
+    expect(index).toBeGreaterThanOrEqual(state.scrollOffset)
+    expect(index).toBeLessThan(state.scrollOffset + visibleRows)
     expect(lines.some((l) => l.includes(REVERSE_ON))).toBe(true)
     expect(contentWindow.length).toBeGreaterThan(0)
   })
