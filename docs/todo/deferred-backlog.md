@@ -806,3 +806,10 @@
 - **为何暂缓**：出 anthropic↔responses 直接桥 RFC 范围；属未来 gemini/openai-cc↔responses 直接桥项目的债。
 - **若做需改什么**：`responses-to-cc.ts` 的 output-item 翻译补 web_search_call→CC 文本分支；对齐直接桥模板。
 - 来源：Phase 6 收官审查建议（2026-07-15）。
+
+## h2 `getSession` 的 `for(;;)` generation-race 重试无迭代上限（LOW，2026-07-14，transport 三轴重组 P4 合并态审查记）
+
+- **根因 / 现状**：`src/lib/transport/http2-client.ts` 的 `getSession()` 用无界 `for(;;)` 做 generation-race 捕获-比较-丢弃-重试（在飞建连若 generation 已过期则关旧、`continue` 重连）。理论上一个每 tick 都触发的 reconcile storm 可让某 caller 永远重试。
+- **当前行为**：不现实的饥饿——每次迭代含一次完整 TLS/proxy 建连（数十~数百 ms），且 reconcile 由人工 config 编辑驱动（非高频），自然被建连延迟限流。P4 合并态审查 reviewer 亲验判定「非必须修」。
+- **理想架构 / 若做需改什么**：加一个宽松迭代上限（如 8 次）后 reject 一个可诊断错误，避免病态配置下的无限循环。注意会引入新失败模式（病态 config → reject vs 现在的无限 retry），需权衡。
+- **为何暂缓**：饥饿不现实（被建连延迟自然限流）、reviewer 判非必须；引入迭代上限会新增「N 次后 reject」的失败语义。**触发条件（值得做）**：出现高频 config reload 或自动化 config 编辑场景使 reconcile storm 变现实。发现方：transport 三轴重组 P4 热重载 reconcile 合并态审查 nit-2（2026-07-14）。
