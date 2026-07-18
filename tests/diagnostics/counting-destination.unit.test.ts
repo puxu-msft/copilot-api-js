@@ -31,4 +31,13 @@ describe("CountingDestination", () => {
     expect(counted.health).toEqual({ queuedBytes: 0, writtenBytes: 4, droppedBytes: 0 })
     expect(counted.takeDirtyPaths()).toEqual(["/tmp/a.ndjson"])
   })
+
+  test("an async destination error rejects idle waiters instead of hanging shutdown", async () => {
+    const raw = new FakeDestination()
+    const counted = new CountingDestination(raw as never)
+    counted.write("pending\n")
+    const idle = counted.waitForIdle()
+    raw.emit("error", new Error("ENOSPC"))
+    await expect(idle).rejects.toThrow("ENOSPC")
+  })
 })

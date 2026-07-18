@@ -51,4 +51,21 @@ describe("StructuredFileSink", () => {
     expect(fs.statSync(directory).mode & 0o777).toBe(0o700)
     for (const file of files) expect(fs.statSync(path.join(directory, file)).mode & 0o777).toBe(0o600)
   })
+
+  test("queue drops make the durability barrier reject instead of reporting shutdown success", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostic-drop-"))
+    dirs.push(directory)
+    const bus = createBus()
+    const sink = await StructuredFileSink.create(bus, { directory, maxSizeBytes: 0, maxLengthBytes: 16 * 1024 })
+    const system = bus.scope("system")
+    const payload = "x".repeat(1024)
+    for (let index = 0; index < 500; index++) {
+      system.publish({
+        kind: "system.diagnostic",
+        diagnostic: createDiagnosticEvent({ level: "info", event: "drop-probe", message: `${index}:${payload}`, origin: "native" }),
+      })
+    }
+    await expect(sink.close()).rejects.toThrow(/dropped|durability/i)
+    expect(sink.health.droppedBytes).toBeGreaterThan(0)
+  })
 })

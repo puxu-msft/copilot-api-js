@@ -209,7 +209,6 @@ export class WsSink {
         return
       }
       case "system.shutdown_completed": {
-        notifyShutdownPhaseChanged({ phase: "finalized", previousPhase: null, needsFlush: false })
         return
       }
       case "system.shutdown_failed": {

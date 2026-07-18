@@ -138,13 +138,23 @@ export class StructuredFileSink {
       diagnostic: createDiagnosticEvent({ level: "info", event: "shutdown.diagnostic-sealing", message: "Diagnostic writer sealing", origin: "native" }),
     })
     this.state = "sealing"
-    await this.durable()
+    let failure: unknown
+    try {
+      await this.durable()
+    } catch (error) {
+      failure = error
+    }
     this.destination.end()
-    await new Promise<void>((resolve, reject) => {
-      this.destination.once("close", resolve)
-      this.destination.once("error", reject)
-    })
-    this.state = "closed"
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this.destination.once("close", resolve)
+        this.destination.once("error", reject)
+      })
+    } catch (error) {
+      failure ??= error
+    }
+    this.state = failure ? "degraded" : "closed"
+    if (failure) throw failure instanceof Error ? failure : new Error("Non-Error diagnostic durability failure")
   }
 
   private handle(event: ObservabilityEvent): void {
@@ -203,6 +213,7 @@ export class StructuredFileSink {
     await this.flush()
     await this.counted.waitForIdle()
     await this.fsyncSegments(this.counted.takeDirtyPaths())
+    if (this.droppedRecords > 0 || this.state === "degraded") throw new Error(`Diagnostic durability failed: ${this.droppedRecords} dropped record chunk(s)`)
   }
 
   private flush(): Promise<void> {
