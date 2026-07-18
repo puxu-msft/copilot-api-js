@@ -697,10 +697,13 @@ export function createRequestContext(opts: {
         metadata: snapshotForRecorder(_forwardedResponse),
       },
     })
-    if (primaryGenerationCandidate !== undefined) {
-      const primary = modelOperationRecorder.snapshot().candidates.find((candidate) => candidate.handle === primaryGenerationCandidate)
-      if (primary?.verdict === undefined) {
-        modelOperationRecorder.settleCandidate(primaryGenerationCandidate, {
+    const operationBeforeTerminal = modelOperationRecorder.snapshot()
+    const terminalCandidate =
+      finalAttempt === undefined ? undefined : operationBeforeTerminal.dispatches.find((dispatch) => dispatch.handle === finalAttempt.handle)?.candidate
+    if (terminalCandidate !== undefined) {
+      const candidate = operationBeforeTerminal.candidates.find((entry) => entry.handle === terminalCandidate)
+      if (candidate?.verdict === undefined) {
+        modelOperationRecorder.settleCandidate(terminalCandidate, {
           verdict: terminal.outcome === "completed" ? "winner" : "failed",
           reason: `terminal:${terminal.outcome}`,
         })
@@ -708,7 +711,7 @@ export function createRequestContext(opts: {
     }
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
       outcome: terminal.outcome,
-      ...(primaryGenerationCandidate !== undefined && { winnerCandidate: primaryGenerationCandidate }),
+      ...(terminal.outcome === "completed" && terminalCandidate !== undefined && { winnerCandidate: terminalCandidate }),
       ...(terminal.outcome === "completed" && finalAttempt !== undefined && { committedDispatch: finalAttempt.handle }),
       ...(terminal.error !== undefined && { error: terminal.error }),
       ...(operationUsage(_response) !== undefined && { usage: operationUsage(_response) }),

@@ -97,4 +97,26 @@ describe("generation delivery and observability terminal", () => {
     await expect(ctx.whenModelOperationFinalized()).rejects.toThrow(/open candidate/i)
     expect(ctx.modelOperationTerminalRecord).toBeNull()
   })
+
+  test("seals a recovery candidate as the winner instead of reopening the failed primary", async () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const primaryDispatch = ctx.beginGenerationDispatch({ candidate: primary })
+    ctx.settleGenerationDispatch(primaryDispatch, { verdict: "discarded", reason: "truncated" })
+    ctx.settleGenerationCandidate(primary, { verdict: "failed", reason: "truncated" })
+    const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary })
+    const recoveryDispatch = ctx.beginGenerationDispatch({ candidate: recovery })
+
+    complete(ctx)
+    ctx.finalizeModelOperationDelivery({ clientPayload: { role: "assistant", content: "recovered" } })
+
+    const record = await ctx.whenModelOperationFinalized()
+    expect(record.terminal).toMatchObject({
+      outcome: "completed",
+      winnerCandidate: recovery,
+      committedDispatch: recoveryDispatch,
+    })
+    expect(record.candidates.find((candidate) => candidate.handle === primary)?.verdict).toBe("failed")
+    expect(record.candidates.find((candidate) => candidate.handle === recovery)?.verdict).toBe("winner")
+  })
 })
