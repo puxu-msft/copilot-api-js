@@ -463,7 +463,36 @@ describe("management and history HTTP routes", () => {
     expect(body.transport.upstreamWsPool).toHaveLength(1)
     expect(body.transport.upstreamWsPool[0]).toMatchObject({ model: "gpt-5.5", state: "idle" })
     expect(["idle", "running", "failed"]).toContain(body.transport.h2Reconcile.state)
+    expect(["idle", "running", "failed"]).toContain(body.transport.upstreamWsReconcile.state)
     expect(body.transport.runtimeCapability).toEqual({ runtime: "bun", wsApplicationKeepalive: "unavailable" })
+  })
+
+  test("GET /api/status surfaces a FAILED upstream WS reconcile (merged-state review fix, spec §4 D7 HIGH-3/HIGH-7 symmetry) — not just h2's", async () => {
+    const fakeConnection = (opts: CreateUpstreamWsConnectionOptions): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model: opts.model,
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {
+        throw new Error("simulated rescheduleIdleTimeout failure")
+      },
+      close: () => {},
+    })
+    setUpstreamWsConnectionFactoryForTests(fakeConnection)
+    const manager = resetUpstreamWsManagerForTests()
+    await manager.create({ headers: {}, model: "gpt-5.5" })
+    manager.reconcileForConfigChange(90_000)
+
+    const res = await app.request("/api/status")
+    const body = (await res.json()) as StatusResponseBody
+
+    expect(res.status).toBe(200)
+    expect(body.transport.upstreamWsReconcile.state).toBe("failed")
+    expect(body.transport.upstreamWsReconcile.lastError).toContain("simulated rescheduleIdleTimeout failure")
   })
 
   test("GET /metrics returns Prometheus exposition projecting the telemetry registry", async () => {
