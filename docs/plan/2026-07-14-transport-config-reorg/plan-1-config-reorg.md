@@ -1,5 +1,7 @@
 # Plan 1 — Config 重组 + 读路径迁移 + state 拆分
 
+> **实施状态（2026-07-14）：已全部落地并合入 master**（feature `feat/transport-config-reorg` → master merge `2c19c7cf`）。8 个 Task（Task 3 拆 2 commit + 微修复）全 TDD 提交，schema 三段 + 6 键迁移（含 `upstream_keepalive:0→absence` 特例）+ state 拆 `setUpstreamTransportConfig`/`onRequestWatchdogChange` 改名 + config.yaml/schema.json + 全仓 Node-only 注释修正均完成；config 测试 711 pass、经 P1 合并态审查（0 blocker）。
+
 > 归属：`docs/plan/2026-07-14-transport-config-reorg/README.md` 阶段 P1。上游：[spec](../../spec/2026-07-14-upstream-transport-config-reorg.md) §4 D1/D2/D3/D4/D6、§5 迁移表、§6 相邻修正；[ADR](../../decisions/2026-07-14-transport-config-three-axis-organization.md)。
 
 ## Goal

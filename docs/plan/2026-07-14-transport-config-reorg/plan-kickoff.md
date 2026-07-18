@@ -6,6 +6,8 @@
 > - 用户主树里 `stale_request_max_age` 旁的 `# TODO: rename stale_request_max_age as upstream_request_deadline` **不在本特性范围**（P1 未动该键）——记录供未来另立任务，别顺手改。
 > - 合并操作建议：P1 rebase 到含用户 config.yaml 提交的 master 后，config.yaml 大概率冲突，**手动 resolve = 保留用户全部新散文 + 按上表把旧键行替换为新键行**，而非 `-X ours/theirs` 机械取一边。
 
+> **✅ 实施状态（2026-07-14 更新）：全部 5 相位 P1-P5 已落地并合入 master**（feature `feat/transport-config-reorg` → master merge `2c19c7cf`，收尾 `6620af67`）。原「本轮只执行 P1、P2-P5 暂缓」的分批裁决已完成——P1 落地验证后依次放行 P2/P3（并行）→ P4（含 Bun pre-header bare-close 根因修复）→ P5（含合并态审查逮出的 WS reconcile dead-export HIGH 修复）。每相位经合并态审查 + 最终整合态审查（0 blocker/0 high 遗留）。下方各相位 kick-off 提示词保留作历史执行记录。落地时行级共存并发 history-v3/tantivy 会话。
+
 > **本轮执行范围（D，2026-07-14 主会话裁决）**：本轮只执行 **P1**（config schema 三轴重组），**P2/P3/P4/P5 暂缓**，不在本轮派发执行 kick-off。原因：P1 是全部下游阶段的唯一前置依赖（见下方 DAG），本轮的重点是先把 P1 的 config schema/state/兼容迁移这一层落地并跑通全量回归，P2 起的连接层真实接线、PUT 迁移、热重载 reconcile、status/diagnostics 接入待 P1 落地并复核后再排期，避免多阶段并行执行时互相踩踏同一批"跨阶段共享接口清单"里尚未定案的签名（本文档「待主会话裁决」小节列出的分叉，多数已在 P1 尚未开工前通过 review+用户裁决收敛，但收敛结果需要先在 P1 真实代码上验证一遍再放行下游）。P2-P5 的 kick-off 提示词仍然完整保留在下方，供 P1 完成并经复核后按序派发，不需要届时重写。
 
 本文档是 `docs/plan/2026-07-14-transport-config-reorg/` 计划集的执行入口：汇总各阶段的**可直接复制的开启提示词**，以及全部 5 份 plan 文档在撰写过程中沉淀下来的、**需要主会话裁决**的分叉与待办清单（不含各 plan 正文里已经自行判定、无需上呈的普通设计取舍——那些留在各自的 Self-Review 小节，这里只收敛真正需要主会话拍板的条目）。
