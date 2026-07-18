@@ -798,18 +798,12 @@ export function createRequestContext(opts: {
       // buffered-retry being enabled). Forwarded-wire correctness is unaffected either way.
       _askNormalization = { ..._askNormalization, ...diag }
       recordAttemptDiagnostic("repair.ask_user_question_normalization", "warning", diag)
-      // MUST publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler
-      // (history sink); onTerminal's projection allowlist does NOT include pipelineInfo. Mirrors
-      // setStreamTimeouts exactly.
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
     recordSendMessageNormalization(diag) {
       // Same shape/lifecycle as recordAskUserQuestionNormalization: request-level, NOT per-attempt-reset
-      // (under buffered-retry may reflect a discarded attempt; forwarded-wire correctness unaffected). MUST
-      // publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler.
+      // (under buffered-retry may reflect a discarded attempt; forwarded-wire correctness unaffected).
       _sendMessageNormalization = { ..._sendMessageNormalization, ...diag }
       recordAttemptDiagnostic("repair.send_message_normalization", "warning", diag)
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
     get repairOutcomes() {
       return _repairOutcomes
@@ -911,7 +905,6 @@ export function createRequestContext(opts: {
     setOriginalRequest(req: OriginalRequest) {
       if (_originalRequest !== null) throw new Error("[RequestContext] original request already registered")
       _originalRequest = req
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "originalRequest", contextRef: ctx })
     },
 
     recordModelOperationIngress() {
@@ -943,15 +936,12 @@ export function createRequestContext(opts: {
       // Direct assignment — caller assembles the complete PipelineInfo
       _pipelineInfo = info
       recordAttemptDiagnostic("pipeline.info", "info", info)
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
 
     setStreamTimeouts(patch: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number }) {
       // Merge (the two fields are independent). Kept separate from `_pipelineInfo`
       // so the 4 gated `setPipelineInfo` full-replace call sites never clobber it.
-      // Reuses the `pipelineInfo` context_updated event kind (no new event type).
       _streamTimeouts = { ..._streamTimeouts, ...patch }
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
 
     setSseEvents(events: Array<SseEventRecord>) {
@@ -972,16 +962,11 @@ export function createRequestContext(opts: {
           ...(capture.request && { outboundRequest: capture.request }),
           ...(capture.response && { outboundResponse: capture.response }),
         }
-        // RFC Phase 5: surface httpHeaders to in-flight observers (history sink's
-        // onContextUpdated reads live ctx.httpHeaders). Not in the lightweight
-        // snapshot — kept lean; the sink reads the full headers off the ctx ref.
-        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
       }
     },
 
     setInboundRequestHeaders(headers: Record<string, string>) {
       _httpHeaders = { ..._httpHeaders, inboundRequest: headers }
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
     setInboundResponseHeaders(headers: Record<string, string>) {
@@ -989,7 +974,6 @@ export function createRequestContext(opts: {
       // sends to the client), captured at the handler write-out point. Completes the
       // four-leg model. Publishes for in-flight visibility (Phase 5).
       _httpHeaders = { ..._httpHeaders, inboundResponse: headers }
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
     setClientResponseStatus(status: number) {
@@ -999,14 +983,12 @@ export function createRequestContext(opts: {
       // MUST land before complete()/fail()/abort() snapshots the entry (mirrors the header
       // capture ordering). Lands on the first-class `clientResponse` leg in toHistoryEntry.
       _clientResponseStatus = status
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
     setOutboundResponseTrailers(trailers: Record<string, string>) {
       // Best-effort h2 response-trailers leg (richest-data-flow). The transport fires
       // this before stream end, so it lands before complete()/fail() snapshots the entry.
       _httpHeaders = { ..._httpHeaders, outboundResponseTrailers: trailers }
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
     addWarningMessage(warning: WarningMessage) {
@@ -1015,7 +997,6 @@ export function createRequestContext(opts: {
 
       _warningMessages.push(warning)
       recordAttemptDiagnostic(`warning.${warning.code}`, "warning", warning, warning.message)
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "warningMessages", contextRef: ctx })
     },
 
     beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
@@ -1047,7 +1028,6 @@ export function createRequestContext(opts: {
         })
         generationAttempts.push({ handle, upstreamFrames: [], settled: false })
       }
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
     },
 
     setAttemptSanitization(info: SanitizationInfo) {
@@ -1088,7 +1068,6 @@ export function createRequestContext(opts: {
             metadata: snapshotForRecorder(req),
           })
         }
-        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
 
@@ -1111,7 +1090,6 @@ export function createRequestContext(opts: {
             metadata: snapshotForRecorder(req),
           })
         }
-        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
 
@@ -1124,7 +1102,6 @@ export function createRequestContext(opts: {
           modelOperationRecorder.setAttemptTransport(generationAttempt.handle, transport)
         }
         recordAttemptDiagnostic("transport.selected", "info", { transport })
-        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
 
@@ -1366,7 +1343,6 @@ export function createRequestContext(opts: {
 
     addQueueWaitMs(ms: number) {
       _queueWaitMs += ms
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "queueWaitMs", contextRef: ctx })
     },
 
     transition(newState: RequestState, meta?: Record<string, unknown>) {

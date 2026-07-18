@@ -11,7 +11,7 @@
  * Volatile fields (id / startTime / durationMs / lastUpdatedAt / timestamps)
  * are intentionally NOT asserted — only the stream shape + stable discriminants.
  *
- * Lifecycle events (created / state_changed / context_updated / completed /
+ * Lifecycle events (created / state_changed / completed /
  * failed / aborted) carry `ctx.summary`; the strongly-typed direct events
  * (model_resolved / feature_applied / stream_progress / attempt_*) do NOT.
  */
@@ -33,7 +33,6 @@ import { createBus } from "~/lib/observability"
 interface StreamRow {
   kind: string
   hasSummary: boolean
-  field?: string
   previousState?: string
   state?: string
   feature?: string
@@ -45,7 +44,6 @@ function reduce(event: ObservabilityEvent): StreamRow {
     kind: event.kind,
     hasSummary: "ctx" in event && event.ctx.summary !== undefined,
   }
-  if (event.kind === "request.context_updated") row.field = event.field
   if (event.kind === "request.state_changed") {
     row.previousState = event.previousState
     row.state = event.ctx.state
@@ -89,13 +87,8 @@ describe("P0.3 bus event stream — golden", () => {
     expect(rows).toEqual([
       { kind: "request.created", hasSummary: true },
       { kind: "request.model_resolved", hasSummary: false },
-      { kind: "request.context_updated", hasSummary: true, field: "originalRequest" },
       { kind: "request.state_changed", hasSummary: true, previousState: "pending", state: "executing" },
-      { kind: "request.context_updated", hasSummary: true, field: "attempts" },
-      { kind: "request.context_updated", hasSummary: true, field: "attempts" },
-      { kind: "request.context_updated", hasSummary: true, field: "attempts" },
       { kind: "request.feature_applied", hasSummary: false, feature: "via-responses" },
-      { kind: "request.context_updated", hasSummary: true, field: "queueWaitMs" },
       { kind: "request.state_changed", hasSummary: true, previousState: "executing", state: "streaming" },
       { kind: "request.state_changed", hasSummary: true, previousState: "streaming", state: "completed" },
       { kind: "request.completed", hasSummary: true, state: "completed" },
@@ -116,9 +109,7 @@ describe("P0.3 bus event stream — golden", () => {
 
     expect(rows).toEqual([
       { kind: "request.created", hasSummary: true },
-      { kind: "request.context_updated", hasSummary: true, field: "originalRequest" },
       { kind: "request.state_changed", hasSummary: true, previousState: "pending", state: "executing" },
-      { kind: "request.context_updated", hasSummary: true, field: "attempts" },
       { kind: "request.attempt_failed", hasSummary: false, attemptIndex: 0 },
       { kind: "request.state_changed", hasSummary: true, previousState: "executing", state: "failed" },
       { kind: "request.failed", hasSummary: true, state: "failed" },
@@ -136,7 +127,6 @@ describe("P0.3 bus event stream — golden", () => {
 
     expect(rows).toEqual([
       { kind: "request.created", hasSummary: true },
-      { kind: "request.context_updated", hasSummary: true, field: "originalRequest" },
       { kind: "request.state_changed", hasSummary: true, previousState: "pending", state: "executing" },
       { kind: "request.state_changed", hasSummary: true, previousState: "executing", state: "aborted" },
       { kind: "request.aborted", hasSummary: true, state: "aborted" },

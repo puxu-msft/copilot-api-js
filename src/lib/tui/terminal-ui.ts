@@ -485,19 +485,13 @@ export class TerminalUi {
         return
       }
       // history.* / system.* — currently no console output (reserved).
-      //
-      // request.context_updated is consumed by HistorySink only — see the
-      // event doc in events.ts. TerminalUi already receives the
-      // higher-fidelity signals (state_changed / feature_applied / etc.)
-      // and would only get duplicates from context_updated.
       case "history.entry_added":
       case "history.entry_updated":
       case "history.stats_changed":
       case "history.cleared":
       case "history.session_deleted":
       case "system.rate_limit_state":
-      case "system.shutdown_completed":
-      case "request.context_updated": {
+      case "system.shutdown_completed": {
         return
       }
       default: {
@@ -1347,7 +1341,7 @@ function renderFeatureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Re
 }
 
 // ============================================================================
-// Attachment helper (mirrors attachHistorySink / attachTelemetrySink shape)
+// Attachment helper (mirrors attachTelemetrySink shape)
 // ============================================================================
 
 export function attachTerminalUi(bus: ObservabilityBus, options?: TerminalUiOptions): () => void {
