@@ -4,9 +4,10 @@ import type {
   DiagnosticValue,
 } from "./types"
 
-const SECRET_KEY = /access[_-]?token|authorization|cookie|device[_-]?code|refresh[_-]?token|api[_-]?key|password|secret/i
+const SECRET_KEY = /access[_-]?token|authorization|cookie|device[_-]?code|user[_-]?code|refresh[_-]?token|api[_-]?key|password|secret/i
 const SECRET_VALUE = /\b(?:Bearer\s+\S+|gh[opusr]_\w+|github_pat_\w+)\b/gi
-const SECRET_ASSIGNMENT = /(["']?(?:access[_-]?token|authorization|cookie|device[_-]?code|refresh[_-]?token|api[_-]?key|password|secret)["']?\s*[:=]\s*)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;}\]]+)/gi
+const SECRET_ASSIGNMENT =
+  /(["']?(?:access[_-]?token|authorization|cookie|device[_-]?code|user[_-]?code|refresh[_-]?token|api[_-]?key|password|secret)["']?\s*[:=]\s*)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;}\]]+)/gi
 
 const REDACTED = "[REDACTED]"
 

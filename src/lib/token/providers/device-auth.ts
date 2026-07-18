@@ -5,6 +5,7 @@ import {
   getDeviceCode,
   pollAccessToken,
 } from "~/lib/token/github-client"
+import { writeSensitiveOnce } from "~/lib/tui/sensitive-output"
 
 import type { TokenInfo } from "../types"
 
@@ -47,7 +48,10 @@ export class DeviceAuthProvider extends GitHubTokenProvider {
       const response = await getDeviceCode()
       consola.debug(`Device authorization started (expires_in=${response.expires_in}s interval=${response.interval}s)`)
 
-      consola.info(`Please enter the code "${response.user_code}" at ${response.verification_uri}`)
+      consola.info(`Open ${response.verification_uri} to complete GitHub device authorization`)
+      if (!writeSensitiveOnce("github-device-code", "GitHub device code", response.user_code)) {
+        throw new Error("GitHub device authorization requires a healthy interactive terminal to display the one-time code")
+      }
 
       const token = await pollAccessToken(response)
 

@@ -928,14 +928,26 @@ export async function applyConfigToState(): Promise<Config> {
     setLoggingConfig({
       ...(logging.terminal_level !== undefined && { terminalLevel: logging.terminal_level }),
       ...(logging.file_level !== undefined && { fileLevel: logging.file_level }),
-      ...(logging.file?.enabled !== undefined && { fileEnabled: logging.file.enabled }),
-      ...(logging.file?.directory !== undefined && { fileDirectory: logging.file.directory }),
-      ...(logging.file?.max_size_mb !== undefined && { fileMaxSizeMb: logging.file.max_size_mb }),
-      ...(logging.file?.max_files_per_process !== undefined && { fileMaxFilesPerProcess: logging.file.max_files_per_process }),
-      ...(logging.file?.retention_days !== undefined && { retentionDays: logging.file.retention_days }),
+      ...(!hasApplied && logging.file?.enabled !== undefined && { fileEnabled: logging.file.enabled }),
+      ...(!hasApplied && logging.file?.directory !== undefined && { fileDirectory: logging.file.directory }),
+      ...(!hasApplied && logging.file?.max_size_mb !== undefined && { fileMaxSizeMb: logging.file.max_size_mb }),
+      ...(!hasApplied && logging.file?.max_files_per_process !== undefined && { fileMaxFilesPerProcess: logging.file.max_files_per_process }),
+      ...(!hasApplied && logging.file?.retention_days !== undefined && { retentionDays: logging.file.retention_days }),
     })
+    if (hasApplied && logging.file) {
+      const differs =
+        (logging.file.enabled !== undefined && logging.file.enabled !== state.logging.fileEnabled)
+        || (logging.file.directory !== undefined && logging.file.directory !== state.logging.fileDirectory)
+        || (logging.file.max_size_mb !== undefined && logging.file.max_size_mb !== state.logging.fileMaxSizeMb)
+        || (logging.file.max_files_per_process !== undefined && logging.file.max_files_per_process !== state.logging.fileMaxFilesPerProcess)
+        || (logging.file.retention_days !== undefined && logging.file.retention_days !== state.logging.retentionDays)
+      if (differs) consola.warn("[config] logging.file.* changes require a restart; keeping the active writer configuration")
+    }
   }
-  if (config.tui?.enabled !== undefined) setTuiEnabled(config.tui.enabled)
+  if (config.tui?.enabled !== undefined) {
+    if (!hasApplied) setTuiEnabled(config.tui.enabled)
+    else if (config.tui.enabled !== state.tuiEnabled) consola.warn("[config] tui.enabled changes require a restart; keeping the active terminal capability")
+  }
 
   // Responses API settings (scalar: override only when present)
   const responsesConfig = config.openai_responses

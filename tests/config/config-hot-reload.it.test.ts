@@ -1242,9 +1242,25 @@ tui:
     expect(state.tuiEnabled).toBe(false)
 
     resetConfigCache()
+    await writeConfig(`
+logging:
+  terminal_level: warn
+  file:
+    enabled: true
+    directory: /tmp/must-not-activate
+tui:
+  enabled: true
+`)
+    await applyConfigToState()
+    expect(state.logging.terminalLevel).toBe("warn") // level is live
+    expect(state.logging.fileEnabled).toBe(false) // writer shape stays frozen
+    expect(state.logging.fileDirectory).toBe("/tmp/diagnostic-test")
+    expect(state.tuiEnabled).toBe(false)
+
+    resetConfigCache()
     await writeConfig("")
     await applyConfigToState()
-    expect(state.logging.terminalLevel).toBe("trace")
+    expect(state.logging.terminalLevel).toBe("warn")
     expect(state.tuiEnabled).toBe(false)
 
     resetConfigManagedState()
