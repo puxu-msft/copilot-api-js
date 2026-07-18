@@ -73,14 +73,28 @@ export function commitV3HistoryEntry(entry: HistoryEntry): void {
       response?.body === undefined ?
         undefined
       : recorder.registerPayload(response.body, { origin: { stage: "upstream-response", track: "upstream", attempt: handle } })
-    const frameHandles = (response?.sseEvents ?? []).map((frame) =>
-      recorder.registerFrame(frame, { origin: { stage: "upstream-capture", track: "upstream", attempt: handle }, mediaType: "text/event-stream" }),
+    const responseFrames = response?.sseEvents ?? []
+    const frameHandles = responseFrames.map((frame) =>
+      recorder.registerFrame(
+        { event: frame.type, data: frame.raw },
+        { origin: { stage: "upstream-capture", track: "upstream", attempt: handle }, mediaType: "text/event-stream" },
+      ),
     )
     recorder.settleAttempt(handle, {
       verdict: response?.success === false ? "failed" : "committed",
       upstreamResponse: {
         payload: responsePayload,
         frames: frameHandles,
+        frameObservations: frameHandles.map((frameHandle, index) => {
+          const frame = responseFrames[index]
+          return {
+            handle: frameHandle,
+            offsetMs: frame.offsetMs,
+            type: frame.type,
+            raw: frame.raw,
+            ...(frame.synthetic === undefined ? {} : { synthetic: frame.synthetic }),
+          }
+        }),
         status: response?.status,
         headers: response?.headers ? Object.entries(response.headers) : undefined,
         metadata: { response, latencyMs: attempt.durationMs },
