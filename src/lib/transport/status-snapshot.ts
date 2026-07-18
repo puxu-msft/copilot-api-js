@@ -5,11 +5,16 @@
  * as every other field on that route.
  */
 
-import type { UpstreamWsStatusRow } from "~/lib/openai/upstream-ws"
+import type {
+  //
+  UpstreamWsReconcileStatus,
+  UpstreamWsStatusRow,
+} from "~/lib/openai/upstream-ws"
 
 import {
   //
   getPooledConnectionIdleTimeoutMs,
+  getUpstreamWsReconcileStatus,
   getUpstreamWsStatusSnapshot,
   peekUpstreamWsManager,
 } from "~/lib/openai/upstream-ws"
@@ -78,10 +83,22 @@ export interface TransportStatusSnapshot {
   h2Sessions: Array<H2SessionStatusRow>
   h2Reconcile: ReturnType<typeof getH2ReconcileStatus>
   upstreamWsPool: Array<UpstreamWsStatusRow>
+  // Symmetric with `h2Reconcile` above (spec §4 D7 HIGH-7: both transports'
+  // reconcile health must be independently visible, not just h2's). Sourced
+  // from the P4 major-fix export `getUpstreamWsReconcileStatus()` — see the
+  // default-when-no-manager handling below, mirroring h2Reconcile's own
+  // always-present default (h2's reconcile state lives at module scope and
+  // is never absent; the WS manager IS a lazily-created singleton, so this
+  // snapshot must supply the same "idle, nothing has ever run" default by
+  // hand when no manager exists yet).
+  upstreamWsReconcile: UpstreamWsReconcileStatus
   runtimeCapability: TransportRuntimeCapability
 }
 
 const disabledToNull = (value: number | undefined): number | null => (value === undefined || value === 0 ? null : value)
+
+/** Default when no upstream WS manager has ever been created — mirrors the shape `getH2ReconcileStatus()` starts at before any reconcile has run. */
+const NO_MANAGER_WS_RECONCILE: UpstreamWsReconcileStatus = { state: "idle", lastCompletedGeneration: 0, lastError: null }
 
 export function getTransportStatusSnapshot(): TransportStatusSnapshot {
   const wsManager = peekUpstreamWsManager()
@@ -96,6 +113,7 @@ export function getTransportStatusSnapshot(): TransportStatusSnapshot {
     h2Sessions: [...getH2SessionStatusSnapshot()],
     h2Reconcile: getH2ReconcileStatus(),
     upstreamWsPool: wsManager === null ? [] : [...getUpstreamWsStatusSnapshot(wsManager)],
+    upstreamWsReconcile: wsManager === null ? NO_MANAGER_WS_RECONCILE : getUpstreamWsReconcileStatus(wsManager),
     runtimeCapability: {
       runtime: typeof Bun === "undefined" ? "node" : "bun",
       wsApplicationKeepalive: "unavailable",
