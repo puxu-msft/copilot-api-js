@@ -8,7 +8,7 @@
 
 **Tech Stack:** Bun (`bun:sqlite`, `Bun.gzipSync`), TypeScript strict, Bun test runner, Hono.
 
-**Design Doc:** [docs/superpowers/specs/2026-04-17-sqlite-history-persistence-design.md](../specs/2026-04-17-sqlite-history-persistence-design.md)
+**Design Doc:** [2026-04-17-sqlite-history-persistence-design.md](../../archive/2607-history-v2-removal/2026-04-17-sqlite-history-persistence-design.md)（History V2 removal 2026-07-18 已归档）
 
 ---
 

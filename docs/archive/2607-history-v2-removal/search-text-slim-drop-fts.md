@@ -1,3 +1,5 @@
+> **📦 已归档（History V2 removal，2026-07-18）** —— 本 RFC 及其后继内容寻址 search_index 均是 History V2 `entries_v2` 搜索子系统的设计，随 V2 整体移除已不再是活代码。History V3 搜索是自包含的可重建 semantic-object 投影，见 skill `history-sqlite-schema`。本文仅作历史设计演进记录保留。
+
 # RFC: search_text 瘦身 + 弃 trigram FTS（entries_v2，先做）
 
 > Status: **SUPERSEDED** by [search-index-delta-forest.md](search-index-delta-forest.md)。本"瘦字段"方案扔掉全文搜索来回避累积冗余；后继 delta 森林方案**消除冗余本身、保住全文搜索**，operator 经对话定型后取代之。本文保留作设计演进记录（其 drop-FTS 迁移安全发现〔CRITICAL-1/2/3〕已并入后继）。

@@ -1,6 +1,8 @@
 # RFC: search_index —— 内容寻址消息去重搜索（删 search_text + 弃 trigram FTS）
 
-> Status: **已实现**（P1-P4 全落地，2026-06；commits 501bf9a P1 schema+双写 / 6fa2ee8 P2 可恢复 backfill+/api/search+列表 preview / 64ed8f4 P3 弃 FTS+删 search_text 列+孤儿 GC / P4 doc-sync）。已从 `search-index-delta-forest.md` 重命名（`delta-forest` 是 misnomer——内容寻址、非 delta）。落地态见 [history.md「内容寻址搜索」](../history.md) + [DESIGN.md history 行](../DESIGN.md)。实现交接稿见 [search-index-plan.md](search-index-plan.md) + [search-index-prompts.md](search-index-prompts.md)。**取代** v2 delta 森林、[search-text-slim-drop-fts.md](search-text-slim-drop-fts.md)。
+> **📦 已随 History V2 removal（2026-07-18）退役** —— 本 RFC 描述的 V2 `search_index` 子系统（`msg_blob`/`req_msg`/`req_aux` 表、可恢复 backfill、归一化去重）随 History V2 整体移除已不再是活代码。History V3 搜索是自包含、可重建的 semantic-object 投影（与本 V2 方案无继承关系），见 skill `history-sqlite-schema`。本文及其配套 [plan](search-index-plan.md)/[prompts](search-index-plan_prompt.md) 仅作历史设计记录保留。
+
+> Status: **已实现**（P1-P4 全落地，2026-06；commits 501bf9a P1 schema+双写 / 6fa2ee8 P2 可恢复 backfill+/api/search+列表 preview / 64ed8f4 P3 弃 FTS+删 search_text 列+孤儿 GC / P4 doc-sync）。已从 `search-index-delta-forest.md` 重命名（`delta-forest` 是 misnomer——内容寻址、非 delta）。落地态见 [history.md「内容寻址搜索」](../history.md) + [DESIGN.md history 行](../DESIGN.md)。实现交接稿见 [search-index-plan.md](search-index-plan.md) + [search-index-prompts.md](search-index-prompts.md)。**取代** v2 delta 森林、[search-text-slim-drop-fts.md](../archive/2607-history-v2-removal/search-text-slim-drop-fts.md)。
 > v5：v4+plan+prompts 经**独立对抗 review 核验**（v4 曾自宣收敛未审），修 3 个 CRITICAL（backfill-shutdown 生命周期、列表 vs 专门页两读路径混淆、GC 漏 deleteSession/clearAll 删除点）+ 2 anchor 幻觉（plan/prompts）+ operator 收尾两取舍（A 专门页 5 源可切换、B prev_req_id 现在建）。
 > v4：吸收 round-1/2/3 全部 review（含两次实测：归一化哈希必要性、77,128 消息/642 请求/42.7× 去重比/req_msg ~13MB、DROP COLUMN 抛错）+ operator 全决策。scoped 到 entries_v2、优先先做、消除 v3-storage 两个 FTS 紧耦合不变量。
 > 触发：v3 调查实测 3.5G 库 79% 是 trigram FTS 索引（2.77GB），根因 = `search_text` 存每条 entry 完整累积对话（~400KB/条）× trigram 10× 放大、且累积低质。

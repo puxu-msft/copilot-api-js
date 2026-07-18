@@ -1,3 +1,5 @@
+> **📦 已归档（History V2 removal，2026-07-18）** —— 本 RFC 描述的是 History V2 的 `entries_v2` head + `entry_stages` 逐 attempt 存储实现。**client/upstream 双腿 + 逐 attempt 上游轨的数据模型形状仍然有效**（V3 projection 沿用同一 `HistoryEntry` 投影 shape，SSOT = `src/lib/history/types.ts`），但本文描述的 V2 SQLite 拆表/序列化/legacy 读适配（`adaptLegacyLegsInPlace`）已随 V2 移除。当前数据模型权威见 [DESIGN.md](../../DESIGN.md)「类型架构·History 数据模型」，存储实现见 skill `history-sqlite-schema`。
+
 # RFC: History 数据模型重构 —— client/upstream 双腿 + 逐 attempt 上游轨
 
 - 状态：**已实施**（分支 `history-data-model`，commit 范围 `a87b2aa2..18b70f6e`；P0-P4c 落地 + P5 doc-sync/golden 回归收尾）。设计定稿于 DRAFT v3（R1 架构 + R2 接地 + R3 集成保真 + R4 换新视角 四轮对抗 review 全并入，发现逐条独立核验——fail()/abort 生产者不对称、Gemini env.body=CC、wire 腿 messages 投影损失均亲手复核属实。命名已定稿）。

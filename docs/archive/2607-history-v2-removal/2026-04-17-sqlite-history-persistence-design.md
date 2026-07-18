@@ -1,3 +1,5 @@
+> **📦 已归档（History V2 removal，2026-07-18）** —— 本文档描述的 History V2 存储机制（`entries_v2`/`entry_stages`/SQLite gzip 单表持久化）随 V2 整体移除已不再是活代码，仅作历史设计记录保留。当前 History V3 架构见 [DESIGN.md](../../DESIGN.md)「活的架构现状」`src/lib/history/` 行 + skill `history-sqlite-schema`。
+
 # SQLite History 持久化设计
 
 **Date:** 2026-04-17

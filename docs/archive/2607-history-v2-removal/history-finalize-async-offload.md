@@ -1,3 +1,5 @@
+> **📦 已归档（History V2 removal，2026-07-18）** —— 本 RFC 描述的 V2 异步两相 finalize（`insertCompletedEntry`/`finalizeEntry` phase1 libuv 压缩 + phase2 同步事务）随 `entries.ts` V2 写链整体移除已不再是活代码。History V3 由终端总线单写者 + `drainV3Writer` 承担同款 drain-before-close 语义，见 [DESIGN.md](../../DESIGN.md)「活的架构现状」`src/lib/history/` 行 + skill `persistence-async-invariants`。本文仅作历史设计记录保留。
+
 # RFC：history finalize 异步卸载（消除每请求 ~164ms 事件循环阻塞）
 
 **状态** Landed（P0–P5 全部落地，2026-06-28；commit b509…→本系列）· **日期** 2026-06-28 · **作者** profiling-driven

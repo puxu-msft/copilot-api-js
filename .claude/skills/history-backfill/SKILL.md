@@ -1,11 +1,14 @@
 ---
 name: history-backfill
-description: 当在 copilot-api-js 写或改 History 层的后台 backfill 时使用——可恢复骨架（history_meta version 守卫、(started_at,id) keyset 续跑、协作 stop、非阻塞分批、never-throw）与破坏性变换的三条铁律（per-row 标记列幂等、排除姊妹路径已变换的子集、双写列+blob 防 list/detail 分叉）。活范例 search-index-backfill / usage-normalize-backfill；接线在 state.ts。
+description: History V2 已整体移除（2026-07-18）——本 skill 描述的可恢复后台 backfill 机制（history_meta version 守卫、keyset 续跑、协作 stop、破坏性变换三铁律）是 V2 专属机制，随 V2 一起退役。History V3 当前无任何 backfill（新写路径一次到位产出全部字段，无历史数据回填需求）。仅当需要理解已退役机制、或未来 V3 真需要引入等价可恢复 backfill 时参考本文方法论。当前 schema 权威见 skill history-sqlite-schema。
 ---
 
-# History 后台 Backfill
+# History 后台 Backfill（V2 专属机制，已随 V2 整体退役——历史参考）
 
-对历史行做后台重算/回填（建索引、重算派生列、变换已存字段）的操作手册。活范例：`src/lib/history/sqlite/search-index-backfill.ts`（建 search_index + 重算 preview_text）、`src/lib/history/sqlite/usage-normalize-backfill.ts`（usage 净值化）。
+> **2026-07-18（History V2 removal）**：本文描述的 backfill 机制（`search-index-backfill.ts`/`usage-normalize-backfill.ts`/`response-preview-backfill.ts`/`legacy-stage-backfill.ts`/`cache-write-backfill.ts`/`calibration-backfill.ts`）随 History V2 整体删除，**无 V3 等价物**（V3 没有历史数据回填机制——新写路径在提交时一次性产出全部字段，projection 缺口靠 projection 层修复，不靠事后扫描回填）。以下内容保留作**方法论参考**（若未来 V3 真的需要引入可恢复 backfill，这里记录的骨架/铁律仍是权威起点），但**不描述任何当前存在的代码**。当前 V3 schema/迁移现状见 skill `history-sqlite-schema`。
+
+对历史行做后台重算/回填（建索引、重算派生列、变换已存字段）的操作手册。**已删除**的活范例（历史参考）：`src/lib/history/sqlite/search-index-backfill.ts`（建 search_index + 重算 preview_text）、`src/lib/history/sqlite/usage-normalize-backfill.ts`（usage 净值化）。
+
 
 **边界**：HOT→T1 搬迁、T1 compact、T2 seal 不是行级 backfill。它们同时提交 seal file + locator/manifest，且 durable unit 是 session/batch；修改这些路径必须改读 skill `archive-background-lifecycle`，不要把“每批 stop flag”直接套到跨 artifact commit 中间。
 

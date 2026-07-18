@@ -120,7 +120,7 @@
 
 ## History REST（`/history/api/*`）
 
-Archive 依赖统一契约：运行配置 `history.archive.enabled=false` 或 Archive handle 未初始化时，`?tier=archive` 读端点以及 archive-now/archive-cooldown 返回 `409 {"error":{"type":"archive_unavailable","message":"..."}}`。
+内置三层降温归档已整体退役（History V2 removal，2026-07-16 起）——config 层不存在任何 `history.archive.*` 键（无需关闭开关，从未有过对应键），任何 `?tier=archive` 查询固定返回 **400** `{"error":"The built-in archive tier has been retired"}`（`src/routes/history/handler.ts` `rejectsRetiredArchiveTier`，代码层硬拒绝，与 config 无关）。旧 archive-now/archive-cooldown 端点随之一并移除。
 
 | 路由 | 方法 | 说明 |
 |------|------|------|

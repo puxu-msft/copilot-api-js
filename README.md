@@ -190,7 +190,7 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 
 Management (`/api/*`), History REST (`/history/api/*`), metrics (`/metrics`), health probes (`/health`, `/health/readiness`, `/health/liveness`), the History WebSocket (`/ws`), and the Web UIs (`/ui/*`, `/ui-v4/*`) are all documented in **[`docs/API.md`](docs/API.md)** alongside the vendor-compatible endpoints.
 
-History archiving is configured under `history.archive.*`. When enabled, old entries cool from HOT `history.db` into `archive.db` and immutable session-generation seal units instead of being hard-deleted. Shutdown seals archive workers after their current durable unit; remaining backlog resumes on the next start. See **[`docs/history.md`](docs/history.md)** and **[`docs/lifecycle.md`](docs/lifecycle.md)**.
+History is persisted to a content-addressed SQLite store (`history-v3.db`): every request/response is recorded as an immutable canonical operation record via a single-writer terminal bus, with periodic DB maintenance (WAL checkpoint / incremental vacuum / analyze). There is no built-in tiered cold-format archiving — the `history.archive.*` config surface was retired together with History V2 (2026-07-18). See **[`docs/history.md`](docs/history.md)** and **[`docs/lifecycle.md`](docs/lifecycle.md)**.
 
 ---
 

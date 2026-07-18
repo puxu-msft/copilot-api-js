@@ -1,3 +1,5 @@
+> **📦 已废弃 / SUPERSEDED（History V2 removal，2026-07-18）** —— 本 RFC 针对 History **V2** 的 `entry_stages` 内联 blob 载体做内容寻址 + coalescing writer 队列改造。该工作从未落地，且随 master 的 History V3 切换（内容寻址 CAS 已是 V3 内建）而整体过时——V2 及其 `entry_stages` 存储于 2026-07-18 移除。本文仅作设计探索历史保留，**不描述任何当前代码**。当前 History V3 内容寻址存储见 skill `history-sqlite-schema`。
+
 # RFC: History content-addressed stage 载体 + per-entry coalescing writer 队列
 
 **状态**: 草案(待 ≥3 轮对抗 subagent review + 用户审阅)
