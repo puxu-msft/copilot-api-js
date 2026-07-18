@@ -21,7 +21,7 @@
  * the panel.
  */
 
-import { truncateToWidth } from "~/lib/observability/projections/format"
+import { truncateAnsiToWidth } from "./width"
 
 /**
  * Rows kept for the scrolling log area above the panel. The panel is clamped so
@@ -98,7 +98,7 @@ export class Region {
     // well-formed input; the `-1` avoids the last-column auto-wrap some
     // terminals do.
     const cols = this.getColumns()
-    const clampWidth = (s: string): string => truncateToWidth(s, cols - 1)
+    const clampWidth = (s: string): string => truncateAnsiToWidth(s, cols - 1)
 
     const rows = this.getRows()
     const maxPanel = Math.max(0, rows - RESERVED_LOG_ROWS)
@@ -299,7 +299,7 @@ export class Region {
     if (!this.established) return ""
     const { rows, panelHeight } = this.established
     const cols = this.getColumns()
-    const clampWidth = (s: string): string => truncateToWidth(s, cols - 1)
+    const clampWidth = (s: string): string => truncateAnsiToWidth(s, cols - 1)
     const bottom = rows - panelHeight
     return SAVE_CURSOR + setScrollRegion(1, bottom) + RESTORE_CURSOR + this.panelContentString(lines, rows, panelHeight, clampWidth)
   }

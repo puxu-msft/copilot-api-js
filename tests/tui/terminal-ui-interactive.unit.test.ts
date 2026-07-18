@@ -110,6 +110,35 @@ beforeEach(() => setSystemTime(new Date(NOW)))
 afterEach(() => setSystemTime())
 
 describe("TerminalUi — P1 interactive integration", () => {
+  test("default column source re-reads stdout.columns after a horizontal resize", () => {
+    const chunks: Array<string> = []
+    const stdoutState = {
+      write: (value: string) => (chunks.push(value), true),
+      isTTY: true,
+      columns: 30,
+      rows: 8,
+    }
+    const stdin = new FakeStdin()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout: stdoutState as unknown as NodeJS.WritableStream,
+      isTTY: true,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("req_🇨🇳x", "模型-🇨🇳", 1000) })
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel at 30 columns
+
+    chunks.length = 0
+    stdoutState.columns = 7
+    bus.scope("system").publish(diagnostic("resize-redraw"))
+
+    const out = chunks.join("")
+    expect(out).toContain("\x1b[7mreq_…\x1b[27m")
+    expect(out).not.toContain("🇨…")
+    ui.destroy()
+  })
+
   test("raw-mode lifecycle + collapsed↔panel↔detail navigation via injected stdin", () => {
     const bus = createBus()
     const { stdout, chunks } = makeStdout()

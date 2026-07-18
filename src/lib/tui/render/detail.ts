@@ -1,6 +1,5 @@
 import type { AttemptSnapshot } from "~/lib/observability"
 
-import { truncateToWidth } from "~/lib/observability/projections/format"
 import {
   //
   formatBytes,
@@ -11,6 +10,7 @@ import {
 import type { DetailView } from "./panel"
 
 import { sanitizeTerminalText } from "./sanitize"
+import { truncateToWidth } from "./width"
 
 export interface KeyedDetailLine {
   key: string

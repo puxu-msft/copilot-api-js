@@ -11,6 +11,7 @@ import path from "node:path"
 import {
   //
   collectGrid,
+  collectGridRows,
   missingNumbers,
   PROJECT_ROOT,
   writeXterm,
@@ -42,5 +43,20 @@ describe("pty harness 管线自证", () => {
     }
     expect(missingNumbers(await mk(new Set()), "PROBE-LOG", 40)).toEqual([])
     expect(missingNumbers(await mk(new Set([7, 19, 33])), "PROBE-LOG", 40)).toEqual([7, 19, 33])
+  })
+
+  test("horizontal oracle 红绿：适配行不标 wrap，超一列精确标记下一行为 wrapped", async () => {
+    const term = new Terminal({ cols: 7, rows: 3, allowProposedApi: true })
+    await writeXterm(term, "123456")
+    expect(
+      collectGridRows(term)
+        .filter((row) => row.text)
+        .some((row) => row.isWrapped),
+    ).toBe(false)
+    await writeXterm(term, "78")
+    const rows = collectGridRows(term).filter((row) => row.text)
+    expect(rows[0]?.occupiedColumns).toBe(7)
+    expect(rows[1]?.isWrapped).toBe(true)
+    term.dispose()
   })
 })

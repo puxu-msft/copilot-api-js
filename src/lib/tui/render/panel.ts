@@ -29,7 +29,6 @@ import {
   //
   formatBytes,
   formatDurationField,
-  truncateToWidth,
 } from "~/lib/observability/projections/format"
 
 import type { ActiveRequestView } from "./footer"
@@ -37,6 +36,7 @@ import type { ActiveRequestView } from "./footer"
 import { buildDetailDocument } from "./detail"
 import { buildActiveFooter } from "./footer"
 import { sanitizeTerminalText } from "./sanitize"
+import { truncateToWidth } from "./width"
 
 /**
  * Literal reverse-video (SGR 7 / 27). Deliberately not `pc.inverse`: the panel

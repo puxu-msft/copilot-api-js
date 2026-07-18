@@ -5,7 +5,8 @@
  *
  * 握手快照：driver 退出时 region.clear() 擦掉 panel/footer，故「运行中空间关系」
  * 不能读末态。driver 在关键状态发唯一 marker 日志（如 "__SNAP__panel"），harness
- * 在串行 write 链上检测到该 marker 已解释进网格，即抓当时快照存入 result.snapshots。
+ * 在串行 write 链上确认 marker 字节已被 xterm 解释后，再抓快照存入 result.snapshots。
+ * marker 从 raw 流识别，避免极窄终端把 marker 换行拆开后无法握手。
  */
 import { Terminal } from "@xterm/headless"
 import path from "node:path"
@@ -19,11 +20,32 @@ export const PROJECT_ROOT = path.resolve(import.meta.dir, "../../..")
 
 type Xterm = InstanceType<typeof Terminal>
 
-export function collectGrid(term: Xterm): Array<string> {
+export interface GridRow {
+  text: string
+  isWrapped: boolean
+  occupiedColumns: number
+}
+
+export function collectGridRows(term: Xterm): Array<GridRow> {
   const buffer = term.buffer.active
-  const lines: Array<string> = []
-  for (let i = 0; i < buffer.length; i++) lines.push(buffer.getLine(i)?.translateToString(true) ?? "")
-  return lines
+  const rows: Array<GridRow> = []
+  for (let rowIndex = 0; rowIndex < buffer.length; rowIndex++) {
+    const line = buffer.getLine(rowIndex)
+    let occupiedColumns = 0
+    if (line) {
+      for (let column = 0; column < line.length; column++) {
+        const cell = line.getCell(column)
+        if (!cell || cell.getChars() === "") continue
+        occupiedColumns = Math.max(occupiedColumns, column + Math.max(1, cell.getWidth()))
+      }
+    }
+    rows.push({ text: line?.translateToString(true) ?? "", isWrapped: line?.isWrapped ?? false, occupiedColumns })
+  }
+  return rows
+}
+
+export function collectGrid(term: Xterm): Array<string> {
+  return collectGridRows(term).map((row) => row.text)
 }
 
 export function writeXterm(term: Xterm, data: string): Promise<void> {
@@ -41,10 +63,7 @@ export interface RunDriverOptions {
   env?: Record<string, string>
   /** 定时键：at 毫秒后向伪终端写 bytes（如 { at: 250, bytes: " " }）。 */
   keys?: Array<{ at: number; bytes: string }>
-  /**
-   * 握手快照：driver 发出的 marker 一旦解释进网格，抓当时的 collectGrid() 存进
-   * result.snapshots[label]。marker 用不与编号载荷冲突的独特串（如 "__SNAP__panel"）。
-   */
+  /** 握手快照：marker 字节经 xterm 串行解释后抓网格；marker 应使用不与载荷冲突的独特字符串。 */
   snapshots?: Array<{ marker: string; label: string }>
   timeoutMs?: number
   cols?: number
@@ -59,6 +78,8 @@ export interface RunDriverResult {
   rawText: string
   /** 握手快照：label → 抓拍时的网格行。运行中空间关系断言用。 */
   snapshots: Record<string, Array<string>>
+  /** 与 snapshots 同时抓取的逐行终端元数据，用于水平占列和自动换行断言。 */
+  snapshotRows: Record<string, Array<GridRow>>
   rawBytes: number
   exitCode: number
 }
@@ -72,6 +93,7 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
   let raw = ""
   let rawBytes = 0
   const snapshots: Record<string, Array<string>> = {}
+  const snapshotRows: Record<string, Array<GridRow>> = {}
   const pendingMarkers = new Map((opts.snapshots ?? []).map((s) => [s.marker, s.label]))
   const armed = new Map<string, { label: string; at: number }>() // marker → {label, 检测到的时刻}
   let lastDataAt = Date.now()
@@ -85,20 +107,24 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
 
   const detectMarkers = (): void => {
     if (pendingMarkers.size === 0) return
-    const text = collectGrid(xterm).join("\n")
     for (const [marker, label] of pendingMarkers) {
-      if (text.includes(marker)) {
+      if (raw.includes(marker)) {
         armed.set(marker, { label, at: Date.now() })
         pendingMarkers.delete(marker)
       }
     }
+  }
+  const captureSnapshot = (label: string): void => {
+    const rows = collectGridRows(xterm)
+    snapshotRows[label] = rows
+    snapshots[label] = rows.map((row) => row.text)
   }
   const snapArmedIfSettled = (): void => {
     if (armed.size === 0) return
     const now = Date.now()
     for (const [marker, { label, at }] of armed) {
       if (now - at < SNAP_SETTLE_MS) continue // 等 panel 重绘 settle
-      snapshots[label] = collectGrid(xterm)
+      captureSnapshot(label)
       armed.delete(marker)
     }
   }
@@ -113,7 +139,7 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
       lastDataAt = Date.now()
       const text = decoder.decode(data, { stream: true })
       raw += text
-      // 串行写 → 每次解释完检测 marker（读点在 write 链上，顺序一致）；抓拍推迟到静默。
+      // 串行写 → 每次解释完从 raw 流检测 marker（顺序一致，且不受网格换行影响）。
       writes = writes.then(() => writeXterm(xterm, text)).then(detectMarkers)
     },
   })
@@ -158,9 +184,8 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
       await writeXterm(xterm, tail)
       detectMarkers()
     }
-    // driver 已退出：任何仍 armed 的 marker 直接抓末态（settle 计时已无意义），
-    // pending 未检测到的也退化为末态（driver 未静默即退的边缘）。
-    for (const [, { label }] of armed) snapshots[label] = collectGrid(xterm)
+    // driver 已退出：任何仍 armed 的 marker 直接抓末态（settle 计时已无意义）。
+    for (const [, { label }] of armed) captureSnapshot(label)
     armed.clear()
     terminal.close()
   }
@@ -168,5 +193,5 @@ export async function runDriver(opts: RunDriverOptions): Promise<RunDriverResult
   const allText = grid.join("\n")
   xterm.dispose()
   if (timedOut) throw new Error(`driver ${opts.driver} pid ${proc.pid} timed out after ${timeoutMs}ms`)
-  return { grid, allText, rawText: raw, snapshots, rawBytes, exitCode }
+  return { grid, allText, rawText: raw, snapshots, snapshotRows, rawBytes, exitCode }
 }
