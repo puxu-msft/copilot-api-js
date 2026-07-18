@@ -3,10 +3,8 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 import path from "node:path"
-import pc from "picocolors"
 import { getProxyForUrl } from "proxy-from-env"
 
-import type { Model } from "./lib/models/client"
 import type { PidfileContent } from "./lib/restart/pidfile"
 
 import packageJson from "../package.json"
@@ -100,6 +98,7 @@ import {
 import { initTokenManagers } from "./lib/token"
 import { getCopilotUsage } from "./lib/token/copilot-client"
 import { attachTerminalUi } from "./lib/tui"
+import { formatAvailableModelLines } from "./lib/tui/render/model-list"
 import {
   //
   createWebSocketAdapter,
@@ -108,33 +107,6 @@ import {
 import { registerWsRoutes } from "./routes"
 import { normalizeExternalUiUrl } from "./routes/ui/route"
 import { createServer } from "./server"
-
-/** Format limit values as "Xk" or "?" if not available */
-function formatLimit(value?: number): string {
-  return value ? `${Math.round(value / 1000)}k` : "?"
-}
-
-/**
- * Format a model as a single line of main info.
- *
- * Example output:
- *   - claude-opus-4.6-1m (3x) (Anthropic)          ctx:1000k prp: 936k out:  64k
- */
-function formatModelInfo(model: Model, disabled = false): string {
-  const limits = model.capabilities?.limits
-
-  const contextK = formatLimit(limits?.max_context_window_tokens)
-  const promptK = formatLimit(limits?.max_prompt_tokens)
-  const outputK = formatLimit(limits?.max_output_tokens)
-  const billingPart = formatBillingLabel(model.billing?.multiplier)
-
-  const disabledTag = disabled ? " [disabled]" : ""
-  const label = `${model.id}${billingPart} (${model.vendor})${disabledTag}`
-  const padded = label.length > 45 ? `${label.slice(0, 42)}...` : label.padEnd(45)
-  const mainLineRaw = `  - ${padded} ` + `ctx:${contextK.padStart(5)} ` + `prp:${promptK.padStart(5)} ` + `out:${outputK.padStart(5)}`
-
-  return disabled ? pc.red(pc.dim(mainLineRaw)) : mainLineRaw
-}
 
 /** Parse an integer from a string, returning a default if the result is NaN. */
 function parseIntOrDefault(value: string, defaultValue: number): number {
@@ -535,7 +507,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ones have been filtered out by config.disabled_models.
   const rawList = getRawModels()?.data ?? state.models?.data ?? []
   const disabledSet = new Set(state.disabledModels.map((id) => normalizeForMatching(id)))
-  consola.info(`Available models:\n${rawList.map((m) => formatModelInfo(m, disabledSet.has(normalizeForMatching(m.id)))).join("\n")}`)
+  const modelLines = formatAvailableModelLines(
+    rawList.map((model) => ({
+      model,
+      disabled: disabledSet.has(normalizeForMatching(model.id)),
+      billingLabel: formatBillingLabel(model.billing?.multiplier),
+    })),
+  )
+  consola.info(["Available models:", ...modelLines].join("\n"))
   const stopModelRefreshLoop = startModelRefreshLoop()
 
   // Load the persisted per-model token-count calibration (factor model + seed).

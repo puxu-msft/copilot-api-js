@@ -110,6 +110,56 @@ beforeEach(() => setSystemTime(new Date(NOW)))
 afterEach(() => setSystemTime())
 
 describe("TerminalUi — P1 interactive integration", () => {
+  test("multi-line diagnostics retain physical rows while an interactive panel is active", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 10,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    chunks.length = 0
+
+    bus.scope("system").publish(diagnostic("Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol"))
+
+    const out = chunks.join("")
+    expect(out).toContain("Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol\n")
+    expect(out).not.toContain("Available models:   - claude-opus-4.8")
+    expect(out).toContain("\x1b[1;7r") // panel is repainted once after all diagnostic lines.
+    ui.destroy()
+  })
+
+  test("multi-line diagnostics queue by physical line in detail and replay in order", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 10,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+    stdin.emit("data", Buffer.from(" "))
+    stdin.emit("data", Buffer.from("\r")) // panel → detail
+    chunks.length = 0
+
+    bus.scope("system").publish(diagnostic("Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol"))
+    expect(chunks.join("")).not.toContain("Available models")
+
+    stdin.emit("data", Buffer.from("\x1bx")) // escape detail; trailing x is inert in panel
+    expect(chunks.join("")).toContain("Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol\n")
+    ui.destroy()
+  })
+
   test("default column source re-reads stdout.columns after a horizontal resize", () => {
     const chunks: Array<string> = []
     const stdoutState = {

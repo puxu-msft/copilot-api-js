@@ -35,7 +35,7 @@ import {
   renderRequestEffect,
   renderSyntheticRequestLine,
 } from "./render/lifecycle"
-import { renderSystemLogLine } from "./render/syslog"
+import { renderSystemLogLines } from "./render/syslog"
 import { registerSensitiveOutput } from "./sensitive-output"
 import { registerTerminal } from "./terminal-coordinator"
 import { TerminalSession } from "./terminal-session"
@@ -166,7 +166,7 @@ export class TerminalUi {
       case "system.diagnostic": {
         const threshold = typeof this.diagnosticLevel === "function" ? this.diagnosticLevel() : this.diagnosticLevel
         if (!isDiagnosticLevelEnabled(event.diagnostic.severity, threshold)) return
-        this.view.printLine(renderSystemLogLine(event.diagnostic))
+        for (const line of renderSystemLogLines(event.diagnostic)) this.view.printLine(line)
         this.render()
         return
       }

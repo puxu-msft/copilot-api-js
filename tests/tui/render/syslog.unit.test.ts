@@ -1,5 +1,5 @@
 /**
- * `renderSystemLogLine` — pure system.log line renderer (extracted from
+ * `renderSystemLogLines` — pure system diagnostic renderer (extracted from
  * ConsoleSink's `onSystemLog` + private `consolaPrefix` in the P0 terminal-layer
  * reorg).
  *
@@ -27,7 +27,7 @@ import {
 
 import type { DiagnosticLevel } from "~/lib/diagnostics"
 
-import { renderSystemLogLine } from "~/lib/tui/render/syslog"
+import { renderSystemLogLines } from "~/lib/tui/render/syslog"
 
 const NOW = new Date("2023-11-14T14:25:36").getTime()
 
@@ -35,9 +35,9 @@ const NOW = new Date("2023-11-14T14:25:36").getTime()
 // eslint-disable-next-line no-control-regex -- intentional ANSI escape range
 const stripAnsi = (s: string): string => s.replaceAll(/\x1b\[[0-9;]*m/g, "")
 
-describe("renderSystemLogLine (system.log pure renderer)", () => {
+describe("renderSystemLogLines (system diagnostic pure renderer)", () => {
   test("info → [INFO] badge, normalized time, and message", () => {
-    const line = stripAnsi(renderSystemLogLine({ severity: "info", message: "hi", timeUnixMs: NOW }))
+    const [line] = renderSystemLogLines({ severity: "info", message: "hi", timeUnixMs: NOW }).map(stripAnsi)
     expect(line.startsWith("[INFO] ")).toBe(true)
     expect(line).toContain("14:25:36")
     expect(line.endsWith(" hi")).toBe(true)
@@ -55,13 +55,28 @@ describe("renderSystemLogLine (system.log pure renderer)", () => {
       ["debug", "[DBG ]"],
     ]
     for (const [logType, badge] of cases) {
-      const line = stripAnsi(renderSystemLogLine({ severity: logType, message: "m", timeUnixMs: NOW }))
+      const [line] = renderSystemLogLines({ severity: logType, message: "m", timeUnixMs: NOW }).map(stripAnsi)
       expect(line).toBe(`${badge} 14:25:36 m`)
     }
   })
 
   test("unknown logType → bare timestamp prefix (no badge)", () => {
-    const line = stripAnsi(renderSystemLogLine({ severity: "trace", message: "m", timeUnixMs: NOW }))
+    const [line] = renderSystemLogLines({ severity: "trace", message: "m", timeUnixMs: NOW }).map(stripAnsi)
     expect(line).toBe("14:25:36 m")
+  })
+
+  test("multi-line messages preserve physical lines and prefix only the first line", () => {
+    const lines = renderSystemLogLines({
+      severity: "info",
+      message: "Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol",
+      timeUnixMs: NOW,
+    }).map(stripAnsi)
+
+    expect(lines).toEqual(["[INFO] 14:25:36 Available models:", "  - claude-opus-4.8", "  - gpt-5.6-sol"])
+  })
+
+  test("CRLF is one line break, blank lines survive, and standalone CR cannot move the cursor", () => {
+    const lines = renderSystemLogLines({ severity: "warn", message: "head\r\n\r\ntail\roverwrite", timeUnixMs: NOW }).map(stripAnsi)
+    expect(lines).toEqual(["[WARN] 14:25:36 head", "", "tail overwrite"])
   })
 })

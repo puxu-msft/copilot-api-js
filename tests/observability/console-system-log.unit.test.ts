@@ -23,7 +23,12 @@ function makeCapture() {
   const stdout = { write: (s: string) => (chunks.push(s), true), isTTY: false } as unknown as NodeJS.WritableStream
   return {
     stdout,
-    text: () => chunks.join("").replaceAll(/\d\d:\d\d:\d\d/g, "TT:TT:TT"),
+    text: () =>
+      chunks
+        .join("")
+        // eslint-disable-next-line no-control-regex -- strip intentional terminal SGR for environment-independent assertions.
+        .replaceAll(/\x1b\[[0-9;]*m/g, "")
+        .replaceAll(/\d\d:\d\d:\d\d/g, "TT:TT:TT"),
   }
 }
 
@@ -53,6 +58,22 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     consola.warn("danger", { code: 42 })
 
     expect(cap.text()).toBe(golden)
+  })
+
+  test("consola multi-line diagnostics preserve model-list structure instead of flattening", () => {
+    const cap = makeCapture()
+    const bus = createBus()
+    const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
+    const uninstall = installConsolaRepublish(bus.scope("system"))
+    cleanups.push(() => {
+      uninstall()
+      sink.destroy()
+    })
+
+    consola.level = 5
+    consola.info("Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol")
+
+    expect(cap.text()).toBe("[INFO] TT:TT:TT Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol\n")
   })
 
   test("system.diagnostic interleaves with request lifecycle lines in publish order", () => {

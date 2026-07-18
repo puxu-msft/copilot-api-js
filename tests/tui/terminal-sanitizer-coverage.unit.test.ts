@@ -15,7 +15,7 @@ import {
   buildDetailLines,
   buildPanelLines,
 } from "~/lib/tui/render/panel"
-import { renderSystemLogLine } from "~/lib/tui/render/syslog"
+import { renderSystemLogLines } from "~/lib/tui/render/syslog"
 
 const ESC = "\u001b"
 const HOSTILE = `${ESC}]8;;https://bad.invalid\u0007link${ESC}]8;;\u0007${ESC}]52;c;secret\u0007${ESC}Ppayload${ESC}\\${ESC}[2J\u009b31m\u0007\r\nnext`
@@ -53,9 +53,9 @@ describe("terminal sanitizer coverage", () => {
   test("request lifecycle and system diagnostics sanitize all external fields", () => {
     const entry = active()
     const created = renderRequestEffect({ kind: "created", entry }, { now: 1000, showActive: true, verbose: true, ordinalFor: () => undefined })!
-    const diagnostic = renderSystemLogLine(createDiagnosticEvent({ level: "warn", event: "hostile", message: HOSTILE, origin: "native" }))
+    const diagnosticLines = renderSystemLogLines(createDiagnosticEvent({ level: "warn", event: "hostile", message: HOSTILE, origin: "native" }))
     expectSafe(created)
-    expectSafe(diagnostic)
+    for (const line of diagnosticLines) expectSafe(line)
   })
 
   test("footer, panel, and detail sanitize external request projections", () => {

@@ -4,9 +4,9 @@
  * `consolaPrefix` helper + `onSystemLog` body).
  *
  * A `system.diagnostic` event is a structured diagnostic published onto the
- * observability bus (see `republish.ts`). This module turns it into the exact
- * `[INFO] HH:MM:SS message` line the old consola-hijack reporter produced, so
- * the sink only has to `printLog` the result.
+ * observability bus (see `republish.ts`). This module preserves its physical
+ * line structure while rendering the first line as
+ * `[INFO] HH:MM:SS message`; the sink prints the returned lines in order.
  *
  * Purity: no `this`, no wall clock, no I/O. The caller supplies the event; the
  * timestamp comes from the event's own `time` field.
@@ -22,16 +22,21 @@ import { formatTime } from "~/lib/observability/projections/format"
 import { sanitizeTerminalText } from "./sanitize"
 
 /**
- * Render a structured diagnostic into its full terminal
- * line — `consolaPrefix(logType, time)` + `message`, no trailing newline.
- * `message` is already args-joined by `republish.ts`; an unknown `logType`
- * yields the bare timestamp prefix (message only when the prefix is empty,
- * which never happens today since the default branch still returns the time).
+ * Render a structured diagnostic into terminal physical lines. The first line
+ * receives `consolaPrefix(logType, time)`; continuation and blank lines retain
+ * the message's original structure without repeating the badge. Every line is
+ * sanitized independently, so LF remains a structural boundary while CR and
+ * other terminal controls cannot reposition the cursor.
  */
-export function renderSystemLogLine(event: Pick<DiagnosticEvent, "message" | "timeUnixMs"> & { severity: string; fields?: DiagnosticEvent["fields"] }): string {
+export function renderSystemLogLines(
+  event: Pick<DiagnosticEvent, "message" | "timeUnixMs"> & { severity: string; fields?: DiagnosticEvent["fields"] },
+): Array<string> {
   const prefix = consolaPrefix(diagnosticConsolaType(event), new Date(event.timeUnixMs))
-  const message = sanitizeTerminalText(event.message)
-  return prefix ? `${prefix} ${message}` : message
+  const [first = "", ...continuations] = event.message
+    .replaceAll("\r\n", "\n")
+    .split("\n")
+    .map((line) => sanitizeTerminalText(line))
+  return [prefix ? `${prefix} ${first}` : first, ...continuations]
 }
 
 /**
