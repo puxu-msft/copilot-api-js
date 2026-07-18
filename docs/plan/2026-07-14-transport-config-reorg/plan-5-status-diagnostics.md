@@ -996,7 +996,7 @@ grep -n "H2SessionStatusRow\|getH2SessionStatusSnapshot\|getH2ReconcileStatus\|U
 - ✅ configured generation + values——`transport.configured.{tcpKeepaliveProbeDelayMs, h2PingIntervalMs, sessionConnectTimeoutMs, pooledConnectionIdleTimeoutMs, softMaxUpstreamWsConnections}`（各自 0/undefined→`null` 归一化，非单一 generation 标量）。
 - ✅ h2 sessions 逐会话——`transport.h2Sessions: Array<{origin, generation, lifecycle, activeStreamCount, effectivePingIntervalMs, effectiveKeepAliveMs}>`。
 - ✅ upstream WS 池逐连接——`transport.upstreamWsPool: Array<{key, model, state, generation}>`。
-- ✅ reconcile 状态（两个 transport 独立）——`transport.h2Reconcile` 与 `transport.upstreamWsPool`（经 manager `reconcileStatus()`）各自 `{state: idle|running|failed, lastCompletedGeneration, lastError}`。
+- ✅ reconcile 状态（两个 transport 独立）——`transport.h2Reconcile` 与 `transport.upstreamWsReconcile`（经 manager `reconcileStatus()`/`getUpstreamWsReconcileStatus()`）各自 `{state: idle|running|failed, lastCompletedGeneration, lastError}`。**合并态审查修正（2026-07-18 追加）**：初次实现遗漏了 `upstreamWsReconcile` 字段——聚合器只暴露了 `h2Reconcile`，`getUpstreamWsReconcileStatus()`（P4 major-fix 导出）曾是零消费者的 dead export，WS reconcile 失败态在 `/api/status`/UI 完全不可见，本节当时的表述也误写成 `transport.upstreamWsPool`（连接池快照，非 reconcile 状态）。已修复：`status-snapshot.ts` 新增 `upstreamWsReconcile` 字段（无 manager 时默认 `{state:"idle", lastCompletedGeneration:0, lastError:null}`，对称 `h2Reconcile` 的模块级默认）；`/api/status` 集成测试 + `OverviewShadcn.tsx` 的 Transport diagnostics Card 均已对称渲染两个 transport 的 reconcile 状态（含失败态 `lastError` 可见）。见提交 `63dd108c`/`de07b354`/`da277907`。
 - ✅ runtime capability——`transport.runtimeCapability: {runtime: "bun"|"node", wsApplicationKeepalive: "unavailable"}`。
 - **结论：不满足"只返回一个 generation 数字"的反模式，逐字段可判定**（spec §4 D7 HIGH-7 验收通过）。
 
