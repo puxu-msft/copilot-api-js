@@ -1,4 +1,9 @@
-import { describe, it, expect } from "bun:test"
+import {
+  //
+  describe,
+  it,
+  expect,
+} from "bun:test"
 
 import { createOperationScope } from "~/lib/context/operation-scope"
 
@@ -57,6 +62,13 @@ describe("operation-scope", () => {
     releasePump()
     await scope.whenOperationQuiesced()
     expect(resolved).toBe(true)
+  })
+
+  it("rejects child registration after the logical-terminal seal", () => {
+    const scope = createOperationScope()
+    scope.seal()
+
+    expect(() => scope.trackOperationBody(Promise.resolve())).toThrow(/after seal/i)
   })
 
   it("root owner does not self-join: whenOperationQuiesced does not count the awaiter", async () => {

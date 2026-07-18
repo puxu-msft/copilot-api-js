@@ -205,9 +205,19 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     inspectRequest: (raw, stopAfter) => inspectRequest(deps, raw, stopAfter),
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
     runResponseWhole: (response, env) => runResponseWhole(deps, response, env),
-    runResponseSink: (upstream, env, sink, opts) => runResponseSink(deps, upstream, env, sink, opts, generation),
-    runResponseBufferedSink: (upstream, env, sink, opts) => runResponseBufferedSink(deps, upstream, env, sink, opts, generation),
+    runResponseSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseSink(deps, upstream, env, sink, opts, generation)),
+    runResponseBufferedSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseBufferedSink(deps, upstream, env, sink, opts, generation)),
   }
+}
+
+function trackResponsePump(env: RequestEnvelope, pump: Promise<ResponseOutcome>): Promise<ResponseOutcome> {
+  // Register the inner pump before returning it to the handler. Promise reactions run in
+  // registration order, so the scope child settles before the handler continuation records its
+  // logical terminal. The finalizer remains outside the scope and therefore cannot self-join.
+  // Runtime-optional for structural mock contexts used by driver-only tests.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  env.ctx.trackOperationBody?.(pump)
+  return pump
 }
 
 // ============================================================================
@@ -543,8 +553,8 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
       if (explicit) ctx.settleGenerationCandidate(candidate, settlement)
     },
 
-    beginDispatch({ candidate, reason, wire, env }) {
-      const strategy = reason === "initial" ? undefined : reason
+    beginDispatch({ candidate, reason, strategy: explicitStrategy, wire, env }) {
+      const strategy = explicitStrategy ?? (reason === "initial" ? undefined : reason)
       const handle =
         explicit ? ctx.beginGenerationDispatch({ candidate, ...(strategy && { strategy }) }) : (`compat-dispatch:${++dispatchSequence}` as DispatchHandle)
       // eslint-disable-next-line @typescript-eslint/no-deprecated -- mock/legacy contexts intentionally exercise the temporary serial adapter until P9 removes it
@@ -614,7 +624,14 @@ async function openPhysicalDispatch(
   try {
     const upstream = exchange ? await exchange(wire, env, () => deps.transport.send(wire, env, options)) : await deps.transport.send(wire, env, options)
     const lifecycle = upstream.lifecycle ?? settledDispatchLifecycle()
-    if (wire.stream) return { kind: "stream", upstream: { ...upstream, lifecycle }, lifecycle }
+    // Preserve the producer's UpstreamStream identity: hook origin/provenance and callers use the
+    // object itself as the dispatch artifact. Adding the migration lifecycle in place avoids a
+    // semantically lossy wrapper while keeping hook mocks compatible.
+    const ownedUpstream = Object.assign(upstream, { lifecycle })
+    // A hook may deliberately replay a recorded stream for a request whose original body did not
+    // set `stream`. Its returned artifact is authoritative at this boundary; non-stream responses
+    // are distinguished by an explicit `nonStream` body.
+    if (wire.stream || (exchange !== undefined && upstream.nonStream === undefined)) return { kind: "stream", upstream: ownedUpstream, lifecycle }
     return { kind: "json", body: upstream.nonStream, headers: upstream.headers, lifecycle }
   } catch (error) {
     const lifecycle = settledDispatchLifecycle()

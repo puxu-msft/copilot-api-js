@@ -71,6 +71,7 @@ function createNoopDeps(overrides: Record<string, unknown> = {}) {
     stopTokenRefreshFn: mock(() => {}),
     closeAllClientsFn: mock(() => {}),
     getClientCountFn: () => 0,
+    drainModelOperationFinalizationsFn: mock(async () => {}),
     shutdownHistoryFn: mock(async () => {}),
     shutdownRequestTelemetryFn: mock(async () => {}),
     ...FAST_TIMING,
@@ -212,6 +213,53 @@ describe("waitForShutdown", () => {
     expect(order).toEqual(["history:start", "history:end", "telemetry:start", "telemetry:end", "notify:start", "notify:end", "observers", "latch"])
     expect(getShutdownPhase()).toBe("stopped")
     expect(completed).toBe(true)
+  })
+
+  test("waits for generation finalization before closing History", async () => {
+    const order: Array<string> = []
+    let releaseGeneration!: () => void
+    const generationBarrier = new Promise<void>((resolve) => {
+      releaseGeneration = resolve
+    })
+
+    const shutdown = gracefulShutdown(
+      "SIGINT",
+      createNoopDeps({
+        drainModelOperationFinalizationsFn: async () => {
+          order.push("generation:start")
+          await generationBarrier
+          order.push("generation:end")
+        },
+        shutdownHistoryFn: async () => {
+          order.push("history")
+        },
+      }),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(order).toEqual(["generation:start"])
+
+    releaseGeneration()
+    await shutdown
+    expect(order).toEqual(["generation:start", "generation:end", "history"])
+  })
+
+  test("generation finalization failure makes shutdown fail after still closing persistence", async () => {
+    let historyClosed = false
+    await expect(
+      gracefulShutdown(
+        "SIGINT",
+        createNoopDeps({
+          drainModelOperationFinalizationsFn: async () => {
+            throw new Error("canonical seal failed")
+          },
+          shutdownHistoryFn: async () => {
+            historyClosed = true
+          },
+        }),
+      ),
+    ).rejects.toThrow("Shutdown persistence failed")
+    expect(historyClosed).toBe(true)
+    expect(getShutdownPhase()).toBe("failed")
   })
 
   test("persistence failure enters failed and never resolves the successful-completion latch", async () => {

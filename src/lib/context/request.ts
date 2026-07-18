@@ -33,6 +33,7 @@ import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
 import { normalizeModelId } from "~/lib/models/resolver"
 import { getProcessIdentity } from "~/lib/process-identity"
 import { state as appState } from "~/lib/state"
+import { withRejectionObserver } from "~/lib/transport/crash-safety"
 
 import type {
   //
@@ -344,6 +345,15 @@ export function createRequestContext(opts: {
         attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string }
       }
     | undefined
+  let generationFinalizerPromise: Promise<ModelOperationRecord> | undefined
+  let resolveModelOperationFinalized!: (record: ModelOperationRecord) => void
+  let rejectModelOperationFinalized!: (error: unknown) => void
+  const modelOperationFinalized = withRejectionObserver(
+    new Promise<ModelOperationRecord>((resolve, reject) => {
+      resolveModelOperationFinalized = resolve
+      rejectModelOperationFinalized = reject
+    }),
+  )
 
   interface GenerationAttemptCapture {
     handle: DispatchHandle
@@ -619,16 +629,40 @@ export function createRequestContext(opts: {
       ...(error !== undefined && { error: snapshotForRecorder(error) }),
       ...(attribution !== undefined && { attribution }),
     }
-    if (deliveryFinalizationRequested) finalizeGenerationDelivery(pendingDeliveryClientPayload)
+    // A logical terminal is the operation-scope fence: no new child may start after this point.
+    // The generation finalizer itself is deliberately NOT a child of this scope because it awaits
+    // quiescence; tracking it here would create a root self-join deadlock.
+    operationScope.seal()
+    startGenerationFinalizerIfReady()
   }
 
   function finalizeGenerationDelivery(clientPayload?: unknown): void {
-    if (modelOperationRecorder.sealed) return
-    if (pendingGenerationTerminal === undefined) {
-      deliveryFinalizationRequested = true
-      if (clientPayload !== undefined) pendingDeliveryClientPayload = snapshotForRecorder(clientPayload)
-      return
-    }
+    if (modelOperationRecorder.sealed || generationFinalizerPromise !== undefined) return
+    deliveryFinalizationRequested = true
+    if (clientPayload !== undefined) pendingDeliveryClientPayload = snapshotForRecorder(clientPayload)
+    startGenerationFinalizerIfReady()
+  }
+
+  function startGenerationFinalizerIfReady(): void {
+    if (generationFinalizerPromise !== undefined || pendingGenerationTerminal === undefined || !deliveryFinalizationRequested) return
+    const clientPayload = pendingDeliveryClientPayload
+    const finalizer = withRejectionObserver(
+      (async (): Promise<ModelOperationRecord> => {
+        await operationScope.whenOperationQuiesced()
+        try {
+          return commitGenerationObservabilityTerminal(clientPayload)
+        } finally {
+          rawCaptureLease.release()
+        }
+      })(),
+    )
+    generationFinalizerPromise = finalizer
+    void finalizer.then(resolveModelOperationFinalized, rejectModelOperationFinalized)
+  }
+
+  function commitGenerationObservabilityTerminal(clientPayload?: unknown): ModelOperationRecord {
+    const terminal = pendingGenerationTerminal
+    if (terminal === undefined) throw new Error("[request-context] generation finalizer started without a logical terminal")
     const finalAttempt = currentGenerationAttempt()
     const primaryUpstreamPayload = finalAttempt?.rawResponsePayload ?? finalAttempt?.sourceBodyPayload ?? finalAttempt?.responsePayload
     if (clientPayload !== undefined) {
@@ -667,21 +701,21 @@ export function createRequestContext(opts: {
       const primary = modelOperationRecorder.snapshot().candidates.find((candidate) => candidate.handle === primaryGenerationCandidate)
       if (primary?.verdict === undefined) {
         modelOperationRecorder.settleCandidate(primaryGenerationCandidate, {
-          verdict: pendingGenerationTerminal.outcome === "completed" ? "winner" : "failed",
-          reason: `terminal:${pendingGenerationTerminal.outcome}`,
+          verdict: terminal.outcome === "completed" ? "winner" : "failed",
+          reason: `terminal:${terminal.outcome}`,
         })
       }
     }
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
-      outcome: pendingGenerationTerminal.outcome,
+      outcome: terminal.outcome,
       ...(primaryGenerationCandidate !== undefined && { winnerCandidate: primaryGenerationCandidate }),
-      ...(pendingGenerationTerminal.outcome === "completed" && finalAttempt !== undefined && { committedDispatch: finalAttempt.handle }),
-      ...(pendingGenerationTerminal.error !== undefined && { error: pendingGenerationTerminal.error }),
+      ...(terminal.outcome === "completed" && finalAttempt !== undefined && { committedDispatch: finalAttempt.handle }),
+      ...(terminal.error !== undefined && { error: terminal.error }),
       ...(operationUsage(_response) !== undefined && { usage: operationUsage(_response) }),
-      ...(pendingGenerationTerminal.attribution !== undefined && { attribution: pendingGenerationTerminal.attribution }),
+      ...(terminal.attribution !== undefined && { attribution: terminal.attribution }),
     })
     publishModelOperationTerminal(modelOperationTerminalRecord)
-    rawCaptureLease.release()
+    return modelOperationTerminalRecord
   }
 
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
@@ -689,9 +723,9 @@ export function createRequestContext(opts: {
   /** Lifecycle abort — fired by the reaper (reapInFlight) to cancel in-flight upstream work (缺陷④). */
   const lifecycleAbort = new AbortController()
   /**
-   * C5 operation tracking (RFC §3.3). Tracks the request's settle-BEFORE async work so shutdown
-   * drain / bounded-grace can wait for it to quiesce. NEW API — no production callers yet
-   * (behavior-preserving until C5 wires the handlers/manager/shutdown). See operation-scope.ts.
+   * Operation tracking (RFC §3.3/§8.4). The driver registers exchange and complete response pumps
+   * as settle-before children; logical terminal seals the scope, and the generation finalizer waits
+   * outside it to avoid root self-join. See operation-scope.ts.
    */
   const operationScope = createOperationScope()
   let _cancelled = false
@@ -918,6 +952,10 @@ export function createRequestContext(opts: {
 
     finalizeModelOperationDelivery(input) {
       finalizeGenerationDelivery(input?.clientPayload)
+    },
+
+    whenModelOperationFinalized() {
+      return modelOperationFinalized
     },
 
     setToolNameMapper(mapper: ToolNameMapper | null) {

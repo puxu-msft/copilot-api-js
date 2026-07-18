@@ -1,9 +1,21 @@
-import { describe, test, expect } from "bun:test"
+import {
+  //
+  describe,
+  test,
+  expect,
+} from "bun:test"
 
 import { createRequestContextManager } from "~/lib/context/manager"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 
-import { BASE, makeCodec, makeEnv, makeTransport, okStream } from "./hooks/driver-test-helpers"
+import {
+  //
+  BASE,
+  makeCodec,
+  makeEnv,
+  makeTransport,
+  okStream,
+} from "./hooks/driver-test-helpers"
 
 // C4a: driver.runRequest tracks the exchange (transport + RC3 retry/backoff) as an operation-body
 // child on the ctx, so the shutdown drain (operationScopes) waits for it to unwind after a
@@ -32,6 +44,7 @@ describe("C4a: driver tracks the exchange as an operation body", () => {
 
     // Simulate a mid-flight settle (reaper/deadline) BEFORE the exchange unwinds.
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    ctx.finalizeModelOperationDelivery()
     await Promise.resolve()
     // Settled out of the visible registry…
     expect(manager.activeCount).toBe(0)
@@ -41,6 +54,7 @@ describe("C4a: driver tracks the exchange as an operation body", () => {
     // Let the exchange finish → operation quiesces → leaves the registry.
     releaseTransport()
     await runPromise
+    await ctx.whenModelOperationFinalized()
     await new Promise((r) => setTimeout(r, 5))
     expect(manager.trackedOperationCount).toBe(0)
   })

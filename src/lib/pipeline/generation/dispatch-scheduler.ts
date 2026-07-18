@@ -47,7 +47,14 @@ export interface DispatchSettlement {
 export interface DispatchRecordingPort {
   beginCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle }): CandidateHandle
   settleCandidate(candidate: CandidateHandle, input: { verdict: CandidateVerdict; reason?: string }): void
-  beginDispatch(input: { candidate: CandidateHandle; reason: DispatchReason; wire: PreparedRequest; forceHttp: boolean; env: RequestEnvelope }): DispatchHandle
+  beginDispatch(input: {
+    candidate: CandidateHandle
+    reason: DispatchReason
+    strategy?: string
+    wire: PreparedRequest
+    forceHttp: boolean
+    env: RequestEnvelope
+  }): DispatchHandle
   recordAdmission(dispatch: DispatchHandle, admission: { admittedAt: number; queueWaitMs: number }): void
   recordOpened(dispatch: DispatchHandle, response: PhysicalTransportResponse): void
   settleDispatch(dispatch: DispatchHandle, input: DispatchSettlement): void
@@ -156,6 +163,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
     async run({ candidate, env, signal }) {
       let current = env
       let reason: DispatchReason = "initial"
+      let strategy: string | undefined
       let forceHttp = false
       let acceptedResolution: ((env: RequestEnvelope) => void | Promise<void>) | undefined
       let dispatchNumber = 0
@@ -165,7 +173,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         if (dispatchNumber >= maxDispatches) throw new Error(`[dispatch-scheduler] dispatch budget exhausted (${maxDispatches})`)
         dispatchNumber++
         const wire = input.prepareWire(current, { reason, forceHttp })
-        const dispatch = input.recording.beginDispatch({ candidate, reason, wire, forceHttp, env: current })
+        const dispatch = input.recording.beginDispatch({ candidate, reason, ...(strategy !== undefined && { strategy }), wire, forceHttp, env: current })
         const model = current.model.id || "unknown"
         let admission
         try {
@@ -228,6 +236,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
           )
           forceHttp = true
           reason = "ws-fallback"
+          strategy = "ws-fallback"
           continue
         }
 
@@ -254,6 +263,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
             false,
           )
           reason = "rate-limit-retry"
+          strategy = "rate-limit-retry"
           continue
         }
 
@@ -267,6 +277,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         current = semantic.env
         acceptedResolution = semantic.onResolved
         reason = "reactive-retry"
+        strategy = semantic.reason
         if (semantic.waitMs) await abortableDelay(semantic.waitMs, signal)
       }
     },

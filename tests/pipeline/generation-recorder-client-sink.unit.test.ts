@@ -51,6 +51,7 @@ describe("generation recorder ClientSink frame arena integration", () => {
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: "done", stop_reason: "end_turn" })
     expect(ctx.modelOperationTerminalRecord).toBeNull()
     sink.finalize?.()
+    await ctx.whenModelOperationFinalized()
     const record = ctx.modelOperationTerminalRecord!
     const upstreamHandles = record.attempts[0]?.upstreamResponse?.frames ?? []
     const clientHandles = record.egress?.client.frames ?? []

@@ -332,6 +332,8 @@ Hedge关闭，primary-only。旧 `runExchange`／`runResponseSink`／`runRespons
 
 ### P6-T3：两阶段 delivery／observability terminal
 
+**实施状态（2026-07-18）**：当前 primary-only runtime 已完成。delivery terminal 不等待 operation quiescence；唯一 generation finalizer 等待 response pump／operation child 静止后才 `recordEgress`、immutable seal 与 publish，且由 manager/shutdown durability barrier 跟踪。P7 hedge loser 所需 `cleanupGrace → typed force-dispose → disposal barrier` 仍是未来 port，本任务未实现也未宣称已实现。
+
 **Files**：generation finalizer、History V3 terminal bus、shutdown finalization barrier。
 
 **RED**：client terminal立即完成wire；loser cleanup晚到仍进入canonical；grace expiry→force dispose→barrier→seal；seal后无late local fact；shutdown等待generation finalizer。

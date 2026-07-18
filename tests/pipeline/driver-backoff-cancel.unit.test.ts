@@ -3,16 +3,27 @@
 // (Regression guard for the 2800s overrun: a reaper-settled request kept sleeping through an
 // exponential backoff and then started another attempt.)
 
-import { describe, test, expect } from "bun:test"
+import {
+  //
+  describe,
+  test,
+  expect,
+} from "bun:test"
 
-import type { ApiError } from "~/lib/error"
 import type { RequestContext } from "~/lib/context/request"
+import type { ApiError } from "~/lib/error"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { RetryStrategy } from "~/lib/pipeline/types"
 
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 
-import { BASE, makeCodec, makeEnv, makeTransport } from "./hooks/driver-test-helpers"
+import {
+  //
+  BASE,
+  makeCodec,
+  makeEnv,
+  makeTransport,
+} from "./hooks/driver-test-helpers"
 
 // A ctx whose lifecycleSignal is driven by a real AbortController (reapInFlight aborts it),
 // plus the no-op methods the driver touches on the retry path.
@@ -31,6 +42,9 @@ function makeReapableCtx(): { ctx: RequestContext; reap: () => void } {
     setAttemptWireRequest: () => {},
     addQueueWaitMs: () => {},
     get lifecycleSignal() {
+      return ac.signal
+    },
+    get operationSignal() {
       return ac.signal
     },
     reapInFlight: () => ac.abort(),

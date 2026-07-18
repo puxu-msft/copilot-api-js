@@ -17,7 +17,7 @@ import {
 } from "~/lib/process-identity"
 
 describe("RequestContext generation recorder lifecycle", () => {
-  test("captures identity, ingress, routing, attempt verdicts, diagnostics, and seals only after the V2 terminal event", () => {
+  test("captures identity, ingress, routing, attempt verdicts, diagnostics, and seals only after the V2 terminal event", async () => {
     resetProcessIdentityForTests()
     const processIdentity = initProcessIdentity("9.9.9-test")
     let terminalWasCommittedAtV2Publish = false
@@ -102,6 +102,7 @@ describe("RequestContext generation recorder lifecycle", () => {
 
     expect(ctx.modelOperationTerminalRecord).toBeNull()
     ctx.finalizeModelOperationDelivery({ clientPayload: { type: "message", role: "assistant", content: [{ type: "text", text: "done" }] } })
+    await ctx.whenModelOperationFinalized()
 
     const terminal = ctx.modelOperationTerminalRecord
     expect(terminalWasCommittedAtV2Publish).toBe(false)
@@ -143,7 +144,7 @@ describe("RequestContext generation recorder lifecycle", () => {
 })
 
 describe("RequestContext generation terminal ordering", () => {
-  test("fail records the logical outcome but delivery finalization seals later", () => {
+  test("fail records the logical outcome but delivery finalization seals later", async () => {
     const bus = createBus()
     const ctx = createRequestContext({ endpoint: "anthropic-messages", publisher: bus.scope("request") })
     ctx.beginAttempt({})
@@ -157,12 +158,13 @@ describe("RequestContext generation terminal ordering", () => {
     expect(terminalAtPublish).toBeUndefined()
     expect(ctx.modelOperationTerminalRecord).toBeNull()
     ctx.finalizeModelOperationDelivery()
+    await ctx.whenModelOperationFinalized()
     expect(ctx.modelOperationTerminalRecord?.terminal).toMatchObject({ outcome: "failed" })
     expect(ctx.modelOperationTerminalRecord?.attempts[0]?.verdict).toBe("failed")
     expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord!)
   })
 
-  test("abort records the logical outcome but delivery finalization seals later", () => {
+  test("abort records the logical outcome but delivery finalization seals later", async () => {
     const bus = createBus()
     const ctx = createRequestContext({ endpoint: "openai-responses", publisher: bus.scope("request") })
     ctx.beginAttempt({})
@@ -175,25 +177,27 @@ describe("RequestContext generation terminal ordering", () => {
 
     expect(terminalAtPublish).toBeUndefined()
     ctx.finalizeModelOperationDelivery()
+    await ctx.whenModelOperationFinalized()
     expect(ctx.modelOperationTerminalRecord?.terminal).toMatchObject({ outcome: "aborted", attribution: { category: "client", code: "client-disconnected" } })
     expect(ctx.modelOperationTerminalRecord?.attempts[0]?.verdict).toBe("failed")
     expect(ctx.modelOperationSnapshot).toBe(ctx.modelOperationTerminalRecord!)
   })
 
-  test("joins an early delivery finalization with a later middleware logical outcome", () => {
+  test("joins an early delivery finalization with a later middleware logical outcome", async () => {
     const ctx = createRequestContext({ endpoint: "openai-responses" })
     const clientBody = { error: { message: "route rejected" } }
 
     ctx.finalizeModelOperationDelivery({ clientPayload: clientBody })
     expect(ctx.modelOperationTerminalRecord).toBeNull()
     ctx.fail("m", new Error("route rejected"))
+    await ctx.whenModelOperationFinalized()
 
     const record = ctx.modelOperationTerminalRecord!
     expect(record.terminal?.outcome).toBe("failed")
     expect(record.arena.payloads.find((node) => node.handle === record.egress?.client.payload)?.value).toEqual(clientBody)
   })
 
-  test("preserves an HTTPError raw response as the primary upstream payload and JSON error fields", () => {
+  test("preserves an HTTPError raw response as the primary upstream payload and JSON error fields", async () => {
     const ctx = createRequestContext({ endpoint: "anthropic-messages" })
     const rawBody = JSON.stringify({ type: "error", error: { message: "bad beta" } })
     const error = new HTTPError("bad beta", 400, rawBody)
@@ -202,6 +206,7 @@ describe("RequestContext generation terminal ordering", () => {
 
     ctx.fail("m", error)
     ctx.finalizeModelOperationDelivery({ clientPayload: { type: "error", error: { message: "bad beta" } } })
+    await ctx.whenModelOperationFinalized()
 
     const record = ctx.modelOperationTerminalRecord!
     const upstreamHandle = record.dispatches[0]?.upstreamResponse?.payload
@@ -214,7 +219,7 @@ describe("RequestContext generation terminal ordering", () => {
     expect(roundTripped.dispatches[0]?.error).toHaveProperty("stack")
   })
 
-  test("preserves the complete upstream envelope when a semantic response receives a failed verdict", () => {
+  test("preserves the complete upstream envelope when a semantic response receives a failed verdict", async () => {
     const ctx = createRequestContext({ endpoint: "openai-responses" })
     const sourceBody = {
       id: "resp_truncated",
@@ -224,16 +229,13 @@ describe("RequestContext generation terminal ordering", () => {
     }
     ctx.beginAttempt({})
 
-    ctx.fail(
-      "gpt-test",
-      new Error("semantic truncation"),
-      {
-        usage: { input_tokens: 3, output_tokens: 1 },
-        content: null,
-        sourceBody,
-      },
-    )
+    ctx.fail("gpt-test", new Error("semantic truncation"), {
+      usage: { input_tokens: 3, output_tokens: 1 },
+      content: null,
+      sourceBody,
+    })
     ctx.finalizeModelOperationDelivery({ clientPayload: sourceBody })
+    await ctx.whenModelOperationFinalized()
 
     const record = ctx.modelOperationTerminalRecord!
     const upstreamHandle = record.dispatches[0]?.upstreamResponse?.payload

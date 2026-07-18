@@ -7,9 +7,14 @@ import {
   test,
 } from "bun:test"
 
-import { createRequestContext } from "~/lib/context/request"
 import { getTerminalModelOperation } from "~/lib/context/lightweight-model-operation"
-import { closeDatabase, openInMemoryDatabase } from "~/lib/history/sqlite/connection"
+import { createLightweightModelOperation } from "~/lib/context/lightweight-model-operation"
+import { createRequestContext } from "~/lib/context/request"
+import {
+  //
+  closeDatabase,
+  openInMemoryDatabase,
+} from "~/lib/history/sqlite/connection"
 import {
   //
   drainV3Writer,
@@ -23,7 +28,6 @@ import {
   resetModelOperationTerminalBusForTests,
   subscribeModelOperationTerminals,
 } from "~/lib/history/v3/terminal-bus"
-import { createLightweightModelOperation } from "~/lib/context/lightweight-model-operation"
 
 beforeEach(() => {
   closeDatabase()
@@ -46,6 +50,7 @@ describe("canonical terminal → V3 writer", () => {
     ctx.beginAttempt({})
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 2 }, content: "ok" })
     ctx.finalizeModelOperationDelivery({ clientPayload: { role: "assistant", content: "ok" } })
+    await ctx.whenModelOperationFinalized()
 
     expect(ctx.modelOperationTerminalRecord).not.toBeNull()
     await drainModelOperationTerminalSubscribers()

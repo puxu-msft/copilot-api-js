@@ -434,7 +434,7 @@ export interface RequestContext {
   readonly settled: boolean
   /** Immutable point-in-time History V3 generation record. The mutable recorder is never exposed. */
   readonly modelOperationSnapshot: ModelOperationRecord
-  /** Canonical terminal record after settle, otherwise null. */
+  /** Canonical terminal record after observability finalization, otherwise null. */
   readonly modelOperationTerminalRecord: ModelOperationRecord | null
 
   readonly originalRequest: OriginalRequest | null
@@ -474,8 +474,10 @@ export interface RequestContext {
   setOriginalRequest(req: OriginalRequest): void
   /** Record canonical ingress once both the V2 body and inbound headers are available. */
   recordModelOperationIngress(): void
-  /** Seal the canonical operation only after client delivery is fully constructed/drained. */
+  /** Notify that client delivery is fully constructed/drained; this does not synchronously seal canonical observability. */
   finalizeModelOperationDelivery(input?: { clientPayload?: unknown }): void
+  /** Join the unique generation finalizer; rejects when canonical observability finalization fails. */
+  whenModelOperationFinalized(): Promise<ModelOperationRecord>
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
   /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */

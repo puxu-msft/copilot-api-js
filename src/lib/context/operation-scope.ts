@@ -37,6 +37,7 @@ export function createOperationScope(): OperationScope {
 
   return {
     trackOperationBody(p: Promise<unknown>): void {
+      if (sealed) throw new Error("[operation-scope] cannot track a child after seal")
       childCount++
       // rejection 也算 settled:一段抛错的 settle-前工作不应把 quiesce 永久 wedge
       // (settle 的终态由 ctx.fail/complete 记录,scope 只关心"工作是否退出")。

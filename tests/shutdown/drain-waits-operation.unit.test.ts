@@ -1,7 +1,16 @@
-import { describe, test, expect } from "bun:test"
+import {
+  //
+  describe,
+  test,
+  expect,
+} from "bun:test"
 
 import { createRequestContextManager } from "~/lib/context/manager"
-import { drainActiveRequests, type ShutdownDrainSource } from "~/lib/shutdown"
+import {
+  //
+  drainActiveRequests,
+  type ShutdownDrainSource,
+} from "~/lib/shutdown"
 
 // C5 drain-switch: the shutdown drain waits on the OPERATION registry (quiesce), not just the
 // visible registry (settle). A settled-but-not-quiesced request keeps orphan settle-before work
@@ -15,6 +24,7 @@ describe("shutdown drain waits on operation quiesce (C5 drain-switch)", () => {
     let release!: () => void
     ctx.trackOperationBody(new Promise<void>((r) => (release = r)))
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    ctx.finalizeModelOperationDelivery()
 
     // Settled → out of the visible registry, but operation still in flight.
     expect(manager.activeCount).toBe(0)
@@ -37,9 +47,25 @@ describe("shutdown drain waits on operation quiesce (C5 drain-switch)", () => {
     const manager = createRequestContextManager()
     const ctx = manager.create({ endpoint: "anthropic-messages" })
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    ctx.finalizeModelOperationDelivery()
 
     const tracker: ShutdownDrainSource = { getActive: () => manager.getTrackedOperations() }
     const result = await drainActiveRequests(2000, tracker, { pollIntervalMs: 10 })
     expect(result).toBe("drained")
+  })
+
+  test("drain waits after operation quiescence until delivery starts the generation finalizer", async () => {
+    const manager = createRequestContextManager()
+    const ctx = manager.create({ endpoint: "anthropic-messages" })
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+
+    const tracker: ShutdownDrainSource = { getActive: () => manager.getTrackedOperations() }
+    const drainPromise = drainActiveRequests(2000, tracker, { pollIntervalMs: 10 })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(manager.trackedOperationCount).toBe(1)
+
+    ctx.finalizeModelOperationDelivery()
+    await ctx.whenModelOperationFinalized()
+    await expect(drainPromise).resolves.toBe("drained")
   })
 })

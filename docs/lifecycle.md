@@ -56,11 +56,12 @@
 
 请求生命周期的 4 步结束后，进程进入 `finalizing`：
 
-1. `shutdownHistory()` 排空异步 terminal finalization、重试暂存写入并关闭 History 数据库。
-2. Archive **不在 shutdown 中继续搬迁、压缩或封存**；只等待首信号前已领取的 durable unit 完成，随后关闭 archive DB。每个 unit 都是 session 或迁移 batch，完成后已持久化 cursor/manifest/locator；下次启动重新查询剩余 backlog 继续。
-3. `shutdownRequestTelemetry()` 先封闭 config 订阅与周期 timer 的生产端，再排空 pending delta、关闭 telemetry 数据库。
-4. 持久化 barrier 完成后，向仍在线的观察者发布 bus `finalized`，再关闭观察者连接。
-5. 所有进程资源成功关闭后，内部状态才进入 `stopped`，`waitForShutdown()` 的 completion latch 才 resolve；History 或 Telemetry barrier 失败则进入 `failed` 并以非零状态退出，不谎报完成。
+1. `RequestContextManager.drainModelOperationFinalizations()` 排空 generation finalizer：每个 finalizer 先等 operation scope quiesce，再构造并发布唯一 immutable canonical terminal；任何拒绝都使 shutdown 失败，History 尚保持打开。
+2. `shutdownHistory()` 排空 terminal subscriber/V3 writer、重试暂存写入并关闭 History 数据库。
+3. Archive **不在 shutdown 中继续搬迁、压缩或封存**；只等待首信号前已领取的 durable unit 完成，随后关闭 archive DB。每个 unit 都是 session 或迁移 batch，完成后已持久化 cursor/manifest/locator；下次启动重新查询剩余 backlog 继续。
+4. `shutdownRequestTelemetry()` 先封闭 config 订阅与周期 timer 的生产端，再排空 pending delta、关闭 telemetry 数据库。
+5. 持久化 barrier 完成后，向仍在线的观察者发布 bus `finalized`，再关闭观察者连接。
+6. 所有进程资源成功关闭后，内部状态才进入 `stopped`，`waitForShutdown()` 的 completion latch 才 resolve；generation finalizer、History 或 Telemetry barrier 失败则进入 `failed` 并以非零状态退出，不谎报完成。
 
 因此 `finalizing` 不等于完成；该阶段的第二次 Ctrl+C 仍立即强退。`waitForShutdown()` 是真正的 latch：多个并发 waiter 都会被唤醒，关闭完成后才注册的 waiter 也会立即 resolve。
 
