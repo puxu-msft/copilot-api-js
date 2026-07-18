@@ -48,6 +48,7 @@ import type {
   HistoryStats,
 } from "~/lib/history/store"
 import type { EndpointType } from "~/lib/history/types"
+import type { Model } from "~/lib/models/client"
 import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
 // Re-export the single source of truth so consumers of the observability
@@ -193,6 +194,17 @@ export type ShutdownPhase = "draining" | "aborting" | "finalized"
 
 export type RateLimitMode = "normal" | "rate-limited" | "recovering"
 
+export interface ModelCatalogEntry {
+  model: Model
+  disabled: boolean
+}
+
+export interface ModelCatalogData {
+  models: ReadonlyArray<ModelCatalogEntry>
+  tokenBasedBilling: boolean
+  timeUnixMs: number
+}
+
 /**
  * The canonical event union. Every event has `kind: "<namespace>.<verb>"`
  * so `ScopedPublisher<NS>` can type-restrict publishes via template
@@ -256,6 +268,11 @@ export type ObservabilityEvent =
   | { kind: "system.shutdown_phase_changed"; phase: ShutdownPhase; previousPhase: ShutdownPhase | null; needsFlush: boolean }
   | { kind: "system.shutdown_completed" }
   | { kind: "system.shutdown_failed"; errors: ReadonlyArray<{ name: string; message: string }> }
+
+  // ── Complete upstream model catalog. Consumers decide presentation: the
+  //    Terminal applies colors/alignment, while the structured file retains
+  //    full model metadata without parsing a pre-rendered text table. ──
+  | ({ kind: "system.model_catalog" } & ModelCatalogData)
 
   // ── Synthetic request-style log line (out-of-observability helpers) ──
   //    A pre-built request-line projection for routes that are deliberately

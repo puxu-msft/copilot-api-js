@@ -31,6 +31,7 @@ export function collectCommittedSpoolDeliveries(directory: string, wanted: Reado
           record?: {
             recordType?: string
             diagnostic?: { event?: string; message?: string }
+            catalog?: { models?: unknown; timeUnixMs?: number; tokenBasedBilling?: boolean }
             parts?: { method?: string; path?: string }
             delivery?: { spoolId?: string; sequence?: number; digest?: string }
           }
@@ -42,6 +43,10 @@ export function collectCommittedSpoolDeliveries(directory: string, wanted: Reado
         const payloadValid =
           (record?.recordType === "diagnostic" && typeof record.diagnostic?.event === "string" && typeof record.diagnostic.message === "string")
           || (record?.recordType === "request-line" && typeof record.parts?.method === "string" && typeof record.parts.path === "string")
+          || (record?.recordType === "model-catalog"
+            && Array.isArray(record.catalog?.models)
+            && typeof record.catalog.timeUnixMs === "number"
+            && typeof record.catalog.tokenBasedBilling === "boolean")
         if (
           payloadValid
           && typeof delivery?.spoolId === "string"

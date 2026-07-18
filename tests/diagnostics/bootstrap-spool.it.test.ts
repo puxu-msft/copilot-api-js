@@ -33,12 +33,13 @@ describe("BootstrapDiagnosticSpool", () => {
     const system = bus.scope("system")
     system.publish({ kind: "system.diagnostic", diagnostic: createDiagnosticEvent({ level: "info", event: "pre", message: "pre", origin: "native" }) })
     system.publish({ kind: "system.diagnostic", diagnostic: createDiagnosticEvent({ level: "info", event: "pre-2", message: "pre-2", origin: "native" }) })
+    system.publish({ kind: "system.model_catalog", models: [], tokenBasedBilling: true, timeUnixMs: 123 })
     const captured = fs
       .readFileSync(spool.path, "utf8")
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as { sequence: number })
-    expect(captured.map((line) => line.sequence)).toEqual([captured[0].sequence, captured[0].sequence + 1])
+    expect(captured.map((line) => line.sequence)).toEqual([captured[0].sequence, captured[0].sequence + 1, captured[0].sequence + 2])
 
     const replayed: Array<string> = []
     const records = spool.retireAndRead()
@@ -51,11 +52,11 @@ describe("BootstrapDiagnosticSpool", () => {
       { name: "post-cutover" },
     )
     system.publish({ kind: "system.diagnostic", diagnostic: createDiagnosticEvent({ level: "info", event: "post", message: "post", origin: "native" }) })
-    for (const record of records) replayed.push(record.recordType === "diagnostic" ? record.diagnostic.event : "request-line")
+    for (const record of records) replayed.push(record.recordType === "diagnostic" ? record.diagnostic.event : record.recordType)
     spool.removeDurably()
     unsub()
 
-    expect(replayed).toEqual(["pre", "pre-2"])
+    expect(replayed).toEqual(["pre", "pre-2", "model-catalog"])
     expect(post).toEqual(["post"])
     expect(fs.existsSync(spool.path)).toBe(false)
   })

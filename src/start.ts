@@ -48,7 +48,6 @@ import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initBus } from "./lib/observability"
 import { toActiveRequestWire } from "./lib/observability/active-request-wire"
-import { formatBillingLabel } from "./lib/observability/projections/format"
 import { installConsolaRepublish } from "./lib/observability/republish"
 import { attachCalibrationSink } from "./lib/observability/sinks/calibration"
 import { attachCalibrationFailureSink } from "./lib/observability/sinks/calibration-failure"
@@ -98,7 +97,6 @@ import {
 import { initTokenManagers } from "./lib/token"
 import { getCopilotUsage } from "./lib/token/copilot-client"
 import { attachTerminalUi } from "./lib/tui"
-import { formatAvailableModelLines } from "./lib/tui/render/model-list"
 import {
   //
   createWebSocketAdapter,
@@ -508,14 +506,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ones have been filtered out by config.disabled_models.
   const rawList = getRawModels()?.data ?? state.models?.data ?? []
   const disabledSet = new Set(state.disabledModels.map((id) => normalizeForMatching(id)))
-  const modelLines = formatAvailableModelLines(
-    rawList.map((model) => ({
-      model,
-      disabled: disabledSet.has(normalizeForMatching(model.id)),
-      billingLabel: formatBillingLabel(model.billing?.multiplier),
-    })),
-  )
-  consola.info(["Available models:", ...modelLines].join("\n"))
+  systemPublisher.publish({
+    kind: "system.model_catalog",
+    models: rawList.map((model) => ({ model, disabled: disabledSet.has(normalizeForMatching(model.id)) })),
+    tokenBasedBilling: state.tokenBasedBilling,
+    timeUnixMs: Date.now(),
+  })
   const stopModelRefreshLoop = startModelRefreshLoop()
 
   // Load the persisted per-model token-count calibration (factor model + seed).

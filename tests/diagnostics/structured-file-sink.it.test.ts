@@ -32,6 +32,12 @@ describe("StructuredFileSink", () => {
       kind: "system.request_line",
       parts: { prefix: "[ OK ]", time: "12:00:00", method: "POST", path: "/v1/messages" },
     })
+    bus.scope("system").publish({
+      kind: "system.model_catalog",
+      models: [],
+      tokenBasedBilling: true,
+      timeUnixMs: 123,
+    })
     await sink.close()
 
     const files = fs.readdirSync(directory).filter((name) => name.endsWith(".ndjson"))
@@ -44,19 +50,26 @@ describe("StructuredFileSink", () => {
         .filter(Boolean)
         .map((line) => JSON.parse(line) as Record<string, unknown>),
     )
-    expect(records).toHaveLength(3)
-    const payloads = records.map((record) => record.record as { recordType: string; diagnostic?: { event?: string }; parts?: unknown })
-    expect(payloads.map((record) => record.recordType).sort()).toEqual(["diagnostic", "diagnostic", "request-line"])
+    expect(records).toHaveLength(4)
+    const payloads = records.map(
+      (record) => record.record as { recordType: string; catalog?: { timeUnixMs?: number }; diagnostic?: { event?: string }; parts?: unknown },
+    )
+    expect(payloads.map((record) => record.recordType).sort()).toEqual(["diagnostic", "diagnostic", "model-catalog", "request-line"])
     expect(payloads.filter((record) => record.diagnostic?.event === "test.record")).toHaveLength(1)
     expect(payloads.filter((record) => record.diagnostic?.event === "shutdown_diagnostic_sealing")).toHaveLength(1)
+    expect(payloads.filter((record) => record.recordType === "model-catalog" && record.catalog?.timeUnixMs === 123)).toHaveLength(1)
     expect(payloads.filter((record) => record.recordType === "request-line")).toHaveLength(1)
     for (const payload of payloads) {
       if (payload.recordType === "diagnostic") {
         expect(payload.diagnostic).toBeDefined()
         expect(payload.parts).toBeUndefined()
-      } else {
+      } else if (payload.recordType === "request-line") {
         expect(payload.parts).toBeDefined()
         expect(payload.diagnostic).toBeUndefined()
+      } else {
+        expect(payload.catalog).toBeDefined()
+        expect(payload.diagnostic).toBeUndefined()
+        expect(payload.parts).toBeUndefined()
       }
     }
     bus.scope("system").publish({

@@ -78,7 +78,7 @@ export class BootstrapDiagnosticSpool {
     this.write = options.write ?? ((fd, buffer, offset, length) => fs.writeSync(fd, buffer, offset, length))
     this.unsubscribe = bus.subscribe(
       (event) => this.capture(event),
-      (event) => event.kind === "system.diagnostic" || event.kind === "system.request_line",
+      (event) => event.kind === "system.diagnostic" || event.kind === "system.model_catalog" || event.kind === "system.request_line",
       { name: "bootstrap-diagnostic-spool" },
     )
   }
@@ -167,26 +167,40 @@ export class BootstrapDiagnosticSpool {
   private capture(event: ObservabilityEvent): void {
     if (this.retired || this.closed) return
     let record: StructuredFileRecord | undefined
-    if (event.kind === "system.diagnostic") record = { recordType: "diagnostic", diagnostic: event.diagnostic }
-    else if (event.kind === "system.request_line")
-      record = { recordType: "request-line", timeUnixMs: Date.now(), process: getProcessIdentityQuiet(), parts: event.parts }
-    if (record) {
-      const sequence = ++nextSpoolSequence
-      const digest = digestRecord(record)
-      const line: BootstrapSpoolLine = { spoolId: this.spoolId, sequence, digest, record }
-      const buffer = Buffer.from(`${JSON.stringify(line)}\n`)
-      let offset = 0
-      try {
-        while (offset < buffer.length) {
-          const written = this.write(this.fd, buffer, offset, buffer.length - offset)
-          if (written <= 0) throw new Error(`Bootstrap diagnostic spool write made no progress at byte ${offset}/${buffer.length}`)
-          offset += written
-        }
-      } catch (error) {
-        this.failure ??= asError(error)
+    switch (event.kind) {
+      case "system.diagnostic": {
+        record = { recordType: "diagnostic", diagnostic: event.diagnostic }
+        break
       }
-      if (!this.failure) this.mirror?.({ ...record, delivery: { spoolId: this.spoolId, sequence, digest } })
+      case "system.model_catalog": {
+        const catalog = { models: event.models, tokenBasedBilling: event.tokenBasedBilling, timeUnixMs: event.timeUnixMs }
+        record = { recordType: "model-catalog", process: getProcessIdentityQuiet(), catalog }
+        break
+      }
+      case "system.request_line": {
+        record = { recordType: "request-line", timeUnixMs: Date.now(), process: getProcessIdentityQuiet(), parts: event.parts }
+        break
+      }
+      default: {
+        break
+      }
     }
+    if (!record) return
+    const sequence = ++nextSpoolSequence
+    const digest = digestRecord(record)
+    const line: BootstrapSpoolLine = { spoolId: this.spoolId, sequence, digest, record }
+    const buffer = Buffer.from(`${JSON.stringify(line)}\n`)
+    let offset = 0
+    try {
+      while (offset < buffer.length) {
+        const written = this.write(this.fd, buffer, offset, buffer.length - offset)
+        if (written <= 0) throw new Error(`Bootstrap diagnostic spool write made no progress at byte ${offset}/${buffer.length}`)
+        offset += written
+      }
+    } catch (error) {
+      this.failure ??= asError(error)
+    }
+    if (!this.failure) this.mirror?.({ ...record, delivery: { spoolId: this.spoolId, sequence, digest } })
   }
 }
 
@@ -285,6 +299,10 @@ function isStructuredFileRecord(value: unknown): value is StructuredFileRecord {
   if (record.recordType === "request-line") {
     const parts = record.parts as { method?: unknown; path?: unknown } | undefined
     return typeof parts?.method === "string" && typeof parts.path === "string"
+  }
+  if (record.recordType === "model-catalog") {
+    const catalog = record.catalog as { models?: unknown; timeUnixMs?: unknown; tokenBasedBilling?: unknown } | undefined
+    return Array.isArray(catalog?.models) && typeof catalog.timeUnixMs === "number" && typeof catalog.tokenBasedBilling === "boolean"
   }
   return false
 }

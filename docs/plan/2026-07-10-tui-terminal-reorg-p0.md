@@ -2,7 +2,7 @@
 
 > **实施状态（2026-07-10）：已实施（6 task 全绿 + 各 task 过审，golden 逐字等价）。** 终态：`src/lib/tui/{terminal-ui,index}.ts` + `render/{footer,syslog}.ts` 落地，`src/lib/observability/sinks/console.ts` 已删，`start.ts` 切 `attachTerminalUi`，ESLint 边界 + L1 守卫就位。已过 subagent 审查（3 MAJOR + 3 MINOR 全部修入：去 require、L1 正样本自证、golden 场景补 error 腿/启动行、消费者清单剔除 3 个仅注释文件、footer Consumes 补全、doc-sync 分历史注释）。P0 纯重组、行为等价、零 PoC 依赖。
 
-> **后续演进（2026-07-18）：** P0 的结构重组结论仍有效；显示宽度原语后来从共享 `observability/projections/format.ts` 下沉为 TUI 自有 `render/width.ts`，以支持 grapheme-aware 与 ANSI-safe 两条截断路径；单值 `renderSystemLogLine` 也升级为 `renderSystemLogLines(): string[]`，保留多行 diagnostic 的物理结构。本文后续路径描述是 P0 当时快照，活现状以 [DESIGN.md](../DESIGN.md#console-ui日志) 为准。
+> **后续演进（2026-07-18）：** P0 的结构重组结论仍有效；显示宽度原语后来从共享 `observability/projections/format.ts` 下沉为 TUI 自有 `render/width.ts`，以支持 grapheme-aware 与 ANSI-safe 两条截断路径；单值 `renderSystemLogLine` 也升级为 `renderSystemLogLines(): string[]`，保留多行 diagnostic 的物理结构；启动模型目录则进一步独立为 `system.model_catalog` 语义事件 + `render/model-list.ts` 末端色彩投影。本文后续路径描述是 P0 当时快照，活现状以 [DESIGN.md](../DESIGN.md#console-ui日志) 为准。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

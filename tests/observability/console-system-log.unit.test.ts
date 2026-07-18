@@ -76,6 +76,39 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     expect(cap.text()).toBe("[INFO] TT:TT:TT Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol\n")
   })
 
+  test("semantic model catalog events render through the plain terminal owner", () => {
+    const cap = makeCapture()
+    const bus = createBus()
+    const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
+    cleanups.push(() => sink.destroy())
+
+    bus.scope("system").publish({
+      kind: "system.model_catalog",
+      models: [
+        {
+          model: {
+            id: "gpt-5.6-sol",
+            vendor: "OpenAI",
+            name: "gpt-5.6-sol",
+            object: "model",
+            version: "1",
+            model_picker_enabled: true,
+            preview: false,
+            is_chat_default: false,
+            is_chat_fallback: false,
+            capabilities: { limits: { max_context_window_tokens: 1_050_000, max_prompt_tokens: 922_000, max_output_tokens: 128_000 } },
+          },
+          disabled: false,
+        },
+      ],
+      tokenBasedBilling: true,
+      timeUnixMs: new Date("2023-11-14T14:25:36").getTime(),
+    })
+
+    expect(cap.text()).toContain("[INFO] TT:TT:TT Available models:\n  - gpt-5.6-sol (OpenAI)")
+    expect(cap.text()).toContain("ctx:1050k prp: 922k out: 128k")
+  })
+
   test("system.diagnostic interleaves with request lifecycle lines in publish order", () => {
     const cap = makeCapture()
     const bus = createBus()
