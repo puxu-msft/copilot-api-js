@@ -753,6 +753,13 @@ export type ResponseAccumulator = BaseStreamAccumulator
  */
 export type ClassifiedStreamError = StreamErrorKind
 
+/** Candidate-local S6 renderer. Stateful translators must create one instance per candidate. */
+export interface CandidateResponseRenderer {
+  renderResponse(frame: UpstreamFrame, env: RequestEnvelope): ClientFrame | Array<ClientFrame>
+  flushResponse(env: RequestEnvelope): Array<ClientFrame>
+  getStreamMeta?(): unknown
+}
+
 /**
  * One format's codec — encapsulates all "this format vs inbound/upstream"
  * differences (docs/v4/03-spec/codec.md §1). The driver consumes it at the
@@ -806,6 +813,14 @@ export interface FormatCodec {
 
   /** S6: translate one upstream frame back to the client protocol (passthrough = identity). */
   renderResponse(frame: UpstreamFrame, env: RequestEnvelope): ClientFrame | Array<ClientFrame>
+
+  /**
+   * Create an isolated response-side renderer for one generation candidate. Codecs whose S6
+   * translation is stateful MUST implement this so hedge siblings never share translator ids,
+   * block indexes, accumulators, or flush state. Stateless codecs may omit it; the driver then
+   * wraps the legacy render method with an empty flush.
+   */
+  createCandidateRenderer?(env: RequestEnvelope): CandidateResponseRenderer
 
   /** S6 non-streaming: translate the whole upstream response back to the client. */
   renderResponseNonStreaming(upstream: unknown, env: RequestEnvelope): unknown

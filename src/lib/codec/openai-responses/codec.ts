@@ -63,6 +63,7 @@ import type { ReverseStreamTranslator } from "~/lib/pipeline/hub-translate"
 import type { RequestState } from "~/lib/pipeline/request-state"
 import type {
   //
+  CandidateResponseRenderer,
   ClassifiedStreamError,
   ClientFrame,
   FormatCodec,
@@ -217,32 +218,63 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       })
     },
   }
-  // Lazily-built CC→Responses per-frame translator (fallback response side).
-  let ccTranslator: CCToResponsesStreamTranslator | null = null
-  // REVERSE `@messages` leg (Phase 5): the reverse-exchange (responseId/itemId/clientModel) the two-hop
-  // Anthropic→CC→Responses render needs (疑点 5), built once in translateOut, + the reverse translator.
-  let reverseExchange: TranslateExchangeContext | undefined
-  let reverseTranslator: ReverseStreamTranslator | undefined
-
-  const ensureCcTranslator = (): CCToResponsesStreamTranslator | null => {
-    const fallback = fallbackScratch.exchange
-    if (!fallback) return null
-    ccTranslator ??= createCCToResponsesStreamTranslator({ responseId: fallback.responseId, itemId: fallback.itemId, clientModel: fallback.clientModel })
-    return ccTranslator
+  const createRenderer = (candidateEnv?: RequestEnvelope): CandidateResponseRenderer => {
+    let ccTranslator: CCToResponsesStreamTranslator | null = null
+    let reverseExchange: TranslateExchangeContext | undefined
+    let reverseTranslator: ReverseStreamTranslator | undefined
+    const candidateScratch = candidateEnv?.requestState?.responsesFallbackScratch as ResponsesFallbackScratch | undefined
+    const ensureCcTranslator = (): CCToResponsesStreamTranslator | null => {
+      // The default renderer is created before the fallback leg's prepareWire calls `ensure()`.
+      // Resolve lazily so both legacy and candidate renderers observe the eventual exchange ids.
+      const fallbackExchange = candidateScratch?.exchange ?? fallbackScratch.exchange
+      if (!fallbackExchange) return null
+      ccTranslator ??= createCCToResponsesStreamTranslator({
+        responseId: fallbackExchange.responseId,
+        itemId: fallbackExchange.itemId,
+        clientModel: fallbackExchange.clientModel,
+      })
+      return ccTranslator
+    }
+    const ensureReverseExchange = (env: RequestEnvelope): TranslateExchangeContext =>
+      (reverseExchange ??= {
+        responseId: `resp_${genShortId()}`,
+        itemId: `item_${genShortId()}`,
+        clientModel: resolvedModelName || (env.body as { model?: string }).model || "",
+      })
+    const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
+      const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
+      return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, ensureReverseExchange(env), reasoningRoundTripOpts(env)))
+    }
+    return {
+      renderResponse(frame, env) {
+        if (env.targetEndpoint === ENDPOINT.RESPONSES) return frame
+        if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).renderFrame(frame)
+        const translator = ensureCcTranslator()
+        if (!translator) return []
+        return translator.translate(frame.data ?? "").map((event): ClientFrame => ({ event: event.event, data: event.data }))
+      },
+      flushResponse(env) {
+        if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).flush()
+        if (env.targetEndpoint === ENDPOINT.RESPONSES) return []
+        const translator = ensureCcTranslator()
+        if (!translator) return []
+        return translator.flush().map((event): ClientFrame => ({ event: event.event, data: event.data }))
+      },
+      getStreamMeta() {
+        return reverseTranslator?.getMeta()
+      },
+    }
   }
+  const defaultRenderer = createRenderer()
 
-  /** Build the reverse-exchange once (also used by the non-streaming translateCCToResponsesResponse). */
+  /** Build the non-streaming reverse exchange once for the legacy request-level path. */
+  let reverseExchange: TranslateExchangeContext | undefined
   const ensureReverseExchange = (env: RequestEnvelope): TranslateExchangeContext =>
     (reverseExchange ??= {
       responseId: `resp_${genShortId()}`,
       itemId: `item_${genShortId()}`,
       clientModel: resolvedModelName || (env.body as { model?: string }).model || "",
     })
-
-  const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
-    const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
-    return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, ensureReverseExchange(env), reasoningRoundTripOpts(env)))
-  }
 
   return {
     format: CLIENT_FORMAT,
@@ -289,28 +321,18 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     // by the cell) + lazily builds the reverse-exchange (`??=`, observably equivalent to the old eager build).
 
     renderResponse(frame, env) {
-      // Direct (/responses): forward the upstream Responses frame verbatim.
-      if (env.targetEndpoint === ENDPOINT.RESPONSES) return frame
-      // REVERSE `@messages` leg (Phase 5): two-hop Anthropic→CC→Responses via the reverse translator.
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).renderFrame(frame)
-      // Fallback (/chat/completions): translate each CC SSE frame → Responses event(s).
-      const translator = ensureCcTranslator()
-      if (!translator) return []
-      return translator.translate(frame.data ?? "").map((ev): ClientFrame => ({ event: ev.event, data: ev.data }))
+      return defaultRenderer.renderResponse(frame, env)
+    },
+    createCandidateRenderer(env) {
+      return createRenderer(env)
     },
 
     flushResponse(env) {
-      // REVERSE `@messages` leg: the reverse translator's flush emits the Responses `response.completed`
-      // (疑点 7b — MUST be drained or the client never gets the terminal).
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).flush()
-      if (env.targetEndpoint === ENDPOINT.RESPONSES) return []
-      const translator = ensureCcTranslator()
-      if (!translator) return []
-      return translator.flush().map((ev): ClientFrame => ({ event: ev.event, data: ev.data }))
+      return defaultRenderer.flushResponse(env)
     },
 
     getStreamMeta() {
-      return reverseTranslator?.getMeta()
+      return defaultRenderer.getStreamMeta?.() as AnthropicToCcStreamMeta | undefined
     },
 
     renderResponseNonStreaming(upstream, env) {
