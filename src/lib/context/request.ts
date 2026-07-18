@@ -347,6 +347,7 @@ export function createRequestContext(opts: {
 
   interface GenerationAttemptCapture {
     handle: DispatchHandle
+    v2Index: number
     effectivePayload?: PayloadNodeHandle
     wirePayload?: PayloadNodeHandle
     responsePayload?: PayloadNodeHandle
@@ -356,10 +357,19 @@ export function createRequestContext(opts: {
     settled: boolean
   }
   const generationAttempts: Array<GenerationAttemptCapture> = []
+  const generationAttemptByHandle = new Map<DispatchHandle, GenerationAttemptCapture>()
+  let activeGenerationDispatch: DispatchHandle | undefined
   let primaryGenerationCandidate: import("./model-operation-record").CandidateHandle | undefined
   const clientFrameHandles: Array<FrameNodeHandle> = []
 
-  const currentGenerationAttempt = (): GenerationAttemptCapture | undefined => generationAttempts.at(-1)
+  const currentGenerationAttempt = (): GenerationAttemptCapture | undefined =>
+    (activeGenerationDispatch === undefined ? undefined : generationAttemptByHandle.get(activeGenerationDispatch)) ?? generationAttempts.at(-1)
+  const selectGenerationAttempt = (handle: DispatchHandle): GenerationAttemptCapture => {
+    const attempt = generationAttemptByHandle.get(handle)
+    if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${handle}`)
+    activeGenerationDispatch = handle
+    return attempt
+  }
   const ensurePrimaryGenerationCandidate = (): import("./model-operation-record").CandidateHandle =>
     (primaryGenerationCandidate ??= modelOperationRecorder.beginCandidate({ role: "primary" }))
 
@@ -533,9 +543,14 @@ export function createRequestContext(opts: {
     })
   }
 
-  function settleGenerationAttempt(attempt: GenerationAttemptCapture, verdict: "committed" | "discarded" | "failed", reason?: string, error?: unknown): void {
+  function settleGenerationAttempt(
+    attempt: GenerationAttemptCapture,
+    verdict: "committed" | "discarded" | "failed" | "cancelled",
+    reason?: string,
+    error?: unknown,
+  ): void {
     if (modelOperationRecorder.sealed || attempt.settled) return
-    const v2 = _attempts[generationAttempts.indexOf(attempt)]
+    const v2 = _attempts[attempt.v2Index]
     const response = v2.response
     const attemptError = v2.error
     const primaryResponsePayload = attempt.rawResponsePayload ?? attempt.sourceBodyPayload ?? attempt.responsePayload
@@ -660,6 +675,7 @@ export function createRequestContext(opts: {
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
       outcome: pendingGenerationTerminal.outcome,
       ...(primaryGenerationCandidate !== undefined && { winnerCandidate: primaryGenerationCandidate }),
+      ...(pendingGenerationTerminal.outcome === "completed" && finalAttempt !== undefined && { committedDispatch: finalAttempt.handle }),
       ...(pendingGenerationTerminal.error !== undefined && { error: pendingGenerationTerminal.error }),
       ...(operationUsage(_response) !== undefined && { usage: operationUsage(_response) }),
       ...(pendingGenerationTerminal.attribution !== undefined && { attribution: pendingGenerationTerminal.attribution }),
@@ -987,37 +1003,92 @@ export function createRequestContext(opts: {
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "warningMessages", contextRef: ctx })
     },
 
-    beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
-      const previous = currentGenerationAttempt()
-      if (previous && !previous.settled) settleGenerationAttempt(previous, "discarded", "superseded by next attempt")
+    beginGenerationCandidate(input) {
+      if (modelOperationRecorder.sealed) throw new Error("[request-context] cannot begin candidate after terminal seal")
+      const handle = modelOperationRecorder.beginCandidate(input)
+      if (input.role === "primary" && primaryGenerationCandidate === undefined) primaryGenerationCandidate = handle
+      return handle
+    },
+
+    settleGenerationCandidate(candidate, input) {
+      if (modelOperationRecorder.sealed) return
+      const row = modelOperationRecorder.snapshot().candidates.find((entry) => entry.handle === candidate)
+      if (row?.verdict === undefined) modelOperationRecorder.settleCandidate(candidate, input)
+    },
+
+    beginGenerationDispatch(input) {
+      if (modelOperationRecorder.sealed) throw new Error("[request-context] cannot begin dispatch after terminal seal")
       const attempt: Attempt = {
         index: _attempts.length,
-        effectiveRequest: null, // Set later via setAttemptEffectiveRequest
-        wireRequest: null, // Set later via setAttemptWireRequest
+        effectiveRequest: null,
+        wireRequest: null,
         response: null,
         error: null,
-        transport: attemptOpts.transport ?? "http",
-        strategy: attemptOpts.strategy,
-        truncation: attemptOpts.truncation,
-        waitMs: attemptOpts.waitMs,
+        transport: input.transport ?? "http",
+        strategy: input.strategy,
+        truncation: input.truncation,
+        waitMs: input.waitMs,
         startTime: Date.now(),
         durationMs: 0,
       }
       _attempts.push(attempt)
-      if (!modelOperationRecorder.sealed) {
-        const handle = modelOperationRecorder.beginDispatch({
-          candidate: ensurePrimaryGenerationCandidate(),
-          ...(attemptOpts.strategy !== undefined && { strategy: attemptOpts.strategy }),
-          transport: attempt.transport,
-          metadata: {
-            ...(attemptOpts.waitMs !== undefined && { waitMs: attemptOpts.waitMs }),
-            ...(attemptOpts.truncation !== undefined && { truncation: attemptOpts.truncation }),
-            startedAt: attempt.startTime,
-          },
-        })
-        generationAttempts.push({ handle, upstreamFrames: [], settled: false })
-      }
+      const handle = modelOperationRecorder.beginDispatch({
+        candidate: input.candidate,
+        ...(input.strategy !== undefined && { strategy: input.strategy }),
+        transport: attempt.transport,
+        metadata: {
+          ...(input.waitMs !== undefined && { waitMs: input.waitMs }),
+          ...(input.truncation !== undefined && { truncation: input.truncation }),
+          startedAt: attempt.startTime,
+        },
+      })
+      const capture: GenerationAttemptCapture = { handle, v2Index: attempt.index, upstreamFrames: [], settled: false }
+      generationAttempts.push(capture)
+      generationAttemptByHandle.set(handle, capture)
+      activeGenerationDispatch = handle
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
+      return handle
+    },
+
+    setGenerationDispatchEffectiveRequest(dispatch, request) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptEffectiveRequest(request)
+    },
+
+    setGenerationDispatchWireRequest(dispatch, request) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptWireRequest(request)
+    },
+
+    setGenerationDispatchTransport(dispatch, transport) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptTransport(transport)
+    },
+
+    setGenerationDispatchResponseHeaders(dispatch, headers) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptResponseHeaders(headers)
+    },
+
+    setGenerationDispatchTimingEpoch(dispatch, kind, epoch, mode) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptTimingEpoch?.(kind, epoch, mode)
+    },
+
+    setGenerationDispatchError(dispatch, error) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptError(error)
+    },
+
+    settleGenerationDispatch(dispatch, input) {
+      const attempt = selectGenerationAttempt(dispatch)
+      settleGenerationAttempt(attempt, input.verdict, input.reason, input.error)
+    },
+
+    beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
+      const previous = currentGenerationAttempt()
+      if (previous && !previous.settled) settleGenerationAttempt(previous, "discarded", "superseded by next attempt")
+      ctx.beginGenerationDispatch({ candidate: ensurePrimaryGenerationCandidate(), ...attemptOpts })
     },
 
     setAttemptSanitization(info: SanitizationInfo) {

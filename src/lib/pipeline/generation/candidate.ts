@@ -13,17 +13,18 @@ import type {
   CandidateRole,
   CandidateVerdict,
   DispatchHandle,
-  DispatchVerdict,
 } from "~/lib/context/model-operation-record"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { UpstreamStream } from "~/lib/pipeline/types"
 
+import { combineAbortSignals } from "~/lib/stream"
 import { OperationCancelledError } from "~/lib/util/abortable-delay"
 
 import type {
   //
   DispatchRecordingPort,
   DispatchScheduler,
+  DispatchSettlement,
 } from "./dispatch-scheduler"
 
 export interface RecoveryCandidateRequest {
@@ -39,7 +40,7 @@ export interface CandidateReady<TProcessor> {
   readonly env: RequestEnvelope
   readonly upstream: UpstreamStream
   readonly processor: TProcessor
-  settleDispatch(input: { verdict: DispatchVerdict; reason?: string; error?: unknown }): Promise<void>
+  settleDispatch(input: DispatchSettlement): Promise<void>
 }
 
 export interface CandidateRuntime<TProcessor> {
@@ -64,6 +65,7 @@ export interface CreateCandidateRuntimeInput<TProcessor> {
 export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntimeInput<TProcessor>): CandidateRuntime<TProcessor> {
   const handle = input.recording.beginCandidate({ role: input.role, ...(input.parentCandidate && { parentCandidate: input.parentCandidate }) })
   const controller = new AbortController()
+  const signal = combineAbortSignals(controller.signal, input.env.ctx.operationSignal) ?? controller.signal
   let started = false
   let settled = false
   let latestEnv = input.env
@@ -84,7 +86,7 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
       started = true
       runPromise = (async () => {
         try {
-          const ready = await input.scheduler.run({ candidate: handle, env: latestEnv, signal: controller.signal })
+          const ready = await input.scheduler.run({ candidate: handle, env: latestEnv, signal })
           latestEnv = ready.env
           return {
             candidate: handle,
@@ -95,7 +97,8 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
             settleDispatch: (settlement) => input.scheduler.settle(ready.dispatch, settlement),
           }
         } catch (error) {
-          if (!controller.signal.aborted) settleCandidate({ verdict: "failed", reason: error instanceof Error ? error.message : "candidate failed" })
+          if (signal.aborted) settleCandidate({ verdict: "cancelled", reason: signal.reason instanceof Error ? signal.reason.message : "candidate cancelled" })
+          else settleCandidate({ verdict: "failed", reason: error instanceof Error ? error.message : "candidate failed" })
           throw error
         }
       })()

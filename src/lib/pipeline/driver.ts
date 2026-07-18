@@ -14,26 +14,24 @@
 
 import consola from "consola"
 
+import type {
+  //
+  CandidateHandle,
+  CandidateRole,
+  DispatchHandle,
+} from "~/lib/context/model-operation-record"
+import type { RequestContext } from "~/lib/context/request"
+
 import { classifyError } from "~/lib/error"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
-import { getShutdownSignal } from "~/lib/shutdown"
-import {
-  //
-  classifyStreamError,
-  combineAbortSignals,
-} from "~/lib/stream"
+import { classifyStreamError } from "~/lib/stream"
 import {
   //
   getUpstreamAdmissionController,
   type UpstreamAdmissionController,
 } from "~/lib/transport/admission-controller"
 import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
-import {
-  //
-  abortableDelay,
-  OperationCancelledError,
-} from "~/lib/util/abortable-delay"
 
 import type { RequestEnvelope } from "./envelope"
 import type {
@@ -42,6 +40,8 @@ import type {
   ClientSink,
   DriverRequestResult,
   FormatCodec,
+  PhysicalTransport,
+  PhysicalTransportResponse,
   PipelineDriver,
   PreparedRequest,
   RawHttpRequest,
@@ -66,6 +66,23 @@ import {
 } from "./cell-assembly"
 import {
   //
+  createCandidateRuntime,
+  type CandidateRuntime,
+} from "./generation/candidate"
+import {
+  //
+  createGenerationCoordinator,
+  type CoordinatedCandidate,
+  type GenerationCoordinator,
+} from "./generation/coordinator"
+import {
+  //
+  createDispatchScheduler,
+  type DispatchRecordingPort,
+  type SemanticRetryDecision,
+} from "./generation/dispatch-scheduler"
+import {
+  //
   assembleRequestRewrites,
   assembleResponseRewrites,
   BUILTIN_REQUEST_REWRITES,
@@ -74,14 +91,18 @@ import {
   type ResponseRewrite,
 } from "./rewrite-registry"
 import { decideRoute } from "./router"
-import { createResponseProcessor } from "./stream/response-processor"
+import {
+  //
+  createResponseProcessor,
+  type ResponseProcessor,
+} from "./stream/response-processor"
 /**
  * Everything the driver needs to orchestrate one format. The route layer (P2.3+)
  * selects the codec by prefix and constructs a driver per request.
  */
 export interface DriverDeps {
   codec: FormatCodec
-  transport: Transport
+  transport: Transport & Partial<PhysicalTransport>
   /** Transport-independent queue/backoff policy; defaults to the process-global adaptive limiter. */
   admission?: UpstreamAdmissionController
   /**
@@ -154,15 +175,38 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
   runResponseBufferedSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: RunBufferedOpts): Promise<ResponseOutcome>
 }
 
-export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStreaming {
+interface GenerationBinding {
+  readonly coordinator: GenerationCoordinator<ResponseProcessor>
+  readonly candidate: CoordinatedCandidate<ResponseProcessor>
+}
+
+interface DriverGenerationRuntime {
+  readonly bindings: WeakMap<UpstreamStream, GenerationBinding>
+  bind(coordinator: GenerationCoordinator<ResponseProcessor>, candidate: CoordinatedCandidate<ResponseProcessor>): GenerationBinding
+}
+
+function createDriverGenerationRuntime(): DriverGenerationRuntime {
+  const bindings = new WeakMap<UpstreamStream, GenerationBinding>()
   return {
-    runRequest: (raw) => runRequest(deps, raw),
-    runResponse: (upstream, env, opts) => runResponse(deps, upstream, env, opts),
+    bindings,
+    bind(coordinator, candidate) {
+      const binding = { coordinator, candidate }
+      bindings.set(candidate.upstream, binding)
+      return binding
+    },
+  }
+}
+
+export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStreaming {
+  const generation = createDriverGenerationRuntime()
+  return {
+    runRequest: (raw) => runRequest(deps, raw, generation),
+    runResponse: (upstream, env, opts) => runResponse(deps, upstream, env, opts, generation),
     inspectRequest: (raw, stopAfter) => inspectRequest(deps, raw, stopAfter),
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
     runResponseWhole: (response, env) => runResponseWhole(deps, response, env),
-    runResponseSink: (upstream, env, sink, opts) => runResponseSink(deps, upstream, env, sink, opts),
-    runResponseBufferedSink: (upstream, env, sink, opts) => runResponseBufferedSink(deps, upstream, env, sink, opts),
+    runResponseSink: (upstream, env, sink, opts) => runResponseSink(deps, upstream, env, sink, opts, generation),
+    runResponseBufferedSink: (upstream, env, sink, opts) => runResponseBufferedSink(deps, upstream, env, sink, opts, generation),
   }
 }
 
@@ -232,7 +276,7 @@ function outboundPrepareWire(deps: DriverDeps, env: RequestEnvelope): PreparedRe
 }
 
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */
-async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<DriverRequestResult> {
+async function runRequest(deps: DriverDeps, raw: RawHttpRequest, generation: DriverGenerationRuntime): Promise<DriverRequestResult> {
   // S1a — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model). SYNC.
   const parsed = deps.codec.parse(raw)
 
@@ -283,28 +327,17 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<Driver
   const hook = getUpstreamHook()
   const afterHook = hook?.upstream?.outbound ? (hook.upstream.outbound(rewritten) ?? rewritten) : rewritten
 
-  // S4 — Exchange: error-driven retry loop (prepareWire → transport → strategy re-env).
-  // Resolve the strategy stack now that the envelope (model + codec state) exists. For a MIGRATED cell the
-  // CellAssembly composes it (RETRY_SEMANTICS × the leg's wire strategies); else the legacy per-route
-  // factory / fixed array. LAZY (resolveExchangeStrategies) — the legacy factory is not evaluated for a
-  // migrated cell, so its recordFeature side effects do not double-fire with the leg's translateOut.
-  const strategies = resolveExchangeStrategies(deps, afterHook)
-  // C0-① (RFC §11.1): runExchange returns the POST-retry env (the final attempt's
-  // env), not `rewritten` (pre-exchange). Consumers — e.g. the Anthropic pump
-  // building the tool-call recoverer from env.body.tools, which deferred-tool-retry
-  // mutates — must see what was actually sent on the successful attempt.
-  //
-  // C4a: the exchange (transport fetch + stream first-event + the RC3 retry/backoff loop) is
-  // settle-BEFORE operation-body work — the exact orphan the user observed (a reaper/deadline
-  // settled the request at 1200s while a 631s backoff kept running). Track its promise so the
-  // shutdown drain (operationScopes) waits for it to actually unwind after a mid-flight settle.
-  // Optional-chained for mock/legacy ctxs (same pattern as `setRouteInfo?.`).
-  const exchangePromise = runExchange(deps, afterHook, strategies)
-  // Runtime-optional for structural mock/legacy contexts that intentionally cast a narrowed ctx.
+  // S4 — the primary-only GenerationCoordinator is now the sole production owner of
+  // prepare/admission/physical-open/reactive retry topology. No legacy retry loop runs beside it.
+  const preflight = await runGenerationPreflight(deps, afterHook)
+  const coordinator = createDriverCoordinator(deps, preflight)
+  const exchangePromise = coordinator.runPrimary()
+  // Runtime-optional for structural mock contexts, preserving the existing operation-scope seam.
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   parsed.ctx.trackOperationBody?.(exchangePromise)
-  const { upstream, env: settled } = await exchangePromise
-  return { ok: true, upstream, env: settled }
+  const candidate = await exchangePromise
+  generation.bind(coordinator, candidate)
+  return { ok: true, upstream: candidate.upstream, env: candidate.env }
 }
 
 /** S3: assemble the request-rewrite chain and apply each in declared order. */
@@ -396,211 +429,207 @@ async function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: 
  * re-prepares from it. The adaptive rate-limiter (429) lives inside
  * `transport.send`, below this loop — it never bubbles up here.
  */
-async function runExchange(
+async function runGenerationPreflight(deps: DriverDeps, env: RequestEnvelope): Promise<RequestEnvelope> {
+  const cell = migratedCell(env)
+  if (cell?.preSend) return cell.preSend(env)
+  if (deps.codec.preSend) return deps.codec.preSend(env)
+  return env
+}
+
+function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope): GenerationCoordinator<ResponseProcessor> {
+  const recording = createDriverRecordingPort(deps, initialEnv.ctx)
+  const strategies = resolveExchangeStrategies(deps, initialEnv)
+  const createCandidate = ({
+    role,
+    parentCandidate,
+    env,
+  }: {
+    role: CandidateRole
+    parentCandidate?: CandidateHandle
+    env: RequestEnvelope
+  }): CandidateRuntime<ResponseProcessor> => {
+    const retry = createSemanticRetryPolicy(deps, strategies)
+    const scheduler = createDispatchScheduler({
+      prepareWire: (current) => outboundPrepareWire(deps, current),
+      open: (wire, current, options) => openPhysicalDispatch(deps, wire, current, options),
+      admission: deps.admission ?? getUpstreamAdmissionController(),
+      recording,
+      decideRetry: retry,
+      maxDispatches: Math.max(16, 1 + deps.maxRetries + deps.maxLearningRetries),
+    })
+    return createCandidateRuntime({
+      role,
+      ...(parentCandidate !== undefined && { parentCandidate }),
+      env,
+      recording,
+      scheduler,
+      createProcessor: ({ env: processorEnv }) => {
+        const responseRewrites = migratedCell(processorEnv)?.responseRewrites(processorEnv) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
+        return createResponseProcessor({
+          env: processorEnv,
+          responseRewrites,
+          renderResponse: (frame, requestEnv) => deps.codec.renderResponse(frame, requestEnv),
+        })
+      },
+    })
+  }
+  return createGenerationCoordinator({ env: initialEnv, createCandidate })
+}
+
+function createSemanticRetryPolicy(
   deps: DriverDeps,
-  env: RequestEnvelope,
   strategies: ReadonlyArray<RetryStrategy>,
-): Promise<{ upstream: UpstreamStream; env: RequestEnvelope }> {
-  let current = env
+): (input: import("./generation/dispatch-scheduler").SemanticRetryInput) => Promise<SemanticRetryDecision> {
   let normalRetries = 0
   let learningRetries = 0
-  let activeStrategy: RetryStrategy | undefined
-  // The accepted retry's meta (post-gate), threaded to onMeta + onResolved (C0-②).
-  let activeMeta: Record<string, unknown> | undefined
-  let nextAttemptStrategy: string | undefined
-  // Once Responses WS fails before its first event, this candidate remains on HTTP for every
-  // subsequent semantic/rate-limit dispatch. Retrying WS would repeat the failed transport hop.
-  let forceHttp = false
-  // First-attempt-only pre-send hook guard (Task 9): the codec may pre-truncate
-  // env.body ONCE before the initial send; reactive retry takes over afterward, so
-  // we never re-run it per attempt (which would re-truncate an already-trimmed body).
-  let preflightDone = false
-
-  for (;;) {
-    // MIGRATED cell: preSend / prepareWire / sampleWireTrack come from the CellAssembly; else the codec.
-    // Resolved per-iteration from `current` (a retry strategy may re-target the leg).
-    const cell = migratedCell(current)
-    if (!preflightDone) {
-      preflightDone = true
-      // MUST run before prepareWire below — otherwise the wire is built from the
-      // un-truncated body and the pre-flight trim would not take effect this attempt.
-      if (cell?.preSend) current = await cell.preSend(current)
-      else if (deps.codec.preSend) current = await deps.codec.preSend(current)
-    }
-    const wire = outboundPrepareWire(deps, current)
-    // One controller instance owns BOTH acquire + observe for this physical dispatch.
-    // The current adapter is stateless, but keeping the pair together is load-bearing for the
-    // upcoming scheduler, where admission may retain dispatch-correlated state.
-    const admission = deps.admission ?? getUpstreamAdmissionController()
-    const attemptStrategy = nextAttemptStrategy ?? activeStrategy?.name
-    current.ctx.beginAttempt({ ...(attemptStrategy && { strategy: attemptStrategy }) })
-    nextAttemptStrategy = undefined
-    // S4 per-attempt sampling (P2.3-S): the codec / assembly derives the history effective +
-    // wire request descriptors from the prepared wire + env (format-specific). The
-    // attempt record exists (beginAttempt above); record both tracks on it.
-    const sample = cell ? cell.sampleWireTrack(wire, current) : deps.codec.sampleRequest?.(wire, current)
-    if (sample) {
-      current.ctx.setAttemptEffectiveRequest(sample.effective)
-      current.ctx.setAttemptWireRequest(sample.wire)
-    }
-    current.ctx.transition("executing")
+  return async ({ env, error }) => {
+    const strategy = strategies.find((candidate) => candidate.canHandle(error))
+    if (!strategy) return { kind: "fail" }
+    let action: RetryAction
     try {
-      const modelId = current.model.id || "unknown"
-      const permit = await admission.acquire({
-        model: modelId,
-        candidateId: "primary",
-        // P5-T2a bridge only: the full GenerationCoordinator will pass the branded V3
-        // DispatchHandle directly instead of reconstructing a label from the legacy view.
-        dispatchId: current.ctx.currentAttempt ? `dispatch:${current.ctx.currentAttempt.index}` : "dispatch:unknown",
-        signal: current.ctx.operationSignal,
-      })
-      current.ctx.addQueueWaitMs(permit.queueWaitMs)
-      const hook = getUpstreamHook()
-      const transportOptions: TransportDispatchOptions = {
-        signal: current.ctx.operationSignal,
-        ...(forceHttp && { forceHttp: true }),
-      }
-      const upstream =
-        hook?.exchange ?
-          await hook.exchange(wire, current, () => deps.transport.send(wire, current, transportOptions))
-        : await deps.transport.send(wire, current, transportOptions)
-      // 首包埋点（spec 2026-07-14 §3.2）：上游响应头到达（每 attempt 各记自己的，绝对 epoch）。
-      {
-        current.ctx.setAttemptTimingEpoch?.("upstreamHeadersAt", Date.now(), "once")
-      }
-      // RFC history-http-header-capture Phase 2: driver owns the outbound header
-      // capture (no handler-side HeadersCapture bag). ② outboundRequest = the wire
-      // headers in hand; ③ outboundResponse = the upstream response headers carried
-      // by UpstreamStream.headers (empty for the upstream-WS path → leg omitted).
-      // Written per-attempt via the merge setter → the FINAL attempt's values stick
-      // at the top-level legs; Phase 3 ALSO records them per-attempt (setAttempt*).
-      const upstreamRespHeaders = Object.fromEntries(upstream.headers.entries())
-      const wireReqHeaders = Object.fromEntries(wire.headers.entries())
-      current.ctx.setHttpHeaders({
-        request: wireReqHeaders,
-        ...(Object.keys(upstreamRespHeaders).length > 0 && { response: upstreamRespHeaders }),
-      })
-      if (Object.keys(upstreamRespHeaders).length > 0) current.ctx.setAttemptResponseHeaders(upstreamRespHeaders)
-      admission.observe({ model: modelId, status: 200, completedAt: Date.now() })
-      // onResolved threads the post-gate meta of the retry that produced this env
-      // (C0-② / RFC §11.2) so the owning strategy commits its learning from it
-      // (e.g. unsupported-beta fixates meta.probedBetas). undefined on first-attempt
-      // success (no retry produced this env).
-      await activeStrategy?.onResolved?.(current, activeMeta)
-      // C0-① (RFC §11.1): return the POST-retry env (the final attempt's `current`),
-      // not the caller's pre-exchange env — consumers read what was actually sent.
-      return { upstream, env: current }
-    } catch (error) {
-      if (error instanceof UpstreamTransportFallbackError) {
-        const dispatchError = classifyError(error.dispatchError)
-        current.ctx.setAttemptError(dispatchError)
-        current.ctx.setHttpHeaders({ request: Object.fromEntries(wire.headers.entries()) })
-        // Complete the permit lifecycle even though the failure has no HTTP status. Current
-        // admission treats it as neutral; future inflight accounting must still see the dispatch end.
-        admission.observe({ model: current.model.id || "unknown", completedAt: Date.now() })
-        current.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "ws-fallback" })
-        nextAttemptStrategy = "ws-fallback"
-        forceHttp = true
-        continue
-      }
-      const apiError = classifyError(error)
-      current.ctx.setAttemptError(apiError)
-      // RFC Phase 2: capture the outbound legs on the failure path too. ② from the
-      // wire; ③ from apiError.responseHeaders (classifyHTTPError now passes it through
-      // on ALL HTTP-error branches). Network/abort failures have no upstream response
-      // → response leg correctly absent. Final attempt wins at the top level.
-      current.ctx.setHttpHeaders({
-        request: Object.fromEntries(wire.headers.entries()),
-        ...(apiError.responseHeaders && { response: Object.fromEntries(apiError.responseHeaders.entries()) }),
-      })
-      if (apiError.responseHeaders) current.ctx.setAttemptResponseHeaders(Object.fromEntries(apiError.responseHeaders.entries()))
+      action = await strategy.handle(error, env)
+    } catch (strategyError) {
+      consola.warn(
+        `[Driver] Strategy "${strategy.name}" threw while handling the error:`,
+        strategyError instanceof Error ? strategyError.message : strategyError,
+      )
+      return { kind: "fail" }
+    }
+    if (action.kind === "abort") return { kind: "fail" }
+    const overBudget = action.learning ? learningRetries++ >= deps.maxLearningRetries : normalRetries++ >= deps.maxRetries
+    if (overBudget) return { kind: "fail" }
+    if (action.meta) deps.onMeta?.(action.meta, action.env)
+    action.env.ctx.recordAttemptFailure({
+      willRetry: true,
+      nextStrategy: strategy.name,
+      ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
+      ...(action.learning && { learning: true }),
+    })
+    if (action.waitMs) action.env.ctx.addQueueWaitMs(action.waitMs)
+    return {
+      kind: "retry",
+      env: action.env,
+      reason: strategy.name,
+      ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
+      onResolved: (resolvedEnv) => strategy.onResolved?.(resolvedEnv, action.meta),
+    }
+  }
+}
 
-      // Admission owns transient throttling only. `quota_exceeded`/402 is deliberately excluded:
-      // it is an account verdict, not a pacing signal, and must surface or be claimed by an explicit
-      // semantic strategy rather than loop indefinitely in the limiter.
-      const rateLimited = apiError.status === 429 || apiError.type === "rate_limited" || apiError.type === "upstream_rate_limited"
-      if (rateLimited) {
-        const decision = admission.observe({
-          model: current.model.id || "unknown",
-          status: apiError.status,
-          rateLimited: true,
-          ...(apiError.retryAfter !== undefined && { retryAfterMs: apiError.retryAfter * 1000 }),
-          completedAt: Date.now(),
-        })
-        if (decision.kind === "retry") {
-          // The replay is bounded by the request operation signal/deadline today. Phase 6 moves it
-          // under the GenerationCoordinator's maxTotalDispatches budget as the final hard count cap.
-          current.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "rate-limit-retry", waitMs: decision.retryAfterMs })
-          nextAttemptStrategy = "rate-limit-retry"
-          continue
+function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): DispatchRecordingPort {
+  let candidateSequence = 0
+  let dispatchSequence = 0
+  const explicit =
+    typeof ctx.beginGenerationCandidate === "function"
+    && typeof ctx.beginGenerationDispatch === "function"
+    && typeof ctx.settleGenerationCandidate === "function"
+    && typeof ctx.settleGenerationDispatch === "function"
+  const fallbackCandidates = new Set<CandidateHandle>()
+
+  const selectSample = (wire: PreparedRequest, env: RequestEnvelope) => {
+    const cell = migratedCell(env)
+    return cell ? cell.sampleWireTrack(wire, env) : deps.codec.sampleRequest?.(wire, env)
+  }
+
+  return {
+    beginCandidate(input) {
+      if (explicit) return ctx.beginGenerationCandidate(input)
+      const handle = `compat-candidate:${++candidateSequence}` as CandidateHandle
+      fallbackCandidates.add(handle)
+      return handle
+    },
+
+    settleCandidate(candidate, settlement) {
+      if (explicit) ctx.settleGenerationCandidate(candidate, settlement)
+    },
+
+    beginDispatch({ candidate, reason, wire, env }) {
+      const strategy = reason === "initial" ? undefined : reason
+      const handle =
+        explicit ? ctx.beginGenerationDispatch({ candidate, ...(strategy && { strategy }) }) : (`compat-dispatch:${++dispatchSequence}` as DispatchHandle)
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- mock/legacy contexts intentionally exercise the temporary serial adapter until P9 removes it
+      if (!explicit) ctx.beginAttempt({ ...(strategy && { strategy }) })
+      const sample = selectSample(wire, env)
+      if (sample) {
+        if (explicit) {
+          ctx.setGenerationDispatchEffectiveRequest(handle, sample.effective)
+          ctx.setGenerationDispatchWireRequest(handle, sample.wire)
+        } else {
+          ctx.setAttemptEffectiveRequest(sample.effective)
+          ctx.setAttemptWireRequest(sample.wire)
         }
       }
+      ctx.setHttpHeaders({ request: Object.fromEntries(wire.headers.entries()) })
+      ctx.transition("executing")
+      return handle
+    },
 
-      const strategy = strategies.find((s) => s.canHandle(apiError))
-      if (!strategy) throw error // no strategy → [FAIL]
+    recordAdmission(_dispatch, permit) {
+      ctx.addQueueWaitMs(permit.queueWaitMs)
+    },
 
-      // A strategy that itself throws degrades to failing the request with the
-      // ORIGINAL caught error (legacy parity — pipeline.ts:307-314 warns + breaks
-      // + re-throws the original error rather than the strategy's own failure).
-      let action: RetryAction
-      try {
-        action = await strategy.handle(apiError, current)
-      } catch (strategyError) {
-        consola.warn(
-          `[Driver] Strategy "${strategy.name}" threw while handling the error:`,
-          strategyError instanceof Error ? strategyError.message : strategyError,
-        )
-        throw error
+    recordOpened(dispatch, response) {
+      if (response.kind === "stream" || response.kind === "json") {
+        const headers = Object.fromEntries((response.kind === "stream" ? response.upstream.headers : response.headers).entries())
+        if (Object.keys(headers).length > 0) {
+          ctx.setHttpHeaders({ response: headers })
+          if (explicit) ctx.setGenerationDispatchResponseHeaders(dispatch, headers)
+          else ctx.setAttemptResponseHeaders(headers)
+        }
+        if (explicit) ctx.setGenerationDispatchTimingEpoch(dispatch, "upstreamHeadersAt", Date.now(), "once")
+        else ctx.setAttemptTimingEpoch?.("upstreamHeadersAt", Date.now(), "once")
+        return
       }
-      // Abort → surface the ORIGINAL caught error (a proper Error/HTTPError with
-      // stack), matching the legacy pipeline (which breaks the loop and re-throws
-      // the original error, pipeline.ts:312). `apiError` (the classified form) is
-      // already recorded via setAttemptError; `action.error` reserves a future
-      // strategy-supplied override but is not surfaced here (the spec draft's
-      // `throw action.error` would throw a non-Error ApiError, losing the stack).
-      if (action.kind === "abort") throw error
-
-      // Budget gate (normal vs learning) — after handle, mirroring pipeline.ts.
-      const overBudget = action.learning ? learningRetries++ >= deps.maxLearningRetries : normalRetries++ >= deps.maxRetries
-      if (overBudget) throw error
-
-      current = action.env
-      activeStrategy = strategy
-      // Capture the accepted retry's meta post-gate (C0-② / RFC §11.2): a
-      // budget-rejected retry threw above (over-budget → throw), so its meta never
-      // reaches here. Route it to the handler's observability sink (only when
-      // present) and remember it for this strategy's onResolved.
-      activeMeta = action.meta
-      if (action.meta) deps.onMeta?.(action.meta, current)
-      current.ctx.recordAttemptFailure({
-        willRetry: true,
-        nextStrategy: strategy.name,
-        ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
-        ...(action.learning && { learning: action.learning }),
-      })
-      // RC1/RC3 cancel coverage: a retry backoff must be interruptible by the same signals
-      // that terminate an in-flight request — the stale reaper (`lifecycleSignal`, which the
-      // reaper fires at deadline before force-settling), graceful shutdown, and client abort.
-      // The legacy bare `delay()` ignored all three, so a request settled by the reaper kept
-      // sleeping through an exponential backoff (631s observed) and then STARTED A NEW ATTEMPT —
-      // one link in the 2800s overrun. `abortableDelay` rejects with an abort-classified error;
-      // the attempt-boundary gate below also covers the waitMs===0 path. (C4b will fold the
-      // per-request deadline signal into the same combine.)
-      // The two signals that terminate a request are folded here: the stale reaper
-      // (`lifecycleSignal`, fired at deadline before force-settling) and graceful shutdown.
-      // (Client-abort is detected at the stream layer, not during backoff; C1 will thread it
-      // + the deadline signal through the unified operationSignal.)
-      const backoffSignal = combineAbortSignals(current.ctx.lifecycleSignal, getShutdownSignal())
-      // Gate BEFORE the next attempt (covers waitMs===0): if the request is already being
-      // cancelled, do not start another upstream attempt.
-      if (backoffSignal?.aborted) throw new OperationCancelledError()
-      // Count the retry backoff in queueWaitMs (legacy parity — pipeline.ts adds
-      // action.waitMs to queueWaitMs in addition to the rate-limiter wait).
-      if (action.waitMs) {
-        current.ctx.addQueueWaitMs(action.waitMs)
-        await abortableDelay(action.waitMs, backoffSignal)
+      const error = classifyError(response.error)
+      if (explicit) ctx.setGenerationDispatchError(dispatch, error)
+      else ctx.setAttemptError(error)
+      if (error.responseHeaders) {
+        const headers = Object.fromEntries(error.responseHeaders.entries())
+        ctx.setHttpHeaders({ response: headers })
+        if (explicit) ctx.setGenerationDispatchResponseHeaders(dispatch, headers)
+        else ctx.setAttemptResponseHeaders(headers)
       }
-    }
+    },
+
+    settleDispatch(dispatch, settlement) {
+      if (settlement.verdict === "discarded" && settlement.retryNextStrategy)
+        ctx.recordAttemptFailure({
+          willRetry: true,
+          nextStrategy: settlement.retryNextStrategy,
+          ...(settlement.waitMs !== undefined && { waitMs: settlement.waitMs }),
+        })
+      if (explicit) ctx.settleGenerationDispatch(dispatch, settlement)
+    },
+  }
+}
+
+async function openPhysicalDispatch(
+  deps: DriverDeps,
+  wire: PreparedRequest,
+  env: RequestEnvelope,
+  options?: TransportDispatchOptions,
+): Promise<PhysicalTransportResponse> {
+  const exchange = getUpstreamHook()?.exchange
+  if (!exchange && deps.transport.open) return (deps.transport as PhysicalTransport).open(wire, env, options)
+  try {
+    const upstream = exchange ? await exchange(wire, env, () => deps.transport.send(wire, env, options)) : await deps.transport.send(wire, env, options)
+    const lifecycle = upstream.lifecycle ?? settledDispatchLifecycle()
+    if (wire.stream) return { kind: "stream", upstream: { ...upstream, lifecycle }, lifecycle }
+    return { kind: "json", body: upstream.nonStream, headers: upstream.headers, lifecycle }
+  } catch (error) {
+    const lifecycle = settledDispatchLifecycle()
+    if (error instanceof UpstreamTransportFallbackError) return { kind: "fallback-before-first-event", error: error.dispatchError, lifecycle }
+    return { kind: "failed-open", error, lifecycle }
+  }
+}
+
+function settledDispatchLifecycle(): import("./types").UpstreamDispatchLifecycle {
+  return {
+    cancel() {},
+    async dispose() {
+      return { quiesced: true, connectionReusable: false }
+    },
+    quiesced: Promise.resolve(),
   }
 }
 
@@ -609,10 +638,22 @@ async function runExchange(
 // ============================================================================
 
 /** S5→S7: construct and return the branch-local processor iterable without an extra async-generator delegation layer. */
-function runResponse(deps: DriverDeps, upstream: UpstreamStream, env: RequestEnvelope, opts?: RunResponseOpts): AsyncIterable<ClientFrame> {
+function runResponse(
+  deps: DriverDeps,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  opts?: RunResponseOpts,
+  generation?: DriverGenerationRuntime,
+): AsyncIterable<ClientFrame> {
+  const coordinated = generation?.bindings.get(upstream)?.candidate.processor
+  if (coordinated) return coordinated.stream(upstream, opts)
+  // Direct response-only callers (dry-run and focused processor tests) have no S4 generation.
+  // This compatibility adapter still creates exactly one processor and owns no retry loop.
   const responseRewrites = migratedCell(env)?.responseRewrites(env) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
-  const processor = createResponseProcessor({ env, responseRewrites, renderResponse: (frame, requestEnv) => deps.codec.renderResponse(frame, requestEnv) })
-  return processor.stream(upstream, opts)
+  return createResponseProcessor({ env, responseRewrites, renderResponse: (frame, requestEnv) => deps.codec.renderResponse(frame, requestEnv) }).stream(
+    upstream,
+    opts,
+  )
 }
 
 /**
@@ -647,6 +688,7 @@ async function runResponseSink(
   env: RequestEnvelope,
   sink: ClientSink,
   opts?: RunResponseOpts,
+  generation?: DriverGenerationRuntime,
 ): Promise<ResponseOutcome> {
   let finish: import("./types").ResponseFinishResult | undefined
   const responseOpts: RunResponseOpts = {
@@ -659,7 +701,7 @@ async function runResponseSink(
     }),
   }
   try {
-    for await (const frame of runResponse(deps, upstream, env, responseOpts)) {
+    for await (const frame of runResponse(deps, upstream, env, responseOpts, generation)) {
       // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
       // handler synthesizes its own trailing terminator; Anthropic emits none).
       if (frame.data === "[DONE]") continue
@@ -718,13 +760,11 @@ export async function runResponseBufferedSink(
   env: RequestEnvelope,
   sink: ClientSink,
   opts: RunBufferedOpts,
+  generation?: DriverGenerationRuntime,
 ): Promise<ResponseOutcome> {
   const cap = opts.retryCap ?? 0
   const bufferCapBytes = opts.bufferCapBytes ?? 0
   const vendor = opts.telemetryVendor ?? "unknown"
-  // Same lazy resolution as the S4 exchange: a migrated cell's buffered re-exchange uses the CellAssembly
-  // stack, never the legacy factory (so no double recordFeature vs the leg's translateOut).
-  const strategies = resolveExchangeStrategies(deps, env)
   let current = upstream
   let currentEnv = env
   let attempt = 0
@@ -835,7 +875,7 @@ export async function runResponseBufferedSink(
         }),
       }
       try {
-        for await (const frame of runResponse(deps, current, currentEnv, responseOpts)) {
+        for await (const frame of runResponse(deps, current, currentEnv, responseOpts, generation)) {
           if (frame.data === "[DONE]") continue
           const toWrite = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
           if (!toWrite) continue
@@ -978,19 +1018,28 @@ export async function runResponseBufferedSink(
         // (The final attempt — success-commit above OR exhaustion-return below — keeps its frames
         // at the top-level slot only, matching `extractStagePayloads`' finalIdx skip: no dup.)
         currentEnv.ctx.commitAttemptSseEvents()
-        // BLOCK-1: L2 缓冲重试也发 attempt_failed → 打 [RETRY] 行，与 L1 一致可见。
-        // 先定稿本次（截断/transport-close）attempt 的 durationMs（截断路径无 error/response setter）。
+        // Finalize the failed response duration before the coordinator settles this dispatch and
+        // emits the single buffered-retry compatibility event through the recording port.
         currentEnv.ctx.finalizeCurrentAttemptDuration()
-        currentEnv.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "buffered-retry" })
         opts.onAttemptReset?.()
         currentEnv.ctx.resetSseEvents()
         // L2 escalation (RFC §8): let the caller tighten this retry's env (e.g. force aggressive
         // context_management) so the regenerated response is smaller/faster. Format-agnostic — the
         // driver just threads the returned env into the next exchange.
         if (opts.escalate) currentEnv = opts.escalate(currentEnv, attempt)
-        const re = await runExchange(deps, currentEnv, strategies)
-        current = re.upstream
-        currentEnv = re.env
+        const parent = generation?.bindings.get(current)
+        // Direct response-helper tests do not have an S4 generation binding for the original
+        // upstream. Keep their temporary serial compatibility event until P9 removes this API;
+        // every production request has `parent` and emits exactly once through settleDispatch.
+        if (!parent) currentEnv.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "buffered-retry" })
+        const coordinator = parent?.coordinator ?? createDriverCoordinator(deps, currentEnv)
+        const recovered =
+          parent ?
+            await coordinator.runRecovery(parent.candidate, thrown ? "transport-close" : "truncated-before-terminal", currentEnv)
+          : await coordinator.runPrimary()
+        generation?.bind(coordinator, recovered)
+        current = recovered.upstream
+        currentEnv = recovered.env
         continue
       }
       // Exhausted / non-retryable → surface the error (truncation synthesizes one) for the

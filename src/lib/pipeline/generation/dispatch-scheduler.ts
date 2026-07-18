@@ -36,13 +36,21 @@ import {
 
 export type DispatchReason = "initial" | "reactive-retry" | "rate-limit-retry" | "ws-fallback"
 
+export interface DispatchSettlement {
+  verdict: DispatchVerdict
+  reason?: string
+  error?: unknown
+  waitMs?: number
+  retryNextStrategy?: string
+}
+
 export interface DispatchRecordingPort {
   beginCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle }): CandidateHandle
   settleCandidate(candidate: CandidateHandle, input: { verdict: CandidateVerdict; reason?: string }): void
-  beginDispatch(input: { candidate: CandidateHandle; reason: DispatchReason; wire: PreparedRequest; forceHttp: boolean }): DispatchHandle
+  beginDispatch(input: { candidate: CandidateHandle; reason: DispatchReason; wire: PreparedRequest; forceHttp: boolean; env: RequestEnvelope }): DispatchHandle
   recordAdmission(dispatch: DispatchHandle, admission: { admittedAt: number; queueWaitMs: number }): void
   recordOpened(dispatch: DispatchHandle, response: PhysicalTransportResponse): void
-  settleDispatch(dispatch: DispatchHandle, input: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void
+  settleDispatch(dispatch: DispatchHandle, input: DispatchSettlement): void
 }
 
 export type SemanticRetryDecision =
@@ -86,7 +94,7 @@ export interface ScheduledDispatch {
 export interface DispatchScheduler {
   run(input: { candidate: CandidateHandle; env: RequestEnvelope; signal: AbortSignal }): Promise<ScheduledDispatch>
   cancelActive(reason: string): Promise<void>
-  settle(dispatch: DispatchHandle, input: { verdict: DispatchVerdict; reason?: string; error?: unknown }): Promise<void>
+  settle(dispatch: DispatchHandle, input: DispatchSettlement): Promise<void>
 }
 
 interface ActiveDispatch {
@@ -100,7 +108,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
   const cleanup = new Map<DispatchHandle, Promise<void>>()
   const maxDispatches = input.maxDispatches ?? 16
 
-  const recordSettlement = (dispatch: DispatchHandle, settlement: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void => {
+  const recordSettlement = (dispatch: DispatchHandle, settlement: DispatchSettlement): void => {
     if (settled.has(dispatch)) return
     settled.add(dispatch)
     input.recording.settleDispatch(dispatch, settlement)
@@ -109,7 +117,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
   const disposeDispatch = (
     dispatch: DispatchHandle,
     lifecycle: UpstreamDispatchLifecycle,
-    settlement: { verdict: DispatchVerdict; reason?: string; error?: unknown },
+    settlement: DispatchSettlement,
     cancelFirst: boolean,
   ): Promise<void> => {
     const pending = cleanup.get(dispatch)
@@ -157,7 +165,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         if (dispatchNumber >= maxDispatches) throw new Error(`[dispatch-scheduler] dispatch budget exhausted (${maxDispatches})`)
         dispatchNumber++
         const wire = input.prepareWire(current, { reason, forceHttp })
-        const dispatch = input.recording.beginDispatch({ candidate, reason, wire, forceHttp })
+        const dispatch = input.recording.beginDispatch({ candidate, reason, wire, forceHttp, env: current })
         const model = current.model.id || "unknown"
         let admission
         try {
@@ -212,7 +220,12 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
 
         if (response.kind === "fallback-before-first-event") {
           input.admission.observe({ model, completedAt: Date.now() })
-          await disposeDispatch(dispatch, response.lifecycle, { verdict: "discarded", reason: "ws-fallback", error: response.error }, false)
+          await disposeDispatch(
+            dispatch,
+            response.lifecycle,
+            { verdict: "discarded", reason: "ws-fallback", error: response.error, retryNextStrategy: "ws-fallback" },
+            false,
+          )
           forceHttp = true
           reason = "ws-fallback"
           continue
@@ -228,7 +241,18 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
           completedAt: Date.now(),
         })
         if (rateLimited && admissionDecision.kind === "retry") {
-          await disposeDispatch(dispatch, response.lifecycle, { verdict: "discarded", reason: "rate-limit-retry", error: response.error }, false)
+          await disposeDispatch(
+            dispatch,
+            response.lifecycle,
+            {
+              verdict: "discarded",
+              reason: "rate-limit-retry",
+              error: response.error,
+              waitMs: admissionDecision.retryAfterMs,
+              retryNextStrategy: "rate-limit-retry",
+            },
+            false,
+          )
           reason = "rate-limit-retry"
           continue
         }
