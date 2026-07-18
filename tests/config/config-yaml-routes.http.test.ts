@@ -1273,4 +1273,61 @@ anthropic:
     expect(written).not.toContain("heartbeat_sec")
     expect(written).toContain("tool_strip_read_result_tags: true")
   })
+
+  test("PUT /api/config/yaml with an empty body migrates a disk-only legacy key WITHOUT relocating an untouched collection (scoped-patch regression guard)", async () => {
+    // This is the ONLY reason the disk-only migration fix (extractDiskOnlyMigrationPatch,
+    // see plan-3-put-migration.md "偏离与根因") returns a SPARSE patch instead of the full
+    // migrated disk payload: a naive full-payload merge would hand model_overrides back to
+    // mergeConfigIntoDocument even though the PUT body never mentioned it, and
+    // replaceCollection (deleteIn + setIn) would silently relocate it to the END of the
+    // document, destroying its original position and comment. The empty `{}` body here is
+    // deliberate — it proves the disk-only legacy key (timeouts.upstream_keepalive) still
+    // gets migrated even when nothing in the request body triggers it.
+    const original = `# model overrides comment
+model_overrides:
+  sonnet: claude-sonnet-4.7
+  haiku: claude-haiku-4.6
+timeouts:
+  upstream_keepalive: 30
+  stream_idle: 300
+`
+    await writeConfig(original)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+
+    // The legacy key was migrated (disk-only — the PUT body never touched it).
+    expect(written).not.toContain("upstream_keepalive")
+    expect(written).toContain("tcp_keepalive_probe_delay: 30")
+
+    // The untouched collection's comment, keys, and — crucially — its ORIGINAL POSITION
+    // (before `timeouts`, not moved to the end after the newly-appended
+    // `upstream_transport` section) are preserved byte-for-byte.
+    const modelOverridesLines = written
+      .split("\n")
+      .slice(
+        0,
+        written.split("\n").findIndex((line) => line.startsWith("timeouts:")),
+      )
+      .join("\n")
+    expect(modelOverridesLines).toBe(`# model overrides comment
+model_overrides:
+  sonnet: claude-sonnet-4.7
+  haiku: claude-haiku-4.6`)
+
+    // Sanity: upstream_transport (the newly-migrated section) was appended AFTER
+    // timeouts/model_overrides, not interleaved with or ahead of them.
+    const modelOverridesIndex = written.indexOf("model_overrides:")
+    const timeoutsIndex = written.indexOf("timeouts:")
+    const upstreamTransportIndex = written.indexOf("upstream_transport:")
+    expect(modelOverridesIndex).toBeGreaterThanOrEqual(0)
+    expect(timeoutsIndex).toBeGreaterThan(modelOverridesIndex)
+    expect(upstreamTransportIndex).toBeGreaterThan(timeoutsIndex)
+  })
 })
