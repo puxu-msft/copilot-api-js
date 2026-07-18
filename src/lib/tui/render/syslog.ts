@@ -3,7 +3,7 @@
  * (P0 terminal-layer reorg; behavior-equivalent to the former private
  * `consolaPrefix` helper + `onSystemLog` body).
  *
- * A `system.log` event is a non-HTTP consola line republished onto the
+ * A `system.diagnostic` event is a structured diagnostic published onto the
  * observability bus (see `republish.ts`). This module turns it into the exact
  * `[INFO] HH:MM:SS message` line the old consola-hijack reporter produced, so
  * the sink only has to `printLog` the result.
@@ -22,7 +22,7 @@ import { formatTime } from "~/lib/observability/projections/format"
 import { sanitizeTerminalText } from "./sanitize"
 
 /**
- * Render a republished consola log (`system.log` event) into its full terminal
+ * Render a structured diagnostic into its full terminal
  * line — `consolaPrefix(logType, time)` + `message`, no trailing newline.
  * `message` is already args-joined by `republish.ts`; an unknown `logType`
  * yields the bare timestamp prefix (message only when the prefix is empty,

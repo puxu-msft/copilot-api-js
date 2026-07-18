@@ -2,15 +2,12 @@
  * The single consola hijack point for the observability subsystem.
  *
  * `installConsolaRepublish` replaces consola's reporters with one that
- * republishes every log as a `system.log` bus event instead of writing to
- * stdout. ConsoleSink then renders those events to stdout (footer-coordinated)
- * and FileSink writes them to `copilot-api.log`. This is what lets non-HTTP
- * logs reach BOTH sinks through one hijack rather than two competing ones
- * (RFC `history-storage-and-file-logging.md` §2.4 — eliminates the
- * `observability-rewrite.md` D6 double-hijack debt).
+ * snapshots/redacts every log into one canonical `system.diagnostic` bus event
+ * instead of writing stdout or files. TerminalUi and StructuredFileSink render
+ * the same immutable value through independent terminal/NDJSON projections.
  *
  * Reentrancy guard (H1): the bus calls `consola.warn` when a sink handler
- * throws (bus.ts publishSync catch). During a `system.log` fan-out that would
+ * throws (bus.ts publishSync catch). During a `system.diagnostic` fan-out that would
  * re-enter this reporter and re-publish, looping a disk-full FileSink error
  * into a log storm. While publishing we set a flag; any consola call that
  * arrives reentrantly is routed through `terminal-coordinator`'s `emergencyWrite`
@@ -41,7 +38,10 @@ interface ConsolaReporter {
 
 /** Join consola args into a single line, matching the legacy footer-aware reporter. */
 function joinArgs(args: Array<unknown>): string {
-  return args.map(projectDiagnosticArgument).join(" ").trimEnd()
+  return args
+    .map((arg) => projectDiagnosticArgument(arg))
+    .join(" ")
+    .trimEnd()
 }
 
 /**

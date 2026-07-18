@@ -143,7 +143,7 @@ export class WsSink {
       // request.context_updated is HistorySink-only (see events.ts) —
       // ignored here to avoid double-broadcasting; WS already sees the
       // higher-fidelity lifecycle events.
-      // system.log is for stdout/file sinks only — not broadcast to WS clients.
+      // system.diagnostic is for terminal/file sinks only — not broadcast to WS clients.
       // system.request_line is likewise a display-only (stdout/file) synthetic line.
       case "request.model_resolved":
       case "request.attempt_started":
