@@ -1,7 +1,8 @@
 /**
  * P4a new-path lock (RFC 2026-07-07 history-data-model-restructure).
  *
- * The P0 golden (restructure-golden.it.test.ts) proves the `new leg ?? legacy`
+ * The P0 golden (restructure-golden.it.test.ts, deleted in the V2 removal —
+ * it locked V2-only `serialize.ts` internals) proved the `new leg ?? legacy`
  * fallback keeps a LEGACY-ONLY entry byte-identical — but a legacy-only entry has
  * NO per-attempt `upstreamRequest`/`upstreamResponse` legs, so it exercises ONLY
  * the fallback arm and can NOT prove the read-side consumers actually migrated to
@@ -12,9 +13,9 @@
  * read came from `attempts[final]` / `clientResponse` / `_index.derived` / `model`,
  * not from a (here-absent) legacy leg.
  *
- * 承重 (R4-FAIL-A): the `rewrites-req` case is the load-bearing one — an entry with
- * only `attempts[final].upstreamRequest.messages` (no `outboundRequest`) MUST still
- * produce a non-empty rewrites-req, or search silently loses the wire-messages diff.
+ * The `rewrites-req`/`rewrites-resp` (search-index) cases were removed in the V2
+ * removal along with `sqlite/search-index-write.ts` (Phase 2) — that facet had no
+ * live V3 equivalent to migrate to.
  */
 
 import {
@@ -31,7 +32,6 @@ import type {
   //
   HistoryEntry,
   MessageContent,
-  SseEventRecord,
 } from "~/lib/history/types"
 
 import {
@@ -56,7 +56,6 @@ import {
   closeDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
-import { buildSearchIndexForEntry } from "~/lib/history/sqlite/search-index-write"
 import { getStats } from "~/lib/history/stats"
 import {
   //
@@ -75,10 +74,6 @@ function msg(role: string, content: string): MessageContent {
   return { role, content }
 }
 
-function sse(offsetMs: number, type: string, raw: string): SseEventRecord {
-  return { offsetMs, type, raw }
-}
-
 /**
  * A HistoryEntry carrying ONLY the new client/upstream legs — no deprecated
  * top-level `outboundResponse` / `outboundRequest` / `effectiveRequest` /
@@ -95,60 +90,6 @@ function newLegEntry(over: Partial<HistoryEntry>): HistoryEntry {
     ...over,
   } as HistoryEntry
 }
-
-/** buildRewritesReq output for an entry (via the pure search-index builder). */
-function rewritesReq(entry: HistoryEntry): string {
-  return buildSearchIndexForEntry(entry).aux.find((a) => a.source === "rewrites-req")?.text ?? ""
-}
-
-/** buildRewritesResp output for an entry. */
-function rewritesResp(entry: HistoryEntry): string {
-  return buildSearchIndexForEntry(entry).aux.find((a) => a.source === "rewrites-resp")?.text ?? ""
-}
-
-describe("P4a: rewrites facets read the new upstream/client legs", () => {
-  test("承重 R4-FAIL-A: rewrites-req reads attempts[final].upstreamRequest.messages (no outboundRequest)", () => {
-    const entry = newLegEntry({
-      clientRequest: { model: "claude-opus-4-7", messages: [msg("user", "hello world")] },
-      attempts: [
-        {
-          index: 0,
-          durationMs: 1,
-          // NEW leg only — the wire messages projection lives here, NOT on outboundRequest.
-          upstreamRequest: { messages: [msg("user", "hello world [proxy-rewritten]")] },
-        },
-      ],
-    })
-    const rw = rewritesReq(entry)
-    // Non-empty proves buildRewritesReq reached the upstreamRequest.messages diff
-    // (the fallback `outboundRequest` is ABSENT), and the injected marker surfaces.
-    expect(rw.length).toBeGreaterThan(0)
-    expect(rw).toContain("proxy-rewritten")
-  })
-
-  test("rewrites-req is empty when neither upstreamRequest nor outboundRequest carries messages", () => {
-    const entry = newLegEntry({ attempts: [{ index: 0, durationMs: 1 }] })
-    expect(rewritesReq(entry)).toBe("")
-  })
-
-  test("rewrites-resp reads upstreamResponse.sseEvents (upstream) + clientResponse.sseEvents (forwarded)", () => {
-    const entry = newLegEntry({
-      attempts: [
-        {
-          index: 0,
-          durationMs: 1,
-          upstreamResponse: { success: true, sseEvents: [sse(0, "content_block_delta", `data: {"upstream":true}`)] },
-        },
-      ],
-      clientResponse: { sseEvents: [sse(0, "content_block_delta", `data: {"forwarded":true}`)] },
-    })
-    const rw = rewritesResp(entry)
-    // The frame align surfaces the changed raw payloads from BOTH the new legs
-    // (no top-level `sseEvents` / `inboundResponse` present).
-    expect(rw).toContain("upstream")
-    expect(rw).toContain("forwarded")
-  })
-})
 
 describe("P4a: response resolvers read new legs (no legacy outboundResponse)", () => {
   const entry = newLegEntry({

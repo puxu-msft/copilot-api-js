@@ -39,7 +39,7 @@ import {
   updateEntry,
   finalizeEntry,
 } from "~/lib/history"
-import { queryEntryCount } from "~/lib/history/sqlite/read"
+import { getDatabase } from "~/lib/history/sqlite/connection"
 import {
   //
   setStateForTests,
@@ -75,10 +75,17 @@ async function completeEntry(entryId: string, overrides: Partial<Parameters<type
   await finalizeEntry(entryId)
 }
 
-/** Count persisted + in-flight entries. */
+/**
+ * Count persisted + in-flight entries. `sqlite/read.ts` (queryEntryCount) is
+ * deleted in Phase 2 of the V2 removal — this test still exercises `finalizeEntry`,
+ * which still writes to the V2 `entries_v2` table until Phase 3 removes the V2
+ * write link, so the persisted count must still come straight from that table
+ * (not `getHistory().total`, which is V3-only and cannot see V2 rows yet).
+ */
 function totalEntryCount(): number {
   try {
-    return queryEntryCount() + listInFlightEntries().length
+    const row = getDatabase().prepare("SELECT COUNT(*) AS n FROM entries_v2").get() as { n: number }
+    return row.n + listInFlightEntries().length
   } catch {
     return listInFlightEntries().length
   }
