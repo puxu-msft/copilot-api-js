@@ -22,6 +22,11 @@ import {
 import { applyForwardMigrations } from "./sqlite/migrations/run"
 import {
   //
+  startV3Maintenance,
+  stopV3Maintenance,
+} from "./v3/maintenance"
+import {
+  //
   drainV3Writer,
   enqueueModelOperation,
   recoverV3Journal,
@@ -79,6 +84,7 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
     unsubscribeV3Terminal = undefined
     unsubscribeRawCapture?.()
     unsubscribeRawCapture = undefined
+    stopV3Maintenance()
     shutdownRawCapture()
     closeDatabase()
     return
@@ -108,6 +114,12 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
       maxObjectBytes: state.historyRawCaptureMaxObjectBytes,
     })
   })
+  // DB-health (Phase 4b): periodic checkpoint/incremental-vacuum/optimize tick,
+  // adopted from the retired V2 reaper tick's maintenance half (see
+  // v3/maintenance.ts doc comment for what was and wasn't carried over).
+  // Idempotent restart — reopening History (e.g. a config reload) restarts the
+  // timer at a fresh interval rather than stacking a second one.
+  startV3Maintenance()
 }
 
 /**
@@ -126,6 +138,7 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
 export function stopHistoryBackgroundWork(): void {
   unsubscribeRawCapture?.()
   unsubscribeRawCapture = undefined
+  stopV3Maintenance()
   // Signal the background backfills to stop BEFORE the DB closes (each saves its
   // cursor per batch and resumes on next start — a post-close prepare would throw).
 }

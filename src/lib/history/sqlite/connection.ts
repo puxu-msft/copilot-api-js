@@ -79,6 +79,15 @@ export function openDatabase(dbPath: string): Database {
   // dbPath including ":memory:" (this closes the old C3 trap where ":memory:"
   // used to fall through to the V2 schema branch because it never matched the
   // `history-v3.db` basename check).
+  //
+  // DB-health (Phase 4b): unlike the retired V2 open path, there is no
+  // "存活共享库跳过" liveness gate here — V3's `v3_operations` table only ever
+  // stores terminal (committed) rows, with no pending/executing/streaming
+  // concept, so there is no "another process may still be writing an in-flight
+  // row" risk VACUUM needs to defer around (see plan §6 / §4b: the liveness
+  // gate is deliberately NOT adopted from V2). Both run unconditionally.
+  maybeVacuumOnStartup(db, dbPath)
+  seedAnalyzeIfNeeded(db)
   if (dbPath !== ":memory:") consola.info(`[history/v3] opened ${dbPath}`)
   return db
 }
