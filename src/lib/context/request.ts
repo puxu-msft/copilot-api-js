@@ -364,11 +364,13 @@ export function createRequestContext(opts: {
     rawResponsePayload?: PayloadNodeHandle
     sourceBodyPayload?: PayloadNodeHandle
     upstreamFrames: Array<FrameNodeHandle>
+    sseEvents?: Array<SseEventRecord>
     settled: boolean
   }
   const generationAttempts: Array<GenerationAttemptCapture> = []
   const generationAttemptByHandle = new Map<DispatchHandle, GenerationAttemptCapture>()
   let activeGenerationDispatch: DispatchHandle | undefined
+  let selectedGenerationDispatch: DispatchHandle | undefined
   let primaryGenerationCandidate: import("./model-operation-record").CandidateHandle | undefined
   const clientFrameHandles: Array<FrameNodeHandle> = []
 
@@ -655,6 +657,7 @@ export function createRequestContext(opts: {
   ): void {
     if (modelOperationRecorder.sealed || attempt.settled) return
     const v2 = _attempts[attempt.v2Index]
+    if (verdict !== "committed" && attempt.sseEvents !== undefined) v2.sseEvents = [...attempt.sseEvents]
     const response = v2.response
     const attemptError = v2.error
     const primaryResponsePayload = attempt.rawResponsePayload ?? attempt.sourceBodyPayload ?? attempt.responsePayload
@@ -1226,9 +1229,8 @@ export function createRequestContext(opts: {
     setGenerationDispatchSseEvents(dispatch, events, projectToLegacy = false) {
       const generationAttempt = generationAttemptByHandle.get(dispatch)
       if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
-      const attempt = _attempts[generationAttempt.v2Index]
-      attempt.sseEvents = events.length > 0 ? events : undefined
-      if (projectToLegacy) ctx.setSseEvents(events)
+      generationAttempt.sseEvents = events.length > 0 ? events : undefined
+      if (projectToLegacy || selectedGenerationDispatch === dispatch) ctx.setSseEvents(events)
     },
 
     captureUpstreamGenerationDispatchFrame(dispatch, frame, _record) {
@@ -1255,6 +1257,9 @@ export function createRequestContext(opts: {
       if (!row) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
       if (row.candidate !== candidate) throw new Error(`[request-context] dispatch ${dispatch} does not belong to candidate ${candidate}`)
       activeGenerationDispatch = dispatch
+      selectedGenerationDispatch = dispatch
+      const generationAttempt = generationAttemptByHandle.get(dispatch)
+      if (generationAttempt?.sseEvents !== undefined) ctx.setSseEvents(generationAttempt.sseEvents)
     },
 
     settleGenerationDispatch(dispatch, input) {
@@ -1486,7 +1491,7 @@ export function createRequestContext(opts: {
      */
     commitAttemptSseEvents() {
       const attempt = ctx.currentAttempt
-      if (attempt) attempt.sseEvents = _sseEvents ? [..._sseEvents] : undefined
+      if (attempt && attempt.sseEvents === undefined) attempt.sseEvents = _sseEvents ? [..._sseEvents] : undefined
     },
 
     /**

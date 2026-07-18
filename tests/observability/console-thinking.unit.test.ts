@@ -36,7 +36,7 @@ import {
 type RequestEvent = Extract<ObservabilityEvent, { kind: `request.${string}` }>
 
 function makeCtx(id = "ctx-1"): RequestContextSnapshot {
-  return { id, endpoint: "anthropic-messages", method: "POST", path: "/v1/messages", state: "completed", startTime: Date.now() - 100, queueWaitMs: 0 }
+  return { id, endpoint: "anthropic-messages", method: "POST", path: "/v1/messages", state: "executing", startTime: Date.now() - 100, queueWaitMs: 0 }
 }
 
 function thinkingEvent(ctx: RequestContextSnapshot, detail: Record<string, unknown>): RequestEvent {
@@ -44,7 +44,7 @@ function thinkingEvent(ctx: RequestContextSnapshot, detail: Record<string, unkno
 }
 
 function completedEvent(ctx: RequestContextSnapshot): RequestEvent {
-  return { kind: "request.completed", ctx, entry: { id: ctx.id, endpoint: "anthropic-messages", state: "completed" } as never }
+  return { kind: "request.completed", ctx: { ...ctx, state: "completed" }, entry: { id: ctx.id, endpoint: "anthropic-messages", state: "completed" } as never }
 }
 
 function makeCapture() {

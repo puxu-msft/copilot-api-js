@@ -275,7 +275,8 @@ describe("Responses v4 driver path", () => {
       expect(line).toContain("last-frame=response.created@")
     }
 
-    expect(text).toContain("response.created")
+    // response.created is an incomplete pre-boundary prefix and is withheld by fast-retry.
+    expect(text).not.toContain("response.created")
     expect(text).toContain("event: error")
     expect(text).toContain('"type":"server_error"')
     expect(getHistory({ endpoint: "openai-responses" }).entries[0]?.state).toBe("failed")

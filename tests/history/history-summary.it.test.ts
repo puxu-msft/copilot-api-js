@@ -586,10 +586,7 @@ describe("getHistorySummaries", () => {
     expect(terminal.total).toBe(1)
   })
 
-  test("terminalOnly excludes a persisted streaming head row not in the in-flight map (state branch)", async () => {
-    // Belt-and-suspenders: an entry eager-persisted as `streaming` then removed
-    // from the in-flight map (transient state) reads back `active: false`, so only
-    // the state-based check in isInFlightSummary catches it.
+  test("V3 summaries ignore an orphan streaming compatibility head without a canonical operation", async () => {
     const done = insertHistoryEntry("anthropic-messages", {
       model: "done-model",
       messages: [{ role: "user", content: "done" }],
@@ -607,9 +604,10 @@ describe("getHistorySummaries", () => {
     persistEntryEager(streamingRow) // writes the SQLite head row with status=streaming
     removeInFlight(streamingRow.id) // now only the persisted row remains (active: false, state: streaming)
 
+    // V3 reads are source-governed by canonical ModelOperationRecord. The retired compatibility
+    // head is not a valid standalone summary source, so it is absent from both broad and terminal views.
     const all = getHistorySummaries()
-    expect(all.entries.map((e) => e.id).sort()).toEqual([done.id, streamingRow.id].sort())
-    expect(all.entries.find((e) => e.id === streamingRow.id)?.active).toBe(false)
+    expect(all.entries.map((e) => e.id)).toEqual([done.id])
 
     const terminal = getHistorySummaries({ terminalOnly: true })
     expect(terminal.entries.map((e) => e.id)).toEqual([done.id])

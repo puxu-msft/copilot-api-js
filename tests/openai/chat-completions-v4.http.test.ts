@@ -400,8 +400,9 @@ describe("CC v4 driver path", () => {
       expect(line).toContain("last-frame=chat.completion.chunk@")
     }
 
-    // The first frame was forwarded, THEN the OpenAI-shape error frame (event: error).
-    expect(text).toContain("Hello")
+    // Fast-retry keeps the pre-boundary partial private. A failure before the first complete
+    // client block surfaces only the OpenAI error terminus; the raw partial remains in History.
+    expect(text).not.toContain("Hello")
     expect(text).toContain("event: error")
     expect(text).toContain('"type":"server_error"')
     expect(getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state).toBe("failed")

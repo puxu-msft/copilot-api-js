@@ -337,13 +337,14 @@ export function clearHistory(): void {
   const inFlightCount = listInFlight().length
   clearInFlight()
   clearRecentModelOperationTerminalsForTests()
-  if (historyState.enabled) {
-    try {
-      clearAllEntries()
-      consola.warn(`[history] CLEARED test store (${inFlightCount} in-flight entries); this primitive is test-only`)
-    } catch (err: unknown) {
-      consola.error("[history] failed to clear test sqlite entries", err)
-    }
+  // Disabled means the History subsystem has no persisted state and no active product event
+  // surface. Do not touch an unopened DB and do not fabricate clear/stats notifications.
+  if (!historyState.enabled) return
+  try {
+    clearAllEntries()
+    consola.warn(`[history] CLEARED test store (${inFlightCount} in-flight entries); this primitive is test-only`)
+  } catch (err: unknown) {
+    consola.error("[history] failed to clear test sqlite entries", err)
   }
   publishHistoryCleared()
   publishStatsChanged()

@@ -59,6 +59,8 @@ export interface CreateCandidateResponseSessionInput<State, Snapshot> {
   readonly env: RequestEnvelope
   readonly responseRewrites: ReadonlyArray<ResponseRewrite>
   readonly renderer: CandidateResponseRenderer
+  /** False only for response-only compatibility helpers whose synthetic handle is not registered in RequestContext. */
+  readonly dispatchScopedCapture?: boolean
   readonly createState: () => State
   readonly onUpstreamFrame?: (state: State, frame: UpstreamFrame) => void
   readonly onRenderedFrame?: (state: State, frame: ClientFrame) => ClientFrame | undefined
@@ -108,6 +110,14 @@ export function createCandidateResponseSession<State, Snapshot>(
     if (hooked === undefined) return undefined
     const transformed = input.onRenderedFrame ? input.onRenderedFrame(state, hooked) : hooked
     if (transformed === undefined) return undefined
+    if (transformed !== frame || readSyntheticKind(transformed) !== undefined) {
+      const transform = { stage: "client-transform", transformId: "candidate:on-rendered-frame", forceDerived: true }
+      if (typeof input.env.ctx.captureGenerationDispatchFrameTransform === "function") {
+        input.env.ctx.captureGenerationDispatchFrameTransform(input.dispatch, frame, transformed, transform)
+      } else {
+        input.env.ctx.captureGenerationFrameTransform?.(frame, transformed, transform)
+      }
+    }
     const syntheticKind = readSyntheticKind(transformed)
     boundary.observe({
       frame: transformed,
@@ -144,7 +154,7 @@ export function createCandidateResponseSession<State, Snapshot>(
     renderer: input.renderer,
     processor: createResponseProcessor({
       env: input.env,
-      dispatch: input.dispatch,
+      ...(input.dispatchScopedCapture !== false && { dispatch: input.dispatch }),
       responseRewrites: input.responseRewrites,
       renderer: input.renderer,
       onSettled: captureTerminalSnapshot,
@@ -172,5 +182,5 @@ export function createDefaultCandidateResponseSession(input: {
   readonly responseRewrites: ReadonlyArray<ResponseRewrite>
   readonly renderer: CandidateResponseRenderer
 }): CandidateResponseSession<void> {
-  return createCandidateResponseSession({ ...input, createState: () => undefined, snapshot: () => undefined })
+  return createCandidateResponseSession({ ...input, dispatchScopedCapture: false, createState: () => undefined, snapshot: () => undefined })
 }

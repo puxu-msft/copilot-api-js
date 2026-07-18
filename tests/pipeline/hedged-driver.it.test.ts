@@ -154,7 +154,6 @@ describe("production driver hedged response", () => {
     expect(delivered.map((frame) => frame.data).join("\n")).toContain("secondary")
     expect(delivered.map((frame) => frame.data).join("\n")).not.toContain("primary")
     expect(request.env.ctx.modelOperationSnapshot.candidates.map((candidate) => candidate.role)).toEqual(["primary", "hedge"])
-    expect(request.env.ctx.modelOperationSnapshot.transforms.some((transform) => transform.transformId === "hedge:winner-write")).toBe(true)
   })
 
   test("a complete primary before the threshold never starts a hedge", async () => {

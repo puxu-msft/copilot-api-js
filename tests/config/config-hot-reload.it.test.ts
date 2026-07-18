@@ -167,16 +167,46 @@ function yamlForField(f: FieldSpec): string {
 const FIELDS: ReadonlyArray<FieldSpec> = [
   // ── telemetry.* (分层遥测) — 样本值避开 apply 层回落分支（γ≥0.005、resolution 整除 60） ──
   { configKey: "telemetry.enabled", stateKey: "telemetryEnabled", sampleYamlValue: "false", expectedStateValue: false, defaultStateValue: true },
-  { configKey: "telemetry.db_path", stateKey: "telemetryDbPath", sampleYamlValue: "/tmp/tel-test.db", expectedStateValue: "/tmp/tel-test.db", defaultStateValue: "" },
+  {
+    configKey: "telemetry.db_path",
+    stateKey: "telemetryDbPath",
+    sampleYamlValue: "/tmp/tel-test.db",
+    expectedStateValue: "/tmp/tel-test.db",
+    defaultStateValue: "",
+  },
   { configKey: "telemetry.persist_interval", stateKey: "telemetryPersistInterval", sampleYamlValue: "30", expectedStateValue: 30, defaultStateValue: 60 },
   { configKey: "telemetry.rollup_interval", stateKey: "telemetryRollupInterval", sampleYamlValue: "1800", expectedStateValue: 1800, defaultStateValue: 3600 },
   { configKey: "telemetry.cardinality_cap", stateKey: "telemetryCardinalityCap", sampleYamlValue: "100", expectedStateValue: 100, defaultStateValue: 200 },
   { configKey: "telemetry.sketch_gamma", stateKey: "telemetrySketchGamma", sampleYamlValue: "0.02", expectedStateValue: 0.02, defaultStateValue: 0.01 },
   { configKey: "telemetry.cumulative", stateKey: "telemetryCumulative", sampleYamlValue: "false", expectedStateValue: false, defaultStateValue: true },
-  { configKey: "telemetry.tiers.raw.resolution_minutes", stateKey: "telemetryRawResolutionMinutes", sampleYamlValue: "10", expectedStateValue: 10, defaultStateValue: 5 },
-  { configKey: "telemetry.tiers.raw.retention_days", stateKey: "telemetryRawRetentionDays", sampleYamlValue: "14", expectedStateValue: 14, defaultStateValue: 7 },
-  { configKey: "telemetry.tiers.hourly.retention_days", stateKey: "telemetryHourlyRetentionDays", sampleYamlValue: "30", expectedStateValue: 30, defaultStateValue: 90 },
-  { configKey: "telemetry.tiers.daily.retention_days", stateKey: "telemetryDailyRetentionDays", sampleYamlValue: "180", expectedStateValue: 180, defaultStateValue: 0 },
+  {
+    configKey: "telemetry.tiers.raw.resolution_minutes",
+    stateKey: "telemetryRawResolutionMinutes",
+    sampleYamlValue: "10",
+    expectedStateValue: 10,
+    defaultStateValue: 5,
+  },
+  {
+    configKey: "telemetry.tiers.raw.retention_days",
+    stateKey: "telemetryRawRetentionDays",
+    sampleYamlValue: "14",
+    expectedStateValue: 14,
+    defaultStateValue: 7,
+  },
+  {
+    configKey: "telemetry.tiers.hourly.retention_days",
+    stateKey: "telemetryHourlyRetentionDays",
+    sampleYamlValue: "30",
+    expectedStateValue: 30,
+    defaultStateValue: 90,
+  },
+  {
+    configKey: "telemetry.tiers.daily.retention_days",
+    stateKey: "telemetryDailyRetentionDays",
+    sampleYamlValue: "180",
+    expectedStateValue: 180,
+    defaultStateValue: 0,
+  },
   // ── Top-level scalars ───────────────────────────────────────────────
   {
     configKey: "timeouts.response_header",
@@ -932,7 +962,8 @@ interface ExemptField {
 const EXEMPT: ReadonlyArray<ExemptField> = [
   {
     configKey: "unknown_endpoint_logging.not_found",
-    reason: "nested object sub-key → state.unknownEndpointLogging.notFound; config→state + null-delete + default(warn) + retain-on-absence covered in tests/config/unknown-endpoint-logging-config.unit.test.ts",
+    reason:
+      "nested object sub-key → state.unknownEndpointLogging.notFound; config→state + null-delete + default(warn) + retain-on-absence covered in tests/config/unknown-endpoint-logging-config.unit.test.ts",
   },
   {
     configKey: "unknown_endpoint_logging.method_not_allowed",
@@ -1009,6 +1040,20 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
     configKey: "chat_completions.buffered_retry",
     reason: "bool|map mode switch + caps → chatCompletionsBufferedRetry + bufferedRetryOverrides.chat_completions; see buffered-retry-keys.test.ts",
   },
+  // Generation runtime is an object-shaped, relation-validated patch (total >= active,
+  // primary + secondary <= active), so it cannot use the scalar FieldSpec registry.
+  // Parsing, frozen per-request snapshots, disabled-timeout fallback, and state reset are
+  // covered by generation-runtime-config.unit.test.ts.
+  { configKey: "generation.hedge.enabled", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.hedge.threshold_sec", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.hedge.max_secondary_candidates", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.hedge.allow_server_tools", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.recovery.max_candidates", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.max_active_candidates", reason: "relation-validated generation budget; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.max_active_dispatches", reason: "relation-validated generation budget; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.max_total_candidates", reason: "relation-validated generation budget; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.max_total_dispatches", reason: "relation-validated generation budget; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.cleanup_grace_sec", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
 ]
 
 // ============================================================================

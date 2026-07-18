@@ -802,6 +802,7 @@ async function maybeRunHedgedResponseSink(
     })
     if (raced.kind === "failure") {
       binding.coordinator.releaseCandidate(binding.candidate.candidate)
+      if (classifyStreamError(raced.error) === "client-abort") return { kind: "settled-abort" }
       return { kind: "stream-error", error: raced.error }
     }
 
@@ -809,14 +810,14 @@ async function maybeRunHedgedResponseSink(
     runtime.bind(binding.coordinator, selected)
     env.ctx.selectGenerationWinner(selected.candidate, selected.dispatch)
     if (raced.kind === "terminal") {
-      await writeWinnerFrames(env, sink, selected.candidate, selected.dispatch, raced.bufferedFrames)
+      await writeWinnerFrames(sink, selected.candidate, raced.bufferedFrames)
       binding.coordinator.releaseCandidate(selected.candidate)
       return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
     }
 
     env.ctx.trackOperationBody(raced.loserCleanup)
-    await writeWinnerFrames(env, sink, selected.candidate, selected.dispatch, raced.bufferedFrames)
-    for await (const frame of raced.liveFrames) await writeWinnerFrame(env, sink, selected.candidate, selected.dispatch, frame)
+    await writeWinnerFrames(sink, selected.candidate, raced.bufferedFrames)
+    for await (const frame of raced.liveFrames) await writeWinnerFrame(sink, selected.candidate, frame)
     binding.coordinator.releaseCandidate(selected.candidate)
     return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
   } catch (error) {
@@ -852,15 +853,8 @@ function withCandidateResponseOpts(
   }
 }
 
-async function writeWinnerFrames(
-  env: RequestEnvelope,
-  sink: ClientSink,
-  candidate: CandidateHandle,
-  dispatch: DispatchHandle,
-  frames: ReadonlyArray<ClientFrame>,
-): Promise<void> {
+async function writeWinnerFrames(sink: ClientSink, candidate: CandidateHandle, frames: ReadonlyArray<ClientFrame>): Promise<void> {
   const delivery = getDownstreamDeliverySession(sink)
-  for (const frame of frames) captureWinnerFrame(env, dispatch, frame)
   if (delivery) {
     await delivery.commitWinnerBlock(String(candidate), frames)
     return
@@ -868,25 +862,10 @@ async function writeWinnerFrames(
   for (const frame of frames) await sink.write(frame)
 }
 
-async function writeWinnerFrame(
-  env: RequestEnvelope,
-  sink: ClientSink,
-  candidate: CandidateHandle,
-  dispatch: DispatchHandle,
-  frame: ClientFrame,
-): Promise<void> {
-  captureWinnerFrame(env, dispatch, frame)
+async function writeWinnerFrame(sink: ClientSink, candidate: CandidateHandle, frame: ClientFrame): Promise<void> {
   const delivery = getDownstreamDeliverySession(sink)
   if (delivery) await delivery.writeWinnerFrame(String(candidate), frame)
   else await sink.write(frame)
-}
-
-function captureWinnerFrame(env: RequestEnvelope, dispatch: DispatchHandle, frame: ClientFrame): void {
-  env.ctx.captureGenerationDispatchFrameTransform(dispatch, frame, frame, {
-    stage: "client-transform",
-    transformId: "hedge:winner-write",
-    forceDerived: true,
-  })
 }
 
 /**
@@ -925,6 +904,8 @@ async function runResponseSink(
 ): Promise<ResponseOutcome> {
   const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
   if (hedged) return hedged
+  const unhedgedBinding = generation?.bindings.get(upstream)
+  if (unhedgedBinding) env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
   const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
   let finish: import("./types").ResponseFinishResult | undefined
   const responseOpts: RunResponseOpts = {
@@ -1000,6 +981,8 @@ export async function runResponseBufferedSink(
 ): Promise<ResponseOutcome> {
   const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
   if (hedged) return hedged
+  const unhedgedBinding = generation?.bindings.get(upstream)
+  if (unhedgedBinding) env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
   const cap = opts.retryCap ?? 0
   const bufferCapBytes = opts.bufferCapBytes ?? 0
   const vendor = opts.telemetryVendor ?? "unknown"
@@ -1279,6 +1262,7 @@ export async function runResponseBufferedSink(
             await coordinator.runRecovery(parent.candidate, thrown ? "transport-close" : "truncated-before-terminal", currentEnv)
           : await coordinator.runPrimary()
         generation?.bind(coordinator, recovered)
+        currentEnv.ctx.selectGenerationWinner(recovered.candidate, recovered.dispatch)
         current = recovered.upstream
         currentEnv = recovered.env
         continue

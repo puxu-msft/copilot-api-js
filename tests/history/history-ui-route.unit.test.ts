@@ -5,6 +5,8 @@ import {
   test,
 } from "bun:test"
 import { Hono } from "hono"
+import { existsSync } from "node:fs"
+import { join } from "node:path"
 
 import { historyRoutes } from "~/routes/history/route"
 import {
@@ -37,6 +39,12 @@ describe("history UI routes", () => {
   test("GET /ui serves the history UI shell", async () => {
     const res = await app.request("http://localhost/ui")
 
+    const builtUi = join(import.meta.dirname, "../..", "ui/dist/index.html")
+    if (!existsSync(builtUi)) {
+      // Source-only checkouts intentionally have no generated UI artifact; the route truthfully 404s.
+      expect(res.status).toBe(404)
+      return
+    }
     expect(res.status).toBe(200)
     expect(res.headers.get("Content-Type")).toContain("text/html")
 

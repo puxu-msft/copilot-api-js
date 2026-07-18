@@ -99,6 +99,10 @@ describe("owns-sink two-racer integration (heartbeat SOFT vs upstream-idle HARD)
     })
 
     const outcomeP = makeDriver().runResponseSink(upstream, makeEnv(), sink)
+    // CandidateResponseSession adds one async generator hand-off before the guard's first next().
+    // Flush microtasks so both heartbeat and upstream-idle timers are armed before fake time moves.
+    await Promise.resolve()
+    await Promise.resolve()
 
     // The SOFT forward-idle racer injects a ping every 10s of silence.
     await clock.advance(10_000) // ping #1

@@ -64,6 +64,9 @@ function fakeContext(opts?: { originalRequest?: { stream?: boolean; model?: stri
     recordFeature: (feature: string, detail?: Record<string, unknown>) => {
       features.push({ feature, detail })
     },
+    setClientResponseStatus() {},
+    setInboundResponseHeaders() {},
+    finalizeModelOperationDelivery() {},
   }
   return {
     headers,
