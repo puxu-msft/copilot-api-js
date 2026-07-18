@@ -84,6 +84,12 @@ describe("Task 5.1 — reactive retry leg end-to-end (mockUpstreamError.toolFiel
     // terminal) entry's `attempts` field is empty until completion (only activity fields mirror
     // incrementally; `toHistoryEntry`'s full attempts array is written at complete()/fail()).
     result.env.ctx.complete({ success: true, model: "claude-x", usage: { input_tokens: 1, output_tokens: 1 }, content: "ok" })
+    // V3 canonical persistence: complete() settles the LOGICAL context, but the canonical
+    // ModelOperationRecord only commits its terminal + publishes once delivery is finalized too —
+    // in production this is driven by observabilityMiddleware / the handler's post-stream call
+    // (RFC pre-response-abort-handling); a direct driver.runRequest()+ctx.complete() test must call
+    // it itself or the entry never lands in the V3 store (History V2 removal Phase 1 audit step 2).
+    result.env.ctx.finalizeModelOperationDelivery()
 
     // ── Independent oracle: the REAL persisted history entry, not the hook / driver call log. ──
     const entry = getEntry(result.env.ctx.id)
