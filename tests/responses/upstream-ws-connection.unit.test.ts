@@ -64,6 +64,18 @@ class StrictFakeSocket extends FakeSocket {
   }
 }
 
+class DelayedCloseSocket extends FakeSocket {
+  override close(code?: number, reason?: string): void {
+    this.closeCalls.push({ code, reason })
+    this.readyState = this.CLOSING
+  }
+
+  finishClose(): void {
+    this.readyState = this.CLOSED
+    this.dispatchEvent(new CloseEvent("close", { code: 1000, reason: "closed" }))
+  }
+}
+
 describe("upstream websocket connection", () => {
   let socket: FakeSocket
 
@@ -152,6 +164,58 @@ describe("upstream websocket connection", () => {
     expect(connection.isOpen).toBe(true)
 
     connection.close()
+    expect(connection.isOpen).toBe(false)
+  })
+
+  test("dispose stays pending until the socket close barrier removes the connection owner", async () => {
+    const delayed = new DelayedCloseSocket()
+    const connection = createUpstreamWsConnection({
+      headers: {},
+      model: "gpt-5.2",
+      idleTimeoutMs: 0,
+      createSocket: () => delayed,
+    })
+    const connecting = connection.connect()
+    delayed.open()
+    await connecting
+
+    let disposed = false
+    const barrier = connection.dispose("hedged loser").then(() => {
+      disposed = true
+    })
+    await flushMicrotasks()
+
+    expect(connection.isOpen).toBe(false)
+    expect(disposed).toBe(false)
+    delayed.finishClose()
+    await barrier
+    expect(disposed).toBe(true)
+  })
+
+  test("dispose during handshake rejects the connect and cannot leak a late-open socket", async () => {
+    const delayed = new DelayedCloseSocket()
+    const connection = createUpstreamWsConnection({
+      headers: {},
+      model: "gpt-5.2",
+      idleTimeoutMs: 0,
+      createSocket: () => delayed,
+    })
+    const connecting = connection.connect()
+    let disposed = false
+    const barrier = connection.dispose("hedged loser").then(() => {
+      disposed = true
+    })
+    await flushMicrotasks()
+
+    await expect(connecting).rejects.toThrow(/hedged loser/i)
+    expect(disposed).toBe(false)
+    // The open listener was detached synchronously; a late open cannot promote this socket.
+    delayed.open()
+    expect(connection.isOpen).toBe(false)
+    expect(disposed).toBe(false)
+    delayed.finishClose()
+    await barrier
+    expect(disposed).toBe(true)
     expect(connection.isOpen).toBe(false)
   })
 
@@ -310,6 +374,32 @@ describe("upstream websocket connection", () => {
     // was absorbed by the guard, leaving the connection cleanly torn down.
     expect(onCloseCalled).toBe(true)
     expect(connection.isOpen).toBe(false)
+  })
+
+  test("a throwing onClose cannot wedge the dispose barrier", async () => {
+    const delayed = new DelayedCloseSocket()
+    const connection = createUpstreamWsConnection({
+      headers: {},
+      model: "gpt-5.5",
+      createSocket: () => delayed,
+      onClose: () => {
+        throw new Error("onClose boom")
+      },
+    })
+    const connecting = connection.connect()
+    delayed.open()
+    await connecting
+
+    let settled = false
+    const disposal = connection.dispose("test disposal").then(() => {
+      settled = true
+    })
+    await flushMicrotasks()
+    expect(settled).toBe(false)
+    delayed.finishClose()
+
+    await expect(disposal).resolves.toBeUndefined()
+    expect(settled).toBe(true)
   })
 
   test("closes socket when send throws synchronously", async () => {

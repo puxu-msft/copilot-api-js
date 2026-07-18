@@ -21,6 +21,7 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
+import type { UpstreamDispatchLifecycle } from "~/lib/pipeline/types"
 import type {
   //
   ResponsesPayload,
@@ -63,7 +64,9 @@ export function canUseUpstreamWebSocket(model: Model | undefined, modelKey: stri
   return state.upstreamWebSocket && !manager.temporarilyDisabled(modelKey) && !manager.stopped && isWsResponsesSupported(model)
 }
 
-export type UpstreamWsAttempt = { kind: "ok"; generator: AsyncGenerator<ServerSentEventMessage> } | { kind: "fallback"; error: unknown }
+export type UpstreamWsAttempt =
+  | { kind: "ok"; generator: AsyncGenerator<ServerSentEventMessage>; lifecycle: UpstreamDispatchLifecycle }
+  | { kind: "fallback"; error: unknown }
 
 /** Options governing one upstream-WS attempt (reuse keying + lifecycle aborts). */
 export interface UpstreamWsAttemptOptions {
@@ -78,6 +81,8 @@ export interface UpstreamWsAttemptOptions {
    * distinguishes reaper-cancel → `stream-error` → error frame for a live client (缺陷④).
    */
   reaperSignal?: AbortSignal
+  /** Candidate/dispatch-local cancellation, independent from request-level signals. */
+  dispatchSignal?: AbortSignal
 }
 
 /**
@@ -90,6 +95,9 @@ export async function attemptUpstreamResponsesWs(
   prepared: PreparedOpenAIRequest<ResponsesPayload>,
   opts?: UpstreamWsAttemptOptions,
 ): Promise<UpstreamWsAttempt> {
+  if (opts?.dispatchSignal?.aborted) {
+    throw opts.dispatchSignal.reason instanceof Error ? opts.dispatchSignal.reason : new DOMException("The operation was aborted.", "AbortError")
+  }
   const manager = getUpstreamWsManager()
   const { wire } = prepared
   const previousResponseId = typeof wire.previous_response_id === "string" ? wire.previous_response_id : undefined
@@ -130,13 +138,21 @@ export async function attemptUpstreamResponsesWs(
   const shutdownSignal = getShutdownSignal()
   const clientAbortSignal = opts?.clientAbortSignal
   const reaperSignal = opts?.reaperSignal
-  const wsRequestSignal = combineAbortSignals(shutdownSignal, clientAbortSignal, reaperSignal, requestAbort.signal)
+  const dispatchSignal = opts?.dispatchSignal
+  const wsRequestSignal = combineAbortSignals(shutdownSignal, clientAbortSignal, reaperSignal, dispatchSignal, requestAbort.signal)
 
-  // Forward external aborts into the local controller so finally-cleanup is consistent.
-  const onExternalAbort = () => requestAbort.abort()
+  // Forward external aborts into the local controller. Once the lifecycle handle exists,
+  // the same callback also owns connection disposal so quiescence cannot depend on a consumer
+  // ever starting the prefetched-frame generator.
+  let disposeAfterHandle: ((reason: string) => void) | undefined
+  const onExternalAbort = () => {
+    requestAbort.abort()
+    disposeAfterHandle?.("Request aborted")
+  }
   shutdownSignal.addEventListener("abort", onExternalAbort, { once: true })
   clientAbortSignal?.addEventListener("abort", onExternalAbort, { once: true })
   reaperSignal?.addEventListener("abort", onExternalAbort, { once: true })
+  dispatchSignal?.addEventListener("abort", onExternalAbort, { once: true })
 
   const fetchSignal = createResponseHeaderTimeoutSignal(wire.model)
   const onFetchTimeout = () => {
@@ -148,6 +164,7 @@ export async function attemptUpstreamResponsesWs(
     shutdownSignal.removeEventListener("abort", onExternalAbort)
     clientAbortSignal?.removeEventListener("abort", onExternalAbort)
     reaperSignal?.removeEventListener("abort", onExternalAbort)
+    dispatchSignal?.removeEventListener("abort", onExternalAbort)
     fetchSignal?.removeEventListener("abort", onFetchTimeout)
   }
 
@@ -155,6 +172,12 @@ export async function attemptUpstreamResponsesWs(
     if (!connection.isOpen) {
       // Handshake honors fetch timeout via the same combined signal.
       await connection.connect({ signal: combineAbortSignals(wsRequestSignal, fetchSignal) })
+    }
+
+    // Admission may have succeeded just before cancellation. Re-check at the last possible
+    // point before `sendRequest()` puts response.create on the physical wire.
+    if (wsRequestSignal?.aborted) {
+      throw wsRequestSignal.reason instanceof Error ? wsRequestSignal.reason : new DOMException("The operation was aborted.", "AbortError")
     }
 
     const iterator = connection.sendRequest(wire, { abortSignal: wsRequestSignal })[Symbol.asyncIterator]()
@@ -168,20 +191,81 @@ export async function attemptUpstreamResponsesWs(
     fetchSignal?.removeEventListener("abort", onFetchTimeout)
     manager.recordSuccessfulStart(wire.model)
 
+    let resolveQuiesced!: () => void
+    let rejectQuiesced!: (error: unknown) => void
+    const quiesced = new Promise<void>((resolve, reject) => {
+      resolveQuiesced = resolve
+      rejectQuiesced = reject
+    })
+    let disposal: Promise<void> | undefined
+    let iteratorCleanup: Promise<void> | undefined
+    let disposing = false
+    const ensureIteratorCleanup = (): Promise<void> => {
+      iteratorCleanup ??= (async () => {
+        if (typeof iterator.return !== "function") return
+        try {
+          await iterator.return(undefined)
+        } catch {
+          // Connection disposal owns the terminal result; iterator cleanup is best-effort,
+          // but the quiescence barrier is later than this cleanup attempt.
+        }
+      })()
+      return iteratorCleanup
+    }
+    const ensureDisposal = (reason?: string): Promise<void> => {
+      if (disposal) return disposal
+      disposing = true
+      // Disposal is the ownership barrier. Detach every external callback before the
+      // connection closes so quiesced never resolves with a live abort listener.
+      detachExternal()
+      if (!requestAbort.signal.aborted) requestAbort.abort(new DOMException(reason ?? "The operation was aborted.", "AbortError"))
+      disposal = Promise.all([connection.dispose(reason ?? "Dispatch disposed"), ensureIteratorCleanup()]).then(
+        () => resolveQuiesced(),
+        (error: unknown) => {
+          rejectQuiesced(error)
+          throw error
+        },
+      )
+      // `cancel()` is synchronous; observe a disposal rejection until an owner awaits the barrier.
+      void disposal.catch(() => {})
+      return disposal
+    }
+    const lifecycle: UpstreamDispatchLifecycle = {
+      cancel(reason) {
+        void ensureDisposal(reason)
+      },
+      async dispose(reason) {
+        await ensureDisposal(reason)
+        await quiesced
+        return { quiesced: true, connectionReusable: false }
+      },
+      quiesced,
+    }
+    disposeAfterHandle = (reason) => {
+      void ensureDisposal(reason)
+    }
+    if (shutdownSignal.aborted || clientAbortSignal?.aborted || reaperSignal?.aborted || dispatchSignal?.aborted) disposeAfterHandle("Request aborted")
+
     return {
       kind: "ok",
+      lifecycle,
       generator: streamWsEvents({
         firstEvent: first.value,
         iterator,
+        ensureIteratorCleanup,
         requestAbort,
+        isCancelled: () => requestAbort.signal.aborted,
         shutdownSignal,
         clientAbortSignal,
         reaperSignal,
         idleTimeoutMs: resolveStreamIdleTimeoutMs(wire.model),
-        onComplete: () => {
+        onComplete: async (naturalCompletion) => {
           shutdownSignal.removeEventListener("abort", onExternalAbort)
           clientAbortSignal?.removeEventListener("abort", onExternalAbort)
           reaperSignal?.removeEventListener("abort", onExternalAbort)
+          dispatchSignal?.removeEventListener("abort", onExternalAbort)
+          if (naturalCompletion && !disposing) resolveQuiesced()
+          else await ensureDisposal("WS response consumer stopped before natural completion")
         },
       }),
     }
@@ -190,8 +274,10 @@ export async function attemptUpstreamResponsesWs(
     // Abort the WS request so the connection's busy state is cleared even when
     // the failure originated outside sendRequest (e.g. handshake error).
     requestAbort.abort()
+    await connection.dispose("Before-first-event fallback")
+    const cancelled = shutdownSignal.aborted || clientAbortSignal?.aborted || reaperSignal?.aborted || dispatchSignal?.aborted
+    if (cancelled) return { kind: "fallback", error }
     manager.recordFallback(wire.model)
-    connection.close()
     consola.warn(
       `[responses] Upstream WS failed before first event, falling back to HTTP `
         + `(${manager.consecutiveFallbacks(wire.model)}/3): ${error instanceof Error ? error.message : String(error)}`,
@@ -203,20 +289,27 @@ export async function attemptUpstreamResponsesWs(
 interface StreamWsEventsOptions {
   firstEvent: ResponsesStreamEvent
   iterator: AsyncIterator<ResponsesStreamEvent>
+  ensureIteratorCleanup: () => Promise<void>
   requestAbort: AbortController
+  isCancelled: () => boolean
   shutdownSignal: AbortSignal | undefined
   clientAbortSignal: AbortSignal | undefined
   reaperSignal: AbortSignal | undefined
   /** Per-model frame-idle timeout (ms; 0 = disabled), resolved by the caller (INV-2 — this deep fn never sees the model). */
   idleTimeoutMs: number
-  onComplete: () => void
+  onComplete: (naturalCompletion: boolean) => Promise<void>
 }
 
 async function* streamWsEvents(opts: StreamWsEventsOptions): AsyncGenerator<ServerSentEventMessage> {
-  const { firstEvent, iterator, requestAbort, shutdownSignal, clientAbortSignal, reaperSignal, idleTimeoutMs, onComplete } = opts
+  const { firstEvent, iterator, ensureIteratorCleanup, requestAbort, isCancelled, shutdownSignal, clientAbortSignal, reaperSignal, idleTimeoutMs, onComplete } =
+    opts
   const idleAbortSignal = combineAbortSignals(shutdownSignal, clientAbortSignal, reaperSignal)
+  let naturalCompletion = false
 
   try {
+    // The first frame was prefetched before the lifecycle handle escaped. A loser may be
+    // cancelled before its consumer starts; never leak that cached frame after the barrier.
+    if (isCancelled()) return
     yield toSseMessage(firstEvent)
 
     for (;;) {
@@ -234,22 +327,20 @@ async function* streamWsEvents(opts: StreamWsEventsOptions): AsyncGenerator<Serv
       // and never surfaces as a false "natural completion". Do NOT change this to
       // throw: that would break bare-iteration callers and double-handle shutdown.
       if (result === STREAM_ABORTED) return
-      if (result.done) return
+      if (result.done) {
+        naturalCompletion = true
+        return
+      }
       yield toSseMessage(result.value)
     }
   } finally {
     // Cover three exit paths uniformly: normal completion, consumer early-return,
     // and exceptions (idle timeout, parse error, etc.). Each must free the
     // connection's busy state and detach external listeners.
-    requestAbort.abort()
-    onComplete()
-    if (typeof iterator.return === "function") {
-      try {
-        await iterator.return(undefined)
-      } catch {
-        // Connection-side iterator.return is best-effort.
-      }
-    }
+    if (!naturalCompletion) requestAbort.abort()
+    await ensureIteratorCleanup()
+    // Quiescence is later than iterator cleanup. History may seal after this callback.
+    await onComplete(naturalCompletion)
   }
 }
 

@@ -15,6 +15,7 @@ import type { PreparedRequest } from "~/lib/pipeline/types"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
+  getUpstreamWsManager,
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
@@ -76,6 +77,7 @@ function failingConnection(onSend: () => void, onClose: () => void): UpstreamWsC
     conversationId: undefined,
     handshakeHeaders: {},
     close: onClose,
+    dispose: async () => onClose(),
   }
 }
 
@@ -87,6 +89,8 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
   let wsCloses = 0
 
   beforeEach(() => {
+    wsSends = 0
+    wsCloses = 0
     setStateForTests({ upstreamWebSocket: true, responseHeaderTimeout: 0 })
     resetUpstreamWsManagerForTests()
     setUpstreamWsConnectionFactoryForTests(() =>
@@ -120,6 +124,17 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
     expect(transports).toEqual(["upstream-ws", "http"])
   })
 
+  test("physical open returns a typed fallback-before-first-event result", async () => {
+    const transports: Array<string> = []
+    const transport = createUpstreamResponsesTransport({ idleTimeoutMs: 5000 })
+
+    const result = await transport.open(makeWire(), makeEnv(transports))
+
+    expect(result.kind).toBe("fallback-before-first-event")
+    await expect(result.lifecycle.quiesced).resolves.toBeUndefined()
+    expect(transports).toEqual(["upstream-ws"])
+  })
+
   test("client cancellation never becomes an HTTP fallback dispatch", async () => {
     const clientAbort = new AbortController()
     clientAbort.abort(new DOMException("The operation was aborted.", "AbortError"))
@@ -135,5 +150,24 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
     await expect(transport.send(makeWire(), env)).rejects.not.toBeInstanceOf(UpstreamTransportFallbackError)
     expect(httpCalls).toBe(0)
     expect(transports).toEqual(["upstream-ws"])
+  })
+
+  test("dispatch-local loser cancellation never becomes an HTTP fallback dispatch", async () => {
+    const dispatchAbort = new AbortController()
+    dispatchAbort.abort(new DOMException("candidate lost", "AbortError"))
+    const transports: Array<string> = []
+    const env = makeEnv(transports)
+    const transport = createUpstreamResponsesTransport({ idleTimeoutMs: 5000 })
+    let httpCalls = 0
+    setFetchMock(() => {
+      httpCalls++
+      return createSseResponse([])
+    })
+
+    await expect(transport.send(makeWire(), env, { signal: dispatchAbort.signal })).rejects.not.toBeInstanceOf(UpstreamTransportFallbackError)
+    expect(wsSends).toBe(0)
+    expect(httpCalls).toBe(0)
+    expect(transports).toEqual(["upstream-ws"])
+    expect(getUpstreamWsManager().consecutiveFallbacks("gpt-5.2")).toBe(0)
   })
 })

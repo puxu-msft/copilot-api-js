@@ -78,8 +78,12 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import {
+  //
+  modelIdFor,
+  stripThinkingSignatureFor,
+} from "~/lib/config/model-translation"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { modelIdFor, stripThinkingSignatureFor } from "~/lib/config/model-translation"
 import {
   //
   captureInboundHeaders,
@@ -89,7 +93,6 @@ import {
   getAgentIdFromHeaders,
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
-import { resolveResponseSessionId } from "~/lib/openai/response-session-store"
 import {
   //
   ENDPOINT,
@@ -99,6 +102,7 @@ import {
   resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
+import { resolveResponseSessionId } from "~/lib/openai/response-session-store"
 import {
   //
   normalizeCallIds,
@@ -451,6 +455,7 @@ const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
   shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
   "reaper-cancel": "Request cancelled by stale-request reaper",
+  "dispatch-cancel": "Upstream dispatch cancelled",
   other: "Stream error",
 }
 

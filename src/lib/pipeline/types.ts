@@ -56,6 +56,22 @@ export type UpstreamFrame = SseFrame
 /** One SSE frame flowing to the client, post-rewrite/translate (S5→S7). */
 export type ClientFrame = SseFrame
 
+export interface DispatchDisposalResult {
+  quiesced: true
+  connectionReusable: boolean
+  detail?: string
+}
+
+/** Lifecycle owner for one physical upstream dispatch. */
+export interface UpstreamDispatchLifecycle {
+  /** Cooperative cancellation; returns immediately. */
+  cancel(reason?: string): void
+  /** Idempotent force-disposal barrier; no local frame/header callback can fire after resolve. */
+  dispose(reason?: string): Promise<DispatchDisposalResult>
+  /** Resolves on natural completion or disposal. */
+  quiesced: Promise<void>
+}
+
 /**
  * The result of a single upstream exchange (S4 output). Streaming responses
  * expose `frames`; non-streaming responses expose `nonStream`. `headers`
@@ -66,6 +82,8 @@ export interface UpstreamStream {
   /** Parsed JSON body for non-streaming responses (undefined when streaming). */
   nonStream?: unknown
   headers: Headers
+  /** Real transports always provide this; hook mocks may omit it during the migration. */
+  lifecycle?: UpstreamDispatchLifecycle
 }
 
 // ============================================================================
@@ -103,6 +121,8 @@ export interface PreparedRequest {
 export interface TransportDispatchOptions {
   /** Skip the Responses WS-first choice for an explicit `ws-fallback` HTTP dispatch. */
   forceHttp?: boolean
+  /** Candidate/dispatch-local cancellation, independent from request-level lifecycle signals. */
+  signal?: AbortSignal
 }
 
 /**
@@ -114,6 +134,17 @@ export interface TransportDispatchOptions {
  */
 export interface Transport {
   send(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<UpstreamStream>
+}
+
+export type PhysicalTransportResponse =
+  | { kind: "stream"; upstream: UpstreamStream & { lifecycle: UpstreamDispatchLifecycle }; lifecycle: UpstreamDispatchLifecycle }
+  | { kind: "json"; body: unknown; headers: Headers; lifecycle: UpstreamDispatchLifecycle }
+  | { kind: "fallback-before-first-event"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
+  | { kind: "failed-open"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
+
+/** Mandatory ownership contract consumed by the upcoming DispatchScheduler. */
+export interface PhysicalTransport {
+  open(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<PhysicalTransportResponse>
 }
 
 // ============================================================================

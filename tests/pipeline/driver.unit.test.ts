@@ -291,7 +291,9 @@ describe("driver.runRequest — orchestration", () => {
     expect(admitted).toHaveLength(2)
     expect(calls.beginAttempt).toEqual([{}, { strategy: "ws-fallback" }])
     expect(calls.recordAttemptFailure).toEqual([{ willRetry: true, nextStrategy: "ws-fallback" }])
-    expect(dispatchOptions).toEqual([undefined, { forceHttp: true }])
+    expect(dispatchOptions).toHaveLength(2)
+    expect(dispatchOptions[0]).toMatchObject({ signal: expect.any(AbortSignal) })
+    expect(dispatchOptions[1]).toMatchObject({ signal: expect.any(AbortSignal), forceHttp: true })
   })
 
   test("reject: decideRoute(reject) → ok:false, transport never called", async () => {

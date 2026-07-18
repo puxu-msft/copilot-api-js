@@ -391,17 +391,37 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     }
 
     const req = session.request(headers)
+    // Physical-dispatch teardown barrier. A Web ReadableStream `cancel()` may return a
+    // promise; make it resolve only after this owned h2 stream emitted `close`. The pooled
+    // session remains untouched and can continue serving sibling streams.
+    let resolveRequestClosed!: () => void
+    const requestClosed = new Promise<void>((resolve) => {
+      resolveRequestClosed = resolve
+    })
+    req.once("close", () => {
+      init.onStreamClosed?.()
+      resolveRequestClosed()
+    })
+    let responseResolved = false
+    let rejectionScheduled = false
+    const rejectAfterRequestClosed = (error: Error): void => {
+      if (responseResolved || rejectionScheduled) return
+      rejectionScheduled = true
+      void requestClosed.then(() => reject(error))
+    }
 
     // Pre-response abort → reject; the post-response abort (cancel the body
     // stream) is wired inside the `response` handler below.
     const onPreResponseAbort = (): void => {
       req.close(http2.constants.NGHTTP2_CANCEL)
-      reject(abortError())
+      rejectAfterRequestClosed(abortError())
     }
     signal?.addEventListener("abort", onPreResponseAbort, { once: true })
 
     req.once("response", (h) => {
       signal?.removeEventListener("abort", onPreResponseAbort)
+      if (rejectionScheduled) return
+      responseResolved = true
 
       const status = h[":status"] ?? 0
       const responseHeaders = new Headers()
@@ -470,8 +490,9 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
             }
           })
         },
-        cancel() {
+        async cancel() {
           req.close(http2.constants.NGHTTP2_CANCEL)
+          await requestClosed
         },
       })
 
@@ -483,7 +504,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     // Error before headers (connect failure, RST before response) → reject.
     req.once("error", (err: Error) => {
       signal?.removeEventListener("abort", onPreResponseAbort)
-      reject(err)
+      rejectAfterRequestClosed(err)
     })
 
     if (init.body !== undefined) req.write(init.body)

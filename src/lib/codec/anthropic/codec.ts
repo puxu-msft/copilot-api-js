@@ -79,8 +79,12 @@ import {
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
+import {
+  //
+  modelIdFor,
+  stripThinkingSignatureFor,
+} from "~/lib/config/model-translation"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { modelIdFor, stripThinkingSignatureFor } from "~/lib/config/model-translation"
 import {
   //
   captureInboundHeaders,
@@ -457,6 +461,7 @@ const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
   shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
   "reaper-cancel": "Request cancelled by stale-request reaper",
+  "dispatch-cancel": "Upstream dispatch cancelled",
   other: "Stream error",
 }
 

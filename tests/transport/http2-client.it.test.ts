@@ -106,6 +106,30 @@ describe("http2-client", () => {
     expect(text).toBe("event: a\n\nevent: b\n\nevent: c\n\n")
   })
 
+  test("body cancel resolves after the owned h2 stream closes while a sibling keeps using the pooled session", async () => {
+    let localStreamClosed = false
+    handler = (stream, headers) => {
+      if (headers[":path"] === "/cancel") {
+        stream.respond({ ":status": 200, "content-type": "text/event-stream" })
+        stream.write("data: first\n\n")
+        return
+      }
+      stream.respond({ ":status": 200 })
+      stream.end("sibling-ok")
+    }
+
+    const cancelled = await http2Fetch(`${url}/cancel`, { onStreamClosed: () => (localStreamClosed = true) })
+    const sibling = await http2Fetch(`${url}/sibling`, {})
+    expect(await sibling.text()).toBe("sibling-ok")
+
+    await cancelled.body!.cancel("test disposal")
+
+    expect(localStreamClosed).toBe(true)
+    // A new sibling still succeeds on the pool after the owned stream was cancelled.
+    const after = await http2Fetch(`${url}/sibling`, {})
+    expect(await after.text()).toBe("sibling-ok")
+  })
+
   test("POST sends the request body", async () => {
     handler = (stream) => {
       let body = ""
@@ -148,6 +172,26 @@ describe("http2-client", () => {
     }
     const res = http2Fetch(`${url}/x`, { signal: AbortSignal.abort() })
     await expect(res).rejects.toThrow(/abort/i)
+  })
+
+  test("pre-response abort rejects only after the owned h2 stream close callback", async () => {
+    handler = () => {
+      // Accept the request but never send response headers.
+    }
+    const abort = new AbortController()
+    let localStreamClosed = false
+    const pending = http2Fetch(`${url}/pending-headers`, {
+      signal: abort.signal,
+      onStreamClosed: () => {
+        localStreamClosed = true
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    abort.abort()
+
+    await expect(pending).rejects.toThrow(/abort/i)
+    expect(localStreamClosed).toBe(true)
   })
 
   // Crash-safety: a pre-response abort on an ORPHANED fetch promise (the caller

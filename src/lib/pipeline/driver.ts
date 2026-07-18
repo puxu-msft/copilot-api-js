@@ -456,7 +456,10 @@ async function runExchange(
       })
       current.ctx.addQueueWaitMs(permit.queueWaitMs)
       const hook = getUpstreamHook()
-      const transportOptions: TransportDispatchOptions | undefined = forceHttp ? { forceHttp: true } : undefined
+      const transportOptions: TransportDispatchOptions = {
+        signal: current.ctx.operationSignal,
+        ...(forceHttp && { forceHttp: true }),
+      }
       const upstream =
         hook?.exchange ?
           await hook.exchange(wire, current, () => deps.transport.send(wire, current, transportOptions))

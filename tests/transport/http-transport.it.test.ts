@@ -83,6 +83,34 @@ describe("createUpstreamHttpTransport", () => {
     expect(frames.map((f) => f.data)).toEqual(['{"choices":[{"delta":{"content":"hi"}}]}', "[DONE]"])
     expect(upstream.nonStream).toBeUndefined()
     expect(upstream.headers.get("x-upstream")).toBe("yes")
+    expect(upstream.lifecycle).toBeDefined()
+    await expect(upstream.lifecycle!.quiesced).resolves.toBeUndefined()
+    await expect(upstream.lifecycle!.dispose()).resolves.toEqual({ quiesced: true, connectionReusable: true })
+  })
+
+  test("physical open returns a mandatory stream lifecycle", async () => {
+    setFetchMock(() => createSseResponse(['data: {"choices":[]}\n\n']))
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+
+    const result = await transport.open(makeWire({ stream: true }), makeEnv())
+
+    expect(result.kind).toBe("stream")
+    if (result.kind !== "stream") throw new Error("expected stream physical result")
+    expect(result.lifecycle).toBeDefined()
+    await result.lifecycle.dispose("test")
+  })
+
+  test("client abort disposes an unconsumed streaming body before quiesced resolves", async () => {
+    const clientAbort = new AbortController()
+    setFetchMock(() => createSseResponse(['data: {"choices":[]}\n\n']))
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000, clientAbortSignal: clientAbort.signal })
+    const upstream = await transport.send(makeWire({ stream: true }), makeEnv())
+
+    clientAbort.abort()
+
+    await expect(upstream.lifecycle!.quiesced).resolves.toBeUndefined()
+    const iterator = upstream.frames[Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toThrow(/abort|cancel/i)
   })
 
   test("non-streaming: returns nonStream JSON + empty frames", async () => {
@@ -92,6 +120,19 @@ describe("createUpstreamHttpTransport", () => {
     const upstream = await transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv())
     expect(await collect(upstream.frames)).toEqual([])
     expect(upstream.nonStream).toEqual({ id: "cc-1", choices: [] })
+    await expect(upstream.lifecycle!.quiesced).resolves.toBeUndefined()
+  })
+
+  test("physical open returns json and typed failed-open variants", async () => {
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+    setFetchMock(() => new Response(JSON.stringify({ id: "json" }), { status: 200, headers: { "content-type": "application/json" } }))
+    const success = await transport.open(makeWire({ stream: false }), makeEnv())
+    expect(success).toMatchObject({ kind: "json", body: { id: "json" } })
+
+    setFetchMock(() => new Response("bad", { status: 500 }))
+    const failed = await transport.open(makeWire({ stream: false }), makeEnv())
+    expect(failed.kind).toBe("failed-open")
+    await expect(failed.lifecycle.quiesced).resolves.toBeUndefined()
   })
 
   test("non-ok upstream → throws HTTPError with the endpoint's error label", async () => {

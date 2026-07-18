@@ -515,6 +515,7 @@ function fakeWsConnection(events: Array<ResponsesStreamEvent>) {
     conversationId: undefined,
     handshakeHeaders: {},
     close: () => {},
+    dispose: async () => {},
   }
 }
 
