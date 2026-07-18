@@ -79,6 +79,10 @@ export type HedgeEligibility =
 export interface FrozenHedgePolicy {
   readonly enabled: boolean
   readonly thresholdMs: number
+  readonly maxActiveCandidates: number
+  readonly maxTotalCandidates: number
+  readonly maxActiveDispatches: number
+  readonly maxTotalDispatches: number
   readonly expectedHedgeCompletionMs: number
   /** Absolute monotonic deadline; disabled deadlines are represented as positive Infinity. */
   readonly requestDeadlineAtMs: number
@@ -132,7 +136,17 @@ export function createFrozenHedgePolicy(config: HedgePolicyConfig): FrozenHedgeP
     return { eligible: true, thresholdAtMs, serverExecutionRisk }
   }
 
-  return Object.freeze({ enabled, thresholdMs, expectedHedgeCompletionMs, requestDeadlineAtMs, evaluate })
+  return Object.freeze({
+    enabled,
+    thresholdMs,
+    maxActiveCandidates,
+    maxTotalCandidates,
+    maxActiveDispatches,
+    maxTotalDispatches,
+    expectedHedgeCompletionMs,
+    requestDeadlineAtMs,
+    evaluate,
+  })
 }
 
 /** Classify duplicate remote-execution risk from the final target wire, never from client format. */

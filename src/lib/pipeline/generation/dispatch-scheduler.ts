@@ -34,6 +34,8 @@ import {
   OperationCancelledError,
 } from "~/lib/util/abortable-delay"
 
+import type { GenerationBudget } from "./generation-budget"
+
 export type DispatchReason = "initial" | "reactive-retry" | "rate-limit-retry" | "ws-fallback"
 
 export interface DispatchSettlement {
@@ -88,6 +90,7 @@ export interface CreateDispatchSchedulerInput {
   /** Hard generation-candidate guard across fallback, 429 and semantic retries. */
   maxDispatches?: number
   monotonicNow?: () => number
+  generationBudget?: GenerationBudget
 }
 
 export interface ScheduledDispatch {
@@ -176,6 +179,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         throwIfAborted(signal)
         if (dispatchNumber >= maxDispatches) throw new Error(`[dispatch-scheduler] dispatch budget exhausted (${maxDispatches})`)
         dispatchNumber++
+        const dispatchBudget = input.generationBudget?.reserveDispatch()
         const wire = input.prepareWire(current, { reason, forceHttp })
         const dispatch = input.recording.beginDispatch({ candidate, reason, ...(strategy !== undefined && { strategy }), wire, forceHttp, env: current })
         const model = current.model.id || "unknown"
@@ -184,6 +188,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
           admission = await input.admission.acquire({ model, candidateId: candidate, dispatchId: dispatch, signal })
           throwIfAborted(signal)
         } catch (error) {
+          dispatchBudget?.release()
           recordSettlement(dispatch, {
             verdict: signal.aborted ? "cancelled" : "failed",
             reason: signal.aborted ? abortReason(signal, "candidate-cancelled") : "admission-failed",
@@ -199,11 +204,16 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
           const options: TransportDispatchOptions = { signal, ...(forceHttp && { forceHttp: true }) }
           response = await input.open(wire, current, options)
         } catch (error) {
+          dispatchBudget?.release()
           recordSettlement(dispatch, { verdict: "failed", reason: "physical-open-threw", error })
           throw new Error("[dispatch-scheduler] PhysicalTransport.open() threw instead of returning failed-open", { cause: error })
         }
         input.recording.recordOpened(dispatch, response)
         active.set(dispatch, { lifecycle: response.lifecycle })
+        void response.lifecycle.quiesced.then(
+          () => dispatchBudget?.release(),
+          () => dispatchBudget?.release(),
+        )
 
         if (signal.aborted) {
           await disposeDispatch(dispatch, response.lifecycle, { verdict: "cancelled", reason: abortReason(signal, "candidate-cancelled") }, true)
@@ -211,6 +221,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         }
 
         if (response.kind === "stream" || response.kind === "json") {
+          dispatchBudget?.release()
           input.admission.observe({ model, status: 200, completedAt: Date.now() })
           await acceptedResolution?.(current)
           return {

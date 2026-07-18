@@ -23,6 +23,7 @@ import type {
 
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import { createGenerationCoordinator } from "~/lib/pipeline/generation/coordinator"
+import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 
 function env(): RequestEnvelope {
   return {
@@ -203,5 +204,34 @@ describe("generation coordinator hedge race", () => {
     expect(failure).toBeInstanceOf(AggregateError)
     expect((failure as AggregateError).errors).toHaveLength(2)
     await expect(coordinator.raceReadyCandidates([first, second])).rejects.toThrow(/already started/i)
+  })
+
+  test("terminal and failed candidates release shared generation capacity", async () => {
+    const budget = createGenerationBudget({ maxActiveCandidates: 2, maxTotalCandidates: 3, maxActiveDispatches: 2, maxTotalDispatches: 4 })
+    const terminal = runtime("primary", "terminal", 1)
+    terminal.ready.upstream.frames = {
+      async *[Symbol.asyncIterator]() {
+        yield { event: "ping", data: JSON.stringify({ type: "ping" }) }
+      },
+    }
+    const failed = runtime("hedge", "failed", 2)
+    failed.ready.upstream.frames = {
+      // eslint-disable-next-line require-yield -- fault injection: fail before any frame
+      async *[Symbol.asyncIterator]() {
+        throw new Error("failed")
+      },
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      generationBudget: budget,
+      createCandidate: ({ role }) => (role === "primary" ? terminal.runtime : failed.runtime),
+    })
+    const primary = await coordinator.runPrimary()
+    const hedge = await coordinator.runHedge()
+
+    const result = await coordinator.raceReadyCandidates([primary, hedge]).catch((error: unknown) => error)
+
+    expect(result).toBeInstanceOf(AggregateError)
+    expect(budget.snapshot().activeCandidates).toBe(0)
   })
 })

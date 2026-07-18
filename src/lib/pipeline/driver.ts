@@ -26,6 +26,7 @@ import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 import { classifyError } from "~/lib/error"
 import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
+import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
 import { classifyStreamError } from "~/lib/stream"
 import {
@@ -468,6 +469,14 @@ async function runGenerationPreflight(deps: DriverDeps, env: RequestEnvelope): P
 
 function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope): GenerationCoordinator<CandidateResponseSession> {
   const recording = createDriverRecordingPort(deps, initialEnv.ctx)
+  const perCandidateDispatchBudget = Math.max(16, 1 + deps.maxRetries + deps.maxLearningRetries)
+  const maxTotalCandidates = deps.hedgePolicy?.maxTotalCandidates ?? 5
+  const generationBudget = createGenerationBudget({
+    maxActiveCandidates: deps.hedgePolicy?.maxActiveCandidates ?? 2,
+    maxTotalCandidates,
+    maxActiveDispatches: deps.hedgePolicy?.maxActiveDispatches ?? 2,
+    maxTotalDispatches: deps.hedgePolicy?.maxTotalDispatches ?? perCandidateDispatchBudget * maxTotalCandidates,
+  })
   const candidateStateFactory = deps.codec.createCandidateStateFactory?.(initialEnv) ?? createCandidateStateFactory(initialEnv, {})
   const createCandidate = ({
     role,
@@ -485,8 +494,9 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
       admission: deps.admission ?? getUpstreamAdmissionController(),
       recording,
       decideRetry: retry,
-      maxDispatches: Math.max(16, 1 + deps.maxRetries + deps.maxLearningRetries),
+      maxDispatches: perCandidateDispatchBudget,
       ...(deps.monotonicNow && { monotonicNow: deps.monotonicNow }),
+      generationBudget,
     })
     return createCandidateRuntime({
       role,
@@ -515,7 +525,7 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
       },
     })
   }
-  return createGenerationCoordinator({ env: initialEnv, createCandidate })
+  return createGenerationCoordinator({ env: initialEnv, createCandidate, generationBudget })
 }
 
 function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generation/dispatch-scheduler").SemanticRetryInput) => Promise<SemanticRetryDecision> {
@@ -790,21 +800,27 @@ async function maybeRunHedgedResponseSink(
         return withCandidateResponseOpts(hedge, outerOpts)
       },
     })
-    if (raced.kind === "failure") return { kind: "stream-error", error: raced.error }
+    if (raced.kind === "failure") {
+      binding.coordinator.releaseCandidate(binding.candidate.candidate)
+      return { kind: "stream-error", error: raced.error }
+    }
 
     const selected = raced.candidate
     runtime.bind(binding.coordinator, selected)
     env.ctx.selectGenerationWinner(selected.candidate, selected.dispatch)
     if (raced.kind === "terminal") {
       await writeWinnerFrames(env, sink, selected.candidate, selected.dispatch, raced.bufferedFrames)
+      binding.coordinator.releaseCandidate(selected.candidate)
       return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
     }
 
     env.ctx.trackOperationBody(raced.loserCleanup)
     await writeWinnerFrames(env, sink, selected.candidate, selected.dispatch, raced.bufferedFrames)
     for await (const frame of raced.liveFrames) await writeWinnerFrame(env, sink, selected.candidate, selected.dispatch, frame)
+    binding.coordinator.releaseCandidate(selected.candidate)
     return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
   } catch (error) {
+    binding.coordinator.releaseCandidate(binding.candidate.candidate)
     if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
     return { kind: "stream-error", error }
   } finally {
