@@ -337,13 +337,12 @@ export function clearHistory(): void {
   const inFlightCount = listInFlight().length
   clearInFlight()
   clearRecentModelOperationTerminalsForTests()
-  if (historyState.enabled) {
-    try {
-      clearAllEntries()
-      consola.warn(`[history] CLEARED test store (${inFlightCount} in-flight entries); this primitive is test-only`)
-    } catch (err: unknown) {
-      consola.error("[history] failed to clear test sqlite entries", err)
-    }
+  if (!historyState.enabled) return
+  try {
+    clearAllEntries()
+    consola.warn(`[history] CLEARED test store (${inFlightCount} in-flight entries); this primitive is test-only`)
+  } catch (err: unknown) {
+    consola.error("[history] failed to clear test sqlite entries", err)
   }
   publishHistoryCleared()
   publishStatsChanged()

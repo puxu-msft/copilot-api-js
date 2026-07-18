@@ -61,6 +61,9 @@ function fakeContext(opts?: { originalRequest?: { stream?: boolean; model?: stri
   const requestContext = {
     id: opts?.reqId ?? "req_test",
     originalRequest: opts?.originalRequest,
+    setClientResponseStatus: () => {},
+    setInboundResponseHeaders: () => {},
+    finalizeModelOperationDelivery: () => {},
     recordFeature: (feature: string, detail?: Record<string, unknown>) => {
       features.push({ feature, detail })
     },

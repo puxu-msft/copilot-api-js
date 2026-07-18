@@ -39,6 +39,7 @@ import { resetToolInputRepairStatsForTests } from "~/lib/anthropic/tool-input-re
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
 import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
+import { resetDiagnosticLoggerForTests } from "~/lib/diagnostics"
 import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
 import {
   //
@@ -147,6 +148,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetTerminalCoordinatorForTests", reset: resetTerminalCoordinatorForTests },
   { name: "resetSensitiveOutputForTests", reset: resetSensitiveOutputForTests },
   { name: "resetStructuredFileSinkForTests", reset: resetStructuredFileSinkForTests },
+  { name: "resetDiagnosticLoggerForTests", reset: resetDiagnosticLoggerForTests },
   // Upstream-hook DI seam (module-global `hookState`, read at driver-suite level
   // via `getUpstreamHook()`): a test file that loads/injects a hook and forgets
   // its own afterEach would otherwise leak the mounted hook into any later test —
