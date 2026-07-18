@@ -70,7 +70,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   // Close any DB opened by a test before restoring paths.
-  initHistory(false)
+  await initHistory(false)
   restoreStateForTests(originalState)
   ;(PATHS as { APP_DIR: string }).APP_DIR = savedAppDir
   ;(PATHS as { CONFIG_YAML: string }).CONFIG_YAML = savedConfigYaml
@@ -122,25 +122,25 @@ describe("no-history mode runtime gate", () => {
     setHistoryConfig({ historyDbPath: ":memory:" })
   })
 
-  test("initHistory(false): isHistoryEnabled() false + DB never opened", () => {
-    initHistory(false)
+  test("initHistory(false): isHistoryEnabled() false + DB never opened", async () => {
+    await initHistory(false)
     expect(isHistoryEnabled()).toBe(false)
     expect(isDatabaseOpen()).toBe(false)
   })
 
-  test("initHistory(true): isHistoryEnabled() true + DB opened", () => {
-    initHistory(true)
+  test("initHistory(true): isHistoryEnabled() true + DB opened", async () => {
+    await initHistory(true)
     expect(isHistoryEnabled()).toBe(true)
     expect(isDatabaseOpen()).toBe(true)
   })
 
-  test("CLI --no-history precedence: false wins even when state.historyEnabled is true", () => {
+  test("CLI --no-history precedence: false wins even when state.historyEnabled is true", async () => {
     // Simulate config enabled:true (state) but CLI --no-history (effective false).
     // start.ts computes `options.history ?? state.historyEnabled`; here the
     // effective value is false, so initHistory must honor it regardless of state.
     expect(state.historyEnabled).toBe(true)
     const effective = false // options.history === false (CLI --no-history)
-    initHistory(effective)
+    await initHistory(effective)
     expect(isHistoryEnabled()).toBe(false)
     expect(isDatabaseOpen()).toBe(false)
   })

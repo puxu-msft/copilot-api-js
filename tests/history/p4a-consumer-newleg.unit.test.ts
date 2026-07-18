@@ -225,7 +225,7 @@ describe("P4a: getStats / getHistory wiring reads new legs (in-flight, DB-backed
     await shutdownHistory()
     clearInFlight()
     setHistoryConfig({ historyDbPath: ":memory:" })
-    initHistory(true)
+    await initHistory(true)
     openInMemoryDatabase()
   })
 

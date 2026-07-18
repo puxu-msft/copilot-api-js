@@ -202,13 +202,13 @@ function createHistoryEntry(overrides?: {
 describe("management and history HTTP routes", () => {
   useIsolatedRuntime()
 
-  beforeEach(() => {
+  beforeEach(async () => {
     copilotUsageHits = 0
     upstreamFetchMock.mockClear()
     // The real getCopilotUsage checks state.githubToken before issuing fetch.
     setStateForTests({ githubToken: "gh-test-token", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
-    initHistory(true, 100)
+    await initHistory(true, 100)
     clearHistory()
     _resetRequestTelemetryForTests()
 

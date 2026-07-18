@@ -41,11 +41,11 @@ let detachSinks: Array<() => void> = []
  * them explicitly (avoids stdout pollution + WS broadcast attempts to
  * non-existent clients).
  */
-export function bootstrapTestRuntime() {
+export async function bootstrapTestRuntime(): Promise<void> {
   if (initialized) return
 
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true, 100)
+  await initHistory(true, 100)
 
   const bus = initBus()
   const historyPub = bus.scope("history")
@@ -57,7 +57,7 @@ export function bootstrapTestRuntime() {
   initialized = true
 }
 
-export function resetTestRuntime() {
+export async function resetTestRuntime(): Promise<void> {
   _resetShutdownState()
   // Re-initialize history (idempotent reopen of the SQLite DB) before clearing.
   // A preceding test that called shutdownHistory()/closeDatabase() would otherwise
@@ -67,7 +67,7 @@ export function resetTestRuntime() {
   // Re-assert `:memory:` here too: a preceding restoreStateForTests may have
   // rolled historyDbPath back to "" (real path), so pin it before reopening.
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true, 100)
+  await initHistory(true, 100)
   clearHistory()
   resetAdaptiveRateLimiter()
 

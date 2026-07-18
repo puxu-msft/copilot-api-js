@@ -19,6 +19,7 @@ import {
   getDatabase,
   openDatabase,
 } from "./sqlite/connection"
+import { applyForwardMigrations } from "./sqlite/migrations/run"
 import {
   //
   drainV3Writer,
@@ -69,7 +70,7 @@ export function isHistoryEnabled(): boolean {
   return enabled
 }
 
-export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
+export async function initHistory(enable: boolean, _legacyMaxEntries?: number): Promise<void> {
   clearInFlight()
   clearRecentModelOperationTerminalsForTests()
   enabled = enable
@@ -88,6 +89,14 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
   openDatabase(dbPath)
   getDatabase().exec(V3_SCHEMA_SQL)
+  // Umzug forward-migration pipe (History V2 removal Phase 4d): `MIGRATIONS`
+  // (migrations/index.ts) is intentionally empty today — this call's value is
+  // wiring the pipe end-to-end (storage construction, ledger read/write,
+  // logger adapter) against the REAL V3 db, so the first real 001+ migration
+  // has a proven-working runner to land into, rather than adding one now.
+  // RETHROWS on failure (see migrations/run.ts) — a half-applied schema
+  // migration must refuse to start, not silently continue.
+  await applyForwardMigrations(getDatabase())
   recoverV3Journal(getDatabase())
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = subscribeModelOperationTerminals(enqueueModelOperation)

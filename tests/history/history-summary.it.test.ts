@@ -64,7 +64,7 @@ function createEmptyEntry(endpoint: EndpointType): HistoryEntry {
 
 beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true, 200)
+  await initHistory(true, 200)
 })
 
 afterEach(async () => {
@@ -827,12 +827,12 @@ describe("summary cache consistency", () => {
     })
     expect(getSummary(entry.id)).toBeDefined()
 
-    initHistory(true, 200)
+    await initHistory(true, 200)
     expect(getSummary(entry.id)).toBeUndefined()
   })
 
   test.skip("FIFO eviction removes summary from cache", async () => {
-    initHistory(true, 3)
+    await initHistory(true, 3)
 
     const entries: Array<HistoryEntry> = []
     for (let i = 0; i < 5; i++) {

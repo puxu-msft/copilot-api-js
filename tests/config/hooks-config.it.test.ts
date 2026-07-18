@@ -96,7 +96,7 @@ describe("hooks declarative state", () => {
     resetConfigCache()
     resetApplyState()
     setBundledConfigForTests({})
-    initHistory(true, 200)
+    await initHistory(true, 200)
   })
 
   afterEach(async () => {

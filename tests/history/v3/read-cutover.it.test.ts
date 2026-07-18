@@ -66,10 +66,10 @@ function record(
   return recorder.commitTerminal({ outcome: "completed", committedAttempt: attempt })
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   closeDatabase()
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true)
+  await initHistory(true)
   resetV3WriterForTests()
   for (const item of [record("generation-1", "generation"), record("tokens-1", "count_tokens")]) {
     commitPreparedOperation(getDatabase(), prepareModelOperation(item))

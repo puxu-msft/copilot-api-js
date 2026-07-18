@@ -57,7 +57,7 @@ beforeEach(async () => {
   resetConfigCache()
   resetApplyState()
   setBundledConfigForTests({})
-  initHistory(true, 200)
+  await initHistory(true, 200)
 })
 
 afterEach(async () => {

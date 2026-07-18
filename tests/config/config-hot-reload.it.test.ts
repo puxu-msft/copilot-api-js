@@ -90,7 +90,7 @@ beforeEach(async () => {
   // override-merging. Real bundled-merge coverage lives in
   // tests/config/config-merge.unit.test.ts.
   setBundledConfigForTests({})
-  initHistory(true, 200)
+  await initHistory(true, 200)
 })
 
 afterEach(async () => {
@@ -1145,11 +1145,11 @@ describe("Coverage completeness", () => {
 // ============================================================================
 
 describe("Special semantics", () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     // initHistory must run before any test that calls applyConfigToState() with
     // history settings — the per-test beforeEach already does this, but
     // beforeAll documents intent for the suite.
-    initHistory(true, 200)
+    await initHistory(true, 200)
   })
 
   test("tool_dedup_calls: true normalizes to 'input'", async () => {

@@ -73,11 +73,11 @@ describe("shutdownHistory (post-V2-removal surgery)", () => {
     let dir: string
     let dbPath: string
 
-    beforeEach(() => {
+    beforeEach(async () => {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), "history-v3-shutdown-"))
       dbPath = path.join(dir, "history-v3.db")
       setStateForTests({ historyDbPath: dbPath })
-      initHistory(true)
+      await initHistory(true)
     })
 
     afterEach(() => {
@@ -100,7 +100,7 @@ describe("shutdownHistory (post-V2-removal surgery)", () => {
 
       // Reopen the SAME on-disk db — the durability proof. If shutdownHistory had
       // closed the DB before draining the writer, this record would be missing.
-      initHistory(true)
+      await initHistory(true)
       const stored = getV3StoredOperation("shutdown-drain-durable-probe")
       expect(stored).toBeDefined()
       expect(stored?.record.identity.operationId).toBe("shutdown-drain-durable-probe")

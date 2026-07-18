@@ -68,7 +68,7 @@ autoRestoreState()
 // Reset history state before each test
 beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true, 200)
+  await initHistory(true, 200)
 })
 afterEach(async () => {
   clearHistory()
@@ -80,18 +80,18 @@ afterEach(async () => {
 
 describe("initHistory", () => {
   test("enables history when enabled=true", async () => {
-    initHistory(true, 100)
+    await initHistory(true, 100)
     expect(isHistoryEnabled()).toBe(true)
   })
 
   test("disables history when enabled=false", async () => {
-    initHistory(false, 100)
+    await initHistory(false, 100)
     expect(isHistoryEnabled()).toBe(false)
   })
 
   test("tracks history limit from state", async () => {
     setStateForTests({ historyRawCaptureMaxObjectBytes: 50 })
-    initHistory(true, 50)
+    await initHistory(true, 50)
     expect(state.historyRawCaptureMaxObjectBytes).toBe(50)
   })
 
@@ -123,7 +123,7 @@ describe("insertEntry", () => {
   })
 
   test("does not insert when disabled", async () => {
-    initHistory(false, 100)
+    await initHistory(false, 100)
     const sessionId = "test-session"
     const entry: HistoryEntry = {
       id: generateId(),
@@ -296,7 +296,7 @@ describe("updateEntry (response)", () => {
   })
 
   test("does nothing when disabled", async () => {
-    initHistory(false, 100)
+    await initHistory(false, 100)
     updateEntry("nonexistent", {
       attempts: [
         {
