@@ -31,7 +31,7 @@
 4. **前缀简化**：`[RETRY-N]` → `[RETRY]`。重试序号由 triplet 的 `(N)` 承载，前缀里的 `-N` 冗余。
 5. **`[RETRY]` 编号 1-based**：`[RETRY]` 行的 `N = attemptIndex + 1`（「这是第 N 次重试」，首次重试显示 `(1)`，贴合今天 `[RETRY-1]` 直觉）。副产品：**末次 `[RETRY]` 行的 `N` 恰等于汇总行总重试数**（末次失败 `attemptIndex = length-2`，`+1 = length-1 =` 汇总 `N`），终态跨面数值天然对齐。
 6. **取色**：duration 字段按**实际显示的头部值**的 severity 上色——`retries >= 1 ? durationColor(lastMs) : durationColor(totalMs)`。`N=0` 仍按 `totalMs` 着色，与今天逐字节一致（**修正**了初稿"N=0 时 last===total"的错误断言：`last` 从 `attempt.startTime` 起算、不含队列等待与 ctx 创建间隙，`total` 从 `ctx.startTime` 起算，两者 **N=0 时也不相等**——证据：`queueWait` 是独立的 `(queued Xs)` 列，证明 total 含队列等待而单 attempt 不含）。着色仅施于**汇总行 + `[RETRY]` 行**（见决策 7）。
-7. **footer/panel 不着色**：footer 单请求行（[footer.ts:56](../../src/lib/tui/render/footer.ts#L56)）与 panel 行（[panel.ts:184](../../src/lib/tui/render/panel.ts#L184)）**今天就不给 elapsed 着色**，且整行喂 `truncateToWidth`（[format.ts:164](../../src/lib/observability/projections/format.ts#L164) 明确只接受纯文本，ANSI 会被腰斩）。故 footer/panel 显示 triplet **纯文本、保持今天的 dim/无色**，截断安全。着色只在走 log-line/`durationColor`、不经 `truncateToWidth` 的汇总行 + `[RETRY]` 行。
+7. **footer/panel 不着色**：footer 单请求行（[footer.ts](../../src/lib/tui/render/footer.ts)）与 panel 行（[panel.ts](../../src/lib/tui/render/panel.ts)）不给 elapsed 单独着色，整行先以纯文本交给 [width.ts](../../src/lib/tui/render/width.ts) 的 `truncateToWidth`，再在末端施加 dim/reverse 样式。故 footer/panel 显示 triplet **纯文本、保持 dim/无色**，字素截断安全；Region 的二次防御则走 ANSI-safe `truncateAnsiToWidth`。着色只在走 log-line/`durationColor`、不经纯文本截断的汇总行 + `[RETRY]` 行。
 
 ## 各面的 `N` 语义
 

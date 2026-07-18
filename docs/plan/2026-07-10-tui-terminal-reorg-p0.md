@@ -2,6 +2,8 @@
 
 > **实施状态（2026-07-10）：已实施（6 task 全绿 + 各 task 过审，golden 逐字等价）。** 终态：`src/lib/tui/{terminal-ui,index}.ts` + `render/{footer,syslog}.ts` 落地，`src/lib/observability/sinks/console.ts` 已删，`start.ts` 切 `attachTerminalUi`，ESLint 边界 + L1 守卫就位。已过 subagent 审查（3 MAJOR + 3 MINOR 全部修入：去 require、L1 正样本自证、golden 场景补 error 腿/启动行、消费者清单剔除 3 个仅注释文件、footer Consumes 补全、doc-sync 分历史注释）。P0 纯重组、行为等价、零 PoC 依赖。
 
+> **后续演进（2026-07-18）：** P0 的结构重组结论仍有效；仅显示宽度原语后来从共享 `observability/projections/format.ts` 下沉为 TUI 自有 `render/width.ts`，以支持 grapheme-aware 与 ANSI-safe 两条截断路径。本文后续路径描述是 P0 当时快照，活现状以 [DESIGN.md](../DESIGN.md#console-ui日志) 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把终端渲染从 `observability/sinks/console.ts` 重组进新的 `src/lib/tui/` 层，`terminal-ui` 作为 bus 订阅者接管「请求事件 + system.log 两条 stdout 流」取代 ConsoleSink，**行为逐字等价**——为 P1/P2 的交互式面板铺路。
@@ -135,7 +137,7 @@ git commit -F <msgfile> -- tests/tui/golden-fixture.unit.test.ts tests/tui/__fix
 
 **Interfaces:**
 - Produces: `buildActiveFooter(args: { active: ReadonlyArray<ActiveRequestView>, now: number, columns: number }): string` —— 纯函数，返回已 `pc.dim` + 截断的 footer 串（空则 `""`）。`ActiveRequestView = { ctx: RequestContextSnapshot, streamBytesIn?: number, streamEventsIn?: number, streamBlockType?: string }`（footer 只需这几个字段的只读视图）。
-- Consumes: `truncateToWidth`/`formatDuration`/`formatStreamInfo`/`formatBytes`（from `~/lib/observability/projections/format`）、`stringWidth`（from `string-width`，多请求分支贪心计宽用）、`pc`（from `picocolors`，`finalizeFooter` 的 `pc.dim`）。
+- Consumes：`truncateToWidth`（当前来自 `~/lib/tui/render/width`；P0 落地时曾位于 observability format）、`formatDuration`/`formatStreamInfo`/`formatBytes`（from `~/lib/observability/projections/format`）、`stringWidth`（from `string-width`，多请求分支贪心计宽用）、`pc`（from `picocolors`，`finalizeFooter` 的 `pc.dim`）。
 
 - [ ] **Step 1: 写 footer.ts 单元测试**（把 console-footer 的 footer 断言下移为对 `buildActiveFooter` 的直接测，冻结时钟 + 固定 columns，断言分组 `model ×N`、宽度 `stringWidth ≤ columns-1`、`(resolving)` 桶）。代码见 console-footer.unit.test.ts 现有断言，改为直接调 `buildActiveFooter({ active, now: NOW, columns })`。
 
