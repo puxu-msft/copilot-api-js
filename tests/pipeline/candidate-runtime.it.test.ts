@@ -151,6 +151,7 @@ function runtime(input: {
   open: (wire: PreparedRequest, env: RequestEnvelope, options: { forceHttp?: boolean; signal?: AbortSignal }) => Promise<PhysicalTransportResponse>
   admission?: UpstreamAdmissionController
   decideRetry?: Parameters<typeof createDispatchScheduler>[0]["decideRetry"]
+  maxDispatches?: number
 }) {
   const scheduler = createDispatchScheduler({
     prepareWire: (env) => ({ url: "https://upstream.test", headers: new Headers(), body: env.body, stream: env.stream }),
@@ -158,6 +159,7 @@ function runtime(input: {
     admission: input.admission ?? immediateAdmission(),
     recording: input.recording,
     decideRetry: input.decideRetry ?? (async () => ({ kind: "fail" as const })),
+    ...(input.maxDispatches !== undefined && { maxDispatches: input.maxDispatches }),
   })
   return createCandidateRuntime({
     role: "primary",
@@ -401,5 +403,66 @@ describe("P6-T1 candidate dispatch runtime", () => {
     expect(recovery).toEqual({ role: "recovery", parentCandidate: candidate.handle, env: expect.any(Object), reason: "truncated-before-commit" })
     expect(recording.dispatches.size).toBe(before)
     await candidate.cancel("test-cleanup")
+  })
+
+  test("dispatch hard cap bounds semantic retries and settles the candidate failed", async () => {
+    const recording = recordingPort()
+    const candidate = runtime({
+      env: envelope("budget"),
+      recording: recording.port,
+      maxDispatches: 2,
+      open: async () => ({ kind: "failed-open", error: new HTTPError("bad", 400, "bad"), lifecycle: settledLifecycle([], "bad") }),
+      decideRetry: async ({ env }) => ({ kind: "retry", reason: "again", env }),
+    })
+
+    await expect(candidate.run()).rejects.toThrow("dispatch budget exhausted (2)")
+
+    expect(recording.dispatches.size).toBe(2)
+    expect([...recording.dispatches.values()].map((row) => row.verdict)).toEqual(["discarded", "discarded"])
+    expect(recording.candidates.get(candidate.handle)?.verdict).toBe("failed")
+  })
+
+  test("chained semantic retries commit only the resolution callback from the final accepted strategy", async () => {
+    const recording = recordingPort()
+    const resolved: Array<string> = []
+    let opens = 0
+    const candidate = runtime({
+      env: envelope("chain-0"),
+      recording: recording.port,
+      open: async () => {
+        if (opens++ < 2) return { kind: "failed-open", error: new HTTPError("bad", 400, "bad"), lifecycle: settledLifecycle([], `bad-${opens}`) }
+        return streamResponse(ownedLifecycle([], "ok"), "ok")
+      },
+      decideRetry: async ({ env, dispatchNumber }) => ({
+        kind: "retry",
+        reason: `step-${dispatchNumber}`,
+        env: env.with({ body: { label: `chain-${dispatchNumber}` } }),
+        onResolved: () => {
+          resolved.push(`step-${dispatchNumber}`)
+        },
+      }),
+    })
+
+    await candidate.run()
+
+    expect([...recording.dispatches.values()].map((row) => row.reason)).toEqual(["initial", "reactive-retry", "reactive-retry"])
+    expect(resolved).toEqual(["step-2"])
+    await candidate.cancel("cleanup")
+  })
+
+  test("a throwing PhysicalTransport.open settles the dispatch and candidate failed", async () => {
+    const recording = recordingPort()
+    const candidate = runtime({
+      env: envelope("throw"),
+      recording: recording.port,
+      open: async () => {
+        throw new Error("contract violation")
+      },
+    })
+
+    await expect(candidate.run()).rejects.toThrow("PhysicalTransport.open() threw")
+
+    expect([...recording.dispatches.values()].map((row) => row.verdict)).toEqual(["failed"])
+    expect(recording.candidates.get(candidate.handle)?.verdict).toBe("failed")
   })
 })

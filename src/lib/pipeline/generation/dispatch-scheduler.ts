@@ -61,6 +61,7 @@ export interface SemanticRetryInput {
   env: RequestEnvelope
   error: ApiError
   rawError: unknown
+  dispatchNumber: number
 }
 
 export interface CreateDispatchSchedulerInput {
@@ -69,6 +70,8 @@ export interface CreateDispatchSchedulerInput {
   admission: UpstreamAdmissionController
   recording: DispatchRecordingPort
   decideRetry: (input: SemanticRetryInput) => SemanticRetryDecision | Promise<SemanticRetryDecision>
+  /** Hard generation-candidate guard across fallback, 429 and semantic retries. */
+  maxDispatches?: number
 }
 
 export interface ScheduledDispatch {
@@ -95,6 +98,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
   const active = new Map<DispatchHandle, ActiveDispatch>()
   const settled = new Set<DispatchHandle>()
   const cleanup = new Map<DispatchHandle, Promise<void>>()
+  const maxDispatches = input.maxDispatches ?? 16
 
   const recordSettlement = (dispatch: DispatchHandle, settlement: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void => {
     if (settled.has(dispatch)) return
@@ -146,9 +150,12 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
       let reason: DispatchReason = "initial"
       let forceHttp = false
       let acceptedResolution: ((env: RequestEnvelope) => void | Promise<void>) | undefined
+      let dispatchNumber = 0
 
       for (;;) {
         throwIfAborted(signal)
+        if (dispatchNumber >= maxDispatches) throw new Error(`[dispatch-scheduler] dispatch budget exhausted (${maxDispatches})`)
+        dispatchNumber++
         const wire = input.prepareWire(current, { reason, forceHttp })
         const dispatch = input.recording.beginDispatch({ candidate, reason, wire, forceHttp })
         const model = current.model.id || "unknown"
@@ -226,7 +233,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
           continue
         }
 
-        const semantic = await input.decideRetry({ candidate, dispatch, env: current, error: apiError, rawError: response.error })
+        const semantic = await input.decideRetry({ candidate, dispatch, env: current, error: apiError, rawError: response.error, dispatchNumber })
         if (semantic.kind === "fail") {
           await disposeDispatch(dispatch, response.lifecycle, { verdict: "failed", reason: "failed-open", error: response.error }, false)
           throw asError(response.error)
