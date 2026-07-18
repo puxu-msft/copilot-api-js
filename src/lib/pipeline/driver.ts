@@ -21,8 +21,10 @@ import type {
   DispatchHandle,
 } from "~/lib/context/model-operation-record"
 import type { RequestContext } from "~/lib/context/request"
+import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
 import { classifyError } from "~/lib/error"
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
 import { classifyStreamError } from "~/lib/stream"
@@ -125,6 +127,9 @@ export interface DriverDeps {
   responseRewrites?: ReadonlyArray<ResponseRewrite>
   /** Format-specific candidate response state/accumulator factory. Omitted only by stateless mocks. */
   candidateResponseSessionFactory?: CandidateResponseSessionFactory
+  /** Frozen per-generation fast-retry policy. Omitted means primary-only behavior. */
+  hedgePolicy?: FrozenHedgePolicy
+  monotonicNow?: () => number
   /**
    * Post-gate per-retry meta sink (C0-② / RFC §11.2). The driver invokes it with
    * the `RetryAction.meta` of a retry **only after the budget gate accepts it**,
@@ -481,6 +486,7 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
       recording,
       decideRetry: retry,
       maxDispatches: Math.max(16, 1 + deps.maxRetries + deps.maxLearningRetries),
+      ...(deps.monotonicNow && { monotonicNow: deps.monotonicNow }),
     })
     return createCandidateRuntime({
       role,
@@ -735,6 +741,138 @@ function currentCandidateResponseOpts(
   return candidate ? { ...outer, ...candidate } : (outer ?? {})
 }
 
+async function maybeRunHedgedResponseSink(
+  deps: DriverDeps,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  sink: ClientSink,
+  outerOpts: RunResponseOpts | RunBufferedOpts | undefined,
+  generation: DriverGenerationRuntime | undefined,
+): Promise<ResponseOutcome | undefined> {
+  const policy = deps.hedgePolicy
+  const runtime = generation
+  const binding = runtime?.bindings.get(upstream)
+  if (!policy?.enabled || !runtime || !binding || !env.stream) return undefined
+  // Explicit buffered-recovery mode retains its sequential multi-candidate topology until P7-T3
+  // folds recovery and hedge budgets into one coordinator. Silently replacing N recoveries with
+  // one hedge would weaken an operator-enabled durability contract.
+  if (outerOpts && "retryCap" in outerOpts) return undefined
+
+  const snapshot = env.ctx.modelOperationSnapshot
+  const activeCandidates = snapshot.candidates.filter((candidate) => candidate.verdict === undefined).length
+  const activeDispatches = snapshot.dispatches.filter((dispatch) => dispatch.verdict === undefined).length
+  const thresholdAtMs = binding.candidate.dispatchedAtMonotonic + policy.thresholdMs
+  const future = policy.evaluate({
+    nowMs: thresholdAtMs,
+    primaryDispatchedAtMs: binding.candidate.dispatchedAtMonotonic,
+    wire: binding.candidate.wire,
+    semanticContentCommitted: false,
+    winnerSelected: false,
+    cancelled: env.ctx.cancelled,
+    settled: env.ctx.settled,
+    secondaryCandidates: snapshot.candidates.filter((candidate) => candidate.role === "hedge").length,
+    activeCandidates,
+    totalCandidates: snapshot.candidates.length,
+    activeDispatches,
+    totalDispatches: snapshot.dispatches.length,
+  })
+  if (!future.eligible) return undefined
+
+  const primary = withCandidateResponseOpts(binding.candidate, outerOpts)
+  const now = (deps.monotonicNow ?? performance.now.bind(performance))()
+  try {
+    const raced = await binding.coordinator.racePrimaryWithDelayedHedge({
+      primary,
+      delayMs: Math.max(0, thresholdAtMs - now),
+      startHedge: async () => {
+        const hedge = await binding.coordinator.runHedge(env)
+        runtime.bind(binding.coordinator, hedge)
+        return withCandidateResponseOpts(hedge, outerOpts)
+      },
+    })
+    if (raced.kind === "failure") return { kind: "stream-error", error: raced.error }
+
+    const selected = raced.candidate
+    runtime.bind(binding.coordinator, selected)
+    env.ctx.selectGenerationWinner(selected.candidate, selected.dispatch)
+    if (raced.kind === "terminal") {
+      await writeWinnerFrames(env, sink, selected.candidate, selected.dispatch, raced.bufferedFrames)
+      return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
+    }
+
+    env.ctx.trackOperationBody(raced.loserCleanup)
+    await writeWinnerFrames(env, sink, selected.candidate, selected.dispatch, raced.bufferedFrames)
+    for await (const frame of raced.liveFrames) await writeWinnerFrame(env, sink, selected.candidate, selected.dispatch, frame)
+    return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
+  } catch (error) {
+    if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+    return { kind: "stream-error", error }
+  } finally {
+    sink.close?.()
+  }
+}
+
+function withCandidateResponseOpts(
+  candidate: CoordinatedCandidate<CandidateResponseSession>,
+  outer: RunResponseOpts | RunBufferedOpts | undefined,
+): CoordinatedCandidate<CandidateResponseSession> {
+  if (!outer) return candidate
+  const session = candidate.processor
+  return {
+    ...candidate,
+    processor: {
+      identity: session.identity,
+      candidate: session.candidate,
+      dispatch: session.dispatch,
+      renderer: session.renderer,
+      processor: session.processor,
+      responseOpts: mergeCandidateResponseOpts(session.responseOpts, outer),
+      boundary: session.boundary,
+      get finish() {
+        return session.finish
+      },
+      snapshot: () => session.snapshot(),
+    },
+  }
+}
+
+async function writeWinnerFrames(
+  env: RequestEnvelope,
+  sink: ClientSink,
+  candidate: CandidateHandle,
+  dispatch: DispatchHandle,
+  frames: ReadonlyArray<ClientFrame>,
+): Promise<void> {
+  const delivery = getDownstreamDeliverySession(sink)
+  for (const frame of frames) captureWinnerFrame(env, dispatch, frame)
+  if (delivery) {
+    await delivery.commitWinnerBlock(String(candidate), frames)
+    return
+  }
+  for (const frame of frames) await sink.write(frame)
+}
+
+async function writeWinnerFrame(
+  env: RequestEnvelope,
+  sink: ClientSink,
+  candidate: CandidateHandle,
+  dispatch: DispatchHandle,
+  frame: ClientFrame,
+): Promise<void> {
+  captureWinnerFrame(env, dispatch, frame)
+  const delivery = getDownstreamDeliverySession(sink)
+  if (delivery) await delivery.writeWinnerFrame(String(candidate), frame)
+  else await sink.write(frame)
+}
+
+function captureWinnerFrame(env: RequestEnvelope, dispatch: DispatchHandle, frame: ClientFrame): void {
+  env.ctx.captureGenerationDispatchFrameTransform(dispatch, frame, frame, {
+    stage: "client-transform",
+    transformId: "hedge:winner-write",
+    forceDerived: true,
+  })
+}
+
 /**
  * owns-the-sink streaming (Stage B, design §3.2): drain the generator `runResponse`
  * into `sink`, returning a control-signal {@link ResponseOutcome}. Reuses the
@@ -769,6 +907,8 @@ async function runResponseSink(
   opts?: RunResponseOpts,
   generation?: DriverGenerationRuntime,
 ): Promise<ResponseOutcome> {
+  const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
+  if (hedged) return hedged
   const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
   let finish: import("./types").ResponseFinishResult | undefined
   const responseOpts: RunResponseOpts = {
@@ -842,6 +982,8 @@ export async function runResponseBufferedSink(
   opts: RunBufferedOpts,
   generation?: DriverGenerationRuntime,
 ): Promise<ResponseOutcome> {
+  const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
+  if (hedged) return hedged
   const cap = opts.retryCap ?? 0
   const bufferCapBytes = opts.bufferCapBytes ?? 0
   const vendor = opts.telemetryVendor ?? "unknown"

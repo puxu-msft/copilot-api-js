@@ -525,6 +525,8 @@ export interface RequestContext {
     outputFrames: ReadonlyArray<unknown>,
     transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
   ): void
+  /** Select the generation winner for V2 compatibility projection and terminal settlement. */
+  selectGenerationWinner(candidate: CandidateHandle, dispatch: DispatchHandle): void
   settleGenerationDispatch(dispatch: DispatchHandle, input: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void
   /** @deprecated Serial compatibility adapter. New production dispatches use beginGenerationDispatch. */
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: RequestTransport }): void

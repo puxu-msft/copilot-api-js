@@ -78,6 +78,8 @@ function runtime(role: CandidateRole, label: string, candidateNumber: number, ga
     candidate,
     dispatch,
     env: requestEnv,
+    wire: { url: "/v1/messages", headers: new Headers(), body: {}, stream: true },
+    dispatchedAtMonotonic: 0,
     upstream: upstream(label, gate),
     processor: session,
     settleDispatch: async () => {},

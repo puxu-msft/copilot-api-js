@@ -54,6 +54,12 @@ export interface GenerationCoordinator<TProcessor> {
   runRecovery(parent: CoordinatedCandidate<TProcessor>, reason: string, env?: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
   runHedge(env?: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
   raceReadyCandidates(candidates: ReadonlyArray<CoordinatedCandidate<TProcessor>>): Promise<HedgeWinner<TProcessor>>
+  racePrimaryWithDelayedHedge(input: {
+    primary: CoordinatedCandidate<TProcessor>
+    delayMs: number
+    hedgeEnv?: RequestEnvelope
+    startHedge?: () => Promise<CoordinatedCandidate<TProcessor>>
+  }): Promise<HedgeRaceResult<TProcessor>>
   cancel(reason: string): Promise<void>
 }
 
@@ -63,6 +69,11 @@ export interface HedgeWinner<TProcessor> {
   readonly liveFrames: AsyncIterable<ClientFrame>
   readonly loserCleanup: Promise<void>
 }
+
+export type HedgeRaceResult<TProcessor> =
+  | ({ readonly kind: "winner" } & HedgeWinner<TProcessor>)
+  | { readonly kind: "terminal"; readonly candidate: CoordinatedCandidate<TProcessor>; readonly bufferedFrames: ReadonlyArray<ClientFrame> }
+  | { readonly kind: "failure"; readonly error: unknown }
 
 /** Create a single-generation, primary-only coordinator. */
 export function createGenerationCoordinator<TProcessor>(input: CreateGenerationCoordinatorInput<TProcessor>): GenerationCoordinator<TProcessor> {
@@ -158,6 +169,42 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       throw new AggregateError(failures, "No generation candidate produced a complete client block")
     },
 
+    async racePrimaryWithDelayedHedge({ primary, delayMs, hedgeEnv, startHedge }) {
+      if (raceStarted) throw new Error("[generation-coordinator] candidate race already started")
+      raceStarted = true
+      const primaryProbe = probeCandidateResponse({ candidate: primary, session: asCandidateResponseSession(primary.processor), upstream: primary.upstream })
+      const threshold = delayWithCancel(delayMs)
+      const first = await Promise.race([
+        primaryProbe.then((outcome) => ({ kind: "primary" as const, outcome })),
+        threshold.promise.then(() => ({ kind: "threshold" as const })),
+      ])
+      if (first.kind === "primary") {
+        threshold.cancel()
+        if (first.outcome.kind === "boundary") {
+          return {
+            kind: "winner",
+            candidate: primary,
+            bufferedFrames: first.outcome.bufferedFrames,
+            liveFrames: first.outcome.liveFrames,
+            loserCleanup: Promise.resolve(),
+          }
+        }
+        if (first.outcome.kind === "terminal") return { kind: "terminal", candidate: primary, bufferedFrames: first.outcome.bufferedFrames }
+        return { kind: "failure", error: first.outcome.error }
+      }
+
+      let hedge: CoordinatedCandidate<TProcessor>
+      try {
+        hedge = await (startHedge ? startHedge() : this.runHedge(hedgeEnv))
+      } catch (error) {
+        await runtimes.get(primary.candidate)?.cancel("hedge-start-failed")
+        await primaryProbe
+        return { kind: "failure", error }
+      }
+      const hedgeProbe = probeCandidateResponse({ candidate: hedge, session: asCandidateResponseSession(hedge.processor), upstream: hedge.upstream })
+      return raceProbePromises({ candidates: [primary, hedge], probes: [primaryProbe, hedgeProbe], runtimes })
+    },
+
     async cancel(reason) {
       cancelledReason ??= reason
       const candidates = [...runtimes.values()]
@@ -165,6 +212,81 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       active = undefined
       const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
       if (errors.length > 0) throw new AggregateError(errors, "One or more generation candidates failed to cancel")
+    },
+  }
+}
+
+async function raceProbePromises<TProcessor>(input: {
+  candidates: ReadonlyArray<CoordinatedCandidate<TProcessor>>
+  probes: ReadonlyArray<Promise<CandidateProbeOutcome<CoordinatedCandidate<TProcessor>>>>
+  runtimes: Map<CandidateHandle, CandidateRuntime<TProcessor>>
+}): Promise<HedgeRaceResult<TProcessor>> {
+  const pending = new Map(input.probes.map((probe, index) => [index, probe.then((outcome) => ({ index, outcome }))]))
+  const failures: Array<unknown> = []
+  let firstTerminal: Extract<CandidateProbeOutcome<CoordinatedCandidate<TProcessor>>, { kind: "terminal" }> | undefined
+  while (pending.size > 0) {
+    const settled = await Promise.race(pending.values())
+    pending.delete(settled.index)
+    const { outcome } = settled
+    if (outcome.kind === "boundary") {
+      const loserCleanup = observeLoserCleanup(input.candidates, pending, outcome.candidate, input.runtimes)
+      return {
+        kind: "winner",
+        candidate: outcome.candidate,
+        bufferedFrames: outcome.bufferedFrames,
+        liveFrames: outcome.liveFrames,
+        loserCleanup,
+      }
+    }
+    if (outcome.kind === "failure") {
+      input.runtimes.get(outcome.candidate.candidate)?.settle({ verdict: "failed", reason: "response-failure" })
+      failures.push(outcome.error)
+    } else {
+      firstTerminal ??= outcome
+    }
+  }
+  if (firstTerminal) return { kind: "terminal", candidate: firstTerminal.candidate, bufferedFrames: firstTerminal.bufferedFrames }
+  return { kind: "failure", error: new AggregateError(failures, "No generation candidate produced a complete client block") }
+}
+
+function observeLoserCleanup<TProcessor>(
+  candidates: ReadonlyArray<CoordinatedCandidate<TProcessor>>,
+  pending: Map<number, Promise<{ index: number; outcome: CandidateProbeOutcome<CoordinatedCandidate<TProcessor>> }>>,
+  winner: CoordinatedCandidate<TProcessor>,
+  runtimes: Map<CandidateHandle, CandidateRuntime<TProcessor>>,
+): Promise<void> {
+  return withRejectionObserver(
+    Promise.allSettled(
+      candidates.flatMap((candidate, index) => {
+        if (candidate.candidate === winner.candidate) return []
+        const runtime = runtimes.get(candidate.candidate)
+        const tasks: Array<Promise<unknown>> = []
+        if (runtime) tasks.push(runtime.cancel("lost hedge race"))
+        const probe = pending.get(index)
+        if (probe) tasks.push(probe.then((entry) => (entry.outcome.kind === "boundary" ? entry.outcome.close() : undefined)))
+        return tasks
+      }),
+    ).then((results) => {
+      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+      if (errors.length > 0) throw new AggregateError(errors, "One or more hedge losers failed to quiesce")
+    }),
+  )
+}
+
+function delayWithCancel(ms: number): { promise: Promise<void>; cancel(): void } {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+    timer = setTimeout(done, Math.max(0, ms))
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+  })
+  return {
+    promise,
+    cancel() {
+      if (timer) clearTimeout(timer)
+      timer = undefined
+      resolve()
     },
   }
 }

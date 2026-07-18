@@ -41,6 +41,13 @@ export interface DownstreamDeliverySession {
   terminate(command: DeliveryTerminalCommand): Promise<void>
 }
 
+const deliveryBySink = new WeakMap<ClientSink, DownstreamDeliverySession>()
+
+/** Resolve the generation-owned delivery behind a production delivery sink. */
+export function getDownstreamDeliverySession(sink: ClientSink): DownstreamDeliverySession | undefined {
+  return deliveryBySink.get(sink)
+}
+
 /** Create a delivery session whose identity and ledger outlive every upstream round. */
 export function createDownstreamDeliverySession(options: CreateDownstreamDeliverySessionOptions): DownstreamDeliverySession {
   const { sink } = options
@@ -214,6 +221,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   }
 
   clientSink.finalize = () => session.terminate({ kind: "complete" })
+  deliveryBySink.set(clientSink, session)
   armHeartbeat()
   return session
 }

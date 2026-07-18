@@ -87,6 +87,7 @@ export interface CreateDispatchSchedulerInput {
   decideRetry: (input: SemanticRetryInput) => SemanticRetryDecision | Promise<SemanticRetryDecision>
   /** Hard generation-candidate guard across fallback, 429 and semantic retries. */
   maxDispatches?: number
+  monotonicNow?: () => number
 }
 
 export interface ScheduledDispatch {
@@ -94,6 +95,8 @@ export interface ScheduledDispatch {
   readonly dispatch: DispatchHandle
   readonly reason: DispatchReason
   readonly env: RequestEnvelope
+  readonly wire: PreparedRequest
+  readonly dispatchedAtMonotonic: number
   readonly upstream: UpstreamStream
   readonly lifecycle: UpstreamDispatchLifecycle
 }
@@ -114,6 +117,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
   const settled = new Set<DispatchHandle>()
   const cleanup = new Map<DispatchHandle, Promise<void>>()
   const maxDispatches = input.maxDispatches ?? 16
+  const monotonicNow = input.monotonicNow ?? performance.now.bind(performance)
 
   const recordSettlement = (dispatch: DispatchHandle, settlement: DispatchSettlement): void => {
     if (settled.has(dispatch)) return
@@ -190,6 +194,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         input.recording.recordAdmission(dispatch, admission)
 
         let response: PhysicalTransportResponse
+        const dispatchedAtMonotonic = monotonicNow()
         try {
           const options: TransportDispatchOptions = { signal, ...(forceHttp && { forceHttp: true }) }
           response = await input.open(wire, current, options)
@@ -213,6 +218,8 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
             dispatch,
             reason,
             env: current,
+            wire,
+            dispatchedAtMonotonic,
             upstream:
               response.kind === "stream" ?
                 response.upstream

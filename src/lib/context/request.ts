@@ -1249,6 +1249,14 @@ export function createRequestContext(opts: {
       captureFrameActionFor(attempt, inputFrames, outputFrames, transform)
     },
 
+    selectGenerationWinner(candidate, dispatch) {
+      const operation = modelOperationRecorder.snapshot()
+      const row = operation.dispatches.find((entry) => entry.handle === dispatch)
+      if (!row) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      if (row.candidate !== candidate) throw new Error(`[request-context] dispatch ${dispatch} does not belong to candidate ${candidate}`)
+      activeGenerationDispatch = dispatch
+    },
+
     settleGenerationDispatch(dispatch, input) {
       const attempt = selectGenerationAttempt(dispatch)
       settleGenerationAttempt(attempt, input.verdict, input.reason, input.error)

@@ -49,6 +49,7 @@ export interface CandidateResponseSession<Snapshot = unknown> {
   readonly processor: ResponseProcessor
   readonly responseOpts: CandidateResponseSessionOptions
   readonly boundary: CandidateBoundaryClassifier
+  readonly finish: CandidateResponseFinish | undefined
   snapshot(): Snapshot
 }
 
@@ -150,6 +151,9 @@ export function createCandidateResponseSession<State, Snapshot>(
     }),
     responseOpts,
     boundary,
+    get finish() {
+      return finish
+    },
     snapshot() {
       // A consumer may close while yielding renderer finish frames (for example WS terminal early-stop),
       // before the processor can resume past its final yield. The presence of a finish verdict proves the

@@ -38,6 +38,8 @@ export interface CandidateReady<TProcessor> {
   readonly candidate: CandidateHandle
   readonly dispatch: DispatchHandle
   readonly env: RequestEnvelope
+  readonly wire: import("~/lib/pipeline/types").PreparedRequest
+  readonly dispatchedAtMonotonic: number
   readonly upstream: UpstreamStream
   readonly processor: TProcessor
   settleDispatch(input: DispatchSettlement): Promise<void>
@@ -95,6 +97,8 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
             candidate: handle,
             dispatch: ready.dispatch,
             env: ready.env,
+            wire: ready.wire,
+            dispatchedAtMonotonic: ready.dispatchedAtMonotonic,
             upstream: ready.upstream,
             processor: input.createProcessor({ candidate: handle, dispatch: ready.dispatch, env: ready.env, upstream: ready.upstream }),
             settleDispatch: (settlement) => input.scheduler.settle(ready.dispatch, settlement),
