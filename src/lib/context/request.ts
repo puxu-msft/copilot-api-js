@@ -444,8 +444,14 @@ export function createRequestContext(opts: {
     rawCaptureLease.appendRef(id, sequence, track, result)
   }
 
-  function canonicalFrameValue(frame: unknown): Readonly<Record<string, unknown>> {
-    if (typeof frame !== "object" || frame === null) return Object.freeze({ data: typeof frame === "string" ? frame : String(frame) })
+  function canonicalFrameValue(frame: unknown, record?: SseEventRecord): Readonly<Record<string, unknown>> {
+    if (typeof frame !== "object" || frame === null) {
+      return Object.freeze({
+        data: typeof frame === "string" ? frame : String(frame),
+        ...(record?.type !== undefined && { type: record.type }),
+        ...(record?.synthetic !== undefined && { synthetic: record.synthetic }),
+      })
+    }
     const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
     return Object.freeze({
       ...(candidate.event !== undefined && { event: candidate.event }),
@@ -453,6 +459,17 @@ export function createRequestContext(opts: {
       ...(candidate.id !== undefined && { id: candidate.id }),
       ...(candidate.retry !== undefined && { retry: candidate.retry }),
       ...(candidate.data === undefined && candidate.raw !== undefined && { data: candidate.raw }),
+      // Preserve the caller-computed `type` (the SSE event type / synthesized "message"/"keepalive"
+      // sentinel, driver.ts/client-sink.ts) and `synthetic`-origin classification (hook-mock/hook-replay
+      // from the driver's upstream-track sampling; hook-rewrite/refusal-recovery/error-shaping-*/
+      // keepalive/anchor/synthetic-message-start from the client-sink's forwarded-track sampling).
+      // Without this the arena node's `value` — what projection.ts's `frames()` reads back for
+      // `SseEventRecord.type`/`.synthetic` — silently drops declared, richest-data-flow-mandated
+      // fields (V3 projection gap audit root cause #2: this function used to keep ONLY the raw wire
+      // fields, so `type` always fell back to the generic "message" default and `synthetic` was
+      // always undefined, even for a real Anthropic `event:` line or a genuine hook-replay frame).
+      ...(record?.type !== undefined && { type: record.type }),
+      ...(record?.synthetic !== undefined && { synthetic: record.synthetic }),
     })
   }
 
@@ -1153,10 +1170,10 @@ export function createRequestContext(opts: {
       recordAttemptDiagnostic(`timing.${kind}`, "info", { epoch, mode })
     },
 
-    captureUpstreamGenerationFrame(frame, _record) {
+    captureUpstreamGenerationFrame(frame, record) {
       if (modelOperationRecorder.sealed) return
       const attempt = currentGenerationAttempt()
-      const handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
+      const handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame, record), {
         origin: { stage: "upstream-capture", track: "upstream", ...(attempt !== undefined && { attempt: attempt.handle }) },
         mediaType: "text/event-stream",
       })
@@ -1235,14 +1252,14 @@ export function createRequestContext(opts: {
       })
     },
 
-    captureForwardedGenerationFrame(frame, _record, syntheticKind) {
+    captureForwardedGenerationFrame(frame, record, syntheticKind) {
       if (modelOperationRecorder.sealed) return
       const known = knownFrame(frame)
       let handle: FrameNodeHandle
       if (syntheticKind !== undefined || known?.bytesChanged) {
         const parent = known?.handle ?? syntheticRoot()
         const transformId = `client-sink:${syntheticKind ?? "mutation"}`
-        handle = modelOperationRecorder.deriveFrame(canonicalFrameValue(frame), {
+        handle = modelOperationRecorder.deriveFrame(canonicalFrameValue(frame, record), {
           derivedFrom: parent,
           transformId,
           origin: { stage: "client-sink", track: "proxy", detail: syntheticKind ?? "mutation" },
@@ -1258,7 +1275,7 @@ export function createRequestContext(opts: {
       } else if (known) {
         handle = known.handle
       } else {
-        handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
+        handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame, record), {
           origin: { stage: "client-sink", track: "client" },
           mediaType: "text/event-stream",
         })

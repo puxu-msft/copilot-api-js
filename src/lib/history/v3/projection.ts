@@ -8,9 +8,14 @@ import type {
   EntrySummary,
   HistoryEntry,
   HistoryState,
+  ModelInfo,
   QueryOptions,
   SseEventRecord,
 } from "~/lib/history/types"
+import type {
+  //
+  CopilotAnnotations,
+} from "~/types/api/anthropic"
 
 function nodeValues(record: ModelOperationRecord): Map<string, unknown> {
   return new Map([...record.arena.payloads, ...record.arena.frames].map((node) => [node.handle, node.value]))
@@ -20,11 +25,22 @@ function payload(values: Map<string, unknown>, track: OperationTrack | undefined
   return track?.payload ? values.get(track.payload) : undefined
 }
 
-function headers(track: OperationTrack | undefined): Record<string, string> | undefined {
-  if (!track?.headers) return undefined
+function foldHeaderFields(fields: ReadonlyArray<readonly [string, string]> | undefined): Record<string, string> | undefined {
+  if (!fields) return undefined
   const out: Record<string, string> = {}
-  for (const [name, value] of track.headers) out[name] = Object.hasOwn(out, name) ? `${out[name]}, ${value}` : value
+  for (const [name, value] of fields) out[name] = Object.hasOwn(out, name) ? `${out[name]}, ${value}` : value
   return out
+}
+
+function headers(track: OperationTrack | undefined): Record<string, string> | undefined {
+  return foldHeaderFields(track?.headers)
+}
+
+/** Attempt-level upstream response trailers (h2 trailer frame, RFC §4) — a SEPARATE captured field
+ *  from `.headers` (settleGenerationAttempt writes both independently, request.ts). Declared on
+ *  `UpstreamResponseData.trailers` (types.ts:423) but never projected until now. */
+function trailers(track: OperationTrack | undefined): Record<string, string> | undefined {
+  return foldHeaderFields(track?.trailers)
 }
 
 function frames(values: Map<string, unknown>, track: OperationTrack | undefined): Array<SseEventRecord> | undefined {
@@ -39,6 +55,16 @@ function frames(values: Map<string, unknown>, track: OperationTrack | undefined)
       ...(value?.synthetic ? { synthetic: value.synthetic } : {}),
     }
   })
+}
+
+/** Per-attempt upstream-original frames for a FAILED (non-final) attempt (RFC §4 D1). The
+ *  successful (final) attempt's frames live on `upstreamResponse.sseEvents` (§S1, via `frames()`
+ *  above reading the SAME track) — this is a SEPARATE per-attempt array projected onto
+ *  `attempts[].sseEvents` only for non-final attempts, so a buffered-retry entry's earlier RST'd
+ *  attempts stay diagnosable without duplicating the final attempt's frames twice. */
+function attemptFrames(values: Map<string, unknown>, attempt: ModelOperationRecord["attempts"][number], isFinal: boolean): Array<SseEventRecord> | undefined {
+  if (isFinal) return undefined
+  return frames(values, attempt.upstreamResponse)
 }
 
 function metadata(value: unknown): Record<string, unknown> | undefined {
@@ -91,24 +117,56 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
   const clientBody = payload(values, record.ingress?.request)
   const attempts = record.attempts.map((attempt, index) => {
     const effectiveMeta = metadata(attempt.effectiveRequest?.metadata)
+    const effectiveMessages = effectiveMeta?.messages as Array<unknown> | undefined
     const requestMeta = metadata(attempt.upstreamRequest?.metadata)
     const responseMeta = metadata(attempt.upstreamResponse?.metadata) as
       | {
-          response?: { success?: boolean; model?: string; usage?: Record<string, unknown>; stop_reason?: string; responseId?: string; error?: string }
+          response?: {
+            success?: boolean
+            model?: string
+            usage?: Record<string, unknown>
+            stop_reason?: string
+            responseId?: string
+            error?: string
+            responseText?: string
+            copilotAnnotations?: Array<CopilotAnnotations>
+            toolSearchRequests?: number
+          }
+          error?: { raw?: { responseText?: string } }
           source?: string
           latencyMs?: number
           usage?: Record<string, unknown>
         }
       | undefined
     const response = responseMeta?.response
+    // A FAILED attempt has no `response` (it's null — see settleGenerationAttempt), so its raw
+    // upstream error body lives on `metadata.error.raw.responseText` instead (captured off
+    // `HTTPError.responseText`, request.ts settleGenerationAttempt/setAttemptError). Fall back to
+    // it so `rawBody` is populated for failed attempts too, not just successful ones.
+    const attemptRawBody = response?.responseText ?? responseMeta?.error?.raw?.responseText
+    // `attempt.metadata` carries `startedAt`/`waitMs` (beginAttempt) merged with `{response,error}`
+    // (settleAttempt) — see model-operation-record.ts commitTerminal-adjacent settle merge. Declared
+    // (types.ts §attempts.startedAt/.waitMs, RFC §4) but never projected until now.
+    const attemptMeta = metadata(attempt.metadata) as { startedAt?: number; waitMs?: number } | undefined
+    const attemptResponseHeaders = headers(attempt.upstreamResponse)
+    const isFinal = index === record.attempts.length - 1
     return {
       index,
       strategy: attempt.strategy,
       durationMs: responseMeta?.latencyMs ?? 0,
-      transport: metadata(attempt.metadata)?.transport as HistoryEntry["transport"] | undefined,
+      // `attempt.transport` is the first-class field written by beginAttempt/setAttemptTransport
+      // (model-operation-record.ts) — NOT `attempt.metadata.transport`, which is never set (that
+      // was a projection bug: reading the wrong source silently dropped every attempt's transport,
+      // V3 projection gap audit root cause #1).
+      transport: attempt.transport as HistoryEntry["transport"] | undefined,
+      ...(attemptMeta?.startedAt !== undefined && { startedAt: attemptMeta.startedAt }),
+      ...(attemptMeta?.waitMs !== undefined && { waitMs: attemptMeta.waitMs }),
       ...(attempt.error ? { error: errorMessage(attempt.error) } : {}),
       effectiveSource: {
         ...effectiveMeta,
+        // `messageCount` (RFC §3, EffectiveSourceLeg) is a NON-authoritative projection of
+        // `messages.length` — declared but never derived (V3 projection gap audit).
+        ...(effectiveMessages !== undefined && { messageCount: effectiveMessages.length }),
         body: payload(values, attempt.effectiveRequest),
       },
       upstreamRequest: {
@@ -119,8 +177,10 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
       upstreamResponse: {
         success: response?.success ?? attempt.verdict === "committed",
         status: attempt.upstreamResponse?.status,
-        headers: headers(attempt.upstreamResponse),
+        headers: attemptResponseHeaders,
+        trailers: trailers(attempt.upstreamResponse),
         body: payload(values, attempt.upstreamResponse) as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"]>["body"],
+        ...(attemptRawBody !== undefined && { rawBody: attemptRawBody }),
         sseEvents: frames(values, attempt.upstreamResponse),
         usage: projectUsage(
           response?.usage
@@ -130,7 +190,18 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
         stopReason: response?.stop_reason,
         model: response?.model ?? record.routing?.resolvedModel,
         responseId: response?.responseId,
+        ...(response?.copilotAnnotations && { copilotAnnotations: response.copilotAnnotations }),
+        ...(response?.toolSearchRequests !== undefined && { toolSearchRequests: response.toolSearchRequests }),
       },
+      // RFC Phase 3 ③: `attempts[].responseHeaders` — the driver writes this for EVERY attempt
+      // (success: UpstreamStream.headers; failure: apiError.responseHeaders), a SEPARATE capture
+      // from `upstreamResponse.headers` (both read the same captured header set today; declared as
+      // a distinct top-level attempt field per types.ts §551, so project it explicitly rather than
+      // relying on consumers to read the nested upstreamResponse.headers).
+      ...(attemptResponseHeaders !== undefined && { responseHeaders: attemptResponseHeaders }),
+      // D1: per-attempt upstream-original frames for a FAILED (non-final) attempt only — the final
+      // attempt's frames live on upstreamResponse.sseEvents (no duplication).
+      ...(attemptFrames(values, attempt, isFinal) !== undefined && { sseEvents: attemptFrames(values, attempt, isFinal) }),
     } satisfies NonNullable<HistoryEntry["attempts"]>[number]
   })
   const state = lifecycleState(record)
@@ -161,6 +232,10 @@ export function recordToHistoryEntry(record: ModelOperationRecord, stored: { pin
       resolved: record.routing?.resolvedModel,
       outboundEndpoint: record.routing?.upstreamEndpoint,
       translated: metadata(record.routing?.metadata)?.translated as boolean | undefined,
+      // `routeOverride` (the client's explicit `@cc/@responses/@messages` leg pin) is already
+      // captured on `record.routing.metadata` by `setRouteInfo` (request.ts) — just never read
+      // back here (V3 projection gap audit).
+      routeOverride: metadata(record.routing?.metadata)?.routeOverride as ModelInfo["routeOverride"],
     },
     clientRequest: {
       method: record.ingress?.method,
