@@ -501,6 +501,7 @@ function fakeWsConnection(events: Array<ResponsesStreamEvent>) {
     model: "gpt-resp",
     conversationId: undefined,
     handshakeHeaders: {},
+    rescheduleIdleTimeout: () => {},
     close: () => {},
   }
 }

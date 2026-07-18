@@ -571,4 +571,135 @@ describe("upstream websocket connection", () => {
       assertGuard(strict, "Idle timeout")
     })
   })
+
+  describe("rescheduleIdleTimeout / onIdle (P4 hot-reload)", () => {
+    test("rescheduleIdleTimeout re-arms the idle timer with the new value (real timer, no fake clock)", async () => {
+      const connection = createUpstreamWsConnection({
+        headers: {},
+        model: "gpt-5.2",
+        idleTimeoutMs: 10_000, // long enough that it would NOT fire during this test if left unchanged
+        createSocket: () => socket,
+      })
+      const connectPromise = connection.connect()
+      socket.open()
+      await connectPromise
+
+      // Shrink the idle window to something the test can actually observe firing.
+      connection.rescheduleIdleTimeout(20)
+
+      await new Promise((r) => setTimeout(r, 60))
+      expect(socket.closeCalls).toHaveLength(1)
+      expect(socket.closeCalls[0]?.reason).toBe("Idle timeout")
+    })
+
+    test("rescheduleIdleTimeout while busy is a no-op until the request finishes (does not interrupt an in-flight request)", async () => {
+      const connection = createUpstreamWsConnection({
+        headers: {},
+        model: "gpt-5.2",
+        idleTimeoutMs: 10_000,
+        createSocket: () => socket,
+      })
+      const connectPromise = connection.connect()
+      socket.open()
+      await connectPromise
+
+      const events = connection.sendRequest({ model: "gpt-5.2", input: "hi", stream: true })
+      connection.rescheduleIdleTimeout(20)
+
+      // Busy connection must NOT be closed by the shrunk idle window.
+      await new Promise((r) => setTimeout(r, 60))
+      expect(socket.closeCalls).toHaveLength(0)
+
+      socket.emitMessage({
+        type: "response.completed",
+        sequence_number: 0,
+        response: { id: "resp_1", object: "response", created_at: 1, status: "completed", model: "gpt-5.2", output: [] },
+      })
+      for await (const _e of events) {
+        /* drain */
+      }
+
+      // Now idle — the rescheduled (short) value takes effect on the NEXT
+      // scheduleIdleClose() call (finishRequest), per Architecture.
+      await new Promise((r) => setTimeout(r, 60))
+      expect(socket.closeCalls).toHaveLength(1)
+    })
+
+    test("rescheduleIdleTimeout computes the new deadline from idleSince, not from the reschedule call time (HIGH-6) — extending after a long idle period fires sooner than a fresh full window would", async () => {
+      const connection = createUpstreamWsConnection({
+        headers: {},
+        model: "gpt-5.2",
+        idleTimeoutMs: 10_000, // long enough that it would not fire on its own during this test
+        createSocket: () => socket,
+      })
+      const connectPromise = connection.connect()
+      socket.open()
+      await connectPromise
+      // idleSince is stamped when onOpen marks the connection idle, above. Let a
+      // good chunk of that idle window elapse BEFORE rescheduling.
+      await new Promise((r) => setTimeout(r, 80))
+
+      // If this were "restart a fresh window from now" (the bug this test would
+      // catch), the connection would close ~100ms after THIS call. Idle-since
+      // based, it closes ~20ms after this call — 80ms of the 100ms window had
+      // already elapsed while idle before the reschedule.
+      connection.rescheduleIdleTimeout(100)
+
+      await new Promise((r) => setTimeout(r, 45))
+      expect(socket.closeCalls).toHaveLength(1)
+      expect(socket.closeCalls[0]?.reason).toBe("Idle timeout")
+    })
+
+    test("rescheduleIdleTimeout closes immediately when the new deadline (based on idleSince) has already passed", async () => {
+      const connection = createUpstreamWsConnection({
+        headers: {},
+        model: "gpt-5.2",
+        idleTimeoutMs: 10_000,
+        createSocket: () => socket,
+      })
+      const connectPromise = connection.connect()
+      socket.open()
+      await connectPromise
+      await new Promise((r) => setTimeout(r, 80)) // idle for 80ms already
+
+      // The new window (30ms) is already shorter than the 80ms that has elapsed
+      // since idleSince — the deadline is already in the past, so this must
+      // close essentially immediately (Math.max(0, deadline - now) === 0), NOT
+      // wait a further 30ms counted from this call.
+      connection.rescheduleIdleTimeout(30)
+
+      await new Promise((r) => setTimeout(r, 15))
+      expect(socket.closeCalls).toHaveLength(1)
+    })
+
+    test("onIdle fires every time the connection transitions (back) to idle — the HIGH-5 eviction hook", async () => {
+      const onIdleCalls: Array<true> = []
+      const connection = createUpstreamWsConnection({
+        headers: {},
+        model: "gpt-5.2",
+        idleTimeoutMs: 10_000,
+        createSocket: () => socket,
+        onIdle: () => onIdleCalls.push(true),
+      })
+      const connectPromise = connection.connect()
+      socket.open()
+      await connectPromise
+      // The initial onOpen->idle transition counts as one.
+      expect(onIdleCalls).toHaveLength(1)
+
+      const events = connection.sendRequest({ model: "gpt-5.2", input: "hi", stream: true })
+      expect(onIdleCalls).toHaveLength(1) // unchanged while busy
+
+      socket.emitMessage({
+        type: "response.completed",
+        sequence_number: 0,
+        response: { id: "resp_1", object: "response", created_at: 1, status: "completed", model: "gpt-5.2", output: [] },
+      })
+      for await (const _e of events) {
+        /* drain */
+      }
+
+      expect(onIdleCalls).toHaveLength(2) // finishRequest() transitioned back to idle
+    })
+  })
 })

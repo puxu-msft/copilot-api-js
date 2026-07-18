@@ -5,7 +5,11 @@ import { randomUUID } from "node:crypto"
 // back into upstream-ws*, so this is a safe top-level edge in the module
 // graph. If a future change to state.ts introduces a cycle this import should
 // be moved inside the getter via dynamic import.
-import { state } from "~/lib/state"
+import {
+  //
+  onUpstreamTransportChange,
+  state,
+} from "~/lib/state"
 
 import type {
   //
@@ -61,6 +65,14 @@ export interface WsBreakerSnapshotRow {
   disabledUntilMs: number
 }
 
+/** Per-connection status row for /api/status (richest-data-flow). */
+export interface UpstreamWsStatusRow {
+  key: string
+  model: string
+  state: "connecting" | "busy" | "idle"
+  generation: number
+}
+
 export interface UpstreamWsManager {
   findReusable(opts: { previousResponseId?: string; conversationId?: string; model: string }): UpstreamWsConnection | undefined
   create(opts: { headers: Record<string, string>; model: string; conversationId?: string }): Promise<UpstreamWsConnection>
@@ -76,6 +88,10 @@ export interface UpstreamWsManager {
   disabledUntilMs(key: string): number
   /** Per-model breaker rows (only models with a live entry appear — clean models are omitted). */
   breakerSnapshot(): Array<WsBreakerSnapshotRow>
+  /** Hot-reload (P4): reschedule every pooled connection's idle-close deadline to `newIdleTimeoutMs`, bump this manager's generation counter, and evict excess IDLE connections down to the (possibly shrunk) soft-max cap. Busy connections are left alone — they converge via existing mechanisms (see Architecture). */
+  reconcileForConfigChange(newIdleTimeoutMs: number): void
+  /** Per-connection status rows for /api/status (P5). */
+  statusSnapshot(): ReadonlyArray<UpstreamWsStatusRow>
   readonly stopped: boolean
 }
 
@@ -97,6 +113,9 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
   }
   const connections = new Map<string, UpstreamWsConnection>()
   const lastUsedAt = new Map<string, number>()
+  /** Generation stamped at create() time; bumped on every reconcileForConfigChange() call. Instance-scoped (per-manager), unlike h2's module-global currentGeneration — each manager owns its own connection pool. */
+  const connectionGeneration = new Map<string, number>()
+  let currentGeneration = 0
   let stopped = false
   // Per-model circuit breaker: `consecutiveFallbacks`/`disabledUntil` keyed by
   // the bare model string (same key space as the connection pool's
@@ -151,6 +170,24 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
     consola.debug(`[upstream-ws] Evicting idle connection ${victimKey} to enforce pool cap (${cap})`)
     victim.close()
     // onClose handler will delete from connections + lastUsedAt
+  }
+
+  /**
+   * Evicts however many idle connections are needed to bring the pool back
+   * within `cap`, counted ONCE up front — unlike callers that loop on
+   * `connections.size` shrinking, this must not re-read `connections.size`
+   * mid-loop: a real connection's close() only removes its entry from
+   * `connections` asynchronously (the manager's `onClose` callback fires
+   * when the underlying WS "close" event arrives, not synchronously inside
+   * `.close()`), so re-checking `connections.size` after each eviction would
+   * see it unchanged and the loop would stop after evicting at most one
+   * connection, silently leaving the pool oversized (spec §4 HIGH-5).
+   */
+  const evictExcessIdleConnections = () => {
+    const cap = getMaxConnections()
+    if (cap <= 0) return
+    const excess = connections.size - cap
+    for (let i = 0; i < excess; i++) evictOneIdleIfNeeded()
   }
 
   return {
@@ -220,9 +257,12 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
         onClose: () => {
           connections.delete(key)
           lastUsedAt.delete(key)
+          connectionGeneration.delete(key)
         },
+        onIdle: () => evictOneIdleIfNeeded(),
       })
       connections.set(key, connection)
+      connectionGeneration.set(key, currentGeneration)
       touch(key)
       return Promise.resolve(connection)
     },
@@ -237,6 +277,7 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
       }
       connections.clear()
       lastUsedAt.clear()
+      connectionGeneration.clear()
     },
 
     resetRuntimeState() {
@@ -329,6 +370,36 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
       return rows
     },
 
+    reconcileForConfigChange(newIdleTimeoutMs) {
+      currentGeneration += 1
+      for (const [key, connection] of connections) {
+        connection.rescheduleIdleTimeout(newIdleTimeoutMs)
+        connectionGeneration.set(key, currentGeneration)
+      }
+      // The soft-max cap may have shrunk — evict now-excess IDLE connections
+      // down to it. Busy connections are left untouched (see Architecture).
+      // evictExcessIdleConnections() computes the excess ONCE up front — see
+      // its own doc comment for why re-checking connections.size mid-loop
+      // would silently under-evict.
+      evictExcessIdleConnections()
+    },
+
+    statusSnapshot() {
+      const rows: Array<UpstreamWsStatusRow> = []
+      for (const [key, connection] of connections) {
+        let connectionState: UpstreamWsStatusRow["state"] = "idle"
+        if (!connection.isOpen) connectionState = "connecting"
+        else if (connection.isBusy) connectionState = "busy"
+        rows.push({
+          key,
+          model: connection.model,
+          state: connectionState,
+          generation: connectionGeneration.get(key) ?? 0,
+        })
+      }
+      return rows
+    },
+
     get stopped() {
       return stopped
     },
@@ -336,6 +407,7 @@ export function createUpstreamWsManager(opts: CreateUpstreamWsManagerOptions = {
 }
 
 let manager: UpstreamWsManager | null = null
+let wsReconcileSubscriptionInstalled = false
 
 export function getUpstreamWsManager(): UpstreamWsManager {
   manager ??= createUpstreamWsManager({
@@ -344,6 +416,16 @@ export function getUpstreamWsManager(): UpstreamWsManager {
     // pooled connections).
     maxConnections: () => state.softMaxUpstreamWsConnections,
   })
+  // Lazy-once subscription (P4), mirroring proxy.ts's ensureTimeoutSubscription().
+  // References the outer `manager` variable (not a snapshot), so this correctly
+  // targets whatever manager instance is current even after
+  // resetUpstreamWsManagerForTests() swaps it out.
+  if (!wsReconcileSubscriptionInstalled) {
+    onUpstreamTransportChange(() => {
+      manager?.reconcileForConfigChange(getPooledConnectionIdleTimeoutMs())
+    })
+    wsReconcileSubscriptionInstalled = true
+  }
   return manager
 }
 
@@ -359,4 +441,9 @@ export function resetUpstreamWsManagerForTests(options?: CreateUpstreamWsManager
 
 export function setUpstreamWsConnectionFactoryForTests(factory: ((opts: CreateUpstreamWsConnectionOptions) => UpstreamWsConnection) | null): void {
   connectionFactory = factory ?? createUpstreamWsConnection
+}
+
+/** Free-function wrapper (README "P4 produces, P5 consumes" signature) — the manager itself owns the per-connection state, so this just delegates. */
+export function getUpstreamWsStatusSnapshot(manager: UpstreamWsManager): ReadonlyArray<UpstreamWsStatusRow> {
+  return manager.statusSnapshot()
 }

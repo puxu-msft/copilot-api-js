@@ -21,7 +21,6 @@ import { copilotWsUrl } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
 import { guardCallback } from "~/lib/transport/crash-safety"
 
-const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000
 const CLOSE_CODE_NORMAL = 1000
 const TERMINAL_EVENTS = new Set(["response.completed", "response.failed", "response.incomplete", "error"])
 
@@ -38,6 +37,17 @@ export interface CreateUpstreamWsConnectionOptions {
   onClose?: () => void
   idleTimeoutMs?: number
   createSocket?: (url: string, headers: Record<string, string>) => WebSocketLike
+  /**
+   * Hot-reload (P4, HIGH-5): called every time this connection transitions
+   * (back) to idle — including the very first time, right after the
+   * handshake completes. `upstream-ws.ts` wires this to re-check the
+   * soft-max cap on every busy→idle transition, not only at `create()` time
+   * or when a config-change reconcile happens to run — without this, a pool
+   * that is fully busy at reload time would never shed its excess
+   * connections once they went idle later (spec-flagged permanent-overage
+   * scenario).
+   */
+  onIdle?: () => void
 }
 
 export interface WebSocketLike extends EventTarget {
@@ -58,6 +68,17 @@ export interface UpstreamWsConnection {
   readonly conversationId: string | undefined
   /** Headers captured at handshake time — used for reuse-diff diagnostics */
   readonly handshakeHeaders: Record<string, string>
+  /**
+   * Hot-reload (P4): update the idle-close deadline used by future/current
+   * idle windows (HIGH-6). The new deadline is computed from the connection's
+   * ORIGINAL idle-start time (`idleSince`), not from the moment this method is
+   * called — so shrinking the timeout below the elapsed idle duration closes
+   * the connection essentially immediately, and extending it does not reset
+   * an already-idle connection's clock back to zero. A no-op while busy or
+   * not yet open; the next transition to idle (`finishRequest`) computes its
+   * own deadline from the new value naturally.
+   */
+  rescheduleIdleTimeout(newIdleTimeoutMs: number): void
   close(): void
 }
 
@@ -85,7 +106,29 @@ function closeUpstreamWs(socket: WebSocketLike | null | undefined, reason: strin
 
 export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptions): UpstreamWsConnection {
   const createSocket = opts.createSocket ?? ((url, headers) => new WebSocket(url, { headers }))
-  const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
+  /**
+   * Mutable — {@link rescheduleIdleTimeout} (P4 hot-reload) updates this in place.
+   * Default reads `state.pooledConnectionIdleTimeout` directly (seconds -> ms) —
+   * NOT a hardcoded module constant — so a direct construction (bypassing
+   * `upstream-ws.ts`'s `create()`, e.g. in a test) still honors the single
+   * runtime-configured default instead of silently drifting from it (spec §7,
+   * removes the stale `DEFAULT_IDLE_TIMEOUT_MS` constant this module used to
+   * carry alongside — and independently of — `CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout`).
+   */
+  let effectiveIdleTimeoutMs = opts.idleTimeoutMs ?? state.pooledConnectionIdleTimeout * 1000
+  /**
+   * Wall-clock time this connection became idle (the initial handshake
+   * settling into idle, or a request finishing) — `undefined` while busy or
+   * not yet connected. `scheduleIdleClose()` computes its deadline as
+   * `idleSince + effectiveIdleTimeoutMs` (HIGH-6), NOT `Date.now() +
+   * effectiveIdleTimeoutMs` — a config-driven reschedule while already idle
+   * must extend/shrink from the ORIGINAL idle start, not from the reschedule
+   * call's own timestamp. Otherwise every hot-reload would silently add
+   * `effectiveIdleTimeoutMs` more wall-clock life to an already-idle
+   * connection, and a shrunk timeout would fail to close a connection that
+   * is already past the new deadline.
+   */
+  let idleSince: number | undefined
   let socket: WebSocketLike | null = null
   let busy = false
   /**
@@ -122,7 +165,9 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
 
   const scheduleIdleClose = () => {
     clearIdleTimer()
-    if (!socket || busy || socket.readyState !== socket.OPEN || idleTimeoutMs <= 0) return
+    if (!socket || busy || socket.readyState !== socket.OPEN || effectiveIdleTimeoutMs <= 0) return
+    const deadlineMs = (idleSince ?? Date.now()) + effectiveIdleTimeoutMs
+    const delayMs = Math.max(0, deadlineMs - Date.now())
     idleTimer = setTimeout(
       guardCallback(
         () => {
@@ -133,8 +178,21 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
           markUnusable()
         },
       ),
-      idleTimeoutMs,
+      delayMs,
     )
+  }
+
+  /**
+   * Single entry point for "this connection just became idle" (HIGH-5 / HIGH-6):
+   * stamps `idleSince` BEFORE scheduling so the deadline math above is correct,
+   * notifies the pool via `opts.onIdle` so a hot-reload-shrunk soft-max cap gets
+   * re-checked on every busy→idle transition (not just at `create()`/reconcile
+   * time — see Architecture), then arms the idle timer.
+   */
+  const markIdle = () => {
+    idleSince = Date.now()
+    opts.onIdle?.()
+    scheduleIdleClose()
   }
 
   const finishRequest = () => {
@@ -143,7 +201,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     currentAbortCleanup = null
     currentQueue?.close()
     currentQueue = null
-    scheduleIdleClose()
+    markIdle()
   }
 
   const failRequest = (error: Error) => {
@@ -259,7 +317,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
               ws.addEventListener("message", handleMessage)
               ws.addEventListener("error", handleError)
               ws.addEventListener("close", handleClose)
-              scheduleIdleClose()
+              markIdle()
               resolve()
             },
             (error) => {
@@ -337,6 +395,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
 
       clearIdleTimer()
       busy = true
+      idleSince = undefined
       currentQueue = createAsyncQueue<ResponsesStreamEvent>()
 
       const abortSignal = requestOpts?.abortSignal
@@ -401,6 +460,18 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
 
     get handshakeHeaders() {
       return opts.headers
+    },
+
+    rescheduleIdleTimeout(newIdleTimeoutMs) {
+      effectiveIdleTimeoutMs = newIdleTimeoutMs
+      // scheduleIdleClose() itself bails out (no-op) when busy/not-open/disabled,
+      // and computes its deadline from `idleSince` (unchanged by this call) —
+      // so unconditionally calling it here is always safe and correct: while
+      // idle+open it re-arms against the SAME idleSince with the new value
+      // (closing immediately if that deadline has already passed); while busy
+      // it does nothing, deferring to the next `finishRequest()`/`markIdle()`,
+      // which will stamp a fresh `idleSince` and read this new value then.
+      scheduleIdleClose()
     },
 
     close() {
