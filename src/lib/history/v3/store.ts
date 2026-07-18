@@ -20,6 +20,17 @@ const FORMAT_VERSION = 1
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+/**
+ * Captured at module load — BEFORE any test can monkey-patch `globalThis.setTimeout`
+ * (e.g. `tests/helpers/fake-clock.ts`, used by streaming-cadence/keepalive tests to
+ * fake-drive application-level heartbeat timers). `runDrain`'s per-item yield below
+ * is an internal event-loop-courtesy mechanism, not a timer any caller should be able
+ * to fake/freeze — a faked global `setTimeout` that never auto-fires would otherwise
+ * hang `drainV3Writer()` forever (surfaced as a `useIsolatedRuntime()` afterEach
+ * timeout once its teardown started awaiting the real V3 writer drain).
+ */
+const realSetTimeout = globalThis.setTimeout
+
 export interface V3StoredOperation {
   record: ModelOperationRecord
   pinned: boolean
@@ -391,7 +402,7 @@ async function runDrain(): Promise<void> {
       } finally {
         item.resolve()
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      await new Promise<void>((resolve) => realSetTimeout(resolve, 0))
     }
   } finally {
     draining = false
@@ -561,4 +572,26 @@ export function resetV3WriterForTests(): void {
   pendingBytes = 0
   draining = false
   status = { pendingOperations: 0, pendingBytes: 0, persistedOperations: 0, failedOperations: 0, conflicts: 0, searchBacklog: 0 }
+}
+
+/**
+ * Wipe every V3 table. **Test-only** primitive (History V2 removal Phase 3):
+ * `entries.ts`'s `clearHistory()` calls this to empty the persisted store
+ * alongside the in-flight map — mirrors the deleted V2 `clearAllEntries`.
+ * `v3_tracks`/`v3_timeline_chunks`/`v3_search_membership` CASCADE from
+ * `v3_operations` (FK ON DELETE CASCADE); `v3_objects`/`v3_search_objects`/
+ * `v3_search_backlog`/`v3_journal` have no FK to an operation row and are
+ * cleared explicitly.
+ */
+export function clearAllV3ForTests(): void {
+  const db = getDatabase()
+  db.exec(V3_SCHEMA_SQL)
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM v3_operations").run()
+    db.prepare("DELETE FROM v3_objects").run()
+    db.prepare("DELETE FROM v3_journal").run()
+    db.prepare("DELETE FROM v3_search_objects").run()
+    db.prepare("DELETE FROM v3_search_backlog").run()
+  })
+  tx()
 }

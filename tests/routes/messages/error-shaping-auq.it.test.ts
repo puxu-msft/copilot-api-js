@@ -23,7 +23,7 @@ import {
 } from "bun:test"
 
 import { getHistory } from "~/lib/history"
-import { drainPendingFinalizations } from "~/lib/history/entries"
+import { drainV3Writer } from "~/lib/history/v3/store"
 import {
   //
   setModels,
@@ -167,7 +167,7 @@ describe("AUQ synthesis — history recording (Task 4.3 sentinel / D-1)", () => 
     const res = await postMessages({ stream: false })
     expect(res.status).toBe(200)
     await res.json()
-    await drainPendingFinalizations()
+    await drainV3Writer()
 
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry).toBeDefined()
@@ -203,7 +203,7 @@ describe("AUQ synthesis — forwarded-track synthetic marking (streaming, produc
     const res = await postMessages({ stream: true })
     expect(res.status).toBe(200)
     await res.text()
-    await drainPendingFinalizations()
+    await drainV3Writer()
 
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     const forwarded = entry?.clientResponse?.sseEvents ?? []

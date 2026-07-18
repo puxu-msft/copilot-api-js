@@ -7,14 +7,6 @@ import {
   state,
 } from "~/lib/state"
 
-// Function-only cyclic import (state ↔ entries): used solely inside
-// `shutdownHistory` at call time, never at module eval, so it is safe — by then
-// both modules are fully initialized (these are hoisted function declarations).
-import {
-  //
-  drainPendingFinalizations,
-  retryPendingFinalizations,
-} from "./entries"
 import { clearInFlight } from "./in-flight"
 import {
   //
@@ -130,22 +122,22 @@ export function stopHistoryBackgroundWork(): void {
 }
 
 /**
- * Final history teardown (graceful `finalize()` step, AFTER request drain): await
- * every in-flight async finalize, run a last-chance retry for transient-deferred
- * entries (the reaper is stopped, so a re-failure tombstones instead of leaking),
- * drain once more in case the retry kicked new finalizes, THEN close the DB. This
- * is the I4 drain that makes async finalize lossless at shutdown. Async; awaited
- * by the shutdown sequence before process exit.
+ * Final history teardown (graceful `finalize()` step, AFTER request drain):
+ * drain the canonical V3 terminal-write pipeline, THEN close the DB. The V2
+ * async-finalize drain (`drainPendingFinalizations`/`retryPendingFinalizations`)
+ * was removed with the V2 write chain (History V2 removal Phase 3) — its
+ * mechanism (transient-retain/tombstone-degrade on a failed `finalizeEntry`)
+ * had no production caller (the deleted `HistorySink` was the only one). The
+ * V3 terminal-bus subscriber (`subscribeModelOperationTerminals`, wired in
+ * `initHistory` below) is the sole production persistence path and drains via
+ * `drainModelOperationTerminalSubscribers` + `drainV3Writer` — unsubscribe
+ * FIRST (stop accepting new terminal records), then drain the subscriber
+ * queue, then drain the writer's own pending/in-flight commits, THEN close.
+ * Async; awaited by the shutdown sequence before process exit.
  */
 export async function shutdownHistory(): Promise<void> {
   // Idempotent: a direct call (tests / non-graceful paths) must also stop background work.
   stopHistoryBackgroundWork()
-  await drainPendingFinalizations()
-  // Deferred terminal finalizations are already-accepted durability work, not
-  // background maintenance. Give them one last bounded-by-entry retry, then
-  // drain the resulting writes before closing the canonical History DB.
-  await retryPendingFinalizations()
-  await drainPendingFinalizations()
   // Keep the canonical terminal subscriber alive through request drain. Only
   // detach after no more requests can settle, then drain terminal work to disk.
   unsubscribeV3Terminal?.()

@@ -60,6 +60,10 @@ const EXEMPT: Record<string, string> = {
   _isTelemetryShutdownSealedForTests: "read-only assertion hook — no state to reset",
   _runRollupTickForTests: "action hook (drives one rollup tick) — no state to reset",
   resetReaperDiagnosticsForTests: "diagnostic snapshot reset — exercised by its owning tests",
+  // Action hook (wipes every V3 table on demand), not a per-test-leak reset —
+  // called explicitly by `clearHistory()` (History V2 removal Phase 3), not by
+  // the fixture's afterEach loop. No module-global singleton state of its own.
+  clearAllV3ForTests: "action hook (wipes V3 tables) — invoked via clearHistory(), no leak state",
   // telemetry injectors: per-test opt-in; their effect is undone by _resetRequestTelemetryForTests
   // (registered), which closes the injected db handle + restores OUTBOX_SOFT_CAP.
   _setTelemetryDbForTests: "db injector — reset via _resetRequestTelemetryForTests",

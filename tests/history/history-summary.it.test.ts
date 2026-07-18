@@ -36,8 +36,6 @@ import {
   shutdownHistory,
   updateEntry,
 } from "~/lib/history"
-import { removeInFlight } from "~/lib/history/in-flight"
-import { persistEntryEager } from "~/lib/history/store"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
@@ -581,36 +579,6 @@ describe("getHistorySummaries", () => {
     expect(all.entries.map((e) => e.id).sort()).toEqual([done.id, live.id].sort())
 
     // terminalOnly: the active in-flight entry is excluded, total reflects it.
-    const terminal = getHistorySummaries({ terminalOnly: true })
-    expect(terminal.entries.map((e) => e.id)).toEqual([done.id])
-    expect(terminal.total).toBe(1)
-  })
-
-  test("terminalOnly excludes a persisted streaming head row not in the in-flight map (state branch)", async () => {
-    // Belt-and-suspenders: an entry eager-persisted as `streaming` then removed
-    // from the in-flight map (transient state) reads back `active: false`, so only
-    // the state-based check in isInFlightSummary catches it.
-    const done = insertHistoryEntry("anthropic-messages", {
-      model: "done-model",
-      messages: [{ role: "user", content: "done" }],
-    })
-    const streamingRow: HistoryEntry = {
-      id: generateId(),
-      startedAt: Date.now() + 1,
-      endpoint: "anthropic-messages",
-      state: "streaming",
-      active: true,
-      model: { requested: "live-model" },
-      clientRequest: { format: "anthropic-messages", model: "live-model", messages: [{ role: "user", content: "live" }], stream: true },
-    }
-    insertEntry(streamingRow)
-    persistEntryEager(streamingRow) // writes the SQLite head row with status=streaming
-    removeInFlight(streamingRow.id) // now only the persisted row remains (active: false, state: streaming)
-
-    const all = getHistorySummaries()
-    expect(all.entries.map((e) => e.id).sort()).toEqual([done.id, streamingRow.id].sort())
-    expect(all.entries.find((e) => e.id === streamingRow.id)?.active).toBe(false)
-
     const terminal = getHistorySummaries({ terminalOnly: true })
     expect(terminal.entries.map((e) => e.id)).toEqual([done.id])
     expect(terminal.total).toBe(1)

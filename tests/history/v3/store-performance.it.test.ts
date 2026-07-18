@@ -7,8 +7,8 @@ import {
   test,
 } from "bun:test"
 
-import type { Database } from "~/lib/history/sqlite/connection"
 import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
+import type { Database } from "~/lib/history/sqlite/connection"
 
 import {
   //
@@ -16,7 +16,7 @@ import {
   getDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
-import { serializeHeadEntry } from "~/lib/history/sqlite/serialize"
+import { recordToHistoryEntry } from "~/lib/history/v3/projection"
 import {
   //
   commitPreparedOperation,
@@ -27,7 +27,6 @@ import {
   resetV3WriterForTests,
   searchV3OperationIds,
 } from "~/lib/history/v3/store"
-import { recordToHistoryEntry } from "~/lib/history/v3/projection"
 
 import {
   //
@@ -39,12 +38,12 @@ import {
   longConversationFixture,
 } from "./performance-fixtures"
 
-function median(values: number[]): number {
+function median(values: Array<number>): number {
   const sorted = [...values].sort((a, b) => a - b)
   return sorted[Math.floor(sorted.length / 2)]
 }
 
-function p95(values: number[]): number {
+function p95(values: Array<number>): number {
   const sorted = [...values].sort((a, b) => a - b)
   return sorted[Math.ceil(sorted.length * 0.95) - 1]
 }
@@ -71,14 +70,24 @@ function liveV3Bytes(db: Database): number {
   return row.bytes
 }
 
+/**
+ * Naive per-operation serialization estimate (mirrors the retired V2 write
+ * path's storage cost: one full uncompressed JSON copy of the projected entry
+ * per operation, no content-addressing/dedup across operations) — the
+ * baseline this test compares V3's CAS savings against. V2's
+ * `sqlite/serialize.ts` was deleted with the V2 write chain (History V2
+ * removal Phase 3); summing the uncompressed JSON byte length of the
+ * projected entry is an equivalent naive-serialization estimate for this
+ * comparison's purpose (V2 stored per-attempt/per-leg stage JSON uncompressed
+ * the same way, just split across separate rows instead of one object).
+ */
 function v2SerializedEstimate(record: ModelOperationRecord): number {
   const entry = recordToHistoryEntry(record)
-  const { row, stages } = serializeHeadEntry(entry)
-  return row.blob_gz.byteLength + stages.reduce((total, stage) => total + Buffer.byteLength(JSON.stringify(stage.payload)), 0)
+  return Buffer.byteLength(JSON.stringify(entry))
 }
 
 function timedPrepare(record: ModelOperationRecord): number {
-  const samples: number[] = []
+  const samples: Array<number> = []
   for (let index = 0; index < 5; index++) {
     const start = performance.now()
     prepareModelOperation(record)
@@ -184,7 +193,11 @@ describe("History V3 store performance", () => {
   })
 
   test("writer pending bytes track logical queue bytes and drain releases RSS pressure", async () => {
-    const records = [largeSseFixture("pending-sse", 2_048, 160), bufferedRetryFixture("pending-retry", 4, 256), embeddingBatchFixture("pending-embedding", 192, 64)]
+    const records = [
+      largeSseFixture("pending-sse", 2_048, 160),
+      bufferedRetryFixture("pending-retry", 4, 256),
+      embeddingBatchFixture("pending-embedding", 192, 64),
+    ]
     Bun.gc(true)
     const rssBefore = process.memoryUsage().rss
     const promises = records.map((record) => enqueueModelOperation(record))
@@ -198,7 +211,19 @@ describe("History V3 store performance", () => {
     const rssGrowth = Math.max(0, rssPending - rssBefore)
     const retainedGrowth = Math.max(0, rssAfter - rssBefore)
 
-    console.log("HISTORY_V3_PERF writer-memory", JSON.stringify({ logicalBytes, pendingBytes: pendingStatus.pendingBytes, pendingOperations: pendingStatus.pendingOperations, rssBefore, rssPending, rssAfter, rssGrowth, retainedGrowth }))
+    console.log(
+      "HISTORY_V3_PERF writer-memory",
+      JSON.stringify({
+        logicalBytes,
+        pendingBytes: pendingStatus.pendingBytes,
+        pendingOperations: pendingStatus.pendingOperations,
+        rssBefore,
+        rssPending,
+        rssAfter,
+        rssGrowth,
+        retainedGrowth,
+      }),
+    )
     expect(pendingStatus.pendingBytes).toBeGreaterThan(0)
     expect(pendingStatus.pendingBytes).toBeLessThanOrEqual(logicalBytes)
     expect(pendingStatus.pendingBytes).toBeGreaterThan(logicalBytes * 0.25)

@@ -7,9 +7,7 @@
 // Store (persistence and query)
 export {
   clearHistory,
-  drainPendingFinalizations,
   exportHistory,
-  finalizeEntry,
   getAgentIdFromHeaders,
   getCurrentSession,
   getEntry,
