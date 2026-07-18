@@ -19,6 +19,45 @@ afterEach(() => {
 })
 
 describe("StructuredFileSink", () => {
+  test("close drains a sub-minLength tail queued behind an active write", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostic-close-race-"))
+    dirs.push(directory)
+    const sink = await StructuredFileSink.create(createBus(), { directory, maxSizeBytes: 1024 * 1024 })
+
+    // The first record starts SonicBoom's async write immediately (> minLength).
+    // The second record and close marker then form a tail below minLength. In
+    // SonicBoom 4.2, flush() can report drain after the active write while
+    // leaving that small tail queued, so a single flush + waitForIdle hangs.
+    sink.writeRecord({
+      recordType: "diagnostic",
+      diagnostic: createDiagnosticEvent({ level: "info", event: "close-race-head", message: "x".repeat(20_000), origin: "native" }),
+    })
+    sink.writeRecord({
+      recordType: "diagnostic",
+      diagnostic: createDiagnosticEvent({ level: "info", event: "close-race-tail", message: "tail", origin: "native" }),
+    })
+
+    const close = sink.close()
+    const outcome = await Promise.race([
+      close.then(() => "closed" as const),
+      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 250)),
+    ])
+
+    if (outcome === "timed-out") {
+      // Let the pre-fix implementation finish so the failing test does not
+      // retain an open destination or hang the entire suite. The cleanup
+      // payload must exceed SonicBoom's 4096-byte minLength to start a write.
+      sink.writeRecord({
+        recordType: "diagnostic",
+        diagnostic: createDiagnosticEvent({ level: "info", event: "close-race-cleanup", message: "y".repeat(5000), origin: "native" }),
+      })
+    }
+    await close
+
+    expect(outcome).toBe("closed")
+    expect(sink.health.queuedBytes).toBe(0)
+  })
+
   test("writes per-process parseable NDJSON with mutually-exclusive record payloads", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostic-file-"))
     dirs.push(directory)

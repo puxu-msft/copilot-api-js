@@ -210,7 +210,14 @@ export class StructuredFileSink {
   }
 
   async durable(): Promise<void> {
-    await this.flush()
+    // SonicBoom can invoke a flush callback when the currently active write
+    // drains while leaving a newly queued tail smaller than minLength buffered.
+    // A subsequent waitForIdle() would then wait forever because no write is
+    // scheduled for that tail. Keep flushing until our public byte accounting,
+    // rather than the backend callback alone, proves the queue is empty.
+    do {
+      await this.flush()
+    } while (this.counted.health.queuedBytes > 0)
     await this.counted.waitForIdle()
     await this.fsyncSegments(this.counted.takeDirtyPaths())
     if (this.droppedRecords > 0 || this.state === "degraded") throw new Error(`Diagnostic durability failed: ${this.droppedRecords} dropped record chunk(s)`)
