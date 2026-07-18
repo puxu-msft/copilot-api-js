@@ -16,12 +16,14 @@ import {
   websocket,
 } from "hono/bun"
 
+import type { RequestContext } from "~/lib/context/request"
 import type {
   //
   ResponsesPayload,
   ResponsesResponse,
 } from "~/types/api/openai-responses"
 
+import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history"
 import { gracefulShutdown } from "~/lib/shutdown"
 import {
@@ -404,6 +406,15 @@ describe("Responses WebSocket transport", () => {
       ],
     })
 
+    const capturedContexts: Array<RequestContext> = []
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => {
+      const ctx = originalCreate(opts)
+      capturedContexts.push(ctx)
+      return ctx
+    }
+
     server = startWsServer()
     const ws = new WebSocket(`${server.url}/responses`)
     await waitForOpen(ws)
@@ -413,7 +424,9 @@ describe("Responses WebSocket transport", () => {
       messages.push(JSON.parse(String(event.data)) as Record<string, unknown>)
     })
 
-    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "first" } }))
+    ws.send(
+      JSON.stringify({ type: "response.create", response: { id: "client-create-1", model: "gpt-4o", input: "first", previous_response_id: "prev-raw-1" } }),
+    )
 
     // Wait for the response.completed frame to arrive
     for (let i = 0; i < 50; i++) {
@@ -422,8 +435,24 @@ describe("Responses WebSocket transport", () => {
     }
     expect(messages.some((m) => m.type === "response.completed")).toBe(true)
 
-    // Socket must still be OPEN — server did not close after completed
+    // Socket must still be OPEN — server did not close after completed. Send a second independent
+    // operation on the same connection; omit its id so the server generates a stable identifier.
     expect(ws.readyState).toBe(WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "second", previous_response_id: null } }))
+    for (let i = 0; i < 50; i++) {
+      if (messages.filter((m) => m.type === "response.completed").length >= 2) break
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    expect(messages.filter((m) => m.type === "response.completed")).toHaveLength(2)
+    expect(capturedContexts).toHaveLength(2)
+    const firstIdentity = capturedContexts[0].modelOperationTerminalRecord?.identity
+    const secondIdentity = capturedContexts[1].modelOperationTerminalRecord?.identity
+    expect(firstIdentity).toMatchObject({ kind: "responses_ws", responseCreateId: "client-create-1", previousResponseId: "prev-raw-1" })
+    expect(secondIdentity).toMatchObject({ kind: "responses_ws", previousResponseId: null })
+    expect(firstIdentity?.connectionId).toBeTruthy()
+    expect(secondIdentity?.connectionId).toBe(firstIdentity?.connectionId)
+    expect(secondIdentity?.responseCreateId).toBeTruthy()
+    expect(secondIdentity?.responseCreateId).not.toBe(firstIdentity?.responseCreateId)
 
     ws.close()
   })

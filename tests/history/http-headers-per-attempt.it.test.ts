@@ -10,7 +10,7 @@ import {
 import { getHistory } from "~/lib/history"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -53,7 +53,7 @@ describe("Phase 3: per-attempt ②③ 头持久化", () => {
     setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamMock)
     setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] })] })
-    setModelOverrides({})
+    setModelMappings({})
   })
 
   test("attempts[] 逐 attempt 带 ② wireRequest.headers + ③ responseHeaders;顶层 outboundRequest 腿带原始 headers", async () => {

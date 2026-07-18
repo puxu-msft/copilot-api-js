@@ -3,6 +3,9 @@ import type { Context } from "hono"
 import consola from "consola"
 import pc from "picocolors"
 
+import type { LightweightModelOperation } from "~/lib/context/lightweight-model-operation"
+import type { MessagesPayload } from "~/types/api/anthropic"
+
 import {
   //
   postAnthropicUpstream,
@@ -10,6 +13,7 @@ import {
 } from "~/lib/anthropic/client"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
+import { createLightweightModelOperation } from "~/lib/context/lightweight-model-operation"
 import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import { calibrate } from "~/lib/models/calibration"
 import {
@@ -25,56 +29,40 @@ import {
 } from "~/lib/observability/projections/format"
 import { publishRequestLine } from "~/lib/observability/synthetic-request-line"
 import { state } from "~/lib/state"
-import { type MessagesPayload } from "~/types/api/anthropic"
 
-// ============================================================================
-// GHC upstream token counting
-// ============================================================================
+function parseEnvelope(text: string): unknown {
+  if (text.length === 0) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
 
-/**
- * Forward token counting to GHC's upstream `/v1/messages/count_tokens` endpoint.
- * Returns the input_tokens count on success, or null to fall through to local
- * estimation.
- *
- * This is the DEFAULT channel (empirically confirmed — see
- * `docs/spec/2026-07-13-ghc-count-tokens-default.md` / the probe conclusions):
- *   - Uses the existing Copilot token (no separate Anthropic API key).
- *   - `payload` is ALREADY system-sanitized by the caller with the same rewrites
- *     the completion path applies at driver S3 (attribution strip, inline
- *     role:"system" handling, system-reminder removal), so `prepareAnthropicRequest`
- *     here produces the SAME wire the real `/v1/messages` request sends — the count
- *     reflects what GHC actually meters (more representative than the retired
- *     api.anthropic.com count, since the real completion also flows through GHC).
- *   - Support boundary ≈ the account's live `/models` catalog. We gate on
- *     `isEndpointSupported(model, MESSAGES)` to skip a doomed 400 round-trip for
- *     catalog models that don't serve `/v1/messages` (e.g. embeddings).
- */
+/** Forward one prepared count request to GHC while retaining the complete attempt. */
 async function countTokensViaGhc(
   c: Context,
   payload: MessagesPayload,
   selectedModel: NonNullable<ReturnType<typeof state.modelIndex.get>>,
+  operation: LightweightModelOperation,
 ): Promise<number | null> {
-  // Skip the upstream round-trip for models that can't serve /v1/messages
-  // (in-catalog embeddings etc. would 400). `modelIndex` membership alone is a
-  // one-way signal (not-in-catalog ⟹ 400), NOT its converse.
-  if (!isEndpointSupported(selectedModel, ENDPOINT.MESSAGES)) return null
-
-  // Source client beta + headers EXACTLY as the completion codec does
-  // (`codec.ts` parse) so the count wire's beta negotiation / header passthrough
-  // matches the real request.
   const clientAnthropicBeta = c.req.raw.headers.get("anthropic-beta") ?? undefined
   const clientRequestHeaders = Object.fromEntries(c.req.raw.headers.entries())
-
   const { wire, headers } = prepareAnthropicRequest(payload, {
     resolvedModel: selectedModel,
     clientAnthropicBeta,
     clientRequestHeaders,
   })
+  const outboundModel = typeof wire.model === "string" ? wire.model : payload.model
+  const attempt = operation.beginAttempt({
+    source: "upstream",
+    effectiveRequest: payload,
+    wireRequest: wire,
+    wireHeaders: new Headers(headers),
+    upstreamEndpoint: "/v1/messages/count_tokens",
+  })
 
   try {
-    // Resolved outbound name (same key space the completion path uses for the
-    // per-model timeout + 529 tag), falling back to the client name.
-    const outboundModel = typeof wire.model === "string" ? wire.model : payload.model
     const response = await postAnthropicUpstream({
       path: "/v1/messages/count_tokens",
       wire,
@@ -82,45 +70,60 @@ async function countTokensViaGhc(
       model: outboundModel,
       signal: createResponseHeaderTimeoutSignal(outboundModel),
     })
+    const responseText = await response.text()
+    const envelope = parseEnvelope(responseText)
 
     if (!response.ok) {
-      consola.warn(`[count_tokens] GHC upstream failed: ${response.status} ` + `${await response.text().catch(() => "")} — falling back to local estimation`)
+      const error = Object.assign(new Error(`GHC count_tokens returned HTTP ${response.status}`), {
+        status: response.status,
+        responseText,
+      })
+      attempt.discard({
+        result: envelope,
+        status: response.status,
+        headers: response.headers,
+        error,
+        reason: "falling back to local token count",
+      })
+      consola.warn(`[count_tokens] GHC upstream failed: ${response.status} ${responseText} — falling back to local estimation`)
       return null
     }
 
-    const result = (await response.json()) as { input_tokens: number }
-    return result.input_tokens
+    const inputTokens = typeof envelope === "object" && envelope !== null ? (envelope as { input_tokens?: unknown }).input_tokens : undefined
+    if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens)) {
+      const error = Object.assign(new Error("GHC count_tokens response omitted a finite input_tokens value"), {
+        status: response.status,
+        responseText,
+      })
+      attempt.discard({ result: envelope, status: response.status, headers: response.headers, error, reason: "invalid upstream count envelope" })
+      consola.warn("[count_tokens] GHC upstream returned an invalid count envelope — falling back to local estimation")
+      return null
+    }
+
+    attempt.commit({
+      result: envelope,
+      status: response.status,
+      headers: response.headers,
+      usage: { inputTokens, details: { response: envelope } },
+      metadata: { rawCount: inputTokens, calibratedCount: inputTokens, source: "upstream" },
+    })
+    return inputTokens
   } catch (error) {
+    attempt.discard({ error, reason: "falling back to local token count" })
     consola.warn("[count_tokens] GHC upstream error — falling back to local estimation:", error)
     return null
   }
 }
 
-/**
- * Handles token counting for Anthropic /v1/messages/count_tokens endpoint.
- *
- * Default channel is GHC's upstream count_tokens (exact, no separate key); falls
- * back to local tiktoken estimation for unsupported models or upstream failures.
- *
- * Per Anthropic docs:
- * - Returns { input_tokens: N } where N is the total input tokens
- * - Thinking blocks from previous assistant turns don't count as input tokens
- * - The count is an estimate
- *
- * Note: count-tokens is intentionally OUT of observability per RFC §6 Q1.
- * No RequestContext, no bus events, no history entry. The terminal outcome is
- * rendered as a request-SHAPED line via `publishRequestLine` (display sinks
- * only — stdout + log file, never history/telemetry), so it reads like a normal
- * request line rather than an `[INFO]` syslog line.
- */
+/** Anthropic-compatible token counting with a standalone History V3 operation. */
 export async function handleCountTokens(c: Context) {
   const startTime = Date.now()
   const method = c.req.method
   const reqPath = c.req.path
+  let operation: LightweightModelOperation | undefined
+  let routingRecorded = false
+  let workingPayload: MessagesPayload | undefined
 
-  // Render the terminal outcome as a request-shaped line (count_tokens is
-  // out-of-observability, so it can't flow through the normal request.completed
-  // path — see synthetic-request-line.ts). `channel` = which counting path served it.
   const emitLine = (model: string, inputTokens: number, channel: string): void => {
     const durationMs = Date.now() - startTime
     publishRequestLine({
@@ -138,59 +141,86 @@ export async function handleCountTokens(c: Context) {
   }
 
   try {
-    const rawPayload = await c.req.json<MessagesPayload>()
+    const parsedPayload = await c.req.json<MessagesPayload>()
+    const semanticInput = structuredClone(parsedPayload)
+    workingPayload = { ...parsedPayload, model: resolveModelName(parsedPayload.model) }
+    operation = createLightweightModelOperation({
+      kind: "count_tokens",
+      request: c.req.raw,
+      semanticRequest: semanticInput,
+      format: "anthropic-messages",
+      requestedModel: parsedPayload.model,
+      metadata: { source: "anthropic", requestedModel: parsedPayload.model },
+    })
 
-    // Resolve model name aliases and date-suffixed versions
-    rawPayload.model = resolveModelName(rawPayload.model)
-
-    const selectedModel = state.modelIndex.get(rawPayload.model)
-
-    // Sanitize once with the SAME system-message rewrites the completion path
-    // applies at driver S3 (createAnthropicSanitizeRewrite → runAnthropicPayloadRewrites):
-    // attribution-billing-line strip, inline role:"system" handling, and
-    // system-reminder removal. Without this the counted body diverges from what a
-    // real /v1/messages request sends (e.g. the attribution line, stripped in the
-    // completion by default, would inflate the count). Tool-name mapping
-    // (toolNameMapper) is skipped as immaterial to token counts. Never-throw: an
-    // unexpected sanitize failure degrades to counting the raw payload.
-    let payload = rawPayload
+    const selectedModel = state.modelIndex.get(workingPayload.model)
+    let payload = workingPayload
     try {
-      payload = runAnthropicPayloadRewrites(rawPayload, { toolNameMapper: null }).payload
+      payload = runAnthropicPayloadRewrites(workingPayload, { toolNameMapper: null }).payload
     } catch (error) {
       consola.warn("[count_tokens] payload sanitize failed — counting the raw payload:", error)
     }
 
-    // Model not in the account catalog — nothing to count against locally
-    // (countTotalInputTokens requires a Model). Matches the previous guard's
-    // position (must precede local estimation).
+    const canUseUpstream = Boolean(state.useUpstreamCountTokens && selectedModel && isEndpointSupported(selectedModel, ENDPOINT.MESSAGES))
+    operation.recordRouting({
+      resolvedModel: selectedModel?.id ?? payload.model,
+      source: canUseUpstream ? "upstream" : "local",
+      ...(canUseUpstream && { upstreamProtocol: "anthropic", upstreamEndpoint: "/v1/messages/count_tokens" }),
+      metadata: { preferredSource: canUseUpstream ? "upstream" : "local", fallbackSource: canUseUpstream ? "local" : undefined },
+    })
+    routingRecorded = true
+
     if (!selectedModel) {
+      const attempt = operation.beginAttempt({ source: "local", effectiveRequest: payload, wireRequest: { payload, tokenizer: null } })
+      attempt.commit({
+        result: { input_tokens: 1 },
+        usage: { inputTokens: 1 },
+        metadata: { rawCount: 1, calibratedCount: 1, source: "local", reason: "unknown-model" },
+      })
+      const response = c.json({ input_tokens: 1 })
+      await operation.complete(response, { usage: { inputTokens: 1 }, metadata: { countTokens: { rawCount: 1, calibratedCount: 1, source: "local" } } })
       emitLine(payload.model, 1, "unknown model")
-      return c.json({ input_tokens: 1 })
+      return response
     }
 
-    // Default channel: GHC upstream count_tokens (exact counts, uses copilot token).
-    // Gated by `anthropic.use_upstream_count_tokens` (default on) — when off, skip the
-    // upstream round-trip and use the local calibrated estimate only.
-    if (state.useUpstreamCountTokens) {
-      const ghcCount = await countTokensViaGhc(c, payload, selectedModel)
+    if (canUseUpstream) {
+      const ghcCount = await countTokensViaGhc(c, payload, selectedModel, operation)
       if (ghcCount !== null) {
+        const response = c.json({ input_tokens: ghcCount })
+        await operation.complete(response, {
+          usage: { inputTokens: ghcCount },
+          metadata: { countTokens: { rawCount: ghcCount, calibratedCount: ghcCount, source: "upstream" } },
+        })
         emitLine(payload.model, ghcCount, "GHC upstream")
-        return c.json({ input_tokens: ghcCount })
+        return response
       }
     }
 
-    // Fallback: local estimation (upstream disabled / unsupported model / failure).
-    // Excludes thinking blocks from assistant messages per Anthropic spec, then applies
-    // the learned size-aware calibration factor so the local estimate tracks the upstream
-    // real count (`calibrate` is identity for an unlearned model). This is the calibration
-    // model's honest-counting consumer post-auto-truncate-removal.
     const rawEstimate = await countTotalInputTokens(payload, selectedModel)
     const inputTokens = calibrate(selectedModel.id, rawEstimate)
-    emitLine(payload.model, inputTokens, `local calibrated, ${selectedModel.capabilities?.tokenizer ?? "o200k_base"}`)
-
-    return c.json({ input_tokens: inputTokens })
+    const tokenizer = selectedModel.capabilities?.tokenizer ?? "o200k_base"
+    const attempt = operation.beginAttempt({ source: "local", effectiveRequest: payload, wireRequest: { payload, tokenizer } })
+    attempt.commit({
+      result: { input_tokens: inputTokens, rawCount: rawEstimate, calibratedCount: inputTokens, source: "local" },
+      usage: { inputTokens, details: { rawCount: rawEstimate, calibratedCount: inputTokens } },
+      metadata: { rawCount: rawEstimate, calibratedCount: inputTokens, source: "local", tokenizer },
+    })
+    const response = c.json({ input_tokens: inputTokens })
+    await operation.complete(response, {
+      usage: { inputTokens, details: { rawCount: rawEstimate, calibratedCount: inputTokens } },
+      metadata: { countTokens: { rawCount: rawEstimate, calibratedCount: inputTokens, source: "local" } },
+    })
+    emitLine(payload.model, inputTokens, `local calibrated, ${tokenizer}`)
+    return response
   } catch (error) {
     consola.error("[count_tokens] Error counting tokens:", error)
-    return c.json({ input_tokens: 1 })
+    const response = c.json({ input_tokens: 1 })
+    if (operation !== undefined) {
+      if (!routingRecorded) operation.recordRouting({ resolvedModel: workingPayload?.model, source: "local", metadata: { failedBeforeRouting: true } })
+      const attempt = operation.beginAttempt({ source: "local", effectiveRequest: workingPayload, wireRequest: { payload: workingPayload } })
+      attempt.fail({ error, reason: "count_tokens handler failure" })
+      await operation.fail(response, error, { usage: { inputTokens: 1 }, metadata: { countTokens: { rawCount: 1, calibratedCount: 1, source: "local" } } })
+    }
+    return response
   }
 }

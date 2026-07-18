@@ -2,7 +2,7 @@ import consola from "consola"
 import fs from "node:fs"
 import path from "node:path"
 
-import { getProcessIdentity } from "~/lib/process-identity"
+import { getProcessIdentity, isProcessAlive } from "~/lib/process-identity"
 
 import {
   //
@@ -42,6 +42,7 @@ const BUSY_TIMEOUT_MS = 5000
 const VACUUM_FREELIST_RATIO = 0.25
 const VACUUM_MIN_FREE_BYTES = 64 * 1024 * 1024
 const VACUUM_WARN_BYTES = 1024 * 1024 * 1024
+const V3_OWNER_MARKER = "copilot-api-history-v3"
 
 let db: Database | null = null
 let openedPath: string | null = null
@@ -53,8 +54,18 @@ export function openDatabase(dbPath: string): Database {
   if (dbPath !== ":memory:") {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   }
+  const existed = dbPath !== ":memory:" && fs.existsSync(dbPath)
   db = createDatabase(dbPath)
   openedPath = dbPath
+  try {
+    assertV3Owner(db, existed, dbPath)
+  } catch (err) {
+    db.close()
+    db = null
+    openedPath = null
+    throw err
+  }
+  const v3Only = dbPath !== ":memory:" && path.basename(dbPath) === "history-v3.db"
   // auto_vacuum MUST be set before ANY other write to the new file — switching
   // to WAL first initializes the DB header and locks auto_vacuum at mode 0
   // (verified empirically). Set on the still-empty file, it makes
@@ -66,6 +77,10 @@ export function openDatabase(dbPath: string): Database {
   db.exec("PRAGMA synchronous = NORMAL;")
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
   db.exec("PRAGMA foreign_keys = ON;")
+  if (v3Only) {
+    if (dbPath !== ":memory:") consola.info(`[history/v3] opened ${dbPath}`)
+    return db
+  }
   db.exec(SCHEMA_SQL)
   // Lineage subsystem removed (dead: zero clustering on real traffic) — drop its
   // orphan tables on existing DBs so they stop occupying space.
@@ -81,7 +96,18 @@ export function openDatabase(dbPath: string): Database {
   dropLegacyFtsAndSearchText(db)
   migrateEntriesColumns(db)
   reclaimOrphanedActiveRows(db)
-  maybeVacuumOnStartup(db, dbPath)
+  if (hasLiveForeignOwner(db, getProcessIdentity().pid)) {
+    // Handover overlap: a live process (any environment — bare-metal takeover,
+    // systemd blue-green, pm2 blue/green) may still be serving normal traffic
+    // against this same DB file. VACUUM needs an exclusive write lock and its
+    // duration scales with file size — easily exceeding busy_timeout — so that
+    // process's concurrent writes would hit SQLITE_BUSY and silently drop
+    // history records (never-throw persist guard). Defer to the next exclusive
+    // startup; the reaper's incremental_vacuum stays safe to run meanwhile.
+    consola.info("[history/sqlite] 检测到存活的共享库进程，跳过启动 VACUUM（延后到下次独占启动）")
+  } else {
+    maybeVacuumOnStartup(db, dbPath)
+  }
   // Seed planner statistics once so the (now several) candidate indexes per
   // query get chosen on selectivity, not heuristics.
   seedAnalyzeIfNeeded(db)
@@ -92,6 +118,22 @@ export function openDatabase(dbPath: string): Database {
   // history_meta(search_index_version).
   if (dbPath !== ":memory:") consola.info(`[history/sqlite] opened ${dbPath}`)
   return db
+}
+
+/**
+ * Refuse to reconcile an existing unowned SQLite artifact as V3. This closes the
+ * remaining escape hatch where a test seam or future caller could point the V3
+ * opener at legacy history.db and trigger DROP/ALTER/VACUUM before detection.
+ */
+function assertV3Owner(database: Database, existed: boolean, dbPath: string): void {
+  if (!existed || dbPath === ":memory:") {
+    database.exec("CREATE TABLE IF NOT EXISTS history_store_identity (owner TEXT PRIMARY KEY)")
+    database.prepare("INSERT OR IGNORE INTO history_store_identity (owner) VALUES (?)").run(V3_OWNER_MARKER)
+    return
+  }
+  const identityTable = database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'history_store_identity'").get()
+  const owner = identityTable ? (database.prepare("SELECT owner FROM history_store_identity LIMIT 1").get() as { owner?: string } | undefined)?.owner : undefined
+  if (owner !== V3_OWNER_MARKER) throw new Error(`[history/v3] refusing to open unowned existing database: ${dbPath}`)
 }
 
 /**
@@ -171,6 +213,14 @@ function maybeVacuumOnStartup(database: Database, dbPath: string): void {
     database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
     database.exec("PRAGMA auto_vacuum = INCREMENTAL;") // activated by the VACUUM below
     database.exec("VACUUM;")
+    // VACUUM rewrote the ENTIRE db into the -wal file (WAL mode), so the -wal now
+    // sits at a ~full-db high-water mark (observed: a 26 GB -wal after a 25 GB
+    // VACUUM). A PASSIVE checkpoint — all the reaper ever runs — NEVER ftruncates
+    // the -wal file; only TRUNCATE reclaims its bytes on disk. We are still
+    // single-connection at startup (server not yet listening) so TRUNCATE takes
+    // its exclusive moment uncontended and shrinks the -wal back to zero. Without
+    // this the multi-GB WAL persists on disk indefinitely.
+    database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
     const afterBytes = pragmaInt(database, "page_count") * pageSize
     consola.info(
       `[history/sqlite] startup VACUUM reclaimed ${((totalBytes - afterBytes) / 1048576).toFixed(0)}MB (${(totalBytes / 1048576).toFixed(0)}MB → ${(afterBytes / 1048576).toFixed(0)}MB)`,
@@ -227,18 +277,74 @@ export function runOptimize(database: Database): void {
 }
 
 /**
- * (pending/executing/streaming) that does NOT belong to the current process is
- * a leftover from a process that crashed before finalizing. Flip it to
- * `interrupted` so the request is discoverable (and reaper-eligible) rather than
- * stuck "active" forever. Matched by (pid, boot_time) — a restart that reuses a
- * pid is distinguished by boot_time.
+ * Distinct non-self owner pids currently holding an active
+ * (pending/executing/streaming) row in `entries_v2`. Shared by
+ * `reclaimOrphanedActiveRows` (①) and the VACUUM gate (⑤) — both need the same
+ * "who else might still be writing this DB" enumeration before deciding
+ * whether that owner is alive.
  */
-function reclaimOrphanedActiveRows(database: Database): void {
-  const { pid, bootTime } = getProcessIdentity()
-  const where = "status IN ('pending','executing','streaming') AND NOT (pid = ? AND boot_time = ?)"
-  // Count directly rather than via `.run().changes` (kept defensive: any future
-  // AFTER-write trigger on entries_v2 would otherwise fold its writes into `changes`).
-  const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(pid, bootTime) as { n: number }
+function distinctActiveOwnerPids(database: Database, selfPid: number): Array<number> {
+  const rows = database
+    .prepare("SELECT DISTINCT pid FROM entries_v2 WHERE status IN ('pending','executing','streaming') AND pid IS NOT NULL AND pid != ?")
+    .all(selfPid) as Array<{ pid: number }>
+  return rows.map((r) => r.pid)
+}
+
+/**
+ * Is any *other* (non-self) process that owns an active row in this DB still
+ * alive right now? Environment-agnostic liveness check shared by the VACUUM
+ * gate (⑤) and usable anywhere else that needs "am I the sole live writer".
+ */
+function hasLiveForeignOwner(database: Database, selfPid: number): boolean {
+  return distinctActiveOwnerPids(database, selfPid).some((pid) => isProcessAlive(pid))
+}
+
+/**
+ * (pending/executing/streaming) rows not owned by a still-alive process are
+ * leftovers from a process that crashed before finalizing. Flip them to
+ * `interrupted` so the request is discoverable (and reaper-eligible) rather
+ * than stuck "active" forever.
+ *
+ * During a graceful-restart handover overlap (bare-metal takeover, systemd
+ * blue-green, or pm2 blue/green — lifecycle.md「overlap 共享状态安全 ①」), a
+ * *live* other process may still be draining in-flight requests when this
+ * process opens the DB — its rows are legitimately active, not orphaned.
+ * Judged by **process liveness** (`isProcessAlive(owner_pid)`), not by an
+ * environment-specific exclusion registry: a live owner's rows are always
+ * skipped, a dead owner's rows are always reclaimed, uniformly across all
+ * three deployment paths. A pid that gets reused by an unrelated process
+ * after the real owner died is a rare, safe-direction miss (we skip
+ * reclaiming that row this cycle; the reaper still eventually catches it),
+ * never a false reclaim of a live owner's row.
+ *
+ * PID-REUSE CASE (must stay distinguished by boot_time, not just liveness):
+ * when the OS reassigns a crashed predecessor's exact pid to THIS process
+ * (rare but real on long-lived hosts with a wrapping pid counter), that
+ * predecessor's orphaned row has `pid == selfPid` — `distinctActiveOwnerPids`
+ * excludes self-pid rows entirely (by design, so this process never touches
+ * its OWN in-flight rows), and even if it didn't, `isProcessAlive(selfPid)`
+ * is trivially true (it's evaluating itself) — liveness alone can never
+ * distinguish "my own row" from "a dead predecessor's row that happens to
+ * share my pid". Only `boot_time` can: this process's OWN rows carry ITS
+ * `boot_time` (set at write time via getProcessIdentity()), while a
+ * pid-reused predecessor's leftover row carries the OLD boot_time. So the
+ * reclaim target is the union of (a) dead-foreign-owner rows and (b)
+ * self-pid rows whose boot_time does NOT match this process's boot_time.
+ * Exported for isolated testing (tests/restart/reclaim-liveness.it.test.ts).
+ */
+export function reclaimOrphanedActiveRows(database: Database): void {
+  const { pid: selfPid, bootTime: selfBootTime } = getProcessIdentity()
+  const deadOwnerPids = distinctActiveOwnerPids(database, selfPid).filter((pid) => !isProcessAlive(pid))
+  const deadOwnerClause = deadOwnerPids.length > 0 ? `pid IN (${deadOwnerPids.map(() => "?").join(",")})` : null
+  // Self-pid-reuse clause: a predecessor's orphaned row that happens to share
+  // this process's pid (reassigned by the OS) but carries an OLD boot_time.
+  // `boot_time IS NOT NULL` excludes legacy pre-pid-column rows (NULL means
+  // "never recorded a boot_time", not "definitely stale") — those are left to
+  // the reaper rather than guessed at here.
+  const selfReuseClause = "(pid = ? AND boot_time IS NOT NULL AND boot_time != ?)"
+  const where = `status IN ('pending','executing','streaming') AND (${[deadOwnerClause, selfReuseClause].filter(Boolean).join(" OR ")})`
+  const params = [...deadOwnerPids, selfPid, selfBootTime]
+  const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(...params) as { n: number }
   if (n === 0) return
   // Backfill a failure reason (richest-data-flow) so the orphaned row surfaces WHY in the
   // list view; COALESCE preserves any real reason already persisted before the crash.
@@ -246,7 +352,7 @@ function reclaimOrphanedActiveRows(database: Database): void {
     .prepare(
       `UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, started_at), error_message = COALESCE(error_message, 'orphaned by a prior process — recovered on restart') WHERE ${where}`,
     )
-    .run(pid, bootTime)
+    .run(...params)
   consola.info(`[history/sqlite] reclaimed ${n} orphaned active row(s) from a prior process → interrupted`)
 }
 
@@ -270,7 +376,7 @@ function reclaimOrphanedActiveRows(database: Database): void {
  * (and unconditionally, guarded by IF NOT EXISTS) covers both fresh databases
  * — where the column came from SCHEMA_SQL's CREATE TABLE — and migrated ones.
  */
-function migrateEntriesColumns(database: Database): void {
+export function migrateEntriesColumns(database: Database): void {
   const columns = database.prepare("PRAGMA table_info(entries_v2)").all() as Array<{ name: string }>
   const existing = new Set(columns.map((c) => c.name))
 

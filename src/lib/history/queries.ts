@@ -16,13 +16,23 @@ import {
 } from "./in-flight"
 import { isActiveState } from "./lifecycle-state"
 import { extractInboundSearchText } from "./normalize-message"
+import { formatFromEndpoint } from "./sqlite/search-index-write"
 import {
   //
-  getEntryById,
-  queryEntries,
-  querySummaries,
-} from "./sqlite/read"
-import { formatFromEndpoint } from "./sqlite/search-index-write"
+  recordMatchesQuery,
+  recordToEntrySummary,
+  recordToHistoryEntry,
+} from "./v3/projection"
+import {
+  //
+  getV3StoredOperation,
+  listV3StoredOperations,
+} from "./v3/store"
+import {
+  //
+  getRecentModelOperationTerminal,
+  listRecentModelOperationTerminals,
+} from "./v3/terminal-bus"
 
 function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
   if (opts.sessionId && entry.sessionId !== opts.sessionId) return false
@@ -88,21 +98,35 @@ function inFlightMatchesSearch(entry: HistoryEntry, needle: string | undefined):
 }
 
 export function getEntry(id: string): HistoryEntry | undefined {
-  return getInFlight(id) ?? getEntryById(id)
+  const inflight = getInFlight(id)
+  if (inflight) return inflight
+  const recent = getRecentModelOperationTerminal(id)
+  if (recent) return recordToHistoryEntry(recent)
+  const stored = getV3StoredOperation(id)
+  return stored ? recordToHistoryEntry(stored.record, stored) : undefined
 }
 
 export function getSummary(id: string): EntrySummary | undefined {
   const inflight = getInFlight(id)
   if (inflight) return toEntrySummary(inflight)
-  const persisted = getEntryById(id)
-  return persisted ? toEntrySummary(persisted) : undefined
+  const recent = getRecentModelOperationTerminal(id)
+  if (recent) return recordToEntrySummary(recent)
+  const stored = getV3StoredOperation(id)
+  return stored ? recordToEntrySummary(stored.record, stored) : undefined
 }
 
 export function getHistory(options: QueryOptions = {}): HistoryResult {
   const { limit = 50 } = options
 
   const inFlightMatches = listInFlight().filter((entry) => matchesFilters(entry, options) && inFlightMatchesSearch(entry, options.search))
-  const persisted = queryEntries({ ...options, limit: 1_000_000 })
+  const operationKind = options.operationKind ?? "generation"
+  const persistedRecords = [
+    ...listRecentModelOperationTerminals().map((record) => ({ record, pinned: false })),
+    ...listV3StoredOperations(operationKind === "all" || operationKind === "generation" ? undefined : operationKind, 1_000_000),
+  ]
+  const persisted = [...new Map(persistedRecords.map((stored) => [stored.record.identity.operationId, stored])).values()]
+    .filter(({ record }) => recordMatchesQuery(record, { ...options, operationKind }))
+    .map((stored) => recordToHistoryEntry(stored.record, stored))
 
   const seen = new Set<string>()
   const merged: Array<HistoryEntry> = []
@@ -140,8 +164,14 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
     .filter((entry) => inFlightMatchesSearch(entry, options.search))
     .map((entry) => toEntrySummary(entry))
     .filter((summary) => summaryMatchesFilters(summary, options))
-  // Fetch a larger slice from SQLite so cursor-based slicing works.
-  const persistedSummaries = querySummaries({ ...options, limit: 1_000_000 })
+  const operationKind = options.operationKind ?? "generation"
+  const persistedRecords = [
+    ...listRecentModelOperationTerminals().map((record) => ({ record, pinned: false })),
+    ...listV3StoredOperations(operationKind === "all" || operationKind === "generation" ? undefined : operationKind, 1_000_000),
+  ]
+  const persistedSummaries = [...new Map(persistedRecords.map((stored) => [stored.record.identity.operationId, stored])).values()]
+    .filter(({ record }) => recordMatchesQuery(record, { ...options, operationKind }))
+    .map((stored) => recordToEntrySummary(stored.record, stored))
 
   const seen = new Set<string>()
   const merged: Array<EntrySummary> = []

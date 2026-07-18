@@ -2,9 +2,6 @@ import type { Context } from "hono"
 
 import {
   //
-  clearHistory,
-  deleteEntries,
-  deleteSession,
   exportHistory,
   getEntry,
   getHistorySummaries,
@@ -32,6 +29,7 @@ import { compressAsync } from "~/lib/history/sqlite/compression"
  */
 function parseListFilters(query: Record<string, string>): QueryOptions {
   return {
+    operationKind: (query.operationKind as QueryOptions["operationKind"]) || undefined,
     model: query.model || undefined,
     endpoint: query.endpoint as EndpointType | undefined,
     success: query.success ? query.success === "true" : undefined,
@@ -46,10 +44,17 @@ function parseListFilters(query: Record<string, string>): QueryOptions {
   }
 }
 
+function rejectsRetiredArchiveTier(c: Context): Response | undefined {
+  if (c.req.query("tier") === "archive") return c.json({ error: "The built-in archive tier has been retired" }, 400)
+  return undefined
+}
+
 export function handleGetEntries(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  const retiredTier = rejectsRetiredArchiveTier(c)
+  if (retiredTier) return retiredTier
 
   const query = c.req.query()
   const options: QueryOptions = {
@@ -84,6 +89,8 @@ export function handleGetEntry(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  const retiredTier = rejectsRetiredArchiveTier(c)
+  if (retiredTier) return retiredTier
 
   const id = c.req.param("id")
   if (!id) {
@@ -171,33 +178,6 @@ export function handleUnpinEntry(c: Context) {
   return setEntryPinState(c, false)
 }
 
-/**
- * DELETE /history/api/entries — parameterized clear.
- *
- * With NO filters it is the historical clear-all (`clearHistory`, wipes the whole
- * store) → `{ success, message }`. With any filter present it is a scoped delete
- * (`deleteEntries`, mirrors the list query's WHERE via read.ts `applyWhere`, never
- * touches in-flight head rows) → `{ success, deleted: N }` so the caller learns
- * exactly how many terminal rows were removed. `cursor`/`limit`/`direction`/
- * `terminalOnly` are pagination-only and intentionally NOT treated as filters.
- */
-export function handleDeleteEntries(c: Context) {
-  if (!isHistoryEnabled()) {
-    return c.json({ error: "History recording is not enabled" }, 400)
-  }
-
-  const query = c.req.query()
-  const filters = parseListFilters(query)
-  const hasFilter = Object.values(filters).some((v) => v !== undefined)
-  if (!hasFilter) {
-    clearHistory()
-    return c.json({ success: true, message: "History cleared" })
-  }
-
-  const deleted = deleteEntries(filters)
-  return c.json({ success: true, deleted })
-}
-
 export function handleGetStats(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
@@ -226,25 +206,6 @@ export function handleExport(c: Context) {
   return c.body(data)
 }
 
-/** Session management endpoints */
-export function handleDeleteSession(c: Context) {
-  if (!isHistoryEnabled()) {
-    return c.json({ error: "History recording is not enabled" }, 400)
-  }
-
-  const id = c.req.param("id")
-  if (!id) {
-    return c.json({ error: "Session id is required" }, 400)
-  }
-  const success = deleteSession(id)
-
-  if (!success) {
-    return c.json({ error: "Session not found" }, 404)
-  }
-
-  return c.json({ success: true, message: "Session deleted" })
-}
-
 const SEARCH_SOURCES: ReadonlySet<SearchSource> = new Set<SearchSource>(["inbound", "rewrites-req", "rewrites-resp", "req-headers", "resp-headers"])
 
 /**
@@ -257,6 +218,8 @@ export function handleSearch(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
+  const retiredTier = rejectsRetiredArchiveTier(c)
+  if (retiredTier) return retiredTier
 
   const query = c.req.query()
   const source = (query.source || "inbound") as SearchSource
@@ -269,14 +232,18 @@ export function handleSearch(c: Context) {
   // 其余 10 个结构化维与 list / delete 完全一致，享受单一事实源、免于将来的解析漂移。
   const { search: _search, ...filters } = parseListFilters(query)
 
-  const result = searchHistory({
-    source,
-    q: query.q || "",
-    limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
-    cursor: query.cursor || undefined,
-    filters,
-  })
-  return c.json(result)
+  try {
+    const result = searchHistory({
+      source,
+      q: query.q || "",
+      limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
+      cursor: query.cursor || undefined,
+      filters,
+    })
+    return c.json(result)
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 501)
+  }
 }
 
 /**
@@ -292,5 +259,9 @@ export function handleSearchContains(c: Context) {
   if (!hash) {
     return c.json({ error: "hash query parameter is required" }, 400)
   }
-  return c.json({ hash, reqIds: searchContains(hash) })
+  try {
+    return c.json({ hash, reqIds: searchContains(hash) })
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 501)
+  }
 }

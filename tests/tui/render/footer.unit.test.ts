@@ -119,6 +119,20 @@ describe("buildActiveFooter — width awareness", () => {
     const { width } = build([view], columns)
     expect(width).toBeLessThanOrEqual(columns - 1)
   })
+
+  test("complex grapheme clusters preserve the width invariant across terminal widths", () => {
+    const view = makeView({
+      id: "r1",
+      path: "/v1/1️⃣1️⃣1️⃣🇨🇳👍🏽👨‍👩‍👧‍👦e\u0301",
+      model: "模型-1️⃣-🇨🇳-👨‍👩‍👧‍👦",
+      elapsedMs: 1234,
+    })
+    for (let columns = 1; columns <= 100; columns++) {
+      const { footer, width } = build([view], columns)
+      expect(width).toBeLessThanOrEqual(Math.max(0, columns - 1))
+      expect(footer).not.toContain("🇨…")
+    }
+  })
 })
 
 describe("buildActiveFooter — model grouping", () => {

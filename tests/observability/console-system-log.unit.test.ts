@@ -8,9 +8,14 @@ import {
 } from "bun:test"
 import consola from "consola"
 
+import { createDiagnosticEvent } from "~/lib/diagnostics"
 import { createBus } from "~/lib/observability/bus"
 import { installConsolaRepublish } from "~/lib/observability/republish"
 import { TerminalUi } from "~/lib/tui"
+
+function diagnostic(message: string) {
+  return { kind: "system.diagnostic" as const, diagnostic: createDiagnosticEvent({ level: "info", event: "test.log", message, origin: "native" }) }
+}
 
 /** Collect stdout bytes from a sink, normalizing the HH:MM:SS stamp. */
 function makeCapture() {
@@ -18,7 +23,12 @@ function makeCapture() {
   const stdout = { write: (s: string) => (chunks.push(s), true), isTTY: false } as unknown as NodeJS.WritableStream
   return {
     stdout,
-    text: () => chunks.join("").replaceAll(/\d\d:\d\d:\d\d/g, "TT:TT:TT"),
+    text: () =>
+      chunks
+        .join("")
+        // eslint-disable-next-line no-control-regex -- strip intentional terminal SGR for environment-independent assertions.
+        .replaceAll(/\x1b\[[0-9;]*m/g, "")
+        .replaceAll(/\d\d:\d\d:\d\d/g, "TT:TT:TT"),
   }
 }
 
@@ -50,7 +60,56 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     expect(cap.text()).toBe(golden)
   })
 
-  test("system.log interleaves with request lifecycle lines in publish order", () => {
+  test("consola multi-line diagnostics preserve model-list structure instead of flattening", () => {
+    const cap = makeCapture()
+    const bus = createBus()
+    const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
+    const uninstall = installConsolaRepublish(bus.scope("system"))
+    cleanups.push(() => {
+      uninstall()
+      sink.destroy()
+    })
+
+    consola.level = 5
+    consola.info("Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol")
+
+    expect(cap.text()).toBe("[INFO] TT:TT:TT Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol\n")
+  })
+
+  test("semantic model catalog events render through the plain terminal owner", () => {
+    const cap = makeCapture()
+    const bus = createBus()
+    const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
+    cleanups.push(() => sink.destroy())
+
+    bus.scope("system").publish({
+      kind: "system.model_catalog",
+      models: [
+        {
+          model: {
+            id: "gpt-5.6-sol",
+            vendor: "OpenAI",
+            name: "gpt-5.6-sol",
+            object: "model",
+            version: "1",
+            model_picker_enabled: true,
+            preview: false,
+            is_chat_default: false,
+            is_chat_fallback: false,
+            capabilities: { limits: { max_context_window_tokens: 1_050_000, max_prompt_tokens: 922_000, max_output_tokens: 128_000 } },
+          },
+          disabled: false,
+        },
+      ],
+      tokenBasedBilling: true,
+      timeUnixMs: new Date("2023-11-14T14:25:36").getTime(),
+    })
+
+    expect(cap.text()).toContain("[INFO] TT:TT:TT Available models:\n  - gpt-5.6-sol (OpenAI)")
+    expect(cap.text()).toContain("ctx:1050k prp: 922k out: 128k")
+  })
+
+  test("system.diagnostic interleaves with request lifecycle lines in publish order", () => {
     const cap = makeCapture()
     const bus = createBus()
     const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
@@ -61,13 +120,34 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     })
 
     const sys = bus.scope("system")
-    sys.publish({ kind: "system.log", logType: "info", message: "before", time: Date.now() })
+    sys.publish(diagnostic("before"))
     consola.level = 5
     consola.info("between")
-    sys.publish({ kind: "system.log", logType: "info", message: "after", time: Date.now() })
+    sys.publish(diagnostic("after"))
 
     const lines = cap.text().trimEnd().split("\n")
     expect(lines).toEqual(["[INFO] TT:TT:TT before", "[INFO] TT:TT:TT between", "[INFO] TT:TT:TT after"])
+  })
+
+  test("consola adapter derives human text only from the redacted snapshot", () => {
+    const probe = "SYNTHETIC_SECRET_7f91"
+    const captured: Array<string> = []
+    const bus = createBus()
+    const unsub = bus.subscribe((event) => {
+      if (event.kind === "system.diagnostic") captured.push(JSON.stringify(event.diagnostic))
+    })
+    const uninstall = installConsolaRepublish(bus.scope("system"))
+    cleanups.push(() => {
+      unsub()
+      uninstall()
+    })
+
+    consola.level = 5
+    consola.error("auth failed", { access_token: probe }, Object.assign(new Error(`authorization=${probe}`), { authorization: probe }))
+
+    expect(captured).toHaveLength(1)
+    expect(captured[0]).not.toContain(probe)
+    expect(captured[0]).toContain("[REDACTED]")
   })
 
   test("republish reporter does not recurse when a consola call fires during fan-out", () => {
@@ -82,7 +162,7 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     // classic recursion trigger.
     let handledCount = 0
     const unsub = bus.subscribe((e) => {
-      if (e.kind === "system.log" && handledCount === 0) {
+      if (e.kind === "system.diagnostic" && handledCount === 0) {
         handledCount++
         consola.warn("reentrant warning")
       }
@@ -113,7 +193,7 @@ describe("ConsoleSink ← system.log (consola republish non-regression)", () => 
     const uninstall = installConsolaRepublish(bus.scope("system"))
     let handledCount = 0
     const unsub = bus.subscribe((e) => {
-      if (e.kind === "system.log" && handledCount === 0) {
+      if (e.kind === "system.diagnostic" && handledCount === 0) {
         handledCount++
         consola.warn("reentrant warning")
       }

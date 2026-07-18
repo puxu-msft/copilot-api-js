@@ -53,22 +53,22 @@ describe("validateConfig — happy paths", () => {
         thinking_block_message_policy: "preserve",
         effort_overrides: { "claude-opus-4.7": ["medium"] },
       },
-      history: { limit: 100, reaper_interval: 600 },
-      model_overrides: { foo: "bar" },
+      history: { raw_capture: { enabled: false, max_object_bytes: 100 } },
+      model_mappings: { foo: "bar" },
     }
     const result = validateConfig(input)
     expect(result.anthropic?.cache_control).toBe("proxied")
-    expect(result.history?.limit).toBe(100)
+    expect(result.history?.raw_capture?.max_object_bytes).toBe(100)
     expect(warnSpy).not.toHaveBeenCalled()
   })
 })
 
 describe("validateConfig — unknown keys", () => {
   test("unknown top-level key warns once + is stripped", () => {
-    const r1 = validateConfig({ unknown_top_key: 42, history: { limit: 10 } })
+    const r1 = validateConfig({ unknown_top_key: 42, history: { raw_capture: { max_object_bytes: 10 } } })
     validateConfig({ unknown_top_key: 42 })
     expect((r1 as Record<string, unknown>).unknown_top_key).toBeUndefined()
-    expect(r1.history?.limit).toBe(10) // valid neighbor survives
+    expect(r1.history?.raw_capture?.max_object_bytes).toBe(10)
     const calls = warnedMessages().filter((m) => m.includes("unknown_top_key"))
     expect(calls.length).toBe(1)
     expect(calls[0]).toContain("Unknown key")
@@ -84,10 +84,10 @@ describe("validateConfig — unknown keys", () => {
 
   test("free-form Record fields accept arbitrary user-defined keys", () => {
     const result = validateConfig({
-      model_overrides: { "claude-3-opus": "claude-opus-4.7", "weird.dots": "x" },
+      model_mappings: { "claude-3-opus": "claude-opus-4.7", "weird.dots": "x" },
       anthropic: { effort_overrides: { "claude-opus-4.7-1m-internal": ["medium", "high"] } },
     })
-    expect(result.model_overrides?.["claude-3-opus"]).toBe("claude-opus-4.7")
+    expect(result.model_mappings?.["claude-3-opus"]).toBe("claude-opus-4.7")
     expect(result.anthropic?.effort_overrides?.["claude-opus-4.7-1m-internal"]).toEqual(["medium", "high"])
     expect(warnSpy).not.toHaveBeenCalled()
   })
@@ -95,10 +95,10 @@ describe("validateConfig — unknown keys", () => {
 
 describe("validateConfig — type errors", () => {
   test("wrong type for known field warns and strips it", () => {
-    const result = validateConfig({ history: { limit: "abc", reaper_interval: 600 } })
-    expect(result.history?.limit).toBeUndefined()
-    expect(result.history?.reaper_interval).toBe(600) // valid sibling survives
-    expect(warnedMessages().some((m) => m.includes("history.limit"))).toBe(true)
+    const result = validateConfig({ history: { raw_capture: { max_object_bytes: "abc", enabled: false } } })
+    expect(result.history?.raw_capture?.max_object_bytes).toBeUndefined()
+    expect(result.history?.raw_capture?.enabled).toBe(false)
+    expect(warnedMessages().some((m) => m.includes("max_object_bytes"))).toBe(true)
   })
 
   test("invalid enum value warns + strips", () => {
@@ -126,9 +126,9 @@ describe("validateConfig — type errors", () => {
   })
 
   test("negative number rejected", () => {
-    const result = validateConfig({ history: { limit: -5 } })
-    expect(result.history?.limit).toBeUndefined()
-    expect(warnedMessages().some((m) => m.includes("history.limit"))).toBe(true)
+    const result = validateConfig({ history: { raw_capture: { max_object_bytes: -5 } } })
+    expect(result.history?.raw_capture?.max_object_bytes).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("max_object_bytes"))).toBe(true)
   })
 })
 
@@ -209,9 +209,9 @@ describe("validateConfig — deprecated keys", () => {
   })
 
   test("history.min_entries → warn only, no translation", () => {
-    const result = validateConfig({ history: { min_entries: 20, limit: 100 } })
+    const result = validateConfig({ history: { min_entries: 20, raw_capture: { max_object_bytes: 100 } } })
     expect((result.history as Record<string, unknown> | undefined)?.min_entries).toBeUndefined()
-    expect(result.history?.limit).toBe(100)
+    expect(result.history?.raw_capture?.max_object_bytes).toBe(100)
     expect(warnedMessages().some((m) => m.includes("history.min_entries"))).toBe(true)
   })
 

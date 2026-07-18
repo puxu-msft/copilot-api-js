@@ -30,7 +30,7 @@ describe("test persistence paths are sandboxed (never the real APP_DIR)", () => 
 
   test("every APP_DIR-derived file is sandboxed, not under the real home", () => {
     const realBase = `${os.homedir()}/.local/share/copilot-api`
-    for (const p of [PATHS.NEGOTIATION_STATES, PATHS.HISTORY_DB, PATHS.LEARNED_LIMITS, PATHS.REQUEST_TELEMETRY, PATHS.CONFIG_YAML, PATHS.COPILOT_LOG]) {
+    for (const p of [PATHS.NEGOTIATION_STATES, PATHS.HISTORY_DB, PATHS.LEARNED_LIMITS, PATHS.REQUEST_TELEMETRY, PATHS.CONFIG_YAML, PATHS.DIAGNOSTIC_LOG_DIR]) {
       expect(p).toContain(SANDBOX_MARKER)
       expect(p.startsWith(realBase)).toBe(false)
     }

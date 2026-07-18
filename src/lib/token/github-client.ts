@@ -97,7 +97,7 @@ export async function pollAccessToken(deviceCode: DeviceCodeResponse): Promise<s
     }
 
     const json = (await response.json()) as AccessTokenResponse
-    consola.debug("Polling access token response:", json)
+    consola.debug(`Polling access token response status=${json.access_token ? "authorized" : "pending"}`)
 
     const { access_token } = json
 

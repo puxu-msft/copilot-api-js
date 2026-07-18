@@ -19,7 +19,7 @@
  *
  * Strictness: top-level and section objects use `.strict()` so any
  * unknown key triggers a validation issue. Free-form `Record<string, T>`
- * fields (model_overrides, effort_overrides, …) are NOT strict —
+ * fields (model_mappings, effort_overrides, …) are NOT strict —
  * their keys are user-defined.
  */
 
@@ -50,7 +50,6 @@ function nullableNonnegativeInt() {
     .transform((v): number | undefined => v ?? undefined)
     .optional()
 }
-
 
 function nullableBoolean() {
   return z
@@ -748,17 +747,19 @@ export type HooksConfig = z.infer<typeof HooksConfigSchema>
 
 export const HistoryConfigSchema = z
   .object({
-    /** @deprecated 兼容旧配置;缺省的 success_limit/failure_limit 回退到它 */
-    limit: nullableNonnegativeInt(),
-    /** Max successful (non-failed) entries kept in SQLite (0 = unlimited). */
-    success_limit: nullableNonnegativeInt(),
-    /** Max failed entries kept in SQLite (0 = unlimited). */
-    failure_limit: nullableNonnegativeInt(),
-    reaper_interval: nullableNonnegativeInt(),
-    db_path: nullableString(),
+    /** Startup-only master switch. false means no History database is opened. */
+    enabled: nullableBoolean(),
+    raw_capture: nullableSection(
+      z
+        .object({
+          enabled: nullableBoolean(),
+          db_path: nullableString(),
+          max_object_bytes: nullableNonnegativeInt(),
+        })
+        .strict(),
+    ),
   })
   .strict()
-
 
 /**
  * `telemetry.*` —— 分层遥测持久化（独立 telemetry.db）。近期/远期分辨率与保留均可配。
@@ -799,7 +800,6 @@ export const TelemetryConfigSchema = z
     tiers: nullableSection(TelemetryTiersConfigSchema),
   })
   .strict()
-
 
 export const RetryConfigSchema = z
   .object({
@@ -871,7 +871,7 @@ export const TimeoutsConfigSchema = z
  * declare overrides for the keys they want to change. Bundled keys without
  * a user counterpart remain in effect.
  */
-const ModelOverridesSchema = z.record(z.string(), z.string()).superRefine((value, ctx) => {
+const ModelMappingsSchema = z.record(z.string(), z.string()).superRefine((value, ctx) => {
   for (const [k, v] of Object.entries(value)) {
     if (k.trim().length === 0) {
       ctx.addIssue({
@@ -893,6 +893,58 @@ const ModelOverridesSchema = z.record(z.string(), z.string()).superRefine((value
     }
   }
 })
+
+/**
+ * Ingress format enum for `model_translation` (RFC §6.1) — the client's inbound
+ * protocol, mirroring `ClientFormat` in `~/lib/pipeline/envelope.ts` but spelled
+ * out with the `-messages`/`-cc`/`-responses` suffixes to match the vendor-scoped
+ * naming used elsewhere in config (`ENDPOINT_SCOPE_VALUES` uses the terser
+ * `anthropic`/`openai-cc`/`openai-responses`/`gemini` form for a different concern —
+ * this is intentionally its own enum, not a reuse, since the two config surfaces
+ * are allowed to diverge without one accidentally constraining the other).
+ */
+export const MODEL_TRANSLATION_INGRESS_VALUES = ["anthropic-messages", "openai-cc", "openai-responses", "gemini"] as const
+
+/**
+ * Per-pair translation features (RFC §6.1) — declared per `(ingress, model@format)`
+ * match to disambiguate the two round-trip scenarios a proxy cannot infer on its
+ * own (stable-model full round-trip vs mid-conversation model switch, where a
+ * carried-over `signature`/`encrypted_content` from a DIFFERENT upstream model is no
+ * longer valid and must be stripped rather than round-tripped). Currently a single
+ * feature; the array shape is deliberately open for future additions.
+ */
+export const MODEL_TRANSLATION_FEATURE_VALUES = ["strip-thinking-signature"] as const
+
+/**
+ * A single `model_translation` match rule: `match` pins a `<model>@<format>` pair
+ * against the FINAL routed target (post `model_mappings` resolution, post router
+ * decision — never the client's raw requested model name; see RFC §6.1). `features`
+ * lists which translation features apply to that pair; omitted/empty = scenario A
+ * (full round-trip, no stripping).
+ *
+ * v1 `match` is EXACT-STRING ONLY (no wildcard/glob) — RFC §6.1 OQ2 defers wildcard
+ * support (`*@openai-responses`) to a future extension; this schema doesn't need to
+ * change to add it later (a superset string syntax parsed downstream), so no
+ * placeholder is added here.
+ */
+const ModelTranslationRuleSchema = z
+  .object({
+    match: z.string({ error: STRING_MSG }).min(1, "match must be a non-empty string"),
+    features: z.array(z.enum(MODEL_TRANSLATION_FEATURE_VALUES)).optional(),
+  })
+  .strict()
+
+/**
+ * `model_translation` (RFC §6.1): per-ingress-format list of per-pair translation
+ * rules. Key = ingress format (client's inbound protocol); value = ordered rule
+ * list, first match wins (mirrors `findMostSpecific`-style config precedent but
+ * simpler — v1 has no specificity ranking since match is exact-string only).
+ *
+ * `z.partialRecord` (not `z.record`) so an unrecognized ingress key raises a
+ * standard `invalid_key` issue on THAT key alone — `cleanInvalidPaths()` drops
+ * just the offending ingress entry (warn-and-continue, never fails config load).
+ */
+const ModelTranslationSchema = z.partialRecord(z.enum(MODEL_TRANSLATION_INGRESS_VALUES), z.array(ModelTranslationRuleSchema))
 
 /**
  * Explicit upstream GHC API base URL. Overrides the URL derived from
@@ -924,6 +976,45 @@ const GhcApiBaseUrlSchema = z
       })
     }
   })
+
+/** unknown HTTP endpoint 日志级别（silent = 不打）。见 UnknownEndpointLoggingSchema。 */
+export const LOG_LEVELS = ["silent", "debug", "info", "warn", "error"] as const
+export const DIAGNOSTIC_LOG_LEVELS = ["silent", "trace", "debug", "info", "warn", "error", "fatal"] as const
+
+/**
+ * unknown HTTP endpoint（打到代理但没匹配任何业务路由）的按状态码分类日志级别。
+ * not_found = 404（真正未匹配路径）；method_not_allowed = 405（路径存在但 method 不对）。
+ * 用 nullableEnum → 每字段接受 null（PUT `/api/config/yaml` 用 null 删除单键）。默认 warn/warn
+ * 由 bundled config.yaml + CONFIG_MANAGED_DEFAULTS 提供（非 leaf schema default）。
+ */
+const UnknownEndpointLoggingSchema = z
+  .object({
+    not_found: nullableEnum(LOG_LEVELS),
+    method_not_allowed: nullableEnum(LOG_LEVELS),
+  })
+  .strict()
+
+const LoggingFileConfigSchema = z
+  .object({
+    enabled: nullableBoolean(),
+    directory: nullableString(),
+    max_size_mb: nullableNonnegativeInt(),
+    max_files_per_process: nullableNonnegativeInt(),
+    retention_days: nullableNonnegativeInt(),
+  })
+  .strict()
+
+const LoggingConfigSchema = z
+  .object({
+    terminal_level: nullableEnum(DIAGNOSTIC_LOG_LEVELS),
+    file_level: nullableEnum(DIAGNOSTIC_LOG_LEVELS),
+    file: LoggingFileConfigSchema.nullable()
+      .transform((value): z.infer<typeof LoggingFileConfigSchema> | undefined => value ?? undefined)
+      .optional(),
+  })
+  .strict()
+
+const TuiConfigSchema = z.object({ enabled: nullableBoolean() }).strict()
 
 const ProxySchema = z
   .string({ error: STRING_MSG })
@@ -979,8 +1070,20 @@ export const ConfigSchema = z
      * switch). See resolveBufferedCaps in state.ts.
      */
     buffered_retry: nullableSection(BufferedRetryOverrideSchema),
-    model_overrides: ModelOverridesSchema.nullable()
-      .transform((v): z.infer<typeof ModelOverridesSchema> | undefined => v ?? undefined)
+    model_mappings: ModelMappingsSchema.nullable()
+      .transform((v): z.infer<typeof ModelMappingsSchema> | undefined => v ?? undefined)
+      .optional(),
+    /**
+     * Per-pair (ingress format → match rule list) translation feature declarations
+     * (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1). Consumed by the
+     * format-agnostic bridge-selection layer (Phase 5), not per-cell translateOut —
+     * keeps the two round-trip scenarios (stable model vs mid-conversation switch)
+     * from drifting out of sync across call sites. Default (key absent, or ingress
+     * present with an empty/absent rule list) = scenario A, full round-trip, no
+     * features stripped.
+     */
+    model_translation: ModelTranslationSchema.nullable()
+      .transform((v): z.infer<typeof ModelTranslationSchema> | undefined => v ?? undefined)
       .optional(),
     disabled_models: nullableNonemptyStringArray(),
     /**
@@ -1019,6 +1122,16 @@ export const ConfigSchema = z
       .strict()
       .nullable()
       .optional(),
+    unknown_endpoint_logging: nullableSection(UnknownEndpointLoggingSchema),
+    logging: nullableSection(LoggingConfigSchema),
+    tui: nullableSection(TuiConfigSchema),
+    /**
+     * 优雅重启（零停机换代）裸手动路径的 pidfile 路径覆盖。缺省用 `PATHS.PIDFILE`
+     * （`~/.local/share/copilot-api/copilot-api.pid`）。仅裸手动路径读取（supervisor
+     * 环境跳过整个 pidfile 机制），且只在 boot 时读一次（不参与热重载——见
+     * config-hot-reload.it.test.ts EXEMPT，与 `ghc_api_base_url` 同理）。
+     */
+    pidfile: nullableString(),
   })
   .strict()
 
@@ -1037,7 +1150,7 @@ export const ConfigSchema = z
 //
 // All overrides are **business-driven**: the schema alone (record vs object,
 // array vs scalar) cannot distinguish, for example, "user adds one alias on
-// top of bundled" (`model_overrides`) from "user takes full ownership of
+// top of bundled" (`model_mappings`) from "user takes full ownership of
 // this strategy table" (`anthropic.effort_overrides`). We make those
 // choices here as deliberate product decisions, not as type inferences.
 
@@ -1056,7 +1169,7 @@ export type RecordMergeStrategy = "per-key" | "replace"
  */
 export const RECORD_MERGE_STRATEGIES = new WeakMap<z.ZodType, RecordMergeStrategy>()
 
-RECORD_MERGE_STRATEGIES.set(ModelOverridesSchema, "per-key")
+RECORD_MERGE_STRATEGIES.set(ModelMappingsSchema, "per-key")
 RECORD_MERGE_STRATEGIES.set(StreamIdleOverridesSchema, "per-key")
 RECORD_MERGE_STRATEGIES.set(ResponseHeaderOverridesSchema, "per-key")
 // effort_overrides / beta_strip_headers / partner_strip_features / tool_strip_fields /
@@ -1080,4 +1193,8 @@ export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
 export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
+export type ModelTranslationIngress = (typeof MODEL_TRANSLATION_INGRESS_VALUES)[number]
+export type ModelTranslationFeature = (typeof MODEL_TRANSLATION_FEATURE_VALUES)[number]
+export type ModelTranslationRule = z.infer<typeof ModelTranslationRuleSchema>
+export type ModelTranslation = z.infer<typeof ModelTranslationSchema>
 export type Config = z.infer<typeof ConfigSchema>

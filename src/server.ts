@@ -10,6 +10,13 @@ import type { ErrorWireFormat } from "./lib/error"
 import { applyConfigToState } from "./lib/config/config"
 import { forwardError } from "./lib/error"
 import { observabilityMiddleware } from "./lib/observability/middleware"
+import {
+  //
+  classifyUnknownEndpoint,
+  getShadowIndex,
+  UNKNOWN_ENDPOINT_CTX_KEY,
+  unknownEndpointFinalizer,
+} from "./lib/observability/unknown-endpoint"
 import { state } from "./lib/state"
 import { ensureValidCopilotToken } from "./lib/token"
 import { registerHttpRoutes } from "./routes"
@@ -82,13 +89,28 @@ export function createServer(options: ServerOptions = {}) {
     return forwardError(c, error, detectErrorWireFormat(c.req.path))
   })
 
-  // Browser auto-requests (favicon, devtools config) — return 204 silently
-  // to avoid [FAIL] 404 noise in TUI logs.
+  // Browser auto-requests (favicon, devtools config) — return 204 silently so
+  // they never enter the unknown-endpoint logging pipeline (see notFound below).
   const browserProbePaths = new Set(["/favicon.ico", "/.well-known/appspecific/com.chrome.devtools.json"])
 
   server.notFound((c) => {
     if (browserProbePaths.has(c.req.path)) {
       return c.body(null, 204)
+    }
+    // Classify unknown endpoints into three states (see docs/spec/2026-07-14-…):
+    //  - method-not-allowed → real 405 + Allow header (path exists, wrong method)
+    //  - unknown-not-found   → 404 (real routing miss)
+    //  - route-owned-not-found → a matched handler called c.notFound() itself;
+    //    keep its 404, don't rewrite to 405, don't log.
+    // The finalizer middleware (registered outside trimTrailingSlash) reads the
+    // stashed classification + final status and logs at the configured level.
+    const cls = classifyUnknownEndpoint(getShadowIndex(server), c.req.method, c.req.path)
+    if (cls.kind === "method-not-allowed") {
+      c.set(UNKNOWN_ENDPOINT_CTX_KEY as never, { classification: cls, method: c.req.method, path: c.req.path, ua: c.req.header("user-agent") ?? "-" } as never)
+      return c.json({ error: "Method Not Allowed" }, 405, { Allow: cls.allow.join(", ") })
+    }
+    if (cls.kind === "unknown-not-found") {
+      c.set(UNKNOWN_ENDPOINT_CTX_KEY as never, { classification: cls, method: c.req.method, path: c.req.path, ua: c.req.header("user-agent") ?? "-" } as never)
     }
     return c.json({ error: "Not Found" }, 404)
   })
@@ -113,6 +135,11 @@ export function createServer(options: ServerOptions = {}) {
   })
 
   server.use(observabilityMiddleware())
+  // Registered OUTSIDE trimTrailingSlash so its after-next sees the FINAL status
+  // (trailing-slash 404→301 rewrite already applied). Reads the notFound-stashed
+  // classification and logs unknown endpoints at the configured level. Not merged
+  // into observabilityMiddleware: unknown endpoints don't create a RequestContext.
+  server.use(unknownEndpointFinalizer())
   server.use(cors())
   server.use(trimTrailingSlash())
 

@@ -139,26 +139,26 @@ describe("T4.2 — @cc streaming leg end-to-end (mock CC SSE upstream → forwar
   })
 })
 
-describe("T4.3 — @responses streaming leg end-to-end (mock Responses SSE upstream, two-hop)", () => {
+describe("T4.3 — @responses streaming leg end-to-end (mock Responses SSE upstream, DIRECT single-hop bridge)", () => {
   useIsolatedRuntime()
 
   const seed = () =>
     setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.RESPONSES] })] })
 
-  test("Responses SSE → CC → Anthropic frames survive the real SDK decoder (two-hop signal chain)", async () => {
+  test("Responses SSE → Anthropic frames survive the real SDK decoder (RFC 2026-07-14 direct-bridge signal chain)", async () => {
     seed()
     const rEvent = (obj: unknown): ServerSentEventMessage => ({ data: JSON.stringify(obj), event: "message" })
     const upstream = sseStream([
       rEvent({ type: "response.created", response: { id: "resp_1", model: "claude-x" } }),
-      rEvent({ type: "response.output_text.delta", delta: "It is sunny." }),
-      rEvent({ type: "response.completed", response: { id: "resp_1", model: "claude-x", usage: { input_tokens: 15, output_tokens: 4, total_tokens: 19 } } }),
+      rEvent({ type: "response.output_text.delta", output_index: 0, delta: "It is sunny." }),
+      rEvent({ type: "response.completed", response: { id: "resp_1", model: "claude-x", status: "completed", usage: { input_tokens: 15, output_tokens: 4, total_tokens: 19 } } }),
     ])
     const { frames, meta } = await runStreamingLeg("claude-x@responses", upstream)
 
     const types = frames.map((f) => JSON.parse(f.data ?? "{}").type)
     expect(types[0]).toBe("message_start")
     expect(types.at(-1)).toBe("message_stop")
-    // getStreamMeta signal chain (Responses翻译→CC帧→累积): net usage surfaced.
+    // Self-contained terminal meta (this translator's OWN running state, not a CC accumulator).
     expect(meta?.usage.input_tokens).toBe(15)
     expect(meta?.stopReason).toBe("end_turn")
 

@@ -1,7 +1,18 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test"
+import {
+  //
+  describe,
+  test,
+  expect,
+  beforeEach,
+  afterEach,
+} from "bun:test"
 
 import { createRequestContextManager } from "~/lib/context/manager"
-import { setStateForTests, state } from "~/lib/state"
+import {
+  //
+  setStateForTests,
+  state,
+} from "~/lib/state"
 
 import { waitUntil } from "../helpers/wait-until"
 
@@ -32,6 +43,8 @@ describe("request_deadline hard total-duration cap (C4b)", () => {
     expect(ctx.settled).toBe(true)
     // Cancel got teeth: lifecycleSignal aborted (reapInFlight) so an in-flight fetch/backoff stops.
     expect(ctx.lifecycleSignal.aborted).toBe(true)
+    expect(ctx.cancelled).toBe(true)
+    expect(ctx.cancelReason).toBe("request_deadline")
     // No longer tracked as active.
     expect(manager.activeCount).toBe(0)
   })

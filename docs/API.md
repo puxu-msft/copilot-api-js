@@ -103,23 +103,36 @@
 | `/ui/*` | GET | 旧 Vue History UI 静态文件（**legacy，正逐页退役到 `/ui-v4`**；`/models` 已退役 2026-07-10；退役路线图 [vue-ui-retirement.md](vue-ui-retirement.md)） |
 | `/ui-v4/*` | GET | 当前活的 React History UI 静态文件 |
 
+### 未知端点行为（404 / 405）
+
+打到代理但没匹配任何业务路由的请求，由全局 `notFound` 三态分类（见 [spec/2026-07-14-unknown-endpoint-logging.md](spec/2026-07-14-unknown-endpoint-logging.md)）：
+
+| 情形 | 状态 | body | 头 |
+|------|------|------|----|
+| 路径存在但 HTTP method 不对 | **405** | `{ "error": "Method Not Allowed" }` | `Allow: <methods>` |
+| 真正未匹配的路径 | **404** | `{ "error": "Not Found" }` | — |
+| 已匹配 handler 主动 `c.notFound()`（如 UI 静态资源缺失） | 404 | handler 自身 body | — |
+| 浏览器探针（`/favicon.ico` / devtools） | 204 | 空 | —（静默、不进日志） |
+
+405 检测从公开 `server.routes` 派生影子 router（绕开全局中间件污染）。unknown endpoint 的日志级别由 config `unknown_endpoint_logging.{not_found,method_not_allowed}` 控制（`silent|debug|info|warn|error`，默认 `warn`；见 [CONFIG 参考](../config.example.yaml)）。全局 `cors()` 对所有 OPTIONS 返 204，故 unknown OPTIONS 不进本管线（明确例外）。
+
 ---
 
 ## History REST（`/history/api/*`）
 
+Archive 依赖统一契约：运行配置 `history.archive.enabled=false` 或 Archive handle 未初始化时，`?tier=archive` 读端点以及 archive-now/archive-cooldown 返回 `409 {"error":{"type":"archive_unavailable","message":"..."}}`。
+
 | 路由 | 方法 | 说明 |
 |------|------|------|
-| `/history/api/entries` | GET | 分页 entry 列表（按 model / endpoint / status / session / time 过滤）。`?terminalOnly=true` 按 state 剔除 active 在飞行、只返回终态条目（给有独立 Live 泳道的 ui-v4 用；过滤作用于 merge 后结果故 `total`/游标分页正确）。`?search=` 是轻量 `preview_text` 快筛（与专门搜索分离） |
-| `/history/api/entries/:id` | GET | 单条 entry（解码后的 payload + response、headers、timing、billing） |
-| `/history/api/entries/:id/export` | GET | 单条 entry 的**规范全量形式**（`getEntry` → 所有 stage / per-attempt sseEvents / 各腿 headers）服务端 zstd 压缩为 `.json.zst` 附件下载（`Content-Type: application/zstd`，复用 `sqlite/compression.ts`；两套前端 UI 的 Export 都走它、前端零压缩依赖） |
-| `/history/api/entries/:id/pin`、`.../unpin` | POST | 切换 debug-pin——pinned 条目豁免 reaper 淘汰 + 计数，返回更新后的完整 entry |
-| `/history/api/entries` | DELETE | 全量清空所有 history（**破坏性**）。按 session 删除见 `/history/api/sessions/:id` |
-| `/history/api/stats` | GET | 聚合计数、token 总量、billing multiplier、model breakdown |
-| `/history/api/sessions` | GET | Session 列表（Claude Code / Codex session 从 headers 推断） |
-| `/history/api/sessions/:id` | DELETE | 删除某 session 的所有 entry |
-| `/history/api/search` | GET | 内容寻址全文搜索：`?source=&q=&limit=&cursor=`（5 源单选 inbound / rewrites-req / rewrites-resp / req-headers / resp-headers，backfill 未完成时 inbound 返 `partial+builtPct`）。见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md) |
-| `/history/api/search/contains` | GET | `?hash=` 懒取某消息 hash 的全部引用请求 |
-| `/history/api/export` | GET | 导出 history 为 JSON |
+| `/history/api/entries` | GET | V3 canonical operation 分页列表（默认 `operationKind=generation`，可显式取 bypass operation）；支持 model / endpoint / state / session / agent / pid / time 过滤与 `terminalOnly=true`。`tier=archive` 明确 400，不回读旧 archive。 |
+| `/history/api/entries/:id` | GET | 从 V3 canonical store 投影完整 entry；未知 id 返回 404。 |
+| `/history/api/entries/:id/export` | GET | 将 V3 `getEntry` 投影服务端 zstd 压缩为 `.json.zst` 附件。 |
+| `/history/api/entries/:id/pin`、`.../unpin` | POST | 更新 `v3_operations.pinned` 专列；详情和 summary 均立即反映。 |
+| `/history/api/stats` | GET | 从 V3 列表与 in-flight 合并视图聚合计数、token 与 model breakdown。 |
+| `/history/api/sessions` | GET | 从 V3 generation records 聚合 Session 列表；不读 `entries_v2`。 |
+| `/history/api/search`、`/history/api/search/contains` | GET | V3 unique semantic payload 搜索与 object→operation companion；绝不回读 V2 `search_index`。 |
+| `/history/api/export` | GET | 从 V3 facade 导出 JSON / CSV。 |
+
 
 存储结构 / blob 压缩 / 迁移见 [history.md](history.md) 与 skill `history-sqlite-schema`。
 

@@ -11,9 +11,9 @@
  *     read, `driver.ts`'s `runExchange`) picks up the new module, not a cached one, and that a bad
  *     reload leaves the OLD hook not just "recorded" but still FUNCTIONALLY effective.
  *
- *  B) L2 × onExchange interaction (review M1/L1) — the hook mount point sits INSIDE `runExchange`
+ *  B) L2 × exchange interaction (review M1/L1) — the hook mount point sits INSIDE `runExchange`
  *     (S4, per-attempt), which is called both by `runRequest`'s initial exchange AND, again, by
- *     `runResponseBufferedSink`'s (L2) buffered-retry re-exchange. This proves `onExchange` fires
+ *     `runResponseBufferedSink`'s (L2) buffered-retry re-exchange. This proves `exchange` fires
  *     exactly once per L1×L2 attempt combination, in strict chronological order — an L1 retry
  *     (a strategy-driven re-exchange) COMPOSED with an L2 retry (a transport-close buffered
  *     re-exchange), not just one or the other in isolation (already covered elsewhere).
@@ -98,22 +98,20 @@ async function hooksState(): Promise<HooksStateBody> {
   return (await res.json()) as HooksStateBody
 }
 
-/** A hook whose `onExchange` never calls `next()` — it short-circuits with a marker frame, so a
- *  real driver run's rendered output betrays WHICH version (v1/v2) is currently effective. No
- *  external imports (the data-URL import mechanism resolves relative to no directory, so a
- *  self-contained fixture avoids any `~/` alias-resolution uncertainty). Deliberately a PLAIN
- *  string payload (not a nested object-literal expression / `JSON.stringify` call) — empirically,
- *  Bun.Transpiler's data-URL reload path mis-parses a `yield { ...: <object-literal-valued
- *  expression> }` body (drops disambiguating parens, corrupting ESM export detection to
- *  `{__esModule, default}` instead of the named export) — unrelated to this feature, a Bun
- *  transpiler quirk with nested object literals inside a yielded object literal. */
+/** A hook whose `exchange` never calls `next()` — it short-circuits with a marker frame, so a
+ *  real driver run's rendered output betrays WHICH version (v1/v2) is currently effective. Kept a
+ *  self-contained fixture (no imports) for simplicity, though the loader now compiles to a
+ *  project-internal file (RFC 2026-07-14 Phase 5) that resolves `~/` aliases + has no data-URL
+ *  brace quirks, so imports/nested object literals would be fine too. */
 function markerHookSource(marker: string): string {
   return `
-export const onExchange = async (_wire: unknown, _env: unknown, _next: unknown) => {
-  async function* gen() {
-    yield { data: "${marker}" }
-  }
-  return { frames: gen(), headers: new Headers() }
+export const hooks = {
+  exchange: async (_wire: unknown, _env: unknown, _next: unknown) => {
+    async function* gen() {
+      yield { data: "${marker}" }
+    }
+    return { frames: gen(), headers: new Headers() }
+  },
 }
 `
 }
@@ -141,7 +139,7 @@ describe("Task 5.3a — reload via the /api/hooks/reload API/state path, verifie
     const { codec } = makeMockDriverCodec({ env })
     const transport: Transport = {
       send: () => {
-        throw new Error("transport.send must never be called — the loaded hook always short-circuits onExchange")
+        throw new Error("transport.send must never be called — the loaded hook always short-circuits exchange")
       },
     }
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport })
@@ -188,7 +186,7 @@ describe("Task 5.3a — reload via the /api/hooks/reload API/state path, verifie
     expect(await runOnce()).toBe("only-good-version")
 
     // Overwrite with unparseable content.
-    writeFileSync(reloadPath, "export const onExchange = ((( not valid typescript")
+    writeFileSync(reloadPath, "export const hooks = ((( not valid typescript")
     const bad = await reload()
     expect(bad.ok).toBe(false)
 
@@ -198,11 +196,11 @@ describe("Task 5.3a — reload via the /api/hooks/reload API/state path, verifie
     // still-good hook — the singleton was never clobbered by the failed reload attempt.
     expect(await runOnce()).toBe("only-good-version")
     // Cross-check against the singleton directly too.
-    expect(getUpstreamHookState()?.exports).toEqual(["onExchange"])
+    expect(getUpstreamHookState()?.exports).toEqual(["exchange"])
   })
 })
 
-describe("Task 5.3b — onExchange fires once per L1×L2 attempt, across a strategy-driven L1 retry composed with a transport-close L2 retry", () => {
+describe("Task 5.3b — exchange fires once per L1×L2 attempt, across a strategy-driven L1 retry composed with a transport-close L2 retry", () => {
   function f(type: string, extra: Record<string, unknown> = {}): UpstreamFrame {
     return { event: type, data: JSON.stringify({ type, ...extra }) }
   }
@@ -275,15 +273,15 @@ describe("Task 5.3b — onExchange fires once per L1×L2 attempt, across a strat
     resetUpstreamHook()
   })
 
-  test("group 1 (L1 retry then L2-triggering RST) + group 2 (clean success) → onExchange fires exactly 3 times, strictly in order, and never before the retry it belongs to is reached", async () => {
+  test("group 1 (L1 retry then L2-triggering RST) + group 2 (clean success) → exchange fires exactly 3 times, strictly in order, and never before the retry it belongs to is reached", async () => {
     const calls: Array<number> = []
     let callIndex = 0
     setUpstreamHookForTests({
-      onExchange: async (_wire, _env, next) => {
+      exchange: async (_wire, _env, next) => {
         callIndex++
         calls.push(callIndex)
         // Call #1 (group 1, L1 attempt 1): simulate a transient 500 the "retry-500" strategy
-        // handles — never reaches transport (matches a real onExchange-thrown error, driver.ts's
+        // handles — never reaches transport (matches a real exchange-thrown error, driver.ts's
         // `runExchange` catch branch).
         if (callIndex === 1) throw new HTTPError("upstream hiccup", 500, "boom")
         // Every other call forwards to the real transport.
@@ -327,9 +325,9 @@ describe("Task 5.3b — onExchange fires once per L1×L2 attempt, across a strat
     const outcome = await driver.runResponseBufferedSink(initial.upstream, initial.env, sink, { ...tracker, retryCap: 1 } as RunBufferedOpts)
 
     expect(outcome.kind).toBe("complete")
-    // Exactly 3 onExchange invocations: L1-attempt-1 (throws, group 1) + L1-attempt-2 (RST,
+    // Exactly 3 exchange invocations: L1-attempt-1 (throws, group 1) + L1-attempt-2 (RST,
     // group 1, the retry the 500-strategy produced) + L1-attempt-1-of-group-2 (clean success).
     expect(calls).toEqual([1, 2, 3])
-    expect(transportCalls).toBe(2) // call #1 never reached transport (it threw inside onExchange itself)
+    expect(transportCalls).toBe(2) // call #1 never reached transport (it threw inside exchange itself)
   })
 })

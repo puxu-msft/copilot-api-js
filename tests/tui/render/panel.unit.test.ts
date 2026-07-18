@@ -261,6 +261,30 @@ describe("buildPanelLines", () => {
     expect(keybar).toContain("quit")
     expectAllFit(lines, columns)
   })
+
+  test("all builders preserve whole graphemes and fit every width with hostile Unicode fields", () => {
+    const view = makeDetail({
+      id: "req_1️⃣🇨🇳👍🏽👨‍👩‍👧‍👦e\u0301",
+      clientModel: "客户端-1️⃣🇨🇳",
+      model: "模型-👍🏽👨‍👩‍👧‍👦",
+      path: "/v1/1️⃣🇨🇳👍🏽👨‍👩‍👧‍👦e\u0301",
+      elapsedMs: 1234,
+      streamBytesIn: 999_999,
+      streamEventsIn: 42,
+      tags: ["标签-1️⃣🇨🇳👨‍👩‍👧‍👦"],
+      attempts: [{ attemptIndex: 0, strategy: "策略-👍🏽", error: { status: 400, message: "失败-1️⃣🇨🇳👨‍👩‍👧‍👦", type: "invalid_request_error" } }],
+    })
+    for (let columns = 1; columns <= 100; columns++) {
+      const collapsed = buildCollapsedLines({ active: [view], now: NOW, columns, showHelp: true })
+      const panel = buildPanelLines({ active: [view], now: NOW, columns, selectedIndex: 0, scrollOffset: 0, rows: 10, showHelp: true })
+      const detail = buildDetailLines({ entry: view, now: NOW, columns })
+      expectAllFit([...collapsed, ...panel, ...detail], columns)
+      for (const line of [...collapsed, ...panel, ...detail]) {
+        expect(line).not.toContain("🇨…")
+        expect(line).not.toContain("👨‍…")
+      }
+    }
+  })
 })
 
 describe("panelContentRows (fixed-height contract — kills geometry-churn blank lines)", () => {

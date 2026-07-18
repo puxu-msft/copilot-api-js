@@ -65,13 +65,20 @@ export const PATHS = {
   /** Independent SQLite DB for tiered telemetry (raw/hourly/daily rollup + cumulative). Own retention lifecycle, separate from history.db. `REQUEST_TELEMETRY` (legacy JSON) is read only for migration/backfill. */
   TELEMETRY_DB: path.join(APP_DIR, "telemetry.db"),
   NEGOTIATION_STATES: path.join(APP_DIR, "negotiation-states.json"),
+  /** Legacy V2 artifact. The online server must not open, migrate, or delete it. */
   HISTORY_DB: path.join(APP_DIR, "history.db"),
+  /** Online History V3 store. Starts empty and never backfills from HISTORY_DB. */
+  HISTORY_V3_DB: path.join(APP_DIR, "history-v3.db"),
+  /** Optional exact-byte CAS, physically and lifecycle-isolated from semantic V3. */
+  HISTORY_RAW_DB: path.join(APP_DIR, "raw.db"),
   /** Sidecar SQLite DB for the durable (session,agent) thinking-quarantine store (L3). */
   THINKING_QUARANTINE_DB: path.join(APP_DIR, "thinking-quarantine.db"),
-  /** Rotating file log for non-HTTP consola output (startup, auth, warnings, errors). */
-  COPILOT_LOG: path.join(APP_DIR, "copilot-api.log"),
+  /** Per-process structured NDJSON diagnostic artifacts. */
+  DIAGNOSTIC_LOG_DIR: path.join(APP_DIR, "logs", "diagnostic"),
   /** Codex CLI config file (`$CODEX_HOME/config.toml`, default `~/.codex/config.toml`). */
   CODEX_CONFIG_TOML: path.join(computeCodexHome(), "config.toml"),
+  /** 裸手动路径优雅重启的 pidfile（pid+bootTime+port）。仅无 supervisor 时写入。 */
+  PIDFILE: path.join(APP_DIR, "copilot-api.pid"),
 }
 
 export async function ensurePaths(): Promise<void> {

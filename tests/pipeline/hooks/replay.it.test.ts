@@ -1,6 +1,6 @@
 /**
  * Task 5.2 (docs/plan/2026-07-12-upstream-hook-middleware/plan-5-integration-closeout.md) — the
- * OFFLINE REPLAY acceptance test: mounting `replayFromHistory(reqId)` on `onExchange` must drive a
+ * OFFLINE REPLAY acceptance test: mounting `replayFromHistory(reqId)` on `exchange` must drive a
  * request end-to-end WITHOUT ever touching the real upstream, and the replayed frames must land on
  * the NEW request's own persisted history entry, correctly marked as hook-produced (not
  * indistinguishable from a genuine GHC response — richest-data-flow).
@@ -26,12 +26,7 @@ import {
   test,
 } from "bun:test"
 
-import {
-  //
-  getEntry,
-  insertEntry,
-  updateEntry,
-} from "~/lib/history"
+import { getEntry } from "~/lib/history"
 import {
   //
   resetUpstreamHook,
@@ -41,6 +36,7 @@ import { readOrigin } from "~/lib/pipeline/hooks/origin"
 import { replayFromHistory } from "~/lib/pipeline/hooks/toolkit"
 import { generateId } from "~/lib/utils"
 
+import { commitV3HistoryEntry } from "../../helpers/history-v3-fixtures"
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import {
   //
@@ -56,15 +52,13 @@ import {
  *  for `replayFromHistory` to read back — mirrors `toolkit.unit.test.ts`'s `insertReplayFixture`. */
 function seedAnthropicEntry(text: string): string {
   const id = generateId()
-  insertEntry({
+  commitV3HistoryEntry({
     id,
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
+    state: "completed",
     model: { requested: "claude-seed", resolved: "claude-seed" },
     clientRequest: { format: "anthropic-messages", model: "claude-seed", messages: [] },
-  })
-  updateEntry(id, {
-    state: "completed",
     attempts: [
       {
         index: 0,
@@ -81,11 +75,7 @@ function seedAnthropicEntry(text: string): string {
               type: "content_block_start",
               raw: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
             },
-            {
-              offsetMs: 2,
-              type: "content_block_delta",
-              raw: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }),
-            },
+            { offsetMs: 2, type: "content_block_delta", raw: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }) },
             { offsetMs: 3, type: "content_block_stop", raw: JSON.stringify({ type: "content_block_stop", index: 0 }) },
             { offsetMs: 4, type: "message_stop", raw: JSON.stringify({ type: "message_stop" }) },
           ],
@@ -98,15 +88,13 @@ function seedAnthropicEntry(text: string): string {
 
 function seedCcEntry(text: string): string {
   const id = generateId()
-  insertEntry({
+  commitV3HistoryEntry({
     id,
     startedAt: Date.now(),
     endpoint: "openai-chat-completions",
+    state: "completed",
     model: { requested: "gpt-seed", resolved: "gpt-seed" },
     clientRequest: { format: "openai-chat-completions", model: "gpt-seed", messages: [] },
-  })
-  updateEntry(id, {
-    state: "completed",
     attempts: [
       {
         index: 0,
@@ -117,9 +105,6 @@ function seedCcEntry(text: string): string {
           usage: { input_tokens: 0, output_tokens: 0 },
           body: null,
           sseEvents: [
-            // CC frames carry NO real event name — the driver fabricates the "message" label
-            // (driver.ts: `frame.event ?? (frame.data ? "message" : "keepalive")`); replayFromHistory
-            // must NOT re-emit that fabricated label as a bogus `event:` line.
             { offsetMs: 0, type: "message", raw: JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: null }] }) },
             { offsetMs: 1, type: "message", raw: JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) },
           ],
@@ -145,11 +130,11 @@ describe("Task 5.2 — offline replay end-to-end (replayFromHistory → zero rea
     const seedId = seedAnthropicEntry("hello from history")
 
     setUpstreamHookForTests({
-      onExchange: async () => replayFromHistory(seedId),
+      exchange: async () => replayFromHistory(seedId),
     })
     // A transport that would record ANY call — proves the driver truly never touched "upstream".
     const { transport, sendCount } = makeCountingTransport(() => {
-      throw new Error("transport.send must NEVER be called during a replay — the hook short-circuits onExchange")
+      throw new Error("transport.send must NEVER be called during a replay — the hook short-circuits exchange")
     })
     const driver = makeRealAnthropicDriver(transport)
 
@@ -199,7 +184,7 @@ describe("Task 5.2 — offline replay end-to-end (replayFromHistory → zero rea
 
   test("a hook that mounts replayFromHistory for a NON-EXISTENT entry rejects loudly (no silent empty replay)", async () => {
     seedAnthropicModel("claude-x")
-    setUpstreamHookForTests({ onExchange: async () => replayFromHistory("no-such-entry-id") })
+    setUpstreamHookForTests({ exchange: async () => replayFromHistory("no-such-entry-id") })
     const { transport, sendCount } = makeCountingTransport(() => {
       throw new Error("transport.send must never be called")
     })

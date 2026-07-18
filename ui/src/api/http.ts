@@ -98,15 +98,6 @@ export const api = {
     return res.blob()
   },
 
-  async deleteEntries(): Promise<void> {
-    await request("/entries", { method: "DELETE" })
-  },
-
-  // Sessions
-  async deleteSession(id: string): Promise<void> {
-    await request("/sessions/" + id, { method: "DELETE" })
-  },
-
   // Stats & Export
   async fetchStats(): Promise<HistoryStats> {
     return request<HistoryStats>("/stats")

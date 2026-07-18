@@ -94,6 +94,8 @@ export interface SseSinkOptions {
    * shape (offsetMs / parsed-type / raw bytes) mirrors the legacy forwarded-record shape (streaming-pump.ts `forwardClientFrame`, removed with the web_search retirement).
    */
   onForwarded?: (record: SseEventRecord) => void
+  /** History V3 arena hook, invoked at the same unique client-wire sampling point. */
+  onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
   /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
   streamStartMs?: number
   /**
@@ -110,6 +112,8 @@ export interface SseSinkOptions {
    */
   isRealContentFrame?: (frame: ClientFrame) => boolean
   onFirstRealContent?: () => void
+  /** Delivery-boundary callback; invoked once by `sink.finalize()` after all terminal writes. */
+  onDeliveryFinalized?: () => void
 }
 
 /**
@@ -156,7 +160,16 @@ function frameType(frame: ClientFrame): string {
 
 /** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
 export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
-  const { heartbeat, onForwarded, streamStartMs = Date.now(), forwardedType, isRealContentFrame, onFirstRealContent } = opts
+  const {
+    heartbeat,
+    onForwarded,
+    onGenerationFrame,
+    streamStartMs = Date.now(),
+    forwardedType,
+    isRealContentFrame,
+    onFirstRealContent,
+    onDeliveryFinalized,
+  } = opts
   const enqueue = makeSerializer()
   // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧只捕获一次。
   let firstRealFired = false
@@ -178,13 +191,16 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   const sampleForwarded = (
     frame: ClientFrame,
     synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
+    generationSynthetic: SseEventRecord["synthetic"] = synthetic,
   ): void => {
-    onForwarded?.({
+    const record: SseEventRecord = {
       offsetMs: Date.now() - streamStartMs,
       type: (forwardedType ?? frameType)(frame),
       raw: frame.data ?? "",
       ...(synthetic ? { synthetic } : {}),
-    })
+    }
+    onForwarded?.(record)
+    onGenerationFrame?.(frame, record, generationSynthetic)
     // 首包埋点：首个非-synthetic 真实内容帧 → ctx firstReal（handler 绑定谓词/回调）。
     if (!synthetic && !firstRealFired && isRealContentFrame?.(frame)) {
       firstRealFired = true
@@ -264,7 +280,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     lastRealMs = Date.now()
     noteBlockState(frame) // update open-block state from real forwarded frames (provider mode only)
     // A synthetic-origin frame (tagged via `tagFrameSynthetic`, frame-origin.ts) samples forwarded
-    // with its `synthetic` kind — `"hook-rewrite"` (a `rewriteUpstreamFrame` hook changed the frame)
+    // with its `synthetic` kind — `"hook-rewrite"` (a `upstream.inbound` hook changed the frame)
     // or `"refusal-recovery"` (refusal recovery's injected end_turn text / rewritten delta / error
     // frame). Same forwarded-only treatment as the other synthetic markers (keepalive/anchor), just
     // driven by a per-frame TAG read off the frame itself rather than a distinct write method: such a
@@ -283,7 +299,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // `ctx.fail/complete` — the settle snapshots `inboundResponse` synchronously, so a
   // post-settle snapshot (e.g. a trailing `finally`) would miss this frame.
   const writeSynthetic = (frame: ClientFrame): Promise<void> => {
-    sampleForwarded(frame)
+    sampleForwarded(frame, undefined, "synthetic")
     return writeSse(frame)
   }
 
@@ -329,6 +345,13 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     stopped = true
     if (timer) clearTimeout(timer)
   }
+  let deliveryFinalized = false
+  const finalize = (): void => {
+    close()
+    if (deliveryFinalized) return
+    deliveryFinalized = true
+    onDeliveryFinalized?.()
+  }
 
   // freezeHeartbeat stops the heartbeat timer WITHOUT closing the sink — `write` stays fully
   // usable (unlike close(), which sets `stopped` and refuses future ticks). The buffered anchor
@@ -362,7 +385,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   }
 
   if (!heartbeatOn) {
-    return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
+    return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, finalize, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
   }
 
   const intervalMs = heartbeat.intervalSec * 1000
@@ -428,7 +451,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
     ;(timer as unknown as { unref?: () => void }).unref?.()
   }
 
-  return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
+  return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, finalize, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
 }
 
 /** {@link makeWsSink} options — forwarded-track sampling (optional) + forward-idle heartbeat (optional). */
@@ -439,6 +462,8 @@ export interface WsSinkOptions {
    * push (`{type: event.type, raw: forwardData}`; `frameType` yields the parsed JSON `type`).
    */
   onForwarded?: (record: SseEventRecord) => void
+  /** History V3 arena hook, invoked at the same unique client-wire sampling point. */
+  onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
   /** Stream-start reference for the forwarded record `offsetMs` (defaults to now). */
   streamStartMs?: number
   /**
@@ -454,6 +479,8 @@ export interface WsSinkOptions {
   /** 首包埋点（spec 2026-07-14 §3.2）：同 {@link SseSinkOptions} — 格式无关谓词 + 首次命中回调。 */
   isRealContentFrame?: (frame: ClientFrame) => boolean
   onFirstRealContent?: () => void
+  /** Delivery-boundary callback; invoked once by `sink.finalize()` after terminal WS send/close. */
+  onDeliveryFinalized?: () => void
 }
 
 /**
@@ -519,7 +546,7 @@ function startFixedForwardIdleHeartbeat(
 
 /** WS sink — writes JSON frame strings through a Hono `WSContext` (the Responses WS path). */
 export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
-  const { onForwarded, streamStartMs = Date.now(), heartbeat, isRealContentFrame, onFirstRealContent } = opts
+  const { onForwarded, onGenerationFrame, streamStartMs = Date.now(), heartbeat, isRealContentFrame, onFirstRealContent, onDeliveryFinalized } = opts
   const enqueue = makeSerializer()
   // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧只捕获一次。
   let firstRealFired = false
@@ -531,8 +558,11 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
   const sampleForwarded = (
     frame: ClientFrame,
     synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
+    generationSynthetic: SseEventRecord["synthetic"] = synthetic,
   ): void => {
-    onForwarded?.({ offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) })
+    const record: SseEventRecord = { offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) }
+    onForwarded?.(record)
+    onGenerationFrame?.(frame, record, generationSynthetic)
     // 首包埋点：首个非-synthetic 真实内容帧 → ctx firstReal（handler 绑定谓词/回调）。
     if (!synthetic && !firstRealFired && isRealContentFrame?.(frame)) {
       firstRealFired = true
@@ -575,13 +605,20 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
   // NOT note activity (it's terminal). The handler must `recordForwarded()` after this and before
   // `ctx.fail` (see makeSseSink).
   const writeSynthetic = (frame: ClientFrame): Promise<void> => {
-    sampleForwarded(frame)
+    sampleForwarded(frame, undefined, "synthetic")
     return sendRaw(frame)
   }
 
   // `close` stops the heartbeat timer — runResponseSink's `finally` MUST call it on every exit so a
   // self-rescheduling timer can't leak (the timer is also `unref`'d). Omitted with no heartbeat.
-  return hb ? { write, writeSynthetic, close: hb.stop } : { write, writeSynthetic }
+  let deliveryFinalized = false
+  const finalize = (): void => {
+    hb?.stop()
+    if (deliveryFinalized) return
+    deliveryFinalized = true
+    onDeliveryFinalized?.()
+  }
+  return hb ? { write, writeSynthetic, close: hb.stop, finalize } : { write, writeSynthetic, finalize }
 }
 
 /**

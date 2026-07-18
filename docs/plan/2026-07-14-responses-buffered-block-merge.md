@@ -197,6 +197,64 @@ Phase 0 是 Phase 2 reducer 实现与 Phase 5 e2e 测试的地基：补齐一个
 - [ ] 跑 `bun run typecheck`，确认全绿（GREEN）；跑 `bun test tests/responses/fixtures/reasoning-text-types.typecheck.unit.test.ts`，确认 4 个 expect 通过。
 - [ ] `git add -- src/types/api/openai-responses.ts tests/responses/fixtures/reasoning-text-types.typecheck.unit.test.ts && git commit -F <msgfile> -- src/types/api/openai-responses.ts tests/responses/fixtures/reasoning-text-types.typecheck.unit.test.ts`，message: `fix(types): model the reasoning_text independent content track for Responses streaming events`
 
+## Task 0.2b：补齐 `response.output_text.annotation.added` 类型建模（GPT 对抗复核 HIGH 修复）
+
+**背景（HIGH，复核发现，spec §5.1 枚举已同步补齐，此处对齐修订版 spec）**：`node_modules/openai/lib/responses/ResponseAccumulator.js:96-105` 确认 `response.output_text.annotation.added` 的处理分支同样调用 `getContent(output.content, event.content_index)`——当 `content_index` 指向的 content part 未被 `content_part.added` 建立时同样抛 `OpenAIError`（"missing content"一类消息）。这是**与 `*.done` 家族同构的地雷**，但 Task 0.2 撰写时只枚举了 `*.done` 事件族，漏了这个 `.added` 事件；本任务把它补进类型系统，Task 2.3 据此把它纳入 `item-summary` 的丢弃集合。真实触发场景：gpt-5.5 `web_search_preview` 原生透传 citation annotation（`url_citation`/`file_citation`），本项目类型 union 完全未建模，当前零测试覆盖。
+
+**Files:**
+- Modify: `src/types/api/openai-responses.ts`
+- Modify: `tests/responses/fixtures/reasoning-text-types.typecheck.unit.test.ts`（Task 0.2 同一探针文件追加一个 `describe`，不新建文件）
+
+**Interfaces:**
+- Produces: `OutputTextAnnotationAddedEvent`（新导出类型，字段对齐 `node_modules/openai/resources/responses/responses.d.ts` 的 `ResponseOutputTextAnnotationAddedEvent`）；`ResponsesStreamEvent` union 新增一个变体。
+
+- [ ] 在 Task 0.2 的类型探针测试文件追加一段（同样是纯类型系统扩展，权威判据仍是 `bun run typecheck`）：
+  ```ts
+  import type { OutputTextAnnotationAddedEvent, ResponsesStreamEvent } from "~/types/api/openai-responses"
+
+  describe("output_text.annotation.added event type (typecheck oracle: bun run typecheck)", () => {
+    test("OutputTextAnnotationAddedEvent compiles and narrows via ResponsesStreamEvent union", () => {
+      const event: OutputTextAnnotationAddedEvent = {
+        type: "response.output_text.annotation.added",
+        item_id: "msg_1",
+        output_index: 0,
+        content_index: 0,
+        annotation_index: 0,
+        annotation: { type: "url_citation", start_index: 0, end_index: 5, url: "https://example.com", title: "Example" },
+        sequence_number: 1,
+      }
+      const asStreamEvent: ResponsesStreamEvent = event
+      expect(event.type).toBe("response.output_text.annotation.added")
+      expect(asStreamEvent.type).toBe("response.output_text.annotation.added")
+    })
+  })
+  ```
+- [ ] 跑 `bun run typecheck`，确认报错（`OutputTextAnnotationAddedEvent` 不存在、`ResponsesStreamEvent` 不接受该字面量，RED）。
+- [ ] 最小实现，修改 `src/types/api/openai-responses.ts`：
+  - 在 `ContentPartDoneEvent`（329 行）之后插入（与其他 `output_text.*` 事件放在一起，保持文件既有的"按事件家族分组"排布）：
+    ```ts
+    /** Emitted when a citation/file/container-file annotation is attached to an output_text content
+     *  part while streaming (e.g. gpt-5.5 web_search_preview native citations). Same minefield shape
+     *  as `output_text.done`: the SDK accumulator calls getContent(content_index) and throws when
+     *  `.added` for that part was dropped (confirmed against
+     *  node_modules/openai/lib/responses/ResponseAccumulator.js:96-105). */
+    export interface OutputTextAnnotationAddedEvent {
+      type: "response.output_text.annotation.added"
+      item_id: string
+      output_index: number
+      content_index: number
+      annotation_index: number
+      annotation: unknown
+      sequence_number: number
+    }
+    ```
+  - 在 `ResponsesStreamEvent` union（428-457 行，Task 0.2 已在其中插入 `ReasoningTextDeltaEvent`/`ReasoningTextDoneEvent`）追加一个变体：
+    ```ts
+      | OutputTextAnnotationAddedEvent
+    ```
+- [ ] 跑 `bun run typecheck`，确认全绿；跑 `bun test tests/responses/fixtures/reasoning-text-types.typecheck.unit.test.ts`，确认新增 `describe` 通过（5 个 expect：4 个来自 Task 0.2 + 2 个新增）。
+- [ ] `git add -- src/types/api/openai-responses.ts tests/responses/fixtures/reasoning-text-types.typecheck.unit.test.ts && git commit -F <msgfile> -- src/types/api/openai-responses.ts tests/responses/fixtures/reasoning-text-types.typecheck.unit.test.ts`，message: `fix(types): model response.output_text.annotation.added (same minefield shape as *.done family)`
+
 ## Task 0.3：共享块型 fixture 模块
 
 本任务是纯粹的测试基础设施提取，不含独立可断言的新行为——它的正确性由 Task 0.4 与 Phase 2 全部消费它的测试的通过来证明（等同于"机械迁移用消费方测试验证"的例外条款）。
@@ -205,7 +263,7 @@ Phase 0 是 Phase 2 reducer 实现与 Phase 5 e2e 测试的地基：补齐一个
 - Create: `tests/responses/fixtures/buffered-merge-blocks.ts`
 
 **Interfaces:**
-- Produces: 5 个块型帧序生成函数：`functionCallBlock()`、`messageMultiPartBlock()`、`refusalBlock()`、`reasoningSummaryBlock()`、`reasoningContentBlock()`，每个返回 `{ frames: Array<ClientFrame>; finalItem: ResponsesOutputItem }`（`frames` 是完整 `output_item.added → ... → output_item.done` 帧序，`finalItem` 是该块闭合时的完整 item，供测试断言 rebuild 结果）。
+- Produces: 6 个块型帧序生成函数：`functionCallBlock()`、`messageMultiPartBlock()`、`refusalBlock()`、`reasoningSummaryBlock()`、`reasoningContentBlock()`、`messageWithAnnotationBlock()`（GPT 对抗复核 HIGH 修复新增），每个返回 `{ frames: Array<ClientFrame>; finalItem: ResponsesOutputItem }`（`frames` 是完整 `output_item.added → ... → output_item.done` 帧序，`finalItem` 是该块闭合时的完整 item，供测试断言 rebuild 结果）。
 
 - [ ] 创建文件（本任务无 RED/GREEN 步骤——纯 helper 提取，验证延后到 Task 0.4）：
   ```ts
@@ -315,6 +373,27 @@ Phase 0 是 Phase 2 reducer 实现与 Phase 5 e2e 测试的地基：补齐一个
         frame("response.reasoning_text.delta", { item_id: itemId, output_index: outputIndex, content_index: 0, delta: "deliberation" }),
         frame("response.reasoning_text.done", { item_id: itemId, output_index: outputIndex, content_index: 0, text: "internal deliberation" }),
         frame("response.content_part.done", { output_index: outputIndex, content_index: 0, part: { type: "reasoning_text", text: "internal deliberation" } }),
+        frame("response.output_item.done", { output_index: outputIndex, item: finalItem }),
+      ],
+    }
+  }
+
+  /** Message block with a single output_text part carrying a streamed citation annotation event
+   *  (gpt-5.5 web_search_preview native citations — GPT 对抗复核 HIGH 修复新增)。`annotation.added` is
+   *  emitted BETWEEN `content_part.added` and the terminal `.done`, same content_index as the part it
+   *  annotates. */
+  export function messageWithAnnotationBlock(outputIndex: number, itemId: string): BlockFixture {
+    const annotation = { type: "url_citation", start_index: 0, end_index: 5, url: "https://example.com", title: "Example" }
+    const finalItem: ResponsesMessageOutput = { type: "message", id: itemId, role: "assistant", status: "completed", content: [{ type: "output_text", text: "Hello", annotations: [annotation] }] }
+    return {
+      finalItem,
+      frames: [
+        frame("response.output_item.added", { output_index: outputIndex, item: { type: "message", id: itemId, role: "assistant", status: "in_progress", content: [] } }),
+        frame("response.content_part.added", { output_index: outputIndex, content_index: 0, part: { type: "output_text", text: "", annotations: [] } }),
+        frame("response.output_text.delta", { output_index: outputIndex, content_index: 0, delta: "Hello" }),
+        frame("response.output_text.annotation.added", { item_id: itemId, output_index: outputIndex, content_index: 0, annotation_index: 0, annotation }),
+        frame("response.output_text.done", { output_index: outputIndex, content_index: 0, text: "Hello" }),
+        frame("response.content_part.done", { output_index: outputIndex, content_index: 0, part: { type: "output_text", text: "Hello", annotations: [annotation] } }),
         frame("response.output_item.done", { output_index: outputIndex, item: finalItem }),
       ],
     }
@@ -676,14 +755,19 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
 - [ ] 跑 `bun test tests/responses/responses-buffered-merge-reducer.unit.test.ts`，确认全部新用例通过（GREEN——Task 2.1 的 allowlist 设计已足够覆盖这 4 种块型，无需改动生产代码；这本身就是对 allowlist 泛化正确性的验证）。
 - [ ] `git add -- tests/responses/responses-buffered-merge-reducer.unit.test.ts && git commit -F <msgfile> -- tests/responses/responses-buffered-merge-reducer.unit.test.ts`，message: `test(responses): extend drop-delta coverage to message/refusal/reasoning blocks + minefield invariant`
 
-## Task 2.3：`item-summary` 档
+## Task 2.3：`item-summary` 档（含 GPT 对抗复核 HIGH 修复：`output_text.annotation.added`）
+
+**背景（HIGH，见 Task 0.2b）**：`item-summary` 塌缩掉 `content_part.added/.done` 后，若 `response.output_text.annotation.added` 未被同时纳入丢弃集合，会成为指向已被丢弃 content part 的孤儿引用——真实 `openai` SDK 消费时在该事件自己的处理分支同样调用 `getContent(content_index)` 抛错（node_modules/openai/lib/responses/ResponseAccumulator.js:96-105，与 `output_text.done` 同构地雷）。等价性论证：annotation 已完整落在 `output_item.done` 的 `item.content[].annotations` 里，丢流式 `annotation.added` 与丢 `content_part.done` 同理不损失终态信息。`drop-delta` 档本身安全（`content_part` 全程保留，未纳入 `DROPPABLE_DELTA_TYPES`），此修复只影响 `item-summary`。
 
 **Files:**
 - Modify: `src/lib/codec/openai-responses/buffered-merge-reducer.ts`
 - Modify: `tests/responses/responses-buffered-merge-reducer.unit.test.ts`
+- Modify: `tests/e2e-client/responses-nodelta.probe.it.test.ts`（DANGER 回归，真实 `openai` SDK 消费者 oracle）
 
-- [ ] 写失败测试：
+- [ ] 写失败测试（reducer 单测文件，`test.each` 追加 `messageWithAnnotationBlock` + 新增专测）：
   ```ts
+  import { messageWithAnnotationBlock } from "./fixtures/buffered-merge-blocks"
+
   describe("item-summary", () => {
     test.each([
       ["function_call", functionCallBlock],
@@ -691,6 +775,7 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
       ["refusal-only", refusalBlock],
       ["reasoning summary", reasoningSummaryBlock],
       ["reasoning content", reasoningContentBlock],
+      ["message with annotation", messageWithAnnotationBlock],
     ])("%s: item-summary collapses to added + done only", (_label, blockFn) => {
       const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "item-summary", completedOutput: "upstream" })
       const { frames } = blockFn(0, "item_1")
@@ -698,15 +783,26 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
       const out = types(reducer.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] }))
       expect(out).toEqual(["response.output_item.added", "response.output_item.done"])
     })
+
+    test("annotation.added is dropped together with content_part.added — no orphan reference (GPT-audit HIGH fix)", () => {
+      const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "item-summary", completedOutput: "upstream" })
+      const { frames } = messageWithAnnotationBlock(0, "msg_1")
+      for (const f of frames) reducer.observe(f)
+      const out = types(reducer.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] }))
+      expect(out).not.toContain("response.output_text.annotation.added")
+      expect(out).not.toContain("response.content_part.added")
+      expect(out).toEqual(["response.output_item.added", "response.output_item.done"])
+    })
   })
   ```
-- [ ] 跑测试确认失败（当前实现只按 `DROPPABLE_DELTA_TYPES` 过滤，`item-summary` 档还没实现额外丢弃逻辑，会保留 content_part/reasoning_summary_part 等中间帧，RED）。
-- [ ] 最小实现，在 `buffered-merge-reducer.ts` 里加第二个 Set 常量并扩展过滤条件：
+- [ ] 跑测试确认失败（当前实现只按 `DROPPABLE_DELTA_TYPES` 过滤，`item-summary` 档还没实现额外丢弃逻辑，会保留 content_part/reasoning_summary_part/`annotation.added` 等中间帧，RED）。
+- [ ] 最小实现，在 `buffered-merge-reducer.ts` 里加第二个 Set 常量（**含 `annotation.added`**）并扩展过滤条件：
   ```ts
   const ITEM_SUMMARY_ONLY_SUBFRAME_TYPES: ReadonlySet<string> = new Set([
     "response.content_part.added",
     "response.content_part.done",
     "response.output_text.done",
+    "response.output_text.annotation.added", // GPT-audit HIGH fix: same minefield shape as *.done, see Task 0.2b/2.3
     "response.refusal.done",
     "response.reasoning_text.done",
     "response.function_call_arguments.done",
@@ -722,7 +818,42 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
   if (dropAsDelta || dropAsItemSummarySubframe) continue
   ```
 - [ ] 跑测试确认全绿（GREEN）；重跑 Task 2.1/2.2 全部既有用例确认零回归。
-- [ ] `git add -- src/lib/codec/openai-responses/buffered-merge-reducer.ts tests/responses/responses-buffered-merge-reducer.unit.test.ts && git commit -F <msgfile> -- src/lib/codec/openai-responses/buffered-merge-reducer.ts tests/responses/responses-buffered-merge-reducer.unit.test.ts`，message: `feat(responses): add item-summary event_compaction mode (collapse block to added+done)`
+- [ ] 写失败测试（DANGER 回归，`tests/e2e-client/responses-nodelta.probe.it.test.ts`，仿现有 `textDoneWithoutContentPart` DANGER 用例的风格，真实 `openai` SDK 消费者 oracle）：
+  ```ts
+  /** DANGER shape: content_part.added dropped but output_text.annotation.added survives — same
+   *  minefield shape as textDoneWithoutContentPart above, for the newly-modeled annotation event
+   *  (GPT-audit HIGH fix, Task 0.2b/2.3). */
+  function annotationAddedWithoutContentPart(): Array<string> {
+    const annotation = { type: "url_citation", start_index: 0, end_index: 5, url: "https://example.com", title: "Example" }
+    return [
+      created(),
+      ev({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: MSG_OPEN }),
+      // NO content_part.added
+      ev({ type: "response.output_text.annotation.added", sequence_number: 2, output_index: 0, content_index: 0, item_id: "msg_1", annotation_index: 0, annotation }),
+      ev({ type: "response.output_text.done", sequence_number: 3, output_index: 0, content_index: 0, text: "Hello world" }),
+      ev({ type: "response.output_item.done", sequence_number: 4, output_index: 0, item: MSG_DONE }),
+      completedFull(5, [MSG_DONE]),
+      DONE,
+    ]
+  }
+
+  test("DANGER: output_text.annotation.added WITHOUT content_part.added → SDK stream THROWS mid-accumulation", async () => {
+    // Confirms item-summary MUST drop annotation.added together with content_part (never let one
+    // survive without the other) — this is the concrete defect the GPT audit caught (Task 0.2b/2.3).
+    let threw: Error | undefined
+    try {
+      await finalOf(annotationAddedWithoutContentPart())
+    } catch (err) {
+      threw = err as Error
+    }
+    expect(threw).toBeInstanceOf(Error)
+    expect(threw?.message).toContain("missing content")
+  })
+  ```
+  （插入位置：紧跟在既有 `test("DANGER: output_text.done WITHOUT content_part.added...")` 用例之后，复用同一 `describe` block 内的 `finalOf`/`ev`/`created`/`completedFull`/`MSG_OPEN`/`MSG_DONE` 既有 helper，不新建 `describe`。）
+- [ ] 跑 `bun test tests/e2e-client/responses-nodelta.probe.it.test.ts`，确认新增 DANGER 用例真的抛 `missing content`（这本身就是"RED"证据——它验证的是当前真实 `openai` SDK 行为，不是本项目待实现代码，成立即通过，无需额外 GREEN 步骤，与 Task 0.4 的 characterization-probe 属性一致）。
+- [ ] `git add -- src/lib/codec/openai-responses/buffered-merge-reducer.ts tests/responses/responses-buffered-merge-reducer.unit.test.ts tests/e2e-client/responses-nodelta.probe.it.test.ts && git commit -F <msgfile> -- src/lib/codec/openai-responses/buffered-merge-reducer.ts tests/responses/responses-buffered-merge-reducer.unit.test.ts tests/e2e-client/responses-nodelta.probe.it.test.ts`，message: `feat(responses): add item-summary event_compaction mode + drop output_text.annotation.added (GPT-audit HIGH fix)`
+
 
 ## Task 2.4：`verbatim` 档 + 三档正交性对比测试
 
@@ -1024,6 +1155,21 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
       expect(diag.repairedItemCount).toBe(1)
       expect(diag.repairReasons).toEqual([])
     })
+
+    test("droppedEventBytes counts BOTH event-name length and data length — aligns with driver's bufferedBytes calc (driver.ts:859, GPT-audit suggestion)", () => {
+      const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "upstream" })
+      const { frames } = functionCallBlock(0, "fc_1")
+      for (const f of frames) reducer.observe(f)
+      reducer.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] })
+      const diag = reducer.diagnostics()
+      // Independent oracle: filter the SAME frames by event type and sum (event.length + data.length)
+      // using the driver's own formula — this pins the byte-accounting CONVENTION (not just a raw
+      // number), so a future edit that forgets to add event.length back in will fail this assertion.
+      const droppedFrames = frames.filter((f) => f.event === "response.function_call_arguments.delta")
+      const expectedBytes = droppedFrames.reduce((sum, f) => sum + (f.data?.length ?? 0) + (f.event?.length ?? 0), 0)
+      expect(diag.droppedEventBytes).toBe(expectedBytes)
+      expect(diag.droppedEventBytes).toBeGreaterThan(droppedFrames.reduce((sum, f) => sum + (f.data?.length ?? 0), 0)) // proves event.length is actually counted, not just data.length
+    })
   })
 
   describe("次序不变量（spec §4）: observe 先于 drop 生效", () => {
@@ -1088,7 +1234,10 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
           const dropAsItemSummarySubframe = closed && opts.eventCompaction === "item-summary" && ITEM_SUMMARY_ONLY_SUBFRAME_TYPES.has(parsed.type)
           if (dropAsDelta || dropAsItemSummarySubframe) {
             droppedEventCount++
-            droppedEventBytes += f.data?.length ?? 0
+            // GPT-audit suggestion: align byte accounting with the driver's own bufferedBytes calc
+            // (driver.ts:859 — `(toWrite.data?.length ?? 0) + (toWrite.event?.length ?? 0)`), so the
+            // diagnostic number is comparable to the buffer-cap accounting the driver already does.
+            droppedEventBytes += (f.data?.length ?? 0) + (f.event?.length ?? 0)
             if (!droppedEventTypes.includes(parsed.type)) droppedEventTypes.push(parsed.type)
             continue
           }
@@ -1785,7 +1934,7 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
 | §3 两旋钮 + 默认值 + capability 约束 | Phase 4 全部（4.1-4.6） |
 | §4 reducer 接口冻结 + driver 咽喉落点 + observe-before-drop 次序不变量 | Phase 1（1.1-1.3）+ Task 2.9（次序专测） |
 | §4 rebuild 源 = `output_item.done` 收集槽（非 accumulator） | Task 2.1（`collected: Map`）+ Task 2.7/2.8 |
-| §5.1 地雷不变量（含 refusal/reasoning 泛化） | Task 2.2（专测）+ Task 0.4（客户端容忍探针） |
+| §5.1 地雷不变量（含 refusal/reasoning 泛化 + `output_text.annotation.added` 同构地雷） | Task 2.2（专测）+ Task 0.4（客户端容忍探针）+ Task 0.2b/2.3（annotation.added 类型建模 + item-summary 丢弃 + DANGER 回归，GPT 对抗复核 HIGH 修复） |
 | §5.2 drop-delta 只丢 5 种 delta、绝不丢 payload delta | Task 2.1/2.2（allowlist 设计天然满足，Global Constraint 6） |
 | §5.3.1 retreat 硬不变量 | Task 2.1（`if (ctx.cause === "retreat") return frames`）+ Task 5.4（集成回归） |
 | §5.3.2 失败态未闭合 item 保留 delta | Task 2.1（"只丢已关闭 item"规则天然满足，已在 Phase 2 引言说明其等价性） |
@@ -1812,10 +1961,19 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
 ## 已知风险/发现（供主会话/用户决策）
 
 1. **Task 2.7 依赖 Phase 3.1 提前执行**（详情见 Task 2.7 正文的风险说明）——这是计划编号顺序与真实执行顺序的唯一一处倒挂，已在文中明确标注，执行者应先做 Phase 3.1 再回来做 Task 2.7，其余 task 顺序不受影响。
-2. **Task 4.2/4.6 的"若测试失败需排查"分支尚未实际运行验证**——`config/validation.ts` 的 `cleanInvalidPaths` 对嵌套对象字段（`buffered_merge.event_compaction`）与未知顶层键（`chat_completions.buffered_merge`）的行为，本计划基于对现有代码的静态阅读推断"应该"�covers 到，但撰写计划时未实际跑通这两个具体场景的既有机制，留了明确的排查路径而非假装确定。
+2. **Task 4.2/4.6 的"若测试失败需排查"分支尚未实际运行验证**——`config/validation.ts` 的 `cleanInvalidPaths` 对嵌套对象字段（`buffered_merge.event_compaction`）与未知顶层键（`chat_completions.buffered_merge`）的行为，本计划基于对现有代码的静态阅读推断"应该"覆盖到，但撰写计划时未实际跑通这两个具体场景的既有机制，留了明确的排查路径而非假装确定。
 3. **Task 5.5 的 `@ai-sdk/openai` 与本项目 in-process server 的对接细节是真实未知数**——`baseURL`/`fetch` 兼容性此前只做过 `npm pack` 层面的类型探测，未做过实际联调，Task 5.5 显式保留了"根据排查结果调整"的步骤。
 4. **Phase 5.6 Codex oracle 明确非阻塞**——不应被误解为本特性默认值翻转的前置门（与 keepalive M-2 的定位不同）。
 5. **`reasoning_text` 类型缺口（Task 0.2）是本次计划撰写过程中新发现的真实代码库缺陷**，经 grep 官方 `openai` npm 包源码坐实，纳入 Phase 0 而非绕过，属于"发现即完整修复"而非"暂不需要"。
+
+## GPT 对抗复核处理记录（本轮，2026-07-14）
+
+计划定稿后经 GPT 异模型对抗复核，结论：0 blocker，质量高，忠实覆盖 spec，9 条承重不变量逐条落实，file:line 引用全部准确，本文档「已知风险/发现」5 条自报风险全部被独立核实属实。复核给出 1 项 HIGH + 2 条建议，处理如下：
+
+- **HIGH（已修复）**：`response.output_text.annotation.added` 在 `item-summary` 档的丢弃集合中遗漏——该事件的 SDK accumulator 分支（`ResponseAccumulator.js:96-105`）同样调用 `getContent(content_index)`，与 `*.done` 家族同构地雷；原设计只枚举了 `.done` 事件、漏了这个 `.added`，`item-summary` 丢弃 `content_part` 后若该帧存活即成孤儿引用。真实触发场景：gpt-5.5 `web_search_preview` 原生透传 citation annotation。修复落在 **Task 0.2b**（新增类型建模 `OutputTextAnnotationAddedEvent`）+ **Task 2.3**（纳入 `ITEM_SUMMARY_ONLY_SUBFRAME_TYPES` + 新增专测 + 新增 DANGER 回归，真实 `openai` SDK 消费者 oracle 断言 `missing content` 抛错）。`drop-delta` 档本身安全（未纳入 `DROPPABLE_DELTA_TYPES`），此修复只影响 `item-summary`。
+- **建议 1（已采纳）**：`diagnostics().droppedEventBytes` 口径对齐 driver 的 `bufferedBytes` 计算（`driver.ts:859`，`(data.length ?? 0) + (event.length ?? 0)`），原实现只计入 `data.length`。已在 **Task 2.9** 更新生产代码 + 新增独立 oracle 测试（用同一公式对过滤后的帧集合独立求和比对，而非仅断言硬编码数字）。
+- **建议 2（已采纳）**：kick-off 提示词补充"执行 Task 5.2/5.3/5.4 前先完整读 `tests/responses/responses-buffered.it.test.ts`（约 650 行）再动手"，已加入 kick-off 正文。
+- **MED 观察（不采纳，按 `record-not-adopted` 记录理由）**：复核指出 `history/types.ts` 反向 import Responses 的 `BufferedMergeDiag` 类型。因该 import 是 `import type`（无运行时依赖，不产生真实模块耦合）且项目已有先例 `AskNormalizationDiag` 同构走同一模式，复核本身也判定"不构成新反模式、不要求改"，故本轮不处理，原计划设计维持不变。
 
 ---
 
@@ -1826,7 +1984,7 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
 
 背景：这是 Responses buffered-retry 路径（opt-in，默认 OFF）的块级语义压缩 + 终结对账特性。上游 spec 是
 docs/spec/2026-07-14-responses-buffered-block-merge.md，已定稿、经四方跨模型对抗审查 + live-GHC 实测 gating。
-计划文档已按 TDD 拆成 Phase 0-5、共约 33 个 bite-sized task，每个 task 独立可测、独立一个 commit。
+计划文档已按 TDD 拆成 Phase 0-5、共 34 个 bite-sized task（GPT 对抗复核后新增 Task 0.2b），每个 task 独立可测、独立一个 commit。
 
 裁判轴：长远正确 + 完整（不是 ROI/YAGNI/最小可交付）。计划已完整覆盖 spec §3-§9 的每一条要求，见计划末尾
 "Self-Review"一节的覆盖映射表；不要因为"暂时用不上"砍掉任何一个 task。
@@ -1843,6 +2001,9 @@ docs/spec/2026-07-14-responses-buffered-block-merge.md，已定稿、经四方�
 - 每个 Phase 跑完之后，运行一次全量相关测试确认零回归：
   bun test tests/pipeline tests/responses tests/config tests/context tests/e2e-client
   bun run typecheck && bun run typecheck:ui-v4
+- 执行 Task 5.2/5.3/5.4 之前，先完整读一遍 `tests/responses/responses-buffered.it.test.ts`（约 650 行，姊妹功能
+  buffered-retry adoption 的现成 golden 测试 harness——`applyFetchMock`/`createSseResponseThenError`/`mockModel`/
+  `useIsolatedRuntime` 等），别分段摸索着写，这几个 task 大量复用它的既有 helper。
 - Phase 5.6（Codex oracle）是非阻塞的人工验证步骤，harness 写完、mock-upstream 手工探测符合预期即可视为本
   task 完成，不需要你自己驱动真实 codex exec（那一步交给用户）。
 - 完成全部 Phase 后，按项目 session-closeout 流程收尾：subagent 审查合并态、更新 docs/DESIGN.md「活的架构

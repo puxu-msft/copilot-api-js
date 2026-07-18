@@ -80,6 +80,7 @@ import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
 import { getRequestContextManager } from "~/lib/context/manager"
+import { modelIdFor, stripThinkingSignatureFor } from "~/lib/config/model-translation"
 import {
   //
   captureInboundHeaders,
@@ -104,6 +105,7 @@ import {
   renderResponseNonStreamingVia,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
+import { processAnthropicSystem } from "~/lib/system-prompt"
 
 import { createAnthropicSanitizeRewrite } from "./request-rewrite-adapter"
 
@@ -172,8 +174,8 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   // builds it (render is identity). `flushResponse` / `getStreamMeta` read the SAME instance.
   let streamTranslator: ForwardStreamTranslator | undefined
   const ensureStreamTranslator = (env: RequestEnvelope): ForwardStreamTranslator => {
-    const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
-    return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId))
+    const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
+    return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId, reasoningRoundTripOpts(env)))
   }
 
   // The S3 request rewrite chain, built once per request. Execution order is by
@@ -224,6 +226,18 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     getContext() {
       return requestContext
     },
+
+    // S1b (RFC 2026-07-14 §4): async system-prompt injection over the top-level `system` field,
+    // moved off the route handler so `client.inbound` (Phase 4) sees the client-NATIVE system
+    // (pre-injection). Early-returns when there is no system (mirrors the legacy route's
+    // `if (wireBody.system)` guard). `env.body.model` is the resolved name (parse set it).
+    async translateInbound(env) {
+      const body = env.body as MessagesPayload
+      if (!body.system) return env
+      const system = await processAnthropicSystem(body.system, body.model, "anthropic")
+      return env.with({ body: { ...body, system } })
+    },
+
     getTruncateBaseline() {
       return truncateBaseline
     },
@@ -262,7 +276,7 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     // as a ctx marker so the wire end_turn stays observably distinguishable (richest-data-flow).
     renderResponseNonStreaming(upstream, env) {
       if (!isForwardTranslateLeg(env.targetEndpoint)) return upstream
-      const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.targetEndpoint, upstream)
+      const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.targetEndpoint, upstream, reasoningRoundTripOpts(env))
       if (contentFiltered) env.ctx.recordFeature("translated-content-filter")
       return rendered
     },
@@ -307,6 +321,19 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
  */
 function isForwardTranslateLeg(targetEndpoint: UpstreamEndpoint | undefined): targetEndpoint is Exclude<UpstreamEndpoint, "/v1/messages"> {
   return targetEndpoint === ENDPOINT.CHAT_COMPLETIONS || targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES
+}
+
+/**
+ * RFC §4.3 scenario A/B (Phase 5): resolve `{ stripThinkingSignature }` for the FORWARD
+ * `(anthropic client, responses model)` reasoning round-trip. Only meaningful on the RESPONSES/
+ * WS_RESPONSES leg (the CC leg has no reasoning round-trip carrier concept) — the CC leg's
+ * `renderResponseNonStreamingVia`/`createForwardStreamTranslator` call sites simply ignore an
+ * always-`false` result, so passing it unconditionally on every forward leg is harmless (no
+ * conditional call-site duplication needed).
+ */
+function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature: boolean } {
+  const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model)
+  return { stripThinkingSignature: stripThinkingSignatureFor("anthropic-messages", modelId, "openai-responses") }
 }
 
 // ============================================================================
@@ -372,6 +399,7 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
     payload: originalSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+  ctx.recordModelOperationIngress()
 
   // Tool-name mapper from the client's ORIGINAL tools (preprocess does not touch
   // tools, so `incoming.tools` is still the client's set). Stored on ctx so the

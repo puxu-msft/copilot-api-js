@@ -77,8 +77,8 @@ describe("driver.inspectRequest", () => {
     apply: (env: RequestEnvelope) => ({ env: env.with({ body: { ...(env.body as Record<string, unknown>), rewritten: true } }), changed: true }),
   } as unknown as RequestRewrite
 
-  test("runs S1-S3, snapshots each stage + records per-rewrite {name, changed}", () => {
-    const r = driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "rewrite-in")
+  test("runs S1-S3, snapshots each stage + records per-rewrite {name, changed}", async () => {
+    const r = await driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "rewrite-in")
     expect(r.stoppedAt).toBe("rewrite-in")
     expect(r.stages.parse?.body).toEqual({ orig: 1 })
     expect(r.stages.parse?.clientFormat).toBe("anthropic")
@@ -87,41 +87,41 @@ describe("driver.inspectRequest", () => {
     expect(r.stages["rewrite-in"]?.body).toEqual({ orig: 1, rewritten: true })
   })
 
-  test("stopAfter=parse stops before S2 (no translate/rewrite-in stages)", () => {
-    const r = driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "parse")
+  test("stopAfter=parse stops before S2 (no translate/rewrite-in stages)", async () => {
+    const r = await driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "parse")
     expect(r.stoppedAt).toBe("parse")
     expect(r.stages.parse).toBeDefined()
     expect(r.stages.translate).toBeUndefined()
     expect(r.stages["rewrite-in"]).toBeUndefined()
   })
 
-  test("stopAfter=translate stops before S3", () => {
-    const r = driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "translate")
+  test("stopAfter=translate stops before S3", async () => {
+    const r = await driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "translate")
     expect(r.stoppedAt).toBe("translate")
     expect(r.stages.translate).toBeDefined()
     expect(r.stages["rewrite-in"]).toBeUndefined()
   })
 
-  test("snapshots are deep — a later mutating rewrite does not perturb the parse snapshot", () => {
-    const r = driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "rewrite-in")
+  test("snapshots are deep — a later mutating rewrite does not perturb the parse snapshot", async () => {
+    const r = await driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "rewrite-in")
     expect(r.stages.parse?.body).toEqual({ orig: 1 }) // not { orig:1, rewritten:true }
   })
 
-  test("S2 reject → stoppedAt reject with status/reason, no translate stage", () => {
+  test("S2 reject → stoppedAt reject with status/reason, no translate stage", async () => {
     const codec = makeCodec({ orig: 1 }, { kind: "reject", status: 400, reason: "unsupported model" } as RouteDecision)
-    const r = driverWith(codec).inspectRequest(RAW, "rewrite-in")
+    const r = await driverWith(codec).inspectRequest(RAW, "rewrite-in")
     expect(r.stoppedAt).toBe("reject")
     expect(r.rejected).toEqual({ status: 400, reason: "unsupported model" })
     expect(r.stages.parse).toBeDefined()
     expect(r.stages.translate).toBeUndefined()
   })
 
-  test("never calls transport (S4 short-circuited)", () => {
+  test("never calls transport (S4 short-circuited)", async () => {
     // transport.send throws if called; reaching rewrite-in without throwing proves S4 is never entered.
-    expect(() => driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "rewrite-in")).not.toThrow()
+    await expect(driverWith(makeCodec({ orig: 1 }), [appendRewrite]).inspectRequest(RAW, "rewrite-in")).resolves.toBeDefined()
   })
 
-  test("stopAfter=prepare-wire runs S4-pre wire prep on the post-rewrite env (note: first-attempt only)", () => {
+  test("stopAfter=prepare-wire runs S4-pre wire prep on the post-rewrite env (note: first-attempt only)", async () => {
     const codec = makeCodec({ orig: 1 })
     // S4-pre: the codec derives the wire from the (post-S3) env. Non-pure in real codecs
     // (betaProbe.recordOutbound / ctx.recordFeature) — the endpoint isolates that with a
@@ -132,7 +132,7 @@ describe("driver.inspectRequest", () => {
       body: { wire: true, from: env.body as Record<string, unknown> },
       stream: false,
     })
-    const r = driverWith(codec, [appendRewrite]).inspectRequest(RAW, "prepare-wire")
+    const r = await driverWith(codec, [appendRewrite]).inspectRequest(RAW, "prepare-wire")
     expect(r.stoppedAt).toBe("prepare-wire")
     // S3 still ran before S4-pre (the wire is derived from the rewritten body).
     expect(r.stages["rewrite-in"]?.applied).toEqual([{ name: "append-flag", changed: true }])
@@ -142,9 +142,9 @@ describe("driver.inspectRequest", () => {
     expect(r.stages["prepare-wire"]?.note).toContain("first-attempt only")
   })
 
-  test("stopAfter=prepare-wire never calls transport either", () => {
+  test("stopAfter=prepare-wire never calls transport either", async () => {
     const codec = makeCodec({ orig: 1 })
     ;(codec as { prepareWire: FormatCodec["prepareWire"] }).prepareWire = () => ({ url: "u", headers: new Headers(), body: {}, stream: false })
-    expect(() => driverWith(codec).inspectRequest(RAW, "prepare-wire")).not.toThrow()
+    await expect(driverWith(codec).inspectRequest(RAW, "prepare-wire")).resolves.toBeDefined()
   })
 })

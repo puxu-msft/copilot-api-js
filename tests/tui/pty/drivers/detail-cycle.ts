@@ -6,6 +6,8 @@
 import { createBus } from "~/lib/observability"
 import { TerminalUi } from "~/lib/tui"
 
+import { diagnostic } from "./diagnostic"
+
 const LIFETIME = Number(process.env.DRIVER_LIFETIME_MS ?? 1500)
 const LOG_MS = Number(process.env.DETAIL_LOG_MS ?? 120)
 
@@ -16,13 +18,22 @@ const sys = bus.scope("system")
 
 req.publish({
   kind: "request.created",
-  ctx: { id: "req_pty_detail", endpoint: "anthropic-messages", method: "POST", path: "/v1/messages", resolvedModel: "claude-sonnet-4-5", state: "streaming", startTime: Date.now(), queueWaitMs: 0 },
+  ctx: {
+    id: "req_pty_detail",
+    endpoint: "anthropic-messages",
+    method: "POST",
+    path: "/v1/messages",
+    resolvedModel: "claude-sonnet-4-5",
+    state: "streaming",
+    startTime: Date.now(),
+    queueWaitMs: 0,
+  },
 } as never)
 
 let n = 0
 const timer = setInterval(() => {
   n++
-  sys.publish({ kind: "system.log", logType: "info", message: `DETAIL-LOG-${String(n).padStart(4, "0")}`, time: Date.now() } as never)
+  sys.publish(diagnostic(`DETAIL-LOG-${String(n).padStart(4, "0")}`))
 }, LOG_MS)
 
 setTimeout(() => {

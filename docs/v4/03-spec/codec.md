@@ -110,4 +110,4 @@ function selectCodec(raw: RawHttpRequest): FormatCodec
 // /responses→openai-responses；/v1beta→gemini；/openai/deployments/*→按子路径
 ```
 
-embeddings 不走 codec/driver（无 history/重试需求，对齐现状）——保持独立薄路径。
+embeddings 不走 codec/driver、仍保持独立薄路径；History V3 由旁路 lightweight `ModelOperation` lifecycle 捕获，且不接 V2 History/重试管线。

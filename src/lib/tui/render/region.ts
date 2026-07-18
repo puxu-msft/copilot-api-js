@@ -21,7 +21,7 @@
  * the panel.
  */
 
-import { truncateToWidth } from "~/lib/observability/projections/format"
+import { truncateAnsiToWidth } from "./width"
 
 /**
  * Rows kept for the scrolling log area above the panel. The panel is clamped so
@@ -48,8 +48,12 @@ const RESTORE_CURSOR = "\x1b8"
 const HIDE_CURSOR = "\x1b[?25l"
 const SHOW_CURSOR = "\x1b[?25h"
 
+export interface RegionOutput {
+  writeFrame(data: string): boolean
+}
+
 export interface RegionOptions {
-  stdout: NodeJS.WritableStream
+  output: RegionOutput
   /** Current terminal width in columns (queried each `render`). */
   getColumns: () => number
   /** Current terminal height in rows (queried each `render`, drives re-anchor). */
@@ -57,7 +61,7 @@ export interface RegionOptions {
 }
 
 export class Region {
-  private readonly stdout: NodeJS.WritableStream
+  private readonly output: RegionOutput
   private readonly getColumns: () => number
   private readonly getRows: () => number
 
@@ -71,7 +75,7 @@ export class Region {
   private established?: { rows: number; panelHeight: number }
 
   constructor(opts: RegionOptions) {
-    this.stdout = opts.stdout
+    this.output = opts.output
     this.getColumns = opts.getColumns
     this.getRows = opts.getRows
   }
@@ -94,7 +98,7 @@ export class Region {
     // well-formed input; the `-1` avoids the last-column auto-wrap some
     // terminals do.
     const cols = this.getColumns()
-    const clampWidth = (s: string): string => truncateToWidth(s, cols - 1)
+    const clampWidth = (s: string): string => truncateAnsiToWidth(s, cols - 1)
 
     const rows = this.getRows()
     const maxPanel = Math.max(0, rows - RESERVED_LOG_ROWS)
@@ -171,7 +175,7 @@ export class Region {
 
     out += this.panelContentString(lines, rows, panelHeight, clampWidth)
 
-    this.stdout.write(out)
+    this.output.writeFrame(out)
   }
 
   /**
@@ -226,7 +230,7 @@ export class Region {
     const panelTop = rows - panelHeight + 1
     // Reset scroll region → move to the panel's top (just below the last log) →
     // erase to end of screen (wipes the panel) → show cursor, leaving it there.
-    this.stdout.write(RESET_SCROLL_REGION + cursorTo(panelTop) + ERASE_TO_END + SHOW_CURSOR)
+    this.output.writeFrame(RESET_SCROLL_REGION + cursorTo(panelTop) + ERASE_TO_END + SHOW_CURSOR)
     this.established = undefined
   }
 
@@ -295,7 +299,7 @@ export class Region {
     if (!this.established) return ""
     const { rows, panelHeight } = this.established
     const cols = this.getColumns()
-    const clampWidth = (s: string): string => truncateToWidth(s, cols - 1)
+    const clampWidth = (s: string): string => truncateAnsiToWidth(s, cols - 1)
     const bottom = rows - panelHeight
     return SAVE_CURSOR + setScrollRegion(1, bottom) + RESTORE_CURSOR + this.panelContentString(lines, rows, panelHeight, clampWidth)
   }

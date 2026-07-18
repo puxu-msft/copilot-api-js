@@ -45,6 +45,7 @@ export class CalibrationFailureSink {
       // own try/catch, so it never rejects — fire-and-forget safety is preserved.
       (event) => this.handle(event),
       (event) => event.kind === "request.failed",
+      { name: "calibration-failure-sink" },
     )
   }
 

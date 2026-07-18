@@ -44,8 +44,8 @@ import { initHistory } from "~/lib/history"
 import {
   //
   CONFIG_MANAGED_DEFAULTS,
-  DEFAULT_MODEL_OVERRIDES,
-  onHistoryLimitChange,
+  DEFAULT_MODEL_MAPPINGS,
+  DEFAULT_MODEL_TRANSLATION,
   resetConfigManagedState,
   restoreStateForTests,
   setStateForTests,
@@ -167,16 +167,46 @@ function yamlForField(f: FieldSpec): string {
 const FIELDS: ReadonlyArray<FieldSpec> = [
   // ── telemetry.* (分层遥测) — 样本值避开 apply 层回落分支（γ≥0.005、resolution 整除 60） ──
   { configKey: "telemetry.enabled", stateKey: "telemetryEnabled", sampleYamlValue: "false", expectedStateValue: false, defaultStateValue: true },
-  { configKey: "telemetry.db_path", stateKey: "telemetryDbPath", sampleYamlValue: "/tmp/tel-test.db", expectedStateValue: "/tmp/tel-test.db", defaultStateValue: "" },
+  {
+    configKey: "telemetry.db_path",
+    stateKey: "telemetryDbPath",
+    sampleYamlValue: "/tmp/tel-test.db",
+    expectedStateValue: "/tmp/tel-test.db",
+    defaultStateValue: "",
+  },
   { configKey: "telemetry.persist_interval", stateKey: "telemetryPersistInterval", sampleYamlValue: "30", expectedStateValue: 30, defaultStateValue: 60 },
   { configKey: "telemetry.rollup_interval", stateKey: "telemetryRollupInterval", sampleYamlValue: "1800", expectedStateValue: 1800, defaultStateValue: 3600 },
   { configKey: "telemetry.cardinality_cap", stateKey: "telemetryCardinalityCap", sampleYamlValue: "100", expectedStateValue: 100, defaultStateValue: 200 },
   { configKey: "telemetry.sketch_gamma", stateKey: "telemetrySketchGamma", sampleYamlValue: "0.02", expectedStateValue: 0.02, defaultStateValue: 0.01 },
   { configKey: "telemetry.cumulative", stateKey: "telemetryCumulative", sampleYamlValue: "false", expectedStateValue: false, defaultStateValue: true },
-  { configKey: "telemetry.tiers.raw.resolution_minutes", stateKey: "telemetryRawResolutionMinutes", sampleYamlValue: "10", expectedStateValue: 10, defaultStateValue: 5 },
-  { configKey: "telemetry.tiers.raw.retention_days", stateKey: "telemetryRawRetentionDays", sampleYamlValue: "14", expectedStateValue: 14, defaultStateValue: 7 },
-  { configKey: "telemetry.tiers.hourly.retention_days", stateKey: "telemetryHourlyRetentionDays", sampleYamlValue: "30", expectedStateValue: 30, defaultStateValue: 90 },
-  { configKey: "telemetry.tiers.daily.retention_days", stateKey: "telemetryDailyRetentionDays", sampleYamlValue: "180", expectedStateValue: 180, defaultStateValue: 0 },
+  {
+    configKey: "telemetry.tiers.raw.resolution_minutes",
+    stateKey: "telemetryRawResolutionMinutes",
+    sampleYamlValue: "10",
+    expectedStateValue: 10,
+    defaultStateValue: 5,
+  },
+  {
+    configKey: "telemetry.tiers.raw.retention_days",
+    stateKey: "telemetryRawRetentionDays",
+    sampleYamlValue: "14",
+    expectedStateValue: 14,
+    defaultStateValue: 7,
+  },
+  {
+    configKey: "telemetry.tiers.hourly.retention_days",
+    stateKey: "telemetryHourlyRetentionDays",
+    sampleYamlValue: "30",
+    expectedStateValue: 30,
+    defaultStateValue: 90,
+  },
+  {
+    configKey: "telemetry.tiers.daily.retention_days",
+    stateKey: "telemetryDailyRetentionDays",
+    sampleYamlValue: "180",
+    expectedStateValue: 180,
+    defaultStateValue: 0,
+  },
   // ── Top-level scalars ───────────────────────────────────────────────
   {
     configKey: "timeouts.response_header",
@@ -755,14 +785,27 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
   },
 
-  // ── model_overrides / model_preference / disabled_models ───────────
+  // ── model_mappings / model_preference / disabled_models ───────────
   {
-    configKey: "model_overrides",
-    stateKey: "modelOverrides",
+    configKey: "model_mappings",
+    stateKey: "modelMappings",
     sampleYamlValue: `\n  custom-alias: claude-opus-4.6`,
-    // merged on top of DEFAULT_MODEL_OVERRIDES
-    expectedStateValue: { ...DEFAULT_MODEL_OVERRIDES, "custom-alias": "claude-opus-4.6" },
-    defaultStateValue: DEFAULT_MODEL_OVERRIDES,
+    // merged on top of DEFAULT_MODEL_MAPPINGS
+    expectedStateValue: { ...DEFAULT_MODEL_MAPPINGS, "custom-alias": "claude-opus-4.6" },
+    defaultStateValue: DEFAULT_MODEL_MAPPINGS,
+  },
+  {
+    // model_translation: retain-on-absence (mirrors model_mappings), but the config
+    // schema (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1, Phase 7) is a
+    // per-ingress list of rules, not a flat scalar map — applyConfigToState() REPLACES
+    // wholesale (no per-key merge like model_mappings; every declared ingress is
+    // user-owned) so expectedStateValue is exactly the sample, not merged with any
+    // built-in default (DEFAULT_MODEL_TRANSLATION is `{}`).
+    configKey: "model_translation",
+    stateKey: "modelTranslation",
+    sampleYamlValue: `\n  anthropic-messages:\n    - match: gpt-5.5@openai-responses\n      features:\n        - strip-thinking-signature`,
+    expectedStateValue: { "anthropic-messages": [{ match: "gpt-5.5@openai-responses", features: ["strip-thinking-signature"] }] },
+    defaultStateValue: DEFAULT_MODEL_TRANSLATION,
   },
   {
     configKey: "disabled_models",
@@ -776,34 +819,26 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
 
   // ── history.* ──────────────────────────────────────────────────────
   {
-    configKey: "history.success_limit",
-    stateKey: "historySuccessLimit",
-    sampleYamlValue: "500",
-    expectedStateValue: 500,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
+    configKey: "history.raw_capture.enabled",
+    stateKey: "historyRawCaptureEnabled",
+    sampleYamlValue: "true",
+    expectedStateValue: true,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
   },
   {
-    configKey: "history.failure_limit",
-    stateKey: "historyFailureLimit",
-    sampleYamlValue: "300",
-    expectedStateValue: 300,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
+    configKey: "history.raw_capture.db_path",
+    stateKey: "historyRawCaptureDbPath",
+    sampleYamlValue: '"/tmp/raw-hot-reload.db"',
+    expectedStateValue: "/tmp/raw-hot-reload.db",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
   },
   {
-    configKey: "history.reaper_interval",
-    stateKey: "historyReaperInterval",
-    sampleYamlValue: "120",
-    expectedStateValue: 120,
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
+    configKey: "history.raw_capture.max_object_bytes",
+    stateKey: "historyRawCaptureMaxObjectBytes",
+    sampleYamlValue: "1048576",
+    expectedStateValue: 1048576,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
   },
-  {
-    configKey: "history.db_path",
-    stateKey: "historyDbPath",
-    sampleYamlValue: '"/tmp/custom.db"',
-    expectedStateValue: "/tmp/custom.db",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.historyDbPath,
-  },
-
   // ── shutdown.* ─────────────────────────────────────────────────────
   {
     configKey: "shutdown.graceful_wait",
@@ -926,6 +961,52 @@ interface ExemptField {
 
 const EXEMPT: ReadonlyArray<ExemptField> = [
   {
+    configKey: "logging.terminal_level",
+    reason: "nested state.logging field; dedicated structured logging config test below covers apply/retain/reset",
+  },
+  {
+    configKey: "logging.file_level",
+    reason: "see logging.terminal_level",
+  },
+  {
+    configKey: "logging.file.enabled",
+    reason: "startup artifact policy nested under state.logging; dedicated structured logging config test",
+  },
+  {
+    configKey: "logging.file.directory",
+    reason: "see logging.file.enabled",
+  },
+  {
+    configKey: "logging.file.max_size_mb",
+    reason: "see logging.file.enabled",
+  },
+  {
+    configKey: "logging.file.max_files_per_process",
+    reason: "see logging.file.enabled",
+  },
+  {
+    configKey: "logging.file.retention_days",
+    reason: "see logging.file.enabled",
+  },
+  {
+    configKey: "tui.enabled",
+    reason: "startup capability nested as state.tuiEnabled; dedicated structured logging config test",
+  },
+  {
+    configKey: "unknown_endpoint_logging.not_found",
+    reason:
+      "nested object sub-key → state.unknownEndpointLogging.notFound; config→state + null-delete + default(warn) + retain-on-absence covered in tests/config/unknown-endpoint-logging-config.unit.test.ts",
+  },
+  {
+    configKey: "unknown_endpoint_logging.method_not_allowed",
+    reason: "see unknown_endpoint_logging.not_found — same dedicated test file",
+  },
+  {
+    configKey: "history.enabled",
+    reason:
+      "STARTUP-ONLY master switch: applied to state.historyEnabled only at boot (hasApplied=false); read once in start.ts to gate initHistory. A runtime change warns + requires a restart (mirrors proxy / ghc_api_base_url). Boot-apply + hot-reload-warn covered in tests/config/history-enabled-config.unit.test.ts",
+  },
+  {
     configKey: "history.limit",
     reason:
       "Deprecated legacy key; no dedicated state field — falls back to success_limit/failure_limit (covered by the 'legacy history.limit falls back' test)",
@@ -937,6 +1018,10 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
   {
     configKey: "ghc_api_base_url",
     reason: "Read once in start.ts; switching upstream mid-flight would mis-route active requests, so changes require restart",
+  },
+  {
+    configKey: "pidfile",
+    reason: "Graceful-restart bare-metal pidfile path override; read once at boot (Task 12 wiring), not part of hot reload",
   },
   {
     configKey: "rate_limiter.retry_interval",
@@ -1130,6 +1215,59 @@ describe("Special semantics", () => {
     initHistory(true, 200)
   })
 
+  test("structured logging and tui config apply, retain on absence, and reset", async () => {
+    await writeConfig(`
+logging:
+  terminal_level: trace
+  file_level: error
+  file:
+    enabled: false
+    directory: /tmp/diagnostic-test
+    max_size_mb: 0
+    max_files_per_process: 2
+    retention_days: 30
+tui:
+  enabled: false
+`)
+    await applyConfigToState()
+    expect(state.logging).toEqual({
+      terminalLevel: "trace",
+      fileLevel: "error",
+      fileEnabled: false,
+      fileDirectory: "/tmp/diagnostic-test",
+      fileMaxSizeMb: 0,
+      fileMaxFilesPerProcess: 2,
+      retentionDays: 30,
+    })
+    expect(state.tuiEnabled).toBe(false)
+
+    resetConfigCache()
+    await writeConfig(`
+logging:
+  terminal_level: warn
+  file:
+    enabled: true
+    directory: /tmp/must-not-activate
+tui:
+  enabled: true
+`)
+    await applyConfigToState()
+    expect(state.logging.terminalLevel).toBe("warn") // level is live
+    expect(state.logging.fileEnabled).toBe(false) // writer shape stays frozen
+    expect(state.logging.fileDirectory).toBe("/tmp/diagnostic-test")
+    expect(state.tuiEnabled).toBe(false)
+
+    resetConfigCache()
+    await writeConfig("")
+    await applyConfigToState()
+    expect(state.logging.terminalLevel).toBe("warn")
+    expect(state.tuiEnabled).toBe(false)
+
+    resetConfigManagedState()
+    expect(state.logging).toEqual(CONFIG_MANAGED_DEFAULTS.logging)
+    expect(state.tuiEnabled).toBe(CONFIG_MANAGED_DEFAULTS.tuiEnabled)
+  })
+
   test("tool_dedup_calls: true normalizes to 'input'", async () => {
     await writeConfig("anthropic:\n  tool_dedup_calls: true\n")
     await applyConfigToState()
@@ -1171,45 +1309,6 @@ system_prompt_overrides:
     expect(state.systemPromptOverrides[1].from).toBe("exact line")
   })
 
-  test("history.success_limit also syncs setHistoryMaxEntries (side effect)", async () => {
-    // initHistory at default; apply changes success limit to 50.
-    initHistory(true, 200)
-    await writeConfig("history:\n  success_limit: 50\n")
-    await applyConfigToState()
-    expect(state.historySuccessLimit).toBe(50)
-    // setHistoryMaxEntries effect verified indirectly — historySuccessLimit reflects it.
-  })
-
-  test("legacy history.limit falls back to both success and failure limits", async () => {
-    initHistory(true, 200)
-    await writeConfig("history:\n  limit: 77\n")
-    await applyConfigToState()
-    expect(state.historySuccessLimit).toBe(77)
-    expect(state.historyFailureLimit).toBe(77)
-  })
-
-  test("dedicated limits override legacy history.limit fallback", async () => {
-    await writeConfig("history:\n  limit: 77\n  success_limit: 10\n  failure_limit: 20\n")
-    await applyConfigToState()
-    expect(state.historySuccessLimit).toBe(10)
-    expect(state.historyFailureLimit).toBe(20)
-  })
-
-  test("changing only reaper_interval retunes the reaper (listener fires)", async () => {
-    // Register a listener AFTER the initial sync so we only observe the
-    // interval-triggered notification, not the synchronous registration call.
-    let fired = 0
-    const unsubscribe = onHistoryLimitChange(() => {
-      fired++
-    })
-    fired = 0 // discard the synchronous on-register invocation
-    await writeConfig("history:\n  reaper_interval: 999\n")
-    await applyConfigToState()
-    unsubscribe()
-    expect(state.historyReaperInterval).toBe(999)
-    expect(fired).toBeGreaterThan(0)
-  })
-
   test("model_refresh_interval: 0 disables the refresh loop", async () => {
     await writeConfig("model_refresh_interval: 0\n")
     await applyConfigToState()
@@ -1219,26 +1318,24 @@ system_prompt_overrides:
   test("empty config does not mutate any pre-existing runtime state", async () => {
     setStateForTests({
       responseHeaderTimeout: 99,
-      modelOverrides: { opus: "custom-model" },
+      modelMappings: { opus: "custom-model" },
       systemPromptOverrides: [{ from: /test/, to: "keep" }],
-      historySuccessLimit: 500,
       disabledModels: ["foo"],
     })
     await writeConfig("")
     await applyConfigToState()
 
     expect(state.responseHeaderTimeout).toBe(99)
-    expect(state.modelOverrides.opus).toBe("custom-model")
+    expect(state.modelMappings.opus).toBe("custom-model")
     expect(state.systemPromptOverrides).toHaveLength(1)
-    expect(state.historySuccessLimit).toBe(500)
     expect(state.disabledModels).toEqual(["foo"])
   })
 
   test("missing config file does not mutate state", async () => {
-    setStateForTests({ modelOverrides: { opus: "custom-model" } })
+    setStateForTests({ modelMappings: { opus: "custom-model" } })
     await removeConfig()
     await applyConfigToState()
-    expect(state.modelOverrides.opus).toBe("custom-model")
+    expect(state.modelMappings.opus).toBe("custom-model")
   })
 
   test("disabled_models retain semantic: writing one field doesn't wipe a previously-set list", async () => {
@@ -1255,10 +1352,10 @@ system_prompt_overrides:
     expect(state.disabledModels).toEqual(["foo"]) // NOT cleared
   })
 
-  test("resetConfigManagedState restores model_overrides to DEFAULT_MODEL_OVERRIDES", () => {
-    setStateForTests({ modelOverrides: { custom: "model" } })
+  test("resetConfigManagedState restores model_mappings to DEFAULT_MODEL_MAPPINGS", () => {
+    setStateForTests({ modelMappings: { custom: "model" } })
     resetConfigManagedState()
-    expect(state.modelOverrides).toEqual(DEFAULT_MODEL_OVERRIDES)
+    expect(state.modelMappings).toEqual(DEFAULT_MODEL_MAPPINGS)
   })
 
   test("system_reject_* defaults are the empirically-confirmed reject set + as_user", () => {
@@ -1272,7 +1369,5 @@ system_prompt_overrides:
     expect(state.thinkingBlockMessagePolicy).toBe(CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy)
     expect(state.responseHeaderTimeout).toBe(CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout)
     expect(state.streamIdleTimeout).toBe(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout)
-    expect(state.historySuccessLimit).toBe(CONFIG_MANAGED_DEFAULTS.historySuccessLimit)
-    expect(state.historyFailureLimit).toBe(CONFIG_MANAGED_DEFAULTS.historyFailureLimit)
   })
 })

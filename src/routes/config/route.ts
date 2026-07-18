@@ -185,10 +185,12 @@ function buildEffectiveConfig(): Record<string, unknown> {
   // ─── Startup-phase config fields (not hot-reloadable; not in CONFIG_MANAGED_DEFAULTS) ───
   out.accountType = state.accountType
   out.ghcApiBaseUrl = state.ghcApiBaseUrl
+  out.historyEnabled = state.historyEnabled
   out.verbose = state.verbose
   out.showGitHubToken = state.showGitHubToken
   out.tokenBasedBilling = state.tokenBasedBilling
-  out.modelOverrides = state.modelOverrides
+  out.modelMappings = state.modelMappings
+  out.modelTranslation = state.modelTranslation
   out.rateLimiter = state.adaptiveRateLimitConfig ?? null
 
   return out
@@ -261,7 +263,8 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "retry")) setNestedScalarContainer(doc, ["retry"], body.retry)
   if (hasOwn(body, "system_prompt_prepend")) setScalar(doc, ["system_prompt_prepend"], body.system_prompt_prepend)
   if (hasOwn(body, "system_prompt_append")) setScalar(doc, ["system_prompt_append"], body.system_prompt_append)
-  if (hasOwn(body, "model_overrides")) replaceCollection(doc, ["model_overrides"], body.model_overrides)
+  if (hasOwn(body, "model_mappings")) replaceCollection(doc, ["model_mappings"], body.model_mappings)
+  if (hasOwn(body, "model_translation")) replaceCollection(doc, ["model_translation"], body.model_translation)
   if (hasOwn(body, "system_prompt_overrides")) {
     replaceCollection(doc, ["system_prompt_overrides"], body.system_prompt_overrides)
   }

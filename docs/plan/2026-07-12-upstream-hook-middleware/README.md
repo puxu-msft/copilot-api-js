@@ -1,3 +1,5 @@
+> **命名已于 v3（2026-07-15 合并 master `2a77bf7c`）迁移**：本文件夹是 v2 实施记录（扁平 `onRequest`/`onExchange`/`rewriteUpstreamFrame`）。最新形状 = 对称四点 `hooks.{client,upstream}.{inbound,outbound}`+`exchange`，权威见 RFC `docs/rfc/2026-07-14-symmetric-four-point-hooks.md` + spec `docs/spec/2026-07-12-upstream-hook-middleware.md` §3.2/§12。
+
 # 上游 hook 中间件 — 实施计划 README（阶段 DAG + 总览）
 
 > **给执行者**：REQUIRED SUB-SKILL：用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实施。步骤用 `- [ ]` 复选框追踪。

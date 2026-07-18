@@ -28,14 +28,15 @@ import type { AttemptSnapshot } from "~/lib/observability"
 import {
   //
   formatBytes,
-  formatDuration,
   formatDurationField,
-  truncateToWidth,
 } from "~/lib/observability/projections/format"
 
 import type { ActiveRequestView } from "./footer"
 
+import { buildDetailDocument } from "./detail"
 import { buildActiveFooter } from "./footer"
+import { sanitizeTerminalText } from "./sanitize"
+import { truncateToWidth } from "./width"
 
 /**
  * Literal reverse-video (SGR 7 / 27). Deliberately not `pc.inverse`: the panel
@@ -161,7 +162,7 @@ export function buildPanelLines(args: {
 
   const lines = window.map((view, i) => {
     const globalIndex = scrollOffset + i
-    const row = truncateToWidth(formatPanelRow(view, now), budget)
+    const row = truncateToWidth(sanitizeTerminalText(formatPanelRow(view, now)), budget)
     return globalIndex === selectedIndex ? `${REVERSE_ON}${row}${REVERSE_OFF}` : row
   })
 
@@ -211,40 +212,7 @@ function formatPanelRow(view: DetailView, now: number): string {
  * truncated to `columns-1`.
  */
 export function buildDetailLines(args: { entry: DetailView; now: number; columns: number }): Array<string> {
-  const { entry, now, columns } = args
-  const budget = columns - 1
-  const { ctx } = entry
-
-  // 与 formatPanelRow 一致：有重试时 elapsed 展开为 last/total(N)，纯文本不着色。
-  const pRetries = (ctx.attemptCount ?? 1) - 1
-  const pLastMs = ctx.currentAttemptStartedAt !== undefined ? now - ctx.currentAttemptStartedAt : undefined
-
-  const raw: Array<string> = [
-    `req_id: ${ctx.id}`,
-    `${ctx.method} ${ctx.path}`,
-    `model: ${ctx.clientModel ?? "?"} → ${ctx.resolvedModel ?? "(resolving)"}`,
-    ...(ctx.multiplier === undefined ? [] : [`multiplier: ${ctx.multiplier}x`]),
-    `state: ${ctx.state}`,
-    `elapsed: ${formatDurationField({ lastMs: pLastMs, totalMs: now - ctx.startTime, retries: pRetries })}`,
-    `queueWait: ${formatDuration(ctx.queueWaitMs)}`,
-    `bytes: ${formatByteFlow(ctx.requestBodySize, entry.streamBytesIn)}`,
-    `events: ${entry.streamEventsIn ?? 0}`,
-    ...(entry.streamBlockType === undefined ? [] : [`block: ${entry.streamBlockType}`]),
-    ...(entry.tags && entry.tags.length > 0 ? [`tags: ${entry.tags.join(", ")}`] : []),
-    ...(entry.thinking ? [`thinking: ${entry.thinking.requested ?? "(unset)"} (requested) → ${entry.thinking.effective} (effective)`] : []),
-    ...(entry.attempts && entry.attempts.length > 0 ?
-      [`attempts: ${entry.attempts.length}`, ...entry.attempts.map((attempt) => `  ${formatAttempt(attempt)}`)]
-    : []),
-  ]
-
-  return raw.map((line) => truncateToWidth(line, budget))
-}
-
-/** One attempt's plain diagnostic line: index, strategy, transport, and error if any. */
-function formatAttempt(attempt: AttemptSnapshot): string {
-  const parts: Array<string> = [`#${attempt.attemptIndex}`]
-  if (attempt.strategy) parts.push(attempt.strategy)
-  if (attempt.transport) parts.push(`[${attempt.transport}]`)
-  if (attempt.error) parts.push(`error ${attempt.error.status} ${attempt.error.type}: ${attempt.error.message}`)
-  return parts.join(" ")
+  const document = buildDetailDocument(args.entry, args.now)
+  const budget = args.columns - 1
+  return [document.header, ...document.body].map((line) => truncateToWidth(sanitizeTerminalText(line.text), budget))
 }

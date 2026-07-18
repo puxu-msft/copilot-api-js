@@ -53,7 +53,7 @@ AbortError: The operation was aborted.
 
 ### 文档同步（completion-includes-doc-sync）
 
-- [docs/DESIGN.md](docs/DESIGN.md)「活的架构现状」/ `staleRequestMaxAge` 选项行 + [docs/shutdown.md](docs/shutdown.md) reaper 段：reaper 现在**取消在飞工作**而非仅打标。
+- [docs/DESIGN.md](docs/DESIGN.md)「活的架构现状」/ `staleRequestMaxAge` 选项行 + [docs/lifecycle.md](docs/lifecycle.md) reaper 段：reaper 现在**取消在飞工作**而非仅打标。
 - 清理 exp 探针或留存于 `exp/stale-abort-unhandled/`（按 feedback-experiments-in-repo-exp-dir 留仓库）。
 
 ## 验证命令

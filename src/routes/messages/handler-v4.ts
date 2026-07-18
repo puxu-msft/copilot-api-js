@@ -106,6 +106,7 @@ import {
 } from "~/lib/anthropic/warmup"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { anthropicCommitBoundaries } from "~/lib/codec/anthropic/commit-boundaries"
+import { applyConfigToState } from "~/lib/config/config"
 import {
   //
   HTTPError,
@@ -144,7 +145,6 @@ import {
   resolveBufferedCaps,
   state,
 } from "~/lib/state"
-import { processAnthropicSystem } from "~/lib/system-prompt"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
@@ -216,10 +216,16 @@ export async function handleMessagesV4(c: Context): Promise<Response> {
   // inboundRequest; the wire body below is the server-modified form).
   const clientRaw = structuredClone(payload)
 
-  // System-prompt collection + config overrides (async, non-idempotent) on the
-  // model-resolved wire body, BEFORE the sync codec.parse.
+  // System-prompt injection (async, non-idempotent) has moved OFF the route into the anthropic
+  // codec's S1b `translateInbound` (RFC 2026-07-14 §4) so `client.inbound` (Phase 4) sees the
+  // client-native `system`. Config freshness stays a route concern: anthropic parse reads
+  // config-managed state (`state.sanitizeToolNames` → the tool-name mapper), and the legacy flow
+  // reloaded config before parse ONLY when a system was present (processAnthropicSystem early-returns
+  // otherwise) — so this reload is guarded on `payload.system` to preserve that exact conditionality
+  // (an unconditional reload would reset config state that system-less tests set up). Model resolved
+  // just above, before the reload — legacy order preserved.
   const wireBody: MessagesPayload = { ...payload, model: resolvedName }
-  if (wireBody.system) wireBody.system = await processAnthropicSystem(wireBody.system, resolvedName, "anthropic")
+  if (payload.system) await applyConfigToState()
 
   // Phase 1: one-time message-level preprocessing (idempotent). The ctx's
   // toolNameMapper is NOT yet built here (that's codec.parse) — but
@@ -396,7 +402,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       try {
         await pumpAnthropicStreamingDispatch({ sink, buffered, forwardedSseEvents, streamStartMs, driver, codec, upstream, env, anchorHooks, anchorState })
       } finally {
-        sink.close?.() // symmetric with the commit path: keep the heartbeat-timer-stop invariant local
+        sink.finalize?.() // terminal delivery drained; seals generation after any synthetic terminus
         detachClientAbort()
       }
     })
@@ -558,7 +564,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       commitCtx?.recordFeature("stream-upstream-resolved", { totalStalledMs: Date.now() - commitInstant })
       await pumpAnthropicStreamingDispatch({ sink, buffered, forwardedSseEvents, streamStartMs, driver, codec, upstream, env, anchorHooks, anchorState })
     } finally {
-      sink.close?.()
+      sink.finalize?.()
       detachClientAbort()
     }
   })
@@ -723,13 +729,15 @@ function renderNonStreamingV4(
         },
         stop_reason: response.stop_reason,
         content: { role: "assistant", content: response.content },
+        sourceBody: response,
       },
       { upstreamSucceeded: true },
     )
+    reqCtx.finalizeModelOperationDelivery({ clientPayload: errorBody })
     return errResponse
   }
 
-  reqCtx.setForwardedResponse({ content: { role: "assistant", content: finalResponse.content } })
+  reqCtx.setForwardedResponse({ content: finalResponse })
   // Forward the controlled subset of upstream response headers BEFORE c.json builds the
   // response, so they land in clientResponse.headers (and the inboundResponse capture below).
   applyForwardedAnthropicResponseHeaders(c, upstreamHeaders)
@@ -760,6 +768,8 @@ function renderNonStreamingV4(
     },
     stop_reason: response.stop_reason ?? undefined,
     content: { role: "assistant", content: response.content },
+    sourceBody: response,
+    responseText: JSON.stringify(response),
   }
   if (failReason) {
     // Unrepairable = upstream delivered a COMPLETE 200 body that the proxy rejected → upstreamSucceeded
@@ -768,7 +778,7 @@ function renderNonStreamingV4(
     reqCtx.fail(
       response.model,
       new Error(failReason),
-      { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content },
+      { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content, sourceBody: response },
       unrepairableTool !== null ? { upstreamSucceeded: true } : undefined,
     )
   } else {
@@ -783,6 +793,7 @@ function renderNonStreamingV4(
     reqCtx.recordFeature("context-edits-applied", { count: ctxEdits.count, clearedInputTokens: ctxEdits.clearedInputTokens, types: ctxEdits.types })
   }
 
+  reqCtx.finalizeModelOperationDelivery({ clientPayload: finalResponse })
   return clientResponse
 }
 
@@ -852,9 +863,22 @@ function makeAnchoredSseSink(
     // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧 → ctx firstReal（透传给 makeSseSink）。
     isRealContentFrame?: (frame: ClientFrame) => boolean
     onFirstRealContent?: () => void
+    onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
+    onDeliveryFinalized?: () => void
   },
 ): { sink: ClientSink; anchorState: AnchorState; anchorHooks: AnchorHooks | undefined } {
-  const { onForwarded, streamStartMs, heartbeatSec, clientAbortSignal, resolvedName, reqId, isRealContentFrame, onFirstRealContent } = args
+  const {
+    onForwarded,
+    streamStartMs,
+    heartbeatSec,
+    clientAbortSignal,
+    resolvedName,
+    reqId,
+    isRealContentFrame,
+    onFirstRealContent,
+    onGenerationFrame,
+    onDeliveryFinalized,
+  } = args
   // Hooks are built for BOTH synthetic-prelude modes (empty_text + enveloped_ping); only `ping` opts out.
   // The mode then selects WHICH injector runs (full anchor vs envelope-only) and whether `anchorBlockOpen`
   // is set — the hooks themselves are the same format primitives.
@@ -874,6 +898,8 @@ function makeAnchoredSseSink(
     streamStartMs,
     ...(isRealContentFrame && { isRealContentFrame }),
     ...(onFirstRealContent && { onFirstRealContent }),
+    ...(onGenerationFrame && { onGenerationFrame }),
+    ...(onDeliveryFinalized && { onDeliveryFinalized }),
     ...(heartbeatSec > 0 && {
       heartbeat: {
         intervalSec: heartbeatSec,
@@ -1169,6 +1195,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // (B0-d). Settle as aborted (forwarded snapshot guaranteed by the finally).
       consola.debug("[Stream] Client disconnected mid-stream — recording aborted")
       env.ctx.abort(acc.model || model, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined })
+      sink.finalize?.()
       return
     }
 
@@ -1205,6 +1232,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         stop_reason: partial.stop_reason,
         content: partial.content,
       })
+      sink.finalize?.()
       return
     }
 
@@ -1233,6 +1261,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         stop_reason: partial.stop_reason,
         content: partial.content,
       })
+      sink.finalize?.()
     } else if (
       state.refusalSseRewrite === "error"
       && isThinkingOnlyRefusal(
@@ -1259,6 +1288,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         { usage: partial.usage, stop_reason: partial.stop_reason, content: partial.content },
         { upstreamSucceeded: true },
       )
+      sink.finalize?.()
     } else if (env.ctx.unrepairableToolInput !== null) {
       // A malformed tool_use input could not be repaired (Layer 1 strip + Layer 2 jsonrepair both
       // failed during S5) — forwarding the broken JSON hands the client an unparseable tool call.
@@ -1287,6 +1317,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         { usage: partial.usage, stop_reason: partial.stop_reason, content: partial.content },
         { upstreamSucceeded: true },
       )
+      sink.finalize?.()
     } else if (!acc.sawMessageStop) {
       // Upstream truncation: a clean EOF WITHOUT the mandatory `message_stop` terminator
       // (GHC mid-stream cutoff). The driver sees a clean drain → `complete`, but the message
@@ -1317,8 +1348,10 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         stop_reason: partial.stop_reason,
         content: partial.content,
       })
+      sink.finalize?.()
     } else {
       env.ctx.complete(buildAnthropicResponseData(acc, model))
+      sink.finalize?.()
     }
   } catch (error) {
     // Unexpected throw from the driver/sink (not a returned outcome): surface a synthetic error
@@ -1334,6 +1367,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
       stop_reason: acc.stopReason || undefined,
     })
+    sink.finalize?.()
   } finally {
     recordForwarded()
   }
@@ -1443,6 +1477,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         usage: { input_tokens: meta?.usage.input_tokens ?? 0, output_tokens: meta?.usage.output_tokens ?? 0 },
         ...(meta?.stopReason && { stop_reason: meta.stopReason }),
       })
+      sink.finalize?.()
       return
     }
 
@@ -1475,12 +1510,19 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         .catch(() => undefined)
       recordForwarded()
       env.ctx.fail(model, error, outboundResponseData())
+      sink.finalize?.()
       return
     }
 
     // outcome.kind === "complete" — the upstream drained cleanly. The terminal stop_reason is the F2
     // signal: undefined ⇒ the CC/Responses stream ended with NO finish_reason ⇒ truncation.
     const meta = codec.getStreamMeta()
+    // N3 (RFC 2026-07-14-anthropic-responses-direct-bridge §3 subtask C): the direct Responses→Anthropic
+    // streaming bridge's meta is a superset carrying `contentFiltered` — record the SAME ctx marker the
+    // non-streaming leg already records (codec.ts renderResponseNonStreaming), so a content-filtered
+    // streaming completion stays observably distinguishable even though its wire stop_reason is end_turn
+    // (Anthropic has no content_filter stop_reason — the marker IS the distinguishability, not the wire value).
+    if (meta?.contentFiltered) env.ctx.recordFeature("translated-content-filter")
     if (meta?.stopReason === undefined) {
       // Truncation: forward the translator's block-close frames (partial content stays balanced) but DROP
       // its terminal message_delta/message_stop (they'd signal a clean completion), then write a synthetic
@@ -1511,6 +1553,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         sseEvents: diag.sseEvents,
       })
       env.ctx.fail(model, new Error("upstream stream truncated: closed without finish_reason"), outboundResponseData())
+      sink.finalize?.()
       return
     }
 
@@ -1521,6 +1564,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     for (const frame of codec.flushResponse(env)) await clientSink.write(frame)
     recordForwarded()
     env.ctx.complete(outboundResponseData())
+    sink.finalize?.()
   } catch (error) {
     // Unexpected throw from the driver/sink: synthesize an Anthropic error terminator + record it, THEN fail.
     await closeAnchorIfOpen(sink, anchorHooks, anchorState)
@@ -1532,6 +1576,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(model, error, outboundResponseData())
+    sink.finalize?.()
   } finally {
     recordForwarded()
   }

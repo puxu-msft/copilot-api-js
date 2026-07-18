@@ -50,7 +50,7 @@ responses:
 
 ## 4. 落点：codec 拥有的有状态 reducer + driver 咽喉调用
 
-**[承重] 变换必须放进 `flushBufferedFrames` 内部**（[driver.ts:762](../../src/lib/pipeline/driver.ts) 单一咽喉），在 anchor close-off/write 循环之前对 `frames` 施加一次。理由（细节评审 BLOCKER 坐实）：`response.completed` 本身在 commit 边界集（[commit-boundaries.ts:20](../../src/lib/codec/openai-responses/commit-boundaries.ts)），HTTP 直连路径上它在**块级 flush**（driver.ts:858）就被送走、终结尾巴 flush（:907）的 buffer 是**空的**——若变换只挂终结 flush，backfill 在 HTTP 直连**恒不触发**。咽喉点同时覆盖块级 / 终结 / retreat 三处。
+**[承重] 变换必须放进 `flushBufferedFrames` 内部**（[driver.ts](../../src/lib/pipeline/driver.ts) 单一咽喉，现约 801 行），在 anchor close-off/write 循环之前对 `frames` 施加一次。理由（细节评审 BLOCKER 坐实）：`response.completed` 本身在 commit 边界集（[commit-boundaries.ts:20](../../src/lib/codec/openai-responses/commit-boundaries.ts)），HTTP 直连路径上它在**块级 flush**（driver.ts:858）就被送走、终结尾巴 flush（:907）的 buffer 是**空的**——若变换只挂终结 flush，backfill 在 HTTP 直连**恒不触发**。咽喉点同时覆盖块级 / 终结 / retreat 三处。
 
 **reducer 接口（格式无关注入缝）**：
 
@@ -78,7 +78,7 @@ interface BufferedFlushContext {
 
 ## 5. 承重不变量（协议合法性）
 
-1. **地雷不变量（泛化到所有 content-part `.done`）**：openai SDK accumulator 中 `output_text.done` / `refusal.done` / `reasoning_text.done` / `reasoning_summary_text.done` **都**走 `getContent()`，缺对应 `.added`（`content_part.added` / `reasoning_summary_part.added`）会**流式中途抛 `missing content`**（早于 completed、救不回）。仅 `function_call_arguments.done` 不走 getContent。故：任何指向 content part 的 `.done`，其 `.added` 必须保留；`item-summary` 塌缩到纯 item 级（无任何 content_part 帧）对所有块型才普适安全。
+1. **地雷不变量（泛化到「任何依赖 `content[contentIndex]` 已存在的事件」，不止 `.done`）**：openai SDK accumulator 中 `output_text.done` / `refusal.done` / `reasoning_text.done` / `reasoning_summary_text.done` **以及 `output_text.annotation.added`** 都走 `getContent(content_index)`，缺对应 `.added`（`content_part.added` / `reasoning_summary_part.added`）会**流式中途抛 `missing content`**（早于 completed、救不回）。仅 `function_call_arguments.done` 不走 getContent。故判据是**「任何依赖 content part 已存在的事件（含各 `.done` 与 `annotation.added`），其 `.added` 必须保留」**；`item-summary` 塌缩到纯 item 级时必须**一并丢弃 `output_text.annotation.added`**（否则它成孤儿引用、客户端抛 `missing content`——annotation 已完整落在 `output_item.done` 的 `item.content[].annotations`，丢流式 annotation 与丢 content_part.done 是同一等价性）。计划复核（GPT）发现：真实 gpt-5.5 `web_search_preview` 原生透传 citation annotation，此路径真实存在、当前项目类型 union 未建模 `output_text.annotation.added` → 须补建模。
 2. **drop-delta 只丢有绝对值 `.done` 重设的 delta**：`output_text.delta`（done 是 `=` 绝对值）、`function_call_arguments.delta`、`refusal.delta`、`reasoning_text.delta`、`reasoning_summary_text.delta` 可证安全丢。**绝不丢 payload 型 delta**（`response.audio.delta` / `image_generation_call.partial_image`）——其 `.done` 在 accumulator 是 no-op、completed.output 不含，丢了不可恢复。
 3. **retreat + 失败/不完整终结 + 未知事件 → 一律 verbatim**（硬不变量，不是某模式的偶然实现）：
    - `cause: "retreat"`（[driver.ts:818-843](../../src/lib/pipeline/driver.ts) buffer-cap 退避）→ `transformFlush` no-op 原样 flush（否则「前缀归并 + 后缀 live delta」混合 wire 造成客户端不可恢复的内容缺口）。

@@ -81,6 +81,25 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 每桶按 `started_at ASC, id ASC` 删除最旧条目，保留最新的对应 `limit` 条。**活跃态（`pending`/`executing`/`streaming`）落在两桶之外**——reaper 既不计数也不淘汰进行中请求的 head 行；它们的回收由下文的孤儿/stale 回收负责。删除 head 行时，其 `entry_stages` 子行经 `ON DELETE CASCADE` 一并删除。
 
+> **History V3（2026-07-16 起）**：在线服务只打开独立 `history-v3.db`，不打开、读取、迁移、回填或删除旧 `history.db` / `archive.db` / seal。终态 `ModelOperationRecord` 经单写者落 `v3_*` 表：semantic object CAS、operation manifest、ordered tracks、timeline chunks、自包含 journal 与可重建搜索投影。在线无 count retention、无自动删除、无内置冷归档。
+
+完整表／列／主键／FK／索引、编码、journal 恢复协议及可选 raw sidecar schema 见 [History V3 SQLite schema](history-v3-schema.md)。该文档也明确解释了旧称“history.db + archive.db”与当前 `history-v3.db + raw.db` 的对应及差异。
+
+### Canonical store 与 raw capture
+
+- semantic V3 默认启用，完整记录 generation、Responses WS、count tokens、embeddings 与 Azure 元数据。
+- `history.raw_capture.enabled=false` 默认关闭。开启后 exact bytes 写独立 `raw.db` CAS；热重载只切新 operation，旧在途 operation 继续写冻结 store generation 后 drain 关闭。
+- raw capture 失败不阻断代理或 semantic V3；status 暴露 generation、gap 与 last error。
+- 搜索只索引 unique semantic payload object，operation membership 独立保存；权威 operation 不依赖搜索成功。
+
+### Canonical 时间与帧观测
+
+- `ModelOperationRecord.sequence` 只负责全局事件排序；每个 canonical event 另存 epoch-ms `occurredAt`，attempt 另存 `settledAt`，terminal `occurredAt` 投影为 `endedAt`，`durationMs = endedAt - startedAt`。禁止再从 sequence 推导时间。
+- SSE/WS semantic frame 的 CAS value 只含 wire 语义字段；per-track `frameObservations` 与 `frames` 一一对齐，保存该帧在 upstream/client 轨各自的 `offsetMs`、`observedAt`、`type` 与 `synthetic`。同一 semantic handle 可在两轨共享而拥有不同观测，不破坏 CAS 去重。
+- `v3_operations.ended_at` 与 `timing_source` 记录时间 provenance：新记录是 `canonical`；修复前已持久行只能以 `committed_at` 作诚实的 `storage-commit-upper-bound`；有独立终端日志的恢复行可为 `terminal-log-rounded`；没有独立 oracle 的恢复行是 `unavailable`。UI 对近似值显示 `≈`，对不可恢复帧 offset 显示“时间不可用”。
+- 修复前 canonicalizer 把 JSON-compatible 共享引用误判为 cycle，导致 generation prepare 失败而 bypass 简单 payload 正常。cycle guard 现只追踪当前递归栈；writer 失败会 ERROR 日志，不再静默。保留的 HistoryEntry 投影用 `scripts/recover-history-v3-projections.ts` 流式、幂等恢复；恢复记录明确标记 projection/raw/timing gap，不冒充完整 canonical/raw 数据。
+
+
 ### Debug-pin（豁免淘汰）
 
 `entries_v2.pinned`（`INTEGER NOT NULL DEFAULT 0`）是 debug 用的钉住标志。调试时常需保留某条 entry 的完整原始数据（请求/响应/sseEvents/per-attempt），但默认 reaper 会按桶超额淘汰把关键样本挤掉。**pinned 行与活跃态行一样落在两桶之外**——reaper 的 `SUCCESS_WHERE`/`FAILURE_WHERE` 各带 `AND pinned = 0`，而 `evictBucket` 的 COUNT 与 DELETE 子查询共用此谓词，故 pinned 行**既不被淘汰、也不计入 success/failure 名额**（pin 满 limit 条不会把正常历史挤空）。
@@ -92,7 +111,7 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 - **存在性判定不读 `.run().changes`**：任何 AFTER-write 触发器/级联都可能把额外写入计入 bun:sqlite 的 `changes`，故 `setEntryPinned` 用 `SELECT 1` 判断行是否存在（防御性——旧 `entries_fts` 触发器即此类，P3 已移除但模式保留）。
 - **in-flight 同步**：`setPinned`（`entries.ts`）切换列后调 `updateInFlight(id, { pinned })` 同步内存副本——因 `getEntry` 是 in-flight 优先，eager-persisted 但未 finalize 的 entry 否则会读到旧 `pinned`（HTTP 响应与广播都会失真）；`toEntrySummary` 也带 `pinned`，避免 producer 丢字段。
 - **广播**：同步后 `publishEntryUpdated`，已连接的 WS 客户端实时反映 `pinned`（不改 stats——pinning 不影响 completed/failed 计数）。
-- **只豁免自动 reaper，非永久不可删**：pin 仅挡后台 reaper 的自动淘汰；显式 `DELETE /history/api/sessions/:id`（删 session）与 `DELETE /history/api/entries`（clear-all）仍会删除 pinned 条目。
+- **pin = 永驻 HOT、永不降温**（三层归档 2026-07-14 起）：pin 既豁免 reaper 自动淘汰、也豁免时间/数量搬迁与手动「立即归档」（时间搬迁 + 数量安全阀 + `archiveNow` 谓词均含 `pinned = 0`）——pinned 行永远留在 HOT 快库、随手可读。产品面删除已移除（无 `DELETE` 端点），故 pinned 行不存在被显式删除的路径。
 
 REST 用法见下文 `POST /history/api/entries/:id/pin|unpin`。
 
@@ -105,9 +124,7 @@ REST 用法见下文 `POST /history/api/entries/:id/pin|unpin`。
 
 ## 数据库位置
 
-默认路径：`$XDG_DATA_HOME/copilot-api/history.db`，未设置 `XDG_DATA_HOME` 时回退到 `~/.local/share/copilot-api/history.db`。
-
-可通过 `config.yaml` 中的 `history.db_path` 覆盖。
+默认路径：`$XDG_DATA_HOME/copilot-api/history-v3.db`；可选 raw store 默认为同目录 `raw.db`。旧 `history.db` 保持原样，在线服务不会触碰。
 
 ## 进行中 vs 持久化（增量持久化）
 
@@ -176,22 +193,19 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 ## REST API
 
+History 产品读面已切到 V3 canonical store：列表、详情、session 聚合、stats、export、logs、debug replay 与 hook replay 都经 V3 facade；不会回读 `entries_v2`。生产面不导出 `deleteSession` / `deleteEntries`，`clearHistory` 与旧 SQLite 删除函数仅供隔离测试临时库。旧库不迁移、不归档。
+
 | 端点 | 说明 |
 |------|------|
-| `GET /history/api/entries` | 分页查询 entries（`?cursor=&limit=` 分页；`?model=&endpoint=&from=&to=&sessionId=&search=` 过滤——`sessionId` 取某 session 的 entries，`search` 是 `preview_text` 子串快筛；`?terminalOnly=true` 剔除 active 在飞行、只返回终态条目，给有独立 Live 泳道的消费者用） |
-| `GET /history/api/entries/:id` | 获取单个 entry |
-| `POST /history/api/entries/:id/pin` | 钉住该 entry（`pinned=1`）：豁免 reaper 淘汰+计数，返回更新后的完整 entry；未知 id → 404 |
-| `POST /history/api/entries/:id/unpin` | 取消钉住（`pinned=0`），恢复正常淘汰资格；返回更新后的完整 entry |
-| `GET /history/api/sessions` | 列出 per-session 聚合摘要（`?limit=N`）。**无独立 session-detail 端点**——某 session 的 entries 经 `GET /history/api/entries?sessionId=<id>` 取 |
-| `DELETE /history/api/entries` | **清空全部** history（`clearHistory` → 删所有表）。破坏性、不可逆 |
-| `DELETE /history/api/sessions/:id` | 删除 session（`deleteSession` → 删该 session 的所有 entries）。破坏性、不可逆 |
-| `GET /history/api/stats` | 聚合统计数据 |
-| `GET /history/api/entries/:id/export` | 单条 entry 导出：`getEntry` 规范全量形式（所有 stage / per-attempt sseEvents / 各腿 headers）经 `compressAsync` 服务端 zstd 压缩为 `.json.zst` 附件（`Content-Type: application/zstd`）；未知 id → 404。两套前端 UI（`ui/` + `ui-v4/`）的 Export 按钮都走它 |
-| `GET /history/api/export` | 导出全部历史（JSON/CSV，明文；与单条 zst 导出并存） |
-| `GET /history/api/search` | **内容寻址全文搜索**（`?source=&q=&limit=&cursor=`，`source` ∈ `inbound`/`rewrites-req`/`rewrites-resp`/`req-headers`/`resp-headers` 5 源单选）。返回 `{rows, nextCursor, partial, builtPct?}`——backfill 未完成时 inbound 结果 `partial:true` |
-| `GET /history/api/search/contains` | `?hash=` 懒取引用某消息 hash 的全部请求 id（inbound 搜索结果行不内联，可达数百） |
-
-> **列表快筛 vs 专门搜索**：列表 `GET /history/api/entries?search=` 是轻量 `preview_text` 子串快筛（as-you-type）；深度全文搜索（5 源）走专门 `GET /history/api/search`。两路分离，见下文 search_index。
+| `GET /history/api/entries` | V3 operation 列表与过滤；默认 generation，`operationKind=all` 可包含 bypass operation。 |
+| `GET /history/api/entries/:id` | V3 canonical record 的 `HistoryEntry` 投影。 |
+| `POST /history/api/entries/:id/pin` | 设置 `v3_operations.pinned=1`，详情与 summary 立即反映。 |
+| `POST /history/api/entries/:id/unpin` | 设置 `v3_operations.pinned=0`。 |
+| `GET /history/api/sessions` | V3 generation records 的 per-session 聚合摘要。 |
+| `GET /history/api/stats` | V3 persisted + in-flight 去重合并视图统计。 |
+| `GET /history/api/entries/:id/export` | V3 entry 投影的 `.json.zst` 下载。 |
+| `GET /history/api/export` | V3 全量 JSON / CSV 导出。 |
+| `GET /history/api/search`、`GET /history/api/search/contains` | V3 unique semantic object 搜索与 object→operation companion；绝不读 V2 搜索表。 |
 
 ## 内容寻址搜索 (search_index)
 
@@ -214,7 +228,7 @@ SQLite schema 定义在 `src/lib/history/sqlite/schema.ts`（权威 DDL）。重
 
 **`prev_req_id`**：entries_v2 上的 best-effort 对话血缘列（组内时间最近一条、无 FK、**与搜索完全解耦**），待将来对话线程化消费。
 
-> **破坏性删除必高声记录**：`clearHistory`/`deleteSession` 都 `consola.warn` 打印删除条目数 + 触发来源（`clearHistory`：`CLEARED ALL entries (N persisted + M in-flight) via DELETE /api/entries`；`deleteSession` 类似）。一次不可逆全量销毁绝不静默——否则它与持久化 bug 不可分辨（曾因 `clearHistory` 无日志，一条已落盘的失败记录"消失"耗费长时间盲查才定位是 dev UI 误触发 `DELETE /api/entries`）。
+> **破坏性删除必高声记录（test-only 原语）**：产品面删除已移除（无 HTTP `DELETE` 端点，spec §3.6）；`clearHistory`/`deleteEntries`/`deleteSession` 仅保留为 **test-only 内部原语**（`resetTestRuntime` 隔离重置依赖）。它们仍 `consola.warn` 打印删除条目数 + 触发来源——一次不可逆全量销毁绝不静默（历史教训：曾因 `clearHistory` 无日志，一条已落盘的失败记录"消失"耗费长时间盲查才定位是 dev UI 误触发删除；现产品面已无此路径）。
 
 ## WebSocket 实时推送
 

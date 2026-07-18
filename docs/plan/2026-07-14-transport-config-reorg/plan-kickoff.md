@@ -1,5 +1,7 @@
 # Kick-off — 上游传输 config 三轴重组（transport-config-reorg）
 
+> **本轮执行范围（D，2026-07-14 主会话裁决）**：本轮只执行 **P1**（config schema 三轴重组），**P2/P3/P4/P5 暂缓**，不在本轮派发执行 kick-off。原因：P1 是全部下游阶段的唯一前置依赖（见下方 DAG），本轮的重点是先把 P1 的 config schema/state/兼容迁移这一层落地并跑通全量回归，P2 起的连接层真实接线、PUT 迁移、热重载 reconcile、status/diagnostics 接入待 P1 落地并复核后再排期，避免多阶段并行执行时互相踩踏同一批"跨阶段共享接口清单"里尚未定案的签名（本文档「待主会话裁决」小节列出的分叉，多数已在 P1 尚未开工前通过 review+用户裁决收敛，但收敛结果需要先在 P1 真实代码上验证一遍再放行下游）。P2-P5 的 kick-off 提示词仍然完整保留在下方，供 P1 完成并经复核后按序派发，不需要届时重写。
+
 本文档是 `docs/plan/2026-07-14-transport-config-reorg/` 计划集的执行入口：汇总各阶段的**可直接复制的开启提示词**，以及全部 5 份 plan 文档在撰写过程中沉淀下来的、**需要主会话裁决**的分叉与待办清单（不含各 plan 正文里已经自行判定、无需上呈的普通设计取舍——那些留在各自的 Self-Review 小节，这里只收敛真正需要主会话拍板的条目）。
 
 权威输入：`docs/spec/2026-07-14-upstream-transport-config-reorg.md`（spec）、`docs/decisions/2026-07-14-transport-config-three-axis-organization.md`（ADR）、`docs/decisions/2026-07-12-per-model-idle-timeout-is-app-guard-only.md`（上游 ADR）、`docs/plan/2026-07-14-transport-config-reorg/README.md`（跨阶段共享接口清单 + 全局约束 9 条，逐字锁定，任何阶段不得擅自改名）。
@@ -188,16 +190,20 @@ bun run test:ui-v4 && bun run build:ui-v4 全绿；
 ### 来自 plan-2（新旋钮真实接线）
 
 3. **`proxy-connect.ts` 被本阶段纳入了 P2 的实际改动范围，但 README 原始的 P2 文件枚举没有列出它**——原因是 D5"`0` 语义全面一致"要在 HTTP CONNECT 代理隧道路径下真正成立，必须修正该文件里一个更隐蔽的、与 keepalive 无关但同属"0 语义反转"的连带缺陷（JS 计时器 `setTimeout(fn, 0)` 是"几乎立即触发"而非"禁用"）。本计划判断这是"完整实现已批准的 D5"所必须、不算范围蔓延，已在 plan-2 Task 1 处理并给出了回填 README 的收尾步骤，**但主会话若认为改动 README 文件枚举之外的文件应该先过一次 spec 层面确认，请在执行 P2 Task 1 之前叫停**，否则默认按 plan-2 既定方案执行。
+   - **【已裁决 2026-07-14｜接受纳入 P2】** gpt reviewer 亲验 `proxy-connect.ts:143` 无条件 `setTimeout(fn, opts.timeoutMs)`、`0` 与禁用相反，bug 真实。纳入 P2 同一 0 归一化正确（fix-all-comparison-sites），HTTP CONNECT 路 `<=0` 不 arm timer（真禁用）。已回写 spec §6.7 + ADR（commit 0e3926ab）。SOCKS 路无法真禁用另裁——见下方新增裁决项 16。
 4. **`getPooledConnectionIdleTimeoutMs` 是否应该导出（而非模块私有）**——本计划默认导出，是为了让 P4/P5 能够复用（P4 用于热重载读取当前配置值、P5 用于聚合展示）。若主会话坚持"P2 严格只做 README 列出的最小契约、导出面留给 P4 自己决定"，只需在 P4 执行前把这一行改回私有 `function`，波及面为零（P4/P5 计划文档已经假定它是导出的，若改为私有，P4/P5 需要相应改为自己重新导出或改变调用方式，这会是一个小的连锁改动，建议尽早拍板）。
+   - **【已裁决 2026-07-14｜定为导出】** P4/P5 已依赖导出，直接定为导出并补入 README 冻结契约表（A7，commit `7bceb508`）。本项关闭。
 
 ### 来自 plan-3（PUT 迁移）
 
 5. **嵌套 section 的 PUT 部分更新是"整体替换"而非"深度合并"，本阶段把这个既有行为模式的影响面从 1 处（`anthropic.buffered_retry`）扩大到 4 处**（`upstream_transport.http2`/`upstream_transport.websocket`/`server.responses_ws` 三个新段 + 原有的一处）——用户若只 PUT 部分字段（如只给 `session_connect_timeout`），磁盘上整个 `http2` 子节点会被替换，此前设置的 `ping_interval` 等其他同节点字段会被抹掉，除非调用方把所有字段都带上。这是既有代码库的一致行为模式，非本阶段引入的新缺陷，但用户可感知的影响面确实变大了。**是否需要把 `setNestedScalarContainer` 升级为对嵌套子对象做逐字段深度合并**——spec/ADR 均未讨论这一点，需要主会话与用户确认是否值得在本轮或未来某阶段补做。
+   - **【已裁决 2026-07-14｜升级为递归深合并 + null 删除】** 用户裁决：`setNestedScalarContainer` 升级为逐字段递归 merge（部分 PUT 只改给出字段、保同段其他字段），`null` 显式删除该字段；既有 `anthropic.buffered_retry` 一并切新语义。已回写 spec §5 + plan-3（B9，commit `fc617dfa`）。本项关闭。
 
 ### 来自 plan-4（热重载 reconcile）
 
 6. **`UpstreamWsManager` 新增的 `reconcileForConfigChange`/`statusSnapshot` 两个方法未被 README 逐字锁定**——是本阶段为了让 README 锁定的自由函数 `getUpstreamWsStatusSnapshot(manager)` 有内部状态可读而必须新增的实现细节。风险很低（纯新增方法，不改动任何既有方法签名），但这类"计划范围内合理延伸未被 README 收录"的情况，主会话可以决定是否需要事后把它们补录进 README 的跨阶段契约清单，作为一个文档一致性问题，而非架构风险。
 7. **`UpstreamWsStatusRow.state` 的三值映射存在命名不对称**：本阶段选定 `!isOpen→"active"` / `isOpen&&isBusy→"busy"` / `isOpen&&!isBusy→"idle"`——即"active"在 WS 侧的语义是"尚未建立连接"，而在 h2 侧 `H2SessionStatusRow.lifecycle` 的"active"语义恰恰相反，是"已建立且可路由"。README 只锁定了类型形状（`"active"|"busy"|"idle"`），未规定语义映射，本阶段的选择可能会在 P5 展示层造成读者困惑（两个相邻字段用同一个词表达相反含义）。**需要主会话确认是否接受这个命名，或要求改用更明确的三值（如 `"connecting"|"busy"|"idle"`）**——但后者需要先修改 README 锁定的类型字面量，属于会牵动 P5 已完成设计的改动，建议尽快拍板以免 P5 已落地实现需要返工。
+   - **【已裁决 2026-07-14｜改字面量为 `"connecting"|"busy"|"idle"`】** 用户 + reviewer 一致：同词反义是命名 footgun。`!isOpen→"connecting"`。已改 README 冻结契约 + plan-4 实现/测试 + plan-5 mock/Badge/过滤/API 测试（commit `4fc309b6`）。plan 未执行、改的只是文档，零返工。本项关闭。
 8. **`onUpstreamTransportChange` 是覆盖全部 5 个字段变化的单一粗粒度事件**——任何一个字段的变化（哪怕只改了与 h2 完全无关的 `softMaxUpstreamWsConnections`）都会触发 h2 侧全量 retire-and-replace，反之亦然。这是 P1 单一事件设计的既定代价，不是本阶段引入的新问题，会造成技术上不必要的连接重建（尤其 h2 侧：一次任意字段的 reconcile 都会让所有 origin 的活跃会话立即转入 retiring，下一个请求都要重新握手）。**是否值得在未来某阶段把该事件拆分为按字段分组的更细粒度事件**——当前判断"配置很少变化 + 重新握手成本对本项目场景可忽略、不值得为此增加 P1 复杂度"，但这是一个成本判断，应由主会话而非本计划单方面定案。
 
 ### 来自 plan-5（status/diagnostics 接入 + ui-v4）
@@ -210,8 +216,9 @@ bun run test:ui-v4 && bun run build:ui-v4 全绿；
 
 ### 跨阶段的共性提醒（非某一阶段独有，值得主会话在启动执行前统一确认一次）
 
-14. 第 3、7 条（P2 的 `proxy-connect.ts` 范围扩张、P4 的 WS state 三值命名不对称）是**优先级最高的两条**——前者涉及"是否要事后过一次 spec 确认"，后者涉及"是否要求改 README 锁定契约"，两者都可能牵动已经写完的下游 plan（P4/P5）的具体实现细节，建议在派发任何执行 kick-off 之前先拍板，避免执行到一半发现契约要改、需要返工。
-15. 第 2、5、6、8、11、12、13 条均为**非阻断的记录型待办**，不影响本轮 5 份 plan 按现有设计直接执行；建议主会话决定这些条目里哪些要转入 `docs/todo/deferred-backlog.md` 长期跟踪，哪些可以在 wrap-up 阶段顺手处理，哪些可以直接确认接受、不再需要跟踪。
+14. 第 3、7 条（P2 的 `proxy-connect.ts` 范围扩张、P4 的 WS state 三值命名不对称）**均已于 2026-07-14 由用户 + gpt reviewer 裁决收敛**（见各条内联「已裁决」标注）：#3 接受纳入 P2、#7 改字面量 `"connecting"`。#4/#5 亦已裁决关闭。派发下游阶段前无遗留高优先分叉。
+15. 第 2、6、8、11、12、13 条为**非阻断记录型待办**，不影响执行；主会话将在 wrap-up 分流——本轮不做的转入 `docs/todo/deferred-backlog.md` 长期跟踪，可顺手做的在收尾处理，可直接接受的确认后不再跟踪。
+16. **【新增裁决 2026-07-14｜SOCKS `session_connect_timeout=0` validation 拒绝】** gpt reviewer 亲验 `node_modules/socks` 源码 `this.options.timeout || 30_000`——SOCKS 路传 0/省略都回落库地板 30s、**无法真禁用**。用户裁决：配了 SOCKS 代理时 validation 层 fail-fast 拒绝 `session_connect_timeout: 0`（宁可报错也不静默套 30s 冒充禁用），诚实表达能力边界优先于语义整齐。已回写 spec §6.7/D3 + ADR D5（commit 0e3926ab）+ plan-2（B8，commit `f427c6c2`/`dc592c3a`）。direct/HTTP CONNECT 路 0 仍真禁用。
 
 ## 计划文档清单（全部已落盘、已提交）
 
@@ -222,5 +229,5 @@ bun run test:ui-v4 && bun run build:ui-v4 全绿；
 | `docs/plan/2026-07-14-transport-config-reorg/plan-2-new-knobs-wiring.md` | P2 | 已落盘并提交（`ca1a86dd`） |
 | `docs/plan/2026-07-14-transport-config-reorg/plan-3-put-migration.md` | P3 | 已落盘并提交（`397b9d2c`） |
 | `docs/plan/2026-07-14-transport-config-reorg/plan-4-hot-reload-reconcile.md` | P4 | 已落盘并提交（`a3f7f1ef`） |
-| `docs/plan/2026-07-14-transport-config-reorg/plan-5-status-diagnostics.md` | P5 | 已落盘，待提交 |
-| `docs/plan/2026-07-14-transport-config-reorg/plan-kickoff.md`（本文件） | 汇总 | 待提交 |
+| `docs/plan/2026-07-14-transport-config-reorg/plan-5-status-diagnostics.md` | P5 | 已落盘并提交（`e94286d9`） |
+| `docs/plan/2026-07-14-transport-config-reorg/plan-kickoff.md`（本文件） | 汇总 | 已落盘并提交 |

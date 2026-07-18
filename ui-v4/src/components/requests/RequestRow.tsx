@@ -54,6 +54,13 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
   const tokensText = tokensCellText(tokenIn(entry), tokenOut(entry), cacheRead)
   const bytesText = bytesCellText(entry.requestBytes, entry.responseBytes)
   const previewTitle = completed ? entry.previewText || truncPreview(entry) : failureSummary(entry)
+  const timingSource = entry.timing?.operation?.source
+  const approximateDuration = timingSource === "storage-commit-upper-bound" || timingSource === "terminal-log-rounded"
+  let durationTitle: string | undefined
+  if (timingSource === "storage-commit-upper-bound") durationTitle = "历史时长上界（以持久化提交时间估算）"
+  else if (timingSource === "terminal-log-rounded") durationTitle = "终端舍入日志恢复时长"
+  else if (anomaly.slow) durationTitle = "slow request (>60s)"
+  const durationText = entry.durationMs === undefined ? "" : `${approximateDuration ? "≈" : ""}${formatElapsed(entry.durationMs)}`
 
   return (
     <button
@@ -76,9 +83,9 @@ function HistoryRow({ entry, selected, onClick }: { entry: EntrySummary; selecte
       </span>
       <span
         className={`w-[64px] shrink-0 ${anomaly.slow ? "row-anomaly text-[var(--signal-warn)]" : "text-[var(--content-dim)]"}`}
-        title={anomaly.slow ? "slow request (>60s)" : undefined}
+        title={durationTitle}
       >
-        {entry.durationMs === undefined ? "" : formatElapsed(entry.durationMs)}
+        {durationText}
       </span>
       <span
         className="w-[180px] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-[var(--content-value)]"

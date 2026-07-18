@@ -116,6 +116,7 @@ import {
   type ReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
+import { processOpenAIMessages } from "~/lib/system-prompt"
 
 import type { ReverseAnthropicMapperHolder } from "./reverse-anthropic-rewrite"
 
@@ -222,6 +223,17 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
 
     getContext() {
       return requestContext
+    },
+
+    // S1b (RFC 2026-07-14 §4): async system-prompt injection, moved off the route handler so the
+    // `client.inbound` hook (S1a→S1b) sees the client-NATIVE body (pre-injection). `env.body.model`
+    // is the resolved name (parse set it); mirrors the legacy route order (model resolved at parse,
+    // then `processOpenAIMessages`'s `applyConfigToState` reload). Idempotent per request (one-shot,
+    // outside the retry loop).
+    async translateInbound(env) {
+      const body = env.body as ChatCompletionsPayload
+      const messages = await processOpenAIMessages(body.messages, body.model, "openai-cc")
+      return env.with({ body: { ...body, messages } })
     },
 
     // S2 translateOut: identity for the forward/direct CC legs (the CC→Responses translation lives in
@@ -346,6 +358,7 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
     payload: originalSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+  ctx.recordModelOperationIngress()
 
   // Tool-name sanitization (client → upstream) over the wire-logical body. The
   // mapper is stored on ctx so the response-side restore can reverse it.
