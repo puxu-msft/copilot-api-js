@@ -41,7 +41,6 @@ import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validat
 import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
 import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
-import { resetArchiveWorkerForTests } from "~/lib/history/sqlite/archive-worker"
 import {
   //
   drainV3Writer,
@@ -123,7 +122,6 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   // Not `*ForTests`-named (a production reset) but a module-global counter that
   // leaks across tests, so reset it here too.
   { name: "resetHistoryPersistErrorStats", reset: resetHistoryPersistErrorStats },
-  { name: "resetArchiveWorkerForTests", reset: resetArchiveWorkerForTests },
   // TUI terminal-coordinator module-level singleton (whole-branch review I3):
   // a test that constructs a non-`silent` TerminalUi and forgets `destroy()`
   // would otherwise leak its registration into the next test file.

@@ -14,10 +14,10 @@ import type { SqliteDatabase } from "~/lib/sqlite/driver"
 import {
   //
   getMeta,
+  HISTORY_META_DDL,
   MIGRATIONS_RUN_KEY,
   setMeta,
 } from "../meta"
-import { HISTORY_META_DDL } from "../schema"
 
 /**
  * history_meta-backed Umzug ledger.
