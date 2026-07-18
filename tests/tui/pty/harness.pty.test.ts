@@ -24,7 +24,8 @@ describe("pty harness 管线自证", () => {
   test("driver root follows the current checkout instead of a developer-specific cwd", () => {
     expect(fs.existsSync(path.join(PROJECT_ROOT, "package.json"))).toBe(true)
     expect(PROJECT_ROOT).toBe(path.resolve(import.meta.dir, "../../.."))
-    expect(PROJECT_ROOT).not.toBe("/home/xp/src/copilot-api-js")
+    const harnessSource = fs.readFileSync(new URL("./harness.ts", import.meta.url), "utf8")
+    expect(harnessSource).not.toContain("/home/xp/src/copilot-api-js")
   })
 
   test("scrollback oracle 红绿：满编号绿、缺号精确报出", async () => {
