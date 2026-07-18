@@ -1,29 +1,28 @@
 /**
- * v4 pipeline — legacy-strategy → env-strategy adapter.
+ * v4 pipeline — payload-strategy → envelope-strategy adapter.
  *
  * The driver's retry loop consumes env-based {@link EnvRetryStrategy} (handle
  * receives + returns the {@link RequestEnvelope}; retry-transport.md §2.1). The
- * existing strategies (network-retry / token-refresh / auto-truncate / …) are
- * the legacy payload-based `RetryStrategy<TPayload>` (handle receives a payload +
+ * payload-oriented strategies (network-retry / token-refresh / reactive rejection / …) are
+ * the payload-based `RetryStrategy<TPayload>` (handle receives a payload +
  * a {@link RetryContext}, returns a payload-bearing action). This adapter bridges
  * the two **without rewriting** the strategy logic, so behavior stays byte-identical
- * to the legacy `executeRequestPipeline` path.
+ * while keeping the format-native strategy logic independent of envelope orchestration.
  *
  * Mapping:
  *   - `handle(error, env)` synthesizes a `RetryContext` from per-request closure
  *     state (the stable `originalPayload` baseline, `model`, `maxRetries`) + a
- *     shared `attempt` counter, runs the legacy `handle(error, env.body, ctx)`,
- *     then folds the legacy action back: `retry.payload`/`prepareHints` → `env.with(...)`,
+ *     shared `attempt` counter, runs the payload strategy `handle(error, env.body, ctx)`,
+ *     then folds the payload action back: `retry.payload`/`prepareHints` → `env.with(...)`,
  *     `abort` → `{ kind: "abort" }`.
- *   - `action.meta` (e.g. auto-truncate's `truncateResult`, unsupported-beta's
+ *   - `action.meta` (e.g. unsupported-beta's
  *     `probedBetas`) is attached to the returned env-action's `meta` (NOT fired
  *     immediately) — the driver routes it post-budget-gate to the handler's
  *     onMeta sink + this strategy's onResolved (C0-② / RFC §11.2), so a
  *     budget-rejected retry never emits phantom pipeline-info.
  *
  * The `attempt` counter is **shared** across all adapted strategies of one request
- * (a `{ value }` ref the factory increments per handle), approximating the legacy
- * global 0-based execution index used in the strategies' log lines.
+ * (a `{ value }` ref the factory increments per handle), providing the shared 0-based execution index used in the strategies' log lines.
  */
 
 import type { ApiError } from "~/lib/error"
@@ -37,36 +36,36 @@ import type {
 import type {
   //
   RetryContext,
-  RetryStrategy as LegacyRetryStrategy,
+  RetryStrategy as PayloadRetryStrategy,
 } from "~/lib/request/retry-types"
 
-/** Mutable shared attempt counter (the legacy global execution index). */
+/** Mutable shared attempt counter for one request's payload strategies. */
 export interface AttemptRef {
   value: number
 }
 
-export interface AdaptLegacyStrategyDeps<TPayload> {
+export interface AdaptPayloadStrategyDeps<TPayload> {
   /** Shared 0-based attempt counter, incremented after each handle. */
   attemptRef: AttemptRef
-  /** Stable truncation baseline (legacy `RetryContext.originalPayload`) — never mutated across retries. */
+  /** Stable retry baseline (`RetryContext.originalPayload`) — never mutated across retries. */
   originalPayload: TPayload
-  /** Resolved model (auto-truncate needs it; network/token-refresh ignore it). */
+  /** Resolved model available to format-native strategy decisions. */
   model: Model | undefined
-  /** Normal-retry budget (legacy `RetryContext.maxRetries`) — used in log lines only. */
+  /** Normal-retry budget (`RetryContext.maxRetries`) used by strategy decisions and logs. */
   maxRetries: number
 }
 
 /**
- * Wrap one legacy `RetryStrategy<TPayload>` as an env-based {@link EnvRetryStrategy}.
- * Construct the legacy strategy fresh per request (its per-instance once-state —
+ * Wrap one payload `RetryStrategy<TPayload>` as an env-based {@link EnvRetryStrategy}.
+ * Construct the payload strategy fresh per request (its per-instance once-state —
  * `hasRetried` / `hasRefreshed` — then tracks that request's retries).
  */
-export function adaptLegacyStrategy<TPayload>(legacy: LegacyRetryStrategy<TPayload>, deps: AdaptLegacyStrategyDeps<TPayload>): EnvRetryStrategy {
+export function adaptPayloadStrategy<TPayload>(payload: PayloadRetryStrategy<TPayload>, deps: AdaptPayloadStrategyDeps<TPayload>): EnvRetryStrategy {
   return {
-    name: legacy.name,
+    name: payload.name,
 
     canHandle(error: ApiError): boolean {
-      return legacy.canHandle(error)
+      return payload.canHandle(error)
     },
 
     async handle(error: ApiError, env: RequestEnvelope): Promise<EnvRetryAction> {
@@ -76,7 +75,7 @@ export function adaptLegacyStrategy<TPayload>(legacy: LegacyRetryStrategy<TPaylo
         model: deps.model,
         maxRetries: deps.maxRetries,
       }
-      const action = await legacy.handle(error, env.body as TPayload, context)
+      const action = await payload.handle(error, env.body as TPayload, context)
       deps.attemptRef.value++
 
       if (action.action === "abort") return { kind: "abort", error: action.error }
@@ -84,7 +83,7 @@ export function adaptLegacyStrategy<TPayload>(legacy: LegacyRetryStrategy<TPaylo
       const patch: Parameters<RequestEnvelope["with"]>[0] = { body: action.payload }
       if (action.prepareHints) patch.prepareHints = action.prepareHints
 
-      // Attach legacy `action.meta` to the env-action rather than firing onMeta
+      // Attach payload `action.meta` to the env-action rather than firing onMeta
       // immediately (C0-② / RFC §11.2): the driver captures it AFTER the budget
       // gate accepts the retry, so a budget-rejected retry's meta never produces
       // phantom pipeline-info / onResolved learning.
@@ -97,9 +96,9 @@ export function adaptLegacyStrategy<TPayload>(legacy: LegacyRetryStrategy<TPaylo
       }
     },
 
-    ...(legacy.onResolved && {
+    ...(payload.onResolved && {
       onResolved: (env: RequestEnvelope, meta?: Record<string, unknown>): void | Promise<void> =>
-        legacy.onResolved?.({ payload: env.body as TPayload, prepareHints: env.prepareHints, meta, attempt: deps.attemptRef.value }),
+        payload.onResolved?.({ payload: env.body as TPayload, prepareHints: env.prepareHints, meta, attempt: deps.attemptRef.value }),
     }),
   }
 }

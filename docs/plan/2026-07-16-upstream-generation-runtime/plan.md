@@ -388,9 +388,9 @@ Client-effective request telemetry在delivery terminal；upstream-physical dispa
 
 ## 12. Phase 9——退役旧编排与配置收敛
 
-### P9-T1：Handler 收缩与 dead path 删除
+### P9-T1：旧 request executor 与测试双轨退役
 
-删除旧pump编排、旧 `src/lib/request/pipeline.ts`、legacy strategy adapter和永久双轨flag。Handler只保留HTTP/WS route边界、driver调用、协议response对象。
+删除无 production consumer 的 `src/lib/request/pipeline.ts` 及 executor-only 测试/helper；共享 payload retry contracts 提取到 `src/lib/request/retry-types.ts`。仍被 production 使用的 adapter 重命名为 `payload-strategy-adapter.ts`，保留 format-native payload strategy → envelope strategy 的职责，不误删 P8 外围 attempt compat。
 
 **Gate**：grep旧符号零残留；knip/typecheck；whole-branch review。
 

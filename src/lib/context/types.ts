@@ -710,7 +710,7 @@ export interface RequestContext {
    * Record that an attempt failed and the pipeline decided whether to retry.
    * Publishes `request.attempt_failed` carrying the AttemptSnapshot, the
    * retry decision, and the strategy / backoff details. Replaces the
-   * `tuiLogger.logRetry` call site in `lib/request/pipeline.ts:346`.
+   * `RequestContext.recordAttemptFailure` publication path.
    */
   recordAttemptFailure(args: { willRetry: boolean; nextStrategy?: string; waitMs?: number; learning?: boolean }): void
   /**

@@ -52,8 +52,8 @@ L1 精确修高发毒（**de-stack 保留全部 thinking**）；L2 接住漏网�
 - config（见 §3.5）+ telemetry（de-stack 消息数 / 重排块数 / 插入合成标记数 / 采用策略）。
 
 ### 3.2 L2 + L3 反应式策略 `src/lib/codec/anthropic/poisoned-thinking-retry.ts`
-- **必须原生 env-strategy**（非 `adaptLegacyStrategy`）——落库 key=`(session_id,agent_id)` 只在 `env.ctx`，legacy `ResolvedContext` 无 ctx、adapter 丢 env（评审 HIGH-1，已复核 [pipeline.ts:154](../../src/lib/request/pipeline.ts#L154)/[legacy-strategy-adapter.ts:100](../../src/lib/pipeline/legacy-strategy-adapter.ts#L100)）。原生 `handle(error,env)`/`onResolved(env,meta)` 读 `env.ctx`（driver `onResolved(current,…)` 传带 ctx 的 env，[driver.ts:283](../../src/lib/pipeline/driver.ts#L283)/[types.ts:137](../../src/lib/pipeline/types.ts#L137)）。
-- 接入 v4 活路径 [codec/anthropic/strategies.ts:84](../../src/lib/codec/anthropic/strategies.ts#L84)（直连主流量，评审 A1）+ 辅接 legacy `anthropic/pipeline.ts:170`（web_search 双跳，legacy 孪生或共享 remediation）。
+- **必须原生 env-strategy**（非 `adaptPayloadStrategy`）——落库 key=`(session_id,agent_id)` 只在 `env.ctx`，payload `ResolvedContext` 无 ctx、adapter 丢 env（评审 HIGH-1，已复核 [retry-types.ts](../../src/lib/request/retry-types.ts)/[payload-strategy-adapter.ts](../../src/lib/pipeline/payload-strategy-adapter.ts)）。原生 `handle(error,env)`/`onResolved(env,meta)` 读 `env.ctx`（driver `onResolved(current,…)` 传带 ctx 的 env，[driver.ts:283](../../src/lib/pipeline/driver.ts#L283)/[types.ts:137](../../src/lib/pipeline/types.ts#L137)）。
+- 接入 v4 活路径 [codec/anthropic/strategies.ts](../../src/lib/codec/anthropic/strategies.ts)；旧 web_search 双跳 payload-strategy 孪生已随旧 request executor 退役。
 - **matcher**：守卫式双 token（`thinking`/`redacted_thinking` + `cannot be modified`，仿 [legacy-thinking-retry](../../src/lib/request/strategies/legacy-thinking-retry.ts#L36)，避免误伤 `thinking.type.enabled`；评审 M3 负样本测试）。per-request 一次性。
 - **L2 remediate**：strip-all thinking（含 redacted）→ 重试一次（`learning:true`，`MAX_LEARNING_RETRIES=32` 足）。PoC 证 → 200。
 - **L3 落库（onResolved，成功才记）**：从 `env.ctx` 读 `(session_id, agent_id)` 写 sidecar（now/hit_count++/error_sample）。无 session_id → 跳过落库（仅 L2 解锁，降级）。归因混淆会话级无害（误记最坏剥该会话 thinking ≤3d 滑动，空明文低伤害、自动过期）；**（record-not-adopted）** 有意不采纳 PoC 对照臂双证（会话级低伤害 + 窄 matcher 使 strip-all→200 即有效 oracle + 自动过期）。

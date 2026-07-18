@@ -35,7 +35,6 @@ import type {
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
-import type { RetryStrategy as LegacyRetryStrategy } from "~/lib/request/retry-types"
 
 import { HTTPError } from "~/lib/error"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
@@ -44,7 +43,6 @@ import {
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
-import { adaptLegacyStrategy } from "~/lib/pipeline/legacy-strategy-adapter"
 import { StreamClientAbortError } from "~/lib/stream"
 import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
 
@@ -1107,81 +1105,5 @@ describe("driver C0 — post-retry env + post-gate meta channel", () => {
     const result = await driver.runRequest({ body: {}, headers: new Headers() })
     expect(result.ok).toBe(true)
     expect(resolvedCalled).toBe(1)
-  })
-})
-
-// ── C0 — CC truncateResult phantom guard (RFC §12.3) ───────────────────────
-// The phantom bug: the pre-gate adapter onMeta fired CC's `recordFeature("truncated")`
-// even for a budget-rejected truncate retry. Post-gate the driver only emits the
-// accepted retry's meta, so a budget-exhausting truncate records NO phantom feature.
-
-describe("driver C0 — CC truncateResult phantom guard (RFC §12.3)", () => {
-  // A CC-handler-style onMeta sink: records "truncated" iff a truncateResult meta
-  // arrives (mirrors handler-v4's onMeta).
-  const ccOnMeta =
-    (features: Array<string>) =>
-    (meta: Record<string, unknown>): void => {
-      if (meta.truncateResult) features.push("truncated")
-    }
-  // A legacy auto-truncate-shaped strategy: handles any error by retrying with a
-  // truncateResult meta (we don't exercise the real tokenizer here — that has its
-  // own unit tests; this asserts the adapter→driver→onMeta budget-gating).
-  const truncateLegacy = (): LegacyRetryStrategy<{ v: number }> => ({
-    name: "auto-truncate",
-    canHandle: () => true,
-    handle: (_e, p) => Promise.resolve({ action: "retry", payload: p, meta: { truncateResult: { wasTruncated: true } } }),
-  })
-
-  test("a successful truncate retry records the truncated feature (normal path intact)", async () => {
-    const { ctx } = makeCtx()
-    const env = makeEnv(ctx)
-    const { codec } = makeCodec({ env })
-    let attempts = 0
-    const transport = makeTransport(async () => {
-      attempts++
-      if (attempts === 1) throw new Error("limit")
-      return okStream()
-    })
-    const features: Array<string> = []
-    const strategies = [adaptLegacyStrategy(truncateLegacy(), { attemptRef: { value: 0 }, originalPayload: { v: 0 }, model: undefined, maxRetries: 1 })]
-    const driver = createPipelineDriver({
-      ...BASE,
-      codec,
-      decideRoute: (e) => codec.decideRoute(e),
-      transport,
-      strategies,
-      onMeta: ccOnMeta(features),
-      maxRetries: 1,
-    })
-
-    const result = await driver.runRequest({ body: { v: 0 }, headers: new Headers() })
-    expect(result.ok).toBe(true)
-    expect(features).toEqual(["truncated"])
-  })
-
-  test("a truncate retry that immediately exceeds maxRetries records NO phantom truncated feature", async () => {
-    const { ctx } = makeCtx()
-    const env = makeEnv(ctx)
-    const { codec } = makeCodec({ env })
-    const transport = makeTransport(async () => {
-      throw new Error("limit") // always fails
-    })
-    const features: Array<string> = []
-    const strategies = [adaptLegacyStrategy(truncateLegacy(), { attemptRef: { value: 0 }, originalPayload: { v: 0 }, model: undefined, maxRetries: 0 })]
-    // maxRetries:0 → the first truncate retry is rejected by the budget gate
-    // (0>=0) → throw before its meta emits. The old pre-gate adapter onMeta would
-    // have fired a phantom "truncated" here.
-    const driver = createPipelineDriver({
-      ...BASE,
-      codec,
-      decideRoute: (e) => codec.decideRoute(e),
-      transport,
-      strategies,
-      onMeta: ccOnMeta(features),
-      maxRetries: 0,
-    })
-
-    await expect(driver.runRequest({ body: { v: 0 }, headers: new Headers() })).rejects.toThrow("limit")
-    expect(features).toEqual([])
   })
 })

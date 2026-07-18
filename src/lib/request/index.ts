@@ -5,9 +5,6 @@
 
 // Payload
 export { logPayloadSizeInfo, logPayloadSizeInfoAnthropic } from "./payload"
-// Pipeline
-export type { FormatAdapter, PipelineOptions, PipelineResult } from "./pipeline"
-export { executeRequestPipeline } from "./pipeline"
 
 // Recording
 export { buildAnthropicResponseData, buildOpenAIResponseData, buildResponsesResponseData } from "./recording"

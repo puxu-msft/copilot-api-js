@@ -3,8 +3,7 @@
  *
  * The data-flow driver: pushes a request through the seven stages (S1→S7),
  * publishing events / sampling raw data at the stage boundaries. Lifted+merged
- * from the current `executeRequestPipeline` retry loop and the handlers'
- * orchestration skeleton (docs/v4/01-architecture.md §1.3, 03-spec/envelope-driver.md §3).
+ * from the pre-driver retry loops and handler orchestration skeletons (docs/v4/01-architecture.md §1.3, 03-spec/envelope-driver.md §3).
  *
  * P2.1 builds the format-agnostic skeleton; it consumes a {@link FormatCodec} +
  * {@link Transport} + retry strategies + the rewrite registry as opaque deps, so

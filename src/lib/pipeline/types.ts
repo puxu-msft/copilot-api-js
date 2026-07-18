@@ -6,13 +6,9 @@
  * (env-based — see docs/v4/03-spec/retry-transport.md §2), and the pure transport
  * send contract.
  *
- * P0.1 defines the interfaces only — **no consumers yet**. The driver (P2) and
- * transport (P0.2/P2) consume them later.
- *
- * Note on naming: the env-based {@link RetryStrategy} here intentionally shares
- * the name with the legacy generic `RetryStrategy<TPayload>` in
- * `~/lib/request/pipeline`. They live in different modules and never collide;
- * the legacy one is replaced by this one as formats migrate (P2 / P0.4).
+ * Note on naming: the envelope-based {@link RetryStrategy} here is the orchestration
+ * contract. Format-native payload strategies own their generic contract in
+ * `~/lib/request/retry-types` and enter the driver through the payload adapter.
  */
 
 import type { OperationKind } from "~/lib/context/model-operation-record"
@@ -142,7 +138,7 @@ export type PhysicalTransportResponse =
   | { kind: "fallback-before-first-event"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
   | { kind: "failed-open"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
 
-/** Mandatory ownership contract consumed by the upcoming DispatchScheduler. */
+/** Mandatory physical ownership contract consumed by the generation dispatch scheduler. */
 export interface PhysicalTransport {
   open(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<PhysicalTransportResponse>
 }
@@ -152,7 +148,7 @@ export interface PhysicalTransport {
 // ============================================================================
 
 /**
- * An error-driven retry strategy. Unlike the legacy `RetryStrategy<TPayload>`,
+ * An error-driven retry strategy. Unlike the payload-oriented `RetryStrategy<TPayload>`,
  * `handle` receives and returns the **envelope** — it mutates one layer of env
  * (prepareHints / body / target), and the next loop turn re-derives the wire via
  * `prepareWire(env)`. This unifies "what to fix + where to re-enter" (see
@@ -169,7 +165,7 @@ export interface RetryStrategy {
    * `meta` is the `RetryAction.meta` carried by the **budget-accepted** retry that
    * produced the successful env (the driver threads it post-gate, so a
    * budget-rejected retry's meta never reaches here — C0-② / RFC §11.2). The
-   * adapter forwards it into the legacy `ResolvedContext.meta`, where
+   * adapter forwards it into the payload strategy `ResolvedContext.meta`, where
    * `unsupported-beta-retry.onResolved` reads `meta.probedBetas` to fixate the
    * located betas into the negotiation cache.
    */
@@ -179,10 +175,10 @@ export interface RetryStrategy {
 /**
  * The outcome of a strategy's `handle`. `retry` carries the modified envelope
  * for the next attempt; `learning` retries draw from a separate budget (see
- * retry-transport.md §2 / pipeline.ts `MAX_LEARNING_RETRIES`).
+ * retry-transport.md §2 / the driver learning-retry budget).
  *
- * `meta` is opaque per-retry diagnostic data (the legacy `RetryAction.meta` — e.g.
- * `truncateResult` / `sanitization` / `probedBetas` / `strippedBetas`). The driver
+ * `meta` is opaque per-retry diagnostic data (the payload strategy `RetryAction.meta` — e.g.
+ * `sanitization` / `probedBetas` / `strippedBetas`). The driver
  * captures it loop-local **only after the budget gate accepts the retry**, then
  * routes it to the handler's `onMeta` sink and to the owning strategy's
  * `onResolved` — so a budget-rejected retry never emits phantom pipeline-info
@@ -673,8 +669,7 @@ export type ResponseOutcome =
 
 /**
  * Orchestrates the stage sequence, publishing events + sampling raw data at
- * each stage boundary. Lifted+merged from the current `executeRequestPipeline`
- * retry loop and the handlers' orchestration skeleton (docs/v4/01-architecture.md §1.3).
+ * each stage boundary. Owned by the generation driver after retiring the pre-driver request executor (docs/v4/01-architecture.md §1.3).
  */
 export interface PipelineDriver {
   /** Request side: run S1→S4 (S4 contains error-driven retry). */
