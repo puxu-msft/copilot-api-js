@@ -42,7 +42,7 @@ transformBufferedFlush?: (state: State, frames: readonly ClientFrame[], ctx: Buf
 ```
 
 - **`cause` 须在三处 flush 调用点各自另传，不可复用 `isTerminalFlush`**：`flushBufferedFrames` 现签名 `(frames, isTerminalFlush: boolean)`（[driver.ts:1060](../../src/lib/pipeline/driver.ts)），`isTerminalFlush` 是 anchor 收尾的既有 gate、与 `cause` 语义**正交**（例如块级 commit 分支的 `closesInheritedAnchor` 可真可假，但其 `cause` 恒为 `"boundary"`）。`flushBufferedFrames` 定义在 retry 循环**外部**（闭包读 `opts`/`sink`/`anchor`/`anchorState`），而 `candidateOpts`（含 `transformBufferedFlush`）是循环**内部**每次迭代重新计算的 `const`——故不改 `flushBufferedFrames` 的定义位置，只**新增两个参数**：`(frames, isTerminalFlush, mergeCtx: BufferedFlushContext, transformBufferedFlush?: RunBufferedOpts["transformBufferedFlush"])`，三处调用点各自把当前迭代的 `candidateOpts.transformBufferedFlush` 与对应的 `{ cause, boundaryFrame? }` 一并传入（retreat @~1155 / 块级 @~1193 / 终结 @~1250）。
-- **`ClientFrame = SseFrame = { event?: string; data?: string; id?: string | number; retry?: number }`**（`src/lib/stream.ts:189`）。
+- **`ClientFrame = SseFrame = { event?: string; data?: string; id?: string | number; retry?: number }`**（`src/lib/stream.ts:198`）。
 - **rebuild 源同址取得**：repair/rebuild 要读的终结快照，是候选本地 reducer 收集的各块 `output_item.done` 的 `item`（不是 `acc` 的拼接纯文本）——reducer 内部维护 `Map<number, ResponsesOutputItem>` 收集槽，通过其自身的 `observe(frame)` 方法在 `output_item.done` 事件上填充（与原设计一致，只是宿主从顶层搬进了候选 `state`）。
 - **buffered ⊥ hedge 互斥（spec §5.4，新增不变量）**：generation runtime 的对冲在 buffered 路径被短路禁用（[driver.ts:768](../../src/lib/pipeline/driver.ts)：`if (outerOpts && "retryCap" in outerOpts) return undefined`——buffered 永远传 `retryCap`）。故 reducer 永不与并发多候选共存，per-candidate 托管模型因此被强化而非削弱；Phase 1 新增一条守卫测试显式声明此不变量。
 
@@ -1257,7 +1257,7 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
       expect(diag.repairReasons).toEqual([])
     })
 
-    test("droppedEventBytes counts BOTH event-name length and data length — aligns with driver's bufferedBytes calc (driver.ts:859, GPT-audit suggestion)", () => {
+    test("droppedEventBytes counts BOTH event-name length and data length — aligns with driver's bufferedBytes calc (driver.ts:1138, GPT-audit suggestion)", () => {
       const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "upstream" })
       const { frames } = functionCallBlock(0, "fc_1")
       for (const f of frames) reducer.observe(f)
@@ -1337,7 +1337,7 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
           if (dropAsDelta || dropAsItemSummarySubframe) {
             droppedEventCount++
             // GPT-audit suggestion: align byte accounting with the driver's own bufferedBytes calc
-            // (driver.ts:859 — `(toWrite.data?.length ?? 0) + (toWrite.event?.length ?? 0)`), so the
+            // (driver.ts:1138 — `(toWrite.data?.length ?? 0) + (toWrite.event?.length ?? 0)`), so the
             // diagnostic number is comparable to the buffer-cap accounting the driver already does.
             droppedEventBytes += (f.data?.length ?? 0) + (f.event?.length ?? 0)
             if (!droppedEventTypes.includes(parsed.type)) droppedEventTypes.push(parsed.type)
@@ -1589,15 +1589,15 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
 
   describe("RequestContext.recordBufferedMergeInfo", () => {
     test("merges into pipelineInfo without requiring setPipelineInfo to have been called", () => {
-      const ctx = createRequestContext({ endpoint: "responses" })
+      const ctx = createRequestContext({ endpoint: "openai-responses" })
       ctx.recordBufferedMergeInfo({ eventCompaction: "drop-delta", completedOutput: "repair-if-incomplete", droppedEventCount: 3, droppedEventBytes: 120, droppedEventTypes: ["response.output_text.delta"], repairedItemCount: 0, repairReasons: [], verbatimFallbacks: [] })
       expect(ctx.pipelineInfo?.bufferedMerge?.droppedEventCount).toBe(3)
     })
 
     test("survives a later setPipelineInfo full-replace call (independent merge slot, mirrors _streamTimeouts/_sendMessageNormalization)", () => {
-      const ctx = createRequestContext({ endpoint: "responses" })
+      const ctx = createRequestContext({ endpoint: "openai-responses" })
       ctx.recordBufferedMergeInfo({ eventCompaction: "drop-delta", completedOutput: "upstream", droppedEventCount: 1, droppedEventBytes: 10, droppedEventTypes: [], repairedItemCount: 0, repairReasons: [], verbatimFallbacks: [] })
-      ctx.setPipelineInfo({ preprocessing: { redactedFields: [] } } as never)
+      ctx.setPipelineInfo({ preprocessing: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
       expect(ctx.pipelineInfo?.bufferedMerge?.droppedEventCount).toBe(1)
       expect(ctx.pipelineInfo?.preprocessing).toBeDefined()
     })
@@ -2164,7 +2164,7 @@ spec §8.2 明确指出现有 8 用例覆盖了 function_call 与 message/text�
 计划定稿后经 GPT 异模型对抗复核，结论：0 blocker，质量高，忠实覆盖 spec，9 条承重不变量逐条落实，file:line 引用全部准确，本文档「已知风险/发现」5 条自报风险全部被独立核实属实。复核给出 1 项 HIGH + 2 条建议，处理如下：
 
 - **HIGH（已修复）**：`response.output_text.annotation.added` 在 `item-summary` 档的丢弃集合中遗漏——该事件的 SDK accumulator 分支（`ResponseAccumulator.js:96-105`）同样调用 `getContent(content_index)`，与 `*.done` 家族同构地雷；原设计只枚举了 `.done` 事件、漏了这个 `.added`，`item-summary` 丢弃 `content_part` 后若该帧存活即成孤儿引用。真实触发场景：gpt-5.5 `web_search_preview` 原生透传 citation annotation。修复落在 **Task 0.2b**（新增类型建模 `OutputTextAnnotationAddedEvent`）+ **Task 2.3**（纳入 `ITEM_SUMMARY_ONLY_SUBFRAME_TYPES` + 新增专测 + 新增 DANGER 回归，真实 `openai` SDK 消费者 oracle 断言 `missing content` 抛错）。`drop-delta` 档本身安全（未纳入 `DROPPABLE_DELTA_TYPES`），此修复只影响 `item-summary`。
-- **建议 1（已采纳）**：`diagnostics().droppedEventBytes` 口径对齐 driver 的 `bufferedBytes` 计算（`driver.ts:859`，`(data.length ?? 0) + (event.length ?? 0)`），原实现只计入 `data.length`。已在 **Task 2.9** 更新生产代码 + 新增独立 oracle 测试（用同一公式对过滤后的帧集合独立求和比对，而非仅断言硬编码数字）。
+- **建议 1（已采纳）**：`diagnostics().droppedEventBytes` 口径对齐 driver 的 `bufferedBytes` 计算（`driver.ts:1138`，`(data.length ?? 0) + (event.length ?? 0)`），原实现只计入 `data.length`。已在 **Task 2.9** 更新生产代码 + 新增独立 oracle 测试（用同一公式对过滤后的帧集合独立求和比对，而非仅断言硬编码数字）。
 - **建议 2（已采纳）**：kick-off 提示词补充"执行 Task 5.2/5.3/5.4 前先完整读 `tests/responses/responses-buffered.it.test.ts`（约 650 行）再动手"，已加入 kick-off 正文。
 - **MED 观察（不采纳，按 `record-not-adopted` 记录理由）**：复核指出 `history/types.ts` 反向 import Responses 的 `BufferedMergeDiag` 类型。因该 import 是 `import type`（无运行时依赖，不产生真实模块耦合）且项目已有先例 `AskNormalizationDiag` 同构走同一模式，复核本身也判定"不构成新反模式、不要求改"，故本轮不处理，原计划设计维持不变。
 
