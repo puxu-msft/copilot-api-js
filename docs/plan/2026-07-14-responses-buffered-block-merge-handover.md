@@ -15,13 +15,18 @@
   - + plan 进度标注提交
 - **Phase 1 完成**（Task 1.1-1.4，`f3af7e1c`..`fc9ba0b4` 之后）：候选托管 `transformBufferedFlush` 缝接入 driver `flushBufferedFrames` 咽喉（types.ts + candidate-response-session.ts + driver.ts 三 flush 点各传 cause）、R1 字节等价显式锁、buffered⊥hedge 特征化测试。**R1 回归绿**：anthropic/responses buffered 20 pass/0 fail、tests/pipeline 721 pass（3 pre-existing）。
 - **backlog（执行期发现，低优先）**：Task 1.4 的 buffered⊥hedge 测试是 characterization、**不隔离** retryCap 短路（`makeBufferedHarness` 不建 generation binding → `!binding` 前置守卫先短路、retryCap 那行不被触达、mutation 不咬）。真正 teeth-ful 的隔离测试需 binding-present harness。不变量本身由 binding-absence + retryCap 双重防御保证。见 `methodology-plan-red-green-mutation-prediction-can-be-wrong-verify` 记忆。
-- **Phase 2 进度（Task 2.1-2.6 完成）**：`src/lib/codec/openai-responses/buffered-merge-reducer.ts` reducer 纯逻辑核心**已完整**：`createResponsesBufferedMergeReducer`（observe 收集 output_item.done item、transformFlush）；`event_compaction` 三档全落地（verbatim / drop-delta〔5 delta allowlist〕/ item-summary〔`ITEM_SUMMARY_ONLY_SUBFRAME_TYPES` 含 annotation.added HIGH 修复〕）+ 三档帧数正交性锁；`locateTerminal` 反向扫描 + `completed_output: upstream` no-op 占位；`isTerminalSnapshotComplete()` 缺陷 oracle（empty-output/missing-item/inconsistent-item + itemsEquivalent）。reducer 单测 16 pass + snapshot oracle 6 pass；probe 15 pass（含 annotation DANGER）。
-- **剩余（Phase 2.7 起）**：
-  - **Task 2.7 有前置依赖倒挂**：`completed_output: repair-if-incomplete`/`rebuild` 要 `tagFrameSynthetic(frame, "buffered-terminal-repair")`，须**先做 Phase 3.1**（`frame-origin.ts:29` `SyntheticOriginKind` + `model-operation-record.ts:28` `OperationSyntheticKind` + `client-sink.ts:194/588` 两 union 各加 `"buffered-terminal-repair"`），否则 TS 收窄报错。占位返回在 Task 2.5 已留（transformFlush 末尾 `if (!terminal || upstream) return working; return working` — Task 2.7 替换最后一行为 repair/rebuild，代码见 plan Task 2.7 §1152-1173）。
-  - 然后 Task 2.8（rebuild 档 e2e）/ Task 2.9（diagnostics() + droppedEventBytes 含 event.length）/ **Task 2.10（把 reducer 接入 Responses 候选工厂 `src/routes/responses/candidate-response-session.ts` — 真正的集成点，observe 挂 onRenderedFrame、transformBufferedFlush 挂候选 responseOpt）**。
-  - Phase 3（History 标记其余接线 + pipelineInfo 诊断）/ Phase 4（config 两旋钮）/ Phase 5（测试三层 + Codex oracle）。
-- **纪律提醒（执行期 slip）**：Task 2.6 一度在 `bun run typecheck` **红时误提交**（test Map 类型推断错），已 amend 修复。**每个 task commit 前必须先确认 typecheck 绿 + 测试绿，别用 `&&` 链把 commit 跟在可能失败的 typecheck 后面无门执行**。
-- **typecheck 绿**。
+- **Phase 2 进度（Task 2.1-2.9 完成）+ Phase 3.1 完成**：reducer **纯逻辑核心全部完成并单测覆盖**（`src/lib/codec/openai-responses/buffered-merge-reducer.ts`，reducer 单测 31 pass、snapshot oracle 6 pass、probe 15 pass、synthetic 类型探针 2 pass）：
+  - `createResponsesBufferedMergeReducer(opts)` → `{ observe, transformFlush, diagnostics }`（无 resetAttempt，候选托管天生 fresh）
+  - `event_compaction` 三档全落地（verbatim / drop-delta〔5 delta allowlist〕/ item-summary〔含 annotation.added HIGH 修复〕）+ 三档帧数正交性锁 + 地雷不变量专测 + 次序不变量专测
+  - `completed_output` 三档全落地（upstream no-op / repair-if-incomplete〔`isTerminalSnapshotComplete` 缺陷 oracle 门控〕/ rebuild），重建帧打 `tagFrameSynthetic(_, "buffered-terminal-repair")`
+  - `diagnostics()` 聚合（droppedEventCount/Bytes〔含 event.length〕/Types、repairedItemCount、repairReasons、verbatimFallbacks）
+  - **Phase 3.1（synthetic 4 站点）已完成**（提前插队，Task 2.7 前置）：`"buffered-terminal-repair"` 加进 SyntheticOriginKind〔frame-origin:29〕+ OperationSyntheticKind〔model-operation-record:28〕+ HTTP/WS sampleForwarded union〔client-sink:194/588〕。
+- **剩余（下一会话，clean boundary）**：
+  - **Task 2.10（集成点，关键）**：把 reducer 接进 Responses 候选工厂 `src/routes/responses/candidate-response-session.ts`（`createState` 加 `bufferedMerge: createResponsesBufferedMergeReducer({eventCompaction:"drop-delta", completedOutput:"repair-if-incomplete"})` 固定字面量、Phase 4.5 回填真配置；`onRenderedFrame` 里 `state.bufferedMerge.observe(rendered)`;新增候选 responseOpt `transformBufferedFlush: (state,frames,ctx)=>state.bufferedMerge.transformFlush(frames,ctx)`）。**需先读 `candidate-response-session.ts` 全文核实 101-146 行结构 + 新建 `tests/pipeline/helpers/responses-buffered-harness.ts`（makeBufferedHarness 的 Responses-codec 变体，用真实 createOpenAiResponsesCodec）**。plan 步骤在 §1387-1459。
+  - **Task 3.2-3.x**：`PipelineInfo.bufferedMerge` 字段 + `recordBufferedMergeInfo()`（**镜像 `recordSendMessageNormalization`、绝不用已删的 `request.context_updated` 总线事件**，plan Task 3.3 已修好，§1530+）+ ui-v4 读码坐实无需改。
+  - **Phase 4**：config 两旋钮 `responses.buffered_merge.{event_compaction,completed_output}` + capability 约束 + 校验回落；Phase 4.5 回填 Task 2.10 的固定字面量。
+  - **Phase 5**：测试三层（unit 已在 Phase 2；driver flush+History 双轨 http/golden；@ai-sdk + Codex oracle e2e）+ 变异纪律。
+- **typecheck + eslint 绿**（reducer 文件已过 `bunx eslint`）。
 - **基线（零代码改动时）**：`5606 pass / 8 pre-existing fail`。8 个失败**全是 master 既有缺陷**（无关区域：History V3 store/semantic ×4、reactive-retry e2e、offline-replay e2e、keepalive buffered-anchor e2e、P0-T1 generation runtime baseline）。执行期**只把新增失败当自己的**；改动后重跑确认没让这 8 个变更糟（尤其后 2 个靠近本特性区域）。
 
 ## 剩余 task：Task 0.4 → Phase 1-5
