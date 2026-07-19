@@ -172,7 +172,7 @@ describe("completed_output: repair-if-incomplete", () => {
     for (const f of fcFrames) reducer.observe(f)
     const terminal = completedFrame([]) // defective: empty despite 1 collected item
     const out = reducer.transformFlush([...fcFrames, terminal], { cause: "boundary", boundaryFrame: terminal })
-    const last = out.at(-1)
+    const last = out.at(-1)!
     expect(JSON.parse(last.data!).response.output).toEqual([finalItem])
     expect(readSyntheticKind(last)).toBe("buffered-terminal-repair")
   })
@@ -183,7 +183,7 @@ describe("completed_output: repair-if-incomplete", () => {
     for (const f of fcFrames) reducer.observe(f)
     const terminal = completedFrame([finalItem]) // already complete
     const out = reducer.transformFlush([...fcFrames, terminal], { cause: "boundary", boundaryFrame: terminal })
-    const last = out.at(-1)
+    const last = out.at(-1)!
     expect(last).toBe(terminal)
     expect(readSyntheticKind(last)).toBeUndefined()
   })
@@ -196,7 +196,7 @@ describe("completed_output: rebuild", () => {
     for (const f of fcFrames) reducer.observe(f)
     const terminal = completedFrame([finalItem]) // already complete — rebuild still replaces it
     const out = reducer.transformFlush([...fcFrames, terminal], { cause: "boundary", boundaryFrame: terminal })
-    const last = out.at(-1)
+    const last = out.at(-1)!
     expect(readSyntheticKind(last)).toBe("buffered-terminal-repair")
     expect(JSON.parse(last.data!).response.output).toEqual([finalItem])
   })
