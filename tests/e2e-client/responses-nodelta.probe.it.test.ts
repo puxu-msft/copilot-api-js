@@ -37,6 +37,10 @@ import {
 } from "~/lib/state"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
 
+import type { BlockFixture } from "../responses/fixtures/buffered-merge-blocks"
+
+import { refusalBlock, reasoningContentBlock, reasoningSummaryBlock } from "../responses/fixtures/buffered-merge-blocks"
+
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
@@ -55,6 +59,12 @@ const MODEL = "gpt-resp"
 /** A Responses event-named SSE frame (event line = data.type). */
 const ev = (obj: { type: string } & Record<string, unknown>): string => `event: ${obj.type}\ndata: ${JSON.stringify(obj)}\n\n`
 const DONE = "data: [DONE]\n\n"
+
+/** Adapter: the Task 0.3 fixtures produce ClientFrame `{event,data}` objects; the probe harness works
+ *  with SSE strings. Convert a fixture's frames to the string form `finalOf` consumes. */
+const fxSse = (fx: BlockFixture): Array<string> => fx.frames.map((f) => `event: ${f.event ?? ""}\ndata: ${f.data ?? ""}\n\n`)
+/** Drop a specific `.added` frame from a fixture (the landmine mutant — its `.done` then throws in the SDK). */
+const fxSseWithout = (fx: BlockFixture, droppedEvent: string): Array<string> => fx.frames.filter((f) => f.event !== droppedEvent).map((f) => `event: ${f.event ?? ""}\ndata: ${f.data ?? ""}\n\n`)
 
 const created = (): string =>
   ev({ type: "response.created", sequence_number: 0, response: { id: "resp_up_1", object: "response", created_at: 1, status: "in_progress", model: MODEL, output: [], usage: null, tools: [], tool_choice: "auto", parallel_tool_calls: false, store: false } })
@@ -270,5 +280,45 @@ describe("GATING: Responses no-delta block — openai SDK reconstruction (upstre
     const eventLines = [...wire.matchAll(/^event: (.+)$/gm)].map((m) => m[1])
     expect(eventLines).toContain("response.output_item.done")
     expect(eventLines.some((e) => e.endsWith(".delta"))).toBe(false) // proxy did NOT re-expand into deltas
+  })
+
+  // ── refusal + reasoning block types (spec §8.2 — the *.done landmine per block type) ──
+  // Each block type's terminal `.done` (refusal.done / reasoning_text.done / reasoning_summary_text.done)
+  // goes through the SDK accumulator's getContent(), so dropping its `.added` throws "missing content"
+  // mid-stream — the same landmine output_text.done has. POSITIVE CONTROL proves the full sequence
+  // reconstructs; GATING proves the mutant (dropped `.added`) throws.
+
+  test("POSITIVE CONTROL: refusal block full sequence → SDK reconstructs a refusal message", async () => {
+    const fx = refusalBlock(0, "msg_ref")
+    const final = await finalOf([created(), ...fxSse(fx), completedFull(9, [fx.finalItem])])
+    const msg = final.output.find((o) => o.type === "message")
+    expect(msg?.content?.[0]?.type).toBe("refusal")
+  })
+
+  test("GATING (landmine): refusal.done without content_part.added → SDK throws missing content", async () => {
+    const fx = refusalBlock(0, "msg_ref2")
+    await expect(finalOf([created(), ...fxSseWithout(fx, "response.content_part.added")])).rejects.toThrow(/missing content/i)
+  })
+
+  test("POSITIVE CONTROL: reasoning summary block full sequence → SDK reconstructs a reasoning item", async () => {
+    const fx = reasoningSummaryBlock(0, "rs_sum")
+    const final = await finalOf([created(), ...fxSse(fx), completedFull(7, [fx.finalItem])])
+    expect(final.output.some((o) => o.type === "reasoning")).toBe(true)
+  })
+
+  test("GATING (landmine): reasoning_summary_text.done without reasoning_summary_part.added → SDK throws missing content", async () => {
+    const fx = reasoningSummaryBlock(0, "rs_sum2")
+    await expect(finalOf([created(), ...fxSseWithout(fx, "response.reasoning_summary_part.added")])).rejects.toThrow(/missing content/i)
+  })
+
+  test("POSITIVE CONTROL: reasoning content-track block full sequence → SDK reconstructs a reasoning item", async () => {
+    const fx = reasoningContentBlock(0, "rs_ct")
+    const final = await finalOf([created(), ...fxSse(fx), completedFull(7, [fx.finalItem])])
+    expect(final.output.some((o) => o.type === "reasoning")).toBe(true)
+  })
+
+  test("GATING (landmine): reasoning_text.done without content_part.added → SDK throws missing content", async () => {
+    const fx = reasoningContentBlock(0, "rs_ct2")
+    await expect(finalOf([created(), ...fxSseWithout(fx, "response.content_part.added")])).rejects.toThrow(/missing content/i)
   })
 })
