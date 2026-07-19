@@ -1,6 +1,6 @@
 # History search Tantivy sidecar v1
 
-> **状态：第一版已接入，产品查询尚未切换。** 本文描述 2026-07-18 从 History SQLite 移出的全文索引。权威语义数据仍是 `history-v3.db` 中的 `ModelOperationRecord`；Tantivy 目录可随时删除，不是 History 的组成部分。
+> **状态：第一版已接入，产品查询尚未切换。** 本文描述 2026-07-18 从 History SQLite 移出的全文索引。权威语义数据仍是 `history-v3.db` 中的 `ModelOperationRecord`；Tantivy 目录可随时删除，不是 History 的组成部分。下一版产品化设计见 [Tantivy V2 RFC](rfc/2026-07-19-history-search-tantivy-v2.md) 与 [implementation plan](plan/2026-07-19-history-search-tantivy-v2.md)。
 
 ## 1．边界
 
