@@ -1,5 +1,7 @@
 # Responses buffered-merge —— 执行接手文档（handover）
 
+> **[2026-07-19 已完结]** 本 handover 描述的剩余工作（Task 2.10 + Phase 3-5）已**全部实施完成并提交**在分支 `feat/responses-buffered-block-merge`，待合并 master。权威现状见 [plan 头部状态注解](2026-07-14-responses-buffered-block-merge.md) + DESIGN.md「活的架构现状」新增行。承重执行期决策（drop-delta 默认作用于所有 Responses 流、bare-driver harness 不可行改 HTTP e2e）见 plan 头部。本文档保留作历史执行叙事，不再是「待接手」状态。
+
 - 日期：2026-07-19
 - 上游：[spec](2026-07-14-responses-buffered-block-merge.md 的同目录 spec)、[plan](2026-07-14-responses-buffered-block-merge.md)（36 task，已对齐 master HEAD、过 GPT 复核 0 blocker）
 - 本文档：给**新会话**接续执行用。旧会话在极长的 SDD 全流程 + 一次大重接地后，执行到 Phase 0 中段主动交接（上下文经济）。
