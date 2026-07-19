@@ -35,4 +35,13 @@ describe("transformBufferedFlush wiring (candidate-hosted seam, spec §4 重接�
     expect(written.some((f) => f.event === "response.output_text.delta")).toBe(false)
     expect(written.map((f) => f.event)).toEqual(["response.created", "response.completed"])
   })
+
+  test("R1: transformBufferedFlush omitted → every flush writes the raw buffer verbatim (byte-identical to pre-seam behavior)", async () => {
+    const frames = [d("response.created"), d("response.output_text.delta"), d("response.completed")]
+    const h = makeBufferedHarness(frames, { sawMessageStop: true })
+    const { sink, frames: written } = makeArraySink()
+    const outcome = await runResponseBufferedSink(h.deps, h.upstream, h.env, sink, { ...h.opts, sawMessageStop: () => true }) // no transformBufferedFlush
+    expect(outcome.kind).toBe("complete")
+    expect(written.map((f) => f.event)).toEqual(["response.created", "response.output_text.delta", "response.completed"])
+  })
 })
