@@ -75,3 +75,28 @@ describe("item-summary", () => {
     expect(out).toEqual(["response.output_item.added", "response.output_item.done"])
   })
 })
+
+describe("verbatim + 三档正交性", () => {
+  test("verbatim returns every frame unchanged for all 5 block types", () => {
+    for (const blockFn of [functionCallBlock, messageMultiPartBlock, refusalBlock, reasoningSummaryBlock, reasoningContentBlock]) {
+      const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "verbatim", completedOutput: "upstream" })
+      const { frames } = blockFn(0, "item_1")
+      for (const f of frames) reducer.observe(f)
+      const out = reducer.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] })
+      expect(out).toEqual(frames)
+    }
+  })
+
+  test("three modes are strictly ordered by frame count: verbatim >= drop-delta >= item-summary", () => {
+    for (const blockFn of [functionCallBlock, messageMultiPartBlock, refusalBlock, reasoningSummaryBlock, reasoningContentBlock]) {
+      const counts = (["verbatim", "drop-delta", "item-summary"] as const).map((mode) => {
+        const reducer = createResponsesBufferedMergeReducer({ eventCompaction: mode, completedOutput: "upstream" })
+        const { frames } = blockFn(0, "item_1")
+        for (const f of frames) reducer.observe(f)
+        return reducer.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] }).length
+      })
+      expect(counts[0]).toBeGreaterThanOrEqual(counts[1])
+      expect(counts[1]).toBeGreaterThanOrEqual(counts[2])
+    }
+  })
+})
