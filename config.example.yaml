@@ -200,6 +200,18 @@
 
 # openai_responses:
 #   buffered_retry: false                              # opt back into live forwarding (default: true)
+#   # buffered_merge — Responses-only protocol normalizer that rides on the buffered path (spec
+#   # 2026-07-14-responses-buffered-block-merge). Lazy: inert when buffered_retry is off.
+#   buffered_merge:
+#     event_compaction: drop-delta          # verbatim | drop-delta (default) | item-summary — how many
+#                                           # mid-block *.delta frames to filter off the FORWARDED wire.
+#                                           # drop-delta: drop the 5 text/args deltas whose .done resets the
+#                                           # absolute value (finalized text survives in output_item.done +
+#                                           # the completed snapshot; a pure output_text.delta accumulator
+#                                           # would see empty text — read .done / completed.output instead).
+#     completed_output: repair-if-incomplete # upstream | repair-if-incomplete (default) | rebuild — terminal
+#                                           # reconciliation; repair rebuilds only a DEFECTIVE completed
+#                                           # (empty/missing output) from the collected output_item.done items.
 # chat_completions:
 #   buffered_retry: { enabled: true, max_retries: 5 }   # keep buffered, override just the cap for this vendor
 

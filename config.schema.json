@@ -1487,6 +1487,42 @@
                   "type": "null"
                 }
               ]
+            },
+            "buffered_merge": {
+              "type": "object",
+              "properties": {
+                "event_compaction": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "verbatim",
+                        "drop-delta",
+                        "item-summary"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "completed_output": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "upstream",
+                        "repair-if-incomplete",
+                        "rebuild"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
